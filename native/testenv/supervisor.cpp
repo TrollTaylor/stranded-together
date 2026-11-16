@@ -4,10 +4,11 @@
 //
 //   st_testenv_supervisor --probe <st_testenv_probe.exe> --run-dir <dir> [--seconds N]
 //   st_testenv_supervisor --game-dir <dir> --mod <winhttp.dll> --scenario <file> --run-dir <dir>
-//                         [--timeout-s N (<=360)] [--saves <dir>|none] [--no-steam-check] [--keep-audio]
+//                         [--timeout-s N (<=360)] [--saves <dir>] [--no-steam-check] [--keep-audio] [--no-game-stdout]
 //                         [--no-mod] [--no-ui-limits] [--steam-env] [--no-isolation]
-//   (bisecting a game that does not start: --no-mod runs the game vanilla (our winhttp.dll
-//    and session.ini moved aside for the run, scenario with supervisor steps only),
+//   (bisecting a game that does not start: --no-mod runs the game without the mod's session,
+//    overlay and game hooks -- winhttp.dll only redirects the saves -- (scenario with
+//    supervisor steps only),
 //    --no-ui-limits drops the job's UI restrictions (kill-on-close stays), --steam-env adds
 //    the variables Steam sets for a game it launches, --no-isolation keeps the automation
 //    channel but not the overlay's automation hooks (virtual pad, foreground, cursor,
@@ -21,8 +22,11 @@
 // checks that no window of the job is on the user's input desktop and that the
 // input desktop did not change; either ends the run at once. Refuses when
 // ds.exe already runs. The game folder is backed up to <run>\backup first and
-// restored afterwards (restore.txt). The user's saves are only read (hashed and
-// copied to <run>\saves-before) and compared afterwards.
+// restored afterwards (restore.txt). The user's saves are hashed and backed up to
+// <run>\saves-backup first; the mod redirects every access to them to a seeded
+// scratch copy (confirmed before any scenario step runs, otherwise the game is
+// killed); afterwards the real tree is compared by hash and restored from the
+// backup if anything differs.
 //
 // GUI subsystem: never opens a console window; prints to the parent console
 // when there is one, and always to <run>\supervisor.log.
@@ -36,6 +40,7 @@
 #include <string>
 #include <vector>
 
+#include "automation.hpp"
 #include "testenv_core.hpp"
 
 namespace te = st::testenv;
@@ -227,10 +232,13 @@ std::wstring ChildEnvironment(bool steam_app_id) {
         for (const wchar_t* p = env; *p; p += wcslen(p) + 1) {
             const std::wstring v = p;
             if (steam_app_id && (_wcsnicmp(v.c_str(), L"SteamAppId=", 11) == 0 || _wcsnicmp(v.c_str(), L"SteamGameId=", 12) == 0)) continue;
+            if (v.rfind(std::wstring(st::automation::saves::kSupervisedEnv) + L"=", 0) == 0) continue;
             vars.push_back(v);
         }
         FreeEnvironmentStringsW(env);
     }
+    // The mod refuses automation=1 in a ds.exe that does not carry this (automation.hpp).
+    vars.push_back(std::wstring(st::automation::saves::kSupervisedEnv) + L"=" + std::to_wstring(GetCurrentProcessId()));
     if (steam_app_id) {
         // ds.exe calls SteamAPI_RestartAppIfNecessary(1850570) (0x141A1F670, from
         // 0x1418EA074) and exits when it returns true. steam_api64.dll returns false
@@ -256,18 +264,52 @@ std::wstring ChildEnvironment(bool steam_app_id) {
     return block;
 }
 
-bool Launch(Owned& o, const std::wstring& exe, const std::wstring& args, const std::wstring& cwd, bool steam_env) {
+// stdout_file: ds.exe prints its own log (FUN_141A11EC0: fwrite to stdout, then
+// OutputDebugStringA) -- given a file as stdout, the run keeps it (game-stdout.txt).
+// Only that one handle is inherited (PROC_THREAD_ATTRIBUTE_HANDLE_LIST).
+bool Launch(Owned& o, const std::wstring& exe, const std::wstring& args, const std::wstring& cwd, bool steam_env,
+            const std::wstring& stdout_file = {}) {
     std::wstring desk = L"WinSta0\\" + te::Widen(o.desktop_name);
-    STARTUPINFOW si{};
-    si.cb = sizeof(si);
+    STARTUPINFOEXW six{};
+    STARTUPINFOW& si = six.StartupInfo;
+    si.cb = sizeof(six);
     si.lpDesktop = desk.data();
     si.dwFlags = STARTF_FORCEOFFFEEDBACK;  // no busy cursor on the user's desktop
     PROCESS_INFORMATION pi{};
     std::wstring cmd = L"\"" + exe + L"\"" + (args.empty() ? L"" : L" " + args);
     std::wstring env = ChildEnvironment(steam_env);
-    if (!CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, FALSE,
-                        CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_PROCESS_GROUP, env.data(), cwd.c_str(), &si, &pi)) {
-        Out("CreateProcess(%s) failed (error %lu)", te::Narrow(exe).c_str(), GetLastError());
+    HANDLE out = INVALID_HANDLE_VALUE;
+    std::vector<unsigned char> attr_buf;
+    DWORD flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_PROCESS_GROUP;
+    if (!stdout_file.empty()) {
+        SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
+        out = CreateFileW(stdout_file.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL,
+                          nullptr);
+        SIZE_T size = 0;
+        InitializeProcThreadAttributeList(nullptr, 1, 0, &size);
+        attr_buf.resize(size);
+        six.lpAttributeList = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(attr_buf.data());
+        if (out != INVALID_HANDLE_VALUE && InitializeProcThreadAttributeList(six.lpAttributeList, 1, 0, &size) &&
+            UpdateProcThreadAttribute(six.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &out, sizeof(out), nullptr, nullptr)) {
+            si.dwFlags |= STARTF_USESTDHANDLES;
+            si.hStdInput = nullptr;
+            si.hStdOutput = out;
+            si.hStdError = out;
+            flags |= EXTENDED_STARTUPINFO_PRESENT;
+        } else {
+            Out("game stdout not captured (error %lu)", GetLastError());
+            six.lpAttributeList = nullptr;
+        }
+    }
+    const bool inherit = (flags & EXTENDED_STARTUPINFO_PRESENT) != 0;
+    si.cb = inherit ? sizeof(six) : sizeof(STARTUPINFOW);
+    const BOOL created = CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, inherit ? TRUE : FALSE, flags, env.data(), cwd.c_str(),
+                                        &si, &pi);
+    const DWORD create_error = GetLastError();
+    if (six.lpAttributeList) DeleteProcThreadAttributeList(six.lpAttributeList);
+    if (out != INVALID_HANDLE_VALUE) CloseHandle(out);  // the child has its own copy
+    if (!created) {
+        Out("CreateProcess(%s) failed (error %lu)", te::Narrow(exe).c_str(), create_error);
         return false;
     }
     if (!AssignProcessToJobObject(o.job, pi.hProcess)) {
@@ -311,7 +353,7 @@ void CloseOwned(Owned& o) {
 // ------------------------------------------------------------------ args
 struct Args {
     std::wstring probe, game_dir, mod, scenario, run_dir, restore, saves;
-    bool saves_none = false, steam_check = true, mute = true, no_mod = false, ui_limits = true, steam_env = false, isolation = true;
+    bool steam_check = true, mute = true, no_mod = false, ui_limits = true, steam_env = false, isolation = true, game_stdout = true;
     unsigned timeout_s = kMaxRunSeconds, probe_seconds = 6;
 };
 
@@ -332,10 +374,9 @@ bool ParseArgs(Args& a, std::string* err) {
         else if (k == L"--scenario") val(a.scenario);
         else if (k == L"--run-dir") val(a.run_dir);
         else if (k == L"--restore") val(a.restore);
-        else if (k == L"--saves") {
-            val(a.saves);
-            a.saves_none = a.saves == L"none";
-        } else if (k == L"--no-steam-check") a.steam_check = false;
+        else if (k == L"--saves") val(a.saves);
+        else if (k == L"--no-steam-check") a.steam_check = false;
+        else if (k == L"--no-game-stdout") a.game_stdout = false;
         else if (k == L"--keep-audio") a.mute = false;
         else if (k == L"--no-mod") a.no_mod = true;
         else if (k == L"--no-ui-limits") a.ui_limits = false;
@@ -594,17 +635,119 @@ bool RunSteps(Run& r) {
 
 std::string PreflightGame(Run& r) {
     if (!te::FileExists(r.game + L"\\ds.exe")) return "no ds.exe in " + te::Narrow(r.game);
-    if (!r.args.no_mod && !te::FileExists(r.args.mod)) return "mod DLL not found: " + te::Narrow(r.args.mod);
+    // --no-mod deploys the DLL too: it is what redirects the saves
+    if (!te::FileExists(r.args.mod)) return "mod DLL not found: " + te::Narrow(r.args.mod);
     if (r.args.no_mod)
         for (const te::Step& s : r.scenario.steps)
             if (s.kind == te::StepKind::mod || s.kind == te::StepKind::waitready || s.kind == te::StepKind::until)
-                return "--no-mod runs the game vanilla: the scenario may only use sleep, note and waitlog (line " + std::to_string(s.line) + ")";
+                return "--no-mod has no automation channel: the scenario may only use sleep, note and waitlog (line " + std::to_string(s.line) + ")";
     const auto running = te::FindProcesses(L"ds.exe");
     if (!running.empty()) return "ds.exe is already running (pid " + std::to_string(running[0]) + "): close it first";
     if (r.args.steam_check && te::FindProcesses(L"steam.exe").empty())
         return "Steam is not running: the game's SteamAPI_Init would fail (start Steam, log in)";
     if (te::FileExists(r.game + L"\\steam_appid.txt")) return "steam_appid.txt exists in the game folder (not ours): refusing";
     return {};
+}
+
+std::wstring EnvW(const wchar_t* name) {
+    wchar_t buf[4096] = {};
+    const DWORD n = GetEnvironmentVariableW(name, buf, 4096);
+    return n > 0 && n < 4096 ? std::wstring(buf, n) : std::wstring();
+}
+
+// The save tree ds.exe uses (docs/hidden-testing.md "Saves"): its "user:" device is
+// getenv("USERPROFILE") + "AppData\Local\KojimaProductions\DeathStrandingDC\<id>\"; Steam's
+// AutoCloud root is %LOCALAPPDATA%\KojimaProductions. Both must be the same folder.
+std::wstring DefaultSaveRoot(std::string* why) {
+    const std::wstring local = EnvW(L"LOCALAPPDATA"), profile = EnvW(L"USERPROFILE");
+    if (local.empty() || profile.empty()) {
+        *why = "LOCALAPPDATA or USERPROFILE is not set: cannot locate the saves";
+        return {};
+    }
+    const std::wstring a = te::FullPath(local + L"\\KojimaProductions"), b = te::FullPath(profile + L"\\AppData\\Local\\KojimaProductions");
+    if (_wcsicmp(a.c_str(), b.c_str()) != 0) {
+        *why = "%LOCALAPPDATA%\\KojimaProductions and %USERPROFILE%\\AppData\\Local\\KojimaProductions differ (" + te::Narrow(a) + " / " +
+               te::Narrow(b) + "): refusing";
+        return {};
+    }
+    return a;
+}
+
+std::wstring CloudLogPath() {
+    const std::wstring steam = SteamPath();
+    return steam.empty() ? std::wstring() : te::FullPath(steam + L"\\logs\\cloud_log.txt");
+}
+
+unsigned long long FileSize(const std::wstring& path) {
+    WIN32_FILE_ATTRIBUTE_DATA a{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &a)) return 0;
+    return (static_cast<unsigned long long>(a.nFileSizeHigh) << 32) | a.nFileSizeLow;
+}
+
+std::string TailFrom(const std::wstring& path, unsigned long long offset) {
+    std::string all;
+    if (!te::ReadFileBytes(path, &all, 256ull << 20)) return {};
+    return offset <= all.size() ? all.substr(static_cast<std::size_t>(offset)) : all;  // rotated: all of it
+}
+
+std::string LastLines(const std::string& text, std::size_t n) {
+    std::vector<std::string> lines;
+    std::size_t at = 0;
+    while (at < text.size()) {
+        std::size_t nl = text.find('\n', at);
+        if (nl == std::string::npos) nl = text.size();
+        std::string l = text.substr(at, nl - at);
+        if (!l.empty() && l.back() == '\r') l.pop_back();
+        if (!l.empty()) lines.push_back(l);
+        at = nl + 1;
+    }
+    std::string out;
+    for (std::size_t i = lines.size() > n ? lines.size() - n : 0; i < lines.size(); ++i) out += lines[i] + "\n";
+    return out;
+}
+
+std::string JsonList(const std::vector<std::string>& v) {
+    std::string j = "[";
+    for (std::size_t i = 0; i < v.size(); ++i) j += (i ? ",\"" : "\"") + te::JsonEscape(v[i]) + "\"";
+    return j + "]";
+}
+
+// The mod's DllMain marker (automation\saves-redirect.txt, written before ds.exe's own
+// code runs) within 10 s, then its "[auto] saves=redirected" log line within 30 s.
+// Anything else ends the run before a scenario step can make the game load a save.
+bool WaitSavesEvidence(Run& r, std::string* detail) {
+    const std::wstring active = r.mod_dir + L"\\automation\\saves-redirect.txt";
+    const std::wstring refused = r.mod_dir + L"\\automation\\saves-redirect-failed.txt";
+    const ULONGLONG t0 = GetTickCount64();
+    const auto refused_text = [&]() {
+        std::string t;
+        te::ReadFileBytes(refused, &t);
+        for (char& c : t)
+            if (c == '\n' || c == '\r') c = ' ';
+        return t;
+    };
+    while (!te::FileExists(active)) {
+        if (te::FileExists(refused)) return *detail = "the mod REFUSED: " + refused_text(), false;
+        if (GetTickCount64() - t0 > 10000) return *detail = "no automation\\saves-redirect.txt within 10 s (mod not loaded?)", false;
+        if (!Watch(r, 50)) {
+            if (te::FileExists(refused)) return *detail = "the mod REFUSED: " + refused_text(), false;
+            return *detail = "the game ended before the save redirect was confirmed (" + r.end_reason + ")", false;
+        }
+    }
+    const double marker_s = static_cast<double>(GetTickCount64() - t0) / 1000.0;
+    const std::regex re("\\[auto\\] saves=redirected");
+    std::string line;
+    while (!LogMatches(r, re, &line)) {
+        if (GetTickCount64() - t0 > 30000) return *detail = "no '[auto] saves=redirected' log line within 30 s", false;
+        if (!Watch(r, 100)) {
+            if (LogMatches(r, re, &line)) break;
+            return *detail = "the game ended before the redirect log line (" + r.end_reason + ")", false;
+        }
+    }
+    char head[96];
+    std::snprintf(head, sizeof(head), "marker after %.2f s; ", marker_s);
+    *detail = head + line;
+    return true;
 }
 
 int RunGame(Args& a) {
@@ -617,6 +760,7 @@ int RunGame(Args& a) {
     r.auto_in = r.mod_dir + L"\\automation\\in";
     r.auto_out = r.mod_dir + L"\\automation\\out";
     r.log_path = r.mod_dir + L"\\stranded_together.log";
+    const std::wstring scratch = r.mod_dir + L"\\automation\\saves";
 
     // ---- preflight (nothing changed yet)
     std::string text, err;
@@ -626,7 +770,13 @@ int RunGame(Args& a) {
     }
     te::WriteFileAtomic(r.run + L"\\scenario.txt", text);
     const unsigned limit = std::min(a.timeout_s, r.scenario.timeout_s);
-    if (const std::string why = PreflightGame(r); !why.empty()) {
+    std::string why = PreflightGame(r);
+    // --saves <dir>: an explicit save root (tests: a scratch "real" root, also handed to the
+    // mod as automation_save_root). Otherwise the user's own.
+    std::wstring save_root = a.saves.empty() ? std::wstring() : te::FullPath(a.saves);
+    if (why.empty() && a.saves == L"none") why = "--saves none is gone: every run redirects and checks the saves";
+    if (why.empty() && save_root.empty()) save_root = DefaultSaveRoot(&why);
+    if (!why.empty()) {
         Out("REFUSED: %s", why.c_str());
         te::WriteFileAtomic(r.run + L"\\summary.json", "{\"mode\":\"game\",\"result\":\"refused\",\"reason\":\"" + te::JsonEscape(why) + "\"}\n");
         return 2;
@@ -640,67 +790,79 @@ int RunGame(Args& a) {
         te::Narrow(r.args.mod).c_str(), te::Narrow(a.scenario).c_str(), r.scenario.steps.size(), r.scenario.role.c_str(),
         std::min(limit, kMaxRunSeconds - kShutdownReserveSeconds), kMaxRunSeconds);
 
-    // ---- saves: read only
-    std::wstring saves = a.saves;
-    if (!a.saves_none && saves.empty()) {
-        wchar_t local[MAX_PATH] = {};
-        GetEnvironmentVariableW(L"LOCALAPPDATA", local, MAX_PATH);
-        saves = std::wstring(local) + L"\\KojimaProductions\\DeathStrandingDC";
+    // ---- saves: hashed and backed up BEFORE anything else changes
+    if (!te::BackupSaves(save_root, r.run, &err)) {
+        Out("REFUSED: saves backup: %s", err.c_str());
+        if (mutex) ReleaseMutex(mutex), CloseHandle(mutex);
+        return 2;
     }
-    std::string saves_before;
-    if (!a.saves_none && te::DirExists(saves)) {
-        saves_before = te::HashManifest(saves);
-        te::WriteFileAtomic(r.run + L"\\saves-before.txt", saves_before);
-        te::CopyTree(saves, r.run + L"\\saves-before");
-        Out("saves %s: %zu bytes of manifest, copied to saves-before (read only)", te::Narrow(saves).c_str(), saves_before.size());
+    {
+        std::string m;
+        te::ReadFileBytes(r.run + L"\\saves-before.txt", &m);
+        Out("saves %s: %zu manifest lines hashed, backed up to saves-backup (verified); saves-restore.txt written",
+            te::Narrow(save_root).c_str(), static_cast<std::size_t>(std::count(m.begin(), m.end(), '\n')));
     }
+    const std::wstring cloud_log = CloudLogPath();
+    const unsigned long long cloud_offset = cloud_log.empty() ? 0 : FileSize(cloud_log);
 
-    // ---- back up the game folder, then deploy
+    // ---- back up the game folder, then deploy (the mod, session.ini, the seeded scratch saves)
     r.error_before = te::Sha256File(r.game + L"\\error.txt");
     if (!te::BackupGameFolder(r.game, r.run, &err)) {
         Out("REFUSED: backup: %s", err.c_str());
+        if (mutex) ReleaseMutex(mutex), CloseHandle(mutex);
         return 2;
     }
     Out("game folder backed up (restore.txt written before any change)");
     bool deployed = te::EnsureDir(r.mod_dir);
     te::RemoveTree(r.mod_dir + L"\\automation");
     deployed = deployed && te::EnsureDir(r.auto_in) && te::EnsureDir(r.auto_out);
-    if (a.no_mod) {
-        // Vanilla game: the folder's own winhttp.dll and session.ini are backed up and moved aside.
-        for (const std::wstring& f : {r.game + L"\\winhttp.dll", r.mod_dir + L"\\session.ini"})
-            if (te::FileExists(f)) deployed = deployed && DeleteFileW(f.c_str());
-    } else {
-        deployed = deployed && CopyFileW(r.args.mod.c_str(), (r.game + L"\\winhttp.dll").c_str(), FALSE);
-        deployed = deployed && te::WriteFileAtomic(r.mod_dir + L"\\session.ini", te::SessionIniText(r.scenario.role, a.mute, a.isolation));
+    const std::wstring extra_root = a.saves.empty() ? std::wstring() : save_root;  // the mod knows the user's own root
+    deployed = deployed && CopyFileW(r.args.mod.c_str(), (r.game + L"\\winhttp.dll").c_str(), FALSE);
+    deployed = deployed && te::WriteFileAtomic(r.mod_dir + L"\\session.ini",
+                                               a.no_mod ? te::RedirectOnlyIniText(extra_root)
+                                                        : te::SessionIniText(r.scenario.role, a.mute, a.isolation, extra_root));
+    if (deployed && !te::SeedScratch(r.run, scratch, &err)) {
+        Out("setup failed: %s", err.c_str());
+        deployed = false;
     }
     DeleteFileW((r.mod_dir + L"\\session.last.ini").c_str());
-    if (a.no_mod) Out("--no-mod: no winhttp.dll and no session.ini for this run (vanilla game)");
+    if (a.no_mod) Out("--no-mod: winhttp.dll only redirects the saves (no session, no overlay, no game hooks)");
     else
         Out("deployed: winhttp.dll %s, session.ini role=%s automation=1 one_shot=1%s", te::Sha256File(r.game + L"\\winhttp.dll").substr(0, 16).c_str(),
             r.scenario.role.c_str(), a.isolation ? "" : " automation_isolate=0");
+    Out("scratch saves seeded: %s (the mod redirects %s there)", te::Narrow(scratch).c_str(), te::Narrow(save_root).c_str());
     g_full_steam_env = a.steam_env;
     if (a.steam_env) Out("--steam-env: the child gets Steam's launch variables too");
 
     int rc = 1;
-    bool started = false;
+    bool started = false, redirected = false;
+    std::string evidence;
     ULONGLONG hard_end = 0;
     if (deployed && CreatePrivateDesktop(r.o) && CreateJob(r.o, a.ui_limits)) {
         const ULONGLONG launch = GetTickCount64();
         hard_end = launch + kMaxRunSeconds * 1000ull;
         r.deadline = launch + std::min(limit, kMaxRunSeconds - kShutdownReserveSeconds) * 1000ull;
-        started = Launch(r.o, r.game + L"\\ds.exe", L"", r.game, true);
+        started = Launch(r.o, r.game + L"\\ds.exe", L"", r.game, true, a.game_stdout ? r.run + L"\\game-stdout.txt" : std::wstring());
     } else {
-        Out("setup failed (deploy/desktop/job): restoring");
+        Out("setup failed (deploy/seed/desktop/job): restoring");
         rc = 2;
     }
     bool steps_ok = false;
     if (started) {
-        if (!Watch(r, 1500)) Out("the game is gone after 1.5 s: %s", r.end_reason.c_str());
-        else steps_ok = RunSteps(r);
+        redirected = WaitSavesEvidence(r, &evidence);
+        Out("saves redirect: %s -- %s", redirected ? "CONFIRMED" : "NOT CONFIRMED", evidence.c_str());
+        if (!redirected) {
+            if (Alive(r.o)) KillOwned(r.o, "the save redirect was not confirmed");
+            if (r.end_reason.empty() || r.end_reason == "the game exited") r.end_reason = "saves not redirected: " + evidence;
+        } else if (!Watch(r, 1000)) {
+            Out("the game is gone right after start: %s", r.end_reason.c_str());
+        } else {
+            steps_ok = RunSteps(r);
+        }
         Out("scenario %s%s%s", steps_ok ? "completed" : "stopped", r.end_reason.empty() ? "" : ": ", r.end_reason.c_str());
         // The end of the run (final screenshot, quit, exit) stays inside the hard cap.
         r.deadline = hard_end - 5000;
-        if (!r.o.violation && Alive(r.o)) {
+        if (!r.o.violation && Alive(r.o) && redirected) {
             if (!steps_ok && !a.no_mod) {
                 std::string d;
                 ModCommand(r, "screenshot zz-final", &d);
@@ -710,7 +872,7 @@ int RunGame(Args& a) {
                 std::string d;
                 ModCommand(r, "quit", &d);
             }
-            // a vanilla game has no quit command
+            // --no-mod has no quit command
             const ULONGLONG end = std::min<ULONGLONG>(GetTickCount64() + (a.no_mod ? 0 : 30000), hard_end);
             while (Alive(r.o) && GetTickCount64() < end) WaitForSingleObject(r.o.process, 250);
             if (Alive(r.o)) KillOwned(r.o, "did not exit after quit");
@@ -726,16 +888,37 @@ int RunGame(Args& a) {
         }
         r.exit_code = code;
         Out("ds.exe exit code %lu (0x%08lX) after %.2f s alive, %.2f s CPU", code, code, r.lifetime_s, r.cpu_s);
-        rc = r.o.violation ? 3 : (steps_ok && r.failures == 0 ? 0 : 1);
+        rc = r.o.violation ? 3 : (steps_ok && r.failures == 0 && redirected ? 0 : 1);
     }
     CloseOwned(r.o);
 
-    // ---- collect, restore
+    // ---- collect
     const std::wstring got = r.run + L"\\game";
     te::EnsureDir(got);
     for (const wchar_t* n : {L"stranded_together.log", L"session.last.ini", L"link-status.json"})
         CopyFileW((r.mod_dir + L"\\" + n).c_str(), (got + L"\\" + n).c_str(), FALSE);
+    for (const wchar_t* n : {L"saves-redirect.txt", L"saves-redirect-failed.txt", L"exit-trace.txt"})
+        CopyFileW((r.mod_dir + L"\\automation\\" + n).c_str(), (got + L"\\" + n).c_str(), FALSE);
     if (te::DirExists(r.auto_out)) te::CopyTree(r.auto_out, r.run + L"\\automation");
+    std::vector<std::string> scratch_changes;
+    if (te::DirExists(scratch)) {
+        std::string before;
+        te::ReadFileBytes(r.run + L"\\saves-before.txt", &before);
+        DeleteFileW((scratch + L"\\.st-redirect-probe").c_str());
+        const std::string after = te::HashManifest(scratch);
+        te::WriteFileAtomic(r.run + L"\\saves-scratch-after.txt", after);
+        scratch_changes = te::DiffManifests(before, after);
+        for (const std::string& c : scratch_changes) {  // what the game wrote (into the copy): kept for inspection
+            const std::wstring rel = te::Widen(c.substr(c.find(' ') + 1));
+            if (!rel.empty() && rel.back() != L'\\' && c.rfind("removed ", 0) != 0) {
+                const std::wstring dst = r.run + L"\\saves-scratch-changed\\" + rel;
+                te::EnsureDir(dst.substr(0, dst.find_last_of(L'\\')));
+                CopyFileW((scratch + L"\\" + rel).c_str(), dst.c_str(), FALSE);
+            }
+        }
+        Out("scratch saves: %zu change(s) by the game (absorbed by the redirect)", scratch_changes.size());
+        for (const std::string& c : scratch_changes) Out("  scratch %s", c.c_str());
+    }
     std::string error_note = "none";
     {
         const std::string now_sha = te::Sha256File(r.game + L"\\error.txt");
@@ -746,22 +929,51 @@ int RunGame(Args& a) {
             if (rc == 0) rc = 1;
         }
     }
+    std::string exit_trace, refused_reason, game_stdout;
+    te::ReadFileBytes(got + L"\\exit-trace.txt", &exit_trace);
+    te::ReadFileBytes(got + L"\\saves-redirect-failed.txt", &refused_reason);
+    if (te::ReadFileBytes(r.run + L"\\game-stdout.txt", &game_stdout)) Out("game stdout: %zu bytes (game-stdout.txt)", game_stdout.size());
+    if (!exit_trace.empty()) Out("exit trace: %s", exit_trace.c_str());
+
+    // ---- restore: the game folder, then the saves (compared by hash, restored if anything differs)
     const te::GuardResult restored = te::RestoreGameFolder(r.run);
     for (const std::string& n : restored.notes) Out("restore: %s", n.c_str());
     Out("game folder restore %s", restored.ok ? "complete" : "INCOMPLETE (see notes)");
-    std::vector<std::string> save_changes;
-    if (!saves_before.empty()) {
-        const std::string after = te::HashManifest(saves);
-        te::WriteFileAtomic(r.run + L"\\saves-after.txt", after);
-        save_changes = te::DiffManifests(saves_before, after);
-        Out("saves: %zu change(s)%s", save_changes.size(), save_changes.empty() ? " (unchanged)" : " made by the game (copy before the run: saves-before)");
-        for (const std::string& c : save_changes) Out("  save %s", c.c_str());
+    // ---- Steam Cloud: what AutoCloud did with the real folder when the game exited (waited for
+    // BEFORE the saves are compared, so the comparison also covers what Steam did after the exit)
+    std::vector<std::string> cloud_lines, cloud_uploads;
+    bool autocloud_seen = false;
+    if (!cloud_log.empty() && started) {
+        for (int i = 0; i < 40 && !autocloud_seen; ++i) {  // AutoCloud runs right after the exit
+            cloud_lines = te::CloudLogLines(TailFrom(cloud_log, cloud_offset), "1850570");
+            for (const std::string& l : cloud_lines)
+                autocloud_seen = autocloud_seen || l.find("AutoCloud complete") != std::string::npos ||
+                                 l.find("Upload complete") != std::string::npos;
+            if (!autocloud_seen) Sleep(500);
+        }
+        cloud_uploads = te::CloudUploads(cloud_lines);
+        std::string all;
+        for (const std::string& l : cloud_lines) all += l + "\n";
+        te::WriteFileAtomic(r.run + L"\\steam-cloud.txt", all);
+        Out("Steam cloud_log: %zu line(s) for app 1850570 since the start (%s), %zu upload line(s)%s", cloud_lines.size(),
+            autocloud_seen ? "AutoCloud ran" : "no AutoCloud pass logged", cloud_uploads.size(), cloud_uploads.empty() ? "" : " -- SEE steam-cloud.txt");
+        if (!cloud_uploads.empty() && rc == 0) rc = 1;
+    }
+
+    // ---- the real saves, compared by hash (restored from saves-backup if anything differs)
+    const te::SavesCheck saves = te::CheckAndRestoreSaves(r.run);
+    if (saves.unchanged) Out("saves: UNCHANGED (hash manifest identical to the one before the run)");
+    else {
+        Out("saves: %zu CHANGE(S) in the real save tree -- restored from saves-backup: %s", saves.changes.size(), saves.ok ? "verified" : "INCOMPLETE");
+        for (const std::string& c : saves.changes) Out("  real save %s", c.c_str());
+        for (const std::string& n : saves.notes) Out("  %s", n.c_str());
+        if (rc == 0) rc = 1;
     }
 
     // ---- summary
     std::string j = "{\"mode\":\"game\",\"result\":\"" + std::string(rc == 0 ? "pass" : rc == 3 ? "violation" : "fail") + "\"";
     j += ",\"end_reason\":\"" + te::JsonEscape(r.end_reason) + "\",\"violation\":" + (r.o.violation ? "true" : "false");
-    char life[160];
+    char life[200];
     std::snprintf(life, sizeof(life), ",\"game_exit_code\":%lu,\"game_alive_s\":%.2f,\"game_cpu_s\":%.2f,\"no_mod\":%s,\"ui_limits\":%s,\"steam_env\":%s,\"isolation\":%s",
                   r.exit_code, r.lifetime_s, r.cpu_s, a.no_mod ? "true" : "false", a.ui_limits ? "true" : "false", a.steam_env ? "true" : "false",
                   a.isolation ? "true" : "false");
@@ -770,11 +982,16 @@ int RunGame(Args& a) {
     j += ",\"input_desktop\":\"" + te::JsonEscape(r.o.initial_input) + "\",\"input_desktop_after\":\"" + te::JsonEscape(InputDesktopName()) + "\"";
     j += ",\"private_desktop_windows\":" + std::to_string(r.o.private_windows) + ",\"private_desktop_titles\":\"" + te::JsonEscape(r.o.private_titles) + "\"";
     j += ",\"failures\":" + std::to_string(r.failures) + ",\"error_txt\":\"" + te::JsonEscape(error_note) + "\"";
-    j += ",\"restored\":" + std::string(restored.ok ? "true" : "false") + ",\"restore_notes\":[";
-    for (std::size_t i = 0; i < restored.notes.size(); ++i) j += (i ? ",\"" : "\"") + te::JsonEscape(restored.notes[i]) + "\"";
-    j += "],\"save_changes\":[";
-    for (std::size_t i = 0; i < save_changes.size(); ++i) j += (i ? ",\"" : "\"") + te::JsonEscape(save_changes[i]) + "\"";
-    j += "],\"steps\":[";
+    j += ",\"restored\":" + std::string(restored.ok ? "true" : "false") + ",\"restore_notes\":" + JsonList(restored.notes);
+    j += ",\"saves_root\":\"" + te::JsonEscape(te::Narrow(save_root)) + "\",\"saves_redirected\":" + (redirected ? "true" : "false");
+    j += ",\"saves_evidence\":\"" + te::JsonEscape(evidence) + "\",\"saves_refused\":\"" + te::JsonEscape(refused_reason) + "\"";
+    j += ",\"saves_unchanged\":" + std::string(saves.unchanged ? "true" : "false") + ",\"saves_ok\":" + (saves.ok ? "true" : "false");
+    j += ",\"save_changes\":" + JsonList(saves.changes) + ",\"saves_restore_notes\":" + JsonList(saves.notes);
+    j += ",\"scratch_changes\":" + JsonList(scratch_changes);
+    j += ",\"cloud_autocloud_seen\":" + std::string(autocloud_seen ? "true" : "false") + ",\"cloud_lines\":" + std::to_string(cloud_lines.size());
+    j += ",\"cloud_uploads\":" + JsonList(cloud_uploads);
+    j += ",\"exit_trace\":\"" + te::JsonEscape(exit_trace) + "\",\"game_stdout_tail\":\"" + te::JsonEscape(LastLines(game_stdout, 25)) + "\"";
+    j += ",\"steps\":[";
     for (std::size_t i = 0; i < r.results.size(); ++i) j += (i ? ",\n  " : "\n  ") + r.results[i];
     j += "]}\n";
     te::WriteFileAtomic(r.run + L"\\summary.json", j);
@@ -812,7 +1029,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         }
         const te::GuardResult g = te::RestoreGameFolder(te::FullPath(a.restore));
         for (const std::string& n : g.notes) Out("restore: %s", n.c_str());
-        return g.ok ? 0 : 1;
+        const te::SavesCheck s = te::CheckAndRestoreSaves(te::FullPath(a.restore));
+        if (s.ran) Out("saves: %s", s.unchanged ? "unchanged" : s.ok ? "CHANGED, restored and verified" : "CHANGED, restore INCOMPLETE");
+        for (const std::string& n : s.notes) Out("saves: %s", n.c_str());
+        return g.ok && s.ok ? 0 : 1;
     }
     if (a.run_dir.empty()) {
         Out("usage: --probe <exe> --run-dir <dir> | --game-dir <dir> --mod <dll> --scenario <file> --run-dir <dir> | --restore <run dir>");

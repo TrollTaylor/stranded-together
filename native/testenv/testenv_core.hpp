@@ -33,7 +33,10 @@ std::string IsoNow();    // 2026-11-16T12:00:00.123
 // ------------------------------------------------------------------ session.ini
 // role solo|echo; loopback UDP only (nothing reaches Steam networking), one-shot.
 // isolate=false writes automation_isolate=0 (channel on, overlay automation hooks off).
-std::string SessionIniText(const std::string& role, bool mute, bool isolate = true);
+// save_root (tests): an extra save root the mod redirects (automation_save_root=).
+std::string SessionIniText(const std::string& role, bool mute, bool isolate = true, const std::wstring& save_root = {});
+// --no-mod runs: the mod only redirects the saves (no role, no overlay, no game hooks).
+std::string RedirectOnlyIniText(const std::wstring& save_root = {});
 
 // ------------------------------------------------------------------ scenarios
 // One line each:
@@ -85,10 +88,37 @@ bool BackupGameFolder(const std::wstring& game_dir, const std::wstring& run_dir,
 GuardResult RestoreGameFolder(const std::wstring& run_dir);
 
 // ------------------------------------------------------------------ saves
-// path \t size \t sha256 lines for every file below dir.
+// path \t size \t sha256 lines for every file below dir, and "path\ \t dir \t -" for
+// every directory (an empty folder the game creates is a change too).
 std::string HashManifest(const std::wstring& dir);
 // Lines "changed|added|removed <path>" between two manifests.
 std::vector<std::string> DiffManifests(const std::string& before, const std::string& after);
+
+// The user's save tree (default %LOCALAPPDATA%\KojimaProductions; docs/hidden-testing.md
+// "Saves"). Before a run BackupSaves hashes it into <run>\saves-before.txt, copies it to
+// <run>\saves-backup\ (verified against the manifest) and writes <run>\saves-restore.txt
+// (root, backup) BEFORE the game starts. SeedScratch copies the backup into the scratch
+// folder the mod redirects to (<game>\stranded_together\automation\saves), verified, plus
+// the mod's self-test probe file. After the run CheckAndRestoreSaves compares the real
+// tree with saves-before.txt; anything changed or removed is copied back from the backup,
+// files that appeared are moved to <run>\saves-added\ (never deleted), folders that
+// appeared are removed when empty; then it verifies again and writes saves-restored.txt.
+bool BackupSaves(const std::wstring& root, const std::wstring& run_dir, std::string* error);
+bool SeedScratch(const std::wstring& run_dir, const std::wstring& scratch, std::string* error);
+struct SavesCheck {
+    bool ran = false;                  // saves-restore.txt was there
+    bool unchanged = false;            // the real tree matched the manifest before any restore
+    bool ok = false;                   // matches now (unchanged, or restored and verified)
+    std::vector<std::string> changes;  // diff found before restoring
+    std::vector<std::string> notes;    // what was restored / moved
+};
+SavesCheck CheckAndRestoreSaves(const std::wstring& run_dir);
+
+// Lines of a Steam cloud_log.txt excerpt that concern `app_id` ("[AppID 1850570]").
+std::vector<std::string> CloudLogLines(const std::string& log_text, const std::string& app_id);
+// Of those, the ones that upload or would upload a file ("Need to upload file", "Upload
+// OK for file", "HTTP upload for file"): with the redirect there must be none.
+std::vector<std::string> CloudUploads(const std::vector<std::string>& app_lines);
 
 // ------------------------------------------------------------------ processes
 std::vector<DWORD> FindProcesses(const wchar_t* exe_name);  // case-insensitive image name

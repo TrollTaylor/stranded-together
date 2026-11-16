@@ -100,6 +100,720 @@ double NowMs() {
     return static_cast<double>(t.QuadPart) * 1000.0 / static_cast<double>(f.QuadPart);
 }
 
+// ------------------------------------------------------------------ save redirect
+// Installed from DllMain (EarlyInit) before ds.exe's own code runs; see automation.hpp
+// "save redirect". Globals here are plain arrays and atomics: no destructors, so the
+// hooks stay valid while the process exits (other threads may still open files after
+// this DLL's CRT has torn down). Hooks never fault: paths are read with wcsnlen/strnlen
+// bounds, allocation failures fail the call (a save path is never passed through
+// unmapped).
+constexpr std::size_t kPathCap = 1024;
+constexpr int kMaxRoots = 4;
+wchar_t g_roots[kMaxRoots][kPathCap];
+std::atomic<int> g_nroots{0};
+wchar_t g_scratch[kPathCap];
+wchar_t g_mod_dir[kPathCap];
+wchar_t g_auto_dir[kPathCap];
+std::atomic<bool> g_rd_active{false};
+std::atomic<bool> g_log_ready{false};
+std::atomic<unsigned long> g_rd_calls{0}, g_rd_failures{0};
+std::atomic<int> g_rd_hooks{0};
+char g_rd_missing[256];  // optional hooks that could not be installed
+
+struct Seen {
+    wchar_t text[260];
+    char op[16];
+    bool logged;
+};
+constexpr int kMaxSeen = 96, kMaxOutside = 48;
+Seen g_seen[kMaxSeen];
+int g_nseen = 0;
+bool g_seen_full = false;
+Seen g_outside[kMaxOutside];
+int g_noutside = 0;
+SRWLOCK g_seen_lock = SRWLOCK_INIT;
+
+void Utf8(const wchar_t* w, char* out, int cap) noexcept {
+    out[0] = 0;
+    if (!w) return;
+    const int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, out, cap, nullptr, nullptr);
+    if (n <= 0) out[0] = 0;
+    out[cap - 1] = 0;
+}
+
+void WcsCopy(wchar_t* dst, std::size_t cap, const wchar_t* src) noexcept {
+    std::size_t i = 0;
+    for (; src && src[i] && i + 1 < cap; ++i) dst[i] = src[i];
+    dst[i] = 0;
+}
+
+// One log line per new entry; entries noted before the log was open are logged by
+// FlushSeen() from Init.
+void FlushSeen() noexcept {
+    if (!g_log_ready.load(std::memory_order_acquire)) return;
+    for (;;) {
+        wchar_t text[260];
+        char op[16];
+        bool outside = false, full = false, found = false;
+        AcquireSRWLockExclusive(&g_seen_lock);
+        for (int i = 0; i < g_nseen && !found; ++i)
+            if (!g_seen[i].logged) {
+                g_seen[i].logged = found = true;
+                WcsCopy(text, 260, g_seen[i].text);
+                std::memcpy(op, g_seen[i].op, sizeof(op));
+            }
+        for (int i = 0; i < g_noutside && !found; ++i)
+            if (!g_outside[i].logged) {
+                g_outside[i].logged = found = outside = true;
+                WcsCopy(text, 260, g_outside[i].text);
+                std::memcpy(op, g_outside[i].op, sizeof(op));
+            }
+        if (!found && g_seen_full) {
+            g_seen_full = false;
+            full = true;
+        }
+        ReleaseSRWLockExclusive(&g_seen_lock);
+        if (full) Log("[auto] saves: more than %d places, the rest are not logged", kMaxSeen);
+        if (!found) return;
+        char u[800];
+        Utf8(text, u, sizeof(u));
+        if (outside) Log("[auto] write outside the save root (%s): %s", op, u);
+        else Log("[auto] saves: %s %s -> scratch", op, u[0] ? u : "(save root)");
+    }
+}
+
+void NoteIn(Seen* table, int* count, int cap, const std::wstring& text, const char* op, bool* full) noexcept {
+    bool added = false;
+    AcquireSRWLockExclusive(&g_seen_lock);
+    bool have = false;
+    for (int i = 0; i < *count && !have; ++i) have = _wcsicmp(table[i].text, text.c_str()) == 0;
+    if (!have) {
+        if (*count < cap) {
+            Seen& s = table[(*count)++];
+            WcsCopy(s.text, 260, text.c_str());
+            std::snprintf(s.op, sizeof(s.op), "%s", op);
+            s.logged = false;
+            added = true;
+        } else if (full) {
+            *full = true;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_seen_lock);
+    if (added || (full && *full)) FlushSeen();
+}
+
+bool UnderDir(const wchar_t* path, const wchar_t* dir) noexcept {
+    const std::size_t n = wcsnlen(dir, kPathCap);
+    return n && _wcsnicmp(path, dir, n) == 0 && (path[n] == L'\\' || path[n] == L'/' || path[n] == 0);
+}
+
+// Writes outside the save root (discovery: where else does the game write?). Absolute
+// drive paths only; our own folder (logs, screenshots) is not interesting.
+void NoteOutside(const wchar_t* path, const char* op) noexcept {
+    if (!g_rd_active.load(std::memory_order_relaxed) || !path) return;
+    try {
+        const std::size_t n = wcsnlen(path, 32768);
+        if (n < 4 || n >= 32768 || path[1] != L':' || UnderDir(path, g_mod_dir)) return;
+        std::wstring dir = saves::Normalize(std::wstring(path, n));
+        const auto slash = dir.find_last_of(L'\\');
+        if (slash != std::wstring::npos && slash > 2) dir.resize(slash);
+        NoteIn(g_outside, &g_noutside, kMaxOutside, dir, op, nullptr);
+    } catch (...) {
+    }
+}
+
+using FindFirstFileExW_t = HANDLE(WINAPI*)(LPCWSTR, FINDEX_INFO_LEVELS, LPVOID, FINDEX_SEARCH_OPS, LPVOID, DWORD);
+FindFirstFileExW_t o_FindFirstFileExW;  // the trampoline (set when the hooks are created)
+
+// Win32's own spelling of a path (relative -> absolute against the current directory,
+// "C:x" drive-relative, trailing dots/spaces, "..") without touching the disk: what
+// the file API will open. "" when it has none.
+std::wstring Win32FullPath(const std::wstring& p) {
+    const DWORD need = GetFullPathNameW(p.c_str(), 0, nullptr, nullptr);
+    if (need == 0 || need > 32768) return {};
+    std::wstring buf(need, L'\0');
+    const DWORD got = GetFullPathNameW(p.c_str(), need, buf.data(), nullptr);
+    if (got == 0 || got >= need) return {};
+    buf.resize(got);
+    return buf;
+}
+
+// Long name of the last component of `path` (8.3 expansion), through the unhooked
+// FindFirstFileExW (no recursion into the hooks).
+bool LongNameOf(const std::wstring& path, std::wstring* name) {
+    if (!o_FindFirstFileExW) return false;
+    WIN32_FIND_DATAW fd;
+    HANDLE h = o_FindFirstFileExW(path.c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch, nullptr, 0);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    FindClose(h);
+    fd.cFileName[MAX_PATH - 1] = 0;
+    *name = fd.cFileName;
+    return true;
+}
+
+// 1: under a save root (*out = the scratch path), 0: not ours, -1: could not decide
+// (out of memory): the hook fails the call. A path counts as under the root when its
+// own lexical form, Win32's full path of it, or that with 8.3 names expanded is.
+int MapW(const wchar_t* path, std::wstring* out, const char* op) noexcept {
+    if (!g_rd_active.load(std::memory_order_acquire) || !path) return 0;
+    try {
+        const std::size_t n = wcsnlen(path, 32768);
+        if (n == 0 || n >= 32768) return 0;
+        std::wstring cand[3];
+        int nc = 0;
+        cand[nc++].assign(path, n);
+        bool lp = false;
+        const std::wstring lexical = saves::Normalize(cand[0], &lp);
+        if (!lp) {
+            std::wstring full = Win32FullPath(cand[0]);
+            if (!full.empty() && full != cand[0]) cand[nc++] = std::move(full);
+        }
+        if (lexical.find(L'~') != std::wstring::npos || cand[nc - 1].find(L'~') != std::wstring::npos) {
+            std::wstring longer = saves::ExpandShortNames(saves::Normalize(cand[nc - 1]), &LongNameOf);
+            if (longer != saves::Normalize(cand[nc - 1])) cand[nc++] = std::move(longer);
+        }
+        std::wstring rel;
+        const int roots = g_nroots.load(std::memory_order_acquire);
+        for (int c = 0; c < nc; ++c) {
+            for (int i = 0; i < roots; ++i) {
+                if (saves::Map(cand[c], g_roots[i], g_scratch, out, &rel)) {
+                    g_rd_calls.fetch_add(1, std::memory_order_relaxed);
+                    NoteIn(g_seen, &g_nseen, kMaxSeen, saves::LogPrefix(rel), op, &g_seen_full);
+                    return 1;
+                }
+            }
+        }
+        return 0;
+    } catch (...) {
+        g_rd_failures.fetch_add(1, std::memory_order_relaxed);
+        return -1;
+    }
+}
+
+// A path argument of a hooked call: the caller's own, or the scratch copy's.
+struct PathW {
+    const wchar_t* use = nullptr;
+    std::wstring mapped;
+    bool redirected = false, fail = false;
+    PathW(const wchar_t* p, const char* op) noexcept : use(p) {
+        const int r = MapW(p, &mapped, op);
+        if (r > 0) use = mapped.c_str(), redirected = true;
+        fail = r < 0;
+    }
+};
+
+struct PathA {
+    const char* use = nullptr;
+    std::string mapped;
+    bool redirected = false, fail = false;
+    PathA(const char* p, const char* op) noexcept : use(p) {
+        if (!g_rd_active.load(std::memory_order_acquire) || !p) return;
+        try {
+            const std::size_t n = strnlen(p, 32768);
+            if (n < 3 || n >= 32768) return;
+            const int wn = MultiByteToWideChar(CP_ACP, 0, p, static_cast<int>(n), nullptr, 0);
+            if (wn <= 0) return;
+            std::wstring w(static_cast<std::size_t>(wn), L'\0');
+            MultiByteToWideChar(CP_ACP, 0, p, static_cast<int>(n), w.data(), wn);
+            std::wstring m;
+            const int r = MapW(w.c_str(), &m, op);
+            if (r < 0) {
+                fail = true;
+                return;
+            }
+            if (r == 0) return;
+            BOOL lossy = FALSE;
+            const int an = WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, m.c_str(), static_cast<int>(m.size()), nullptr, 0, nullptr, &lossy);
+            if (an <= 0 || lossy) {  // the scratch path has no ANSI spelling: never fall back to the real one
+                fail = true;
+                return;
+            }
+            mapped.assign(static_cast<std::size_t>(an), '\0');
+            WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, m.c_str(), static_cast<int>(m.size()), mapped.data(), an, nullptr, nullptr);
+            use = mapped.c_str();
+            redirected = true;
+        } catch (...) {
+            g_rd_failures.fetch_add(1, std::memory_order_relaxed);
+            fail = true;
+        }
+    }
+};
+
+bool WriteIntent(DWORD access, DWORD disposition) noexcept {
+    return (access & (GENERIC_WRITE | GENERIC_ALL | FILE_WRITE_DATA | FILE_APPEND_DATA | DELETE | FILE_WRITE_ATTRIBUTES)) != 0 ||
+           disposition == CREATE_ALWAYS || disposition == CREATE_NEW || disposition == TRUNCATE_EXISTING;
+}
+
+// Fails the call when a path could not be decided (never passes a save path through).
+#define ST_RD_GUARD(path, ret)                    \
+    if ((path).fail) {                            \
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);    \
+        return ret;                               \
+    }
+
+using CreateFileW_t = HANDLE(WINAPI*)(LPCWSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
+using CreateFileA_t = HANDLE(WINAPI*)(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
+using CreateFile2_t = HANDLE(WINAPI*)(LPCWSTR, DWORD, DWORD, DWORD, LPCREATEFILE2_EXTENDED_PARAMETERS);
+using FindFirstFileW_t = HANDLE(WINAPI*)(LPCWSTR, LPWIN32_FIND_DATAW);
+using FindFirstFileA_t = HANDLE(WINAPI*)(LPCSTR, LPWIN32_FIND_DATAA);
+using FindFirstFileExA_t = HANDLE(WINAPI*)(LPCSTR, FINDEX_INFO_LEVELS, LPVOID, FINDEX_SEARCH_OPS, LPVOID, DWORD);
+using GetAttrW_t = DWORD(WINAPI*)(LPCWSTR);
+using GetAttrA_t = DWORD(WINAPI*)(LPCSTR);
+using GetAttrExW_t = BOOL(WINAPI*)(LPCWSTR, GET_FILEEX_INFO_LEVELS, LPVOID);
+using GetAttrExA_t = BOOL(WINAPI*)(LPCSTR, GET_FILEEX_INFO_LEVELS, LPVOID);
+using SetAttrW_t = BOOL(WINAPI*)(LPCWSTR, DWORD);
+using PathOpW_t = BOOL(WINAPI*)(LPCWSTR);                       // DeleteFileW, RemoveDirectoryW
+using PathOpA_t = BOOL(WINAPI*)(LPCSTR);                        // DeleteFileA, RemoveDirectoryA
+using CreateDirW_t = BOOL(WINAPI*)(LPCWSTR, LPSECURITY_ATTRIBUTES);
+using CreateDirA_t = BOOL(WINAPI*)(LPCSTR, LPSECURITY_ATTRIBUTES);
+using CreateDirExW_t = BOOL(WINAPI*)(LPCWSTR, LPCWSTR, LPSECURITY_ATTRIBUTES);
+using MoveW_t = BOOL(WINAPI*)(LPCWSTR, LPCWSTR);
+using MoveA_t = BOOL(WINAPI*)(LPCSTR, LPCSTR);
+using MoveExW_t = BOOL(WINAPI*)(LPCWSTR, LPCWSTR, DWORD);
+using MoveExA_t = BOOL(WINAPI*)(LPCSTR, LPCSTR, DWORD);
+using MoveProgW_t = BOOL(WINAPI*)(LPCWSTR, LPCWSTR, LPPROGRESS_ROUTINE, LPVOID, DWORD);
+using CopyW_t = BOOL(WINAPI*)(LPCWSTR, LPCWSTR, BOOL);
+using CopyA_t = BOOL(WINAPI*)(LPCSTR, LPCSTR, BOOL);
+using CopyExW_t = BOOL(WINAPI*)(LPCWSTR, LPCWSTR, LPPROGRESS_ROUTINE, LPVOID, LPBOOL, DWORD);
+using ReplaceW_t = BOOL(WINAPI*)(LPCWSTR, LPCWSTR, LPCWSTR, DWORD, LPVOID, LPVOID);
+using SetAttrA_t = BOOL(WINAPI*)(LPCSTR, DWORD);
+using Copy2_t = HRESULT(WINAPI*)(PCWSTR, PCWSTR, COPYFILE2_EXTENDED_PARAMETERS*);
+using HardLinkW_t = BOOL(WINAPI*)(LPCWSTR, LPCWSTR, LPSECURITY_ATTRIBUTES);
+
+CreateFileW_t o_CreateFileW;
+CreateFileA_t o_CreateFileA;
+CreateFile2_t o_CreateFile2;
+FindFirstFileW_t o_FindFirstFileW;
+FindFirstFileA_t o_FindFirstFileA;
+FindFirstFileExA_t o_FindFirstFileExA;
+GetAttrW_t o_GetFileAttributesW;
+GetAttrA_t o_GetFileAttributesA;
+GetAttrExW_t o_GetFileAttributesExW;
+GetAttrExA_t o_GetFileAttributesExA;
+SetAttrW_t o_SetFileAttributesW;
+PathOpW_t o_DeleteFileW, o_RemoveDirectoryW;
+PathOpA_t o_DeleteFileA, o_RemoveDirectoryA;
+CreateDirW_t o_CreateDirectoryW;
+CreateDirA_t o_CreateDirectoryA;
+CreateDirExW_t o_CreateDirectoryExW;
+MoveW_t o_MoveFileW;
+MoveA_t o_MoveFileA;
+MoveExW_t o_MoveFileExW;
+MoveExA_t o_MoveFileExA;
+MoveProgW_t o_MoveFileWithProgressW;
+CopyW_t o_CopyFileW;
+CopyA_t o_CopyFileA;
+CopyExW_t o_CopyFileExW;
+ReplaceW_t o_ReplaceFileW;
+SetAttrA_t o_SetFileAttributesA;
+Copy2_t o_CopyFile2;
+HardLinkW_t o_CreateHardLinkW;
+
+HANDLE WINAPI H_CreateFileW(LPCWSTR f, DWORD a, DWORD s, LPSECURITY_ATTRIBUTES sa, DWORD d, DWORD fl, HANDLE t) {
+    const DWORD e = GetLastError();
+    const bool w = WriteIntent(a, d);
+    PathW p(f, w ? "write" : "read");
+    ST_RD_GUARD(p, INVALID_HANDLE_VALUE)
+    if (w && !p.redirected) NoteOutside(f, "write");
+    SetLastError(e);
+    return o_CreateFileW(p.use, a, s, sa, d, fl, t);
+}
+HANDLE WINAPI H_CreateFileA(LPCSTR f, DWORD a, DWORD s, LPSECURITY_ATTRIBUTES sa, DWORD d, DWORD fl, HANDLE t) {
+    const DWORD e = GetLastError();
+    PathA p(f, WriteIntent(a, d) ? "write" : "read");
+    ST_RD_GUARD(p, INVALID_HANDLE_VALUE)
+    SetLastError(e);
+    return o_CreateFileA(p.use, a, s, sa, d, fl, t);
+}
+HANDLE WINAPI H_CreateFile2(LPCWSTR f, DWORD a, DWORD s, DWORD d, LPCREATEFILE2_EXTENDED_PARAMETERS x) {
+    const DWORD e = GetLastError();
+    const bool w = WriteIntent(a, d);
+    PathW p(f, w ? "write" : "read");
+    ST_RD_GUARD(p, INVALID_HANDLE_VALUE)
+    if (w && !p.redirected) NoteOutside(f, "write");
+    SetLastError(e);
+    return o_CreateFile2(p.use, a, s, d, x);
+}
+HANDLE WINAPI H_FindFirstFileW(LPCWSTR f, LPWIN32_FIND_DATAW fd) {
+    const DWORD e = GetLastError();
+    PathW p(f, "list");
+    ST_RD_GUARD(p, INVALID_HANDLE_VALUE)
+    SetLastError(e);
+    return o_FindFirstFileW(p.use, fd);
+}
+HANDLE WINAPI H_FindFirstFileA(LPCSTR f, LPWIN32_FIND_DATAA fd) {
+    const DWORD e = GetLastError();
+    PathA p(f, "list");
+    ST_RD_GUARD(p, INVALID_HANDLE_VALUE)
+    SetLastError(e);
+    return o_FindFirstFileA(p.use, fd);
+}
+HANDLE WINAPI H_FindFirstFileExW(LPCWSTR f, FINDEX_INFO_LEVELS l, LPVOID d, FINDEX_SEARCH_OPS o, LPVOID sf, DWORD fl) {
+    const DWORD e = GetLastError();
+    PathW p(f, "list");
+    ST_RD_GUARD(p, INVALID_HANDLE_VALUE)
+    SetLastError(e);
+    return o_FindFirstFileExW(p.use, l, d, o, sf, fl);
+}
+HANDLE WINAPI H_FindFirstFileExA(LPCSTR f, FINDEX_INFO_LEVELS l, LPVOID d, FINDEX_SEARCH_OPS o, LPVOID sf, DWORD fl) {
+    const DWORD e = GetLastError();
+    PathA p(f, "list");
+    ST_RD_GUARD(p, INVALID_HANDLE_VALUE)
+    SetLastError(e);
+    return o_FindFirstFileExA(p.use, l, d, o, sf, fl);
+}
+DWORD WINAPI H_GetFileAttributesW(LPCWSTR f) {
+    const DWORD e = GetLastError();
+    PathW p(f, "stat");
+    ST_RD_GUARD(p, INVALID_FILE_ATTRIBUTES)
+    SetLastError(e);
+    return o_GetFileAttributesW(p.use);
+}
+DWORD WINAPI H_GetFileAttributesA(LPCSTR f) {
+    const DWORD e = GetLastError();
+    PathA p(f, "stat");
+    ST_RD_GUARD(p, INVALID_FILE_ATTRIBUTES)
+    SetLastError(e);
+    return o_GetFileAttributesA(p.use);
+}
+BOOL WINAPI H_GetFileAttributesExW(LPCWSTR f, GET_FILEEX_INFO_LEVELS l, LPVOID d) {
+    const DWORD e = GetLastError();
+    PathW p(f, "stat");
+    ST_RD_GUARD(p, FALSE)
+    SetLastError(e);
+    return o_GetFileAttributesExW(p.use, l, d);
+}
+BOOL WINAPI H_GetFileAttributesExA(LPCSTR f, GET_FILEEX_INFO_LEVELS l, LPVOID d) {
+    const DWORD e = GetLastError();
+    PathA p(f, "stat");
+    ST_RD_GUARD(p, FALSE)
+    SetLastError(e);
+    return o_GetFileAttributesExA(p.use, l, d);
+}
+BOOL WINAPI H_SetFileAttributesW(LPCWSTR f, DWORD a) {
+    const DWORD e = GetLastError();
+    PathW p(f, "attrib");
+    ST_RD_GUARD(p, FALSE)
+    if (!p.redirected) NoteOutside(f, "attrib");
+    SetLastError(e);
+    return o_SetFileAttributesW(p.use, a);
+}
+BOOL WINAPI H_DeleteFileW(LPCWSTR f) {
+    const DWORD e = GetLastError();
+    PathW p(f, "delete");
+    ST_RD_GUARD(p, FALSE)
+    if (!p.redirected) NoteOutside(f, "delete");
+    SetLastError(e);
+    return o_DeleteFileW(p.use);
+}
+BOOL WINAPI H_DeleteFileA(LPCSTR f) {
+    const DWORD e = GetLastError();
+    PathA p(f, "delete");
+    ST_RD_GUARD(p, FALSE)
+    SetLastError(e);
+    return o_DeleteFileA(p.use);
+}
+BOOL WINAPI H_RemoveDirectoryW(LPCWSTR f) {
+    const DWORD e = GetLastError();
+    PathW p(f, "rmdir");
+    ST_RD_GUARD(p, FALSE)
+    if (!p.redirected) NoteOutside(f, "rmdir");
+    SetLastError(e);
+    return o_RemoveDirectoryW(p.use);
+}
+BOOL WINAPI H_RemoveDirectoryA(LPCSTR f) {
+    const DWORD e = GetLastError();
+    PathA p(f, "rmdir");
+    ST_RD_GUARD(p, FALSE)
+    SetLastError(e);
+    return o_RemoveDirectoryA(p.use);
+}
+BOOL WINAPI H_CreateDirectoryW(LPCWSTR f, LPSECURITY_ATTRIBUTES sa) {
+    const DWORD e = GetLastError();
+    PathW p(f, "mkdir");
+    ST_RD_GUARD(p, FALSE)
+    if (!p.redirected) NoteOutside(f, "mkdir");
+    SetLastError(e);
+    return o_CreateDirectoryW(p.use, sa);
+}
+BOOL WINAPI H_CreateDirectoryA(LPCSTR f, LPSECURITY_ATTRIBUTES sa) {
+    const DWORD e = GetLastError();
+    PathA p(f, "mkdir");
+    ST_RD_GUARD(p, FALSE)
+    SetLastError(e);
+    return o_CreateDirectoryA(p.use, sa);
+}
+BOOL WINAPI H_CreateDirectoryExW(LPCWSTR tmpl, LPCWSTR f, LPSECURITY_ATTRIBUTES sa) {
+    const DWORD e = GetLastError();
+    PathW t(tmpl, "stat"), p(f, "mkdir");
+    ST_RD_GUARD(t, FALSE)
+    ST_RD_GUARD(p, FALSE)
+    SetLastError(e);
+    return o_CreateDirectoryExW(t.use, p.use, sa);
+}
+BOOL WINAPI H_MoveFileW(LPCWSTR a, LPCWSTR b) {
+    const DWORD e = GetLastError();
+    PathW pa(a, "move-from"), pb(b, "move-to");
+    ST_RD_GUARD(pa, FALSE)
+    ST_RD_GUARD(pb, FALSE)
+    if (!pb.redirected) NoteOutside(b, "move-to");
+    SetLastError(e);
+    return o_MoveFileW(pa.use, pb.use);
+}
+BOOL WINAPI H_MoveFileA(LPCSTR a, LPCSTR b) {
+    const DWORD e = GetLastError();
+    PathA pa(a, "move-from"), pb(b, "move-to");
+    ST_RD_GUARD(pa, FALSE)
+    ST_RD_GUARD(pb, FALSE)
+    SetLastError(e);
+    return o_MoveFileA(pa.use, pb.use);
+}
+BOOL WINAPI H_MoveFileExW(LPCWSTR a, LPCWSTR b, DWORD fl) {
+    const DWORD e = GetLastError();
+    PathW pa(a, "move-from"), pb(b, "move-to");
+    ST_RD_GUARD(pa, FALSE)
+    ST_RD_GUARD(pb, FALSE)
+    if (b && !pb.redirected) NoteOutside(b, "move-to");
+    SetLastError(e);
+    return o_MoveFileExW(pa.use, pb.use, fl);
+}
+BOOL WINAPI H_MoveFileExA(LPCSTR a, LPCSTR b, DWORD fl) {
+    const DWORD e = GetLastError();
+    PathA pa(a, "move-from"), pb(b, "move-to");
+    ST_RD_GUARD(pa, FALSE)
+    ST_RD_GUARD(pb, FALSE)
+    SetLastError(e);
+    return o_MoveFileExA(pa.use, pb.use, fl);
+}
+BOOL WINAPI H_MoveFileWithProgressW(LPCWSTR a, LPCWSTR b, LPPROGRESS_ROUTINE r, LPVOID d, DWORD fl) {
+    const DWORD e = GetLastError();
+    PathW pa(a, "move-from"), pb(b, "move-to");
+    ST_RD_GUARD(pa, FALSE)
+    ST_RD_GUARD(pb, FALSE)
+    SetLastError(e);
+    return o_MoveFileWithProgressW(pa.use, pb.use, r, d, fl);
+}
+BOOL WINAPI H_CopyFileW(LPCWSTR a, LPCWSTR b, BOOL fail) {
+    const DWORD e = GetLastError();
+    PathW pa(a, "copy-from"), pb(b, "copy-to");
+    ST_RD_GUARD(pa, FALSE)
+    ST_RD_GUARD(pb, FALSE)
+    if (!pb.redirected) NoteOutside(b, "copy-to");
+    SetLastError(e);
+    return o_CopyFileW(pa.use, pb.use, fail);
+}
+BOOL WINAPI H_CopyFileA(LPCSTR a, LPCSTR b, BOOL fail) {
+    const DWORD e = GetLastError();
+    PathA pa(a, "copy-from"), pb(b, "copy-to");
+    ST_RD_GUARD(pa, FALSE)
+    ST_RD_GUARD(pb, FALSE)
+    SetLastError(e);
+    return o_CopyFileA(pa.use, pb.use, fail);
+}
+BOOL WINAPI H_CopyFileExW(LPCWSTR a, LPCWSTR b, LPPROGRESS_ROUTINE r, LPVOID d, LPBOOL c, DWORD fl) {
+    const DWORD e = GetLastError();
+    PathW pa(a, "copy-from"), pb(b, "copy-to");
+    ST_RD_GUARD(pa, FALSE)
+    ST_RD_GUARD(pb, FALSE)
+    SetLastError(e);
+    return o_CopyFileExW(pa.use, pb.use, r, d, c, fl);
+}
+BOOL WINAPI H_ReplaceFileW(LPCWSTR a, LPCWSTR b, LPCWSTR bak, DWORD fl, LPVOID x, LPVOID y) {
+    const DWORD e = GetLastError();
+    PathW pa(a, "replace"), pb(b, "replace-from"), pc(bak, "replace-backup");
+    ST_RD_GUARD(pa, FALSE)
+    ST_RD_GUARD(pb, FALSE)
+    ST_RD_GUARD(pc, FALSE)
+    if (!pa.redirected) NoteOutside(a, "replace");
+    SetLastError(e);
+    return o_ReplaceFileW(pa.use, pb.use, pc.use, fl, x, y);
+}
+// Not imported by ds.exe; hooked (optional) so no other route writes into the save root.
+BOOL WINAPI H_SetFileAttributesA(LPCSTR f, DWORD a) {
+    const DWORD e = GetLastError();
+    PathA p(f, "attrib");
+    ST_RD_GUARD(p, FALSE)
+    SetLastError(e);
+    return o_SetFileAttributesA(p.use, a);
+}
+HRESULT WINAPI H_CopyFile2(PCWSTR a, PCWSTR b, COPYFILE2_EXTENDED_PARAMETERS* x) {
+    const DWORD e = GetLastError();
+    PathW pa(a, "copy-from"), pb(b, "copy-to");
+    if (pa.fail || pb.fail) return HRESULT_FROM_WIN32(ERROR_NOT_ENOUGH_MEMORY);
+    SetLastError(e);
+    return o_CopyFile2(pa.use, pb.use, x);
+}
+BOOL WINAPI H_CreateHardLinkW(LPCWSTR link, LPCWSTR existing, LPSECURITY_ATTRIBUTES sa) {
+    const DWORD e = GetLastError();
+    PathW pl(link, "link"), pe(existing, "link-to");
+    ST_RD_GUARD(pl, FALSE)
+    ST_RD_GUARD(pe, FALSE)
+    SetLastError(e);
+    return o_CreateHardLinkW(pl.use, pe.use, sa);
+}
+#undef ST_RD_GUARD
+
+// ---- hidden runs never open anything on the user's desktop: ds.exe imports
+// ShellExecuteA (FUN_141a1a820, a URL/launch helper); whatever it would start (a browser
+// tab, another program) would not be in the run's job nor on its private desktop.
+using ShellExecuteA_t = HINSTANCE(WINAPI*)(HWND, LPCSTR, LPCSTR, LPCSTR, LPCSTR, INT);
+using ShellExecuteW_t = HINSTANCE(WINAPI*)(HWND, LPCWSTR, LPCWSTR, LPCWSTR, LPCWSTR, INT);
+using ShellExecuteExA_t = BOOL(WINAPI*)(void*);
+using ShellExecuteExW_t = BOOL(WINAPI*)(void*);
+ShellExecuteA_t o_ShellExecuteA;
+ShellExecuteW_t o_ShellExecuteW;
+ShellExecuteExA_t o_ShellExecuteExA;
+ShellExecuteExW_t o_ShellExecuteExW;
+std::atomic<unsigned long> g_shell_blocked{0};
+std::atomic<int> g_shell_hooks{0};
+
+void NoteShellBlocked(const char* api, const char* file) noexcept {
+    g_shell_blocked.fetch_add(1, std::memory_order_relaxed);
+    char f[200] = "?";
+    if (file) std::snprintf(f, sizeof(f), "%.190s", file);
+    if (g_log_ready.load(std::memory_order_acquire)) Log("[auto] blocked %s(%s): hidden runs start nothing outside the job", api, f);
+}
+HINSTANCE WINAPI H_ShellExecuteA(HWND, LPCSTR, LPCSTR file, LPCSTR, LPCSTR, INT) {
+    NoteShellBlocked("ShellExecuteA", file ? file : "");
+    SetLastError(ERROR_ACCESS_DENIED);
+    return reinterpret_cast<HINSTANCE>(static_cast<INT_PTR>(SE_ERR_ACCESSDENIED));
+}
+HINSTANCE WINAPI H_ShellExecuteW(HWND, LPCWSTR, LPCWSTR file, LPCWSTR, LPCWSTR, INT) {
+    char f[200] = "";
+    if (file) Utf8(file, f, sizeof(f));
+    NoteShellBlocked("ShellExecuteW", f);
+    SetLastError(ERROR_ACCESS_DENIED);
+    return reinterpret_cast<HINSTANCE>(static_cast<INT_PTR>(SE_ERR_ACCESSDENIED));
+}
+BOOL WINAPI H_ShellExecuteExA(void*) {
+    NoteShellBlocked("ShellExecuteExA", "");
+    SetLastError(ERROR_ACCESS_DENIED);
+    return FALSE;
+}
+BOOL WINAPI H_ShellExecuteExW(void*) {
+    NoteShellBlocked("ShellExecuteExW", "");
+    SetLastError(ERROR_ACCESS_DENIED);
+    return FALSE;
+}
+
+// ---- exit tracer: who ends the process (bisecting a game that quits at start-up)
+using RtlExitUserProcess_t = void(NTAPI*)(LONG);
+using TerminateProcess_t = BOOL(WINAPI*)(HANDLE, UINT);
+RtlExitUserProcess_t o_RtlExitUserProcess;
+TerminateProcess_t o_TerminateProcess;
+std::atomic<bool> g_exit_traced{false};
+
+void AppendRaw(const wchar_t* path, const char* text) noexcept {
+    HANDLE f = (o_CreateFileW ? o_CreateFileW : &CreateFileW)(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                                             OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD w = 0;
+    WriteFile(f, text, static_cast<DWORD>(std::strlen(text)), &w, nullptr);
+    CloseHandle(f);
+}
+
+void TraceExit(const char* how, unsigned long code) noexcept {
+    if (g_exit_traced.exchange(true)) return;
+    void* frames[28] = {};
+    const USHORT n = CaptureStackBackTrace(2, 28, frames, nullptr);
+    char text[4096];
+    int len = std::snprintf(text, sizeof(text), "%s(%lu = 0x%08lX) on thread %lu, stack:", how, code, code, GetCurrentThreadId());
+    for (USHORT i = 0; i < n && len > 0 && len < static_cast<int>(sizeof(text)) - 96; ++i) {
+        HMODULE m = nullptr;
+        wchar_t name[MAX_PATH] = {};
+        char mod[MAX_PATH] = "?";
+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               static_cast<LPCWSTR>(frames[i]), &m) &&
+            GetModuleFileNameW(m, name, MAX_PATH)) {
+            const wchar_t* base = wcsrchr(name, L'\\');
+            Utf8(base ? base + 1 : name, mod, sizeof(mod));
+        }
+        const unsigned long long off =
+            reinterpret_cast<unsigned long long>(frames[i]) - reinterpret_cast<unsigned long long>(m);
+        if (m && _stricmp(mod, "ds.exe") == 0)  // as Ghidra shows it (image base 0x140000000)
+            len += std::snprintf(text + len, sizeof(text) - len, " ds.exe+0x%llX(0x%llX)", off, 0x140000000ull + off);
+        else
+            len += std::snprintf(text + len, sizeof(text) - len, " %s+0x%llX", mod, m ? off : reinterpret_cast<unsigned long long>(frames[i]));
+    }
+    Log("[auto] exit: %s", text);
+    wchar_t path[kPathCap + 32];
+    std::swprintf(path, kPathCap + 32, L"%s\\exit-trace.txt", g_auto_dir);
+    char line[4200];
+    std::snprintf(line, sizeof(line), "%s\n", text);
+    AppendRaw(path, line);
+}
+
+void NTAPI H_RtlExitUserProcess(LONG code) {
+    TraceExit("ExitProcess", static_cast<unsigned long>(code));
+    o_RtlExitUserProcess(code);
+}
+BOOL WINAPI H_TerminateProcess(HANDLE h, UINT code) {
+    if (h == GetCurrentProcess() || GetProcessId(h) == GetCurrentProcessId()) TraceExit("TerminateProcess", code);
+    return o_TerminateProcess(h, code);
+}
+
+struct HookSpec {
+    const wchar_t* dll;  // kernelbase first: kernel32's exports of these are stubs into it
+    const char* name;
+    void* detour;
+    void** original;
+    bool required;       // ds.exe imports it
+};
+
+// ---- session.ini, read in DllMain (Win32 only)
+bool ReadIniRaw(const wchar_t* path, std::string* out) noexcept {
+    HANDLE f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                           FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    char buf[16384];
+    DWORD got = 0;
+    const BOOL ok = ReadFile(f, buf, sizeof(buf) - 1, &got, nullptr);
+    CloseHandle(f);
+    if (!ok) return false;
+    try {
+        out->assign(buf, got);
+    } catch (...) {
+        return false;
+    }
+    return true;
+}
+
+void RefuseAndExit(const char* why) noexcept {
+    // ds.exe must not run without the redirect: it would read and write the user's saves.
+    if (g_auto_dir[0]) {
+        wchar_t path[kPathCap + 64];
+        std::swprintf(path, kPathCap + 64, L"%s\\%s", g_auto_dir, saves::kRefusedFile);
+        char text[700];
+        std::snprintf(text, sizeof(text), "saves=REFUSED\nreason=%s\nexit_code=0x%08lX\n", why, saves::kRefusedExitCode);
+        CreateDirectoryW(g_auto_dir, nullptr);
+        AppendRaw(path, text);
+    }
+    OutputDebugStringA("[stranded_together] hidden run refused: the save redirect could not be installed\n");
+    TerminateProcess(GetCurrentProcess(), saves::kRefusedExitCode);
+}
+
+// Init (log open): the evidence line the supervisor waits for, then the places
+// noted so far.
+void LogSaves() noexcept {
+    if (!g_rd_active.load()) {
+        Log("[auto] saves=NOT redirected: the redirect is not active in this process (it is installed from DllMain of ds.exe)");
+        return;
+    }
+    char scratch[kPathCap * 3];
+    Utf8(g_scratch, scratch, sizeof(scratch));
+    const int roots = g_nroots.load();
+    for (int i = 0; i < roots; ++i) {
+        char root[kPathCap * 3];
+        Utf8(g_roots[i], root, sizeof(root));
+        Log("[auto] saves: root %d %s", i, root);
+    }
+    Log("[auto] saves=redirected: %d save root(s) -> %s (%d file API hooks, self-test passed%s%s)", roots, scratch, g_rd_hooks.load(),
+        g_rd_missing[0] ? "; optional hooks missing: " : "", g_rd_missing);
+    Log("[auto] ShellExecute(Ex)A/W blocked for this run (%d hooks)", g_shell_hooks.load());
+    g_log_ready.store(true, std::memory_order_release);
+    FlushSeen();
+}
+
 // ------------------------------------------------------------------ audio
 // Hidden runs are silent: every buffer the game hands to WASAPI (Wwise and
 // XAudio2 both end in IAudioRenderClient::ReleaseBuffer) is flagged SILENT.
@@ -461,18 +1175,20 @@ void WriteStatus(double started) {
     const overlay::Stats os = overlay::GetStats();
     const overlay::input::Stats is = overlay::input::GetStats();
     const overlay::input::PadState pad = overlay::input::VirtualPad();
-    char buf[1400];
+    char buf[1600];
     std::snprintf(buf, sizeof(buf),
                   "pid=%lu\nuptime_s=%.1f\ncommands=%lu\nfailures=%lu\noverlay_installed=%d\noverlay_disabled=%d\n"
                   "overlay_reason=%s\npresents=%lu\nfps=%.1f\nbackbuffer=%ux%u\nformat=%d\nqueue=%s\nmenu_open=%d\n"
                   "occluded_masked=%lu\nwindow=%p\nxinput_hook=%d\nxinput14_hook=%d\npad_connected=%d\npad_buttons=0x%04X\npad_reads=%lu\n"
-                  "isolated_pad_reads=%lu\nforeground_answers=%lu\naudio_buffers_silenced=%lu\nlog_seq=%llu\nsnapshot=%s\n",
+                  "isolated_pad_reads=%lu\nforeground_answers=%lu\naudio_buffers_silenced=%lu\nsaves_redirected=%d\n"
+                  "saves_redirected_calls=%lu\nsaves_redirect_failures=%lu\nlog_seq=%llu\nsnapshot=%s\n",
                   GetCurrentProcessId(), (NowMs() - started) / 1000.0, g_commands.load(), g_failures.load(),
                   os.installed ? 1 : 0, os.disabled ? 1 : 0, os.disabled_reason, os.presents, static_cast<double>(os.fps),
                   os.width, os.height, os.format, os.queue_source, overlay::IsOpen() ? 1 : 0, os.occluded_masked,
                   static_cast<void*>(overlay::input::Window()), is.xinput_hook ? 1 : 0, is.xinput14_hook ? 1 : 0,
                   pad.connected ? 1 : 0, pad.buttons, is.virtual_pad_reads, is.isolated_pad_reads, is.foreground_answers,
-                  g_silenced.load(), static_cast<unsigned long long>(LogNewestSeq()), SnapshotText().c_str());
+                  g_silenced.load(), g_rd_active.load() ? 1 : 0, g_rd_calls.load(), g_rd_failures.load(),
+                  static_cast<unsigned long long>(LogNewestSeq()), SnapshotText().c_str());
     WriteAtomic(g_out + L"\\status.txt", buf);
 }
 
@@ -537,13 +1253,42 @@ bool Init(const std::wstring& mod_dir) noexcept {
         if (on)
             Log("[auto] automation=1 in session.ini: hidden test run (screenshots, command files%s%s)",
                 isolate ? ", virtual pad, input/display isolation" : "; automation_isolate=0: no isolation hooks", mute ? ", muted" : "");
+        if (on && !g_rd_active.load()) {
+            // DllMain did not see automation=1 (session.ini unreadable at that moment?) or did not
+            // finish the redirect: the game must not go on with the user's saves.
+            Log("[auto] saves=NOT redirected although automation=1: ending ds.exe before it can touch the saves");
+            LogShutdown();
+            RefuseAndExit("automation=1 but the save redirect was not installed in DllMain");
+            return false;
+        }
+        if (on) LogSaves();
         return on;
     } catch (...) {
         return false;
     }
 }
 
+bool WaitForGameD3D12(unsigned timeout_ms) noexcept {
+    const double t0 = NowMs();
+    if (GetModuleHandleW(L"d3d12.dll")) {
+        Log("[overlay] d3d12.dll was already loaded before the overlay: ds.exe may exit(0) at its device check (0x1419A6CE9)");
+        return true;
+    }
+    while (!GetModuleHandleW(L"d3d12.dll")) {
+        if (NowMs() - t0 > timeout_ms) {
+            Log("[overlay] ds.exe did not load d3d12.dll within %u s: overlay not installed this run", timeout_ms / 1000);
+            return false;
+        }
+        Sleep(2);
+    }
+    Log("[overlay] deferred %.0f ms until ds.exe loaded d3d12.dll itself (its device check at 0x1419A6980 exits(0) when "
+        "d3d12.dll is loaded earlier)",
+        NowMs() - t0);
+    return true;
+}
+
 bool Enabled() noexcept { return g_enabled.load(); }
+bool SavesRedirected() noexcept { return g_rd_active.load(); }
 bool MuteRequested() noexcept { return g_mute.load(); }
 bool IsolateRequested() noexcept { return g_isolate.load(); }
 
@@ -572,6 +1317,263 @@ void Start(const std::wstring& mod_dir, const char* build) noexcept {
     } catch (...) {
         Log("[auto] automation start failed (exception)");
     }
+}
+
+// ------------------------------------------------------------------ DllMain: save redirect
+namespace {
+
+bool AddRoot(const std::wstring& root) noexcept {
+    try {
+        if (root.size() < 4 || root.size() >= kPathCap) return false;
+        const std::wstring norm = saves::Normalize(root);
+        const int n = g_nroots.load();
+        for (int i = 0; i < n; ++i)
+            if (saves::Map(norm, g_roots[i], L"X:\\", nullptr) && saves::Map(g_roots[i], norm, L"X:\\", nullptr)) return true;  // same
+        if (n >= kMaxRoots) return false;
+        WcsCopy(g_roots[n], kPathCap, norm.c_str());
+        g_nroots.store(n + 1);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+std::wstring EnvVar(const wchar_t* name) {
+    wchar_t buf[kPathCap] = {};
+    const DWORD n = GetEnvironmentVariableW(name, buf, static_cast<DWORD>(kPathCap));
+    return n > 0 && n < kPathCap ? std::wstring(buf, n) : std::wstring();
+}
+
+// The hooks: kernelbase.dll implements all of these (kernel32's exports are stubs into
+// it), except MoveFileW/MoveFileA/MoveFileExA/CopyFileA (kernel32 only). MinHook patches
+// the function bodies, so kernelbase's internal calls (FindFirstFileW -> FindFirstFileExW)
+// go through them too; mapping is idempotent (the scratch root is outside every save root).
+#define ST_HOOK(dll, name, req) {dll, #name, reinterpret_cast<void*>(&H_##name), reinterpret_cast<void**>(&o_##name), req}
+const HookSpec kSaveHooks[] = {
+    ST_HOOK(L"kernelbase.dll", CreateFileW, true),         ST_HOOK(L"kernelbase.dll", FindFirstFileW, true),
+    ST_HOOK(L"kernelbase.dll", FindFirstFileExW, true),    ST_HOOK(L"kernelbase.dll", GetFileAttributesW, true),
+    ST_HOOK(L"kernelbase.dll", SetFileAttributesW, true),  ST_HOOK(L"kernelbase.dll", DeleteFileW, true),
+    ST_HOOK(L"kernelbase.dll", RemoveDirectoryW, true),    ST_HOOK(L"kernelbase.dll", CreateDirectoryW, true),
+    ST_HOOK(L"kernelbase.dll", MoveFileExW, true),         ST_HOOK(L"kernelbase.dll", CopyFileW, true),
+    ST_HOOK(L"kernel32.dll", MoveFileW, true),             ST_HOOK(L"kernelbase.dll", GetFileAttributesA, true),
+    ST_HOOK(L"kernelbase.dll", CreateFileA, false),        ST_HOOK(L"kernelbase.dll", CreateFile2, false),
+    ST_HOOK(L"kernelbase.dll", FindFirstFileA, false),     ST_HOOK(L"kernelbase.dll", FindFirstFileExA, false),
+    ST_HOOK(L"kernelbase.dll", GetFileAttributesExW, false), ST_HOOK(L"kernelbase.dll", GetFileAttributesExA, false),
+    ST_HOOK(L"kernelbase.dll", DeleteFileA, false),        ST_HOOK(L"kernelbase.dll", RemoveDirectoryA, false),
+    ST_HOOK(L"kernelbase.dll", CreateDirectoryA, false),   ST_HOOK(L"kernelbase.dll", CreateDirectoryExW, false),
+    ST_HOOK(L"kernelbase.dll", MoveFileWithProgressW, false), ST_HOOK(L"kernelbase.dll", CopyFileExW, false),
+    ST_HOOK(L"kernelbase.dll", ReplaceFileW, false),       ST_HOOK(L"kernel32.dll", MoveFileA, false),
+    ST_HOOK(L"kernel32.dll", MoveFileExA, false),          ST_HOOK(L"kernel32.dll", CopyFileA, false),
+    ST_HOOK(L"kernelbase.dll", SetFileAttributesA, false), ST_HOOK(L"kernelbase.dll", CopyFile2, false),
+    ST_HOOK(L"kernelbase.dll", CreateHardLinkW, false),
+};
+// shell32 is a static import of ds.exe (mapped before this DllMain runs); optional.
+const HookSpec kShellHooks[] = {
+    ST_HOOK(L"shell32.dll", ShellExecuteA, false),   ST_HOOK(L"shell32.dll", ShellExecuteW, false),
+    ST_HOOK(L"shell32.dll", ShellExecuteExA, false), ST_HOOK(L"shell32.dll", ShellExecuteExW, false),
+};
+#undef ST_HOOK
+
+void* Resolve(const wchar_t* dll, const char* name) noexcept {
+    HMODULE m = GetModuleHandleW(dll);
+    void* p = m ? reinterpret_cast<void*>(GetProcAddress(m, name)) : nullptr;
+    if (!p && _wcsicmp(dll, L"kernelbase.dll") == 0) {  // older systems: kernel32
+        m = GetModuleHandleW(L"kernel32.dll");
+        p = m ? reinterpret_cast<void*>(GetProcAddress(m, name)) : nullptr;
+    }
+    return p;
+}
+
+void AppendMissing(const char* name) noexcept {
+    const std::size_t at = std::strlen(g_rd_missing);
+    std::snprintf(g_rd_missing + at, sizeof(g_rd_missing) - at, "%s%s", at ? " " : "", name);
+}
+
+// MinHook from DllMain: only kernel32/ntdll calls (VirtualAlloc, thread snapshot,
+// Suspend/ResumeThread), no LoadLibrary; the process has no game threads yet.
+bool InstallSaveHooks(char* why, std::size_t cap) noexcept {
+    const MH_STATUS init = MH_Initialize();
+    if (init != MH_OK && init != MH_ERROR_ALREADY_INITIALIZED) {
+        std::snprintf(why, cap, "MinHook init failed (%s)", MH_StatusToString(init));
+        return false;
+    }
+    std::vector<void*> created;
+    try {
+        created.reserve(sizeof(kSaveHooks) / sizeof(kSaveHooks[0]));
+    } catch (...) {
+        std::snprintf(why, cap, "out of memory");
+        return false;
+    }
+    for (const HookSpec& h : kSaveHooks) {
+        void* target = Resolve(h.dll, h.name);
+        MH_STATUS s = target ? MH_CreateHook(target, h.detour, h.original) : MH_ERROR_FUNCTION_NOT_FOUND;
+        if (s == MH_OK) {
+            created.push_back(target);
+            continue;
+        }
+        if (h.required) {
+            std::snprintf(why, cap, "required hook %s failed (%s)", h.name, MH_StatusToString(s));
+            for (void* t : created) MH_RemoveHook(t);
+            return false;
+        }
+        AppendMissing(h.name);
+    }
+    for (void* t : created) {
+        const MH_STATUS s = MH_EnableHook(t);
+        if (s != MH_OK) {
+            std::snprintf(why, cap, "enabling a file API hook failed (%s)", MH_StatusToString(s));
+            return false;  // the caller ends the process: partially enabled hooks do not matter
+        }
+    }
+    g_rd_hooks.store(static_cast<int>(created.size()));
+    return true;
+}
+
+void InstallShellBlock() noexcept {
+    int n = 0;
+    for (const HookSpec& h : kShellHooks) {
+        void* target = Resolve(h.dll, h.name);
+        if (target && MH_CreateHook(target, h.detour, h.original) == MH_OK) {
+            if (MH_EnableHook(target) == MH_OK) ++n;
+            else MH_RemoveHook(target);
+        }
+    }
+    g_shell_hooks.store(n);
+}
+
+void InstallExitTrace() noexcept {
+    void* exit_target = Resolve(L"ntdll.dll", "RtlExitUserProcess");
+    void* term_target = Resolve(L"kernelbase.dll", "TerminateProcess");
+    if (exit_target && MH_CreateHook(exit_target, reinterpret_cast<void*>(&H_RtlExitUserProcess),
+                                     reinterpret_cast<void**>(&o_RtlExitUserProcess)) == MH_OK)
+        MH_EnableHook(exit_target);
+    if (term_target && MH_CreateHook(term_target, reinterpret_cast<void*>(&H_TerminateProcess),
+                                     reinterpret_cast<void**>(&o_TerminateProcess)) == MH_OK)
+        MH_EnableHook(term_target);
+}
+
+}  // namespace
+
+void EarlyInit() noexcept {
+    wchar_t exe[kPathCap] = {};
+    const DWORD n = GetModuleFileNameW(nullptr, exe, static_cast<DWORD>(kPathCap));
+    if (n == 0 || n >= kPathCap) return;
+    wchar_t* slash = wcsrchr(exe, L'\\');
+    if (!slash) return;
+    *slash = 0;
+    std::swprintf(g_mod_dir, kPathCap, L"%s\\stranded_together", exe);
+    std::swprintf(g_auto_dir, kPathCap, L"%s\\automation", g_mod_dir);
+    std::string ini;
+    wchar_t ini_path[kPathCap + 32];
+    std::swprintf(ini_path, kPathCap + 32, L"%s\\session.ini", g_mod_dir);
+    if (!ReadIniRaw(ini_path, &ini)) return;
+    bool on = false, exit_trace = true;
+    std::wstring extra_root;
+    try {
+        std::size_t at = 0;
+        while (at < ini.size()) {
+            std::size_t nl = ini.find('\n', at);
+            if (nl == std::string::npos) nl = ini.size();
+            const std::string line = detail::Trim(ini.substr(at, nl - at));
+            at = nl + 1;
+            if (line.empty() || line[0] == '#' || line[0] == ';') continue;
+            const auto eq = line.find('=');
+            if (eq == std::string::npos) continue;
+            const std::string k = detail::Trim(line.substr(0, eq)), v = detail::Trim(line.substr(eq + 1));
+            const std::string lv = detail::Lower(v);
+            const bool b = lv == "1" || lv == "true" || lv == "yes" || lv == "on";
+            if (k == "automation") on = b;
+            else if (k == "automation_exit_trace") exit_trace = b;
+            else if (k == "automation_save_root" && !v.empty()) {  // tests: an extra root (UTF-8)
+                const int wn = MultiByteToWideChar(CP_UTF8, 0, v.data(), static_cast<int>(v.size()), nullptr, 0);
+                extra_root.assign(static_cast<std::size_t>(wn > 0 ? wn : 0), L'\0');
+                if (wn > 0) MultiByteToWideChar(CP_UTF8, 0, v.data(), static_cast<int>(v.size()), extra_root.data(), wn);
+            }
+        }
+    } catch (...) {
+        on = true;  // unreadable but present: refuse below rather than guess
+        extra_root.clear();
+    }
+    if (!on) return;
+
+    char why[400] = {};
+    // Only st_testenv_supervisor starts a hidden run (it sets this variable for its child).
+    // automation=1 left behind by an interrupted run must not turn a normal launch (Steam,
+    // the user's desktop) into a redirected one whose progress lands in the scratch copy.
+    if (EnvVar(saves::kSupervisedEnv).empty()) {
+        std::snprintf(why, sizeof(why),
+                      "automation=1 in session.ini but ds.exe was not started by st_testenv_supervisor (%ls not set): left over from an "
+                      "interrupted hidden run? Run tools\\testenv\\Restore-TestRun.ps1 for that run",
+                      saves::kSupervisedEnv);
+        RefuseAndExit(why);
+        return;
+    }
+    try {
+        CreateDirectoryW(g_auto_dir, nullptr);
+        wchar_t stale[kPathCap + 64];
+        std::swprintf(stale, kPathCap + 64, L"%s\\%s", g_auto_dir, saves::kRefusedFile);
+        DeleteFileW(stale);
+        std::swprintf(stale, kPathCap + 64, L"%s\\%s", g_auto_dir, saves::kActiveFile);
+        DeleteFileW(stale);
+        std::swprintf(g_scratch, kPathCap, L"%s\\saves", g_auto_dir);
+        // ds.exe: getenv("USERPROFILE") + "AppData\Local\KojimaProductions\..."; Steam's
+        // AutoCloud and the user's view: %LOCALAPPDATA%\KojimaProductions.
+        const std::wstring profile = EnvVar(L"USERPROFILE"), local = EnvVar(L"LOCALAPPDATA");
+        if (!profile.empty()) AddRoot(profile + L"\\AppData\\Local\\KojimaProductions");
+        if (!local.empty()) AddRoot(local + L"\\KojimaProductions");
+        if (!extra_root.empty() && !AddRoot(extra_root)) std::snprintf(why, sizeof(why), "automation_save_root not usable");
+        if (!why[0] && g_nroots.load() == 0) std::snprintf(why, sizeof(why), "no save root (USERPROFILE and LOCALAPPDATA empty)");
+        for (int i = 0; !why[0] && i < g_nroots.load(); ++i)
+            if (saves::Map(g_scratch, g_roots[i], L"X:\\", nullptr) || saves::Map(g_roots[i], g_scratch, L"X:\\", nullptr))
+                std::snprintf(why, sizeof(why), "the scratch folder and a save root overlap");
+        const DWORD sa = GetFileAttributesW(g_scratch);
+        if (!why[0] && (sa == INVALID_FILE_ATTRIBUTES || !(sa & FILE_ATTRIBUTE_DIRECTORY)))
+            std::snprintf(why, sizeof(why), "no seeded scratch copy at automation\\saves (the supervisor seeds it)");
+    } catch (...) {
+        std::snprintf(why, sizeof(why), "exception while preparing the redirect");
+    }
+    if (!why[0]) InstallSaveHooks(why, sizeof(why));
+    if (!why[0] && g_rd_hooks.load() == 0) std::snprintf(why, sizeof(why), "no hooks installed");
+    if (!why[0]) {
+        g_rd_active.store(true, std::memory_order_release);
+        // Self-test through the hooks: the probe exists only in the scratch copy.
+        for (int i = 0; !why[0] && i < g_nroots.load(); ++i) {
+            wchar_t probe[kPathCap + 64];
+            std::swprintf(probe, kPathCap + 64, L"%s\\%s", g_roots[i], saves::kProbeName);
+            if (GetFileAttributesW(probe) == INVALID_FILE_ATTRIBUTES) {
+                std::snprintf(why, sizeof(why), "self-test: GetFileAttributesW(<root %d>\\%ls) was not answered from the scratch copy", i,
+                              saves::kProbeName);
+                break;
+            }
+            HANDLE f = CreateFileW(probe, GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (f == INVALID_HANDLE_VALUE) std::snprintf(why, sizeof(why), "self-test: CreateFileW(<root %d>\\probe) failed", i);
+            else CloseHandle(f);
+            char probe_a[kPathCap * 2];
+            BOOL lossy = FALSE;
+            if (!why[0] && WideCharToMultiByte(CP_ACP, WC_NO_BEST_FIT_CHARS, probe, -1, probe_a, sizeof(probe_a), nullptr, &lossy) > 0 && !lossy &&
+                GetFileAttributesA(probe_a) == INVALID_FILE_ATTRIBUTES)
+                std::snprintf(why, sizeof(why), "self-test: GetFileAttributesA(<root %d>\\probe) was not answered from the scratch copy", i);
+        }
+    }
+    if (why[0]) {
+        g_rd_active.store(false);
+        RefuseAndExit(why);
+        return;
+    }
+    if (exit_trace) InstallExitTrace();
+    InstallShellBlock();
+    wchar_t active[kPathCap + 64];
+    std::swprintf(active, kPathCap + 64, L"%s\\%s", g_auto_dir, saves::kActiveFile);
+    char text[kPathCap * 4];
+    char scratch[kPathCap * 3];
+    Utf8(g_scratch, scratch, sizeof(scratch));
+    int len = std::snprintf(text, sizeof(text), "saves=redirected\npid=%lu\nhooks=%d\nscratch=%s\n", GetCurrentProcessId(), g_rd_hooks.load(), scratch);
+    for (int i = 0; i < g_nroots.load() && len > 0 && len < static_cast<int>(sizeof(text)) - 32; ++i) {
+        char root[kPathCap * 3];
+        Utf8(g_roots[i], root, sizeof(root));
+        len += std::snprintf(text + len, sizeof(text) - len, "root=%s\n", root);
+    }
+    AppendRaw(active, text);
 }
 
 }  // namespace st::automation

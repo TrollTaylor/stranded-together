@@ -19,6 +19,7 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 namespace {
@@ -59,6 +60,82 @@ void SafeRelease(T*& p) {
     p = nullptr;
 }
 
+std::string ReadAll(const std::wstring& path) {
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return "<open failed " + std::to_string(GetLastError()) + ">";
+    char buf[256] = {};
+    DWORD got = 0;
+    ReadFile(f, buf, sizeof(buf) - 1, &got, nullptr);
+    CloseHandle(f);
+    return std::string(buf, got);
+}
+
+bool WriteAll(const std::wstring& path, const char* text) {
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    DWORD w = 0;
+    const BOOL ok = WriteFile(f, text, static_cast<DWORD>(std::strlen(text)), &w, nullptr);
+    CloseHandle(f);
+    return ok != FALSE;
+}
+
+// Like ds.exe's "user:" device, at start-up: read the profile, write a checkpoint
+// through a temp file + MoveFileExW, make a folder, copy, delete, rename with MoveFileW,
+// look a file up through the ANSI API, enumerate. The e2e points this at a scratch
+// "real" save root (ST_FAKEGAME_SAVE_ROOT); the mod must redirect all of it.
+void SaveExercise(const std::wstring& root) {
+    const std::wstring base = root + L"\\DeathStrandingDC\\1";
+    Log("save read profile.dat: '%s'", ReadAll(base + L"\\profile\\profile.dat").c_str());
+    std::wstring slashed = base + L"/profile/profile.dat";
+    Log("save read with '/' separators: '%s'", ReadAll(slashed).c_str());
+    int ok = 0, total = 0;
+    const auto step = [&](bool r, const char* what) {
+        ++total;
+        ok += r ? 1 : 0;
+        Log("save %s: %s (error %lu)", what, r ? "ok" : "FAILED", r ? 0ul : GetLastError());
+    };
+    CreateDirectoryW((base + L"\\autosave0").c_str(), nullptr);
+    step(WriteAll(base + L"\\autosave0\\checkpoint.dattemp", "fake checkpoint"), "write checkpoint.dattemp");
+    step(MoveFileExW((base + L"\\autosave0\\checkpoint.dattemp").c_str(), (base + L"\\autosave0\\checkpoint.dat").c_str(),
+                     MOVEFILE_REPLACE_EXISTING) != FALSE,
+         "MoveFileExW temp -> checkpoint.dat");
+    step(CreateDirectoryW((base + L"\\autosave1").c_str(), nullptr) != FALSE, "CreateDirectoryW autosave1");
+    step(CopyFileW((base + L"\\autosave0\\checkpoint.dat").c_str(), (base + L"\\autosave1\\checkpoint.dat").c_str(), FALSE) != FALSE,
+         "CopyFileW autosave0 -> autosave1");
+    step(DeleteFileW((base + L"\\quicksave0\\checkpoint.dat").c_str()) != FALSE, "DeleteFileW quicksave0");
+    step(WriteAll(base + L"\\manual.tmp", "m") && MoveFileW((base + L"\\manual.tmp").c_str(), (base + L"\\manual.dat").c_str()) != FALSE,
+         "MoveFileW manual.tmp -> manual.dat");
+    char narrow[1024] = {};
+    WideCharToMultiByte(CP_ACP, 0, (base + L"\\profile\\profile.dat").c_str(), -1, narrow, sizeof(narrow), nullptr, nullptr);
+    step(GetFileAttributesA(narrow) != INVALID_FILE_ATTRIBUTES, "GetFileAttributesA profile.dat");
+    WIN32_FIND_DATAW fd;
+    int entries = 0;
+    HANDLE h = FindFirstFileExW((base + L"\\*").c_str(), FindExInfoBasic, &fd, FindExSearchNameMatch, nullptr, 0);
+    if (h != INVALID_HANDLE_VALUE) {
+        do ++entries;
+        while (FindNextFileW(h, &fd));
+        FindClose(h);
+    }
+    step(entries > 2, "FindFirstFileExW lists the save folder");
+    // Other spellings of the same folders (each must land in the scratch copy as well):
+    // a "\\.\" device path, a trailing dot (Win32 drops it), a path relative to the
+    // current directory, and the 8.3 short name of the folder (when the volume has them).
+    step(WriteAll(L"\\\\.\\" + base + L"\\autosave0\\device.dat", "d"), "write through a \\\\.\\ path");
+    step(WriteAll(base + L"\\autosave0.\\trailing-dot.dat", "t"), "write through 'autosave0.' (trailing dot)");
+    wchar_t cwd[1024] = {};
+    const DWORD cn = GetCurrentDirectoryW(1024, cwd);
+    std::wstring parent(cwd, cn < 1024 ? cn : 0);
+    parent = parent.substr(0, parent.find_last_of(L'\\'));
+    const bool sibling = !parent.empty() && _wcsnicmp(base.c_str(), (parent + L"\\").c_str(), parent.size() + 1) == 0;
+    step(sibling && WriteAll(L"..\\" + base.substr(parent.size() + 1) + L"\\autosave0\\relative.dat", "r"),
+         "write through a path relative to the current directory");
+    wchar_t short_base[1024] = {};
+    const DWORD sn = GetShortPathNameW(base.c_str(), short_base, 1024);
+    Log("save 8.3 spelling: %s", sn > 0 && sn < 1024 && _wcsicmp(short_base, base.c_str()) != 0 ? "yes" : "none on this volume");
+    step(sn > 0 && sn < 1024 && WriteAll(std::wstring(short_base) + L"\\autosave0\\short.dat", "s"), "write through the 8.3 short path");
+    Log("save exercise: %d/%d ok, %d entries", ok, total, entries);
+}
+
 }  // namespace
 
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
@@ -71,6 +148,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     CreateDirectoryW((dir + L"\\stranded_together").c_str(), nullptr);
     _wfopen_s(&g_log, (dir + L"\\stranded_together\\fakegame.log").c_str(), L"w");
     Log("fake game started (pid %lu), WinHttpCheckPlatform=%d", GetCurrentProcessId(), winhttp);
+    wchar_t save_root[1024] = {};
+    const DWORD sr = GetEnvironmentVariableW(L"ST_FAKEGAME_SAVE_ROOT", save_root, 1024);
+    if (sr > 0 && sr < 1024) SaveExercise(save_root);
     Sleep(1500);  // a real game takes a while before its swapchain; the mod's overlay hooks are in by then
 
     using GetStateFn = DWORD(WINAPI*)(DWORD, XINPUT_STATE*);

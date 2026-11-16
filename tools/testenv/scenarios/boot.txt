@@ -1,0 +1,24 @@
+# Boot film: what the game shows on the hidden desktop without any input (logos,
+# notices, "press any button", title), one screenshot every 10 s. Nothing is pressed,
+# so no save is loaded. Used to discover the title flow for smoke.txt.
+role solo
+timeout 200
+waitready 90
+waitlog 120 \[overlay\] input attached
+screenshot boot-00
+wait 10000
+screenshot boot-10s
+wait 10000
+screenshot boot-20s
+wait 10000
+screenshot boot-30s
+wait 10000
+screenshot boot-40s
+wait 10000
+screenshot boot-50s
+wait 15000
+screenshot boot-65s
+wait 15000
+screenshot boot-80s
+snapshot
+quit

@@ -117,6 +117,140 @@ void SessionIni() {
               t.find("udp_peer=127.0.0.1\n") != std::string::npos && t.find("debug_menu=1\n") != std::string::npos &&
               t.find("automation_mute=1\n") != std::string::npos && t.find("secret") == std::string::npos,
           "session.ini: solo, loopback udp, automation, one-shot, no secret");
+    Check(t.find("automation_save_root") == std::string::npos &&
+              te::SessionIniText("solo", true, true, L"D:\\x\\saves").find("automation_save_root=D:\\x\\saves\n") != std::string::npos,
+          "session.ini: automation_save_root only when a test root is given");
+    const std::string r = te::RedirectOnlyIniText();
+    Check(r.find("automation=1\n") != std::string::npos && r.find("one_shot=1\n") != std::string::npos && r.find("role=") == std::string::npos &&
+              r.find("debug_menu") == std::string::npos,
+          "--no-mod session.ini: automation (save redirect) only, no role, no menu");
+}
+
+// The mod's save redirect: path mapping (automation.hpp, also what the hooks run).
+void SaveRedirectMapping() {
+    namespace sv = au::saves;
+    const std::wstring root = L"C:\\Users\\taylo\\AppData\\Local\\KojimaProductions";
+    const std::wstring scratch = L"D:\\Games\\DS\\stranded_together\\automation\\saves";
+    std::wstring out, rel;
+    Check(sv::Map(root + L"\\DeathStrandingDC\\97930372\\autosave3\\checkpoint.dat", root, scratch, &out, &rel) &&
+              out == scratch + L"\\DeathStrandingDC\\97930372\\autosave3\\checkpoint.dat" &&
+              rel == L"DeathStrandingDC\\97930372\\autosave3\\checkpoint.dat",
+          "a checkpoint under the root maps into the scratch copy", te::Narrow(out));
+    Check(sv::Map(L"c:/users/TAYLO/appdata/local/kojimaproductions/DeathStrandingDC/97930372/profile/profile.dat", root, scratch, &out) &&
+              out == scratch + L"\\DeathStrandingDC\\97930372\\profile\\profile.dat",
+          "case and '/' separators do not matter (the rest keeps its spelling)", te::Narrow(out));
+    Check(sv::Map(L"\\\\?\\C:\\Users\\taylo\\AppData\\Local\\KojimaProductions\\DeathStrandingDC\\1\\x", root, scratch, &out) &&
+              out == L"\\\\?\\" + scratch + L"\\DeathStrandingDC\\1\\x",
+          "a \\\\?\\ path maps and keeps its prefix", te::Narrow(out));
+    Check(sv::Map(L"C:\\Users\\taylo\\AppData\\Local\\\\KojimaProductions\\\\DeathStrandingDC\\.\\1\\..\\2\\*", root, scratch, &out) &&
+              out == scratch + L"\\DeathStrandingDC\\2\\*",
+          "doubled separators, '.' and '..' are resolved before matching", te::Narrow(out));
+    Check(sv::Map(root, root, scratch, &out, &rel) && out == scratch && rel.empty() && sv::Map(root + L"\\", root, scratch, &out) && out == scratch,
+          "the root itself maps to the scratch root");
+    Check(!sv::Map(L"C:\\Users\\taylo\\AppData\\Local\\KojimaProductionsX\\a", root, scratch, &out) &&
+              !sv::Map(L"C:\\Users\\taylo\\AppData\\Local\\Temp\\a", root, scratch, &out) &&
+              !sv::Map(L"C:\\Users\\taylo\\AppData\\Local", root, scratch, &out) && !sv::Map(L"", root, scratch, &out) &&
+              !sv::Map(L"profile.dat", root, scratch, &out),
+          "siblings, parents, other folders and relative names are not mapped");
+    Check(sv::Map(L"C:\\Users\\taylo\\AppData\\Local\\Temp\\..\\KojimaProductions\\DeathStrandingDC\\1\\a", root, scratch, &out) &&
+              out == scratch + L"\\DeathStrandingDC\\1\\a",
+          "a '..' detour into the root is caught");
+    Check(!sv::Map(scratch + L"\\DeathStrandingDC\\1\\a", root, scratch, &out), "mapping is idempotent (the scratch copy is not remapped)");
+    Check(sv::Map(L"\\\\.\\C:\\Users\\taylo\\AppData\\Local\\KojimaProductions\\DeathStrandingDC\\1\\x", root, scratch, &out) &&
+              out == L"\\\\?\\" + scratch + L"\\DeathStrandingDC\\1\\x",
+          "a \\\\.\\ device path maps too", te::Narrow(out));
+    Check(sv::Map(L"C:\\Users\\taylo\\AppData\\Local\\KojimaProductions.\\DeathStrandingDC\\1\\x", root, scratch, &out) &&
+              out == scratch + L"\\DeathStrandingDC\\1\\x" &&
+              sv::Map(L"C:\\Users\\taylo\\AppData\\Local\\KojimaProductions \\DeathStrandingDC. \\1\\x", root, scratch, &out) &&
+              out == scratch + L"\\DeathStrandingDC\\1\\x",
+          "trailing dots and spaces of a component (Win32 drops them) do not hide the root", te::Narrow(out));
+    Check(sv::Map(root + L":stream", root, scratch, &out, &rel) && out == scratch + L":stream" &&
+              sv::Map(root + L"\\a.dat:s", root, scratch, &out) && out == scratch + L"\\a.dat:s",
+          "alternate data streams of the root and below map", te::Narrow(out));
+    {
+        const auto lookup = [](const std::wstring& p, std::wstring* name) {
+            if (p == L"C:\\Users\\TAYLO~1") return *name = L"taylo", true;
+            if (p == L"C:\\Users\\taylo\\AppData\\Local\\KOJIMA~1") return *name = L"KojimaProductions", true;
+            return false;
+        };
+        const std::wstring exp = sv::ExpandShortNames(L"C:\\Users\\TAYLO~1\\AppData\\Local\\KOJIMA~1\\DeathStrandingDC\\x", lookup);
+        Check(exp == root + L"\\DeathStrandingDC\\x" && sv::Map(exp, root, scratch, &out),
+              "8.3 short names are expanded (component by component) before matching", te::Narrow(exp));
+        Check(sv::ExpandShortNames(L"C:\\NOPE~1\\TAYLO~1\\x", lookup) == L"C:\\NOPE~1\\TAYLO~1\\x" &&
+                  sv::ExpandShortNames(L"C:\\a\\b", lookup) == L"C:\\a\\b" && sv::ExpandShortNames(L"\\\\srv\\X~1\\a", lookup) == L"\\\\srv\\X~1\\a",
+              "short-name expansion stops at a missing component and leaves other paths alone");
+    }
+    Check(sv::LogPrefix(L"DeathStrandingDC\\97930372\\autosave3\\checkpoint.dat") == L"DeathStrandingDC\\97930372\\autosave3" &&
+              sv::LogPrefix(L"DeathStrandingDC\\97930372\\profile\\a\\b\\c.dat") == L"DeathStrandingDC\\97930372\\profile" &&
+              sv::LogPrefix(L".st-redirect-probe").empty() && sv::LogPrefix(L"DeathStrandingDC\\x") == L"DeathStrandingDC",
+          "log prefix: parent folder, at most 3 levels");
+}
+
+bool Put(const std::wstring& p, const std::string& s);
+std::string Get(const std::wstring& p);
+
+// The supervisor's save guard: backup, seed, compare, restore.
+void SavesGuard(const std::wstring& work) {
+    const std::wstring base = work + L"\\savesguard";
+    te::RemoveTree(base);
+    const std::wstring real = base + L"\\real\\KojimaProductions", run = base + L"\\run", scratch = base + L"\\game\\automation\\saves";
+    const std::wstring dc = real + L"\\DeathStrandingDC\\1";
+    te::EnsureDir(dc + L"\\profile");
+    te::EnsureDir(dc + L"\\autosave9");  // empty folder
+    te::EnsureDir(dc + L"\\quicksave0");
+    te::EnsureDir(dc + L"\\autosave0");
+    te::EnsureDir(run);
+    Put(dc + L"\\profile\\profile.dat", "profile");
+    Put(dc + L"\\autosave0\\checkpoint.dat", "a0");
+    Put(dc + L"\\quicksave0\\checkpoint.dat", "q0");
+    Put(dc + L"\\steam_autocloud.vdf", "vdf");
+    std::string err;
+    Check(te::BackupSaves(real, run, &err), "saves backed up (manifest + verified copy)", err);
+    Check(!te::BackupSaves(real, run, &err), "a run folder backs the saves up once");
+    std::string before;
+    te::ReadFileBytes(run + L"\\saves-before.txt", &before);
+    Check(before.find("DeathStrandingDC\\1\\autosave9\\\tdir") != std::string::npos &&
+              before.find("DeathStrandingDC\\1\\profile\\profile.dat\t7\t") != std::string::npos,
+          "the manifest lists folders (also empty ones) and files with size + sha256");
+    Check(te::SeedScratch(run, scratch, &err) && Get(scratch + L"\\DeathStrandingDC\\1\\profile\\profile.dat") == "profile" &&
+              te::DirExists(scratch + L"\\DeathStrandingDC\\1\\autosave9") && te::FileExists(scratch + L"\\.st-redirect-probe"),
+          "scratch copy seeded (files, empty folders, the redirect probe)", err);
+    Check(!te::FileExists(real + L"\\.st-redirect-probe"), "the probe exists only in the scratch copy");
+    te::SavesCheck c = te::CheckAndRestoreSaves(run);
+    Check(c.ran && c.unchanged && c.ok && Get(run + L"\\saves-restored.txt").rfind("ok\nunchanged", 0) == 0, "untouched saves: unchanged");
+    // What a run without the redirect could do:
+    Put(dc + L"\\profile\\profile.dat", "changed");
+    DeleteFileW((dc + L"\\quicksave0\\checkpoint.dat").c_str());
+    RemoveDirectoryW((dc + L"\\quicksave0").c_str());
+    te::EnsureDir(dc + L"\\autosave1");
+    Put(dc + L"\\autosave1\\checkpoint.dat", "new");
+    te::EnsureDir(dc + L"\\autosave2");
+    RemoveDirectoryW((dc + L"\\autosave9").c_str());
+    c = te::CheckAndRestoreSaves(run);
+    std::string notes;
+    for (const auto& n : c.notes) notes += n + "; ";
+    Check(c.ran && !c.unchanged && c.changes.size() == 7 && c.ok, "changed saves are detected and restored", notes);
+    Check(Get(dc + L"\\profile\\profile.dat") == "profile" && Get(dc + L"\\quicksave0\\checkpoint.dat") == "q0" &&
+              te::DirExists(dc + L"\\autosave9") && !te::DirExists(dc + L"\\autosave1") && !te::DirExists(dc + L"\\autosave2"),
+          "changed/removed files and folders back, new ones gone from the save tree");
+    Check(Get(run + L"\\saves-added\\DeathStrandingDC\\1\\autosave1\\checkpoint.dat") == "new", "a new file is moved to saves-added, not deleted");
+    Check(te::DiffManifests(before, te::HashManifest(real)).empty() && Get(run + L"\\saves-restored.txt").rfind("ok\nrestored", 0) == 0,
+          "after the restore the tree matches the manifest again");
+    c = te::CheckAndRestoreSaves(run);
+    Check(c.unchanged && c.ok, "a second check finds nothing to do");
+    te::SavesCheck none = te::CheckAndRestoreSaves(base + L"\\no-such-run");
+    Check(!none.ran && none.ok, "no saves-restore.txt: nothing to check");
+    // Steam's cloud log
+    const std::string cloud =
+        "[2026-11-16 11:32:05] [AppID 1850570]\tSkipping un-modified file KojimaProductions/DeathStrandingDC/1/profile/profile.dat\r\n"
+        "[2026-11-16 11:32:05] [AppID 1850570] AutoCloud complete\n"
+        "[2026-11-16 11:32:06] [AppID 999] Need to upload file x\n"
+        "[2026-11-16 08:04:40] [AppID 1850570] Need to upload file KojimaProductions/DeathStrandingDC/1/profile/profile.dat\n"
+        "[2026-11-16 08:04:41] [AppID 1850570] Upload OK for file KojimaProductions/DeathStrandingDC/1/profile/profile.dat\n";
+    const auto lines = te::CloudLogLines(cloud, "1850570");
+    const auto ups = te::CloudUploads(lines);
+    Check(lines.size() == 4 && ups.size() == 2 && lines[0].back() != '\r', "Steam cloud_log: app lines and upload lines");
+    te::RemoveTree(base);
 }
 
 bool Put(const std::wstring& p, const std::string& s) { return te::WriteFileAtomic(p, s); }
@@ -244,6 +378,58 @@ bool CenterIs(const std::wstring& png, int r, int g, int b, std::string* got) {
     return std::abs(p[2] - r) <= 2 && std::abs(p[1] - g) <= 2 && std::abs(p[0] - b) <= 2;
 }
 
+// automation=1 left behind (an interrupted run) and the game started by something else
+// than the supervisor (Steam): the mod must end it in DllMain, before it runs. The fake
+// game is started on a private desktop in a kill-on-close job, never on the user's.
+void RefusedOutsideSupervisor(const std::wstring& game, const std::wstring& mod) {
+    const std::wstring mod_dir = game + L"\\stranded_together";
+    Check(CopyFileW(mod.c_str(), (game + L"\\winhttp.dll").c_str(), FALSE) != FALSE, "refusal: mod deployed into the fake game folder");
+    te::EnsureDir(mod_dir + L"\\automation\\saves");
+    Put(mod_dir + L"\\automation\\saves\\.st-redirect-probe", "probe");  // a seeded scratch copy is there too
+    Put(mod_dir + L"\\session.ini", "one_shot=1\nautomation=1\n");
+    SetEnvironmentVariableW(au::saves::kSupervisedEnv, nullptr);
+    wchar_t name[64];
+    std::swprintf(name, 64, L"StTestEnvRefusal_%lu", GetCurrentProcessId());
+    HDESK desk = CreateDesktopW(name, nullptr, nullptr, 0, GENERIC_ALL, nullptr);
+    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION lim{};
+    lim.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
+    const bool setup = desk && job && SetInformationJobObject(job, JobObjectExtendedLimitInformation, &lim, sizeof(lim));
+    Check(setup, "refusal: private desktop and job");
+    DWORD code = 0;
+    if (setup) {
+        std::wstring desktop = std::wstring(L"WinSta0\\") + name;
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        si.lpDesktop = desktop.data();
+        PROCESS_INFORMATION pi{};
+        std::wstring exe = game + L"\\ds.exe", cmd = L"\"" + exe + L"\"";
+        if (CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, FALSE, CREATE_SUSPENDED, nullptr, game.c_str(), &si, &pi)) {
+            if (AssignProcessToJobObject(job, pi.hProcess)) {
+                ResumeThread(pi.hThread);
+                if (WaitForSingleObject(pi.hProcess, 15000) != WAIT_OBJECT_0) TerminateJobObject(job, 1);
+                WaitForSingleObject(pi.hProcess, 5000);
+                GetExitCodeProcess(pi.hProcess, &code);
+            } else {
+                TerminateProcess(pi.hProcess, 1);
+            }
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+        }
+    }
+    if (job) CloseHandle(job);
+    if (desk) CloseDesktop(desk);
+    const std::string refused = Get(mod_dir + L"\\automation\\" + au::saves::kRefusedFile);
+    char hex[32];
+    std::snprintf(hex, sizeof(hex), "0x%08lX", code);
+    Check(code == au::saves::kRefusedExitCode && refused.find("not started by st_testenv_supervisor") != std::string::npos,
+          "automation=1 in a ds.exe the supervisor did not start is refused in DllMain", std::string(hex) + " " + refused);
+    Check(!te::FileExists(mod_dir + L"\\fakegame.log"), "refusal: the fake game's own code never ran");
+    te::RemoveTree(mod_dir + L"\\automation");
+    DeleteFileW((mod_dir + L"\\session.ini").c_str());
+    Put(game + L"\\winhttp.dll", "original winhttp.dll (not a DLL)");
+}
+
 int EndToEnd(const std::wstring& supervisor, const std::wstring& fakegame, const std::wstring& mod, const std::wstring& scenario,
              const std::wstring& work_in) {
     if (!te::FindProcesses(L"ds.exe").empty()) {
@@ -257,8 +443,17 @@ int EndToEnd(const std::wstring& supervisor, const std::wstring& fakegame, const
     Check(CopyFileW(fakegame.c_str(), (game + L"\\ds.exe").c_str(), FALSE) != FALSE, "fake game copied as ds.exe");
     Put(game + L"\\winhttp.dll", "original winhttp.dll (not a DLL)");
     Put(game + L"\\stranded_together\\session.ini", "# original session\nrole=echo\n");
+    // A scratch "real" save root: the fake game uses it at start-up like ds.exe's user:
+    // device; the mod must redirect all of it into the seeded scratch copy.
+    const std::wstring saves = work + L"\\realsaves\\KojimaProductions";
+    te::EnsureDir(saves + L"\\DeathStrandingDC\\1\\profile");
+    te::EnsureDir(saves + L"\\DeathStrandingDC\\1\\quicksave0");
+    Put(saves + L"\\DeathStrandingDC\\1\\profile\\profile.dat", "seed-profile");
+    Put(saves + L"\\DeathStrandingDC\\1\\quicksave0\\checkpoint.dat", "q0");
+    const std::string saves_before = te::HashManifest(saves);
+    SetEnvironmentVariableW(L"ST_FAKEGAME_SAVE_ROOT", saves.c_str());  // inherited by the supervisor and the fake game
     std::wstring cmd = L"\"" + supervisor + L"\" --game-dir \"" + game + L"\" --mod \"" + mod + L"\" --scenario \"" + scenario +
-                       L"\" --run-dir \"" + run + L"\" --saves none --no-steam-check --timeout-s 150";
+                       L"\" --run-dir \"" + run + L"\" --saves \"" + saves + L"\" --no-steam-check --timeout-s 150";
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
@@ -304,6 +499,32 @@ int EndToEnd(const std::wstring& supervisor, const std::wstring& fakegame, const
               !te::FileExists(game + L"\\stranded_together\\session.last.ini") && !te::DirExists(game + L"\\stranded_together\\automation"),
           "session.ini restored, session.last.ini and automation removed");
     Check(te::FindProcesses(L"ds.exe").empty(), "no ds.exe left running");
+    // saves
+    Check(summary.find("\"saves_redirected\":true") != std::string::npos && summary.find("\"saves_unchanged\":true") != std::string::npos,
+          "summary: saves redirected (confirmed before the steps) and unchanged");
+    Check(modlog.find("[auto] saves=redirected") != std::string::npos &&
+              modlog.find("[auto] saves: write DeathStrandingDC\\1\\autosave0 -> scratch") != std::string::npos,
+          "mod log: saves=redirected and one line per redirected place");
+    Check(fake.find("save read profile.dat: 'seed-profile'") != std::string::npos &&
+              fake.find("save read with '/' separators: 'seed-profile'") != std::string::npos,
+          "the game read the seeded profile through the redirect");
+    Check(fake.find("save exercise: 12/12 ok") != std::string::npos, "every save operation of the fake game succeeded (in the scratch copy)");
+    {
+        const std::wstring a0 = run + L"\\saves-scratch-changed\\DeathStrandingDC\\1\\autosave0\\";
+        Check(Get(a0 + L"device.dat") == "d" && Get(a0 + L"trailing-dot.dat") == "t" && Get(a0 + L"relative.dat") == "r" &&
+                  Get(a0 + L"short.dat") == "s",
+              "\\\\.\\, trailing-dot, relative and 8.3 spellings of the save folder were redirected too");
+    }
+    Check(te::HashManifest(saves) == saves_before && !te::FileExists(saves + L"\\.st-redirect-probe"),
+          "the 'real' save tree is byte for byte unchanged");
+    Check(Get(run + L"\\saves-scratch-changed\\DeathStrandingDC\\1\\autosave0\\checkpoint.dat") == "fake checkpoint" &&
+              Get(run + L"\\saves-scratch-changed\\DeathStrandingDC\\1\\autosave1\\checkpoint.dat") == "fake checkpoint" &&
+              Get(run + L"\\saves-scratch-changed\\DeathStrandingDC\\1\\manual.dat") == "m",
+          "the writes landed in the scratch copy (collected to saves-scratch-changed)");
+    Check(summary.find("removed DeathStrandingDC\\\\1\\\\quicksave0\\\\checkpoint.dat") != std::string::npos,
+          "the delete hit the scratch copy (scratch_changes)");
+    Check(Get(run + L"\\game\\saves-redirect.txt").rfind("saves=redirected", 0) == 0, "DllMain marker collected");
+    RefusedOutsideSupervisor(game, mod);
     return g_fail ? 1 : 0;
 }
 
@@ -333,7 +554,9 @@ int wmain(int argc, wchar_t** argv) {
     CommandParser();
     ScenarioParser(scenarios.empty() ? L"" : te::FullPath(scenarios));
     SessionIni();
+    SaveRedirectMapping();
     BackupRestore(te::FullPath(work));
+    SavesGuard(te::FullPath(work));
     std::printf("%s: %d passed, %d failed\n", g_fail ? "FAILED" : "PASSED", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

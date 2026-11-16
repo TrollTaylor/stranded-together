@@ -1,24 +1,35 @@
 # Smoke test of the real game on the hidden desktop (tools/testenv/Start-TestRun.ps1 -Scenario smoke):
-# boot to the title, press Continue with the virtual pad, wait for Sam, open the debug menu.
+# boot to the title, press Continue with the virtual pad, wait for Sam, open the debug menu, quit.
+# The save the game loads is the scratch copy (the mod redirects the save folder; the
+# supervisor refuses to run the steps until that is confirmed).
 role solo
 timeout 360
-# the mod's automation channel comes up at DLL load, long before the title
+# the mod's automation channel comes up once ds.exe loaded d3d12.dll (the overlay waits for that)
 waitready 90
-# first rendered frames (logos); the overlay hooked Present
-?waitlog 120 \[overlay\] input attached
-?screenshot 01-boot
-# logos / "press any button" / title: A every 4 s until the local player exists.
-# The title menu's first entry is CONTINUE when a save exists.
-until 240 4000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+# first rendered frames; the overlay hooked Present
+waitlog 120 \[overlay\] input attached
+# Boot without input (boot.txt, 2026-11-16): black, then the title menu after ~15-20 s.
+# No "press any button", no notices: the menu opens with CONTINUE selected when a save exists.
+wait 25000
+?screenshot 01-title
+pad A 150
+wait 4000
+?screenshot 02-after-continue
+# Loading; A again every 5 s only while no local player exists (a confirmation, if any).
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
 waitplayer 60
 # let the world settle
-wait 8000
-screenshot 02-in-world
+wait 10000
+screenshot 03-in-world
 snapshot
 menu open
-wait 500
-screenshot 03-debug-menu
+wait 700
+screenshot 04-debug-menu
 action log_status
 menu close
-screenshot 04-menu-closed
+wait 300
+screenshot 05-menu-closed
+wait 4000
+?screenshot 06-later
+snapshot
 quit

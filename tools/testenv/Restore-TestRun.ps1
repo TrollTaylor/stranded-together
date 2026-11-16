@@ -1,7 +1,8 @@
 <#
 .SYNOPSIS
-  Puts the game folder back from a hidden run's restore.txt (after a crash of the
-  supervisor or of this machine during a run). Safe to run more than once.
+  Puts the game folder back from a hidden run's restore.txt and checks the saves against
+  saves-before.txt (restoring them from saves-backup if they differ), after a crash of the
+  supervisor or of this machine during a run. Safe to run more than once.
 
 .EXAMPLE
   pwsh -File tools\testenv\Restore-TestRun.ps1 -RunDir build-testenv\runs\20261116-120000-smoke

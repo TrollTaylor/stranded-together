@@ -92,7 +92,12 @@ DWORD WINAPI Bootstrap(LPVOID) {
         ov.mod_dir = mod_dir;
         ov.build = ST_BUILD_ID;
         ov.automation = st::automation::Enabled() && st::automation::IsolateRequested();
-        if (!st::overlay::Install(ov)) st::Log("[mod] debug menu unavailable this run (see [overlay] above)");
+        // ds.exe exits(0) when d3d12.dll is already loaded before its own device
+        // creation (check at 0x1419A6CE9), and the overlay loads d3d12.dll. So the
+        // overlay always waits until the game has loaded it itself (every mode, not
+        // only hidden runs: v0.2.0 quit on normal launches because of this).
+        const bool overlay_ok = st::automation::WaitForGameD3D12(120000);
+        if (!overlay_ok || !st::overlay::Install(ov)) st::Log("[mod] debug menu unavailable this run (see [overlay] above)");
     } else {
         st::Log("[mod] debug menu off (debug_menu=0)");
     }
@@ -145,6 +150,10 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
         // Only ds.exe gets the mod; anything else that happens to load this
         // winhttp.dll (it forwards everything) just gets plain WinHTTP.
         if (HostIsDeathStranding()) {
+            // Hidden test runs (session.ini automation=1): the user's saves are redirected
+            // to a scratch copy before ds.exe's own code runs; when that cannot be done the
+            // process ends here (st::automation::EarlyInit). No-op otherwise.
+            st::automation::EarlyInit();
             HANDLE t = CreateThread(nullptr, 0, &Bootstrap, nullptr, 0, nullptr);
             if (t) CloseHandle(t);
         }

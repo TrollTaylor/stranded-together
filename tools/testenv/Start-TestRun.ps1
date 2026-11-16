@@ -9,8 +9,11 @@
 
 .NOTES
   Refuses when ds.exe is already running. The game folder's winhttp.dll and
-  stranded_together files are backed up to the run folder and restored afterwards;
-  your saves are only read (hashed and copied to the run folder) and compared.
+  stranded_together files are backed up to the run folder and restored afterwards.
+  Your saves (%LOCALAPPDATA%\KojimaProductions) are hashed and backed up to the run
+  folder first; the mod redirects every access to them to a scratch copy (the run is
+  stopped unless that is confirmed), and afterwards they are compared by hash and
+  restored from the backup if anything differs.
   Output: build-testenv\runs\<yyyyMMdd-HHmmss>-<scenario>\ (summary.json, supervisor.log,
   game\stranded_together.log, automation\*.png, results.txt, saves-*.txt).
 #>
@@ -26,10 +29,11 @@ param(
     [switch]$KeepAudio,
     [switch]$NoBuild,
     # Bisecting a game that does not start (docs/hidden-testing.md "When the game exits at once"):
-    [switch]$NoMod,          # vanilla game (our winhttp.dll/session.ini moved aside); scenario 'alive'
+    [switch]$NoMod,          # no session/overlay/game hooks: winhttp.dll only redirects the saves; scenario 'alive'
     [switch]$NoUiLimits,     # job without UI restrictions (kill-on-close stays)
     [switch]$SteamEnv,       # the environment variables Steam sets for a game it launches
-    [switch]$NoIsolation     # automation channel without the overlay's isolation hooks
+    [switch]$NoIsolation,    # automation channel without the overlay's isolation hooks
+    [switch]$NoGameStdout    # do not hand ds.exe a file as stdout (its own log -> game-stdout.txt)
 )
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
@@ -60,7 +64,7 @@ if (-not $NoBuild) {
         & cmake -S $repo -B $BuildDir -G 'Visual Studio 17 2022' -A x64 | Out-Host
         if ($LASTEXITCODE) { throw 'cmake configure failed' }
     }
-    & cmake --build $BuildDir --config $Config --target st_mod st_testenv_supervisor st_testenv_probe -- -m -v:m | Out-Host
+    & cmake --build $BuildDir --config $Config --target st_mod st_testenv_supervisor st_testenv_probe -- '/m' '/verbosity:minimal' | Out-Host
     if ($LASTEXITCODE) { throw 'build failed' }
 }
 $sup = Join-Path $bin 'st_testenv_supervisor.exe'
@@ -90,17 +94,21 @@ if ($NoMod) { $supArgs += '--no-mod' }
 if ($NoUiLimits) { $supArgs += '--no-ui-limits' }
 if ($SteamEnv) { $supArgs += '--steam-env' }
 if ($NoIsolation) { $supArgs += '--no-isolation' }
+if ($NoGameStdout) { $supArgs += '--no-game-stdout' }
 Write-Host "hidden run: $name -> $run"
 & $sup @supArgs 2>&1 | Out-Host
 $code = $LASTEXITCODE
 
-# A supervisor that died mid-run leaves restore.txt without restored.txt, and a restore that
-# met a locked file says INCOMPLETE: restore again (idempotent; refuses while ds.exe runs).
+# A supervisor that died mid-run leaves restore.txt without restored.txt (or saves-restore.txt
+# without saves-restored.txt), and a restore that met a locked file says INCOMPLETE: restore
+# again (idempotent; refuses while ds.exe runs; also checks and restores the saves).
 $restoredTxt = Join-Path $run 'restored.txt'
-if (Test-Path (Join-Path $run 'restore.txt')) {
+$savesRestoredTxt = Join-Path $run 'saves-restored.txt'
+if ((Test-Path (Join-Path $run 'restore.txt')) -or (Test-Path (Join-Path $run 'saves-restore.txt'))) {
     $state = if (Test-Path $restoredTxt) { (Get-Content $restoredTxt -TotalCount 1) } else { '' }
-    if ($state -ne 'ok') {
-        Write-Warning ("the game folder was not fully restored ({0}); restoring again from restore.txt" -f $(if ($state) { $state } else { 'no restore ran' }))
+    $savesState = if (-not (Test-Path (Join-Path $run 'saves-restore.txt'))) { 'ok' } elseif (Test-Path $savesRestoredTxt) { (Get-Content $savesRestoredTxt -TotalCount 1) } else { '' }
+    if ($state -ne 'ok' -or $savesState -ne 'ok') {
+        Write-Warning ("game folder: {0}, saves: {1}; restoring again from the run folder" -f $(if ($state) { $state } else { 'no restore ran' }), $(if ($savesState) { $savesState } else { 'no check ran' }))
         for ($i = 0; $i -lt 3; $i++) {
             & $sup --restore $run 2>&1 | Out-Host
             if ($LASTEXITCODE -eq 0) { break }
@@ -116,7 +124,13 @@ if (Test-Path $summaryPath) {
     Write-Host ("result: {0}  failures: {1}  restored: {2}  violation: {3}  error.txt: {4}" -f $s.result, $s.failures, $s.restored, $s.violation, $s.error_txt)
     Write-Host ("game: exit code {0} after {1} s alive ({2} s CPU); windows on the private desktop: {3} ({4})" -f $s.game_exit_code, $s.game_alive_s, $s.game_cpu_s, $s.private_desktop_windows, $s.private_desktop_titles)
     foreach ($step in $s.steps) { Write-Host ("  [{0}] line {1}: {2} -- {3}" -f ($(if ($step.ok) { 'ok' } else { 'FAIL' })), $step.line, $step.step, $step.detail) }
-    if ($s.save_changes.Count) { Write-Host ("saves changed by the game: {0}" -f ($s.save_changes -join ', ')) }
+    Write-Host ("saves: redirected {0} ({1}); real tree unchanged: {2}; restored/verified: {3}" -f $s.saves_redirected, $s.saves_evidence, $s.saves_unchanged, $s.saves_ok)
+    if ($s.saves_refused) { Write-Warning ("the mod refused to run the game: {0}" -f $s.saves_refused) }
+    if ($s.save_changes.Count) { Write-Warning ("REAL SAVES CHANGED (restored from saves-backup): {0}" -f ($s.save_changes -join ', ')) }
+    if ($s.scratch_changes.Count) { Write-Host ("scratch copy changed by the game (expected, discarded): {0}" -f ($s.scratch_changes -join ', ')) }
+    Write-Host ("Steam Cloud: AutoCloud pass logged: {0}; app lines: {1}; uploads: {2}" -f $s.cloud_autocloud_seen, $s.cloud_lines, $s.cloud_uploads.Count)
+    if ($s.exit_trace) { Write-Host ("exit trace: {0}" -f $s.exit_trace.Trim()) }
+    if ($s.game_stdout_tail) { Write-Host "game stdout (last lines, game-stdout.txt):"; Write-Host $s.game_stdout_tail }
 }
 $shots = Get-ChildItem (Join-Path $run 'automation') -Filter *.png -ErrorAction SilentlyContinue
 if ($shots) { Write-Host ("screenshots: {0}" -f (($shots | ForEach-Object Name) -join ', ')) }
