@@ -1,0 +1,13 @@
+# The launcher's "Play with test save" session on the hidden desktop (Start-TestRun.ps1
+# -Scenario sandbox-alive -SandboxSession [-SeedSaves complete-100]): session.ini without
+# automation=1, sandbox_saves=testenv-<pid> (+ sandbox_foreign_saves=1 with a seed). The mod's
+# visible-play path redirects the saves in DllMain (and skips the owner check after its self-test);
+# the supervisor confirms <mod>\sandbox-active.txt and "[sandbox] saves=redirected" before this runs.
+# No automation channel (no screenshots, no input, no mute): the game is ended before the title
+# music, ~15 s after it started.
+role solo
+timeout 60
+waitlog 30 \[sandbox\] test save: the game reads and writes only the sandbox copy
+?waitlog 10 \[sandbox\] foreign saves: check bypassed
+note the visible-play sandbox redirect is active; ending the game before the title
+sleep 4000

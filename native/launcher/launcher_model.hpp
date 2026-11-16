@@ -113,6 +113,30 @@ struct CodeCheck {
     std::string message;           // "" for an empty field; otherwise a sentence for the player
 };
 
+// Debug > Test saves (docs/sandbox-and-local-test.md): a save the user picked once (a downloaded
+// 100% save, a friend's save), played on a sandbox copy; the real save folder is never written.
+struct TestSaveView {
+    std::string folder;            // the remembered test save folder ("" = none picked)
+    bool folder_ok = false;        // it holds save slots
+    std::string folder_note;       // "12 save slots found" / why not
+    bool use_for_all = false;      // Host, Join and Solo test use the test save too
+    bool seeded = false;           // the sandbox copy exists (its progress is kept between games)
+    std::string sandbox_dir;       // <game>\stranded_together\sandbox
+    std::string result;            // after a test-save game: what happened to your saves / why the game refused
+    enum class Tone { neutral, good, warn, bad } tone = Tone::neutral;
+};
+
+// Debug > Test saves > Local two-player test: two games on this PC (host + guest), linked over
+// UDP loopback, each on its own sandbox copy, the guest started directly (second instance).
+struct LocalTestView {
+    bool running = false;          // started and at least one game still runs (or is starting)
+    std::uint32_t host_pid = 0, guest_pid = 0;
+    std::string host_state, guest_state;   // each game's link state ("" before its first status)
+    std::string headline, detail;
+    LinkView::Tone tone = LinkView::Tone::neutral;
+    bool host_pad = false;         // the option: XInput pads on the host too (else keyboard + mouse only)
+};
+
 class LauncherModel {
 public:
     virtual ~LauncherModel() = default;
@@ -179,6 +203,18 @@ public:
     virtual void check_for_updates() = 0;
     virtual void start_update() = 0;
     virtual void set_auto_update_check(bool on) = 0;   // persisted ("auto_update_check")
+
+    // Debug > Test saves. The folder is remembered (launcher-settings.json "test_save").
+    virtual TestSaveView test_save() const = 0;
+    virtual bool set_test_save_folder(const std::string& folder, std::string& error_out) = 0;
+    virtual void set_use_test_save(bool on) = 0;
+    // Debug tools only (solo) on the test save; the sandbox is seeded on first use.
+    virtual bool play_test_save(std::string& error_out) = 0;
+    // Deletes the sandbox copies (test save and both local-test games); the next game seeds them again.
+    virtual bool reset_test_saves(std::string& error_out) = 0;
+    virtual LocalTestView local_test() const = 0;
+    virtual void set_local_test_host_pad(bool on) = 0;
+    virtual bool start_local_test(std::string& error_out) = 0;
 
     virtual void tick() = 0;
 };

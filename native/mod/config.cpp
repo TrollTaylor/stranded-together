@@ -121,8 +121,20 @@ Config LoadConfig(const std::wstring& dir) {
             const std::uint32_t vk = ParseKey(v);
             if (vk) c.debug_menu_vk = vk;
             else Log("[config] session.ini:%d debug_menu_key '%s' not understood; keeping F9", lineno, v.c_str());
-        } else if (k == "automation" || k == "automation_mute" || k == "automation_save_root" || k == "automation_foreign_saves") {
-            // read by automation.cpp before the one-shot rename
+        } else if (k == "automation" || k == "automation_mute" || k == "automation_save_root" || k == "automation_foreign_saves" ||
+                   k == "automation_isolate" || k == "automation_exit_trace" || k == "sandbox_foreign_saves" || k == "appdir_settings" ||
+                   k == "second_instance") {
+            // read by automation.cpp before the one-shot rename (DllMain)
+        } else if (k == "sandbox_saves") {
+            c.sandbox_saves = v;  // the redirect itself is installed in DllMain (automation.cpp)
+        } else if (k == "frame_cap") {
+            const unsigned long fc = std::strtoul(v.c_str(), nullptr, 10);
+            c.frame_cap = fc == 0 ? 0u : static_cast<unsigned>(fc < 15 ? 15 : fc > 240 ? 240 : fc);
+        } else if (k == "local_window") {
+            if (v == "left" || v == "right") c.local_window = v;
+        } else if (k == "local_input") {
+            if (v == "host" || v == "host_pad" || v == "guest") c.local_input = v;
+            else Log("[config] session.ini:%d local_input '%s' not understood; ignored", lineno, v.c_str());
         } else if (k == "one_shot") {
             c.one_shot = ParseBool(v);
         } else if (k == "name") {
@@ -147,6 +159,9 @@ Config LoadConfig(const std::wstring& dir) {
         RoleName(c.role), c.transport == Transport::udp ? "udp" : "steam",
         static_cast<unsigned long long>(c.peer_steam_id), c.udp_peer.c_str(), c.udp_port_local, c.udp_port_peer,
         c.send_hz, c.interp_delay_ms, c.debug_menu ? 1 : 0, c.debug_menu_vk);
+    if (!c.sandbox_saves.empty() || !c.local_input.empty())
+        Log("[config] test save sandbox=%s local_input=%s", c.sandbox_saves.empty() ? "-" : c.sandbox_saves.c_str(),
+            c.local_input.empty() ? "-" : c.local_input.c_str());
     Log("[config] partner_body=%s partner_holo=%08X partner_marker=%d partner_voice=%d", PartnerBodyName(c.partner_body),
         c.partner_holo, c.partner_marker, c.partner_voice ? 1 : 0);
     return c;

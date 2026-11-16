@@ -4,8 +4,9 @@ A small Win32 + Direct3D 11 + Dear ImGui window that sits in the DEATH
 STRANDING DIRECTOR'S CUT game folder, checks the install, writes the session
 settings for the in-game mod, starts the game through Steam, shows the link
 status the mod reports and carries the Debug page (test options, live mod
-log, mod on/off). It updates itself and the mod from GitHub Releases
-([Updates](#updates)). It never injects anything and never touches saves.
+log, mod on/off, test saves and the local two-player test). It updates itself and the mod from
+GitHub Releases ([Updates](#updates)). It never injects anything and never writes your saves:
+Debug > Test saves only reads them (copies into `stranded_together\sandbox`).
 Installed like Diamond Dogs Together: extract the release zip into the game
 folder and run `StrandedTogether.exe` ([packaging.md](packaging.md) builds
 the zip).
@@ -59,7 +60,7 @@ On start the launcher checks, in this order:
 
 ## Debug page
 
-Two tabs (`ui::DebugTab`):
+Three tabs (`ui::DebugTab`):
 
 * **Options**: **Debug tools only (solo)** (role=solo: the in-game debug menu
   and the mod log, no partner, no network; loopback UDP like the echo; it
@@ -79,6 +80,16 @@ Two tabs (`ui::DebugTab`):
   not write, e.g. a persistent `deploy.ps1 -Session` file; not while the game
   runs), **Copy log**, and a live tail of `stranded_together.log` (last 400
   lines, re-read once a second, "Follow" keeps it at the end).
+
+* **Test saves** ([sandbox-and-local-test.md](sandbox-and-local-test.md)): **Choose folder...**
+  (a folder picker; the folder must hold save slots, e.g. a downloaded 100% save; remembered in
+  `launcher-settings.json` `"test_save"`), **Open test-save folder**, **Reset test saves**,
+  **Play with test save (your saves untouched)** (Debug tools only on the sandbox copy
+  `sandbox\test`, `sandbox_saves=test` + `sandbox_foreign_saves=1`), **Also for Host, Join, Solo
+  test**, the result after the game (real save tree compared by SHA-256, or the mod's refusal), and
+  the **Local two-player test** (two ds.exe on this PC, started directly with `SteamAppId`,
+  loopback UDP, 30 fps cap, each on its own sandbox; **Pads on the host too**) with both games'
+  link state.
 
 The Play > Solo test tab links to it; Tools points to it.
 
@@ -204,7 +215,20 @@ debug_menu=1                    the in-game debug menu (Debug page)
 debug_menu_key=F9               F1..F12 (Debug page)
 one_shot=1                      always: the mod renames the file to session.last.ini once read
 name=<display name>             optional; printable ASCII, no # ; = quotes, <= 32 chars
+sandbox_saves=<name>            Debug > Test saves: the game runs on stranded_together\sandbox\<name>
+sandbox_foreign_saves=1         with sandbox_saves: skip ds.exe's save-owner check (after the redirect self-test)
+appdir_settings=1               local test: the game folder's settings.cfg -> the sandbox's
+second_instance=1               local test, second game: its single-instance mutex is renamed
+local_input=host|host_pad|guest local test: input split, keeps running unfocused
+local_window=left|right         local test: the window takes that half of the monitor
+frame_cap=30                    local test: at most 30 frames per second
 ```
+
+The sandbox keys are written only together (`MakeSessionIniText` refuses `second_instance`,
+`appdir_settings` or `sandbox_foreign_saves` without `sandbox_saves`, a name that is not
+`[A-Za-z0-9_-]{1,40}`, other `local_input`/`local_window` values, `frame_cap` outside 15..240).
+The local test's files are `stranded_together\instances\host|guest\session.ini` (the games get
+`ST_INSTANCE_DIR=instances\host|guest`), never `stranded_together\session.ini`.
 
 `core::MakeSessionIniText` validates every field (canonical secret, individual
 SteamID64, canonical IPv4, port ranges) and `core::ParseSessionIniText` reads
@@ -374,8 +398,8 @@ with faint drip lines, like the logo. `--check` compares pixels (tolerance 2).
 
 ### Screenshots
 
-`st_launcher_screens` renders 35 scenes into `build-launcher\launcher-shots\`
-(`01-play-host` ... `35-about-updates`), among them `10-play-dev-build`,
+`st_launcher_screens` renders 37 scenes into `build-launcher\launcher-shots\`
+(`01-play-host` ... `37-debug-local-test`), among them `36-debug-test-saves`, `37-debug-local-test`, `10-play-dev-build`,
 `11-play-mod-mismatch`, `13-mod-foreign`, `14-mod-disabled`,
 `20-ingame-solo`, `27-debug-options`, `28-debug-files`, `29-debug-in-game`,
 and the updater's `31-play-update-available`, `32-play-update-downloading`,

@@ -1066,16 +1066,109 @@ void LauncherUi::RefreshLog(bool force) {
 
 void LauncherUi::DebugPage(Phase phase) {
     PageHeader("Debug", "Test tools for the mod. The options go into every game you start from this launcher.");
-    static const char* const kTabs[ui::kDebugTabCount] = {ui::DebugTabLabel(ui::DebugTab::options), ui::DebugTabLabel(ui::DebugTab::files)};
+    static const char* const kTabs[ui::kDebugTabCount] = {ui::DebugTabLabel(ui::DebugTab::options), ui::DebugTabLabel(ui::DebugTab::saves),
+                                                          ui::DebugTabLabel(ui::DebugTab::files)};
     int index = static_cast<int>(debug_tab_);
-    if (Segmented("##debugtab", kTabs, ui::kDebugTabCount, &index, 300.0f, true)) {
+    if (Segmented("##debugtab", kTabs, ui::kDebugTabCount, &index, 420.0f, true)) {
         debug_tab_ = static_cast<ui::DebugTab>(index);
         debug_result_ = Result{};
         if (debug_tab_ == ui::DebugTab::files) RefreshLog(true);
     }
     Gap(4.0f);
     if (debug_tab_ == ui::DebugTab::options) DebugOptionsTab(phase);
+    else if (debug_tab_ == ui::DebugTab::saves) DebugSavesTab(phase);
     else DebugFilesTab(phase);
+}
+
+// Debug > Test saves: a save the user picked once (e.g. a downloaded 100% save), played on a
+// sandbox copy, and the local two-player test (two games on this PC).
+void LauncherUi::DebugSavesTab(Phase phase) {
+    const TestSaveView t = model_.test_save();
+    const LocalTestView lt = model_.local_test();
+    const bool can = ui::CanStartSession(phase) && !lt.running;
+    const float avail = ImGui::GetContentRegionAvail().x / theme::Scale();
+    BeginCard("##testsave");
+    SectionLabel("TEST SAVE");
+    {
+        const Font f(GetFonts().mono, kSmall);
+        Text(t.folder.empty() ? "No folder picked" : t.folder.c_str(), t.folder.empty() ? col::kTextFaint : col::kText, kSmall, GetFonts().mono,
+             0.0f);
+    }
+    Message(t.folder_ok ? Icon::check : Icon::info, t.folder_ok ? col::kGood : col::kTextFaint, t.folder_note, kSmall);
+    Gap(2.0f);
+    const float w3 = std::floor((avail - 16.0f - 24.0f) / 3.0f);
+    if (Button("Choose folder...##testsave", ButtonKind::secondary, ImVec2(w3, 36.0f), can && shell_.pick_folder != nullptr, Icon::folder, true)) {
+        std::string folder;
+        if (shell_.pick_folder(folder)) {
+            std::string error;
+            const bool ok = model_.set_test_save_folder(folder, error);
+            debug_result_ = Result{ok, ok ? "Test save folder set. Your own saves are only read, never written." : error, ""};
+        }
+    }
+    ImGui::SameLine(0.0f, Px(8.0f));
+    if (Button("Open test-save folder", ButtonKind::quiet, ImVec2(w3, 36.0f), true, Icon::folder, true))
+        if (shell_.open_folder) shell_.open_folder(t.sandbox_dir);
+    ImGui::SameLine(0.0f, Px(8.0f));
+    if (Button("Reset test saves", ButtonKind::quiet, ImVec2(w3, 36.0f), can && t.seeded, Icon::trash, true)) {
+        std::string error;
+        const bool ok = model_.reset_test_saves(error);
+        debug_result_ = Result{ok, ok ? "The test copies are deleted; the next game starts again from the picked save." : error, ""};
+    }
+    Gap(2.0f);
+    if (Button("Play with test save (your saves untouched)", ButtonKind::primary, ImVec2(318.0f, 40.0f), can && t.folder_ok, Icon::play, true)) {
+        CommitFields();
+        std::string error;
+        const bool ok = model_.play_test_save(error);
+        debug_result_ = Result{ok, ok ? "Starting DEATH STRANDING on the test save (debug tools only)." : error, ""};
+    }
+    ImGui::SameLine(0.0f, Px(14.0f));
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + Px(9.0f));
+    bool use = t.use_for_all;
+    if (Checkbox("Also for Host, Join, Solo test", &use, t.folder_ok)) model_.set_use_test_save(use);
+    Text("The game reads and writes only a copy in stranded_together\\sandbox (your profile copied in, the save's slots in place "
+         "of yours). Your own save folder is only read, and hashed before and after.",
+         col::kTextDim, kSmall, nullptr, 0.0f);
+    if (!t.result.empty()) {
+        const ImU32 c = t.tone == TestSaveView::Tone::good ? col::kGood : t.tone == TestSaveView::Tone::bad ? col::kBad
+                        : t.tone == TestSaveView::Tone::warn ? col::kWarn : col::kTextDim;
+        Message(t.tone == TestSaveView::Tone::good ? Icon::check : Icon::warning, c, t.result, kSmall);
+    }
+    EndCard();
+    Gap(4.0f);
+
+    BeginCard("##localtest", 0.0f, col::kCard, lt.running ? col::kCoolBorder : col::kBorder);
+    SectionLabel("LOCAL TWO-PLAYER TEST");
+    if (!lt.running)
+        Text("Two games on this PC, linked over loopback: host window = keyboard + mouse, guest window = gamepad. Each runs on "
+             "its own copy of the test save (or of your saves), at 30 fps.",
+             col::kTextDim, kSmall, nullptr, 0.0f);
+    Gap(2.0f);
+    if (Button("Local two-player test", ButtonKind::primary, ImVec2(232.0f, 40.0f), can, Icon::cable, true)) {
+        CommitFields();
+        std::string error;
+        const bool ok = model_.start_local_test(error);
+        debug_result_ = Result{ok, ok ? "Starting two games: the host now, the guest a few seconds later." : error, ""};
+    }
+    ImGui::SameLine(0.0f, Px(14.0f));
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + Px(9.0f));
+    bool pad = lt.host_pad;
+    if (Checkbox("Pads on the host too", &pad, !lt.running)) model_.set_local_test_host_pad(pad);
+    if (lt.running || !lt.headline.empty()) {
+        const ImU32 c = lt.tone == LinkView::Tone::good ? col::kGood : lt.tone == LinkView::Tone::bad ? col::kBad
+                        : lt.tone == LinkView::Tone::warn ? col::kWarn : col::kCool;
+        Message(lt.tone == LinkView::Tone::good ? Icon::check : Icon::signal, c, lt.headline, kBody);
+        if (lt.running) {
+            const std::string games = "Host game " + (lt.host_pid ? "pid " + std::to_string(lt.host_pid) : std::string("starting")) + " (" +
+                                      (lt.host_state.empty() ? std::string("no status yet") : lt.host_state) + ")   Guest game " +
+                                      (lt.guest_pid ? "pid " + std::to_string(lt.guest_pid) : std::string("starts soon")) + " (" +
+                                      (lt.guest_state.empty() ? std::string("no status yet") : lt.guest_state) + ")";
+            Text(games.c_str(), col::kTextDim, kSmall, GetFonts().mono, 0.0f);
+        }
+        Text(lt.detail.c_str(), col::kTextDim, kSmall, nullptr, 0.0f);
+    }
+    EndCard();
+    ResultLine(debug_result_);
+    (void)phase;
 }
 
 void LauncherUi::DebugOptionsTab(Phase phase) {
@@ -1436,6 +1529,8 @@ void LauncherUi::PrepareScene(int index, MockModel& mock) {
     lan.peer_ip = "192.168.1.20";
     mock.set_lan(lan);
     mock.set_player_name("");
+    mock.set_test_save_view(TestSaveView{});
+    mock.jump_to_local_test(-1.0);
     {
         UpdateInfo none;
         none.current_version = mock.version();
@@ -1547,6 +1642,32 @@ void LauncherUi::PrepareScene(int index, MockModel& mock) {
         page = Page::debug;
         break;
     case ui::Scene::about: page = Page::about; break;
+    case ui::Scene::debug_test_saves: {
+        TestSaveView t = mock.test_save();
+        t.folder = "D:\\Downloads\\DeathStranding-100-percent-save";
+        t.folder_ok = true;
+        t.folder_note = "23 save slots found";
+        t.seeded = true;
+        t.result = "Your own saves were not changed (every file checked by SHA-256 before and after).";
+        t.tone = TestSaveView::Tone::good;
+        mock.set_test_save_view(t);
+        mock.jump_to_local_test(-1.0);
+        debug_tab_ = ui::DebugTab::saves;
+        page = Page::debug;
+        break;
+    }
+    case ui::Scene::debug_local_test: {
+        TestSaveView t = mock.test_save();
+        t.folder = "D:\\Downloads\\DeathStranding-100-percent-save";
+        t.folder_ok = true;
+        t.folder_note = "23 save slots found";
+        t.seeded = true;
+        mock.set_test_save_view(t);
+        mock.jump_to_local_test(30.0);
+        debug_tab_ = ui::DebugTab::saves;
+        page = Page::debug;
+        break;
+    }
     case ui::Scene::play_update_available: mock.set_update_info(MockModel::MockRelease()); break;
     case ui::Scene::play_update_downloading: {
         UpdateInfo u = MockModel::MockRelease();

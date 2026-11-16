@@ -15,6 +15,7 @@
 #include "core_install.hpp"
 #include "core_log.hpp"
 #include "core_paths.hpp"
+#include "core_sandbox.hpp"
 #include "core_session.hpp"
 #include "core_text.hpp"
 #include "core_update.hpp"
@@ -409,6 +410,174 @@ public:
         return info;
     }
 
+    // ---- Debug > Test saves -----------------------------------------------------------------
+    TestSaveView test_save() const override {
+        TestSaveView v;
+        v.folder = test_folder_;
+        v.folder_ok = test_check_.ok;
+        v.folder_note = test_folder_.empty() ? std::string("No test save picked yet.") : test_check_.note;
+        v.use_for_all = test_use_;
+        v.seeded = test_seeded_;
+        v.sandbox_dir = Utf8(JoinPath2(paths_.mod, L"sandbox"));
+        v.result = test_result_;
+        v.tone = test_tone_;
+        return v;
+    }
+
+    bool set_test_save_folder(const std::string& folder, std::string& error_out) override {
+        if (folder.empty()) {
+            test_folder_.clear();
+            test_check_ = SeedCheck{};
+            SaveTestChoices();
+            return true;
+        }
+        const SeedCheck check = CheckSeedFolder(Wide(folder));
+        if (!check.ok) {
+            error_out = check.note;
+            return false;
+        }
+        if (local_.running || SessionPhase() || AnyGameRunningIn(*env_, paths_.game)) {
+            error_out = "Quit DEATH STRANDING first: the test save copy is in use.";
+            return false;
+        }
+        const bool changed = !IEquals(Wide(folder), Wide(test_folder_));
+        test_folder_ = folder;
+        test_check_ = check;
+        SaveTestChoices();
+        if (changed) {
+            // A new test save: the old copies were seeded from the previous folder.
+            std::string ignored;
+            for (const char* name : {kTestSaveSandbox, kLocalHostSandbox, kLocalGuestSandbox})
+                ResetSandbox(paths_, GetSandboxPaths(paths_, name), ignored);
+        }
+        RefreshTestSave();
+        LauncherLog(*env_, paths_, "test_save=folder_set slots=" + std::to_string(check.slots));
+        return true;
+    }
+
+    void set_use_test_save(bool on) override {
+        test_use_ = on;
+        SaveTestChoices();
+    }
+
+    bool play_test_save(std::string& error_out) override {
+        if (!ReadyFor(error_out)) return false;
+        SessionIni ini = BaseIni("solo");
+        ini.debug_menu = true;
+        Loopback(ini);
+        if (!PrepareSandbox(ini, kTestSaveSandbox, error_out)) return false;
+        return StartSession(ini, Role::solo, error_out);
+    }
+
+    bool reset_test_saves(std::string& error_out) override {
+        if (local_.running || SessionPhase() || AnyGameRunningIn(*env_, paths_.game)) {
+            error_out = "Quit DEATH STRANDING first: the test save copies are in use.";
+            return false;
+        }
+        for (const char* name : {kTestSaveSandbox, kLocalHostSandbox, kLocalGuestSandbox})
+            if (!ResetSandbox(paths_, GetSandboxPaths(paths_, name), error_out)) return false;
+        RefreshTestSave();
+        test_result_.clear();
+        LauncherLog(*env_, paths_, "test_save=reset");
+        return true;
+    }
+
+    LocalTestView local_test() const override {
+        LocalTestView v;
+        v.running = local_.running;
+        v.host_pid = local_.host_pid;
+        v.guest_pid = local_.guest_pid;
+        v.host_state = local_.host_state;
+        v.guest_state = local_.guest_state;
+        v.headline = local_.headline;
+        v.detail = local_.detail;
+        v.tone = local_.tone;
+        v.host_pad = local_host_pad_;
+        return v;
+    }
+
+    void set_local_test_host_pad(bool on) override {
+        local_host_pad_ = on;
+        SaveTestChoices();
+    }
+
+    bool start_local_test(std::string& error_out) override {
+        if (!ReadyFor(error_out)) return false;
+        if (local_.running) {
+            error_out = "The local two-player test is already running.";
+            return false;
+        }
+        if (!SteamClientRunning(*env_)) {
+            error_out = "Start Steam and log in first: both games sign in with your Steam account.";
+            return false;
+        }
+        // Both games: their own sandbox copy (the test save, or a copy of your own saves), low-quality
+        // windowed graphics, a frame cap, loopback UDP between them, the input split.
+        const SeedCheck* seed = test_check_.ok ? &test_check_ : nullptr;
+        const std::wstring real = RealSaveRoot();
+        for (const char* name : {kLocalHostSandbox, kLocalGuestSandbox}) {
+            const SandboxPaths sp = GetSandboxPaths(paths_, name);
+            if (!SandboxSeeded(sp) &&
+                !SeedSandbox(paths_, sp, seed, real, Account(), seed ? test_folder_ : std::string("your own saves"), error_out))
+                return false;
+            std::string werr;
+            if (!IsFile(sp.settings) && !WriteAtomic(sp.settings, LocalTestSettingsCfg(), true, werr)) {
+                error_out = "Could not write the test games' graphics settings: " + werr;
+                return false;
+            }
+        }
+        const std::string secret = NewSecret();
+        SessionIni host = BaseIni("host");
+        host.secret = secret;
+        host.transport = "udp";
+        host.udp_peer = "127.0.0.1";
+        host.udp_port_local = kDefaultUdpPort;
+        host.udp_port_peer = kDefaultUdpPort + 1;
+        host.debug_menu = true;   // the input split lives in the overlay
+        host.sandbox_saves = kLocalHostSandbox;
+        host.sandbox_foreign_saves = true;
+        host.appdir_settings = true;
+        host.local_input = local_host_pad_ ? "host_pad" : "host";
+        host.frame_cap = kLocalTestFrameCap;
+        host.local_window = "left";   // the two windows side by side
+        SessionIni guest = host;
+        guest.role = "guest";
+        guest.udp_port_local = kDefaultUdpPort + 1;
+        guest.udp_port_peer = kDefaultUdpPort;
+        guest.sandbox_saves = kLocalGuestSandbox;
+        guest.second_instance = true;
+        guest.local_input = "guest";
+        guest.local_window = "right";
+        for (const auto& [ini, dir] : {std::pair<const SessionIni*, std::wstring>{&host, LocalDir(L"host")}, {&guest, LocalDir(L"guest")}}) {
+            std::string text, werr;
+            if (!MakeSessionIniText(*ini, text, error_out)) return false;
+            CreateDirectories(dir);
+            for (const wchar_t* stale : {L"link-status.json", L"sandbox-refused.txt", L"sandbox-active.txt"}) DeleteFileChecked(JoinPath2(dir, stale));
+            if (!WriteAtomic(JoinPath2(dir, L"session.ini"), text, true, werr)) {
+                error_out = "Could not write " + Utf8(JoinPath2(dir, L"session.ini")) + ": " + werr;
+                return false;
+            }
+        }
+        real_before_ = SaveTreeManifest(real);
+        std::uint32_t pid = 0;
+        if (!env_->StartProcess(paths_.exe, paths_.game, LocalEnv(L"host"), pid) || !pid) {
+            error_out = "DEATH STRANDING could not be started for the local test.";
+            CleanupLocalIni();
+            return false;
+        }
+        local_ = LocalTest{};
+        local_.running = true;
+        local_.host_pid = pid;
+        local_.started_ms = env_->NowMs();
+        local_.guest_due_ms = local_.started_ms + kLocalGuestDelayMs;
+        local_.headline = "Starting the first game (host)...";
+        local_.detail = "The second game (guest) starts a few seconds later. Each window shows the other player.";
+        local_.tone = LinkView::Tone::neutral;
+        test_result_.clear();
+        LauncherLog(*env_, paths_, "local_test=start host_pid=" + std::to_string(pid) + (local_host_pad_ ? " host_pad=1" : ""));
+        return true;
+    }
+
     void set_auto_update_check(bool on) override {
         {
             std::lock_guard<std::mutex> lock(update_mutex_);
@@ -513,12 +682,33 @@ public:
             pending_ = active || IsFile(paths_.session_ini);
             record_lost_ = SessionPhase() && !(active && r.Str("session_id") == session_id_);
         }
+        TickLocalTest(now);
+        if (session_sandbox_ && (phase_ == Phase::launching || phase_ == Phase::in_game) && IsFile(SandboxRefusedPath())) {
+            // The mod ended the game in DllMain: the test-save redirect could not be installed.
+            FinishSandboxCheck();
+            CleanupSession(*env_, paths_);
+            EndSessionState();
+            phase_ = Phase::ready;
+            pending_ = false;
+        }
+        if (session_sandbox_ && phase_ == Phase::in_game && sandbox_check_at_ && now >= sandbox_check_at_) {
+            sandbox_check_at_ = 0;
+            if (!IsFile(SandboxActivePath()) && !IsFile(SandboxRefusedPath())) {
+                sandbox_unconfirmed_ = true;
+                test_tone_ = TestSaveView::Tone::bad;
+                test_result_ = "WARNING: the running game has not confirmed the test save (no sandbox-active.txt from the mod). It may be "
+                               "running on your own saves: quit it without saving.";
+                LauncherLog(*env_, paths_, "test_save=unconfirmed (no sandbox-active.txt " + std::to_string(kSandboxConfirmMs / 1000) +
+                                               " s after the game started)");
+            }
+        }
         switch (phase_) {
         case Phase::launching: {
             if (AnyGameRunningIn(*env_, paths_.game)) {
                 LauncherLog(*env_, paths_, "game=started");
                 phase_ = Phase::in_game;
                 gone_since_ = 0;
+                if (session_sandbox_) sandbox_check_at_ = now + kSandboxConfirmMs;
             } else if (record_lost_) {
                 // The helper gave up (the game never started) or another window cancelled.
                 EndSessionState();
@@ -536,6 +726,7 @@ public:
                 if (now - gone_since_ >= kExitConfirmMs) {
                     LauncherLog(*env_, paths_, "game=exited");
                     CleanupSession(*env_, paths_);   // the helper may have done it already
+                    FinishSandboxCheck();
                     phase_ = Phase::after_game;
                     after_until_ = now + kAfterGameMs;
                     link_ = LinkView{};
@@ -699,6 +890,182 @@ private:
         lan_.port_peer = pp >= 1 && pp <= 65535 ? static_cast<int>(pp) : kDefaultUdpPort;
         name_ = settings_.Str("name");
         if (!name_.empty() && !IsValidPlayerName(name_)) name_.clear();
+        if (const json::Value* t = settings_.Find("test_save"); t && t->is_object()) {
+            test_folder_ = t->Str("folder");
+            test_use_ = t->Bool("use", false);
+            local_host_pad_ = t->Bool("host_pad", false);
+        }
+        RefreshTestSave();
+    }
+
+    void SaveTestChoices() {
+        json::Value t = json::Value::Object();
+        t["folder"] = test_folder_;
+        t["use"] = test_use_;
+        t["host_pad"] = local_host_pad_;
+        settings_["test_save"] = t;
+        SaveChoices();
+    }
+
+    void RefreshTestSave() {
+        test_check_ = test_folder_.empty() ? SeedCheck{} : CheckSeedFolder(Wide(test_folder_));
+        test_seeded_ = SandboxSeeded(GetSandboxPaths(paths_, kTestSaveSandbox));
+    }
+
+    std::uint32_t Account() const {
+        const std::uint64_t id = OwnSteamId(*env_);
+        return id > 76561197960265728ull ? static_cast<std::uint32_t>(id - 76561197960265728ull) : 0u;
+    }
+
+    std::wstring SandboxRefusedPath() const { return JoinPath2(paths_.mod, L"sandbox-refused.txt"); }
+    std::wstring SandboxActivePath() const { return JoinPath2(paths_.mod, L"sandbox-active.txt"); }
+    // A test-save game must report its redirect (the mod writes sandbox-active.txt in DllMain, before
+    // ds.exe's own code). Missing this long after the game started: the session.ini did not reach it.
+    static constexpr std::int64_t kSandboxConfirmMs = 20000;
+
+    // The test save for this session: seeded on first use, the real tree hashed before the game.
+    bool PrepareSandbox(SessionIni& ini, const char* name, std::string& error) {
+        if (!test_check_.ok) {
+            error = test_folder_.empty() ? "Pick a test save folder first (Debug > Test saves)." : test_check_.note;
+            return false;
+        }
+        const SandboxPaths sp = GetSandboxPaths(paths_, name);
+        const std::wstring real = RealSaveRoot();
+        if (!SandboxSeeded(sp) && !SeedSandbox(paths_, sp, &test_check_, real, Account(), test_folder_, error)) return false;
+        ini.sandbox_saves = name;
+        ini.sandbox_foreign_saves = true;   // a downloaded save belongs to another account; applied only after the redirect self-test
+        real_before_ = SaveTreeManifest(real);
+        std::string werr;
+        WriteAtomic(JoinPath2(JoinPath2(paths_.mod, L"sandbox"), L"real-saves-before.txt"), real_before_, true, werr);
+        DeleteFileChecked(SandboxRefusedPath());
+        DeleteFileChecked(SandboxActivePath());   // the mod writes it again in DllMain of this game
+        session_sandbox_ = true;
+        sandbox_unconfirmed_ = false;
+        sandbox_check_at_ = 0;
+        test_seeded_ = true;
+        LauncherLog(*env_, paths_, std::string("test_save=on sandbox=") + name);
+        return true;
+    }
+
+    // After a game on a sandbox: did it refuse, and is the real save tree what it was?
+    // local: the local two-player test (its games' refusals are in instances\host|guest; a
+    // "Play with test save" game's in the mod folder: never another mode's leftover file).
+    std::string CheckRealSaves(TestSaveView::Tone& tone, bool local) {
+        std::string text;
+        if (local ? ReadLocalRefusal(text) : ReadTextShared(SandboxRefusedPath(), text, 1u << 16)) {
+            std::string reason;
+            for (const std::string& l : SplitLines(text))
+                if (StartsWith(l, "reason=")) reason = l.substr(7);
+            tone = TestSaveView::Tone::bad;
+            return "The game refused to start with the test save, so it never touched any save: " +
+                   (reason.empty() ? std::string("the save redirect could not be installed.") : reason);
+        }
+        const std::vector<std::string> changes = ManifestChanges(real_before_, SaveTreeManifest(RealSaveRoot()));
+        if (!local && sandbox_unconfirmed_) {
+            tone = TestSaveView::Tone::bad;
+            return "The game never confirmed the test save (the mod wrote no sandbox-active.txt), so it may have run on your own saves" +
+                   (changes.empty() ? std::string(" (your save folder is unchanged).")
+                                    : " (" + std::to_string(changes.size()) + " file(s) changed in your save folder, e.g. " + changes[0] + ").");
+        }
+        if (changes.empty()) {
+            tone = TestSaveView::Tone::good;
+            return "Your own saves were not changed (every file checked by SHA-256 before and after).";
+        }
+        tone = TestSaveView::Tone::warn;
+        LauncherLog(*env_, paths_, "test_save=real_tree_changed count=" + std::to_string(changes.size()));
+        return "Your save folder changed while the test save ran (" + std::to_string(changes.size()) + " file(s), e.g. " + changes[0] +
+               "). The game itself only wrote to the test copy; Steam Cloud may have synced. Check before you play normally.";
+    }
+
+    bool ReadLocalRefusal(std::string& text) {
+        for (const wchar_t* who : {L"host", L"guest"})
+            if (ReadTextShared(JoinPath2(LocalDir(who), L"sandbox-refused.txt"), text, 1u << 16)) return true;
+        return false;
+    }
+
+    void FinishSandboxCheck() {
+        if (!session_sandbox_) return;
+        session_sandbox_ = false;
+        sandbox_check_at_ = 0;
+        test_result_ = CheckRealSaves(test_tone_, false);
+        sandbox_unconfirmed_ = false;
+        LauncherLog(*env_, paths_, std::string("test_save=checked tone=") + std::to_string(static_cast<int>(test_tone_)));
+    }
+
+    // ---- local two-instance test --------------------------------------------------------
+    static constexpr std::int64_t kLocalGuestDelayMs = 8000;
+    static constexpr int kLocalTestFrameCap = 30;
+    struct LocalTest {
+        bool running = false;
+        bool guest_started = false;
+        std::uint32_t host_pid = 0, guest_pid = 0;
+        std::int64_t started_ms = 0, guest_due_ms = 0, gone_since = 0, next_status_ms = 0;
+        std::string host_state, guest_state, headline, detail;
+        LinkView::Tone tone = LinkView::Tone::neutral;
+    };
+
+    std::wstring LocalDir(const wchar_t* who) const { return JoinPath2(JoinPath2(paths_.mod, L"instances"), who); }
+    static std::vector<std::wstring> LocalEnv(const wchar_t* who) {
+        // SteamAppId: steam_api64.dll's RestartAppIfNecessary answers false (no relaunch through
+        // Steam); ST_INSTANCE_DIR: the mod's per-game folder (session.ini, log, link status).
+        return {L"SteamAppId=1850570", L"SteamGameId=1850570", std::wstring(L"ST_INSTANCE_DIR=instances\\") + who};
+    }
+    void CleanupLocalIni() {
+        for (const wchar_t* who : {L"host", L"guest"}) DeleteFileChecked(JoinPath2(LocalDir(who), L"session.ini"));
+    }
+    std::string LocalState(const wchar_t* who, std::uint32_t pid) {
+        std::string text;
+        if (!ReadTextShared(JoinPath2(LocalDir(who), L"link-status.json"), text, 1u << 20)) return {};
+        const json::Value st = ParseStatusText(text, pid);
+        return st.is_object() ? st.Str("state") : std::string();
+    }
+
+    void TickLocalTest(std::int64_t now) {
+        if (!local_.running) return;
+        const bool host_alive = local_.host_pid && env_->ProcessAlive(local_.host_pid);
+        if (!local_.guest_started && now >= local_.guest_due_ms) {
+            if (host_alive) {
+                std::uint32_t pid = 0;
+                local_.guest_started = true;
+                if (env_->StartProcess(paths_.exe, paths_.game, LocalEnv(L"guest"), pid) && pid) {
+                    local_.guest_pid = pid;
+                    LauncherLog(*env_, paths_, "local_test=guest_started pid=" + std::to_string(pid));
+                } else {
+                    local_.detail = "The second game could not be started.";
+                    LauncherLog(*env_, paths_, "local_test=guest_start_failed");
+                }
+            } else {
+                local_.guest_started = true;   // nothing to start next to
+            }
+        }
+        const bool guest_alive = local_.guest_pid && env_->ProcessAlive(local_.guest_pid);
+        if (now >= local_.next_status_ms) {
+            local_.next_status_ms = now + 1000;
+            local_.host_state = host_alive ? LocalState(L"host", local_.host_pid) : std::string();
+            local_.guest_state = guest_alive ? LocalState(L"guest", local_.guest_pid) : std::string();
+        }
+        if (host_alive || guest_alive || !local_.guest_started) {
+            local_.gone_since = 0;
+            const bool both = host_alive && guest_alive;
+            const bool linked = local_.host_state == "connected" && local_.guest_state == "connected";
+            local_.headline = linked ? "Both games are linked" : both ? "Both games are running" : host_alive ? "The first game (host) runs" : "The second game (guest) runs";
+            local_.detail = linked ? "Each window shows the other player. Keyboard + mouse play the host window, a pad plays the guest."
+                                   : "Load a save in each window (Continue). The second game may first say it cannot reach the game server: press OK.";
+            local_.tone = linked ? LinkView::Tone::good : LinkView::Tone::neutral;
+            return;
+        }
+        if (!local_.gone_since) local_.gone_since = now;
+        if (now - local_.gone_since < 3000) return;
+        // Both games are gone: unread one-shot files go, the real save tree is compared.
+        CleanupLocalIni();
+        TestSaveView::Tone tone = TestSaveView::Tone::neutral;
+        test_result_ = CheckRealSaves(tone, true);
+        test_tone_ = tone;
+        local_.running = false;
+        local_.headline = "The local test has ended";
+        local_.detail = test_result_;
+        local_.tone = tone == TestSaveView::Tone::good ? LinkView::Tone::good : tone == TestSaveView::Tone::bad ? LinkView::Tone::bad : LinkView::Tone::warn;
+        LauncherLog(*env_, paths_, "local_test=ended");
     }
 
     void SaveChoices() {
@@ -812,6 +1179,10 @@ private:
         case Phase::after_game: error = "A game is already running. Close it first."; return false;
         default: error = last_error_.empty() ? "Co-op can't start from this folder right now." : last_error_; return false;
         }
+        if (local_.running) {
+            error = "The local two-player test is still running. Close both test games first.";
+            return false;
+        }
         if (AnyGameRunningIn(*env_, paths_.game)) {
             error = "DEATH STRANDING is already running. Close it first, then start co-op from here so the mod gets its settings.";
             return false;
@@ -859,7 +1230,11 @@ private:
         return true;
     }
 
-    bool StartSession(const SessionIni& ini, Role role, std::string& error) {
+    bool StartSession(SessionIni ini, Role role, std::string& error) {
+        if (ini.sandbox_saves.empty()) {
+            session_sandbox_ = false;
+            if (test_use_ && !PrepareSandbox(ini, kTestSaveSandbox, error)) return false;
+        }
         std::string id;
         if (!ActivateSession(*env_, paths_, ini, id, error)) return false;
         if (!StartWatchdogFor(*env_, paths_, id))
@@ -953,6 +1328,17 @@ private:
 
     std::string session_id_, code_;
     Role role_ = Role::host;
+    // Test saves and the local test.
+    std::string test_folder_;
+    SeedCheck test_check_;
+    bool test_use_ = false, test_seeded_ = false, local_host_pad_ = false;
+    bool session_sandbox_ = false;   // the session started from here runs on a sandbox
+    bool sandbox_unconfirmed_ = false;   // that game never wrote sandbox-active.txt
+    std::int64_t sandbox_check_at_ = 0;  // when to look for sandbox-active.txt (0 = not pending)
+    std::string real_before_;        // the real save tree's manifest before that game
+    std::string test_result_;
+    TestSaveView::Tone test_tone_ = TestSaveView::Tone::neutral;
+    LocalTest local_;
     Transport session_transport_ = Transport::steam;
     std::int64_t launch_ms_ = 0, gone_since_ = 0, after_until_ = 0;
     std::int64_t next_check_ms_ = 0, next_status_ms_ = 0;

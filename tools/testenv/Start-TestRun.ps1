@@ -31,6 +31,12 @@ param(
     # them ('Save data is corrupted' otherwise); with a seed the supervisor writes automation_foreign_saves=1 and the
     # mod skips that check in this hidden run only (docs/hidden-testing.md "Using another save").
     [string]$SeedSaves,
+    # Experiments: this file is the games' settings.cfg (the graphics settings; redirected, never the real one).
+    [string]$SettingsCfg,
+    # Experiments: "Key" "Value" lines merged into the scratch profiles' game_settings.cfg (graphics menu options).
+    [string]$GameSettings,
+    # The launcher's "Play with test save" session.ini (sandbox_saves, no automation channel; scenario sandbox-alive).
+    [switch]$SandboxSession,
     [switch]$KeepAudio,
     [switch]$NoBuild,
     # Bisecting a game that does not start (docs/hidden-testing.md "When the game exits at once"):
@@ -100,6 +106,9 @@ if ($SeedSaves -and $SeedSaves -ne 'own') {
     $supArgs += @('--seed-saves', (Resolve-Path $SeedSaves).Path)
     Write-Host "seed saves: $SeedSaves (scratch copy only; your real saves stay untouched)"
 }
+if ($GameSettings) { $supArgs += @('--game-settings', (Resolve-Path $GameSettings).Path) }
+if ($SettingsCfg) { $supArgs += @('--settings-cfg', (Resolve-Path $SettingsCfg).Path) }
+if ($SandboxSession) { $supArgs += '--sandbox-session' }
 if ($KeepAudio) { $supArgs += '--keep-audio' }
 if ($NoMod) { $supArgs += '--no-mod' }
 if ($NoUiLimits) { $supArgs += '--no-ui-limits' }

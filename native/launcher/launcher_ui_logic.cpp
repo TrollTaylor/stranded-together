@@ -86,6 +86,7 @@ PlayTab TabForRole(Role role) {
 const char* DebugTabLabel(DebugTab tab) {
     switch (tab) {
     case DebugTab::options: return "Options";
+    case DebugTab::saves: return "Test saves";
     case DebugTab::files: return "Files and log";
     }
     return "";
@@ -244,7 +245,8 @@ const char* const kSceneNames[static_cast<int>(Scene::count)] = {
     "21-ingame-not-responding", "22-ingame-lost",       "23-ingame-after-game",   "24-tools",
     "25-tools-result",        "26-tools-in-game",       "27-debug-options",       "28-debug-files",
     "29-debug-in-game",       "30-about",               "31-play-update-available", "32-play-update-downloading",
-    "33-play-update-failed",  "34-play-updated",        "35-about-updates",
+    "33-play-update-failed",  "34-play-updated",        "35-about-updates",       "36-debug-test-saves",
+    "37-debug-local-test",
 };
 }  // namespace
 

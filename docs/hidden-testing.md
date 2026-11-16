@@ -26,6 +26,8 @@ the supervisor and the probe itself unless `-NoBuild`).
 | Real game, start-up | **solved**: ds.exe quit with code 0 because the mod's overlay loaded `d3d12.dll` before the game's own device creation (ds.exe's check at 0x1419A6CE9). The overlay now waits for the game's delay-load in automation runs. See "Why the game quit at once". |
 | Real game, smoke (12:25, 12:28) | **passes**: title -> Continue (virtual pad) -> Sam in the world (Incinerator West of Capital Knot City) -> debug menu -> quit with exit code 0 in ~50 s; screenshots in `runs\<run>\automation\`; saves identical. |
 | Real game, 100% save (14:34-14:44) | **passes** with `-SeedSaves complete-100`: the save is owned by an Epic account (`epic_<id>`); the mod skips ds.exe's save-owner check (3 byte-checked `jne`->`jmp`, automation + `automation_foreign_saves=1` only), Continue loads Episode 15, `echo-holo-100` walks and shows the hologram trailing. See "Using another save". |
+| Two games, hidden (16:15, 16:22) | **pass** with `-Scenario two-games -SeedSaves complete-100`: host + guest ds.exe on one private desktop, the guest survives the single-instance mutex (`mutex=renamed`), both link over UDP loopback (`[link] CONNECTED` on both), both show the other's hologram (`partner=visible` on both snapshots), both saves redirected to their own scratch copy, real tree unchanged, 0 uploads. See "Two games". |
+| Test-save session, hidden (16:19) | **pass** with `-Scenario sandbox-alive -SandboxSession -SeedSaves complete-100`: the launcher's visible-play session.ini (no `automation=1`) redirects in DllMain and bypasses the owner check (`[sandbox] ...`). See "Test-save session". |
 | Real game, walking (13:54, 13:56) | **passes**: the virtual pad's left stick walks Sam (20.2 m in a 6 s hold), the right stick turns the camera; `echo-holo` shows the echo partner hologram trailing Sam. The first runs "did nothing" because this save holds the player in a scripted BT scene ~5-20 s after it loads, exactly when they pushed the stick. See "Pad input in gameplay". |
 
 ## How it works
@@ -379,7 +381,9 @@ before/after, no violation, game folder restored (`restored.txt` ok), no `error.
 ## Scenarios (`tools/testenv/scenarios/*.txt`)
 
 ```
-role solo|echo               session role (default solo)
+role solo|echo|host          session role (default solo); host: a second (guest) game too ("Two games")
+graphics low                 30 fps cap, appdir settings.cfg + profile overrides (see "Two games")
+@guest <step>                the step goes to the guest game (role host); @both <mod command> to both
 timeout <s>                  steps limit, 30..360 (default 360). The game's whole lifetime is capped
                              at 360 s: steps get at most 315 s, the last 45 s are kept for the
                              final screenshot, quit, exit and kill
@@ -556,3 +560,90 @@ Before the bypass: run 20261116-142026-seedload showed *Save data is corrupted* 
 the other account's `profile\` copied too, the game stalled before its first frame (run
 20261116-141151-smoke: that `profile.dat` is `epic_`-owned too), which is why the user's
 `profile\` stays.
+
+## Two games (`role host`)
+
+The launcher's local two-player test ([sandbox-and-local-test.md](sandbox-and-local-test.md)),
+hidden: `Start-TestRun.ps1 -Scenario two-games -SeedSaves complete-100`.
+
+* **Second game.** The supervisor starts the first ds.exe as before (`role=host`, UDP 27555 ->
+  27556), waits for its save-redirect evidence, then starts a second ds.exe in the same job on the
+  same private desktop with `ST_INSTANCE_DIR=automation\guest`: its mod folder
+  `<mod>\automation\guest` (session.ini `role=guest`, 27556 -> 27555, `second_instance=1`,
+  its own automation channel and scratch saves, removed with the automation tree), and the same
+  evidence gate (`guest saves redirect: CONFIRMED`). `second_instance=1` renames ds.exe's
+  single-instance mutex for that process only (`[mod] second instance: mutex=renamed (1 call(s)
+  ...)`; without it the second ds.exe exits with code 1).
+* **Steps.** `@guest <step>` sends a mod command / `waitready` / `waitlog` / `until` to the guest;
+  `@both` a mod command to both. Each game's log is matched separately. A guest that exits after
+  `@guest quit` does not end the run; otherwise either game exiting does.
+* **The second login.** The guest signs in to the game server with the same Steam account: the
+  server refuses it and the game waits behind *"Unable to log in to Death Stranding game server.
+  Launching in Offline Mode... Error Code: 50000"* until OK (run 20261116-155336, `zz-final-guest`).
+  `two-games.txt` presses A on the guest until its partner spawns.
+* **Load.** Hidden games are never vsynced (`Present` answers OCCLUDED, the mod reports S_OK), so
+  the first game rendered at ~1000 fps and starved the second (run 154851: the guest read its pad
+  0 times for 40 s). `graphics low` writes `frame_cap=30` (the mod waits on the game thread once
+  per presented frame): the host's CPU time per second alive fell from 8.1 s (run 154851) to 1.9 s (run 161556).
+* **Windows (not working yet).** `local_window=left|right` (as the launcher writes): each game
+  window gets a title bar and half of the monitor (`[overlay] local test: game window placed on the
+  left half (0,309 1280x750, client 1264x711)`), and the subclass keeps that size when ds.exe asks
+  for a full-monitor window (`kept the game window at 1280x750`). Still, at the end of runs 162418
+  and 162635 both windows were back at `[0,0 2560x1440]` (`summary.json` `private_desktop_titles`
+  now lists each window's rect): ds.exe resizes its window by a path the subclass does not see.
+  The supported way today is the game's own Windowed option, set once per test window.
+* **Graphics settings.** `graphics low` / `--settings-cfg <file>` redirect the game folder's
+  `settings.cfg` to `automation\settings.cfg` (`appdir_settings=1`); `--game-settings <file>`
+  merges `"Key" "Value"` lines into the scratch profiles' `game_settings.cfg`. Neither changed the
+  boot resolution in runs 153540 .. 154718 (2560x1440 screenshots, see sandbox-and-local-test.md
+  "Graphics"): kept as experiment tools.
+* **Resources.** Every 2 s the supervisor samples each game: working set and private bytes
+  (`GetProcessMemoryInfo`), CPU (process times, % of all logical CPUs), GPU dedicated/shared memory
+  and 3D engine use (`\GPU Process Memory(*)`, `\GPU Engine(*)` performance counters, per
+  `pid_<pid>` instance): `resources.csv` and `summary.json` `"resources"`.
+
+Run 20261116-161556 (RTX 5080 16 GB, 64 GB RAM; both at 2560x1440 internally, 30 fps cap,
+100% save, Episode 15 garage), whole run including boot and loading:
+
+| | peak working set | avg working set | peak private | peak GPU dedicated | avg GPU dedicated | peak CPU | avg CPU |
+|---|---|---|---|---|---|---|---|
+| host | 4844 MB | 2934 MB | 10250 MB | 4880 MB | 2692 MB | 19.6 % | 6.0 % |
+| guest | 4758 MB | 2756 MB | 10182 MB | 4875 MB | 2548 MB | 17.3 % | 5.8 % |
+| both | 9582 MB (peak sum) | | 20407 MB | 9750 MB | | 36.9 % | |
+
+System RAM never went below 17.2 GB free. Without the frame cap (run 154851) the GPU memory was
+similar (host 4880 MB, guest 2861 MB while still loading) but the host used 25 % CPU on average
+and the guest could not keep up. Two games need about 10 GB of VRAM and 10 GB of RAM on this
+machine; a GPU with 8 GB will likely page.
+
+| Run | Outcome |
+|---|---|
+| `20261116-154851-two-games` | both started, mutex renamed, linked; the guest never spawned the partner: it sat behind the offline-mode notice (found from `zz-final-guest`), and the host rendered uncapped |
+| `20261116-155336-two-games` | frame cap on: both at ~30 fps; guest still behind the notice (screenshot shows it) |
+| `20261116-155723-two-games` | **pass**: A dismisses the notice; both `partner=visible`, `link=connected`; screenshots of both |
+| `20261116-160909-two-games` | window placement from the render thread: both games stopped presenting (deadlock); fixed by moving it to the window thread |
+| `20261116-161556-two-games` | **pass** with side-by-side windows; the resource table above |
+| `20261116-162226-two-games` | **pass** (same, final build) |
+
+## Test-save session (`--sandbox-session`)
+
+`Start-TestRun.ps1 -Scenario sandbox-alive -SandboxSession -SeedSaves complete-100` deploys the
+session.ini the launcher writes for **Play with test save** (`role=solo`, loopback, `debug_menu=0`,
+`sandbox_saves=testenv-<pid>`, `sandbox_foreign_saves=1` with a seed; no `automation=1`) and seeds
+`<mod>\sandbox\testenv-<pid>\saves` from the saves backup (the sandbox folder is recorded in
+`restore.txt` before it exists and removed afterwards). The saves gate waits for
+`<mod>\sandbox-active.txt` and `[sandbox] saves=redirected`. There is no automation channel (no
+screenshots, input or mute): the scenario only waits for the log lines and the supervisor ends the
+game ~15 s after start, before the title music. Run 20261116-161912: redirect confirmed after
+2.64 s, foreign saves bypassed at the 3 sites, real tree unchanged, 0 uploads.
+
+## A launcher window open during a run
+
+The testenv's `session.ini` used to start with the launcher's own header (`# Generated by
+Stranded Together`). An open launcher window (v0.2.3) tidies a session.ini with that header when
+no game runs and no session is active (`StaleSessionPending`), so in runs 153757 and 154109 it
+deleted the run's session.ini in the ~16 ms between deploy and the game start: the game started
+**without** the redirect and ran 10 s at the title until the supervisor's evidence gate killed it
+(the real tree was unchanged: the title only reads). Fixed twice: the testenv header is now
+`# Stranded Together testenv: ...` (launchers leave it alone), and a ds.exe that carries
+`ST_TESTENV_SUPERVISED` now ends in DllMain when it finds no automation (or sandbox) session.

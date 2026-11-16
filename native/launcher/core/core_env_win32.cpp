@@ -11,6 +11,7 @@
 
 #include "core_env.hpp"
 
+#include <algorithm>
 #include <cstdio>
 
 namespace st::core {
@@ -184,6 +185,43 @@ public:
         BOOL ok = CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, FALSE, base | CREATE_BREAKAWAY_FROM_JOB, nullptr,
                                  game_dir.c_str(), &si, &pi);
         if (!ok) ok = CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, FALSE, base, nullptr, game_dir.c_str(), &si, &pi);
+        if (!ok) return false;
+        pid_out = pi.dwProcessId;
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        return true;
+    }
+
+    bool StartProcess(const std::wstring& exe, const std::wstring& cwd, const std::vector<std::wstring>& env_add,
+                      std::uint32_t& pid_out) override {
+        pid_out = 0;
+        // This process's environment, the added names replaced.
+        std::vector<std::wstring> vars;
+        if (wchar_t* env = GetEnvironmentStringsW()) {
+            for (const wchar_t* p = env; *p; p += wcslen(p) + 1) {
+                const std::wstring v = p;
+                bool replaced = false;
+                for (const std::wstring& add : env_add) {
+                    const std::size_t eq = add.find(L'=');
+                    if (eq != std::wstring::npos && v.size() > eq && _wcsnicmp(v.c_str(), add.c_str(), eq + 1) == 0) replaced = true;
+                }
+                if (!replaced) vars.push_back(v);
+            }
+            FreeEnvironmentStringsW(env);
+        }
+        for (const std::wstring& add : env_add) vars.push_back(add);
+        std::sort(vars.begin(), vars.end(), [](const std::wstring& a, const std::wstring& b) { return _wcsicmp(a.c_str(), b.c_str()) < 0; });
+        std::wstring block;
+        for (const std::wstring& v : vars) block += v, block += L'\0';
+        block += L'\0';
+        std::wstring cmd = L"\"" + exe + L"\"";
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        PROCESS_INFORMATION pi{};
+        const DWORD base = CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_PROCESS_GROUP;
+        BOOL ok = CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, FALSE, base | CREATE_BREAKAWAY_FROM_JOB, block.data(), cwd.c_str(),
+                                 &si, &pi);
+        if (!ok) ok = CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, FALSE, base, block.data(), cwd.c_str(), &si, &pi);
         if (!ok) return false;
         pid_out = pi.dwProcessId;
         CloseHandle(pi.hThread);

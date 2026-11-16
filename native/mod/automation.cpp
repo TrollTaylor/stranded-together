@@ -25,6 +25,7 @@
 #include "overlay/overlay.hpp"
 #include "overlay/overlay_input.hpp"
 #include "overlay/overlay_renderer.hpp"
+#include "sandbox.hpp"
 
 namespace st::automation {
 namespace {
@@ -111,12 +112,19 @@ double NowMs() {
 // bounds, allocation failures fail the call (a save path is never passed through
 // unmapped).
 constexpr std::size_t kPathCap = 1024;
-constexpr int kMaxRoots = 4;
+constexpr int kMaxRoots = 8;
 wchar_t g_roots[kMaxRoots][kPathCap];
+wchar_t g_root_scratch[kMaxRoots][kPathCap];  // where root i is mapped to
 std::atomic<int> g_nroots{0};
-wchar_t g_scratch[kPathCap];
-wchar_t g_mod_dir[kPathCap];
+int g_nsave_roots = 0;          // the first roots are the save tree (probe self-test); the rest single files
+wchar_t g_scratch[kPathCap];    // the save tree's scratch copy
+wchar_t g_mod_dir[kPathCap];    // this instance's mod folder (<game>\stranded_together[\<ST_INSTANCE_DIR>])
+wchar_t g_base_mod_dir[kPathCap];  // <game>\stranded_together
 wchar_t g_auto_dir[kPathCap];
+wchar_t g_status_dir[kPathCap];    // where the active / refused files go (automation: g_auto_dir, sandbox: g_mod_dir)
+// automation (hidden runs) or sandbox (launcher test saves): set once in DllMain.
+std::atomic<int> g_mode{0};  // 0 none, 1 automation, 2 sandbox
+const char* Tag() noexcept { return g_mode.load(std::memory_order_relaxed) == 2 ? "[sandbox]" : "[auto]"; }
 std::atomic<bool> g_rd_active{false};
 std::atomic<bool> g_log_ready{false};
 std::atomic<unsigned long> g_rd_calls{0}, g_rd_failures{0};
@@ -176,12 +184,12 @@ void FlushSeen() noexcept {
             full = true;
         }
         ReleaseSRWLockExclusive(&g_seen_lock);
-        if (full) Log("[auto] saves: more than %d places, the rest are not logged", kMaxSeen);
+        if (full) Log("%s saves: more than %d places, the rest are not logged", Tag(), kMaxSeen);
         if (!found) return;
         char u[800];
         Utf8(text, u, sizeof(u));
-        if (outside) Log("[auto] write outside the save root (%s): %s", op, u);
-        else Log("[auto] saves: %s %s -> scratch", op, u[0] ? u : "(save root)");
+        if (outside) Log("%s write outside the save root (%s): %s", Tag(), op, u);
+        else Log("%s saves: %s %s -> scratch", Tag(), op, u[0] ? u : "(save root)");
     }
 }
 
@@ -216,7 +224,7 @@ void NoteOutside(const wchar_t* path, const char* op) noexcept {
     if (!g_rd_active.load(std::memory_order_relaxed) || !path) return;
     try {
         const std::size_t n = wcsnlen(path, 32768);
-        if (n < 4 || n >= 32768 || path[1] != L':' || UnderDir(path, g_mod_dir)) return;
+        if (n < 4 || n >= 32768 || path[1] != L':' || UnderDir(path, g_base_mod_dir)) return;
         std::wstring dir = saves::Normalize(std::wstring(path, n));
         const auto slash = dir.find_last_of(L'\\');
         if (slash != std::wstring::npos && slash > 2) dir.resize(slash);
@@ -279,9 +287,14 @@ int MapW(const wchar_t* path, std::wstring* out, const char* op) noexcept {
         const int roots = g_nroots.load(std::memory_order_acquire);
         for (int c = 0; c < nc; ++c) {
             for (int i = 0; i < roots; ++i) {
-                if (saves::Map(cand[c], g_roots[i], g_scratch, out, &rel)) {
+                if (saves::Map(cand[c], g_roots[i], g_root_scratch[i], out, &rel)) {
                     g_rd_calls.fetch_add(1, std::memory_order_relaxed);
-                    NoteIn(g_seen, &g_nseen, kMaxSeen, saves::LogPrefix(rel), op, &g_seen_full);
+                    if (i < g_nsave_roots) {
+                        NoteIn(g_seen, &g_nseen, kMaxSeen, saves::LogPrefix(rel), op, &g_seen_full);
+                    } else {  // a single redirected file (appdir settings.cfg): named in the log
+                        const wchar_t* name = wcsrchr(g_roots[i], L'\\');
+                        NoteIn(g_seen, &g_nseen, kMaxSeen, std::wstring(L"<game folder>\\") + (name ? name + 1 : g_roots[i]), op, &g_seen_full);
+                    }
                     return 1;
                 }
             }
@@ -783,16 +796,21 @@ bool ReadIniRaw(const wchar_t* path, std::string* out) noexcept {
 
 void RefuseAndExit(const char* why) noexcept {
     // ds.exe must not run without the redirect: it would read and write the user's saves.
-    if (g_auto_dir[0]) {
+    const bool sandbox = g_mode.load() == 2;
+    const unsigned long code = sandbox ? sandbox::kRefusedExitCode : saves::kRefusedExitCode;
+    const wchar_t* dir = sandbox ? g_mod_dir : g_auto_dir;
+    if (dir[0]) {
         wchar_t path[kPathCap + 64];
-        std::swprintf(path, kPathCap + 64, L"%s\\%s", g_auto_dir, saves::kRefusedFile);
+        std::swprintf(path, kPathCap + 64, L"%s\\%s", dir, sandbox ? sandbox::kRefusedFile : saves::kRefusedFile);
         char text[700];
-        std::snprintf(text, sizeof(text), "saves=REFUSED\nreason=%s\nexit_code=0x%08lX\n", why, saves::kRefusedExitCode);
-        CreateDirectoryW(g_auto_dir, nullptr);
+        std::snprintf(text, sizeof(text), "%s=REFUSED\nreason=%s\nexit_code=0x%08lX\n", sandbox ? "sandbox" : "saves", why, code);
+        CreateDirectoryW(dir, nullptr);
+        if (sandbox) DeleteFileW(path);  // one reason per launch
         AppendRaw(path, text);
     }
-    OutputDebugStringA("[stranded_together] hidden run refused: the save redirect could not be installed\n");
-    TerminateProcess(GetCurrentProcess(), saves::kRefusedExitCode);
+    OutputDebugStringA(sandbox ? "[stranded_together] test-save game refused: the save redirect could not be installed\n"
+                               : "[stranded_together] hidden run refused: the save redirect could not be installed\n");
+    TerminateProcess(GetCurrentProcess(), code);
 }
 
 // ---- foreign saves (automation.hpp "foreign saves"): DllMain, after the redirect is proven
@@ -868,22 +886,27 @@ void InstallForeignSaves() noexcept {
 // noted so far.
 void LogSaves() noexcept {
     if (!g_rd_active.load()) {
-        Log("[auto] saves=NOT redirected: the redirect is not active in this process (it is installed from DllMain of ds.exe)");
+        Log("%s saves=NOT redirected: the redirect is not active in this process (it is installed from DllMain of ds.exe)", Tag());
         return;
     }
     char scratch[kPathCap * 3];
     Utf8(g_scratch, scratch, sizeof(scratch));
     const int roots = g_nroots.load();
     for (int i = 0; i < roots; ++i) {
-        char root[kPathCap * 3];
+        char root[kPathCap * 3], to[kPathCap * 3];
         Utf8(g_roots[i], root, sizeof(root));
-        Log("[auto] saves: root %d %s", i, root);
+        Utf8(g_root_scratch[i], to, sizeof(to));
+        Log("%s saves: root %d %s -> %s", Tag(), i, root, to);
     }
-    Log("[auto] saves=redirected: %d save root(s) -> %s (%d file API hooks, self-test passed%s%s)", roots, scratch, g_rd_hooks.load(),
-        g_rd_missing[0] ? "; optional hooks missing: " : "", g_rd_missing);
-    Log("[auto] ShellExecute(Ex)A/W blocked for this run (%d hooks)", g_shell_hooks.load());
+    Log("%s saves=redirected: %d save root(s) -> %s (%d file API hooks, self-test passed%s%s)", Tag(), g_nsave_roots, scratch,
+        g_rd_hooks.load(), g_rd_missing[0] ? "; optional hooks missing: " : "", g_rd_missing);
+    if (g_nroots.load() > g_nsave_roots) Log("%s appdir settings.cfg redirected too (%d file name(s))", Tag(), g_nroots.load() - g_nsave_roots);
+    if (g_mode.load() == 1) Log("[auto] ShellExecute(Ex)A/W blocked for this run (%d hooks)", g_shell_hooks.load());
     if (g_foreign_requested.load())
-        Log("[auto] foreign saves: %s", g_foreign_note[0] ? g_foreign_note : "NOT bypassed (no result recorded)");
+        Log("%s foreign saves: %s", Tag(), g_foreign_note[0] ? g_foreign_note : "NOT bypassed (no result recorded)");
+    if (sandbox::MutexRenameInstalled())
+        Log("%s second instance: CreateMutexA/W(Ex) hooked, %s is renamed to %s%s in this process (self-test passed)", Tag(),
+            sandbox::kAppMutex, sandbox::kAppMutex, sandbox::kMutexSuffix);
     g_log_ready.store(true, std::memory_order_release);
     FlushSeen();
 }
@@ -1406,7 +1429,7 @@ bool Init(const std::wstring& mod_dir) noexcept {
         std::ifstream in(mod_dir + L"\\session.ini");
         if (!in) return false;
         std::string line;
-        bool on = false, mute = true, isolate = true;
+        bool on = false, mute = true, isolate = true, sandbox = false;
         while (std::getline(in, line)) {
             line = detail::Trim(line);
             if (line.empty() || line[0] == '#' || line[0] == ';') continue;
@@ -1417,6 +1440,21 @@ bool Init(const std::wstring& mod_dir) noexcept {
             if (k == "automation") on = b;
             else if (k == "automation_mute") mute = b;
             else if (k == "automation_isolate") isolate = b;
+            else if (k == "sandbox_saves" && !v.empty()) sandbox = true;
+        }
+        if (!on && sandbox) {
+            // Launcher test save (sandbox.hpp): DllMain installed the redirect, or the game must not run.
+            if (!g_rd_active.load() || g_mode.load() != 2) {
+                Log("[sandbox] saves=NOT redirected although session.ini asks for a test save: ending ds.exe before it can touch "
+                    "your saves");
+                LogShutdown();
+                g_mode.store(2);
+                RefuseAndExit("sandbox_saves is set but the save redirect was not installed in DllMain");
+                return false;
+            }
+            Log("[sandbox] test save: the game reads and writes only the sandbox copy; your own saves are not opened");
+            LogSaves();
+            return false;
         }
         g_enabled.store(on);
         g_mute.store(mute);
@@ -1494,7 +1532,7 @@ void Start(const std::wstring& mod_dir, const char* build) noexcept {
 // ------------------------------------------------------------------ DllMain: save redirect
 namespace {
 
-bool AddRoot(const std::wstring& root) noexcept {
+bool AddRoot(const std::wstring& root, const wchar_t* scratch) noexcept {
     try {
         if (root.size() < 4 || root.size() >= kPathCap) return false;
         const std::wstring norm = saves::Normalize(root);
@@ -1503,6 +1541,7 @@ bool AddRoot(const std::wstring& root) noexcept {
             if (saves::Map(norm, g_roots[i], L"X:\\", nullptr) && saves::Map(g_roots[i], norm, L"X:\\", nullptr)) return true;  // same
         if (n >= kMaxRoots) return false;
         WcsCopy(g_roots[n], kPathCap, norm.c_str());
+        WcsCopy(g_root_scratch[n], kPathCap, scratch);
         g_nroots.store(n + 1);
         return true;
     } catch (...) {
@@ -1633,13 +1672,41 @@ void EarlyInit() noexcept {
     wchar_t* slash = wcsrchr(exe, L'\\');
     if (!slash) return;
     *slash = 0;
-    std::swprintf(g_mod_dir, kPathCap, L"%s\\stranded_together", exe);
+    std::swprintf(g_base_mod_dir, kPathCap, L"%s\\stranded_together", exe);
+    // ST_INSTANCE_DIR (sandbox.hpp): a second game on this PC keeps its own mod folder.
+    try {
+        const std::wstring dir = sandbox::ModDirFor(exe, EnvVar(sandbox::kInstanceEnv));
+        if (dir.size() >= kPathCap - 64) return;
+        WcsCopy(g_mod_dir, kPathCap, dir.c_str());
+    } catch (...) {
+        return;
+    }
     std::swprintf(g_auto_dir, kPathCap, L"%s\\automation", g_mod_dir);
     std::string ini;
     wchar_t ini_path[kPathCap + 32];
     std::swprintf(ini_path, kPathCap + 32, L"%s\\session.ini", g_mod_dir);
-    if (!ReadIniRaw(ini_path, &ini)) return;
-    bool on = false, exit_trace = true, foreign = false;
+    // A ds.exe that st_testenv_supervisor started must never run on the real saves: when its
+    // automation session.ini is gone (deleted by another program between deploy and start) or
+    // is not a hidden-run file, it ends here instead of running unredirected.
+    const bool supervised = !EnvVar(saves::kSupervisedEnv).empty();
+    // The same for a game the launcher's local two-player test started (ST_INSTANCE_DIR): its
+    // instance session.ini is one-shot; without it the game would run on the real saves.
+    const bool instanced = !EnvVar(sandbox::kInstanceEnv).empty();
+    if (!ReadIniRaw(ini_path, &ini)) {
+        if (supervised) {
+            g_mode.store(1);
+            RefuseAndExit("started by st_testenv_supervisor but there is no session.ini in the mod folder (deleted before the game "
+                          "read it?): not running on the real saves");
+        } else if (instanced) {
+            g_mode.store(2);
+            RefuseAndExit("started for the local two-player test (ST_INSTANCE_DIR) but there is no session.ini in its folder (already "
+                          "used, or deleted?): not running on the real saves");
+        }
+        return;
+    }
+    bool exit_trace = true, foreign = false;
+    sandbox::Request req;
+    req.instance_env = instanced;
     std::wstring extra_root;
     try {
         std::size_t at = 0;
@@ -1654,9 +1721,13 @@ void EarlyInit() noexcept {
             const std::string k = detail::Trim(line.substr(0, eq)), v = detail::Trim(line.substr(eq + 1));
             const std::string lv = detail::Lower(v);
             const bool b = lv == "1" || lv == "true" || lv == "yes" || lv == "on";
-            if (k == "automation") on = b;
+            if (k == "automation") req.automation = b;
             else if (k == "automation_exit_trace") exit_trace = b;
             else if (k == "automation_foreign_saves") foreign = b;
+            else if (k == "sandbox_saves") req.sandbox = v;
+            else if (k == "sandbox_foreign_saves") req.sandbox_foreign = b;
+            else if (k == "appdir_settings") req.appdir_settings = b;
+            else if (k == "second_instance") req.second_instance = b;
             else if (k == "automation_save_root" && !v.empty()) {  // tests: an extra root (UTF-8)
                 const int wn = MultiByteToWideChar(CP_UTF8, 0, v.data(), static_cast<int>(v.size()), nullptr, 0);
                 extra_root.assign(static_cast<std::size_t>(wn > 0 ? wn : 0), L'\0');
@@ -1664,16 +1735,43 @@ void EarlyInit() noexcept {
             }
         }
     } catch (...) {
-        on = true;  // unreadable but present: refuse below rather than guess
+        req.automation = true;  // unreadable but present: refuse below rather than guess
         extra_root.clear();
     }
-    if (!on) return;
+    const sandbox::Mode mode = sandbox::Decide(req);
+    // (a test-save sandbox session is redirected too: allowed, the supervisor's --sandbox-session)
+    if (supervised && mode != sandbox::Mode::automation && mode != sandbox::Mode::sandbox) {
+        g_mode.store(1);
+        RefuseAndExit("started by st_testenv_supervisor but session.ini has no automation=1 (not the run's file): not running on the "
+                      "real saves");
+        return;
+    }
+    if (mode == sandbox::Mode::none) return;  // every normal launch: nothing installed
+    const bool automation = mode == sandbox::Mode::automation;
+    g_mode.store(automation ? 1 : 2);
+    WcsCopy(g_status_dir, kPathCap, automation ? g_auto_dir : g_mod_dir);
 
     char why[400] = {};
+    if (mode == sandbox::Mode::refuse_bad_name) {
+        std::snprintf(why, sizeof(why), "sandbox_saves must be a folder name of letters, digits, '_' and '-' (got '%.60s')", req.sandbox.c_str());
+        RefuseAndExit(why);
+        return;
+    }
+    if (mode == sandbox::Mode::refuse_orphan) {
+        std::snprintf(why, sizeof(why),
+                      "second_instance / appdir_settings / sandbox_foreign_saves need a save redirect (sandbox_saves= or a hidden run)");
+        RefuseAndExit(why);
+        return;
+    }
+    if (mode == sandbox::Mode::refuse_instance) {
+        RefuseAndExit("started for the local two-player test (ST_INSTANCE_DIR) but its session.ini asks for no test save "
+                      "(sandbox_saves=): not running on the real saves");
+        return;
+    }
     // Only st_testenv_supervisor starts a hidden run (it sets this variable for its child).
     // automation=1 left behind by an interrupted run must not turn a normal launch (Steam,
     // the user's desktop) into a redirected one whose progress lands in the scratch copy.
-    if (EnvVar(saves::kSupervisedEnv).empty()) {
+    if (automation && EnvVar(saves::kSupervisedEnv).empty()) {
         std::snprintf(why, sizeof(why),
                       "automation=1 in session.ini but ds.exe was not started by st_testenv_supervisor (%ls not set): left over from an "
                       "interrupted hidden run? Run tools\\testenv\\Restore-TestRun.ps1 for that run",
@@ -1681,27 +1779,48 @@ void EarlyInit() noexcept {
         RefuseAndExit(why);
         return;
     }
+    wchar_t settings_scratch[kPathCap] = {};
     try {
-        CreateDirectoryW(g_auto_dir, nullptr);
+        CreateDirectoryW(g_status_dir, nullptr);
         wchar_t stale[kPathCap + 64];
-        std::swprintf(stale, kPathCap + 64, L"%s\\%s", g_auto_dir, saves::kRefusedFile);
+        std::swprintf(stale, kPathCap + 64, L"%s\\%s", g_status_dir, automation ? saves::kRefusedFile : sandbox::kRefusedFile);
         DeleteFileW(stale);
-        std::swprintf(stale, kPathCap + 64, L"%s\\%s", g_auto_dir, saves::kActiveFile);
+        std::swprintf(stale, kPathCap + 64, L"%s\\%s", g_status_dir, automation ? saves::kActiveFile : sandbox::kActiveFile);
         DeleteFileW(stale);
-        std::swprintf(g_scratch, kPathCap, L"%s\\saves", g_auto_dir);
+        if (automation) {
+            std::swprintf(g_scratch, kPathCap, L"%s\\saves", g_auto_dir);
+            std::swprintf(settings_scratch, kPathCap, L"%s\\settings.cfg", g_auto_dir);
+        } else {
+            // <game>\stranded_together\sandbox\<name>\ (shared by every instance folder; the launcher seeds it)
+            const std::wstring name(req.sandbox.begin(), req.sandbox.end());
+            std::swprintf(g_scratch, kPathCap, L"%s\\sandbox\\%s\\saves", g_base_mod_dir, name.c_str());
+            std::swprintf(settings_scratch, kPathCap, L"%s\\sandbox\\%s\\settings.cfg", g_base_mod_dir, name.c_str());
+        }
         // ds.exe: getenv("USERPROFILE") + "AppData\Local\KojimaProductions\..."; Steam's
         // AutoCloud and the user's view: %LOCALAPPDATA%\KojimaProductions.
         const std::wstring profile = EnvVar(L"USERPROFILE"), local = EnvVar(L"LOCALAPPDATA");
-        if (!profile.empty()) AddRoot(profile + L"\\AppData\\Local\\KojimaProductions");
-        if (!local.empty()) AddRoot(local + L"\\KojimaProductions");
-        if (!extra_root.empty() && !AddRoot(extra_root)) std::snprintf(why, sizeof(why), "automation_save_root not usable");
-        if (!why[0] && g_nroots.load() == 0) std::snprintf(why, sizeof(why), "no save root (USERPROFILE and LOCALAPPDATA empty)");
-        for (int i = 0; !why[0] && i < g_nroots.load(); ++i)
+        if (!profile.empty()) AddRoot(profile + L"\\AppData\\Local\\KojimaProductions", g_scratch);
+        if (!local.empty()) AddRoot(local + L"\\KojimaProductions", g_scratch);
+        if (automation && !extra_root.empty() && !AddRoot(extra_root, g_scratch)) std::snprintf(why, sizeof(why), "automation_save_root not usable");
+        g_nsave_roots = g_nroots.load();
+        if (!why[0] && g_nsave_roots == 0) std::snprintf(why, sizeof(why), "no save root (USERPROFILE and LOCALAPPDATA empty)");
+        for (int i = 0; !why[0] && i < g_nsave_roots; ++i)
             if (saves::Map(g_scratch, g_roots[i], L"X:\\", nullptr) || saves::Map(g_roots[i], g_scratch, L"X:\\", nullptr))
                 std::snprintf(why, sizeof(why), "the scratch folder and a save root overlap");
         const DWORD sa = GetFileAttributesW(g_scratch);
         if (!why[0] && (sa == INVALID_FILE_ATTRIBUTES || !(sa & FILE_ATTRIBUTE_DIRECTORY)))
-            std::snprintf(why, sizeof(why), "no seeded scratch copy at automation\\saves (the supervisor seeds it)");
+            std::snprintf(why, sizeof(why), automation ? "no seeded scratch copy at automation\\saves (the supervisor seeds it)"
+                                                       : "no seeded test-save copy at stranded_together\\sandbox\\<name>\\saves (the launcher seeds it)");
+        // appdir:settings.cfg (the graphics settings, read from the game folder): the file and the
+        // temporary names a writer may use next to it.
+        if (!why[0] && req.appdir_settings) {
+            for (const wchar_t* suffix : {L"", L"temp", L".tmp"}) {
+                wchar_t root[kPathCap], to[kPathCap];
+                std::swprintf(root, kPathCap, L"%s\\settings.cfg%s", exe, suffix);
+                std::swprintf(to, kPathCap, L"%s%s", settings_scratch, suffix);
+                if (!AddRoot(root, to)) std::snprintf(why, sizeof(why), "appdir_settings: could not add %ls", root);
+            }
+        }
     } catch (...) {
         std::snprintf(why, sizeof(why), "exception while preparing the redirect");
     }
@@ -1710,7 +1829,7 @@ void EarlyInit() noexcept {
     if (!why[0]) {
         g_rd_active.store(true, std::memory_order_release);
         // Self-test through the hooks: the probe exists only in the scratch copy.
-        for (int i = 0; !why[0] && i < g_nroots.load(); ++i) {
+        for (int i = 0; !why[0] && i < g_nsave_roots; ++i) {
             wchar_t probe[kPathCap + 64];
             std::swprintf(probe, kPathCap + 64, L"%s\\%s", g_roots[i], saves::kProbeName);
             if (GetFileAttributesW(probe) == INVALID_FILE_ATTRIBUTES) {
@@ -1728,39 +1847,51 @@ void EarlyInit() noexcept {
                 std::snprintf(why, sizeof(why), "self-test: GetFileAttributesA(<root %d>\\probe) was not answered from the scratch copy", i);
         }
     }
+    // A second game on this PC: only with the redirect proven (two games never share one save tree).
+    if (!why[0] && req.second_instance) sandbox::InstallMutexRename(why, sizeof(why));
     if (why[0]) {
         g_rd_active.store(false);
         RefuseAndExit(why);
         return;
     }
-    if (exit_trace) InstallExitTrace();
-    InstallShellBlock();
-    // Saves of another account (--seed-saves): only here, after the redirect is installed and
-    // self-tested, in a supervised automation run (the checks above returned otherwise).
-    g_foreign_requested.store(foreign);
-    switch (foreign_saves::Decide(foreign, on, !EnvVar(saves::kSupervisedEnv).empty(), g_rd_active.load())) {
-        case foreign_saves::Decision::off: break;
-        case foreign_saves::Decision::install: InstallForeignSaves(); break;
-        case foreign_saves::Decision::refuse_no_automation:
-            std::snprintf(g_foreign_note, sizeof(g_foreign_note), "NOT bypassed: not a supervised automation run");
-            break;
-        case foreign_saves::Decision::refuse_no_redirect:
-            std::snprintf(g_foreign_note, sizeof(g_foreign_note), "NOT bypassed: the save redirect is not active");
-            break;
+    if (automation) {
+        if (exit_trace) InstallExitTrace();
+        InstallShellBlock();
+    }
+    // Saves of another account: only here, after the redirect is installed and self-tested
+    // (hidden runs: in a supervised automation run; test saves: sandbox_foreign_saves=1).
+    const bool want_foreign = automation ? foreign : req.sandbox_foreign;
+    g_foreign_requested.store(want_foreign);
+    if (automation) {
+        switch (foreign_saves::Decide(foreign, true, !EnvVar(saves::kSupervisedEnv).empty(), g_rd_active.load())) {
+            case foreign_saves::Decision::off: break;
+            case foreign_saves::Decision::install: InstallForeignSaves(); break;
+            case foreign_saves::Decision::refuse_no_automation:
+                std::snprintf(g_foreign_note, sizeof(g_foreign_note), "NOT bypassed: not a supervised automation run");
+                break;
+            case foreign_saves::Decision::refuse_no_redirect:
+                std::snprintf(g_foreign_note, sizeof(g_foreign_note), "NOT bypassed: the save redirect is not active");
+                break;
+        }
+    } else if (sandbox::SandboxForeignAllowed(req.sandbox_foreign, g_rd_active.load())) {
+        InstallForeignSaves();
     }
     wchar_t active[kPathCap + 64];
-    std::swprintf(active, kPathCap + 64, L"%s\\%s", g_auto_dir, saves::kActiveFile);
-    char text[kPathCap * 4];
+    std::swprintf(active, kPathCap + 64, L"%s\\%s", g_status_dir, automation ? saves::kActiveFile : sandbox::kActiveFile);
+    char text[kPathCap * 6];
     char scratch[kPathCap * 3];
     Utf8(g_scratch, scratch, sizeof(scratch));
-    int len = std::snprintf(text, sizeof(text), "saves=redirected\npid=%lu\nhooks=%d\nscratch=%s\n", GetCurrentProcessId(), g_rd_hooks.load(), scratch);
+    int len = std::snprintf(text, sizeof(text), "%s=redirected\npid=%lu\nhooks=%d\nscratch=%s\n", automation ? "saves" : "sandbox",
+                            GetCurrentProcessId(), g_rd_hooks.load(), scratch);
     for (int i = 0; i < g_nroots.load() && len > 0 && len < static_cast<int>(sizeof(text)) - 32; ++i) {
         char root[kPathCap * 3];
         Utf8(g_roots[i], root, sizeof(root));
-        len += std::snprintf(text + len, sizeof(text) - len, "root=%s\n", root);
+        len += std::snprintf(text + len, sizeof(text) - len, "%s=%s\n", i < g_nsave_roots ? "root" : "file_root", root);
     }
-    if (foreign && len > 0 && len < static_cast<int>(sizeof(text)) - 64)
-        std::snprintf(text + len, sizeof(text) - len, "foreign_saves=%s\n", g_foreign_bypassed.load() ? "bypassed" : "refused");
+    if (want_foreign && len > 0 && len < static_cast<int>(sizeof(text)) - 64)
+        len += std::snprintf(text + len, sizeof(text) - len, "foreign_saves=%s\n", g_foreign_bypassed.load() ? "bypassed" : "refused");
+    if (req.second_instance && len > 0 && len < static_cast<int>(sizeof(text)) - 64)
+        len += std::snprintf(text + len, sizeof(text) - len, "second_instance=mutex_rename_installed\n");
     AppendRaw(active, text);
 }
 

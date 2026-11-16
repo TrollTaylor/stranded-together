@@ -12,11 +12,13 @@
 
 #include <cstdio>
 #include <cstring>
+#include <set>
 #include <string>
 
 #include "core/core_install.hpp"
 #include "core/core_model.hpp"
 #include "core/core_paths.hpp"
+#include "core/core_sandbox.hpp"
 #include "core/core_session.hpp"
 #include "core/core_text.hpp"
 #include "launcher_join_code.hpp"
@@ -60,8 +62,21 @@ public:
     std::vector<ProcessRow> GameProcesses() override { return game_running ? std::vector<ProcessRow>{game} : std::vector<ProcessRow>{}; }
     bool ProcessStartMs(std::uint32_t, std::int64_t&) override { return false; }
     bool ProcessAlive(std::uint32_t pid) override {
-        return (pid == 777 && owner_alive) || (pid == 555 && steam) || (pid == 9 && game_running);
+        return (pid == 777 && owner_alive) || (pid == 555 && steam) || (pid == 9 && game_running) || alive.count(pid) != 0;
     }
+    // The local two-instance test starts ds.exe directly: recorded, pid 31, 32, ...
+    bool StartProcess(const std::wstring& exe, const std::wstring& cwd, const std::vector<std::wstring>& env_add,
+                      std::uint32_t& pid_out) override {
+        started.push_back(env_add);
+        started_exe = exe;
+        (void)cwd;
+        pid_out = 30 + static_cast<std::uint32_t>(started.size());
+        alive.insert(pid_out);
+        return true;
+    }
+    std::vector<std::vector<std::wstring>> started;
+    std::wstring started_exe;
+    std::set<std::uint32_t> alive;
     std::uint32_t CurrentPid() override { return 4242; }
     std::int64_t CurrentStartMs() override { return 0; }
     bool OpenUrl(const std::wstring& url) override {
@@ -545,7 +560,10 @@ void UiLogic() {
     }
     const ui::Options so = ui::ParseCommandLine({L"--write-session", L"solo"});
     CHECK(so.error.empty() && so.write_role == L"solo");
-    CHECK(ui::SceneCount() == static_cast<int>(ui::Scene::count) && ui::SceneCount() == 35);
+    CHECK(ui::SceneCount() == static_cast<int>(ui::Scene::count) && ui::SceneCount() == 37);
+    CHECK(std::string(ui::SceneName(ui::Scene::debug_test_saves)) == "36-debug-test-saves" &&
+          std::string(ui::SceneName(ui::Scene::debug_local_test)) == "37-debug-local-test");
+    CHECK(std::string(ui::DebugTabLabel(ui::DebugTab::saves)) == "Test saves" && ui::kDebugTabCount == 3);
     for (int i = 0; i < ui::SceneCount(); ++i) CHECK(*ui::SceneName(static_cast<ui::Scene>(i)) != '\0');
 }
 
@@ -803,6 +821,242 @@ void RealModelFlow() {
     }
     RemoveTree(dir);
 }
+
+void WriteFile(const std::wstring& path, const std::string& text) {
+    std::string error;
+    CreateDirectories(ParentOf(path));
+    WriteAtomic(path, text, true, error);
+}
+
+// Test saves: the seed-folder check, seeding a sandbox (the real save tree is only read), the
+// session.ini keys, the real model's Play with test save and the local two-instance test.
+void TestSaves() {
+    const std::wstring local = NewTempDir(L"st-launcher-local-");
+    wchar_t old_local[1024]{};
+    const DWORD had = GetEnvironmentVariableW(L"LOCALAPPDATA", old_local, 1024);
+    SetEnvironmentVariableW(L"LOCALAPPDATA", local.c_str());   // RealSaveRoot() -> this fake tree
+    const std::wstring real = JoinPath2(local, L"KojimaProductions");
+    CHECK(IEquals(RealSaveRoot(), real));
+    const std::wstring acct = JoinPath2(JoinPath2(real, L"DeathStrandingDC"), L"104729");
+    WriteFile(JoinPath2(acct, L"profile\\profile.dat"), "own profile");
+    WriteFile(JoinPath2(acct, L"profile\\game_settings.cfg"), "\"GameDifficulty\" \"4\"\r\n");
+    WriteFile(JoinPath2(acct, L"autosave0\\checkpoint.dat"), "own slot");
+    WriteFile(JoinPath2(acct, L"steam_autocloud.vdf"), "steam");
+    CreateDirectories(JoinPath2(real, L"DeathStranding\\104729\\transfer"));
+    const std::string real_before = SaveTreeManifest(real);
+    CHECK(real_before.find("profile\\profile.dat") != std::string::npos);
+
+    const std::wstring downloads = NewTempDir(L"st-launcher-dl-");
+    const std::wstring save100 = JoinPath2(downloads, L"complete-100");
+    WriteFile(JoinPath2(save100, L"DeathStrandingDC\\autosave3\\checkpoint.dat"), "100 percent");
+    WriteFile(JoinPath2(save100, L"DeathStrandingDC\\manualsave1\\checkpoint.dat"), "100 percent manual");
+    WriteFile(JoinPath2(save100, L"DeathStrandingDC\\notaslot\\checkpoint.dat"), "x");
+    SeedCheck c = CheckSeedFolder(save100);
+    CHECK(c.ok && c.slots == 2 && c.note.find("2 save slots") != std::string::npos);
+    CHECK(CheckSeedFolder(JoinPath2(save100, L"DeathStrandingDC")).ok);
+    CHECK(!CheckSeedFolder(downloads).ok && !CheckSeedFolder(downloads).note.empty());
+    CHECK(!CheckSeedFolder(L"").ok && !CheckSeedFolder(JoinPath2(downloads, L"missing")).ok);
+    const SeedCheck own = CheckSeedFolder(real);   // <root>\DeathStrandingDC\<account>\<slots>
+    CHECK(own.ok && own.slots == 1);
+
+    // A fake game folder.
+    const std::wstring dir = NewTempDir(L"st-launcher-sandbox-");
+    std::string error;
+    CHECK(WriteAtomic(JoinPath2(dir, L"ds.exe"), std::string(), true, error));
+    CHECK(WriteAtomic(JoinPath2(dir, L"winhttp.dll"), FakeOurDll(), true, error));
+    const InstancePaths paths = GetInstancePaths(dir);
+    const SandboxPaths sp = GetSandboxPaths(paths, kTestSaveSandbox);
+    CHECK(PathInside(sp.root, JoinPath2(paths.mod, L"sandbox")) && !SandboxSeeded(sp));
+    CHECK(SeedSandbox(paths, sp, &c, real, 104729, "complete-100", error));
+    CHECK(SandboxSeeded(sp));
+    const std::wstring sacct = JoinPath2(sp.saves, L"DeathStrandingDC\\104729");
+    std::string text;
+    CHECK(ReadTextShared(JoinPath2(sacct, L"profile\\profile.dat"), text) && text == "own profile");   // your profile
+    CHECK(ReadTextShared(JoinPath2(sacct, L"autosave3\\checkpoint.dat"), text) && text == "100 percent");   // the test save's slots
+    CHECK(IsFile(JoinPath2(sacct, L"manualsave1\\checkpoint.dat")) && !IsDir(JoinPath2(sacct, L"autosave0")) && !IsDir(JoinPath2(sacct, L"notaslot")));
+    CHECK(!IsFile(JoinPath2(sacct, L"steam_autocloud.vdf")) && IsDir(JoinPath2(sp.saves, L"DeathStranding\\104729\\transfer")));
+    // Without a seed: a full copy of your own saves.
+    const SandboxPaths full = GetSandboxPaths(paths, kLocalHostSandbox);
+    CHECK(SeedSandbox(paths, full, nullptr, real, 0, "own", error) && IsFile(JoinPath2(full.saves, L"DeathStrandingDC\\104729\\autosave0\\checkpoint.dat")));
+    // Never outside stranded_together\sandbox, never overlapping the real tree.
+    SandboxPaths bad = sp;
+    bad.root = JoinPath2(dir, L"elsewhere");
+    bad.saves = JoinPath2(bad.root, L"saves");
+    CHECK(!SeedSandbox(paths, bad, &c, real, 104729, "x", error) && !IsDir(bad.root));
+    SandboxPaths inside_real = sp;
+    inside_real.root = JoinPath2(paths.mod, L"sandbox\\x");
+    CHECK(!SeedSandbox(paths, inside_real, &c, inside_real.root, 104729, "x", error));
+    SeedCheck empty;
+    CHECK(!SeedSandbox(paths, sp, &empty, real, 104729, "x", error));
+    SeedCheck in_sandbox = c;   // a test save picked inside the test copies: refused before anything is emptied
+    in_sandbox.slots_dir = JoinPath2(sp.saves, L"DeathStrandingDC\\104729");
+    CHECK(!SeedSandbox(paths, sp, &in_sandbox, real, 104729, "x", error) && error.find("outside") != std::string::npos && SandboxSeeded(sp));
+    CHECK(SaveTreeManifest(real) == real_before);   // the real tree was only read
+    CHECK(ManifestChanges(real_before, real_before).empty());
+    CHECK(ManifestChanges("a\t1\tX\nb\t1\tY\n", "a\t1\tZ\nc\t1\tW\n").size() == 3);
+    CHECK(ResetSandbox(paths, full, error) && !IsDir(full.root));
+    CHECK(!ResetSandbox(paths, bad, error));
+
+    // session.ini: the sandbox keys round trip; invalid combinations are refused.
+    SessionIni ini;
+    ini.role = "solo";
+    ini.transport = "udp";
+    ini.udp_peer = "127.0.0.1";
+    ini.udp_port_local = 27555;
+    ini.udp_port_peer = 27556;
+    ini.sandbox_saves = "local-guest";
+    ini.sandbox_foreign_saves = true;
+    ini.appdir_settings = true;
+    ini.second_instance = true;
+    ini.local_input = "guest";
+    ini.frame_cap = 30;
+    CHECK(MakeSessionIniText(ini, text, error));
+    CHECK(text.find("sandbox_saves=local-guest\n") != std::string::npos && text.find("second_instance=1\n") != std::string::npos &&
+          text.find("local_input=guest\n") != std::string::npos && text.find("frame_cap=30\n") != std::string::npos);
+    SessionIni back;
+    CHECK(ParseSessionIniText(text, back, error) && back.sandbox_saves == "local-guest" && back.sandbox_foreign_saves && back.appdir_settings &&
+          back.second_instance && back.local_input == "guest" && back.frame_cap == 30);
+    SessionIni bad_ini = ini;
+    bad_ini.sandbox_saves = "..\\x";
+    CHECK(!MakeSessionIniText(bad_ini, text, error));
+    bad_ini = ini;
+    bad_ini.sandbox_saves.clear();   // second_instance without a sandbox
+    CHECK(!MakeSessionIniText(bad_ini, text, error));
+    bad_ini = ini;
+    bad_ini.local_input = "both";
+    CHECK(!MakeSessionIniText(bad_ini, text, error));
+    bad_ini = ini;
+    bad_ini.frame_cap = 5;
+    CHECK(!MakeSessionIniText(bad_ini, text, error));
+    SessionIni plain;
+    plain.role = "solo";
+    CHECK(MakeSessionIniText(plain, text, error) && text.find("sandbox") == std::string::npos && text.find("frame_cap") == std::string::npos);
+
+    // The real model: pick the folder, Play with test save.
+    CHECK(ResetSandbox(paths, sp, error));
+    auto env = std::make_shared<FakeEnv>();
+    env->steam = true;
+    {
+        auto m = MakeRealModelWithEnv(dir, env);
+        CHECK(m->phase() == Phase::ready);
+        CHECK(!m->test_save().folder_ok && !m->play_test_save(error) && error.find("test save") != std::string::npos);
+        CHECK(!m->set_test_save_folder(Utf8(downloads), error) && !error.empty());
+        CHECK(m->set_test_save_folder(Utf8(save100), error) && m->test_save().folder_ok);
+        CHECK(m->play_test_save(error));
+        CHECK(m->phase() == Phase::launching && m->session_role() == Role::solo && SandboxSeeded(sp));
+        CHECK(ReadTextShared(paths.session_ini, text) && ParseSessionIniText(text, ini, error));
+        CHECK(ini.role == "solo" && ini.sandbox_saves == "test" && ini.sandbox_foreign_saves && !ini.second_instance && ini.debug_menu);
+        // The game runs and exits; the real tree is compared.
+        env->game_running = true;
+        env->game.pid = 9;
+        env->game.path = paths.exe;
+        m->tick();
+        CHECK(m->phase() == Phase::in_game);
+        env->game_running = false;
+        m->tick();
+        env->now += 5000;
+        m->tick();
+        CHECK(m->phase() == Phase::after_game && m->test_save().tone == TestSaveView::Tone::good &&
+              m->test_save().result.find("not changed") != std::string::npos);
+        env->now += 5000;
+        m->tick();
+        CHECK(m->phase() == Phase::ready);
+        // Remembered; "use for all" puts the test save into a Solo test too.
+        m->set_use_test_save(true);
+    }
+    {
+        auto m = MakeRealModelWithEnv(dir, env);
+        CHECK(m->test_save().folder == Utf8(save100) && m->test_save().use_for_all && m->test_save().seeded);
+        CHECK(m->solo_test(error));
+        CHECK(ReadTextShared(paths.session_ini, text) && ParseSessionIniText(text, ini, error) && ini.role == "echo" && ini.sandbox_saves == "test");
+        CHECK(m->end_session(error));
+        // A refusal by the mod (no redirect) is shown and ends the session.
+        m->set_use_test_save(false);
+        CHECK(m->play_test_save(error));
+        WriteFile(JoinPath2(paths.mod, L"sandbox-refused.txt"), "sandbox=REFUSED\nreason=self-test failed\n");
+        m->tick();
+        CHECK(m->phase() == Phase::ready && m->test_save().tone == TestSaveView::Tone::bad &&
+              m->test_save().result.find("self-test failed") != std::string::npos);
+        DeleteFileChecked(JoinPath2(paths.mod, L"sandbox-refused.txt"));
+
+        // The local two-instance test.
+        m->set_local_test_host_pad(true);
+        CHECK(m->start_local_test(error));
+        CHECK(env->started.size() == 1 && IEquals(env->started_exe, paths.exe));
+        const auto has = [&](std::size_t i, const std::wstring& v) {
+            for (const std::wstring& e : env->started[i]) if (e == v) return true;
+            return false;
+        };
+        CHECK(has(0, L"SteamAppId=1850570") && has(0, L"ST_INSTANCE_DIR=instances\\host"));
+        const std::wstring host_ini = JoinPath2(paths.mod, L"instances\\host\\session.ini");
+        const std::wstring guest_ini = JoinPath2(paths.mod, L"instances\\guest\\session.ini");
+        CHECK(ReadTextShared(host_ini, text) && ParseSessionIniText(text, ini, error));
+        CHECK(ini.role == "host" && ini.transport == "udp" && ini.udp_port_local == 27555 && ini.udp_port_peer == 27556 &&
+              ini.sandbox_saves == "local-host" && ini.appdir_settings && !ini.second_instance && ini.local_input == "host_pad" &&
+              ini.frame_cap == 30 && ini.debug_menu && ini.local_window == "left");
+        const std::string secret = ini.secret;
+        CHECK(ReadTextShared(guest_ini, text) && ParseSessionIniText(text, ini, error));
+        CHECK(ini.role == "guest" && ini.udp_port_local == 27556 && ini.udp_port_peer == 27555 && ini.sandbox_saves == "local-guest" &&
+              ini.second_instance && ini.local_input == "guest" && ini.secret == secret && ini.local_window == "right");
+        CHECK(SandboxSeeded(GetSandboxPaths(paths, kLocalHostSandbox)) && SandboxSeeded(GetSandboxPaths(paths, kLocalGuestSandbox)));
+        CHECK(IsFile(GetSandboxPaths(paths, kLocalGuestSandbox).settings));
+        CHECK(m->local_test().running && m->local_test().host_pid == 31 && m->local_test().guest_pid == 0);
+        CHECK(!m->start_local_test(error) && !m->reset_test_saves(error));
+        CHECK(!m->play_test_save(error) && error.find("local two-player test") != std::string::npos);   // one test at a time
+        env->now += 9000;
+        m->tick();
+        CHECK(env->started.size() == 2 && has(1, L"ST_INSTANCE_DIR=instances\\guest") && m->local_test().guest_pid == 32);
+        env->alive.clear();   // both games quit
+        m->tick();
+        env->now += 4000;
+        m->tick();
+        CHECK(!m->local_test().running && m->local_test().tone == LinkView::Tone::good && !IsFile(host_ini) && !IsFile(guest_ini));
+
+        // A local game's refusal left behind never speaks for a later "Play with test save" game.
+        const std::wstring active = JoinPath2(paths.mod, L"sandbox-active.txt");
+        WriteFile(JoinPath2(paths.mod, L"instances\\host\\sandbox-refused.txt"), "sandbox=REFUSED\nreason=old local refusal\n");
+        CHECK(m->play_test_save(error));
+        env->game_running = true;
+        m->tick();
+        CHECK(m->phase() == Phase::in_game);
+        WriteFile(active, "sandbox=redirected\n");   // the mod's DllMain marker
+        env->now += 25000;
+        m->tick();
+        CHECK(m->test_save().tone != TestSaveView::Tone::bad);
+        env->game_running = false;
+        m->tick();
+        env->now += 5000;
+        m->tick();
+        CHECK(m->phase() == Phase::after_game && m->test_save().tone == TestSaveView::Tone::good &&
+              m->test_save().result.find("old local refusal") == std::string::npos);
+        env->now += 5000;
+        m->tick();
+        CHECK(m->phase() == Phase::ready);
+        // A game that never confirms the test save (its session.ini did not reach it): warned while it runs and after.
+        CHECK(m->play_test_save(error) && !IsFile(active));   // the old marker is gone before the launch
+        env->game_running = true;
+        m->tick();
+        CHECK(m->phase() == Phase::in_game);
+        env->now += 25000;
+        m->tick();
+        CHECK(m->test_save().tone == TestSaveView::Tone::bad && m->test_save().result.find("WARNING") != std::string::npos);
+        env->game_running = false;
+        m->tick();
+        env->now += 5000;
+        m->tick();
+        CHECK(m->phase() == Phase::after_game && m->test_save().tone == TestSaveView::Tone::bad &&
+              m->test_save().result.find("never confirmed") != std::string::npos);
+        env->now += 5000;
+        m->tick();
+        CHECK(m->reset_test_saves(error) && !SandboxSeeded(sp));
+    }
+    CHECK(SaveTreeManifest(real) == real_before);   // after everything: the real tree untouched
+
+    SetEnvironmentVariableW(L"LOCALAPPDATA", had ? old_local : nullptr);
+    RemoveTree(dir);
+    RemoveTree(downloads);
+    RemoveTree(local);
+}
 }  // namespace
 
 int main() {
@@ -817,6 +1071,7 @@ int main() {
     MockFlow();
     SessionRoundTrip();
     RealModelFlow();
+    TestSaves();
     std::printf("launcher core tests: %d/%d passed\n", g_checks - g_failures, g_checks);
     return g_failures == 0 ? 0 : 1;
 }

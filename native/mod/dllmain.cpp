@@ -16,7 +16,9 @@
 #include "log.hpp"
 #include "MinHook.h"
 #include "overlay/overlay.hpp"
+#include "overlay/overlay_input.hpp"
 #include "player_sync.hpp"
+#include "sandbox.hpp"
 #include "steam_owner.hpp"
 #include "winhttp_forwards.inc"
 
@@ -58,8 +60,48 @@ bool GuardedTick() noexcept {
     }
 }
 
+// frame_cap=<fps> (session.ini; the launcher's local two-instance test and hidden two-game
+// runs): the game thread waits here once per presented frame, so two games on one PC do not
+// each render as fast as the GPU allows (a hidden game's Present is never vsynced).
+std::atomic<unsigned> g_frame_cap{0};
+
+void FrameCap() noexcept {
+    const unsigned cap = g_frame_cap.load(std::memory_order_relaxed);
+    if (!cap) return;
+    static unsigned long last_presents = ~0ul;
+    static LONGLONG next = 0, freq = 0;
+    static HANDLE timer = nullptr;
+    static bool timer_tried = false;
+    // once per frame: the frame pump may run more than once per presented frame
+    const unsigned long presents = st::overlay::Installed() ? st::overlay::GetStats().presents : 0;
+    if (presents != 0 && presents == last_presents) return;
+    last_presents = presents;
+    if (!freq) {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        freq = f.QuadPart;
+    }
+    if (!timer_tried) {
+        timer_tried = true;
+        timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    }
+    const LONGLONG period = freq / cap;
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    if (next == 0 || now.QuadPart - next > period * 4) next = now.QuadPart;  // start / after a long frame
+    if (now.QuadPart < next) {
+        const LONGLONG wait_100ns = (next - now.QuadPart) * 10000000 / freq;
+        LARGE_INTEGER due;
+        due.QuadPart = -wait_100ns;
+        if (timer && SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) WaitForSingleObject(timer, 1000);
+        else Sleep(static_cast<DWORD>(wait_100ns / 10000));
+    }
+    next += period;
+}
+
 void HookedRunCallbacks() {
     g_original();
+    FrameCap();
     if (!g_sync_enabled.load(std::memory_order_acquire)) return;
     if (!GuardedTick()) {
         g_sync_enabled.store(false);
@@ -68,11 +110,24 @@ void HookedRunCallbacks() {
     }
 }
 
+std::wstring EnvW(const wchar_t* name) {
+    wchar_t buf[512] = {};
+    const DWORD n = GetEnvironmentVariableW(name, buf, ARRAYSIZE(buf));
+    return n > 0 && n < ARRAYSIZE(buf) ? std::wstring(buf, n) : std::wstring();
+}
+
 DWORD WINAPI Bootstrap(LPVOID) {
     const std::wstring game_dir = ExeDir();
-    const std::wstring mod_dir = game_dir + L"\\stranded_together";
+    // A second game on this PC (launcher local test, hidden two-instance runs) has its own mod
+    // folder below stranded_together (ST_INSTANCE_DIR, sandbox.hpp): the one DllMain used too.
+    bool instance = false;
+    const std::wstring instance_env = EnvW(st::sandbox::kInstanceEnv);
+    const std::wstring mod_dir = st::sandbox::ModDirFor(game_dir, instance_env, &instance);
+    if (instance) CreateDirectoryW(mod_dir.c_str(), nullptr);
     st::LogInit(mod_dir);
     st::Log("[mod] Stranded Together %s loaded into ds.exe (pid %lu)", ST_BUILD_ID, GetCurrentProcessId());
+    if (instance) st::Log("[mod] instance folder %ls (ST_INSTANCE_DIR)", instance_env.c_str());
+    else if (!instance_env.empty()) st::Log("[mod] ST_INSTANCE_DIR '%ls' is not a valid folder name: ignored", instance_env.c_str());
 
     // Hidden test runs (tools/testenv): automation=1 is read before LoadConfig
     // consumes a one-shot session.ini.
@@ -84,9 +139,24 @@ DWORD WINAPI Bootstrap(LPVOID) {
     }
     st::debug::SetRoleLabel(st::RoleName(cfg.role));
 
+    // Local two-instance test: which input this game takes and that it keeps running unfocused
+    // (overlay_input.hpp "local test"). The overlay installs these hooks, so it is always on then.
+    const st::sandbox::LocalInput local = st::sandbox::ParseLocalInput(cfg.local_input);
+    if (local != st::sandbox::LocalInput::off) {
+        st::overlay::input::SetLocalMode(local == st::sandbox::LocalInput::guest      ? st::overlay::input::LocalMode::guest
+                                         : local == st::sandbox::LocalInput::host_pad ? st::overlay::input::LocalMode::host_pad
+                                                                                      : st::overlay::input::LocalMode::host);
+        st::Log("[mod] local two-instance test: input %s", st::sandbox::LocalInputName(local));
+    }
+
+    if (!cfg.local_window.empty()) {
+        st::overlay::input::SetWindowSlot(cfg.local_window == "left" ? st::overlay::input::WindowSlot::left : st::overlay::input::WindowSlot::right);
+        st::Log("[mod] local test: the game window goes to the %s half of the monitor", cfg.local_window.c_str());
+    }
+
     // In-game debug menu (Direct3D 12 overlay). Installed before anything that
     // can fail below, so the menu's Status tab can show why co-op is off.
-    if (cfg.debug_menu) {
+    if (cfg.debug_menu || local != st::sandbox::LocalInput::off || !cfg.local_window.empty()) {
         st::overlay::Options ov;
         ov.toggle_vk = cfg.debug_menu_vk;
         ov.mod_dir = mod_dir;
@@ -102,6 +172,9 @@ DWORD WINAPI Bootstrap(LPVOID) {
         st::Log("[mod] debug menu off (debug_menu=0)");
     }
     st::automation::Start(mod_dir, ST_BUILD_ID);  // no-op unless automation=1
+    if (st::sandbox::MutexRenameInstalled())
+        st::Log("[mod] second instance: mutex=renamed (%lu call(s) of ds.exe's single-instance check went to %s%s)",
+                st::sandbox::MutexRenames(), st::sandbox::kAppMutex, st::sandbox::kMutexSuffix);
 
     if (!st::game::Resolve()) {
         st::Log("[mod] this ds.exe build is not supported (functions not found): co-op disabled");
@@ -124,6 +197,10 @@ DWORD WINAPI Bootstrap(LPVOID) {
         return 0;
     }
     st::Log("[mod] frame pump hooked");
+    if (cfg.frame_cap) {
+        g_frame_cap.store(cfg.frame_cap);
+        st::Log("[mod] frame_cap=%u: the game thread waits so this game shows at most %u frames per second", cfg.frame_cap, cfg.frame_cap);
+    }
 
     const bool net = cfg.role == st::Role::host || cfg.role == st::Role::guest;
     if (net) {

@@ -50,6 +50,9 @@ struct Event {
     float x = 0, y = 0;    // mouse_move: client pixels; wheel: x horizontal, y vertical (notches)
 };
 
+// Local two-instance test mode (SetLocalMode below).
+enum class LocalMode : std::uint8_t { off, host, host_pad, guest };
+
 struct Stats {
     bool subclassed = false;
     bool keyboard_hook = false;
@@ -73,6 +76,9 @@ struct Stats {
     unsigned long activate_app_posted = 0;    // automation: WM_ACTIVATEAPP(TRUE) posted by AssertActive
     unsigned long vibration_kept = 0;         // automation: XInputSetState(0) answered here, never reaching a real pad
     bool xinput_set_hook = false;             // automation: XInputSetState hooked (xinput1_4 / XINPUTUAP)
+    LocalMode local = LocalMode::off;         // local two-instance test mode
+    unsigned long local_hidden_pad_reads = 0; // local host: XInput reads answered "not connected"
+    unsigned long local_cursor_kept = 0;      // local: SetCursorPos/ClipCursor kept from the system (window not in front)
 };
 
 // Virtual XInput pad 0 (automation). `connected` stays true after a hold ends
@@ -85,6 +91,29 @@ struct PadState {
 };
 void SetAutomation(bool on) noexcept;  // before CreateApiHooks (adds the GetForegroundWindow hook)
 bool Automation() noexcept;
+
+// Local two-instance test (docs/sandbox-and-local-test.md): two visible games on one PC.
+// Set before the overlay installs (CreateApiHooks / Attach). In every local mode the game
+// window is told it stays active (WM_ACTIVATEAPP(FALSE) handed on as TRUE: ds.exe's
+// app-active flag gates its pad reader), so the unfocused game keeps running and reading
+// its pad; the cursor is only clipped/moved by the game whose window really is in the
+// foreground (the guest never touches it).
+//   host      keyboard + mouse; XInput pads read as disconnected (and get no rumble)
+//   host_pad  keyboard + mouse + XInput pads (the user asked for a pad on the host too)
+//   guest     XInput pads; GetForegroundWindow answers the game window (ds.exe clears its
+//             keyboard state when the foreground window is not its own: harmless for a pad)
+// Automation (hidden runs) wins over this.
+void SetLocalMode(LocalMode mode) noexcept;
+LocalMode GetLocalMode() noexcept;
+// Two games side by side (session.ini local_window=left|right): when the overlay first attaches
+// to the game window it gets a normal title bar and the left / right half of its monitor
+// (16:9, SetWindowPos asynchronous: the window belongs to the game's thread). Works with
+// automation too (hidden two-game runs place their windows on the private desktop).
+enum class WindowSlot : std::uint8_t { none, left, right };
+void SetWindowSlot(WindowSlot slot) noexcept;
+void PlaceWindow(HWND hwnd) noexcept;   // Attach calls it once: posts PlaceMessage() to the window
+UINT PlaceMessage() noexcept;            // handled by the subclass on the window's thread
+void PlaceWindowNow(HWND hwnd) noexcept;
 void SetVirtualPad(const PadState& pad) noexcept;  // any thread
 // Automation: post WM_ACTIVATEAPP(TRUE) to the attached game window (any thread). ds.exe
 // sets its app-active flag only from that message (window procedure 0x141A19BE0, case
@@ -124,6 +153,8 @@ void RequestToggleForTest() noexcept;
 LRESULT KeyboardProcForTest(int code, WPARAM vk, LPARAM lp) noexcept;
 // Pretends `vk` was physically down when the menu opened (call after opening).
 void MarkHeldForTest(std::uint32_t vk) noexcept;
+// Forgets what CaptureHeld saw physically down (the harness runs on a desktop someone may be using).
+void ClearHeldForTest() noexcept;
 
 void SetOpen(bool open) noexcept;
 bool IsOpen() noexcept;

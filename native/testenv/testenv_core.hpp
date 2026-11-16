@@ -38,16 +38,37 @@ std::string IsoNow();    // 2026-11-16T12:00:00.123
 // save-owner check so another account's saves load (automation.hpp "foreign saves").
 std::string SessionIniText(const std::string& role, bool mute, bool isolate = true, const std::wstring& save_root = {},
                            bool foreign_saves = false);
+// Every field: the two-game runs (role host: the first game role=host on 27555->27556, the
+// second role=guest on 27556->27555 with second_instance=1) and appdir_settings (graphics low).
+struct SessionOptions {
+    std::string role = "solo";
+    bool mute = true, isolate = true;
+    std::wstring save_root;
+    bool foreign_saves = false;
+    bool appdir_settings = false;   // appdir_settings=1: <game>\settings.cfg -> automation\settings.cfg
+    bool second_instance = false;   // second_instance=1: the second ds.exe's single-instance mutex is renamed
+    int port_local = 27555, port_peer = 27556;
+    unsigned frame_cap = 0;         // frame_cap=<fps> (graphics low: 30; the mod waits once per frame)
+    std::string local_window;       // local_window=left|right (two-game runs: the windows side by side)
+};
+std::string SessionIniText(const SessionOptions& options);
 // The supervisor's rule: automation_foreign_saves=1 only when --seed-saves names a seed and
 // the full mod runs (--no-mod installs no game patches).
 inline bool WantForeignSaves(const std::wstring& seed, bool no_mod) { return !seed.empty() && !no_mod; }
+// --sandbox-session runs: the session.ini the launcher writes for "Play with test save"
+// (no automation=1: sandbox_saves=<name>, sandbox_foreign_saves with a seed, no debug menu), so
+// the mod's visible-play sandbox path runs in a hidden game. No automation channel.
+std::string SandboxSessionIniText(const std::string& name, bool foreign_saves);
 // --no-mod runs: the mod only redirects the saves (no role, no overlay, no game hooks).
 std::string RedirectOnlyIniText(const std::wstring& save_root = {});
 
 // ------------------------------------------------------------------ scenarios
 // One line each:
 //   # comment / blank
-//   role solo|echo               session role (default solo)
+//   role solo|echo|host          session role (default solo); host: a second game (guest) is started
+//                                too, on the same private desktop (two-game run)
+//   graphics low                 both games read sandbox.hpp's low-quality windowed settings.cfg
+//   @guest <step>                the step goes to the second game (role host); @both <mod command> to both
 //   timeout <s>                  whole run limit, 30..360 (default 360)
 //   waitready <s>                until the mod's automation channel is up
 //   waitlog <s> <regex>          until a stranded_together.log line matches (ECMAScript)
@@ -67,9 +88,11 @@ struct Step {
     std::string command;        // until: the mod command
     std::uint32_t seconds = 0;  // waitready / waitlog / until
     std::uint32_t ms = 0;       // sleep / until interval
+    int target = 0;             // 0 the first game, 1 the second (guest), 2 both (mod commands, waitready)
 };
 struct Scenario {
     std::string role = "solo";
+    bool low_graphics = false;  // graphics low
     unsigned timeout_s = 360;
     std::vector<Step> steps;
 };

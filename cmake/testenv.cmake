@@ -32,7 +32,7 @@ target_link_libraries(st_testenv_core PUBLIC bcrypt)
 
 add_executable(st_testenv_supervisor WIN32 ${_st_te}/supervisor.cpp)
 target_compile_options(st_testenv_supervisor PRIVATE ${ST_WARNINGS})
-target_link_libraries(st_testenv_supervisor PRIVATE st_testenv_core user32 shell32)
+target_link_libraries(st_testenv_supervisor PRIVATE st_testenv_core user32 shell32 pdh)
 
 # The probe captures with the mod's own code (overlay_renderer.cpp).
 add_executable(st_testenv_probe WIN32 ${_st_te}/probe.cpp

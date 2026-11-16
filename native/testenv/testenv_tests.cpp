@@ -13,12 +13,14 @@
 #include <windows.h>
 #include <wincodec.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
 
 #include "automation.hpp"
+#include "sandbox.hpp"
 #include "testenv_core.hpp"
 
 namespace te = st::testenv;
@@ -660,6 +662,109 @@ int EndToEnd(const std::wstring& supervisor, const std::wstring& fakegame, const
 
 }  // namespace
 
+// Test saves and two games on one PC (native/mod/sandbox.hpp, docs/sandbox-and-local-test.md).
+void SandboxRules() {
+    namespace sb = st::sandbox;
+    Check(sb::ValidSandboxName("test") && sb::ValidSandboxName("local-guest") && sb::ValidSandboxName("testenv-1234") &&
+              !sb::ValidSandboxName("") && !sb::ValidSandboxName("..") && !sb::ValidSandboxName("a\\b") && !sb::ValidSandboxName("a/b") &&
+              !sb::ValidSandboxName(std::string(41, 'a')),
+          "sandbox names: letters, digits, '_' and '-' only (never a path)");
+    std::wstring rel;
+    Check(sb::ValidInstanceDir(L"instances\\guest", &rel) && rel == L"instances\\guest" && sb::ValidInstanceDir(L"automation/guest", &rel) &&
+              rel == L"automation\\guest" && !sb::ValidInstanceDir(L"..\\x") && !sb::ValidInstanceDir(L"\\abs") && !sb::ValidInstanceDir(L"C:\\x") &&
+              !sb::ValidInstanceDir(L"a\\\\b") && !sb::ValidInstanceDir(L"a\\b\\c\\d") && !sb::ValidInstanceDir(L""),
+          "ST_INSTANCE_DIR: 1..3 plain components below stranded_together");
+    bool used = true;
+    Check(sb::ModDirFor(L"C:\\G", L"", &used) == L"C:\\G\\stranded_together" && !used &&
+              sb::ModDirFor(L"C:\\G", L"instances\\host", &used) == L"C:\\G\\stranded_together\\instances\\host" && used &&
+              sb::ModDirFor(L"C:\\G", L"..\\..\\Windows", &used) == L"C:\\G\\stranded_together" && !used,
+          "the instance mod folder (an invalid ST_INSTANCE_DIR falls back to the default)");
+    Check(sb::RenamedMutex("DeathStrandingDCAppMutex") == "DeathStrandingDCAppMutex-StrandedTogether-2" &&
+              sb::RenamedMutex("Local\\DeathStrandingDCAppMutex") == "Local\\DeathStrandingDCAppMutex-StrandedTogether-2" &&
+              sb::RenamedMutex("DeathStrandingDCAppMutex2").empty() && sb::RenamedMutex("Other").empty() && sb::RenamedMutex(nullptr).empty() &&
+              sb::RenamedMutexW(L"DeathStrandingDCAppMutex") == L"DeathStrandingDCAppMutex-StrandedTogether-2",
+          "second instance: only ds.exe's single-instance mutex is renamed");
+    sb::Request r;
+    Check(sb::Decide(r) == sb::Mode::none, "no keys: nothing installed (every normal launch)");
+    r.sandbox = "test";
+    Check(sb::Decide(r) == sb::Mode::sandbox, "sandbox_saves=test: the visible-play redirect");
+    r.automation = true;
+    Check(sb::Decide(r) == sb::Mode::automation, "automation=1 wins (hidden runs keep their own rules)");
+    r = sb::Request{};
+    r.sandbox = "..\\real";
+    Check(sb::Decide(r) == sb::Mode::refuse_bad_name, "a sandbox name that is a path: refused");
+    for (int k = 0; k < 3; ++k) {
+        r = sb::Request{};
+        (k == 0 ? r.second_instance : k == 1 ? r.appdir_settings : r.sandbox_foreign) = true;
+        Check(sb::Decide(r) == sb::Mode::refuse_orphan, "second_instance / appdir_settings / sandbox_foreign_saves without a redirect: refused");
+    }
+    r = sb::Request{};
+    r.instance_env = true;
+    Check(sb::Decide(r) == sb::Mode::refuse_instance, "ST_INSTANCE_DIR without a test save / hidden run: refused (never the real saves)");
+    r.sandbox = "local-guest";
+    Check(sb::Decide(r) == sb::Mode::sandbox, "ST_INSTANCE_DIR with sandbox_saves: the local test's redirect");
+    r = sb::Request{};
+    r.instance_env = true;
+    r.automation = true;
+    Check(sb::Decide(r) == sb::Mode::automation, "ST_INSTANCE_DIR with automation=1: a hidden two-game run's guest");
+    Check(sb::SandboxForeignAllowed(true, true) && !sb::SandboxForeignAllowed(true, false) && !sb::SandboxForeignAllowed(false, true),
+          "test-save foreign-save bypass: only requested and after the redirect self-test");
+    Check(sb::ParseLocalInput("host") == sb::LocalInput::host && sb::ParseLocalInput("guest") == sb::LocalInput::guest &&
+              sb::ParseLocalInput("host_pad") == sb::LocalInput::host_pad && sb::ParseLocalInput("x") == sb::LocalInput::off,
+          "local_input values");
+    const std::string merged = sb::MergeGameSettings("\"GameDifficulty\" \"4\"\r\n\"WindowMode\" \"0\"\r\n", "\"WindowMode\" \"1\"\r\n\"GraphicQuality\" \"0\"\r\n");
+    Check(merged == "\"GameDifficulty\" \"4\"\r\n\"WindowMode\" \"1\"\r\n\"GraphicQuality\" \"0\"\r\n", "game_settings.cfg merge: replace + append, CRLF kept", merged);
+    {
+        const std::string low = sb::LowGraphicsSettingsCfg();
+        bool lines_ok = !low.empty();
+        std::size_t at = 0;
+        while (lines_ok && at < low.size()) {
+            const std::size_t nl = low.find("\r\n", at);
+            const std::string line = low.substr(at, nl == std::string::npos ? std::string::npos : nl - at);
+            lines_ok = std::count(line.begin(), line.end(), '"') == 4 && line.front() == '"' && line.back() == '"';
+            at = nl == std::string::npos ? low.size() : nl + 2;
+        }
+        Check(lines_ok, "the low graphics settings.cfg text is \"key\" \"value\" lines (the game's own format)");
+    }
+
+    // the two-game session.ini files
+    te::SessionOptions o;
+    o.role = "host";
+    o.appdir_settings = true;
+    o.frame_cap = 30;
+    o.local_window = "left";
+    const std::string host = te::SessionIniText(o);
+    o.role = "guest";
+    o.port_local = 27556;
+    o.port_peer = 27555;
+    o.second_instance = true;
+    o.local_window = "right";
+    const std::string guest = te::SessionIniText(o);
+    Check(host.find("role=host\n") != std::string::npos && host.find("udp_port_local=27555\n") != std::string::npos &&
+              host.find("second_instance") == std::string::npos && host.find("frame_cap=30\n") != std::string::npos &&
+              host.find("appdir_settings=1\n") != std::string::npos && host.find("local_window=left\n") != std::string::npos,
+          "two-game run: the host's session.ini");
+    Check(guest.find("role=guest\n") != std::string::npos && guest.find("udp_port_local=27556\nudp_port_peer=27555\n") != std::string::npos &&
+              guest.find("second_instance=1\n") != std::string::npos && guest.find("automation=1\n") != std::string::npos,
+          "two-game run: the guest's session.ini");
+    Check(host.rfind("# Generated by Stranded Together", 0) != 0, "testenv files never carry the launcher's header (an open launcher would delete them)");
+    const std::string sbs = te::SandboxSessionIniText("testenv-1", true);
+    Check(sbs.find("sandbox_saves=testenv-1\n") != std::string::npos && sbs.find("sandbox_foreign_saves=1\n") != std::string::npos &&
+              sbs.find("automation") == std::string::npos,
+          "--sandbox-session: the launcher-style test-save session.ini (no automation=1)");
+
+    // scenarios: @guest / @both need role host
+    te::Scenario sc;
+    std::string err;
+    Check(te::ParseScenario("role host\ngraphics low\n@guest pad A 100\n@both screenshot x\n?@guest waitlog 5 abc\nquit\n", &sc, &err) &&
+              sc.steps.size() == 4 && sc.steps[0].target == 1 && sc.steps[1].target == 2 && sc.steps[2].target == 1 && sc.steps[2].optional &&
+              sc.steps[3].target == 0 && sc.low_graphics,
+          "scenario: @guest / @both steps", err);
+    Check(!te::ParseScenario("role solo\n@guest pad A 100\n", &sc, &err), "scenario: @guest without role host is refused");
+    Check(!te::ParseScenario("role host\n@both waitlog 5 x\n", &sc, &err), "scenario: @both only for mod commands and waitready");
+    Check(!te::ParseScenario("role host\n@guest @guest quit\n", &sc, &err), "scenario: one @ prefix per step");
+}
+
 int wmain(int argc, wchar_t** argv) {
     std::wstring scenarios, supervisor, fakegame, mod, scenario, work = L".";
     bool e2e = false;
@@ -685,6 +790,7 @@ int wmain(int argc, wchar_t** argv) {
     ScenarioParser(scenarios.empty() ? L"" : te::FullPath(scenarios));
     SessionIni();
     ForeignSaves();
+    SandboxRules();
     SaveRedirectMapping();
     BackupRestore(te::FullPath(work));
     SavesGuard(te::FullPath(work));

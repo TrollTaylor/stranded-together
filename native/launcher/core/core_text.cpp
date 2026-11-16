@@ -188,6 +188,30 @@ bool MakeSessionIniText(const SessionIni& s, std::string& text, std::string& err
         error = "echo_delay_s must be 0 to 10 and echo_offset_m 0 to 20";
         return false;
     }
+    if (!s.sandbox_saves.empty()) {
+        bool name_ok = s.sandbox_saves.size() <= 40;
+        for (char c : s.sandbox_saves)
+            name_ok = name_ok && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-');
+        if (!name_ok) {
+            error = "sandbox_saves must be a folder name of letters, digits, '_' and '-'";
+            return false;
+        }
+    } else if (s.sandbox_foreign_saves || s.appdir_settings || s.second_instance) {
+        error = "sandbox_foreign_saves, appdir_settings and second_instance need sandbox_saves";
+        return false;
+    }
+    if (!s.local_input.empty() && s.local_input != "host" && s.local_input != "host_pad" && s.local_input != "guest") {
+        error = "local_input must be host, host_pad or guest";
+        return false;
+    }
+    if (!s.local_window.empty() && s.local_window != "left" && s.local_window != "right") {
+        error = "local_window must be left or right";
+        return false;
+    }
+    if (s.frame_cap != 0 && (s.frame_cap < 15 || s.frame_cap > 240)) {
+        error = "frame_cap must be 0 or 15 to 240";
+        return false;
+    }
     if (!s.name.empty() && !IsValidPlayerName(s.name)) {
         error = "the name may only use plain letters, digits, spaces and simple punctuation (32 characters at most)";
         return false;
@@ -215,6 +239,15 @@ bool MakeSessionIniText(const SessionIni& s, std::string& text, std::string& err
     t += "debug_menu_key=" + FunctionKeyName(s.debug_menu_key) + "\n";
     t += std::string("one_shot=") + (s.one_shot ? "1" : "0") + "\n";
     if (!s.name.empty()) t += "name=" + s.name + "\n";
+    if (!s.sandbox_saves.empty()) {
+        t += "sandbox_saves=" + s.sandbox_saves + "\n";
+        if (s.sandbox_foreign_saves) t += "sandbox_foreign_saves=1\n";
+        if (s.appdir_settings) t += "appdir_settings=1\n";
+        if (s.second_instance) t += "second_instance=1\n";
+    }
+    if (!s.local_input.empty()) t += "local_input=" + s.local_input + "\n";
+    if (s.frame_cap) t += "frame_cap=" + std::to_string(s.frame_cap) + "\n";
+    if (!s.local_window.empty()) t += "local_window=" + s.local_window + "\n";
     text = std::move(t);
     return true;
 }
@@ -244,6 +277,13 @@ bool ParseSessionIniText(const std::string& text, SessionIni& out, std::string& 
         else if (k == "one_shot") out.one_shot = IniBool(v);
         else if (k == "debug_menu_key") ok = (out.debug_menu_key = ParseFunctionKey(v)) != 0;
         else if (k == "name") out.name = v;
+        else if (k == "sandbox_saves") out.sandbox_saves = v;
+        else if (k == "sandbox_foreign_saves") out.sandbox_foreign_saves = IniBool(v);
+        else if (k == "appdir_settings") out.appdir_settings = IniBool(v);
+        else if (k == "second_instance") out.second_instance = IniBool(v);
+        else if (k == "local_input") out.local_input = v;
+        else if (k == "frame_cap") ok = ParseIntStrict(v, 0, 240, out.frame_cap);
+        else if (k == "local_window") out.local_window = v;
         if (!ok) {
             error = "session.ini: " + k + " is malformed";
             return false;

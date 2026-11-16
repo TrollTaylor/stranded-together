@@ -442,6 +442,30 @@ st::ShellServices MakeServices(bool interactive) {
         if (slash != std::wstring::npos && Exists(w.substr(0, slash), true))
             ShellExecuteW(g_app->hwnd, L"open", w.substr(0, slash).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     };
+    // Debug > Test saves: the system folder picker (IFileOpenDialog, FOS_PICKFOLDERS).
+    s.pick_folder = [](std::string& out) {
+        IFileOpenDialog* dlg = nullptr;
+        if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg))) || !dlg) return false;
+        DWORD opts = 0;
+        dlg->GetOptions(&opts);
+        dlg->SetOptions(opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+        dlg->SetTitle(L"Pick the folder that holds the test save (DeathStrandingDC)");
+        bool ok = false;
+        if (SUCCEEDED(dlg->Show(g_app ? g_app->hwnd : nullptr))) {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(dlg->GetResult(&item)) && item) {
+                PWSTR path = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path)) && path) {
+                    out = Utf8(path);
+                    ok = !out.empty();
+                    CoTaskMemFree(path);
+                }
+                item->Release();
+            }
+        }
+        dlg->Release();
+        return ok;
+    };
     return s;
 }
 

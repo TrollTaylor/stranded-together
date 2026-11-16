@@ -20,6 +20,8 @@ struct ShellServices {
     std::function<void(const std::string& utf8_file)> reveal_file;   // Explorer with the file selected
     std::function<void(const std::string& utf8_file)> open_file;     // the file's default program (a .log in Notepad)
     std::function<void(const std::string& utf8_url)> open_url;
+    // A folder picker (Debug > Test saves); false when cancelled. Null in screenshots.
+    std::function<bool(std::string& utf8_folder_out)> pick_folder;
 };
 
 struct LogoTexture {
@@ -67,6 +69,7 @@ private:
     void DebugPage(Phase phase);
     void DebugOptionsTab(Phase phase);
     void DebugFilesTab(Phase phase);
+    void DebugSavesTab(Phase phase);
     void ModSwitchButton(const InstallChecks& checks, bool enabled, float logical_width);
     void RefreshLog(bool force);
     void AboutPage(Phase phase);

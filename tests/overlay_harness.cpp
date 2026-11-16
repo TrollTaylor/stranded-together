@@ -549,6 +549,9 @@ int main(int argc, char** argv) {
     Frames(2);
 
     // ---- 4. input while open: ImGui gets it, the game does not
+    // A key or mouse button the person at this PC holds while the menu opened would have its
+    // release passed to the game on purpose (CaptureHeld); this check is about posted input only.
+    st::overlay::input::ClearHeldForTest();
     k0 = g_game_keys, h0 = g_game_hook_keys, m0 = g_game_mouse;
     const int i0 = g_game_input;
     PostMessageW(hwnd, WM_MOUSEMOVE, 0, MAKELPARAM(300, 200));

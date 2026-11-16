@@ -31,6 +31,9 @@
 // GUI subsystem: never opens a console window; prints to the parent console
 // when there is one, and always to <run>\supervisor.log.
 #include <windows.h>
+#include <pdh.h>
+#include <pdhmsg.h>
+#include <psapi.h>
 #include <shellapi.h>
 
 #include <algorithm>
@@ -41,6 +44,7 @@
 #include <vector>
 
 #include "automation.hpp"
+#include "sandbox.hpp"
 #include "testenv_core.hpp"
 
 namespace te = st::testenv;
@@ -206,7 +210,11 @@ bool SafetyCheck(Owned& o) {
         ++i->n;
         wchar_t title[96] = {};
         GetWindowTextW(w, title, 96);
-        if (i->titles.size() < 300) i->titles += (i->titles.empty() ? "" : " | ") + te::Narrow(title);
+        RECT rc{};
+        GetWindowRect(w, &rc);
+        char where[64];
+        std::snprintf(where, sizeof(where), " [%ld,%ld %ldx%ld]", rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top);
+        if (i->titles.size() < 400) i->titles += (i->titles.empty() ? "" : " | ") + te::Narrow(title) + where;
         return TRUE;
     }, reinterpret_cast<LPARAM>(&inv));
     if (inv.n >= o.private_windows && inv.n > 0) {  // the most seen at once (the game may have exited by the end)
@@ -226,17 +234,19 @@ std::wstring SteamPath() {
 
 bool g_full_steam_env = false;  // --steam-env
 
-std::wstring ChildEnvironment(bool steam_app_id) {
+std::wstring ChildEnvironment(bool steam_app_id, const std::vector<std::wstring>& extra = {}) {
     std::vector<std::wstring> vars;
     if (wchar_t* env = GetEnvironmentStringsW()) {
         for (const wchar_t* p = env; *p; p += wcslen(p) + 1) {
             const std::wstring v = p;
             if (steam_app_id && (_wcsnicmp(v.c_str(), L"SteamAppId=", 11) == 0 || _wcsnicmp(v.c_str(), L"SteamGameId=", 12) == 0)) continue;
             if (v.rfind(std::wstring(st::automation::saves::kSupervisedEnv) + L"=", 0) == 0) continue;
+            if (_wcsnicmp(v.c_str(), L"ST_INSTANCE_DIR=", 16) == 0) continue;  // only what this run sets
             vars.push_back(v);
         }
         FreeEnvironmentStringsW(env);
     }
+    for (const std::wstring& v : extra) vars.push_back(v);
     // The mod refuses automation=1 in a ds.exe that does not carry this (automation.hpp).
     vars.push_back(std::wstring(st::automation::saves::kSupervisedEnv) + L"=" + std::to_wstring(GetCurrentProcessId()));
     if (steam_app_id) {
@@ -268,7 +278,8 @@ std::wstring ChildEnvironment(bool steam_app_id) {
 // OutputDebugStringA) -- given a file as stdout, the run keeps it (game-stdout.txt).
 // Only that one handle is inherited (PROC_THREAD_ATTRIBUTE_HANDLE_LIST).
 bool Launch(Owned& o, const std::wstring& exe, const std::wstring& args, const std::wstring& cwd, bool steam_env,
-            const std::wstring& stdout_file = {}) {
+            const std::wstring& stdout_file = {}, const std::vector<std::wstring>& extra_env = {}, HANDLE* process_out = nullptr,
+            DWORD* pid_out = nullptr) {
     std::wstring desk = L"WinSta0\\" + te::Widen(o.desktop_name);
     STARTUPINFOEXW six{};
     STARTUPINFOW& si = six.StartupInfo;
@@ -277,7 +288,7 @@ bool Launch(Owned& o, const std::wstring& exe, const std::wstring& args, const s
     si.dwFlags = STARTF_FORCEOFFFEEDBACK;  // no busy cursor on the user's desktop
     PROCESS_INFORMATION pi{};
     std::wstring cmd = L"\"" + exe + L"\"" + (args.empty() ? L"" : L" " + args);
-    std::wstring env = ChildEnvironment(steam_env);
+    std::wstring env = ChildEnvironment(steam_env, extra_env);
     HANDLE out = INVALID_HANDLE_VALUE;
     std::vector<unsigned char> attr_buf;
     DWORD flags = CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_PROCESS_GROUP;
@@ -319,11 +330,17 @@ bool Launch(Owned& o, const std::wstring& exe, const std::wstring& args, const s
         CloseHandle(pi.hProcess);
         return false;
     }
-    o.process = pi.hProcess;
-    o.pid = pi.dwProcessId;
+    if (process_out) {
+        *process_out = pi.hProcess;
+        if (pid_out) *pid_out = pi.dwProcessId;
+    } else {
+        o.process = pi.hProcess;
+        o.pid = pi.dwProcessId;
+    }
     ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
-    Out("started %s pid %lu on WinSta0\\%s (job: kill on close, UI restricted)", te::Narrow(exe).c_str(), o.pid, o.desktop_name.c_str());
+    Out("started %s pid %lu on WinSta0\\%s (job: kill on close, UI restricted)%s", te::Narrow(exe).c_str(), pi.dwProcessId,
+        o.desktop_name.c_str(), extra_env.empty() ? "" : (" env " + te::Narrow(extra_env[0])).c_str());
     return true;
 }
 
@@ -352,8 +369,9 @@ void CloseOwned(Owned& o) {
 
 // ------------------------------------------------------------------ args
 struct Args {
-    std::wstring probe, game_dir, mod, scenario, run_dir, restore, saves, seed;
+    std::wstring probe, game_dir, mod, scenario, run_dir, restore, saves, seed, settings_cfg, game_settings;
     bool steam_check = true, mute = true, no_mod = false, ui_limits = true, steam_env = false, isolation = true, game_stdout = true;
+    bool sandbox_session = false;   // --sandbox-session: the launcher's test-save session.ini (no automation channel)
     unsigned timeout_s = kMaxRunSeconds, probe_seconds = 6;
 };
 
@@ -376,10 +394,13 @@ bool ParseArgs(Args& a, std::string* err) {
         else if (k == L"--restore") val(a.restore);
         else if (k == L"--saves") val(a.saves);
         else if (k == L"--seed-saves") val(a.seed);
+        else if (k == L"--settings-cfg") val(a.settings_cfg);
+        else if (k == L"--game-settings") val(a.game_settings);
         else if (k == L"--no-steam-check") a.steam_check = false;
         else if (k == L"--no-game-stdout") a.game_stdout = false;
         else if (k == L"--keep-audio") a.mute = false;
         else if (k == L"--no-mod") a.no_mod = true;
+        else if (k == L"--sandbox-session") a.sandbox_session = true;
         else if (k == L"--no-ui-limits") a.ui_limits = false;
         else if (k == L"--steam-env") a.steam_env = true;
         else if (k == L"--no-isolation") a.isolation = false;
@@ -442,14 +463,53 @@ int RunProbe(const Args& a) {
 }
 
 // ------------------------------------------------------------------ game mode
+// The second game of a two-game run (scenario "role host"): same job, same private desktop,
+// its own mod folder <mod>\automation\guest (ST_INSTANCE_DIR), automation channel and scratch saves.
+struct Guest {
+    bool on = false;
+    std::wstring dir, auto_in, auto_out, log_path, scratch;
+    HANDLE process = nullptr;
+    DWORD pid = 0;
+    unsigned seq = 0;
+    bool quit_sent = false;
+    bool redirected = false;
+    std::string evidence;
+    double lifetime_s = 0, cpu_s = 0;
+    unsigned long exit_code = 0;
+};
+
+// Resource use of the game processes (two-game runs: what two low-settings games cost).
+struct ResourceSample {
+    double t = 0;
+    double ws_mb = 0, private_mb = 0, cpu_pct = 0, gpu_dedicated_mb = 0, gpu_shared_mb = 0;
+};
+struct ResourceTrack {
+    DWORD pid = 0;
+    std::string name;
+    ULONGLONG last_cpu = 0, last_tick = 0;
+    double peak_ws = 0, peak_private = 0, peak_gpu = 0, peak_gpu_shared = 0, peak_cpu = 0;
+    double sum_cpu = 0, sum_ws = 0, sum_gpu = 0;
+    unsigned n = 0;
+};
+
 struct Run {
     Args args;
     std::wstring run, game, mod_dir, auto_in, auto_out, log_path;
     Owned o;
+    Guest g;
     te::Scenario scenario;
     ULONGLONG deadline = 0;
     unsigned seq = 0;
     bool quit_sent = false;
+    // resources (sampled every 2 s while the games run)
+    ULONGLONG next_sample = 0;
+    std::vector<ResourceTrack> tracks;
+    std::string resources_csv;
+    double peak_total_ws = 0, peak_total_gpu = 0, peak_total_cpu = 0, peak_total_private = 0;
+    double sys_ram_total_mb = 0, sys_ram_min_free_mb = 0;
+    void* pdh_query = nullptr;
+    void* pdh_gpu_dedicated = nullptr;
+    void* pdh_gpu_shared = nullptr;
     std::vector<std::string> results;  // per step, JSON objects
     int failures = 0;
     std::string end_reason;
@@ -459,6 +519,168 @@ struct Run {
 };
 
 bool Expired(const Run& r) { return GetTickCount64() >= r.deadline; }
+
+// "graphics low" / --game-settings: `"Key" "Value"` lines merged into every account's
+// profile\game_settings.cfg of a SCRATCH copy (the graphics menu's options live there).
+// Never called for anything but a scratch folder below <mod>\automation. Returns the count.
+int ApplyGameSettings(const std::wstring& scratch, const std::string& overrides) {
+    int n = 0;
+    const std::wstring dc = scratch + L"\\DeathStrandingDC";
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((dc + L"\\*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || fd.cFileName[0] == L'.') continue;
+        const std::wstring profile = dc + L"\\" + fd.cFileName + L"\\profile";
+        if (!te::DirExists(profile)) continue;
+        std::string text;
+        te::ReadFileBytes(profile + L"\\game_settings.cfg", &text);
+        if (te::WriteFileAtomic(profile + L"\\game_settings.cfg", st::sandbox::MergeGameSettings(text, overrides))) ++n;
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return n;
+}
+
+// ---- resources: working set / private bytes / CPU (process times) and GPU memory + 3D engine
+// use from the "GPU Process Memory" / "GPU Engine" performance counters (per pid instance).
+void* g_pdh_util = nullptr;
+
+void OpenPdh(Run& r) {
+    PDH_HQUERY q = nullptr;
+    if (PdhOpenQueryW(nullptr, 0, &q) != ERROR_SUCCESS) return;
+    PDH_HCOUNTER c1 = nullptr, c2 = nullptr, c3 = nullptr;
+    PdhAddEnglishCounterW(q, L"\\GPU Process Memory(*)\\Dedicated Usage", 0, &c1);
+    PdhAddEnglishCounterW(q, L"\\GPU Process Memory(*)\\Shared Usage", 0, &c2);
+    PdhAddEnglishCounterW(q, L"\\GPU Engine(*)\\Utilization Percentage", 0, &c3);
+    PdhCollectQueryData(q);
+    r.pdh_query = q;
+    r.pdh_gpu_dedicated = c1;
+    r.pdh_gpu_shared = c2;
+    g_pdh_util = c3;
+}
+
+// Sum of a wildcard counter's instances named "pid_<pid>_..." (engine: only engtype_3D).
+double PdhSumForPid(void* counter, DWORD pid, bool engine_3d) {
+    if (!counter) return 0;
+    DWORD bytes = 0, count = 0;
+    if (PdhGetFormattedCounterArrayW(static_cast<PDH_HCOUNTER>(counter), PDH_FMT_DOUBLE | PDH_FMT_NOCAP100, &bytes, &count, nullptr) !=
+        static_cast<PDH_STATUS>(PDH_MORE_DATA))
+        return 0;
+    std::vector<unsigned char> buf(bytes);
+    auto* items = reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W*>(buf.data());
+    if (PdhGetFormattedCounterArrayW(static_cast<PDH_HCOUNTER>(counter), PDH_FMT_DOUBLE | PDH_FMT_NOCAP100, &bytes, &count, items) !=
+        ERROR_SUCCESS)
+        return 0;
+    const std::wstring prefix = L"pid_" + std::to_wstring(pid) + L"_";
+    double sum = 0;
+    for (DWORD i = 0; i < count; ++i) {
+        const std::wstring name = items[i].szName ? items[i].szName : L"";
+        if (name.rfind(prefix, 0) != 0) continue;
+        if (engine_3d && name.find(L"engtype_3D") == std::wstring::npos) continue;
+        if (items[i].FmtValue.CStatus == ERROR_SUCCESS || items[i].FmtValue.CStatus == PDH_CSTATUS_NEW_DATA) sum += items[i].FmtValue.doubleValue;
+    }
+    return sum;
+}
+
+void SampleResources(Run& r, bool force = false) {
+    const ULONGLONG now = GetTickCount64();
+    if (!force && now < r.next_sample) return;
+    r.next_sample = now + 2000;
+    if (!r.pdh_query) OpenPdh(r);
+    if (r.pdh_query) PdhCollectQueryData(static_cast<PDH_HQUERY>(r.pdh_query));
+    MEMORYSTATUSEX ms{sizeof(ms)};
+    if (GlobalMemoryStatusEx(&ms)) {
+        r.sys_ram_total_mb = static_cast<double>(ms.ullTotalPhys) / 1048576.0;
+        const double free_mb = static_cast<double>(ms.ullAvailPhys) / 1048576.0;
+        if (r.sys_ram_min_free_mb == 0 || free_mb < r.sys_ram_min_free_mb) r.sys_ram_min_free_mb = free_mb;
+    }
+    SYSTEM_INFO si{};
+    GetSystemInfo(&si);
+    const double cores = si.dwNumberOfProcessors ? si.dwNumberOfProcessors : 1;
+    struct P {
+        HANDLE h;
+        DWORD pid;
+        const char* name;
+    };
+    std::vector<P> procs;
+    if (r.o.process && Alive(r.o)) procs.push_back({r.o.process, r.o.pid, "host"});
+    if (r.g.on && r.g.process && WaitForSingleObject(r.g.process, 0) == WAIT_TIMEOUT) procs.push_back({r.g.process, r.g.pid, "guest"});
+    if (procs.empty()) return;
+    double tot_ws = 0, tot_gpu = 0, tot_cpu = 0, tot_priv = 0;
+    for (const P& p : procs) {
+        ResourceTrack* t = nullptr;
+        for (ResourceTrack& x : r.tracks)
+            if (x.pid == p.pid) t = &x;
+        if (!t) {
+            r.tracks.push_back(ResourceTrack{});
+            t = &r.tracks.back();
+            t->pid = p.pid;
+            t->name = r.g.on ? p.name : "game";
+        }
+        ResourceSample s;
+        s.t = static_cast<double>(now - g_t0) / 1000.0;
+        PROCESS_MEMORY_COUNTERS_EX pm{};
+        pm.cb = sizeof(pm);
+        if (GetProcessMemoryInfo(p.h, reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pm), sizeof(pm))) {
+            s.ws_mb = static_cast<double>(pm.WorkingSetSize) / 1048576.0;
+            s.private_mb = static_cast<double>(pm.PrivateUsage) / 1048576.0;
+        }
+        FILETIME c{}, e{}, k{}, u{};
+        if (GetProcessTimes(p.h, &c, &e, &k, &u)) {
+            const auto ft = [](const FILETIME& f) { return (static_cast<ULONGLONG>(f.dwHighDateTime) << 32) | f.dwLowDateTime; };
+            const ULONGLONG cpu = ft(k) + ft(u);
+            if (t->last_tick && now > t->last_tick)
+                s.cpu_pct = static_cast<double>(cpu - t->last_cpu) / 1e4 / static_cast<double>(now - t->last_tick) * 100.0 / cores;
+            t->last_cpu = cpu;
+            t->last_tick = now;
+        }
+        s.gpu_dedicated_mb = PdhSumForPid(r.pdh_gpu_dedicated, p.pid, false) / 1048576.0;
+        s.gpu_shared_mb = PdhSumForPid(r.pdh_gpu_shared, p.pid, false) / 1048576.0;
+        const double gpu_util = PdhSumForPid(g_pdh_util, p.pid, true);
+        char line[256];
+        std::snprintf(line, sizeof(line), "%.1f,%s,%lu,%.0f,%.0f,%.1f,%.0f,%.0f,%.1f\n", s.t, t->name.c_str(), p.pid, s.ws_mb, s.private_mb, s.cpu_pct,
+                      s.gpu_dedicated_mb, s.gpu_shared_mb, gpu_util);
+        r.resources_csv += line;
+        t->peak_ws = std::max(t->peak_ws, s.ws_mb);
+        t->peak_private = std::max(t->peak_private, s.private_mb);
+        t->peak_gpu = std::max(t->peak_gpu, s.gpu_dedicated_mb);
+        t->peak_gpu_shared = std::max(t->peak_gpu_shared, s.gpu_shared_mb);
+        t->peak_cpu = std::max(t->peak_cpu, s.cpu_pct);
+        t->sum_cpu += s.cpu_pct;
+        t->sum_ws += s.ws_mb;
+        t->sum_gpu += s.gpu_dedicated_mb;
+        ++t->n;
+        tot_ws += s.ws_mb, tot_gpu += s.gpu_dedicated_mb, tot_cpu += s.cpu_pct, tot_priv += s.private_mb;
+    }
+    r.peak_total_ws = std::max(r.peak_total_ws, tot_ws);
+    r.peak_total_gpu = std::max(r.peak_total_gpu, tot_gpu);
+    r.peak_total_cpu = std::max(r.peak_total_cpu, tot_cpu);
+    r.peak_total_private = std::max(r.peak_total_private, tot_priv);
+}
+
+std::string ResourcesJson(const Run& r) {
+    std::string j = "{\"processes\":[";
+    for (std::size_t i = 0; i < r.tracks.size(); ++i) {
+        const ResourceTrack& t = r.tracks[i];
+        const double n = t.n ? t.n : 1;
+        char b[512];
+        std::snprintf(b, sizeof(b),
+                      "%s{\"name\":\"%s\",\"pid\":%lu,\"samples\":%u,\"peak_working_set_mb\":%.0f,\"avg_working_set_mb\":%.0f,"
+                      "\"peak_private_mb\":%.0f,\"peak_gpu_dedicated_mb\":%.0f,\"avg_gpu_dedicated_mb\":%.0f,\"peak_gpu_shared_mb\":%.0f,"
+                      "\"peak_cpu_pct\":%.1f,\"avg_cpu_pct\":%.1f}",
+                      i ? "," : "", t.name.c_str(), t.pid, t.n, t.peak_ws, t.sum_ws / n, t.peak_private, t.peak_gpu, t.sum_gpu / n,
+                      t.peak_gpu_shared, t.peak_cpu, t.sum_cpu / n);
+        j += b;
+    }
+    char b[320];
+    std::snprintf(b, sizeof(b),
+                  "],\"peak_total_working_set_mb\":%.0f,\"peak_total_private_mb\":%.0f,\"peak_total_gpu_dedicated_mb\":%.0f,"
+                  "\"peak_total_cpu_pct\":%.1f,\"system_ram_mb\":%.0f,\"system_ram_min_free_mb\":%.0f,\"cpu_pct_note\":\"of all logical CPUs\"}",
+                  r.peak_total_ws, r.peak_total_private, r.peak_total_gpu, r.peak_total_cpu, r.sys_ram_total_mb, r.sys_ram_min_free_mb);
+    return j + b;
+}
+
+bool GuestAlive(const Run& r) { return !r.g.on || !r.g.process || WaitForSingleObject(r.g.process, 0) == WAIT_TIMEOUT; }
 
 // Waits `ms` while watching the process and the safety rules. False = stop the run.
 bool Watch(Run& r, DWORD ms) {
@@ -474,6 +696,11 @@ bool Watch(Run& r, DWORD ms) {
             if (r.end_reason.empty()) r.end_reason = "the game exited";
             return false;
         }
+        if (!GuestAlive(r) && !r.g.quit_sent) {  // after "@guest quit" its exit is expected
+            if (r.end_reason.empty()) r.end_reason = "the guest game exited";
+            return false;
+        }
+        SampleResources(r);
         if (Expired(r)) {
             r.end_reason = "run timeout";
             return false;
@@ -485,17 +712,21 @@ bool Watch(Run& r, DWORD ms) {
 }
 
 // Sends one mod command and waits for its .done. Returns ok; detail = the mod's line.
-bool ModCommand(Run& r, const std::string& cmd, std::string* detail) {
+// target 0: the (first) game; 1: the guest game of a two-game run.
+bool ModCommand(Run& r, const std::string& cmd, std::string* detail, int target = 0) {
+    const bool guest = target == 1 && r.g.on;
+    const std::wstring& in = guest ? r.g.auto_in : r.auto_in;
+    const std::wstring& out = guest ? r.g.auto_out : r.auto_out;
     char name[32];
-    std::snprintf(name, sizeof(name), "%04u", ++r.seq);
+    std::snprintf(name, sizeof(name), "%04u", guest ? ++r.g.seq : ++r.seq);
     const std::wstring base = te::Widen(name);
-    const std::wstring done = r.auto_out + L"\\" + base + L".done";
-    if (!te::WriteFileAtomic(r.auto_in + L"\\" + base + L".tmp", cmd + "\n") ||
-        !MoveFileExW((r.auto_in + L"\\" + base + L".tmp").c_str(), (r.auto_in + L"\\" + base + L".cmd").c_str(), MOVEFILE_REPLACE_EXISTING)) {
+    const std::wstring done = out + L"\\" + base + L".done";
+    if (!te::WriteFileAtomic(in + L"\\" + base + L".tmp", cmd + "\n") ||
+        !MoveFileExW((in + L"\\" + base + L".tmp").c_str(), (in + L"\\" + base + L".cmd").c_str(), MOVEFILE_REPLACE_EXISTING)) {
         *detail = "could not write the command file";
         return false;
     }
-    if (cmd.rfind("quit", 0) == 0) r.quit_sent = true;
+    if (cmd.rfind("quit", 0) == 0) (guest ? r.g.quit_sent : r.quit_sent) = true;
     const ULONGLONG end = GetTickCount64() + te::AckTimeoutSeconds(cmd) * 1000ull;
     bool last_look = false;
     while (GetTickCount64() < end || last_look) {
@@ -531,9 +762,9 @@ bool ModCommand(Run& r, const std::string& cmd, std::string* detail) {
     return false;
 }
 
-bool LogMatches(Run& r, const std::regex& re, std::string* line_out) {
+bool LogMatches(Run& r, const std::regex& re, std::string* line_out, int target = 0) {
     std::string text;
-    if (!te::ReadFileBytes(r.log_path, &text)) return false;
+    if (!te::ReadFileBytes(target == 1 && r.g.on ? r.g.log_path : r.log_path, &text)) return false;
     std::size_t at = 0;
     while (at < text.size()) {
         std::size_t nl = text.find('\n', at);
@@ -577,34 +808,39 @@ bool RunSteps(Run& r) {
                 detail = ok ? "slept" : r.end_reason;
                 break;
             case te::StepKind::waitready: {
-                what = "waitready " + std::to_string(s.seconds);
+                what = std::string(s.target == 1 ? "@guest " : s.target == 2 ? "@both " : "") + "waitready " + std::to_string(s.seconds);
                 const ULONGLONG end = t0 + s.seconds * 1000ull;
-                while (!(ok = te::FileExists(r.auto_out + L"\\ready.txt")) && GetTickCount64() < end && Watch(r, 200)) {
+                const auto ready_now = [&]() {
+                    const bool host = s.target == 1 || te::FileExists(r.auto_out + L"\\ready.txt");
+                    const bool guest = s.target == 0 || !r.g.on || te::FileExists(r.g.auto_out + L"\\ready.txt");
+                    return host && guest;
+                };
+                while (!(ok = ready_now()) && GetTickCount64() < end && Watch(r, 200)) {
                 }
                 std::string ready;
-                te::ReadFileBytes(r.auto_out + L"\\ready.txt", &ready);
+                te::ReadFileBytes((s.target == 1 ? r.g.auto_out : r.auto_out) + L"\\ready.txt", &ready);
                 for (char& c : ready)
                     if (c == '\n') c = ' ';
                 detail = ok ? "automation channel up: " + ready : (r.end_reason.empty() ? "no ready.txt" : r.end_reason);
                 break;
             }
             case te::StepKind::waitlog: {
-                what = "waitlog " + std::to_string(s.seconds) + " " + s.text;
+                what = std::string(s.target == 1 ? "@guest " : "") + "waitlog " + std::to_string(s.seconds) + " " + s.text;
                 const std::regex re(s.text);
                 const ULONGLONG end = t0 + s.seconds * 1000ull;
-                while (!(ok = LogMatches(r, re, &detail)) && GetTickCount64() < end && Watch(r, 500)) {
+                while (!(ok = LogMatches(r, re, &detail, s.target)) && GetTickCount64() < end && Watch(r, 500)) {
                 }
                 if (!ok) detail = r.end_reason.empty() || Alive(r.o) ? "no matching log line" : r.end_reason;
                 break;
             }
             case te::StepKind::until: {
-                what = "until " + s.text + " => " + s.command;
+                what = std::string(s.target == 1 ? "@guest " : "") + "until " + s.text + " => " + s.command;
                 const std::regex re(s.text);
                 const ULONGLONG end = t0 + s.seconds * 1000ull;
                 unsigned sent = 0;
-                while (!(ok = LogMatches(r, re, &detail)) && GetTickCount64() < end) {
+                while (!(ok = LogMatches(r, re, &detail, s.target)) && GetTickCount64() < end) {
                     std::string d;
-                    const bool sent_ok = ModCommand(r, s.command, &d);
+                    const bool sent_ok = ModCommand(r, s.command, &d, s.target);
                     ++sent;
                     if (!sent_ok) {
                         detail = "command failed: " + d;
@@ -618,12 +854,21 @@ bool RunSteps(Run& r) {
                 break;
             }
             case te::StepKind::mod:
-                what = s.text;
-                ok = ModCommand(r, s.text, &detail);
+                if (s.target == 2) {
+                    what = "@both " + s.text;
+                    std::string d1, d2;
+                    const bool ok1 = ModCommand(r, s.text, &d1, 0);
+                    const bool ok2 = ModCommand(r, s.text, &d2, 1);
+                    ok = ok1 && ok2;
+                    detail = "host: " + d1 + " | guest: " + d2;
+                } else {
+                    what = std::string(s.target == 1 ? "@guest " : "") + s.text;
+                    ok = ModCommand(r, s.text, &detail, s.target);
+                }
                 break;
         }
         Record(r, s, what.c_str(), ok, detail, t0);
-        if (!ok && !Alive(r.o)) return false;
+        if (!ok && (!Alive(r.o) || !GuestAlive(r))) return false;
         if (!ok && !r.end_reason.empty() && r.end_reason != "the game exited") return false;
         if (!ok && !s.optional) return false;
         if (Expired(r)) {
@@ -638,7 +883,7 @@ std::string PreflightGame(Run& r) {
     if (!te::FileExists(r.game + L"\\ds.exe")) return "no ds.exe in " + te::Narrow(r.game);
     // --no-mod deploys the DLL too: it is what redirects the saves
     if (!te::FileExists(r.args.mod)) return "mod DLL not found: " + te::Narrow(r.args.mod);
-    if (r.args.no_mod)
+    if (r.args.no_mod || r.args.sandbox_session)
         for (const te::Step& s : r.scenario.steps)
             if (s.kind == te::StepKind::mod || s.kind == te::StepKind::waitready || s.kind == te::StepKind::until)
                 return "--no-mod has no automation channel: the scenario may only use sleep, note and waitlog (line " + std::to_string(s.line) + ")";
@@ -716,9 +961,11 @@ std::string JsonList(const std::vector<std::string>& v) {
 // The mod's DllMain marker (automation\saves-redirect.txt, written before ds.exe's own
 // code runs) within 10 s, then its "[auto] saves=redirected" log line within 30 s.
 // Anything else ends the run before a scenario step can make the game load a save.
-bool WaitSavesEvidence(Run& r, std::string* detail) {
-    const std::wstring active = r.mod_dir + L"\\automation\\saves-redirect.txt";
-    const std::wstring refused = r.mod_dir + L"\\automation\\saves-redirect-failed.txt";
+bool WaitSavesEvidence(Run& r, std::string* detail, int target = 0) {
+    const std::wstring& dir = target == 1 ? r.g.dir : r.mod_dir;
+    const bool sb = r.args.sandbox_session;
+    const std::wstring active = sb ? dir + L"\\sandbox-active.txt" : dir + L"\\automation\\saves-redirect.txt";
+    const std::wstring refused = sb ? dir + L"\\sandbox-refused.txt" : dir + L"\\automation\\saves-redirect-failed.txt";
     const ULONGLONG t0 = GetTickCount64();
     const auto refused_text = [&]() {
         std::string t;
@@ -736,12 +983,12 @@ bool WaitSavesEvidence(Run& r, std::string* detail) {
         }
     }
     const double marker_s = static_cast<double>(GetTickCount64() - t0) / 1000.0;
-    const std::regex re("\\[auto\\] saves=redirected");
+    const std::regex re(sb ? "\\[sandbox\\] saves=redirected" : "\\[auto\\] saves=redirected");
     std::string line;
-    while (!LogMatches(r, re, &line)) {
+    while (!LogMatches(r, re, &line, target)) {
         if (GetTickCount64() - t0 > 30000) return *detail = "no '[auto] saves=redirected' log line within 30 s", false;
         if (!Watch(r, 100)) {
-            if (LogMatches(r, re, &line)) break;
+            if (LogMatches(r, re, &line, target)) break;
             return *detail = "the game ended before the redirect log line (" + r.end_reason + ")", false;
         }
     }
@@ -771,6 +1018,19 @@ int RunGame(Args& a) {
     }
     te::WriteFileAtomic(r.run + L"\\scenario.txt", text);
     const unsigned limit = std::min(a.timeout_s, r.scenario.timeout_s);
+    // role host: a second (guest) game in <mod>\automation\guest (ST_INSTANCE_DIR=automation\guest)
+    r.g.on = r.scenario.role == "host";
+    if (r.g.on) {
+        r.g.dir = r.mod_dir + L"\\automation\\guest";
+        r.g.auto_in = r.g.dir + L"\\automation\\in";
+        r.g.auto_out = r.g.dir + L"\\automation\\out";
+        r.g.log_path = r.g.dir + L"\\stranded_together.log";
+        r.g.scratch = r.g.dir + L"\\automation\\saves";
+        if (a.no_mod) {
+            Out("REFUSED: role host (two games) needs the full mod (--no-mod given)");
+            return 2;
+        }
+    }
     std::string why = PreflightGame(r);
     // --saves <dir>: an explicit save root (tests: a scratch "real" root, also handed to the
     // mod as automation_save_root). Otherwise the user's own.
@@ -821,19 +1081,100 @@ int RunGame(Args& a) {
     // --seed-saves only: another account's saves need ds.exe's save-owner check skipped
     // (automation_foreign_saves=1; the mod does it only in this supervised, redirected run).
     const bool foreign = te::WantForeignSaves(a.seed, a.no_mod);
+    // --sandbox-session: the scratch copy is a launcher-style sandbox (<mod>\\sandbox\\testenv-<pid>),
+    // removed when the run ends (recorded in restore.txt before it exists).
+    const std::string sandbox_name = "testenv-" + std::to_string(GetCurrentProcessId());
+    const std::wstring sandbox_root = r.mod_dir + L"\\sandbox\\" + te::Widen(sandbox_name);
+    const std::wstring sandbox_scratch = sandbox_root + L"\\saves";
+    if (a.sandbox_session) {
+        std::string manifest;
+        te::ReadFileBytes(r.run + L"\\restore.txt", &manifest);
+        if (!te::DirExists(r.mod_dir + L"\\sandbox")) manifest += "tree\t" + te::Narrow(r.mod_dir + L"\\sandbox") + "\n";
+        manifest += "tree\t" + te::Narrow(sandbox_root) + "\n";
+        te::WriteFileAtomic(r.run + L"\\restore.txt", manifest);
+    }
     deployed = deployed && CopyFileW(r.args.mod.c_str(), (r.game + L"\\winhttp.dll").c_str(), FALSE);
-    deployed = deployed && te::WriteFileAtomic(r.mod_dir + L"\\session.ini",
-                                               a.no_mod ? te::RedirectOnlyIniText(extra_root)
-                                                        : te::SessionIniText(r.scenario.role, a.mute, a.isolation, extra_root, foreign));
+    // graphics: "graphics low" (sandbox.hpp's low-quality windowed settings.cfg) or --settings-cfg <file>
+    // (an experiment): <game>\settings.cfg is redirected to automation\settings.cfg (appdir_settings=1).
+    std::string settings_text;
+    const bool appdir = !a.no_mod && (r.scenario.low_graphics || !a.settings_cfg.empty());
+    if (appdir) {
+        if (!a.settings_cfg.empty()) {
+            if (!te::ReadFileBytes(te::FullPath(a.settings_cfg), &settings_text)) {
+                Out("setup failed: --settings-cfg %s unreadable", te::Narrow(a.settings_cfg).c_str());
+                deployed = false;
+            }
+        } else {
+            settings_text = st::sandbox::LowGraphicsSettingsCfg();
+        }
+    }
+    te::SessionOptions so;
+    so.role = r.scenario.role;
+    so.mute = a.mute;
+    so.isolate = a.isolation;
+    so.save_root = extra_root;
+    so.foreign_saves = foreign;
+    so.appdir_settings = appdir;
+    if (r.scenario.low_graphics) so.frame_cap = 30;  // two games on one GPU: neither renders uncapped
+    if (r.g.on) so.local_window = "left";              // the two windows side by side (as the launcher's local test)
+    deployed = deployed && te::WriteFileAtomic(r.mod_dir + L"\\session.ini", a.no_mod            ? te::RedirectOnlyIniText(extra_root)
+                                                                   : a.sandbox_session ? te::SandboxSessionIniText(sandbox_name, foreign)
+                                                                                       : te::SessionIniText(so));
+    if (deployed && a.sandbox_session) {
+        if (!te::SeedScratch(r.run, sandbox_scratch, &err)) {
+            Out("setup failed (sandbox): %s", err.c_str());
+            deployed = false;
+        } else {
+            int n = 0;
+            if (!a.seed.empty() && !te::ApplySeedSaves(sandbox_scratch, te::FullPath(a.seed), &n, &err)) deployed = false;
+            Out("--sandbox-session: session.ini sandbox_saves=%s%s (no automation=1), sandbox seeded at %s", sandbox_name.c_str(),
+                foreign ? " sandbox_foreign_saves=1" : "", te::Narrow(sandbox_scratch).c_str());
+        }
+    }
+    if (deployed && appdir) deployed = te::WriteFileAtomic(r.mod_dir + L"\\automation\\settings.cfg", settings_text);
     if (deployed && !te::SeedScratch(r.run, scratch, &err)) {
         Out("setup failed: %s", err.c_str());
         deployed = false;
+    }
+    // Two-game run (role host): the guest game's own folder <mod>\automation\guest (removed with
+    // the automation tree when the run ends), its session.ini, scratch saves and settings.
+    if (deployed && r.g.on) {
+        te::SessionOptions go = so;
+        go.role = "guest";
+        go.port_local = so.port_peer;
+        go.port_peer = so.port_local;
+        go.second_instance = true;
+        go.local_window = "right";
+        deployed = te::EnsureDir(r.g.auto_in) && te::EnsureDir(r.g.auto_out) && te::WriteFileAtomic(r.g.dir + L"\\session.ini", te::SessionIniText(go));
+        if (deployed && appdir) deployed = te::WriteFileAtomic(r.g.dir + L"\\automation\\settings.cfg", settings_text);
+        if (deployed && !te::SeedScratch(r.run, r.g.scratch, &err)) {
+            Out("setup failed (guest): %s", err.c_str());
+            deployed = false;
+        }
+        if (deployed) Out("guest game deployed: %s (session.ini role=guest second_instance=1, own scratch saves)", te::Narrow(r.g.dir).c_str());
+    }
+    if (deployed && appdir) Out("graphics: settings.cfg redirected (appdir_settings=1), %zu bytes from %s", settings_text.size(),
+                                a.settings_cfg.empty() ? "sandbox.hpp LowGraphicsSettingsCfg" : te::Narrow(a.settings_cfg).c_str());
+    // the graphics menu's options: the scratch profiles' game_settings.cfg (never the real one)
+    std::string game_settings;
+    if (deployed && !a.no_mod && (r.scenario.low_graphics || !a.game_settings.empty())) {
+        if (!a.game_settings.empty() && !te::ReadFileBytes(te::FullPath(a.game_settings), &game_settings)) {
+            Out("setup failed: --game-settings %s unreadable", te::Narrow(a.game_settings).c_str());
+            deployed = false;
+        } else {
+            if (game_settings.empty()) game_settings = st::sandbox::LowGraphicsGameSettings();
+            const int hn = ApplyGameSettings(scratch, game_settings);
+            const int gn = r.g.on ? ApplyGameSettings(r.g.scratch, game_settings) : 0;
+            Out("graphics: game_settings.cfg overrides merged into %d scratch profile(s)%s", hn + gn, r.g.on ? " (both games)" : "");
+        }
     }
     // --seed-saves: the game loads another save (e.g. a 100% completion one) from the scratch
     // copy; the user's real saves are still backed up, redirected away from and verified.
     if (deployed && !a.seed.empty()) {
         int accounts = 0;
-        if (!te::ApplySeedSaves(scratch, te::FullPath(a.seed), &accounts, &err)) {
+        int guest_accounts = 0;
+        if (!te::ApplySeedSaves(scratch, te::FullPath(a.seed), &accounts, &err) ||
+            (r.g.on && !te::ApplySeedSaves(r.g.scratch, te::FullPath(a.seed), &guest_accounts, &err))) {
             Out("setup failed: %s", err.c_str());
             deployed = false;
         } else {
@@ -871,15 +1212,33 @@ int RunGame(Args& a) {
         Out("saves redirect: %s -- %s", redirected ? "CONFIRMED" : "NOT CONFIRMED", evidence.c_str());
         if (redirected && foreign) {
             // logged by the mod right after "saves=redirected" (Init): where it bypassed, or why not
-            const std::regex fre("\\[auto\\] foreign saves: ");
+            const std::regex fre(a.sandbox_session ? "\\[sandbox\\] foreign saves: " : "\\[auto\\] foreign saves: ");
             std::string line;
             for (int i = 0; i < 50 && !LogMatches(r, fre, &line); ++i)
                 if (!Watch(r, 100)) break;
-            foreign_note = line.empty() ? "no '[auto] foreign saves:' log line" : line;
+            foreign_note = line.empty() ? "no 'foreign saves:' log line" : line;
             Out("foreign saves: %s", foreign_note.c_str());
         }
+        if (redirected && r.g.on) {
+            // The second game, once the first one's redirect is proven (like DDT's lab: one at a time).
+            if (!Watch(r, 3000)) {
+                Out("the first game is gone before the guest started: %s", r.end_reason.c_str());
+            } else if (!Launch(r.o, r.game + L"\\ds.exe", L"", r.game, true, a.game_stdout ? r.run + L"\\guest-stdout.txt" : std::wstring(),
+                               {L"ST_INSTANCE_DIR=automation\\guest"}, &r.g.process, &r.g.pid)) {
+                r.end_reason = "the guest game could not be started";
+                redirected = false;
+            } else {
+                r.g.redirected = WaitSavesEvidence(r, &r.g.evidence, 1);
+                Out("guest saves redirect: %s -- %s", r.g.redirected ? "CONFIRMED" : "NOT CONFIRMED", r.g.evidence.c_str());
+                if (!r.g.redirected) {
+                    redirected = false;
+                    evidence += " | guest: " + r.g.evidence;
+                    if (r.end_reason.empty() || r.end_reason == "the guest game exited") r.end_reason = "guest saves not redirected: " + r.g.evidence;
+                }
+            }
+        }
         if (!redirected) {
-            if (Alive(r.o)) KillOwned(r.o, "the save redirect was not confirmed");
+            if (Alive(r.o) || (r.g.on && GuestAlive(r))) KillOwned(r.o, "the save redirect was not confirmed");
             if (r.end_reason.empty() || r.end_reason == "the game exited") r.end_reason = "saves not redirected: " + evidence;
         } else if (!Watch(r, 1000)) {
             Out("the game is gone right after start: %s", r.end_reason.c_str());
@@ -889,22 +1248,49 @@ int RunGame(Args& a) {
         Out("scenario %s%s%s", steps_ok ? "completed" : "stopped", r.end_reason.empty() ? "" : ": ", r.end_reason.c_str());
         // The end of the run (final screenshot, quit, exit) stays inside the hard cap.
         r.deadline = hard_end - 5000;
-        if (!r.o.violation && Alive(r.o) && redirected) {
+        SampleResources(r, true);
+        const bool guest_alive = r.g.on && r.g.process && GuestAlive(r);
+        if (!r.o.violation && (Alive(r.o) || guest_alive) && redirected) {
             if (!steps_ok && !a.no_mod) {
                 std::string d;
-                ModCommand(r, "screenshot zz-final", &d);
+                if (Alive(r.o)) ModCommand(r, "screenshot zz-final", &d);
                 Out("final screenshot: %s", d.c_str());
+                if (guest_alive) {
+                    ModCommand(r, "screenshot zz-final-guest", &d, 1);
+                    Out("final guest screenshot: %s", d.c_str());
+                }
             }
-            if (!r.quit_sent && !a.no_mod) {
+            if (guest_alive && !r.g.quit_sent && !a.no_mod) {
+                // the guest first: the host's quit ends its link, which the guest would only log
+                const std::wstring cmd = r.g.auto_in + L"\\9999.cmd";
+                te::WriteFileAtomic(r.g.auto_in + L"\\9999.tmp", "quit\n");
+                MoveFileExW((r.g.auto_in + L"\\9999.tmp").c_str(), cmd.c_str(), MOVEFILE_REPLACE_EXISTING);
+                r.g.quit_sent = true;
+            }
+            if (Alive(r.o) && !r.quit_sent && !a.no_mod) {
                 std::string d;
                 ModCommand(r, "quit", &d);
             }
             // --no-mod has no quit command
-            const ULONGLONG end = std::min<ULONGLONG>(GetTickCount64() + (a.no_mod ? 0 : 30000), hard_end);
-            while (Alive(r.o) && GetTickCount64() < end) WaitForSingleObject(r.o.process, 250);
-            if (Alive(r.o)) KillOwned(r.o, "did not exit after quit");
+            const ULONGLONG end = std::min<ULONGLONG>(GetTickCount64() + (a.no_mod || a.sandbox_session ? 0 : 30000), hard_end);
+            while ((Alive(r.o) || (r.g.on && r.g.process && GuestAlive(r))) && GetTickCount64() < end) Sleep(250);
+            if (Alive(r.o) || (r.g.on && r.g.process && GuestAlive(r))) KillOwned(r.o, "did not exit after quit");
         }
         KillOwned(r.o, "end of run (no-op when everything exited)");
+        if (r.g.on && r.g.process) {
+            DWORD gcode = 0;
+            GetExitCodeProcess(r.g.process, &gcode);
+            r.g.exit_code = gcode;
+            FILETIME c{}, e{}, k{}, u{};
+            if (GetProcessTimes(r.g.process, &c, &e, &k, &u)) {
+                const auto t = [](const FILETIME& f) { return (static_cast<unsigned long long>(f.dwHighDateTime) << 32) | f.dwLowDateTime; };
+                r.g.lifetime_s = static_cast<double>(t(e) - t(c)) / 1e7;
+                r.g.cpu_s = static_cast<double>(t(k) + t(u)) / 1e7;
+            }
+            Out("guest ds.exe exit code %lu (0x%08lX) after %.2f s alive, %.2f s CPU", gcode, gcode, r.g.lifetime_s, r.g.cpu_s);
+            CloseHandle(r.g.process);
+            r.g.process = nullptr;
+        }
         DWORD code = 0;
         GetExitCodeProcess(r.o.process, &code);
         FILETIME c{}, e{}, k{}, u{};
@@ -924,9 +1310,46 @@ int RunGame(Args& a) {
     te::EnsureDir(got);
     for (const wchar_t* n : {L"stranded_together.log", L"session.last.ini", L"link-status.json"})
         CopyFileW((r.mod_dir + L"\\" + n).c_str(), (got + L"\\" + n).c_str(), FALSE);
-    for (const wchar_t* n : {L"saves-redirect.txt", L"saves-redirect-failed.txt", L"exit-trace.txt"})
+    for (const wchar_t* n : {L"saves-redirect.txt", L"saves-redirect-failed.txt", L"exit-trace.txt", L"settings.cfg"})
         CopyFileW((r.mod_dir + L"\\automation\\" + n).c_str(), (got + L"\\" + n).c_str(), FALSE);
     if (te::DirExists(r.auto_out)) te::CopyTree(r.auto_out, r.run + L"\\automation");
+    std::vector<std::string> guest_scratch_changes, sandbox_changes;
+    if (a.sandbox_session) {
+        for (const wchar_t* n : {L"sandbox-active.txt", L"sandbox-refused.txt"})
+            CopyFileW((r.mod_dir + L"\\" + n).c_str(), (got + L"\\" + n).c_str(), FALSE);
+        if (te::DirExists(sandbox_scratch)) {
+            std::string before;
+            te::ReadFileBytes(r.run + L"\\saves-before.txt", &before);
+            DeleteFileW((sandbox_scratch + L"\\.st-redirect-probe").c_str());
+            const std::string after = te::HashManifest(sandbox_scratch);
+            te::WriteFileAtomic(r.run + L"\\saves-sandbox-after.txt", after);
+            sandbox_changes = te::DiffManifests(before, after);
+            Out("sandbox: %zu change(s) by the game in the sandbox copy", sandbox_changes.size());
+        }
+    }
+    if (r.g.on) {
+        const std::wstring gg = r.run + L"\\guest";
+        te::EnsureDir(gg + L"\\game");
+        for (const wchar_t* n : {L"stranded_together.log", L"session.last.ini", L"session.ini", L"link-status.json"})
+            CopyFileW((r.g.dir + L"\\" + n).c_str(), (gg + L"\\game\\" + n).c_str(), FALSE);
+        for (const wchar_t* n : {L"saves-redirect.txt", L"saves-redirect-failed.txt", L"exit-trace.txt"})
+            CopyFileW((r.g.dir + L"\\automation\\" + n).c_str(), (gg + L"\\game\\" + n).c_str(), FALSE);
+        if (te::DirExists(r.g.auto_out)) te::CopyTree(r.g.auto_out, gg + L"\\automation");
+        if (te::DirExists(r.g.scratch)) {
+            std::string before;
+            te::ReadFileBytes(r.run + L"\\saves-scratch-before.txt", &before);
+            DeleteFileW((r.g.scratch + L"\\.st-redirect-probe").c_str());
+            const std::string after = te::HashManifest(r.g.scratch);
+            te::WriteFileAtomic(gg + L"\\saves-scratch-after.txt", after);
+            guest_scratch_changes = te::DiffManifests(before, after);
+            Out("guest scratch saves: %zu change(s) by the guest game (absorbed by its redirect)", guest_scratch_changes.size());
+        }
+    }
+    if (!r.resources_csv.empty())
+        te::WriteFileAtomic(r.run + L"\\resources.csv", "t_s,game,pid,working_set_mb,private_mb,cpu_pct_of_all_cpus,gpu_dedicated_mb,gpu_shared_mb,gpu_3d_util_pct\n" +
+                                                             r.resources_csv);
+    const std::string resources = ResourcesJson(r);
+    Out("resources: %s", resources.c_str());
     std::vector<std::string> scratch_changes;
     if (te::DirExists(scratch)) {
         std::string before;
@@ -1021,6 +1444,17 @@ int RunGame(Args& a) {
     j += ",\"cloud_autocloud_seen\":" + std::string(autocloud_seen ? "true" : "false") + ",\"cloud_lines\":" + std::to_string(cloud_lines.size());
     j += ",\"cloud_uploads\":" + JsonList(cloud_uploads);
     j += ",\"exit_trace\":\"" + te::JsonEscape(exit_trace) + "\",\"game_stdout_tail\":\"" + te::JsonEscape(LastLines(game_stdout, 25)) + "\"";
+    j += ",\"two_games\":" + std::string(r.g.on ? "true" : "false");
+    j += ",\"sandbox_session\":" + std::string(a.sandbox_session ? "true" : "false") + ",\"sandbox_changes\":" + JsonList(sandbox_changes);
+    if (r.g.on) {
+        char gl[200];
+        std::snprintf(gl, sizeof(gl), ",\"guest_exit_code\":%lu,\"guest_alive_s\":%.2f,\"guest_cpu_s\":%.2f,\"guest_saves_redirected\":%s", r.g.exit_code,
+                      r.g.lifetime_s, r.g.cpu_s, r.g.redirected ? "true" : "false");
+        j += gl;
+        j += ",\"guest_saves_evidence\":\"" + te::JsonEscape(r.g.evidence) + "\",\"guest_scratch_changes\":" + JsonList(guest_scratch_changes);
+    }
+    j += ",\"graphics_settings_cfg\":\"" + te::JsonEscape(appdir ? (a.settings_cfg.empty() ? std::string("low") : te::Narrow(a.settings_cfg)) : std::string()) + "\"";
+    j += ",\"resources\":" + resources;
     j += ",\"steps\":[";
     for (std::size_t i = 0; i < r.results.size(); ++i) j += (i ? ",\n  " : "\n  ") + r.results[i];
     j += "]}\n";

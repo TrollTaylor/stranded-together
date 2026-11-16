@@ -88,6 +88,45 @@ public:
     void set_auto_update_check(bool on) override { update_.auto_check = on; }
     void tick() override;
 
+    // Test saves: a picked folder is "ok" when its name contains "save"; Play with test save
+    // runs a solo session; the local test runs for 90 s (linked after 45 s) and then ends.
+    TestSaveView test_save() const override { return test_; }
+    bool set_test_save_folder(const std::string& folder, std::string& error_out) override {
+        if (!folder.empty() && folder.find("save") == std::string::npos && folder.find("Save") == std::string::npos) {
+            error_out = "No save slots there. Pick the folder that holds DeathStrandingDC (with autosave/manualsave folders inside).";
+            return false;
+        }
+        test_.folder = folder;
+        test_.folder_ok = !folder.empty();
+        test_.folder_note = folder.empty() ? "No test save picked yet." : "23 save slots found";
+        test_.seeded = false;
+        return true;
+    }
+    void set_use_test_save(bool on) override { test_.use_for_all = on; }
+    bool play_test_save(std::string& error_out) override {
+        if (!test_.folder_ok) {
+            error_out = "Pick a test save folder first (Debug > Test saves).";
+            return false;
+        }
+        test_.seeded = true;
+        return debug_solo(error_out);
+    }
+    bool reset_test_saves(std::string& error_out) override {
+        if (local_start_ >= 0.0) {
+            error_out = "Quit DEATH STRANDING first: the test save copies are in use.";
+            return false;
+        }
+        test_.seeded = false;
+        test_.result.clear();
+        return true;
+    }
+    LocalTestView local_test() const override;
+    void set_local_test_host_pad(bool on) override { host_pad_ = on; }
+    bool start_local_test(std::string& error_out) override;
+    // screenshot driver: the local test `seconds` after it started (< 0: not running)
+    void jump_to_local_test(double seconds);
+    void set_test_save_view(const TestSaveView& v) { test_ = v; }
+
     // ---- Hooks for tests and the screenshot driver -------------------------
     static constexpr std::uint64_t kOwnSteamId = 76561197960265728ull + 104729ull;
     static constexpr std::uint64_t kPartnerSteamId = 76561197960265728ull + 7919ull;
@@ -131,6 +170,14 @@ private:
     bool crash_report_ = false;
     UpdateInfo update_;
     double update_started_ = -1.0;   // when Check / Update now was pressed (mock clock)
+    TestSaveView test_ = [] {
+        TestSaveView v;
+        v.folder_note = "No test save picked yet.";
+        v.sandbox_dir = "C:\\Program Files (x86)\\Steam\\steamapps\\common\\DEATH STRANDING DIRECTORS CUT\\stranded_together\\sandbox";
+        return v;
+    }();
+    bool host_pad_ = false;
+    double local_start_ = -1.0;   // mock clock; < 0 when no local test runs
 };
 
 std::unique_ptr<LauncherModel> MakeMockModel(const MockOptions& options);

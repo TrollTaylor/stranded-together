@@ -431,7 +431,41 @@ bool MockModel::clear_session(std::string& error_out) {
     return true;
 }
 
+LocalTestView MockModel::local_test() const {
+    LocalTestView v;
+    v.host_pad = host_pad_;
+    if (local_start_ < 0.0) return v;
+    const double t = now() - local_start_;
+    v.running = true;
+    v.host_pid = 4242;
+    v.guest_pid = t >= 8.0 ? 4343u : 0u;
+    v.host_state = t >= 20.0 ? "connected" : "listening";
+    v.guest_state = t >= 20.0 ? "connected" : t >= 8.0 ? "connecting" : "";
+    const bool linked = t >= 20.0;
+    v.headline = linked ? "Both games are linked" : t >= 8.0 ? "Both games are running" : "Starting the first game (host)...";
+    v.detail = linked ? "Each window shows the other player. Keyboard + mouse play the host window, a pad plays the guest."
+                      : "Load a save in each window (Continue). The second game may first say it cannot reach the game server: press OK.";
+    v.tone = linked ? LinkView::Tone::good : LinkView::Tone::neutral;
+    return v;
+}
+
+bool MockModel::start_local_test(std::string& error_out) {
+    if (phase_ != Phase::ready || local_start_ >= 0.0) {
+        error_out = "A game is already running. Close it first.";
+        return false;
+    }
+    local_start_ = now();
+    return true;
+}
+
+void MockModel::jump_to_local_test(double seconds) { local_start_ = seconds < 0.0 ? -1.0 : now() - seconds; }
+
 void MockModel::tick() {
+    if (local_start_ >= 0.0 && now() - local_start_ >= 90.0) {
+        local_start_ = -1.0;
+        test_.result = "Your own saves were not changed (every file checked by SHA-256 before and after).";
+        test_.tone = TestSaveView::Tone::good;
+    }
     if (update_started_ >= 0.0) {
         const double u = now() - update_started_;
         if (update_.status == UpdateStatus::checking && u >= 1.5) {

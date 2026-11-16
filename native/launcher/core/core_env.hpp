@@ -55,6 +55,16 @@ public:
     virtual std::wstring DesktopDir() = 0;
     virtual std::wstring TempDir() = 0;
     virtual std::string OsVersion() = 0;
+
+    // The local two-instance test: starts `exe` directly (not through Steam) in `cwd` with this
+    // process's environment plus `env_add` ("NAME=value"; these replace inherited ones), a
+    // normal visible window. pid_out = the new process. Default: unavailable (test fakes).
+    virtual bool StartProcess(const std::wstring& exe, const std::wstring& cwd, const std::vector<std::wstring>& env_add,
+                              std::uint32_t& pid_out) {
+        (void)exe, (void)cwd, (void)env_add;
+        pid_out = 0;
+        return false;
+    }
 };
 
 std::shared_ptr<Env> MakeWin32Env();

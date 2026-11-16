@@ -87,6 +87,7 @@ add_library(st_mod SHARED
   native/mod/game_actions.cpp
   native/mod/partner_holo.cpp
   native/mod/automation.cpp
+  native/mod/sandbox.cpp
   ${ST_OVERLAY_SOURCES})
 set_target_properties(st_mod PROPERTIES OUTPUT_NAME winhttp PREFIX "")
 target_include_directories(st_mod PRIVATE native/mod)

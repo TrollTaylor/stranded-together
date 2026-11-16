@@ -41,9 +41,9 @@ const char* PlayTabLabel(PlayTab tab);   // "Host" | "Join" | "Solo test"
 PlayTab TabForRole(Role role);
 
 // ---- Debug page --------------------------------------------------------------
-enum class DebugTab { options, files };
-inline constexpr int kDebugTabCount = 2;
-const char* DebugTabLabel(DebugTab tab);   // "Options" | "Files and log"
+enum class DebugTab { options, saves, files };
+inline constexpr int kDebugTabCount = 3;
+const char* DebugTabLabel(DebugTab tab);   // "Options" | "Test saves" | "Files and log"
 // The F-key list of the debug-menu key combo: "F1\0F2\0...F12\0\0" (ImGui::Combo items).
 const char* FunctionKeyItems();
 // The chip / headline for the mod state ("Mod 0.1.0", "Mod: development build", ...).
@@ -147,6 +147,8 @@ enum class Scene {
     play_update_failed,
     play_updated,
     about_updates,
+    debug_test_saves,      // Debug > Test saves: a test save picked, the local test idle
+    debug_local_test,      // Debug > Test saves: the local two-player test running, both games linked
     count
 };
 int SceneCount();

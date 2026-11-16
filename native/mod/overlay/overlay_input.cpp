@@ -50,6 +50,16 @@ XInputSetStateFn g_orig_xinput14_set = nullptr;
 
 // Automation (hidden test runs)
 std::atomic<bool> g_automation{false};
+// Local two-instance test (SetLocalMode, SetWindowSlot)
+std::atomic<LocalMode> g_local{LocalMode::off};
+std::atomic<WindowSlot> g_window_slot{WindowSlot::none};
+std::atomic<bool> g_window_placed{false};
+// The placed window's size and the monitor it was placed on (window thread only).
+std::atomic<bool> g_window_kept{false};
+int g_keep_w = 0, g_keep_h = 0;
+RECT g_keep_monitor{};
+std::atomic<unsigned long> g_window_reverts{0};
+std::atomic<unsigned long> g_local_hidden_pads{0}, g_local_cursor_kept{0}, g_local_activate_rewritten{0};
 SRWLOCK g_pad_lock = SRWLOCK_INIT;
 PadState g_pad;
 DWORD g_pad_packet = 1;
@@ -224,6 +234,35 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT m, WPARAM wp, LPARAM lp) {
         return prev ? CallWindowProcW(prev, hwnd, m, wp, lp) : DefWindowProcW(hwnd, m, wp, lp);
     };
 
+    if (m != 0 && m == PlaceMessage()) {
+        PlaceWindowNow(hwnd);
+        return 0;
+    }
+    if (g_window_kept.load(std::memory_order_relaxed)) {
+        // ds.exe puts its window back to the whole monitor (borderless) after it set up its
+        // swapchain (hidden run 20261116-162418: both windows 2560x1440 at 0,0 again). Keep the
+        // placed size and title bar; a move by the user (other position, same size) still works.
+        if (m == WM_WINDOWPOSCHANGING && lp) {
+            auto* wpos = reinterpret_cast<WINDOWPOS*>(lp);
+            if (!(wpos->flags & SWP_NOSIZE) && (wpos->cx != g_keep_w || wpos->cy != g_keep_h)) {
+                const bool fullscreen_request = wpos->cx >= g_keep_monitor.right - g_keep_monitor.left &&
+                                                wpos->cy >= g_keep_monitor.bottom - g_keep_monitor.top;
+                wpos->cx = g_keep_w;
+                wpos->cy = g_keep_h;
+                if (fullscreen_request) wpos->flags |= SWP_NOMOVE;  // stay where it was placed
+                if (g_window_reverts.fetch_add(1, std::memory_order_relaxed) < 4)
+                    Log("[overlay] local test: kept the game window at %dx%d (the game asked for a full-monitor window)", g_keep_w, g_keep_h);
+            }
+        } else if (m == WM_STYLECHANGING && wp == static_cast<WPARAM>(GWL_STYLE) && lp) {
+            auto* ss = reinterpret_cast<STYLESTRUCT*>(lp);
+            ss->styleNew = (ss->styleNew & ~static_cast<DWORD>(WS_POPUP | WS_MAXIMIZE)) | WS_OVERLAPPEDWINDOW;
+        }
+    }
+    if (m == WM_SIZE && g_window_slot.load(std::memory_order_relaxed) != WindowSlot::none) {
+        static std::atomic<int> logged{0};
+        if (logged.fetch_add(1, std::memory_order_relaxed) < 6)
+            Log("[overlay] local test: game window client size now %u x %u", static_cast<unsigned>(LOWORD(lp)), static_cast<unsigned>(HIWORD(lp)));
+    }
     if (m == WM_NCDESTROY) {
         // The window is going away: unhook ourselves (only if still on top).
         if (prev && reinterpret_cast<WNDPROC>(GetWindowLongPtrW(hwnd, GWLP_WNDPROC)) == &WndProc)
@@ -250,6 +289,15 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT m, WPARAM wp, LPARAM lp) {
             g_activate_rewritten.fetch_add(1, std::memory_order_relaxed);
             return prev ? CallWindowProcW(prev, hwnd, m, TRUE, lp) : DefWindowProcW(hwnd, m, TRUE, lp);
         }
+    }
+    if (m == WM_ACTIVATEAPP && wp == FALSE && !g_automation.load(std::memory_order_relaxed) &&
+        g_local.load(std::memory_order_relaxed) != LocalMode::off) {
+        // Local two-instance test: the other game's window takes the focus all the time; this one
+        // must keep its app-active flag (pad reader, no pause), so it is told it stays active.
+        if (g_local_activate_rewritten.fetch_add(1, std::memory_order_relaxed) == 0)
+            Log("[overlay] local test: WM_ACTIVATEAPP(FALSE) handed to the game as TRUE (it keeps running unfocused)");
+        if (g_open.load()) g_close_request.store(true);
+        return prev ? CallWindowProcW(prev, hwnd, m, TRUE, lp) : DefWindowProcW(hwnd, m, TRUE, lp);
     }
     if (m == WM_KILLFOCUS || (m == WM_ACTIVATEAPP && wp == FALSE)) {
         // Automation: the hidden window is never really focused; keep the menu.
@@ -324,8 +372,22 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT m, WPARAM wp, LPARAM lp) {
     return pass();
 }
 
+// Local two-instance test: only the game whose window really is in front may move or clip
+// the cursor (the guest never: it has no mouse). The real foreground, not the guest's answer.
+bool LocalCursorKept() noexcept {
+    const LocalMode mode = g_local.load(std::memory_order_relaxed);
+    if (mode == LocalMode::off || g_automation.load(std::memory_order_relaxed)) return false;
+    if (mode != LocalMode::guest) {
+        const HWND fg = g_orig_foreground ? g_orig_foreground() : GetForegroundWindow();
+        const HWND own = g_hwnd.load(std::memory_order_acquire);
+        if (own && fg == own) return false;
+    }
+    g_local_cursor_kept.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+
 BOOL WINAPI HookSetCursorPos(int x, int y) {
-    if (g_open.load(std::memory_order_acquire) || g_automation.load(std::memory_order_relaxed)) {
+    if (g_open.load(std::memory_order_acquire) || g_automation.load(std::memory_order_relaxed) || LocalCursorKept()) {
         g_supp_pos.fetch_add(1, std::memory_order_relaxed);
         return TRUE;
     }
@@ -334,6 +396,10 @@ BOOL WINAPI HookSetCursorPos(int x, int y) {
 
 BOOL WINAPI HookClipCursor(const RECT* r) {
     if (g_automation.load(std::memory_order_relaxed)) {  // the cursor belongs to the user's desktop
+        g_supp_clip.fetch_add(1, std::memory_order_relaxed);
+        return TRUE;
+    }
+    if (r && LocalCursorKept()) {  // releasing a clip (nullptr) always goes through
         g_supp_clip.fetch_add(1, std::memory_order_relaxed);
         return TRUE;
     }
@@ -375,6 +441,11 @@ DWORD AnswerXInput(XInputGetStateFn orig, DWORD index, XINPUT_STATE* state) {
         g_virtual_reads.fetch_add(1, std::memory_order_relaxed);
         return ERROR_SUCCESS;
     }
+    if (g_local.load(std::memory_order_relaxed) == LocalMode::host) {
+        // Local test, host on keyboard + mouse: the pads belong to the guest game.
+        g_local_hidden_pads.fetch_add(1, std::memory_order_relaxed);
+        return ERROR_DEVICE_NOT_CONNECTED;
+    }
     if (!orig) return ERROR_DEVICE_NOT_CONNECTED;
     const DWORD r = orig(index, state);
     if (r == ERROR_SUCCESS && state && g_open.load(std::memory_order_acquire)) {
@@ -404,6 +475,7 @@ DWORD AnswerXInputSet(XInputSetStateFn orig, DWORD index, XINPUT_VIBRATION* vib)
                 static_cast<unsigned>(vib->wLeftMotorSpeed), static_cast<unsigned>(vib->wRightMotorSpeed));
         return ERROR_SUCCESS;
     }
+    if (g_local.load(std::memory_order_relaxed) == LocalMode::host) return ERROR_DEVICE_NOT_CONNECTED;  // the guest's pads
     return orig ? orig(index, vib) : ERROR_DEVICE_NOT_CONNECTED;
 }
 
@@ -438,7 +510,7 @@ HWND OwnMainWindow() noexcept {
 }
 
 HWND WINAPI HookGetForegroundWindow() {
-    if (g_automation.load(std::memory_order_relaxed)) {
+    if (g_automation.load(std::memory_order_relaxed) || g_local.load(std::memory_order_relaxed) == LocalMode::guest) {
         HWND h = g_hwnd.load(std::memory_order_acquire);
         if (!h) h = OwnMainWindow();
         if (h) {
@@ -507,13 +579,18 @@ bool CreateApiHooks(void** targets, std::size_t* count, std::size_t cap) noexcep
     } else {
         Log("[overlay] XINPUTUAP XInputGetState not hooked (%s)", xi ? "export missing or hook failed" : "dll not loadable");
     }
-    if (g_automation.load()) {
-        void* fg = reinterpret_cast<void*>(GetProcAddress(user, "GetForegroundWindow"));
+    const LocalMode local = g_automation.load() ? LocalMode::off : g_local.load();
+    if (local == LocalMode::host || local == LocalMode::host_pad) {
+        // The real foreground is read through this pointer (LocalCursorKept); not hooked.
+        g_orig_foreground = reinterpret_cast<GetForegroundWindowFn>(GetProcAddress(user, "GetForegroundWindow"));
+    }
+    if (g_automation.load() || local == LocalMode::guest || local == LocalMode::host) {
+        void* fg = (g_automation.load() || local == LocalMode::guest) ? reinterpret_cast<void*>(GetProcAddress(user, "GetForegroundWindow")) : nullptr;
         if (fg && Create(fg, reinterpret_cast<void*>(&HookGetForegroundWindow), reinterpret_cast<void**>(&g_orig_foreground),
                          "GetForegroundWindow")) {
             g_foreground_target = fg;
             targets[(*count)++] = fg;
-        } else {
+        } else if (fg) {
             Log("[overlay] automation: GetForegroundWindow not hooked; the game may treat its hidden window as unfocused");
         }
         // Rumble for the virtual pad must not reach a real controller (see AnswerXInputSet).
@@ -588,7 +665,56 @@ bool Attach(HWND hwnd) noexcept {
         g_kb_hook ? "on" : "FAILED (keys may reach the game while the menu is open)");
     if (g_automation.load() && AssertActive())
         Log("[overlay] automation: WM_ACTIVATEAPP(TRUE) posted to the game window (its pad input needs the app-active flag)");
+    PlaceWindow(hwnd);
     return true;
+}
+
+void SetWindowSlot(WindowSlot slot) noexcept { g_window_slot.store(slot); }
+
+void PlaceWindow(HWND hwnd) noexcept {
+    const WindowSlot slot = g_window_slot.load();
+    if (slot == WindowSlot::none || !hwnd || g_window_placed.exchange(true)) return;
+    // Attach runs on the render thread; style and position changes send messages to the window's
+    // own thread, which may be waiting on the render thread (hidden run 20261116-160909: both
+    // games stopped presenting). So the subclass does it on the window thread.
+    const UINT msg = PlaceMessage();
+    if (!msg || !PostMessageW(hwnd, msg, 0, 0)) Log("[overlay] local test: could not ask the game window to move (error %lu)", GetLastError());
+}
+
+UINT PlaceMessage() noexcept {
+    static const UINT msg = RegisterWindowMessageW(L"StrandedTogether.PlaceWindow");
+    return msg;
+}
+
+// On the game window's thread (WndProc): the left or right half of the monitor the game opened
+// on, 16:9, with a normal title bar (two games side by side).
+void PlaceWindowNow(HWND hwnd) noexcept {
+    const WindowSlot slot = g_window_slot.load();
+    MONITORINFO mi{sizeof(mi)};
+    if (!GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY), &mi)) return;
+    const RECT work = mi.rcWork;
+    const LONG half = (work.right - work.left) / 2;
+    LONG cw = half - 16, ch = cw * 9 / 16;
+    const DWORD style = (static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_STYLE)) & ~static_cast<DWORD>(WS_POPUP | WS_MAXIMIZE)) | WS_OVERLAPPEDWINDOW;
+    const DWORD ex = static_cast<DWORD>(GetWindowLongPtrW(hwnd, GWL_EXSTYLE)) & ~static_cast<DWORD>(WS_EX_TOPMOST);
+    RECT r{0, 0, cw, ch};
+    AdjustWindowRectEx(&r, style, FALSE, ex);
+    if (r.bottom - r.top > work.bottom - work.top) {  // a tall monitor: fit the height instead
+        ch = (work.bottom - work.top) - (r.bottom - r.top - ch);
+        cw = ch * 16 / 9;
+        r = RECT{0, 0, cw, ch};
+        AdjustWindowRectEx(&r, style, FALSE, ex);
+    }
+    const int w = r.right - r.left, h = r.bottom - r.top;
+    const int x = slot == WindowSlot::left ? work.left + (half - w) / 2 : work.left + half + (half - w) / 2;
+    const int y = work.top + ((work.bottom - work.top) - h) / 2;
+    SetWindowLongPtrW(hwnd, GWL_STYLE, static_cast<LONG_PTR>(style));
+    SetWindowLongPtrW(hwnd, GWL_EXSTYLE, static_cast<LONG_PTR>(ex));
+    g_keep_w = w, g_keep_h = h, g_keep_monitor = mi.rcMonitor;
+    g_window_kept.store(true);
+    const BOOL ok = SetWindowPos(hwnd, HWND_NOTOPMOST, x, y, w, h, SWP_FRAMECHANGED | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    Log("[overlay] local test: game window placed on the %s half (%d,%d %dx%d, client %ldx%ld)%s", slot == WindowSlot::left ? "left" : "right", x,
+        y, w, h, cw, ch, ok ? "" : " -- SetWindowPos failed");
 }
 
 bool AssertActive() noexcept {
@@ -677,6 +803,7 @@ void SetOpen(bool open) noexcept {
 }
 
 void MarkHeldForTest(std::uint32_t vk) noexcept { MarkHeld(vk); }
+void ClearHeldForTest() noexcept { ClearHeld(); }
 
 bool IsOpen() noexcept { return g_open.load(); }
 
@@ -707,6 +834,9 @@ Stats GetStats() noexcept {
     s.xinput_hook = g_xinput_target != nullptr || g_xinput14_target != nullptr;
     s.xinput14_hook = g_xinput14_target != nullptr;
     s.automation = g_automation.load();
+    s.local = g_local.load();
+    s.local_hidden_pad_reads = g_local_hidden_pads.load();
+    s.local_cursor_kept = g_local_cursor_kept.load();
     s.virtual_pad_reads = g_virtual_reads.load();
     s.isolated_pad_reads = g_isolated_reads.load();
     s.foreground_answers = g_foreground_answers.load();
@@ -727,6 +857,8 @@ Stats GetStats() noexcept {
 }
 
 void SetAutomation(bool on) noexcept { g_automation.store(on); }
+void SetLocalMode(LocalMode mode) noexcept { g_local.store(mode); }
+LocalMode GetLocalMode() noexcept { return g_local.load(); }
 bool Automation() noexcept { return g_automation.load(); }
 
 void SetVirtualPad(const PadState& pad) noexcept {

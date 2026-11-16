@@ -57,6 +57,15 @@ struct SessionIni {
     // so a later plain Steam launch runs unmodded. Every launch writes it.
     bool one_shot = true;
     std::string name;                 // optional display name
+    // Test saves and the local two-instance test (docs/sandbox-and-local-test.md; read by the
+    // mod in DllMain, native/mod/sandbox.hpp). Written only when sandbox_saves is set.
+    std::string sandbox_saves;        // a folder name under stranded_together\sandbox ("" = the real saves)
+    bool sandbox_foreign_saves = false;   // skip ds.exe's save-owner check (another account's save)
+    bool appdir_settings = false;     // the game folder's settings.cfg -> the sandbox's settings.cfg
+    bool second_instance = false;     // the second game on this PC (its single-instance mutex is renamed)
+    std::string local_input;          // host | host_pad | guest ("" = a normal game)
+    int frame_cap = 0;                // 0 or 15..240 frames per second
+    std::string local_window;         // left | right: the game window takes that half of the monitor
 };
 inline constexpr double kMaxEchoDelayS = 10.0;
 inline constexpr double kMaxEchoOffsetM = 20.0;

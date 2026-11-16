@@ -49,6 +49,14 @@ struct Config {
     std::uint32_t debug_menu_vk = 0x78;  // virtual-key that toggles it (default VK_F9)
     bool one_shot = false;             // consumed on load (renamed to session.last.ini)
     std::string player_name;           // shown in logs; from Steam persona when empty
+
+    // Local two-instance test (docs/sandbox-and-local-test.md): local_input=host|host_pad|guest.
+    // Read here for the overlay's input split; the sandbox keys (sandbox_saves, sandbox_foreign_saves,
+    // appdir_settings, second_instance) are read by automation.cpp in DllMain.
+    std::string local_input;           // "" = a normal game
+    std::string sandbox_saves;         // the test-save sandbox this game runs on ("" = the real saves)
+    unsigned frame_cap = 0;            // frame_cap=<15..240>: at most this many frames per second (0 = off)
+    std::string local_window;          // local_window=left|right: the game window takes that half of the monitor
 };
 
 // Loads <dir>\session.ini. Never throws; unknown keys are logged and ignored.
