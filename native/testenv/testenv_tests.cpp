@@ -126,42 +126,127 @@ void SessionIni() {
           "--no-mod session.ini: automation (save redirect) only, no role, no menu");
 }
 
+// ds.exe's file bytes at an RVA (section table of the PE on disk). False when absent.
+bool ReadDsExeRva(const std::string& pe, std::uint32_t rva, std::uint8_t* out, std::uint32_t len) {
+    if (pe.size() < 0x400 || pe[0] != 'M' || pe[1] != 'Z') return false;
+    const std::uint32_t nt = *reinterpret_cast<const std::uint32_t*>(pe.data() + 0x3C);
+    if (nt + sizeof(IMAGE_NT_HEADERS64) > pe.size()) return false;
+    const auto* h = reinterpret_cast<const IMAGE_NT_HEADERS64*>(pe.data() + nt);
+    const auto* sec = IMAGE_FIRST_SECTION(h);
+    for (WORD i = 0; i < h->FileHeader.NumberOfSections; ++i) {
+        const IMAGE_SECTION_HEADER& s = sec[i];
+        if (rva >= s.VirtualAddress && rva + len <= s.VirtualAddress + s.SizeOfRawData) {
+            const std::size_t off = s.PointerToRawData + (rva - s.VirtualAddress);
+            if (off + len > pe.size()) return false;
+            std::memcpy(out, pe.data() + off, len);
+            return true;
+        }
+    }
+    return false;
+}
+
+// The foreign-saves bypass (automation.hpp "foreign saves"): the gate, the supervisor's rule,
+// the byte check, and the site table against the installed ds.exe when there is one.
+void ForeignSaves() {
+    namespace fs = au::foreign_saves;
+    using D = fs::Decision;
+    Check(fs::Decide(false, true, true, true) == D::off && fs::Decide(false, false, false, false) == D::off,
+          "foreign saves: off unless automation_foreign_saves=1 (normal play never patches)");
+    Check(fs::Decide(true, false, true, true) == D::refuse_no_automation && fs::Decide(true, true, false, true) == D::refuse_no_automation &&
+              fs::Decide(true, false, false, false) == D::refuse_no_automation,
+          "foreign saves: refused outside a supervised automation run");
+    Check(fs::Decide(true, true, true, false) == D::refuse_no_redirect, "foreign saves: refused when the save redirect is not active");
+    Check(fs::Decide(true, true, true, true) == D::install, "foreign saves: installed only with automation + supervised + redirect + key");
+    Check(te::WantForeignSaves(L"C:\\seed", false) && !te::WantForeignSaves(L"", false) && !te::WantForeignSaves(L"C:\\seed", true),
+          "supervisor: the key only with --seed-saves and the full mod");
+    const std::string plain = te::SessionIniText("solo", true), seeded = te::SessionIniText("echo", true, true, {}, true);
+    Check(plain.find("automation_foreign_saves") == std::string::npos && seeded.find("automation_foreign_saves=1\n") != std::string::npos &&
+              te::RedirectOnlyIniText().find("foreign") == std::string::npos,
+          "session.ini: automation_foreign_saves=1 only when asked for");
+    // site table sanity: jne rel8 at patch_at, distinct, inside .text of ds.exe (VA 0x140001000..0x143B3A000)
+    bool table = fs::kSiteCount == 3;
+    for (const fs::Site& s : fs::kSites)
+        table = table && s.patch_at + 1 < s.len && s.expect[s.patch_at] == fs::kJne8 && s.expect[s.patch_at - 2] == 0x84 &&
+                s.expect[s.patch_at - 1] == 0xDB && s.rva >= 0x1000 && s.rva + s.len < 0x3B3A000 && s.expect[0] == 0x48 &&
+                s.expect[1] == 0x8B && s.expect[2] == 0x05;
+    Check(table, "site table: each window loads the owner string and ends in test bl,bl; jne rel8");
+    // owner string operand: mov rax,[rip+disp32] must resolve to 0x144598268 in every window
+    bool owner = true;
+    for (const fs::Site& s : fs::kSites) {
+        std::int32_t disp = 0;
+        std::memcpy(&disp, s.expect + 3, 4);
+        owner = owner && fs::kImageBase + s.rva + 7 + disp == 0x144598268ull;
+    }
+    Check(owner, "site table: every window reads the account-id string at 0x144598268");
+    // CheckSites with a synthetic image: all match -> true; one byte off -> false + where; unreadable -> false
+    std::vector<std::uint8_t> image(0x3B3A000, 0xCC);
+    for (const fs::Site& s : fs::kSites) std::memcpy(image.data() + s.rva, s.expect, s.len);
+    const auto reader = [&](std::uint32_t rva, std::uint8_t* out, std::uint32_t len) {
+        if (static_cast<std::size_t>(rva) + len > image.size()) return false;
+        std::memcpy(out, image.data() + rva, len);
+        return true;
+    };
+    std::string why;
+    Check(fs::CheckSites(reader, &why), "byte check: matching image accepted", why);
+    image[fs::kSites[1].rva + 50] ^= 0x01;
+    why.clear();
+    Check(!fs::CheckSites(reader, &why) && why.find("bytes differ at 0x") != std::string::npos && why.find("sync read") != std::string::npos,
+          "byte check: one differing byte refuses (and names the site)", why);
+    image[fs::kSites[1].rva + 50] ^= 0x01;
+    image[fs::kSites[2].rva + fs::kSites[2].patch_at] = fs::kJmp8;  // already patched by someone else: refused too
+    why.clear();
+    Check(!fs::CheckSites(reader, &why), "byte check: an already patched site refuses", why);
+    why.clear();
+    Check(!fs::CheckSites([](std::uint32_t, std::uint8_t*, std::uint32_t) { return false; }, &why) && why.rfind("not readable", 0) == 0,
+          "byte check: an unreadable image refuses", why);
+    // The installed game, when present: the table matches this ds.exe build byte for byte.
+    const std::wstring ds = L"C:\\Program Files (x86)\\Steam\\steamapps\\common\\DEATH STRANDING DIRECTORS CUT\\ds.exe";
+    std::string pe;
+    if (te::ReadFileBytes(ds, &pe, 256ull << 20)) {
+        why.clear();
+        Check(fs::CheckSites([&](std::uint32_t rva, std::uint8_t* out, std::uint32_t len) { return ReadDsExeRva(pe, rva, out, len); }, &why),
+              "byte check: the installed ds.exe matches every site", why);
+    } else {
+        std::printf("info  installed ds.exe not found: site table not checked against the game\n");
+    }
+}
+
 // The mod's save redirect: path mapping (automation.hpp, also what the hooks run).
 void SaveRedirectMapping() {
     namespace sv = au::saves;
-    const std::wstring root = L"C:\\Users\\taylo\\AppData\\Local\\KojimaProductions";
+    const std::wstring root = L"C:\\Users\\player\\AppData\\Local\\KojimaProductions";
     const std::wstring scratch = L"D:\\Games\\DS\\stranded_together\\automation\\saves";
     std::wstring out, rel;
-    Check(sv::Map(root + L"\\DeathStrandingDC\\97930372\\autosave3\\checkpoint.dat", root, scratch, &out, &rel) &&
-              out == scratch + L"\\DeathStrandingDC\\97930372\\autosave3\\checkpoint.dat" &&
-              rel == L"DeathStrandingDC\\97930372\\autosave3\\checkpoint.dat",
+    Check(sv::Map(root + L"\\DeathStrandingDC\\12345678\\autosave3\\checkpoint.dat", root, scratch, &out, &rel) &&
+              out == scratch + L"\\DeathStrandingDC\\12345678\\autosave3\\checkpoint.dat" &&
+              rel == L"DeathStrandingDC\\12345678\\autosave3\\checkpoint.dat",
           "a checkpoint under the root maps into the scratch copy", te::Narrow(out));
-    Check(sv::Map(L"c:/users/TAYLO/appdata/local/kojimaproductions/DeathStrandingDC/97930372/profile/profile.dat", root, scratch, &out) &&
-              out == scratch + L"\\DeathStrandingDC\\97930372\\profile\\profile.dat",
+    Check(sv::Map(L"c:/users/PLAYER/appdata/local/kojimaproductions/DeathStrandingDC/12345678/profile/profile.dat", root, scratch, &out) &&
+              out == scratch + L"\\DeathStrandingDC\\12345678\\profile\\profile.dat",
           "case and '/' separators do not matter (the rest keeps its spelling)", te::Narrow(out));
-    Check(sv::Map(L"\\\\?\\C:\\Users\\taylo\\AppData\\Local\\KojimaProductions\\DeathStrandingDC\\1\\x", root, scratch, &out) &&
+    Check(sv::Map(L"\\\\?\\C:\\Users\\player\\AppData\\Local\\KojimaProductions\\DeathStrandingDC\\1\\x", root, scratch, &out) &&
               out == L"\\\\?\\" + scratch + L"\\DeathStrandingDC\\1\\x",
           "a \\\\?\\ path maps and keeps its prefix", te::Narrow(out));
-    Check(sv::Map(L"C:\\Users\\taylo\\AppData\\Local\\\\KojimaProductions\\\\DeathStrandingDC\\.\\1\\..\\2\\*", root, scratch, &out) &&
+    Check(sv::Map(L"C:\\Users\\player\\AppData\\Local\\\\KojimaProductions\\\\DeathStrandingDC\\.\\1\\..\\2\\*", root, scratch, &out) &&
               out == scratch + L"\\DeathStrandingDC\\2\\*",
           "doubled separators, '.' and '..' are resolved before matching", te::Narrow(out));
     Check(sv::Map(root, root, scratch, &out, &rel) && out == scratch && rel.empty() && sv::Map(root + L"\\", root, scratch, &out) && out == scratch,
           "the root itself maps to the scratch root");
-    Check(!sv::Map(L"C:\\Users\\taylo\\AppData\\Local\\KojimaProductionsX\\a", root, scratch, &out) &&
-              !sv::Map(L"C:\\Users\\taylo\\AppData\\Local\\Temp\\a", root, scratch, &out) &&
-              !sv::Map(L"C:\\Users\\taylo\\AppData\\Local", root, scratch, &out) && !sv::Map(L"", root, scratch, &out) &&
+    Check(!sv::Map(L"C:\\Users\\player\\AppData\\Local\\KojimaProductionsX\\a", root, scratch, &out) &&
+              !sv::Map(L"C:\\Users\\player\\AppData\\Local\\Temp\\a", root, scratch, &out) &&
+              !sv::Map(L"C:\\Users\\player\\AppData\\Local", root, scratch, &out) && !sv::Map(L"", root, scratch, &out) &&
               !sv::Map(L"profile.dat", root, scratch, &out),
           "siblings, parents, other folders and relative names are not mapped");
-    Check(sv::Map(L"C:\\Users\\taylo\\AppData\\Local\\Temp\\..\\KojimaProductions\\DeathStrandingDC\\1\\a", root, scratch, &out) &&
+    Check(sv::Map(L"C:\\Users\\player\\AppData\\Local\\Temp\\..\\KojimaProductions\\DeathStrandingDC\\1\\a", root, scratch, &out) &&
               out == scratch + L"\\DeathStrandingDC\\1\\a",
           "a '..' detour into the root is caught");
     Check(!sv::Map(scratch + L"\\DeathStrandingDC\\1\\a", root, scratch, &out), "mapping is idempotent (the scratch copy is not remapped)");
-    Check(sv::Map(L"\\\\.\\C:\\Users\\taylo\\AppData\\Local\\KojimaProductions\\DeathStrandingDC\\1\\x", root, scratch, &out) &&
+    Check(sv::Map(L"\\\\.\\C:\\Users\\player\\AppData\\Local\\KojimaProductions\\DeathStrandingDC\\1\\x", root, scratch, &out) &&
               out == L"\\\\?\\" + scratch + L"\\DeathStrandingDC\\1\\x",
           "a \\\\.\\ device path maps too", te::Narrow(out));
-    Check(sv::Map(L"C:\\Users\\taylo\\AppData\\Local\\KojimaProductions.\\DeathStrandingDC\\1\\x", root, scratch, &out) &&
+    Check(sv::Map(L"C:\\Users\\player\\AppData\\Local\\KojimaProductions.\\DeathStrandingDC\\1\\x", root, scratch, &out) &&
               out == scratch + L"\\DeathStrandingDC\\1\\x" &&
-              sv::Map(L"C:\\Users\\taylo\\AppData\\Local\\KojimaProductions \\DeathStrandingDC. \\1\\x", root, scratch, &out) &&
+              sv::Map(L"C:\\Users\\player\\AppData\\Local\\KojimaProductions \\DeathStrandingDC. \\1\\x", root, scratch, &out) &&
               out == scratch + L"\\DeathStrandingDC\\1\\x",
           "trailing dots and spaces of a component (Win32 drops them) do not hide the root", te::Narrow(out));
     Check(sv::Map(root + L":stream", root, scratch, &out, &rel) && out == scratch + L":stream" &&
@@ -169,19 +254,19 @@ void SaveRedirectMapping() {
           "alternate data streams of the root and below map", te::Narrow(out));
     {
         const auto lookup = [](const std::wstring& p, std::wstring* name) {
-            if (p == L"C:\\Users\\TAYLO~1") return *name = L"taylo", true;
-            if (p == L"C:\\Users\\taylo\\AppData\\Local\\KOJIMA~1") return *name = L"KojimaProductions", true;
+            if (p == L"C:\\Users\\PLAYER~1") return *name = L"player", true;
+            if (p == L"C:\\Users\\player\\AppData\\Local\\KOJIMA~1") return *name = L"KojimaProductions", true;
             return false;
         };
-        const std::wstring exp = sv::ExpandShortNames(L"C:\\Users\\TAYLO~1\\AppData\\Local\\KOJIMA~1\\DeathStrandingDC\\x", lookup);
+        const std::wstring exp = sv::ExpandShortNames(L"C:\\Users\\PLAYER~1\\AppData\\Local\\KOJIMA~1\\DeathStrandingDC\\x", lookup);
         Check(exp == root + L"\\DeathStrandingDC\\x" && sv::Map(exp, root, scratch, &out),
               "8.3 short names are expanded (component by component) before matching", te::Narrow(exp));
-        Check(sv::ExpandShortNames(L"C:\\NOPE~1\\TAYLO~1\\x", lookup) == L"C:\\NOPE~1\\TAYLO~1\\x" &&
+        Check(sv::ExpandShortNames(L"C:\\NOPE~1\\PLAYER~1\\x", lookup) == L"C:\\NOPE~1\\PLAYER~1\\x" &&
                   sv::ExpandShortNames(L"C:\\a\\b", lookup) == L"C:\\a\\b" && sv::ExpandShortNames(L"\\\\srv\\X~1\\a", lookup) == L"\\\\srv\\X~1\\a",
               "short-name expansion stops at a missing component and leaves other paths alone");
     }
-    Check(sv::LogPrefix(L"DeathStrandingDC\\97930372\\autosave3\\checkpoint.dat") == L"DeathStrandingDC\\97930372\\autosave3" &&
-              sv::LogPrefix(L"DeathStrandingDC\\97930372\\profile\\a\\b\\c.dat") == L"DeathStrandingDC\\97930372\\profile" &&
+    Check(sv::LogPrefix(L"DeathStrandingDC\\12345678\\autosave3\\checkpoint.dat") == L"DeathStrandingDC\\12345678\\autosave3" &&
+              sv::LogPrefix(L"DeathStrandingDC\\12345678\\profile\\a\\b\\c.dat") == L"DeathStrandingDC\\12345678\\profile" &&
               sv::LogPrefix(L".st-redirect-probe").empty() && sv::LogPrefix(L"DeathStrandingDC\\x") == L"DeathStrandingDC",
           "log prefix: parent folder, at most 3 levels");
 }
@@ -407,7 +492,8 @@ void RefusedOutsideSupervisor(const std::wstring& game, const std::wstring& mod)
     Check(CopyFileW(mod.c_str(), (game + L"\\winhttp.dll").c_str(), FALSE) != FALSE, "refusal: mod deployed into the fake game folder");
     te::EnsureDir(mod_dir + L"\\automation\\saves");
     Put(mod_dir + L"\\automation\\saves\\.st-redirect-probe", "probe");  // a seeded scratch copy is there too
-    Put(mod_dir + L"\\session.ini", "one_shot=1\nautomation=1\n");
+    // A stale --seed-saves session.ini (interrupted run): refused before the foreign-saves bypass too.
+    Put(mod_dir + L"\\session.ini", "one_shot=1\nautomation=1\nautomation_foreign_saves=1\n");
     SetEnvironmentVariableW(au::saves::kSupervisedEnv, nullptr);
     wchar_t name[64];
     std::swprintf(name, 64, L"StTestEnvRefusal_%lu", GetCurrentProcessId());
@@ -446,6 +532,8 @@ void RefusedOutsideSupervisor(const std::wstring& game, const std::wstring& mod)
     Check(code == au::saves::kRefusedExitCode && refused.find("not started by st_testenv_supervisor") != std::string::npos,
           "automation=1 in a ds.exe the supervisor did not start is refused in DllMain", std::string(hex) + " " + refused);
     Check(!te::FileExists(mod_dir + L"\\fakegame.log"), "refusal: the fake game's own code never ran");
+    Check(!te::FileExists(mod_dir + L"\\automation\\" + au::saves::kActiveFile),
+          "refusal: no redirect and no foreign-saves bypass (stale automation_foreign_saves=1 ignored)");
     te::RemoveTree(mod_dir + L"\\automation");
     DeleteFileW((mod_dir + L"\\session.ini").c_str());
     Put(game + L"\\winhttp.dll", "original winhttp.dll (not a DLL)");
@@ -472,9 +560,15 @@ int EndToEnd(const std::wstring& supervisor, const std::wstring& fakegame, const
     Put(saves + L"\\DeathStrandingDC\\1\\profile\\profile.dat", "seed-profile");
     Put(saves + L"\\DeathStrandingDC\\1\\quicksave0\\checkpoint.dat", "q0");
     const std::string saves_before = te::HashManifest(saves);
+    // --seed-saves: the supervisor seeds this slot and asks for the foreign-saves bypass; on the
+    // fake game the byte check must refuse (no ds.exe code there) and the run go on unpatched.
+    const std::wstring seed = work + L"\\seed";
+    te::EnsureDir(seed + L"\\DeathStrandingDC\\quicksave0");
+    Put(seed + L"\\DeathStrandingDC\\quicksave0\\checkpoint.dat", "seed-q0");
     SetEnvironmentVariableW(L"ST_FAKEGAME_SAVE_ROOT", saves.c_str());  // inherited by the supervisor and the fake game
     std::wstring cmd = L"\"" + supervisor + L"\" --game-dir \"" + game + L"\" --mod \"" + mod + L"\" --scenario \"" + scenario +
-                       L"\" --run-dir \"" + run + L"\" --saves \"" + saves + L"\" --no-steam-check --timeout-s 150";
+                       L"\" --run-dir \"" + run + L"\" --saves \"" + saves + L"\" --seed-saves \"" + seed +
+                       L"\" --no-steam-check --timeout-s 150";
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
@@ -554,6 +648,12 @@ int EndToEnd(const std::wstring& supervisor, const std::wstring& fakegame, const
     Check(summary.find("removed DeathStrandingDC\\\\1\\\\quicksave0\\\\checkpoint.dat") != std::string::npos,
           "the delete hit the scratch copy (scratch_changes)");
     Check(Get(run + L"\\game\\saves-redirect.txt").rfind("saves=redirected", 0) == 0, "DllMain marker collected");
+    Check(summary.find("\"foreign_saves\":true") != std::string::npos &&
+              summary.find("[auto] foreign saves: NOT bypassed (nothing patched)") != std::string::npos &&
+              modlog.find("check bypassed") == std::string::npos &&
+              Get(run + L"\\game\\saves-redirect.txt").find("foreign_saves=refused\n") != std::string::npos,
+          "--seed-saves: automation_foreign_saves=1 sent; the byte check refused on a non-ds.exe image (nothing patched)");
+    Check(Get(game + L"\\stranded_together\\session.ini").find("foreign") == std::string::npos, "restored session.ini has no foreign-saves key");
     RefusedOutsideSupervisor(game, mod);
     return g_fail ? 1 : 0;
 }
@@ -584,6 +684,7 @@ int wmain(int argc, wchar_t** argv) {
     CommandParser();
     ScenarioParser(scenarios.empty() ? L"" : te::FullPath(scenarios));
     SessionIni();
+    ForeignSaves();
     SaveRedirectMapping();
     BackupRestore(te::FullPath(work));
     SavesGuard(te::FullPath(work));

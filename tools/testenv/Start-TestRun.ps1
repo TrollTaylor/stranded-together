@@ -27,8 +27,9 @@ param(
     [ValidateRange(30, 360)][int]$TimeoutSec = 360,
     [string]$Saves,
     # Save the hidden game loads (scratch copy only): a folder holding DeathStrandingDC\<slots>,
-    # a name under testenv-saves\, or 'own'. Default: the user's own saves. NOTE: DS binds saves to the Steam account
-    # that wrote them; a save from another account shows 'Save data is corrupted' (run 20261116-142026-seedload).
+    # a name under testenv-saves\, or 'own'. Default: the user's own saves. DS binds saves to the account that wrote
+    # them ('Save data is corrupted' otherwise); with a seed the supervisor writes automation_foreign_saves=1 and the
+    # mod skips that check in this hidden run only (docs/hidden-testing.md "Using another save").
     [string]$SeedSaves,
     [switch]$KeepAudio,
     [switch]$NoBuild,

@@ -31,10 +31,12 @@
 // The thread only does file I/O, queues debug actions (they run on the game
 // thread, st::debug::OnTick), asks the overlay for captures (taken inside
 // Present) and sets the virtual pad state (answered by the XInputGetState hook).
-// It never reads or calls game memory.
+// It never reads or calls game memory. (DllMain's foreign-saves bypass below is the one
+// write to ds.exe, and only with automation_foreign_saves=1.)
 #pragma once
 #include <cctype>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <string>
 #include <vector>
@@ -400,7 +402,7 @@ inline bool Map(const std::wstring& path, const std::wstring& root, const std::w
     return true;
 }
 
-// 8.3 names: "C:\Users\TAYLO~1\AppData\Local\KOJIMA~1\x" names the save root too.
+// 8.3 names: "C:\Users\PLAYER~1\AppData\Local\KOJIMA~1\x" names the save root too.
 // `normalized` is a Normalize()d drive path; every component with a '~' (and no
 // wildcard) is replaced by long_name(<path up to and including it>, &long) when that
 // finds it on disk; expansion stops at the first component it cannot find (nothing
@@ -429,8 +431,8 @@ inline std::wstring ExpandShortNames(const std::wstring& normalized, LongName&& 
 }
 
 // Directory part of a root-relative path, at most `depth` components, for one log
-// line per distinct place: "DeathStrandingDC\97930372\autosave3\checkpoint.dat" ->
-// "DeathStrandingDC\97930372\autosave3"; a file directly in the root -> "".
+// line per distinct place: "DeathStrandingDC\12345678\autosave3\checkpoint.dat" ->
+// "DeathStrandingDC\12345678\autosave3"; a file directly in the root -> "".
 inline std::wstring LogPrefix(const std::wstring& rel, int depth = 3) {
     const auto slash = rel.find_last_of(L'\\');
     if (slash == std::wstring::npos) return {};
@@ -447,15 +449,130 @@ inline std::wstring LogPrefix(const std::wstring& rel, int depth = 3) {
 
 }  // namespace saves
 
+// ------------------------------------------------------------- foreign saves
+// Saves made by another account (docs/hidden-testing.md "Using another save").
+//
+// The data part of checkpoint.dat / profile.dat is u32 magic 0xC0391E1D, u32 seed, then
+// the rest XORed with MurmurHash3_x64_128(seed 42) of {seed, 12 constant bytes at
+// 0x143BA4460}: the key does not depend on the account. The account binding is one
+// string after decryption: u32 length + "steam_<SteamID64>" (or "epic_<id>" from the
+// Epic Games Store build), compared with the running account's id (global string
+// 0x144598268, set by FUN_1419FF950 as "steam_%llu" of ISteamUser::GetSteamID) by the
+// engine's string equality FUN_14190B110. On a mismatch the readers mark the request
+// "broken" (state byte +0x3A = 0x11, shown as "Save data is corrupted, and cannot be
+// loaded."; the data itself is still decompressed). Three readers do this:
+//   async    FUN_141A01ED0 (sSaveDataAsynCallback, mode 1: checkpoint.dat loads, Continue/Load)
+//   sync     FUN_1419FFA40 (synchronous read, returns false and sets *mismatch = 1)
+//   import   FUN_1419FF5B0 (SaveData: ImportDownloadedData)
+// Each is `call FUN_14190B110; ...; test bl,bl; jne <accepted>; <reject>`. The bypass turns
+// each `jne rel8` (0x75) into `jmp rel8` (0xEB): exactly the owner check is skipped,
+// nothing else changes. Only with automation=1 (supervised, save redirect active and
+// self-tested) AND automation_foreign_saves=1 (written by the supervisor only with
+// --seed-saves), installed in DllMain before ds.exe's code runs. Every window below is
+// compared byte for byte (from the owner-string load to the reject store) before any
+// byte is written; any difference (another ds.exe build) installs nothing.
+namespace foreign_saves {
+
+constexpr std::uint64_t kImageBase = 0x140000000ull;  // ds.exe's preferred base (VAs in the comments)
+constexpr std::uint8_t kJne8 = 0x75, kJmp8 = 0xEB;
+
+struct Site {
+    const char* name;
+    std::uint32_t rva;       // first byte of `expect`
+    std::uint32_t patch_at;  // offset of the jne rel8 opcode in `expect`
+    const std::uint8_t* expect;
+    std::uint32_t len;
+};
+
+// 0x1419FF7AE: mov rax,[0x144598268] ... call 0x14190B110 ... test bl,bl; jne +4; mov byte [rdi+3A],11
+inline constexpr std::uint8_t kImportBytes[] = {
+    0x48, 0x8B, 0x05, 0xB3, 0x8A, 0xB9, 0x02, 0x48, 0x83, 0xC1, 0x10, 0x48, 0x89, 0x4D, 0xF7, 0x48, 0x8D, 0x48, 0xF0,
+    0x48, 0x3B, 0xCA, 0x74, 0x09, 0xB8, 0x01, 0x00, 0x00, 0x00, 0xF0, 0x0F, 0xC1, 0x01, 0x48, 0x8D, 0x41, 0x10, 0x48,
+    0x8D, 0x4D, 0xE7, 0x48, 0x89, 0x45, 0xEF, 0x48, 0x8D, 0x55, 0xEF, 0xE8, 0x2C, 0xB9, 0xF0, 0xFF, 0x48, 0x8D, 0x4D,
+    0xEF, 0x0F, 0xB6, 0xD8, 0xE8, 0x30, 0xB5, 0xF0, 0xFF, 0x84, 0xDB, 0x75, 0x04, 0xC6, 0x47, 0x3A, 0x11};
+// 0x1419FFE0F: mov rax,[0x144598268] ... call 0x14190B110 ... test bl,bl; jne +0x29; test r13,r13; je; mov byte [r13],1
+inline constexpr std::uint8_t kSyncBytes[] = {
+    0x48, 0x8B, 0x05, 0x52, 0x84, 0xB9, 0x02, 0x48, 0x83, 0xC1, 0x10, 0x48, 0x83, 0xC0, 0xF0, 0x48, 0x89, 0x4D, 0xA0,
+    0x48, 0x3B, 0xC2, 0x74, 0x05, 0xF0, 0x44, 0x0F, 0xC1, 0x20, 0x48, 0x83, 0xC0, 0x10, 0x48, 0x8D, 0x55, 0x98, 0x48,
+    0x8D, 0x4D, 0x80, 0x48, 0x89, 0x45, 0x98, 0xE8, 0xCF, 0xB2, 0xF0, 0xFF, 0x48, 0x8D, 0x4D, 0x98, 0x0F, 0xB6, 0xD8,
+    0xE8, 0xD3, 0xAE, 0xF0, 0xFF, 0x84, 0xDB, 0x75, 0x29, 0x4D, 0x85, 0xED, 0x74, 0x05, 0x41, 0xC6, 0x45, 0x00, 0x01};
+// 0x141A02902: mov rax,[0x144598268] ... call 0x14190B110 ... test bl,bl; jne +5; mov byte [r14+3A],11
+inline constexpr std::uint8_t kAsyncBytes[] = {
+    0x48, 0x8B, 0x05, 0x5F, 0x59, 0xB9, 0x02, 0x48, 0x83, 0xC1, 0x10, 0x48, 0x83, 0xC0, 0xF0, 0x48, 0x89, 0x8D, 0xE0,
+    0x00, 0x00, 0x00, 0x49, 0x3B, 0xC5, 0x74, 0x05, 0xF0, 0x44, 0x0F, 0xC1, 0x20, 0x48, 0x83, 0xC0, 0x10, 0x48, 0x8D,
+    0x55, 0x68, 0x48, 0x8D, 0x4D, 0x60, 0x48, 0x89, 0x45, 0x68, 0xE8, 0xD9, 0x87, 0xF0, 0xFF, 0x48, 0x8D, 0x4D, 0x68,
+    0x0F, 0xB6, 0xD8, 0xE8, 0xDD, 0x83, 0xF0, 0xFF, 0x84, 0xDB, 0x75, 0x05, 0x41, 0xC6, 0x46, 0x3A, 0x11};
+
+inline constexpr Site kSites[] = {
+    {"async checkpoint load FUN_141A01ED0", 0x01A02902u, 67u, kAsyncBytes, static_cast<std::uint32_t>(sizeof(kAsyncBytes))},
+    {"sync read FUN_1419FFA40", 0x019FFE0Fu, 64u, kSyncBytes, static_cast<std::uint32_t>(sizeof(kSyncBytes))},
+    {"ImportDownloadedData FUN_1419FF5B0", 0x019FF7AEu, 68u, kImportBytes, static_cast<std::uint32_t>(sizeof(kImportBytes))},
+};
+constexpr int kSiteCount = static_cast<int>(sizeof(kSites) / sizeof(kSites[0]));
+
+// Static VA of a site's patched byte (log lines, docs).
+inline std::uint64_t PatchVa(const Site& s) { return kImageBase + s.rva + s.patch_at; }
+
+enum class Decision : std::uint8_t {
+    off,                  // not requested: nothing happens (every normal launch)
+    install,              // requested in a supervised, redirected automation run
+    refuse_no_automation, // requested, but not a supervised automation run
+    refuse_no_redirect,   // requested, but the save redirect is not active: the user's real saves could be loaded
+};
+
+// The gate. `requested` = automation_foreign_saves=1, `automation` = automation=1,
+// `supervised` = ST_TESTENV_SUPERVISED set, `redirect_active` = the save redirect installed
+// and self-tested.
+inline Decision Decide(bool requested, bool automation, bool supervised, bool redirect_active) {
+    if (!requested) return Decision::off;
+    if (!automation || !supervised) return Decision::refuse_no_automation;
+    if (!redirect_active) return Decision::refuse_no_redirect;
+    return Decision::install;
+}
+
+// Compares every site with `read(rva, buffer, len) -> bool` (false: not readable) BEFORE
+// anything is written; true only when all of them match. *why names the first mismatch.
+template <class Read>
+inline bool CheckSites(Read&& read, std::string* why) {
+    for (const Site& s : kSites) {
+        std::uint8_t got[128] = {};
+        if (s.len > sizeof(got) || s.patch_at >= s.len || s.expect[s.patch_at] != kJne8) {
+            if (why) *why = std::string("bad site table entry: ") + s.name;
+            return false;
+        }
+        if (!read(s.rva, got, s.len)) {
+            if (why) *why = std::string("not readable: ") + s.name;
+            return false;
+        }
+        for (std::uint32_t i = 0; i < s.len; ++i)
+            if (got[i] != s.expect[i]) {
+                if (why) {
+                    char b[160];
+                    std::snprintf(b, sizeof(b), "bytes differ at 0x%llX (+%u in %s): 0x%02X, expected 0x%02X (another ds.exe build?)",
+                                  static_cast<unsigned long long>(kImageBase + s.rva + i), i, s.name, got[i], s.expect[i]);
+                    *why = b;
+                }
+                return false;
+            }
+    }
+    return true;
+}
+
+}  // namespace foreign_saves
+
 // DllMain (DLL_PROCESS_ATTACH, ds.exe only): when <exe dir>\stranded_together\session.ini
 // says automation=1, installs the save redirect (above) before the game's own code
 // runs, and the exit tracer (ExitProcess / TerminateProcess of the game logged with a
 // call stack). When the redirect cannot be installed or its self-test fails, it writes
 // <mod>\automation\saves-redirect-failed.txt and ends the process with
 // saves::kRefusedExitCode: the game never runs unprotected. Win32 only, no CRT I/O.
+// Then, only with automation_foreign_saves=1 and the redirect active, the foreign-saves
+// bypass (foreign_saves above; logged by Init, noted in saves-redirect.txt).
 void EarlyInit() noexcept;
 // After Init (log open): "[auto] saves=redirected ..." and the places seen so far.
 bool SavesRedirected() noexcept;
+// True when DllMain installed the foreign-saves bypass in this process.
+bool ForeignSavesBypassed() noexcept;
 
 // Bootstrap thread, before the overlay installs (automation runs): waits until ds.exe
 // has loaded d3d12.dll itself. ds.exe's device creation (FUN_1419A6980) reads

@@ -1,5 +1,7 @@
 // File-based automation channel for hidden test runs. See automation.hpp and
-// docs/hidden-testing.md. Runs on its own thread; never touches game memory.
+// docs/hidden-testing.md. Runs on its own thread; never touches game memory, except the
+// foreign-saves bypass (automation.hpp "foreign saves": 3 bytes, DllMain, only with
+// automation_foreign_saves=1 in a supervised, redirected run, byte-checked first).
 #include "automation.hpp"
 
 #include <windows.h>
@@ -793,6 +795,75 @@ void RefuseAndExit(const char* why) noexcept {
     TerminateProcess(GetCurrentProcess(), saves::kRefusedExitCode);
 }
 
+// ---- foreign saves (automation.hpp "foreign saves"): DllMain, after the redirect is proven
+std::atomic<bool> g_foreign_requested{false}, g_foreign_bypassed{false};
+char g_foreign_note[640];  // the "[auto] foreign saves: ..." text Init logs
+
+// ds.exe's own image: [base, base + SizeOfImage) and the section of an RVA must be committed,
+// executable and readable (VirtualQuery, never a read that could fault inside ds.exe).
+bool ReadImage(const unsigned char* base, std::size_t image_size, std::uint32_t rva, std::uint8_t* out, std::uint32_t len) noexcept {
+    if (!base || static_cast<std::size_t>(rva) + len > image_size) return false;
+    const unsigned char* p = base + rva;
+    for (const unsigned char* at = p; at < p + len;) {
+        MEMORY_BASIC_INFORMATION mbi{};
+        if (!VirtualQuery(at, &mbi, sizeof(mbi)) || mbi.State != MEM_COMMIT || (mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS)) ||
+            !(mbi.Protect & (PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)))
+            return false;
+        at = static_cast<const unsigned char*>(mbi.BaseAddress) + mbi.RegionSize;
+    }
+    std::memcpy(out, p, len);
+    return true;
+}
+
+void InstallForeignSaves() noexcept {
+    namespace fs = foreign_saves;
+    const auto* base = reinterpret_cast<const unsigned char*>(GetModuleHandleW(nullptr));
+    std::size_t image_size = 0;
+    if (base) {
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+        if (dos->e_magic == IMAGE_DOS_SIGNATURE && nt->Signature == IMAGE_NT_SIGNATURE &&
+            nt->OptionalHeader.Magic == IMAGE_NT_OPTIONAL_HDR64_MAGIC)
+            image_size = nt->OptionalHeader.SizeOfImage;
+    }
+    std::string why;
+    bool ok = false;
+    try {
+        ok = image_size != 0 && fs::CheckSites([&](std::uint32_t rva, std::uint8_t* out, std::uint32_t len) {
+                 return ReadImage(base, image_size, rva, out, len);
+             }, &why);
+        if (!image_size) why = "ds.exe image headers not readable";
+    } catch (...) {
+        ok = false, why = "exception while checking the sites";
+    }
+    if (!ok) {
+        std::snprintf(g_foreign_note, sizeof(g_foreign_note), "NOT bypassed (nothing patched): %s", why.c_str());
+        return;
+    }
+    // All windows match this ds.exe build: one byte each, jne rel8 -> jmp rel8.
+    int done = 0;
+    int len = std::snprintf(g_foreign_note, sizeof(g_foreign_note), "check bypassed at");
+    for (const fs::Site& s : fs::kSites) {
+        auto* at = const_cast<unsigned char*>(base) + s.rva + s.patch_at;
+        DWORD old = 0;
+        if (!VirtualProtect(at, 1, PAGE_EXECUTE_READWRITE, &old)) break;
+        *at = fs::kJmp8;
+        DWORD ignored = 0;
+        VirtualProtect(at, 1, old, &ignored);
+        FlushInstructionCache(GetCurrentProcess(), at, 1);
+        if (*at != fs::kJmp8) break;
+        ++done;
+        if (len > 0 && len < static_cast<int>(sizeof(g_foreign_note)) - 96)
+            len += std::snprintf(g_foreign_note + len, sizeof(g_foreign_note) - len, "%s 0x%llX (%s)", done > 1 ? "," : "",
+                                 static_cast<unsigned long long>(fs::PatchVa(s)), s.name);
+    }
+    if (done != fs::kSiteCount) {
+        std::snprintf(g_foreign_note, sizeof(g_foreign_note), "PARTLY bypassed: %d of %d sites written (VirtualProtect failed, error %lu)", done,
+                      fs::kSiteCount, GetLastError());
+    }
+    g_foreign_bypassed.store(done == fs::kSiteCount);
+}
+
 // Init (log open): the evidence line the supervisor waits for, then the places
 // noted so far.
 void LogSaves() noexcept {
@@ -811,6 +882,8 @@ void LogSaves() noexcept {
     Log("[auto] saves=redirected: %d save root(s) -> %s (%d file API hooks, self-test passed%s%s)", roots, scratch, g_rd_hooks.load(),
         g_rd_missing[0] ? "; optional hooks missing: " : "", g_rd_missing);
     Log("[auto] ShellExecute(Ex)A/W blocked for this run (%d hooks)", g_shell_hooks.load());
+    if (g_foreign_requested.load())
+        Log("[auto] foreign saves: %s", g_foreign_note[0] ? g_foreign_note : "NOT bypassed (no result recorded)");
     g_log_ready.store(true, std::memory_order_release);
     FlushSeen();
 }
@@ -1387,6 +1460,7 @@ bool WaitForGameD3D12(unsigned timeout_ms) noexcept {
 
 bool Enabled() noexcept { return g_enabled.load(); }
 bool SavesRedirected() noexcept { return g_rd_active.load(); }
+bool ForeignSavesBypassed() noexcept { return g_foreign_bypassed.load(); }
 bool MuteRequested() noexcept { return g_mute.load(); }
 bool IsolateRequested() noexcept { return g_isolate.load(); }
 
@@ -1565,7 +1639,7 @@ void EarlyInit() noexcept {
     wchar_t ini_path[kPathCap + 32];
     std::swprintf(ini_path, kPathCap + 32, L"%s\\session.ini", g_mod_dir);
     if (!ReadIniRaw(ini_path, &ini)) return;
-    bool on = false, exit_trace = true;
+    bool on = false, exit_trace = true, foreign = false;
     std::wstring extra_root;
     try {
         std::size_t at = 0;
@@ -1582,6 +1656,7 @@ void EarlyInit() noexcept {
             const bool b = lv == "1" || lv == "true" || lv == "yes" || lv == "on";
             if (k == "automation") on = b;
             else if (k == "automation_exit_trace") exit_trace = b;
+            else if (k == "automation_foreign_saves") foreign = b;
             else if (k == "automation_save_root" && !v.empty()) {  // tests: an extra root (UTF-8)
                 const int wn = MultiByteToWideChar(CP_UTF8, 0, v.data(), static_cast<int>(v.size()), nullptr, 0);
                 extra_root.assign(static_cast<std::size_t>(wn > 0 ? wn : 0), L'\0');
@@ -1660,6 +1735,19 @@ void EarlyInit() noexcept {
     }
     if (exit_trace) InstallExitTrace();
     InstallShellBlock();
+    // Saves of another account (--seed-saves): only here, after the redirect is installed and
+    // self-tested, in a supervised automation run (the checks above returned otherwise).
+    g_foreign_requested.store(foreign);
+    switch (foreign_saves::Decide(foreign, on, !EnvVar(saves::kSupervisedEnv).empty(), g_rd_active.load())) {
+        case foreign_saves::Decision::off: break;
+        case foreign_saves::Decision::install: InstallForeignSaves(); break;
+        case foreign_saves::Decision::refuse_no_automation:
+            std::snprintf(g_foreign_note, sizeof(g_foreign_note), "NOT bypassed: not a supervised automation run");
+            break;
+        case foreign_saves::Decision::refuse_no_redirect:
+            std::snprintf(g_foreign_note, sizeof(g_foreign_note), "NOT bypassed: the save redirect is not active");
+            break;
+    }
     wchar_t active[kPathCap + 64];
     std::swprintf(active, kPathCap + 64, L"%s\\%s", g_auto_dir, saves::kActiveFile);
     char text[kPathCap * 4];
@@ -1671,6 +1759,8 @@ void EarlyInit() noexcept {
         Utf8(g_roots[i], root, sizeof(root));
         len += std::snprintf(text + len, sizeof(text) - len, "root=%s\n", root);
     }
+    if (foreign && len > 0 && len < static_cast<int>(sizeof(text)) - 64)
+        std::snprintf(text + len, sizeof(text) - len, "foreign_saves=%s\n", g_foreign_bypassed.load() ? "bypassed" : "refused");
     AppendRaw(active, text);
 }
 

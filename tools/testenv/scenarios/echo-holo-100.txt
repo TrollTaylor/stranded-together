@@ -1,0 +1,53 @@
+# echo-holo with the 100% completion save (Start-TestRun.ps1 -Scenario echo-holo-100 -SeedSaves complete-100).
+# The save comes from another account (an Epic Games Store one: its owner string is "epic_<id>"),
+# so the supervisor writes automation_foreign_saves=1 and the mod skips ds.exe's save-owner
+# check (docs/hidden-testing.md "Using another save"). Without that, Continue shows
+# "Save data is corrupted, and cannot be loaded."
+#
+# What this save does (run 20261116-143642-seed-discover): Continue loads Episode 15 ("Pass the
+# time until the presidential inauguration") in a distribution centre's garage near Mountain
+# Knot City. The local player entity appears ~4 s after Continue but the world keeps loading
+# (black loading screen) for another ~20 s; the player entity is then created again and Sam
+# stands in the garage with free control (no scripted hold). Left idle for ~1.5 min, Sam sits
+# down to rest ("Massage Shoulders / Sleep / Stand Up"), so the scenario moves him right away.
+role echo
+timeout 360
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+?screenshot 01-title
+pad A 150
+wait 4000
+?screenshot 02-after-continue
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+# the world is still loading: 1 s pushes until one moves Sam at least 1 m (ly=32760 marks the probe's lines)
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+screenshot 03-control
+snapshot
+# walk ~6 s across the garage floor; the echo partner (welcome hologram) follows 2 s behind, out of view
+pad none 6000 ly=32767
+waitlog 5 pad none 6000 ly=32767 -> ok: .*player moved ([3-9]|[1-9][0-9]+)\.[0-9]+ m
+screenshot 04-walked
+snapshot
+# turn the camera round to look back along Sam's path (~1.3 s at full deflection is ~180 degrees)
+pad none 1300 rx=32767
+screenshot 05-looking-back
+# keep walking the same way, now towards the camera: the hologram trails behind Sam, in view
+pad none 1500 ly=-32767
+screenshot 06-trailing-a
+pad none 1500 ly=-32767
+screenshot 07-trailing-b
+pad none 1500 ly=-32767
+screenshot 08-trailing-c
+snapshot
+# standing: the partner arrives within 2 s and fades
+wait 3000
+screenshot 09-stopped
+action log_status
+menu open
+wait 700
+screenshot 10-debug-menu
+menu close
+wait 300
+quit

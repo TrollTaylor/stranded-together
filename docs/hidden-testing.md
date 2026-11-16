@@ -25,6 +25,7 @@ the supervisor and the probe itself unless `-NoBuild`).
 | Saves | **redirected**: with `automation=1` the mod hooks the Win32 file API in DllMain and sends every access under `%LOCALAPPDATA%\KojimaProductions` to a scratch copy; the supervisor backs the real tree up, confirms the redirect before any step, compares by hash afterwards. 6 real runs: real tree identical every time, 0 Steam Cloud uploads. See "Saves". |
 | Real game, start-up | **solved**: ds.exe quit with code 0 because the mod's overlay loaded `d3d12.dll` before the game's own device creation (ds.exe's check at 0x1419A6CE9). The overlay now waits for the game's delay-load in automation runs. See "Why the game quit at once". |
 | Real game, smoke (12:25, 12:28) | **passes**: title -> Continue (virtual pad) -> Sam in the world (Incinerator West of Capital Knot City) -> debug menu -> quit with exit code 0 in ~50 s; screenshots in `runs\<run>\automation\`; saves identical. |
+| Real game, 100% save (14:34-14:44) | **passes** with `-SeedSaves complete-100`: the save is owned by an Epic account (`epic_<id>`); the mod skips ds.exe's save-owner check (3 byte-checked `jne`->`jmp`, automation + `automation_foreign_saves=1` only), Continue loads Episode 15, `echo-holo-100` walks and shows the hologram trailing. See "Using another save". |
 | Real game, walking (13:54, 13:56) | **passes**: the virtual pad's left stick walks Sam (20.2 m in a 6 s hold), the right stick turns the camera; `echo-holo` shows the echo partner hologram trailing Sam. The first runs "did nothing" because this save holds the player in a scripted BT scene ~5-20 s after it loads, exactly when they pushed the stick. See "Pad input in gameplay". |
 
 ## How it works
@@ -75,7 +76,8 @@ no second ds.exe appeared.
 `native/mod/automation.cpp` reads `automation`, `automation_mute` and
 `automation_isolate` from `session.ini` itself, before `LoadConfig` renames a
 one-shot file, and starts a thread that only does file I/O. It never writes game
-memory and reads it only through `ReadProcessMemory` (the `pad` result's "game pad
+memory (the one exception: with `automation_foreign_saves=1`, written only for `-SeedSaves`,
+DllMain flips 3 byte-checked branch bytes, see "Using another save") and reads it only through `ReadProcessMemory` (the `pad` result's "game pad
 state", see "Pad input in gameplay"; a bad page fails the read instead of faulting);
 game actions are queued to the existing debug-action queue and run on the
 game thread (`st::debug::OnTick`), screenshots are taken inside `Present`.
@@ -172,7 +174,7 @@ The `xfr:` device (the original DEATH STRANDING's saves, for the import) is
 `DeathStranding`). There is no `SHGetKnownFolderPath`/`SHGetFolderPath` import: the
 root comes from `USERPROFILE`, and Steam's AutoCloud rule is `WinAppDataLocal`
 `KojimaProductions/DeathStrandingDC/<id>` (cloud_log). On disk (this PC, account
-97930372): `autosaveN\checkpoint.dat`, `manualsaveN\...`, `quicksaveN\...` (0..22),
+12345678): `autosaveN\checkpoint.dat`, `manualsaveN\...`, `quicksaveN\...` (0..22),
 `profile\profile.dat` (written by the game on every load), `profile\game_settings.cfg`,
 `profile\bindings.cfg` (the settings files), `steam_autocloud.vdf` (Steam's), and
 `DeathStranding\<id>\transfer\` (empty). The checkpoint writer `FUN_141A01ED0` uses
@@ -221,7 +223,7 @@ copy (ctest `st_testenv_e2e` checks this refusal). And if the bootstrap thread f
 game the same way. Hidden runs also block `ShellExecute(Ex)A/W` (ds.exe imports
 `ShellExecuteA`): whatever it would open (a browser tab) would be outside the job and on
 the user's desktop. In the log: `[auto] saves=redirected: ...` (once, at load), then one line
-per redirected place (`[auto] saves: read DeathStrandingDC\97930372\profile -> scratch`,
+per redirected place (`[auto] saves: read DeathStrandingDC\12345678\profile -> scratch`,
 at most 96) and, for discovery, one per place the game writes outside the root
 (`[auto] write outside the save root (write): C:\Users\...\D3DSCache\...`, at most 48).
 Globals are plain arrays (no destructors), so the hooks stay valid while the process
@@ -364,6 +366,11 @@ deflection: ~1.3 s per 180 degrees) and walk back into the incinerator building 
 | `20261116-135236-expl1` | walking into the incinerator building (scratch scenario, role echo) | 20 m into the hall, hologram trailing Sam in view, no BTs | confirmed, unchanged |
 | `20261116-135430-echo-holo` | final `echo-holo` | **pass**: 19.9 m in 6 s, camera round, hologram trailing Sam by ~3-5 m in `05-trailing-a`..`07-trailing-c` (`06-trailing-b` clearest), merged at `08-stopped` | confirmed, unchanged, 0 uploads |
 | `20261116-135611-walk` | final `walk` | **pass**: gate after 2 probes, 20.18 m in 6 s (checked by `waitlog`), camera turned in `03`/`05` | confirmed, unchanged, 0 uploads |
+| `20261116-143459-smoke` | `smoke -SeedSaves complete-100` (first bypass run) | **pass**: `foreign saves: check bypassed` (3 sites), no "corrupted" dialog, local player at (-1100.18, 273.92, 352.69), but the screenshots were still the loading screen (12%, 14%): this save loads longer | confirmed, unchanged, 0 uploads |
+| `20261116-143642-seed-discover` | screenshot every 12 s after Continue (scratch scenario, role echo) | world shown ~20 s after the player entity first appeared (entity re-created at 49.8 s); Episode 15 garage, hologram visible; Sam sits down after ~1.5 min idle; the game autosaved into the scratch copy (`autosave4`) | confirmed, unchanged, 0 uploads |
+| `20261116-144148-echo-holo-100` | `echo-holo-100 -SeedSaves complete-100` | **pass**: control after 3 probes, 16.80 m in 6 s, hologram trailing in `06-trailing-a` / `08-trailing-c`, debug menu `10-debug-menu` | confirmed, unchanged, 0 uploads |
+| `20261116-144316-smoke` | `smoke` (own saves, after the change) | **pass**, no `foreign` line anywhere, `"foreign_saves":false` | confirmed, unchanged, 0 uploads |
+| `20261116-144423-echo-holo-100` | `echo-holo-100 -SeedSaves complete-100` again | **pass**: 3 probes, 16.90 m in 6 s | confirmed, unchanged, 0 uploads |
 | `20261116-140715-echo-holo` | `echo-holo` after the review (XInputSetState hooks) | **pass**: gate after 2 probes, 20.12 m in 6 s, hologram trailing Sam in `05`..`07`; the game's 924 rumble calls answered by the mod, none reached a real pad | confirmed, unchanged, 0 uploads |
 
 Every run: no window of the job on the user's desktop, input desktop `Default`
@@ -399,6 +406,10 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   turned round to look back, then 3 x 1.5 s walking towards the camera with screenshots
   `05-trailing-a` .. `07-trailing-c` of the hologram partner trailing 2 s behind (it fades
   within 2 m, so only while Sam keeps moving), `08-stopped`, `log_status`, the menu.
+* `echo-holo-100.txt` (role echo, with `-SeedSaves complete-100`): Continue into the 100% save,
+  1 s probes until Sam moves (the world loads 5-20 s after the player entity appears), 6 s walk
+  (>= 3 m), camera round, 3 x 1.5 s towards the camera with screenshots `06-trailing-a` ..
+  `08-trailing-c`, `09-stopped`, `log_status`, `10-debug-menu`.
 * `boot.txt`: no input, a screenshot every 10-15 s for 80 s (title flow discovery).
 * `alive.txt`: supervisor steps only (works with `-NoMod`): watch the game for 45 s.
 * `fake-smoke.txt`: the ctest's fake game.
@@ -447,7 +458,8 @@ saves changed / cloud upload / restore incomplete, 2 refused (preflight), 3 safe
 ## Tests (no game)
 
 * `st_testenv_tests`: command parser, scenario language (and every scenario file),
-  session.ini text (incl. `automation_save_root`, the `--no-mod` file), the save
+  session.ini text (incl. `automation_save_root`, `automation_foreign_saves`, the `--no-mod` file),
+  the foreign-saves gate and byte check (incl. the site table against the installed ds.exe), the save
   redirect's path mapping (`saves::Map`: case, separators, `\\?\`, `.`/`..`, siblings,
   idempotence, log prefixes), backup/restore of a scratch game folder (incl. a tampered
   manifest), save manifests, the saves guard (backup, seed + probe, unchanged check,
@@ -477,8 +489,70 @@ saves changed / cloud upload / restore incomplete, 2 refused (preflight), 3 safe
 `steam_autocloud.vdf` stay in the scratch copy, and the real saves are backed up, redirected away
 from and verified exactly as in every run. `testenv-saves\` is git-ignored.
 
-Death Stranding binds saves to the Steam account that wrote them. A downloaded 100% save
-(`testenv-saves\complete-100`, from another account) shows **"Save data is corrupted, and cannot
-be loaded."** (run 20261116-142026-seedload). With the other account's `profile\` copied too, the
-game stalls before its first frame (run 20261116-141151-smoke). Only saves made by the same Steam
-account work, so the default stays the user's own saves.
+```powershell
+pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario echo-holo-100 -SeedSaves complete-100
+```
+
+**Why another account's save "is corrupted" (static, ds.exe).** The data part of
+`checkpoint.dat` (after the `[Slot]` ini and the PNG; the three decimal sizes at the start of
+the file give their lengths) and of `profile.dat` is: u32 magic `0xC0391E1D` (`0xC0391E55`
+without the owner field), u32 seed, then everything XORed with one 16-byte key,
+`MurmurHash3_x64_128(seed 42)` (`FUN_1418FE890`) of the seed plus 12 constant bytes (copied
+from 0x143BA4460 to 0x14577B6B0 by a static initializer at 0x1417F3ED0). The key does not
+depend on the account. Decrypted, the payload starts with the **owner**: u32 length +
+`steam_<SteamID64>`; then the compressed save (`FUN_1418EC990`). The running account's owner is
+the global string at 0x144598268, set by `FUN_1419FF950` as `"steam_%llu"` of
+`ISteamUser::GetSteamID` (vtable +0x10); the writer `FUN_141A01B30` stores it into every save.
+Three readers compare the two with the engine's string equality `FUN_14190B110`:
+
+| Reader | Compare / branch | On a mismatch |
+|---|---|---|
+| `FUN_141A01ED0` (`sSaveDataAsynCallback`, mode 1: checkpoint loads, Continue / Load Game) | call 0x141A02932, `jne` at **0x141A02945** | `mov byte [r14+0x3A], 0x11`: the request is "broken", the menu shows *Save data is corrupted, and cannot be loaded.* (the data is still decompressed) |
+| `FUN_1419FFA40` (synchronous read, e.g. the profile) | call 0x1419FFE3C, `jne` at **0x1419FFE4F** | returns false, `*mismatch = 1` |
+| `FUN_1419FF5B0` (`SaveData: ImportDownloadedData`) | call 0x1419FF7DF, `jne` at **0x1419FF7F2** | state 0x11 |
+
+`testenv-saves\complete-100` decrypts to the owner `epic_435f34e7...` (37 bytes): it was made by
+the **Epic Games Store** build, not by another Steam account; the user's own saves say
+`steam_<their SteamID64>`. Nothing else in the file is bound to the account, so the only thing in
+the way is that comparison. A Cheat Engine "Disable Save Data Check" script almost certainly
+patches exactly this (the `jne` after the compare, or the `mov [..+0x3A], 0x11`).
+
+**The bypass (mod, `automation_foreign_saves=1`).** In `DllMain` (`st::automation::EarlyInit`),
+after the save redirect is installed and its self-test passed, and only in a supervised
+automation run (`foreign_saves::Decide`: key + `automation=1` + `ST_TESTENV_SUPERVISED` + redirect
+active; otherwise nothing is written), the mod compares a 74-76 byte window at each of the three
+sites with this ds.exe build (from the `mov rax,[0x144598268]` that loads the owner string,
+through the call to `FUN_14190B110`, `test bl,bl`, the `jne` and the reject store). Only when all
+three match does it turn each `jne rel8` (0x75) into `jmp rel8` (0xEB), one byte per site
+(`VirtualProtect`, `FlushInstructionCache`); any difference installs nothing and logs where.
+Nothing can fault: the image range is checked with `VirtualQuery` before it is read. Log line
+(right after `[auto] saves=redirected`; also `foreign_saves=bypassed` in `saves-redirect.txt`):
+
+```
+[auto] foreign saves: check bypassed at 0x141A02945 (async checkpoint load FUN_141A01ED0), 0x1419FFE4F (sync read FUN_1419FFA40), 0x1419FF7F2 (ImportDownloadedData FUN_1419FF5B0)
+```
+
+The supervisor writes the key only with `--seed-saves` and the full mod (`te::WantForeignSaves`;
+`--no-mod` installs no game patches) and records the log line in `summary.json`
+(`foreign_saves`, `foreign_saves_evidence`). Normal play never sees the key (the launcher does
+not write it; `config.cpp` only ignores it) and `Decide` returns `off`: ds.exe is not touched.
+The redirect and the real-save check stay in force: a bypassed game only ever loads and writes
+the scratch copy (its autosaves there carry the user's `steam_` owner). Tests:
+`st_testenv_tests` (the gate, the supervisor rule, `session.ini`, the byte check with a
+synthetic image, one differing byte, an already patched site, an unreadable image, and the site
+table against the installed `ds.exe`), `st_testenv_e2e` (`--seed-saves` with the fake game: the
+key is sent, the byte check refuses on a non-ds.exe image, the run goes on unpatched).
+
+**What the 100% save does** (runs 14:34-14:44): Continue loads Episode 15 ("Pass the time until
+the presidential inauguration") in a distribution centre's garage near Mountain Knot City, local
+player at (-1100.2, 273.9, 352.5). The local player entity appears ~4 s after Continue but the
+world keeps loading (black loading screen, 12-14% after 10 s) for another 5-20 s; then the player
+entity is created again and Sam has free control (no scripted hold). Left idle for ~1.5 min Sam
+sits down to rest. `echo-holo-100.txt` probes with 1 s pushes until Sam moves, walks 6 s
+(16.8-16.9 m), turns the camera round and screenshots the hologram partner trailing
+(`06-trailing-a`, `08-trailing-c`), then the debug menu (`10-debug-menu`).
+
+Before the bypass: run 20261116-142026-seedload showed *Save data is corrupted* on Continue; with
+the other account's `profile\` copied too, the game stalled before its first frame (run
+20261116-141151-smoke: that `profile.dat` is `epic_`-owned too), which is why the user's
+`profile\` stays.

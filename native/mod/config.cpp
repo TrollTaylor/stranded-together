@@ -121,7 +121,7 @@ Config LoadConfig(const std::wstring& dir) {
             const std::uint32_t vk = ParseKey(v);
             if (vk) c.debug_menu_vk = vk;
             else Log("[config] session.ini:%d debug_menu_key '%s' not understood; keeping F9", lineno, v.c_str());
-        } else if (k == "automation" || k == "automation_mute" || k == "automation_save_root") {
+        } else if (k == "automation" || k == "automation_mute" || k == "automation_save_root" || k == "automation_foreign_saves") {
             // read by automation.cpp before the one-shot rename
         } else if (k == "one_shot") {
             c.one_shot = ParseBool(v);

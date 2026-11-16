@@ -34,7 +34,13 @@ std::string IsoNow();    // 2026-11-16T12:00:00.123
 // role solo|echo; loopback UDP only (nothing reaches Steam networking), one-shot.
 // isolate=false writes automation_isolate=0 (channel on, overlay automation hooks off).
 // save_root (tests): an extra save root the mod redirects (automation_save_root=).
-std::string SessionIniText(const std::string& role, bool mute, bool isolate = true, const std::wstring& save_root = {});
+// foreign_saves (only with --seed-saves): automation_foreign_saves=1, the mod skips ds.exe's
+// save-owner check so another account's saves load (automation.hpp "foreign saves").
+std::string SessionIniText(const std::string& role, bool mute, bool isolate = true, const std::wstring& save_root = {},
+                           bool foreign_saves = false);
+// The supervisor's rule: automation_foreign_saves=1 only when --seed-saves names a seed and
+// the full mod runs (--no-mod installs no game patches).
+inline bool WantForeignSaves(const std::wstring& seed, bool no_mod) { return !seed.empty() && !no_mod; }
 // --no-mod runs: the mod only redirects the saves (no role, no overlay, no game hooks).
 std::string RedirectOnlyIniText(const std::wstring& save_root = {});
 

@@ -818,10 +818,13 @@ int RunGame(Args& a) {
     te::RemoveTree(r.mod_dir + L"\\automation");
     deployed = deployed && te::EnsureDir(r.auto_in) && te::EnsureDir(r.auto_out);
     const std::wstring extra_root = a.saves.empty() ? std::wstring() : save_root;  // the mod knows the user's own root
+    // --seed-saves only: another account's saves need ds.exe's save-owner check skipped
+    // (automation_foreign_saves=1; the mod does it only in this supervised, redirected run).
+    const bool foreign = te::WantForeignSaves(a.seed, a.no_mod);
     deployed = deployed && CopyFileW(r.args.mod.c_str(), (r.game + L"\\winhttp.dll").c_str(), FALSE);
     deployed = deployed && te::WriteFileAtomic(r.mod_dir + L"\\session.ini",
                                                a.no_mod ? te::RedirectOnlyIniText(extra_root)
-                                                        : te::SessionIniText(r.scenario.role, a.mute, a.isolation, extra_root));
+                                                        : te::SessionIniText(r.scenario.role, a.mute, a.isolation, extra_root, foreign));
     if (deployed && !te::SeedScratch(r.run, scratch, &err)) {
         Out("setup failed: %s", err.c_str());
         deployed = false;
@@ -842,15 +845,16 @@ int RunGame(Args& a) {
     DeleteFileW((r.mod_dir + L"\\session.last.ini").c_str());
     if (a.no_mod) Out("--no-mod: winhttp.dll only redirects the saves (no session, no overlay, no game hooks)");
     else
-        Out("deployed: winhttp.dll %s, session.ini role=%s automation=1 one_shot=1%s", te::Sha256File(r.game + L"\\winhttp.dll").substr(0, 16).c_str(),
-            r.scenario.role.c_str(), a.isolation ? "" : " automation_isolate=0");
+        Out("deployed: winhttp.dll %s, session.ini role=%s automation=1 one_shot=1%s%s", te::Sha256File(r.game + L"\\winhttp.dll").substr(0, 16).c_str(),
+            r.scenario.role.c_str(), a.isolation ? "" : " automation_isolate=0", foreign ? " automation_foreign_saves=1" : "");
+    if (!a.seed.empty() && a.no_mod) Out("--no-mod with --seed-saves: no foreign-saves bypass (another account's saves show as corrupted)");
     Out("scratch saves seeded: %s (the mod redirects %s there)", te::Narrow(scratch).c_str(), te::Narrow(save_root).c_str());
     g_full_steam_env = a.steam_env;
     if (a.steam_env) Out("--steam-env: the child gets Steam's launch variables too");
 
     int rc = 1;
     bool started = false, redirected = false;
-    std::string evidence;
+    std::string evidence, foreign_note;
     ULONGLONG hard_end = 0;
     if (deployed && CreatePrivateDesktop(r.o) && CreateJob(r.o, a.ui_limits)) {
         const ULONGLONG launch = GetTickCount64();
@@ -865,6 +869,15 @@ int RunGame(Args& a) {
     if (started) {
         redirected = WaitSavesEvidence(r, &evidence);
         Out("saves redirect: %s -- %s", redirected ? "CONFIRMED" : "NOT CONFIRMED", evidence.c_str());
+        if (redirected && foreign) {
+            // logged by the mod right after "saves=redirected" (Init): where it bypassed, or why not
+            const std::regex fre("\\[auto\\] foreign saves: ");
+            std::string line;
+            for (int i = 0; i < 50 && !LogMatches(r, fre, &line); ++i)
+                if (!Watch(r, 100)) break;
+            foreign_note = line.empty() ? "no '[auto] foreign saves:' log line" : line;
+            Out("foreign saves: %s", foreign_note.c_str());
+        }
         if (!redirected) {
             if (Alive(r.o)) KillOwned(r.o, "the save redirect was not confirmed");
             if (r.end_reason.empty() || r.end_reason == "the game exited") r.end_reason = "saves not redirected: " + evidence;
@@ -1003,6 +1016,8 @@ int RunGame(Args& a) {
     j += ",\"saves_unchanged\":" + std::string(saves.unchanged ? "true" : "false") + ",\"saves_ok\":" + (saves.ok ? "true" : "false");
     j += ",\"save_changes\":" + JsonList(saves.changes) + ",\"saves_restore_notes\":" + JsonList(saves.notes);
     j += ",\"scratch_changes\":" + JsonList(scratch_changes);
+    j += ",\"seed_saves\":\"" + te::JsonEscape(te::Narrow(a.seed)) + "\",\"foreign_saves\":" + (foreign ? "true" : "false");
+    j += ",\"foreign_saves_evidence\":\"" + te::JsonEscape(foreign_note) + "\"";
     j += ",\"cloud_autocloud_seen\":" + std::string(autocloud_seen ? "true" : "false") + ",\"cloud_lines\":" + std::to_string(cloud_lines.size());
     j += ",\"cloud_uploads\":" + JsonList(cloud_uploads);
     j += ",\"exit_trace\":\"" + te::JsonEscape(exit_trace) + "\",\"game_stdout_tail\":\"" + te::JsonEscape(LastLines(game_stdout, 25)) + "\"";
