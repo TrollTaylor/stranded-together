@@ -1,0 +1,34 @@
+# Echo test of the partner body on the hidden desktop (Start-TestRun.ps1 -Scenario echo-holo):
+# boot, Continue, walk forward so the echo partner (2 s behind, welcome hologram by default)
+# is a few metres back, then swing the camera round while walking and take screenshots.
+role echo
+timeout 360
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+?screenshot 01-title
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+wait 8000
+screenshot 02-in-world
+# walk forward ~5 s (left stick up)
+pad NONE 5000 ly=32767
+# keep walking and turn the camera right (right stick) to look back at the partner
+pad NONE 900 ly=32767 rx=32767
+screenshot 03-turn-a
+pad NONE 900 ly=32767 rx=32767
+screenshot 04-turn-b
+pad NONE 900 ly=32767 rx=32767
+screenshot 05-turn-c
+wait 1500
+screenshot 06-stopped
+snapshot
+action log_status
+menu open
+wait 700
+screenshot 07-menu-status
+menu close
+wait 300
+quit
