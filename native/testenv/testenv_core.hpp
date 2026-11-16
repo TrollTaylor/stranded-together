@@ -105,6 +105,14 @@ std::vector<std::string> DiffManifests(const std::string& before, const std::str
 // appeared are removed when empty; then it verifies again and writes saves-restored.txt.
 bool BackupSaves(const std::wstring& root, const std::wstring& run_dir, std::string* error);
 bool SeedScratch(const std::wstring& run_dir, const std::wstring& scratch, std::string* error);
+// --seed-saves: replace the save slots of every Steam account folder in the seeded scratch
+// copy (scratch\DeathStrandingDC\<digits>\) with <seed>\DeathStrandingDC\* slot folders
+// (autosave*/manualsave*/quicksave*). Everything else in the account folder (profile\,
+// game_settings.cfg, steam_autocloud.vdf) stays the user's. Only ever touches the scratch
+// copy. *accounts = how many account folders were seeded.
+bool ApplySeedSaves(const std::wstring& scratch, const std::wstring& seed, int* accounts, std::string* error);
+// HashManifest(dir) without the redirect probe line (the probe is deleted before the after-hash).
+std::string ManifestWithoutProbe(const std::wstring& dir);
 struct SavesCheck {
     bool ran = false;                  // saves-restore.txt was there
     bool unchanged = false;            // the real tree matched the manifest before any restore

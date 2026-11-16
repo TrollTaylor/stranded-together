@@ -9,8 +9,16 @@
 // Like ds.exe it calls XInputGetState through a pointer from
 // LoadLibrary("xinput1_4.dll") + GetProcAddress, and renders with D3D12 on a
 // DIRECT queue into a flip-discard swapchain. Each press of A (edge) toggles the
-// clear colour between kColors[0] and kColors[1]. Lines go to
-// <exe dir>\stranded_together\fakegame.log. WM_CLOSE (the mod's quit) exits.
+// clear colour between kColors[0] and kColors[1]; a left stick pushed past ds.exe's
+// deadzone (7849) is logged. Lines go to <exe dir>\stranded_together\fakegame.log.
+// WM_CLOSE (the mod's quit) exits.
+//
+// Like ds.exe, pads count only while the app is "active": ds.exe's window procedure
+// (0x141A19BE0, case WM_ACTIVATEAPP) sets platform+0x68 = (wParam == 1) and its pad
+// reader (FUN_1419B3090) answers an empty pad while that flag is clear. The hidden
+// window is never activated by the user, so the fake game deactivates itself once
+// before the overlay attaches and once after: the mod must post WM_ACTIVATEAPP(TRUE)
+// on attach and hand later WM_ACTIVATEAPP(FALSE) to the game as TRUE.
 #include <windows.h>
 #include <d3d12.h>
 #include <dxgi1_4.h>
@@ -27,6 +35,7 @@ namespace {
 const float kColors[2][4] = {{0.10f, 0.30f, 0.40f, 1.0f}, {0.80f, 0.20f, 0.10f, 1.0f}};
 FILE* g_log = nullptr;
 bool g_quit = false;
+bool g_active = false;  // ds.exe: platform+0x68, only WM_ACTIVATEAPP writes it
 
 void Log(const char* fmt, ...) {
     if (!g_log) return;
@@ -51,6 +60,10 @@ LRESULT CALLBACK WndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
     }
     if (m == WM_KEYDOWN) Log("WM_KEYDOWN vk=0x%02X", static_cast<unsigned>(w));
+    if (m == WM_ACTIVATEAPP) {
+        g_active = w == 1;
+        Log("WM_ACTIVATEAPP wParam=%llu: app active=%d", static_cast<unsigned long long>(w), g_active ? 1 : 0);
+    }
     return DefWindowProcW(h, m, w, l);
 }
 
@@ -157,6 +170,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     HMODULE x14 = LoadLibraryW(L"xinput1_4.dll");
     const auto get_state = x14 ? reinterpret_cast<GetStateFn>(GetProcAddress(x14, "XInputGetState")) : nullptr;
     Log("xinput1_4 XInputGetState %s", get_state ? "found" : "MISSING");
+    // ds.exe also calls XInputSetState through a pointer (its rumble). The mod must answer
+    // it for the virtual pad without reaching a real controller. Only a zero vibration
+    // (motors off) is ever sent here, so even a missing hook could not rumble a real pad.
+    using SetStateFn = DWORD(WINAPI*)(DWORD, XINPUT_VIBRATION*);
+    const auto set_state = x14 ? reinterpret_cast<SetStateFn>(GetProcAddress(x14, "XInputSetState")) : nullptr;
 
     WNDCLASSEXW wc = {};
     wc.cbSize = sizeof(wc);
@@ -168,6 +186,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
                                 nullptr, inst, nullptr);
     ShowWindow(hwnd, SW_SHOW);
     SetForegroundWindow(hwnd);
+    // Deactivated before the overlay attaches (it attaches at the first Present).
+    SendMessageW(hwnd, WM_ACTIVATEAPP, FALSE, 0);
+    Log("self-deactivation before the first frame: app active=%d", g_active ? 1 : 0);
 
     IDXGIFactory4* factory = nullptr;
     ID3D12Device* device = nullptr;
@@ -220,7 +241,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
     if (FAILED(hr)) return 2;
 
     int color = 0;
-    bool a_was_down = false;
+    bool a_was_down = false, stick_was_up = false;
+    unsigned long ignored_packets = 0;
     DWORD last_packet = 0, last_result = 0xFFFFFFFF;
     unsigned long frames = 0;
     const ULONGLONG end = GetTickCount64() + 300000;  // never outlives a run
@@ -239,12 +261,23 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
                 Log("pad 0 %s", r == ERROR_SUCCESS ? "connected" : "not connected");
                 last_result = r;
             }
+            if (r == ERROR_SUCCESS && xs.dwPacketNumber != last_packet && !g_active) {
+                last_packet = xs.dwPacketNumber;  // ds.exe: an empty pad while not active
+                if (ignored_packets++ < 8) Log("pad packet %lu ignored: app not active", xs.dwPacketNumber);
+            }
             if (r == ERROR_SUCCESS && xs.dwPacketNumber != last_packet) {
                 last_packet = xs.dwPacketNumber;
+                const bool up = xs.Gamepad.sThumbLY > 7849;
+                if (up && !stick_was_up) Log("left stick up (ly=%d, packet %lu)", xs.Gamepad.sThumbLY, xs.dwPacketNumber);
+                stick_was_up = up;
                 const bool a = (xs.Gamepad.wButtons & XINPUT_GAMEPAD_A) != 0;
                 if (a && !a_was_down) {
                     color ^= 1;
                     Log("A pressed (packet %lu): colour %d", xs.dwPacketNumber, color);
+                    if (set_state) {
+                        XINPUT_VIBRATION off{};
+                        Log("XInputSetState(0, motors off) -> %lu", set_state(0, &off));
+                    }
                 }
                 a_was_down = a;
             }
@@ -278,6 +311,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE, PWSTR, int) {
         }
         if (++frames % 300 == 0) Log("frames %lu", frames);
         if (frames == 120) Log("after 120 frames: GetForegroundWindow()==window: %s", GetForegroundWindow() == hwnd ? "yes" : "no");
+        if (frames == 60) {  // the overlay is attached by now: a later focus loss must not deactivate the game
+            SendMessageW(hwnd, WM_ACTIVATEAPP, FALSE, 0);
+            Log("self-deactivation at frame 60: app active=%d", g_active ? 1 : 0);
+        }
     }
     Log("exit after %lu frames", frames);
     SafeRelease(fence);

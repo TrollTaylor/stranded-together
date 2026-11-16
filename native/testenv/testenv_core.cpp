@@ -652,6 +652,73 @@ bool SeedScratch(const std::wstring& run_dir, const std::wstring& scratch, std::
     return true;
 }
 
+namespace {
+bool AllDigits(const std::wstring& s) {
+    if (s.empty()) return false;
+    for (wchar_t c : s)
+        if (c < L'0' || c > L'9') return false;
+    return true;
+}
+// Only the save slots: profile\ (account-bound options/bindings) stays the user's, because a
+// profile from another Steam account stalls the game before its first frame (run 20261116-141151).
+bool IsSlotOrProfile(const std::wstring& name) {
+    std::wstring n = name;
+    for (auto& c : n) c = static_cast<wchar_t>(towlower(c));
+    return n.rfind(L"autosave", 0) == 0 || n.rfind(L"manualsave", 0) == 0 || n.rfind(L"quicksave", 0) == 0;
+}
+std::vector<std::wstring> SubDirs(const std::wstring& dir) {
+    std::vector<std::wstring> out;
+    WIN32_FIND_DATAW fd;
+    HANDLE h = FindFirstFileW((dir + L"\\*").c_str(), &fd);
+    if (h == INVALID_HANDLE_VALUE) return out;
+    do {
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
+        const std::wstring n = fd.cFileName;
+        if (n != L"." && n != L"..") out.push_back(n);
+    } while (FindNextFileW(h, &fd));
+    FindClose(h);
+    return out;
+}
+}  // namespace
+
+bool ApplySeedSaves(const std::wstring& scratch, const std::wstring& seed, int* accounts, std::string* error) {
+    *accounts = 0;
+    const std::wstring src = seed + L"\\DeathStrandingDC";
+    if (!DirExists(src)) return *error = "seed saves: " + Narrow(src) + " not found (expected <seed>\\DeathStrandingDC\\<slots>)", false;
+    bool has_slot = false;
+    for (const std::wstring& n : SubDirs(src)) has_slot = has_slot || IsSlotOrProfile(n);
+    if (!has_slot) return *error = "seed saves: no autosave*/manualsave*/quicksave* folders in " + Narrow(src), false;
+    const std::wstring game = scratch + L"\\DeathStrandingDC";
+    for (const std::wstring& acct : SubDirs(game)) {
+        if (!AllDigits(acct)) continue;
+        const std::wstring dst = game + L"\\" + acct;
+        for (const std::wstring& n : SubDirs(dst))
+            if (IsSlotOrProfile(n) && !RemoveTree(dst + L"\\" + n)) return *error = "seed saves: cannot clear " + Narrow(dst + L"\\" + n), false;
+        for (const std::wstring& n : SubDirs(src)) {
+            if (!IsSlotOrProfile(n)) continue;
+            if (!CopyTree(src + L"\\" + n, dst + L"\\" + n)) return *error = "seed saves: copying " + Narrow(n) + " failed", false;
+        }
+        ++*accounts;
+    }
+    if (!*accounts) return *error = "seed saves: no Steam account folder (digits) under " + Narrow(game), false;
+    return true;
+}
+
+std::string ManifestWithoutProbe(const std::wstring& dir) {
+    const std::string m = HashManifest(dir);
+    std::string out;
+    std::size_t pos = 0;
+    while (pos < m.size()) {
+        std::size_t e = m.find('\n', pos);
+        if (e == std::string::npos) e = m.size();
+        const std::string line = m.substr(pos, e - pos);
+        if (line.find(".st-redirect-probe") == std::string::npos) out += line + "\n";
+        pos = e + 1;
+    }
+    return out;
+}
+
 SavesCheck CheckAndRestoreSaves(const std::wstring& run_dir) {
     SavesCheck r;
     SavesRestoreFile m;

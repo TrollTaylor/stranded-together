@@ -1,6 +1,16 @@
 # Echo test of the partner body on the hidden desktop (Start-TestRun.ps1 -Scenario echo-holo):
-# boot, Continue, walk forward so the echo partner (2 s behind, welcome hologram by default)
-# is a few metres back, then swing the camera round while walking and take screenshots.
+# boot, Continue, walk ~6 s so the echo partner (your own movement replayed 2 s later, welcome
+# hologram by default) trails a few metres behind, then turn the camera round to look back and
+# keep walking towards the camera, with screenshots of the trailing hologram at a distance
+# (it fades within 2 m of Sam, so it is only visible while Sam keeps moving).
+#
+# The sticks work in the world; what blocked them in the first runs was the save itself: right
+# after this save loads (Incinerator West of Capital Knot City, Episode 1) Sam can walk for ~5 s,
+# then a scripted BT scene ("We've got company") holds the player for ~13 s, and only then does
+# the stick move him again (docs/hidden-testing.md "Pad input in gameplay"). So the scenario waits
+# 17 s after the player appears and then probes with 1 s pushes until one moves Sam >= 1 m.
+# Every pad result line says how far the player moved ("player moved 9.54 m") and what the
+# game's own input manager saw ("slot0(... sticks=0.00,1.00,0.00,0.00)").
 role echo
 timeout 360
 waitready 90
@@ -11,24 +21,39 @@ pad A 150
 wait 4000
 until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
 waitplayer 60
-wait 8000
-screenshot 02-in-world
-# walk forward ~5 s (left stick up)
-pad NONE 5000 ly=32767
-# keep walking and turn the camera right (right stick) to look back at the partner
-pad NONE 900 ly=32767 rx=32767
-screenshot 03-turn-a
-pad NONE 900 ly=32767 rx=32767
-screenshot 04-turn-b
-pad NONE 900 ly=32767 rx=32767
-screenshot 05-turn-c
-wait 1500
-screenshot 06-stopped
+# the scripted BT scene after loading this save holds the player for ~5..18 s after it appears
+wait 17000
+# control is back once a 1 s push moves Sam at least 1 m (ly=32760 marks the probe's log lines)
+until 45 300 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+# The gate leaves Sam a few metres out on the apron, facing the BT field (walking out there gets
+# him caught by BTs within seconds), the camera behind him. Turn the camera round first (right
+# stick, ~1.3 s at full deflection is ~180 degrees) so "forward" leads back into the incinerator
+# building, where no BTs come.
+pad none 1300 rx=32767
+screenshot 02-camera-round
+# walk ~6 s into the building (left stick up); the echo partner follows 2 s behind, out of view
+pad none 6000 ly=32767
+waitlog 5 pad none 6000 ly=32767 -> ok: .*player moved ([5-9]|[1-9][0-9]+)\.[0-9]+ m
+screenshot 03-walked
 snapshot
+# turn the camera to look back: the partner is still coming along Sam's path
+pad none 1300 rx=32767
+screenshot 04-looking-back
+# keep walking the same way, now towards the camera: the hologram trails behind Sam, in view
+pad none 1500 ly=-32767
+screenshot 05-trailing-a
+pad none 1500 ly=-32767
+screenshot 06-trailing-b
+pad none 1500 ly=-32767
+screenshot 07-trailing-c
+snapshot
+# standing: the partner arrives within 2 s and fades
+wait 3000
+screenshot 08-stopped
 action log_status
 menu open
 wait 700
-screenshot 07-menu-status
+screenshot 09-menu-status
 menu close
 wait 300
 quit

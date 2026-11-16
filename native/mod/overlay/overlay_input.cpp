@@ -16,6 +16,7 @@ namespace {
 using SetCursorPosFn = BOOL(WINAPI*)(int, int);
 using ClipCursorFn = BOOL(WINAPI*)(const RECT*);
 using XInputGetStateFn = DWORD(WINAPI*)(DWORD, XINPUT_STATE*);
+using XInputSetStateFn = DWORD(WINAPI*)(DWORD, XINPUT_VIBRATION*);
 using GetForegroundWindowFn = HWND(WINAPI*)();
 
 std::atomic<bool> g_open{false};
@@ -37,11 +38,15 @@ void* g_clipcursor_target = nullptr;
 void* g_xinput_target = nullptr;
 void* g_xinput14_target = nullptr;
 void* g_foreground_target = nullptr;
+void* g_xinput_set_target = nullptr;    // automation only
+void* g_xinput14_set_target = nullptr;  // automation only
 SetCursorPosFn g_orig_setcursorpos = nullptr;
 ClipCursorFn g_orig_clipcursor = nullptr;
 XInputGetStateFn g_orig_xinput = nullptr;
 XInputGetStateFn g_orig_xinput14 = nullptr;
 GetForegroundWindowFn g_orig_foreground = nullptr;
+XInputSetStateFn g_orig_xinput_set = nullptr;
+XInputSetStateFn g_orig_xinput14_set = nullptr;
 
 // Automation (hidden test runs)
 std::atomic<bool> g_automation{false};
@@ -114,7 +119,8 @@ std::size_t g_ev_head = 0, g_ev_count = 0;
 
 // Stats
 std::atomic<unsigned long> g_blocked_messages{0}, g_blocked_raw{0}, g_blocked_keys{0}, g_supp_clip{0}, g_supp_pos{0},
-    g_idle_pads{0}, g_toggle_count{0}, g_chars{0}, g_virtual_reads{0}, g_isolated_reads{0}, g_foreground_answers{0};
+    g_idle_pads{0}, g_toggle_count{0}, g_chars{0}, g_virtual_reads{0}, g_isolated_reads{0}, g_foreground_answers{0},
+    g_activate_true{0}, g_activate_rewritten{0}, g_activate_posted{0}, g_focus_logged{0}, g_vibration_kept{0};
 
 void Push(const Event& e) noexcept {
     AcquireSRWLockExclusive(&g_ev_lock);
@@ -225,6 +231,25 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT m, WPARAM wp, LPARAM lp) {
         g_hwnd.store(nullptr);
         g_open.store(false);
         return pass();
+    }
+    if (g_automation.load(std::memory_order_relaxed) &&
+        (m == WM_ACTIVATEAPP || m == WM_ACTIVATE || m == WM_NCACTIVATE || m == WM_SETFOCUS || m == WM_KILLFOCUS)) {
+        // Discovery: what the hidden window is told about activation (first 24 messages).
+        if (g_focus_logged.fetch_add(1, std::memory_order_relaxed) < 24)
+            Log("[overlay] automation: window message 0x%04X wParam=0x%llX lParam=0x%llX", m,
+                static_cast<unsigned long long>(wp), static_cast<unsigned long long>(lp));
+        if (m == WM_ACTIVATEAPP) {
+            // ds.exe keeps "application active" only from WM_ACTIVATEAPP (window procedure
+            // 0x141A19BE0, case 0x1C: platform+0x68 = wParam == 1) and its pad reader
+            // FUN_1419B3090 answers an empty pad while that flag is clear. The hidden window
+            // is never activated by the user, so the game is always told it is active.
+            if (wp == TRUE) {
+                g_activate_true.fetch_add(1, std::memory_order_relaxed);
+                return pass();
+            }
+            g_activate_rewritten.fetch_add(1, std::memory_order_relaxed);
+            return prev ? CallWindowProcW(prev, hwnd, m, TRUE, lp) : DefWindowProcW(hwnd, m, TRUE, lp);
+        }
     }
     if (m == WM_KILLFOCUS || (m == WM_ACTIVATEAPP && wp == FALSE)) {
         // Automation: the hidden window is never really focused; keep the menu.
@@ -362,6 +387,29 @@ DWORD AnswerXInput(XInputGetStateFn orig, DWORD index, XINPUT_STATE* state) {
 DWORD WINAPI HookXInputGetState(DWORD index, XINPUT_STATE* state) { return AnswerXInput(g_orig_xinput, index, state); }
 DWORD WINAPI HookXInput14GetState(DWORD index, XINPUT_STATE* state) { return AnswerXInput(g_orig_xinput14, index, state); }
 
+// Automation: ds.exe also GetProcAddress'es XInputSetState (pointer at +0x16820, called by
+// its vibration routine 0x1419B24F0 with the pad index it reads). The hidden game's pad 0
+// is the virtual one, but the real xinput1_4 would send that rumble to the user's real
+// controller in slot 0. Rumble for the virtual pad is accepted and dropped; other indices
+// are "not connected", as for XInputGetState. Never reaches the system.
+DWORD AnswerXInputSet(XInputSetStateFn orig, DWORD index, XINPUT_VIBRATION* vib) {
+    if (g_automation.load(std::memory_order_relaxed)) {
+        AcquireSRWLockShared(&g_pad_lock);
+        const bool connected = g_pad.connected;
+        ReleaseSRWLockShared(&g_pad_lock);
+        if (index != 0 || !connected) return ERROR_DEVICE_NOT_CONNECTED;
+        if (!vib) return ERROR_BAD_ARGUMENTS;
+        if (g_vibration_kept.fetch_add(1, std::memory_order_relaxed) == 0)
+            Log("[overlay] automation: XInputSetState(0) vibration %u/%u kept from the real pads (virtual pad only)",
+                static_cast<unsigned>(vib->wLeftMotorSpeed), static_cast<unsigned>(vib->wRightMotorSpeed));
+        return ERROR_SUCCESS;
+    }
+    return orig ? orig(index, vib) : ERROR_DEVICE_NOT_CONNECTED;
+}
+
+DWORD WINAPI HookXInputSetState(DWORD index, XINPUT_VIBRATION* vib) { return AnswerXInputSet(g_orig_xinput_set, index, vib); }
+DWORD WINAPI HookXInput14SetState(DWORD index, XINPUT_VIBRATION* vib) { return AnswerXInputSet(g_orig_xinput14_set, index, vib); }
+
 // Before the first Present attaches us to the game window: the process's largest
 // visible top-level window (cached for 250 ms; the hidden desktop holds only ours).
 HWND OwnMainWindow() noexcept {
@@ -417,7 +465,7 @@ bool Create(void* target, void* detour, void** original, const char* name) noexc
 bool CreateApiHooks(void** targets, std::size_t* count, std::size_t cap) noexcept {
     HMODULE user = GetModuleHandleW(L"user32.dll");
     if (!user) user = LoadLibraryW(L"user32.dll");
-    if (!user || *count + 5 > cap) return false;
+    if (!user || *count + 7 > cap) return false;
     void* scp = reinterpret_cast<void*>(GetProcAddress(user, "SetCursorPos"));
     void* clip = reinterpret_cast<void*>(GetProcAddress(user, "ClipCursor"));
     if (!scp || !clip) {
@@ -468,12 +516,29 @@ bool CreateApiHooks(void** targets, std::size_t* count, std::size_t cap) noexcep
         } else {
             Log("[overlay] automation: GetForegroundWindow not hooked; the game may treat its hidden window as unfocused");
         }
+        // Rumble for the virtual pad must not reach a real controller (see AnswerXInputSet).
+        void* x14set = x14 ? reinterpret_cast<void*>(GetProcAddress(x14, "XInputSetState")) : nullptr;
+        if (x14set && Create(x14set, reinterpret_cast<void*>(&HookXInput14SetState), reinterpret_cast<void**>(&g_orig_xinput14_set),
+                             "XInputSetState (xinput1_4)")) {
+            g_xinput14_set_target = x14set;
+            targets[(*count)++] = x14set;
+        } else {
+            Log("[overlay] automation: xinput1_4 XInputSetState not hooked; the game's rumble may reach a real pad 0");
+        }
+        void* xset = xi ? reinterpret_cast<void*>(GetProcAddress(xi, "XInputSetState")) : nullptr;
+        if (xset && xset != x14set &&
+            Create(xset, reinterpret_cast<void*>(&HookXInputSetState), reinterpret_cast<void**>(&g_orig_xinput_set),
+                   "XInputSetState (XINPUTUAP)")) {
+            g_xinput_set_target = xset;
+            targets[(*count)++] = xset;
+        }
     }
     return true;
 }
 
 void RemoveApiHooks() noexcept {
-    for (void** t : {&g_setcursorpos_target, &g_clipcursor_target, &g_xinput_target, &g_xinput14_target, &g_foreground_target}) {
+    for (void** t : {&g_setcursorpos_target, &g_clipcursor_target, &g_xinput_target, &g_xinput14_target, &g_foreground_target,
+                     &g_xinput_set_target, &g_xinput14_set_target}) {
         if (*t) {
             MH_DisableHook(*t);
             MH_RemoveHook(*t);
@@ -485,6 +550,8 @@ void RemoveApiHooks() noexcept {
     g_orig_xinput = nullptr;
     g_orig_xinput14 = nullptr;
     g_orig_foreground = nullptr;
+    g_orig_xinput_set = nullptr;
+    g_orig_xinput14_set = nullptr;
 }
 
 void SetToggleKey(std::uint32_t vk) noexcept { g_toggle_vk.store(vk ? vk : 0x78); }
@@ -519,6 +586,19 @@ bool Attach(HWND hwnd) noexcept {
     g_kb_hook_on.store(g_kb_hook != nullptr);
     Log("[overlay] input attached to window %p (thread %lu): subclassed, keyboard hook %s", hwnd, tid,
         g_kb_hook ? "on" : "FAILED (keys may reach the game while the menu is open)");
+    if (g_automation.load() && AssertActive())
+        Log("[overlay] automation: WM_ACTIVATEAPP(TRUE) posted to the game window (its pad input needs the app-active flag)");
+    return true;
+}
+
+bool AssertActive() noexcept {
+    const HWND hwnd = g_hwnd.load();
+    if (!g_automation.load() || !hwnd) return false;
+    // Posted to the window itself (never the user's desktop); the subclass passes it to
+    // ds.exe's window procedure, which sets its app-active flag. lParam: the window's own
+    // thread (WM_ACTIVATEAPP's "other thread"), nothing outside the process is named.
+    if (!PostMessageW(hwnd, WM_ACTIVATEAPP, TRUE, static_cast<LPARAM>(GetWindowThreadProcessId(hwnd, nullptr)))) return false;
+    g_activate_posted.fetch_add(1, std::memory_order_relaxed);
     return true;
 }
 
@@ -630,6 +710,11 @@ Stats GetStats() noexcept {
     s.virtual_pad_reads = g_virtual_reads.load();
     s.isolated_pad_reads = g_isolated_reads.load();
     s.foreground_answers = g_foreground_answers.load();
+    s.activate_app_true = g_activate_true.load();
+    s.activate_app_rewritten = g_activate_rewritten.load();
+    s.activate_app_posted = g_activate_posted.load();
+    s.vibration_kept = g_vibration_kept.load();
+    s.xinput_set_hook = g_xinput14_set_target != nullptr || g_xinput_set_target != nullptr;
     s.blocked_messages = g_blocked_messages.load();
     s.blocked_raw_input = g_blocked_raw.load();
     s.blocked_keys = g_blocked_keys.load();

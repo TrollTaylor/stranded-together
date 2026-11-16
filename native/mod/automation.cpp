@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -896,6 +897,81 @@ void InstallMute() {
     else Log("[auto] audio not muted: hook failed (%s)", MH_StatusToString(s));
 }
 
+// ------------------------------------------------------------------ game pad state (read only)
+// What ds.exe made of the pad, read through ReadProcessMemory (a bad page fails the read,
+// it never faults inside the game). Static layout (docs/hidden-testing.md "Pad input in
+// gameplay"): the input manager DAT_147BE6330 has 7 player slots of 0xF0 bytes; slot +0x30
+// = its pad controller, +0x40..+0xEF = the 0xB0-byte pad state FUN_1419B3090 wrote (floats
+// LX LY RX RY at +0x40.., +0xE4 = 1 read / 2 app inactive / 0 none), +0x108 = player id.
+// Controller: +0x28 device (1 PlayStation, 2 Steam Input, 3 XInput, 4 HID), +0x68 mode
+// (1 = gated by the app-active flag), +0x6C pad index. Platform DAT_14577D3F0 +0x68 = app active.
+namespace gamepad {
+constexpr std::uintptr_t kInputMgr = 0x147BE6330 - 0x140000000, kPlatform = 0x14577D3F0 - 0x140000000,
+                         kDevRead = 0x1419B3090 - 0x140000000, kMouse = 0x147BE69F8 - 0x140000000,
+                         kKeyboard = 0x147BE69F0 - 0x140000000;
+
+template <class T>
+bool Peek(std::uintptr_t addr, T* out) noexcept {
+    SIZE_T got = 0;
+    return addr > 0x10000 && ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(addr), out, sizeof(T), &got) &&
+           got == sizeof(T);
+}
+
+bool Known() noexcept {
+    static int known = -1;  // the pad reader's prologue (push rbx/rsi/rdi/r14; sub rsp,48h): this ds.exe build
+    if (known < 0) {
+        const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+        std::uint64_t head = 0;
+        known = Peek(base + kDevRead, &head) && head == 0x8348'5641'5756'5340ull ? 1 : 0;
+    }
+    return known == 1;
+}
+
+std::string Describe() {
+    if (!Known()) return "unknown ds.exe build";
+    const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+    char b[200];
+    std::uintptr_t platform = 0;
+    std::uint8_t active = 0xFF;
+    if (Peek(base + kPlatform, &platform)) Peek(platform + 0x68, &active);
+    // Keyboard/mouse activity as FUN_1432960C0 sees it (either one makes it "in use"): mouse
+    // DAT_147BE69F8, record +0xBC + idx*0x24 (idx +0x104; FUN_1428CB6A0 checks the qwords at
+    // +0x08/+0x1C and the bytes +0x14..+0x18), keyboard DAT_147BE69F0, 0x81 key bytes at
+    // +0xD4 + idx*0x81 (idx +0x1D8; FUN_1419BA030).
+    std::uintptr_t mouse = 0, kb = 0;
+    Peek(base + kMouse, &mouse);
+    Peek(base + kKeyboard, &kb);
+    std::int32_t midx = -1, kidx = -1;
+    std::uint8_t rec[0x24] = {}, keys[0x81] = {};
+    bool mouse_active = false;
+    int keys_down = 0;
+    if (mouse && Peek(mouse + 0x104, &midx) && midx >= 0 && midx < 64 && Peek(mouse + 0xBC + static_cast<std::uintptr_t>(midx) * 0x24, &rec)) {
+        std::uint64_t q08 = 0, q1c = 0;
+        std::memcpy(&q08, rec + 0x08, 8), std::memcpy(&q1c, rec + 0x1C, 8);
+        mouse_active = q08 || q1c || rec[0x14] || rec[0x15] || rec[0x16] || rec[0x17] || rec[0x18];
+    }
+    if (kb && Peek(kb + 0x1D8, &kidx) && kidx >= 0 && kidx < 64 && Peek(kb + 0xD4 + static_cast<std::uintptr_t>(kidx) * 0x81, &keys))
+        for (const std::uint8_t k : keys) keys_down += k ? 1 : 0;
+    std::snprintf(b, sizeof(b), "app_active=%d mouse=%s keys_down=%d", static_cast<int>(active), mouse_active ? "active" : "idle", keys_down);
+    std::string out = b;
+    for (int i = 0; i < 7; ++i) {
+        const std::uintptr_t slot = base + kInputMgr + static_cast<std::uintptr_t>(i) * 0xF0;
+        std::int32_t used = 0, player = 0;
+        std::uintptr_t ctrl = 0;
+        float st[4] = {};
+        if (!Peek(slot + 0xE4, &used) || !used || !Peek(slot + 0x108, &player) || !Peek(slot + 0x30, &ctrl) || !Peek(slot + 0x40, &st))
+            continue;
+        std::int32_t dev = -1, mode = -1, pad = -1;
+        if (ctrl) Peek(ctrl + 0x28, &dev), Peek(ctrl + 0x68, &mode), Peek(ctrl + 0x6C, &pad);
+        std::snprintf(b, sizeof(b), " slot%d(player=%d state=%d device=%d mode=%d pad=%d sticks=%.2f,%.2f,%.2f,%.2f)", i, player, used,
+                      dev, mode, pad, static_cast<double>(st[0]), static_cast<double>(st[1]), static_cast<double>(st[2]),
+                      static_cast<double>(st[3]));
+        out += b;
+    }
+    return out;
+}
+}  // namespace gamepad
+
 // ------------------------------------------------------------------ game window
 HWND GameWindow() {
     HWND h = overlay::input::Window();
@@ -979,11 +1055,31 @@ Outcome DoPad(const Command& c) {
     p.buttons = c.buttons;
     p.lx = c.lx, p.ly = c.ly, p.rx = c.rx, p.ry = c.ry, p.lt = c.lt, p.rt = c.rt;
     const unsigned long reads0 = is.virtual_pad_reads;
+    // Defensive: ds.exe's pad reader returns an empty pad for "mode 1" controllers while its
+    // app-active flag is clear (set only by WM_ACTIVATEAPP); the hidden window is never
+    // activated by the user, so it is told again before every hold (see AssertActive).
+    overlay::input::AssertActive();
+    const debug::Snapshot before = debug::GetSnapshot();
     overlay::input::SetVirtualPad(p);
-    SleepFor(c.ms);
+    std::string seen;
+    if (c.ms >= 600) {  // what the game made of the held pad (its own input manager, read only)
+        SleepFor(300);
+        seen = gamepad::Describe();
+        SleepFor(c.ms - 300);
+    } else {
+        SleepFor(c.ms);
+    }
     overlay::input::SetVirtualPad(overlay::input::PadState{true});  // idle, still connected
     const unsigned long reads = overlay::input::GetStats().virtual_pad_reads - reads0;
-    return Fmt(true, "buttons=0x%04X held %u ms; the game read the pad %lu times", c.buttons, c.ms, reads);
+    const debug::Snapshot after = debug::GetSnapshot();
+    char moved[96] = "";
+    if (before.local_valid && after.local_valid) {  // z is up in Decima: the walk is in x/y
+        const double dx = after.local_pos[0] - before.local_pos[0], dy = after.local_pos[1] - before.local_pos[1];
+        std::snprintf(moved, sizeof(moved), "; player moved %.2f m (speed %.2f)", std::sqrt(dx * dx + dy * dy),
+                      static_cast<double>(after.speed));
+    }
+    return Fmt(true, "buttons=0x%04X held %u ms; the game read the pad %lu times%s%s%s", c.buttons, c.ms, reads, moved,
+               seen.empty() ? "" : "; game pad state: ", seen.c_str());
 }
 
 Outcome DoKey(const Command& c) {
@@ -1175,19 +1271,21 @@ void WriteStatus(double started) {
     const overlay::Stats os = overlay::GetStats();
     const overlay::input::Stats is = overlay::input::GetStats();
     const overlay::input::PadState pad = overlay::input::VirtualPad();
-    char buf[1600];
+    char buf[2048];
     std::snprintf(buf, sizeof(buf),
                   "pid=%lu\nuptime_s=%.1f\ncommands=%lu\nfailures=%lu\noverlay_installed=%d\noverlay_disabled=%d\n"
                   "overlay_reason=%s\npresents=%lu\nfps=%.1f\nbackbuffer=%ux%u\nformat=%d\nqueue=%s\nmenu_open=%d\n"
                   "occluded_masked=%lu\nwindow=%p\nxinput_hook=%d\nxinput14_hook=%d\npad_connected=%d\npad_buttons=0x%04X\npad_reads=%lu\n"
-                  "isolated_pad_reads=%lu\nforeground_answers=%lu\naudio_buffers_silenced=%lu\nsaves_redirected=%d\n"
+                  "isolated_pad_reads=%lu\nforeground_answers=%lu\nactivate_app_true=%lu\nactivate_app_rewritten=%lu\n"
+                  "activate_app_posted=%lu\nxinput_set_hook=%d\nvibration_kept=%lu\naudio_buffers_silenced=%lu\nsaves_redirected=%d\n"
                   "saves_redirected_calls=%lu\nsaves_redirect_failures=%lu\nlog_seq=%llu\nsnapshot=%s\n",
                   GetCurrentProcessId(), (NowMs() - started) / 1000.0, g_commands.load(), g_failures.load(),
                   os.installed ? 1 : 0, os.disabled ? 1 : 0, os.disabled_reason, os.presents, static_cast<double>(os.fps),
                   os.width, os.height, os.format, os.queue_source, overlay::IsOpen() ? 1 : 0, os.occluded_masked,
                   static_cast<void*>(overlay::input::Window()), is.xinput_hook ? 1 : 0, is.xinput14_hook ? 1 : 0,
                   pad.connected ? 1 : 0, pad.buttons, is.virtual_pad_reads, is.isolated_pad_reads, is.foreground_answers,
-                  g_silenced.load(), g_rd_active.load() ? 1 : 0, g_rd_calls.load(), g_rd_failures.load(),
+                  is.activate_app_true, is.activate_app_rewritten, is.activate_app_posted, is.xinput_set_hook ? 1 : 0,
+                  is.vibration_kept, g_silenced.load(), g_rd_active.load() ? 1 : 0, g_rd_calls.load(), g_rd_failures.load(),
                   static_cast<unsigned long long>(LogNewestSeq()), SnapshotText().c_str());
     WriteAtomic(g_out + L"\\status.txt", buf);
 }

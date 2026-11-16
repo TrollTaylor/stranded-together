@@ -12,6 +12,8 @@ safety rules and current status: [docs/hidden-testing.md](../../docs/hidden-test
 | `Start-TestRun.ps1 -Scenario alive -NoMod` | start-up bisection switches: `-NoMod` (the DLL only redirects the saves), `-NoUiLimits`, `-SteamEnv`, `-NoIsolation`; `-NoGameStdout` |
 | `Restore-TestRun.ps1 -RunDir <run>` | put the game folder back and check/restore the saves after a crash (safe to repeat) |
 | `scenarios\smoke.txt` | title -> Continue (virtual pad) -> Sam in the world -> debug menu -> quit |
+| `scenarios\walk.txt` | Continue, wait out the save's scripted BT hold, walk 6 s (must move >= 5 m), turn the camera |
+| `scenarios\echo-holo.txt` | role echo: walk, look back, screenshots of the hologram partner trailing Sam |
 | `scenarios\boot.txt` | no input, screenshots of the boot every 10-15 s (title flow discovery) |
 | `scenarios\alive.txt` | supervisor-only: is the game still alive after 45 s |
 | `scenarios\fake-smoke.txt` | the ctest `st_testenv_e2e` with the fake game |

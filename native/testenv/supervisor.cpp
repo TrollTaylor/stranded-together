@@ -4,7 +4,7 @@
 //
 //   st_testenv_supervisor --probe <st_testenv_probe.exe> --run-dir <dir> [--seconds N]
 //   st_testenv_supervisor --game-dir <dir> --mod <winhttp.dll> --scenario <file> --run-dir <dir>
-//                         [--timeout-s N (<=360)] [--saves <dir>] [--no-steam-check] [--keep-audio] [--no-game-stdout]
+//                         [--timeout-s N (<=360)] [--saves <dir>] [--seed-saves <dir>] [--no-steam-check] [--keep-audio] [--no-game-stdout]
 //                         [--no-mod] [--no-ui-limits] [--steam-env] [--no-isolation]
 //   (bisecting a game that does not start: --no-mod runs the game without the mod's session,
 //    overlay and game hooks -- winhttp.dll only redirects the saves -- (scenario with
@@ -352,7 +352,7 @@ void CloseOwned(Owned& o) {
 
 // ------------------------------------------------------------------ args
 struct Args {
-    std::wstring probe, game_dir, mod, scenario, run_dir, restore, saves;
+    std::wstring probe, game_dir, mod, scenario, run_dir, restore, saves, seed;
     bool steam_check = true, mute = true, no_mod = false, ui_limits = true, steam_env = false, isolation = true, game_stdout = true;
     unsigned timeout_s = kMaxRunSeconds, probe_seconds = 6;
 };
@@ -375,6 +375,7 @@ bool ParseArgs(Args& a, std::string* err) {
         else if (k == L"--run-dir") val(a.run_dir);
         else if (k == L"--restore") val(a.restore);
         else if (k == L"--saves") val(a.saves);
+        else if (k == L"--seed-saves") val(a.seed);
         else if (k == L"--no-steam-check") a.steam_check = false;
         else if (k == L"--no-game-stdout") a.game_stdout = false;
         else if (k == L"--keep-audio") a.mute = false;
@@ -825,6 +826,19 @@ int RunGame(Args& a) {
         Out("setup failed: %s", err.c_str());
         deployed = false;
     }
+    // --seed-saves: the game loads another save (e.g. a 100% completion one) from the scratch
+    // copy; the user's real saves are still backed up, redirected away from and verified.
+    if (deployed && !a.seed.empty()) {
+        int accounts = 0;
+        if (!te::ApplySeedSaves(scratch, te::FullPath(a.seed), &accounts, &err)) {
+            Out("setup failed: %s", err.c_str());
+            deployed = false;
+        } else {
+            Out("scratch saves: slots replaced from %s in %d account folder(s); the real saves are untouched",
+                te::Narrow(te::FullPath(a.seed)).c_str(), accounts);
+        }
+    }
+    if (deployed) te::WriteFileAtomic(r.run + L"\\saves-scratch-before.txt", te::ManifestWithoutProbe(scratch));
     DeleteFileW((r.mod_dir + L"\\session.last.ini").c_str());
     if (a.no_mod) Out("--no-mod: winhttp.dll only redirects the saves (no session, no overlay, no game hooks)");
     else
@@ -903,7 +917,8 @@ int RunGame(Args& a) {
     std::vector<std::string> scratch_changes;
     if (te::DirExists(scratch)) {
         std::string before;
-        te::ReadFileBytes(r.run + L"\\saves-before.txt", &before);
+        if (!te::ReadFileBytes(r.run + L"\\saves-scratch-before.txt", &before))
+            te::ReadFileBytes(r.run + L"\\saves-before.txt", &before);
         DeleteFileW((scratch + L"\\.st-redirect-probe").c_str());
         const std::string after = te::HashManifest(scratch);
         te::WriteFileAtomic(r.run + L"\\saves-scratch-after.txt", after);

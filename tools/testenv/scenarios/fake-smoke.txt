@@ -9,6 +9,7 @@ screenshot fake-01-before
 pad A 300
 wait 400
 screenshot fake-02-after-a
+pad none 300 ly=32767
 menu open
 screenshot fake-03-menu
 menu close

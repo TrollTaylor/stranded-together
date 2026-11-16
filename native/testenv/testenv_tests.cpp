@@ -216,6 +216,27 @@ void SavesGuard(const std::wstring& work) {
               te::DirExists(scratch + L"\\DeathStrandingDC\\1\\autosave9") && te::FileExists(scratch + L"\\.st-redirect-probe"),
           "scratch copy seeded (files, empty folders, the redirect probe)", err);
     Check(!te::FileExists(real + L"\\.st-redirect-probe"), "the probe exists only in the scratch copy");
+    {  // --seed-saves: another save in the scratch copy only
+        const std::wstring seed = base + L"\\seed\\DeathStrandingDC";
+        te::EnsureDir(seed + L"\\manualsave4");
+        te::EnsureDir(seed + L"\\profile");
+        Put(seed + L"\\manualsave4\\checkpoint.dat", "seed-m4");
+        Put(seed + L"\\profile\\profile.dat", "seed-profile");
+        Put(seed + L"\\notes.txt", "ignored");
+        int accounts = 0;
+        Check(te::ApplySeedSaves(scratch, base + L"\\seed", &accounts, &err) && accounts == 1, "seed saves applied to the account folder", err);
+        const std::wstring sa = scratch + L"\\DeathStrandingDC\\1";
+        Check(Get(sa + L"\\manualsave4\\checkpoint.dat") == "seed-m4" && Get(sa + L"\\profile\\profile.dat") == "profile" &&
+                  !te::DirExists(sa + L"\\autosave0") && !te::DirExists(sa + L"\\quicksave0") && Get(sa + L"\\steam_autocloud.vdf") == "vdf" &&
+                  !te::FileExists(sa + L"\\notes.txt"),
+              "seed: slots replaced; the user's profile and other account files kept; non-slot files not copied");
+        Check(Get(dc + L"\\autosave0\\checkpoint.dat") == "a0" && Get(dc + L"\\profile\\profile.dat") == "profile",
+              "seed: the real saves are untouched");
+        Check(!te::ApplySeedSaves(scratch, base + L"\\no-seed", &accounts, &err), "seed: a folder without DeathStrandingDC is refused");
+        Check(te::ManifestWithoutProbe(scratch).find(".st-redirect-probe") == std::string::npos, "seed: manifest without the probe");
+        te::RemoveTree(scratch);
+        Check(te::SeedScratch(run, scratch, &err), "scratch re-seeded from the backup after the seed test", err);
+    }
     te::SavesCheck c = te::CheckAndRestoreSaves(run);
     Check(c.ran && c.unchanged && c.ok && Get(run + L"\\saves-restored.txt").rfind("ok\nunchanged", 0) == 0, "untouched saves: unchanged");
     // What a run without the redirect could do:
@@ -489,11 +510,20 @@ int EndToEnd(const std::wstring& supervisor, const std::wstring& fakegame, const
     Check(DecodePng(run + L"\\automation\\fake-03-menu.png", px, w, h) && w == 960 && h == 540, "screenshot with the debug menu open");
     const std::string fake = Get(run + L"\\game-new\\fakegame.log");
     Check(fake.find("A pressed") != std::string::npos, "the virtual pad reached the game's own XInputGetState call");
+    Check(fake.find("self-deactivation before the first frame: app active=0") != std::string::npos &&
+              fake.find("WM_ACTIVATEAPP wParam=1: app active=1") != std::string::npos,
+          "the mod posted WM_ACTIVATEAPP(TRUE) to the hidden window (ds.exe ignores pads while not active)");
+    Check(fake.find("self-deactivation at frame 60: app active=1") != std::string::npos,
+          "a later WM_ACTIVATEAPP(FALSE) reached the game as TRUE");
+    Check(fake.find("left stick up (ly=32767") != std::string::npos, "the virtual pad's left stick reached the game");
+    Check(fake.find("XInputSetState(0, motors off) -> 0") != std::string::npos, "XInputSetState for the virtual pad answers success");
     Check(fake.find("GetForegroundWindow()==window: yes") != std::string::npos, "GetForegroundWindow answers the hidden game window");
     Check(fake.find("WM_CLOSE: exiting") != std::string::npos, "quit closed the game through WM_CLOSE");
     const std::string modlog = Get(run + L"\\game\\stranded_together.log");
     Check(modlog.find("[auto] channel ready") != std::string::npos && modlog.find("AUTOMATION") != std::string::npos,
           "mod log: automation channel and overlay automation mode");
+    Check(modlog.find("XInputSetState(0) vibration 0/0 kept from the real pads") != std::string::npos,
+          "the game's XInputSetState was answered by the mod (rumble never reaches a real pad)");
     Check(Get(game + L"\\winhttp.dll") == "original winhttp.dll (not a DLL)", "winhttp.dll restored after the run");
     Check(Get(game + L"\\stranded_together\\session.ini") == "# original session\nrole=echo\n" &&
               !te::FileExists(game + L"\\stranded_together\\session.last.ini") && !te::DirExists(game + L"\\stranded_together\\automation"),

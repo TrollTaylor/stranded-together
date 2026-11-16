@@ -25,6 +25,7 @@ the supervisor and the probe itself unless `-NoBuild`).
 | Saves | **redirected**: with `automation=1` the mod hooks the Win32 file API in DllMain and sends every access under `%LOCALAPPDATA%\KojimaProductions` to a scratch copy; the supervisor backs the real tree up, confirms the redirect before any step, compares by hash afterwards. 6 real runs: real tree identical every time, 0 Steam Cloud uploads. See "Saves". |
 | Real game, start-up | **solved**: ds.exe quit with code 0 because the mod's overlay loaded `d3d12.dll` before the game's own device creation (ds.exe's check at 0x1419A6CE9). The overlay now waits for the game's delay-load in automation runs. See "Why the game quit at once". |
 | Real game, smoke (12:25, 12:28) | **passes**: title -> Continue (virtual pad) -> Sam in the world (Incinerator West of Capital Knot City) -> debug menu -> quit with exit code 0 in ~50 s; screenshots in `runs\<run>\automation\`; saves identical. |
+| Real game, walking (13:54, 13:56) | **passes**: the virtual pad's left stick walks Sam (20.2 m in a 6 s hold), the right stick turns the camera; `echo-holo` shows the echo partner hologram trailing Sam. The first runs "did nothing" because this save holds the player in a scripted BT scene ~5-20 s after it loads, exactly when they pushed the stick. See "Pad input in gameplay". |
 
 ## How it works
 
@@ -73,8 +74,10 @@ no second ds.exe appeared.
 
 `native/mod/automation.cpp` reads `automation`, `automation_mute` and
 `automation_isolate` from `session.ini` itself, before `LoadConfig` renames a
-one-shot file, and starts a thread that only does file I/O. It never reads game
-memory; game actions are queued to the existing debug-action queue and run on the
+one-shot file, and starts a thread that only does file I/O. It never writes game
+memory and reads it only through `ReadProcessMemory` (the `pad` result's "game pad
+state", see "Pad input in gameplay"; a bad page fails the read instead of faulting);
+game actions are queued to the existing debug-action queue and run on the
 game thread (`st::debug::OnTick`), screenshots are taken inside `Present`.
 Before that, `DllMain` installs the save redirect ("Saves") and the exit tracer, and in
 automation runs the overlay is installed only once ds.exe has loaded `d3d12.dll` itself
@@ -87,7 +90,7 @@ Commands (one per line in `automation\in\*.cmd`, files in name order):
 | `wait <ms>` | sleep |
 | `log <text>` | `[auto] <text>` in stranded_together.log |
 | `screenshot <name>` | the back buffer being presented -> `out\<name>.png` (menu open or closed) |
-| `pad <buttons> <ms> [lx= ly= rx= ry= lt= rt=]` | virtual XInput pad 0: `A`, `A+START`, `DPAD_DOWN`, `none`...; then idle but connected |
+| `pad <buttons> <ms> [lx= ly= rx= ry= lt= rt=]` | virtual XInput pad 0: `A`, `A+START`, `DPAD_DOWN`, `none`...; then idle but connected. Result: pad reads, `player moved <m> m (speed <v>)` (x/y distance of the local player over the hold) and, for holds >= 600 ms, the `game pad state` 300 ms in (see "Pad input in gameplay") |
 | `padoff` | virtual pad disconnected |
 | `key <F9\|esc\|w\|0xNN> <ms>` | `WM_KEYDOWN/UP` posted to the game window (window procedure only; posted keys never reach `WH_KEYBOARD` hooks, so most game keys will not react) |
 | `menu open\|close\|toggle` | the F9 debug menu |
@@ -99,8 +102,8 @@ Commands (one per line in `automation\in\*.cmd`, files in name order):
 
 Results: one line per command in `out\results.txt`, `out\NNNN.done` (`ok|fail`, count,
 last detail), `out\status.txt` every second (presents, fps, back buffer, queue, pad
-reads, foreground answers, silenced audio buffers, snapshot), `out\ready.txt` when the
-channel is up.
+reads, foreground answers, `WM_ACTIVATEAPP` counts, silenced audio buffers, snapshot),
+`out\ready.txt` when the channel is up.
 
 Isolation hooks (overlay, automation only; `automation_isolate=0` turns them off):
 
@@ -110,6 +113,17 @@ Isolation hooks (overlay, automation only; `automation_isolate=0` turns them off
   overlay previously hooked only XINPUTUAP, so the menu's pad blocking now also works).
   In automation only virtual pad 0 exists; real pads read as disconnected. The packet
   number changes with every state change.
+* **Rumble**: ds.exe also takes `XInputSetState` from xinput1_4 (pointer at +0x16820,
+  called by its vibration routine 0x1419B24F0 with the pad index). Since pad 0 reads as
+  connected, the game rumbles it (run 14:07: 924 calls, the first at 32639/21074 in the
+  BT scene); unhooked, that went to the user's real controller in XInput slot 0. In
+  automation both exports' `XInputSetState` are hooked: index 0 answers `ERROR_SUCCESS`
+  and is dropped, other indices "not connected"; nothing reaches the system (status.txt
+  `xinput_set_hook`, `vibration_kept`). Not isolated: PlayStation/HID pads and Steam
+  Input, which ds.exe reads itself (`FUN_1419B3090` devices 1, 2, 4; it switches a
+  controller to whichever device shows activity, `FUN_1419B2680`). Touching a real
+  DualSense during a hidden run can steer the hidden Sam, and the game may write its
+  rumble/light bar. Keep such pads idle or unplugged during hidden runs.
 * **Foreground**: `GetForegroundWindow` answers the game window (ds.exe compares it with
   its window at 0x141A18719 and clears its keyboard state at 0x1419B9691 when they
   differ); before the first `Present` attaches the overlay, the process's largest visible
@@ -121,6 +135,15 @@ Isolation hooks (overlay, automation only; `automation_isolate=0` turns them off
 * **Audio**: `IAudioRenderClient::ReleaseBuffer` (vtable slot 4 of the shared-mode render
   client, found on a throwaway client) gets `AUDCLNT_BUFFERFLAGS_SILENT`. Process-local;
   nothing is written to the volume mixer. `--keep-audio` turns it off.
+* **Activation**: the overlay posts `WM_ACTIVATEAPP(TRUE)` to the game window when it
+  attaches and before every `pad` hold, and hands any `WM_ACTIVATEAPP(FALSE)` to the game
+  as `TRUE` (`st::overlay::input::AssertActive`; counted as `activate_app_*` in
+  status.txt; the first 24 activation/focus messages are logged). ds.exe sets its
+  app-active flag only from that message and its pad reader ignores "mode 1" controllers
+  while it is clear (see "Pad input in gameplay"). Defensive only: in every real run so far
+  the flag was already set (the window is activated on its own desktop when it is created,
+  no `FALSE` ever arrived) and the controller in use is mode 0, so this was not what
+  stopped the sticks.
 * Focus loss does not close the debug menu (the hidden window never has focus).
 
 Screenshots: `st::overlay::CaptureBackBuffer` (overlay_renderer.cpp) records
@@ -260,6 +283,65 @@ then misses the swapchain-creation hook and finds the DIRECT queue through
 the same); the overlay's own install order (`native/mod/overlay/overlay.cpp`
 `st::overlay::Install`) needs the same deferral outside automation.
 
+## Pad input in gameplay
+
+The first `echo-holo` run (12:55) pressed A at the title fine, but in the world
+`pad none 5000 ly=32767` and `pad none 900 ly=32767 rx=32767` neither moved Sam nor
+turned the camera, although ds.exe read the pad ~5000 times.
+
+**The input path (static, ds.exe).** `FUN_1419B1D30` polls `XInputGetState` through the
+pointer at +0x16818 (call 0x1419B1DC7) into a ring of 0x2D0 states per pad (32 bytes:
+`XINPUT_STATE`, packet number as u64 at +0x10, result at +0x18; the ring only advances
+when the packet number changes). `FUN_1419B1EE0` walks the ring back over the packets newer
+than the caller's last one (`min(last, newest-1)`, so the newest state always counts: a
+held stick with an unchanged packet number is still read), ORs the buttons and turns the
+newest sticks into floats with a 7849 deadzone (`(|v|-7849)/24918`, clamped to 1). The pad
+controller (`FUN_1419B3090`; device at +0x28: 1 PlayStation pad, 2 Steam Input, 3 XInput,
+4 HID, switched to whichever device shows activity) writes a 0xB0-byte pad state (LX LY
+RX RY floats first). Before that it checks `controller+0x68 == 1 && !platform+0x68` and
+then answers an empty pad (state 2): platform (`DAT_14577D3F0`)+0x68 is the app-active
+flag, written only by the window procedure 0x141A19BE0 on `WM_ACTIVATEAPP`
+(`mov [rdi+0x68], (wParam == 1)` at 0x141A19ECA). The input manager `DAT_147BE6330`
+keeps 7 player slots (0xF0 bytes; +0x30 controller, +0x40 the pad state, +0xE4 state,
++0x108 player id); the action layer (`FUN_14358C0E0`, `FUN_1432960C0`) maps it and treats
+keyboard/mouse (`DAT_147BE69F0` keys, `DAT_147BE69F8` mouse records) as "in use" when they
+show activity.
+
+**What the game actually saw (runs 13:40-13:43).** The `pad` command now reads that state
+back through `ReadProcessMemory` (gated on the pad reader's prologue bytes, so another
+ds.exe build reads nothing):
+
+```
+pad none 6000 ly=32767 -> app_active=1 mouse=idle keys_down=0
+                          slot0(player=0 state=1 device=3 mode=0 pad=0 sticks=0.00,1.00,0.00,0.00)
+pad none 1500 rx=32767 -> slot0(... sticks=0.00,0.00,1.00,0.00)
+```
+
+So the stick reached the game's input manager at full deflection: XInput device, pad 0,
+mode 0 (not gated), app active, keyboard/mouse idle. Nothing in the input path dropped it.
+
+**Root cause: the save, not the input.** A run that pushed the stick in 1.5 s steps from
+the moment the player appeared (`diag2`, 13:45) shows it: the player appears at 31.0 s;
+Sam walks at ~4 m/s from 31.8 s, stops at ~36.5 s and does not move for any stick until
+~49 s, then walks again (4.0-4.2 m/s). In that window the save (Incinerator West of
+Capital Knot City, Episode 1, right after the cremation) plays its scripted BT scene
+("We've got company": Sam crouches, the Odradek opens); START and B do nothing there either.
+The 12:55 run and the first `walk` runs pushed the stick 8 s after the player appeared
+(39-49 s), entirely inside that hold; the run that pushed the stick at 49 s (`diag1`)
+walked. The camera stick is held in the same scene. The end of the hold varies a little
+per run (13:54 and 14:07: a 1 s push 18.8 s after the player appeared still moved Sam
+0.02 m, the next one at ~20 s moved him 2.6-2.9 m), hence the probe loop.
+
+**What the scenarios do.** After `waitplayer`, wait 17 s, then
+`until 45 300 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760`
+(1 s pushes until one moves Sam >= 1 m; the odd `ly=32760` makes the probe's log lines
+unique, since `waitlog`/`until` match any line of the whole log), and verify a walk with
+`waitlog 5 pad none 6000 ly=32767 -> ok: .*player moved ([5-9]|[1-9][0-9]+)\.`. Do not walk
+out onto the apron: the BTs there catch Sam within seconds (13:50 run: tar, "Shake Off",
+then a capture scene). The scenarios turn the camera round first (right stick at full
+deflection: ~1.3 s per 180 degrees) and walk back into the incinerator building (a hall
+~40 m deep). Movement is camera-relative: `ly=-32767` walks Sam towards the camera.
+
 ## Runs (2026-11-16, all on the private desktop)
 
 | Run (`build-testenv\runs\`) | Switches | Outcome | Saves |
@@ -271,6 +353,18 @@ the same); the overlay's own install order (`native/mod/overlay/overlay.cpp`
 | `20261116-122558-smoke` | `-Scenario smoke` | **pass**: title, Continue, local player after 29 s at (543.37, 330.40, 237.29), in-world, debug menu, log_status, quit -> exit 0 after 48.4 s | confirmed, unchanged, 0 uploads; scratch `profile.dat` changed (discarded) |
 | `20261116-122820-smoke` | `-Scenario smoke` (+ `06-later`) | **pass**, same path, exit 0 after 52 s | confirmed, unchanged, 0 uploads; scratch `profile.dat` changed (discarded) |
 | `20261116-124653-smoke` | `-Scenario smoke` after the review fixes (path forms, 8.3, supervisor gate, ShellExecute block; 31 hooks) | **pass**, same path, exit 0 after 52.6 s; 4 ShellExecute hooks, nothing blocked | confirmed, unchanged (also by an independent sha256 of all 34 files), 0 uploads |
+| `20261116-125503-echo-holo` | old `echo-holo` (stick 8 s after the player appeared) | steps ok, but Sam did not move (543.37,330.40 -> 543.36,330.40) and the camera did not turn: inside the scripted BT hold | confirmed, unchanged |
+| `20261116-133628-walk` | first `walk`, with the activation fix | same: the 6 s `ly` moved Sam 0.03 m; `WM_ACTIVATEAPP(TRUE)` seen 4x, never FALSE | confirmed, unchanged |
+| `20261116-134015-walk` | + game pad state read back | the game's input manager held `sticks=0.00,1.00,..` / `0.00,0.00,1.00,..` (XInput, mode 0, app active): the input arrived | confirmed, unchanged |
+| `20261116-134208-walk` | + keyboard/mouse activity | mouse idle, 0 keys down; still no movement at 40-48 s | confirmed, unchanged |
+| `20261116-134339-diag1` | START, B, DPAD_RIGHT, then `lx` (scratch scenario) | START/B did nothing at 43-46 s; `lx` at 49 s walked 1.8 m (speed 3.98), camera turned | confirmed, unchanged |
+| `20261116-134510-diag2` | 14 x (1.5 s `ly`, snapshot) from the player's appearance (scratch scenario) | walks 31.8-36.5 s (4.15, 3.88 m/s), held 36.5-49 s, walks again from ~49 s (4.0-4.2 m/s, 16 m): the scripted hold | confirmed, unchanged |
+| `20261116-134759-cal1` | camera calibration (scratch scenario, role echo) | right stick ~1.2-1.5 s per 180 degrees; 9.5 m in 3 s; hologram partner visible; BT tar on the apron at ~63 s | confirmed, unchanged |
+| `20261116-135029-echo-holo` | `echo-holo` draft walking out onto the apron | gate after 2 probes, 17.65 m in 6 s, then caught by BTs (tar, "Shake Off", capture scene) | confirmed, unchanged |
+| `20261116-135236-expl1` | walking into the incinerator building (scratch scenario, role echo) | 20 m into the hall, hologram trailing Sam in view, no BTs | confirmed, unchanged |
+| `20261116-135430-echo-holo` | final `echo-holo` | **pass**: 19.9 m in 6 s, camera round, hologram trailing Sam by ~3-5 m in `05-trailing-a`..`07-trailing-c` (`06-trailing-b` clearest), merged at `08-stopped` | confirmed, unchanged, 0 uploads |
+| `20261116-135611-walk` | final `walk` | **pass**: gate after 2 probes, 20.18 m in 6 s (checked by `waitlog`), camera turned in `03`/`05` | confirmed, unchanged, 0 uploads |
+| `20261116-140715-echo-holo` | `echo-holo` after the review (XInputSetState hooks) | **pass**: gate after 2 probes, 20.12 m in 6 s, hologram trailing Sam in `05`..`07`; the game's 924 rumble calls answered by the mod, none reached a real pad | confirmed, unchanged, 0 uploads |
 
 Every run: no window of the job on the user's desktop, input desktop `Default`
 before/after, no violation, game folder restored (`restored.txt` ok), no `error.txt`.
@@ -298,6 +392,13 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   only while there is no `[sync] local player entity 0 -> <entity>` (none was needed),
   `waitplayer`, 10 s, `03-in-world`, `snapshot`, debug menu open, `04-debug-menu`,
   `action log_status`, close, `05-menu-closed`, 4 s, `06-later`, `snapshot`, `quit`.
+* `walk.txt`: Continue, wait out the scripted BT hold, 1 s probes until Sam moves, camera
+  round (`rx`, 1.3 s), 6 s walk into the incinerator building (must move >= 5 m), a quarter
+  turn left; snapshots and screenshots `02-control` .. `05-turned-left`.
+* `echo-holo.txt` (role echo): the same start, a 6 s walk into the building, the camera
+  turned round to look back, then 3 x 1.5 s walking towards the camera with screenshots
+  `05-trailing-a` .. `07-trailing-c` of the hologram partner trailing 2 s behind (it fades
+  within 2 m, so only while Sam keeps moving), `08-stopped`, `log_status`, the menu.
 * `boot.txt`: no input, a screenshot every 10-15 s for 80 s (title flow discovery).
 * `alive.txt`: supervisor steps only (works with `-NoMod`): watch the game for 45 s.
 * `fake-smoke.txt`: the ctest's fake game.
@@ -361,5 +462,23 @@ saves changed / cloud upload / restore incomplete, 2 refused (preflight), 3 safe
   reads the seeded profile (also with `/`), writes a checkpoint through a temp file +
   `MoveFileExW`, creates a folder, copies, deletes, `MoveFileW`, `GetFileAttributesA`,
   enumerates (8/8 ok), the real root stays byte for byte identical, the writes are in
-  the scratch copy, `saves=redirected` in the log. Skipped (77) while a ds.exe runs.
+  the scratch copy, `saves=redirected` in the log. The fake game also keeps ds.exe's
+  app-active rule (pads count only after `WM_ACTIVATEAPP(TRUE)`): it deactivates itself
+  before the overlay attaches and again at frame 60; the e2e checks that the mod's post
+  re-activates it, that the later `FALSE` reaches it as `TRUE`, and that the virtual pad's
+  left stick (`pad none 300 ly=32767`) arrives. Skipped (77) while a ds.exe runs.
 * `st_overlay_harness` section 10: the automation parts of the overlay.
+
+## Using another save (`-SeedSaves`)
+
+`Start-TestRun.ps1 -SeedSaves <folder or name under testenv-saves\>` replaces the save
+*slots* (`autosave*`, `manualsave*`, `quicksave*`) in the run's scratch copy with the ones in
+`<folder>\DeathStrandingDC\`. The user's `profile\`, `game_settings.cfg` and
+`steam_autocloud.vdf` stay in the scratch copy, and the real saves are backed up, redirected away
+from and verified exactly as in every run. `testenv-saves\` is git-ignored.
+
+Death Stranding binds saves to the Steam account that wrote them. A downloaded 100% save
+(`testenv-saves\complete-100`, from another account) shows **"Save data is corrupted, and cannot
+be loaded."** (run 20261116-142026-seedload). With the other account's `profile\` copied too, the
+game stalls before its first frame (run 20261116-141151-smoke). Only saves made by the same Steam
+account work, so the default stays the user's own saves.

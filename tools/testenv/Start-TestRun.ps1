@@ -26,6 +26,10 @@ param(
     [string]$GameDir,
     [ValidateRange(30, 360)][int]$TimeoutSec = 360,
     [string]$Saves,
+    # Save the hidden game loads (scratch copy only): a folder holding DeathStrandingDC\<slots>,
+    # a name under testenv-saves\, or 'own'. Default: the user's own saves. NOTE: DS binds saves to the Steam account
+    # that wrote them; a save from another account shows 'Save data is corrupted' (run 20261116-142026-seedload).
+    [string]$SeedSaves,
     [switch]$KeepAudio,
     [switch]$NoBuild,
     # Bisecting a game that does not start (docs/hidden-testing.md "When the game exits at once"):
@@ -89,6 +93,12 @@ $mod = Join-Path $bin 'winhttp.dll'
 
 $supArgs = @('--game-dir', $GameDir, '--mod', $mod, '--scenario', $scenarioFile, '--run-dir', $run, '--timeout-s', $TimeoutSec)
 if ($Saves) { $supArgs += @('--saves', $Saves) }
+if ($SeedSaves -and $SeedSaves -ne 'own') {
+    if (-not (Test-Path $SeedSaves)) { $SeedSaves = Join-Path $repo ('testenv-saves\' + $SeedSaves) }
+    if (-not (Test-Path (Join-Path $SeedSaves 'DeathStrandingDC'))) { throw "seed saves not found: $SeedSaves (needs DeathStrandingDC\<slots>)" }
+    $supArgs += @('--seed-saves', (Resolve-Path $SeedSaves).Path)
+    Write-Host "seed saves: $SeedSaves (scratch copy only; your real saves stay untouched)"
+}
 if ($KeepAudio) { $supArgs += '--keep-audio' }
 if ($NoMod) { $supArgs += '--no-mod' }
 if ($NoUiLimits) { $supArgs += '--no-ui-limits' }

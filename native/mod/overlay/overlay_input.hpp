@@ -68,6 +68,11 @@ struct Stats {
     unsigned long virtual_pad_reads = 0;  // XInputGetState answered with the virtual pad
     unsigned long isolated_pad_reads = 0; // automation: other indices / no virtual pad -> not connected
     unsigned long foreground_answers = 0; // automation: GetForegroundWindow -> the game window
+    unsigned long activate_app_true = 0;      // automation: WM_ACTIVATEAPP(TRUE) seen by the game window
+    unsigned long activate_app_rewritten = 0; // automation: WM_ACTIVATEAPP(FALSE) handed to the game as TRUE
+    unsigned long activate_app_posted = 0;    // automation: WM_ACTIVATEAPP(TRUE) posted by AssertActive
+    unsigned long vibration_kept = 0;         // automation: XInputSetState(0) answered here, never reaching a real pad
+    bool xinput_set_hook = false;             // automation: XInputSetState hooked (xinput1_4 / XINPUTUAP)
 };
 
 // Virtual XInput pad 0 (automation). `connected` stays true after a hold ends
@@ -81,11 +86,18 @@ struct PadState {
 void SetAutomation(bool on) noexcept;  // before CreateApiHooks (adds the GetForegroundWindow hook)
 bool Automation() noexcept;
 void SetVirtualPad(const PadState& pad) noexcept;  // any thread
+// Automation: post WM_ACTIVATEAPP(TRUE) to the attached game window (any thread). ds.exe
+// sets its app-active flag only from that message (window procedure 0x141A19BE0, case
+// 0x1C -> platform+0x68) and its pad reader (FUN_1419B3090) returns an empty pad while the
+// flag is clear: sticks and buttons are ignored in gameplay. The subclass also hands every
+// WM_ACTIVATEAPP(FALSE) to the game as TRUE. False when not attached / not automation.
+bool AssertActive() noexcept;
 PadState VirtualPad() noexcept;
 
 // Bootstrap thread: create (not enable) the process-wide API hooks:
 // SetCursorPos, ClipCursor (user32), XInputGetState (xinput1_4.dll and XINPUTUAP.dll,
-// optional) and, in automation, GetForegroundWindow.
+// optional) and, in automation, GetForegroundWindow and XInputSetState (the game's rumble
+// for the virtual pad never reaches a real controller).
 // Appends each created target to `targets`. False if a required one failed.
 bool CreateApiHooks(void** targets, std::size_t* count, std::size_t cap) noexcept;
 void RemoveApiHooks() noexcept;

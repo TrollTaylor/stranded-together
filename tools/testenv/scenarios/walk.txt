@@ -1,0 +1,38 @@
+# Walking on the hidden desktop (Start-TestRun.ps1 -Scenario walk): boot, Continue, then the
+# virtual pad's left stick walks Sam and the right stick turns the camera.
+# Checked by the scenario: the 6 s walk must move the player >= 5 m (each pad result line says
+# "player moved X m" and what the game's own input manager saw, "sticks=LX,LY,RX,RY"). The
+# camera turns are visible in the screenshots (02 -> 03 -> 04 face different ways).
+#
+# This save (Incinerator West of Capital Knot City, Episode 1) holds the player in a scripted BT
+# scene from ~5 s to ~18 s after it appears ("We've got company"): sticks pushed then do nothing,
+# which is what the first hidden runs ran into (docs/hidden-testing.md "Pad input in gameplay").
+# So: wait 17 s, then 1 s pushes until one moves Sam >= 1 m. Out on the apron BTs catch Sam
+# within seconds, so the walk goes back into the incinerator building (camera turned round first).
+role solo
+timeout 300
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+?screenshot 01-title
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+wait 17000
+until 45 300 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+snapshot
+screenshot 02-control
+# camera round (~180 degrees: right stick ~1.3 s at full deflection)
+pad none 1300 rx=32767
+screenshot 03-camera-round
+# walk 6 s (left stick up) into the building
+pad none 6000 ly=32767
+waitlog 5 pad none 6000 ly=32767 -> ok: .*player moved ([5-9]|[1-9][0-9]+)\.[0-9]+ m
+snapshot
+screenshot 04-walked
+# a quarter turn of the camera to the left while standing
+pad none 650 rx=-32767
+screenshot 05-turned-left
+snapshot
+quit
