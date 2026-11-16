@@ -117,6 +117,9 @@ float last_heal = -1, last_hours = -1;
 bool last_cycle = true;
 std::uintptr_t last_ping_entity = 0;
 int last_ping_index = 99;
+std::atomic<int> catalogs{0}, surveys{0};
+int last_catalog_start = -1, last_catalog_count = -1;
+double last_catalog_distance = -1;
 }  // namespace st::game::stub
 
 namespace st::game {
@@ -176,6 +179,21 @@ bool PartnerVoicePing(std::uintptr_t partner_entity, int index, char* msg, std::
     return partner_entity != 0;
 }
 void ActionsTick(double) noexcept { ++stub::ticks; }
+bool StartHoloCatalog(int start, int count, double distance_m, char* msg, std::size_t cap) noexcept {
+    Seen();
+    ++stub::catalogs;
+    stub::last_catalog_start = start;
+    stub::last_catalog_count = count;
+    stub::last_catalog_distance = distance_m;
+    Say(msg, cap, "catalog batch started (stub)");
+    return true;
+}
+bool StartClipSurvey(char* msg, std::size_t cap) noexcept {
+    Seen();
+    ++stub::surveys;
+    Say(msg, cap, "clip survey started (stub)");
+    return true;
+}
 void ReadDiagnostics(Diagnostics* d) noexcept {
     *d = Diagnostics{};
     d->resolved = true;

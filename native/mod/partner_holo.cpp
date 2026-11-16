@@ -277,16 +277,6 @@ const char* StartVisibleBlocker(std::uintptr_t e) {
 }
 
 // ---------------------------------------------------------------- collectors DB
-struct Item {
-    std::uintptr_t ptr = 0;
-    std::uint32_t display_no = 0, hash = 0, name_hash = 0;
-    std::int32_t sort = 0;
-    std::uint8_t type = 0;
-    bool hidden = false;
-    bool empty = true, loaded = false;
-    std::uintptr_t res = 0;  // loaded EntityResource
-};
-
 bool RefState(std::uintptr_t field, bool* empty, bool* loaded, std::uintptr_t* res) {
     // StreamingRef: field holds d -> {obj, flags}. Empty test = 0x141DE1350,
     // loaded test + resource = 0x141DDE990.
@@ -479,19 +469,30 @@ bool EntityAlive() {
            g == g_entity_guid;
 }
 
-void ReleaseSpawner(const char* why) {
-    if (!g_sp) return;
-    const auto sp = reinterpret_cast<std::uintptr_t>(g_sp);
+// Releases our one reference to `spv`. False when it no longer looks like ours
+// (then it is leaked deliberately) or the release faulted.
+bool ReleaseSpawnerPtr(void* spv, const char* why) {
+    if (!spv) return true;
+    const auto sp = reinterpret_cast<std::uintptr_t>(spv);
     std::int32_t rc = 0;
     if (Q(sp) != g_fn.spawner_vt || !Rd(sp + kSpRefCount, rc) || rc < 1) {
         // Not the object we created any more: leaking our reference is the only safe choice.
-        Log("[holo] spawner %p no longer looks like ours (vtable %p, refcount %d); not releasing it (%s)", g_sp,
+        Log("[holo] spawner %p no longer looks like ours (vtable %p, refcount %d); not releasing it (%s)", spv,
             reinterpret_cast<void*>(Q(sp)), rc, why);
-    } else {
-        bool destroyed = false;
-        if (!CallRelease(g_sp, &destroyed)) Disable("spawner release");
-        else Log("[holo] released spawner %p (refcount was %d%s)", g_sp, rc, destroyed ? ", destroyed" : "");
+        return false;
     }
+    bool destroyed = false;
+    if (!CallRelease(spv, &destroyed)) {
+        Disable("spawner release");
+        return false;
+    }
+    Log("[holo] released spawner %p (refcount was %d%s)", spv, rc, destroyed ? ", destroyed" : "");
+    return true;
+}
+
+void ReleaseSpawner(const char* why) {
+    if (!g_sp) return;
+    ReleaseSpawnerPtr(g_sp, why);
     g_sp = nullptr;
 }
 
@@ -509,6 +510,49 @@ void ResetState() {
     g_reasserts = 0;
 }
 
+// The removal half of a teardown, shared by the partner body and the catalog
+// spawns: remove the entity we realized (if it is still the same object), or
+// realize-and-remove a finished load the way the game does (0x142CA1AA0), or
+// cancel a load in flight. *release says whether the spawner reference may be
+// released afterwards (false: the entity may still be referenced; leak both).
+const char* RemoveSteps(void* spv, bool realized, bool alive, game::Entity* e, bool* release) {
+    const auto sp = reinterpret_cast<std::uintptr_t>(spv);
+    const char* no_remove = nullptr;
+    *release = true;
+    if (realized) {
+        if (!alive) return "entity already gone";
+        if (!CanRemove(&no_remove)) {
+            *release = false;
+            return no_remove;
+        }
+        const bool ok = CallOne(g_fn.remove, e);
+        if (!ok) Disable("RemoveEntity");
+        return ok ? "entity removed" : "entity remove FAULTED";
+    }
+    std::uint8_t loaded = 0;
+    Rd(sp + kSpLoaded, loaded);
+    if (loaded && !CanRemove(&no_remove)) {
+        *release = false;  // cannot remove what realize would attach: leave it loaded, leak the spawner
+        return no_remove;
+    }
+    if (loaded) {
+        void* ev = nullptr;
+        if (!CallRealize(g_fn.realize, spv, &ev)) {
+            Disable("Realize (teardown)");
+            return "realize FAULTED";
+        }
+        if (ev && mem::InImage(Q(reinterpret_cast<std::uintptr_t>(ev)))) {
+            const bool ok = CallOne(g_fn.remove, ev);
+            if (!ok) Disable("RemoveEntity");
+            return ok ? "loaded entity realized and removed" : "remove FAULTED";
+        }
+        return "loaded but no entity";
+    }
+    const bool ok = CallOne(g_fn.cancel, spv);
+    if (!ok) Disable("CancelSpawner");
+    return ok ? "load cancelled" : "cancel FAULTED";
+}
+
 // Everything torn down exactly once: entity removed (if we realized it, or the
 // spawner finished loading), or the load cancelled; then our reference released.
 bool Teardown(const char* why) {
@@ -516,47 +560,8 @@ bool Teardown(const char* why) {
         ResetState();
         return false;
     }
-    const auto sp = reinterpret_cast<std::uintptr_t>(g_sp);
-    const char* step = "nothing to remove";
-    const char* no_remove = nullptr;
     bool release = true;
-    if (g_realized) {
-        if (!EntityAlive()) {
-            step = "entity already gone";
-        } else if (!CanRemove(&no_remove)) {
-            // The entity may still be referenced by the spawner: leak both rather than
-            // free the spawner under a live entity.
-            step = no_remove;
-            release = false;
-        } else {
-            const bool ok = CallOne(g_fn.remove, g_entity);
-            step = ok ? "entity removed" : "entity remove FAULTED";
-            if (!ok) Disable("RemoveEntity");
-        }
-    } else {
-        std::uint8_t loaded = 0;
-        Rd(sp + kSpLoaded, loaded);
-        if (loaded && !CanRemove(&no_remove)) {
-            step = no_remove;  // cannot remove what realize would attach: leave it loaded, leak the spawner
-            release = false;
-        } else if (loaded) {
-            void* e = nullptr;
-            if (!CallRealize(g_fn.realize, g_sp, &e)) {
-                Disable("Realize (teardown)");
-                step = "realize FAULTED";
-            } else if (e && mem::InImage(Q(reinterpret_cast<std::uintptr_t>(e)))) {
-                const bool ok = CallOne(g_fn.remove, e);
-                step = ok ? "loaded entity realized and removed" : "remove FAULTED";
-                if (!ok) Disable("RemoveEntity");
-            } else {
-                step = "loaded but no entity";
-            }
-        } else {
-            const bool ok = CallOne(g_fn.cancel, g_sp);
-            step = ok ? "load cancelled" : "cancel FAULTED";
-            if (!ok) Disable("CancelSpawner");
-        }
-    }
+    const char* step = RemoveSteps(g_sp, g_realized, g_realized && EntityAlive(), g_entity, &release);
     Log("[holo] teardown (%s): hash=%08X spawner=%p entity=%p: %s%s", why, g_hash, g_sp, g_entity, step,
         release ? "" : " (not removed; spawner reference leaked)");
     if (release) ReleaseSpawner(why);
@@ -876,6 +881,151 @@ bool SetShown(bool shown) {
     const bool ok = CallOne(shown ? g_fn.start_visible : g_fn.stop_visible, e);
     if (!ok) Disable(shown ? "StartVisibleWelcomeHolo" : "StopVisibleWelcomeHolo");
     LogComponent(partner::FindComponentByName(e, "DSWelcomeHoloComponent"), shown ? "debug show" : "debug hide");
+    return ok;
+}
+
+// ---------------------------------------------------------------- collectors DB / independent spawns
+bool ReadItems(std::uintptr_t* db, std::vector<Item>* items) {
+    items->clear();
+    *db = 0;
+    if (!Resolve()) return false;
+    return ReadDb(db, items);
+}
+
+bool SpawnBegin(std::uintptr_t item_ptr, std::uint32_t hash, const game::WorldTransform& at, Spawn* s, char* why,
+                std::size_t cap) {
+    *s = Spawn{};
+    if (!Resolve()) {
+        Set(why, cap, "%s", g_fn.why);
+        return false;
+    }
+    if (!item_ptr || mem::RttiOf(item_ptr) != mem::Base() + kItemRtti) {
+        Set(why, cap, "item %08X is not a DSCollectorsItemResource any more", hash);
+        return false;
+    }
+    const std::uintptr_t ref = item_ptr + kItemDisplayRef;
+    bool empty = true, loaded = false;
+    std::uintptr_t res = 0;
+    if (!RefState(ref, &empty, &loaded, &res) || empty) {
+        Set(why, cap, "item %08X has no display entity", hash);
+        return false;
+    }
+    void* sp = nullptr;
+    if (!CallCreate(g_fn.create, &sp, &at, ref)) {
+        Disable("CreateSpawner");
+        Set(why, cap, "%s", g_fn.why);
+        return false;
+    }
+    if (!sp) {
+        Set(why, cap, "CreateSpawner returned null for item %08X", hash);
+        return false;
+    }
+    if (Q(reinterpret_cast<std::uintptr_t>(sp)) != g_fn.spawner_vt) {
+        Disable("spawner vtable check");
+        Set(why, cap, "spawner %p has an unexpected vtable (left alone)", sp);
+        return false;
+    }
+    if (!CallSpawner(g_fn.start, sp)) {
+        Disable("StartSpawner");
+        Set(why, cap, "%s (spawner leaked)", g_fn.why);
+        return false;
+    }
+    s->sp = sp;
+    s->hash = hash;
+    Set(why, cap, "spawner %p started (ref %s)", sp, loaded ? "already loaded" : "streaming");
+    return true;
+}
+
+SpawnState SpawnPoll(Spawn& s, char* why, std::size_t cap) {
+    if (!s.sp) {
+        Set(why, cap, "no spawner");
+        return SpawnState::failed;
+    }
+    if (s.realized) return SpawnState::realized;
+    std::uint8_t flags[2] = {};
+    if (!mem::Read(reinterpret_cast<std::uintptr_t>(s.sp) + kSpLoaded, flags, sizeof(flags))) {
+        Set(why, cap, "spawner %p unreadable; dropped", s.sp);
+        s = Spawn{};
+        return SpawnState::failed;
+    }
+    if (flags[1]) {
+        Set(why, cap, "the game cancelled loading item %08X", s.hash);
+        return SpawnState::cancelled;
+    }
+    if (!flags[0]) return SpawnState::loading;
+    void* ev = nullptr;
+    if (!CallRealize(g_fn.realize, s.sp, &ev)) {
+        Disable("Realize");
+        Set(why, cap, "%s (spawner leaked)", g_fn.why);
+        s = Spawn{};
+        return SpawnState::failed;
+    }
+    s.realized = true;
+    s.e = ev;
+    if (ev) {
+        partner::ReadVtable(ev, &s.vt);
+        partner::ReadGuid(ev, &s.guid);
+    }
+    Set(why, cap, "realized entity %p", ev);
+    return SpawnState::realized;
+}
+
+bool SpawnAlive(const Spawn& s) {
+    if (!s.e) return false;
+    std::uintptr_t vt = 0;
+    game::Guid g;
+    return partner::ReadVtable(s.e, &vt) && vt == s.vt && partner::ReadGuid(s.e, &g) && g == s.guid;
+}
+
+const char* ValidateWelcomeHolo(game::Entity* e, std::uintptr_t* comp) {
+    *comp = 0;
+    if (!e) return "no entity";
+    return Validate(reinterpret_cast<std::uintptr_t>(e), comp);
+}
+
+bool SpawnStartVisible(game::Entity* e, char* why, std::size_t cap) {
+    if (!g_fn.ok) {
+        Set(why, cap, "%s", g_fn.why);
+        return false;
+    }
+    if (const char* blocked = StartVisibleBlocker(reinterpret_cast<std::uintptr_t>(e))) {
+        Set(why, cap, "StartVisible not called: %s", blocked);
+        return false;
+    }
+    if (!CallOne(g_fn.start_visible, e)) {
+        Disable("StartVisibleWelcomeHolo");
+        Set(why, cap, "%s", g_fn.why);
+        return false;
+    }
+    Set(why, cap, "StartVisible called");
+    return true;
+}
+
+void LogWelcomeHolo(game::Entity* e, const char* what) {
+    const std::uintptr_t comp = partner::FindComponentByName(e, "DSWelcomeHoloComponent");
+    if (!comp) return;
+    LogComponent(comp, what);
+    LogComponentResource(comp);
+}
+
+bool SpawnTeardown(Spawn& s, const char* why, char* step_out, std::size_t cap) {
+    if (!s.sp) {
+        Set(step_out, cap, "nothing to tear down");
+        s = Spawn{};
+        return true;
+    }
+    if (!g_fn.create) {
+        Set(step_out, cap, "hologram functions never resolved; spawner %p leaked", s.sp);
+        s = Spawn{};
+        return false;
+    }
+    bool release = true;
+    const char* step = RemoveSteps(s.sp, s.realized, s.realized && SpawnAlive(s), s.e, &release);
+    bool ok = release;
+    if (release) ok = ReleaseSpawnerPtr(s.sp, why);
+    Set(step_out, cap, "%s%s", step,
+        release ? (ok ? "; spawner released" : "; spawner LEAKED") : " (not removed; spawner reference leaked)");
+    s = Spawn{};
     return ok;
 }
 

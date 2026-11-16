@@ -36,6 +36,9 @@ extern float last_heal, last_hours;
 extern bool last_cycle;
 extern std::uintptr_t last_ping_entity;
 extern int last_ping_index;
+extern std::atomic<int> catalogs, surveys;
+extern int last_catalog_start, last_catalog_count;
+extern double last_catalog_distance;
 }  // namespace st::game::stub
 
 namespace {
@@ -211,6 +214,21 @@ void TestActions() {
     CHECK(game::stub::last_ping_index == 2 && game::stub::last_ping_entity == 0);
     sync::stub::have_partner = true;
     game::stub::last_cycle = true;
+
+    // Holo catalog: v[0] start, v[1] count (at least 1), v[2] distance.
+    debug::Request cat;
+    cat.action = debug::Action::holo_catalog;
+    cat.v[0] = 45;
+    cat.v[1] = 0;
+    cat.v[2] = 4.5;
+    const std::uint32_t scat = debug::Queue(cat);
+    debug::Drain();
+    CHECK(debug::ResultFor(scat, &r) && r.ok && std::strstr(r.text, "catalog") != nullptr);
+    CHECK(game::stub::catalogs.load() == 1 && game::stub::last_catalog_start == 45 && game::stub::last_catalog_count == 1 &&
+          std::fabs(game::stub::last_catalog_distance - 4.5) < 1e-9);
+    const std::uint32_t ssur = debug::Queue(debug::Action::clip_survey);
+    debug::Drain();
+    CHECK(debug::ResultFor(ssur, &r) && r.ok && game::stub::surveys.load() == 1);
 
     debug::Request e;
     e.action = debug::Action::set_echo_tuning;

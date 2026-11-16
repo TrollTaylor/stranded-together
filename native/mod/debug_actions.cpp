@@ -123,6 +123,12 @@ bool DoUnstuck(const Request&, char* msg, std::size_t cap) { return game::Unstuc
 bool DoHeal(const Request& r, char* msg, std::size_t cap) { return game::HealLocalPlayer(r.f[0], msg, cap); }
 bool DoSetTimeOfDay(const Request& r, char* msg, std::size_t cap) { return game::SetTimeOfDay(r.f[0], msg, cap); }
 bool DoDayNightCycle(const Request& r, char* msg, std::size_t cap) { return game::SetDayNightCycle(r.flag, msg, cap); }
+bool DoHoloCatalog(const Request& r, char* msg, std::size_t cap) {
+    const int start = static_cast<int>(r.v[0]);
+    const int count = r.v[1] >= 1 ? static_cast<int>(r.v[1]) : 1;
+    return game::StartHoloCatalog(start, count, r.v[2], msg, cap);
+}
+bool DoClipSurvey(const Request&, char* msg, std::size_t cap) { return game::StartClipSurvey(msg, cap); }
 bool DoVoicePing(const Request& r, char* msg, std::size_t cap) {
     // The live partner entity, exactly as the Partner tab sees it (0 when there is none).
     Snapshot s;
@@ -179,6 +185,8 @@ constexpr Row kRows[] = {
     {{Action::copy_diagnostics, Tab::status, "Copy diagnostics", "Status and game diagnostics to the clipboard and the log.", true}, &DoCopyDiagnostics},
     {{Action::log_status, Tab::tools, "Log status", "Everything on the Status tab to the log.", true}, &DoLogStatus},
     {{Action::set_verbose, Tab::tools, "Verbose logging", "Per-2s trace lines from the sync.", false}, &DoVerbose},
+    {{Action::holo_catalog, Tab::tools, "Holo catalog", "Spawn, log and screenshot collectors holograms one by one (start count [distance]).", false}, &DoHoloCatalog},
+    {{Action::clip_survey, Tab::tools, "Clip survey", "Log every loaded animation clip with root motion, and which fit Sam's skeleton.", false}, &DoClipSurvey},
 };
 constexpr std::size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);
 static_assert(kRowCount == static_cast<std::size_t>(Action::count), "every Action needs exactly one registry row");

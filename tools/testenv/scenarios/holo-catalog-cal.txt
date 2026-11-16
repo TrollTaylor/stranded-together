@@ -1,0 +1,26 @@
+# Hologram catalog, calibration batch (docs/character-catalog.md):
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario holo-catalog-cal -SeedSaves complete-100
+# Two Type 4 items and two Type 20 items, to check the framing before the full batches.
+# Same start as echo-holo-100 (Episode 15, distribution centre garage near Mountain Knot City),
+# but role solo: no partner body, so nothing else stands in the shots.
+role solo
+timeout 360
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+?screenshot 01-title
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+# a short walk forward so the camera sits behind Sam, then stand still
+pad none 1500 ly=32767
+wait 1500
+screenshot 02-before
+action holo_catalog 0 2
+waitlog 120 \[catalog\] batch 0\.\.1 done
+action holo_catalog 48 2
+waitlog 120 \[catalog\] batch 48\.\.49 done
+screenshot 03-after
+quit

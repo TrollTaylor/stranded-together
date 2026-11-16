@@ -86,6 +86,7 @@ add_library(st_mod SHARED
   native/mod/debug_actions.cpp
   native/mod/game_actions.cpp
   native/mod/partner_holo.cpp
+  native/mod/holo_catalog.cpp
   native/mod/automation.cpp
   native/mod/sandbox.cpp
   ${ST_OVERLAY_SOURCES})

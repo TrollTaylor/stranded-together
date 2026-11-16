@@ -10,6 +10,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 #include "game_api.hpp"
 
@@ -62,5 +63,56 @@ bool SetShown(bool shown);
 bool Describe(const char* what);
 // F7 / respawn: forget items refused earlier and log the DB table again.
 void ResetRejected();
+
+// ---------------------------------------------------------------- collectors DB
+// One DSCollectorsItemResource, read fresh. `ptr` is valid for the current frame
+// only (the DB can be freed at any load).
+struct Item {
+    std::uintptr_t ptr = 0;
+    std::uint32_t display_no = 0, hash = 0, name_hash = 0;
+    std::int32_t sort = 0;
+    std::uint8_t type = 0;
+    bool hidden = false;
+    bool empty = true, loaded = false;
+    std::uintptr_t res = 0;  // loaded EntityResource (when `loaded`)
+};
+// Game thread. False when the functions did not verify or the DB is not loaded.
+bool ReadItems(std::uintptr_t* db, std::vector<Item>* items);
+
+// ---------------------------------------------------------------- independent spawns
+// Debug tooling (the hologram catalog, docs/character-catalog.md): the same
+// spawner calls and checks as the partner body, with the caller owning the state.
+// Game thread only. Every Spawn that SpawnBegin started must end in SpawnTeardown.
+struct Spawn {
+    void* sp = nullptr;  // our spawner reference (we own one count)
+    std::uint32_t hash = 0;
+    bool realized = false;
+    game::Entity* e = nullptr;
+    std::uintptr_t vt = 0;
+    game::Guid guid;
+};
+// Starts loading `item_ptr`'s DisplayEntityResource at `at` (item read this frame).
+bool SpawnBegin(std::uintptr_t item_ptr, std::uint32_t hash, const game::WorldTransform& at, Spawn* s, char* why,
+                std::size_t cap);
+enum class SpawnState : std::uint8_t {
+    loading,    // still streaming
+    realized,   // loaded and realized this call: s.e is the entity (may be null: nothing realized)
+    cancelled,  // the game cancelled the load (tear down)
+    failed,     // spawner unreadable or a call faulted: s.sp was dropped (leaked), nothing to tear down
+};
+SpawnState SpawnPoll(Spawn& s, char* why, std::size_t cap);
+// The realized entity is still the same object (vtable + GUID).
+bool SpawnAlive(const Spawn& s);
+// The partner body's welcome-hologram checks (reads only): nullptr when `e` is a
+// safe welcome hologram (*comp = its DSWelcomeHoloComponent), else the reason.
+const char* ValidateWelcomeHolo(game::Entity* e, std::uintptr_t* comp);
+// StartVisibleWelcomeHolo after the same pre-call checks the partner body uses.
+bool SpawnStartVisible(game::Entity* e, char* why, std::size_t cap);
+// Welcome-hologram component state + resource flags to the log.
+void LogWelcomeHolo(game::Entity* e, const char* what);
+// Removes the entity (or cancels the load) and releases the spawner, exactly
+// once. `step` receives what was done. Returns false when something had to be
+// leaked (world unavailable, spawner no longer ours); the log says which.
+bool SpawnTeardown(Spawn& s, const char* why, char* step, std::size_t cap);
 
 }  // namespace st::holo

@@ -59,6 +59,15 @@ bool SetDayNightCycle(bool enabled, char* msg, std::size_t cap) noexcept;
 // from the partner's position. `partner_entity` is the live partner (0 = none);
 // `index` < 0 picks the next line in turn.
 bool PartnerVoicePing(std::uintptr_t partner_entity, int index, char* msg, std::size_t cap) noexcept;
+// Hologram catalog (docs/character-catalog.md): spawns collectors items [start,
+// start + count) of the sorted Type 4 / Type 20 list one at a time `distance_m`
+// in front of Sam (0 = default), logs each one, screenshots it (automation) and
+// removes it. Runs over many ticks; the log says "[catalog] batch done".
+bool StartHoloCatalog(int start, int count, double distance_m, char* msg, std::size_t cap) noexcept;
+// Animation clip survey (docs/character-catalog.md): every loaded SkeletonAnimationResource
+// with root motion or a walk/run-like path, and which share Sam's skeleton layout. Reads only;
+// the memory scan runs on its own thread and ends with "[survey] done".
+bool StartClipSurvey(char* msg, std::size_t cap) noexcept;
 
 // Once per game tick (st::debug::OnTick): resolves on first use and runs the
 // post-teleport verification.

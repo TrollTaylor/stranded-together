@@ -36,6 +36,8 @@ enum class Action : std::uint8_t {
     set_day_night_cycle,  // flag = cycle enabled (false = time frozen)
     voice_ping,           // partner echo voice line; i = line number from 1 (0 = next in turn)
     copy_diagnostics,     // status + game diagnostics to the clipboard and the log
+    holo_catalog,         // v[0] = first index, v[1] = count, v[2] = distance in front of Sam (m, 0 = default)
+    clip_survey,          // loaded animation clips with root motion / on Sam's skeleton, to the log
     count
 };
 

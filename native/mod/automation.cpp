@@ -1497,6 +1497,7 @@ bool WaitForGameD3D12(unsigned timeout_ms) noexcept {
 }
 
 bool Enabled() noexcept { return g_enabled.load(); }
+std::wstring OutDir() noexcept { return g_enabled.load() ? g_out : std::wstring(); }
 bool SavesRedirected() noexcept { return g_rd_active.load(); }
 bool ForeignSavesBypassed() noexcept { return g_foreign_bypassed.load(); }
 bool MuteRequested() noexcept { return g_mute.load(); }

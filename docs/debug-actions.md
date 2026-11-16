@@ -188,6 +188,13 @@ marker body and `partner_voice=1`, the echo that talks is player_sync's separate
 entity, which this accessor does not expose, so the ping reports "no DSEchoComponent" there
 too (needs a player_sync accessor for the voice entity).
 
+### Hologram catalog and clip survey (`holo_catalog`, `clip_survey`; no buttons, scenarios only)
+
+* `action holo_catalog <start> <count> [distance_m]`: spawns the collectors DB's Type 4 and Type 20 items one at a time in front of Sam. Each item is logged, screenshotted (`holo-<HashId>.png`) and removed (`native/mod/holo_catalog.cpp`).
+* `action clip_survey`: logs every loaded animation clip that has root motion or a walk-like name, and marks the clips that fit Sam's skeleton.
+
+Both use only the partner hologram's byte-checked spawner calls and ReadProcessMemory reads. What they found is in [character-catalog.md](character-catalog.md).
+
 ## Byte-check table
 
 | Check | RVA | Gates |

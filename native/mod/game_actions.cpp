@@ -11,6 +11,7 @@
 #include <cstring>
 
 #include "game_api.hpp"
+#include "holo_catalog.hpp"
 #include "log.hpp"
 
 namespace st::game {
@@ -866,7 +867,14 @@ void ActionsTick(double now_ms) noexcept {
     g_now_ms = now_ms;
     EnsureResolved();
     RunVerify();
+    catalog::Tick(now_ms);
 }
+
+bool StartHoloCatalog(int start, int count, double distance_m, char* msg, std::size_t cap) noexcept {
+    return catalog::Start(start, count, distance_m, msg, cap);
+}
+
+bool StartClipSurvey(char* msg, std::size_t cap) noexcept { return catalog::StartClipSurvey(msg, cap); }
 
 void ReadDiagnostics(Diagnostics* d) noexcept {
     *d = Diagnostics{};

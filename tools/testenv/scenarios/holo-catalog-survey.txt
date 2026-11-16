@@ -1,0 +1,27 @@
+# Animation clip survey + catalog re-takes (docs/character-catalog.md):
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario holo-catalog-survey -SeedSaves complete-100
+# Logs Sam's photo-mode pose clips, the DSExternalAnimationResource clips, then every loaded
+# SkeletonAnimationResource with root motion or a walk/run-like path (memory scan on a worker
+# thread, ReadProcessMemory only), marking the ones on Sam's skeleton layout. Then re-takes the
+# screenshot of catalog item 79 (its PNG was not written in run 20261116-170308) and shows the
+# three Higgs items once more.
+role solo
+timeout 360
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+?screenshot 01-title
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+pad none 1500 ly=32767
+wait 1500
+action clip_survey
+waitlog 200 \[survey\] done
+action holo_catalog 79 1
+waitlog 60 \[catalog\] batch 79\.\.79 done
+action holo_catalog 62 3
+waitlog 60 \[catalog\] batch 62\.\.64 done
+quit

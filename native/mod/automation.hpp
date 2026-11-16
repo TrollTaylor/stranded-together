@@ -47,6 +47,8 @@ namespace st::automation {
 // Reads automation=1 / automation_mute from <mod_dir>\session.ini.
 bool Init(const std::wstring& mod_dir) noexcept;
 bool Enabled() noexcept;
+// <mod>utomation\out (screenshots, results), or empty when automation is off.
+std::wstring OutDir() noexcept;
 bool MuteRequested() noexcept;
 // automation_isolate (default 1): the overlay's automation hooks (virtual pad only,
 // GetForegroundWindow, cursor isolation, no exclusive fullscreen, no occlusion).

@@ -1,0 +1,35 @@
+# Hologram catalog, every Type 4 / Type 20 collectors item (docs/character-catalog.md):
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario holo-catalog-all -SeedSaves complete-100
+# The 100% save has 90 such items (48 Type 4 at catalog index 0..47, 42 Type 20 at 48..89).
+# Each item takes ~2 s (spawn, 1.5 s settle, screenshot automation\out\holo-<HashId>.png at
+# half size, remove), so the three batches take ~3 min after the ~40 s start. Between
+# batches Sam takes a short step: left idle for ~1.5 min he sits down to rest and blocks the
+# view. Role solo: no partner body in the shots.
+role solo
+timeout 360
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+?screenshot 01-title
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+# a short walk forward so the camera sits behind Sam, then stand still
+pad none 1500 ly=32767
+wait 1500
+screenshot 02-before
+action holo_catalog 0 30
+waitlog 120 \[catalog\] batch 0\.\.29 done
+pad none 400 ly=32767
+wait 1200
+action holo_catalog 30 30
+waitlog 120 \[catalog\] batch 30\.\.59 done
+pad none 400 ly=32767
+wait 1200
+action holo_catalog 60 30
+waitlog 120 \[catalog\] batch 60\.\.89 done
+screenshot 03-after
+action log_status
+quit
