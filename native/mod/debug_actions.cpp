@@ -1,0 +1,476 @@
+// Debug-menu action queue, action registry/handlers and the status snapshot.
+// See debug_actions.hpp for the threading contract.
+#include "debug_actions.hpp"
+
+#include <windows.h>
+
+#include <array>
+#include <cstdio>
+#include <utility>
+#include <cstring>
+
+#include "log.hpp"
+#include "player_sync.hpp"
+
+namespace st::debug {
+namespace {
+
+// ------------------------------------------------------------------ locks
+struct SrwGuard {
+    explicit SrwGuard(SRWLOCK& l) : lock(l) { AcquireSRWLockExclusive(&lock); }
+    ~SrwGuard() { ReleaseSRWLockExclusive(&lock); }
+    SrwGuard(const SrwGuard&) = delete;
+    SrwGuard& operator=(const SrwGuard&) = delete;
+    SRWLOCK& lock;
+};
+
+template <std::size_t N>
+void Copy(char (&dst)[N], const char* src) noexcept {
+    if (!src) src = "";
+    std::strncpy(dst, src, N - 1);
+    dst[N - 1] = 0;
+}
+
+// ------------------------------------------------------------------ handlers
+// Game thread only. Each writes a short human message; false = failed/refused.
+bool DoRespawn(const Request&, char* msg, std::size_t cap) {
+    sync::DebugRespawnPartner();
+    std::snprintf(msg, cap, "partner respawn requested");
+    return true;
+}
+bool DoRemove(const Request&, char* msg, std::size_t cap) {
+    const bool had = sync::DebugRemovePartner();
+    std::snprintf(msg, cap, had ? "partner removed; spawning held until Respawn" : "no partner; spawning held until Respawn");
+    return true;
+}
+bool DoShow(const Request&, char* msg, std::size_t cap) {
+    const bool ok = sync::DebugSetPartnerVisible(true);
+    std::snprintf(msg, cap, ok ? "partner shown" : "no live partner (or SetVisible unavailable)");
+    return ok;
+}
+bool DoHide(const Request&, char* msg, std::size_t cap) {
+    const bool ok = sync::DebugSetPartnerVisible(false);
+    std::snprintf(msg, cap, ok ? "partner hidden" : "no live partner (or SetVisible unavailable)");
+    return ok;
+}
+bool DoEchoTuning(const Request& r, char* msg, std::size_t cap) {
+    sync::DebugSetEchoTuning(r.f[0], r.f[1]);
+    std::snprintf(msg, cap, "echo delay %.2f s, offset %.2f m", r.f[0], r.f[1]);
+    return true;
+}
+bool DoVerbose(const Request& r, char* msg, std::size_t cap) {
+    sync::DebugSetVerbose(r.flag);
+    std::snprintf(msg, cap, "verbose logging %s", r.flag ? "on" : "off");
+    return true;
+}
+bool DoLogPositions(const Request&, char* msg, std::size_t cap) {
+    sync::DebugLogPositions();
+    std::snprintf(msg, cap, "positions written to the log");
+    return true;
+}
+bool DoLogPartner(const Request&, char* msg, std::size_t cap) {
+    const bool ok = sync::DebugLogPartner();
+    std::snprintf(msg, cap, ok ? "partner details written to the log" : "no live partner");
+    return ok;
+}
+bool DoLogStatus(const Request&, char* msg, std::size_t cap) {
+    const Snapshot s = GetSnapshot();
+    Log("[debug] status: role=%s state=%s link=%s/%s/%s peer=%s rtt=%u rx=%llu tx=%llu", s.role, s.mod_state, s.link_state,
+        s.transport, s.route, s.peer, s.rtt_ms, static_cast<unsigned long long>(s.rx), static_cast<unsigned long long>(s.tx));
+    Log("[debug] status: local=%p valid=%d awake=%d flags=0x%llX pos=(%.2f, %.2f, %.2f) speed=%.2f tick=%.1f Hz",
+        reinterpret_cast<void*>(s.local_entity), s.local_valid ? 1 : 0, s.local_awake ? 1 : 0,
+        static_cast<unsigned long long>(s.local_flags), s.local_pos[0], s.local_pos[1], s.local_pos[2], s.speed, s.tick_hz);
+    Log("[debug] status: partner=%p state=%s source=%s flags=0x%llX pos=(%.2f, %.2f, %.2f) remote_fresh=%d age=%.0f ms",
+        reinterpret_cast<void*>(s.partner_entity), s.partner_state, s.partner_source,
+        static_cast<unsigned long long>(s.partner_flags), s.partner_pos[0], s.partner_pos[1], s.partner_pos[2],
+        s.remote_fresh ? 1 : 0, s.remote_age_ms);
+    char d[4096];
+    FormatDiagnostics(s, d, sizeof(d));
+    for (char* line = d; *line;) {
+        char* end = std::strchr(line, '\n');
+        if (end) *end = 0;
+        if (std::strncmp(line, "game", 4) == 0 || std::strncmp(line, "load", 4) == 0 || std::strncmp(line, "area", 4) == 0 ||
+            std::strncmp(line, "time", 4) == 0 || std::strncmp(line, "health", 6) == 0 || std::strncmp(line, "teleport", 8) == 0 ||
+            std::strncmp(line, "last", 4) == 0 || std::strncmp(line, "pushed", 6) == 0)
+            Log("[debug] status: %s", line);
+        if (!end) break;
+        line = end + 1;
+    }
+    std::snprintf(msg, cap, "status written to the log");
+    return true;
+}
+bool DoTeleport(const Request& r, char* msg, std::size_t cap) {
+    const game::TeleportMode mode = r.i == 2 ? game::TeleportMode::snap_to_ground : game::TeleportMode::place;
+    char why[160] = {};
+    const bool ok = game::TeleportLocalPlayer(r.v[0], r.v[1], r.v[2], mode, why, sizeof(why));
+    if (ok) std::snprintf(msg, cap, "%s", why);
+    else std::snprintf(msg, cap, "teleport to (%.2f, %.2f, %.2f) failed: %s", r.v[0], r.v[1], r.v[2], why);
+    return ok;
+}
+bool DoTeleportToPartner(const Request&, char* msg, std::size_t cap) {
+    double p[3] = {};
+    if (!sync::DebugPartnerPosition(p)) {
+        std::snprintf(msg, cap, "no partner position yet");
+        return false;
+    }
+    char why[160] = {};
+    const bool ok = game::TeleportLocalPlayer(p[0], p[1], p[2], game::TeleportMode::place, why, sizeof(why));
+    std::snprintf(msg, cap, ok ? "to the partner (%.2f, %.2f, %.2f): %s" : "teleport to the partner (%.2f, %.2f, %.2f) failed: %s",
+                  p[0], p[1], p[2], why);
+    return ok;
+}
+bool DoUnstuck(const Request&, char* msg, std::size_t cap) { return game::Unstuck(msg, cap); }
+bool DoHeal(const Request& r, char* msg, std::size_t cap) { return game::HealLocalPlayer(r.f[0], msg, cap); }
+bool DoSetTimeOfDay(const Request& r, char* msg, std::size_t cap) { return game::SetTimeOfDay(r.f[0], msg, cap); }
+bool DoDayNightCycle(const Request& r, char* msg, std::size_t cap) { return game::SetDayNightCycle(r.flag, msg, cap); }
+bool DoVoicePing(const Request& r, char* msg, std::size_t cap) {
+    // The live partner entity, exactly as the Partner tab sees it (0 when there is none).
+    Snapshot s;
+    sync::FillDebugSnapshot(s);
+    return game::PartnerVoicePing(s.partner_voice_entity ? s.partner_voice_entity : s.partner_entity, r.i - 1, msg, cap);
+}
+
+void FillSnapshot(Snapshot& s, double now_ms);
+
+bool SetClipboardUtf8(const char* text) {
+    const int wn = MultiByteToWideChar(CP_UTF8, 0, text, -1, nullptr, 0);
+    if (wn <= 0) return false;
+    HGLOBAL mem = GlobalAlloc(GMEM_MOVEABLE, static_cast<SIZE_T>(wn) * sizeof(wchar_t));
+    if (!mem) return false;
+    if (auto* w = static_cast<wchar_t*>(GlobalLock(mem))) {
+        MultiByteToWideChar(CP_UTF8, 0, text, -1, w, wn);
+        GlobalUnlock(mem);
+    }
+    if (!OpenClipboard(nullptr)) {
+        GlobalFree(mem);
+        return false;
+    }
+    EmptyClipboard();
+    const bool ok = SetClipboardData(CF_UNICODETEXT, mem) != nullptr;
+    CloseClipboard();
+    if (!ok) GlobalFree(mem);
+    return ok;
+}
+
+bool DoCopyDiagnostics(const Request&, char* msg, std::size_t cap);
+
+struct Row {
+    ActionInfo info;
+    Handler handler;
+};
+
+// THE registry: display order inside each tab, and the handler that runs on
+// the game thread.
+constexpr Row kRows[] = {
+    {{Action::respawn_partner, Tab::partner, "Respawn partner", "Remove the partner and spawn it again (same as F7).", true}, &DoRespawn},
+    {{Action::remove_partner, Tab::partner, "Remove partner", "Remove the partner and keep it away until Respawn.", true}, &DoRemove},
+    {{Action::show_partner, Tab::partner, "Show", "Entity SetVisible(true) on the partner.", true}, &DoShow},
+    {{Action::hide_partner, Tab::partner, "Hide", "Entity SetVisible(false) on the partner.", true}, &DoHide},
+    {{Action::log_partner, Tab::partner, "Log partner details", "Type, flags, model and components of the partner entity.", true}, &DoLogPartner},
+    {{Action::set_echo_tuning, Tab::partner, "Echo tuning", "Echo role: replay delay and sideways offset.", false}, &DoEchoTuning},
+    {{Action::voice_ping, Tab::partner, "Voice ping", "Play one echo voice line from the partner (DSEchoComponent::Play).", true}, &DoVoicePing},
+    {{Action::teleport, Tab::player, "Teleport", "Teleport Sam to coordinates (PlayerGame::PlaceOn).", false}, &DoTeleport},
+    {{Action::teleport_to_partner, Tab::player, "Teleport to partner", "Teleport Sam to the partner's position.", false}, &DoTeleportToPartner},
+    {{Action::unstuck, Tab::player, "Unstuck", "Teleport Sam to the last safe ground position the game recorded.", true}, &DoUnstuck},
+    {{Action::heal, Tab::player, "Heal", "Heal Sam to max health (Entity_ExportedHeal).", true}, &DoHeal},
+    {{Action::log_positions, Tab::player, "Log positions", "Sam and partner positions and rotation to the log (same as F6).", true}, &DoLogPositions},
+    {{Action::set_time_of_day, Tab::player, "Set time of day", "GameWorldTimeState::SetTimeOfDay (instant).", false}, &DoSetTimeOfDay},
+    {{Action::set_day_night_cycle, Tab::player, "Freeze time", "Turn the day/night cycle off or on (EnableDayNightCycle).", false}, &DoDayNightCycle},
+    {{Action::copy_diagnostics, Tab::status, "Copy diagnostics", "Status and game diagnostics to the clipboard and the log.", true}, &DoCopyDiagnostics},
+    {{Action::log_status, Tab::tools, "Log status", "Everything on the Status tab to the log.", true}, &DoLogStatus},
+    {{Action::set_verbose, Tab::tools, "Verbose logging", "Per-2s trace lines from the sync.", false}, &DoVerbose},
+};
+constexpr std::size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);
+static_assert(kRowCount == static_cast<std::size_t>(Action::count), "every Action needs exactly one registry row");
+
+template <std::size_t... I>
+constexpr std::array<ActionInfo, kRowCount> MakeInfos(std::index_sequence<I...>) {
+    return {{kRows[I].info...}};
+}
+constexpr std::array<ActionInfo, kRowCount> kInfos = MakeInfos(std::make_index_sequence<kRowCount>{});
+
+Handler g_test_handlers[static_cast<std::size_t>(Action::count)] = {};
+
+const Row* RowFor(Action a) noexcept {
+    for (const Row& r : kRows)
+        if (r.info.id == a) return &r;
+    return nullptr;
+}
+
+// ------------------------------------------------------------------ queue
+constexpr std::size_t kQueueCap = 64;
+SRWLOCK g_queue_lock = SRWLOCK_INIT;
+Request g_queue[kQueueCap];
+std::size_t g_queue_count = 0;
+std::uint32_t g_next_serial = 1;
+
+constexpr std::size_t kResultCap = 32;
+SRWLOCK g_result_lock = SRWLOCK_INIT;
+Result g_results[kResultCap];
+std::size_t g_result_head = 0, g_result_count = 0;
+double g_last_tick_ms = 0;
+
+void AddResult(const Result& r) noexcept {
+    SrwGuard g(g_result_lock);
+    g_results[(g_result_head + g_result_count) % kResultCap] = r;
+    if (g_result_count < kResultCap) ++g_result_count;
+    else g_result_head = (g_result_head + 1) % kResultCap;
+}
+
+// ------------------------------------------------------------------ snapshot
+SRWLOCK g_snap_lock = SRWLOCK_INIT;
+Snapshot g_snap;
+std::uint64_t g_snap_serial = 0;
+double g_next_publish_ms = 0;
+char g_mod_state[96] = "starting";
+char g_role[16] = "none";
+volatile LONG g_menu_open = 0;
+
+}  // namespace
+
+const ActionInfo* Actions(std::size_t* count) noexcept {
+    if (count) *count = kRowCount;
+    return kInfos.data();
+}
+
+const ActionInfo* Find(Action a) noexcept {
+    const Row* r = RowFor(a);
+    return r ? &r->info : nullptr;
+}
+
+const char* ActionName(Action a) noexcept {
+    const Row* r = RowFor(a);
+    return r ? r->info.label : "?";
+}
+
+std::uint32_t Queue(const Request& in) noexcept {
+    if (in.action >= Action::count) return 0;
+    SrwGuard g(g_queue_lock);
+    if (g_queue_count >= kQueueCap) return 0;
+    Request r = in;
+    r.serial = g_next_serial++;
+    if (g_next_serial == 0) g_next_serial = 1;
+    g_queue[g_queue_count++] = r;
+    return r.serial;
+}
+
+std::uint32_t Queue(Action a) noexcept {
+    Request r;
+    r.action = a;
+    return Queue(r);
+}
+
+std::size_t Pending() noexcept {
+    SrwGuard g(g_queue_lock);
+    return g_queue_count;
+}
+
+std::size_t Drain() noexcept {
+    Request batch[kQueueCap];
+    std::size_t n = 0;
+    {
+        SrwGuard g(g_queue_lock);
+        n = g_queue_count;
+        for (std::size_t i = 0; i < n; ++i) batch[i] = g_queue[i];
+        g_queue_count = 0;
+    }
+    for (std::size_t i = 0; i < n; ++i) {
+        const Request& r = batch[i];
+        const Row* row = RowFor(r.action);
+        if (!row) continue;
+        Handler h = g_test_handlers[static_cast<std::size_t>(r.action)];
+        if (!h) h = row->handler;
+        Result res;
+        res.serial = r.serial;
+        res.action = r.action;
+        res.time_ms = g_last_tick_ms;
+        res.ok = h(r, res.text, sizeof(res.text));
+        Log("[debug] action #%u %s: %s%s", r.serial, row->info.label, res.ok ? "" : "FAILED: ", res.text);
+        AddResult(res);
+    }
+    return n;
+}
+
+void OnTick(double now_ms) noexcept {
+    g_last_tick_ms = now_ms;
+    game::ActionsTick(now_ms);  // resolves game_actions once, post-teleport checks
+    Drain();
+    const bool open = MenuOpen();
+    if (open || now_ms >= g_next_publish_ms) {
+        g_next_publish_ms = now_ms + 500;
+        Snapshot s;
+        FillSnapshot(s, now_ms);
+        Publish(s);
+    }
+}
+
+namespace {
+void FillSnapshot(Snapshot& s, double now_ms) {
+    s.time_ms = now_ms;
+    {
+        SrwGuard g(g_snap_lock);  // SetRoleLabel writes g_role from another thread
+        Copy(s.role, g_role);
+    }
+    sync::FillDebugSnapshot(s);
+    game::ReadDiagnostics(&s.diag);
+}
+
+bool DoCopyDiagnostics(const Request&, char* msg, std::size_t cap) {
+    Snapshot s;
+    FillSnapshot(s, g_last_tick_ms);
+    {
+        SrwGuard g(g_snap_lock);
+        Copy(s.mod_state, g_mod_state);
+    }
+    static char text[4096];
+    const std::size_t n = FormatDiagnostics(s, text, sizeof(text));
+    // One log line per report line.
+    for (char* line = text; *line;) {
+        char* end = std::strchr(line, '\n');
+        if (end) *end = 0;
+        Log("[debug] diag: %s", line);
+        if (!end) break;
+        *end = '\n';
+        line = end + 1;
+    }
+    const bool ok = SetClipboardUtf8(text);
+    std::snprintf(msg, cap, ok ? "%zu bytes copied to the clipboard (and the log)" : "clipboard busy; report written to the log", n);
+    return ok;
+}
+}  // namespace
+
+std::size_t FormatDiagnostics(const Snapshot& s, char* out, std::size_t cap) noexcept {
+    if (!out || !cap) return 0;
+    out[0] = 0;
+    std::size_t n = 0;
+    auto add = [&](const char* fmt, auto... args) {
+        if (n + 1 >= cap) return;
+        const int w = std::snprintf(out + n, cap - n, fmt, args...);
+        if (w < 0) return;
+        n += static_cast<std::size_t>(w);
+        if (n >= cap) n = cap - 1;
+    };
+    const game::Diagnostics& d = s.diag;
+    char a[192], b[192];
+    add("Stranded Together diagnostics (tick %.0f ms)\n", s.time_ms);
+    add("role=%s mod=%s link=%s %s %s peer=%s rtt=%u ms rx=%llu tx=%llu\n", s.role, s.mod_state, s.link_state, s.transport,
+        s.route, s.peer[0] ? s.peer : "-", s.rtt_ms, static_cast<unsigned long long>(s.rx), static_cast<unsigned long long>(s.tx));
+    add("sam=%p present=%d valid=%d awake=%d flags=0x%llX pos=(%.2f, %.2f, %.2f) speed=%.2f\n",
+        reinterpret_cast<void*>(s.local_entity), s.local_present ? 1 : 0, s.local_valid ? 1 : 0, s.local_awake ? 1 : 0,
+        static_cast<unsigned long long>(s.local_flags), s.local_pos[0], s.local_pos[1], s.local_pos[2], static_cast<double>(s.speed));
+    add("partner=%p state=%s source=%s flags=0x%llX pos=(%.2f, %.2f, %.2f)%s remote=%s age=%.0f ms\n",
+        reinterpret_cast<void*>(s.partner_entity), s.partner_state, s.partner_source[0] ? s.partner_source : "-",
+        static_cast<unsigned long long>(s.partner_flags), s.partner_pos[0], s.partner_pos[1], s.partner_pos[2],
+        s.partner_pos_valid ? "" : " (invalid)", s.remote_fresh ? "fresh" : "stale", s.remote_age_ms);
+    if (!d.resolved) {
+        add("game: not read (no game)\n");
+        return n;
+    }
+    add("game checks: features=0x%X%s%s\n", d.features, d.disabled[0] ? " disabled: " : " (all ok)", d.disabled);
+    if (d.state_valid) {
+        game::DescribeGameStateFlags(d.state_flags, a, sizeof(a));
+        game::DescribeGameStateFlags(d.state_requested, b, sizeof(b));
+        add("game state: 0x%llX [%s] requested 0x%llX [%s] phase %d%s\n", static_cast<unsigned long long>(d.state_flags), a,
+            static_cast<unsigned long long>(d.state_requested), b, d.state_phase, d.state_phase == 2 ? " (setup)" : "");
+    } else {
+        add("game state: n/a\n");
+    }
+    if (d.module_valid) {
+        game::DescribeLoadMask(d.load_mask, a, sizeof(a));
+        add("load mask: 0x%X [%s] reason %u\n", d.load_mask, a, d.load_reason);
+    } else {
+        add("load mask: n/a\n");
+    }
+    if (d.player_system_valid) add("pushed player transform: %s\n", d.pushed_transform ? "PENDING" : "no");
+    if (d.area_valid) {
+        const char* an = game::AreaName(d.area);
+        add("area: %u %s\n", d.area, an ? an : "?");
+    } else {
+        add("area: n/a (only read while an area change is active)\n");
+    }
+    if (d.tod_valid) {
+        game::FormatClock(d.time_of_day, a, sizeof(a));
+        add("time of day: %s (%.3f h) day %d, cycle %s\n", a, static_cast<double>(d.time_of_day), d.day,
+            d.day_night_cycle ? "on" : "FROZEN");
+    } else {
+        add("time of day: n/a\n");
+    }
+    if (d.health_valid) add("health: %.1f / %.1f\n", static_cast<double>(d.health), static_cast<double>(d.health_max));
+    else add("health: n/a\n");
+    add("teleport: %s%s\n", d.teleport_ready ? "ready" : "blocked: ", d.teleport_ready ? "" : d.teleport_block);
+    if (d.last_teleport[0]) add("last teleport: %s\n", d.last_teleport);
+    return n;
+}
+
+std::size_t RecentResults(Result* out, std::size_t max) noexcept {
+    SrwGuard g(g_result_lock);
+    const std::size_t n = g_result_count < max ? g_result_count : max;
+    const std::size_t skip = g_result_count - n;
+    for (std::size_t i = 0; i < n; ++i) out[i] = g_results[(g_result_head + skip + i) % kResultCap];
+    return n;
+}
+
+bool ResultFor(std::uint32_t serial, Result* out) noexcept {
+    SrwGuard g(g_result_lock);
+    for (std::size_t i = g_result_count; i-- > 0;) {
+        const Result& r = g_results[(g_result_head + i) % kResultCap];
+        if (r.serial == serial) {
+            if (out) *out = r;
+            return true;
+        }
+    }
+    return false;
+}
+
+void Publish(const Snapshot& s) noexcept {
+    SrwGuard g(g_snap_lock);
+    g_snap = s;
+    g_snap.serial = ++g_snap_serial;
+    Copy(g_snap.mod_state, g_mod_state);
+}
+
+Snapshot GetSnapshot() noexcept {
+    AcquireSRWLockShared(&g_snap_lock);
+    Snapshot s = g_snap;
+    ReleaseSRWLockShared(&g_snap_lock);
+    if (s.serial == 0) {
+        SrwGuard g(g_snap_lock);
+        Copy(s.mod_state, g_mod_state);
+        Copy(s.role, g_role);
+    }
+    return s;
+}
+
+void SetModState(const char* text) noexcept {
+    SrwGuard g(g_snap_lock);
+    Copy(g_mod_state, text);
+    Copy(g_snap.mod_state, text);
+}
+
+const char* RoleLabel() noexcept { return g_role; }
+void SetRoleLabel(const char* role) noexcept {
+    SrwGuard g(g_snap_lock);
+    Copy(g_role, role);
+}
+
+void SetMenuOpen(bool open) noexcept { InterlockedExchange(&g_menu_open, open ? 1 : 0); }
+bool MenuOpen() noexcept { return InterlockedCompareExchange(&g_menu_open, 0, 0) != 0; }
+
+void SetHandlerForTest(Action a, Handler fn) noexcept {
+    if (a < Action::count) g_test_handlers[static_cast<std::size_t>(a)] = fn;
+}
+
+void ResetForTest() noexcept {
+    {
+        SrwGuard g(g_queue_lock);
+        g_queue_count = 0;
+    }
+    {
+        SrwGuard g(g_result_lock);
+        g_result_count = g_result_head = 0;
+    }
+    for (Handler& h : g_test_handlers) h = nullptr;
+}
+
+}  // namespace st::debug
+

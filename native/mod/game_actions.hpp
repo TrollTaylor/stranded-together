@@ -1,0 +1,236 @@
+// Game-side debug actions and read-only diagnostics for the in-game menu
+// (docs/debug-actions.md): teleport (PlayerGame::PlaceOn), unstuck, heal,
+// time of day, partner voice ping, and the game-state / load / area / time /
+// health readout shown on the Status tab.
+//
+// Rules (DS's crash reporter fires on ANY access violation, even a handled one):
+//   * Every action runs on the game's main thread (st::debug::OnTick, called
+//     from st::sync::Tick). Never call these from the render thread.
+//   * Game memory is only read with ReadProcessMemory (fails instead of
+//     faulting); pointers are validated (vtable in ds.exe, RTTI type) before use.
+//   * Every game function and every global/offset is checked against the exact
+//     ds.exe bytes at its known RVA once (Resolve). A mismatch disables the
+//     features that depend on it and logs why; nothing is ever called blind.
+//
+// The pure decoders below (flag names, area names) are inline so the overlay
+// tests can check them without the game.
+#pragma once
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+
+namespace st::game {
+
+// ------------------------------------------------------------------ actions
+enum class TeleportMode : int {
+    // PlaceOn mode 1: place at (x, y, z) with a short ground probe (ray z+2 m
+    // .. z-2 m, nearest hit; keeps z when nothing is hit). Use when z is known
+    // (partner position, saved position, typed coordinates).
+    place = 1,
+    // PlaceOn mode 2: place at (x, y, z), then on the next GameModule update
+    // the game casts one ray z+2000 m .. z-2000 m and puts Sam on the topmost
+    // surface. Use for "x, y only" (z = ray centre; kSnapRayCentreZ covers the map).
+    snap_to_ground = 2,
+};
+constexpr double kSnapRayCentreZ = 500.0;
+constexpr double kTeleportMinIntervalMs = 500.0;
+
+// All functions below: game thread only. `msg` (may be null) receives one
+// human-readable result line; the return value is success.
+//
+// THE local-player teleport. Every teleport in the menu (coordinates, saved
+// position, partner, snap) ends here. Checks all preconditions first (see
+// docs/debug-actions.md) and verifies the result on later frames (log).
+bool TeleportLocalPlayer(double x, double y, double z, TeleportMode mode, char* msg, std::size_t cap) noexcept;
+inline bool TeleportLocalPlayer(double x, double y, double z) noexcept {
+    return TeleportLocalPlayer(x, y, z, TeleportMode::place, nullptr, 0);
+}
+// Teleport (mode 1) to the safe ground transform the game itself records in
+// DSPlayerParamComponent (the one its "return to safe position" warp uses).
+bool Unstuck(char* msg, std::size_t cap) noexcept;
+// amount <= 0: heal to max health.
+bool HealLocalPlayer(float amount, char* msg, std::size_t cap) noexcept;
+// GameWorldTimeState::SetTimeOfDay(hours, transition 0 = instant). hours in [0, 24).
+bool SetTimeOfDay(float hours, char* msg, std::size_t cap) noexcept;
+// GameWorldTimeState.EnableDayNightCycle (false = time frozen).
+bool SetDayNightCycle(bool enabled, char* msg, std::size_t cap) noexcept;
+// DSEchoComponent::Play on the partner entity's echo component: one voice line
+// from the partner's position. `partner_entity` is the live partner (0 = none);
+// `index` < 0 picks the next line in turn.
+bool PartnerVoicePing(std::uintptr_t partner_entity, int index, char* msg, std::size_t cap) noexcept;
+
+// Once per game tick (st::debug::OnTick): resolves on first use and runs the
+// post-teleport verification.
+void ActionsTick(double now_ms) noexcept;
+
+// ------------------------------------------------------------------ diagnostics
+enum Feature : std::uint32_t {
+    kFeatTeleport = 1u << 0,
+    kFeatUnstuck = 1u << 1,
+    kFeatHealth = 1u << 2,
+    kFeatHeal = 1u << 3,
+    kFeatTime = 1u << 4,
+    kFeatArea = 1u << 5,
+    kFeatState = 1u << 6,
+    kFeatModule = 1u << 7,
+    kFeatEcho = 1u << 8,
+    kFeatAll = (1u << 9) - 1,
+};
+
+struct Diagnostics {
+    bool resolved = false;        // the byte checks ran (false: no game / not yet)
+    std::uint32_t features = 0;   // Feature bits that passed the byte checks
+    char disabled[160] = {};      // "teleport: <check> differs; ..." (empty = all ok)
+
+    // DSGameState: +8 current flags, +0x10 flags requested by script, +0x5E0 post-load phase
+    bool state_valid = false;
+    std::uint64_t state_flags = 0;
+    std::uint64_t state_requested = 0;
+    std::int32_t state_phase = 0;  // 2 = "Setup" settle phase after a load
+
+    // GameModule: +0x44C suspend/loading reason mask, +0x450 load-reason byte
+    bool module_valid = false;
+    std::uint32_t load_mask = 0;
+    std::uint8_t load_reason = 0;
+
+    // DSPlayerSystem +0x206D0 bit 0: a pushed transform is pending (a later Pop warps Sam back)
+    bool player_system_valid = false;
+    bool pushed_transform = false;
+
+    // Area (read-only path: area-change state, only while it is active)
+    bool area_valid = false;
+    std::uint16_t area = 0xFFFF;
+
+    // GameWorldTimeState (GameModule+0x58)
+    bool tod_valid = false;
+    float time_of_day = 0;        // hours [0, 24)
+    std::int32_t day = 0;         // +0x28 day counter (inferred)
+    bool day_night_cycle = false; // +0x2C EnableDayNightCycle
+
+    // Sam
+    bool health_valid = false;
+    float health = 0, health_max = 0;
+
+    // Teleport readiness right now (cheap reads only; the sequence check runs at call time)
+    bool teleport_ready = false;
+    char teleport_block[96] = {};
+    char last_teleport[160] = {};  // newest teleport and its verification
+};
+// Game thread. Reads only.
+void ReadDiagnostics(Diagnostics* out) noexcept;
+
+// ------------------------------------------------------------------ decoders (pure)
+// DSGameState flags use EDSGameStateForScript bit values (RTTI enum 0x144C66648).
+constexpr std::uint64_t kStoppingGameEventMask = 0x184F407FEC7F7Full;  // IsStoppingGameEvent 0x142DD3760
+constexpr std::uint64_t kGameStateSetup = 0x4000000ull;
+
+inline const char* GameStateFlagName(int bit) noexcept {
+    static const char* const kNames[] = {
+        "TerminalOperation", "TerminalOperationSimple", "PauseMenu", "PrivateRoom", "BaggageSelect", "HandcuffDevice",
+        "Cutscene", "WeaponSelector", "Subspace", "KnotSpace", "StrideAreaEvent", "Result", "FastTravel", "GameOver",
+        "Faint", "BossBattle", "AfterBeatBoss", "Annihilation", "Movie", "InGameCutscene", "InGameActing",
+        "RelocateBaggage", "Loading", "HeartmanRoom", "Renovation", "Onsen", "Setup", "CallingRadio", "SystemPause",
+        "AreaChanging", "DirectIntoPrivateRoom"};
+    if (bit < 0 || bit >= static_cast<int>(sizeof(kNames) / sizeof(kNames[0]))) return nullptr;
+    return kNames[bit];
+}
+
+// "Cutscene|Loading|bit40" (or "none"). Returns the length written.
+inline std::size_t DescribeGameStateFlags(std::uint64_t flags, char* out, std::size_t cap) noexcept {
+    if (!out || !cap) return 0;
+    out[0] = 0;
+    std::size_t n = 0;
+    for (int b = 0; b < 64; ++b) {
+        if (!(flags & (1ull << b))) continue;
+        char tmp[32];
+        const char* name = GameStateFlagName(b);
+        if (!name) {
+            std::snprintf(tmp, sizeof(tmp), "bit%d", b);
+            name = tmp;
+        }
+        const int w = std::snprintf(out + n, cap - n, "%s%s", n ? "|" : "", name);
+        if (w < 0 || static_cast<std::size_t>(w) >= cap - n) {
+            n = cap - 1;
+            break;
+        }
+        n += static_cast<std::size_t>(w);
+    }
+    if (!n) {
+        std::snprintf(out, cap, "none");
+        n = std::strlen(out);
+    }
+    return n;
+}
+
+// GameModule+0x44C bits (meanings inferred from the code that sets them).
+inline std::size_t DescribeLoadMask(std::uint32_t mask, char* out, std::size_t cap) noexcept {
+    if (!out || !cap) return 0;
+    struct Bit {
+        std::uint32_t bit;
+        const char* name;
+    };
+    static const Bit kBits[] = {{0x2, "loading/area change"}, {0x4, "pending"}, {0x8, "pending2"},
+                                {0x40, "streaming not ready"}, {0x80, "streaming settle"}, {0x100, "saving"}};
+    out[0] = 0;
+    std::size_t n = 0;
+    std::uint32_t rest = mask;
+    for (const Bit& b : kBits) {
+        if (!(mask & b.bit)) continue;
+        rest &= ~b.bit;
+        const int w = std::snprintf(out + n, cap - n, "%s%s", n ? "|" : "", b.name);
+        if (w < 0 || static_cast<std::size_t>(w) >= cap - n) return cap - 1;
+        n += static_cast<std::size_t>(w);
+    }
+    if (rest) {
+        const int w = std::snprintf(out + n, cap - n, "%s0x%X", n ? "|" : "", rest);
+        if (w < 0 || static_cast<std::size_t>(w) >= cap - n) return cap - 1;
+        n += static_cast<std::size_t>(w);
+    }
+    if (!n) {
+        std::snprintf(out, cap, "none");
+        n = std::strlen(out);
+    }
+    return n;
+}
+
+// EDSArea values.
+inline const char* AreaName(std::uint16_t area) noexcept {
+    switch (area) {
+        case 0: return "Area00";
+        case 100: return "Area01";
+        case 200: return "Area02";
+        case 300: return "Area03";
+        case 400: return "Area04";
+        case 500: return "Warrior01";
+        case 510: return "Warrior02";
+        case 520: return "Warrior03";
+        case 600: return "Beach01";
+        case 700: return "Frange01";
+        case 1100: return "Nm01";
+        case 1200: return "Nm02";
+        case 1400: return "Nm04";
+        case 0xFFFF: return "Empty";
+        default: return nullptr;
+    }
+}
+
+// Sanity range for teleport targets (map coordinates are a few km).
+inline bool TeleportTargetSane(double x, double y, double z) noexcept {
+    const auto finite = [](double v) { return v == v && v - v == 0; };  // not NaN, not inf
+    if (!finite(x) || !finite(y) || !finite(z)) return false;
+    return x > -50000 && x < 50000 && y > -50000 && y < 50000 && z > -10000 && z < 10000;
+}
+
+// Hours -> "14:30".
+inline void FormatClock(float hours, char* out, std::size_t cap) noexcept {
+    if (!out || !cap) return;
+    if (!(hours >= 0.0f && hours < 48.0f)) {
+        std::snprintf(out, cap, "?");
+        return;
+    }
+    int minutes = static_cast<int>(hours * 60.0f + 0.5f) % (24 * 60);
+    std::snprintf(out, cap, "%02d:%02d", minutes / 60, minutes % 60);
+}
+
+}  // namespace st::game

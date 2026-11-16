@@ -1,0 +1,11 @@
+build/
+build-*/
+out/
+ref-ddt/
+tools/re/.cache/
+__pycache__/
+*.user
+dist/
+build-config.log
+*.log
+!docs/**/*.log

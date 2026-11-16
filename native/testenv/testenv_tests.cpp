@@ -1,0 +1,339 @@
+// st_testenv_tests: checks of the hidden test environment without the game.
+//
+//   st_testenv_tests [--scenarios <dir>]
+//       pure checks: the mod's automation command parser, the scenario language
+//       (and every scenario file in <dir>), session.ini text, save manifests, and
+//       backup/restore of a scratch "game folder"
+//   st_testenv_tests --e2e --supervisor <exe> --fakegame <exe> --mod <winhttp.dll>
+//                    --scenario <file> --work <dir>
+//       end to end on a private desktop: a scratch game folder with the fake game
+//       as ds.exe, the real mod, the real supervisor; checks screenshots (decoded),
+//       the virtual pad reaching the "game", quit, and that the folder was restored.
+//       Exit 77 (skipped) when a ds.exe is already running.
+#include <windows.h>
+#include <wincodec.h>
+
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
+
+#include "automation.hpp"
+#include "testenv_core.hpp"
+
+namespace te = st::testenv;
+namespace au = st::automation;
+
+namespace {
+
+int g_fail = 0, g_pass = 0;
+void Check(bool ok, const char* what, const std::string& detail = {}) {
+    std::printf("%s  %s%s%s\n", ok ? "PASS" : "FAIL", what, detail.empty() ? "" : "  -- ", detail.c_str());
+    std::fflush(stdout);
+    (ok ? g_pass : g_fail)++;
+}
+
+bool Parse(const char* line, au::Command* c = nullptr) {
+    au::Command tmp;
+    std::string err;
+    return au::ParseCommand(line, c ? c : &tmp, &err);
+}
+
+void CommandParser() {
+    au::Command c;
+    Check(Parse("wait 1500", &c) && c.kind == au::Kind::wait && c.ms == 1500, "wait <ms>");
+    Check(!Parse("wait -5") && !Parse("wait") && !Parse("wait 9999999"), "wait rejects bad times");
+    Check(Parse("screenshot 01-title_a.b", &c) && c.kind == au::Kind::screenshot && c.text == "01-title_a.b", "screenshot <name>");
+    Check(!Parse("screenshot ../x") && !Parse("screenshot .hidden") && !Parse("screenshot a/b"), "screenshot names cannot leave out\\");
+    Check(Parse("pad A+START 250 lx=-32768 ry=32767 rt=255", &c) && c.kind == au::Kind::pad &&
+              c.buttons == (au::kPadA | au::kPadStart) && c.ms == 250 && c.lx == -32768 && c.ry == 32767 && c.rt == 255,
+          "pad buttons, hold, axes");
+    Check(Parse("pad none 100", &c) && c.buttons == 0 && Parse("PAD dpad_down 50", &c) && c.buttons == au::kPadDown, "pad none / case");
+    Check(!Parse("pad Q 100") && !Parse("pad A") && !Parse("pad A 100 lx=40000") && !Parse("pad A 100 lt=-1") && !Parse("pad A 100 zz=1"),
+          "pad rejects unknown buttons / bad axes");
+    Check(Parse("key F9 100", &c) && c.vk == 0x78 && Parse("key esc 10", &c) && c.vk == 0x1B && Parse("key w 10", &c) && c.vk == 'W' &&
+              Parse("key 0x41 10", &c) && c.vk == 0x41,
+          "key names");
+    Check(!Parse("key F13 10") && !Parse("key nope 10"), "key rejects unknown keys");
+    Check(Parse("menu open", &c) && c.text == "open" && !Parse("menu maybe"), "menu open|close|toggle");
+    Check(Parse("action teleport 1 2.5 -3", &c) && c.kind == au::Kind::action && c.text == "teleport" && c.numbers.size() == 3 &&
+              c.numbers[1] == 2.5,
+          "action with numbers");
+    Check(!Parse("action teleport x") && !Parse("action t 1 2 3 4"), "action rejects non-numbers / too many");
+    Check(Parse("waitplayer 120", &c) && c.ms == 120000 && Parse("waitlog 30 [sync] local player", &c) &&
+              c.text == "[sync] local player" && c.ms == 30000,
+          "waitplayer / waitlog keep the text with spaces");
+    Check(Parse("log hello world", &c) && c.text == "hello world" && Parse("quit", &c) && c.kind == au::Kind::quit &&
+              Parse("snapshot", &c) && Parse("padoff", &c),
+          "log / quit / snapshot / padoff");
+    std::string err;
+    Check(!au::ParseCommand("   # comment", &c, &err) && err.empty() && !au::ParseCommand("", &c, &err) && err.empty(),
+          "blank and comment lines are not errors");
+    Check(!au::ParseCommand("frobnicate", &c, &err) && !err.empty(), "unknown command is an error", err);
+    Check(au::NormalizeActionName("Respawn partner") == "respawn_partner" && au::NormalizeActionName("LOG-status ") == "log_status" &&
+              au::NormalizeActionName("Teleport to partner") == "teleport_to_partner",
+          "action names: label <-> snake case");
+}
+
+void ScenarioParser(const std::wstring& dir) {
+    te::Scenario s;
+    std::string err;
+    const char* good =
+        "# smoke\nrole echo\ntimeout 300\nwaitready 60\nwaitlog 90 \\[sync\\] first tick\n"
+        "until 200 3000 local player entity 0+ -> 0*[1-9A-F] => pad A 150\n?screenshot x\nsleep 500\nnote hi there\nquit\n";
+    Check(te::ParseScenario(good, &s, &err) && s.role == "echo" && s.timeout_s == 300 && s.steps.size() == 7, "scenario parses", err);
+    if (s.steps.size() == 7) {
+        Check(s.steps[0].kind == te::StepKind::waitready && s.steps[0].seconds == 60, "waitready step");
+        Check(s.steps[1].kind == te::StepKind::waitlog && s.steps[1].text == "\\[sync\\] first tick", "waitlog keeps the regex");
+        Check(s.steps[2].kind == te::StepKind::until && s.steps[2].ms == 3000 && s.steps[2].command == "pad A 150" &&
+                  s.steps[2].text == "local player entity 0+ -> 0*[1-9A-F]",
+              "until: regex and command split at =>");
+        Check(s.steps[3].optional && s.steps[3].kind == te::StepKind::mod, "? marks a step optional");
+        Check(s.steps[6].kind == te::StepKind::mod && s.steps[6].text == "quit", "mod commands pass through");
+    }
+    Check(!te::ParseScenario("timeout 999\nquit\n", &s, &err), "timeout above 360 s refused", err);
+    Check(!te::ParseScenario("waitlog 10 ([\nquit\n", &s, &err), "bad regex refused", err);
+    Check(!te::ParseScenario("until 10 1000 x => quit\n", &s, &err), "until cannot repeat quit", err);
+    Check(!te::ParseScenario("pad Q 10\n", &s, &err), "bad mod command refused at parse time", err);
+    Check(!te::ParseScenario("# nothing\n", &s, &err), "empty scenario refused");
+    Check(te::AckTimeoutSeconds("wait 60000") == 75 && te::AckTimeoutSeconds("screenshot a") == 40 &&
+              te::AckTimeoutSeconds("waitplayer 100") == 115,
+          "ack timeouts follow the command");
+    int files = 0;
+    for (const std::wstring& rel : te::ListFiles(dir, false)) {
+        if (rel.size() < 4 || rel.substr(rel.size() - 4) != L".txt") continue;
+        std::string text;
+        ++files;
+        const bool ok = te::ReadFileBytes(dir + L"\\" + rel, &text) && te::ParseScenario(text, &s, &err);
+        Check(ok, ("scenario file " + te::Narrow(rel)).c_str(), ok ? std::to_string(s.steps.size()) + " steps" : err);
+    }
+    if (!dir.empty()) Check(files > 0, "scenario folder has scenarios", te::Narrow(dir));
+}
+
+void SessionIni() {
+    const std::string t = te::SessionIniText("solo", true);
+    Check(t.find("role=solo\n") != std::string::npos && t.find("automation=1\n") != std::string::npos &&
+              t.find("one_shot=1\n") != std::string::npos && t.find("transport=udp\n") != std::string::npos &&
+              t.find("udp_peer=127.0.0.1\n") != std::string::npos && t.find("debug_menu=1\n") != std::string::npos &&
+              t.find("automation_mute=1\n") != std::string::npos && t.find("secret") == std::string::npos,
+          "session.ini: solo, loopback udp, automation, one-shot, no secret");
+}
+
+bool Put(const std::wstring& p, const std::string& s) { return te::WriteFileAtomic(p, s); }
+std::string Get(const std::wstring& p) {
+    std::string s;
+    return te::ReadFileBytes(p, &s) ? s : std::string("<missing>");
+}
+
+void BackupRestore(const std::wstring& work) {
+    const std::wstring root = work + L"\\guard";
+    te::RemoveTree(root);
+    const std::wstring game = root + L"\\game", mod = game + L"\\stranded_together", run = root + L"\\run";
+    te::EnsureDir(mod);
+    te::EnsureDir(run);
+    Put(game + L"\\ds.exe", "exe");
+    Put(game + L"\\winhttp.dll", "original dll");
+    Put(mod + L"\\session.ini", "role=echo\n");
+    Put(mod + L"\\positions.txt", "1 2 3 home\n");
+    Put(mod + L"\\stranded_together.log", "old log\n");
+    std::string err;
+    Check(te::BackupGameFolder(game, run, &err), "backup of a game folder", err);
+    Check(!te::BackupGameFolder(game, run, &err), "a run folder is used once (restore.txt kept)");
+    // What a hidden run does to the folder:
+    Put(game + L"\\winhttp.dll", "our dll");
+    Put(mod + L"\\session.ini", "automation=1\n");
+    MoveFileExW((mod + L"\\session.ini").c_str(), (mod + L"\\session.last.ini").c_str(), MOVEFILE_REPLACE_EXISTING);
+    Put(mod + L"\\stranded_together.log", "new log\n");
+    Put(mod + L"\\link-status.json", "{}");
+    Put(mod + L"\\something-new.txt", "new");
+    Put(game + L"\\error.txt", "crash");
+    te::EnsureDir(mod + L"\\automation\\out");
+    Put(mod + L"\\automation\\out\\a.png", "png");
+    const te::GuardResult r = te::RestoreGameFolder(run);
+    std::string notes;
+    for (const auto& n : r.notes) notes += n + "; ";
+    Check(r.ok, "restore reports success", notes);
+    Check(Get(game + L"\\winhttp.dll") == "original dll", "winhttp.dll restored");
+    Check(Get(mod + L"\\session.ini") == "role=echo\n", "session.ini restored");
+    Check(!te::FileExists(mod + L"\\session.last.ini") && !te::FileExists(mod + L"\\link-status.json"),
+          "files that did not exist before are removed");
+    Check(Get(mod + L"\\stranded_together.log") == "old log\n" && Get(mod + L"\\positions.txt") == "1 2 3 home\n",
+          "log restored, untouched files kept");
+    Check(!te::FileExists(game + L"\\error.txt"), "a new error.txt is removed (the supervisor copies it first)");
+    Check(!te::DirExists(mod + L"\\automation"), "the automation folder is removed");
+    Check(Get(run + L"\\game-new\\something-new.txt") == "new" && !te::FileExists(mod + L"\\something-new.txt"),
+          "a new file in stranded_together is moved to <run>\\game-new");
+    Check(te::FileExists(run + L"\\restored.txt"), "restored.txt written");
+    const te::GuardResult again = te::RestoreGameFolder(run);
+    Check(again.ok && Get(game + L"\\winhttp.dll") == "original dll", "restore is idempotent");
+
+    // A folder without stranded_together and without winhttp.dll.
+    const std::wstring game2 = root + L"\\game2", run2 = root + L"\\run2";
+    te::EnsureDir(game2);
+    te::EnsureDir(run2);
+    Put(game2 + L"\\ds.exe", "exe");
+    err.clear();
+    Check(te::BackupGameFolder(game2, run2, &err), "backup of a clean folder", err);
+    te::EnsureDir(game2 + L"\\stranded_together\\automation\\in");
+    Put(game2 + L"\\winhttp.dll", "our dll");
+    Put(game2 + L"\\stranded_together\\session.last.ini", "x");
+    Put(game2 + L"\\stranded_together\\stranded_together.log", "x");
+    const te::GuardResult r2 = te::RestoreGameFolder(run2);
+    Check(r2.ok && !te::FileExists(game2 + L"\\winhttp.dll") && !te::DirExists(game2 + L"\\stranded_together") &&
+              te::FileExists(game2 + L"\\ds.exe"),
+          "clean folder: our dll and our stranded_together folder removed, ds.exe kept");
+
+    // A tampered manifest never reaches outside the game folder.
+    const std::wstring outside = root + L"\\outside.txt", run3 = root + L"\\run3";
+    Put(outside, "keep me");
+    te::EnsureDir(run3);
+    Put(run3 + L"\\restore.txt", "game\t" + te::Narrow(game) + "\nfile\t0\t" + te::Narrow(outside) + "\t-\t-\ntree\t" + te::Narrow(root) + "\n");
+    te::RestoreGameFolder(run3);
+    Check(Get(outside) == "keep me" && te::DirExists(game), "restore ignores paths outside the game folder");
+
+    // Save manifests
+    const std::wstring saves = root + L"\\saves";
+    te::EnsureDir(saves + L"\\autosave0");
+    Put(saves + L"\\autosave0\\checkpoint.dat", "a");
+    Put(saves + L"\\profile.dat", "p");
+    const std::string m1 = te::HashManifest(saves);
+    Put(saves + L"\\profile.dat", "p2");
+    Put(saves + L"\\autosave1.dat", "n");
+    DeleteFileW((saves + L"\\autosave0\\checkpoint.dat").c_str());
+    const auto diff = te::DiffManifests(m1, te::HashManifest(saves));
+    std::string d;
+    for (const auto& x : diff) d += x + "; ";
+    Check(diff.size() == 3 && d.find("changed profile.dat") != std::string::npos && d.find("added autosave1.dat") != std::string::npos &&
+              d.find("removed autosave0\\checkpoint.dat") != std::string::npos,
+          "save manifest diff: changed / added / removed", d);
+    te::RemoveTree(root);
+}
+
+// ------------------------------------------------------------------ e2e
+bool DecodePng(const std::wstring& path, std::vector<unsigned char>& bgra, UINT& w, UINT& h) {
+    IWICImagingFactory* f = nullptr;
+    IWICBitmapDecoder* dec = nullptr;
+    IWICBitmapFrameDecode* frame = nullptr;
+    IWICBitmapSource* conv = nullptr;
+    bool ok = SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&f))) &&
+              SUCCEEDED(f->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnDemand, &dec)) &&
+              SUCCEEDED(dec->GetFrame(0, &frame)) && SUCCEEDED(WICConvertBitmapSource(GUID_WICPixelFormat32bppBGRA, frame, &conv)) &&
+              SUCCEEDED(conv->GetSize(&w, &h));
+    if (ok) {
+        bgra.resize(static_cast<std::size_t>(w) * h * 4);
+        ok = SUCCEEDED(conv->CopyPixels(nullptr, w * 4, static_cast<UINT>(bgra.size()), bgra.data()));
+    }
+    if (conv) conv->Release();
+    if (frame) frame->Release();
+    if (dec) dec->Release();
+    if (f) f->Release();
+    return ok;
+}
+
+bool CenterIs(const std::wstring& png, int r, int g, int b, std::string* got) {
+    std::vector<unsigned char> px;
+    UINT w = 0, h = 0;
+    if (!DecodePng(png, px, w, h) || !w || !h) {
+        *got = "not decodable";
+        return false;
+    }
+    const unsigned char* p = &px[(static_cast<std::size_t>(h / 2) * w + w / 2) * 4];
+    char buf[96];
+    std::snprintf(buf, sizeof(buf), "%ux%u centre (%d,%d,%d) want (%d,%d,%d)", w, h, p[2], p[1], p[0], r, g, b);
+    *got = buf;
+    return std::abs(p[2] - r) <= 2 && std::abs(p[1] - g) <= 2 && std::abs(p[0] - b) <= 2;
+}
+
+int EndToEnd(const std::wstring& supervisor, const std::wstring& fakegame, const std::wstring& mod, const std::wstring& scenario,
+             const std::wstring& work_in) {
+    if (!te::FindProcesses(L"ds.exe").empty()) {
+        std::printf("SKIP  a ds.exe is running: the supervisor refuses to start (by design)\n");
+        return 77;
+    }
+    const std::wstring work = te::FullPath(work_in) + L"\\e2e";
+    te::RemoveTree(work);
+    const std::wstring game = work + L"\\game", run = work + L"\\run";
+    te::EnsureDir(game + L"\\stranded_together");
+    Check(CopyFileW(fakegame.c_str(), (game + L"\\ds.exe").c_str(), FALSE) != FALSE, "fake game copied as ds.exe");
+    Put(game + L"\\winhttp.dll", "original winhttp.dll (not a DLL)");
+    Put(game + L"\\stranded_together\\session.ini", "# original session\nrole=echo\n");
+    std::wstring cmd = L"\"" + supervisor + L"\" --game-dir \"" + game + L"\" --mod \"" + mod + L"\" --scenario \"" + scenario +
+                       L"\" --run-dir \"" + run + L"\" --saves none --no-steam-check --timeout-s 150";
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    const ULONGLONG t0 = GetTickCount64();
+    if (!CreateProcessW(supervisor.c_str(), cmd.data(), nullptr, nullptr, FALSE, 0, nullptr, work.c_str(), &si, &pi)) {
+        Check(false, "supervisor started", std::to_string(GetLastError()));
+        return 1;
+    }
+    const DWORD waited = WaitForSingleObject(pi.hProcess, 240000);
+    DWORD code = 99;
+    if (waited != WAIT_OBJECT_0) TerminateProcess(pi.hProcess, 99);
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    std::printf("info  supervisor exit %lu after %.1f s; run folder %s\n", code, static_cast<double>(GetTickCount64() - t0) / 1000.0,
+                te::Narrow(run).c_str());
+    if (code == 2) {  // refused: a game or another hidden run (e.g. another build folder's ctest) is active
+        const std::string log = Get(run + L"\\supervisor.log");
+        if (log.find("is already running") != std::string::npos || log.find("another st_testenv_supervisor") != std::string::npos) {
+            std::printf("SKIP  the supervisor refused to start (another run or a ds.exe is active)\n");
+            return 77;
+        }
+    }
+    std::string summary = Get(run + L"\\summary.json");
+    Check(code == 0 && summary.find("\"result\":\"pass\"") != std::string::npos, "supervisor run passed",
+          summary.substr(0, 300));
+    Check(summary.find("\"violation\":false") != std::string::npos, "no window on the user's desktop, input desktop unchanged");
+    std::string got;
+    Check(CenterIs(run + L"\\automation\\fake-01-before.png", 26, 77, 102, &got), "screenshot before A: the fake game's colour 0", got);
+    Check(CenterIs(run + L"\\automation\\fake-02-after-a.png", 204, 51, 26, &got), "screenshot after virtual A: colour 1", got);
+    std::vector<unsigned char> px;
+    UINT w = 0, h = 0;
+    Check(DecodePng(run + L"\\automation\\fake-03-menu.png", px, w, h) && w == 960 && h == 540, "screenshot with the debug menu open");
+    const std::string fake = Get(run + L"\\game-new\\fakegame.log");
+    Check(fake.find("A pressed") != std::string::npos, "the virtual pad reached the game's own XInputGetState call");
+    Check(fake.find("GetForegroundWindow()==window: yes") != std::string::npos, "GetForegroundWindow answers the hidden game window");
+    Check(fake.find("WM_CLOSE: exiting") != std::string::npos, "quit closed the game through WM_CLOSE");
+    const std::string modlog = Get(run + L"\\game\\stranded_together.log");
+    Check(modlog.find("[auto] channel ready") != std::string::npos && modlog.find("AUTOMATION") != std::string::npos,
+          "mod log: automation channel and overlay automation mode");
+    Check(Get(game + L"\\winhttp.dll") == "original winhttp.dll (not a DLL)", "winhttp.dll restored after the run");
+    Check(Get(game + L"\\stranded_together\\session.ini") == "# original session\nrole=echo\n" &&
+              !te::FileExists(game + L"\\stranded_together\\session.last.ini") && !te::DirExists(game + L"\\stranded_together\\automation"),
+          "session.ini restored, session.last.ini and automation removed");
+    Check(te::FindProcesses(L"ds.exe").empty(), "no ds.exe left running");
+    return g_fail ? 1 : 0;
+}
+
+}  // namespace
+
+int wmain(int argc, wchar_t** argv) {
+    std::wstring scenarios, supervisor, fakegame, mod, scenario, work = L".";
+    bool e2e = false;
+    for (int i = 1; i < argc; ++i) {
+        const std::wstring a = argv[i];
+        const auto next = [&]() { return i + 1 < argc ? std::wstring(argv[++i]) : std::wstring(); };
+        if (a == L"--scenarios") scenarios = next();
+        else if (a == L"--e2e") e2e = true;
+        else if (a == L"--supervisor") supervisor = next();
+        else if (a == L"--fakegame") fakegame = next();
+        else if (a == L"--mod") mod = next();
+        else if (a == L"--scenario") scenario = next();
+        else if (a == L"--work") work = next();
+    }
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    if (e2e) {
+        const int rc = EndToEnd(te::FullPath(supervisor), te::FullPath(fakegame), te::FullPath(mod), te::FullPath(scenario), work);
+        if (rc == 77) return rc;
+        std::printf("%s: %d passed, %d failed\n", g_fail ? "FAILED" : "PASSED", g_pass, g_fail);
+        return g_fail ? 1 : 0;
+    }
+    CommandParser();
+    ScenarioParser(scenarios.empty() ? L"" : te::FullPath(scenarios));
+    SessionIni();
+    BackupRestore(te::FullPath(work));
+    std::printf("%s: %d passed, %d failed\n", g_fail ? "FAILED" : "PASSED", g_pass, g_fail);
+    return g_fail ? 1 : 0;
+}

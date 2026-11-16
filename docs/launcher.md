@@ -1,0 +1,406 @@
+# The Stranded Together launcher (`StrandedTogether.exe`)
+
+A small Win32 + Direct3D 11 + Dear ImGui window that sits in the DEATH
+STRANDING DIRECTOR'S CUT game folder, checks the install, writes the session
+settings for the in-game mod, starts the game through Steam, shows the link
+status the mod reports and carries the Debug page (test options, live mod
+log, mod on/off). It updates itself and the mod from GitHub Releases
+([Updates](#updates)). It never injects anything and never touches saves.
+Installed like Diamond Dogs Together: extract the release zip into the game
+folder and run `StrandedTogether.exe` ([packaging.md](packaging.md) builds
+the zip).
+
+## Where it lives and what it checks
+
+The release zip is extracted into the game folder:
+
+```
+<game>\ds.exe                                the game (Steam app 1850570)
+<game>\winhttp.dll                           the mod (a winhttp proxy ds.exe loads from its folder)
+<game>\StrandedTogether.exe                  this launcher
+<game>\stranded_together\package.json        from the zip: version, build id, SHA-256 of every file
+<game>\stranded_together\README.txt          from the zip: install / play / debug / uninstall
+<game>\stranded_together\THIRD_PARTY_NOTICES.txt
+<game>\stranded_together\...                 written by the launcher / the mod (below)
+```
+
+On start the launcher checks, in this order:
+
+| Check | Result when it fails |
+|---|---|
+| `ds.exe` next to the launcher | "Move me to your game folder" page. Steam's own copy of the game is found from the registry (`SteamPath`/`InstallPath`, the `Steam App 1850570` uninstall key), every library in `libraryfolders.vdf` and `appmanifest_1850570.acf` `installdir` (default `DEATH STRANDING DIRECTORS CUT`), and offered with "Open my game folder". |
+| Folder path (not a drive root, not a junction/symlink, not too long) | "Co-op can't start here" card. |
+| `ds.exe` SHA-256 = `9D5306D7…EDD2B`, `steam_api64.dll` SHA-256 = `F1EB582E…AB69` | **Warning only**: "Untested game version" banner. Hashes are cached in `launcher-settings.json` by size and write time (ds.exe is 86 MB). |
+| `winhttp.dll` (`core::CheckMod`) | The Play page's mod chip and, when co-op cannot start, its card (Host/Join/Solo unavailable): **missing**: "Install the co-op mod first" with the steps. **foreign** (not a PE with the proxy's `\\.\GLOBALROOT\SystemRoot\System32\winhttp.dll.` forwarders naming `stranded_together`, or a link): "Another winhttp.dll is in the way"; the file is never renamed, replaced or deleted. **disabled** (only our `winhttp.dll.disabled`): "The mod is switched off" with **Enable mod**. **ok**: SHA-256 equals `package.json`'s `winhttp.dll` row, the exe in the folder equals its `StrandedTogether.exe` row and its `build_id` is this launcher's: chip "Mod 0.1.0". **mismatch** (ours, but any of those differ, or `package.json` is damaged): **warning only**, "The mod files don't match" card. **dev_build** (ours, no `package.json`, e.g. `tools\deploy.ps1`): chip "Mod: development build" and a one-line note. Re-checked every 2 s when the size or write time of the DLL, its `.disabled` twin, `package.json` or the exe changes. |
+| Steam running with a logged-in user (`HKCU\Software\Valve\Steam\ActiveProcess` `pid` alive and `ActiveUser` != 0) | Host is disabled ("Start Steam and log in": the join code carries the host's SteamID64). Join and Solo test stay available (`steam://` starts Steam). |
+
+## Play
+
+* **Host**: makes a new 20-character secret, takes the own SteamID64
+  (`76561197960265728 + ActiveUser`), formats the code
+  `DST1-SSSSS-SSSSS-SSSSS-SSSSS-CC@<SteamID64>` with st_net's
+  `stcoop::steam_code::Format`, copies it to the clipboard, writes
+  `session.ini` (role=host) and opens `steam://rungameid/1850570`.
+* **Join**: the field accepts a pasted code or a Steam invite string
+  (`+stranded_join <code>`), validated live with the same parser the mod uses
+  (`stcoop::steam_code::Parse`: blanks, case, dashes, O->0, I/L->1 tolerated;
+  the player's own code is refused). Writes role=guest with `peer_steamid` and
+  `secret` from the code.
+* **Solo test**: role=echo. The mod spawns a clone of the player that replays
+  their movement `echo_delay_s` behind (Debug page). The launcher writes it with
+  `transport=udp`, `udp_peer=127.0.0.1`, ports 27555/27556 (loopback only, no
+  secret), so nothing reaches Steam or the network even if the mod opens its
+  transport.
+* **Advanced: connection and name**: Steam (default) or LAN / VPN (UDP) with
+  the partner's IPv4 and both ports (default 27555/27555; two copies on one PC
+  swap them), and an optional display name. Persisted in
+  `launcher-settings.json`. In LAN mode the guest still pastes the host's code
+  (it carries the shared secret).
+
+## Debug page
+
+Two tabs (`ui::DebugTab`):
+
+* **Options**: **Debug tools only (solo)** (role=solo: the in-game debug menu
+  and the mod log, no partner, no network; loopback UDP like the echo; it
+  always writes `debug_menu=1`, whatever the checkbox below says) and
+  **Echo test**; sliders for echo delay (0-10 s), echo offset (0-20 m), send
+  rate (1-120 Hz) and partner interpolation delay (0-1000 ms); **In-game
+  debug menu** on/off and its key (F1-F12, default F9); **Wake the partner
+  clone** (`partner_activate`); **Verbose mod log**; **Reset to defaults**.
+  Saved in `launcher-settings.json` under `"debug"` (sliders when released)
+  and written into every `session.ini`, Host and Join included
+  (`core::ApplyDebugOptions`).
+* **Files and log**: Open mod folder, Open log, **Copy error.txt** (the
+  game's crash report next to ds.exe, enabled when it exists), **Disable mod
+  / Enable mod** (renames `winhttp.dll` <-> `winhttp.dll.disabled`; only our
+  DLL, never while a session runs or ds.exe runs, never over another file),
+  **Clear session** (cleanup plus deleting a `session.ini` this launcher did
+  not write, e.g. a persistent `deploy.ps1 -Session` file; not while the game
+  runs), **Copy log**, and a live tail of `stranded_together.log` (last 400
+  lines, re-read once a second, "Follow" keeps it at the end).
+
+The Play > Solo test tab links to it; Tools points to it.
+
+## In game
+
+While the game starts or runs, the In game page polls `link-status.json`
+(2 Hz) and shows the state, partner, ping, route (Steam relay / Steam direct /
+LAN) and whether the partner's character is visible. "Cancel" works until the
+game process exists.
+
+## Updates
+
+The launcher updates itself and the mod from GitHub Releases
+(`native/launcher/core/core_update.*`, adapted from DDT's; releases are made
+by `tools\release.ps1`, see [releasing.md](releasing.md)).
+
+**Check.** Once per launch, on the first tick in a game folder, unless About >
+"Check for updates when the launcher starts" is off (`auto_update_check` in
+`launcher-settings.json`, default on); and on About > **Check for updates**.
+It reads `https://api.github.com/repos/TrollTaylor/stranded-together/releases?per_page=20`
+(`ParseReleasesFeed`) and picks the highest SemVer `tag_name` that is newer
+than this launcher's version (`0.1.0+abc1234` compares as `0.1.0`), skipping
+drafts, prereleases (and `-rc` style tags), and releases without exactly one
+uploaded asset named `StrandedTogether-<version>.zip` whose
+`browser_download_url` is `https://github.com/TrollTaylor/stranded-together/releases/download/<tag>/<name>`.
+Source zips, `zipball_url` and any other asset are never taken. The asset's
+`size` and `digest` (`sha256:...`) are kept for the download check.
+
+**Banner.** Play shows a card on top (`ui::UpdateBannerFor`): "Update
+available: version X" with the first lines of the release notes, **Release
+notes** (the release page) and **Update now**; a progress bar while it
+downloads; a spinner while it installs; "Version X was not installed" with
+the reason and **Try again**; "Updated to version X" in the new window. A
+failed check or "You have the latest version" only shows on About.
+
+**Update now** (`RealModel::start_update`, on its own thread):
+
+1. Refused with a sentence while `ds.exe` runs from the folder or a session
+   is starting or running ("Quit DEATH STRANDING first...").
+2. Downloads to `stranded_together\update.zip` (at most the feed's size, 256 MB),
+   then checks the size and GitHub's SHA-256 digest.
+3. `ApplyUpdate` checks the zip (`VerifyUpdateZip`): it opens, has at most
+   64 entries, only `StrandedTogether.exe`, `winhttp.dll` and files under
+   `stranded_together/` (never `ds.exe` or another game file, never a file
+   the launcher or mod writes: `session.ini`, settings, logs...), its
+   `package.json` is ours with the release's version, and its `files[]` lists
+   every other entry exactly once with a matching SHA-256 (and size);
+   `winhttp.dll` must be the Stranded Together proxy, the exe a PE.
+4. Refused when `winhttp.dll` in the folder is another program's (it is never
+   replaced). A mod switched off stays off: the new DLL becomes
+   `winhttp.dll.disabled`.
+5. Every file is written next to its target as `<file>.st-new`; then each
+   old file is moved aside (`StrandedTogether.exe` -> `StrandedTogether.exe.old`,
+   which works while it runs; others -> `<file>.st-old`) and the new one moved
+   in. `ds.exe` is checked once more right before. Any failed move puts every
+   old file back.
+6. The new `StrandedTogether.exe --after-update <pid>` is started
+   (`StartSuccessor`) and must set the event `Local\StrandedTogether-update-<pid>`
+   within 20 s; if it exits first, or does not answer in time (it is then
+   ended, so its exe can be replaced), the update is rolled back (the old exe
+   comes back from `.old`) and the player gets "your current version was put back".
+   While the update downloads or installs, Host, Join, Solo test and the mod
+   switch are refused ("An update is being installed...").
+7. The old window closes (`ui::CloseForUpdate`). The new one signals, waits
+   up to 15 s for the old process to exit (ends it if it hangs), claims the
+   folder's single instance, deletes `StrandedTogether.exe.old` (retrying for
+   5 s) and says "Updated to version X".
+
+Every start also deletes a leftover `StrandedTogether.exe.old` and repairs an
+update that was killed half way (`CleanUpdateLeftovers`: `*.st-new` deleted,
+`*.st-old` moved back when its file is missing). `launcher-settings.json`,
+logs, `session*.ini` and anything else in `stranded_together\` that the zip
+does not carry are left alone. Each step is one `update=...` line in
+`launcher.log`; Collect logs' `summary.txt` has `update=<status>`.
+
+**WinHTTP without importing it.** The launcher sits next to the mod's
+`winhttp.dll` proxy, so `core_update.cpp` never links `winhttp.lib`: it
+includes `<winhttp.h>` for types only, loads System32's copy with
+`LoadLibraryExW(L"winhttp.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32)`,
+refuses the module unless `GetModuleFileNameW` is `<System32>\winhttp.dll`
+(a module of that name loaded from elsewhere would be returned instead), and
+takes the eleven functions it needs with `GetProcAddress`. Requests use the
+system proxy settings, follow redirects (a release asset redirects to
+GitHub's download host) but never from https to http, send
+`User-Agent: StrandedTogether-Launcher/<version>`, and time out after 10-30 s.
+
+**Developer flags.** `--update-feed <url>` reads the releases from a loopback
+feed (`http(s)://127.0.0.1` or `localhost` only; then download URLs must be
+loopback too) and checks on start whatever the setting says;
+`--update-now` (with `--update-feed`) installs a found update at once. The
+restarted launcher gets `--update-feed` again but not `--update-now`.
+[releasing.md](releasing.md#testing-the-updater-without-github) has the recipe.
+
+## The contract with the mod
+
+### `stranded_together\session.ini` (launcher -> mod)
+
+Written before the game starts. **Without the file the mod stays idle and the
+game runs vanilla.** Every launch writes `one_shot=1`: the mod renames the
+file to `session.last.ini` as soon as it has read it, so starting the game
+from Steam afterwards runs it unmodded even if the launcher never cleans up.
+An unread file is deleted after the game exits (or after Cancel / End
+session / Clear session). Plain `key=value` lines, LF, the first line a `#`
+comment starting `# Generated by Stranded Together` (that header is how
+cleanup recognises the file as ours, besides the recorded hash).
+
+```
+# Generated by Stranded Together. The mod renames it to session.last.ini once read; without this file the game runs unmodded.
+role=host|guest|echo|solo     solo = Debug tools only
+transport=steam|udp
+peer_steamid=<SteamID64>        guest only (the host's id from the code)
+secret=<20 Crockford base32>    host: new; guest: from the code; echo / solo: absent
+udp_peer=<ipv4>                 udp only
+udp_port_local=<1..65535>       udp only
+udp_port_peer=<1..65535>        udp only
+send_hz=30                      1..120          (Debug page)
+interp_delay_ms=100             0..1000         (Debug page)
+echo_delay_s=2                  0..10, the mod's range (Debug page)
+echo_offset_m=1.5               0..20           (Debug page)
+partner_activate=1              wake the partner clone (Debug page)
+verbose=0                       (Debug page)
+debug_menu=1                    the in-game debug menu (Debug page)
+debug_menu_key=F9               F1..F12 (Debug page)
+one_shot=1                      always: the mod renames the file to session.last.ini once read
+name=<display name>             optional; printable ASCII, no # ; = quotes, <= 32 chars
+```
+
+`core::MakeSessionIniText` validates every field (canonical secret, individual
+SteamID64, canonical IPv4, port ranges) and `core::ParseSessionIniText` reads
+it back (used by the tests and to show the host's code again after the window
+was reopened). This matches `native/mod/config.cpp` `LoadConfig` (same keys,
+`#`/`;` comments, BOM tolerated). A file without `one_shot` (hand-written,
+`tools\deploy.ps1 -Session`) is read on every start; `ParseSessionIniText`
+reads it back with `one_shot=false`. The launcher's text was fed to the mod's
+real `LoadConfig` in a scratch harness: every key known, values as written,
+the file renamed.
+
+### `stranded_together\link-status.json` (mod -> launcher)
+
+Written by the mod about once a second:
+
+```json
+{"v":1,"pid":1234,"state":"connected","transport":"steam","route":"relay","peer":"Sam",
+ "rtt_ms":48,"remote":"visible","reason":"","code":"DST1-...","time_utc":"2026-11-15T12:00:00Z"}
+```
+
+* `state`: `idle|listening|waiting|connecting|handshake|connected|reconnecting|lost|rejected|error`
+  * Also accepted, because the current mod writes them:
+    * `off` / `disabled`: the link has not started. With a `reason`, the page says "Co-op did not start".
+    * `echo`: in echo role the page only reads `remote`.
+* `peer`: the mod writes `steam:<SteamID64>` or `ip:port`. The page shows a Steam peer as
+  "Steam player ...1234", so the full SteamID never appears on screen.
+* `remote`: `none|spawning|visible|failed`
+* Anything that is not `"v":1` with a `state` is ignored.
+* **Stale** when `time_utc` is more than 15 s old or `pid` is not running: the
+  page then says "The game is not responding" (no ping, not connected).
+* `reason` is shown as-is in lost/rejected/error/reconnecting sentences.
+* While the game is still starting, a stale or foreign status is ignored.
+* The launcher never reads `code` (it has its own); Collect logs redacts it.
+
+`core::StatusViewOf(status, fresh, role)` turns one status into the headline,
+detail and tone (pure, unit-tested; the mock model uses it too, so the
+screenshots show the real wording).
+
+### Session lifecycle (`stranded_together\session-record.json`)
+
+The DDT pattern, slimmed: the record (`v:1`, product
+`stranded-together-session`, `session_id`, `active`, `role`, `transport`,
+`ini_sha256`, launcher and helper pid + start time) is written **before**
+`session.ini`, everything under the per-folder mutex
+`Local\stranded-together-play-<16 hex of SHA-256(upper-case game path)>`.
+
+* **Activate** refuses while `ds.exe` runs from the folder, or while another
+  live window/helper owns an active session, or when a `session.ini` that is
+  not ours exists.
+* **Cleanup** never runs while `ds.exe` runs from the folder. It deletes
+  `session.ini` only when its hash matches the record or it carries our header
+  (a hand-written file is left alone and reported), deletes `link-status.json`
+  when its writer is gone, and marks the record inactive.
+* **Helper**: after a successful activation the launcher starts itself hidden
+  as `StrandedTogether.exe --watch <session_id>` (`CREATE_NO_WINDOW`,
+  breakaway from the job). It waits for `ds.exe`, waits for it to exit (a
+  restart within 8 s counts as the same game) and cleans up; if the game never
+  starts it cleans up after 10 minutes. So closing the launcher window is safe.
+* **The window** also cleans up when it sees the game exit (4 s), and on start
+  it cleans up a leftover session whose game is not running and whose window
+  and helper are gone (PC restarted, helper killed).
+* After a one-shot launch the host's code for a reopened window is read from
+  `session.last.ini` (only when its hash is the recorded one).
+* **Tools > End session** does the same cleanup on request (not while the game
+  runs).
+
+Logs: `stranded_together\launcher.log` (redacted: no codes, secrets, SteamIDs,
+user names or paths; rotated at 1 MB to `launcher.old.log`).
+**Collect logs** makes `stranded-together-logs-<stamp>.zip` on the Desktop with
+`stranded_together.log` (the mod's), the launcher logs, `link-status.json`,
+the session record and a `summary.txt`, every text redacted.
+
+## DLL-search hazard (the launcher lives next to the mod's winhttp.dll)
+
+`ds.exe` loads `winhttp.dll` from its folder; so would any program in that
+folder that imports winhttp (winhttp is not a KnownDLL). The launcher
+therefore:
+
+* does **not import WINHTTP.dll** at all: the updater loads System32's copy
+  explicitly ([Updates](#updates));
+* links with `/DEPENDENTLOADFLAG:0x800` (static imports resolved from
+  System32 only; this also keeps the game's own `d3dcompiler_47.dll` out);
+* calls `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` first thing in
+  `wWinMain` (later `LoadLibrary`/COM loads).
+
+The ctest `st_launcher_no_winhttp_import` (`st_launcher_update_tests
+--check-imports StrandedTogether.exe`) reads the built exe's import and
+delay-import tables and its load config: no `winhttp*`, and
+`DependentLoadFlags` = `0x0800`. Today's imports: d3d11, D3DCOMPILER_47,
+dwmapi, ole32, SHELL32, USER32, GDI32, ADVAPI32, bcrypt, KERNEL32, IMM32.
+An end-to-end self-update was run with an invalid `winhttp.dll` (a few bytes
+that only pass the "ours" byte test) next to the exe: the launcher checked,
+downloaded, installed, restarted and never loaded it.
+
+## Command line
+
+```
+StrandedTogether.exe                      the window (real model)
+  --mock [--mock-scenario <name>]         simulated model: ready | wrong-folder | not-installed |
+                                          untested-version | steam-offline | partner-drops |
+                                          dev-build | mod-mismatch | mod-foreign | mod-disabled |
+                                          update-available (Update now simulates download/install)
+  --scale <f>                             force a UI scale
+  --selftest                              built-in checks (exit 0 = passed); reports, but does not
+                                          fail on, a folder without ds.exe
+  --screenshot-all <dir> [--scale 1]      render every page hidden and save PNGs (35 scenes)
+  --watch <session>                       the hidden helper
+  --after-update <pid>                    (the updater) the new window waits for the old one to close
+Developer only (no window, no Steam launch, no helper):
+  --write-session host|join|echo|solo [--code <code>] [--transport steam|udp]
+                  [--udp-peer <ip>] [--udp-port-local <n>] [--udp-port-peer <n>] [--game-dir <dir>]
+  --end-session [--game-dir <dir>]
+  --update-feed <url> [--update-now]      releases from a loopback test feed; install at once
+```
+
+`--write-session` is meant for testing the mod without the window: it writes
+`session.ini` (and the record) exactly as the buttons do, with the Debug
+page's saved options and `one_shot=1`, prints the host code, and leaves the
+file until the game reads it, `--end-session` or the next launcher start with
+the game closed. `--selftest` also reports the mod state and `package.json`.
+
+## Build and tests
+
+`cmake/launcher.cmake` (included by the root `CMakeLists.txt`):
+
+* `st_imgui` (static): Dear ImGui 1.92.6 + Win32/DX11 backends, `third_party/imgui` (MIT, see `UPSTREAM.txt`).
+* `st_launcher_core` (static): the launcher core (with `core_update`), join code, UI logic, mock model and entries. Links `st_net` for the DST1 code (only `steam_join_code` and `link_crypto` objects are pulled in); never `winhttp.lib`.
+* `st_launcher` (WIN32 exe, `OUTPUT_NAME StrandedTogether`), `/W4 /WX /utf-8 /permissive-`.
+* Tests: `st_launcher_core_tests` (join code round trip, session.ini text incl. `one_shot`/debug keys/`solo`, status parse and view, Steam library parsing and game-folder discovery from a fake `SteamPath`, `package.json` parsing and every mod state, disable/enable, Debug options persistence, redaction, UI logic, a session activate/cleanup round trip and the real model on a temporary fake game folder with a fake Env: Debug tools only, Clear session, live log, crash report, package ok/mismatch/foreign, a window reopened after the mod consumed `session.ini`), `st_launcher_update_tests` (SemVer incl. prerelease order; the feed: drafts, prereleases, source-only releases, foreign or query URLs, two matching assets, digests, `/releases/latest`, loopback feeds; `VerifyUpdateZip`: wrong version, missing or unlisted files, hash mismatch, game or runtime files, a foreign DLL; `ApplyUpdate`: success, ds.exe running before and during, foreign DLL, a failed move half way, a failed restart, a fresh folder, a switched-off mod, leftovers; the real model on a fake feed and fake HTTP: once per launch, the setting, refused while the game runs, digest mismatch, offline, success with `--after-update <pid>`, the new window's cleanup, rollback, `--update-feed`/`--update-now`; the banner logic, command line and mock; the real WinHTTP client against an HTTP server on 127.0.0.1), `st_launcher_no_winhttp_import`, `st_launcher_selftest`, `st_launcher_screens` (fails on `imgui-error|FAIL:`), `st_launcher_assets_current` (`make_launcher_assets.py --check`).
+
+```
+cmake -S . -B build-launcher -G "Visual Studio 17 2022" -A x64
+cmake --build build-launcher --config Release --target st_launcher st_launcher_core_tests st_launcher_update_tests
+ctest --test-dir build-launcher -C Release -R st_launcher
+```
+
+### Logo and icon
+
+`tools/launcher/make_launcher_assets.py` (Pillow) reads `docs/readme/logo.png`
+and writes `native/launcher/resources/st_logo.png` (the emblem: pods and cable,
+384 px wide) and `st_launcher.ico` (16-256 px). The black lettering of the logo
+is invisible on the dark UI, so the script cuts the pods out by alpha: the
+first of the alpha row runs (the lettering is the second). Icons of 48 px and
+below show the left pod alone (the pair is a thin strip at that size). The
+window draws the title "STRANDED TOGETHER" itself as spaced Segoe UI Light text
+with faint drip lines, like the logo. `--check` compares pixels (tolerance 2).
+
+## Reused from Diamond Dogs Together vs changed
+
+| DDT | Here |
+|---|---|
+| `launcher_main.cpp` (window, DX11 + WARP, WIC logo, screenshot driver, DPI, dark title bar, single instance per folder, update hand-off) | Kept; rebranded; file dialogs and folder picker removed; `SetDefaultDllDirectories`; 820x580. |
+| `launcher_theme.*` (widgets: Button, Segmented, RadioRow, Checkbox, ProgressBar, Spinner, StatusDot, cards, drawn icons) | Kept; Death Stranding palette (amber `#E8A33A` accent, LED blue `#5BB8FF` secondary, blue-grey panels); Bahnschrift titles; Segoe UI Light spaced title; icons `cable`, `echo`, `network`, `steam`, `stop`. |
+| `launcher_app.*` | Same structure (sidebar, pages, cards, code card, join field, screenshot scenes); pages are Play (Host / Join / Solo test + Advanced), In game, Tools, About. Character picker, HUD, Settings, saves, uninstall and local test removed; the update card on Play and the Updates section on About kept. |
+| `launcher_ui_logic.*` | Same ideas (page rules, join field, code split, ping tone, pacing, command line); new tabs, LAN checks, scenes, options. |
+| `launcher_model.hpp`, `launcher_model_mock.*` | Trimmed interface; added install checks, transport/LAN, solo test, end session; mock builds its link view with the real `StatusViewOf`. |
+| `launcher_join_code.*` | Same, on `stcoop::steam_code` (DST1, `+stranded_join`). |
+| `launcher_entry.*` | `--watch`, `--write-session`, `--end-session`, `--selftest`, single instance, the new window's side of the update hand-off; local-test entries removed. |
+| `core_util`, `core_json`, `core_env(_win32)`, `core_log`, `hash`, `file_io`, `crc32`, `inflate`, `zip` | Copied unchanged except the namespace (`ddt` -> `st`), comments and `ds.exe` as the game process. |
+| `core_paths` | Same algorithm; DS constants, new file layout, `PlayMutexName` prefix. |
+| `core_text` | Secret/SteamID/INI/redaction kept (DST1 and `+stranded_join` redaction, `secret=` redaction); lab.ini/coop.ini, MGSV sentences, missions and launch evidence replaced by `session.ini` and `StatusViewOf`. |
+| `core_session` | Activate/cleanup/helper pattern kept on one file and a smaller record; save handoff, relaunch, marker and coop.ini removed. |
+| `core_install` | The gate (hashes as warnings), `package.json` (simpler than DDT's: version, build id, file hashes) and the winhttp.dll check (ours / foreign / disabled), mod on/off, Steam account, settings and Collect logs (also `session.last.ini`, `package.json`, `error.txt`); no setup steps or uninstall. |
+| `core_model` | Rewritten small (about 570 lines instead of 1,900) on the same patterns. |
+| `core_update` | Same flow (feed, download, staged install with rollback, hand-off to the new exe); WinHTTP loaded from System32 instead of imported; an `HttpClient` seam; the zip verified against its `package.json` (every file) and the feed's digest; prereleases skipped; `.st-new`/`.st-old`; no GPL source-zip rules. |
+| `core_saves`, `core_localtest*`, `qar`, `fpk`, `fox2`, `runtime_dat`, `ddt_datbuild`, assets | Dropped. |
+
+### Screenshots
+
+`st_launcher_screens` renders 35 scenes into `build-launcher\launcher-shots\`
+(`01-play-host` ... `35-about-updates`), among them `10-play-dev-build`,
+`11-play-mod-mismatch`, `13-mod-foreign`, `14-mod-disabled`,
+`20-ingame-solo`, `27-debug-options`, `28-debug-files`, `29-debug-in-game`,
+and the updater's `31-play-update-available`, `32-play-update-downloading`,
+`33-play-update-failed`, `34-play-updated` and `35-about-updates`.
+
+## Not done / not verified
+
+* Not run against the real game: the end-to-end launch through Steam, the mod
+  reading `session.ini` and writing `link-status.json` were not exercised (the
+  mod was being written in parallel). The helper was verified with a stand-in
+  `ds.exe` process in a scratch folder (it removed `session.ini` 8 s after that
+  process exited); the window's own paths are covered by the fake-Env tests.
+* The real window was not opened interactively; every page was checked from
+  the hidden `--screenshot-all` render of the mock model.
+* "Ours" for a DLL without `package.json` is a byte-pattern test (the
+  proxy's forwarders plus the folder name), not a signature: a deliberately
+  crafted DLL would pass it. With `package.json` the SHA-256 decides.
+* The Debug page, mod on/off and the package checks were verified with the
+  unit tests, the screenshots, `--selftest` / `--write-session` in a scratch
+  game folder extracted from a real zip, and the mod's `LoadConfig` in a
+  harness; not against the running game.
+* No saves, uninstall, or Steam invites from the launcher (invites are the
+  mod's job: `+stranded_join` connect strings are accepted when pasted).
+* The updater was run end to end only against a loopback feed (a scratch
+  game folder, a hand-made 0.1.1 zip, `--update-feed ... --update-now`: checked,
+  downloaded, verified, installed, restarted, `.old` deleted); against GitHub
+  only the check (the repository has no release yet). The first real release
+  will be the first real download from GitHub's asset host.

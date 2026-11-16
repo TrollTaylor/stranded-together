@@ -1,0 +1,144 @@
+cmake_minimum_required(VERSION 3.20)
+project(stranded_together VERSION 0.1.0 LANGUAGES C CXX)
+
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+enable_testing()
+
+# Build id both players' links compare (HELLO build field, 16 bytes max).
+set(ST_BUILD_ID "${PROJECT_VERSION}")
+find_package(Git QUIET)
+if(GIT_FOUND)
+  execute_process(COMMAND "${GIT_EXECUTABLE}" rev-parse --short=7 HEAD WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                  OUTPUT_VARIABLE _st_git OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET RESULT_VARIABLE _st_git_rc)
+  if(_st_git_rc EQUAL 0 AND _st_git MATCHES "^[0-9a-f]+$")
+    set(ST_BUILD_ID "${PROJECT_VERSION}+${_st_git}")
+  endif()
+endif()
+message(STATUS "stranded-together build id ${ST_BUILD_ID}")
+
+set(ST_WARNINGS /W4 /WX /utf-8 /permissive-)
+
+# ---- MinHook (BSD-2-Clause, third_party/minhook)
+add_library(st_minhook STATIC
+  third_party/minhook/src/buffer.c
+  third_party/minhook/src/hook.c
+  third_party/minhook/src/trampoline.c
+  third_party/minhook/src/hde/hde64.c)
+target_include_directories(st_minhook PUBLIC third_party/minhook/include)
+
+# ---- Network layer: ported from Diamond Dogs Together (game-agnostic link v2 + Steam P2P)
+add_library(st_net STATIC
+  native/net/import_table.cpp
+  native/net/link_crypto.cpp
+  native/net/link_protocol.cpp
+  native/net/link_session.cpp
+  native/net/pose_interp.cpp
+  native/net/steam_join_code.cpp
+  native/net/steam_net_callbacks.cpp
+  native/net/steam_net_dispatch.cpp
+  native/net/steam_net_gates.cpp
+  native/net/steam_transport.cpp
+  native/net/udp_transport.cpp
+  native/net/win_import_patch.cpp)
+target_include_directories(st_net PUBLIC native/include)
+
+target_compile_options(st_net PRIVATE ${ST_WARNINGS})
+target_link_libraries(st_net PUBLIC ws2_32 bcrypt)
+
+# ---- Dear ImGui for the in-game debug menu: core + DX12 backend (third_party/imgui,
+# v1.92.6). Own build (not the launcher's st_imgui): IM_ASSERT never aborts the game
+# (native/mod/overlay/overlay_imconfig.h).
+add_library(st_mod_imgui STATIC
+  third_party/imgui/imgui.cpp
+  third_party/imgui/imgui_draw.cpp
+  third_party/imgui/imgui_tables.cpp
+  third_party/imgui/imgui_widgets.cpp
+  third_party/imgui/backends/imgui_impl_dx12.cpp)
+target_include_directories(st_mod_imgui PUBLIC third_party/imgui third_party/imgui/backends native/mod/overlay)
+target_compile_definitions(st_mod_imgui PUBLIC "IMGUI_USER_CONFIG=\"overlay_imconfig.h\"")
+target_compile_options(st_mod_imgui PRIVATE /utf-8)
+target_link_libraries(st_mod_imgui PUBLIC dxgi d3dcompiler)
+
+# Overlay + debug-menu sources shared by the mod and the overlay harness.
+set(ST_OVERLAY_SOURCES
+  native/mod/overlay/overlay.cpp
+  native/mod/overlay/overlay_input.cpp
+  native/mod/overlay/overlay_keys.cpp
+  native/mod/overlay/overlay_menu.cpp
+  native/mod/overlay/overlay_positions.cpp
+  native/mod/overlay/overlay_renderer.cpp)
+
+# ---- The mod: winhttp.dll proxy loaded by ds.exe from the game folder
+add_library(st_mod SHARED
+  native/mod/dllmain.cpp
+  native/mod/log.cpp
+  native/mod/config.cpp
+  native/mod/game_api.cpp
+  native/mod/steam_owner.cpp
+  native/mod/link.cpp
+  native/mod/pose_wire.cpp
+  native/mod/player_sync.cpp
+  native/mod/partner_source.cpp
+  native/mod/status.cpp
+  native/mod/debug_actions.cpp
+  native/mod/game_actions.cpp
+  native/mod/partner_holo.cpp
+  native/mod/automation.cpp
+  ${ST_OVERLAY_SOURCES})
+set_target_properties(st_mod PROPERTIES OUTPUT_NAME winhttp PREFIX "")
+target_include_directories(st_mod PRIVATE native/mod)
+target_compile_definitions(st_mod PRIVATE "ST_BUILD_ID=\"${ST_BUILD_ID}\"" UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS)
+target_compile_options(st_mod PRIVATE ${ST_WARNINGS})
+target_link_libraries(st_mod PRIVATE st_net st_minhook user32 st_mod_imgui delayimp)
+# The proxy emits its own winhttp.lib; never link the SDK one into the mod.
+# Graphics DLLs load only when the debug menu is used (the game delay-loads them too).
+target_link_options(st_mod PRIVATE /DELAYLOAD:dxgi.dll /DELAYLOAD:d3dcompiler_47.dll)
+
+# ---- Debug menu checks (no game, no GPU): action queue/registry, log ring,
+# saved-position parsing, key names. tests/overlay_sync_stubs.cpp stands in for
+# player_sync's debug accessors.
+add_executable(st_overlay_tests tests/overlay_tests.cpp tests/overlay_sync_stubs.cpp
+               native/mod/debug_actions.cpp native/mod/log.cpp
+               native/mod/overlay/overlay_keys.cpp native/mod/overlay/overlay_positions.cpp)
+target_include_directories(st_overlay_tests PRIVATE native/mod native/mod/overlay third_party/imgui)
+target_compile_definitions(st_overlay_tests PRIVATE "IMGUI_USER_CONFIG=\"overlay_imconfig.h\"" UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS)
+target_compile_options(st_overlay_tests PRIVATE ${ST_WARNINGS})
+add_test(NAME st_overlay_tests COMMAND st_overlay_tests)
+
+# ---- st_overlay_harness: its own window + D3D12 device + DIRECT queue + flip-model
+# swapchain, the SAME overlay hook path as the mod, menu opened programmatically,
+# pixel checks, ResizeBuffers (incl. a 10-bit format) and PNG screenshots in the
+# build directory. Needs a GPU or WARP (--warp); see docs/debug-menu.md.
+add_executable(st_overlay_harness tests/overlay_harness.cpp tests/overlay_sync_stubs.cpp
+               native/mod/debug_actions.cpp native/mod/log.cpp ${ST_OVERLAY_SOURCES})
+target_include_directories(st_overlay_harness PRIVATE native/mod native/mod/overlay)
+target_compile_definitions(st_overlay_harness PRIVATE "ST_BUILD_ID=\"${ST_BUILD_ID}\"" UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS)
+target_compile_options(st_overlay_harness PRIVATE ${ST_WARNINGS})
+target_link_libraries(st_overlay_harness PRIVATE st_minhook st_mod_imgui d3d12 user32 windowscodecs ole32)
+add_test(NAME st_overlay_harness COMMAND st_overlay_harness --out "${CMAKE_CURRENT_BINARY_DIR}")
+
+# ---- Pure tests (no game needed)
+add_executable(st_net_tests tests/net_tests.cpp native/mod/pose_wire.cpp)
+target_include_directories(st_net_tests PRIVATE native/mod)
+target_link_libraries(st_net_tests PRIVATE st_net)
+target_compile_options(st_net_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_net_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_net_tests COMMAND st_net_tests)
+
+# ---- st_fakepeer: console stand-in for the second player (UDP), + self-test
+add_executable(st_fakepeer tools/fakepeer/fakepeer.cpp native/mod/link.cpp native/mod/steam_owner.cpp
+               native/mod/log.cpp native/mod/pose_wire.cpp)
+target_include_directories(st_fakepeer PRIVATE native/mod)
+target_compile_definitions(st_fakepeer PRIVATE "ST_BUILD_ID=\"${ST_BUILD_ID}\"" _CRT_SECURE_NO_WARNINGS)
+target_compile_options(st_fakepeer PRIVATE ${ST_WARNINGS})
+target_link_libraries(st_fakepeer PRIVATE st_net st_minhook)
+add_test(NAME st_fakepeer_selftest COMMAND st_fakepeer --selftest)
+
+# ---- Launcher (StrandedTogether.exe)
+include(cmake/launcher.cmake OPTIONAL)
+
+# ---- Hidden test environment (private-desktop game runs): tools/testenv
+include(cmake/testenv.cmake OPTIONAL)

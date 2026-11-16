@@ -1,0 +1,664 @@
+// See overlay_input.hpp for what is blocked and why.
+#include "overlay_input.hpp"
+
+#include <windowsx.h>
+#include <xinput.h>
+
+#include <atomic>
+#include <cstring>
+
+#include "MinHook.h"
+#include "log.hpp"
+
+namespace st::overlay::input {
+namespace {
+
+using SetCursorPosFn = BOOL(WINAPI*)(int, int);
+using ClipCursorFn = BOOL(WINAPI*)(const RECT*);
+using XInputGetStateFn = DWORD(WINAPI*)(DWORD, XINPUT_STATE*);
+using GetForegroundWindowFn = HWND(WINAPI*)();
+
+std::atomic<bool> g_open{false};
+std::atomic<std::uint32_t> g_toggle_vk{0x78};
+std::atomic<unsigned> g_toggles{0};
+std::atomic<bool> g_close_request{false};
+std::atomic<bool> g_toggle_seen_by_messages{false};  // the hook/WndProc saw the key at least once
+bool g_poll_prev = false;
+
+// Window + hooks
+std::atomic<HWND> g_hwnd{nullptr};
+std::atomic<WNDPROC> g_prev_proc{nullptr};
+HHOOK g_kb_hook = nullptr;
+std::atomic<bool> g_kb_hook_on{false};
+
+// API hooks
+void* g_setcursorpos_target = nullptr;
+void* g_clipcursor_target = nullptr;
+void* g_xinput_target = nullptr;
+void* g_xinput14_target = nullptr;
+void* g_foreground_target = nullptr;
+SetCursorPosFn g_orig_setcursorpos = nullptr;
+ClipCursorFn g_orig_clipcursor = nullptr;
+XInputGetStateFn g_orig_xinput = nullptr;
+XInputGetStateFn g_orig_xinput14 = nullptr;
+GetForegroundWindowFn g_orig_foreground = nullptr;
+
+// Automation (hidden test runs)
+std::atomic<bool> g_automation{false};
+SRWLOCK g_pad_lock = SRWLOCK_INIT;
+PadState g_pad;
+DWORD g_pad_packet = 1;
+
+// Cursor clip bookkeeping (SetOpen on the render thread, ClipCursor hook on any thread)
+SRWLOCK g_clip_lock = SRWLOCK_INIT;
+bool g_clip_saved = false;
+bool g_clip_was_free = true;
+RECT g_clip_rect{};
+bool g_game_clip_set = false;   // the game called ClipCursor while the menu was open
+bool g_game_clip_null = true;
+RECT g_game_clip{};
+
+// Keys/buttons physically down when the menu opened. Their releases still reach
+// the game (raw input, legacy messages, keyboard hook): otherwise a key held
+// while opening the menu (W, a mouse button) stays "down" in the game's own input
+// state after the menu closes. Written on open (render thread), read on the
+// window thread.
+std::atomic<std::uint64_t> g_held[4];
+std::atomic<bool> g_mouse_held{false};
+
+bool Held(std::uint32_t vk) noexcept {
+    return vk < 256 && (g_held[vk >> 6].load(std::memory_order_relaxed) >> (vk & 63) & 1u) != 0;
+}
+void MarkHeld(std::uint32_t vk) noexcept {
+    if (vk >= 256) return;
+    g_held[vk >> 6].fetch_or(std::uint64_t{1} << (vk & 63), std::memory_order_relaxed);
+    if (vk == VK_LBUTTON || vk == VK_RBUTTON || vk == VK_MBUTTON || vk == VK_XBUTTON1 || vk == VK_XBUTTON2)
+        g_mouse_held.store(true, std::memory_order_relaxed);
+}
+void ClearHeld() noexcept {
+    for (auto& h : g_held) h.store(0, std::memory_order_relaxed);
+    g_mouse_held.store(false, std::memory_order_relaxed);
+}
+void CaptureHeld(std::uint32_t toggle) noexcept {
+    ClearHeld();
+    for (std::uint32_t vk = 1; vk < 255; ++vk)
+        if (vk != toggle && (GetAsyncKeyState(static_cast<int>(vk)) & 0x8000)) MarkHeld(vk);
+}
+
+// WM_INPUT that only releases something held since before the menu opened.
+// Reading the packet does not consume it: the game's own GetRawInputData still
+// gets it when we pass the message on.
+bool IsHeldRelease(LPARAM lp) noexcept {
+    RAWINPUT ri;
+    UINT size = sizeof(ri);
+    if (GetRawInputData(reinterpret_cast<HRAWINPUT>(lp), RID_INPUT, &ri, &size, sizeof(RAWINPUTHEADER)) == static_cast<UINT>(-1))
+        return false;  // HID packets (bigger) and bad handles: blocked
+    if (ri.header.dwType == RIM_TYPEKEYBOARD)
+        return (ri.data.keyboard.Flags & RI_KEY_BREAK) != 0 && Held(ri.data.keyboard.VKey);
+    if (ri.header.dwType == RIM_TYPEMOUSE && g_mouse_held.load(std::memory_order_relaxed)) {
+        const USHORT f = ri.data.mouse.usButtonFlags;
+        constexpr USHORT kUp = RI_MOUSE_LEFT_BUTTON_UP | RI_MOUSE_RIGHT_BUTTON_UP | RI_MOUSE_MIDDLE_BUTTON_UP |
+                               RI_MOUSE_BUTTON_4_UP | RI_MOUSE_BUTTON_5_UP;
+        return (f & kUp) != 0 && (f & ~kUp) == 0;  // releases only: no press, no wheel
+    }
+    return false;
+}
+
+bool IsButtonUp(UINT m) noexcept { return m == WM_LBUTTONUP || m == WM_RBUTTONUP || m == WM_MBUTTONUP || m == WM_XBUTTONUP; }
+
+// Event ring
+constexpr std::size_t kCap = 512;
+SRWLOCK g_ev_lock = SRWLOCK_INIT;
+Event g_events[kCap];
+std::size_t g_ev_head = 0, g_ev_count = 0;
+
+// Stats
+std::atomic<unsigned long> g_blocked_messages{0}, g_blocked_raw{0}, g_blocked_keys{0}, g_supp_clip{0}, g_supp_pos{0},
+    g_idle_pads{0}, g_toggle_count{0}, g_chars{0}, g_virtual_reads{0}, g_isolated_reads{0}, g_foreground_answers{0};
+
+void Push(const Event& e) noexcept {
+    AcquireSRWLockExclusive(&g_ev_lock);
+    g_events[(g_ev_head + g_ev_count) % kCap] = e;
+    if (g_ev_count < kCap) ++g_ev_count;
+    else g_ev_head = (g_ev_head + 1) % kCap;
+    ReleaseSRWLockExclusive(&g_ev_lock);
+}
+
+void ClearEvents() noexcept {
+    AcquireSRWLockExclusive(&g_ev_lock);
+    g_ev_head = g_ev_count = 0;
+    ReleaseSRWLockExclusive(&g_ev_lock);
+}
+
+void Toggle() noexcept {
+    g_toggles.fetch_add(1);
+    g_toggle_count.fetch_add(1);
+}
+
+void PushKey(std::uint32_t vk, bool down, bool extended) noexcept {
+    Event e;
+    e.type = EventType::key;
+    e.vk = vk;
+    e.down = down;
+    e.extended = extended;
+    Push(e);
+}
+
+void PushChar(std::uint32_t ch) noexcept {
+    if (ch < 0x20 || ch == 0x7F) return;  // control characters are keys, not text
+    Event e;
+    e.type = EventType::character;
+    e.ch = ch;
+    Push(e);
+    g_chars.fetch_add(1, std::memory_order_relaxed);
+}
+
+void PushButton(int button, bool down) noexcept {
+    Event e;
+    e.type = EventType::mouse_button;
+    e.button = button;
+    e.down = down;
+    Push(e);
+}
+
+// Characters for a key swallowed by our keyboard hook (no WM_CHAR is generated
+// for it). Runs on the window thread. Modifier state comes from the physical
+// keys: the thread's own key state never saw the swallowed modifier presses.
+void PushCharsFor(std::uint32_t vk, LPARAM lp) noexcept {
+    const bool ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+    if (ctrl && !alt) return;  // shortcuts (Ctrl+C...) are keys; Ctrl+Alt is AltGr text
+    BYTE keys[256] = {};
+    if (GetAsyncKeyState(VK_SHIFT) & 0x8000) keys[VK_SHIFT] = keys[VK_LSHIFT] = 0x80;
+    if (ctrl) keys[VK_CONTROL] = keys[VK_LCONTROL] = 0x80;
+    if (alt) keys[VK_MENU] = keys[VK_RMENU] = 0x80;
+    if (GetKeyState(VK_CAPITAL) & 1) keys[VK_CAPITAL] = 0x01;
+    keys[vk & 0xFF] |= 0x80;
+    wchar_t text[8] = {};
+    const UINT scan = static_cast<UINT>((lp >> 16) & 0xFF);
+    // Flag 4: do not change the keyboard state (dead keys stay intact for the game).
+    const int n = ToUnicodeEx(vk, scan, keys, text, 8, 4, GetKeyboardLayout(0));
+    for (int i = 0; i < n && i < 8; ++i) PushChar(text[i]);
+}
+
+LRESULT CALLBACK KeyboardProc(int code, WPARAM wp, LPARAM lp) {
+    if (code < 0) return CallNextHookEx(nullptr, code, wp, lp);
+    const std::uint32_t vk = static_cast<std::uint32_t>(wp);
+    const bool up = (lp & (1LL << 31)) != 0;
+    const bool was_down = (lp & (1LL << 30)) != 0;
+    const bool alt = (lp & (1LL << 29)) != 0;
+    const bool extended = (lp & (1LL << 24)) != 0;
+    if (vk == g_toggle_vk.load(std::memory_order_relaxed)) {
+        g_toggle_seen_by_messages.store(true, std::memory_order_relaxed);
+        if (code == HC_ACTION && !up && !was_down) Toggle();
+        return 1;  // the toggle key never reaches the game
+    }
+    if (g_open.load(std::memory_order_acquire)) {
+        if (vk == VK_F4 && alt) return CallNextHookEx(nullptr, code, wp, lp);  // Alt+F4 still closes the game
+        if (up && Held(vk)) {  // releasing a key held since before the menu opened
+            if (code == HC_ACTION) PushKey(vk, false, extended);
+            return CallNextHookEx(nullptr, code, wp, lp);
+        }
+        if (code == HC_ACTION) {
+            PushKey(vk, !up, extended);
+            if (!up) PushCharsFor(vk, lp);
+            g_blocked_keys.fetch_add(1, std::memory_order_relaxed);
+        }
+        return 1;
+    }
+    return CallNextHookEx(nullptr, code, wp, lp);
+}
+
+bool IsMouseMessage(UINT m) noexcept { return m >= WM_MOUSEFIRST && m <= WM_MOUSELAST; }
+bool IsKeyMessage(UINT m) noexcept { return m >= WM_KEYFIRST && m <= WM_KEYLAST; }
+
+LRESULT CALLBACK WndProc(HWND hwnd, UINT m, WPARAM wp, LPARAM lp) {
+    const WNDPROC prev = g_prev_proc.load(std::memory_order_acquire);
+    const auto pass = [&]() -> LRESULT {
+        return prev ? CallWindowProcW(prev, hwnd, m, wp, lp) : DefWindowProcW(hwnd, m, wp, lp);
+    };
+
+    if (m == WM_NCDESTROY) {
+        // The window is going away: unhook ourselves (only if still on top).
+        if (prev && reinterpret_cast<WNDPROC>(GetWindowLongPtrW(hwnd, GWLP_WNDPROC)) == &WndProc)
+            SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(prev));
+        g_hwnd.store(nullptr);
+        g_open.store(false);
+        return pass();
+    }
+    if (m == WM_KILLFOCUS || (m == WM_ACTIVATEAPP && wp == FALSE)) {
+        // Automation: the hidden window is never really focused; keep the menu.
+        if (g_open.load() && !g_automation.load(std::memory_order_relaxed)) g_close_request.store(true);
+        return pass();
+    }
+
+    const std::uint32_t toggle = g_toggle_vk.load(std::memory_order_relaxed);
+    if ((m == WM_KEYDOWN || m == WM_SYSKEYDOWN || m == WM_KEYUP || m == WM_SYSKEYUP) && wp == toggle) {
+        // Only reaches here when our keyboard hook is not installed.
+        g_toggle_seen_by_messages.store(true, std::memory_order_relaxed);
+        if ((m == WM_KEYDOWN || m == WM_SYSKEYDOWN) && !(lp & (1LL << 30))) Toggle();
+        return 0;
+    }
+    if (!g_open.load(std::memory_order_acquire)) return pass();
+
+    // ---- menu open: nothing below reaches the game
+    if (m == WM_INPUT) {
+        if (IsHeldRelease(lp)) return pass();
+        g_blocked_raw.fetch_add(1, std::memory_order_relaxed);
+        return DefWindowProcW(hwnd, m, wp, lp);  // lets the system clean up the raw input handle
+    }
+    if (IsMouseMessage(m)) {
+        switch (m) {
+            case WM_MOUSEMOVE: {
+                Event e;
+                e.type = EventType::mouse_move;
+                e.x = static_cast<float>(GET_X_LPARAM(lp));
+                e.y = static_cast<float>(GET_Y_LPARAM(lp));
+                Push(e);
+                break;
+            }
+            case WM_LBUTTONDOWN: case WM_LBUTTONDBLCLK: PushButton(0, true); break;
+            case WM_LBUTTONUP: PushButton(0, false); break;
+            case WM_RBUTTONDOWN: case WM_RBUTTONDBLCLK: PushButton(1, true); break;
+            case WM_RBUTTONUP: PushButton(1, false); break;
+            case WM_MBUTTONDOWN: case WM_MBUTTONDBLCLK: PushButton(2, true); break;
+            case WM_MBUTTONUP: PushButton(2, false); break;
+            case WM_XBUTTONDOWN: case WM_XBUTTONDBLCLK: PushButton(GET_XBUTTON_WPARAM(wp) == XBUTTON1 ? 3 : 4, true); break;
+            case WM_XBUTTONUP: PushButton(GET_XBUTTON_WPARAM(wp) == XBUTTON1 ? 3 : 4, false); break;
+            case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL: {
+                Event e;
+                e.type = EventType::wheel;
+                const float notches = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wp)) / static_cast<float>(WHEEL_DELTA);
+                (m == WM_MOUSEWHEEL ? e.y : e.x) = notches;
+                Push(e);
+                break;
+            }
+            default: break;
+        }
+        if (IsButtonUp(m) && g_mouse_held.load(std::memory_order_relaxed)) return pass();  // held since before opening
+        g_blocked_messages.fetch_add(1, std::memory_order_relaxed);
+        return m == WM_XBUTTONDOWN || m == WM_XBUTTONUP || m == WM_XBUTTONDBLCLK ? TRUE : 0;
+    }
+    if (IsKeyMessage(m)) {
+        if ((m == WM_SYSKEYDOWN || m == WM_SYSKEYUP) && wp == VK_F4) return pass();  // Alt+F4
+        const bool hooked = g_kb_hook_on.load(std::memory_order_relaxed);
+        if (!hooked) {
+            if (m == WM_KEYDOWN || m == WM_SYSKEYDOWN || m == WM_KEYUP || m == WM_SYSKEYUP)
+                PushKey(static_cast<std::uint32_t>(wp), m == WM_KEYDOWN || m == WM_SYSKEYDOWN, (lp & (1LL << 24)) != 0);
+            else if (m == WM_CHAR || m == WM_SYSCHAR)
+                PushChar(static_cast<std::uint32_t>(wp));
+        }
+        if ((m == WM_KEYUP || m == WM_SYSKEYUP) && Held(static_cast<std::uint32_t>(wp))) return pass();  // held since before opening
+        g_blocked_messages.fetch_add(1, std::memory_order_relaxed);
+        return 0;
+    }
+    if (m == WM_SETCURSOR && LOWORD(lp) == HTCLIENT) {
+        SetCursor(nullptr);  // the menu draws its own cursor
+        return TRUE;
+    }
+    return pass();
+}
+
+BOOL WINAPI HookSetCursorPos(int x, int y) {
+    if (g_open.load(std::memory_order_acquire) || g_automation.load(std::memory_order_relaxed)) {
+        g_supp_pos.fetch_add(1, std::memory_order_relaxed);
+        return TRUE;
+    }
+    return g_orig_setcursorpos(x, y);
+}
+
+BOOL WINAPI HookClipCursor(const RECT* r) {
+    if (g_automation.load(std::memory_order_relaxed)) {  // the cursor belongs to the user's desktop
+        g_supp_clip.fetch_add(1, std::memory_order_relaxed);
+        return TRUE;
+    }
+    if (g_open.load(std::memory_order_acquire)) {
+        AcquireSRWLockExclusive(&g_clip_lock);
+        g_game_clip_set = true;
+        g_game_clip_null = r == nullptr;
+        if (r) g_game_clip = *r;
+        ReleaseSRWLockExclusive(&g_clip_lock);
+        g_supp_clip.fetch_add(1, std::memory_order_relaxed);
+        return TRUE;
+    }
+    return g_orig_clipcursor(r);
+}
+
+DWORD AnswerXInput(XInputGetStateFn orig, DWORD index, XINPUT_STATE* state) {
+    if (g_automation.load(std::memory_order_relaxed)) {
+        // Only the virtual pad exists: a real pad never reaches the hidden game.
+        AcquireSRWLockShared(&g_pad_lock);
+        const PadState p = g_pad;
+        const DWORD packet = g_pad_packet;
+        ReleaseSRWLockShared(&g_pad_lock);
+        if (index != 0 || !p.connected) {
+            g_isolated_reads.fetch_add(1, std::memory_order_relaxed);
+            return ERROR_DEVICE_NOT_CONNECTED;
+        }
+        if (!state) return ERROR_BAD_ARGUMENTS;
+        std::memset(state, 0, sizeof(*state));
+        state->dwPacketNumber = packet;
+        if (!g_open.load(std::memory_order_acquire)) {  // an open menu keeps the pad idle, as for a real pad
+            state->Gamepad.wButtons = p.buttons;
+            state->Gamepad.bLeftTrigger = p.lt;
+            state->Gamepad.bRightTrigger = p.rt;
+            state->Gamepad.sThumbLX = p.lx;
+            state->Gamepad.sThumbLY = p.ly;
+            state->Gamepad.sThumbRX = p.rx;
+            state->Gamepad.sThumbRY = p.ry;
+        }
+        g_virtual_reads.fetch_add(1, std::memory_order_relaxed);
+        return ERROR_SUCCESS;
+    }
+    if (!orig) return ERROR_DEVICE_NOT_CONNECTED;
+    const DWORD r = orig(index, state);
+    if (r == ERROR_SUCCESS && state && g_open.load(std::memory_order_acquire)) {
+        std::memset(&state->Gamepad, 0, sizeof(state->Gamepad));  // connected, idle
+        g_idle_pads.fetch_add(1, std::memory_order_relaxed);
+    }
+    return r;
+}
+
+DWORD WINAPI HookXInputGetState(DWORD index, XINPUT_STATE* state) { return AnswerXInput(g_orig_xinput, index, state); }
+DWORD WINAPI HookXInput14GetState(DWORD index, XINPUT_STATE* state) { return AnswerXInput(g_orig_xinput14, index, state); }
+
+// Before the first Present attaches us to the game window: the process's largest
+// visible top-level window (cached for 250 ms; the hidden desktop holds only ours).
+HWND OwnMainWindow() noexcept {
+    static std::atomic<HWND> cached{nullptr};
+    static std::atomic<ULONGLONG> when{0};
+    const ULONGLONG now = GetTickCount64();
+    if (now - when.load(std::memory_order_relaxed) < 250) return cached.load(std::memory_order_relaxed);
+    struct Find {
+        HWND best = nullptr;
+        LONG area = 0;
+    } f;
+    EnumWindows([](HWND w, LPARAM lp) -> BOOL {
+        DWORD pid = 0;
+        GetWindowThreadProcessId(w, &pid);
+        if (pid != GetCurrentProcessId() || GetWindow(w, GW_OWNER) || !IsWindowVisible(w)) return TRUE;
+        RECT r{};
+        GetWindowRect(w, &r);
+        auto* find = reinterpret_cast<Find*>(lp);
+        const LONG area = (r.right - r.left) * (r.bottom - r.top);
+        if (area > find->area) find->best = w, find->area = area;
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&f));
+    cached.store(f.best, std::memory_order_relaxed);
+    when.store(now, std::memory_order_relaxed);
+    return f.best;
+}
+
+HWND WINAPI HookGetForegroundWindow() {
+    if (g_automation.load(std::memory_order_relaxed)) {
+        HWND h = g_hwnd.load(std::memory_order_acquire);
+        if (!h) h = OwnMainWindow();
+        if (h) {
+            g_foreground_answers.fetch_add(1, std::memory_order_relaxed);
+            return h;
+        }
+    }
+    return g_orig_foreground ? g_orig_foreground() : nullptr;
+}
+
+BOOL RealClipCursor(const RECT* r) noexcept { return g_orig_clipcursor ? g_orig_clipcursor(r) : ClipCursor(r); }
+
+bool Create(void* target, void* detour, void** original, const char* name) noexcept {
+    const MH_STATUS s = MH_CreateHook(target, detour, original);
+    if (s != MH_OK) {
+        Log("[overlay] input hook %s: MH_CreateHook failed (%s)", name, MH_StatusToString(s));
+        return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+bool CreateApiHooks(void** targets, std::size_t* count, std::size_t cap) noexcept {
+    HMODULE user = GetModuleHandleW(L"user32.dll");
+    if (!user) user = LoadLibraryW(L"user32.dll");
+    if (!user || *count + 5 > cap) return false;
+    void* scp = reinterpret_cast<void*>(GetProcAddress(user, "SetCursorPos"));
+    void* clip = reinterpret_cast<void*>(GetProcAddress(user, "ClipCursor"));
+    if (!scp || !clip) {
+        Log("[overlay] user32 SetCursorPos/ClipCursor not found");
+        return false;
+    }
+    if (!Create(scp, reinterpret_cast<void*>(&HookSetCursorPos), reinterpret_cast<void**>(&g_orig_setcursorpos), "SetCursorPos"))
+        return false;
+    g_setcursorpos_target = scp;
+    targets[(*count)++] = scp;
+    if (!Create(clip, reinterpret_cast<void*>(&HookClipCursor), reinterpret_cast<void**>(&g_orig_clipcursor), "ClipCursor")) {
+        RemoveApiHooks();
+        return false;
+    }
+    g_clipcursor_target = clip;
+    targets[(*count)++] = clip;
+
+    // The game's XInput: ds.exe loads xinput1_4.dll by name and calls its
+    // XInputGetState through a function pointer (0x1419B1C57); XINPUTUAP.dll
+    // (delay-loaded) is only its fallback. Both are hooked (optional).
+    HMODULE x14 = GetModuleHandleW(L"xinput1_4.dll");
+    if (!x14) x14 = LoadLibraryW(L"xinput1_4.dll");
+    void* x14get = x14 ? reinterpret_cast<void*>(GetProcAddress(x14, "XInputGetState")) : nullptr;
+    if (x14get && Create(x14get, reinterpret_cast<void*>(&HookXInput14GetState), reinterpret_cast<void**>(&g_orig_xinput14),
+                         "XInputGetState (xinput1_4)")) {
+        g_xinput14_target = x14get;
+        targets[(*count)++] = x14get;
+    } else {
+        Log("[overlay] xinput1_4 XInputGetState not hooked (%s)", x14 ? "export missing or hook failed" : "dll not loadable");
+    }
+    HMODULE xi = GetModuleHandleW(L"XINPUTUAP.dll");
+    if (!xi) xi = LoadLibraryW(L"XINPUTUAP.dll");
+    void* xget = xi ? reinterpret_cast<void*>(GetProcAddress(xi, "XInputGetState")) : nullptr;
+    if (xget && xget != x14get &&
+        Create(xget, reinterpret_cast<void*>(&HookXInputGetState), reinterpret_cast<void**>(&g_orig_xinput),
+               "XInputGetState (XINPUTUAP)")) {
+        g_xinput_target = xget;
+        targets[(*count)++] = xget;
+    } else {
+        Log("[overlay] XINPUTUAP XInputGetState not hooked (%s)", xi ? "export missing or hook failed" : "dll not loadable");
+    }
+    if (g_automation.load()) {
+        void* fg = reinterpret_cast<void*>(GetProcAddress(user, "GetForegroundWindow"));
+        if (fg && Create(fg, reinterpret_cast<void*>(&HookGetForegroundWindow), reinterpret_cast<void**>(&g_orig_foreground),
+                         "GetForegroundWindow")) {
+            g_foreground_target = fg;
+            targets[(*count)++] = fg;
+        } else {
+            Log("[overlay] automation: GetForegroundWindow not hooked; the game may treat its hidden window as unfocused");
+        }
+    }
+    return true;
+}
+
+void RemoveApiHooks() noexcept {
+    for (void** t : {&g_setcursorpos_target, &g_clipcursor_target, &g_xinput_target, &g_xinput14_target, &g_foreground_target}) {
+        if (*t) {
+            MH_DisableHook(*t);
+            MH_RemoveHook(*t);
+            *t = nullptr;
+        }
+    }
+    g_orig_setcursorpos = nullptr;
+    g_orig_clipcursor = nullptr;
+    g_orig_xinput = nullptr;
+    g_orig_xinput14 = nullptr;
+    g_orig_foreground = nullptr;
+}
+
+void SetToggleKey(std::uint32_t vk) noexcept { g_toggle_vk.store(vk ? vk : 0x78); }
+std::uint32_t ToggleKey() noexcept { return g_toggle_vk.load(); }
+
+bool Attach(HWND hwnd) noexcept {
+    if (!hwnd || !IsWindow(hwnd)) return false;
+    if (g_hwnd.load() == hwnd) return true;
+    if (g_hwnd.load()) Detach();
+    DWORD pid = 0;
+    const DWORD tid = GetWindowThreadProcessId(hwnd, &pid);
+    if (!tid || pid != GetCurrentProcessId()) {
+        Log("[overlay] window %p is not ours; input not attached", hwnd);
+        return false;
+    }
+    SetLastError(ERROR_SUCCESS);
+    const auto prev = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&WndProc)));
+    if (!prev && GetLastError() != ERROR_SUCCESS) {
+        Log("[overlay] could not subclass the game window (error %lu): menu input disabled", GetLastError());
+        return false;
+    }
+    g_prev_proc.store(prev);
+    g_hwnd.store(hwnd);
+    // Our hook goes on top of the game's own WH_KEYBOARD hook (newest runs first).
+    g_kb_hook = SetWindowsHookExW(WH_KEYBOARD, &KeyboardProc, nullptr, tid);
+    if (!g_kb_hook) {
+        HMODULE self = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(&KeyboardProc), &self);
+        g_kb_hook = SetWindowsHookExW(WH_KEYBOARD, &KeyboardProc, self, tid);
+    }
+    g_kb_hook_on.store(g_kb_hook != nullptr);
+    Log("[overlay] input attached to window %p (thread %lu): subclassed, keyboard hook %s", hwnd, tid,
+        g_kb_hook ? "on" : "FAILED (keys may reach the game while the menu is open)");
+    return true;
+}
+
+void Detach() noexcept {
+    SetOpen(false);
+    if (g_kb_hook) {
+        UnhookWindowsHookEx(g_kb_hook);
+        g_kb_hook = nullptr;
+    }
+    g_kb_hook_on.store(false);
+    const HWND hwnd = g_hwnd.exchange(nullptr);
+    const WNDPROC prev = g_prev_proc.load();
+    if (hwnd && prev && IsWindow(hwnd) && reinterpret_cast<WNDPROC>(GetWindowLongPtrW(hwnd, GWLP_WNDPROC)) == &WndProc)
+        SetWindowLongPtrW(hwnd, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(prev));
+    // g_prev_proc stays: a message already inside WndProc may still call it.
+    ClearEvents();
+}
+
+HWND Window() noexcept { return g_hwnd.load(); }
+
+unsigned TakeToggles() noexcept { return g_toggles.exchange(0); }
+
+void PollToggleFallback() noexcept {
+    // Only when neither our keyboard hook nor the window ever reported the key.
+    if (g_kb_hook_on.load() || g_toggle_seen_by_messages.load()) return;
+    const HWND hwnd = g_hwnd.load();
+    const bool fg = hwnd && GetForegroundWindow() == hwnd;
+    const bool down = fg && (GetAsyncKeyState(static_cast<int>(g_toggle_vk.load())) & 0x8000) != 0;
+    if (down && !g_poll_prev) Toggle();
+    g_poll_prev = down;
+}
+
+bool TakeCloseRequest() noexcept { return g_close_request.exchange(false); }
+void RequestToggleForTest() noexcept { Toggle(); }
+LRESULT KeyboardProcForTest(int code, WPARAM vk, LPARAM lp) noexcept { return KeyboardProc(code, vk, lp); }
+
+void SetOpen(bool open) noexcept {
+    const bool was = g_open.exchange(open);
+    if (was == open) return;
+    const HWND hwnd = g_hwnd.load();
+    if (open) {
+        g_close_request.store(false);
+        ClearEvents();
+        CaptureHeld(g_toggle_vk.load());
+        AcquireSRWLockExclusive(&g_clip_lock);
+        RECT r{};
+        g_clip_saved = GetClipCursor(&r) != FALSE;
+        RECT desk{GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN), 0, 0};
+        desk.right = desk.left + GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        desk.bottom = desk.top + GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        g_clip_was_free = !g_clip_saved || EqualRect(&r, &desk);
+        g_clip_rect = r;
+        g_game_clip_set = false;
+        ReleaseSRWLockExclusive(&g_clip_lock);
+        if (!g_automation.load()) RealClipCursor(nullptr);  // free the cursor for the menu
+    } else {
+        AcquireSRWLockExclusive(&g_clip_lock);
+        bool apply = false, null_clip = true;
+        RECT r{};
+        if (g_game_clip_set) {  // what the game asked for while we held the cursor
+            apply = true;
+            null_clip = g_game_clip_null;
+            r = g_game_clip;
+        } else if (g_clip_saved) {
+            apply = true;
+            null_clip = g_clip_was_free;
+            r = g_clip_rect;
+        }
+        g_clip_saved = g_game_clip_set = false;
+        ReleaseSRWLockExclusive(&g_clip_lock);
+        // The clip is desktop-global: never impose it on another focused application.
+        if (apply && hwnd && !g_automation.load() && GetForegroundWindow() == hwnd) RealClipCursor(null_clip ? nullptr : &r);
+        ClearEvents();
+        ClearHeld();
+    }
+}
+
+void MarkHeldForTest(std::uint32_t vk) noexcept { MarkHeld(vk); }
+
+bool IsOpen() noexcept { return g_open.load(); }
+
+std::size_t Drain(Event* out, std::size_t max) noexcept {
+    AcquireSRWLockExclusive(&g_ev_lock);
+    const std::size_t n = g_ev_count < max ? g_ev_count : max;
+    for (std::size_t i = 0; i < n; ++i) out[i] = g_events[(g_ev_head + i) % kCap];
+    g_ev_head = (g_ev_head + n) % kCap;
+    g_ev_count -= n;
+    ReleaseSRWLockExclusive(&g_ev_lock);
+    return n;
+}
+
+bool CursorClientPos(float* x, float* y) noexcept {
+    const HWND hwnd = g_hwnd.load();
+    POINT p{};
+    if (!hwnd || !GetCursorPos(&p) || !ScreenToClient(hwnd, &p)) return false;
+    *x = static_cast<float>(p.x);
+    *y = static_cast<float>(p.y);
+    return true;
+}
+
+Stats GetStats() noexcept {
+    Stats s;
+    s.subclassed = g_hwnd.load() != nullptr;
+    s.keyboard_hook = g_kb_hook_on.load();
+    s.cursor_hooks = g_setcursorpos_target && g_clipcursor_target;
+    s.xinput_hook = g_xinput_target != nullptr || g_xinput14_target != nullptr;
+    s.xinput14_hook = g_xinput14_target != nullptr;
+    s.automation = g_automation.load();
+    s.virtual_pad_reads = g_virtual_reads.load();
+    s.isolated_pad_reads = g_isolated_reads.load();
+    s.foreground_answers = g_foreground_answers.load();
+    s.blocked_messages = g_blocked_messages.load();
+    s.blocked_raw_input = g_blocked_raw.load();
+    s.blocked_keys = g_blocked_keys.load();
+    s.characters = g_chars.load();
+    s.suppressed_clip = g_supp_clip.load();
+    s.suppressed_cursor_pos = g_supp_pos.load();
+    s.idle_pads = g_idle_pads.load();
+    s.toggles = g_toggle_count.load();
+    return s;
+}
+
+void SetAutomation(bool on) noexcept { g_automation.store(on); }
+bool Automation() noexcept { return g_automation.load(); }
+
+void SetVirtualPad(const PadState& pad) noexcept {
+    AcquireSRWLockExclusive(&g_pad_lock);
+    const bool changed = pad.connected != g_pad.connected || pad.buttons != g_pad.buttons || pad.lt != g_pad.lt ||
+                         pad.rt != g_pad.rt || pad.lx != g_pad.lx || pad.ly != g_pad.ly || pad.rx != g_pad.rx ||
+                         pad.ry != g_pad.ry;
+    g_pad = pad;
+    if (changed) ++g_pad_packet;  // XInput: a new packet number whenever the state changes
+    ReleaseSRWLockExclusive(&g_pad_lock);
+}
+
+PadState VirtualPad() noexcept {
+    AcquireSRWLockShared(&g_pad_lock);
+    const PadState p = g_pad;
+    ReleaseSRWLockShared(&g_pad_lock);
+    return p;
+}
+
+}  // namespace st::overlay::input

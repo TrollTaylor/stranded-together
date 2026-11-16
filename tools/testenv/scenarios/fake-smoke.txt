@@ -1,0 +1,17 @@
+# End-to-end check with the fake game (ctest st_testenv_e2e): the real mod and
+# supervisor, a stand-in ds.exe that toggles its clear colour on each A press.
+role solo
+timeout 150
+waitready 60
+waitlog 30 \[overlay\] installed
+sleep 1500
+screenshot fake-01-before
+pad A 300
+wait 400
+screenshot fake-02-after-a
+menu open
+screenshot fake-03-menu
+menu close
+snapshot
+log fake smoke done
+quit

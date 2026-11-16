@@ -1,0 +1,171 @@
+// Debug-menu plumbing shared by the overlay (render thread) and the mod's tick
+// (game main thread, st::sync::Tick):
+//
+//   render thread  --Queue(Request)-->  [locked queue]  --Drain on tick-->  handler (game thread)
+//   tick thread    --Publish(Snapshot)--> [locked copy] --GetSnapshot-->    menu (render thread)
+//
+// The menu never touches game memory: everything it shows is a copy the tick
+// published, and everything it does is a request the tick executes.
+//
+// Adding an action: one enum value below + one row in kRows (debug_actions.cpp)
+// with its handler there. Game-side work lives in game_actions.cpp (st::game). The menu lists rows by tab, so most actions need no
+// menu code at all.
+#pragma once
+#include <cstddef>
+#include <cstdint>
+
+#include "game_actions.hpp"
+
+namespace st::debug {
+
+enum class Action : std::uint8_t {
+    respawn_partner,      // what F7 does: remove the partner, spawn again next frame
+    remove_partner,       // remove and hold spawning until "respawn"
+    show_partner,
+    hide_partner,
+    set_echo_tuning,      // f[0] = echo delay (s), f[1] = sideways offset (m)
+    set_verbose,          // flag
+    log_positions,        // what F6 does
+    log_partner,          // partner entity details (type, flags, components)
+    log_status,           // the whole snapshot to the log
+    teleport,             // v = x, y, z; i = game::TeleportMode (0 = place, 2 = snap to ground from x, y)
+    teleport_to_partner,
+    unstuck,              // teleport to the game's recorded safe ground position
+    heal,                 // f[0] = amount (0 = to max health)
+    set_time_of_day,      // f[0] = hours [0, 24)
+    set_day_night_cycle,  // flag = cycle enabled (false = time frozen)
+    voice_ping,           // partner echo voice line; i = line number from 1 (0 = next in turn)
+    copy_diagnostics,     // status + game diagnostics to the clipboard and the log
+    count
+};
+
+struct Request {
+    Action action = Action::count;
+    double v[3] = {};
+    float f[2] = {};
+    std::int32_t i = 0;
+    bool flag = false;
+    std::uint32_t serial = 0;  // filled by Queue
+};
+
+// Where an action shows up in the menu (and whether it needs a partner).
+enum class Tab : std::uint8_t { status, partner, player, tools };
+struct ActionInfo {
+    Action id;
+    Tab tab;
+    const char* label;    // button text
+    const char* help;     // tooltip
+    bool button;          // false: driven by a dedicated widget (sliders, teleport form)
+};
+// Registry, in display order.
+const ActionInfo* Actions(std::size_t* count) noexcept;
+const ActionInfo* Find(Action a) noexcept;
+const char* ActionName(Action a) noexcept;
+
+// Any thread. Returns the request serial (never 0), or 0 when the queue is full.
+std::uint32_t Queue(const Request& r) noexcept;
+std::uint32_t Queue(Action a) noexcept;
+// Pending requests (menu display / tests).
+std::size_t Pending() noexcept;
+
+// Game thread (st::sync::Tick): runs queued actions, then publishes a fresh
+// snapshot when one is due (every tick while the menu is open, else 2 Hz).
+void OnTick(double now_ms) noexcept;
+// Runs queued actions only. OnTick calls it; exposed for tests and harnesses.
+std::size_t Drain() noexcept;
+
+// Outcome of an executed action, newest last.
+struct Result {
+    std::uint32_t serial = 0;
+    Action action = Action::count;
+    bool ok = false;
+    double time_ms = 0;  // tick clock when it ran
+    char text[160] = {};
+};
+// Copies up to `max` newest results (oldest first); returns how many.
+std::size_t RecentResults(Result* out, std::size_t max) noexcept;
+// The result for one serial, if it ran already.
+bool ResultFor(std::uint32_t serial, Result* out) noexcept;
+
+// ------------------------------------------------------------------ snapshot
+struct Snapshot {
+    std::uint64_t serial = 0;  // bumps on every Publish
+    double time_ms = 0;        // tick clock (link::NowMsPrecise)
+    char role[16] = "none";
+    char mod_state[96] = "starting";
+
+    // Link (host/guest only)
+    bool net = false;
+    char link_state[24] = "off";
+    char transport[12] = {};
+    char route[12] = {};
+    char peer[48] = {};
+    char reason[96] = {};
+    std::uint32_t rtt_ms = 0;
+    std::uint64_t rx = 0, tx = 0;
+
+    // Local Sam
+    bool local_present = false;   // GetLocalDSPlayerEntity returned an entity
+    bool local_valid = false;     // its transform was read this tick
+    bool local_awake = false;
+    std::uintptr_t local_entity = 0;
+    std::uint64_t local_flags = 0;
+    double local_pos[3] = {};
+    float local_rot[3][3] = {};
+    float speed = 0;
+
+    // Partner (our spawned entity) and the newest remote pose
+    std::uintptr_t partner_entity = 0;
+    std::uintptr_t partner_voice_entity = 0;  // entity carrying the DSEchoComponent (echo body or partner_voice=1 echo)
+    char partner_state[16] = "none";
+    char partner_source[24] = {};
+    std::uint64_t partner_flags = 0;
+    bool partner_pos_valid = false;
+    double partner_pos[3] = {};
+    bool spawn_disabled = false;
+    bool spawn_held = false;      // "remove partner" from the menu holds spawning
+    bool remote_fresh = false;
+    double remote_age_ms = 0;
+
+    // Tuning
+    float echo_delay_s = 0;
+    float echo_offset_m = 0;
+    std::uint32_t interp_delay_ms = 0;
+    std::uint32_t send_hz = 0;
+    bool verbose = false;
+
+    // Rates
+    float tick_hz = 0;
+    std::uint64_t ticks = 0;
+
+    // Game state, load mask, area, time of day, health, teleport readiness
+    // (game_actions.cpp; read-only, filled on the game thread).
+    game::Diagnostics diag;
+};
+
+// Plain-text report of a snapshot (what "Copy diagnostics" puts on the
+// clipboard). Returns the length written.
+std::size_t FormatDiagnostics(const Snapshot& s, char* out, std::size_t cap) noexcept;
+
+// Tick thread. Copies under a lock.
+void Publish(const Snapshot& s) noexcept;
+// Any thread: a copy of the newest snapshot (serial 0 before the first tick).
+Snapshot GetSnapshot() noexcept;
+
+// Bootstrap thread: free text shown in the Status tab ("ready (echo)", "game
+// functions not found", ...).
+void SetModState(const char* text) noexcept;
+const char* RoleLabel() noexcept;
+void SetRoleLabel(const char* role) noexcept;
+
+// The overlay sets this while the menu is open; the tick publishes every frame
+// then, and the mod's own hotkeys (F6/F7, read with GetAsyncKeyState) stand down.
+void SetMenuOpen(bool open) noexcept;
+bool MenuOpen() noexcept;
+
+// Tests: replace a handler's game call. `fn` returns ok and writes a message.
+using Handler = bool (*)(const Request&, char* msg, std::size_t cap);
+void SetHandlerForTest(Action a, Handler fn) noexcept;
+void ResetForTest() noexcept;
+
+}  // namespace st::debug

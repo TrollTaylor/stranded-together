@@ -1,0 +1,24 @@
+# Smoke test of the real game on the hidden desktop (tools/testenv/Start-TestRun.ps1 -Scenario smoke):
+# boot to the title, press Continue with the virtual pad, wait for Sam, open the debug menu.
+role solo
+timeout 360
+# the mod's automation channel comes up at DLL load, long before the title
+waitready 90
+# first rendered frames (logos); the overlay hooked Present
+?waitlog 120 \[overlay\] input attached
+?screenshot 01-boot
+# logos / "press any button" / title: A every 4 s until the local player exists.
+# The title menu's first entry is CONTINUE when a save exists.
+until 240 4000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+# let the world settle
+wait 8000
+screenshot 02-in-world
+snapshot
+menu open
+wait 500
+screenshot 03-debug-menu
+action log_status
+menu close
+screenshot 04-menu-closed
+quit
