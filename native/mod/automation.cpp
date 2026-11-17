@@ -5,6 +5,8 @@
 #include "automation.hpp"
 
 #include <windows.h>
+#include <psapi.h>
+#include <tlhelp32.h>
 #include <audioclient.h>
 #include <mmdeviceapi.h>
 
@@ -1494,6 +1496,116 @@ bool BytesAt(std::uintptr_t addr, const unsigned char* want, std::size_t len) no
            std::memcmp(got, want, len) == 0;
 }
 
+struct ModuleSpan {
+    std::uintptr_t base = 0, end = 0;
+    wchar_t name[64] = {};
+    bool system = false;  // under the Windows folder (incl. System32\DriverStore)
+};
+
+// Every module of this process (no locks held by us afterwards: the list is copied first).
+std::size_t ListModules(ModuleSpan* out, std::size_t cap) noexcept {
+    HMODULE mods[512];
+    DWORD bytes = 0;
+    if (!K32EnumProcessModules(GetCurrentProcess(), mods, sizeof(mods), &bytes)) return 0;
+    wchar_t windir[MAX_PATH] = {};
+    const UINT wl = GetWindowsDirectoryW(windir, MAX_PATH);
+    std::size_t n = 0;
+    for (DWORD i = 0; i < bytes / sizeof(HMODULE) && n < cap; ++i) {
+        MODULEINFO mi{};
+        wchar_t path[MAX_PATH] = {};
+        if (!K32GetModuleInformation(GetCurrentProcess(), mods[i], &mi, sizeof(mi))) continue;
+        GetModuleFileNameW(mods[i], path, MAX_PATH);
+        ModuleSpan& m = out[n++];
+        m.base = reinterpret_cast<std::uintptr_t>(mi.lpBaseOfDll);
+        m.end = m.base + mi.SizeOfImage;
+        m.system = wl && _wcsnicmp(path, windir, wl) == 0;
+        const wchar_t* slash = wcsrchr(path, L'\\');
+        wcsncpy_s(m.name, slash ? slash + 1 : path, _TRUNCATE);
+    }
+    return n;
+}
+
+void LogThirdPartyModules(const char* when) noexcept {
+    static ModuleSpan mods[512];
+    const std::size_t n = ListModules(mods, 512);
+    std::string list;
+    for (std::size_t i = 0; i < n; ++i) {
+        if (mods[i].system) continue;
+        char name[96];
+        std::snprintf(name, sizeof(name), "%s%ls", list.empty() ? "" : ", ", mods[i].name);
+        list += name;
+    }
+    Log("[diag] %s: %zu modules; outside Windows: %s", when, n, list.c_str());
+}
+
+// The game's main thread: the oldest thread of this process.
+DWORD MainThreadId() noexcept {
+    const HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+    THREADENTRY32 te{sizeof(te)};
+    DWORD best = 0;
+    ULONGLONG best_time = ~0ull;
+    for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
+        if (te.th32OwnerProcessID != GetCurrentProcessId()) continue;
+        const HANDLE h = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, te.th32ThreadID);
+        if (!h) continue;
+        FILETIME c, e, k, u;
+        if (GetThreadTimes(h, &c, &e, &k, &u)) {
+            const ULONGLONG t = (static_cast<ULONGLONG>(c.dwHighDateTime) << 32) | c.dwLowDateTime;
+            if (t < best_time) best_time = t, best = te.th32ThreadID;
+        }
+        CloseHandle(h);
+    }
+    CloseHandle(snap);
+    return best;
+}
+
+// Diagnosis of a game that does not finish creating its renderer (local test guest on a
+// player's desktop, v0.5.4: d3d12.dll loaded at 0.4 s, no device for ~27 s, then "does not support
+// DirectX 12"). Where is the main thread? Suspend it for a moment (only GetThreadContext and a
+// ReadProcessMemory into a fixed buffer while it is suspended: it may hold the heap or loader
+// lock), then name the module of RIP and of every stack value that points into a module.
+void LogMainThreadWhere(const char* when) noexcept {
+    static ModuleSpan mods[512];
+    const std::size_t n = ListModules(mods, 512);
+    const DWORD tid = MainThreadId();
+    if (!tid || tid == GetCurrentThreadId()) return;
+    const HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, tid);
+    if (!h) return;
+    static std::uintptr_t stack[1024];
+    CONTEXT ctx{};
+    ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+    SIZE_T got = 0;
+    bool have = false;
+    if (SuspendThread(h) != static_cast<DWORD>(-1)) {
+        have = GetThreadContext(h, &ctx) != 0;
+        if (have) ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(ctx.Rsp), stack, sizeof(stack), &got);
+        ResumeThread(h);
+    }
+    CloseHandle(h);
+    if (!have) return;
+    const auto where = [&](std::uintptr_t a, char* buf, std::size_t cap) {
+        for (std::size_t i = 0; i < n; ++i)
+            if (a >= mods[i].base && a < mods[i].end) {
+                std::snprintf(buf, cap, "%ls+0x%llX", mods[i].name, static_cast<unsigned long long>(a - mods[i].base));
+                return true;
+            }
+        return false;
+    };
+    char rip[96] = "?";
+    where(ctx.Rip, rip, sizeof(rip));
+    std::string frames;
+    int count = 0;
+    for (std::size_t i = 0; i < got / sizeof(std::uintptr_t) && count < 24; ++i) {
+        char b[96];
+        if (!where(stack[i], b, sizeof(b))) continue;
+        frames += (frames.empty() ? "" : " | ");
+        frames += b;
+        ++count;
+    }
+    Log("[diag] %s: main thread %lu at %s; stack values in modules: %s", when, tid, rip, frames.c_str());
+}
+
 }  // namespace
 
 bool WaitForGameD3D12(unsigned timeout_ms) noexcept {
@@ -1537,7 +1649,17 @@ bool WaitForGameD3D12(unsigned timeout_ms) noexcept {
     }
     std::uintptr_t created = 0, render_device = 0, holder = 0;
     double seen_ms = 0;
+    LogThirdPartyModules("modules when d3d12.dll loaded");
+    int diag_step = 0;  // a renderer that takes long: log where the main thread is at 5, 12, 20 and 28 s
+    static const double kDiagAtMs[] = {5000, 12000, 20000, 28000};
     for (;;) {
+        if (diag_step < 4 && !(created && render_device) && NowMs() - loaded_ms > kDiagAtMs[diag_step]) {
+            char when[64];
+            std::snprintf(when, sizeof(when), "no renderer %.0f s after d3d12.dll loaded", kDiagAtMs[diag_step] / 1000);
+            if (diag_step == 0) LogThirdPartyModules(when);
+            LogMainThreadWhere(when);
+            ++diag_step;
+        }
         ReadGamePtr(base + 0x5558F70, created);
         if (ReadGamePtr(base + 0x5558F80 + 0x20, holder)) render_device = holder;
         if (created && render_device) {
@@ -1554,6 +1676,7 @@ bool WaitForGameD3D12(unsigned timeout_ms) noexcept {
         Sleep(10);
     }
     Log("[overlay] the game's renderer is up (%.0f ms after d3d12.dll loaded): the overlay installs after it", seen_ms - loaded_ms);
+    if (g_enabled.load()) LogMainThreadWhere("hidden run self-test of the stall diagnosis");  // proves the code path
     return true;
 }
 
