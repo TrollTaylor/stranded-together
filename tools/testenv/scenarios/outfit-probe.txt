@@ -1,0 +1,79 @@
+# Partner Sam's outfit, solo (docs/real-partner-body.md section 9): a debug Sam body (demo_sam_clean)
+# 3 m ahead of Sam in mirror mode, then dressed like our own Sam (real_outfit 1: its own darker suit
+# variation removed, our exos variation added, our suit colour set), then explicit outfits.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario outfit-probe -SeedSaves complete-100
+role solo
+timeout 360
+ini pose_hook=1
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+wait 1500
+action real_outfit 0
+action real_spawn 1 3 1
+waitlog 30 \[real\] ('sam' is live|.*refused|.*did not load|the game cancelled loading|spawn failed|teardown)
+wait 2500
+screenshot 01-undressed-front
+action real_outfit 0
+# dressed like our own Sam
+action real_outfit 1
+waitlog 10 \[outfit\] body .*(exos variation|suit colour|not applied)
+wait 3000
+screenshot 02-dressed-front
+action real_outfit 0
+pad none 1300 rx=32767
+wait 1500
+screenshot 03-dressed-sam-front
+pad none 1300 rx=-32767
+wait 1500
+# explicit outfits: plain porter suit (no exos), colour 0 / 9 / 3
+action real_outfit 2 255 0
+wait 2000
+screenshot 04-exos-none-colour-0
+action real_outfit 2 255 9
+wait 1500
+screenshot 05-exos-none-colour-9
+action real_outfit 2 255 3
+wait 1500
+screenshot 06-exos-none-colour-3
+# silver suit (exos 14 = v10), gold suit (exos 29 = v40)
+action real_outfit 2 14 255
+wait 2000
+screenshot 07-exos-14-silver
+action real_outfit 2 29 255
+wait 2000
+screenshot 08-exos-29-gold
+action real_outfit 0
+# back to our own outfit
+action real_outfit 1
+wait 2000
+screenshot 09-dressed-again
+action real_outfit 0
+# our own Sam changes his suit colour (hidden test only: the inventory byte, as the uniform menu
+# sets it; the game re-dresses Sam); the body, dressed like our Sam, follows
+action real_outfit 4 0
+wait 3000
+action real_outfit 0
+screenshot 10-own-colour-0
+action real_outfit 4 9
+wait 3000
+action real_outfit 0
+screenshot 11-own-colour-9
+action real_outfit 4 15
+wait 3000
+action real_outfit 0
+screenshot 12-own-colour-15-silver
+action real_outfit 4 16
+wait 3000
+action real_outfit 0
+screenshot 13-own-colour-16-gold
+action real_stats
+action real_remove
+wait 1000
+action log_status
+quit

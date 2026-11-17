@@ -152,6 +152,8 @@ bool DoRealNames(const Request& r, char* msg, std::size_t cap) { return game::Re
 bool DoRealStats(const Request& r, char* msg, std::size_t cap) { return game::RealBodyCommand(5, r.v, msg, cap); }
 bool DoRealMirror(const Request& r, char* msg, std::size_t cap) { return game::RealBodyCommand(6, r.v, msg, cap); }
 bool DoRealControl(const Request& r, char* msg, std::size_t cap) { return game::RealBodyCommand(7, r.v, msg, cap); }
+bool DoSelfView(const Request& r, char* msg, std::size_t cap) { return game::RealBodyCommand(8, r.v, msg, cap); }
+bool DoRealOutfit(const Request& r, char* msg, std::size_t cap) { return game::RealBodyCommand(9, r.v, msg, cap); }
 bool DoVoicePing(const Request& r, char* msg, std::size_t cap) {
     // The live partner entity, exactly as the Partner tab sees it (0 when there is none).
     Snapshot s;
@@ -222,6 +224,8 @@ constexpr Row kRows[] = {
     {{Action::real_stats, Tab::tools, "Real stats", "Pose hook counters and the partner-vs-published check.", false}, &DoRealStats},
     {{Action::real_mirror, Tab::tools, "Real mirror", "The debug real body copies Sam's live pose (1) or keeps its own (0).", false}, &DoRealMirror},
     {{Action::real_control, Tab::tools, "Real control", "Load the n-th streamed-out collectors hologram through the real body's path+GUID route.", false}, &DoRealControl},
+    {{Action::self_view, Tab::tools, "Self view", "Show yourself as a character in place of Sam on this screen (1/0, body id, follow mode).", false}, &DoSelfView},
+    {{Action::real_outfit, Tab::tools, "Real outfit", "Partner Sam's outfit: 0 log, 1 like your Sam, 2 exos + suit colour, 3 override off.", false}, &DoRealOutfit},
 };
 constexpr std::size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);
 static_assert(kRowCount == static_cast<std::size_t>(Action::count), "every Action needs exactly one registry row");

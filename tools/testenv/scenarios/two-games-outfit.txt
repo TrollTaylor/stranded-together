@@ -1,0 +1,93 @@
+# Partner Sam's outfit between two games on one PC, hidden (docs/real-partner-body.md section 9):
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-outfit -SeedSaves complete-100
+# Both players are Sam (the guest picked sam). Each game sends its own Sam's outfit with every STJ1
+# frame and dresses the partner's Sam body like it: the 100% save's gold suit (colour 16 -> exos 31)
+# on both. Then each player changes its own suit colour (hidden-test action real_outfit 4: the
+# inventory byte the uniform menu sets; the game re-dresses that Sam itself) and the OTHER game's
+# partner Sam follows: host colour 9 (olive), guest colour 0 (default blue), host 15 (silver suit).
+role host
+graphics low
+timeout 360
+ini partner_body=real
+@host ini my_character=sam
+@guest ini my_character=sam
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 30 \[sync\] my character: 'sam' \(body_id 1\); joint frames \(STJ1\) sent with every pose
+@guest waitlog 30 \[sync\] my character: 'sam' \(body_id 1\); joint frames \(STJ1\) sent with every pose
+wait 25000
+pad A 150
+@guest pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+@guest until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitplayer 60
+waitlog 60 \[link\] CONNECTED
+@guest waitlog 60 \[link\] CONNECTED
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+@guest until 150 3000 \[sync\] partner body: real 'sam' => pad A 120
+waitlog 60 \[sync\] partner body: real 'sam'
+# each game received the other's outfit and dressed its partner Sam (gold: exos 31)
+waitlog 20 \[outfit\] the partner's outfit: variant 0 exos 31 suit colour 16
+@guest waitlog 20 \[outfit\] the partner's outfit: variant 0 exos 31 suit colour 16
+waitlog 20 \[outfit\] body .*: exos variation 31 .* added
+@guest waitlog 20 \[outfit\] body .*: exos variation 31 .* added
+# the host looks back at the guest (its own Sam's front and the guest's Sam body in one frame)
+pad none 1300 rx=32767
+wait 2500
+screenshot 02-host-sees-guest-gold
+@guest screenshot 02-guest-sees-host-gold
+action real_outfit 0
+@guest action real_outfit 0
+# the host changes its own suit colour to 9: the guest's partner Sam follows
+action real_outfit 4 9
+@guest waitlog 15 \[outfit\] body .*: suit colour 9 set \(#1;
+@guest wait 1500
+screenshot 03-host-own-colour-9
+@guest screenshot 03-guest-sees-host-colour-9
+# the guest changes to colour 0 (exos 1, default blue): the host's partner Sam follows
+@guest action real_outfit 4 0
+waitlog 15 \[outfit\] body .*: suit colour 0 set
+wait 1500
+screenshot 04-host-sees-guest-colour-0
+@guest screenshot 04-guest-own-colour-0
+# the host to silver (15 -> exos 16)
+action real_outfit 4 15
+@guest waitlog 15 \[outfit\] body .*: exos variation 16 .* added
+@guest wait 1500
+screenshot 05-host-own-silver
+@guest screenshot 05-guest-sees-host-silver
+# the host back to colour 9: the exos variation changes again and the guest's body gets colour 9
+# again (#1/#2 were the first change to 9; #3+ come after silver: a variation change may reset
+# the suit colour, so it is set after every one)
+action real_outfit 4 9
+@guest waitlog 15 \[outfit\] body .*: suit colour 9 set \(#[3-9];
+@guest wait 1500
+screenshot 05b-host-own-colour-9-again
+@guest screenshot 05b-guest-sees-host-colour-9-again
+action real_outfit 0
+@guest action real_outfit 0
+# the guest walks towards the host: the dressed body walks (the outfit stays on while posed)
+@guest until 60 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+@guest pad none 600 ly=32767 keep
+screenshot 06-host-sees-guest-walk-a
+wait 250
+screenshot 06-host-sees-guest-walk-b
+@guest pad none 0
+wait 2000
+screenshot 07-host-sees-guest-stopped
+@guest pad none 1300 rx=32767
+@guest wait 1500
+@guest screenshot 07-guest-own-front
+action real_stats
+@guest action real_stats
+action log_status
+@guest action log_status
+?waitlog 12 \[sync\] link traffic over
+?@guest waitlog 12 \[sync\] link traffic over
+@guest quit
+wait 3000
+quit

@@ -119,6 +119,7 @@ DebugOptions DebugOptionsFromSettings(const json::Value& settings) {
     if (key) o.debug_menu_key = key;
     // Only an explicit "holo" picks the hologram: missing or unknown keeps the default (real).
     o.real_partner_body = d->Str("partner_body") != "holo";
+    o.self_character = d->Bool("self_character", o.self_character);
     return ClampDebugOptions(o);
 }
 
@@ -133,6 +134,7 @@ void DebugOptionsToSettings(const DebugOptions& o, json::Value& settings) {
     d["debug_menu"] = o.debug_menu;
     d["debug_menu_key"] = FunctionKeyName(o.debug_menu_key);
     d["partner_body"] = o.real_partner_body ? "real" : "holo";
+    d["self_character"] = o.self_character;
     settings["debug"] = d;
 }
 
@@ -146,6 +148,9 @@ void ApplyDebugOptions(const DebugOptions& o, SessionIni& ini) {
     ini.debug_menu = o.debug_menu;
     ini.debug_menu_key = o.debug_menu_key;
     ini.partner_body = o.real_partner_body ? "real" : "holo";
+    // The self view needs the pose hook, which only partner_body=real installs; the writer adds
+    // the key only for a non-host whose character is not Sam.
+    ini.self_character = o.self_character && o.real_partner_body;
     ini.one_shot = true;
 }
 
@@ -440,6 +445,13 @@ public:
             test_check_ = SeedCheck{};
             SaveTestChoices();
             return true;
+        }
+        // The launcher's own copies are deleted below when the folder changes (and by Reset test saves):
+        // picking one would delete the save the user just picked.
+        if (PathInside(FullPath(Wide(folder)), FullPath(JoinPath2(paths_.mod, L"sandbox")))) {
+            error_out = "That folder is one of the launcher's own test copies, which it deletes when you reset or change the test save. "
+                        "Pick the original save folder instead (for example the one you downloaded).";
+            return false;
         }
         const SeedCheck check = CheckSeedFolder(Wide(folder));
         if (!check.ok) {

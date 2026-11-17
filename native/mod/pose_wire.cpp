@@ -187,7 +187,8 @@ Quat UnpackQuat(std::uint64_t bits) {
 
 std::size_t EncodeJoints(const JointFrame& f, std::uint8_t* out, std::size_t cap) noexcept {
     if (!out || f.joint_count == 0 || f.joint_count > kMaxJoints || f.t_count > kMaxJointTranslations) return 0;
-    const std::size_t size = JointFrameSize(f.joint_count, f.t_count);
+    const bool outfit = (f.flags & kJointsOutfit) != 0;
+    const std::size_t size = JointFrameSize(f.joint_count, f.t_count, outfit);
     if (cap < size) return 0;
     std::uint8_t* p = out;
     std::memcpy(p, kJointMagic, 4);
@@ -216,6 +217,12 @@ std::size_t EncodeJoints(const JointFrame& f, std::uint8_t* out, std::size_t cap
             Put(p, static_cast<std::int16_t>(std::lround(v)));
         }
     }
+    if (outfit) {
+        const Outfit& o = f.outfit;
+        const std::uint8_t b[kOutfitSize] = {o.variant,        o.exos,           o.suit_colour,     o.cap_colour,
+                                             o.glasses_a_lens, o.glasses_b_lens, o.glasses_a_frame, o.glasses_b_frame};
+        for (std::uint8_t v : b) Put(p, v);
+    }
     return static_cast<std::size_t>(p - out);
 }
 
@@ -238,11 +245,23 @@ bool DecodeJoints(const std::uint8_t* data, std::size_t size, JointFrame& out) n
         f.q[j] = UnpackQuat(b);
     }
     f.t_count = Get<std::uint8_t>(p);
-    if (f.t_count > kMaxJointTranslations || size != JointFrameSize(f.joint_count, f.t_count)) return false;
+    const bool outfit = (f.flags & kJointsOutfit) != 0;
+    // Flag bits this build does not know announce blocks after the known ones (a newer build):
+    // the frame may then be longer, and the rest is ignored. Known flags only: the exact size.
+    const bool unknown = (f.flags & ~kJointsKnown) != 0;
+    const std::size_t want = JointFrameSize(f.joint_count, f.t_count, outfit);
+    if (f.t_count > kMaxJointTranslations || (unknown ? size < want : size != want)) return false;
+    f.flags = static_cast<std::uint8_t>(f.flags & kJointsKnown);
     for (unsigned i = 0; i < f.t_count; ++i) {
         f.t_joint[i] = Get<std::uint8_t>(p);
         if (f.t_joint[i] >= f.joint_count) return false;
         for (unsigned a = 0; a < 3; ++a) f.t[i][a] = static_cast<float>(Get<std::int16_t>(p)) / 10000.0f;
+    }
+    if (outfit) {
+        Outfit& o = f.outfit;
+        std::uint8_t* b[kOutfitSize] = {&o.variant,        &o.exos,           &o.suit_colour,     &o.cap_colour,
+                                        &o.glasses_a_lens, &o.glasses_b_lens, &o.glasses_a_frame, &o.glasses_b_frame};
+        for (std::uint8_t* v : b) *v = Get<std::uint8_t>(p);
     }
     out = f;
     return true;
@@ -271,6 +290,7 @@ void BlendJoints(const JointFrame& a, const JointFrame& b, float t, JointFrame& 
     out.layout_hash = b.layout_hash;
     out.body_id = b.body_id;
     out.flags = b.flags;
+    out.outfit = b.outfit;
     out.joint_count = static_cast<std::uint8_t>(n);
     for (unsigned j = 0; j < n; ++j) out.q[j] = q[j];
     out.t_count = b.t_count;

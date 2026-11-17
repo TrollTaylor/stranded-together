@@ -385,7 +385,7 @@ before/after, no violation, game folder restored (`restored.txt` ok), no `error.
 ```
 role solo|echo|host          session role (default solo); host: a second (guest) game too ("Two games")
 ini <key>=<value>            an extra session.ini line, for every game of the run; only partner_body,
-                             partner_character, my_character, partner_holo, partner_marker, partner_voice,
+                             partner_character, my_character, self_character, partner_holo, partner_marker, partner_voice,
                              partner_activate, pose_hook, echo_delay_s, echo_offset_m, send_hz,
                              interp_delay_ms (testenv_core ScenarioIniKeyAllowed)
 @host ini <key>=<value>      the same, for the first game only; @guest ini for the guest game only (role
@@ -431,6 +431,23 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   1-16 in mirror mode (idle and two walk frames each); each body's `waitlog` names only that body,
   because the regex searches the whole log, and is optional, so a body that never loads does not end
   the tour.
+* `self-view.txt` (role solo, `my_character=fragile`, `self_character=1`): the self view
+  (docs/real-partner-body.md section 8): standing, looking at the camera, walking and running towards
+  and away from the camera as Fragile; a game hide reason simulated (`self_view 2 26 1`: the body goes,
+  reason 63 cleared, nobody visible; cleared again: Fragile back), then `self_view 0` (Sam again, for
+  comparison), a stray reason 63 with no body (`self_view 2 63 1`: repaired in the next tick, Sam stays
+  visible) and back on with the other follow modes. `self-view-edges.txt`: the same start, then the purple
+  roadster next to it (the scenario's frames call it the trike; X: get
+  on, ride, X: get off) and a rest (hold B: sit, hold X: Sleep, B: stand up). `two-games-real-self.txt`
+  (role host): `two-games-real` with `@guest ini self_character=1`: the guest sees itself as Fragile, the
+  host never gets a self body (`nolog`).
+* `outfit-probe.txt` (role solo, `pose_hook=1`): the partner Sam's outfit (docs/real-partner-body.md
+  section 9). A debug Sam body 3 m ahead is dressed like our own Sam, then with explicit outfits. Then our
+  own Sam's suit colour is changed (`real_outfit 4`) and the body follows.
+* `two-games-outfit.txt` (role host): both players are Sam. Each game sees the other's Sam body in its gold
+  suit. Then the host changes to colour 9, the guest to colour 0, the host to silver and back to colour 9
+  (the guest's body must get colour 9 again after the variation change, `#2`); each time the other
+  game's partner body follows.
 * `two-games.txt`, `two-games-real.txt`, `two-games-real-fallback.txt` (role host): two games, see
   "Two games".
 * `boot.txt`: no input, a screenshot every 10-15 s for 80 s (title flow discovery).

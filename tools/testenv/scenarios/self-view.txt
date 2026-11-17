@@ -1,0 +1,110 @@
+# Self view (docs/real-partner-body.md section 8): the player sees themself as their own character.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario self-view -SeedSaves complete-100
+# A guest-like game (role solo, my_character=fragile, self_character=1): the local Sam's model is
+# hidden through his mesh controller (Root hide reason 63) and a solid Fragile body stands at his
+# world transform, copied every frame Sam's model updates, playing his live pose. Frames: standing
+# (from behind), looking at the camera, walking and running towards / away from the camera, then
+# self view off (Sam again, for comparison) and back on with the other follow modes (stats only).
+# Restore checks (hidden tests only, self_view 2 <reason> <0/1> writes Sam's hide mask on the scratch
+# game): a game hide reason (26, photo mode's "hide Sam") makes the body go and our reason 63 clear
+# while the game keeps Sam hidden, and the body comes back when it is cleared; a stray reason 63
+# with no body shown (a lost clear) is repaired in the next tick.
+role solo
+timeout 360
+ini partner_body=real
+ini my_character=fragile
+ini self_character=1
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[self\] showing 'fragile'
+wait 2000
+screenshot 01-standing-back
+action real_stats
+# turn the camera round: the character faces the camera
+pad none 1300 rx=32767
+wait 1500
+screenshot 02-looking-at-camera
+action real_stats
+# walk / run towards the camera (full stick), frames 0.2 s apart while moving
+pad none 1600 ly=-32767 keep
+screenshot 03-towards-a
+wait 200
+screenshot 03-towards-b
+wait 200
+screenshot 03-towards-c
+wait 200
+screenshot 03-towards-d
+pad none 0
+wait 1500
+screenshot 04-stopped
+action real_stats
+# half stick: a walk
+pad none 1500 ly=-14000 keep
+screenshot 05-walk-a
+wait 250
+screenshot 05-walk-b
+wait 250
+screenshot 05-walk-c
+pad none 0
+# away from the camera, full stick, longer: running
+pad none 2500 ly=32767 keep
+screenshot 06-away-a
+wait 200
+screenshot 06-away-b
+wait 200
+screenshot 06-away-c
+pad none 0
+wait 1500
+screenshot 07-stopped-back
+action real_stats
+action log_status
+# a game hide reason (photo mode's 26): body hidden, our 63 cleared, Sam stays hidden by the game
+action self_view 2 26 1
+waitlog 5 \[self\] Sam shown again \(the game hides Sam itself.*reason 63 cleared, mask now 0x4000000;
+wait 1500
+screenshot 07b-game-hides-sam
+action self_view 2 26 0
+waitlog 5 \[self\] showing 'fragile' .*show 2\)
+wait 1500
+screenshot 07c-shown-again
+# self view off: the local Sam again (comparison)
+action self_view 0
+wait 1500
+screenshot 08-off-sam-back
+# a lost clear: reason 63 on Sam with no body shown is cleared again in the next tick
+action self_view 2 63 1
+waitlog 5 \[self\] reason 63 was still set on Sam while the body is not shown.*repair 1\)
+wait 1000
+screenshot 08b-after-repair
+pad none 1300 rx=32767
+wait 1500
+screenshot 09-off-sam-facing
+# back on, follow mode 2 (the body's own update copies the transform): stats while walking
+action self_view 1 0 2
+wait 5000
+screenshot 10-on-again
+pad none 2500 ly=-32767 keep
+screenshot 11-mode2-towards-a
+wait 300
+screenshot 11-mode2-towards-b
+pad none 0
+action real_stats
+# follow mode 3 (the tick only, like the partner)
+action self_view 1 0 3
+pad none 2500 ly=32767 keep
+screenshot 12-mode3-away-a
+wait 300
+screenshot 12-mode3-away-b
+pad none 0
+action real_stats
+action self_view 1 0 1
+wait 2000
+action real_stats
+action log_status
+quit

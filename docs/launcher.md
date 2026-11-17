@@ -55,8 +55,9 @@ On start the launcher checks, in this order:
   Die-Hardman, Cliff Unger, Bridges porter (no suit), Deadman, Heartman, Mama, Lockne, Amelie, Higgs,
   Bridges guard, Bridges medic, Sam (MULE suit), Fragile (porter suit)), which the launcher compiles in (`core::OfferedCharacters`), so the
   mod and the launcher share one list. The note beside it: your partner sees you as this
-  character; on your own screen you are still Sam (with Debug > Partner body = Hologram it says
-  instead that your partner sees you as a hologram). Remembered in `launcher-settings.json`
+  character, and so do you on your own screen (the self view, Debug > "See yourself as your
+  character", default on; with it off: "On your own screen you stay Sam"; with Debug > Partner body =
+  Hologram it says instead that your partner sees you as a hologram). Remembered in `launcher-settings.json`
   `"my_character"`; a missing, unknown or no longer offered key is Sam.
 * **Solo test**: role=echo. The mod spawns a clone of the player that replays
   their movement `echo_delay_s` behind (Debug page). The launcher writes it with
@@ -84,7 +85,11 @@ Three tabs (`ui::DebugTab`):
   fails). Hologram also means this game sends no joint frames (no pose hook), so the partner
   sees you as a hologram whatever character you picked: the option's text says so, and with
   Hologram set the Join, Host and local-test character rows show "Partner body is Hologram
-  (Debug page): your partner sees you as a hologram" (screenshot `39-play-join-hologram`); **Wake the partner clone** (`partner_activate`); **Verbose mod log**; **Reset to
+  (Debug page): your partner sees you as a hologram" (screenshot `39-play-join-hologram`); **See yourself as your
+  character** (`self_character=1`, default on, needs Real character: on your own screen Sam is replaced by the
+  character picked on Join; written only for a guest, echo or solo session whose character is not Sam; Sam
+  comes back whenever the game hides him itself, the character is not ready or the mod stops, see
+  docs/real-partner-body.md section 8.3; untick it to stay Sam on your own screen); **Wake the partner clone** (`partner_activate`); **Verbose mod log**; **Reset to
   defaults**. Saved in `launcher-settings.json` under `"debug"` (sliders when released)
   and written into every `session.ini`, Host and Join included
   (`core::ApplyDebugOptions`).
@@ -241,11 +246,14 @@ local_window=left|right         local test: the window takes that half of the mo
 frame_cap=30                    local test: at most 30 frames per second
 my_character=<key>              the character the other player sees you as: an offered body_table key; always sam for a host
 partner_body=real|holo          how the partner is drawn on this screen (Debug page; default real)
+self_character=1                you see yourself as my_character too (Debug page; not for a host or sam)
 ```
 
 `my_character` is written for every host as `sam` (whatever was asked) and otherwise only when
 set; `MakeSessionIniText` refuses a key that is not an offered body (exact spelling) and a
-`partner_body` other than `real` or `holo`.
+`partner_body` other than `real` or `holo`. `self_character=1` is written only for a non-host whose
+`my_character` is set and is not `sam`, and only when the Debug option is on and Partner body is Real
+character (`core::ApplyDebugOptions`); the mod treats a missing key as off.
 
 The sandbox keys are written only together (`MakeSessionIniText` refuses `second_instance`,
 `appdir_settings` or `sandbox_foreign_saves` without `sandbox_saves`, a name that is not

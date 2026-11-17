@@ -72,6 +72,10 @@ struct SessionIni {
     // whatever this says (the mod does the same). "" = not written (the mod uses sam).
     std::string my_character;
     std::string partner_body;         // real | holo: how the partner is drawn ("" = not written, the mod's default)
+    // Self view: on this player's own screen the local Sam is shown as my_character too. Written
+    // (self_character=1) only for a non-host whose my_character is set and is not sam; the mod
+    // treats a missing key as off.
+    bool self_character = false;
 };
 inline constexpr double kMaxEchoDelayS = 10.0;
 inline constexpr double kMaxEchoOffsetM = 20.0;

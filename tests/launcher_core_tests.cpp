@@ -335,6 +335,21 @@ void Characters() {
     echo.udp_port_peer = 27556;
     echo.my_character = "porter";
     CHECK(MakeSessionIniText(echo, text, error) && text.find("my_character=porter\n") != std::string::npos);
+    // Self view: written only for a non-host whose character is set and not sam; parsed back.
+    CHECK(text.find("self_character") == std::string::npos);   // off unless asked
+    echo.self_character = true;
+    CHECK(MakeSessionIniText(echo, text, error) && text.find("self_character=1\n") != std::string::npos);
+    CHECK(ParseSessionIniText(text, back, error) && back.self_character && back.my_character == "porter");
+    guest.self_character = true;
+    guest.my_character = "fragile";
+    CHECK(MakeSessionIniText(guest, text, error) && text.find("self_character=1\n") != std::string::npos);
+    guest.my_character = "sam";   // Sam needs no self view
+    CHECK(MakeSessionIniText(guest, text, error) && text.find("self_character") == std::string::npos);
+    guest.my_character.clear();
+    CHECK(MakeSessionIniText(guest, text, error) && text.find("self_character") == std::string::npos);
+    host.self_character = true;   // the host is always Sam
+    CHECK(MakeSessionIniText(host, text, error) && text.find("self_character") == std::string::npos);
+    CHECK(ParseSessionIniText(text, back, error) && !back.self_character);
 }
 
 void StatusParse() {
@@ -561,6 +576,19 @@ void DebugOptionsPersist() {
     CHECK(!h.real_partner_body);
     ApplyDebugOptions(h, ini);
     CHECK(ini.partner_body == "holo");
+    // Self view: on by default (older settings files too), saved, and only with the real body.
+    CHECK(DebugOptions{}.self_character && DebugOptionsFromSettings(json::Value::Object()).self_character);
+    CHECK(h.self_character && !ini.self_character);   // Hologram: no pose hook, no self view
+    ApplyDebugOptions(r, ini);
+    CHECK(ini.self_character && ini.partner_body == "real");
+    d.real_partner_body = true;
+    d.self_character = false;
+    DebugOptionsToSettings(d, settings);
+    CHECK(json::Parse(json::Dump(settings), back));
+    const DebugOptions so = DebugOptionsFromSettings(back);
+    CHECK(!so.self_character && so.real_partner_body);
+    ApplyDebugOptions(so, ini);
+    CHECK(!ini.self_character);
     json::Value odd;
     CHECK(json::Parse("{\"debug\":{\"partner_body\":\"marker\"}}", odd) && DebugOptionsFromSettings(odd).real_partner_body);
     // Hand-edited numbers far outside int range fall back instead of an undefined cast.
@@ -809,6 +837,7 @@ void RealModelFlow() {
     CHECK(ReadTextShared(paths.session_ini, text) && ParseSessionIniText(text, ini, error) && ini.role == "guest" &&
           ini.peer_steamid == Decimal(kSteamIdBase + 7919ull) && ini.secret == "7QK2MX9RT4PB8WZ3HCNA");
     CHECK(ini.my_character == "diehardman" && ini.partner_body == "real");
+    CHECK(ini.self_character && text.find("self_character=1\n") != std::string::npos);   // the default: see yourself as your character
     CHECK(m->cancel_launch(error) && m->phase() == Phase::ready && !IsFile(paths.session_ini));
     m->set_my_character("gandalf");   // not in the mod's table: Sam
     CHECK(m->my_character() == "sam");
@@ -1034,6 +1063,9 @@ void TestSaves() {
         CHECK(m->set_test_save_folder(Utf8(save100), error) && m->test_save().folder_ok);
         CHECK(m->play_test_save(error));
         CHECK(m->phase() == Phase::launching && m->session_role() == Role::solo && SandboxSeeded(sp));
+        // One of the launcher's own copies is refused (changing the folder would delete it), copy untouched.
+        CHECK(!m->set_test_save_folder(Utf8(sp.saves), error) && error.find("test copies") != std::string::npos);
+        CHECK(m->test_save().folder == Utf8(save100) && SandboxSeeded(sp));
         CHECK(ReadTextShared(paths.session_ini, text) && ParseSessionIniText(text, ini, error));
         CHECK(ini.role == "solo" && ini.sandbox_saves == "test" && ini.sandbox_foreign_saves && !ini.second_instance && ini.debug_menu);
         // The game runs and exits; the real tree is compared.
@@ -1086,12 +1118,12 @@ void TestSaves() {
         CHECK(ini.role == "host" && ini.transport == "udp" && ini.udp_port_local == 27555 && ini.udp_port_peer == 27556 &&
               ini.sandbox_saves == "local-host" && ini.appdir_settings && !ini.second_instance && ini.local_input == "host_pad" &&
               ini.frame_cap == 30 && ini.debug_menu && ini.local_window == "left");
-        CHECK(ini.my_character == "sam" && ini.partner_body == "real");   // the host game is always Sam
+        CHECK(ini.my_character == "sam" && ini.partner_body == "real" && !ini.self_character);   // the host game is always Sam
         const std::string secret = ini.secret;
         CHECK(ReadTextShared(guest_ini, text) && ParseSessionIniText(text, ini, error));
         CHECK(ini.role == "guest" && ini.udp_port_local == 27556 && ini.udp_port_peer == 27555 && ini.sandbox_saves == "local-guest" &&
               ini.second_instance && ini.local_input == "guest" && ini.secret == secret && ini.local_window == "right");
-        CHECK(ini.my_character == "cliff" && ini.partner_body == "real");
+        CHECK(ini.my_character == "cliff" && ini.partner_body == "real" && ini.self_character);   // the guest sees itself as Cliff
         CHECK(SandboxSeeded(GetSandboxPaths(paths, kLocalHostSandbox)) && SandboxSeeded(GetSandboxPaths(paths, kLocalGuestSandbox)));
         CHECK(IsFile(GetSandboxPaths(paths, kLocalGuestSandbox).settings));
         CHECK(m->local_test().running && m->local_test().host_pid == 31 && m->local_test().guest_pid == 0);

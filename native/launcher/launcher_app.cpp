@@ -793,8 +793,10 @@ void LauncherUi::JoinTab(Phase phase) {
         ImGui::SameLine(0.0f, Px(14.0f));
         ImGui::SetCursorPosY(row_y + Px(1.0f));
         if (model_.debug_options().real_partner_body)
-            Text("Your partner sees you as this character (experimental).\nOn your own screen you are still Sam.", col::kTextDim, kSmall,
-                 nullptr, 0.0f);
+            Text(character == core::kHostCharacter        ? "Your partner sees you as this character (experimental)."
+                 : model_.debug_options().self_character ? "Your partner sees you as this character (experimental),\nand so do you on your own screen."
+                                                         : "Your partner sees you as this character (experimental).\nOn your own screen you stay Sam (Debug page).",
+                 col::kTextDim, kSmall, nullptr, 0.0f);
         else
             Text("Partner body is Hologram (Debug page): your partner\nsees you as a hologram, not this character.", col::kWarn, kSmall,
                  nullptr, 0.0f);
@@ -1320,6 +1322,13 @@ void LauncherUi::DebugOptionsTab(Phase phase) {
                                    "If either game uses Hologram, or the character cannot be shown, the hologram is used."
                                  : "Your partner shows as a see-through hologram, and you appear to them as one too: your character "
                                    "(Join) is not sent.",
+             col::kTextFaint, kSmall, nullptr, 0.0f);
+        // session.ini self_character: on your own screen Sam is replaced by your character too. Needs
+        // Real character (the pose hook); written only for a guest whose character is not Sam.
+        Gap(2.0f);
+        committed |= Checkbox("See yourself as your character", &o.self_character, o.real_partner_body);
+        Text(o.real_partner_body && o.self_character ? "On your own screen you appear as the character you picked on Join (the host is always Sam)."
+                                                     : "On your own screen you stay Sam.",
              col::kTextFaint, kSmall, nullptr, 0.0f);
     }
     Gap(4.0f);

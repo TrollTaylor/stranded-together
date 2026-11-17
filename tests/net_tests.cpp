@@ -305,6 +305,55 @@ void TestJointFrames() {
     CHECK(std::fabs(wire::AngleBetween(wire::Quat{0, 0, 0, 1}, wire::Quat{0, 0, 1, 0}) - 180.0f) < 0.01f);
 }
 
+// The optional outfit block (flags kJointsOutfit): 8 bytes after the translations.
+void TestJointOutfit() {
+    wire::JointFrame f;
+    f.joint_count = 77;
+    f.body_id = 1;
+    f.flags = wire::kJointsValid | wire::kJointsOutfit;
+    f.t_count = 2;
+    f.t_joint[1] = 1;
+    f.outfit = wire::Outfit{0, 33, 16, 24, 1, 2, 3, 4};
+    std::uint8_t buf[wire::kMaxJointFrameSize];
+    const std::size_t n = wire::EncodeJoints(f, buf, sizeof(buf));
+    CHECK(n == wire::JointFrameSize(77, 2, true) && n == 505);
+    CHECK(buf[n - 8] == 0 && buf[n - 7] == 33 && buf[n - 6] == 16 && buf[n - 1] == 4);
+    wire::JointFrame g;
+    CHECK(wire::DecodeJoints(buf, n, g));
+    CHECK((g.flags & wire::kJointsOutfit) && g.outfit == f.outfit && g.outfit.glasses_b_frame == 4 && g.outfit.exos == 33);
+    CHECK(!wire::DecodeJoints(buf, n - 8, g));  // flag set, block missing
+    CHECK(!wire::DecodeJoints(buf, n - 1, g));
+    std::uint8_t bad[wire::kMaxJointFrameSize];
+    std::memcpy(bad, buf, n);
+    bad[18] = wire::kJointsValid;  // block present, flag clear
+    CHECK(!wire::DecodeJoints(bad, n, g));
+    CHECK(wire::DecodeJoints(bad, n - 8, g) && !(g.flags & wire::kJointsOutfit) && g.outfit == wire::Outfit{});
+    // without the flag the frame is the plain 497-byte one
+    f.flags = wire::kJointsValid;
+    CHECK(wire::EncodeJoints(f, buf, sizeof(buf)) == 497);
+    // the blend carries the newer frame's outfit
+    wire::JointFrame a = f, b = f, m;
+    a.outfit.exos = 1;
+    b.outfit.exos = 2;
+    b.flags = wire::kJointsValid | wire::kJointsOutfit;
+    wire::BlendJoints(a, b, 0.25f, m);
+    CHECK(m.outfit.exos == 2 && (m.flags & wire::kJointsOutfit));
+    // a newer build's unknown flag with a longer frame: decoded, the extra block ignored
+    f.flags = wire::kJointsValid | wire::kJointsOutfit;
+    const std::size_t n2 = wire::EncodeJoints(f, buf, sizeof(buf));
+    std::uint8_t longer[wire::kMaxJointFrameSize + 16] = {};
+    std::memcpy(longer, buf, n2);
+    longer[18] = static_cast<std::uint8_t>(wire::kJointsValid | wire::kJointsOutfit | 0x04);
+    CHECK(wire::DecodeJoints(longer, n2 + 12, g) && g.outfit == f.outfit && g.flags == (wire::kJointsValid | wire::kJointsOutfit));
+    CHECK(wire::DecodeJoints(longer, n2, g));       // the unknown block may be empty
+    CHECK(!wire::DecodeJoints(longer, n2 - 1, g));  // but the known blocks must be complete
+    // the exos index counts only for the porter suit (variant 0)
+    CHECK(wire::PorterExos(wire::Outfit{0, 31, 16, 0, 0, 0, 0, 0}) == 31);
+    CHECK(wire::PorterExos(wire::Outfit{2, 31, 16, 0, 0, 0, 0, 0}) == 0xFF);
+    CHECK(wire::PorterExos(wire::Outfit{0, 44, 16, 0, 0, 0, 0, 0}) == 0xFF);
+    CHECK(wire::PorterExos(wire::Outfit{0xFF, 3, 16, 0, 0, 0, 0, 0}) == 0xFF);
+}
+
 void TestBodyTable() {
     std::uint8_t g[16] = {};
     CHECK(bodies::ParseGuid("336f4328-1381-4947-8e6d-7def29e654bd", g));
@@ -443,6 +492,7 @@ void TestBodyChoice() {
 int main() {
     TestPoseRoundTrip();
     TestJointFrames();
+    TestJointOutfit();
     TestBodyTable();
     TestBodyChoice();
     TestRotation();

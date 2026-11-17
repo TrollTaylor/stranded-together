@@ -1,0 +1,92 @@
+# Self view edge cases (docs/real-partner-body.md section 8): the vehicle and the private room.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario self-view-edges -SeedSaves complete-100
+# Same start as self-view (role solo, my_character=fragile, self_character=1). 1) The reverse trike
+# next to the start: walk to it (the path of self-view's 03 frames), X (Use Vehicle), ride, stop,
+# X again. 2) The rest of self-view's path to the BRIDGES pad, then hold B (Enter Private Room):
+# (on this path B sits Sam down instead), then hold X (Sleep, a nap) to see whether the game sleeps
+# or hides Sam: Sam must be shown again, and the body back afterwards.
+role solo
+timeout 360
+ini partner_body=real
+ini my_character=fragile
+ini self_character=1
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[self\] showing 'fragile'
+wait 2000
+screenshot 01-standing-back
+pad none 1300 rx=32767
+wait 1500
+pad none 1600 ly=-32767 keep
+screenshot 02-at-trike
+pad X 150
+wait 3000
+screenshot 03-mounted
+action real_stats
+pad none 2000 rt=255 keep
+screenshot 04-riding-a
+wait 300
+screenshot 04-riding-b
+pad none 0
+wait 2500
+screenshot 05-stopped-on-trike
+action real_stats
+action log_status
+pad X 150
+wait 3000
+screenshot 06-after-x
+action real_stats
+?waitlog 10 \[self\] showing 'fragile'
+wait 1500
+screenshot 07-off-trike
+action real_stats
+action log_status
+pad none 2500 ly=32767 keep
+screenshot 08-away
+pad none 0
+wait 1000
+pad B 2000
+wait 4000
+screenshot 10-private-room-a
+action real_stats
+wait 6000
+screenshot 10-private-room-b
+action log_status
+pad B 2000
+wait 8000
+screenshot 11-back-a
+action real_stats
+wait 6000
+screenshot 11-back-b
+action real_stats
+# sit again and hold X (Sleep): a nap in the field (does the game sleep or hide Sam?)
+pad B 2000
+wait 3000
+screenshot 12-sitting
+pad X 3000
+wait 2000
+screenshot 13-nap-a
+action real_stats
+wait 5000
+screenshot 13-nap-b
+action log_status
+wait 8000
+screenshot 13-nap-c
+action real_stats
+wait 8000
+screenshot 13-nap-d
+pad B 150
+wait 6000
+screenshot 14-after-nap
+action real_stats
+action log_status
+wait 5000
+screenshot 14-after-nap-b
+action real_stats
+quit

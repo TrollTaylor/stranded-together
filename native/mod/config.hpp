@@ -50,6 +50,11 @@ struct Config {
     // The character THIS player appears as on the other player's screen (body_table key), sent as
     // STJ1 body_id. "" / unknown = sam; the host always sends sam (docs/real-partner-body.md).
     std::string my_character;
+    // Self view: on THIS player's own screen the local Sam is replaced by my_character too (a
+    // guest whose character is not sam; the host is always Sam). Written by the launcher
+    // (self_character=1, Debug option, default on); off when absent. Needs the pose hook
+    // (partner_body=real or pose_hook=1). docs/real-partner-body.md section 8.
+    bool self_character = false;
     bool pose_hook = false;            // install the pose hook even without partner_body=real (debug spawns)
 
     // Debug

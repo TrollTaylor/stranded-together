@@ -44,8 +44,9 @@ const char* UnavailableReason() noexcept;
 // per-second [pose] counters.
 void Tick(game::Entity* local, bool local_active, double now_ms) noexcept;
 
-// ---- the body (one slot, owned by the partner sync or by a debug action)
-enum class Owner : std::uint8_t { none, partner, debug };
+// ---- the body (the partner slot, owned by the partner sync or by a debug action; the self
+// view has a second slot of its own, below)
+enum class Owner : std::uint8_t { none, partner, debug, self };
 enum class Phase : std::uint8_t { idle, loading, live };
 enum class BeginResult : std::uint8_t { started, busy, unavailable, failed };
 BeginResult Begin(const bodies::Body& body, const game::WorldTransform& at, Owner owner, double now_ms, char* why,
@@ -76,12 +77,46 @@ void ResetFrames() noexcept;
 // same-build peer that sends no STJ1: partner_body=holo, or its capture is unavailable, paused or
 // behind a notice; other builds are rejected at the link handshake).
 bool StarvedOfFrames(double limit_ms) noexcept;
+// ---- outfit (docs/real-partner-body.md section 9; game thread)
+// This game's own Sam outfit (sent in STJ1). False when unavailable (byte checks, no player).
+bool ReadOutfit(game::Entity* local, wire::Outfit* out) noexcept;
+// The outfit the partner sent (nullptr: none / a new session). The partner's Sam body
+// (demo_sam_clean) is dressed with it: its own darker suit variation removed, the exos
+// variation added, the suit colour set.
+void SetPartnerOutfit(const wire::Outfit* o) noexcept;
+
 // Interpolates the ring at play_ms and publishes the result to the detour.
 // False when the ring is empty (the detour keeps the last pose).
 bool SamplePublish(double play_ms) noexcept;
 
+// ---- self view (docs/real-partner-body.md section 8): on THIS player's own screen the local
+// Sam is replaced by the chosen character. A second body (its own slot) stands at Sam's world
+// transform, copied in the detour every frame Sam's model is updated, and plays Sam's live pose
+// (the newest capture, no wire, no delay). Sam's own model is hidden through his mesh-visibility
+// controller (player +0xA60, Root hide-reason mask +0xD98, reason 63 ours, set and cleared with
+// locked operations); the game's own hide reasons are never touched. Sam is hidden only while
+// the body is shown and posed: Sam asleep (loads, cutscenes, knot space), any hide reason of the
+// game's own (photo mode, scripted scenes), a pose that stops, a removed body or a new player
+// show Sam again first. Everything runs from Tick (game thread).
+// `body` = the character to show in Sam's place, nullptr = off (the host, Sam chosen, or
+// session.ini self_character=0). Needs the pose hook.
+void ConfigureSelf(const bodies::Body* body) noexcept;
+bool SelfConfigured() noexcept;
+bool SelfShown() noexcept;           // the body is shown and Sam hidden right now
+game::Entity* SelfEntity() noexcept;  // the self body (loading or live), nullptr when none
+
+// The per-frame sync faulted (dllmain GuardedTick) and Tick will not run again this session: the
+// detour stops all work (both slots unpublished, no capture), our hide reason is cleared on Sam and
+// a shown self body hidden, so a dead tick never leaves the player invisible. Logged.
+void EmergencyStop() noexcept;
+
 // ---- debug actions (game_actions.cpp): op 1 probe, 2 spawn <body id> <dist m> <mirror 0/1>,
-// 3 remove, 4 joint names, 5 stats.
+// 3 remove, 4 joint names, 5 stats, 6 mirror <0/1>, 7 control item <n>,
+// 8 self view <0/1> <body id, 0 = configured> <follow: 1 Sam's update, 2 the body's, 3 tick, 0 unchanged>
+//   (8 with 2 <reason 0..63> <0/1>: hidden tests on scratch saves only, sets / clears a hide reason
+//   on the local Sam's mask, e.g. 26 = photo mode's, 63 = a stray bit of ours),
+// 9 outfit <0 log / 1 like our Sam / 2 exos colour / 3 override off / 4 own suit colour (hidden tests
+//   on scratch saves only)>.
 bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 
 }  // namespace st::realbody

@@ -50,6 +50,9 @@ enum class Action : std::uint8_t {
     real_stats,           // pose hook counters + partner-vs-published check
     real_mirror,          // v[0] = 1 on / 0 off: the debug body copies Sam's live pose
     real_control,         // v[0] = n: the n-th streamed-out collectors item through the same path+GUID route (control)
+    self_view,            // v[0] = 1 on / 0 off, v[1] = body id (0 = my_character), v[2] = follow (1 Sam's update, 2 the body's, 3 tick, 0 unchanged)
+    real_outfit,          // v[0] = 0 log, 1 dress the slot's Sam body like our Sam, 2 exos v[1] + suit colour v[2], 3 override off,
+                          //   4 (hidden tests on scratch saves only) set our own Sam's suit colour byte to v[1]
     count
 };
 

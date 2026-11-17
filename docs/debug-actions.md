@@ -207,7 +207,7 @@ Both use only the partner hologram's byte-checked spawner calls and ReadProcessM
 
 Scenarios: `anim-census-discover`, `anim-census-mule`, `anim-census-tour`, `anim-census-tour2`.
 
-### Real partner body (`real_probe`, `real_spawn`, `real_remove`, `real_names`, `real_stats`, `real_mirror`, `real_control`; scenarios only)
+### Real partner body (`real_probe`, `real_spawn`, `real_remove`, `real_names`, `real_stats`, `real_mirror`, `real_control`, `self_view`, `real_outfit`; scenarios only)
 
 `native/mod/real_body.cpp`, mechanism and evidence in [real-partner-body.md](real-partner-body.md). Needs the pose
 hook, which is installed at start-up only with `session.ini partner_body=real` or `pose_hook=1` (scenario line
@@ -222,8 +222,25 @@ hook, which is installed at start-up only with `session.ini partner_body=real` o
   `action real_stats` (hook counters, latch, partner-vs-published angle check).
 * `action real_control <n>`: the n-th streamed-out collectors item through the same fake path+GUID reference
   (a control for the load mechanism; holograms are refused afterwards because they have no SkinnedModel).
+* `action self_view <0/1> [body id] [follow]`: the self view (docs/real-partner-body.md section 8). 1: a body
+  (`body id`, 0 = this game's `my_character`) is shown in place of the local Sam on this screen; 0: off, the
+  body goes and Sam is shown. `follow`: how the body follows Sam (1 Sam's own model update copies his world
+  transform, the default; 2 the body's own update; 3 the tick only; 0 unchanged). `real_stats` reports it too,
+  and a `[self]` line is logged every second while the body exists.
+  `self_view 2 <reason 0..63> <0/1>` sets / clears one hide reason on the local Sam's Root mask (26 =
+  photo mode's "hide Sam", 63 = a stray bit of ours, to test the repair). Only in hidden tests on
+  redirected scratch saves; refused otherwise.
+* `action real_outfit <mode> [a] [b]`: the partner Sam's outfit (docs/real-partner-body.md section 9,
+  `native/mod/partner_outfit.cpp`). The modes:
+  * 0: log our own Sam's outfit (inventory bytes, exos index, variant) and the art-parts variations of
+    our Sam and of the slot's and self bodies.
+  * 1: dress the slot's Sam body (a debug `real_spawn 1`, or the partner) like our own Sam, continuously.
+  * 2: dress it with exos `a` (0..43) and suit colour `b` (0..16); anything else = none.
+  * 3: override off; the partner's own outfit applies again.
+  * 4: overwrite our own Sam's suit colour byte with `a` (0..16); the game re-dresses Sam itself at once.
+    Only in hidden tests on redirected scratch saves; refused otherwise.
 
-Scenarios: `real-body-diag`, `real-body-tour`, `real-body-tour-all` (every table id, solo), `echo-real-100`, `echo-real-fragile-100` (role echo),
+Scenarios: `real-body-diag`, `real-body-tour`, `real-body-tour-all` (every table id, solo), `self-view`, `self-view-edges`, `outfit-probe` (solo), `two-games-real-self`, `two-games-outfit` (role host), `echo-real-100`, `echo-real-fragile-100` (role echo),
 `two-games-real`, `two-games-real-fallback` (role host, two games). `real_spawn` takes any id in the table,
 offered or not (the debug way to prove a new body before it gets `offered`). The partner's character in a
 session comes from the peer's `my_character`; `session.ini partner_character` overrides it for debugging

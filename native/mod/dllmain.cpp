@@ -61,6 +61,17 @@ bool GuardedTick() noexcept {
     }
 }
 
+// After a fault the tick never runs again: nothing it maintains may stay half done (the self
+// view's hide reason on Sam, the bodies published to the animate detour).
+bool GuardedEmergencyStop() noexcept {
+    __try {
+        st::realbody::EmergencyStop();
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 // frame_cap=<fps> (session.ini; the launcher's local two-instance test and hidden two-game
 // runs): the game thread waits here once per presented frame, so two games on one PC do not
 // each render as fast as the GPU allows (a hidden game's Present is never vsynced).
@@ -106,8 +117,10 @@ void HookedRunCallbacks() {
     if (!g_sync_enabled.load(std::memory_order_acquire)) return;
     if (!GuardedTick()) {
         g_sync_enabled.store(false);
-        if (!g_faulted.exchange(true))
+        if (!g_faulted.exchange(true)) {
             st::Log("[mod] EXCEPTION in the per-frame sync: co-op disabled for this run (the game keeps running)");
+            if (!GuardedEmergencyStop()) st::Log("[mod] the emergency stop faulted too");
+        }
     }
 }
 

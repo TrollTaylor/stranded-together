@@ -327,7 +327,8 @@ Entity* BodyEntity() {
 }
 
 bool OurEntity(Entity* e) {
-    return e && (e == g_slot.e || e == g_voice.e || e == holo::LiveEntity() || e == realbody::LiveEntity());
+    return e && (e == g_slot.e || e == g_voice.e || e == holo::LiveEntity() || e == realbody::LiveEntity() ||
+                 e == realbody::SelfEntity());
 }
 
 void RemoveBody(const char* why) {
@@ -469,6 +470,7 @@ void PeerBodyId(std::uint8_t id) {
 void TakeJointFrame(const wire::JointFrame& f, double key_ms) {
     if (realbody::PushFrame(f, key_ms)) {
         PeerBodyId(f.body_id);
+        if (f.flags & wire::kJointsOutfit) realbody::SetPartnerOutfit(&f.outfit);
         return;
     }
     static unsigned dropped_logs = 0;
@@ -887,6 +889,17 @@ void Init(const Config& config, const std::wstring& mod_dir) noexcept {
         : realbody::HookInstalled()                                        ? "sent with every pose"
         : config.partner_body == PartnerBody::real || config.pose_hook    ? "not sent (the pose hook is unavailable)"
                                                                            : "not sent (no pose hook: partner_body is not real)");
+    // Self view (docs/real-partner-body.md section 8): this player sees themself as their own
+    // character too. Only for a character other than Sam (ChooseOwn already made the host Sam).
+    if (config.self_character) {
+        const bool sam = !g_own_body || g_own_body->id == bodies::Default().id;
+        if (sam)
+            Log("[sync] self view: not needed (your character is sam%s)", own.host_forced || config.role == Role::host ? ", the host" : "");
+        else if (!realbody::HookInstalled())
+            Log("[sync] self view unavailable: the pose hook is not installed (partner_body=real or pose_hook=1 at start)");
+        else
+            realbody::ConfigureSelf(g_own_body);
+    }
     if (!config.partner_character.empty()) {
         if (bodies::FindByKey(config.partner_character.c_str()))
             Log("[sync] partner_character=%s: debug override, the partner is shown as this body whatever it sends",
@@ -979,6 +992,10 @@ void Tick() noexcept {
                 jf.seq = p.seq;
                 jf.sender_ms = p.sender_ms;
                 jf.body_id = g_own_body->id;
+                // Our own Sam's outfit rides along (8 bytes; docs/real-partner-body.md section 9): a
+                // receiver showing us as Sam dresses its body like our Sam.
+                jf.flags = static_cast<std::uint8_t>(jf.flags & ~wire::kJointsOutfit);
+                if (realbody::ReadOutfit(g_local, &jf.outfit)) jf.flags |= wire::kJointsOutfit;
             }
             if (g_net) {
                 if (have_joints) link::SendPoseAndJoints(p, jf);
@@ -1014,6 +1031,7 @@ void Tick() noexcept {
                 g_ring.Reset();
                 realbody::ResetFrames();
                 g_peer_body.Reset();  // a new session may be another player with another character
+                realbody::SetPartnerOutfit(nullptr);
                 g_first_joints_wait_ms = 0;
                 Log("[sync] new link session (#%u): interpolation reset", gen);
                 if (BodyPresent()) RemoveBody("new link session");  // session end of the previous partner

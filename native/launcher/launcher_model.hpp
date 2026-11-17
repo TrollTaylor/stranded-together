@@ -57,6 +57,9 @@ struct DebugOptions {
     // How your partner is drawn on your screen: true = partner_body=real (a solid character that
     // copies their real animation; experimental), false = partner_body=holo (the hologram).
     bool real_partner_body = true;
+    // Self view: on your own screen you appear as your chosen character too (session.ini
+    // self_character=1, written only with the real partner body and a character other than Sam).
+    bool self_character = true;
 };
 
 // The Advanced / LAN section (transport udp).
@@ -163,7 +166,7 @@ public:
     virtual void set_player_name(const std::string& name) = 0;
     // Join: the character you appear as on the other player's screen (session.ini my_character,
     // a key of core::OfferedCharacters(); anything else is stored as "sam"). The host is always Sam.
-    // On your own screen you are still Sam.
+    // On your own screen you appear as that character too (DebugOptions::self_character).
     virtual std::string my_character() const = 0;
     virtual void set_my_character(const std::string& key) = 0;
 

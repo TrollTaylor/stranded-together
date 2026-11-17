@@ -91,6 +91,7 @@ add_library(st_mod SHARED
   native/mod/body_table.cpp
   native/mod/body_choice.cpp
   native/mod/real_body.cpp
+  native/mod/partner_outfit.cpp
   native/mod/automation.cpp
   native/mod/sandbox.cpp
   ${ST_OVERLAY_SOURCES})
