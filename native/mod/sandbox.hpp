@@ -184,14 +184,14 @@ inline bool SandboxForeignAllowed(bool requested, bool redirect_active) { return
 // rect (the overlay then moves each window to its half: local_window).
 // The game rewrites this file on exit with its own values, so the launcher merges these keys into
 // it before every local test (MergeGameSettings), not only when the file is missing.
+// The file must be COMPLETE: with keys missing, ds.exe's boot check (0x14262E9D1..0x14262E9F9)
+// shows "Invalid Graphics Configration. Set Graphics Setting Default" (a 10 s message box), resets
+// every graphics setting to its defaults (FUN_142644660: fullscreen again) and, next to a running
+// first game, the second game's renderer set-up then failed (v0.5.3 on a player's desktop: the
+// host, whose file the game had completed on an earlier exit, ran windowed; the guest did not).
+// All keys below, in the game's own order, with the values the game itself wrote for this preset.
 inline const char* LowGraphicsSettingsCfg() {
-    return "\"window_mode\" \"1\"\r\n"
-           "\"window_left\" \"0\"\r\n"
-           "\"window_top\" \"0\"\r\n"
-           "\"window_right\" \"1280\"\r\n"
-           "\"window_bottom\" \"720\"\r\n"
-           "\"hdr\" \"0\"\r\n"
-           "\"rendering_width\" \"1280\"\r\n"
+    return "\"rendering_width\" \"1280\"\r\n"
            "\"rendering_height\" \"720\"\r\n"
            "\"wait_vsync\" \"1\"\r\n"
            "\"fps\" \"30\"\r\n"
@@ -200,7 +200,30 @@ inline const char* LowGraphicsSettingsCfg() {
            "\"postprocess_motionblur\" \"0\"\r\n"
            "\"postprocess_ssr\" \"0\"\r\n"
            "\"postprocess_ao\" \"0\"\r\n"
-           "\"max_shadowmap_size\" \"0\"\r\n";
+           "\"max_shadowmap_size\" \"0\"\r\n"
+           "\"hdr\" \"0\"\r\n"
+           "\"window_left\" \"0\"\r\n"
+           "\"window_top\" \"0\"\r\n"
+           "\"window_right\" \"1280\"\r\n"
+           "\"window_bottom\" \"720\"\r\n"
+           "\"window_mode\" \"1\"\r\n"
+           "\"streaming_memory_mb\" \"2816\"\r\n"
+           "\"lod_scale\" \"2\"\r\n"
+           "\"anti-aliasing\" \"2\"\r\n"
+           "\"amd_fsr\" \"0\"\r\n"
+           "\"amd_fsr_sharpness\" \"87\"\r\n"
+           "\"amd_fsr_mode\" \"0\"\r\n"
+           "\"amd_fsr2\" \"0\"\r\n"
+           "\"amd_fsr2_mode\" \"1\"\r\n"
+           "\"amd_fsr2_sharpness_value\" \"80\"\r\n"
+           "\"nvidia_nis\" \"0\"\r\n"
+           "\"nvidia_nis_sharpness\" \"10\"\r\n"
+           "\"nvidia_nis_mode\" \"0\"\r\n"
+           "\"nvidia_dlss\" \"0\"\r\n"
+           "\"nvidia_dlss_sharpness\" \"50\"\r\n"
+           "\"nvidia_dlss_quality\" \"0\"\r\n"
+           "\"intel_xess\" \"0\"\r\n"
+           "\"intel_xess_mode\" \"1\"\r\n";
 }
 
 // The graphics menu's options in the profile's game_settings.cfg (keys from the settings table
