@@ -117,6 +117,8 @@ DebugOptions DebugOptionsFromSettings(const json::Value& settings) {
     o.debug_menu = d->Bool("debug_menu", o.debug_menu);
     const int key = ParseFunctionKey(d->Str("debug_menu_key"));
     if (key) o.debug_menu_key = key;
+    // Only an explicit "holo" picks the hologram: missing or unknown keeps the default (real).
+    o.real_partner_body = d->Str("partner_body") != "holo";
     return ClampDebugOptions(o);
 }
 
@@ -130,6 +132,7 @@ void DebugOptionsToSettings(const DebugOptions& o, json::Value& settings) {
     d["verbose"] = o.verbose;
     d["debug_menu"] = o.debug_menu;
     d["debug_menu_key"] = FunctionKeyName(o.debug_menu_key);
+    d["partner_body"] = o.real_partner_body ? "real" : "holo";
     settings["debug"] = d;
 }
 
@@ -142,6 +145,7 @@ void ApplyDebugOptions(const DebugOptions& o, SessionIni& ini) {
     ini.verbose = o.verbose;
     ini.debug_menu = o.debug_menu;
     ini.debug_menu_key = o.debug_menu_key;
+    ini.partner_body = o.real_partner_body ? "real" : "holo";
     ini.one_shot = true;
 }
 
@@ -208,6 +212,12 @@ public:
     void set_player_name(const std::string& name) override {
         name_ = name;
         settings_["name"] = name;
+        SaveChoices();
+    }
+    std::string my_character() const override { return my_character_; }
+    void set_my_character(const std::string& key) override {
+        my_character_ = CharacterKeyOrSam(key);
+        settings_["my_character"] = my_character_;
         SaveChoices();
     }
 
@@ -493,11 +503,16 @@ public:
         v.detail = local_.detail;
         v.tone = local_.tone;
         v.host_pad = local_host_pad_;
+        v.guest_character = local_guest_character_;
         return v;
     }
 
     void set_local_test_host_pad(bool on) override {
         local_host_pad_ = on;
+        SaveTestChoices();
+    }
+    void set_local_test_guest_character(const std::string& key) override {
+        local_guest_character_ = CharacterKeyOrSam(key);
         SaveTestChoices();
     }
 
@@ -548,6 +563,7 @@ public:
         guest.second_instance = true;
         guest.local_input = "guest";
         guest.local_window = "right";
+        guest.my_character = local_guest_character_;   // the host game stays Sam (BaseIni)
         for (const auto& [ini, dir] : {std::pair<const SessionIni*, std::wstring>{&host, LocalDir(L"host")}, {&guest, LocalDir(L"guest")}}) {
             std::string text, werr;
             if (!MakeSessionIniText(*ini, text, error_out)) return false;
@@ -574,7 +590,8 @@ public:
         local_.detail = "The second game (guest) starts a few seconds later. Each window shows the other player.";
         local_.tone = LinkView::Tone::neutral;
         test_result_.clear();
-        LauncherLog(*env_, paths_, "local_test=start host_pid=" + std::to_string(pid) + (local_host_pad_ ? " host_pad=1" : ""));
+        LauncherLog(*env_, paths_, "local_test=start host_pid=" + std::to_string(pid) + (local_host_pad_ ? " host_pad=1" : "") +
+                                       " guest_character=" + local_guest_character_ + " partner_body=" + host.partner_body);
         return true;
     }
 
@@ -890,10 +907,13 @@ private:
         lan_.port_peer = pp >= 1 && pp <= 65535 ? static_cast<int>(pp) : kDefaultUdpPort;
         name_ = settings_.Str("name");
         if (!name_.empty() && !IsValidPlayerName(name_)) name_.clear();
+        // A hand-edited or no longer offered character falls back to Sam.
+        my_character_ = CharacterKeyOrSam(settings_.Str("my_character"));
         if (const json::Value* t = settings_.Find("test_save"); t && t->is_object()) {
             test_folder_ = t->Str("folder");
             test_use_ = t->Bool("use", false);
             local_host_pad_ = t->Bool("host_pad", false);
+            local_guest_character_ = CharacterKeyOrSam(t->Str("guest_character"));
         }
         RefreshTestSave();
     }
@@ -903,6 +923,7 @@ private:
         t["folder"] = test_folder_;
         t["use"] = test_use_;
         t["host_pad"] = local_host_pad_;
+        t["guest_character"] = local_guest_character_;
         settings_["test_save"] = t;
         SaveChoices();
     }
@@ -1194,6 +1215,9 @@ private:
         SessionIni ini;
         ini.role = role;
         ini.name = name_;
+        // The host is always Sam; every other role carries the Join tab's choice (the writer
+        // puts sam for a host anyway).
+        ini.my_character = std::string(role) == "host" ? std::string(kHostCharacter) : my_character_;
         ApplyDebugOptions(debug_, ini);
         return ini;
     }
@@ -1244,7 +1268,8 @@ private:
             error = "Steam could not be started. Start Steam, log in, then try again.";
             return false;
         }
-        LauncherLog(*env_, paths_, "launch=steam role=" + ini.role + " transport=" + ini.transport);
+        LauncherLog(*env_, paths_, "launch=steam role=" + ini.role + " transport=" + ini.transport + " my_character=" + ini.my_character +
+                                       " partner_body=" + ini.partner_body);
         session_id_ = id;
         role_ = role;
         session_transport_ = ini.transport == "udp" ? Transport::udp : Transport::steam;
@@ -1332,6 +1357,8 @@ private:
     std::string test_folder_;
     SeedCheck test_check_;
     bool test_use_ = false, test_seeded_ = false, local_host_pad_ = false;
+    std::string my_character_ = kHostCharacter;            // Join tab: "my_character"
+    std::string local_guest_character_ = kHostCharacter;   // local test: "test_save" / "guest_character"
     bool session_sandbox_ = false;   // the session started from here runs on a sandbox
     bool sandbox_unconfirmed_ = false;   // that game never wrote sandbox-active.txt
     std::int64_t sandbox_check_at_ = 0;  // when to look for sandbox-active.txt (0 = not pending)
@@ -1384,6 +1411,7 @@ int RunWriteSession(const std::wstring& game_dir, const WriteSessionRequest& req
     json::Value settings;
     ReadSettings(paths, settings);
     ApplyDebugOptions(DebugOptionsFromSettings(settings), ini);   // the Debug page's options, one_shot=1
+    ini.my_character = CharacterKeyOrSam(settings.Str("my_character"));   // the Join tab's choice (a host writes sam)
     ini.transport = request.transport.empty() ? "steam" : request.transport;
     if (ini.transport == "udp") {
         ini.udp_peer = request.udp_peer.empty() ? std::string("127.0.0.1") : request.udp_peer;

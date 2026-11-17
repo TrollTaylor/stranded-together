@@ -833,6 +833,14 @@ bool RunSteps(Run& r) {
                 if (!ok) detail = r.end_reason.empty() || Alive(r.o) ? "no matching log line" : r.end_reason;
                 break;
             }
+            case te::StepKind::nolog: {
+                // The whole log so far, once: a line that must never have been written.
+                what = std::string(s.target == 1 ? "@guest " : "") + "nolog " + s.text;
+                std::string line;
+                ok = !LogMatches(r, std::regex(s.text), &line, s.target);
+                detail = ok ? "no matching log line" : "found: " + line;
+                break;
+            }
             case te::StepKind::until: {
                 what = std::string(s.target == 1 ? "@guest " : "") + "until " + s.text + " => " + s.command;
                 const std::regex re(s.text);
@@ -886,7 +894,7 @@ std::string PreflightGame(Run& r) {
     if (r.args.no_mod || r.args.sandbox_session)
         for (const te::Step& s : r.scenario.steps)
             if (s.kind == te::StepKind::mod || s.kind == te::StepKind::waitready || s.kind == te::StepKind::until)
-                return "--no-mod has no automation channel: the scenario may only use sleep, note and waitlog (line " + std::to_string(s.line) + ")";
+                return "--no-mod has no automation channel: the scenario may only use sleep, note, waitlog and nolog (line " + std::to_string(s.line) + ")";
     const auto running = te::FindProcesses(L"ds.exe");
     if (!running.empty()) return "ds.exe is already running (pid " + std::to_string(running[0]) + "): close it first";
     if (r.args.steam_check && te::FindProcesses(L"steam.exe").empty())
@@ -1118,6 +1126,7 @@ int RunGame(Args& a) {
     if (r.scenario.low_graphics) so.frame_cap = 30;  // two games on one GPU: neither renders uncapped
     if (r.g.on) so.local_window = "left";              // the two windows side by side (as the launcher's local test)
     so.extra = r.scenario.ini;                         // scenario "ini key=value" lines (allow-listed)
+    so.extra.insert(so.extra.end(), r.scenario.host_ini.begin(), r.scenario.host_ini.end());  // "@host ini": this game only
     deployed = deployed && te::WriteFileAtomic(r.mod_dir + L"\\session.ini", a.no_mod            ? te::RedirectOnlyIniText(extra_root)
                                                                    : a.sandbox_session ? te::SandboxSessionIniText(sandbox_name, foreign)
                                                                                        : te::SessionIniText(so));
@@ -1146,6 +1155,9 @@ int RunGame(Args& a) {
         go.port_peer = so.port_local;
         go.second_instance = true;
         go.local_window = "right";
+        // The shared ini lines, then "@guest ini" (not the host's own lines; the mod keeps a key's last value).
+        go.extra = r.scenario.ini;
+        go.extra.insert(go.extra.end(), r.scenario.guest_ini.begin(), r.scenario.guest_ini.end());
         deployed = te::EnsureDir(r.g.auto_in) && te::EnsureDir(r.g.auto_out) && te::WriteFileAtomic(r.g.dir + L"\\session.ini", te::SessionIniText(go));
         if (deployed && appdir) deployed = te::WriteFileAtomic(r.g.dir + L"\\automation\\settings.cfg", settings_text);
         if (deployed && !te::SeedScratch(r.run, r.g.scratch, &err)) {

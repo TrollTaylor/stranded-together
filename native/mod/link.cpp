@@ -79,6 +79,7 @@ std::uint32_t g_last_rx_jseq = 0;
 bool g_have_rx_jseq = false;
 
 volatile LONG64 g_rx_frames = 0, g_tx_frames = 0;
+volatile LONG64 g_rx_joints = 0, g_tx_joints = 0, g_tx_payload = 0;
 volatile long g_state = static_cast<long>(lk::LinkState::off);
 
 
@@ -214,6 +215,7 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
             slot.generation = g_generation;
             if (g_jq_count < kJQueue) ++g_jq_count;
             else g_jq_head = (g_jq_head + 1) % kJQueue;
+            InterlockedIncrement64(&g_rx_joints);
         }
         for (unsigned i = 0; i < pose_count; ++i) {
             const wire::Pose& p = poses[i];
@@ -395,6 +397,7 @@ bool SendPose(const wire::Pose& pose) noexcept {
     if (g_session.CanSendData()) {
         lk::BodyWriter w(g_body, sizeof(g_body));
         if (w.Add(lk::MsgType::frame, frame, n)) sent = g_session.SendData(g_body, w.size(), NowMs());
+        if (sent) InterlockedAdd64(&g_tx_payload, static_cast<LONG64>(w.size()));
     }
     ReleaseSRWLockExclusive(&g_tx);
     if (sent) InterlockedIncrement64(&g_tx_frames);
@@ -406,17 +409,19 @@ bool SendPoseAndJoints(const wire::Pose& pose, const wire::JointFrame& joints) n
     const std::size_t n = wire::EncodePose(pose, frame);
     std::uint8_t jbuf[wire::kMaxJointFrameSize];
     const std::size_t jn = wire::EncodeJoints(joints, jbuf, sizeof(jbuf));
-    bool sent = false;
+    bool sent = false, with_joints = false;
     AcquireSRWLockExclusive(&g_tx);
     if (g_session.CanSendData()) {
         lk::BodyWriter w(g_body, sizeof(g_body));
         if (w.Add(lk::MsgType::frame, frame, n)) {
-            if (jn) w.Add(lk::MsgType::frame, jbuf, jn);  // no room: the pose alone still goes
+            with_joints = jn && w.Add(lk::MsgType::frame, jbuf, jn);  // no room: the pose alone still goes
             sent = g_session.SendData(g_body, w.size(), NowMs());
+            if (sent) InterlockedAdd64(&g_tx_payload, static_cast<LONG64>(w.size()));
         }
     }
     ReleaseSRWLockExclusive(&g_tx);
     if (sent) InterlockedIncrement64(&g_tx_frames);
+    if (sent && with_joints) InterlockedIncrement64(&g_tx_joints);
     return sent;
 }
 
@@ -475,6 +480,9 @@ Info GetInfo() noexcept {
     ReleaseSRWLockShared(&g_reason_lock);
     i.rx_frames = static_cast<std::uint64_t>(g_rx_frames);
     i.tx_frames = static_cast<std::uint64_t>(g_tx_frames);
+    i.rx_joint_frames = static_cast<std::uint64_t>(g_rx_joints);
+    i.tx_joint_frames = static_cast<std::uint64_t>(g_tx_joints);
+    i.tx_payload_bytes = static_cast<std::uint64_t>(g_tx_payload);
     return i;
 }
 

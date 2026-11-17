@@ -5,7 +5,8 @@
 #   st_imgui            Dear ImGui 1.92.6 (third_party/imgui) with the Win32 + DX11 backends
 #   st_launcher_core    everything without a window: the launcher core (Steam discovery,
 #                       install gate, session.ini, status, watchdog), the join-code check
-#                       (on st_net's DST1 parser), the UI logic, the mock model, the entries
+#                       (on st_net's DST1 parser), the UI logic, the mock model, the entries,
+#                       the mod's character table (native/mod/body_table.cpp)
 #   st_launcher         the exe (OUTPUT_NAME StrandedTogether)
 #   st_launcher_core_tests  pure checks (join code round trip, session.ini text, status parse...)
 #   st_launcher_update_tests  the updater: SemVer, release feed, zip verification, install/rollback,
@@ -62,9 +63,13 @@ add_library(st_launcher_core STATIC
   native/launcher/launcher_join_code.cpp
   native/launcher/launcher_ui_logic.cpp
   native/launcher/launcher_model_mock.cpp
-  native/launcher/launcher_entry.cpp)
+  native/launcher/launcher_entry.cpp
+  # The character list (pure data, no Windows or game code): the Join tab offers exactly the
+  # bodies the mod's table marks `offered`. Only this file of the mod; nothing else is pulled in.
+  native/mod/body_table.cpp)
 target_include_directories(st_launcher_core PUBLIC native native/launcher native/launcher/core "${_st_generated}")
-# native/mod/sandbox.hpp (header only): the session.ini keys and graphics text shared with the mod
+# native/mod/sandbox.hpp (header only): the session.ini keys and graphics text shared with the mod;
+# native/mod/body_table.hpp: the character list
 target_include_directories(st_launcher_core PRIVATE native/mod)
 # st_net brings stcoop/steam_join_code + link_crypto (the DST1 code). Never winhttp.lib: the
 # launcher lives in the game folder next to the mod's winhttp.dll proxy, so the update check

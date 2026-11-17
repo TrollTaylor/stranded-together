@@ -269,7 +269,7 @@ std::string SessionIniText(const SessionOptions& o) {
 }
 
 bool ScenarioIniKeyAllowed(const std::string& key) {
-    static const char* const kAllowed[] = {"partner_body", "partner_character", "partner_holo", "partner_marker", "partner_voice",
+    static const char* const kAllowed[] = {"partner_body", "partner_character", "my_character", "partner_holo", "partner_marker", "partner_voice",
                                            "partner_activate", "pose_hook", "echo_delay_s", "echo_offset_m", "send_hz",
                                            "interp_delay_ms"};
     for (const char* k : kAllowed)
@@ -313,14 +313,20 @@ bool ParseScenario(const std::string& text, Scenario* out, std::string* error) {
             out->role = words[1];
             continue;
         }
-        if (verb == "ini") {
-            const std::string kv = automation::detail::Rest(line, 1);
+        // "ini k=v" goes to every game's session.ini; "@host ini" / "@guest ini" to one game of a
+        // two-game run only (written after the shared lines, so they win: the mod keeps a key's last value).
+        const bool host_ini = verb == "@host" && words.size() >= 2 && automation::detail::Lower(words[1]) == "ini";
+        const bool guest_ini = verb == "@guest" && words.size() >= 2 && automation::detail::Lower(words[1]) == "ini";
+        if (verb == "ini" || host_ini || guest_ini) {
+            const std::string kv = automation::detail::Rest(line, verb == "ini" ? 1 : 2);
             const auto eq = kv.find('=');
             const std::string key = eq == std::string::npos ? "" : Trim(kv.substr(0, eq));
             const std::string val = eq == std::string::npos ? "" : Trim(kv.substr(eq + 1));
             if (key.empty() || val.empty() || val.find_first_of("\r\n") != std::string::npos) return fail("ini <key>=<value>");
             if (!ScenarioIniKeyAllowed(key)) return fail("ini: key '" + key + "' is not allowed in a scenario");
-            out->ini.push_back(key + "=" + val);
+            if (st.optional) return fail("ini cannot be optional");
+            (host_ini ? out->host_ini : guest_ini ? out->guest_ini : out->ini).push_back(key + "=" + val);
+            if (guest_ini && !out->guest_ini_line) out->guest_ini_line = lineno;
             continue;
         }
         if (verb == "graphics") {
@@ -338,8 +344,8 @@ bool ParseScenario(const std::string& text, Scenario* out, std::string* error) {
         const std::string verb2 = automation::detail::Lower(words2[0]);
         if (st.target != 0 && !verb2.empty() && verb2[0] == '@') return fail("one @ prefix per step");
         if (st.target != 0 && (verb2 == "role" || verb2 == "timeout" || verb2 == "graphics" || verb2 == "sleep" || verb2 == "note" || verb2 == "ini"))
-            return fail(verb2 + " cannot take a @guest / @both prefix");
-        if (st.target == 2 && verb2 != "waitready" && (verb2 == "waitlog" || verb2 == "until"))
+            return fail(verb2 + " cannot take a @guest / @both prefix" + (verb2 == "ini" ? " (@both ini: write plain ini, it goes to both games)" : ""));
+        if (st.target == 2 && verb2 != "waitready" && (verb2 == "waitlog" || verb2 == "nolog" || verb2 == "until"))
             return fail("@both: only mod commands and waitready");
         if (st.target != 0) {
             // re-dispatch the rest of the line
@@ -371,6 +377,15 @@ bool ParseScenario(const std::string& text, Scenario* out, std::string* error) {
                 std::regex re(st.text);
             } catch (const std::regex_error&) {
                 return fail("waitlog: bad regex '" + st.text + "'");
+            }
+        } else if (verb == "nolog") {
+            if (words.size() < 2) return fail("nolog <regex>");
+            st.kind = StepKind::nolog;
+            st.text = automation::detail::Rest(line, 1);
+            try {
+                std::regex re(st.text);
+            } catch (const std::regex_error&) {
+                return fail("nolog: bad regex '" + st.text + "'");
             }
         } else if (verb == "until") {
             const auto arrow = line.find("=>");
@@ -414,6 +429,10 @@ bool ParseScenario(const std::string& text, Scenario* out, std::string* error) {
             *error = "line " + std::to_string(s.line) + ": @guest / @both steps need 'role host' (two games)";
             return false;
         }
+    if (!out->guest_ini.empty() && out->role != "host") {
+        *error = "line " + std::to_string(out->guest_ini_line) + ": @guest ini needs 'role host' (two games)";
+        return false;
+    }
     return true;
 }
 

@@ -54,6 +54,8 @@ public:
     void set_lan(const LanSettings& lan) override { lan_ = lan; }
     std::string player_name() const override { return name_; }
     void set_player_name(const std::string& name) override { name_ = name; }
+    std::string my_character() const override { return my_character_; }
+    void set_my_character(const std::string& key) override;
 
     bool host(std::string& code_out, std::string& error_out) override;
     CodeCheck check_code(const std::string& code) const override;
@@ -122,6 +124,7 @@ public:
     }
     LocalTestView local_test() const override;
     void set_local_test_host_pad(bool on) override { host_pad_ = on; }
+    void set_local_test_guest_character(const std::string& key) override;
     bool start_local_test(std::string& error_out) override;
     // screenshot driver: the local test `seconds` after it started (< 0: not running)
     void jump_to_local_test(double seconds);
@@ -164,6 +167,7 @@ private:
     Transport transport_ = Transport::steam;
     LanSettings lan_;
     std::string name_;
+    std::string my_character_ = "sam";
     std::string last_error_;
     LinkOverride link_override_ = LinkOverride::none;
     DebugOptions debug_;
@@ -177,6 +181,7 @@ private:
         return v;
     }();
     bool host_pad_ = false;
+    std::string guest_character_ = "sam";
     double local_start_ = -1.0;   // mock clock; < 0 when no local test runs
 };
 

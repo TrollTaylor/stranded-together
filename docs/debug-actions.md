@@ -223,7 +223,11 @@ hook, which is installed at start-up only with `session.ini partner_body=real` o
 * `action real_control <n>`: the n-th streamed-out collectors item through the same fake path+GUID reference
   (a control for the load mechanism; holograms are refused afterwards because they have no SkinnedModel).
 
-Scenarios: `real-body-diag`, `real-body-tour` (solo), `echo-real-100`, `echo-real-fragile-100` (role echo).
+Scenarios: `real-body-diag`, `real-body-tour`, `real-body-tour-all` (every table id, solo), `echo-real-100`, `echo-real-fragile-100` (role echo),
+`two-games-real`, `two-games-real-fallback` (role host, two games). `real_spawn` takes any id in the table,
+offered or not (the debug way to prove a new body before it gets `offered`). The partner's character in a
+session comes from the peer's `my_character`; `session.ini partner_character` overrides it for debugging
+(docs/real-partner-body.md section 5).
 
 ## Byte-check table
 

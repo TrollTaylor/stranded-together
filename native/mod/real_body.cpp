@@ -245,12 +245,55 @@ bool CallPoseFns(std::uintptr_t sm, std::uintptr_t pose, bool bounds) {
 constexpr float kSamRestPelvisLen = 1.000f;
 bool g_same_skel = false;  // set by Validate before the body is published
 
+// Thigh + shin (the local translations of the knee and ankle joints, both legs): bone lengths,
+// which do not change with the pose. Sam-skeleton joint indices (the names logged by real_names).
+constexpr unsigned kSamLegJoints[4] = {62, 63, 67, 68};  // R knee, R foot, L knee, L foot
+float g_leg_body = 0, g_leg_sam = 0, g_leg_ratio = 0;   // 0 = not measured
+bool g_leg_used = false;                                // the pelvis ratio came from the legs
+
+float LegLength(const Joint (&j)[kJ], const unsigned (&idx)[4]) {
+    float sum = 0;
+    for (unsigned i : idx) {
+        const float* t = j[i].t;
+        sum += std::sqrt(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
+    }
+    return sum / 2;  // per leg
+}
+
+// Runs in the detour: math only (no logging, no allocation).
 void FinishLatch() {
     g_latch_ok = g_latch_good > 0;
     g_pelvis_ratio = 1.0f;
     g_latch_sam_pelvis_len = kSamRestPelvisLen;
+    g_leg_body = g_leg_sam = g_leg_ratio = 0;
+    g_leg_used = false;
     if (g_latch_ok && !g_same_skel) {
         float r = g_latch_pelvis_len / kSamRestPelvisLen;
+        // The latch assumes the body's first frames are a standing rest pose. Heartman's are not:
+        // pelvis 0.619 m (seated, run 20261116-194938), so the ratio clamped to 0.75 sank his feet
+        // into the floor (run 20261116-194441). The leg bones give the scale whatever the pose; when
+        // the two disagree by more than 8 % the legs win.
+        unsigned body_idx[4] = {};
+        bool mapped = true;
+        for (unsigned k = 0; k < 4; ++k) {
+            unsigned found = kJ;
+            for (unsigned j = 0; j < kJ && found == kJ; ++j)
+                if (g_map[j] == kSamLegJoints[k]) found = j;
+            mapped = mapped && found < kJ;
+            body_idx[k] = found < kJ ? found : 0;
+        }
+        Capture c;
+        if (mapped && g_capture.Read(c)) {
+            g_leg_body = LegLength(g_latch, body_idx);
+            g_leg_sam = LegLength(c.j, kSamLegJoints);
+            if (g_leg_body > 0.3f && g_leg_sam > 0.3f) {
+                g_leg_ratio = g_leg_body / g_leg_sam;
+                if (std::fabs(r / g_leg_ratio - 1.0f) > 0.08f) {
+                    r = g_leg_ratio;
+                    g_leg_used = true;
+                }
+            }
+        }
         if (r < 0.75f) r = 0.75f;
         if (r > 1.33f) r = 1.33f;
         g_pelvis_ratio = r;
@@ -764,6 +807,10 @@ void Stats(double now) {
         Log("[real] latched the body's own pose: %u plausible of %u frames -> %s; pelvis %.3f m vs Sam's rest %.3f m, ratio %.3f%s", g_latch_good,
             g_latch_seen, g_latch_ok ? "using its own bone translations" : "using Sam's bone translations", g_latch_pelvis_len,
             g_latch_sam_pelvis_len, g_pelvis_ratio, g_same_skel ? " (Sam's own skeleton: not scaled)" : "");
+        if (g_leg_ratio > 0)
+            Log("[real]   legs (thigh + shin) %.3f m vs Sam %.3f m: ratio %.3f%s", g_leg_body, g_leg_sam, g_leg_ratio,
+                g_leg_used ? "; the latched pelvis disagrees by more than 8 % (not a standing pose): the pelvis ratio uses the legs"
+                           : "; agrees with the pelvis");
     }
     if (!any) return;
     char check[96] = {};
@@ -1023,6 +1070,9 @@ PollResult Poll(double now_ms, char* why, std::size_t cap) noexcept {
     g_phase = Phase::live;
     g_live_tick = GetTickCount64();
     g_logged_latch = false;
+    // Without a body the stats ran every 10 s; a body removed within that wait (a debug tour
+    // spends about 6 s on each) never got its latch line (run 20261116-194441: 9 of 16 missing).
+    if (g_next_stats_ms > now_ms + 1000) g_next_stats_ms = now_ms + 1000;
     g_apply_on.store(g_owner == Owner::partner || g_mirror, std::memory_order_release);
     return PollResult::became_live;
 }
@@ -1083,15 +1133,16 @@ bool CaptureFrame(wire::JointFrame* out) noexcept {
     return FrameFromCapture(c, out);
 }
 
-void PushFrame(const wire::JointFrame& f, double key_ms) noexcept {
-    if (f.joint_count != kJ || f.layout_hash != wire::kSamLayoutHash) return;
-    if (g_ring_count && key_ms <= RingAt(g_ring_count - 1).key_ms) return;
+bool PushFrame(const wire::JointFrame& f, double key_ms) noexcept {
+    if (f.joint_count != kJ || f.layout_hash != wire::kSamLayoutHash) return false;
+    if (g_ring_count && key_ms <= RingAt(g_ring_count - 1).key_ms) return false;
     Slot& s = g_ring[(g_ring_head + g_ring_count) % kRing];
     g_last_push_tick = GetTickCount64();
     s.key_ms = key_ms;
     s.f = f;
     if (g_ring_count < kRing) ++g_ring_count;
     else g_ring_head = (g_ring_head + 1) % kRing;
+    return true;
 }
 
 void ResetFrames() noexcept { g_ring_head = g_ring_count = 0; }

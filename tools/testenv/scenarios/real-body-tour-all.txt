@@ -1,0 +1,270 @@
+# Real partner body, every body_table id (docs/real-partner-body.md section 2, "offered"):
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario real-body-tour-all -SeedSaves complete-100
+# Spawns ids 1..16 in turn, each 5 m ahead of Sam and mirroring his live pose. Frames per body:
+#   NN-<key>-idle      the body stands in Sam's idle, facing the camera;
+#   NN-<key>-walk-a/b  Sam turns round and walks towards the camera (the pad stays held); the body, now
+#                      behind him, walks in place and is seen past his shoulder.
+# Sam then walks away from the camera again. These timings (0.7 s + 0.2 s towards, 1.1 s away) kept all 16
+# bodies framed alike, standing on open floor (run 20261116-194441). Longer walks drifted Sam until the
+# body stood behind a parked vehicle (run 20261116-195757), and walking sideways (194938) or towards the
+# body (195431) turned the camera, so Sam ended up facing walls with the body out of frame.
+# For each body the log has the load time ("loaded after"), joint count and layout hash ("model ... joints
+# 77 layout"), the joint-name map ("mapped by name: N missing") and the pelvis latch ("pelvis ... ratio");
+# real_stats adds the hook counters. The supervisor's waitlog searches the whole log, so each body's wait
+# names that body only (an earlier body's lines must not end it); it is optional (?), so a body that never
+# loads does not end the tour.
+role solo
+timeout 360
+ini pose_hook=1
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+wait 1500
+screenshot 00-control
+action real_probe
+# id 1: sam
+action real_spawn 1 5 1
+?waitlog 30 \[real\] (.*'sam'( is live| refused|.* did not load| will not be tried)|the game cancelled loading 'sam')
+wait 1500
+screenshot 01-sam-idle
+action real_stats
+pad none 700 ly=-32767 keep
+screenshot 01-sam-walk-a
+wait 200
+screenshot 01-sam-walk-b
+pad none 0
+action real_stats
+action real_remove
+pad none 1100 ly=32767
+wait 600
+# id 2: porter
+action real_spawn 2 5 1
+?waitlog 30 \[real\] (.*'porter'( is live| refused|.* did not load| will not be tried)|the game cancelled loading 'porter')
+wait 1500
+screenshot 02-porter-idle
+action real_stats
+pad none 700 ly=-32767 keep
+screenshot 02-porter-walk-a
+wait 200
+screenshot 02-porter-walk-b
+pad none 0
+action real_stats
+action real_remove
+pad none 1100 ly=32767
+wait 600
+# id 3: fragile
+action real_spawn 3 5 1
+?waitlog 30 \[real\] (.*'fragile'( is live| refused|.* did not load| will not be tried)|the game cancelled loading 'fragile')
+wait 1500
+screenshot 03-fragile-idle
+action real_stats
+pad none 700 ly=-32767 keep
+screenshot 03-fragile-walk-a
+wait 200
+screenshot 03-fragile-walk-b
+pad none 0
+action real_stats
+action real_remove
+pad none 1100 ly=32767
+wait 600
+# id 4: diehardman
+action real_spawn 4 5 1
+?waitlog 30 \[real\] (.*'diehardman'( is live| refused|.* did not load| will not be tried)|the game cancelled loading 'diehardman')
+wait 1500
+screenshot 04-diehardman-idle
+action real_stats
+pad none 700 ly=-32767 keep
+screenshot 04-diehardman-walk-a
+wait 200
+screenshot 04-diehardman-walk-b
+pad none 0
+action real_stats
+action real_remove
+pad none 1100 ly=32767
+wait 600
+# id 5: cliff
+action real_spawn 5 5 1
+?waitlog 30 \[real\] (.*'cliff'( is live| refused|.* did not load| will not be tried)|the game cancelled loading 'cliff')
+wait 1500
+screenshot 05-cliff-idle
+action real_stats
+pad none 700 ly=-32767 keep
+screenshot 05-cliff-walk-a
+wait 200
+screenshot 05-cliff-walk-b
+pad none 0
+action real_stats
+action real_remove
+pad none 1100 ly=32767
+wait 600
+# id 6: porter_plain
+action real_spawn 6 5 1
+?waitlog 30 \[real\] (.*'porter_plain'( is live| refused|.* did not load| will not be tried)|the game cancelled loading 'porter_plain')
+wait 1500
+screenshot 06-porter_plain-idle
+action real_stats
+pad none 700 ly=-32767 keep
+screenshot 06-porter_plain-walk-a
+wait 200
+screenshot 06-porter_plain-walk-b
+pad none 0
+action real_stats
+action real_remove
+pad none 1100 ly=32767
+wait 600
+# id 7: deadman
+action real_spawn 7 5 1
+?waitlog 30 \[real\] (.*'deadman'( is live| refused|.* did not load| will not be tried)|the game cancelled loading 'deadman')
+wait 1500
+screenshot 07-deadman-idle
+action real_stats
+pad none 700 ly=-32767 keep
+screenshot 07-deadman-walk-a
+wait 200
+screenshot 07-deadman-walk-b
+pad none 0
+action real_stats
+action real_remove
+pad none 1100 ly=32767
+wait 600
+# id 8: heartman
+action real_spawn 8 5 1
+?waitlog 30 \[real\] (.*'heartman'( is live| refused|.* did not load| will not be tried)|the game cancelled loading 'heartman')
+wait 1500
+screenshot 08-heartman-idle
+action real_stats
+pad none 700 ly=-32767 keep
+screenshot 08-heartman-walk-a
+wait 200
+screenshot 08-heartman-walk-b
+pad none 0
+action real_stats
+action real_remove
+pad none 1100 ly=32767
+wait 600
+# id 9: mama
+action real_spawn 9 5 1
+?waitlog 30 \[real\] (.*'mama'( is live| refused|.* did not load| will not be tried)|the game cancelled loading 'mama')
+wait 1500
+screenshot 09-mama-idle
+action real_stats
+pad none 700 ly=-32767 keep
+screenshot 09-mama-walk-a
+wait 200
+screenshot 09-mama-walk-b
+pad none 0
+action real_stats
+action real_remove
+pad none 1100 ly=32767
+wait 600
+# id 10: lockne
+action real_spawn 10 5 1
+?waitlog 30 \[real\] (.*'lockne'( is live| refused|.* did not load| will not be tried)|the game cancelled loading 'lockne')
+wait 1500
+screenshot 10-lockne-idle
+action real_stats
+pad none 700 ly=-32767 keep
+screenshot 10-lockne-walk-a
+wait 200
+screenshot 10-lockne-walk-b
+pad none 0
+action real_stats
+action real_remove
+pad none 1100 ly=32767
+wait 600
+# id 11: amelie
+action real_spawn 11 5 1
+?waitlog 30 \[real\] (.*'amelie'( is live| refused|.* did not load| will not be tried)|the game cancelled loading 'amelie')
+wait 1500
+screenshot 11-amelie-idle
+action real_stats
+pad none 700 ly=-32767 keep
+screenshot 11-amelie-walk-a
+wait 200
+screenshot 11-amelie-walk-b
+pad none 0
+action real_stats
+action real_remove
+pad none 1100 ly=32767
+wait 600
+# id 12: higgs
+action real_spawn 12 5 1
+?waitlog 30 \[real\] (.*'higgs'( is live| refused|.* did not load| will not be tried)|the game cancelled loading 'higgs')
+wait 1500
+screenshot 12-higgs-idle
+action real_stats
+pad none 700 ly=-32767 keep
+screenshot 12-higgs-walk-a
+wait 200
+screenshot 12-higgs-walk-b
+pad none 0
+action real_stats
+action real_remove
+pad none 1100 ly=32767
+wait 600
+# id 13: guard
+action real_spawn 13 5 1
+?waitlog 30 \[real\] (.*'guard'( is live| refused|.* did not load| will not be tried)|the game cancelled loading 'guard')
+wait 1500
+screenshot 13-guard-idle
+action real_stats
+pad none 700 ly=-32767 keep
+screenshot 13-guard-walk-a
+wait 200
+screenshot 13-guard-walk-b
+pad none 0
+action real_stats
+action real_remove
+pad none 1100 ly=32767
+wait 600
+# id 14: medic
+action real_spawn 14 5 1
+?waitlog 30 \[real\] (.*'medic'( is live| refused|.* did not load| will not be tried)|the game cancelled loading 'medic')
+wait 1500
+screenshot 14-medic-idle
+action real_stats
+pad none 700 ly=-32767 keep
+screenshot 14-medic-walk-a
+wait 200
+screenshot 14-medic-walk-b
+pad none 0
+action real_stats
+action real_remove
+pad none 1100 ly=32767
+wait 600
+# id 15: sam_mule
+action real_spawn 15 5 1
+?waitlog 30 \[real\] (.*'sam_mule'( is live| refused|.* did not load| will not be tried)|the game cancelled loading 'sam_mule')
+wait 1500
+screenshot 15-sam_mule-idle
+action real_stats
+pad none 700 ly=-32767 keep
+screenshot 15-sam_mule-walk-a
+wait 200
+screenshot 15-sam_mule-walk-b
+pad none 0
+action real_stats
+action real_remove
+pad none 1100 ly=32767
+wait 600
+# id 16: fragile_suit
+action real_spawn 16 5 1
+?waitlog 30 \[real\] (.*'fragile_suit'( is live| refused|.* did not load| will not be tried)|the game cancelled loading 'fragile_suit')
+wait 1500
+screenshot 16-fragile_suit-idle
+action real_stats
+pad none 700 ly=-32767 keep
+screenshot 16-fragile_suit-walk-a
+wait 200
+screenshot 16-fragile_suit-walk-b
+pad none 0
+action real_stats
+action real_remove
+pad none 1100 ly=32767
+wait 600
+quit

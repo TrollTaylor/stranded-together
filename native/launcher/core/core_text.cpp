@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "body_table.hpp"   // native/mod, pure data: the character list shared with the mod
 #include "core_util.hpp"
 
 namespace st::core {
@@ -129,6 +130,33 @@ bool IsValidPlayerName(const std::string& name) {
     return true;
 }
 
+// ---- Characters ------------------------------------------------------------------
+std::vector<CharacterChoice> OfferedCharacters() {
+    std::vector<CharacterChoice> out;
+    for (std::size_t i = 0; i < bodies::OfferedCount(); ++i) {
+        const bodies::Body& b = bodies::OfferedAt(i);
+        out.push_back({b.key, b.label});
+    }
+    return out;
+}
+
+bool IsOfferedCharacter(const std::string& key) {
+    for (std::size_t i = 0; i < bodies::OfferedCount(); ++i)
+        if (key == bodies::OfferedAt(i).key) return true;
+    return false;
+}
+
+std::string CharacterKeyOrSam(const std::string& key) {
+    // FindByKey ignores case, like the mod reading session.ini; the table's own spelling is kept.
+    const bodies::Body* b = bodies::FindByKey(key.c_str());
+    return b && b->offered ? std::string(b->key) : std::string(kHostCharacter);
+}
+
+std::string CharacterLabel(const std::string& key) {
+    const bodies::Body* b = bodies::FindByKey(CharacterKeyOrSam(key).c_str());
+    return b ? std::string(b->label) : std::string("Sam");
+}
+
 // ---- session.ini ----------------------------------------------------------------
 bool MakeSessionIniText(const SessionIni& s, std::string& text, std::string& error) {
     text.clear();
@@ -212,6 +240,17 @@ bool MakeSessionIniText(const SessionIni& s, std::string& text, std::string& err
         error = "frame_cap must be 0 or 15 to 240";
         return false;
     }
+    // Only offered bodies: a body nobody has seen work in game is never sent to a partner.
+    if (!host && !s.my_character.empty() && !IsOfferedCharacter(s.my_character)) {
+        std::string keys;
+        for (const CharacterChoice& c : OfferedCharacters()) keys += (keys.empty() ? "" : ", ") + c.key;
+        error = "my_character must be one of the offered characters (" + keys + ")";
+        return false;
+    }
+    if (!s.partner_body.empty() && s.partner_body != "real" && s.partner_body != "holo") {
+        error = "partner_body must be real or holo";
+        return false;
+    }
     if (!s.name.empty() && !IsValidPlayerName(s.name)) {
         error = "the name may only use plain letters, digits, spaces and simple punctuation (32 characters at most)";
         return false;
@@ -248,6 +287,11 @@ bool MakeSessionIniText(const SessionIni& s, std::string& text, std::string& err
     if (!s.local_input.empty()) t += "local_input=" + s.local_input + "\n";
     if (s.frame_cap) t += "frame_cap=" + std::to_string(s.frame_cap) + "\n";
     if (!s.local_window.empty()) t += "local_window=" + s.local_window + "\n";
+    // The host is always Sam (only the guest picks a character). Written for every host, so the
+    // rule is plain in the file; the mod applies it too.
+    if (host) t += std::string("my_character=") + kHostCharacter + "\n";
+    else if (!s.my_character.empty()) t += "my_character=" + s.my_character + "\n";
+    if (!s.partner_body.empty()) t += "partner_body=" + s.partner_body + "\n";
     text = std::move(t);
     return true;
 }
@@ -284,6 +328,8 @@ bool ParseSessionIniText(const std::string& text, SessionIni& out, std::string& 
         else if (k == "local_input") out.local_input = v;
         else if (k == "frame_cap") ok = ParseIntStrict(v, 0, 240, out.frame_cap);
         else if (k == "local_window") out.local_window = v;
+        else if (k == "my_character") out.my_character = v;
+        else if (k == "partner_body") out.partner_body = v;
         if (!ok) {
             error = "session.ini: " + k + " is malformed";
             return false;

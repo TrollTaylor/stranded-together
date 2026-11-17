@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "core/core_text.hpp"   // the character list (native/mod/body_table.cpp's offered bodies)
 #include "imgui_internal.h"   // ClosePopupToLevel (the screenshot driver resets popups between scenes)
 #include "launcher_join_code.hpp"
 #include "launcher_model_mock.hpp"
@@ -17,6 +18,9 @@ using namespace theme;
 using ui::Page;
 
 constexpr float kSidebarWidth = 204.0f;
+// Debug > Partner body = Hologram: shown next to every "you appear as" choice, because a hologram
+// game sends no joint frames and so never shows its character to the partner.
+constexpr const char* kHologramNote = "Partner body is Hologram (Debug page): your partner sees you as a hologram.";
 
 ImU32 ToneColor(ui::Tone tone) {
     switch (tone) {
@@ -187,6 +191,40 @@ bool SliderIntField(const char* id, const char* label, int* value, int lo, int h
     ImGui::PopStyleVar(2);
     ImGui::EndGroup();
     return changed;
+}
+
+// The character list (Join, the local test): the offered bodies of native/mod/body_table.cpp,
+// by their labels. Returns true when another character was picked (*key is set to its key).
+// open: open the list now (the screenshot scene that shows it).
+bool CharacterCombo(const char* id, std::string* key, float logical_width, bool enabled, bool open = false) {
+    const std::vector<core::CharacterChoice> choices = core::OfferedCharacters();
+    const std::string current = core::CharacterLabel(*key);
+    bool picked = false;
+    const Font f(GetFonts().regular, kSmall + 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, Px(10.0f, 8.0f));
+    // The open list: roomier rows, and room above and below them (the page's WindowPadding is 0,
+    // so the first and last rows would touch the rounded border; BeginCombo sets only x).
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, Px(8.0f, 8.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, Px(10.0f, 8.0f));
+    ImGui::SetNextItemWidth(Px(logical_width));
+    // The list is the offered bodies: no height cap, so it never scrolls. All 16 fit the window at
+    // scale 1 (screenshot scene 38-play-join-characters); a longer table would need a cap here.
+    if (open) ImGui::OpenPopupEx(ImHashStr("##ComboPopup", 0, ImGui::GetID(id)));   // BeginCombo's own popup id
+    if (!enabled) ImGui::BeginDisabled();
+    if (ImGui::BeginCombo(id, current.c_str(), ImGuiComboFlags_HeightLargest)) {
+        for (const core::CharacterChoice& c : choices) {
+            const bool selected = c.key == *key;
+            if (ImGui::Selectable(c.label.c_str(), selected) && !selected) {
+                *key = c.key;
+                picked = true;
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    if (!enabled) ImGui::EndDisabled();
+    ImGui::PopStyleVar(3);
+    return picked;
 }
 
 ImU32 SoftOf(ui::Tone tone) {
@@ -640,6 +678,13 @@ void LauncherUi::HostTab(Phase phase, const InstallChecks& checks) {
     Text("The game starts through Steam and you get a join code for your partner. Load your save; they appear in your world once "
          "connected.",
          col::kTextDim, kSmall, nullptr, 0.0f);
+    Gap(2.0f);
+    // The guest picks a character on Join; the host has no choice (my_character=sam).
+    Message(Icon::person, col::kAccent, "You appear as: Sam (the host is always Sam)", kSmall, 0.0f, col::kText);
+    // partner_body=holo installs no pose hook, so this game sends no joint frames: the partner
+    // sees a hologram whatever this game's character is (docs/real-partner-body.md section 5).
+    if (!model_.debug_options().real_partner_body)
+        Message(Icon::warning, col::kWarn, kHologramNote, kSmall, 0.0f, col::kTextDim);
     ImGui::EndGroup();
     EndCard();
     Gap(2.0f);
@@ -735,6 +780,24 @@ void LauncherUi::JoinTab(Phase phase) {
     {
         const Icon icon = view.tone == ui::Tone::good ? Icon::check : view.tone == ui::Tone::bad ? Icon::warning : Icon::info;
         Message(icon, ToneColor(view.tone), view.message, kSmall, field_w);
+    }
+    Gap(4.0f);
+    // The character the host sees you as (session.ini my_character). Saved when picked.
+    SectionLabel("YOUR CHARACTER");
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - Px(4.0f));
+    {
+        std::string character = model_.my_character();
+        const float row_y = ImGui::GetCursorPosY();
+        if (CharacterCombo("##character", &character, 220.0f, view.field_enabled, open_character_list_)) model_.set_my_character(character);
+        open_character_list_ = false;
+        ImGui::SameLine(0.0f, Px(14.0f));
+        ImGui::SetCursorPosY(row_y + Px(1.0f));
+        if (model_.debug_options().real_partner_body)
+            Text("Your partner sees you as this character (experimental).\nOn your own screen you are still Sam.", col::kTextDim, kSmall,
+                 nullptr, 0.0f);
+        else
+            Text("Partner body is Hologram (Debug page): your partner\nsees you as a hologram, not this character.", col::kWarn, kSmall,
+                 nullptr, 0.0f);
     }
     Gap(6.0f);
     if (Button("Join game", ButtonKind::primary, ImVec2(190.0f, 46.0f), view.can_join && ui::CanStartSession(phase), Icon::play, true)) {
@@ -1153,6 +1216,25 @@ void LauncherUi::DebugSavesTab(Phase phase) {
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() + Px(9.0f));
     bool pad = lt.host_pad;
     if (Checkbox("Pads on the host too", &pad, !lt.running)) model_.set_local_test_host_pad(pad);
+    Gap(2.0f);
+    {
+        // The guest game's my_character: the quickest way to see a chosen character (in the host window).
+        const float row_y = ImGui::GetCursorPosY();
+        ImGui::SetCursorPosY(row_y + Px(8.0f));
+        Text("Guest appears as", col::kTextDim, kSmall, nullptr, -1.0f);
+        ImGui::SameLine(0.0f, Px(10.0f));
+        ImGui::SetCursorPosY(row_y);
+        std::string character = lt.guest_character;
+        if (CharacterCombo("##guestcharacter", &character, 200.0f, !lt.running)) model_.set_local_test_guest_character(character);
+        ImGui::SameLine(0.0f, Px(12.0f));
+        // Not row_y + 8 like the label before the combo: after SameLine ImGui already adds the
+        // combo's frame padding (the line's text offset), so +8 would put this text 8 px too low.
+        ImGui::SetCursorPosY(row_y);
+        Text("in the host window. The host is always Sam.", col::kTextFaint, kSmall, nullptr, -1.0f);
+        // Both local-test games get the Debug option's partner_body: with Hologram neither sends
+        // joint frames, so the host window shows the guest as a hologram.
+        if (!model_.debug_options().real_partner_body) Message(Icon::warning, col::kWarn, kHologramNote, kSmall, 0.0f, col::kTextDim);
+    }
     if (lt.running || !lt.headline.empty()) {
         const ImU32 c = lt.tone == LinkView::Tone::good ? col::kGood : lt.tone == LinkView::Tone::bad ? col::kBad
                         : lt.tone == LinkView::Tone::warn ? col::kWarn : col::kCool;
@@ -1222,6 +1304,24 @@ void LauncherUi::DebugOptionsTab(Phase phase) {
     committed |= ImGui::IsItemDeactivatedAfterEdit();
     o.echo_delay_s = delay;
     o.echo_offset_m = offset;
+    Gap(4.0f);
+    // session.ini partner_body: how YOUR partner is drawn on YOUR screen (the hologram is the fallback).
+    // It also decides whether this game sends its character at all: the pose hook (and with it the
+    // STJ1 joint frames that carry my_character) is installed only for partner_body=real.
+    SectionLabel("PARTNER BODY");
+    {
+        static const char* const kBodies[2] = {"Real character (experimental)", "Hologram"};
+        int body = o.real_partner_body ? 0 : 1;
+        if (Segmented("##partnerbody", kBodies, 2, &body, std::fmin(col_w * 2.0f + 20.0f, 460.0f), true)) {
+            o.real_partner_body = body == 0;
+            committed = true;
+        }
+        Text(o.real_partner_body ? "Your partner shows as a solid character that copies their moves, and they see you as your character. "
+                                   "If either game uses Hologram, or the character cannot be shown, the hologram is used."
+                                 : "Your partner shows as a see-through hologram, and you appear to them as one too: your character "
+                                   "(Join) is not sent.",
+             col::kTextFaint, kSmall, nullptr, 0.0f);
+    }
     Gap(4.0f);
     committed |= Checkbox("In-game debug menu", &o.debug_menu, true);
     ImGui::SameLine(0.0f, Px(10.0f));
@@ -1529,6 +1629,9 @@ void LauncherUi::PrepareScene(int index, MockModel& mock) {
     lan.peer_ip = "192.168.1.20";
     mock.set_lan(lan);
     mock.set_player_name("");
+    mock.set_my_character("sam");
+    mock.set_local_test_guest_character("sam");
+    open_character_list_ = false;
     mock.set_test_save_view(TestSaveView{});
     mock.jump_to_local_test(-1.0);
     {
@@ -1557,7 +1660,23 @@ void LauncherUi::PrepareScene(int index, MockModel& mock) {
     case ui::Scene::play_join_valid:
         play_tab_ = ui::PlayTab::join;
         copy_into(MockModel::PartnerCode());
+        mock.set_my_character("fragile");
         break;
+    case ui::Scene::play_join_characters:   // the character list open
+        play_tab_ = ui::PlayTab::join;
+        copy_into(MockModel::PartnerCode());
+        mock.set_my_character("fragile");
+        open_character_list_ = true;
+        break;
+    case ui::Scene::play_join_hologram: {   // Hologram sends no joint frames: the character is not shown
+        play_tab_ = ui::PlayTab::join;
+        copy_into(MockModel::PartnerCode());
+        mock.set_my_character("fragile");
+        DebugOptions o;
+        o.real_partner_body = false;
+        mock.set_debug_options(o);
+        break;
+    }
     case ui::Scene::play_solo: play_tab_ = ui::PlayTab::solo; break;
     case ui::Scene::play_lan:
         play_tab_ = ui::PlayTab::join;
@@ -1663,6 +1782,7 @@ void LauncherUi::PrepareScene(int index, MockModel& mock) {
         t.folder_note = "23 save slots found";
         t.seeded = true;
         mock.set_test_save_view(t);
+        mock.set_local_test_guest_character("fragile");
         mock.jump_to_local_test(30.0);
         debug_tab_ = ui::DebugTab::saves;
         page = Page::debug;

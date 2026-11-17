@@ -1,0 +1,92 @@
+# Real partner bodies between two games on one PC, hidden (docs/real-partner-body.md "Character choice"):
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-real -SeedSaves complete-100
+# The two-games run with partner_body=real on both games. The host is Sam (my_character=sam; the mod
+# sends sam for the host whatever it says); the guest picked Fragile. Each game shows the OTHER player's
+# choice from its STJ1 body_id: the guest sees the host as the Sam body, the host sees the guest as
+# Fragile. Both bodies copy the sender's real 77-joint pose over the loopback link (STJ1 next to STP1).
+role host
+graphics low
+timeout 360
+ini partner_body=real
+@host ini my_character=sam
+@guest ini my_character=fragile
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+# what each game sends (Init): the host sam, the guest fragile, both with every pose
+waitlog 30 \[sync\] my character: 'sam' \(body_id 1\); joint frames \(STJ1\) sent with every pose
+@guest waitlog 30 \[sync\] my character: 'fragile' \(body_id 3\); joint frames \(STJ1\) sent with every pose
+# the title menu (~20 s after the first frame), CONTINUE selected
+wait 25000
+?screenshot 01-host-title
+?@guest screenshot 01-guest-title
+pad A 150
+@guest pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+@guest until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitplayer 60
+waitlog 60 \[link\] CONNECTED
+@guest waitlog 60 \[link\] CONNECTED
+# the 100% save loads the world 5-20 s after the player appears: 1 s pushes until the host's Sam walks
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+# the guest presses A through the offline-mode notice (see two-games) and then shows the host's Sam.
+# Behind the notice the guest's game does not animate Sam, so it sends positions but no joint frames:
+# the host waits 3 s for the first STJ1 frame, shows the hologram meanwhile and switches to the
+# guest's Fragile once joint frames flow (run 20261116-192744: the old order waited on the host first)
+@guest until 150 3000 \[sync\] partner body: real 'sam' => pad A 120
+waitlog 60 \[sync\] partner body: real 'fragile'
+?waitlog 5 \[sync\] partner character: 'fragile' \(peer body_id 3
+?@guest waitlog 5 \[sync\] partner character: 'sam' \(peer body_id 1
+wait 3000
+screenshot 02-host-control
+@guest screenshot 02-guest-sees-host
+action real_stats
+@guest action real_stats
+# the host walks away (held pad): on the guest's screen the Sam body walks off, frames ~0.3 s apart
+pad none 1500 ly=32767 keep
+@guest screenshot 03-guest-sees-host-walk-a
+wait 200
+@guest screenshot 03-guest-sees-host-walk-b
+wait 200
+@guest screenshot 03-guest-sees-host-walk-c
+wait 200
+@guest screenshot 03-guest-sees-host-walk-d
+@guest action real_stats
+pad none 0
+wait 2500
+@guest screenshot 04-guest-sees-host-stopped
+# the host looks back: the guest's Fragile body stands where the guest's Sam is
+pad none 1300 rx=32767
+wait 1500
+screenshot 05-host-sees-guest-standing
+action real_stats
+# the guest walks towards the host (1 s pushes until it moves, then a held walk): Fragile walks
+@guest until 60 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+@guest pad none 600 ly=32767 keep
+screenshot 06-host-sees-guest-walk-a
+wait 200
+screenshot 06-host-sees-guest-walk-b
+wait 200
+screenshot 06-host-sees-guest-walk-c
+wait 200
+screenshot 06-host-sees-guest-walk-d
+action real_stats
+@guest pad none 0
+wait 2500
+screenshot 07-host-sees-guest-stopped
+@guest screenshot 07-guest-view
+action log_status
+@guest action log_status
+action real_stats
+@guest action real_stats
+snapshot
+@guest snapshot
+# link traffic (sent / received poses and joint frames, payload B/s) is logged every 10 s
+?waitlog 12 \[sync\] link traffic over
+?@guest waitlog 12 \[sync\] link traffic over
+@guest quit
+wait 3000
+quit

@@ -104,6 +104,7 @@ private:
     char port_local_buf_[8] = {};
     char port_peer_buf_[8] = {};
     char name_buf_[40] = {};
+    bool open_character_list_ = false;   // screenshot scene: open the Join tab's character list once
 
     LinkView link_;   // this frame's link status (sessions only)
 

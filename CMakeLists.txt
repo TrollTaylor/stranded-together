@@ -89,6 +89,7 @@ add_library(st_mod SHARED
   native/mod/holo_catalog.cpp
   native/mod/anim_census.cpp
   native/mod/body_table.cpp
+  native/mod/body_choice.cpp
   native/mod/real_body.cpp
   native/mod/automation.cpp
   native/mod/sandbox.cpp
@@ -126,7 +127,7 @@ target_link_libraries(st_overlay_harness PRIVATE st_minhook st_mod_imgui d3d12 u
 add_test(NAME st_overlay_harness COMMAND st_overlay_harness --out "${CMAKE_CURRENT_BINARY_DIR}")
 
 # ---- Pure tests (no game needed)
-add_executable(st_net_tests tests/net_tests.cpp native/mod/pose_wire.cpp native/mod/body_table.cpp)
+add_executable(st_net_tests tests/net_tests.cpp native/mod/pose_wire.cpp native/mod/body_table.cpp native/mod/body_choice.cpp)
 target_include_directories(st_net_tests PRIVATE native/mod)
 target_link_libraries(st_net_tests PRIVATE st_net)
 target_compile_options(st_net_tests PRIVATE ${ST_WARNINGS})

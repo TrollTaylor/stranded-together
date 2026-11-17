@@ -96,11 +96,28 @@ void ScenarioParser(const std::wstring& dir) {
         Check(s.steps[6].kind == te::StepKind::mod && s.steps[6].text == "quit", "mod commands pass through");
     }
     Check(!te::ParseScenario("timeout 999\nquit\n", &s, &err), "timeout above 360 s refused", err);
+    Check(te::ParseScenario("role host\nnolog back to the real body\n@guest nolog x\nquit\n", &s, &err) && s.steps.size() == 3 &&
+              s.steps[0].kind == te::StepKind::nolog && s.steps[0].text == "back to the real body" && s.steps[1].target == 1 &&
+              s.steps[1].kind == te::StepKind::nolog,
+          "nolog parses (also for the guest)", err);
+    Check(!te::ParseScenario("nolog\nquit\n", &s, &err) && !te::ParseScenario("nolog (\nquit\n", &s, &err) &&
+              !te::ParseScenario("role host\n@both nolog x\nquit\n", &s, &err),
+          "nolog needs a valid regex and no @both", err);
     Check(te::ParseScenario("ini partner_body=real\nini echo_delay_s = 2.0\nquit\n", &s, &err) && s.ini.size() == 2 &&
               s.ini[0] == "partner_body=real" && s.ini[1] == "echo_delay_s=2.0",
           "ini lines parse", err);
     Check(!te::ParseScenario("ini automation_save_root=C:\\x\nquit\n", &s, &err), "ini refuses keys outside the allow-list", err);
     Check(!te::ParseScenario("ini partner_body\nquit\n", &s, &err), "ini needs key=value", err);
+    Check(te::ParseScenario("role host\nini partner_body=real\n@host ini my_character=sam\n@guest ini my_character=fragile\n"
+                            "@guest INI partner_body=holo\n@guest quit\nquit\n",
+                            &s, &err) &&
+              s.ini.size() == 1 && s.host_ini.size() == 1 && s.host_ini[0] == "my_character=sam" && s.guest_ini.size() == 2 &&
+              s.guest_ini[0] == "my_character=fragile" && s.guest_ini[1] == "partner_body=holo" && s.steps.size() == 2,
+          "@host ini / @guest ini go to one game", err);
+    Check(!te::ParseScenario("@guest ini my_character=fragile\nquit\n", &s, &err), "@guest ini needs role host", err);
+    Check(!te::ParseScenario("role host\n@both ini partner_body=real\nquit\n", &s, &err), "@both ini refused (plain ini is both)", err);
+    Check(!te::ParseScenario("role host\n@guest ini automation=1\nquit\n", &s, &err), "@guest ini keeps the allow-list", err);
+    Check(!te::ParseScenario("role host\n?@guest ini my_character=fragile\nquit\n", &s, &err), "ini cannot be optional", err);
     {
         te::SessionOptions so;
         so.role = "echo";

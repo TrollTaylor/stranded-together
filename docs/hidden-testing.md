@@ -27,6 +27,8 @@ the supervisor and the probe itself unless `-NoBuild`).
 | Real game, smoke (12:25, 12:28) | **passes**: title -> Continue (virtual pad) -> Sam in the world (Incinerator West of Capital Knot City) -> debug menu -> quit with exit code 0 in ~50 s; screenshots in `runs\<run>\automation\`; saves identical. |
 | Real game, 100% save (14:34-14:44) | **passes** with `-SeedSaves complete-100`: the save is owned by an Epic account (`epic_<id>`); the mod skips ds.exe's save-owner check (3 byte-checked `jne`->`jmp`, automation + `automation_foreign_saves=1` only), Continue loads Episode 15, `echo-holo-100` walks and shows the hologram trailing. See "Using another save". |
 | Two games, hidden (16:15, 16:22) | **pass** with `-Scenario two-games -SeedSaves complete-100`: host + guest ds.exe on one private desktop, the guest survives the single-instance mutex (`mutex=renamed`), both link over UDP loopback (`[link] CONNECTED` on both), both show the other's hologram (`partner=visible` on both snapshots), both saves redirected to their own scratch copy, real tree unchanged, 0 uploads. See "Two games". |
+| Two games, real bodies (19:31-19:36) | **pass** with `-Scenario two-games-real` and `-Scenario two-games-real-fallback` (`-SeedSaves complete-100`): each game shows the other as a solid character copying its animation (guest sees Sam, host sees Fragile; Cliff in a scratch variant), and a host whose guest sends no joint frames shows the hologram. Both games exit 0, real tree unchanged, 0 uploads. These runs used a build from before the 19:57/20:05 changes; on the final build only `two-games-real` was rerun (20:24, pass). See docs/real-partner-body.md section 5 and the "Two games" run table. |
+| All 16 real bodies, solo (20:01) | **pass** with `-Scenario real-body-tour-all -SeedSaves complete-100`: every body_table id loads, maps all 77 joints and mirrors Sam's pose (run 20261116-200116). See docs/real-partner-body.md sections 1 and 2. |
 | Test-save session, hidden (16:19) | **pass** with `-Scenario sandbox-alive -SandboxSession -SeedSaves complete-100`: the launcher's visible-play session.ini (no `automation=1`) redirects in DllMain and bypasses the owner check (`[sandbox] ...`). See "Test-save session". |
 | Real game, walking (13:54, 13:56) | **passes**: the virtual pad's left stick walks Sam (20.2 m in a 6 s hold), the right stick turns the camera; `echo-holo` shows the echo partner hologram trailing Sam. The first runs "did nothing" because this save holds the player in a scripted BT scene ~5-20 s after it loads, exactly when they pushed the stick. See "Pad input in gameplay". |
 
@@ -382,9 +384,14 @@ before/after, no violation, game folder restored (`restored.txt` ok), no `error.
 
 ```
 role solo|echo|host          session role (default solo); host: a second (guest) game too ("Two games")
-ini <key>=<value>            an extra session.ini line; only partner_body, partner_character, partner_holo,
-                             partner_marker, partner_voice, partner_activate, pose_hook, echo_delay_s,
-                             echo_offset_m, send_hz, interp_delay_ms (testenv_core ScenarioIniKeyAllowed)
+ini <key>=<value>            an extra session.ini line, for every game of the run; only partner_body,
+                             partner_character, my_character, partner_holo, partner_marker, partner_voice,
+                             partner_activate, pose_hook, echo_delay_s, echo_offset_m, send_hz,
+                             interp_delay_ms (testenv_core ScenarioIniKeyAllowed)
+@host ini <key>=<value>      the same, for the first game only; @guest ini for the guest game only (role
+                             host). Written after the shared lines, so they win (the mod keeps a key's last
+                             value). @both ini is refused (plain ini already goes to both); ini cannot be
+                             optional
 graphics low                 30 fps cap, appdir settings.cfg + profile overrides (see "Two games")
 @guest <step>                the step goes to the guest game (role host); @both <mod command> to both
 timeout <s>                  steps limit, 30..360 (default 360). The game's whole lifetime is capped
@@ -392,6 +399,7 @@ timeout <s>                  steps limit, 30..360 (default 360). The game's whol
                              final screenshot, quit, exit and kill
 waitready <s>                until automation\out\ready.txt exists
 waitlog <s> <regex>          until a stranded_together.log line matches (ECMAScript)
+nolog <regex>                fails at once if any log line so far matches (a negative check; @guest too)
 until <s> <ms> <regex> => <mod command>   repeat the command until the log matches
 sleep <ms> / note <text>     supervisor side
 <anything else>              one mod command (checked when the scenario is parsed)
@@ -417,9 +425,14 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   1 s probes until Sam moves (the world loads 5-20 s after the player entity appears), 6 s walk
   (>= 3 m), camera round, 3 x 1.5 s towards the camera with screenshots `06-trailing-a` ..
   `08-trailing-c`, `09-stopped`, `log_status`, `10-debug-menu`.
-* `real-body-tour.txt`, `real-body-diag.txt`, `echo-real-100.txt`, `echo-real-fragile-100.txt`: the real
+* `real-body-tour.txt`, `real-body-tour-all.txt`, `real-body-diag.txt`, `echo-real-100.txt`, `echo-real-fragile-100.txt`: the real
   partner body (docs/real-partner-body.md). They use `pad ... keep` (the pad stays held after the command, so
-  screenshots are taken mid-walk; `pad none 0` releases it).
+  screenshots are taken mid-walk; `pad none 0` releases it). `real-body-tour-all.txt` spawns every id
+  1-16 in mirror mode (idle and two walk frames each); each body's `waitlog` names only that body,
+  because the regex searches the whole log, and is optional, so a body that never loads does not end
+  the tour.
+* `two-games.txt`, `two-games-real.txt`, `two-games-real-fallback.txt` (role host): two games, see
+  "Two games".
 * `boot.txt`: no input, a screenshot every 10-15 s for 80 s (title flow discovery).
 * `alive.txt`: supervisor steps only (works with `-NoMod`): watch the game for 45 s.
 * `fake-smoke.txt`: the ctest's fake game.
@@ -587,6 +600,11 @@ hidden: `Start-TestRun.ps1 -Scenario two-games -SeedSaves complete-100`.
   server refuses it and the game waits behind *"Unable to log in to Death Stranding game server.
   Launching in Offline Mode... Error Code: 50000"* until OK (run 20261116-155336, `zz-final-guest`).
   `two-games.txt` presses A on the guest until its partner spawns.
+* **Real bodies.** `two-games-real.txt` (both `partner_body=real`, guest `my_character=fragile`) and
+  `two-games-real-fallback.txt` (host real, guest hologram: the host falls back to the hologram) use
+  `@host ini` / `@guest ini` for per-game session.ini lines. See docs/real-partner-body.md section 5.
+  Behind the offline-mode notice the guest animates nothing, so it sends no joint frames: both scenarios
+  press A on the guest first (run 20261116-192744 waited on the host first and failed).
 * **Load.** Hidden games are never vsynced (`Present` answers OCCLUDED, the mod reports S_OK), so
   the first game rendered at ~1000 fps and starved the second (run 154851: the guest read its pad
   0 times for 40 s). `graphics low` writes `frame_cap=30` (the mod waits on the game thread once
@@ -630,6 +648,12 @@ machine; a GPU with 8 GB will likely page.
 | `20261116-160909-two-games` | window placement from the render thread: both games stopped presenting (deadlock); fixed by moving it to the window thread |
 | `20261116-161556-two-games` | **pass** with side-by-side windows; the resource table above |
 | `20261116-162226-two-games` | **pass** (same, final build) |
+| `20261116-192744-two-games-real` | **fail**: the scenario waited on the host before the guest pressed A; the guest, behind its notice, sent no joint frames and the host's fallback to the hologram was permanent (both fixed) |
+| `20261116-193151-two-games-real` | **pass**: guest sees a solid Sam, host sees a solid Fragile (hologram first while the guest was behind its notice, then back to the real body); 565 B per datagram |
+| `20261116-193451-two-games-real-fallback` | **pass**: the host waits 3 s, falls back to the hologram and stays on it |
+| `20261116-193649-two-games-real-cliff` | **pass**: a scratch copy of `two-games-real` with the guest as Cliff (not in the repo) |
+| (runs above) | built before the Heartman leg latch (19:57) and ids 6-16 offered (20:05); see docs/real-partner-body.md section 6 item 1 for which build each run used |
+| `20261116-202426-two-games-real` | **pass** on the final build (after the review fixes): guest sees a solid Sam walking, host sees a solid Fragile standing and running; 300/300 joint frames per 10 s, 565 B per datagram. `two-games-real-fallback` was not rerun on this build. |
 
 ## Test-save session (`--sandbox-session`)
 

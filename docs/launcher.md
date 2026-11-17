@@ -41,12 +41,23 @@ On start the launcher checks, in this order:
   (`76561197960265728 + ActiveUser`), formats the code
   `DST1-SSSSS-SSSSS-SSSSS-SSSSS-CC@<SteamID64>` with st_net's
   `stcoop::steam_code::Format`, copies it to the clipboard, writes
-  `session.ini` (role=host) and opens `steam://rungameid/1850570`.
+  `session.ini` (role=host) and opens `steam://rungameid/1850570`. The card says
+  "You appear as: Sam (the host is always Sam)": a host always writes `my_character=sam`.
 * **Join**: the field accepts a pasted code or a Steam invite string
   (`+stranded_join <code>`), validated live with the same parser the mod uses
   (`stcoop::steam_code::Parse`: blanks, case, dashes, O->0, I/L->1 tolerated;
   the player's own code is refused). Writes role=guest with `peer_steamid` and
   `secret` from the code.
+* **Your character** (Join tab): the character the host sees you as, written as
+  `my_character=<key>` (the mod sends it as STJ1 `body_id`; see
+  [real-partner-body.md](real-partner-body.md)). The list is exactly the bodies marked `offered`
+  in `native/mod/body_table.cpp` (proven in game; all 16 ids now: Sam, Bridges porter, Fragile,
+  Die-Hardman, Cliff Unger, Bridges porter (no suit), Deadman, Heartman, Mama, Lockne, Amelie, Higgs,
+  Bridges guard, Bridges medic, Sam (MULE suit), Fragile (porter suit)), which the launcher compiles in (`core::OfferedCharacters`), so the
+  mod and the launcher share one list. The note beside it: your partner sees you as this
+  character; on your own screen you are still Sam (with Debug > Partner body = Hologram it says
+  instead that your partner sees you as a hologram). Remembered in `launcher-settings.json`
+  `"my_character"`; a missing, unknown or no longer offered key is Sam.
 * **Solo test**: role=echo. The mod spawns a clone of the player that replays
   their movement `echo_delay_s` behind (Debug page). The launcher writes it with
   `transport=udp`, `udp_peer=127.0.0.1`, ports 27555/27556 (loopback only, no
@@ -67,9 +78,14 @@ Three tabs (`ui::DebugTab`):
   always writes `debug_menu=1`, whatever the checkbox below says) and
   **Echo test**; sliders for echo delay (0-10 s), echo offset (0-20 m), send
   rate (1-120 Hz) and partner interpolation delay (0-1000 ms); **In-game
-  debug menu** on/off and its key (F1-F12, default F9); **Wake the partner
-  clone** (`partner_activate`); **Verbose mod log**; **Reset to defaults**.
-  Saved in `launcher-settings.json` under `"debug"` (sliders when released)
+  debug menu** on/off and its key (F1-F12, default F9); **Partner body**: Real
+  character (experimental) or Hologram (`partner_body=real|holo`, default real: how your
+  partner is drawn on your screen; the mod falls back to the hologram when the real body
+  fails). Hologram also means this game sends no joint frames (no pose hook), so the partner
+  sees you as a hologram whatever character you picked: the option's text says so, and with
+  Hologram set the Join, Host and local-test character rows show "Partner body is Hologram
+  (Debug page): your partner sees you as a hologram" (screenshot `39-play-join-hologram`); **Wake the partner clone** (`partner_activate`); **Verbose mod log**; **Reset to
+  defaults**. Saved in `launcher-settings.json` under `"debug"` (sliders when released)
   and written into every `session.ini`, Host and Join included
   (`core::ApplyDebugOptions`).
 * **Files and log**: Open mod folder, Open log, **Copy error.txt** (the
@@ -88,8 +104,9 @@ Three tabs (`ui::DebugTab`):
   `sandbox\test`, `sandbox_saves=test` + `sandbox_foreign_saves=1`), **Also for Host, Join, Solo
   test**, the result after the game (real save tree compared by SHA-256, or the mod's refusal), and
   the **Local two-player test** (two ds.exe on this PC, started directly with `SteamAppId`,
-  loopback UDP, 30 fps cap, each on its own sandbox; **Pads on the host too**) with both games'
-  link state.
+  loopback UDP, 30 fps cap, each on its own sandbox; **Pads on the host too**; **Guest appears
+  as**: the guest game's `my_character`, the host game is always Sam; remembered in
+  `"test_save"` `"guest_character"`) with both games' link state.
 
 The Play > Solo test tab links to it; Tools points to it.
 
@@ -222,7 +239,13 @@ second_instance=1               local test, second game: its single-instance mut
 local_input=host|host_pad|guest local test: input split, keeps running unfocused
 local_window=left|right         local test: the window takes that half of the monitor
 frame_cap=30                    local test: at most 30 frames per second
+my_character=<key>              the character the other player sees you as: an offered body_table key; always sam for a host
+partner_body=real|holo          how the partner is drawn on this screen (Debug page; default real)
 ```
+
+`my_character` is written for every host as `sam` (whatever was asked) and otherwise only when
+set; `MakeSessionIniText` refuses a key that is not an offered body (exact spelling) and a
+`partner_body` other than `real` or `holo`.
 
 The sandbox keys are written only together (`MakeSessionIniText` refuses `second_instance`,
 `appdir_settings` or `sandbox_foreign_saves` without `sandbox_saves`, a name that is not
@@ -357,7 +380,7 @@ the game closed. `--selftest` also reports the mod state and `package.json`.
 * `st_imgui` (static): Dear ImGui 1.92.6 + Win32/DX11 backends, `third_party/imgui` (MIT, see `UPSTREAM.txt`).
 * `st_launcher_core` (static): the launcher core (with `core_update`), join code, UI logic, mock model and entries. Links `st_net` for the DST1 code (only `steam_join_code` and `link_crypto` objects are pulled in); never `winhttp.lib`.
 * `st_launcher` (WIN32 exe, `OUTPUT_NAME StrandedTogether`), `/W4 /WX /utf-8 /permissive-`.
-* Tests: `st_launcher_core_tests` (join code round trip, session.ini text incl. `one_shot`/debug keys/`solo`, status parse and view, Steam library parsing and game-folder discovery from a fake `SteamPath`, `package.json` parsing and every mod state, disable/enable, Debug options persistence, redaction, UI logic, a session activate/cleanup round trip and the real model on a temporary fake game folder with a fake Env: Debug tools only, Clear session, live log, crash report, package ok/mismatch/foreign, a window reopened after the mod consumed `session.ini`), `st_launcher_update_tests` (SemVer incl. prerelease order; the feed: drafts, prereleases, source-only releases, foreign or query URLs, two matching assets, digests, `/releases/latest`, loopback feeds; `VerifyUpdateZip`: wrong version, missing or unlisted files, hash mismatch, game or runtime files, a foreign DLL; `ApplyUpdate`: success, ds.exe running before and during, foreign DLL, a failed move half way, a failed restart, a fresh folder, a switched-off mod, leftovers; the real model on a fake feed and fake HTTP: once per launch, the setting, refused while the game runs, digest mismatch, offline, success with `--after-update <pid>`, the new window's cleanup, rollback, `--update-feed`/`--update-now`; the banner logic, command line and mock; the real WinHTTP client against an HTTP server on 127.0.0.1), `st_launcher_no_winhttp_import`, `st_launcher_selftest`, `st_launcher_screens` (fails on `imgui-error|FAIL:`), `st_launcher_assets_current` (`make_launcher_assets.py --check`).
+* Tests: `st_launcher_core_tests` (join code round trip, session.ini text incl. `one_shot`/debug keys/`solo`/`my_character` (host always sam)/`partner_body`, the offered character list, status parse and view, Steam library parsing and game-folder discovery from a fake `SteamPath`, `package.json` parsing and every mod state, disable/enable, Debug options persistence, redaction, UI logic, a session activate/cleanup round trip and the real model on a temporary fake game folder with a fake Env: Debug tools only, Clear session, live log, crash report, package ok/mismatch/foreign, a window reopened after the mod consumed `session.ini`), `st_launcher_update_tests` (SemVer incl. prerelease order; the feed: drafts, prereleases, source-only releases, foreign or query URLs, two matching assets, digests, `/releases/latest`, loopback feeds; `VerifyUpdateZip`: wrong version, missing or unlisted files, hash mismatch, game or runtime files, a foreign DLL; `ApplyUpdate`: success, ds.exe running before and during, foreign DLL, a failed move half way, a failed restart, a fresh folder, a switched-off mod, leftovers; the real model on a fake feed and fake HTTP: once per launch, the setting, refused while the game runs, digest mismatch, offline, success with `--after-update <pid>`, the new window's cleanup, rollback, `--update-feed`/`--update-now`; the banner logic, command line and mock; the real WinHTTP client against an HTTP server on 127.0.0.1), `st_launcher_no_winhttp_import`, `st_launcher_selftest`, `st_launcher_screens` (fails on `imgui-error|FAIL:`), `st_launcher_assets_current` (`make_launcher_assets.py --check`).
 
 ```
 cmake -S . -B build-launcher -G "Visual Studio 17 2022" -A x64
@@ -398,8 +421,9 @@ with faint drip lines, like the logo. `--check` compares pixels (tolerance 2).
 
 ### Screenshots
 
-`st_launcher_screens` renders 37 scenes into `build-launcher\launcher-shots\`
-(`01-play-host` ... `37-debug-local-test`), among them `36-debug-test-saves`, `37-debug-local-test`, `10-play-dev-build`,
+`st_launcher_screens` renders 38 scenes into `build-launcher\launcher-shots\`
+(`01-play-host` ... `38-play-join-characters`), among them `36-debug-test-saves`, `37-debug-local-test`,
+`38-play-join-characters` (the character list open), `10-play-dev-build`,
 `11-play-mod-mismatch`, `13-mod-foreign`, `14-mod-disabled`,
 `20-ingame-solo`, `27-debug-options`, `28-debug-files`, `29-debug-in-game`,
 and the updater's `31-play-update-available`, `32-play-update-downloading`,

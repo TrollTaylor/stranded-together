@@ -117,6 +117,8 @@ Config LoadConfig(const std::wstring& dir) {
             c.partner_voice = ParseBool(v);
         } else if (k == "partner_character") {
             c.partner_character = v;
+        } else if (k == "my_character") {
+            c.my_character = v;
         } else if (k == "pose_hook") {
             c.pose_hook = ParseBool(v);
         } else if (k == "verbose") {
@@ -168,9 +170,11 @@ Config LoadConfig(const std::wstring& dir) {
     if (!c.sandbox_saves.empty() || !c.local_input.empty())
         Log("[config] test save sandbox=%s local_input=%s", c.sandbox_saves.empty() ? "-" : c.sandbox_saves.c_str(),
             c.local_input.empty() ? "-" : c.local_input.c_str());
-    Log("[config] partner_body=%s partner_holo=%08X partner_marker=%d partner_voice=%d partner_character=%s pose_hook=%d",
+    Log("[config] partner_body=%s partner_holo=%08X partner_marker=%d partner_voice=%d partner_character=%s my_character=%s "
+        "pose_hook=%d",
         PartnerBodyName(c.partner_body), c.partner_holo, c.partner_marker, c.partner_voice ? 1 : 0,
-        c.partner_character.empty() ? "-" : c.partner_character.c_str(), c.pose_hook ? 1 : 0);
+        c.partner_character.empty() ? "-" : c.partner_character.c_str(), c.my_character.empty() ? "-" : c.my_character.c_str(),
+        c.pose_hook ? 1 : 0);
     return c;
 }
 

@@ -80,7 +80,8 @@ std::string RedirectOnlyIniText(const std::wstring& save_root = {});
 //   <anything else>              one mod command (native/mod/automation.hpp), checked here
 // A leading '?' makes a step optional: its failure is recorded, the run goes on.
 // Any other failed step ends the scenario (the supervisor still screenshots and quits).
-enum class StepKind { mod, waitready, waitlog, until, sleep, note };
+// nolog: fails when the log already has a matching line (a negative check, no waiting).
+enum class StepKind { mod, waitready, waitlog, nolog, until, sleep, note };
 struct Step {
     StepKind kind = StepKind::mod;
     int line = 0;
@@ -95,7 +96,10 @@ struct Scenario {
     std::string role = "solo";
     bool low_graphics = false;  // graphics low
     unsigned timeout_s = 360;
-    std::vector<std::string> ini;  // "ini key=value": extra session.ini lines (partner/pose keys only)
+    std::vector<std::string> ini;        // "ini key=value": extra session.ini lines (partner/pose keys only), every game
+    std::vector<std::string> host_ini;   // "@host ini key=value": the first game only, written after `ini`
+    std::vector<std::string> guest_ini;  // "@guest ini key=value": the guest game only (role host), after `ini`
+    int guest_ini_line = 0;              // for the role-host check's error message
     std::vector<Step> steps;
 };
 // Keys a scenario may add to session.ini with "ini key=value" (nothing that touches saves,

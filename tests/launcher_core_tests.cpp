@@ -275,6 +275,68 @@ void SessionIniText() {
     CHECK(!IsGeneratedIniText("role=host\n"));
 }
 
+// The character choice (native/mod/body_table.cpp's offered bodies) and the partner body in session.ini.
+void Characters() {
+    // The list is the table's offered bodies, in id order, Sam first (ids 1-16 are proven in game).
+    const std::vector<CharacterChoice> list = OfferedCharacters();
+    CHECK(list.size() == 16);
+    if (list.size() == 16) {
+        CHECK(list[0].key == "sam" && list[1].key == "porter" && list[2].key == "fragile" && list[3].key == "diehardman" &&
+              list[4].key == "cliff" && list[6].key == "deadman" && list[15].key == "fragile_suit");
+        CHECK(list[0].label == "Sam (porter suit)" && list[2].label == "Fragile" && list[4].label == "Cliff Unger" &&
+              list[7].label == "Heartman");
+    }
+    CHECK(IsOfferedCharacter("fragile") && IsOfferedCharacter("deadman") && !IsOfferedCharacter("Fragile") &&
+          !IsOfferedCharacter("gandalf") && !IsOfferedCharacter(""));
+    CHECK(CharacterKeyOrSam("Fragile") == "fragile" && CharacterKeyOrSam("cliff") == "cliff" && CharacterKeyOrSam("Higgs") == "higgs");
+    CHECK(CharacterKeyOrSam("gandalf") == "sam");   // not in the table
+    CHECK(CharacterKeyOrSam("nobody") == "sam" && CharacterKeyOrSam("") == "sam");
+    CHECK(CharacterLabel("diehardman") == "Die-Hardman" && CharacterLabel("nobody") == "Sam (porter suit)");
+
+    std::string text, error;
+    SessionIni back;
+    // The host is always Sam: written even when nothing (or another character) was asked for.
+    SessionIni host;
+    host.role = "host";
+    host.secret = "K7RD3WQ9MP2XVB6TZHN4";
+    CHECK(MakeSessionIniText(host, text, error) && text.find("my_character=sam\n") != std::string::npos);
+    CHECK(text.find("partner_body") == std::string::npos);   // not set: the mod's default
+    host.my_character = "fragile";
+    host.partner_body = "real";
+    CHECK(MakeSessionIniText(host, text, error) && text.find("my_character=sam\n") != std::string::npos &&
+          text.find("fragile") == std::string::npos && text.find("partner_body=real\n") != std::string::npos);
+    CHECK(ParseSessionIniText(text, back, error) && back.my_character == "sam" && back.partner_body == "real");
+    // The guest's key goes out as chosen.
+    SessionIni guest = host;
+    guest.role = "guest";
+    guest.peer_steamid = "76561197960370457";
+    guest.partner_body = "holo";
+    CHECK(MakeSessionIniText(guest, text, error) && text.find("my_character=fragile\n") != std::string::npos &&
+          text.find("partner_body=holo\n") != std::string::npos);
+    CHECK(ParseSessionIniText(text, back, error) && back.my_character == "fragile" && back.partner_body == "holo");
+    guest.my_character.clear();   // not chosen: not written (the mod sends sam)
+    CHECK(MakeSessionIniText(guest, text, error) && text.find("my_character") == std::string::npos);
+    // Only offered keys (exact spelling); partner_body only real or holo.
+    guest.my_character = "gandalf";
+    CHECK(!MakeSessionIniText(guest, text, error) && error.find("fragile") != std::string::npos);
+    guest.my_character = "Fragile";
+    CHECK(!MakeSessionIniText(guest, text, error));
+    guest.my_character = "cliff";
+    guest.partner_body = "marker";
+    CHECK(!MakeSessionIniText(guest, text, error));
+    guest.partner_body = "real";
+    CHECK(MakeSessionIniText(guest, text, error) && text.find("my_character=cliff\n") != std::string::npos);
+    // Echo and solo carry the choice too (harmless without a partner).
+    SessionIni echo;
+    echo.role = "echo";
+    echo.transport = "udp";
+    echo.udp_peer = "127.0.0.1";
+    echo.udp_port_local = 27555;
+    echo.udp_port_peer = 27556;
+    echo.my_character = "porter";
+    CHECK(MakeSessionIniText(echo, text, error) && text.find("my_character=porter\n") != std::string::npos);
+}
+
 void StatusParse() {
     const std::string text =
         "{\"v\":1,\"pid\":1234,\"state\":\"connected\",\"transport\":\"udp\",\"route\":\"direct\",\"peer\":\"Fragile\",\"rtt_ms\":31,"
@@ -488,6 +550,19 @@ void DebugOptionsPersist() {
     ApplyDebugOptions(r, ini);
     CHECK(ini.one_shot && ini.echo_delay_s == 4.5 && ini.debug_menu_key == 5 && !ini.debug_menu && ini.verbose);
     CHECK(DebugOptionsFromSettings(json::Value::Object()).debug_menu_key == 9);
+    // Partner body: real by default (also for older settings files without the key), holo when chosen.
+    CHECK(DebugOptions{}.real_partner_body && DebugOptionsFromSettings(json::Value::Object()).real_partner_body);
+    CHECK(r.real_partner_body && settings.Find("debug")->Str("partner_body") == "real" && ini.partner_body == "real");
+    d.real_partner_body = false;
+    DebugOptionsToSettings(d, settings);
+    CHECK(settings.Find("debug")->Str("partner_body") == "holo");
+    CHECK(json::Parse(json::Dump(settings), back));
+    const DebugOptions h = DebugOptionsFromSettings(back);
+    CHECK(!h.real_partner_body);
+    ApplyDebugOptions(h, ini);
+    CHECK(ini.partner_body == "holo");
+    json::Value odd;
+    CHECK(json::Parse("{\"debug\":{\"partner_body\":\"marker\"}}", odd) && DebugOptionsFromSettings(odd).real_partner_body);
     // Hand-edited numbers far outside int range fall back instead of an undefined cast.
     json::Value wild;
     CHECK(json::Parse("{\"debug\":{\"send_hz\":1e300,\"interp_delay_ms\":-1e300,\"echo_delay_s\":\"x\"}}", wild));
@@ -560,9 +635,11 @@ void UiLogic() {
     }
     const ui::Options so = ui::ParseCommandLine({L"--write-session", L"solo"});
     CHECK(so.error.empty() && so.write_role == L"solo");
-    CHECK(ui::SceneCount() == static_cast<int>(ui::Scene::count) && ui::SceneCount() == 37);
+    CHECK(ui::SceneCount() == static_cast<int>(ui::Scene::count) && ui::SceneCount() == 39);
     CHECK(std::string(ui::SceneName(ui::Scene::debug_test_saves)) == "36-debug-test-saves" &&
-          std::string(ui::SceneName(ui::Scene::debug_local_test)) == "37-debug-local-test");
+          std::string(ui::SceneName(ui::Scene::debug_local_test)) == "37-debug-local-test" &&
+          std::string(ui::SceneName(ui::Scene::play_join_characters)) == "38-play-join-characters" &&
+          std::string(ui::SceneName(ui::Scene::play_join_hologram)) == "39-play-join-hologram");
     CHECK(std::string(ui::DebugTabLabel(ui::DebugTab::saves)) == "Test saves" && ui::kDebugTabCount == 3);
     for (int i = 0; i < ui::SceneCount(); ++i) CHECK(*ui::SceneName(static_cast<ui::Scene>(i)) != '\0');
 }
@@ -570,6 +647,10 @@ void UiLogic() {
 void MockFlow() {
     MockModel m(MockOptions{});
     m.use_manual_clock(0.0);
+    CHECK(m.my_character() == "sam" && m.local_test().guest_character == "sam");
+    m.set_my_character("Fragile");
+    m.set_local_test_guest_character("gandalf");   // not a character
+    CHECK(m.my_character() == "fragile" && m.local_test().guest_character == "sam");
     std::string code, error;
     CHECK(m.host(code, error));
     m.advance(15.0);
@@ -682,6 +763,7 @@ void RealModelFlow() {
     CHECK(ReadTextShared(paths.session_ini, text) && ParseSessionIniText(text, ini, error));
     CHECK(ini.role == "host" && ini.transport == "steam" && FormatJoinCode(ini.secret, kSteamIdBase + 104729ull) == code);
     CHECK(ini.one_shot && ini.debug_menu && ini.debug_menu_key == 9);
+    CHECK(ini.my_character == "sam" && ini.partner_body == "real" && m->my_character() == "sam");
     CHECK(!m->check_code(code).ok);   // own code
 
     // The game starts; the mod consumes the one-shot session.ini (renames it) and reports in.
@@ -721,10 +803,16 @@ void RealModelFlow() {
     // Join, cancel; solo test; LAN mode.
     CHECK(!m->join("DST1-nonsense", error));
     const std::string partner = FormatJoinCode("7QK2MX9RT4PB8WZ3HCNA", kSteamIdBase + 7919ull);
+    m->set_my_character("diehardman");
+    CHECK(m->my_character() == "diehardman");
     CHECK(m->join("+stranded_join " + partner, error) && m->session_role() == Role::join);
     CHECK(ReadTextShared(paths.session_ini, text) && ParseSessionIniText(text, ini, error) && ini.role == "guest" &&
           ini.peer_steamid == Decimal(kSteamIdBase + 7919ull) && ini.secret == "7QK2MX9RT4PB8WZ3HCNA");
+    CHECK(ini.my_character == "diehardman" && ini.partner_body == "real");
     CHECK(m->cancel_launch(error) && m->phase() == Phase::ready && !IsFile(paths.session_ini));
+    m->set_my_character("gandalf");   // not in the mod's table: Sam
+    CHECK(m->my_character() == "sam");
+    m->set_my_character("fragile");
     CHECK(m->solo_test(error) && m->session_role() == Role::echo);
     CHECK(ReadTextShared(paths.session_ini, text) && ParseSessionIniText(text, ini, error) && ini.role == "echo" &&
           ini.transport == "udp" && ini.udp_peer == "127.0.0.1" && ini.secret.empty());
@@ -740,13 +828,14 @@ void RealModelFlow() {
     dbg.verbose = true;
     dbg.debug_menu_key = 6;
     dbg.debug_menu = false;   // debug tools only switches the menu on anyway
+    dbg.real_partner_body = false;
     m->set_debug_options(dbg);
     CHECK(m->debug_solo(error) && m->session_role() == Role::solo && m->phase() == Phase::launching);
     CHECK(ReadTextShared(paths.session_ini, text) && ParseSessionIniText(text, ini, error) && ini.role == "solo" && ini.transport == "udp" &&
           ini.udp_peer == "127.0.0.1" && ini.secret.empty() && ini.one_shot && ini.echo_delay_s == 3.5 && ini.echo_offset_m == 4.0 &&
           ini.send_hz == 60 && ini.interp_delay_ms == 150 && !ini.partner_activate && ini.verbose && ini.debug_menu_key == 6 &&
           ini.debug_menu);
-    CHECK(text.find("debug_menu_key=F6\n") != std::string::npos);
+    CHECK(text.find("debug_menu_key=F6\n") != std::string::npos && text.find("partner_body=holo\n") != std::string::npos);
     CHECK(!m->set_mod_enabled(false, error));   // not during a session
     CHECK(m->clear_session(error) && m->phase() == Phase::ready && !IsFile(paths.session_ini));
     CHECK(m->solo_test(error));
@@ -808,7 +897,8 @@ void RealModelFlow() {
     {
         auto again = MakeRealModelWithEnv(dir, env);
         CHECK(again->transport() == Transport::udp && again->lan().peer_ip == "192.168.1.20" && again->player_name() == "Sam");
-        CHECK(again->debug_options().debug_menu_key == 9 && again->debug_options().send_hz == 30);
+        CHECK(again->debug_options().debug_menu_key == 9 && again->debug_options().send_hz == 30 && again->debug_options().real_partner_body);
+        CHECK(again->my_character() == "fragile");
     }
     SessionIni host;
     host.role = "host";
@@ -981,6 +1071,8 @@ void TestSaves() {
 
         // The local two-instance test.
         m->set_local_test_host_pad(true);
+        m->set_local_test_guest_character("cliff");
+        CHECK(m->local_test().guest_character == "cliff");
         CHECK(m->start_local_test(error));
         CHECK(env->started.size() == 1 && IEquals(env->started_exe, paths.exe));
         const auto has = [&](std::size_t i, const std::wstring& v) {
@@ -994,10 +1086,12 @@ void TestSaves() {
         CHECK(ini.role == "host" && ini.transport == "udp" && ini.udp_port_local == 27555 && ini.udp_port_peer == 27556 &&
               ini.sandbox_saves == "local-host" && ini.appdir_settings && !ini.second_instance && ini.local_input == "host_pad" &&
               ini.frame_cap == 30 && ini.debug_menu && ini.local_window == "left");
+        CHECK(ini.my_character == "sam" && ini.partner_body == "real");   // the host game is always Sam
         const std::string secret = ini.secret;
         CHECK(ReadTextShared(guest_ini, text) && ParseSessionIniText(text, ini, error));
         CHECK(ini.role == "guest" && ini.udp_port_local == 27556 && ini.udp_port_peer == 27555 && ini.sandbox_saves == "local-guest" &&
               ini.second_instance && ini.local_input == "guest" && ini.secret == secret && ini.local_window == "right");
+        CHECK(ini.my_character == "cliff" && ini.partner_body == "real");
         CHECK(SandboxSeeded(GetSandboxPaths(paths, kLocalHostSandbox)) && SandboxSeeded(GetSandboxPaths(paths, kLocalGuestSandbox)));
         CHECK(IsFile(GetSandboxPaths(paths, kLocalGuestSandbox).settings));
         CHECK(m->local_test().running && m->local_test().host_pid == 31 && m->local_test().guest_pid == 0);
@@ -1011,6 +1105,10 @@ void TestSaves() {
         env->now += 4000;
         m->tick();
         CHECK(!m->local_test().running && m->local_test().tone == LinkView::Tone::good && !IsFile(host_ini) && !IsFile(guest_ini));
+        {
+            auto reopened = MakeRealModelWithEnv(dir, env);   // the guest's character is remembered
+            CHECK(reopened->local_test().guest_character == "cliff");
+        }
 
         // A local game's refusal left behind never speaks for a later "Play with test save" game.
         const std::wstring active = JoinPath2(paths.mod, L"sandbox-active.txt");
@@ -1062,6 +1160,7 @@ void TestSaves() {
 int main() {
     JoinCodes();
     SessionIniText();
+    Characters();
     StatusParse();
     Discovery();
     PackageAndMod();

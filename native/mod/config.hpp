@@ -44,7 +44,12 @@ struct Config {
     std::uint32_t partner_holo = 0;    // collectors item HashId to show (hex or decimal); 0 = automatic
     int partner_marker = -1;           // trace-point prop index for the marker body; -1 = first usable
     bool partner_voice = false;        // also spawn the (invisible) echo next to a holo/marker body as its voice source
-    std::string partner_character;     // partner_body=real: body_table key (sam, porter, fragile, ...); "" = sam
+    // partner_body=real, debug override: show this body_table key (sam, porter, fragile, ...) for the
+    // partner instead of the one the peer sends (STJ1 body_id). "" = follow the peer (the normal case).
+    std::string partner_character;
+    // The character THIS player appears as on the other player's screen (body_table key), sent as
+    // STJ1 body_id. "" / unknown = sam; the host always sends sam (docs/real-partner-body.md).
+    std::string my_character;
     bool pose_hook = false;            // install the pose hook even without partner_body=real (debug spawns)
 
     // Debug

@@ -67,11 +67,14 @@ void ResetRefused() noexcept;
 // Sam's newest captured pose as a frame (77 rotations + root/pelvis translation).
 // False when nothing fresh (< 250 ms) was captured.
 bool CaptureFrame(wire::JointFrame* out) noexcept;
-// Received / echoed frames, keyed by the time they should play at (our clock).
-void PushFrame(const wire::JointFrame& f, double key_ms) noexcept;
+// Received / echoed frames, keyed by the time they should play at (our clock). False when the
+// frame was dropped: not Sam's 77-joint layout (the body could not play it), or not newer than
+// the ring's newest key (reordered). Only accepted frames count as "the peer sends joints".
+bool PushFrame(const wire::JointFrame& f, double key_ms) noexcept;
 void ResetFrames() noexcept;
-// True when the body has been live for `limit_ms` without any frame pushed in that time
-// (a peer that sends no STJ1: a v0.3 build, or its pose capture is unavailable).
+// True when the body has been live for `limit_ms` without any frame pushed in that time (a
+// same-build peer that sends no STJ1: partner_body=holo, or its capture is unavailable, paused or
+// behind a notice; other builds are rejected at the link handshake).
 bool StarvedOfFrames(double limit_ms) noexcept;
 // Interpolates the ring at play_ms and publishes the result to the detour.
 // False when the ring is empty (the detour keeps the last pose).

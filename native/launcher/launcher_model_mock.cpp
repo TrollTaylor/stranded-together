@@ -431,9 +431,14 @@ bool MockModel::clear_session(std::string& error_out) {
     return true;
 }
 
+// Like the real model: only an offered character is kept, anything else is Sam.
+void MockModel::set_my_character(const std::string& key) { my_character_ = core::CharacterKeyOrSam(key); }
+void MockModel::set_local_test_guest_character(const std::string& key) { guest_character_ = core::CharacterKeyOrSam(key); }
+
 LocalTestView MockModel::local_test() const {
     LocalTestView v;
     v.host_pad = host_pad_;
+    v.guest_character = guest_character_;
     if (local_start_ < 0.0) return v;
     const double t = now() - local_start_;
     v.running = true;

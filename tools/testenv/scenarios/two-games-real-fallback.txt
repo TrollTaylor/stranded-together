@@ -1,0 +1,61 @@
+# Real partner body fallback between two games, hidden (docs/real-partner-body.md "Character choice"):
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-real-fallback -SeedSaves complete-100
+# The host wants the real body (partner_body=real); the guest plays with the hologram (partner_body=holo),
+# so it installs no pose hook and sends positions only, no joint frames (STJ1). The host spawns no real
+# body before the first joint frame (it would stand in its bind pose and the character is unknown): it
+# waits 3 s, falls back to the hologram, and stays there because joint frames never come. Checked, not
+# left to the reader: both traffic lines must show 0 joint frames, and the host log must never have
+# "again: back to the real body" (nolog, before and after the traffic checks).
+role host
+graphics low
+timeout 360
+@host ini partner_body=real
+@guest ini partner_body=holo
+@guest ini my_character=fragile
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 30 \[sync\] my character: 'sam' \(body_id 1\); joint frames \(STJ1\) sent with every pose
+@guest waitlog 30 \[sync\] my character: 'fragile' \(body_id 3\); joint frames \(STJ1\) not sent \(no pose hook: partner_body is not real\)
+wait 25000
+?screenshot 01-host-title
+?@guest screenshot 01-guest-title
+pad A 150
+@guest pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+@guest until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitplayer 60
+waitlog 60 \[link\] CONNECTED
+@guest waitlog 60 \[link\] CONNECTED
+# the host walks ahead, then looks back at the guest's Sam
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+pad none 1300 rx=32767
+# the guest presses A through the offline-mode notice (see two-games) and shows the host as the hologram
+@guest until 150 3000 \[sync\] partner body: hologram => pad A 120
+# the host waited 3 s for a first joint frame, then fell back to the hologram
+waitlog 60 \[sync\] partner body 'real': waiting for the partner's first joint frame \(STJ1\)
+waitlog 15 \[sync\] partner body 'real' unavailable \(the partner sends positions but no joint frames \(STJ1\) for 3 s\): falling back to 'holo'
+waitlog 15 \[sync\] partner body: hologram
+# the guest is in the game now and walks: still no joint frames, so the host keeps the hologram
+@guest until 60 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+wait 3000
+nolog \[sync\] the partner sends joint frames \(STJ1\) again: back to the real body
+screenshot 03-host-sees-guest-hologram
+action log_status
+action real_stats
+@guest screenshot 04-guest-sees-host-hologram
+@guest action log_status
+# the host received poses but no joint frames
+waitlog 15 \[sync\] link traffic over [0-9]+ s: .*received [1-9][0-9]* poses, 0 joint frames
+@guest waitlog 15 \[sync\] link traffic over [0-9]+ s: sent [1-9][0-9]* poses \(0 with joint frames\)
+nolog \[sync\] the partner sends joint frames \(STJ1\) again: back to the real body
+nolog \[sync\] partner body: real
+screenshot 05-host-still-hologram
+snapshot
+@guest snapshot
+@guest quit
+wait 3000
+quit

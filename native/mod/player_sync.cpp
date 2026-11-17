@@ -8,6 +8,7 @@
 #include <cstring>
 #include <initializer_list>
 
+#include "body_choice.hpp"
 #include "debug_actions.hpp"
 #include "game_api.hpp"
 #include "link.hpp"
@@ -139,6 +140,26 @@ bool g_net = false;  // host/guest (vs echo)
 Ring g_ring;
 std::uint32_t g_generation = 0;
 
+// Real character bodies (docs/real-partner-body.md "Character choice"): what we send as
+// STJ1 body_id, and the peer's body_id after the stable-for-30-frames debounce.
+const bodies::Body* g_own_body = nullptr;
+bodies::StableId g_peer_body;  // Known() also means: the peer sent playable STJ1 in this link session
+
+// Joint-frame starvation (docs/real-partner-body.md "Fallback when the peer sends no STJ1").
+// A peer behind a pause or a notice sends positions but no joints (its animate never runs), so
+// starvation is not proof of a hologram peer: after a starvation fallback the real body comes
+// back once joint frames flow again, and a body that has had joints holds its last pose while
+// the peer stands still.
+bool g_starved_fallback = false;     // the chain left 'real' because no joint frames came
+double g_last_joints_ms = 0;         // our clock at the newest received (or echoed) playable STJ1 frame
+unsigned g_joints_since_fallback = 0;
+double g_rx_pos[3] = {};             // the newest received transform's position
+double g_joints_pos[3] = {};         // ... when the newest playable STJ1 frame arrived
+// When the real body began waiting for the session's first joint frame (TrySpawn). Its own timer,
+// cleared whenever that wait is interrupted (link down, partner silent, Sam asleep, new link
+// session): a stale start would otherwise fall back to the hologram at once when positions resume.
+double g_first_joints_wait_ms = 0;
+
 Entity* g_local = nullptr;
 game::Guid g_local_guid;
 WorldTransform g_local_wt{};
@@ -189,6 +210,7 @@ double g_next_send_ms = 0;
 std::uint32_t g_seq = 0;
 double g_next_status_ms = 0;
 double g_next_trace_ms = 0;
+double g_next_traffic_ms = 0;
 std::uint64_t g_frames = 0;
 double g_first_tick_ms = 0;
 bool g_logged_rate = false;
@@ -344,9 +366,11 @@ void BuildChain() {
 
 void ResetBodyChain() {
     g_chain_pos = 0;
+    g_starved_fallback = false;
     g_holo_failures = 0;
     g_spawn_failures = 0;
     g_body_wait_since_ms = 0;
+    g_first_joints_wait_ms = 0;
     holo::ResetRejected();
     realbody::ResetRefused();
 }
@@ -402,6 +426,134 @@ void ComposeTransform(const double (&pos)[3], const wire::Quat& q, WorldTransfor
     wire::MatrixFromQuat(q, out.rot.m);
 }
 
+// The real body the partner should have now: partner_character (debug override), else the
+// peer's debounced body_id when it is offered, else Sam; a refused body falls back to Sam.
+// nullptr when every candidate was refused (the chain then falls back to the hologram).
+const bodies::Body* RealBodyToShow() {
+    const bodies::PartnerChoice c = bodies::ChoosePartner(g_cfg.partner_character.c_str(), g_peer_body.Known(), g_peer_body.Shown());
+    if (!realbody::Refused(c.body->id)) return c.body;
+    return !realbody::Refused(bodies::Default().id) ? &bodies::Default() : nullptr;
+}
+
+// Every received (or echoed) STJ1 frame the body can play (realbody::PushFrame accepted it):
+// the body_id debounce, the joint-starvation state, and a log line when the raw id changes (the
+// first few times only, so a flapping peer cannot flood the log) and when the shown character
+// changes. A frame the ring dropped (another skeleton layout or joint count, or reordered) must
+// not count: a real body spawned or brought back on such frames would have nothing to play.
+void PeerBodyId(std::uint8_t id) {
+    static std::uint8_t logged_raw = 0;
+    static unsigned raw_logs = 0;
+    if ((!g_peer_body.Known() || id != logged_raw) && raw_logs < 20) {
+        ++raw_logs;
+        logged_raw = id;
+        const bodies::Body* b = bodies::FindById(id);
+        Log("[sync] the partner sends joint frames (STJ1), body_id %u (%s)", id, b ? b->key : "unknown");
+    }
+    g_last_joints_ms = link::NowMsPrecise();
+    ++g_joints_since_fallback;
+    std::memcpy(g_joints_pos, g_rx_pos, sizeof(g_joints_pos));
+    const bool first = !g_peer_body.Known();
+    if (!g_peer_body.Push(id)) return;
+    const bodies::PartnerChoice c = bodies::ChoosePartner(g_cfg.partner_character.c_str(), true, id);
+    char when[48];
+    if (first) std::snprintf(when, sizeof(when), "first frame");
+    else std::snprintf(when, sizeof(when), "stable for %u frames", bodies::kStableFrames);
+    Log("[sync] partner character: '%s' (peer body_id %u, %s%s)", c.body->key, id, when,
+        c.from_override      ? "; the partner_character override wins"
+        : c.peer_not_offered ? "; not an offered body, shown as sam"
+                             : "");
+}
+
+// A received or echoed STJ1 frame: into the body's ring and, only if it was kept, into the
+// "peer sends joints" state. The first few drops are logged (another layout, or reordered).
+void TakeJointFrame(const wire::JointFrame& f, double key_ms) {
+    if (realbody::PushFrame(f, key_ms)) {
+        PeerBodyId(f.body_id);
+        return;
+    }
+    static unsigned dropped_logs = 0;
+    if (dropped_logs < 5) {
+        ++dropped_logs;
+        Log("[sync] joint frame seq %u dropped: %u joints, layout %08X (playable: 77 joints, layout %08X, newer than the last)",
+            f.seq, static_cast<unsigned>(f.joint_count), f.layout_hash, wire::kSamLayoutHash);
+    }
+}
+
+// Host/guest: every 10 s while the link carries poses, what went each way and the payload rate
+// (docs/real-partner-body.md: about 560 B per datagram at 30 Hz with joint frames).
+void LogTraffic(double now) {
+    if (!g_net || now < g_next_traffic_ms) return;
+    static link::Info prev{};
+    static double prev_ms = 0;
+    const link::Info li = link::GetInfo();
+    g_next_traffic_ms = now + 10000;
+    const double s = prev_ms > 0 ? (now - prev_ms) / 1000.0 : 0;
+    const std::uint64_t tx = li.tx_frames - prev.tx_frames, txj = li.tx_joint_frames - prev.tx_joint_frames,
+                        rx = li.rx_frames - prev.rx_frames, rxj = li.rx_joint_frames - prev.rx_joint_frames,
+                        bytes = li.tx_payload_bytes - prev.tx_payload_bytes;
+    prev = li;
+    prev_ms = now;
+    if (s <= 0 || (!tx && !rx)) return;
+    Log("[sync] link traffic over %.0f s: sent %llu poses (%llu with joint frames), %.0f B/s payload (%.0f B each); "
+        "received %llu poses, %llu joint frames",
+        s, static_cast<unsigned long long>(tx), static_cast<unsigned long long>(txj), static_cast<double>(bytes) / s,
+        tx ? static_cast<double>(bytes) / static_cast<double>(tx) : 0.0, static_cast<unsigned long long>(rx),
+        static_cast<unsigned long long>(rxj));
+}
+
+// The real body has no joint frames to play: fall back to the next body (the hologram), and
+// remember why, so ReturnToReal can bring the real body back when joint frames arrive.
+void StarvedFallBack(const char* why, double now) {
+    FallBack(why, now);
+    g_first_joints_wait_ms = 0;
+    if (CurrentBody() == PartnerBody::real) return;  // nothing to fall back to
+    g_starved_fallback = true;
+    g_joints_since_fallback = 0;
+}
+
+// After a starvation fallback: the peer sends joint frames again (it left a pause or a notice,
+// or its capture started late). 30 fresh frames (about 1 s) before switching, so one stray
+// frame does not swap the body.
+void ReturnToReal(double now) {
+    if (!g_starved_fallback || CurrentBody() == PartnerBody::real) return;
+    if (g_joints_since_fallback < bodies::kStableFrames || now - g_last_joints_ms > 500) return;
+    if (!realbody::Available() || !RealBodyToShow()) {
+        g_starved_fallback = false;  // the real body cannot come back this run
+        return;
+    }
+    Log("[sync] the partner sends joint frames (STJ1) again: back to the real body (from '%s')",
+        PartnerBodyName(CurrentBody()));
+    RemoveBody("the partner sends joint frames again");
+    partner::Release(g_slot.src);
+    g_chain_pos = 0;
+    g_chain_exhausted = false;
+    g_starved_fallback = false;
+    g_holo_failures = 0;
+    g_spawn_failures = 0;
+    g_body_wait_since_ms = 0;
+    g_next_spawn_ms = now;
+}
+
+// A live real body whose joint frames stopped: while the peer stands still (paused, in a menu)
+// it holds the last pose; once the peer moves without joints (> 1 m) it would glide in that
+// pose, so it falls back. A peer that never sent joints this session falls back at once.
+bool PeerMovedSinceJoints() {
+    if (!g_peer_body.Known()) return true;
+    const double dx = g_rx_pos[0] - g_joints_pos[0], dy = g_rx_pos[1] - g_joints_pos[1], dz = g_rx_pos[2] - g_joints_pos[2];
+    return dx * dx + dy * dy + dz * dz > 1.0;
+}
+
+// The peer's body_id changed (after the debounce): respawn a real body that no longer matches.
+// Only bodies we own; a debug body in the slot or a hologram after a fallback stay as they are.
+void FollowPeerCharacter(double now) {
+    if (!RealOurs() || CurrentBody() != PartnerBody::real || !realbody::CurrentBody()) return;
+    const bodies::Body* want = RealBodyToShow();
+    if (!want || want == realbody::CurrentBody()) return;
+    Log("[sync] partner character now '%s' (was '%s'): respawning the real body", want->key, realbody::CurrentBody()->key);
+    RemoveBody("the partner's character changed");
+    g_next_spawn_ms = now;
+}
+
 // Cloning Sam's own DSPlayerEntityResource crashes the game (it needs a
 // DSPlayerController; first in-game run 2026-11-16), so the partner is always
 // a non-player entity: see the body chain above.
@@ -423,9 +575,21 @@ void TrySpawn(const WorldTransform& at, double now) {
     switch (CurrentBody()) {
         case PartnerBody::real: {
             if (realbody::GetPhase() != realbody::Phase::idle) return;  // DriveReal polls it (or a debug body holds the slot)
-            const bodies::Body* want = bodies::FindByKey(g_cfg.partner_character.c_str());
-            if (!want) want = &bodies::Default();
-            const bodies::Body* body = !realbody::Refused(want->id) ? want : !realbody::Refused(bodies::Default().id) ? &bodies::Default() : nullptr;
+            // No joint frame yet in this session: a body now would stand in its bind pose, and
+            // it might be the wrong character (the body_id comes with STJ1). Wait 3 s, then the
+            // hologram stands in (ReturnToReal brings the real body when joints arrive).
+            if (!g_peer_body.Known()) {
+                if (g_first_joints_wait_ms == 0) {
+                    g_first_joints_wait_ms = now;
+                    Log("[sync] partner body 'real': waiting for the partner's first joint frame (STJ1)");
+                }
+                if (now - g_first_joints_wait_ms > 3000)
+                    StarvedFallBack("the partner sends positions but no joint frames (STJ1) for 3 s", now);
+                else
+                    g_next_spawn_ms = now + 250;
+                return;
+            }
+            const bodies::Body* body = RealBodyToShow();
             if (!body) {
                 FallBack("every real body was refused", now);
                 return;
@@ -645,7 +809,7 @@ void Hotkeys(double now) {
 void TeardownTriggers(double now) {
     // Loads, cutscenes and knot space put Sam to sleep first: take the partner
     // down then, so nothing of ours is outstanding when the game changes worlds.
-    if (!g_local_active) g_body_wait_since_ms = 0;  // waiting for body data only counts while Sam is up
+    if (!g_local_active) g_body_wait_since_ms = g_first_joints_wait_ms = 0;  // waiting only counts while Sam is up
     if (BodyPresent() && g_local_asleep_since_ms > 0 && now - g_local_asleep_since_ms >= 1000) {
         RemoveBody("Sam asleep (load, cutscene or knot space)");
         g_next_spawn_ms = now + 2000;
@@ -706,6 +870,31 @@ void Init(const Config& config, const std::wstring& mod_dir) noexcept {
         config.send_hz, config.interp_delay_ms, config.partner_activate ? 1 : 0, PartnerBodyName(g_chain[0]), chain,
         config.partner_voice ? 1 : 0,
         config.role == Role::echo ? " (echo: your own movement is replayed by the partner body)" : "");
+
+    // What the other player sees us as (STJ1 body_id). Sending needs the pose hook, which only a
+    // partner_body=real (or pose_hook=1) game installs at start-up: a hologram game sends no
+    // joint frames, so a real-body peer shows it as the hologram (player_sync's starvation fallback).
+    g_peer_body.Reset();
+    const bodies::OwnChoice own = bodies::ChooseOwn(config.role == Role::host, config.my_character.c_str());
+    g_own_body = own.body;
+    if (own.host_forced)
+        Log("[sync] my_character=%s ignored: the host is always sam", config.my_character.c_str());
+    else if (own.unknown_key)
+        Log("[sync] my_character=%s is not a known character: sending sam", config.my_character.c_str());
+    Log("[sync] my character: '%s' (body_id %u%s); joint frames (STJ1) %s", g_own_body->key, g_own_body->id,
+        bodies::IsOffered(g_own_body->id) ? "" : ", not offered: the partner shows sam",
+        config.role == Role::solo                                          ? "not sent (solo)"
+        : realbody::HookInstalled()                                        ? "sent with every pose"
+        : config.partner_body == PartnerBody::real || config.pose_hook    ? "not sent (the pose hook is unavailable)"
+                                                                           : "not sent (no pose hook: partner_body is not real)");
+    if (!config.partner_character.empty()) {
+        if (bodies::FindByKey(config.partner_character.c_str()))
+            Log("[sync] partner_character=%s: debug override, the partner is shown as this body whatever it sends",
+                config.partner_character.c_str());
+        else
+            Log("[sync] partner_character=%s is not a known character: ignored (the partner's own choice is shown)",
+                config.partner_character.c_str());
+    }
 }
 
 void Tick() noexcept {
@@ -789,19 +978,21 @@ void Tick() noexcept {
             if (have_joints) {
                 jf.seq = p.seq;
                 jf.sender_ms = p.sender_ms;
-                const bodies::Body* mine = bodies::FindByKey(g_cfg.partner_character.c_str());
-                jf.body_id = mine ? mine->id : bodies::Default().id;
+                jf.body_id = g_own_body->id;
             }
             if (g_net) {
                 if (have_joints) link::SendPoseAndJoints(p, jf);
                 else link::SendPose(p);
             } else if (g_ring.Push(p.sender_ms, now, p.x + g_cfg.echo_offset_m, p.y, p.z, p.rot)) {
                 g_last_remote_ms = now;
+                g_rx_pos[0] = p.x + g_cfg.echo_offset_m, g_rx_pos[1] = p.y, g_rx_pos[2] = p.z;
             }
             if (!g_net && have_joints) {
                 std::uint8_t buf[wire::kMaxJointFrameSize];
                 const std::size_t n = wire::EncodeJoints(jf, buf, sizeof(buf));
-                if (n && wire::DecodeJoints(buf, n, back)) realbody::PushFrame(back, g_ring.Unwrapped(back.sender_ms));
+                if (n && wire::DecodeJoints(buf, n, back)) {
+                    TakeJointFrame(back, g_ring.Unwrapped(back.sender_ms));  // echo: our own body_id is the "peer's"
+                }
                 static bool logged = false;
                 if (!logged && n) {
                     logged = true;
@@ -822,23 +1013,20 @@ void Tick() noexcept {
                 g_generation = gen;
                 g_ring.Reset();
                 realbody::ResetFrames();
+                g_peer_body.Reset();  // a new session may be another player with another character
+                g_first_joints_wait_ms = 0;
                 Log("[sync] new link session (#%u): interpolation reset", gen);
                 if (BodyPresent()) RemoveBody("new link session");  // session end of the previous partner
             }
             if (!(p.flags & wire::kPoseValid)) continue;
+            g_rx_pos[0] = p.x, g_rx_pos[1] = p.y, g_rx_pos[2] = p.z;
             if (g_ring.Push(p.sender_ms, static_cast<double>(recv), p.x, p.y, p.z, p.rot))
                 g_last_remote_ms = static_cast<double>(recv);
         }
         static wire::JointFrame jf;
         while (link::PopJoints(jf, recv, gen)) {
             if (gen != g_generation) continue;  // a frame from before the session change
-            static std::uint8_t logged_body = 0;
-            if (jf.body_id != logged_body) {
-                logged_body = jf.body_id;
-                const bodies::Body* b = bodies::FindById(jf.body_id);
-                Log("[sync] the partner sends joint frames (STJ1), body_id %u (%s)", jf.body_id, b ? b->key : "unknown");
-            }
-            realbody::PushFrame(jf, g_ring.Unwrapped(jf.sender_ms));
+            TakeJointFrame(jf, g_ring.Unwrapped(jf.sender_ms));
         }
     }
     g_ring.Settle();
@@ -847,9 +1035,13 @@ void Tick() noexcept {
     TeardownTriggers(now);
     DriveHolo(now);
     DriveReal(now);
+    FollowPeerCharacter(now);
+    ReturnToReal(now);
     const double delay = g_net ? static_cast<double>(g_cfg.interp_delay_ms) : g_cfg.echo_delay_s * 1000.0;
     const bool remote_fresh = g_last_remote_ms > 0 && now - g_last_remote_ms < 10000;
     if ((BodyPresent() || g_voice.e) && !remote_fresh) RemoveBody("partner silent for 10 s");
+    // The first-joint wait counts only while positions arrive over a live link (TrySpawn runs).
+    if (!remote_fresh || (g_net && g_link_down_since_ms > 0)) g_first_joints_wait_ms = 0;
 
     double pos[3] = {};
     wire::Quat q;
@@ -867,10 +1059,10 @@ void Tick() noexcept {
                     Log("[sync] SetWorldTransform failed on the real body; removing it");
                     RemoveBody("set transform fault");
                     g_next_spawn_ms = now + 5000;
-                } else if (now - g_last_remote_ms < 1000 && realbody::StarvedOfFrames(3000)) {
-                    // Transforms arrive but no joint frames: without them the body would glide in its
-                    // bind pose, so the next body in the chain (the hologram) takes over.
-                    FallBack("the partner sends positions but no joint frames (STJ1)", now);
+                } else if (now - g_last_remote_ms < 1000 && realbody::StarvedOfFrames(3000) && PeerMovedSinceJoints()) {
+                    // Transforms arrive and move but no joint frames: the body would glide in a frozen
+                    // pose, so the next body in the chain (the hologram) takes over until joints return.
+                    StarvedFallBack("the partner sends positions but no joint frames (STJ1)", now);
                 } else {
                     realbody::SamplePublish(g_ring.PlayTime(now, delay));  // joints on the transform's timeline
                 }
@@ -914,6 +1106,7 @@ void Tick() noexcept {
             holo::PhaseName(), static_cast<unsigned long long>(body ? Flags(body) : 0), g_remote_state);
     }
 
+    LogTraffic(now);
     Hotkeys(now);
     PublishStatus(now);
     debug::OnTick(now);  // debug-menu actions + snapshot (game thread)

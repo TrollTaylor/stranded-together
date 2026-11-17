@@ -6,6 +6,7 @@
 #include <deque>
 #include <vector>
 
+#include "body_choice.hpp"
 #include "body_table.hpp"
 #include "pose_wire.hpp"
 #include "stcoop/link_crypto.hpp"
@@ -327,12 +328,123 @@ void TestBodyTable() {
     CHECK(bodies::FindByKey("FRAGILE") && bodies::FindByKey("FRAGILE")->id == 3);
     CHECK(!bodies::FindByKey("frag") && !bodies::FindByKey("") && !bodies::FindById(0));
     CHECK(bodies::Default().id == 1);
+    // offered: exactly the bodies proven in game (ids 1-16, real-body-tour-all), in id order; nothing else
+    CHECK(bodies::OfferedCount() == 16);
+    for (std::size_t i = 0; i < bodies::OfferedCount(); ++i) CHECK(bodies::OfferedAt(i).id == i + 1 && bodies::OfferedAt(i).offered);
+    CHECK(&bodies::OfferedAt(99) == &bodies::Default());
+    for (std::uint8_t id = 1; id <= 16; ++id) CHECK(bodies::IsOffered(id));
+    CHECK(!bodies::IsOffered(0) && !bodies::IsOffered(17) && !bodies::IsOffered(200));
+    std::size_t offered = 0;
+    for (std::size_t i = 0; i < bodies::Count(); ++i) offered += bodies::At(i).offered ? 1 : 0;
+    CHECK(offered == bodies::OfferedCount());
+}
+
+void TestBodyChoice() {
+    // sender: my_character -> STJ1 body_id
+    bodies::OwnChoice o = bodies::ChooseOwn(false, "fragile");
+    CHECK(o.body->id == 3 && !o.host_forced && !o.unknown_key);
+    o = bodies::ChooseOwn(false, "Cliff");
+    CHECK(o.body->id == 5);
+    o = bodies::ChooseOwn(false, "");
+    CHECK(o.body == &bodies::Default() && !o.unknown_key);
+    o = bodies::ChooseOwn(false, nullptr);
+    CHECK(o.body == &bodies::Default() && !o.unknown_key);
+    o = bodies::ChooseOwn(false, "gandalf");
+    CHECK(o.body == &bodies::Default() && o.unknown_key);
+    o = bodies::ChooseOwn(false, "heartman");
+    CHECK(o.body->id == 8 && !o.unknown_key);
+    // A body appended to the table but not proven yet (none today) is sent as asked; the receiver shows sam.
+    const bodies::Body* unproven = nullptr;
+    for (std::size_t i = 0; i < bodies::Count() && !unproven; ++i)
+        if (!bodies::At(i).offered) unproven = &bodies::At(i);
+    if (unproven) {
+        o = bodies::ChooseOwn(false, unproven->key);
+        CHECK(o.body == unproven && !o.unknown_key);
+    }
+    // the host is always Sam
+    o = bodies::ChooseOwn(true, "fragile");
+    CHECK(o.body == &bodies::Default() && o.host_forced);
+    o = bodies::ChooseOwn(true, "sam");
+    CHECK(o.body == &bodies::Default() && !o.host_forced);
+    o = bodies::ChooseOwn(true, "");
+    CHECK(o.body == &bodies::Default() && !o.host_forced && !o.unknown_key);
+    o = bodies::ChooseOwn(true, "gandalf");
+    CHECK(o.body == &bodies::Default() && !o.host_forced && o.unknown_key);
+
+    // receiver: the peer's id when offered, else sam; partner_character overrides
+    bodies::PartnerChoice p = bodies::ChoosePartner("", true, 3);
+    CHECK(p.body->id == 3 && !p.from_override && !p.peer_not_offered);
+    p = bodies::ChoosePartner(nullptr, true, 5);
+    CHECK(p.body->id == 5);
+    p = bodies::ChoosePartner("", false, 3);  // no frame yet: the peer's id is not known
+    CHECK(p.body == &bodies::Default() && !p.peer_not_offered);
+    p = bodies::ChoosePartner("", true, 8);
+    CHECK(p.body->id == 8 && !p.peer_not_offered);
+    if (unproven) {  // known but not offered
+        p = bodies::ChoosePartner("", true, unproven->id);
+        CHECK(p.body == &bodies::Default() && p.peer_not_offered);
+        p = bodies::ChoosePartner(unproven->key, true, 3);  // debug tours may show unproven bodies
+        CHECK(p.body == unproven && p.from_override);
+    }
+    p = bodies::ChoosePartner("", true, 0);
+    CHECK(p.body == &bodies::Default() && p.peer_not_offered);
+    p = bodies::ChoosePartner("", true, 250);  // unknown id (a newer build's body)
+    CHECK(p.body == &bodies::Default() && p.peer_not_offered);
+    p = bodies::ChoosePartner("diehardman", true, 3);
+    CHECK(p.body->id == 4 && p.from_override);
+    p = bodies::ChoosePartner("heartman", true, 3);
+    CHECK(p.body->id == 8 && p.from_override);
+    p = bodies::ChoosePartner("PORTER", false, 0);
+    CHECK(p.body->id == 2 && p.from_override);
+    p = bodies::ChoosePartner("gandalf", true, 3);  // unknown override: ignored, the peer's choice
+    CHECK(p.body->id == 3 && !p.from_override && p.unknown_override);
+
+    // debounce: the first id at once, a change only after kStableFrames frames in a row
+    bodies::StableId s;
+    CHECK(!s.Known() && s.Shown() == 0);
+    CHECK(s.Push(3) && s.Known() && s.Shown() == 3);
+    CHECK(!s.Push(3) && s.Shown() == 3);
+    for (unsigned i = 0; i + 1 < bodies::kStableFrames; ++i) CHECK(!s.Push(5));
+    CHECK(s.Shown() == 3);
+    CHECK(s.Push(5) && s.Shown() == 5);  // the 30th frame
+    // flapping never switches: the shown id in between restarts the count
+    for (unsigned round = 0; round < 50; ++round) {
+        for (unsigned i = 0; i < bodies::kStableFrames - 1; ++i) CHECK(!s.Push(1));
+        CHECK(!s.Push(5));
+    }
+    CHECK(s.Shown() == 5);
+    // alternating between two other ids never switches either
+    for (unsigned i = 0; i < 200; ++i) CHECK(!s.Push(i % 2 ? 2 : 4));
+    CHECK(s.Shown() == 5);
+    // a run of one id interrupted by another restarts the count
+    for (unsigned i = 0; i < 20; ++i) CHECK(!s.Push(2));
+    CHECK(!s.Push(4));
+    for (unsigned i = 0; i + 1 < bodies::kStableFrames; ++i) CHECK(!s.Push(2));
+    CHECK(s.Push(2) && s.Shown() == 2);
+    s.Reset();
+    CHECK(!s.Known() && s.Push(4) && s.Shown() == 4);
+    bodies::StableId quick(1);
+    CHECK(quick.Push(1) && quick.Push(2) && quick.Shown() == 2 && !quick.Push(2));
+
+    // an unknown body_id travels intact through STJ1 (the receiver decides what to show)
+    wire::JointFrame f;
+    f.joint_count = 77;
+    f.body_id = 250;
+    f.flags = wire::kJointsValid;
+    std::uint8_t buf[wire::kMaxJointFrameSize];
+    const std::size_t n = wire::EncodeJoints(f, buf, sizeof(buf));
+    wire::JointFrame g;
+    CHECK(n && wire::DecodeJoints(buf, n, g) && g.body_id == 250 && g.joint_count == 77);
+    CHECK(bodies::ChoosePartner("", true, g.body_id).body == &bodies::Default());
+    f.body_id = 0;
+    CHECK(wire::EncodeJoints(f, buf, sizeof(buf)) == n && wire::DecodeJoints(buf, n, g) && g.body_id == 0);
 }
 
 int main() {
     TestPoseRoundTrip();
     TestJointFrames();
     TestBodyTable();
+    TestBodyChoice();
     TestRotation();
     TestJoinCode();
     TestLinkHandshake();

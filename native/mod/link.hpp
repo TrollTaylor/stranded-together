@@ -22,13 +22,17 @@ struct Info {
     bool connected = false;
     char reason[96] = {};
     std::uint64_t rx_frames = 0, tx_frames = 0;
+    // Joint frames (STJ1) sent / accepted, and the link body bytes sent with the poses (the
+    // FRAME messages; the link header and encryption come on top): the real body's bandwidth.
+    std::uint64_t rx_joint_frames = 0, tx_joint_frames = 0, tx_payload_bytes = 0;
 };
 
 bool Start(const Config& config) noexcept;  // game thread, once
 bool Running() noexcept;
 bool SendPose(const wire::Pose& pose) noexcept;  // game thread; false when not connected
 // The pose plus a joint frame (STJ1) in the same datagram (one FRAME message each).
-// Peers before v0.4 ignore the second message (DecodePose rejects its size and magic).
+// Only a same-build peer ever receives it: the link runs in play mode, where a HELLO from
+// another build is rejected (build_mismatch) before any FRAME is exchanged.
 bool SendPoseAndJoints(const wire::Pose& pose, const wire::JointFrame& joints) noexcept;
 // Received joint frames, oldest first, with their own "newer seq" filter (the seq is
 // shared with the STP1 frame of the same datagram) and the same generation counter.

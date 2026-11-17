@@ -66,6 +66,12 @@ struct SessionIni {
     std::string local_input;          // host | host_pad | guest ("" = a normal game)
     int frame_cap = 0;                // 0 or 15..240 frames per second
     std::string local_window;         // left | right: the game window takes that half of the monitor
+    // The real partner body (docs/real-partner-body.md). my_character: the character THIS player
+    // appears as on the other player's screen, an offered native/mod/body_table.cpp key; the mod
+    // sends it as STJ1 body_id. The host is always Sam: the writer puts my_character=sam for a host
+    // whatever this says (the mod does the same). "" = not written (the mod uses sam).
+    std::string my_character;
+    std::string partner_body;         // real | holo: how the partner is drawn ("" = not written, the mod's default)
 };
 inline constexpr double kMaxEchoDelayS = 10.0;
 inline constexpr double kMaxEchoOffsetM = 20.0;
@@ -80,6 +86,20 @@ bool ParseSessionIniText(const std::string& text, SessionIni& out, std::string& 
 bool IsGeneratedIniText(const std::string& text);   // starts with kHeader
 // key=value lines, '#'/';' comments, trimmed; later keys win.
 std::vector<std::pair<std::string, std::string>> ParseIni(const std::string& text);
+
+// ---- Characters ------------------------------------------------------------------
+// The list comes from native/mod/body_table.cpp (compiled into the launcher): the bodies
+// with `offered` set, i.e. proven in game. One source of truth for the mod and the launcher.
+inline constexpr char kHostCharacter[] = "sam";   // the host is always Sam
+struct CharacterChoice {
+    std::string key;     // session.ini my_character (body_table key, lower case)
+    std::string label;   // body_table label, shown in the launcher
+};
+std::vector<CharacterChoice> OfferedCharacters();   // in body_table (id) order; Sam first
+bool IsOfferedCharacter(const std::string& key);    // exactly the key of an offered body
+// An offered key as given (any case) -> its table key; anything else -> "sam".
+std::string CharacterKeyOrSam(const std::string& key);
+std::string CharacterLabel(const std::string& key);   // CharacterKeyOrSam's label
 
 // ---- link-status.json -----------------------------------------------------------
 // link-status.json -> object, or null when it is not v1, has no state or

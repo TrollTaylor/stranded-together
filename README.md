@@ -15,9 +15,14 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
 
 - Two players connect over Steam (Steam Networking Messages, relayed, no port forwarding)
   with a join code `DST1-XXXXX-XXXXX-XXXXX-XXXXX-CC@<host SteamID64>`.
-- Each player sees the other as a second Sam in their world, moved to the partner's
-  position and facing at 30 Hz with 100 ms interpolation.
-- Not yet: animation (the partner glides), cargo, vehicles, world/BT/mission sync.
+- Each player sees the other in their world, moved to the partner's position and facing
+  at 30 Hz with 100 ms interpolation.
+- **Experimental:** the partner is a solid character that copies the other player's real
+  animation (walking, running, stopping). The guest picks which character the host sees;
+  the host is always Sam. If the real character cannot be shown, the partner appears as a
+  hologram instead. See [docs/real-partner-body.md](docs/real-partner-body.md).
+- Not yet: cargo, backpack and Odradek on the partner, facial animation, vehicles,
+  world/BT/mission sync.
 
 ## Download
 
@@ -37,8 +42,8 @@ Starting the game from Steam on its own runs it unmodded: each start from the la
 
 ## Play
 
-1. **Host:** **Play → Host → Host game**. The game starts through Steam and a join code is copied to your clipboard; send it to your partner.
-2. **Join:** **Play → Join**, paste the code, **Join game**. **Advanced** switches to LAN / VPN (UDP) and sets your name.
+1. **Host:** **Play → Host → Host game**. The game starts through Steam and a join code is copied to your clipboard; send it to your partner. The host always appears as Sam.
+2. **Join:** **Play → Join**, paste the code, pick **Your character** (Sam, Fragile, Die-Hardman, Cliff, Deadman, Higgs and others), **Join game**. The host sees you as that character when both games use the real character (Debug → Partner body); on your own screen you are still Sam. **Advanced** switches to LAN / VPN (UDP) and sets your name.
 3. **Solo test:** **Play → Solo test** starts the game with an echo, a copy of you that replays your movement. No partner, no network.
 
 Keep the launcher open to see the connection on **In game**; closing it is safe (a hidden helper tidies up after the game exits).
@@ -47,7 +52,7 @@ Keep the launcher open to see the connection on **In game**; closing it is safe 
 
 The launcher's **Debug** page:
 
-- **Options:** **Debug tools only (solo)** starts the game with just the in-game debug menu and logging (no partner, no network), or the **Echo test**; echo delay and offset, send rate, interpolation delay, waking the partner clone, verbose logging, and the **in-game debug menu** on/off with its key (**F9** by default, F1–F12). These options go into every game started from the launcher.
+- **Options:** **Debug tools only (solo)** starts the game with just the in-game debug menu and logging (no partner, no network), or the **Echo test**; echo delay and offset, send rate, interpolation delay, waking the partner clone, verbose logging, the **in-game debug menu** on/off with its key (**F9** by default, F1–F12), and **Partner body**: **Real character (experimental)** (default) or **Hologram**: how your partner is drawn on your screen, and with Hologram your partner sees you as a hologram too (a hologram game does not send your character). These options go into every game started from the launcher.
 - **Files and log:** open the mod folder or log, a live tail of `stranded_together.log` with **Copy log**, **Copy error.txt** (the game's crash report), **Disable mod / Enable mod** (renames `winhttp.dll` ↔ `winhttp.dll.disabled`) and **Clear session** (deletes `session.ini`).
 - **Tools → Collect logs** puts a zip for a bug report on the Desktop (codes, secrets and Steam IDs removed).
 

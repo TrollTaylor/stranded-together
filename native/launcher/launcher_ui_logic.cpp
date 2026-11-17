@@ -246,7 +246,7 @@ const char* const kSceneNames[static_cast<int>(Scene::count)] = {
     "25-tools-result",        "26-tools-in-game",       "27-debug-options",       "28-debug-files",
     "29-debug-in-game",       "30-about",               "31-play-update-available", "32-play-update-downloading",
     "33-play-update-failed",  "34-play-updated",        "35-about-updates",       "36-debug-test-saves",
-    "37-debug-local-test",
+    "37-debug-local-test",    "38-play-join-characters", "39-play-join-hologram",
 };
 }  // namespace
 

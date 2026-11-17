@@ -149,6 +149,8 @@ enum class Scene {
     about_updates,
     debug_test_saves,      // Debug > Test saves: a test save picked, the local test idle
     debug_local_test,      // Debug > Test saves: the local two-player test running, both games linked
+    play_join_characters,  // Join: the character list open
+    play_join_hologram,    // Join with Debug > Partner body = Hologram: the "you are sent as a hologram" note
     count
 };
 int SceneCount();

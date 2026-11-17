@@ -1,8 +1,8 @@
 #pragma once
 // Stranded Together launcher: the model behind the GUI shell. Adapted from
-// Diamond Dogs Together's LauncherModel, trimmed for milestone 1: no setup
-// steps, characters, HUD, saves or local two-window test; added the install
-// checks, the transport (Steam or LAN/UDP) and the solo echo test. The update
+// Diamond Dogs Together's LauncherModel, trimmed: no setup steps, HUD or saves;
+// added the install checks, the transport (Steam or LAN/UDP), the solo echo
+// test and the character choice (the real partner body). The update
 // check and self-update from GitHub Releases are DDT's (core/core_update.hpp).
 //
 // Every string is UTF-8 and player-facing. Threading: the GUI calls every
@@ -54,6 +54,9 @@ struct DebugOptions {
     bool verbose = false;          // verbose mod log
     bool debug_menu = true;        // the in-game debug menu
     int debug_menu_key = 9;        // its key: F1..F12 (the number)
+    // How your partner is drawn on your screen: true = partner_body=real (a solid character that
+    // copies their real animation; experimental), false = partner_body=holo (the hologram).
+    bool real_partner_body = true;
 };
 
 // The Advanced / LAN section (transport udp).
@@ -135,6 +138,7 @@ struct LocalTestView {
     std::string headline, detail;
     LinkView::Tone tone = LinkView::Tone::neutral;
     bool host_pad = false;         // the option: XInput pads on the host too (else keyboard + mouse only)
+    std::string guest_character = "sam";   // the guest game's my_character (the host game is always Sam)
 };
 
 class LauncherModel {
@@ -157,6 +161,11 @@ public:
     virtual void set_lan(const LanSettings& lan) = 0;
     virtual std::string player_name() const = 0;   // "" = the mod picks (Steam name)
     virtual void set_player_name(const std::string& name) = 0;
+    // Join: the character you appear as on the other player's screen (session.ini my_character,
+    // a key of core::OfferedCharacters(); anything else is stored as "sam"). The host is always Sam.
+    // On your own screen you are still Sam.
+    virtual std::string my_character() const = 0;
+    virtual void set_my_character(const std::string& key) = 0;
 
     // Sessions: each writes session.ini and starts the game through Steam.
     virtual bool host(std::string& code_out, std::string& error_out) = 0;
@@ -214,6 +223,7 @@ public:
     virtual bool reset_test_saves(std::string& error_out) = 0;
     virtual LocalTestView local_test() const = 0;
     virtual void set_local_test_host_pad(bool on) = 0;
+    virtual void set_local_test_guest_character(const std::string& key) = 0;   // persisted, like host_pad
     virtual bool start_local_test(std::string& error_out) = 0;
 
     virtual void tick() = 0;
