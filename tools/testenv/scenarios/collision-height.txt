@@ -1,0 +1,151 @@
+# Which capsule height stops the game offering Climb on the partner (docs/real-partner-body.md 11.5), one
+# hidden game: the echo partner pinned ahead; for heights 2.6 (default), 2.0, 3.2 and Sam's own (0, the v0.7
+# capsule) (action collision 5) Sam walks into it twice and presses A while pressed against it. The trace logs the distance and Sam's height every tick.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario collision-height -SeedSaves complete-100
+role echo
+timeout 360
+ini partner_body=real
+ini partner_character=sam
+ini echo_delay_s=3.0
+ini name=TagEcho
+waitready 90
+waitlog 120 \[overlay\] input attached
+waitlog 30 \[coll\] player collision on
+wait 25000
+?screenshot 01-title
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[sync\] partner body: real
+wait 3000
+pad none 700 ly=32767
+wait 1500
+action collision 3 2.5
+waitlog 10 \[coll\] on: the partner blocks Sam
+?waitlog 30 \[tags\] name tags use the game's menu font
+screenshot 02-tag
+action collision 2 200000
+# ---- height 2.6 m: straight at half stick + A, then turned at full stick + A
+action collision 5 2.6
+pad none 1800 ly=-32767
+wait 800
+action collision 3 2.5
+wait 1800
+pad none 1100 ly=16000 keep
+screenshot h2.6-1-contact
+pad A 200 ly=16000 keep
+wait 900
+screenshot h2.6-1-after-a
+pad none 0
+action collision 0
+pad none 1800 ly=-32767
+wait 800
+pad none 500 rx=32767
+wait 1000
+action collision 3 2.5
+wait 1800
+pad none 450 ly=32767 keep
+pad none 300 ly=24000 keep
+screenshot h2.6-2-contact
+pad A 200 ly=24000 keep
+wait 900
+screenshot h2.6-2-after-a
+pad none 0
+action collision 0
+# ---- height 2.0 m: straight at half stick + A, then turned at full stick + A
+action collision 5 2.0
+pad none 1800 ly=-32767
+wait 800
+action collision 3 2.5
+wait 1800
+pad none 1100 ly=16000 keep
+screenshot h2.0-1-contact
+pad A 200 ly=16000 keep
+wait 900
+screenshot h2.0-1-after-a
+pad none 0
+action collision 0
+pad none 1800 ly=-32767
+wait 800
+pad none 500 rx=32767
+wait 1000
+action collision 3 2.5
+wait 1800
+pad none 450 ly=32767 keep
+pad none 300 ly=24000 keep
+screenshot h2.0-2-contact
+pad A 200 ly=24000 keep
+wait 900
+screenshot h2.0-2-after-a
+pad none 0
+action collision 0
+# ---- height 3.2 m: straight at half stick + A, then turned at full stick + A
+action collision 5 3.2
+pad none 1800 ly=-32767
+wait 800
+action collision 3 2.5
+wait 1800
+pad none 1100 ly=16000 keep
+screenshot h3.2-1-contact
+pad A 200 ly=16000 keep
+wait 900
+screenshot h3.2-1-after-a
+pad none 0
+action collision 0
+pad none 1800 ly=-32767
+wait 800
+pad none 500 rx=32767
+wait 1000
+action collision 3 2.5
+wait 1800
+pad none 450 ly=32767 keep
+pad none 300 ly=24000 keep
+screenshot h3.2-2-contact
+pad A 200 ly=24000 keep
+wait 900
+screenshot h3.2-2-after-a
+pad none 0
+action collision 0
+# ---- height 0 m: straight at half stick + A, then turned at full stick + A
+action collision 5 0
+pad none 1800 ly=-32767
+wait 800
+action collision 3 2.5
+wait 1800
+pad none 1100 ly=16000 keep
+screenshot h0-1-contact
+pad A 200 ly=16000 keep
+wait 900
+screenshot h0-1-after-a
+pad none 0
+action collision 0
+pad none 1800 ly=-32767
+wait 800
+pad none 500 rx=32767
+wait 1000
+action collision 3 2.5
+wait 1800
+pad none 450 ly=32767 keep
+pad none 300 ly=24000 keep
+screenshot h0-2-contact
+pad A 200 ly=24000 keep
+wait 900
+screenshot h0-2-after-a
+pad none 0
+action collision 0
+action collision 3 3
+wait 2000
+screenshot 08-tag-near
+action name_tags 1
+wait 800
+screenshot 09-tag-self
+action name_tags 0
+action collision 3 0
+action collision 2 0
+pad START 150
+wait 3000
+screenshot 10-map-header
+action log_status
+quit

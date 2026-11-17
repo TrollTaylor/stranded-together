@@ -1114,6 +1114,15 @@ int RunGame(Args& a) {
             }
         } else {
             settings_text = st::sandbox::LowGraphicsSettingsCfg();
+            // "graphics low <fps>": the game's own frame limit raised (a frame-rate test)
+            if (r.scenario.low_graphics_fps != 30) {
+                const std::string n = "\"" + std::to_string(r.scenario.low_graphics_fps) + "\"";
+                for (const char* key : {"\"fps\" \"30\"", "\"limit_fps\" \"30\""}) {
+                    const std::string k = key;
+                    const std::size_t at = settings_text.find(k);
+                    if (at != std::string::npos) settings_text.replace(at, k.size(), k.substr(0, k.find(' ') + 1) + n);
+                }
+            }
         }
     }
     te::SessionOptions so;

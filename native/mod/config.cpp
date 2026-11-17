@@ -155,10 +155,20 @@ Config LoadConfig(const std::wstring& dir) {
             c.partner_collision = ParseBool(v);
         } else if (k == "partner_gear") {
             c.partner_gear = ParseBool(v);
+        } else if (k == "smooth_pose") {
+            c.smooth_pose = ParseBool(v);
         } else if (k == "partner_collision_layer") {
             const int layer = std::atoi(v.c_str());
-            if (layer == 9 || layer == 10) c.partner_collision_layer = layer;
-            else Log("[config] partner_collision_layer=%s ignored (9 or 10)", v.c_str());
+            if (layer == 9 || layer == 10 || layer == 25) c.partner_collision_layer = layer;
+            else Log("[config] partner_collision_layer=%s ignored (25, 10 or 9)", v.c_str());
+        } else if (k == "partner_collision_height") {
+            const float h = static_cast<float>(std::atof(v.c_str()));
+            if (h == 0.0f || (h >= 1.0f && h <= 6.0f)) c.partner_collision_height = h;
+            else Log("[config] partner_collision_height=%s ignored (0, or 1 to 6 m)", v.c_str());
+        } else if (k == "name_tag_font") {
+            if (v == "game" || v == "1") c.name_tag_game_font = true;
+            else if (v == "default" || v == "0") c.name_tag_game_font = false;
+            else Log("[config] name_tag_font=%s ignored (game or default)", v.c_str());
         } else {
             Log("[config] session.ini:%d unknown key '%s' ignored", lineno, k.c_str());
         }
@@ -187,9 +197,10 @@ Config LoadConfig(const std::wstring& dir) {
         PartnerBodyName(c.partner_body), c.partner_holo, c.partner_marker, c.partner_voice ? 1 : 0,
         c.partner_character.empty() ? "-" : c.partner_character.c_str(), c.my_character.empty() ? "-" : c.my_character.c_str(),
         c.self_character ? 1 : 0, c.pose_hook ? 1 : 0);
-    Log("[config] name_tags=%d name=%s", c.name_tags ? 1 : 0, c.player_name.empty() ? "- (Steam name)" : "set");
-    Log("[config] partner_collision=%d layer=%d", c.partner_collision ? 1 : 0, c.partner_collision_layer);
-    Log("[config] partner_gear=%d", c.partner_gear ? 1 : 0);
+    Log("[config] name_tags=%d font=%s name=%s", c.name_tags ? 1 : 0, c.name_tag_game_font ? "game" : "default", c.player_name.empty() ? "- (Steam name)" : "set");
+    Log("[config] partner_collision=%d layer=%d height=%.2f", c.partner_collision ? 1 : 0, c.partner_collision_layer,
+        static_cast<double>(c.partner_collision_height));
+    Log("[config] partner_gear=%d smooth_pose=%d", c.partner_gear ? 1 : 0, c.smooth_pose ? 1 : 0);
     return c;
 }
 

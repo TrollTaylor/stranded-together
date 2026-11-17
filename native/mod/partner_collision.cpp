@@ -58,6 +58,11 @@ constexpr float kMaxSlope = 1.0472f;   // 60 degrees, Humanoid::Init's default
 constexpr double kSeparatedM = 0.90;   // into the world only this far apart (2 x 0.40 m + margin)
 constexpr double kOverlapM = 0.55;     // out of the world when closer than this (a snap, lag): no depenetration push
 constexpr double kOverlapDzM = 1.8;    // ... and vertically closer than this
+// Sam's feet this far above the partner's origin: off (review: the tall capsule, 4 m from the partner's
+// feet, reaches Sam on a ledge, rock or vehicle 1.65-4 m above the partner, where the v0.7 1.65 m capsule
+// never could: an invisible pillar or a push). Below this the 1.65 m capsule overlapped Sam's feet the
+// same way; the climb it defeats starts from the partner's own level.
+constexpr double kSamAboveM = 1.6;
 constexpr double kFastMps = 8.0;       // the partner rides something
 constexpr double kJumpM = 2.0;         // one tick: a snap or teleport
 constexpr double kStaleMs = 500.0;     // no remote sample for this long
@@ -289,12 +294,104 @@ void LogSelfChecks(std::uintptr_t sam) {
     const std::uintptr_t mover = Q(c + kCapMover);
     const std::uintptr_t mvt = mover ? Q(mover) : 0;
     Log("[coll] self check: Sam's capsule %p type %d layer %d group %d in world %u disable %d mover %s; resource %s radius %.2f m; "
-        "layer matrix (8,9)=%d (8,10)=%d (9,10)=%d (8,8)=%d",
+        "layer matrix (8,9)=%d (8,10)=%d (9,10)=%d (8,8)=%d (8,25)=%d (8,14)=%d (8,34)=%d",
         reinterpret_cast<void*>(c), type, layer, group, in, dis,
         mvt == g_base + kMoverProxyVt ? "proxy" : mvt == g_base + kMoverRigidVt ? "rigid body" : "?", rn ? rn : "?", radius,
-        MatrixBit(8, 9), MatrixBit(8, 10), MatrixBit(9, 10), MatrixBit(8, 8));
+        MatrixBit(8, 9), MatrixBit(8, 10), MatrixBit(9, 10), MatrixBit(8, 8), MatrixBit(8, 25), MatrixBit(8, 14), MatrixBit(8, 34));
 }
 
+// The capsule's layer (docs/real-partner-body.md 11.5): 10 "Humanoid blocker" by default. Its row in the
+// live layer matrix is logged once. Layers 9 and 25 are test settings: in hidden runs 25 did not block Sam
+// reliably (he walked through it on 2 of 4 approaches) and the game offered Climb on 9, 10 and 25 alike, so
+// the layer does not decide climbing; the capsule's height does (TallResource below).
+int g_layer_picked = 0;  // 0 not yet
+
+int PickLayer() {
+    if (g_layer_picked) return g_layer_picked;
+    g_layer_picked = g_layer;
+    Log("[coll] capsule layer %d; matrix: (%d,8)=%d (%d,9)=%d (%d,14)=%d (%d,16)=%d (%d,34)=%d (%d,17)=%d (%d,31)=%d", g_layer, g_layer,
+        MatrixBit(g_layer, 8), g_layer, MatrixBit(g_layer, 9), g_layer, MatrixBit(g_layer, 14), g_layer, MatrixBit(g_layer, 16), g_layer,
+        MatrixBit(g_layer, 34), g_layer, MatrixBit(g_layer, 17), g_layer, MatrixBit(g_layer, 31));
+    return g_layer_picked;
+}
+
+// ---------------------------------------------------------------- a capsule too tall to climb
+// Sam climbs any obstacle up to about his own height: on the partner's 1.65 m capsule (Sam's own mover
+// resource) the game offered Climb and Sam climbed onto it, on every layer. The partner's capsule gets a
+// private copy of Sam's PhysicsCharacterMoverResource with a larger StandingHeight instead, which
+// Capsule::Configure turns into the mover's height (0x141C31930: mover vt+0x268(..., StandingHeight - 0.05)).
+// The copy is plain data (RTTI: vtable, ObjectUUID, refcount at +0x18, floats, the material Ref at +0x60):
+// its refcount is set far above anything the game adds or releases, so the release at 0x1419F5E50 never
+// frees it; the material it points to gets one reference of ours. Copies live for the session (at most
+// kMaxTall, one page).
+constexpr std::size_t kMoverResSize = 0x68;  // RTTI size of PhysicsCharacterMoverResource
+constexpr std::uintptr_t kMoverResRefcount = 0x18, kMoverResStanding = 0x30, kMoverResMaterial = 0x60;
+constexpr std::uint32_t kRefcountMask = 0x3FFFFF;  // the low 22 bits count (0x1419F5E50)
+constexpr std::uint32_t kOurRefcount = 0x200000;
+constexpr int kMaxTall = 16;
+struct Tall {
+    std::uintptr_t src = 0;
+    float height = 0;
+    std::uintptr_t copy = 0;
+};
+Tall g_tall[kMaxTall];
+int g_tall_n = 0;
+std::uint8_t* g_tall_page = nullptr;
+float g_height = 4.0f;  // partner_collision_height (0: Sam's own resource)
+
+// The resource to configure the partner capsule with: Sam's own, or a copy of it with StandingHeight =
+// height. 0 when Sam's resource does not check out.
+std::uintptr_t TallResource(std::uintptr_t sam_res, float height) {
+    if (!sam_res) return 0;
+    const std::uintptr_t rtti = mem::RttiOf(sam_res);
+    const char* rn = rtti ? mem::RttiName(rtti) : nullptr;
+    if (!rn || std::strcmp(rn, "PhysicsCharacterMoverResource") != 0) return 0;
+    float standing = 0;
+    if (!Rd(sam_res + kMoverResStanding, standing) || !std::isfinite(standing)) return 0;
+    if (!(height > standing + 0.05f)) return sam_res;  // off, or not taller than Sam's own
+    alignas(16) std::uint8_t raw[kMoverResSize];
+    if (!mem::Read(sam_res, raw, sizeof(raw))) return 0;
+    // A copy is reused only while the source still holds the same bytes (review: after a reload a new
+    // resource can sit at the old address): everything but the height and the refcount compared.
+    for (int i = 0; i < g_tall_n; ++i) {
+        if (g_tall[i].src != sam_res || std::fabs(g_tall[i].height - height) >= 0.001f) continue;
+        const auto* c = reinterpret_cast<const std::uint8_t*>(g_tall[i].copy);
+        bool same = true;
+        for (std::size_t k = 0; k < sizeof(raw) && same; ++k) {
+            const bool skip = (k >= kMoverResStanding && k < kMoverResStanding + 4) || (k >= kMoverResRefcount && k < kMoverResRefcount + 4);
+            same = skip || c[k] == raw[k];
+        }
+        if (same) return g_tall[i].copy;
+    }
+    if (g_tall_n >= kMaxTall) {
+        Log("[coll] tall capsule: %d resource copies made already; Sam's own height is used", kMaxTall);
+        return sam_res;
+    }
+    std::uintptr_t mat = 0;
+    std::memcpy(&mat, raw + kMoverResMaterial, sizeof(mat));
+    std::uint32_t mat_count = 0;
+    if (mat && (!Rd(mat + kMoverResRefcount, mat_count) || (mat_count & kRefcountMask) == 0 || (mat_count & kRefcountMask) > 0x100000)) {
+        Log("[coll] tall capsule: the mover resource's material %p does not read as a live resource; Sam's own height is used",
+            reinterpret_cast<void*>(mat));
+        return sam_res;
+    }
+    if (!g_tall_page) {
+        g_tall_page = static_cast<std::uint8_t*>(VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+        if (!g_tall_page) return sam_res;
+    }
+    std::uint8_t* dst = g_tall_page + static_cast<std::size_t>(g_tall_n) * 0x80;
+    std::memcpy(dst, raw, sizeof(raw));
+    std::memcpy(dst + kMoverResStanding, &height, sizeof(height));
+    std::uint32_t rc = 0;
+    std::memcpy(&rc, raw + kMoverResRefcount, sizeof(rc));
+    rc = (rc & ~kRefcountMask) | kOurRefcount;
+    std::memcpy(dst + kMoverResRefcount, &rc, sizeof(rc));
+    if (mat) InterlockedIncrement(reinterpret_cast<volatile LONG*>(mat + kMoverResRefcount));  // the copy's reference
+    g_tall[g_tall_n++] = Tall{sam_res, height, reinterpret_cast<std::uintptr_t>(dst)};
+    Log("[coll] tall capsule: a copy of Sam's mover resource with standing height %.2f m (his own %.2f m)", static_cast<double>(height),
+        static_cast<double>(standing));
+    return reinterpret_cast<std::uintptr_t>(dst);
+}
 void SetState(const char* s, double d) {
     if (std::strcmp(s, g_state) == 0) return;
     g_state = s;
@@ -358,10 +455,11 @@ bool Attach(std::uintptr_t e, std::uintptr_t sam, const game::WorldTransform& wt
         Log("[coll] attach: the capsule is not in the body's component list after AddComponent");
         return false;
     }
+    const std::uintptr_t res = TallResource(mover_res, g_height);
     Cfg cfg{};
-    cfg.mover_res = mover_res;
+    cfg.mover_res = res ? res : mover_res;
     cfg.type = g_type;
-    cfg.layer = g_layer;
+    cfg.layer = PickLayer();
     cfg.group = kGroup;
     cfg.mask = 0x1F;
     cfg.max_slope = kMaxSlope;
@@ -383,11 +481,14 @@ bool Attach(std::uintptr_t e, std::uintptr_t sam, const game::WorldTransform& wt
         Log("[coll] attach: SetTransform faulted");
         return false;
     }
-    float radius = 0;
-    Rd(mover_res + kMoverResRadius, radius);
-    Log("[coll] capsule attached to the partner body %p: component %p, %s mover %p on layer %d, group %d, radius %.2f m, in world %u",
+    float radius = 0, height = 0;
+    Rd(cfg.mover_res + kMoverResRadius, radius);
+    Rd(cfg.mover_res + kMoverResStanding, height);
+    std::int32_t live_layer = -1;
+    Rd(comp + kCapLayer, live_layer);
+    Log("[coll] capsule attached to the partner body %p: component %p, %s mover %p on layer %d, group %d, radius %.2f m, height %.2f m, in world %u",
         reinterpret_cast<void*>(e), reinterpret_cast<void*>(comp), g_type == 1 ? "proxy" : "rigid-body", reinterpret_cast<void*>(mover),
-        g_layer, kGroup, radius, in);
+        live_layer, kGroup, radius, static_cast<double>(height), in);
     return in == 1;
 }
 
@@ -413,11 +514,12 @@ void Init(const Config& config) noexcept {
     g_cfg = config;
     g_on = config.partner_collision;
     g_layer = config.partner_collision_layer;
+    g_height = config.partner_collision_height;
     if (!config.partner_collision) Log("[coll] player collision off (partner_collision=0)");
     else
         Log("[coll] player collision on: the partner's real body gets the game's character capsule (layer %d); the hologram and "
-            "the self view never do",
-            g_layer);
+            "the self view never do; capsule height %.2f m",
+            g_layer, static_cast<double>(g_height));
 }
 
 void Tick(game::Entity* local, bool local_active, game::Entity* body_e, bool partner_in_vehicle, double remote_age_ms, double now) noexcept {
@@ -485,6 +587,7 @@ void Tick(game::Entity* local, bool local_active, game::Entity* body_e, bool par
     else if (partner_in_vehicle) why = "off: the partner is in a vehicle";
     else if (g_b.speed > kFastMps) why = "off: the partner moves fast (vehicle?)";
     else if (now < g_b.hold_until_ms) why = "off: the partner jumped (snap or teleport)";
+    else if (-dz > kSamAboveM) why = "off: Sam is above the partner (over 1.6 m)";
     else if (!SamCapsuleInWorld(SamCapsule(sam))) why = "off: Sam's own capsule is not in the world (ladder, zipline, ...)";
     else {
         const bool seq = now >= next_seq_ms;
@@ -565,8 +668,8 @@ void Tick(game::Entity* local, bool local_active, game::Entity* body_e, bool par
         g_trace_request_ms = 0;
     }
     if (now < g_trace_until_ms)
-        Log("[coll] trace d=%.3f dz=%.2f sam=(%.3f, %.3f) step=%.4f body=(%.3f, %.3f) speed=%.2f %s", d, dz, sw.pos.x, sw.pos.y, sam_step,
-            bw.pos.x, bw.pos.y, g_b.speed, on ? "on" : "off");
+        Log("[coll] trace d=%.3f dz=%.2f sam=(%.3f, %.3f, z %.3f) step=%.4f body=(%.3f, %.3f, z %.3f) speed=%.2f %s", d, dz, sw.pos.x,
+            sw.pos.y, sw.pos.z, sam_step, bw.pos.x, bw.pos.y, bw.pos.z, g_b.speed, on ? "on" : "off");
     if (now >= g_next_stats_ms) {
         if (g_next_stats_ms > 0 && g_min_d < 5.0)
             Log("[coll] 1 s: min distance %.3f m, capsule on %u of %u ticks, enables %u, disables %u, partner speed %.2f m/s", g_min_d,
@@ -603,7 +706,7 @@ void EmergencyStop() noexcept {
 namespace st::game {
 
 // action collision <op> [a] [b]: 0 log, 1 <0/1> off/on, 2 <ms> per-tick distance trace,
-// 3 <m> pin the partner m ahead of Sam (0 = follow again), 4 <layer> <type> reconfigure.
+// 3 <m> pin the partner m ahead of Sam (0 = follow again), 4 <layer> <type> reconfigure, 5 <height m> the capsule's height.
 bool CollisionCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept {
     using namespace st::collision;
     char text[160] = {};
@@ -633,14 +736,15 @@ bool CollisionCommand(int op, const double (&v)[3], char* msg, std::size_t cap) 
             std::snprintf(text, sizeof(text), "collision trace %.0f ms", v[1]);
             break;
         case 3:
-            return sync::DebugPinPartner(v[1], msg, cap);
+            return sync::DebugPinPartner(v[1], v[2], msg, cap);
         case 4: {
             const int layer = static_cast<int>(v[1]), type = static_cast<int>(v[2]);
-            if ((layer != 9 && layer != 10) || (type != 0 && type != 1)) {
-                if (msg && cap) std::snprintf(msg, cap, "collision 4 <layer 9|10> <type 0|1>");
+            if ((layer != 9 && layer != 10 && layer != 25) || (type != 0 && type != 1)) {
+                if (msg && cap) std::snprintf(msg, cap, "collision 4 <layer 25|10|9> <type 0|1>");
                 return false;
             }
             g_layer = layer, g_type = type;
+            g_layer_picked = layer;
             if (g_b.comp && g_checked > 0 && CompValid(g_b.e, g_b.comp)) {
                 Cfg cfg{};
                 cfg.mover_res = Q(g_b.comp + kCapMoverRes);
@@ -651,8 +755,33 @@ bool CollisionCommand(int op, const double (&v)[3], char* msg, std::size_t cap) 
             std::snprintf(text, sizeof(text), "collision layer %d type %d", layer, type);
             break;
         }
+        case 5: {
+            // Test op: the capsule's standing height in m (0 = Sam's own resource), applied now.
+            const float h = static_cast<float>(v[1]);
+            if (!(h == 0.0f || (h >= 1.0f && h <= 6.0f))) {
+                if (msg && cap) std::snprintf(msg, cap, "collision 5 <height m 1..6, 0 = Sam's own>");
+                return false;
+            }
+            g_height = h;
+            Entity* local = nullptr;
+            TryGetLocalPlayer(&local);
+            const std::uintptr_t sam_cap = local ? SamCapsule(reinterpret_cast<std::uintptr_t>(local)) : 0;
+            const std::uintptr_t sam_res = sam_cap ? Q(sam_cap + kCapMoverRes) : 0;
+            const std::uintptr_t res = TallResource(sam_res, h);
+            if (g_b.comp && res && g_checked > 0 && CompValid(g_b.e, g_b.comp)) {
+                Cfg cfg{};
+                cfg.mover_res = res;
+                cfg.type = g_type, cfg.layer = PickLayer(), cfg.group = kGroup, cfg.mask = 0x1F, cfg.max_slope = kMaxSlope;
+                const bool ok = CallConfigure(g_b.comp, &cfg);
+                float sh = 0;
+                Rd(res + kMoverResStanding, sh);
+                Log("[coll] reconfigured: standing height %.2f m (%s)", static_cast<double>(sh), ok ? "ok" : "faulted");
+            }
+            std::snprintf(text, sizeof(text), "collision height %.2f m", static_cast<double>(h));
+            break;
+        }
         default:
-            if (msg && cap) std::snprintf(msg, cap, "collision: 0 log, 1 off/on, 2 trace ms, 3 pin m, 4 layer type");
+            if (msg && cap) std::snprintf(msg, cap, "collision: 0 log, 1 off/on, 2 trace ms, 3 pin m, 4 layer type, 5 height m");
             return false;
     }
     if (msg && cap) std::snprintf(msg, cap, "%s", text);

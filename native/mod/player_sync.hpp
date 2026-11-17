@@ -35,6 +35,7 @@ bool DebugLogPartner() noexcept;
 bool DebugPartnerPosition(double (&out)[3]) noexcept;  // live partner entity, else newest remote sample
 // Collision tests (action collision 3): the partner body stands still `dist_m` ahead of Sam (along
 // the camera's forward, else his last walking direction), facing him, holding its last pose; 0 = it follows the stream again.
-bool DebugPinPartner(double dist_m, char* msg, std::size_t cap) noexcept;
+// dz_m: the partner this far above (+) or below (-) Sam (tests: Sam on a ledge above it), -10..10.
+bool DebugPinPartner(double dist_m, double dz_m, char* msg, std::size_t cap) noexcept;
 
 }  // namespace st::sync

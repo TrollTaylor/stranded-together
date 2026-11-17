@@ -23,13 +23,19 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
   (porter, silver or gold). A guest who picked another character appears as it on their own
   screen too. If the real character cannot be shown, the partner appears as a hologram
   instead. See [docs/real-partner-body.md](docs/real-partner-body.md).
-- The partner's name floats above their head (your co-op name, or your Steam name).
+- The partner's name floats above their head (your co-op name, or your Steam name), in the
+  game's own menu font, read from your installed game (Segoe UI for characters it lacks).
 - Players cannot walk through each other: on foot, your partner's body stops you like
-  another character does.
-- **Experimental:** the backpack and the delivery cases each player carries show on their
-  character on the other screen, and on your own character when you appear as one.
-- Not yet: equipment and weapons on the backpack, cargo colours, the Odradek, facial
-  animation, vehicles, world/BT/mission sync.
+  another character does. You cannot climb onto your partner.
+- The other player's movement stays smooth at high frame rates: both bodies get a new pose
+  every frame (tested up to about 113 fps).
+- **Experimental:** what each player carries shows on their character on the other screen:
+  the backpack with its bag and pouches, stowed weapons, shoulder shields, hanging boots,
+  delivery cases, the BB pod (a stand-in model) and Sam's exoskeleton parts (on a Sam body).
+  When you appear as another character, your own real gear shows on you.
+- Not yet: weapons in hand, the Odradek, the cuff device, hats and glasses (untested),
+  gear colours, the exoskeleton on non-Sam characters, facial animation, vehicles,
+  world/BT/mission sync.
 
 ## Download
 

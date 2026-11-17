@@ -54,16 +54,18 @@ real saves unchanged and 0 cloud uploads. Run folders are under `build-testenv\r
 A composite of these frames is in the session scratchpad (`real_body_evidence.jpg`).
 
 What is not right yet:
-- Gear (section 12): the bodies carry the backpack frame and delivery cases, but not the rain cover,
-  pouches, equipment, Odradek or BB pod, and the case colours are not matched.
+- Gear (section 12): the bodies carry the player's gear entities (everything on the backpack, shields,
+  hanging boots, the pod as a prop) and, on a Sam body, Sam's gear parts; not the weapon in hand, the
+  Odradek or the cuff device, and on another character not the exoskeleton.
 - The faces do not move: no facial rig is driven.
 - A female body plays Sam's male motion.
 - Collision: the partner's real body now blocks the local player (section 11).
 
 Hook counters in every run were `rej=0 torn=0 aba=0 wpm=0 faults=0` ([pose] lines). The check of the
 partner's committed pose against the published pose is 0.00° while standing still. While moving it is up
-to 4-10° max: the publisher runs at the tick rate (about 125 Hz) and the game updates the body at 60 Hz,
-so the comparison is against a slightly newer frame.
+to 4-10° max: the publisher runs at the tick rate (about 125 Hz) and the game updated the body at 60 Hz
+(v0.7), so the comparison is against a slightly newer frame. Since v0.8 the bodies are updated every
+frame up to 240 fps and the partner's pose is interpolated in its own update (section 3.5).
 
 ## 2. The body: cutscene actors, loaded by path and GUID
 
@@ -242,6 +244,155 @@ during the review); the remaining risk is the forced call overlapping an entity-
   its call site in the spawner constructor, the String constructor and destructor, the manager vtable
   `+0x10`. A mismatch disables the real body; the hologram stays.
 
+### 3.5 Smooth above 60 fps (`session.ini smooth_pose`, default on)
+
+**The problem** [V: decompiles, game data, run `20261117-144357-smooth-echo`]:
+- The game updates every entity at the rate its resource asks for (`EUpdateFrequency`, entity `+0x204`:
+  0 = 9.99 Hz ... 3 = 59.94 Hz, 4 = 120, 5 = 144, 6 = 240 Hz). Every cutscene body in `body_table.cpp` and
+  every gear prop asks for 59.94 Hz (some props 14.99 Hz: 2 of 15 in that run); the player asks for 240 Hz.
+- The detour poses a body only when the game updates it. With v0.7 the partner and self bodies got
+  60 poses a second whatever the frame rate: at 110 fps 45 % of the frames while running repeated the
+  last pose (a 1-1-0-1-0 cadence), and the limbs' angular speed jumped between 0 and twice the real
+  value (jerk 1.8 against Sam's own 0.24, see the meter below).
+- Why 59.94 Hz is a ceiling: the scheduler (World `[0x147BC4E70]+0x130`, 0x28-byte groups) counts each
+  group down by the frame time (`0x1423FC300`) and sends `MsgEntityUpdate` to the due ones; SkinnedModel's
+  handler (vtable `+0x58` = `0x14239D9B0` -> `0x1423A6670`) then animates. The interval is the slower of
+  the global cap `[0x144B0CD41]` (6 on PC, set in `0x14262D330`) and the entity's own value.
+
+**The fix: three parts, bits of the smooth mask** (`smooth_pose=1` = mask 7, `0` = mask 0 = the v0.7
+behaviour; the `smooth 1 <mask>` test action switches them at run time):
+1. **240 Hz updates (bit 1, `kSmoothBoost`).** The game's own `Entity::SetUpdateFrequency 0x14235F5A0
+   (Entity*, u8)`, the setter it uses to boost carried cargo to 240 Hz (`0x142CBF860`) and on the player
+   (`0x143740100`). It takes the global SRW lock `0x147BC4828`, writes `+0x204` and moves the entity to the
+   group of its new interval (`0x1423FC0E0` on World `+0x130`; children follow).
+   - Byte-checked before the first call (the whole prologue up to the regroup call, with the lock, World
+     and regroup targets resolved and compared), logged once:
+     `[smooth] update-frequency setter verified (ds.exe+0x235F5A0: lock, World, regroup call)`.
+   - Called from the tick (game thread), only on entities we spawned, only while Sam is up: a live body
+     (`DriveFreq`, at most 8 tries per body) and, every 250 ms, each published gear prop (vtable + GUID
+     checked first; its own value is remembered, so clearing the bit puts it back). Read back and logged:
+     `[real] body update frequency 3 (59.94 Hz) -> 6 (240 Hz), scheduler group 13 -> 55`.
+   - A fault turns it off for the session (`[smooth] SetUpdateFrequency FAULTED ...`). 69 calls in the
+     four runs below, 0 faults, no error.txt.
+   - Effect: the bodies and props are updated every frame up to 240 fps (above 240 fps Sam repeats too).
+     The tick's forced update (section 3.3) now fires only for a body the game stops updating.
+   - Accepted risk [I]: whether the tick can overlap the scheduler's own frame function is not known; the
+     setter takes the game's lock, the call is made once per entity, and the game itself calls it from
+     entity jobs.
+2. **Interpolation in the body's own update (bit 2, `kSmoothDetourInterp`).** Each tick
+   `SamplePublish` also publishes, in a seqlock, the ring frames around the play time (up to 3, keyed on
+   the sender's timeline), the play time and the QPC time it was taken at. The partner body's detour
+   interpolates at `play = play_ref + (QPC now - QPC ref)`: the pose belongs to the moment the game
+   updates the body, not to the tick that may have run before or after it. Pure math (nlerp with the
+   hemisphere fix, root and pelvis lerped), no lock, log or allocation. It never extrapolates: past the
+   newest frame it holds it (counted as `hold`). The transform stays in the tick. Debug mirror bodies keep
+   the old path.
+3. **Capture-time stamps (bit 4, `kSmoothCaptureStamp`).** STJ1's `sender_ms` is now the QPC time at
+   which the game computed the sent pose (`realbody::CaptureFrame`), up to a frame before the send tick.
+   The receiver spaces the frames as they really were. Same field, same encoding (no format change; mixed
+   builds are refused at the handshake anyway, section 4).
+
+**Not changed, measured instead:**
+- **The self view's lag.** The self body shows Sam's pose of the previous frame (section 8.2). At 60 fps
+  and above the age was one frame in 99-100 % of the writes (`capture age ... ~1 frame`), so the lag is
+  constant, not jitter. At 37-40 fps 15-25 % of the writes were same-frame, with no repeated frame and a
+  jerk below Sam's own; not worth the history buffer the research proposed.
+- **The send rate stays 30 Hz.** At 60 Hz (run `20261117-145602-smooth-echo-60hz`, `ini send_hz=60`) the
+  echo partner's error against Sam fell from 0.21-0.37° to 0.14-0.16° (average of hips, both thighs and
+  the right forearm while running; max 1.2-1.5° instead of 1.7-2.2°), while its jerk stayed at Sam's
+  level either way; it doubles the bandwidth (594 B per pose: 17.8 KB/s each way at 30 Hz, 35.6 KB/s at
+  60 Hz). `send_hz=60` remains a setting for players who want it.
+
+**The meter (`[smooth]` line, every second in hidden tests, one second in ten otherwise).** Measured in
+the tick, once per presented frame, from fault-free reads: four joints (hips, both thighs, right forearm)
+of each body's current pose and of Sam's newest capture.
+- `fps` (overlay presents), `ticks`, frame time range, the frame cap and mask in force.
+- Per body: `upd` model updates, `app` pose writes, `writes/frame 0:1:2+` (ticks with no new write, one,
+  more), `moving` frames, `new` and `repeat` (exactly the same pose again), `stutter` (a step under 10 %
+  of the running mean), `jerk` = mean |w(k) - w(k-1)| / mean w with w the joints' angular speed (step /
+  frame time): 0 for perfectly even motion, about 1-2 when every other frame repeats.
+- Partner: `interp`, `hold` and `torn` of the detour interpolation, `latency` = now - the play time of the
+  pose on screen, and in echo (the partner replays our own Sam, `partner_character=sam`) `err`: the angle
+  between the body's joints and Sam's captured joints at the same play time.
+- Self: the capture age per write in frames.
+- `Sam`: the same for Sam's own captures (the reference: what the game itself shows), `freq` = `+0x204`.
+- `smooth 3 <n>` logs the next n frames one by one (`[smooth] seq`: frame time, each body's and Sam's step
+  in degrees, pose writes).
+
+**Evidence** (hidden, `-SeedSaves complete-100`, all pass, exit 0, no error.txt, real saves unchanged,
+0 uploads; `[pose]` rej/torn/aba/wpm/faults 0). Averages over the seconds in which Sam ran the whole second;
+"repeat" = share of moving frames that repeated the pose; jerk of Sam's own captures in brackets.
+
+Run `20261117-144357-smooth-echo` (one game: echo partner 1 s behind, self view Fragile; no graphics
+preset, 2560x1440; uncapped it reaches about 110 fps here; `01-mask0-120-towards.png` shows Fragile with
+Sam's gear running towards the camera and the echo partner's tag behind her):
+
+| mask | cap | fps | partner upd/s | partner repeat | partner jerk | echo err avg / max | latency | self upd/s | self repeat | self jerk |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 0 (v0.7) | 30 | 38.1 | 37.1 | 4.4 % | 0.95 (0.88) | 5.42° / 11.3° | 1026.7 ms | 36.4 | 5.8 % | 0.85 |
+| 0 | 60 | 76.1 | 58.8 | 23.0 % | 1.00 (0.40) | 1.98° / 5.7° | 1015.6 ms | 58.8 | 23.0 % | 0.94 |
+| 0 | 120 | 110.3 | 60.1 | 45.8 % | 1.79 (0.24) | 1.17° / 4.5° | 1013.3 ms | 60.1 | 45.8 % | 1.79 |
+| 0 | none | 108.7 | 60.2 | 45.1 % | 1.80 (0.24) | 1.08° / 3.1° | 1013.3 ms | 60.2 | 44.9 % | 1.77 |
+| 1 (boost) | 120 | 109.0 | 109.6 | 0 % | 0.22 (0.24) | 1.13° / 3.6° | 1009.2 ms | 109.6 | 0 % | 0.27 |
+| 1 | none | 110.6 | 111.2 | 0 % | 0.20 (0.21) | 1.03° / 3.4° | 1009.1 ms | 111.2 | 0 % | 0.26 |
+| 7 (all) | 30 | 36.8 | 37.2 | 0 % | 0.87 (0.82) | 0.21° / 2.2° | 1025.3 ms | 37.2 | 0 % | 0.66 |
+| 7 | 60 | 77.3 | 78.0 | 0 % | 0.40 (0.44) | 0.32° / 1.7° | 1011.4 ms | 78.0 | 0 % | 0.49 |
+| 7 | 120 | 112.6 | 113.0 | 0 % | 0.14 (0.22) | 0.37° / 1.8° | 1007.6 ms | 113.0 | 0 % | 0.26 |
+| 7 | none | 111.6 | 111.9 | 0 % | 0.15 (0.24) | 0.37° / 1.9° | 1007.6 ms | 111.9 | 0 % | 0.28 |
+
+Run `20261117-145300-smooth-two-games` (host Sam, guest Fragile with self view, both walking at once;
+`graphics low` with the game's own fps limit raised to 120 through `-SettingsCfg`; two games reach about
+80 fps each on this PC, with 10-24 % GPU and up to 30 % of all CPUs each, so the limit is CPU time
+[I]; the run's screenshots do not show the other player, the numbers are from the counters):
+
+| mask | cap | host fps | host sees guest: upd/s, repeat, jerk | guest fps | guest sees host: upd/s, repeat, jerk | guest self: upd/s, repeat, jerk | latency |
+|---|---|---|---|---|---|---|---|
+| 0 | 30 | 38.1 | 34.8, 10.9 %, 0.99 (0.80) | 38.6 | 36.0, 9.6 %, 0.88 (0.83) | 36.0, 8.2 %, 0.91 | 127 ms |
+| 0 | 60 | 74.8 | 60.1, 20.3 %, 0.89 (0.28) | 73.8 | 60.3, 19.0 %, 0.82 (0.28) | 60.3, 18.9 %, 0.90 | 116 ms |
+| 0 | none | 78.5 | 60.4, 23.5 %, 0.99 (0.24) | 79.2 | 60.2, 24.2 %, 1.02 (0.28) | 60.2, 24.3 %, 1.05 | 116 ms |
+| 7 | 30 | 38.7 | 39.3, 0 %, 0.85 (0.92) | 39.0 | 39.7, 0 %, 0.86 (0.87) | 39.7, 0 %, 0.70 | 124 ms |
+| 7 | 60 | 75.4 | 76.0, 0 %, 0.21 (0.27) | 72.8 | 73.2, 0 %, 0.24 (0.28) | 73.2, 0 %, 0.31 | 111 ms |
+| 7 | none | 79.3 | 79.8, 1.0 %, 0.17 (0.25) | 81.9 | 82.2, 0 %, 0.19 (0.27) | 82.2, 0 %, 0.30 | 110 ms |
+
+(The host's 1 % at mask 7 / none: one second in which the guest was quitting.) In the same run with the
+game's own limit at 30 (run `20261117-144836-smooth-two-games`, plain `graphics low`) both games stayed at
+30.0 fps whatever the frame cap, so the two masks looked the same (0 % repeats, jerk 0.2): at 30 fps
+the 60 Hz body never repeated a frame. That is why the v0.7 tests never showed it.
+
+Frame sequences (`smooth 3 240` while running towards the camera at the 120 cap, run `144357`): mask 0
+alternates `0.0 / 10.0 / 0.0 / 9.4 ...` degrees per frame on both bodies while Sam moves `5.7 / 7.5 / 7.8 /
+13.3 ...`; mask 7 moves `4.2 / 4.7 / 4.3 / 4.6 ...` on the partner and, on the self body, exactly Sam's
+step of the frame before. CPU was the same with and without the boost (33 % of all CPUs uncapped, 30 %
+at the 120 cap, `resources.csv`).
+
+Repeated with the final build (run `20261117-150148-smooth-echo`): mask 0 again 60 updates/s and 39-44 %
+repeats at 98-108 fps (jerk 1.5-1.8), mask 7 again 0 % repeats at every rate (jerk 0.13-0.14 at
+110 fps, echo error 0.21-0.40° average), 17 setter calls, 0 faults.
+
+The "cap" column is the frame cap asked for (`smooth 2 <fps>`, the mod's `frame_cap` at run time); it is
+loose: 30 gave 37-39 fps and 60 gave 73-78 fps (the "fps" column is measured). Not investigated [I: it
+waits only on ticks that see a new present count].
+
+Final build, two games (run `20261117-154136-smooth-two-games`, `graphics low 120`, the integrated v0.8
+code with gear, collision and font): the games reached 64-69 fps uncapped this time (Sam moving the whole
+second; Sam's own jerk in brackets):
+
+| mask | cap | host fps | host sees guest: upd/s, repeat, jerk | guest fps | guest sees host: upd/s, repeat, jerk | guest self: upd/s, repeat, jerk |
+|---|---|---|---|---|---|---|
+| 0 | 30 | 37.5 | 35.6, 6.9 %, 0.67 (0.59) | 39.0 | 39.1, 1.8 %, 0.59 (0.55) | 38.4, 3.4 %, 0.61 |
+| 0 | 60 | 63.5 | 58.2, 9.1 %, 0.57 (0.31) | 65.3 | 60.1, 10.2 %, 0.54 (0.28) | 59.7, 9.6 %, 0.55 |
+| 0 | none | 64.4 | 58.2, 10.0 %, 0.57 (0.30) | 66.5 | 59.0, 11.7 %, 0.62 (0.28) | 59.4, 11.5 %, 0.60 |
+| 7 | 30 | 36.8 | 37.3, 0 %, 0.55 (0.58) | 38.5 | 39.1, 0 %, 0.54 (0.56) | 39.1, 0 %, 0.58 |
+| 7 | 60 | 67.7 | 68.2, 0 %, 0.22 (0.28) | 67.1 | 67.6, 0 %, 0.21 (0.27) | 67.6, 0 %, 0.26 |
+| 7 | none | 69.0 | 70.1, 0 %, 0.25 (0.31) | 68.2 | 68.7, 0.3 %, 0.26 (0.29) | 68.7, 0 %, 0.29 |
+
+Latency 112-128 ms; setter 20 calls, 0 faults; `[pose]` rej / torn / aba / faults 0. The self body's jerk
+is slightly above Sam's in some rows of the one-game table (0.47-0.49 vs 0.41-0.44 at the 60 cap): it is
+one frame behind Sam (8.2), so "equal or below Sam's" holds for the partner, not always for the self body.
+
+Scenarios: `smooth-echo` (one game), `smooth-two-games` (two games; `graphics low 120` raises the game's
+own limit, docs/hidden-testing.md).
+
 ## 4. Wire format and interpolation (`pose_wire`, ctest `st_net_tests`)
 
 **STJ1 frame.** It is 497 bytes for 77 joints, 505 with the outfit block (section 9):
@@ -284,7 +435,9 @@ during the review); the remaining risk is the forced call overlapping an entity-
 
 **Echo.** Sam's captured pose goes through encode and decode every send tick (30 Hz). It is pushed into a
 256-entry ring keyed on the transform ring's unwrapped sender time. It is sampled at the same play time as
-the transform (`Ring::PlayTime`) and nlerped per joint, with the hemisphere fix.
+the transform (`Ring::PlayTime`) and nlerped per joint, with the hemisphere fix. Since v0.8 (section 3.5)
+`sender_ms` of STJ1 is the time Sam's pose was captured (QPC, up to a frame before the send tick), and the
+partner body's own model update interpolates at its own moment.
 
 **Network (host and guest).** Run between two hidden games (section 5, runs 20261116-193151 and
 20261116-193649): 565 B of payload per datagram (STP1 + STJ1 frames), 16.95 KB/s at 30 Hz each way,
@@ -405,9 +558,10 @@ docs/hidden-testing.md.
    checks), `echo-real-100` and a two-game run with a newly offered id were not.
 2. **More characters: done for the table.** All 16 ids passed `real-body-tour-all` and are offered (section 2).
    Not checked per character: collision size, and how a female body looks playing Sam's motion over time.
-3. **Gear: done in part** (section 12). The backpack frame and the cargo cases are the game's own
-   cutscene props placed on the body's joints every frame and synced over the link (STC1). Not drawn:
-   the rain cover and pouches, equipment, the Odradek, the BB pod, tools; colours not matched.
+3. **Gear: done for what the game draws as plain entities** (section 12, v0.8). Copies of the sender's own
+   gear entities (by resource, STR1), its gear parts and the backpack's parts, synced over the link (STC1
+   v2); the self view keeps Sam's real gear. Not drawn: the weapon in hand, the Odradek, the cuff device,
+   the exoskeleton on a non-Sam body; the pod is a tilted cinematic prop; colours not matched.
 4. **Faces.** Not researched: drive DSFacialRig on Sam's body, or leave the faces static.
 5. **Cutscenes and photo mode.**
    - Cutscenes already remove the body (Sam asleep).
@@ -436,6 +590,8 @@ See [debug-actions.md](debug-actions.md) "Real partner body". Scenarios:
 - `two-games-real` and `two-games-real-fallback`: host and guest (section 5).
 - `self-view`, `self-view-edges` (solo) and `two-games-real-self` (host and guest): the self view (section 8).
 - `gear-self` (solo) and `two-games-gear` (host and guest): gear on the bodies (section 12).
+- `smooth-echo` (echo partner and self view in one game) and `smooth-two-games` (host and guest): frame
+  rates 30 / 60 / 120 / none, smooth mask 0 against 7, the `[smooth]` meter (section 3.5).
 
 ## 8. Self view: you see yourself as your character
 
@@ -461,6 +617,22 @@ From static work (Ghidra, capstone; every byte pattern below re-checked against 
   `InterlockedAnd64` (a game bit can never be lost; the game's own writes are not atomic, so ours is
   re-asserted every tick), after fault-free reads confirm the entity's vtable is DSPlayerEntity's
   (`0x143D7D0D8`) and the controller points back at it.
+- **Since v0.8 our bit lives in the controller's global part mask `+0x348` (player `+0xDA8`), not in the
+  Root mask** (section 12.2). The part masks start there (part k at `+0x348 + 8k`, k < 89); mask 0 is never
+  written by `SetPartVisible 0x1426B4D80` (part 0 goes to the Root mask), and ApplyMeshControl reads it as
+  a second global condition (`0x1426D91EF cmp qword [rbx+0x348],0`; the diff loop `0x1426D915A` covers
+  it): any bit hides every ArtPart of Sam (the top-level setter, then each mapped part). IsRootVisible
+  reads only `+0x338`, so the inventory keeps every gear entity shown and attached to Sam's animated,
+  invisible skeleton. Both sites are byte-checked. A stray bit 63 left in the Root mask by an older build is
+  cleared by the repair. Census: run `20261117-130343` (`gear 9 0`).
+- **Clearing it restores what the game's own masks say** [V: decompile of `0x1426D9120`] (review asked
+  whether turning the self view off could re-show parts other systems hid): the function treats `+0x338`
+  and `+0x348` the same way (`mask[0x67] == 0 && mask[0x69] == 0` before each part's own test). When both
+  are zero it recomputes every part from that part's own masks (`+0x348 + 8k`, the `+0x8D8` / `+0xE68`
+  arrays and the `+0x19A0` byte); then it copies the masks into their "last applied" copies. So a hat, the
+  hood, an outfit variation or the pod part hidden through their own masks stay hidden after our bit
+  clears, exactly as after the photo-mode reason 26 or v0.7's Root-mask bit. Not covered: parts a system
+  hides by calling the ArtParts setters directly, outside the controller (the same for the Root mask).
 - Not used: Entity SetVisible (Wake/Sleep undo it, no children), the hidden bit, direct ArtPart calls
   (overwritten by `ApplyMeshControl`), camera visibility.
 - The game has two more ways to hide Sam, and the self body follows both (it is not shown while either
@@ -484,7 +656,8 @@ A mismatch turns the self view off (logged); Sam stays.
   written twice (`stale=0`), 60 writes/s solo [V: `[self]` lines, runs below]. The age is one frame at
   both rates, so the body's model is updated before Sam's in a frame and **shows Sam's pose of the
   previous frame** [I]; the transform is this frame's (below).
-  - **The body animates at 60 Hz, Sam at the frame rate.** The game updates the body's model 60 times a
+  - **v0.7: the body animated at 60 Hz, Sam at the frame rate (fixed in v0.8, section 3.5: both now
+    every frame, the age a constant one frame at 60 fps and above).** The game updates the body's model 60 times a
     second (`app=60` while Sam's transform is copied 100-126 times a second solo, run
     `20261117-082028`). Above 60 fps every other presented frame repeats the body's last pose, so it is
     up to about two frames old there and the limbs move at half Sam's rate [I from the counters]; at the
@@ -513,7 +686,8 @@ A mismatch turns the self view off (logged); Sam stays.
     update runs before Sam's final move of the frame) - not used;
   - mode 3 (the tick, like the partner): kept as the fallback (the tick moves the body whenever no copy
     came for 100 ms). Its 0 cm in the log is meaningless (measured right after its own move).
-- The game updates the moved body by itself at 60 Hz (`game-drove`, `forced=0`); while it is still
+- The game updates the moved body by itself (`game-drove`, `forced=0`), at 60 Hz in v0.7 and every frame
+  since the 240 Hz boost (section 3.5); while it is still
   invisible and latching, the tick's forced update drives it (section 3.3).
 - `self_view <0/1> <body id> <follow>` switches it at run time (docs/debug-actions.md).
 
@@ -561,8 +735,9 @@ counters).
 
 ### 8.4 Gear (decision; superseded by section 12)
 
-Since section 12 the self body carries the player's own backpack frame and cargo cases as props (Sam's
-hide still hides his real gear). The first version's decision, for the record:
+Since v0.8 the self view hides Sam through the global part mask (8.1), so the game keeps drawing his real
+gear on his invisible skeleton (section 12.2); before that (v0.7) the self body carried the backpack frame and
+cargo cases as props. The first version's decision, for the record:
 
 Root hides all of Sam's gear: the backpack, the cargo on it, the boots, BB pod and exo parts. The
 chosen character's cutscene body has none, so **a non-Sam self view shows no cargo or backpack** (the
@@ -599,6 +774,44 @@ Sam's was seen floating next to the body (back views `01`, `07`; seated; in the 
 - Collision: none seen (the body stands exactly on Sam, distance 0.0 cm, and Sam was never pushed).
 - Two PCs; the launcher's own local two-player test (the run above wrote the same ini lines by scenario).
 
+### 8.7 The cargo menu still shows Sam (decision: not changed)
+
+Update (run `20261117-153804-two-games-full-gear`, guest `07*`): hidden-test input does reach the cuff
+menus: START opens Map/Information (`07-guest-menu`, behind a ranked-event notice), A on the guest's own
+map entry offers "Manage Cargo" (`07d`), and A again opens a view-only Cargo Management list of the
+private locker (`07e`: "Cargo management actions ... cannot currently be performed"), which has no
+character figure. The on-foot cargo menu with Sam's figure (the "Open Cargo Menu" prompt) was not opened.
+Opening a menu puts Sam to sleep for the mod: both bodies and all props are removed and spawned again
+after it closes (existing behaviour, `[gear] 19 prop(s) removed (Sam asleep)`).
+
+A guest who plays as Fragile still sees Sam in the cargo/inventory menu, carrying the right cargo. This
+is left as it is for now, for the reasons below.
+
+What that menu figure is:
+- It is a `DSPlayerAKukanEntity` ("subspace" player, RTTI `0x144BCA020`, size 0x7A0). It derives from
+  `Entity`, not `ControlledEntity` or `Humanoid` [V RTTI].
+- It is spawned from `DSPlayerSubspaceConfig.SubspacePlayerResource`
+  (`ds/entities/player/akukan/ds_player_akukan_entity`) [V census].
+- Its 10 components include `DSBaggage2CarrierComponent`, which is why it shows the real cargo. They also
+  include Sam's skeleton-only SkinnedModel and the menu Morpheme network `sam/references/akukan` on Sam's
+  77-joint skeleton [V run-time census].
+- Shared baggage code accepts either `DSPlayerEntity` or `DSPlayerAKukanEntity` as the owner
+  (`0x142922CC0`, `0x14291156A`) [V decompile].
+
+Why it is not replaced yet:
+- The only workable route would be a "self view in the menu": hide the menu Sam's mesh, then place and
+  pose the chosen character's cutscene body on it through the SkinnedModel animate hook (same skeleton).
+- Every step of that is unknown and happens inside a paused menu:
+  - which world the subspace entity lives in;
+  - how to hide its mesh: bit 63 is the `DSPlayerEntity` mesh controller at `+0xA60`, which this
+    0x7A0-byte entity lacks;
+  - whether the mod's game-thread tick runs while the menu pauses the game;
+  - whether the menu's own camera and lighting render a spawned body at all.
+- The menu also raycasts and highlights on Sam's attach points (`Subspace_Head`, ...), and DS's crash
+  reporter fires even on caught faults.
+- The census was taken with the menu closed (0 live AKukan entities). A first probe would be
+  `action anim_census` with the cargo menu open, and no input path to open it is known in the hidden test
+  environment yet: BACK opened nothing (`20261117-140054-collision-climb`, `11-back`).
 ## 9. Outfit: the partner Sam wears the other player's own suit
 
 **Status (2026-11-17): works in hidden runs (solo and two games on one PC).** A partner shown as Sam
@@ -893,8 +1106,9 @@ stick [V, by eye]. A one-frame lead or lag at full speed was not measured.
   nothing, and BACK opened nothing visible.
 - **Photo mode.** Its flag is unknown.
 - **The weapon selector.** It is not in the mask, so tags stay up.
-- **Fonts.** Segoe UI only. Names in CJK and other scripts that Segoe UI lacks render as boxes; no
-  fallback fonts are merged yet.
+- **Fonts.** Tags use the game's menu typeface (section 10.6), with Segoe UI merged in for the glyphs it
+  lacks. Names in CJK, Hangul, Arabic or Thai, which neither covers, render as boxes. The game's own
+  per-language SST fonts are not merged yet.
 - **HDR back buffers.** Colours are written as raw UNORM, the known overlay limitation.
 - **The anchor on other bodies.** 0.36 m over the head joint fits Sam; the gap over a head of
   another shape (hair, hats) was not measured per character. The hologram and the marker keep the
@@ -905,6 +1119,67 @@ stick [V, by eye]. A one-frame lead or lag at full speed was not measured.
   - a letterboxed view;
   - two PCs over Steam.
 
+### 10.6 The game's menu font
+
+**Status (2026-11-17): works in hidden runs, solo and between two games.** Name tags are drawn in the
+typeface of the game's menu headers: the "Map/Information" title when the map opens. Turn it off with
+`session.ini name_tag_font=default`, which brings back Segoe UI.
+
+**Which font** [V: game data, decoded offline with `tools/re/ds_archive.py`]:
+- The header is `MenuStyleText` class `common_titling`. Its family resolves, for every language, to
+  `interface/fonts/ds/expsmediumneon`: a `FontResource` with GUID `94f869a0-db23-3d46-a69a-c92036327756`,
+  typeface "EX PS Medium Neon".
+- It covers 429 code points: Latin with Latin-1 and Extended-A, part of Greek, and Cyrillic. Lower case
+  is drawn as small capitals. It has no U+00B7, which the tag uses in " · 42 m".
+
+**It is not a TTF.** It is a Decima `FontResource` made of vector outlines:
+- metrics (height 1000, ascent 800, descent 200);
+- per glyph: advance, code point and contours;
+- per contour: command bytes and points. A command byte splits into `type = b >> 6` and `k = b & 63`.
+  Type 0 means k line-to points. Type 1 is a TrueType-style quadratic B-spline: k - 1 off-curve controls
+  with implied midpoints, then the end point.
+- Points always number 1 + Σk.
+- Kerning pairs are present but not used: ImGui's loader interface has no kerning.
+
+**Reading it** (`native/mod/game_font.cpp`; read-only, memory only, never written, shipped or logged):
+- **Where.** The path hash is murmur3 of `interface/fonts/ds/expsmediumneon.core`. The reader looks it up
+  in `data\7017f9bb9d52fc1c4433599203cc51b1.bin` first, then in every archive. It decrypts the table rows
+  and chunks (murmur3 and SALT masks, MD5 via BCrypt) and decompresses with `OodleLZ_Decompress`.
+- **Oodle.** ds.exe links Oodle statically and never loads the `oo2core_7_win64.dll` that sits in its
+  folder [V: no DLL name in ds.exe; the first run logged "not loaded"]. The reader loads that file by full
+  path from the game folder for the read, then frees it.
+- **Parsing.** `ParseFontCore` checks every count, that every contour uses exactly its points, the
+  object's GUID, and that the parse ends exactly at the object's size. Any mismatch falls back to Segoe UI
+  with one log line. `st_net_tests` covers it with a synthetic font (no game data).
+- **When.** A worker thread at below-normal priority reads the font the first time a tag is wanted. The
+  overlay's render thread is then up, so D3D12 is never touched early. It took 0 to 16 ms in the runs
+  below. The raw core bytes are zeroed after the parse; only the parsed outlines stay in memory.
+
+**Drawing it** (`native/mod/overlay/overlay_font.cpp`, `native/mod/game_font_raster.cpp`):
+- The font is a custom `ImFontLoader` in the overlay's ImGui atlas. It is added between frames, outside
+  NewFrame..Render. The atlas is dynamic (`RendererHasTextures`), so glyphs are baked on demand.
+- Each glyph's contours are rasterised with a private static copy of the repo's `imstb_truetype.h`
+  (`stbtt_Rasterize`, nonzero fill, ImGui's oversampling).
+- Segoe UI is merged into the same `ImFont` for missing glyphs: " · ", and anything else the game font
+  lacks.
+- The size is scaled ×0.87, so its capitals stand 10% taller than Segoe UI's at the same tag size.
+- The menu keeps Segoe UI.
+
+**Evidence** (hidden, `-SeedSaves complete-100`, pass, exit 0, no error.txt, real saves unchanged,
+0 uploads):
+
+| Run (`build-testenv\runs\`) | What it shows |
+|---|---|
+| `20261117-140054-collision-climb` | First build: `the game's menu font is unavailable (the game's oo2core DLL ... is not loaded)`. Tags fell back to Segoe UI. This led to the fix above. |
+| `20261117-141254-collision-height` | `name tags use the game's menu font 'EX PS Medium Neon' (429 glyphs, 1090 contours, read ... in 15 ms ...)`. `09-tag-self`: "TagEcho (test)" in the game's typeface. `10-map-header`: the game's own "Map/Information". |
+| `20261117-142256-collision-climb` (final build) | Every tag drawn in the game font (`07-tag-near`, `09-tag-self`). `10-map-header` for comparison. |
+| `20261117-142530-two-games-collision` (final build, two games, 1280x720) | Both games log the game font. `05-host-tag-far` / `05-guest-tag-far`: "TagPlayer (guest) · 34 m" and "TagPlayer (host) · 33 m": the " · " comes from Segoe UI, everything else from the game font. |
+
+Not covered:
+- CJK, Hangul and Arabic names: the game's SST fonts could be merged the same way.
+- Kerning.
+- A game build whose font differs: the GUID check falls back to Segoe UI.
+
 ## 11. Player collision: you cannot walk through your partner
 
 **Status (2026-11-17): works in hidden runs, solo (echo) and between two games.** The partner's real
@@ -914,8 +1189,11 @@ pushing, he slides round it, as he does round any other character.
 - On by default. `session.ini partner_collision=0` turns it off.
 - The launcher's Debug page has **Players block each other**. It needs Real character, and it writes
   `partner_collision=0` only when unticked.
+- **The partner cannot be climbed** (section 11.5). Its capsule is 4.0 m tall, which Sam cannot climb or
+  jump-grab. The game offered Climb on the 1.65 m capsule of v0.7.
 - `partner_collision_layer=9` picks the game's "AI or Remote Player" collision layer instead of the
-  default 10. This is a test setting, not in the launcher.
+  default 10. `partner_collision_height=<m>` (0 = Sam's own) sets the capsule's height. Both are test
+  settings, not in the launcher.
 
 Code:
 - `native/mod/partner_collision.{hpp,cpp}`: `player_sync` calls it every tick, after the partner was
@@ -939,12 +1217,13 @@ comp = CreateComponent 0x1422B4FC0(CapsuleComponent RTTI 0x144B39F70, [0x144B386
                                        at +0x50 jumps to it unconditionally: slot 1, 0x1424417B0)
 AddComponent 0x142348220(body, comp)   (component list +0x90, init messages; the body's flags have
                                         0x10000000 "initialized" and 0x4000 "in world")
-Capsule::Configure 0x142446340(comp, {Sam's PhysicsCharacterMoverResource (his capsule +0x68),
+Capsule::Configure 0x142446340(comp, {a copy of Sam's PhysicsCharacterMoverResource (his capsule +0x68)
+                                      with StandingHeight 4.0 m (section 11.5),
                                       type 0, layer 10, group 3, 0x1F, 60 degrees})
 ```
 
-- **Size.** The capsule uses Sam's own resource: radius 0.40 m, standing height 1.65 m [V: logged].
-  Every character gets Sam's capsule, because no per-body resource exists.
+- **Size.** The capsule uses Sam's radius, 0.40 m, and a standing height of 4.0 m (section 11.5; Sam's own is
+  1.65 m) [V: logged]. Every character gets this capsule, because no per-body resource exists.
 - **Layer 10, "Humanoid blocker".** The layer matrix (built by `0x1422AC810`) lets it meet only the
   Player (8) and AI/remote (9) layers and vehicles. It does not meet cargo, bullets, the camera or static
   geometry. Logged at run time: `(8,9)=1 (8,10)=1 (9,10)=1 (8,8)=0`. Layer 9 would also push cargo and be
@@ -1012,6 +1291,9 @@ they clear.
   exists: mixed builds are refused) only has the speed gate below.
 - The partner moves faster than 8 m/s (a vehicle), or jumped more than 2 m in one tick (a snap or a
   teleport). After a jump it stays off for 0.5 s.
+- **Sam above the partner.** Sam's feet more than 1.6 m above the partner's origin (Sam on a ledge, rock
+  or vehicle above it): the 4 m capsule (11.5) would reach him there, an invisible pillar or a push that
+  the v0.7 1.65 m capsule never caused (review finding). `[coll] off: Sam is above the partner (over 1.6 m)`.
 - **Overlap.** The two are closer than 0.55 m horizontally and within 1.8 m vertically. Collision goes
   off and comes back only once they are 0.9 m apart. The capsule is never put into the world on top of
   Sam, so Havok never pushes them apart (no launch).
@@ -1057,10 +1339,7 @@ Screenshots (all looked at):
 - **Sliding round.** This is a capsule against a capsule. Unless Sam hits the partner exactly centred,
   pushing at it makes him slide round it: within 0.6 s at full stick, 1.2-2.2 s at half stick. He would
   do the same round an NPC. Not tried: whether NPCs or BTs block him harder.
-- **Climb prompt.** Pressed against the partner, the game showed "Climb" (`101113`, `05-slow-in-a`).
-  Sam's movement probes may count the partner's 1.65 m capsule as a climbable obstacle [I]. In `101322`
-  the A press came after Sam had slid off, so whether he can climb onto the partner is untested. If he
-  can, layer 9 or a lower capsule may be needed.
+- **Climb prompt.** Fixed: see section 11.5.
 - **Not run:**
   - vehicles (gated by Sam's parent and by the partner's speed), ladders, ziplines;
   - cutscenes and menus with a partner in contact;
@@ -1079,152 +1358,327 @@ Screenshots (all looked at):
   or NPC standing where the partner walks in the other world, and push it [I: not run with a parked
   trike]. Layer 10 meets the vehicle layer; no layer that meets only the Player layer was found.
 
-## 12. Gear: backpack and cargo on the bodies
+### 11.5 No climbing on the partner [V: hidden runs below]
 
-**Status (2026-11-17): works in hidden runs, solo (self view and a debug body) and between two games,
-with synthetic delivery cases.** No real delivery cargo was read in a run: the 100% save's Sam carries only
-personal equipment and weapons, so from the game's own data only the backpack frame and one waist piece are
-drawn; the cases in every run are the hidden-test action `gear 3 n` (12.7).
-The partner's real body and the self view's body now carry the player's own backpack and the cargo
-cases on it, synced live over the link. On by default; `session.ini partner_gear=0` turns it off (nothing
-is read, sent or spawned). There is no launcher option yet.
+On v0.7, pressed against the partner, the game offered "Climb", and A put Sam on top of the partner's
+1.65 m capsule.
+
+**The collision layer does not decide it.** The research suggested layer 25 "vs Humanoids", because the
+layer-matrix replay showed it outside the movement-probe layers 14, 16 and 34 [V: the live matrix logged
+`(25,8)=1 (25,9)=1 (25,14)=0 (25,16)=0 (25,34)=0`]. In game:
+- The prompt still showed on layer 25 (`20261117-140054-collision-climb`, `03-a-contact`), and Sam
+  climbed it.
+- Layer 25 also did not block reliably: Sam walked through it on 2 of 4 approaches (to 0.22 m and 0.03 m).
+- Run `20261117-140652-collision-layers` compared layers 9, 25 and 10 head to head. After A, Sam climbed
+  each of them, rising 1.74 m.
+
+So the climb check is not the layer: it sees anything that blocks Sam. Whether NPCs (layer 9) are
+spared by an entity check is unknown.
+
+**The height decides it.** The partner's capsule is configured with a private copy of Sam's
+`PhysicsCharacterMoverResource` (RTTI size 0x68: plain data) with a larger `StandingHeight` (+0x30).
+`Capsule::Configure` (`0x142446340`) AddRefs the resource at +0x18. The mover factory `0x141C31930` passes
+`StandingHeight - 0.05` to the mover's vt+0x268, which stores the height that its shape is built from
+[V: decompiles].
+
+The copy (`partner_collision.cpp TallResource`):
+- is made only after the source's RTTI name and StandingHeight check out;
+- has its refcount (low 22 bits) set to 0x200000, so the release at `0x1419F5E50` never reaches zero;
+- adds one reference of ours to the material it points to (+0x60);
+- lives for the session (at most 16 copies, in one page).
+
+No game call or patch is added: Configure is the same call as before.
+
+| Height | Result (A pressed against the partner) |
+|---|---|
+| 1.65 m (Sam's own, v0.7) | "Climb" prompt; Sam on top (+1.77 / +1.78 m) |
+| 2.0 m | Sam on top (+2.15 m) |
+| 2.6 m | No prompt, but a jump-grab put Sam on top (+2.73 m, `20261117-141709`, `03-a-hold-a`) |
+| 3.2 m | No prompt, a hop only (+0.68 m) |
+| **4.0 m (default)** | No prompt, hops only; blocked at ≥ 0.81 m |
+
+Runs are hidden, `-SeedSaves complete-100`, all pass, exit 0, no error.txt, real saves unchanged,
+0 uploads:
+- `20261117-141254-collision-height`: heights 2.6, 2.0, 3.2 and 1.65 in one run (`action collision 5`).
+- **`20261117-142256-collision-climb` (final build, scenario `collision-climb`).** The default 4.0 m
+  capsule, four approaches from different directions:
+  - half stick with A, A held 1.2 s, X and Y;
+  - full stick with A and A held;
+  - half stick with A ×3;
+  - full stick with A ×4.
+
+  Results:
+  - Sam was blocked at **0.838 m minimum while the capsule was in the world** (327 ticks under 0.95 m).
+  - His highest point was **1.10 m above the ground**: approach 3 put him on the parked trike, where A
+    means "Use Vehicle" (`05-c-after-a3`). Everything else was hops of up to 0.71 m.
+  - No contact frame shows "Climb": `03-a-contact`, `04-b-contact` and `05-d-mid` show no prompt, or only
+    the trike's prompts.
+  - **Control** (`action collision 5 0`, the 1.65 m capsule): `06-control-contact` shows "(A) Climb", and
+    A put Sam 1.78 m up, on top of it (`06-control-after-a`).
+- `20261117-142000-collision-climb`: the same build. Its control line was lost to a scenario typo, so it
+  ran five 4.0 m approaches: blocked at ≥ 0.808 m, highest point 1.04 m (the trike again).
+- `20261117-142530-two-games-collision` (final build, two games): the guest was blocked by the host's
+  4.0 m capsule at **0.816 m**, and on the host's screen the guest's Fragile stopped at 0.816 m. 21 ticks
+  in contact on each side.
+
+- **`20261117-153502-collision-climb` (the integrated v0.8 build, all review fixes).** Four 4.0 m
+  approaches: blocked at 0.802 / 0.819 / 0.778 / 0.843 m minimum while in the world; highest points
+  +0.67 / 0.00 / +0.95 / +0.88 m (hops, and in approach 3 Sam at the parked roadster: `05-c-after-a3`
+  shows the partner standing and Sam at the car, not on the partner); `03-a-contact` shows no prompt.
+  **Approach 5, Sam above the partner** (`action collision 3 2.5 -2.2`: the partner 2.2 m below Sam's
+  feet): collision stayed off for the whole approach (`off: Sam is above the partner (over 1.6 m)`), Sam
+  walked to 0.13 m of the spot with no rise (`05-e-above`): no invisible pillar. **Control** (1.65 m):
+  `06-control-contact` "(A) Climb", Sam on top (+1.74 m). Exit 0, no error.txt, real saves unchanged,
+  0 uploads.
+- `20261117-153804-two-games-full-gear` (two games, collision on by default): the guest walked up to the
+  host and stopped beside him (`03a-host-sees-guest-front`).
+
+The capsule copy is reused only while Sam's resource still holds the same bytes (everything but the
+height and the refcount compared): after a reload a new resource at the old address gets its own copy.
+
+Not covered:
+- Ladders and ropes placed against the partner.
+- A partner on a slope above Sam: the capsule reaches 4 m up, which is more than the body. It meets only
+  Sam, AI and vehicles, never the camera or static geometry. Sam up to 1.6 m above the partner still
+  meets the capsule, as with v0.7's.
+- Whether the game's climb check skips NPCs by entity type.
+
+## 12. Gear: what the player carries, on the bodies
+
+**Status (2026-11-17, v0.8 development): works in hidden runs, solo and between two games.** The
+partner's real body and the self view now carry the player's whole visible gear, not substitute props:
+- **Self view (your own screen):** the game keeps drawing Sam's real gear - backpack with its bag and
+  everything on it, weapons on the backpack and in hand, shoulder shields, the hip crate, the cuff
+  device, hanging boots, the Odradek - on Sam's animated, invisible skeleton, so it rides on the chosen
+  character exactly as on Sam (section 8.1: our hide bit moved to the global part mask). The BB pod, which
+  the game hides with Sam's own BBPod part, is added as a copy of the game's pod entity.
+- **Partner (the other screen):** the sender reads every gear entity the game shows on Sam (his child
+  entities and theirs) and sends each one's entity resource (path + GUID, STR1) and its pose relative to a
+  joint of Sam's skeleton or to its parent item (STC1 v2). The receiver spawns the same resource from its
+  own installed game and places it every frame on the body's joints. Sam's own gear *parts* (exoskeleton,
+  BB pod pipe, hip gear, pouches, power glove...) and the backpack's own parts (its bag, rain cover,
+  ammo pouches) are mirrored part by part on a Sam body and on the backpack prop. Delivery cargo keeps the
+  case props of v0.7.
+- `session.ini partner_gear=0` turns all of it off (nothing is read, sent or spawned); the self view's
+  hide is part of the self view (section 8).
 
 Code:
-- `native/mod/partner_gear.{hpp,cpp}`: reading our gear, the send schedule, the props (spawn, colour,
-  show, remove).
-- `native/mod/real_body.cpp`: the placement in the pose detour (`PublishGear`, `PlaceGear`), the
-  path + GUID spawn shared with the bodies (`BeginByPath`), `ReadJointModel`.
-- `native/mod/pose_wire.{hpp,cpp}`: the STC1 frame. `native/mod/link.cpp`: its own datagram, queue and
-  sequence filter. `native/mod/player_sync.cpp`: send, receive, echo, the tick.
+- `native/mod/partner_gear.{hpp,cpp}`: reading our gear (entity walk, resource table, parts, cargo), the
+  send schedule, the props (spawn, validate, retry, show, remove), the parts mirror, the census.
+- `native/mod/real_body.cpp`: the placement in the pose detour (`PublishGear`, `PlaceGear`), the path +
+  GUID spawn (`BeginByPath`, `BeginByPathGuid`), `ResourceIdentity`, `ReadJointModel`, the self view's hide.
+- `native/mod/pose_wire.{hpp,cpp}`: STC1 v2, STR1, `GearAssignProps`, `GearRetryDelayMs` (ctest
+  `st_net_tests`, `TestGearFrames`, `TestGearV2`). `native/mod/link.cpp`: their datagrams and queues.
+  `native/mod/player_sync.cpp`: send, receive, echo.
 
-### 12.1 What the game has [V: decompiles, byte checks, run logs]
+### 12.1 What the game draws on Sam [V: census run `20261117-130343-census`, `gear 9 0`]
 
-| What | Where |
-|---|---|
-| Inventory component | player `+0x54C8` (byte-checked store `0x14271FC22`) |
-| Backpack | inventory `+0x4CB8`, a reference: entity = value − 0x20, `DSBackpackEntity` (store `0x1427C0D11`) |
-| Odradek | inventory `+0x4CA0`, entity = value − 0x20, `DSOdradekBodyEntity` (store `0x1427C0BC8`) |
-| Baggage carrier | player `+0x54D0` `DSBaggage2CarrierComponent` (store `0x14271FC38`), carrier object `+0x50` (bind `0x142CB1ED0`) |
-| Carrier | `+0x10` slot count, `+0x18` slot pointers (lookup `0x142C52010`) |
-| Slot | `+0x01` type (1 back, 2/3 arms, 4/5 waist, 6/7 hands, 10+ weapons, shoes...), `+0x0C` pieces, `+0x18` stack count, `+0x20` stack pointers (walk `0x142C536E0`) |
-| Stack | `+0x10` count, `+0x18` `DSBaggage2` pointers |
-| `DSBaggage2` | `+0x20` u8 model byte, `+0x21` u8, `+0x28` `DSGameBaggageListItem*`, **`+0x38` world position (3 doubles), `+0x50` rotation rows (9 floats)**, `+0xD8` entity index |
-| `DSGameBaggageListItem` | `+0x3A` attribute (1 Personal), `+0x3B` case type, `+0x3E` volume (S, M, L, LL), `+0x50` weight (dsdc_types offsets) |
+The census walks Sam's child entities (`+0x70` parent, `+0x78` first child, `+0x80` next sibling, checked
+in `0x14235EBC0`) and the inventory's gear block (`+0x4C80..+0x4F00`). In the 100% save:
 
-**Carried pieces have no entity.** Their entity index is −1 (run `20261117-105218`); the research's
-route through the baggage manager's entity table only finds pieces lying in the world. The
-`DSBaggage2` itself keeps the piece's world transform in the entity layout: a valid rotation, 0.8-1.5 m
-from Sam's root, updated as he walks (run `20261117-105905`). It is read fault-free, twice, and refused
-unless it is a rotation within 6 m of Sam. There is no byte check for `+0x38`; the plausibility check is
-the guard [I].
+| Entity (resource) | Class, components | Where |
+|---|---|---|
+| backpack (`ds/entities/item/backpack/backpack_temp`, DSBackpackEntityResource) | DSBackpackEntity; DSBaggage2CarrierComponent, ArtPartsData (24 parts: the frame, the cover / bag at 7 capacities, ammo, cylinder...) | spine 4, inventory `+0x4CB8` |
+| on the backpack: 6 × `ds/entities/weapons/weapon_collection` | Entity; model components (some BackpackCustomizePaintManagement) | the equipment and stowed weapons, 0.4-0.5 m out from the frame |
+| on the backpack: 4 × `backpack_temp` children | Entity; belt (DSPlayerBackpackBeltComponent), chiral cylinder, ... | at the frame |
+| on the backpack: `ds/entities/weapons/builder` | DSWeaponEntity | the PCC at the right hip |
+| BB pod (`ds_player_inventory` b5041f35) + keyring + dog tag | Entity; DSBBPodComponent | chest, inventory `+0x4D48` (a reference: entity = value − 0x20; `+0x4D60` is its component) |
+| the baby (12060443) | Entity; DSBridgeBabyComponent, talk, voice | in the pod |
+| 2 shoulder shields, the ammo loader, the cuff device, the hanging boots (`weapons/sam_boot`) | Entity; DSArmorPlate / DSPlayerInventoryAccessory (+ talk, voice) / DSPlayerHangedBoots | arms, hip, right hand, left hip |
+| the boots on his feet (188043d6) | Entity; DSPlayerBootsComponent | his root (inventory `+0x4D80`) |
+| Odradek arm + body (`ds/entities/player/ds_odradek`) | DSOdradekArmEntity / DSOdradekBodyEntity | left shoulder |
+| weapon cases, grenades, rifle, ... | invisible until used | |
 
-**The 100% save** at its start (Mountain Knot City) carries 9 pieces, all *personal*: 5 on the back
-(equipment and weapons in 3 stacks), 2 on the arms (equipment), a weapon and the ladder on the waist,
-plus slots 10-17 (weapons, shoes...). Relative to the backpack, the back pieces sit on an exact grid
-(the 3 stacks 0.13 m apart outwards along the backpack's y axis, pieces 0.27 m apart upwards, no
-rotation), so they ride rigidly on it [V log].
+Every visible piece is an entity with an ArtPartsData and a SkinnedModel attached by an
+AttachToHelperMover. Carried pieces of cargo have no entity (`DSBaggage2 +0xD8` = −1); the personal
+equipment of the 100% save is what the `weapon_collection` entities and the backpack's own parts show.
+Sam's own gear parts are parts of his model: the mesh controller maps `EDSPlayerMesh` k to an ArtParts
+index at `ctrl +0x38 + 8k` (census: ExoMain 32 → 32, ExoSub 38 → 34, BBPodPipe 31 → 2, Hip 72 → 44,
+HipGun 73 → 45, Support 86 → 50 ...). `demo_sam_clean` has the same 107 parts (same part resources,
+checked at run time).
 
 ### 12.2 What is drawn
 
-- **The backpack:** `demo_bak0_mule_def` (`08ab4fca-839a-3142-86d1-b154336412a0`), at the backpack
-  entity's pose relative to Sam's joint 4 (`JNT_C_B_004_Spine`): measured (−0.005, 0.012, −0.136) m, the
-  same as the `HLP_Backpack` helper in the game data (0, 0.022, −0.141) [V]. It is the bare frame with its
-  small lower pouch: Sam's own backpack also shows its rain cover, pouches and gun case, which are
-  separate sub-entities with no prop.
-- **Cargo cases** (`demo_bsm0_baggagesmall0_new`, `demo_bmd0_main_def_v02_new`, `demo_bla0_baggagelarge0_new`,
-  `demo_blx0_main_def`, `demo_blx1_main_def`): each piece at its own pose, relative to the backpack (back
-  slot) or to the nearer joint of a left/right pair (arms: joints 7/36, hands: 9/38; waist: hips 1).
-  Which pieces: deliveries (list item case type Normal, LiquidOnly, Material, Delicate, SmallDelicate,
-  ToxicGas) in any slot, and a weapon on the waist (drawn as a small case where the game places that piece: on the **left** hip, slot type 4. Sam
-  shows a dark item there; the cream crate visible on his right hip is the other waist piece, slot
-  type 5, case type 12, which is not drawn [V: screenshots `111812` `01-self-back` / `06-sam-real-gear`,
-  log positions]). Their model
-  (`EDSBaggage2Model`) comes from the list item: case type + volume (+ Personal). Weapon cases, material
-  tanks, `bsm1` and `blx2` are drawn as the case of the nearest size (approximate); builders, carts, the
-  ladder, shields and the heater are not drawn (no plain prop exists).
-- **Not drawn:** personal equipment and weapons on the back and arms. In the 100% save they show on Sam
-  as the backpack's dark rain-cover bag and pouches, not as cases; their model byte (6, `PersonalLarge`)
-  drawn as a large case covered Fragile's head (run `20261117-105905`, `02-self-front`), so they are left
-  out. The Odradek: the cutscene prop stands in its unfolded bind pose (a gold arm hanging off the left
-  shoulder, run `20261117-104819`), so it is read but not drawn. The BB pod: not found in this save
-  (inventory `+0x4D60` is not an entity there).
-- **Colours:** the props keep their own look (silver cases with yellow straps; the medium case is the
-  dark BRIDGES one). The config's 52 colour variations are not matched to the pieces: the `DSBaggage2`
-  field that selects one was not found. STC1 carries a variation byte for that (always 0xFF now).
+- **Self view:** Sam is hidden through the controller's global part mask, so `IsRootVisible` stays true
+  and the inventory keeps showing every gear entity on his invisible skeleton (section 8.1). Sam's own
+  gear parts (exoskeleton...) are hidden with him. The BB pod entity is shown by the game only while Sam's
+  BBPod part is (`0x1426A0620` part 30 reads `ctrl +0x2118`), so the self view adds a copy of the pod as
+  its only prop.
+- **Partner:** every visible gear entity of the sender that passes the mirror policy (12.5), the
+  backpack as the cinematic frame `demo_bak0_mule_def` (its 24 ArtParts are the real backpack's: the bag,
+  cover and pouches are mirrored on it), Sam's gear parts on a Sam body, delivery cargo as the case props
+  of v0.7 (`gear 3 <n>` synthetic cases in the tests).
+- Not mirrored (never spawned on the receiver): the boots on Sam's feet (the body's own feet), the baby,
+  the cuff device (talk / voice components), the Odradek (its classes update with the player: run
+  `20261117-131822` crashed a worker thread at `0x14296F3AE` right after copies of it were created),
+  weapons in hand at level 1 (DSWeaponEntity, level 2).
 
 ### 12.3 Sender (game thread, every 100 ms)
 
-1. Sam's world transform, his pose's model matrices (77 × 0x40: three axis rows, then the translation;
-   verified: joint 31, the head, 1.59 m above the root; joint 4 1.17 m) and every item's world transform.
-2. Each item relative to its anchor (`Relative`), as position + rotation.
-3. While Sam moves or turns (more than 2 cm or about 2° since the last read) the poses of an unchanged
-   layout are kept: the tick may read Sam and the pieces a frame apart. A new layout is taken when the
-   next read (100 ms later) agrees: one torn or refused read (an item dropped, every later index
-   shifted) would otherwise make the receiver respawn every prop. The cargo walk stops after 256
-   stacks + pieces per read (garbage counts cannot make 64³ reads).
-4. The self view hides Sam with reason 63, and the game then hides the backpack too: its last visible
-   state from before is used while the self view is shown. Cargo in a carrier slot counts as carried.
-5. **Send** (`gear::TakeSend`): when the layout hash changes, when a pose moved by more than 2 cm / 4°
-   (at most every 250 ms), and every 1 s. Only a game with the pose hook (a real-body game) sends.
-   Measured: 10-21 STC1 frames per 10 s, 2 items = 52 bytes each.
+1. The entity walk: Sam's children and theirs (depth 3, at most 320 visited, a stack of 256: Sam has
+   about 45 children of his own). An entity is sent when it is visible (`+0x88 & 2`), has a model
+   (`+0xB8`), its resource path is under `ds/entities/` (not effects or the camera), it is within 3 m of
+   Sam and it passes the mirror policy. Each distinct resource gets an id of a session table (64 at most).
+   Each node's first 0xC0 bytes are read once, and its class / resource / policy verdict is cached while
+   the node keeps its address, vtable, resource reference and component list (`gear 10 0` turns the cache
+   off). Measured on the game thread (run `20261117-153804`, host): 2.7 ms per read without the cache,
+   0.8-1.0 ms with it (max 2.3-2.7 ms), every 100 ms (`[gear] read cost ...`).
+2. The anchor: the parent item when the entity's parent is one (the backpack, the pod); otherwise the
+   nearest joint of Sam's skeleton, torso joints first (a limb joint must be more than 10 cm nearer), kept
+   while it is at most 15 cm farther than the nearest (a flip would change the layout).
+3. Sam's gear parts (the 26 gear `EDSPlayerMesh` entries through the controller's map: which exist, which
+   are shown; the last reading stands while our self view hides them) and the backpack's 24 parts.
+4. Cargo, as before: carrier slots → stacks → `DSBaggage2`, deliveries drawn as cases.
+5. A new layout is taken when the next read agrees (the debounce); its first difference is logged (`a new
+   layout ... held a read: first difference at item ...`, 30 lines at most).
+6. **Send** (`gear::TakeSend`): when the layout or the parts change, when a pose moved by more than 2 cm /
+   4° (at most every 250 ms), and every 1 s. **STR1** (`gear::TakeSendRes`): a new id at once, then one
+   entry every 250 ms round-robin (a lost one comes again). An entry that could not be sent (the link not
+   up yet) goes out again first, and on every new link session the whole table is sent again at once (the
+   partner cleared its table; review: before, entries made before the session reached the partner only
+   through the 250 ms round-robin, about 10-16 s for 40-64 ids). A frame that does not encode is logged.
 
-### 12.4 Wire: STC1
+### 12.4 Wire: STC1 version 2 and STR1
 
-`'STC1' | u32 seq | u8 version 1 | u8 count | u8 flags | u8 dropped | u16 layout hash | u16 0`, then
-`count` × 18 bytes: `u8 kind | u8 model | u8 variation | u8 joint | u8 parent | u8 0 | i16 x, y, z (1 mm)
-| 48-bit smallest-three rotation` (the STJ1 codec). At most 40 items (736 bytes), sent in a datagram of
-its own (one FRAME message). The decoder checks the size, the version, each item's kind and anchor (a
-joint < 77, or an earlier item) and the layout hash; unknown flag bits are cleared. `DecodePose`,
-`DecodeJoints` and `DecodeName` reject it and it rejects theirs (ctest `st_net_tests`, `TestGearFrames`).
-The receiver keeps its own newer-seq filter and a 4-frame queue; a new link session clears the
-partner's gear. Mixed builds never meet (HELLO build check, section 4).
+`'STC1' | u32 seq | u8 version 2 | u8 count | u8 flags | u8 dropped | u16 layout hash | u16 0`, then
+[flags bit 1: `u64 apply[2] | u64 visible[2]`, Sam's gear parts by ArtParts index], [flags bit 2: `u64
+apply | u64 visible`, the backpack's parts], then `count` × 18 bytes: `u8 kind | u8 model | u8 variation |
+u8 joint | u8 parent | u8 res | i16 x, y, z (1 mm) | 48-bit smallest-three rotation`. Kind 5 (`entity`)
+names a resource id (< 64); the id is part of the layout hash, the parts are not. At most 56 items: 1072
+bytes with both part blocks, inside one link body (1148). Version 1 is refused (mixed builds never meet:
+HELLO build check, section 4).
+
+`'STR1' | u8 version 1 | u8 id | u8 path length n | u8 0 | 16-byte GUID | n path bytes`: one entry of the
+sender's table. The decoder refuses an id ≥ 64, a size other than 24 + n, and a path that is not 1-160
+bytes of `[a-z0-9_/.-]` under `ds/entities/` without `..`. It rides in a datagram of its own; the receiver
+keeps a queue of 16 (no sequence filter: an entry is idempotent); a new link session clears the table.
+A session change seen first on the gear or STR1 queue (before that session's first pose) now resets the
+session there instead of dropping the frame.
+
+Measured (two games, 100% save): about 15-22 items, 300-450 bytes per STC1 frame, 10-20 frames per 10 s;
+STR1 4 entries a second.
 
 ### 12.5 Receiver: props
 
-- One prop per drawn item, loaded by path + GUID exactly like the bodies (`realbody::BeginByPath`,
-  section 2.1, without the spawner log lines), at most 4 started per tick, spawned 20 m under the body
-  and invisible. Each realized prop is refused if it is a Humanoid / player or carries AI, controller,
-  capsule or physics components (none did); a prop that fails to load is not tried again this session.
-- **Placement in the detour** (`real_body.cpp`): right after the partner body's pose was written (its
-  world transform and the fresh model matrices), and for the self view right after Sam's transform was
-  copied onto the self body (this frame's transform, the body's current pose). Each prop:
-  `world = body ∘ model matrix[anchor joint, mapped to the body's own skeleton] ∘ item pose`, or the
-  parent item's world ∘ item pose; then the prop's vtable and GUID are checked and
-  `Entity_ExportedSetWorldTransform` is called. The list is published through a seqlock; unpublishing
-  waits until no detour is inside (as for the bodies). The tick places them once more after the
-  partner body was moved. Counters in every run: `aba 0, bad matrix 0`.
-- **Shown** with the body: the partner's when its body is visible, the self view's only while the self
-  body is shown in Sam's place (Sam's own gear is visible otherwise). Hidden at once while Sam is
-  asleep; removed after 1 s asleep, when the body changes (another character, a respawn), when the
-  body goes (hologram fallback, link loss, 10 s silence) and on a new layout for the props whose kind
-  changes. The hologram, marker and echo bodies never get props.
-- On another body (Fragile, Cliff) the backpack follows that body's own spine joint: it sits on her
-  back, not where it would be on Sam.
+- **Keyed by what they show.** Each item needs a prop of a key (a cinematic prop, or `entity` + resource
+  id). On a new layout the props are matched to the items by key (`wire::GearAssignProps`: the same index
+  first, then any unused prop of that key), so one piece removed does not respawn every later one; props
+  nobody wants go after the detour stopped using the old list (`layout A -> B: N prop(s) kept (M moved to
+  another item), K removed`).
+- **Checked before anything loads** (`wire::GearResProven`, unit-tested; review: realizing a copy is the
+  step that crashed, so a check after it protects nothing). A partner's STR1 entry is kept only when its
+  core is one whose entities were mirrored in hidden runs: `ds/entities/item/backpack/...`,
+  `ds/entities/player/ds_player_inventory`, `ds/entities/weapons/weapon_collection`, `.../sam_cant`,
+  `.../sam_boot`; and never for the entities the level-1 policy refuses that the census found on Sam (the
+  BB pod entity unless `gear 8 1`, the cuff device / talk entity, the baby / boots entity, the chiral
+  cylinder, the backpack belt). Otherwise `[gear] the partner's resource N '...' not loaded: ...` (20 lines
+  at most) and the key is refused. Seen in the final run: an early `ds/entities/player/ds_odradek` entity
+  (plain `Entity` class, sent at level 1 once at startup) was not loaded. A game whose own tests set
+  level 2 accepts any `ds/entities/` path. Not checked before loading: whether the GUID exists in this
+  install's core (another game build), as with the bodies' fixed GUIDs.
+- **A changed entry** (an honest peer never changes an id): props showing the old resource are removed and
+  spawned again from the new one; logged 10 times at most.
+- **Spawn:** by path + GUID like the bodies (`BeginByPathGuid`), at most 4 per tick, 20 m under the body,
+  invisible, only once the STR1 entry is known (`waiting for their resource`).
+- **Mirror policy** (sender and receiver, `MirrorableAt`): only the plain `Entity` class (DSWeaponEntity at
+  level 2), and only these components: level 0 SkinnedModel, StaticModel, ArtPartsData, ArtPartsVariation,
+  ArtPartsShaderVariableComponent, ShaderVariableComponent, StencilBufferComponent,
+  MeshPaintTextureComponent, BoostMeshStreamingForArtPartsDataComponent, ExternalAnimationComponent,
+  LodDistanceOverrideComponent, AttachToHelperMover, CustomizedAttachToHelperMover,
+  DSOutlineEffectComponent; level 1 (default) adds DSArmorPlateComponent,
+  BackpackCustomizePaintManagementComponent, DSSimpleAnimationComponent, SoundComponent and
+  DSPlayerHangedBootsComponent; level 2 (hidden tests only) adds DSChiralCylinderComponent and
+  DSPlayerBackpackBeltComponent; DSBBPodComponent only with `gear 8 1` (hidden tests only). The receiver
+  checks the realized entity again and refuses it for the session otherwise (plus no Humanoid / player /
+  backpack entity, no AI, controller, capsule or physics components).
+- **Failures are retried** (G2, 12.8): a prop that did not start or load is tried again after 2, 4, 8, 16,
+  30 s ... (`wire::GearRetryDelayMs`); only a validation refusal is final for the session. A prop the
+  game destroyed releases its spawner (`SpawnTeardown`) and is retried with the same backoff (review: it
+  leaked the spawner and was respawned every tick).
+- **Placement in the detour** as in v0.7: `world = body ∘ model matrix[anchor joint → the body's own
+  joint] ∘ item pose`, or the parent item's world ∘ item pose; vtable + GUID checked before
+  `Entity_ExportedSetWorldTransform`. Up to 56 props per slot.
+- **Shown** with the body. The real flag is read every tick and set again when the game changed it
+  (`reshown`); a tick without a placement no longer hides them (300 ms do); a placement fault that
+  switched the detour's list off is published again (3 times a session at most).
+- **Parts:** a target's parts are set only when its ArtParts are the same resources as our own reference
+  entity at every named index (the partner's Sam body vs our Sam; the backpack prop vs our backpack; logged
+  once per target), through the game's part setter `0x1422B2770` inside the model update bracket
+  `0x142391620 / 0x1423966A0` (what ApplyMeshControl does), each byte-checked; only parts that differ.
+  A fault after the bracket opened closes it (the entity's critical section must not stay held while the
+  body is updated at 240 Hz on a worker thread); the calls then stay off for the session.
 
-### 12.6 Evidence (hidden, `-SeedSaves complete-100`, all exit 0, no error.txt, real saves unchanged, 0 uploads)
+### 12.6 Evidence (hidden, `-SeedSaves complete-100`, no error.txt unless said, real saves unchanged, 0 uploads)
 
 | Run (`build-testenv\runs\`) | What it shows |
 |---|---|
-| `20261117-114454-two-games-all` (**the final code**, pass, collision and tags on) | **Different gear on each game** (review: before this both games always had the same layout). Host `gear 3 1`, guest `gear 3 2`: host log `the partner's gear: 4 items (... cargo 3 ...)`, layout D58E; guest log `the partner's gear: 3 items (... cargo 2 ...)`, layout C70C, each the other game's own layout. Guest `02-guest-sees-host-and-self`: her own Fragile with two cases stacked on her backpack and the small case at her left hip, and the host's Sam body ahead with **one** case (enlarged crop). Host `03-host-sees-guest-front` and `04-host-sees-guest-c`: the guest's Fragile with her top case showing over her head and the hip case. `new layouts held a read 2` each (the debounce: the start layout and the `gear 3` change). |
-| `20261117-112035-gear-self` (pass) | The same steps as `110347` below (run `111812`, the same code but the stack 0.25 m out: `01-self-back`, `03-walk-b`, `04-run-b` Fragile with the backpack frame and hip case standing, walking and running; `06-sam-real-gear` Sam's real gear); the synthetic stack now sits in the game's innermost layer (0.12 m out from the backpack): `09-three-cases` on the debug Fragile's back, `11-self-again` (front) and `12-self-again-front` (back) on the self view. `[gear-self]` / `[gear]` placements: aba 0, bad matrix 0. |
-| `20261117-112231-two-games-gear` (pass) | Guest view of the host's Sam body (enlarged crops): `02-guest-sees-host` and `04b-` the backpack frame and hip case on his back; `03-guest-sees-host-three-cases` 3 cases stacked on it; `04-guest-sees-host-one-case` 1 case. Guest log: `layout B585 -> C70C: 2 prop(s) removed`, `C70C -> 8089: 1 prop(s) removed`. Host view of the guest's Fragile: `03a-host-sees-guest-front` (waist case at her side), `03b-host-sees-guest-back` (the frame's bars on her back, the case at her left hip), as on her own screen (run `111245`, `02-guest-self`). STC1: 10-15 frames per 10 s each way, poses 575 B per datagram unchanged. |
-| `20261117-110347-gear-self` (pass; the final classification, the synthetic stack 0.25 m out) | Self view, Fragile: `01-self-back` the backpack frame on her back and the waist weapon as a small case at her left hip; `03-walk-b` and `04-run-b` the same while walking and running. `06-sam-real-gear` (self view off): Sam with his real gear (dark bag, pouches, ladder, the hip box). `07-debug-fragile-back`: a debug Fragile (the partner placement path) with the backpack frame. `09-three-cases`, `10-one-case`, `10b-no-cases`: `gear 3 3/1/0` stacks 3 / 1 / no synthetic delivery cases on the debug body's backpack. `11-self-again` (front) and `12-self-again-front` (her back): the self view with the 3-case stack. |
-| `20261117-111015-two-games-gear` (pass; stack 0.25 m out) | The guest sees the host's Sam body with 3 synthetic cases (`03-guest-sees-host-three-cases`), then 1 (`04-`), then none (`04b-`): the guest log shows `layout B585 -> C70C: 2 prop(s) removed`. |
-| `20261117-111245-two-games-gear` (pass; stack 0.25 m out) | The host's own Sam (`02-host-own-gear`) and the guest's view of him (`02-guest-sees-host`: backpack frame and hip case on his back); the guest's own Fragile (`02-guest-self`) and the host's view of her, front and back (`03a-host-sees-guest-front`, `03b-host-sees-guest-back`: waist case at her side, the frame's bars on her back). |
-| `20261117-105905-gear-self` | The first run that read the cargo: 9 pieces; every one drawn by its model byte. `02-self-front`: two large cases at her shoulders cover her head (the arm-slot equipment), which led to the classification above. |
-| `20261117-104819-gear-self`, `-105218-` | Earlier builds: backpack and Odradek only (the cargo walk went through the entity index, −1 for carried pieces). |
+| `20261117-134056-gear-full` (pass; the solo scenario, the final policy) | Self view, Fragile: `01-self-back` Sam's whole real backpack on her back (the dark bag, the olive pouches, the frame), the shoulder shields, the hip crate, the cuff device; `02-self-front` the same from the front, the BB pod (the cinematic pod prop) on her chest but tilted about 45° to her right and her Sam-gold boots (12.7); `05-sam-real-gear-back` / `06-...-front` Sam himself, self view off, the same camera: the same gear. A debug Sam (porter suit) wearing copies: `07-debug-sam-back`, `08-debug-sam-front` (the pod on his chest, the shields, the gear parts set: `partner body: 7 part(s) set`, `backpack prop: 5 part(s) set`, 17 props live). The equipment wheel (`09`): its top item is the blood grenade, in Sam's hand in `11` (HUD "Custom Hematic Grenade"); its copy is refused (DSWeaponAimArc, below). Level 2 (`10c`, `10d`): the backpack's cylinder and belt copies, no crash. G2: `gear 5 4` / `gear 6`: 4 failures, 4 retries, all back. Exit 0, no error.txt. |
+| `20261117-133245-two-games-fullgear` (pass; two games, a scratch copy of `two-games-full-gear` before the walk / pack-parts fixes) | Guest `02-guest-sees-host`: its own Fragile with Sam's real backpack, pouches, hip crate, shoulder shield and pod; the host's Sam body ahead in the gold suit with the backpack frame, pouches and its gear parts (enlarged crop: the blue waist lamp of the support exo, `partner body: 7 part(s) set`). Host `03b-host-sees-guest-back`: the guest's Fragile with the frame, pouches, shields and the hip crate (crop). 12 layout changes both ways (`gear 3` cycles), a prop respawn with 6 injected start failures, all props hidden behind the mod's back: both sides kept following (`layout ... kept`, `6 failures, 6 retries, 9 reshown`, `17 items, 17 props live`). The guest's D-pad right opened the equipment wheel (`06-guest-dpad-right`). |
+| `20261117-132631-gear-generic2` (pass) | The staged mirror levels 0 / 1 / 2 on a debug Sam (7, 15, 15 props, no crash), G2 fault injection (`4 failures, 4 retries`, `15 reshown`), the first self view with the real gear kept. The cinematic pod anchored on the left shoulder turned on Fragile's skeleton (`13-self-again-back`): anchors now prefer the spine. |
+| `20261117-130343-census` (pass) | `gear 9 0` / `gear 9 1`: the census of 12.1 (Sam's child tree, inventory, mesh controller, ArtParts of Sam, the backpack, the pod and `demo_sam_clean`). |
+| `20261117-131822-gear-generic` (**fail**, error.txt) | Copies of the Odradek (DSOdradekArm/BodyEntity) and the pod entity were created: an access violation in a worker thread at `0x14296F3AE` (null player). Led to the class rule. |
+| `20261117-133622-gear-full` (**fail**, error.txt) | A copy of the pod entity (DSBBPodComponent) with the backpack's cylinder and belt: an access violation at `0x142933FA6`. The pod is the cinematic prop again; the cylinder and belt passed alone in `134056` (level 2). |
+| **`20261117-153804-two-games-full-gear`** (pass; the integrated v0.8 build with every review fix; collision on, name tags in the game font) | Guest `02b-guest-sees-host-front`: the host walked back and faces the guest; enlarged: his Sam body in the gold suit with both shoulder shields, the BB pod on his chest (the cinematic pod: orange and white, tilted; the host's own real pod is a dark capsule, `02b-host-own-front`), a case at his left hip and a green-lit item at his right side (the host's own Sam has a brick-patterned case in his right hand there), the tag "HOSTPORTER" in the game's menu font. Host `03a-host-sees-guest-front`: the guest's Fragile walked up beside him (collision stopped her); enlarged: the pod on her chest, a shoulder shield, a white and yellow case at her left hip, the backpack behind her. Gear changes both ways as in `134347`; `17 items, 17 props live` on the host at the end (`15 reshown, 14 kept across layouts`); the guest's equipment wheel used for real (`06b`: "Removed cargo placed on back"). Read cost 2.7 ms without / 0.8-1.0 ms with the walk cache. Exit 0, no error.txt, real saves unchanged, 0 uploads. |
+| `20261117-134347-two-games-full-gear` (pass; the repo scenario, the first full-gear build) | Guest `02-guest-sees-host`: its own Fragile carrying Sam's real backpack (dark bag, olive pouches, frame), hip crate, shoulder shield and pod; ahead the host's Sam body in the gold suit with the backpack frame, the olive pouch panel, its bag (mirrored part, but silver: the bag's colour variation is not mirrored), a shoulder shield and the blue waist lamp of the support exo (enlarged crop). Host `03a-host-sees-guest-front`: the guest's Fragile behind it with shoulder shields and the pod. Gear changes both ways (`gear 3` cycles, a prop respawn with 6 injected start failures, all props hidden behind the mod's back): `6 failures, 6 retries, 11 reshown`, `19 items, 19 props live` on the guest, `17-18 items` live on the host, every layout followed. A real change through the game's own input: the guest took the blood grenade from its equipment wheel (D-pad right, stick up): its frame changed and the host followed (`layout ... 12 prop(s) kept`); the grenade itself is not copied (DSWeaponAimArc). STC1 11-14 frames per 10 s each way; link payload 17.9 KB/s, 597 B per pose datagram on average (gear and STR1 included; v0.7: 575 B). Both exit 0, no error.txt, real saves unchanged, 0 uploads. |
 
 ### 12.7 Not covered
 
-- **Real deliveries.** The 100% save's Sam carries only personal equipment and weapons, so the
-  delivery path (case type → model) ran only with synthetic cases (`gear 3`, hidden tests only); real
-  orders, liquid barrels, material tanks and hand-held cargo were not seen in a run [I].
-- **Colours** (normal / personal / BRIDGES variations) are not matched; **equipment and weapons on the
-  back and arms**, the **rain cover, pouches and gun case**, the **Odradek**, the **BB pod**, the
-  **ladder** and other tools are not drawn.
-- **Moving fidelity:** poses are refreshed only while Sam stands still (a new layout is taken at once),
-  so the backpack's sway is not synced.
-- **Not run:** vehicles (the cargo moves to the vehicle; the props follow what the carrier holds),
-  cutscenes and loads with props shown, a character change mid-session, link loss, two PCs.
-- **Collision:** the props have no physics; the partner's capsule (section 11) does not grow with a
-  tall stack.
+- **Weapons in hand.** The weapon Sam holds is a DSWeaponEntity with DSWeaponAimArc (aiming): not copied
+  at any level; the partner holds nothing. Stowed weapons (on the backpack) are drawn.
+- **The Odradek, the cuff device, the baby, the BB pod's own entity** are not copied (crash or talk /
+  voice components); the pod is the cinematic prop: its model's axes are not the pod entity's, so it sits
+  tilted about 45° on the chest (`20261117-134056` `02-self-front`), and it is orange and white where the
+  player's real pod is dark (`20261117-153804` `02b`); a fixed correction was not found.
+- **Hats, caps, glasses** were never worn in a run (the 100% save wears none): their entity path is not
+  known, and a core outside the proven list is not loaded on the receiver (12.5), so they may not show.
+- **Sam's boots on the self view.** The boots entity on Sam's feet stays drawn on his invisible skeleton:
+  Sam's gold boots over the chosen character's shoes. Its ArtParts are shown again by the boots component
+  every frame and the entity is put back on Sam every frame (both tried, run `20261117-132631`).
+- **Sam's gear parts on another body.** The exoskeleton, BB pod pipe, hip gear are parts of Sam's own
+  model: mirrored on a Sam body only, not on Fragile, Cliff... (and not on the self view, where they are
+  hidden with Sam).
+- **Animated gear stands still.** Copies of skinned gear (the hanging boots, the pouches) are posed by
+  nobody: they keep their bind pose.
+- **Positions on another character** are relative to Sam's joints mapped by name; on Fragile the backpack
+  sits a few cm off (the self view: Sam's gear on Sam's invisible skeleton, a few cm off her smaller body).
+- **Colours / customisation:** the backpack's paint and the cases' colour variations are not mirrored.
+- Real delivery cargo (cases from a terminal) was still not seen in a run; vehicles, ziplines, two PCs.
+
+### 12.8 The user's report: "the host cargo isn't showing on the guest" (G2)
+
+**What the logs of the user's local two-player test show** (`instances\host|guest\stranded_together.log`,
+v0.7.0, guest = porter self view) [V]:
+- The link never stopped carrying gear: 10-20 STC1 frames per 10 s each way for the whole session, and
+  the guest's partner props stayed `2 props live (0 loading, 2 shown, 0 failed)` (later 1) to the end.
+- The guest's own drawn gear never changed: its "unload" moved personal equipment, which v0.7 did not
+  draw at all, so no layout changed.
+- At host 423 s (guest 413.8 s, the clocks are 9.4 s apart) the **host's own read** lost its one drawn
+  piece, the waist weapon drawn as a small case (`our gear: 1 items`, layout 8089 → 28A2) while the host
+  stood still; the guest followed at once (`layout 8089 -> 28A2: 1 prop(s) removed`). The guest showed
+  exactly what the host sent. Why the piece left the host's waist slot (unequipped, moved into the
+  backpack) is not in the log [I].
+
+So the root cause of "the host's cargo isn't showing" was **G1, not the link**: v0.7 drew only the
+backpack frame and one waist case of the host (7 of 9 personal pieces, the bag, pouches, stowed weapons,
+BB pod, exos were "not drawn"), and that case went when the host moved it.
+
+**Latent defects found on the way, fixed** (each could have made it permanent):
+1. A prop that failed to start or load was never tried again this session (`refused` per def, `failed`
+   per slot). Now retried with a backoff (2, 4, 8, 16, 30 s); only a validation refusal is final.
+2. Visibility was cached (`p.shown`): a prop the game hid (Sleep / Wake, activation) stayed hidden while
+   the stats said shown. Now the real flag is read every tick and set again (`reshown`).
+3. Props were keyed by item index: one piece removed respawned every later prop. Now matched by key
+   (`GearAssignProps`, unit-tested).
+4. One placement fault switched the detour's list off until the layout changed. Now published again (3
+   times a session at most).
+5. A tick without a placement hid every prop; now 300 ms without one do.
+6. An STC1 frame that cannot be encoded is logged (it was dropped silently).
+7. The BB pod was read at the wrong offset (`+0x4D60` is its component; the pod is the reference at
+   `+0x4D48`).
+8. The sender's entity walk was cut at 48 nodes (Sam alone has about 45 children): raised to 256 / 320.
+
+Evidence (G2): unit tests (`TestGearV2`: prop reuse, retry schedule), and in hidden runs `gear 5 <n>`
+(injected start failures: `4 failures, 4 retries`, all props back within 4 s) and `gear 6` (every prop
+hidden behind the mod's back: shown again in the next tick, `15 reshown`) on the debug body
+(`20261117-132631`) and on the guest's view of the host after 12 layout changes both ways
+(`20261117-133245`: `6 failures, 6 retries, 9 reshown`, `17 items, 17 props live`).

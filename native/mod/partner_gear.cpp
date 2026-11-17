@@ -35,7 +35,7 @@ constexpr std::uintptr_t kSlotWalk2 = 0x2C5370A;      // mov r14,[rbx+0x20]; mov
 constexpr std::uintptr_t kSlotWalk3 = 0x2C53736;      // mov rbx,[rax+0x18]; movsxd rax,[rax+0x10] (stack items)
 constexpr std::uintptr_t kBagSetWorld = 0x2C73D08;    // mov rax,[rcx+0x330]; cmp byte [rax+0x21],1 (cargo entity -> DSBaggage2)
 constexpr std::uintptr_t kPInv = 0x54C8, kPCarrier = 0x54D0, kCompOwner = 0x48;
-constexpr std::uintptr_t kInvOdra = 0x4CA0, kInvPack = 0x4CB8, kInvBbPod = 0x4D60;
+constexpr std::uintptr_t kInvOdra = 0x4CA0, kInvPack = 0x4CB8, kInvBbPod = 0x4D48;  // +0x4D48: the pod (a reference); +0x4D60 is its DSBBPodComponent
 constexpr std::uintptr_t kCarrierObj = 0x50, kCarSlotN = 0x10, kCarSlots = 0x18;
 constexpr std::uintptr_t kSlotType = 0x01, kSlotStackN = 0x18, kSlotStacks = 0x20;
 constexpr std::uintptr_t kStackN = 0x10, kStackItems = 0x18;
@@ -105,6 +105,7 @@ int PropFor(const wire::GearItem& it) {
         case wire::GearKind::odradek: return kPropOdradek;
         case wire::GearKind::bb_pod: return kPropBbPod;
         case wire::GearKind::cargo: return it.model < 31 ? kModelMap[it.model].prop : (it.model == wire::kGearNone ? kPropM : kPropNone);
+        case wire::GearKind::entity: return it.res < wire::kMaxGearRes ? kPropCount + it.res : kPropNone;
     }
     return kPropNone;
 }
@@ -177,7 +178,64 @@ struct Checks {
 } g_chk;
 
 bool g_enabled = true;
+// The self view hides Sam through the global part mask, so the game itself keeps drawing his gear on his
+// skeleton (real_body.cpp kPlayerGlobalMask); the self view's props are only the BB pod (Tick).
 bool g_partner_on = true, g_self_on = true;
+int g_fault_spawns = 0;  // hidden tests (`gear 5 <n>`): the next n prop starts fail
+bool g_pod_visible_memo = true;  // the BB pod's state while our self view was off
+const char* TypeOf(std::uintptr_t obj);
+
+// Which of the game's gear entities are mirrored (each side spawns copies of them by resource): the
+// copies get no player, so only entities whose class and components draw a model and do nothing
+// else. Runs 20261117-131822 and -133622 crashed a worker thread (0x14296F3AE, 0x142933FA6) right
+// after copies of the Odradek (DSOdradek*Entity), the BB pod (DSBBPodComponent) and the backpack's
+// cylinder / belt were created: classes other than Entity are refused. Level 0: model components only;
+// 1 (default): also the small DS components proven in run 20261117-132631 (shields, the stowed weapons'
+// paint, hanging boots, simple animation, sound); 2 (tests only, not proven): also the chiral cylinder,
+// the backpack belt and weapons (DSWeaponEntity). `gear 7 <level>`.
+int g_mirror_level = 1;
+// The BB pod: the cinematic pod prop (0, demo_bbp1_main_def, the default) or a copy of the game's own
+// pod entity (1, `gear 8 1`, tests only: its DSBBPodComponent binds to the player, and both runs that
+// created such a copy crashed a worker thread, 20261117-131822 and -133622).
+bool g_pod_entity = false;
+bool ComponentTier(const char* n, int* tier) {
+    static const char* const kTier0[] = {"SkinnedModel", "StaticModel", "ArtPartsData", "ArtPartsVariation", "ArtPartsShaderVariableComponent",
+                                         "ShaderVariableComponent", "StencilBufferComponent", "MeshPaintTextureComponent",
+                                         "BoostMeshStreamingForArtPartsDataComponent", "ExternalAnimationComponent", "LodDistanceOverrideComponent",
+                                         "AttachToHelperMover", "CustomizedAttachToHelperMover", "DSOutlineEffectComponent"};
+    static const char* const kTier1[] = {"DSArmorPlateComponent", "BackpackCustomizePaintManagementComponent", "DSSimpleAnimationComponent",
+                                         "SoundComponent", "DSPlayerHangedBootsComponent"};
+    static const char* const kTier2[] = {"DSChiralCylinderComponent", "DSPlayerBackpackBeltComponent"};
+    for (const char* k : kTier0)
+        if (std::strcmp(n, k) == 0) return (*tier = 0), true;
+    for (const char* k : kTier1)
+        if (std::strcmp(n, k) == 0) return (*tier = 1), true;
+    for (const char* k : kTier2)
+        if (std::strcmp(n, k) == 0) return (*tier = 2), true;
+    if (g_pod_entity && std::strcmp(n, "DSBBPodComponent") == 0) return (*tier = 1), true;
+    return false;
+}
+// The entity's class and components allow a copy at level (why: the first reason not).
+bool MirrorableAt(std::uintptr_t e, int level, const char** why) {
+    const char* tn = TypeOf(e);
+    const bool weapon = std::strcmp(tn, "DSWeaponEntity") == 0;
+    if (std::strcmp(tn, "Entity") != 0 && !(weapon && level >= 2)) return (*why = weapon ? "a weapon (level 2)" : "not a plain Entity class"), false;
+    std::int32_t n = 0;
+    if (!Rd(e + 0x90, n) || n <= 0 || n > 64) return (*why = "component list unreadable"), false;
+    const std::uintptr_t data = Q(e + 0x98);
+    static char buf[96];
+    for (std::int32_t i = 0; i < n; ++i) {
+        const std::uintptr_t c = Q(data + 8ull * static_cast<unsigned>(i));
+        const char* cn = c ? mem::RttiName(mem::RttiOf(c)) : nullptr;
+        int tier = 9;
+        if (!cn || !ComponentTier(cn, &tier) || tier > level) {
+            std::snprintf(buf, sizeof(buf), "carries %s", cn ? cn : "?");
+            return (*why = buf), false;
+        }
+    }
+    return true;
+}
+bool SendableEntity(std::uintptr_t e, const char** why) { return MirrorableAt(e, g_mirror_level, why); }
 int g_test_cases = 0;       // hidden tests: this many synthetic delivery cases on our backpack (0 none)
 bool g_debug_body = false;  // our own gear on the debug body (real_spawn)
 
@@ -188,7 +246,93 @@ struct LocalItem {
     std::uintptr_t e;
     bool visible;
     Xf world;
+    std::uint8_t res = wire::kGearNone;  // entity: our resource id
+    std::uintptr_t parent_e = 0;         // entity: its parent entity (anchors on that item when it is one)
 };
+
+// ---------------------------------------------------------------- gear resource tables (STR1)
+// Ours: an id per distinct entity resource seen this session (stable, never reused). The partner's:
+// what its STR1 frames said (cleared with its gear on a new session).
+struct ResEntry {
+    bool used = false;
+    std::uint8_t guid[16] = {};
+    char path[wire::kMaxGearResPath + 1] = {};
+};
+ResEntry g_res_local[wire::kMaxGearRes];
+unsigned g_res_local_n = 0;
+std::uint64_t g_res_unsent = 0;  // ids not sent yet (sent first)
+unsigned g_res_rr = 0;           // round-robin resend position
+double g_res_next_ms = 0;
+std::uint32_t g_res_full = 0;    // resources not given an id (table full)
+ResEntry g_res_partner[wire::kMaxGearRes];
+std::uint32_t g_res_rx = 0;
+
+int LocalResId(const char* path, const std::uint8_t (&guid)[16]) {
+    for (unsigned i = 0; i < g_res_local_n; ++i)
+        if (std::memcmp(g_res_local[i].guid, guid, 16) == 0 && std::strcmp(g_res_local[i].path, path) == 0) return static_cast<int>(i);
+    if (g_res_local_n >= wire::kMaxGearRes || !wire::GearResPathOk(path)) {
+        ++g_res_full;
+        return -1;
+    }
+    ResEntry& r = g_res_local[g_res_local_n];
+    r.used = true;
+    std::memcpy(r.guid, guid, 16);
+    std::snprintf(r.path, sizeof(r.path), "%s", path);
+    g_res_unsent |= 1ull << g_res_local_n;
+    Log("[gear] resource %u: '%s' %02x%02x%02x%02x...", g_res_local_n, path, guid[3], guid[2], guid[1], guid[0]);
+    return static_cast<int>(g_res_local_n++);
+}
+
+// Sam's own ArtParts that are gear (EDSPlayerMesh: BBPod 30, BBPodPipe 31, ExoMain 32, Balloon 35,
+// ExoSub 38, Speed 39, Pile 40, BatteryEmission 41, Heavy 42, EmissionHeavy 43, LegIn/Out(+Lamp)
+// 44-47, SubPouch 51, DreamCatcher 52, GlovePower 54, BackpackBelt 63, Strand 69, BeachLeg lamps
+// 70-71, Hip 72, HipGun 73, GravityGlove 78, Support 86, EmissionSupport 87): the mesh controller
+// maps each to an ArtParts index (controller +0x38 + 8k, -1: none; census run 20261117-130343).
+constexpr std::uint8_t kGearMeshParts[] = {30, 31, 32, 35, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 51, 52, 54, 63, 69, 70, 71, 72, 73, 78, 86, 87};
+std::uint64_t g_parts_apply[2] = {}, g_parts_visible[2] = {};
+bool g_have_parts = false;
+std::uint64_t g_pack_apply = 0, g_pack_visible = 0;
+bool g_have_pack_parts = false;
+
+// ArtPartsData: +0x38 initialised, +0x100 part count, +0x108 parts; part +0x18 parent, +0x20 its
+// resource, +0x2C flags (bit 0 asked visible, bit 1 shown).
+struct Apd {
+    std::uintptr_t apd = 0, arr = 0;
+    std::int32_t n = 0;
+};
+bool ReadApd(std::uintptr_t e, Apd* out) {
+    const std::uintptr_t apd = partner::FindComponentByName(reinterpret_cast<game::Entity*>(e), "ArtPartsData");
+    std::int32_t n = 0;
+    if (!apd || !Rd(apd + 0x100, n) || n <= 0 || n > 512) return false;
+    const std::uintptr_t arr = Q(apd + 0x108);
+    if (!arr) return false;
+    out->apd = apd, out->arr = arr, out->n = n;
+    return true;
+}
+bool PartFlags(const Apd& a, unsigned i, std::uint8_t* fl) {
+    const std::uintptr_t p = Q(a.arr + 8ull * i);
+    return p && Rd(p + 0x2C, *fl);
+}
+
+// Our Sam's gear parts (which exist, which are shown). False when unreadable.
+bool ReadParts(std::uintptr_t sam) {
+    const std::uintptr_t ctrl = sam + 0xA60;
+    Apd a;
+    if (Q(ctrl) != sam || !ReadApd(sam, &a)) return false;
+    std::uint64_t apply[2] = {}, vis[2] = {};
+    for (std::uint8_t k : kGearMeshParts) {
+        std::int32_t idx = -1;
+        if (!Rd(ctrl + 0x38 + 8ull * k, idx) || idx < 0 || idx >= a.n || idx >= static_cast<std::int32_t>(wire::kMaxGearParts)) continue;
+        std::uint8_t fl = 0;
+        if (!PartFlags(a, static_cast<unsigned>(idx), &fl)) continue;
+        apply[idx >> 6] |= 1ull << (idx & 63);
+        if (fl & 0x2) vis[idx >> 6] |= 1ull << (idx & 63);
+    }
+    g_parts_apply[0] = apply[0], g_parts_apply[1] = apply[1];
+    g_parts_visible[0] = vis[0], g_parts_visible[1] = vis[1];
+    g_have_parts = true;
+    return true;
+}
 constexpr unsigned kMaxLocal = 128;
 LocalItem g_items[kMaxLocal];
 unsigned g_item_count = 0;
@@ -215,12 +359,23 @@ double g_last_send_ms = 0;
 wire::GearFrame g_partner;
 bool g_have_partner = false;
 
+// A prop's key: what it shows. kProps index (0..kPropCount-1), or kPropCount + resource id (an
+// entity item). Props are matched to items by key on a layout change (wire::GearAssignProps).
+constexpr int kKeyEntity = kPropCount;
+constexpr int kKeyCount = kPropCount + static_cast<int>(wire::kMaxGearRes);
+
 struct Prop {
-    int def = kPropNone;   // kProps index; kPropNone = no prop for this item
+    int def = kPropNone;   // key (see above); kPropNone = no prop for this item
     holo::Spawn sp;
     bool loading = false, live = false, failed = false, shown = false;
     std::uintptr_t vt = 0;
     game::Guid guid;
+    unsigned fails = 0;     // failed starts / loads in a row (retried with a backoff)
+    double retry_ms = 0;    // not before this (failed)
+    double placed_ms = 0;   // the last tick it was placed
+    unsigned reshows = 0;   // times it was found changed by the game in the current 3 s window
+    double reshow_since = 0;
+    bool game_owned = false;  // the prop's own components keep hiding it: its visibility is left to them
 };
 struct PropSet {
     const char* tag;
@@ -229,13 +384,16 @@ struct PropSet {
     Prop props[wire::kMaxGearItems];
     wire::GearFrame want;          // the layout + poses the props follow
     bool have_want = false;
+    const ResEntry* res = nullptr; // the resource table the entity items name
     std::uint16_t published_hash = 0;
     unsigned published_n = 0;
     bool published = false;
     double asleep_since = 0;
-    unsigned spawned = 0, failed = 0, removed = 0;
-    std::uint32_t refused = 0;     // bit per prop def that failed to load / validate (this session)
+    unsigned spawned = 0, failed = 0, removed = 0, retried = 0, reshown = 0, kept = 0;
+    bool refused[kKeyCount] = {};  // keys whose entity was refused by validation (deterministic: this session)
     double next_stats_ms = 0;
+    double last_placed_ms = 0;
+    std::uint32_t placement_off = 0;  // ticks the detour's list was found unpublished (a placement fault)
 };
 PropSet g_sets[2] = {{"gear", realbody::GearSlot::partner}, {"gear-self", realbody::GearSlot::self}};
 
@@ -328,6 +486,41 @@ bool BaggageWorld(std::uintptr_t bag, Xf* out) {
     return true;
 }
 
+// The entity walk's verdicts, cached per entity (review: every check is a ReadProcessMemory call, and the
+// class / component / resource checks of ~60 nodes ran every 100 ms on the game thread). An entry holds
+// while the entity keeps its address, vtable, resource reference and component list; visibility, the
+// model and the transform are still read every time. `gear 10 0` switches the cache off (a comparison).
+struct NodeMemo {
+    std::uintptr_t e = 0, vt = 0, res = 0, comps = 0;
+    std::int32_t ncomp = -1;
+    std::int8_t cls = 0;        // 1 an entity the walk looks at (descends into), 2 not (camera, player, no Entity)
+    std::int16_t verdict = -9;  // -9 not known yet, -1 no usable resource, -2 not mirrored, >= 0 our resource id
+};
+NodeMemo g_memo[512];
+bool g_memo_on = true;
+std::uint64_t g_memo_hits = 0, g_memo_misses = 0;
+// hdr: the node's first 0xC0 bytes (one read: vtable, resource reference +0x58, children +0x78, flags
+// +0x88, components +0x90 / +0x98, model +0xB8).
+constexpr std::size_t kNodeHdr = 0xC0;
+NodeMemo* Memo(std::uintptr_t e, const std::uint8_t (&hdr)[kNodeHdr]) {
+    if (!g_memo_on) return nullptr;
+    NodeMemo& m = g_memo[((e >> 4) * 0x9E3779B97F4A7C15ull) >> 55];  // 9 bits
+    std::uintptr_t vt = 0, res = 0, comps = 0;
+    std::int32_t n = -1;
+    std::memcpy(&vt, hdr, 8), std::memcpy(&res, hdr + 0x58, 8), std::memcpy(&n, hdr + 0x90, 4), std::memcpy(&comps, hdr + 0x98, 8);
+    if (m.e == e && m.vt == vt && m.res == res && m.comps == comps && m.ncomp == n) {
+        ++g_memo_hits;
+        return &m;
+    }
+    ++g_memo_misses;
+    m = NodeMemo{};
+    m.e = e, m.vt = vt, m.res = res, m.comps = comps, m.ncomp = n;
+    return &m;
+}
+// ReadItems' cost on the game thread (QPC), logged after 50 reads and then every 600 (about a minute).
+double g_read_us_sum = 0, g_read_us_max = 0;
+std::uint32_t g_read_timed = 0, g_read_window = 0;
+
 // Reads every gear item of the local player into g_items. `verbose`: the full walk to the log.
 bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
     g_item_count = 0;
@@ -356,6 +549,8 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
         it.e = obj;
         it.visible = visible;
         it.world = w;
+        it.res = wire::kGearNone;
+        it.parent_e = 0;
     };
     auto add_entity = [&](wire::GearKind k, std::uintptr_t e) {
         Xf w;
@@ -363,12 +558,128 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
     };
     const std::uintptr_t pack = RefEntity(Q(inv + kInvPack));
     if (pack && Derives(pack, "DSBackpackEntity")) add_entity(wire::GearKind::backpack, pack);
-    // The Odradek is read for the log only: the cutscene prop stands in its unfolded bind pose (run
-    // 20261117-104819: a gold arm hanging off the left shoulder), not folded on the shoulder.
+    // The BB pod (inventory +0x4D48, a reference: entity = value - 0x20; the entity with the
+    // DSBBPodComponent, which binds to the player) is drawn as the cinematic pod prop. The game shows it
+    // only while Sam's own BBPod part is shown (0x1426A0620 part 30), so under our self view (all his
+    // parts hidden) its state from before stands.
+    std::uintptr_t pod = RefEntity(Q(inv + kInvBbPod));
+    if (pod && !partner::FindComponentByName(reinterpret_cast<game::Entity*>(pod), "DSBBPodComponent")) pod = 0;
+    if (pod) {
+        Xf w;
+        if (ReadWorld(pod, &w) && Dist(w, sam) < 5.0) {
+            bool vis = Visible(pod);
+            if (realbody::SelfShown()) vis = g_pod_visible_memo;
+            else g_pod_visible_memo = vis;
+            char ppath[wire::kMaxGearResPath + 8] = {};
+            std::uint8_t pguid[16] = {};
+            const char* prt = nullptr;
+            const char* no = nullptr;
+            const int pid = g_pod_entity && MirrorableAt(pod, 1, &no) &&
+                                    realbody::ResourceIdentity(reinterpret_cast<game::Entity*>(pod), ppath, sizeof(ppath), pguid, &prt)
+                                ? LocalResId(ppath, pguid)
+                                : -1;
+            add(pid >= 0 ? wire::GearKind::entity : wire::GearKind::bb_pod, wire::kGearNone, 0, pod, vis, w);
+            if (pid >= 0 && g_item_count && g_items[g_item_count - 1].e == pod) {
+                g_items[g_item_count - 1].res = static_cast<std::uint8_t>(pid);
+                g_items[g_item_count - 1].parent_e = p;
+            }
+        }
+    }
     const std::uintptr_t odra = RefEntity(Q(inv + kInvOdra));
     if (verbose)
         Log("[gear] inventory %p: backpack %p (%s), Odradek %p (%s)", reinterpret_cast<void*>(inv), reinterpret_cast<void*>(pack),
             pack ? TypeOf(pack) : "-", reinterpret_cast<void*>(odra), odra ? TypeOf(odra) : "-");
+    // Every other gear entity the game shows on Sam (docs/real-partner-body.md section 12): his child
+    // entities and theirs (depth 3, at most 320 visited), each visible one that has a model and an
+    // entity resource under ds/entities/ (weapons in hand and stowed, the BB pod and what hangs on it,
+    // shields, the cuff device, hanging boots, everything on the backpack). Not sent: his boots (the
+    // body's own feet), the baby in the pod (talk / voice components), the camera, effects.
+    {
+        struct Node {
+            std::uintptr_t e, parent;
+            int depth;
+        };
+        static Node stack[256];  // Sam has ~45 children of his own, the backpack ~15
+        int sp = 0;
+        unsigned visited = 0, skipped = 0;
+        for (std::uintptr_t c = Q(p + 0x78), guard = 0; c && sp < 256 && guard < 128; c = Q(c + 0x80), ++guard) stack[sp++] = {c, p, 1};
+        while (sp > 0 && visited < 320) {
+            const Node nd = stack[--sp];
+            ++visited;
+            std::uint8_t hdr[kNodeHdr];
+            const bool have_hdr = mem::Read(nd.e, hdr, sizeof(hdr));
+            auto HQ = [&](std::size_t off) {
+                std::uintptr_t v = 0;
+                if (have_hdr) std::memcpy(&v, hdr + off, sizeof(v));
+                else v = Q(nd.e + off);
+                return v;
+            };
+            NodeMemo* memo = verbose || !have_hdr ? nullptr : Memo(nd.e, hdr);
+            if (memo && memo->cls == 0)
+                memo->cls = (!Derives(nd.e, "Entity") || Derives(nd.e, "CameraEntity") || Derives(nd.e, "DSPlayerEntity")) ? 2 : 1;
+            if (memo ? memo->cls == 2 : (!Derives(nd.e, "Entity") || Derives(nd.e, "CameraEntity") || Derives(nd.e, "DSPlayerEntity"))) continue;
+            const bool vis = (HQ(kEntFlags) & 0x2) != 0;
+            // children first pushed (visited after this one: a parent is always added before them)
+            if (nd.depth < 3)
+                for (std::uintptr_t c = HQ(0x78), guard = 0; c && sp < 256 && guard < 64; c = Q(c + 0x80), ++guard) stack[sp++] = {c, nd.e, nd.depth + 1};
+            if (!vis || nd.e == pack || !HQ(0xB8)) continue;
+            if (nd.e == pod) continue;  // sent as the cinematic BB pod (above)
+            if (memo && memo->verdict == -1) {
+                ++skipped;
+                continue;
+            }
+            if (memo && memo->verdict == -2) continue;
+            int id = memo && memo->verdict >= 0 ? memo->verdict : -1;
+            char path[wire::kMaxGearResPath + 8] = {};
+            const char* rt = nullptr;
+            if (id < 0) {
+                std::uint8_t guid[16] = {};
+                if (!realbody::ResourceIdentity(reinterpret_cast<game::Entity*>(nd.e), path, sizeof(path), guid, &rt) || !wire::GearResPathOk(path) ||
+                    std::strncmp(path, "ds/entities/effects/", 20) == 0 || std::strncmp(path, "ds/entities/player/camera", 25) == 0) {
+                    if (memo) memo->verdict = -1;
+                    ++skipped;
+                    continue;
+                }
+                const char* not_sent = nullptr;
+                if (!SendableEntity(nd.e, &not_sent)) {
+                    if (memo) memo->verdict = -2;
+                    if (verbose) Log("[gear]   entity %p %s '%s' not mirrored: %s", reinterpret_cast<void*>(nd.e), TypeOf(nd.e), path, not_sent);
+                    continue;
+                }
+                id = LocalResId(path, guid);
+                if (id < 0) continue;  // table full: not cached (counted in g_res_full)
+                if (memo) memo->verdict = static_cast<std::int16_t>(id);
+            }
+            Xf w;
+            if (!ReadWorld(nd.e, &w) || Dist(w, sam) > 3.0) continue;
+            add(wire::GearKind::entity, wire::kGearNone, 0, nd.e, true, w);
+            if (g_item_count && g_items[g_item_count - 1].e == nd.e) {
+                g_items[g_item_count - 1].res = static_cast<std::uint8_t>(id);
+                g_items[g_item_count - 1].parent_e = nd.parent;
+            }
+            if (verbose)
+                Log("[gear]   entity %p %s res %d '%s' (%s), parent %p", reinterpret_cast<void*>(nd.e), TypeOf(nd.e), id, path, rt ? rt : "-",
+                    reinterpret_cast<void*>(nd.parent));
+        }
+        if (verbose) Log("[gear] entity walk: %u visited, %u not under ds/entities", visited, skipped);
+    }
+    // While our self view hides Sam (global part mask) his parts read hidden: the last reading stands.
+    if (!realbody::SelfShown()) ReadParts(p);
+    // The backpack's own ArtParts (its bag, rain cover, pouches: 24 parts in the 100% save).
+    g_have_pack_parts = false;
+    if (pack) {
+        Apd a;
+        if (ReadApd(pack, &a)) {
+            g_pack_apply = g_pack_visible = 0;
+            for (unsigned i = 0; i < static_cast<unsigned>(a.n) && i < 64; ++i) {
+                std::uint8_t fl = 0;
+                if (!PartFlags(a, i, &fl)) continue;
+                g_pack_apply |= 1ull << i;
+                if (fl & 0x2) g_pack_visible |= 1ull << i;
+            }
+            g_have_pack_parts = g_pack_apply != 0;
+        }
+    }
 
     // The carrier: slots -> stacks -> DSBaggage2. Carried pieces have no entity of their own (their
     // entity index +0xD8 is -1); the DSBaggage2 keeps its own world transform and model.
@@ -437,9 +748,14 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
                         Rd(li + kListWeight, weight);
                         Rd(li + kListId, id);
                     }
-                    Log("[gear]     slot type %u stack %d piece %d: %p model byte %u (+0x21 %u), list item %08X attribute %u case %u volume %u "
-                        "weight %.1f -> model %u (%s); at %.3f %.3f %.3f (%.2f m from Sam)%s",
-                        type, ti, bi, reinterpret_cast<void*>(bag), mb[0], mb[1], id, f[0], f[1], f[4], weight, from_li,
+                    std::int32_t eidx = -2;
+                    Rd(bag + 0xD8, eidx);
+                    std::uint8_t lx[0x10] = {};
+                    if (li_ok) mem::Read(li + 0x30, lx, sizeof(lx));
+                    Log("[gear]     slot type %u stack %d piece %d: %p entity index %d model byte %u (+0x21 %u), list item %08X attribute %u case %u volume %u "
+                        "weight %.1f [+0x30: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X] -> model %u (%s); at %.3f %.3f %.3f (%.2f m from Sam)%s",
+                        type, ti, bi, reinterpret_cast<void*>(bag), eidx, mb[0], mb[1], id, f[0], f[1], f[4], weight, lx[0], lx[1], lx[2], lx[3], lx[4], lx[5],
+                        lx[6], lx[7], lx[8], lx[9], lx[10], lx[11], lx[12], lx[13], lx[14], lx[15], from_li,
                         model != wire::kGearNone ? "drawn" : "not drawn: equipment / weapon / tool", w.p[0], w.p[1], w.p[2], Dist(w, sam),
                         placed ? "" : " NOT PLACED");
                 }
@@ -455,6 +771,22 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
     }
     if (verbose) Log("[gear] carrier %p: %d slots, %u pieces read (%u refused)", reinterpret_cast<void*>(car), slots, pieces, refused);
     return true;
+}
+
+// Entity items keep their anchor joint while it stays near (Sam's joint chosen per entity).
+struct JointMemo {
+    std::uintptr_t e = 0;
+    std::uint8_t j = 0;
+};
+JointMemo g_joint_memo[64];
+unsigned g_joint_memo_next = 0;
+void RememberJoint(std::uintptr_t e, std::uint8_t j) {
+    for (JointMemo& m : g_joint_memo)
+        if (m.e == e) {
+            m.j = j;
+            return;
+        }
+    g_joint_memo[g_joint_memo_next++ % 64] = {e, j};
 }
 
 // Builds the frame from g_items: anchors and relative poses. `prev`: keep its poses for items whose
@@ -473,19 +805,13 @@ bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_
     int pack_index = -1;
     Xf pack_world;
     unsigned cargo = 0, dropped = 0;
+    std::uintptr_t frame_e[wire::kMaxGearItems] = {};
+    Xf frame_w[wire::kMaxGearItems];
+    (void)self_hidden;  // the self view hides Sam through the global part mask: his gear stays shown (real flags)
     for (unsigned i = 0; i < g_item_count; ++i) {
         const LocalItem& it = g_items[i];
-        const unsigned kind = static_cast<unsigned>(it.kind);
-        // Visibility: our own self view hides Sam (reason 63), and the game then hides the backpack,
-        // Odradek and pod too; their last state from before is used. Cargo in a carrier slot counts as
-        // carried.
-        bool vis = it.visible;
-        if (it.kind != wire::GearKind::cargo && kind < 4) {
-            if (self_hidden) vis = g_vis_memo[kind];
-            else g_vis_memo[kind] = it.visible;
-        } else {
-            vis = true;
-        }
+        // Cargo in a carrier slot counts as carried; everything else as the game shows it.
+        const bool vis = it.kind == wire::GearKind::cargo ? true : it.visible;
         if (!vis) continue;
         if (it.kind == wire::GearKind::cargo) ++cargo;
         if (f.count >= wire::kMaxGearItems) {
@@ -496,8 +822,44 @@ bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_
         gi.kind = it.kind;
         gi.model = it.model;
         gi.variation = it.variation;
+        gi.res = it.res;
         const Xf* anchor = nullptr;
-        if (it.kind == wire::GearKind::cargo && it.slot_type == 1 && pack_index >= 0) {
+        int parent_item = -1;
+        if (it.kind == wire::GearKind::entity && it.parent_e)
+            for (unsigned k = 0; k < f.count; ++k)
+                if (frame_e[k] == it.parent_e) parent_item = static_cast<int>(k);
+        if (parent_item >= 0) {
+            gi.parent = static_cast<std::uint8_t>(parent_item);
+            anchor = &frame_w[parent_item];
+        } else if (it.kind == wire::GearKind::entity || it.kind == wire::GearKind::bb_pod) {
+            // the nearest joint of Sam's skeleton, kept while it is at most 15 cm farther than the nearest
+            // (a layout that flips between two joints would respawn the prop)
+            // Torso joints win over a limb joint that is at most 10 cm nearer (an arm swinging past the
+            // chest must not carry the BB pod away).
+            // (root, hips, spine 2-5, neck, head: the shoulders' joint frames differ between the
+            // characters' skeletons, a pod anchored there turns on Fragile)
+            static const bool kTorso[77] = {true, true, true, true, true, true, false, false, false, false, false, false, false, false, false,
+                                            false, false, false, false, false, false, false, false, false, false, false, false, false, false, false,
+                                            true, true};
+            int best = -1, best_torso = -1;
+            double bd = 1e9, bt = 1e9;
+            for (unsigned j = 0; j < 77; ++j) {
+                const Xf* jw = joint(j);
+                if (!jw) continue;
+                const double d = Dist(*jw, it.world);
+                if (d < bd) bd = d, best = static_cast<int>(j);
+                if (kTorso[j] && d < bt) bt = d, best_torso = static_cast<int>(j);
+            }
+            if (best < 0) continue;
+            if (best_torso >= 0 && bt <= bd + 0.10) best = best_torso, bd = bt;
+            int keep = -1;
+            for (const JointMemo& m : g_joint_memo)
+                if (m.e == it.e) keep = m.j;
+            if (keep >= 0 && joint(static_cast<unsigned>(keep)) && Dist(*joint(static_cast<unsigned>(keep)), it.world) <= bd + 0.15) best = keep;
+            RememberJoint(it.e, static_cast<std::uint8_t>(best));
+            gi.joint = static_cast<std::uint8_t>(best);
+            anchor = joint(gi.joint);
+        } else if (it.kind == wire::GearKind::cargo && it.slot_type == 1 && pack_index >= 0) {
             gi.parent = static_cast<std::uint8_t>(pack_index);
             anchor = &pack_world;
         } else {
@@ -528,7 +890,19 @@ bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_
             pack_index = static_cast<int>(f.count);
             pack_world = it.world;
         }
+        frame_e[f.count] = it.e;
+        frame_w[f.count] = it.world;
         f.items[f.count++] = gi;
+    }
+    if (g_have_pack_parts && pack_index >= 0) {
+        f.flags |= wire::kGearPackParts;
+        f.pack_apply = g_pack_apply;
+        f.pack_visible = g_pack_visible;
+    }
+    if (g_have_parts) {
+        f.flags |= wire::kGearParts;
+        f.parts_apply[0] = g_parts_apply[0], f.parts_apply[1] = g_parts_apply[1];
+        f.parts_visible[0] = g_parts_visible[0], f.parts_visible[1] = g_parts_visible[1];
     }
     // Hidden tests only: synthetic delivery cases stacked on the backpack (large, medium, small, ...),
     // in the innermost of the layers the game uses on Sam's backpack (run 20261117-105905: layers 0.13 m
@@ -562,12 +936,13 @@ bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_
 }
 
 void DescribeFrame(const wire::GearFrame& f, const char* what) {
-    unsigned per[kPropCount] = {}, none = 0, approx = 0, pack = 0, odra = 0, pod = 0, cargo = 0;
+    unsigned per[kPropCount] = {}, none = 0, approx = 0, pack = 0, odra = 0, pod = 0, cargo = 0, ents = 0;
     for (unsigned i = 0; i < f.count; ++i) {
         const wire::GearItem& it = f.items[i];
         const int p = PropFor(it);
-        if (p >= 0) ++per[p];
-        else ++none;
+        if (p >= 0 && p < kPropCount) ++per[p];
+        else if (p < 0) ++none;
+        ents += it.kind == wire::GearKind::entity;
         if (it.kind == wire::GearKind::cargo) {
             ++cargo;
             if (it.model >= 31 || !kModelMap[it.model].exact) ++approx;
@@ -576,10 +951,17 @@ void DescribeFrame(const wire::GearFrame& f, const char* what) {
         odra += it.kind == wire::GearKind::odradek;
         pod += it.kind == wire::GearKind::bb_pod;
     }
-    Log("[gear] %s: %u items (backpack %u, Odradek %u, BB pod %u, cargo %u: %u approximate, %u not drawn; dropped over the cap %u), layout %04X; "
-        "props S %u M %u L %u XL %u cube %u",
-        what, f.count, pack, odra, pod, cargo, approx, none, f.dropped, wire::GearLayoutHash(f), per[kPropS], per[kPropM], per[kPropL], per[kPropXL],
-        per[kPropCube]);
+    unsigned parts = 0, parts_vis = 0;
+    if (f.flags & wire::kGearParts)
+        for (unsigned k = 0; k < 2; ++k)
+            for (unsigned b = 0; b < 64; ++b) {
+                parts += (f.parts_apply[k] >> b) & 1;
+                parts_vis += (f.parts_visible[k] >> b) & 1;
+            }
+    Log("[gear] %s: %u items (backpack %u, Odradek %u, BB pod %u, cargo %u: %u approximate, %u not drawn; game entities %u; dropped over the cap %u), "
+        "layout %04X; props S %u M %u L %u XL %u cube %u; Sam's gear parts %u of %u shown",
+        what, f.count, pack, odra, pod, cargo, approx, none, ents, f.dropped, wire::GearLayoutHash(f), per[kPropS], per[kPropM], per[kPropL], per[kPropXL],
+        per[kPropCube], parts_vis, parts);
 }
 
 void ReadLocalTick(game::Entity* local, bool local_active, double now) {
@@ -588,7 +970,22 @@ void ReadLocalTick(game::Entity* local, bool local_active, double now) {
     if (!local || !local_active || !Checked()) return;
     char why[160] = {};
     Xf sam;
-    if (!ReadWorld(reinterpret_cast<std::uintptr_t>(local), &sam) || !ReadItems(local, false, why, sizeof(why))) {
+    LARGE_INTEGER t0, t1, qf;
+    QueryPerformanceCounter(&t0);
+    const bool read_ok = ReadWorld(reinterpret_cast<std::uintptr_t>(local), &sam) && ReadItems(local, false, why, sizeof(why));
+    QueryPerformanceCounter(&t1);
+    QueryPerformanceFrequency(&qf);
+    const double us = static_cast<double>(t1.QuadPart - t0.QuadPart) * 1e6 / static_cast<double>(qf.QuadPart);
+    g_read_us_sum += us;
+    if (us > g_read_us_max) g_read_us_max = us;
+    ++g_read_window;
+    if (++g_read_timed == 50 || g_read_window >= 600) {
+        Log("[gear] read cost (game thread): mean %.0f us, max %.0f us over %u reads; walk cache %s (%llu hits, %llu misses)", g_read_us_sum / g_read_window,
+            g_read_us_max, g_read_window, g_memo_on ? "on" : "off", static_cast<unsigned long long>(g_memo_hits),
+            static_cast<unsigned long long>(g_memo_misses));
+        g_read_us_sum = 0, g_read_us_max = 0, g_read_window = 0;
+    }
+    if (!read_ok) {
         ++g_read_fail;
         return;
     }
@@ -608,7 +1005,18 @@ void ReadLocalTick(game::Entity* local, bool local_active, double now) {
     if (g_have_local && (nh != wire::GearLayoutHash(g_local) || f.count != g_local.count)) {
         if (!(g_pending && g_pending_hash == nh && g_pending_count == f.count)) {
             g_pending = true, g_pending_hash = nh, g_pending_count = f.count;
-            ++g_layout_held;
+            if (++g_layout_held <= 30) {
+                // what differs (the debounce's churn, logged for the first changes)
+                unsigned d = 0;
+                while (d < f.count && d < g_local.count && f.items[d].kind == g_local.items[d].kind && f.items[d].res == g_local.items[d].res &&
+                       f.items[d].joint == g_local.items[d].joint && f.items[d].parent == g_local.items[d].parent && f.items[d].model == g_local.items[d].model)
+                    ++d;
+                const wire::GearItem* a = d < g_local.count ? &g_local.items[d] : nullptr;
+                const wire::GearItem* b = d < f.count ? &f.items[d] : nullptr;
+                Log("[gear] a new layout %04X (%u items, was %04X with %u) held a read: first difference at item %u: kind %d/%d res %d/%d joint %d/%d parent %d/%d",
+                    nh, f.count, wire::GearLayoutHash(g_local), g_local.count, d, a ? static_cast<int>(a->kind) : -1, b ? static_cast<int>(b->kind) : -1,
+                    a ? a->res : -1, b ? b->res : -1, a ? a->joint : -1, b ? b->joint : -1, a ? a->parent : -1, b ? b->parent : -1);
+            }
             return;
         }
     }
@@ -624,6 +1032,138 @@ void ReadLocalTick(game::Entity* local, bool local_active, double now) {
 }
 
 // ---------------------------------------------------------------- props (game thread)
+// Game calls on ArtParts (a partner Sam body's gear parts, the boots on our Sam's feet under the self
+// view), byte-checked once: the per-part setter 0x1422B2770 (apd, visible, index), the top-level
+// setter 0x1422B25F0 (apd, visible, 0) and the model update bracket ApplyMeshControl wraps them in
+// (0x142391620 (model, 1) ... 0x1423966A0 (model): the entity's critical section +0x288).
+constexpr std::uintptr_t kApdSetPart = 0x22B2770, kApdSetAll = 0x22B25F0, kModelBegin = 0x2391620, kModelEnd = 0x23966A0;
+struct ApdFns {
+    bool done = false, ok = false, faulted = false;
+    char why[160] = {};
+} g_apd;
+
+bool ApdFnsOk() {
+    if (g_apd.done) return g_apd.ok && !g_apd.faulted;
+    g_apd.done = true;
+    struct Site {
+        const char* name;
+        std::uintptr_t rva;
+        const char* sig;
+    };
+    static const Site kSites[] = {
+        {"ArtParts part setter", kApdSetPart, "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 30 0F B6 41 38 0F B6 F2 49 63 D8"},
+        {"ArtParts top-level setter", kApdSetAll, "48 89 6C 24 10 48 89 74 24 18 57 41 56 41 57 48 83 EC 30 48 8B 41 48"},
+        {"model update begin", kModelBegin, "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 48 8B 79 48 48 8B D9 8B F2"},
+        {"model update end", kModelEnd, "48 89 5C 24 10 57 48 83 EC 60 48 8B 05"}};
+    g_apd.ok = true;
+    for (const Site& s : kSites)
+        if (!mem::CodeMatches(mem::Base() + s.rva, s.sig)) {
+            std::snprintf(g_apd.why, sizeof(g_apd.why), "%s at ds.exe+0x%llX does not match", s.name, static_cast<unsigned long long>(s.rva));
+            g_apd.ok = false;
+            break;
+        }
+    Log("[gear] ArtParts functions %s", g_apd.ok ? "verified (part / top-level setters, model update bracket)" : g_apd.why);
+    return g_apd.ok;
+}
+
+using ModelBeginFn = void (*)(std::uintptr_t, unsigned);
+using ModelEndFn = void (*)(std::uintptr_t);
+using SetPartFn = void (*)(std::uintptr_t, unsigned long long, int);
+using SetAllFn = void (*)(std::uintptr_t, unsigned char, char);
+// idx < 0: every top-level part. SEH: a fault switches these calls off for the session. A fault
+// after the bracket opened closes it (the entity's critical section +0x288 must not stay held: the
+// body's next model update, on a worker thread at 240 Hz, would wait on it for good).
+void CloseModelBracket(std::uintptr_t sm) {
+    __try {
+        reinterpret_cast<ModelEndFn>(mem::Base() + kModelEnd)(sm);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+}
+bool CallSetParts(std::uintptr_t sm, std::uintptr_t apd, int idx, bool vis) {
+    const std::uintptr_t b = mem::Base();
+    volatile bool open = false;
+    __try {
+        reinterpret_cast<ModelBeginFn>(b + kModelBegin)(sm, 1);
+        open = true;
+        if (idx < 0) reinterpret_cast<SetAllFn>(b + kApdSetAll)(apd, vis ? 1 : 0, 0);
+        else reinterpret_cast<SetPartFn>(b + kApdSetPart)(apd, vis ? 1ull : 0ull, idx);
+        open = false;
+        reinterpret_cast<ModelEndFn>(b + kModelEnd)(sm);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_apd.faulted = true;
+        if (open) CloseModelBracket(sm);
+        return false;
+    }
+}
+
+// The entity's model (+0xB8) and ArtPartsData, checked: the model points back at the entity.
+bool ModelAndApd(std::uintptr_t e, std::uintptr_t* sm, Apd* a) {
+    *sm = Q(e + 0xB8);
+    return *sm && Q(*sm + 0x48) == e && ReadApd(e, a);
+}
+
+// Mirrored ArtParts: a target (the partner's Sam body, the backpack prop) shows the sender's parts when
+// its ArtParts are the very parts of our own reference entity (our Sam, our backpack): the same part
+// resources at every index the sender names. Only those indices are set, and only when they differ.
+struct PartsMirror {
+    const char* what = "";
+    std::uintptr_t target = 0;
+    bool checked = false, compatible = false;
+    unsigned applied = 0, failed = 0;
+    double next_ms = 0;
+};
+PartsMirror g_pm{"partner body"}, g_pack_pm{"backpack prop"};
+
+bool Bit(const std::uint64_t* words, unsigned i) { return ((words[i >> 6] >> (i & 63)) & 1) != 0; }
+
+void MirrorParts(PartsMirror& m, std::uintptr_t target, std::uintptr_t ref, const std::uint64_t* apply, const std::uint64_t* visible, unsigned max,
+                 double now) {
+    if (m.target != target) {
+        const char* w = m.what;
+        m = PartsMirror{};
+        m.what = w;
+        m.target = target;
+    }
+    if (!target || !ref || now < m.next_ms || !ApdFnsOk()) return;
+    m.next_ms = now + 100;
+    std::uintptr_t sm = 0;
+    Apd b, l;
+    if (!ModelAndApd(target, &sm, &b) || !ReadApd(ref, &l)) return;
+    if (!m.checked) {
+        m.checked = true;
+        unsigned same = 0, named = 0;
+        for (unsigned i = 0; i < max; ++i) {
+            if (!Bit(apply, i)) continue;
+            ++named;
+            const std::uintptr_t bp = i < static_cast<unsigned>(b.n) ? Q(b.arr + 8ull * i) : 0;
+            const std::uintptr_t lp = i < static_cast<unsigned>(l.n) ? Q(l.arr + 8ull * i) : 0;
+            if (bp && lp && Q(bp + 0x20) == Q(lp + 0x20)) ++same;  // (a part without a resource of its own: none on both)
+        }
+        m.compatible = b.n == l.n && named > 0 && same == named;
+        Log("[gear] %s %p: %d ArtParts (ours %d), %u of %u named parts are the same resources: %s", m.what, reinterpret_cast<void*>(target), b.n, l.n,
+            same, named, m.compatible ? "the partner's parts are mirrored on it" : "another model: its parts are left as they are");
+    }
+    if (!m.compatible) return;
+    unsigned changed = 0;
+    for (unsigned i = 0; i < max && i < static_cast<unsigned>(b.n); ++i) {
+        if (!Bit(apply, i)) continue;
+        const bool want = Bit(visible, i);
+        std::uint8_t fl = 0;
+        if (!PartFlags(b, i, &fl) || ((fl & 1) != 0) == want) continue;
+        if (!CallSetParts(sm, b.apd, static_cast<int>(i), want)) {
+            ++m.failed;
+            Log("[gear] the ArtParts part setter faulted on the %s: parts off for this session", m.what);
+            return;
+        }
+        ++changed;
+    }
+    if (changed) {
+        m.applied += changed;
+        if (m.applied <= 200) Log("[gear] %s: %u part(s) set (total %u)", m.what, changed, m.applied);
+    }
+}
+
 void Unpublish(PropSet& s) {
     if (!s.published) return;
     realbody::PublishGear(s.slot, nullptr, 0);
@@ -647,6 +1187,8 @@ void RemoveAll(PropSet& s, const char* why) {
         if (s.props[i].loading || s.props[i].live || s.props[i].sp.sp) {
             RemoveProp(s, i, why);
             ++n;
+        } else {
+            s.props[i] = Prop{};
         }
     if (n) Log("[%s] %u prop(s) removed (%s)", s.tag, n, why);
     s.body = nullptr;
@@ -678,28 +1220,63 @@ void PublishNow(PropSet& s) {
     s.published_n = n;
 }
 
-bool ValidateProp(game::Entity* e, const char** why) {
+bool ValidateProp(game::Entity* e, bool entity_item, char* why, std::size_t cap) {
     const auto a = reinterpret_cast<std::uintptr_t>(e);
     const std::uintptr_t rtti = mem::RttiOf(a);
-    if (!rtti) return (*why = "entity type unknown"), false;
-    if (mem::DerivesFrom(rtti, "Humanoid") || mem::DerivesFrom(rtti, "DSPlayerEntity")) return (*why = "a Humanoid / player entity"), false;
+    if (!rtti) return std::snprintf(why, cap, "entity type unknown"), false;
+    if (mem::DerivesFrom(rtti, "Humanoid") || mem::DerivesFrom(rtti, "DSPlayerEntity") || mem::DerivesFrom(rtti, "DSBackpackEntity"))
+        return std::snprintf(why, cap, "a Humanoid / player / backpack entity"), false;
     for (const char* bad : {"AIIndividualComponent", "AIBodyComponent", "DSPlayerControllerComponent", "HumanoidController", "CapsuleComponent",
                             "PhysicsCollisionComponent", "PhysicsRagdollComponent"})
-        if (partner::FindComponentByName(e, bad)) return (*why = "carries AI, controller or physics components"), false;
+        if (partner::FindComponentByName(e, bad)) return std::snprintf(why, cap, "carries %s", bad), false;
+    if (!entity_item) return true;
+    // A game gear entity's copy: the same class / component rule the sender applies (MirrorableAt).
+    const char* no = nullptr;
+    if (!MirrorableAt(a, g_mirror_level, &no)) return std::snprintf(why, cap, "%s", no ? no : "not mirrorable"), false;
     return true;
 }
 
-void SetShown(PropSet& s, unsigned i, bool on) {
+void SetShown(PropSet& s, unsigned i, bool on, double now) {
     Prop& p = s.props[i];
-    if (!p.live || p.shown == on) return;
-    if (!holo::SpawnAlive(p.sp)) return;
+    if (!p.live || !holo::SpawnAlive(p.sp)) return;
+    // The real flag, not a cached one: Sleep / Wake, activation or a menu may have changed it.
+    std::uint64_t fl = 0;
+    const bool is_on = partner::ReadFlags(p.sp.e, &fl) && (fl & 0x2) != 0;
+    if (p.shown == on && is_on == on) return;
+    if (p.shown == on && is_on != on) {
+        // A prop whose own components hide it again and again (more than 5 times in 3 s) is left to
+        // them while it should be shown (hiding it with the body still wins); a one-off change is undone.
+        if (now - p.reshow_since > 3000) p.reshow_since = now, p.reshows = 0;
+        if (on && !p.game_owned && ++p.reshows > 5) {
+            p.game_owned = true;
+            Log("[%s] prop %u is hidden by its own components again and again: its visibility is left to them", s.tag, i);
+        }
+        if (on && p.game_owned) return;
+        if (++s.reshown <= 20) Log("[%s] prop %u was %s by the game: set %s again", s.tag, i, is_on ? "shown" : "hidden", on ? "visible" : "invisible");
+    }
     if (partner::SetVisible(p.sp.e, on)) p.shown = on;
+}
+
+// The path + GUID a prop key loads (false: an entity resource the table does not name yet).
+bool KeySource(const PropSet& s, int key, const char** path, const std::uint8_t** guid, const char** label) {
+    static std::uint8_t parsed[kPropCount][16];
+    static bool parsed_ok[kPropCount] = {};
+    if (key >= 0 && key < kPropCount) {
+        if (!parsed_ok[key]) parsed_ok[key] = bodies::ParseGuid(kProps[key].guid, parsed[key]);
+        if (!parsed_ok[key]) return false;
+        *path = kProps[key].path, *guid = parsed[key], *label = kProps[key].key;
+        return true;
+    }
+    const int r = key - kKeyEntity;
+    if (r < 0 || r >= static_cast<int>(wire::kMaxGearRes) || !s.res || !s.res[r].used) return false;
+    *path = s.res[r].path, *guid = s.res[r].guid, *label = s.res[r].path;
+    return true;
 }
 
 void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_active, double now) {
     if (!local_active) {
         if (s.asleep_since == 0) s.asleep_since = now > 0 ? now : 1;
-        for (unsigned i = 0; i < wire::kMaxGearItems; ++i) SetShown(s, i, false);
+        for (unsigned i = 0; i < wire::kMaxGearItems; ++i) SetShown(s, i, false, now);
         if (now - s.asleep_since >= 1000 && s.body) RemoveAll(s, "Sam asleep");
         return;
     }
@@ -717,51 +1294,77 @@ void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_acti
     }
     const wire::GearFrame& f = s.want;
     const std::uint16_t h = wire::GearLayoutHash(f);
-    // A new layout: props whose kind changes go (after the detour stopped using the old list).
+    bool changed = false;
+    // A new layout: the props are matched to the new items by what they show (one piece removed must
+    // not respawn every later one); props nobody wants any more go (after the detour stopped using the
+    // old list). A failed prop keeps its backoff when its item still wants the same key.
     if (h != s.published_hash) {
-        bool any_change = false;
+        int old_keys[wire::kMaxGearItems], want[wire::kMaxGearItems], map[wire::kMaxGearItems];
         for (unsigned i = 0; i < wire::kMaxGearItems; ++i) {
-            const int want = i < f.count ? PropFor(f.items[i]) : kPropNone;
             const Prop& p = s.props[i];
-            if ((p.loading || p.live || p.failed) && p.def != want) any_change = true;
+            old_keys[i] = (p.loading || p.live || p.failed) ? p.def : -1;
+            want[i] = i < f.count ? PropFor(f.items[i]) : -1;
         }
-        if (any_change) {
-            Unpublish(s);
-            unsigned gone = 0;
-            for (unsigned i = 0; i < wire::kMaxGearItems; ++i) {
-                const int want = i < f.count ? PropFor(f.items[i]) : kPropNone;
-                Prop& p = s.props[i];
-                if ((p.loading || p.live || p.failed) && p.def != want) {
-                    RemoveProp(s, i, "layout changed");
-                    ++gone;
-                }
+        wire::GearAssignProps(old_keys, wire::kMaxGearItems, want, f.count, map);
+        Unpublish(s);
+        static Prop next[wire::kMaxGearItems];
+        bool used[wire::kMaxGearItems] = {};
+        unsigned kept = 0, moved = 0, gone = 0;
+        for (unsigned j = 0; j < wire::kMaxGearItems; ++j) {
+            next[j] = Prop{};
+            if (j < f.count && map[j] >= 0) {
+                next[j] = s.props[map[j]];
+                used[map[j]] = true;
+                ++kept;
+                moved += map[j] != static_cast<int>(j);
             }
-            Log("[%s] layout %04X -> %04X: %u prop(s) removed", s.tag, s.published_hash, h, gone);
         }
+        for (unsigned i = 0; i < wire::kMaxGearItems; ++i)
+            if (!used[i] && (s.props[i].loading || s.props[i].live || s.props[i].sp.sp)) {
+                RemoveProp(s, i, "layout changed");
+                ++gone;
+            }
+        for (unsigned j = 0; j < wire::kMaxGearItems; ++j) s.props[j] = next[j];
+        s.kept += moved;
+        if (s.published_hash != 0xFFFF || gone)
+            Log("[%s] layout %04X -> %04X: %u prop(s) kept (%u moved to another item), %u removed", s.tag, s.published_hash, h, kept, moved, gone);
         s.published_hash = h;
         DescribeFrame(f, s.tag);
+        changed = true;
     }
-    // Spawn the missing props (a few per tick), poll the loading ones.
+    // Spawn the missing props (a few per tick), poll the loading ones; failures are retried.
     unsigned begun = 0, loading = 0;
     game::WorldTransform at{};
     const bool have_at = game::TryGetTransform(body, &at);
     at.pos.z -= 20.0;  // out of sight until the first placement
-    bool changed = false;
     for (unsigned i = 0; i < f.count; ++i) {
         Prop& p = s.props[i];
         const int want = PropFor(f.items[i]);
-        if (want < 0 || (s.refused & (1u << want))) continue;
-        if (!p.loading && !p.live && !p.failed && have_at && begun < 4) {
+        if (want < 0 || want >= kKeyCount || s.refused[want]) continue;
+        const char* path = nullptr;
+        const std::uint8_t* gid = nullptr;
+        const char* label = "?";
+        const bool known = KeySource(s, want, &path, &gid, &label);
+        if (!p.loading && !p.live && have_at && begun < 4 && known && !(p.failed && now < p.retry_ms)) {
             char why[200] = {};
-            if (realbody::BeginByPath(kProps[want].path, kProps[want].guid, at, 0x6E000000u + i, &p.sp, why, sizeof(why))) {
-                p.def = want;
+            std::uint8_t g16[16];
+            std::memcpy(g16, gid, 16);
+            p.def = want;
+            const bool injected = g_fault_spawns > 0;  // hidden tests: `gear 5 <n>` makes the next n starts fail
+            if (injected) {
+                --g_fault_spawns;
+                std::snprintf(why, sizeof(why), "TEST: start failure injected (gear 5)");
+            }
+            if (!injected && realbody::BeginByPathGuid(path, g16, at, 0x6E000000u + i, &p.sp, why, sizeof(why))) {
                 p.loading = true;
+                p.failed = false;
                 ++begun;
+                if (p.fails) ++s.retried;
             } else {
-                p.def = want;
                 p.failed = true;
+                p.retry_ms = now + wire::GearRetryDelayMs(++p.fails);
                 ++s.failed;
-                Log("[%s] prop %u '%s' not started: %s", s.tag, i, kProps[want].key, why);
+                if (s.failed <= 30) Log("[%s] prop %u '%s' not started (try %u, again in %.0f s): %s", s.tag, i, label, p.fails, (p.retry_ms - now) / 1000, why);
             }
         }
         if (p.loading) {
@@ -770,24 +1373,27 @@ void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_acti
             switch (holo::SpawnPoll(p.sp, why, sizeof(why))) {
                 case holo::SpawnState::loading: break;
                 case holo::SpawnState::cancelled:
-                case holo::SpawnState::failed:
-                    Log("[%s] prop %u '%s' did not load: %s", s.tag, i, kProps[want].key, why);
+                case holo::SpawnState::failed: {
+                    const unsigned fails = p.fails + 1;
                     RemoveProp(s, i, "load failed");
                     s.props[i].def = want;
                     s.props[i].failed = true;
-                    s.refused |= 1u << want;
+                    s.props[i].fails = fails;
+                    s.props[i].retry_ms = now + wire::GearRetryDelayMs(fails);
                     ++s.failed;
+                    if (s.failed <= 30) Log("[%s] prop %u '%s' did not load (try %u, again in %.0f s): %s", s.tag, i, label, fails, wire::GearRetryDelayMs(fails) / 1000, why);
                     break;
+                }
                 case holo::SpawnState::realized: {
                     p.loading = false;
-                    const char* bad = nullptr;
-                    if (!p.sp.e || !ValidateProp(p.sp.e, &bad)) {
-                        Log("[%s] prop %u '%s' refused: %s", s.tag, i, kProps[want].key, bad ? bad : "no entity");
+                    char bad[160] = "no entity";
+                    if (!p.sp.e || !ValidateProp(p.sp.e, want >= kKeyEntity, bad, sizeof(bad))) {
+                        Log("[%s] prop %u '%s' refused for this session: %s", s.tag, i, label, bad);
                         if (p.sp.e) partner::DescribeEntity(p.sp.e, "refused gear prop");
                         RemoveProp(s, i, "refused");
                         s.props[i].def = want;
                         s.props[i].failed = true;
-                        s.refused |= 1u << want;
+                        s.refused[want] = true;
                         ++s.failed;
                         break;
                     }
@@ -797,45 +1403,249 @@ void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_acti
                     partner::ReadGuid(p.sp.e, &p.guid);
                     p.live = true;
                     p.shown = false;
+                    p.fails = 0;
                     ++s.spawned;
                     changed = true;
-                    static bool described[kPropCount] = {};
+                    static bool described[kKeyCount] = {};
                     if (!described[want]) {
                         described[want] = true;
-                        partner::DescribeEntity(p.sp.e, kProps[want].key);
+                        partner::DescribeEntity(p.sp.e, label);
                     }
                     break;
                 }
             }
         }
         if (p.live && !holo::SpawnAlive(p.sp)) {
-            Log("[%s] prop %u '%s' was destroyed by the game", s.tag, i, kProps[want].key);
+            // SpawnTeardown handles a dead entity (the spawner reference only); then the failure backoff,
+            // so a resource whose entity removes itself is not respawned every tick.
+            const unsigned fails = p.fails + 1;
             Unpublish(s);
-            p = Prop{};
+            RemoveProp(s, i, "destroyed by the game");
+            s.props[i].def = want;
+            s.props[i].failed = true;
+            s.props[i].fails = fails;
+            s.props[i].retry_ms = now + wire::GearRetryDelayMs(fails);
+            ++s.failed;
+            if (s.failed <= 30) Log("[%s] prop %u '%s' was destroyed by the game: again in %.0f s", s.tag, i, label, wire::GearRetryDelayMs(fails) / 1000);
             changed = true;
         }
     }
-    // Publish when anything changed (new props live, new poses).
+    // Publish when anything changed (new props live, new poses), and again when a placement fault
+    // switched the detour's list off (at most 3 times a session: a fault fires the crash reporter).
     static wire::GearFrame last_pub[2];
     const int si = s.slot == realbody::GearSlot::self ? 1 : 0;
     float dm = 0, dd = 0;
     const bool poses_moved = !wire::GearPoseDelta(last_pub[si], f, &dm, &dd) || dm > 0.0005f || dd > 0.05f;
-    if (changed || poses_moved || !s.published) {
+    bool fault_off = s.published && realbody::GearPublished(s.slot) == 0;
+    if (fault_off) {
+        ++s.placement_off;
+        Log("[%s] the detour's prop list was switched off (a placement fault): %s", s.tag, s.placement_off <= 3 ? "published again" : "left off");
+        if (s.placement_off > 3) fault_off = false;
+    }
+    if (changed || poses_moved || !s.published || fault_off) {
         PublishNow(s);
         last_pub[si] = f;
     }
     // Place now from the tick too (the detour places them every frame the body is updated).
     const unsigned placed = realbody::PlaceGearNow(s.slot);
-    // Visibility: with the body.
-    for (unsigned i = 0; i < f.count; ++i) SetShown(s, i, body_visible && placed > 0);
+    if (placed > 0) s.last_placed_ms = now;
+    // Visibility: with the body; a tick without a placement (a torn read) does not hide them, 300 ms do.
+    const bool place_ok = placed > 0 || (s.last_placed_ms > 0 && now - s.last_placed_ms < 300);
+    for (unsigned i = 0; i < f.count; ++i) SetShown(s, i, body_visible && place_ok, now);
     if (now >= s.next_stats_ms && s.published_n) {
         s.next_stats_ms = now + 5000;
-        unsigned live = 0, shown = 0;
-        for (unsigned i = 0; i < f.count; ++i) live += s.props[i].live, shown += s.props[i].shown;
+        unsigned live = 0, shown = 0, waiting = 0, failed_now = 0, refused = 0;
+        for (unsigned i = 0; i < f.count; ++i) {
+            const Prop& p = s.props[i];
+            live += p.live, shown += p.shown, failed_now += p.failed;
+            const int k = PropFor(f.items[i]);
+            const char* a = nullptr;
+            const std::uint8_t* b = nullptr;
+            const char* c = nullptr;
+            if (k >= 0 && k < kKeyCount && s.refused[k]) ++refused;
+            else if (k >= 0 && !KeySource(s, k, &a, &b, &c)) ++waiting;
+        }
         std::uint32_t pl = 0, aba = 0, bad = 0;
         realbody::GearCounters(s.slot, &pl, &aba, &bad);
-        Log("[%s] %u items, %u props live (%u loading, %u shown, %u failed, %u removed); placements %u (aba %u, bad matrix %u)", s.tag, f.count, live,
-            loading, shown, s.failed, s.removed, pl, aba, bad);
+        Log("[%s] %u items, %u props live (%u loading, %u shown, %u failing now, %u refused, %u waiting for their resource; %u failures, %u retries, %u "
+            "reshown, %u kept across layouts, %u removed); placements %u (aba %u, bad matrix %u)",
+            s.tag, f.count, live, loading, shown, failed_now, refused, waiting, s.failed, s.retried, s.reshown, s.kept, s.removed, pl, aba, bad);
+    }
+}
+
+
+// ---------------------------------------------------------------- census (debug, read-only, fault-free)
+// What the game draws on and around an entity: its child tree, the inventory's gear entities, the
+// mesh controller's part masks and the ArtParts it drives. Every read is fault-free; nothing is called.
+std::string CStr(std::uintptr_t p, std::size_t max = 96) {
+    if (!p) return "";
+    std::int32_t len = -1;
+    char buf[128] = {};
+    if (max > sizeof(buf) - 1) max = sizeof(buf) - 1;
+    if (!Rd(p - 8, len) || len < 0 || len > 4096) return "";
+    const std::size_t n = static_cast<std::size_t>(len) < max ? static_cast<std::size_t>(len) : max;
+    if (n && !mem::Read(p, buf, n)) return "";
+    for (std::size_t i = 0; i < n; ++i)
+        if (static_cast<unsigned char>(buf[i]) < 0x20 || static_cast<unsigned char>(buf[i]) > 0x7E) buf[i] = '?';
+    return std::string(buf, n);
+}
+
+// The name of a Decima object (ResourceWithName +0x20 String), or "".
+std::string ObjName(std::uintptr_t o) {
+    if (!o || !mem::DerivesFrom(mem::RttiOf(o), "ResourceWithName")) return "";
+    return CStr(Q(o + 0x20));
+}
+
+std::string GuidStr(const std::uint8_t* g) {
+    char b[40];
+    std::snprintf(b, sizeof(b), "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x", g[3], g[2], g[1], g[0], g[5], g[4], g[7], g[6],
+                  g[8], g[9], g[10], g[11], g[12], g[13], g[14], g[15]);
+    return b;
+}
+
+void CensusEntity(const char* tag, int depth, std::uintptr_t e, std::uintptr_t sam, const Xf* sam_w) {
+    std::uint64_t f = 0;
+    Rd(e + kEntFlags, f);
+    char path[200] = {};
+    std::uint8_t g[16] = {};
+    const char* rt = nullptr;
+    const bool have = realbody::ResourceIdentity(reinterpret_cast<game::Entity*>(e), path, sizeof(path), g, &rt);
+    Xf w;
+    char where[200] = "";
+    if (sam_w && ReadWorld(e, &w)) {
+        double rp[3];
+        float rr[3][3];
+        Relative(*sam_w, w, rp, rr);
+        int best = -1;
+        double bd = 1e9;
+        for (unsigned j = 0; j < 77; ++j) {
+            Xf jw;
+            if (!JointWorld(reinterpret_cast<game::Entity*>(sam), *sam_w, j, &jw)) continue;
+            const double d = Dist(jw, w);
+            if (d < bd) bd = d, best = static_cast<int>(j);
+        }
+        std::snprintf(where, sizeof(where), " at Sam-local (%.3f %.3f %.3f) nearest joint %d (%.3f m)", rp[0], rp[1], rp[2], best, bd);
+    }
+    Log("[census] %s %*s%p %s flags 0x%llX vis %d parent %p res '%s' %s (%s)%s", tag, depth * 2, "", reinterpret_cast<void*>(e), TypeOf(e),
+        static_cast<unsigned long long>(f), (f & 2) ? 1 : 0, reinterpret_cast<void*>(Q(e + 0x70)), have ? path : "?", have ? GuidStr(g).c_str() : "-",
+        rt ? rt : "-", where);
+    partner::DescribeEntity(reinterpret_cast<game::Entity*>(e), "census");
+}
+
+void CensusTree(const char* tag, std::uintptr_t root, std::uintptr_t sam, const Xf* sam_w, unsigned* budget, int depth = 0) {
+    if (!root || depth > 4) return;
+    std::uintptr_t c = Q(root + 0x78);
+    for (int guard = 0; c && guard < 64 && *budget; ++guard, c = Q(c + 0x80)) {
+        if (!Derives(c, "Entity")) {
+            Log("[census] %s %*s%p is not an Entity (%s): stop", tag, depth * 2 + 2, "", reinterpret_cast<void*>(c), TypeOf(c));
+            break;
+        }
+        --*budget;
+        CensusEntity(tag, depth + 1, c, sam, sam_w);
+        CensusTree(tag, c, sam, sam_w, budget, depth + 1);
+    }
+}
+
+// ArtPartsData: +0x100 count, +0x108 part pointers; part +0x08 child count, +0x18 parent part,
+// +0x2C flags (bit 0 asked visible, bit 1 shown). The part's name: the first named resource it points to.
+void CensusArtParts(const char* tag, std::uintptr_t e) {
+    const std::uintptr_t apd = partner::FindComponentByName(reinterpret_cast<game::Entity*>(e), "ArtPartsData");
+    std::int32_t n = -1;
+    const std::uintptr_t arr = apd ? Q(apd + 0x108) : 0;
+    if (!apd || !Rd(apd + 0x100, n) || n < 0 || n > 512 || !arr) {
+        Log("[census] %s ArtPartsData %p: count %d (not walked); entity +0x180 = %p", tag, reinterpret_cast<void*>(apd), n,
+            reinterpret_cast<void*>(Q(e + 0x180)));
+        return;
+    }
+    Log("[census] %s ArtPartsData %p (%s): %d parts; entity +0x180 = %p", tag, reinterpret_cast<void*>(apd), TypeOf(apd), n,
+        reinterpret_cast<void*>(Q(e + 0x180)));
+    for (std::int32_t i = 0; i < n; ++i) {
+        const std::uintptr_t p = Q(arr + 8ull * static_cast<unsigned>(i));
+        if (!p) continue;
+        std::uint8_t fl = 0;
+        std::int32_t kids = 0;
+        Rd(p + 0x2C, fl);
+        Rd(p + 0x08, kids);
+        const std::uintptr_t parent = Q(p + 0x18);
+        int pi = -1;
+        for (std::int32_t k = 0; k < n && parent; ++k)
+            if (Q(arr + 8ull * static_cast<unsigned>(k)) == parent) pi = k;
+        std::string name;
+        std::string refs;
+        for (unsigned off = 0x20; off < 0x80 && name.empty(); off += 8) {
+            const std::uintptr_t q = Q(p + off);
+            const char* tn = q ? mem::RttiName(mem::RttiOf(q)) : nullptr;
+            if (!tn) continue;
+            name = ObjName(q);
+            char b[96];
+            std::snprintf(b, sizeof(b), " +%X %s", off, tn);
+            refs += b;
+        }
+        Log("[census] %s   part %d %s flags 0x%02X parent %d kids %d name '%s'%s", tag, i, TypeOf(p), fl, pi, kids, name.c_str(), refs.c_str());
+    }
+}
+
+void CensusMeshControl(std::uintptr_t sam) {
+    const std::uintptr_t ctrl = sam + 0xA60;
+    if (Q(ctrl) != sam) {
+        Log("[census] mesh controller: +0xA60 does not point back at Sam");
+        return;
+    }
+    std::uint64_t root = 0, cmp = 0;
+    Rd(ctrl + 0x338, root);
+    Rd(ctrl + 0x1998, cmp);
+    Log("[census] mesh controller %p: Root mask 0x%llX, compare value 0x%llX", reinterpret_cast<void*>(ctrl), static_cast<unsigned long long>(root),
+        static_cast<unsigned long long>(cmp));
+    for (unsigned k = 0; k < 89; ++k) {
+        std::uint64_t m = 0, m2 = 0, m3 = 0;
+        std::int32_t idx = -1;
+        std::uint8_t mode = 0;
+        Rd(ctrl + 0x348 + 8ull * k, m);
+        Rd(ctrl + 0x8D8 + 8ull * k, m2);
+        Rd(ctrl + 0xE68 + 8ull * k, m3);
+        Rd(ctrl + 0x38 + 8ull * k, idx);
+        Rd(ctrl + 0x19A0 + k, mode);
+        if (idx == -1 && !m && !m2 && !m3 && !mode && k) continue;
+        Log("[census]   part %2u: ArtParts index %d, mask 0x%llX, b 0x%llX, c 0x%llX, compare mode %u", k, idx, static_cast<unsigned long long>(m),
+            static_cast<unsigned long long>(m2), static_cast<unsigned long long>(m3), mode);
+    }
+}
+
+void Census(game::Entity* who, bool sam_like) {
+    const auto e = reinterpret_cast<std::uintptr_t>(who);
+    if (!e) {
+        Log("[census] no entity");
+        return;
+    }
+    Xf w;
+    const bool have_w = ReadWorld(e, &w);
+    CensusEntity("root", 0, e, e, have_w ? &w : nullptr);
+    unsigned budget = 200;
+    CensusTree("tree", e, e, have_w ? &w : nullptr, &budget);
+    CensusArtParts("root", e);
+    if (!sam_like) return;
+    CensusMeshControl(e);
+    const std::uintptr_t inv = Q(e + kPInv);
+    if (!inv || Q(inv + kCompOwner) != e) {
+        Log("[census] no inventory component");
+        return;
+    }
+    // Every reference / entity pointer in the inventory's gear block (+0x4C80 .. +0x4F00).
+    for (std::uintptr_t off = 0x4C80; off < 0x4F00; off += 8) {
+        const std::uintptr_t v = Q(inv + off);
+        const std::uintptr_t ent = RefEntity(v);
+        if (!v) continue;
+        if (!ent) {
+            const char* tn = mem::RttiName(mem::RttiOf(v));
+            if (tn) Log("[census] inv +0x%llX = %p (%s)", static_cast<unsigned long long>(off), reinterpret_cast<void*>(v), tn);
+            continue;
+        }
+        char tag[32];
+        std::snprintf(tag, sizeof(tag), "inv+%llX", static_cast<unsigned long long>(off));
+        CensusEntity(tag, 0, ent, e, have_w ? &w : nullptr);
+        unsigned b2 = 40;
+        CensusTree(tag, ent, e, have_w ? &w : nullptr, &b2);
+        CensusArtParts(tag, ent);
     }
 }
 
@@ -859,24 +1669,131 @@ void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
     if (debug) {
         ps.want = g_local;
         ps.have_want = g_have_local;
+        ps.res = g_res_local;
     } else {
         ps.want = g_partner;
         ps.have_want = g_have_partner;
+        ps.res = g_res_partner;
     }
     std::uint64_t flags = 0;
     const bool pvis = pbody && partner::ReadFlags(pbody, &flags) && (flags & 0x2) != 0;
     DriveSet(ps, pbody, pvis, local_active, now_ms);
-    // The self view: only while the self body is shown in Sam's place.
+    // The partner's own gear parts (exoskeleton, BB pod pipe, ...) on a Sam body, and its backpack's
+    // parts (the bag, rain cover, pouches) on the backpack prop: each only when the target's ArtParts
+    // are the same resources as our own Sam's / backpack's.
+    if (pbody && local_active && ps.have_want) {
+        const auto lp = reinterpret_cast<std::uintptr_t>(local);
+        if (ps.want.flags & wire::kGearParts)
+            MirrorParts(g_pm, reinterpret_cast<std::uintptr_t>(pbody), lp, ps.want.parts_apply, ps.want.parts_visible, wire::kMaxGearParts, now_ms);
+        std::uintptr_t prop = 0, ours = 0;
+        for (unsigned i = 0; i < ps.want.count; ++i)
+            if (ps.want.items[i].kind == wire::GearKind::backpack && ps.props[i].live && holo::SpawnAlive(ps.props[i].sp)) {
+                prop = reinterpret_cast<std::uintptr_t>(ps.props[i].sp.e);
+                break;
+            }
+        if (lp && Q(lp) == mem::Base() + kPlayerVtable) {
+            const std::uintptr_t inv = Q(lp + kPInv);
+            if (inv && Q(inv + kCompOwner) == lp) ours = RefEntity(Q(inv + kInvPack));
+        }
+        if (prop && (ps.want.flags & wire::kGearPackParts)) {
+            const std::uint64_t pa[1] = {ps.want.pack_apply}, pv[1] = {ps.want.pack_visible};
+            MirrorParts(g_pack_pm, prop, ours, pa, pv, 64, now_ms);
+        }
+    }
+    // The self view's props: only what the game itself stops drawing while Sam's parts are hidden (the
+    // BB pod, which follows his BBPod part); everything else is his real gear on his skeleton.
     PropSet& ss = g_sets[1];
     game::Entity* sbody = g_self_on ? realbody::SlotEntity(realbody::GearSlot::self) : nullptr;
-    ss.want = g_local;
-    ss.have_want = g_have_local;
+    static wire::GearFrame self_frame;
+    self_frame = wire::GearFrame{};
+    self_frame.flags = g_local.flags & wire::kGearValid;
+    for (unsigned i = 0; i < g_local.count; ++i)
+        if (g_local.items[i].kind == wire::GearKind::bb_pod && g_local.items[i].parent == wire::kGearNoParent)
+            self_frame.items[self_frame.count++] = g_local.items[i];
+    ss.want = self_frame;
+    ss.have_want = g_have_local && self_frame.count > 0;
+    ss.res = g_res_local;
     DriveSet(ss, sbody, sbody && realbody::SelfShown(), local_active, now_ms);
+}
+
+bool TakeSendRes(double now_ms, wire::GearRes* out) noexcept {
+    if (!g_enabled || !out || g_res_local_n == 0) return false;
+    unsigned id = wire::kMaxGearRes;
+    if (g_res_unsent) {
+        for (unsigned i = 0; i < g_res_local_n; ++i)
+            if ((g_res_unsent >> i) & 1) {
+                id = i;
+                break;
+            }
+    } else {
+        if (now_ms < g_res_next_ms) return false;
+        id = g_res_rr++ % g_res_local_n;
+    }
+    if (id >= g_res_local_n) return false;
+    g_res_unsent &= ~(1ull << id);
+    g_res_next_ms = now_ms + 250;
+    out->id = static_cast<std::uint8_t>(id);
+    std::memcpy(out->guid, g_res_local[id].guid, 16);
+    std::snprintf(out->path, sizeof(out->path), "%s", g_res_local[id].path);
+    return true;
+}
+
+// The receiver's own check of a partner resource, before anything is loaded from it (review: the
+// class / component policy can only run after the copy is realized, and realizing is the step that
+// crashed a worker thread in runs 20261117-131822 / -133622). Default: only the cores whose entities
+// were mirrored in the hidden runs (the backpack's items, the stowed weapons, the hanging boots, the
+// inventory's shields / tags / pouches), and never the resources the sender's level-1 policy refuses
+// that were seen on Sam (census 20261117-130343): the BB pod entity (DSBBPodComponent), the cuff device,
+// the baby, the boots, the chiral cylinder, the backpack belt. A game whose own tests raised the mirror
+// level (gear 7 2) or chose the pod entity (gear 8 1) accepts what that level sends.
+bool ResAllowed(const char* path, const std::uint8_t (&guid)[16], const char** why) {
+    if (g_mirror_level >= 2) return true;  // tests only (gear 7 2): any ds/entities/ path the wire allows
+    return wire::GearResProven(path, guid, g_pod_entity, why);
+}
+std::uint32_t g_res_refused = 0, g_res_changed = 0;
+
+void MarkResUnsent(int id) noexcept {
+    if (id < 0) g_res_unsent = g_res_local_n >= 64 ? ~0ull : ((1ull << g_res_local_n) - 1);
+    else if (static_cast<unsigned>(id) < g_res_local_n) g_res_unsent |= 1ull << id;
+}
+
+void SetPartnerRes(const wire::GearRes& r) noexcept {
+    if (r.id >= wire::kMaxGearRes) return;
+    ResEntry& e = g_res_partner[r.id];
+    if (e.used && std::memcmp(e.guid, r.guid, 16) == 0 && std::strcmp(e.path, r.path) == 0) return;
+    PropSet& s = g_sets[0];
+    const int key = kKeyEntity + r.id;
+    const char* no = nullptr;
+    if (!ResAllowed(r.path, r.guid, &no)) {
+        if (++g_res_refused <= 20) Log("[gear] the partner's resource %u '%s' %s not loaded: %s", r.id, r.path, GuidStr(r.guid).c_str(), no);
+        s.refused[key] = true;
+        return;
+    }
+    if (e.used) {
+        // An honest peer never changes an id; a changed one must not keep showing the old resource.
+        if (++g_res_changed <= 10) Log("[gear] the partner's resource %u changed: '%s' -> '%s'", r.id, e.path, r.path);
+        bool unpublished = false;
+        for (unsigned i = 0; i < wire::kMaxGearItems; ++i) {
+            Prop& p = s.props[i];
+            if (p.def != key || !(p.loading || p.live || p.sp.sp || p.failed)) continue;
+            if (!unpublished) Unpublish(s), unpublished = true;
+            RemoveProp(s, i, "its resource changed");
+        }
+    }
+    e.used = true;
+    std::memcpy(e.guid, r.guid, 16);
+    std::snprintf(e.path, sizeof(e.path), "%s", r.path);
+    ++g_res_rx;
+    // A prop of this id refused or failed before (another resource) is tried again.
+    g_sets[0].refused[kKeyEntity + r.id] = false;
 }
 
 bool TakeSend(double now_ms, wire::GearFrame* out) noexcept {
     if (!g_enabled || !g_have_local || !out) return false;
-    const bool layout = !g_have_sent || wire::GearLayoutHash(g_sent) != wire::GearLayoutHash(g_local) || g_sent.count != g_local.count;
+    const bool parts_changed = (g_sent.flags & wire::kGearParts) != (g_local.flags & wire::kGearParts) ||
+                               std::memcmp(g_sent.parts_visible, g_local.parts_visible, sizeof(g_sent.parts_visible)) != 0 ||
+                               std::memcmp(g_sent.parts_apply, g_local.parts_apply, sizeof(g_sent.parts_apply)) != 0;
+    const bool layout = !g_have_sent || parts_changed || wire::GearLayoutHash(g_sent) != wire::GearLayoutHash(g_local) || g_sent.count != g_local.count;
     float dm = 0, dd = 0;
     const bool moved = !layout && wire::GearPoseDelta(g_sent, g_local, &dm, &dd) && (dm > 0.02f || dd > 4.0f);
     const double since = now_ms - g_last_send_ms;
@@ -892,6 +1809,7 @@ void SetPartnerGear(const wire::GearFrame* f) noexcept {
     if (!f) {
         if (g_have_partner) Log("[gear] the partner's gear cleared");
         g_have_partner = false;
+        for (ResEntry& e : g_res_partner) e = ResEntry{};
         return;
     }
     if (!g_have_partner || wire::GearLayoutHash(*f) != wire::GearLayoutHash(g_partner)) DescribeFrame(*f, "the partner's gear");
@@ -936,11 +1854,13 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             realbody::GearCounters(realbody::GearSlot::partner, &pl[0], &aba[0], &bad[0]);
             realbody::GearCounters(realbody::GearSlot::self, &pl[1], &aba[1], &bad[1]);
             std::snprintf(msg, cap,
-                          "%s; ours %u items (layout %04X, reads %u, failed %u, kept while moving %u, new layouts held a read %u); partner's %s (%u items); props partner %u spawned "
-                          "%u failed, self %u spawned %u failed; placements %u/%u (aba %u/%u, bad %u/%u)",
+                          "%s; ours %u items (layout %04X, reads %u, failed %u, kept while moving %u, new layouts held a read %u; resources %u, %u "
+                          "without an id); partner's %s (%u items, %u resource entries received); props partner %u spawned %u failed %u retried %u reshown, "
+                          "self %u spawned %u failed; placements %u/%u (aba %u/%u, bad %u/%u); partner gear parts set %u",
                           ok ? "read ok" : why, g_local.count, wire::GearLayoutHash(g_local), g_reads, g_read_fail, g_moving_skips, g_layout_held,
-                          g_have_partner ? "received" : "none", g_have_partner ? g_partner.count : 0u, g_sets[0].spawned, g_sets[0].failed,
-                          g_sets[1].spawned, g_sets[1].failed, pl[0], pl[1], aba[0], aba[1], bad[0], bad[1]);
+                          g_res_local_n, g_res_full, g_have_partner ? "received" : "none", g_have_partner ? g_partner.count : 0u, g_res_rx,
+                          g_sets[0].spawned, g_sets[0].failed, g_sets[0].retried, g_sets[0].reshown, g_sets[1].spawned, g_sets[1].failed, pl[0], pl[1],
+                          aba[0], aba[1], bad[0], bad[1], g_pm.applied + g_pack_pm.applied);
             Log("[gear] status: %s", msg);
             return ok;
         }
@@ -966,8 +1886,67 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             g_debug_body = v[1] != 0;
             std::snprintf(msg, cap, "our own gear on the debug body %s", g_debug_body ? "on" : "off");
             return true;
+        case 5:
+        case 6: {
+            if (!automation::Enabled() || !automation::SavesRedirected()) {
+                std::snprintf(msg, cap, "refused: only in a hidden test run on scratch saves");
+                return false;
+            }
+            if (op == 5) {
+                g_fault_spawns = v[1] <= 0 ? 0 : v[1] > 100 ? 100 : static_cast<int>(v[1]);
+                std::snprintf(msg, cap, "TEST: the next %d prop start(s) fail", g_fault_spawns);
+            } else {
+                // what the game might do to a prop (Sleep / Wake, activation): hide every partner prop
+                // behind our back; the tick must show them again
+                unsigned n = 0;
+                for (Prop& p : g_sets[0].props)
+                    if (p.live && holo::SpawnAlive(p.sp) && partner::SetVisible(p.sp.e, false)) ++n;
+                std::snprintf(msg, cap, "TEST: %u partner prop(s) hidden behind the mod's back", n);
+            }
+            Log("[gear] %s", msg);
+            return true;
+        }
+        case 8:
+            if (v[1] != 0 && (!automation::Enabled() || !automation::SavesRedirected())) {
+                std::snprintf(msg, cap, "refused: the pod entity copy only in a hidden test run on scratch saves (it crashed a worker thread)");
+                return false;
+            }
+            g_pod_entity = v[1] != 0;
+            g_next_read_ms = 0;
+            std::snprintf(msg, cap, "BB pod drawn as %s", g_pod_entity ? "a copy of the game's pod entity" : "the cinematic pod prop");
+            Log("[gear] %s", msg);
+            return true;
+        case 7:
+            if (v[1] > 1 && (!automation::Enabled() || !automation::SavesRedirected())) {
+                std::snprintf(msg, cap, "refused: mirror level 2 only in a hidden test run on scratch saves (not proven safe)");
+                return false;
+            }
+            g_mirror_level = v[1] < 0 ? 0 : v[1] > 2 ? 2 : static_cast<int>(v[1]);
+            g_next_read_ms = 0;
+            std::snprintf(msg, cap, "game gear entities mirrored at level %d (0 model components only, 1 + the proven DS components, 2 + cylinder, belt, weapons)",
+                          g_mirror_level);
+            Log("[gear] %s", msg);
+            return true;
+        case 10:
+            g_memo_on = v[1] != 0;
+            for (NodeMemo& m : g_memo) m = NodeMemo{};
+            g_read_us_sum = 0, g_read_us_max = 0, g_read_timed = 0, g_read_window = 0;
+            std::snprintf(msg, cap, "gear walk cache %s (read cost logged after 50 reads)", g_memo_on ? "on" : "off");
+            Log("[gear] %s", msg);
+            return true;
+        case 9: {
+            // census: 0 the local player, 1 the partner / debug body, 2 the self body
+            game::Entity* who = nullptr;
+            const int what = static_cast<int>(v[1]);
+            if (what == 0) game::TryGetLocalPlayer(&who);
+            else who = realbody::SlotEntity(what == 2 ? realbody::GearSlot::self : realbody::GearSlot::partner);
+            Census(who, what == 0);
+            std::snprintf(msg, cap, "census of %s %p logged", what == 0 ? "the local player" : what == 2 ? "the self body" : "the partner body",
+                          static_cast<void*>(who));
+            return who != nullptr;
+        }
         default:
-            std::snprintf(msg, cap, "unknown op %d (0 log, 1 partner 0/1, 2 self 0/1, 3 test limit n, 4 debug body 0/1)", op);
+            std::snprintf(msg, cap, "unknown op %d (0 log, 1 partner 0/1, 2 self 0/1, 3 test cases n, 4 debug body 0/1, 5 n / 6 test faults, 7 level, 8 pod entity, 9 census 0/1/2, 10 walk cache 0/1)", op);
             return false;
     }
 }

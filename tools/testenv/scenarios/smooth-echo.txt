@@ -1,0 +1,95 @@
+# Smooth animation above 60 fps (docs/real-partner-body.md section 3.5), one game: the echo partner (a Sam
+# body replaying our own Sam 1 s later, 1.5 m aside) and the self view (Fragile in Sam's place) at frame
+# caps 30, 60, 120 and none, first with the v0.7 behaviour (smooth_pose=0: bodies at the game's 59.94 Hz),
+# then the 240 Hz boost alone, then everything (mask 7). The [smooth] line every second has the numbers:
+# presented fps, pose writes per frame, new vs repeated poses while moving, stutter, jerk, latency, and the
+# echo partner's error against our own Sam's captured pose at the same play time.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario smooth-echo -SeedSaves complete-100
+role echo
+timeout 360
+ini partner_body=real
+ini partner_character=sam
+ini my_character=fragile
+ini self_character=1
+ini echo_delay_s=1.0
+ini echo_offset_m=1.5
+ini partner_collision=0
+ini smooth_pose=0
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[sync\] partner body: real
+waitlog 40 \[self\] showing 'fragile'
+# the camera round to face Sam: walking towards it, the echo partner trails behind Sam, in view
+pad none 1300 rx=32767
+wait 1500
+action smooth 0
+# ---- v0.7 behaviour (mask 0) at 30 / 60 / 120 / uncapped
+action smooth 2 30
+wait 1500
+pad none 4000 ly=-32767
+pad none 4000 ly=32767
+action smooth 2 60
+wait 1500
+pad none 4000 ly=-32767
+pad none 4000 ly=32767
+action smooth 2 120
+wait 1500
+pad none 4000 ly=-32767 keep
+action smooth 3 240
+wait 1000
+screenshot 01-mask0-120-towards
+pad none 0
+pad none 4000 ly=32767
+action smooth 2 0
+wait 1500
+pad none 4000 ly=-32767
+pad none 4000 ly=32767
+action smooth 0
+# ---- the 240 Hz boost alone (mask 1) at 120 / uncapped
+action smooth 1 1
+action smooth 2 120
+wait 1500
+action smooth 0
+pad none 4000 ly=-32767
+pad none 4000 ly=32767
+action smooth 2 0
+wait 1500
+pad none 4000 ly=-32767
+pad none 4000 ly=32767
+# ---- everything (mask 7) at 30 / 60 / 120 / uncapped
+action smooth 1 7
+action smooth 2 30
+wait 1500
+action smooth 0
+pad none 4000 ly=-32767
+pad none 4000 ly=32767
+action smooth 2 60
+wait 1500
+pad none 4000 ly=-32767
+pad none 4000 ly=32767
+action smooth 2 120
+wait 1500
+pad none 4000 ly=-32767 keep
+action smooth 3 240
+wait 1000
+screenshot 02-mask7-120-towards
+pad none 0
+pad none 4000 ly=32767
+action smooth 2 0
+wait 1500
+pad none 4000 ly=-32767 keep
+action smooth 3 240
+wait 1000
+screenshot 03-mask7-uncapped-towards
+pad none 0
+pad none 4000 ly=32767
+action smooth 0
+action real_stats
+action log_status
+quit

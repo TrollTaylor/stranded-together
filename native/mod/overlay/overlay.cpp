@@ -18,6 +18,7 @@
 #include "overlay_keys.hpp"
 #include "overlay_menu.hpp"
 #include "overlay_renderer.hpp"
+#include "overlay_font.hpp"
 #include "overlay_tags.hpp"
 
 // ImGui assertion sink (overlay_imconfig.h): log once per site, keep running.
@@ -540,6 +541,7 @@ void FrameMain(IDXGISwapChain* chain) noexcept {
     ApplyScale(h);
     FeedInput(w, h);
 
+    if (name_tags) font::BetweenFrames();  // the atlas is unlocked here (outside NewFrame..Render)
     ImGui::NewFrame();
     if (name_tags) tags::Draw(ImGui::GetBackgroundDrawList(), static_cast<float>(w), static_cast<float>(h), g_ui_scale);
     if (g_open) {
@@ -957,6 +959,7 @@ bool Install(const Options& options) noexcept {
     if (g_installed.load()) return true;
     QueryPerformanceFrequency(&g_qpf);
     g_opt = options;
+    font::Configure(options.game_font);
     input::SetAutomation(options.automation);
     input::SetToggleKey(options.toggle_vk);
     menu::Init(options.mod_dir);

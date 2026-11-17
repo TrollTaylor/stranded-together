@@ -78,7 +78,10 @@ set(ST_OVERLAY_SOURCES
   native/mod/overlay/overlay_menu.cpp
   native/mod/overlay/overlay_positions.cpp
   native/mod/overlay/overlay_renderer.cpp
-  native/mod/overlay/overlay_tags.cpp)
+  native/mod/overlay/overlay_tags.cpp
+  native/mod/overlay/overlay_font.cpp
+  native/mod/game_font.cpp
+  native/mod/game_font_raster.cpp)
 
 # ---- The mod: winhttp.dll proxy loaded by ds.exe from the game folder
 add_library(st_mod SHARED
@@ -136,11 +139,12 @@ add_executable(st_overlay_harness tests/overlay_harness.cpp tests/overlay_sync_s
 target_include_directories(st_overlay_harness PRIVATE native/mod native/mod/overlay)
 target_compile_definitions(st_overlay_harness PRIVATE "ST_BUILD_ID=\"${ST_BUILD_ID}\"" UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS)
 target_compile_options(st_overlay_harness PRIVATE ${ST_WARNINGS})
-target_link_libraries(st_overlay_harness PRIVATE st_minhook st_mod_imgui d3d12 user32 windowscodecs ole32)
+target_link_libraries(st_overlay_harness PRIVATE st_minhook st_mod_imgui d3d12 user32 windowscodecs ole32 bcrypt)
 add_test(NAME st_overlay_harness COMMAND st_overlay_harness --out "${CMAKE_CURRENT_BINARY_DIR}")
 
 # ---- Pure tests (no game needed)
-add_executable(st_net_tests tests/net_tests.cpp native/mod/pose_wire.cpp native/mod/body_table.cpp native/mod/body_choice.cpp)
+add_executable(st_net_tests tests/net_tests.cpp native/mod/pose_wire.cpp native/mod/body_table.cpp native/mod/body_choice.cpp
+               native/mod/game_font.cpp)
 target_include_directories(st_net_tests PRIVATE native/mod)
 target_link_libraries(st_net_tests PRIVATE st_net)
 target_compile_options(st_net_tests PRIVATE ${ST_WARNINGS})

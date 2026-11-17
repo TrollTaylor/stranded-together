@@ -4,10 +4,12 @@
 // The game's own character collision: Humanoid::Init (0x14373A780) gives Sam a CapsuleComponent at
 // run time (NewGuid, CreateComponent, AddComponent, Configure). The same sequence gives the
 // partner's real body (a spawned cutscene-actor DSControlledEntity, real_body.hpp) a capsule of its
-// own, with Sam's PhysicsCharacterMoverResource (radius 0.40 m, height 1.65 m), body type 0 (a Havok
-// character rigid body, what the game gives remote and AI humanoids) on collision layer 10
-// "Humanoid blocker" (it meets only the Player and AI/remote layers and vehicles: no cargo, bullets,
-// camera or static; partner_collision_layer=9 picks the game's "AI or Remote Player" layer). Every
+// own, with a private copy of Sam's PhysicsCharacterMoverResource (radius 0.40 m) whose standing height is
+// 4.0 m instead of his 1.65 m, so the game offers no Climb on it and a jump cannot grab its top (section
+// 11.5; partner_collision_height), body type 0 (a Havok character rigid body, what the game gives remote
+// and AI humanoids) on collision layer 10 "Humanoid blocker" (it meets only the Player and AI/remote
+// layers and vehicles: no cargo, bullets, camera or static; partner_collision_layer=9 picks the game's
+// "AI or Remote Player" layer, 25 "vs Humanoids" is a test setting). Every
 // tick the capsule is put at the body's transform with zero velocity, exactly HumanoidMover's reset
 // path (Capsule SetTransform, SetVelocity). Sam's own capsule proxy is then blocked by it like by any
 // other character.

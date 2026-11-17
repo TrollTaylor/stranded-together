@@ -1,0 +1,153 @@
+# No climbing on the partner (docs/real-partner-body.md 11.5) and name tags in the game's menu font
+# (section 10.6), one hidden game:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario collision-climb -SeedSaves complete-100
+# The echo partner (a real Sam body) is pinned ahead of Sam (action collision 3) with the default capsule
+# (layer 10, 4.0 m tall). Sam walks into it from three directions and presses A (climb / jump), X and Y
+# while pressed against it; the trace logs the distance and Sam's height every tick ([coll] trace ...
+# sam=(x, y, z ...)). Control: Sam's own 1.65 m capsule (action collision 5 0, the v0.7 capsule), where
+# the game offers Climb. Then the tag near, far (12 m, with the distance; " · " comes from Segoe UI), the
+# self test, and the game's own "Map/Information" header for comparison.
+role echo
+timeout 360
+ini partner_body=real
+ini partner_character=sam
+ini echo_delay_s=3.0
+ini name=TagEcho
+waitready 90
+waitlog 120 \[overlay\] input attached
+waitlog 30 \[coll\] player collision on
+wait 25000
+?screenshot 01-title
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[sync\] partner body: real
+wait 3000
+pad none 700 ly=32767
+wait 1500
+action collision 3 2.5
+waitlog 10 \[coll\] on: the partner blocks Sam
+waitlog 10 \[coll\] capsule attached .* height 4\.00 m
+waitlog 30 \[tags\] name tags use the game's menu font
+action collision 2 200000
+# ---- approach 1: straight ahead at half stick; A, A held, X, Y while pushing
+wait 1500
+pad none 1100 ly=16000 keep
+screenshot 03-a-contact
+pad A 200 ly=16000 keep
+wait 400
+screenshot 03-a-after-a
+pad A 1200 ly=16000 keep
+screenshot 03-a-hold-a
+pad X 200 ly=16000 keep
+wait 400
+pad Y 200 ly=16000 keep
+wait 600
+screenshot 03-a-after-xy
+pad none 0
+action collision 0
+pad none 1800 ly=-32767
+wait 800
+# ---- approach 2: camera turned, full stick then A
+pad none 500 rx=32767
+wait 1000
+action collision 3 2.5
+wait 1800
+pad none 450 ly=32767 keep
+pad none 300 ly=24000 keep
+screenshot 04-b-contact
+pad A 200 ly=24000 keep
+wait 400
+screenshot 04-b-after-a
+pad A 1000 ly=24000 keep
+screenshot 04-b-hold-a
+pad none 0
+pad none 1800 ly=-32767
+wait 800
+# ---- approach 3: camera turned again, half stick, A three times
+pad none 500 rx=32767
+wait 1000
+action collision 3 2.5
+wait 1800
+pad none 1100 ly=16000 keep
+screenshot 05-c-contact
+pad A 150 ly=16000 keep
+wait 300
+pad A 150 ly=16000 keep
+wait 300
+pad A 150 ly=16000 keep
+wait 300
+screenshot 05-c-after-a3
+pad none 0
+action collision 0
+pad none 1800 ly=-32767
+wait 800
+# ---- approach 4: camera turned again, full stick with A pressed four times while pushing
+pad none 500 rx=32767
+wait 1000
+action collision 3 2.5
+wait 1800
+pad none 450 ly=32767 keep
+screenshot 05-d-contact
+pad A 120 ly=32767 keep
+wait 250
+pad A 120 ly=32767 keep
+wait 250
+screenshot 05-d-mid
+pad A 120 ly=32767 keep
+wait 250
+pad A 120 ly=32767 keep
+wait 600
+screenshot 05-d-after-a4
+pad none 0
+action collision 0
+pad none 1800 ly=-32767
+wait 800
+# ---- approach 5: the partner 2.2 m below Sam's feet (Sam on a ledge above it): the 4 m capsule would
+# reach 1.8 m above Sam's feet; collision is off while Sam is more than 1.6 m above the partner, so Sam
+# walks over the spot unhindered (the trace's d falls under 0.84 m)
+action collision 3 2.5 -2.2
+?waitlog 10 \[coll\] off: Sam is above the partner
+wait 1500
+pad none 1600 ly=16000 keep
+screenshot 05-e-above
+pad none 0
+action collision 0
+pad none 1800 ly=-32767
+wait 800
+# ---- control: Sam's own 1.65 m capsule (v0.7): the game offers Climb and Sam climbs it
+action collision 5 0
+action collision 3 2.5
+wait 1800
+pad none 1100 ly=16000 keep
+screenshot 06-control-contact
+pad A 200 ly=16000 keep
+wait 900
+screenshot 06-control-after-a
+pad none 0
+wait 1500
+action collision 0
+action collision 5 4
+pad none 1800 ly=-32767
+wait 1500
+# ---- the tag: near (pinned 3 m), far (12 m, with the distance), the self test above our own Sam
+action collision 3 3
+wait 2000
+screenshot 07-tag-near
+action collision 3 12
+wait 2000
+screenshot 08-tag-far
+action name_tags 1
+wait 800
+screenshot 09-tag-self
+action name_tags 0
+action collision 3 0
+action collision 2 0
+# ---- the game's own menu header in the same typeface: START opens the cuff map ("Map/Information")
+pad START 150
+wait 3000
+screenshot 10-map-header
+action log_status
+quit

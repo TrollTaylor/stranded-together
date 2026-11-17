@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <map>
 #include <regex>
 #include <sstream>
@@ -272,7 +273,8 @@ bool ScenarioIniKeyAllowed(const std::string& key) {
     static const char* const kAllowed[] = {"partner_body", "partner_character", "my_character", "self_character", "partner_holo",
                                            "partner_marker", "partner_voice", "partner_activate", "pose_hook", "echo_delay_s",
                                            "echo_offset_m", "send_hz", "interp_delay_ms", "name", "name_tags", "partner_collision",
-                                           "partner_collision_layer", "partner_gear"};
+                                           "partner_collision_layer", "partner_collision_height", "partner_gear", "name_tag_font",
+                                           "smooth_pose", "frame_cap"};
     for (const char* k : kAllowed)
         if (key == k) return true;
     return false;
@@ -331,7 +333,15 @@ bool ParseScenario(const std::string& text, Scenario* out, std::string* error) {
             continue;
         }
         if (verb == "graphics") {
-            if (words.size() != 2 || words[1] != "low") return fail("graphics low");
+            // "graphics low [fps]": the low preset; fps (30..240) replaces its "fps" / "limit_fps" 30
+            // (a frame-rate test: the game's own limit wins over frame_cap).
+            if (words.size() < 2 || words.size() > 3 || words[1] != "low") return fail("graphics low [fps]");
+            if (words.size() == 3) {
+                char* end = nullptr;
+                const unsigned long fps = std::strtoul(words[2].c_str(), &end, 10);
+                if (!end || *end || fps < 30 || fps > 240) return fail("graphics low [fps 30..240]");
+                out->low_graphics_fps = static_cast<unsigned>(fps);
+            }
             out->low_graphics = true;
             continue;
         }

@@ -912,6 +912,9 @@ void Init(const Config& config, const std::wstring& mod_dir) noexcept {
         else
             realbody::ConfigureSelf(g_own_body);
     }
+    if (realbody::HookInstalled())
+        realbody::ConfigureSmooth(config.smooth_pose ? realbody::kSmoothAll : 0u, config.role == Role::echo,
+                                  static_cast<double>(config.echo_delay_s) * 1000.0);
     nametags::Init(config);
     collision::Init(config);
     gear::Init(config);
@@ -1010,10 +1013,16 @@ void Tick() noexcept {
             // the transform (same seq and timestamp). In echo it goes through the full encode ->
             // decode path, so the played-back animation is exactly what a peer would receive.
             static wire::JointFrame jf, back;
-            const bool have_joints = realbody::HookInstalled() && realbody::CaptureFrame(&jf);
+            double capture_ms = 0;
+            const bool have_joints = realbody::HookInstalled() && realbody::CaptureFrame(&jf, &capture_ms);
             if (have_joints) {
                 jf.seq = p.seq;
                 jf.sender_ms = p.sender_ms;
+                // Smooth bit kSmoothCaptureStamp (docs/real-partner-body.md section 3.5): the time Sam's pose
+                // was computed (the same QPC clock as `now`, up to a frame earlier), so the receiver's
+                // interpolation spaces the poses as they really were, whatever the sender's frame rate.
+                if ((realbody::SmoothMask() & realbody::kSmoothCaptureStamp) && capture_ms > 0 && capture_ms <= now && now - capture_ms < 250)
+                    jf.sender_ms = static_cast<std::uint32_t>(static_cast<std::uint64_t>(capture_ms));
                 jf.body_id = g_own_body->id;
                 // Our own Sam's outfit rides along (8 bytes; docs/real-partner-body.md section 9): a
                 // receiver showing us as Sam dresses its body like our Sam.
@@ -1048,11 +1057,36 @@ void Tick() noexcept {
                 static std::uint32_t gear_seq = 0;
                 gf.seq = ++gear_seq;
                 if (g_net) {
-                    link::SendGear(gf);
+                    if (!link::SendGear(gf)) {
+                        static unsigned unsent = 0;
+                        std::uint8_t probe[wire::kMaxGearFrameSize];
+                        if (!wire::EncodeGear(gf, probe, sizeof(probe)) && ++unsent <= 10)
+                            Log("[gear] our gear frame (%u items) does not encode: not sent", static_cast<unsigned>(gf.count));
+                    }
                 } else {
                     std::uint8_t buf[wire::kMaxGearFrameSize];
                     const std::size_t n = wire::EncodeGear(gf, buf, sizeof(buf));
                     if (n && wire::DecodeGear(buf, n, gback)) gear::SetPartnerGear(&gback);  // echo: our own gear
+                }
+            }
+            // Our gear resource table (STR1): the entity items' resources by id.
+            static wire::GearRes gr, grback;
+            if (g_net) {
+                // a new link session: the partner's table is empty again (it clears it), every entry again
+                static std::uint32_t res_gen = 0;
+                const std::uint32_t lg = link::Generation();
+                if (lg != res_gen) {
+                    res_gen = lg;
+                    gear::MarkResUnsent(-1);
+                }
+            }
+            if (realbody::HookInstalled() && gear::TakeSendRes(now, &gr)) {
+                if (g_net) {
+                    if (!link::SendGearRes(gr)) gear::MarkResUnsent(gr.id);  // not connected yet: again later
+                } else {
+                    std::uint8_t buf[wire::kMaxGearResFrameSize];
+                    const std::size_t n = wire::EncodeGearRes(gr, buf, sizeof(buf));
+                    if (n && wire::DecodeGearRes(buf, n, grback)) gear::SetPartnerRes(grback);  // echo: our own table
                 }
             }
         }
@@ -1063,7 +1097,9 @@ void Tick() noexcept {
         wire::Pose p;
         std::uint64_t recv = 0;
         std::uint32_t gen = 0;
-        while (link::PopPose(p, recv, gen)) {
+        // A new link session (any queue may show it first: an STR1 entry or a gear frame can arrive
+        // before the session's first pose and must not be dropped as "from before the change").
+        auto new_session = [&](std::uint32_t gen) {
             if (gen != g_generation) {
                 g_generation = gen;
                 g_ring.Reset();
@@ -1075,6 +1111,9 @@ void Tick() noexcept {
                 Log("[sync] new link session (#%u): interpolation reset", gen);
                 if (BodyPresent()) RemoveBody("new link session");  // session end of the previous partner
             }
+        };
+        while (link::PopPose(p, recv, gen)) {
+            new_session(gen);
             if (!(p.flags & wire::kPoseValid)) continue;
             g_rx_pos[0] = p.x, g_rx_pos[1] = p.y, g_rx_pos[2] = p.z;
             g_rx_in_vehicle = (p.flags & wire::kPoseInVehicle) != 0;
@@ -1083,13 +1122,21 @@ void Tick() noexcept {
         }
         static wire::JointFrame jf;
         while (link::PopJoints(jf, recv, gen)) {
+            if (gen > g_generation) new_session(gen);
             if (gen != g_generation) continue;  // a frame from before the session change
             TakeJointFrame(jf, g_ring.Unwrapped(jf.sender_ms));
         }
         static wire::GearFrame gf;
         while (link::PopGear(gf, recv, gen)) {
+            if (gen > g_generation) new_session(gen);
             if (gen != g_generation) continue;  // a frame from before the session change
             gear::SetPartnerGear(&gf);
+        }
+        static wire::GearRes gr;
+        while (link::PopGearRes(gr, gen)) {
+            if (gen > g_generation) new_session(gen);
+            if (gen != g_generation) continue;
+            gear::SetPartnerRes(gr);
         }
     }
     g_ring.Settle();
@@ -1304,7 +1351,7 @@ bool DebugLogPartner() noexcept {
     return true;
 }
 
-bool DebugPinPartner(double dist_m, char* msg, std::size_t cap) noexcept {
+bool DebugPinPartner(double dist_m, double dz_m, char* msg, std::size_t cap) noexcept {
     if (!(dist_m > 0)) {
         g_pin = false;
         Log("[sync] partner unpinned: it follows the stream again");
@@ -1315,19 +1362,20 @@ bool DebugPinPartner(double dist_m, char* msg, std::size_t cap) noexcept {
     double dir[2] = {g_move_dir[0], g_move_dir[1]};
     const bool camera = nametags::CameraForward(g_local, dir);
     const double dl = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1]);
-    if (!g_local_valid || dl < 0.5 || dist_m > 50) {
-        if (msg && cap) std::snprintf(msg, cap, "pin: no local player, no direction, or more than 50 m");
+    if (!g_local_valid || dl < 0.5 || dist_m > 50 || !(dz_m >= -10 && dz_m <= 10)) {
+        if (msg && cap) std::snprintf(msg, cap, "pin: no local player, no direction, more than 50 m, or a height offset outside -10..10 m");
         return false;
     }
     WorldTransform w = g_local_wt;
     w.pos.x += dir[0] * dist_m;
     w.pos.y += dir[1] * dist_m;
+    w.pos.z += dz_m;
     // Turned 180 degrees about the up axis (Sam is upright): it faces back towards him.
     for (int r = 0; r < 2; ++r)
         for (int c = 0; c < 3; ++c) w.rot.m[r][c] = -w.rot.m[r][c];
     g_pin_wt = w;
     g_pin = true;
-    Log("[sync] partner pinned %.2f m ahead of Sam along the %s (%.3f, %.3f): at (%.3f, %.3f, %.3f)", dist_m,
+    Log("[sync] partner pinned %.2f m ahead of Sam (%+.2f m height) along the %s (%.3f, %.3f): at (%.3f, %.3f, %.3f)", dist_m, dz_m,
         camera ? "camera's forward" : "last walking direction", dir[0], dir[1], w.pos.x, w.pos.y, w.pos.z);
     if (msg && cap) std::snprintf(msg, cap, "partner pinned %.2f m ahead", dist_m);
     return true;

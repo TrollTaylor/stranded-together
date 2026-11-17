@@ -254,6 +254,9 @@ self_character=1                you see yourself as my_character too (Debug page
 name_tags=0                     no name tags (Debug page; written only when unticked, the mod's default is on)
 partner_collision=0             you can walk through your partner (Debug page; written only when unticked, default on)
 partner_gear=0                  no backpack or cargo on the bodies, none sent (mod key only, not written by the launcher; default on)
+smooth_pose=0                   the bodies keep the game's 60 Hz updates (v0.7; mod key only, not written by the launcher; default on)
+partner_collision_height=0      the partner's capsule at Sam's own 1.65 m, climbable as in v0.7 (mod key only; default 4.0 m: no climbing)
+name_tag_font=default           name tags in Segoe UI instead of the game's menu font (mod key only; default game)
 ```
 
 `my_character` is written for every host as `sam` (whatever was asked) and otherwise only when

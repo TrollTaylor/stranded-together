@@ -124,6 +124,21 @@ void ScenarioParser(const std::wstring& dir) {
         so.extra = {"partner_body=real"};
         Check(te::SessionIniText(so).find("\npartner_body=real\n") != std::string::npos, "ini lines end up in session.ini", "");
     }
+    {
+        // frame_cap from a scenario: written after the supervisor's own (graphics low: 30), and the mod
+        // keeps a key's last value, so the scenario's wins; smooth_pose is a scenario key too.
+        Check(te::ParseScenario("role host\ngraphics low\nini frame_cap=60\nini smooth_pose=0\nquit\n", &s, &err) && s.ini.size() == 2 &&
+                  s.ini[0] == "frame_cap=60" && s.ini[1] == "smooth_pose=0",
+              "ini frame_cap / smooth_pose allowed", err);
+        te::SessionOptions so;
+        so.role = "host";
+        so.frame_cap = 30;
+        so.extra = {"frame_cap=60"};
+        const std::string t = te::SessionIniText(so);
+        Check(t.find("frame_cap=30\n") != std::string::npos && t.find("frame_cap=60\n") != std::string::npos &&
+                  t.find("frame_cap=60\n") > t.find("frame_cap=30\n"),
+              "a scenario frame_cap comes after the supervisor's", "");
+    }
     Check(!te::ParseScenario("waitlog 10 ([\nquit\n", &s, &err), "bad regex refused", err);
     Check(!te::ParseScenario("until 10 1000 x => quit\n", &s, &err), "until cannot repeat quit", err);
     Check(!te::ParseScenario("pad Q 10\n", &s, &err), "bad mod command refused at parse time", err);
@@ -755,6 +770,15 @@ void SandboxRules() {
             at = nl == std::string::npos ? low.size() : nl + 2;
         }
         Check(lines_ok, "the low graphics settings.cfg text is \"key\" \"value\" lines (the game's own format)");
+        // "graphics low <fps>" replaces these two lines (supervisor.cpp)
+        Check(low.find("\"fps\" \"30\"") != std::string::npos && low.find("\"limit_fps\" \"30\"") != std::string::npos,
+              "the low preset carries the fps / limit_fps lines graphics low <fps> replaces");
+        te::Scenario g;
+        std::string gerr;
+        Check(te::ParseScenario("role host\ngraphics low 120\nquit\n", &g, &gerr) && g.low_graphics && g.low_graphics_fps == 120, "graphics low 120", gerr);
+        Check(te::ParseScenario("role host\ngraphics low\nquit\n", &g, &gerr) && g.low_graphics_fps == 30, "graphics low: 30 fps", gerr);
+        Check(!te::ParseScenario("role host\ngraphics low 20\nquit\n", &g, &gerr) && !te::ParseScenario("role host\ngraphics low 12x\nquit\n", &g, &gerr),
+              "graphics low <fps>: 30..240 digits only");
     }
 
     // the two-game session.ini files

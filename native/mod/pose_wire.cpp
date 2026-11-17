@@ -1,6 +1,7 @@
 #include "pose_wire.hpp"
 
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 
 namespace st::wire {
@@ -420,6 +421,7 @@ constexpr unsigned kGearJoints = 77;  // Sam's skeleton (kSamLayoutHash)
 bool GearItemOk(const GearItem& it, unsigned index) {
     const auto k = static_cast<std::uint8_t>(it.kind);
     if (k < 1 || k > kGearKindMax) return false;
+    if (it.kind == GearKind::entity && it.res >= kMaxGearRes) return false;
     if (it.parent == kGearNoParent) return it.joint < kGearJoints;
     return it.parent < index;
 }
@@ -439,13 +441,15 @@ std::uint16_t GearLayoutHash(const GearFrame& f) noexcept {
         mix(it.variation);
         mix(it.parent == kGearNoParent ? it.joint : std::uint8_t{0});
         mix(it.parent);
+        mix(it.kind == GearKind::entity ? it.res : kGearNone);
     }
     return static_cast<std::uint16_t>((h >> 16) ^ (h & 0xFFFFu));
 }
 
 std::size_t EncodeGear(const GearFrame& f, std::uint8_t* out, std::size_t cap) noexcept {
     if (!out || f.count > kMaxGearItems) return 0;
-    const std::size_t size = GearFrameSize(f.count);
+    const bool parts = (f.flags & kGearParts) != 0, pack = (f.flags & kGearPackParts) != 0;
+    const std::size_t size = GearFrameSize(f.count, parts, pack);
     if (cap < size) return 0;
     for (unsigned i = 0; i < f.count; ++i) {
         const GearItem& it = f.items[i];
@@ -463,6 +467,14 @@ std::size_t EncodeGear(const GearFrame& f, std::uint8_t* out, std::size_t cap) n
     Put(p, f.dropped);
     Put(p, GearLayoutHash(f));
     Put(p, std::uint16_t{0});
+    if (parts) {
+        for (unsigned k = 0; k < 2; ++k) Put(p, f.parts_apply[k]);
+        for (unsigned k = 0; k < 2; ++k) Put(p, static_cast<std::uint64_t>(f.parts_visible[k] & f.parts_apply[k]));
+    }
+    if (pack) {
+        Put(p, f.pack_apply);
+        Put(p, static_cast<std::uint64_t>(f.pack_visible & f.pack_apply));
+    }
     for (unsigned i = 0; i < f.count; ++i) {
         const GearItem& it = f.items[i];
         Put(p, static_cast<std::uint8_t>(it.kind));
@@ -470,7 +482,7 @@ std::size_t EncodeGear(const GearFrame& f, std::uint8_t* out, std::size_t cap) n
         Put(p, it.variation);
         Put(p, it.parent == kGearNoParent ? it.joint : std::uint8_t{0});
         Put(p, it.parent);
-        Put(p, std::uint8_t{0});
+        Put(p, it.kind == GearKind::entity ? it.res : kGearNone);
         for (float v : it.p) Put(p, static_cast<std::int16_t>(std::lround(v * 1000.0f)));
         const std::uint64_t b = PackQuat(it.q);
         for (unsigned k = 0; k < 6; ++k) *p++ = static_cast<std::uint8_t>(b >> (8 * k));
@@ -490,7 +502,16 @@ bool DecodeGear(const std::uint8_t* data, std::size_t size, GearFrame& out) noex
     f.dropped = Get<std::uint8_t>(p);
     const std::uint16_t hash = Get<std::uint16_t>(p);
     Get<std::uint16_t>(p);
-    if (f.count > kMaxGearItems || size != GearFrameSize(f.count)) return false;
+    const bool parts = (f.flags & kGearParts) != 0, pack = (f.flags & kGearPackParts) != 0;
+    if (f.count > kMaxGearItems || size != GearFrameSize(f.count, parts, pack)) return false;
+    if (parts) {
+        for (unsigned k = 0; k < 2; ++k) f.parts_apply[k] = Get<std::uint64_t>(p);
+        for (unsigned k = 0; k < 2; ++k) f.parts_visible[k] = Get<std::uint64_t>(p) & f.parts_apply[k];
+    }
+    if (pack) {
+        f.pack_apply = Get<std::uint64_t>(p);
+        f.pack_visible = Get<std::uint64_t>(p) & f.pack_apply;
+    }
     for (unsigned i = 0; i < f.count; ++i) {
         GearItem& it = f.items[i];
         it.kind = static_cast<GearKind>(Get<std::uint8_t>(p));
@@ -498,7 +519,8 @@ bool DecodeGear(const std::uint8_t* data, std::size_t size, GearFrame& out) noex
         it.variation = Get<std::uint8_t>(p);
         it.joint = Get<std::uint8_t>(p);
         it.parent = Get<std::uint8_t>(p);
-        Get<std::uint8_t>(p);
+        it.res = Get<std::uint8_t>(p);
+        if (it.kind != GearKind::entity) it.res = kGearNone;
         for (float& v : it.p) v = static_cast<float>(Get<std::int16_t>(p)) / 1000.0f;
         std::uint64_t b = 0;
         for (unsigned k = 0; k < 6; ++k) b |= static_cast<std::uint64_t>(*p++) << (8 * k);
@@ -508,6 +530,80 @@ bool DecodeGear(const std::uint8_t* data, std::size_t size, GearFrame& out) noex
     }
     if (GearLayoutHash(f) != hash) return false;
     out = f;
+    return true;
+}
+
+bool GearResPathOk(const char* path) noexcept {
+    if (!path) return false;
+    const std::size_t n = std::strlen(path);
+    if (n < 13 || n > kMaxGearResPath || std::strncmp(path, "ds/entities/", 12) != 0 || std::strstr(path, "..")) return false;
+    for (std::size_t i = 0; i < n; ++i) {
+        const char c = path[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '/' || c == '.' || c == '-')) return false;
+    }
+    return true;
+}
+
+void GearGuidText(const std::uint8_t (&g)[16], char (&out)[37]) noexcept {
+    std::snprintf(out, sizeof(out), "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x", g[3], g[2], g[1], g[0], g[5], g[4], g[7], g[6],
+                  g[8], g[9], g[10], g[11], g[12], g[13], g[14], g[15]);
+}
+
+bool GearResProven(const char* path, const std::uint8_t (&guid)[16], bool allow_pod_entity, const char** why) noexcept {
+    static const char* const kPaths[] = {"ds/entities/item/backpack/backpack_temp", "ds/entities/player/ds_player_inventory",
+                                         "ds/entities/weapons/weapon_collection", "ds/entities/weapons/sam_cant", "ds/entities/weapons/sam_boot"};
+    // census 20261117-130343: the cuff device / talk entity, the baby / boots entity, the chiral
+    // cylinder, the backpack belt
+    static const char* const kDenied[] = {"c8061ffe-fa4f-dc45-9cc9-f7982abf247c", "89fbb2a5-ac54-c749-aa5f-d2a2c7950709",
+                                          "f5033627-24f0-1441-a7d4-e7f1e90c68fa", "d2464e7e-23eb-e246-9dce-68601e706982"};
+    static const char kPodEntity[] = "b5041f35-b5a5-564c-8b84-76587a06f97a";
+    const char* dummy = nullptr;
+    if (!why) why = &dummy;
+    if (!GearResPathOk(path)) return (*why = "not a gear resource path"), false;
+    bool known = std::strncmp(path, "ds/entities/item/backpack/", 26) == 0;
+    for (const char* k : kPaths) known = known || std::strcmp(path, k) == 0;
+    if (!known) return (*why = "not one of the proven gear resources"), false;
+    char g[37];
+    GearGuidText(guid, g);
+    if (std::strcmp(g, kPodEntity) == 0) return allow_pod_entity ? true : ((*why = "the BB pod entity (drawn as the cinematic pod)"), false);
+    for (const char* d : kDenied)
+        if (std::strcmp(g, d) == 0) return (*why = "an entity the mirror policy refuses (player-bound components)"), false;
+    return true;
+}
+
+std::size_t EncodeGearRes(const GearRes& r, std::uint8_t* out, std::size_t cap) noexcept {
+    if (!out || r.id >= kMaxGearRes || !GearResPathOk(r.path)) return 0;
+    const std::size_t n = std::strlen(r.path);
+    if (cap < kGearResHeaderSize + n) return 0;
+    std::uint8_t* p = out;
+    std::memcpy(p, kGearResMagic, 4);
+    p += 4;
+    Put(p, kGearResVersion);
+    Put(p, r.id);
+    Put(p, static_cast<std::uint8_t>(n));
+    Put(p, std::uint8_t{0});
+    std::memcpy(p, r.guid, 16);
+    p += 16;
+    std::memcpy(p, r.path, n);
+    p += n;
+    return static_cast<std::size_t>(p - out);
+}
+
+bool DecodeGearRes(const std::uint8_t* data, std::size_t size, GearRes& out) noexcept {
+    if (!data || size < kGearResHeaderSize || std::memcmp(data, kGearResMagic, 4) != 0) return false;
+    const std::uint8_t* p = data + 4;
+    GearRes r;
+    if (Get<std::uint8_t>(p) != kGearResVersion) return false;
+    r.id = Get<std::uint8_t>(p);
+    const std::size_t n = Get<std::uint8_t>(p);
+    Get<std::uint8_t>(p);
+    if (r.id >= kMaxGearRes || n > kMaxGearResPath || size != kGearResHeaderSize + n) return false;
+    std::memcpy(r.guid, p, 16);
+    p += 16;
+    std::memcpy(r.path, p, n);
+    r.path[n] = 0;
+    if (!GearResPathOk(r.path)) return false;
+    out = r;
     return true;
 }
 
@@ -526,6 +622,36 @@ bool GearPoseDelta(const GearFrame& a, const GearFrame& b, float* max_m, float* 
     if (max_m) *max_m = dm;
     if (max_deg) *max_deg = dd;
     return true;
+}
+
+void GearAssignProps(const int* old_keys, unsigned old_n, const int* want, unsigned want_n, int* out) noexcept {
+    constexpr unsigned kCap = 256;
+    bool used[kCap] = {};
+    if (old_n > kCap) old_n = kCap;
+    for (unsigned j = 0; j < want_n; ++j) {
+        out[j] = -1;
+        if (want[j] >= 0 && j < old_n && old_keys[j] == want[j]) {
+            out[j] = static_cast<int>(j);
+            used[j] = true;
+        }
+    }
+    for (unsigned j = 0; j < want_n; ++j) {
+        if (out[j] >= 0 || want[j] < 0) continue;
+        for (unsigned i = 0; i < old_n; ++i) {
+            if (used[i] || old_keys[i] != want[j]) continue;
+            // a slot whose own index still wants its key keeps it (handled above)
+            out[j] = static_cast<int>(i);
+            used[i] = true;
+            break;
+        }
+    }
+}
+
+double GearRetryDelayMs(unsigned failures) noexcept {
+    if (failures == 0) return 0;
+    double d = 2000;
+    for (unsigned i = 1; i < failures && d < 30000; ++i) d *= 2;
+    return d > 30000 ? 30000 : d;
 }
 
 }  // namespace st::wire

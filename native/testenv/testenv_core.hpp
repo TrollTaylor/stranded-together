@@ -95,6 +95,7 @@ struct Step {
 struct Scenario {
     std::string role = "solo";
     bool low_graphics = false;  // graphics low
+    unsigned low_graphics_fps = 30;  // graphics low <fps>: the game's own "fps" / "limit_fps" (30..240)
     unsigned timeout_s = 360;
     std::vector<std::string> ini;        // "ini key=value": extra session.ini lines (partner/pose keys only), every game
     std::vector<std::string> host_ini;   // "@host ini key=value": the first game only, written after `ini`

@@ -14,6 +14,8 @@
 #include "log.hpp"
 #include "partner_holo.hpp"
 #include "automation.hpp"
+#include "config.hpp"
+#include "overlay/overlay.hpp"
 #include "partner_collision.hpp"
 #include "partner_outfit.hpp"
 #include "partner_source.hpp"
@@ -61,6 +63,16 @@ constexpr std::uintptr_t kInventoryRootCheck = 0x27F0B40;  // mov rcx,rbx; call 
 constexpr std::uintptr_t kSetWorldTransform = 0x2361EA0;   // Entity_ExportedSetWorldTransform(e, wt)
 constexpr std::uintptr_t kPlayerMeshCtl = 0xA60;
 constexpr std::uintptr_t kPlayerRootMask = 0xA60 + 0x338;  // 0xD98
+// The controller's part masks start at +0x348 (part k at +0x348 + 8k, k < 89); mask 0 is never written
+// by SetPartVisible (part 0 goes to the Root mask) and ApplyMeshControl reads it as a second global
+// condition (0x1426D91EF: cmp qword [rbx+0x348],0): any bit hides every ArtPart of Sam (FUN_1422B25F0
+// on the top-level parts, then each mapped part), but IsRootVisible looks only at +0x338, so the
+// inventory keeps every gear entity (backpack and what hangs on it, weapons, BB pod, Odradek,
+// accessories) shown and attached to Sam's animated, invisible skeleton (docs/real-partner-body.md
+// section 8.1). Our bit 63 lives there.
+constexpr std::uintptr_t kPlayerGlobalMask = 0xA60 + 0x348;  // 0xDA8
+constexpr std::uintptr_t kApplyGlobalCheck = 0x26D91E2;      // cmp [rbx+0x338],0; mov sil,1; jnz; cmp [rbx+0x348],0; jnz
+constexpr std::uintptr_t kApplyMaskLoop = 0x26D915A;         // add rcx,0x348; mov rax,[rcx+0x2C8]; cmp [rcx],rax (the diff check)
 constexpr std::uint64_t kOurReason = 1ull << 63;
 
 // SkinnedModel (0x3B0)
@@ -138,10 +150,35 @@ struct ApplyBuf {
     float troot[3];
     float tpelvis[3];
     Joint fb[kJ];       // the local Sam's own full joints (translation/scale fallback, Sam order)
+    double play = 0;    // the play time (sender timeline) it was sampled at (0: a mirror frame)
+};
+
+// Smooth animation above 60 fps (docs/real-partner-body.md section 3.5). The tick publishes the
+// bracketing ring frames (up to 3, keyed on the sender timeline) and the play time at a QPC
+// reference; the partner body's own model update interpolates them at the moment it runs.
+struct InterpBuf {
+    std::uint32_t n = 0;  // frames 1..3
+    double ref_ms = 0;    // QPC milliseconds (link::NowMsPrecise's clock) when published
+    double play_ref = 0;  // the play time at ref_ms (sender timeline)
+    double key[3] = {};
+    wire::Quat q[3][kJ];  // Sam-skeleton order
+    float troot[3][3] = {};
+    float tpelvis[3][3] = {};
+    Joint fb[kJ];  // the local Sam's own full joints (translation/scale fallback)
 };
 
 SeqLock<Capture> g_capture;
 SeqLock<ApplyBuf> g_apply;  // the partner slot's published frame
+SeqLock<InterpBuf> g_interp;  // the partner slot's bracketing frames (smooth bit kSmoothDetourInterp)
+std::atomic<bool> g_interp_on{false};  // the newest publish was an InterpBuf (a mirror frame clears it)
+
+// Smooth-animation features (bits of realbody::kSmooth*), session.ini smooth_pose / the `smooth` test action.
+std::atomic<unsigned> g_smooth{kSmoothAll};
+// Detour-side counters of the smooth path (read and reset by the tick's meter).
+std::atomic<std::uint32_t> g_interp_applies{0}, g_interp_holds{0}, g_interp_torn{0};
+std::atomic<double> g_last_play{0};  // the play time of the newest pose written onto the partner body
+std::atomic<float> g_frame_ms{16.7f};  // the tick's frame time (EMA), for the self body's age buckets
+std::atomic<std::uint32_t> g_self_age_bucket[3] = {};  // self pose writes: < 0.5 frame old, < 1.5, older
 
 // ---------------------------------------------------------------- detour state
 using AnimateFn = void (*)(void* sm, float dt);
@@ -182,6 +219,7 @@ struct BodySlot {
     std::uintptr_t e_vt = 0;  // the entity's vtable (set before `e` is published): the detour's ABA check
     std::atomic<bool> apply_on{false};  // override enabled (a debug body with mirror off only observes)
     std::atomic<std::uint32_t> game_updates{0};
+    std::atomic<std::uint32_t> updates{0};  // every detour call on the body (the game's and the forced ones): the meter
     Counters ct;
     // Set by the game thread before `sm` is published (release), read by the detour.
     std::uint8_t map[kJ] = {};  // body joint -> Sam joint
@@ -215,6 +253,10 @@ struct BodySlot {
     std::uint32_t prev_forced = 0, prev_skipped = 0;
     bool forced_off = false;
     std::uint32_t refused = 0;  // bit per body id that failed to load / validate in THIS slot (this session)
+    // Update frequency (DriveFreq): the entity it was read on, its own value then, attempts.
+    std::uintptr_t freq_e = 0;
+    std::uint8_t freq_orig = 0xFF;
+    unsigned freq_calls = 0;
 };
 BodySlot g_slots[2];
 BodySlot& g_p = g_slots[0];   // partner / debug
@@ -617,15 +659,67 @@ void ApplyBody(BodySlot& b, std::uintptr_t sm, bool live) {
             std::uint64_t mx = g_self_age_max_us.load(std::memory_order_relaxed);
             while (us > mx && !g_self_age_max_us.compare_exchange_weak(mx, us, std::memory_order_relaxed)) {
             }
+            const double fr = g_frame_ms.load(std::memory_order_relaxed);
+            g_self_age_bucket[age_ms < 0.5 * fr ? 0 : age_ms < 1.5 * fr ? 1 : 2].fetch_add(1, std::memory_order_relaxed);
         }
         if (g_self_last_frame.exchange(c.frame, std::memory_order_relaxed) == c.frame)
             g_self_stale.fetch_add(1, std::memory_order_relaxed);
+    } else if (&b == &g_slots[0] && g_interp_on.load(std::memory_order_acquire) &&
+               (g_smooth.load(std::memory_order_relaxed) & kSmoothDetourInterp) && g_qpc_per_ms > 0) {
+        // Interpolated now, at this update's own time: play = the published play time advanced by the
+        // QPC time since it was published; never past the newest frame (held, counted).
+        static thread_local InterpBuf ib;
+        if (!g_interp.Read(ib) || ib.n == 0 || ib.n > 3) {
+            g_interp_torn.fetch_add(1, std::memory_order_relaxed);
+            ct.torn.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        const double play = ib.play_ref + (static_cast<double>(Qpc()) / g_qpc_per_ms - ib.ref_ms);
+        unsigned s = 0;
+        float alpha = 0;
+        if (ib.n >= 2) {
+            if (ib.n == 3 && play > ib.key[1]) s = 1;
+            const double span = ib.key[s + 1] - ib.key[s];
+            const double a = span > 0 ? (play - ib.key[s]) / span : 1.0;
+            alpha = a <= 0 ? 0.0f : a >= 1 ? 1.0f : static_cast<float>(a);
+        }
+        if (play > ib.key[ib.n - 1]) g_interp_holds.fetch_add(1, std::memory_order_relaxed);
+        const unsigned s2 = ib.n >= 2 ? s + 1 : s;
+        float troot[3], tpel[3];
+        for (int k = 0; k < 3; ++k) {
+            troot[k] = ib.troot[s][k] + alpha * (ib.troot[s2][k] - ib.troot[s][k]);
+            tpel[k] = ib.tpelvis[s][k] + alpha * (ib.tpelvis[s2][k] - ib.tpelvis[s][k]);
+        }
+        for (unsigned j = 0; j < kJ; ++j) {
+            const unsigned sj = b.map[j];
+            Joint& o = cur[j];
+            const wire::Quat& qa = ib.q[s][sj];
+            wire::Quat qb = ib.q[s2][sj];
+            if (qa.x * qb.x + qa.y * qb.y + qa.z * qb.z + qa.w * qb.w < 0) qb = wire::Quat{-qb.x, -qb.y, -qb.z, -qb.w};
+            float x = qa.x + alpha * (qb.x - qa.x), y = qa.y + alpha * (qb.y - qa.y), z = qa.z + alpha * (qb.z - qa.z),
+                  w = qa.w + alpha * (qb.w - qa.w);
+            const float n = std::sqrt(x * x + y * y + z * z + w * w);
+            if (n > 1e-6f) x /= n, y /= n, z /= n, w /= n;
+            else x = qa.x, y = qa.y, z = qa.z, w = qa.w;
+            o.q[0] = x, o.q[1] = y, o.q[2] = z, o.q[3] = w;
+            const Joint& src = b.latch_ok ? b.latch[j] : ib.fb[sj];
+            std::memcpy(o.t, src.t, sizeof(o.t));
+            std::memcpy(o.s, src.s, sizeof(o.s));
+            if (sj == kSamRoot) {
+                o.t[0] = troot[0], o.t[1] = troot[1], o.t[2] = troot[2];
+            } else if (sj == kSamPelvis) {
+                o.t[0] = tpel[0] * b.pelvis_ratio, o.t[1] = tpel[1] * b.pelvis_ratio, o.t[2] = tpel[2] * b.pelvis_ratio;
+            }
+        }
+        g_interp_applies.fetch_add(1, std::memory_order_relaxed);
+        g_last_play.store(play < ib.key[0] ? ib.key[0] : play > ib.key[ib.n - 1] ? ib.key[ib.n - 1] : play, std::memory_order_relaxed);
     } else {
         ApplyBuf a;
         if (!g_apply.Read(a)) {
             ct.torn.fetch_add(1, std::memory_order_relaxed);
             return;
         }
+        if (&b == &g_slots[0]) g_last_play.store(a.play, std::memory_order_relaxed);
         for (unsigned j = 0; j < kJ; ++j) {
             const unsigned sj = b.map[j];
             Joint& o = cur[j];
@@ -675,9 +769,11 @@ void Detour(void* sm, float dt) {
         if (g_self_follow.load(std::memory_order_relaxed) == 1) CopySamTransform();
     } else if (s == g_p.sm.load(std::memory_order_seq_cst)) {
         if (!t_forcing) g_p.game_updates.fetch_add(1, std::memory_order_relaxed);
+        g_p.updates.fetch_add(1, std::memory_order_relaxed);
         ApplyBody(g_p, s, false);
     } else if (s == g_me.sm.load(std::memory_order_seq_cst)) {
         if (!t_forcing) g_me.game_updates.fetch_add(1, std::memory_order_relaxed);
+        g_me.updates.fetch_add(1, std::memory_order_relaxed);
         if (g_self_follow.load(std::memory_order_relaxed) == 2) CopySamTransform();
         ApplyBody(g_me, s, true);
     }
@@ -794,7 +890,10 @@ bool CheckMeshSites() {
               Check("IsRootVisible", kIsRootVisible, "48 83 B9 38 03 00 00 00 75 0C 83 3D ?? ?? ?? ?? 00 75 03 B0 01 C3 32 C0", w, cap) &&
               Check("inventory Root check", kInventoryRootCheck, "48 8B CB E8 ?? ?? ?? ?? 84 C0 75", w, cap) &&
               Check("Entity_ExportedSetWorldTransform", kSetWorldTransform,
-                    "48 85 C9 74 1C 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 33 D2 48 8B CB E8", w, cap);
+                    "48 85 C9 74 1C 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 33 D2 48 8B CB E8", w, cap) &&
+              Check("ApplyMeshControl global mask check (+0x348)", kApplyGlobalCheck,
+                    "48 83 BB 38 03 00 00 00 40 B6 01 75 46 48 83 BB 48 03 00 00 00 75 3C", w, cap) &&
+              Check("ApplyMeshControl mask diff loop (+0x348)", kApplyMaskLoop, "48 81 C1 48 03 00 00 48 8B 81 C8 02 00 00 48 39 01 75", w, cap);
     if (ok && (mem::RipTarget(b + kMeshCtlCall + 11, 1, 5) != b + kMeshCtlUpdate ||
                mem::RipTarget(b + kInventoryRootCheck + 3, 1, 5) != b + kIsRootVisible)) {
         std::snprintf(w, cap, "the mesh-control / IsRootVisible calls do not lead where expected");
@@ -832,9 +931,13 @@ std::uintptr_t SamMaskAddr(std::uintptr_t sam) {
     if (Q(sam) != mem::Base() + kPlayerVtable) return 0;
     if (Q(sam + kPlayerMeshCtl) != sam) return 0;
     std::uint64_t m = 0;
-    if (!Rd(sam + kPlayerRootMask, m)) return 0;
+    if (!Rd(sam + kPlayerRootMask, m) || !Rd(sam + kPlayerGlobalMask, m)) return 0;
     return sam + kPlayerRootMask;
 }
+
+// Where our hide bit lives: the controller's global part mask (+0x348, see kPlayerGlobalMask), not
+// the Root mask, so the game keeps showing Sam's gear entities. 0 when SamMaskAddr refuses.
+std::uintptr_t SamHideAddr(std::uintptr_t sam) { return SamMaskAddr(sam) ? sam + kPlayerGlobalMask : 0; }
 
 // Sets / clears only our reason bit with a locked operation: a game bit can never be lost. (The
 // game's own SetRootVisible is a plain read-modify-write, so ours can be: a lost SET is re-asserted
@@ -843,7 +946,7 @@ std::uintptr_t SamMaskAddr(std::uintptr_t sam) {
 // freed on another thread between the check and the write is a small accepted window (the change-
 // of-player and asleep paths).
 bool SetOurReason(std::uintptr_t sam, bool on, std::uint64_t* mask_out = nullptr) {
-    const std::uintptr_t a = SamMaskAddr(sam);
+    const std::uintptr_t a = SamHideAddr(sam);
     if (!a) return false;
     std::uint64_t m = 0;
     if (!Rd(a, m)) return false;
@@ -1008,6 +1111,7 @@ void ResetSlot(BodySlot& b) {
     b.mirror = false;
     b.start_hidden = false;
     b.last_game_ms = 0;
+    b.freq_e = 0;  // a new body (even at the same address) is read and boosted afresh
 }
 
 void Refuse(BodySlot& slot, const bodies::Body* b, const char* why) {
@@ -1326,11 +1430,12 @@ ULONGLONG g_last_push_tick = 0;  // GetTickCount64 of the newest PushFrame
 
 RingSlot& RingAt(unsigned i) { return g_ring[(g_ring_head + i) % kRing]; }
 
-void PublishFrame(const wire::JointFrame& f) {
+void PublishFrame(const wire::JointFrame& f, double play = 0) {
     static ApplyBuf a;
     Capture c;
     if (!g_capture.Read(c)) return;  // no local Sam pose for the fallback translations yet
     a.seq = ++g_apply_seq;
+    a.play = play;
     for (unsigned j = 0; j < kJ; ++j) a.q[j] = j < f.joint_count ? f.q[j] : wire::Quat{};
     std::memcpy(a.fb, c.j, sizeof(a.fb));
     std::memcpy(a.troot, c.j[kSamRoot].t, sizeof(a.troot));
@@ -1379,7 +1484,12 @@ std::uint32_t g_self_shows = 0, g_self_unshows = 0, g_self_repairs = 0;
 // first, SamMaskAddr).
 void SelfRepair(std::uintptr_t sam) {
     if (g_self_shown || !sam || !g_mesh.ok) return;
-    const std::uintptr_t a = SamMaskAddr(sam);
+    // Builds before this one put the bit in the Root mask: a stray one there is cleared too.
+    if (const std::uintptr_t r = SamMaskAddr(sam)) {
+        std::uint64_t rm = 0;
+        if (Rd(r, rm) && (rm & kOurReason)) InterlockedAnd64(reinterpret_cast<volatile LONG64*>(r), static_cast<LONG64>(~kOurReason));
+    }
+    const std::uintptr_t a = SamHideAddr(sam);
     std::uint64_t m = 0;
     if (!a || !Rd(a, m) || !(m & kOurReason)) return;
     InterlockedAnd64(reinterpret_cast<volatile LONG64*>(a), static_cast<LONG64>(~kOurReason));
@@ -1434,7 +1544,7 @@ bool SelfShow(std::uintptr_t sam) {
     g_self_shown = true;
     ++g_self_shows;
     g_self_not_shown = "";
-    Log("[self] showing '%s' in place of Sam (Sam's Root mask 0x%llX, reason 63 ours; follow mode %d; show %u)", g_me.body ? g_me.body->key : "?",
+    Log("[self] showing '%s' in place of Sam (Sam's global part mask 0x%llX, reason 63 ours: his gear stays; follow mode %d; show %u)", g_me.body ? g_me.body->key : "?",
         static_cast<unsigned long long>(m), g_self_follow.load(), g_self_shows);
     return true;
 }
@@ -1602,19 +1712,21 @@ void SelfStats(double now) {
     const std::uint64_t n = g_self_age_n.exchange(0), us = g_self_age_us.exchange(0), mx = g_self_age_max_us.exchange(0);
     std::uint64_t mask = 0, sam_flags = 0;
     const std::uintptr_t sam_e = g_self_sam ? g_self_sam : g_sam_e.load();
+    std::uint64_t gmask = 0;
     if (const std::uintptr_t a = SamMaskAddr(sam_e)) Rd(a, mask);
+    if (const std::uintptr_t a = SamHideAddr(sam_e)) Rd(a, gmask);
     if (sam_e) partner::ReadFlags(reinterpret_cast<game::Entity*>(sam_e), &sam_flags);
     std::int32_t scene = -1;
     if (g_mesh.scene_hide) Rd(g_mesh.scene_hide, scene);
     const std::uint32_t fz = g_me.forced - g_me.prev_forced, sk = g_me.forced_skipped - g_me.prev_skipped;
     g_me.prev_forced = g_me.forced, g_me.prev_skipped = g_me.forced_skipped;
     Log("[self] shown=%d '%s' app=%u obs=%u copies=%u (failed %u, aba %u) tick-moves=%u pose age avg %.2f max %.2f ms stale=%u "
-        "body-Sam distance avg %.1f max %.1f cm; Sam's Root mask 0x%llX flags 0x%llX scene-hide %d repairs %u; rej=%u(last %d) aba=%u "
+        "body-Sam distance avg %.1f max %.1f cm; Sam's Root mask 0x%llX global mask 0x%llX flags 0x%llX scene-hide %d repairs %u; rej=%u(last %d) aba=%u "
         "nocap=%u wpm=%u faults=%u forced=%u game-drove=%u",
         g_self_shown ? 1 : 0, g_me.body ? g_me.body->key : "?", app - prev_app, obs - prev_obs, copies - prev_copies, fail - prev_fail,
         caba - prev_caba, g_self_tick_moves - prev_moves, n ? static_cast<double>(us) / static_cast<double>(n) / 1000.0 : 0.0,
         static_cast<double>(mx) / 1000.0, stale - prev_stale, g_self_dist_n ? g_self_dist_sum / g_self_dist_n * 100.0 : 0.0,
-        g_self_dist_max * 100.0, static_cast<unsigned long long>(mask), static_cast<unsigned long long>(sam_flags), scene, g_self_repairs,
+        g_self_dist_max * 100.0, static_cast<unsigned long long>(mask), static_cast<unsigned long long>(gmask), static_cast<unsigned long long>(sam_flags), scene, g_self_repairs,
         rej - prev_rej, g_me.ct.last_reject.load(), aba - prev_aba, nocap - prev_nocap, wpm - prev_wpm, g_me.ct.faults.load(), fz, sk);
     prev_app = app, prev_copies = copies, prev_fail = fail, prev_stale = stale, prev_rej = rej, prev_obs = obs, prev_moves = g_self_tick_moves;
     prev_aba = aba, prev_nocap = nocap, prev_wpm = wpm, prev_caba = caba;
@@ -1694,6 +1806,487 @@ void DressPartner(game::Entity* local, bool local_active, double now_ms) {
     }
     if (!holo::SpawnAlive(g_p.spawn)) return;
     outfit::Apply(g_dress, reinterpret_cast<std::uintptr_t>(g_p.spawn.e), want, reinterpret_cast<std::uintptr_t>(local), now_ms);
+}
+
+// ---------------------------------------------------------------- update frequency (smooth bit kSmoothBoost)
+// The game updates an entity at the rate its resource asks for (EUpdateFrequency, entity +0x204: 3 =
+// 59.94 Hz for every cutscene body and gear prop we spawn, 6 = 240 Hz for the player). Above 60 fps
+// the bodies would repeat a pose every other frame. The game's own setter (the one it uses to boost
+// carried cargo to 240 Hz, 0x142CBF860, and on the player, 0x143740100) moves our entities to the
+// 240 Hz group, so their models are updated (and posed by the detour) every frame up to 240 fps.
+// Only entities we spawned; a fault turns it off for the session.
+constexpr std::uintptr_t kSetUpdateFrequency = 0x235F5A0;  // void Entity::SetUpdateFrequency(Entity*, u8 idx)
+constexpr std::uintptr_t kSchedRegroup = 0x23FC0E0;        // (World+0x130, Entity*): new interval, move to its group
+constexpr std::uintptr_t kFreqLock = 0x7BC4828;            // the global SRW lock the setter takes
+constexpr std::uintptr_t kWorldGlobal = 0x7BC4E70;         // World* (scheduler at +0x130)
+constexpr std::uintptr_t kEntFreq = 0x204, kEntGroup = 0x20A;
+constexpr std::uint8_t kFreq240Hz = 6;
+const char* const kFreqNames[7] = {"9.99 Hz", "14.99 Hz", "29.97 Hz", "59.94 Hz", "120 Hz", "144 Hz", "240 Hz"};
+const char* FreqName(std::uint8_t f) { return f < 7 ? kFreqNames[f] : "?"; }
+
+struct FreqState {
+    bool checked = false, ok = false, off = false;
+    char why[160] = "not checked";
+    std::uintptr_t fn = 0;
+    std::uint32_t calls = 0, faults = 0;
+} g_freq;
+
+bool CheckFreqSites() {
+    if (g_freq.checked) return g_freq.ok;
+    g_freq.checked = true;
+    const std::uintptr_t b = mem::Base();
+    bool ok = Check("Entity SetUpdateFrequency", kSetUpdateFrequency,
+                    "48 89 5C 24 08 57 48 83 EC 20 0F B6 FA 48 8B D9 38 91 04 02 00 00 74 4D 48 8D 0D ?? ?? ?? ?? FF 15 ?? ?? ?? ?? "
+                    "84 C0 75 0D 48 8D 0D ?? ?? ?? ?? FF 15 ?? ?? ?? ?? 40 88 BB 04 02 00 00 48 8B 0D ?? ?? ?? ?? 48 85 C9 74 0F 48 "
+                    "81 C1 30 01 00 00 48 8B D3 E8",
+                    g_freq.why, sizeof(g_freq.why)) &&
+              Check("scheduler regroup", kSchedRegroup, "48 89 5C 24 10 48 89 6C 24 18 57 48 83 EC 20 66 83 BA 0A 02 00 00 00", g_freq.why,
+                    sizeof(g_freq.why));
+    if (ok && (mem::RipTarget(b + kSetUpdateFrequency + 0x18, 3, 7) != b + kFreqLock ||
+               mem::RipTarget(b + kSetUpdateFrequency + 0x3D, 3, 7) != b + kWorldGlobal ||
+               mem::RipTarget(b + kSetUpdateFrequency + 0x53, 1, 5) != b + kSchedRegroup)) {
+        std::snprintf(g_freq.why, sizeof(g_freq.why), "SetUpdateFrequency's lock / World / regroup references do not lead where expected");
+        ok = false;
+    }
+    if (ok) g_freq.fn = b + kSetUpdateFrequency;
+    Log("[smooth] update-frequency setter %s", ok ? "verified (ds.exe+0x235F5A0: lock, World, regroup call)" : g_freq.why);
+    g_freq.ok = ok;
+    return ok;
+}
+
+bool CallSetFreq(std::uintptr_t e, std::uint8_t idx) {
+    using Fn = void (*)(void*, std::uint8_t);
+    __try {
+        reinterpret_cast<Fn>(g_freq.fn)(reinterpret_cast<void*>(e), idx);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// Sets `e`'s update frequency to `want` when it differs (fault-free read first). 0 = unchanged / done,
+// 1 = changed, -1 = refused or faulted. `tag` / `what` only for the log line.
+int SetFreq(std::uintptr_t e, std::uint8_t want, const char* tag, const char* what, bool log) {
+    std::uint8_t cur = 0;
+    std::int16_t g0 = -1;
+    if (!e || !Rd(e + kEntFreq, cur) || !Rd(e + kEntGroup, g0)) return -1;
+    if (cur == want) return 0;
+    if (g_freq.off || !CheckFreqSites()) return -1;
+    if (cur > 6 || want > 6) return -1;
+    ++g_freq.calls;
+    if (!CallSetFreq(e, want)) {
+        ++g_freq.faults;
+        g_freq.off = true;
+        Log("[smooth] SetUpdateFrequency FAULTED on %s %p: the boost is off for this session", what, reinterpret_cast<void*>(e));
+        return -1;
+    }
+    std::uint8_t after = 0xFF;
+    std::int16_t g1 = -1;
+    Rd(e + kEntFreq, after);
+    Rd(e + kEntGroup, g1);
+    if (log)
+        Log("[%s] %s update frequency %u (%s) -> %u (%s), scheduler group %d -> %d", tag, what, cur, FreqName(cur), after, FreqName(after),
+            g0, g1);
+    return after == want ? 1 : -1;
+}
+
+// Game thread: a live body at 240 Hz while the boost bit is set, else back at its own frequency.
+void DriveFreq(BodySlot& b, bool local_active) {
+    if (b.phase != Phase::live || !holo::SpawnAlive(b.spawn) || !local_active) return;
+    const auto e = reinterpret_cast<std::uintptr_t>(b.spawn.e);
+    if (b.freq_e != e) {
+        b.freq_e = e;
+        b.freq_orig = 0xFF;
+        b.freq_calls = 0;
+    }
+    std::uint8_t cur = 0;
+    if (!Rd(e + kEntFreq, cur)) return;
+    if (b.freq_orig == 0xFF) b.freq_orig = cur;
+    const std::uint8_t want = (g_smooth.load(std::memory_order_relaxed) & kSmoothBoost) && !g_freq.off ? kFreq240Hz : b.freq_orig;
+    if (cur == want || b.freq_calls >= 8) return;  // a value the game keeps changing back is left alone after 8 tries
+    ++b.freq_calls;
+    SetFreq(e, want, b.tag, "body", true);
+}
+
+// Game thread, every 250 ms: the published gear props of both slots, the same way (their own
+// frequency is remembered per prop to put it back).
+// An entry not seen in 8 passes (2 s: its prop is gone) is freed (review: the table filled up and the
+// "start over" then remembered an already boosted rate as the original). A prop first seen at 240 Hz
+// (its entry was lost) goes back to 59.94 Hz, what the cinematic resources ask for.
+struct PropFreq {
+    std::uintptr_t e = 0;
+    game::Guid guid;
+    std::uint8_t orig = 0xFF;
+    std::uint8_t misses = 0;
+};
+PropFreq g_prop_freq[2 * kMaxGearProps];
+double g_next_prop_freq_ms = 0;
+std::uint32_t g_prop_boosts = 0, g_prop_restores = 0;
+
+void DriveGearFreq(bool local_active, double now_ms) {
+    if (!local_active || now_ms < g_next_prop_freq_ms) return;
+    g_next_prop_freq_ms = now_ms + 250;
+    const bool boost = (g_smooth.load(std::memory_order_relaxed) & kSmoothBoost) && !g_freq.off;
+    static GearSet set;
+    for (PropFreq& p : g_prop_freq)
+        if (p.e && p.misses < 255) ++p.misses;  // cleared below for every prop still published
+    for (int slot = 0; slot < 2; ++slot) {
+        if (g_gear_n[slot].load(std::memory_order_acquire) == 0 || !g_gear[slot].Read(set) || set.n > kMaxGearProps) {
+            for (PropFreq& p : g_prop_freq) p.misses = 0;  // a torn or empty read: no conclusions this pass
+            continue;
+        }
+        for (unsigned i = 0; i < set.n; ++i) {
+            const GearProp& g = set.p[i];
+            if (!g.e) continue;
+            std::uintptr_t vt = 0;
+            game::Guid id;
+            if (!Rd(g.e, vt) || vt != g.e_vt || !Rd(g.e + game::kEntityGuid, id.lo) || !Rd(g.e + game::kEntityGuid + 8, id.hi) || id != g.guid)
+                continue;
+            PropFreq* pf = nullptr;
+            PropFreq* free_pf = nullptr;
+            for (PropFreq& p : g_prop_freq) {
+                if (p.e == g.e && p.guid == g.guid) pf = &p;
+                else if (!free_pf && (p.e == 0 || p.orig == 0xFF || p.misses >= 8)) free_pf = &p;
+            }
+            std::uint8_t cur = 0;
+            if (!Rd(g.e + kEntFreq, cur)) continue;
+            if (!pf) {
+                if (!free_pf) {  // the table is full of props that may be gone: start over
+                    for (PropFreq& p : g_prop_freq) p = PropFreq{};
+                    free_pf = &g_prop_freq[0];
+                }
+                pf = free_pf;
+                pf->e = g.e;
+                pf->guid = g.guid;
+                pf->orig = cur == kFreq240Hz ? std::uint8_t{3} : cur;
+            }
+            pf->misses = 0;
+            const std::uint8_t want = boost ? kFreq240Hz : pf->orig;
+            if (cur == want) continue;
+            const int r = SetFreq(g.e, want, slot ? "gear-self" : "gear", "prop", g_prop_boosts + g_prop_restores < 6);
+            if (r == 1) ++(boost ? g_prop_boosts : g_prop_restores);
+            if (g_freq.off) return;
+        }
+    }
+}
+
+// ---------------------------------------------------------------- smoothness meter (tick)
+// What the player sees, measured once per tick (one tick per presented frame): four joints (hips,
+// both thighs, the right forearm) of each body's current pose and of Sam's newest capture. Per
+// second: frames, frames that showed a NEW pose while moving vs repeats (exactly the same pose),
+// "stutter" (a step under 10 % of the running mean step), the jerk ratio mean|w_k - w_k-1| / mean w
+// of the joints' angular speed w = step / frame time (0 for perfectly even motion; a 60 Hz body at
+// 120 fps alternates w and 0: about 1), pose writes per frame (0 / 1 / 2+), and for the partner the
+// end-to-end latency, frames held past the newest received one and (echo only, where the replayed
+// pose is our own Sam's of echo_delay_s ago) the error against Sam's captured pose at that time.
+constexpr unsigned kMeterJ[4] = {1, 61, 66, 8};  // JNT_C_B_001_Hips, JNT_R_B_100_Leg, JNT_L_B_100_Leg, JNT_R_B_002_Arm
+
+struct Series {
+    bool have = false;
+    wire::Quat prev[4];
+    double ema_rate = 0;   // deg/s, running
+    double prev_rate = -1;
+    // per second
+    std::uint32_t frames = 0, moving = 0, repeat = 0, stutter = 0;
+    double jerk_sum = 0, rate_sum = 0;
+    void Reset() { frames = moving = repeat = stutter = 0, jerk_sum = rate_sum = 0; }
+    void Lost() { have = false, prev_rate = -1; }
+    void Add(const wire::Quat (&q)[4], double dt_ms) {
+        if (!have || dt_ms <= 0.05) {
+            std::memcpy(prev, q, sizeof(prev));
+            have = true;
+            prev_rate = -1;
+            return;
+        }
+        double step = 0;
+        for (unsigned k = 0; k < 4; ++k) step += wire::AngleBetween(prev[k], q[k]);
+        const bool same = std::memcmp(prev, q, sizeof(prev)) == 0;
+        std::memcpy(prev, q, sizeof(prev));
+        const double rate = step * 1000.0 / dt_ms;
+        ++frames;
+        const bool mov = ema_rate > 30.0;  // deg/s over the 4 joints: walking is several hundred
+        if (mov) {
+            ++moving;
+            if (same) ++repeat;
+            if (rate < 0.1 * ema_rate) ++stutter;
+            if (prev_rate >= 0) {
+                jerk_sum += std::fabs(rate - prev_rate);
+                rate_sum += rate;
+            }
+        }
+        prev_rate = rate;
+        ema_rate += (rate - ema_rate) * 0.1;
+    }
+    double Jerk() const { return rate_sum > 0 ? jerk_sum / rate_sum : 0; }
+};
+
+struct SamHist {  // Sam's captures (echo ground truth): QPC ms + the meter joints
+    double ms;
+    wire::Quat q[4];
+};
+constexpr unsigned kHist = 2048;  // > 8 s at 240 Hz
+SamHist g_hist[kHist];
+unsigned g_hist_head = 0, g_hist_n = 0;
+std::uint32_t g_hist_frame = 0;
+
+bool HistAt(double ms, wire::Quat (&out)[4]) {
+    if (g_hist_n < 2) return false;
+    const SamHist& oldest = g_hist[(g_hist_head + kHist - g_hist_n) % kHist];
+    const SamHist& newest = g_hist[(g_hist_head + kHist - 1) % kHist];
+    if (ms < oldest.ms || ms > newest.ms) return false;
+    for (unsigned i = g_hist_n - 1; i > 0; --i) {
+        const SamHist& a = g_hist[(g_hist_head + kHist - g_hist_n + i - 1) % kHist];
+        const SamHist& b = g_hist[(g_hist_head + kHist - g_hist_n + i) % kHist];
+        if (a.ms <= ms && ms <= b.ms) {
+            const float t = b.ms > a.ms ? static_cast<float>((ms - a.ms) / (b.ms - a.ms)) : 1.0f;
+            for (unsigned k = 0; k < 4; ++k) {
+                wire::Quat qb = b.q[k];
+                const wire::Quat& qa = a.q[k];
+                if (qa.x * qb.x + qa.y * qb.y + qa.z * qb.z + qa.w * qb.w < 0) qb = wire::Quat{-qb.x, -qb.y, -qb.z, -qb.w};
+                out[k] = wire::Normalize(wire::Quat{qa.x + t * (qb.x - qa.x), qa.y + t * (qb.y - qa.y), qa.z + t * (qb.z - qa.z),
+                                                    qa.w + t * (qb.w - qa.w)});
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+// The meter joints of a live body's current pose (Sam-skeleton joints through the body's map).
+// Read twice and compared (a write in progress on another thread is skipped).
+bool ReadBodyJoints(BodySlot& b, wire::Quat (&q)[4]) {
+    const std::uintptr_t sm = b.sm.load(std::memory_order_acquire);
+    if (!sm || b.phase != Phase::live || b.latch_state.load(std::memory_order_acquire) != 1) return false;
+    std::uint8_t hdr[kPoseSize];
+    std::uintptr_t pose = 0, local = 0;
+    if (!ReadPoseHdr(sm, hdr, &pose) || CheckHdr(hdr, b.skel.load(std::memory_order_acquire), &local) != 0) return false;
+    for (unsigned k = 0; k < 4; ++k) {
+        const std::uintptr_t a = local + sizeof(Joint) * b.inv[kMeterJ[k]];
+        float x[4], y[4];
+        if (!mem::Read(a, x, sizeof(x)) || !mem::Read(a, y, sizeof(y)) || std::memcmp(x, y, sizeof(x)) != 0) return false;
+        q[k] = wire::Quat{x[0], x[1], x[2], x[3]};
+    }
+    return true;
+}
+
+struct SlotMeter {
+    Series s;
+    std::uint32_t prev_app = 0, prev_upd = 0;
+    std::uint32_t per_tick[3] = {};  // ticks with 0, 1, 2+ pose writes
+    std::uint32_t upd = 0, app = 0;
+    double err_sum = 0, err_max = 0, lat_sum = 0;
+    std::uint32_t err_n = 0, lat_n = 0;
+    void Reset() {
+        s.Reset();
+        per_tick[0] = per_tick[1] = per_tick[2] = 0;
+        upd = app = 0;
+        err_sum = err_max = lat_sum = 0;
+        err_n = lat_n = 0;
+    }
+};
+SlotMeter g_meter[2];
+Series g_sam_series;
+std::uint32_t g_sam_caps = 0, g_prev_cap_frame = 0;
+double g_meter_prev_ms = 0, g_meter_next_ms = 0, g_meter_start_ms = 0;
+unsigned long g_meter_presents = 0;
+std::uint32_t g_meter_ticks = 0;
+double g_meter_dt_min = 1e9, g_meter_dt_max = 0;
+bool g_meter_echo = false;  // the partner replays our own Sam (echo role): ground truth available
+double g_meter_echo_delay_ms = 0;
+
+// Frame sequence recording (smooth 3 <n>): per tick, the frame time and each series' step.
+struct SeqRow {
+    float dt, step_p, step_s, step_sam;
+    std::uint8_t app_p, app_s;
+};
+constexpr unsigned kSeqMax = 600;
+SeqRow g_seq[kSeqMax];
+unsigned g_seq_n = 0, g_seq_want = 0;
+wire::Quat g_seq_prev[3][4];
+bool g_seq_have[3] = {};
+
+float SeqStep(int i, bool ok, const wire::Quat (&q)[4]) {
+    if (!ok) {
+        g_seq_have[i] = false;
+        return -1;
+    }
+    float st = 0;
+    if (g_seq_have[i])
+        for (unsigned k = 0; k < 4; ++k) st += wire::AngleBetween(g_seq_prev[i][k], q[k]);
+    else st = -1;
+    std::memcpy(g_seq_prev[i], q, sizeof(q));
+    g_seq_have[i] = true;
+    return st;
+}
+
+void LogSeq() {
+    Log("[smooth] frame sequence: %u frames; per frame: dt ms / partner step / self step / Sam step (deg, 4 joints) / partner writes "
+        "/ self writes",
+        g_seq_n);
+    char line[1024];
+    for (unsigned i = 0; i < g_seq_n; i += 12) {
+        std::size_t o = 0;
+        for (unsigned k = i; k < g_seq_n && k < i + 12 && o + 64 < sizeof(line); ++k) {
+            const SeqRow& r = g_seq[k];
+            o += static_cast<std::size_t>(std::snprintf(line + o, sizeof(line) - o, " %.1f/%.1f/%.1f/%.1f/%u/%u", r.dt, r.step_p, r.step_s,
+                                                        r.step_sam, r.app_p, r.app_s));
+        }
+        Log("[smooth] seq %3u:%s", i, line);
+    }
+}
+
+void Meter(double now_ms) {
+    if (!g_hook) return;
+    const bool any = g_p.phase == Phase::live || g_me.phase == Phase::live;
+    const double dt = g_meter_prev_ms > 0 ? now_ms - g_meter_prev_ms : 0;
+    g_meter_prev_ms = now_ms;
+    if (dt > 0 && dt < 200) {
+        const float fr = g_frame_ms.load(std::memory_order_relaxed);
+        g_frame_ms.store(fr + (static_cast<float>(dt) - fr) * 0.1f, std::memory_order_relaxed);
+    }
+    if (!any) {
+        g_meter_next_ms = 0;
+        g_sam_series.Lost();
+        g_meter[0].s.Lost(), g_meter[1].s.Lost();
+        return;
+    }
+    if (g_meter_next_ms == 0) {
+        g_meter_next_ms = now_ms + 1000;
+        g_meter_start_ms = now_ms;
+        g_meter_presents = overlay::Installed() ? overlay::GetStats().presents : 0;
+        g_meter_ticks = 0;
+        for (SlotMeter& m : g_meter) {
+            m.Reset();
+            m.prev_app = 0, m.prev_upd = 0;
+        }
+        g_meter[0].prev_app = g_p.ct.applies.load(), g_meter[0].prev_upd = g_p.updates.load();
+        g_meter[1].prev_app = g_me.ct.applies.load(), g_meter[1].prev_upd = g_me.updates.load();
+        g_sam_series.Reset();
+        g_sam_caps = 0;
+    }
+    ++g_meter_ticks;
+    if (dt > 0) {
+        if (dt < g_meter_dt_min) g_meter_dt_min = dt;
+        if (dt > g_meter_dt_max) g_meter_dt_max = dt;
+    }
+    // Sam's newest capture: the reference series and the ground-truth history.
+    Capture c;
+    wire::Quat samq[4];
+    bool sam_ok = false;
+    if (g_capture.Read(c) && GetTickCount64() - c.tick_ms < 250) {
+        for (unsigned k = 0; k < 4; ++k) samq[k] = wire::Quat{c.j[kMeterJ[k]].q[0], c.j[kMeterJ[k]].q[1], c.j[kMeterJ[k]].q[2], c.j[kMeterJ[k]].q[3]};
+        sam_ok = true;
+        g_sam_series.Add(samq, dt);
+        if (c.frame != g_prev_cap_frame) {
+            ++g_sam_caps;
+            g_prev_cap_frame = c.frame;
+        }
+        if (c.frame != g_hist_frame && g_qpc_per_ms > 0) {
+            g_hist_frame = c.frame;
+            SamHist& h = g_hist[g_hist_head];
+            h.ms = static_cast<double>(c.qpc) / g_qpc_per_ms;
+            std::memcpy(h.q, samq, sizeof(h.q));
+            g_hist_head = (g_hist_head + 1) % kHist;
+            if (g_hist_n < kHist) ++g_hist_n;
+        }
+    } else {
+        g_sam_series.Lost();
+    }
+    wire::Quat bq[2][4];
+    bool body_ok[2] = {};
+    std::uint8_t apps[2] = {};
+    for (int i = 0; i < 2; ++i) {
+        BodySlot& b = g_slots[i];
+        SlotMeter& m = g_meter[i];
+        const std::uint32_t app = b.ct.applies.load(), upd = b.updates.load();
+        const std::uint32_t da = app - m.prev_app, du = upd - m.prev_upd;
+        m.prev_app = app, m.prev_upd = upd;
+        apps[i] = static_cast<std::uint8_t>(da > 9 ? 9 : da);
+        if (b.phase != Phase::live) {
+            m.s.Lost();
+            continue;
+        }
+        m.app += da, m.upd += du;
+        ++m.per_tick[da > 2 ? 2 : da];
+        body_ok[i] = ReadBodyJoints(b, bq[i]);
+        if (body_ok[i]) m.s.Add(bq[i], dt);
+        else m.s.Lost();
+    }
+    // Partner: latency of the pose on screen (now - its play time, on one PC the same clock in echo)
+    // and, in echo, its error against our own Sam at that play time.
+    if (g_p.phase == Phase::live && g_p.owner == Owner::partner) {
+        const double play = g_last_play.load(std::memory_order_relaxed);
+        SlotMeter& m = g_meter[0];
+        if (play > 0) {
+            m.lat_sum += now_ms - play;
+            ++m.lat_n;
+        }
+        wire::Quat ref[4];
+        if (g_meter_echo && body_ok[0] && m.s.ema_rate > 30.0 && play > 0 && HistAt(play, ref)) {
+            double e = 0;
+            for (unsigned k = 0; k < 4; ++k) e += wire::AngleBetween(ref[k], bq[0][k]);
+            e /= 4;
+            m.err_sum += e;
+            ++m.err_n;
+            if (e > m.err_max) m.err_max = e;
+        }
+    }
+    if (g_seq_want && g_seq_n < g_seq_want && g_seq_n < kSeqMax) {
+        SeqRow& r = g_seq[g_seq_n++];
+        r.dt = static_cast<float>(dt);
+        r.step_p = SeqStep(0, body_ok[0], bq[0]);
+        r.step_s = SeqStep(1, body_ok[1], bq[1]);
+        r.step_sam = SeqStep(2, sam_ok, samq);
+        r.app_p = apps[0], r.app_s = apps[1];
+        if (g_seq_n >= g_seq_want) {
+            LogSeq();
+            g_seq_want = 0;
+        }
+    }
+    if (now_ms < g_meter_next_ms) return;
+    const double span = (now_ms - g_meter_start_ms) / 1000.0;
+    const unsigned long presents = overlay::Installed() ? overlay::GetStats().presents : 0;
+    const double fps = span > 0 ? static_cast<double>(presents - g_meter_presents) / span : 0;
+    std::uint8_t sam_f = 0xFF, pf = 0xFF, sf = 0xFF;
+    if (const std::uintptr_t se = g_sam_e.load()) Rd(se + kEntFreq, sam_f);
+    if (g_p.phase == Phase::live && holo::SpawnAlive(g_p.spawn)) Rd(reinterpret_cast<std::uintptr_t>(g_p.spawn.e) + kEntFreq, pf);
+    if (g_me.phase == Phase::live && holo::SpawnAlive(g_me.spawn)) Rd(reinterpret_cast<std::uintptr_t>(g_me.spawn.e) + kEntFreq, sf);
+    char part[400] = "partner -", self[400] = "self -";
+    const std::uint32_t ia = g_interp_applies.exchange(0), ih = g_interp_holds.exchange(0), it = g_interp_torn.exchange(0);
+    if (g_p.phase == Phase::live) {
+        const SlotMeter& m = g_meter[0];
+        std::snprintf(part, sizeof(part),
+                      "partner upd %u app %u (interp %u hold %u torn %u) writes/frame 0:%u 1:%u 2+:%u | moving %u new %u repeat %u stutter %u "
+                      "jerk %.2f | latency %.1f ms | err avg %.2f max %.2f deg (n %u) | freq %u",
+                      m.upd, m.app, ia, ih, it, m.per_tick[0], m.per_tick[1], m.per_tick[2], m.s.moving, m.s.moving - m.s.repeat, m.s.repeat,
+                      m.s.stutter, m.s.Jerk(), m.lat_n ? m.lat_sum / m.lat_n : 0.0, m.err_n ? m.err_sum / m.err_n : 0.0, m.err_max, m.err_n,
+                      pf);
+    }
+    if (g_me.phase == Phase::live) {
+        const SlotMeter& m = g_meter[1];
+        const std::uint32_t b0 = g_self_age_bucket[0].exchange(0), b1 = g_self_age_bucket[1].exchange(0), b2 = g_self_age_bucket[2].exchange(0);
+        std::snprintf(self, sizeof(self),
+                      "self upd %u app %u writes/frame 0:%u 1:%u 2+:%u | moving %u new %u repeat %u stutter %u jerk %.2f | capture age "
+                      "<0.5 frame %u, ~1 frame %u, older %u | freq %u",
+                      m.upd, m.app, m.per_tick[0], m.per_tick[1], m.per_tick[2], m.s.moving, m.s.moving - m.s.repeat, m.s.repeat, m.s.stutter,
+                      m.s.Jerk(), b0, b1, b2, sf);
+    }
+    // Every second in hidden tests; in a player's game one second in ten (the same one-second numbers),
+    // and not at all with smooth_pose=0 (the v0.7 behaviour logs nothing new).
+    static unsigned windows = 0;
+    if (automation::Enabled() || (g_smooth.load(std::memory_order_relaxed) != 0 && windows++ % 10 == 0))
+        Log("[smooth] fps %.1f (ticks %u, frame %.1f-%.1f ms, cap %u, mask %u) | %s | %s | Sam caps %u moving %u repeat %u stutter %u jerk "
+            "%.2f freq %u",
+            fps, g_meter_ticks, g_meter_dt_min < 1e8 ? g_meter_dt_min : 0.0, g_meter_dt_max, RuntimeFrameCap(), g_smooth.load(), part, self,
+            g_sam_caps, g_sam_series.moving, g_sam_series.repeat, g_sam_series.stutter, g_sam_series.Jerk(), sam_f);
+    g_meter_next_ms = now_ms + 1000;
+    g_meter_start_ms = now_ms;
+    g_meter_presents = presents;
+    g_meter_ticks = 0;
+    g_meter_dt_min = 1e9, g_meter_dt_max = 0;
+    g_meter[0].Reset(), g_meter[1].Reset();
+    g_sam_series.Reset();
+    g_sam_caps = 0;
 }
 
 }  // namespace
@@ -1813,6 +2406,32 @@ bool BeginByPath(const char* path, const char* guid_text, const game::WorldTrans
     return StartByPath("gear", path, "prop", path, guid, tag, at, true, out, why, cap) == BeginResult::started;
 }
 
+bool BeginByPathGuid(const char* path, const std::uint8_t (&guid)[16], const game::WorldTransform& at, std::uint32_t tag, holo::Spawn* out,
+                     char* why, std::size_t cap) noexcept {
+    if (!g_hook || !ResolveSpawn()) {
+        Set(why, cap, "%s", g_hook ? g_fn.why : "pose hook not installed");
+        return false;
+    }
+    if (!path || !*path) {
+        Set(why, cap, "no path");
+        return false;
+    }
+    return StartByPath("gear", path, "prop", path, guid, tag, at, true, out, why, cap) == BeginResult::started;
+}
+
+unsigned GearPublished(GearSlot slot) noexcept { return g_gear_n[slot == GearSlot::self ? 1 : 0].load(std::memory_order_acquire); }
+
+bool ResourceIdentity(game::Entity* e, char* path, std::size_t cap, std::uint8_t (&guid)[16], const char** type) noexcept {
+    if (type) *type = nullptr;
+    if (path && cap) path[0] = 0;
+    RefInfo r;
+    if (!e || !ReadRef(reinterpret_cast<std::uintptr_t>(e) + kEntResRef, &r)) return false;
+    std::memcpy(guid, r.guid, 16);
+    if (path && cap) std::snprintf(path, cap, "%s", r.path.c_str());
+    if (type && r.obj) *type = partner::TypeName(reinterpret_cast<const void*>(r.obj));
+    return !r.path.empty();
+}
+
 bool ReadJointModel(game::Entity* e, unsigned j, float (&m)[4][4]) noexcept {
     const std::uintptr_t sm = e ? ModelOf(reinterpret_cast<std::uintptr_t>(e)) : 0;
     if (!sm || j >= kJ) return false;
@@ -1907,6 +2526,7 @@ void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
             if (g_capture.Read(c)) {
                 static wire::JointFrame f;
                 FrameFromCapture(c, &f);
+                g_interp_on.store(false, std::memory_order_release);  // a mirror frame: the detour plays it as is
                 PublishFrame(f);
             }
         }
@@ -1920,15 +2540,31 @@ void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
     if (g_hook) SelfTick(local, local_active, now_ms);
     DriveModel(g_p, local_active);
     DriveModel(g_me, local_active);
+    DriveFreq(g_p, local_active);
+    DriveFreq(g_me, local_active);
+    DriveGearFreq(local_active, now_ms);
     DressPartner(local, local_active, now_ms);
     if (g_hook) Stats(now_ms);
+    Meter(now_ms);
 }
 
-bool CaptureFrame(wire::JointFrame* out) noexcept {
+bool CaptureFrame(wire::JointFrame* out, double* capture_ms) noexcept {
     Capture c;
     if (!g_capture.Read(c) || GetTickCount64() - c.tick_ms > 250) return false;
+    if (capture_ms) *capture_ms = g_qpc_per_ms > 0 ? static_cast<double>(c.qpc) / g_qpc_per_ms : 0;
     return FrameFromCapture(c, out);
 }
+
+void ConfigureSmooth(unsigned mask, bool echo, double echo_delay_ms) noexcept {
+    g_smooth.store(mask & kSmoothAll);
+    g_meter_echo = echo;
+    g_meter_echo_delay_ms = echo_delay_ms;
+    Log("[smooth] smooth_pose mask %u: 240 Hz body/prop updates %s, per-update interpolation %s, capture-time stamps %s%s", mask & kSmoothAll,
+        (mask & kSmoothBoost) ? "on" : "off", (mask & kSmoothDetourInterp) ? "on" : "off", (mask & kSmoothCaptureStamp) ? "on" : "off",
+        echo ? " (echo: the meter compares the partner with our own Sam's captured pose)" : "");
+}
+
+unsigned SmoothMask() noexcept { return g_smooth.load(std::memory_order_relaxed); }
 
 bool PushFrame(const wire::JointFrame& f, double key_ms) noexcept {
     if (f.joint_count != kJ || f.layout_hash != wire::kSamLayoutHash) return false;
@@ -1988,7 +2624,40 @@ bool SamplePublish(double play_ms) noexcept {
         const double span = b.key_ms - a.key_ms;
         wire::BlendJoints(a.f, b.f, span > 0 ? static_cast<float>((play_ms - a.key_ms) / span) : 1.0f, out);
     }
-    PublishFrame(out);
+    PublishFrame(out, play_ms);
+    // Smooth path: the bracketing frames themselves, for the detour to interpolate at its own time.
+    if (!(g_smooth.load(std::memory_order_relaxed) & kSmoothDetourInterp) || g_qpc_per_ms <= 0) {
+        g_interp_on.store(false, std::memory_order_release);
+        return true;
+    }
+    Capture c;
+    if (!g_capture.Read(c)) return true;  // no local Sam pose for the fallback translations yet
+    static InterpBuf ib;
+    unsigned first = 0, n = 1;
+    if (g_ring_count == 1 || play_ms >= newest.key_ms) {
+        first = g_ring_count - 1;
+    } else {
+        unsigned i = 1;  // the first frame keyed after play_ms (play before the oldest: 1, alpha clamps to 0)
+        while (i < g_ring_count - 1 && RingAt(i).key_ms <= play_ms) ++i;
+        first = i - 1;
+        n = i + 1 < g_ring_count ? 3 : 2;
+    }
+    ib.n = n;
+    for (unsigned k = 0; k < n; ++k) {
+        const RingSlot& r = RingAt(first + k);
+        ib.key[k] = r.key_ms;
+        for (unsigned j = 0; j < kJ; ++j) ib.q[k][j] = j < r.f.joint_count ? r.f.q[j] : wire::Quat{};
+        std::memcpy(ib.troot[k], c.j[kSamRoot].t, sizeof(ib.troot[k]));
+        std::memcpy(ib.tpelvis[k], c.j[kSamPelvis].t, sizeof(ib.tpelvis[k]));
+        for (unsigned t = 0; t < r.f.t_count; ++t) {
+            if (r.f.t_joint[t] == kSamRoot) std::memcpy(ib.troot[k], r.f.t[t], sizeof(ib.troot[k]));
+            if (r.f.t_joint[t] == kSamPelvis) std::memcpy(ib.tpelvis[k], r.f.t[t], sizeof(ib.tpelvis[k]));
+        }
+    }
+    std::memcpy(ib.fb, c.j, sizeof(ib.fb));
+    ib.play_ref = play_ms;
+    ib.ref_ms = static_cast<double>(Qpc()) / g_qpc_per_ms;
+    if (g_interp.Write(ib)) g_interp_on.store(true, std::memory_order_release);
     return true;
 }
 
@@ -2168,7 +2837,9 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
                     Set(msg, cap, "no: reason 0..63, a local player and verified mesh sites needed");
                     return false;
                 }
-                const std::uintptr_t a = SamMaskAddr(reinterpret_cast<std::uintptr_t>(sam));
+                // reason 63 is ours: it goes where the self view puts it (the global part mask); any
+                // other reason is a game's (the Root mask)
+                const std::uintptr_t a = reason == 63 ? SamHideAddr(reinterpret_cast<std::uintptr_t>(sam)) : SamMaskAddr(reinterpret_cast<std::uintptr_t>(sam));
                 std::uint64_t before = 0, after = 0;
                 if (!a || !Rd(a, before)) {
                     Set(msg, cap, "Sam's mesh mask does not check out");
@@ -2247,6 +2918,39 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             }
             g_outfit_override = 0;
             Set(msg, cap, "outfit override off (the partner's own outfit applies)");
+            return true;
+        }
+        case 10: {  // smooth <op> <a>: 0 log, 1 feature mask a (0..7), 2 frame cap a fps (0 off), 3 record a frame sequence of a ticks
+            const int sub = static_cast<int>(v[0]);
+            if (sub == 1) {
+                const unsigned mask = v[1] >= 0 && v[1] <= kSmoothAll ? static_cast<unsigned>(v[1]) : kSmoothAll;
+                ConfigureSmooth(mask, g_meter_echo, g_meter_echo_delay_ms);
+                Set(msg, cap, "smooth mask %u", mask);
+                return true;
+            }
+            if (sub == 2) {
+                const unsigned fps = v[1] > 0 ? static_cast<unsigned>(v[1]) : 0;
+                SetRuntimeFrameCap(fps);
+                Set(msg, cap, "frame cap %u", RuntimeFrameCap());
+                Log("[smooth] frame cap now %u fps (0 = off)", RuntimeFrameCap());
+                return true;
+            }
+            if (sub == 3) {
+                const unsigned n = v[1] > 0 ? static_cast<unsigned>(v[1]) : 120;
+                g_seq_n = 0;
+                g_seq_have[0] = g_seq_have[1] = g_seq_have[2] = false;
+                g_seq_want = n > kSeqMax ? kSeqMax : n;
+                Set(msg, cap, "recording %u frames", g_seq_want);
+                return true;
+            }
+            std::uint8_t pf = 0xFF, sf = 0xFF, samf = 0xFF;
+            if (g_p.phase == Phase::live) Rd(reinterpret_cast<std::uintptr_t>(g_p.spawn.e) + kEntFreq, pf);
+            if (g_me.phase == Phase::live) Rd(reinterpret_cast<std::uintptr_t>(g_me.spawn.e) + kEntFreq, sf);
+            if (have_sam) Rd(reinterpret_cast<std::uintptr_t>(sam) + kEntFreq, samf);
+            Set(msg, cap, "mask %u cap %u; update frequency: partner %u self %u Sam %u; setter %s (%u calls, %u faults%s); props boosted %u restored %u",
+                g_smooth.load(), RuntimeFrameCap(), pf, sf, samf, g_freq.checked ? (g_freq.ok ? "verified" : g_freq.why) : "not checked yet",
+                g_freq.calls, g_freq.faults, g_freq.off ? ", OFF" : "", g_prop_boosts, g_prop_restores);
+            Log("[smooth] %s", msg);
             return true;
         }
         default:

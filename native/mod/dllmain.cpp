@@ -121,6 +121,13 @@ void FrameCap() noexcept {
     next += period;
 }
 
+}  // namespace
+
+void st::SetRuntimeFrameCap(unsigned fps) noexcept { g_frame_cap.store(fps == 0 ? 0u : fps < 15 ? 15u : fps > 240 ? 240u : fps); }
+unsigned st::RuntimeFrameCap() noexcept { return g_frame_cap.load(std::memory_order_relaxed); }
+
+namespace {
+
 void HookedRunCallbacks() {
     g_original();
     FrameCap();
@@ -187,6 +194,7 @@ DWORD WINAPI Bootstrap(LPVOID) {
     if (menu || tags) {
         st::overlay::Options ov;
         ov.menu = menu;
+        ov.game_font = cfg.name_tag_game_font;
         ov.startup_hint = menu;
         ov.toggle_vk = cfg.debug_menu_vk;
         ov.mod_dir = mod_dir;

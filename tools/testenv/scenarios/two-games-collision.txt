@@ -69,6 +69,14 @@ screenshot 04-host-after
 @guest screenshot 04-guest-after
 action collision 0
 @guest action collision 0
+# the tags far away (25 m and more: the distance after the name, its " · " from Segoe UI): each partner pinned 30 m ahead
+action collision 3 30
+@guest action collision 3 30
+wait 2500
+screenshot 05-host-tag-far
+@guest screenshot 05-guest-tag-far
+action collision 3 0
+@guest action collision 3 0
 action log_status
 @guest action log_status
 ?waitlog 12 \[sync\] link traffic over

@@ -100,6 +100,14 @@ RxG g_gqueue[kGQueue];
 unsigned g_gq_head = 0, g_gq_count = 0;
 std::uint32_t g_last_rx_gseq = 0;
 bool g_have_rx_gseq = false;
+// Gear resource entries (STR1): idempotent, so no sequence filter; newest wins when full.
+struct RxR {
+    wire::GearRes r;
+    std::uint32_t generation;
+};
+constexpr unsigned kRQueue = 16;
+RxR g_rqueue[kRQueue];
+unsigned g_rq_head = 0, g_rq_count = 0;
 
 volatile LONG64 g_rx_frames = 0, g_tx_frames = 0;
 volatile LONG64 g_rx_joints = 0, g_tx_joints = 0, g_tx_payload = 0;
@@ -192,6 +200,9 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
     bool have_name = false;
     static thread_local wire::GearFrame gear;  // transport thread only
     bool have_gear = false;
+    constexpr unsigned kMaxRes = 4;
+    static thread_local wire::GearRes res[kMaxRes];
+    unsigned res_count = 0;
 
     AcquireSRWLockExclusive(&g_tx);
     const lk::Delivery d = g_session.OnDatagram(data, size, from, now);
@@ -214,6 +225,8 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
                     have_name = true;  // the newest in the datagram wins
                 } else if (wire::DecodeGear(m.data, m.size, gear)) {
                     have_gear = true;
+                } else if (res_count < kMaxRes && wire::DecodeGearRes(m.data, m.size, res[res_count])) {
+                    ++res_count;
                 }
             } else if (m.type == static_cast<std::uint8_t>(lk::MsgType::close)) {
                 g_session.OnPeerClose(now);
@@ -229,7 +242,7 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
 
     if (g_use_steam && new_session && g_host && committed.address) g_steam.set_peer(lab::SteamIdOf(committed));
 
-    if (pose_count || joint_count || have_name || have_gear || new_session) {
+    if (pose_count || joint_count || have_name || have_gear || res_count || new_session) {
         AcquireSRWLockExclusive(&g_rx);
         if (new_session) {
             g_q_count = 0;
@@ -239,7 +252,15 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
             g_have_peer_name = false;
             g_gq_count = 0;
             g_have_rx_gseq = false;
+            g_rq_count = 0;
             ++g_generation;
+        }
+        for (unsigned i = 0; i < res_count; ++i) {
+            RxR& slot = g_rqueue[(g_rq_head + g_rq_count) % kRQueue];
+            slot.r = res[i];
+            slot.generation = g_generation;
+            if (g_rq_count < kRQueue) ++g_rq_count;
+            else g_rq_head = (g_rq_head + 1) % kRQueue;
         }
         if (have_gear && !(g_have_rx_gseq && static_cast<std::int32_t>(gear.seq - g_last_rx_gseq) <= 0)) {
             g_last_rx_gseq = gear.seq;
@@ -555,6 +576,44 @@ bool SendGear(const wire::GearFrame& gear) noexcept {
     ReleaseSRWLockExclusive(&g_tx);
     if (sent) InterlockedIncrement64(&g_tx_gears);
     return sent;
+}
+
+bool SendGearRes(const wire::GearRes& res) noexcept {
+    std::uint8_t buf[wire::kMaxGearResFrameSize];
+    const std::size_t n = wire::EncodeGearRes(res, buf, sizeof(buf));
+    if (!n) return false;
+    bool sent = false;
+    AcquireSRWLockExclusive(&g_tx);
+    if (g_session.CanSendData()) {
+        lk::BodyWriter w(g_body, sizeof(g_body));
+        if (w.Add(lk::MsgType::frame, buf, n)) {
+            sent = g_session.SendData(g_body, w.size(), NowMs());
+            if (sent) InterlockedAdd64(&g_tx_payload, static_cast<LONG64>(w.size()));
+        }
+    }
+    ReleaseSRWLockExclusive(&g_tx);
+    return sent;
+}
+
+std::uint32_t Generation() noexcept {
+    AcquireSRWLockExclusive(&g_rx);
+    const std::uint32_t g = g_generation;
+    ReleaseSRWLockExclusive(&g_rx);
+    return g;
+}
+
+bool PopGearRes(wire::GearRes& out, std::uint32_t& generation) noexcept {
+    bool ok = false;
+    AcquireSRWLockExclusive(&g_rx);
+    if (g_rq_count) {
+        out = g_rqueue[g_rq_head].r;
+        generation = g_rqueue[g_rq_head].generation;
+        g_rq_head = (g_rq_head + 1) % kRQueue;
+        --g_rq_count;
+        ok = true;
+    }
+    ReleaseSRWLockExclusive(&g_rx);
+    return ok;
 }
 
 bool PopGear(wire::GearFrame& out, std::uint64_t& receive_ms, std::uint32_t& generation) noexcept {

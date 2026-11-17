@@ -68,7 +68,8 @@ void ResetRefused() noexcept;
 // ---- pose stream (game thread)
 // Sam's newest captured pose as a frame (77 rotations + root/pelvis translation).
 // False when nothing fresh (< 250 ms) was captured.
-bool CaptureFrame(wire::JointFrame* out) noexcept;
+// `capture_ms` (optional): when the game computed that pose, on link::NowMsPrecise's clock (QPC).
+bool CaptureFrame(wire::JointFrame* out, double* capture_ms = nullptr) noexcept;
 // Received / echoed frames, keyed by the time they should play at (our clock). False when the
 // frame was dropped: not Sam's 77-joint layout (the body could not play it), or not newer than
 // the ring's newest key (reordered). Only accepted frames count as "the peer sends joints".
@@ -121,7 +122,7 @@ struct GearProp {
     float p[3] = {};            // position in the anchor's frame (m)
     float r[3][3] = {};         // rotation rows in the anchor's frame
 };
-inline constexpr unsigned kMaxGearProps = 40;
+inline constexpr unsigned kMaxGearProps = 56;  // wire::kMaxGearItems
 enum class GearSlot : std::uint8_t { partner = 0, self = 1 };
 // Game thread. n > 0 publishes the list (it replaces the previous one); n = 0 unpublishes it and
 // waits until no detour uses it (call before removing a published prop).
@@ -137,6 +138,15 @@ game::Entity* SlotEntity(GearSlot slot) noexcept;
 // Game thread; the caller owns `out` and must end it with holo::SpawnTeardown.
 bool BeginByPath(const char* path, const char* guid_text, const game::WorldTransform& at, std::uint32_t tag, holo::Spawn* out,
                  char* why, std::size_t cap) noexcept;
+// The same with the raw GUID bytes (a gear entity resource named by the partner's STR1 table).
+bool BeginByPathGuid(const char* path, const std::uint8_t (&guid)[16], const game::WorldTransform& at, std::uint32_t tag, holo::Spawn* out,
+                     char* why, std::size_t cap) noexcept;
+// How many props of the slot the detour places now (0: unpublished, or a placement fault switched
+// the list off until it is published again).
+unsigned GearPublished(GearSlot slot) noexcept;
+// An entity's resource identity: its StreamingRef (+0x58) path (no ".core") and raw GUID (the bytes
+// BeginByPath takes), and the resource's type name when loaded. Fault-free reads; false when unreadable.
+bool ResourceIdentity(game::Entity* e, char* path, std::size_t cap, std::uint8_t (&guid)[16], const char** type) noexcept;
 // The model-space matrix (4 rows: right, forward, up axes, then the translation) of joint `j` of an
 // entity's current pose (its SkinnedModel at +0xB8, checked; 77-joint layout). Fault-free reads.
 bool ReadJointModel(game::Entity* e, unsigned j, float (&m)[4][4]) noexcept;
@@ -150,13 +160,26 @@ bool HeadWorld(game::Entity* e, double (&pos)[3]) noexcept;
 // a shown self body hidden, so a dead tick never leaves the player invisible. Logged.
 void EmergencyStop() noexcept;
 
+// ---- smooth animation above 60 fps (docs/real-partner-body.md section 3.5; session.ini smooth_pose)
+// kSmoothBoost: our bodies and gear props are moved to the game's 240 Hz update group (Entity
+//   SetUpdateFrequency, byte-checked; the game's own cutscene bodies and props ask for 59.94 Hz), so
+//   their models are updated and posed every frame up to 240 fps instead of every other frame.
+// kSmoothDetourInterp: the partner body's pose is interpolated in its own model update at that
+//   moment's play time (the tick publishes the bracketing frames and a QPC reference).
+// kSmoothCaptureStamp: our STJ1 frames carry the time Sam's pose was captured, not the send tick's.
+inline constexpr unsigned kSmoothBoost = 1, kSmoothDetourInterp = 2, kSmoothCaptureStamp = 4, kSmoothAll = 7;
+// `echo`: the partner replays our own Sam (role echo), so the [smooth] meter can compare it with
+// Sam's captured pose at the same play time.
+void ConfigureSmooth(unsigned mask, bool echo, double echo_delay_ms) noexcept;
+unsigned SmoothMask() noexcept;
+
 // ---- debug actions (game_actions.cpp): op 1 probe, 2 spawn <body id> <dist m> <mirror 0/1>,
 // 3 remove, 4 joint names, 5 stats, 6 mirror <0/1>, 7 control item <n>,
 // 8 self view <0/1> <body id, 0 = configured> <follow: 1 Sam's update, 2 the body's, 3 tick, 0 unchanged>
 //   (8 with 2 <reason 0..63> <0/1>: hidden tests on scratch saves only, sets / clears a hide reason
 //   on the local Sam's mask, e.g. 26 = photo mode's, 63 = a stray bit of ours),
 // 9 outfit <0 log / 1 like our Sam / 2 exos colour / 3 override off / 4 own suit colour (hidden tests
-//   on scratch saves only)>.
+//   on scratch saves only)>, 10 smooth <0 log / 1 mask / 2 frame cap fps / 3 record n frames>.
 bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 
 }  // namespace st::realbody

@@ -9,6 +9,7 @@
 
 #include "body_choice.hpp"
 #include "body_table.hpp"
+#include "game_font.hpp"
 #include "nametag_math.hpp"
 #include "pose_wire.hpp"
 #include "stcoop/link_crypto.hpp"
@@ -354,10 +355,10 @@ void TestGearFrames() {
     bad[3] = '2';
     CHECK(!wire::DecodeGear(bad, n, g));
     std::memcpy(bad, buf, n);
-    bad[8] = 2;  // version
+    bad[8] = 1;  // version 1 (v0.7 builds)
     CHECK(!wire::DecodeGear(bad, n, g));
     std::memcpy(bad, buf, n);
-    bad[9] = 41;  // count over the cap (and the size no longer matches)
+    bad[9] = 57;  // count over the cap (and the size no longer matches)
     CHECK(!wire::DecodeGear(bad, n, g));
     std::memcpy(bad, buf, n);
     bad[16 + 18 * 1 + 4] = 3;  // item 1 sits on item 3 (not an earlier item)
@@ -372,7 +373,7 @@ void TestGearFrames() {
     bad[16 + 18 * 2 + 1] = 5;  // model changed without the hash: rejected
     CHECK(!wire::DecodeGear(bad, n, g));
     std::memcpy(bad, buf, n);
-    bad[10] = 0xFF;  // unknown flag bits are cleared
+    bad[10] = 0xF9;  // unknown flag bits are cleared (bits 1 and 2, the parts blocks, are known: no blocks, so not set here)
     CHECK(wire::DecodeGear(bad, n, g) && g.flags == wire::kGearValid);
     // Other frames' magic is not a gear frame, and a gear frame is none of theirs.
     wire::Pose pose;
@@ -401,7 +402,9 @@ void TestGearFrames() {
     CHECK(wire::EncodeGear(f, buf, n - 1) == 0);
     // The full cap fits a link body next to nothing else (1148 bytes) and decodes.
     wire::GearFrame full;
-    full.flags = wire::kGearValid;
+    full.flags = wire::kGearValid | wire::kGearParts | wire::kGearPackParts;
+    full.parts_apply[0] = ~0ull, full.parts_apply[1] = 0xFFFF;
+    full.pack_apply = 0xFFFFFF;
     for (unsigned i = 0; i < wire::kMaxGearItems; ++i) {
         wire::GearItem& it = full.items[full.count++];
         it.kind = i == 0 ? wire::GearKind::backpack : wire::GearKind::cargo;
@@ -413,6 +416,154 @@ void TestGearFrames() {
     const std::size_t fn = wire::EncodeGear(full, buf, sizeof(buf));
     CHECK(fn == wire::kMaxGearFrameSize && fn <= 1148 - 4);
     CHECK(wire::DecodeGear(buf, fn, g) && g.count == wire::kMaxGearItems && g.items[39].parent == 38);
+}
+
+// STC1 version 2 (entity items, the parts block), STR1 resource frames, prop reuse across layouts and
+// the retry schedule of failed props (docs/real-partner-body.md section 12).
+void TestGearV2() {
+    wire::GearFrame f;
+    f.seq = 9;
+    f.flags = wire::kGearValid | wire::kGearParts;
+    f.parts_apply[0] = 0x0000000F00000004ull, f.parts_apply[1] = 0x1;
+    f.parts_visible[0] = 0x0000000500000004ull | 0x100, f.parts_visible[1] = 0x3;  // bits outside apply are dropped
+    auto add = [&f](wire::GearKind k, std::uint8_t res, std::uint8_t joint, std::uint8_t parent) {
+        wire::GearItem& it = f.items[f.count++];
+        it.kind = k;
+        it.res = res;
+        it.joint = joint;
+        it.parent = parent;
+        it.p[1] = -0.1f;
+    };
+    add(wire::GearKind::backpack, wire::kGearNone, 4, wire::kGearNoParent);
+    add(wire::GearKind::entity, 0, 0, 0);                        // on the backpack
+    add(wire::GearKind::entity, 63, 9, wire::kGearNoParent);     // in the right hand
+    add(wire::GearKind::cargo, 7, 1, wire::kGearNoParent);       // a cargo item's res is not sent
+    f.items[3].model = 2;
+    std::uint8_t buf[wire::kMaxGearFrameSize];
+    const std::size_t n = wire::EncodeGear(f, buf, sizeof(buf));
+    CHECK(n == wire::GearFrameSize(4, true) && n == 16 + 32 + 4 * 18);
+    wire::GearFrame g;
+    CHECK(wire::DecodeGear(buf, n, g));
+    CHECK(g.flags == (wire::kGearValid | wire::kGearParts) && g.count == 4);
+    CHECK(g.parts_apply[0] == f.parts_apply[0] && g.parts_apply[1] == 1);
+    CHECK(g.parts_visible[0] == 0x0000000500000004ull && g.parts_visible[1] == 1);
+    CHECK(g.items[1].kind == wire::GearKind::entity && g.items[1].res == 0 && g.items[1].parent == 0);
+    CHECK(g.items[2].res == 63 && g.items[2].joint == 9);
+    CHECK(g.items[3].res == wire::kGearNone && g.items[0].res == wire::kGearNone);
+    // The resource id is part of the layout; the parts are not.
+    wire::GearFrame o = f;
+    o.items[2].res = 5;
+    CHECK(wire::GearLayoutHash(o) != wire::GearLayoutHash(f));
+    o = f;
+    o.parts_visible[0] = 0;
+    CHECK(wire::GearLayoutHash(o) == wire::GearLayoutHash(f));
+    // An entity item without a valid id is refused both ways.
+    o = f;
+    o.items[2].res = 64;
+    CHECK(wire::EncodeGear(o, buf, sizeof(buf)) == 0);
+    std::uint8_t bad[wire::kMaxGearFrameSize];
+    std::memcpy(bad, buf, n);
+    bad[48 + 18 * 2 + 5] = 64;
+    CHECK(!wire::DecodeGear(bad, n, g));
+    // The parts flag without the block (or the reverse) does not size up.
+    std::memcpy(bad, buf, n);
+    bad[10] = wire::kGearValid;
+    CHECK(!wire::DecodeGear(bad, n, g));
+    // Without parts: 16 + 18 n.
+    o = f;
+    o.flags = wire::kGearValid;
+    CHECK(wire::EncodeGear(o, buf, sizeof(buf)) == wire::GearFrameSize(4));
+    // The backpack's parts block (after the parts block; alone too).
+    o = f;
+    o.flags |= wire::kGearPackParts;
+    o.pack_apply = 0xFFFFFF;
+    o.pack_visible = 0x1C0021 | (1ull << 40);  // a bit outside apply is dropped
+    std::size_t on = wire::EncodeGear(o, buf, sizeof(buf));
+    CHECK(on == wire::GearFrameSize(4, true, true) && on == 16 + 32 + 16 + 4 * 18);
+    CHECK(wire::DecodeGear(buf, on, g) && g.pack_apply == 0xFFFFFF && g.pack_visible == 0x1C0021 && g.parts_apply[1] == 1);
+    o.flags = wire::kGearValid | wire::kGearPackParts;
+    on = wire::EncodeGear(o, buf, sizeof(buf));
+    CHECK(on == wire::GearFrameSize(4, false, true) && wire::DecodeGear(buf, on, g) && g.pack_visible == 0x1C0021 && g.parts_apply[0] == 0);
+    CHECK(!wire::DecodeGear(buf, on - 1, g));
+
+    // STR1
+    wire::GearRes r;
+    r.id = 17;
+    for (int i = 0; i < 16; ++i) r.guid[i] = static_cast<std::uint8_t>(0xA0 + i);
+    std::snprintf(r.path, sizeof(r.path), "%s", "ds/entities/player/ds_player_inventory");
+    std::uint8_t rb[wire::kMaxGearResFrameSize];
+    const std::size_t rn = wire::EncodeGearRes(r, rb, sizeof(rb));
+    CHECK(rn == 24 + std::strlen(r.path));
+    wire::GearRes rr;
+    CHECK(wire::DecodeGearRes(rb, rn, rr) && rr.id == 17 && std::memcmp(rr.guid, r.guid, 16) == 0 && std::strcmp(rr.path, r.path) == 0);
+    CHECK(!wire::DecodeGearRes(rb, rn - 1, rr) && !wire::DecodeGearRes(rb, rn + 1, rr));
+    std::uint8_t rbad[wire::kMaxGearResFrameSize];
+    std::memcpy(rbad, rb, rn);
+    rbad[5] = 64;  // id over the table
+    CHECK(!wire::DecodeGearRes(rbad, rn, rr));
+    std::memcpy(rbad, rb, rn);
+    rbad[24] = 'x';  // not under ds/entities/
+    CHECK(!wire::DecodeGearRes(rbad, rn, rr));
+    std::memcpy(rbad, rb, rn);
+    rbad[30] = '\n';  // a control byte in the path
+    CHECK(!wire::DecodeGearRes(rbad, rn, rr));
+    CHECK(wire::GearResPathOk("ds/entities/weapons/weapon_collection") && !wire::GearResPathOk("ds/entities/../x") &&
+          !wire::GearResPathOk("ds/entities/Weapons/x") && !wire::GearResPathOk("ds/entities/") && !wire::GearResPathOk("models/x"));
+    {
+        // the receiver's check before loading (review finding 1): proven cores only, refused entities never
+        const std::uint8_t any[16] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
+        // b5041f35-b5a5-564c-8b84-76587a06f97a (the BB pod entity), stored as the game keeps it
+        const std::uint8_t pod[16] = {0x35, 0x1f, 0x04, 0xb5, 0xa5, 0xb5, 0x4c, 0x56, 0x8b, 0x84, 0x76, 0x58, 0x7a, 0x06, 0xf9, 0x7a};
+        const std::uint8_t cyl[16] = {0x27, 0x36, 0x03, 0xf5, 0xf0, 0x24, 0x41, 0x14, 0xa7, 0xd4, 0xe7, 0xf1, 0xe9, 0x0c, 0x68, 0xfa};
+        char txt[37];
+        wire::GearGuidText(pod, txt);
+        CHECK(std::strcmp(txt, "b5041f35-b5a5-564c-8b84-76587a06f97a") == 0);
+        const char* why = nullptr;
+        CHECK(wire::GearResProven("ds/entities/weapons/weapon_collection", any, false, &why));
+        CHECK(wire::GearResProven("ds/entities/item/backpack/backpack_temp", any, false, &why));
+        CHECK(wire::GearResProven("ds/entities/item/backpack/other_item", any, false, &why));
+        CHECK(wire::GearResProven("ds/entities/player/ds_player_inventory", any, false, &why));
+        CHECK(!wire::GearResProven("ds/entities/player/ds_odradek", any, false, &why) && why);
+        CHECK(!wire::GearResProven("ds/entities/weapons/builder", any, false, &why));
+        CHECK(!wire::GearResProven("ds/entities/weapons/weapon_collection2", any, false, &why));
+        CHECK(!wire::GearResProven("ds/entities/player/ds_player_inventory", pod, false, &why));
+        CHECK(wire::GearResProven("ds/entities/player/ds_player_inventory", pod, true, &why));
+        CHECK(!wire::GearResProven("ds/entities/item/backpack/backpack_temp", cyl, true, &why));
+        CHECK(!wire::GearResProven("ds/entities/../entities/item/backpack/x", any, false, &why));
+    }
+    std::snprintf(r.path, sizeof(r.path), "%s", "c:/windows");
+    CHECK(wire::EncodeGearRes(r, rb, sizeof(rb)) == 0);
+    // An STR1 frame is no other frame, and no other frame is an STR1 frame.
+    wire::GearFrame gf2;
+    wire::Pose pose;
+    CHECK(!wire::DecodeGear(rb, rn, gf2) && !wire::DecodePose(rb, rn, pose) && !wire::DecodeGearRes(buf, n, rr));
+
+    // Prop reuse: one piece removed from the middle keeps every later prop (moved, not respawned).
+    {
+        const int old_keys[6] = {0, 9, 10, 11, 9, -1};
+        const int want[5] = {0, 10, 11, 9, 12};  // item 1 (key 9) gone, a new key 12 at the end
+        int map[5];
+        wire::GearAssignProps(old_keys, 6, want, 5, map);
+        CHECK(map[0] == 0 && map[1] == 2 && map[2] == 3 && (map[3] == 1 || map[3] == 4) && map[4] == -1);
+        // each old slot used once
+        const int want2[3] = {9, 9, 9};
+        int map2[3];
+        wire::GearAssignProps(old_keys, 6, want2, 3, map2);
+        CHECK(map2[1] == 1 && map2[0] == 4 && map2[2] == -1);  // index 1 keeps its own, item 0 takes the other
+        // the same index wins when its key still matches
+        const int want3[2] = {9, 0};
+        int map3[2];
+        wire::GearAssignProps(old_keys, 6, want3, 2, map3);
+        CHECK(map3[0] == 1 && map3[1] == 0);
+        // no prop wanted: -1
+        const int want4[1] = {-1};
+        int map4[1];
+        wire::GearAssignProps(old_keys, 6, want4, 1, map4);
+        CHECK(map4[0] == -1);
+    }
+    // Retries: 2, 4, 8, 16, 30, 30 s.
+    CHECK(wire::GearRetryDelayMs(0) == 0 && wire::GearRetryDelayMs(1) == 2000 && wire::GearRetryDelayMs(2) == 4000 &&
+          wire::GearRetryDelayMs(4) == 16000 && wire::GearRetryDelayMs(5) == 30000 && wire::GearRetryDelayMs(40) == 30000);
 }
 
 void TestNameTagMath() {
@@ -792,18 +943,80 @@ void TestBodyChoice() {
     CHECK(wire::EncodeJoints(f, buf, sizeof(buf)) == n && wire::DecodeJoints(buf, n, g) && g.body_id == 0);
 }
 
-int main() {
-    TestPoseRoundTrip();
+// The game-font parser (game_font.cpp) on a synthetic FontResource (made-up outlines, no game data):
+// layout, validation of counts and point use, the exact-end rule, GUID check, and the path hash.
+static void PutU32(std::vector<std::uint8_t>& b, std::uint32_t v) { b.insert(b.end(), reinterpret_cast<std::uint8_t*>(&v), reinterpret_cast<std::uint8_t*>(&v) + 4); }
+static void PutF(std::vector<std::uint8_t>& b, float v) { b.insert(b.end(), reinterpret_cast<std::uint8_t*>(&v), reinterpret_cast<std::uint8_t*>(&v) + 4); }
+static std::vector<std::uint8_t> SyntheticFont(std::uint32_t pts_in_square, bool extra_byte) {
+    std::vector<std::uint8_t> body;
+    for (int i = 0; i < 16; ++i) body.push_back(static_cast<std::uint8_t>(i + 1));  // ObjectUUID
+    PutU32(body, 4), PutU32(body, 0), body.insert(body.end(), {'T', 'e', 's', 't'});  // TypefaceName (len, crc, bytes)
+    PutF(body, 1000), PutF(body, 800), PutF(body, 200), PutF(body, 700);
+    PutU32(body, 2);
+    // 'B' (sorted after ' ' by the parser): a square (4 line-to) and a curve contour (one 3-point spline)
+    PutF(body, 600), PutU32(body, 'B');
+    for (int i = 0; i < 4; ++i) PutF(body, 0);
+    PutU32(body, 2);
+    PutU32(body, 1), body.push_back(0x04);  // type 0, k 4
+    PutU32(body, pts_in_square);
+    for (std::uint32_t i = 0; i < pts_in_square; ++i) PutF(body, static_cast<float>(i % 2 ? 700 : 100)), PutF(body, static_cast<float>(i < 2 ? 0 : 700));
+    PutU32(body, 1), body.push_back(0x43);  // type 1, k 3: two controls + end
+    PutU32(body, 4);
+    for (int i = 0; i < 4; ++i) PutF(body, 200.0f + 50 * i), PutF(body, -100.0f + 10 * i);
+    PutF(body, 250), PutU32(body, ' ');
+    for (int i = 0; i < 4; ++i) PutF(body, 0);
+    PutU32(body, 0);
+    PutU32(body, 1), PutU32(body, 'A'), PutU32(body, 'B'), PutF(body, -20);  // kerning
+    if (extra_byte) body.push_back(0);
+    std::vector<std::uint8_t> core;
+    const std::uint64_t other = 0x1111111111111111ull, tid = gamefont::kFontResourceTypeId;
+    core.insert(core.end(), reinterpret_cast<const std::uint8_t*>(&other), reinterpret_cast<const std::uint8_t*>(&other) + 8);
+    PutU32(core, 3), core.insert(core.end(), {9, 9, 9});  // an unrelated object first
+    core.insert(core.end(), reinterpret_cast<const std::uint8_t*>(&tid), reinterpret_cast<const std::uint8_t*>(&tid) + 8);
+    PutU32(core, static_cast<std::uint32_t>(body.size()));
+    core.insert(core.end(), body.begin(), body.end());
+    return core;
+}
+
+void TestGameFontParser() {
+    char why[200] = {};
+    gamefont::Font f;
+    std::vector<std::uint8_t> ok = SyntheticFont(5, false);
+    CHECK(gamefont::ParseFontCore(ok.data(), ok.size(), nullptr, &f, why, sizeof(why)));
+    CHECK(f.typeface == "Test" && f.height == 1000 && f.ascent == 800 && f.descent == 200);
+    CHECK(f.glyphs.size() == 2 && f.glyphs[0].cp == ' ' && f.glyphs[1].cp == 'B' && f.kerning_pairs == 1);
+    const gamefont::Glyph* b = f.Find('B');
+    CHECK(b && b->n_contours == 2 && b->advance == 600 && b->min_y == -100 && b->max_x == 700 && b->max_y == 700);
+    CHECK(f.contours.size() == 2 && f.contours[1].n_pt == 4 && f.cmds.size() == 2 && f.pts.size() == 2 * 9);
+    CHECK(!f.Find('A') && f.Find(' ') && f.Find(' ')->n_contours == 0);
+    std::uint8_t guid[16];
+    for (int i = 0; i < 16; ++i) guid[i] = static_cast<std::uint8_t>(i + 1);
+    CHECK(gamefont::ParseFontCore(ok.data(), ok.size(), guid, &f, why, sizeof(why)));
+    CHECK(!gamefont::ParseFontCore(ok.data(), ok.size(), gamefont::kMenuFontGuid, &f, why, sizeof(why)));
+    std::vector<std::uint8_t> bad_pts = SyntheticFont(6, false);  // 6 points for 1 + 4 used
+    CHECK(!gamefont::ParseFontCore(bad_pts.data(), bad_pts.size(), nullptr, &f, why, sizeof(why)) && f.glyphs.empty());
+    std::vector<std::uint8_t> extra = SyntheticFont(5, true);  // the parse must end exactly at the object's size
+    CHECK(!gamefont::ParseFontCore(extra.data(), extra.size(), nullptr, &f, why, sizeof(why)));
+    for (std::size_t cut = 0; cut < ok.size(); cut += 7)  // every truncation is refused, never read past
+        CHECK(!gamefont::ParseFontCore(ok.data(), cut, nullptr, &f, why, sizeof(why)));
+    // Decima path hashes (the same as tools/re/ds_archive.py hash).
+    CHECK(gamefont::PathHash("interface/fonts/ds/expsmediumneon.core") == 0x8B1154249961D97Aull);
+    CHECK(gamefont::PathHash("Interface\\Fonts\\DS\\ExpsMediumNeon.core") == 0x8B1154249961D97Aull);
+}
+
+int main() {    TestPoseRoundTrip();
     TestJointFrames();
     TestJointOutfit();
     TestNameFrames();
     TestNameTagMath();
     TestGearFrames();
+    TestGearV2();
     TestBodyTable();
     TestBodyChoice();
     TestRotation();
     TestJoinCode();
     TestLinkHandshake();
+    TestGameFontParser();
     if (g_fail) {
         std::printf("%d check(s) failed\n", g_fail);
         return 1;

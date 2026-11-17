@@ -34,6 +34,8 @@ struct Options {
     // false: the overlay is installed only for the name tags (session.ini debug_menu=0,
     // name_tags=1): no menu, no toggle key, no hint, the game window is not subclassed.
     bool menu = true;
+    // Name tags in the game's own menu font (overlay_font.hpp; session.ini name_tag_font).
+    bool game_font = true;
     // Hidden test runs (session.ini automation=1, docs/hidden-testing.md): the
     // virtual pad answers XInputGetState, GetForegroundWindow answers the game
     // window, SetCursorPos/ClipCursor never reach the system, the menu ignores

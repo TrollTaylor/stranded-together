@@ -170,17 +170,28 @@ bool DecodeName(const std::uint8_t* data, std::size_t size, NameFrame& out) noex
 // prop entities there on the partner's body. Sent in its own datagram (FRAME message) when the
 // layout changes and about once a second otherwise; own magic, own sequence filter.
 //
-//   'STC1' | u32 seq | u8 version (1) | u8 count | u8 flags | u8 dropped | u16 layout hash |
+//   'STC1' | u32 seq | u8 version (2) | u8 count | u8 flags | u8 dropped | u16 layout hash |
 //   u16 reserved                                                              (16 bytes)
-//   count x 18 bytes: u8 kind | u8 model | u8 variation | u8 joint | u8 parent | u8 reserved |
+//   [flags bit 1, kGearParts: u64 apply[2] | u64 visible[2]                   (32 bytes)]
+//   [flags bit 2, kGearPackParts: u64 apply | u64 visible, the backpack's ArtParts (16 bytes)]
+//   count x 18 bytes: u8 kind | u8 model | u8 variation | u8 joint | u8 parent | u8 res |
 //                     i16 x, y, z (1 mm, +-32 m) | 48-bit smallest-three rotation (as STJ1)
+// Version 2 (v0.8): the `entity` kind (a gear entity of the game's own, named by `res`, an id of
+// the sender's resource table, sent as STR1 frames below) and the parts block (which of Sam's own
+// ArtParts the sender shows: exoskeleton, BB pod pipe, hip gear, pouches). Version 1 frames are
+// refused (mixed builds never meet: HELLO build check).
 inline constexpr std::uint8_t kGearMagic[4] = {'S', 'T', 'C', '1'};
-inline constexpr std::uint8_t kGearVersion = 1;
+inline constexpr std::uint8_t kGearVersion = 2;
 inline constexpr std::size_t kGearHeaderSize = 16;
+inline constexpr std::size_t kGearPartsSize = 32;
+inline constexpr std::size_t kGearPackPartsSize = 16;
 inline constexpr std::size_t kGearItemSize = 18;
-inline constexpr unsigned kMaxGearItems = 40;
-inline constexpr std::size_t GearFrameSize(unsigned count) { return kGearHeaderSize + count * kGearItemSize; }
-inline constexpr std::size_t kMaxGearFrameSize = GearFrameSize(kMaxGearItems);  // 736
+inline constexpr unsigned kMaxGearItems = 56;
+inline constexpr unsigned kMaxGearParts = 128;  // ArtParts indices the parts block can name
+inline constexpr std::size_t GearFrameSize(unsigned count, bool parts = false, bool pack_parts = false) {
+    return kGearHeaderSize + (parts ? kGearPartsSize : 0) + (pack_parts ? kGearPackPartsSize : 0) + count * kGearItemSize;
+}
+inline constexpr std::size_t kMaxGearFrameSize = GearFrameSize(kMaxGearItems, true, true);  // 1072
 inline constexpr std::uint8_t kGearNoParent = 0xFF;  // GearItem::parent: placed on `joint`
 inline constexpr std::uint8_t kGearNone = 0xFF;      // GearItem::model / variation: none / unknown
 
@@ -189,12 +200,17 @@ enum class GearKind : std::uint8_t {
     odradek = 2,   // the Odradek on the left shoulder
     bb_pod = 3,    // the BB pod on the chest
     cargo = 4,     // one baggage piece; model = EDSBaggage2Model
+    entity = 5,    // one of the game's own gear entities (weapon, BB pod, accessory, what hangs on the
+                   // backpack ...): `res` names its resource in the sender's table (STR1)
 };
-inline constexpr std::uint8_t kGearKindMax = 4;
+inline constexpr std::uint8_t kGearKindMax = 5;
+inline constexpr unsigned kMaxGearRes = 64;  // resource ids 0..63
 
 enum GearFlags : std::uint8_t {
     kGearValid = 1u << 0,   // the sender has a live player whose gear was read
-    kGearKnown = kGearValid,
+    kGearParts = 1u << 1,   // the parts block follows the header
+    kGearPackParts = 1u << 2,  // the backpack's parts block follows (after the parts block)
+    kGearKnown = kGearValid | kGearParts | kGearPackParts,
 };
 
 struct GearItem {
@@ -204,6 +220,7 @@ struct GearItem {
                                          // own look (what this build always sends: the piece's variation is not read)
     std::uint8_t joint = 0;              // Sam-skeleton joint (0..76) the item hangs on (parent == kGearNoParent)
     std::uint8_t parent = kGearNoParent; // or an earlier item's index (cargo stacked on the backpack)
+    std::uint8_t res = kGearNone;        // entity: the resource id (< kMaxGearRes); kGearNone otherwise
     float p[3] = {};                     // position in the anchor's frame (m)
     Quat q;                              // rotation in the anchor's frame
 };
@@ -213,8 +230,48 @@ struct GearFrame {
     std::uint8_t flags = 0;
     std::uint8_t count = 0;
     std::uint8_t dropped = 0;  // items the sender had to leave out (over kMaxGearItems)
+    // kGearParts: Sam's own ArtParts (index < kMaxGearParts) the sender reports (apply) and which of
+    // them it shows (visible, a subset of apply). The receiver mirrors them on a Sam body only.
+    std::uint64_t parts_apply[2] = {};
+    std::uint64_t parts_visible[2] = {};
+    // kGearPackParts: the backpack entity's own ArtParts (index < 64: its bag, rain cover, pouches);
+    // the receiver mirrors them on the backpack prop when its parts are the same resources.
+    std::uint64_t pack_apply = 0;
+    std::uint64_t pack_visible = 0;
     GearItem items[kMaxGearItems];
 };
+
+// ---------------------------------------------------------------- gear resource frame (STR1)
+// One entry of the sender's gear resource table: the id the `entity` items use, the entity
+// resource's path (no ".core") and its raw GUID (the bytes the receiver's streaming manager takes).
+// Sent when an id is first used and round-robin about every 250 ms (a lost frame is resent).
+//
+//   'STR1' | u8 version (1) | u8 id | u8 path length n | u8 reserved | 16-byte GUID | n path bytes
+inline constexpr std::uint8_t kGearResMagic[4] = {'S', 'T', 'R', '1'};
+inline constexpr std::uint8_t kGearResVersion = 1;
+inline constexpr std::size_t kGearResHeaderSize = 24;
+inline constexpr std::size_t kMaxGearResPath = 160;
+inline constexpr std::size_t kMaxGearResFrameSize = kGearResHeaderSize + kMaxGearResPath;
+
+struct GearRes {
+    std::uint8_t id = 0;
+    std::uint8_t guid[16] = {};
+    char path[kMaxGearResPath + 1] = {};
+};
+// A path the receiver may load: 1..160 bytes of [a-z0-9_/.-], starting "ds/entities/", no "..".
+bool GearResPathOk(const char* path) noexcept;
+// The receiver's own check of a partner resource before anything is loaded from it (partner_gear.cpp
+// SetPartnerRes): only the cores whose entities were mirrored in hidden runs (the backpack's items,
+// ds_player_inventory, the stowed weapons, sam_cant, the hanging boots) and none of the entities the
+// level-1 mirror policy refuses that the census found on Sam (the BB pod entity unless allow_pod_entity,
+// the cuff device, the baby, the boots, the chiral cylinder, the backpack belt). why: the reason when not.
+bool GearResProven(const char* path, const std::uint8_t (&guid)[16], bool allow_pod_entity, const char** why) noexcept;
+// A GUID as the logs print it (8-4-4-4-12, the first three groups little-endian): 37 bytes with the 0.
+void GearGuidText(const std::uint8_t (&guid)[16], char (&out)[37]) noexcept;
+std::size_t EncodeGearRes(const GearRes& r, std::uint8_t* out, std::size_t cap) noexcept;
+// Rejects bad magic / version, id >= kMaxGearRes, a size other than 24 + n, and a path that is
+// not GearResPathOk.
+bool DecodeGearRes(const std::uint8_t* data, std::size_t size, GearRes& out) noexcept;
 
 // The layout: kinds, models, variations and anchors (not the poses), 16-bit FNV-1a. Two frames
 // with the same hash need the same props.
@@ -229,5 +286,17 @@ bool DecodeGear(const std::uint8_t* data, std::size_t size, GearFrame& out) noex
 // The largest change between two frames with the same layout: position (m) and rotation (deg).
 // False when the layouts differ.
 bool GearPoseDelta(const GearFrame& a, const GearFrame& b, float* max_m, float* max_deg) noexcept;
+
+// Prop reuse across a layout change (the receiver's props are keyed by what they show, not by the
+// item index: one piece unloaded must not respawn every later prop). old_keys[i]: the key of the
+// prop held in slot i (-1: none); want[j]: the key item j needs (-1: no prop). out[j] = the old
+// slot whose prop item j takes over, or -1 (a new prop). The same index is kept when its key
+// matches, then the first unused old slot with that key. Each old slot is used at most once.
+void GearAssignProps(const int* old_keys, unsigned old_n, const int* want, unsigned want_n, int* out) noexcept;
+
+// Retry schedule of a prop that failed to start or load (transient: a load the game cancelled, the
+// streaming manager busy, no local player during a load): 2 s, 4 s, 8 s, ... at most 30 s after
+// `failures` (1-based) failures in a row.
+double GearRetryDelayMs(unsigned failures) noexcept;
 
 }  // namespace st::wire

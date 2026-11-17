@@ -388,12 +388,15 @@ ini <key>=<value>            an extra session.ini line, for every game of the ru
                              partner_character, my_character, self_character, partner_holo, partner_marker, partner_voice,
                              partner_activate, pose_hook, echo_delay_s, echo_offset_m, send_hz,
                              interp_delay_ms, name, name_tags, partner_collision,
-                             partner_collision_layer, partner_gear (testenv_core ScenarioIniKeyAllowed)
+                             partner_collision_layer, partner_collision_height, partner_gear, name_tag_font,
+                             smooth_pose, frame_cap (testenv_core ScenarioIniKeyAllowed; a scenario
+                             frame_cap is written after graphics low's 30, so it wins)
 @host ini <key>=<value>      the same, for the first game only; @guest ini for the guest game only (role
                              host). Written after the shared lines, so they win (the mod keeps a key's last
                              value). @both ini is refused (plain ini already goes to both); ini cannot be
                              optional
-graphics low                 30 fps cap, appdir settings.cfg + profile overrides (see "Two games")
+graphics low [fps]           30 fps cap, appdir settings.cfg + profile overrides (see "Two games");
+                             fps (30..240) replaces the preset's "fps" / "limit_fps" 30 (frame-rate tests)
 @guest <step>                the step goes to the guest game (role host); @both <mod command> to both
 timeout <s>                  steps limit, 30..360 (default 360). The game's whole lifetime is capped
                              at 360 s: steps get at most 315 s, the last 45 s are kept for the
@@ -447,7 +450,14 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   walks into it at full and half stick, round it and on, with the distance logged every tick (`action collision
   2`); the `-off` copy runs the same steps with `partner_collision=0`. `collision.txt` first pins the partner
   7 m ahead (the capsule stays out of the world beyond 4 m). Two games: the guest walks the host's path
-  into the host's standing body.
+  into the host's standing body, then each partner is pinned 30 m ahead for the far tag (` · ` distance).
+* `collision-climb.txt` (role echo): no climbing on the partner and the game-font name tags
+  (docs/real-partner-body.md 11.5 and 10.6). The default 4.0 m capsule pinned ahead; Sam walks into it from four
+  directions pressing A (held, repeated), X and Y; the trace logs Sam's height. Control: `action collision 5 0`,
+  Sam's own 1.65 m capsule, where the game offers Climb. Then the tag near, far and self, and the game's own
+  `Map/Information` header (START) for comparison. `collision-layers.txt` and `collision-height.txt`: the
+  research runs (layers 9, 25, 10 with `action collision 4`; heights 2.6, 2.0, 3.2 and 1.65 with
+  `action collision 5`).
 * `two-games-all.txt` (role host): name tags, gear and collision together, all on by default. The host
   Sam with `name=TagPlayer`, the guest Fragile with self view and `name=TagFriend` (different names: no
   `(host)`/`(guest)` suffix, 9 B labels). Different gear (`gear 3 1` on the host, `gear 3 2` on the guest),
@@ -461,6 +471,13 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   wearing our gear (`gear 4 1`, `real_spawn 3 1.6 1`) and a cargo change (`gear 3 3`, `1`, `0`: synthetic
   delivery cases). Two games: each side's own gear and the other screen's view of it, and the host's cargo
   change seen by the guest.
+* `gear-full.txt` (role solo, Fragile, self view) and `two-games-full-gear.txt` (role host, the guest
+  Fragile with self view): the full gear of v0.8 (docs/real-partner-body.md section 12). Solo: the self view
+  with Sam's real gear, Sam for comparison, a debug Sam and a debug Fragile wearing copies of our gear
+  entities and parts, a weapon from the equipment wheel (D-pad right held, stick up), mirror level 2, and
+  G2's injected failures (`gear 5`, `gear 6`). Two games: each side's view of the other, many gear
+  changes both ways (`gear 3 <n>` cycles, a prop respawn with injected start failures, props hidden
+  behind the mod's back), then the guest takes a weapon from its equipment wheel.
 * `outfit-probe.txt` (role solo, `pose_hook=1`): the partner Sam's outfit (docs/real-partner-body.md
   section 9). A debug Sam body 3 m ahead is dressed like our own Sam, then with explicit outfits. Then our
   own Sam's suit colour is changed (`real_outfit 4`) and the body follows.
@@ -651,6 +668,15 @@ hidden: `Start-TestRun.ps1 -Scenario two-games -SeedSaves complete-100`.
   the first game rendered at ~1000 fps and starved the second (run 154851: the guest read its pad
   0 times for 40 s). `graphics low` writes `frame_cap=30` (the mod waits on the game thread once
   per presented frame): the host's CPU time per second alive fell from 8.1 s (run 154851) to 1.9 s (run 161556).
+* **Frame rates.** `graphics low` also writes `"fps" "30"` and `"limit_fps" "30"` into the redirected
+  settings.cfg, and that limit wins over any frame cap: run 20261117-144836 stayed at 30.0 fps with the cap
+  off. For other rates in two games write `graphics low 120` (the same preset with `"fps" "120"` and
+  `"limit_fps" "120"`; run 20261117-154136: 64-69 fps each uncapped on this PC; earlier the same through
+  `-SettingsCfg`, run 20261117-145300: about 80 fps), then `ini frame_cap=<n>` or, at run time,
+  `action smooth 2 <fps>` (0 = off; docs/debug-actions.md "Smooth animation"). One game without
+  `graphics low` runs uncapped (about 110 fps at 2560x1440 with two bodies, run 20261117-144357). The cap
+  is loose: 30 gave 37-39 fps and 60 gave 73-78 fps; read the real rate from the `[smooth]` lines or
+  `automation\out\status.txt`.
 * **Windows (not working yet).** `local_window=left|right` (as the launcher writes): each game
   window gets a title bar and half of the monitor (`[overlay] local test: game window placed on the
   left half (0,309 1280x750, client 1264x711)`), and the subclass keeps that size when ds.exe asks

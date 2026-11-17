@@ -228,10 +228,15 @@ Scenarios: `name-tags`, `two-games-name-tags`, `two-games-all`.
   checks (Sam's own capsule, its resource and radius, the layer-matrix bits).
 * `action collision 1 <0/1>`: collision off / on for this session.
 * `action collision 2 <ms>`: log the horizontal Sam-partner distance every tick for `<ms>`
-  (`[coll] trace d=...`).
-* `action collision 3 <m>`: pin the partner body `<m>` m ahead of Sam along the camera's forward (where the
-  pad's forward walks), facing him, holding its last pose; `3 0` lets it follow the stream again.
-* `action collision 4 <layer 9|10> <type 0|1>`: reconfigure the capsule (type 0 rigid body, 1 proxy).
+  (`[coll] trace d=... sam=(x, y, z ...) ... body=(x, y, z ...)`: with both heights, for climb checks).
+* `action collision 3 <m> [dz]`: pin the partner body `<m>` m ahead of Sam along the camera's forward (where the
+  pad's forward walks), facing him, holding its last pose; `3 0` lets it follow the stream again. `dz` (-10..10 m)
+  puts it that far above (+) or below (-) Sam: `3 2.5 -2.2` is Sam on a ledge above the partner (collision
+  off: `[coll] off: Sam is above the partner (over 1.6 m)`).
+* `action collision 4 <layer 10|9|25> <type 0|1>`: reconfigure the capsule (type 0 rigid body, 1 proxy).
+* `action collision 5 <m>`: reconfigure the capsule with a standing height of `<m>` m (1 to 6; `0` = Sam's own
+  1.65 m resource, the v0.7 capsule that the game offers Climb on). Default 4.0 (`partner_collision_height`).
+  `[coll] tall capsule: ...` logs each resource copy, `[coll] reconfigured: standing height ...` the change.
 
 The capsule is in the world only while the partner is within 4 m of Sam (the state then reads `off: the
 partner is not near Sam`) and not riding something (`off: the partner is in a vehicle`).
@@ -247,14 +252,55 @@ Scenarios: `collision`, `collision-off`, `two-games-collision`, `two-games-all`.
   sent), the partner's gear and the prop counters (with `new layouts held a read`: layouts taken only when
   the next read agreed).
 * `action gear 1 <0/1>`: the partner's props off / on.
-* `action gear 2 <0/1>`: the self view's props off / on.
+* `action gear 2 <0/1>`: the self view's props off / on (since v0.8 only the BB pod: the self view keeps Sam's real gear).
 * `action gear 3 <n>` (hidden test runs on scratch saves only): stack `n` (0..12) synthetic delivery
   cases (large, medium, small, ...) on our backpack; they are sent and shown like carried cargo. `3 0`
   removes them.
 * `action gear 4 <0/1>`: our own gear on the debug body (`real_spawn ... 1`): the partner's placement
-  path in a solo run.
+  path in a solo run (and our gear parts mirrored on a debug Sam).
+* `action gear 5 <n>` (hidden test runs on scratch saves only): the next `n` prop starts fail (a
+  transient failure injected): they must be retried and come back (section 12.8).
+* `action gear 6` (hidden test runs on scratch saves only): every partner prop is hidden behind the
+  mod's back, as the game might do; the next tick shows them again (`reshown`).
+* `action gear 7 <0..2>`: which of the game's gear entities are mirrored: 0 model components only, 1
+  (default) also the proven small DS components (shields, the stowed weapons' paint, hanging boots, simple
+  animation, sound), 2 also the chiral cylinder, the backpack belt and weapons (`DSWeaponEntity`). Read
+  again at once. Level 2 only in hidden test runs on scratch saves (refused otherwise: not proven safe);
+  at level 2 this game also accepts any `ds/entities/` resource from the partner (section 12.5).
+* `action gear 8 <0/1>` (hidden test runs on scratch saves only for 1): the BB pod as a copy of the game's
+  own pod entity (1) instead of the cinematic pod prop (0, default). Both runs that created such a copy
+  crashed (section 12.6).
+* `action gear 9 <0/1/2>`: census (read-only) of the local player (0: child entity tree with
+  resources, components, positions and nearest joints, the inventory's gear entities, the mesh
+  controller's part masks and ArtParts map), the partner / debug body (1) or the self body (2).
+* `action gear 10 <0/1>`: the sender's entity-walk cache off / on (default on). The read's cost on the
+  game thread is logged after 50 reads and then every 600 (`[gear] read cost (game thread): mean ... us,
+  max ... us over N reads; walk cache on (hits, misses)`).
 
-Scenarios: `gear-self`, `two-games-gear`, `two-games-all`.
+Scenarios: `gear-self`, `two-games-gear`, `two-games-all`, `gear-full`, `two-games-full-gear`.
+
+### Smooth animation (`smooth`; scenarios only)
+
+`native/mod/real_body.cpp`, docs/real-partner-body.md section 3.5. Needs the pose hook.
+
+* `action smooth 0`: log the smooth mask, the frame cap, the update frequency (entity `+0x204`) of the
+  partner body, the self body and Sam, the setter's byte check and its call / fault counts, props boosted
+  and restored.
+* `action smooth 1 <mask>`: the smooth features at run time (bits: 1 the 240 Hz update boost of our
+  bodies and gear props, 2 interpolation in the partner body's own update, 4 capture-time stamps on our
+  STJ1 frames; 7 all = `smooth_pose=1`, 0 = the v0.7 behaviour). Clearing bit 1 puts each body and prop
+  back at its own frequency in the next tick (props within 250 ms).
+* `action smooth 2 <fps>`: this game's frame cap now (0 off, else 15..240; the same wait as
+  `session.ini frame_cap`, which it replaces until the end of the session). A `settings.cfg` fps limit
+  (`graphics low`: 30) still applies on top.
+* `action smooth 3 <n>`: log the next `n` frames (up to 600) one by one: frame time, the partner's, the
+  self body's and Sam's joint step in degrees, pose writes (`[smooth] seq` lines).
+
+While a body is live a `[smooth]` line is logged every second in hidden tests (one second in ten
+otherwise): presented fps, pose writes per frame, new vs repeated poses, stutter, jerk, latency, the echo
+error against Sam (section 3.5 "The meter").
+
+Scenarios: `smooth-echo`, `smooth-two-games`.
 
 ### Real partner body (`real_probe`, `real_spawn`, `real_remove`, `real_names`, `real_stats`, `real_mirror`, `real_control`, `self_view`, `real_outfit`; scenarios only)
 
@@ -317,6 +363,7 @@ session comes from the peer's `my_character`; `session.ini partner_character` ov
 | DSEchoComponent::Play (whole function) | `0x2BBF3A0` | voice ping |
 | GameModule loading check called by Play | `0x2DCAC40` | voice ping |
 | DSEchoComponent update, sentence pick (`+0x30`, `+0x60`, `+0x68`, resource `+0x20/+0x28`) | `0x2BB705F` | voice ping |
+| Entity::SetUpdateFrequency (prologue to the regroup call; lock `0x147BC4828`, World `0x147BC4E70`, regroup `0x1423FC0E0` targets) / scheduler regroup prologue | `0x235F5A0`, `0x23FC0E0` | smooth (240 Hz boost) |
 
 Regenerate the hex with `DS.load().rd(va, n).hex()` from `tools/re/dsre.py` after a game
 patch, re-verifying each meaning first.

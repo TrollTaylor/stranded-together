@@ -70,14 +70,27 @@ struct Config {
     bool name_tags = true;
     // partner_collision=0|1 (default 1): the local player cannot walk through the partner's real body
     // (the game's own character capsule on that body; docs/real-partner-body.md section 11).
-    // partner_collision_layer=10|9 (default 10 "Humanoid blocker"; 9 = the game's "AI or Remote
-    // Player" layer, which bullets and cargo hit too).
+    // partner_collision_layer=10|9|25 (default 10 "Humanoid blocker"; 9 = the game's "AI or Remote
+    // Player" layer, which bullets and cargo hit too; 25 "vs Humanoids" did not block reliably). Test setting.
+    // partner_collision_height=<m> (default 4.0; 0 = Sam's own 1.65 m): the capsule's standing height. Taller
+    // than Sam can climb or reach with a jump-grab (2.6 m was still grabbed), so the partner cannot be climbed
+    // (section 11.5).
     bool partner_collision = true;
     int partner_collision_layer = 10;
+    float partner_collision_height = 4.0f;
+    // name_tag_font=game|default (default game): name tags use the game's own menu font ("EX PS Medium
+    // Neon", the "Map/Information" header), read at run time from the installed game's archives into
+    // memory only (never written or shipped); default = the overlay's Segoe UI.
+    bool name_tag_game_font = true;
     // partner_gear=0|1 (default 1): the partner's real body (and the self view's body) carries the
     // player's backpack, Odradek, BB pod and cargo (docs/real-partner-body.md section 12), and our
     // own gear layout is sent (STC1). 0: nothing is read, sent or spawned.
     bool partner_gear = true;
+    // smooth_pose=0|1 (default 1; docs/real-partner-body.md section 3.5): the partner's and the self
+    // view's bodies (and their gear props) get a fresh pose every presented frame above 60 fps: 240 Hz
+    // model updates, interpolation inside the body's own update, capture-time stamps on STJ1. 0 = the
+    // v0.7 behaviour (bodies updated at the game's 59.94 Hz for cutscene actors).
+    bool smooth_pose = true;
 
     // Local two-instance test (docs/sandbox-and-local-test.md): local_input=host|host_pad|guest.
     // Read here for the overlay's input split; the sandbox keys (sandbox_saves, sandbox_foreign_saves,
@@ -90,6 +103,10 @@ struct Config {
 
 // Loads <dir>\session.ini. Never throws; unknown keys are logged and ignored.
 Config LoadConfig(const std::wstring& dir);
+// dllmain.cpp: the frame cap at run time (session.ini frame_cap sets it at start; the `smooth` test
+// action changes it). 0 = off, else clamped to 15..240.
+void SetRuntimeFrameCap(unsigned fps) noexcept;
+unsigned RuntimeFrameCap() noexcept;
 const char* RoleName(Role r);
 const char* PartnerBodyName(PartnerBody b);
 

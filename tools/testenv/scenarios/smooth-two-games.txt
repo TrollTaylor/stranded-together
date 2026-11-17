@@ -1,0 +1,101 @@
+# Smooth animation above 60 fps in two games on one PC (docs/real-partner-body.md section 3.5): the host
+# (Sam) and the guest (Fragile, self view on) walk at the same time at frame caps 30, 60 and none, first
+# with the v0.7 behaviour (smooth_pose=0), then with everything on (mask 7). Each game logs a [smooth] line
+# every second: its presented fps, the partner body's and the self body's pose writes per frame, new vs
+# repeated poses while moving, stutter, jerk and the partner's latency. "graphics low" alone sets the game's
+# own "fps" / "limit_fps" to 30 in settings.cfg, and that wins over frame_cap: "graphics low 120" raises
+# both so the caps 30 / 60 / none (= 120) apply.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario smooth-two-games -SeedSaves complete-100
+role host
+graphics low 120
+timeout 360
+ini partner_body=real
+ini partner_collision=0
+ini smooth_pose=0
+@host ini my_character=sam
+@guest ini my_character=fragile
+@guest ini self_character=1
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+@guest pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+@guest until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitplayer 60
+waitlog 60 \[link\] CONNECTED
+@guest waitlog 60 \[link\] CONNECTED
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+@guest until 150 3000 \[sync\] partner body: real 'sam' => pad A 120
+waitlog 60 \[sync\] partner body: real 'fragile'
+@guest waitlog 30 \[self\] showing 'fragile' in place of Sam
+@guest until 60 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+wait 2000
+@both action smooth 0
+# ---- v0.7 behaviour (mask 0): caps 30, 60, none; both players walk at the same time
+@both action smooth 2 30
+wait 1500
+@guest pad none 300 ly=-32767 keep
+pad none 4000 ly=-32767
+@guest pad none 300 ly=32767 keep
+pad none 4000 ly=32767
+@guest pad none 0
+@both action smooth 2 60
+wait 1500
+@guest pad none 300 ly=-32767 keep
+pad none 4000 ly=-32767 keep
+@both action smooth 3 180
+wait 500
+screenshot 01-host-mask0-60
+@guest screenshot 01-guest-mask0-60
+pad none 0
+@guest pad none 300 ly=32767 keep
+pad none 4000 ly=32767
+@guest pad none 0
+@both action smooth 2 0
+wait 1500
+@guest pad none 300 ly=-32767 keep
+pad none 4000 ly=-32767
+@guest pad none 300 ly=32767 keep
+pad none 4000 ly=32767
+@guest pad none 0
+# ---- everything (mask 7)
+@both action smooth 1 7
+@both action smooth 2 30
+wait 1500
+@both action smooth 0
+@guest pad none 300 ly=-32767 keep
+pad none 4000 ly=-32767
+@guest pad none 300 ly=32767 keep
+pad none 4000 ly=32767
+@guest pad none 0
+@both action smooth 2 60
+wait 1500
+@guest pad none 300 ly=-32767 keep
+pad none 4000 ly=-32767 keep
+@both action smooth 3 180
+wait 500
+screenshot 02-host-mask7-60
+@guest screenshot 02-guest-mask7-60
+pad none 0
+@guest pad none 300 ly=32767 keep
+pad none 4000 ly=32767
+@guest pad none 0
+@both action smooth 2 0
+wait 1500
+@guest pad none 300 ly=-32767 keep
+pad none 4000 ly=-32767
+@guest pad none 300 ly=32767 keep
+pad none 4000 ly=32767
+@guest pad none 0
+@both action smooth 0
+?waitlog 12 \[sync\] link traffic over
+action log_status
+@guest action log_status
+@guest quit
+wait 3000
+quit

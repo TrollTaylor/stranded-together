@@ -1,19 +1,21 @@
-// Gear: the backpack, Odradek, BB pod and cargo on the partner's real body and on the self view's
-// body (docs/real-partner-body.md section 12).
+// Gear: what the player carries, on the partner's real body (and the BB pod on the self view's body;
+// the self view keeps Sam's real gear, real_body.cpp) - docs/real-partner-body.md section 12.
 //
-//   Sender: every 100 ms (game thread) the local player's gear is read fault-free: the backpack,
-//           Odradek and BB pod entities of the inventory component (player +0x54C8) and every
-//           cargo piece in the player's baggage carrier (player +0x54D0 -> carrier -> slots ->
-//           stacks -> DSBaggage2 -> its entity in the baggage manager). Each item gets a kind, the
-//           game's EDSBaggage2Model (found by matching the piece's model resource against the
-//           baggage config's ModelResources), its colour variation, and a pose relative to an
-//           anchor: a joint of Sam's skeleton (his pose's model matrices) or the backpack (cargo on
-//           the back). The layout goes to the partner as STC1 (pose_wire.hpp) when it changes and
-//           about once a second; the same frame dresses this player's own self-view body.
-//   Receiver: one prop entity per item, the game's own cutscene props (demo_bak0_*, demo_bsm0_*,
-//           ...) loaded by path + GUID like the bodies (realbody::BeginByPath), spawned invisible,
-//           shown with the body, placed every frame by the pose detour on the body's own joints
-//           (realbody::PublishGear) and removed with the body.
+//   Sender: every 100 ms (game thread), fault-free: every visible gear entity the game shows on Sam
+//           (his child entities and theirs: everything on the backpack, shields, hanging boots, the
+//           pod's tags ...) that passes the mirror policy, named by its entity resource (a session
+//           table sent as STR1), the backpack (the cinematic frame), the BB pod (the cinematic pod),
+//           delivery cargo from the baggage carrier (player +0x54D0) as cases, Sam's own gear parts
+//           (exoskeleton, BB pod pipe, hip gear: ArtParts shown bits) and the backpack's parts (its bag,
+//           rain cover, pouches). Each item has a pose relative to an anchor: a joint of Sam's skeleton
+//           or its parent item. STC1 v2 (pose_wire.hpp) goes out when the layout or the parts change
+//           and about once a second.
+//   Receiver: one prop per item, keyed by what it shows (a cinematic prop or a resource id), loaded
+//           by path + GUID like the bodies (realbody::BeginByPath / BeginByPathGuid) from the user's
+//           own installed game, validated, spawned invisible, shown with the body, placed every frame
+//           by the pose detour on the body's own joints (realbody::PublishGear), retried after a
+//           failed start / load, removed with the body. The parts are set on a Sam body and on the
+//           backpack prop when their ArtParts are the same resources as ours.
 //
 // Game thread only (Tick, SetPartnerGear, LocalFrame, DebugCommand); the detour placement lives in
 // real_body.cpp.
@@ -38,15 +40,28 @@ void Tick(game::Entity* local, bool local_active, double now_ms) noexcept;
 // more than 2 cm / 4 deg, or 1 s since the last one); `out` is the frame (seq filled by the caller).
 bool TakeSend(double now_ms, wire::GearFrame* out) noexcept;
 
-// The partner's gear (a received or echoed frame); nullptr: none (a new session, link loss).
+// The partner's gear (a received or echoed frame); nullptr: none (a new session, link loss; its
+// resource table is cleared too).
 void SetPartnerGear(const wire::GearFrame* f) noexcept;
+
+// Our gear resource table (STR1): true when an entry should go out now (a new id at once, then one
+// entry every 250 ms round-robin). The partner's entries (received or echoed).
+bool TakeSendRes(double now_ms, wire::GearRes* out) noexcept;
+// An entry (id) or the whole table (-1) goes out again first: a send that failed (not connected yet),
+// a new link session (the partner cleared its table).
+void MarkResUnsent(int id) noexcept;
+// The partner's entries. Checked before anything is loaded (partner_gear.cpp ResAllowed): only the
+// proven gear cores, never the resources the mirror policy refuses.
+void SetPartnerRes(const wire::GearRes& r) noexcept;
 
 // The per-frame sync faulted: the detour stops placing props (they stay where they are).
 void EmergencyStop() noexcept;
 
 // Debug (docs/debug-actions.md "Gear"): 0 log (our gear in full, the props), 1 <0/1> partner props
-// off/on, 2 <0/1> self-view props off/on, 3 <n> hidden tests only: send / show only our first n
-// cargo pieces (-1 = all), 4 <0/1> debug: our own gear on the debug body (real_spawn) on/off.
+// off/on, 2 <0/1> self-view props off/on, 3 <n> hidden tests only: n synthetic delivery cases on our
+// backpack, 4 <0/1> debug: our own gear on the debug body (real_spawn) on/off, 5 <n> / 6 hidden tests:
+// the next n prop starts fail / every partner prop hidden behind our back, 7 <0..2> mirror level,
+// 8 <0/1> the BB pod as a copy of the game's pod entity (tests), 9 <0/1/2> census.
 bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 
 }  // namespace st::gear

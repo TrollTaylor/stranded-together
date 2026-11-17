@@ -58,6 +58,8 @@ enum class Action : std::uint8_t {
                           //   ahead (0 = follow again), 4 reconfigure: layer v[1] (9/10), type v[2] (0 rigid body, 1 proxy)
     gear,                 // v[0] = 0 log, 1 partner props off (v[1] 0) / on (1), 2 self-view props off / on, 3 test: only the first v[1]
                           //   cargo pieces (-1 all; hidden tests only), 4 our own gear on the debug body off / on
+    smooth,               // v[0] = 0 log, 1 smooth feature mask v[1] (0..7, realbody::kSmooth*), 2 frame cap v[1] fps (0 off),
+                          //   3 record a per-frame sequence of v[1] ticks to the log (docs/real-partner-body.md section 3.5)
     count
 };
 

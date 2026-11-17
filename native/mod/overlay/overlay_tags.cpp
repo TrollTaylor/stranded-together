@@ -8,6 +8,7 @@
 
 #include "imgui.h"
 #include "log.hpp"
+#include "overlay_font.hpp"
 
 namespace st::overlay::tags {
 namespace {
@@ -76,7 +77,10 @@ void Draw(ImDrawList* dl, float w, float h, float ui_scale) noexcept {
         return;
     }
 
-    ImFont* font = ImGui::GetFont();
+    // The game's menu font when it was read (overlay_font.hpp), else the overlay's default font.
+    ImFont* font = font::TagFont();
+    const float font_scale = font ? font::TagSizeScale() : 1.0f;
+    if (!font) font = ImGui::GetFont();
     const float scale = ui_scale > 0 ? ui_scale : 1.0f;
     bool any = false;
     Stats last{};
@@ -85,7 +89,8 @@ void Draw(ImDrawList* dl, float w, float h, float ui_scale) noexcept {
         const Tag& t = f.tags[i];
         if (!t.text[0]) continue;
         const nametag::Projected p = nametag::Project(v, t.anchor, w, h);
-        const nametag::Style s = nametag::StyleFor(p.dist, scale);
+        nametag::Style s = nametag::StyleFor(p.dist, scale);
+        s.size_px *= font_scale;
         if (!p.visible || !s.visible) {
             ++hidden;
             continue;

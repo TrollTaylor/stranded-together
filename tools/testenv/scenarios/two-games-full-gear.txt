@@ -1,0 +1,145 @@
+# Full gear between two games (docs/real-partner-body.md section 12), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-full-gear -SeedSaves complete-100
+# Each game mirrors the other's
+# gear entities (weapons, BB pod, shields, cuff device, everything on the backpack) and Sam's gear parts
+# (exoskeleton...) onto the partner body; the guest (Fragile, self view) keeps Sam's real gear. Then many
+# gear changes both ways (synthetic cases, prop respawns, injected start failures, props hidden behind
+# the mod's back) and a real one: the guest's equipment wheel. With the default settings otherwise:
+# player collision on (4 m capsule), name tags in the game's menu font. Also: the host walks back to face
+# the guest (his BB pod seen from the front), the gear walk's cost with its cache off and on (gear 10),
+# and the guest's cuff menu opened and stepped through (what it shows of the guest's character).
+role host
+graphics low
+timeout 360
+ini partner_body=real
+@host ini my_character=sam
+@host ini name=HostPorter
+@guest ini my_character=fragile
+@guest ini self_character=1
+@guest ini name=GuestPorter
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+@guest pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+@guest until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitplayer 60
+waitlog 60 \[link\] CONNECTED
+@guest waitlog 60 \[link\] CONNECTED
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+@guest until 150 3000 \[sync\] partner body: real 'sam' => pad A 120
+waitlog 60 \[sync\] partner body: real 'fragile'
+@guest waitlog 30 \[self\] showing 'fragile' in place of Sam
+waitlog 30 \[gear\] the partner's gear: .*game entities [1-9]
+@guest waitlog 30 \[gear\] the partner's gear: .*game entities [1-9]
+waitlog 40 \[gear\] [0-9]+ items, [1-9][0-9]* props live
+@guest waitlog 40 \[gear\] [0-9]+ items, [1-9][0-9]* props live
+wait 4000
+action gear 0
+@guest action gear 0
+screenshot 02-host-own-gear
+@guest screenshot 02-guest-sees-host
+?waitlog 20 \[tags\] name tags use the game's menu font
+?@guest waitlog 20 \[tags\] name tags use the game's menu font
+# the host walks back towards the guest and stops facing it: his front (BB pod) on the guest's screen
+pad none 450 ly=-32767
+wait 1800
+@guest screenshot 02b-guest-sees-host-front
+screenshot 02b-host-own-front
+pad none 450 ly=32767
+wait 1500
+# the host turns round: the guest's Fragile behind it; she walks up to him (collision stops her), then
+# walks away (her back)
+pad none 1300 rx=32767
+wait 1500
+@guest pad none 900 ly=32767
+wait 1200
+screenshot 03a-host-sees-guest-front
+@guest pad none 700 ly=-32767
+wait 1500
+screenshot 03b-host-sees-guest-back
+@guest screenshot 03b-guest-self-front
+pad none 1300 rx=-32767
+wait 1500
+# G2: changes both ways, each followed on the other game
+action gear 3 3
+@guest action gear 3 2
+wait 2500
+@guest screenshot 04-guest-sees-host-three-cases
+screenshot 04-host-sees-guest-two-cases
+action gear 3 1
+@guest action gear 3 0
+wait 2000
+action gear 3 5
+@guest action gear 3 4
+wait 2000
+action gear 3 0
+@guest action gear 3 1
+wait 2000
+@guest action gear 5 6
+@guest action gear 1 0
+wait 1000
+@guest action gear 1 1
+action gear 6
+wait 1500
+@guest action gear 6
+action gear 3 2
+@guest action gear 3 3
+waitlog 30 \[gear\] the partner's gear: .*cargo 4:
+@guest waitlog 30 \[gear\] the partner's gear: .*cargo 3:
+@guest waitlog 60 \[gear\] [0-9]+ items, [1-9][0-9]* props live \(0 loading, [1-9][0-9]* shown, 0 failing now, .*failures, [1-9][0-9]* retries
+wait 3000
+@guest screenshot 05-guest-sees-host-after-changes
+screenshot 05-host-sees-guest-after-changes
+action gear 0
+@guest action gear 0
+# the gear walk's cost on the game thread, its cache off then on again (50 reads each, logged)
+action gear 10 0
+wait 6500
+action gear 10 1
+wait 6500
+# a real change through the game's own input: the guest takes a weapon from the equipment wheel (D-pad
+# right held, the stick up: the wheel's top item); both sides log their gear
+@guest pad dpad_right 1500 ry=32767 ly=32767 keep
+@guest screenshot 06-guest-equipment-wheel
+@guest pad none 0
+wait 3000
+@guest action gear 0
+action gear 0
+@guest screenshot 06b-guest-after-equip
+screenshot 06c-host-sees-guest-after-equip
+# G3: the guest's cuff menu (START: Map/Information), then a few steps down its tab column
+@guest pad START 150
+wait 3000
+@guest screenshot 07-guest-menu
+@guest pad dpad_down 150
+wait 1500
+@guest screenshot 07b-guest-menu-down1
+@guest pad dpad_down 150
+wait 1500
+@guest screenshot 07c-guest-menu-down2
+@guest pad A 150
+wait 2500
+@guest screenshot 07d-guest-menu-a
+# "Manage Cargo" on the guest's own entry: the cargo menu's figure (G3)
+@guest pad A 150
+wait 3000
+@guest screenshot 07e-guest-manage-cargo
+@guest pad B 150
+wait 1500
+@guest pad B 150
+wait 1500
+@guest pad B 150
+wait 1500
+action log_status
+@guest action log_status
+?waitlog 12 \[sync\] link traffic over
+?@guest waitlog 12 \[sync\] link traffic over
+@guest quit
+wait 3000
+quit

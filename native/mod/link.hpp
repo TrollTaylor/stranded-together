@@ -59,6 +59,13 @@ bool SendGear(const wire::GearFrame& gear) noexcept;
 // Received gear frames, oldest first (a small queue), with their own "newer seq" filter and the
 // same generation counter as PopPose.
 bool PopGear(wire::GearFrame& out, std::uint64_t& receive_ms, std::uint32_t& generation) noexcept;
+// One entry of our gear resource table (STR1) in a datagram of its own; received ones, oldest first
+// (a queue of 16, no sequence filter: an entry is idempotent), with the generation counter.
+bool SendGearRes(const wire::GearRes& res) noexcept;
+bool PopGearRes(wire::GearRes& out, std::uint32_t& generation) noexcept;
+// The current link session counter (the `generation` the Pop* calls report; bumped by each new
+// handshake). Game thread: tells the sender that the partner's tables were cleared.
+std::uint32_t Generation() noexcept;
 // Millisecond clock from QueryPerformanceCounter (shared by link and sync).
 std::uint64_t NowMs() noexcept;
 double NowMsPrecise() noexcept;
