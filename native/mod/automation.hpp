@@ -589,7 +589,9 @@ bool ForeignSavesBypassed() noexcept;
 // device's vtable is outside it (it always is: the runtime is D3D12Core.dll) it calls
 // platform->Exit(0) (vtable +0x180 at 0x1419A6CE9 -> FUN_141A12A20 -> _exit(0)): the game
 // quits silently with code 0 before its first frame. The overlay's LoadLibrary("d3d12.dll")
-// + probe device must therefore come after the game's own delay-load. False on timeout
+// + probe device must therefore come after the game's own delay-load, and after the game's
+// first D3D12CreateDevice too (hooked here): between the two the game sets the process-wide DRED
+// settings, and a probe device alive then broke its renderer set-up. False on timeout
 // (the overlay then stays off for the run).
 bool WaitForGameD3D12(unsigned timeout_ms) noexcept;
 

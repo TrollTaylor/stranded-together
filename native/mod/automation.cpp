@@ -1477,6 +1477,22 @@ bool Init(const std::wstring& mod_dir) noexcept {
     }
 }
 
+namespace {
+
+// D3D12CreateDevice(IUnknown* adapter, D3D_FEATURE_LEVEL, REFIID, void**), without d3d12.h here.
+using D3D12CreateDeviceFn = HRESULT(WINAPI*)(IUnknown*, int, const GUID&, void**);
+D3D12CreateDeviceFn g_orig_d3d12_create_device = nullptr;
+std::atomic<bool> g_game_device_created{false};
+
+HRESULT WINAPI HookD3D12CreateDevice(IUnknown* adapter, int level, const GUID& riid, void** device) {
+    const HRESULT hr = g_orig_d3d12_create_device(adapter, level, riid, device);
+    // A capability check passes device == nullptr (S_FALSE); only a created device counts.
+    if (SUCCEEDED(hr) && device && *device) g_game_device_created.store(true, std::memory_order_release);
+    return hr;
+}
+
+}  // namespace
+
 bool WaitForGameD3D12(unsigned timeout_ms) noexcept {
     const double t0 = NowMs();
     if (GetModuleHandleW(L"d3d12.dll")) {
@@ -1488,11 +1504,44 @@ bool WaitForGameD3D12(unsigned timeout_ms) noexcept {
             Log("[overlay] ds.exe did not load d3d12.dll within %u s: overlay not installed this run", timeout_ms / 1000);
             return false;
         }
-        Sleep(2);
+        Sleep(1);
     }
+    const double loaded_ms = NowMs();
     Log("[overlay] deferred %.0f ms until ds.exe loaded d3d12.dll itself (its device check at 0x1419A6980 exits(0) when "
         "d3d12.dll is loaded earlier)",
-        NowMs() - t0);
+        loaded_ms - t0);
+
+    // d3d12.dll is loaded inside the game's device creation (FUN_1419A6980), which then sets the
+    // process-wide DRED settings (ID3D12DeviceRemovedExtendedDataSettings) and only after that
+    // creates its device. The overlay's probe device (overlay.cpp ReadVTables, WARP) must not exist
+    // in between: on a player's PC (v0.5.0, launched through Steam) the game then failed with
+    // "Error initializing rendering configuration" and its crash report crashed reading the null
+    // device (0x1419A4004). So the overlay waits for the game's first created D3D12 device.
+    bool hooked = false;
+    const HMODULE d3d12 = GetModuleHandleW(L"d3d12.dll");
+    void* const target = d3d12 ? reinterpret_cast<void*>(GetProcAddress(d3d12, "D3D12CreateDevice")) : nullptr;
+    const MH_STATUS init = MH_Initialize();
+    if (target && (init == MH_OK || init == MH_ERROR_ALREADY_INITIALIZED) &&
+        MH_CreateHook(target, reinterpret_cast<void*>(&HookD3D12CreateDevice), reinterpret_cast<void**>(&g_orig_d3d12_create_device)) == MH_OK) {
+        // Left enabled for the run: the detour only forwards and sets a flag.
+        hooked = MH_EnableHook(target) == MH_OK;
+    }
+    // A device created before the hook went in is never seen: then wait long enough that the
+    // game's device certainly exists (its title screen comes about 20 s after start).
+    constexpr double kMissedMs = 20000;
+    while (!g_game_device_created.load(std::memory_order_acquire)) {
+        if (!hooked || NowMs() - loaded_ms > kMissedMs) {
+            Log("[overlay] %s: installing %.0f ms after d3d12.dll loaded",
+                hooked ? "the game's D3D12CreateDevice was not seen (created before the hook?)" : "could not hook D3D12CreateDevice",
+                NowMs() - loaded_ms);
+            if (!hooked) Sleep(static_cast<DWORD>(kMissedMs));
+            return true;
+        }
+        Sleep(1);
+    }
+    Sleep(250);  // let the game finish the rest of its device set-up first
+    Log("[overlay] the game created its D3D12 device %.0f ms after loading d3d12.dll: the overlay's probe comes after it",
+        NowMs() - loaded_ms);
     return true;
 }
 
