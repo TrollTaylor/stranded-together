@@ -175,12 +175,23 @@ inline bool SandboxForeignAllowed(bool requested, bool redirect_active) { return
 // upscalers; "fps" is read at boot (FUN_14262E480, clamped 15..240). Written by the launcher's local
 // test into each sandbox (appdir_settings=1 redirects the game folder's file there, so the user's
 // own one is never read or written) and by the testenv's "graphics low".
-// NOT VERIFIED to change anything: hidden runs with this file (and with WindowMode/GraphicQuality
-// in game_settings.cfg) still rendered 2560x1440 at the title (runs 20261116-1535..1547); the
-// game derives its boot display mode elsewhere (FUN_142642EC0 / FUN_142642010). What does keep two
-// games light is frame_cap=30 (dllmain.cpp) and local_window (the windows side by side).
+// window_mode is a windowed switch: the game writes it as ([display+0x62] == 0) ? 1 : 0
+// (0x1426454D4..0x142645521), so 0 = fullscreen, the default when the key is absent. Earlier
+// versions of this text had no window_mode: on a player's desktop the local test's host went
+// fullscreen at 1920x1080 (its own rewrite of the file: window_mode 0, window 0,0-1920,1080) and
+// the guest's renderer set-up then failed ("Error initializing rendering configuration"), every
+// time; hidden runs on a private desktop never showed it. So: windowed, 1280x720, and the window
+// rect (the overlay then moves each window to its half: local_window).
+// The game rewrites this file on exit with its own values, so the launcher merges these keys into
+// it before every local test (MergeGameSettings), not only when the file is missing.
 inline const char* LowGraphicsSettingsCfg() {
-    return "\"rendering_width\" \"1280\"\r\n"
+    return "\"window_mode\" \"1\"\r\n"
+           "\"window_left\" \"0\"\r\n"
+           "\"window_top\" \"0\"\r\n"
+           "\"window_right\" \"1280\"\r\n"
+           "\"window_bottom\" \"720\"\r\n"
+           "\"hdr\" \"0\"\r\n"
+           "\"rendering_width\" \"1280\"\r\n"
            "\"rendering_height\" \"720\"\r\n"
            "\"wait_vsync\" \"1\"\r\n"
            "\"fps\" \"30\"\r\n"

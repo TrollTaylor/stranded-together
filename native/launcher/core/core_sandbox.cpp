@@ -248,6 +248,8 @@ std::vector<std::string> ManifestChanges(const std::string& before, const std::s
     return out;
 }
 
-std::string LocalTestSettingsCfg() { return st::sandbox::LowGraphicsSettingsCfg(); }
+std::string LocalTestSettingsCfg(const std::string& current) {
+    return st::sandbox::MergeGameSettings(current, st::sandbox::LowGraphicsSettingsCfg());
+}
 
 }  // namespace st::core

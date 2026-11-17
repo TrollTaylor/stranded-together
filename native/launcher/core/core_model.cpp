@@ -536,7 +536,10 @@ public:
                 !SeedSandbox(paths_, sp, seed, real, Account(), seed ? test_folder_ : std::string("your own saves"), error_out))
                 return false;
             std::string werr;
-            if (!IsFile(sp.settings) && !WriteAtomic(sp.settings, LocalTestSettingsCfg(), true, werr)) {
+            // Every time: the game rewrites this file on exit (fullscreen again, its own size).
+            std::string current;
+            if (IsFile(sp.settings)) ReadTextShared(sp.settings, current);
+            if (!WriteAtomic(sp.settings, LocalTestSettingsCfg(current), true, werr)) {
                 error_out = "Could not write the test games' graphics settings: " + werr;
                 return false;
             }

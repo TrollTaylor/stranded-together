@@ -69,7 +69,8 @@ std::string SaveTreeManifest(const std::wstring& root);
 std::vector<std::string> ManifestChanges(const std::string& before, const std::string& after);
 
 // The local two-instance test: low-quality windowed graphics for the sandbox's settings.cfg
-// (sandbox.hpp) and the input split's ini values.
-std::string LocalTestSettingsCfg();
+// (sandbox.hpp) merged into `current` (the file as the game last wrote it; "" when missing):
+// windowed, 1280x720, low quality. Written before every local test.
+std::string LocalTestSettingsCfg(const std::string& current);
 
 }  // namespace st::core

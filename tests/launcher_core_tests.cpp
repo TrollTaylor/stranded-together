@@ -1157,6 +1157,21 @@ void TestSaves() {
 }
 }  // namespace
 
+// The local test forces windowed, 1280x720 into the settings.cfg the game rewrote (fullscreen):
+// without window_mode=1 the host went fullscreen and the guest could not start (v0.5.2).
+void LocalTestSettings() {
+    const std::string fresh = LocalTestSettingsCfg("");
+    CHECK(fresh.find("\"window_mode\" \"1\"") != std::string::npos);
+    CHECK(fresh.find("\"rendering_width\" \"1280\"") != std::string::npos);
+    const std::string game = "\"rendering_width\" \"1920\"\r\n\"window_mode\" \"0\"\r\n\"nvidia_dlss\" \"0\"\r\n";
+    const std::string merged = LocalTestSettingsCfg(game);
+    CHECK(merged.find("\"window_mode\" \"1\"") != std::string::npos);
+    CHECK(merged.find("\"window_mode\" \"0\"") == std::string::npos);
+    CHECK(merged.find("\"rendering_width\" \"1280\"") != std::string::npos);
+    CHECK(merged.find("1920") == std::string::npos);
+    CHECK(merged.find("\"nvidia_dlss\" \"0\"") != std::string::npos);  // the game's other keys stay
+}
+
 int main() {
     JoinCodes();
     SessionIniText();
@@ -1171,6 +1186,7 @@ int main() {
     SessionRoundTrip();
     RealModelFlow();
     TestSaves();
+    LocalTestSettings();
     std::printf("launcher core tests: %d/%d passed\n", g_checks - g_failures, g_checks);
     return g_failures == 0 ? 0 : 1;
 }
