@@ -7,7 +7,12 @@ the mod uses RVAs plus byte signatures (`native/mod/game_api.cpp`).
 
 Tools: `tools/re/dsre.py` (fast Python index: `.pdata` functions, RIP-relative xrefs,
 E8 calls, data pointers), `tools/re/exported.py` (dumps Decima's exported script symbol
-table), `tools/re/mksigs.py` (unique signatures), `tools/re/gh.py` (Ghidra HTTP plugin client).
+table), `tools/re/mksigs.py` (unique signatures), `tools/re/gh.py` (Ghidra HTTP plugin client),
+`tools/re/ds_archive.py` (read-only packfile reader: core paths, extraction, RTTI objects and fields;
+results in `docs/game-data-index.md`).
+
+The real (solid) partner body and pose sync: addresses, byte checks and run evidence in
+`docs/real-partner-body.md` (SkinnedModel animate hook, pose layout, StreamingRef register-by-path).
 
 Everything here is **static** evidence. Nothing was observed at runtime yet; the first
 in-game test is what confirms or refutes the behaviour notes marked *(untested)*.

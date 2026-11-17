@@ -68,6 +68,14 @@ bool StartHoloCatalog(int start, int count, double distance_m, char* msg, std::s
 // with root motion or a walk/run-like path, and which share Sam's skeleton layout. Reads only;
 // the memory scan runs on its own thread and ends with "[survey] done".
 bool StartClipSurvey(char* msg, std::size_t cap) noexcept;
+// Animated-body census, Sam's pose dumps and scan, look-at teleport (anim_census.hpp).
+bool StartAnimCensus(double radius_m, int tag, int scan, char* msg, std::size_t cap) noexcept;
+bool PoseDump(int tag, int frames, double delay_ms, char* msg, std::size_t cap) noexcept;
+bool StartPoseScan(int tag, char* msg, std::size_t cap) noexcept;
+bool LookAtBody(int index, double dist_m, char* msg, std::size_t cap) noexcept;
+// Real partner body debug commands (real_body.hpp DebugCommand: 1 probe, 2 spawn, 3 remove,
+// 4 joint names, 5 stats, 6 mirror).
+bool RealBodyCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 
 // Once per game tick (st::debug::OnTick): resolves on first use and runs the
 // post-teleport verification.

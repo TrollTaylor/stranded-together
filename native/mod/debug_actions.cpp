@@ -129,6 +129,29 @@ bool DoHoloCatalog(const Request& r, char* msg, std::size_t cap) {
     return game::StartHoloCatalog(start, count, r.v[2], msg, cap);
 }
 bool DoClipSurvey(const Request&, char* msg, std::size_t cap) { return game::StartClipSurvey(msg, cap); }
+bool DoAnimCensus(const Request& r, char* msg, std::size_t cap) {
+    return game::StartAnimCensus(r.v[0], static_cast<int>(r.v[1]), static_cast<int>(r.v[2]), msg, cap);
+}
+bool DoPoseDump(const Request& r, char* msg, std::size_t cap) {
+    return game::PoseDump(static_cast<int>(r.v[0]), r.v[1] >= 1 ? static_cast<int>(r.v[1]) : 1, r.v[2], msg, cap);
+}
+bool DoPoseScan(const Request& r, char* msg, std::size_t cap) { return game::StartPoseScan(static_cast<int>(r.v[0]), msg, cap); }
+bool DoLookAtBody(const Request& r, char* msg, std::size_t cap) { return game::LookAtBody(static_cast<int>(r.v[0]), r.v[1], msg, cap); }
+bool DoSnapTeleport(const Request& r, char* msg, std::size_t cap) {
+    char why[160] = {};
+    const double z = r.v[2] != 0 ? r.v[2] : game::kSnapRayCentreZ;
+    const bool ok = game::TeleportLocalPlayer(r.v[0], r.v[1], z, game::TeleportMode::snap_to_ground, why, sizeof(why));
+    std::snprintf(msg, cap, ok ? "snap teleport to (%.2f, %.2f, %.2f): %s" : "snap teleport to (%.2f, %.2f, %.2f) failed: %s", r.v[0], r.v[1],
+                  z, why);
+    return ok;
+}
+bool DoRealProbe(const Request& r, char* msg, std::size_t cap) { return game::RealBodyCommand(1, r.v, msg, cap); }
+bool DoRealSpawn(const Request& r, char* msg, std::size_t cap) { return game::RealBodyCommand(2, r.v, msg, cap); }
+bool DoRealRemove(const Request& r, char* msg, std::size_t cap) { return game::RealBodyCommand(3, r.v, msg, cap); }
+bool DoRealNames(const Request& r, char* msg, std::size_t cap) { return game::RealBodyCommand(4, r.v, msg, cap); }
+bool DoRealStats(const Request& r, char* msg, std::size_t cap) { return game::RealBodyCommand(5, r.v, msg, cap); }
+bool DoRealMirror(const Request& r, char* msg, std::size_t cap) { return game::RealBodyCommand(6, r.v, msg, cap); }
+bool DoRealControl(const Request& r, char* msg, std::size_t cap) { return game::RealBodyCommand(7, r.v, msg, cap); }
 bool DoVoicePing(const Request& r, char* msg, std::size_t cap) {
     // The live partner entity, exactly as the Partner tab sees it (0 when there is none).
     Snapshot s;
@@ -187,6 +210,18 @@ constexpr Row kRows[] = {
     {{Action::set_verbose, Tab::tools, "Verbose logging", "Per-2s trace lines from the sync.", false}, &DoVerbose},
     {{Action::holo_catalog, Tab::tools, "Holo catalog", "Spawn, log and screenshot collectors holograms one by one (start count [distance]).", false}, &DoHoloCatalog},
     {{Action::clip_survey, Tab::tools, "Clip survey", "Log every loaded animation clip with root motion, and which fit Sam's skeleton.", false}, &DoClipSurvey},
+    {{Action::anim_census, Tab::tools, "Anim census", "Log every animated body in the world (radius tag scan).", false}, &DoAnimCensus},
+    {{Action::pose_dump, Tab::tools, "Pose dump", "Dump Sam's animation manager and model memory (tag frames delay_ms).", false}, &DoPoseDump},
+    {{Action::pose_scan, Tab::tools, "Pose scan", "Scan memory for world-space joint data near Sam (tag).", false}, &DoPoseScan},
+    {{Action::look_at_body, Tab::tools, "Look at body", "Teleport Sam behind the n-th body of the last census (index distance).", false}, &DoLookAtBody},
+    {{Action::snap_teleport, Tab::tools, "Snap teleport", "Teleport Sam to x y and snap to the topmost surface (PlaceOn mode 2).", false}, &DoSnapTeleport},
+    {{Action::real_probe, Tab::tools, "Real probe", "Real body: the player's resource path/GUID, the streaming manager, Sam's model.", false}, &DoRealProbe},
+    {{Action::real_spawn, Tab::tools, "Real spawn", "Spawn a real character body ahead of Sam (body id, distance, mirror 0/1).", false}, &DoRealSpawn},
+    {{Action::real_remove, Tab::tools, "Real remove", "Remove the debug real body.", false}, &DoRealRemove},
+    {{Action::real_names, Tab::tools, "Real names", "Log Sam's and the real body's joint names.", false}, &DoRealNames},
+    {{Action::real_stats, Tab::tools, "Real stats", "Pose hook counters and the partner-vs-published check.", false}, &DoRealStats},
+    {{Action::real_mirror, Tab::tools, "Real mirror", "The debug real body copies Sam's live pose (1) or keeps its own (0).", false}, &DoRealMirror},
+    {{Action::real_control, Tab::tools, "Real control", "Load the n-th streamed-out collectors hologram through the real body's path+GUID route.", false}, &DoRealControl},
 };
 constexpr std::size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);
 static_assert(kRowCount == static_cast<std::size_t>(Action::count), "every Action needs exactly one registry row");

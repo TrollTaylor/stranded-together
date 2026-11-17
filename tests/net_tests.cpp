@@ -6,6 +6,7 @@
 #include <deque>
 #include <vector>
 
+#include "body_table.hpp"
 #include "pose_wire.hpp"
 #include "stcoop/link_crypto.hpp"
 #include "stcoop/link_protocol.hpp"
@@ -214,8 +215,124 @@ void TestLinkHandshake() {
 
 }  // namespace
 
+// STJ1 joint frames (docs/real-partner-body.md).
+wire::Quat RandQuat(unsigned& seed) {
+    auto r = [&]() {
+        seed = seed * 1664525u + 1013904223u;
+        return static_cast<float>((seed >> 8) & 0xFFFF) / 32767.5f - 1.0f;
+    };
+    return wire::Normalize(wire::Quat{r(), r(), r(), r()});
+}
+
+void TestJointFrames() {
+    wire::JointFrame f;
+    f.seq = 7;
+    f.sender_ms = 123456;
+    f.joint_count = 77;
+    f.body_id = 3;
+    f.flags = wire::kJointsValid;
+    unsigned seed = 12345;
+    for (unsigned j = 0; j < 77; ++j) f.q[j] = RandQuat(seed);
+    // edge cases: identity, w ~ 0, components at +-1/sqrt2, a negated quaternion
+    f.q[0] = wire::Quat{0, 0, 0, 1};
+    f.q[1] = wire::Quat{1, 0, 0, 0};
+    f.q[2] = wire::Quat{0.70710678f, 0.70710678f, 0, 0};
+    f.q[3] = wire::Quat{-0.70710678f, 0, 0.70710678f, 0};
+    f.q[4] = wire::Quat{0.5f, -0.5f, 0.5f, -0.5f};
+    f.q[5] = wire::Quat{-0.1f, -0.2f, -0.3f, -0.9273618f};
+    f.t_count = 2;
+    f.t_joint[0] = 0;
+    f.t_joint[1] = 1;
+    f.t[0][0] = 0.01f, f.t[0][1] = -0.02f, f.t[0][2] = 0.0f;
+    f.t[1][0] = 0.0123f, f.t[1][1] = 0.0f, f.t[1][2] = 0.919f;
+    std::uint8_t buf[wire::kMaxJointFrameSize];
+    const std::size_t n = wire::EncodeJoints(f, buf, sizeof(buf));
+    CHECK(n == wire::JointFrameSize(77, 2));
+    CHECK(n == 497);
+    wire::JointFrame g;
+    CHECK(wire::DecodeJoints(buf, n, g));
+    CHECK(g.seq == 7 && g.sender_ms == 123456 && g.joint_count == 77 && g.body_id == 3 && g.layout_hash == wire::kSamLayoutHash);
+    float worst = 0;
+    for (unsigned j = 0; j < 77; ++j) {
+        const float a = wire::AngleBetween(f.q[j], g.q[j]);
+        if (a > worst) worst = a;
+    }
+    CHECK(worst < 0.02f);
+    CHECK(g.t_count == 2 && g.t_joint[1] == 1 && std::fabs(g.t[1][2] - 0.919f) < 1e-4f && std::fabs(g.t[0][1] + 0.02f) < 1e-4f);
+    // clamp
+    f.t[1][2] = 5.0f;
+    CHECK(wire::EncodeJoints(f, buf, sizeof(buf)) == n);
+    CHECK(wire::DecodeJoints(buf, n, g) && std::fabs(g.t[1][2] - 3.2767f) < 1e-3f);
+    f.t[1][2] = 0.919f;
+    // rejects
+    CHECK(!wire::DecodeJoints(buf, n - 1, g));
+    CHECK(!wire::DecodeJoints(buf, n + 1, g));
+    std::uint8_t bad[wire::kMaxJointFrameSize];
+    std::memcpy(bad, buf, n);
+    bad[3] = '2';
+    CHECK(!wire::DecodeJoints(bad, n, g));
+    std::memcpy(bad, buf, n);
+    bad[16] = 0;  // joint_count 0
+    CHECK(!wire::DecodeJoints(bad, n, g));
+    std::memcpy(bad, buf, n);
+    bad[16] = 200;  // too many joints
+    CHECK(!wire::DecodeJoints(bad, n, g));
+    std::memcpy(bad, buf, n);
+    bad[20 + 77 * 6 + 1] = 77;  // translation joint out of range
+    CHECK(!wire::DecodeJoints(bad, n, g));
+    CHECK(!wire::DecodeJoints(buf, 10, g));
+    CHECK(!wire::DecodeJoints(nullptr, n, g));
+    wire::JointFrame nan = f;
+    nan.q[9].x = std::nanf("");
+    CHECK(wire::EncodeJoints(nan, buf, sizeof(buf)) == 0);
+    CHECK(wire::EncodeJoints(f, buf, 100) == 0);  // too small
+    // blend: halfway between q and -q of the same rotation is that rotation; t lerps
+    wire::JointFrame a = f, b = f;
+    for (unsigned j = 0; j < 77; ++j) b.q[j] = wire::Quat{-f.q[j].x, -f.q[j].y, -f.q[j].z, -f.q[j].w};
+    b.t[1][2] = 1.019f;
+    wire::JointFrame m;
+    wire::BlendJoints(a, b, 0.5f, m);
+    worst = 0;
+    for (unsigned j = 0; j < 77; ++j) worst = std::fmax(worst, wire::AngleBetween(m.q[j], f.q[j]));
+    CHECK(worst < 0.01f);
+    CHECK(std::fabs(m.t[1][2] - 0.969f) < 1e-5f);
+    // blend of two different rotations about z: halfway angle
+    a.q[0] = wire::Quat{0, 0, 0, 1};
+    b.q[0] = wire::Quat{0, 0, std::sin(0.5f), std::cos(0.5f)};  // 60 degrees... (1 rad)
+    wire::BlendJoints(a, b, 0.5f, a);  // aliasing allowed
+    CHECK(std::fabs(wire::AngleBetween(a.q[0], wire::Quat{0, 0, 0, 1}) - 57.29578f * 0.5f) < 0.5f);
+    CHECK(std::fabs(wire::AngleBetween(wire::Quat{0, 0, 0, 1}, wire::Quat{0, 0, 1, 0}) - 180.0f) < 0.01f);
+}
+
+void TestBodyTable() {
+    std::uint8_t g[16] = {};
+    CHECK(bodies::ParseGuid("336f4328-1381-4947-8e6d-7def29e654bd", g));
+    const std::uint8_t fgl[16] = {0x28, 0x43, 0x6f, 0x33, 0x81, 0x13, 0x47, 0x49, 0x8e, 0x6d, 0x7d, 0xef, 0x29, 0xe6, 0x54, 0xbd};
+    CHECK(std::memcmp(g, fgl, 16) == 0);
+    CHECK(bodies::ParseGuid("514b5705-aaf0-a447-a82e-0bb83b855201", g));
+    const std::uint8_t sam[16] = {0x05, 0x57, 0x4b, 0x51, 0xf0, 0xaa, 0x47, 0xa4, 0xa8, 0x2e, 0x0b, 0xb8, 0x3b, 0x85, 0x52, 0x01};
+    CHECK(std::memcmp(g, sam, 16) == 0);
+    CHECK(!bodies::ParseGuid("336f4328-1381-4947-8e6d-7def29e654b", g));
+    CHECK(!bodies::ParseGuid("336f4328+1381-4947-8e6d-7def29e654bd", g));
+    CHECK(!bodies::ParseGuid("336f4328-1381-4947-8e6d-7def29e654bx", g));
+    CHECK(!bodies::ParseGuid(nullptr, g));
+    CHECK(bodies::Count() >= 5);
+    for (std::size_t i = 0; i < bodies::Count(); ++i) {
+        const bodies::Body& b = bodies::At(i);
+        CHECK(b.id == i + 1);  // ids are wire values: dense and append-only
+        CHECK(bodies::ParseGuid(b.guid, g));
+        CHECK(std::strncmp(b.path, "ds/entities/cinematics/demo_", 28) == 0);
+        CHECK(bodies::FindByKey(b.key) == &b && bodies::FindById(b.id) == &b);
+    }
+    CHECK(bodies::FindByKey("FRAGILE") && bodies::FindByKey("FRAGILE")->id == 3);
+    CHECK(!bodies::FindByKey("frag") && !bodies::FindByKey("") && !bodies::FindById(0));
+    CHECK(bodies::Default().id == 1);
+}
+
 int main() {
     TestPoseRoundTrip();
+    TestJointFrames();
+    TestBodyTable();
     TestRotation();
     TestJoinCode();
     TestLinkHandshake();

@@ -1,0 +1,46 @@
+# Animated-body census, run 4: the terrorist (Demens) camp and the distribution centre north of
+# Mountain Knot City, plus 4 consecutive animation dumps of a MULE (SkinnedModel pose buffers).
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario anim-census-tour2 -SeedSaves complete-100
+role solo
+timeout 360
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+pad none 1000 ly=32767
+wait 1500
+# Distribution Center North of Mountain Knot City
+action snap_teleport -1741.90 2037.95 0
+wait 12000
+action anim_census 400 41 0
+screenshot 41-dc-north-mountain-knot
+?action look_at_body 0 4
+?wait 2500
+?screenshot 41b-dc-north-body0
+# Terrorist Camp Northwest of Mountain Knot City (posts 590..592)
+action snap_teleport -1694.60 1086.98 0
+wait 12000
+action anim_census 400 42 0
+screenshot 42-terrorist-camp
+?action look_at_body 0 6
+?wait 2500
+?screenshot 42b-terrorist-camp-body0
+?action pose_dump 1000 4 0
+?wait 1000
+?action look_at_body 1 6
+?wait 2500
+?screenshot 42c-terrorist-camp-body1
+# MULE Camp Southwest of Lake Knot City again: 4 consecutive dumps of a MULE
+action snap_teleport 1517.90 992.00 0
+wait 12000
+action anim_census 400 43 0
+?action pose_dump 1000 4 0
+?wait 1000
+?action look_at_body 2 5
+?wait 2500
+?screenshot 43b-mule-camp-body2
+quit

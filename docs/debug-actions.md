@@ -195,6 +195,36 @@ too (needs a player_sync accessor for the voice entity).
 
 Both use only the partner hologram's byte-checked spawner calls and ReadProcessMemory reads. What they found is in [character-catalog.md](character-catalog.md).
 
+### Animated-body census and pose memory (`anim_census`, `pose_dump`, `pose_scan`, `look_at_body`, `snap_teleport`; scenarios only)
+
+`native/mod/anim_census.cpp`. Reads only (ReadProcessMemory), except the byte-checked teleport.
+
+* `action anim_census <radius_m> <tag> <scan>`: every world-list entity with an AnimationManager, a Humanoid type, AIEntityType Humanoid or a 77-joint skinned body (type, resource, components, skeleton, animation manager, flags, position), the akukan Sam resource, then optionally a worker-thread memory scan (bit 1: AnimationManagers/Humanoids outside the world list; bit 2: every `DSDeliveryPointInfoResource` and MULE camp locator with its world position). Ends with `[census] done tag=<tag>`.
+* `action pose_dump <tag> <frames> <delay_ms>`: Sam's (tag >= 1000: census body tag-1000) AnimationManager, its resource, SkinnedModel and model resource plus the buffers they point to, on consecutive ticks, to `automation\out\pose-<tag>-<n>.bin`.
+* `action pose_scan <tag>`: worker thread; world-space float/double triples near Sam and references to his Skeleton, to `posescan-<tag>.bin`.
+* `action look_at_body <index> <distance>`: teleport (mode 1) so census body `index` stands `distance` m ahead of Sam.
+* `action snap_teleport <x> <y> [z]`: PlaceOn mode 2 (snap to the topmost surface).
+
+Scenarios: `anim-census-discover`, `anim-census-mule`, `anim-census-tour`, `anim-census-tour2`.
+
+### Real partner body (`real_probe`, `real_spawn`, `real_remove`, `real_names`, `real_stats`, `real_mirror`, `real_control`; scenarios only)
+
+`native/mod/real_body.cpp`, mechanism and evidence in [real-partner-body.md](real-partner-body.md). Needs the pose
+hook, which is installed at start-up only with `session.ini partner_body=real` or `pose_hook=1` (scenario line
+`ini pose_hook=1`).
+
+* `action real_probe`: the player's own resource reference (path key, GUID byte order compared with
+  `ds_player_character`'s decoded GUID), the streaming manager, Sam's SkinnedModel and skeleton. Reads only.
+* `action real_spawn <body id> <distance m> <mirror 0/1>`: loads a body from `body_table.cpp` (1 Sam, 2 porter,
+  3 Fragile, 4 Die-Hardman, 5 Cliff, ...) by path + GUID and stands it `distance` m ahead of Sam facing him (a
+  negative distance: behind him, facing his way). Mirror 1: it copies Sam's live pose.
+* `action real_mirror <0/1>`, `action real_remove`, `action real_names` (77 joint names, Sam vs the body),
+  `action real_stats` (hook counters, latch, partner-vs-published angle check).
+* `action real_control <n>`: the n-th streamed-out collectors item through the same fake path+GUID reference
+  (a control for the load mechanism; holograms are refused afterwards because they have no SkinnedModel).
+
+Scenarios: `real-body-diag`, `real-body-tour` (solo), `echo-real-100`, `echo-real-fragile-100` (role echo).
+
 ## Byte-check table
 
 | Check | RVA | Gates |

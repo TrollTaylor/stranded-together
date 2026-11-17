@@ -1,0 +1,39 @@
+# Real partner body, load diagnostics (docs/real-partner-body.md):
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario real-body-diag -SeedSaves complete-100
+# real_control loads a streamed-out collectors hologram through the same fake path+GUID
+# reference the real body uses (control: the mechanism), then the real body itself.
+role solo
+timeout 300
+ini pose_hook=1
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+wait 1500
+action real_probe
+action real_control 0
+waitlog 30 \[real\] ('control' is live|.*refused|.*did not load|.*cancelled|spawn failed|teardown)
+wait 1500
+screenshot 20-control
+action real_remove
+action real_spawn 1 4 0
+waitlog 30 \[real\] ('sam' is live|.*refused|.*did not load|.*cancelled|spawn failed|teardown)
+wait 2000
+screenshot 21-sam-own-pose
+action real_names
+action real_mirror 1
+wait 1500
+screenshot 22-sam-mirror
+action real_stats
+action real_remove
+action real_spawn 2 4 1
+waitlog 30 \[real\] ('porter' is live|.*refused|.*did not load|.*cancelled|spawn failed|teardown)
+wait 1500
+screenshot 23-porter-mirror
+action real_stats
+action real_remove
+quit

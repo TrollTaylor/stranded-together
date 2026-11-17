@@ -36,7 +36,8 @@ extern float last_heal, last_hours;
 extern bool last_cycle;
 extern std::uintptr_t last_ping_entity;
 extern int last_ping_index;
-extern std::atomic<int> catalogs, surveys;
+extern std::atomic<int> catalogs, surveys, censuses, real_cmds;
+extern int last_real_op;
 extern int last_catalog_start, last_catalog_count;
 extern double last_catalog_distance;
 }  // namespace st::game::stub
@@ -229,6 +230,18 @@ void TestActions() {
     const std::uint32_t ssur = debug::Queue(debug::Action::clip_survey);
     debug::Drain();
     CHECK(debug::ResultFor(ssur, &r) && r.ok && game::stub::surveys.load() == 1);
+    const std::uint32_t scen = debug::Queue(debug::Action::anim_census);
+    const std::uint32_t spd = debug::Queue(debug::Action::pose_dump);
+    const std::uint32_t sps = debug::Queue(debug::Action::pose_scan);
+    const std::uint32_t sla = debug::Queue(debug::Action::look_at_body);
+    debug::Drain();
+    CHECK(debug::ResultFor(scen, &r) && r.ok && debug::ResultFor(spd, &r) && r.ok && debug::ResultFor(sps, &r) && r.ok &&
+          debug::ResultFor(sla, &r) && r.ok && game::stub::censuses.load() == 4);
+    const std::uint32_t srp = debug::Queue(debug::Action::real_probe);
+    const std::uint32_t srm = debug::Queue(debug::Action::real_mirror);
+    debug::Drain();
+    CHECK(debug::ResultFor(srp, &r) && r.ok && debug::ResultFor(srm, &r) && r.ok && game::stub::real_cmds.load() == 2 &&
+          game::stub::last_real_op == 6);
 
     debug::Request e;
     e.action = debug::Action::set_echo_tuning;

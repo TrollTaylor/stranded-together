@@ -1,0 +1,53 @@
+# Real partner body, step 2b: the echo-real-100 run with Fragile as the body (docs/real-partner-body.md).
+# Same steps; partner_character=fragile.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario echo-real-fragile-100 -SeedSaves complete-100
+# Joint frames go through the STJ1 encode -> decode path (what a peer would receive), into a
+# time-keyed ring sampled on the same timeline as the transform. Same prologue as echo-holo-100.
+role echo
+timeout 360
+ini partner_body=real
+ini partner_character=fragile
+ini echo_delay_s=2.0
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+?screenshot 01-title
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[sync\] partner body: real
+wait 3000
+screenshot 03-control
+action real_stats
+# walk ~6 s; the partner follows 2 s behind, out of view
+pad none 6000 ly=32767
+waitlog 5 pad none 6000 ly=32767 -> ok: .*player moved ([3-9]|[1-9][0-9]+)\.[0-9]+ m
+screenshot 04-walked
+# turn the camera round to look back along the path
+pad none 1300 rx=32767
+screenshot 05-looking-back
+# walk towards the camera: the partner trails behind Sam, in view; frames 0.3 s apart while walking
+pad none 1200 ly=-32767 keep
+screenshot 06-trailing-a
+wait 200
+screenshot 06-trailing-b
+wait 200
+screenshot 06-trailing-c
+wait 200
+screenshot 06-trailing-d
+wait 200
+screenshot 06-trailing-e
+action real_stats
+wait 200
+screenshot 06-trailing-f
+wait 200
+screenshot 06-trailing-g
+pad none 0
+# standing: the partner arrives within 2 s and stops in Sam's idle
+wait 3000
+screenshot 09-stopped
+action real_stats
+action log_status
+quit

@@ -264,7 +264,17 @@ std::string SessionIniText(const SessionOptions& o) {
     if (o.second_instance) s += "second_instance=1\n";
     if (o.frame_cap) s += "frame_cap=" + std::to_string(o.frame_cap) + "\n";
     if (!o.local_window.empty()) s += "local_window=" + o.local_window + "\n";
+    for (const std::string& line : o.extra) s += line + "\n";
     return s;
+}
+
+bool ScenarioIniKeyAllowed(const std::string& key) {
+    static const char* const kAllowed[] = {"partner_body", "partner_character", "partner_holo", "partner_marker", "partner_voice",
+                                           "partner_activate", "pose_hook", "echo_delay_s", "echo_offset_m", "send_hz",
+                                           "interp_delay_ms"};
+    for (const char* k : kAllowed)
+        if (key == k) return true;
+    return false;
 }
 
 // ------------------------------------------------------------------ scenarios
@@ -303,6 +313,16 @@ bool ParseScenario(const std::string& text, Scenario* out, std::string* error) {
             out->role = words[1];
             continue;
         }
+        if (verb == "ini") {
+            const std::string kv = automation::detail::Rest(line, 1);
+            const auto eq = kv.find('=');
+            const std::string key = eq == std::string::npos ? "" : Trim(kv.substr(0, eq));
+            const std::string val = eq == std::string::npos ? "" : Trim(kv.substr(eq + 1));
+            if (key.empty() || val.empty() || val.find_first_of("\r\n") != std::string::npos) return fail("ini <key>=<value>");
+            if (!ScenarioIniKeyAllowed(key)) return fail("ini: key '" + key + "' is not allowed in a scenario");
+            out->ini.push_back(key + "=" + val);
+            continue;
+        }
         if (verb == "graphics") {
             if (words.size() != 2 || words[1] != "low") return fail("graphics low");
             out->low_graphics = true;
@@ -317,7 +337,7 @@ bool ParseScenario(const std::string& text, Scenario* out, std::string* error) {
         const auto words2 = automation::detail::Split(line);
         const std::string verb2 = automation::detail::Lower(words2[0]);
         if (st.target != 0 && !verb2.empty() && verb2[0] == '@') return fail("one @ prefix per step");
-        if (st.target != 0 && (verb2 == "role" || verb2 == "timeout" || verb2 == "graphics" || verb2 == "sleep" || verb2 == "note"))
+        if (st.target != 0 && (verb2 == "role" || verb2 == "timeout" || verb2 == "graphics" || verb2 == "sleep" || verb2 == "note" || verb2 == "ini"))
             return fail(verb2 + " cannot take a @guest / @both prefix");
         if (st.target == 2 && verb2 != "waitready" && (verb2 == "waitlog" || verb2 == "until"))
             return fail("@both: only mod commands and waitready");

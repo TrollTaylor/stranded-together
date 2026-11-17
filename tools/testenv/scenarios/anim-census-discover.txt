@@ -1,0 +1,32 @@
+# Animated-body census, run 1 (anim_census.cpp):
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario anim-census-discover -SeedSaves complete-100
+# At the save's start (Mountain Knot garage): census of every animated body in the world list,
+# then a memory scan for AnimationManagers/Humanoids outside the list and for named places
+# (delivery points, MULE camp locators) with their world positions. Sam's pose memory: two
+# dumps standing still, a world-space scan, two dumps while walking.
+role solo
+timeout 360
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+pad none 1500 ly=32767
+wait 2000
+screenshot 01-start
+action anim_census 0 1 3
+action pose_dump 10 2 0
+wait 1000
+action pose_dump 11 1 0
+waitlog 200 \[census\] done tag=1
+action pose_scan 12
+waitlog 150 \[pose\] scan done tag=12
+action pose_dump 20 3 1200
+pad none 3000 ly=32760
+wait 500
+action pose_dump 21 1 0
+screenshot 02-after-walk
+quit

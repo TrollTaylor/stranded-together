@@ -1,0 +1,60 @@
+# Animated-body census, run 3 (anim_census.cpp): a tour of Central (area 200) with a census and
+# screenshots at each stop. Coordinates are the game's own DSDeliveryPointInfoResource positions
+# (logged by anim-census-mule). Snap teleports (PlaceOn mode 2) land on the topmost surface.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario anim-census-tour -SeedSaves complete-100
+role solo
+timeout 360
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+pad none 1000 ly=32767
+wait 1500
+# Weather Station (where the friendly porters were heading)
+action snap_teleport 36.47 -73.98 0
+wait 12000
+action anim_census 400 31 0
+screenshot 31-weather-station
+?action look_at_body 0 4
+?wait 2500
+?screenshot 31b-weather-station-body0
+# Lake Knot City
+action snap_teleport 2587.29 2013.84 0
+wait 12000
+action anim_census 400 32 0
+screenshot 32-lake-knot
+?action look_at_body 0 4
+?wait 2500
+?screenshot 32b-lake-knot-body0
+# Distribution Center South of Lake Knot City
+action snap_teleport 1054.34 409.51 0
+wait 12000
+action anim_census 400 33 0
+screenshot 33-dc-south-lake-knot
+?action look_at_body 0 4
+?wait 2500
+?screenshot 33b-dc-body0
+# South Knot City
+action snap_teleport 1378.90 -1284.69 0
+wait 12000
+action anim_census 400 34 0
+screenshot 34-south-knot
+?action look_at_body 0 4
+?wait 2500
+?screenshot 34b-south-knot-body0
+# MULE Camp Southwest of Lake Knot City (post 540)
+action snap_teleport 1517.90 992.00 0
+wait 12000
+action anim_census 400 35 0
+screenshot 35-mule-camp
+?action look_at_body 0 6
+?wait 2500
+?screenshot 35b-mule-camp-body0
+?action look_at_body 1 6
+?wait 2500
+?screenshot 35c-mule-camp-body1
+quit

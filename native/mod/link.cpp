@@ -66,6 +66,17 @@ Rx g_queue[64];
 unsigned g_q_head = 0, g_q_count = 0;
 std::uint32_t g_last_rx_seq = 0;
 bool g_have_rx_seq = false;
+// Joint frames (STJ1): a small queue of their own (each ~1.3 KB decoded), own seq state.
+struct RxJ {
+    wire::JointFrame f;
+    std::uint64_t ms;
+    std::uint32_t generation;
+};
+constexpr unsigned kJQueue = 8;
+RxJ g_jqueue[kJQueue];
+unsigned g_jq_head = 0, g_jq_count = 0;
+std::uint32_t g_last_rx_jseq = 0;
+bool g_have_rx_jseq = false;
 
 volatile LONG64 g_rx_frames = 0, g_tx_frames = 0;
 volatile long g_state = static_cast<long>(lk::LinkState::off);
@@ -141,9 +152,11 @@ void LogEvents(const lk::Event* events, unsigned count) noexcept {
 }
 
 void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::Endpoint& from) noexcept {
-    constexpr unsigned kMaxFrames = 32, kMaxEvents = 16;
+    constexpr unsigned kMaxFrames = 32, kMaxEvents = 16, kMaxJoints = 2;
     wire::Pose poses[kMaxFrames];
     unsigned pose_count = 0;
+    static thread_local wire::JointFrame joints[kMaxJoints];  // transport thread only
+    unsigned joint_count = 0;
     lk::Event events[kMaxEvents];
     unsigned event_count = 0;
     const std::uint64_t now = NowMs();
@@ -164,6 +177,8 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
                 if (pose_count < kMaxFrames && wire::DecodePose(m.data, m.size, p)) {
                     poses[pose_count++] = p;
                     any_pose = true;
+                } else if (joint_count < kMaxJoints && wire::DecodeJoints(m.data, m.size, joints[joint_count])) {
+                    ++joint_count;
                 }
             } else if (m.type == static_cast<std::uint8_t>(lk::MsgType::close)) {
                 g_session.OnPeerClose(now);
@@ -179,12 +194,26 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
 
     if (g_use_steam && new_session && g_host && committed.address) g_steam.set_peer(lab::SteamIdOf(committed));
 
-    if (pose_count || new_session) {
+    if (pose_count || joint_count || new_session) {
         AcquireSRWLockExclusive(&g_rx);
         if (new_session) {
             g_q_count = 0;
             g_have_rx_seq = false;
+            g_jq_count = 0;
+            g_have_rx_jseq = false;
             ++g_generation;
+        }
+        for (unsigned i = 0; i < joint_count; ++i) {
+            const wire::JointFrame& f = joints[i];
+            if (g_have_rx_jseq && static_cast<std::int32_t>(f.seq - g_last_rx_jseq) <= 0) continue;
+            g_last_rx_jseq = f.seq;
+            g_have_rx_jseq = true;
+            RxJ& slot = g_jqueue[(g_jq_head + g_jq_count) % kJQueue];
+            slot.f = f;
+            slot.ms = now;
+            slot.generation = g_generation;
+            if (g_jq_count < kJQueue) ++g_jq_count;
+            else g_jq_head = (g_jq_head + 1) % kJQueue;
         }
         for (unsigned i = 0; i < pose_count; ++i) {
             const wire::Pose& p = poses[i];
@@ -370,6 +399,40 @@ bool SendPose(const wire::Pose& pose) noexcept {
     ReleaseSRWLockExclusive(&g_tx);
     if (sent) InterlockedIncrement64(&g_tx_frames);
     return sent;
+}
+
+bool SendPoseAndJoints(const wire::Pose& pose, const wire::JointFrame& joints) noexcept {
+    std::uint8_t frame[wire::kPoseFrameSize];
+    const std::size_t n = wire::EncodePose(pose, frame);
+    std::uint8_t jbuf[wire::kMaxJointFrameSize];
+    const std::size_t jn = wire::EncodeJoints(joints, jbuf, sizeof(jbuf));
+    bool sent = false;
+    AcquireSRWLockExclusive(&g_tx);
+    if (g_session.CanSendData()) {
+        lk::BodyWriter w(g_body, sizeof(g_body));
+        if (w.Add(lk::MsgType::frame, frame, n)) {
+            if (jn) w.Add(lk::MsgType::frame, jbuf, jn);  // no room: the pose alone still goes
+            sent = g_session.SendData(g_body, w.size(), NowMs());
+        }
+    }
+    ReleaseSRWLockExclusive(&g_tx);
+    if (sent) InterlockedIncrement64(&g_tx_frames);
+    return sent;
+}
+
+bool PopJoints(wire::JointFrame& out, std::uint64_t& receive_ms, std::uint32_t& generation) noexcept {
+    bool ok = false;
+    AcquireSRWLockExclusive(&g_rx);
+    if (g_jq_count) {
+        out = g_jqueue[g_jq_head].f;
+        receive_ms = g_jqueue[g_jq_head].ms;
+        generation = g_jqueue[g_jq_head].generation;
+        g_jq_head = (g_jq_head + 1) % kJQueue;
+        --g_jq_count;
+        ok = true;
+    }
+    ReleaseSRWLockExclusive(&g_rx);
+    return ok;
 }
 
 bool PopPose(wire::Pose& out, std::uint64_t& receive_ms, std::uint32_t& generation) noexcept {

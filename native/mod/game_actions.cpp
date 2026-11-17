@@ -11,7 +11,9 @@
 #include <cstring>
 
 #include "game_api.hpp"
+#include "anim_census.hpp"
 #include "holo_catalog.hpp"
+#include "real_body.hpp"
 #include "log.hpp"
 
 namespace st::game {
@@ -868,6 +870,7 @@ void ActionsTick(double now_ms) noexcept {
     EnsureResolved();
     RunVerify();
     catalog::Tick(now_ms);
+    census::Tick(now_ms);
 }
 
 bool StartHoloCatalog(int start, int count, double distance_m, char* msg, std::size_t cap) noexcept {
@@ -875,6 +878,18 @@ bool StartHoloCatalog(int start, int count, double distance_m, char* msg, std::s
 }
 
 bool StartClipSurvey(char* msg, std::size_t cap) noexcept { return catalog::StartClipSurvey(msg, cap); }
+
+bool StartAnimCensus(double radius_m, int tag, int scan, char* msg, std::size_t cap) noexcept {
+    return census::StartAnimCensus(radius_m, tag, scan, msg, cap);
+}
+bool PoseDump(int tag, int frames, double delay_ms, char* msg, std::size_t cap) noexcept {
+    return census::PoseDump(tag, frames, delay_ms, msg, cap);
+}
+bool StartPoseScan(int tag, char* msg, std::size_t cap) noexcept { return census::StartPoseScan(tag, msg, cap); }
+bool LookAtBody(int index, double dist_m, char* msg, std::size_t cap) noexcept { return census::LookAt(index, dist_m, msg, cap); }
+bool RealBodyCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept {
+    return realbody::DebugCommand(op, v, msg, cap);
+}
 
 void ReadDiagnostics(Diagnostics* d) noexcept {
     *d = Diagnostics{};

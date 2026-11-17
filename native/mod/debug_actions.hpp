@@ -38,6 +38,18 @@ enum class Action : std::uint8_t {
     copy_diagnostics,     // status + game diagnostics to the clipboard and the log
     holo_catalog,         // v[0] = first index, v[1] = count, v[2] = distance in front of Sam (m, 0 = default)
     clip_survey,          // loaded animation clips with root motion / on Sam's skeleton, to the log
+    anim_census,          // v[0] = radius m (0 = all), v[1] = tag, v[2] = scan bits (1 anim/humanoid, 2 places)
+    pose_dump,            // v[0] = tag, v[1] = frames (1..8), v[2] = delay ms
+    pose_scan,            // v[0] = tag: world-space float triples near Sam + Skeleton refs (worker thread)
+    look_at_body,         // v[0] = index in the last census, v[1] = distance m (0 = 4 m)
+    snap_teleport,        // v = x, y, z (z 0 = 500): PlaceOn mode 2 (snap to the topmost surface)
+    real_probe,           // real body (docs/real-partner-body.md): player ref path/GUID order, manager, Sam's model
+    real_spawn,           // v[0] = body id (body_table), v[1] = distance m, v[2] = 1 mirror Sam's live pose
+    real_remove,          // remove the debug real body
+    real_names,           // Sam's and the body's 77 joint names
+    real_stats,           // pose hook counters + partner-vs-published check
+    real_mirror,          // v[0] = 1 on / 0 off: the debug body copies Sam's live pose
+    real_control,         // v[0] = n: the n-th streamed-out collectors item through the same path+GUID route (control)
     count
 };
 

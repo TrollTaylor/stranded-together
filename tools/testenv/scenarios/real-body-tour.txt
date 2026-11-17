@@ -1,0 +1,103 @@
+# Real partner body, step 1 (docs/real-partner-body.md):
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario real-body-tour -SeedSaves complete-100
+# P0: real_probe reads the player's own resource reference (path key format, GUID byte order,
+#     streaming manager). P1: a solid cutscene-actor body (body id 1 = Sam in the porter suit,
+#     ds/entities/cinematics/demo_sam_clean) is loaded by path + GUID and stood 4 m ahead of Sam
+#     with its own pose. P2: mirror on: the body copies Sam's live pose through the animate hook,
+#     screenshots while Sam stands and while he walks (the pad stays held between shots).
+role solo
+timeout 360
+ini pose_hook=1
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+wait 1500
+screenshot 01-control
+action real_probe
+action real_stats
+action real_spawn 1 4 0
+waitlog 30 \[real\] ('sam' is live|.*refused|.*did not load|.*cancelled|spawn failed|teardown)
+wait 1500
+screenshot 10-sam-own-pose
+action real_names
+wait 2500
+action real_stats
+action real_mirror 1
+wait 1500
+screenshot 11-mirror-idle
+action real_stats
+# walk towards the camera: Sam turns round, the body (4 m behind him now) walks in place
+pad none 900 ly=-32767 keep
+screenshot 12-mirror-walk-a
+wait 250
+screenshot 12-mirror-walk-b
+wait 250
+screenshot 12-mirror-walk-c
+wait 250
+screenshot 12-mirror-walk-d
+action real_stats
+pad none 0
+wait 2000
+screenshot 13-mirror-stopped
+action real_stats
+action real_remove
+wait 1000
+screenshot 14-removed
+pad none 1300 ly=32767
+wait 600
+action real_spawn 2 5 1
+waitlog 30 \[real\] ('porter' is live|.*refused|.*did not load|.*cancelled|spawn failed|teardown)
+wait 1500
+screenshot 20-porter-idle
+pad none 700 ly=-32767 keep
+screenshot 20-porter-walk-a
+wait 200
+screenshot 20-porter-walk-b
+pad none 0
+action real_stats
+action real_remove
+pad none 1300 ly=32767
+wait 600
+action real_spawn 3 5 1
+waitlog 30 \[real\] ('fragile' is live|.*refused|.*did not load|.*cancelled|spawn failed|teardown)
+wait 1500
+screenshot 30-fragile-idle
+pad none 700 ly=-32767 keep
+screenshot 30-fragile-walk-a
+wait 200
+screenshot 30-fragile-walk-b
+pad none 0
+action real_stats
+action real_remove
+pad none 1300 ly=32767
+wait 600
+action real_spawn 4 5 1
+waitlog 30 \[real\] ('diehardman' is live|.*refused|.*did not load|.*cancelled|spawn failed|teardown)
+wait 1500
+screenshot 40-diehardman-idle
+pad none 700 ly=-32767 keep
+screenshot 40-diehardman-walk-a
+wait 200
+screenshot 40-diehardman-walk-b
+pad none 0
+action real_stats
+action real_remove
+pad none 1300 ly=32767
+wait 600
+action real_spawn 5 5 1
+waitlog 30 \[real\] ('cliff' is live|.*refused|.*did not load|.*cancelled|spawn failed|teardown)
+wait 1500
+screenshot 50-cliff-idle
+pad none 700 ly=-32767 keep
+screenshot 50-cliff-walk-a
+wait 200
+screenshot 50-cliff-walk-b
+pad none 0
+action real_stats
+action real_remove
+quit

@@ -910,6 +910,18 @@ bool SpawnBegin(std::uintptr_t item_ptr, std::uint32_t hash, const game::WorldTr
         Set(why, cap, "item %08X has no display entity", hash);
         return false;
     }
+    if (!SpawnBeginField(ref, hash, at, s, why, cap)) return false;
+    Set(why, cap, "spawner %p started (ref %s)", s->sp, loaded ? "already loaded" : "streaming");
+    return true;
+}
+
+bool SpawnBeginField(std::uintptr_t ref, std::uint32_t hash, const game::WorldTransform& at, Spawn* s, char* why,
+                     std::size_t cap) {
+    *s = Spawn{};
+    if (!Resolve()) {
+        Set(why, cap, "%s", g_fn.why);
+        return false;
+    }
     void* sp = nullptr;
     if (!CallCreate(g_fn.create, &sp, &at, ref)) {
         Disable("CreateSpawner");
@@ -932,7 +944,7 @@ bool SpawnBegin(std::uintptr_t item_ptr, std::uint32_t hash, const game::WorldTr
     }
     s->sp = sp;
     s->hash = hash;
-    Set(why, cap, "spawner %p started (ref %s)", sp, loaded ? "already loaded" : "streaming");
+    Set(why, cap, "spawner %p started", sp);
     return true;
 }
 

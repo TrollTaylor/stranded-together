@@ -138,4 +138,157 @@ Quat Slerp(const Quat& a, const Quat& bin, float t) noexcept {
     return Quat{wa * a.x + wb * b.x, wa * a.y + wb * b.y, wa * a.z + wb * b.z, wa * a.w + wb * b.w};
 }
 
+// ---------------------------------------------------------------- STJ1
+namespace {
+constexpr float kInvSqrt2 = 0.70710678118f;
+constexpr float kQScale = 16383.0f / kInvSqrt2;
+
+bool FiniteQ(const Quat& q) {
+    return std::isfinite(q.x) && std::isfinite(q.y) && std::isfinite(q.z) && std::isfinite(q.w);
+}
+
+std::uint64_t PackQuat(const Quat& in) {
+    const Quat q = Normalize(in);
+    const float c[4] = {q.x, q.y, q.z, q.w};
+    unsigned big = 0;
+    for (unsigned i = 1; i < 4; ++i)
+        if (std::fabs(c[i]) > std::fabs(c[big])) big = i;
+    const float sign = c[big] < 0 ? -1.0f : 1.0f;
+    std::uint64_t bits = big;
+    unsigned shift = 2;
+    for (unsigned i = 0; i < 4; ++i) {
+        if (i == big) continue;
+        float v = c[i] * sign * kQScale;
+        if (v > 16383.0f) v = 16383.0f;
+        if (v < -16383.0f) v = -16383.0f;
+        const long r = std::lround(v) + 16384;
+        bits |= static_cast<std::uint64_t>(r & 0x7FFF) << shift;
+        shift += 15;
+    }
+    return bits;
+}
+
+Quat UnpackQuat(std::uint64_t bits) {
+    const unsigned big = static_cast<unsigned>(bits & 3);
+    float c[4] = {};
+    unsigned shift = 2;
+    float sum = 0;
+    for (unsigned i = 0; i < 4; ++i) {
+        if (i == big) continue;
+        const long r = static_cast<long>((bits >> shift) & 0x7FFF) - 16384;
+        c[i] = static_cast<float>(r) / kQScale;
+        sum += c[i] * c[i];
+        shift += 15;
+    }
+    c[big] = sum < 1.0f ? std::sqrt(1.0f - sum) : 0.0f;
+    return Normalize(Quat{c[0], c[1], c[2], c[3]});
+}
+}  // namespace
+
+std::size_t EncodeJoints(const JointFrame& f, std::uint8_t* out, std::size_t cap) noexcept {
+    if (!out || f.joint_count == 0 || f.joint_count > kMaxJoints || f.t_count > kMaxJointTranslations) return 0;
+    const std::size_t size = JointFrameSize(f.joint_count, f.t_count);
+    if (cap < size) return 0;
+    std::uint8_t* p = out;
+    std::memcpy(p, kJointMagic, 4);
+    p += 4;
+    Put(p, f.seq);
+    Put(p, f.sender_ms);
+    Put(p, f.layout_hash);
+    Put(p, f.joint_count);
+    Put(p, f.body_id);
+    Put(p, f.flags);
+    Put(p, std::uint8_t{0});
+    for (unsigned j = 0; j < f.joint_count; ++j) {
+        if (!FiniteQ(f.q[j])) return 0;
+        const std::uint64_t b = PackQuat(f.q[j]);
+        for (unsigned k = 0; k < 6; ++k) *p++ = static_cast<std::uint8_t>(b >> (8 * k));
+    }
+    Put(p, f.t_count);
+    for (unsigned i = 0; i < f.t_count; ++i) {
+        if (f.t_joint[i] >= f.joint_count) return 0;
+        Put(p, f.t_joint[i]);
+        for (unsigned a = 0; a < 3; ++a) {
+            if (!std::isfinite(f.t[i][a])) return 0;
+            float v = f.t[i][a] * 10000.0f;
+            if (v > 32767.0f) v = 32767.0f;
+            if (v < -32767.0f) v = -32767.0f;
+            Put(p, static_cast<std::int16_t>(std::lround(v)));
+        }
+    }
+    return static_cast<std::size_t>(p - out);
+}
+
+bool DecodeJoints(const std::uint8_t* data, std::size_t size, JointFrame& out) noexcept {
+    if (!data || size < kJointHeaderSize + 1 || std::memcmp(data, kJointMagic, 4) != 0) return false;
+    const std::uint8_t* p = data + 4;
+    JointFrame f;
+    f.seq = Get<std::uint32_t>(p);
+    f.sender_ms = Get<std::uint32_t>(p);
+    f.layout_hash = Get<std::uint32_t>(p);
+    f.joint_count = Get<std::uint8_t>(p);
+    f.body_id = Get<std::uint8_t>(p);
+    f.flags = Get<std::uint8_t>(p);
+    Get<std::uint8_t>(p);
+    if (f.joint_count == 0 || f.joint_count > kMaxJoints) return false;
+    if (size < kJointHeaderSize + f.joint_count * 6u + 1u) return false;
+    for (unsigned j = 0; j < f.joint_count; ++j) {
+        std::uint64_t b = 0;
+        for (unsigned k = 0; k < 6; ++k) b |= static_cast<std::uint64_t>(*p++) << (8 * k);
+        f.q[j] = UnpackQuat(b);
+    }
+    f.t_count = Get<std::uint8_t>(p);
+    if (f.t_count > kMaxJointTranslations || size != JointFrameSize(f.joint_count, f.t_count)) return false;
+    for (unsigned i = 0; i < f.t_count; ++i) {
+        f.t_joint[i] = Get<std::uint8_t>(p);
+        if (f.t_joint[i] >= f.joint_count) return false;
+        for (unsigned a = 0; a < 3; ++a) f.t[i][a] = static_cast<float>(Get<std::int16_t>(p)) / 10000.0f;
+    }
+    out = f;
+    return true;
+}
+
+void BlendJoints(const JointFrame& a, const JointFrame& b, float t, JointFrame& out) noexcept {
+    if (!(t >= 0.0f)) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    const unsigned n = a.joint_count < b.joint_count ? a.joint_count : b.joint_count;
+    bool same_t = a.t_count == b.t_count;
+    for (unsigned i = 0; same_t && i < a.t_count; ++i) same_t = a.t_joint[i] == b.t_joint[i];
+    float tr[kMaxJointTranslations][3] = {};
+    for (unsigned i = 0; i < b.t_count; ++i)
+        for (unsigned k = 0; k < 3; ++k) tr[i][k] = same_t ? a.t[i][k] + t * (b.t[i][k] - a.t[i][k]) : b.t[i][k];
+    Quat q[kMaxJoints];
+    for (unsigned j = 0; j < n; ++j) {
+        const Quat& qa = a.q[j];
+        Quat qb = b.q[j];
+        if (qa.x * qb.x + qa.y * qb.y + qa.z * qb.z + qa.w * qb.w < 0) qb = Quat{-qb.x, -qb.y, -qb.z, -qb.w};
+        q[j] = Normalize(Quat{qa.x + t * (qb.x - qa.x), qa.y + t * (qb.y - qa.y), qa.z + t * (qb.z - qa.z),
+                              qa.w + t * (qb.w - qa.w)});
+    }
+    // out may alias a or b: everything was computed first.
+    out.seq = b.seq;
+    out.sender_ms = b.sender_ms;
+    out.layout_hash = b.layout_hash;
+    out.body_id = b.body_id;
+    out.flags = b.flags;
+    out.joint_count = static_cast<std::uint8_t>(n);
+    for (unsigned j = 0; j < n; ++j) out.q[j] = q[j];
+    out.t_count = b.t_count;
+    for (unsigned i = 0; i < b.t_count; ++i) {
+        out.t_joint[i] = b.t_joint[i];
+        for (unsigned k = 0; k < 3; ++k) out.t[i][k] = tr[i][k];
+    }
+}
+
+float AngleBetween(const Quat& a, const Quat& b) noexcept {
+    // Relative rotation conj(a) * b, angle = 2 atan2(|xyz|, |w|): exact near 0 (acos is not).
+    const double ax = -a.x, ay = -a.y, az = -a.z, aw = a.w;
+    const double rw = aw * b.w - ax * b.x - ay * b.y - az * b.z;
+    const double rx = aw * b.x + ax * b.w + ay * b.z - az * b.y;
+    const double ry = aw * b.y - ax * b.z + ay * b.w + az * b.x;
+    const double rz = aw * b.z + ax * b.y - ay * b.x + az * b.w;
+    const double v = std::sqrt(rx * rx + ry * ry + rz * rz);
+    return static_cast<float>(2.0 * std::atan2(v, std::fabs(rw)) * 57.29577951308232);
+}
+
 }  // namespace st::wire

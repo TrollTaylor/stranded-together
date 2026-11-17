@@ -1,0 +1,40 @@
+# Animated-body census, run 2 (anim_census.cpp):
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario anim-census-mule -SeedSaves complete-100
+# At the start: census + memory scan (outside-list bodies, named places), Sam's pose scan and
+# dumps (still, walking). Then teleport behind the nearest friendly MULE (census body 0, about
+# 590 m away), census there, screenshots, and dumps of that MULE's animation memory.
+role solo
+timeout 360
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+pad none 1500 ly=32767
+wait 2500
+action anim_census 0 1 3
+action pose_scan 12
+action pose_dump 10 2 0
+waitlog 200 \[census\] done tag=1
+waitlog 150 \[pose\] scan done tag=12
+action pose_dump 20 3 1200
+pad none 3000 ly=32760
+action pose_dump 21 1 0
+action anim_census 0 2 0
+action look_at_body 0 5
+wait 8000
+screenshot 10-mule-a
+action anim_census 300 3 0
+action look_at_body 0 4
+wait 3000
+screenshot 11-mule-b
+action pose_dump 1000 2 0
+wait 2000
+action pose_dump 1001 1 0
+action look_at_body 1 3
+wait 3000
+screenshot 12-mule-c
+quit

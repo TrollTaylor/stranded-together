@@ -47,6 +47,7 @@ const char* PartnerBodyName(PartnerBody b) {
     switch (b) {
         case PartnerBody::marker: return "marker";
         case PartnerBody::echo: return "echo";
+        case PartnerBody::real: return "real";
         default: return "holo";
     }
 }
@@ -102,6 +103,7 @@ Config LoadConfig(const std::wstring& dir) {
             if (v == "holo" || v == "hologram") c.partner_body = PartnerBody::holo;
             else if (v == "marker") c.partner_body = PartnerBody::marker;
             else if (v == "echo") c.partner_body = PartnerBody::echo;
+            else if (v == "real" || v == "solid") c.partner_body = PartnerBody::real;
             else Log("[config] session.ini:%d partner_body '%s' not understood; keeping holo", lineno, v.c_str());
         } else if (k == "partner_holo") {
             // Exactly 8 hex digits = hex, as the mod's log prints HashIds ("0089ABCD"); otherwise
@@ -113,6 +115,10 @@ Config LoadConfig(const std::wstring& dir) {
             if (c.partner_marker < -1 || c.partner_marker > 255) c.partner_marker = -1;
         } else if (k == "partner_voice") {
             c.partner_voice = ParseBool(v);
+        } else if (k == "partner_character") {
+            c.partner_character = v;
+        } else if (k == "pose_hook") {
+            c.pose_hook = ParseBool(v);
         } else if (k == "verbose") {
             c.verbose = ParseBool(v);
         } else if (k == "debug_menu") {
@@ -162,8 +168,9 @@ Config LoadConfig(const std::wstring& dir) {
     if (!c.sandbox_saves.empty() || !c.local_input.empty())
         Log("[config] test save sandbox=%s local_input=%s", c.sandbox_saves.empty() ? "-" : c.sandbox_saves.c_str(),
             c.local_input.empty() ? "-" : c.local_input.c_str());
-    Log("[config] partner_body=%s partner_holo=%08X partner_marker=%d partner_voice=%d", PartnerBodyName(c.partner_body),
-        c.partner_holo, c.partner_marker, c.partner_voice ? 1 : 0);
+    Log("[config] partner_body=%s partner_holo=%08X partner_marker=%d partner_voice=%d partner_character=%s pose_hook=%d",
+        PartnerBodyName(c.partner_body), c.partner_holo, c.partner_marker, c.partner_voice ? 1 : 0,
+        c.partner_character.empty() ? "-" : c.partner_character.c_str(), c.pose_hook ? 1 : 0);
     return c;
 }
 

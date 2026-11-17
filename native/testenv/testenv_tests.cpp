@@ -53,6 +53,8 @@ void CommandParser() {
     Check(Parse("pad none 100", &c) && c.buttons == 0 && Parse("PAD dpad_down 50", &c) && c.buttons == au::kPadDown, "pad none / case");
     Check(!Parse("pad Q 100") && !Parse("pad A") && !Parse("pad A 100 lx=40000") && !Parse("pad A 100 lt=-1") && !Parse("pad A 100 zz=1"),
           "pad rejects unknown buttons / bad axes");
+    Check(Parse("pad none 0 ly=32767 keep", &c) && c.keep && c.ly == 32767 && Parse("pad none 100", &c) && !c.keep && !Parse("pad none 100 keep ly=1"),
+          "pad keep (last word only)");
     Check(Parse("key F9 100", &c) && c.vk == 0x78 && Parse("key esc 10", &c) && c.vk == 0x1B && Parse("key w 10", &c) && c.vk == 'W' &&
               Parse("key 0x41 10", &c) && c.vk == 0x41,
           "key names");
@@ -94,6 +96,17 @@ void ScenarioParser(const std::wstring& dir) {
         Check(s.steps[6].kind == te::StepKind::mod && s.steps[6].text == "quit", "mod commands pass through");
     }
     Check(!te::ParseScenario("timeout 999\nquit\n", &s, &err), "timeout above 360 s refused", err);
+    Check(te::ParseScenario("ini partner_body=real\nini echo_delay_s = 2.0\nquit\n", &s, &err) && s.ini.size() == 2 &&
+              s.ini[0] == "partner_body=real" && s.ini[1] == "echo_delay_s=2.0",
+          "ini lines parse", err);
+    Check(!te::ParseScenario("ini automation_save_root=C:\\x\nquit\n", &s, &err), "ini refuses keys outside the allow-list", err);
+    Check(!te::ParseScenario("ini partner_body\nquit\n", &s, &err), "ini needs key=value", err);
+    {
+        te::SessionOptions so;
+        so.role = "echo";
+        so.extra = {"partner_body=real"};
+        Check(te::SessionIniText(so).find("\npartner_body=real\n") != std::string::npos, "ini lines end up in session.ini", "");
+    }
     Check(!te::ParseScenario("waitlog 10 ([\nquit\n", &s, &err), "bad regex refused", err);
     Check(!te::ParseScenario("until 10 1000 x => quit\n", &s, &err), "until cannot repeat quit", err);
     Check(!te::ParseScenario("pad Q 10\n", &s, &err), "bad mod command refused at parse time", err);

@@ -1117,6 +1117,7 @@ int RunGame(Args& a) {
     so.appdir_settings = appdir;
     if (r.scenario.low_graphics) so.frame_cap = 30;  // two games on one GPU: neither renders uncapped
     if (r.g.on) so.local_window = "left";              // the two windows side by side (as the launcher's local test)
+    so.extra = r.scenario.ini;                         // scenario "ini key=value" lines (allow-listed)
     deployed = deployed && te::WriteFileAtomic(r.mod_dir + L"\\session.ini", a.no_mod            ? te::RedirectOnlyIniText(extra_root)
                                                                    : a.sandbox_session ? te::SandboxSessionIniText(sandbox_name, foreign)
                                                                                        : te::SessionIniText(so));

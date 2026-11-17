@@ -50,6 +50,7 @@ struct SessionOptions {
     int port_local = 27555, port_peer = 27556;
     unsigned frame_cap = 0;         // frame_cap=<fps> (graphics low: 30; the mod waits once per frame)
     std::string local_window;       // local_window=left|right (two-game runs: the windows side by side)
+    std::vector<std::string> extra;  // scenario "ini key=value" lines (allow-listed keys only)
 };
 std::string SessionIniText(const SessionOptions& options);
 // The supervisor's rule: automation_foreign_saves=1 only when --seed-saves names a seed and
@@ -94,8 +95,12 @@ struct Scenario {
     std::string role = "solo";
     bool low_graphics = false;  // graphics low
     unsigned timeout_s = 360;
+    std::vector<std::string> ini;  // "ini key=value": extra session.ini lines (partner/pose keys only)
     std::vector<Step> steps;
 };
+// Keys a scenario may add to session.ini with "ini key=value" (nothing that touches saves,
+// automation, isolation or instances).
+bool ScenarioIniKeyAllowed(const std::string& key);
 bool ParseScenario(const std::string& text, Scenario* out, std::string* error);
 // Seconds the supervisor waits for the ack of one mod command.
 unsigned AckTimeoutSeconds(const std::string& mod_command);

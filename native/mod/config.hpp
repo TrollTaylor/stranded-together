@@ -12,9 +12,11 @@ namespace st {
 // solo: debug tools only (in-game menu, logging), no partner and no network.
 enum class Role { none, host, guest, echo, solo };
 enum class Transport { steam, udp };
-// What the partner looks like (docs/partner-hologram.md). Each body falls back to
-// the next one when it cannot be found or spawned: holo -> marker -> echo.
-enum class PartnerBody { holo, marker, echo };
+// What the partner looks like (docs/partner-hologram.md, docs/real-partner-body.md).
+// Each body falls back to the next one when it cannot be found or spawned:
+// real -> holo -> marker -> echo. `real` is a solid character body that plays the
+// other player's real animation (experimental; not the default yet).
+enum class PartnerBody { holo, marker, echo, real };
 
 struct Config {
     bool present = false;          // session.ini existed and parsed
@@ -42,6 +44,8 @@ struct Config {
     std::uint32_t partner_holo = 0;    // collectors item HashId to show (hex or decimal); 0 = automatic
     int partner_marker = -1;           // trace-point prop index for the marker body; -1 = first usable
     bool partner_voice = false;        // also spawn the (invisible) echo next to a holo/marker body as its voice source
+    std::string partner_character;     // partner_body=real: body_table key (sam, porter, fragile, ...); "" = sam
+    bool pose_hook = false;            // install the pose hook even without partner_body=real (debug spawns)
 
     // Debug
     bool verbose = false;

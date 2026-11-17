@@ -15,6 +15,8 @@
 //   pad <buttons> <ms> [lx= ly= rx= ry= lt= rt=]
 //                                  virtual XInput pad 0: hold buttons (A+START, DPAD_DOWN,
 //                                  none, ...) and sticks for ms, then idle (still connected)
+//                                  ("keep" as the last word: the pad stays held afterwards,
+//                                  so screenshots can be taken mid-walk; release with pad none 0)
 //   padoff                         virtual pad disconnected again
 //   key <name|0xVK> <ms>           WM_KEYDOWN/WM_KEYUP posted to the game window (window
 //                                  procedure only: posted keys never reach WH_KEYBOARD hooks)
@@ -79,6 +81,7 @@ struct Command {
     std::int16_t lx = 0, ly = 0, rx = 0, ry = 0;
     std::uint8_t lt = 0, rt = 0;
     std::uint32_t vk = 0;
+    bool keep = false;             // pad ... keep: the pad stays in this state after the hold
 };
 
 namespace detail {
@@ -232,6 +235,10 @@ inline bool ParseCommand(const std::string& raw, Command* out, std::string* erro
         if (!detail::Uint(w[2], 0, kMaxMs, &out->ms)) return *error = "pad: hold time 0..600000 ms", false;
         for (std::size_t i = 3; i < w.size(); ++i) {
             const std::string kv = detail::Lower(w[i]);
+            if (kv == "keep" && i + 1 == w.size()) {
+                out->keep = true;
+                continue;
+            }
             const auto eq = kv.find('=');
             double v = 0;
             const std::string k = eq == std::string::npos ? kv : kv.substr(0, eq);

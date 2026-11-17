@@ -94,7 +94,7 @@ Commands (one per line in `automation\in\*.cmd`, files in name order):
 | `wait <ms>` | sleep |
 | `log <text>` | `[auto] <text>` in stranded_together.log |
 | `screenshot <name>` | the back buffer being presented -> `out\<name>.png` (menu open or closed) |
-| `pad <buttons> <ms> [lx= ly= rx= ry= lt= rt=]` | virtual XInput pad 0: `A`, `A+START`, `DPAD_DOWN`, `none`...; then idle but connected. Result: pad reads, `player moved <m> m (speed <v>)` (x/y distance of the local player over the hold) and, for holds >= 600 ms, the `game pad state` 300 ms in (see "Pad input in gameplay") |
+| `pad <buttons> <ms> [lx= ly= rx= ry= lt= rt=]` | virtual XInput pad 0: `A`, `A+START`, `DPAD_DOWN`, `none`...; then idle but connected (a last word `keep`: the pad stays held after the command, for mid-walk screenshots; `pad none 0` releases it). Result: pad reads, `player moved <m> m (speed <v>)` (x/y distance of the local player over the hold) and, for holds >= 600 ms, the `game pad state` 300 ms in (see "Pad input in gameplay") |
 | `padoff` | virtual pad disconnected |
 | `key <F9\|esc\|w\|0xNN> <ms>` | `WM_KEYDOWN/UP` posted to the game window (window procedure only; posted keys never reach `WH_KEYBOARD` hooks, so most game keys will not react) |
 | `menu open\|close\|toggle` | the F9 debug menu |
@@ -382,6 +382,9 @@ before/after, no violation, game folder restored (`restored.txt` ok), no `error.
 
 ```
 role solo|echo|host          session role (default solo); host: a second (guest) game too ("Two games")
+ini <key>=<value>            an extra session.ini line; only partner_body, partner_character, partner_holo,
+                             partner_marker, partner_voice, partner_activate, pose_hook, echo_delay_s,
+                             echo_offset_m, send_hz, interp_delay_ms (testenv_core ScenarioIniKeyAllowed)
 graphics low                 30 fps cap, appdir settings.cfg + profile overrides (see "Two games")
 @guest <step>                the step goes to the guest game (role host); @both <mod command> to both
 timeout <s>                  steps limit, 30..360 (default 360). The game's whole lifetime is capped
@@ -414,6 +417,9 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   1 s probes until Sam moves (the world loads 5-20 s after the player entity appears), 6 s walk
   (>= 3 m), camera round, 3 x 1.5 s towards the camera with screenshots `06-trailing-a` ..
   `08-trailing-c`, `09-stopped`, `log_status`, `10-debug-menu`.
+* `real-body-tour.txt`, `real-body-diag.txt`, `echo-real-100.txt`, `echo-real-fragile-100.txt`: the real
+  partner body (docs/real-partner-body.md). They use `pad ... keep` (the pad stays held after the command, so
+  screenshots are taken mid-walk; `pad none 0` releases it).
 * `boot.txt`: no input, a screenshot every 10-15 s for 80 s (title flow discovery).
 * `alive.txt`: supervisor steps only (works with `-NoMod`): watch the game for 45 s.
 * `fake-smoke.txt`: the ctest's fake game.

@@ -94,6 +94,12 @@ struct Spawn {
 // Starts loading `item_ptr`'s DisplayEntityResource at `at` (item read this frame).
 bool SpawnBegin(std::uintptr_t item_ptr, std::uint32_t hash, const game::WorldTransform& at, Spawn* s, char* why,
                 std::size_t cap);
+// The same for a raw StreamingRef field (address of the pointer to its {proxy, flags}
+// box): used by the real body (real_body.cpp), whose reference is built from a path +
+// GUID. The spawner copies the reference in its constructor, so `field` only has to
+// stay valid during this call. `tag` is only logged.
+bool SpawnBeginField(std::uintptr_t field, std::uint32_t tag, const game::WorldTransform& at, Spawn* s, char* why,
+                     std::size_t cap);
 enum class SpawnState : std::uint8_t {
     loading,    // still streaming
     realized,   // loaded and realized this call: s.e is the entity (may be null: nothing realized)

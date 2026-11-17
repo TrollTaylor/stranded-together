@@ -1165,7 +1165,7 @@ Outcome DoPad(const Command& c) {
     } else {
         SleepFor(c.ms);
     }
-    overlay::input::SetVirtualPad(overlay::input::PadState{true});  // idle, still connected
+    if (!c.keep) overlay::input::SetVirtualPad(overlay::input::PadState{true});  // idle, still connected
     const unsigned long reads = overlay::input::GetStats().virtual_pad_reads - reads0;
     const debug::Snapshot after = debug::GetSnapshot();
     char moved[96] = "";
@@ -1174,7 +1174,7 @@ Outcome DoPad(const Command& c) {
         std::snprintf(moved, sizeof(moved), "; player moved %.2f m (speed %.2f)", std::sqrt(dx * dx + dy * dy),
                       static_cast<double>(after.speed));
     }
-    return Fmt(true, "buttons=0x%04X held %u ms; the game read the pad %lu times%s%s%s", c.buttons, c.ms, reads, moved,
+    return Fmt(true, "buttons=0x%04X held %u ms%s; the game read the pad %lu times%s%s%s", c.buttons, c.ms, c.keep ? " (kept)" : "", reads, moved,
                seen.empty() ? "" : "; game pad state: ", seen.c_str());
 }
 

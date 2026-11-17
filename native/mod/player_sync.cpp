@@ -15,6 +15,7 @@
 #include "partner_holo.hpp"
 #include "partner_source.hpp"
 #include "pose_wire.hpp"
+#include "real_body.hpp"
 #include "status.hpp"
 #include "steam_owner.hpp"
 
@@ -78,6 +79,15 @@ public:
         offset_ = std::fabs(d) > 250.0 ? target_offset_ : offset_ + d * 0.05;
     }
     bool Empty() const { return count_ == 0; }
+    // The sender-clock time Sample() plays at (joint frames use the same timeline).
+    double PlayTime(double now_ms, double delay_ms) const { return now_ms - offset_ - delay_ms; }
+    // A sender timestamp on the ring's unwrapped axis (for frames that ride with the pose).
+    double Unwrapped(std::uint32_t sender32) const {
+        std::uint32_t w = wraps_;
+        if (count_ && sender32 < last_sender_ && last_sender_ - sender32 > 0x80000000u) ++w;
+        else if (count_ && sender32 > last_sender_ && sender32 - last_sender_ > 0x80000000u && w) --w;
+        return static_cast<double>((static_cast<std::int64_t>(w) << 32) | sender32);
+    }
     bool Sample(double now_ms, double delay_ms, double (&pos)[3], wire::Quat& q) const {
         if (!count_) return false;
         const double t = now_ms - offset_ - delay_ms;
@@ -146,7 +156,7 @@ double g_local_asleep_since_ms = 0;  // 0 while Sam is awake
 // marker: a trace-point prop, created synchronously into g_slot;
 // echo:   the echo resource (invisible, voice-capable), created into g_slot.
 // The body in use walks down g_chain when one cannot be found or spawned.
-PartnerBody g_chain[3] = {PartnerBody::holo, PartnerBody::marker, PartnerBody::echo};
+PartnerBody g_chain[4] = {PartnerBody::holo, PartnerBody::marker, PartnerBody::echo, PartnerBody::echo};
 unsigned g_chain_len = 3;
 unsigned g_chain_pos = 0;
 
@@ -283,21 +293,25 @@ SlotSpawnResult SlotSpawn(Slot& s, partner::Kind kind, const WorldTransform& at,
 }
 
 // ---------------------------------------------------------------- body
-bool BodyPresent() { return g_slot.e != nullptr || holo::GetPhase() != holo::Phase::idle; }
+bool RealOurs() { return realbody::GetOwner() == realbody::Owner::partner && realbody::GetPhase() != realbody::Phase::idle; }
+bool BodyPresent() { return g_slot.e != nullptr || holo::GetPhase() != holo::Phase::idle || RealOurs(); }
 
 // The entity that is the partner's body right now (validated alive), or nullptr.
 Entity* BodyEntity() {
     if (Entity* h = holo::LiveEntity()) return h;
+    if (realbody::GetOwner() == realbody::Owner::partner)
+        if (Entity* r = realbody::LiveEntity()) return r;
     return SlotAlive(g_slot) ? g_slot.e : nullptr;
 }
 
 bool OurEntity(Entity* e) {
-    return e && (e == g_slot.e || e == g_voice.e || e == holo::LiveEntity());
+    return e && (e == g_slot.e || e == g_voice.e || e == holo::LiveEntity() || e == realbody::LiveEntity());
 }
 
 void RemoveBody(const char* why) {
     const bool had = BodyPresent() || g_voice.e;
     holo::Remove(why);
+    if (RealOurs()) realbody::Remove(why);
     SlotRemove(g_slot, why);
     SlotRemove(g_voice, why);
     if (had) g_remote_state = "none";
@@ -312,6 +326,9 @@ void ReleaseSources() {
 void BuildChain() {
     g_chain_len = 0;
     switch (g_cfg.partner_body) {
+        case PartnerBody::real:
+            g_chain[g_chain_len++] = PartnerBody::real;
+            [[fallthrough]];
         case PartnerBody::holo:
             g_chain[g_chain_len++] = PartnerBody::holo;
             [[fallthrough]];
@@ -331,6 +348,7 @@ void ResetBodyChain() {
     g_spawn_failures = 0;
     g_body_wait_since_ms = 0;
     holo::ResetRejected();
+    realbody::ResetRefused();
 }
 
 void FallBack(const char* why, double now) {
@@ -403,6 +421,33 @@ void TrySpawn(const WorldTransform& at, double now) {
 
     char why[200] = {};
     switch (CurrentBody()) {
+        case PartnerBody::real: {
+            if (realbody::GetPhase() != realbody::Phase::idle) return;  // DriveReal polls it (or a debug body holds the slot)
+            const bodies::Body* want = bodies::FindByKey(g_cfg.partner_character.c_str());
+            if (!want) want = &bodies::Default();
+            const bodies::Body* body = !realbody::Refused(want->id) ? want : !realbody::Refused(bodies::Default().id) ? &bodies::Default() : nullptr;
+            if (!body) {
+                FallBack("every real body was refused", now);
+                return;
+            }
+            switch (realbody::Begin(*body, at, realbody::Owner::partner, now, why, sizeof(why))) {
+                case realbody::BeginResult::started:
+                    g_remote_state = "loading";
+                    return;
+                case realbody::BeginResult::busy:
+                    g_next_spawn_ms = now + 1000;
+                    return;
+                case realbody::BeginResult::unavailable:
+                    FallBack(why, now);
+                    return;
+                case realbody::BeginResult::failed:
+                    Log("[sync] real body spawn failed: %s", why);
+                    if (++g_holo_failures >= 3) FallBack(why, now);
+                    else g_next_spawn_ms = now + 2000;
+                    return;
+            }
+            return;
+        }
         case PartnerBody::holo: {
             if (holo::GetPhase() != holo::Phase::idle) return;  // Poll drives it
             switch (holo::Begin(at, g_cfg.partner_holo, now, why, sizeof(why))) {
@@ -481,6 +526,31 @@ void DriveHolo(double now) {
             if (!holo::Available()) FallBack(why, now);
             else if (++g_holo_failures >= 3) FallBack(why, now);
             else g_next_spawn_ms = now + 1000;  // Begin picks the next item (refused ones are skipped)
+            return;
+    }
+}
+
+// Per frame: drive the asynchronous real body (load -> realize -> validate -> live).
+void DriveReal(double now) {
+    if (!RealOurs()) return;
+    char why[200] = {};
+    switch (realbody::Poll(now, why, sizeof(why))) {
+        case realbody::PollResult::idle:
+        case realbody::PollResult::live:
+            return;
+        case realbody::PollResult::loading:
+            g_remote_state = "loading";
+            return;
+        case realbody::PollResult::became_live:
+            g_remote_state = "visible";
+            g_holo_failures = 0;
+            BodySpawned(now);
+            Log("[sync] partner body: real '%s'", realbody::CurrentBody() ? realbody::CurrentBody()->key : "?");
+            return;
+        case realbody::PollResult::failed:
+            g_remote_state = "failed";
+            if (!realbody::Available()) FallBack(why, now);
+            else g_next_spawn_ms = now + 1000;  // the next Begin skips refused bodies (then falls back)
             return;
     }
 }
@@ -626,9 +696,14 @@ void Init(const Config& config, const std::wstring& mod_dir) noexcept {
     BuildChain();
     g_slot.role = "partner";
     g_voice.role = "partner voice";
-    Log("[sync] init role=%s send_hz=%u interp=%ums activate=%d body=%s%s%s voice=%d%s", RoleName(config.role),
-        config.send_hz, config.interp_delay_ms, config.partner_activate ? 1 : 0, PartnerBodyName(g_chain[0]),
-        g_chain_len > 1 ? " (then " : "", g_chain_len > 2 ? "marker, echo)" : (g_chain_len > 1 ? "echo)" : ""),
+    char chain[64] = {};
+    for (unsigned i = 1; i < g_chain_len; ++i) {
+        std::strncat(chain, i == 1 ? " (then " : ", ", sizeof(chain) - std::strlen(chain) - 1);
+        std::strncat(chain, PartnerBodyName(g_chain[i]), sizeof(chain) - std::strlen(chain) - 1);
+    }
+    if (g_chain_len > 1) std::strncat(chain, ")", sizeof(chain) - std::strlen(chain) - 1);
+    Log("[sync] init role=%s send_hz=%u interp=%ums activate=%d body=%s%s voice=%d%s", RoleName(config.role),
+        config.send_hz, config.interp_delay_ms, config.partner_activate ? 1 : 0, PartnerBodyName(g_chain[0]), chain,
         config.partner_voice ? 1 : 0,
         config.role == Role::echo ? " (echo: your own movement is replayed by the partner body)" : "");
 }
@@ -672,10 +747,14 @@ void Tick() noexcept {
         g_local_since_ms = now;
         ReleaseSources();  // re-validate the resources for the new world
         g_local_valid = false;
-        if (!g_net) g_ring.Reset();
+        if (!g_net) {
+            g_ring.Reset();
+            realbody::ResetFrames();
+        }
     }
     g_local_valid = g_local && game::TryGetTransform(g_local, &g_local_wt);
     g_local_active = g_local && (Flags(g_local) & game::kEntityFlagSleeping) == 0;
+    realbody::Tick(g_local, g_local_active && g_local_valid, now);  // pose capture publication, debug bodies
     if (g_local_active || !g_local) g_local_asleep_since_ms = 0;
     else if (g_local_asleep_since_ms == 0) g_local_asleep_since_ms = now;
 
@@ -702,10 +781,33 @@ void Tick() noexcept {
             p.x = g_local_wt.pos.x, p.y = g_local_wt.pos.y, p.z = g_local_wt.pos.z;
             p.rot = wire::QuatFromMatrix(g_local_wt.rot.m);
             p.speed = g_speed;
+            // Joint pose (STJ1, docs/real-partner-body.md): Sam's captured skeleton pose rides with
+            // the transform (same seq and timestamp). In echo it goes through the full encode ->
+            // decode path, so the played-back animation is exactly what a peer would receive.
+            static wire::JointFrame jf, back;
+            const bool have_joints = realbody::HookInstalled() && realbody::CaptureFrame(&jf);
+            if (have_joints) {
+                jf.seq = p.seq;
+                jf.sender_ms = p.sender_ms;
+                const bodies::Body* mine = bodies::FindByKey(g_cfg.partner_character.c_str());
+                jf.body_id = mine ? mine->id : bodies::Default().id;
+            }
             if (g_net) {
-                link::SendPose(p);
+                if (have_joints) link::SendPoseAndJoints(p, jf);
+                else link::SendPose(p);
             } else if (g_ring.Push(p.sender_ms, now, p.x + g_cfg.echo_offset_m, p.y, p.z, p.rot)) {
                 g_last_remote_ms = now;
+            }
+            if (!g_net && have_joints) {
+                std::uint8_t buf[wire::kMaxJointFrameSize];
+                const std::size_t n = wire::EncodeJoints(jf, buf, sizeof(buf));
+                if (n && wire::DecodeJoints(buf, n, back)) realbody::PushFrame(back, g_ring.Unwrapped(back.sender_ms));
+                static bool logged = false;
+                if (!logged && n) {
+                    logged = true;
+                    Log("[sync] joint frames (STJ1): %zu bytes each, %u joints, body_id %u; echoed through encode/decode", n,
+                        static_cast<unsigned>(jf.joint_count), static_cast<unsigned>(jf.body_id));
+                }
             }
         }
     }
@@ -719,6 +821,7 @@ void Tick() noexcept {
             if (gen != g_generation) {
                 g_generation = gen;
                 g_ring.Reset();
+                realbody::ResetFrames();
                 Log("[sync] new link session (#%u): interpolation reset", gen);
                 if (BodyPresent()) RemoveBody("new link session");  // session end of the previous partner
             }
@@ -726,12 +829,24 @@ void Tick() noexcept {
             if (g_ring.Push(p.sender_ms, static_cast<double>(recv), p.x, p.y, p.z, p.rot))
                 g_last_remote_ms = static_cast<double>(recv);
         }
+        static wire::JointFrame jf;
+        while (link::PopJoints(jf, recv, gen)) {
+            if (gen != g_generation) continue;  // a frame from before the session change
+            static std::uint8_t logged_body = 0;
+            if (jf.body_id != logged_body) {
+                logged_body = jf.body_id;
+                const bodies::Body* b = bodies::FindById(jf.body_id);
+                Log("[sync] the partner sends joint frames (STJ1), body_id %u (%s)", jf.body_id, b ? b->key : "unknown");
+            }
+            realbody::PushFrame(jf, g_ring.Unwrapped(jf.sender_ms));
+        }
     }
     g_ring.Settle();
 
     // ---- partner body
     TeardownTriggers(now);
     DriveHolo(now);
+    DriveReal(now);
     const double delay = g_net ? static_cast<double>(g_cfg.interp_delay_ms) : g_cfg.echo_delay_s * 1000.0;
     const bool remote_fresh = g_last_remote_ms > 0 && now - g_last_remote_ms < 10000;
     if ((BodyPresent() || g_voice.e) && !remote_fresh) RemoveBody("partner silent for 10 s");
@@ -746,6 +861,20 @@ void Tick() noexcept {
         g_last_target_valid = true;
         if (!BodyPresent()) {
             TrySpawn(target, now);
+        } else if (RealOurs()) {
+            if (realbody::GetPhase() == realbody::Phase::live) {
+                if (!realbody::Move(target)) {
+                    Log("[sync] SetWorldTransform failed on the real body; removing it");
+                    RemoveBody("set transform fault");
+                    g_next_spawn_ms = now + 5000;
+                } else if (now - g_last_remote_ms < 1000 && realbody::StarvedOfFrames(3000)) {
+                    // Transforms arrive but no joint frames: without them the body would glide in its
+                    // bind pose, so the next body in the chain (the hologram) takes over.
+                    FallBack("the partner sends positions but no joint frames (STJ1)", now);
+                } else {
+                    realbody::SamplePublish(g_ring.PlayTime(now, delay));  // joints on the transform's timeline
+                }
+            }
         } else if (holo::GetPhase() == holo::Phase::live) {
             if (!holo::Move(target)) {
                 Log("[sync] SetWorldTransform failed on the hologram; removing it");
@@ -832,7 +961,9 @@ void FillDebugSnapshot(debug::Snapshot& s) noexcept {
         reinterpret_cast<std::uintptr_t>(g_voice.e ? g_voice.e : (CurrentBody() == PartnerBody::echo ? body : nullptr));
     CopyText(s.partner_state, g_remote_state);
     char src[sizeof(s.partner_source)] = {};
-    if (CurrentBody() == PartnerBody::holo && holo::CurrentHash())
+    if (CurrentBody() == PartnerBody::real && realbody::CurrentBody())
+        std::snprintf(src, sizeof(src), "real %s", realbody::CurrentBody()->key);
+    else if (CurrentBody() == PartnerBody::holo && holo::CurrentHash())
         std::snprintf(src, sizeof(src), "holo %08X", holo::CurrentHash());
     else if (CurrentBody() == PartnerBody::marker && g_slot.src.res)
         std::snprintf(src, sizeof(src), "marker #%d", g_slot.src.index);
@@ -891,6 +1022,10 @@ void DebugLogPositions() noexcept { LogPositionsNow(); }
 
 bool DebugLogPartner() noexcept {
     if (holo::Describe("debug menu")) return true;
+    if (Entity* r = RealOurs() ? realbody::LiveEntity() : nullptr) {
+        partner::DescribeEntity(r, "debug menu (real body)");
+        return true;
+    }
     if (!SlotAlive(g_slot)) return false;
     partner::DescribeEntity(g_slot.e, "debug menu");
     return true;

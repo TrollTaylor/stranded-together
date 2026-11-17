@@ -15,6 +15,7 @@
 #include "link.hpp"
 #include "log.hpp"
 #include "MinHook.h"
+#include "real_body.hpp"
 #include "overlay/overlay.hpp"
 #include "overlay/overlay_input.hpp"
 #include "player_sync.hpp"
@@ -188,6 +189,9 @@ DWORD WINAPI Bootstrap(LPVOID) {
         st::debug::SetModState("MinHook init failed");
         return 0;
     }
+    // Real partner body (docs/real-partner-body.md): the pose hook goes in at start-up, never
+    // mid-game (enabling a hook suspends every thread while job threads may be inside it).
+    if (cfg.partner_body == st::PartnerBody::real || cfg.pose_hook) st::realbody::InstallHook();
     void* target = reinterpret_cast<void*>(st::game::Get().SteamRunCallbacksWrapper);
     MH_STATUS s = MH_CreateHook(target, reinterpret_cast<void*>(&HookedRunCallbacks), reinterpret_cast<void**>(&g_original));
     if (s == MH_OK) s = MH_EnableHook(target);

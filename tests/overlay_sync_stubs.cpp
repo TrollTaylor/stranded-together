@@ -117,7 +117,8 @@ float last_heal = -1, last_hours = -1;
 bool last_cycle = true;
 std::uintptr_t last_ping_entity = 0;
 int last_ping_index = 99;
-std::atomic<int> catalogs{0}, surveys{0};
+std::atomic<int> catalogs{0}, surveys{0}, censuses{0}, real_cmds{0};
+int last_real_op = 0;
 int last_catalog_start = -1, last_catalog_count = -1;
 double last_catalog_distance = -1;
 }  // namespace st::game::stub
@@ -192,6 +193,37 @@ bool StartClipSurvey(char* msg, std::size_t cap) noexcept {
     Seen();
     ++stub::surveys;
     Say(msg, cap, "clip survey started (stub)");
+    return true;
+}
+bool StartAnimCensus(double, int, int, char* msg, std::size_t cap) noexcept {
+    Seen();
+    ++stub::censuses;
+    Say(msg, cap, "census (stub)");
+    return true;
+}
+bool PoseDump(int, int, double, char* msg, std::size_t cap) noexcept {
+    Seen();
+    ++stub::censuses;
+    Say(msg, cap, "pose dump (stub)");
+    return true;
+}
+bool StartPoseScan(int, char* msg, std::size_t cap) noexcept {
+    Seen();
+    ++stub::censuses;
+    Say(msg, cap, "pose scan (stub)");
+    return true;
+}
+bool LookAtBody(int, double, char* msg, std::size_t cap) noexcept {
+    Seen();
+    ++stub::censuses;
+    Say(msg, cap, "look at (stub)");
+    return true;
+}
+bool RealBodyCommand(int op, const double (&)[3], char* msg, std::size_t cap) noexcept {
+    Seen();
+    stub::last_real_op = op;
+    ++stub::real_cmds;
+    Say(msg, cap, "real body (stub)");
     return true;
 }
 void ReadDiagnostics(Diagnostics* d) noexcept {
