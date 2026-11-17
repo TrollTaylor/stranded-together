@@ -12,6 +12,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdarg>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -1479,16 +1480,18 @@ bool Init(const std::wstring& mod_dir) noexcept {
 
 namespace {
 
-// D3D12CreateDevice(IUnknown* adapter, D3D_FEATURE_LEVEL, REFIID, void**), without d3d12.h here.
-using D3D12CreateDeviceFn = HRESULT(WINAPI*)(IUnknown*, int, const GUID&, void**);
-D3D12CreateDeviceFn g_orig_d3d12_create_device = nullptr;
-std::atomic<bool> g_game_device_created{false};
+// Fault-free read of the game's own memory (DS's crash reporter fires even on SEH-caught faults).
+bool ReadGamePtr(std::uintptr_t addr, std::uintptr_t& out) noexcept {
+    SIZE_T n = 0;
+    out = 0;
+    return ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(addr), &out, sizeof(out), &n) && n == sizeof(out);
+}
 
-HRESULT WINAPI HookD3D12CreateDevice(IUnknown* adapter, int level, const GUID& riid, void** device) {
-    const HRESULT hr = g_orig_d3d12_create_device(adapter, level, riid, device);
-    // A capability check passes device == nullptr (S_FALSE); only a created device counts.
-    if (SUCCEEDED(hr) && device && *device) g_game_device_created.store(true, std::memory_order_release);
-    return hr;
+bool BytesAt(std::uintptr_t addr, const unsigned char* want, std::size_t len) noexcept {
+    unsigned char got[16] = {};
+    SIZE_T n = 0;
+    return len <= sizeof(got) && ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(addr), got, len, &n) && n == len &&
+           std::memcmp(got, want, len) == 0;
 }
 
 }  // namespace
@@ -1504,7 +1507,7 @@ bool WaitForGameD3D12(unsigned timeout_ms) noexcept {
             Log("[overlay] ds.exe did not load d3d12.dll within %u s: overlay not installed this run", timeout_ms / 1000);
             return false;
         }
-        Sleep(1);
+        Sleep(2);
     }
     const double loaded_ms = NowMs();
     Log("[overlay] deferred %.0f ms until ds.exe loaded d3d12.dll itself (its device check at 0x1419A6980 exits(0) when "
@@ -1512,36 +1515,45 @@ bool WaitForGameD3D12(unsigned timeout_ms) noexcept {
         loaded_ms - t0);
 
     // d3d12.dll is loaded inside the game's device creation (FUN_1419A6980), which then sets the
-    // process-wide DRED settings (ID3D12DeviceRemovedExtendedDataSettings) and only after that
-    // creates its device. The overlay's probe device (overlay.cpp ReadVTables, WARP) must not exist
-    // in between: on a player's PC (v0.5.0, launched through Steam) the game then failed with
-    // "Error initializing rendering configuration" and its crash report crashed reading the null
-    // device (0x1419A4004). So the overlay waits for the game's first created D3D12 device.
-    bool hooked = false;
-    const HMODULE d3d12 = GetModuleHandleW(L"d3d12.dll");
-    void* const target = d3d12 ? reinterpret_cast<void*>(GetProcAddress(d3d12, "D3D12CreateDevice")) : nullptr;
-    const MH_STATUS init = MH_Initialize();
-    if (target && (init == MH_OK || init == MH_ERROR_ALREADY_INITIALIZED) &&
-        MH_CreateHook(target, reinterpret_cast<void*>(&HookD3D12CreateDevice), reinterpret_cast<void**>(&g_orig_d3d12_create_device)) == MH_OK) {
-        // Left enabled for the run: the detour only forwards and sets a flag.
-        hooked = MH_EnableHook(target) == MH_OK;
+    // process-wide DRED settings and creates its device; Steam's overlay hooks D3D12/DXGI around
+    // the same time on a player's desktop. Anything the overlay does to D3D12 in that window (its
+    // WARP probe device, inline hooks on D3D12CreateDevice or the swapchain) broke the game's start
+    // on a player's PC (v0.5.0 / v0.5.1: "Error initializing rendering configuration", then its
+    // crash report crashed reading the missing device at 0x1419A4004). So the overlay touches
+    // nothing until the game's renderer exists, read from the game's own globals (no hooks):
+    //   0x145558F70: written at 0x1419A6D22 right after the device is created;
+    //   [0x145558F80 + 0x20]: the render device object the crash report reads (0x1419A4000).
+    const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+    static const unsigned char kStoreF70[] = {0x48, 0x89, 0x05, 0x47, 0x22, 0xBB, 0x03};  // mov [rip+0x3BB2247], rax
+    static const unsigned char kLeaF80[] = {0x48, 0x8D, 0x0D, 0x0B, 0x11, 0xC6, 0x03};    // lea rcx, [rip+0x3C6110B]
+    static const unsigned char kReadF80[] = {0x48, 0x8B, 0x49, 0x20, 0x48, 0x8B, 0x01};    // mov rcx,[rcx+0x20]; mov rax,[rcx]
+    const bool known = BytesAt(base + 0x19A6D22, kStoreF70, sizeof(kStoreF70)) && BytesAt(base + 0x18F7E6E, kLeaF80, sizeof(kLeaF80)) &&
+                       BytesAt(base + 0x19A4000, kReadF80, sizeof(kReadF80));
+    constexpr double kFallbackMs = 30000;  // the title screen comes about 20 s after start
+    if (!known) {
+        Log("[overlay] unknown ds.exe build (renderer globals not found): waiting %.0f s before installing", kFallbackMs / 1000);
+        Sleep(static_cast<DWORD>(kFallbackMs));
+        return true;
     }
-    // A device created before the hook went in is never seen: then wait long enough that the
-    // game's device certainly exists (its title screen comes about 20 s after start).
-    constexpr double kMissedMs = 20000;
-    while (!g_game_device_created.load(std::memory_order_acquire)) {
-        if (!hooked || NowMs() - loaded_ms > kMissedMs) {
-            Log("[overlay] %s: installing %.0f ms after d3d12.dll loaded",
-                hooked ? "the game's D3D12CreateDevice was not seen (created before the hook?)" : "could not hook D3D12CreateDevice",
-                NowMs() - loaded_ms);
-            if (!hooked) Sleep(static_cast<DWORD>(kMissedMs));
+    std::uintptr_t created = 0, render_device = 0, holder = 0;
+    double seen_ms = 0;
+    for (;;) {
+        ReadGamePtr(base + 0x5558F70, created);
+        if (ReadGamePtr(base + 0x5558F80 + 0x20, holder)) render_device = holder;
+        if (created && render_device) {
+            if (seen_ms == 0) seen_ms = NowMs();
+            if (NowMs() - seen_ms >= 2000) break;  // let the game (and Steam's overlay) finish their set-up first
+        } else {
+            seen_ms = 0;
+        }
+        if (NowMs() - loaded_ms > kFallbackMs) {
+            Log("[overlay] the game's renderer was not seen within %.0f s (device %s, render device %s): installing anyway",
+                kFallbackMs / 1000, created ? "set" : "not set", render_device ? "set" : "not set");
             return true;
         }
-        Sleep(1);
+        Sleep(10);
     }
-    Sleep(250);  // let the game finish the rest of its device set-up first
-    Log("[overlay] the game created its D3D12 device %.0f ms after loading d3d12.dll: the overlay's probe comes after it",
-        NowMs() - loaded_ms);
+    Log("[overlay] the game's renderer is up (%.0f ms after d3d12.dll loaded): the overlay installs after it", seen_ms - loaded_ms);
     return true;
 }
 
