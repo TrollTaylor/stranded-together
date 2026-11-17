@@ -1,0 +1,78 @@
+# Player collision between two hidden games (docs/real-partner-body.md section 11):
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-collision -SeedSaves complete-100
+# Both games start on the same spot (same save). The host walks ahead and stands; the guest (shown
+# to the host as Fragile) then walks the same way, straight into the host's Sam body. Both games
+# log the horizontal distance between their own Sam and the partner body every tick
+# ([coll] trace d=...): the guest is stopped by the host's body on its screen, and on the host's
+# screen the guest's Fragile stops in front of the host's Sam.
+role host
+graphics low
+timeout 360
+ini partner_body=real
+ini name=TagPlayer
+@host ini my_character=sam
+@guest ini my_character=fragile
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 30 \[coll\] player collision on
+@guest waitlog 30 \[coll\] player collision on
+wait 25000
+?screenshot 01-host-title
+?@guest screenshot 01-guest-title
+pad A 150
+@guest pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+@guest until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitplayer 60
+waitlog 60 \[link\] CONNECTED
+@guest waitlog 60 \[link\] CONNECTED
+# the host's Sam walks once the world is up (1 s pushes), the guest presses A through its notice
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+@guest until 150 3000 \[sync\] partner body: real 'sam' => pad A 120
+waitlog 60 \[sync\] partner body: real 'fragile'
+# the host walks on ahead, stops, and turns its camera round to watch the guest come
+pad none 1500 ly=32767
+wait 1000
+pad none 1300 rx=32767
+wait 2000
+action collision 0
+@guest action collision 0
+screenshot 02-host-looks-back
+@guest screenshot 02-guest-sees-host-ahead
+# both games: the distance every tick for 25 s
+action collision 2 25000
+@guest action collision 2 25000
+# the guest walks the host's path (1 s pushes until it moves, then a held walk) into the host's body
+@guest until 60 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+@guest pad none 1000 ly=32767 keep
+@guest screenshot 03-guest-walks-in-a
+screenshot 03-host-sees-guest-a
+wait 300
+@guest screenshot 03-guest-walks-in-b
+screenshot 03-host-sees-guest-b
+wait 300
+@guest screenshot 03-guest-walks-in-c
+screenshot 03-host-sees-guest-c
+wait 600
+@guest screenshot 03-guest-walks-in-d
+screenshot 03-host-sees-guest-d
+wait 1000
+@guest screenshot 03-guest-walks-in-e
+screenshot 03-host-sees-guest-e
+@guest pad none 0
+wait 2000
+screenshot 04-host-after
+@guest screenshot 04-guest-after
+action collision 0
+@guest action collision 0
+action log_status
+@guest action log_status
+?waitlog 12 \[sync\] link traffic over
+?@guest waitlog 12 \[sync\] link traffic over
+@guest quit
+wait 3000
+quit

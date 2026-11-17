@@ -350,6 +350,18 @@ void Characters() {
     host.self_character = true;   // the host is always Sam
     CHECK(MakeSessionIniText(host, text, error) && text.find("self_character") == std::string::npos);
     CHECK(ParseSessionIniText(text, back, error) && !back.self_character);
+    // Name tags: the mod's default is on, so only name_tags=0 is written; parsed back either way.
+    CHECK(text.find("name_tags") == std::string::npos && back.name_tags);
+    host.name_tags = false;
+    CHECK(MakeSessionIniText(host, text, error) && text.find("name_tags=0\n") != std::string::npos);
+    CHECK(ParseSessionIniText(text, back, error) && !back.name_tags);
+    CHECK(ParseSessionIniText(text + "name_tags=1\n", back, error) && back.name_tags);
+    // Player collision: the same pattern (default on, only partner_collision=0 written).
+    CHECK(text.find("partner_collision") == std::string::npos && back.partner_collision);
+    host.partner_collision = false;
+    CHECK(MakeSessionIniText(host, text, error) && text.find("partner_collision=0\n") != std::string::npos);
+    CHECK(ParseSessionIniText(text, back, error) && !back.partner_collision);
+    CHECK(ParseSessionIniText(text + "partner_collision=1\n", back, error) && back.partner_collision);
 }
 
 void StatusParse() {
@@ -589,6 +601,24 @@ void DebugOptionsPersist() {
     CHECK(!so.self_character && so.real_partner_body);
     ApplyDebugOptions(so, ini);
     CHECK(!ini.self_character);
+    // Name tags: on by default (older settings files too), saved, copied into the session.ini.
+    CHECK(DebugOptions{}.name_tags && DebugOptionsFromSettings(json::Value::Object()).name_tags && ini.name_tags);
+    d.name_tags = false;
+    DebugOptionsToSettings(d, settings);
+    CHECK(json::Parse(json::Dump(settings), back));
+    const DebugOptions nt = DebugOptionsFromSettings(back);
+    CHECK(!nt.name_tags);
+    ApplyDebugOptions(nt, ini);
+    CHECK(!ini.name_tags);
+    // Player collision: on by default (older settings files too), saved, copied into the session.ini.
+    CHECK(DebugOptions{}.partner_collision && DebugOptionsFromSettings(json::Value::Object()).partner_collision && ini.partner_collision);
+    d.partner_collision = false;
+    DebugOptionsToSettings(d, settings);
+    CHECK(json::Parse(json::Dump(settings), back));
+    const DebugOptions pc = DebugOptionsFromSettings(back);
+    CHECK(!pc.partner_collision);
+    ApplyDebugOptions(pc, ini);
+    CHECK(!ini.partner_collision);
     json::Value odd;
     CHECK(json::Parse("{\"debug\":{\"partner_body\":\"marker\"}}", odd) && DebugOptionsFromSettings(odd).real_partner_body);
     // Hand-edited numbers far outside int range fall back instead of an undefined cast.

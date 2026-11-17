@@ -294,6 +294,8 @@ bool MakeSessionIniText(const SessionIni& s, std::string& text, std::string& err
     if (!s.partner_body.empty()) t += "partner_body=" + s.partner_body + "\n";
     // Self view: only a guest (or echo / solo) whose character is not Sam needs it.
     if (!host && s.self_character && !s.my_character.empty() && s.my_character != kHostCharacter) t += "self_character=1\n";
+    if (!s.name_tags) t += "name_tags=0\n";
+    if (!s.partner_collision) t += "partner_collision=0\n";
     text = std::move(t);
     return true;
 }
@@ -333,6 +335,8 @@ bool ParseSessionIniText(const std::string& text, SessionIni& out, std::string& 
         else if (k == "my_character") out.my_character = v;
         else if (k == "partner_body") out.partner_body = v;
         else if (k == "self_character") out.self_character = IniBool(v);
+        else if (k == "name_tags") out.name_tags = IniBool(v);
+        else if (k == "partner_collision") out.partner_collision = IniBool(v);
         if (!ok) {
             error = "session.ini: " + k + " is malformed";
             return false;

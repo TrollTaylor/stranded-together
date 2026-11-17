@@ -14,7 +14,7 @@ inline constexpr std::uint8_t kPoseMagic[4] = {'S', 'T', 'P', '1'};
 
 enum PoseFlags : std::uint32_t {
     kPoseValid = 1u << 0,     // sender has a live local player
-    kPoseInVehicle = 1u << 1, // reserved
+    kPoseInVehicle = 1u << 1, // the sender rides something (a parent entity: vehicle, mount); player collision
 };
 
 struct Quat {
@@ -123,5 +123,111 @@ bool DecodeJoints(const std::uint8_t* data, std::size_t size, JointFrame& out) n
 void BlendJoints(const JointFrame& a, const JointFrame& b, float t, JointFrame& out) noexcept;
 // Angle in degrees between two rotations (0..180).
 float AngleBetween(const Quat& a, const Quat& b) noexcept;
+
+// ---------------------------------------------------------------- player name frame (STN1)
+// The name this player wants shown above their head on the other player's screen (name tags,
+// docs/real-partner-body.md section 10). Rides as one more FRAME message in a pose datagram on
+// the first sends of a session, about once a second after that and right after a change. A
+// receiver of another build never sees it (the HELLO build check), and DecodePose / DecodeJoints
+// reject its magic, so an older decoder would drop it silently.
+//
+//   'STN1' | u8 version (1) | u8 flags | u8 len (0..64) | u8 reserved | UTF-8 name[len]   (8 + len)
+inline constexpr std::uint8_t kNameMagic[4] = {'S', 'T', 'N', '1'};
+inline constexpr std::uint8_t kNameVersion = 1;
+inline constexpr std::size_t kNameHeaderSize = 8;
+inline constexpr unsigned kMaxNameBytes = 64;
+inline constexpr unsigned kMaxNameCodepoints = 32;
+inline constexpr std::size_t kMaxNameFrameSize = kNameHeaderSize + kMaxNameBytes;
+
+enum NameFlags : std::uint8_t {
+    kNameFromHost = 1u << 0,      // the sender is the session's host
+    kNameKnown = kNameFromHost,   // other bits are cleared by the decoder (a newer build's)
+};
+
+struct NameFrame {
+    std::uint8_t flags = 0;
+    std::uint8_t len = 0;                // bytes in name, without the terminator
+    char name[kMaxNameBytes + 1] = {};   // UTF-8, sanitized (SanitizeName), NUL-terminated
+};
+
+// Cleans a display name: invalid UTF-8 bytes, C0/C1 controls, DEL, bidi and other invisible
+// format characters (U+061C, U+200B..U+200F, U+2028..U+202E, U+2060..U+206F, U+FEFF) are dropped,
+// runs of white space become one space, leading/trailing space is trimmed, and the result is cut
+// at a code-point boundary to at most kMaxNameCodepoints code points and min(cap - 1,
+// kMaxNameBytes) bytes. Always NUL-terminates (cap > 0); returns the length.
+std::size_t SanitizeName(const char* in, std::size_t n, char* out, std::size_t cap) noexcept;
+// Encodes f (its name is sanitized again on the way). Returns the size, 0 when cap is too small.
+std::size_t EncodeName(const NameFrame& f, std::uint8_t* out, std::size_t cap) noexcept;
+// Rejects bad magic, another version, len > kMaxNameBytes and a size other than 8 + len. The
+// name comes out sanitized (a peer cannot smuggle controls into the overlay or the log).
+bool DecodeName(const std::uint8_t* data, std::size_t size, NameFrame& out) noexcept;
+
+// ---------------------------------------------------------------- gear layout frame (STC1)
+// What the sender carries (docs/real-partner-body.md section 12): the backpack, the Odradek, the
+// BB pod and every cargo piece on the back, arms, waist and hands, each as a kind (+ the game's
+// EDSBaggage2Model and colour variation for cargo) and a pose relative to an anchor: a joint of
+// Sam's 77-joint skeleton, or an earlier item (cargo sits on the backpack). The receiver puts
+// prop entities there on the partner's body. Sent in its own datagram (FRAME message) when the
+// layout changes and about once a second otherwise; own magic, own sequence filter.
+//
+//   'STC1' | u32 seq | u8 version (1) | u8 count | u8 flags | u8 dropped | u16 layout hash |
+//   u16 reserved                                                              (16 bytes)
+//   count x 18 bytes: u8 kind | u8 model | u8 variation | u8 joint | u8 parent | u8 reserved |
+//                     i16 x, y, z (1 mm, +-32 m) | 48-bit smallest-three rotation (as STJ1)
+inline constexpr std::uint8_t kGearMagic[4] = {'S', 'T', 'C', '1'};
+inline constexpr std::uint8_t kGearVersion = 1;
+inline constexpr std::size_t kGearHeaderSize = 16;
+inline constexpr std::size_t kGearItemSize = 18;
+inline constexpr unsigned kMaxGearItems = 40;
+inline constexpr std::size_t GearFrameSize(unsigned count) { return kGearHeaderSize + count * kGearItemSize; }
+inline constexpr std::size_t kMaxGearFrameSize = GearFrameSize(kMaxGearItems);  // 736
+inline constexpr std::uint8_t kGearNoParent = 0xFF;  // GearItem::parent: placed on `joint`
+inline constexpr std::uint8_t kGearNone = 0xFF;      // GearItem::model / variation: none / unknown
+
+enum class GearKind : std::uint8_t {
+    backpack = 1,  // the backpack frame
+    odradek = 2,   // the Odradek on the left shoulder
+    bb_pod = 3,    // the BB pod on the chest
+    cargo = 4,     // one baggage piece; model = EDSBaggage2Model
+};
+inline constexpr std::uint8_t kGearKindMax = 4;
+
+enum GearFlags : std::uint8_t {
+    kGearValid = 1u << 0,   // the sender has a live player whose gear was read
+    kGearKnown = kGearValid,
+};
+
+struct GearItem {
+    GearKind kind = GearKind::cargo;
+    std::uint8_t model = kGearNone;      // EDSBaggage2Model (cargo), kGearNone otherwise
+    std::uint8_t variation = kGearNone;  // index into the baggage config's colour variations; kGearNone = the prop's
+                                         // own look (what this build always sends: the piece's variation is not read)
+    std::uint8_t joint = 0;              // Sam-skeleton joint (0..76) the item hangs on (parent == kGearNoParent)
+    std::uint8_t parent = kGearNoParent; // or an earlier item's index (cargo stacked on the backpack)
+    float p[3] = {};                     // position in the anchor's frame (m)
+    Quat q;                              // rotation in the anchor's frame
+};
+
+struct GearFrame {
+    std::uint32_t seq = 0;
+    std::uint8_t flags = 0;
+    std::uint8_t count = 0;
+    std::uint8_t dropped = 0;  // items the sender had to leave out (over kMaxGearItems)
+    GearItem items[kMaxGearItems];
+};
+
+// The layout: kinds, models, variations and anchors (not the poses), 16-bit FNV-1a. Two frames
+// with the same hash need the same props.
+std::uint16_t GearLayoutHash(const GearFrame& f) noexcept;
+// Returns the size, 0 when the frame cannot be encoded (count over the cap, an unknown kind, a
+// joint >= 77, a parent that is not an earlier item, NaN, a position beyond +-32 m).
+std::size_t EncodeGear(const GearFrame& f, std::uint8_t* out, std::size_t cap) noexcept;
+// Rejects bad magic, another version, a size other than 16 + 18 * count, count over the cap, an
+// unknown kind, a bad anchor (as EncodeGear) and a layout hash that does not match the items.
+// Unknown flag bits are cleared.
+bool DecodeGear(const std::uint8_t* data, std::size_t size, GearFrame& out) noexcept;
+// The largest change between two frames with the same layout: position (m) and rotation (deg).
+// False when the layouts differ.
+bool GearPoseDelta(const GearFrame& a, const GearFrame& b, float* max_m, float* max_deg) noexcept;
 
 }  // namespace st::wire

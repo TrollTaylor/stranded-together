@@ -271,7 +271,8 @@ std::string SessionIniText(const SessionOptions& o) {
 bool ScenarioIniKeyAllowed(const std::string& key) {
     static const char* const kAllowed[] = {"partner_body", "partner_character", "my_character", "self_character", "partner_holo",
                                            "partner_marker", "partner_voice", "partner_activate", "pose_hook", "echo_delay_s",
-                                           "echo_offset_m", "send_hz", "interp_delay_ms"};
+                                           "echo_offset_m", "send_hz", "interp_delay_ms", "name", "name_tags", "partner_collision",
+                                           "partner_collision_layer", "partner_gear"};
     for (const char* k : kAllowed)
         if (key == k) return true;
     return false;

@@ -8,6 +8,7 @@
 // invisible echo (partner_source.cpp). See docs/partner-hologram.md.
 // Milestone 1: position + rotation only.
 #pragma once
+#include <cstddef>
 #include <string>
 
 #include "config.hpp"
@@ -32,5 +33,8 @@ void DebugSetVerbose(bool on) noexcept;
 void DebugLogPositions() noexcept;                   // what F6 does
 bool DebugLogPartner() noexcept;
 bool DebugPartnerPosition(double (&out)[3]) noexcept;  // live partner entity, else newest remote sample
+// Collision tests (action collision 3): the partner body stands still `dist_m` ahead of Sam (along
+// the camera's forward, else his last walking direction), facing him, holding its last pose; 0 = it follows the stream again.
+bool DebugPinPartner(double dist_m, char* msg, std::size_t cap) noexcept;
 
 }  // namespace st::sync

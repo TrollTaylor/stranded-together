@@ -22,6 +22,11 @@ Code:
 - `native/mod/player_sync.cpp`: the `real` body in the body chain, the echo and net joint stream.
 - `native/mod/link.cpp`: STJ1 next to STP1.
 - `native/mod/partner_holo.cpp`: `SpawnBeginField`.
+- Name tags (section 10): `native/mod/nametags.cpp`, `native/mod/nametag_math.hpp`,
+  `native/mod/overlay/overlay_tags.cpp`, the STN1 frame in `pose_wire`.
+- Player collision (section 11): `native/mod/partner_collision.{hpp,cpp}`.
+- Gear, the backpack and cargo on the bodies (section 12): `native/mod/partner_gear.{hpp,cpp}`, the
+  placement in `real_body.cpp`, the STC1 frame in `pose_wire`.
 
 Tags:
 - [V] verified: bytes, a decompile, or a run cited below.
@@ -49,10 +54,11 @@ real saves unchanged and 0 cloud uploads. Run folders are under `build-testenv\r
 A composite of these frames is in the session scratchpad (`real_body_evidence.jpg`).
 
 What is not right yet:
-- The bodies have no backpack, cargo or Odradek.
+- Gear (section 12): the bodies carry the backpack frame and delivery cases, but not the rain cover,
+  pouches, equipment, Odradek or BB pod, and the case colours are not matched.
 - The faces do not move: no facial rig is driven.
 - A female body plays Sam's male motion.
-- Collision with Sam was not tested.
+- Collision: the partner's real body now blocks the local player (section 11).
 
 Hook counters in every run were `rej=0 torn=0 aba=0 wpm=0 faults=0` ([pose] lines). The check of the
 partner's committed pose against the published pose is 0.00° while standing still. While moving it is up
@@ -259,10 +265,16 @@ during the review); the remaining risk is the forced call overlapping an entity-
   are cleared. The known parts must still be complete (tested). This only helps builds from now on.
 
 - Round-trip error is below 0.02° per joint (tested).
-- It rides in the same datagram as STP1. STP1 is unchanged. Mixed mod versions never get this far: the
+- It rides in the same datagram as STP1. STP1's layout is unchanged; its flags bit 1 (`kPoseInVehicle`,
+  reserved until now) is set while the sender's Sam has a parent entity (vehicle, mount), for player
+  collision (section 11.2). Older decoders kept the flags as sent, so the size and layout stay the same.
+  Mixed mod versions never get this far: the
   mod's link runs in play mode, where the HELLO is rejected when the builds differ (`[link] rejected:
   build_mismatch`, the launcher's "different mod version"), so neither player sees a partner. A peer
   that sends no STJ1 is therefore always a same-build game (see "Fallback" in section 5).
+  The build id is the version and the commit; a build configured from a tree with changed tracked
+  files adds `-m` (`0.6.0+75ccfed-m`, `CMakeLists.txt`), so a development build never passes the check
+  against the release made from the same commit. It is taken when CMake configures.
 - A frame counts only when the body's ring accepts it (`realbody::PushFrame` returns true: 77 joints,
   layout `BE39C83F`, newer than the last). A frame it drops does not set the peer's character, does not
   count as "the peer sends joints" for the fallback, and the first 5 drops are logged
@@ -393,19 +405,18 @@ docs/hidden-testing.md.
    checks), `echo-real-100` and a two-game run with a newly offered id were not.
 2. **More characters: done for the table.** All 16 ids passed `real-body-tour-all` and are offered (section 2).
    Not checked per character: collision size, and how a female body looks playing Sam's motion over time.
-3. **Gear.** Backpack, cargo and Odradek could be the game's own prop entities parented to the body. Not
-   researched.
+3. **Gear: done in part** (section 12). The backpack frame and the cargo cases are the game's own
+   cutscene props placed on the body's joints every frame and synced over the link (STC1). Not drawn:
+   the rain cover and pouches, equipment, the Odradek, the BB pod, tools; colours not matched.
 4. **Faces.** Not researched: drive DSFacialRig on Sam's body, or leave the faces static.
 5. **Cutscenes and photo mode.**
    - Cutscenes already remove the body (Sam asleep).
    - Photo mode calls the forced update with dt 0; the detour handles it, but it was not tested.
    - Whether a `demo_*` entity we spawned can be bound by a running sequence that uses the same body is
      unknown. Checking for an active sequence before spawning would be a cheap guard.
-6. **Collision and physics** of `demo_*` bodies against Sam and vehicles (`CollisionRadius 1.0`): not
-   confirmed. Possible collision push seen in run 20261116-193151 (`06-host-sees-guest-walk-a..c`, `07`:
-   the host's Sam and cargo case suddenly fill the left of the frame as the Fragile body runs at him; in
-   `06-d` he is not in view and Fragile runs past on the left) [I]; not confirmed. Logging both positions at those frames
-   (`F6` / `log_status`) in `two-games-real` would confirm or rule it out.
+6. **Collision: done** (section 11). The partner's real body gets the game's own character capsule, so
+   the local Sam is stopped by it as by another character. The `demo_*` bodies themselves have no
+   physics component; the possible push seen in run 20261116-193151 was not reproduced.
 7. **Release switch: decided.** The two-game run and the fallback run passed, so the launcher writes
    `partner_body=real` by default; the option stays on the Debug tab, labelled experimental, with
    Hologram as the manual choice. `holo` stays the automatic fallback. Revisit (move the option off the
@@ -424,6 +435,7 @@ See [debug-actions.md](debug-actions.md) "Real partner body". Scenarios:
   shows Fragile through the `partner_character` override.
 - `two-games-real` and `two-games-real-fallback`: host and guest (section 5).
 - `self-view`, `self-view-edges` (solo) and `two-games-real-self` (host and guest): the self view (section 8).
+- `gear-self` (solo) and `two-games-gear` (host and guest): gear on the bodies (section 12).
 
 ## 8. Self view: you see yourself as your character
 
@@ -547,7 +559,10 @@ cleared, mask now 0x0; body hidden`, `[self] body not shown: <why>` on change, a
 every second (writes, copies, pose age, distance, Sam's mask, entity flags, scene-hide counter, repairs,
 counters).
 
-### 8.4 Gear (decision)
+### 8.4 Gear (decision; superseded by section 12)
+
+Since section 12 the self body carries the player's own backpack frame and cargo cases as props (Sam's
+hide still hides his real gear). The first version's decision, for the record:
 
 Root hides all of Sam's gear: the backpack, the cargo on it, the boots, BB pod and exo parts. The
 chosen character's cutscene body has none, so **a non-Sam self view shows no cargo or backpack** (the
@@ -708,7 +723,7 @@ unchanged and 0 uploads.
 - **Boots.** The player's boots are a separate model (gold in the 100% save); the body keeps its own.
 - **Cap and glasses.** They are separate accessory entities. Their colours are sent but not used.
 - **Exoskeleton and power-glove meshes.** Only their texture tints come with the exos variation.
-- **Backpack and cargo.**
+- **Backpack and cargo:** section 12 (props, not the player's own backpack variation).
 - **A receiver not in the porter suit.** It cannot take the exos resource, so the remote player's
   silver or gold suit and tints are not shown. The colour still is.
 - **The uniform menu.** The runs changed the outfit through the inventory byte (`real_outfit 4`, hidden
@@ -719,3 +734,497 @@ unchanged and 0 uploads.
   streamed data stay loaded is unproven); a self-view body that is Sam (not needed: the self view is
   only for other characters).
 
+
+## 10. Name tags: the partner's name above their head
+
+Each game draws the other player's name above the partner's body (any body: real, hologram, marker,
+or the invisible echo). Each game sends its own name over the link. On by default:
+`session.ini name_tags=0` turns both off. The launcher's Debug page has **Show player names above
+heads**, which writes `name_tags=0` only when it is unticked.
+
+Code:
+- `native/mod/pose_wire.{hpp,cpp}`: the STN1 frame and `SanitizeName`.
+- `native/mod/link.cpp`: sending (`SetLocalName`) and receiving (`PeerName`).
+- `native/mod/nametags.{hpp,cpp}`: game side. It picks the name, the anchor and the gates, finds the
+  camera and holds its byte checks.
+- `native/mod/nametag_math.hpp`: pure code. Projection, letterbox, size and fade, the label.
+- `native/mod/overlay/overlay_tags.{hpp,cpp}`: the overlay. It reads the camera at Present, projects
+  and draws.
+- Unit tests in `st_net_tests` (`TestNameFrames`, `TestNameTagMath`).
+
+### 10.1 The camera [V: byte checks at start, runs below]
+
+| What | Where |
+|---|---|
+| Local player | `Player* = [Sam + 0x560]` (`DSPlayerEntity::GetPlayer` 0x1427115B0) |
+| Camera view object | `[Player + 0xD0]`, vtable `0x143F15208` (checked every read) |
+| View snapshot | view + 0x28 .. + 0x84. It holds the position (3 doubles), the axes (+0x40: right, forward, up; Z up), near +0x68, far +0x6C, top +0x70 (near * tan(fov_v / 2)), right +0x7C (top * aspect), projection mode +0x80 (0 = perspective) |
+| Who writes it | The view's per-frame update, vtable slot 2 `0x14361AA50`. It calls `Camera::GetViewFrustum` (`0x141E05BA0`, FOV-aspect adjust included) and copies the result at `0x14361AAC6` |
+
+Byte-checked at the first tick with a player:
+- `GetPlayer`;
+- the `Player + 0xD0` getter `0x1423C6140`;
+- `GetCameraPosition`'s use of it (`0x1426E8FC2`);
+- the 160-byte frustum copy at `0x14361AAC6`;
+- vtable slot 2.
+
+Any difference turns the tags off and logs which check failed.
+
+The overlay reads the snapshot inside `Present` with `ReadProcessMemory`:
+- It reads the vtable first.
+- It then reads the 0x5C bytes twice. Both reads must match; it tries 3 times, because the game
+  writes the snapshot non-atomically.
+
+Runtime numbers, run `093026` [V]:
+- `a0 (0.825, -0.566, 0)`, `a1 (0.560, 0.817, -0.139)`, `a2 (0.079, 0.115, 0.990)`.
+- `dot(cross(a0, a1), a2) = 1.000`: right-handed, Z up.
+- near 0.2, far 4000, fov_v 45.7 deg, aspect 1.7778.
+
+Projection: `d = p - cam`, then `x = d.a0`, `z = d.a1`, `y = d.a2`. A point with `z <= near` is
+hidden. Otherwise `ndc = (x/z * near/right, y/z * near/top)`. If the view's aspect differs from the
+back buffer's by more than 1 %, the point is fitted into a centred letter- or pillarbox; this case is
+unit-tested but not seen in a run.
+
+### 10.2 What is drawn and when
+
+**Anchor.** The pointer of the label sits 0.36 m above the body's head joint (joint 31 of the
+77-joint layout, through the body's joint map; `realbody::HeadWorld`). For a standing Sam that is
+1.95 m over his feet, as before; it now follows leans and crouches, and sits closer over shorter
+bodies such as Fragile. A head that does not read, or is not 0.3-2.4 m over the feet and within 1 m
+beside them, falls back to the root + 1.95 m: the hologram and the marker always use that. The log
+says which once per change (`[tags] anchor: over the head joint`). Run `092833` used the root + 2.05 m,
+and the label floated about 0.3 m over Sam's head; at 1-2 m from the camera the root anchor put the
+label well off a leaning body's head (run `101839`, guest `03-guest-walks-in-d`).
+
+**Text.**
+- The partner's name.
+- When it equals our own name, which happens with two games on one Steam account: ` (host)` or
+  ` (guest)`, the peer's role.
+- When no name arrived (the peer has `name_tags=0`): `Host` or `Guest`.
+- In echo mode: `<own name> (echo)`.
+
+**Distance.**
+- Text size is 26 px at 5 m or less, falling to 15 px at 60 m or more. Both values are for 1080p and
+  are scaled with the overlay.
+- At 25 m and beyond, the distance follows the name (`TagEcho (echo) - 42 m`, with a middle dot).
+- From 150 m the label fades out; at 300 m it is gone.
+- Closer than 0.8 m it is hidden.
+
+**Not drawn** (game thread, logged as `[tags] hidden: <reason>` / `[tags] shown`):
+- DSGameState flags `& 0x184F407FEC7F7F`, the game's own `IsStoppingGameEvent` mask. It covers
+  PauseMenu, HandcuffDevice (the cuff map), Cutscene, Movie, InGameCutscene, Loading, SystemPause,
+  FastTravel, KnotSpace, and more (`game::ReadStopGates`).
+- Any GameModule load bit (+0x44C).
+- Sam asleep.
+- No partner body, or the partner silent for 10 s.
+- The partner's real body hidden by the game (entity flag 0x2 clear): no tag over nothing.
+- No camera view.
+- A frame the game thread has not refreshed for 500 ms.
+
+**Drawn but not shown** (overlay, logged as `[tags] not drawn: ...` on each change):
+- Behind the camera or on its near plane.
+- Outside the view.
+- Beyond 300 m.
+
+**Style.** A dark pill (rounded box) with a pointer, drawn on ImGui's background draw list, under the
+debug menu. There is no depth test, so the tag shows through walls. When the anchor is near a screen
+edge, the box is pushed inside the screen and the pointer still marks the anchor.
+
+**The overlay renderer.** It now also lives while a tag is visible during gameplay. Two changes make
+that safe:
+- It is released before the game creates a swapchain (the `CreateSwapChain(ForHwnd)` hooks), because
+  DXGI allows one flip-model swapchain per window. Those hooks are optional for the overlay; without
+  them tags are not drawn at all (logged once: `[overlay] name tags not drawn: the swapchain creation
+  hooks are unavailable`), so a kept renderer can never block the game's swapchain re-creation.
+- It is released, as before, once nothing is drawn.
+
+With `debug_menu=0` and `name_tags=1`, the overlay is installed for the tags only:
+- no menu, toggle key or hint;
+- the game window is not subclassed.
+
+Installation still waits for the game's renderer (`WaitForGameD3D12`).
+
+### 10.3 Wire: STN1
+
+`'STN1' | u8 version 1 | u8 flags (bit 0: sender is the host) | u8 len (0..64) | u8 0 | UTF-8 name[len]`
+(8 + len bytes).
+
+**Placement.** One more FRAME message in a pose datagram:
+- the first 10 datagrams of each link session;
+- then every 30th (about 1 Hz at `send_hz=30`);
+- the next one after a change.
+
+Unknown flag bits are cleared. Another version or a wrong size is rejected. `DecodePose` and
+`DecodeJoints` reject its magic, and `DecodeName` rejects theirs (tested). Mixed builds never get
+this far (HELLO `build_mismatch`, section 4).
+
+**Sanitizing.** Both sender and receiver run `SanitizeName`, which:
+- drops invalid UTF-8, C0/C1 controls, DEL and bidi/zero-width format characters;
+- collapses and trims white space;
+- caps the name at 32 code points and 64 bytes, cut at a code-point boundary.
+
+The receiver keeps the newest name per link session and clears it on a new session.
+
+**Our name.** `session.ini name=` (the launcher's Advanced "your name in co-op") if set, otherwise the
+Steam persona name. Names are never logged in full: the log shows `[tags] our name: 7 B fnv ...` and
+`[tags] partner name: 9 B fnv ... (session #1, sent by the host)`. `[steam] ready` now also logs only
+the persona's length and hash. With `name_tags=0` nothing is sent.
+
+### 10.4 Evidence (hidden, `-SeedSaves complete-100`, all exit 0, real saves unchanged, 0 uploads)
+
+| Run (`build-testenv\runs\`) | What it shows |
+|---|---|
+| `20261117-093026-name-tags` (`name-tags`, echo with the real Sam body 6 s behind, `name=TagEcho`) | `02-near-standing`: "TagEcho (echo)" just above the head of the partner, who stands where Sam stands. `03-self-test` (`action name_tags 1`): "TagEcho (test)" above our own Sam's head. `07-pause-menu`: the START button opened the cuff Map/Information screen (HandcuffDevice), and no tag is drawn; log `[tags] hidden: game state HandcuffDevice`. |
+| `20261117-093249-name-tags` | `04-far-b`: the partner Sam body runs towards the camera with the tag right above its head (logged 11.3 m 1.3 s before the frame, closer by then; our own Sam is out of frame, the camera pinned against a wall). `07-partner-behind-camera`: Sam walks away and the partner stands behind the camera: no tag (log `not drawn`). |
+| `20261117-093544-name-tags` | `09-far-sweep-04` (echo offset 40 m, camera turning at half stick): a small figure in front of the racks with "TagEcho (echo) - 42 m" (middle dot) directly above it, while the camera rotates. `09-far-sweep-08` onwards: out of view, no tag. Map: no tag. `12-esc-menu`: Esc posted to the window opened no menu, so the tag is still shown (the system pause menu was not reached). |
+| `20261117-094013-two-games-name-tags` (both `name=TagPlayer`, guest Fragile) | Guest `03-guest-sees-host-walk-b`: the host's Sam body walking away with "TagPlayer (host)" above it. Host `06-host-sees-guest-walk-b`: the guest's Fragile running, with "TagPlayer (guest)" above her. Each log: `[tags] partner name: 9 B fnv 88533042`. Marked failed only by an optional `?waitlog`, since removed (the scenario's failure count includes optional steps). |
+| `20261117-114454-two-games-all` (**the final code**: head anchor, all three features on; host `name=TagPlayer`, guest Fragile `name=TagFriend`) | **pass**, both exit 0. Different names, so no suffix: each log `[tags] label: 9 B` and `[tags] anchor: over the head joint`. Guest `02-guest-sees-host-and-self`: "TagPlayer" right over the host's Sam body about 10 m ahead. Host `03-host-sees-guest-front`: "TagFriend" right over the guest's Fragile. In contact (0.8 m): guest `04-guest-walks-in-c`, "TagPlayer" just above the host body's head (compare run `101839` below, where the root anchor put it far off); host `04-host-sees-guest-c`, "TagFriend" over Fragile behind the host's own Sam. Host `04-host-sees-guest-e`: the guest has passed behind the camera, no tag. |
+| `20261117-094807-two-games-name-tags` (the root anchor, with the box clamped into the screen) | **pass**, both exit 0. Guest `02-guest-sees-host`: "TagPlayer (host)" above the host's Sam body standing about 9.5 m ahead. Host `07-host-sees-guest-stopped`: the guest's Fragile at the left edge, half behind the host's own Sam, and her tag "TagPlayer (guest)" pushed fully into the screen. In run `094513` the same frame cut the box at the edge, which is why the clamp was added. Each log: `[tags] partner name: 9 B fnv 88533042`. Payload: 574 B per datagram at 30 Hz, about 0.7 B of it STN1 on average. |
+
+Screenshots include the overlay: the capture runs after the overlay's draw, on the same queue.
+
+**Camera timing.** In the sweep frames the label stays over the figure while the camera turns at half
+stick [V, by eye]. A one-frame lead or lag at full speed was not measured.
+
+### 10.5 Not covered
+
+- **The system pause menu.** Its flag (SystemPause, bit 28) is in the mask, and the tags were hidden
+  under `Loading|SystemPause` while loading. But no run opened that menu: Esc posted to the window did
+  nothing, and BACK opened nothing visible.
+- **Photo mode.** Its flag is unknown.
+- **The weapon selector.** It is not in the mask, so tags stay up.
+- **Fonts.** Segoe UI only. Names in CJK and other scripts that Segoe UI lacks render as boxes; no
+  fallback fonts are merged yet.
+- **HDR back buffers.** Colours are written as raw UNORM, the known overlay limitation.
+- **The anchor on other bodies.** 0.36 m over the head joint fits Sam; the gap over a head of
+  another shape (hair, hats) was not measured per character. The hologram and the marker keep the
+  root + 1.95 m.
+- **Not run in a game:**
+  - `debug_menu=0` with tags only;
+  - a game swapchain rebuild while a tag is shown (the release-before-create path);
+  - a letterboxed view;
+  - two PCs over Steam.
+
+## 11. Player collision: you cannot walk through your partner
+
+**Status (2026-11-17): works in hidden runs, solo (echo) and between two games.** The partner's real
+body blocks the local Sam. He stops about 0.81-0.85 m from its centre (two 0.40 m capsules). If he keeps
+pushing, he slides round it, as he does round any other character.
+
+- On by default. `session.ini partner_collision=0` turns it off.
+- The launcher's Debug page has **Players block each other**. It needs Real character, and it writes
+  `partner_collision=0` only when unticked.
+- `partner_collision_layer=9` picks the game's "AI or Remote Player" collision layer instead of the
+  default 10. This is a test setting, not in the launcher.
+
+Code:
+- `native/mod/partner_collision.{hpp,cpp}`: `player_sync` calls it every tick, after the partner was
+  moved.
+- `native/mod/game_actions.cpp`: the gates on the local player (`LocalCollisionBlock`).
+
+### 11.1 How it works [V: decompiles and byte checks; runs below]
+
+DS uses Havok Physics (hknp). A character's collision is a `CapsuleComponent`. Its mover is one of two
+kinds:
+- a character proxy (type 1), for the locally controlled player;
+- a character rigid body (type 0), which the game gives remote and AI humanoids.
+
+`Humanoid::Init` (`0x14373A780`) gives Sam his capsule at run time. The partner's body is a
+cutscene-actor `DSControlledEntity` with no physics of its own, and the mod repeats that sequence on it:
+
+```
+NewGuid 0x141920CF0(&g)
+comp = CreateComponent 0x1422B4FC0(CapsuleComponent RTTI 0x144B39F70, [0x144B386D0], nullptr, &g)
+[comp+0x70] = 0x143744220             the contact filter Humanoid::Init stores (the capsule's listener
+                                       at +0x50 jumps to it unconditionally: slot 1, 0x1424417B0)
+AddComponent 0x142348220(body, comp)   (component list +0x90, init messages; the body's flags have
+                                        0x10000000 "initialized" and 0x4000 "in world")
+Capsule::Configure 0x142446340(comp, {Sam's PhysicsCharacterMoverResource (his capsule +0x68),
+                                      type 0, layer 10, group 3, 0x1F, 60 degrees})
+```
+
+- **Size.** The capsule uses Sam's own resource: radius 0.40 m, standing height 1.65 m [V: logged].
+  Every character gets Sam's capsule, because no per-body resource exists.
+- **Layer 10, "Humanoid blocker".** The layer matrix (built by `0x1422AC810`) lets it meet only the
+  Player (8) and AI/remote (9) layers and vehicles. It does not meet cargo, bullets, the camera or static
+  geometry. Logged at run time: `(8,9)=1 (8,10)=1 (9,10)=1 (8,8)=0`. Layer 9 would also push cargo and be
+  hit by bullets [I].
+- **Group 3.** This is what `DSControlledEntityResource` vt+0x98 returns (`0x1434F6CC0`: base 1 | 2)
+  [V bytes]. Sam's group is 7 [V logged].
+- **Every tick**, the capsule is put at the body's world transform and its velocity is zeroed
+  (`Capsule::SetTransform 0x142446980`, `SetVelocity 0x142446910`). This is HumanoidMover's own reset
+  path (`0x143608C30`). The rigid body does not collide with static geometry, so without this it would
+  fall.
+- **Off and on** use `Capsule::Disable 0x14243A740` and `Enable 0x14243A9E0`, the capsule's disable
+  counter. Ours is always balanced. Before Disable, the capsule is placed at the body, so when the
+  removal writes the capsule's position back into the entity, nothing changes.
+- **Lifetime.** The component belongs to the body.
+  - When the body is removed (any of the real body's teardown triggers, section 3.4), the capsule goes
+    with it (MsgPrepareForRemoval, `0x1424419F0`). Just before, while the body is still live, the
+    teardown takes the capsule out of the world (`collision::BodyGoing`, GUID and component checks
+    first), so a teardown that cannot remove the entity (a spawner reference leaked, a faulted
+    remove) leaves no invisible wall. Afterwards the mod only forgets its pointer and never calls
+    into the old capsule (it may be freed).
+  - A body that reads as unreadable for a tick keeps its capsule record (taken out of the world if it
+    still checks out), so a later good read never attaches a second capsule. If `Configure` faults
+    after creating a mover, that capsule is taken out of the world too.
+  - The emergency stop (the per-frame sync faulted) takes the capsule out of the world first, in its
+    own fault guard, before the body and gear stops.
+  - Before every call, fault-free reads check that the capsule is still in the body's component list,
+    with its vtable and owner, and that the body is the same (pointer and GUID).
+- **Byte checks** run once, before the first call. A mismatch turns collision off with a log line. They
+  cover:
+  - NewGuid, CreateComponent, the AddComponent thunk and body, Configure, SetTransform, SetVelocity,
+    Disable, Enable, and the add/remove-world function;
+  - the contact filter, the listener vtable slot 1 and its thunk, and the CapsuleComponent RTTI name;
+  - Humanoid::Init's own call sequence: each call target, and the RTTI and name operands.
+
+  After Configure, the mover must have the rigid-body vtable `0x143BDBD00`.
+
+**Never on** the hologram (the fallback), the marker or echo bodies, or the self view's body:
+`player_sync` passes only the partner slot's live real body. A debug body (`real_spawn`) gets none
+either.
+
+### 11.2 When it is off
+
+The capsule is taken out of the world (Disable) while any of these holds. It is put back (Enable) when
+they clear.
+- `partner_collision=0` or `action collision 1 0`, or a failed byte check or attach.
+- The local Sam is not on foot in the played world (`LocalCollisionBlock`):
+  - no player;
+  - Sam asleep (loads, cutscenes, knot space);
+  - the game loading or suspended;
+  - a stopping game event (menus, cutscenes, the map, and so on: mask `0x184F407FEC7F7F`);
+  - the post-load setup phase;
+  - Sam attached to a parent entity (vehicles, mounts);
+  - a ground snap pending;
+  - Sam bound to a sequence (scripted scenes). This is checked every 250 ms and is the one game call.
+- Sam's own capsule is out of the world or disabled (ladders, ziplines and other moves that take it out
+  [I: not run]).
+- The partner body is hidden or asleep, or no partner position came for 0.5 s.
+- **The partner is not near.** The capsule is in the world only while the partner is within 4 m of
+  the local Sam horizontally (and 3 m vertically); it leaves again beyond 4.5 m. The capsule stands
+  where the partner is in the *other* game's world, which can be inside our own parked trike or next
+  to our own MULEs: away from Sam it could only push those, never block Sam (review finding).
+- **The partner rides something.** The sender sets the pose flag `kPoseInVehicle` (bit 1 of the
+  pose flags, reserved until now) while its Sam has a parent entity (vehicle, mount); the receiver
+  takes the capsule out of the world while the newest pose has it. A peer that never sets it (none
+  exists: mixed builds are refused) only has the speed gate below.
+- The partner moves faster than 8 m/s (a vehicle), or jumped more than 2 m in one tick (a snap or a
+  teleport). After a jump it stays off for 0.5 s.
+- **Overlap.** The two are closer than 0.55 m horizontally and within 1.8 m vertically. Collision goes
+  off and comes back only once they are 0.9 m apart. The capsule is never put into the world on top of
+  Sam, so Havok never pushes them apart (no launch).
+
+Every change is logged, for example `[coll] on: the partner blocks Sam (partner 3.00 m away)` or
+`[coll] off: <why> (...)`. While a partner is within 5 m, a `[coll] 1 s: min distance ...` line is
+logged once a second.
+
+### 11.3 Evidence (hidden, `-SeedSaves complete-100`, all pass, exit 0, no error.txt, real saves unchanged, 0 uploads)
+
+Scenarios:
+- `collision`: the echo partner is pinned ahead with `action collision 3`. Sam walks into it at full and
+  half stick, round it, then on.
+- `collision-off`: the same with `partner_collision=0`.
+- `two-games-collision`: the guest walks the host's path into the host's standing Sam body.
+
+Distances are the horizontal distance from Sam to the body, every tick (`action collision 2`).
+
+| Run (`build-testenv\runs\`) | What it shows |
+|---|---|
+| `20261117-114731-collision` (**the final code**, pass) | Pinned 7 m ahead: `off: the partner is not near Sam (over 4 m)`; pinned 3 m: on. **Full stick:** contact 0.6 s at **0.847-0.963 m** (71 ticks), then Sam slid round it. `03-walk-in-b`: Sam face to face with the partner Sam, "TagEcho (echo)" over its head. **Half stick:** 1.3 s at **0.850-0.966 m** (158 ticks, at most 0.025 m change per tick). **Round it:** no contact. **Walking afterwards:** 3 s moved Sam 8.79 m. **The echo walking into Sam:** 0.96 to 0.56 m, Sam not moved, collision off (overlap). `05-slow-in-b`: the Climb prompt again while pressed against the partner's back; the A press (59.5 s) came when Sam had slid 1.4 m off, his height then rose 0.7 m and fell back 2-3.5 m from the partner (`05-slow-in-climb`: Sam by the pillar, no partner in view), so climbing onto the partner is still untested. |
+| `20261117-114454-two-games-all` (**the final code**: the 4 m gate, gear props and name tags on) | Two games. Each capsule attached at 3.9 m (`on: the partner blocks Sam (partner 3.96 m away)`) and left the world again at 4.5 m (`off: the partner is not near Sam`). **Guest:** blocked by the host's Sam body at **0.800 m**, then slid round it (`04-guest-walks-in-c`: Fragile beside the host's Sam body, both with their cases). **Host:** the guest's Fragile came within **0.802 m** of the host's Sam (`04-host-sees-guest-c`); the host's Sam did not move. 73 ticks on each side with the capsule in the world. |
+| `20261117-102636-collision` (before the 4 m gate) | **Full stick:** contact for 0.6 s at **0.848-0.949 m** (73 ticks, mean 0.859 m), sliding 1.75 m round the partner. `03-walk-in-b` (0.85 m): Sam face to face with the partner Sam, his arm and cargo reaching across the partner's body (they lie outside the 0.40 m capsule). **Half stick:** 1.2 s at **0.842-0.948 m** (148 ticks, sd 0.022 m, at most 0.025 m change per tick). **Round it:** never closer than 1.90 m. **Walking afterwards:** 3 s back moved Sam 8.64 m. **The echo walking into the standing Sam:** 0.93 to 0.55 m, Sam not moved, collision off (overlap). |
+| `20261117-102307-collision-off` (the final build) | Collision off: Sam walks through the partner again. `action collision 0` now logs the self checks with collision off too (the earlier off run showed none: a name clash, fixed). |
+| `20261117-102446-collision` (the final build) | Contact at **0.812 m**, then 0.849 m twice. Marked fail only by the scenario's walk-on check (the pad measured 1.08 m while the trace shows Sam walking about 6 m: he was still turning after the previous step; the scenario now waits 1.5 s first). |
+| `20261117-101322-collision` | **Full stick:** Sam stopped at **0.827 m**. `03-walk-in-b`: Sam pressed against the partner Sam, face to face. He stayed at 0.83-0.94 m for 0.6 s while sliding 1.7 m round it, then walked on. **Half stick:** **0.837-0.949 m** for 1.2 s (`05-slow-in-a`, `-b`), then round it. **No jitter:** in contact, the distance changed by at most 0.024 m per tick at half stick. **Walking afterwards:** 2.5 s back moved Sam 3.96 m. **The echo walking into Sam:** the unpinned echo then walked into the standing Sam. The distance fell from 0.93 to 0.56 m in 0.13 s, Sam did not move (0.00 m), and collision went off (overlap) and stayed off while the echo stood on him. |
+| `20261117-101113-collision` | The same. Full stick: 0.848 m. Half stick: **0.842-0.948 m for 2.2 s** (266 ticks, mean 0.849 m, sd 0.018 m). `05-slow-in-a`: Sam against the partner, with a **Climb** prompt on screen (see 11.4). Its "round the partner" step pushed Sam into a wall instead (the scenario is fixed since). |
+| `20261117-100916-collision` | Full stick, head-on: Sam stopped dead at **0.830 m** (one tick moved 0.003 m), then slid round the capsule at 0.83-0.85 m. |
+| `20261117-101541-collision-off` | The same steps with collision off: Sam walks straight through the partner, down to **0.02 m** at full stick and 0.14 m at half stick. `03-walk-in-b` (d 0.39 m): Sam inside the partner body. |
+| `20261117-101839-two-games-collision` | Two games (graphics low, 30 fps). **Guest:** blocked by the host's Sam body at **0.806 m**, then slid 1.7 m round it in 0.6 s. **Host:** the guest's Fragile came within **0.808 m** of the host's Sam and passed by; the host's Sam did not move (0.00 m). Both logs show `[coll] on` from the attach to the end. |
+| `20261117-100436-collision`, `20261117-100709-collision` | Earlier scenario versions. They pinned the partner along the walking direction, which missed it by 0.1-0.2 m: one contact at 0.848 m with a slide round, and one pass at 0.937 m without contact. |
+
+Screenshots (all looked at):
+- `20261117-102636-collision\automation\03-walk-in-b.png`: the final build, in contact at 0.85 m.
+- `20261117-101322-collision\automation\03-walk-in-b.png`: the closest approach, 0.83 m.
+- `20261117-101113-collision\automation\05-slow-in-a.png`: 0.84 m, with the Climb prompt.
+- `20261117-101541-collision-off\automation\03-walk-in-b.png`: collision off, Sam overlapping the body.
+- `20261117-101839-two-games-collision\guest\automation\03-guest-walks-in-c.png`: the guest walking in,
+  1.7 m behind the host's body.
+
+### 11.4 Not covered
+
+- **Sliding round.** This is a capsule against a capsule. Unless Sam hits the partner exactly centred,
+  pushing at it makes him slide round it: within 0.6 s at full stick, 1.2-2.2 s at half stick. He would
+  do the same round an NPC. Not tried: whether NPCs or BTs block him harder.
+- **Climb prompt.** Pressed against the partner, the game showed "Climb" (`101113`, `05-slow-in-a`).
+  Sam's movement probes may count the partner's 1.65 m capsule as a climbable obstacle [I]. In `101322`
+  the A press came after Sam had slid off, so whether he can climb onto the partner is untested. If he
+  can, layer 9 or a lower capsule may be needed.
+- **Not run:**
+  - vehicles (gated by Sam's parent and by the partner's speed), ladders, ziplines;
+  - cutscenes and menus with a partner in contact;
+  - Sam carrying cargo by hand;
+  - the partner crouching (its capsule is always standing height);
+  - other characters' sizes (Fragile gets Sam's 0.40 m capsule);
+  - the hologram fallback and the self view (code paths only: they never get a capsule);
+  - two PCs over Steam.
+- **The partner walking into you.** It is not blocked on your screen. It is blocked on the partner's
+  own screen (by your Sam), so with low lag it stops in front of you on both screens. A lagged partner
+  that overlaps you just passes through: collision is off until you are 0.9 m apart, and nobody is
+  pushed.
+- **Physics thread.** The calls run on the game thread, as the spawn does, and the physics setters take
+  locks [I]. No fault in any run.
+- **Our own vehicles and AI near Sam.** Within 4 m of Sam the capsule can still meet a local vehicle
+  or NPC standing where the partner walks in the other world, and push it [I: not run with a parked
+  trike]. Layer 10 meets the vehicle layer; no layer that meets only the Player layer was found.
+
+## 12. Gear: backpack and cargo on the bodies
+
+**Status (2026-11-17): works in hidden runs, solo (self view and a debug body) and between two games,
+with synthetic delivery cases.** No real delivery cargo was read in a run: the 100% save's Sam carries only
+personal equipment and weapons, so from the game's own data only the backpack frame and one waist piece are
+drawn; the cases in every run are the hidden-test action `gear 3 n` (12.7).
+The partner's real body and the self view's body now carry the player's own backpack and the cargo
+cases on it, synced live over the link. On by default; `session.ini partner_gear=0` turns it off (nothing
+is read, sent or spawned). There is no launcher option yet.
+
+Code:
+- `native/mod/partner_gear.{hpp,cpp}`: reading our gear, the send schedule, the props (spawn, colour,
+  show, remove).
+- `native/mod/real_body.cpp`: the placement in the pose detour (`PublishGear`, `PlaceGear`), the
+  path + GUID spawn shared with the bodies (`BeginByPath`), `ReadJointModel`.
+- `native/mod/pose_wire.{hpp,cpp}`: the STC1 frame. `native/mod/link.cpp`: its own datagram, queue and
+  sequence filter. `native/mod/player_sync.cpp`: send, receive, echo, the tick.
+
+### 12.1 What the game has [V: decompiles, byte checks, run logs]
+
+| What | Where |
+|---|---|
+| Inventory component | player `+0x54C8` (byte-checked store `0x14271FC22`) |
+| Backpack | inventory `+0x4CB8`, a reference: entity = value − 0x20, `DSBackpackEntity` (store `0x1427C0D11`) |
+| Odradek | inventory `+0x4CA0`, entity = value − 0x20, `DSOdradekBodyEntity` (store `0x1427C0BC8`) |
+| Baggage carrier | player `+0x54D0` `DSBaggage2CarrierComponent` (store `0x14271FC38`), carrier object `+0x50` (bind `0x142CB1ED0`) |
+| Carrier | `+0x10` slot count, `+0x18` slot pointers (lookup `0x142C52010`) |
+| Slot | `+0x01` type (1 back, 2/3 arms, 4/5 waist, 6/7 hands, 10+ weapons, shoes...), `+0x0C` pieces, `+0x18` stack count, `+0x20` stack pointers (walk `0x142C536E0`) |
+| Stack | `+0x10` count, `+0x18` `DSBaggage2` pointers |
+| `DSBaggage2` | `+0x20` u8 model byte, `+0x21` u8, `+0x28` `DSGameBaggageListItem*`, **`+0x38` world position (3 doubles), `+0x50` rotation rows (9 floats)**, `+0xD8` entity index |
+| `DSGameBaggageListItem` | `+0x3A` attribute (1 Personal), `+0x3B` case type, `+0x3E` volume (S, M, L, LL), `+0x50` weight (dsdc_types offsets) |
+
+**Carried pieces have no entity.** Their entity index is −1 (run `20261117-105218`); the research's
+route through the baggage manager's entity table only finds pieces lying in the world. The
+`DSBaggage2` itself keeps the piece's world transform in the entity layout: a valid rotation, 0.8-1.5 m
+from Sam's root, updated as he walks (run `20261117-105905`). It is read fault-free, twice, and refused
+unless it is a rotation within 6 m of Sam. There is no byte check for `+0x38`; the plausibility check is
+the guard [I].
+
+**The 100% save** at its start (Mountain Knot City) carries 9 pieces, all *personal*: 5 on the back
+(equipment and weapons in 3 stacks), 2 on the arms (equipment), a weapon and the ladder on the waist,
+plus slots 10-17 (weapons, shoes...). Relative to the backpack, the back pieces sit on an exact grid
+(the 3 stacks 0.13 m apart outwards along the backpack's y axis, pieces 0.27 m apart upwards, no
+rotation), so they ride rigidly on it [V log].
+
+### 12.2 What is drawn
+
+- **The backpack:** `demo_bak0_mule_def` (`08ab4fca-839a-3142-86d1-b154336412a0`), at the backpack
+  entity's pose relative to Sam's joint 4 (`JNT_C_B_004_Spine`): measured (−0.005, 0.012, −0.136) m, the
+  same as the `HLP_Backpack` helper in the game data (0, 0.022, −0.141) [V]. It is the bare frame with its
+  small lower pouch: Sam's own backpack also shows its rain cover, pouches and gun case, which are
+  separate sub-entities with no prop.
+- **Cargo cases** (`demo_bsm0_baggagesmall0_new`, `demo_bmd0_main_def_v02_new`, `demo_bla0_baggagelarge0_new`,
+  `demo_blx0_main_def`, `demo_blx1_main_def`): each piece at its own pose, relative to the backpack (back
+  slot) or to the nearer joint of a left/right pair (arms: joints 7/36, hands: 9/38; waist: hips 1).
+  Which pieces: deliveries (list item case type Normal, LiquidOnly, Material, Delicate, SmallDelicate,
+  ToxicGas) in any slot, and a weapon on the waist (drawn as a small case where the game places that piece: on the **left** hip, slot type 4. Sam
+  shows a dark item there; the cream crate visible on his right hip is the other waist piece, slot
+  type 5, case type 12, which is not drawn [V: screenshots `111812` `01-self-back` / `06-sam-real-gear`,
+  log positions]). Their model
+  (`EDSBaggage2Model`) comes from the list item: case type + volume (+ Personal). Weapon cases, material
+  tanks, `bsm1` and `blx2` are drawn as the case of the nearest size (approximate); builders, carts, the
+  ladder, shields and the heater are not drawn (no plain prop exists).
+- **Not drawn:** personal equipment and weapons on the back and arms. In the 100% save they show on Sam
+  as the backpack's dark rain-cover bag and pouches, not as cases; their model byte (6, `PersonalLarge`)
+  drawn as a large case covered Fragile's head (run `20261117-105905`, `02-self-front`), so they are left
+  out. The Odradek: the cutscene prop stands in its unfolded bind pose (a gold arm hanging off the left
+  shoulder, run `20261117-104819`), so it is read but not drawn. The BB pod: not found in this save
+  (inventory `+0x4D60` is not an entity there).
+- **Colours:** the props keep their own look (silver cases with yellow straps; the medium case is the
+  dark BRIDGES one). The config's 52 colour variations are not matched to the pieces: the `DSBaggage2`
+  field that selects one was not found. STC1 carries a variation byte for that (always 0xFF now).
+
+### 12.3 Sender (game thread, every 100 ms)
+
+1. Sam's world transform, his pose's model matrices (77 × 0x40: three axis rows, then the translation;
+   verified: joint 31, the head, 1.59 m above the root; joint 4 1.17 m) and every item's world transform.
+2. Each item relative to its anchor (`Relative`), as position + rotation.
+3. While Sam moves or turns (more than 2 cm or about 2° since the last read) the poses of an unchanged
+   layout are kept: the tick may read Sam and the pieces a frame apart. A new layout is taken when the
+   next read (100 ms later) agrees: one torn or refused read (an item dropped, every later index
+   shifted) would otherwise make the receiver respawn every prop. The cargo walk stops after 256
+   stacks + pieces per read (garbage counts cannot make 64³ reads).
+4. The self view hides Sam with reason 63, and the game then hides the backpack too: its last visible
+   state from before is used while the self view is shown. Cargo in a carrier slot counts as carried.
+5. **Send** (`gear::TakeSend`): when the layout hash changes, when a pose moved by more than 2 cm / 4°
+   (at most every 250 ms), and every 1 s. Only a game with the pose hook (a real-body game) sends.
+   Measured: 10-21 STC1 frames per 10 s, 2 items = 52 bytes each.
+
+### 12.4 Wire: STC1
+
+`'STC1' | u32 seq | u8 version 1 | u8 count | u8 flags | u8 dropped | u16 layout hash | u16 0`, then
+`count` × 18 bytes: `u8 kind | u8 model | u8 variation | u8 joint | u8 parent | u8 0 | i16 x, y, z (1 mm)
+| 48-bit smallest-three rotation` (the STJ1 codec). At most 40 items (736 bytes), sent in a datagram of
+its own (one FRAME message). The decoder checks the size, the version, each item's kind and anchor (a
+joint < 77, or an earlier item) and the layout hash; unknown flag bits are cleared. `DecodePose`,
+`DecodeJoints` and `DecodeName` reject it and it rejects theirs (ctest `st_net_tests`, `TestGearFrames`).
+The receiver keeps its own newer-seq filter and a 4-frame queue; a new link session clears the
+partner's gear. Mixed builds never meet (HELLO build check, section 4).
+
+### 12.5 Receiver: props
+
+- One prop per drawn item, loaded by path + GUID exactly like the bodies (`realbody::BeginByPath`,
+  section 2.1, without the spawner log lines), at most 4 started per tick, spawned 20 m under the body
+  and invisible. Each realized prop is refused if it is a Humanoid / player or carries AI, controller,
+  capsule or physics components (none did); a prop that fails to load is not tried again this session.
+- **Placement in the detour** (`real_body.cpp`): right after the partner body's pose was written (its
+  world transform and the fresh model matrices), and for the self view right after Sam's transform was
+  copied onto the self body (this frame's transform, the body's current pose). Each prop:
+  `world = body ∘ model matrix[anchor joint, mapped to the body's own skeleton] ∘ item pose`, or the
+  parent item's world ∘ item pose; then the prop's vtable and GUID are checked and
+  `Entity_ExportedSetWorldTransform` is called. The list is published through a seqlock; unpublishing
+  waits until no detour is inside (as for the bodies). The tick places them once more after the
+  partner body was moved. Counters in every run: `aba 0, bad matrix 0`.
+- **Shown** with the body: the partner's when its body is visible, the self view's only while the self
+  body is shown in Sam's place (Sam's own gear is visible otherwise). Hidden at once while Sam is
+  asleep; removed after 1 s asleep, when the body changes (another character, a respawn), when the
+  body goes (hologram fallback, link loss, 10 s silence) and on a new layout for the props whose kind
+  changes. The hologram, marker and echo bodies never get props.
+- On another body (Fragile, Cliff) the backpack follows that body's own spine joint: it sits on her
+  back, not where it would be on Sam.
+
+### 12.6 Evidence (hidden, `-SeedSaves complete-100`, all exit 0, no error.txt, real saves unchanged, 0 uploads)
+
+| Run (`build-testenv\runs\`) | What it shows |
+|---|---|
+| `20261117-114454-two-games-all` (**the final code**, pass, collision and tags on) | **Different gear on each game** (review: before this both games always had the same layout). Host `gear 3 1`, guest `gear 3 2`: host log `the partner's gear: 4 items (... cargo 3 ...)`, layout D58E; guest log `the partner's gear: 3 items (... cargo 2 ...)`, layout C70C, each the other game's own layout. Guest `02-guest-sees-host-and-self`: her own Fragile with two cases stacked on her backpack and the small case at her left hip, and the host's Sam body ahead with **one** case (enlarged crop). Host `03-host-sees-guest-front` and `04-host-sees-guest-c`: the guest's Fragile with her top case showing over her head and the hip case. `new layouts held a read 2` each (the debounce: the start layout and the `gear 3` change). |
+| `20261117-112035-gear-self` (pass) | The same steps as `110347` below (run `111812`, the same code but the stack 0.25 m out: `01-self-back`, `03-walk-b`, `04-run-b` Fragile with the backpack frame and hip case standing, walking and running; `06-sam-real-gear` Sam's real gear); the synthetic stack now sits in the game's innermost layer (0.12 m out from the backpack): `09-three-cases` on the debug Fragile's back, `11-self-again` (front) and `12-self-again-front` (back) on the self view. `[gear-self]` / `[gear]` placements: aba 0, bad matrix 0. |
+| `20261117-112231-two-games-gear` (pass) | Guest view of the host's Sam body (enlarged crops): `02-guest-sees-host` and `04b-` the backpack frame and hip case on his back; `03-guest-sees-host-three-cases` 3 cases stacked on it; `04-guest-sees-host-one-case` 1 case. Guest log: `layout B585 -> C70C: 2 prop(s) removed`, `C70C -> 8089: 1 prop(s) removed`. Host view of the guest's Fragile: `03a-host-sees-guest-front` (waist case at her side), `03b-host-sees-guest-back` (the frame's bars on her back, the case at her left hip), as on her own screen (run `111245`, `02-guest-self`). STC1: 10-15 frames per 10 s each way, poses 575 B per datagram unchanged. |
+| `20261117-110347-gear-self` (pass; the final classification, the synthetic stack 0.25 m out) | Self view, Fragile: `01-self-back` the backpack frame on her back and the waist weapon as a small case at her left hip; `03-walk-b` and `04-run-b` the same while walking and running. `06-sam-real-gear` (self view off): Sam with his real gear (dark bag, pouches, ladder, the hip box). `07-debug-fragile-back`: a debug Fragile (the partner placement path) with the backpack frame. `09-three-cases`, `10-one-case`, `10b-no-cases`: `gear 3 3/1/0` stacks 3 / 1 / no synthetic delivery cases on the debug body's backpack. `11-self-again` (front) and `12-self-again-front` (her back): the self view with the 3-case stack. |
+| `20261117-111015-two-games-gear` (pass; stack 0.25 m out) | The guest sees the host's Sam body with 3 synthetic cases (`03-guest-sees-host-three-cases`), then 1 (`04-`), then none (`04b-`): the guest log shows `layout B585 -> C70C: 2 prop(s) removed`. |
+| `20261117-111245-two-games-gear` (pass; stack 0.25 m out) | The host's own Sam (`02-host-own-gear`) and the guest's view of him (`02-guest-sees-host`: backpack frame and hip case on his back); the guest's own Fragile (`02-guest-self`) and the host's view of her, front and back (`03a-host-sees-guest-front`, `03b-host-sees-guest-back`: waist case at her side, the frame's bars on her back). |
+| `20261117-105905-gear-self` | The first run that read the cargo: 9 pieces; every one drawn by its model byte. `02-self-front`: two large cases at her shoulders cover her head (the arm-slot equipment), which led to the classification above. |
+| `20261117-104819-gear-self`, `-105218-` | Earlier builds: backpack and Odradek only (the cargo walk went through the entity index, −1 for carried pieces). |
+
+### 12.7 Not covered
+
+- **Real deliveries.** The 100% save's Sam carries only personal equipment and weapons, so the
+  delivery path (case type → model) ran only with synthetic cases (`gear 3`, hidden tests only); real
+  orders, liquid barrels, material tanks and hand-held cargo were not seen in a run [I].
+- **Colours** (normal / personal / BRIDGES variations) are not matched; **equipment and weapons on the
+  back and arms**, the **rain cover, pouches and gun case**, the **Odradek**, the **BB pod**, the
+  **ladder** and other tools are not drawn.
+- **Moving fidelity:** poses are refreshed only while Sam stands still (a new layout is taken at once),
+  so the backpack's sway is not synced.
+- **Not run:** vehicles (the cargo moves to the vehicle; the props follow what the carrier holds),
+  cutscenes and loads with props shown, a character change mid-session, link loss, two PCs.
+- **Collision:** the props have no physics; the partner's capsule (section 11) does not grow with a
+  tall stack.

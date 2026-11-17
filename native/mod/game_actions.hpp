@@ -136,6 +136,23 @@ struct Diagnostics {
 };
 // Game thread. Reads only.
 void ReadDiagnostics(Diagnostics* out) noexcept;
+// Game thread. Reads only. The DSGameState flags (+8) and the GameModule load mask (+0x44C), the
+// two "the world is not being played" signals (name tags hide on kStoppingGameEventMask or any
+// load bit). False (both 0) when a byte check failed or a global is not set.
+bool ReadStopGates(std::uint64_t* state_flags, std::uint32_t* load_mask) noexcept;
+// Game thread. Player collision (partner_collision.cpp): nullptr when the local Sam is on foot in
+// the played world, otherwise why not (no player, asleep, loading/suspended, a stopping game event
+// such as a menu or cutscene, the post-load setup phase, attached to a parent entity such as a
+// vehicle, a ground snap pending; with `sequence` also bound to a sequence, the one game call:
+// ControlledEntity_ExportedIsBoundToSequence, byte-checked). Reads only otherwise.
+const char* LocalCollisionBlock(bool sequence) noexcept;
+// Player collision debug command (partner_collision.cpp): see docs/debug-actions.md "Player collision".
+bool CollisionCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
+// Gear debug command (partner_gear.cpp): see docs/debug-actions.md "Gear".
+bool GearCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
+// Name tags debug command (nametags.cpp): 0 normal, 1 self test (a tag above your own Sam),
+// 2 log the camera numbers, 3 <0/1> tags off / on.
+bool NameTagCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 
 // ------------------------------------------------------------------ decoders (pure)
 // DSGameState flags use EDSGameStateForScript bit values (RTTI enum 0x144C66648).

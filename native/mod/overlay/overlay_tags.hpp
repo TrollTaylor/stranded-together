@@ -1,0 +1,58 @@
+// Name tags in the overlay (docs/real-partner-body.md section 10): the partner's name drawn
+// above their head, projected through the game's own camera every presented frame.
+//
+//   game thread  --Publish(Frame)-->  [locked copy]  --inside Present-->  Draw
+//
+// The game side (nametags.cpp) decides WHAT and WHETHER (name, world anchor, the game-state
+// gates) and registers the camera reader; the overlay reads the camera view at Present (fault-
+// free, through the reader) so the tag follows the frame being shown, projects and draws. With
+// no reader registered (the overlay harness) nothing is ever drawn.
+#pragma once
+#include <cstddef>
+#include <cstdint>
+
+#include "nametag_math.hpp"
+
+struct ImDrawList;
+
+namespace st::overlay::tags {
+
+inline constexpr unsigned kMaxTags = 2;
+
+struct Tag {
+    double anchor[3] = {};   // world point the label's bottom centre sits on (above the head)
+    char text[96] = {};      // UTF-8, sanitized
+};
+
+struct Frame {
+    bool show = false;            // all gates clear (game thread)
+    std::uintptr_t view = 0;      // the game's camera view object (passed to the reader)
+    unsigned count = 0;
+    Tag tags[kMaxTags];
+};
+
+// Reads the camera view snapshot of `view` (game memory, fault-free). False: unusable.
+using ViewReader = bool (*)(std::uintptr_t view, nametag::View* out) noexcept;
+void SetViewReader(ViewReader reader) noexcept;
+
+// Game thread, every tick while the feature is on (a frame older than 500 ms is not drawn).
+void Publish(const Frame& f) noexcept;
+// Render thread: a fresh frame wants drawing (the overlay keeps its renderer for it).
+bool Wanted() noexcept;
+// Render thread, between ImGui::NewFrame and Render. w, h: back buffer; ui_scale: the overlay's.
+void Draw(ImDrawList* dl, float w, float h, float ui_scale) noexcept;
+
+struct Stats {
+    unsigned long published = 0;      // frames published
+    unsigned long drawn_frames = 0;   // presented frames with at least one tag drawn
+    unsigned long view_failures = 0;  // reader said no (torn twice, wrong vtable, not perspective)
+    unsigned long offscreen = 0;      // tags not drawn: behind the camera / outside the view / too far
+    float last_x = 0, last_y = 0;     // last drawn tag: anchor in pixels
+    float last_w = 0, last_h = 0;     // its box (pixels)
+    float last_dist = 0;              // metres
+    float last_size = 0;              // text px
+    bool last_fitted = false;         // letter-/pillarboxed viewport
+};
+Stats GetStats() noexcept;
+
+}  // namespace st::overlay::tags

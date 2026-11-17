@@ -26,6 +26,7 @@
 
 #include "body_table.hpp"
 #include "game_api.hpp"
+#include "partner_holo.hpp"
 #include "pose_wire.hpp"
 
 namespace st::realbody {
@@ -104,6 +105,45 @@ void ConfigureSelf(const bodies::Body* body) noexcept;
 bool SelfConfigured() noexcept;
 bool SelfShown() noexcept;           // the body is shown and Sam hidden right now
 game::Entity* SelfEntity() noexcept;  // the self body (loading or live), nullptr when none
+
+// ---- gear props (docs/real-partner-body.md section 12; partner_gear.cpp owns them)
+// Prop entities (backpack, cargo, Odradek, BB pod) placed on a body every frame: in the detour,
+// right after the body's pose was written (the partner) or right after the self body got Sam's
+// transform (the self view), from the body's own world transform and the model matrix of the
+// anchor joint, so they move in the same frame as the body. Each prop is checked (vtable + GUID)
+// before the game's Entity_ExportedSetWorldTransform is called on it.
+struct GearProp {
+    std::uintptr_t e = 0;       // the prop entity
+    std::uintptr_t e_vt = 0;    // its vtable when validated
+    game::Guid guid;            // its per-creation GUID
+    std::uint8_t joint = 0;     // anchor: a joint of Sam's skeleton (mapped onto the body's own)
+    std::int8_t parent = -1;    // or an earlier prop of the list (cargo on the backpack)
+    float p[3] = {};            // position in the anchor's frame (m)
+    float r[3][3] = {};         // rotation rows in the anchor's frame
+};
+inline constexpr unsigned kMaxGearProps = 40;
+enum class GearSlot : std::uint8_t { partner = 0, self = 1 };
+// Game thread. n > 0 publishes the list (it replaces the previous one); n = 0 unpublishes it and
+// waits until no detour uses it (call before removing a published prop).
+void PublishGear(GearSlot slot, const GearProp* props, unsigned n) noexcept;
+// Game thread: places the published props from the body's current world transform and pose now
+// (the tick's pass, after the partner body was moved). Returns the props placed.
+unsigned PlaceGearNow(GearSlot slot) noexcept;
+// Detour placement counters (per slot): placements, ABA refusals, bad matrices.
+void GearCounters(GearSlot slot, std::uint32_t* placed, std::uint32_t* aba, std::uint32_t* bad) noexcept;
+// The body entity of a slot when live (partner slot: also a debug body), nullptr otherwise.
+game::Entity* SlotEntity(GearSlot slot) noexcept;
+// Starts loading any DSControlledEntity by path + GUID (the bodies' route, BeginSlot), for props.
+// Game thread; the caller owns `out` and must end it with holo::SpawnTeardown.
+bool BeginByPath(const char* path, const char* guid_text, const game::WorldTransform& at, std::uint32_t tag, holo::Spawn* out,
+                 char* why, std::size_t cap) noexcept;
+// The model-space matrix (4 rows: right, forward, up axes, then the translation) of joint `j` of an
+// entity's current pose (its SkinnedModel at +0xB8, checked; 77-joint layout). Fault-free reads.
+bool ReadJointModel(game::Entity* e, unsigned j, float (&m)[4][4]) noexcept;
+// The head joint (joint 31 of the 77-joint layout, through the body's joint map for a live partner
+// or self body; as is for the local Sam) in world space. False when unreadable or implausible
+// (not 0.3-2.4 m over the root, or more than 1 m beside it). Name tags anchor on it.
+bool HeadWorld(game::Entity* e, double (&pos)[3]) noexcept;
 
 // The per-frame sync faulted (dllmain GuardedTick) and Tick will not run again this session: the
 // detour stops all work (both slots unpublished, no capture), our hide reason is cleared on Sam and

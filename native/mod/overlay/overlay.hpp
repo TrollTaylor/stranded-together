@@ -12,7 +12,8 @@
 // Everything after that happens inside the game's Present, under one lock,
 // and every failure disables the overlay for the run with one log line.
 // The D3D12 renderer (and every reference to the game's swapchain/queue) exists
-// only while the menu or the startup hint is on screen.
+// only while the menu, the startup hint or a name tag (overlay_tags.hpp) is on screen, and
+// is dropped before the game creates a new swapchain.
 // See docs/debug-menu.md.
 #pragma once
 #include <cstddef>
@@ -30,6 +31,9 @@ struct Options {
     std::wstring mod_dir;            // <game>\stranded_together (positions.txt lives here)
     std::string build;               // shown in the menu title
     bool startup_hint = true;        // "F9: debug menu" toast once Sam is in the world
+    // false: the overlay is installed only for the name tags (session.ini debug_menu=0,
+    // name_tags=1): no menu, no toggle key, no hint, the game window is not subclassed.
+    bool menu = true;
     // Hidden test runs (session.ini automation=1, docs/hidden-testing.md): the
     // virtual pad answers XInputGetState, GetForegroundWindow answers the game
     // window, SetCursorPos/ClipCursor never reach the system, the menu ignores

@@ -154,6 +154,9 @@ bool DoRealMirror(const Request& r, char* msg, std::size_t cap) { return game::R
 bool DoRealControl(const Request& r, char* msg, std::size_t cap) { return game::RealBodyCommand(7, r.v, msg, cap); }
 bool DoSelfView(const Request& r, char* msg, std::size_t cap) { return game::RealBodyCommand(8, r.v, msg, cap); }
 bool DoRealOutfit(const Request& r, char* msg, std::size_t cap) { return game::RealBodyCommand(9, r.v, msg, cap); }
+bool DoNameTags(const Request& r, char* msg, std::size_t cap) { return game::NameTagCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
+bool DoCollision(const Request& r, char* msg, std::size_t cap) { return game::CollisionCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
+bool DoGear(const Request& r, char* msg, std::size_t cap) { return game::GearCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoVoicePing(const Request& r, char* msg, std::size_t cap) {
     // The live partner entity, exactly as the Partner tab sees it (0 when there is none).
     Snapshot s;
@@ -226,6 +229,9 @@ constexpr Row kRows[] = {
     {{Action::real_control, Tab::tools, "Real control", "Load the n-th streamed-out collectors hologram through the real body's path+GUID route.", false}, &DoRealControl},
     {{Action::self_view, Tab::tools, "Self view", "Show yourself as a character in place of Sam on this screen (1/0, body id, follow mode).", false}, &DoSelfView},
     {{Action::real_outfit, Tab::tools, "Real outfit", "Partner Sam's outfit: 0 log, 1 like your Sam, 2 exos + suit colour, 3 override off.", false}, &DoRealOutfit},
+    {{Action::name_tags, Tab::tools, "Name tags", "Name tags: 0 normal, 1 self test above your own Sam, 2 log the camera, 3 0/1 off/on.", false}, &DoNameTags},
+    {{Action::collision, Tab::tools, "Collision", "Player collision: 0 log, 1 0/1 off/on, 2 ms trace, 3 m pin the partner ahead, 4 layer type.", false}, &DoCollision},
+    {{Action::gear, Tab::tools, "Gear", "Backpack and cargo on the bodies: 0 log, 1 0/1 partner props, 2 0/1 self-view props, 4 0/1 own gear on the debug body.", false}, &DoGear},
 };
 constexpr std::size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);
 static_assert(kRowCount == static_cast<std::size_t>(Action::count), "every Action needs exactly one registry row");

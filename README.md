@@ -23,8 +23,13 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
   (porter, silver or gold). A guest who picked another character appears as it on their own
   screen too. If the real character cannot be shown, the partner appears as a hologram
   instead. See [docs/real-partner-body.md](docs/real-partner-body.md).
-- Not yet: cargo, backpack and Odradek on the partner, facial animation, vehicles,
-  world/BT/mission sync.
+- The partner's name floats above their head (your co-op name, or your Steam name).
+- Players cannot walk through each other: on foot, your partner's body stops you like
+  another character does.
+- **Experimental:** the backpack and the delivery cases each player carries show on their
+  character on the other screen, and on your own character when you appear as one.
+- Not yet: equipment and weapons on the backpack, cargo colours, the Odradek, facial
+  animation, vehicles, world/BT/mission sync.
 
 ## Download
 

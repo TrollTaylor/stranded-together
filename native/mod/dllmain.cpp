@@ -17,6 +17,8 @@
 #include "MinHook.h"
 #include "real_body.hpp"
 #include "overlay/overlay.hpp"
+#include "partner_collision.hpp"
+#include "partner_gear.hpp"
 #include "overlay/overlay_input.hpp"
 #include "player_sync.hpp"
 #include "sandbox.hpp"
@@ -63,13 +65,21 @@ bool GuardedTick() noexcept {
 
 // After a fault the tick never runs again: nothing it maintains may stay half done (the self
 // view's hide reason on Sam, the bodies published to the animate detour).
-bool GuardedEmergencyStop() noexcept {
+// Each stop on its own: one that faults must not keep the others from running. The capsule first
+// (a frozen capsule would be an invisible wall for the rest of the session).
+bool GuardedStop(void (*stop)() noexcept) noexcept {
     __try {
-        st::realbody::EmergencyStop();
+        stop();
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
+}
+bool GuardedEmergencyStop() noexcept {
+    const bool coll = GuardedStop(&st::collision::EmergencyStop);
+    const bool body = GuardedStop(&st::realbody::EmergencyStop);
+    const bool gear = GuardedStop(&st::gear::EmergencyStop);
+    return coll && body && gear;
 }
 
 // frame_cap=<fps> (session.ini; the launcher's local two-instance test and hidden two-game
@@ -169,9 +179,15 @@ DWORD WINAPI Bootstrap(LPVOID) {
     }
 
     // In-game debug menu (Direct3D 12 overlay). Installed before anything that
-    // can fail below, so the menu's Status tab can show why co-op is off.
-    if (cfg.debug_menu || local != st::sandbox::LocalInput::off || !cfg.local_window.empty()) {
+    // can fail below, so the menu's Status tab can show why co-op is off. Name tags draw through
+    // it too (docs/real-partner-body.md section 10): with debug_menu=0 it is installed for them
+    // alone, without the menu (no toggle key, no window hooks).
+    const bool menu = cfg.debug_menu || local != st::sandbox::LocalInput::off || !cfg.local_window.empty();
+    const bool tags = cfg.name_tags && (cfg.role == st::Role::host || cfg.role == st::Role::guest || cfg.role == st::Role::echo);
+    if (menu || tags) {
         st::overlay::Options ov;
+        ov.menu = menu;
+        ov.startup_hint = menu;
         ov.toggle_vk = cfg.debug_menu_vk;
         ov.mod_dir = mod_dir;
         ov.build = ST_BUILD_ID;
@@ -183,6 +199,7 @@ DWORD WINAPI Bootstrap(LPVOID) {
         const bool overlay_ok = st::automation::WaitForGameD3D12(
             120000, local != st::sandbox::LocalInput::off || !cfg.local_window.empty() || st::automation::Enabled());
         if (!overlay_ok || !st::overlay::Install(ov)) st::Log("[mod] debug menu unavailable this run (see [overlay] above)");
+        else if (!menu) st::Log("[mod] overlay installed for the name tags only (debug_menu=0)");
     } else {
         st::Log("[mod] debug menu off (debug_menu=0)");
     }

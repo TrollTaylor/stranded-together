@@ -149,6 +149,16 @@ Config LoadConfig(const std::wstring& dir) {
             c.one_shot = ParseBool(v);
         } else if (k == "name") {
             c.player_name = v;
+        } else if (k == "name_tags") {
+            c.name_tags = ParseBool(v);
+        } else if (k == "partner_collision") {
+            c.partner_collision = ParseBool(v);
+        } else if (k == "partner_gear") {
+            c.partner_gear = ParseBool(v);
+        } else if (k == "partner_collision_layer") {
+            const int layer = std::atoi(v.c_str());
+            if (layer == 9 || layer == 10) c.partner_collision_layer = layer;
+            else Log("[config] partner_collision_layer=%s ignored (9 or 10)", v.c_str());
         } else {
             Log("[config] session.ini:%d unknown key '%s' ignored", lineno, k.c_str());
         }
@@ -177,6 +187,9 @@ Config LoadConfig(const std::wstring& dir) {
         PartnerBodyName(c.partner_body), c.partner_holo, c.partner_marker, c.partner_voice ? 1 : 0,
         c.partner_character.empty() ? "-" : c.partner_character.c_str(), c.my_character.empty() ? "-" : c.my_character.c_str(),
         c.self_character ? 1 : 0, c.pose_hook ? 1 : 0);
+    Log("[config] name_tags=%d name=%s", c.name_tags ? 1 : 0, c.player_name.empty() ? "- (Steam name)" : "set");
+    Log("[config] partner_collision=%d layer=%d", c.partner_collision ? 1 : 0, c.partner_collision_layer);
+    Log("[config] partner_gear=%d", c.partner_gear ? 1 : 0);
     return c;
 }
 

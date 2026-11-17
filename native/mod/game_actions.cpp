@@ -891,6 +891,33 @@ bool RealBodyCommand(int op, const double (&v)[3], char* msg, std::size_t cap) n
     return realbody::DebugCommand(op, v, msg, cap);
 }
 
+bool ReadStopGates(std::uint64_t* state_flags, std::uint32_t* load_mask) noexcept {
+    *state_flags = 0;
+    *load_mask = 0;
+    EnsureResolved();
+    if (!(g_features & kFeatState) || !(g_features & kFeatModule)) return false;
+    const World w = ReadWorld();
+    return w.gs && w.gm && Rd(w.gs + kGsFlags, *state_flags) && Rd(w.gm + kGmLoadMask, *load_mask);
+}
+
+const char* LocalCollisionBlock(bool sequence) noexcept {
+    EnsureResolved();
+    if (!(g_features & kFeatState) || !(g_features & kFeatModule)) return "game state checks unavailable (byte check)";
+    Sam s;
+    if (!ReadSam(&s)) return "no local player";
+    if (const char* why = Blocked(s, 0, nullptr)) return why;
+    if (Q(s.e + kEntParent)) return "Sam is attached to a parent entity (vehicle, mount)";
+    const std::uintptr_t p = Q(s.e + kSamPlayer);
+    std::int32_t snap = 0;
+    if (p && Q(p) == Base() + kPlayerGameVtable && Rd(p + kPlayerSnapPending, snap) && snap == 1) return "a ground snap is pending";
+    if (sequence && (g_features & kFeatTeleport)) {
+        bool bound = false;
+        if (!CallIsBoundToSequence(s.e, &bound)) return "sequence check faulted";
+        if (bound) return "Sam is bound to a sequence (scripted scene)";
+    }
+    return nullptr;
+}
+
 void ReadDiagnostics(Diagnostics* d) noexcept {
     *d = Diagnostics{};
     EnsureResolved();

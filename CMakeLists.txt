@@ -15,6 +15,14 @@ if(GIT_FOUND)
                   OUTPUT_VARIABLE _st_git OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET RESULT_VARIABLE _st_git_rc)
   if(_st_git_rc EQUAL 0 AND _st_git MATCHES "^[0-9a-f]+$")
     set(ST_BUILD_ID "${PROJECT_VERSION}+${_st_git}")
+    # Tracked files changed (at configure time): "-m", so a development build never passes the
+    # HELLO build check against the release made from the same commit (tools/release.ps1 needs a
+    # clean tree, so releases never carry it). Re-evaluated whenever CMake re-configures.
+    execute_process(COMMAND "${GIT_EXECUTABLE}" status --porcelain --untracked-files=no WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+                    OUTPUT_VARIABLE _st_dirty OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET RESULT_VARIABLE _st_dirty_rc)
+    if(_st_dirty_rc EQUAL 0 AND NOT _st_dirty STREQUAL "")
+      set(ST_BUILD_ID "${ST_BUILD_ID}-m")
+    endif()
   endif()
 endif()
 message(STATUS "stranded-together build id ${ST_BUILD_ID}")
@@ -69,7 +77,8 @@ set(ST_OVERLAY_SOURCES
   native/mod/overlay/overlay_keys.cpp
   native/mod/overlay/overlay_menu.cpp
   native/mod/overlay/overlay_positions.cpp
-  native/mod/overlay/overlay_renderer.cpp)
+  native/mod/overlay/overlay_renderer.cpp
+  native/mod/overlay/overlay_tags.cpp)
 
 # ---- The mod: winhttp.dll proxy loaded by ds.exe from the game folder
 add_library(st_mod SHARED
@@ -92,6 +101,9 @@ add_library(st_mod SHARED
   native/mod/body_choice.cpp
   native/mod/real_body.cpp
   native/mod/partner_outfit.cpp
+  native/mod/nametags.cpp
+  native/mod/partner_collision.cpp
+  native/mod/partner_gear.cpp
   native/mod/automation.cpp
   native/mod/sandbox.cpp
   ${ST_OVERLAY_SOURCES})

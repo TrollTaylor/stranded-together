@@ -18,6 +18,7 @@
 #include "overlay_keys.hpp"
 #include "overlay_menu.hpp"
 #include "overlay_renderer.hpp"
+#include "overlay_tags.hpp"
 
 // ImGui assertion sink (overlay_imconfig.h): log once per site, keep running.
 void StOverlayImGuiAssert(const char* expr, const char* file, int line) {
@@ -86,6 +87,9 @@ Resize1Fn g_orig_resize1 = nullptr;
 EclFn g_orig_ecl = nullptr;
 CreateSwapChainFn g_orig_create_chain = nullptr;
 CreateSwapChainForHwndFn g_orig_create_chain_hwnd = nullptr;
+// Both creation hooks are in: the renderer is released before the game creates a swapchain. Name
+// tags keep the renderer alive in gameplay, so they are drawn only with these hooks.
+std::atomic<bool> g_create_hooks{false};
 SetFullscreenStateFn g_orig_set_fullscreen = nullptr;
 std::atomic<bool> g_logged_fullscreen{false};
 
@@ -276,7 +280,7 @@ void FeedInput(UINT bb_w, UINT bb_h) noexcept {
 }
 
 bool HintActive(double now) noexcept {
-    if (!g_opt.startup_hint || g_hint_done) return false;
+    if (!g_opt.startup_hint || !g_opt.menu || g_hint_done) return false;
     if (g_hint_until > 0) {
         if (now < g_hint_until) return true;
         g_hint_done = true;
@@ -466,15 +470,25 @@ void FrameMain(IDXGISwapChain* chain) noexcept {
         UpdateStats([](Stats& s, const void*) { ++s.presents; }, nullptr);
     }
 
-    AttachWindow(chain);
-    input::PollToggleFallback();
     const int req = g_open_request.exchange(-1);
-    if (req >= 0) ApplyOpen(req != 0);
-    if (input::TakeToggles() & 1u) ApplyOpen(!g_open);
-    if (input::TakeCloseRequest()) ApplyOpen(false);
+    if (g_opt.menu) {  // name tags only (debug_menu=0): no window hooks, no toggles, no menu
+        AttachWindow(chain);
+        input::PollToggleFallback();
+        if (req >= 0) ApplyOpen(req != 0);
+        if (input::TakeToggles() & 1u) ApplyOpen(!g_open);
+        if (input::TakeCloseRequest()) ApplyOpen(false);
+    }
 
     const bool hint = !g_open && HintActive(now);
-    if (!g_open && !hint) {  // closed menu: nothing is drawn, nothing is kept
+    // Name tags (overlay_tags.hpp): drawn while the game thread publishes a fresh, visible frame.
+    bool name_tags = tags::Wanted();
+    if (name_tags && !g_create_hooks.load()) {
+        static bool logged = false;
+        if (!logged) Log("[overlay] name tags not drawn: the swapchain creation hooks are unavailable (a kept renderer could block the game's swapchain re-creation)");
+        logged = true;
+        name_tags = false;
+    }
+    if (!g_open && !hint && !name_tags) {  // closed menu, no tags: nothing is drawn, nothing is kept
         ReleaseRendererWhenIdle();
         return;
     }
@@ -527,6 +541,7 @@ void FrameMain(IDXGISwapChain* chain) noexcept {
     FeedInput(w, h);
 
     ImGui::NewFrame();
+    if (name_tags) tags::Draw(ImGui::GetBackgroundDrawList(), static_cast<float>(w), static_cast<float>(h), g_ui_scale);
     if (g_open) {
         const debug::Snapshot snap = debug::GetSnapshot();
         const Stats stats = GetStats();
@@ -539,7 +554,7 @@ void FrameMain(IDXGISwapChain* chain) noexcept {
         ctx.ui_scale = &g_ui_scale;
         menu::Draw(ctx);
         if (ctx.close) ApplyOpen(false);
-    } else {
+    } else if (hint) {
         DrawHint();
     }
     ImGui::Render();
@@ -758,6 +773,20 @@ void RecordCreatedChain(IUnknown* device, IDXGISwapChain* chain) noexcept {
     if (q) q->Release();
 }
 
+// The game creates a swapchain (start, or a display change): drop our renderer first. It holds
+// a reference to the old swapchain, and DXGI allows one flip-model swapchain per window, so a
+// kept reference would make the game's creation fail. Matters while name tags keep the
+// renderer alive in gameplay; the menu and the hint release it when closed anyway.
+void ReleaseRendererForNewChain() noexcept {
+    if (t_in_present) return;  // not from inside our own frame (never seen; the lock is not recursive)
+    AcquireSRWLockExclusive(&g_render);
+    if (g_renderer.Ready()) {
+        Log("[overlay] the game creates a new swapchain: renderer released first");
+        ReleaseRenderer();
+    }
+    ReleaseSRWLockExclusive(&g_render);
+}
+
 // Automation: a hidden run must never take the user's display (exclusive fullscreen).
 void LogFullscreenRefused(const char* where) noexcept {
     if (!g_logged_fullscreen.exchange(true)) Log("[overlay] automation: exclusive fullscreen refused (%s): the game stays windowed", where);
@@ -779,6 +808,7 @@ HRESULT STDMETHODCALLTYPE HookCreateSwapChain(IDXGIFactory* f, IUnknown* device,
         desc = &windowed;
         LogFullscreenRefused("CreateSwapChain");
     }
+    ReleaseRendererForNewChain();
     const HRESULT hr = g_orig_create_chain(f, device, desc, out);
     if (SUCCEEDED(hr) && out) {
         const DWORD err = GetLastError();
@@ -798,6 +828,7 @@ HRESULT STDMETHODCALLTYPE HookCreateSwapChainForHwnd(IDXGIFactory2* f, IUnknown*
         fs = &windowed;
         LogFullscreenRefused("CreateSwapChainForHwnd");
     }
+    ReleaseRendererForNewChain();
     const HRESULT hr = g_orig_create_chain_hwnd(f, device, hwnd, desc, fs, output, out);
     if (SUCCEEDED(hr) && out) {
         const DWORD err = GetLastError();
@@ -970,7 +1001,7 @@ bool Install(const Options& options) noexcept {
         if (create_hooks && vt.create_chain_hwnd != vt.create_chain)
             create_hooks = Hook(vt.create_chain_hwnd, reinterpret_cast<void*>(&HookCreateSwapChainForHwnd),
                                 reinterpret_cast<void**>(&g_orig_create_chain_hwnd), "CreateSwapChainForHwnd", why, sizeof(why));
-        if (!create_hooks) Log("[overlay] swapchain creation hooks unavailable (%s): the queue is found via ExecuteCommandLists", why);
+        if (!create_hooks) Log("[overlay] swapchain creation hooks unavailable (%s): the queue is found via ExecuteCommandLists; no name tags", why);
         why[0] = 0;
     }
     if (ok && options.automation && vt.set_fullscreen &&
@@ -994,6 +1025,7 @@ bool Install(const Options& options) noexcept {
         Log("[overlay] not installed: enabling hooks failed (%s)", MH_StatusToString(applied));
         return false;
     }
+    g_create_hooks.store(create_hooks);
     g_installed.store(true);
     UpdateStats([](Stats& s, const void*) { s.installed = true; }, nullptr);
     char key[24];
@@ -1052,7 +1084,7 @@ void Shutdown() noexcept {
 bool Installed() noexcept { return g_installed.load(); }
 bool Disabled() noexcept { return g_disabled.load(); }
 bool IsOpen() noexcept { return input::IsOpen(); }
-void SetOpen(bool open) noexcept { g_open_request.store(open ? 1 : 0); }
+void SetOpen(bool open) noexcept { g_open_request.store(open ? 1 : 0); }  // ignored without the menu (Options::menu)
 
 Stats GetStats() noexcept {
     AcquireSRWLockShared(&g_stats_lock);

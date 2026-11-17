@@ -78,8 +78,33 @@ unsigned g_jq_head = 0, g_jq_count = 0;
 std::uint32_t g_last_rx_jseq = 0;
 bool g_have_rx_jseq = false;
 
+// Name tags (STN1). Our own name: written by the game thread (SetLocalName), read under g_tx
+// by the senders. The schedule counter is per session (reset on a new session).
+char g_local_name[wire::kMaxNameBytes + 1] = {};
+std::uint8_t g_local_name_len = 0;
+bool g_name_send = false;
+std::uint32_t g_name_version = 0, g_name_sent_version = 0;
+std::uint32_t g_name_sends = 0;  // pose datagrams sent this session (the STN1 schedule)
+// The partner's name (under g_rx), cleared on a new session.
+wire::NameFrame g_peer_name;
+bool g_have_peer_name = false;
+std::uint32_t g_peer_name_generation = 0;
+// Gear layout frames (STC1): a small queue of their own, own seq state.
+struct RxG {
+    wire::GearFrame f;
+    std::uint64_t ms;
+    std::uint32_t generation;
+};
+constexpr unsigned kGQueue = 4;
+RxG g_gqueue[kGQueue];
+unsigned g_gq_head = 0, g_gq_count = 0;
+std::uint32_t g_last_rx_gseq = 0;
+bool g_have_rx_gseq = false;
+
 volatile LONG64 g_rx_frames = 0, g_tx_frames = 0;
 volatile LONG64 g_rx_joints = 0, g_tx_joints = 0, g_tx_payload = 0;
+volatile LONG64 g_rx_names = 0, g_tx_names = 0;
+volatile LONG64 g_rx_gears = 0, g_tx_gears = 0;
 volatile long g_state = static_cast<long>(lk::LinkState::off);
 
 
@@ -163,10 +188,15 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
     const std::uint64_t now = NowMs();
     bool new_session = false;
     lab::Endpoint committed{};
+    wire::NameFrame name;
+    bool have_name = false;
+    static thread_local wire::GearFrame gear;  // transport thread only
+    bool have_gear = false;
 
     AcquireSRWLockExclusive(&g_tx);
     const lk::Delivery d = g_session.OnDatagram(data, size, from, now);
     new_session = d.new_session;
+    if (new_session) g_name_sends = 0;  // the new partner gets our name with the next sends
     unsigned messages = 0;
     if (d.data && lk::ValidateBody(d.body, d.size, messages)) {
         lk::MessageReader reader(d.body, d.size);
@@ -180,6 +210,10 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
                     any_pose = true;
                 } else if (joint_count < kMaxJoints && wire::DecodeJoints(m.data, m.size, joints[joint_count])) {
                     ++joint_count;
+                } else if (wire::DecodeName(m.data, m.size, name)) {
+                    have_name = true;  // the newest in the datagram wins
+                } else if (wire::DecodeGear(m.data, m.size, gear)) {
+                    have_gear = true;
                 }
             } else if (m.type == static_cast<std::uint8_t>(lk::MsgType::close)) {
                 g_session.OnPeerClose(now);
@@ -195,14 +229,34 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
 
     if (g_use_steam && new_session && g_host && committed.address) g_steam.set_peer(lab::SteamIdOf(committed));
 
-    if (pose_count || joint_count || new_session) {
+    if (pose_count || joint_count || have_name || have_gear || new_session) {
         AcquireSRWLockExclusive(&g_rx);
         if (new_session) {
             g_q_count = 0;
             g_have_rx_seq = false;
             g_jq_count = 0;
             g_have_rx_jseq = false;
+            g_have_peer_name = false;
+            g_gq_count = 0;
+            g_have_rx_gseq = false;
             ++g_generation;
+        }
+        if (have_gear && !(g_have_rx_gseq && static_cast<std::int32_t>(gear.seq - g_last_rx_gseq) <= 0)) {
+            g_last_rx_gseq = gear.seq;
+            g_have_rx_gseq = true;
+            RxG& slot = g_gqueue[(g_gq_head + g_gq_count) % kGQueue];
+            slot.f = gear;
+            slot.ms = now;
+            slot.generation = g_generation;
+            if (g_gq_count < kGQueue) ++g_gq_count;
+            else g_gq_head = (g_gq_head + 1) % kGQueue;
+            InterlockedIncrement64(&g_rx_gears);
+        }
+        if (have_name) {
+            g_peer_name = name;
+            g_have_peer_name = true;
+            g_peer_name_generation = g_generation;
+            InterlockedIncrement64(&g_rx_names);
         }
         for (unsigned i = 0; i < joint_count; ++i) {
             const wire::JointFrame& f = joints[i];
@@ -389,18 +443,73 @@ bool Start(const Config& c) noexcept {
 
 bool Running() noexcept { return g_running != 0 && g_failed == 0; }
 
+namespace {
+// g_tx held. Adds our STN1 frame to a pose datagram when the schedule says so: the first 10
+// datagrams of a session, every 30th after that (~1 s at send_hz=30), and the next one after
+// the name changed. True when it was added (counted once the datagram is sent).
+bool AddNameFrame(lk::BodyWriter& w) noexcept {
+    if (!g_name_send) return false;
+    const std::uint32_t n = g_name_sends;
+    if (!(n < 10 || n % 30 == 0 || g_name_version != g_name_sent_version)) return false;
+    wire::NameFrame f;
+    f.flags = g_host ? wire::kNameFromHost : 0;
+    f.len = g_local_name_len;
+    std::memcpy(f.name, g_local_name, sizeof(f.name));
+    std::uint8_t buf[wire::kMaxNameFrameSize];
+    const std::size_t size = wire::EncodeName(f, buf, sizeof(buf));
+    if (!size || !w.Add(lk::MsgType::frame, buf, size)) return false;  // no room: the next datagram tries again
+    g_name_sent_version = g_name_version;
+    return true;
+}
+}  // namespace
+
+void SetLocalName(const char* utf8, bool send) noexcept {
+    char clean[wire::kMaxNameBytes + 1];
+    const std::size_t len = wire::SanitizeName(utf8 ? utf8 : "", utf8 ? std::strlen(utf8) : 0, clean, sizeof(clean));
+    AcquireSRWLockExclusive(&g_tx);
+    if (send != g_name_send || len != g_local_name_len || std::memcmp(clean, g_local_name, len) != 0) {
+        std::memcpy(g_local_name, clean, len + 1);
+        g_local_name_len = static_cast<std::uint8_t>(len);
+        g_name_send = send;
+        ++g_name_version;
+    }
+    ReleaseSRWLockExclusive(&g_tx);
+}
+
+bool PeerName(char* out, std::size_t cap, std::uint32_t* generation, bool* from_host) noexcept {
+    if (!out || !cap) return false;
+    out[0] = 0;
+    bool ok = false;
+    AcquireSRWLockShared(&g_rx);
+    if (g_have_peer_name) {
+        std::snprintf(out, cap, "%s", g_peer_name.name);
+        if (generation) *generation = g_peer_name_generation;
+        if (from_host) *from_host = (g_peer_name.flags & wire::kNameFromHost) != 0;
+        ok = true;
+    }
+    ReleaseSRWLockShared(&g_rx);
+    return ok;
+}
+
 bool SendPose(const wire::Pose& pose) noexcept {
     std::uint8_t frame[wire::kPoseFrameSize];
     const std::size_t n = wire::EncodePose(pose, frame);
-    bool sent = false;
+    bool sent = false, with_name = false;
     AcquireSRWLockExclusive(&g_tx);
     if (g_session.CanSendData()) {
         lk::BodyWriter w(g_body, sizeof(g_body));
-        if (w.Add(lk::MsgType::frame, frame, n)) sent = g_session.SendData(g_body, w.size(), NowMs());
-        if (sent) InterlockedAdd64(&g_tx_payload, static_cast<LONG64>(w.size()));
+        if (w.Add(lk::MsgType::frame, frame, n)) {
+            with_name = AddNameFrame(w);
+            sent = g_session.SendData(g_body, w.size(), NowMs());
+        }
+        if (sent) {
+            InterlockedAdd64(&g_tx_payload, static_cast<LONG64>(w.size()));
+            ++g_name_sends;
+        }
     }
     ReleaseSRWLockExclusive(&g_tx);
     if (sent) InterlockedIncrement64(&g_tx_frames);
+    if (sent && with_name) InterlockedIncrement64(&g_tx_names);
     return sent;
 }
 
@@ -409,20 +518,58 @@ bool SendPoseAndJoints(const wire::Pose& pose, const wire::JointFrame& joints) n
     const std::size_t n = wire::EncodePose(pose, frame);
     std::uint8_t jbuf[wire::kMaxJointFrameSize];
     const std::size_t jn = wire::EncodeJoints(joints, jbuf, sizeof(jbuf));
-    bool sent = false, with_joints = false;
+    bool sent = false, with_joints = false, with_name = false;
     AcquireSRWLockExclusive(&g_tx);
     if (g_session.CanSendData()) {
         lk::BodyWriter w(g_body, sizeof(g_body));
         if (w.Add(lk::MsgType::frame, frame, n)) {
             with_joints = jn && w.Add(lk::MsgType::frame, jbuf, jn);  // no room: the pose alone still goes
+            with_name = AddNameFrame(w);
             sent = g_session.SendData(g_body, w.size(), NowMs());
-            if (sent) InterlockedAdd64(&g_tx_payload, static_cast<LONG64>(w.size()));
+            if (sent) {
+                InterlockedAdd64(&g_tx_payload, static_cast<LONG64>(w.size()));
+                ++g_name_sends;
+            }
         }
     }
     ReleaseSRWLockExclusive(&g_tx);
     if (sent) InterlockedIncrement64(&g_tx_frames);
     if (sent && with_joints) InterlockedIncrement64(&g_tx_joints);
+    if (sent && with_name) InterlockedIncrement64(&g_tx_names);
     return sent;
+}
+
+bool SendGear(const wire::GearFrame& gear) noexcept {
+    std::uint8_t buf[wire::kMaxGearFrameSize];
+    const std::size_t n = wire::EncodeGear(gear, buf, sizeof(buf));
+    if (!n) return false;
+    bool sent = false;
+    AcquireSRWLockExclusive(&g_tx);
+    if (g_session.CanSendData()) {
+        lk::BodyWriter w(g_body, sizeof(g_body));
+        if (w.Add(lk::MsgType::frame, buf, n)) {
+            sent = g_session.SendData(g_body, w.size(), NowMs());
+            if (sent) InterlockedAdd64(&g_tx_payload, static_cast<LONG64>(w.size()));
+        }
+    }
+    ReleaseSRWLockExclusive(&g_tx);
+    if (sent) InterlockedIncrement64(&g_tx_gears);
+    return sent;
+}
+
+bool PopGear(wire::GearFrame& out, std::uint64_t& receive_ms, std::uint32_t& generation) noexcept {
+    bool ok = false;
+    AcquireSRWLockExclusive(&g_rx);
+    if (g_gq_count) {
+        out = g_gqueue[g_gq_head].f;
+        receive_ms = g_gqueue[g_gq_head].ms;
+        generation = g_gqueue[g_gq_head].generation;
+        g_gq_head = (g_gq_head + 1) % kGQueue;
+        --g_gq_count;
+        ok = true;
+    }
+    ReleaseSRWLockExclusive(&g_rx);
+    return ok;
 }
 
 bool PopJoints(wire::JointFrame& out, std::uint64_t& receive_ms, std::uint32_t& generation) noexcept {
@@ -483,6 +630,10 @@ Info GetInfo() noexcept {
     i.rx_joint_frames = static_cast<std::uint64_t>(g_rx_joints);
     i.tx_joint_frames = static_cast<std::uint64_t>(g_tx_joints);
     i.tx_payload_bytes = static_cast<std::uint64_t>(g_tx_payload);
+    i.rx_name_frames = static_cast<std::uint64_t>(g_rx_names);
+    i.tx_name_frames = static_cast<std::uint64_t>(g_tx_names);
+    i.rx_gear_frames = static_cast<std::uint64_t>(g_rx_gears);
+    i.tx_gear_frames = static_cast<std::uint64_t>(g_tx_gears);
     return i;
 }
 

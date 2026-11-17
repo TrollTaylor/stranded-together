@@ -207,6 +207,55 @@ Both use only the partner hologram's byte-checked spawner calls and ReadProcessM
 
 Scenarios: `anim-census-discover`, `anim-census-mule`, `anim-census-tour`, `anim-census-tour2`.
 
+### Name tags (`name_tags`; scenarios only)
+
+`native/mod/nametags.cpp`, docs/real-partner-body.md section 10.
+
+* `action name_tags 0`: normal (the partner's tag).
+* `action name_tags 1`: self test: a tag above your own Sam (`<name> (test)`), to check the projection
+  without a partner.
+* `action name_tags 2`: log the camera view (position, axes, handedness, near/far, fov, aspect) and where your
+  own Sam's feet and tag anchor project on the back buffer.
+* `action name_tags 3 <0/1>`: tags off / on for this session (on needs `name_tags=1`).
+
+Scenarios: `name-tags`, `two-games-name-tags`, `two-games-all`.
+
+### Player collision (`collision`; scenarios only)
+
+`native/mod/partner_collision.cpp`, docs/real-partner-body.md section 11.
+
+* `action collision 0`: log the state, the partner's capsule (in world, disable counter) and the self
+  checks (Sam's own capsule, its resource and radius, the layer-matrix bits).
+* `action collision 1 <0/1>`: collision off / on for this session.
+* `action collision 2 <ms>`: log the horizontal Sam-partner distance every tick for `<ms>`
+  (`[coll] trace d=...`).
+* `action collision 3 <m>`: pin the partner body `<m>` m ahead of Sam along the camera's forward (where the
+  pad's forward walks), facing him, holding its last pose; `3 0` lets it follow the stream again.
+* `action collision 4 <layer 9|10> <type 0|1>`: reconfigure the capsule (type 0 rigid body, 1 proxy).
+
+The capsule is in the world only while the partner is within 4 m of Sam (the state then reads `off: the
+partner is not near Sam`) and not riding something (`off: the partner is in a vehicle`).
+
+Scenarios: `collision`, `collision-off`, `two-games-collision`, `two-games-all`.
+
+### Gear (`gear`; scenarios only)
+
+`native/mod/partner_gear.cpp`, docs/real-partner-body.md section 12.
+
+* `action gear 0`: log our gear in full (the inventory's backpack and Odradek, every carrier slot and
+  piece with its list item, case type, volume and model, Sam's anchor joints in world space, the frame
+  sent), the partner's gear and the prop counters (with `new layouts held a read`: layouts taken only when
+  the next read agreed).
+* `action gear 1 <0/1>`: the partner's props off / on.
+* `action gear 2 <0/1>`: the self view's props off / on.
+* `action gear 3 <n>` (hidden test runs on scratch saves only): stack `n` (0..12) synthetic delivery
+  cases (large, medium, small, ...) on our backpack; they are sent and shown like carried cargo. `3 0`
+  removes them.
+* `action gear 4 <0/1>`: our own gear on the debug body (`real_spawn ... 1`): the partner's placement
+  path in a solo run.
+
+Scenarios: `gear-self`, `two-games-gear`, `two-games-all`.
+
 ### Real partner body (`real_probe`, `real_spawn`, `real_remove`, `real_names`, `real_stats`, `real_mirror`, `real_control`, `self_view`, `real_outfit`; scenarios only)
 
 `native/mod/real_body.cpp`, mechanism and evidence in [real-partner-body.md](real-partner-body.md). Needs the pose

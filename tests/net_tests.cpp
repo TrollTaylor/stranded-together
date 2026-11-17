@@ -4,10 +4,12 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <string>
 #include <vector>
 
 #include "body_choice.hpp"
 #include "body_table.hpp"
+#include "nametag_math.hpp"
 #include "pose_wire.hpp"
 #include "stcoop/link_crypto.hpp"
 #include "stcoop/link_protocol.hpp"
@@ -212,6 +214,307 @@ void TestLinkHandshake() {
     }
     CHECK(h2.state() != lk::LinkState::connected);
     CHECK(g2.state() != lk::LinkState::connected);
+}
+
+// ---- name tags: STN1 frame + sanitizer (docs/real-partner-body.md section 10)
+void TestNameFrames() {
+    char out[wire::kMaxNameBytes + 1];
+    // plain, trimmed, inner runs of space collapsed
+    CHECK(wire::SanitizeName("  Tag  Host ", 12, out, sizeof(out)) == 8 && std::strcmp(out, "Tag Host") == 0);
+    // controls, DEL, bidi overrides and zero-width characters dropped
+    const char evil[] = "A\x01" "B\x7F" "C\xE2\x80\xAE" "D\xE2\x81\xA6" "E\xE2\x80\x8B" "F\xEF\xBB\xBF" "G\xC2\x85" "H";
+    CHECK(wire::SanitizeName(evil, sizeof(evil) - 1, out, sizeof(out)) == 8 && std::strcmp(out, "ABCDEFGH") == 0);
+    // invalid UTF-8: stray continuation, overlong, surrogate, truncated sequence -> dropped
+    const char bad[] = "a\x80" "b\xC0\xAF" "c\xED\xA0\x80" "d\xE3\x81";
+    CHECK(wire::SanitizeName(bad, sizeof(bad) - 1, out, sizeof(out)) == 4 && std::strcmp(out, "abcd") == 0);
+    // valid multi-byte text is kept: "Sam" + U+00E9 + U+30B5 (katakana SA) + U+1F4E6 (package)
+    const char utf[] = "Sam\xC3\xA9\xE3\x82\xB5\xF0\x9F\x93\xA6";
+    CHECK(wire::SanitizeName(utf, sizeof(utf) - 1, out, sizeof(out)) == sizeof(utf) - 1 && std::strcmp(out, utf) == 0);
+    // 32 code points at most, cut at a code-point boundary
+    std::string many;
+    for (int i = 0; i < 40; ++i) many += "\xC3\xA9";  // 40 x U+00E9, 80 bytes
+    std::size_t n = wire::SanitizeName(many.c_str(), many.size(), out, sizeof(out));
+    CHECK(n == 64 && std::memcmp(out, many.c_str(), 64) == 0);  // 32 code points = 64 bytes
+    std::string kana;
+    for (int i = 0; i < 30; ++i) kana += "\xE3\x82\xB5";  // 90 bytes: the 64-byte cap cuts at 21 code points
+    n = wire::SanitizeName(kana.c_str(), kana.size(), out, sizeof(out));
+    CHECK(n == 63 && std::memcmp(out, kana.c_str(), 63) == 0);
+    char small[6];
+    CHECK(wire::SanitizeName("\xC3\xA9\xC3\xA9\xC3\xA9", 6, small, sizeof(small)) == 4);  // never half a sequence
+    CHECK(wire::SanitizeName(nullptr, 3, out, sizeof(out)) == 0 && out[0] == 0);
+    CHECK(wire::SanitizeName(" \t\n ", 4, out, sizeof(out)) == 0 && out[0] == 0);
+
+    // round trip
+    wire::NameFrame f;
+    f.flags = wire::kNameFromHost;
+    std::snprintf(f.name, sizeof(f.name), "%s", "TagHost");
+    f.len = 7;
+    std::uint8_t buf[wire::kMaxNameFrameSize];
+    const std::size_t size = wire::EncodeName(f, buf, sizeof(buf));
+    CHECK(size == wire::kNameHeaderSize + 7);
+    CHECK(std::memcmp(buf, "STN1", 4) == 0 && buf[4] == 1 && buf[5] == 1 && buf[6] == 7 && buf[7] == 0);
+    wire::NameFrame g;
+    CHECK(wire::DecodeName(buf, size, g) && g.len == 7 && std::strcmp(g.name, "TagHost") == 0 && g.flags == wire::kNameFromHost);
+    // the other frame decoders refuse it (a receiver tries pose, joints, then name)
+    wire::Pose pose;
+    static wire::JointFrame jf;
+    CHECK(!wire::DecodePose(buf, size, pose));
+    CHECK(!wire::DecodeJoints(buf, size, jf));
+    // and the name decoder refuses theirs
+    std::uint8_t pbuf[wire::kPoseFrameSize];
+    wire::Pose p;
+    wire::EncodePose(p, pbuf);
+    CHECK(!wire::DecodeName(pbuf, sizeof(pbuf), g));
+    // size, version, length checks
+    CHECK(!wire::DecodeName(buf, size - 1, g));
+    CHECK(!wire::DecodeName(buf, wire::kNameHeaderSize - 1, g));
+    std::uint8_t bad2[wire::kMaxNameFrameSize + 4];
+    std::memcpy(bad2, buf, size);
+    bad2[4] = 2;
+    CHECK(!wire::DecodeName(bad2, size, g));
+    std::memcpy(bad2, buf, size);
+    bad2[6] = 65;
+    CHECK(!wire::DecodeName(bad2, wire::kNameHeaderSize + 65, g));
+    // unknown flag bits are cleared; an empty name is valid
+    std::memcpy(bad2, buf, size);
+    bad2[5] = 0xF1;
+    CHECK(wire::DecodeName(bad2, size, g) && g.flags == wire::kNameFromHost);
+    wire::NameFrame empty;
+    CHECK(wire::EncodeName(empty, buf, sizeof(buf)) == wire::kNameHeaderSize);
+    CHECK(wire::DecodeName(buf, wire::kNameHeaderSize, g) && g.len == 0 && g.name[0] == 0);
+    // a hostile sender's bytes come out sanitized
+    const std::uint8_t raw[] = {'S', 'T', 'N', '1', 1, 0, 6, 0, 'x', 0x1B, '[', '2', 'J', 'y'};
+    CHECK(wire::DecodeName(raw, sizeof(raw), g) && std::strcmp(g.name, "x[2Jy") == 0 && g.len == 5);
+    // no room
+    CHECK(wire::EncodeName(f, buf, 10) == 0);
+}
+
+void TestGearFrames() {
+    // A backpack on Sam's spine, two cases stacked on it, a hand-held case, the Odradek.
+    wire::GearFrame f;
+    f.seq = 77;
+    f.flags = wire::kGearValid;
+    auto add = [&f](wire::GearKind k, std::uint8_t model, std::uint8_t var, std::uint8_t joint, std::uint8_t parent, float x, float y, float z,
+                    float deg) {
+        wire::GearItem& it = f.items[f.count++];
+        it.kind = k;
+        it.model = model;
+        it.variation = var;
+        it.joint = joint;
+        it.parent = parent;
+        it.p[0] = x, it.p[1] = y, it.p[2] = z;
+        const float h = deg * 0.0087266f;
+        it.q = wire::Quat{0, 0, std::sin(h), std::cos(h)};
+    };
+    add(wire::GearKind::backpack, wire::kGearNone, wire::kGearNone, 4, wire::kGearNoParent, 0.0f, -0.25f, 0.05f, 0);
+    add(wire::GearKind::cargo, 2, 7, 0, 0, 0.01f, -0.10f, 0.32f, 90);
+    add(wire::GearKind::cargo, 1, wire::kGearNone, 0, 0, -0.02f, -0.12f, 0.71f, -12.5f);
+    add(wire::GearKind::cargo, 3, 3, 9, wire::kGearNoParent, 0.10f, 0.0f, -0.30f, 180);
+    add(wire::GearKind::odradek, wire::kGearNone, wire::kGearNone, 35, wire::kGearNoParent, 0.05f, -0.2f, 0.11f, 33);
+    std::uint8_t buf[wire::kMaxGearFrameSize];
+    const std::size_t n = wire::EncodeGear(f, buf, sizeof(buf));
+    CHECK(n == wire::GearFrameSize(5) && n == 16 + 5 * 18);
+    wire::GearFrame g;
+    CHECK(wire::DecodeGear(buf, n, g));
+    CHECK(g.seq == 77 && g.count == 5 && g.flags == wire::kGearValid && g.dropped == 0);
+    CHECK(wire::GearLayoutHash(g) == wire::GearLayoutHash(f));
+    for (unsigned i = 0; i < 5; ++i) {
+        CHECK(g.items[i].kind == f.items[i].kind && g.items[i].model == f.items[i].model && g.items[i].variation == f.items[i].variation);
+        CHECK(g.items[i].parent == f.items[i].parent);
+        if (f.items[i].parent == wire::kGearNoParent) CHECK(g.items[i].joint == f.items[i].joint);
+        for (int a = 0; a < 3; ++a) CHECK(std::fabs(g.items[i].p[a] - f.items[i].p[a]) <= 0.0005f);  // 1 mm units
+        CHECK(wire::AngleBetween(g.items[i].q, f.items[i].q) < 0.02f);
+    }
+    float dm = 1, dd = 1;
+    CHECK(wire::GearPoseDelta(f, g, &dm, &dd) && dm <= 0.0005f && dd < 0.02f);
+    // A moved piece changes the poses, not the layout.
+    wire::GearFrame moved = f;
+    moved.items[2].p[2] += 0.05f;
+    CHECK(wire::GearLayoutHash(moved) == wire::GearLayoutHash(f));
+    CHECK(wire::GearPoseDelta(f, moved, &dm, &dd) && std::fabs(dm - 0.05f) < 1e-4f);
+    // Another model / variation / anchor / count is another layout.
+    wire::GearFrame other = f;
+    other.items[1].model = 3;
+    CHECK(wire::GearLayoutHash(other) != wire::GearLayoutHash(f) && !wire::GearPoseDelta(f, other, &dm, &dd));
+    other = f;
+    other.items[1].variation = 8;
+    CHECK(wire::GearLayoutHash(other) != wire::GearLayoutHash(f));
+    other = f;
+    other.items[3].joint = 38;
+    CHECK(wire::GearLayoutHash(other) != wire::GearLayoutHash(f));
+    other = f;
+    other.count = 4;
+    CHECK(wire::GearLayoutHash(other) != wire::GearLayoutHash(f));
+    // Decoder rejects: size, magic, version, count over the cap, a forward parent, a bad joint,
+    // an unknown kind, a hash that does not match.
+    CHECK(!wire::DecodeGear(buf, n - 1, g));
+    CHECK(!wire::DecodeGear(buf, n + 1, g));
+    std::uint8_t bad[wire::kMaxGearFrameSize];
+    std::memcpy(bad, buf, n);
+    bad[3] = '2';
+    CHECK(!wire::DecodeGear(bad, n, g));
+    std::memcpy(bad, buf, n);
+    bad[8] = 2;  // version
+    CHECK(!wire::DecodeGear(bad, n, g));
+    std::memcpy(bad, buf, n);
+    bad[9] = 41;  // count over the cap (and the size no longer matches)
+    CHECK(!wire::DecodeGear(bad, n, g));
+    std::memcpy(bad, buf, n);
+    bad[16 + 18 * 1 + 4] = 3;  // item 1 sits on item 3 (not an earlier item)
+    CHECK(!wire::DecodeGear(bad, n, g));
+    std::memcpy(bad, buf, n);
+    bad[16 + 18 * 3 + 3] = 77;  // joint 77 of 77
+    CHECK(!wire::DecodeGear(bad, n, g));
+    std::memcpy(bad, buf, n);
+    bad[16 + 18 * 2 + 0] = 9;  // unknown kind
+    CHECK(!wire::DecodeGear(bad, n, g));
+    std::memcpy(bad, buf, n);
+    bad[16 + 18 * 2 + 1] = 5;  // model changed without the hash: rejected
+    CHECK(!wire::DecodeGear(bad, n, g));
+    std::memcpy(bad, buf, n);
+    bad[10] = 0xFF;  // unknown flag bits are cleared
+    CHECK(wire::DecodeGear(bad, n, g) && g.flags == wire::kGearValid);
+    // Other frames' magic is not a gear frame, and a gear frame is none of theirs.
+    wire::Pose pose;
+    wire::JointFrame jf;
+    wire::NameFrame nf;
+    CHECK(!wire::DecodePose(buf, n, pose) && !wire::DecodeJoints(buf, n, jf) && !wire::DecodeName(buf, n, nf));
+    std::uint8_t pbuf[wire::kPoseFrameSize];
+    wire::EncodePose(pose, pbuf);
+    CHECK(!wire::DecodeGear(pbuf, sizeof(pbuf), g));
+    // Encoder refuses: over the cap, a forward parent, a bad joint, NaN, beyond +-32 m, a small buffer.
+    wire::GearFrame e = f;
+    e.count = static_cast<std::uint8_t>(wire::kMaxGearItems + 1);
+    CHECK(wire::EncodeGear(e, buf, sizeof(buf)) == 0);
+    e = f;
+    e.items[1].parent = 1;
+    CHECK(wire::EncodeGear(e, buf, sizeof(buf)) == 0);
+    e = f;
+    e.items[0].joint = 77;
+    CHECK(wire::EncodeGear(e, buf, sizeof(buf)) == 0);
+    e = f;
+    e.items[2].p[1] = std::nanf("");
+    CHECK(wire::EncodeGear(e, buf, sizeof(buf)) == 0);
+    e = f;
+    e.items[2].p[1] = 40.0f;
+    CHECK(wire::EncodeGear(e, buf, sizeof(buf)) == 0);
+    CHECK(wire::EncodeGear(f, buf, n - 1) == 0);
+    // The full cap fits a link body next to nothing else (1148 bytes) and decodes.
+    wire::GearFrame full;
+    full.flags = wire::kGearValid;
+    for (unsigned i = 0; i < wire::kMaxGearItems; ++i) {
+        wire::GearItem& it = full.items[full.count++];
+        it.kind = i == 0 ? wire::GearKind::backpack : wire::GearKind::cargo;
+        it.model = i == 0 ? wire::kGearNone : static_cast<std::uint8_t>(1 + i % 6);
+        it.joint = 4;
+        it.parent = i == 0 ? wire::kGearNoParent : static_cast<std::uint8_t>(i - 1);
+        it.p[2] = 0.3f;
+    }
+    const std::size_t fn = wire::EncodeGear(full, buf, sizeof(buf));
+    CHECK(fn == wire::kMaxGearFrameSize && fn <= 1148 - 4);
+    CHECK(wire::DecodeGear(buf, fn, g) && g.count == wire::kMaxGearItems && g.items[39].parent == 38);
+}
+
+void TestNameTagMath() {
+    // Camera at the origin looking along +Y (Z up), 90 deg vertical fov, 16:9.
+    nametag::View v;
+    v.axis[0][0] = 1;  // right
+    v.axis[1][1] = 1;  // forward
+    v.axis[2][2] = 1;  // up
+    v.near_plane = 0.1f;
+    v.far_plane = 1000;
+    v.top = 0.1f;  // tan(45 deg) * near
+    v.right = v.top * 16.0f / 9.0f;
+    const double ahead[3] = {0, 10, 0};
+    nametag::Projected p = nametag::Project(v, ahead, 1920, 1080);
+    CHECK(p.visible && std::fabs(p.x - 960) < 0.01f && std::fabs(p.y - 540) < 0.01f && std::fabs(p.dist - 10) < 1e-4f);
+    // 10 m ahead, 5 m up: half way to the top edge (tan = 0.5)
+    const double up[3] = {0, 10, 5};
+    p = nametag::Project(v, up, 1920, 1080);
+    CHECK(p.visible && std::fabs(p.x - 960) < 0.01f && std::fabs(p.y - 270) < 0.01f);
+    // to the right: x grows; on the right edge exactly at x = depth * right / near
+    const double right_edge[3] = {10.0 * 16.0 / 9.0, 10, 0};
+    p = nametag::Project(v, right_edge, 1920, 1080);
+    CHECK(p.visible && std::fabs(p.x - 1920) < 0.05f);
+    const double left[3] = {-3, 10, 0};
+    p = nametag::Project(v, left, 1920, 1080);
+    CHECK(p.visible && p.x < 960);
+    // behind the camera, on the near plane, beyond the edges: not visible
+    const double behind[3] = {0, -10, 0};
+    CHECK(!nametag::Project(v, behind, 1920, 1080).visible);
+    const double at_near[3] = {0, 0.05, 0};
+    CHECK(!nametag::Project(v, at_near, 1920, 1080).visible);
+    const double off_right[3] = {30, 10, 0};
+    CHECK(!nametag::Project(v, off_right, 1920, 1080).visible);
+    const double off_top[3] = {0, 10, 11};
+    CHECK(!nametag::Project(v, off_top, 1920, 1080).visible);
+    // a camera far from the origin (world coordinates in the thousands, doubles)
+    nametag::View far = v;
+    far.pos[0] = -1100.25, far.pos[1] = 273.5, far.pos[2] = 352.75;
+    const double far_pt[3] = {-1100.25, 283.5, 352.75};
+    p = nametag::Project(far, far_pt, 2560, 1440);
+    CHECK(p.visible && std::fabs(p.x - 1280) < 0.01f && std::fabs(p.y - 720) < 0.01f);
+    // a rotated camera: looking along +X (right = -Y)
+    nametag::View rot = v;
+    rot.axis[0][0] = 0, rot.axis[0][1] = -1;
+    rot.axis[1][1] = 0, rot.axis[1][0] = 1;
+    const double along_x[3] = {10, -2, 0};  // 2 m to the camera's right
+    p = nametag::Project(rot, along_x, 1920, 1080);
+    CHECK(p.visible && p.x > 960 && std::fabs(p.y - 540) < 0.01f);
+    // unusable views
+    nametag::View ortho = v;
+    ortho.perspective = false;
+    CHECK(!nametag::Project(ortho, ahead, 1920, 1080).visible);
+    nametag::View zero = v;
+    zero.axis[1][1] = 0;
+    CHECK(!nametag::ViewUsable(zero));
+    nametag::View nan = v;
+    nan.pos[0] = std::nan("");
+    CHECK(!nametag::ViewUsable(nan));
+    // letterbox: a 21:9 view on a 16:9 buffer -> bars top and bottom, centre unchanged
+    nametag::View wide = v;
+    wide.right = v.top * 21.0f / 9.0f;
+    const nametag::Viewport vp = nametag::FitViewport(wide.right / wide.top, 1920, 1080);
+    CHECK(vp.fitted && std::fabs(vp.w - 1920) < 0.01f && std::fabs(vp.h - 1920 * 9.0f / 21.0f) < 0.05f && vp.y > 0);
+    p = nametag::Project(wide, up, 1920, 1080);
+    CHECK(p.visible && std::fabs(p.y - (540 - 0.25f * vp.h)) < 0.05f);
+    CHECK(!nametag::FitViewport(16.0f / 9.0f, 1920, 1080).fitted);
+    CHECK(!nametag::FitViewport(1.7700f, 1920, 1080).fitted);  // within 1 %
+    const nametag::Viewport pil = nametag::FitViewport(4.0f / 3.0f, 1920, 1080);
+    CHECK(pil.fitted && std::fabs(pil.w - 1440) < 0.01f && std::fabs(pil.x - 240) < 0.01f);
+
+    // style by distance
+    nametag::Style s = nametag::StyleFor(3, 1);
+    CHECK(s.visible && s.size_px == nametag::kNearPx && s.alpha == 1 && !s.show_distance);
+    s = nametag::StyleFor(60, 1);
+    CHECK(s.visible && s.size_px == nametag::kFarPx && s.show_distance);
+    s = nametag::StyleFor(32.5f, 2);
+    CHECK(s.visible && std::fabs(s.size_px - 2 * (nametag::kNearPx + nametag::kFarPx) / 2) < 0.01f);
+    s = nametag::StyleFor(225, 1);
+    CHECK(s.visible && std::fabs(s.alpha - 0.5f) < 1e-4f);
+    CHECK(!nametag::StyleFor(300, 1).visible && !nametag::StyleFor(0.5f, 1).visible && !nametag::StyleFor(std::nanf(""), 1).visible);
+
+    // labels
+    char out[96];
+    CHECK(nametag::ComposeLabel("Alice", "Bob", true, false, out, sizeof(out)) == 5 && std::strcmp(out, "Alice") == 0);
+    nametag::ComposeLabel("Sam", "Sam", true, false, out, sizeof(out));  // one Steam account, two games
+    CHECK(std::strcmp(out, "Sam (host)") == 0);
+    nametag::ComposeLabel("Sam", "Sam", false, false, out, sizeof(out));
+    CHECK(std::strcmp(out, "Sam (guest)") == 0);
+    nametag::ComposeLabel("", "Bob", false, false, out, sizeof(out));
+    CHECK(std::strcmp(out, "Guest") == 0);
+    nametag::ComposeLabel(nullptr, "Bob", true, false, out, sizeof(out));
+    CHECK(std::strcmp(out, "Host") == 0);
+    nametag::ComposeLabel(nullptr, "Bob", false, true, out, sizeof(out));
+    CHECK(std::strcmp(out, "Bob (echo)") == 0);
+    nametag::ComposeLabel(nullptr, "", false, true, out, sizeof(out));
+    CHECK(std::strcmp(out, "You (echo)") == 0);
+    char tiny[6];
+    CHECK(nametag::ComposeLabel("ab\xE3\x82\xB5" "cd", "x", true, false, tiny, sizeof(tiny)) == 5);  // cut after the full sequence
+    CHECK(nametag::ComposeLabel("abc\xE3\x82\xB5", "x", true, false, tiny, sizeof(tiny)) == 3 && std::strcmp(tiny, "abc") == 0);
+    CHECK(nametag::ComposeLabel("abcd\xC3\xA9", "x", true, false, tiny, sizeof(tiny)) == 4 && std::strcmp(tiny, "abcd") == 0);
+    CHECK(nametag::ComposeLabel("abc\xC3\xA9", "x", true, false, tiny, sizeof(tiny)) == 5 && std::strcmp(tiny, "abc\xC3\xA9") == 0);
+    CHECK(nametag::NameHash("") == 2166136261u && nametag::NameHash("a") != nametag::NameHash("b"));
 }
 
 }  // namespace
@@ -493,6 +796,9 @@ int main() {
     TestPoseRoundTrip();
     TestJointFrames();
     TestJointOutfit();
+    TestNameFrames();
+    TestNameTagMath();
+    TestGearFrames();
     TestBodyTable();
     TestBodyChoice();
     TestRotation();

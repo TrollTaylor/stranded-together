@@ -1,0 +1,104 @@
+# All three partner features between two hidden games, together and on by default
+# (docs/real-partner-body.md sections 10-12):
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-all -SeedSaves complete-100
+# The host is Sam, the guest Fragile with her self view. Different names (no "(host)" suffix): the
+# host shows "TagFriend" over the guest's Fragile, the guest "TagPlayer" over the host's Sam (both
+# 9 B labels). Different gear: the host stacks 1 synthetic delivery case on its backpack, the guest
+# 2 (hidden-test action gear 3 n), so each partner body must carry the other game's cases. Then the
+# guest walks into the host's standing Sam body (collision on, distance traced on both games).
+role host
+graphics low
+timeout 360
+ini partner_body=real
+@host ini name=TagPlayer
+@guest ini name=TagFriend
+@host ini my_character=sam
+@guest ini my_character=fragile
+@guest ini self_character=1
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 30 \[coll\] player collision on
+@guest waitlog 30 \[coll\] player collision on
+wait 25000
+?screenshot 01-host-title
+?@guest screenshot 01-guest-title
+pad A 150
+@guest pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+@guest until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitplayer 60
+waitlog 60 \[link\] CONNECTED
+@guest waitlog 60 \[link\] CONNECTED
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+@guest until 150 3000 \[sync\] partner body: real 'sam' => pad A 120
+waitlog 60 \[sync\] partner body: real 'fragile'
+@guest waitlog 30 \[self\] showing 'fragile' in place of Sam
+# names: the other game's name, no suffix (9 B labels; a shared name would be "... (host)", 16 B)
+waitlog 30 \[tags\] label: 9 B
+@guest waitlog 30 \[tags\] label: 9 B
+waitlog 30 \[tags\] anchor: over the head joint
+@guest waitlog 30 \[tags\] anchor: over the head joint
+# the host walks on ahead and stands, its back to the guest
+pad none 1500 ly=32767
+wait 1500
+# different gear on each game: the host 1 case, the guest 2 (plus the waist case each)
+action gear 3 1
+@guest action gear 3 2
+waitlog 15 \[gear\] the partner's gear: .*cargo 3
+@guest waitlog 15 \[gear\] the partner's gear: .*cargo 2
+?waitlog 15 \[gear\] [0-9]+ items, [1-9][0-9]* props live \(0 loading
+wait 3000
+screenshot 02-host-own
+@guest screenshot 02-guest-sees-host-and-self
+action gear 0
+@guest action gear 0
+# the host turns its camera round: the guest's Fragile (front) with her name
+pad none 1300 rx=32767
+wait 2000
+screenshot 03-host-sees-guest-front
+action collision 0
+@guest action collision 0
+# both games: the Sam-partner distance every tick for 25 s
+action collision 2 25000
+@guest action collision 2 25000
+# the guest walks the host's path into the host's standing Sam body
+@guest until 60 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+@guest pad none 1200 ly=32767 keep
+@guest screenshot 04-guest-walks-in-a
+screenshot 04-host-sees-guest-a
+wait 300
+@guest screenshot 04-guest-walks-in-b
+screenshot 04-host-sees-guest-b
+wait 300
+@guest screenshot 04-guest-walks-in-c
+screenshot 04-host-sees-guest-c
+wait 300
+@guest screenshot 04-guest-walks-in-d
+screenshot 04-host-sees-guest-d
+wait 600
+@guest screenshot 04-guest-walks-in-e
+screenshot 04-host-sees-guest-e
+@guest pad none 0
+wait 2000
+screenshot 05-host-after
+@guest screenshot 05-guest-after
+# the guest walks back towards its own camera: on the host's screen her back with her two cases
+@guest pad none 900 ly=-32767
+wait 2000
+screenshot 06-host-sees-guest-back
+@guest screenshot 06-guest-self
+action collision 0
+@guest action collision 0
+action gear 0
+@guest action gear 0
+action log_status
+@guest action log_status
+?waitlog 12 \[sync\] link traffic over
+?@guest waitlog 12 \[sync\] link traffic over
+@guest quit
+wait 3000
+quit

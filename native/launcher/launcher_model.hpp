@@ -60,6 +60,12 @@ struct DebugOptions {
     // Self view: on your own screen you appear as your chosen character too (session.ini
     // self_character=1, written only with the real partner body and a character other than Sam).
     bool self_character = true;
+    // Name tags: your partner's name above their head, and yours sent to them (session.ini
+    // name_tags; the mod's default is on, so only name_tags=0 is written).
+    bool name_tags = true;
+    // Player collision: you cannot walk through your partner's body (session.ini partner_collision;
+    // the mod's default is on, so only partner_collision=0 is written).
+    bool partner_collision = true;
 };
 
 // The Advanced / LAN section (transport udp).

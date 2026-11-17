@@ -226,6 +226,21 @@ bool RealBodyCommand(int op, const double (&)[3], char* msg, std::size_t cap) no
     Say(msg, cap, "real body (stub)");
     return true;
 }
+bool NameTagCommand(int, const double (&)[3], char* msg, std::size_t cap) noexcept {
+    Seen();
+    Say(msg, cap, "name tags (stub)");
+    return true;
+}
+bool CollisionCommand(int, const double (&)[3], char* msg, std::size_t cap) noexcept {
+    Seen();
+    Say(msg, cap, "collision (stub)");
+    return true;
+}
+bool GearCommand(int, const double (&)[3], char* msg, std::size_t cap) noexcept {
+    Seen();
+    Say(msg, cap, "gear (stub)");
+    return true;
+}
 void ReadDiagnostics(Diagnostics* d) noexcept {
     *d = Diagnostics{};
     d->resolved = true;

@@ -62,7 +62,22 @@ struct Config {
     bool debug_menu = true;            // in-game ImGui debug menu (D3D12 overlay)
     std::uint32_t debug_menu_vk = 0x78;  // virtual-key that toggles it (default VK_F9)
     bool one_shot = false;             // consumed on load (renamed to session.last.ini)
-    std::string player_name;           // shown in logs; from Steam persona when empty
+    // name=<text>: the name shown above this player's head on the partner's screen (name tags);
+    // "" = the Steam persona name. Sent over the link (STN1), never logged in full.
+    std::string player_name;
+    // name_tags=0|1 (default 1): show the partner's name above their head (overlay) and send our
+    // own (STN1). 0: neither (the partner then shows "Host" / "Guest" for us).
+    bool name_tags = true;
+    // partner_collision=0|1 (default 1): the local player cannot walk through the partner's real body
+    // (the game's own character capsule on that body; docs/real-partner-body.md section 11).
+    // partner_collision_layer=10|9 (default 10 "Humanoid blocker"; 9 = the game's "AI or Remote
+    // Player" layer, which bullets and cargo hit too).
+    bool partner_collision = true;
+    int partner_collision_layer = 10;
+    // partner_gear=0|1 (default 1): the partner's real body (and the self view's body) carries the
+    // player's backpack, Odradek, BB pod and cargo (docs/real-partner-body.md section 12), and our
+    // own gear layout is sent (STC1). 0: nothing is read, sent or spawned.
+    bool partner_gear = true;
 
     // Local two-instance test (docs/sandbox-and-local-test.md): local_input=host|host_pad|guest.
     // Read here for the overlay's input split; the sandbox keys (sandbox_saves, sandbox_foreign_saves,

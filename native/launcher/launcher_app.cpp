@@ -1330,6 +1330,19 @@ void LauncherUi::DebugOptionsTab(Phase phase) {
         Text(o.real_partner_body && o.self_character ? "On your own screen you appear as the character you picked on Join (the host is always Sam)."
                                                      : "On your own screen you stay Sam.",
              col::kTextFaint, kSmall, nullptr, 0.0f);
+        // session.ini name_tags: the partner's name above their head; ours goes to them.
+        Gap(2.0f);
+        committed |= Checkbox("Show player names above heads", &o.name_tags, true);
+        Text(o.name_tags ? "Your partner's name floats above them, and yours above you on their screen (your Steam name, or the one set under Advanced)."
+                         : "No names are shown, and your name is not sent.",
+             col::kTextFaint, kSmall, nullptr, 0.0f);
+        // session.ini partner_collision: the partner's real body blocks you.
+        Gap(2.0f);
+        committed |= Checkbox("Players block each other", &o.partner_collision, o.real_partner_body);
+        Text(!o.real_partner_body ? "Needs Partner body = Real character: a hologram partner never blocks you."
+             : o.partner_collision ? "You cannot walk through your partner's body; it stops you like another character. Off in vehicles, menus and cutscenes."
+                                   : "You can walk through your partner.",
+             col::kTextFaint, kSmall, nullptr, 0.0f);
     }
     Gap(4.0f);
     committed |= Checkbox("In-game debug menu", &o.debug_menu, true);

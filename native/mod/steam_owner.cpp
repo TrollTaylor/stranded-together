@@ -40,7 +40,7 @@ stcoop::lab::SteamNetApi g_api;  // published once g_phase == ready
 std::atomic<int> g_phase{static_cast<int>(Phase::waiting_for_steam)};
 const char* g_reason = "";
 std::uint64_t g_self = 0;
-char g_persona[64] = {};
+char g_persona[129] = {};  // Steam allows 128 bytes; a cut sequence is dropped by wire::SanitizeName
 volatile long g_halt = 0;
 unsigned g_attempts = 0;
 bool g_want_requests = false;
@@ -200,8 +200,12 @@ void Pump() noexcept {
         Log("[steam] SessionRequest (1251) callback %s", ok ? "registered" : "registration FAULTED");
     }
     g_phase.store(static_cast<int>(Phase::ready), std::memory_order_release);
-    Log("[steam] ready: self=%llu persona='%s' messages=%p sockets=%p utils=%p", static_cast<unsigned long long>(g_self),
-        g_persona, messages, sockets, utils);
+    // The persona name is personal: logged as its length and a hash only (it travels to the
+    // partner as the name tag, wire STN1, and nowhere else).
+    unsigned hash = 2166136261u;
+    for (const char* c = g_persona; *c; ++c) hash = (hash ^ static_cast<unsigned char>(*c)) * 16777619u;
+    Log("[steam] ready: self=%llu persona %zu B fnv %08X messages=%p sockets=%p utils=%p", static_cast<unsigned long long>(g_self),
+        std::strlen(g_persona), hash, messages, sockets, utils);
 }
 
 Phase GetPhase() noexcept { return static_cast<Phase>(g_phase.load(std::memory_order_acquire)); }

@@ -1,0 +1,92 @@
+# Gear between two games on one PC, hidden (docs/real-partner-body.md section 12): each game sends its
+# own backpack and cargo layout (STC1) and shows the other's on the partner body; the guest also wears
+# its own on its self view (Fragile).
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-gear -SeedSaves complete-100
+# Both games load the same 100% save, so both Sams carry the same gear: the backpack and personal
+# equipment (only the waist weapon is drawn as a case). A cargo change: the host stacks 3 synthetic
+# delivery cases on its backpack (hidden-test action `gear 3 3`), then 1; the guest's view of the
+# host follows. Collision is off so the walking players never meet a capsule.
+role host
+graphics low
+timeout 360
+ini partner_body=real
+ini partner_collision=0
+@host ini my_character=sam
+@guest ini my_character=fragile
+@guest ini self_character=1
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+@guest pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+@guest until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitplayer 60
+waitlog 60 \[link\] CONNECTED
+@guest waitlog 60 \[link\] CONNECTED
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+@guest until 150 3000 \[sync\] partner body: real 'sam' => pad A 120
+waitlog 60 \[sync\] partner body: real 'fragile'
+@guest waitlog 30 \[self\] showing 'fragile' in place of Sam
+# each game has the other's gear and shows it on the partner body
+waitlog 30 \[gear\] the partner's gear: .*backpack 1
+@guest waitlog 30 \[gear\] the partner's gear: .*backpack 1
+waitlog 30 \[gear\] [0-9]+ items, [1-9][0-9]* props live
+@guest waitlog 30 \[gear\] [0-9]+ items, [1-9][0-9]* props live
+@guest waitlog 30 \[gear-self\] [0-9]+ items, [1-9][0-9]* props live
+wait 2000
+screenshot 02-host-own-gear
+@guest screenshot 02-guest-sees-host
+@guest screenshot 02-guest-self
+action gear 0
+@guest action gear 0
+# the host looks back at the guest's Fragile, a few metres behind it (front); the guest then walks
+# towards its own camera, away from the host: on the host's screen her back with her gear
+pad none 1300 rx=32767
+wait 1500
+screenshot 03a-host-sees-guest-front
+@guest pad none 700 ly=-32767
+wait 1500
+screenshot 03b-host-sees-guest-back
+@guest screenshot 03b-guest-self-front
+pad none 1300 rx=-32767
+wait 1500
+# a cargo change on the host while it stands ahead of the guest, its back to the guest's camera:
+# 3 synthetic delivery cases, then 1, then none
+action gear 3 3
+@guest waitlog 10 \[gear\] the partner's gear: .*cargo 4
+@guest waitlog 10 \[gear\] [0-9]+ items, [0-9]+ props live \(0 loading
+wait 2500
+screenshot 03-host-own-three-cases
+@guest screenshot 03-guest-sees-host-three-cases
+action gear 3 1
+@guest waitlog 10 \[gear\] layout .* prop\(s\) removed
+wait 2500
+@guest screenshot 04-guest-sees-host-one-case
+action gear 3 0
+@guest waitlog 10 \[gear\] layout .* prop\(s\) removed
+wait 2500
+@guest screenshot 04b-guest-sees-host-no-cases
+action gear 3 3
+@guest waitlog 10 \[gear\] the partner's gear: .*cargo 4
+wait 2500
+# the host walks away: on the guest's screen the Sam body walks off with its gear
+pad none 1200 ly=32767 keep
+@guest screenshot 05-guest-sees-host-walk-a
+wait 250
+@guest screenshot 05-guest-sees-host-walk-b
+pad none 0
+wait 2000
+action gear 0
+@guest action gear 0
+action log_status
+@guest action log_status
+?waitlog 12 \[sync\] link traffic over
+?@guest waitlog 12 \[sync\] link traffic over
+@guest quit
+wait 3000
+quit

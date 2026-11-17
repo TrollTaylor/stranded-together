@@ -89,7 +89,11 @@ Three tabs (`ui::DebugTab`):
   character** (`self_character=1`, default on, needs Real character: on your own screen Sam is replaced by the
   character picked on Join; written only for a guest, echo or solo session whose character is not Sam; Sam
   comes back whenever the game hides him itself, the character is not ready or the mod stops, see
-  docs/real-partner-body.md section 8.3; untick it to stay Sam on your own screen); **Wake the partner clone** (`partner_activate`); **Verbose mod log**; **Reset to
+  docs/real-partner-body.md section 8.3; untick it to stay Sam on your own screen); **Show player names above heads** (`name_tags`, default on:
+  your partner's name floats above their body and yours is sent to them, docs/real-partner-body.md section 10;
+  unticked writes `name_tags=0`: nothing is drawn or sent); **Players block each other** (`partner_collision`,
+  default on, needs Real character: your partner's body stops you like another character, docs/real-partner-body.md
+  section 11; unticked writes `partner_collision=0`); **Wake the partner clone** (`partner_activate`); **Verbose mod log**; **Reset to
   defaults**. Saved in `launcher-settings.json` under `"debug"` (sliders when released)
   and written into every `session.ini`, Host and Join included
   (`core::ApplyDebugOptions`).
@@ -247,6 +251,9 @@ frame_cap=30                    local test: at most 30 frames per second
 my_character=<key>              the character the other player sees you as: an offered body_table key; always sam for a host
 partner_body=real|holo          how the partner is drawn on this screen (Debug page; default real)
 self_character=1                you see yourself as my_character too (Debug page; not for a host or sam)
+name_tags=0                     no name tags (Debug page; written only when unticked, the mod's default is on)
+partner_collision=0             you can walk through your partner (Debug page; written only when unticked, default on)
+partner_gear=0                  no backpack or cargo on the bodies, none sent (mod key only, not written by the launcher; default on)
 ```
 
 `my_character` is written for every host as `sam` (whatever was asked) and otherwise only when

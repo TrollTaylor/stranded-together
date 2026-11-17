@@ -14,6 +14,7 @@
 #include "log.hpp"
 #include "partner_holo.hpp"
 #include "automation.hpp"
+#include "partner_collision.hpp"
 #include "partner_outfit.hpp"
 #include "partner_source.hpp"
 
@@ -184,6 +185,7 @@ struct BodySlot {
     Counters ct;
     // Set by the game thread before `sm` is published (release), read by the detour.
     std::uint8_t map[kJ] = {};  // body joint -> Sam joint
+    std::uint8_t inv[kJ] = {};  // Sam joint -> body joint (gear anchors)
     // Latch of the body's own pose (detour writes while latch_state == 0).
     std::atomic<int> latch_state{0};  // 0 observing, 1 done
     Joint latch[kJ] = {};
@@ -230,6 +232,15 @@ std::atomic<std::uint64_t> g_self_age_us{0}, g_self_age_n{0}, g_self_age_max_us{
 std::atomic<std::uint32_t> g_self_last_frame{0};
 std::atomic<ULONGLONG> g_self_last_apply{0};  // GetTickCount64 of the last pose written onto the self body
 std::atomic<ULONGLONG> g_self_last_copy{0};   // ... of the last transform copied in a detour
+
+// Gear props (partner_gear.cpp publishes them, the detour and the tick place them).
+struct GearSet {
+    std::uint32_t n = 0;
+    GearProp p[kMaxGearProps];
+};
+SeqLock<GearSet> g_gear[2];
+std::atomic<std::uint32_t> g_gear_n[2] = {};  // 0: nothing published (the detour skips at once)
+std::atomic<std::uint32_t> g_gear_placed[2] = {}, g_gear_aba[2] = {}, g_gear_bad[2] = {};
 
 bool ReadPoseHdr(std::uintptr_t sm, std::uint8_t (&hdr)[kPoseSize], std::uintptr_t* pose) {
     std::int32_t idx = -1;
@@ -324,6 +335,108 @@ bool CallSetWt(std::uintptr_t e, const void* wt) {
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
     }
+}
+
+// ---------------------------------------------------------------- gear placement (detour or tick)
+struct Xf {
+    double p[3];
+    float r[3][3];  // rows: the frame's right, forward, up axes in the parent frame
+};
+#pragma pack(push, 4)
+struct PackedWt {  // the entity world transform layout (+0xC8 position, +0xE0 rotation rows)
+    double p[3];
+    float r[3][3];
+};
+#pragma pack(pop)
+static_assert(sizeof(PackedWt) == kWorldBytes, "world transform layout");
+
+// child (in parent's frame) -> world
+Xf Compose(const Xf& parent, const double (&p)[3], const float (&r)[3][3]) {
+    Xf o;
+    for (int k = 0; k < 3; ++k) {
+        o.p[k] = parent.p[k] + p[0] * parent.r[0][k] + p[1] * parent.r[1][k] + p[2] * parent.r[2][k];
+        for (int c = 0; c < 3; ++c) o.r[k][c] = r[k][0] * parent.r[0][c] + r[k][1] * parent.r[1][c] + r[k][2] * parent.r[2][c];
+    }
+    return o;
+}
+
+// A pose model matrix (4 x float4: three axes, then the translation) as a frame: the axes are
+// normalised (bone scale), and a matrix that is not finite / not a rotation is refused.
+bool JointFrame(const float (&m)[4][4], double (&p)[3], float (&r)[3][3]) {
+    for (int k = 0; k < 3; ++k) {
+        const float* a = m[k];
+        const float len = std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
+        if (!std::isfinite(len) || len < 0.2f || len > 5.0f) return false;
+        for (int c = 0; c < 3; ++c) r[k][c] = a[c] / len;
+        if (!std::isfinite(m[3][k]) || std::fabs(m[3][k]) > 10.0f) return false;
+        p[k] = m[3][k];
+    }
+    const float d = r[0][0] * r[1][0] + r[0][1] * r[1][1] + r[0][2] * r[1][2];
+    return std::fabs(d) < 0.2f;
+}
+
+// Places the slot's published props on a body whose world transform is `world` and whose pose's
+// model matrices start at `mb` (77 x 0x40 bytes). Fault-free reads; the game's own setter per prop
+// after its vtable + GUID check. Returns the props placed.
+unsigned PlaceGear(int slot, const Xf& world, std::uintptr_t mb, const std::uint8_t* inv) {
+    if (!g_fn_setwt || !mb || g_gear_n[slot].load(std::memory_order_acquire) == 0) return 0;
+    static thread_local GearSet set;
+    if (!g_gear[slot].Read(set) || set.n == 0 || set.n > kMaxGearProps) return 0;
+    Xf w[kMaxGearProps];
+    bool have[kMaxGearProps] = {};
+    unsigned placed = 0;
+    for (unsigned i = 0; i < set.n; ++i) {
+        const GearProp& g = set.p[i];
+        Xf anchor;
+        if (g.parent >= 0) {
+            if (static_cast<unsigned>(g.parent) >= i || !have[g.parent]) continue;
+            anchor = w[g.parent];
+        } else {
+            if (g.joint >= kJ) continue;
+            float m[4][4];
+            double jp[3];
+            float jr[3][3];
+            if (!mem::Read(mb + 0x40ull * inv[g.joint], m, sizeof(m)) || !JointFrame(m, jp, jr)) {
+                g_gear_bad[slot].fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
+            anchor = Compose(world, jp, jr);
+        }
+        const double gp[3] = {g.p[0], g.p[1], g.p[2]};
+        w[i] = Compose(anchor, gp, g.r);
+        have[i] = true;
+        if (!g.e) continue;  // no prop for this item (yet): its frame still anchors the items on it
+        std::uintptr_t vt = 0;
+        game::Guid id;
+        if (!Rd(g.e, vt) || vt != g.e_vt || !Rd(g.e + game::kEntityGuid, id.lo) || !Rd(g.e + game::kEntityGuid + 8, id.hi) ||
+            id != g.guid) {
+            g_gear_aba[slot].fetch_add(1, std::memory_order_relaxed);
+            continue;
+        }
+        PackedWt wt;
+        std::memcpy(wt.p, w[i].p, sizeof(wt.p));
+        std::memcpy(wt.r, w[i].r, sizeof(wt.r));
+        if (!CallSetWt(g.e, &wt)) {
+            g_gear_bad[slot].fetch_add(1, std::memory_order_relaxed);
+            g_gear_n[slot].store(0, std::memory_order_release);  // never again until republished
+            return placed;
+        }
+        ++placed;
+    }
+    g_gear_placed[slot].fetch_add(placed, std::memory_order_relaxed);
+    return placed;
+}
+
+bool ReadWorld(std::uintptr_t e, Xf* out) {
+    alignas(8) std::uint8_t a[kWorldBytes + 4] = {}, b[kWorldBytes + 4] = {};
+    if (!mem::Read(e + kEntWorld, a, kWorldBytes) || !mem::Read(e + kEntWorld, b, kWorldBytes) || std::memcmp(a, b, kWorldBytes) != 0)
+        return false;
+    PackedWt wt;
+    std::memcpy(&wt, a, sizeof(wt));
+    if (!std::isfinite(wt.p[0]) || !std::isfinite(wt.p[1]) || !std::isfinite(wt.p[2])) return false;
+    std::memcpy(out->p, wt.p, sizeof(out->p));
+    std::memcpy(out->r, wt.r, sizeof(out->r));
+    return true;
 }
 
 // Pelvis scale = the body's rest (bind) pelvis length over Sam's. Sam's is a constant: his
@@ -422,6 +535,17 @@ void CopySamTransform() {
     }
     g_self_copies.fetch_add(1, std::memory_order_relaxed);
     g_self_last_copy.store(GetTickCount64(), std::memory_order_relaxed);
+    // Gear props on the self body: this frame's transform, the body's current pose.
+    if (g_gear_n[1].load(std::memory_order_acquire)) {
+        std::uint8_t hdr[kPoseSize];
+        std::uintptr_t pose = 0, local = 0;
+        if (ReadPoseHdr(self_sm, hdr, &pose) && CheckHdr(hdr, g_me.skel.load(std::memory_order_acquire), &local) == 0) {
+            Xf w;
+            std::memcpy(w.p, p, sizeof(w.p));
+            std::memcpy(w.r, a + 0x18, sizeof(w.r));
+            PlaceGear(1, w, Field<std::uintptr_t>(hdr, kHdrModel), g_me.inv);
+        }
+    }
 }
 
 // Overwrites the body's finished pose. `live`: the self view, straight from the newest capture of
@@ -531,6 +655,11 @@ void ApplyBody(BodySlot& b, std::uintptr_t sm, bool live) {
     }
     ct.applies.fetch_add(1, std::memory_order_relaxed);
     if (live) g_self_last_apply.store(GetTickCount64(), std::memory_order_relaxed);
+    // Gear props on the partner (or debug) body: its world transform now, the pose just written.
+    if (!live && g_gear_n[0].load(std::memory_order_acquire)) {
+        Xf w;
+        if (ReadWorld(owner, &w)) PlaceGear(0, w, Field<std::uintptr_t>(hdr, kHdrModel), b.inv);
+    }
 }
 
 void Detour(void* sm, float dt) {
@@ -906,6 +1035,9 @@ bool Teardown(BodySlot& b, const char* why) {
         ResetSlot(b);
         return false;
     }
+    // Player collision: the partner body's capsule leaves the world while the body is still live
+    // (a teardown that cannot remove the entity must not leave an invisible wall).
+    if (&b == &g_p && b.spawn.e) collision::BodyGoing(b.spawn.e);
     Unpublish(b);
     char step[160] = {};
     holo::SpawnTeardown(b.spawn, why, step, sizeof(step));
@@ -963,6 +1095,8 @@ const char* Validate(BodySlot& b, std::uintptr_t e) {
         sam_names[0].c_str(), sam_names[1].c_str(), sam_names[2].c_str(), sam_names[3].c_str(), sam_names[76].c_str(), missing,
         diff_order);
     if (missing) return "joint names do not match Sam's skeleton";
+    for (unsigned j = 0; j < kJ; ++j) b.inv[j] = static_cast<std::uint8_t>(j);
+    for (unsigned j = 0; j < kJ; ++j) b.inv[b.map[j]] = static_cast<std::uint8_t>(j);
     b.live_sm = sm;
     b.same_skel = ps.skel == ss.skel;
     b.latch_good = b.latch_seen = 0;
@@ -976,25 +1110,10 @@ const char* Validate(BodySlot& b, std::uintptr_t e) {
     return nullptr;
 }
 
-BeginResult BeginSlot(BodySlot& slot, const bodies::Body& body, const game::WorldTransform& at, Owner owner, double now_ms, char* why,
-                      std::size_t cap) {
-    if (slot.phase != Phase::idle) {
-        Set(why, cap, "a body is already %s", slot.phase == Phase::live ? "live" : "loading");
-        return BeginResult::busy;
-    }
-    if (!g_hook || !ResolveSpawn()) {
-        Set(why, cap, "%s", g_hook ? g_fn.why : "pose hook not installed (partner_body=real or pose_hook=1 at start)");
-        return BeginResult::unavailable;
-    }
-    if (body.id < 32 && (slot.refused & (1u << body.id))) {
-        Set(why, cap, "body '%s' was refused earlier", body.key);
-        return BeginResult::failed;
-    }
-    std::uint8_t guid[16];
-    if (!bodies::ParseGuid(body.guid, guid)) {
-        Set(why, cap, "bad GUID text for '%s'", body.key);
-        return BeginResult::failed;
-    }
+// Starts the spawner for a DSControlledEntity by path + GUID (the bodies and, quietly, the gear props).
+BeginResult StartByPath(const char* tag, const char* key, const char* label, const char* path, const std::uint8_t* guid,
+                        std::uint32_t spawn_tag, const game::WorldTransform& at, bool quiet, holo::Spawn* out, char* why,
+                        std::size_t cap) {
     game::Entity* sam = nullptr;
     if (!game::TryGetLocalPlayer(&sam) || !sam) {
         Set(why, cap, "no local player");
@@ -1032,7 +1151,7 @@ BeginResult BeginSlot(BodySlot& slot, const bodies::Body& body, const game::Worl
     std::memset(fp, 0, sizeof(*fp));
     fp->hash = -1;
     std::memcpy(fp->guid, guid, 16);
-    if (!CallStrCtor(&fp->str, body.path) || !fp->str) {
+    if (!CallStrCtor(&fp->str, path) || !fp->str) {
         VirtualFree(fp, 0, MEM_RELEASE);
         g_fn.spawn_ok = false;
         Set(why, cap, "String ctor faulted; real body disabled");
@@ -1048,7 +1167,7 @@ BeginResult BeginSlot(BodySlot& slot, const bodies::Body& body, const game::Worl
     std::uint64_t box[2] = {reinterpret_cast<std::uint64_t>(fp), (static_cast<std::uint64_t>(static_cast<std::uint8_t>(prio)) << 52) | mgr};
     std::uint64_t field = reinterpret_cast<std::uint64_t>(box);
     const bool loaded_test = static_cast<std::int8_t>(static_cast<std::uint8_t>(box[1] >> 52)) < 0;
-    Log("[%s] spawning '%s' (%s): path '%s' guid %s; manager %p (reference priority %d%s)", slot.tag, body.key, body.label, body.path,
+    if (!quiet) Log("[%s] spawning '%s' (%s): path '%s' guid %s; manager %p (reference priority %d%s)", tag, key, label, path,
         GuidText(guid).c_str(), reinterpret_cast<void*>(mgr), prio, loaded_test ? " - BAD: reads as loaded" : "");
     if (loaded_test) {
         CallStrDtor(&fp->str);
@@ -1056,17 +1175,41 @@ BeginResult BeginSlot(BodySlot& slot, const bodies::Body& body, const game::Worl
         Set(why, cap, "internal: priority bits read as loaded");
         return BeginResult::failed;
     }
-    holo::Spawn sp;
     char w[200] = {};
-    const bool ok = holo::SpawnBeginField(reinterpret_cast<std::uintptr_t>(&field), body.id, at, &sp, w, sizeof(w));
-    Log("[%s]   proxy after the spawner ctor: hash %08X (the manager computed it), %s", slot.tag, static_cast<std::uint32_t>(fp->hash), w);
+    const bool ok = holo::SpawnBeginField(reinterpret_cast<std::uintptr_t>(&field), spawn_tag, at, out, w, sizeof(w));
+    if (!quiet) Log("[%s]   proxy after the spawner ctor: hash %08X (the manager computed it), %s", tag, static_cast<std::uint32_t>(fp->hash), w);
     CallStrDtor(&fp->str);  // Register copied the String (refcounted)
     VirtualFree(fp, 0, MEM_RELEASE);
     if (!ok) {
         Set(why, cap, "spawner: %s", w);
         return holo::Available() ? BeginResult::failed : BeginResult::unavailable;
     }
-    LogSpawnerRef(slot.tag, sp.sp, "after StartSpawner");
+    if (!quiet) LogSpawnerRef(tag, out->sp, "after StartSpawner");
+    return BeginResult::started;
+}
+
+BeginResult BeginSlot(BodySlot& slot, const bodies::Body& body, const game::WorldTransform& at, Owner owner, double now_ms, char* why,
+                      std::size_t cap) {
+    if (slot.phase != Phase::idle) {
+        Set(why, cap, "a body is already %s", slot.phase == Phase::live ? "live" : "loading");
+        return BeginResult::busy;
+    }
+    if (!g_hook || !ResolveSpawn()) {
+        Set(why, cap, "%s", g_hook ? g_fn.why : "pose hook not installed (partner_body=real or pose_hook=1 at start)");
+        return BeginResult::unavailable;
+    }
+    if (body.id < 32 && (slot.refused & (1u << body.id))) {
+        Set(why, cap, "body '%s' was refused earlier", body.key);
+        return BeginResult::failed;
+    }
+    std::uint8_t guid[16];
+    if (!bodies::ParseGuid(body.guid, guid)) {
+        Set(why, cap, "bad GUID text for '%s'", body.key);
+        return BeginResult::failed;
+    }
+    holo::Spawn sp;
+    const BeginResult r = StartByPath(slot.tag, body.key, body.label, body.path, guid, body.id, at, false, &sp, why, cap);
+    if (r != BeginResult::started) return r;
     slot.spawn = sp;
     slot.owner = owner;
     slot.body = &body;
@@ -1608,6 +1751,97 @@ bool Move(const game::WorldTransform& at) noexcept {
 
 bool Remove(const char* why) noexcept { return Teardown(g_p, why); }
 
+void PublishGear(GearSlot slot, const GearProp* props, unsigned n) noexcept {
+    const int i = slot == GearSlot::self ? 1 : 0;
+    if (!g_fn_setwt && mem::CodeMatches(mem::Base() + kSetWorldTransform, "48 85 C9 74 1C 53 48 83 EC 20 48 8B D9 E8 ?? ?? ?? ?? 33 D2 48 8B CB E8"))
+        g_fn_setwt = mem::Base() + kSetWorldTransform;
+    static GearSet set;
+    set.n = props && g_fn_setwt ? (n < kMaxGearProps ? n : kMaxGearProps) : 0;
+    for (unsigned k = 0; k < set.n; ++k) set.p[k] = props[k];
+    if (set.n == 0) {
+        // Unpublish, then wait until no detour can still be placing the old list.
+        g_gear_n[i].store(0, std::memory_order_seq_cst);
+        g_gear[i].Write(set);
+        const ULONGLONG until = GetTickCount64() + 50;
+        while (g_inflight.load(std::memory_order_seq_cst) != 0 && GetTickCount64() < until) SwitchToThread();
+        if (g_inflight.load(std::memory_order_seq_cst) != 0)
+            Log("[%s] gear unpublish: detour still busy after 50 ms (continuing)", i ? "gear-self" : "gear");
+        return;
+    }
+    g_gear[i].Write(set);
+    g_gear_n[i].store(set.n, std::memory_order_release);
+}
+
+unsigned PlaceGearNow(GearSlot slot) noexcept {
+    const int i = slot == GearSlot::self ? 1 : 0;
+    BodySlot& b = g_slots[i];
+    const std::uintptr_t sm = b.sm.load(std::memory_order_acquire), e = b.e.load(std::memory_order_acquire);
+    if (!sm || !e || b.phase != Phase::live || g_gear_n[i].load(std::memory_order_acquire) == 0) return 0;
+    if (Q(sm) != g_sm_vt || Q(sm + kSmEntity) != e || Q(e) != b.e_vt) return 0;
+    std::uint8_t hdr[kPoseSize];
+    std::uintptr_t pose = 0, local = 0;
+    if (!ReadPoseHdr(sm, hdr, &pose) || CheckHdr(hdr, b.skel.load(std::memory_order_acquire), &local) != 0) return 0;
+    Xf w;
+    if (!ReadWorld(e, &w)) return 0;
+    return PlaceGear(i, w, Field<std::uintptr_t>(hdr, kHdrModel), b.inv);
+}
+
+void GearCounters(GearSlot slot, std::uint32_t* placed, std::uint32_t* aba, std::uint32_t* bad) noexcept {
+    const int i = slot == GearSlot::self ? 1 : 0;
+    if (placed) *placed = g_gear_placed[i].load();
+    if (aba) *aba = g_gear_aba[i].load();
+    if (bad) *bad = g_gear_bad[i].load();
+}
+
+game::Entity* SlotEntity(GearSlot slot) noexcept {
+    BodySlot& b = g_slots[slot == GearSlot::self ? 1 : 0];
+    if (b.phase != Phase::live || !holo::SpawnAlive(b.spawn)) return nullptr;
+    return b.spawn.e;
+}
+
+bool BeginByPath(const char* path, const char* guid_text, const game::WorldTransform& at, std::uint32_t tag, holo::Spawn* out, char* why,
+                 std::size_t cap) noexcept {
+    if (!g_hook || !ResolveSpawn()) {
+        Set(why, cap, "%s", g_hook ? g_fn.why : "pose hook not installed");
+        return false;
+    }
+    std::uint8_t guid[16];
+    if (!path || !bodies::ParseGuid(guid_text, guid)) {
+        Set(why, cap, "bad GUID text");
+        return false;
+    }
+    return StartByPath("gear", path, "prop", path, guid, tag, at, true, out, why, cap) == BeginResult::started;
+}
+
+bool ReadJointModel(game::Entity* e, unsigned j, float (&m)[4][4]) noexcept {
+    const std::uintptr_t sm = e ? ModelOf(reinterpret_cast<std::uintptr_t>(e)) : 0;
+    if (!sm || j >= kJ) return false;
+    std::uint8_t hdr[kPoseSize];
+    std::uintptr_t pose = 0;
+    if (!ReadPoseHdr(sm, hdr, &pose) || Field<std::int32_t>(hdr, kHdrState) != kPoseStateModel) return false;
+    const std::uintptr_t mb = Field<std::uintptr_t>(hdr, kHdrModel), me = Field<std::uintptr_t>(hdr, kHdrModelEnd);
+    if (!mb || me - mb != kJ * 0x40) return false;
+    return mem::Read(mb + 0x40ull * j, m, sizeof(m));
+}
+
+bool HeadWorld(game::Entity* e, double (&pos)[3]) noexcept {
+    constexpr unsigned kSamHead = 31;  // the head joint of the 77-joint layout (1.59 m above the root standing)
+    if (!e) return false;
+    unsigned j = kSamHead;
+    for (BodySlot* b : {&g_p, &g_me})
+        if (b->phase == Phase::live && b->spawn.e == e) j = b->inv[kSamHead];
+    float m[4][4];
+    double jp[3];
+    float jr[3][3];
+    Xf w;
+    if (!ReadJointModel(e, j, m) || !JointFrame(m, jp, jr) || !ReadWorld(reinterpret_cast<std::uintptr_t>(e), &w)) return false;
+    const Xf h = Compose(w, jp, jr);
+    const double dx = h.p[0] - w.p[0], dy = h.p[1] - w.p[1], dz = h.p[2] - w.p[2];
+    if (!(dz > 0.3 && dz < 2.4) || dx * dx + dy * dy > 1.0) return false;  // not a head over its feet
+    pos[0] = h.p[0], pos[1] = h.p[1], pos[2] = h.p[2];
+    return true;
+}
+
 void ConfigureSelf(const bodies::Body* body) noexcept {
     g_self_body = body;
     g_self_on = body != nullptr;
@@ -1621,6 +1855,8 @@ void EmergencyStop() noexcept {
     g_sam_sm.store(0, std::memory_order_seq_cst);
     g_sam_e.store(0, std::memory_order_seq_cst);
     g_self_follow.store(3, std::memory_order_seq_cst);
+    g_gear_n[0].store(0, std::memory_order_seq_cst);
+    g_gear_n[1].store(0, std::memory_order_seq_cst);
     Unpublish(g_p);
     Unpublish(g_me);
     // Sam first (fault-free checked), then the body.

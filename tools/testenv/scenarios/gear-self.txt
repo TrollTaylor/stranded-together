@@ -1,0 +1,95 @@
+# Gear on the self view's body (docs/real-partner-body.md section 12): the player sees themself as
+# their own character (Fragile) carrying their own backpack and cargo.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario gear-self -SeedSaves complete-100
+# A guest-like game (role solo, my_character=fragile, self_character=1). The local gear (backpack,
+# Odradek, BB pod, the cargo on the back) is read every 100 ms and put on the self body as the
+# game's own cutscene props, placed every frame on her joints. Frames: standing from behind and
+# from the front, walking and running, then the self view off (Sam with his real gear, the same
+# camera), a debug Fragile body in front of Sam wearing our gear (the partner's placement path),
+# and a cargo change: the 100% save's Sam carries personal equipment and weapons only (not drawn as
+# cases, except the weapon on his waist), so the hidden-test action `gear 3 <n>` stacks n synthetic
+# delivery cases on the backpack (3, then 1, then none).
+role solo
+timeout 360
+ini partner_body=real
+ini my_character=fragile
+ini self_character=1
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[self\] showing 'fragile'
+waitlog 30 \[gear-self\] .*items, [1-9][0-9]* props live
+wait 2000
+action gear 0
+screenshot 01-self-back
+# turn the camera round: the character faces the camera
+pad none 1300 rx=32767
+wait 1500
+screenshot 02-self-front
+pad none 1300 rx=-32767
+wait 1500
+# walk away from the camera (half stick), then run (full stick)
+pad none 1500 ly=14000 keep
+screenshot 03-walk-a
+wait 250
+screenshot 03-walk-b
+pad none 0
+pad none 2000 ly=32767 keep
+screenshot 04-run-a
+wait 200
+screenshot 04-run-b
+wait 200
+screenshot 04-run-c
+pad none 0
+wait 1500
+screenshot 05-stopped-back
+action gear 0
+action real_stats
+# self view off: the local Sam with his real gear, the same camera (comparison)
+action self_view 0
+wait 2000
+screenshot 06-sam-real-gear
+# Sam turns to the camera; a debug Fragile 1.6 m ahead of him (between him and the camera), facing
+# him (her back to the camera), mirroring his pose and wearing our gear: the partner's placement path
+pad none 700 ly=-32767
+wait 1500
+action gear 4 1
+action real_spawn 3 1.6 1
+waitlog 20 \[gear\] .*items, [1-9][0-9]* props live
+wait 2000
+screenshot 07-debug-fragile-back
+pad none 1300 rx=32767
+wait 1500
+screenshot 08-debug-fragile-front
+pad none 1300 rx=-32767
+wait 1500
+# a cargo change: 3 synthetic delivery cases on the backpack, then 1, then none
+action gear 3 3
+waitlog 10 \[gear\] gear: .*cargo 4
+wait 3000
+screenshot 09-three-cases
+action gear 3 1
+waitlog 10 \[gear\] layout .* prop\(s\) removed
+wait 2000
+screenshot 10-one-case
+action gear 3 0
+waitlog 10 \[gear\] layout .* prop\(s\) removed
+wait 2000
+screenshot 10b-no-cases
+action gear 3 3
+action real_remove
+action self_view 1
+waitlog 20 \[self\] showing 'fragile'
+wait 3000
+screenshot 11-self-again
+pad none 1300 rx=32767
+wait 1500
+screenshot 12-self-again-front
+action gear 0
+action log_status
+quit

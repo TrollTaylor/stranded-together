@@ -120,6 +120,8 @@ DebugOptions DebugOptionsFromSettings(const json::Value& settings) {
     // Only an explicit "holo" picks the hologram: missing or unknown keeps the default (real).
     o.real_partner_body = d->Str("partner_body") != "holo";
     o.self_character = d->Bool("self_character", o.self_character);
+    o.name_tags = d->Bool("name_tags", o.name_tags);
+    o.partner_collision = d->Bool("partner_collision", o.partner_collision);
     return ClampDebugOptions(o);
 }
 
@@ -135,6 +137,8 @@ void DebugOptionsToSettings(const DebugOptions& o, json::Value& settings) {
     d["debug_menu_key"] = FunctionKeyName(o.debug_menu_key);
     d["partner_body"] = o.real_partner_body ? "real" : "holo";
     d["self_character"] = o.self_character;
+    d["name_tags"] = o.name_tags;
+    d["partner_collision"] = o.partner_collision;
     settings["debug"] = d;
 }
 
@@ -151,6 +155,8 @@ void ApplyDebugOptions(const DebugOptions& o, SessionIni& ini) {
     // The self view needs the pose hook, which only partner_body=real installs; the writer adds
     // the key only for a non-host whose character is not Sam.
     ini.self_character = o.self_character && o.real_partner_body;
+    ini.name_tags = o.name_tags;
+    ini.partner_collision = o.partner_collision;
     ini.one_shot = true;
 }
 

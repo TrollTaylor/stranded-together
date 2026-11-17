@@ -25,6 +25,10 @@ struct Info {
     // Joint frames (STJ1) sent / accepted, and the link body bytes sent with the poses (the
     // FRAME messages; the link header and encryption come on top): the real body's bandwidth.
     std::uint64_t rx_joint_frames = 0, tx_joint_frames = 0, tx_payload_bytes = 0;
+    // Player name frames (STN1, name tags) sent / accepted.
+    std::uint64_t rx_name_frames = 0, tx_name_frames = 0;
+    // Gear layout frames (STC1, backpack and cargo) sent / accepted.
+    std::uint64_t rx_gear_frames = 0, tx_gear_frames = 0;
 };
 
 bool Start(const Config& config) noexcept;  // game thread, once
@@ -41,6 +45,20 @@ bool PopJoints(wire::JointFrame& out, std::uint64_t& receive_ms, std::uint32_t& 
 // handshake: rejoin, different guest) bump `generation` so the caller can
 // reset its interpolation state.
 bool PopPose(wire::Pose& out, std::uint64_t& receive_ms, std::uint32_t& generation) noexcept;
+// Name tags (docs/real-partner-body.md section 10). Game thread: the name the partner should
+// show above our head (UTF-8; sanitized here; "" with send = false stops sending). The link adds
+// a STN1 frame to the pose datagrams: the first 10 of every session, then every 30th, and the
+// next one after a change.
+void SetLocalName(const char* utf8, bool send) noexcept;
+// The partner's name from its newest STN1 frame of the current session (sanitized). False when
+// none arrived this session. generation = the link session it came in (as PopPose's).
+bool PeerName(char* out, std::size_t cap, std::uint32_t* generation, bool* from_host) noexcept;
+// Gear (docs/real-partner-body.md section 12). Game thread: our backpack / cargo layout (STC1) in a
+// datagram of its own (one FRAME message). False when not connected or it does not encode.
+bool SendGear(const wire::GearFrame& gear) noexcept;
+// Received gear frames, oldest first (a small queue), with their own "newer seq" filter and the
+// same generation counter as PopPose.
+bool PopGear(wire::GearFrame& out, std::uint64_t& receive_ms, std::uint32_t& generation) noexcept;
 // Millisecond clock from QueryPerformanceCounter (shared by link and sync).
 std::uint64_t NowMs() noexcept;
 double NowMsPrecise() noexcept;

@@ -53,6 +53,11 @@ enum class Action : std::uint8_t {
     self_view,            // v[0] = 1 on / 0 off, v[1] = body id (0 = my_character), v[2] = follow (1 Sam's update, 2 the body's, 3 tick, 0 unchanged)
     real_outfit,          // v[0] = 0 log, 1 dress the slot's Sam body like our Sam, 2 exos v[1] + suit colour v[2], 3 override off,
                           //   4 (hidden tests on scratch saves only) set our own Sam's suit colour byte to v[1]
+    name_tags,            // v[0] = 0 normal, 1 self test (a tag above your own Sam), 2 log the camera, 3 tags off (v[1] 0) / on (1)
+    collision,            // v[0] = 0 log, 1 off (v[1] 0) / on (1), 2 per-tick distance trace for v[1] ms, 3 pin the partner v[1] m
+                          //   ahead (0 = follow again), 4 reconfigure: layer v[1] (9/10), type v[2] (0 rigid body, 1 proxy)
+    gear,                 // v[0] = 0 log, 1 partner props off (v[1] 0) / on (1), 2 self-view props off / on, 3 test: only the first v[1]
+                          //   cargo pieces (-1 all; hidden tests only), 4 our own gear on the debug body off / on
     count
 };
 

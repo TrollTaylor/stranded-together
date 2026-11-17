@@ -1,0 +1,112 @@
+# Name tags (docs/real-partner-body.md section 10), one hidden game:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario name-tags -SeedSaves complete-100
+# The echo partner (a real Sam body replaying our own movement 6 s later) carries our name with
+# " (echo)" above its head: name=TagEcho, so no Steam name appears in the screenshots or logs.
+# Shows the tag near and far (with the distance), the self test above our own Sam, no tag while
+# the partner is behind the camera, and no tag in the pause menu and on the map.
+role echo
+timeout 360
+ini partner_body=real
+ini partner_character=sam
+ini echo_delay_s=6.0
+ini name=TagEcho
+waitready 90
+waitlog 120 \[overlay\] input attached
+waitlog 30 \[tags\] name tags on
+wait 25000
+?screenshot 01-title
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[sync\] partner body: real
+waitlog 20 \[tags\] camera view checks passed
+# standing: the partner arrives where Sam stands (6 s behind): the tag right above the head
+wait 7000
+waitlog 10 \[tags\] drawn:
+screenshot 02-near-standing
+action name_tags 2
+# the self test: a tag above our own Sam (the anchor is exactly Sam's position + 1.95 m)
+action name_tags 1
+wait 600
+screenshot 03-self-test
+action name_tags 2
+action name_tags 0
+# walk towards the camera for 7 s: the partner keeps standing at the start for 6 s (it replays
+# us 6 s late), then follows: it is 20-30 m away, small, with the distance after the name
+pad none 4000 ly=-32767 keep
+screenshot 04-far-a
+pad none 3000 ly=-32767 keep
+screenshot 04-far-b
+wait 300
+screenshot 04-far-c
+pad none 0
+action name_tags 2
+wait 3000
+screenshot 05-approaching
+# standing: the partner arrives next to Sam
+wait 5000
+screenshot 06-near-arrived
+# walk away from the camera: the partner stays at the start for 6 s, which is now behind the
+# camera: no tag
+pad none 4000 ly=32767 keep
+screenshot 07-partner-behind-camera
+pad none 0
+wait 7000
+screenshot 08-arrived-again
+# far: the echo offset puts the partner 40 m along world +X (applied to the replay, so 6 s later);
+# the camera then sweeps a full circle (half stick) with a screenshot every ~0.4 s. The tag is
+# drawn through walls (no depth test): small, with the distance after the name.
+action echo_tuning 6 40
+wait 7500
+pad none 200 rx=20000 keep
+screenshot 09-far-sweep-01
+wait 300
+screenshot 09-far-sweep-02
+wait 300
+screenshot 09-far-sweep-03
+wait 300
+screenshot 09-far-sweep-04
+wait 300
+screenshot 09-far-sweep-05
+wait 300
+screenshot 09-far-sweep-06
+wait 300
+screenshot 09-far-sweep-07
+wait 300
+screenshot 09-far-sweep-08
+wait 300
+screenshot 09-far-sweep-09
+wait 300
+screenshot 09-far-sweep-10
+wait 300
+screenshot 09-far-sweep-11
+wait 300
+screenshot 09-far-sweep-12
+wait 300
+screenshot 09-far-sweep-13
+wait 300
+screenshot 09-far-sweep-14
+pad none 0
+action echo_tuning 6 0
+# START: the cuff map (HandcuffDevice) with a notice: no tag
+pad START 150
+wait 2500
+screenshot 10-map
+action log_status
+pad A 150
+wait 1500
+pad B 150
+wait 2500
+screenshot 11-after-map
+# Esc (posted to the window; may not reach the game): the system pause menu, if it opens
+key esc 150
+wait 2500
+screenshot 12-esc-menu
+action log_status
+key esc 150
+wait 2500
+screenshot 13-after-esc
+action log_status
+quit

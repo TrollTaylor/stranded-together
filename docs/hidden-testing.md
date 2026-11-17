@@ -387,7 +387,8 @@ role solo|echo|host          session role (default solo); host: a second (guest)
 ini <key>=<value>            an extra session.ini line, for every game of the run; only partner_body,
                              partner_character, my_character, self_character, partner_holo, partner_marker, partner_voice,
                              partner_activate, pose_hook, echo_delay_s, echo_offset_m, send_hz,
-                             interp_delay_ms (testenv_core ScenarioIniKeyAllowed)
+                             interp_delay_ms, name, name_tags, partner_collision,
+                             partner_collision_layer, partner_gear (testenv_core ScenarioIniKeyAllowed)
 @host ini <key>=<value>      the same, for the first game only; @guest ini for the guest game only (role
                              host). Written after the shared lines, so they win (the mod keeps a key's last
                              value). @both ini is refused (plain ini already goes to both); ini cannot be
@@ -441,6 +442,25 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   on, ride, X: get off) and a rest (hold B: sit, hold X: Sleep, B: stand up). `two-games-real-self.txt`
   (role host): `two-games-real` with `@guest ini self_character=1`: the guest sees itself as Fragile, the
   host never gets a self body (`nolog`).
+* `collision.txt` (role echo), `collision-off.txt` and `two-games-collision.txt` (role host): player collision
+  (docs/real-partner-body.md section 11). The echo partner is pinned ahead of Sam (`action collision 3`), Sam
+  walks into it at full and half stick, round it and on, with the distance logged every tick (`action collision
+  2`); the `-off` copy runs the same steps with `partner_collision=0`. `collision.txt` first pins the partner
+  7 m ahead (the capsule stays out of the world beyond 4 m). Two games: the guest walks the host's path
+  into the host's standing body.
+* `two-games-all.txt` (role host): name tags, gear and collision together, all on by default. The host
+  Sam with `name=TagPlayer`, the guest Fragile with self view and `name=TagFriend` (different names: no
+  `(host)`/`(guest)` suffix, 9 B labels). Different gear (`gear 3 1` on the host, `gear 3 2` on the guest),
+  each checked on the other game (`the partner's gear: ... cargo 3` / `cargo 2`); the guest then walks into
+  the host's standing body with the distance traced on both games, and walks back so the host sees her back.
+  Note: `waitlog` matches any line of the log so far, so each check names text that cannot have appeared
+  before (the cargo counts here).
+* `gear-self.txt` (role solo, Fragile, self view) and `two-games-gear.txt` (role host, the guest Fragile with
+  self view, `partner_collision=0`): the backpack and cargo on the bodies (docs/real-partner-body.md section
+  12). Solo: the self view standing, walking and running, Sam with his real gear for comparison, a debug Fragile
+  wearing our gear (`gear 4 1`, `real_spawn 3 1.6 1`) and a cargo change (`gear 3 3`, `1`, `0`: synthetic
+  delivery cases). Two games: each side's own gear and the other screen's view of it, and the host's cargo
+  change seen by the guest.
 * `outfit-probe.txt` (role solo, `pose_hook=1`): the partner Sam's outfit (docs/real-partner-body.md
   section 9). A debug Sam body 3 m ahead is dressed like our own Sam, then with explicit outfits. Then our
   own Sam's suit colour is changed (`real_outfit 4`) and the body follows.
@@ -448,6 +468,11 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   suit. Then the host changes to colour 9, the guest to colour 0, the host to silver and back to colour 9
   (the guest's body must get colour 9 again after the variation change, `#2`); each time the other
   game's partner body follows.
+* `name-tags.txt` (role echo, `name=TagEcho`, echo delay 6 s): name tags (docs/real-partner-body.md section
+  10): the tag near, the self test above our own Sam, far (the echo offset puts the partner 40 m away; a
+  camera sweep), none while the partner is behind the camera, none on the cuff map (START).
+  `two-games-name-tags.txt` (role host): `two-games-real` with `name=TagPlayer` on both games: each shows
+  the other's name with its role, `TagPlayer (host)` / `TagPlayer (guest)`.
 * `two-games.txt`, `two-games-real.txt`, `two-games-real-fallback.txt` (role host): two games, see
   "Two games".
 * `boot.txt`: no input, a screenshot every 10-15 s for 80 s (title flow discovery).

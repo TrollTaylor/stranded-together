@@ -311,4 +311,221 @@ float AngleBetween(const Quat& a, const Quat& b) noexcept {
     return static_cast<float>(2.0 * std::atan2(v, std::fabs(rw)) * 57.29577951308232);
 }
 
+// ---------------------------------------------------------------- STN1
+namespace {
+
+// One code point from in[i..n): its value and length, or 0 for an invalid sequence (overlong,
+// surrogate, above U+10FFFF, truncated, stray continuation byte).
+unsigned NextCodepoint(const unsigned char* in, std::size_t i, std::size_t n, std::uint32_t& cp) {
+    const unsigned c = in[i];
+    if (c < 0x80) {
+        cp = c;
+        return 1;
+    }
+    unsigned len = 0;
+    std::uint32_t v = 0, min = 0;
+    if ((c & 0xE0) == 0xC0) len = 2, v = c & 0x1F, min = 0x80;
+    else if ((c & 0xF0) == 0xE0) len = 3, v = c & 0x0F, min = 0x800;
+    else if ((c & 0xF8) == 0xF0) len = 4, v = c & 0x07, min = 0x10000;
+    else return 0;
+    if (i + len > n) return 0;
+    for (unsigned k = 1; k < len; ++k) {
+        const unsigned d = in[i + k];
+        if ((d & 0xC0) != 0x80) return 0;
+        v = (v << 6) | (d & 0x3F);
+    }
+    if (v < min || v > 0x10FFFF || (v >= 0xD800 && v <= 0xDFFF)) return 0;
+    cp = v;
+    return len;
+}
+
+bool Invisible(std::uint32_t cp) {
+    return cp < 0x20 || cp == 0x7F || (cp >= 0x80 && cp <= 0x9F) || cp == 0x061C || (cp >= 0x200B && cp <= 0x200F) ||
+           (cp >= 0x2028 && cp <= 0x202E) || (cp >= 0x2060 && cp <= 0x206F) || cp == 0xFEFF;
+}
+
+bool Space(std::uint32_t cp) { return cp == 0x20 || cp == 0xA0 || cp == 0x3000 || (cp >= 0x2000 && cp <= 0x200A); }
+
+}  // namespace
+
+std::size_t SanitizeName(const char* in_chars, std::size_t n, char* out, std::size_t cap) noexcept {
+    if (!out || !cap) return 0;
+    out[0] = 0;
+    if (!in_chars) return 0;
+    const auto* in = reinterpret_cast<const unsigned char*>(in_chars);
+    const std::size_t max_bytes = cap - 1 < kMaxNameBytes ? cap - 1 : kMaxNameBytes;
+    std::size_t o = 0;
+    unsigned cps = 0;
+    bool pending_space = false;
+    for (std::size_t i = 0; i < n && in[i];) {
+        std::uint32_t cp = 0;
+        const unsigned len = NextCodepoint(in, i, n, cp);
+        if (!len) {  // drop one byte and resynchronise
+            ++i;
+            continue;
+        }
+        const std::size_t at = i;
+        i += len;
+        if (Invisible(cp)) continue;
+        if (Space(cp)) {
+            pending_space = o > 0;  // leading space is trimmed
+            continue;
+        }
+        const std::size_t need = len + (pending_space ? 1u : 0u);
+        const unsigned need_cps = 1u + (pending_space ? 1u : 0u);
+        if (o + need > max_bytes || cps + need_cps > kMaxNameCodepoints) break;
+        if (pending_space) {
+            out[o++] = ' ';
+            ++cps;
+            pending_space = false;
+        }
+        std::memcpy(out + o, in + at, len);
+        o += len;
+        ++cps;
+    }
+    out[o] = 0;  // trailing space was never written
+    return o;
+}
+
+std::size_t EncodeName(const NameFrame& f, std::uint8_t* out, std::size_t cap) noexcept {
+    char clean[kMaxNameBytes + 1];
+    const std::size_t len = SanitizeName(f.name, f.len < sizeof(f.name) ? f.len : sizeof(f.name) - 1, clean, sizeof(clean));
+    const std::size_t size = kNameHeaderSize + len;
+    if (!out || cap < size) return 0;
+    std::memcpy(out, kNameMagic, 4);
+    out[4] = kNameVersion;
+    out[5] = static_cast<std::uint8_t>(f.flags & kNameKnown);
+    out[6] = static_cast<std::uint8_t>(len);
+    out[7] = 0;
+    std::memcpy(out + kNameHeaderSize, clean, len);
+    return size;
+}
+
+bool DecodeName(const std::uint8_t* data, std::size_t size, NameFrame& out) noexcept {
+    if (!data || size < kNameHeaderSize || std::memcmp(data, kNameMagic, 4) != 0) return false;
+    if (data[4] != kNameVersion) return false;
+    const unsigned len = data[6];
+    if (len > kMaxNameBytes || size != kNameHeaderSize + len) return false;
+    NameFrame v;
+    v.flags = static_cast<std::uint8_t>(data[5] & kNameKnown);
+    v.len = static_cast<std::uint8_t>(SanitizeName(reinterpret_cast<const char*>(data + kNameHeaderSize), len, v.name, sizeof(v.name)));
+    out = v;
+    return true;
+}
+
+// ---------------------------------------------------------------- STC1
+namespace {
+constexpr unsigned kGearJoints = 77;  // Sam's skeleton (kSamLayoutHash)
+
+bool GearItemOk(const GearItem& it, unsigned index) {
+    const auto k = static_cast<std::uint8_t>(it.kind);
+    if (k < 1 || k > kGearKindMax) return false;
+    if (it.parent == kGearNoParent) return it.joint < kGearJoints;
+    return it.parent < index;
+}
+}  // namespace
+
+std::uint16_t GearLayoutHash(const GearFrame& f) noexcept {
+    std::uint32_t h = 2166136261u;
+    auto mix = [&h](std::uint8_t b) {
+        h ^= b;
+        h *= 16777619u;
+    };
+    mix(f.count);
+    for (unsigned i = 0; i < f.count && i < kMaxGearItems; ++i) {
+        const GearItem& it = f.items[i];
+        mix(static_cast<std::uint8_t>(it.kind));
+        mix(it.model);
+        mix(it.variation);
+        mix(it.parent == kGearNoParent ? it.joint : std::uint8_t{0});
+        mix(it.parent);
+    }
+    return static_cast<std::uint16_t>((h >> 16) ^ (h & 0xFFFFu));
+}
+
+std::size_t EncodeGear(const GearFrame& f, std::uint8_t* out, std::size_t cap) noexcept {
+    if (!out || f.count > kMaxGearItems) return 0;
+    const std::size_t size = GearFrameSize(f.count);
+    if (cap < size) return 0;
+    for (unsigned i = 0; i < f.count; ++i) {
+        const GearItem& it = f.items[i];
+        if (!GearItemOk(it, i) || !FiniteQ(it.q)) return 0;
+        for (float v : it.p)
+            if (!std::isfinite(v) || std::fabs(v) > 32.0f) return 0;
+    }
+    std::uint8_t* p = out;
+    std::memcpy(p, kGearMagic, 4);
+    p += 4;
+    Put(p, f.seq);
+    Put(p, kGearVersion);
+    Put(p, f.count);
+    Put(p, static_cast<std::uint8_t>(f.flags & kGearKnown));
+    Put(p, f.dropped);
+    Put(p, GearLayoutHash(f));
+    Put(p, std::uint16_t{0});
+    for (unsigned i = 0; i < f.count; ++i) {
+        const GearItem& it = f.items[i];
+        Put(p, static_cast<std::uint8_t>(it.kind));
+        Put(p, it.model);
+        Put(p, it.variation);
+        Put(p, it.parent == kGearNoParent ? it.joint : std::uint8_t{0});
+        Put(p, it.parent);
+        Put(p, std::uint8_t{0});
+        for (float v : it.p) Put(p, static_cast<std::int16_t>(std::lround(v * 1000.0f)));
+        const std::uint64_t b = PackQuat(it.q);
+        for (unsigned k = 0; k < 6; ++k) *p++ = static_cast<std::uint8_t>(b >> (8 * k));
+    }
+    return static_cast<std::size_t>(p - out);
+}
+
+bool DecodeGear(const std::uint8_t* data, std::size_t size, GearFrame& out) noexcept {
+    if (!data || size < kGearHeaderSize || std::memcmp(data, kGearMagic, 4) != 0) return false;
+    const std::uint8_t* p = data + 4;
+    static thread_local GearFrame f;
+    f = GearFrame{};
+    f.seq = Get<std::uint32_t>(p);
+    if (Get<std::uint8_t>(p) != kGearVersion) return false;
+    f.count = Get<std::uint8_t>(p);
+    f.flags = static_cast<std::uint8_t>(Get<std::uint8_t>(p) & kGearKnown);
+    f.dropped = Get<std::uint8_t>(p);
+    const std::uint16_t hash = Get<std::uint16_t>(p);
+    Get<std::uint16_t>(p);
+    if (f.count > kMaxGearItems || size != GearFrameSize(f.count)) return false;
+    for (unsigned i = 0; i < f.count; ++i) {
+        GearItem& it = f.items[i];
+        it.kind = static_cast<GearKind>(Get<std::uint8_t>(p));
+        it.model = Get<std::uint8_t>(p);
+        it.variation = Get<std::uint8_t>(p);
+        it.joint = Get<std::uint8_t>(p);
+        it.parent = Get<std::uint8_t>(p);
+        Get<std::uint8_t>(p);
+        for (float& v : it.p) v = static_cast<float>(Get<std::int16_t>(p)) / 1000.0f;
+        std::uint64_t b = 0;
+        for (unsigned k = 0; k < 6; ++k) b |= static_cast<std::uint64_t>(*p++) << (8 * k);
+        it.q = UnpackQuat(b);
+        if (!GearItemOk(it, i)) return false;
+        if (it.parent != kGearNoParent) it.joint = 0;
+    }
+    if (GearLayoutHash(f) != hash) return false;
+    out = f;
+    return true;
+}
+
+bool GearPoseDelta(const GearFrame& a, const GearFrame& b, float* max_m, float* max_deg) noexcept {
+    if (a.count != b.count || GearLayoutHash(a) != GearLayoutHash(b)) return false;
+    float dm = 0, dd = 0;
+    for (unsigned i = 0; i < a.count; ++i) {
+        const GearItem& x = a.items[i];
+        const GearItem& y = b.items[i];
+        const float dx = x.p[0] - y.p[0], dy = x.p[1] - y.p[1], dz = x.p[2] - y.p[2];
+        const float m = std::sqrt(dx * dx + dy * dy + dz * dz);
+        const float d = AngleBetween(x.q, y.q);
+        if (m > dm) dm = m;
+        if (d > dd) dd = d;
+    }
+    if (max_m) *max_m = dm;
+    if (max_deg) *max_deg = dd;
+    return true;
+}
+
 }  // namespace st::wire

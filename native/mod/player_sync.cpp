@@ -13,6 +13,9 @@
 #include "game_api.hpp"
 #include "link.hpp"
 #include "log.hpp"
+#include "nametags.hpp"
+#include "partner_collision.hpp"
+#include "partner_gear.hpp"
 #include "partner_holo.hpp"
 #include "partner_source.hpp"
 #include "pose_wire.hpp"
@@ -25,6 +28,8 @@ namespace {
 
 using game::Entity;
 using game::WorldTransform;
+
+constexpr std::uintptr_t kEntityParent = 0x70;  // Entity: parent entity (vehicle, mount), as game_actions reads it
 
 // ---------------------------------------------------------------- snapshot ring
 // Remote poses keyed by the sender's millisecond clock. Playback runs at
@@ -154,6 +159,7 @@ bool g_starved_fallback = false;     // the chain left 'real' because no joint f
 double g_last_joints_ms = 0;         // our clock at the newest received (or echoed) playable STJ1 frame
 unsigned g_joints_since_fallback = 0;
 double g_rx_pos[3] = {};             // the newest received transform's position
+bool g_rx_in_vehicle = false;        // the newest received pose has kPoseInVehicle (player collision)
 double g_joints_pos[3] = {};         // ... when the newest playable STJ1 frame arrived
 // When the real body began waiting for the session's first joint frame (TrySpawn). Its own timer,
 // cleared whenever that wait is interrupted (link down, partner silent, Sam asleep, new link
@@ -168,6 +174,11 @@ bool g_local_active = false;
 double g_prev_pos[3] = {};
 double g_prev_pos_ms = 0;
 float g_speed = 0;
+double g_move_dir[2] = {0, 0};  // the local player's newest horizontal walking direction (unit; collision tests)
+
+// action collision 3: the partner pinned in place (collision tests).
+bool g_pin = false;
+WorldTransform g_pin_wt{};
 
 double g_local_since_ms = 0;        // when the current local player entity appeared
 double g_local_asleep_since_ms = 0;  // 0 while Sam is awake
@@ -492,15 +503,16 @@ void LogTraffic(double now) {
     const double s = prev_ms > 0 ? (now - prev_ms) / 1000.0 : 0;
     const std::uint64_t tx = li.tx_frames - prev.tx_frames, txj = li.tx_joint_frames - prev.tx_joint_frames,
                         rx = li.rx_frames - prev.rx_frames, rxj = li.rx_joint_frames - prev.rx_joint_frames,
-                        bytes = li.tx_payload_bytes - prev.tx_payload_bytes;
+                        bytes = li.tx_payload_bytes - prev.tx_payload_bytes, txg = li.tx_gear_frames - prev.tx_gear_frames,
+                        rxg = li.rx_gear_frames - prev.rx_gear_frames;
     prev = li;
     prev_ms = now;
     if (s <= 0 || (!tx && !rx)) return;
     Log("[sync] link traffic over %.0f s: sent %llu poses (%llu with joint frames), %.0f B/s payload (%.0f B each); "
-        "received %llu poses, %llu joint frames",
+        "received %llu poses, %llu joint frames; gear frames (STC1) sent %llu, received %llu",
         s, static_cast<unsigned long long>(tx), static_cast<unsigned long long>(txj), static_cast<double>(bytes) / s,
         tx ? static_cast<double>(bytes) / static_cast<double>(tx) : 0.0, static_cast<unsigned long long>(rx),
-        static_cast<unsigned long long>(rxj));
+        static_cast<unsigned long long>(rxj), static_cast<unsigned long long>(txg), static_cast<unsigned long long>(rxg));
 }
 
 // The real body has no joint frames to play: fall back to the next body (the hologram), and
@@ -900,6 +912,9 @@ void Init(const Config& config, const std::wstring& mod_dir) noexcept {
         else
             realbody::ConfigureSelf(g_own_body);
     }
+    nametags::Init(config);
+    collision::Init(config);
+    gear::Init(config);
     if (!config.partner_character.empty()) {
         if (bodies::FindByKey(config.partner_character.c_str()))
             Log("[sync] partner_character=%s: debug override, the partner is shown as this body whatever it sends",
@@ -966,6 +981,11 @@ void Tick() noexcept {
         const float inst = static_cast<float>(std::sqrt(dx * dx + dy * dy + dz * dz) * 1000.0 / (now - g_prev_pos_ms));
         g_speed = g_speed * 0.9f + inst * 0.1f;
     }
+    if (g_local_valid && g_prev_pos_ms > 0 && now - g_prev_pos_ms > 1.0) {
+        const double mx = g_local_wt.pos.x - g_prev_pos[0], my = g_local_wt.pos.y - g_prev_pos[1];
+        const double m = std::sqrt(mx * mx + my * my);
+        if (m * 1000.0 / (now - g_prev_pos_ms) > 1.0) g_move_dir[0] = mx / m, g_move_dir[1] = my / m;
+    }
     if (g_local_valid) {
         g_prev_pos[0] = g_local_wt.pos.x, g_prev_pos[1] = g_local_wt.pos.y, g_prev_pos[2] = g_local_wt.pos.z;
         g_prev_pos_ms = now;
@@ -980,6 +1000,9 @@ void Tick() noexcept {
             p.seq = ++g_seq;
             p.sender_ms = static_cast<std::uint32_t>(static_cast<std::uint64_t>(now));
             p.flags = wire::kPoseValid;
+            // Riding something (Sam has a parent entity: vehicle, mount): the partner's player
+            // collision takes our body's capsule out of its world (partner_collision.hpp).
+            if (partner::mem::Q(reinterpret_cast<std::uintptr_t>(g_local) + kEntityParent) != 0) p.flags |= wire::kPoseInVehicle;
             p.x = g_local_wt.pos.x, p.y = g_local_wt.pos.y, p.z = g_local_wt.pos.z;
             p.rot = wire::QuatFromMatrix(g_local_wt.rot.m);
             p.speed = g_speed;
@@ -1003,6 +1026,7 @@ void Tick() noexcept {
             } else if (g_ring.Push(p.sender_ms, now, p.x + g_cfg.echo_offset_m, p.y, p.z, p.rot)) {
                 g_last_remote_ms = now;
                 g_rx_pos[0] = p.x + g_cfg.echo_offset_m, g_rx_pos[1] = p.y, g_rx_pos[2] = p.z;
+                g_rx_in_vehicle = (p.flags & wire::kPoseInVehicle) != 0;
             }
             if (!g_net && have_joints) {
                 std::uint8_t buf[wire::kMaxJointFrameSize];
@@ -1015,6 +1039,20 @@ void Tick() noexcept {
                     logged = true;
                     Log("[sync] joint frames (STJ1): %zu bytes each, %u joints, body_id %u; echoed through encode/decode", n,
                         static_cast<unsigned>(jf.joint_count), static_cast<unsigned>(jf.body_id));
+                }
+            }
+            // Gear (STC1, docs/real-partner-body.md section 12): our backpack and cargo, when the layout
+            // changes and about once a second. Only a game with the pose hook (a real-body game) sends it.
+            static wire::GearFrame gf, gback;
+            if (realbody::HookInstalled() && gear::TakeSend(now, &gf)) {
+                static std::uint32_t gear_seq = 0;
+                gf.seq = ++gear_seq;
+                if (g_net) {
+                    link::SendGear(gf);
+                } else {
+                    std::uint8_t buf[wire::kMaxGearFrameSize];
+                    const std::size_t n = wire::EncodeGear(gf, buf, sizeof(buf));
+                    if (n && wire::DecodeGear(buf, n, gback)) gear::SetPartnerGear(&gback);  // echo: our own gear
                 }
             }
         }
@@ -1032,12 +1070,14 @@ void Tick() noexcept {
                 realbody::ResetFrames();
                 g_peer_body.Reset();  // a new session may be another player with another character
                 realbody::SetPartnerOutfit(nullptr);
+                gear::SetPartnerGear(nullptr);
                 g_first_joints_wait_ms = 0;
                 Log("[sync] new link session (#%u): interpolation reset", gen);
                 if (BodyPresent()) RemoveBody("new link session");  // session end of the previous partner
             }
             if (!(p.flags & wire::kPoseValid)) continue;
             g_rx_pos[0] = p.x, g_rx_pos[1] = p.y, g_rx_pos[2] = p.z;
+            g_rx_in_vehicle = (p.flags & wire::kPoseInVehicle) != 0;
             if (g_ring.Push(p.sender_ms, static_cast<double>(recv), p.x, p.y, p.z, p.rot))
                 g_last_remote_ms = static_cast<double>(recv);
         }
@@ -1045,6 +1085,11 @@ void Tick() noexcept {
         while (link::PopJoints(jf, recv, gen)) {
             if (gen != g_generation) continue;  // a frame from before the session change
             TakeJointFrame(jf, g_ring.Unwrapped(jf.sender_ms));
+        }
+        static wire::GearFrame gf;
+        while (link::PopGear(gf, recv, gen)) {
+            if (gen != g_generation) continue;  // a frame from before the session change
+            gear::SetPartnerGear(&gf);
         }
     }
     g_ring.Settle();
@@ -1067,6 +1112,7 @@ void Tick() noexcept {
     if (g_local_valid && remote_fresh && echo_ready && g_ring.Sample(now, delay, pos, q)) {
         WorldTransform target{};
         ComposeTransform(pos, q, target);
+        if (g_pin) target = g_pin_wt;  // collision tests: the body stands still (its last pose held)
         g_last_target[0] = pos[0], g_last_target[1] = pos[1], g_last_target[2] = pos[2];
         g_last_target_valid = true;
         if (!BodyPresent()) {
@@ -1081,7 +1127,7 @@ void Tick() noexcept {
                     // Transforms arrive and move but no joint frames: the body would glide in a frozen
                     // pose, so the next body in the chain (the hologram) takes over until joints return.
                     StarvedFallBack("the partner sends positions but no joint frames (STJ1)", now);
-                } else {
+                } else if (!g_pin) {
                     realbody::SamplePublish(g_ring.PlayTime(now, delay));  // joints on the transform's timeline
                 }
             }
@@ -1100,6 +1146,22 @@ void Tick() noexcept {
         if (g_voice.e && !game::TrySetTransform(g_voice.e, target)) SlotForget(g_voice, "set transform fault");
         DriveVoice(target, now);
     }
+
+    // Player collision (partner_collision.hpp): only the partner slot's real body, never the
+    // hologram or the self view's body.
+    {
+        Entity* real = RealOurs() && CurrentBody() == PartnerBody::real && realbody::GetPhase() == realbody::Phase::live
+                           ? realbody::LiveEntity()
+                           : nullptr;
+        collision::Tick(g_local, g_local_active && g_local_valid, real, g_rx_in_vehicle, g_last_remote_ms > 0 ? now - g_last_remote_ms : 1e9,
+                        now);
+    }
+
+    // Gear (partner_gear.hpp): our gear read, the partner's and the self view's props kept on their bodies.
+    gear::Tick(g_local, g_local_active && g_local_valid, now);
+
+    // Name tags (nametags.hpp): the partner's name above their head, our own name to the link.
+    nametags::Tick(g_local, g_local_active && g_local_valid, BodyEntity(), remote_fresh, now);
 
     // One-shot diagnostics: did the partner stay where we put it, and is Sam fine?
     if (g_proxy_check_ms > 0 && now >= g_proxy_check_ms) {
@@ -1239,6 +1301,35 @@ bool DebugLogPartner() noexcept {
     }
     if (!SlotAlive(g_slot)) return false;
     partner::DescribeEntity(g_slot.e, "debug menu");
+    return true;
+}
+
+bool DebugPinPartner(double dist_m, char* msg, std::size_t cap) noexcept {
+    if (!(dist_m > 0)) {
+        g_pin = false;
+        Log("[sync] partner unpinned: it follows the stream again");
+        if (msg && cap) std::snprintf(msg, cap, "partner unpinned");
+        return true;
+    }
+    // Along the camera's forward (where the pad's forward walks Sam), else his last walking direction.
+    double dir[2] = {g_move_dir[0], g_move_dir[1]};
+    const bool camera = nametags::CameraForward(g_local, dir);
+    const double dl = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1]);
+    if (!g_local_valid || dl < 0.5 || dist_m > 50) {
+        if (msg && cap) std::snprintf(msg, cap, "pin: no local player, no direction, or more than 50 m");
+        return false;
+    }
+    WorldTransform w = g_local_wt;
+    w.pos.x += dir[0] * dist_m;
+    w.pos.y += dir[1] * dist_m;
+    // Turned 180 degrees about the up axis (Sam is upright): it faces back towards him.
+    for (int r = 0; r < 2; ++r)
+        for (int c = 0; c < 3; ++c) w.rot.m[r][c] = -w.rot.m[r][c];
+    g_pin_wt = w;
+    g_pin = true;
+    Log("[sync] partner pinned %.2f m ahead of Sam along the %s (%.3f, %.3f): at (%.3f, %.3f, %.3f)", dist_m,
+        camera ? "camera's forward" : "last walking direction", dir[0], dir[1], w.pos.x, w.pos.y, w.pos.z);
+    if (msg && cap) std::snprintf(msg, cap, "partner pinned %.2f m ahead", dist_m);
     return true;
 }
 

@@ -1,0 +1,95 @@
+# Player collision off, for comparison with collision.txt (docs/real-partner-body.md section 11):
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario collision-off -SeedSaves complete-100
+# The same steps with partner_collision=0: Sam walks through the pinned partner.
+role echo
+timeout 360
+ini partner_body=real
+ini partner_character=sam
+ini echo_delay_s=3.0
+ini name=TagEcho
+ini partner_collision=0
+waitready 90
+waitlog 120 \[overlay\] input attached
+waitlog 30 \[coll\] player collision off
+wait 25000
+?screenshot 01-title
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[sync\] partner body: real
+# the echo partner catches up and stands on Sam (overlap: the capsule stays off)
+wait 4000
+action collision 0
+# a short walk: Sam faces the camera's forward (the pad's forward)
+pad none 700 ly=32767
+wait 1500
+# pin the partner 3 m ahead of Sam along the camera's forward, facing him
+action collision 3 3
+wait 1500
+screenshot 02-partner-ahead
+action log_status
+# walk straight into the standing partner (full stick), the distance logged every tick; frames
+# around the contact (3 m at ~4 m/s: contact after ~0.5 s)
+action collision 2 40000
+pad none 450 ly=32767 keep
+screenshot 03-walk-in-a
+wait 100
+screenshot 03-walk-in-b
+wait 100
+screenshot 03-walk-in-c
+wait 300
+screenshot 03-walk-in-d
+wait 500
+pad none 0
+screenshot 04-after-walk-in
+action collision 0
+# back towards the camera (away from the walls ahead), then the next pin
+pad none 1800 ly=-32767
+wait 800
+# again at half stick (~1.4 m/s): the partner pinned 2.5 m ahead along the camera's forward
+action collision 3 2.5
+wait 1500
+screenshot 05-pinned-again
+pad none 1250 ly=16000 keep
+screenshot 05-slow-in-a
+wait 250
+screenshot 05-slow-in-b
+wait 250
+screenshot 05-slow-in-c
+# the game may offer Climb in front of the partner: press A while pushing (does Sam climb onto it?)
+pad A 200 ly=16000 keep
+wait 1200
+screenshot 05-slow-in-climb
+wait 300
+screenshot 05-slow-in-d
+pad none 0
+# back towards the camera (away from the walls ahead), then the next pin
+pad none 1800 ly=-32767
+wait 800
+# walk around the partner: pinned 2 m ahead, Sam walks right-forward, then forward past it
+action collision 3 2
+wait 1500
+pad none 1500 lx=26000 ly=20000 keep
+screenshot 06-around-a
+pad none 1000 ly=32767 keep
+screenshot 06-around-b
+pad none 0
+# walking still works: Sam stops, then 3 s back towards the camera must move him >= 3 m
+wait 1500
+pad none 3000 ly=-32766
+waitlog 5 pad none 3000 ly=-32766 -> ok: .*player moved ([3-9]|[1-9][0-9]+)\.[0-9]+ m
+screenshot 07-walked-on
+# the partner walks into the standing Sam: unpinned, the echo replays Sam's last 3 s and ends on his spot
+action collision 2 9000
+action collision 3 0
+wait 2500
+screenshot 08-partner-walks-in-a
+wait 1500
+screenshot 08-partner-walks-in-b
+wait 3500
+screenshot 09-partner-on-sam
+action collision 0
+action log_status
+quit

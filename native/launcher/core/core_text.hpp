@@ -76,6 +76,12 @@ struct SessionIni {
     // (self_character=1) only for a non-host whose my_character is set and is not sam; the mod
     // treats a missing key as off.
     bool self_character = false;
+    // Name tags (the partner's name above their head; ours sent to them). The mod's default is
+    // on: only name_tags=0 is written.
+    bool name_tags = true;
+    // Player collision (the partner's real body blocks you). The mod's default is on: only
+    // partner_collision=0 is written.
+    bool partner_collision = true;
 };
 inline constexpr double kMaxEchoDelayS = 10.0;
 inline constexpr double kMaxEchoOffsetM = 20.0;
