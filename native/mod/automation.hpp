@@ -593,6 +593,6 @@ bool ForeignSavesBypassed() noexcept;
 // renderer (read from its globals, no hooks): between the two the game sets the process-wide DRED
 // settings, and a probe device alive then broke its renderer set-up. False on timeout
 // (the overlay then stays off for the run).
-bool WaitForGameD3D12(unsigned timeout_ms) noexcept;
+bool WaitForGameD3D12(unsigned timeout_ms, bool log_create_device = false) noexcept;
 
 }  // namespace st::automation

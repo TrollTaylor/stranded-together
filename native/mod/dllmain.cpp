@@ -167,7 +167,8 @@ DWORD WINAPI Bootstrap(LPVOID) {
         // creation (check at 0x1419A6CE9), and the overlay loads d3d12.dll. So the
         // overlay always waits until the game has loaded it itself (every mode, not
         // only hidden runs: v0.2.0 quit on normal launches because of this).
-        const bool overlay_ok = st::automation::WaitForGameD3D12(120000);
+        const bool overlay_ok = st::automation::WaitForGameD3D12(
+            120000, local != st::sandbox::LocalInput::off || !cfg.local_window.empty() || st::automation::Enabled());
         if (!overlay_ok || !st::overlay::Install(ov)) st::Log("[mod] debug menu unavailable this run (see [overlay] above)");
     } else {
         st::Log("[mod] debug menu off (debug_menu=0)");

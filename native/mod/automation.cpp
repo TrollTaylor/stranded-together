@@ -7,6 +7,7 @@
 #include <windows.h>
 #include <psapi.h>
 #include <tlhelp32.h>
+#include <dxgi1_4.h>
 #include <audioclient.h>
 #include <mmdeviceapi.h>
 
@@ -1606,9 +1607,70 @@ void LogMainThreadWhere(const char* when) noexcept {
     Log("[diag] %s: main thread %lu at %s; stack values in modules: %s", when, tid, rip, frames.c_str());
 }
 
+// ds.exe calls D3D12CreateDevice through its delay-load slot 0x144F64D50 (thunk 0x1439034DB:
+// jmp [rip+0x166186F]; callers 0x1419A6B57, the per-adapter capability test with no output, and
+// 0x1419A6BD2, the real creation, both with feature level 12_0). The local test's second game failed
+// exactly there on a player's desktop (the device global 0x145558F70 is never set; the message
+// names the chosen GPU). A pass-through wrapper in that writable data slot (no code patched, so
+// nothing to race with Steam's overlay hooks inside d3d12.dll) logs each call and its HRESULT.
+using CreateDeviceFn = HRESULT(WINAPI*)(IUnknown*, int, const GUID&, void**);
+CreateDeviceFn g_real_create_device = nullptr;
+std::atomic<int> g_create_device_calls{0};
+
+HRESULT WINAPI LoggedCreateDevice(IUnknown* adapter, int level, const GUID& riid, void** device) {
+    MEMORYSTATUSEX before{sizeof(before)};
+    GlobalMemoryStatusEx(&before);
+    const HRESULT hr = g_real_create_device(adapter, level, riid, device);
+    const int n = g_create_device_calls.fetch_add(1);
+    if (n < 16) {
+        DXGI_ADAPTER_DESC desc{};
+        IDXGIAdapter* a = nullptr;
+        if (adapter && SUCCEEDED(adapter->QueryInterface(__uuidof(IDXGIAdapter), reinterpret_cast<void**>(&a))) && a) {
+            a->GetDesc(&desc);
+            a->Release();
+        }
+        char budget[128] = "";
+        IDXGIAdapter3* a3 = nullptr;
+        if (adapter && SUCCEEDED(adapter->QueryInterface(__uuidof(IDXGIAdapter3), reinterpret_cast<void**>(&a3))) && a3) {
+            DXGI_QUERY_VIDEO_MEMORY_INFO local{};
+            if (SUCCEEDED(a3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &local)))
+                std::snprintf(budget, sizeof(budget), ", VRAM budget %llu MB, in use %llu MB",
+                              static_cast<unsigned long long>(local.Budget >> 20), static_cast<unsigned long long>(local.CurrentUsage >> 20));
+            a3->Release();
+        }
+        MEMORYSTATUSEX ms{sizeof(ms)};
+        GlobalMemoryStatusEx(&ms);
+        Log("[diag] D3D12CreateDevice #%d (%s): adapter '%ls' (vendor %04X, %llu MB dedicated%s), level 0x%X -> hr=0x%08lX%s; "
+            "system commit available %llu MB before, %llu MB after (limit %llu MB)",
+            n + 1, device ? "create" : "capability test", adapter ? desc.Description : L"default", desc.VendorId,
+            static_cast<unsigned long long>(desc.DedicatedVideoMemory >> 20), budget, level, static_cast<unsigned long>(hr),
+            SUCCEEDED(hr) ? (hr == S_OK ? "" : " (S_FALSE)") : (hr == E_OUTOFMEMORY ? " FAILED: out of memory (system commit)" : " FAILED"),
+            static_cast<unsigned long long>(before.ullAvailPageFile >> 20), static_cast<unsigned long long>(ms.ullAvailPageFile >> 20),
+            static_cast<unsigned long long>(ms.ullTotalPageFile >> 20));
+    }
+    return hr;
+}
+
+void WrapCreateDeviceSlot() noexcept {
+    const std::uintptr_t base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
+    static const unsigned char kThunk[] = {0xFF, 0x25, 0x6F, 0x18, 0x66, 0x01};  // 0x1439034DB: jmp [rip+0x166186F]
+    void** const slot = reinterpret_cast<void**>(base + 0x4F64D50);
+    const HMODULE d3d12 = GetModuleHandleW(L"d3d12.dll");
+    g_real_create_device = d3d12 ? reinterpret_cast<CreateDeviceFn>(GetProcAddress(d3d12, "D3D12CreateDevice")) : nullptr;
+    std::uintptr_t current = 0;
+    const std::uintptr_t stub = base + 0x39034E7;  // the delay-load stub until the first call resolves it
+    if (!g_real_create_device || !BytesAt(base + 0x39034DB, kThunk, sizeof(kThunk)) || !ReadGamePtr(reinterpret_cast<std::uintptr_t>(slot), current) ||
+        (current != stub && current != reinterpret_cast<std::uintptr_t>(g_real_create_device))) {
+        Log("[diag] D3D12CreateDevice slot not wrapped (unknown build or slot %p)", reinterpret_cast<void*>(current));
+        return;
+    }
+    InterlockedExchangePointer(slot, reinterpret_cast<void*>(&LoggedCreateDevice));
+    Log("[diag] D3D12CreateDevice calls are logged (delay-load slot was %s)", current == stub ? "unresolved" : "resolved");
+}
+
 }  // namespace
 
-bool WaitForGameD3D12(unsigned timeout_ms) noexcept {
+bool WaitForGameD3D12(unsigned timeout_ms, bool log_create_device) noexcept {
     const double t0 = NowMs();
     if (GetModuleHandleW(L"d3d12.dll")) {
         Log("[overlay] d3d12.dll was already loaded before the overlay: ds.exe may exit(0) at its device check (0x1419A6CE9)");
@@ -1619,9 +1681,10 @@ bool WaitForGameD3D12(unsigned timeout_ms) noexcept {
             Log("[overlay] ds.exe did not load d3d12.dll within %u s: overlay not installed this run", timeout_ms / 1000);
             return false;
         }
-        Sleep(2);
+        Sleep(1);
     }
     const double loaded_ms = NowMs();
+    if (log_create_device) WrapCreateDeviceSlot();  // first: the game creates its device a few hundred ms later
     Log("[overlay] deferred %.0f ms until ds.exe loaded d3d12.dll itself (its device check at 0x1419A6980 exits(0) when "
         "d3d12.dll is loaded earlier)",
         loaded_ms - t0);
