@@ -43,8 +43,9 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
 - Not yet: the equipped boots on the other screen (the partner shows the character's own),
   other weapons in hand (bola gun, launchers, PCC ...), the Odradek, the cuff device, the
   weapon crate on the hip, the chiral cylinder, glasses (untested), the exoskeleton on non-Sam
-  characters, facial animation, voices and sounds of the partner, vehicles, world/BT/mission
-  sync.
+  characters, facial animation, the partner's gear and vehicle sounds and gunshots (footsteps, movement and rifle handling are heard,
+  experimental), vehicles,
+  world/BT/mission sync.
 
 ## Download
 
@@ -65,7 +66,7 @@ Starting the game from Steam on its own runs it unmodded: each start from the la
 ## Play
 
 1. **Host:** **Play → Host → Host game**. The game starts through Steam and a join code is copied to your clipboard; send it to your partner. The host always appears as Sam.
-2. **Join:** **Play → Join**, paste the code, **Join game**. You play **Fragile (porter suit)**; with **Debug → Allow other characters** you can pick another character under **Your character** (Sam, Die-Hardman, Cliff, Deadman, Higgs and others). The host sees you as that character when both games use the real character (Debug → Partner body), and on your own screen you appear as it too (Debug → See yourself as your character). **Advanced** switches to LAN / VPN (UDP) and sets your name.
+2. **Join:** **Play → Join**, paste the code, **Join game**. You play **Fragile (porter suit)**; with **Debug → Allow other characters** you can pick another character under **Your character** (Sam, Die-Hardman, Cliff, Deadman, Higgs and others). The host sees you as that character when both games use the real character (Debug → Partner body), and on your own screen you appear as it too (Debug → See yourself as your character). Unless you play Sam, his voice (lines, grunts, breathing) is silenced on your own game (Debug → Mute Sam's voice when you are not Sam). The host hears nothing of Sam from a partner who is not Sam, and you hear the host's Sam from his body (Debug → Hear your partner's voice). Each of you also hears the other's footsteps, movement and weapon sounds from their body (Debug → Hear your partner's footsteps and sounds; experimental), at the volume set by Debug → Partner sound volume. **Advanced** switches to LAN / VPN (UDP) and sets your name.
 3. **Solo test:** **Play → Solo test** starts the game with an echo, a copy of you that replays your movement. No partner, no network.
 
 Keep the launcher open to see the connection on **In game**; closing it is safe (a hidden helper tidies up after the game exits).

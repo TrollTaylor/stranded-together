@@ -90,6 +90,7 @@ DebugOptions ClampDebugOptions(DebugOptions o) {
     o.echo_offset_m = static_cast<double>(static_cast<long long>(o.echo_offset_m * 100.0 + 0.5)) / 100.0;
     if (o.send_hz < 1 || o.send_hz > 120) o.send_hz = d.send_hz;
     if (o.interp_delay_ms < 0 || o.interp_delay_ms > 1000) o.interp_delay_ms = d.interp_delay_ms;
+    if (o.partner_volume < 0 || o.partner_volume > 100) o.partner_volume = d.partner_volume;
     if (o.debug_menu_key < 1 || o.debug_menu_key > 12) o.debug_menu_key = d.debug_menu_key;
     return o;
 }
@@ -120,6 +121,11 @@ DebugOptions DebugOptionsFromSettings(const json::Value& settings) {
     // Only an explicit "holo" picks the hologram: missing or unknown keeps the default (real).
     o.real_partner_body = d->Str("partner_body") != "holo";
     o.self_character = d->Bool("self_character", o.self_character);
+    // Only an explicit "sam" keeps Sam's voice: missing or unknown keeps the default (auto).
+    o.mute_sam_voice = d->Str("self_voice") != "sam";
+    o.partner_voice_sync = d->Bool("voice_sync", o.partner_voice_sync);
+    o.partner_sound_sync = d->Bool("sound_sync", o.partner_sound_sync);
+    o.partner_volume = whole("partner_volume", o.partner_volume, 0, 100);
     o.name_tags = d->Bool("name_tags", o.name_tags);
     o.partner_collision = d->Bool("partner_collision", o.partner_collision);
     o.allow_other_characters = d->Bool("allow_other_characters", o.allow_other_characters);
@@ -138,6 +144,10 @@ void DebugOptionsToSettings(const DebugOptions& o, json::Value& settings) {
     d["debug_menu_key"] = FunctionKeyName(o.debug_menu_key);
     d["partner_body"] = o.real_partner_body ? "real" : "holo";
     d["self_character"] = o.self_character;
+    d["self_voice"] = o.mute_sam_voice ? "auto" : "sam";
+    d["voice_sync"] = o.partner_voice_sync;
+    d["sound_sync"] = o.partner_sound_sync;
+    d["partner_volume"] = o.partner_volume;
     d["name_tags"] = o.name_tags;
     d["partner_collision"] = o.partner_collision;
     d["allow_other_characters"] = o.allow_other_characters;
@@ -164,6 +174,12 @@ void ApplyDebugOptions(const DebugOptions& o, SessionIni& ini) {
     // The self view needs the pose hook, which only partner_body=real installs; the writer adds
     // the key only for a non-host whose character is not Sam.
     ini.self_character = o.self_character && o.real_partner_body;
+    // auto: the mod mutes Sam's voice only when this player's character is not Sam (never for a host).
+    ini.self_voice = o.mute_sam_voice ? "auto" : "sam";
+    ini.voice_sync = o.partner_voice_sync;
+    ini.sound_sync = o.partner_sound_sync;
+    ini.partner_volume = o.partner_volume;
+
     ini.name_tags = o.name_tags;
     ini.partner_collision = o.partner_collision;
     ini.one_shot = true;

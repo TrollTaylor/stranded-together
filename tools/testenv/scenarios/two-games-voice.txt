@@ -1,0 +1,104 @@
+# Partner voice, Phase 2, two games (docs/audio-research.md section 15): the host plays Sam, the guest Fragile in her
+# porter suit with the self view (what the launcher writes by default), self_voice=auto on both, voice_sync=1 and the
+# audio probe on both.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-voice -SeedSaves complete-100
+# 1. The host speaks (the game's own voice queue: ReceivedLike, Humming; then a run with jumps): the host sends STS1
+#    kind 0, the guest receives, resolves and plays each line with PlaySentence on the talking entity at the host
+#    body's head (the probe logs the return value and where the voice instance is).
+# 2. The guest runs and jumps: her (muted) Sam efforts go out as kind 1 only; the host receives kind 1 and plays
+#    nothing. `nolog` checks that the guest sent no Sam line (kind 0) up to then.
+# 3. Test only: the guest sends as Sam (`voice_sync 2 1`) and jumps: the host plays her lines on her body's head.
+role host
+graphics low
+timeout 360
+ini partner_body=real
+ini voice_sync=1
+ini audio_probe=1
+ini self_voice=auto
+@host ini my_character=sam
+@guest ini my_character=fragile_suit
+@guest ini self_character=1
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+@guest pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+@guest until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitplayer 60
+waitlog 60 \[link\] CONNECTED
+@guest waitlog 60 \[link\] CONNECTED
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+@guest until 150 3000 \[sync\] partner body: real 'sam' => pad A 120
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+@guest waitlog 30 \[self\] showing 'fragile_suit' in place of Sam
+waitlog 30 \[pvoice\] talking entity
+@guest waitlog 30 \[pvoice\] talking entity
+wait 2000
+screenshot 01-host-sees-guest
+@guest screenshot 01-guest-sees-host
+# 1. the host speaks: spoken situations through the game's own queue, then efforts
+log voice: host speaks
+@guest log voice: host speaks
+action audio_probe 2 0
+wait 4000
+action audio_probe 2 3
+wait 5000
+pad none 3000 ly=32767 keep
+pad A 200 ly=32767 keep
+pad none 900 ly=32767 keep
+pad A 200 ly=32767 keep
+pad none 3000 ly=-32767 keep
+pad none 0
+wait 3000
+@guest waitlog 20 \[pvoice\] received seq [0-9]+ kind 0 sentence 1/1 .*resolved to SentenceResource
+@guest waitlog 20 \[pvoice\] partner line seq [0-9]+ .*= 1 \| talking entity
+@guest screenshot 02-guest-heard-host
+# 2. the guest (Fragile) runs and jumps: kind 1 only
+log voice: guest efforts
+@guest log voice: guest efforts
+@guest pad none 3000 ly=32767 keep
+@guest pad A 200 ly=32767 keep
+@guest pad none 900 ly=32767 keep
+@guest pad A 200 ly=32767 keep
+@guest pad none 3000 ly=-32767 keep
+@guest pad none 0
+wait 3000
+@guest action audio_probe 2 1
+wait 3000
+@guest waitlog 20 \[pvoice\] sent seq [0-9]+ kind 1
+waitlog 20 \[pvoice\] received seq [0-9]+ kind 1
+@guest nolog \[pvoice\] sent seq [0-9]+ kind 0
+nolog \[pvoice\] partner line seq
+# 3. test only: the guest sends her (muted) Sam efforts as Sam lines; the host plays them on her body's head
+log voice: guest as Sam (test)
+@guest log voice: guest as Sam (test)
+@guest action voice_sync 2 1
+@guest action audio_probe 2 1
+wait 2500
+@guest pad none 2500 ly=32767 keep
+@guest pad A 200 ly=32767 keep
+@guest pad none 900 ly=32767 keep
+@guest pad A 200 ly=32767 keep
+@guest pad none 2500 ly=-32767 keep
+@guest pad none 0
+wait 3000
+@guest action voice_sync 2 0
+waitlog 20 \[pvoice\] partner line seq [0-9]+ .*= 1 \| talking entity
+screenshot 03-host-heard-guest
+# both: counters, the probe summary, status
+log voice: end
+@guest log voice: end
+action voice_sync 0
+@guest action voice_sync 0
+action audio_probe 0
+@guest action audio_probe 0
+action log_status
+@guest action log_status
+@guest quit
+wait 3000
+quit

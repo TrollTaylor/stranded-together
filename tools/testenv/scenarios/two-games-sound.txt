@@ -1,0 +1,164 @@
+# Partner sounds, Phase 3, two games (docs/audio-research.md section 16): the host plays Sam, the guest Fragile in her
+# porter suit with the self view (what the launcher writes by default), self_voice=auto and voice_sync=1 on both,
+# sound_sync=1 and the audio probe on both (the probe owns the Wwise hooks and forwards to the partner sounds).
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-sound -SeedSaves complete-100
+# Every mirrored post is logged on both sides (`sound_sync 1 1`).
+# 1. The host walks, runs, jumps and fires the rifle: his footsteps, foley and gun go out as STA1; the guest posts them
+#    on her Wwise objects at the host body's joints at the pose play time (playing id, end-of-event callbacks).
+# 2. The guest does the same: the other direction.
+# 3. The guest opens the cuff map while the host runs: the guest posts nothing while it is open (her game's gate) and
+#    stops what was playing (A dismisses the map's notice, B closes the map); the host then opens his while the guest runs.
+role host
+graphics low
+timeout 360
+ini partner_body=real
+ini voice_sync=1
+ini sound_sync=1
+ini audio_probe=1
+ini self_voice=auto
+@host ini my_character=sam
+@guest ini my_character=fragile_suit
+@guest ini self_character=1
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+@guest pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+@guest until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitplayer 60
+waitlog 60 \[link\] CONNECTED
+@guest waitlog 60 \[link\] CONNECTED
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+@guest until 150 3000 \[sync\] partner body: real 'sam' => pad A 120
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+@guest waitlog 30 \[self\] showing 'fragile_suit' in place of Sam
+wait 2000
+action sound_sync 1 1
+@guest action sound_sync 1 1
+screenshot 01-host-sees-guest
+@guest screenshot 01-guest-sees-host
+# 1. the host: walk, run, jumps, the rifle
+log sound: host moves
+@guest log sound: host moves
+pad none 3000 ly=16000
+pad none 3000 ly=-16000
+pad none 3000 ly=32767
+pad none 1200 ly=-32767 keep
+pad A 200 ly=-32767 keep
+pad none 900 ly=-32767 keep
+pad A 200 ly=-32767 keep
+pad none 1500 ly=-32767 keep
+pad none 0
+wait 2500
+@guest waitlog 10 \[psound\] partner post steps ev 0x[0-9A-F]+ \(their pid [0-9]+\) -> pid [1-9][0-9]*
+@guest waitlog 10 \[psound\] partner post foley ev 0x[0-9A-F]+ \(their pid [0-9]+\) -> pid [1-9][0-9]*
+log sound: host gun
+@guest log sound: host gun
+pad dpad_right 600 keep
+pad dpad_right 900 lx=-23170 ly=23170 rx=-23170 ry=23170 keep
+pad dpad_right 400 keep
+pad none 0
+wait 3000
+pad none 1500 lt=255 keep
+pad none 400 lt=255 rt=255 keep
+pad none 300 lt=255 keep
+pad none 400 lt=255 rt=255 keep
+pad none 0
+wait 2500
+pad dpad_right 600 keep
+pad dpad_right 900 lx=32767 ly=0 rx=32767 ry=0 keep
+pad dpad_right 400 keep
+pad none 0
+wait 2500
+@guest waitlog 10 \[psound\] partner post weapon ev 0x[0-9A-F]+ \(their pid [0-9]+\) -> pid [1-9][0-9]*
+screenshot 02-host-after-gun
+action sound_sync 0
+@guest action sound_sync 0
+# 2. the guest: walk, run, jumps, the rifle
+log sound: guest moves
+@guest log sound: guest moves
+@guest pad none 3000 ly=16000
+@guest pad none 3000 ly=-16000
+@guest pad none 3000 ly=32767
+@guest pad none 1200 ly=-32767 keep
+@guest pad A 200 ly=-32767 keep
+@guest pad none 900 ly=-32767 keep
+@guest pad A 200 ly=-32767 keep
+@guest pad none 1500 ly=-32767 keep
+@guest pad none 0
+wait 2500
+waitlog 10 \[psound\] partner post steps ev 0x[0-9A-F]+ \(their pid [0-9]+\) -> pid [1-9][0-9]*
+waitlog 10 \[psound\] partner post foley ev 0x[0-9A-F]+ \(their pid [0-9]+\) -> pid [1-9][0-9]*
+log sound: guest gun
+@guest log sound: guest gun
+@guest pad dpad_right 600 keep
+@guest pad dpad_right 900 lx=-23170 ly=23170 rx=-23170 ry=23170 keep
+@guest pad dpad_right 400 keep
+@guest pad none 0
+wait 3000
+@guest pad none 1500 lt=255 keep
+@guest pad none 400 lt=255 rt=255 keep
+@guest pad none 300 lt=255 keep
+@guest pad none 400 lt=255 rt=255 keep
+@guest pad none 0
+wait 2500
+@guest pad dpad_right 600 keep
+@guest pad dpad_right 900 lx=32767 ly=0 rx=32767 ry=0 keep
+@guest pad dpad_right 400 keep
+@guest pad none 0
+wait 2500
+waitlog 10 \[psound\] partner post weapon ev 0x[0-9A-F]+ \(their pid [0-9]+\) -> pid [1-9][0-9]*
+@guest screenshot 02-guest-after-gun
+action sound_sync 0
+@guest action sound_sync 0
+# 3. menus: the guest's cuff map open while the host runs, then the host's while the guest runs
+log sound: guest menu
+@guest log sound: guest menu
+@guest pad START 150
+@guest waitlog 5 \[psound\] gate closed: paused / menu / cutscene \(HandcuffDevice\)
+@guest log sound: guest menu open
+pad none 4000 ly=32767
+pad none 0
+wait 1500
+@guest screenshot 03-guest-menu
+@guest action sound_sync 0
+@guest log sound: guest menu closing
+@guest pad A 150
+wait 2000
+@guest until 20 2500 \[psound\] gate open again .*HandcuffDevice => pad B 150
+@guest log sound: guest menu closed
+log sound: host menu
+@guest log sound: host menu
+pad START 150
+waitlog 5 \[psound\] gate closed: paused / menu / cutscene \(HandcuffDevice\)
+log sound: host menu open
+@guest pad none 4000 ly=32767
+@guest pad none 0
+wait 1500
+screenshot 03-host-menu
+action sound_sync 0
+log sound: host menu closing
+pad A 150
+wait 2000
+until 20 2500 \[psound\] gate open again .*HandcuffDevice => pad B 150
+log sound: host menu closed
+# both: counters, the probe summary, status
+log sound: end
+@guest log sound: end
+wait 3000
+action sound_sync 1 0
+@guest action sound_sync 1 0
+action sound_sync 0
+@guest action sound_sync 0
+action audio_probe 0
+@guest action audio_probe 0
+action log_status
+@guest action log_status
+@guest quit
+wait 3000
+quit

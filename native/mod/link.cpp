@@ -125,6 +125,32 @@ constexpr unsigned kKQueue = 4;
 RxK g_kqueue[kKQueue];
 unsigned g_kq_head = 0, g_kq_count = 0;
 
+// The reliable ordered channel (docs/link-protocol.md "Reliable channel"; under g_tx with the session):
+// channel 2 (wire::kSpeechChannel) carries STS1. Reset on every new session.
+lk::ReliableSender g_rel_tx[lk::kReliableChannels];
+lk::ReliableReceiver g_rel_rx[lk::kReliableChannels];
+// Received speech frames (under g_rx), in delivery order.
+struct RxS {
+    wire::Speech s;
+    std::uint32_t generation;
+};
+constexpr unsigned kSQueue = 32;
+RxS g_squeue[kSQueue];
+unsigned g_sq_head = 0, g_sq_count = 0;
+volatile LONG64 g_rx_speech = 0, g_tx_speech = 0, g_rx_speech_bad = 0;
+// Received sound event frames (STA1, under g_rx): newest-seq filter (u16, wrap-safe), oldest dropped when full.
+struct RxA {
+    wire::SoundFrame f;
+    std::uint32_t generation;
+};
+constexpr unsigned kAQueue = 16;
+RxA g_aqueue[kAQueue];
+unsigned g_aq_head = 0, g_aq_count = 0;
+std::uint16_t g_last_rx_aseq = 0;
+std::uint64_t g_rx_aseen = 0;  // bit k: seq (newest - k) was taken
+bool g_have_rx_aseq = false;
+volatile LONG64 g_rx_sound = 0, g_tx_sound = 0, g_tx_sound_alone = 0;
+
 volatile LONG64 g_rx_frames = 0, g_tx_frames = 0;
 volatile LONG64 g_rx_joints = 0, g_tx_joints = 0, g_tx_payload = 0;
 volatile LONG64 g_rx_names = 0, g_tx_names = 0;
@@ -224,11 +250,21 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
     unsigned look_count = 0;
     static thread_local wire::GearPose gpose;
     bool have_gpose = false;
+    constexpr unsigned kMaxSpeech = 16;
+    static thread_local wire::Speech speech[kMaxSpeech];
+    unsigned speech_count = 0;
+    constexpr unsigned kMaxSound = 2;
+    static thread_local wire::SoundFrame sound[kMaxSound];  // transport thread only
+    unsigned sound_count = 0;
 
     AcquireSRWLockExclusive(&g_tx);
     const lk::Delivery d = g_session.OnDatagram(data, size, from, now);
     new_session = d.new_session;
-    if (new_session) g_name_sends = 0;  // the new partner gets our name with the next sends
+    if (new_session) {
+        g_name_sends = 0;  // the new partner gets our name with the next sends
+        for (auto& t : g_rel_tx) t.Reset();
+        for (auto& r : g_rel_rx) r.Reset();
+    }
     unsigned messages = 0;
     if (d.data && lk::ValidateBody(d.body, d.size, messages)) {
         lk::MessageReader reader(d.body, d.size);
@@ -252,12 +288,38 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
                     ++look_count;
                 } else if (wire::DecodeGearPose(m.data, m.size, gpose)) {
                     have_gpose = true;
+                } else if (sound_count < kMaxSound && wire::DecodeSound(m.data, m.size, sound[sound_count])) {
+                    ++sound_count;
                 }
+            } else if (m.type == static_cast<std::uint8_t>(lk::MsgType::reliable)) {
+                lk::ReliableMsg r{};
+                if (lk::DecodeReliable(m, r) && r.channel >= 1 && r.channel < lk::kReliableChannels)
+                    g_rel_rx[r.channel].Accept(r.id, r.payload, r.size, now);
+            } else if (m.type == static_cast<std::uint8_t>(lk::MsgType::relack)) {
+                lk::RelAckMsg a{};
+                if (lk::DecodeRelAck(m, a) && a.channel >= 1 && a.channel < lk::kReliableChannels)
+                    g_rel_tx[a.channel].OnRelAck(a.next_expected, a.bits, a.free_slots, now);
             } else if (m.type == static_cast<std::uint8_t>(lk::MsgType::close)) {
                 g_session.OnPeerClose(now);
             }
         }
         if (any_pose) g_session.jitter().OnPacket(static_cast<std::uint32_t>(now), d.send_ms, now);
+    }
+    // In-order reliable messages of the speech channel; anything that is not a valid STS1 is dropped
+    // (it was delivered, so it is acknowledged either way).
+    {
+        std::uint8_t buf[lk::kMaxReliableMessage];
+        std::size_t got = 0;
+        // At most kMaxSpeech per pump: the rest stays in the receiver for the next one (never dropped unseen).
+        while (speech_count < kMaxSpeech && g_rel_rx[wire::kSpeechChannel].Drain(buf, sizeof(buf), got, now)) {
+            if (wire::DecodeSpeech(buf, got, speech[speech_count])) ++speech_count;
+            else InterlockedIncrement64(&g_rx_speech_bad);
+        }
+        // Other channels are not used by this build: drained and dropped so their windows never fill.
+        for (unsigned ch = 1; ch < lk::kReliableChannels; ++ch)
+            if (ch != wire::kSpeechChannel)
+                while (g_rel_rx[ch].Drain(buf, sizeof(buf), got, now)) {
+                }
     }
     lk::Event e{};
     while (event_count < kMaxEvents && g_session.PopEvent(e)) events[event_count++] = e;
@@ -267,9 +329,12 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
 
     if (g_use_steam && new_session && g_host && committed.address) g_steam.set_peer(lab::SteamIdOf(committed));
 
-    if (pose_count || joint_count || have_name || have_gear || res_count || look_count || have_gpose || new_session) {
+    if (pose_count || joint_count || have_name || have_gear || res_count || look_count || have_gpose || speech_count || sound_count || new_session) {
         AcquireSRWLockExclusive(&g_rx);
         if (new_session) {
+            g_aq_count = 0;
+            g_have_rx_aseq = false;
+            g_sq_count = 0;
             g_q_count = 0;
             g_have_rx_seq = false;
             g_jq_count = 0;
@@ -281,6 +346,40 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
             g_vq_count = 0;
             g_kq_count = 0;
             ++g_generation;
+        }
+        for (unsigned i = 0; i < sound_count; ++i) {
+            const wire::SoundFrame& f = sound[i];
+            // Duplicates (and frames older than 64 seqs) are dropped; a reordered frame is kept (its stops matter):
+            // a bitmap of the seqs seen behind the newest one.
+            if (g_have_rx_aseq) {
+                const int diff = static_cast<std::int16_t>(static_cast<std::uint16_t>(f.seq - g_last_rx_aseq));
+                if (diff > 0) {
+                    g_rx_aseen = diff >= 64 ? 1ull : (g_rx_aseen << diff) | 1ull;
+                    g_last_rx_aseq = f.seq;
+                } else {
+                    const int back = -diff;
+                    if (back >= 64 || (g_rx_aseen >> back) & 1ull) continue;
+                    g_rx_aseen |= 1ull << back;
+                }
+            } else {
+                g_last_rx_aseq = f.seq;
+                g_rx_aseen = 1;
+            }
+            g_have_rx_aseq = true;
+            RxA& slot = g_aqueue[(g_aq_head + g_aq_count) % kAQueue];
+            slot.f = f;
+            slot.generation = g_generation;
+            if (g_aq_count < kAQueue) ++g_aq_count;
+            else g_aq_head = (g_aq_head + 1) % kAQueue;
+            InterlockedIncrement64(&g_rx_sound);
+        }
+        for (unsigned i = 0; i < speech_count; ++i) {
+            RxS& slot = g_squeue[(g_sq_head + g_sq_count) % kSQueue];
+            slot.s = speech[i];
+            slot.generation = g_generation;
+            if (g_sq_count < kSQueue) ++g_sq_count;
+            else g_sq_head = (g_sq_head + 1) % kSQueue;
+            InterlockedIncrement64(&g_rx_speech);
         }
         for (unsigned i = 0; i < look_count; ++i) {
             RxV& slot = g_vqueue[(g_vq_head + g_vq_count) % kVQueue];
@@ -356,6 +455,30 @@ void OnIdle(void*) noexcept {
     unsigned event_count = 0;
     const std::uint64_t now = NowMs();
     AcquireSRWLockExclusive(&g_tx);
+    // The reliable channel (as the link harness drives it): due first transmissions and retransmissions
+    // (within the per-tick budget) and the receivers' acknowledgements, in small DATA packets of their own.
+    if (g_session.CanSendData()) {
+        std::size_t budget = lk::kRetransmitBudgetBytes;
+        const std::uint32_t rto = g_session.rtt().rto_ms();
+        for (unsigned packets = 0; packets < 4; ++packets) {
+            const bool due = lk::ReliableDue(g_rel_tx, now, rto, budget);
+            lk::RelAckState acks[lk::kReliableChannels];
+            bool any_ack = false;
+            for (unsigned ch = 0; ch < lk::kReliableChannels; ++ch) {
+                acks[ch] = lk::RelAckState{};
+                lk::ReliableReceiver& rx = g_rel_rx[ch];
+                if (ch == 0 || !rx.dirty() || (!due && now - rx.dirty_since() < lk::kAckDelayMs)) continue;
+                acks[ch].due = true;
+                rx.AckState(acks[ch].next_expected, acks[ch].bits, acks[ch].free_slots);
+                rx.ClearDirty();
+                any_ack = true;
+            }
+            if (!due && !any_ack) break;
+            lk::BodyWriter w(g_body, sizeof(g_body));
+            lk::PackBody(w, nullptr, 0, acks, g_rel_tx, now, rto, budget);
+            if (!w.size() || !g_session.SendData(g_body, w.size(), now)) break;
+        }
+    }
     g_session.OnTimer(now);
     lk::Event e{};
     while (event_count < kMaxEvents && g_session.PopEvent(e)) events[event_count++] = e;
@@ -553,44 +676,65 @@ bool PeerName(char* out, std::size_t cap, std::uint32_t* generation, bool* from_
     return ok;
 }
 
-bool SendPose(const wire::Pose& pose) noexcept {
+namespace {
+// g_tx held, a datagram sent: the STA1 frame that did not fit into it goes in one of its own.
+void SendSoundAlone(const std::uint8_t* abuf, std::size_t an) noexcept {
+    lk::BodyWriter w(g_body, sizeof(g_body));
+    if (an && w.Add(lk::MsgType::frame, abuf, an) && g_session.SendData(g_body, w.size(), NowMs())) {
+        InterlockedAdd64(&g_tx_payload, static_cast<LONG64>(w.size()));
+        InterlockedIncrement64(&g_tx_sound);
+        InterlockedIncrement64(&g_tx_sound_alone);
+    }
+}
+}  // namespace
+
+bool SendPose(const wire::Pose& pose, const wire::SoundFrame* sound) noexcept {
     std::uint8_t frame[wire::kPoseFrameSize];
     const std::size_t n = wire::EncodePose(pose, frame);
-    bool sent = false, with_name = false;
+    std::uint8_t abuf[wire::kMaxSoundFrameSize];
+    const std::size_t an = sound ? wire::EncodeSound(*sound, abuf, sizeof(abuf)) : 0;
+    bool sent = false, with_name = false, with_sound = false;
     AcquireSRWLockExclusive(&g_tx);
     if (g_session.CanSendData()) {
         lk::BodyWriter w(g_body, sizeof(g_body));
         if (w.Add(lk::MsgType::frame, frame, n)) {
+            with_sound = an && w.Add(lk::MsgType::frame, abuf, an);
             with_name = AddNameFrame(w);
             sent = g_session.SendData(g_body, w.size(), NowMs());
         }
         if (sent) {
             InterlockedAdd64(&g_tx_payload, static_cast<LONG64>(w.size()));
             ++g_name_sends;
+            if (an && !with_sound) SendSoundAlone(abuf, an);
         }
     }
     ReleaseSRWLockExclusive(&g_tx);
     if (sent) InterlockedIncrement64(&g_tx_frames);
     if (sent && with_name) InterlockedIncrement64(&g_tx_names);
+    if (sent && with_sound) InterlockedIncrement64(&g_tx_sound);
     return sent;
 }
 
-bool SendPoseAndJoints(const wire::Pose& pose, const wire::JointFrame& joints) noexcept {
+bool SendPoseAndJoints(const wire::Pose& pose, const wire::JointFrame& joints, const wire::SoundFrame* sound) noexcept {
     std::uint8_t frame[wire::kPoseFrameSize];
     const std::size_t n = wire::EncodePose(pose, frame);
     std::uint8_t jbuf[wire::kMaxJointFrameSize];
     const std::size_t jn = wire::EncodeJoints(joints, jbuf, sizeof(jbuf));
-    bool sent = false, with_joints = false, with_name = false;
+    std::uint8_t abuf[wire::kMaxSoundFrameSize];
+    const std::size_t an = sound ? wire::EncodeSound(*sound, abuf, sizeof(abuf)) : 0;
+    bool sent = false, with_joints = false, with_name = false, with_sound = false;
     AcquireSRWLockExclusive(&g_tx);
     if (g_session.CanSendData()) {
         lk::BodyWriter w(g_body, sizeof(g_body));
         if (w.Add(lk::MsgType::frame, frame, n)) {
             with_joints = jn && w.Add(lk::MsgType::frame, jbuf, jn);  // no room: the pose alone still goes
+            with_sound = an && w.Add(lk::MsgType::frame, abuf, an);   // no room: a datagram of its own below
             with_name = AddNameFrame(w);
             sent = g_session.SendData(g_body, w.size(), NowMs());
             if (sent) {
                 InterlockedAdd64(&g_tx_payload, static_cast<LONG64>(w.size()));
                 ++g_name_sends;
+                if (an && !with_sound) SendSoundAlone(abuf, an);
             }
         }
     }
@@ -598,7 +742,22 @@ bool SendPoseAndJoints(const wire::Pose& pose, const wire::JointFrame& joints) n
     if (sent) InterlockedIncrement64(&g_tx_frames);
     if (sent && with_joints) InterlockedIncrement64(&g_tx_joints);
     if (sent && with_name) InterlockedIncrement64(&g_tx_names);
+    if (sent && with_sound) InterlockedIncrement64(&g_tx_sound);
     return sent;
+}
+
+bool PopSound(wire::SoundFrame& out, std::uint32_t& generation) noexcept {
+    bool ok = false;
+    AcquireSRWLockExclusive(&g_rx);
+    if (g_aq_count) {
+        out = g_aqueue[g_aq_head].f;
+        generation = g_aqueue[g_aq_head].generation;
+        g_aq_head = (g_aq_head + 1) % kAQueue;
+        --g_aq_count;
+        ok = true;
+    }
+    ReleaseSRWLockExclusive(&g_rx);
+    return ok;
 }
 
 bool SendGear(const wire::GearFrame& gear) noexcept {
@@ -685,6 +844,36 @@ bool PopGearPose(wire::GearPose& out, std::uint32_t& generation) noexcept {
         generation = g_kqueue[g_kq_head].generation;
         g_kq_head = (g_kq_head + 1) % kKQueue;
         --g_kq_count;
+        ok = true;
+    }
+    ReleaseSRWLockExclusive(&g_rx);
+    return ok;
+}
+
+bool SendSpeech(const wire::Speech& s) noexcept {
+    std::uint8_t buf[wire::kMaxSpeechFrameSize];
+    const std::size_t n = wire::EncodeSpeech(s, buf, sizeof(buf));
+    if (!n) return false;
+    bool queued = false;
+    AcquireSRWLockExclusive(&g_tx);
+    if (g_session.CanSendData())
+        queued = g_rel_tx[wire::kSpeechChannel].Queue(buf, n, lk::ReliableMode::append) == lk::ReliableResult::queued;
+    ReleaseSRWLockExclusive(&g_tx);
+    if (queued) {
+        InterlockedIncrement64(&g_tx_speech);
+        InterlockedAdd64(&g_tx_payload, static_cast<LONG64>(n));
+    }
+    return queued;  // the transport thread puts it on the wire within one idle tick (20 ms)
+}
+
+bool PopSpeech(wire::Speech& out, std::uint32_t& generation) noexcept {
+    bool ok = false;
+    AcquireSRWLockExclusive(&g_rx);
+    if (g_sq_count) {
+        out = g_squeue[g_sq_head].s;
+        generation = g_squeue[g_sq_head].generation;
+        g_sq_head = (g_sq_head + 1) % kSQueue;
+        --g_sq_count;
         ok = true;
     }
     ReleaseSRWLockExclusive(&g_rx);
@@ -789,6 +978,15 @@ Info GetInfo() noexcept {
     i.tx_name_frames = static_cast<std::uint64_t>(g_tx_names);
     i.rx_gear_frames = static_cast<std::uint64_t>(g_rx_gears);
     i.tx_gear_frames = static_cast<std::uint64_t>(g_tx_gears);
+    i.rx_speech = static_cast<std::uint64_t>(g_rx_speech);
+    i.tx_speech = static_cast<std::uint64_t>(g_tx_speech);
+    i.rx_sound = static_cast<std::uint64_t>(g_rx_sound);
+    i.tx_sound = static_cast<std::uint64_t>(g_tx_sound);
+    i.tx_sound_alone = static_cast<std::uint64_t>(g_tx_sound_alone);
+
+    AcquireSRWLockShared(&g_tx);
+    for (const auto& t : g_rel_tx) i.rel_retransmits += t.retransmits();
+    ReleaseSRWLockShared(&g_tx);
     return i;
 }
 

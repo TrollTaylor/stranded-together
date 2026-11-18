@@ -1,0 +1,129 @@
+# Self voice, Phase 1, the shipping set-up (docs/audio-research.md section 9): self_voice's OWN hook on the talk
+# handler (no audio probe: nothing else is hooked), the guest-Fragile self view.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario self-voice-own-hook -SeedSaves complete-100
+# The self-voice-fragile steps without the probe's test situations: idle, walk, run, jumps, the gun, the cargo menu with
+# the figure asked to speak (muted), the mute off for a run and jumps and the menu again (passed), on again, idle.
+# Evidence: the [voice] counts (muted / passed per owner), a clean exit, saves unchanged.
+role solo
+timeout 360
+ini self_voice=auto
+ini partner_body=real
+ini my_character=fragile_suit
+ini self_character=1
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[self\] showing 'fragile_suit' in place of Sam
+wait 2000
+screenshot 01-start
+action self_voice 0
+# since 2026-11-18 (doc section 17): with sound_sync=0, partner_sound hooks only PostEvent / UnregisterGameObj for the mute,
+# which then silences the talk's voice post (the talk runs) instead of dropping the talk
+nolog \[voice\] Sam's muted voice: no PostEvent hook
+nolog \[psound\] PostEvent for self_voice NOT hooked
+log audio: received like
+until 60 12000 ReceivedLike hash 0x3440E578: check 1, queued 1 => action self_voice 3 0
+wait 3000
+# idle: breathing / humming lines come after a while standing still
+log audio: idle 1
+wait 20000
+# walk (half stick) and run (full stick), there and back (ly=-32767 walks towards the camera)
+log audio: walk
+pad none 4000 ly=16000
+pad none 4000 ly=-16000
+log audio: run
+pad none 5000 ly=32767
+pad none 5000 ly=-32767
+# jump: A pressed while running (the game's jump / vault where offered)
+log audio: jump
+pad none 1200 ly=32767 keep
+pad A 200 ly=32767 keep
+pad none 900 ly=32767 keep
+pad A 200 ly=32767 keep
+pad none 900 ly=32767 keep
+pad A 200 ly=-32767 keep
+pad none 1500 ly=-32767 keep
+pad A 200 ly=-32767 keep
+pad none 0
+wait 2500
+screenshot 02-after-jumps
+# a gun: the equipment wheel's upper left item (the assault rifle in the 100% save), aimed and fired
+log audio: gun
+pad dpad_right 600 keep
+pad dpad_right 900 lx=-23170 ly=23170 rx=-23170 ry=23170 keep
+pad dpad_right 400 keep
+pad none 0
+wait 3000
+pad none 1500 lt=255 keep
+pad none 400 lt=255 rt=255 keep
+pad none 300 lt=255 keep
+pad none 400 lt=255 rt=255 keep
+pad none 0
+wait 2000
+screenshot 03-gun
+# empty hands again: the wheel's right item
+pad dpad_right 600 keep
+pad dpad_right 900 lx=32767 ly=0 rx=32767 ry=0 keep
+pad dpad_right 400 keep
+pad none 0
+wait 2500
+# the cargo menu: START (cuff map, the Sam entry focused), A = Manage Cargo (repeated until it is open), then the
+# figure's own voice through the game's PlayAkukanVoice (`self_voice 2 <list>`), B back, START closes the map
+log audio: cargo menu 1
+pad START 150
+wait 3000
+until 25 3000 \[menu\] subspace state 5 .*\(opens 1\) => pad A 150
+waitlog 10 \[voice\] cargo menu figure [0-9A-F]+ shows the chosen character
+wait 1500
+screenshot 04-cargo-menu-fragile
+action self_voice 2 0
+wait 3000
+action self_voice 2 1
+wait 3000
+until 25 2500 \[menu\] subspace state 2 .*\(opens 1\) => pad B 150
+wait 1500
+pad START 150
+wait 3000
+# the mute off for a run and jumps (the talks now pass: counted as passed), and the menu once more
+log audio: mute off
+action self_voice 1 0
+pad none 5000 ly=32767 keep
+pad A 200 ly=32767 keep
+pad none 900 ly=32767 keep
+pad A 200 ly=32767 keep
+pad none 5000 ly=-32767 keep
+pad none 0
+wait 4000
+# the cargo menu: START (cuff map, the Sam entry focused), A = Manage Cargo (repeated until it is open), then the
+# figure's own voice through the game's PlayAkukanVoice (`self_voice 2 <list>`), B back, START closes the map
+log audio: cargo menu 2
+pad START 150
+wait 3000
+until 25 3000 \[menu\] subspace state 5 .*\(opens 2\) => pad A 150
+waitlog 10 \[menu\] showing 'fragile_suit' in place of the menu's Sam figure
+wait 1500
+screenshot 05-cargo-menu-unmuted
+action self_voice 2 0
+wait 3000
+action self_voice 2 1
+wait 3000
+until 25 2500 \[menu\] subspace state 2 .*\(opens 2\) => pad B 150
+wait 1500
+pad START 150
+wait 3000
+log audio: mute on
+action self_voice 1 1
+# idle again for the breathing lines after running
+log audio: idle 2
+wait 25000
+log audio: end
+action self_voice 0
+wait 1500
+nolog \[voice\] an external-source post .* was not matched to a muted talk
+action log_status
+quit

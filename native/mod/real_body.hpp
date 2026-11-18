@@ -118,6 +118,9 @@ bool HeadLift(game::Entity* sam, float (&local)[3]) noexcept;
 bool SelfConfigured() noexcept;
 bool SelfShown() noexcept;           // the body is shown and Sam hidden right now
 game::Entity* SelfEntity() noexcept;  // the self body (loading or live), nullptr when none
+// The cargo menu's Sam figure (DSPlayerAKukanEntity) while the self body stands in for it (Manage Cargo open, the
+// self view on; from the opening frames, before the body is shown), else 0. Game thread (self_voice.cpp mutes its voice).
+std::uintptr_t MenuSelfFigure() noexcept;
 
 // ---- gear props (docs/real-partner-body.md section 12; partner_gear.cpp owns them)
 // Prop entities (backpack, cargo, Odradek, BB pod) placed on a body every frame: in the detour,
@@ -178,6 +181,11 @@ bool ReadJointModel(game::Entity* e, unsigned j, float (&m)[4][4]) noexcept;
 // or self body; as is for the local Sam) in world space. False when unreadable or implausible
 // (not 0.3-2.4 m over the root, or more than 1 m beside it). Name tags anchor on it.
 bool HeadWorld(game::Entity* e, double (&pos)[3]) noexcept;
+// Joint `sam_joint` of the 77-joint layout (through the body's joint map for a live partner or self body; as is for the
+// local Sam) in world space. False when unreadable, not finite or more than 3 m from the entity's root. The partner
+// sounds (partner_sound.cpp) place their emitters on it.
+bool JointWorld(game::Entity* e, unsigned sam_joint, double (&pos)[3]) noexcept;
+
 
 // The per-frame sync faulted (dllmain GuardedTick) and Tick will not run again this session: the
 // detour stops all work (both slots unpublished, no capture), our hide reason is cleared on Sam and

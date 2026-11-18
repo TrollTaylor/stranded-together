@@ -332,6 +332,119 @@ error against Sam (section 3.5 "The meter").
 
 Scenarios: `smooth-echo`, `smooth-two-games`.
 
+### Audio probe (`audio_probe`; scenarios only, `session.ini audio_probe=1`)
+
+`native/mod/audio_probe.cpp`, [audio-research.md](audio-research.md) section 9 (Phase 0). Logging only: the
+hooks are installed at start-up (each byte-checked, a mismatch skips that hook and the log names it) only
+with `audio_probe=1`; with the key off nothing is hooked.
+
+* `action audio_probe 0`: a summary line (Wwise calls per kind, game objects and their owners, voice-path
+  counts, ring drops). The same line is logged every 10 s while anything changes.
+* `action audio_probe 1`: the full dump: per thread, per event (posts by owner, RTPCs set on the object
+  before the post, the owners), the player's game objects, the other posting objects grouped by owner, the
+  instance creators, the local player's animation sound indices, the talk requests per owner.
+* `action audio_probe 2 <n>`: asks the local player's voice queue for test situation `n` the way
+  `PlayPlayerVoice` does (the check `0x142717F30`, then `0x1427352E0` with flag 1, on the game thread).
+  0 ReceivedLike, 1 Jumping, 2 OutOfBreath, 3 Humming, 4 AlmostThere, 6 Cold, 7 HoldBaggageNormal (the
+  list in `kSituations`). It needs the player getter `0x14283EC30` to return the local player (a
+  `DSPlayerEntity`). The only call the probe makes into the game.
+* `action audio_probe 3`: the local player's components (and which derive from the talk / voice / sound
+  types). `action audio_probe 4`: reset the counters.
+
+Scenarios: `audio-probe` (Sam), `audio-probe-fragile` (the guest-Fragile self view).
+
+With `self_voice` muting (below) the probe owns the talk-handler hook and asks `self_voice` first: a dropped talk is
+logged as `[audio] talk #N MUTED ...` and counted as `(MUTED by self_voice)` in the dump's talk requests.
+
+### Self voice (`self_voice`; `session.ini self_voice=auto|sam|mute`)
+
+`native/mod/self_voice.cpp`, [audio-research.md](audio-research.md) section 9 (Phase 1), sections 14 and 17. Sam's voice
+(spoken lines and the grunts, efforts and breathing) is muted at `DSTalkComponent`'s `MsgDSStartTalk` handler
+when the talk is the local player's own (or the cargo menu figure's while it shows the chosen character). Since
+2026-11-18 the local player's muted talk **runs** and only its voice post is silenced in Wwise (a PostEvent detour,
+partner_sound's or the probe's, calls `selfvoice::PrePost`; `[voice] Sam's muted voice: the talk runs ...`); without
+such a detour the talk is dropped as before. The figure's talks are always dropped. The `[voice] counts` lines add
+`dropped N, silenced in Wwise M` and `voice posts silenced N (exact, token), volume call failed, restored, near the
+player but not matched, other talkers kept`; an unmatched post is also logged (`an external-source post ... was not
+matched to a muted talk`). The hook
+is installed at start-up only when the setting resolves to mute (`auto` with a character other than Sam, or `mute`);
+otherwise nothing is hooked and the action reports "not armed". Every second in which a count changed the mod logs
+`[voice] counts: ... local player talks muted N passed M; menu figure talks muted N passed M ...`.
+
+* `action self_voice 0`: the counts (also in the result text).
+* `action self_voice 1 <0|1>`: mute off / on at run time (only when armed). With it off, the same talks are
+  counted as passed: the A/B within one run.
+* `action self_voice 2 <list>`: the cargo menu's figure (`DSPlayerAKukanEntity`) says a random line of its line
+  list `list` (0 or 1: the figure has 2 lists of 8 sentences in the 100% save) through the game's own
+  `PlayAkukanVoice` export (`0x142757D40`, byte-checked with its tail jump to `0x14273BB10`; the figure's
+  resource, list count and sentence count are read fault-free first). Fails when Manage Cargo is not open.
+* `action self_voice 3 <n>`: test situation `n` (the audio probe's list: 0 ReceivedLike, 1 Jumping, 2 OutOfBreath,
+  3 Humming, 4 AlmostThere, 5 IdleBreathingWhenOverburdened, 6 Cold, 7 HoldBaggageNormal) through the local player's
+  voice queue (the game's `PlayPlayerVoice` path, byte-checked, SEH-guarded); works without the probe and when nothing
+  is armed. The result says `check 1, queued 0|1` (the queue refuses some requests by priority or repeat rules).
+
+Scenarios: `self-voice-fragile` (guest-Fragile self view with the audio probe), `self-voice-own-hook` (the same
+without the probe: self_voice's own hook, the shipping set-up; with `sound_sync=0` partner_sound hooks only PostEvent
+for the silencing), `self-voice-sam` (the Sam control: not armed), `bb-answer-selfview` (the self view without the mute:
+BB's answer control), `two-games-audio` (the final run), `audio-keys-off` (every audio key off).
+
+With `voice_sync=1` (below) the same hook is installed even when nothing is muted (a Sam host): it then only copies
+the local player's talks for the partner voice, and `self_voice 1` reports "not armed" (nothing to mute).
+
+### Voice sync (`voice_sync`; `session.ini voice_sync=1`, `voice_subtitles=0|1`)
+
+`native/mod/partner_voice.cpp`, [audio-research.md](audio-research.md) section 15 (Phase 2). Each player hears the
+other's voice: the local player's talks go out as STS1 (kind 0 while the character is Sam, kind 1 without the line
+otherwise) and the partner's are played with the game's `DSTalkComponent::PlaySentence` on the invisible talking
+entity at the partner body's head. Log lines (`[pvoice]`): `sent seq N kind K ...`, `received seq N kind K sentence
+i/n <GUID>: resolved to SentenceResource ...`, `partner line seq N ... -> PlaySentence(...) = 1 | talking entity ...
+at (x, y, z) ...`, `not played: <why>`, `subtitle request: ... -> DROPPED (a partner line ...)|DROPPED (the local
+player's own muted line, self_voice)|shown`, every 60 s (was 5 s) `talking entity ... | partner head ..., d m apart`,
+and `counts` every 10 s when they changed. At most 2 received lines are handled a tick (the rest wait); a partner
+line's subtitle is dropped only within 2 s of `PlaySentence`, and not at all when the game refused the line.
+
+* `action voice_sync 0`: the counters (sent / received / played / refused / unresolved / skipped / subtitles / link).
+* `action voice_sync 1 <n>`: play sentence `n` (modulo the map size; the map is sorted by GUID, so `n` names the
+  same sentence on every game: 700 is a spoken one) on the talking entity as if the partner had said it, with the
+  same checks (paused / menu, distance, the entity's `DSTalkComponent`). A line those checks refuse is logged with
+  the reason (`test line seq 0 ...: not played: <why>`) and named in the result text; the action itself succeeds.
+* `action voice_sync 2 <0|1>`: **test only**: 1 sends Sam's lines as kind 0 even when this player is not Sam (the
+  other direction of a host-Sam / guest-Fragile run); 0 back to normal.
+* `action voice_sync 3`: rebuild the GUID map from the local player's resident sentence group and log it.
+
+Scenarios: `voice-sync-echo` (role echo: our own lines come back through STS1 to the echo partner), `two-games-voice`
+(host Sam, guest Fragile, the probe on both), `two-games-voice-own` (the same without the probe; the guest with
+`voice_subtitles=1`).
+
+### Sound sync (`sound_sync`; `session.ini sound_sync=1`, `sound_steps=0|1`)
+
+`native/mod/partner_sound.cpp`, [audio-research.md](audio-research.md) section 16 (Phase 3). Each player hears the
+other's footsteps, foley, cargo and weapon sounds: the Wwise events posted on the local player's own game objects go
+out as STA1 in the pose datagram, and the partner's are posted on our own Wwise objects at the partner body's joints,
+at the pose play time. Log lines (`[psound]`): `mirror post <category> ev 0x... pid N obj ... tag T (<owner>) | slot
+<joint> offset (x, y, z) m ...` (sender), `partner post <category> ev 0x... (their pid N) -> pid M on our object i
+... | at (x, y, z): the partner's <joint> joint (h m over the body's root) + (offset) m, d m from that joint ... |
+play time - event time +n ms` (receiver), `gate closed: <why>` / `gate open again after n ms (was: <why>): N partner
+item(s) held back, M posted while it was closed`, `stopped the partner's sounds on N object(s): <why>`, and `status`
+(two lines: sent, received) every 30 s (was 5 s) when the counters changed. The first 30 mirrored posts of each side
+are always logged. Since 2026-11-18 (audio-research.md section 17.4): `partner post <category> ev 0x... refused: not on
+the allow-list` (the first 10), and the status lines add `invalid items dropped`, `event ids learned here`, `refused
+(allow-list)`, `re-registered`, `capped (15 min)`, `partner_volume 0` and `volume`. Owner labels outside the allow-list
+read `denied (not on the allow-list): ...`. `session.ini partner_volume=0..100` sets the volume of the partner's sounds.
+
+* `action sound_sync 0`: the counters (both lines) and, per owner label (`DSCustomSoundComponent of the player`,
+  `SoundComponent of DSWeaponEntity (a child entity, depth 1)`, `material effect emitter (...)`, `denied (camera): ...`),
+  the registrations, posts and sent posts.
+* `action sound_sync 1 <0|1>`: log every mirrored post on both sides (1) or only the first 30 (0).
+* `action sound_sync 2`: stop every partner sound we play now (`StopAll` on our objects).
+
+Scenarios: `sound-sync-echo` (role echo: our own sounds come back through STA1 to the echo partner, then the cuff map
+holds them back), `two-games-sound` (host Sam, guest Fragile, the probe on both), `two-games-sound-own` (the same with
+the partner sounds' own hooks), `sound-sync-volume` (the echo steps with `partner_volume=50`), `two-games-audio` (all
+audio with the launcher's default keys). The cuff map shows a "new ranked event" notice in these saves: A takes it away and B
+then closes the map (START does not).
+
+
 ### Real partner body (`real_probe`, `real_spawn`, `real_remove`, `real_names`, `real_stats`, `real_mirror`, `real_control`, `self_view`, `real_outfit`; scenarios only)
 
 `native/mod/real_body.cpp`, mechanism and evidence in [real-partner-body.md](real-partner-body.md). Needs the pose

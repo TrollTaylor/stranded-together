@@ -389,7 +389,8 @@ ini <key>=<value>            an extra session.ini line, for every game of the ru
                              partner_activate, pose_hook, echo_delay_s, echo_offset_m, send_hz,
                              interp_delay_ms, name, name_tags, partner_collision,
                              partner_collision_layer, partner_collision_height, partner_gear, name_tag_font,
-                             smooth_pose, frame_cap (testenv_core ScenarioIniKeyAllowed; a scenario
+                             smooth_pose, frame_cap, audio_probe, self_voice, voice_sync, voice_subtitles, sound_sync,
+                             sound_steps, partner_volume (testenv_core ScenarioIniKeyAllowed; a scenario
                              frame_cap is written after graphics low's 30, so it wins)
 @host ini <key>=<value>      the same, for the first game only; @guest ini for the guest game only (role
                              host). Written after the shared lines, so they win (the mod keeps a key's last
@@ -470,7 +471,51 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   the host's standing body with the distance traced on both games, and walks back so the host sees her back.
   Note: `waitlog` matches any line of the log so far, so each check names text that cannot have appeared
   before (the cargo counts here).
+* `audio-probe.txt` (role solo, `audio_probe=1`) and `audio-probe-fragile.txt` (the same steps with the
+  `fragile_suit` self view): docs/audio-research.md Phase 0. Idle, walk, run, jumps (A while running), seven
+  test situations through the game's voice queue (`audio_probe 2 <n>`), the assault rifle aimed and fired,
+  the cargo menu, idle again, then the dump (`audio_probe 1`). The hidden game is silent: the evidence is
+  the `[audio]` log lines only.
+* `self-voice-fragile.txt` (role solo, `self_voice=auto`, `audio_probe=1`, the `fragile_suit` self view),
+  `self-voice-own-hook.txt` (the same set-up without the probe: self_voice's own hook) and `self-voice-sam.txt`
+  (Sam, `partner_body=real` for the menu log lines; the control, not armed): docs/audio-research.md Phase 1
+  (section 14). The audio-probe steps, then Manage Cargo opened with `until ... subspace state 5 ... (opens N) =>
+  pad A` and the figure asked to speak (`self_voice 2 0`, `2 1`); on the Fragile runs the mute is switched off
+  (`self_voice 1 0`) for a few talks and a second menu, then on again. `nolog` checks that no unmuted talk of
+  the local player was logged before the mute-off section. Evidence: `[voice] counts` / `status` lines,
+  `[audio] talk #N MUTED`, the voice posts and the dump's per-event post counts. *(2026-11-18)* Since the talk runs and
+  only its voice post is silenced (audio-research.md section 17.2), the Fragile runs check instead `nolog \[voice\] Sam's
+  muted voice: no PostEvent hook` and `nolog \[voice\] an external-source post .* was not matched to a muted talk`; the
+  own-hook run (no probe, `sound_sync=0`) also asks `ReceivedLike` with `self_voice 3 0`.
+* `bb-answer-selfview.txt` (role solo, the `fragile_suit` self view, `self_voice=sam`, probe): `ReceivedLike` asked with
+  `until ... queued 1 => action audio_probe 2 0`, then 15 s; the control for "BB's answer" (section 17.2).
+* `two-games-audio.txt` (role host: host Sam, guest `fragile_suit` with self view; `self_voice=auto`, `voice_sync=1`,
+  `sound_sync=1` on both, no probe: what the launcher writes by default) and `audio-keys-off.txt` (role solo, Sam, no
+  audio key): the final runs of audio-research.md section 17. The first: the host's `ReceivedLike` (`self_voice 3 0`
+  until the queue takes it) must play on the guest (`partner line seq ... = 1`), the guest's own lines are silenced and
+  sent as kind 1 only, then (test) her lines as Sam must play on the host; then the two-games-sound steps. The second:
+  `nolog` of `[psound]`, `[pvoice]`, `[audio]` and of any audio key in the `[config]` line.
+* `sound-sync-volume.txt`: `sound-sync-echo` with `partner_volume=50` (`nolog ... SetGameObjectOutputBusVolume(our object
+  N) failed`).
+* `voice-sync-echo.txt` (role echo, `voice_sync=1`, `audio_probe=1`, a real Sam echo partner 1.5 m to the side, 2 s
+  behind), `two-games-voice.txt` (role host: the host Sam, the guest `fragile_suit` with self view, `voice_sync=1`,
+  `self_voice=auto` and the probe on both) and `two-games-voice-own.txt` (the same without the probe; the guest with
+  `voice_subtitles=1`): docs/audio-research.md Phase 2 (section 15). Test lines (`voice_sync 1 <n>`), spoken
+  situations through the game's queue (`audio_probe 2 <n>`, probe runs only), runs with jumps on each side; the
+  guest's efforts must go out as kind 1 only (`nolog \[pvoice\] sent seq [0-9]+ kind 0` on the guest, `nolog
+  \[pvoice\] partner line seq` on the host), then the guest sends as Sam (`voice_sync 2 1`, test only) and the host
+  must play her lines. Evidence: the `[pvoice]` sent / received / resolved / `PlaySentence(...) = 1` / talking entity
+  lines, and with the probe the `[audio] PlaySentence #N ... -> 1` and `voice post ... m from the partner voice
+  entity` lines.
+* `sound-sync-echo.txt` (role echo, `sound_sync=1`, own hooks, a real Sam echo partner 1.5 m to the side, 2 s behind),
+  `two-games-sound.txt` (role host: the host Sam, the guest `fragile_suit` with self view, `voice_sync=1`,
+  `self_voice=auto`, `sound_sync=1` and the probe on both) and `two-games-sound-own.txt` (the same without the probe):
+  docs/audio-research.md Phase 3 (section 16). Each side walks, runs, jumps and fires the rifle while the other waits
+  for `[psound] partner post steps|foley|weapon ... -> pid [1-9]...`; then each opens the cuff map while the other runs
+  (`waitlog ... gate closed: ... (HandcuffDevice)`, closed again with A (the map's notice) and B until `gate open
+  again`). Evidence: the `[psound]` mirror / partner post lines, the gate lines and the two `status` / `counts` lines.
 * `weapons-solo.txt` (role solo, `my_character=fragile_suit`, self view, a debug Fragile with our gear) and
+
   `two-games-weapons.txt` (role host, the guest `fragile_suit` with self view): weapons in hand
   (docs/real-partner-body.md section 17). The 100% save's equipment wheel with the game's own inputs: D-pad right
   held, then the stick pushed, then centred, then the D-pad let go (`pad dpad_right 600 keep`, `pad dpad_right

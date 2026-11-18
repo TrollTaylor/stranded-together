@@ -158,6 +158,10 @@ bool DoNameTags(const Request& r, char* msg, std::size_t cap) { return game::Nam
 bool DoCollision(const Request& r, char* msg, std::size_t cap) { return game::CollisionCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoGear(const Request& r, char* msg, std::size_t cap) { return game::GearCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoSmooth(const Request& r, char* msg, std::size_t cap) { return game::RealBodyCommand(10, r.v, msg, cap); }
+bool DoAudioProbe(const Request& r, char* msg, std::size_t cap) { return game::AudioProbeCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
+bool DoSelfVoice(const Request& r, char* msg, std::size_t cap) { return game::SelfVoiceCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
+bool DoVoiceSync(const Request& r, char* msg, std::size_t cap) { return game::VoiceSyncCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
+bool DoSoundSync(const Request& r, char* msg, std::size_t cap) { return game::SoundSyncCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoVoicePing(const Request& r, char* msg, std::size_t cap) {
     // The live partner entity, exactly as the Partner tab sees it (0 when there is none).
     Snapshot s;
@@ -234,6 +238,11 @@ constexpr Row kRows[] = {
     {{Action::collision, Tab::tools, "Collision", "Player collision: 0 log, 1 0/1 off/on, 2 ms trace, 3 m pin the partner ahead, 4 layer type.", false}, &DoCollision},
     {{Action::gear, Tab::tools, "Gear", "Gear on the bodies: 0 log, 1 0/1 partner props, 2 0/1 self-view props, 4 0/1 own gear on the debug body, 7 0..2 mirror level, 9 0/1/2 census.", false}, &DoGear},
     {{Action::smooth, Tab::tools, "Smooth", "Body animation above 60 fps: 0 log, 1 mask (0..7), 2 frame cap fps (0 off), 3 record n frames.", false}, &DoSmooth},
+    {{Action::audio_probe, Tab::tools, "Audio probe", "Audio probe (audio_probe=1): 0 summary, 1 dump, 2 n test situation, 3 player components, 4 reset.", false}, &DoAudioProbe},
+    {{Action::self_voice, Tab::tools, "Self voice", "Sam's voice muted for a non-Sam player (self_voice): 0 log, 1 0/1 mute off/on, 2 n cargo menu figure says list n.", false}, &DoSelfVoice},
+    {{Action::voice_sync, Tab::tools, "Voice sync", "Partner voice (voice_sync=1): 0 log, 1 n play sentence n on the partner, 2 0/1 test: send as Sam, 3 rebuild the map.", false}, &DoVoiceSync},
+    {{Action::sound_sync, Tab::tools, "Sound sync", "Partner sounds (sound_sync=1): 0 log, 1 0/1 log every mirrored post, 2 stop the partner's sounds.", false}, &DoSoundSync},
+
 };
 constexpr std::size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);
 static_assert(kRowCount == static_cast<std::size_t>(Action::count), "every Action needs exactly one registry row");

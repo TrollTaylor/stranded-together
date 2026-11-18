@@ -76,6 +76,20 @@ struct SessionIni {
     // (self_character=1) only for a non-host whose my_character is set and is not sam; the mod
     // treats a missing key as off.
     bool self_character = false;
+    // Self voice (docs/audio-research.md section 9, Phase 1): auto | sam | mute (self_voice_setting.hpp). auto =
+    // the mod mutes Sam's voice on this player's game when their character is not Sam. Written whenever set;
+    // "" = not written (the mod then keeps Sam's voice). The writer refuses other values.
+    std::string self_voice = "auto";
+    // Partner voice (docs/audio-research.md section 15, Phase 2): voice_sync=1 is written when set; the mod's
+    // default (no key) is off.
+    bool voice_sync = false;
+    // Partner sounds (docs/audio-research.md section 16, Phase 3): sound_sync=1 is written when set; the mod's default (no
+    // key) is off.
+    bool sound_sync = false;
+    // Partner sound volume (Phase 4, 0..100): partner_volume=N is written only with sound_sync and N below 100 (the mod's
+    // default is 100). The writer refuses values outside 0..100.
+    int partner_volume = 100;
+
     // Name tags (the partner's name above their head; ours sent to them). The mod's default is
     // on: only name_tags=0 is written.
     bool name_tags = true;

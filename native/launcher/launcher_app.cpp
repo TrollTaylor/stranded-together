@@ -1357,6 +1357,37 @@ void LauncherUi::DebugOptionsTab(Phase phase) {
         Text(o.real_partner_body && o.self_character ? "On your own screen you appear as your character, Fragile unless you picked another (the host is always Sam)."
                                                      : "On your own screen you stay Sam.",
              col::kTextFaint, kSmall, nullptr, 0.0f);
+        // session.ini self_voice: auto (Sam's voice muted on your game when your character is not Sam) or sam.
+        Gap(2.0f);
+        committed |= Checkbox("Mute Sam's voice when you are not Sam", &o.mute_sam_voice, true);
+        Text(o.mute_sam_voice ? "Playing Fragile (or anyone but Sam), you no longer hear Sam's lines, grunts and breathing on your game. "
+                                "Footsteps, gear, BB and radio calls stay. The host is always Sam and hears him."
+                              : "You hear Sam's voice on your game whatever character you play.",
+             col::kTextFaint, kSmall, nullptr, 0.0f);
+        // session.ini voice_sync: each player hears the other's voice from their body.
+        Gap(2.0f);
+        committed |= Checkbox("Hear your partner's voice", &o.partner_voice_sync, true);
+        Text(o.partner_voice_sync ? "Your partner's lines, grunts and breathing play from their body when they are near you, and yours "
+                                    "from yours. Only Sam's voice exists: a partner who is not Sam is silent."
+                                  : "You do not hear your partner's voice, and they do not hear yours.",
+             col::kTextFaint, kSmall, nullptr, 0.0f);
+        // session.ini sound_sync: each player hears the other's footsteps, foley and gun from their body.
+        Gap(2.0f);
+        committed |= Checkbox("Hear your partner's footsteps and sounds", &o.partner_sound_sync, true);
+        Text(o.partner_sound_sync ? "Your partner's footsteps, movement, cargo and weapon sounds play from their body when they are "
+                                    "near you, and yours from yours (experimental)."
+                                  : "You do not hear your partner's footsteps and sounds, and they do not hear yours.",
+             col::kTextFaint, kSmall, nullptr, 0.0f);
+        // session.ini partner_volume: the partner's sounds on this game (not their voice).
+        if (o.partner_sound_sync) {
+            Gap(2.0f);
+            changed |= SliderIntField("##partnervol", "PARTNER SOUND VOLUME", &o.partner_volume, 0, 100, "%d %%", col_w);
+            committed |= ImGui::IsItemDeactivatedAfterEdit();
+            Text(o.partner_volume == 0 ? "Your partner's footsteps and sounds are not played on your game."
+                                       : "How loud your partner's footsteps and sounds are on your game (not their voice).",
+                 col::kTextFaint, kSmall, nullptr, 0.0f);
+        }
+
         // session.ini name_tags: the partner's name above their head; ours goes to them.
         Gap(2.0f);
         committed |= Checkbox("Show player names above heads", &o.name_tags, true);

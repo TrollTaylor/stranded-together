@@ -60,6 +60,19 @@ struct DebugOptions {
     // Self view: on your own screen you appear as your chosen character too (session.ini
     // self_character=1, written only with the real partner body and a character other than Sam).
     bool self_character = true;
+    // Self voice: Sam's voice (lines, grunts, breathing) is muted on your own game when your character is not
+    // Sam (session.ini self_voice=auto; off writes self_voice=sam). docs/audio-research.md section 9, Phase 1.
+    bool mute_sam_voice = true;
+    // Partner voice: you hear your partner's voice from their body, and they hear yours (session.ini voice_sync=1;
+    // off writes nothing, the mod's default is off). docs/audio-research.md section 15, Phase 2.
+    bool partner_voice_sync = true;
+    // Partner sounds: you hear your partner's footsteps, foley and gun from their body, and they hear yours (session.ini
+    // sound_sync=1; off writes nothing, the mod's default is off). docs/audio-research.md section 16, Phase 3.
+    bool partner_sound_sync = true;
+    // Partner sound volume (Phase 4): the partner's footsteps, foley and weapon sounds at this percent (0..100; session.ini
+    // partner_volume, written only with partner sounds on and below 100). docs/audio-research.md section 17.
+    int partner_volume = 100;
+
     // Name tags: your partner's name above their head, and yours sent to them (session.ini
     // name_tags; the mod's default is on, so only name_tags=0 is written).
     bool name_tags = true;

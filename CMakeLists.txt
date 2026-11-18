@@ -133,7 +133,12 @@ add_library(st_mod SHARED
   native/mod/partner_gear.cpp
   native/mod/gear_look.cpp
   native/mod/menu_figure.cpp
+  native/mod/audio_probe.cpp
+  native/mod/self_voice.cpp
+  native/mod/partner_voice.cpp
+  native/mod/partner_sound.cpp
   native/mod/automation.cpp
+
   native/mod/sandbox.cpp
   ${ST_OVERLAY_SOURCES})
 set_target_properties(st_mod PROPERTIES OUTPUT_NAME winhttp PREFIX "")

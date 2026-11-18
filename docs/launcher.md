@@ -103,7 +103,20 @@ Three tabs (`ui::DebugTab`):
   comes back whenever the game hides him itself, the character is not ready or the mod stops, see
   docs/real-partner-body.md section 8.3; untick it to stay Sam on your own screen); **Show player names above heads** (`name_tags`, default on:
   your partner's name floats above their body and yours is sent to them, docs/real-partner-body.md section 10;
-  unticked writes `name_tags=0`: nothing is drawn or sent); **Players block each other** (`partner_collision`,
+  unticked writes `name_tags=0`: nothing is drawn or sent); **Mute Sam's voice when you are not Sam** (`self_voice`,
+  default on = `self_voice=auto`: playing Fragile or anyone but Sam, Sam's lines, grunts and breathing are not heard
+  on your own game; footsteps, gear, BB and radio calls stay; unticked writes `self_voice=sam`; the setting is
+  saved as `"self_voice": "auto"|"sam"` in launcher-settings.json); **Hear your partner's voice** (`voice_sync`,
+  default on = `voice_sync=1`: your partner's lines, grunts and breathing play from their body when they are near
+  you, and yours from yours; a partner who is not Sam is silent (only Sam's voice exists in the game's resident
+  lines); unticked writes nothing, the mod's default is off; saved as `"voice_sync": true|false`;
+  docs/audio-research.md section 15); **Hear your partner's footsteps and sounds** (`sound_sync`, default on =
+  `sound_sync=1`: your partner's footsteps, movement, cargo and weapon sounds play from their body when they are near
+  you, and yours from yours (experimental: footsteps are recognised by position); unticked writes nothing, the mod's
+  default is off; saved as `"sound_sync": true|false`; docs/audio-research.md section 16); while it is ticked, the slider
+  **PARTNER SOUND VOLUME** (0-100 %, default 100: `partner_volume=N` is written only below 100; 0 = your partner's
+  sounds are not played; their voice is not affected; saved as `"partner_volume": N`; docs/audio-research.md section
+  17.3); **Players block each other** (`partner_collision`,
   default on, needs Real character: your partner's body stops you like another character, docs/real-partner-body.md
   section 11; unticked writes `partner_collision=0`); **Allow other characters** (launcher-only, default off,
   `"debug"` `"allow_other_characters"`, never written to session.ini: off, a guest plays Fragile (porter suit)
@@ -267,6 +280,19 @@ my_character=<key>              the character the other player sees you as: an o
                                 fragile_suit for every other role unless Debug > Allow other characters is on
 partner_body=real|holo          how the partner is drawn on this screen (Debug page; default real)
 self_character=1                you see yourself as my_character too (Debug page; not for a host or sam)
+self_voice=auto|sam             auto: Sam's voice is muted on your game when your character is not Sam (Debug page "Mute Sam's
+                                voice when you are not Sam", default on; unticked writes sam; always written). The mod also
+                                takes mute (a test value); a missing key keeps Sam's voice. docs/audio-research.md Phase 1
+voice_sync=1                    each player hears the other's voice (Debug page "Hear your partner's voice", default on;
+                                written only when ticked, the mod's default is off). The mod also reads voice_subtitles=0|1
+                                (not written: 0, the partner's subtitles are not shown). docs/audio-research.md Phase 2
+sound_sync=1                    each player hears the other's footsteps, foley, cargo and weapon sounds (Debug page "Hear
+                                your partner's footsteps and sounds", default on; written only when ticked, the mod's
+                                default is off). The mod also reads sound_steps=0|1 (not written: 1, footsteps by
+                                position). docs/audio-research.md Phase 3
+partner_volume=0..100           the partner's footsteps and sounds at this percent (Debug page slider "PARTNER SOUND
+                                VOLUME"; written only with sound_sync=1 and below 100; the writer refuses values outside
+                                0..100; the mod's default is 100). docs/audio-research.md section 17.3
 name_tags=0                     no name tags (Debug page; written only when unticked, the mod's default is on)
 partner_collision=0             you can walk through your partner (Debug page; written only when unticked, default on)
 partner_gear=0                  no backpack or cargo on the bodies, none sent (mod key only, not written by the launcher; default on)
@@ -414,7 +440,8 @@ the game closed. `--selftest` also reports the mod state and `package.json`.
 * `st_imgui` (static): Dear ImGui 1.92.6 + Win32/DX11 backends, `third_party/imgui` (MIT, see `UPSTREAM.txt`).
 * `st_launcher_core` (static): the launcher core (with `core_update`), join code, UI logic, mock model and entries. Links `st_net` for the DST1 code (only `steam_join_code` and `link_crypto` objects are pulled in); never `winhttp.lib`.
 * `st_launcher` (WIN32 exe, `OUTPUT_NAME StrandedTogether`), `/W4 /WX /utf-8 /permissive-`.
-* Tests: `st_launcher_core_tests` (join code round trip, session.ini text incl. `one_shot`/debug keys/`solo`/`my_character` (host always sam)/`partner_body`, the offered character list, status parse and view, Steam library parsing and game-folder discovery from a fake `SteamPath`, `package.json` parsing and every mod state, disable/enable, Debug options persistence, redaction, UI logic, a session activate/cleanup round trip and the real model on a temporary fake game folder with a fake Env: Debug tools only, Clear session, live log, crash report, package ok/mismatch/foreign, a window reopened after the mod consumed `session.ini`), `st_launcher_update_tests` (SemVer incl. prerelease order; the feed: drafts, prereleases, source-only releases, foreign or query URLs, two matching assets, digests, `/releases/latest`, loopback feeds; `VerifyUpdateZip`: wrong version, missing or unlisted files, hash mismatch, game or runtime files, a foreign DLL; `ApplyUpdate`: success, ds.exe running before and during, foreign DLL, a failed move half way, a failed restart, a fresh folder, a switched-off mod, leftovers; the real model on a fake feed and fake HTTP: once per launch, the setting, refused while the game runs, digest mismatch, offline, success with `--after-update <pid>`, the new window's cleanup, rollback, `--update-feed`/`--update-now`; the banner logic, command line and mock; the real WinHTTP client against an HTTP server on 127.0.0.1), `st_launcher_no_winhttp_import`, `st_launcher_selftest`, `st_launcher_screens` (fails on `imgui-error|FAIL:`), `st_launcher_assets_current` (`make_launcher_assets.py --check`).
+* Tests: `st_launcher_core_tests` (join code round trip, session.ini text incl. `one_shot`/debug keys/`solo`/`my_character` (host always sam)/`partner_body`/`voice_sync`/`sound_sync`/`partner_volume` (0..100, written only with sound_sync below 100)/`self_voice`
+ (auto, sam, mute; anything else refused), the offered character list, status parse and view, Steam library parsing and game-folder discovery from a fake `SteamPath`, `package.json` parsing and every mod state, disable/enable, Debug options persistence, redaction, UI logic, a session activate/cleanup round trip and the real model on a temporary fake game folder with a fake Env: Debug tools only, Clear session, live log, crash report, package ok/mismatch/foreign, a window reopened after the mod consumed `session.ini`), `st_launcher_update_tests` (SemVer incl. prerelease order; the feed: drafts, prereleases, source-only releases, foreign or query URLs, two matching assets, digests, `/releases/latest`, loopback feeds; `VerifyUpdateZip`: wrong version, missing or unlisted files, hash mismatch, game or runtime files, a foreign DLL; `ApplyUpdate`: success, ds.exe running before and during, foreign DLL, a failed move half way, a failed restart, a fresh folder, a switched-off mod, leftovers; the real model on a fake feed and fake HTTP: once per launch, the setting, refused while the game runs, digest mismatch, offline, success with `--after-update <pid>`, the new window's cleanup, rollback, `--update-feed`/`--update-now`; the banner logic, command line and mock; the real WinHTTP client against an HTTP server on 127.0.0.1), `st_launcher_no_winhttp_import`, `st_launcher_selftest`, `st_launcher_screens` (fails on `imgui-error|FAIL:`), `st_launcher_assets_current` (`make_launcher_assets.py --check`).
 
 ```
 cmake -S . -B build-launcher -G "Visual Studio 17 2022" -A x64

@@ -13,6 +13,7 @@
 #include "game_font.hpp"
 #include "nametag_math.hpp"
 #include "pose_wire.hpp"
+#include "self_voice_setting.hpp"
 #include "stcoop/link_crypto.hpp"
 #include "stcoop/link_protocol.hpp"
 #include "stcoop/link_session.hpp"
@@ -1211,6 +1212,339 @@ void TestGameFontParser() {
     CHECK(gamefont::PathHash("Interface\\Fonts\\DS\\ExpsMediumNeon.core") == 0x8B1154249961D97Aull);
 }
 
+// session.ini self_voice (docs/audio-research.md section 9, Phase 1): the values, and who is muted under auto.
+void TestSelfVoiceSetting() {
+    using selfvoice::Mode;
+    Mode m = Mode::sam;
+    CHECK(selfvoice::ParseMode("auto", &m) && m == Mode::automatic);
+    CHECK(selfvoice::ParseMode("mute", &m) && m == Mode::mute);
+    CHECK(selfvoice::ParseMode("sam", &m) && m == Mode::sam);
+    for (const char* bad : {"", "Auto", "MUTE", "on", "1", "fragile", "auto ", " sam", "mute\n"}) {
+        m = Mode::mute;
+        CHECK(!selfvoice::ParseMode(bad, &m) && m == Mode::mute);  // refused, the value untouched
+    }
+    CHECK(selfvoice::ParseMode("auto", nullptr) && !selfvoice::ParseMode("x", nullptr));
+    for (Mode x : {Mode::automatic, Mode::sam, Mode::mute}) CHECK(selfvoice::ParseMode(selfvoice::ModeName(x), &m) && m == x);
+    // Sam's keys (any case, sam_* variants); unset counts as Sam (the mod sends sam).
+    CHECK(selfvoice::IsSamCharacter("sam") && selfvoice::IsSamCharacter("Sam") && selfvoice::IsSamCharacter("sam_mule"));
+    CHECK(selfvoice::IsSamCharacter("") && selfvoice::IsSamCharacter(nullptr));
+    CHECK(!selfvoice::IsSamCharacter("fragile_suit") && !selfvoice::IsSamCharacter("fragile") && !selfvoice::IsSamCharacter("samurai") &&
+          !selfvoice::IsSamCharacter("sa") && !selfvoice::IsSamCharacter("s") && !selfvoice::IsSamCharacter("porter"));
+    // auto: muted only for a character other than Sam; sam never; mute always.
+    CHECK(selfvoice::ResolveMute(Mode::automatic, "fragile_suit") && selfvoice::ResolveMute(Mode::automatic, "mama"));
+    CHECK(!selfvoice::ResolveMute(Mode::automatic, "sam") && !selfvoice::ResolveMute(Mode::automatic, "sam_mule") &&
+          !selfvoice::ResolveMute(Mode::automatic, ""));
+    CHECK(!selfvoice::ResolveMute(Mode::sam, "fragile_suit") && selfvoice::ResolveMute(Mode::mute, "sam"));
+    // Every offered body except Sam's is muted under auto (the character list the launcher offers).
+    for (std::size_t i = 0; i < bodies::OfferedCount(); ++i) {
+        const bodies::Body& b = bodies::OfferedAt(i);
+        const bool sam = std::strncmp(b.key, "sam", 3) == 0;
+        CHECK(selfvoice::ResolveMute(Mode::automatic, b.key) == !sam);
+    }
+    // What the mod resolves: ChooseOwn makes the host Sam whatever my_character says.
+    CHECK(!selfvoice::ResolveMute(Mode::automatic, bodies::ChooseOwn(true, "fragile_suit").body->key));
+    CHECK(selfvoice::ResolveMute(Mode::automatic, bodies::ChooseOwn(false, "fragile_suit").body->key));
+    CHECK(!selfvoice::ResolveMute(Mode::automatic, bodies::ChooseOwn(false, "gandalf").body->key));  // unknown: sam
+}
+
+// ---- partner voice: STS1 frame (docs/audio-research.md sections 7 and 15)
+// Partner sounds (docs/audio-research.md section 16): STA1 round trip, every refusal, the size limit, and the other
+// decoders refuse it (and it refuses theirs).
+void TestSoundFrames() {
+    wire::SoundFrame a;
+    a.seq = 65535;
+    a.sender_ms = 0xFFFFFF00u;
+    a.n = 4;
+    wire::SoundItem& post = a.item[0];
+    post.op = 0, post.a = 0x0B509EF4u, post.b = 1234, post.slot = 1, post.tag = 7, post.category = 1, post.age_ms = 17;
+    post.off[0] = -12, post.off[1] = 20, post.off[2] = 5;
+    post.nrtpc = 2;
+    post.rtpc_id[0] = 0x1111u, post.rtpc_value[0] = 0.5f, post.rtpc_id[1] = 0x2222u, post.rtpc_value[1] = -3.25f;
+    wire::SoundItem& stop = a.item[1];
+    stop.op = 1, stop.b = 1234, stop.fade_ms = 300, stop.category = 2;
+    wire::SoundItem& act = a.item[2];
+    act.op = 2, act.a = 0x6D69D583u, act.slot = 3, act.tag = 9, act.fade_ms = 100;
+    wire::SoundItem& rt = a.item[3];
+    rt.op = 3, rt.slot = 6, rt.tag = 7, rt.nrtpc = 1, rt.rtpc_id[0] = 0x3333u, rt.rtpc_value[0] = 42.0f, rt.fade_ms = 50;
+    const std::size_t want = wire::kSoundHeaderSize + 4 * wire::kSoundItemSize + 3 * wire::kSoundRtpcSize;
+    CHECK(wire::SoundFrameSize(a) == want && want == 132);
+    // one item checked alone (the sender drops an invalid item, not the whole frame)
+    CHECK(wire::SoundItemValid(post) && wire::SoundItemValid(stop) && wire::SoundItemValid(act) && wire::SoundItemValid(rt));
+    {
+        wire::SoundItem bad = post;
+        bad.op = 9;
+        CHECK(!wire::SoundItemValid(bad));
+        bad = stop;
+        bad.b = 0;  // a stop without a playing id
+        CHECK(!wire::SoundItemValid(bad));
+        bad = post;
+        bad.rtpc_value[0] = std::numeric_limits<float>::quiet_NaN();
+        CHECK(!wire::SoundItemValid(bad));
+    }
+    std::uint8_t buf[wire::kMaxSoundFrameSize + 16];
+    const std::size_t size = wire::EncodeSound(a, buf, sizeof(buf));
+    CHECK(size == want);
+    CHECK(std::memcmp(buf, "STA1", 4) == 0 && buf[4] == 1 && buf[5] == 4);
+    static wire::SoundFrame b;
+    CHECK(wire::DecodeSound(buf, size, b));
+    CHECK(b.n == 4 && b.seq == 65535 && b.sender_ms == 0xFFFFFF00u);
+    CHECK(b.item[0].op == 0 && b.item[0].a == 0x0B509EF4u && b.item[0].b == 1234 && b.item[0].slot == 1 && b.item[0].tag == 7 && b.item[0].category == 1 &&
+          b.item[0].age_ms == 17 && b.item[0].off[0] == -12 && b.item[0].off[1] == 20 && b.item[0].off[2] == 5 && b.item[0].nrtpc == 2 &&
+          b.item[0].rtpc_id[1] == 0x2222u && b.item[0].rtpc_value[1] == -3.25f);
+    CHECK(b.item[1].op == 1 && b.item[1].b == 1234 && b.item[1].fade_ms == 300 && b.item[1].category == 2);
+    CHECK(b.item[2].op == 2 && b.item[2].a == 0x6D69D583u && b.item[2].slot == 3 && b.item[2].tag == 9 && b.item[2].fade_ms == 100);
+    CHECK(b.item[3].op == 3 && b.item[3].nrtpc == 1 && b.item[3].rtpc_value[0] == 42.0f);
+    // sizes: one byte short / long, the header alone, null
+    CHECK(!wire::DecodeSound(buf, size - 1, b));
+    buf[size] = 0;
+    CHECK(!wire::DecodeSound(buf, size + 1, b));
+    CHECK(!wire::DecodeSound(buf, wire::kSoundHeaderSize, b));
+    CHECK(!wire::DecodeSound(nullptr, size, b));
+    // a refused frame leaves the output alone
+    b.seq = 99;
+    std::uint8_t t[sizeof(buf)];
+    auto refused = [&](std::size_t at, std::uint8_t v) {
+        std::memcpy(t, buf, size);
+        t[at] = v;
+        return !wire::DecodeSound(t, size, b) && b.seq == 99;
+    };
+    const std::size_t i0 = wire::kSoundHeaderSize;        // item 0 (post, 2 RTPCs)
+    const std::size_t i1 = i0 + wire::SoundItemSize(2);  // item 1 (stop)
+    const std::size_t i2 = i1 + wire::kSoundItemSize;    // item 2 (action)
+    const std::size_t i3 = i2 + wire::kSoundItemSize;    // item 3 (rtpc)
+    CHECK(refused(3, static_cast<std::uint8_t>('2')));  // magic
+    CHECK(refused(4, 2));                               // version
+    CHECK(refused(5, 0));                               // n = 0
+    CHECK(refused(5, 3));                               // n does not match the size
+    CHECK(refused(5, 33));                              // n > 32
+    CHECK(refused(i0 + 8, 4));                          // unknown op
+    CHECK(refused(i0 + 9, 7));                          // slot 7
+    CHECK(refused(i0 + 11, 13));                        // nrtpc 13
+    std::memcpy(t, buf, size);
+    std::memset(t + i0, 0, 4);  // post without an event id
+    CHECK(!wire::DecodeSound(t, size, b));
+    std::memcpy(t, buf, size);
+    std::memset(t + i0 + 4, 0, 4);  // post without a playing id
+    CHECK(!wire::DecodeSound(t, size, b));
+    std::memcpy(t, buf, size);
+    t[i0 + 12] = 0xD1, t[i0 + 13] = 0x07;  // age 2001
+    CHECK(!wire::DecodeSound(t, size, b));
+    CHECK(refused(i0 + 14, 1));  // a post with a fade
+    CHECK(refused(i0 + 22, 5));  // category 5
+    CHECK(refused(i0 + 23, 1));  // the reserved byte
+    std::memcpy(t, buf, size);
+    std::memset(t + i0 + 24, 0, 4);  // RTPC id 0
+    CHECK(!wire::DecodeSound(t, size, b));
+    const float bad[3] = {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(), 2e7f};
+    for (float v : bad) {
+        std::memcpy(t, buf, size);
+        std::memcpy(t + i0 + 28, &v, 4);  // RTPC value
+        CHECK(!wire::DecodeSound(t, size, b));
+    }
+    // stop: fields it does not use must be 0, a playing id is needed, fade <= 10 s
+    CHECK(refused(i1 + 0, 1));  // a stop with an event id
+    std::memcpy(t, buf, size);
+    std::memset(t + i1 + 4, 0, 4);
+    CHECK(!wire::DecodeSound(t, size, b));
+    CHECK(refused(i1 + 9, 1));   // slot
+    CHECK(refused(i1 + 10, 1));  // tag
+    CHECK(refused(i1 + 16, 1));  // offset
+    std::memcpy(t, buf, size);
+    t[i1 + 14] = 0x11, t[i1 + 15] = 0x27;  // fade 10001
+    CHECK(!wire::DecodeSound(t, size, b));
+    // action: type <= 4, no offset; rtpc: no ids, a slot < 7
+    CHECK(refused(i2 + 9, 5));
+    CHECK(refused(i2 + 18, 1));
+    CHECK(refused(i3 + 0, 1));
+    CHECK(refused(i3 + 9, 7));
+    // the encoder: nothing invalid, at most 512 bytes, a small buffer, n = 0
+    wire::SoundFrame c = a;
+    c.item[1].a = 5;  // a stop with an event id
+    CHECK(wire::EncodeSound(c, buf, sizeof(buf)) == 0 && wire::SoundFrameSize(c) == 0);
+    c = a;
+    c.n = 0;
+    CHECK(wire::EncodeSound(c, buf, sizeof(buf)) == 0);
+    c = a;
+    c.item[3].nrtpc = 0;  // an RTPC update without values
+    CHECK(wire::EncodeSound(c, buf, sizeof(buf)) == 0);
+    CHECK(wire::EncodeSound(a, buf, want - 1) == 0);
+    static wire::SoundFrame big;
+    big.n = wire::kMaxSoundItems;
+    for (unsigned i = 0; i < big.n; ++i) {
+        big.item[i] = post;
+        big.item[i].nrtpc = 0;
+    }
+    CHECK(wire::SoundFrameSize(big) == wire::kSoundHeaderSize + 32 * wire::kSoundItemSize);  // 780: too big to send
+    CHECK(wire::EncodeSound(big, buf, sizeof(buf)) == 0);
+    big.n = 20;  // 12 + 20 x 24 = 492
+    CHECK(wire::EncodeSound(big, buf, sizeof(buf)) == 492 && wire::DecodeSound(buf, 492, b) && b.n == 20);
+    big.item[0].nrtpc = 12;  // + 96 = 588
+    CHECK(wire::EncodeSound(big, buf, sizeof(buf)) == 0);
+    // the other decoders refuse it, and it refuses theirs
+    const std::size_t sn = wire::EncodeSound(a, buf, sizeof(buf));
+    wire::Pose pose;
+    static wire::JointFrame jf;
+    wire::NameFrame nf;
+    static wire::GearFrame gf;
+    wire::GearRes gr;
+    static wire::GearLook gl;
+    static wire::GearPose gp;
+    wire::Speech sp;
+    CHECK(sn && !wire::DecodePose(buf, sn, pose) && !wire::DecodeJoints(buf, sn, jf) && !wire::DecodeName(buf, sn, nf) && !wire::DecodeGear(buf, sn, gf) &&
+          !wire::DecodeGearRes(buf, sn, gr) && !wire::DecodeGearLook(buf, sn, gl) && !wire::DecodeGearPose(buf, sn, gp) && !wire::DecodeSpeech(buf, sn, sp));
+    wire::Speech s;
+    s.kind = 1, s.seq = 3;
+    std::uint8_t sb[wire::kMaxSpeechFrameSize];
+    const std::size_t ssz = wire::EncodeSpeech(s, sb, sizeof(sb));
+    std::uint8_t pb[wire::kPoseFrameSize];
+    wire::Pose pp;
+    pp.flags = wire::kPoseValid;
+    CHECK(ssz && !wire::DecodeSound(sb, ssz, b) && !wire::DecodeSound(pb, wire::EncodePose(pp, pb), b));
+}
+
+void TestSpeechFrames() {
+
+    wire::Speech a;
+    a.kind = 0;
+    a.flags = wire::kSpeechFromHost;
+    a.n = 2;
+    a.seq = 7;
+    a.sender_ms = 123456;
+    a.situation = 0x2CF2EAD9u;  // Jumping
+    for (int i = 0; i < 16; ++i) a.guid[0][i] = static_cast<std::uint8_t>(i + 1), a.guid[1][i] = static_cast<std::uint8_t>(0xF0 - i);
+    std::uint8_t buf[wire::kMaxSpeechFrameSize + 8];
+    const std::size_t size = wire::EncodeSpeech(a, buf, sizeof(buf));
+    CHECK(size == wire::SpeechFrameSize(2) && size == 52);
+    CHECK(std::memcmp(buf, "STS1", 4) == 0 && buf[4] == 1 && buf[5] == 0 && buf[6] == 1 && buf[7] == 2);
+    wire::Speech b;
+    CHECK(wire::DecodeSpeech(buf, size, b));
+    CHECK(b.kind == 0 && b.flags == wire::kSpeechFromHost && b.n == 2 && b.seq == 7 && b.sender_ms == 123456 && b.situation == 0x2CF2EAD9u);
+    CHECK(std::memcmp(b.guid, a.guid, 32) == 0);
+    // the size must match n exactly
+    CHECK(!wire::DecodeSpeech(buf, size - 1, b));
+    buf[size] = 0;
+    CHECK(!wire::DecodeSpeech(buf, size + 1, b));
+    CHECK(!wire::DecodeSpeech(buf, wire::kSpeechHeaderSize - 1, b));
+    CHECK(!wire::DecodeSpeech(nullptr, size, b));
+    // magic, version, kind, count
+    std::uint8_t t[sizeof(buf)];
+    std::memcpy(t, buf, size);
+    t[3] = '2';
+    CHECK(!wire::DecodeSpeech(t, size, b));
+    std::memcpy(t, buf, size);
+    t[4] = 2;
+    CHECK(!wire::DecodeSpeech(t, size, b));
+    std::memcpy(t, buf, size);
+    t[5] = 3;  // kind 3
+    CHECK(!wire::DecodeSpeech(t, size, b));
+    std::memcpy(t, buf, size);
+    t[7] = 5;  // n 5 (and the size of 2)
+    CHECK(!wire::DecodeSpeech(t, size, b));
+    // seq 0, an all-zero GUID
+    std::memcpy(t, buf, size);
+    std::memset(t + 8, 0, 4);
+    CHECK(!wire::DecodeSpeech(t, size, b));
+    std::memcpy(t, buf, size);
+    std::memset(t + 20 + 16, 0, 16);
+    CHECK(!wire::DecodeSpeech(t, size, b));
+    // unknown flag bits are cleared
+    std::memcpy(t, buf, size);
+    t[6] = 0xFF;
+    CHECK(wire::DecodeSpeech(t, size, b) && b.flags == wire::kSpeechKnown);
+    // kind 1 (muted) carries no GUIDs; kind 0 / 2 need at least one
+    wire::Speech m;
+    m.kind = 1;
+    m.seq = 8;
+    CHECK(wire::EncodeSpeech(m, buf, sizeof(buf)) == wire::kSpeechHeaderSize);
+    CHECK(wire::DecodeSpeech(buf, wire::kSpeechHeaderSize, b) && b.kind == 1 && b.n == 0 && b.seq == 8);
+    m.n = 1;
+    std::memset(m.guid[0], 0x11, 16);
+    CHECK(wire::EncodeSpeech(m, buf, sizeof(buf)) == 0);  // muted with a GUID
+    wire::Speech z = a;
+    z.n = 0;
+    CHECK(wire::EncodeSpeech(z, buf, sizeof(buf)) == 0);  // played without a sentence
+    z.n = 1, z.kind = 2;
+    CHECK(wire::EncodeSpeech(z, buf, sizeof(buf)) == wire::SpeechFrameSize(1));
+    CHECK(wire::DecodeSpeech(buf, wire::SpeechFrameSize(1), b) && b.kind == 2 && b.n == 1);
+    // a hand-made kind 0 frame with n 0 and a kind 1 frame with n 1 are refused
+    std::memcpy(t, buf, wire::kSpeechHeaderSize);
+    t[5] = 0, t[7] = 0;
+    CHECK(!wire::DecodeSpeech(t, wire::kSpeechHeaderSize, b));
+    std::memcpy(t, buf, wire::SpeechFrameSize(1));
+    t[5] = 1;
+    CHECK(!wire::DecodeSpeech(t, wire::SpeechFrameSize(1), b));
+    // encoder limits: 4 sentences at most, seq 0, a small buffer
+    wire::Speech big = a;
+    big.n = 4;
+    for (int k = 2; k < 4; ++k) std::memset(big.guid[k], 0x40 + k, 16);
+    CHECK(wire::EncodeSpeech(big, buf, sizeof(buf)) == wire::kMaxSpeechFrameSize);
+    CHECK(wire::DecodeSpeech(buf, wire::kMaxSpeechFrameSize, b) && b.n == 4 && b.guid[3][0] == 0x43);
+    big.n = 5;
+    CHECK(wire::EncodeSpeech(big, buf, sizeof(buf)) == 0);
+    big.n = 1, big.seq = 0;
+    CHECK(wire::EncodeSpeech(big, buf, sizeof(buf)) == 0);
+    big.seq = 1;
+    CHECK(wire::EncodeSpeech(big, buf, wire::SpeechFrameSize(1) - 1) == 0);
+    // the other decoders refuse it, and it refuses theirs
+    const std::size_t sn = wire::EncodeSpeech(a, buf, sizeof(buf));
+    wire::Pose pose;
+    static wire::JointFrame jf;
+    wire::NameFrame nf;
+    static wire::GearFrame gf;
+    wire::GearRes gr;
+    static wire::GearLook gl;
+    static wire::GearPose gp;
+    CHECK(!wire::DecodePose(buf, sn, pose) && !wire::DecodeJoints(buf, sn, jf) && !wire::DecodeName(buf, sn, nf) && !wire::DecodeGear(buf, sn, gf) &&
+          !wire::DecodeGearRes(buf, sn, gr) && !wire::DecodeGearLook(buf, sn, gl) && !wire::DecodeGearPose(buf, sn, gp));
+    nf = wire::NameFrame{};
+    std::snprintf(nf.name, sizeof(nf.name), "%s", "x");
+    nf.len = 1;
+    std::uint8_t nb[wire::kMaxNameFrameSize];
+    const std::size_t nn = wire::EncodeName(nf, nb, sizeof(nb));
+    CHECK(nn && !wire::DecodeSpeech(nb, nn, b));
+
+    // The reliable channel carries STS1 in order, exactly once, through a lost first transmission.
+    namespace lk = stcoop::link;
+    static lk::ReliableSender tx;
+    static lk::ReliableReceiver rx;
+    std::uint64_t now = 1000;
+    for (std::uint32_t q = 1; q <= 3; ++q) {
+        wire::Speech s = a;
+        s.seq = q;
+        const std::size_t n = wire::EncodeSpeech(s, buf, sizeof(buf));
+        CHECK(tx.Queue(buf, n, lk::ReliableMode::append) == lk::ReliableResult::queued);
+    }
+    std::vector<std::uint32_t> got;
+    bool lost_once = false;
+    for (int step = 0; step < 200 && got.size() < 3; ++step) {
+        now += 20;
+        lk::ReliableSender::Pick pick{};
+        while (tx.NextDue(now, 100, 4096, pick)) {
+            tx.MarkSent(pick.id, now);
+            if (pick.id == 1 && !lost_once) {  // the second message's first transmission is lost
+                lost_once = true;
+                continue;
+            }
+            rx.Accept(pick.id, pick.payload, pick.size, now);
+            rx.Accept(pick.id, pick.payload, pick.size, now);  // a duplicate is stored once
+        }
+        std::uint8_t out[lk::kMaxReliableMessage];
+        std::size_t outn = 0;
+        while (rx.Drain(out, sizeof(out), outn, now)) {
+            wire::Speech d;
+            CHECK(wire::DecodeSpeech(out, outn, d));
+            got.push_back(d.seq);
+        }
+        std::uint16_t next = 0;
+        std::uint32_t bits = 0;
+        std::uint8_t free_slots = 0;
+        rx.AckState(next, bits, free_slots);
+        tx.OnRelAck(next, bits, free_slots, now);
+    }
+    CHECK(lost_once && got.size() == 3 && got[0] == 1 && got[1] == 2 && got[2] == 3);
+    CHECK(tx.idle() && tx.retransmits() >= 1);
+}
+
 int main() {    TestPoseRoundTrip();
     TestJointFrames();
     TestJointOutfit();
@@ -1225,6 +1559,9 @@ int main() {    TestPoseRoundTrip();
     TestJoinCode();
     TestLinkHandshake();
     TestGameFontParser();
+    TestSelfVoiceSetting();
+    TestSpeechFrames();
+    TestSoundFrames();
     if (g_fail) {
         std::printf("%d check(s) failed\n", g_fail);
         return 1;

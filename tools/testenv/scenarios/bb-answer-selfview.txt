@@ -1,0 +1,28 @@
+# BB's answer to Sam's ReceivedLike line with the guest-Fragile self view and NO mute (self_voice=sam): the control
+# for review finding "the mute stops BB answering" (docs/audio-research.md section 17). The probe logs every voice post.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario bb-answer-selfview -SeedSaves complete-100
+# ReceivedLike is asked through the voice queue until the queue takes it (it refuses it at times), then 15 s for BB.
+role solo
+timeout 300
+ini audio_probe=1
+ini self_voice=sam
+ini partner_body=real
+ini my_character=fragile_suit
+ini self_character=1
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[self\] showing 'fragile_suit' in place of Sam
+wait 5000
+log audio: received like
+until 90 12000 ReceivedLike hash 0x3440E578: check 1, queued 1 => action audio_probe 2 0
+wait 15000
+log audio: end
+action audio_probe 1
+wait 1500
+quit

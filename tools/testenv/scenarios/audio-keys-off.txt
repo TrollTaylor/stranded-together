@@ -1,0 +1,73 @@
+# All audio keys off (docs/audio-research.md section 17, the control of the final runs): Sam on his own with none of the
+# audio keys (no self_voice, voice_sync, sound_sync, partner_volume, audio_probe): nothing audio-related may be hooked, sent
+# or played. The config line shows the defaults (self_voice=sam voice_sync=0 sound_sync=0 partner_volume=100), self_voice
+# logs "nothing hooked", and no [psound] / [pvoice] / [audio] line appears. Walk, run, jumps, the gun, the cuff map, idle.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario audio-keys-off -SeedSaves complete-100
+role solo
+timeout 300
+ini partner_body=real
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+wait 2000
+screenshot 01-start
+nolog \[config\] self_voice=(auto|mute)
+nolog \[config\] self_voice=sam voice_sync=1
+nolog \[config\] .*sound_sync=1
+nolog \[voice\] .*muted for this player
+nolog \[psound\]
+nolog \[pvoice\]
+nolog \[audio\]
+log audio: walk and run
+pad none 4000 ly=16000
+pad none 4000 ly=-16000
+pad none 5000 ly=32767
+pad none 5000 ly=-32767
+log audio: jump
+pad none 1200 ly=32767 keep
+pad A 200 ly=32767 keep
+pad none 900 ly=32767 keep
+pad A 200 ly=32767 keep
+pad none 1500 ly=-32767 keep
+pad none 0
+wait 2500
+log audio: gun
+pad dpad_right 600 keep
+pad dpad_right 900 lx=-23170 ly=23170 rx=-23170 ry=23170 keep
+pad dpad_right 400 keep
+pad none 0
+wait 3000
+pad none 1500 lt=255 keep
+pad none 400 lt=255 rt=255 keep
+pad none 300 lt=255 keep
+pad none 0
+wait 2000
+screenshot 02-gun
+pad dpad_right 600 keep
+pad dpad_right 900 lx=32767 ly=0 rx=32767 ry=0 keep
+pad dpad_right 400 keep
+pad none 0
+wait 2500
+log audio: cuff map
+pad START 150
+wait 4000
+screenshot 03-map
+pad A 150
+wait 2000
+pad B 150
+wait 3000
+log audio: idle
+wait 15000
+action self_voice 0
+log audio: end
+nolog \[psound\]
+nolog \[pvoice\]
+nolog \[audio\]
+nolog \[voice\] (counts|an external)
+action log_status
+quit

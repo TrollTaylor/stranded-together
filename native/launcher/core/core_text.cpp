@@ -10,6 +10,7 @@
 
 #include "body_table.hpp"   // native/mod, pure data: the character list shared with the mod
 #include "core_util.hpp"
+#include "self_voice_setting.hpp"   // native/mod, pure: the self_voice values the mod understands
 
 namespace st::core {
 namespace {
@@ -265,6 +266,14 @@ bool MakeSessionIniText(const SessionIni& s, std::string& text, std::string& err
         error = "partner_body must be real or holo";
         return false;
     }
+    if (!s.self_voice.empty() && !selfvoice::ParseMode(s.self_voice, nullptr)) {
+        error = "self_voice must be auto, sam or mute";
+        return false;
+    }
+    if (s.partner_volume < 0 || s.partner_volume > 100) {
+        error = "partner_volume must be 0..100";
+        return false;
+    }
     if (!s.name.empty() && !IsValidPlayerName(s.name)) {
         error = "the name may only use plain letters, digits, spaces and simple punctuation (32 characters at most)";
         return false;
@@ -308,6 +317,10 @@ bool MakeSessionIniText(const SessionIni& s, std::string& text, std::string& err
     if (!s.partner_body.empty()) t += "partner_body=" + s.partner_body + "\n";
     // Self view: only a guest (or echo / solo) whose character is not Sam needs it.
     if (!host && s.self_character && !s.my_character.empty() && s.my_character != kHostCharacter) t += "self_character=1\n";
+    if (!s.self_voice.empty()) t += "self_voice=" + s.self_voice + "\n";
+    if (s.voice_sync) t += "voice_sync=1\n";
+    if (s.sound_sync) t += "sound_sync=1\n";
+    if (s.sound_sync && s.partner_volume < 100) t += "partner_volume=" + std::to_string(s.partner_volume) + "\n";
     if (!s.name_tags) t += "name_tags=0\n";
     if (!s.partner_collision) t += "partner_collision=0\n";
     text = std::move(t);
@@ -318,6 +331,7 @@ bool ParseSessionIniText(const std::string& text, SessionIni& out, std::string& 
     out = SessionIni{};
     out.transport = "steam";
     out.one_shot = false;   // absent = a persistent (hand-written) file
+    out.self_voice.clear(); // absent = not written (the mod keeps Sam's voice)
     for (const auto& kv : ParseIni(text)) {
         const std::string& k = kv.first;
         const std::string& v = kv.second;
@@ -349,6 +363,10 @@ bool ParseSessionIniText(const std::string& text, SessionIni& out, std::string& 
         else if (k == "my_character") out.my_character = v;
         else if (k == "partner_body") out.partner_body = v;
         else if (k == "self_character") out.self_character = IniBool(v);
+        else if (k == "self_voice") ok = selfvoice::ParseMode(v, nullptr) && (out.self_voice = v, true);
+        else if (k == "voice_sync") out.voice_sync = IniBool(v);
+        else if (k == "sound_sync") out.sound_sync = IniBool(v);
+        else if (k == "partner_volume") ok = ParseIntStrict(v, 0, 100, out.partner_volume);
         else if (k == "name_tags") out.name_tags = IniBool(v);
         else if (k == "partner_collision") out.partner_collision = IniBool(v);
         if (!ok) {

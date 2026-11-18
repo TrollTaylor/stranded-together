@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <string>
 
+#include "self_voice_setting.hpp"
+
 namespace st {
 
 // solo: debug tools only (in-game menu, logging), no partner and no network.
@@ -95,6 +97,41 @@ struct Config {
     // model updates, interpolation inside the body's own update, capture-time stamps on STJ1. 0 = the
     // v0.7 behaviour (bodies updated at the game's 59.94 Hz for cutscene actors).
     bool smooth_pose = true;
+    // audio_probe=0|1 (default 0; docs/audio-research.md section 9, Phase 0): logging-only probes on Sam's voice path
+    // (voice queue, talk handler, animation sound events) and on the exported Wwise API (PostEvent, RegisterGameObj,
+    // SetSwitch, SetRTPCValue, SetPosition, StopPlayingID per game object). Changes nothing the game does.
+    bool audio_probe = false;
+    // self_voice=auto|sam|mute (docs/audio-research.md section 9, Phase 1; self_voice.cpp): Sam's own voice (spoken
+    // lines, grunts, efforts, breathing) on THIS player's game. auto = muted when this player's character
+    // (my_character; the host is always sam) is not Sam, and the cargo menu's figure while it shows that character;
+    // sam = as the game plays it; mute = always muted. Absent (or not understood) = sam: nothing is hooked. The
+    // launcher writes auto (Debug option, default on) or sam.
+    selfvoice::Mode self_voice = selfvoice::Mode::sam;
+    // voice_sync=0|1 (default 0; docs/audio-research.md section 15, Phase 2; partner_voice.cpp): each player hears
+    // the other's voice. The local player's talks (Sam's lines, grunts, efforts, breathing) go out as STS1 on the
+    // link's reliable channel (a player who is not Sam sends only "muted" frames: never Sam's lines), and the
+    // partner's are played with the game's DSTalkComponent::PlaySentence on an invisible talking entity (the echo
+    // resource, as partner_voice=1 spawns it) kept at the partner body's head. 0: nothing is hooked, sent or played
+    // for it (self_voice still mutes).
+    bool voice_sync = false;
+    // voice_subtitles=0|1 (default 0): with voice_sync, the game may show the partner's lines as subtitles; 0 drops
+    // the subtitle of a line the partner voice just played (the subtitle hook, byte-checked), 1 leaves them.
+    bool voice_subtitles = false;
+    // sound_sync=0|1 (default 0; docs/audio-research.md section 16, Phase 3; partner_sound.cpp): each player hears the
+    // other's footsteps, foley, cargo and weapon sounds. The Wwise events posted on the local player's own game objects
+    // (the SoundComponents of the player and his child entities: animation foley, weapons, gear, cargo) go out as STA1 in
+    // the pose datagram, with their RTPC values; the partner's are posted on game objects of our own kept at the partner
+    // body's joints, at the pose play time. 0: nothing is hooked, sent or posted for it.
+    bool sound_sync = false;
+    // sound_steps=0|1 (default 1; with sound_sync): footsteps and the movement layer, which the game plays from material
+    // effect emitters with no owner, are taken as the local player's by position (within 1 m of his root or 0.5 m of a
+    // foot; experimental: another walker that close is mistaken for him). 0: only the sounds tied to the player exactly.
+    bool sound_steps = true;
+    // partner_volume=0..100 (default 100; with sound_sync; Phase 4): the partner's footsteps, foley and weapon sounds at this
+    // percent of their normal volume (SetGameObjectOutputBusVolume on the receiver's own Wwise objects); 0 posts nothing.
+    // The partner's voice is not affected. Out of range: clamped.
+    int partner_volume = 100;
+
 
     // Local two-instance test (docs/sandbox-and-local-test.md): local_input=host|host_pad|guest.
     // Read here for the overlay's input split; the sandbox keys (sandbox_saves, sandbox_foreign_saves,

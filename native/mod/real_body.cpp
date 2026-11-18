@@ -3308,8 +3308,26 @@ bool HeadWorld(game::Entity* e, double (&pos)[3]) noexcept {
     return true;
 }
 
+bool JointWorld(game::Entity* e, unsigned sam_joint, double (&pos)[3]) noexcept {
+    if (!e || sam_joint >= kJ) return false;
+    unsigned j = sam_joint;
+    for (BodySlot* b : {&g_p, &g_me})
+        if (b->phase == Phase::live && b->spawn.e == e) j = b->inv[sam_joint];
+    float m[4][4];
+    double jp[3];
+    float jr[3][3];
+    Xf w;
+    if (j >= kJ || !ReadJointModel(e, j, m) || !JointFrame(m, jp, jr) || !ReadWorld(reinterpret_cast<std::uintptr_t>(e), &w)) return false;
+    const Xf h = Compose(w, jp, jr);
+    const double dx = h.p[0] - w.p[0], dy = h.p[1] - w.p[1], dz = h.p[2] - w.p[2];
+    if (!std::isfinite(dx) || !std::isfinite(dy) || !std::isfinite(dz) || dx * dx + dy * dy + dz * dz > 9.0) return false;
+    pos[0] = h.p[0], pos[1] = h.p[1], pos[2] = h.p[2];
+    return true;
+}
+
 void ConfigureSelf(const bodies::Body* body) noexcept {
     g_self_body = body;
+
     g_self_on = body != nullptr;
     g_me.tag = "self";
     if (body) Log("[self] self view on: '%s' (%s) is shown in place of the local Sam on this screen", body->key, body->label);
@@ -3370,6 +3388,7 @@ void EmergencyStop() noexcept {
         was_shown ? (cleared ? (hid ? "cleared, body hidden" : "cleared, body NOT hidden") : "NOT cleared") : "");
 }
 bool SelfShown() noexcept { return g_self_shown; }
+std::uintptr_t MenuSelfFigure() noexcept { return g_menu_active ? g_menu_e.load(std::memory_order_relaxed) : 0; }
 game::Entity* SelfEntity() noexcept {
     if (g_me.phase == Phase::idle) return nullptr;
     return g_me.spawn.e;

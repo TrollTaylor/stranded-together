@@ -2264,3 +2264,80 @@ So about 70-150 ms at 30 fps; the hand's motion afterwards is the pose stream's 
   the PCC there has no prop.
 - Tested with the 100% save's rifle and grenades only, standing; not while running, in vehicles or with the
   left hand (`MTP_L_Hand_a` is mapped but not seen in a run).
+
+## 18. Partner voice: STS1 (`pose_wire`, ctest `st_net_tests`)
+
+What each player says reaches the other as STS1 frames; the design, the receiver and the hidden-run evidence are in
+[audio-research.md](audio-research.md) section 15 (`session.ini voice_sync=1`, `native/mod/partner_voice.cpp`).
+
+**STS1 frame.** 20 bytes plus 16 per sentence (at most 84):
+
+| Part | Contents |
+|---|---|
+| Header | `'STS1' \| u8 version 1 \| u8 kind \| u8 flags \| u8 n \| u32 seq \| u32 sender_ms \| u32 situation hash` |
+| Sentences | n × 16-byte GUID of a `SentenceResource` (the raw bytes at `+0x08`, as the game keeps them) |
+
+- **kind** 0 = the sender's Sam said these sentences (n = 1..4; the receiver plays the first one that resolves);
+  1 = the sender's player is not Sam: a line was said but **not sent** (n = 0; the receiver plays nothing); 2 = a line
+  of the sender's own character (n = 1..4; reserved for Phase 4, never sent by this build).
+- **flags** bit 0 = the sender is the host; other bits are cleared by the decoder. **situation hash** 0 (unknown:
+  the talk handler that feeds the sender does not see it).
+- The decoder refuses another magic or version, kind > 2, n > 4, a size other than 20 + 16 n, kind 0 / 2 with n = 0,
+  kind 1 with n > 0, seq 0 and an all-zero GUID (`TestSpeechFrames`). STP1, STJ1, STN1 and the gear decoders refuse
+  it, and it refuses theirs (tested).
+- **Delivery.** Not a FRAME message: STS1 is queued on the link's **reliable ordered channel 2**
+  (`link_protocol.hpp`; `link.cpp` drives the senders and receivers from its 20 ms idle tick: first transmissions,
+  resends after the RTO within a 2,400-byte budget, RELACKs after 50 ms; all reset on a new session). A frame is
+  resent until acknowledged and delivered once, in order (tested through a lost first transmission). The receiver
+  also ignores a seq it has already seen in the session (idempotent). `link::Info` counts speech frames queued and
+  delivered and the reliable resends; `[pvoice] counts` prints them. *(changed 2026-11-18)* The link hands at most 16
+  speech frames to the game per pump and leaves the rest in the reliable receiver for the next one (before, more than 16
+  in one pump were lost after being acknowledged); the game plays at most 2 received lines a tick.
+- **Language.** The GUID names the sentence, not the sound: each receiver plays it from its own install in its own
+  voice language, with its own subtitle text (shown only with `voice_subtitles=1`).
+- Mixed builds never get this far: STS1 lives in `pose_wire.hpp/.cpp`, part of the build id's wire hash (section 4),
+  so the HELLO is refused (`build_mismatch`) between builds whose frames differ.
+- **Budget.** About one frame per talk: 33 talks in 140 s of play in Phase 0, 20 to 36 bytes each.
+
+## 19. Partner sounds: STA1 (`pose_wire`, ctest `st_net_tests`)
+
+The sender's own footsteps, foley, cargo and weapon sounds reach the other game as STA1 frames; the design, the
+receiver and the hidden-run evidence are in [audio-research.md](audio-research.md) section 16 (`session.ini
+sound_sync=1`, `native/mod/partner_sound.cpp`).
+
+**STA1 frame.** 12 bytes plus 24 per item plus 8 per RTPC; the encoder never writes more than 512 bytes (at most 32
+items):
+
+| Part | Contents |
+|---|---|
+| Header | `'STA1' \| u8 version 1 \| u8 n \| u16 seq \| u32 sender_ms` |
+| Item (24 bytes) | `u32 a \| u32 b \| u8 op \| u8 slot \| u8 tag \| u8 nrtpc \| u16 age_ms \| u16 fade_ms \| i16 off[3] \| u8 category \| u8 0` |
+| RTPCs | nrtpc × `{u32 rtpc id \| f32 value}` |
+
+- **op** 0 = post (a = event id, b = the sender's playing id, both non-zero; slot 0..6 = head, left foot, right foot,
+  right hand, left hand, back, hips; off = where the sender's game object was, in cm from that joint, world axes;
+  the RTPCs set on that object, newest last, at most 12); 1 = stop (b = the playing id, fade_ms; everything else 0);
+  2 = action on event (a = event id, b = a playing id or 0, slot = the `AkActionOnEventType` 0..4, fade_ms);
+  3 = RTPC update on the tag's object (1..12 RTPCs, fade_ms = the interpolation).
+- **tag** names the sender's game object (1..255, reused after unregistration) so later RTPC updates and actions reach
+  the receiver's object bound to it. **age_ms** (0..2,000): the item happened at `sender_ms - age_ms`, on the same
+  clock as the pose's `sender_ms`; the receiver posts it when its pose play time reaches that moment. **category**
+  0..4 (foley, steps, weapon, cargo, gear) is for the counters only.
+- The decoder refuses another magic or version, n = 0 or > 32, a size that does not match the items exactly or is over
+  512 bytes, an unknown op, a slot / action out of range, nrtpc > 12, ids an op needs that are 0, fields an op does
+  not use that are not 0, age > 2,000 ms, fade > 10,000 ms, category > 4, a reserved byte not 0, an RTPC id 0, and a
+  non-finite or huge (|v| > 1e7) value; a refused frame leaves the output untouched (`TestSoundFrames`). STP1, STJ1,
+  STN1, STS1 and the gear decoders refuse it, and it refuses theirs (tested).
+- **Delivery.** A FRAME message in the pose datagram (STP1 + STJ1 + STA1 + STN1); when it does not fit there it goes
+  in a datagram of its own right after. Unreliable (a lost footstep is better than a late one). *(changed 2026-11-18)*
+  The link drops duplicates and frames more than 64 seqs behind the newest (a bitmap, u16 wrap-safe) but keeps a
+  reordered frame (its stops matter); the receiver counts gaps as lost and takes a late frame back off that count.
+  Stops are sent twice more in the next frames (idempotent on the receiver). The sender checks every item alone
+  (`wire::SoundItemValid`, the decoder's own rules) and drops an invalid one, not the frame. `link::Info` counts STA1
+  frames sent (and those that went alone) and accepted. The format did not change.
+- **What the receiver does with it** *(2026-11-18, audio-research.md section 17.4)*: a post or action is carried out
+  only for an event id on its allow-list (seeded ids plus the ids its own game posted on its own player's allowed
+  objects); stops and actions are never dropped for timing; `partner_volume` scales its objects' output.
+- Mixed builds never get this far: STA1 lives in `pose_wire.hpp/.cpp`, part of the build id's wire hash (section 4).
+- **Budget** [inferred from the run counters]: 3-4 posts a second while moving, 24-80 bytes each (movement-layer posts
+  carry 7 RTPCs): about 0.2-0.3 KB/s per direction next to the pose stream's ~17 KB/s.

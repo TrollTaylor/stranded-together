@@ -8,9 +8,14 @@
 #include <atomic>
 #include <string>
 
+#include "audio_probe.hpp"
 #include "automation.hpp"
 #include "config.hpp"
 #include "debug_actions.hpp"
+#include "self_voice.hpp"
+#include "partner_sound.hpp"
+#include "partner_voice.hpp"
+
 #include "game_api.hpp"
 #include "link.hpp"
 #include "log.hpp"
@@ -231,6 +236,21 @@ DWORD WINAPI Bootstrap(LPVOID) {
     // Real partner body (docs/real-partner-body.md): the pose hook goes in at start-up, never
     // mid-game (enabling a hook suspends every thread while job threads may be inside it).
     if (cfg.partner_body == st::PartnerBody::real || cfg.pose_hook) st::realbody::InstallHook();
+    // Audio probe (docs/audio-research.md section 9, Phase 0): logging only, at start-up like the pose hook.
+    if (cfg.audio_probe) st::audioprobe::Install();
+    // Self voice (docs/audio-research.md section 9, Phase 1): Sam's voice muted for a player who is not Sam. After the
+    // probe (which then owns the talk-handler hook and asks self_voice first); nothing is hooked for self_voice=sam.
+    // Partner voice (section 15, Phase 2; voice_sync=1): the same talk hook copies the local player's talks, and the
+    // subtitle hook drops the partner's subtitles (voice_subtitles=0).
+    st::selfvoice::Install(cfg.self_voice, cfg.role == st::Role::host, cfg.my_character, cfg.voice_sync);
+    st::pvoice::Install(cfg);
+    // Partner sounds (section 16, Phase 3; sound_sync=1): the Wwise event mirror, after the probe (which then owns the
+    // Wwise and play-path hooks and forwards to it); nothing is hooked for sound_sync=0.
+    st::psound::Install(cfg);
+    // A muted talk runs and only its voice post is silenced when a PostEvent detour calls selfvoice::PrePost (partner_sound
+    // installs one for it even with sound_sync=0); otherwise the talk is dropped (docs/audio-research.md section 17).
+    st::selfvoice::PostHookReady(st::psound::PostHooked());
+
     void* target = reinterpret_cast<void*>(st::game::Get().SteamRunCallbacksWrapper);
     MH_STATUS s = MH_CreateHook(target, reinterpret_cast<void*>(&HookedRunCallbacks), reinterpret_cast<void**>(&g_original));
     if (s == MH_OK) s = MH_EnableHook(target);

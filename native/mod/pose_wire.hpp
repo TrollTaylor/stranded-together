@@ -392,4 +392,116 @@ void GearAssignProps(const int* old_keys, unsigned old_n, const int* want, unsig
 // `failures` (1-based) failures in a row.
 double GearRetryDelayMs(unsigned failures) noexcept;
 
+// ---------------------------------------------------------------- speech frame (STS1)
+// One line the sender's player said (docs/audio-research.md sections 7 and 15): the sentences of one talk
+// request (MsgDSStartTalk to the sender's own player), by the SentenceResource's 16-byte object GUID, which is
+// the same on both games and language-independent (each receiver plays the line in its own voice language).
+// Rides the link's reliable ordered channel (kSpeechChannel), so it is resent until acknowledged; the
+// receiver also ignores a seq it has seen (idempotent).
+//
+//   'STS1' | u8 version (1) | u8 kind | u8 flags | u8 n | u32 seq | u32 sender_ms | u32 situation hash  (20 bytes)
+//   n x 16-byte sentence GUID (raw bytes as the game keeps them at RTTIRefObject + 0x08)
+//
+// kind 0 (kSpeechPlayed): n = 1..4 sentences the sender's Sam said; the receiver plays them on the partner.
+// kind 1 (kSpeechMuted): n = 0; the sender's player is not Sam, so Sam's line was not sent (statistics only).
+// kind 2 (kSpeechOwnLine): n = 1..4; a line of the sender's own character (reserved for Phase 4; this build
+//        never sends it, and a receiver resolves it like kind 0, from the Sam lines it holds).
+inline constexpr std::uint8_t kSpeechMagic[4] = {'S', 'T', 'S', '1'};
+inline constexpr std::uint8_t kSpeechVersion = 1;
+inline constexpr std::size_t kSpeechHeaderSize = 20;
+inline constexpr unsigned kMaxSpeechSentences = 4;
+inline constexpr std::size_t SpeechFrameSize(unsigned n) { return kSpeechHeaderSize + n * 16u; }
+inline constexpr std::size_t kMaxSpeechFrameSize = SpeechFrameSize(kMaxSpeechSentences);  // 84
+inline constexpr std::uint8_t kSpeechChannel = 2;  // the link's reliable channel for game data (link_protocol.hpp)
+
+enum class SpeechKind : std::uint8_t { played = 0, muted = 1, own_line = 2 };
+inline constexpr std::uint8_t kSpeechKindMax = 2;
+
+enum SpeechFlags : std::uint8_t {
+    kSpeechFromHost = 1u << 0,  // the sender is the session's host
+    kSpeechKnown = kSpeechFromHost,  // other bits are cleared by the decoder (a newer build's)
+};
+
+struct Speech {
+    std::uint8_t kind = 0;  // SpeechKind
+    std::uint8_t flags = 0;
+    std::uint8_t n = 0;
+    std::uint32_t seq = 0;
+    std::uint32_t sender_ms = 0;
+    std::uint32_t situation = 0;  // the situation hash (0 = unknown: what this build sends)
+    std::uint8_t guid[kMaxSpeechSentences][16] = {};
+};
+// Returns the size, 0 when it cannot be encoded (see DecodeSpeech for the rules) or cap is too small.
+std::size_t EncodeSpeech(const Speech& s, std::uint8_t* out, std::size_t cap) noexcept;
+// Rejects bad magic, another version, kind > 2, n > 4, a size other than 20 + 16 n, kind 0 / 2 with n = 0,
+// kind 1 with n > 0, seq 0, and an all-zero GUID. Unknown flag bits are cleared.
+bool DecodeSpeech(const std::uint8_t* data, std::size_t size, Speech& out) noexcept;
+
+// ---------------------------------------------------------------- sound event frame (STA1)
+// The sender's own sounds as Wwise events (docs/audio-research.md sections 7 and 16, Phase 3: footsteps, foley,
+// cargo, weapons): each event posted on one of the local player's own Wwise game objects, with the RTPC values set
+// on that object, the playing id the sender's Wwise returned (so a later stop finds it) and where it sounded
+// relative to one of the player's joints. The receiver posts the same event id (the same banks on both games) on a
+// game object of its own kept at the partner body's matching joint, at the pose play time of the event. Rides as a
+// FRAME next to STP1 / STJ1 in the pose datagram (unreliable: a lost footstep is better than a late one).
+//
+//   'STA1' | u8 version (1) | u8 n | u16 seq | u32 sender_ms                                   (12 bytes)
+//   n x item (24 bytes): u32 a | u32 b | u8 op | u8 slot | u8 tag | u8 nrtpc | u16 age_ms | u16 fade_ms |
+//                        i16 off[3] (cm, world axes) | u8 category | u8 0
+//                        nrtpc x {u32 rtpc id | f32 value}                                   (8 bytes each)
+//
+// op 0 post:   a = event id (!= 0), b = the sender's playing id (!= 0), slot < kSoundSlots, nrtpc <= 12, fade 0.
+// op 1 stop:   a = 0, b = the playing id to stop (!= 0), slot / tag / nrtpc / offset 0, fade_ms = the fade.
+// op 2 action: a = event id (!= 0), b = a playing id or 0, slot = AkActionOnEventType (0..4), nrtpc 0, fade_ms.
+// op 3 rtpc:   a = 0, b = 0, slot < kSoundSlots, nrtpc 1..12 (new values on the tag's object), fade_ms = the
+//              interpolation time.
+// tag: the sender's game object (1..255, reused after it is unregistered; 0 = none). The item's time is
+// sender_ms - age_ms (age <= 2,000). category < kSoundCategories (statistics only).
+inline constexpr std::uint8_t kSoundMagic[4] = {'S', 'T', 'A', '1'};
+inline constexpr std::uint8_t kSoundVersion = 1;
+inline constexpr std::size_t kSoundHeaderSize = 12, kSoundItemSize = 24, kSoundRtpcSize = 8;
+inline constexpr unsigned kMaxSoundItems = 32, kMaxSoundRtpcs = 12;
+inline constexpr std::size_t kMaxSoundFrameSize = 512;  // the encoder never writes more (fits next to STP1 + STJ1)
+inline constexpr std::uint16_t kMaxSoundAgeMs = 2000, kMaxSoundFadeMs = 10000;
+inline constexpr std::size_t SoundItemSize(unsigned nrtpc) { return kSoundItemSize + nrtpc * kSoundRtpcSize; }
+
+enum class SoundOp : std::uint8_t { post = 0, stop = 1, action = 2, rtpc = 3 };
+inline constexpr std::uint8_t kSoundOpMax = 3;
+// Where on the body the sound is (the joint the receiver's game object follows).
+enum class SoundSlot : std::uint8_t { head = 0, foot_l = 1, foot_r = 2, hand_r = 3, hand_l = 4, back = 5, hips = 6 };
+inline constexpr unsigned kSoundSlots = 7;
+inline constexpr std::uint8_t kSoundActionMax = 4;  // AkActionOnEventType: stop, pause, resume, break, release envelope
+// What made the sound on the sender (counters on both sides; the receiver treats them alike).
+enum class SoundCategory : std::uint8_t { foley = 0, steps = 1, weapon = 2, cargo = 3, gear = 4 };
+inline constexpr unsigned kSoundCategories = 5;
+
+struct SoundItem {
+    std::uint32_t a = 0, b = 0;
+    std::uint8_t op = 0, slot = 0, tag = 0, nrtpc = 0;
+    std::uint16_t age_ms = 0, fade_ms = 0;
+    std::int16_t off[3] = {};
+    std::uint8_t category = 0;
+    std::uint32_t rtpc_id[kMaxSoundRtpcs] = {};
+    float rtpc_value[kMaxSoundRtpcs] = {};
+};
+struct SoundFrame {
+    std::uint16_t seq = 0;
+    std::uint32_t sender_ms = 0;
+    std::uint8_t n = 0;
+    SoundItem item[kMaxSoundItems];
+};
+// The size the frame encodes to (0 when an item is invalid or n is 0 / > kMaxSoundItems).
+std::size_t SoundFrameSize(const SoundFrame& f) noexcept;
+// Returns the size, 0 when it cannot be encoded (see DecodeSound), cap is too small or it would exceed
+// kMaxSoundFrameSize.
+std::size_t EncodeSound(const SoundFrame& f, std::uint8_t* out, std::size_t cap) noexcept;
+// One item as EncodeSound / DecodeSound check it (the sender drops an invalid item alone, not its whole frame).
+bool SoundItemValid(const SoundItem& it) noexcept;
+// Rejects bad magic, another version, n = 0 or > 32, a size that does not match the items exactly or exceeds
+// kMaxSoundFrameSize, an unknown op, a slot >= 7 (post / rtpc) or an action > 4, nrtpc > 12, an RTPC count the op
+// does not allow, event / playing ids the op needs that are 0, fields the op does not use that are not 0, age >
+// 2,000 ms, fade > 10,000 ms, category >= 5, a reserved byte that is not 0, an RTPC id 0, and a non-finite or huge
+// (|v| > 1e7) RTPC value.
+bool DecodeSound(const std::uint8_t* data, std::size_t size, SoundFrame& out) noexcept;
+
 }  // namespace st::wire

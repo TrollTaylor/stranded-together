@@ -60,7 +60,13 @@ enum class Action : std::uint8_t {
                           //   cargo pieces (-1 all; hidden tests only), 4 our own gear on the debug body off / on
     smooth,               // v[0] = 0 log, 1 smooth feature mask v[1] (0..7, realbody::kSmooth*), 2 frame cap v[1] fps (0 off),
                           //   3 record a per-frame sequence of v[1] ticks to the log (docs/real-partner-body.md section 3.5)
+    audio_probe,          // v[0] = 0 summary, 1 dump, 2 test situation v[1], 3 player components, 4 reset (audio_probe=1; docs/audio-research.md)
+    self_voice,           // v[0] = 0 log, 1 mute off / on v[1] (when armed), 2 the cargo menu figure says line list v[1] (session.ini self_voice)
+    voice_sync,           // v[0] = 0 log, 1 play sentence v[1] on the partner's talking entity, 2 test: send as Sam v[1] 0/1, 3 rebuild the map
+                          //   (session.ini voice_sync=1; docs/audio-research.md section 15)
+    sound_sync,           // v[0] = 0 log, 1 verbose v[1] 0/1, 2 stop the partner's sounds (session.ini sound_sync=1; docs/audio-research.md section 16)
     count
+
 };
 
 struct Request {

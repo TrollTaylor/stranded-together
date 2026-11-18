@@ -1,6 +1,7 @@
 // The co-op link: DDT's link v2 session (authenticated handshake, HMAC,
 // keepalives, RTT) over either Steam Networking Messages or plain UDP.
-// Carries pose frames (pose_wire) as unreliable FRAME messages.
+// Carries pose frames (pose_wire) as unreliable FRAME messages, and speech frames (STS1) on the
+// session's reliable ordered channel (link_protocol.hpp ReliableSender / ReliableReceiver).
 //
 // Threads: the transport thread drives the session (datagrams + timers); the
 // game thread sends poses and drains received ones. One SRW lock guards the
@@ -29,15 +30,26 @@ struct Info {
     std::uint64_t rx_name_frames = 0, tx_name_frames = 0;
     // Gear layout frames (STC1, backpack and cargo) sent / accepted.
     std::uint64_t rx_gear_frames = 0, tx_gear_frames = 0;
+    // Speech frames (STS1, partner voice) queued on / delivered by the reliable channel, and the
+    // reliable channel's retransmissions (all channels).
+    std::uint64_t rx_speech = 0, tx_speech = 0, rel_retransmits = 0;
+    // Sound event frames (STA1, partner sounds) sent (in a pose datagram or, without room, one of their own) /
+    // accepted, and those that went alone.
+    std::uint64_t rx_sound = 0, tx_sound = 0, tx_sound_alone = 0;
 };
 
 bool Start(const Config& config) noexcept;  // game thread, once
 bool Running() noexcept;
-bool SendPose(const wire::Pose& pose) noexcept;  // game thread; false when not connected
+// `sound` (optional): an STA1 frame (partner sounds, docs/audio-research.md section 16) added to the same
+// datagram; when it does not fit there it goes in a datagram of its own right after.
+bool SendPose(const wire::Pose& pose, const wire::SoundFrame* sound = nullptr) noexcept;  // game thread; false when not connected
 // The pose plus a joint frame (STJ1) in the same datagram (one FRAME message each).
 // Only a same-build peer ever receives it: the link runs in play mode, where a HELLO from
 // another build is rejected (build_mismatch) before any FRAME is exchanged.
-bool SendPoseAndJoints(const wire::Pose& pose, const wire::JointFrame& joints) noexcept;
+bool SendPoseAndJoints(const wire::Pose& pose, const wire::JointFrame& joints, const wire::SoundFrame* sound = nullptr) noexcept;
+// Received sound event frames (STA1), oldest first (a queue of 16; the oldest is dropped when full), with their
+// own "newer seq" filter (u16, wrap-safe) and the generation counter.
+bool PopSound(wire::SoundFrame& out, std::uint32_t& generation) noexcept;
 // Received joint frames, oldest first, with their own "newer seq" filter (the seq is
 // shared with the STP1 frame of the same datagram) and the same generation counter.
 bool PopJoints(wire::JointFrame& out, std::uint64_t& receive_ms, std::uint32_t& generation) noexcept;
@@ -71,6 +83,13 @@ bool SendGearLook(const wire::GearLook& look) noexcept;
 bool PopGearLook(wire::GearLook& out, std::uint32_t& generation) noexcept;
 bool SendGearPose(const wire::GearPose& pose) noexcept;
 bool PopGearPose(wire::GearPose& out, std::uint32_t& generation) noexcept;
+// Partner voice (docs/audio-research.md section 15). Game thread: one STS1 frame queued on the link's
+// reliable ordered channel (wire::kSpeechChannel; resent until acknowledged, in order). False when not
+// connected, the frame does not encode, or the channel's window (32 unacknowledged messages) is full.
+bool SendSpeech(const wire::Speech& s) noexcept;
+// Received speech frames in order (a queue of 32; the oldest is dropped when full), with the
+// generation counter. Delivered at most once per link session by the reliable channel.
+bool PopSpeech(wire::Speech& out, std::uint32_t& generation) noexcept;
 // The current link session counter (the `generation` the Pop* calls report; bumped by each new
 // handshake). Game thread: tells the sender that the partner's tables were cleared.
 std::uint32_t Generation() noexcept;

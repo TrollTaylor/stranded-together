@@ -8,7 +8,12 @@
 #include <cstring>
 #include <initializer_list>
 
+#include "audio_probe.hpp"
 #include "body_choice.hpp"
+#include "self_voice.hpp"
+#include "partner_sound.hpp"
+#include "partner_voice.hpp"
+
 #include "debug_actions.hpp"
 #include "game_api.hpp"
 #include "link.hpp"
@@ -733,9 +738,10 @@ void DriveReal(double now) {
     }
 }
 
-// partner_voice=1: the invisible echo rides along with a holo/marker body.
+// partner_voice=1 or voice_sync=1: the invisible echo rides along with the partner body (voice_sync: at its head,
+// pvoice::EmitterTransform), the partner voice's talking entity.
 void DriveVoice(const WorldTransform& at, double now) {
-    if (!g_cfg.partner_voice || CurrentBody() == PartnerBody::echo || g_voice.e || now < g_next_voice_ms) return;
+    if (!(g_cfg.partner_voice || g_cfg.voice_sync) || CurrentBody() == PartnerBody::echo || g_voice.e || now < g_next_voice_ms) return;
     if (!BodyEntity() || !g_local_active || g_spawn_disabled) return;
     if (SlotSpawn(g_voice, partner::Kind::echo, at, "StrandedTogetherPartnerVoice") != SlotSpawnResult::spawned)
         g_next_voice_ms = now + 30000;
@@ -1031,13 +1037,22 @@ void Tick() noexcept {
                 jf.flags = static_cast<std::uint8_t>(jf.flags & ~wire::kJointsOutfit);
                 if (realbody::ReadOutfit(g_local, &jf.outfit)) jf.flags |= wire::kJointsOutfit;
             }
+            // Partner sounds (STA1, partner_sound.hpp, sound_sync=1): our sound events since the last send ride in the
+            // same datagram (same sender_ms axis as the pose); in echo they go through encode / decode back to us.
+            static wire::SoundFrame sf, sback;
+            const bool have_sound = psound::TakeSend(g_local, now, &sf);
             if (g_net) {
-                if (have_joints) link::SendPoseAndJoints(p, jf);
-                else link::SendPose(p);
+                if (have_joints) link::SendPoseAndJoints(p, jf, have_sound ? &sf : nullptr);
+                else link::SendPose(p, have_sound ? &sf : nullptr);
             } else if (g_ring.Push(p.sender_ms, now, p.x + g_cfg.echo_offset_m, p.y, p.z, p.rot)) {
                 g_last_remote_ms = now;
                 g_rx_pos[0] = p.x + g_cfg.echo_offset_m, g_rx_pos[1] = p.y, g_rx_pos[2] = p.z;
                 g_rx_in_vehicle = (p.flags & wire::kPoseInVehicle) != 0;
+            }
+            if (!g_net && have_sound) {
+                std::uint8_t buf[wire::kMaxSoundFrameSize];
+                const std::size_t n = wire::EncodeSound(sf, buf, sizeof(buf));
+                if (n && wire::DecodeSound(buf, n, sback)) psound::OnFrame(sback, g_ring.Unwrapped(sback.sender_ms), now);
             }
             if (!g_net && have_joints) {
                 std::uint8_t buf[wire::kMaxJointFrameSize];
@@ -1142,6 +1157,8 @@ void Tick() noexcept {
                 realbody::SetPartnerOutfit(nullptr);
                 gear::SetPartnerGear(nullptr);
                 g_first_joints_wait_ms = 0;
+                pvoice::NewSession();
+                psound::NewSession();
                 Log("[sync] new link session (#%u): interpolation reset", gen);
                 if (BodyPresent()) RemoveBody("new link session");  // session end of the previous partner
             }
@@ -1184,6 +1201,18 @@ void Tick() noexcept {
             if (gen != g_generation) continue;
             gear::SetPartnerPose(gp);
         }
+        wire::Speech sp;
+        while (link::PopSpeech(sp, gen)) {
+            if (gen > g_generation) new_session(gen);
+            if (gen != g_generation) continue;
+            pvoice::OnSpeech(sp, now);  // played in pvoice::Tick below, with this tick's talking entity
+        }
+        static wire::SoundFrame snd;
+        while (link::PopSound(snd, gen)) {
+            if (gen > g_generation) new_session(gen);
+            if (gen != g_generation) continue;
+            psound::OnFrame(snd, g_ring.Unwrapped(snd.sender_ms), now);  // scheduled at the pose play time (psound::Tick)
+        }
     }
     g_ring.Settle();
 
@@ -1202,10 +1231,13 @@ void Tick() noexcept {
     double pos[3] = {};
     wire::Quat q;
     const bool echo_ready = g_net || now - g_first_tick_ms > delay;
+    psound::Frame sndf;  // partner sounds: where the partner is this tick and the pose play time
     if (g_local_valid && remote_fresh && echo_ready && g_ring.Sample(now, delay, pos, q)) {
         WorldTransform target{};
         ComposeTransform(pos, q, target);
         if (g_pin) target = g_pin_wt;  // collision tests: the body stands still (its last pose held)
+        sndf.have_root = true, sndf.root = target;
+        sndf.have_play = true, sndf.play_ms = g_ring.PlayTime(now, delay);
         g_last_target[0] = pos[0], g_last_target[1] = pos[1], g_last_target[2] = pos[2];
         g_last_target_valid = true;
         if (!BodyPresent()) {
@@ -1236,8 +1268,10 @@ void Tick() noexcept {
             g_remote_state = "none";
             g_next_spawn_ms = now + 5000;
         }
-        if (g_voice.e && !game::TrySetTransform(g_voice.e, target)) SlotForget(g_voice, "set transform fault");
-        DriveVoice(target, now);
+        WorldTransform voice_at = target;
+        if (g_cfg.voice_sync) pvoice::EmitterTransform(BodyEntity(), target, &voice_at);  // the partner's head
+        if (g_voice.e && !game::TrySetTransform(g_voice.e, voice_at)) SlotForget(g_voice, "set transform fault");
+        DriveVoice(voice_at, now);
     }
 
     // Player collision (partner_collision.hpp): only the partner slot's real body, never the
@@ -1255,6 +1289,26 @@ void Tick() noexcept {
 
     // Name tags (nametags.hpp): the partner's name above their head, our own name to the link.
     nametags::Tick(g_local, g_local_active && g_local_valid, BodyEntity(), remote_fresh, now);
+
+    // Partner voice (partner_voice.hpp, voice_sync=1): our talks out (STS1), the partner's played on the talking entity.
+    {
+        pvoice::Frame vf;
+        vf.local = g_local;
+        vf.local_ok = g_local_active && g_local_valid;
+        vf.body = BodyEntity();
+        vf.emitter = g_voice.e ? g_voice.e : (CurrentBody() == PartnerBody::echo ? vf.body : nullptr);
+        vf.net = g_net;
+        pvoice::Tick(vf, now);
+    }
+
+    // Partner sounds (partner_sound.hpp, sound_sync=1): the partner's sound events posted at the pose play time on our
+    // emitters at the body's joints; our own drained (they went out with the pose above).
+    sndf.local = g_local;
+    sndf.local_ok = g_local_active && g_local_valid;
+    sndf.body = BodyEntity();
+    sndf.net = g_net;
+    psound::Tick(sndf, now);
+
 
     // One-shot diagnostics: did the partner stay where we put it, and is Sam fine?
     if (g_proxy_check_ms > 0 && now >= g_proxy_check_ms) {
@@ -1282,6 +1336,8 @@ void Tick() noexcept {
     LogTraffic(now);
     Hotkeys(now);
     PublishStatus(now);
+    audioprobe::Tick(g_local, now);  // audio_probe=1 only: drains the probe rings (docs/audio-research.md section 9)
+    selfvoice::Tick(g_local, now);   // self_voice muting only: publishes the local player and the menu figure, logs counts
     debug::OnTick(now);  // debug-menu actions + snapshot (game thread)
 }
 

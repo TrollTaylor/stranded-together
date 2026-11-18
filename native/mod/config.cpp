@@ -159,6 +159,23 @@ Config LoadConfig(const std::wstring& dir) {
             c.partner_gear = ParseBool(v);
         } else if (k == "smooth_pose") {
             c.smooth_pose = ParseBool(v);
+        } else if (k == "audio_probe") {
+            c.audio_probe = ParseBool(v);
+        } else if (k == "voice_sync") {
+            c.voice_sync = ParseBool(v);
+        } else if (k == "voice_subtitles") {
+            c.voice_subtitles = ParseBool(v);
+        } else if (k == "sound_sync") {
+            c.sound_sync = ParseBool(v);
+        } else if (k == "sound_steps") {
+            c.sound_steps = ParseBool(v);
+        } else if (k == "partner_volume") {
+            char* end = nullptr;
+            const long pv = std::strtol(v.c_str(), &end, 10);
+            if (end == v.c_str() || *end != '\0' || pv < 0 || pv > 100) Log("[config] session.ini:%d partner_volume '%s' ignored (0..100)", lineno, v.c_str());
+            else c.partner_volume = static_cast<int>(pv);
+        } else if (k == "self_voice") {
+            if (!selfvoice::ParseMode(v, &c.self_voice)) Log("[config] session.ini:%d self_voice '%s' not understood (auto, sam or mute); keeping sam", lineno, v.c_str());
         } else if (k == "partner_collision_layer") {
             const int layer = std::atoi(v.c_str());
             if (layer == 9 || layer == 10 || layer == 25) c.partner_collision_layer = layer;
@@ -203,6 +220,10 @@ Config LoadConfig(const std::wstring& dir) {
     Log("[config] partner_collision=%d layer=%d height=%.2f", c.partner_collision ? 1 : 0, c.partner_collision_layer,
         static_cast<double>(c.partner_collision_height));
     Log("[config] partner_gear=%d smooth_pose=%d", c.partner_gear ? 1 : 0, c.smooth_pose ? 1 : 0);
+    if (c.audio_probe) Log("[config] audio_probe=1 (logging only)");
+    Log("[config] self_voice=%s voice_sync=%d voice_subtitles=%d sound_sync=%d sound_steps=%d partner_volume=%d", selfvoice::ModeName(c.self_voice),
+        c.voice_sync ? 1 : 0, c.voice_subtitles ? 1 : 0, c.sound_sync ? 1 : 0, c.sound_steps ? 1 : 0, c.partner_volume);
+
     return c;
 }
 

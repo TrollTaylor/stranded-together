@@ -385,6 +385,66 @@ void Characters() {
     CHECK(MakeSessionIniText(host, text, error) && text.find("partner_collision=0\n") != std::string::npos);
     CHECK(ParseSessionIniText(text, back, error) && !back.partner_collision);
     CHECK(ParseSessionIniText(text + "partner_collision=1\n", back, error) && back.partner_collision);
+    // Self voice (docs/audio-research.md Phase 1): auto by default, written for every role, parsed back; only
+    // auto / sam / mute; a file without it parses back as "" (the mod keeps Sam's voice).
+    CHECK(SessionIni{}.self_voice == "auto");
+    CHECK(MakeSessionIniText(host, text, error) && text.find("self_voice=auto\n") != std::string::npos);
+    CHECK(ParseSessionIniText(text, back, error) && back.self_voice == "auto");
+    guest.my_character = "fragile_suit";
+    guest.self_voice = "sam";
+    CHECK(MakeSessionIniText(guest, text, error) && text.find("self_voice=sam\n") != std::string::npos);
+    CHECK(ParseSessionIniText(text, back, error) && back.self_voice == "sam");
+    guest.self_voice = "mute";
+    CHECK(MakeSessionIniText(guest, text, error) && text.find("self_voice=mute\n") != std::string::npos);
+    guest.self_voice = "Mute";
+    CHECK(!MakeSessionIniText(guest, text, error) && error.find("self_voice") != std::string::npos);
+    guest.self_voice = "fragile";
+    CHECK(!MakeSessionIniText(guest, text, error));
+    guest.self_voice.clear();
+    CHECK(MakeSessionIniText(guest, text, error) && text.find("self_voice") == std::string::npos);
+    CHECK(ParseSessionIniText(text, back, error) && back.self_voice.empty());
+    CHECK(!ParseSessionIniText(text + "self_voice=loud\n", back, error) && error.find("self_voice") != std::string::npos);
+    // Partner voice (docs/audio-research.md Phase 2): voice_sync=1 written only when set, parsed back; absent = off.
+    CHECK(!SessionIni{}.voice_sync);
+    CHECK(MakeSessionIniText(guest, text, error) && text.find("voice_sync") == std::string::npos);
+    CHECK(ParseSessionIniText(text, back, error) && !back.voice_sync);
+    guest.voice_sync = true;
+    CHECK(MakeSessionIniText(guest, text, error) && text.find("voice_sync=1\n") != std::string::npos);
+    CHECK(ParseSessionIniText(text, back, error) && back.voice_sync);
+    host.voice_sync = true;
+    CHECK(MakeSessionIniText(host, text, error) && text.find("voice_sync=1\n") != std::string::npos);
+    host.voice_sync = false;
+    // Partner sounds (docs/audio-research.md Phase 3): sound_sync=1 written only when set, parsed back; absent = off.
+    CHECK(!SessionIni{}.sound_sync);
+    CHECK(MakeSessionIniText(guest, text, error) && text.find("sound_sync") == std::string::npos);
+    CHECK(ParseSessionIniText(text, back, error) && !back.sound_sync);
+    guest.sound_sync = true;
+    CHECK(MakeSessionIniText(guest, text, error) && text.find("sound_sync=1\n") != std::string::npos);
+    CHECK(ParseSessionIniText(text, back, error) && back.sound_sync);
+    guest.sound_sync = false;
+    host.sound_sync = true;
+    CHECK(MakeSessionIniText(host, text, error) && text.find("sound_sync=1\n") != std::string::npos);
+    host.sound_sync = false;
+    // Partner sound volume (Phase 4): written only with sound_sync and below 100, parsed back; refused outside 0..100.
+    CHECK(SessionIni{}.partner_volume == 100);
+    guest.sound_sync = true;
+    CHECK(MakeSessionIniText(guest, text, error) && text.find("partner_volume") == std::string::npos);
+    guest.partner_volume = 40;
+    CHECK(MakeSessionIniText(guest, text, error) && text.find("partner_volume=40\n") != std::string::npos);
+    CHECK(ParseSessionIniText(text, back, error) && back.partner_volume == 40);
+    guest.partner_volume = 0;
+    CHECK(MakeSessionIniText(guest, text, error) && text.find("partner_volume=0\n") != std::string::npos);
+    CHECK(ParseSessionIniText(text, back, error) && back.partner_volume == 0);
+    guest.sound_sync = false;
+    CHECK(MakeSessionIniText(guest, text, error) && text.find("partner_volume") == std::string::npos);  // no partner sounds: not written
+    guest.sound_sync = true;
+    guest.partner_volume = 101;
+    CHECK(!MakeSessionIniText(guest, text, error));
+    guest.partner_volume = -1;
+    CHECK(!MakeSessionIniText(guest, text, error));
+    CHECK(!ParseSessionIniText("partner_volume=150\n", back, error) && !ParseSessionIniText("partner_volume=x\n", back, error));
+    guest.partner_volume = 100;
+    guest.sound_sync = false;
 }
 
 void StatusParse() {
@@ -651,6 +711,60 @@ void DebugOptionsPersist() {
     CHECK(!pc.partner_collision);
     ApplyDebugOptions(pc, ini);
     CHECK(!ini.partner_collision);
+    // Self voice: muting on by default (older settings files too: self_voice=auto), saved as auto / sam, copied in.
+    CHECK(DebugOptions{}.mute_sam_voice && DebugOptionsFromSettings(json::Value::Object()).mute_sam_voice && ini.self_voice == "auto");
+    d.mute_sam_voice = false;
+    DebugOptionsToSettings(d, settings);
+    CHECK(settings.Find("debug")->Str("self_voice") == "sam");
+    CHECK(json::Parse(json::Dump(settings), back));
+    const DebugOptions sv = DebugOptionsFromSettings(back);
+    CHECK(!sv.mute_sam_voice);
+    ApplyDebugOptions(sv, ini);
+    CHECK(ini.self_voice == "sam");
+    d.mute_sam_voice = true;
+    DebugOptionsToSettings(d, settings);
+    CHECK(settings.Find("debug")->Str("self_voice") == "auto" && json::Parse(json::Dump(settings), back));
+    ApplyDebugOptions(DebugOptionsFromSettings(back), ini);
+    CHECK(ini.self_voice == "auto");
+    // Partner voice: on by default (older settings files too), saved as a bool, copied in.
+    CHECK(DebugOptions{}.partner_voice_sync && DebugOptionsFromSettings(json::Value::Object()).partner_voice_sync && ini.voice_sync);
+    d.partner_voice_sync = false;
+    DebugOptionsToSettings(d, settings);
+    CHECK(json::Parse(json::Dump(settings), back));
+    const DebugOptions vs = DebugOptionsFromSettings(back);
+    CHECK(!vs.partner_voice_sync);
+    ApplyDebugOptions(vs, ini);
+    CHECK(!ini.voice_sync);
+    d.partner_voice_sync = true;
+    DebugOptionsToSettings(d, settings);
+    CHECK(json::Parse(json::Dump(settings), back));
+    ApplyDebugOptions(DebugOptionsFromSettings(back), ini);
+    CHECK(ini.voice_sync);
+    // Partner sounds: on by default (older settings files too), saved as a bool, copied in.
+    CHECK(DebugOptions{}.partner_sound_sync && DebugOptionsFromSettings(json::Value::Object()).partner_sound_sync && ini.sound_sync);
+    d.partner_sound_sync = false;
+    DebugOptionsToSettings(d, settings);
+    CHECK(json::Parse(json::Dump(settings), back));
+    const DebugOptions ss = DebugOptionsFromSettings(back);
+    CHECK(!ss.partner_sound_sync);
+    ApplyDebugOptions(ss, ini);
+    CHECK(!ini.sound_sync);
+    d.partner_sound_sync = true;
+    DebugOptionsToSettings(d, settings);
+    CHECK(json::Parse(json::Dump(settings), back));
+    ApplyDebugOptions(DebugOptionsFromSettings(back), ini);
+    CHECK(ini.sound_sync);
+    // Partner sound volume: 100 by default (older settings files too), saved, copied in; out-of-range falls back.
+    CHECK(DebugOptions{}.partner_volume == 100 && DebugOptionsFromSettings(json::Value::Object()).partner_volume == 100 && ini.partner_volume == 100);
+    d.partner_volume = 35;
+    DebugOptionsToSettings(d, settings);
+    CHECK(json::Parse(json::Dump(settings), back));
+    ApplyDebugOptions(DebugOptionsFromSettings(back), ini);
+    CHECK(ini.partner_volume == 35);
+    d.partner_volume = 100;
+    json::Value vol;
+    CHECK(json::Parse("{\"debug\":{\"partner_volume\":1e300}}", vol) && DebugOptionsFromSettings(vol).partner_volume == 100);
+    CHECK(json::Parse("{\"debug\":{\"partner_volume\":-5}}", vol) && DebugOptionsFromSettings(vol).partner_volume == 100);
     json::Value odd;
     CHECK(json::Parse("{\"debug\":{\"partner_body\":\"marker\"}}", odd) && DebugOptionsFromSettings(odd).real_partner_body);
     // Hand-edited numbers far outside int range fall back instead of an undefined cast.
@@ -917,6 +1031,11 @@ void RealModelFlow() {
           ini.peer_steamid == Decimal(kSteamIdBase + 7919ull) && ini.secret == "7QK2MX9RT4PB8WZ3HCNA");
     CHECK(ini.my_character == "diehardman" && ini.partner_body == "real");
     CHECK(ini.self_character && text.find("self_character=1\n") != std::string::npos);   // the default: see yourself as your character
+    CHECK(ini.self_voice == "auto" && text.find("self_voice=auto\n") != std::string::npos);  // the default: Sam's voice muted for a non-Sam
+    CHECK(ini.voice_sync && text.find("voice_sync=1\n") != std::string::npos);  // the default: each hears the other's voice
+    CHECK(ini.sound_sync && text.find("sound_sync=1\n") != std::string::npos);  // the default: each hears the other's sounds
+    CHECK(ini.partner_volume == 100 && text.find("partner_volume") == std::string::npos);  // the default: full volume, no key
+
     CHECK(m->cancel_launch(error) && m->phase() == Phase::ready && !IsFile(paths.session_ini));
     m->set_my_character("gandalf");   // not in the mod's table: Fragile (porter suit)
     CHECK(m->my_character() == "fragile_suit");

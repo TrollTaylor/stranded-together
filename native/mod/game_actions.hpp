@@ -150,6 +150,15 @@ const char* LocalCollisionBlock(bool sequence) noexcept;
 bool CollisionCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 // Gear debug command (partner_gear.cpp): see docs/debug-actions.md "Gear".
 bool GearCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
+// Audio probe debug command (audio_probe.cpp, session.ini audio_probe=1): see docs/debug-actions.md "Audio probe".
+bool AudioProbeCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
+// Self voice debug command (self_voice.cpp, session.ini self_voice): see docs/debug-actions.md "Self voice".
+bool SelfVoiceCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
+// Partner voice debug command (partner_voice.cpp, session.ini voice_sync=1): see docs/debug-actions.md "Voice sync".
+bool VoiceSyncCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
+// Partner sounds debug command (partner_sound.cpp, session.ini sound_sync=1): see docs/debug-actions.md "Sound sync".
+bool SoundSyncCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
+
 // Name tags debug command (nametags.cpp): 0 normal, 1 self test (a tag above your own Sam),
 // 2 log the camera numbers, 3 <0/1> tags off / on.
 bool NameTagCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;

@@ -1,0 +1,108 @@
+# Audio probe, Phase 0 (docs/audio-research.md section 9): logging only, no sound changed.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario audio-probe -SeedSaves complete-100
+# Sam on his own (role solo, audio_probe=1): idle, walk, run, jumps (A while running), the game's own voice
+# queue asked for a few situations (`audio_probe 2 <n>`), the assault rifle aimed and fired, the cargo menu,
+# idle again; then the full dump (events per owner, the player's game objects, animation indices, talk owners).
+# The hidden game is silent: everything is read from the [audio] log lines.
+role solo
+timeout 360
+ini audio_probe=1
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+wait 2000
+action audio_probe 3
+action audio_probe 0
+screenshot 01-start
+# idle: breathing / humming lines come after a while standing still
+log audio: idle 1
+wait 20000
+action audio_probe 0
+# walk (half stick) and run (full stick), there and back (ly=-32767 walks towards the camera)
+log audio: walk
+pad none 4000 ly=16000
+pad none 4000 ly=-16000
+log audio: run
+pad none 5000 ly=32767
+pad none 5000 ly=-32767
+action audio_probe 0
+# jump: A pressed while running (the game's jump / vault where offered)
+log audio: jump
+pad none 1200 ly=32767 keep
+pad A 200 ly=32767 keep
+pad none 900 ly=32767 keep
+pad A 200 ly=32767 keep
+pad none 900 ly=32767 keep
+pad A 200 ly=-32767 keep
+pad none 1500 ly=-32767 keep
+pad A 200 ly=-32767 keep
+pad none 0
+wait 2500
+screenshot 02-after-jumps
+action audio_probe 0
+# situations through the game's own voice queue (PlayPlayerVoice path): ReceivedLike, Jumping, OutOfBreath,
+# Humming, AlmostThere, HoldBaggageNormal, Cold
+log audio: test situations
+action audio_probe 2 0
+wait 3500
+action audio_probe 2 1
+wait 2500
+action audio_probe 2 2
+wait 3500
+action audio_probe 2 3
+wait 6000
+action audio_probe 2 4
+wait 3500
+action audio_probe 2 7
+wait 2500
+action audio_probe 2 6
+wait 3500
+action audio_probe 0
+# a gun: the equipment wheel's upper left item (the assault rifle in the 100% save), aimed and fired
+log audio: gun
+pad dpad_right 600 keep
+pad dpad_right 900 lx=-23170 ly=23170 rx=-23170 ry=23170 keep
+pad dpad_right 400 keep
+pad none 0
+wait 3000
+pad none 1500 lt=255 keep
+pad none 400 lt=255 rt=255 keep
+pad none 300 lt=255 keep
+pad none 400 lt=255 rt=255 keep
+pad none 0
+wait 2000
+screenshot 03-gun
+# empty hands again: the wheel's right item
+pad dpad_right 600 keep
+pad dpad_right 900 lx=32767 ly=0 rx=32767 ry=0 keep
+pad dpad_right 400 keep
+pad none 0
+wait 2500
+action audio_probe 0
+# the cargo menu: START (cuff map, the Sam entry focused), A = Manage Cargo, B back, START closes the map
+log audio: cargo menu
+pad START 150
+wait 3000
+pad A 150
+wait 4500
+screenshot 04-cargo-menu
+pad none 900 rx=32767
+wait 2000
+pad B 150
+wait 2500
+pad START 150
+wait 3000
+action audio_probe 0
+# idle again for the breathing lines after running
+log audio: idle 2
+wait 25000
+log audio: end
+action audio_probe 1
+wait 1500
+action log_status
+quit

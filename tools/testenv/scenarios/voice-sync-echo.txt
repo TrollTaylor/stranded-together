@@ -1,0 +1,72 @@
+# Partner voice, Phase 2, one game (docs/audio-research.md section 15): role echo, voice_sync=1 with the audio probe.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario voice-sync-echo -SeedSaves complete-100
+# The echo partner (a real Sam body replaying our own movement 1.5 m to the side, 2 s later) gets the invisible talking
+# entity at its head. Our own talks go through STS1 encode / decode and come back as the partner's lines: resolved
+# from the resident group and played with the game's DSTalkComponent::PlaySentence on that entity. The probe logs the
+# PlaySentence return value and the voice posts (with their distance from the talking entity). Test lines too
+# (`voice_sync 1 <n>`), and the queue asked for spoken situations (`audio_probe 2 <n>`: ReceivedLike, Humming).
+role echo
+timeout 360
+ini partner_body=real
+ini partner_character=sam
+ini echo_delay_s=2.0
+ini echo_offset_m=1.5
+ini audio_probe=1
+ini voice_sync=1
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[sync\] partner body: real
+waitlog 40 \[pvoice\] talking entity
+wait 3000
+screenshot 01-start
+action voice_sync 3
+action voice_sync 0
+# test lines on the talking entity: a few sentences of the map
+log voice: test lines
+action voice_sync 1 0
+wait 3000
+action voice_sync 1 100
+wait 3000
+action voice_sync 1 700
+wait 3000
+# spoken situations through the game's own queue: the line plays on Sam, the copy on the echo partner
+log voice: situations
+action audio_probe 2 0
+wait 4000
+screenshot 02-received-like
+action audio_probe 2 3
+wait 6000
+# run and jump: efforts and breathing
+log voice: run and jump
+pad none 4000 ly=32767 keep
+pad A 200 ly=32767 keep
+pad none 900 ly=32767 keep
+pad A 200 ly=32767 keep
+pad none 4000 ly=-32767 keep
+pad none 0
+wait 4000
+screenshot 03-after-run
+# the cuff map (START): a line is not played while it is open (the log says why)
+log voice: menu
+pad START 150
+wait 3000
+action voice_sync 1 5
+waitlog 5 \[pvoice\] test line seq 0 .*not played: paused / menu / cutscene
+wait 1500
+pad START 150
+wait 3000
+# idle: breathing
+log voice: idle
+wait 15000
+log voice: end
+action voice_sync 0
+action audio_probe 0
+wait 1500
+action log_status
+quit

@@ -241,6 +241,27 @@ bool GearCommand(int, const double (&)[3], char* msg, std::size_t cap) noexcept 
     Say(msg, cap, "gear (stub)");
     return true;
 }
+bool AudioProbeCommand(int, const double (&)[3], char* msg, std::size_t cap) noexcept {
+    Seen();
+    Say(msg, cap, "audio probe (stub)");
+    return true;
+}
+bool SelfVoiceCommand(int, const double (&)[3], char* msg, std::size_t cap) noexcept {
+    Seen();
+    Say(msg, cap, "self voice (stub)");
+    return true;
+}
+bool VoiceSyncCommand(int, const double (&)[3], char* msg, std::size_t cap) noexcept {
+    Seen();
+    Say(msg, cap, "voice sync (stub)");
+    return true;
+}
+bool SoundSyncCommand(int, const double (&)[3], char* msg, std::size_t cap) noexcept {
+    Seen();
+    Say(msg, cap, "sound sync (stub)");
+    return true;
+}
+
 void ReadDiagnostics(Diagnostics* d) noexcept {
     *d = Diagnostics{};
     d->resolved = true;

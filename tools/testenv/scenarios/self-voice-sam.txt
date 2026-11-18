@@ -1,0 +1,115 @@
+# Self voice, Phase 1 control (docs/audio-research.md section 9): Sam on his own, self_voice=auto.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario self-voice-sam -SeedSaves complete-100
+# role solo, partner_body=real, no my_character (Sam): self_voice=auto resolves to sam, nothing is muted (the [voice] line says
+# "nothing hooked"; the audio probe still logs every talk). The same steps as self-voice-fragile without the mute
+# toggles: idle, walk, run, jumps, seven test situations, the gun, the cargo menu with Sam's figure asked to speak,
+# idle, the dump. Its counts are the control for the Fragile run (talks played, footstep and foley posts).
+role solo
+timeout 360
+ini audio_probe=1
+ini self_voice=auto
+# the pose hook (as on the Fragile run; no self view without a character): real_body logs the cargo menu states
+ini partner_body=real
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+wait 2000
+screenshot 01-start
+action audio_probe 0
+action self_voice 0
+# idle: breathing / humming lines come after a while standing still
+log audio: idle 1
+wait 20000
+action audio_probe 0
+# walk (half stick) and run (full stick), there and back (ly=-32767 walks towards the camera)
+log audio: walk
+pad none 4000 ly=16000
+pad none 4000 ly=-16000
+log audio: run
+pad none 5000 ly=32767
+pad none 5000 ly=-32767
+action audio_probe 0
+# jump: A pressed while running (the game's jump / vault where offered)
+log audio: jump
+pad none 1200 ly=32767 keep
+pad A 200 ly=32767 keep
+pad none 900 ly=32767 keep
+pad A 200 ly=32767 keep
+pad none 900 ly=32767 keep
+pad A 200 ly=-32767 keep
+pad none 1500 ly=-32767 keep
+pad A 200 ly=-32767 keep
+pad none 0
+wait 2500
+screenshot 02-after-jumps
+action audio_probe 0
+# situations through the game's own voice queue (PlayPlayerVoice path): ReceivedLike, Jumping, OutOfBreath,
+# Humming, AlmostThere, HoldBaggageNormal, Cold
+log audio: test situations
+action audio_probe 2 0
+wait 3500
+action audio_probe 2 1
+wait 2500
+action audio_probe 2 2
+wait 3500
+action audio_probe 2 3
+wait 6000
+action audio_probe 2 4
+wait 3500
+action audio_probe 2 7
+wait 2500
+action audio_probe 2 6
+wait 3500
+action audio_probe 0
+# a gun: the equipment wheel's upper left item (the assault rifle in the 100% save), aimed and fired
+log audio: gun
+pad dpad_right 600 keep
+pad dpad_right 900 lx=-23170 ly=23170 rx=-23170 ry=23170 keep
+pad dpad_right 400 keep
+pad none 0
+wait 3000
+pad none 1500 lt=255 keep
+pad none 400 lt=255 rt=255 keep
+pad none 300 lt=255 keep
+pad none 400 lt=255 rt=255 keep
+pad none 0
+wait 2000
+screenshot 03-gun
+# empty hands again: the wheel's right item
+pad dpad_right 600 keep
+pad dpad_right 900 lx=32767 ly=0 rx=32767 ry=0 keep
+pad dpad_right 400 keep
+pad none 0
+wait 2500
+action audio_probe 0
+# the cargo menu: START (cuff map, the Sam entry focused), A = Manage Cargo (repeated until it is open), then the
+# figure's own voice through the game's PlayAkukanVoice (`self_voice 2 <list>`), B back, START closes the map
+log audio: cargo menu 1
+pad START 150
+wait 3000
+until 25 3000 \[menu\] subspace state 5 .*\(opens 1\) => pad A 150
+wait 1500
+screenshot 04-cargo-menu-sam
+action self_voice 2 0
+wait 3000
+action self_voice 2 1
+wait 3000
+action audio_probe 0
+until 25 2500 \[menu\] subspace state 2 .*\(opens 1\) => pad B 150
+wait 1500
+pad START 150
+wait 3000
+# idle again for the breathing lines after running
+log audio: idle 2
+wait 25000
+log audio: end
+action self_voice 0
+action audio_probe 1
+wait 1500
+action log_status
+quit

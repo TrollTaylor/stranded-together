@@ -842,4 +842,172 @@ double GearRetryDelayMs(unsigned failures) noexcept {
     return d > 30000 ? 30000 : d;
 }
 
+// ---------------------------------------------------------------- STS1
+namespace {
+bool SpeechOk(const Speech& s) {
+    if (s.kind > kSpeechKindMax || s.n > kMaxSpeechSentences || s.seq == 0) return false;
+    if (s.kind == static_cast<std::uint8_t>(SpeechKind::muted) ? s.n != 0 : s.n == 0) return false;
+    for (unsigned i = 0; i < s.n; ++i) {
+        bool any = false;
+        for (std::uint8_t b : s.guid[i]) any |= b != 0;
+        if (!any) return false;
+    }
+    return true;
+}
+}  // namespace
+
+std::size_t EncodeSpeech(const Speech& s, std::uint8_t* out, std::size_t cap) noexcept {
+    if (!out || !SpeechOk(s)) return 0;
+    const std::size_t size = SpeechFrameSize(s.n);
+    if (cap < size) return 0;
+    std::uint8_t* p = out;
+    std::memcpy(p, kSpeechMagic, 4);
+    p += 4;
+    Put(p, kSpeechVersion);
+    Put(p, s.kind);
+    Put(p, static_cast<std::uint8_t>(s.flags & kSpeechKnown));
+    Put(p, s.n);
+    Put(p, s.seq);
+    Put(p, s.sender_ms);
+    Put(p, s.situation);
+    for (unsigned i = 0; i < s.n; ++i) {
+        std::memcpy(p, s.guid[i], 16);
+        p += 16;
+    }
+    return size;
+}
+
+bool DecodeSpeech(const std::uint8_t* data, std::size_t size, Speech& out) noexcept {
+    if (!data || size < kSpeechHeaderSize || std::memcmp(data, kSpeechMagic, 4) != 0) return false;
+    const std::uint8_t* p = data + 4;
+    if (Get<std::uint8_t>(p) != kSpeechVersion) return false;
+    Speech s;
+    s.kind = Get<std::uint8_t>(p);
+    s.flags = static_cast<std::uint8_t>(Get<std::uint8_t>(p) & kSpeechKnown);
+    s.n = Get<std::uint8_t>(p);
+    if (s.n > kMaxSpeechSentences || size != SpeechFrameSize(s.n)) return false;
+    s.seq = Get<std::uint32_t>(p);
+    s.sender_ms = Get<std::uint32_t>(p);
+    s.situation = Get<std::uint32_t>(p);
+    for (unsigned i = 0; i < s.n; ++i) {
+        std::memcpy(s.guid[i], p, 16);
+        p += 16;
+    }
+    if (!SpeechOk(s)) return false;
+    out = s;
+    return true;
+}
+
+// ---------------------------------------------------------------- STA1
+namespace {
+bool SoundItemOk(const SoundItem& it) {
+    if (it.op > kSoundOpMax || it.nrtpc > kMaxSoundRtpcs || it.age_ms > kMaxSoundAgeMs || it.fade_ms > kMaxSoundFadeMs ||
+        it.category >= kSoundCategories)
+        return false;
+    const bool no_off = it.off[0] == 0 && it.off[1] == 0 && it.off[2] == 0;
+    switch (static_cast<SoundOp>(it.op)) {
+    case SoundOp::post:
+        if (it.a == 0 || it.b == 0 || it.slot >= kSoundSlots || it.fade_ms != 0) return false;
+        break;
+    case SoundOp::stop:
+        if (it.a != 0 || it.b == 0 || it.slot != 0 || it.tag != 0 || it.nrtpc != 0 || !no_off) return false;
+        break;
+    case SoundOp::action:
+        if (it.a == 0 || it.slot > kSoundActionMax || it.nrtpc != 0 || !no_off) return false;
+        break;
+    case SoundOp::rtpc:
+        if (it.a != 0 || it.b != 0 || it.slot >= kSoundSlots || it.nrtpc == 0 || !no_off) return false;
+        break;
+    }
+    for (unsigned k = 0; k < it.nrtpc; ++k) {
+        const float v = it.rtpc_value[k];
+        if (it.rtpc_id[k] == 0 || !std::isfinite(v) || std::fabs(v) > 1e7f) return false;
+    }
+    return true;
+}
+}  // namespace
+
+bool SoundItemValid(const SoundItem& it) noexcept { return SoundItemOk(it); }
+
+std::size_t SoundFrameSize(const SoundFrame& f) noexcept {
+    if (f.n == 0 || f.n > kMaxSoundItems) return 0;
+    std::size_t size = kSoundHeaderSize;
+    for (unsigned i = 0; i < f.n; ++i) {
+        if (!SoundItemOk(f.item[i])) return 0;
+        size += SoundItemSize(f.item[i].nrtpc);
+    }
+    return size;
+}
+
+std::size_t EncodeSound(const SoundFrame& f, std::uint8_t* out, std::size_t cap) noexcept {
+    const std::size_t size = SoundFrameSize(f);
+    if (!out || !size || size > kMaxSoundFrameSize || cap < size) return 0;
+    std::uint8_t* p = out;
+    std::memcpy(p, kSoundMagic, 4);
+    p += 4;
+    Put(p, kSoundVersion);
+    Put(p, f.n);
+    Put(p, f.seq);
+    Put(p, f.sender_ms);
+    for (unsigned i = 0; i < f.n; ++i) {
+        const SoundItem& it = f.item[i];
+        Put(p, it.a);
+        Put(p, it.b);
+        Put(p, it.op);
+        Put(p, it.slot);
+        Put(p, it.tag);
+        Put(p, it.nrtpc);
+        Put(p, it.age_ms);
+        Put(p, it.fade_ms);
+        for (std::int16_t o : it.off) Put(p, o);
+        Put(p, it.category);
+        Put(p, static_cast<std::uint8_t>(0));
+        for (unsigned k = 0; k < it.nrtpc; ++k) {
+            Put(p, it.rtpc_id[k]);
+            Put(p, it.rtpc_value[k]);
+        }
+    }
+    return size;
+}
+
+bool DecodeSound(const std::uint8_t* data, std::size_t size, SoundFrame& out) noexcept {
+    if (!data || size < kSoundHeaderSize + kSoundItemSize || size > kMaxSoundFrameSize || std::memcmp(data, kSoundMagic, 4) != 0) return false;
+    const std::uint8_t* p = data + 4;
+    const std::uint8_t* const end = data + size;
+    if (Get<std::uint8_t>(p) != kSoundVersion) return false;
+    const std::uint8_t n = Get<std::uint8_t>(p);
+    if (n == 0 || n > kMaxSoundItems) return false;
+    const std::uint16_t seq = Get<std::uint16_t>(p);
+    const std::uint32_t sender_ms = Get<std::uint32_t>(p);
+    static thread_local SoundFrame f;  // `out` changes only when the whole frame is valid (3.4 KB: not on the stack)
+    for (unsigned i = 0; i < n; ++i) {
+        if (static_cast<std::size_t>(end - p) < kSoundItemSize) return false;
+        SoundItem it;
+        it.a = Get<std::uint32_t>(p);
+        it.b = Get<std::uint32_t>(p);
+        it.op = Get<std::uint8_t>(p);
+        it.slot = Get<std::uint8_t>(p);
+        it.tag = Get<std::uint8_t>(p);
+        it.nrtpc = Get<std::uint8_t>(p);
+        it.age_ms = Get<std::uint16_t>(p);
+        it.fade_ms = Get<std::uint16_t>(p);
+        for (std::int16_t& o : it.off) o = Get<std::int16_t>(p);
+        it.category = Get<std::uint8_t>(p);
+        if (Get<std::uint8_t>(p) != 0) return false;
+        if (it.nrtpc > kMaxSoundRtpcs || static_cast<std::size_t>(end - p) < it.nrtpc * kSoundRtpcSize) return false;
+        for (unsigned k = 0; k < it.nrtpc; ++k) {
+            it.rtpc_id[k] = Get<std::uint32_t>(p);
+            it.rtpc_value[k] = Get<float>(p);
+        }
+        if (!SoundItemOk(it)) return false;
+        f.item[i] = it;
+    }
+    if (p != end) return false;
+    out.n = n;
+    out.seq = seq;
+    out.sender_ms = sender_ms;
+    for (unsigned i = 0; i < n; ++i) out.item[i] = f.item[i];
+    return true;
+}
+
 }  // namespace st::wire

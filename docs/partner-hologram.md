@@ -27,7 +27,7 @@ the same.
 | `partner_body` | `holo` | `holo`, `marker` or `echo`: the first body to try |
 | `partner_holo` | `0` | collectors item `HashId` to show. Write it as the log prints it (8 hex digits) or as `0x...`; `0` means automatic |
 | `partner_marker` | `-1` | index of the trace-point prop for the marker body; `-1` means the first usable one |
-| `partner_voice` | `0` | `1` also spawns the invisible echo next to a holo or marker body, as its future voice source |
+| `partner_voice` | `0` | `1` also spawns the invisible echo next to a holo or marker body, as its voice source. `voice_sync=1` spawns it too, at the partner body's head, and plays the partner's voice on it (audio-research.md section 15) |
 
 If a body cannot be found or spawned, the mod falls back along this chain and logs why:
 **holo → marker → echo** (starting from the configured body). F7 or the debug menu's
