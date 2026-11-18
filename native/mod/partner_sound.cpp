@@ -212,8 +212,9 @@ thread_local bool t_ctx_emitter = false;
 
 std::uint32_t H_PostEvent(std::uint32_t ev, std::uint64_t obj, std::uint32_t flags, CallbackFn cb, void* cookie, std::uint32_t n_ext, void* ext,
                           std::uint32_t pid) {
-    selfvoice::PrePost(ev, obj, n_ext);  // self_voice silencing (before the post)
+    const bool sam_muted = selfvoice::PrePost(ev, obj, n_ext);  // self_voice: the local Sam's voice while muted
     const std::uint32_t r = o_post(ev, obj, flags, cb, cookie, n_ext, ext, pid);
+    if (sam_muted) selfvoice::AfterPost(r, o_stop);  // stopped at once (o_stop null when StopPlayingID is not hooked here: the export)
     HotPost(ev, obj, n_ext, r);
     return r;
 }
@@ -226,7 +227,6 @@ int H_Unregister(std::uint64_t obj) {
     // Before the original: once it returns, another thread may register the same pooled id, and its record must come
     // after this one in the ring (review 2026-11-18).
     HotUnregister(obj);
-    selfvoice::NoteUnregister(obj);
     return o_unreg(obj);
 }
 int H_SetRtpc(std::uint32_t id, float value, std::uint64_t obj, std::int32_t ms, int curve, bool bypass) {
@@ -594,6 +594,10 @@ void Learn(std::uint32_t ev) {
 }
 bool Denied(std::uint32_t ev) {
     for (std::uint32_t d : kDenyEvents)
+        if (d == ev) return true;
+    // every event of Sam's voice bus (grunts, efforts, breathing, lines; docs/audio-research.md section 18): never sent or
+    // posted, even if one were ever played without external sources on an allowed object
+    for (std::uint32_t d : selfvoice::kSamVoiceEvents)
         if (d == ev) return true;
     return false;
 }
@@ -1182,8 +1186,8 @@ void HotAction(std::uint32_t ev, std::int32_t action, std::uint64_t obj, std::in
 // ---------------------------------------------------------------- install
 void Install(const Config& cfg) noexcept {
     g_cfg = cfg;
-    // self_voice silencing needs a PostEvent detour that calls selfvoice::PrePost: with sound_sync=0 only that hook (and
-    // UnregisterGameObj's) is installed, and nothing is recorded or sent.
+    // self_voice silencing needs a PostEvent detour that calls selfvoice::PrePost / AfterPost: with sound_sync=0 only that
+    // hook is installed, and nothing is recorded or sent.
     const bool voice_only = !cfg.sound_sync && selfvoice::WantsPostHook();
     if (!cfg.sound_sync && !voice_only) return;
     g_base = mem::Base();
@@ -1215,7 +1219,7 @@ void Install(const Config& cfg) noexcept {
             Log("[psound] PostEvent for self_voice: %s", g_post_hooked ? "the audio probe's hook" : "NOT hooked by the probe");
             return;
         }
-        const HookDef* need[2] = {&kHooks[0], &kHooks[2]};  // PostEvent, UnregisterGameObj
+        const HookDef* need[1] = {&kHooks[0]};  // PostEvent
         bool ok = true;
         for (const HookDef* h : need) {
             const std::uintptr_t at = g_base + h->rva;
@@ -1234,7 +1238,7 @@ void Install(const Config& cfg) noexcept {
         const MH_STATUS applied = MH_ApplyQueued();
         g_post_hooked = applied == MH_OK;
         g_own_hooks = g_post_hooked;
-        Log("[psound] sound_sync=0: only PostEvent and UnregisterGameObj hooked, for self_voice (%s); nothing is recorded or sent",
+        Log("[psound] sound_sync=0: only PostEvent hooked, for self_voice (%s); nothing is recorded or sent",
             g_post_hooked ? "applied" : MH_StatusToString(applied));
         return;
     }

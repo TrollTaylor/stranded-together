@@ -365,6 +365,58 @@ std::atomic<std::uint64_t> g_fit_pel_sum[2] = {}, g_fit_pel_n[2] = {};
 std::atomic<float> g_lift_cm{0}, g_lift_err_mm{-1};
 std::atomic<int> g_lift_diag{0};  // g_lift_state, for the log
 
+// Self view headgear (docs/real-partner-body.md section 20; session.ini self_headgear, default on). One head lift
+// cannot fit both items: her eyes sit 1.1 cm higher above her head joint than Sam's, her scalp and hair need about
+// 4.5 cm for the cap, and the lift (6.1 cm, in the neck joint's frame) made both slide on her skull whenever her head
+// turned against her neck (walking). Instead each of Sam's head accessories gets a constant offset of its own in his
+// head helper's frame (HLP_Head on joint 31: x = -lateral, y = forward, z = up), written into the accessory's own
+// mover (partner_gear.cpp), and the lift is 0. Rows by the self body's head rig; a body without a row keeps the lift.
+struct HeadgearRow {
+    std::uint8_t body_id;
+    std::int16_t mm[kHeadItemClasses][3];  // per class (cap, glasses), helper frame, mm
+};
+// Chosen from 2560x1440 front and back close-ups (run 20261118-105952-self-headgear): the cap 5.0 cm up and 1.2 cm back
+// (snug: no hair through its band from behind, the brim on her brow, eyes free; 4.5 / 4.8 cm let strands through), the
+// glasses 1.1 cm up and 0.4 cm back (her eye-lid joints sit 1.1 cm higher above the head joint than Sam's: lenses on her
+// eyes; 0.7 / 1.5 cm checked).
+constexpr HeadgearRow kHeadgearRows[] = {
+    {3, {{0, -12, 50}, {0, -4, 11}}},   // fragile (demo_fgl_new): fgl_head_def
+    {16, {{0, -12, 50}, {0, -4, 11}}},  // fragile_suit (demo_fgl_body_suiti): fgl_head_def
+};
+std::atomic<bool> g_hg_cfg{true};  // session.ini self_headgear / `self_view 10 <0/1>`
+std::atomic<int> g_hg_row{-1};     // the self body's row (FitOn), -1 none
+std::atomic<int> g_hg_mm[kHeadItemClasses][3] = {};  // the offsets in use (the row's, or `self_view 8/9`)
+std::atomic<bool> g_hg_tuned{false};  // `self_view 8/9` set them: FitOn keeps them
+// partner_gear.cpp says every tick whether it writes the offsets (its site check passed, `gear 18` on, no shown head
+// item of ours refused or unknown): GetTickCount64 of the last "ready", 0 = not ready. Stale after 500 ms (gear off,
+// partner_gear=0, the tick stopped), so the lift comes back whenever nothing else holds the items up.
+std::atomic<ULONGLONG> g_hg_ready_ms{0};
+bool HeadgearRowWanted() {
+    return g_hg_cfg.load(std::memory_order_relaxed) && g_hg_row.load(std::memory_order_relaxed) >= 0;
+}
+bool HeadgearReadyNow() {
+    const ULONGLONG t = g_hg_ready_ms.load(std::memory_order_acquire);
+    return t != 0 && GetTickCount64() - t < 500;
+}
+// The head lift that applies now: none while the per-item offsets do the job.
+int EffectiveLiftPct() {
+    if (HeadgearRowWanted() && HeadgearReadyNow()) return 0;
+    return g_lift_pct.load(std::memory_order_relaxed);
+}
+
+// Self view feet (section 21; session.ini self_feet_hide, default on): her foot joints (Sam layout 63, 68; their
+// children, the toes and MTP_*_Foot_a, follow through the model matrices) take this scale on the self body while the
+// game draws Sam's equipped boots on his fitted skeleton, so her own boots vanish inside his. Percent, 100 = off.
+std::atomic<bool> g_feet_cfg{true};
+std::atomic<int> g_feet_pct{1};
+std::atomic<bool> g_feet_boots{false};  // the tick: Sam's boots entity is shown (inventory +0x4D80, visible flag)
+std::atomic<std::uint32_t> g_feet_writes{0};  // self body pose writes with the feet scaled
+// The partner's feet (boots_sync): scaled while the boots prop on it is live, shown and posed (partner_gear.cpp).
+std::atomic<bool> g_pfeet_on{false};
+std::atomic<int> g_pfeet_pct{1};
+std::atomic<std::uint32_t> g_pfeet_writes{0};
+constexpr unsigned kSamFootR = 63, kSamFootL = 68;
+
 // The cargo menu's Sam figure (docs/real-partner-body.md section 15). While the on-foot cargo menu is
 // open the local Sam is asleep in the field and a second Sam (DSPlayerAKukanEntity) stands in the
 // menu's room; the self body then stands on that figure and plays its pose. The figure's model is
@@ -596,7 +648,7 @@ void CaptureSam(std::uintptr_t sm) {
                     std::memcpy(cur[j].s, c.j[j].s, sizeof(cur[j].s));
                 }
             }
-            const int pct = g_lift_pct.load(std::memory_order_relaxed);
+            const int pct = EffectiveLiftPct();
             if (g_lift_state == 1)
                 for (int k = 0; k < 3; ++k) cur[kSamHeadJ].t[k] += g_lift_local[k] * static_cast<float>(pct) / 100.0f;
             // The lift's measure (once per body): Sam's own head (the original animate's model matrices,
@@ -930,6 +982,84 @@ void CopySamTransform(bool menu = false) {
     }
 }
 
+// The partner (or debug) body's pose now (not the self view's live capture): the bracketing frames interpolated at this
+// moment's play time, or the published frame; latch translations and scales, the pelvis times the ratio. Pure math on
+// the published buffers (the body's own update and the boots prop's, section 21). `stats`: the body's counters.
+bool ComposePartner(BodySlot& b, Joint (&cur)[kJ], bool stats) {
+    if (&b == &g_slots[0] && g_interp_on.load(std::memory_order_acquire) &&
+        (g_smooth.load(std::memory_order_relaxed) & kSmoothDetourInterp) && g_qpc_per_ms > 0) {
+        // Interpolated now, at this update's own time: play = the published play time advanced by the
+        // QPC time since it was published; never past the newest frame (held, counted).
+        static thread_local InterpBuf ib;
+        if (!g_interp.Read(ib) || ib.n == 0 || ib.n > 3) {
+            if (stats) g_interp_torn.fetch_add(1, std::memory_order_relaxed);
+            if (stats) b.ct.torn.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+        const double play = ib.play_ref + (static_cast<double>(Qpc()) / g_qpc_per_ms - ib.ref_ms);
+        unsigned s = 0;
+        float alpha = 0;
+        if (ib.n >= 2) {
+            if (ib.n == 3 && play > ib.key[1]) s = 1;
+            const double span = ib.key[s + 1] - ib.key[s];
+            const double a = span > 0 ? (play - ib.key[s]) / span : 1.0;
+            alpha = a <= 0 ? 0.0f : a >= 1 ? 1.0f : static_cast<float>(a);
+        }
+        if (stats && play > ib.key[ib.n - 1]) g_interp_holds.fetch_add(1, std::memory_order_relaxed);
+        const unsigned s2 = ib.n >= 2 ? s + 1 : s;
+        float troot[3], tpel[3];
+        for (int k = 0; k < 3; ++k) {
+            troot[k] = ib.troot[s][k] + alpha * (ib.troot[s2][k] - ib.troot[s][k]);
+            tpel[k] = ib.tpelvis[s][k] + alpha * (ib.tpelvis[s2][k] - ib.tpelvis[s][k]);
+        }
+        for (unsigned j = 0; j < kJ; ++j) {
+            const unsigned sj = b.map[j];
+            Joint& o = cur[j];
+            const wire::Quat& qa = ib.q[s][sj];
+            wire::Quat qb = ib.q[s2][sj];
+            if (qa.x * qb.x + qa.y * qb.y + qa.z * qb.z + qa.w * qb.w < 0) qb = wire::Quat{-qb.x, -qb.y, -qb.z, -qb.w};
+            float x = qa.x + alpha * (qb.x - qa.x), y = qa.y + alpha * (qb.y - qa.y), z = qa.z + alpha * (qb.z - qa.z),
+                  w = qa.w + alpha * (qb.w - qa.w);
+            const float n = std::sqrt(x * x + y * y + z * z + w * w);
+            if (n > 1e-6f) x /= n, y /= n, z /= n, w /= n;
+            else x = qa.x, y = qa.y, z = qa.z, w = qa.w;
+            o.q[0] = x, o.q[1] = y, o.q[2] = z, o.q[3] = w;
+            const Joint& src = b.latch_ok ? b.latch[j] : ib.fb[sj];
+            std::memcpy(o.t, src.t, sizeof(o.t));
+            std::memcpy(o.s, src.s, sizeof(o.s));
+            if (sj == kSamRoot) {
+                o.t[0] = troot[0], o.t[1] = troot[1], o.t[2] = troot[2];
+            } else if (sj == kSamPelvis) {
+                o.t[0] = tpel[0] * b.pelvis_ratio, o.t[1] = tpel[1] * b.pelvis_ratio, o.t[2] = tpel[2] * b.pelvis_ratio;
+            }
+        }
+        if (stats) g_interp_applies.fetch_add(1, std::memory_order_relaxed);
+        if (stats) g_last_play.store(play < ib.key[0] ? ib.key[0] : play > ib.key[ib.n - 1] ? ib.key[ib.n - 1] : play, std::memory_order_relaxed);
+    } else {
+        ApplyBuf a;
+        if (!g_apply.Read(a)) {
+            if (stats) b.ct.torn.fetch_add(1, std::memory_order_relaxed);
+            return false;
+        }
+        if (stats && &b == &g_slots[0]) g_last_play.store(a.play, std::memory_order_relaxed);
+        for (unsigned j = 0; j < kJ; ++j) {
+            const unsigned sj = b.map[j];
+            Joint& o = cur[j];
+            o.q[0] = a.q[sj].x, o.q[1] = a.q[sj].y, o.q[2] = a.q[sj].z, o.q[3] = a.q[sj].w;
+            const Joint& src = b.latch_ok ? b.latch[j] : a.fb[sj];
+            std::memcpy(o.t, src.t, sizeof(o.t));
+            std::memcpy(o.s, src.s, sizeof(o.s));
+            if (sj == kSamRoot) {
+                o.t[0] = a.troot[0], o.t[1] = a.troot[1], o.t[2] = a.troot[2];
+            } else if (sj == kSamPelvis) {
+                o.t[0] = a.tpelvis[0] * b.pelvis_ratio, o.t[1] = a.tpelvis[1] * b.pelvis_ratio,
+                o.t[2] = a.tpelvis[2] * b.pelvis_ratio;
+            }
+        }
+    }
+    return true;
+}
+
 // Overwrites the body's finished pose. `live`: the self view, straight from the newest capture of
 // the local Sam (no wire, no ring, no delay); otherwise the partner's published frame.
 void ApplyBody(BodySlot& b, std::uintptr_t sm, bool live) {
@@ -1005,76 +1135,24 @@ void ApplyBody(BodySlot& b, std::uintptr_t sm, bool live) {
         }
         if (!from_menu && g_self_last_frame.exchange(c.frame, std::memory_order_relaxed) == c.frame)
             g_self_stale.fetch_add(1, std::memory_order_relaxed);
-    } else if (&b == &g_slots[0] && g_interp_on.load(std::memory_order_acquire) &&
-               (g_smooth.load(std::memory_order_relaxed) & kSmoothDetourInterp) && g_qpc_per_ms > 0) {
-        // Interpolated now, at this update's own time: play = the published play time advanced by the
-        // QPC time since it was published; never past the newest frame (held, counted).
-        static thread_local InterpBuf ib;
-        if (!g_interp.Read(ib) || ib.n == 0 || ib.n > 3) {
-            g_interp_torn.fetch_add(1, std::memory_order_relaxed);
-            ct.torn.fetch_add(1, std::memory_order_relaxed);
-            return;
-        }
-        const double play = ib.play_ref + (static_cast<double>(Qpc()) / g_qpc_per_ms - ib.ref_ms);
-        unsigned s = 0;
-        float alpha = 0;
-        if (ib.n >= 2) {
-            if (ib.n == 3 && play > ib.key[1]) s = 1;
-            const double span = ib.key[s + 1] - ib.key[s];
-            const double a = span > 0 ? (play - ib.key[s]) / span : 1.0;
-            alpha = a <= 0 ? 0.0f : a >= 1 ? 1.0f : static_cast<float>(a);
-        }
-        if (play > ib.key[ib.n - 1]) g_interp_holds.fetch_add(1, std::memory_order_relaxed);
-        const unsigned s2 = ib.n >= 2 ? s + 1 : s;
-        float troot[3], tpel[3];
-        for (int k = 0; k < 3; ++k) {
-            troot[k] = ib.troot[s][k] + alpha * (ib.troot[s2][k] - ib.troot[s][k]);
-            tpel[k] = ib.tpelvis[s][k] + alpha * (ib.tpelvis[s2][k] - ib.tpelvis[s][k]);
-        }
-        for (unsigned j = 0; j < kJ; ++j) {
-            const unsigned sj = b.map[j];
-            Joint& o = cur[j];
-            const wire::Quat& qa = ib.q[s][sj];
-            wire::Quat qb = ib.q[s2][sj];
-            if (qa.x * qb.x + qa.y * qb.y + qa.z * qb.z + qa.w * qb.w < 0) qb = wire::Quat{-qb.x, -qb.y, -qb.z, -qb.w};
-            float x = qa.x + alpha * (qb.x - qa.x), y = qa.y + alpha * (qb.y - qa.y), z = qa.z + alpha * (qb.z - qa.z),
-                  w = qa.w + alpha * (qb.w - qa.w);
-            const float n = std::sqrt(x * x + y * y + z * z + w * w);
-            if (n > 1e-6f) x /= n, y /= n, z /= n, w /= n;
-            else x = qa.x, y = qa.y, z = qa.z, w = qa.w;
-            o.q[0] = x, o.q[1] = y, o.q[2] = z, o.q[3] = w;
-            const Joint& src = b.latch_ok ? b.latch[j] : ib.fb[sj];
-            std::memcpy(o.t, src.t, sizeof(o.t));
-            std::memcpy(o.s, src.s, sizeof(o.s));
-            if (sj == kSamRoot) {
-                o.t[0] = troot[0], o.t[1] = troot[1], o.t[2] = troot[2];
-            } else if (sj == kSamPelvis) {
-                o.t[0] = tpel[0] * b.pelvis_ratio, o.t[1] = tpel[1] * b.pelvis_ratio, o.t[2] = tpel[2] * b.pelvis_ratio;
-            }
-        }
-        g_interp_applies.fetch_add(1, std::memory_order_relaxed);
-        g_last_play.store(play < ib.key[0] ? ib.key[0] : play > ib.key[ib.n - 1] ? ib.key[ib.n - 1] : play, std::memory_order_relaxed);
-    } else {
-        ApplyBuf a;
-        if (!g_apply.Read(a)) {
-            ct.torn.fetch_add(1, std::memory_order_relaxed);
-            return;
-        }
-        if (&b == &g_slots[0]) g_last_play.store(a.play, std::memory_order_relaxed);
-        for (unsigned j = 0; j < kJ; ++j) {
-            const unsigned sj = b.map[j];
-            Joint& o = cur[j];
-            o.q[0] = a.q[sj].x, o.q[1] = a.q[sj].y, o.q[2] = a.q[sj].z, o.q[3] = a.q[sj].w;
-            const Joint& src = b.latch_ok ? b.latch[j] : a.fb[sj];
-            std::memcpy(o.t, src.t, sizeof(o.t));
-            std::memcpy(o.s, src.s, sizeof(o.s));
-            if (sj == kSamRoot) {
-                o.t[0] = a.troot[0], o.t[1] = a.troot[1], o.t[2] = a.troot[2];
-            } else if (sj == kSamPelvis) {
-                o.t[0] = a.tpelvis[0] * b.pelvis_ratio, o.t[1] = a.tpelvis[1] * b.pelvis_ratio,
-                o.t[2] = a.tpelvis[2] * b.pelvis_ratio;
-            }
-        }
+    } else if (!ComposePartner(b, cur, true)) {
+        return;
+    }
+    // Her feet scaled away under boots drawn over them (section 21): the self view under Sam's equipped boots (on
+    // his fitted skeleton, Sam's own update), the partner under our boots prop. Only the body's pose: never the latch,
+    // the fit's shape, the capture or the wire. The scale reaches the toes through the model matrices.
+    int feet_pct = 100;
+    if (live && !from_menu) {
+        if (g_feet_cfg.load(std::memory_order_relaxed) && g_feet_boots.load(std::memory_order_relaxed) && g_fit_want.load(std::memory_order_relaxed))
+            feet_pct = g_feet_pct.load(std::memory_order_relaxed);
+    } else if (!live && &b == &g_slots[0] && g_pfeet_on.load(std::memory_order_acquire)) {
+        feet_pct = g_pfeet_pct.load(std::memory_order_relaxed);
+    }
+    if (feet_pct >= 0 && feet_pct < 100) {
+        const float k = feet_pct < 1 ? 0.01f : static_cast<float>(feet_pct) / 100.0f;
+        for (unsigned j = 0; j < kJ; ++j)
+            if (b.map[j] == kSamFootR || b.map[j] == kSamFootL) cur[j].s[0] = cur[j].s[1] = cur[j].s[2] = k;
+        (live ? g_feet_writes : g_pfeet_writes).fetch_add(1, std::memory_order_relaxed);
     }
     SIZE_T wrote = 0;
     if (!WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(local), cur, sizeof(cur), &wrote) || wrote != sizeof(cur)) {
@@ -1152,9 +1230,98 @@ void ApplyGearPose(unsigned k, std::uintptr_t sm) {
     g_pt_applies.fetch_add(1, std::memory_order_relaxed);
 }
 
+// The partner's boots prop (docs/real-partner-body.md section 21): ds/entities/cinematics/demo_apv_sam_foot_def_v01, the
+// equipped boots' own ArtParts on their own 10-joint skeleton (Root, Hips, R / L 100 Leg, 101 Leg, 102 Foot, 103 Toe;
+// layout 0x9B68A8AD), the same parent chain as the bodies' 77 joints. In its own model update it takes the partner
+// body's local joints, composed exactly as the body's own update composes them at this moment (ComposePartner), with
+// an identity root: placed on the body's root joint frame (a gear item on joint 0, identity pose), its model matrices
+// are the body's. That is what the game's DSPlayerBootsComponent does for Sam's own boots (0x1427C4880).
+constexpr unsigned kBootsJ = 10;
+constexpr std::uint32_t kBootsLayout = 0x9B68A8ADu;
+constexpr std::int16_t kBootsParent[kBootsJ] = {-1, 0, 1, 2, 3, 4, 1, 6, 7, 8};
+constexpr std::uint8_t kBootsSamJ[kBootsJ] = {0, 1, 61, 62, 63, 64, 66, 67, 68, 69};
+struct BootsTarget {
+    std::atomic<std::uintptr_t> sm{0};  // published last (release); 0 = off
+    std::atomic<std::uintptr_t> e{0}, e_vt{0}, skel{0};
+    std::uint8_t bj[kBootsJ] = {};     // boots joint -> the partner body's joint (written while sm is 0)
+    holo::Spawn spawn;
+    std::atomic<std::uint32_t> game_updates{0}, applies{0}, rejects{0}, torn{0}, wpm{0};
+    std::atomic<ULONGLONG> last_apply{0};
+    ULONGLONG last_game_ms = 0;
+    std::uint32_t forced = 0;
+    bool forced_off = false;
+} g_bt;
+std::atomic<bool> g_bt_faulted{false};
+
+void ApplyBootsPose(std::uintptr_t sm) {
+    if (g_bt_faulted.load(std::memory_order_relaxed)) return;
+    const std::uintptr_t te = g_bt.e.load(std::memory_order_acquire), tvt = g_bt.e_vt.load(std::memory_order_relaxed),
+                         tskel = g_bt.skel.load(std::memory_order_relaxed);
+    std::uintptr_t id[2] = {};
+    std::uintptr_t owner = 0, evt = 0;
+    if (!te || !mem::Read(sm, id, sizeof(id)) || id[0] != g_sm_vt || !Rd(sm + kSmEntity, owner) || owner != te || !Rd(owner, evt) || evt != tvt) {
+        g_bt.rejects.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    std::uint8_t hdr[kPoseSize];
+    std::uintptr_t pose = 0;
+    if (!ReadPoseHdr(sm, hdr, &pose) || Field<std::uintptr_t>(hdr, kHdrSkel) != tskel || Field<std::int32_t>(hdr, kHdrState) != kPoseStateModel) {
+        g_bt.rejects.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    const std::uintptr_t lb = Field<std::uintptr_t>(hdr, kHdrLocal), le = Field<std::uintptr_t>(hdr, kHdrLocalEnd);
+    const std::uintptr_t mb = Field<std::uintptr_t>(hdr, kHdrModel), me = Field<std::uintptr_t>(hdr, kHdrModelEnd);
+    if (!lb || le - lb != kBootsJ * sizeof(Joint) || !mb || me - mb != kBootsJ * 0x40ull) {
+        g_bt.rejects.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    BodySlot& b = g_p;
+    if (b.latch_state.load(std::memory_order_acquire) != 1 || !b.apply_on.load(std::memory_order_acquire) || !b.sm.load(std::memory_order_acquire)) {
+        g_bt.rejects.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    static thread_local Joint body[kJ];
+    if (!ComposePartner(b, body, false)) {
+        g_bt.torn.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    Joint cur[kBootsJ];
+    if (!mem::Read(lb, cur, sizeof(cur))) return;
+    cur[0].q[0] = cur[0].q[1] = cur[0].q[2] = 0, cur[0].q[3] = 1;
+    cur[0].t[0] = cur[0].t[1] = cur[0].t[2] = 0;
+    for (unsigned k = 1; k < kBootsJ; ++k) {
+        const Joint& s = body[g_bt.bj[k]];
+        std::memcpy(cur[k].q, s.q, sizeof(cur[k].q));
+        std::memcpy(cur[k].t, s.t, 3 * sizeof(float));
+    }
+    SIZE_T wrote = 0;
+    if (!WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(lb), cur, sizeof(cur), &wrote) || wrote != sizeof(cur)) {
+        g_bt.wpm.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    std::int32_t bounds_on = 0;
+    Rd(sm + kSmBoundsOn, bounds_on);
+    if (!CallPoseFns(sm, pose, bounds_on != 0)) {
+        g_bt_faulted.store(true, std::memory_order_seq_cst);  // never again this session
+        g_bt.sm.store(0, std::memory_order_seq_cst);
+        return;
+    }
+    g_bt.applies.fetch_add(1, std::memory_order_relaxed);
+    g_bt.last_apply.store(GetTickCount64(), std::memory_order_relaxed);
+}
+
 void Detour(void* sm, float dt) {
     g_orig(sm, dt);
     const auto s = reinterpret_cast<std::uintptr_t>(sm);
+    if (s && s == g_bt.sm.load(std::memory_order_relaxed)) {
+        g_inflight.fetch_add(1, std::memory_order_seq_cst);
+        if (g_bt.sm.load(std::memory_order_seq_cst) == s) {
+            if (!t_forcing) g_bt.game_updates.fetch_add(1, std::memory_order_relaxed);
+            ApplyBootsPose(s);
+        }
+        g_inflight.fetch_sub(1, std::memory_order_seq_cst);
+        return;
+    }
     if (s && g_pt_live.load(std::memory_order_relaxed)) {
         for (unsigned k = 0; k < kMaxPoseTargets; ++k) {
             if (g_pt[k].sm.load(std::memory_order_relaxed) != s) continue;
@@ -1955,6 +2122,15 @@ const char* FitOn() {
     }
     sh.pelvis_ratio = g_me.pelvis_ratio;
     if (!g_fit_shape.Write(sh)) return "off (the shape could not be published)";
+    {
+        int row = -1;
+        for (unsigned i = 0; i < sizeof(kHeadgearRows) / sizeof(kHeadgearRows[0]); ++i)
+            if (g_me.body && kHeadgearRows[i].body_id == g_me.body->id) row = static_cast<int>(i);
+        if (row >= 0 && !g_hg_tuned.load())
+            for (int c = 0; c < kHeadItemClasses; ++c)
+                for (int k = 0; k < 3; ++k) g_hg_mm[c][k].store(kHeadgearRows[row].mm[c][k]);
+        g_hg_row.store(row, std::memory_order_seq_cst);
+    }
     g_lift_reset.store(true, std::memory_order_seq_cst);  // the head lift is measured again on this body
     g_fit_want.store(true, std::memory_order_seq_cst);
     return nullptr;
@@ -2445,10 +2621,14 @@ void FitStats() {
     if (w != pw || r != pr || g_fit_want.load() || lu[0] != plu[0])
         Log("[self] fit %s: writes=%u same-pose=%u (newest %u) updates game-rewrote=%u held=%u (t joints %u, q %u, s %u) restores=%u wpm=%u torn=%u "
             "busy=%u faults=%u; leak check (translations nearer the shape than Sam's own):%s, max %u per update; captured pelvis cm%s; "
-            "head lift %d%% (measured %.1f cm, check %.2f mm, state %d); Sam vs body cm mean/max over %u ticks:%s",
+            "head lift %d%% (measured %.1f cm, check %.2f mm, state %d); headgear %s row %d cap %d/%d/%d glasses %d/%d/%d mm; feet %s %d%% boots %s "
+            "writes %u; Sam vs body cm mean/max over %u ticks:%s",
             g_fit_want.load() ? "on" : "off", w - pw, su - psu, sf - psf, f - pf, h - ph, jh - pj, q - pq, ss - pss, r - pr, wpm - pwpm, t - pt, sk - ps,
-            g_fit_faults.load(), leak, g_fit_toward_max.exchange(0), pels, g_lift_pct.load(),
-            static_cast<double>(g_lift_cm.load()), static_cast<double>(g_lift_err_mm.load()), g_lift_diag.load(), g_fit_d_n, dist[0] ? dist : " -");
+            g_fit_faults.load(), leak, g_fit_toward_max.exchange(0), pels, EffectiveLiftPct(),
+            static_cast<double>(g_lift_cm.load()), static_cast<double>(g_lift_err_mm.load()), g_lift_diag.load(), g_hg_cfg.load() ? "on" : "off",
+            g_hg_row.load(), g_hg_mm[0][0].load(), g_hg_mm[0][1].load(), g_hg_mm[0][2].load(), g_hg_mm[1][0].load(), g_hg_mm[1][1].load(),
+            g_hg_mm[1][2].load(), g_feet_cfg.load() ? "on" : "off", g_feet_pct.load(), g_feet_boots.load() ? "shown" : "not shown", g_feet_writes.load(),
+            g_fit_d_n, dist[0] ? dist : " -");
     pw = w, ph = h, pj = jh, pf = f, pr = r, pwpm = wpm, pt = t, ps = sk, pq = q, pss = ss, psu = su, psf = sf;
     for (int i = 0; i < 2; ++i) ppel[i] = pel[i], ppn[i] = pn[i], pto[i] = to[i], plu[i] = lu[i];
     for (unsigned i = 0; i < 5; ++i) g_fit_d_sum[i] = 0, g_fit_d_max[i] = 0;
@@ -2547,6 +2727,26 @@ void DriveModel(BodySlot& b, bool local_active) {
 
 // Gear pose targets the game does not update by itself (a prop standing still): the forced model
 // update, as DriveModel does for a body, only while the game has not updated it for 100 ms.
+void DriveBootsTarget(bool local_active) {
+    const std::uintptr_t sm = g_bt.sm.load(std::memory_order_acquire);
+    if (!local_active || !sm || !g_fn_forced || g_bt.forced_off) return;
+    if (g_bt.game_updates.exchange(0, std::memory_order_relaxed) != 0) g_bt.last_game_ms = GetTickCount64();
+    if (g_bt.last_game_ms && GetTickCount64() - g_bt.last_game_ms < 100) return;
+    const std::uintptr_t te = g_bt.e.load();
+    if (!holo::SpawnAlive(g_bt.spawn) || reinterpret_cast<std::uintptr_t>(g_bt.spawn.e) != te) return;
+    std::uintptr_t id[2] = {};
+    if (!mem::Read(sm, id, sizeof(id)) || id[0] != g_sm_vt || Q(sm + kSmEntity) != te || Q(te) != g_bt.e_vt.load()) return;
+    t_forcing = true;
+    const bool ok = CallForced(sm);
+    t_forcing = false;
+    if (!ok) {
+        g_bt.forced_off = true;
+        Log("[boots] forced model update of the boots prop FAULTED; not called again this run");
+        return;
+    }
+    ++g_bt.forced;
+}
+
 void DrivePoseTargets(bool local_active) {
     if (!local_active || !g_fn_forced || g_pt_forced_off || g_pt_faulted.load() || !g_pt_live.load(std::memory_order_acquire)) return;
     for (PoseTarget& t : g_pt) {
@@ -3170,6 +3370,55 @@ void GearCounters(GearSlot slot, std::uint32_t* placed, std::uint32_t* aba, std:
     if (bad) *bad = g_gear_bad[i].load();
 }
 
+void ClearBootsProp() noexcept {
+    if (!g_bt.sm.load(std::memory_order_acquire)) return;
+    g_bt.sm.store(0, std::memory_order_seq_cst);
+    const ULONGLONG until = GetTickCount64() + 50;
+    while (g_inflight.load(std::memory_order_seq_cst) != 0 && GetTickCount64() < until) SwitchToThread();
+    g_bt.e.store(0);
+    g_bt.spawn = holo::Spawn{};
+    g_bt.last_apply.store(0);
+}
+bool SetBootsProp(const holo::Spawn* sp, char* why, std::size_t cap) noexcept {
+    if (why && cap) why[0] = 0;
+    if (!sp || !sp->e) {
+        ClearBootsProp();
+        return true;
+    }
+    const auto e = reinterpret_cast<std::uintptr_t>(sp->e);
+    if (g_bt.sm.load(std::memory_order_acquire) && g_bt.e.load() == e) return true;  // the same prop
+    ClearBootsProp();
+    if (!g_hook || g_bt_faulted.load()) return Set(why, cap, "%s", g_hook ? "a boots pose write faulted earlier" : "no pose hook"), false;
+    if (!holo::SpawnAlive(*sp)) return Set(why, cap, "the prop is gone"), false;
+    if (g_p.phase != Phase::live || g_p.latch_state.load() != 1) return Set(why, cap, "the partner body is not live and latched"), false;
+    const std::uintptr_t sm = ModelOf(e);
+    const SkelInfo si = sm ? PoseSkeleton(sm) : SkelInfo{};
+    if (!si.skel || si.count != static_cast<std::int32_t>(kBootsJ) || si.layout != kBootsLayout || !si.joints)
+        return Set(why, cap, "its skeleton is not the boots' (%d joints, layout %08X)", si.count, si.layout), false;
+    for (unsigned k = 0; k < kBootsJ; ++k) {
+        std::int16_t par = -2;
+        if (!Rd(si.joints + 0x10ull * k + 8, par) || par != kBootsParent[k]) return Set(why, cap, "joint %u's parent is %d, not %d", k, par, kBootsParent[k]), false;
+        const unsigned bj = g_p.inv[kBootsSamJ[k]];
+        if (bj >= kJ || g_p.map[bj] != kBootsSamJ[k]) return Set(why, cap, "the body has no joint for Sam joint %u", kBootsSamJ[k]), false;
+        g_bt.bj[k] = static_cast<std::uint8_t>(bj);
+    }
+    std::uintptr_t vt = 0;
+    if (!Rd(e, vt) || !vt) return Set(why, cap, "unreadable entity"), false;
+    g_bt.e.store(e), g_bt.e_vt.store(vt), g_bt.skel.store(si.skel);
+    g_bt.spawn = *sp;
+    g_bt.game_updates.store(0), g_bt.last_game_ms = 0, g_bt.last_apply.store(0);
+    g_bt.sm.store(sm, std::memory_order_seq_cst);
+    return true;
+}
+bool BootsPosed(double within_ms) noexcept {
+    const ULONGLONG t = g_bt.last_apply.load(std::memory_order_relaxed);
+    return g_bt.sm.load(std::memory_order_acquire) && t && static_cast<double>(GetTickCount64() - t) < within_ms;
+}
+void BootsCounters(char* out, std::size_t cap) noexcept {
+    std::snprintf(out, cap, "boots prop %p: %u pose writes (%u refused, %u torn, %u wpm), %u forced updates%s", reinterpret_cast<void*>(g_bt.e.load()),
+                  g_bt.applies.load(), g_bt.rejects.load(), g_bt.torn.load(), g_bt.wpm.load(), g_bt.forced, g_bt_faulted.load() ? ", FAULTED: off" : "");
+}
+
 bool SetGearPose(unsigned k, const holo::Spawn* sp, const wire::GearPose* pose) noexcept {
     if (k >= kMaxPoseTargets || !g_hook) return false;
     PoseTarget& t = g_pt[k];
@@ -3290,6 +3539,30 @@ bool ReadJointModel(game::Entity* e, unsigned j, float (&m)[4][4]) noexcept {
     return mem::Read(mb + 0x40ull * j, m, sizeof(m));
 }
 
+bool JointWorldN(game::Entity* e, unsigned j, unsigned n, double (&pos)[3]) noexcept {
+    const std::uintptr_t sm = e ? ModelOf(reinterpret_cast<std::uintptr_t>(e)) : 0;
+    if (!sm || j >= n || n == 0 || n > 512) return false;
+    std::uint8_t hdr[kPoseSize];
+    std::uintptr_t pose = 0;
+    if (!ReadPoseHdr(sm, hdr, &pose) || Field<std::int32_t>(hdr, kHdrState) != kPoseStateModel) return false;
+    const std::uintptr_t mb = Field<std::uintptr_t>(hdr, kHdrModel), me = Field<std::uintptr_t>(hdr, kHdrModelEnd);
+    float m[4][4];
+    double jp[3];
+    float jr[3][3];
+    Xf w;
+    if (!mb || me - mb != n * 0x40ull || !mem::Read(mb + 0x40ull * j, m, sizeof(m)) || !ReadWorld(reinterpret_cast<std::uintptr_t>(e), &w)) return false;
+    // position only: the row 3 of the model matrix (a joint whose axes are scaled away still has its position)
+    for (int k = 0; k < 3; ++k) {
+        if (!std::isfinite(m[3][k]) || std::fabs(m[3][k]) > 10.0f) return false;
+        jp[k] = m[3][k];
+    }
+    for (int a = 0; a < 3; ++a)
+        for (int c = 0; c < 3; ++c) jr[a][c] = a == c ? 1.0f : 0.0f;
+    const Xf h = Compose(w, jp, jr);
+    std::memcpy(pos, h.p, sizeof(pos));
+    return true;
+}
+
 bool HeadWorld(game::Entity* e, double (&pos)[3]) noexcept {
     constexpr unsigned kSamHead = 31;  // the head joint of the 77-joint layout (1.59 m above the root standing)
     if (!e) return false;
@@ -3317,7 +3590,13 @@ bool JointWorld(game::Entity* e, unsigned sam_joint, double (&pos)[3]) noexcept 
     double jp[3];
     float jr[3][3];
     Xf w;
-    if (j >= kJ || !ReadJointModel(e, j, m) || !JointFrame(m, jp, jr) || !ReadWorld(reinterpret_cast<std::uintptr_t>(e), &w)) return false;
+    if (j >= kJ || !ReadJointModel(e, j, m) || !ReadWorld(reinterpret_cast<std::uintptr_t>(e), &w)) return false;
+    // The position only (row 3): a foot scaled away under boots (section 21) keeps its position but not its axes.
+    for (int k = 0; k < 3; ++k) {
+        if (!std::isfinite(m[3][k]) || std::fabs(m[3][k]) > 10.0f) return false;
+        jp[k] = m[3][k];
+        for (int c = 0; c < 3; ++c) jr[k][c] = k == c ? 1.0f : 0.0f;
+    }
     const Xf h = Compose(w, jp, jr);
     const double dx = h.p[0] - w.p[0], dy = h.p[1] - w.p[1], dz = h.p[2] - w.p[2];
     if (!std::isfinite(dx) || !std::isfinite(dy) || !std::isfinite(dz) || dx * dx + dy * dy + dz * dz > 9.0) return false;
@@ -3352,6 +3631,53 @@ bool HeadLift(game::Entity* sam, float (&local)[3]) noexcept {
     return true;
 }
 
+bool SelfHeadItemOffset(int cls, float (&off)[3]) noexcept {
+    off[0] = off[1] = off[2] = 0;
+    if (cls < 0 || cls >= kHeadItemClasses || !g_hg_cfg.load(std::memory_order_relaxed) || g_hg_row.load(std::memory_order_relaxed) < 0 ||
+        !g_fit_want.load(std::memory_order_acquire) || !g_fit_cfg.load(std::memory_order_relaxed) || g_fit_faulted.load(std::memory_order_relaxed))
+        return false;
+    for (int k = 0; k < 3; ++k) off[k] = static_cast<float>(g_hg_mm[cls][k].load(std::memory_order_relaxed)) / 1000.0f;
+    return true;
+}
+void SetHeadgearReady(bool ready) noexcept { g_hg_ready_ms.store(ready ? GetTickCount64() : 0, std::memory_order_release); }
+bool HeadgearWanted() noexcept {
+    return HeadgearRowWanted() && g_fit_want.load(std::memory_order_acquire) && g_fit_cfg.load(std::memory_order_relaxed) &&
+           !g_fit_faulted.load(std::memory_order_relaxed);
+}
+void ConfigureSelfHeadgear(bool on) noexcept {
+    g_hg_cfg.store(on);
+    Log("[self] headgear %s (session.ini self_headgear)", on ? "on: Sam's cap and glasses get offsets of their own for the character's head (no head lift)"
+                                                            : "off: the head lift (v0.11)");
+}
+void ConfigureSelfFeet(bool on) noexcept {
+    g_feet_cfg.store(on);
+    Log("[self] feet %s (session.ini self_feet_hide)", on ? "hidden under Sam's equipped boots" : "kept (her own boots under his)");
+}
+void SetSamBootsShown(bool shown) noexcept { g_feet_boots.store(shown, std::memory_order_relaxed); }
+void SetPartnerFeetHidden(bool on, int pct) noexcept {
+    g_pfeet_pct.store(pct < 1 ? 1 : pct > 100 ? 100 : pct, std::memory_order_relaxed);
+    g_pfeet_on.store(on, std::memory_order_release);
+}
+void FeetCounters(std::uint32_t* self_writes, std::uint32_t* partner_writes) noexcept {
+    if (self_writes) *self_writes = g_feet_writes.load();
+    if (partner_writes) *partner_writes = g_pfeet_writes.load();
+}
+bool JointFrameWorld(game::Entity* e, unsigned sam_joint, double (&p)[3], float (&r)[3][3]) noexcept {
+    if (!e || sam_joint >= kJ) return false;
+    unsigned j = sam_joint;
+    for (BodySlot* b : {&g_p, &g_me})
+        if (b->phase == Phase::live && b->spawn.e == e) j = b->inv[sam_joint];
+    float m[4][4];
+    double jp[3];
+    float jr[3][3];
+    Xf w;
+    if (j >= kJ || !ReadJointModel(e, j, m) || !JointFrame(m, jp, jr) || !ReadWorld(reinterpret_cast<std::uintptr_t>(e), &w)) return false;
+    const Xf h = Compose(w, jp, jr);
+    std::memcpy(p, h.p, sizeof(p));
+    std::memcpy(r, h.r, sizeof(r));
+    return true;
+}
+
 void EmergencyStop() noexcept {
     // The detour stops touching anything (no capture, no transform copy, no pose write, no fit).
     FitOffWait();
@@ -3364,6 +3690,8 @@ void EmergencyStop() noexcept {
     g_gear_n[0].store(0, std::memory_order_seq_cst);
     g_gear_n[1].store(0, std::memory_order_seq_cst);
     g_pt_live.store(0, std::memory_order_seq_cst);
+    g_bt.sm.store(0, std::memory_order_seq_cst);
+    g_pfeet_on.store(false, std::memory_order_seq_cst);
     Unpublish(g_p);
     Unpublish(g_me);
     // Sam first (fault-free checked), then the body.
@@ -3443,6 +3771,7 @@ void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
     DriveFreq(g_me, local_active);
     DriveGearFreq(local_active, now_ms);
     DrivePoseTargets(local_active);
+    DriveBootsTarget(local_active);
     DressPartner(local, local_active, now_ms);
     if (g_hook) Stats(now_ms);
     Meter(now_ms);
@@ -3791,6 +4120,39 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
                     g_menu_shown ? 1 : 0);
                 Log("[menu] %s", msg);
                 return ok;
+            }
+            if (v[0] == 8 || v[0] == 9) {  // self_view 8|9 <item 0 cap / 1 glasses> <mm>: the headgear offset up (8) / forward (9)
+                const int cls = static_cast<int>(v[1]);
+                if (cls < 0 || cls >= kHeadItemClasses || !(v[2] >= -100 && v[2] <= 100)) {
+                    Set(msg, cap, "self_view %d <item 0 cap / 1 glasses> <mm -100..100>", static_cast<int>(v[0]));
+                    return false;
+                }
+                g_hg_mm[cls][v[0] == 8 ? 2 : 1].store(static_cast<int>(v[2]));
+                g_hg_tuned.store(true);
+                Set(msg, cap, "self view headgear: %s offset (x %d, forward %d, up %d mm)%s", cls == kHeadItemCap ? "cap" : "glasses", g_hg_mm[cls][0].load(),
+                    g_hg_mm[cls][1].load(), g_hg_mm[cls][2].load(), g_hg_row.load() >= 0 ? "" : " (this body has no headgear row: not used)");
+                Log("[self] %s", msg);
+                return true;
+            }
+            if (v[0] == 10) {  // self_view 10 <0/1>: the headgear offsets (on) or the v0.11 head lift (off)
+                g_hg_cfg.store(v[1] != 0);
+                Set(msg, cap, "self view headgear %s (head lift now %d%%)", v[1] != 0 ? "on" : "off", EffectiveLiftPct());
+                Log("[self] %s", msg);
+                return true;
+            }
+            if (v[0] == 11) {  // self_view 11 <percent>: her feet's scale under Sam's boots (100: not scaled)
+                const int pct = v[1] < 1 ? 1 : v[1] > 100 ? 100 : static_cast<int>(v[1]);
+                g_feet_pct.store(pct);
+                Set(msg, cap, "self view feet: scale %d%% (%s; Sam's boots %s)", pct, g_feet_cfg.load() ? "on" : "off (self_feet_hide=0)",
+                    g_feet_boots.load() ? "shown" : "not shown");
+                Log("[self] %s", msg);
+                return true;
+            }
+            if (v[0] == 12) {  // self_view 12 <0/1>: her feet hidden under Sam's boots on / off
+                g_feet_cfg.store(v[1] != 0);
+                Set(msg, cap, "self view feet %s", v[1] != 0 ? "hidden under Sam's boots" : "kept");
+                Log("[self] %s", msg);
+                return true;
             }
             const int follow = static_cast<int>(v[2]);
             if (follow >= 1 && follow <= 3) g_self_follow.store(follow);

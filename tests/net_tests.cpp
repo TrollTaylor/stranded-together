@@ -375,8 +375,11 @@ void TestGearFrames() {
     bad[16 + 18 * 2 + 1] = 5;  // model changed without the hash: rejected
     CHECK(!wire::DecodeGear(bad, n, g));
     std::memcpy(bad, buf, n);
-    bad[10] = 0xF9;  // unknown flag bits are cleared (bits 1 and 2, the parts blocks, are known: no blocks, so not set here)
+    bad[10] = 0xF1;  // unknown flag bits are cleared (bits 1-3, the parts blocks, are known: no blocks, so not set here)
     CHECK(wire::DecodeGear(bad, n, g) && g.flags == wire::kGearValid);
+    std::memcpy(bad, buf, n);
+    bad[8] = 3;  // version 3 (v0.9 - v0.11 builds)
+    CHECK(!wire::DecodeGear(bad, n, g));
     // Other frames' magic is not a gear frame, and a gear frame is none of theirs.
     wire::Pose pose;
     wire::JointFrame jf;
@@ -402,22 +405,76 @@ void TestGearFrames() {
     e.items[2].p[1] = 40.0f;
     CHECK(wire::EncodeGear(e, buf, sizeof(buf)) == 0);
     CHECK(wire::EncodeGear(f, buf, n - 1) == 0);
+    // Version 4: the boots item (kind 7, joint 0, no parent) and its parts block (docs/real-partner-body.md section 21).
+    {
+        wire::GearFrame b = f;
+        b.flags |= wire::kGearBoots;
+        b.boots_apply = 0x0000FF0Fu, b.boots_visible = 0x00000103u;
+        wire::GearItem& it = b.items[b.count++];
+        it.kind = wire::GearKind::boots;
+        it.joint = 0;
+        it.parent = wire::kGearNoParent;
+        std::uint8_t bb[wire::kMaxGearFrameSize];
+        const std::size_t bn = wire::EncodeGear(b, bb, sizeof(bb));
+        CHECK(bn == wire::GearFrameSize(6, false, false, true) && bn == 16 + 8 + 6 * 18);
+        CHECK(wire::DecodeGear(bb, bn, g) && g.count == 6 && (g.flags & wire::kGearBoots) && g.boots_apply == 0x0000FF0Fu &&
+              g.boots_visible == 0x00000103u && g.items[5].kind == wire::GearKind::boots && g.items[5].joint == 0 &&
+              g.items[5].res == wire::kGearNone);
+        // the decoder refuses: visible bits outside apply, the item without the block, the block without the item
+        std::uint8_t x[wire::kMaxGearFrameSize];
+        std::memcpy(x, bb, bn);
+        x[16 + 4] |= 0x10;  // visible bit 4, not in apply
+        CHECK(!wire::DecodeGear(x, bn, g));
+        std::memcpy(x, bb, 16);
+        x[10] = static_cast<std::uint8_t>(x[10] & ~wire::kGearBoots);
+        std::memcpy(x + 16, bb + 24, bn - 24);  // the same items, no block
+        CHECK(!wire::DecodeGear(x, bn - 8, g));
+        std::memcpy(x, buf, 16);  // the five-item frame without boots, a block put in
+        x[10] = static_cast<std::uint8_t>(x[10] | wire::kGearBoots);
+        std::memset(x + 16, 0, 8);
+        std::memcpy(x + 24, buf + 16, n - 16);
+        CHECK(!wire::DecodeGear(x, n + 8, g));
+        // the encoder refuses: no block, a block and no item, two boots items, boots on another joint or an item,
+        // visible outside apply
+        wire::GearFrame e2 = b;
+        e2.flags = static_cast<std::uint8_t>(e2.flags & ~wire::kGearBoots);
+        CHECK(wire::EncodeGear(e2, bb, sizeof(bb)) == 0);
+        e2 = f;
+        e2.flags |= wire::kGearBoots;
+        CHECK(wire::EncodeGear(e2, bb, sizeof(bb)) == 0);
+        e2 = b;
+        e2.items[e2.count++] = it;
+        CHECK(wire::EncodeGear(e2, bb, sizeof(bb)) == 0);
+        e2 = b;
+        e2.items[5].joint = 63;
+        CHECK(wire::EncodeGear(e2, bb, sizeof(bb)) == 0);
+        e2 = b;
+        e2.items[5].parent = 0;
+        CHECK(wire::EncodeGear(e2, bb, sizeof(bb)) == 0);
+        e2 = b;
+        e2.boots_visible = 0x80000000u;
+        CHECK(wire::EncodeGear(e2, bb, sizeof(bb)) == 0);
+        // the boots item is part of the layout
+        CHECK(wire::GearLayoutHash(b) != wire::GearLayoutHash(f));
+    }
     // The full cap fits a link body next to nothing else (1148 bytes) and decodes.
     wire::GearFrame full;
-    full.flags = wire::kGearValid | wire::kGearParts | wire::kGearPackParts;
+    full.flags = wire::kGearValid | wire::kGearParts | wire::kGearPackParts | wire::kGearBoots;
     full.parts_apply[0] = ~0ull, full.parts_apply[1] = 0xFFFF;
     full.pack_apply = 0xFFFFFF;
+    full.boots_apply = ~0u, full.boots_visible = 0x00F0F0F0u;
     for (unsigned i = 0; i < wire::kMaxGearItems; ++i) {
         wire::GearItem& it = full.items[full.count++];
-        it.kind = i == 0 ? wire::GearKind::backpack : wire::GearKind::cargo;
-        it.model = i == 0 ? wire::kGearNone : static_cast<std::uint8_t>(1 + i % 6);
-        it.joint = 4;
-        it.parent = i == 0 ? wire::kGearNoParent : static_cast<std::uint8_t>(i - 1);
-        it.p[2] = 0.3f;
+        const bool boots = i + 1 == wire::kMaxGearItems;
+        it.kind = i == 0 ? wire::GearKind::backpack : boots ? wire::GearKind::boots : wire::GearKind::cargo;
+        it.model = i == 0 || boots ? wire::kGearNone : static_cast<std::uint8_t>(1 + i % 6);
+        it.joint = boots ? 0 : 4;
+        it.parent = i == 0 || boots ? wire::kGearNoParent : static_cast<std::uint8_t>(i - 1);
+        it.p[2] = boots ? 0.0f : 0.3f;
     }
     const std::size_t fn = wire::EncodeGear(full, buf, sizeof(buf));
     CHECK(fn == wire::kMaxGearFrameSize && fn <= 1148 - 4);
-    CHECK(wire::DecodeGear(buf, fn, g) && g.count == wire::kMaxGearItems && g.items[39].parent == 38);
+    CHECK(wire::DecodeGear(buf, fn, g) && g.count == wire::kMaxGearItems && g.items[39].parent == 38 && g.boots_visible == 0x00F0F0F0u);
 }
 
 // STC1 version 3 (entity and weapon items, the parts block), STR1 resource frames, prop reuse across layouts and
@@ -660,7 +717,7 @@ void TestGearV2() {
     o.items[2].res = 24;
     o.items[2].joint = 26;
     on = wire::EncodeGear(o, buf, sizeof(buf));
-    CHECK(on == wire::GearFrameSize(4) && buf[8] == 3);
+    CHECK(on == wire::GearFrameSize(4) && buf[8] == wire::kGearVersion && wire::kGearVersion == 4);
     CHECK(wire::DecodeGear(buf, on, g) && g.items[2].kind == wire::GearKind::weapon && g.items[2].res == 24 && g.items[2].model == 45 &&
           g.items[2].variation == 4 && g.items[2].joint == 26 && g.items[2].parent == wire::kGearNoParent);
     wire::GearFrame w2 = o;
@@ -670,7 +727,7 @@ void TestGearV2() {
     w2.items[2].res = 64;
     CHECK(wire::EncodeGear(w2, buf, sizeof(buf)) == 0);
     w2 = o;
-    w2.items[2].kind = static_cast<wire::GearKind>(7);
+    w2.items[2].kind = static_cast<wire::GearKind>(8);  // unknown since version 4 (7 is boots)
     CHECK(wire::EncodeGear(w2, buf, sizeof(buf)) == 0);
     on = wire::EncodeGear(o, buf, sizeof(buf));
     buf[8] = 2;
@@ -1545,6 +1602,131 @@ void TestSpeechFrames() {
     CHECK(tx.idle() && tx.retransmits() >= 1);
 }
 
+// STM1 vehicle frames (docs/real-partner-body.md section 22).
+void TestVehicleFrames() {
+    // the allow-list: GUID text -> raw bytes_le, kinds and layouts as decoded from the game data
+    const wire::VehicleResource* res = wire::VehicleResources();
+    CHECK(res != nullptr);
+    const std::uint8_t casp[16] = {0x5d, 0x81, 0x17, 0xff, 0x07, 0x4a, 0x40, 0x08, 0x9b, 0x23, 0xd3, 0x0f, 0x30, 0x26, 0x9e, 0x7f};
+    const wire::VehicleResource* r = wire::FindVehicleResource(casp);
+    CHECK(r && r->kind == wire::VehicleKind::speedcar && r->layout == 0xECF43324u && std::strcmp(r->key, "roadster") == 0);
+    std::uint8_t other[16] = {};
+    std::memcpy(other, casp, 16);
+    other[15] ^= 1;
+    CHECK(wire::FindVehicleResource(other) == nullptr);
+    unsigned kinds[4] = {};
+    for (unsigned i = 0; i < wire::kVehicleResourceCount; ++i) ++kinds[static_cast<unsigned>(res[i].kind)];
+    CHECK(kinds[0] == 0 && kinds[1] == 1 && kinds[2] == 2 && kinds[3] == 2);
+
+    static wire::VehicleFrame f, back;
+    f = wire::VehicleFrame{};
+    f.seq = 7;
+    f.sender_ms = 0xFFFFFFF0u;
+    f.kind = 1;
+    f.state = 2;
+    f.flags = wire::kVehSeated | wire::kVehJoints;
+    std::memcpy(f.guid, casp, 16);
+    f.x = -1100.123456789, f.y = 274.5, f.z = 352.25;
+    f.rot = wire::Normalize(wire::Quat{0.1f, -0.2f, 0.7f, 0.68f});
+    f.speed = 12.5f;
+    f.seat[0] = 0.312f, f.seat[1] = -0.25f, f.seat[2] = 0.851f;
+    f.seat_rot = wire::Normalize(wire::Quat{0.0f, 0.0f, 0.05f, 1.0f});
+    f.layout = 0xECF43324u;
+    f.n = 23;
+    for (unsigned j = 0; j < f.n; ++j) {
+        f.q[j] = wire::Normalize(wire::Quat{0.01f * static_cast<float>(j), 0.3f, -0.1f, 0.9f});
+        f.t[j][0] = 0.001f * static_cast<float>(j), f.t[j][1] = -1.5f, f.t[j][2] = 2.25f;
+    }
+    std::uint8_t buf[wire::kMaxVehicleFrameSize];
+    const std::size_t n = wire::EncodeVehicle(f, buf, sizeof(buf));
+    CHECK(n == wire::VehicleFrameSize(23) && n == 84 + 23 * 12);
+    CHECK(wire::DecodeVehicle(buf, n, back));
+    CHECK(back.seq == 7 && back.sender_ms == 0xFFFFFFF0u && back.kind == 1 && back.state == 2 && back.flags == f.flags);
+    CHECK(std::memcmp(back.guid, casp, 16) == 0 && back.x == f.x && back.y == f.y && back.z == f.z && back.speed == 12.5f);
+    CHECK(wire::AngleBetween(back.rot, f.rot) < 0.02f && wire::AngleBetween(back.seat_rot, f.seat_rot) < 0.02f);
+    CHECK(std::fabs(back.seat[0] - 0.312f) < 0.0006f && std::fabs(back.seat[1] + 0.25f) < 0.0006f && std::fabs(back.seat[2] - 0.851f) < 0.0006f);
+    CHECK(back.layout == 0xECF43324u && back.n == 23);
+    float worst = 0;
+    for (unsigned j = 0; j < 23; ++j) {
+        const float a = wire::AngleBetween(back.q[j], f.q[j]);
+        if (a > worst) worst = a;
+        for (unsigned k = 0; k < 3; ++k) CHECK(std::fabs(back.t[j][k] - f.t[j][k]) < 0.0006f);
+    }
+    CHECK(worst < 0.02f);
+    // a frame without joints (parked, not seated)
+    {
+        wire::VehicleFrame p = f;
+        p.flags = 0, p.n = 0, p.state = 0;
+        p.seat[0] = p.seat[1] = p.seat[2] = 0;
+        const std::size_t pn = wire::EncodeVehicle(p, buf, sizeof(buf));
+        CHECK(pn == wire::kVehicleHeaderSize && wire::DecodeVehicle(buf, pn, back) && back.n == 0 && back.flags == 0);
+        p.seat[0] = 0.5f;  // a seat while not seated
+        CHECK(wire::EncodeVehicle(p, buf, sizeof(buf)) == 0);
+    }
+    // the encoder refuses what the decoder would
+    auto refused = [&](void (*mut)(wire::VehicleFrame&)) {
+        static wire::VehicleFrame m;
+        m = f;
+        mut(m);
+        return wire::EncodeVehicle(m, buf, sizeof(buf)) == 0;
+    };
+    CHECK(refused([](wire::VehicleFrame& m) { m.kind = 0; }));
+    CHECK(refused([](wire::VehicleFrame& m) { m.kind = 4; }));
+    CHECK(refused([](wire::VehicleFrame& m) { m.kind = 3; }));  // a roadster GUID with the trike's kind
+    CHECK(refused([](wire::VehicleFrame& m) { m.state = 16; }));
+    CHECK(refused([](wire::VehicleFrame& m) { m.flags |= 4; }));
+    CHECK(refused([](wire::VehicleFrame& m) { m.flags &= static_cast<std::uint8_t>(~wire::kVehJoints); }));
+    CHECK(refused([](wire::VehicleFrame& m) { m.n = 65; }));
+    CHECK(refused([](wire::VehicleFrame& m) { m.layout = 0; }));
+    CHECK(refused([](wire::VehicleFrame& m) { m.guid[0] ^= 0xFF; }));
+    CHECK(refused([](wire::VehicleFrame& m) { m.x = std::numeric_limits<double>::quiet_NaN(); }));
+    CHECK(refused([](wire::VehicleFrame& m) { m.y = 2e7; }));
+    CHECK(refused([](wire::VehicleFrame& m) { m.speed = std::numeric_limits<float>::infinity(); }));
+    CHECK(refused([](wire::VehicleFrame& m) { m.seat[2] = 4.5f; }));
+    CHECK(refused([](wire::VehicleFrame& m) { m.t[3][1] = 40.0f; }));
+    CHECK(refused([](wire::VehicleFrame& m) { m.q[0].w = std::numeric_limits<float>::quiet_NaN(); }));
+    std::uint8_t small[wire::kVehicleHeaderSize];
+    CHECK(wire::EncodeVehicle(f, small, sizeof(small)) == 0);
+    // the decoder: sizes, magic, version, reserved byte, bytes it must refuse
+    CHECK(!wire::DecodeVehicle(buf, n - 1, back));
+    CHECK(!wire::DecodeVehicle(buf, n - 12, back));
+    CHECK(!wire::DecodeVehicle(buf, 40, back));
+    auto bad_at = [&](std::size_t off, std::uint8_t v) {
+        std::uint8_t c[wire::kMaxVehicleFrameSize];
+        std::memcpy(c, buf, n);
+        c[off] = v;
+        return !wire::DecodeVehicle(c, n, back);
+    };
+    CHECK(bad_at(0, 'X'));     // magic
+    CHECK(bad_at(4, 2));       // version
+    CHECK(bad_at(5, 0));       // kind 0
+    CHECK(bad_at(5, 9));       // kind 9
+    CHECK(bad_at(6, 200));     // state
+    CHECK(bad_at(7, 0x81));    // unknown flag
+    CHECK(bad_at(7, wire::kVehSeated));  // joints without the flag
+    CHECK(bad_at(16, 0x00));   // GUID byte 0 (0x5d)
+    CHECK(bad_at(83, 1));      // reserved
+    CHECK(bad_at(82, 24));     // n = 24 with 23 joints' bytes
+    {
+        // a NaN position
+        std::uint8_t c[wire::kMaxVehicleFrameSize];
+        std::memcpy(c, buf, n);
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        std::memcpy(c + 32, &nan, 8);
+        CHECK(!wire::DecodeVehicle(c, n, back));
+        // a seat x of 5 m (5000 mm at offset 66)
+        std::memcpy(c, buf, n);
+        const std::int16_t big = 5000;
+        std::memcpy(c + 66, &big, 2);
+        CHECK(!wire::DecodeVehicle(c, n, back));
+    }
+    // other frames are never taken for a vehicle frame, and a vehicle frame for nothing else
+    wire::Pose pose;
+    CHECK(!wire::DecodePose(buf, n, pose));
+    wire::GearPose gp;
+    CHECK(!wire::DecodeGearPose(buf, n, gp));
+}
+
 int main() {    TestPoseRoundTrip();
     TestJointFrames();
     TestJointOutfit();
@@ -1562,6 +1744,7 @@ int main() {    TestPoseRoundTrip();
     TestSelfVoiceSetting();
     TestSpeechFrames();
     TestSoundFrames();
+    TestVehicleFrames();
     if (g_fail) {
         std::printf("%d check(s) failed\n", g_fail);
         return 1;

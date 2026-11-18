@@ -170,29 +170,36 @@ bool DecodeName(const std::uint8_t* data, std::size_t size, NameFrame& out) noex
 // prop entities there on the partner's body. Sent in its own datagram (FRAME message) when the
 // layout changes and about once a second otherwise; own magic, own sequence filter.
 //
-//   'STC1' | u32 seq | u8 version (3) | u8 count | u8 flags | u8 dropped | u16 layout hash |
+//   'STC1' | u32 seq | u8 version (4) | u8 count | u8 flags | u8 dropped | u16 layout hash |
 //   u16 reserved                                                              (16 bytes)
 //   [flags bit 1, kGearParts: u64 apply[2] | u64 visible[2]                   (32 bytes)]
 //   [flags bit 2, kGearPackParts: u64 apply | u64 visible, the backpack's ArtParts (16 bytes)]
+//   [flags bit 3, kGearBoots: u32 apply | u32 visible, the boots' ArtParts (8 bytes)]
 //   count x 18 bytes: u8 kind | u8 model | u8 variation | u8 joint | u8 parent | u8 res |
 //                     i16 x, y, z (1 mm, +-32 m) | 48-bit smallest-three rotation (as STJ1)
 // Version 2 (v0.8): the `entity` kind (a gear entity of the game's own, named by `res`, an id of
 // the sender's resource table, sent as STR1 frames below) and the parts block (which of Sam's own
 // ArtParts the sender shows: exoskeleton, BB pod pipe, hip gear, pouches). Version 1 frames are
 // refused (mixed builds never meet: HELLO build check). Version 3 (after v0.9): the `weapon` kind;
-// version 2 frames are refused.
+// version 2 frames are refused. Version 4 (after v0.11): the `boots` kind and its parts block
+// (docs/real-partner-body.md section 21); version 3 frames are refused. A frame has the boots block
+// exactly when it has a boots item, at most one, on joint 0 with no parent; visible bits outside
+// apply are refused.
 inline constexpr std::uint8_t kGearMagic[4] = {'S', 'T', 'C', '1'};
-inline constexpr std::uint8_t kGearVersion = 3;
+inline constexpr std::uint8_t kGearVersion = 4;
 inline constexpr std::size_t kGearHeaderSize = 16;
 inline constexpr std::size_t kGearPartsSize = 32;
 inline constexpr std::size_t kGearPackPartsSize = 16;
+inline constexpr std::size_t kGearBootsSize = 8;
 inline constexpr std::size_t kGearItemSize = 18;
 inline constexpr unsigned kMaxGearItems = 56;
 inline constexpr unsigned kMaxGearParts = 128;  // ArtParts indices the parts block can name
-inline constexpr std::size_t GearFrameSize(unsigned count, bool parts = false, bool pack_parts = false) {
-    return kGearHeaderSize + (parts ? kGearPartsSize : 0) + (pack_parts ? kGearPackPartsSize : 0) + count * kGearItemSize;
+inline constexpr unsigned kMaxGearBootsParts = 32;  // the boots' ArtParts the boots block can name
+inline constexpr std::size_t GearFrameSize(unsigned count, bool parts = false, bool pack_parts = false, bool boots = false) {
+    return kGearHeaderSize + (parts ? kGearPartsSize : 0) + (pack_parts ? kGearPackPartsSize : 0) + (boots ? kGearBootsSize : 0) +
+           count * kGearItemSize;
 }
-inline constexpr std::size_t kMaxGearFrameSize = GearFrameSize(kMaxGearItems, true, true);  // 1072
+inline constexpr std::size_t kMaxGearFrameSize = GearFrameSize(kMaxGearItems, true, true, true);  // 1080
 inline constexpr std::uint8_t kGearNoParent = 0xFF;  // GearItem::parent: placed on `joint`
 inline constexpr std::uint8_t kGearNone = 0xFF;      // GearItem::model / variation: none / unknown
 
@@ -207,8 +214,11 @@ enum class GearKind : std::uint8_t {
                    // hanger): `res` names the sender's weapon resource (STR1), `model` its EDSWeaponId, `variation`
                    // its level. The receiver never spawns that resource (a copy crashes the game): it shows a
                    // cinematic prop with the same model, or nothing (docs/real-partner-body.md section 17)
+    boots = 7,     // version 4: the sender's equipped boots (DSPlayerBootsComponent's entity, part_sam_foot_def); on
+                   // joint 0, identity pose; which of their ArtParts show is the boots block. The receiver draws a
+                   // cutscene boots prop posed from the body's legs (docs/real-partner-body.md section 21)
 };
-inline constexpr std::uint8_t kGearKindMax = 6;
+inline constexpr std::uint8_t kGearKindMax = 7;
 // The kinds whose `res` is a resource id of the sender's table (sent, part of the layout hash).
 inline constexpr bool GearHasRes(GearKind k) { return k == GearKind::entity || k == GearKind::weapon; }
 inline constexpr unsigned kMaxGearRes = 64;  // resource ids 0..63
@@ -217,7 +227,8 @@ enum GearFlags : std::uint8_t {
     kGearValid = 1u << 0,   // the sender has a live player whose gear was read
     kGearParts = 1u << 1,   // the parts block follows the header
     kGearPackParts = 1u << 2,  // the backpack's parts block follows (after the parts block)
-    kGearKnown = kGearValid | kGearParts | kGearPackParts,
+    kGearBoots = 1u << 3,      // the boots' parts block follows (after the backpack's); exactly with a boots item
+    kGearKnown = kGearValid | kGearParts | kGearPackParts | kGearBoots,
 };
 
 struct GearItem {
@@ -245,6 +256,10 @@ struct GearFrame {
     // the receiver mirrors them on the backpack prop when its parts are the same resources.
     std::uint64_t pack_apply = 0;
     std::uint64_t pack_visible = 0;
+    // kGearBoots: the boots entity's own ArtParts (index < 32: mk1 / mk2 / mk3 left and right, soles, wear) the
+    // sender reports and shows (visible within apply); the receiver sets them on its boots prop.
+    std::uint32_t boots_apply = 0;
+    std::uint32_t boots_visible = 0;
     GearItem items[kMaxGearItems];
 };
 
@@ -503,5 +518,71 @@ bool SoundItemValid(const SoundItem& it) noexcept;
 // 2,000 ms, fade > 10,000 ms, category >= 5, a reserved byte that is not 0, an RTPC id 0, and a non-finite or huge
 // (|v| > 1e7) RTPC value.
 bool DecodeSound(const std::uint8_t* data, std::size_t size, SoundFrame& out) noexcept;
+
+// ---------------------------------------------------------------- vehicle frame (STM1)
+// The vehicle the sender rides (or has just left), docs/real-partner-body.md section 22: its kind and drivable
+// resource, its world transform, the sender's Sam relative to it (the seat) and, optionally, its skinned pose
+// (wheels, steering, suspension). A FRAME message in a datagram of its own, at the pose send rate while a vehicle
+// is reported; `sender_ms` is on the same axis as STP1's (the receiver plays it at the pose play time).
+//
+//   'STM1' | u8 version (1) | u8 kind | u8 state | u8 flags | u32 seq | u32 sender_ms |
+//   16-byte resource GUID (raw, as the game's StreamingRef holds it) | f64 x, y, z | 6-byte rotation |
+//   f32 speed (m/s) | i16 seat x, y, z (1 mm) | 6-byte seat rotation | u32 skeleton layout hash |
+//   u8 n | u8 0                                                                            (84 bytes)
+//   [flags & kVehJoints] n x { 6-byte rotation | i16 x, y, z (1 mm) }                   (12 bytes each)
+// Rotations are STJ1's smallest-three. The seat is the sender's Sam in the vehicle's frame (zero when not seated).
+inline constexpr std::uint8_t kVehicleMagic[4] = {'S', 'T', 'M', '1'};
+inline constexpr std::uint8_t kVehicleVersion = 1;
+inline constexpr std::size_t kVehicleHeaderSize = 84;
+inline constexpr unsigned kMaxVehicleJoints = 64;
+inline constexpr std::size_t VehicleFrameSize(unsigned n) { return kVehicleHeaderSize + n * 12u; }
+inline constexpr std::size_t kMaxVehicleFrameSize = VehicleFrameSize(kMaxVehicleJoints);  // 852
+inline constexpr float kMaxVehicleSeatM = 4.0f;    // |seat offset| per axis
+inline constexpr float kMaxVehicleJointM = 32.0f;  // |joint translation| per axis
+inline constexpr std::uint8_t kVehicleStateMax = 15;
+// The game's EVehicleType (VehicleEntity +0x4C4).
+enum class VehicleKind : std::uint8_t { none = 0, speedcar = 1, truck = 2, motorbike = 3 };
+enum VehicleFlags : std::uint8_t {
+    kVehSeated = 1u << 0,  // the sender's Sam has this vehicle as its parent entity (the seat is meaningful)
+    kVehJoints = 1u << 1,  // the joint block follows (n > 0)
+    kVehKnown = kVehSeated | kVehJoints,
+};
+struct VehicleFrame {
+    std::uint32_t seq = 0;
+    std::uint32_t sender_ms = 0;
+    std::uint8_t kind = 0;   // VehicleKind 1..3
+    std::uint8_t state = 0;  // the vehicle's ride state (+0x4CC: 0 parked, 1 getting on, 2 riding, 3 getting off, 5 broken ...)
+    std::uint8_t flags = 0;
+    std::uint8_t guid[16] = {};
+    double x = 0, y = 0, z = 0;
+    Quat rot;
+    float speed = 0;
+    float seat[3] = {};
+    Quat seat_rot;
+    std::uint32_t layout = 0;  // the vehicle's skeleton layout hash (0: unknown)
+    std::uint8_t n = 0;        // joints in the block (0 without kVehJoints)
+    Quat q[kMaxVehicleJoints];
+    float t[kMaxVehicleJoints][3] = {};
+};
+// The drivable vehicle resources a frame may name (decoded from the game data; docs/real-partner-body.md section 22).
+struct VehicleResource {
+    const char* key;
+    const char* path;
+    const char* guid;      // the root resource GUID (text; raw bytes = uuid.bytes_le)
+    VehicleKind kind;
+    std::uint32_t layout;  // its skeleton's layout hash (0: not known)
+};
+inline constexpr unsigned kVehicleResourceCount = 5;
+const VehicleResource* VehicleResources() noexcept;  // kVehicleResourceCount entries
+// The entry whose GUID is `guid` (raw bytes), nullptr when none.
+const VehicleResource* FindVehicleResource(const std::uint8_t (&guid)[16]) noexcept;
+// Returns the size, 0 when the frame cannot be encoded (any check of DecodeVehicle fails or cap is too small).
+std::size_t EncodeVehicle(const VehicleFrame& f, std::uint8_t* out, std::size_t cap) noexcept;
+// Rejects bad magic, another version, a size other than VehicleFrameSize(n), a kind outside 1..3, a state above 15,
+// unknown flag bits, joints flag without joints (or joints without the flag), n over the cap, a reserved byte that is
+// not 0, a GUID that is not a drivable resource of that kind (the allow-list above), NaN / inf anywhere, |coord| > 1e7,
+// |speed| > 1000, a seat offset beyond +-4 m (or one at all when not seated), a joint translation beyond +-32 m, and a
+// joint block whose layout hash is 0.
+bool DecodeVehicle(const std::uint8_t* data, std::size_t size, VehicleFrame& out) noexcept;
 
 }  // namespace st::wire

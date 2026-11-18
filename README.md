@@ -35,16 +35,20 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
   parts (on a Sam body), in the colours the owner sees (a gold or silver cap, the backpack's
   paint); the backpack frame extends with the load as on the owner's screen. A partner shown as
   Sam has the other player's own hair and head (cap hair, the metal face lines).
-  When you appear as another character, your own real gear, cap, equipped boots and weapons
-  show on you, fitted to your character's body, and the cargo menu (Manage Cargo) shows your
-  character instead of Sam.
+  When you appear as another character, your own real gear, cap, glasses, equipped boots and
+  weapons show on you, fitted to your character's body (the cap and glasses placed for
+  Fragile's head; her own shoes hidden inside the boots), and the cargo menu (Manage Cargo)
+  shows your character instead of Sam. The equipped boots also show on the other screen.
 - **Experimental:** weapons in hand show on the other screen: the assault rifle, handgun,
   shotgun, multi rod and the grenades (as the game's cutscene models, in their own colours).
-- Not yet: the equipped boots on the other screen (the partner shows the character's own),
-  other weapons in hand (bola gun, launchers, PCC ...), the Odradek, the cuff device, the
-  weapon crate on the hip, the chiral cylinder, glasses (untested), the exoskeleton on non-Sam
-  characters, facial animation, the partner's gear and vehicle sounds and gunshots (footsteps, movement and rifle handling are heard,
-  experimental), vehicles,
+- **Experimental:** vehicles: when your partner drives a roadster, you see it with
+  them seated in it, moving where they drive and parked where they leave it (a
+  hologram of the roadster; trikes and trucks with `vehicle_sync=3` in session.ini, untested
+  against a real drive).
+- Not yet: other weapons in hand (bola gun, launchers, PCC ...), the Odradek, the cuff device,
+  the weapon crate on the hip, the chiral cylinder, the exoskeleton on non-Sam characters,
+  facial animation, the partner's gear and vehicle sounds and gunshots (footsteps, movement and
+  rifle handling are heard, experimental), solid vehicles, the vehicle's paint and cargo, carts,
   world/BT/mission sync.
 
 ## Download

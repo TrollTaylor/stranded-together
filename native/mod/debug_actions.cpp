@@ -162,6 +162,7 @@ bool DoAudioProbe(const Request& r, char* msg, std::size_t cap) { return game::A
 bool DoSelfVoice(const Request& r, char* msg, std::size_t cap) { return game::SelfVoiceCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoVoiceSync(const Request& r, char* msg, std::size_t cap) { return game::VoiceSyncCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoSoundSync(const Request& r, char* msg, std::size_t cap) { return game::SoundSyncCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
+bool DoVehicleSync(const Request& r, char* msg, std::size_t cap) { return game::VehicleSyncCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoVoicePing(const Request& r, char* msg, std::size_t cap) {
     // The live partner entity, exactly as the Partner tab sees it (0 when there is none).
     Snapshot s;
@@ -242,6 +243,7 @@ constexpr Row kRows[] = {
     {{Action::self_voice, Tab::tools, "Self voice", "Sam's voice muted for a non-Sam player (self_voice): 0 log, 1 0/1 mute off/on, 2 n cargo menu figure says list n.", false}, &DoSelfVoice},
     {{Action::voice_sync, Tab::tools, "Voice sync", "Partner voice (voice_sync=1): 0 log, 1 n play sentence n on the partner, 2 0/1 test: send as Sam, 3 rebuild the map.", false}, &DoVoiceSync},
     {{Action::sound_sync, Tab::tools, "Sound sync", "Partner sounds (sound_sync=1): 0 log, 1 0/1 log every mirrored post, 2 stop the partner's sounds.", false}, &DoSoundSync},
+    {{Action::vehicle_sync, Tab::tools, "Vehicle sync", "Vehicles (vehicle_sync): 0 log, 1 mode 0 off/1 roadster/2 solid/3 all, 2 copy override 0..3, 3 trace ms, 4 offset right/forward cm, 5 describe, 6 offset up cm.", false}, &DoVehicleSync},
 
 };
 constexpr std::size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);

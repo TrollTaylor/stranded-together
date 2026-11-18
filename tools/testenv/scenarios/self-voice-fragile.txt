@@ -93,9 +93,9 @@ pad dpad_right 400 keep
 pad none 0
 wait 2500
 action audio_probe 0
-# silencing (2026-11-18, doc section 17): the local player's talks run, their voice posts are silenced; none may be missed
+# silencing (2026-11-18, doc sections 17 and 18): the local player's talks run, their voice posts are stopped; none may be missed
 nolog \[voice\] Sam's muted voice: no PostEvent hook
-nolog \[voice\] an external-source post .* was not matched to a muted talk
+nolog \[voice\] an external-source post .* is not one of Sam's voice events
 nolog \[audio\] talk #[0-9]+ MUTED comp [^|]*owner [^|]*\(the local player\)
 # the cargo menu: START (cuff map, the Sam entry focused), A = Manage Cargo (repeated until it is open), then the
 # figure's own voice through the game's PlayAkukanVoice (`self_voice 2 <list>`), B back, START closes the map
@@ -115,7 +115,7 @@ until 25 2500 \[menu\] subspace state 2 .*\(opens 1\) => pad B 150
 wait 1500
 pad START 150
 wait 3000
-nolog \[voice\] an external-source post .* was not matched to a muted talk
+nolog \[voice\] an external-source post .* is not one of Sam's voice events
 # the mute off for a few situations (the same talks now pass: counted as passed), and the menu once more
 log audio: mute off
 action self_voice 1 0

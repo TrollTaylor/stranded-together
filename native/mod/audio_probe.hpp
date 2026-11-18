@@ -3,7 +3,8 @@
 //   Hooks (installed at start-up, before the frame pump; each byte-checked, a mismatch skips that hook):
 //     - the exported Wwise API, found by export name and checked against the known RVA and prologue:
 //       PostEvent (by id), RegisterGameObj, UnregisterGameObj, SetSwitch, SetRTPCValue, SetPosition,
-//       StopPlayingID;
+//       StopPlayingID; SetGameObjectOutputBusVolume and SetGameObjectAuxSendValues (counted on the objects whose
+//       voice self_voice silenced; audio-research.md section 18); plus Wwise bus meters on Sam's voice chain;
 //     - Sam's voice path: the voice-queue enqueue 0x1426A6570, DSTalkComponent's MsgDSStartTalk
 //       handler 0x1422D4F70, DSTalkComponent::PlaySentence 0x1422D3FE0 and
 //       DSCustomSoundComponent::OnAnimationSoundEvent 0x142D83630 (the local player's only);

@@ -1,0 +1,97 @@
+# The partner side of headgear and boots in one game (docs/real-partner-body.md sections 20 and 21): the echo partner
+# replays our own Sam as Fragile in her porter suit 1.2 m beside us (everything through the STC1 / STR1 / STV1 encoders
+# and decoders), while our own self view shows Fragile too, with Sam's real cap and boots. So one picture holds both
+# screens' views: our self view (the game's own cap and boots on Sam's fitted skeleton) and the partner (props on its
+# body). The boots: the partner's own model boots first (`gear 21 0`: boots_sync off, the v0.11 view), then the boots
+# prop on its legs with its feet kept (`gear 20 100`) and scaled away (`gear 20 1`), front and side, walking; the cap
+# and the glasses on both; the meters: `[headgear] partner head prop ...` (where the prop sits in the partner body's
+# head joint's frame) and `[boots] boots' feet vs the drawn feet` (the prop's feet against the body's).
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario echo-boots-headgear -SeedSaves complete-100
+role echo
+timeout 360
+ini partner_body=real
+ini partner_character=fragile_suit
+ini my_character=fragile_suit
+ini self_character=1
+ini echo_delay_s=0.3
+ini echo_offset_m=-1.2
+ini partner_collision=0
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[sync\] partner body: real
+waitlog 40 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+action gear 14 15 1
+waitlog 40 \[boots\] the partner's boots prop .* follows the partner body's legs
+wait 3000
+# both fronts: the camera round
+pad none 1300 rx=32767
+wait 2000
+screenshot 01-front-boots-feet-1
+action gear 20 100
+wait 1500
+screenshot 01-front-boots-feet-kept
+action gear 20 1
+action gear 21 0
+wait 3000
+screenshot 01-front-noboots
+action gear 21 1
+waitlog 30 \[boots\] the partner body's feet scaled away
+wait 1500
+screenshot 01-front-boots-again
+# the glasses too
+action gear 14 13 1
+wait 3000
+screenshot 02-front-both
+action gear 14 13 0
+wait 2000
+# her side
+pad none 650 rx=32767
+wait 1500
+screenshot 03-side-boots
+action gear 21 0
+wait 3000
+screenshot 03-side-noboots
+action gear 21 1
+wait 3000
+# walking across the camera's view (the partner follows 0.3 s behind), feet scaled
+pad none 650 rx=-32767
+wait 1500
+log walk
+pad none 1 lx=20000 keep
+screenshot 04-walk-a
+screenshot 04-walk-b
+screenshot 04-walk-c
+wait 800
+screenshot 04-walk-d
+pad none 0
+wait 1500
+pad none 1 lx=-20000 keep
+wait 400
+screenshot 05-walk-back-a
+screenshot 05-walk-back-b
+wait 800
+screenshot 05-walk-back-c
+pad none 0
+log walk done
+wait 1500
+# running at 30 fps (two games run capped)
+log run30
+action smooth 2 30
+pad none 2500 ly=32767 keep
+screenshot 06-run30
+pad none 0
+wait 800
+pad none 2500 ly=-32767
+log run30 done
+action smooth 2 0
+wait 1500
+action gear 0
+action real_stats
+action log_status
+quit

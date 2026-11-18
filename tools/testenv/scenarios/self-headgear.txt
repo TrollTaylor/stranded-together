@@ -1,0 +1,154 @@
+# Self view headgear and feet, solo (docs/real-partner-body.md sections 20 and 21): Fragile in her porter suit with
+# Sam's real gear, the cap and the glasses. Each view twice with the same camera: "before" is v0.11 (the head lift,
+# `self_view 10 0`; her own feet kept, `self_view 12 0`), "after" this build (the per-item mover offsets, `self_view
+# 10 1`; her feet scaled away under Sam's boots, `self_view 12 1`). Her feet front at 100 / 1 / 30 %; the cap, the cap
+# and the glasses, the glasses alone, front, then from behind; tuning variants of both offsets (`self_view 8/9`); the
+# first steps of a walk across the camera's view as a frame sequence both ways; a run at 30 fps. The `[headgear] self
+# ...` meter lines say where each item sits in her drawn head joint's frame every second (mean, spread, the largest
+# tick-to-tick step), the `[boots] boots' feet vs the drawn feet` lines how far Sam's boots are from her feet.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario self-headgear -SeedSaves complete-100 [-SettingsCfg <4K cfg>]
+role solo
+timeout 360
+ini partner_body=real
+ini my_character=fragile_suit
+ini self_character=1
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+action gear 14 15 1
+wait 3000
+waitlog 10 \[headgear\] our cap0[0-3] .*mover offset set to
+# she faces the camera: her feet first (kept, then scaled to 1 and 30 %)
+pad none 1300 rx=32767
+wait 1500
+action self_view 12 0
+wait 1500
+screenshot 01-front-feet-kept
+action self_view 12 1
+wait 1500
+screenshot 01-front-feet-1
+action self_view 11 30
+wait 1500
+screenshot 01-front-feet-30
+action self_view 11 1
+# the cap: v0.11 and now, then two tuning variants
+action self_view 10 0
+wait 1500
+screenshot 02-front-cap-before
+action self_view 10 1
+wait 1500
+screenshot 02-front-cap-after
+action self_view 8 0 48
+action self_view 9 0 -8
+wait 1500
+screenshot 02-front-cap-v48-8
+action self_view 8 0 50
+action self_view 9 0 -12
+wait 1500
+screenshot 02-front-cap-v50-12
+action self_view 8 0 50
+action self_view 9 0 -12
+# the glasses too, then alone, then two tuning variants
+action gear 14 13 1
+wait 2500
+action self_view 10 0
+wait 1500
+screenshot 03-front-both-before
+action self_view 10 1
+wait 1500
+screenshot 03-front-both-after
+action gear 14 15 0
+wait 2500
+screenshot 04-front-glasses-after
+action self_view 10 0
+wait 1500
+screenshot 04-front-glasses-before
+action self_view 10 1
+action self_view 8 1 15
+wait 1500
+screenshot 04-front-glasses-v15
+action self_view 8 1 7
+wait 1500
+screenshot 04-front-glasses-v7
+action self_view 8 1 11
+action gear 14 13 0
+action gear 14 15 1
+wait 2500
+# from behind: the cap's band against her hair, v0.11, now and the variants
+pad none 1300 rx=-32767
+wait 1500
+action self_view 10 0
+wait 1500
+screenshot 05-back-cap-before
+action self_view 10 1
+wait 1500
+screenshot 05-back-cap-after
+action self_view 8 0 48
+action self_view 9 0 -8
+wait 1500
+screenshot 05-back-cap-v48-8
+action self_view 8 0 50
+action self_view 9 0 -12
+wait 1500
+screenshot 05-back-cap-v50-12
+action self_view 8 0 50
+action self_view 9 0 -12
+# her side
+pad none 650 rx=32767
+wait 1500
+screenshot 06-side-cap-after
+action self_view 10 0
+wait 1500
+screenshot 06-side-cap-before
+action self_view 10 1
+# the first steps of a walk across the camera's view (her profile): v0.11, then now
+pad none 650 rx=32767
+wait 1500
+log walk before
+action self_view 10 0
+action self_view 12 0
+wait 1500
+pad none 1 lx=20000 keep
+screenshot 07-walk-before-a
+screenshot 07-walk-before-b
+screenshot 07-walk-before-c
+screenshot 07-walk-before-d
+wait 1200
+screenshot 07-walk-before-e
+pad none 0
+wait 1500
+log walk after
+action self_view 10 1
+action self_view 12 1
+wait 1500
+pad none 1 lx=-20000 keep
+screenshot 08-walk-after-a
+screenshot 08-walk-after-b
+screenshot 08-walk-after-c
+screenshot 08-walk-after-d
+wait 1200
+screenshot 08-walk-after-e
+pad none 0
+wait 1500
+# running at 30 fps (two games run capped): the boots meter
+log run30 after
+action smooth 2 30
+pad none 2500 ly=32767 keep
+screenshot 09-run30-a
+pad none 0
+wait 800
+pad none 2500 ly=-32767 keep
+screenshot 09-run30-b
+pad none 0
+log run30 done
+action smooth 2 0
+wait 1500
+action real_stats
+action log_status
+quit

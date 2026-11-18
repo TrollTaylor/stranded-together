@@ -1,0 +1,77 @@
+# Vehicle sync between two games (docs/real-partner-body.md section 22): the host plays Sam, the guest Fragile in her
+# porter suit with the self view (as the launcher writes it). Both start beside their own purple roadster (the 100%
+# save's Episode 15 garage). DRIVER gets on with the game's own X, drives off (hard left, straight, left), stops and
+# gets off again; WATCHER watches from beyond the parked roadster, about 5 m to its left (its camera untouched
+# since the load, so it looks along the drive; partner_collision=0 so the car never meets the watcher's body): the
+# driver's body seated in the roadster's copy (the hologram), moving where it drives, then parked; then the driver is
+# placed beyond 30 m of it and the copy goes. two-games-vehicle.txt: the host
+# drives; two-games-vehicle-guest.txt: the guest drives (the host sees her Fragile body in the copy).
+# `action vehicle_sync 9 x y` places a player beside the parked roadster (where X got Sam on in run 20261117-072538) or
+# at the watching point; `vehicle_sync 3` logs the trace both games' logs are compared with (sender transform at tick
+# rate, receiver placement at the play time; the same QPC clock on one PC).
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-vehicle -SeedSaves complete-100 -SettingsCfg <1080p cfg>
+role host
+graphics low
+timeout 360
+ini partner_body=real
+ini vehicle_sync=1
+ini partner_collision=0
+@host ini my_character=sam
+@guest ini my_character=fragile_suit
+@guest ini self_character=1
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+@guest pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+@guest until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitplayer 60
+waitlog 60 \[link\] CONNECTED
+@guest waitlog 60 \[link\] CONNECTED
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+@guest until 150 3000 \[sync\] partner body: real 'sam' => pad A 120
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+@guest waitlog 30 \[self\] showing 'fragile_suit' in place of Sam
+# ---- host drives, guest watches
+@guest action vehicle_sync 9 -1088.0 281.5
+action vehicle_sync 9 -1094.4 276.9
+wait 1500
+@both action vehicle_sync 3 60000
+until 20 4000 \[vehicle\] ours: roadster => pad X 150
+@guest waitlog 20 \[vehicle\] copy 'roadster_hologram' shown
+wait 3500
+screenshot 01-host-mounted
+@guest screenshot 01-guest-sees-host-mounted
+pad none 1200 rt=255 lx=-32767 keep
+@guest screenshot 02-guest-sees-host-driving-a
+screenshot 02-host-driving-a
+pad none 900 rt=255 keep
+@guest screenshot 02-guest-sees-host-driving-b
+screenshot 02-host-driving-b
+pad none 900 rt=255 lx=-32767 keep
+@guest screenshot 02-guest-sees-host-driving-c
+pad none 0
+wait 2000
+screenshot 03-host-stopped
+@guest screenshot 03-guest-sees-host-stopped
+@both action vehicle_sync 0
+pad X 150
+wait 4000
+screenshot 04-host-off
+@guest screenshot 04-guest-sees-host-off
+@both action vehicle_sync 0
+# the driver walks away (beyond 30 m of its parked roadster): the copy goes
+action vehicle_sync 9 -1100 270
+@guest waitlog 20 \[vehicle\] the partner's vehicle copy 'roadster_hologram' removed
+wait 1500
+@guest screenshot 05-guest-after-host-left
+@both action vehicle_sync 0
+@both action real_stats
+@both action log_status
+@guest quit
+quit

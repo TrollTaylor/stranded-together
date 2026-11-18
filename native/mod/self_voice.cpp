@@ -180,34 +180,47 @@ bool CallAkukanVoice(int n) {
 }
 
 // ---------------------------------------------------------------- silencing Sam's voice in Wwise (the talk runs)
-// With a PostEvent hook in (partner_sound's or the probe's; they call PrePost before the original), a muted local
-// talk is not dropped: the game runs it (so whatever follows it, BB's answer to a dialogue line, still comes), and the
-// one external-source post that plays its voice gets SetGameObjectOutputBusVolume(object, listener 0, 0) first (a
-// queued Wwise message, the same thread, so it applies before the post). Without that hook the talk is dropped as
-// before. Which post is the local player's voice: the local DSTalkComponent's playing instance ([[comp+0x40]+0x90],
-// read fault-free: "exact"), or, failing that, a talk token (a local talk let through in the last kTokenMs) and the
-// post's object position (+0x20) within kNearM of the local player's head and nearer to it than to the partner's
-// talking entity, and not one of the other talkers' preset events (BB, the cuff device).
-constexpr std::uintptr_t kSetBusVolume = 0x3A1EEF0;  // export SetGameObjectOutputBusVolume(_K emitter, _K listener, float)
-constexpr const char* kSetBusVolumeSig = "48 89 5C 24 08 57 48 83 EC 30 0F 29 74 24 20 48 8B DA 0F 57 F6 48 8B F9";
-constexpr const char* kSetBusVolumeName = "?SetGameObjectOutputBusVolume@SoundEngine@AK@@YA?AW4AKRESULT@@_K0M@Z";
+// With a PostEvent hook in (partner_sound's or the probe's; they ask PrePost before the original), a muted local talk
+// is not dropped: the game runs it (so whatever follows it, BB's answer to a dialogue line, still comes), and the one
+// external-source post that plays its voice is STOPPED right after it is posted (AfterPost: StopPlayingID(playing id,
+// 0 ms), queued behind the play message on the same thread, so Wwise handles both in the same audio frame and the
+// streamed voice never renders, neither its dry path nor its reverb sends). Without that hook the talk is dropped.
+// v0.11 set SetGameObjectOutputBusVolume(object, 0) instead: Decima's own sound-instance update (0x141DD3380) pushed
+// its level onto the same object one update later and fed the voice's game-defined aux sends (reverb), so the grunts
+// came back (docs/audio-research.md section 18).
+// Which post is the local player's voice: one of Sam's voice events (kSamVoiceEvents: the events whose sounds route to
+// his voice bus 0xDCB6FE59, Wwise bank metadata, section 18), not one of the other talkers' presets, and either the local
+// DSTalkComponent's playing instance ([[comp+0x40]+0x90], read fault-free: "exact") or the post's object position
+// (+0x20) within kNearM of the local player's head and nearer to it than to the partner's talking entity (which plays
+// the partner's Sam lines; both measured at head height over the root) while a muted talk of the local player was let
+// through in the last kTokenMs ("pending"). Without one a position match is left alone: another Sam actor near the
+// player (an in-engine cutscene, the menu figure) is never cut (every Sam voice post in the hidden runs had one).
+constexpr std::uintptr_t kStopPlaying = 0x3A20B20;  // export StopPlayingID(AkPlayingID, AkTimeMs, AkCurveInterpolation)
+constexpr const char* kStopPlayingSig = "85 C9 74 5C 48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 41 8B F8 8B F2";
+constexpr const char* kStopPlayingName = "?StopPlayingID@SoundEngine@AK@@YAXKJW4AkCurveInterpolation@@@Z";
+constexpr int kCurveLinear = 4;  // AkCurveInterpolation_Linear
 constexpr std::uintptr_t kTalkPlaying = 0x40, kPlayingInstance = 0x90, kObjPos = 0x20;
 constexpr double kTokenMs = 3000.0, kNearM = 3.0, kHeadM = 1.55;
 constexpr std::uint32_t kOtherTalkerEvents[] = {0x8118407Cu, 0xD44C68CFu, 0xE5BEA679u};  // BB, the cuff device, a child's VoiceComponent
+std::uintptr_t g_stop_export = 0;    // checked at Install
+// v0.11's method, kept for before / after measurements only (debug op 4 0): SetGameObjectOutputBusVolume(object, 0, 0)
+// before the post. Checked at Install like the stop export.
+constexpr std::uintptr_t kSetBusVolume = 0x3A1EEF0;
+constexpr const char* kSetBusVolumeSig = "48 89 5C 24 08 57 48 83 EC 30 0F 29 74 24 20 48 8B DA 0F 57 F6 48 8B F9";
+constexpr const char* kSetBusVolumeName = "?SetGameObjectOutputBusVolume@SoundEngine@AK@@YA?AW4AKRESULT@@_K0M@Z";
 using BusVolumeFn = int (*)(std::uint64_t, std::uint64_t, float);
-BusVolumeFn g_bus_volume = nullptr;
+std::uintptr_t g_bus_volume = 0;
+std::atomic<bool> g_by_volume{false};
+std::atomic<std::uint32_t> g_vol_set{0}, g_vol_fail{0};
 bool g_want_post = false;            // mute resolved at start and the export checked: silencing wanted
-std::atomic<bool> g_silence{false};  // a PostEvent hook calls PrePost: silence instead of drop
+std::atomic<bool> g_silence{false};  // a PostEvent hook asks PrePost / AfterPost: silence instead of drop
 std::atomic<std::uintptr_t> g_local_comp{0};
 std::atomic<std::int32_t> g_tokens{0};
 std::atomic<std::int64_t> g_token_until{0};
 std::atomic<std::uint64_t> g_pos_bits[3], g_echo_bits[3];
 std::atomic<bool> g_pos_ok{false}, g_echo_ok{false};
-constexpr unsigned kMutedSlots = 16;
-std::atomic<std::uint64_t> g_muted_obj[kMutedSlots];
-std::atomic<std::uint32_t> g_muted_n{0};
-std::atomic<std::uint32_t> g_sil_talks{0}, g_sil_posts{0}, g_sil_exact{0}, g_sil_token{0}, g_sil_fail{0}, g_sil_restored{0}, g_sil_unmatched{0},
-    g_sil_other{0};
+std::atomic<std::uint32_t> g_sil_talks{0}, g_sil_posts{0}, g_sil_exact{0}, g_sil_token{0}, g_sil_untokened{0}, g_sil_stopped{0}, g_sil_fault{0},
+    g_sil_nopid{0}, g_sil_unmatched{0}, g_sil_other{0};
 std::atomic<std::uint64_t> g_last_unmatched{0};  // ev | obj low bits, for the log
 std::int64_t g_qpf = 1;
 
@@ -233,48 +246,38 @@ double Dist3(const double (&a)[3], const double (&b)[3]) noexcept {
     const double x = a[0] - b[0], y = a[1] - b[1], z = a[2] - b[2];
     return std::sqrt(x * x + y * y + z * z);
 }
-int CallBusVolume(std::uint64_t obj, float v) noexcept {
+int CallBusVolume(std::uint64_t obj) noexcept {
     __try {
-        return g_bus_volume(obj, 0, v);
+        return reinterpret_cast<BusVolumeFn>(g_bus_volume)(obj, 0, 0.0f);
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return -1;
     }
 }
-bool MutedHas(std::uint64_t obj, bool remove) noexcept {
-    for (std::atomic<std::uint64_t>& s : g_muted_obj) {
-        std::uint64_t cur = s.load(std::memory_order_acquire);
-        if (cur != obj) continue;
-        if (remove && s.compare_exchange_strong(cur, 0, std::memory_order_acq_rel)) g_muted_n.fetch_sub(1, std::memory_order_relaxed);
+bool CallStop(StopFn fn, std::uint32_t pid) noexcept {
+    __try {
+        fn(pid, 0, kCurveLinear);
         return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
     }
-    return false;
-}
-void MutedAdd(std::uint64_t obj) noexcept {
-    if (MutedHas(obj, false)) return;
-    for (std::atomic<std::uint64_t>& s : g_muted_obj) {
-        std::uint64_t zero = 0;
-        if (s.compare_exchange_strong(zero, obj, std::memory_order_acq_rel)) {
-            g_muted_n.fetch_add(1, std::memory_order_relaxed);
-            return;
-        }
-    }
-    // full (16 objects muted and never reused or unregistered): the oldest-looking slot is reused; its object keeps
-    // volume 0 until Wwise forgets it at its unregistration (pooled voice instances are re-registered per sound)
-    g_muted_obj[obj % kMutedSlots].store(obj, std::memory_order_release);
 }
 
 std::uint32_t g_last[6] = {};
 double g_next_log_ms = 0;
 
 void LogCounts(const char* why) {
-    Log("[voice] %s: self_voice=%s (%s, character '%s'): local player talks muted %u (dropped %u, silenced in Wwise %u) passed %u; menu figure talks "
-        "muted %u passed %u; other-branch messages passed %u; talk messages seen %u | voice posts silenced %u (exact %u, token %u), volume call failed "
-        "%u, restored %u, near the player but not matched %u, other talkers kept %u",
+    Log("[voice] %s: self_voice=%s (%s, character '%s'): local player talks muted %u (dropped %u, ran with the voice stopped %u) passed %u; menu figure "
+        "talks muted %u passed %u; other-branch messages passed %u; talk messages seen %u | Sam's voice posts stopped %u of %u (exact %u, a muted talk "
+        "pending %u, none pending %u), stop call faulted %u, post failed %u; near the player, a muted talk pending, not one of Sam's voice events %u; "
+        "other talkers kept %u",
         why, ModeName(g_mode),
-        !g_armed.load() ? "not armed" : !g_mute.load() ? "armed, mute off" : g_silence.load() ? "muting: the talk runs, its voice is silenced in Wwise" : "muting: the talk is dropped",
+        !g_armed.load() ? "not armed" : !g_mute.load() ? "armed, mute off" : g_silence.load() ? "muting: the talk runs, its voice is stopped in Wwise" : "muting: the talk is dropped",
         g_character, g_drop_local.load() + g_sil_talks.load(), g_drop_local.load(), g_sil_talks.load(), g_pass_local.load(), g_drop_menu.load(),
-        g_pass_menu.load(), g_pass_other_branch.load(), g_seen.load(), g_sil_posts.load(), g_sil_exact.load(), g_sil_token.load(), g_sil_fail.load(),
-        g_sil_restored.load(), g_sil_unmatched.load(), g_sil_other.load());
+        g_pass_menu.load(), g_pass_other_branch.load(), g_seen.load(), g_sil_stopped.load(), g_sil_posts.load(), g_sil_exact.load(), g_sil_token.load(),
+        g_sil_untokened.load(), g_sil_fault.load(), g_sil_nopid.load(), g_sil_unmatched.load(), g_sil_other.load());
+    if (g_vol_set.load() || g_vol_fail.load() || g_by_volume.load())
+        Log("[voice] %s: v0.11's volume 0 (debug op 4 0, %s): set on %u voice posts (not stopped), failed %u", why, g_by_volume.load() ? "now on" : "now off",
+            g_vol_set.load(), g_vol_fail.load());
 }
 
 }  // namespace
@@ -301,7 +304,7 @@ bool FilterTalk(void* comp, void* msg) noexcept {
         return false;
     }
     if (is_local && g_silence.load(std::memory_order_relaxed)) {
-        // The talk runs (what the game chains to it still happens); its voice post is silenced in PrePost. Its
+        // The talk runs (what the game chains to it still happens); its voice post is stopped (PrePost / AfterPost). Its
         // subtitle (a spoken line) is dropped once by the subtitle hook.
         g_local_comp.store(reinterpret_cast<std::uintptr_t>(comp), std::memory_order_relaxed);
         g_token_until.store(QpcNow() + static_cast<std::int64_t>(kTokenMs * static_cast<double>(g_qpf) / 1000.0), std::memory_order_relaxed);
@@ -321,69 +324,82 @@ bool FilterTalk(void* comp, void* msg) noexcept {
     return true;
 }
 
-void PrePost(std::uint32_t ev, std::uint64_t obj, std::uint32_t n_ext) noexcept {
-    if (!g_silence.load(std::memory_order_relaxed) || !obj || obj >= 0xFFFFFFFFFFFFFFE0ull) return;
-    const bool mute = g_mute.load(std::memory_order_relaxed);
-    const bool was_muted = g_muted_n.load(std::memory_order_relaxed) && MutedHas(obj, false);
-    bool silence = false;
-    if (n_ext && mute) {
-        bool other = false;
-        for (std::uint32_t o : kOtherTalkerEvents) other |= o == ev;
-        // exact: the local talk component's playing instance is this object
-        const std::uintptr_t comp = g_local_comp.load(std::memory_order_relaxed);
-        std::uintptr_t playing = 0, inst = 0;
-        const bool exact = !other && comp && Rd(comp + kTalkPlaying, playing) && playing && Rd(playing + kPlayingInstance, inst) && inst == obj;
-        // else: a token and the position
-        double p[3] = {}, head[3] = {}, echo[3] = {};
-        bool close_by = false, nearer = true;
-        if (!exact && !other && g_pos_ok.load(std::memory_order_relaxed) && mem::Read(static_cast<std::uintptr_t>(obj) + kObjPos, p, sizeof(p))) {
-            LoadVec(g_pos_bits, head);
-            head[2] += kHeadM;
-            const double dl = Dist3(p, head);
-            close_by = std::isfinite(dl) && dl <= kNearM;
-            if (close_by && g_echo_ok.load(std::memory_order_relaxed)) {
-                LoadVec(g_echo_bits, echo);
-                nearer = dl < Dist3(p, echo);
-            }
+bool SamVoiceEvent(std::uint32_t ev) noexcept {
+    for (std::uint32_t v : kSamVoiceEvents)
+        if (v == ev) return true;
+    return false;
+}
+
+bool PrePost(std::uint32_t ev, std::uint64_t obj, std::uint32_t n_ext) noexcept {
+    if (!n_ext || !g_silence.load(std::memory_order_relaxed) || !g_mute.load(std::memory_order_relaxed) || !obj || obj >= 0xFFFFFFFFFFFFFFE0ull)
+        return false;
+    bool other = false;
+    for (std::uint32_t o : kOtherTalkerEvents) other |= o == ev;
+    if (other) {
+        g_sil_other.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    // exact: the local talk component's playing instance is this object
+    const std::uintptr_t comp = g_local_comp.load(std::memory_order_relaxed);
+    std::uintptr_t playing = 0, inst = 0;
+    const bool exact = comp && Rd(comp + kTalkPlaying, playing) && playing && Rd(playing + kPlayingInstance, inst) && inst == obj;
+    // else: the position
+    double p[3] = {}, head[3] = {}, echo[3] = {};
+    bool close_by = false, nearer = true;
+    if (!exact && g_pos_ok.load(std::memory_order_relaxed) && mem::Read(static_cast<std::uintptr_t>(obj) + kObjPos, p, sizeof(p))) {
+        LoadVec(g_pos_bits, head);
+        head[2] += kHeadM;
+        const double dl = Dist3(p, head);
+        close_by = std::isfinite(dl) && dl <= kNearM;
+        if (close_by && g_echo_ok.load(std::memory_order_relaxed)) {
+            LoadVec(g_echo_bits, echo);
+            echo[2] += kHeadM;  // the same reference point on both: the head height over the root
+            nearer = dl < Dist3(p, echo);
         }
-        const bool token = g_tokens.load(std::memory_order_relaxed) > 0 && QpcNow() < g_token_until.load(std::memory_order_relaxed);
-        if (exact || (token && close_by && nearer)) {
-            silence = true;
-            if (g_tokens.fetch_sub(1, std::memory_order_relaxed) <= 0) g_tokens.store(0, std::memory_order_relaxed);
-            (exact ? g_sil_exact : g_sil_token).fetch_add(1, std::memory_order_relaxed);
-        } else if (other) {
-            g_sil_other.fetch_add(1, std::memory_order_relaxed);
-        } else if (close_by && nearer) {
+    }
+    const bool token = g_tokens.load(std::memory_order_relaxed) > 0 && QpcNow() < g_token_until.load(std::memory_order_relaxed);
+    // By position only while a muted talk of the local player is pending (another Sam actor's voice near us, an in-engine
+    // cutscene's or the menu figure's without a muted talk, is never cut); the exact match needs no token.
+    if (!exact && !(close_by && nearer && token)) return false;
+    if (!SamVoiceEvent(ev)) {
+        if (token) {
             g_sil_unmatched.fetch_add(1, std::memory_order_relaxed);
             g_last_unmatched.store(static_cast<std::uint64_t>(ev) | (obj << 32), std::memory_order_relaxed);
         }
+        return false;
     }
-    if (silence) {
-        if (CallBusVolume(obj, 0.0f) == 1) {
-            g_sil_posts.fetch_add(1, std::memory_order_relaxed);
-            MutedAdd(obj);
-        } else {
-            g_sil_fail.fetch_add(1, std::memory_order_relaxed);
-        }
-    } else if (was_muted) {
-        // a muted object reused for another sound: back to full volume first
-        if (CallBusVolume(obj, 1.0f) == 1) g_sil_restored.fetch_add(1, std::memory_order_relaxed);
-        MutedHas(obj, true);
+    if (token && g_tokens.fetch_sub(1, std::memory_order_relaxed) <= 0) g_tokens.store(0, std::memory_order_relaxed);
+    (exact ? g_sil_exact : token ? g_sil_token : g_sil_untokened).fetch_add(1, std::memory_order_relaxed);
+    g_sil_posts.fetch_add(1, std::memory_order_relaxed);
+    if (g_by_volume.load(std::memory_order_relaxed)) {  // v0.11 (debug op 4 0): volume 0 before the post, no stop
+        (g_bus_volume && CallBusVolume(obj) == 1 ? g_vol_set : g_vol_fail).fetch_add(1, std::memory_order_relaxed);
+        return false;
     }
+    return true;
 }
 
-void NoteUnregister(std::uint64_t obj) noexcept {
-    // Wwise forgets the object's volume with it
-    if (g_muted_n.load(std::memory_order_relaxed)) MutedHas(obj, true);
+void AfterPost(std::uint32_t pid, StopFn stop) noexcept {
+    if (!pid) {
+        g_sil_nopid.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    const StopFn fn = stop ? stop : reinterpret_cast<StopFn>(g_stop_export);
+    if (fn && CallStop(fn, pid)) g_sil_stopped.fetch_add(1, std::memory_order_relaxed);
+    else g_sil_fault.fetch_add(1, std::memory_order_relaxed);
 }
 
 bool WantsPostHook() noexcept { return g_want_post; }
 
+unsigned MeterState() noexcept {
+    if (!g_armed.load(std::memory_order_relaxed) || !g_mute.load(std::memory_order_relaxed) || !g_silence.load(std::memory_order_relaxed)) return 0;
+    return g_by_volume.load(std::memory_order_relaxed) ? 1u : 2u;
+}
+
 void PostHookReady(bool ready) noexcept {
     if (!g_want_post) return;
     g_silence.store(ready);
-    Log("[voice] Sam's muted voice: %s", ready ? "the talk runs and its voice post is silenced in Wwise (SetGameObjectOutputBusVolume 0; what the game chains to "
-                                                   "the line, BB's answer, still comes; its subtitle is dropped)"
+    Log("[voice] Sam's muted voice: %s", ready ? "the talk runs and its voice post is stopped in Wwise right after it is posted (StopPlayingID, 0 ms; "
+                                                   "what the game chains to the line, BB's answer, still comes; its subtitle is dropped)"
                                                  : "no PostEvent hook: the talk is dropped instead (BB does not answer a muted dialogue line)");
 }
 
@@ -460,16 +476,19 @@ bool Install(Mode mode, bool is_host, const std::string& my_character, bool capt
     }
     if (mute) {
         // Silencing in Wwise (the talk runs) needs this export and a PostEvent hook (PostHookReady says, after psound::Install).
+        // The probe (installed before this) may have hooked the export already: it checked the same bytes first.
         LARGE_INTEGER f;
         QueryPerformanceFrequency(&f);
         g_qpf = f.QuadPart > 0 ? f.QuadPart : 1;
-        const auto got = reinterpret_cast<std::uintptr_t>(GetProcAddress(GetModuleHandleW(nullptr), kSetBusVolumeName));
-        if (got && got == mem::Base() + kSetBusVolume && mem::CodeMatches(got, kSetBusVolumeSig)) {
-            g_bus_volume = reinterpret_cast<BusVolumeFn>(got);
+        const auto got = reinterpret_cast<std::uintptr_t>(GetProcAddress(GetModuleHandleW(nullptr), kStopPlayingName));
+        if (got && got == mem::Base() + kStopPlaying && (audioprobe::Hooked(kStopPlaying) || mem::CodeMatches(got, kStopPlayingSig))) {
+            g_stop_export = got;
             g_want_post = true;
+            const auto bv = reinterpret_cast<std::uintptr_t>(GetProcAddress(GetModuleHandleW(nullptr), kSetBusVolumeName));
+            if (bv && bv == mem::Base() + kSetBusVolume && (audioprobe::Hooked(kSetBusVolume) || mem::CodeMatches(bv, kSetBusVolumeSig))) g_bus_volume = bv;
         } else {
-            Log("[voice] SetGameObjectOutputBusVolume (ds.exe+0x%llX) %s: a muted talk is dropped", static_cast<unsigned long long>(kSetBusVolume),
-                !got ? "not exported" : got != mem::Base() + kSetBusVolume ? "moved" : "bytes differ");
+            Log("[voice] StopPlayingID (ds.exe+0x%llX) %s: a muted talk is dropped", static_cast<unsigned long long>(kStopPlaying),
+                !got ? "not exported" : got != mem::Base() + kStopPlaying ? "moved" : "bytes differ");
         }
     }
     g_mute.store(mute);  // before arming: an armed filter never counts a talk as passed because of the order
@@ -519,7 +538,8 @@ void Tick(game::Entity* local, double now_ms) noexcept {
         }
         const std::uint64_t um = g_last_unmatched.exchange(0, std::memory_order_relaxed);
         if (um)
-            Log("[voice] an external-source post (event 0x%08X, object ...%08X) near the local player was not matched to a muted talk: not silenced",
+            Log("[voice] an external-source post (event 0x%08X, object ...%08X) near the local player while a muted talk was pending is not one of "
+                "Sam's voice events: kept",
                 static_cast<unsigned>(um & 0xFFFFFFFFu), static_cast<unsigned>(um >> 32));
     }
     const std::uintptr_t fig = realbody::MenuSelfFigure();
@@ -530,7 +550,7 @@ void Tick(game::Entity* local, double now_ms) noexcept {
     if (now_ms < g_next_log_ms) return;
     g_next_log_ms = now_ms + 1000;
     const std::uint32_t now[6] = {g_drop_local.load() + g_sil_talks.load(), g_drop_menu.load(), g_pass_local.load(), g_pass_menu.load(), g_pass_other_branch.load(),
-                                  g_sil_posts.load() + g_sil_unmatched.load() * 7u + g_sil_restored.load() * 13u + g_sil_fail.load() * 17u};
+                                  g_sil_stopped.load() + g_sil_unmatched.load() * 7u + g_sil_fault.load() * 13u + g_sil_nopid.load() * 17u};
     bool changed = false;
     for (int i = 0; i < 6; ++i) changed |= now[i] != g_last[i];
     if (!changed) return;
@@ -543,9 +563,9 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
     switch (op) {
     case 0:
         LogCounts("status");
-        say("self_voice=%s (%s): muted %u local / %u menu, passed %u / %u, voice posts silenced %u", ModeName(g_mode),
+        say("self_voice=%s (%s): muted %u local / %u menu, passed %u / %u, Sam's voice posts stopped %u of %u", ModeName(g_mode),
             !g_armed.load() ? "not armed" : g_mute.load() ? "muting" : "mute off", g_drop_local.load() + g_sil_talks.load(), g_drop_menu.load(),
-            g_pass_local.load(), g_pass_menu.load(), g_sil_posts.load());
+            g_pass_local.load(), g_pass_menu.load(), g_sil_stopped.load(), g_sil_posts.load());
         return true;
     case 1: {
         if (!g_armed.load() || !g_resolved_mute) {
@@ -589,8 +609,24 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
         say("figure %p: list %d of %d (%d sentences) asked", reinterpret_cast<void*>(view.e), n, count, sentences);
         return true;
     }
+    case 4: {
+        if (!g_want_post) {
+            say("not silencing in Wwise (mute not resolved at start, or no StopPlayingID export)");
+            return false;
+        }
+        const bool by_volume = v[1] == 0.0;
+        if (by_volume && !g_bus_volume) {
+            say("SetGameObjectOutputBusVolume export not checked: v0.11's method unavailable");
+            return false;
+        }
+        g_by_volume.store(by_volume);
+        LogCounts(by_volume ? "silencing by v0.11's volume 0 (debug: the grunts come through)" : "silencing by stopping the voice");
+        say("Sam's muted voice posts are %s", by_volume ? "set to volume 0 (v0.11, test only)" : "stopped");
+        return true;
+    }
     default:
-        say("ops: 0 log, 1 <0/1> mute off / on, 2 <n> the menu figure says line list n, 3 <n> test situation n (voice queue)");
+        say("ops: 0 log, 1 <0/1> mute off / on, 2 <n> the menu figure says line list n, 3 <n> test situation n (voice queue), 4 <0/1> "
+            "v0.11 volume 0 / stop");
         return false;
     }
 }

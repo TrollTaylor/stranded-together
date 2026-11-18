@@ -124,6 +124,6 @@ wait 25000
 log audio: end
 action self_voice 0
 wait 1500
-nolog \[voice\] an external-source post .* was not matched to a muted talk
+nolog \[voice\] an external-source post .* is not one of Sam's voice events
 action log_status
 quit

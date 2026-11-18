@@ -35,7 +35,8 @@ using mem::Rd;
 // Evidence: docs/audio-research.md sections 2, 3 and 10. Every target is byte-checked before its hook.
 // The Wwise API is found by export name first; the export must be the known RVA with the known bytes.
 constexpr std::uintptr_t kPostEvent = 0x3A1A5C0, kRegister = 0x3A1CF50, kUnregister = 0x3A21640, kSetPosition = 0x3A1FA50,
-                         kSetSwitch = 0x3A202F0, kSetRtpc = 0x3A1FC10, kStopPlaying = 0x3A20B20;
+                         kSetSwitch = 0x3A202F0, kSetRtpc = 0x3A1FC10, kStopPlaying = 0x3A20B20, kBusVolume = 0x3A1EEF0,
+                         kAuxSends = 0x3A1EC40;
 constexpr std::uintptr_t kEnqueue = 0x26A6570;        // voice manager enqueue (player + 0x4500)
 constexpr std::uintptr_t kEnqueueCall = 0x26A6381;    // in 0x1426A6330 (the locked enqueue): call kEnqueue
 constexpr std::uintptr_t kTalk = 0x22D4F70;           // DSTalkComponent MsgDSStartTalk handler body
@@ -186,6 +187,27 @@ using PlayerUpdateFn = void (*)(void*, void*);
 using EmitterStartFn = void (*)(void*);
 using ExecActionFn = int (*)(std::uint32_t, int, std::uint64_t, std::int32_t, int, std::uint32_t);
 
+// The objects whose voice post self_voice silenced (Sam's muted voice; the counters below, doc section 18).
+constexpr unsigned kSvSlots = 16;
+std::atomic<std::uint64_t> g_sv_obj[kSvSlots];
+std::atomic<std::uint32_t> g_sv_next{0};
+std::atomic<std::uint32_t> g_sv_vol{0}, g_sv_vol_up{0}, g_sv_aux{0}, g_sv_aux_n{0};
+std::atomic<std::uint64_t> g_sv_vol_last{0}, g_sv_aux_last{0};  // return address (low 32 bits: RVA) | value bits / count << 32
+bool SvHas(std::uint64_t obj) noexcept {
+    for (const auto& s : g_sv_obj)
+        if (s.load(std::memory_order_relaxed) == obj) return true;
+    return false;
+}
+void SvAdd(std::uint64_t obj) noexcept {
+    if (SvHas(obj)) return;
+    g_sv_obj[g_sv_next.fetch_add(1, std::memory_order_relaxed) % kSvSlots].store(obj, std::memory_order_relaxed);
+}
+void SvRemove(std::uint64_t obj) noexcept {
+    for (auto& s : g_sv_obj) {
+        std::uint64_t cur = obj;
+        s.compare_exchange_strong(cur, 0, std::memory_order_relaxed);
+    }
+}
 PostEventFn o_post = nullptr;
 RegisterFn o_reg = nullptr;
 UnregisterFn o_unreg = nullptr;
@@ -208,8 +230,12 @@ EmitterStartFn o_emitter = nullptr;
 
 std::uint32_t H_PostEvent(std::uint32_t ev, std::uint64_t obj, std::uint32_t flags, void* cb, void* cookie, std::uint32_t n_ext, void* ext,
                           std::uint32_t pid) {
-    selfvoice::PrePost(ev, obj, n_ext);  // Sam's own voice silenced on this game (before the post), self_voice.cpp
+    const bool sam_muted = selfvoice::PrePost(ev, obj, n_ext);  // the local Sam's voice while muted (self_voice.cpp)
     const std::uint32_t r = o_post(ev, obj, flags, cb, cookie, n_ext, ext, pid);
+    if (sam_muted) {
+        selfvoice::AfterPost(r, o_stop);  // stopped at once (o_stop: the original when hooked here, else the export)
+        SvAdd(obj);
+    }
     if (psound::Capturing()) psound::HotPost(ev, obj, n_ext, r);
     Push(kPost, ev, r, (flags & 0x7FFFFFFFu) | (n_ext ? 0x80000000u : 0u), obj, reinterpret_cast<std::uint64_t>(_ReturnAddress()));
     if (n_ext && g_on.load(std::memory_order_relaxed)) {
@@ -239,7 +265,7 @@ int H_Register(std::uint64_t obj, const char* name) {
 int H_Unregister(std::uint64_t obj) {
     // Before the original: another thread may register the same pooled id right after it (the ring keeps the order).
     if (psound::Capturing()) psound::HotUnregister(obj);
-    selfvoice::NoteUnregister(obj);
+    SvRemove(obj);
     const int r = o_unreg(obj);
     Push(kUnreg, 0, static_cast<std::uint32_t>(r), 0, obj, reinterpret_cast<std::uint64_t>(_ReturnAddress()));
     return r;
@@ -272,6 +298,197 @@ int H_ExecAction(std::uint32_t ev, int action, std::uint64_t obj, std::int32_t m
     if (psound::Capturing()) psound::HotAction(ev, action, obj, ms, pid);
     Push(kAction, ev, static_cast<std::uint32_t>(action), pid, obj, reinterpret_cast<std::uint64_t>(_ReturnAddress()));
     return r;
+}
+
+// ---------------------------------------------------------------- Sam's muted voice: what happens after it (grunts, 2026-11-18)
+// docs/audio-research.md section 18. The objects whose voice post self_voice silenced (the last kSvSlots, until they are
+// unregistered): every later SetGameObjectOutputBusVolume / SetGameObjectAuxSendValues on them is counted (Decima's
+// sound-instance update 0x141DD3380 pushes its own level and zone sends: call sites 0x141DD34FB / 0x141DD35B2).
+using BusVolumeFn = int (*)(std::uint64_t, std::uint64_t, float);
+using AuxSendsFn = int (*)(std::uint64_t, void*, std::uint32_t);
+BusVolumeFn o_busvol = nullptr;
+AuxSendsFn o_aux = nullptr;
+int H_BusVolume(std::uint64_t obj, std::uint64_t listener, float v) {
+    const int r = o_busvol(obj, listener, v);
+    if (obj && SvHas(obj)) {
+        g_sv_vol.fetch_add(1, std::memory_order_relaxed);
+        if (v > 0.0f) {
+            g_sv_vol_up.fetch_add(1, std::memory_order_relaxed);
+            std::uint32_t bits = 0;
+            std::memcpy(&bits, &v, 4);
+            g_sv_vol_last.store((reinterpret_cast<std::uint64_t>(_ReturnAddress()) - g_base) | (static_cast<std::uint64_t>(bits) << 32), std::memory_order_relaxed);
+        }
+    }
+    return r;
+}
+int H_AuxSends(std::uint64_t obj, void* sends, std::uint32_t n) {
+    const int r = o_aux(obj, sends, n);
+    if (obj && SvHas(obj)) {
+        g_sv_aux.fetch_add(1, std::memory_order_relaxed);
+        if (n) {
+            g_sv_aux_n.fetch_add(1, std::memory_order_relaxed);
+            g_sv_aux_last.store((reinterpret_cast<std::uint64_t>(_ReturnAddress()) - g_base) | (static_cast<std::uint64_t>(n) << 32), std::memory_order_relaxed);
+        }
+    }
+    return r;
+}
+
+// Sam's voice buses metered by Wwise itself (doc section 18): AK::SoundEngine::RegisterBusMeteringCallback(bus, cb,
+// AK_EnableBusMeter_Peak). The callback (the audio thread, every audio frame while that bus has a mix node) gets the
+// bus's IAkMetering (vtable 0x144323210: +0x08 GetPeak -> [this+0x10], one float per channel, linear). The 2019.2 callback
+// does not name its bus: one callback per bus (MeterCb<i>). The hidden test silences only the device buffer
+// (IAudioRenderClient), after the mix: the meters still read what the mix holds. Counted per self_voice state at that
+// moment (selfvoice::MeterState: 0 not muting, 1 muting with v0.11's volume 0, 2 muting by stopping the voice).
+// The chain from the bank metadata: Sam's voice bus 0xDCB6FE59 -> 0x3D52851C -> 0xEE074523 (also BB 0x8FC5AE86, the cuff
+// 0xA18CEC43) -> 0x5FD8F5F6 -> 0x7CC88FD9 -> the master bus 0xE2B7BC37 (everything; a check that metering works at all).
+constexpr std::uintptr_t kMeterReg = 0x3A1CE80, kMeterVtbl = 0x4323210;
+constexpr std::uintptr_t kBusNodes = 0x7E9BAA0, kBusNodeCount = 0x7E9BAA8;  // the mix-bus nodes (0x143A63A70): node+0x70 -> bus, bus+0x10 id
+constexpr std::uint32_t kMeterBuses[] = {0xDCB6FE59u, 0x3D52851Cu, 0xEE074523u, 0x5FD8F5F6u, 0x7CC88FD9u, 0xE2B7BC37u};
+constexpr unsigned kMeters = sizeof(kMeterBuses) / sizeof(kMeterBuses[0]);
+constexpr float kLoud = 0.001f;  // -60 dBFS
+using MeterCbFn = void (*)(void*, std::uint32_t, std::uint32_t);
+using MeterRegFn = int (*)(std::uint32_t, MeterCbFn, std::uint32_t);
+struct MeterAcc {
+    std::atomic<std::uint32_t> frames{0}, loud{0}, peak_bits{0};
+};
+MeterAcc g_meter[kMeters][3];
+// Loud stretches of the voice tree's mixing bus 0x7CC88FD9 (the first bus of Sam's voice chain that has a mix node; run
+// 20261118-113135): the game thread logs each one with its start time, so it can be laid next to the voice posts.
+constexpr unsigned kBurstBus = 4;
+std::atomic<std::uint32_t> g_burst_loud{0}, g_burst_peak{0};
+std::uint32_t g_burst_seen = 0, g_burst_frames = 0, g_burst_logged = 0;
+double g_burst_start = -1, g_burst_last = 0;
+unsigned g_burst_state = 0;
+std::atomic<std::uint32_t> g_meter_bad{0};
+bool g_meter_tried = false;
+int g_meter_reg[kMeters] = {};
+unsigned g_meter_tries = 0;
+void MeterOne(unsigned bus, void* metering, std::uint32_t chcfg) noexcept {
+    std::uintptr_t vt = 0, peaks = 0;
+    const unsigned n = chcfg & 0xFFu;
+    float v[8] = {};
+    if (!metering || n == 0 || n > 8 || !Rd(reinterpret_cast<std::uintptr_t>(metering), vt) || vt != g_base + kMeterVtbl ||
+        !Rd(reinterpret_cast<std::uintptr_t>(metering) + 0x10, peaks) || !peaks || !mem::Read(peaks, v, n * sizeof(float))) {
+        g_meter_bad.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    float pk = 0;
+    for (unsigned i = 0; i < n; ++i)
+        if (std::isfinite(v[i]) && std::fabs(v[i]) > pk) pk = std::fabs(v[i]);
+    MeterAcc& a = g_meter[bus][selfvoice::MeterState()];
+    a.frames.fetch_add(1, std::memory_order_relaxed);
+    if (pk > kLoud) a.loud.fetch_add(1, std::memory_order_relaxed);
+    std::uint32_t bits = 0;
+    std::memcpy(&bits, &pk, 4);
+    if (bus == kBurstBus && pk > kLoud) {
+        g_burst_loud.fetch_add(1, std::memory_order_relaxed);
+        std::uint32_t bp = g_burst_peak.load(std::memory_order_relaxed);
+        while (bits > bp && !g_burst_peak.compare_exchange_weak(bp, bits, std::memory_order_relaxed)) {
+        }
+    }
+    std::uint32_t cur = a.peak_bits.load(std::memory_order_relaxed);
+    while (bits > cur && !a.peak_bits.compare_exchange_weak(cur, bits, std::memory_order_relaxed)) {
+    }
+}
+template <unsigned I>
+void MeterCb(void* metering, std::uint32_t chcfg, std::uint32_t) {
+    MeterOne(I, metering, chcfg);
+}
+const MeterCbFn kMeterCbs[kMeters] = {&MeterCb<0>, &MeterCb<1>, &MeterCb<2>, &MeterCb<3>, &MeterCb<4>, &MeterCb<5>};
+double Db(std::uint32_t bits) {
+    float f = 0;
+    std::memcpy(&f, &bits, 4);
+    return f > 0 ? 20.0 * std::log10(static_cast<double>(f)) : -999.0;
+}
+int CallMeterReg(std::uintptr_t fn, std::uint32_t bus, MeterCbFn cb) noexcept {
+    __try {
+        return reinterpret_cast<MeterRegFn>(fn)(bus, cb, 1u /* AK_EnableBusMeter_Peak */);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+void MeterRegister() {
+    if (g_meter_tried) return;
+    const auto got = reinterpret_cast<std::uintptr_t>(GetProcAddress(GetModuleHandleW(nullptr),
+                                                                      "?RegisterBusMeteringCallback@SoundEngine@AK@@YA?AW4AKRESULT@@KP6AXPEAVIAkMetering@2@UAkChannelConfig@@W4AkMeteringFlags@@@Z2@Z"));
+    if (!got || got != g_base + kMeterReg || !mem::CodeMatches(got, "8B C1 48 8B 0D BF E7 47 04 48 85 C9 74 0D 45 8B C8 4C 8B C2 8B D0 E9")) {
+        g_meter_tried = true;
+        Log("[audio] voice bus meters: NOT registered (RegisterBusMeteringCallback %s)", !got ? "not exported" : got != g_base + kMeterReg ? "moved" : "bytes differ");
+        return;
+    }
+    bool all = true;
+    for (unsigned i = 0; i < kMeters; ++i)
+        if (g_meter_reg[i] != 1) all &= (g_meter_reg[i] = CallMeterReg(got, kMeterBuses[i], kMeterCbs[i])) == 1;
+    if (all || ++g_meter_tries >= 600) {
+        g_meter_tried = true;
+        char buf[256] = {};
+        int at = 0;
+        for (unsigned i = 0; i < kMeters && at < static_cast<int>(sizeof(buf)) - 24; ++i)
+            at += std::snprintf(buf + at, sizeof(buf) - static_cast<std::size_t>(at), "%s0x%08X %d", i ? ", " : "", kMeterBuses[i], g_meter_reg[i]);
+        Log("[audio] voice bus meters %s (bus AKRESULT: %s; peak per audio frame)", all ? "registered" : "NOT all registered", buf);
+    }
+}
+// Which buses have a mix node right now (the list 0x143A63A70 walks), fault-free; new ids are logged once (at most 64).
+std::uint32_t g_seen_bus[64] = {};
+unsigned g_seen_bus_n = 0;
+void BusCensus() {
+    std::uintptr_t arr = 0;
+    std::uint32_t n = 0;
+    if (!Rd(g_base + kBusNodes, arr) || !Rd(g_base + kBusNodeCount, n) || !arr || n > 512) return;
+    for (std::uint32_t i = 0; i < n && g_seen_bus_n < 64; ++i) {
+        std::uintptr_t node = 0, bus = 0;
+        std::uint32_t id = 0;
+        if (!Rd(arr + i * 8ull, node) || !node || !Rd(node + 0x70, bus) || !bus || !Rd(bus + 0x10, id)) continue;
+        bool known = false;
+        for (unsigned k = 0; k < g_seen_bus_n; ++k) known |= g_seen_bus[k] == id;
+        if (known) continue;
+        g_seen_bus[g_seen_bus_n++] = id;
+        std::uint8_t flags = 0;
+        Rd(node + 0xA8, flags);
+        Log("[audio] mix-bus node for bus 0x%08X (node %p, metering flags 0x%02X; %u nodes now)", id, reinterpret_cast<void*>(node), (flags >> 2) & 0x1F, n);
+    }
+}
+void BurstTick(double now) {
+    const std::uint32_t loud = g_burst_loud.load(std::memory_order_relaxed);
+    const std::uint32_t d = loud - g_burst_seen;
+    g_burst_seen = loud;
+    if (d) {
+        if (g_burst_start < 0) g_burst_start = now, g_burst_frames = 0, g_burst_state = selfvoice::MeterState();
+        g_burst_frames += d;
+        g_burst_last = now;
+        return;
+    }
+    if (g_burst_start < 0 || now - g_burst_last < 300) return;
+    static const char* const kSt[3] = {"not muting", "muting by volume 0 (v0.11)", "muting by stopping"};
+    if (g_burst_logged++ < 400)
+        Log("[audio] voice bus 0x%08X loud from %.3f s for %.0f ms: %u frames above -60 dBFS, peak %.1f dBFS (self_voice %s at the start)",
+            kMeterBuses[kBurstBus], g_burst_start / 1000.0, g_burst_last - g_burst_start, g_burst_frames, Db(g_burst_peak.exchange(0)), kSt[g_burst_state]);
+    g_burst_start = -1;
+}
+std::uint32_t g_meter_last[kMeters * 3 + 2] = {};
+void LogVoiceAfter(const char* why, bool always) {
+    std::uint32_t now[kMeters * 3 + 2] = {};
+    for (unsigned i = 0; i < kMeters; ++i)
+        for (unsigned k = 0; k < 3; ++k) now[i * 3 + k] = g_meter[i][k].frames.load();
+    now[kMeters * 3] = g_sv_vol.load() + g_sv_aux.load(), now[kMeters * 3 + 1] = g_meter_bad.load();
+    if (!always && std::memcmp(now, g_meter_last, sizeof(now)) == 0) return;
+    std::memcpy(g_meter_last, now, sizeof(now));
+    const std::uint64_t vl = g_sv_vol_last.load(), al = g_sv_aux_last.load();
+    float lv = 0;
+    const std::uint32_t lvb = static_cast<std::uint32_t>(vl >> 32);
+    std::memcpy(&lv, &lvb, 4);
+    Log("[audio] voice after mute (%s): on the silenced objects: SetGameObjectOutputBusVolume %u (above 0: %u, last %.3f from ds.exe+0x%X), "
+        "SetGameObjectAuxSendValues %u (with sends: %u, last n=%u from ds.exe+0x%X); meter reads unreadable %u",
+        why, g_sv_vol.load(), g_sv_vol_up.load(), lv, static_cast<unsigned>(vl & 0xFFFFFFFFu), g_sv_aux.load(), g_sv_aux_n.load(),
+        static_cast<unsigned>(al >> 32), static_cast<unsigned>(al & 0xFFFFFFFFu), g_meter_bad.load());
+    static const char* const kState[3] = {"not muting", "muting by volume 0 (v0.11)", "muting by stopping the voice"};
+    for (unsigned i = 0; i < kMeters; ++i)
+        for (unsigned k = 0; k < 3; ++k) {
+            const MeterAcc& m = g_meter[i][k];
+            if (!m.frames.load()) continue;
+            Log("[audio] voice after mute (%s): bus 0x%08X meter, %s: frames %u, loud (peak > -60 dBFS) %u, max %.1f dBFS", why, kMeterBuses[i], kState[k],
+                m.frames.load(), m.loud.load(), Db(m.peak_bits.load()));
+        }
 }
 
 // Instance creation / attachment: who (component, return address) made the game object.
@@ -484,6 +701,13 @@ const HookDef kHooks[] = {
      reinterpret_cast<void**>(&o_emitter)},
     {"custom sound init", nullptr, kCustomInit, "48 89 5C 24 18 57 48 83 EC 20 48 8B F9 E8", reinterpret_cast<void*>(&H_CustomInit),
      reinterpret_cast<void**>(&o_custom_init)},
+    // observational (doc section 18): Decima's own level and zone sends pushed onto a voice object after self_voice's mute
+    {"SetGameObjectOutputBusVolume", "?SetGameObjectOutputBusVolume@SoundEngine@AK@@YA?AW4AKRESULT@@_K0M@Z", kBusVolume,
+     "48 89 5C 24 08 57 48 83 EC 30 0F 29 74 24 20 48 8B DA 0F 57 F6 48 8B F9", reinterpret_cast<void*>(&H_BusVolume),
+     reinterpret_cast<void**>(&o_busvol)},
+    {"SetGameObjectAuxSendValues", "?SetGameObjectAuxSendValues@SoundEngine@AK@@YA?AW4AKRESULT@@_KPEAUAkAuxSendValue@@K@Z", kAuxSends,
+     "48 89 5C 24 10 48 89 6C 24 18 57 48 83 EC 30 45 33 D2 41 8B D8 48 8B FA", reinterpret_cast<void*>(&H_AuxSends),
+     reinterpret_cast<void**>(&o_aux)},
 };
 constexpr std::size_t kHookCount = sizeof(kHooks) / sizeof(kHooks[0]);
 bool g_hooked[kHookCount] = {};
@@ -539,7 +763,7 @@ std::map<std::string, std::uint32_t>* g_talk_owners = nullptr;
 std::vector<std::uint64_t>* g_analyze = nullptr;
 std::uint32_t g_tail = 0, g_dtail = 0, g_dropped = 0, g_ddropped = 0, g_stops_known = 0, g_stops_unknown = 0;
 std::uint32_t g_n_enqueue = 0, g_n_talk = 0, g_n_sentence = 0, g_n_anim = 0, g_n_voicepost = 0, g_n_say = 0;
-double g_next_summary_ms = 0, g_next_family_ms = 0, g_next_reverse_ms = 0;
+double g_next_summary_ms = 0, g_next_family_ms = 0, g_next_reverse_ms = 0, g_next_census_ms = 0;
 std::uint32_t g_last_sum[kKinds] = {};
 DWORD g_game_tid = 0;
 
@@ -1440,8 +1664,15 @@ void Tick(game::Entity* local, double now_ms) noexcept {
         g_next_reverse_ms = now_ms + 2000;
         ReverseScan();
     }
+    MeterRegister();
+    BurstTick(now_ms);
+    if (now_ms >= g_next_census_ms) {
+        g_next_census_ms = now_ms + 1000;
+        BusCensus();
+    }
     if (now_ms >= g_next_summary_ms) {
         g_next_summary_ms = now_ms + 10000;
+        LogVoiceAfter("10 s", false);
         std::uint32_t c[kKinds];
         bool moved = false;
         for (int k = 0; k < kKinds; ++k) c[k] = g_calls[k].load(std::memory_order_relaxed), moved |= c[k] != g_last_sum[k];
@@ -1458,10 +1689,12 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
     switch (op) {
     case 0:
         Summary("summary");
+        LogVoiceAfter("summary", true);
         std::snprintf(msg, cap, "summary logged");
         return true;
     case 1:
         Dump();
+        LogVoiceAfter("dump", true);
         std::snprintf(msg, cap, "dump logged: %zu events, %zu objects", g_evs->size(), g_objs->size());
         return true;
     case 2:

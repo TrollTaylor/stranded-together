@@ -299,6 +299,15 @@ Scenarios: `collision`, `collision-off`, `two-games-collision`, `two-games-all`.
   sent (default on; the partner's props follow). The result reports the weapon watch: changes seen, how many of
   their reads waited for the watch's 40 ms gap, and the time from a draw / holster to the frame that carries it
   (mean, max). Weapons with no prop on the other screen are not sent (logged once each).
+* `action gear 18 <0/1>`: the self view headgear's mover writes (docs/real-partner-body.md section 20) off (every
+  accessory's mover back to the identity, and the v0.11 head lift back) / on (the default). `[headgear] our entity ...
+  hangs on HLP_Head but has no offset of its own`: an unlisted head item is shown, so no offset is written and the lift
+  holds every head item up while it is shown. `action gear 19 <0/1>`: the headgear and boots meters (`[headgear] self
+  ...`, `[headgear] partner head prop ...`, `[boots] boots' feet vs the drawn feet ...`; every second) off / on. By
+  default they run in hidden tests only (never in play).
+* `action gear 20 <percent>` (1-100, default 1): the partner body's feet scale under its boots prop (section 21;
+  100: not scaled). `action gear 21 <0/1>`: boots sync at run time (section 21): our boots item not sent and the
+  partner's boots prop not drawn (0) / both (1, the default with `boots_sync=1`).
 * `action gear 16 <0/1>`: Sam's head parts (hair, hood, face lines; docs/real-partner-body.md section 14) not
   named / named in our frames (default on). Off only stops naming them, so a partner body keeps what it had
   last: to see the cutscene defaults, set 0 before the body comes. The result says whether the last read was
@@ -351,6 +360,16 @@ with `audio_probe=1`; with the key off nothing is hooked.
 * `action audio_probe 3`: the local player's components (and which derive from the talk / voice / sound
   types). `action audio_probe 4`: reset the counters.
 
+*(2026-11-18, audio-research.md section 18)* The probe also hooks `SetGameObjectOutputBusVolume` and
+`SetGameObjectAuxSendValues` (observational) and registers Wwise bus meters (`RegisterBusMeteringCallback`, peak) on
+Sam's voice chain `0xDCB6FE59`, `0x3D52851C`, `0xEE074523`, `0x5FD8F5F6`, `0x7CC88FD9` and the master `0xE2B7BC37`.
+Lines: `[audio] voice bus meters registered (...)`; `[audio] mix-bus node for bus 0x... ` (each bus that gets a mix node,
+once; only those can be metered: in this game Sam's chain mixes first at `0x7CC88FD9`); `[audio] voice after mute (...)`
+with the game's volume / aux-send calls on the objects whose voice self_voice silenced and, per bus, frames, loud frames
+(peak > -60 dBFS) and the max split by the self_voice state (not muting / v0.11's volume 0 / stopping); `[audio] voice
+bus 0x7CC88FD9 loud from <t> s for <ms>: ...` for each loud stretch (the timeline to lay next to the `voice post #N`
+lines). The hidden test silences the device buffer only, after the mix, so the meters read what would be heard.
+
 Scenarios: `audio-probe` (Sam), `audio-probe-fragile` (the guest-Fragile self view).
 
 With `self_voice` muting (below) the probe owns the talk-handler hook and asks `self_voice` first: a dropped talk is
@@ -362,11 +381,14 @@ logged as `[audio] talk #N MUTED ...` and counted as `(MUTED by self_voice)` in 
 (spoken lines and the grunts, efforts and breathing) is muted at `DSTalkComponent`'s `MsgDSStartTalk` handler
 when the talk is the local player's own (or the cargo menu figure's while it shows the chosen character). Since
 2026-11-18 the local player's muted talk **runs** and only its voice post is silenced in Wwise (a PostEvent detour,
-partner_sound's or the probe's, calls `selfvoice::PrePost`; `[voice] Sam's muted voice: the talk runs ...`); without
-such a detour the talk is dropped as before. The figure's talks are always dropped. The `[voice] counts` lines add
-`dropped N, silenced in Wwise M` and `voice posts silenced N (exact, token), volume call failed, restored, near the
-player but not matched, other talkers kept`; an unmatched post is also logged (`an external-source post ... was not
-matched to a muted talk`). The hook
+partner_sound's or the probe's, calls `selfvoice::PrePost` / `AfterPost`; `[voice] Sam's muted voice: the talk runs ...`);
+without such a detour the talk is dropped as before. The figure's talks are always dropped. *(Changed after v0.11,
+audio-research.md section 18)* the voice post is **stopped** right after it is posted (`StopPlayingID`, 0 ms): v0.11's
+volume 0 was undone by the game's own sound-instance update and the grunts were heard. Only Sam's 28 voice events
+(`selfvoice::kSamVoiceEvents`) near the local player are stopped. The `[voice] counts` lines add `dropped N, ran with the
+voice stopped M` and `Sam's voice posts stopped N of M (exact, a muted talk pending, none pending), stop call faulted,
+post failed; near the player, a muted talk pending, not one of Sam's voice events N; other talkers kept`; such a
+not-Sam post is also logged (`an external-source post ... is not one of Sam's voice events: kept`). The hook
 is installed at start-up only when the setting resolves to mute (`auto` with a character other than Sam, or `mute`);
 otherwise nothing is hooked and the action reports "not armed". Every second in which a count changed the mod logs
 `[voice] counts: ... local player talks muted N passed M; menu figure talks muted N passed M ...`.
@@ -382,8 +404,12 @@ otherwise nothing is hooked and the action reports "not armed". Every second in 
   3 Humming, 4 AlmostThere, 5 IdleBreathingWhenOverburdened, 6 Cold, 7 HoldBaggageNormal) through the local player's
   voice queue (the game's `PlayPlayerVoice` path, byte-checked, SEH-guarded); works without the probe and when nothing
   is armed. The result says `check 1, queued 0|1` (the queue refuses some requests by priority or repeat rules).
+* `action self_voice 4 <0|1>`: how a muted voice post is silenced: `1` stopped (the default), `0` v0.11's
+  `SetGameObjectOutputBusVolume(object, 0)` before the post, not stopped. Test only, for before / after measurements (it
+  lets the grunts through); logged as `[voice] ... v0.11's volume 0 (debug op 4 0, now on|off): set on N voice posts`.
 
-Scenarios: `self-voice-fragile` (guest-Fragile self view with the audio probe), `self-voice-own-hook` (the same
+Scenarios: `grunts-fragile` (the grunts: walk, run, jumps, situations with the stop, with v0.11's volume 0 and with the
+mute off, measured by the probe's bus meters), `self-voice-fragile` (guest-Fragile self view with the audio probe), `self-voice-own-hook` (the same
 without the probe: self_voice's own hook, the shipping set-up; with `sound_sync=0` partner_sound hooks only PostEvent
 for the silencing), `self-voice-sam` (the Sam control: not armed), `bb-answer-selfview` (the self view without the mute:
 BB's answer control), `two-games-audio` (the final run), `audio-keys-off` (every audio key off).
@@ -444,6 +470,42 @@ the partner sounds' own hooks), `sound-sync-volume` (the echo steps with `partne
 audio with the launcher's default keys). The cuff map shows a "new ranked event" notice in these saves: A takes it away and B
 then closes the map (START does not).
 
+### Vehicle sync (`vehicle_sync`; `session.ini vehicle_sync=0|1|2|3`, default 1)
+
+`native/mod/vehicle_sync.cpp`, [real-partner-body.md](real-partner-body.md) section 22. The vehicle a player rides goes
+out as STM1, and the other screen shows a copy of it (the trike's or the truck's cutscene body, the roadster's
+construction hologram) under the partner's body. Log lines (`[vehicle]`): `game checks ok`, `our vehicle <ptr>:
+DSVehicleSpeedCar, kind 1, ride state 0; resource 'ds/entities/vehicle/pe_ds_vehicle_casp' <guid> (...); skeleton 23
+joints, layout ECF43324` (first sight), `ours: roadster riding (2), seated, at (x, y, z) v m/s, seat (x, y, z), 23
+joints ...; N frames sent (...)` (every 2 s while one is reported), `our Sam got off vehicle ...: reported as parked
+...`, `our last vehicle ...: no longer reported (60 s | beyond 30 m)`, `first frame from the partner`, `the partner's
+vehicle copy '<key>' loading / live after n ms / placed / shown / posed from the partner's vehicle joints / removed
+(<why>)`, `the partner's <copy>: no copy (<why>)` (once per reason: the mode, a refusal) and, in hidden tests or
+while a trace runs, every 5 s while a copy is live `meter (5 s): partner body vs the copy's seat ... cm; play delay ... ms; the
+sent joints turned up to ... deg; the copy's pose vs the closest of the last 6 given ... deg`.
+
+* `action vehicle_sync 0`: three status lines (ours, the partner's copy and the pose targets, the seat meter over the
+  session); the result text is a one-line summary.
+* `action vehicle_sync 1 <0|1|2|3>`: the mode at run time (0 removes the copy and stops sending; 1 the roadster's copy
+  only, the default; 2 solid copies only: trike and truck; 3 all three). Every mode but 0 sends what we ride.
+* `action vehicle_sync 2 <0..3>`: show the partner's vehicle as copy 1 roadster hologram, 2 trike, 3 truck whatever it
+  is (0 = by its kind; the override ignores the mode). No joint pose on another skeleton. Hidden tests of the solid copies (only the roadster is
+  reachable at the 100% save's start).
+* `action vehicle_sync 3 <ms>`: trace for that long: `trace tx t=<QPC ms> pos=(...)` every tick on the sender (our
+  vehicle) and `trace rx play=<sender ms> now=... placed=(...)` on the receiver; on one PC both games share the QPC
+  clock, so the placement error is the receiver's placement against the sender's own transform at the play time.
+* `action vehicle_sync 4 <right cm> <forward cm>` / `6 <up cm>`: an offset of the copy in the vehicle's frame (origin
+  tuning; 0 by default).
+* `action vehicle_sync 5`: describe our current / last vehicle and the copy (components, resource, skeleton).
+* `action vehicle_sync 7` / `8 [m]`: the drivable vehicles in the world's entity list (7 logs them, 8 places Sam beside
+  the nearest). The 100% save's parked roadster is not in that list (82 entities): use 9.
+* `action vehicle_sync 9 <x> <y>`: hidden tests on scratch saves: place Sam at x, y at his own height
+  (`TeleportMode::place`). Beside the parked roadster: `9 -1094.4 276.9` (X then gets him on).
+
+Scenarios: `vehicle-echo` (role echo: our own roadster comes back through STM1, the copy 2 s behind and 4 m beside),
+`two-games-vehicle` (host Sam drives, the guest Fragile watches), `two-games-vehicle-guest` (the guest drives, the host
+watches).
+
 
 ### Real partner body (`real_probe`, `real_spawn`, `real_remove`, `real_names`, `real_stats`, `real_mirror`, `real_control`, `self_view`, `real_outfit`; scenarios only)
 
@@ -479,6 +541,12 @@ hook, which is installed at start-up only with `session.ini partner_body=real` o
   (0-150, default 100): the fit's head lift, how far Sam's head joint (the cap, the glasses) sits from her head
   back towards his own (0: her head; the cap sinks over her eyes). The `[self] fit` line every second has the
   meter (Sam vs body per joint, mean / max), the leak check and the lift.
+  `self_view 8|9 <item> <mm>` (item 0 the cap, 1 the glasses; -100..100): the headgear offset up (8) / forward
+  (9) in Sam's head helper's frame (docs/real-partner-body.md section 20), at run time (it then stays for later
+  shows). `self_view 10 <0/1>`: the per-item headgear offsets (1, the default with `self_headgear=1`) or the v0.11
+  head lift (0: `self_view 7`'s lift applies again, the movers go back to the identity). `self_view 11 <percent>`
+  (1-100, default 1): her feet's scale under Sam's equipped boots (section 21); `self_view 12 <0/1>`: her feet
+  scaled (1, the default with `self_feet_hide=1`) or kept.
   `self_view 4`: the
   subspace work object's state and menu kind, and every ArtPart of the menu's figure (asked / effective
   visible, top-level, children) in the log. In hidden tests a `[menu] subspace state ...` line is logged on
@@ -523,6 +591,7 @@ session comes from the peer's `my_character`; `session.ini partner_character` ov
 | GameModule loading check called by Play | `0x2DCAC40` | voice ping |
 | DSEchoComponent update, sentence pick (`+0x30`, `+0x60`, `+0x68`, resource `+0x20/+0x28`) | `0x2BB705F` | voice ping |
 | Entity::SetUpdateFrequency (prologue to the regroup call; lock `0x147BC4828`, World `0x147BC4E70`, regroup `0x1423FC0E0` targets) / scheduler regroup prologue | `0x235F5A0`, `0x23FC0E0` | smooth (240 Hz boost) |
+| Vehicle classes: vtable slot 0 = the RTTI getter (`DSVehicleSpeedCar` / `DSVehicleTruck` / `DSVehicleMotorbike`), the constructors' `+0x4C4` kind writes, the type / ride state reads (`+0x4C4`, `+0x4CC`), Entity_ExportedGetParent (`+0x70`) | `0x3E274D8`/`0x2F6BC10`, `0x3E26790`/`0x2F6BCB0`, `0x3E25DB8`/`0x2F6BB60`; `0x2F62201`, `0x2F62571`, `0x2F61CFC`; `0x2FA73B6`, `0x2FA74B8`, `0x2361B80` | vehicle sync (sender) |
 
 Regenerate the hex with `DS.load().rd(va, n).hex()` from `tools/re/dsre.py` after a game
 patch, re-verifying each meaning first.

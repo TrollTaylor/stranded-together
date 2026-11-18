@@ -390,7 +390,9 @@ ini <key>=<value>            an extra session.ini line, for every game of the ru
                              interp_delay_ms, name, name_tags, partner_collision,
                              partner_collision_layer, partner_collision_height, partner_gear, name_tag_font,
                              smooth_pose, frame_cap, audio_probe, self_voice, voice_sync, voice_subtitles, sound_sync,
-                             sound_steps, partner_volume (testenv_core ScenarioIniKeyAllowed; a scenario
+                             sound_steps, partner_volume, self_headgear, self_feet_hide, boots_sync,
+                             vehicle_sync
+                             (testenv_core ScenarioIniKeyAllowed; a scenario
                              frame_cap is written after graphics low's 30, so it wins)
 @host ini <key>=<value>      the same, for the first game only; @guest ini for the guest game only (role
                              host). Written after the shared lines, so they win (the mod keeps a key's last
@@ -487,6 +489,13 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   only its voice post is silenced (audio-research.md section 17.2), the Fragile runs check instead `nolog \[voice\] Sam's
   muted voice: no PostEvent hook` and `nolog \[voice\] an external-source post .* was not matched to a muted talk`; the
   own-hook run (no probe, `sound_sync=0`) also asks `ReceivedLike` with `self_voice 3 0`.
+* `grunts-fragile.txt` (role solo, the `fragile_suit` self view, `self_voice=auto`, `sound_sync=1`, `audio_probe=1`):
+  docs/audio-research.md section 18. Idle, walk, run, jumps while running, the Jumping and OutOfBreath situations, idle,
+  with Sam's muted voice stopped; the same moves with v0.11's volume 0 (`self_voice 4 0`, the "before"), with the mute off
+  (`self_voice 1 0`, the control) and stopped again. Evidence: the probe's `[audio] voice after mute` meter lines and the
+  `[audio] voice bus 0x7CC88FD9 loud from` timeline next to the `voice post #N` lines, `[voice] counts` (`stopped N of M`).
+  `nolog` checks that no post was refused as not one of Sam's events and that no stop call faulted. *(2026-11-18)* The other
+  self-voice scenarios now `nolog \[voice\] an external-source post .* is not one of Sam's voice events`.
 * `bb-answer-selfview.txt` (role solo, the `fragile_suit` self view, `self_voice=sam`, probe): `ReceivedLike` asked with
   `until ... queued 1 => action audio_probe 2 0`, then 15 s; the control for "BB's answer" (section 17.2).
 * `two-games-audio.txt` (role host: host Sam, guest `fragile_suit` with self view; `self_voice=auto`, `voice_sync=1`,
@@ -533,6 +542,17 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   30 fps (`smooth 2 30`), and with the fit off (the leak check's comparison); last another character through
   the self view's body switch (`self_view 1 3`). `log <text>` marks each phase in the log for the `[self] fit`
   lines.
+* `self-headgear.txt` (role solo, `fragile_suit` self view, the cap, then the glasses), `echo-boots-headgear.txt` (role
+  echo: the same self view and a `fragile_suit` echo partner 1.2 m beside it), `echo-boots-sam.txt` (role echo, a
+  partner Sam body) and `two-games-boots-headgear.txt` (role host: host Sam, guest `fragile_suit`; run it with a 1080p
+  settings.cfg): headgear and boots (docs/real-partner-body.md sections 20 and 21). Each view "before" (v0.11: `self_view
+  10 0` the head lift, `self_view 12 0` her feet kept, `gear 21 0` no boots item) and "after"; front, back and side
+  close-ups, tuning variants (`self_view 8/9`), the first steps of a walk as a frame sequence, a run at 30 fps; her
+  feet at 100 / 1 / 30 % (`self_view 11`), the partner's boots prop with its feet kept and scaled (`gear 20`). Evidence:
+  the `[headgear] self ...` / `partner head prop ...` and `[boots] boots' feet vs the drawn feet ...` meter lines and
+  the screenshots. (A 3840x2160 `-SettingsCfg` with only the resolution keys still gave 2560x1440 solo.) The meters run
+  in hidden tests only (`gear 19` turns them on in play). In `self-headgear.txt` each tuning variant is followed by the
+  shipped offsets again (cap `8 0 50` / `9 0 -12`, glasses `8 1 11`), so the walk and the 30 fps run use them.
 * `two-games-final.txt` (role host, the guest as the launcher writes it by default: `fragile_suit`, self view,
   fit and lift; the cap on): gear fit, boots and weapons (rifle drawn, aimed, fired, put away; the blood grenade)
   on both screens, the guest's back from the host, the self view off and on again, and the guest running with
@@ -595,6 +615,30 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   the other's name with its role, `TagPlayer (host)` / `TagPlayer (guest)`.
 * `two-games.txt`, `two-games-real.txt`, `two-games-real-fallback.txt` (role host): two games, see
   "Two games".
+* `vehicle-echo.txt` (role echo, `echo_offset_m=4`, `vehicle_sync=1`): vehicle sync (docs/real-partner-body.md section
+  22). `action vehicle_sync 9 -1094.4 276.9` places Sam beside the 100% save's parked purple roadster (where X got him on
+  in `self-view-edges`; walking there with the stick missed it in two runs: the probe walk's length varies), then
+  `until ... ours: roadster => pad X 150`; the echo copy (the roadster's hologram) with the echo Sam seated, a drive (hard
+  left, straight, left: about 28 m, up to 13.7 m/s), stopped, looked at from four camera angles, off again (the copy stays
+  parked), the copy override (`vehicle_sync 2 2` trike, `2 3` truck, `2 0`), and the mode switched off at run time.
+  Evidence: `[vehicle] meter (5 s)` lines and the `vehicle_sync 3` trace (compare `trace tx` with `trace rx` + 4 m).
+* `two-games-vehicle.txt` / `two-games-vehicle-guest.txt` (role host: host Sam, guest `fragile_suit` with self view,
+  `partner_collision=0`): one player gets on its roadster and drives the same path, stops, gets off and is then placed
+  more than 30 m from it (the copy goes); the other watches from `-1088.0 281.5` (about 5 m left of the parked roadster)
+  with its camera untouched since the load, so the drive runs through the middle of its picture. The host drives in the
+  first, the guest in the second (each watcher's camera must not have been turned by a drive of its own). Run with a
+  1080p `-SettingsCfg`. The trace of both games is compared offline (the same QPC clock on one PC).
+  `vehicle_sync=1` (the default) shows the roadster's copy only; `3` also the trike's and the truck's (their copies are
+  checked through the override only), `2` those two only.
+* `two-games-release.txt` (role host, the launcher's default keys: host Sam, guest `fragile_suit` with self view,
+  `voice_sync=1`, `sound_sync=1`, `self_voice=auto`, partner collision on; the guest adds `audio_probe=1`): the release
+  check of headgear, boots, the grunt mute and vehicle sync in one run. Her cap, then cap and glasses on both screens; her
+  boots on the host's screen off, then on again with five frames right after (the boots prop must not show before it is
+  posed and its parts mirrored); the first steps of her walk across his view; her walk, run and six jumps with the probe's
+  bus meters and the `[voice]` counts; then the host's roadster drive seen by the guest (as `two-games-vehicle`), and the
+  copy gone after he is placed beyond 30 m. Her camera faces the host for the mount (`06`) and is then turned back round
+  (`@guest pad none 1300 rx=-32767`) to face his drive: without that turn (run `20261118-130121`) the copy left her view
+  after the first drive frame. Run with a 1080p `-SettingsCfg`; final run `20261118-130839-two-games-release`.
 * `boot.txt`: no input, a screenshot every 10-15 s for 80 s (title flow discovery).
 * `alive.txt`: supervisor steps only (works with `-NoMod`): watch the game for 45 s.
 * `fake-smoke.txt`: the ctest's fake game.

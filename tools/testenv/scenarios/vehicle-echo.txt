@@ -1,0 +1,108 @@
+# Vehicle sync in one game (docs/real-partner-body.md section 22): the echo partner replays our own Sam 2 s later, 4 m
+# beside us, and our own vehicle goes through the STM1 encoder / decoder to it. So the purple roadster at the start
+# (the 100% save's Episode 15 garage) is driven by us and its copy (the roadster's construction hologram) trails it with
+# the echo Sam seated in it. Then off again (the copy stays parked where the roadster is), and the copy override shows
+# the solid cutscene trike and truck at the same place (action vehicle_sync 2 2 / 2 3; no wheel pose on another skeleton).
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario vehicle-echo -SeedSaves complete-100
+role echo
+timeout 360
+ini partner_body=real
+ini echo_offset_m=4
+ini partner_collision=0
+ini vehicle_sync=1
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[sync\] partner body: real
+wait 2000
+screenshot 01-standing
+# beside the parked roadster (vehicle_sync 9: where Sam stood when X got him on in run 20261117-072538) and get on
+action vehicle_sync 9 -1094.4 276.9
+wait 1500
+screenshot 02-at-roadster
+action vehicle_sync 3 30000
+until 20 4000 \[vehicle\] ours: roadster => pad X 150
+wait 3000
+screenshot 03-mounted
+?waitlog 10 \[vehicle\] copy 'roadster_hologram' (shown|NOT shown)
+wait 1500
+screenshot 04-mounted-copy
+action vehicle_sync 0
+# drive: hard left (away from the pillar), then straight on
+pad none 1200 rt=255 lx=-32767 keep
+screenshot 05-driving-a
+pad none 900 rt=255 keep
+screenshot 05-driving-b
+pad none 900 rt=255 lx=-32767 keep
+screenshot 05-driving-c
+pad none 0
+wait 2500
+screenshot 06-stopped
+action vehicle_sync 0
+pad none 600 rx=32767
+wait 500
+screenshot 07-look-a
+pad none 600 rx=32767
+wait 500
+screenshot 07-look-b
+pad none 600 rx=32767
+wait 500
+screenshot 07-look-c
+pad none 600 rx=32767
+wait 500
+screenshot 07-look-d
+# off again: the copy stays where the roadster is parked
+pad X 150
+wait 3500
+screenshot 08-off
+action vehicle_sync 0
+pad none 1300 rx=32767
+wait 1500
+screenshot 08-off-b
+# the solid copies at the same place (debug override), each looked at from three camera angles
+action vehicle_sync 2 2
+?waitlog 20 \[vehicle\] copy 'trike' (shown|NOT shown)
+wait 1500
+screenshot 09-as-trike-a
+pad none 870 rx=32767
+wait 400
+screenshot 09-as-trike-b
+pad none 870 rx=32767
+wait 400
+screenshot 09-as-trike-c
+action vehicle_sync 2 3
+?waitlog 20 \[vehicle\] copy 'truck' (shown|NOT shown)
+wait 1500
+screenshot 10-as-truck-a
+pad none 870 rx=32767
+wait 400
+screenshot 10-as-truck-b
+pad none 870 rx=32767
+wait 400
+screenshot 10-as-truck-c
+action vehicle_sync 2 0
+?waitlog 20 \[vehicle\] the partner's vehicle copy 'roadster_hologram' .*loading
+wait 2500
+screenshot 11-hologram-again-a
+pad none 870 rx=32767
+wait 400
+screenshot 11-hologram-again-b
+pad none 870 rx=32767
+wait 400
+screenshot 11-hologram-again-c
+action vehicle_sync 5
+action vehicle_sync 0
+# switched off at run time: the copy goes and nothing is sent or shown any more
+action vehicle_sync 1 0
+waitlog 10 \[vehicle\] the partner's vehicle copy 'roadster_hologram' removed \(vehicle_sync turned off\)
+wait 2500
+screenshot 12-off
+action vehicle_sync 0
+action real_stats
+action log_status
+quit

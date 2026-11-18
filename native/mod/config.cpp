@@ -123,6 +123,14 @@ Config LoadConfig(const std::wstring& dir) {
             c.self_character = ParseBool(v);
         } else if (k == "self_fit") {
             c.self_fit = ParseBool(v);
+        } else if (k == "self_headgear") {
+            c.self_headgear = ParseBool(v);
+        } else if (k == "self_feet_hide") {
+            c.self_feet_hide = ParseBool(v);
+        } else if (k == "boots_sync") {
+            c.boots_sync = ParseBool(v);
+        } else if (k == "vehicle_sync") {
+            c.vehicle_sync = v == "2" ? 2 : v == "3" ? 3 : (ParseBool(v) ? 1 : 0);
         } else if (k == "pose_hook") {
             c.pose_hook = ParseBool(v);
         } else if (k == "verbose") {
@@ -219,7 +227,9 @@ Config LoadConfig(const std::wstring& dir) {
     Log("[config] name_tags=%d font=%s name=%s", c.name_tags ? 1 : 0, c.name_tag_game_font ? "game" : "default", c.player_name.empty() ? "- (Steam name)" : "set");
     Log("[config] partner_collision=%d layer=%d height=%.2f", c.partner_collision ? 1 : 0, c.partner_collision_layer,
         static_cast<double>(c.partner_collision_height));
-    Log("[config] partner_gear=%d smooth_pose=%d", c.partner_gear ? 1 : 0, c.smooth_pose ? 1 : 0);
+    Log("[config] partner_gear=%d smooth_pose=%d self_headgear=%d self_feet_hide=%d boots_sync=%d", c.partner_gear ? 1 : 0, c.smooth_pose ? 1 : 0,
+        c.self_headgear ? 1 : 0, c.self_feet_hide ? 1 : 0, c.boots_sync ? 1 : 0);
+    Log("[config] vehicle_sync=%d", c.vehicle_sync);
     if (c.audio_probe) Log("[config] audio_probe=1 (logging only)");
     Log("[config] self_voice=%s voice_sync=%d voice_subtitles=%d sound_sync=%d sound_steps=%d partner_volume=%d", selfvoice::ModeName(c.self_voice),
         c.voice_sync ? 1 : 0, c.voice_subtitles ? 1 : 0, c.sound_sync ? 1 : 0, c.sound_steps ? 1 : 0, c.partner_volume);

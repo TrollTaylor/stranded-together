@@ -70,6 +70,9 @@ constexpr PropDef kProps[] = {
     {"case_l", "ds/entities/cinematics/demo_bla0_baggagelarge0_new", "39120f1e-e878-3d46-b272-90153e5ed040"},
     {"case_xl", "ds/entities/cinematics/demo_blx0_main_def", "eb084776-a437-174b-8ea0-fa40efe9da07"},
     {"cube", "ds/entities/cinematics/demo_blx1_main_def", "91243825-ad49-6a48-81e1-c4ec0f65a2b2"},
+    // The equipped boots (docs/real-partner-body.md section 21): the cutscene copy of DSPlayerBootsComponent's entity, the
+    // same ArtParts (part_sam_foot_def) on the same 10-joint skeleton, posed from the partner body's legs (real_body.cpp).
+    {"boots", "ds/entities/cinematics/demo_apv_sam_foot_def_v01", "7e71552e-bf48-464d-8628-fd9f0afc70cd"},
     // Weapons and hand tools (docs/real-partner-body.md section 17): cutscene props with the player
     // weapon's own art parts (decoded offline from the cores; a copy of the game's DSWeaponEntity crashes).
     {"w_assault_rifle", "ds/entities/cinematics/demo_apv_asr2_main_def_v04_def", "d6215dea-4e9d-7e4c-8ef6-bd9f9751ab39"},
@@ -82,7 +85,7 @@ constexpr PropDef kProps[] = {
     {"w_shot_gun", "ds/entities/cinematics/demo_shg2_main_def", "c739ae4a-1ed9-2d47-8c91-e237dab76b69"},
 };
 enum PropId : int {
-    kPropNone = -1, kPropBackpack = 0, kPropOdradek, kPropBbPod, kPropS, kPropM, kPropL, kPropXL, kPropCube,
+    kPropNone = -1, kPropBackpack = 0, kPropOdradek, kPropBbPod, kPropS, kPropM, kPropL, kPropXL, kPropCube, kPropBoots,
     kPropWAsr, kPropWGrbl, kPropWGrdc, kPropWGrfl, kPropWGrsm, kPropWMrod, kPropWHag, kPropWShg, kPropCount
 };
 static_assert(sizeof(kProps) / sizeof(kProps[0]) == kPropCount, "prop table");
@@ -143,11 +146,13 @@ struct ResEntry;
 // The prop key an item needs (-1: none). `res`: the resource table its entity / weapon ids name (a
 // weapon's prop follows its resource's core; without a table a weapon has none).
 int PropFor(const wire::GearItem& it, const ResEntry* res);
+bool g_boots_sync = true;  // session.ini boots_sync / `gear 21 <0/1>` (section 21)
 int PropForKind(const wire::GearItem& it) {
     switch (it.kind) {
         case wire::GearKind::backpack: return kPropBackpack;
         case wire::GearKind::odradek: return kPropOdradek;
         case wire::GearKind::bb_pod: return kPropBbPod;
+        case wire::GearKind::boots: return g_boots_sync ? kPropBoots : kPropNone;
         case wire::GearKind::cargo: return it.model < 31 ? kModelMap[it.model].prop : (it.model == wire::kGearNone ? kPropM : kPropNone);
         case wire::GearKind::entity: return it.res < wire::kMaxGearRes ? kPropCount + it.res : kPropNone;
         case wire::GearKind::weapon: return kPropNone;
@@ -586,8 +591,8 @@ struct PropSet {
     double last_placed_ms = 0;
     std::uint32_t placement_off = 0;  // ticks the detour's list was found unpublished (a placement fault)
     unsigned looks = 0, looks_partial = 0, looks_reapplied = 0, looks_failed = 0;
-    std::uintptr_t pose_e[realbody::kMaxPoseTargets] = {};  // the props given the partner's backpack pose
-    std::uint32_t pose_seq_pub[realbody::kMaxPoseTargets] = {};
+    std::uintptr_t pose_e[realbody::kGearPoseTargets] = {};  // the props given the partner's backpack pose
+    std::uint32_t pose_seq_pub[realbody::kGearPoseTargets] = {};
     unsigned pose_targets = 0;
     unsigned pose_target_logs = 0;  // target changes logged (the first 40)
     // Weapon props no item wants any more (holstered into a pouch, thrown): kept hidden for 60 s and taken
@@ -824,6 +829,19 @@ constexpr double kWatchGapMs = 40;  // a state that toggles every tick must not 
 double g_read_us_sum = 0, g_read_us_max = 0;
 std::uint32_t g_read_timed = 0, g_read_window = 0;
 
+void NoteHeadItem(std::uintptr_t e, int res_id, double now);  // section 20 (below)
+void ReadBootsShown(std::uintptr_t inv);                     // section 21 (below)
+// Boots (section 21; session.ini boots_sync): ours sent as STC1 kind 7, the partner's drawn as the boots prop.
+struct BootsRead {
+    bool checked = false, ok = false;
+    std::uintptr_t e = 0;
+    bool shown = false;
+} g_boots;
+std::uint32_t g_boots_apply = 0, g_boots_visible = 0;  // our boots' ArtParts (the last read)
+std::uintptr_t g_boots_prop_e = 0;  // the partner's boots prop given to realbody::SetBootsProp (0 none)
+bool g_boots_prop_shown = false;     // ... and shown on the partner body now (BootsTick; the boots meter)
+int g_pfeet_pct = 1;  // `gear 20 <percent>`: the partner body's feet under the boots prop (100: not scaled)
+
 // Reads every gear item of the local player into g_items. `verbose`: the full walk to the log.
 bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
     g_item_count = 0;
@@ -860,6 +878,23 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
         Xf w;
         if (e && ReadWorld(e, &w) && Dist(w, sam) < 5.0) add(k, wire::kGearNone, 0, e, Visible(e), w);
     };
+    ReadBootsShown(inv);
+    if (g_boots_sync && g_boots.shown && g_boots.e) {
+        // the boots item (STC1 kind 7): which of the boots' 32 ArtParts are reported and shown
+        Apd a;
+        std::uint32_t apply = 0, visible = 0;
+        if (ReadApd(g_boots.e, &a))
+            for (unsigned i = 0; i < static_cast<unsigned>(a.n) && i < wire::kMaxGearBootsParts; ++i) {
+                std::uint8_t fl = 0;
+                if (!PartFlags(a, i, &fl)) continue;
+                apply |= 1u << i;
+                if (fl & 0x2) visible |= 1u << i;
+            }
+        if (apply && (apply != g_boots_apply || visible != g_boots_visible))
+            Log("[boots] our boots' ArtParts: %d, shown %08X of %08X", a.n, visible, apply);
+        g_boots_apply = apply, g_boots_visible = visible;
+        if (apply) add_entity(wire::GearKind::boots, g_boots.e);
+    }
     const std::uintptr_t pack = RefEntity(Q(inv + kInvPack));
     if (pack && Derives(pack, "DSBackpackEntity")) add_entity(wire::GearKind::backpack, pack);
     // The BB pod (inventory +0x4D48, a reference: entity = value - 0x20; the entity with the
@@ -1018,6 +1053,7 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
             }
             Xf w;
             if (!ReadWorld(nd.e, &w) || Dist(w, sam) > 3.0) continue;
+            NoteHeadItem(nd.e, id, static_cast<double>(GetTickCount64()));
             add(wire::GearKind::entity, wire::kGearNone, 0, nd.e, true, w);
             if (g_item_count && g_items[g_item_count - 1].e == nd.e) {
                 g_items[g_item_count - 1].res = static_cast<std::uint8_t>(id);
@@ -1178,6 +1214,7 @@ bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_
     };
     int pack_index = -1;
     Xf pack_world;
+    bool boots_added = false;
     unsigned cargo = 0, dropped = 0;
     std::uintptr_t frame_e[wire::kMaxGearItems] = {};
     Xf frame_w[wire::kMaxGearItems];
@@ -1248,7 +1285,8 @@ bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_
             anchor = &pack_world;
         } else {
             std::uint8_t j = kJSpine4;
-            if (it.kind == wire::GearKind::odradek) j = kJLShoulder;
+            if (it.kind == wire::GearKind::boots) j = 0;
+            else if (it.kind == wire::GearKind::odradek) j = kJLShoulder;
             else if (it.kind == wire::GearKind::bb_pod) j = kJSpine5;
             else if (it.kind == wire::GearKind::cargo && it.slot_type != 1) {
                 // arms (slot types 2, 3) on the upper arm, waist (4, 5) on the hips, hands (6, 7) on the
@@ -1270,6 +1308,13 @@ bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_
         if (std::fabs(rp[0]) > 30 || std::fabs(rp[1]) > 30 || std::fabs(rp[2]) > 30) continue;
         gi.p[0] = static_cast<float>(rp[0]), gi.p[1] = static_cast<float>(rp[1]), gi.p[2] = static_cast<float>(rp[2]);
         gi.q = wire::Normalize(wire::QuatFromMatrix(rr));
+        if (it.kind == wire::GearKind::boots) {
+            // the boots follow the legs, not a frame: the receiver's prop takes the body's own leg joints on its root
+            gi.p[0] = gi.p[1] = gi.p[2] = 0;
+            gi.q = wire::Quat{};
+            if (boots_added) continue;
+            boots_added = true;
+        }
         if (it.kind == wire::GearKind::backpack && pack_index < 0) {
             pack_index = static_cast<int>(f.count);
             pack_world = it.world;
@@ -1277,6 +1322,11 @@ bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_
         frame_e[f.count] = it.e;
         frame_w[f.count] = it.world;
         f.items[f.count++] = gi;
+    }
+    if (boots_added) {
+        f.flags |= wire::kGearBoots;
+        f.boots_apply = g_boots_apply;
+        f.boots_visible = g_boots_visible & g_boots_apply;
     }
     if (g_have_pack_parts && pack_index >= 0) {
         f.flags |= wire::kGearPackParts;
@@ -1381,7 +1431,10 @@ void ReadLooks(double now) {
     static std::uintptr_t own[wire::kMaxGearItems];
     unsigned nown = 0;
     for (unsigned i = 0; i < g_local.count; ++i)
-        if ((g_local.items[i].kind == wire::GearKind::entity || g_local.items[i].kind == wire::GearKind::backpack) && g_local_e[i]) own[nown++] = g_local_e[i];
+        if ((g_local.items[i].kind == wire::GearKind::entity || g_local.items[i].kind == wire::GearKind::backpack ||
+             g_local.items[i].kind == wire::GearKind::boots) &&
+            g_local_e[i])
+            own[nown++] = g_local_e[i];
     look::SetOwnGear(own, nown, g_local_player);
     if (now < g_next_look_ms || !g_looks_on) return;
     g_next_look_ms = now + 500;
@@ -1398,7 +1451,7 @@ void ReadLooks(double now) {
         const std::uintptr_t e = g_local_e[i];
         wire::GearLook l;
         bool ok = false;
-        if (it.kind == wire::GearKind::entity || it.kind == wire::GearKind::backpack) {
+        if (it.kind == wire::GearKind::entity || it.kind == wire::GearKind::backpack || it.kind == wire::GearKind::boots) {
             ok = e && look::ReadEntity(e, &l);
         } else if (it.kind == wire::GearKind::cargo) {
             if (e && L.have && L.e == e) {
@@ -1615,6 +1668,373 @@ void ReadLocalTick(game::Entity* local, bool local_active, double now) {
     }
 }
 
+// ---------------------------------------------------------------- self view headgear (docs/real-partner-body.md section 20)
+// Our Sam's head accessories (ds/entities/player/ds_player_inventory: eyewear0, glasses00-02, cap00-03; each an
+// Entity whose AttachToHelperMover hangs it on HLP_Head) get the offset realbody::SelfHeadItemOffset asks for, as the
+// translation of the mover's own local matrix (+0x60, a Mat44: rows x, y, z, then the translation at +0x90; identity
+// from its constructor 0x14239B930). The mover's update (0x1423A7450) combines it with the helper's world transform
+// every frame when +0xA0 is 0 (0x1423A7773: cmp byte [rsi+0xA0],bl; jnz; lea r8,[rsi+0x60]; ...; call 0x14195DF70,
+// which multiplies the local by the helper's rotation: the translation is in the helper's frame). Written from the
+// game thread only when it differs from what is there (show, hide, tuning); an item whose matrix is not the identity
+// or ours is left alone. The sender then measures the item on Sam's head joint with the offset in it, so the other
+// screen places it the same way on her body's head (no wire change).
+struct HeadItemRes {
+    const char* guid;
+    int cls;
+    const char* name;
+};
+constexpr HeadItemRes kHeadItemRes[] = {
+    {"3b9eb11e-cdfb-0146-b4e7-bf6ad3926f01", realbody::kHeadItemGlasses, "eyewear0"},
+    {"d2306d68-4458-c04c-9566-2463d7b93578", realbody::kHeadItemGlasses, "glasses00"},
+    {"036f3017-bb5e-844f-8939-6790c89c4067", realbody::kHeadItemGlasses, "glasses01"},
+    {"6482902d-bc58-4d4d-b5b5-279e919364ba", realbody::kHeadItemGlasses, "glasses02"},
+    {"c83ac923-bcb3-5e4e-b062-8b9789e6a81f", realbody::kHeadItemCap, "cap00"},
+    {"17de6d02-2c8d-ac4b-ac9f-46672eaa5f6e", realbody::kHeadItemCap, "cap01"},
+    {"dbd027af-9b73-ca4f-bca1-3d708ee2f8c8", realbody::kHeadItemCap, "cap02"},
+    {"6247acf7-74d5-a846-8e29-6459ef4b1f71", realbody::kHeadItemCap, "cap03"},
+};
+constexpr std::uintptr_t kMoverUseLocal = 0x23A7773;  // in the mover update: the +0xA0 test and the +0x60 local
+constexpr std::uintptr_t kEntMover = 0xB0, kMoverEntity = 0x48, kMoverLocal = 0x60, kMoverLocalT = 0x90, kMoverNoLocal = 0xA0, kMoverHelper = 0xB0;
+struct HeadItem {
+    std::uintptr_t e = 0, e_vt = 0, mover = 0, mover_vt = 0;
+    int cls = -1;
+    const char* name = "";
+    double seen_ms = -1e9;  // the last read that saw it shown
+    bool ours = false;      // our offset is in its mover (put back to 0 when no longer wanted)
+    float written[3] = {};
+    bool refused = false;   // its matrix was neither the identity nor ours: left alone
+    std::uint8_t orig_flag = 1;  // the game's +0xA0 (skip the local matrix) before ours
+};
+HeadItem g_hi[8];
+struct HeadgearState {
+    bool checked = false, ok = false;
+    std::uint32_t writes = 0, restores = 0, game_changed = 0, refusals = 0, bad = 0;
+    unsigned logs = 0;
+} g_hg;
+bool g_hg_on = true;  // `gear 18 <0/1>`: the mover writes (realbody still decides the offsets)
+// Any other shown entity of ours hung on HLP_Head (an accessory not in kHeadItemRes, or a listed one whose mover is not
+// the expected kind) keeps the v0.11 head lift for everything: it gets no offset of its own. Checked once per entity.
+struct HeadProbe {
+    std::uintptr_t e = 0, vt = 0;
+    bool head = false;
+};
+HeadProbe g_hprobe[64];
+unsigned g_hprobe_rr = 0, g_unknown_logs = 0;
+double g_unknown_head_ms = -1e9;  // the last read that saw such an item shown
+
+bool OnHeadHelper(std::uintptr_t e, std::uintptr_t* mover_out, char (&helper)[40]) {
+    helper[0] = 0;
+    const std::uintptr_t mover = Q(e + kEntMover);
+    if (mover_out) *mover_out = mover;
+    if (mover && Derives(mover, "AttachToHelperMover") && Q(mover + kMoverEntity) == e) ReadString(Q(mover + kMoverHelper), helper, sizeof(helper));
+    return mover && helper[0] && std::strcmp(helper, "HLP_Head") == 0;
+}
+
+void NoteUnknownHeadItem(std::uintptr_t e, double now) {
+    const std::uintptr_t vt = Q(e);
+    HeadProbe* p = nullptr;
+    for (HeadProbe& x : g_hprobe)
+        if (x.e == e && x.vt == vt) p = &x;
+    if (!p) {
+        p = &g_hprobe[g_hprobe_rr++ % 64];
+        char helper[40];
+        p->e = e, p->vt = vt, p->head = OnHeadHelper(e, nullptr, helper);
+        if (p->head && g_unknown_logs++ < 20)
+            Log("[headgear] our entity %p %s hangs on HLP_Head but has no offset of its own: the head lift stays while it is shown", reinterpret_cast<void*>(e),
+                TypeOf(e));
+    }
+    if (p->head) g_unknown_head_ms = now;
+}
+
+int HeadItemClassOf(int res_id, const char** name) {
+    if (res_id < 0 || res_id >= static_cast<int>(wire::kMaxGearRes) || !g_res_local[res_id].used) return -1;
+    char g[37];
+    wire::GearGuidText(g_res_local[res_id].guid, g);
+    for (const HeadItemRes& h : kHeadItemRes)
+        if (std::strcmp(g, h.guid) == 0) return (*name = h.name), h.cls;
+    return -1;
+}
+
+// The entity walk saw a shown entity of resource `res_id` (game thread).
+void NoteHeadItem(std::uintptr_t e, int res_id, double now) {
+    const char* name = "";
+    const int cls = HeadItemClassOf(res_id, &name);
+    if (cls < 0) {
+        NoteUnknownHeadItem(e, now);
+        return;
+    }
+    HeadItem* h = nullptr;
+    for (HeadItem& x : g_hi)
+        if (x.e == e) h = &x;
+    if (!h)
+        for (HeadItem& x : g_hi)
+            if (!x.e) {
+                h = &x;
+                break;
+            }
+    if (!h) {
+        g_unknown_head_ms = now;  // more head items than slots: the lift stays
+        return;
+    }
+    if (h->e != e) {
+        *h = HeadItem{};
+        std::uintptr_t mover = 0;
+        char helper[40];
+        const bool ok = OnHeadHelper(e, &mover, helper);
+        if (g_hg.logs++ < 40)
+            Log("[headgear] our %s %p (res %d): mover %p %s helper '%s'%s", name, reinterpret_cast<void*>(e), res_id, reinterpret_cast<void*>(mover),
+                mover ? TypeOf(mover) : "-", helper, ok ? "" : ": not used (not an AttachToHelperMover on HLP_Head: not on the head)");
+        if (!ok) return;
+        h->e = e, h->e_vt = Q(e), h->mover = mover, h->mover_vt = Q(mover), h->cls = cls, h->name = name;
+    }
+    h->seen_ms = now;
+}
+
+bool HeadgearChecked() {
+    if (g_hg.checked) return g_hg.ok;
+    g_hg.checked = true;
+    g_hg.ok = mem::CodeMatches(mem::Base() + kMoverUseLocal, "38 9E A0 00 00 00 75 4A 4C 8D 46 60 48 8D 54 24 20 48 8D 4C 24 60 E8 E2 67 5B FF");
+    Log("[headgear] the accessory mover's local-matrix site %s", g_hg.ok ? "verified" : "does not match: no headgear offsets");
+    return g_hg.ok;
+}
+
+// Every tick (game thread): each accessory's mover translation = the offset wanted now (0 when none). `stop` (the
+// emergency stop): every offset of ours goes back to the identity and the game's flag, and the lift is told so.
+void HeadgearTick(double now, bool stop = false) {
+    // Ready: the offsets can be written into every shown head item of ours; else none is written and the lift holds
+    // them all up as in v0.11 (realbody::EffectiveLiftPct).
+    bool refused_any = false;
+    for (const HeadItem& h : g_hi) refused_any |= h.e && h.refused && now - h.seen_ms < 600;
+    const bool ready = !stop && g_hg_on && realbody::HeadgearWanted() && HeadgearChecked() && !refused_any && now - g_unknown_head_ms >= 600;
+    realbody::SetHeadgearReady(ready);
+    for (HeadItem& h : g_hi) {
+        if (!h.e) continue;
+        const bool shown = now - h.seen_ms < 600;
+        float want[3] = {0, 0, 0};
+        const bool on = ready && shown && realbody::SelfHeadItemOffset(h.cls, want);
+        if (!on && !h.ours) {
+            if (!shown) h = HeadItem{};  // gone and nothing of ours in it
+            continue;
+        }
+        if (!on) want[0] = want[1] = want[2] = 0;
+        // still the same entity and mover (fault-free reads)
+        std::uint8_t no_local = 1;
+        if (Q(h.e) != h.e_vt || Q(h.e + kEntMover) != h.mover || Q(h.mover) != h.mover_vt || Q(h.mover + kMoverEntity) != h.e ||
+            !Rd(h.mover + kMoverNoLocal, no_local)) {
+            ++g_hg.bad;
+            h = HeadItem{};
+            continue;
+        }
+        float m[4][4];
+        if (!mem::Read(h.mover + kMoverLocal, m, sizeof(m))) {
+            ++g_hg.bad;
+            continue;
+        }
+        bool rot_ok = std::fabs(m[3][3] - 1.0f) < 1e-5f;
+        for (int r = 0; r < 3 && rot_ok; ++r)
+            for (int c = 0; c < 4; ++c) rot_ok = rot_ok && std::fabs(m[r][c] - (r == c ? 1.0f : 0.0f)) < 1e-5f;
+        // +0xA0 set: the update skips the local matrix (the game's movers of these accessories have it set, their
+        // local being the identity); ours goes in with it cleared, and the game's value comes back with the identity.
+        const bool is_zero = m[3][0] == 0 && m[3][1] == 0 && m[3][2] == 0 && (!h.ours || no_local == h.orig_flag);
+        const bool is_ours = h.ours && no_local == 0 && m[3][0] == h.written[0] && m[3][1] == h.written[1] && m[3][2] == h.written[2];
+        if (!rot_ok || (!is_zero && !is_ours) || no_local > 1) {
+            if (!h.refused) {
+                h.refused = true;
+                ++g_hg.refusals;
+                Log("[headgear] our %s %p: its mover's local matrix is not the identity or ours (translation %.3f %.3f %.3f, +0xA0 %u): left alone", h.name,
+                    reinterpret_cast<void*>(h.e), static_cast<double>(m[3][0]), static_cast<double>(m[3][1]), static_cast<double>(m[3][2]), no_local);
+            }
+            if (h.ours) ++g_hg.game_changed, h.ours = false;
+            continue;
+        }
+        h.refused = false;
+        if (!h.ours) h.orig_flag = no_local;
+        const bool any = want[0] != 0 || want[1] != 0 || want[2] != 0;
+        const std::uint8_t want_flag = any ? 0 : h.orig_flag;
+        if (m[3][0] == want[0] && m[3][1] == want[1] && m[3][2] == want[2] && no_local == want_flag) continue;
+        SIZE_T wrote = 0, wrote_f = 0;
+        bool ok;
+        if (any)  // the translation first, then the flag: an update between the two still skips the local
+            ok = WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(h.mover + kMoverLocalT), want, sizeof(want), &wrote) && wrote == sizeof(want) &&
+                 WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(h.mover + kMoverNoLocal), &want_flag, 1, &wrote_f) && wrote_f == 1;
+        else  // the flag back first, then the translation
+            ok = WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(h.mover + kMoverNoLocal), &want_flag, 1, &wrote_f) && wrote_f == 1 &&
+                 WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(h.mover + kMoverLocalT), want, sizeof(want), &wrote) && wrote == sizeof(want);
+        if (!ok) {
+            ++g_hg.bad;
+            continue;
+        }
+        std::memcpy(h.written, want, sizeof(want));
+        h.ours = any;
+        ++(any ? g_hg.writes : g_hg.restores);
+        if (g_hg.logs++ < 60)
+            Log("[headgear] our %s %p: mover offset %s (%.1f, %.1f, %.1f) cm in HLP_Head's frame (x = -lateral, y forward, z up)", h.name, reinterpret_cast<void*>(h.e),
+                any ? "set to" : "back to the identity", static_cast<double>(want[0]) * 100, static_cast<double>(want[1]) * 100, static_cast<double>(want[2]) * 100);
+    }
+}
+
+// The headgear meter: where a head item sits in the drawn body's head frame (joint 31), every tick, cm. The self view:
+// our accessory against the self body's head (and against Sam's fitted head); the partner: our prop against the partner
+// body's head. Logged each second: mean, standard deviation and the largest tick-to-tick step of that position.
+struct HeadSeries {
+    double n = 0, s[3] = {}, ss[3] = {}, step_max = 0, prev[3] = {};
+    bool have_prev = false;
+    void Add(const double (&v)[3]) {
+        if (have_prev) {
+            const double d = std::sqrt((v[0] - prev[0]) * (v[0] - prev[0]) + (v[1] - prev[1]) * (v[1] - prev[1]) + (v[2] - prev[2]) * (v[2] - prev[2]));
+            if (d > step_max) step_max = d;
+        }
+        std::memcpy(prev, v, sizeof(prev));
+        have_prev = true;
+        ++n;
+        for (int k = 0; k < 3; ++k) s[k] += v[k], ss[k] += v[k] * v[k];
+    }
+    void Describe(char* out, std::size_t cap) const {
+        double m[3], sd[3];
+        for (int k = 0; k < 3; ++k) {
+            m[k] = s[k] / n;
+            const double var = ss[k] / n - m[k] * m[k];
+            sd[k] = var > 0 ? std::sqrt(var) : 0;
+        }
+        std::snprintf(out, cap, "mean (%.2f, %.2f, %.2f) sd (%.2f, %.2f, %.2f) step max %.2f over %.0f", m[0], m[1], m[2], sd[0], sd[1], sd[2], step_max, n);
+    }
+    void Reset() { *this = HeadSeries{}; }
+};
+HeadSeries g_hm_self[2], g_hm_sam[2], g_hm_partner[4];
+double g_bm_self[4] = {}, g_bm_p[4] = {};  // R sum, L sum, R max, L max
+unsigned g_bm_self_n = 0, g_bm_p_n = 0;
+double g_hm_next_ms = 0;
+int g_hm_on = -1;  // `gear 19 <0/1>`; -1: on in hidden tests only (automation), off in play
+
+// v: the point in the frame (p, r rows) in cm
+void InFrame(const double (&p)[3], const float (&r)[3][3], const Xf& w, double (&v)[3]) {
+    const double d[3] = {w.p[0] - p[0], w.p[1] - p[1], w.p[2] - p[2]};
+    for (int i = 0; i < 3; ++i) v[i] = (d[0] * r[i][0] + d[1] * r[i][1] + d[2] * r[i][2]) * 100.0;
+}
+
+void HeadMeter(game::Entity* local, double now) {
+    if (g_hm_on == 0 || (g_hm_on < 0 && !automation::Enabled())) return;
+    // the self view: our shown accessories
+    game::Entity* self = realbody::SelfShown() ? realbody::SelfEntity() : nullptr;
+    if (self) {
+        double hp[3], sp[3];
+        float hr[3][3], sr[3][3];
+        const bool have_h = realbody::JointFrameWorld(self, 31, hp, hr);
+        const bool have_s = local && realbody::JointFrameWorld(local, 31, sp, sr);
+        for (const HeadItem& h : g_hi) {
+            if (!h.e || now - h.seen_ms > 600 || h.cls < 0 || h.cls > 1) continue;
+            Xf w;
+            if (!ReadWorld(h.e, &w)) continue;
+            double v[3];
+            if (have_h) InFrame(hp, hr, w, v), g_hm_self[h.cls].Add(v);
+            if (have_s) InFrame(sp, sr, w, v), g_hm_sam[h.cls].Add(v);
+        }
+    }
+    // the partner: our props anchored on its head joints
+    PropSet& ps = g_sets[0];
+    game::Entity* pb = ps.body;
+    if (pb && ps.have_want) {
+        double hp[3];
+        float hr[3][3];
+        if (realbody::JointFrameWorld(pb, 31, hp, hr)) {
+            unsigned k = 0;
+            for (unsigned i = 0; i < ps.want.count && k < 4; ++i) {
+                const wire::GearItem& it = ps.want.items[i];
+                if (it.parent != wire::kGearNoParent || it.joint < 31 || it.joint > 34 || !ps.props[i].live || !ps.props[i].shown) continue;
+                Xf w;
+                if (!holo::SpawnAlive(ps.props[i].sp) || !ReadWorld(reinterpret_cast<std::uintptr_t>(ps.props[i].sp.e), &w)) continue;
+                double v[3];
+                InFrame(hp, hr, w, v);
+                g_hm_partner[k++].Add(v);
+            }
+        }
+    }
+    // the boots meter (section 21): the boots' feet (their joints 4 and 8) against the drawn body's feet (63, 68), cm
+    {
+        auto foot_d = [](game::Entity* boots, game::Entity* body, unsigned bj, unsigned sj, double* d) {
+            double a[3], b[3];
+            if (!realbody::JointWorldN(boots, bj, 10, a) || !realbody::JointWorld(body, sj, b)) return false;
+            *d = std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2])) * 100.0;
+            return std::isfinite(*d);
+        };
+        double dr = 0, dl = 0;
+        if (self && g_boots.shown && g_boots.e && foot_d(reinterpret_cast<game::Entity*>(g_boots.e), self, 4, 63, &dr) &&
+            foot_d(reinterpret_cast<game::Entity*>(g_boots.e), self, 8, 68, &dl)) {
+            g_bm_self[0] += dr, g_bm_self[1] += dl, ++g_bm_self_n;
+            if (dr > g_bm_self[2]) g_bm_self[2] = dr;
+            if (dl > g_bm_self[3]) g_bm_self[3] = dl;
+        }
+        if (pb && g_boots_prop_shown && g_boots_prop_e && foot_d(reinterpret_cast<game::Entity*>(g_boots_prop_e), pb, 4, 63, &dr) &&
+            foot_d(reinterpret_cast<game::Entity*>(g_boots_prop_e), pb, 8, 68, &dl)) {
+            g_bm_p[0] += dr, g_bm_p[1] += dl, ++g_bm_p_n;
+            if (dr > g_bm_p[2]) g_bm_p[2] = dr;
+            if (dl > g_bm_p[3]) g_bm_p[3] = dl;
+        }
+    }
+    if (now < g_hm_next_ms) return;
+    g_hm_next_ms = now + (automation::Enabled() ? 1000 : 10000);  // every second in hidden tests, else every 10 s
+    if (g_bm_self_n || g_bm_p_n) {
+        char sa[96] = "-", pa[96] = "-";
+        if (g_bm_self_n) std::snprintf(sa, sizeof(sa), "R %.1f/%.1f L %.1f/%.1f over %u", g_bm_self[0] / g_bm_self_n, g_bm_self[2], g_bm_self[1] / g_bm_self_n, g_bm_self[3], g_bm_self_n);
+        if (g_bm_p_n) std::snprintf(pa, sizeof(pa), "R %.1f/%.1f L %.1f/%.1f over %u", g_bm_p[0] / g_bm_p_n, g_bm_p[2], g_bm_p[1] / g_bm_p_n, g_bm_p[3], g_bm_p_n);
+        std::uint32_t sw = 0, pw = 0;
+        realbody::FeetCounters(&sw, &pw);
+        Log("[boots] boots' feet vs the drawn feet cm mean/max: self (Sam's boots, her body) %s; partner (boots prop, partner body) %s; feet-scaled pose writes self %u partner %u",
+            sa, pa, sw, pw);
+    }
+    for (double& v : g_bm_self) v = 0;
+    for (double& v : g_bm_p) v = 0;
+    g_bm_self_n = g_bm_p_n = 0;
+    char a[160];
+    static const char* const kCls[2] = {"cap", "glasses"};
+    for (int c = 0; c < 2; ++c) {
+        if (g_hm_self[c].n > 0) {
+            char b[160] = "-";
+            g_hm_self[c].Describe(a, sizeof(a));
+            if (g_hm_sam[c].n > 0) g_hm_sam[c].Describe(b, sizeof(b));
+            Log("[headgear] self %s in her drawn head joint's frame cm (x, y up, z forward): %s; in Sam's fitted head joint's frame: %s", kCls[c], a, b);
+        }
+        g_hm_self[c].Reset(), g_hm_sam[c].Reset();
+    }
+    for (int k = 0; k < 4; ++k) {
+        if (g_hm_partner[k].n > 0) {
+            g_hm_partner[k].Describe(a, sizeof(a));
+            Log("[headgear] partner head prop %d in the partner body's head joint's frame cm (x, y up, z forward): %s", k, a);
+        }
+        g_hm_partner[k].Reset();
+    }
+    static std::uint32_t pw = 0, pr = 0, pc = 0, pf = 0;
+    if (pw != g_hg.writes || pr != g_hg.restores || pc != g_hg.game_changed || pf != g_hg.refusals)
+        Log("[headgear] mover writes %u, restores %u, changed by the game %u, refused %u, bad reads %u", g_hg.writes, g_hg.restores, g_hg.game_changed,
+            g_hg.refusals, g_hg.bad);
+    pw = g_hg.writes, pr = g_hg.restores, pc = g_hg.game_changed, pf = g_hg.refusals;
+}
+
+// Our Sam's equipped boots entity (inventory +0x4D80, a plain entity pointer: the inventory's visual update reads its
+// flags there, 0x1427F1D2F) and whether the game shows it (+0x88 bit 1). The self view hides her feet only while it is.
+constexpr std::uintptr_t kInvBoots = 0x4D80, kInvBootsSite = 0x27F1D2F;
+void ReadBootsShown(std::uintptr_t inv) {
+    if (!g_boots.checked) {
+        g_boots.checked = true;
+        g_boots.ok = mem::CodeMatches(mem::Base() + kInvBootsSite, "48 8B 86 80 4D 00 00 48 8B 88 88 00 00 00 D0 E9 F6 C1 01") &&
+                     mem::CodeMatches(mem::Base() + kInvBootsSite + 0x1B, "48 8B 86 88 4D 00 00") &&
+                     mem::CodeMatches(mem::Base() + kInvBootsSite + 0x25, "48 8B 8E 80 4D 00 00");
+        Log("[boots] the inventory's boots entity sites %s", g_boots.ok ? "verified" : "do not match: her feet are not hidden, no boots sent");
+    }
+    std::uintptr_t e = 0;
+    bool shown = false;
+    if (g_boots.ok && inv) {
+        e = Q(inv + kInvBoots);
+        if (e && !Derives(e, "Entity")) e = 0;
+        shown = e && Visible(e);
+    }
+    if (e != g_boots.e || shown != g_boots.shown)
+        Log("[boots] our Sam's boots entity %p %s", reinterpret_cast<void*>(e), shown ? "shown" : e ? "not shown" : "(none)");
+    g_boots.e = e;
+    g_boots.shown = shown;
+    realbody::SetSamBootsShown(shown);
+}
+
 // ---------------------------------------------------------------- props (game thread)
 // Game calls on ArtParts (a partner Sam body's gear parts, the boots on our Sam's feet under the self
 // view), byte-checked once: the per-part setter 0x1422B2770 (apd, visible, index), the top-level
@@ -1698,6 +2118,13 @@ struct PartsMirror {
     double next_ms = 0, recheck_ms = 0;
 };
 PartsMirror g_pm{"partner body"}, g_pack_pm{"backpack prop"};
+PartsMirror g_boots_pm{"boots prop"};  // the partner's boots prop (BootsTick)
+// The boots prop `e` may be shown, and the partner body's feet scaled away under it: it is the pose target, a pose was
+// written onto it within 250 ms and the partner's boots parts are mirrored on it (our own boots entity is the parts'
+// reference: without one, barefoot or unreadable, the partner keeps its own boots and no prop shows).
+bool BootsPropReady(std::uintptr_t e) {
+    return e && e == g_boots_prop_e && realbody::BootsPosed(250) && g_boots_pm.target == e && g_boots_pm.compatible;
+}
 
 void MirrorParts(PartsMirror& m, std::uintptr_t target, std::uintptr_t ref, const std::uint64_t* apply, const std::uint64_t* visible, unsigned max,
                  double now) {
@@ -1753,8 +2180,16 @@ void MirrorParts(PartsMirror& m, std::uintptr_t target, std::uintptr_t ref, cons
     }
 }
 
+// The boots prop's pose target (section 21) goes before the prop does.
+void ReleaseBootsTarget(game::Entity* e) {
+    if (!e || reinterpret_cast<std::uintptr_t>(e) != g_boots_prop_e) return;
+    realbody::SetPartnerFeetHidden(false, 100);
+    realbody::ClearBootsProp();
+    g_boots_prop_e = 0;
+}
+
 void ClearPoses(PropSet& s) {
-    for (unsigned k = 0; k < realbody::kMaxPoseTargets; ++k)
+    for (unsigned k = 0; k < realbody::kGearPoseTargets; ++k)
         if (s.pose_e[k]) {
             realbody::ClearGearPose(k);
             s.pose_e[k] = 0;
@@ -1772,6 +2207,7 @@ void Unpublish(PropSet& s) {
 
 void RemoveProp(PropSet& s, unsigned i, const char* why) {
     Prop& p = s.props[i];
+    ReleaseBootsTarget(p.sp.e);
     if (p.loading || p.live || p.sp.sp) {
         char step[160] = {};
         holo::SpawnTeardown(p.sp, why, step, sizeof(step));
@@ -1782,6 +2218,7 @@ void RemoveProp(PropSet& s, unsigned i, const char* why) {
 
 void RemoveSpare(PropSet& s, unsigned k, const char* why) {
     PropSet::Spare& sp = s.spare[k];
+    ReleaseBootsTarget(sp.p.sp.e);
     if (sp.p.loading || sp.p.live || sp.p.sp.sp) {
         char step[160] = {};
         holo::SpawnTeardown(sp.p.sp, why, step, sizeof(step));
@@ -1980,8 +2417,8 @@ void ApplyPoses(PropSet& s, double now) {
         return;
     }
     const unsigned bi = pose->item;
-    std::uintptr_t want_e[realbody::kMaxPoseTargets] = {};
-    const holo::Spawn* want_sp[realbody::kMaxPoseTargets] = {};
+    std::uintptr_t want_e[realbody::kGearPoseTargets] = {};
+    const holo::Spawn* want_sp[realbody::kGearPoseTargets] = {};
     unsigned n = 0;
     const Prop& bp = s.props[bi];
     std::uintptr_t skel = 0;
@@ -1991,7 +2428,7 @@ void ApplyPoses(PropSet& s, double now) {
         const auto be = reinterpret_cast<std::uintptr_t>(bp.sp.e);
         if (look::PoseSkeleton(be, &skel, &layout, &count) && layout == pose->skeleton && count == pose->n) want_sp[n] = &bp.sp, want_e[n++] = be;
     }
-    for (unsigned i = 0; i < f.count && n && n < realbody::kMaxPoseTargets; ++i) {
+    for (unsigned i = 0; i < f.count && n && n < realbody::kGearPoseTargets; ++i) {
         const Prop& p = s.props[i];
         if (i == bi || f.items[i].parent != bi || !p.live || !holo::SpawnAlive(p.sp) || now - p.live_ms < 500) continue;
         const auto e = reinterpret_cast<std::uintptr_t>(p.sp.e);
@@ -2000,7 +2437,7 @@ void ApplyPoses(PropSet& s, double now) {
         std::int32_t c = 0;
         if (look::PoseSkeleton(e, &sk, &lay, &c) && sk == skel && c == pose->n) want_sp[n] = &p.sp, want_e[n++] = e;
     }
-    for (unsigned k = 0; k < realbody::kMaxPoseTargets; ++k) {
+    for (unsigned k = 0; k < realbody::kGearPoseTargets; ++k) {
         if (want_e[k] != s.pose_e[k] || (want_e[k] && s.pose_seq_pub[k] != seq)) {
             if (!want_e[k]) {
                 realbody::ClearGearPose(k);
@@ -2244,7 +2681,13 @@ void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_acti
     if (placed > 0) s.last_placed_ms = now;
     // Visibility: with the body; a tick without a placement (a torn read) does not hide them, 300 ms do.
     const bool place_ok = placed > 0 || (s.last_placed_ms > 0 && now - s.last_placed_ms < 300);
-    for (unsigned i = 0; i < f.count; ++i) SetShown(s, i, body_visible && place_ok, now);
+    for (unsigned i = 0; i < f.count; ++i) {
+        bool on = body_visible && place_ok;
+        // The boots prop (section 21) only once BootsTick made it the pose target, it is posed and the partner's boots parts
+        // are mirrored on it: never in the cutscene's own pose or parts (the spawn pop of 12-14 cm the review measured).
+        if (on && f.items[i].kind == wire::GearKind::boots) on = BootsPropReady(reinterpret_cast<std::uintptr_t>(s.props[i].sp.e));
+        SetShown(s, i, on, now);
+    }
     if (now >= s.next_stats_ms && s.published_n) {
         s.next_stats_ms = now + 5000;
         unsigned live = 0, shown = 0, waiting = 0, failed_now = 0, refused = 0;
@@ -2456,7 +2899,63 @@ void Census(game::Entity* who, bool sam_like) {
 
 void Init(const Config& config) noexcept {
     g_enabled = config.partner_gear;
-    Log("[gear] gear on bodies %s (partner_gear=%d)", g_enabled ? "on" : "off", g_enabled ? 1 : 0);
+    g_boots_sync = config.boots_sync;
+    Log("[gear] gear on bodies %s (partner_gear=%d); boots %s (boots_sync=%d)", g_enabled ? "on" : "off", g_enabled ? 1 : 0,
+        g_boots_sync ? "sent and drawn on the partner" : "not sent or drawn", g_boots_sync ? 1 : 0);
+}
+
+// The partner's boots prop (section 21): its pose target (real_body.cpp), its ArtParts as the sender shows them, and
+// the partner body's own feet scaled away while it is shown and posed. Game thread, after DriveSet (which shows the prop only once
+// BootsPropReady: posed and its parts mirrored).
+void BootsTick(PropSet& s, game::Entity* body, double now) {
+    const Prop* bp = nullptr;
+    unsigned bi = 0;
+    if (g_boots_sync && body && s.have_want && (s.want.flags & wire::kGearBoots))
+        for (unsigned i = 0; i < s.want.count; ++i)
+            if (s.want.items[i].kind == wire::GearKind::boots && s.props[i].live && holo::SpawnAlive(s.props[i].sp) &&
+                now - s.props[i].live_ms >= 300) {
+                bp = &s.props[i], bi = i;
+                break;
+            }
+    std::uintptr_t want = bp ? reinterpret_cast<std::uintptr_t>(bp->sp.e) : 0;
+    static std::uintptr_t refused_e = 0;
+    if (want && want == refused_e) want = 0;
+    if (want != g_boots_prop_e) {
+        realbody::SetPartnerFeetHidden(false, 100);
+        char why[160] = {};
+        if (!want) {
+            realbody::ClearBootsProp();
+            Log("[boots] the partner's boots prop: no pose target now");
+        } else if (!realbody::SetBootsProp(&bp->sp, why, sizeof(why))) {
+            Log("[boots] the partner's boots prop %p (item %u) is not posed: %s", reinterpret_cast<void*>(want), bi, why);
+            refused_e = want;
+            want = 0;
+        } else {
+            Log("[boots] the partner's boots prop %p (item %u) follows the partner body's legs", reinterpret_cast<void*>(want), bi);
+        }
+        g_boots_prop_e = want;
+    }
+    if (bp && g_boots_prop_e) {
+        const std::uint64_t pa[1] = {s.want.boots_apply}, pv[1] = {s.want.boots_visible};
+        MirrorParts(g_boots_pm, g_boots_prop_e, g_boots.e, pa, pv, wire::kMaxGearBootsParts, now);
+    }
+    g_boots_prop_shown = bp && bp->shown && BootsPropReady(g_boots_prop_e);
+    const bool hide = g_boots_prop_shown && g_pfeet_pct < 100;
+    static bool hid = false;
+    realbody::SetPartnerFeetHidden(hide, g_pfeet_pct);
+    if (hide != hid) {
+        std::uint32_t sw = 0, pw = 0;
+        realbody::FeetCounters(&sw, &pw);
+        Log("[boots] the partner body's feet %s (scale %d%%; %u pose writes with them scaled so far)", hide ? "scaled away under the boots prop" : "shown", g_pfeet_pct, pw);
+        hid = hide;
+    }
+    static double next_ms = 0;
+    if (g_boots_prop_e && now >= next_ms) {
+        next_ms = now + 5000;
+        char c[200];
+        realbody::BootsCounters(c, sizeof(c));
+        Log("[boots] %s; parts %s", c, g_boots_pm.compatible ? "mirrored" : "not mirrored (another model?)");
+    }
 }
 
 bool Enabled() noexcept { return g_enabled; }
@@ -2465,6 +2964,7 @@ void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
     if (!g_enabled || !realbody::HookInstalled()) return;
     if (local_active && g_chk.ok) WatchWeapon(local, now_ms);
     ReadLocalTick(local, local_active, now_ms);
+    HeadgearTick(static_cast<double>(GetTickCount64()), false);
     // The partner slot: the partner's real body (or, debug, a mirroring debug body with our gear).
     PropSet& ps = g_sets[0];
     game::Entity* pbody = g_partner_on ? realbody::SlotEntity(realbody::GearSlot::partner) : nullptr;
@@ -2482,6 +2982,7 @@ void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
     std::uint64_t flags = 0;
     const bool pvis = pbody && partner::ReadFlags(pbody, &flags) && (flags & 0x2) != 0;
     DriveSet(ps, pbody, pvis, local_active, now_ms);
+    BootsTick(ps, pbody, now_ms);
     // The partner's own gear parts (exoskeleton, BB pod pipe, ...) on a Sam body, and its backpack's
     // parts (the bag, rain cover, pouches) on the backpack prop: each only when the target's ArtParts
     // are the same resources as our own Sam's / backpack's.
@@ -2518,6 +3019,8 @@ void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
     ss.have_want = g_have_local && self_frame.count > 0;
     ss.res = g_res_local;
     DriveSet(ss, sbody, sbody && realbody::SelfShown(), local_active, now_ms);
+    // the meters last: the props were just placed from the bodies' current transforms and poses (PlaceGearNow)
+    HeadMeter(local, static_cast<double>(GetTickCount64()));
 }
 
 bool TakeSendRes(double now_ms, wire::GearRes* out) noexcept {
@@ -2710,6 +3213,11 @@ void SetPartnerGear(const wire::GearFrame* f) noexcept {
 void EmergencyStop() noexcept {
     realbody::PublishGear(realbody::GearSlot::partner, nullptr, 0);
     realbody::PublishGear(realbody::GearSlot::self, nullptr, 0);
+    // Our head accessories' movers back to the identity and the game's own flag (fault-free checks first: only a mover
+    // that still holds exactly what we wrote), so the real Sam's cap and glasses sit where the game puts them.
+    const std::uint32_t before = g_hg.restores;
+    HeadgearTick(static_cast<double>(GetTickCount64()), true);
+    if (g_hg.restores != before) Log("[headgear] emergency stop: %u accessory mover(s) put back", g_hg.restores - before);
 }
 
 bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept {
@@ -2962,6 +3470,35 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
                           g_ww.lat_max, g_ww.lat_n);
             Log("[gear] %s", msg);
             return true;
+        case 18:
+            // the self view headgear's mover writes (section 20): off puts every accessory's mover back to the identity
+            g_hg_on = v[1] != 0;
+            std::snprintf(msg, cap, "headgear mover offsets %s (writes %u, restores %u, changed by the game %u, refused %u)", g_hg_on ? "on" : "off",
+                          g_hg.writes, g_hg.restores, g_hg.game_changed, g_hg.refusals);
+            Log("[gear] %s", msg);
+            return true;
+        case 21:
+            // boots sync (section 21) at run time: our boots item sent / not, the partner's boots prop drawn / not
+            g_boots_sync = v[1] != 0;
+            g_next_read_ms = 0;
+            std::snprintf(msg, cap, "boots %s", g_boots_sync ? "sent and drawn on the partner" : "not sent or drawn");
+            Log("[gear] %s", msg);
+            return true;
+        case 20: {
+            // the partner body's feet under the boots prop (section 21): scale percent, 100 = not scaled
+            g_pfeet_pct = v[1] < 1 ? 1 : v[1] > 100 ? 100 : static_cast<int>(v[1]);
+            char c[200];
+            realbody::BootsCounters(c, sizeof(c));
+            std::snprintf(msg, cap, "partner feet under the boots prop: scale %d%% (%s)", g_pfeet_pct, c);
+            Log("[gear] %s", msg);
+            return true;
+        }
+        case 19:
+            // the headgear meter (section 20) on / off
+            g_hm_on = v[1] != 0 ? 1 : 0;
+            std::snprintf(msg, cap, "headgear meter %s", g_hm_on ? "on" : "off");
+            Log("[gear] %s", msg);
+            return true;
         case 13:
             g_poses_on = v[1] != 0;
             if (!g_poses_on) ClearPoses(g_sets[0]);
@@ -2980,7 +3517,7 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             return who != nullptr;
         }
         default:
-            std::snprintf(msg, cap, "unknown op %d (0 log, 1 partner 0/1, 2 self 0/1, 3 test cases n, 4 debug body 0/1, 5 n / 6 test faults, 7 level, 8 pod entity, 9 census 0/1/2, 10 walk cache 0/1, 11 looks 0/1, 12 looks off/on, 13 backpack pose off/on, 14 accessory list, 15 cap colour, 16 head parts off/on, 17 weapons off/on)", op);
+            std::snprintf(msg, cap, "unknown op %d (0 log, 1 partner 0/1, 2 self 0/1, 3 test cases n, 4 debug body 0/1, 5 n / 6 test faults, 7 level, 8 pod entity, 9 census 0/1/2, 10 walk cache 0/1, 11 looks 0/1, 12 looks off/on, 13 backpack pose off/on, 14 accessory list, 15 cap colour, 16 head parts off/on, 17 weapons off/on, 18 headgear offsets off/on, 19 headgear meter off/on, 20 partner feet scale percent, 21 boots sync off/on)", op);
             return false;
     }
 }

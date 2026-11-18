@@ -1,0 +1,177 @@
+# The release check of headgear, boots, the grunt mute and vehicle sync in one two-game run, with the launcher's default
+# keys (docs/real-partner-body.md sections 20-22, docs/audio-research.md section 18): the host plays Sam, the guest
+# Fragile in her porter suit with the self view; voice_sync=1, sound_sync=1, self_voice=auto (what the launcher writes),
+# vehicle_sync and the gear keys at their defaults; the guest also runs the audio probe (audio_probe=1: Wwise's own peak
+# meters of Sam's voice bus chain, observation only).
+# 1. Headgear and boots: the guest turns to face the host; her cap, then cap and glasses, on both screens; her boots on the
+#    host's screen: off (`@guest gear 21 0`), then on again with a frame sequence right after (the boots prop must not show
+#    in its own pose or parts before it is posed: the review's spawn pop); the first steps of her walk across his view.
+# 2. Grunts: the guest walks, runs and jumps; `[voice]` counts (Sam's voice posts stopped) and the probe's `[audio] voice
+#    after mute` meters on her game; the host's partner voice / sound counts (nothing of hers played as voice).
+# 3. Vehicle: both beside their own parked roadster (the 100% save's garage); the host gets on with X, drives (hard left,
+#    straight, left), stops and gets off; the guest watches from about 5 m to its left and sees the copy (the roadster's
+#    hologram) with Sam seated, moving, parked; then the host walks away beyond 30 m and the copy goes. Her camera still
+#    faces the host's start from section 1 (the mount, `06`); it is then turned back round (the right stick, about 180
+#    degrees) to face where he drives (`07`-`10`): run 20261118-130121 kept it and the copy left her view mid-drive.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-release -SeedSaves complete-100 -SettingsCfg <1080p cfg>
+role host
+graphics low
+timeout 360
+ini partner_body=real
+ini voice_sync=1
+ini sound_sync=1
+ini self_voice=auto
+@host ini my_character=sam
+@guest ini my_character=fragile_suit
+@guest ini self_character=1
+@guest ini audio_probe=1
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+@guest pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+@guest until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitplayer 60
+waitlog 60 \[link\] CONNECTED
+@guest waitlog 60 \[link\] CONNECTED
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+@guest until 150 3000 \[sync\] partner body: real 'sam' => pad A 120
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+@guest waitlog 30 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+@guest waitlog 60 \[audio\] voice bus meters registered
+nolog \[psound\] .*NOT enabled
+@guest nolog \[psound\] .*NOT enabled
+@guest nolog \[voice\] Sam's muted voice: no PostEvent hook
+# ---- 1. headgear and boots
+log final: headgear
+@guest log final: headgear
+@guest action gear 14 15 1
+@guest waitlog 20 \[headgear\] our cap0[0-3] .*mover offset set to
+waitlog 40 \[boots\] the partner's boots prop .* follows the partner body's legs
+@guest waitlog 40 \[boots\] the partner's boots prop .* follows the partner body's legs
+@guest pad none 2600 lx=14000 ly=32767
+@guest pad none 1300 rx=32767
+@guest pad none 350 ly=32767
+wait 3000
+screenshot 01-host-sees-guest-cap
+@guest screenshot 01-guest-self-cap
+@guest screenshot 01-guest-sees-host
+@guest action gear 14 13 1
+wait 3000
+screenshot 02-host-sees-guest-cap-glasses
+@guest screenshot 02-guest-self-cap-glasses
+log final: boots respawn
+@guest log final: boots respawn
+@guest action gear 21 0
+wait 3500
+screenshot 03-host-sees-guest-noboots
+@guest action gear 21 1
+screenshot 03-host-sees-guest-boots-a
+screenshot 03-host-sees-guest-boots-b
+screenshot 03-host-sees-guest-boots-c
+screenshot 03-host-sees-guest-boots-d
+screenshot 03-host-sees-guest-boots-e
+waitlog 30 \[boots\] the partner body's feet scaled away
+screenshot 03-host-sees-guest-boots-f
+wait 2500
+screenshot 03-host-sees-guest-boots-settled
+log final: walk start
+@guest log final: walk start
+@guest pad none 1 lx=20000 keep
+screenshot 04-host-sees-guest-walk-a
+screenshot 04-host-sees-guest-walk-b
+screenshot 04-host-sees-guest-walk-c
+wait 600
+screenshot 04-host-sees-guest-walk-d
+@guest screenshot 04-guest-self-walk
+@guest pad none 0
+wait 2000
+# ---- 2. grunts: her walk, run and jumps
+log final: grunts
+@guest log final: grunts
+@guest action audio_probe 0
+@guest action self_voice 0
+@guest pad none 3000 ly=16000
+@guest pad none 3000 ly=-16000
+@guest pad none 3000 ly=32767
+@guest pad none 1000 ly=-32767 keep
+@guest pad A 200 ly=-32767 keep
+@guest pad none 900 ly=-32767 keep
+@guest pad A 200 ly=-32767 keep
+@guest pad none 900 ly=-32767 keep
+@guest pad A 200 ly=-32767 keep
+@guest pad none 900 ly=32767 keep
+@guest pad A 200 ly=32767 keep
+@guest pad none 900 ly=32767 keep
+@guest pad A 200 ly=32767 keep
+@guest pad none 900 ly=32767 keep
+@guest pad A 200 ly=32767 keep
+@guest pad none 1500 ly=32767 keep
+@guest pad none 0
+wait 3000
+@guest action audio_probe 2 1
+wait 3000
+@guest action audio_probe 2 2
+wait 5000
+log final: grunts end
+@guest log final: grunts end
+@guest action audio_probe 0
+@guest action self_voice 0
+@guest nolog \[voice\] counts: .*stop call faulted [1-9]
+action self_voice 0
+action voice_sync 0
+@guest action voice_sync 0
+action sound_sync 0
+@guest action sound_sync 0
+@guest screenshot 05-guest-after-grunts
+# ---- 3. vehicle: the host drives, the guest watches
+log final: vehicle
+@guest log final: vehicle
+@guest action vehicle_sync 9 -1088.0 281.5
+action vehicle_sync 9 -1094.4 276.9
+wait 1500
+@both action vehicle_sync 3 60000
+until 20 4000 \[vehicle\] ours: roadster => pad X 150
+@guest waitlog 20 \[vehicle\] copy 'roadster_hologram' shown
+wait 3500
+screenshot 06-host-mounted
+@guest screenshot 06-guest-sees-host-mounted
+@guest pad none 1300 rx=-32767
+wait 500
+@guest screenshot 06-guest-turned
+pad none 1200 rt=255 lx=-32767 keep
+@guest screenshot 07-guest-sees-host-driving-a
+screenshot 07-host-driving-a
+pad none 900 rt=255 keep
+@guest screenshot 07-guest-sees-host-driving-b
+screenshot 07-host-driving-b
+pad none 900 rt=255 lx=-32767 keep
+@guest screenshot 07-guest-sees-host-driving-c
+pad none 0
+wait 2000
+screenshot 08-host-stopped
+@guest screenshot 08-guest-sees-host-stopped
+@both action vehicle_sync 0
+pad X 150
+wait 4000
+screenshot 09-host-off
+@guest screenshot 09-guest-sees-host-off
+@both action vehicle_sync 0
+action vehicle_sync 9 -1100 270
+@guest waitlog 20 \[vehicle\] the partner's vehicle copy 'roadster_hologram' removed
+wait 1500
+@guest screenshot 10-guest-after-host-left
+log final: end
+@guest log final: end
+@both action vehicle_sync 0
+@both action gear 0
+@both action real_stats
+@both action log_status
+@guest quit
+wait 3000
+quit

@@ -261,6 +261,11 @@ bool SoundSyncCommand(int, const double (&)[3], char* msg, std::size_t cap) noex
     Say(msg, cap, "sound sync (stub)");
     return true;
 }
+bool VehicleSyncCommand(int, const double (&)[3], char* msg, std::size_t cap) noexcept {
+    Seen();
+    Say(msg, cap, "vehicle sync (stub)");
+    return true;
+}
 
 void ReadDiagnostics(Diagnostics* d) noexcept {
     *d = Diagnostics{};

@@ -124,6 +124,18 @@ struct RxK {
 constexpr unsigned kKQueue = 4;
 RxK g_kqueue[kKQueue];
 unsigned g_kq_head = 0, g_kq_count = 0;
+// Vehicle frames (STM1, docs/real-partner-body.md section 22): a small queue of their own (each ~1.8 KB decoded),
+// own "newer seq" filter.
+struct RxM {
+    wire::VehicleFrame f;
+    std::uint32_t generation;
+};
+constexpr unsigned kMQueue = 8;
+RxM g_mqueue[kMQueue];
+unsigned g_mq_head = 0, g_mq_count = 0;
+std::uint32_t g_last_rx_mseq = 0;
+bool g_have_rx_mseq = false;
+volatile LONG64 g_rx_vehicle = 0, g_tx_vehicle = 0;
 
 // The reliable ordered channel (docs/link-protocol.md "Reliable channel"; under g_tx with the session):
 // channel 2 (wire::kSpeechChannel) carries STS1. Reset on every new session.
@@ -256,6 +268,8 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
     constexpr unsigned kMaxSound = 2;
     static thread_local wire::SoundFrame sound[kMaxSound];  // transport thread only
     unsigned sound_count = 0;
+    static thread_local wire::VehicleFrame vehicle;  // transport thread only
+    bool have_vehicle = false;
 
     AcquireSRWLockExclusive(&g_tx);
     const lk::Delivery d = g_session.OnDatagram(data, size, from, now);
@@ -290,6 +304,8 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
                     have_gpose = true;
                 } else if (sound_count < kMaxSound && wire::DecodeSound(m.data, m.size, sound[sound_count])) {
                     ++sound_count;
+                } else if (wire::DecodeVehicle(m.data, m.size, vehicle)) {
+                    have_vehicle = true;  // the newest in the datagram wins
                 }
             } else if (m.type == static_cast<std::uint8_t>(lk::MsgType::reliable)) {
                 lk::ReliableMsg r{};
@@ -329,9 +345,12 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
 
     if (g_use_steam && new_session && g_host && committed.address) g_steam.set_peer(lab::SteamIdOf(committed));
 
-    if (pose_count || joint_count || have_name || have_gear || res_count || look_count || have_gpose || speech_count || sound_count || new_session) {
+    if (pose_count || joint_count || have_name || have_gear || res_count || look_count || have_gpose || speech_count || sound_count || have_vehicle ||
+        new_session) {
         AcquireSRWLockExclusive(&g_rx);
         if (new_session) {
+            g_mq_count = 0;
+            g_have_rx_mseq = false;
             g_aq_count = 0;
             g_have_rx_aseq = false;
             g_sq_count = 0;
@@ -387,6 +406,16 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
             slot.generation = g_generation;
             if (g_vq_count < kVQueue) ++g_vq_count;
             else g_vq_head = (g_vq_head + 1) % kVQueue;
+        }
+        if (have_vehicle && !(g_have_rx_mseq && static_cast<std::int32_t>(vehicle.seq - g_last_rx_mseq) <= 0)) {
+            g_last_rx_mseq = vehicle.seq;
+            g_have_rx_mseq = true;
+            RxM& slot = g_mqueue[(g_mq_head + g_mq_count) % kMQueue];
+            slot.f = vehicle;
+            slot.generation = g_generation;
+            if (g_mq_count < kMQueue) ++g_mq_count;
+            else g_mq_head = (g_mq_head + 1) % kMQueue;
+            InterlockedIncrement64(&g_rx_vehicle);
         }
         if (have_gpose) {
             RxK& slot = g_kqueue[(g_kq_head + g_kq_count) % kKQueue];
@@ -820,6 +849,32 @@ bool SendGearLook(const wire::GearLook& look) noexcept {
 bool SendGearPose(const wire::GearPose& pose) noexcept {
     std::uint8_t buf[wire::kMaxGearPoseFrameSize];
     return SendFrameBytes(buf, wire::EncodeGearPose(pose, buf, sizeof(buf)));
+}
+
+bool SendVehicle(const wire::VehicleFrame& f) noexcept {
+    std::uint8_t buf[wire::kMaxVehicleFrameSize];
+    const bool sent = SendFrameBytes(buf, wire::EncodeVehicle(f, buf, sizeof(buf)));
+    if (sent) InterlockedIncrement64(&g_tx_vehicle);
+    return sent;
+}
+
+bool PopVehicle(wire::VehicleFrame& out, std::uint32_t& generation) noexcept {
+    bool ok = false;
+    AcquireSRWLockExclusive(&g_rx);
+    if (g_mq_count) {
+        out = g_mqueue[g_mq_head].f;
+        generation = g_mqueue[g_mq_head].generation;
+        g_mq_head = (g_mq_head + 1) % kMQueue;
+        --g_mq_count;
+        ok = true;
+    }
+    ReleaseSRWLockExclusive(&g_rx);
+    return ok;
+}
+
+void VehicleCounts(std::uint64_t* sent, std::uint64_t* received) noexcept {
+    if (sent) *sent = static_cast<std::uint64_t>(InterlockedCompareExchange64(&g_tx_vehicle, 0, 0));
+    if (received) *received = static_cast<std::uint64_t>(InterlockedCompareExchange64(&g_rx_vehicle, 0, 0));
 }
 
 bool PopGearLook(wire::GearLook& out, std::uint32_t& generation) noexcept {

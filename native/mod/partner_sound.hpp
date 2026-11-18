@@ -54,7 +54,7 @@ void Install(const Config& cfg) noexcept;
 bool Enabled() noexcept;    // sound_sync=1 and ready
 bool Capturing() noexcept;  // any thread: the hot paths record (cheap)
 // A PostEvent detour (ours, or the audio probe's) calls selfvoice::PrePost. With sound_sync=0 and self_voice silencing
-// wanted (selfvoice::WantsPostHook), Install hooks only PostEvent and UnregisterGameObj for it.
+// wanted (selfvoice::WantsPostHook), Install hooks only PostEvent for it.
 bool PostHooked() noexcept;
 
 // ---- hot paths (any thread; called by this module's hooks or the audio probe's)

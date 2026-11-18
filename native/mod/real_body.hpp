@@ -115,6 +115,30 @@ inline constexpr int kDefaultHeadLiftPct = 100;
 // on the head are measured against the character's real head and the other screen gets the same lift.
 // False (local zeroed) when no lift is applied to that entity now.
 bool HeadLift(game::Entity* sam, float (&local)[3]) noexcept;
+// Self view headgear (docs/real-partner-body.md section 20; session.ini self_headgear, default on): with the fit on and a
+// self body whose head rig has a row, each of Sam's head accessories gets a constant offset of its own in his head
+// helper's frame (HLP_Head: x = -lateral, y = forward, z = up; metres), written into the accessory's own mover by
+// partner_gear.cpp, and the head lift above is 0. False (off zeroed): no offset now (the mover's identity applies).
+inline constexpr int kHeadItemCap = 0, kHeadItemGlasses = 1, kHeadItemClasses = 2;
+bool SelfHeadItemOffset(int cls, float (&off)[3]) noexcept;
+// The offsets are wanted now (the key, a row for the self body, the fit on): partner_gear decides whether it can write them.
+bool HeadgearWanted() noexcept;
+// partner_gear.cpp, every tick (game thread): true while it writes the offsets into every shown head item of ours (its
+// site check passed, the mover writes on, no head item refused or unknown). The lift is 0 only while this was said true
+// within the last 500 ms; otherwise the v0.11 lift holds the items up.
+void SetHeadgearReady(bool ready) noexcept;
+void ConfigureSelfHeadgear(bool on) noexcept;
+// Self view feet (section 21; session.ini self_feet_hide, default on): her foot joints take a near-zero scale on the
+// self body while the game draws Sam's equipped boots (the gear tick says so with SetSamBootsShown).
+void ConfigureSelfFeet(bool on) noexcept;
+void SetSamBootsShown(bool shown) noexcept;
+// The partner body's feet (boots_sync): scaled to pct percent while `on` (the boots prop on it is live, shown and posed).
+void SetPartnerFeetHidden(bool on, int pct) noexcept;
+void FeetCounters(std::uint32_t* self_writes, std::uint32_t* partner_writes) noexcept;
+// Joint `sam_joint` (as JointWorld) as a world frame: position and rotation rows (right, forward, up; normalised).
+bool JointFrameWorld(game::Entity* e, unsigned sam_joint, double (&p)[3], float (&r)[3][3]) noexcept;
+// Joint j of an entity whose skeleton has n joints (any layout: the boots' 10), position in world space (row 3 only).
+bool JointWorldN(game::Entity* e, unsigned j, unsigned n, double (&pos)[3]) noexcept;
 bool SelfConfigured() noexcept;
 bool SelfShown() noexcept;           // the body is shown and Sam hidden right now
 game::Entity* SelfEntity() noexcept;  // the self body (loading or live), nullptr when none
@@ -164,8 +188,20 @@ bool BeginByPathGuid(const char* path, const std::uint8_t (&guid)[16], const gam
 // checks out). The same prop again only replaces the joints. sp = nullptr / pose = nullptr clears the
 // target (waits until no detour uses it: call before the prop is removed). A pose write that faults
 // turns gear poses off for the session (false from then on). Game thread.
-inline constexpr unsigned kMaxPoseTargets = 8;
+inline constexpr unsigned kMaxPoseTargets = 9;
+// Targets 0..7 are the gear's (partner_gear.cpp); target 8 is the partner's vehicle copy (vehicle_sync.cpp,
+// docs/real-partner-body.md section 22).
+inline constexpr unsigned kGearPoseTargets = 8;
+inline constexpr unsigned kVehiclePoseTarget = 8;
 bool SetGearPose(unsigned k, const holo::Spawn* sp, const wire::GearPose* pose) noexcept;
+// The partner's boots prop (docs/real-partner-body.md section 21; boots_sync): a cutscene prop on the boots' own 10-joint
+// skeleton (layout 0x9B68A8AD, parents checked), posed in its own model updates from the partner body's legs (the body's
+// pose composed at that moment, identity root). The prop is placed as a gear item on the body's joint 0. sp = nullptr
+// clears it (waits until no detour uses it: call before the prop is removed). False (why says): not taken. Game thread.
+bool SetBootsProp(const holo::Spawn* sp, char* why, std::size_t cap) noexcept;
+void ClearBootsProp() noexcept;
+bool BootsPosed(double within_ms) noexcept;  // a pose was written onto it within that time
+void BootsCounters(char* out, std::size_t cap) noexcept;
 void ClearGearPose(unsigned k) noexcept;
 void GearPoseCounters(char* out, std::size_t cap) noexcept;
 // How many props of the slot the detour places now (0: unpublished, or a placement fault switched

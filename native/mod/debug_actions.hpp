@@ -65,6 +65,8 @@ enum class Action : std::uint8_t {
     voice_sync,           // v[0] = 0 log, 1 play sentence v[1] on the partner's talking entity, 2 test: send as Sam v[1] 0/1, 3 rebuild the map
                           //   (session.ini voice_sync=1; docs/audio-research.md section 15)
     sound_sync,           // v[0] = 0 log, 1 verbose v[1] 0/1, 2 stop the partner's sounds (session.ini sound_sync=1; docs/audio-research.md section 16)
+    vehicle_sync,         // v[0] = 0 log, 1 mode v[1], 2 copy override v[1], 3 trace v[1] ms, 4 offset right v[1] / forward v[2] cm, 5 describe,
+                          //   6 offset up v[1] cm (session.ini vehicle_sync; docs/real-partner-body.md section 22)
     count
 
 };

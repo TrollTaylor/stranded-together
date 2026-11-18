@@ -1,0 +1,49 @@
+# The boots prop on a partner Sam body (docs/real-partner-body.md section 21): the echo partner replays our own Sam as
+# demo_sam_clean 1.2 m beside us; no self view. His own model's default boots (`gear 21 0`), then the boots prop with
+# the body's feet kept (`gear 20 100`) and scaled away (`gear 20 1`), front and walking.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario echo-boots-sam -SeedSaves complete-100
+role echo
+timeout 300
+ini partner_body=real
+ini partner_character=sam
+ini echo_delay_s=0.3
+ini echo_offset_m=-1.2
+ini partner_collision=0
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[sync\] partner body: real
+waitlog 40 \[boots\] the partner's boots prop .* follows the partner body's legs
+wait 3000
+pad none 1300 rx=32767
+wait 2000
+screenshot 01-front-boots-feet-1
+action gear 20 100
+wait 1500
+screenshot 01-front-boots-feet-kept
+action gear 20 1
+action gear 21 0
+wait 3000
+screenshot 01-front-noboots
+action gear 21 1
+waitlog 30 \[boots\] the partner body's feet scaled away
+wait 1500
+screenshot 01-front-boots-again
+pad none 650 rx=-32767
+wait 1500
+pad none 1 lx=20000 keep
+screenshot 02-walk-a
+screenshot 02-walk-b
+wait 600
+screenshot 02-walk-c
+pad none 0
+wait 1500
+action gear 0
+action real_stats
+action log_status
+quit

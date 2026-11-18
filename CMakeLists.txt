@@ -137,6 +137,7 @@ add_library(st_mod SHARED
   native/mod/self_voice.cpp
   native/mod/partner_voice.cpp
   native/mod/partner_sound.cpp
+  native/mod/vehicle_sync.cpp
   native/mod/automation.cpp
 
   native/mod/sandbox.cpp

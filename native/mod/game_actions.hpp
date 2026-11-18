@@ -158,6 +158,8 @@ bool SelfVoiceCommand(int op, const double (&v)[3], char* msg, std::size_t cap) 
 bool VoiceSyncCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 // Partner sounds debug command (partner_sound.cpp, session.ini sound_sync=1): see docs/debug-actions.md "Sound sync".
 bool SoundSyncCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
+// Vehicle sync debug command (vehicle_sync.cpp, session.ini vehicle_sync): see docs/debug-actions.md "Vehicle sync".
+bool VehicleSyncCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 
 // Name tags debug command (nametags.cpp): 0 normal, 1 self test (a tag above your own Sam),
 // 2 log the camera numbers, 3 <0/1> tags off / on.

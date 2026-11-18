@@ -5,7 +5,7 @@
 //   thunk 0x1422D6AA0). Every line Sam says goes through it, the spoken lines and the non-verbal ones
 //   (grunts, efforts, breathing, humming: the animation voice events end in the same voice queue; Phase 0,
 //   section 12.1). A talk is muted when (2026-11-18: with a PostEvent detour in, the talk RUNS and only its voice post
-//   is silenced in Wwise, PrePost below; without one, the message is dropped and the original is not run)
+//   is stopped in Wwise, PrePost / AfterPost below; without one, the message is dropped and the original is not run)
 //     - the setting resolves to mute,
 //     - the talk component's owner [comp+0x48] (fault-free read) is exactly the local player entity
 //       (not BB, the cuff device or any other child: they have DSTalkComponents of their own), or the cargo
@@ -46,17 +46,33 @@ const char* Character() noexcept;  // this player's character key as Install res
 // ring (its sentences' pointers and GUIDs, fault-free reads), muted or not.
 bool FilterTalk(void* comp, void* msg) noexcept;
 
-// Silencing instead of dropping (2026-11-18, docs/audio-research.md section 17): with a PostEvent hook in (partner_sound's,
-// also installed for this alone, or the audio probe's), a muted talk of the local player runs, and the external-source
-// post that plays its voice is silenced first (SetGameObjectOutputBusVolume(object, listener 0, 0)), so what the game
-// chains to the line (BB's answer to a dialogue line) still happens. The cargo menu figure's talks are still dropped.
-// Any thread, inside the PostEvent detour, before the original. Cheap unless the post has external sources.
-void PrePost(std::uint32_t ev, std::uint64_t obj, std::uint32_t n_ext) noexcept;
-void NoteUnregister(std::uint64_t obj) noexcept;  // any thread: the UnregisterGameObj detour (before the original)
-// Bootstrap thread: Install resolved mute and the volume export checked (partner_sound then installs a PostEvent
-// hook for this even with sound_sync=0); PostHookReady(true) once a hook calls PrePost, else the talk is dropped.
+// Silencing instead of dropping (2026-11-18, docs/audio-research.md sections 17 and 18): with a PostEvent hook in
+// (partner_sound's, also installed for this alone, or the audio probe's), a muted talk of the local player runs, and the
+// external-source post that plays its voice is stopped right after it is posted (StopPlayingID(playing id, 0 ms)), so
+// what the game chains to the line (BB's answer to a dialogue line) still happens and nothing of the voice renders.
+// (v0.11 set SetGameObjectOutputBusVolume(object, 0) before the post; Decima's sound-instance update set the object's
+// volume back to its own level right after and fed its reverb sends: the grunts were heard. Section 18.)
+// The cargo menu figure's talks are still dropped.
+// Any thread, inside the PostEvent detour. PrePost before the original: true = this post is the local Sam's voice;
+// then AfterPost with the post's playing id and the detour's StopPlayingID original (its trampoline when that detour
+// hooked StopPlayingID, else nullptr: the export, checked at Install). Cheap unless the post has external sources.
+using StopFn = void (*)(std::uint32_t, std::int32_t, int);
+bool PrePost(std::uint32_t ev, std::uint64_t obj, std::uint32_t n_ext) noexcept;
+void AfterPost(std::uint32_t pid, StopFn stop) noexcept;
+// The Wwise events whose sounds route to Sam's voice bus 0xDCB6FE59 (all of them external-source voice presets; the
+// game's resident banks, section 18). Only these are stopped; partner_sound never sends or posts them.
+inline constexpr std::uint32_t kSamVoiceEvents[] = {
+    0x1C5DF301u, 0x1D6D9E55u, 0x2572469Au, 0x2F459828u, 0x32839529u, 0x35904449u, 0x36A86F1Bu, 0x39DEAD87u, 0x3A4084ECu, 0x3A420518u,
+    0x3D4BF9E2u, 0x3E51AF82u, 0x47A674A9u, 0x735DB9D1u, 0x7616B19Eu, 0x7B540EFFu, 0x8DE56BC0u, 0x98796136u, 0xA4D58CE8u, 0xA9835F3Cu,
+    0xB25F980Fu, 0xB458AA34u, 0xB4FECB5Fu, 0xD4435CECu, 0xDDFABAE6u, 0xE4C59BEBu, 0xF308691Bu, 0xFF918A85u,
+};
+// Bootstrap thread: Install resolved mute and the StopPlayingID export checked (partner_sound then installs a PostEvent
+// hook for this even with sound_sync=0); PostHookReady(true) once a hook calls PrePost / AfterPost, else the talk is dropped.
 bool WantsPostHook() noexcept;
 void PostHookReady(bool ready) noexcept;
+// Any thread (the audio probe's bus meters): 0 not muting, 1 muting by v0.11's volume 0 (debug op 4 0), 2 muting by
+// stopping the voice.
+unsigned MeterState() noexcept;
 // Game thread: the partner's talking entity (its voice posts are never taken for the local player's).
 void NoteEcho(game::Entity* echo) noexcept;
 
@@ -81,7 +97,9 @@ void Tick(game::Entity* local, double now_ms) noexcept;
 
 // Debug command (game thread; `action self_voice <op> [a]`): 0 log the counts, 1 <0/1> mute off / on
 // (only when armed), 2 <n> the cargo menu's figure says its line list n (the game's PlayAkukanVoice; the menu
-// must be open), 3 <n> test situation n through the local player's voice queue (audioprobe::TestSituation).
+// must be open), 3 <n> test situation n through the local player's voice queue (audioprobe::TestSituation),
+// 4 <0/1> how a muted voice post is silenced: 1 stopped (the default), 0 v0.11's SetGameObjectOutputBusVolume 0 (for
+// before / after measurements only: it lets the grunts through, section 18).
 bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 
 }  // namespace st::selfvoice

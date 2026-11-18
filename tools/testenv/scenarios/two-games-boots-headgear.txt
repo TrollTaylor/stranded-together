@@ -1,0 +1,115 @@
+# Two games, headgear and boots on both screens (docs/real-partner-body.md sections 20 and 21): the host plays Sam, the
+# guest Fragile in her porter suit with the self view (as the launcher writes it), the cap and then the glasses on the
+# guest. The host's view of the guest: her headgear with the v0.11 head lift (`@guest self_view 10 0`) and with the
+# per-item offsets, standing and in the first steps of a walk; her own model's boots (`@guest gear 21 0`: no boots item
+# sent), then the boots prop on her legs with her feet kept (`gear 20 100`) and scaled away. The guest's view of the
+# host: his Sam body with the boots prop (its own default boots under it scaled away). Run it with a 1080p settings.cfg:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-boots-headgear -SeedSaves complete-100 -SettingsCfg <1080p cfg>
+role host
+graphics low
+timeout 360
+ini partner_body=real
+@host ini my_character=sam
+@guest ini my_character=fragile_suit
+@guest ini self_character=1
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+@guest pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+@guest until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitplayer 60
+waitlog 60 \[link\] CONNECTED
+@guest waitlog 60 \[link\] CONNECTED
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+@guest until 150 3000 \[sync\] partner body: real 'sam' => pad A 120
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+@guest waitlog 30 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+@guest action gear 14 15 1
+waitlog 40 \[boots\] the partner's boots prop .* follows the partner body's legs
+@guest waitlog 40 \[boots\] the partner's boots prop .* follows the partner body's legs
+@guest pad none 2600 lx=14000 ly=32767
+@guest pad none 1300 rx=32767
+@guest pad none 350 ly=32767
+wait 3000
+screenshot 01-host-sees-guest-front
+@guest screenshot 01-guest-sees-host-front
+@guest screenshot 01-guest-self-front
+# her cap on the host's screen: v0.11 (the head lift), then now
+@guest action self_view 10 0
+wait 3000
+screenshot 02-host-sees-guest-cap-before
+@guest action self_view 10 1
+wait 3000
+screenshot 02-host-sees-guest-cap-after
+# her boots on the host's screen: her own (no boots item), the prop with her feet kept, the prop with her feet scaled
+@guest action gear 21 0
+wait 3500
+screenshot 03-host-sees-guest-noboots
+@guest action gear 21 1
+waitlog 30 \[boots\] the partner body's feet scaled away
+wait 1500
+action gear 20 100
+wait 1500
+screenshot 03-host-sees-guest-boots-feet-kept
+action gear 20 1
+wait 1500
+screenshot 03-host-sees-guest-boots-feet-1
+# his boots on the guest's screen: the prop on his Sam body, its own boots kept, then scaled away
+@guest action gear 20 100
+wait 1500
+@guest screenshot 04-guest-sees-host-boots-feet-kept
+@guest action gear 20 1
+wait 1500
+@guest screenshot 04-guest-sees-host-boots-feet-1
+@guest action gear 21 0
+wait 3500
+@guest screenshot 04-guest-sees-host-noboots
+@guest action gear 21 1
+wait 2500
+# the glasses too
+@guest action gear 14 13 1
+wait 3000
+screenshot 05-host-sees-guest-both
+@guest screenshot 05-guest-self-both
+@guest action gear 14 13 0
+wait 2000
+# the first steps of her walk across the host's view: v0.11, then now
+@guest log walk before
+log walk before
+@guest action self_view 10 0
+wait 2500
+@guest pad none 1 lx=-20000 keep
+screenshot 06-host-sees-guest-walk-before-a
+screenshot 06-host-sees-guest-walk-before-b
+screenshot 06-host-sees-guest-walk-before-c
+wait 600
+screenshot 06-host-sees-guest-walk-before-d
+@guest pad none 0
+wait 2500
+@guest log walk after
+log walk after
+@guest action self_view 10 1
+wait 2500
+@guest pad none 1 lx=20000 keep
+screenshot 07-host-sees-guest-walk-after-a
+screenshot 07-host-sees-guest-walk-after-b
+screenshot 07-host-sees-guest-walk-after-c
+wait 600
+screenshot 07-host-sees-guest-walk-after-d
+@guest pad none 0
+wait 2000
+log walk done
+@guest log walk done
+action gear 0
+@guest action gear 0
+action log_status
+@guest action log_status
+@guest quit
+wait 3000
+quit

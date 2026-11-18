@@ -422,8 +422,17 @@ bool GearItemOk(const GearItem& it, unsigned index) {
     const auto k = static_cast<std::uint8_t>(it.kind);
     if (k < 1 || k > kGearKindMax) return false;
     if (GearHasRes(it.kind) && it.res >= kMaxGearRes) return false;
+    if (it.kind == GearKind::boots) return it.parent == kGearNoParent && it.joint == 0;
     if (it.parent == kGearNoParent) return it.joint < kGearJoints;
     return it.parent < index;
+}
+// The boots block goes with exactly one boots item (version 4).
+bool GearBootsOk(const GearFrame& f) {
+    unsigned boots = 0;
+    for (unsigned i = 0; i < f.count && i < kMaxGearItems; ++i) boots += f.items[i].kind == GearKind::boots;
+    const bool block = (f.flags & kGearBoots) != 0;
+    if (boots > 1 || (boots == 1) != block) return false;
+    return !block || (f.boots_visible & ~f.boots_apply) == 0;
 }
 }  // namespace
 
@@ -448,9 +457,9 @@ std::uint16_t GearLayoutHash(const GearFrame& f) noexcept {
 
 std::size_t EncodeGear(const GearFrame& f, std::uint8_t* out, std::size_t cap) noexcept {
     if (!out || f.count > kMaxGearItems) return 0;
-    const bool parts = (f.flags & kGearParts) != 0, pack = (f.flags & kGearPackParts) != 0;
-    const std::size_t size = GearFrameSize(f.count, parts, pack);
-    if (cap < size) return 0;
+    const bool parts = (f.flags & kGearParts) != 0, pack = (f.flags & kGearPackParts) != 0, boots = (f.flags & kGearBoots) != 0;
+    const std::size_t size = GearFrameSize(f.count, parts, pack, boots);
+    if (cap < size || !GearBootsOk(f)) return 0;
     for (unsigned i = 0; i < f.count; ++i) {
         const GearItem& it = f.items[i];
         if (!GearItemOk(it, i) || !FiniteQ(it.q)) return 0;
@@ -474,6 +483,10 @@ std::size_t EncodeGear(const GearFrame& f, std::uint8_t* out, std::size_t cap) n
     if (pack) {
         Put(p, f.pack_apply);
         Put(p, static_cast<std::uint64_t>(f.pack_visible & f.pack_apply));
+    }
+    if (boots) {
+        Put(p, f.boots_apply);
+        Put(p, f.boots_visible);
     }
     for (unsigned i = 0; i < f.count; ++i) {
         const GearItem& it = f.items[i];
@@ -502,8 +515,8 @@ bool DecodeGear(const std::uint8_t* data, std::size_t size, GearFrame& out) noex
     f.dropped = Get<std::uint8_t>(p);
     const std::uint16_t hash = Get<std::uint16_t>(p);
     Get<std::uint16_t>(p);
-    const bool parts = (f.flags & kGearParts) != 0, pack = (f.flags & kGearPackParts) != 0;
-    if (f.count > kMaxGearItems || size != GearFrameSize(f.count, parts, pack)) return false;
+    const bool parts = (f.flags & kGearParts) != 0, pack = (f.flags & kGearPackParts) != 0, boots = (f.flags & kGearBoots) != 0;
+    if (f.count > kMaxGearItems || size != GearFrameSize(f.count, parts, pack, boots)) return false;
     if (parts) {
         for (unsigned k = 0; k < 2; ++k) f.parts_apply[k] = Get<std::uint64_t>(p);
         for (unsigned k = 0; k < 2; ++k) f.parts_visible[k] = Get<std::uint64_t>(p) & f.parts_apply[k];
@@ -511,6 +524,10 @@ bool DecodeGear(const std::uint8_t* data, std::size_t size, GearFrame& out) noex
     if (pack) {
         f.pack_apply = Get<std::uint64_t>(p);
         f.pack_visible = Get<std::uint64_t>(p) & f.pack_apply;
+    }
+    if (boots) {
+        f.boots_apply = Get<std::uint32_t>(p);
+        f.boots_visible = Get<std::uint32_t>(p);
     }
     for (unsigned i = 0; i < f.count; ++i) {
         GearItem& it = f.items[i];
@@ -528,7 +545,7 @@ bool DecodeGear(const std::uint8_t* data, std::size_t size, GearFrame& out) noex
         if (!GearItemOk(it, i)) return false;
         if (it.parent != kGearNoParent) it.joint = 0;
     }
-    if (GearLayoutHash(f) != hash) return false;
+    if (GearLayoutHash(f) != hash || !GearBootsOk(f)) return false;
     out = f;
     return true;
 }
@@ -1007,6 +1024,146 @@ bool DecodeSound(const std::uint8_t* data, std::size_t size, SoundFrame& out) no
     out.seq = seq;
     out.sender_ms = sender_ms;
     for (unsigned i = 0; i < n; ++i) out.item[i] = f.item[i];
+    return true;
+}
+
+// ---------------------------------------------------------------- vehicle frame (STM1)
+namespace {
+constexpr VehicleResource kVehicleRes[kVehicleResourceCount] = {
+    {"roadster", "ds/entities/vehicle/pe_ds_vehicle_casp", "ff17815d-4a07-0840-9b23-d30f30269e7f", VehicleKind::speedcar, 0xECF43324u},
+    {"trike", "ds/entities/vehicle/pe_ds_vehicle_ca03", "3337b48c-a29c-d748-a1bd-5f02f064486a", VehicleKind::motorbike, 0x8DABA9B0u},
+    {"trike_kusanagi", "ds/entities/vehicle/pe_ds_vehicle_bkyk", "1d8c8523-3510-ff43-827d-7cea16e6ff37", VehicleKind::motorbike, 0u},
+    {"truck", "ds/entities/vehicle/pe_ds_vehicle_ca02", "0f79737e-e401-e249-9d56-1f09e2c5b4ee", VehicleKind::truck, 0xB609EC0Du},
+    {"truck_npc", "ds/entities/vehicle/pe_ds_vehicle_celd", "ab30dada-9e77-124a-927c-dc50421618d2", VehicleKind::truck, 0xB609EC0Du},
+};
+
+int Hex(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+// "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" -> uuid.bytes_le (the first three groups little-endian).
+bool GuidBytesLe(const char* text, std::uint8_t (&out)[16]) {
+    std::uint8_t be[16] = {};
+    unsigned n = 0;
+    for (const char* p = text; *p; ++p) {
+        if (*p == '-') continue;
+        const int hi = Hex(p[0]);
+        const int lo = p[1] ? Hex(p[1]) : -1;
+        if (hi < 0 || lo < 0 || n >= 16) return false;
+        be[n++] = static_cast<std::uint8_t>(hi * 16 + lo);
+        ++p;
+    }
+    if (n != 16) return false;
+    const std::uint8_t order[16] = {3, 2, 1, 0, 5, 4, 7, 6, 8, 9, 10, 11, 12, 13, 14, 15};
+    for (unsigned i = 0; i < 16; ++i) out[i] = be[order[i]];
+    return true;
+}
+
+bool VehicleOk(const VehicleFrame& f) {
+    if (f.kind < 1 || f.kind > 3 || f.state > kVehicleStateMax || (f.flags & ~kVehKnown) != 0) return false;
+    if (((f.flags & kVehJoints) != 0) != (f.n > 0) || f.n > kMaxVehicleJoints) return false;
+    if (f.n > 0 && f.layout == 0) return false;
+    const VehicleResource* r = FindVehicleResource(f.guid);
+    if (!r || static_cast<std::uint8_t>(r->kind) != f.kind) return false;
+    if (!Finite(f.x) || !Finite(f.y) || !Finite(f.z) || std::fabs(f.x) > 1e7 || std::fabs(f.y) > 1e7 || std::fabs(f.z) > 1e7) return false;
+    if (!FiniteQ(f.rot) || !FiniteQ(f.seat_rot) || !std::isfinite(f.speed) || std::fabs(f.speed) > 1000.0f) return false;
+    for (float v : f.seat) {
+        if (!std::isfinite(v) || std::fabs(v) > kMaxVehicleSeatM) return false;
+        if (!(f.flags & kVehSeated) && v != 0.0f) return false;
+    }
+    for (unsigned j = 0; j < f.n; ++j) {
+        if (!FiniteQ(f.q[j])) return false;
+        for (float v : f.t[j])
+            if (!std::isfinite(v) || std::fabs(v) > kMaxVehicleJointM) return false;
+    }
+    return true;
+}
+
+void PutQ6(std::uint8_t*& p, const Quat& q) {
+    const std::uint64_t b = PackQuat(q);
+    for (unsigned k = 0; k < 6; ++k) *p++ = static_cast<std::uint8_t>(b >> (8 * k));
+}
+Quat GetQ6(const std::uint8_t*& p) {
+    std::uint64_t b = 0;
+    for (unsigned k = 0; k < 6; ++k) b |= static_cast<std::uint64_t>(*p++) << (8 * k);
+    return UnpackQuat(b);
+}
+}  // namespace
+
+const VehicleResource* VehicleResources() noexcept { return kVehicleRes; }
+
+const VehicleResource* FindVehicleResource(const std::uint8_t (&guid)[16]) noexcept {
+    for (const VehicleResource& r : kVehicleRes) {
+        std::uint8_t g[16];
+        if (GuidBytesLe(r.guid, g) && std::memcmp(g, guid, 16) == 0) return &r;
+    }
+    return nullptr;
+}
+
+std::size_t EncodeVehicle(const VehicleFrame& f, std::uint8_t* out, std::size_t cap) noexcept {
+    if (!out || !VehicleOk(f)) return 0;
+    const std::size_t size = VehicleFrameSize(f.n);
+    if (cap < size) return 0;
+    std::uint8_t* p = out;
+    std::memcpy(p, kVehicleMagic, 4);
+    p += 4;
+    Put(p, kVehicleVersion);
+    Put(p, f.kind);
+    Put(p, f.state);
+    Put(p, f.flags);
+    Put(p, f.seq);
+    Put(p, f.sender_ms);
+    std::memcpy(p, f.guid, 16);
+    p += 16;
+    Put(p, f.x);
+    Put(p, f.y);
+    Put(p, f.z);
+    PutQ6(p, f.rot);
+    Put(p, f.speed);
+    for (float v : f.seat) Put(p, static_cast<std::int16_t>(std::lround(v * 1000.0f)));
+    PutQ6(p, f.seat_rot);
+    Put(p, f.layout);
+    Put(p, f.n);
+    Put(p, std::uint8_t{0});
+    for (unsigned j = 0; j < f.n; ++j) {
+        PutQ6(p, f.q[j]);
+        for (float v : f.t[j]) Put(p, static_cast<std::int16_t>(std::lround(v * 1000.0f)));
+    }
+    return static_cast<std::size_t>(p - out);
+}
+
+bool DecodeVehicle(const std::uint8_t* data, std::size_t size, VehicleFrame& out) noexcept {
+    if (!data || size < kVehicleHeaderSize || std::memcmp(data, kVehicleMagic, 4) != 0) return false;
+    const std::uint8_t* p = data + 4;
+    static thread_local VehicleFrame f;
+    f = VehicleFrame{};
+    if (Get<std::uint8_t>(p) != kVehicleVersion) return false;
+    f.kind = Get<std::uint8_t>(p);
+    f.state = Get<std::uint8_t>(p);
+    f.flags = Get<std::uint8_t>(p);
+    f.seq = Get<std::uint32_t>(p);
+    f.sender_ms = Get<std::uint32_t>(p);
+    std::memcpy(f.guid, p, 16);
+    p += 16;
+    f.x = Get<double>(p);
+    f.y = Get<double>(p);
+    f.z = Get<double>(p);
+    f.rot = GetQ6(p);
+    f.speed = Get<float>(p);
+    for (float& v : f.seat) v = static_cast<float>(Get<std::int16_t>(p)) / 1000.0f;
+    f.seat_rot = GetQ6(p);
+    f.layout = Get<std::uint32_t>(p);
+    f.n = Get<std::uint8_t>(p);
+    if (Get<std::uint8_t>(p) != 0) return false;
+    if (f.n > kMaxVehicleJoints || size != VehicleFrameSize(f.n)) return false;
+    for (unsigned j = 0; j < f.n; ++j) {
+        f.q[j] = GetQ6(p);
+        for (float& v : f.t[j]) v = static_cast<float>(Get<std::int16_t>(p)) / 1000.0f;
+    }
+    if (!VehicleOk(f)) return false;
+    out = f;
     return true;
 }
 

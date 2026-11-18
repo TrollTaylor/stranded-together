@@ -476,11 +476,27 @@ bool SameResource(std::uintptr_t a, std::uintptr_t b) {
     const std::uintptr_t ra = a ? RefObject(a + kEntResRef) : 0;
     return ra && ra == (b ? RefObject(b + kEntResRef) : 0);
 }
+// An entity carrying a DSPlayerBootsComponent (our boots entity, inventory +0x4D80).
+bool IsBootsEntity(std::uintptr_t e) {
+    std::int32_t n = 0;
+    if (!e || !Rd(e + kEntComps, n) || n <= 0 || n > 64) return false;
+    std::uintptr_t comps[64] = {};
+    if (!mem::Read(Q(e + kEntComps + 8), comps, 8ull * static_cast<unsigned>(n))) return false;
+    for (std::int32_t i = 0; i < n; ++i)
+        if (comps[i] && mem::DerivesFrom(mem::RttiOf(comps[i]), "DSPlayerBootsComponent")) return true;
+    return false;
+}
 bool Allowed(const Found& f, wire::GearKind kind, std::uintptr_t prop) {
     switch (kind) {
     case wire::GearKind::entity:
         if (f.src == kSrcAcc || f.src == kSrcItem || f.src == kSrcPackCfg || f.src == kSrcProp) return true;
         if (f.src == kSrcComp || f.src == kSrcOwn) return f.owner && (f.owner == g_player_own || SameResource(f.owner, prop));
+        return false;
+    case wire::GearKind::boots:
+        // the equipped boots (section 21): the prop's own, our player's and our own boots entity's components
+        if (f.src == kSrcItem || f.src == kSrcProp) return true;
+        if (f.src == kSrcComp || f.src == kSrcOwn)
+            return f.owner && (f.owner == g_player_own || SameResource(f.owner, prop) || IsBootsEntity(f.owner));
         return false;
     case wire::GearKind::backpack:
         if (f.src == kSrcPackCfg || f.src == kSrcProp) return true;

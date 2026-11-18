@@ -1,5 +1,8 @@
 # Audio research: the guest's voice and syncing both players' sounds
 
+Status (2026-11-18, after v0.11.0): **the grunts are fixed: Sam's muted voice post is now stopped right after it is posted
+(section 18)**. v0.11's volume 0 (17.2) was set back to full level by the game's own sound-instance update one update later,
+so the user still heard Sam grunt as Fragile; measured by Wwise's own bus meters in run `20261118-113511-grunts-fragile`.
 Status (2026-11-18, after the review): **Phase 1 changed, Phase 4 partly done, all phases re-run on the final code;
 results and the review's findings in section 17.** Sam's muted voice is now *silenced in Wwise while the talk runs*
 (the talk is no longer dropped when a PostEvent detour is in); partner sounds post only allow-listed event ids, from an
@@ -1240,6 +1243,9 @@ Every run in this section: `-SeedSaves complete-100`, no `ds.exe` running before
 
 ### 17.2 Phase 1 changed: the muted talk runs, its voice is silenced [verified]
 
+*(Corrected after v0.11.0, section 18: the volume call returned 1, but the game's sound-instance update set the object's
+volume back to its own level right after it, so the voice was heard. The post is now stopped instead.)*
+
 - **Finding H2 ("the mute stops BB's answer") is refuted as stated.** With the guest-Fragile self view and *no* mute
   (`20261118-090911-bb-answer-selfview`, `self_voice=sam`), the queue took `ReceivedLike` (`check 1, queued 1`), Sam's line
   played (`voice post #6 event 0xA4D58CE8 ... 1.58 m from the local player`) and **no BB post (`0x8118407C`) followed in 15 s**.
@@ -1353,3 +1359,98 @@ partner_volume=100`, `[voice] ... Sam's voice plays as usual (nothing hooked)`, 
   host, a guest without the self view, long sessions, and the 15-minute cap.
 - Why BB does not answer `ReceivedLike` in the guest set-up.
 - The `0xC0000005` after `quit` of Phase 0 (`055718`) did not recur in 9 runs here (11 game processes); its cause is unknown.
+
+## 18. The grunts came back in v0.11: the mute is now a stop (2026-11-18)
+
+After v0.11.0 the user still heard Sam grunting when Fragile jumped and walked around. Their own logs (two games, the guest
+`fragile_suit` with the self view, launcher defaults) showed the guest's 53 talks all "silenced in Wwise" (53 of 53, 0 unmatched,
+0 failed) and the host playing none of them (`received 53 ... played 0`). So the matching was right and nothing crossed the link:
+the volume-0 mute itself did not hold.
+
+### 18.1 Cause [verified]
+
+- `WwiseSimpleSoundInstance` (vtable `0x143C1C188`) starts at `+0x148` = `0x141DBE710`: it computes the instance level
+  (`0x141DCC800`, which sets the dirty flag `inst+0x2AA`) and posts (`0x141DBE900` -> `0x141DD2040` -> `PostEvent`; v0.11's
+  `PrePost` ran here). Its update `+0x168` = `0x141DCC450` calls `0x141DD3380`, which, while `+0x2AA` is set, calls
+  `SetGameObjectOutputBusVolume(inst, 0, [+0x2AC] * [+0x2A0])` (call `0x141DD34FB`) and `SetGameObjectAuxSendValues(inst,
+  sends, n)` (call `0x141DD35B2`, the zone reverb sends). The flag is set at construction (`+0x2AB`, base constructor
+  `0x141DAB380`) and whenever the level or the zone values change, so it is still pending when the voice is posted.
+- Probe run **`20261118-112502-grunts-fragile`** (v0.11's method, both exports hooked by the probe, logging only): on every one
+  of the 51 objects whose voice post was set to volume 0, Decima called `SetGameObjectOutputBusVolume` again with **1.000** from
+  `ds.exe+0x1DD3500` (the return address of `0x141DD34FB`) and `SetGameObjectAuxSendValues` with **1 send** from
+  `ds.exe+0x1DD35B7` (51 of 51 each). The last call wins in Wwise: the voice played at full level, with its reverb.
+- Loudness, measured by Wwise itself (`AK::SoundEngine::RegisterBusMeteringCallback`, peak per audio frame; the hidden test
+  silences only the device buffer, after the mix). Sam's voice bus `0xDCB6FE59` and its next two parents get no mix node of
+  their own in this game (the probe's `[audio] mix-bus node` census); the first bus of the chain that mixes is the voice tree's
+  `0x7CC88FD9`, metered with the master `0xE2B7BC37` as a check. Run **`20261118-113511-grunts-fragile`**, one game, the same
+  moves in each section (walk, run, 6-10 jumps while running, the Jumping and OutOfBreath situations, idle):
+
+| Section | Sam's voice posts | Loud stretches on `0x7CC88FD9` (peak > -60 dBFS) | Peaks |
+|---|---|---|---|
+| v0.11's method (`self_voice 4 0`) | 17 | 10 (385 loud frames) | -9.5 to -25.5 dBFS |
+| mute off (`self_voice 1 0`, the control) | 15 | 8 (366 loud frames) | -9.6 to -22.0 dBFS |
+| **stopped (this fix), 50-100 s and 149-178 s** | **45** | **0** | - |
+
+  (Counts of loud stretches corrected by the review's recount: 10 and 8, not 11 and 9; the frame totals and peaks stand.)
+  So the v0.11 mute was as loud as no mute at all. The only loud stretches while stopping (36-49 s, before the first move)
+  coincide with five radio-type voice posts (`0x374FF1A2`, `0x518FE01D`, 2-D at the origin, 1186 m away: not Sam's) and one
+  stopped Sam post inside the same window (`#3`, 37.6 s), which therefore cannot be told apart there.
+- What the grunts were: Sam's own voice through the talk path, as section 12.1 found. In run `113511` 78 of the 83 voice
+  posts (external sources) were his voice presets (`0x3E51AF82` 41, `0x1C5DF301` 15, `0x3D4BF9E2` 13, `0x7B540EFF` 5, `0xB4FECB5F` 4;
+  `0xFF918A85` and `0xA4D58CE8` in the earlier runs), posted by `DSTalkComponent` 1.0-1.5 m from the player (the other 5: the radio-type `0x374FF1A2` / `0x518FE01D`); the animation voice
+  events (indices 2500-2599: 142 in this run) feed the same voice queue (section 12.1; 78 talks here, not every event becomes a talk). No vocal sound took another path in the observed data, and
+  none of the 80 event ids the player's components post or that `sound_sync` ever mirrored routes under the voice tree
+  `0x7CC88FD9` (bank metadata) [inferred: routing only; no sample was listened to].
+
+### 18.2 The fix
+
+- **`native/mod/self_voice.cpp`**: a muted voice post of the local Sam is **stopped right after it is posted**: the PostEvent
+  detour (partner_sound's or the probe's) asks `PrePost` before the original and calls `AfterPost(playing id, its StopPlayingID
+  original)` after it, which calls `StopPlayingID(id, 0 ms, linear)` (SEH-guarded; the trampoline when that detour hooked
+  `StopPlayingID`, else the export, checked at start-up: RVA `0x3A20B20` and its first bytes, or hooked by the probe). The stop
+  is queued behind the play message on the same thread, so Wwise handles both in one audio frame and the streamed voice never
+  renders, dry or reverb. The talk still runs (BB's answer chains as before); its subtitle is still dropped. Hot path: two
+  atomics, at most four fault-free reads, no lock, no allocation, no logging.
+- **Which post**: one of **Sam's 28 voice events** (`selfvoice::kSamVoiceEvents`: every event whose sounds route to his voice bus
+  `0xDCB6FE59`, all external-source presets), not BB's / the cuff's / a child's preset, and either the talk component's playing
+  instance (`exact`) or, **while a muted talk of the local player is pending** (3 s), within 3 m of the local player's head and
+  nearer it than the partner's talking entity (both measured 1.55 m over the root). Without a pending talk a position match is
+  left alone, so another Sam actor near the player (an in-engine cutscene's, the menu figure's) is never cut (review follow-up;
+  in every run each of Sam's voice posts had one pending: `none pending 0`). An external-source post near the player with a muted talk pending that is *not* one of his events is
+  kept and logged (`... is not one of Sam's voice events: kept`), so radio calls and other characters are never cut.
+- **`native/mod/partner_sound.cpp`**: the 28 events are on the deny list too (never sent, never posted), on top of the existing
+  rule that external-source posts are never mirrored. With `sound_sync=0` the self_voice-only hook set is now PostEvent alone
+  (UnregisterGameObj is no longer needed).
+- **Debug**: `self_voice 4 <0|1>` switches between v0.11's volume 0 (test only, for before / after measurements) and the stop.
+  The audio probe adds the bus meters, the mix-bus census, the loud-stretch timeline of `0x7CC88FD9` and the counts of Decima's
+  volume / aux-send calls on the stopped objects (`[audio] voice after mute`, `[audio] voice bus ... loud from`).
+- No wire change; with `self_voice=sam` (or Sam) nothing changes; keys and defaults unchanged.
+
+### 18.3 Runs (`build-testenv\runs\`, all `-SeedSaves complete-100`, one at a time, no other `ds.exe` running; game exit code 0, saves unchanged, no `error.txt`, 0 cloud uploads)
+
+| Run | Build | What it shows |
+|---|---|---|
+| `20261118-112502-grunts-fragile` | v0.11's self_voice + the probe's new hooks | the cause: 51 of 51 "silenced" objects set back to volume 1.000 and given 1 aux send by Decima; 51 talks, 0 unmatched (the bus meter on `0xDCB6FE59` read 0 frames: that bus has no mix node) |
+| `20261118-113135-grunts-fragile` | the fix, meters on the whole chain | 42 posts stopped, 15 v0.11, 14 unmuted (`passed 14`); `0x7CC88FD9` max -18.4 dBFS while stopping (the radio at the start), -9.3 v0.11, -10.0 mute off |
+| **`20261118-113511-grunts-fragile`** | the fix + the loud-stretch timeline | the table above; `stopped 46 of 63` muted talks (17 by v0.11 in its section), stop call faulted 0, post failed 0, not-Sam's-event 0, other talkers kept 0; 63 muted talks gave 63 posts (no retries) |
+| **`20261118-113842-two-games-audio`** | the fix, launcher defaults, no probe (partner_sound's own hooks: the stop through its `StopPlayingID` trampoline) | guest (Fragile): `stopped 13 of 13`, faulted 0, post failed 0, other talkers kept 1; 12 talks sent as kind 1 (muted), 1 Sam line (the test step); host: `received 13 (12 muted by the partner): played 1` (the test line), sound_sync posted 315 foley / steps / weapon of the guest's, 0 voice sent either way, refused by the allow-list 4 (host) / 2 (guest: foley ids `0xBF02CC1E`, `0x72296642`, as in the user's log); both exit codes 0 |
+| **`20261118-130839-two-games-release`** | the shipped build, launcher defaults (`voice_sync=1`, `sound_sync=1`), the guest with the probe | guest (Fragile): `stopped 15 of 15`, faulted 0, post failed 0, none pending 0; host: `received 15 (15 muted by the partner): played 0`. On the guest's `0x7CC88FD9` meter, the grunt section (her walk, run, six jumps, the Jumping and OutOfBreath situations, 74-105 s) holds ten of her Sam voice posts (1.1-1.5 m from her, all stopped) and one loud stretch, 0.67 s at -11.5 dBFS right after a post 0.00 m from the partner's talking entity (the host's own Sam line played as the partner voice; guest `received 4, played 4`); the vehicle section's two stretches follow partner-voice posts too. The only other loud stretches (47-61 s, before any move) overlap the radio-type posts (`0x374FF1A2`, `0x518FE01D`) and four stopped posts, as in `113511`. Run `20261118-130121` (the same scenario) gave the same picture: 15 of 15 stopped, the host played 0 of 15. |
+
+Footsteps and foley were not touched (the change only acts on external-source posts of the 28 events): player-owned
+`DSCustomSoundComponent` posts 640 / 782 / 824 and steps / movement emitter posts 434 / 540 / 567 in the three runs, which
+differ in length (the last two have the extra sections).
+
+### 18.4 Not verified
+
+- **Audibility by ear.** Hidden runs are silent; what is measured is Wwise's own mix peak on the first mixing bus of Sam's voice
+  chain. A short attack before the stop (less than one audio frame) would not show in a per-frame peak above -60 dBFS only if
+  it were quieter than that; none was seen. Reverb tails go through aux buses that were not metered (the stopped voice feeds
+  none).
+- The fix acts on the game of the player who is not Sam (the guest in these runs). The host never played the guest's
+  Sam vocals in the user's v0.11 logs (0 of 53) nor in the runs, so the grunts the user heard came from the guest's own
+  game [I: by the logs; by ear only on a real desktop].
+- Falls, stumbles, damage, BTs, climbing, ladders, ropes, vehicles, heavy cargo, the private room and long sessions were not
+  exercised; a vocal sound posted without external sources (none seen) would not be stopped, but would still never be
+  mirrored (deny list).
+- Whether stopping the voice at once shortens the talk for `DSTalkComponent` (it gets its end-of-event at once): no repeated
+  post and no extra talk was seen (63 talks, 63 posts); BB's answer chain was not re-run.

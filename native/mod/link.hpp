@@ -83,6 +83,11 @@ bool SendGearLook(const wire::GearLook& look) noexcept;
 bool PopGearLook(wire::GearLook& out, std::uint32_t& generation) noexcept;
 bool SendGearPose(const wire::GearPose& pose) noexcept;
 bool PopGearPose(wire::GearPose& out, std::uint32_t& generation) noexcept;
+// The vehicle we ride or have just left (STM1, docs/real-partner-body.md section 22) in a datagram of its own;
+// received ones, oldest first (a queue of 8, newer-seq filter), with the generation counter. Counts both ways.
+bool SendVehicle(const wire::VehicleFrame& f) noexcept;
+bool PopVehicle(wire::VehicleFrame& out, std::uint32_t& generation) noexcept;
+void VehicleCounts(std::uint64_t* sent, std::uint64_t* received) noexcept;
 // Partner voice (docs/audio-research.md section 15). Game thread: one STS1 frame queued on the link's
 // reliable ordered channel (wire::kSpeechChannel; resent until acknowledged, in order). False when not
 // connected, the frame does not encode, or the channel's window (32 unacknowledged messages) is full.

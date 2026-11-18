@@ -4,7 +4,7 @@
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-audio -SeedSaves complete-100
 # 0. Voice: the host's ReceivedLike line (asked through his voice queue, `self_voice 3 0`, until the queue takes it) goes to
 #    the guest as STS1 and plays on his body's head there; the guest's own Sam lines run silenced on her game (their voice
-#    post at volume 0, the subtitle dropped) and go out as kind 1 only; then, test only (`voice_sync 2 1`), her lines go
+#    post stopped right after it is posted, audio-research.md section 18; the subtitle dropped) and go out as kind 1 only; then, test only (`voice_sync 2 1`), her lines go
 #    to the host as Sam's (the other direction of the voice path).
 # 1-3. Sounds both ways and the cuff-map gate, as two-games-sound-own (every mirrored post logged, `sound_sync 1 1`).
 role host
@@ -58,7 +58,7 @@ wait 3000
 @guest action self_voice 0
 @guest nolog \[pvoice\] sent seq [0-9]+ kind 0
 nolog \[pvoice\] partner line seq
-@guest nolog \[voice\] an external-source post .* was not matched to a muted talk
+@guest nolog \[voice\] an external-source post .* is not one of Sam's voice events
 log voice: guest as Sam (test)
 @guest log voice: guest as Sam (test)
 @guest action voice_sync 2 1
@@ -183,7 +183,7 @@ action voice_sync 0
 @guest action voice_sync 0
 action self_voice 0
 @guest action self_voice 0
-@guest nolog \[voice\] an external-source post .* was not matched to a muted talk
+@guest nolog \[voice\] an external-source post .* is not one of Sam's voice events
 action log_status
 @guest action log_status
 @guest quit

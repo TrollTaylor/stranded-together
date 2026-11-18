@@ -27,6 +27,7 @@
 #include "real_body.hpp"
 #include "status.hpp"
 #include "steam_owner.hpp"
+#include "vehicle_sync.hpp"
 
 namespace st::sync {
 namespace {
@@ -917,6 +918,8 @@ void Init(const Config& config, const std::wstring& mod_dir) noexcept {
             Log("[sync] self view unavailable: the pose hook is not installed (partner_body=real or pose_hook=1 at start)");
         else {
             realbody::ConfigureSelfFit(config.self_fit);
+            realbody::ConfigureSelfHeadgear(config.self_headgear);
+            realbody::ConfigureSelfFeet(config.self_feet_hide);
             realbody::ConfigureSelf(g_own_body);
         }
     }
@@ -926,6 +929,7 @@ void Init(const Config& config, const std::wstring& mod_dir) noexcept {
     nametags::Init(config);
     collision::Init(config);
     gear::Init(config);
+    vsync::Init(config);
     if (!config.partner_character.empty()) {
         if (bodies::FindByKey(config.partner_character.c_str()))
             Log("[sync] partner_character=%s: debug override, the partner is shown as this body whatever it sends",
@@ -1054,6 +1058,23 @@ void Tick() noexcept {
                 const std::size_t n = wire::EncodeSound(sf, buf, sizeof(buf));
                 if (n && wire::DecodeSound(buf, n, sback)) psound::OnFrame(sback, g_ring.Unwrapped(sback.sender_ms), now);
             }
+            // Our vehicle (STM1, docs/real-partner-body.md section 22, vehicle_sync): in a datagram of its own, on the
+            // pose's sender_ms axis; in echo through encode / decode back to us, moved like the echoed pose.
+            {
+                static wire::VehicleFrame vf, vback;
+                if (vsync::TakeSend(g_local, g_local_wt, p.sender_ms, p.seq, now, &vf)) {
+                    if (g_net) {
+                        link::SendVehicle(vf);
+                    } else {
+                        std::uint8_t buf[wire::kMaxVehicleFrameSize];
+                        const std::size_t n = wire::EncodeVehicle(vf, buf, sizeof(buf));
+                        if (n && wire::DecodeVehicle(buf, n, vback)) {
+                            vback.x += g_cfg.echo_offset_m;
+                            vsync::OnFrame(vback, g_ring.Unwrapped(vback.sender_ms), now);
+                        }
+                    }
+                }
+            }
             if (!g_net && have_joints) {
                 std::uint8_t buf[wire::kMaxJointFrameSize];
                 const std::size_t n = wire::EncodeJoints(jf, buf, sizeof(buf));
@@ -1159,6 +1180,7 @@ void Tick() noexcept {
                 g_first_joints_wait_ms = 0;
                 pvoice::NewSession();
                 psound::NewSession();
+                vsync::NewSession();
                 Log("[sync] new link session (#%u): interpolation reset", gen);
                 if (BodyPresent()) RemoveBody("new link session");  // session end of the previous partner
             }
@@ -1213,6 +1235,12 @@ void Tick() noexcept {
             if (gen != g_generation) continue;
             psound::OnFrame(snd, g_ring.Unwrapped(snd.sender_ms), now);  // scheduled at the pose play time (psound::Tick)
         }
+        static wire::VehicleFrame vf;
+        while (link::PopVehicle(vf, gen)) {
+            if (gen > g_generation) new_session(gen);
+            if (gen != g_generation) continue;
+            vsync::OnFrame(vf, g_ring.Unwrapped(vf.sender_ms), now);  // played at the pose play time (vsync::Tick)
+        }
     }
     g_ring.Settle();
 
@@ -1232,10 +1260,13 @@ void Tick() noexcept {
     wire::Quat q;
     const bool echo_ready = g_net || now - g_first_tick_ms > delay;
     psound::Frame sndf;  // partner sounds: where the partner is this tick and the pose play time
+    vsync::TickIn vin;   // the partner's vehicle: the same play time as the body
     if (g_local_valid && remote_fresh && echo_ready && g_ring.Sample(now, delay, pos, q)) {
         WorldTransform target{};
         ComposeTransform(pos, q, target);
         if (g_pin) target = g_pin_wt;  // collision tests: the body stands still (its last pose held)
+        vin.have_play = true, vin.play_ms = g_ring.PlayTime(now, delay);
+        vin.have_body = true, vin.body = target;
         sndf.have_root = true, sndf.root = target;
         sndf.have_play = true, sndf.play_ms = g_ring.PlayTime(now, delay);
         g_last_target[0] = pos[0], g_last_target[1] = pos[1], g_last_target[2] = pos[2];
@@ -1273,6 +1304,13 @@ void Tick() noexcept {
         if (g_voice.e && !game::TrySetTransform(g_voice.e, voice_at)) SlotForget(g_voice, "set transform fault");
         DriveVoice(voice_at, now);
     }
+
+    // The partner's vehicle (vehicle_sync.hpp): its copy placed at the same play time as the body, under it.
+    // asleep for under 1 s (a menu's first frames) keeps the copy, as the partner body and the gear props do
+    vin.local_ok = g_local_valid && (g_local_active || (g_local_asleep_since_ms > 0 && now - g_local_asleep_since_ms < 1000));
+    vin.partner_present = BodyPresent();
+    vsync::Tick(vin, now);
+    vsync::SenderTick(g_local, now);
 
     // Player collision (partner_collision.hpp): only the partner slot's real body, never the
     // hologram or the self view's body.

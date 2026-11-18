@@ -35,6 +35,13 @@ Code:
   detour's figure branch in `real_body.cpp`.
 - Weapons in hand (section 17): the weapon read, the watch and the weapon props in `native/mod/partner_gear.cpp`,
   the STC1 `weapon` kind (version 3) in `pose_wire`.
+- Headgear on the character (section 20): `kHeadgearRows` / `SelfHeadItemOffset` in `real_body.cpp`, the accessory
+  movers (`HeadgearTick`) and the meters (`HeadMeter`) in `native/mod/partner_gear.cpp`.
+- Boots (section 21): the feet scale in `ApplyBody`, the boots prop's pose target (`SetBootsProp`, `ApplyBootsPose`,
+  `ComposePartner`) in `real_body.cpp`; the boots item, prop and parts (`ReadBootsShown`, `BootsTick`) in
+  `partner_gear.cpp`; the STC1 `boots` kind and block (version 4) in `pose_wire`.
+- Vehicles (section 22): `native/mod/vehicle_sync.{hpp,cpp}`, the STM1 frame in `pose_wire`, `link::SendVehicle` /
+  `PopVehicle`, the pose target `kVehiclePoseTarget` in `real_body`.
 
 Tags:
 - [V] verified: bytes, a decompile, or a run cited below.
@@ -2050,7 +2057,8 @@ in the character's proportions (`CaptureSam` in `real_body.cpp`, Sam's branch of
   `20261117-215351-self-fit-head`; the same in `-220357`). The cost: Sam's hidden skeleton is one frame behind
   his animation (what the game reads from it, such as hand positions for aiming, is one frame old) [I: no
   effect seen].
-- **Head lift** (default 100 %; `self_view 7 <percent>`). Sam's head joint (31; its subtree 31-34) sits that
+- **Head lift** (default 100 %; `self_view 7 <percent>`; *since 2026-11-18 0 for a body with a headgear row:
+  section 20 gives each head item its own offset instead*). Sam's head joint (31; its subtree 31-34) sits that
   share of the way from her head back to where Sam's own head would be: Sam's cap and glasses hang on his
   `HLP_Head` helper, made for his head, and with her head joint the cap sank over her eyes with her hair
   showing through its crown (`01-front-lift0`). Measured once per show on Sam's own pose: the original
@@ -2123,8 +2131,8 @@ lift ...% (measured ... cm, check ... mm, state ...); Sam vs body cm mean/max ov
 
 - The gear models keep Sam's size and Sam's girth in their helper offsets (the shields are made for his
   shoulders: from the front they still stand a little out from hers).
-- **The partner's boots.** On the other screen the partner body shows her model's own boots, not the
-  equipped boots: the boots entity (`ds_player_inventory`, DSPlayerBootsComponent) is not mirrored (a copy of
+- **The partner's boots** *(done 2026-11-18: section 21, the boots prop posed from the body's legs)*. On the other
+  screen the partner body showed her model's own boots, not the equipped boots: the boots entity (`ds_player_inventory`, DSPlayerBootsComponent) is not mirrored (a copy of
   a DS gameplay component is refused by the mirror policy, section 12; copies of such entities crashed worker
   threads before). A boots prop driven as a pose target (its 10 joints from the partner body's pose) is the
   planned next step; it must first be proven at mirror level 2 in hidden runs. (`demo_sam_boot_def_new` is
@@ -2191,7 +2199,8 @@ One new kind, `weapon = 6` (`kGearKindMax` 6), in the same 18-byte item: `res` i
 (part of the layout hash, like an entity's), `model` its EDSWeaponId, `variation` its level. STC1 goes to
 version 3 (a version 2 frame is refused; mixed builds never meet: HELLO build check). STV1 keeps a weapon look's
 `res` too (`wire::GearHasRes`). Unit-tested in `st_net_tests` (`TestGearV2`: round trip, the id in the layout,
-an id of 64, a kind of 7 and a version 2 frame refused).
+an id of 64, a kind of 7 and a version 2 frame refused). *(Version 4, 2026-11-18, adds kind 7 `boots` and its
+block: section 21.3; the test now uses kind 8 for the unknown kind.)*
 
 ### 17.4 Receiver
 
@@ -2341,3 +2350,334 @@ items):
 - Mixed builds never get this far: STA1 lives in `pose_wire.hpp/.cpp`, part of the build id's wire hash (section 4).
 - **Budget** [inferred from the run counters]: 3-4 posts a second while moving, 24-80 bytes each (movement-layer posts
   carry 7 RTPCs): about 0.2-0.3 KB/s per direction next to the pose stream's ~17 KB/s.
+
+## 20. Headgear on the character: an offset per item (`session.ini self_headgear`, default on)
+
+**Status (2026-11-18): works in hidden runs, solo, echo and two games.** The user's report on v0.11: "glasses still
+not in the right spot, hats too feel a little high up and when starts walking it moves weirdly."
+
+### 20.1 Why (the v0.11 head lift)
+
+- One lift cannot fit both items [V data, I interpretation]. Fragile's eye-lid joints sit 1.1 cm higher above her head
+  joint than Sam's (each face mesh's inverse bind matrices); her scalp and hair need about 5 cm for the cap. The lift
+  (section 16.1, measured 6.1 cm) moved every head item by the same amount: the glasses sat on her forehead, the cap
+  about 1 cm high with a band of hair under it.
+- The lift lived in the neck joint's frame (it was added to joint 31's local translation), so the head items pivoted
+  about a point 6 cm off her real head pivot. Measured in her drawn head joint's frame every tick (the new meter,
+  run `20261118-105952-self-headgear`, uncapped): standing the cap sat at (-0.3..-1.0, 6.0, 0.1) cm (x, up, forward:
+  about 1 cm to one side); in the first second of a walk its mean moved by up to 0.9 cm sideways and 0.8 cm
+  forward / back, spread (sd) up to 0.7 cm [V]. On the other screen the sender measured the item against the head
+  without the lift (section 16.1), so the relative pose changed with the head's angle; it is frozen while moving
+  and re-sent when standing, so the host saw it jump at walk start and stop: steps of 0.9-1.0 cm in the host's
+  meter (run `20261118-111051-two-games-boots-headgear`, the guest with `self_view 10 0`) [V].
+- Sam's cap and glasses are accessory entities (`ds/entities/player/ds_player_inventory`: eyewear0 `3b9eb11e`,
+  glasses00-02 `d2306d68` `036f3017` `6482902d`, cap00-03 `c83ac923` `17de6d02` `dbd027af` `6247acf7`) hung on his
+  only head helper `HLP_Head` (joint 31, zero translation; helper x = -head x, y = head local z (forward), z = head
+  local y (up)) by an `AttachToHelperMover`.
+
+### 20.2 What the mod does [V: decompiles, byte checks, runs below]
+
+- The mover (`0x1423A7450`, entity `+0xB0`, `+0x48` its entity, `+0xB0` the helper name) combines the helper's world
+  transform with a per-instance local matrix at `+0x60` (a Mat44, rows x, y, z, then the translation at `+0x90`;
+  identity from the constructor `0x14239B930`) unless the byte `+0xA0` is set (`0x1423A7773`: `cmp byte
+  [rsi+0xA0],bl; jnz; lea r8,[rsi+0x60]; ... call 0x14195DF70`, byte-checked at first use). `0x14195DF70` multiplies
+  the local by the helper's rotation (`0x1419333D0`), so the local translation is in the helper's frame: confirmed
+  in the runs (an offset of (0, -1.2 forward, 5.0 up) cm reads (0, 5.0 up, -1.2 forward) in her head joint's frame).
+  The game's accessory movers have `+0xA0` = 1 and the identity.
+- partner_gear's entity walk (100 ms) finds our Sam's shown accessories by resource GUID and checks each mover (class
+  `AttachToHelperMover`, back pointer, helper `HLP_Head`). Every tick (game thread) each mover's translation is set to
+  the offset `realbody::SelfHeadItemOffset` asks for, with `+0xA0` cleared (the translation first, then the flag), or
+  put back (the flag back first, then the translation zero) when the self view, the fit or the key goes off or the
+  item is taken off. Nothing is written when it already holds the value; a mover whose matrix is neither the
+  identity nor ours, or whose flag the game changed, is left alone (`refused`, `changed by the game`: 0 in every run).
+  The resource is never written (the partner's props and every copy share it). No new game call or hook.
+- The offsets are per self body head rig (`kHeadgearRows` in `real_body.cpp`; fragile and fragile_suit share
+  `fgl_head_def`): **cap (0, -1.2 forward, 5.0 up) cm, glasses / eyewear (0, -0.4, 1.1) cm**, chosen from 2560x1440
+  front and back close-ups of 4.5 / 4.8 / 5.0 cm (the lower two let hair strands through the cap's band from behind;
+  5.0 cm with 1.2 cm back is snug, brim on her brow, eyes free) and 0.7 / 1.1 / 1.5 cm for the glasses. A body
+  without a row keeps the head lift.
+- **The lift goes only while the offsets are really written** (review follow-up). partner_gear tells realbody every tick
+  whether it writes them (`realbody::SetHeadgearReady`): its site check passed, `gear 18` on, no shown head item of ours
+  refused, and no other shown entity of ours hung on `HLP_Head` (an accessory not in the list above: `[headgear] our
+  entity ... hangs on HLP_Head but has no offset of its own`). The lift is 0 only while that was said within 500 ms;
+  otherwise no offset is written and the v0.11 lift holds every head item up. So `partner_gear=0`, a failed byte check,
+  `gear 18 0`, a refused mover or an unknown head item give v0.11's placement, never items sunk 6 cm into her head.
+- **Emergency stop**: after a fault in the per-frame sync `gear::EmergencyStop` puts every mover of ours back (the identity
+  and the game's own `+0xA0`, only where the mover still holds exactly what we wrote), so the real Sam's cap and glasses
+  sit where the game puts them.
+- With the offsets on, the head lift is 0 (her head joint is Sam's head joint), so `realbody::HeadLift` is false and
+  the gear sender measures each head item on that joint with the offset in it: the relative pose is a constant and
+  the other screen places the prop exactly as on this one (no wire change, no re-sends while walking).
+- Side effect: the third-person camera, which follows joint 31, no longer gets the 6 cm lift (it sits at her head's
+  height) [I: not compared in pictures].
+- Controls: `self_view 8|9 <item> <mm>` (tuning), `self_view 10 <0/1>` (offsets / v0.11 lift), `gear 18 <0/1>` (the
+  mover writes), `gear 19 <0/1>` (meters). Logged: `[headgear] our <item> <entity>: mover <p> AttachToHelperMover helper
+  'HLP_Head'`, `... mover offset set to / back to the identity ...`, the counters on change, the `[self] fit` line's
+  `headgear on row ...`, and the meter every second, in hidden tests only by default (`gear 19 1` in play): `[headgear] self <item> in
+  her drawn head joint's frame cm (x, y up, z forward): mean ... sd ... step max ...` and `[headgear] partner head prop
+  <k> in the partner body's head joint's frame ...` (sampled at the end of the gear tick, after the props were
+  placed from the bodies' current transforms and poses).
+
+### 20.3 Evidence (hidden, `-SeedSaves complete-100`, all pass, exit 0, no error.txt, real saves unchanged, 0 uploads)
+
+| Run (`build-testenv\runs\`) | What it shows |
+|---|---|
+| `20261118-105952-self-headgear` (solo, 2560x1440) | `02-front-cap-before/-after/-v48-8/-v50-12`, `05-back-cap-*` (the hair through the band at 4.5 and 4.8 cm, none at 5.0 / -1.2), `03-front-both-*`, `04-front-glasses-before/-after/-v7/-v15` (before: the glasses on her forehead, eyes below them; after: the lenses on her eyes), `07-walk-before-*` / `08-walk-after-*` (the cap perched high in v0.11, snug now). Meter: v0.11 walking: mean x -0.05..0.90, forward -0.84..0.73, sd up to 0.72 cm; now sd 0.00 and step max 0.00 standing, walking, running uncapped and at 30 fps. |
+| `20261118-104633-self-headgear` (solo) | the first build (cap 4.5 cm): mover writes 8, restores 8, refused 0 after the `+0xA0` fix; the same meter result. |
+| `20261118-110748-echo-boots-headgear` (echo, our self view and a fragile_suit echo partner 1.2 m beside us, 2560x1440) | the partner's cap prop at (0.00, 5.00, -1.20) cm in its head joint's frame, sd 0.00 standing, walking and at 30 fps; `02-front-both`: cap and glasses on the partner. (Run `-110515`, the same scenario, had the meter before the props were placed: it read 2-24 cm "lag" that the corrected meter shows as 0.0-0.1 cm.) |
+| `20261118-111051-two-games-boots-headgear` (host Sam, guest fragile_suit, 1920x1080 at 30 fps) | Host's meter of the guest's cap: v0.11 (guest `self_view 10 0`) mean (-1.0, 6.0, -0.15..0.30), jumps of 0.9-1.0 cm at walk start / stop; now (0.00, 5.00, -1.20), sd 0.00, step 0.00. `02-host-sees-guest-cap-before/-after` (enlarged: perched / snug). |
+
+### 20.4 Not covered / still different
+
+- Only Fragile's head rig has a row; other self-view characters keep the lift (with its slide).
+- The camera height change was not compared in pictures. The meter is sampled at tick time, not at render time.
+- The glasses were judged from front views with her head lowered in the idle (no side close-up of the lenses).
+- Review correction: in `20261118-105952-self-headgear` the walk frames (`08-walk-after-*`), the 30 fps run and the meter
+  lines were at the earlier cap offset (4.5 cm up, 0.3 cm back: the scenario put that back after each tuning variant);
+  the final 5.0 / -1.2 cm were walked in the two-game and echo runs only. The scenario now restores the shipped values;
+  the final runs are in 20.5.
+- When a head item is put on, the first tick after the game shows it can draw it once without its offset (the entity
+  walk that finds it runs every 100 ms): the meter's first second after `gear 14 15 1` reads one tick of four at about 0
+  cm instead of 5 cm (step max 5.1 cm). One frame, then constant; not seen in a picture [V: meter; I: visibility].
+
+### 20.5 Final runs (the shipped build `0.11.0+fbd9ce-92`; hidden, `-SeedSaves complete-100`, pass, exit 0, no error.txt, real saves unchanged, 0 uploads)
+
+| Run (`build-testenv\runs\`) | What it shows |
+|---|---|
+| `20261118-125307-self-headgear` (solo, 2560x1440) | The shipped offsets restored after each tuning variant: the self cap meter reads (0.00, 5.00, -1.20) cm, sd 0.00, step 0.00 in the 15 one-second windows of the walk and the 30 fps run (114-128 s; the 112 s window is still the v0.11 mode and 113 s is the switch-on, a 5.14 cm step) (v0.11 in the same run: mean x up to -0.96, sd up to 0.53, step up to 2.0 cm). `08-walk-after-c` (enlarged): the cap snug while she walks. |
+| **`20261118-130839-two-games-release`** (host Sam, guest `fragile_suit`, launcher defaults, 1920x1080) | Host's meter of her props: cap (0.00, 5.00, -1.20), glasses (0.00, 1.10, -0.40) cm, sd 0.00 in 172 windows (only the window in which the glasses came on, a slot change, differs). Her own meter: the same values in 167 windows. `01/02-host-sees-guest-cap(-glasses)` (enlarged x4): cap on her head, lenses over her eyes; `09/10-guest-*` (her self view from the front after the camera turn, enlarged x4): cap snug, glasses on her eyes. |
+| `20261118-130121-two-games-release` (the same scenario before its camera fix) | The same meters (cap and glasses sd 0.00 while she walks, on both screens). |
+
+## 21. Boots: her feet scaled away, the equipped boots on them (`self_feet_hide`, `boots_sync`, default on)
+
+**Status (2026-11-18): works in hidden runs, solo, echo and two games.** The user's idea: "scaling the feet bones to
+hide the feet then attaching the boots".
+
+### 21.1 Scaling the foot joints [V: decompile `0x141D8AA20`, runs below]
+
+- The model-matrix step multiplies each joint's rotation rows by its local scale (joint `+0x20`) and then by the
+  parent's model matrix, with no compensation: a foot's scale reaches the toe and `MTP_*_Foot_a`, and the foot's own
+  position (row 3) is kept. The bounds step transforms bone boxes with no inverse. So two `s` values in the pose
+  `ApplyBody` already writes are enough: **the body joints mapped to Sam joints 63 and 68 (`JNT_R/L_B_102_Foot`) get
+  scale 0.01** (a percentage, `self_view 11` / `gear 20`; 1 % rather than 0 keeps normals finite). Only the drawn
+  body's pose: never the latch, the fit's shape, the capture or the wire; Sam's own skeleton is never scaled.
+- Her porter suit is one mesh (`fgl_body_suiti`: `mesh_body_lx`), so the scale is the only way to hide her shoes. In
+  every picture the shoe vanished inside the equipped boot (front, side, walking, running); no lump at the ankle was
+  seen (the pose deformer's `FootS_PRO` helpers did not leave one) [V for the views looked at: front standing,
+  stepping; side views only at a distance].
+- Mod reads of a foot joint: `realbody::JointWorld` (partner sound foot emitters) now uses the joint's position only
+  (row 3), so it keeps working under the scale; the new boots meter uses positions only too.
+
+### 21.2 Self view: under Sam's own boots (no wire change)
+
+- The game draws Sam's equipped boots (inventory `+0x4D80`, `DSPlayerBootsComponent`, copied from his fitted
+  skeleton) on her legs already (section 16.1). Her feet are scaled while the self body is fed from the field Sam
+  (not the cargo menu's figure), the fit is on and the game shows the boots entity (its visible flag; read every 100
+  ms, `0x1427F1D2F` / `+0x1B` / `+0x25` byte-checked: `[boots] the inventory's boots entity sites verified`).
+- Meter: Sam's boots' feet (their skeleton's joints 4 and 8) against her drawn feet: 0.0 cm mean and max standing,
+  walking, running uncapped and at 30 fps (after the first second of a show).
+
+### 21.3 The partner: STC1 version 4, the boots prop
+
+- **Sender.** While boots_sync is on and the game shows our boots entity, the gear frame gets one item of kind 7
+  `boots` on joint 0 with the identity pose, and the boots block: which of the boots' 32 ArtParts the game asks shown
+  (`+0x2C` bit 1; 2 of 32 in the 100% save: `80010000`). The boots' look rides STV1 like an entity's (the look policy
+  allows the prop's own, our player's and our own gear's components).
+- **Wire** (`pose_wire`, ctest `st_net_tests` `TestGearFrames`): version 4; flags bit 3 `kGearBoots`: `u32 apply | u32
+  visible` after the backpack's block (8 bytes; the largest frame is now 1080 bytes). The decoder refuses version 3,
+  visible bits outside apply, a boots item without the block, the block without a boots item, more than one boots
+  item, and a boots item not on joint 0 or with a parent; the encoder refuses the same. Mixed builds never meet (HELLO
+  build check, section 4).
+- **Receiver.** Kind 7 is a fixed prop, `ds/entities/cinematics/demo_apv_sam_foot_def_v01` (`7e71552e-bf48-464d-8628-
+  fd9f0afc70cd`): the cutscene copy of the boots entity, the same `part_sam_foot_def` ArtParts on the same 10-joint
+  skeleton (layout `0x9B68A8AD`), no gameplay component. It is spawned, shown and placed like every gear prop (on the
+  body's joint 0 frame). `realbody::SetBootsProp` checks it (10 joints, the layout, each joint's parent `-1 0 1 2 3 4 1
+  6 7 8`, a body joint for each of Sam joints 0, 1, 61-64, 66-69) and then, in the prop's own model update (the pose
+  hook), writes the partner body's local joints as the body's own update composes them at that moment
+  (`ComposePartner`, the same interpolation) with an identity root, and reruns the model-matrix and bounds steps:
+  its model matrices are the body's legs, as `DSPlayerBootsComponent` (`0x1427C4880`) does for Sam. A prop the game
+  stops updating gets the forced update; a fault turns it off for the session. Its 32 parts are set as the sender's
+  through the existing parts setter (checked against our own boots entity's parts: `parts mirrored`).
+- **The prop shows only once it is posed and its parts are mirrored** (review follow-up): `BootsTick` makes it the pose
+  target 300 ms after it is live (shown or not), and the gear set shows it only while a pose was written onto it within
+  250 ms and its parts are mirrored (`BootsPropReady`). Before, it was shown from its first placement in the cutscene's
+  own pose and parts, which the meter caught as 12-14 cm at every spawn (the review: `110748`, `111051`, `111356`: a
+  pop of a frame or more, not meter timing). Without our own boots entity as the parts' reference (barefoot, or the
+  inventory unreadable) the parts are not mirrored, so no prop shows and the partner keeps its own boots.
+- While the prop is shown, the partner body's feet are scaled (`gear 20`); otherwise its own boots show. Before the prop
+  is removed its pose target is cleared and the feet come back.
+- Meter (only while the prop is shown): the prop's feet against the partner body's feet: 0.0-0.1 cm mean and max (echo
+  standing, walking and at 30 fps; the host's view of the guest at 30 fps; 0.6-0.7 cm max while she walks in the
+  two-game run). Pose writes: 0 refused, 0 torn; forced updates 0 in the boots runs, but 277 (guest) / 286 (host) in the
+  longer `20261118-113842-two-games-audio` (the game stopped updating the prop at times; the forced update covered it).
+
+### 21.4 Evidence (hidden, `-SeedSaves complete-100`, all pass, exit 0, no error.txt, real saves unchanged, 0 uploads)
+
+| Run (`build-testenv\runs\`) | What it shows |
+|---|---|
+| `20261118-105952-self-headgear` (solo) | `01-front-feet-kept/-1/-30`: kept, her shoe's toe pokes through the front of Sam's boot (enlarged ×6: a second rounded toe and the gold toe piece cut); scaled, the boot is clean at 1 % and 30 %. `07-walk-*` with her feet kept, `08-walk-*` and `09-run30-*` scaled. Boots meter 0.0/0.0 cm. |
+| `20261118-110748-echo-boots-headgear` (echo, fragile_suit partner) | `01-front-noboots` (the partner's own dark boots, v0.11), `01-front-boots-feet-kept` (the prop over her own boots: her toe through it), `01-front-boots-feet-1` (the gold-trimmed boots, clean), `03-side-*`, `04-walk-*` (both bodies' boots while stepping). |
+| `20261118-111051-two-games-boots-headgear` (two games, 1080p) | Host's view of the guest (enlarged ×3.5): `03-host-sees-guest-noboots` dark boots, `-boots-feet-kept` / `-feet-1` the gold-trimmed boots; the guest's view of the host's Sam body: the prop live (`parts mirrored`, 0 refused) but his feet were behind her backpack in the shots. |
+| `20261118-111356-echo-boots-sam` (echo, a partner Sam body) | `01-front-noboots` demo_sam_clean's own default boots; `-feet-1` the equipped boots on its feet; a gold patch of its default boot's ankle (weighted to the shin, so not scaled away) still shows on one foot. |
+| **`20261118-130839-two-games-release`** (final build, two games, 1080p) | The prop's spawn after the review fix (`@guest gear 21 0` then `1`, frames 250 ms apart, enlarged x4 in `20261118-130121`): her own dark boots until the prop is ready, one frame where the prop fades in over the same feet, then the gold-trimmed boots; no frame of the prop in its own pose or parts, and the meter's first second after each spawn reads 0.0/0.0 cm (before the fix: 12-14 cm). Over the run: prop vs feet 0.0/0.0 cm in 150 of 177 windows, at most 0.1/0.3 cm; 2554 pose writes, 0 refused, 0 torn, 0 forced updates. Her self view: Sam's boots on her feet, 0.0/0.0 cm in 90 of 91 windows (the first: 1.7 cm max while the self view came up). `04-guest-self-walk` (enlarged x4): the host's Sam body in the equipped gold boots on her screen (the first shot of that; before, his feet were behind her backpack) and her own foot in Sam's boot, no toe through it. `10-guest-after-host-left` (her front, x4): both boots on her feet; gold bits of the boot's top show through her trouser hem at one shin [V at x4, low resolution]. |
+
+### 21.5 Not covered / still different
+
+- A partner **Sam** body: part of its default boot that is skinned to the shin (a gold patch at the ankle) still shows
+  through; hiding that body's boot parts through the parts block (section 14) was not done.
+- The boots are Sam-sized on her (wider shafts). Wear (MeshPaint) is not mirrored: the prop looks clean.
+- Joint-anchored gear on the feet (none seen) would be skipped by `PlaceGear` under the scale (axes too short).
+- Falls, ladders, vehicles and the cargo menu's figure were not run with the feet scaled (the cargo menu's figure is
+  not fitted, so it never scales).
+- The boots' shafts are wider than her trouser hems: in the final run's front view gold bits of the boot top show
+  through the hem at one shin (1080p, enlarged).
+- Emergency stop (a fault in the per-frame sync): the boots prop stays where it is (like every gear prop) and the
+  partner body's feet are no longer scaled by us; whether the game keeps the last scale on that body until it updates
+  it again was not checked [I]. Never seen in a run.
+
+## 22. Vehicles: the partner's vehicle under its body (`session.ini vehicle_sync`, default 1: the roadster)
+
+**Status (2026-11-18): first milestone, works in hidden runs (one game and two games, both directions).** When a player
+gets on a vehicle and drives, the other screen shows a copy of that vehicle with the player's body seated in it (the
+body's seated pose already arrives in STJ1), moving where it is driven, then parked where it is left; the copy goes when
+the player walks away (more than 30 m) or after 60 s. The reachable vehicle at the 100% save's start is the purple
+roadster, and the roadster has no solid cutscene body, so on the other screen it is the roadster's **hologram**
+(`construction_holo_roadster`); the trike and the truck get their solid cutscene bodies (proven only through the copy
+override, below), so by default (`vehicle_sync=1`) only the roadster's copy is shown; `vehicle_sync=3` adds the trike's and
+the truck's, `2` shows those two only (every value but 0 sends what we ride).
+
+### 22.1 What the game does [V: byte checks at start, the runs below; I: inferred]
+
+- **The vehicle is Sam's parent entity.** `[Sam + 0x70]` (Entity_ExportedGetParent `0x142361B80` reads `+0x70`) is the
+  vehicle entity itself, a `DSVehicleSpeedCar` (vtable `0x143E274D8`), from the frame X is pressed (ride state 0, Sam
+  still beside it: seat offset (1.59, -0.55, 0.10) m in the echo run, (2.59, -1.47, 0.05) m in `122017`), through getting
+  on (state 1), riding (2) and getting off, until Sam stands on the floor again [V: `[vehicle] ours:` lines, runs below].
+  No seat child was seen. So the frame's `seated` flag means "his parent is the vehicle", not "in the seat": at state 0 he
+  still stands beside it (the body is placed from its own pose stream either way; only the seat meter reads the flag).
+- **Class and kind.** Each class is told apart by its vtable; slot 0 is its RTTI getter (`lea rax, [rip+..]; ret`,
+  byte-checked), and the constructors write the EVehicleType at `+0x4C4` (SpeedCar 1 `0x142F62201`, Truck 2
+  `0x142F62571`, Motorbike 3 `0x142F61CFC`), which the game's own getter reads at `0x142FA73B6`. The ride state is
+  `+0x4CC` (read at `0x142FA74B8`): 0 parked, 1 getting on, 2 riding, 3 getting off, 5 broken [V for 0, 1 and 2; I for
+  the others].
+- **Resource.** The vehicle's StreamingRef (`+0x58`) names `ds/entities/vehicle/pe_ds_vehicle_casp`, GUID
+  `ff17815d-4a07-0840-9b23-d30f30269e7f`, a `DSVehicleSpeedCarResource` [V].
+- **Pose.** `[vehicle + 0xB8]` is its SkinnedModel; its pose has 23 joints, layout `ECF43324` (the hologram's too), and
+  its joints move while it drives (the wheels turn up to 180 degrees within 5 s, the steering, the suspension) [V:
+  `meter` lines].
+- The parked roadster is **not** in the World's entity list (82 entities; `action vehicle_sync 7`) [V].
+
+### 22.2 Sender (game thread, the pose send tick)
+
+`vsync::TakeSend`: `[Sam + 0x70]` checked against the three vehicle vtables (else its parent's parent, for a seat child;
+anything else is logged once by type and not sent). Read fault-free: the kind (`+0x4C4`, must match the class and the
+resource), the ride state (`+0x4CC`, 0..15), the resource GUID (must be on the allow-list below), the world transform
+(the game's getter), Sam relative to it (the seat, within +-4 m) and its local pose (`look::ReadPose`: read twice, equal
+reads only; the layout must be the resource's). After Sam gets off the same vehicle is still sent, as parked (seat 0),
+while its vtable and per-creation GUID still check, Sam is within 30 m of it and for at most 60 s. One STM1 frame per
+send tick (30 Hz) in a datagram of its own, on the pose's `sender_ms` axis.
+
+### 22.3 Wire: STM1 (`pose_wire`, ctest `st_net_tests` `TestVehicleFrames`)
+
+| Part | Contents |
+|---|---|
+| Header (84 bytes) | `'STM1' \| u8 version 1 \| u8 kind (1 roadster, 2 truck, 3 trike) \| u8 ride state \| u8 flags (bit 0 seated, bit 1 joints) \| u32 seq \| u32 sender_ms \| 16-byte resource GUID \| f64 x, y, z \| 6-byte rotation \| f32 speed \| i16 seat x, y, z (1 mm) \| 6-byte seat rotation \| u32 skeleton layout hash \| u8 n \| u8 0` |
+| Joints (flags bit 1) | n x {6-byte rotation, i16 x, y, z (1 mm)}, n <= 64 |
+
+Rotations are STJ1's smallest-three. The frame is 360 bytes with the roadster's 23 joints: while one is reported the
+link payload went from 573-623 to 901-1009 bytes a send, about 10 KB/s more each way. The decoder (and the encoder)
+refuse: another magic or version, a size other than 84 + 12 n, a kind outside 1..3, a state above 15, unknown flag bits,
+the joints flag without joints or joints without it, n > 64, a non-zero reserved byte, a joint block with layout 0,
+**a GUID that is not a drivable vehicle of that kind** (the allow-list: roadster `pe_ds_vehicle_casp`, trike
+`pe_ds_vehicle_ca03` and `_bkyk`, truck `pe_ds_vehicle_ca02` and `_celd`), NaN or infinity anywhere, |coord| > 1e7,
+|speed| > 1000, a seat beyond +-4 m (or any seat when not seated) and a joint translation beyond +-32 m. The receiver
+never loads the GUID it is sent: it only picks one of three fixed copies by kind. Link: a queue of its own (8, newer-seq
+filter, the generation counter; `link::SendVehicle` / `PopVehicle`). Mixed builds never meet (HELLO build check,
+section 4).
+
+### 22.4 Receiver
+
+- **The copies** (`kCopies` in `vehicle_sync.cpp`, loaded through the bodies' path + GUID route,
+  `realbody::BeginByPathGuid`):
+
+| Kind | Copy | Checks |
+|---|---|---|
+| roadster | `ds/entities/npc/customize_holo/construction/construction_holo_roadster` `8b3517fe-...` (the construction hologram, `ForConstruction=1`: no fade near the player; docs/character-catalog.md #89) | the welcome hologram's checks (`holo::ValidateWelcomeHolo`), 23 joints, layout `ECF43324`; shown with StartVisible |
+| trike | `ds/entities/cinematics/demo_bkst_main_def_pro_new` `161eefa7-...` (the drivable trike's art and Skeleton) | 40 joints, layout `8DABA9B0` |
+| truck | `ds/entities/cinematics/demo_cald_main_def_game` `58c639c3-...` (the drivable truck's art and Skeleton) | 47 joints, layout `B609EC0D` |
+
+  Every copy is refused when it is a Humanoid, player or vehicle entity, or carries an interaction, physics, ragdoll,
+  controller, capsule, vehicle mover or bounder component (the solid ones also any AI component), or its skeleton is not
+  the vehicle's: refused for the game run. A transient refusal (no pose yet right at realize, a 20 s load timeout, not
+  shown) backs off 30 s, doubling up to 8 min, and is forgotten at a new link session; a set-transform fault refuses for
+  the game run. A load that fails is retried after 10 s, doubling up to 80 s; a start that fails after 5 s, doubling up
+  to 80 s (review follow-up: the count was reset before, so it stayed 5 s). `vehicle_sync=2` shows the solid copies
+  only, `1` (default) the roadster's only, `3` all; the override `vehicle_sync 2 <n>` ignores the mode. A reported
+  vehicle without a copy is logged once per reason (`the partner's <copy>: no copy (...)`).
+- **Timeline.** Frames go into a ring of 160 on the pose ring's unwrapped sender axis; the copy is placed every tick at
+  the **same play time as the partner body** (the STP1 ring's `PlayTime`), lerped / slerped between the bracketing
+  frames (a jump over 25 m is not slid), with `Entity_ExportedSetWorldTransform`. Two frames more than 0.5 s apart on
+  the sender's axis are not interpolated (the later one stands, and its kind picks the copy), and the ring is emptied
+  when a frame comes after 2 s without one, so a new drive never starts from an old one's frames (review follow-up). The partner body is placed as before
+  (the sender's Sam transform, which is the vehicle's times the seat); the meter compares the body with the copy's
+  transform times the sent seat.
+- **Pose.** When the frame's layout and joint count are the copy's (the roadster and its hologram), the interpolated
+  joints go to the animate hook's pose target `realbody::kVehiclePoseTarget` (target 8; the gear keeps 0..7), written in
+  the copy's own model update like the backpack's (section 13).
+- **Lifetime.** Spawned 20 m below and invisible, shown after its first placement. Removed (its pose target cleared
+  first) when: no frame for 2 s, the play time is more than 1 s past the newest frame (the sender stopped reporting), it
+  has been broken (state 5) for 3 s, the partner has no body on our screen, our player has been asleep for 1 s or is
+  gone (loads, cutscenes; the same 1 s as the partner body, so a menu's first frames do not respawn it), a new link
+  session, the kind changes, or the key is turned off. After a fault in the per-frame sync the copy is hidden where it
+  stands (`vsync::EmergencyStop`). The meters (seat, play delay, the copy's read-back pose) run in hidden tests and
+  while a trace runs only. Local vehicles are never read or touched
+  on the receiving side.
+- **Interplay.** Player collision (section 11.2) already takes the partner's capsule out while it rides
+  (`kPoseInVehicle`). The copies have no physics: a player can walk through the partner's vehicle. Name tag and gear
+  ride the body as before.
+
+### 22.5 Evidence (hidden, `-SeedSaves complete-100`, exit 0 (both games), no error.txt, real saves unchanged, 0 uploads)
+
+Placement error: the copy's placement against the sender's own vehicle transform at the same play time (the
+`vehicle_sync 3` trace; on one PC both games share the QPC clock; the echo adds its 4 m offset), over the ticks where the
+vehicle moved.
+
+| Run (`build-testenv\runs\`) | What it shows |
+|---|---|
+| `20261118-122455-vehicle-echo` (final build) | Our roadster mounted with X, driven about 28 m (up to 13.7 m/s), stopped, left; the echo copy 2 s behind: placement error 0.63 cm mean, 1.73 cm p95, 4.32 cm max over 364 moving ticks (0.07 cm mean over all 3396); body vs the copy's seat 0.0 cm mean, 0.1 cm max over 3170 ticks; the copy's pose writes: 0 rejects, 0 torn, 0 write failures, 0 faults; its pose read back equals one of the last 6 given exactly while still (0.00 deg), within 2-3 deg while getting on, up to 45 deg while the wheels spin fast (22.6). Frames: `10-as-truck-a/c` the truck override (`BRIDGES` side) at the parked place; `12-off` switched off at run time: the copy removed, no frame sent after (`1437 frames sent` before and after). |
+| `20261118-121037-vehicle-echo` (the build before the last meter change) | `05-driving-a`: the real roadster and the copy moving side by side, the echo Sam seated in the copy. Placement error 0.67 cm mean, 1.69 cm p95, 9.38 cm max moving. The trike override (`09-as-trike-*`) is hidden behind the real roadster at every angle (a corner shows). |
+| `20261118-120658-vehicle-echo` (the first working run; marked failed only by an optional `waitlog` with a wrong pattern, exit 0) | `04-mounted-copy` (enlarged): the hologram copy beside the real roadster, the echo Sam seated at its wheel; `07-look-b` (enlarged) the echo Sam in the copy close up, behind its windscreen, hands at the wheel, next to the real roadster with Sam in it. Placement error 0.49 cm mean, 1.26 cm p95, 4.72 cm max moving (a 5.6 m drive). |
+| **`20261118-122017-two-games-vehicle`** (host Sam drives, guest Fragile watches; 1080p) | Guest's view, enlarged: `02-guest-sees-host-driving-b` the hologram roadster from behind, mid-drive, the host's Sam seated, `Host` tag; `02-...-c` / `03-...-stopped` at 26-27 m by the barrier; `04-...-off` Sam standing beside the parked copy; `05-...-after-host-left` gone after the host was placed beyond 30 m (`no longer reported (beyond 30 m)`, then `removed (the partner stopped reporting a vehicle)`). Host's own view: `01-host-mounted`, `02-host-driving-*`. Placement error 0.66 cm mean, 1.26 cm p95, 1.40 cm max moving; play delay 100 ms (`interp_delay_ms`); copy live 66 ms after it was asked for. |
+| **`20261118-122223-two-games-vehicle-guest`** (the guest drives, the host watches) | Host's view, enlarged: `02-host-sees-guest-driving-b` the copy with Fragile (blonde) seated, `Guest` tag; `03-host-sees-guest-stopped` at 27 m, Fragile seated; `04-host-sees-guest-off` Fragile in her porter suit standing beside the parked copy; `05` gone. Placement error 0.68 cm mean, 1.43 cm p95, 1.90 cm max moving. |
+| `20261118-121400-two-games-vehicle` (an earlier version: both drives in one run) | `01-guest-sees-host-mounted` (enlarged): the host's Sam seated in the hologram copy, overlapping the guest's own purple roadster at the same place (each game has its own). As watcher after its own drive the host looked at a wall (its camera turned by the drive): the scenario was split in two. Placement error 0.55 / 0.63 cm mean, 1.64 / 1.52 cm max. |
+| `20261118-121812-two-games-vehicle` | The watcher behind its own roadster: the copy was hidden by it during the drive (the watching point moved since). |
+| **`20261118-130839-two-games-release`** (final build, launcher defaults, host drives, guest Fragile watches; 1080p) | Guest's view, enlarged: `06-guest-sees-host-mounted` the hologram over her own purple roadster at the same spot; after her camera turn `07-...-driving-b` the copy from behind mid-drive with the host's head in it, `-c` and `08` the copy parked at 27 m, `09-...-off` the host's Sam standing beside it at 26 m, `10` gone. Placement error 0.54 cm mean, 1.29 cm p95, 1.54 cm max over 126 moving ticks (0.10 cm mean over all 678); body vs the copy's seat 0.0 cm mean, 0.1 cm max; copy live 65 ms after it was asked for; removed by "the partner stopped reporting a vehicle" after the host's `no longer reported (beyond 30 m)`. |
+| `20261118-130121-two-games-release` (the same scenario before its camera fix) | `06-guest-sees-host-mounted` (enlarged): the host's Sam seated in the hologram, which overlaps her own roadster; `07-...-driving-a` the copy with Sam leaving her view at its left edge; the later frames face away (hence the camera turn). Placement error 0.53 cm mean, 1.27 cm p95, 1.94 cm max moving. |
+| `20261118-115950`, `-120309`, `-120532-vehicle-echo` | Failed setups: walking to the roadster with the stick missed it (the probe walk's length varies), and the World's entity list holds no vehicle (`vehicle_sync 8`); hence `vehicle_sync 9`. |
+
+### 22.6 Not covered / still different
+
+- **Only the roadster was driven.** The trike and truck copies were spawned, validated, placed and shown (override),
+  never with a real trike or truck sending: their origin against the drivable vehicle's, their joint poses (the same
+  Skeleton, so expected to fit) and the Kusanagi trike (`bkyk`, its own skeleton: no pose) are not proven. The garage
+  terminal's vehicle menu was not scouted.
+- **The roadster is a hologram on the other screen** (no solid cutscene roadster exists; a forged entity resource or a
+  copy of the real `DSVehicleSpeedCar` was not attempted: the latter is the pattern that crashed with weapons, 17.1).
+- **Paint and variations** (purple, gold / silver, broken) are not mirrored; the hologram has its own look.
+- **Wheel motion** arrives at 30 Hz and is given every tick; the copy is not moved to the 240 Hz update group, so at
+  speed its wheels may step (the read-back meter shows up to 45 deg against the given poses while they spin).
+- **Cargo on the vehicle, sounds (engine, RTPCs), lights, damage effects** are not mirrored. The partner body's hands
+  and feet are Sam's seated pose: on Fragile they may not meet the wheel exactly.
+- **Not run**: link loss or a load while driving (the code removes the copy), long drives outside the garage, two
+  vehicles at once, carts and floating carriers (logged once as another parent type, not sent), a vehicle destroyed while
+  ridden.
+- **No collision** with the partner's vehicle copy.
+- **Two of the same vehicle.** In the two-game runs both games come from one save, so the watcher's own roadster is
+  parked where the partner's copy appears (`121400`: the hologram inside the guest's own purple roadster). In play a
+  partner's copy will often overlap or duplicate the local player's own vehicle of the same kind.
+- **Parked for 60 s at most.** A vehicle left by its driver stops being reported after 60 s even while the driver stands
+  beside it (or once they are 30 m away): the copy goes then.
+- The echo screenshots `04-mounted-copy` / `07-look-b` (`e04_copy.png`, `e07b.png`) are from `120658`, an older
+  build than the final runs.
+- The pose targets share one fault switch: a fault writing the copy's pose turns off every gear pose (the backpack's,
+  the boots prop's) for the session, as a fault on any of them already did. Kept on purpose (a fault means our write
+  hit something unexpected); never seen in a run.

@@ -61,7 +61,24 @@ struct Config {
     // lengths, so the gear, cargo and boots the game hangs on it sit on the character
     // (docs/real-partner-body.md section 16). Default on; self_fit=0 keeps Sam's proportions.
     bool self_fit = true;
-    bool pose_hook = false;            // install the pose hook even without partner_body=real (debug spawns)
+    // Self view headgear (docs/real-partner-body.md section 20): with the fit on, Sam's cap and glasses get an offset of
+    // their own in his head helper's frame (the accessory's own mover), made for the character's head, instead of the
+    // head lift. Default on; self_headgear=0 keeps the v0.11 head lift.
+    bool self_headgear = true;
+    // Self view feet (section 21): her own feet are scaled to nothing under Sam's equipped boots. Default on;
+    // self_feet_hide=0 keeps her own boots under his.
+    bool self_feet_hide = true;
+    // Partner boots (section 21): the sender's equipped boots as a gear item (STC1 kind 7) and, on the other screen, a
+    // cutscene boots prop posed from the partner body's legs with the partner's own feet scaled away. Default on;
+    // boots_sync=0: nothing read, sent or spawned (the partner shows its own model's boots).
+    bool boots_sync = true;
+    // Vehicles (docs/real-partner-body.md section 22): the vehicle the player rides is sent (STM1) and shown under the
+    // partner's body on the other screen as a visual copy (a cutscene trike / truck, the roadster's hologram). 1 = on,
+    // the roadster's copy only (default; the one proven against a real drive), 3 = also the trike's and the truck's
+    // copies, 2 = solid copies only (trike, truck; no hologram roadster), 0 = nothing read, sent or spawned. Every value
+    // but 0 sends what we ride.
+    int vehicle_sync = 1;
+    bool pose_hook = false;           // install the pose hook even without partner_body=real (debug spawns)
 
     // Debug
     bool verbose = false;

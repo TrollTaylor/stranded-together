@@ -28,6 +28,7 @@
 #include "player_sync.hpp"
 #include "sandbox.hpp"
 #include "steam_owner.hpp"
+#include "vehicle_sync.hpp"
 #include "winhttp_forwards.inc"
 
 #ifndef ST_BUILD_ID
@@ -84,7 +85,8 @@ bool GuardedEmergencyStop() noexcept {
     const bool coll = GuardedStop(&st::collision::EmergencyStop);
     const bool body = GuardedStop(&st::realbody::EmergencyStop);
     const bool gear = GuardedStop(&st::gear::EmergencyStop);
-    return coll && body && gear;
+    const bool veh = GuardedStop(&st::vsync::EmergencyStop);
+    return coll && body && gear && veh;
 }
 
 // frame_cap=<fps> (session.ini; the launcher's local two-instance test and hidden two-game

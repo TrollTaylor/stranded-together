@@ -299,6 +299,13 @@ partner_gear=0                  no backpack or cargo on the bodies, none sent (m
 smooth_pose=0                   the bodies keep the game's 60 Hz updates (v0.7; mod key only, not written by the launcher; default on)
 partner_collision_height=0      the partner's capsule at Sam's own 1.65 m, climbable as in v0.7 (mod key only; default 4.0 m: no climbing)
 name_tag_font=default           name tags in Segoe UI instead of the game's menu font (mod key only; default game)
+self_headgear=0                 the self view's cap and glasses go back to v0.11's head lift (mod key only; default on:
+                                an offset per item for Fragile's head; docs/real-partner-body.md section 20)
+self_feet_hide=0                the self view keeps the character's own feet under the equipped boots (mod key only;
+                                default on; section 21)
+boots_sync=0                    the equipped boots are not sent or drawn on the partner (mod key only; default on; section 21)
+vehicle_sync=0|1|2|3            the partner's vehicle (mod key only; default 1: the roadster's copy; 3 also trike and truck
+                                copies, 2 those two only, 0 nothing read, sent or spawned; section 22)
 ```
 
 `my_character` is written for every host as `sam` (whatever was asked) and otherwise only when
