@@ -1,0 +1,93 @@
+# Sam's head between two games, both directions (docs/real-partner-body.md section 14), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-hair -SeedSaves complete-100
+# Both players chose Sam (no self view): each game's partner Sam (demo_sam_clean) shows the other's head
+# parts. Each game pins its partner body 1.6 m ahead of its own Sam, facing the camera (collision 3), for
+# face shots; each camera turns round for its own Sam's face. First without the head parts (gear 16 0
+# before the bodies come: the cutscene defaults), then with them; then the host puts the Bridges cap on
+# (gold) and the guest takes the cyphead accessory (metal-line hair and face lines) off and puts her cap
+# on (silver). Census of each game's own Sam (gear 9 0) and partner body (gear 9 1) at the end: the head
+# part flags must agree across the games. Player collision off.
+role host
+graphics low
+timeout 360
+ini partner_body=real
+ini partner_collision=0
+@host ini my_character=sam
+@host ini name=HostPorter
+@guest ini my_character=sam
+@guest ini name=GuestPorter
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+@guest pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+@guest until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitplayer 60
+@both action gear 16 0
+waitlog 60 \[link\] CONNECTED
+@guest waitlog 60 \[link\] CONNECTED
+until 120 500 ly=32760 -> ok: .*player moved (1\.[5-9]|[2-9]|[1-9][0-9]+)[0-9.]* m => pad none 800 ly=32760
+@guest until 150 3000 \[sync\] partner body: real 'sam' => pad A 120
+waitlog 60 \[sync\] partner body: real 'sam'
+waitlog 40 \[gear\] [0-9]+ items, [1-9][0-9]* props live
+@guest waitlog 40 \[gear\] [0-9]+ items, [1-9][0-9]* props live
+wait 2500
+# the partner pinned ahead, facing each camera; each camera turned a little so its own Sam does not hide it
+@both action collision 3 1.6
+pad none 220 rx=32767
+@guest pad none 220 rx=32767
+wait 1500
+screenshot 10-host-sees-guest-before
+@guest screenshot 10-guest-sees-host-before
+@both action gear 16 1
+wait 3000
+screenshot 11-host-sees-guest-after
+@guest screenshot 11-guest-sees-host-after
+# each camera round: each player's own Sam's face (the camera drifts back after a few seconds: shot at once)
+pad none 1300 rx=32767
+@guest pad none 1300 rx=32767
+wait 1200
+screenshot 11b-host-own-front
+@guest screenshot 11b-guest-own-front
+pad none 1300 rx=-32767
+@guest pad none 1300 rx=-32767
+# the host's cap (gold); the guest's cyphead accessory (0x35) off and her cap (silver)
+action gear 14 15 1
+action gear 15 24
+@guest action gear 14 53 0
+@guest action gear 14 15 1
+@guest action gear 15 23
+wait 3500
+screenshot 12-host-sees-guest-cap-no-cyphead
+@guest screenshot 12-guest-sees-host-cap
+pad none 1300 rx=32767
+@guest pad none 1300 rx=32767
+wait 1200
+screenshot 12b-host-own-cap
+@guest screenshot 12b-guest-own-cap-no-cyphead
+pad none 1300 rx=-32767
+@guest pad none 1300 rx=-32767
+# the guest's cap off again: her hair without the metal lines on both screens
+@guest action gear 14 15 0
+wait 3000
+screenshot 13-host-sees-guest-no-cyphead
+pad none 1300 rx=32767
+@guest pad none 1300 rx=32767
+wait 1200
+@guest screenshot 13b-guest-own-no-cyphead
+@both action gear 9 0
+@both action gear 9 1
+@both action gear 16 1
+@both action collision 3 0
+action gear 0
+@guest action gear 0
+action log_status
+@guest action log_status
+@guest quit
+wait 3000
+quit

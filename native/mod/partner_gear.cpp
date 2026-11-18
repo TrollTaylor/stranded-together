@@ -9,8 +9,10 @@
 
 #include "automation.hpp"
 #include "game_actions.hpp"
+#include "gear_look.hpp"
 #include "log.hpp"
 #include "partner_holo.hpp"
+#include "partner_outfit.hpp"
 #include "partner_source.hpp"
 #include "real_body.hpp"
 
@@ -314,18 +316,106 @@ bool PartFlags(const Apd& a, unsigned i, std::uint8_t* fl) {
     return p && Rd(p + 0x2C, *fl);
 }
 
-// Our Sam's gear parts (which exist, which are shown). False when unreadable.
+// Sam's head (docs/real-partner-body.md section 14): hair, hood, face lines, cap hair. The inventory
+// update chooses these parts every frame from what he wears (cap, glasses, the cyphead accessory, the
+// hood's state and type); demo_sam_clean has no mesh controller and keeps the defaults. Every ArtParts
+// part below the part the controller maps to Head (EDSPlayerMesh 2; index 52 in part_sam_body_suiti) is
+// mirrored by its asked-visible bit (flags bit 0), only while Sam wears the porter suit (107 parts, the
+// body's own resource), no Root or global hide is set (+0x338 / +0x348: photo mode, scenes) and no hood
+// switch animation runs. The animated switch meshes themselves are never sent.
+bool Bit(const std::uint64_t* words, unsigned i) { return ((words[i >> 6] >> (i & 63)) & 1) != 0; }
+constexpr unsigned kHeadMesh = 2;
+constexpr std::int32_t kSuitiParts = 107;
+constexpr std::uint8_t kHeadSwitchParts[] = {68, 83, 84};  // hoodswitch, hoodotterswitch, hoodoxiswitch (suiti)
+constexpr std::uint8_t kHeadSkipParts[] = {68, 83, 84, 85, 86};  // + oxi switch children
+bool g_head_on = true;  // `gear 16 <0/1>`
+struct HeadState {
+    std::uintptr_t arr = 0;  // the ArtParts array the subtree was computed for
+    std::uint64_t subtree[2] = {};
+    std::uint64_t apply[2] = {}, vis[2] = {};
+    bool have = false;
+    unsigned held = 0, reads = 0;
+    const char* why = "not read yet";
+} g_head;
+
+bool HeadSubtree(std::uintptr_t ctrl, const Apd& a, std::uint64_t* out) {
+    std::int32_t head = -1;
+    if (!Rd(ctrl + 0x38 + 8ull * kHeadMesh, head) || head < 0 || head >= a.n) return false;
+    const std::uintptr_t hp = Q(a.arr + 8ull * static_cast<unsigned>(head));
+    if (!hp) return false;
+    out[0] = out[1] = 0;
+    for (unsigned i = 0; i < static_cast<unsigned>(a.n) && i < wire::kMaxGearParts; ++i) {
+        std::uintptr_t p = Q(a.arr + 8ull * i);
+        if (!p || p == hp) continue;
+        for (int hop = 0; hop < 6 && p; ++hop) {
+            p = Q(p + 0x18);
+            if (p == hp) {
+                out[i >> 6] |= 1ull << (i & 63);
+                break;
+            }
+        }
+    }
+    for (std::uint8_t k : kHeadSkipParts) out[k >> 6] &= ~(1ull << (k & 63));
+    return out[0] || out[1];
+}
+
+// Reads the head parts into g_head, or keeps the last reading (g_head.why says why).
+void ReadHead(std::uintptr_t sam, std::uintptr_t ctrl, const Apd& a) {
+    ++g_head.reads;
+    auto hold = [](const char* why) {
+        g_head.why = why;
+        ++g_head.held;
+    };
+    if (a.n != kSuitiParts || !outfit::LocalWearsPorter(sam)) return hold("not the porter suit");
+    // (reason 63 of the global mask is the self view's own: real_body.cpp kOurReason; the head parts'
+    // asked bits are still the game's then)
+    if (Q(ctrl + 0x338) != 0 || (Q(ctrl + 0x348) & ~(1ull << 63)) != 0) return hold("Sam hidden by a Root / global part mask");
+    if (g_head.arr != a.arr) {
+        std::uint64_t st[2] = {};
+        if (!HeadSubtree(ctrl, a, st)) return hold("no head part in the controller's map");
+        g_head.arr = a.arr;
+        g_head.subtree[0] = st[0], g_head.subtree[1] = st[1];
+        unsigned n = 0;
+        for (unsigned i = 0; i < 128; ++i) n += Bit(st, i) ? 1u : 0u;
+        Log("[gear] Sam's head: %u ArtParts below the Head part are mirrored (hair, hood, face lines)", n);
+    }
+    for (std::uint8_t k : kHeadSwitchParts) {
+        std::uint8_t fl = 0;
+        if (k < a.n && PartFlags(a, k, &fl) && (fl & 1)) return hold("the hood switch animation runs");
+    }
+    std::uint64_t vis[2] = {};
+    for (unsigned i = 0; i < static_cast<unsigned>(a.n) && i < wire::kMaxGearParts; ++i) {
+        if (!Bit(g_head.subtree, i)) continue;
+        std::uint8_t fl = 0;
+        if (!PartFlags(a, i, &fl)) return hold("a part is unreadable");
+        if (fl & 1) vis[i >> 6] |= 1ull << (i & 63);
+    }
+    if (g_head.have && (vis[0] != g_head.vis[0] || vis[1] != g_head.vis[1]))
+        Log("[gear] Sam's head parts changed: shown %016llX %016llX -> %016llX %016llX", static_cast<unsigned long long>(g_head.vis[1]),
+            static_cast<unsigned long long>(g_head.vis[0]), static_cast<unsigned long long>(vis[1]), static_cast<unsigned long long>(vis[0]));
+    g_head.apply[0] = g_head.subtree[0], g_head.apply[1] = g_head.subtree[1];
+    g_head.vis[0] = vis[0], g_head.vis[1] = vis[1];
+    g_head.have = true;
+    g_head.why = "read";
+}
+
+// Our Sam's gear parts (which exist, which are shown) and his head parts. False when unreadable.
 bool ReadParts(std::uintptr_t sam) {
     const std::uintptr_t ctrl = sam + 0xA60;
     Apd a;
     if (Q(ctrl) != sam || !ReadApd(sam, &a)) return false;
     std::uint64_t apply[2] = {}, vis[2] = {};
+    ReadHead(sam, ctrl, a);
+    if (g_head_on && g_head.have)
+        for (unsigned w = 0; w < 2; ++w) apply[w] = g_head.apply[w], vis[w] = g_head.vis[w];
+    // The gear parts (their effective bit) win where both name a part (the balloon, 57).
     for (std::uint8_t k : kGearMeshParts) {
         std::int32_t idx = -1;
         if (!Rd(ctrl + 0x38 + 8ull * k, idx) || idx < 0 || idx >= a.n || idx >= static_cast<std::int32_t>(wire::kMaxGearParts)) continue;
         std::uint8_t fl = 0;
         if (!PartFlags(a, static_cast<unsigned>(idx), &fl)) continue;
         apply[idx >> 6] |= 1ull << (idx & 63);
+        vis[idx >> 6] &= ~(1ull << (idx & 63));
         if (fl & 0x2) vis[idx >> 6] |= 1ull << (idx & 63);
     }
     g_parts_apply[0] = apply[0], g_parts_apply[1] = apply[1];
@@ -338,6 +428,38 @@ LocalItem g_items[kMaxLocal];
 unsigned g_item_count = 0;
 wire::GearFrame g_local;           // the frame we show and send (rel poses refreshed when still)
 bool g_have_local = false;
+std::uintptr_t g_local_e[wire::kMaxGearItems] = {};  // g_local's items: their entity (or DSBaggage2); 0 synthetic
+
+// Gear looks (docs/real-partner-body.md section 13): ours per item of g_local (sender), the partner's
+// per item of its layout (receiver). `gear 12 <0/1>` switches them off / on (both sides).
+bool g_looks_on = true;
+struct LocalLook {
+    bool have = false;
+    wire::GearLook l;
+    std::uint32_t hash = 0, sent_hash = 0;
+    std::uint16_t sent_layout = 0;
+    std::uintptr_t e = 0;
+};
+LocalLook g_look[wire::kMaxGearItems];
+double g_next_look_ms = 0, g_look_rr_ms = 0;
+unsigned g_look_rr = 0;
+std::uint32_t g_looks_sent = 0;
+struct PartnerLook {
+    bool have = false;
+    wire::GearLook l;
+    std::uint32_t hash = 0;
+};
+PartnerLook g_plook[wire::kMaxGearItems];
+std::uint32_t g_looks_rx = 0;
+// The backpack's skinned pose (STK1): ours (sender) and the partner's (receiver). `gear 13 <0/1>`.
+bool g_poses_on = true;
+wire::GearPose g_pose_local, g_pose_sent;
+bool g_have_pose_local = false, g_have_pose_sent = false;
+double g_pose_sent_ms = 0;
+std::uint32_t g_poses_sent = 0;
+wire::GearPose g_pose_partner;
+bool g_have_pose_partner = false;
+std::uint32_t g_pose_partner_seq = 0, g_poses_rx = 0;
 double g_next_read_ms = 0;
 Xf g_prev_sam;
 bool g_have_prev_sam = false;
@@ -376,6 +498,9 @@ struct Prop {
     unsigned reshows = 0;   // times it was found changed by the game in the current 3 s window
     double reshow_since = 0;
     bool game_owned = false;  // the prop's own components keep hiding it: its visibility is left to them
+    double live_ms = 0;       // when it became live (looks wait 0.5 s)
+    std::uint32_t look_hash = 0;  // the look applied (wire::GearLookHash; 0 none)
+    double look_check_ms = 0;     // next check that it still shows it
 };
 struct PropSet {
     const char* tag;
@@ -394,6 +519,11 @@ struct PropSet {
     double next_stats_ms = 0;
     double last_placed_ms = 0;
     std::uint32_t placement_off = 0;  // ticks the detour's list was found unpublished (a placement fault)
+    unsigned looks = 0, looks_partial = 0, looks_reapplied = 0, looks_failed = 0;
+    std::uintptr_t pose_e[realbody::kMaxPoseTargets] = {};  // the props given the partner's backpack pose
+    std::uint32_t pose_seq_pub[realbody::kMaxPoseTargets] = {};
+    unsigned pose_targets = 0;
+    unsigned pose_target_logs = 0;  // target changes logged (the first 40)
 };
 PropSet g_sets[2] = {{"gear", realbody::GearSlot::partner}, {"gear-self", realbody::GearSlot::self}};
 
@@ -463,13 +593,15 @@ std::uint8_t ModelFromListItem(std::uintptr_t li) {
 }
 
 // Which carried pieces are drawn as a case: deliveries (case type Normal, LiquidOnly, Material,
-// Delicate, SmallDelicate, ToxicGas) anywhere, and a weapon on the waist (Sam shows it as a small
-// case at his hip). Equipment, weapons on the back and arms, tools (ladder, cart, builders), BB pod,
-// bodies: not drawn (in game they sit in the backpack's pouches or are models we have no prop for).
+// Delicate, SmallDelicate, ToxicGas) anywhere. Equipment, weapons (also the weapon case at the waist: the
+// game draws a dark netted weapon crate, sam_weapon_case_*, a physics entity we do not copy; v0.8 drew a
+// white delivery case there, which the player never wears: docs/real-partner-body.md section 13), tools
+// (the folded ladder at the waist, carts, builders), BB pod, bodies: not drawn (in game they sit in the
+// backpack's pouches or are models we have no prop for).
 bool Drawn(std::uint8_t kase, std::uint8_t slot_type) {
+    (void)slot_type;
     switch (kase) {
         case 0: case 1: case 9: case 13: case 17: case 18: return true;
-        case 2: return slot_type == 4 || slot_type == 5;
         default: return false;
     }
 }
@@ -791,7 +923,7 @@ void RememberJoint(std::uintptr_t e, std::uint8_t j) {
 
 // Builds the frame from g_items: anchors and relative poses. `prev`: keep its poses for items whose
 // layout matches (Sam moving: the tick's reads of Sam and the gear may be a frame apart).
-bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_poses, wire::GearFrame* out) {
+bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_poses, wire::GearFrame* out, std::uintptr_t* out_e) {
     wire::GearFrame f;
     f.flags = wire::kGearValid;
     // Joint frames of Sam (model matrices) in world space.
@@ -808,13 +940,18 @@ bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_
     std::uintptr_t frame_e[wire::kMaxGearItems] = {};
     Xf frame_w[wire::kMaxGearItems];
     (void)self_hidden;  // the self view hides Sam through the global part mask: his gear stays shown (real flags)
+    // The cargo comes last but must not be what the cap cuts (the pieces stacked on the backpack are
+    // what the user sees): the other items leave it room.
+    unsigned want_cargo = static_cast<unsigned>(g_test_cases);
+    for (unsigned i = 0; i < g_item_count; ++i) want_cargo += g_items[i].kind == wire::GearKind::cargo;
+    const unsigned other_cap = want_cargo >= wire::kMaxGearItems - 8 ? 8 : wire::kMaxGearItems - want_cargo;
     for (unsigned i = 0; i < g_item_count; ++i) {
         const LocalItem& it = g_items[i];
         // Cargo in a carrier slot counts as carried; everything else as the game shows it.
         const bool vis = it.kind == wire::GearKind::cargo ? true : it.visible;
         if (!vis) continue;
         if (it.kind == wire::GearKind::cargo) ++cargo;
-        if (f.count >= wire::kMaxGearItems) {
+        if (f.count >= wire::kMaxGearItems || (it.kind != wire::GearKind::cargo && it.kind != wire::GearKind::backpack && f.count >= other_cap)) {
             ++dropped;
             continue;
         }
@@ -925,12 +1062,19 @@ bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_
         ++cargo;
     }
     f.dropped = static_cast<std::uint8_t>(dropped > 255 ? 255 : dropped);
+    // Sam moving: a pose relative to one of his joints may mix two frames (the joint and the item read
+    // a frame apart), so those keep the last still reading. An item on another item (the cargo and
+    // everything on the backpack) is read in the same pass as its parent: its pose stays live (the
+    // stack's sway).
     if (keep_poses && g_have_local && wire::GearLayoutHash(f) == wire::GearLayoutHash(g_local) && f.count == g_local.count) {
         for (unsigned i = 0; i < f.count; ++i) {
+            if (f.items[i].parent != wire::kGearNoParent) continue;
             std::memcpy(f.items[i].p, g_local.items[i].p, sizeof(f.items[i].p));
             f.items[i].q = g_local.items[i].q;
         }
     }
+    if (out_e)
+        for (unsigned i = 0; i < wire::kMaxGearItems; ++i) out_e[i] = i < f.count ? frame_e[i] : 0;
     *out = f;
     return true;
 }
@@ -964,6 +1108,89 @@ void DescribeFrame(const wire::GearFrame& f, const char* what) {
         per[kPropCube], parts_vis, parts);
 }
 
+// Our gear's looks (every 500 ms; a carried case's variation once per piece): each item of g_local that
+// is one of the game's entities (its variations and shader variables), the backpack, the delivery cases
+// (the baggage manager's own variation lookup) and the synthetic test cases (the config's v01 of their
+// size). The BB pod and Odradek props are cinematic stand-ins: not coloured.
+std::uintptr_t g_local_player = 0;  // the player of the last read (look sources)
+
+double g_look_us_sum = 0, g_look_us_max = 0;  // ReadLooks' cost (QPC), logged with the read cost
+std::uint32_t g_look_window = 0;
+
+void ReadLooks(double now) {
+    if (!look::ReadAvailable()) return;
+    // Our own gear entities are a source of the partner's variations (on and off): the list every read
+    // (100 ms), so entries found through gear we no longer hold are dropped before any use.
+    static std::uintptr_t own[wire::kMaxGearItems];
+    unsigned nown = 0;
+    for (unsigned i = 0; i < g_local.count; ++i)
+        if ((g_local.items[i].kind == wire::GearKind::entity || g_local.items[i].kind == wire::GearKind::backpack) && g_local_e[i]) own[nown++] = g_local_e[i];
+    look::SetOwnGear(own, nown, g_local_player);
+    if (now < g_next_look_ms || !g_looks_on) return;
+    g_next_look_ms = now + 500;
+    LARGE_INTEGER t0, t1, qf;
+    QueryPerformanceCounter(&t0);
+    const std::uint16_t layout = wire::GearLayoutHash(g_local);
+    for (unsigned i = 0; i < wire::kMaxGearItems; ++i) {
+        LocalLook& L = g_look[i];
+        if (i >= g_local.count) {
+            L.have = false;
+            continue;
+        }
+        const wire::GearItem& it = g_local.items[i];
+        const std::uintptr_t e = g_local_e[i];
+        wire::GearLook l;
+        bool ok = false;
+        if (it.kind == wire::GearKind::entity || it.kind == wire::GearKind::backpack) {
+            ok = e && look::ReadEntity(e, &l);
+        } else if (it.kind == wire::GearKind::cargo) {
+            if (e && L.have && L.e == e) {
+                l = L.l;  // a carried piece keeps its variation
+                ok = true;
+            } else if (e) {
+                ok = look::ReadBaggage(e, &l);
+            } else {
+                const int p = PropFor(it);
+                ok = (p == kPropS || p == kPropM || p == kPropL) && look::ReadConfigVariation(static_cast<unsigned>(p - kPropS + 1), &l);
+            }
+        }
+        if (!ok) {
+            L.have = false;
+            continue;
+        }
+        l.item = static_cast<std::uint8_t>(i);
+        l.layout = layout;
+        l.kind = it.kind;
+        l.res = it.kind == wire::GearKind::entity ? it.res : wire::kGearNone;
+        L.l = l;
+        L.e = e;
+        L.have = true;
+        L.hash = wire::GearLookHash(l);
+    }
+    QueryPerformanceCounter(&t1);
+    QueryPerformanceFrequency(&qf);
+    const double us = static_cast<double>(t1.QuadPart - t0.QuadPart) * 1e6 / static_cast<double>(qf.QuadPart);
+    g_look_us_sum += us;
+    if (us > g_look_us_max) g_look_us_max = us;
+    ++g_look_window;
+}
+
+// Our backpack's skinned pose (every read: its frame extends with the stack, its cover joints shape
+// the rain cover; the receiver writes it onto its copies).
+void ReadBackpackPose() {
+    g_have_pose_local = false;
+    if (!g_poses_on) return;
+    for (unsigned i = 0; i < g_local.count; ++i) {
+        if (g_local.items[i].kind != wire::GearKind::backpack || !g_local_e[i]) continue;
+        if (look::ReadPose(g_local_e[i], &g_pose_local)) {
+            g_pose_local.item = static_cast<std::uint8_t>(i);
+            g_pose_local.layout = wire::GearLayoutHash(g_local);
+            g_have_pose_local = true;
+        }
+        return;
+    }
+}
+
 void ReadLocalTick(game::Entity* local, bool local_active, double now) {
     if (now < g_next_read_ms) return;
     g_next_read_ms = now + kReadEveryMs;
@@ -980,10 +1207,12 @@ void ReadLocalTick(game::Entity* local, bool local_active, double now) {
     if (us > g_read_us_max) g_read_us_max = us;
     ++g_read_window;
     if (++g_read_timed == 50 || g_read_window >= 600) {
-        Log("[gear] read cost (game thread): mean %.0f us, max %.0f us over %u reads; walk cache %s (%llu hits, %llu misses)", g_read_us_sum / g_read_window,
-            g_read_us_max, g_read_window, g_memo_on ? "on" : "off", static_cast<unsigned long long>(g_memo_hits),
-            static_cast<unsigned long long>(g_memo_misses));
+        Log("[gear] read cost (game thread): mean %.0f us, max %.0f us over %u reads; walk cache %s (%llu hits, %llu misses); looks read "
+            "(every 500 ms) mean %.0f us, max %.0f us over %u",
+            g_read_us_sum / g_read_window, g_read_us_max, g_read_window, g_memo_on ? "on" : "off", static_cast<unsigned long long>(g_memo_hits),
+            static_cast<unsigned long long>(g_memo_misses), g_look_window ? g_look_us_sum / g_look_window : 0.0, g_look_us_max, g_look_window);
         g_read_us_sum = 0, g_read_us_max = 0, g_read_window = 0;
+        g_look_us_sum = 0, g_look_us_max = 0, g_look_window = 0;
     }
     if (!read_ok) {
         ++g_read_fail;
@@ -1000,7 +1229,8 @@ void ReadLocalTick(game::Entity* local, bool local_active, double now) {
     g_prev_sam = sam;
     g_have_prev_sam = true;
     wire::GearFrame f;
-    if (!BuildFrame(local, sam, realbody::SelfShown(), moving, &f)) return;
+    static std::uintptr_t fe[wire::kMaxGearItems];
+    if (!BuildFrame(local, sam, realbody::SelfShown(), moving, &f, fe)) return;
     const std::uint16_t nh = wire::GearLayoutHash(f);
     if (g_have_local && (nh != wire::GearLayoutHash(g_local) || f.count != g_local.count)) {
         if (!(g_pending && g_pending_hash == nh && g_pending_count == f.count)) {
@@ -1024,6 +1254,10 @@ void ReadLocalTick(game::Entity* local, bool local_active, double now) {
     if (moving && g_have_local && wire::GearLayoutHash(f) == wire::GearLayoutHash(g_local)) ++g_moving_skips;
     g_local = f;
     g_have_local = true;
+    std::memcpy(g_local_e, fe, sizeof(g_local_e));
+    g_local_player = reinterpret_cast<std::uintptr_t>(local);
+    ReadLooks(now);
+    ReadBackpackPose();
     const std::uint16_t h = wire::GearLayoutHash(f);
     if (h != g_logged_hash) {
         g_logged_hash = h;
@@ -1110,12 +1344,10 @@ struct PartsMirror {
     const char* what = "";
     std::uintptr_t target = 0;
     bool checked = false, compatible = false;
-    unsigned applied = 0, failed = 0;
-    double next_ms = 0;
+    unsigned applied = 0, failed = 0, checks = 0;
+    double next_ms = 0, recheck_ms = 0;
 };
 PartsMirror g_pm{"partner body"}, g_pack_pm{"backpack prop"};
-
-bool Bit(const std::uint64_t* words, unsigned i) { return ((words[i >> 6] >> (i & 63)) & 1) != 0; }
 
 void MirrorParts(PartsMirror& m, std::uintptr_t target, std::uintptr_t ref, const std::uint64_t* apply, const std::uint64_t* visible, unsigned max,
                  double now) {
@@ -1130,8 +1362,14 @@ void MirrorParts(PartsMirror& m, std::uintptr_t target, std::uintptr_t ref, cons
     std::uintptr_t sm = 0;
     Apd b, l;
     if (!ModelAndApd(target, &sm, &b) || !ReadApd(ref, &l)) return;
+    // Not compatible yet: checked again every 3 s (our own Sam may have been in another suit or body
+    // variant when the body came; the body keeps its parts until then).
+    if (m.checked && !m.compatible && now >= m.recheck_ms) m.checked = false;
     if (!m.checked) {
         m.checked = true;
+        m.recheck_ms = now + 3000;
+        const bool was = m.compatible;
+        ++m.checks;
         unsigned same = 0, named = 0;
         for (unsigned i = 0; i < max; ++i) {
             if (!Bit(apply, i)) continue;
@@ -1141,8 +1379,9 @@ void MirrorParts(PartsMirror& m, std::uintptr_t target, std::uintptr_t ref, cons
             if (bp && lp && Q(bp + 0x20) == Q(lp + 0x20)) ++same;  // (a part without a resource of its own: none on both)
         }
         m.compatible = b.n == l.n && named > 0 && same == named;
-        Log("[gear] %s %p: %d ArtParts (ours %d), %u of %u named parts are the same resources: %s", m.what, reinterpret_cast<void*>(target), b.n, l.n,
-            same, named, m.compatible ? "the partner's parts are mirrored on it" : "another model: its parts are left as they are");
+        if (m.checks == 1 || m.compatible != was || m.checks % 100 == 0)
+            Log("[gear] %s %p: %d ArtParts (ours %d), %u of %u named parts are the same resources: %s", m.what, reinterpret_cast<void*>(target), b.n, l.n,
+                same, named, m.compatible ? "the partner's parts are mirrored on it" : "another model: its parts are left as they are (checked again every 3 s)");
     }
     if (!m.compatible) return;
     unsigned changed = 0;
@@ -1164,7 +1403,18 @@ void MirrorParts(PartsMirror& m, std::uintptr_t target, std::uintptr_t ref, cons
     }
 }
 
+void ClearPoses(PropSet& s) {
+    for (unsigned k = 0; k < realbody::kMaxPoseTargets; ++k)
+        if (s.pose_e[k]) {
+            realbody::ClearGearPose(k);
+            s.pose_e[k] = 0;
+            s.pose_seq_pub[k] = 0;
+        }
+    s.pose_targets = 0;
+}
+
 void Unpublish(PropSet& s) {
+    ClearPoses(s);
     if (!s.published) return;
     realbody::PublishGear(s.slot, nullptr, 0);
     s.published = false;
@@ -1271,6 +1521,136 @@ bool KeySource(const PropSet& s, int key, const char** path, const std::uint8_t*
     if (r < 0 || r >= static_cast<int>(wire::kMaxGearRes) || !s.res || !s.res[r].used) return false;
     *path = s.res[r].path, *guid = s.res[r].guid, *label = s.res[r].path;
     return true;
+}
+
+// An entity copy's own ArtParts as the look names them (the same entity resource: the same parts): true
+// when they match; `set`: the differing ones are set (the game's part setter in the model bracket).
+bool LookPartsMatch(std::uintptr_t e, const wire::GearLook& l, bool set, unsigned* changed) {
+    if (!l.parts_apply) return true;
+    std::uintptr_t sm = 0;
+    Apd a;
+    if (!ModelAndApd(e, &sm, &a)) return true;  // nothing we can do
+    bool match = true;
+    for (unsigned i = 0; i < 64 && i < static_cast<unsigned>(a.n); ++i) {
+        if (!((l.parts_apply >> i) & 1)) continue;
+        const bool want = ((l.parts_visible >> i) & 1) != 0;
+        std::uint8_t fl = 0;
+        if (!PartFlags(a, i, &fl) || ((fl & 1) != 0) == want) continue;
+        match = false;
+        if (!set || !ApdFnsOk()) continue;
+        if (!CallSetParts(sm, a.apd, static_cast<int>(i), want)) {
+            Log("[gear] the ArtParts part setter faulted on a gear copy: parts off for this session");
+            return false;
+        }
+        if (changed) ++*changed;
+    }
+    return match;
+}
+
+// The look the partner set's item i should show: the partner's STV1 for that item of this layout (a
+// debug body: our own), or nullptr.
+const wire::GearLook* WantLook(const PropSet& s, unsigned i, std::uint32_t* hash) {
+    const wire::GearFrame& f = s.want;
+    const std::uint16_t h = wire::GearLayoutHash(f);
+    const bool debug = realbody::GetOwner() == realbody::Owner::debug;
+    const wire::GearLook* l = nullptr;
+    if (debug && g_look[i].have) l = &g_look[i].l, *hash = g_look[i].hash;
+    else if (!debug && g_plook[i].have) l = &g_plook[i].l, *hash = g_plook[i].hash;
+    if (!l || l->layout != h || l->item != i || i >= f.count || l->kind != f.items[i].kind) return nullptr;
+    if (l->kind == wire::GearKind::entity && l->res != f.items[i].res) return nullptr;
+    return l;
+}
+
+// Each live prop (0.5 s after it became live) gets its item's look; every 2 s it is checked again and
+// re-applied when its own components changed it. At most 4 applies per tick.
+void ApplyLooks(PropSet& s, double now) {
+    if (!g_looks_on || !look::ApplyAvailable()) return;
+    unsigned budget = 4;
+    for (unsigned i = 0; i < s.want.count && budget; ++i) {
+        Prop& p = s.props[i];
+        if (!p.live || !holo::SpawnAlive(p.sp) || now - p.live_ms < 500) continue;
+        std::uint32_t hash = 0;
+        const wire::GearLook* want = WantLook(s, i, &hash);
+        if (!want) continue;
+        const auto e = reinterpret_cast<std::uintptr_t>(p.sp.e);
+        bool again = false;
+        if (p.look_hash == hash) {
+            if (now < p.look_check_ms) continue;
+            p.look_check_ms = now + 2000;
+            if (look::Satisfied(e, *want) && LookPartsMatch(e, *want, false, nullptr)) continue;
+            again = true;
+        }
+        --budget;
+        char why[160] = {};
+        const look::ApplyResult r = look::Apply(e, *want, why, sizeof(why));
+        unsigned parts_set = 0;
+        if (r != look::ApplyResult::off) LookPartsMatch(e, *want, true, &parts_set);
+        p.look_hash = hash;
+        p.look_check_ms = now + 2000;
+        if (r == look::ApplyResult::off) return;
+        if (r == look::ApplyResult::failed) ++s.looks_failed;
+        else if (r == look::ApplyResult::partial) ++s.looks_partial;
+        if (again) ++s.looks_reapplied;
+        else ++s.looks;
+        const char* a = nullptr;
+        const std::uint8_t* b = nullptr;
+        const char* label = "?";
+        KeySource(s, p.def, &a, &b, &label);
+        if (s.looks + s.looks_reapplied <= 60)
+            Log("[look] prop %u '%s': %s %u variation(s), %u shader variable(s), %u part(s) set: %s%s%s", i, label,
+                again ? "look applied again (it had changed):" : "look applied:", want->nvar, want->nsv, parts_set,
+                r == look::ApplyResult::done ? "done" : r == look::ApplyResult::partial ? "partly" : "failed", why[0] ? "; " : "", why);
+    }
+}
+
+// The partner's backpack pose onto the backpack prop and onto every prop on it that has the same
+// skeleton (the rain cover, the frame's own sub-entities), in their model updates (real_body).
+void ApplyPoses(PropSet& s, double now) {
+    const bool debug = realbody::GetOwner() == realbody::Owner::debug;
+    const wire::GearPose* pose = debug ? (g_have_pose_local ? &g_pose_local : nullptr) : (g_have_pose_partner ? &g_pose_partner : nullptr);
+    const std::uint32_t seq = debug ? g_reads : g_pose_partner_seq;
+    const wire::GearFrame& f = s.want;
+    if (!g_poses_on || !pose || pose->layout != wire::GearLayoutHash(f) || pose->item >= f.count || f.items[pose->item].kind != wire::GearKind::backpack) {
+        if (s.pose_targets) ClearPoses(s);
+        return;
+    }
+    const unsigned bi = pose->item;
+    std::uintptr_t want_e[realbody::kMaxPoseTargets] = {};
+    const holo::Spawn* want_sp[realbody::kMaxPoseTargets] = {};
+    unsigned n = 0;
+    const Prop& bp = s.props[bi];
+    std::uintptr_t skel = 0;
+    std::uint32_t layout = 0;
+    std::int32_t count = 0;
+    if (bp.live && holo::SpawnAlive(bp.sp) && now - bp.live_ms >= 500) {
+        const auto be = reinterpret_cast<std::uintptr_t>(bp.sp.e);
+        if (look::PoseSkeleton(be, &skel, &layout, &count) && layout == pose->skeleton && count == pose->n) want_sp[n] = &bp.sp, want_e[n++] = be;
+    }
+    for (unsigned i = 0; i < f.count && n && n < realbody::kMaxPoseTargets; ++i) {
+        const Prop& p = s.props[i];
+        if (i == bi || f.items[i].parent != bi || !p.live || !holo::SpawnAlive(p.sp) || now - p.live_ms < 500) continue;
+        const auto e = reinterpret_cast<std::uintptr_t>(p.sp.e);
+        std::uintptr_t sk = 0;
+        std::uint32_t lay = 0;
+        std::int32_t c = 0;
+        if (look::PoseSkeleton(e, &sk, &lay, &c) && sk == skel && c == pose->n) want_sp[n] = &p.sp, want_e[n++] = e;
+    }
+    for (unsigned k = 0; k < realbody::kMaxPoseTargets; ++k) {
+        if (want_e[k] != s.pose_e[k] || (want_e[k] && s.pose_seq_pub[k] != seq)) {
+            if (!want_e[k]) {
+                realbody::ClearGearPose(k);
+            } else if (!realbody::SetGearPose(k, want_sp[k], pose)) {
+                want_e[k] = 0;
+            }
+            if (want_e[k] != s.pose_e[k] && ++s.pose_target_logs <= 40)
+                Log("[gear] backpack pose target %u: %p%s", k, reinterpret_cast<void*>(want_e[k]), k == 0 ? " (the backpack prop)" : " (a prop on it, same skeleton)");
+            s.pose_e[k] = want_e[k];
+            s.pose_seq_pub[k] = seq;
+        }
+    }
+    unsigned live = 0;
+    for (std::uintptr_t e : s.pose_e) live += e != 0;
+    if (live != s.pose_targets) s.pose_targets = live;
 }
 
 void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_active, double now) {
@@ -1404,6 +1784,8 @@ void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_acti
                     p.live = true;
                     p.shown = false;
                     p.fails = 0;
+                    p.live_ms = now;
+                    p.look_hash = 0;
                     ++s.spawned;
                     changed = true;
                     static bool described[kKeyCount] = {};
@@ -1429,6 +1811,10 @@ void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_acti
             if (s.failed <= 30) Log("[%s] prop %u '%s' was destroyed by the game: again in %.0f s", s.tag, i, label, wire::GearRetryDelayMs(fails) / 1000);
             changed = true;
         }
+    }
+    if (&s == &g_sets[0]) {
+        ApplyLooks(s, now);
+        ApplyPoses(s, now);
     }
     // Publish when anything changed (new props live, new poses), and again when a placement fault
     // switched the detour's list off (at most 3 times a session: a fault fires the crash reporter).
@@ -1467,6 +1853,13 @@ void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_acti
         }
         std::uint32_t pl = 0, aba = 0, bad = 0;
         realbody::GearCounters(s.slot, &pl, &aba, &bad);
+        if (&s == &g_sets[0] && (s.looks || s.pose_targets)) {
+            char lc[400], pc[200];
+            look::Counters(lc, sizeof(lc));
+            realbody::GearPoseCounters(pc, sizeof(pc));
+            Log("[look] props: %u looks applied (%u partly, %u again, %u failed); %s; backpack pose: %s", s.looks, s.looks_partial, s.looks_reapplied,
+                s.looks_failed, lc, pc);
+        }
         Log("[%s] %u items, %u props live (%u loading, %u shown, %u failing now, %u refused, %u waiting for their resource; %u failures, %u retries, %u "
             "reshown, %u kept across layouts, %u removed); placements %u (aba %u, bad matrix %u)",
             s.tag, f.count, live, loading, shown, failed_now, refused, waiting, s.failed, s.retried, s.reshown, s.kept, s.removed, pl, aba, bad);
@@ -1805,11 +2198,76 @@ bool TakeSend(double now_ms, wire::GearFrame* out) noexcept {
     return true;
 }
 
+bool TakeSendLook(double now_ms, wire::GearLook* out) noexcept {
+    if (!g_enabled || !g_looks_on || !g_have_local || !out) return false;
+    const std::uint16_t layout = wire::GearLayoutHash(g_local);
+    for (unsigned i = 0; i < g_local.count; ++i) {
+        LocalLook& L = g_look[i];
+        if (!L.have || L.l.layout != layout || (L.hash == L.sent_hash && L.sent_layout == layout)) continue;
+        L.sent_hash = L.hash, L.sent_layout = layout;
+        *out = L.l;
+        ++g_looks_sent;
+        return true;
+    }
+    if (now_ms < g_look_rr_ms || g_local.count == 0) return false;
+    g_look_rr_ms = now_ms + 250;
+    for (unsigned k = 0; k < g_local.count; ++k) {
+        const unsigned i = g_look_rr++ % g_local.count;
+        if (!g_look[i].have || g_look[i].l.layout != layout) continue;
+        *out = g_look[i].l;
+        ++g_looks_sent;
+        return true;
+    }
+    return false;
+}
+
+void MarkLooksUnsent() noexcept {
+    for (LocalLook& L : g_look) L.sent_hash = 0, L.sent_layout = 0;
+    g_have_pose_sent = false;
+}
+
+void SetPartnerLook(const wire::GearLook& l) noexcept {
+    if (l.item >= wire::kMaxGearItems) return;
+    PartnerLook& p = g_plook[l.item];
+    const std::uint32_t h = wire::GearLookHash(l);
+    if (++g_looks_rx <= 3 || (p.have && (p.hash != h || p.l.layout != l.layout) && g_looks_rx <= 80))
+        Log("[look] the partner's item %u (layout %04X, kind %u res %u): %u variation(s), %u shader variable(s)", l.item, l.layout, static_cast<unsigned>(l.kind),
+            l.res, l.nvar, l.nsv);
+    p.l = l;
+    p.hash = h;
+    p.have = true;
+}
+
+bool TakeSendPose(double now_ms, wire::GearPose* out) noexcept {
+    if (!g_enabled || !g_poses_on || !g_have_pose_local || !out) return false;
+    const double since = now_ms - g_pose_sent_ms;
+    float dm = 0, dd = 0;
+    const bool same = g_have_pose_sent && g_pose_sent.item == g_pose_local.item && g_pose_sent.layout == g_pose_local.layout &&
+                      wire::GearPoseDiff(g_pose_sent, g_pose_local, &dm, &dd);
+    const bool changed = !same || dm > 0.001f || dd > 0.5f;
+    if (!(since >= 1000 || (changed && since >= 100))) return false;
+    g_pose_sent = g_pose_local;
+    g_have_pose_sent = true;
+    g_pose_sent_ms = now_ms;
+    ++g_poses_sent;
+    *out = g_pose_local;
+    return true;
+}
+
+void SetPartnerPose(const wire::GearPose& p) noexcept {
+    if (++g_poses_rx <= 2) Log("[gear] the partner's backpack pose: item %u, %u joints (skeleton %08X)", p.item, p.n, p.skeleton);
+    g_pose_partner = p;
+    g_have_pose_partner = true;
+    ++g_pose_partner_seq;
+}
+
 void SetPartnerGear(const wire::GearFrame* f) noexcept {
     if (!f) {
         if (g_have_partner) Log("[gear] the partner's gear cleared");
         g_have_partner = false;
         for (ResEntry& e : g_res_partner) e = ResEntry{};
+        for (PartnerLook& l : g_plook) l = PartnerLook{};
+        g_have_pose_partner = false;
         return;
     }
     if (!g_have_partner || wire::GearLayoutHash(*f) != wire::GearLayoutHash(g_partner)) DescribeFrame(*f, "the partner's gear");
@@ -1934,6 +2392,141 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             std::snprintf(msg, cap, "gear walk cache %s (read cost logged after 50 reads)", g_memo_on ? "on" : "off");
             Log("[gear] %s", msg);
             return true;
+        case 11: {
+            // looks: 0 our gear (every entity, the sources of their variations, the backpack's joints), 1 the
+            // partner's props
+            if (v[1] == 0) {
+                game::Entity* local = nullptr;
+                game::TryGetLocalPlayer(&local);
+                char why[160] = {};
+                if (!Checked() || !ReadItems(local, false, why, sizeof(why))) {
+                    std::snprintf(msg, cap, "our gear not read: %s", why);
+                    return false;
+                }
+                static std::uintptr_t ents[kMaxLocal];
+                unsigned n = 0;
+                std::uintptr_t pack = 0;
+                for (unsigned i = 0; i < g_item_count; ++i) {
+                    const LocalItem& it = g_items[i];
+                    if (it.kind != wire::GearKind::entity && it.kind != wire::GearKind::backpack) continue;
+                    ents[n++] = it.e;
+                    if (it.kind == wire::GearKind::backpack) pack = it.e;
+                }
+                look::DumpSources(ents, n, reinterpret_cast<std::uintptr_t>(local));
+                for (unsigned i = 0; i < n; ++i) {
+                    char tag[32];
+                    std::snprintf(tag, sizeof(tag), "ours %u", i);
+                    look::Dump(tag, ents[i], pack);
+                }
+                if (pack) look::DumpJoints("our backpack", pack);
+                for (unsigned i = 0; i < g_local.count; ++i)
+                    if (g_look[i].have)
+                        Log("[look] our item %u kind %u: %u variation(s), %u shader variable(s), hash %08X (sent %08X)", i, static_cast<unsigned>(g_local.items[i].kind),
+                            g_look[i].l.nvar, g_look[i].l.nsv, g_look[i].hash, g_look[i].sent_hash);
+                std::snprintf(msg, cap, "our gear's looks logged (%u entities); %u looks sent, %u backpack poses sent", n, g_looks_sent, g_poses_sent);
+                return true;
+            }
+            PropSet& s = g_sets[0];
+            std::uintptr_t pack = 0;
+            for (unsigned i = 0; i < s.want.count; ++i)
+                if (s.want.items[i].kind == wire::GearKind::backpack && s.props[i].live) pack = reinterpret_cast<std::uintptr_t>(s.props[i].sp.e);
+            unsigned n = 0;
+            for (unsigned i = 0; i < s.want.count; ++i) {
+                const Prop& p = s.props[i];
+                if (!p.live || !holo::SpawnAlive(p.sp)) continue;
+                char tag[48];
+                std::uint32_t hash = 0;
+                const wire::GearLook* w = WantLook(s, i, &hash);
+                std::snprintf(tag, sizeof(tag), "prop %u (want %u var %u sv)", i, w ? w->nvar : 0u, w ? w->nsv : 0u);
+                look::Dump(tag, reinterpret_cast<std::uintptr_t>(p.sp.e), pack);
+                ++n;
+            }
+            if (pack) look::DumpJoints("the backpack prop", pack);
+            char lc[400], pc[200];
+            look::Counters(lc, sizeof(lc));
+            realbody::GearPoseCounters(pc, sizeof(pc));
+            std::snprintf(msg, cap, "%u partner props' looks logged; %u looks received, %u poses received; %s; pose: %s", n, g_looks_rx, g_poses_rx, lc, pc);
+            Log("[look] %s", msg);
+            return true;
+        }
+        case 14:
+        case 15: {
+            // hidden tests: what the player wears on the head (the inventory's accessory list, inv +0x37F9 +
+            // 0x40 i: type at +0 (0x0D / 0x0E glasses, 0x0F cap), worn flag at +0x1D, the item at +0x1F; read
+            // by the inventory update 0x1427F0FD9 / 0x1427F14B6) and the cap colour (inv +0x4BE0)
+            const std::uintptr_t b = mem::Base();
+            if (!mem::CodeMatches(b + 0x27F0FD9, "48 8D BE 16 38 00 00") || !mem::CodeMatches(b + 0x27F14B6, "80 78 E3 0F 75 19 44 38 20") ||
+                !mem::CodeMatches(b + 0x27F18EB, "0F B6 96 E0 4B 00 00 48 8B 8E 18 4E 00 00")) {
+                std::snprintf(msg, cap, "the inventory accessory list / cap colour sites do not match");
+                return false;
+            }
+            game::Entity* local = nullptr;
+            game::TryGetLocalPlayer(&local);
+            const auto p = reinterpret_cast<std::uintptr_t>(local);
+            const std::uintptr_t inv = p && Q(p) == b + kPlayerVtable ? Q(p + kPInv) : 0;
+            if (!inv || Q(inv + kCompOwner) != p) {
+                std::snprintf(msg, cap, "no local player inventory");
+                return false;
+            }
+            const bool write = op == 15 || v[1] != 0 || v[2] != 0;
+            if (write && (!automation::Enabled() || !automation::SavesRedirected())) {
+                std::snprintf(msg, cap, "refused: only in a hidden test run on scratch saves");
+                return false;
+            }
+            auto put = [](std::uintptr_t at, std::uint8_t val) {
+                SIZE_T w = 0;
+                return WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(at), &val, 1, &w) && w == 1;
+            };
+            if (op == 15) {
+                const std::uint8_t c = static_cast<std::uint8_t>(v[1] < 0 ? 0 : v[1] > 24 ? 24 : v[1]);
+                std::uint8_t was = 0;
+                Rd(inv + 0x4BE0, was);
+                const bool ok = put(inv + 0x4BE0, c);
+                std::snprintf(msg, cap, "TEST: our cap colour %u -> %u%s", was, c, ok ? "" : " (write failed)");
+                Log("[look] %s", msg);
+                return ok;
+            }
+            const std::uint8_t want_type = static_cast<std::uint8_t>(v[1]);
+            unsigned changed = 0, listed = 0;
+            for (unsigned i = 0; i < 64; ++i) {
+                const std::uintptr_t ent = inv + 0x37F9 + 0x40ull * i;
+                std::uint8_t type = 0, worn = 0;
+                if (!Rd(ent, type) || !Rd(ent + 0x1D, worn) || type == 0) continue;
+                const std::uintptr_t item = Q(inv + 0x3818 + 0x40ull * i);
+                float f34 = -1;
+                if (item) Rd(item + 0x34, f34);
+                if (++listed <= 64) Log("[look] accessory entry %u: type 0x%02X worn %u item %p (+0x34 %.2f)", i, type, worn, reinterpret_cast<void*>(item), f34);
+                if (write && type == want_type && changed == 0) {
+                    const std::uint8_t to = static_cast<std::uint8_t>(v[2] != 0 ? 1 : 0);
+                    if (put(ent + 0x1D, to)) ++changed;
+                }
+            }
+            std::snprintf(msg, cap, "%u accessory entries listed%s", listed, write ? (changed ? "; TEST: one entry's worn flag set" : "; no entry of that type") : "");
+            Log("[look] %s", msg);
+            return true;
+        }
+        case 12:
+            g_looks_on = v[1] != 0;
+            if (!g_looks_on)
+                for (PropSet& s : g_sets)
+                    for (Prop& p : s.props) p.look_hash = 0;
+            std::snprintf(msg, cap, "gear looks (colours, variations) %s", g_looks_on ? "on" : "off");
+            Log("[look] %s", msg);
+            return true;
+        case 16:
+            // Sam's head parts (hair, hood, face lines) named in our frames: off / on (section 14). Off only
+            // stops naming them: a partner body keeps what it was last given (set it before the body comes).
+            g_head_on = v[1] != 0;
+            std::snprintf(msg, cap, "head parts %s (%s; %u reads, %u held; mirrored on the partner: %u part(s) set)", g_head_on ? "sent" : "not sent",
+                          g_head.why, g_head.reads, g_head.held, g_pm.applied);
+            Log("[gear] %s", msg);
+            return true;
+        case 13:
+            g_poses_on = v[1] != 0;
+            if (!g_poses_on) ClearPoses(g_sets[0]);
+            std::snprintf(msg, cap, "backpack pose sync %s", g_poses_on ? "on" : "off");
+            Log("[gear] %s", msg);
+            return true;
         case 9: {
             // census: 0 the local player, 1 the partner / debug body, 2 the self body
             game::Entity* who = nullptr;
@@ -1946,7 +2539,7 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             return who != nullptr;
         }
         default:
-            std::snprintf(msg, cap, "unknown op %d (0 log, 1 partner 0/1, 2 self 0/1, 3 test cases n, 4 debug body 0/1, 5 n / 6 test faults, 7 level, 8 pod entity, 9 census 0/1/2, 10 walk cache 0/1)", op);
+            std::snprintf(msg, cap, "unknown op %d (0 log, 1 partner 0/1, 2 self 0/1, 3 test cases n, 4 debug body 0/1, 5 n / 6 test faults, 7 level, 8 pod entity, 9 census 0/1/2, 10 walk cache 0/1, 11 looks 0/1, 12 looks off/on, 13 backpack pose off/on, 14 accessory list, 15 cap colour, 16 head parts off/on)", op);
             return false;
     }
 }

@@ -108,6 +108,22 @@ struct RxR {
 constexpr unsigned kRQueue = 16;
 RxR g_rqueue[kRQueue];
 unsigned g_rq_head = 0, g_rq_count = 0;
+// Gear look (STV1) and gear pose (STK1) frames: idempotent per item (the newest wins), no sequence
+// filter; small queues, newest wins when full.
+struct RxV {
+    wire::GearLook l;
+    std::uint32_t generation;
+};
+constexpr unsigned kVQueue = 16;
+RxV g_vqueue[kVQueue];
+unsigned g_vq_head = 0, g_vq_count = 0;
+struct RxK {
+    wire::GearPose p;
+    std::uint32_t generation;
+};
+constexpr unsigned kKQueue = 4;
+RxK g_kqueue[kKQueue];
+unsigned g_kq_head = 0, g_kq_count = 0;
 
 volatile LONG64 g_rx_frames = 0, g_tx_frames = 0;
 volatile LONG64 g_rx_joints = 0, g_tx_joints = 0, g_tx_payload = 0;
@@ -203,6 +219,11 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
     constexpr unsigned kMaxRes = 4;
     static thread_local wire::GearRes res[kMaxRes];
     unsigned res_count = 0;
+    constexpr unsigned kMaxLooks = 4;
+    static thread_local wire::GearLook looks[kMaxLooks];
+    unsigned look_count = 0;
+    static thread_local wire::GearPose gpose;
+    bool have_gpose = false;
 
     AcquireSRWLockExclusive(&g_tx);
     const lk::Delivery d = g_session.OnDatagram(data, size, from, now);
@@ -227,6 +248,10 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
                     have_gear = true;
                 } else if (res_count < kMaxRes && wire::DecodeGearRes(m.data, m.size, res[res_count])) {
                     ++res_count;
+                } else if (look_count < kMaxLooks && wire::DecodeGearLook(m.data, m.size, looks[look_count])) {
+                    ++look_count;
+                } else if (wire::DecodeGearPose(m.data, m.size, gpose)) {
+                    have_gpose = true;
                 }
             } else if (m.type == static_cast<std::uint8_t>(lk::MsgType::close)) {
                 g_session.OnPeerClose(now);
@@ -242,7 +267,7 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
 
     if (g_use_steam && new_session && g_host && committed.address) g_steam.set_peer(lab::SteamIdOf(committed));
 
-    if (pose_count || joint_count || have_name || have_gear || res_count || new_session) {
+    if (pose_count || joint_count || have_name || have_gear || res_count || look_count || have_gpose || new_session) {
         AcquireSRWLockExclusive(&g_rx);
         if (new_session) {
             g_q_count = 0;
@@ -253,7 +278,23 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
             g_gq_count = 0;
             g_have_rx_gseq = false;
             g_rq_count = 0;
+            g_vq_count = 0;
+            g_kq_count = 0;
             ++g_generation;
+        }
+        for (unsigned i = 0; i < look_count; ++i) {
+            RxV& slot = g_vqueue[(g_vq_head + g_vq_count) % kVQueue];
+            slot.l = looks[i];
+            slot.generation = g_generation;
+            if (g_vq_count < kVQueue) ++g_vq_count;
+            else g_vq_head = (g_vq_head + 1) % kVQueue;
+        }
+        if (have_gpose) {
+            RxK& slot = g_kqueue[(g_kq_head + g_kq_count) % kKQueue];
+            slot.p = gpose;
+            slot.generation = g_generation;
+            if (g_kq_count < kKQueue) ++g_kq_count;
+            else g_kq_head = (g_kq_head + 1) % kKQueue;
         }
         for (unsigned i = 0; i < res_count; ++i) {
             RxR& slot = g_rqueue[(g_rq_head + g_rq_count) % kRQueue];
@@ -593,6 +634,61 @@ bool SendGearRes(const wire::GearRes& res) noexcept {
     }
     ReleaseSRWLockExclusive(&g_tx);
     return sent;
+}
+
+namespace {
+bool SendFrameBytes(const std::uint8_t* buf, std::size_t n) noexcept {
+    if (!n) return false;
+    bool sent = false;
+    AcquireSRWLockExclusive(&g_tx);
+    if (g_session.CanSendData()) {
+        lk::BodyWriter w(g_body, sizeof(g_body));
+        if (w.Add(lk::MsgType::frame, buf, n)) {
+            sent = g_session.SendData(g_body, w.size(), NowMs());
+            if (sent) InterlockedAdd64(&g_tx_payload, static_cast<LONG64>(w.size()));
+        }
+    }
+    ReleaseSRWLockExclusive(&g_tx);
+    return sent;
+}
+}  // namespace
+
+bool SendGearLook(const wire::GearLook& look) noexcept {
+    std::uint8_t buf[wire::kMaxGearLookFrameSize];
+    return SendFrameBytes(buf, wire::EncodeGearLook(look, buf, sizeof(buf)));
+}
+
+bool SendGearPose(const wire::GearPose& pose) noexcept {
+    std::uint8_t buf[wire::kMaxGearPoseFrameSize];
+    return SendFrameBytes(buf, wire::EncodeGearPose(pose, buf, sizeof(buf)));
+}
+
+bool PopGearLook(wire::GearLook& out, std::uint32_t& generation) noexcept {
+    bool ok = false;
+    AcquireSRWLockExclusive(&g_rx);
+    if (g_vq_count) {
+        out = g_vqueue[g_vq_head].l;
+        generation = g_vqueue[g_vq_head].generation;
+        g_vq_head = (g_vq_head + 1) % kVQueue;
+        --g_vq_count;
+        ok = true;
+    }
+    ReleaseSRWLockExclusive(&g_rx);
+    return ok;
+}
+
+bool PopGearPose(wire::GearPose& out, std::uint32_t& generation) noexcept {
+    bool ok = false;
+    AcquireSRWLockExclusive(&g_rx);
+    if (g_kq_count) {
+        out = g_kqueue[g_kq_head].p;
+        generation = g_kqueue[g_kq_head].generation;
+        g_kq_head = (g_kq_head + 1) % kKQueue;
+        --g_kq_count;
+        ok = true;
+    }
+    ReleaseSRWLockExclusive(&g_rx);
+    return ok;
 }
 
 std::uint32_t Generation() noexcept {

@@ -15,6 +15,7 @@
 #include "partner_holo.hpp"
 #include "automation.hpp"
 #include "config.hpp"
+#include "menu_figure.hpp"
 #include "overlay/overlay.hpp"
 #include "partner_collision.hpp"
 #include "partner_outfit.hpp"
@@ -275,6 +276,17 @@ std::atomic<std::uint32_t> g_self_last_frame{0};
 std::atomic<ULONGLONG> g_self_last_apply{0};  // GetTickCount64 of the last pose written onto the self body
 std::atomic<ULONGLONG> g_self_last_copy{0};   // ... of the last transform copied in a detour
 
+// The cargo menu's Sam figure (docs/real-partner-body.md section 15). While the on-foot cargo menu is
+// open the local Sam is asleep in the field and a second Sam (DSPlayerAKukanEntity) stands in the
+// menu's room; the self body then stands on that figure and plays its pose. The figure's model is
+// published here; its own capture is kept apart from Sam's (Sam's feeds the wire).
+std::atomic<std::uintptr_t> g_menu_sm{0}, g_menu_e{0}, g_menu_skel{0};
+std::atomic<int> g_self_src{0};  // the self body's pose and transform source: 0 the local Sam, 1 the menu figure
+SeqLock<Capture> g_menu_capture;
+std::atomic<std::uint32_t> g_menu_caps{0}, g_menu_rej{0}, g_menu_copies{0}, g_menu_copy_fail{0}, g_menu_copy_aba{0};
+std::atomic<ULONGLONG> g_menu_last_apply{0};  // GetTickCount64 of the last figure pose written onto the self body
+std::atomic<ULONGLONG> g_menu_last_copy{0};   // ... of the last figure transform copied onto it
+
 // Gear props (partner_gear.cpp publishes them, the detour and the tick place them).
 struct GearSet {
     std::uint32_t n = 0;
@@ -283,6 +295,39 @@ struct GearSet {
 SeqLock<GearSet> g_gear[2];
 std::atomic<std::uint32_t> g_gear_n[2] = {};  // 0: nothing published (the detour skips at once)
 std::atomic<std::uint32_t> g_gear_placed[2] = {}, g_gear_aba[2] = {}, g_gear_bad[2] = {};
+
+// Gear skinned poses (partner_gear.cpp publishes them): the partner's backpack pose written onto our
+// copies of it (the backpack prop, the rain cover ...) in their own model updates, after the original
+// animate, like the bodies (docs/real-partner-body.md section 13).
+constexpr unsigned kMaxGearPoseJ = 64;
+struct GearPoseBuf {
+    std::uint32_t n = 0;
+    float q[kMaxGearPoseJ][4];
+    float t[kMaxGearPoseJ][3];
+};
+struct PoseTarget {
+    std::atomic<std::uintptr_t> sm{0};  // published last (release); 0 = off
+    // Written by the game thread only while sm is 0 (and no detour is inside: ClearGearPose waits);
+    // the detour reads each once (ApplyGearPose), so one call never mixes two props' values.
+    std::atomic<std::uintptr_t> e{0}, e_vt{0}, skel{0};
+    std::atomic<std::uint32_t> n{0};
+    holo::Spawn spawn;  // the prop's spawn (game thread: SpawnAlive before a forced update)
+    std::atomic<std::uint32_t> game_updates{0};
+    ULONGLONG last_game_ms = 0;
+    std::uint32_t forced = 0;
+};
+PoseTarget g_pt[kMaxPoseTargets];
+SeqLock<GearPoseBuf> g_pt_buf[kMaxPoseTargets];
+std::atomic<std::uint32_t> g_pt_live{0};  // targets published (the detour's fast check)
+std::atomic<std::uint32_t> g_pt_applies{0}, g_pt_rejects{0}, g_pt_wpm{0}, g_pt_faults{0}, g_pt_torn{0};
+std::atomic<bool> g_pt_faulted{false};  // a pose write faulted: gear poses off for the session
+bool g_pt_forced_off = false;
+// The published-target count for the detour's fast check (0 for good after a fault).
+void RecountPoseTargets() {
+    std::uint32_t live = 0;
+    for (const PoseTarget& x : g_pt) live += x.sm.load(std::memory_order_relaxed) != 0;
+    g_pt_live.store(g_pt_faulted.load(std::memory_order_relaxed) ? 0u : live, std::memory_order_seq_cst);
+}
 
 bool ReadPoseHdr(std::uintptr_t sm, std::uint8_t (&hdr)[kPoseSize], std::uintptr_t* pose) {
     std::int32_t idx = -1;
@@ -347,6 +392,23 @@ void CaptureSam(std::uintptr_t sm) {
     c.qpc = Qpc();
     c.frame = g_ct.captures.load(std::memory_order_relaxed) + 1;
     if (g_capture.Write(c)) g_ct.captures.fetch_add(1, std::memory_order_relaxed);
+}
+
+// The cargo menu's figure: the same capture, into its own buffer (section 15).
+void CaptureMenu(std::uintptr_t sm) {
+    std::uint8_t hdr[kPoseSize];
+    std::uintptr_t pose = 0, local = 0;
+    if (!ReadPoseHdr(sm, hdr, &pose)) return;
+    if (CheckHdr(hdr, g_menu_skel.load(std::memory_order_acquire), &local)) {
+        g_menu_rej.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    Capture c;
+    if (!mem::Read(local, c.j, sizeof(c.j))) return;
+    c.tick_ms = GetTickCount64();
+    c.qpc = Qpc();
+    c.frame = g_menu_caps.load(std::memory_order_relaxed) + 1;
+    if (g_menu_capture.Write(c)) g_menu_caps.fetch_add(1, std::memory_order_relaxed);
 }
 
 bool CallForced(std::uintptr_t sm) {
@@ -543,36 +605,43 @@ void FinishLatch(BodySlot& b) {
 }
 
 // Self view: Sam's world transform (read fault-free, twice for a consistent copy) onto the self
-// body, through the game's own exported setter (the body's transform lock and dirty flags).
-void CopySamTransform() {
+// body, through the game's own exported setter (the body's transform lock and dirty flags). `menu`:
+// the cargo menu's figure is the source instead (section 15; no gear props there).
+void CopySamTransform(bool menu = false) {
     const std::uintptr_t self_e = g_me.e.load(std::memory_order_seq_cst);
     const std::uintptr_t self_sm = g_me.sm.load(std::memory_order_seq_cst);
-    const std::uintptr_t sam = g_sam_e.load(std::memory_order_acquire);
+    const std::uintptr_t sam = menu ? g_menu_e.load(std::memory_order_acquire) : g_sam_e.load(std::memory_order_acquire);
     if (!self_e || !self_sm || !sam || !g_fn_setwt) return;
+    std::atomic<std::uint32_t>& fail_ct = menu ? g_menu_copy_fail : g_self_copy_fail;
     // ABA, as ApplyBody: the game may have freed the body (world streaming, a scripted cleanup)
     // since the tick last saw it. Only an entity that still has the vtable it was validated with
     // and still owns the published model (model vtable + back pointer) gets the game call.
     std::uintptr_t ev = 0, em = 0, smv = 0, sme = 0;
     if (!Rd(self_e, ev) || ev != g_me.e_vt || !Rd(self_e + kEntModel, em) || em != self_sm || !Rd(self_sm, smv) || smv != g_sm_vt ||
         !Rd(self_sm + kSmEntity, sme) || sme != self_e) {
-        g_self_copy_aba.fetch_add(1, std::memory_order_relaxed);
+        (menu ? g_menu_copy_aba : g_self_copy_aba).fetch_add(1, std::memory_order_relaxed);
         return;
     }
     alignas(8) std::uint8_t a[kWorldBytes + 4] = {}, b2[kWorldBytes + 4] = {};
     if (!mem::Read(sam + kEntWorld, a, kWorldBytes) || !mem::Read(sam + kEntWorld, b2, kWorldBytes) ||
         std::memcmp(a, b2, kWorldBytes) != 0) {
-        g_self_copy_fail.fetch_add(1, std::memory_order_relaxed);
+        fail_ct.fetch_add(1, std::memory_order_relaxed);
         return;
     }
     double p[3];
     std::memcpy(p, a, sizeof(p));
     if (!std::isfinite(p[0]) || !std::isfinite(p[1]) || !std::isfinite(p[2])) {
-        g_self_copy_fail.fetch_add(1, std::memory_order_relaxed);
+        fail_ct.fetch_add(1, std::memory_order_relaxed);
         return;
     }
     if (!CallSetWt(self_e, a)) {
-        g_self_copy_fail.fetch_add(1, std::memory_order_relaxed);
+        fail_ct.fetch_add(1, std::memory_order_relaxed);
         g_self_follow.store(3, std::memory_order_relaxed);  // never again from a detour this run
+        return;
+    }
+    if (menu) {
+        g_menu_copies.fetch_add(1, std::memory_order_relaxed);
+        g_menu_last_copy.store(GetTickCount64(), std::memory_order_relaxed);
         return;
     }
     g_self_copies.fetch_add(1, std::memory_order_relaxed);
@@ -630,9 +699,10 @@ void ApplyBody(BodySlot& b, std::uintptr_t sm, bool live) {
         return;
     }
     if (!b.apply_on.load(std::memory_order_acquire)) return;
+    const bool from_menu = live && g_self_src.load(std::memory_order_acquire) == 1;
     if (live) {
         Capture c;
-        if (!g_capture.Read(c)) {
+        if (!(from_menu ? g_menu_capture : g_capture).Read(c)) {
             ct.nocap.fetch_add(1, std::memory_order_relaxed);
             return;
         }
@@ -662,7 +732,7 @@ void ApplyBody(BodySlot& b, std::uintptr_t sm, bool live) {
             const double fr = g_frame_ms.load(std::memory_order_relaxed);
             g_self_age_bucket[age_ms < 0.5 * fr ? 0 : age_ms < 1.5 * fr ? 1 : 2].fetch_add(1, std::memory_order_relaxed);
         }
-        if (g_self_last_frame.exchange(c.frame, std::memory_order_relaxed) == c.frame)
+        if (!from_menu && g_self_last_frame.exchange(c.frame, std::memory_order_relaxed) == c.frame)
             g_self_stale.fetch_add(1, std::memory_order_relaxed);
     } else if (&b == &g_slots[0] && g_interp_on.load(std::memory_order_acquire) &&
                (g_smooth.load(std::memory_order_relaxed) & kSmoothDetourInterp) && g_qpc_per_ms > 0) {
@@ -748,7 +818,7 @@ void ApplyBody(BodySlot& b, std::uintptr_t sm, bool live) {
         return;
     }
     ct.applies.fetch_add(1, std::memory_order_relaxed);
-    if (live) g_self_last_apply.store(GetTickCount64(), std::memory_order_relaxed);
+    if (live) (from_menu ? g_menu_last_apply : g_self_last_apply).store(GetTickCount64(), std::memory_order_relaxed);
     // Gear props on the partner (or debug) body: its world transform now, the pose just written.
     if (!live && g_gear_n[0].load(std::memory_order_acquire)) {
         Xf w;
@@ -756,17 +826,89 @@ void ApplyBody(BodySlot& b, std::uintptr_t sm, bool live) {
     }
 }
 
+// A gear prop's pose (target k): the published joints' rotations and translations over its finished
+// pose (scale kept), then the game's model-matrix and bounds steps, as ApplyBody does for a body.
+void ApplyGearPose(unsigned k, std::uintptr_t sm) {
+    PoseTarget& t = g_pt[k];
+    if (g_pt_faulted.load(std::memory_order_relaxed)) return;
+    // each published value once: the size checks and the write below use the same joint count
+    const std::uintptr_t te = t.e.load(std::memory_order_acquire), tvt = t.e_vt.load(std::memory_order_relaxed),
+                         tskel = t.skel.load(std::memory_order_relaxed);
+    const std::uint32_t tn = t.n.load(std::memory_order_relaxed);
+    std::uintptr_t id[2] = {};
+    std::uintptr_t owner = 0, evt = 0;
+    if (!te || !mem::Read(sm, id, sizeof(id)) || id[0] != g_sm_vt || !Rd(sm + kSmEntity, owner) || owner != te || !Rd(owner, evt) || evt != tvt) {
+        g_pt_rejects.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    std::uint8_t hdr[kPoseSize];
+    std::uintptr_t pose = 0;
+    if (!ReadPoseHdr(sm, hdr, &pose) || Field<std::uintptr_t>(hdr, kHdrSkel) != tskel || Field<std::int32_t>(hdr, kHdrState) != kPoseStateModel) {
+        g_pt_rejects.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    const std::uintptr_t lb = Field<std::uintptr_t>(hdr, kHdrLocal), le = Field<std::uintptr_t>(hdr, kHdrLocalEnd);
+    const std::uintptr_t mb = Field<std::uintptr_t>(hdr, kHdrModel), me = Field<std::uintptr_t>(hdr, kHdrModelEnd);
+    if (!lb || tn == 0 || tn > kMaxGearPoseJ || le - lb != tn * sizeof(Joint) || !mb || me - mb != tn * 0x40ull) {
+        g_pt_rejects.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    static thread_local GearPoseBuf b;
+    if (!g_pt_buf[k].Read(b) || b.n != tn) {
+        g_pt_torn.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    Joint cur[kMaxGearPoseJ];
+    if (!mem::Read(lb, cur, tn * sizeof(Joint))) return;
+    for (unsigned j = 0; j < tn; ++j) {
+        std::memcpy(cur[j].q, b.q[j], sizeof(cur[j].q));
+        cur[j].t[0] = b.t[j][0], cur[j].t[1] = b.t[j][1], cur[j].t[2] = b.t[j][2];
+    }
+    SIZE_T wrote = 0;
+    if (!WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(lb), cur, tn * sizeof(Joint), &wrote) || wrote != tn * sizeof(Joint)) {
+        g_pt_wpm.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    std::int32_t bounds_on = 0;
+    Rd(sm + kSmBoundsOn, bounds_on);
+    if (!CallPoseFns(sm, pose, bounds_on != 0)) {
+        g_pt_faults.fetch_add(1, std::memory_order_relaxed);
+        g_pt_faulted.store(true, std::memory_order_seq_cst);  // never again this session (SetGearPose refuses)
+        g_pt_live.store(0, std::memory_order_seq_cst);
+        return;
+    }
+    g_pt_applies.fetch_add(1, std::memory_order_relaxed);
+}
+
 void Detour(void* sm, float dt) {
     g_orig(sm, dt);
     const auto s = reinterpret_cast<std::uintptr_t>(sm);
+    if (s && g_pt_live.load(std::memory_order_relaxed)) {
+        for (unsigned k = 0; k < kMaxPoseTargets; ++k) {
+            if (g_pt[k].sm.load(std::memory_order_relaxed) != s) continue;
+            g_inflight.fetch_add(1, std::memory_order_seq_cst);
+            if (g_pt_live.load(std::memory_order_seq_cst) && g_pt[k].sm.load(std::memory_order_seq_cst) == s) {
+                if (!t_forcing) g_pt[k].game_updates.fetch_add(1, std::memory_order_relaxed);
+                ApplyGearPose(k, s);
+            }
+            g_inflight.fetch_sub(1, std::memory_order_seq_cst);
+            return;
+        }
+    }
     if (!s || (s != g_sam_sm.load(std::memory_order_relaxed) && s != g_p.sm.load(std::memory_order_relaxed) &&
-               s != g_me.sm.load(std::memory_order_relaxed)))
+               s != g_me.sm.load(std::memory_order_relaxed) && s != g_menu_sm.load(std::memory_order_relaxed)))
         return;
     g_inflight.fetch_add(1, std::memory_order_seq_cst);
     g_ct.calls.fetch_add(1, std::memory_order_relaxed);
+    const bool menu_src = g_self_src.load(std::memory_order_seq_cst) == 1;
     if (s == g_sam_sm.load(std::memory_order_seq_cst)) {
         CaptureSam(s);
-        if (g_self_follow.load(std::memory_order_relaxed) == 1) CopySamTransform();
+        if (g_self_follow.load(std::memory_order_relaxed) == 1 && !menu_src) CopySamTransform();
+    } else if (s == g_menu_sm.load(std::memory_order_seq_cst)) {
+        // The cargo menu's figure: its pose for the self body, then its transform onto it (follow 1 and 2
+        // alike; follow 3 leaves it to the tick).
+        CaptureMenu(s);
+        if (menu_src && g_self_follow.load(std::memory_order_relaxed) != 3) CopySamTransform(true);
     } else if (s == g_p.sm.load(std::memory_order_seq_cst)) {
         if (!t_forcing) g_p.game_updates.fetch_add(1, std::memory_order_relaxed);
         g_p.updates.fetch_add(1, std::memory_order_relaxed);
@@ -774,7 +916,7 @@ void Detour(void* sm, float dt) {
     } else if (s == g_me.sm.load(std::memory_order_seq_cst)) {
         if (!t_forcing) g_me.game_updates.fetch_add(1, std::memory_order_relaxed);
         g_me.updates.fetch_add(1, std::memory_order_relaxed);
-        if (g_self_follow.load(std::memory_order_relaxed) == 2) CopySamTransform();
+        if (g_self_follow.load(std::memory_order_relaxed) == 2 && !menu_src) CopySamTransform();
         ApplyBody(g_me, s, true);
     }
     g_inflight.fetch_sub(1, std::memory_order_seq_cst);
@@ -1132,9 +1274,13 @@ void Unpublish(BodySlot& b) {
 }
 
 void SelfUnshow(const char* why);  // self view: Sam back before the body goes
+void MenuEnd(const char* why);     // the cargo menu's figure: its parts back, its model unpublished
 
 bool Teardown(BodySlot& b, const char* why) {
-    if (&b == &g_me) SelfUnshow(why);
+    if (&b == &g_me) {
+        MenuEnd(why);
+        SelfUnshow(why);
+    }
     if (b.phase == Phase::idle && !b.spawn.sp) {
         ResetSlot(b);
         return false;
@@ -1166,7 +1312,9 @@ const char* Validate(BodySlot& b, std::uintptr_t e) {
     const std::uintptr_t sm = ModelOf(e);
     if (!sm) return "no SkinnedModel at +0xB8 (vtable / back pointer)";
     const SkelInfo ps = PoseSkeleton(sm);
-    const std::uintptr_t sam_sm = g_sam_sm.load();
+    // Sam's model; while the cargo menu's figure is the source (Sam asleep, section 15), the figure's: the
+    // same 77-joint layout, Sam's skeleton resource.
+    const std::uintptr_t sam_sm = g_sam_sm.load() ? g_sam_sm.load() : g_menu_sm.load();
     const SkelInfo ss = PoseSkeleton(sam_sm);
     Log("[%s]   model %p: skeleton %p joints %d layout %08X; Sam's skeleton %p joints %d layout %08X%s", b.tag, reinterpret_cast<void*>(sm),
         reinterpret_cast<void*>(ps.skel), ps.count, ps.layout, reinterpret_cast<void*>(ss.skel), ss.count, ss.layout,
@@ -1557,6 +1705,213 @@ void SelfNotShown(const char* why) {
     }
 }
 
+// ---------------------------------------------------------------- the cargo menu's figure (game thread)
+// docs/real-partner-body.md section 15. While the on-foot cargo menu is open, the subspace work object
+// wakes its own Sam (DSPlayerAKukanEntity) in a room of the world and puts the local Sam to sleep. The
+// self body then stays (it is not removed as on other sleeps), stands on the figure and plays its pose
+// (the figure's model is captured by the detour, its transform copied in the figure's own update), and
+// the figure's ArtParts are hidden (menu_figure.cpp: the top-level parts; the subspace gear and the
+// cargo are entities of their own on its skeleton and stay). The private room's uniform and cap
+// previews (kinds 6, 7) keep Sam. When the menu closes (or anything does not check out) the figure's
+// parts are put back first, then the body hidden; the field self view takes over when Sam wakes.
+bool g_menu_on = true;      // `self_view 3 <0/1>` (on with the self view)
+bool g_menu_active = false;  // the figure's model is published, the self body follows it
+bool g_menu_shown = false;   // our body shown, the figure's top-level parts hidden by us
+menufig::Hidden g_menu_hidden;
+const char* g_menu_not_shown = "";
+double g_menu_retry_ms = 0, g_menu_rehide_ms = 0;
+std::uint32_t g_menu_shows = 0, g_menu_unshows = 0, g_menu_tick_moves = 0, g_menu_rehide_ticks = 0;
+// A figure whose parts we hid but could not put back (a fault, or it stopped checking out): from then
+// on our body stands in for it whenever the menu shows it, and is never hidden there (the menu never
+// shows nobody because of us).
+std::uintptr_t g_menu_lost_e = 0;
+
+void MenuUnshow(const char* why) {
+    if (!g_menu_shown) return;
+    // The figure first, then our body.
+    char w[160] = {};
+    const std::uintptr_t fig = g_menu_hidden.e;
+    const bool back = menufig::Restore(&g_menu_hidden, w, sizeof(w));
+    if (!back && fig) g_menu_lost_e = fig;
+    game::Entity* e = g_me.phase == Phase::live && holo::SpawnAlive(g_me.spawn) ? g_me.spawn.e : nullptr;
+    const bool keep = fig ? !back : g_menu_lost_e != 0;  // the figure stays hidden: our body stays
+    const bool hid = e && !keep && partner::SetVisible(e, false);
+    g_menu_shown = false;
+    ++g_menu_unshows;
+    Log("[menu] the menu's Sam figure shown again (%s): %s; body %s", why, w,
+        keep ? "left visible (the figure's parts could not be put back)" : hid ? "hidden" : e ? "could not be hidden" : "gone");
+}
+
+void MenuEnd(const char* why) {
+    MenuUnshow(why);
+    if (!g_menu_active && !g_menu_sm.load(std::memory_order_relaxed)) return;
+    g_self_src.store(0, std::memory_order_seq_cst);
+    g_menu_sm.store(0, std::memory_order_seq_cst);
+    g_menu_e.store(0, std::memory_order_seq_cst);
+    g_menu_skel.store(0, std::memory_order_seq_cst);
+    const ULONGLONG until = GetTickCount64() + 50;
+    while (g_inflight.load(std::memory_order_seq_cst) != 0 && GetTickCount64() < until) SwitchToThread();
+    g_menu_active = false;
+    g_menu_not_shown = "";
+    Log("[menu] the self body follows the local Sam again (%s)", why);
+}
+
+void MenuNotShown(const char* why) {
+    if (g_menu_shown) MenuUnshow(why);
+    if (std::strcmp(g_menu_not_shown, why) != 0) {
+        g_menu_not_shown = why;
+        Log("[menu] body not shown in the menu: %s", why);
+    }
+}
+
+void MenuShow(const menufig::View& v, double now_ms) {
+    char w[160] = {};
+    if (v.e && v.e == g_menu_lost_e) {
+        // the figure is still hidden from an earlier fault: only our body is shown
+        if (partner::SetVisible(g_me.spawn.e, true)) {
+            g_menu_shown = true;
+            g_menu_not_shown = "";
+            ++g_menu_shows;
+            Log("[menu] showing '%s' on the menu's figure, whose parts stayed hidden after a fault (show %u)", g_me.body ? g_me.body->key : "?", g_menu_shows);
+        } else {
+            g_menu_retry_ms = now_ms + 5000;
+        }
+        return;
+    }
+    if (!menufig::Hide(v, &g_menu_hidden, w, sizeof(w))) {
+        g_menu_retry_ms = now_ms + 5000;
+        Log("[menu] the figure's parts could not be hidden (%s): the menu shows Sam", w);
+        MenuNotShown("the figure's parts could not be hidden");
+        return;
+    }
+    if (!partner::SetVisible(g_me.spawn.e, true)) {
+        char r[160] = {};
+        menufig::Restore(&g_menu_hidden, r, sizeof(r));
+        g_menu_retry_ms = now_ms + 5000;
+        Log("[menu] the body could not be made visible: the figure %s", r);
+        MenuNotShown("show failed");
+        return;
+    }
+    g_menu_shown = true;
+    g_menu_not_shown = "";
+    ++g_menu_shows;
+    Log("[menu] showing '%s' in place of the menu's Sam figure: %s (kind %d/%d, show %u)", g_me.body ? g_me.body->key : "?", w, v.kind,
+        v.kind_next, g_menu_shows);
+}
+
+// True while the cargo menu's figure is the self body's source (the body is kept, whatever Sam does).
+bool MenuTick(std::uintptr_t sam, double now_ms) {
+    menufig::View v;
+    const bool read = menufig::Read(&v);
+    const char* out = !g_menu_on               ? "the menu figure is switched off"
+                      : !read                  ? "the subspace work object is not readable"
+                      : !menufig::Open(v)      ? "the cargo menu closed"
+                      : !menufig::KindAllowed(v) ? "a menu other than Manage Cargo (the figure stays Sam)"
+                      : v.player != sam        ? "the menu serves another player entity"
+                                               : nullptr;
+    if (out) {
+        if (g_menu_active) MenuEnd(out);
+        return false;
+    }
+    if (g_menu_active && v.e != g_menu_e.load(std::memory_order_relaxed)) MenuEnd("another menu figure");
+    if (g_self_shown) SelfUnshow("the cargo menu opened");
+    if (!g_menu_active) {
+        g_menu_skel.store(v.skel, std::memory_order_release);
+        g_menu_e.store(v.e, std::memory_order_release);
+        g_menu_sm.store(v.sm, std::memory_order_seq_cst);
+        g_self_src.store(1, std::memory_order_seq_cst);
+        g_menu_active = true;
+        g_menu_not_shown = "";
+        Log("[menu] the cargo menu is open (kind %d/%d, state %d): the self body follows its Sam figure %p (model %p, skeleton %p%s)", v.kind,
+            v.kind_next, v.state, reinterpret_cast<void*>(v.e), reinterpret_cast<void*>(v.sm), reinterpret_cast<void*>(v.skel),
+            v.skel == g_sam_skel.load() ? ", Sam's own" : ", not Sam's object");
+    }
+    // The body normally lives on from the field; it is spawned on the figure when it does not.
+    if (g_me.phase == Phase::idle) {
+        if (now_ms < g_self_retry_ms || (g_self_body->id < 32 && (g_me.refused & (1u << g_self_body->id)))) return true;
+        game::WorldTransform at{};
+        if (!game::TryGetTransform(reinterpret_cast<game::Entity*>(v.e), &at)) return true;
+        char why[200] = {};
+        g_me.start_hidden = true;
+        const BeginResult r = BeginSlot(g_me, *g_self_body, at, Owner::self, now_ms, why, sizeof(why));
+        if (r == BeginResult::started) {
+            g_self_spawn_sam = sam;
+            Log("[menu] spawning '%s' on the menu's figure", g_self_body->key);
+        } else {
+            g_me.start_hidden = false;
+            Log("[menu] could not start '%s': %s", g_self_body->key, why);
+            g_self_retry_ms = now_ms + 10000;
+        }
+        return true;
+    }
+    char why[200] = {};
+    if (PollSlot(g_me, now_ms, why, sizeof(why)) == PollResult::failed) {
+        g_self_retry_ms = now_ms + 10000;
+        return true;
+    }
+    if (g_me.phase != Phase::live) return true;
+    // Fallback: the copy in the figure's update did not run (follow 3, or the figure's model was not
+    // updated): move the body from the tick.
+    const ULONGLONG t = GetTickCount64();
+    const ULONGLONG last_copy = g_menu_last_copy.load(std::memory_order_relaxed);
+    if (g_self_follow.load() == 3 || !last_copy || t - last_copy > 100) {
+        game::WorldTransform wt{};
+        if (game::TryGetTransform(reinterpret_cast<game::Entity*>(v.e), &wt) && game::TrySetTransform(g_me.spawn.e, wt)) ++g_menu_tick_moves;
+    }
+    const ULONGLONG last_apply = g_menu_last_apply.load(std::memory_order_relaxed);
+    const char* not_ready = g_me.latch_state.load(std::memory_order_acquire) != 1 ? "latching the body's own pose"
+                            : !g_me.apply_on.load()                                ? "the pose write was switched off (a fault)"
+                            : v.state == 3                                         ? "the menu is still opening"
+                            : !last_apply || t - last_apply > 250                  ? "no fresh figure pose written onto the body"
+                            : now_ms < g_menu_retry_ms                             ? "waiting to try again"
+                                                                                   : nullptr;
+    if (not_ready) {
+        MenuNotShown(not_ready);
+        return true;
+    }
+    if (!g_menu_shown) {
+        MenuShow(v, now_ms);
+        g_menu_rehide_ms = now_ms + 250;
+    } else if (now_ms >= g_menu_rehide_ms) {
+        // the game re-asking a top-level part visible was never seen; checked 4 times a second
+        g_menu_rehide_ms = now_ms + 250;
+        if (menufig::Rehide(&g_menu_hidden)) ++g_menu_rehide_ticks;
+    }
+    return true;
+}
+
+// Every tick (hidden-test evidence and the support log): the subspace state on change, and once a
+// second while the menu is anywhere but idle, what the figure and the self body are doing.
+void MenuWatch(double now_ms) {
+    static menufig::View last;
+    static double next_ms = 0;
+    static std::uint32_t pc = 0, prj = 0, pco = 0, pfail = 0, paba = 0, papp = 0;
+    menufig::View v;
+    if (!menufig::Read(&v) && !v.w) return;
+    static unsigned opens = 0;  // times the menu reached state 5 (hidden tests wait on it)
+    if (v.state == 5 && last.state != 5) ++opens;
+    if (v.state != last.state || v.req != last.req || v.kind != last.kind || v.kind_next != last.kind_next || v.e != last.e || v.awake != last.awake)
+        Log("[menu] subspace state %d (asked %d) kind %d/%d flags 0x%02X figure %p %s; model %p skeleton %p (%s) parts %d (opens %u)", v.state, v.req,
+            v.kind, v.kind_next, v.flags, reinterpret_cast<void*>(v.e), v.e ? (v.awake ? "awake" : "asleep") : "-", reinterpret_cast<void*>(v.sm),
+            reinterpret_cast<void*>(v.skel), v.skel && v.skel == g_sam_skel.load() ? "Sam's" : v.skel ? "77 joints, Sam's layout" : "none", v.parts, opens);
+    last = v;
+    if (v.state == 0 || v.state == 2 || v.state < 0 || now_ms < next_ms) return;
+    next_ms = now_ms + 1000;
+    const std::uint32_t c = g_menu_caps.load(), rj = g_menu_rej.load(), co = g_menu_copies.load(), f = g_menu_copy_fail.load(),
+                        ab = g_menu_copy_aba.load(), ap = g_me.ct.applies.load();
+    double bp[3] = {};
+    const bool have_body = g_me.phase == Phase::live && mem::Read(reinterpret_cast<std::uintptr_t>(g_me.spawn.e) + kEntWorld, bp, sizeof(bp));
+    const double d = have_body ? std::sqrt((bp[0] - v.pos[0]) * (bp[0] - v.pos[0]) + (bp[1] - v.pos[1]) * (bp[1] - v.pos[1]) +
+                                           (bp[2] - v.pos[2]) * (bp[2] - v.pos[2]))
+                               : -1;
+    Log("[menu] figure %p at (%.2f, %.2f, %.2f) %s kind %d/%d; captures %u rej %u copies %u (fail %u aba %u) tick-moves %u; body %s shown %d "
+        "pose writes %u, body-figure distance %.1f cm; rehides %u; source %s",
+        reinterpret_cast<void*>(v.e), v.pos[0], v.pos[1], v.pos[2], v.awake ? "awake" : "asleep", v.kind, v.kind_next, c - pc, rj - prj, co - pco,
+        f - pfail, ab - paba, g_menu_tick_moves, g_me.phase == Phase::live ? "live" : g_me.phase == Phase::loading ? "loading" : "none",
+        g_menu_shown ? 1 : 0, ap - papp, d * 100.0, g_menu_hidden.rehides, g_self_src.load() == 1 ? "figure" : "Sam");
+    pc = c, prj = rj, pco = co, pfail = f, paba = ab, papp = ap;
+}
+
 void SelfTick(game::Entity* local, bool local_active, double now_ms) {
     const auto sam = reinterpret_cast<std::uintptr_t>(local);
     // Another player entity (load, return to title) while our reason was set on the old one: it is
@@ -1573,7 +1928,13 @@ void SelfTick(game::Entity* local, bool local_active, double now_ms) {
     SelfRepair(sam);
     if (sam && g_self_spawn_sam && sam != g_self_spawn_sam && (g_me.phase != Phase::idle || g_me.spawn.sp)) Teardown(g_me, "local player changed");
     if (!g_self_on || !g_self_body || !g_hook) {
+        MenuEnd("self view off");
         if (g_me.phase != Phase::idle || g_me.spawn.sp) Teardown(g_me, "self view off");
+        return;
+    }
+    // The cargo menu: the body stays and stands on the menu's figure (section 15).
+    if (sam && MenuTick(sam, now_ms)) {
+        g_self_asleep_since = 0;
         return;
     }
     if (!sam || !local_active) {
@@ -1786,6 +2147,33 @@ void DriveModel(BodySlot& b, bool local_active) {
         return;
     }
     ++b.forced;
+}
+
+// Gear pose targets the game does not update by itself (a prop standing still): the forced model
+// update, as DriveModel does for a body, only while the game has not updated it for 100 ms.
+void DrivePoseTargets(bool local_active) {
+    if (!local_active || !g_fn_forced || g_pt_forced_off || g_pt_faulted.load() || !g_pt_live.load(std::memory_order_acquire)) return;
+    for (PoseTarget& t : g_pt) {
+        const std::uintptr_t sm = t.sm.load(std::memory_order_acquire);
+        if (!sm) continue;
+        if (t.game_updates.exchange(0, std::memory_order_relaxed) != 0) t.last_game_ms = GetTickCount64();
+        if (t.last_game_ms && GetTickCount64() - t.last_game_ms < 100) continue;
+        // This runs before the gear tick notices a prop the game destroyed (player_sync: realbody::Tick
+        // before gear::Tick): the prop's spawn is checked here too, as DriveModel checks a body's.
+        const std::uintptr_t te = t.e.load();
+        if (!holo::SpawnAlive(t.spawn) || reinterpret_cast<std::uintptr_t>(t.spawn.e) != te) continue;
+        std::uintptr_t id[2] = {};
+        if (!mem::Read(sm, id, sizeof(id)) || id[0] != g_sm_vt || Q(sm + kSmEntity) != te || Q(te) != t.e_vt.load()) continue;
+        t_forcing = true;
+        const bool ok = CallForced(sm);
+        t_forcing = false;
+        if (!ok) {
+            g_pt_forced_off = true;
+            Log("[gear] forced model update of a gear prop FAULTED; not called again this run");
+            return;
+        }
+        ++t.forced;
+    }
 }
 
 // Game thread: the partner slot's Sam body (demo_sam_clean, id 1) wears the outfit the other player
@@ -2386,6 +2774,69 @@ void GearCounters(GearSlot slot, std::uint32_t* placed, std::uint32_t* aba, std:
     if (bad) *bad = g_gear_bad[i].load();
 }
 
+bool SetGearPose(unsigned k, const holo::Spawn* sp, const wire::GearPose* pose) noexcept {
+    if (k >= kMaxPoseTargets || !g_hook) return false;
+    PoseTarget& t = g_pt[k];
+    if (!sp || !sp->e || !pose) {
+        ClearGearPose(k);
+        return true;
+    }
+    if (g_pt_faulted.load()) return false;  // a pose write faulted: off for the session
+    if (!holo::SpawnAlive(*sp)) return false;
+    const auto e = reinterpret_cast<std::uintptr_t>(sp->e);
+    if (pose->n == 0 || pose->n > kMaxGearPoseJ) return false;
+    GearPoseBuf b;
+    b.n = pose->n;
+    for (unsigned j = 0; j < pose->n; ++j) {
+        const wire::Quat q = wire::Normalize(pose->q[j]);
+        b.q[j][0] = q.x, b.q[j][1] = q.y, b.q[j][2] = q.z, b.q[j][3] = q.w;
+        b.t[j][0] = pose->t[j][0], b.t[j][1] = pose->t[j][1], b.t[j][2] = pose->t[j][2];
+    }
+    if (t.sm.load(std::memory_order_acquire) && t.e.load() == e) {
+        // the same prop: only the joints change
+        for (int i = 0; i < 4 && !g_pt_buf[k].Write(b); ++i) SwitchToThread();
+        return true;
+    }
+    // a new prop: checked (its model, skeleton and joint count), then published
+    ClearGearPose(k);
+    const std::uintptr_t sm = ModelOf(e);
+    if (!sm) return false;
+    const SkelInfo si = PoseSkeleton(sm);
+    if (!si.skel || si.count != static_cast<std::int32_t>(pose->n) || si.layout != pose->skeleton) return false;
+    std::uintptr_t vt = 0;
+    if (!Rd(e, vt) || !vt) return false;
+    t.e.store(e), t.e_vt.store(vt), t.skel.store(si.skel), t.n.store(pose->n);
+    t.spawn = *sp;
+    t.game_updates.store(0), t.last_game_ms = 0;
+    for (int i = 0; i < 4 && !g_pt_buf[k].Write(b); ++i) SwitchToThread();
+    t.sm.store(sm, std::memory_order_seq_cst);
+    RecountPoseTargets();
+    return true;
+}
+
+void ClearGearPose(unsigned k) noexcept {
+    if (k >= kMaxPoseTargets) return;
+    PoseTarget& t = g_pt[k];
+    if (!t.sm.load(std::memory_order_acquire)) return;
+    t.sm.store(0, std::memory_order_seq_cst);
+    RecountPoseTargets();
+    // wait until no detour can still be writing this prop's pose
+    const ULONGLONG until = GetTickCount64() + 50;
+    while (g_inflight.load(std::memory_order_seq_cst) != 0 && GetTickCount64() < until) SwitchToThread();
+    t.e.store(0);
+    t.spawn = holo::Spawn{};
+}
+
+void GearPoseCounters(char* out, std::size_t cap) noexcept {
+    std::uint32_t forced = 0, live = 0;
+    for (const PoseTarget& t : g_pt) {
+        forced += t.forced;
+        live += t.sm.load() != 0;
+    }
+    std::snprintf(out, cap, "%u target(s), %u pose writes, %u forced updates, rejects %u, torn %u, write failures %u, faults %u%s", live, g_pt_applies.load(),
+                  forced, g_pt_rejects.load(), g_pt_torn.load(), g_pt_wpm.load(), g_pt_faults.load(), g_pt_faulted.load() ? " (OFF for this session)" : "");
+}
+
 game::Entity* SlotEntity(GearSlot slot) noexcept {
     BodySlot& b = g_slots[slot == GearSlot::self ? 1 : 0];
     if (b.phase != Phase::live || !holo::SpawnAlive(b.spawn)) return nullptr;
@@ -2474,8 +2925,12 @@ void EmergencyStop() noexcept {
     g_sam_sm.store(0, std::memory_order_seq_cst);
     g_sam_e.store(0, std::memory_order_seq_cst);
     g_self_follow.store(3, std::memory_order_seq_cst);
+    g_self_src.store(0, std::memory_order_seq_cst);
+    g_menu_sm.store(0, std::memory_order_seq_cst);
+    g_menu_e.store(0, std::memory_order_seq_cst);
     g_gear_n[0].store(0, std::memory_order_seq_cst);
     g_gear_n[1].store(0, std::memory_order_seq_cst);
+    g_pt_live.store(0, std::memory_order_seq_cst);
     Unpublish(g_p);
     Unpublish(g_me);
     // Sam first (fault-free checked), then the body.
@@ -2487,6 +2942,15 @@ void EmergencyStop() noexcept {
     g_self_shown = false;
     g_self_on = false;
     g_self_sam = 0;
+    // The cargo menu's figure: its parts back (fault-free checks, SEH-guarded calls), our body hidden.
+    if (g_menu_shown) {
+        char w[160] = {};
+        menufig::Restore(&g_menu_hidden, w, sizeof(w));
+        if (g_me.phase == Phase::live && holo::SpawnAlive(g_me.spawn)) partner::SetVisible(g_me.spawn.e, false);
+        g_menu_shown = false;
+        Log("[menu] emergency stop: the figure %s", w);
+    }
+    g_menu_active = false;
     Log("[self] emergency stop (the per-frame sync faulted): detour work off%s%s", was_shown ? "; Sam shown again: reason 63 " : "",
         was_shown ? (cleared ? (hid ? "cleared, body hidden" : "cleared, body NOT hidden") : "NOT cleared") : "");
 }
@@ -2538,11 +3002,13 @@ void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
     else if (asleep_since == 0) asleep_since = now_ms > 0 ? now_ms : 1;
     if (g_p.owner == Owner::debug && asleep_since > 0 && now_ms - asleep_since >= 1000) Teardown(g_p, "Sam asleep (debug body)");
     if (g_hook) SelfTick(local, local_active, now_ms);
+    if (g_hook && (g_self_on || automation::Enabled())) MenuWatch(now_ms);  // hidden tests: also with the self view off
     DriveModel(g_p, local_active);
-    DriveModel(g_me, local_active);
+    DriveModel(g_me, local_active || g_menu_active);
     DriveFreq(g_p, local_active);
     DriveFreq(g_me, local_active);
     DriveGearFreq(local_active, now_ms);
+    DrivePoseTargets(local_active);
     DressPartner(local, local_active, now_ms);
     if (g_hook) Stats(now_ms);
     Meter(now_ms);
@@ -2853,6 +3319,22 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
                     static_cast<unsigned long long>(before), static_cast<unsigned long long>(after));
                 Log("[self] %s", msg);
                 return true;
+            }
+            if (v[0] == 3) {  // self_view 3 <0/1>: the cargo menu's figure replaced (on) or kept Sam (off)
+                g_menu_on = v[1] != 0;
+                if (!g_menu_on) MenuEnd("the menu figure switched off (debug)");
+                Set(msg, cap, "cargo menu figure: %s", g_menu_on ? "the self body in its place" : "Sam");
+                return true;
+            }
+            if (v[0] == 4) {  // self_view 4: the menu figure's state and parts in the log
+                menufig::View mv;
+                const bool ok = menufig::Read(&mv);
+                menufig::LogParts(mv);
+                Set(msg, cap, "subspace %s: state %d kind %d/%d figure %p %s, %d parts; %s, shown %d", ok ? "read" : menufig::Why(), mv.state, mv.kind,
+                    mv.kind_next, reinterpret_cast<void*>(mv.e), mv.awake ? "awake" : "asleep", mv.parts, g_menu_active ? "the self body follows it" : "not followed",
+                    g_menu_shown ? 1 : 0);
+                Log("[menu] %s", msg);
+                return ok;
             }
             const int follow = static_cast<int>(v[2]);
             if (follow >= 1 && follow <= 3) g_self_follow.store(follow);

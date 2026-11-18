@@ -273,6 +273,87 @@ std::size_t EncodeGearRes(const GearRes& r, std::uint8_t* out, std::size_t cap) 
 // not GearResPathOk.
 bool DecodeGearRes(const std::uint8_t* data, std::size_t size, GearRes& out) noexcept;
 
+// ---------------------------------------------------------------- gear look frame (STV1)
+// How one item of the sender's current gear layout looks (docs/real-partner-body.md section 13): the
+// art-parts variations applied to the game's entity (texture-set swaps: the gold / silver cap, the
+// backpack's paint, the rain cover's level, a shield's level, a case's colour), by resource GUID in
+// component order, and the live entries of its ArtPartsShaderVariableComponent (colour indices, lens
+// colours ...). The receiver resolves each GUID among the resources its own game already holds and
+// applies both to its copy of that item. Sent when an item's look changes and round-robin; keyed by
+// (layout hash, item index): a look for another layout is ignored.
+//
+//   'STV1' | u8 version (1) | u8 item | u16 layout hash | u8 kind | u8 res | u8 nvar | u8 nsv |
+//   u64 parts apply | u64 parts shown                                                         (28 bytes)
+//   nvar x 16-byte GUID
+//   nsv x { u32 hash | u16 part (0x1FF = every part) | u8 count (1..4) | u8 0 | f32 v[4] }   (24 bytes each)
+inline constexpr std::uint8_t kGearLookMagic[4] = {'S', 'T', 'V', '1'};
+inline constexpr std::uint8_t kGearLookVersion = 1;
+inline constexpr std::size_t kGearLookHeaderSize = 28;
+inline constexpr std::size_t kGearLookVarSize = 24;
+inline constexpr unsigned kMaxLookVariations = 8;
+inline constexpr unsigned kMaxLookShaderVars = 32;
+inline constexpr std::uint16_t kLookAllParts = 0x1FF;
+inline constexpr std::size_t GearLookSize(unsigned nvar, unsigned nsv) { return kGearLookHeaderSize + nvar * 16u + nsv * kGearLookVarSize; }
+inline constexpr std::size_t kMaxGearLookFrameSize = GearLookSize(kMaxLookVariations, kMaxLookShaderVars);  // 924
+
+struct GearShaderVar {
+    std::uint32_t hash = 0;
+    std::uint16_t part = kLookAllParts;  // an ArtParts index of the entity, or kLookAllParts
+    std::uint8_t count = 1;              // values used (1..4)
+    float v[4] = {};
+};
+struct GearLook {
+    std::uint8_t item = 0;     // index in the sender's gear frame (< kMaxGearItems)
+    std::uint16_t layout = 0;  // GearLayoutHash of that frame
+    GearKind kind = GearKind::entity;
+    std::uint8_t res = kGearNone;  // entity: the resource id (as the item's); kGearNone otherwise
+    std::uint8_t nvar = 0, nsv = 0;
+    // The entity's own ArtParts (index < 64) the sender reports, and which of them are shown (the rain
+    // cover's size for the load, a pouch's state ...); shown bits outside apply are dropped.
+    std::uint64_t parts_apply = 0, parts_visible = 0;
+    std::uint8_t guid[kMaxLookVariations][16] = {};
+    GearShaderVar sv[kMaxLookShaderVars];
+};
+// Rejects (returns 0) item >= kMaxGearItems, an unknown kind, nvar / nsv over the caps, a count
+// outside 1..4, a part above 0x1FF and non-finite values.
+std::size_t EncodeGearLook(const GearLook& l, std::uint8_t* out, std::size_t cap) noexcept;
+// The same checks, plus bad magic / version and a size other than GearLookSize(nvar, nsv). Unused
+// value slots (index >= count) come out 0.
+bool DecodeGearLook(const std::uint8_t* data, std::size_t size, GearLook& out) noexcept;
+// A hash of what the look shows (the parts, the variations in order, each variable's hash / part / count and
+// its values rounded to 1/256), not of item / layout: equal looks hash equal.
+std::uint32_t GearLookHash(const GearLook& l) noexcept;
+
+// ---------------------------------------------------------------- gear skinned pose frame (STK1)
+// The local joint pose of one skinned item of the sender's current gear layout (the backpack: its
+// frame extends with the cargo stacked on it, its cover joints shape the rain cover; docs/real-
+// partner-body.md section 13). Rotations as STJ1's smallest-three, translations in 1e-4 m.
+//
+//   'STK1' | u8 version (1) | u8 item | u16 layout hash | u32 skeleton layout hash | u8 n | u8 0 | u16 0  (16 bytes)
+//   n x { 6-byte rotation | i16 x, y, z }                                             (12 bytes each)
+inline constexpr std::uint8_t kGearPoseMagic[4] = {'S', 'T', 'K', '1'};
+inline constexpr std::uint8_t kGearPoseVersion = 1;
+inline constexpr std::size_t kGearPoseHeaderSize = 16;
+inline constexpr unsigned kMaxGearPoseJoints = 64;
+inline constexpr std::size_t GearPoseSize(unsigned n) { return kGearPoseHeaderSize + n * 12u; }
+inline constexpr std::size_t kMaxGearPoseFrameSize = GearPoseSize(kMaxGearPoseJoints);  // 784
+
+struct GearPose {
+    std::uint8_t item = 0;
+    std::uint16_t layout = 0;
+    std::uint32_t skeleton = 0;  // the skeleton's layout hash (the receiver's copy must have the same)
+    std::uint8_t n = 0;          // joints (1..kMaxGearPoseJoints)
+    Quat q[kMaxGearPoseJoints];
+    float t[kMaxGearPoseJoints][3] = {};
+};
+// Rejects (0) item >= kMaxGearItems, n 0 or over the cap, a non-finite rotation, a translation
+// beyond +-3.2 m.
+std::size_t EncodeGearPose(const GearPose& p, std::uint8_t* out, std::size_t cap) noexcept;
+bool DecodeGearPose(const std::uint8_t* data, std::size_t size, GearPose& out) noexcept;
+// The largest difference between two poses of the same joint count: translation (m), rotation (deg).
+// False when the counts or skeletons differ.
+bool GearPoseDiff(const GearPose& a, const GearPose& b, float* max_m, float* max_deg) noexcept;
+
 // The layout: kinds, models, variations and anchors (not the poses), 16-bit FNV-1a. Two frames
 // with the same hash need the same props.
 std::uint16_t GearLayoutHash(const GearFrame& f) noexcept;

@@ -141,6 +141,18 @@ bool BeginByPath(const char* path, const char* guid_text, const game::WorldTrans
 // The same with the raw GUID bytes (a gear entity resource named by the partner's STR1 table).
 bool BeginByPathGuid(const char* path, const std::uint8_t (&guid)[16], const game::WorldTransform& at, std::uint32_t tag, holo::Spawn* out,
                      char* why, std::size_t cap) noexcept;
+// Gear skinned poses (docs/real-partner-body.md section 13): target k (< kMaxPoseTargets) is a gear prop
+// whose finished pose gets `pose`'s joints (rotations and translations; the prop's own scale kept) in
+// its own model updates, then the game's model-matrix and bounds steps, as a body's. The prop is
+// checked first (its SkinnedModel, a skeleton of pose->n joints with layout hash pose->skeleton); a
+// prop the game stops updating is driven with the forced model update (only while its spawn still
+// checks out). The same prop again only replaces the joints. sp = nullptr / pose = nullptr clears the
+// target (waits until no detour uses it: call before the prop is removed). A pose write that faults
+// turns gear poses off for the session (false from then on). Game thread.
+inline constexpr unsigned kMaxPoseTargets = 8;
+bool SetGearPose(unsigned k, const holo::Spawn* sp, const wire::GearPose* pose) noexcept;
+void ClearGearPose(unsigned k) noexcept;
+void GearPoseCounters(char* out, std::size_t cap) noexcept;
 // How many props of the slot the detour places now (0: unpublished, or a placement fault switched
 // the list off until it is published again).
 unsigned GearPublished(GearSlot slot) noexcept;

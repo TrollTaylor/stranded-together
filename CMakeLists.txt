@@ -107,6 +107,8 @@ add_library(st_mod SHARED
   native/mod/nametags.cpp
   native/mod/partner_collision.cpp
   native/mod/partner_gear.cpp
+  native/mod/gear_look.cpp
+  native/mod/menu_figure.cpp
   native/mod/automation.cpp
   native/mod/sandbox.cpp
   ${ST_OVERLAY_SOURCES})

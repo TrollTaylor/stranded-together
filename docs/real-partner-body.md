@@ -27,6 +27,12 @@ Code:
 - Player collision (section 11): `native/mod/partner_collision.{hpp,cpp}`.
 - Gear, the backpack and cargo on the bodies (section 12): `native/mod/partner_gear.{hpp,cpp}`, the
   placement in `real_body.cpp`, the STC1 frame in `pose_wire`.
+- Gear looks and the backpack's pose (section 13): `native/mod/gear_look.{hpp,cpp}`, the STV1 / STK1
+  frames in `pose_wire`, the pose targets in `real_body.cpp`.
+- Sam's head on the partner Sam (section 14): `ReadHead` in `native/mod/partner_gear.cpp` (the STC1 parts
+  block), `outfit::LocalWearsPorter` in `native/mod/partner_outfit.cpp`.
+- The cargo menu's figure under the self view (section 15): `native/mod/menu_figure.{hpp,cpp}`, `MenuTick` and the
+  detour's figure branch in `real_body.cpp`.
 
 Tags:
 - [V] verified: bytes, a decompile, or a run cited below.
@@ -774,7 +780,11 @@ Sam's was seen floating next to the body (back views `01`, `07`; seated; in the 
 - Collision: none seen (the body stands exactly on Sam, distance 0.0 cm, and Sam was never pushed).
 - Two PCs; the launcher's own local two-player test (the run above wrote the same ini lines by scenario).
 
-### 8.7 The cargo menu still shows Sam (decision: not changed)
+### 8.7 The cargo menu still shows Sam (superseded by section 15)
+
+**Since section 15 the on-foot cargo menu shows the self view's character.** What follows is the earlier decision
+and its probes, for the record (the BACK button and the Map entries are corrected there: A on the focused "Sam"
+entry is "Manage Cargo").
 
 Update (run `20261117-153804-two-games-full-gear`, guest `07*`): hidden-test input does reach the cuff
 menus: START opens Map/Information (`07-guest-menu`, behind a ranked-event notice), A on the guest's own
@@ -934,7 +944,8 @@ unchanged and 0 uploads.
   is sent, and `demo_sam_body_suitmule_demo_new` exists as id 15, but the body is not respawned by
   variant. Not run in a game: the 100% save's Sam wears the porter suit.
 - **Boots.** The player's boots are a separate model (gold in the 100% save); the body keeps its own.
-- **Cap and glasses.** They are separate accessory entities. Their colours are sent but not used.
+- **Cap and glasses.** They are separate accessory entities; their colours come with section 13's looks
+  (the STJ1 bytes are still not used).
 - **Exoskeleton and power-glove meshes.** Only their texture tints come with the exos variation.
 - **Backpack and cargo:** section 12 (props, not the player's own backpack variation).
 - **A receiver not in the porter suit.** It cannot take the exos resource, so the remote player's
@@ -1527,7 +1538,9 @@ checked at run time).
    nearest joint of Sam's skeleton, torso joints first (a limb joint must be more than 10 cm nearer), kept
    while it is at most 15 cm farther than the nearest (a flip would change the layout).
 3. Sam's gear parts (the 26 gear `EDSPlayerMesh` entries through the controller's map: which exist, which
-   are shown; the last reading stands while our self view hides them) and the backpack's 24 parts.
+   are shown; the last reading stands while our self view hides them), his head parts (section 14: every
+   part below the Head part, by its asked-visible bit, held while he is not in the porter suit or is
+   hidden) and the backpack's 24 parts.
 4. Cargo, as before: carrier slots → stacks → `DSBaggage2`, deliveries drawn as cases.
 5. A new layout is taken when the next read agrees (the debounce); its first difference is logged (`a new
    layout ... held a read: first difference at item ...`, 30 lines at most).
@@ -1541,7 +1554,7 @@ checked at run time).
 ### 12.4 Wire: STC1 version 2 and STR1
 
 `'STC1' | u32 seq | u8 version 2 | u8 count | u8 flags | u8 dropped | u16 layout hash | u16 0`, then
-[flags bit 1: `u64 apply[2] | u64 visible[2]`, Sam's gear parts by ArtParts index], [flags bit 2: `u64
+[flags bit 1: `u64 apply[2] | u64 visible[2]`, Sam's gear and head parts by ArtParts index (section 14)], [flags bit 2: `u64
 apply | u64 visible`, the backpack's parts], then `count` × 18 bytes: `u8 kind | u8 model | u8 variation |
 u8 joint | u8 parent | u8 res | i16 x, y, z (1 mm) | 48-bit smallest-three rotation`. Kind 5 (`entity`)
 names a resource id (< 64); the id is part of the layout hash, the parts are not. At most 56 items: 1072
@@ -1629,8 +1642,8 @@ STR1 4 entries a second.
   voice components); the pod is the cinematic prop: its model's axes are not the pod entity's, so it sits
   tilted about 45° on the chest (`20261117-134056` `02-self-front`), and it is orange and white where the
   player's real pod is dark (`20261117-153804` `02b`); a fixed correction was not found.
-- **Hats, caps, glasses** were never worn in a run (the 100% save wears none): their entity path is not
-  known, and a core outside the proven list is not loaded on the receiver (12.5), so they may not show.
+- **Hats, caps, glasses:** the cap is a `ds_player_inventory` entity (proven core) and shows with its colour
+  since section 13 (run `20261117-173443`, put on with `gear 14 15 1`).
 - **Sam's boots on the self view.** The boots entity on Sam's feet stays drawn on his invisible skeleton:
   Sam's gold boots over the chosen character's shoes. Its ArtParts are shown again by the boots component
   every frame and the entity is put back on Sam every frame (both tried, run `20261117-132631`).
@@ -1641,7 +1654,8 @@ STR1 4 entries a second.
   nobody: they keep their bind pose.
 - **Positions on another character** are relative to Sam's joints mapped by name; on Fragile the backpack
   sits a few cm off (the self view: Sam's gear on Sam's invisible skeleton, a few cm off her smaller body).
-- **Colours / customisation:** the backpack's paint and the cases' colour variations are not mirrored.
+- **Colours / customisation:** mirrored since section 13 (variations and shader variables of every mirrored
+  item, the backpack's pose).
 - Real delivery cargo (cases from a terminal) was still not seen in a run; vehicles, ziplines, two PCs.
 
 ### 12.8 The user's report: "the host cargo isn't showing on the guest" (G2)
@@ -1682,3 +1696,324 @@ Evidence (G2): unit tests (`TestGearV2`: prop reuse, retry schedule), and in hid
 hidden behind the mod's back: shown again in the next tick, `15 reshown`) on the debug body
 (`20261117-132631`) and on the guest's view of the host after 12 layout changes both ways
 (`20261117-133245`: `6 failures, 6 retries, 9 reshown`, `17 items, 17 props live`).
+
+
+## 13. Gear looks and the back cargo: colours, variations and the backpack's pose
+
+**Status (2026-11-17, after v0.8.0): works in hidden two-game runs.** The user's report on v0.8: "the
+bridges cap is gold [on my screen] and on the other player's screen it's just black", "the cargo on the
+other player's back isn't displaying correctly". Each mirrored gear item now looks on the other screen
+as it does on its owner's: the cap gold, silver or in its colour, the backpack's paint (gold in the 100%
+save) and its dark bag, the rain cover's level, the shields' and the stowed weapons' paint and lights,
+the hanging boots, the delivery cases' colours. The backpack frame takes the owner's pose (it extends with
+the load). `gear 12 0` / `gear 13 0` turn looks / the pose off (tests).
+
+Code: `native/mod/gear_look.{hpp,cpp}` (read, resolve, apply, debug dumps), `partner_gear.cpp` (schedule,
+which prop gets which look and pose), `real_body.cpp` (pose targets in the animate detour), `pose_wire`
+(STV1, STK1; ctest `st_net_tests` `TestGearLook`), `link.cpp` / `player_sync.cpp` (send, queues, echo).
+
+### 13.1 Why the cap was black [V: decompiles, runs below]
+
+The game colours a gear entity at run time on the entity itself, and a copy spawned from its entity
+resource (v0.8) had neither channel, so it showed the material's default:
+- **ArtPartsVariation components** (texture-set swaps). The cap: byte inv `+0x4BE0` (0..22 a colour index,
+  23 silver, 24 gold); `0x14284AA30` adds the global accessory table's variation (`[[0x147BEB0F8]+8]+0x358`
+  `+0x50` / `+0x58`) for 23 / 24. The backpack: `DSBackpackEntityResource.ArtPartsVariations` (v21 gold in
+  the 100% save, v22 silver). The rain cover: `DSBackpackConfig.RainCoverLv2/Lv3Apv`. Shields, hanging boots:
+  their component resource's `ArtPartsVariations`. Stowed weapons' paint: the item infos' variations.
+  Cases: the baggage config's 52 variations.
+- **The ArtPartsShaderVariableComponent** (`[e+0x180]+0xF0`, linked back at `+0x80`): sorted entries of 0x28
+  bytes `{u64 key (low: hash; high: kind << 27 | part << 18 | sub-indices), u32 hash, f32[4], u8 count, u8
+  removed}`, count `+0x50`, array `+0x58`. The cap's colour index is `0x3A3714ED` (0 under gold / silver).
+- The cap does not follow the suit colour (the user's guess): it has its own byte. Run `173443`: suit
+  colour 9 left the cap as it was on both screens.
+
+### 13.2 Sender (game thread, every 500 ms)
+
+For each item of the current gear frame: an entity item or the backpack → its own ArtParts shown (index < 64:
+the rain cover shows one of its 9 parts for the load), its applied variations
+(component `+0x30` resource GUID, `+0x50` applied, in component order) and its live shader variables
+(fault-free reads); a carried case → the baggage manager's own variation lookup `0x142C541D0(mgr, list
+item, (bag+0x204 >> 5) & 1)` (byte-checked with its call site `0x142C48B60`), once per piece; a synthetic
+test case → the config's v01 of its size. BB pod / Odradek props are cinematic stand-ins: no look. Each
+look is hashed (values to 1/256); a changed one goes out at once (up to 4 a tick), then one every 250 ms
+round-robin; a new link session sends all again. The backpack's skinned pose (42 local joints, read
+twice, equal reads only) goes out when it moved more than 1 mm / 0.5° (at most 10 Hz), else every 1 s.
+
+### 13.3 Wire: STV1 and STK1
+
+`'STV1' | u8 version 1 | u8 item | u16 layout hash | u8 kind | u8 res | u8 nvar | u8 nsv | u64 parts apply | u64
+parts shown`, then `nvar` × 16-byte GUID, then `nsv` × `{u32 hash | u16 part (0x1FF all) | u8 count 1..4 | u8 0 |
+f32 v[4]}`. At most 8 / 32: 924 bytes. `'STK1' | u8 version 1 | u8 item | u16 layout | u32 skeleton layout hash | u8 n | u8 0 | u16 0`,
+then `n` × (6-byte smallest-three rotation, i16 × 3 translation in 1e-4 m): 520 bytes for the backpack's 42
+joints. Each rides in a datagram of its own; the receiver queues 16 / 4 (newest per item wins, no sequence
+filter), cleared on a new session. The decoders refuse bad sizes, counts, parts, kinds and non-finite
+values (unit-tested). Mixed builds never meet (the HELLO build check).
+
+### 13.4 Receiver
+
+- **Which look:** the STV1 of item i applies only while it names the partner's current layout hash and the
+  item's kind / resource id; a prop moved to another item by `GearAssignProps` keeps what it shows until its
+  new item's look arrives.
+- **Resolving a GUID, no loads:** among the resources this game already holds: the accessory table, the item
+  infos (`[0x147BEB0F8] +0x5D6A0 / +0x5D6A8`, type 2, `+0x40` [0] [1]), our backpack's resource list
+  (`+0x138 / +0x140`), the `DSBackpackConfig` (settings `+0x5D6C0`, stored at `0x14292553E`; rain cover), the
+  baggage config (`[[0x147BF4968]+8] +0x2B0 / +0x2B8`) and its additional assets, every component resource
+  (`EntityComponent +0x30`) of our own gear and player (arrays of variations found by a bounded scan), the
+  prop's own component resources, and last our own gear's applied variations. Each candidate is checked to
+  be an `ArtPartsVariationResource` with that GUID. In run `173443` all 9 variations of the 100% save's gear
+  were found without our own gear's applied ones (accessory, item infos, backpack, backpack config, component
+  resources). A GUID not found is left out (logged, tried again after 15 s).
+- **Scope per item kind** (review fix): a look takes a variation only from sources of its own kind. A game
+  entity (cap, shields, stowed weapons, rain cover, pouches): the accessory table, the item infos, the backpack
+  config, our player's component resources, our own gear entity **of the same resource** as the prop (its
+  components and applied variations) and the prop's own components. The backpack: our backpack's resource,
+  its scan, the backpack config, our backpack's components / applied variations, the prop's own. A case: the
+  baggage config and the prop's own. A GUID held only by another kind's source is left out (`... of another
+  kind's sources` in the counters; 0 in every final run).
+- **Lifetime of the cache** (review fix): only the resident tables (accessory, item infos, backpack and baggage
+  config) are kept. Entries found through our own gear carry their owner entity and are dropped and gathered
+  again before any use as soon as our gear list changes (it is refreshed every gear read, 100 ms). The prop's
+  own components are read at the apply that needs them and never kept (a removed prop's resources may be
+  freed).
+- **Applying** (0.5 s after the prop is live, at most 4 a tick, game thread): variations made equal to the
+  wanted list (`0x14235B910` removes, `0x1422BC100` adds), then each shader variable: the component is
+  created and linked as the game's cap function does (`0x1422B03C0`, `+0x80` / `+0xF0`), then
+  `exists` `0x1422BD8C0`, `add` `0x1422BD420` (0), `set` `0x1422BDCC0` (a part index only below the prop's
+  part count; a new variable is only added while the copy's component holds fewer than 48 entries, the game's
+  own gear has 1-8; variables are only ever added or set, so one the owner stops having keeps its last value
+  on the copy), then the entity's own parts (the game's part setter in the model bracket, as section 12.5;
+  the rain cover's part 5 instead of its default part 0 was the missing big dark bag). Every 2 s the prop is checked (`Satisfied`) and applied again when its own components
+  changed it (none did in the runs: `0 again`). Every call is byte-checked once; a fault turns looks off for
+  the session (the same accepted risk as the outfit, section 9.2: calls from the tick while job threads may
+  update the prop).
+- **The backpack's pose** (`realbody::SetGearPose`): the backpack prop (`demo_bak0_mule_def`, the real
+  backpack's skeleton `061E5883`, 42 joints, checked) gets the partner's local joints in its own model
+  updates (the animate detour, after the original, as a body: rotations and translations, its own scales;
+  then the model-matrix and bounds steps). The real frame's cover joint sits 13.4 cm farther out than the
+  prop's bind pose with the 100% save's load (`JNT_C_B_000_Cover` y −0.468 vs −0.334) and its leg and arm
+  joints are bent: v0.8's frame stood unextended. The backpack's sub-entities (rain cover, belt, cylinder,
+  pouches) have skeletons of their own (1-4 joints): no pose is copied to them [V: `gear 11`].
+  Review fixes: a prop the game stopped updating is driven with the forced model update only while its
+  spawn still checks out (`holo::SpawnAlive`, as `DriveModel` does for a body: the real-body tick runs before
+  the gear tick notices a prop the game destroyed); the detour reads the target's entity, skeleton and joint
+  count once per call; a fault in the pose write turns gear poses off for the session (`OFF for this
+  session` in the counters; `SetGearPose` refuses from then on).
+- **Fixes in the same pass:** the cap that cut the item list (56) now leaves the cargo room (the backpack and
+  cargo first); poses of items on another item (everything on the backpack, the cargo) stay live while Sam
+  moves (only joint-anchored items keep the still reading); the waist weapon case is no longer drawn as a
+  white delivery case (the game draws a dark weapon crate, `sam_weapon_case_*`, a physics entity we do not
+  copy).
+
+### 13.5 Tests (hidden only, scratch saves)
+
+- `gear 14 [type] [0/1]`: the inventory's accessory list (inv `+0x37F9 + 0x40 i`: type, worn `+0x1D`, item
+  `+0x1F`; the inventory update reads it at `0x1427F0FD9` / `0x1427F14B6`). Type 0x0F is the cap: `gear 14 15
+  1` makes the game put the cap on (the 100% save owns it, worn 0).
+- `gear 15 <0..24>`: the cap colour byte inv `+0x4BE0` (site `0x1427F18EB`).
+
+### 13.6 Evidence (hidden, `-SeedSaves complete-100`, all exit 0, no error.txt, real saves unchanged, 0 uploads)
+
+| Run (`build-testenv\runs\`) | What it shows |
+|---|---|
+| `20261117-174735-echo-gear-look` (**final code**, one game at 2560x1440; the echo partner, a Sam body wearing copies of our gear through every encoder / decoder, stands 1.4 m beside Sam) | `10-back-v08` (looks and pose off, the v0.8 view): the copy's backpack panel tan where Sam's is gold, a silver crumpled bag in its middle, the rain cover a dark crumple at its side. `11-back-looks`: the copy's panel gold, the large dark rain cover over the top as on Sam, the shields lit green as Sam's (`prop 3 ... 2 part(s) set`: the rain cover shows part 5 like ours instead of its default part 0). The cap: `16-cap-v08` the copy's cap **black** under Sam's gold one (the user's report, reproduced), `17-cap-looks` gold on both, `13-cap-gold`, `14-cap-silver`, `15-cap-colour9` (green) the same on both. `19-stack9`: nine synthetic cases (v01, blue) on the copy only. |
+| `20261117-174400-echo-gear-look` (before the parts block) | The same pairs; the rain cover still showed its default part (a dark roll at the side): what led to the parts block. |
+| `20261117-173443-two-games-gear-look` (two games, before the parts block) | Cross-game resolution: the host's 9 applied variations all found without its own gear's applied ones; the guest resolved all it was sent (`0 unresolved`; via accessory table, item infos, backpack, backpack config, baggage config, component resources); cap gold / silver / colour 9 applied on the guest's copy (`prop 13 ... look applied`), the host's own and the guest's view the same silver and green (`13-*-cap-silver`, `14-*-cap-colour9`; the gold guest frame had its camera inside a body). `0 again` (no prop changed its own look back), 1331 pose writes on the host's backpack prop, no fault. The two bodies overlapped in the back shots (camera framing), so the side-by-side proof is the echo run. |
+| `20261117-191052-two-games-looks-menu` (**final code** after the review fixes; two games, graphics low; host Sam, guest Fragile with self view; pass, exit 0 / 0, no error.txt, real saves unchanged, 0 uploads) | The host's partner body pinned on the guest's screen (`collision 6 2.2`: its back to her; `collision 3 1.6`: facing her). Enlarged crops: `12-host-own-front-gold` vs `12-guest-sees-host-front-gold` and `13-*-silver`: the same gold, then silver cap, with the cap hair under it, on both screens. `10-host-own-back` vs `10-guest-sees-host-back`: the gold panel and the dark bag over it on both; the brown "Bridges" weapon crate on his right hip and the yellow cylinder only on his own screen (not copied, 13.7). `14-guest-sees-host-stack5`: five synthetic cases stacked above his backpack. Host: `35 looks applied (0 partly, 0 again, 0 failed)`, guest: `39 ... (0 failed)`, both `0 unresolved (0 of another kind's sources), 0 variable(s) over the cap`, 2240 / 1795 backpack pose writes, 263 forced updates on the guest, rejects / faults 0, no `FAULTED` line. Gear read cost mean 1.0 ms (max 1.65 ms) per 100 ms read; the looks read every 500 ms mean 0.51 ms, max 0.74 ms. |
+| `20261117-185906-two-games-looks-menu` (the same build before the `collision 6` test action; pass) | The guest's back: `20-guest-own-back` (Sam's real gear on Fragile) vs `20-host-sees-guest-back` (her partner body on the host's screen): the gold panel and the dark bag on both; the brown weapon crate on the right hip and the yellow cylinder only on her own screen. |
+| `20261117-175305-two-games-gear-look` (two games, graphics low; host Sam, guest Fragile with self view; before the review fixes) | Over the link: the guest applied every look it was sent (`28 looks applied (0 partly, 0 again, 0 failed)`, `0 unresolved`, found via accessory table 3, item infos 3, backpack 1, backpack config 1, baggage config 9, component resources 3; none via its own gear), the rain cover's parts (`prop 3 ... 2 part(s) set`), the hanging boots' (4), the backpack prop's pose (1233 writes, 0 rejects / faults). Enlarged crops of `12/13/14-guest-sees-host-cap-*` against `12/13/14-host-own-cap-*`: the cap gold, silver and green on both screens, the dark rain cover over the host's backpack and his shield lit green on both. Link payload 19.4 KB/s (v0.8: 17.9). The guest's own body stood partly in front of the host in the back shots (the two games start on the same spot): the close comparison is the echo run's. |
+
+
+### 13.7 Still different
+
+- **Not drawn on the partner:** the folded ladder at the right hip (a baggage model, no entity), the weapon
+  crate (`sam_weapon_case_*`, a physics entity: in the final two-game runs the brown "Bridges" crate on the
+  owner's right hip, seen from behind, is the most visible difference left on the back), the chiral cylinder
+  (the yellow canister low on the left; its copy carries `DSChiralCylinderComponent`, level 2 only), the PCC
+  (`DSWeaponEntity`).
+- **Sources across different saves:** both games ran the same 100% save. A partner who wears gear the
+  receiver's game does not hold (or holds only through another kind's source) gets that variation left out
+  (logged): untested.
+- **The BB pod** is still the cinematic stand-in (orange and white, tilted); its colour is not copied.
+- **Synthetic cases** stand where real ones were measured (run `20261117-105905`), but the owner's frame does
+  not extend for them (they are not real cargo), so on the partner they sit on an unextended frame. Real
+  deliveries from a terminal were still not carried in a run; their variation comes from the game's own
+  lookup and their frame extension with the backpack's pose.
+- **The pose is held between frames** (at most 10 Hz while it changes; no interpolation): the frame's sway
+  steps.
+- **Two PCs**, other saves (a receiver whose game holds fewer of the variations: logged and left out).
+
+## 14. Sam's head: hair, hood and face lines on the partner Sam
+
+The user's report (v0.8): "sams haircut is different on the guest screen". No haircut or hair-growth system was
+found in the game's code or data [inferred: no string or code found]. The inventory update `0x1427EEC30` chooses
+Sam's head parts **every frame** from what he wears, through his mesh controller (`SetPartVisible 0x1426B4D80`,
+reasons 3, 11, 15, 25, 28) [V: decompile]. `demo_sam_clean` has no mesh controller, so the partner Sam always
+showed the defaults of `part_sam_body_suiti`: the full default hair, ponytail and wig, the porter hood rolled
+down, and no metal lines.
+
+### 14.1 What chooses the head parts [V: decompile, census `20261117-130343-census`, runs below]
+
+| What Sam wears | Parts (ArtParts index in `part_sam_body_suiti`; EDSPlayerMesh) |
+|---|---|
+| A cap (Bridges cap `0x0F`, Santa cap, cap02; not cap03) and player state `0x50` | hair 55 (HairDef 28) and wig 62 (HairWig 50) hidden; cap hair 82 (HairCap 37, `sam_hair_naked`) shown. cap03 hides the ponytail 56 (74). |
+| The cyphead accessory (EDSSuitPartsId 53 = `0x35`, worn in the 100% save) | 61 (HairNotMetalLine 77) hidden; the face and hair metal lines 66 / 67 (75 / 76) shown |
+| Glasses (state `0x39`) | 55 / 62 hidden; the glasses hair 80 / 81 (48 / 49), chosen by the hood state |
+| The hood (inv `+0x4970`: 3 raising, 4 switch animation, 5 up) and its type (porter / otter / oxi) | hood on / off / switch (4 / 5 / 6, remapped by the controller: 53/54/68 porter, 69/70/83 otter, 71/76/84 oxi). Hood up hides 55 and shows 29 HairHoodOn. |
+| The race flag (`[0x147BF6E88]+0xF` bit 0) | 5 HoodOff and 74 ponytail hidden; 88 HoodRace (89) shown |
+| Body variant 2 | the defaults |
+
+The 100% save wears the cyphead accessory and the otter hood. So Sam already differs from `demo_sam_clean` at 53,
+61, 66, 67 and 70 when the game loads (`echo-hair` `10-front-before`: no cheek lines on the partner).
+
+### 14.2 Design: the head parts ride in the STC1 parts block (no wire change)
+
+- **Sender** (`partner_gear.cpp` `ReadHead`; every gear read, on the game thread, fault-free reads):
+  - Every ArtParts part below Head is named in the parts block. Head is the part the controller maps to
+    EDSPlayerMesh 2 (controller `+0x38 + 8*2`, index 52). "Below" means its parent pointer chain (part `+0x18`,
+    at most 6 hops) reaches Head. The set is computed once per ArtParts array: 32 parts in this model (53..89
+    without the switch meshes).
+  - Each part is sent with its **asked-visible bit** (flags bit 0). Bit 1 is not reliable under hidden parents.
+  - The gear parts (12.3 step 3) keep their effective bit and win where both name a part (the balloon, 57).
+- **Held:** the last reading stands (`gear 16` says why) while any of these is true:
+  - Sam does not wear the porter suit. The check is `outfit::LocalWearsPorter` (the body variant's GUID, or its
+    index if the variant is not loaded) and 107 ArtParts. The indices only mean these parts in
+    `part_sam_body_suiti`, and the partner body always uses that model.
+  - A Root or global part mask hides Sam (controller `+0x338` / `+0x348`: photo mode, scenes). The self view's
+    own reason (bit 63 of `+0x348`) does not count: the asked bits are still the game's then (review fix).
+  - A hood switch mesh (68, 83, 84) is shown, i.e. the 0.4 s hood animation is running.
+- **Never named:** the switch meshes (68, 83, 84) and the oxi switch's children (85, 86). The game animates them
+  with the part animation, which the partner body does not have.
+- **Wire:** unchanged. The STC1 version 2 flags bit-1 block already carries `u64 apply[2] | u64 visible[2]` for
+  indices < 128, and a parts change already sends a frame. Mixed builds never meet (HELLO build check).
+- **Receiver:** the existing `MirrorParts` (12.5). It calls the part setter `0x1422B2770` inside the model
+  bracket, only where a part differs, parents first.
+  - New: a body found to be "another model" is checked again every 3 s. Before, it was checked once per body.
+    "Another model" means its parts are not the same resources as our own Sam's at every named index; our Sam
+    may have been in another suit when the body came.
+- **Both directions** use the same code: the host's Sam on the guest's partner body, and a guest who chose Sam on
+  the host's. A player shown as another character (Fragile...) is not a Sam body, so the check refuses it.
+- **Debug:** `action gear 16 <0/1>` (debug-actions.md) turns naming the head parts off / on, in both directions.
+  Off only stops naming them, so the body keeps what it had last. The status says whether the last read was
+  taken or held.
+
+### 14.3 Evidence (hidden, `-SeedSaves complete-100`, all pass, exit 0, no error.txt, real saves unchanged, 0 uploads)
+
+| Run (`build-testenv\runs\`) | What it shows |
+|---|---|
+| `20261117-180341-echo-hair` (one game at 2560x1440; `gear 16 0` before the partner came) | Setup: the echo partner is a `demo_sam_clean` fed our own frames, standing 0.9 m beside Sam. `10-front-before`: the partner (left, "You (echo)") has no cheek lines and fuller hair; Sam has the metal lines. `11-front-after` (`gear 16 1`, `partner body: 5 part(s) set`): the same lines and the same combed-back hair on both. `12-front-cap` (`gear 14 15 1`, `3 part(s) set`): both under the gold cap with the loose cap hair (82 shown, 55 / 62 hidden). `13-front-no-cyphead` (cap off, `gear 14 53 0`, `6 part(s) set`): both have the default hair without lines. Sam's own head masks are logged at each change (`Sam's head parts changed`). |
+| `20261117-180649-two-games-hair` (two games, both Sam, graphics low; earlier framing) | The final census agrees in both directions at every head part 53..89 (the host with the cap; the guest without the cyphead, with her cap). It compares each game's own Sam (`gear 9 0`) with the other game's partner body (`gear 9 1`). The framing was poor: the bodies were far from the cameras. |
+| `20261117-180954-two-games-hair` (partner pinned, first try) | The census agrees again. Each pinned body stood behind that player's own Sam, so the screenshots are not usable. |
+| `20261117-191359-two-games-hair` (**final code** after the review fixes; pass, exit 0 / 0, no error.txt, real saves unchanged, 0 uploads) | `cmp.py`: head parts 53..89 agree in both directions; only 8, 17, 18, 20, 21 differ. Enlarged `12b-host-own-cap` / `12b-guest-own-cap-no-cyphead`: the host's gold cap and the guest's silver one, each with the cap hair, the same on both screens; `11b-guest-own-front`: her own Sam and the host's partner body both with the combed-back hair and the metal cheek line. Looks on both games `0 failed, 0 unresolved`. |
+| `20261117-191052-two-games-looks-menu` (final code; host Sam, guest Fragile) | The host's own Sam (`gear 9 0`) against his partner body on the guest's screen (`gear 9 1`): head parts agree (cap on, silver); the face crops show the same cap hair. |
+| `20261117-181236-two-games-hair` (the scenario's first passing run) | The census agrees in both directions. Only body parts 8, 17, 18, 20 and 21 differ (glove, silver misanga / sleeve, boots); no head parts differ. `11b-*-own-front` on each screen: its own Sam and the partner side by side, both with the metal lines. `12b-*`: the host's gold cap and the guest's silver one, each with the cap hair, the same on both screens. |
+
+### 14.4 Not covered
+
+- No run raised the hood (rain, the hood button) or wore glasses. Their parts are named the same way (hood state
+  and type, 80 / 81), but this was not checked.
+- During the hood switch the partner keeps the previous head for about 0.4 s, then jumps.
+- Another suit (MULE suit, private-room wear) holds the last head reading. The partner body is always the porter
+  suit (9.4).
+- A guest shown as another character has that character's own head: there is nothing to mirror.
+
+## 15. The cargo menu shows the player's character (self view)
+
+**Status (2026-11-17): works in hidden solo and two-game runs (Fragile), on with the self view (section 8), only in
+Manage Cargo (kind 0), `self_view 3 <0/1>` to switch it at run time.** The user's request (v0.8): "if we can change the menu sam to the players character lets
+try it". A guest who plays as another character and sees themself as that character in the field now also sees
+that character in the on-foot cargo menu ("Cargo Management", opened from the cuff map's "Sam" entry with A,
+"Manage Cargo"), carrying Sam's real backpack and cargo, as in the field. The host (always Sam) and a guest who
+chose Sam have no self view, so their menu is unchanged. Code: `native/mod/menu_figure.cpp` (the subspace work
+object, the figure's parts) and `real_body.cpp` (`MenuTick`, the detour's figure branch).
+
+### 15.1 The menu's Sam figure [V: decompiles, byte checks, run logs below]
+
+- The menu is the game's "subspace" scene. Its work object `W = [0x147BE79B0]` (0x9D0 bytes, built by
+  `0x1426E76A0`) is ticked by `0x1426C19B0` under the lock at `W+0x9C0`. Fields used: `+0x14` state, `+0x1C`
+  requested state, `+0x08` / `+0x0C` menu kind (in force / asked), `+0x9C8` flags, `+0x30` weak ref (figure
+  `+0x20`), `+0x50` the player it serves, `+0x58` the figure.
+- States: 0 no player, 1 create the figure (once, `0x1426ACB10`), 2 idle (figure asleep), 3 teleport and wake
+  (`0x1426AD430`: the figure to the `subspace_player_point`, the local Sam deactivated), 4 fade in, 5 open
+  (`0x1426AB100`), 6 close (`0x1426ADC10`: Sam re-activated, figure asleep), 7 cleanup, back to 2.
+- The figure is a `DSPlayerAKukanEntity` (RTTI `0x144BCA020`, 0x7A0 bytes; vtable `0x143D7DE48`, stored by its
+  constructor `0x1426F3270` at `0x1426F329E`). It uses **Sam's own Skeleton object** (the same pointer as the
+  player's while he is awake) and an ArtParts model of **107 parts with 20 top-level ones** (0, 1, 52, 90..106),
+  the porter suit's layout. In the 100% save it stood at world (100, 100, 20). The subspace's gear entities
+  (backpack, pod, boots ...) and its carrier with the cargo are separate entities parented onto it.
+- "Manage Cargo" from the map is **kind 0** (logged `kind 0/0` in every opening). Kinds 6 and 7 (the private
+  room's uniform and cap previews, one-shot openers `0x142D1BD70` / `0x142D1BD00`) keep Sam: there the figure is
+  what the player is choosing [inferred; not opened in a run].
+- The menu puts the local Sam to sleep (state 3), so before this the self body was removed 1 s later like on
+  any sleep and Sam stood in the menu.
+
+### 15.2 What the mod does (game thread, `SelfTick` -> `MenuTick`; nothing changes without the self view)
+
+1. **Detect** (fault-free reads): `W` non-null, state 3, or 4 / 5 with the figure awake; the figure's vtable and
+   the weak ref check out; `W+0x50` is our player; its model is a SkinnedModel pointing back at it with a 77-joint
+   pose of Sam's layout; its ArtPartsData (found by type name) points back at it; the kind in force and the
+   kind asked are both 0 (Manage Cargo, the only kind run; review fix: every other kind keeps Sam). The work
+   object is read in one block; the figure's model and parts only in states 3..6, the ArtPartsData found by
+   name once per figure and then re-checked with a few reads (vtable, back pointer, count, array).
+2. **Keep the self body.** While that holds, the asleep teardown does not run: the field body lives on (it is
+   spawned on the figure when there is none, e.g. after `self_view 3 1` while the menu is already open), and its
+   source switches from Sam to the figure (`g_self_src`). The figure's model is published to the SkinnedModel
+   detour: its pose is captured into a buffer of its own (Sam's capture feeds the wire and is not touched) and its
+   world transform is copied onto the body in the figure's own model update (the same exported setter as 8.2;
+   the tick moves it when no copy came for 100 ms). The body's own update writes the figure's pose (same joint
+   map, latch and pelvis ratio). The body's Validate uses the figure's skeleton when Sam's model is unpublished.
+3. **Swap** once the body is latched and has a figure pose written within 250 ms, in state 4 or 5: the figure's
+   **top-level ArtParts are hidden** with the game's own top-level setter `0x1422B25F0(apd, 0, 0)` inside the
+   model bracket `0x142391620` / `0x1423966A0` (exactly ApplyMeshControl's call for the player's Root), then our
+   body is made visible. Why the top-level parts are enough [V: decompiles of `0x1422B8FE0`, `0x1422B8F10`,
+   `0x1422B94D0`]: a part is effectively shown (flags `+0x2C` bit 1) only when its own asked bit (bit 0) and every
+   ancestor's are set. The menu's per-frame part toggles (`0x14272A070`, about 63 calls of `0x1422B2770`) only set
+   asked bits of mapped parts below the top level, which stay hidden under a hidden ancestor. Four times a
+   second the remembered top-level parts are checked and hidden again if the game asked one visible
+   (`rehides`: 0 in every run).
+   The gear, the cargo and the attach-point highlight stay on the figure's (now invisible) skeleton, sized for
+   Sam, as in the field (8.4, 12).
+4. **Restore** when the state leaves 3..5 (state 6 on close), the kind becomes 6 / 7, the self view goes off, the
+   body is torn down or the per-frame sync stops (emergency stop): the figure's parts first (`0x1422B25F0(apd,
+   1, 0)` when every top-level part was shown before, else each remembered one with `0x1422B2770`; only when the
+   figure still checks out: vtable, ArtPartsData back pointer, the same part array), then our body hidden, then
+   the source back to Sam. The field self view shows the body again when Sam wakes (`[self] showing ...`).
+   Review fixes: the put-back is tried even after an earlier ArtParts call faulted (each call is SEH-guarded);
+   if it still fails, our body is **not** hidden and stands in for that figure at every later opening (the
+   menu never shows nobody because of us); a fault inside the hide itself puts back what it hid.
+- Byte-checked once (`[menu] cargo menu figure sites verified`): the work-object reader `0x1426B5989` (and that
+  it reads `0x147BE79B0`), the ticker's prologue and its state reads (`+0x1C`, `+0x9C8`, `+0x14`), state 1's stores
+  of `+0x50` / `+0x58`, the open function's kind stores, the AKukan vtable store (and its target), both ArtParts
+  setters, the model bracket and the SkinnedModel vtable. A mismatch or a fault in an ArtParts call: the menu
+  shows Sam (logged); the field self view is unaffected.
+- Logs: `[menu] subspace state ... (opens N)` on every change, `[menu] figure ...` every second while the menu is
+  not idle (captures, copies, pose writes, body-figure distance, rehides), `[menu] showing 'fragile' in place of
+  the menu's Sam figure: 20 top-level part(s) of 107 hidden ...`, `[menu] the menu's Sam figure shown again (...):
+  put back 20 top-level part(s) (all); body hidden`. `self_view 4` dumps every part's flags (docs/debug-actions.md).
+
+### 15.3 Evidence (hidden, `-SeedSaves complete-100`, solo, `my_character=fragile`, `self_character=1`)
+
+| Run (`build-testenv\runs\`) | What it shows |
+|---|---|
+| `20261117-191052-two-games-looks-menu` (**final code** after the review fixes; two games; pass, exit 0 / 0, no error.txt, real saves unchanged, 0 uploads) | The guest (Fragile, self view) opens Manage Cargo while connected: `30-guest-menu` Fragile from behind with Sam's backpack, gold shields and cases; `31-guest-menu-turned` her front; `32-guest-field-after-menu` Fragile in the field again. Log: `showing 'fragile' in place of the menu's Sam figure: 20 top-level part(s) of 107 hidden`, then `put back 20 top-level part(s) (all); body hidden`; body-figure distance 0.0 cm, rehides 0. The same in runs `185906`, `190238`, `190619`. On the host's screen her partner body stays where she opened the menu (`30-host-while-guest-in-menu`); after she closed it, her gear was read with 6 items for about 3.6 s (run `185906`: the game moves the gear back from the figure) before the full 13. |
+| `20261117-183403-self-view-menu` (solo, before the review fixes; pass, exit 0, no error.txt, real saves unchanged, 0 uploads) | Input: START opens Map/Information with the "Sam" entry focused, A = Manage Cargo (no ranked-event notice in this solo run), B returns to the map, START closes it. `03-menu-sam` (feature off): Cargo Management with Sam in his gold suit from behind, backpack, shield, cargo. `04-menu-fragile` (switched on while open; shown 0.1 s later): Fragile (blonde, black leather) in his place with the same backpack, gold shield, hip cases, ladder and the menu's highlight frame. `05-menu-turned` (right stick): the camera orbits to the front; Fragile faces it, the roadster at the vehicle point behind. `06-after-close`: back on the map. `07` / `11-field-after-cycles` / `12-field-front`: Fragile in the field again with Sam's gear. `08`, `09`, `10`: three more openings, Fragile each time; there the body was kept from the field and shown in the same tick the menu left state 3 (`74.813` state 3, `74.828` shown, state 5 at `75.219`), so Sam's figure never appeared. `13-field-sam` (`self_view 0`): Sam. `14-menu-sam-again`: the menu once more, Sam with every part, as in `03`. Log: 4 shows, 4 restores (`put back 20 top-level part(s) (all)`), body-figure distance 0.0 cm every second, 88-134 figure captures and copies a second, copy fail / aba 0, rehides 0, `[pose]` and `[self]` faults / wpm / repairs 0. |
+| `20261117-183119-self-view-menu` (fail: scenario) | The same up to `07`; B returned to the map, not the field, so the next START closed the map and the A presses did nothing. Fixed in the scenario (START closes the map). Exit 0, real saves unchanged. |
+| `20261117-182918-self-view-menu` (fail: code, the probe) | The figure's data (kind 0, 107 / 20 parts, Sam's skeleton, (100, 100, 20)) and `03-menu-sam`. Spawning the body in the menu was refused ("Sam's skeleton not available": Validate needed Sam's model, unpublished while he sleeps) and that turned the self view off for the run; fixed (Validate uses the figure's model then). Exit 0, real saves unchanged. |
+
+
+### 15.4 Not covered / differences
+
+- The part flags after a restore are the game's own recomputation, not a byte copy: parts 85 / 86 (the oxi
+  hood-switch's children) read asked-and-effective before the first hide and asked-only after (their parent, the hood-switch
+  part 84 [I: section 14's naming], is hidden); every other part of the 107 is identical (`self_view 4` dumps, final run). The same recomputation the
+  game runs after photo mode's Root hide; no visible difference in `03` vs `14` [V screenshot].
+- The figure's gear and cargo hang on Sam's invisible skeleton, a few cm off a smaller body (as in the field,
+  8.4); the menu's attach-point highlight follows Sam's skeleton.
+- Only Manage Cargo from the map (kind 0) was opened, and only kind 0 is swapped. Terminal cargo screens (kinds 2,
+  5, 8), "View Stored Cargo", the private room's previews (6, 7) and any other kind keep Sam. The field's "Open
+  Cargo Menu" prompt (shown next to "Enter Private Room") was not opened in a run; it gets Fragile only if it is
+  kind 0. Online (the ranked-event notice), other saves and other characters were not run. Moving or arranging
+  cargo with Fragile shown was not exercised.
+- The first opening after `self_view 3 1` (body spawned in the menu) took about 0.1 s from spawn to show; Sam's
+  figure is visible for that time.
+- The self view's BB pod prop (12) is removed after 1 s of the menu like on any sleep and comes back in the field.

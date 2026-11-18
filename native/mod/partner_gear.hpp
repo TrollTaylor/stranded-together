@@ -54,6 +54,18 @@ void MarkResUnsent(int id) noexcept;
 // proven gear cores, never the resources the mirror policy refuses.
 void SetPartnerRes(const wire::GearRes& r) noexcept;
 
+// Gear looks (STV1, docs/real-partner-body.md section 13): the look of one item of our current layout
+// when it should go out now (a changed one at once, then one every 250 ms round-robin); the caller may
+// ask up to 4 times a tick. MarkLooksUnsent: a new link session (every look and the pose again).
+// SetPartnerLook: a received / echoed one (kept per item; used while its layout is the partner's).
+bool TakeSendLook(double now_ms, wire::GearLook* out) noexcept;
+void MarkLooksUnsent() noexcept;
+void SetPartnerLook(const wire::GearLook& l) noexcept;
+// The backpack's skinned pose (STK1): ours when it should go out (changed by more than 1 mm / 0.5 deg,
+// at most every 100 ms; else every 1 s), the partner's (written onto our copies of its backpack).
+bool TakeSendPose(double now_ms, wire::GearPose* out) noexcept;
+void SetPartnerPose(const wire::GearPose& p) noexcept;
+
 // The per-frame sync faulted: the detour stops placing props (they stay where they are).
 void EmergencyStop() noexcept;
 
@@ -61,7 +73,9 @@ void EmergencyStop() noexcept;
 // off/on, 2 <0/1> self-view props off/on, 3 <n> hidden tests only: n synthetic delivery cases on our
 // backpack, 4 <0/1> debug: our own gear on the debug body (real_spawn) on/off, 5 <n> / 6 hidden tests:
 // the next n prop starts fail / every partner prop hidden behind our back, 7 <0..2> mirror level,
-// 8 <0/1> the BB pod as a copy of the game's pod entity (tests), 9 <0/1/2> census.
+// 8 <0/1> the BB pod as a copy of the game's pod entity (tests), 9 <0/1/2> census, 10 <0/1> walk cache,
+// 11 <0/1> looks of our gear / the partner's props (log), 12 <0/1> looks off / on, 13 <0/1> backpack pose
+// sync off / on.
 bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 
 }  // namespace st::gear

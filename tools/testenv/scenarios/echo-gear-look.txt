@@ -1,0 +1,82 @@
+# Gear looks side by side (docs/real-partner-body.md section 13), hidden, one game at full resolution:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario echo-gear-look -SeedSaves complete-100
+# The echo partner (a Sam body wearing copies of our gear, sent through the STC1 / STR1 / STV1 / STK1
+# encoders and decoders) stands 1.4 m beside Sam (world +x), so one screenshot shows Sam's real gear
+# and the copies: first with looks and the backpack pose off (the v0.8 view), then on; the cap gold,
+# silver and colour 9; stacks of synthetic cases (drawn on the copy only).
+role echo
+timeout 360
+ini partner_body=real
+ini partner_character=sam
+ini echo_delay_s=0.3
+ini echo_offset_m=1.4
+ini partner_collision=0
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+action gear 12 0
+action gear 13 0
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[sync\] partner body: real
+waitlog 40 \[gear\] [0-9]+ items, [1-9][0-9]* props live
+wait 3000
+screenshot 10-back-v08
+action gear 11 1
+action gear 12 1
+action gear 13 1
+wait 4000
+screenshot 11-back-looks
+action gear 11 0
+action gear 11 1
+# the other side: the camera a quarter round each way
+pad none 650 rx=32767
+wait 1000
+screenshot 12-side-a
+pad none 1300 rx=-32767
+wait 1000
+screenshot 12-side-b
+pad none 650 rx=32767
+wait 1000
+# the cap
+action gear 14 15 1
+wait 3000
+screenshot 13-cap-gold
+action gear 15 23
+wait 2500
+screenshot 14-cap-silver
+action gear 15 9
+wait 2500
+screenshot 15-cap-colour9
+action gear 15 24
+wait 2000
+# looks off again for a direct before / after with the cap
+action gear 12 0
+action gear 13 0
+action gear 1 0
+wait 500
+action gear 1 1
+wait 4000
+screenshot 16-cap-v08
+action gear 12 1
+action gear 13 1
+wait 4000
+screenshot 17-cap-looks
+# synthetic stacks (on the copy only)
+action gear 3 3
+wait 3000
+screenshot 18-stack3
+action gear 3 9
+wait 3000
+screenshot 19-stack9
+action gear 3 0
+# the front: the camera half round
+pad none 1300 rx=32767
+wait 1200
+screenshot 20-front
+action gear 0
+action log_status
+quit

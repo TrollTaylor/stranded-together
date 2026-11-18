@@ -442,7 +442,12 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   comparison), a stray reason 63 with no body (`self_view 2 63 1`: repaired in the next tick, Sam stays
   visible) and back on with the other follow modes. `self-view-edges.txt`: the same start, then the purple
   roadster next to it (the scenario's frames call it the trike; X: get
-  on, ride, X: get off) and a rest (hold B: sit, hold X: Sleep, B: stand up). `two-games-real-self.txt`
+  on, ride, X: get off) and a rest (hold B: sit, hold X: Sleep, B: stand up). `self-view-menu.txt`: the same start,
+  then the on-foot cargo menu (START opens the cuff map with the "Sam" entry focused, A on it = "Manage Cargo";
+  B closes it, `until` steps wait on `[menu] subspace state 5 ... (opens N)`): first with the menu figure off
+  (`self_view 3 0`: Sam), switched on while open (Fragile in his place), the figure turned, closed; three more
+  open / close cycles; then the self view off and the menu once more (Sam with every part back).
+  `two-games-real-self.txt`
   (role host): `two-games-real` with `@guest ini self_character=1`: the guest sees itself as Fragile, the
   host never gets a self body (`nolog`).
 * `collision.txt` (role echo), `collision-off.txt` and `two-games-collision.txt` (role host): player collision
@@ -478,6 +483,34 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   G2's injected failures (`gear 5`, `gear 6`). Two games: each side's view of the other, many gear
   changes both ways (`gear 3 <n>` cycles, a prop respawn with injected start failures, props hidden
   behind the mod's back), then the guest takes a weapon from its equipment wheel.
+* `two-games-gear-look.txt` (role host, the guest Fragile with self view, `partner_collision=0`): gear looks and
+  the back cargo (docs/real-partner-body.md section 13). The guest walks up behind the host; the host's own back
+  and the guest's view of it first with looks and the backpack pose off (the v0.8 view), then on; the cap put on
+  through the host's accessory list (`gear 14 15 1`) gold, silver and colour 9 (`gear 15`), the suit colour
+  (`real_outfit 4 9`), the host's side, synthetic stacks of 2, 5 and 9 cases on his back; then the guest walks
+  past the host for her back on both screens, with 5 cases.
+* `echo-gear-look.txt` (role echo, one game at full resolution, `echo_offset_m=1.4`, `echo_delay_s=0.3`): the same
+  looks side by side: the echo partner (a Sam body wearing copies of our gear through every encoder and decoder)
+  stands beside Sam, so each screenshot shows the real gear and the copies; looks off, then on; the cap gold, silver,
+  colour 9; looks off again with fresh props (`gear 1 0` / `1`: the black cap of v0.8), then on; stacks of 3 and 9
+  synthetic cases.
+* `echo-hair.txt` (role echo, one game at full resolution, `echo_offset_m=0.9`): Sam's head on the partner Sam
+  (docs/real-partner-body.md section 14). `gear 16 0` before the echo partner comes (the cutscene defaults),
+  the camera round for both faces, then `gear 16 1`, the Bridges cap on (`gear 14 15 1`), the cap and the
+  cyphead accessory off (`gear 14 53 0`); the camera a little each way for every state.
+* `two-games-hair.txt` (role host, both players Sam, `partner_collision=0`): the same between two games, both
+  directions. Each game pins its partner 1.6 m ahead (`collision 3 1.6`) and turns its camera a little, then
+  round for its own Sam beside the partner. The host puts the gold cap on; the guest takes the cyphead off and
+  puts a silver cap on, then off. Census of each game's own Sam and partner body at the end (`gear 9 0` / `1`):
+  the head part flags must agree across the games.
+* `two-games-looks-menu.txt` (role host Sam, the guest Fragile with self view, `partner_collision=0`): sections
+  13-15 together between two games. The host walks ahead; on the guest's screen his partner body is pinned with
+  its back to her (`collision 6 2.2`) and then facing her (`collision 3 1.6`), her camera turned a little for each
+  shot and back. His back on both screens, the Bridges cap gold then silver (`gear 14 15 1`, `gear 15`) from
+  behind and in front, the head census (host `gear 9 0`, guest `gear 9 1`), a stack of 5 synthetic cases; the guest
+  walks past him for her back on both screens; then the guest opens Manage Cargo (START, A), must be shown as
+  Fragile there (`[menu] showing 'fragile' in place of the menu's Sam figure`), turns the menu camera, closes it
+  (B, START) and is Fragile in the field again.
 * `outfit-probe.txt` (role solo, `pose_hook=1`): the partner Sam's outfit (docs/real-partner-body.md
   section 9). A debug Sam body 3 m ahead is dressed like our own Sam, then with explicit outfits. Then our
   own Sam's suit colour is changed (`real_outfit 4`) and the body follows.

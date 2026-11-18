@@ -255,6 +255,16 @@ bool ReadLocal(std::uintptr_t p, wire::Outfit* out) noexcept {
     return true;
 }
 
+bool LocalWearsPorter(std::uintptr_t p) noexcept {
+    if (!Available()) return false;
+    std::uintptr_t inv = 0, sc = 0;
+    std::uint8_t variant = 0xFF;
+    if (!PlayerParts(p, &inv, &sc) || !Rd(sc + kScVariantIdx, variant)) return false;
+    const std::uintptr_t v = CurrentVariant(sc);
+    std::uint8_t guid[16] = {};
+    return v ? mem::Read(v + kObjGuid, guid, 16) && std::memcmp(guid, g.porter, 16) == 0 : variant == wire::kPorterVariant;
+}
+
 const char* Describe(const wire::Outfit& o, char* buf, std::size_t cap) noexcept {
     std::snprintf(buf, cap, "variant %u exos %u suit colour %u cap %u glasses A lens %u frame %u, B lens %u frame %u", o.variant, o.exos,
                   o.suit_colour, o.cap_colour, o.glasses_a_lens, o.glasses_a_frame, o.glasses_b_lens, o.glasses_b_frame);

@@ -63,6 +63,14 @@ bool PopGear(wire::GearFrame& out, std::uint64_t& receive_ms, std::uint32_t& gen
 // (a queue of 16, no sequence filter: an entry is idempotent), with the generation counter.
 bool SendGearRes(const wire::GearRes& res) noexcept;
 bool PopGearRes(wire::GearRes& out, std::uint32_t& generation) noexcept;
+// The look of one item of our gear (STV1: its art-parts variations and shader variables) and the
+// skinned pose of one item (STK1: the backpack's joints), each in a datagram of its own; received
+// ones, oldest first (queues of 16 / 4, no sequence filter: the newest per item wins), with the
+// generation counter (docs/real-partner-body.md section 13).
+bool SendGearLook(const wire::GearLook& look) noexcept;
+bool PopGearLook(wire::GearLook& out, std::uint32_t& generation) noexcept;
+bool SendGearPose(const wire::GearPose& pose) noexcept;
+bool PopGearPose(wire::GearPose& out, std::uint32_t& generation) noexcept;
 // The current link session counter (the `generation` the Pop* calls report; bumped by each new
 // handshake). Game thread: tells the sender that the partner's tables were cleared.
 std::uint32_t Generation() noexcept;

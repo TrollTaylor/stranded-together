@@ -607,6 +607,186 @@ bool DecodeGearRes(const std::uint8_t* data, std::size_t size, GearRes& out) noe
     return true;
 }
 
+// ---------------------------------------------------------------- STV1
+namespace {
+bool LookOk(const GearLook& l) {
+    const auto k = static_cast<std::uint8_t>(l.kind);
+    if (l.item >= kMaxGearItems || k < 1 || k > kGearKindMax) return false;
+    if (l.nvar > kMaxLookVariations || l.nsv > kMaxLookShaderVars) return false;
+    for (unsigned i = 0; i < l.nsv; ++i) {
+        const GearShaderVar& s = l.sv[i];
+        if (s.count < 1 || s.count > 4 || s.part > kLookAllParts) return false;
+        for (unsigned c = 0; c < s.count; ++c)
+            if (!std::isfinite(s.v[c])) return false;
+    }
+    return true;
+}
+}  // namespace
+
+std::size_t EncodeGearLook(const GearLook& l, std::uint8_t* out, std::size_t cap) noexcept {
+    if (!out || !LookOk(l)) return 0;
+    const std::size_t size = GearLookSize(l.nvar, l.nsv);
+    if (cap < size) return 0;
+    std::uint8_t* p = out;
+    std::memcpy(p, kGearLookMagic, 4);
+    p += 4;
+    Put(p, kGearLookVersion);
+    Put(p, l.item);
+    Put(p, l.layout);
+    Put(p, static_cast<std::uint8_t>(l.kind));
+    Put(p, l.kind == GearKind::entity ? l.res : kGearNone);
+    Put(p, l.nvar);
+    Put(p, l.nsv);
+    Put(p, l.parts_apply);
+    Put(p, static_cast<std::uint64_t>(l.parts_visible & l.parts_apply));
+    for (unsigned i = 0; i < l.nvar; ++i) {
+        std::memcpy(p, l.guid[i], 16);
+        p += 16;
+    }
+    for (unsigned i = 0; i < l.nsv; ++i) {
+        const GearShaderVar& s = l.sv[i];
+        Put(p, s.hash);
+        Put(p, s.part);
+        Put(p, s.count);
+        Put(p, std::uint8_t{0});
+        for (unsigned c = 0; c < 4; ++c) Put(p, c < s.count ? s.v[c] : 0.0f);
+    }
+    return static_cast<std::size_t>(p - out);
+}
+
+bool DecodeGearLook(const std::uint8_t* data, std::size_t size, GearLook& out) noexcept {
+    if (!data || size < kGearLookHeaderSize || std::memcmp(data, kGearLookMagic, 4) != 0) return false;
+    const std::uint8_t* p = data + 4;
+    static thread_local GearLook l;
+    l = GearLook{};
+    if (Get<std::uint8_t>(p) != kGearLookVersion) return false;
+    l.item = Get<std::uint8_t>(p);
+    l.layout = Get<std::uint16_t>(p);
+    l.kind = static_cast<GearKind>(Get<std::uint8_t>(p));
+    l.res = Get<std::uint8_t>(p);
+    l.nvar = Get<std::uint8_t>(p);
+    l.nsv = Get<std::uint8_t>(p);
+    if (l.nvar > kMaxLookVariations || l.nsv > kMaxLookShaderVars || size != GearLookSize(l.nvar, l.nsv)) return false;
+    l.parts_apply = Get<std::uint64_t>(p);
+    l.parts_visible = Get<std::uint64_t>(p) & l.parts_apply;
+    if (l.kind != GearKind::entity) l.res = kGearNone;
+    for (unsigned i = 0; i < l.nvar; ++i) {
+        std::memcpy(l.guid[i], p, 16);
+        p += 16;
+    }
+    for (unsigned i = 0; i < l.nsv; ++i) {
+        GearShaderVar& s = l.sv[i];
+        s.hash = Get<std::uint32_t>(p);
+        s.part = Get<std::uint16_t>(p);
+        s.count = Get<std::uint8_t>(p);
+        Get<std::uint8_t>(p);
+        for (unsigned c = 0; c < 4; ++c) {
+            const float v = Get<float>(p);
+            s.v[c] = c < s.count ? v : 0.0f;
+        }
+    }
+    if (!LookOk(l)) return false;
+    out = l;
+    return true;
+}
+
+std::uint32_t GearLookHash(const GearLook& l) noexcept {
+    std::uint32_t h = 2166136261u;
+    auto mix = [&h](std::uint32_t v) {
+        for (unsigned k = 0; k < 4; ++k) {
+            h ^= (v >> (8 * k)) & 0xFFu;
+            h *= 16777619u;
+        }
+    };
+    mix(static_cast<std::uint32_t>(l.parts_apply)), mix(static_cast<std::uint32_t>(l.parts_apply >> 32));
+    const std::uint64_t vis = l.parts_visible & l.parts_apply;
+    mix(static_cast<std::uint32_t>(vis)), mix(static_cast<std::uint32_t>(vis >> 32));
+    mix(l.nvar);
+    for (unsigned i = 0; i < l.nvar && i < kMaxLookVariations; ++i)
+        for (unsigned k = 0; k < 16; k += 4)
+            mix(static_cast<std::uint32_t>(l.guid[i][k]) | (static_cast<std::uint32_t>(l.guid[i][k + 1]) << 8) |
+                (static_cast<std::uint32_t>(l.guid[i][k + 2]) << 16) | (static_cast<std::uint32_t>(l.guid[i][k + 3]) << 24));
+    mix(l.nsv);
+    for (unsigned i = 0; i < l.nsv && i < kMaxLookShaderVars; ++i) {
+        const GearShaderVar& s = l.sv[i];
+        mix(s.hash);
+        mix(static_cast<std::uint32_t>(s.part) | (static_cast<std::uint32_t>(s.count) << 16));
+        for (unsigned c = 0; c < s.count && c < 4; ++c) {
+            const float v = s.v[c];
+            const double r = std::isfinite(v) ? std::floor(static_cast<double>(v) * 256.0 + 0.5) : 0.0;
+            const double lim = 2147483647.0;
+            mix(static_cast<std::uint32_t>(static_cast<std::int32_t>(r > lim ? lim : r < -lim ? -lim : r)));
+        }
+    }
+    return h;
+}
+
+// ---------------------------------------------------------------- STK1
+std::size_t EncodeGearPose(const GearPose& g, std::uint8_t* out, std::size_t cap) noexcept {
+    if (!out || g.item >= kMaxGearItems || g.n == 0 || g.n > kMaxGearPoseJoints) return 0;
+    const std::size_t size = GearPoseSize(g.n);
+    if (cap < size) return 0;
+    for (unsigned j = 0; j < g.n; ++j) {
+        if (!FiniteQ(g.q[j])) return 0;
+        for (float v : g.t[j])
+            if (!std::isfinite(v) || std::fabs(v) > 3.2f) return 0;
+    }
+    std::uint8_t* p = out;
+    std::memcpy(p, kGearPoseMagic, 4);
+    p += 4;
+    Put(p, kGearPoseVersion);
+    Put(p, g.item);
+    Put(p, g.layout);
+    Put(p, g.skeleton);
+    Put(p, g.n);
+    Put(p, std::uint8_t{0});
+    Put(p, std::uint16_t{0});
+    for (unsigned j = 0; j < g.n; ++j) {
+        const std::uint64_t b = PackQuat(g.q[j]);
+        for (unsigned k = 0; k < 6; ++k) *p++ = static_cast<std::uint8_t>(b >> (8 * k));
+        for (float v : g.t[j]) Put(p, static_cast<std::int16_t>(std::lround(v * 10000.0f)));
+    }
+    return static_cast<std::size_t>(p - out);
+}
+
+bool DecodeGearPose(const std::uint8_t* data, std::size_t size, GearPose& out) noexcept {
+    if (!data || size < kGearPoseHeaderSize || std::memcmp(data, kGearPoseMagic, 4) != 0) return false;
+    const std::uint8_t* p = data + 4;
+    static thread_local GearPose g;
+    g = GearPose{};
+    if (Get<std::uint8_t>(p) != kGearPoseVersion) return false;
+    g.item = Get<std::uint8_t>(p);
+    g.layout = Get<std::uint16_t>(p);
+    g.skeleton = Get<std::uint32_t>(p);
+    g.n = Get<std::uint8_t>(p);
+    Get<std::uint8_t>(p);
+    Get<std::uint16_t>(p);
+    if (g.item >= kMaxGearItems || g.n == 0 || g.n > kMaxGearPoseJoints || size != GearPoseSize(g.n)) return false;
+    for (unsigned j = 0; j < g.n; ++j) {
+        std::uint64_t b = 0;
+        for (unsigned k = 0; k < 6; ++k) b |= static_cast<std::uint64_t>(*p++) << (8 * k);
+        g.q[j] = UnpackQuat(b);
+        for (float& v : g.t[j]) v = static_cast<float>(Get<std::int16_t>(p)) / 10000.0f;
+    }
+    out = g;
+    return true;
+}
+
+bool GearPoseDiff(const GearPose& a, const GearPose& b, float* max_m, float* max_deg) noexcept {
+    if (a.n != b.n || a.skeleton != b.skeleton) return false;
+    float dm = 0, dd = 0;
+    for (unsigned j = 0; j < a.n && j < kMaxGearPoseJoints; ++j) {
+        const float dx = a.t[j][0] - b.t[j][0], dy = a.t[j][1] - b.t[j][1], dz = a.t[j][2] - b.t[j][2];
+        const float m = std::sqrt(dx * dx + dy * dy + dz * dz);
+        const float d = AngleBetween(a.q[j], b.q[j]);
+        if (m > dm) dm = m;
+        if (d > dd) dd = d;
+    }
+    if (max_m) *max_m = dm;
+    if (max_deg) *max_deg = dd;
+    return true;
+}
+
 bool GearPoseDelta(const GearFrame& a, const GearFrame& b, float* max_m, float* max_deg) noexcept {
     if (a.count != b.count || GearLayoutHash(a) != GearLayoutHash(b)) return false;
     float dm = 0, dd = 0;

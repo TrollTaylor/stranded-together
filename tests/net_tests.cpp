@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -420,6 +421,166 @@ void TestGearFrames() {
 
 // STC1 version 2 (entity items, the parts block), STR1 resource frames, prop reuse across layouts and
 // the retry schedule of failed props (docs/real-partner-body.md section 12).
+// STV1 (gear looks) and STK1 (the backpack's skinned pose), docs/real-partner-body.md section 13.
+void TestGearLook() {
+    wire::GearLook l;
+    l.item = 7;
+    l.layout = 0xBEEF;
+    l.kind = wire::GearKind::entity;
+    l.res = 12;
+    l.nvar = 2;
+    for (unsigned k = 0; k < 16; ++k) l.guid[0][k] = static_cast<std::uint8_t>(k), l.guid[1][k] = static_cast<std::uint8_t>(0xF0 + k);
+    l.nsv = 3;
+    l.sv[0].hash = 0x3A3714EDu, l.sv[0].part = wire::kLookAllParts, l.sv[0].count = 1, l.sv[0].v[0] = 9.0f;
+    l.sv[1].hash = 0x4AB95B99u, l.sv[1].part = 5, l.sv[1].count = 3, l.sv[1].v[0] = 0.1f, l.sv[1].v[1] = 0.2f, l.sv[1].v[2] = 0.3f;
+    l.sv[1].v[3] = 77.0f;  // beyond count: not sent
+    l.sv[2].hash = 0x42661929u, l.sv[2].part = 0, l.sv[2].count = 4;
+    std::uint8_t buf[wire::kMaxGearLookFrameSize];
+    const std::size_t n = wire::EncodeGearLook(l, buf, sizeof(buf));
+    CHECK(n == wire::GearLookSize(2, 3) && n == 28 + 32 + 72);
+    wire::GearLook m;
+    CHECK(wire::DecodeGearLook(buf, n, m));
+    CHECK(m.item == 7 && m.layout == 0xBEEF && m.kind == wire::GearKind::entity && m.res == 12 && m.nvar == 2 && m.nsv == 3);
+    CHECK(std::memcmp(m.guid[1], l.guid[1], 16) == 0);
+    CHECK(m.sv[0].hash == 0x3A3714EDu && m.sv[0].part == wire::kLookAllParts && m.sv[0].count == 1 && m.sv[0].v[0] == 9.0f);
+    CHECK(m.sv[1].part == 5 && m.sv[1].count == 3 && m.sv[1].v[2] == 0.3f && m.sv[1].v[3] == 0.0f);
+    // v[3] beyond count is not sent: equal once the original drops it too
+    l.sv[1].v[3] = 0.0f;
+    CHECK(wire::GearLookHash(m) == wire::GearLookHash(l));
+    // item / layout are not part of the hash; a value change is (beyond 1/256)
+    m.item = 3, m.layout = 1;
+    CHECK(wire::GearLookHash(m) == wire::GearLookHash(l));
+    m.sv[0].v[0] = 9.01f;
+    CHECK(wire::GearLookHash(m) != wire::GearLookHash(l));
+    m.sv[0].v[0] = 9.001f;
+    CHECK(wire::GearLookHash(m) == wire::GearLookHash(l));
+    // a variation's order counts
+    wire::GearLook o = l;
+    std::memcpy(o.guid[0], l.guid[1], 16), std::memcpy(o.guid[1], l.guid[0], 16);
+    CHECK(wire::GearLookHash(o) != wire::GearLookHash(l));
+    // a non-entity kind sends no resource id
+    o = l;
+    o.kind = wire::GearKind::backpack;
+    CHECK(wire::DecodeGearLook(buf, wire::EncodeGearLook(o, buf, sizeof(buf)), m) && m.res == wire::kGearNone);
+    // the largest look fits a link body
+    o = l;
+    o.nvar = wire::kMaxLookVariations, o.nsv = wire::kMaxLookShaderVars;
+    for (unsigned i = 0; i < o.nsv; ++i) o.sv[i].count = 4, o.sv[i].part = static_cast<std::uint16_t>(i);
+    CHECK(wire::EncodeGearLook(o, buf, sizeof(buf)) == 924);
+    static_assert(wire::kMaxGearLookFrameSize <= 1148 - 8, "STV1 fits a link body");
+    // refused: caps, kinds, counts, parts, non-finite values, sizes, magic, version
+    o.nvar = wire::kMaxLookVariations + 1;
+    CHECK(wire::EncodeGearLook(o, buf, sizeof(buf)) == 0);
+    o = l;
+    o.item = wire::kMaxGearItems;
+    CHECK(wire::EncodeGearLook(o, buf, sizeof(buf)) == 0);
+    o = l;
+    o.kind = static_cast<wire::GearKind>(0);
+    CHECK(wire::EncodeGearLook(o, buf, sizeof(buf)) == 0);
+    o = l;
+    o.sv[0].count = 0;
+    CHECK(wire::EncodeGearLook(o, buf, sizeof(buf)) == 0);
+    o.sv[0].count = 5;
+    CHECK(wire::EncodeGearLook(o, buf, sizeof(buf)) == 0);
+    o = l;
+    o.sv[2].part = 0x200;
+    CHECK(wire::EncodeGearLook(o, buf, sizeof(buf)) == 0);
+    o = l;
+    o.sv[1].v[1] = std::nanf("");
+    CHECK(wire::EncodeGearLook(o, buf, sizeof(buf)) == 0);
+    o.sv[1].v[1] = 0.2f;
+    o.sv[1].v[3] = std::nanf("");  // beyond count: not sent, fine
+    CHECK(wire::EncodeGearLook(o, buf, sizeof(buf)) == n);
+    const std::size_t n2 = wire::EncodeGearLook(l, buf, sizeof(buf));
+    CHECK(!wire::DecodeGearLook(buf, n2 - 1, m) && !wire::DecodeGearLook(buf, n2 + 1, m));
+    std::uint8_t bad[wire::kMaxGearLookFrameSize + 4];
+    std::memcpy(bad, buf, n2);
+    bad[3] = '2';
+    CHECK(!wire::DecodeGearLook(bad, n2, m));
+    std::memcpy(bad, buf, n2);
+    bad[4] = 2;  // version
+    CHECK(!wire::DecodeGearLook(bad, n2, m));
+    std::memcpy(bad, buf, n2);
+    bad[5] = static_cast<std::uint8_t>(wire::kMaxGearItems);  // item
+    CHECK(!wire::DecodeGearLook(bad, n2, m));
+    std::memcpy(bad, buf, n2);
+    bad[10] = 3;  // nvar 3: the size no longer matches
+    CHECK(!wire::DecodeGearLook(bad, n2, m));
+    std::memcpy(bad, buf, n2);
+    bad[28 + 32 + 24 + 6] = 0;  // the second variable's count 0
+    CHECK(!wire::DecodeGearLook(bad, n2, m));
+    std::memcpy(bad, buf, n2);
+    const float inf = std::numeric_limits<float>::infinity();
+    std::memcpy(bad + 28 + 32 + 8, &inf, 4);  // the first variable's value
+    CHECK(!wire::DecodeGearLook(bad, n2, m));
+    // other frames are not looks, and a look is none of them
+    wire::GearRes r;
+    wire::GearFrame gf;
+    CHECK(!wire::DecodeGearRes(buf, n2, r) && !wire::DecodeGear(buf, n2, gf));
+    // an empty look (a case without a variation) is valid
+    o = wire::GearLook{};
+    o.kind = wire::GearKind::cargo;
+    CHECK(wire::EncodeGearLook(o, buf, sizeof(buf)) == 28 && wire::DecodeGearLook(buf, 28, m) && m.nvar == 0 && m.nsv == 0);
+    // the parts: shown bits outside apply are dropped; a part change is a look change
+    o.parts_apply = 0x1FF, o.parts_visible = 0x1002;
+    CHECK(wire::DecodeGearLook(buf, wire::EncodeGearLook(o, buf, sizeof(buf)), m) && m.parts_apply == 0x1FF && m.parts_visible == 0x2);
+    wire::GearLook o2 = m;
+    o2.parts_visible = 0x4;
+    CHECK(wire::GearLookHash(o2) != wire::GearLookHash(m));
+    o2.parts_visible = 0x2 | 0x1000;  // outside apply: the same look
+    CHECK(wire::GearLookHash(o2) == wire::GearLookHash(m));
+
+    // STK1
+    wire::GearPose p;
+    p.item = 0;
+    p.layout = 0x1234;
+    p.skeleton = 0x81671A7Du;
+    p.n = 42;
+    for (unsigned j = 0; j < p.n; ++j) {
+        const float a = 0.05f * static_cast<float>(j);
+        p.q[j] = wire::Normalize(wire::Quat{std::sin(a), 0.1f, 0.0f, std::cos(a)});
+        p.t[j][0] = 0.001f * static_cast<float>(j), p.t[j][1] = -0.25f, p.t[j][2] = j == 5 ? 3.19f : 0.5f;
+    }
+    std::uint8_t pb[wire::kMaxGearPoseFrameSize];
+    const std::size_t pn = wire::EncodeGearPose(p, pb, sizeof(pb));
+    CHECK(pn == wire::GearPoseSize(42) && pn == 16 + 42 * 12);
+    wire::GearPose q;
+    CHECK(wire::DecodeGearPose(pb, pn, q));
+    CHECK(q.item == 0 && q.layout == 0x1234 && q.skeleton == 0x81671A7Du && q.n == 42);
+    float dm = 1, dd = 1;
+    CHECK(wire::GearPoseDiff(p, q, &dm, &dd) && dm < 1e-4f && dd < 0.05f);
+    CHECK(std::fabs(q.t[5][2] - 3.19f) < 1e-4f);
+    q.t[3][1] += 0.01f;
+    CHECK(wire::GearPoseDiff(p, q, &dm, &dd) && std::fabs(dm - 0.01f) < 2e-4f);
+    q.skeleton = 1;
+    CHECK(!wire::GearPoseDiff(p, q, &dm, &dd));
+    static_assert(wire::kMaxGearPoseFrameSize == 784 && wire::kMaxGearPoseFrameSize <= 1148 - 8, "STK1 fits a link body");
+    wire::GearPose b = p;
+    b.t[0][0] = 3.3f;  // beyond +-3.2 m
+    CHECK(wire::EncodeGearPose(b, pb, sizeof(pb)) == 0);
+    b = p;
+    b.q[1].x = std::nanf("");
+    CHECK(wire::EncodeGearPose(b, pb, sizeof(pb)) == 0);
+    b = p;
+    b.n = 0;
+    CHECK(wire::EncodeGearPose(b, pb, sizeof(pb)) == 0);
+    b.n = wire::kMaxGearPoseJoints + 1;
+    CHECK(wire::EncodeGearPose(b, pb, sizeof(pb)) == 0);
+    b = p;
+    b.item = wire::kMaxGearItems;
+    CHECK(wire::EncodeGearPose(b, pb, sizeof(pb)) == 0);
+    const std::size_t pn2 = wire::EncodeGearPose(p, pb, sizeof(pb));
+    CHECK(!wire::DecodeGearPose(pb, pn2 - 1, q) && !wire::DecodeGearPose(pb, pn2 + 12, q));
+    std::uint8_t pbad[wire::kMaxGearPoseFrameSize];
+    std::memcpy(pbad, pb, pn2);
+    pbad[12] = 41;  // the joint count no longer matches the size
+    CHECK(!wire::DecodeGearPose(pbad, pn2, q));
+    std::memcpy(pbad, pb, pn2);
+    pbad[4] = 9;  // version
+    CHECK(!wire::DecodeGearPose(pbad, pn2, q));
+    CHECK(!wire::DecodeGearLook(pb, pn2, m) && !wire::DecodeGear(pb, pn2, gf));
+}
+
 void TestGearV2() {
     wire::GearFrame f;
     f.seq = 9;
@@ -1011,6 +1172,7 @@ int main() {    TestPoseRoundTrip();
     TestNameTagMath();
     TestGearFrames();
     TestGearV2();
+    TestGearLook();
     TestBodyTable();
     TestBodyChoice();
     TestRotation();

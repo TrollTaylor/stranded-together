@@ -1,0 +1,130 @@
+# Gear looks, the back, Sam's head and the guest's cargo menu between two games (docs/real-partner-body.md
+# sections 13-15), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-looks-menu -SeedSaves complete-100
+# The host is Sam, the guest Fragile with the self view. The host walks ahead. On the guest's screen his
+# partner body is pinned 2.2 m ahead of her with its back to her (`collision 6 2.2`) or facing her
+# (`collision 3 1.6`), and her camera turned a little so her own body does not hide it (the cameras
+# re-centre behind their players after a few seconds, so each turn is shot at once). His back (backpack paint, rain cover, frame) on both
+# screens; the Bridges cap put on (gold 24, then silver 23); his partner body pinned facing the guest
+# (`collision 3 1.6`) for his face and cap next to his own camera turned round; census of his own Sam
+# (host `gear 9 0`) and of his partner body on the guest (`gear 9 1`); a synthetic stack; the guest walks
+# past him for her back on both screens; then the guest opens Manage Cargo (START, A) and must see Fragile
+# there, and the field again after closing it (B, START). Player collision off.
+role host
+graphics low
+timeout 360
+ini partner_body=real
+ini partner_collision=0
+@host ini my_character=sam
+@host ini name=HostPorter
+@guest ini my_character=fragile
+@guest ini self_character=1
+@guest ini name=GuestPorter
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+@guest pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+@guest until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitplayer 60
+waitlog 60 \[link\] CONNECTED
+@guest waitlog 60 \[link\] CONNECTED
+until 120 500 ly=32760 -> ok: .*player moved (1\.[5-9]|[2-9]|[1-9][0-9]+)[0-9.]* m => pad none 800 ly=32760
+@guest until 150 3000 \[sync\] partner body: real 'sam' => pad A 120
+waitlog 60 \[sync\] partner body: real 'fragile'
+@guest waitlog 30 \[self\] showing 'fragile' in place of Sam
+waitlog 40 \[gear\] [0-9]+ items, [1-9][0-9]* props live
+@guest waitlog 40 \[gear\] [0-9]+ items, [1-9][0-9]* props live
+wait 3000
+# his back: his own camera, and the guest's (pinned, its back to her)
+screenshot 10-host-own-back
+@guest action collision 6 2.2
+wait 1500
+@guest pad none 400 rx=32767
+wait 500
+@guest screenshot 10-guest-sees-host-back
+@guest pad none 400 rx=-32767
+@guest action gear 11 1
+# the cap, gold
+action gear 14 15 1
+action gear 15 24
+wait 3000
+screenshot 11-host-own-back-cap
+@guest pad none 400 rx=32767
+wait 500
+@guest screenshot 11-guest-sees-host-back-cap
+@guest pad none 400 rx=-32767
+# his face: pinned 1.6 m ahead of the guest, facing her; her camera turned a little, his own camera round
+@guest action collision 3 1.6
+wait 1500
+@guest pad none 400 rx=32767
+wait 500
+@guest screenshot 12-guest-sees-host-front-gold
+@guest pad none 400 rx=-32767
+pad none 1300 rx=32767
+wait 1200
+screenshot 12-host-own-front-gold
+pad none 1300 rx=-32767
+action gear 15 23
+wait 3000
+@guest pad none 400 rx=32767
+wait 500
+@guest screenshot 13-guest-sees-host-front-silver
+@guest pad none 400 rx=-32767
+pad none 1300 rx=32767
+wait 1200
+screenshot 13-host-own-front-silver
+pad none 1300 rx=-32767
+action gear 9 0
+@guest action gear 9 1
+@guest action collision 3 0
+action gear 15 24
+wait 2500
+# a synthetic stack on his backpack (the guest's view, pinned with its back to her; not drawn on his own screen)
+action gear 3 5
+@guest action collision 6 2.2
+wait 3000
+@guest pad none 400 rx=32767
+wait 500
+@guest screenshot 14-guest-sees-host-stack5
+@guest pad none 400 rx=-32767
+@guest action collision 3 0
+action gear 3 0
+# the guest walks past him: her back on both screens (his camera turned a little)
+@guest pad none 2600 ly=32767
+wait 800
+pad none 220 rx=32767
+wait 600
+screenshot 20-host-sees-guest-back
+@guest screenshot 20-guest-own-back
+# the guest's cargo menu: START (the map, "Sam" focused), A (Manage Cargo)
+@guest pad START 150
+wait 3000
+@guest until 25 3000 \[menu\] subspace state 5 .*\(opens 1\) => pad A 150
+@guest waitlog 15 \[menu\] showing 'fragile' in place of the menu's Sam figure
+wait 2000
+@guest screenshot 30-guest-menu
+screenshot 30-host-while-guest-in-menu
+@guest action self_view 4
+@guest pad none 900 rx=32767
+wait 1500
+@guest screenshot 31-guest-menu-turned
+@guest until 25 2500 \[menu\] subspace state 2 .*\(opens 1\) => pad B 150
+@guest waitlog 10 \[self\] showing 'fragile'.*show 2\)
+wait 1000
+@guest pad START 150
+wait 2500
+@guest screenshot 32-guest-field-after-menu
+action gear 0
+@guest action gear 0
+action log_status
+@guest action log_status
+@guest action real_stats
+@guest quit
+wait 3000
+quit

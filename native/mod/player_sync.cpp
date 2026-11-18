@@ -1089,6 +1089,38 @@ void Tick() noexcept {
                     if (n && wire::DecodeGearRes(buf, n, grback)) gear::SetPartnerRes(grback);  // echo: our own table
                 }
             }
+            // Our gear's looks (STV1) and the backpack's pose (STK1), docs/real-partner-body.md section 13.
+            if (g_net) {
+                static std::uint32_t look_gen = 0;
+                const std::uint32_t lg = link::Generation();
+                if (lg != look_gen) {
+                    look_gen = lg;
+                    gear::MarkLooksUnsent();
+                }
+            }
+            static wire::GearLook gl, glback;
+            for (int k = 0; k < 4 && realbody::HookInstalled() && gear::TakeSendLook(now, &gl); ++k) {
+                if (g_net) {
+                    if (!link::SendGearLook(gl)) {
+                        gear::MarkLooksUnsent();  // not connected yet: again later
+                        break;
+                    }
+                } else {
+                    std::uint8_t buf[wire::kMaxGearLookFrameSize];
+                    const std::size_t n = wire::EncodeGearLook(gl, buf, sizeof(buf));
+                    if (n && wire::DecodeGearLook(buf, n, glback)) gear::SetPartnerLook(glback);  // echo: our own looks
+                }
+            }
+            static wire::GearPose gp, gpback;
+            if (realbody::HookInstalled() && gear::TakeSendPose(now, &gp)) {
+                if (g_net) {
+                    link::SendGearPose(gp);
+                } else {
+                    std::uint8_t buf[wire::kMaxGearPoseFrameSize];
+                    const std::size_t n = wire::EncodeGearPose(gp, buf, sizeof(buf));
+                    if (n && wire::DecodeGearPose(buf, n, gpback)) gear::SetPartnerPose(gpback);  // echo: our own pose
+                }
+            }
         }
     }
 
@@ -1137,6 +1169,18 @@ void Tick() noexcept {
             if (gen > g_generation) new_session(gen);
             if (gen != g_generation) continue;
             gear::SetPartnerRes(gr);
+        }
+        static wire::GearLook gl;
+        while (link::PopGearLook(gl, gen)) {
+            if (gen > g_generation) new_session(gen);
+            if (gen != g_generation) continue;
+            gear::SetPartnerLook(gl);
+        }
+        static wire::GearPose gp;
+        while (link::PopGearPose(gp, gen)) {
+            if (gen > g_generation) new_session(gen);
+            if (gen != g_generation) continue;
+            gear::SetPartnerPose(gp);
         }
     }
     g_ring.Settle();
@@ -1351,7 +1395,7 @@ bool DebugLogPartner() noexcept {
     return true;
 }
 
-bool DebugPinPartner(double dist_m, double dz_m, char* msg, std::size_t cap) noexcept {
+bool DebugPinPartner(double dist_m, double dz_m, char* msg, std::size_t cap, bool away) noexcept {
     if (!(dist_m > 0)) {
         g_pin = false;
         Log("[sync] partner unpinned: it follows the stream again");
@@ -1370,13 +1414,15 @@ bool DebugPinPartner(double dist_m, double dz_m, char* msg, std::size_t cap) noe
     w.pos.x += dir[0] * dist_m;
     w.pos.y += dir[1] * dist_m;
     w.pos.z += dz_m;
-    // Turned 180 degrees about the up axis (Sam is upright): it faces back towards him.
-    for (int r = 0; r < 2; ++r)
-        for (int c = 0; c < 3; ++c) w.rot.m[r][c] = -w.rot.m[r][c];
+    // Turned 180 degrees about the up axis (Sam is upright): it faces back towards him. `away`: Sam's
+    // own heading (its back to him and the camera: back shots).
+    if (!away)
+        for (int r = 0; r < 2; ++r)
+            for (int c = 0; c < 3; ++c) w.rot.m[r][c] = -w.rot.m[r][c];
     g_pin_wt = w;
     g_pin = true;
-    Log("[sync] partner pinned %.2f m ahead of Sam (%+.2f m height) along the %s (%.3f, %.3f): at (%.3f, %.3f, %.3f)", dist_m, dz_m,
-        camera ? "camera's forward" : "last walking direction", dir[0], dir[1], w.pos.x, w.pos.y, w.pos.z);
+    Log("[sync] partner pinned %.2f m ahead of Sam (%+.2f m height) along the %s (%.3f, %.3f), %s: at (%.3f, %.3f, %.3f)", dist_m, dz_m,
+        camera ? "camera's forward" : "last walking direction", dir[0], dir[1], away ? "its back to him" : "facing him", w.pos.x, w.pos.y, w.pos.z);
     if (msg && cap) std::snprintf(msg, cap, "partner pinned %.2f m ahead", dist_m);
     return true;
 }

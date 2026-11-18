@@ -34,6 +34,10 @@ bool Available() noexcept;
 // components are checked). False when the player does not check out.
 bool ReadLocal(std::uintptr_t player, wire::Outfit* out) noexcept;
 
+// The local player wears the porter suit (its body variant's GUID when loaded, else its index): the
+// suit whose ArtParts (part_sam_body_suiti) demo_sam_clean also has. False when unsure.
+bool LocalWearsPorter(std::uintptr_t player) noexcept;
+
 // What has been done to one body (game thread). Reset (Forget) when the body goes.
 struct Dress {
     std::uintptr_t e = 0;             // the body these fields describe

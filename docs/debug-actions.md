@@ -237,6 +237,8 @@ Scenarios: `name-tags`, `two-games-name-tags`, `two-games-all`.
 * `action collision 5 <m>`: reconfigure the capsule with a standing height of `<m>` m (1 to 6; `0` = Sam's own
   1.65 m resource, the v0.7 capsule that the game offers Climb on). Default 4.0 (`partner_collision_height`).
   `[coll] tall capsule: ...` logs each resource copy, `[coll] reconfigured: standing height ...` the change.
+* `action collision 6 <m> [dz]`: the pin of `collision 3`, but the partner body turned the way Sam faces: its
+  back to him and to the camera (hidden tests: close shots of the partner's back cargo). `collision 3 0` unpins.
 
 The capsule is in the world only while the partner is within 4 m of Sam (the state then reads `off: the
 partner is not near Sam`) and not riding something (`off: the partner is in a vehicle`).
@@ -275,9 +277,33 @@ Scenarios: `collision`, `collision-off`, `two-games-collision`, `two-games-all`.
   controller's part masks and ArtParts map), the partner / debug body (1) or the self body (2).
 * `action gear 10 <0/1>`: the sender's entity-walk cache off / on (default on). The read's cost on the
   game thread is logged after 50 reads and then every 600 (`[gear] read cost (game thread): mean ... us,
-  max ... us over N reads; walk cache on (hits, misses)`).
+  max ... us over N reads; walk cache on (hits, misses); looks read (every 500 ms) mean ... us, max ... us`).
 
-Scenarios: `gear-self`, `two-games-gear`, `two-games-all`, `gear-full`, `two-games-full-gear`.
+* `action gear 11 <0/1>`: the looks (docs/real-partner-body.md section 13), read-only: 0 our gear (every
+  mirrored entity's applied art-parts variations with the source this game finds each in, its shader
+  variables, its components and their resources, its pose's skeleton; the backpack's 42 joints), 1 the
+  partner's props (the same, plus what each item should show).
+* `action gear 12 <0/1>`: gear looks (STV1: variations and shader variables) off / on, both directions (default
+  on). Off stops sending and applying; what a prop already shows stays until it is spawned again. The
+  periodic `[look] props: ...` line counts applies, variations left out (`unresolved`, `of another kind's
+  sources`), shader variables refused at the copy's cap (48 entries) and how often our own gear's sources
+  were gathered again; the backpack pose part says `OFF for this session` after a pose-write fault.
+* `action gear 13 <0/1>`: the backpack's skinned pose (STK1) off / on (default on).
+* `action gear 14 [type] [0/1]` (writes only in hidden test runs on scratch saves): lists the inventory's
+  accessory list (inv `+0x37F9 + 0x40 i`: type, worn flag `+0x1D`, item `+0x1F`); with a type (0x0F = 15 the
+  cap, 0x0D / 0x0E glasses) sets the first such entry's worn flag: the game puts the cap on or takes it off
+  itself.
+* `action gear 15 <0..24>` (hidden test runs on scratch saves only): our cap colour byte (inv `+0x4BE0`:
+  0..22 a colour index, 23 silver, 24 gold); the game re-colours the cap itself.
+* `action gear 16 <0/1>`: Sam's head parts (hair, hood, face lines; docs/real-partner-body.md section 14) not
+  named / named in our frames (default on). Off only stops naming them, so a partner body keeps what it had
+  last: to see the cutscene defaults, set 0 before the body comes. The result says whether the last read was
+  taken or held (not the porter suit, Sam hidden by a part mask, the hood switch animation) and how many parts
+  were set on our partner body. `gear 14 53 0` takes the cyphead accessory off (the metal-line hair and face
+  lines).
+
+Scenarios: `gear-self`, `two-games-gear`, `two-games-all`, `gear-full`, `two-games-full-gear`, `two-games-gear-look`,
+`echo-hair`, `two-games-hair`, `two-games-looks-menu`.
 
 ### Smooth animation (`smooth`; scenarios only)
 
@@ -325,6 +351,13 @@ hook, which is installed at start-up only with `session.ini partner_body=real` o
   `self_view 2 <reason 0..63> <0/1>` sets / clears one hide reason on the local Sam's Root mask (26 =
   photo mode's "hide Sam", 63 = a stray bit of ours, to test the repair). Only in hidden tests on
   redirected scratch saves; refused otherwise.
+  `self_view 3 <0/1>`: the cargo menu's Sam figure (docs/real-partner-body.md section 15): 1 (the default) the
+  self body takes its place while the on-foot cargo menu is open (Manage Cargo, menu kind 0, only; every other
+  kind shows Sam), 0 the menu shows Sam. `self_view 4`: the
+  subspace work object's state and menu kind, and every ArtPart of the menu's figure (asked / effective
+  visible, top-level, children) in the log. In hidden tests a `[menu] subspace state ...` line is logged on
+  every change (with `(opens N)`, the times the menu reached its open state) and a `[menu] figure ...` line
+  every second while the menu is anywhere but idle.
 * `action real_outfit <mode> [a] [b]`: the partner Sam's outfit (docs/real-partner-body.md section 9,
   `native/mod/partner_outfit.cpp`). The modes:
   * 0: log our own Sam's outfit (inventory bytes, exos index, variant) and the art-parts variations of
@@ -335,7 +368,7 @@ hook, which is installed at start-up only with `session.ini partner_body=real` o
   * 4: overwrite our own Sam's suit colour byte with `a` (0..16); the game re-dresses Sam itself at once.
     Only in hidden tests on redirected scratch saves; refused otherwise.
 
-Scenarios: `real-body-diag`, `real-body-tour`, `real-body-tour-all` (every table id, solo), `self-view`, `self-view-edges`, `outfit-probe` (solo), `two-games-real-self`, `two-games-outfit` (role host), `echo-real-100`, `echo-real-fragile-100` (role echo),
+Scenarios: `real-body-diag`, `real-body-tour`, `real-body-tour-all` (every table id, solo), `self-view`, `self-view-edges`, `self-view-menu`, `outfit-probe` (solo), `two-games-real-self`, `two-games-outfit` (role host), `echo-real-100`, `echo-real-fragile-100` (role echo),
 `two-games-real`, `two-games-real-fallback` (role host, two games). `real_spawn` takes any id in the table,
 offered or not (the debug way to prove a new body before it gets `offered`). The partner's character in a
 session comes from the peer's `my_character`; `session.ini partner_character` overrides it for debugging

@@ -706,7 +706,8 @@ void EmergencyStop() noexcept {
 namespace st::game {
 
 // action collision <op> [a] [b]: 0 log, 1 <0/1> off/on, 2 <ms> per-tick distance trace,
-// 3 <m> pin the partner m ahead of Sam (0 = follow again), 4 <layer> <type> reconfigure, 5 <height m> the capsule's height.
+// 3 <m> pin the partner m ahead of Sam (0 = follow again), 4 <layer> <type> reconfigure, 5 <height m> the capsule's height,
+// 6 <m> the pin of 3 with the partner's back to Sam.
 bool CollisionCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept {
     using namespace st::collision;
     char text[160] = {};
@@ -737,6 +738,9 @@ bool CollisionCommand(int op, const double (&v)[3], char* msg, std::size_t cap) 
             break;
         case 3:
             return sync::DebugPinPartner(v[1], v[2], msg, cap);
+        case 6:
+            // the same pin, its back to Sam (hidden tests: the partner's back cargo close to the camera)
+            return sync::DebugPinPartner(v[1], v[2], msg, cap, true);
         case 4: {
             const int layer = static_cast<int>(v[1]), type = static_cast<int>(v[2]);
             if ((layer != 9 && layer != 10 && layer != 25) || (type != 0 && type != 1)) {
@@ -781,7 +785,7 @@ bool CollisionCommand(int op, const double (&v)[3], char* msg, std::size_t cap) 
             break;
         }
         default:
-            if (msg && cap) std::snprintf(msg, cap, "collision: 0 log, 1 off/on, 2 trace ms, 3 pin m, 4 layer type, 5 height m");
+            if (msg && cap) std::snprintf(msg, cap, "collision: 0 log, 1 off/on, 2 trace ms, 3 pin m, 4 layer type, 5 height m, 6 pin m (its back to Sam)");
             return false;
     }
     if (msg && cap) std::snprintf(msg, cap, "%s", text);

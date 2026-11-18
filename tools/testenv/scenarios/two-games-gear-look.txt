@@ -1,0 +1,117 @@
+# Gear looks and the back cargo between two games (docs/real-partner-body.md section 13), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-gear-look -SeedSaves complete-100
+# The host (Sam) walks ahead; the guest (Fragile, self view) sees his back. First the v0.8 view (looks and
+# the backpack pose off), then with them on: the backpack's paint and rain cover, the cap put on through the
+# inventory's accessory list (gold 24, silver 23, colour 9), the suit colour, his side, stacks of synthetic
+# cases; then the guest walks past him and the host sees her back. Player collision off (the guest walks
+# through the host).
+role host
+graphics low
+timeout 360
+ini partner_body=real
+ini partner_collision=0
+@host ini my_character=sam
+@host ini name=HostPorter
+@guest ini my_character=fragile
+@guest ini self_character=1
+@guest ini name=GuestPorter
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+@guest pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+@guest until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitplayer 60
+waitlog 60 \[link\] CONNECTED
+@guest waitlog 60 \[link\] CONNECTED
+@both action gear 12 0
+@both action gear 13 0
+until 120 500 ly=32760 -> ok: .*player moved (0\.[7-9]|[1-9]|[1-9][0-9]+)[0-9.]* m => pad none 800 ly=32760
+@guest until 150 3000 \[sync\] partner body: real 'sam' => pad A 120
+waitlog 60 \[sync\] partner body: real 'fragile'
+@guest waitlog 30 \[self\] showing 'fragile' in place of Sam
+waitlog 40 \[gear\] [0-9]+ items, [1-9][0-9]* props live
+@guest waitlog 40 \[gear\] [0-9]+ items, [1-9][0-9]* props live
+# the host stands 1-2 m ahead of the guest (short steps): the guest's camera sees his back
+wait 2500
+# the v0.8 view: the host's own back and the guest's view of it
+screenshot 10-host-own-back-v08
+@guest screenshot 10-guest-sees-host-back-v08
+action gear 11 0
+@guest action gear 11 1
+# looks and the backpack pose on
+@both action gear 12 1
+@both action gear 13 1
+wait 4000
+screenshot 11-host-own-back
+@guest screenshot 11-guest-sees-host-back
+@guest action gear 11 1
+# the cap: the host's accessory list, then the Bridges cap (type 0x0F) put on, gold (24)
+action gear 14 0
+action gear 14 15 1
+wait 3000
+screenshot 12-host-own-cap-gold
+@guest screenshot 12-guest-sees-host-cap-gold
+action gear 15 23
+wait 2500
+screenshot 13-host-own-cap-silver
+@guest screenshot 13-guest-sees-host-cap-silver
+action gear 15 9
+wait 2500
+screenshot 14-host-own-cap-colour9
+@guest screenshot 14-guest-sees-host-cap-colour9
+action real_outfit 4 9
+wait 2500
+screenshot 15-host-own-suit9
+@guest screenshot 15-guest-sees-host-suit9
+@guest action gear 11 1
+action gear 15 24
+action real_outfit 4 16
+# the host turns to his right: his left side on the guest's screen; his camera turned a quarter for his own
+pad none 250 lx=32767
+wait 1500
+@guest screenshot 16-guest-sees-host-side
+pad none 650 rx=-32767
+wait 1200
+screenshot 16-host-own-side
+pad none 650 rx=32767
+wait 800
+pad none 250 ly=32767
+wait 1200
+# synthetic cases stacked on the host's backpack (not drawn on his own screen)
+action gear 3 2
+wait 2500
+screenshot 17-host-own-stack2
+@guest screenshot 17-guest-sees-host-stack2
+action gear 3 5
+wait 2500
+@guest screenshot 18-guest-sees-host-stack5
+action gear 3 9
+wait 2500
+@guest screenshot 19-guest-sees-host-stack9
+@guest action gear 11 1
+action gear 3 0
+# the guest walks past the host: her back on both screens (the host follows a little)
+@guest pad none 1300 ly=32767
+wait 600
+pad none 300 ly=32767
+wait 1500
+screenshot 20-host-sees-guest-back
+@guest screenshot 20-guest-own-back
+@guest action gear 3 5
+wait 2500
+screenshot 21-host-sees-guest-stack5
+@guest screenshot 21-guest-own-stack5
+action gear 11 1
+action gear 0
+@guest action gear 0
+action log_status
+@guest action log_status
+@guest quit
+wait 3000
+quit

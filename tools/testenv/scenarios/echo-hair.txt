@@ -1,0 +1,74 @@
+# Sam's head on the partner Sam (docs/real-partner-body.md section 14), hidden, one game at full resolution:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario echo-hair -SeedSaves complete-100
+# The echo partner (a demo_sam_clean body fed our own frames through the encoders) stands 0.9 m beside
+# Sam (world +x); the camera turns round to see both faces. First without the head parts (gear 16 0
+# before the body comes: the v0.8 head, the cutscene defaults), then with them; then the Bridges cap put
+# on (the hair under it becomes the cap hair), then the cap and the cyphead accessory (type 0x35: the
+# metal-line hair and face lines) taken off.
+role echo
+timeout 360
+ini partner_body=real
+ini partner_character=sam
+ini echo_delay_s=0.3
+ini echo_offset_m=0.9
+ini partner_collision=0
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+action gear 16 0
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[sync\] partner body: real
+waitlog 40 \[gear\] [0-9]+ items, [1-9][0-9]* props live
+wait 3000
+# the front of both: the camera half round, then a little each way
+pad none 1300 rx=32767
+wait 1500
+screenshot 10-front-before
+pad none 150 rx=32767
+wait 1000
+screenshot 10b-front-before
+pad none 300 rx=-32767
+wait 1000
+screenshot 10c-front-before
+pad none 150 rx=32767
+action gear 9 1
+# the head parts on
+action gear 16 1
+wait 3000
+screenshot 11-front-after
+pad none 150 rx=32767
+wait 1000
+screenshot 11b-front-after
+pad none 300 rx=-32767
+wait 1000
+screenshot 11c-front-after
+pad none 150 rx=32767
+action gear 9 1
+# the Bridges cap (type 0x0F) on: the hair under it
+action gear 14 0
+action gear 14 15 1
+wait 3500
+screenshot 12-front-cap
+pad none 150 rx=32767
+wait 1000
+screenshot 12b-front-cap
+pad none 150 rx=-32767
+# the cap off and the cyphead accessory (0x35) off: the default hair and no metal lines
+action gear 14 15 0
+action gear 14 53 0
+wait 3500
+screenshot 13-front-no-cyphead
+pad none 150 rx=32767
+wait 1000
+screenshot 13b-front-no-cyphead
+pad none 150 rx=-32767
+action gear 9 0
+action gear 9 1
+action gear 16 1
+action gear 0
+action log_status
+quit
