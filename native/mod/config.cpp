@@ -121,6 +121,8 @@ Config LoadConfig(const std::wstring& dir) {
             c.my_character = v;
         } else if (k == "self_character") {
             c.self_character = ParseBool(v);
+        } else if (k == "self_fit") {
+            c.self_fit = ParseBool(v);
         } else if (k == "pose_hook") {
             c.pose_hook = ParseBool(v);
         } else if (k == "verbose") {
@@ -193,10 +195,10 @@ Config LoadConfig(const std::wstring& dir) {
         Log("[config] test save sandbox=%s local_input=%s", c.sandbox_saves.empty() ? "-" : c.sandbox_saves.c_str(),
             c.local_input.empty() ? "-" : c.local_input.c_str());
     Log("[config] partner_body=%s partner_holo=%08X partner_marker=%d partner_voice=%d partner_character=%s my_character=%s "
-        "self_character=%d pose_hook=%d",
+        "self_character=%d self_fit=%d pose_hook=%d",
         PartnerBodyName(c.partner_body), c.partner_holo, c.partner_marker, c.partner_voice ? 1 : 0,
         c.partner_character.empty() ? "-" : c.partner_character.c_str(), c.my_character.empty() ? "-" : c.my_character.c_str(),
-        c.self_character ? 1 : 0, c.pose_hook ? 1 : 0);
+        c.self_character ? 1 : 0, c.self_fit ? 1 : 0, c.pose_hook ? 1 : 0);
     Log("[config] name_tags=%d font=%s name=%s", c.name_tags ? 1 : 0, c.name_tag_game_font ? "game" : "default", c.player_name.empty() ? "- (Steam name)" : "set");
     Log("[config] partner_collision=%d layer=%d height=%.2f", c.partner_collision ? 1 : 0, c.partner_collision_layer,
         static_cast<double>(c.partner_collision_height));

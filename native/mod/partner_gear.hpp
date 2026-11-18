@@ -75,7 +75,8 @@ void EmergencyStop() noexcept;
 // the next n prop starts fail / every partner prop hidden behind our back, 7 <0..2> mirror level,
 // 8 <0/1> the BB pod as a copy of the game's pod entity (tests), 9 <0/1/2> census, 10 <0/1> walk cache,
 // 11 <0/1> looks of our gear / the partner's props (log), 12 <0/1> looks off / on, 13 <0/1> backpack pose
-// sync off / on.
+// sync off / on, 14 / 15 accessories / cap colour (tests), 16 <0/1> head parts, 17 <0/1> weapons off / on
+// (section 17: weapons in a hand and on the backpack, drawn as cutscene props).
 bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 
 }  // namespace st::gear

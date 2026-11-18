@@ -15,13 +15,37 @@ if(GIT_FOUND)
                   OUTPUT_VARIABLE _st_git OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET RESULT_VARIABLE _st_git_rc)
   if(_st_git_rc EQUAL 0 AND _st_git MATCHES "^[0-9a-f]+$")
     set(ST_BUILD_ID "${PROJECT_VERSION}+${_st_git}")
-    # Tracked files changed (at configure time): "-m", so a development build never passes the
+    # Tracked files changed (at configure time): a "-xx" suffix, so a development build never passes the
     # HELLO build check against the release made from the same commit (tools/release.ps1 needs a
     # clean tree, so releases never carry it). Re-evaluated whenever CMake re-configures.
     execute_process(COMMAND "${GIT_EXECUTABLE}" status --porcelain --untracked-files=no WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
                     OUTPUT_VARIABLE _st_dirty OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET RESULT_VARIABLE _st_dirty_rc)
     if(_st_dirty_rc EQUAL 0 AND NOT _st_dirty STREQUAL "")
-      set(ST_BUILD_ID "${ST_BUILD_ID}-m")
+      # The suffix is "-" and two hex digits of a hash of the files that define the wire (line endings
+      # normalised), so two development builds with different frames (a version bump of STC1, ...) also
+      # fail the check instead of silently dropping each other's frames; editing one of them re-runs
+      # this configure step. The commit is shortened when needed to stay within the 16 bytes.
+      set(_st_wire_files native/mod/pose_wire.hpp native/mod/pose_wire.cpp native/include/stcoop/link_protocol.hpp
+                         native/net/link_protocol.cpp)
+      set(_st_wire_text "")
+      foreach(_f IN LISTS _st_wire_files)
+        file(READ "${CMAKE_CURRENT_SOURCE_DIR}/${_f}" _t)
+        string(REPLACE "\r\n" "\n" _t "${_t}")
+        string(APPEND _st_wire_text "${_f}\n${_t}")
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${_f}")
+      endforeach()
+      string(SHA256 _st_wire_hash "${_st_wire_text}")
+      string(SUBSTRING "${_st_wire_hash}" 0 2 _st_wire_hash)
+      string(LENGTH "${PROJECT_VERSION}" _st_vlen)
+      math(EXPR _st_glen "16 - ${_st_vlen} - 1 - 3")
+      if(_st_glen GREATER 7)
+        set(_st_glen 7)
+      endif()
+      if(_st_glen LESS 4)
+        set(_st_glen 4)
+      endif()
+      string(SUBSTRING "${_st_git}" 0 ${_st_glen} _st_git_short)
+      set(ST_BUILD_ID "${PROJECT_VERSION}+${_st_git_short}-${_st_wire_hash}")
     endif()
   endif()
 endif()

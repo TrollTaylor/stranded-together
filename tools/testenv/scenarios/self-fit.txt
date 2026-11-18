@@ -1,0 +1,79 @@
+# Self view fit, solo (docs/real-partner-body.md section 16): the guest's character, Fragile in her porter
+# suit, with Sam's real gear, cargo, cap and boots on her body (Sam's hidden skeleton takes her bone
+# lengths). Each view twice with the same camera and pose: the fit on, then off (`self_view 5 0`, Sam's
+# proportions: the gear floats as before), then on again.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario self-fit -SeedSaves complete-100
+role solo
+timeout 360
+ini partner_body=real
+ini my_character=fragile_suit
+ini self_character=1
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+# the cap on (the game puts it on itself; hidden test runs on scratch saves only)
+action gear 14 15 1
+wait 3000
+action gear 0
+waitlog 5 \[self\] fit on: writes=[1-9]
+screenshot 01-fit-back
+action self_view 5 0
+wait 1500
+screenshot 01-nofit-back
+action self_view 5 1
+wait 1500
+# a quarter turn of the camera: her right side
+pad none 650 rx=32767
+wait 1500
+screenshot 02-fit-side
+action self_view 5 0
+wait 1500
+screenshot 02-nofit-side
+action self_view 5 1
+wait 1500
+# another quarter: she faces the camera
+pad none 650 rx=32767
+wait 1500
+screenshot 03-fit-front
+action self_view 5 0
+wait 1500
+screenshot 03-nofit-front
+action self_view 5 1
+wait 1500
+pad none 1300 rx=-32767
+wait 1500
+# running away from the camera: a burst (flicker of the gear between frames)
+pad none 2500 ly=32767 keep
+screenshot 04-run-a
+wait 60
+screenshot 04-run-b
+wait 60
+screenshot 04-run-c
+wait 60
+screenshot 04-run-d
+wait 60
+screenshot 04-run-e
+wait 60
+screenshot 04-run-f
+pad none 0
+wait 1500
+action real_stats
+# the self view off: Sam back with his own proportions (never left reshaped)
+action self_view 0
+wait 2000
+screenshot 05-sam-back
+pad none 1300 rx=32767
+wait 1500
+screenshot 06-sam-front
+action self_view 1
+waitlog 20 \[self\] showing 'fragile_suit' .*fit on
+wait 3000
+screenshot 07-fit-again-front
+action log_status
+quit

@@ -1,0 +1,123 @@
+# Two games, the guest as the launcher sets it up by default (docs/real-partner-body.md sections 16-17): the host
+# plays Sam; the guest Fragile in her porter suit (my_character=fragile_suit, self_character=1: what the launcher
+# writes for every guest unless Debug > "Allow other characters" is on), the self view fit and head lift on,
+# the cap on. Both cameras look at the other player's front: gear fit (cap, shoulder shields, arm and hip cargo),
+# boots, then weapons drawn, aimed, fired and put away on both screens; the guest's back from the host; the
+# guest's own front; the self view off and on again; last the leak check (the guest runs with the fit on, then
+# off). For more detail run it with a 1080p settings.cfg:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-final -SeedSaves complete-100 -SettingsCfg <1080p cfg>
+role host
+graphics low
+timeout 360
+ini partner_body=real
+@host ini my_character=sam
+@guest ini my_character=fragile_suit
+@guest ini self_character=1
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+@guest pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+@guest until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitplayer 60
+waitlog 60 \[link\] CONNECTED
+@guest waitlog 60 \[link\] CONNECTED
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+@guest until 150 3000 \[sync\] partner body: real 'sam' => pad A 120
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+@guest waitlog 30 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+# the cap on the guest (the game puts it on itself; scratch saves only)
+@guest action gear 14 15 1
+waitlog 40 \[gear\] [0-9]+ items, [1-9][0-9]* props live
+@guest pad none 2600 lx=14000 ly=32767
+@guest pad none 1300 rx=32767
+@guest pad none 350 ly=32767
+wait 3000
+screenshot 01-host-sees-guest-front
+@guest screenshot 01-guest-sees-host-front
+# the guest: the assault rifle drawn, aimed, fired, put away
+@guest pad dpad_right 600 keep
+@guest pad dpad_right 900 lx=-23170 ly=23170 rx=-23170 ry=23170 keep
+@guest pad dpad_right 400 keep
+@guest pad none 0
+wait 3000
+screenshot 02-host-sees-guest-rifle
+@guest screenshot 02-guest-self-rifle
+@guest pad none 2500 lt=255 keep
+screenshot 03-host-sees-guest-aim
+@guest screenshot 03-guest-self-aim
+@guest pad none 400 lt=255 rt=255 keep
+screenshot 04-host-sees-guest-fire
+@guest pad none 0
+wait 1500
+@guest pad dpad_right 600 keep
+@guest pad dpad_right 900 lx=0 ly=32767 rx=0 ry=32767 keep
+@guest pad dpad_right 400 keep
+@guest pad none 0
+wait 3000
+screenshot 05-host-sees-guest-grenade
+@guest pad dpad_right 600 keep
+@guest pad dpad_right 900 lx=32767 ly=0 rx=32767 ry=0 keep
+@guest pad dpad_right 400 keep
+@guest pad none 0
+wait 3000
+screenshot 06-host-sees-guest-put-away
+# the host: the assault rifle drawn and aimed, then put away; the guest looks at him
+pad dpad_right 600 keep
+pad dpad_right 900 lx=-23170 ly=23170 rx=-23170 ry=23170 keep
+pad dpad_right 400 keep
+pad none 0
+wait 3000
+@guest screenshot 07-guest-sees-host-rifle
+pad none 2500 lt=255 keep
+@guest screenshot 08-guest-sees-host-aim
+pad none 0
+wait 1000
+pad dpad_right 600 keep
+pad dpad_right 900 lx=32767 ly=0 rx=32767 ry=0 keep
+pad dpad_right 400 keep
+pad none 0
+wait 3000
+@guest screenshot 09-guest-sees-host-put-away
+# the guest turns her back to the host (a step towards her own camera)
+@guest pad none 450 ly=-32767
+wait 2500
+screenshot 10-host-sees-guest-back
+# the guest's camera round to her front: her own screen
+@guest pad none 1300 rx=32767
+wait 2500
+@guest screenshot 11-guest-self-front
+# the self view off (Sam with his gear) and on again
+@guest action self_view 0
+wait 2500
+@guest screenshot 12-guest-self-off
+@guest action self_view 1
+@guest waitlog 30 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+wait 3000
+@guest screenshot 13-guest-self-again
+# the leak check: the guest runs with the fit on, then off (the `[self] fit` lines)
+@guest log leak run fit on
+@guest pad none 2500 ly=32767 keep
+@guest pad none 0
+wait 1500
+@guest action self_view 5 0
+@guest log leak run fit off
+@guest pad none 2500 ly=-32767 keep
+@guest pad none 0
+wait 1500
+@guest action self_view 5 1
+@guest log leak run done
+action gear 17 1
+@guest action gear 17 1
+action gear 0
+@guest action gear 0
+action log_status
+@guest action log_status
+@guest quit
+wait 3000
+quit

@@ -1,0 +1,111 @@
+# Weapons in hand between two games, hidden (docs/real-partner-body.md section 17): the host plays Sam, the
+# guest Fragile (porter suit, self view, fit on). Each draws weapons from the 100% save's equipment wheel
+# with the game's own inputs: D-pad right held (the wheel opens), then the stick pushed to the item, then
+# centred (the wheel keeps its highlighted item), then the D-pad let go; so the stick never turns the
+# camera. Items: the assault rifle (upper left), aimed (LT) and fired (RT); the blood grenade (top), aimed;
+# empty hands (right); the electric grenade (upper right). The other screen must show the weapon in the
+# body's hand (a cutscene prop of the same model), and nothing once it is put away.
+# Setup: the host walks ahead; the guest walks past him on his right, turns her camera round and steps back
+# towards him, so both cameras look at the other player's front.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-weapons -SeedSaves complete-100
+role host
+graphics low
+timeout 360
+ini partner_body=real
+@host ini my_character=sam
+@guest ini my_character=fragile_suit
+@guest ini self_character=1
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+@guest pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+@guest until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitplayer 60
+waitlog 60 \[link\] CONNECTED
+@guest waitlog 60 \[link\] CONNECTED
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+@guest until 150 3000 \[sync\] partner body: real 'sam' => pad A 120
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+@guest waitlog 30 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+waitlog 40 \[gear\] [0-9]+ items, [1-9][0-9]* props live
+@guest pad none 2600 lx=14000 ly=32767
+@guest pad none 1300 rx=32767
+@guest pad none 350 ly=32767
+wait 2500
+screenshot 01-host-sees-guest
+@guest screenshot 01-guest-sees-host
+# the guest: the assault rifle
+@guest pad dpad_right 600 keep
+@guest pad dpad_right 900 lx=-23170 ly=23170 rx=-23170 ry=23170 keep
+@guest pad dpad_right 400 keep
+@guest pad none 0
+wait 3000
+screenshot 02-host-sees-guest-rifle
+@guest screenshot 02-guest-self-rifle
+@guest pad none 2500 lt=255 keep
+screenshot 03-host-sees-guest-aim
+@guest screenshot 03-guest-self-aim
+@guest pad none 400 lt=255 rt=255 keep
+screenshot 04-host-sees-guest-fire
+@guest pad none 0
+wait 1500
+# the guest: the blood grenade, aimed
+@guest pad dpad_right 600 keep
+@guest pad dpad_right 900 lx=0 ly=32767 rx=0 ry=32767 keep
+@guest pad dpad_right 400 keep
+@guest pad none 0
+wait 3000
+screenshot 05-host-sees-guest-grenade
+@guest pad none 2000 lt=255 keep
+screenshot 06-host-sees-guest-grenade-aim
+@guest screenshot 06-guest-self-grenade-aim
+@guest pad none 0
+wait 1500
+# the guest: empty hands
+@guest pad dpad_right 600 keep
+@guest pad dpad_right 900 lx=32767 ly=0 rx=32767 ry=0 keep
+@guest pad dpad_right 400 keep
+@guest pad none 0
+wait 3000
+screenshot 07-host-sees-guest-put-away
+@guest screenshot 07-guest-sees-host
+# the host: the assault rifle, aimed; the guest looks at him
+pad dpad_right 600 keep
+pad dpad_right 900 lx=-23170 ly=23170 rx=-23170 ry=23170 keep
+pad dpad_right 400 keep
+pad none 0
+wait 3000
+@guest screenshot 08-guest-sees-host-rifle
+screenshot 08-host-self-rifle
+pad none 2500 lt=255 keep
+@guest screenshot 09-guest-sees-host-aim
+pad none 0
+wait 1500
+# the host: the electric grenade
+pad dpad_right 600 keep
+pad dpad_right 900 lx=23170 ly=23170 rx=23170 ry=23170 keep
+pad dpad_right 400 keep
+pad none 0
+wait 3000
+@guest screenshot 10-guest-sees-host-electric
+pad dpad_right 600 keep
+pad dpad_right 900 lx=32767 ly=0 rx=32767 ry=0 keep
+pad dpad_right 400 keep
+pad none 0
+wait 3000
+@guest screenshot 11-guest-sees-host-put-away
+action gear 17 1
+@guest action gear 17 1
+action gear 0
+@guest action gear 0
+action log_status
+@guest action log_status
+@guest quit
+wait 3000
+quit

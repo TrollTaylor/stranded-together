@@ -266,8 +266,8 @@ Scenarios: `collision`, `collision-off`, `two-games-collision`, `two-games-all`.
   mod's back, as the game might do; the next tick shows them again (`reshown`).
 * `action gear 7 <0..2>`: which of the game's gear entities are mirrored: 0 model components only, 1
   (default) also the proven small DS components (shields, the stowed weapons' paint, hanging boots, simple
-  animation, sound), 2 also the chiral cylinder, the backpack belt and weapons (`DSWeaponEntity`). Read
-  again at once. Level 2 only in hidden test runs on scratch saves (refused otherwise: not proven safe);
+  animation, sound), 2 also the chiral cylinder and the backpack belt. A `DSWeaponEntity` is never copied, at
+  any level (a copy crashes the game; weapons are their own kind, `gear 17`). Read again at once. Level 2 only in hidden test runs on scratch saves (refused otherwise: not proven safe);
   at level 2 this game also accepts any `ds/entities/` resource from the partner (section 12.5).
 * `action gear 8 <0/1>` (hidden test runs on scratch saves only for 1): the BB pod as a copy of the game's
   own pod entity (1) instead of the cinematic pod prop (0, default). Both runs that created such a copy
@@ -295,6 +295,10 @@ Scenarios: `collision`, `collision-off`, `two-games-collision`, `two-games-all`.
   itself.
 * `action gear 15 <0..24>` (hidden test runs on scratch saves only): our cap colour byte (inv `+0x4BE0`:
   0..22 a colour index, 23 silver, 24 gold); the game re-colours the cap itself.
+* `action gear 17 <0/1>`: weapons in hand and on the backpack (docs/real-partner-body.md section 17) not sent /
+  sent (default on; the partner's props follow). The result reports the weapon watch: changes seen, how many of
+  their reads waited for the watch's 40 ms gap, and the time from a draw / holster to the frame that carries it
+  (mean, max). Weapons with no prop on the other screen are not sent (logged once each).
 * `action gear 16 <0/1>`: Sam's head parts (hair, hood, face lines; docs/real-partner-body.md section 14) not
   named / named in our frames (default on). Off only stops naming them, so a partner body keeps what it had
   last: to see the cutscene defaults, set 0 before the body comes. The result says whether the last read was
@@ -353,7 +357,16 @@ hook, which is installed at start-up only with `session.ini partner_body=real` o
   redirected scratch saves; refused otherwise.
   `self_view 3 <0/1>`: the cargo menu's Sam figure (docs/real-partner-body.md section 15): 1 (the default) the
   self body takes its place while the on-foot cargo menu is open (Manage Cargo, menu kind 0, only; every other
-  kind shows Sam), 0 the menu shows Sam. `self_view 4`: the
+  kind shows Sam), 0 the menu shows Sam. `self_view 5 <0/1>`: the self view fit (docs/real-partner-body.md
+  section 16): 1 (the default, session.ini `self_fit`) Sam's hidden skeleton takes the character's bone
+  lengths while the body is shown, so his gear, cargo and boots sit on the character; 0 Sam's proportions.
+  `self_view 6 <0/1>`: the fit's same pose (section 16.1): 1 (the default) Sam's hidden skeleton takes the pose
+  the self body was last written from, so the gear stays on the body while moving; 0 Sam's newest pose (the
+  gear runs one frame ahead of the body: up to 20 cm at the hands running at 30 fps). `self_view 7 <percent>`
+  (0-150, default 100): the fit's head lift, how far Sam's head joint (the cap, the glasses) sits from her head
+  back towards his own (0: her head; the cap sinks over her eyes). The `[self] fit` line every second has the
+  meter (Sam vs body per joint, mean / max), the leak check and the lift.
+  `self_view 4`: the
   subspace work object's state and menu kind, and every ArtPart of the menu's figure (asked / effective
   visible, top-level, children) in the log. In hidden tests a `[menu] subspace state ...` line is logged on
   every change (with `(opens N)`, the times the menu reached its open state) and a `[menu] figure ...` line

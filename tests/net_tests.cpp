@@ -419,7 +419,7 @@ void TestGearFrames() {
     CHECK(wire::DecodeGear(buf, fn, g) && g.count == wire::kMaxGearItems && g.items[39].parent == 38);
 }
 
-// STC1 version 2 (entity items, the parts block), STR1 resource frames, prop reuse across layouts and
+// STC1 version 3 (entity and weapon items, the parts block), STR1 resource frames, prop reuse across layouts and
 // the retry schedule of failed props (docs/real-partner-body.md section 12).
 // STV1 (gear looks) and STK1 (the backpack's skinned pose), docs/real-partner-body.md section 13.
 void TestGearLook() {
@@ -647,6 +647,43 @@ void TestGearV2() {
     CHECK(on == wire::GearFrameSize(4, false, true) && wire::DecodeGear(buf, on, g) && g.pack_visible == 0x1C0021 && g.parts_apply[0] == 0);
     CHECK(!wire::DecodeGear(buf, on - 1, g));
 
+    // Version 3: the weapon kind (docs/real-partner-body.md section 17) keeps its resource id (part of the
+    // layout), its EDSWeaponId (model) and its level (variation); a weapon without a valid id, a kind above
+    // weapon and a version 2 frame are refused.
+    CHECK(wire::GearHasRes(wire::GearKind::weapon) && wire::GearHasRes(wire::GearKind::entity) && !wire::GearHasRes(wire::GearKind::cargo));
+    o = f;
+    o.flags = wire::kGearValid;
+    o.items[2].kind = wire::GearKind::weapon;
+    o.items[2].model = 45;
+    o.items[2].variation = 4;
+    o.items[2].res = 24;
+    o.items[2].joint = 26;
+    on = wire::EncodeGear(o, buf, sizeof(buf));
+    CHECK(on == wire::GearFrameSize(4) && buf[8] == 3);
+    CHECK(wire::DecodeGear(buf, on, g) && g.items[2].kind == wire::GearKind::weapon && g.items[2].res == 24 && g.items[2].model == 45 &&
+          g.items[2].variation == 4 && g.items[2].joint == 26 && g.items[2].parent == wire::kGearNoParent);
+    wire::GearFrame w2 = o;
+    w2.items[2].res = 25;
+    CHECK(wire::GearLayoutHash(w2) != wire::GearLayoutHash(o));
+    w2 = o;
+    w2.items[2].res = 64;
+    CHECK(wire::EncodeGear(w2, buf, sizeof(buf)) == 0);
+    w2 = o;
+    w2.items[2].kind = static_cast<wire::GearKind>(7);
+    CHECK(wire::EncodeGear(w2, buf, sizeof(buf)) == 0);
+    on = wire::EncodeGear(o, buf, sizeof(buf));
+    buf[8] = 2;
+    CHECK(!wire::DecodeGear(buf, on, g));
+    // a weapon's look carries its resource id too
+    wire::GearLook wl;
+    wl.item = 2;
+    wl.kind = wire::GearKind::weapon;
+    wl.res = 24;
+    std::uint8_t lb[wire::kMaxGearLookFrameSize];
+    const std::size_t ln = wire::EncodeGearLook(wl, lb, sizeof(lb));
+    wire::GearLook wl2;
+    CHECK(ln && wire::DecodeGearLook(lb, ln, wl2) && wl2.kind == wire::GearKind::weapon && wl2.res == 24);
+
     // STR1
     wire::GearRes r;
     r.id = 17;
@@ -687,6 +724,15 @@ void TestGearV2() {
         CHECK(!wire::GearResProven("ds/entities/player/ds_odradek", any, false, &why) && why);
         CHECK(!wire::GearResProven("ds/entities/weapons/builder", any, false, &why));
         CHECK(!wire::GearResProven("ds/entities/weapons/weapon_collection2", any, false, &why));
+        // a weapon's own resource: never loaded at any mirror level (the three proven entities of the folder are not weapons)
+        CHECK(wire::GearResWeaponOnly("ds/entities/weapons/assault_rifle"));
+        CHECK(wire::GearResWeaponOnly("ds/entities/weapons/builder"));
+        CHECK(wire::GearResWeaponOnly("ds/entities/weapons/weapon_collection2"));
+        CHECK(!wire::GearResWeaponOnly("ds/entities/weapons/weapon_collection"));
+        CHECK(!wire::GearResWeaponOnly("ds/entities/weapons/sam_cant"));
+        CHECK(!wire::GearResWeaponOnly("ds/entities/weapons/sam_boot"));
+        CHECK(!wire::GearResWeaponOnly("ds/entities/item/backpack/backpack_temp"));
+        CHECK(!wire::GearResWeaponOnly(nullptr));
         CHECK(!wire::GearResProven("ds/entities/player/ds_player_inventory", pod, false, &why));
         CHECK(wire::GearResProven("ds/entities/player/ds_player_inventory", pod, true, &why));
         CHECK(!wire::GearResProven("ds/entities/item/backpack/backpack_temp", cyl, true, &why));

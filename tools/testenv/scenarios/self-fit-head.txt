@@ -1,0 +1,128 @@
+# Self view fit, solo (docs/real-partner-body.md section 16): the head lift and the same pose. The guest's
+# character, Fragile in her porter suit, with Sam's real gear and the cap: the same front and side views at
+# head lifts 0 / 50 / 75 / 100 % and with the fit off; then running with the fit's same pose on and off,
+# uncapped and at 30 fps (the `[self] fit on` lines measure Sam's hidden skeleton against the drawn body every
+# tick), and with the fit off for the leak check; last, another character through the self view's body
+# switch (what "Allow other characters" picks).
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario self-fit-head -SeedSaves complete-100
+role solo
+timeout 360
+ini partner_body=real
+ini my_character=fragile_suit
+ini self_character=1
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+# the cap on (the game puts it on itself; hidden test runs on scratch saves only)
+action gear 14 15 1
+wait 3000
+waitlog 5 \[self\] fit on: writes=[1-9]
+# she faces the camera
+pad none 1300 rx=32767
+wait 1500
+action self_view 7 0
+wait 1200
+screenshot 01-front-lift0
+action self_view 7 50
+wait 1200
+screenshot 01-front-lift50
+action self_view 7 75
+wait 1200
+screenshot 01-front-lift75
+action self_view 7 100
+wait 1200
+screenshot 01-front-lift100
+action self_view 5 0
+wait 1500
+screenshot 01-front-nofit
+action self_view 5 1
+wait 1500
+# a quarter back: her side
+pad none 650 rx=-32767
+wait 1500
+action self_view 7 0
+wait 1200
+screenshot 02-side-lift0
+action self_view 7 100
+wait 1200
+screenshot 02-side-lift100
+action self_view 5 0
+wait 1500
+screenshot 02-side-nofit
+action self_view 5 1
+wait 1500
+# another quarter: her back (shoulder shields, hip gear)
+pad none 650 rx=-32767
+wait 1500
+screenshot 03-back-fit
+action self_view 5 0
+wait 1500
+screenshot 03-back-nofit
+action self_view 5 1
+wait 2000
+# running, uncapped: the same pose on, then off (the meter lines in between)
+log run uncapped same-pose on
+pad none 3000 ly=32767 keep
+screenshot 04-run-same-a
+wait 50
+screenshot 04-run-same-b
+pad none 0
+wait 1500
+action self_view 6 0
+log run uncapped same-pose off
+pad none 3000 ly=-32767 keep
+screenshot 04-run-newest-a
+wait 50
+screenshot 04-run-newest-b
+pad none 0
+wait 1500
+# the same at 30 fps (two games run capped)
+action smooth 2 30
+action self_view 6 1
+wait 1500
+log run 30fps same-pose on
+pad none 3000 ly=32767 keep
+screenshot 05-run30-same-a
+wait 50
+screenshot 05-run30-same-b
+pad none 0
+wait 1500
+action self_view 6 0
+log run 30fps same-pose off
+pad none 3000 ly=-32767 keep
+screenshot 05-run30-newest-a
+wait 50
+screenshot 05-run30-newest-b
+pad none 0
+wait 1500
+action self_view 6 1
+action smooth 2 0
+# the leak check's comparison: running with the fit off (Sam's own pose against the same reference)
+wait 1500
+log run uncapped fit on
+pad none 3000 ly=32767
+wait 1000
+action self_view 5 0
+log run uncapped fit off
+pad none 3000 ly=-32767
+wait 1000
+action self_view 5 1
+log run done
+wait 1500
+action real_stats
+# another character (the leather-jacket Fragile, body 3): the self view switches its body, the fit follows
+action self_view 1 3
+waitlog 30 \[self\] showing 'fragile' in place of Sam
+wait 3000
+screenshot 06-other-character
+pad none 1300 rx=32767
+wait 1500
+screenshot 06-other-character-front
+action log_status
+quit

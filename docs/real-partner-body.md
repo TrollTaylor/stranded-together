@@ -33,6 +33,8 @@ Code:
   block), `outfit::LocalWearsPorter` in `native/mod/partner_outfit.cpp`.
 - The cargo menu's figure under the self view (section 15): `native/mod/menu_figure.{hpp,cpp}`, `MenuTick` and the
   detour's figure branch in `real_body.cpp`.
+- Weapons in hand (section 17): the weapon read, the watch and the weapon props in `native/mod/partner_gear.cpp`,
+  the STC1 `weapon` kind (version 3) in `pose_wire`.
 
 Tags:
 - [V] verified: bytes, a decompile, or a run cited below.
@@ -430,8 +432,10 @@ own limit, docs/hidden-testing.md).
   build_mismatch`, the launcher's "different mod version"), so neither player sees a partner. A peer
   that sends no STJ1 is therefore always a same-build game (see "Fallback" in section 5).
   The build id is the version and the commit; a build configured from a tree with changed tracked
-  files adds `-m` (`0.6.0+75ccfed-m`, `CMakeLists.txt`), so a development build never passes the check
-  against the release made from the same commit. It is taken when CMake configures.
+  files adds `-` and two hex digits of a hash of the wire's source files (`pose_wire`, `link_protocol`;
+  `0.9.0+bad8ed9-3f`, `CMakeLists.txt`; before v0.10 a bare `-m`), so a development build never passes the
+  check against the release made from the same commit, and two development builds whose frames differ
+  fail it too. It is taken when CMake configures, and editing one of those files re-runs the configure step.
 - A frame counts only when the body's ring accepts it (`realbody::PushFrame` returns true: 77 joints,
   layout `BE39C83F`, newer than the last). A frame it drops does not set the peer's character, does not
   count as "the peer sends joints" for the fallback, and the first 5 drops are logged
@@ -463,6 +467,7 @@ The mod and the launcher (docs/launcher.md) both follow these rules:
 | Rule | Mod (`body_choice.cpp`, `player_sync.cpp`) |
 |---|---|
 | `session.ini my_character=<body key>` is the character THIS player appears as on the other player's screen. | `ChooseOwn`. It is sent as STJ1 `body_id`. A missing or unknown key is `sam`. A known key that is not offered is sent as asked, and the receiver shows Sam for it. |
+| The guest is Fragile in her porter suit (`fragile_suit`, id 16). | Launcher only: Join, the local test's guest, echo and solo write `my_character=fragile_suit`; the other characters are offered only with the launcher's Debug option "Allow other characters" (docs/launcher.md). The mod is unchanged: it plays whatever key it is given (a hand-written session.ini without the key still sends `sam`). |
 | The host is always Sam. | With `role=host` the mod sends `sam` whatever `my_character` says, and logs `[sync] my_character=<key> ignored: the host is always sam`. The launcher's Host screen says "You appear as: Sam (the host is always Sam)" and writes `my_character=sam`. |
 | The receiver shows the peer's `body_id`, not its own config. | `ChoosePartner`. The peer's id is shown if it is offered. Otherwise (unknown, 0, not offered, or no STJ1 frame yet) Sam is shown. |
 | A change of the peer's `body_id` respawns the body only after it has been stable for about 30 frames. | `StableId`, `kStableFrames = 30` received STJ1 frames (about 1 s at `send_hz=30`). The first id is taken at once. Going back to the shown id restarts the count, so a flapping id never respawns the body. `FollowPeerCharacter` then removes the real body and the next spawn uses the new character. A new link session resets it. |
@@ -1522,7 +1527,8 @@ checked at run time).
 - Not mirrored (never spawned on the receiver): the boots on Sam's feet (the body's own feet), the baby,
   the cuff device (talk / voice components), the Odradek (its classes update with the player: run
   `20261117-131822` crashed a worker thread at `0x14296F3AE` right after copies of it were created),
-  weapons in hand at level 1 (DSWeaponEntity, level 2).
+  weapons (DSWeaponEntity: never copied, at any level; since section 17 they are sent as their own kind and
+  drawn as cutscene props).
 
 ### 12.3 Sender (game thread, every 100 ms)
 
@@ -1552,6 +1558,8 @@ checked at run time).
    through the 250 ms round-robin, about 10-16 s for 40-64 ids). A frame that does not encode is logged.
 
 ### 12.4 Wire: STC1 version 2 and STR1
+
+(Version 3 since section 17: the same layout plus the `weapon` kind.)
 
 `'STC1' | u32 seq | u8 version 2 | u8 count | u8 flags | u8 dropped | u16 layout hash | u16 0`, then
 [flags bit 1: `u64 apply[2] | u64 visible[2]`, Sam's gear and head parts by ArtParts index (section 14)], [flags bit 2: `u64
@@ -1593,8 +1601,8 @@ STR1 4 entries a second.
   spawned again from the new one; logged 10 times at most.
 - **Spawn:** by path + GUID like the bodies (`BeginByPathGuid`), at most 4 per tick, 20 m under the body,
   invisible, only once the STR1 entry is known (`waiting for their resource`).
-- **Mirror policy** (sender and receiver, `MirrorableAt`): only the plain `Entity` class (DSWeaponEntity at
-  level 2), and only these components: level 0 SkinnedModel, StaticModel, ArtPartsData, ArtPartsVariation,
+- **Mirror policy** (sender and receiver, `MirrorableAt`): only the plain `Entity` class (never a
+  DSWeaponEntity, section 17), and only these components: level 0 SkinnedModel, StaticModel, ArtPartsData, ArtPartsVariation,
   ArtPartsShaderVariableComponent, ShaderVariableComponent, StencilBufferComponent,
   MeshPaintTextureComponent, BoostMeshStreamingForArtPartsDataComponent, ExternalAnimationComponent,
   LodDistanceOverrideComponent, AttachToHelperMover, CustomizedAttachToHelperMover,
@@ -1630,14 +1638,14 @@ STR1 4 entries a second.
 | `20261117-132631-gear-generic2` (pass) | The staged mirror levels 0 / 1 / 2 on a debug Sam (7, 15, 15 props, no crash), G2 fault injection (`4 failures, 4 retries`, `15 reshown`), the first self view with the real gear kept. The cinematic pod anchored on the left shoulder turned on Fragile's skeleton (`13-self-again-back`): anchors now prefer the spine. |
 | `20261117-130343-census` (pass) | `gear 9 0` / `gear 9 1`: the census of 12.1 (Sam's child tree, inventory, mesh controller, ArtParts of Sam, the backpack, the pod and `demo_sam_clean`). |
 | `20261117-131822-gear-generic` (**fail**, error.txt) | Copies of the Odradek (DSOdradekArm/BodyEntity) and the pod entity were created: an access violation in a worker thread at `0x14296F3AE` (null player). Led to the class rule. |
-| `20261117-133622-gear-full` (**fail**, error.txt) | A copy of the pod entity (DSBBPodComponent) with the backpack's cylinder and belt: an access violation at `0x142933FA6`. The pod is the cinematic prop again; the cylinder and belt passed alone in `134056` (level 2). |
+| `20261117-133622-gear-full` (**fail**, error.txt) | An access violation at `0x142933FA6`, first blamed on the copy of the pod entity (DSBBPodComponent) with the backpack's cylinder and belt. Re-read for section 17 [V: RIP, registers, log order]: `0x142933FA6` is in DSWeaponEntity's update (`movzx r15d, byte [r14+0x52D]` with R14 = its weapon instance `+0x338` = 0, RDI the entity), and the log registers `ds/entities/weapons/builder` (the PCC, a DSWeaponEntity) just before: the crash was the **PCC copy** let through at level 2. Weapons are never copied since (section 17). |
 | **`20261117-153804-two-games-full-gear`** (pass; the integrated v0.8 build with every review fix; collision on, name tags in the game font) | Guest `02b-guest-sees-host-front`: the host walked back and faces the guest; enlarged: his Sam body in the gold suit with both shoulder shields, the BB pod on his chest (the cinematic pod: orange and white, tilted; the host's own real pod is a dark capsule, `02b-host-own-front`), a case at his left hip and a green-lit item at his right side (the host's own Sam has a brick-patterned case in his right hand there), the tag "HOSTPORTER" in the game's menu font. Host `03a-host-sees-guest-front`: the guest's Fragile walked up beside him (collision stopped her); enlarged: the pod on her chest, a shoulder shield, a white and yellow case at her left hip, the backpack behind her. Gear changes both ways as in `134347`; `17 items, 17 props live` on the host at the end (`15 reshown, 14 kept across layouts`); the guest's equipment wheel used for real (`06b`: "Removed cargo placed on back"). Read cost 2.7 ms without / 0.8-1.0 ms with the walk cache. Exit 0, no error.txt, real saves unchanged, 0 uploads. |
 | `20261117-134347-two-games-full-gear` (pass; the repo scenario, the first full-gear build) | Guest `02-guest-sees-host`: its own Fragile carrying Sam's real backpack (dark bag, olive pouches, frame), hip crate, shoulder shield and pod; ahead the host's Sam body in the gold suit with the backpack frame, the olive pouch panel, its bag (mirrored part, but silver: the bag's colour variation is not mirrored), a shoulder shield and the blue waist lamp of the support exo (enlarged crop). Host `03a-host-sees-guest-front`: the guest's Fragile behind it with shoulder shields and the pod. Gear changes both ways (`gear 3` cycles, a prop respawn with 6 injected start failures, all props hidden behind the mod's back): `6 failures, 6 retries, 11 reshown`, `19 items, 19 props live` on the guest, `17-18 items` live on the host, every layout followed. A real change through the game's own input: the guest took the blood grenade from its equipment wheel (D-pad right, stick up): its frame changed and the host followed (`layout ... 12 prop(s) kept`); the grenade itself is not copied (DSWeaponAimArc). STC1 11-14 frames per 10 s each way; link payload 17.9 KB/s, 597 B per pose datagram on average (gear and STR1 included; v0.7: 575 B). Both exit 0, no error.txt, real saves unchanged, 0 uploads. |
 
 ### 12.7 Not covered
 
-- **Weapons in hand.** The weapon Sam holds is a DSWeaponEntity with DSWeaponAimArc (aiming): not copied
-  at any level; the partner holds nothing. Stowed weapons (on the backpack) are drawn.
+- **Weapons in hand:** see section 17 (cutscene props of the same model; the game's DSWeaponEntity is never
+  copied).
 - **The Odradek, the cuff device, the baby, the BB pod's own entity** are not copied (crash or talk /
   voice components); the pod is the cinematic prop: its model's axes are not the pod entity's, so it sits
   tilted about 45° on the chest (`20261117-134056` `02-self-front`), and it is orange and white where the
@@ -2017,3 +2025,242 @@ object, the figure's parts) and `real_body.cpp` (`MenuTick`, the detour's figure
 - The first opening after `self_view 3 1` (body spawned in the menu) took about 0.1 s from spawn to show; Sam's
   figure is visible for that time.
 - The self view's BB pod prop (12) is removed after 1 s of the menu like on any sleep and comes back in the field.
+
+## 16. The self view fits Sam's gear to the character (`session.ini self_fit`, default on)
+
+**Status (2026-11-17): works in hidden runs (Fragile, porter suit), solo and in two games.** Before, the self
+view drew Sam's real gear on Sam's hidden skeleton (section 8.1) while the character's body, with its own
+bone lengths, copied his pose: Fragile is smaller (head joint 6.3 cm lower, shoulders 3.8 cm narrower per
+side, torso 12 % shorter), so the shoulder shields and arm devices hung outside and above her shoulders.
+
+### 16.1 What it does [V: runs below]
+
+While the self body is shown (reason 63 set, section 8.3), Sam's own model update ends with his skeleton
+in the character's proportions (`CaptureSam` in `real_body.cpp`, Sam's branch of the animate detour):
+- every local joint but the root takes the self body's latched translation and scale (the same values
+  `ApplyBody` writes on her body), the pelvis Sam's translation times the pelvis ratio; then the game's
+  model-matrix and bounds steps run again (`0x141D8AA20`, `0x141D8A660`, as for the bodies).
+- **Same pose** (default; `self_view 6 <0/1>`). The rotations, the root and the pelvis come from **the capture
+  the self body was last written from** (`ApplyBody` publishes it), not Sam's newest: the body's model is
+  updated before Sam's in a frame, so it shows the previous frame's pose (section 8.2), and gear hung on Sam's
+  newest pose parted from it while moving. Measured every tick (Sam's hidden joints against the drawn body's,
+  model space, `[self] fit on: ... Sam vs body cm mean/max`): with the same pose **0.0/0.0 cm** at the neck,
+  both hands and the right foot standing, running uncapped (about 115 fps) and running at 30 fps; with Sam's
+  newest pose, running, mean 1.4-2.8 / max 5-7 cm uncapped and mean 6-8 / **max 15-20 cm at 30 fps** (run
+  `20261117-215351-self-fit-head`; the same in `-220357`). The cost: Sam's hidden skeleton is one frame behind
+  his animation (what the game reads from it, such as hand positions for aiming, is one frame old) [I: no
+  effect seen].
+- **Head lift** (default 100 %; `self_view 7 <percent>`). Sam's head joint (31; its subtree 31-34) sits that
+  share of the way from her head back to where Sam's own head would be: Sam's cap and glasses hang on his
+  `HLP_Head` helper, made for his head, and with her head joint the cap sank over her eyes with her hair
+  showing through its crown (`01-front-lift0`). Measured once per show on Sam's own pose: the original
+  animate's head model matrix against the fitted one, expressed in the neck joint's (30) frame; the frame
+  convention is checked on that very write (the head must sit at neck + t . axes: `check 0.00 mm`) or the lift
+  stays off (state 2). Measured: 5.6-6.1 cm. Front and side close-ups at 0 / 50 / 75 / 100 % (run `-215351`,
+  2560x1440, enlarged): 0 and 50 % cover her eyes; 75 and 100 % sit on her hair with her eyes visible; 100 %
+  also keeps the third-person camera where it is with Sam (the camera follows that joint: the frames shift with
+  the lift).
+- So everything the game hangs on Sam's skeleton sits on her: the helper-attached gear (shoulder shields,
+  cap and glasses on `HLP_Head`, BB pod, hanging boots, Odradek), the backpack, the cargo slots on the arms
+  and hips, the weapon in her hand (section 17), and the **equipped boots**, which copy Sam's leg and foot
+  model matrices (`DSPlayerBootsComponent`, MsgModifyAnimatedPose `0x1427C4880`, 10 joints by name hash):
+  they are drawn on her feet and cover the boots of her own model (the porter suit's boots are a primitive
+  inside its one body mesh, `sam_body_boot_v00_set`, so they cannot be hidden as a part; they are not visible
+  under the equipped boots in the runs below).
+- **Clean capture.** The capture (the wire's STJ1 frames, the self body's pose, the meter) still gets Sam's
+  own joints: before the capture, a rotation, translation or scale still bit-identical to the one written on
+  the last update (the game did not rewrite it) is read as its clean value. One Sam update at a time goes
+  through the guard, the capture and the fit; a second one at the same moment skips its capture (`busy`, 0
+  in the runs), so no unguarded pose reaches the wire.
+- **Leak check** (the review asked whether the game's animate derives anything from the pose we leave
+  behind). Logged every second: of the translations the shape changes, how many came back nearer the shape
+  than Sam's reference (taken at the first fit update), with the fit on and, as the comparison, with the self
+  body shown and the fit off; and the captured pelvis length both ways. Run `20261117-220357-self-fit-head`,
+  running uncapped: **fit on 4.00 per update, fit off 4.00 per update, the same joints both ways (26, 27, 55,
+  56: `MTP_R_Hand_a/b`, `MTP_L_Hand_a/b`, hand helpers the game animates), the same largest change (78.3 mm)**;
+  standing 0 both ways; captured pelvis 90.6-97.6 cm running either way. Two games (`20261117-220002`): 0
+  while running with the fit on and off; the same four hand helpers only while the rifle was held. So no leak
+  was seen [V for those states; vehicles, falls and ladders not run].
+- **Off.** `FitOff` runs before reason 63 is cleared (SelfUnshow, a new player entity, the emergency stop),
+  and those paths then wait (at most 5 ms) for a Sam update already inside the fit, so the last write lands
+  before the clear (review: one in flight could land after it). Sam's next update writes nothing and puts
+  back any value the game left as ours (`restores`, 0 in the runs: the game rewrote them). Sam can still be
+  drawn with her proportions for the one update between the clear and his next animate.
+- **Safety.** No new game call or hook: the same `WriteProcessMemory` of the 77 local joints and the same
+  two pose functions the bodies use, on Sam's pose after the original animate returned, with the pose header
+  checked as for the capture (skeleton, state 4, sizes). A fault in the pose functions turns the fit off for
+  the session (`faults`). The fit only runs for a latched body on its own skeleton (a body on Sam's skeleton
+  has his proportions). Not covered: another thread reading Sam's matrices between the original animate and
+  our rewrite.
+- **The other screen.** The sender (partner_gear, section 12.3) measures each gear item against Sam's
+  reshaped joints, so the receiver, placing it on the partner body's identical joints, gets the same fit with
+  no wire change. Items on the head joints (31-34) are measured against her head without the lift
+  (`realbody::HeadLift`: the sender takes the lift, rotated by the neck joint, off those joints' frames), so
+  the receiver's placement on her body's real head carries the same lift: on the host's screen the cap sits on
+  her hair with her eyes visible (run `20261117-220002`, 1920x1080, enlarged). A guest with the self view off
+  (or the fit off) still sends items measured on Sam's proportions, as before.
+- **Side effects** [I]: the game's own systems that read Sam's joints (aim origins, IK) see the character's
+  proportions, one frame late, while the self view is shown; with the lift at 100 % the camera height is
+  Sam's.
+
+Controls: `session.ini self_fit=0` (mod key only, not written by the launcher) keeps Sam's proportions;
+`self_view 5 <0/1>` the fit, `self_view 6 <0/1>` the same pose, `self_view 7 <percent>` the head lift at run
+time (docs/debug-actions.md). Logged: `[self] showing ... fit on (...)` and every second `[self] fit on:
+writes=... same-pose=... (newest ...) ... held=... (t joints, q, s) restores=... wpm=... torn=... busy=...
+faults=...; leak check ...: off .../update ... on .../update ...; captured pelvis cm off ... on ...; head
+lift ...% (measured ... cm, check ... mm, state ...); Sam vs body cm mean/max over N ticks: neck ... R hand
+... L hand ... R foot ... head ...`.
+
+### 16.2 Evidence (hidden, `-SeedSaves complete-100`, all pass, exit 0, no error.txt, real saves unchanged, 0 uploads)
+
+| Run (`build-testenv\runs\`) | What it shows |
+|---|---|
+| `20261117-215351-self-fit-head` and `-220357-self-fit-head` (solo, `my_character=fragile_suit`, 2560x1440, the cap put on with `gear 14 15 1`) | `01-front-lift0/50/75/100`, `01-front-nofit`, `02-side-lift0/100`, `02-side-nofit` (enlarged): the cap over her eyes with hair through the crown at 0 %, still over her eyes at 50 %, on her hair with the eyes visible at 75 and 100 % (100 % as with the fit off). `01-front-lift100` against `01-front-nofit`: the shoulder shields closer to her shoulders, the hip case against her hip, the gold-trimmed equipped boots on her feet in both. Meter: same pose 0.0/0.0 cm standing and running at both rates, newest pose up to 7 cm (uncapped) and 20 cm (30 fps) running; the leak check above. `06-other-character*`: the self view switched to the leather-jacket Fragile (`self_view 1 3`), the fit and lift measured again. |
+| `20261117-220002-two-games-final` (host Sam, guest `fragile_suit` with the self view, fit and lift, as the launcher writes by default; `graphics low` with a 1920x1080 settings.cfg) | Host's view of the guest, enlarged: `01` the cap on her hair, eyes visible, empty hands, her own model's boots (the partner side has no equipped boots, 16.3); `02` the rifle prop upright in her right hand; `03` shouldered and aimed; `05` the red blood grenade in her right hand; `06` empty again. Guest's own screen: `02-guest-self-rifle` her real blue non-lethal rifle upright in her right hand, the cap on her hair from behind; `12-guest-self-off` Sam with his gear (self view off), `13-guest-self-again` Fragile again. Guest's view of the host: `08` a dark rifle across his chest while he aims, partly behind her cap. `10-host-sees-guest-back`: she stepped out of the frame (weak). |
+| `20261117-202654-self-fit`, `-203337-two-games-fit` (before the same pose and the lift) | Kept for history: the fit standing; the cap then sank (no lift). |
+
+### 16.3 Not covered / still different
+
+- The gear models keep Sam's size and Sam's girth in their helper offsets (the shields are made for his
+  shoulders: from the front they still stand a little out from hers).
+- **The partner's boots.** On the other screen the partner body shows her model's own boots, not the
+  equipped boots: the boots entity (`ds_player_inventory`, DSPlayerBootsComponent) is not mirrored (a copy of
+  a DS gameplay component is refused by the mirror policy, section 12; copies of such entities crashed worker
+  threads before). A boots prop driven as a pose target (its 10 joints from the partner body's pose) is the
+  planned next step; it must first be proven at mirror level 2 in hidden runs. (`demo_sam_boot_def_new` is
+  named in the path lists but is in no archive of this install.)
+- The cargo menu's figure (section 15) is not fitted (the menu still hangs Sam's gear on Sam's proportions).
+- A guest with the self view off sends gear measured on Sam's proportions.
+- Vehicles, falls and ragdoll, ladders and ropes, carrying a body and BT tar were not run with the fit on.
+
+## 17. Weapons in hand: the partner's weapon on its body, yours on your character
+
+**Status (2026-11-17, after v0.9.0): works in hidden runs, solo and between two games.** The user's request: "guns
+visible in hand is important". A weapon or grenade the player draws now shows in the hand of their body on the
+other screen, follows the hand (aiming, firing, the throw's wind-up), and goes when it is put away. On your own
+screen, under the self view, the game's own weapon sits in your character's hand.
+
+### 17.1 How the game holds a weapon [V: static analysis, then the run logs below]
+
+- Every weapon or hand tool is a `DSWeaponEntity` (RTTI `0x144BDF5E0`) owned by the player's inventory:
+  `+0x70` parent, `+0xB0` its `AttachToHelperMover`, `+0x338` the weapon instance. Instance `+0x12` u8
+  EDSWeaponId, `+0x18` its `DSWeaponParameter` (`+0x20` Id, `+0x113` Lv), `+0x300` owner, `+0x308` back
+  reference (entity + 0x20), `+0x450` flags. Mover `+0x48` its entity, `+0xA0` "local is identity", `+0xB0` the
+  helper name.
+- Drawn: `WeaponInstance::AttachTo` (`0x142911300`, from `Inventory::EquipToHand` `0x1427ABCE0` and the grenade
+  state machine `0x1428827F0`) parents it to Sam on helper `MTP_R_Hand_a` (joint 26 of the 77) with an identity
+  local. On the backpack hanger: parent the backpack, helper `HLP_WeaponAsr2`, `HLP_WeaponPzbr` ... Grenades wait
+  in the pouch (`HLP_Grenade`, a pouch entity) and are visible only in the hand.
+- Logged in every run (`[gear] our weapon ...`): the assault rifle `weapon id 45 (parameter id 45) level 4`,
+  parent the backpack on `HLP_WeaponAsr2`, then parent Sam on `MTP_R_Hand_a (joint 26, local identity)`; the
+  blood grenade `id 7`, the electric grenade `id 10`, the PCC `id 38` on `HLP_WeaponPzbr`; `instance ok`,
+  `mover ok` every time.
+- **A copy of a DSWeaponEntity crashes the game**: its update reads the weapon instance without a null check
+  (`0x142933FA6`); a copy has none. Run `20261117-133622` was that crash (the PCC copy at mirror level 2, section
+  12.6). `MirrorableAt` refuses every DSWeaponEntity now, at any level, and the receiver never loads a weapon's
+  own resource at any level (17.4).
+
+### 17.2 Sender (game thread)
+
+- **The read** (the 100 ms entity walk of section 12.3): a visible DSWeaponEntity under Sam (in a hand, or on
+  the backpack) is a `weapon` item: its resource (path + GUID, an id of the STR1 table, cached per node like an
+  entity's), `model` = EDSWeaponId, `variation` = its level, anchored on **the joint its mover's helper names**
+  (`MTP_R_Hand_a` 26, `MTP_L_Hand_a` 55, `_b`/`_c`, `MTP_Spine_a..c`), else on its parent item (the
+  backpack), else the nearest joint. In a hand its pose relative to the anchor is the mover's constant local, so
+  the hand carries it on the receiver's body with the 77-joint pose (no per-frame weapon pose). Every field is
+  read fault-free and checked (back reference, owner, `DSWeaponParameter` / `AttachToHelperMover` RTTI, the mover
+  pointing back). The cartridges (DSAttachOrPhysicsEntity children) are refused as before. **A weapon with no
+  prop on the other screen (17.4: the PCC, bola gun, launchers ...) is not sent and takes no id**: the STR1
+  table has 64 ids for the session and never frees one (review), so only weapons the receiver can draw use it
+  (logged once each, `our weapon '...': no prop for it on the other screen (not sent)`); a full table is
+  logged once (`the resource table is full`).
+- **The watch** (every tick, about 8 reads): the inventory's current weapon (`0x1427A4390`: the instance at
+  inventory `+0xD0 + 0x70 * u8 [+0x1C78]`, byte-checked) and its entity's visible bit and parent, plus those of
+  the weapon that was current before (put away: the slot changes when the wheel's item is picked, the old
+  weapon is hidden later). A change triggers the read at once, at most once per 40 ms (a state that toggled
+  every tick would otherwise turn the 100 ms walk into a per-tick one; review). `gear 17` counts the reads
+  that waited for the gap (1 of 7 changes in run `20261117-220002`).
+- **No debounce for weapons**: a layout that differs from the last only in its weapon items is taken at once
+  (the one-read agreement of section 12.3 stays for everything else).
+- `gear 17 <0/1>` switches weapons off / on and reports the watch: `draw / holster to frame: mean 14 ms, max
+  109 ms over 8` (run `211649`; 0 ms in 7 of 8: the read runs in the same tick as the watch).
+
+### 17.3 Wire: STC1 version 3
+
+One new kind, `weapon = 6` (`kGearKindMax` 6), in the same 18-byte item: `res` is the weapon's resource id
+(part of the layout hash, like an entity's), `model` its EDSWeaponId, `variation` its level. STC1 goes to
+version 3 (a version 2 frame is refused; mixed builds never meet: HELLO build check). STV1 keeps a weapon look's
+`res` too (`wire::GearHasRes`). Unit-tested in `st_net_tests` (`TestGearV2`: round trip, the id in the layout,
+an id of 64, a kind of 7 and a version 2 frame refused).
+
+### 17.4 Receiver
+
+- **The weapon's own resource is never loaded.** Its STR1 entry (`ds/entities/weapons/...`) is kept for the
+  weapon items only (`[gear] the partner's weapon resource N '...': never loaded itself; its weapon items show
+  w_assault_rifle`); an entity item naming it stays refused (`GearResProven` unchanged). Since the review this
+  holds **at any mirror level on the receiver too**: `ResAllowed` refuses a weapon's own resource
+  (`wire::GearResWeaponOnly`: `ds/entities/weapons/...` other than the three proven entity resources of that
+  folder, `weapon_collection`, `sam_cant`, `sam_boot`; unit-tested in `st_net_tests`) before the level-2 test
+  shortcut, so a weapon resource is never loaded even from a peer that sent one at level 2.
+- **A cutscene prop of the same model** (DSControlledEntity, the class already spawned for the bodies, the
+  backpack and the pod; decoded offline from the cores, `kWeaponMap` in `partner_gear.cpp`):
+
+| Weapon core | Prop | Match |
+|---|---|---|
+| `assault_rifle` (every level, lethal and non-lethal) | `demo_apv_asr2_main_def_v04_def` d6215dea | the same `part_asr2_main_def` model; its colours are the prop's variation (dark), not the player's |
+| `blood_grenade` | `demo_grbl_main_def` 76840453 | exact |
+| `electrical_grenade` (remote stun bomb) | `demo_grdc_main_def` 0ffe5ad6 | exact |
+| `grenade` | `demo_grfl_main_def` 7b42becd | exact (`part_grfl_main_def`) |
+| `smoke_grenade` | `demo_grsm_main_def` 9f924eca | exact (`part_grsm_main_def`) |
+| `multi_rod` | `demo_mrod_main_def` e00d083a | exact |
+| `hand_gun` (player: hag1 / hag3) | `demo_hag2_main_def` af940392 | approximate (another handgun model) |
+| `shot_gun` (player: shg0) | `demo_shg2_main_def` c739ae4a | approximate |
+
+  No prop exists (nothing is drawn, logged once per resource): bola gun, grenade launchers, sticky gun, maser
+  gun, EX grenades, PCC, ladder, climbing anchor, spray, strand.
+- Placed every frame by the detour on the body's own joint 26 like every other prop (section 12.5), shown with
+  the body. A prop no item wants any more (put away, thrown, switched) is **kept hidden for 60 s** (6 at most)
+  and taken again by the next item of the same key: the next draw shows without a load (`weapon spares N (K
+  kept, R reused)`). Logged: `weapon prop N 'w_...' shown X ms after its layout was taken`.
+- **Self view.** Nothing to send: the game itself draws the real weapon on Sam's hidden skeleton, which the fit
+  of section 16 reshapes to the character's bones, so it sits in her hand (her real, colour-correct weapon).
+
+### 17.5 Latency [V: logs below]
+
+Draw on one game to the prop in the hand on the other (both games capped at 30 fps, one PC, UDP loopback):
+- sender: the watch and the read in the same tick (0 ms in 7 of 8 changes in run `211649`, 109 ms once; before
+  the watch also followed the previous weapon, a put-away was found by the 100 ms read and the watch's figure
+  read a misleading 1.1 s, runs `205843`..`211150`), the frame on the next send (at most one tick, 33 ms);
+- link: frame taken -> layout applied on the other game 31-55 ms (run `211150`, from the same layout hashes
+  logged on both games, both directions: the clock offset cancels);
+- prop: shown 33-67 ms after the layout on its first spawn (one load of the cutscene resource), 0 ms when a kept
+  prop is reused, and the rifle drawn from the backpack keeps its prop (the same key, re-anchored).
+So about 70-150 ms at 30 fps; the hand's motion afterwards is the pose stream's (section 3).
+
+### 17.6 Evidence (hidden, `-SeedSaves complete-100`, all pass, exit 0, no error.txt, real saves unchanged, 0 uploads)
+
+| Run (`build-testenv\runs\`) | What it shows |
+|---|---|
+| `20261117-205442-weapons-solo` (solo, 2560x1440, the self view Fragile porter suit with the fit, a debug Fragile mirroring her and wearing her gear through the partner's placement, `gear 4 1`) | `03-rifle-drawn` (enlarged): the self view's Fragile holds the game's own non-lethal rifle (purple and blue) upright in her right hand; the debug Fragile, facing her, holds the dark rifle prop upright in her right hand. `04-rifle-aim`: the debug Fragile shoulders the prop and aims, the grip in her right hand. Later frames: the bodies overlap or the camera was turned by the wheel's stick (fixed in the scenario since). |
+| `20261117-211649-weapons-solo` (the same, the wheel used without turning the camera) | Enlarged: `09-blood-grenade` the red and white grenade in the debug Fragile's right hand; `13-electric-grenade` the stun bomb in her hand; `15-put-away` both hands empty; `16-rifle-again` the debug Fragile holds the dark rifle prop again while the self view's Fragile in front holds her real purple rifle. Watch: `mean 14 ms, max 109 ms over 8`; the rifle's prop came back from the spares (`shown 0 ms`). |
+| **`20261117-211150-two-games-weapons`** (host Sam, guest `fragile_suit` with the self view and fit, `graphics low` 1280x720) | Host's view of the guest's body, enlarged: `01` empty right hand; `02-host-sees-guest-rifle` the dark rifle held upright in her right hand; `03-...-aim` the rifle shouldered and aimed; `05-...-grenade` the red and white grenade in her right hand; `07-...-put-away` the hand empty again (run `210601`: `weapons 0` in the host's layout within 0.1 s of the guest's put-away, clocks aligned by the layout hashes). Guest's view of the host's Sam body: `09-guest-sees-host-aim` a dark gun across his chest while he aims; in `08` / `10` his right hand is hidden behind the guest's own shoulder shield (weak evidence for that side; the logs show the props live and shown: `weapon prop 4 'w_assault_rifle' shown 66 ms`, `'w_electric_grenade' shown 33 ms`). Guest's own screen: `02-guest-self-rifle` her real rifle in her right hand. |
+| `20261117-212222-two-games-weapons` (the final build: the watch follows the previous weapon too) | The host's view of the guest, enlarged, as in `211150`: empty hand (`01`), the rifle upright (`02`), aimed (`03`), the grenade in her right hand (`05`), empty again (`07`). `gear 17`: `draw / holster to frame: mean 0 ms, max 0 ms over 4` on both games; props `shown 32-67 ms` after their layouts. |
+| `20261117-205843`, `-210231`, `-210601`, `-210924-two-games-weapons` | Earlier framings of the same scenario (the guest hidden behind the host's Sam, the camera turned by the wheel's stick); same logs: every draw, switch and put-away followed on both games, no prop failure. |
+| **`20261117-220002-two-games-final`** (after the review fixes; the guest as the launcher writes it, 1920x1080) | Host's view of the guest, enlarged: `01` empty right hand, `02` the dark rifle prop upright in her right hand, `03` shouldered and aimed, `05` the red blood grenade in her right hand, `06` empty again (logs: `w_assault_rifle shown 65 ms`, `w_blood_grenade shown 33 ms`). Guest's own screen: `02-guest-self-rifle` her real blue non-lethal rifle in her right hand. Guest's view of the host: `08` a dark rifle across his chest while aiming, partly behind her cap; `07` the rifle not visible (his hand low, behind her head): weak. The PCC was logged `no prop for it on the other screen (not sent)` and took no id. |
+
+### 17.7 Not covered
+
+- **Weapons with no cutscene model** (the bola gun, grenade launchers, sticky gun, maser gun, EX grenades, the
+  PCC, ladder, climbing anchor, spray, strand): nothing is drawn for them on the other screen. Drawing them needs
+  a plain entity built from the loaded weapon resource's model components (a private `EntityResource` and the
+  game's own entity creation, as `DSWeaponEntity::OnInit` `0x14292D290` does for its cartridges), with its own
+  lifetime: not attempted.
+- **Colours**: the rifle prop keeps its own dark variation; the player's rifle (gold Lv4, non-lethal blue) is
+  not matched (the look sync of section 13 does not resolve weapon variations yet). Handgun and shotgun props
+  are other models of the same kind.
+- Thrown grenades and fired projectiles are world entities, not drawn on the other screen; muzzle flashes,
+  tracers, the aim laser and sounds are not mirrored.
+- Stowed guns on the backpack hanger (the rifle on `HLP_WeaponAsr2`) are drawn as their prop on the backpack;
+  the PCC there has no prop.
+- Tested with the 100% save's rifle and grenades only, standing; not while running, in vehicles or with the
+  left hand (`MTP_L_Hand_a` is mapped but not seen in a run).

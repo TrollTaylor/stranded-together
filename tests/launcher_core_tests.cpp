@@ -292,6 +292,29 @@ void Characters() {
     CHECK(CharacterKeyOrSam("gandalf") == "sam");   // not in the table
     CHECK(CharacterKeyOrSam("nobody") == "sam" && CharacterKeyOrSam("") == "sam");
     CHECK(CharacterLabel("diehardman") == "Die-Hardman" && CharacterLabel("nobody") == "Sam (porter suit)");
+    // The guest plays Fragile (porter suit); others only with the Debug option "Allow other characters".
+    CHECK(std::string(kGuestCharacter) == "fragile_suit" && IsOfferedCharacter(kGuestCharacter) &&
+          CharacterLabel(kGuestCharacter) == "Fragile (porter suit)");
+    CHECK(GuestPickOrDefault("Cliff") == "cliff" && GuestPickOrDefault("sam") == "sam" && GuestPickOrDefault("gandalf") == "fragile_suit" &&
+          GuestPickOrDefault("") == "fragile_suit");
+    CHECK(GuestCharacter("cliff", false) == "fragile_suit" && GuestCharacter("sam", false) == "fragile_suit" &&
+          GuestCharacter("cliff", true) == "cliff" && GuestCharacter("sam", true) == "sam" && GuestCharacter("gandalf", true) == "fragile_suit");
+    {
+        const std::vector<CharacterChoice> only = GuestCharacterChoices(false), all = GuestCharacterChoices(true);
+        CHECK(only.size() == 1 && only[0].key == "fragile_suit" && only[0].label == "Fragile (porter suit)");
+        CHECK(all.size() == 16 && all[0].key == "sam");
+    }
+    {
+        // Saved choices from before (no "character_defaults"): the old default "sam" (or nothing) becomes
+        // Fragile (porter suit), a real pick is kept; with the marker, "sam" is a pick like any other.
+        json::Value old = json::Value::Object();
+        CHECK(GuestPickFromSettings(old, "sam") == "fragile_suit" && GuestPickFromSettings(old, "") == "fragile_suit" &&
+              GuestPickFromSettings(old, "cliff") == "cliff" && GuestPickFromSettings(old, "fragile") == "fragile" &&
+              GuestPickFromSettings(old, "gandalf") == "fragile_suit" && GuestPickFromSettings(old, "Sam") == "fragile_suit" &&
+              GuestPickFromSettings(old, "Cliff") == "cliff");
+        old["character_defaults"] = kCharacterDefaults;
+        CHECK(GuestPickFromSettings(old, "sam") == "sam" && GuestPickFromSettings(old, "") == "fragile_suit");
+    }
 
     std::string text, error;
     SessionIni back;
@@ -588,6 +611,15 @@ void DebugOptionsPersist() {
     CHECK(!h.real_partner_body);
     ApplyDebugOptions(h, ini);
     CHECK(ini.partner_body == "holo");
+    // Other characters for the guest: off by default (older settings files too), saved, never in session.ini.
+    CHECK(!DebugOptions{}.allow_other_characters && !DebugOptionsFromSettings(json::Value::Object()).allow_other_characters);
+    {
+        DebugOptions a;
+        a.allow_other_characters = true;
+        json::Value s = json::Value::Object(), sb;
+        DebugOptionsToSettings(a, s);
+        CHECK(json::Parse(json::Dump(s), sb) && DebugOptionsFromSettings(sb).allow_other_characters);
+    }
     // Self view: on by default (older settings files too), saved, and only with the real body.
     CHECK(DebugOptions{}.self_character && DebugOptionsFromSettings(json::Value::Object()).self_character);
     CHECK(h.self_character && !ini.self_character);   // Hologram: no pose hook, no self view
@@ -693,11 +725,12 @@ void UiLogic() {
     }
     const ui::Options so = ui::ParseCommandLine({L"--write-session", L"solo"});
     CHECK(so.error.empty() && so.write_role == L"solo");
-    CHECK(ui::SceneCount() == static_cast<int>(ui::Scene::count) && ui::SceneCount() == 39);
+    CHECK(ui::SceneCount() == static_cast<int>(ui::Scene::count) && ui::SceneCount() == 40);
     CHECK(std::string(ui::SceneName(ui::Scene::debug_test_saves)) == "36-debug-test-saves" &&
           std::string(ui::SceneName(ui::Scene::debug_local_test)) == "37-debug-local-test" &&
           std::string(ui::SceneName(ui::Scene::play_join_characters)) == "38-play-join-characters" &&
-          std::string(ui::SceneName(ui::Scene::play_join_hologram)) == "39-play-join-hologram");
+          std::string(ui::SceneName(ui::Scene::play_join_hologram)) == "39-play-join-hologram" &&
+          std::string(ui::SceneName(ui::Scene::debug_options_characters)) == "40-debug-options-characters");
     CHECK(std::string(ui::DebugTabLabel(ui::DebugTab::saves)) == "Test saves" && ui::kDebugTabCount == 3);
     for (int i = 0; i < ui::SceneCount(); ++i) CHECK(*ui::SceneName(static_cast<ui::Scene>(i)) != '\0');
 }
@@ -705,10 +738,19 @@ void UiLogic() {
 void MockFlow() {
     MockModel m(MockOptions{});
     m.use_manual_clock(0.0);
-    CHECK(m.my_character() == "sam" && m.local_test().guest_character == "sam");
+    CHECK(m.my_character() == "fragile_suit" && m.local_test().guest_character == "fragile_suit");
+    m.set_my_character("Fragile");   // fixed without "Allow other characters"
+    CHECK(m.my_character() == "fragile_suit");
+    {
+        DebugOptions a;
+        a.allow_other_characters = true;
+        m.set_debug_options(a);
+    }
     m.set_my_character("Fragile");
     m.set_local_test_guest_character("gandalf");   // not a character
-    CHECK(m.my_character() == "fragile" && m.local_test().guest_character == "sam");
+    CHECK(m.my_character() == "fragile" && m.local_test().guest_character == "fragile_suit");
+    m.set_debug_options(DebugOptions{});
+    CHECK(m.my_character() == "fragile_suit");
     std::string code, error;
     CHECK(m.host(code, error));
     m.advance(15.0);
@@ -821,7 +863,7 @@ void RealModelFlow() {
     CHECK(ReadTextShared(paths.session_ini, text) && ParseSessionIniText(text, ini, error));
     CHECK(ini.role == "host" && ini.transport == "steam" && FormatJoinCode(ini.secret, kSteamIdBase + 104729ull) == code);
     CHECK(ini.one_shot && ini.debug_menu && ini.debug_menu_key == 9);
-    CHECK(ini.my_character == "sam" && ini.partner_body == "real" && m->my_character() == "sam");
+    CHECK(ini.my_character == "sam" && ini.partner_body == "real" && m->my_character() == "fragile_suit");   // the host is Sam
     CHECK(!m->check_code(code).ok);   // own code
 
     // The game starts; the mod consumes the one-shot session.ini (renames it) and reports in.
@@ -861,6 +903,13 @@ void RealModelFlow() {
     // Join, cancel; solo test; LAN mode.
     CHECK(!m->join("DST1-nonsense", error));
     const std::string partner = FormatJoinCode("7QK2MX9RT4PB8WZ3HCNA", kSteamIdBase + 7919ull);
+    m->set_my_character("diehardman");   // fixed without "Allow other characters"
+    CHECK(m->my_character() == "fragile_suit");
+    {
+        DebugOptions a;
+        a.allow_other_characters = true;
+        m->set_debug_options(a);
+    }
     m->set_my_character("diehardman");
     CHECK(m->my_character() == "diehardman");
     CHECK(m->join("+stranded_join " + partner, error) && m->session_role() == Role::join);
@@ -869,8 +918,8 @@ void RealModelFlow() {
     CHECK(ini.my_character == "diehardman" && ini.partner_body == "real");
     CHECK(ini.self_character && text.find("self_character=1\n") != std::string::npos);   // the default: see yourself as your character
     CHECK(m->cancel_launch(error) && m->phase() == Phase::ready && !IsFile(paths.session_ini));
-    m->set_my_character("gandalf");   // not in the mod's table: Sam
-    CHECK(m->my_character() == "sam");
+    m->set_my_character("gandalf");   // not in the mod's table: Fragile (porter suit)
+    CHECK(m->my_character() == "fragile_suit");
     m->set_my_character("fragile");
     CHECK(m->solo_test(error) && m->session_role() == Role::echo);
     CHECK(ReadTextShared(paths.session_ini, text) && ParseSessionIniText(text, ini, error) && ini.role == "echo" &&
@@ -957,7 +1006,33 @@ void RealModelFlow() {
         auto again = MakeRealModelWithEnv(dir, env);
         CHECK(again->transport() == Transport::udp && again->lan().peer_ip == "192.168.1.20" && again->player_name() == "Sam");
         CHECK(again->debug_options().debug_menu_key == 9 && again->debug_options().send_hz == 30 && again->debug_options().real_partner_body);
-        CHECK(again->my_character() == "fragile");
+        CHECK(again->my_character() == "fragile_suit");   // "Allow other characters" is off again
+        DebugOptions a;
+        a.allow_other_characters = true;
+        again->set_debug_options(a);
+        CHECK(again->my_character() == "fragile");   // the stored pick comes back
+        again->set_debug_options(DebugOptions{});
+    }
+    {
+        // Settings from before Fragile (porter suit) was the guest's character: the old default "sam" is
+        // migrated, a real pick is kept (and counts only with "Allow other characters").
+        std::string saved;
+        CHECK(ReadTextShared(paths.settings, saved));
+        CHECK(WriteAtomic(paths.settings,
+                          std::string("{\"product\":\"stranded-together-launcher-settings\",\"v\":1,\"my_character\":\"sam\",\"test_save\":{\"guest_character\":\"cliff\"},"
+                                      "\"debug\":{\"allow_other_characters\":true}}"),
+                          true, error));
+        auto old = MakeRealModelWithEnv(dir, env);
+        CHECK(old->my_character() == "fragile_suit" && old->local_test().guest_character == "cliff");
+        old->set_player_name("Sam");   // any save writes the marker
+        std::string now_text;
+        json::Value now;
+        CHECK(ReadTextShared(paths.settings, now_text) && json::Parse(now_text, now) && now.Int("character_defaults", 0) == kCharacterDefaults &&
+              now.Str("my_character") == "fragile_suit");
+        old.reset();
+        auto reread = MakeRealModelWithEnv(dir, env);   // migrated once: still Fragile (porter suit), "sam" does not come back
+        CHECK(reread->my_character() == "fragile_suit" && reread->local_test().guest_character == "cliff");
+        CHECK(WriteAtomic(paths.settings, saved, true, error));
     }
     SessionIni host;
     host.role = "host";
@@ -1133,6 +1208,13 @@ void TestSaves() {
 
         // The local two-instance test.
         m->set_local_test_host_pad(true);
+        m->set_local_test_guest_character("cliff");   // fixed without "Allow other characters"
+        CHECK(m->local_test().guest_character == "fragile_suit");
+        {
+            DebugOptions a = m->debug_options();
+            a.allow_other_characters = true;
+            m->set_debug_options(a);
+        }
         m->set_local_test_guest_character("cliff");
         CHECK(m->local_test().guest_character == "cliff");
         CHECK(m->start_local_test(error));

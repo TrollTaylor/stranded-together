@@ -276,6 +276,95 @@ std::atomic<std::uint32_t> g_self_last_frame{0};
 std::atomic<ULONGLONG> g_self_last_apply{0};  // GetTickCount64 of the last pose written onto the self body
 std::atomic<ULONGLONG> g_self_last_copy{0};   // ... of the last transform copied in a detour
 
+// Self view fit (docs/real-partner-body.md section 16). While the self body is shown (Sam hidden by
+// reason 63), Sam's own update ends with his skeleton in the body's proportions: every local joint
+// but the root takes the body's latched translation and scale, the pelvis Sam's own translation times
+// the pelvis ratio (exactly what the body's pose gets), the rotations stay Sam's; then the game's
+// model-matrix and bounds steps run again, as for the bodies. Everything the game hangs on Sam's
+// skeleton (helper-attached gear, the cargo slots, the boots that copy his leg matrices) then sits on
+// the character. Sam's clean pose still feeds the capture (the wire, the self body, the meter): a
+// translation still bit-identical to the one written last (the game did not rewrite it) is read as
+// its clean value. Off: nothing is written; a translation the game left as written is put back.
+// Same pose (default, `self_view 6 <0/1>`): the rotations, root and pelvis come from the capture the
+// self body last applied, not Sam's newest: the body's update runs before Sam's in a frame (section
+// 8.2), so it shows the previous frame's pose, and Sam's gear must hang on that same pose or it parts
+// from the body while moving (18 cm at the hand running at 30 fps in run 20261117-212222).
+// Head lift (`self_view 7 <percent>`): Sam's head joint (and so HLP_Head: the cap, the glasses) sits
+// that share of the way from the character's head back to where Sam's own head would be, measured once
+// in the head's parent frame: Sam's cap is made for his head and sank over her eyes at 0 %.
+struct FitShape {
+    std::uint8_t on[kJ] = {};  // Sam joint -> takes t / s below
+    float t[kJ][4] = {};
+    float s[kJ][4] = {};
+    float pelvis_ratio = 1.0f;
+};
+constexpr unsigned kSamNeck2 = 30, kSamHeadJ = 31;  // JNT_C_B_007_Neck, JNT_C_B_008_Head (its subtree: 31-34)
+struct LiftPub {
+    float local[4] = {};  // the applied lift in the neck joint's frame (Sam's skeleton), 0 when none
+    std::uint32_t on = 0;
+};
+SeqLock<FitShape> g_fit_shape;
+SeqLock<Capture> g_self_applied;       // the capture the self body's pose was last written from
+SeqLock<LiftPub> g_lift_pub;           // for the gear sender (partner_gear): the head items' anchor without the lift
+std::atomic<bool> g_fit_cfg{true};     // session.ini self_fit / `self_view 5 <0/1>`
+std::atomic<bool> g_fit_sync{true};    // `self_view 6 <0/1>`: same pose as the body
+std::atomic<int> g_lift_pct{kDefaultHeadLiftPct};  // `self_view 7 <percent>`
+std::atomic<bool> g_lift_reset{false};  // FitOn: measure the lift again (another body)
+std::atomic<bool> g_fit_want{false};   // game thread: the self body is shown and fitted (cleared before Sam is shown)
+std::atomic<bool> g_fit_busy{false};   // one Sam update at a time inside the fit and the capture
+std::atomic<bool> g_fit_faulted{false};  // a model-matrix call faulted: no fit for the session
+// Sam's update only (under g_fit_busy).
+bool g_fit_active = false;  // the last update wrote the shape
+Joint g_fit_written[kJ];    // what it wrote
+float g_fit_clean_q[kJ][4], g_fit_clean_t[kJ][4], g_fit_clean_s[kJ][4];  // Sam's own joints then
+int g_lift_state = 0;           // 0 to measure, 1 measured, 2 refused (the frame convention did not check out)
+float g_lift_local[3] = {};     // the full lift (100 %) in the neck joint's frame
+int g_lift_pct_pub = -1;        // the percentage last published to g_lift_pub
+float g_fit_ref_t[kJ][3] = {};  // Sam's clean translations just before the first write after FitOn
+bool g_fit_ref_ok = false;
+std::atomic<std::uint32_t> g_fit_writes{0}, g_fit_updates_held{0}, g_fit_joints_held{0}, g_fit_updates_fresh{0}, g_fit_restores{0},
+    g_fit_wpm{0}, g_fit_faults{0}, g_fit_torn{0}, g_fit_skips{0}, g_fit_qheld{0}, g_fit_sheld{0}, g_fit_sync_used{0}, g_fit_sync_fallback{0},
+    g_fit_toward_max{0};
+// The leak check by bucket (0: the fit off, 1: on): joints nearer the shape than Sam's reference, updates
+// measured, the largest change from the reference (um), and which joints (bits 0-63, 64-76).
+std::atomic<std::uint32_t> g_fit_toward[2] = {}, g_fit_leak_upd[2] = {}, g_fit_dev_max_um[2] = {};
+std::atomic<std::uint64_t> g_fit_toward_bits[2][2] = {};
+FitShape g_fit_last_shape;   // Sam's update only (under g_fit_busy): the last shape read
+bool g_fit_last_shape_ok = false;
+std::atomic<bool> g_fit_shown{false};  // the self body is shown (the leak check's fit-off bucket); SelfShow / FitOffWait
+
+// The review's leak check (Sam's update, under g_fit_busy): of the joints the shape changes (the body's
+// translation more than 2 mm from Sam's reference), how many came back from the game's animate nearer the
+// shape than the reference. Measured with the fit on and off: a leak shows only with it on.
+void LeakCheck(const FitShape& sh, const Capture& c, int bucket) {
+    unsigned toward = 0;
+    double dev_max = 0;
+    for (unsigned j = 2; j < kJ; ++j) {
+        if (!sh.on[j]) continue;
+        double ds = 0, dr = 0, dd = 0;
+        for (int k = 0; k < 3; ++k) {
+            ds += (c.j[j].t[k] - sh.t[j][k]) * (c.j[j].t[k] - sh.t[j][k]);
+            dr += (c.j[j].t[k] - g_fit_ref_t[j][k]) * (c.j[j].t[k] - g_fit_ref_t[j][k]);
+            dd += (sh.t[j][k] - g_fit_ref_t[j][k]) * (sh.t[j][k] - g_fit_ref_t[j][k]);
+        }
+        if (dd > 0.002 * 0.002 && ds < dr) {
+            ++toward;
+            g_fit_toward_bits[bucket][j / 64].fetch_or(1ull << (j % 64), std::memory_order_relaxed);
+        }
+        if (dr > dev_max) dev_max = dr;
+    }
+    g_fit_toward[bucket].fetch_add(toward, std::memory_order_relaxed);
+    g_fit_leak_upd[bucket].fetch_add(1, std::memory_order_relaxed);
+    if (bucket == 1 && toward > g_fit_toward_max.load(std::memory_order_relaxed)) g_fit_toward_max.store(toward, std::memory_order_relaxed);
+    const auto um = static_cast<std::uint32_t>(std::sqrt(dev_max) * 1e6);
+    if (um > g_fit_dev_max_um[bucket].load(std::memory_order_relaxed)) g_fit_dev_max_um[bucket].store(um, std::memory_order_relaxed);
+}
+// Captured pelvis length (Sam's clean pose) while the fit is on / off, in micrometres (the review's check:
+// a fit leaking into the capture would shrink it by the pelvis ratio).
+std::atomic<std::uint64_t> g_fit_pel_sum[2] = {}, g_fit_pel_n[2] = {};
+std::atomic<float> g_lift_cm{0}, g_lift_err_mm{-1};
+std::atomic<int> g_lift_diag{0};  // g_lift_state, for the log
+
 // The cargo menu's Sam figure (docs/real-partner-body.md section 15). While the on-foot cargo menu is
 // open the local Sam is asleep in the field and a second Sam (DSPlayerAKukanEntity) stands in the
 // menu's room; the self body then stands on that figure and plays its pose. The figure's model is
@@ -376,6 +465,27 @@ std::int64_t Qpc() {
     return v.QuadPart;
 }
 
+bool CallPoseFns(std::uintptr_t sm, std::uintptr_t pose, bool bounds);
+
+// The fit's write (Sam's update, under g_fit_busy): `cur` over Sam's local joints, then the game's
+// model-matrix and bounds steps. False: not written (counted).
+bool FitWrite(std::uintptr_t sm, std::uintptr_t pose, std::uintptr_t local, const Joint (&cur)[kJ], bool pose_fns) {
+    SIZE_T wrote = 0;
+    if (!WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(local), cur, sizeof(cur), &wrote) || wrote != sizeof(cur)) {
+        g_fit_wpm.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    if (!pose_fns) return true;
+    std::int32_t bounds_on = 0;
+    Rd(sm + kSmBoundsOn, bounds_on);
+    if (!CallPoseFns(sm, pose, bounds_on != 0)) {
+        g_fit_faults.fetch_add(1, std::memory_order_relaxed);
+        g_fit_faulted.store(true, std::memory_order_seq_cst);  // never again this session
+        return false;
+    }
+    return true;
+}
+
 void CaptureSam(std::uintptr_t sm) {
     std::uint8_t hdr[kPoseSize];
     std::uintptr_t pose = 0, local = 0;
@@ -388,10 +498,171 @@ void CaptureSam(std::uintptr_t sm) {
     }
     Capture c;
     if (!mem::Read(local, c.j, sizeof(c.j))) return;
+    // One Sam update at a time through the guard, the capture and the fit: a second one at the same
+    // moment skips its capture (counted `busy`), so no unguarded pose ever reaches the wire.
+    if (g_fit_busy.exchange(true, std::memory_order_acquire)) {
+        g_fit_skips.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    // The fit (section 16): values the game left as we wrote them read as Sam's clean ones.
+    unsigned held = 0, qheld = 0, sheld = 0;
+    const bool was_active = g_fit_active;
+    if (was_active) {
+        for (unsigned j = 0; j < kJ; ++j) {
+            if (std::memcmp(c.j[j].t, g_fit_written[j].t, 3 * sizeof(float)) == 0 &&
+                std::memcmp(c.j[j].t, g_fit_clean_t[j], 3 * sizeof(float)) != 0) {
+                std::memcpy(c.j[j].t, g_fit_clean_t[j], 3 * sizeof(float));
+                ++held;
+            }
+            if (std::memcmp(c.j[j].q, g_fit_written[j].q, 4 * sizeof(float)) == 0 &&
+                std::memcmp(c.j[j].q, g_fit_clean_q[j], 4 * sizeof(float)) != 0) {
+                std::memcpy(c.j[j].q, g_fit_clean_q[j], 4 * sizeof(float));
+                ++qheld;
+            }
+            if (std::memcmp(c.j[j].s, g_fit_written[j].s, 3 * sizeof(float)) == 0 &&
+                std::memcmp(c.j[j].s, g_fit_clean_s[j], 3 * sizeof(float)) != 0) {
+                std::memcpy(c.j[j].s, g_fit_clean_s[j], 3 * sizeof(float));
+                ++sheld;
+            }
+        }
+        (held || qheld || sheld ? g_fit_updates_held : g_fit_updates_fresh).fetch_add(1, std::memory_order_relaxed);
+        g_fit_joints_held.fetch_add(held, std::memory_order_relaxed);
+        g_fit_qheld.fetch_add(qheld, std::memory_order_relaxed);
+        g_fit_sheld.fetch_add(sheld, std::memory_order_relaxed);
+    }
+    {
+        // The review's leak check: the captured pelvis length with the fit on / off, and (fit on) how
+        // many of the translations the fit changes came back nearer the shape than Sam's own.
+        const float* p = c.j[kSamPelvis].t;
+        const double len = std::sqrt(static_cast<double>(p[0]) * p[0] + static_cast<double>(p[1]) * p[1] + static_cast<double>(p[2]) * p[2]);
+        if (std::isfinite(len) && len < 3.0) {
+            g_fit_pel_sum[was_active ? 1 : 0].fetch_add(static_cast<std::uint64_t>(len * 1e6), std::memory_order_relaxed);
+            g_fit_pel_n[was_active ? 1 : 0].fetch_add(1, std::memory_order_relaxed);
+        }
+    }
     c.tick_ms = GetTickCount64();
     c.qpc = Qpc();
     c.frame = g_ct.captures.load(std::memory_order_relaxed) + 1;
     if (g_capture.Write(c)) g_ct.captures.fetch_add(1, std::memory_order_relaxed);
+    for (unsigned j = 0; j < kJ; ++j) {
+        std::memcpy(g_fit_clean_q[j], c.j[j].q, sizeof(g_fit_clean_q[j]));
+        std::memcpy(g_fit_clean_t[j], c.j[j].t, sizeof(g_fit_clean_t[j]));
+        std::memcpy(g_fit_clean_s[j], c.j[j].s, sizeof(g_fit_clean_s[j]));
+    }
+    const bool want = g_fit_want.load(std::memory_order_acquire) && g_fit_cfg.load(std::memory_order_relaxed) &&
+                      !g_fit_faulted.load(std::memory_order_relaxed);
+    if (want) {
+        static thread_local FitShape sh;
+        if (!g_fit_shape.Read(sh)) {
+            g_fit_torn.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            if (g_lift_reset.exchange(false, std::memory_order_acq_rel)) g_lift_state = 0, g_fit_ref_ok = false;
+            if (!was_active && !g_fit_ref_ok) {
+                for (unsigned j = 0; j < kJ; ++j) std::memcpy(g_fit_ref_t[j], c.j[j].t, sizeof(g_fit_ref_t[j]));
+                g_fit_ref_ok = true;
+            }
+            g_fit_last_shape = sh;
+            g_fit_last_shape_ok = true;
+            if (was_active && g_fit_ref_ok) LeakCheck(sh, c, 1);
+            // The pose: the one the self body was last written from (same pose), else Sam's newest.
+            // (The lift is measured on Sam's newest pose: the same rotations as the clean head below.)
+            const Joint* src = c.j;
+            if (g_lift_state != 0 && g_fit_sync.load(std::memory_order_relaxed) && g_self_src.load(std::memory_order_acquire) == 0 &&
+                g_qpc_per_ms > 0) {
+                static thread_local Capture ap;
+                if (g_self_applied.Read(ap) && ap.frame != 0 && ap.frame <= c.frame &&
+                    static_cast<double>(c.qpc - ap.qpc) / g_qpc_per_ms < 150.0) {
+                    src = ap.j;
+                    g_fit_sync_used.fetch_add(1, std::memory_order_relaxed);
+                } else {
+                    g_fit_sync_fallback.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+            Joint cur[kJ];
+            for (unsigned j = 0; j < kJ; ++j) {
+                std::memcpy(cur[j].q, src[j].q, sizeof(cur[j].q));
+                if (j == kSamRoot) {
+                    std::memcpy(cur[j].t, src[j].t, sizeof(cur[j].t));
+                    std::memcpy(cur[j].s, c.j[j].s, sizeof(cur[j].s));
+                } else if (j == kSamPelvis) {
+                    for (int k = 0; k < 3; ++k) cur[j].t[k] = src[j].t[k] * sh.pelvis_ratio;
+                    cur[j].t[3] = c.j[j].t[3];
+                    std::memcpy(cur[j].s, c.j[j].s, sizeof(cur[j].s));
+                } else if (sh.on[j]) {
+                    std::memcpy(cur[j].t, sh.t[j], sizeof(cur[j].t));
+                    std::memcpy(cur[j].s, sh.s[j], sizeof(cur[j].s));
+                } else {
+                    std::memcpy(cur[j].t, c.j[j].t, sizeof(cur[j].t));
+                    std::memcpy(cur[j].s, c.j[j].s, sizeof(cur[j].s));
+                }
+            }
+            const int pct = g_lift_pct.load(std::memory_order_relaxed);
+            if (g_lift_state == 1)
+                for (int k = 0; k < 3; ++k) cur[kSamHeadJ].t[k] += g_lift_local[k] * static_cast<float>(pct) / 100.0f;
+            // The lift's measure (once per body): Sam's own head (the original animate's model matrices,
+            // before our write) against the fitted one, in the neck joint's frame.
+            const std::uintptr_t mb = Field<std::uintptr_t>(hdr, kHdrModel);
+            float clean_head[4][4] = {};
+            const bool measure = g_lift_state == 0 && mb && mem::Read(mb + 0x40ull * kSamHeadJ, clean_head, sizeof(clean_head));
+            if (FitWrite(sm, pose, local, cur, true)) {
+                std::memcpy(g_fit_written, cur, sizeof(g_fit_written));
+                g_fit_active = true;
+                g_fit_writes.fetch_add(1, std::memory_order_relaxed);
+                float neck[4][4], head[4][4];
+                if (measure && mem::Read(mb + 0x40ull * kSamNeck2, neck, sizeof(neck)) && mem::Read(mb + 0x40ull * kSamHeadJ, head, sizeof(head))) {
+                    // The convention (rows = the parent's scaled axes, row 3 its position) checked on this
+                    // very write: the head must sit at neck + t . axes.
+                    double err = 0, lift = 0, d[3];
+                    bool ok = true;
+                    for (int k = 0; k < 3; ++k) {
+                        const double pred = neck[3][k] + cur[kSamHeadJ].t[0] * neck[0][k] + cur[kSamHeadJ].t[1] * neck[1][k] + cur[kSamHeadJ].t[2] * neck[2][k];
+                        err += (pred - head[3][k]) * (pred - head[3][k]);
+                        d[k] = static_cast<double>(clean_head[3][k]) - head[3][k];
+                        lift += d[k] * d[k];
+                        ok = ok && std::isfinite(pred) && std::isfinite(d[k]);
+                    }
+                    err = std::sqrt(err), lift = std::sqrt(lift);
+                    float loc[3] = {};
+                    for (int a = 0; a < 3 && ok; ++a) {
+                        const double n2 = static_cast<double>(neck[a][0]) * neck[a][0] + static_cast<double>(neck[a][1]) * neck[a][1] +
+                                          static_cast<double>(neck[a][2]) * neck[a][2];
+                        if (!(n2 > 0.04 && n2 < 25.0)) ok = false;
+                        else loc[a] = static_cast<float>((d[0] * neck[a][0] + d[1] * neck[a][1] + d[2] * neck[a][2]) / n2);
+                    }
+                    ok = ok && err < 0.002 && lift < 0.20;
+                    if (ok) std::memcpy(g_lift_local, loc, sizeof(g_lift_local));
+                    g_lift_state = ok ? 1 : 2;
+                    g_lift_cm.store(static_cast<float>(lift * 100.0), std::memory_order_relaxed);
+                    g_lift_err_mm.store(static_cast<float>(err * 1000.0), std::memory_order_relaxed);
+                    g_lift_diag.store(g_lift_state, std::memory_order_relaxed);
+                    g_lift_pct_pub = -1;  // publish below
+                }
+                const int pub_pct = g_lift_state == 1 ? pct : 0;
+                if (pub_pct != g_lift_pct_pub) {
+                    LiftPub lp;
+                    for (int k = 0; k < 3; ++k) lp.local[k] = g_lift_local[k] * static_cast<float>(pub_pct) / 100.0f;
+                    lp.on = pub_pct != 0;
+                    if (g_lift_pub.Write(lp)) g_lift_pct_pub = pub_pct;
+                }
+            }
+        }
+    } else if (!g_fit_active && g_fit_ref_ok && g_fit_last_shape_ok && g_fit_shown.load(std::memory_order_relaxed)) {
+        LeakCheck(g_fit_last_shape, c, 0);   // the self body shown, the fit off (`self_view 5 0`): the comparison
+    } else if (g_fit_active) {
+        // Off: Sam's clean values back where the game left ours (it rewrote the rest itself).
+        if (held || qheld || sheld) {
+            Joint clean[kJ];
+            std::memcpy(clean, c.j, sizeof(clean));
+            if (FitWrite(sm, pose, local, clean, !g_fit_faulted.load(std::memory_order_relaxed)))
+                g_fit_restores.fetch_add(1, std::memory_order_relaxed);
+        }
+        g_fit_active = false;
+        if (g_lift_pct_pub != 0) {
+            LiftPub lp;
+            if (g_lift_pub.Write(lp)) g_lift_pct_pub = 0;
+        }
+    }
+    g_fit_busy.store(false, std::memory_order_release);
 }
 
 // The cargo menu's figure: the same capture, into its own buffer (section 15).
@@ -700,8 +971,8 @@ void ApplyBody(BodySlot& b, std::uintptr_t sm, bool live) {
     }
     if (!b.apply_on.load(std::memory_order_acquire)) return;
     const bool from_menu = live && g_self_src.load(std::memory_order_acquire) == 1;
+    static thread_local Capture c;  // live: the capture written (the fit's same pose, section 16.1)
     if (live) {
-        Capture c;
         if (!(from_menu ? g_menu_capture : g_capture).Read(c)) {
             ct.nocap.fetch_add(1, std::memory_order_relaxed);
             return;
@@ -819,6 +1090,7 @@ void ApplyBody(BodySlot& b, std::uintptr_t sm, bool live) {
     }
     ct.applies.fetch_add(1, std::memory_order_relaxed);
     if (live) (from_menu ? g_menu_last_apply : g_self_last_apply).store(GetTickCount64(), std::memory_order_relaxed);
+    if (live && !from_menu) g_self_applied.Write(c);  // the fit hangs Sam's gear on this same pose
     // Gear props on the partner (or debug) body: its world transform now, the pose just written.
     if (!live && g_gear_n[0].load(std::memory_order_acquire)) {
         Xf w;
@@ -1661,7 +1933,45 @@ bool SamHiddenOtherwise(std::uintptr_t sam, const char** why) {
     return true;
 }
 
+// The fit (section 16) off: Sam's next update writes nothing and puts back any translation the game
+// left as ours. Always before reason 63 is cleared.
+void FitOff() { g_fit_want.store(false, std::memory_order_seq_cst); }
+
+// The fit on: the body's latched translations and scales by Sam joint, its pelvis ratio. Only for a
+// latched body on its own skeleton (a body on Sam's skeleton has his proportions).
+const char* FitOn() {
+    FitOff();
+    if (!g_fit_cfg.load()) return "off (self_fit=0)";
+    if (g_fit_faulted.load()) return "off (a model-matrix call faulted earlier)";
+    if (g_me.latch_state.load(std::memory_order_acquire) != 1 || !g_me.latch_ok) return "off (the body's own pose was not latched)";
+    if (g_me.same_skel) return "not needed (the body is on Sam's skeleton)";
+    FitShape sh;
+    for (unsigned bj = 0; bj < kJ; ++bj) {
+        const unsigned sj = g_me.map[bj];
+        if (sj == kSamRoot || sj == kSamPelvis || sj >= kJ) continue;
+        sh.on[sj] = 1;
+        std::memcpy(sh.t[sj], g_me.latch[bj].t, sizeof(sh.t[sj]));
+        std::memcpy(sh.s[sj], g_me.latch[bj].s, sizeof(sh.s[sj]));
+    }
+    sh.pelvis_ratio = g_me.pelvis_ratio;
+    if (!g_fit_shape.Write(sh)) return "off (the shape could not be published)";
+    g_lift_reset.store(true, std::memory_order_seq_cst);  // the head lift is measured again on this body
+    g_fit_want.store(true, std::memory_order_seq_cst);
+    return nullptr;
+}
+
+// FitOff, then wait (at most 5 ms) for a Sam update already inside the fit: one that read "on" before
+// FitOff must finish its write before reason 63 is cleared, so the next update is the one that ends
+// the fit (review: an in-flight write could land after the clear).
+void FitOffWait() {
+    FitOff();
+    g_fit_shown.store(false, std::memory_order_seq_cst);
+    const ULONGLONG until = GetTickCount64() + 5;
+    while (g_fit_busy.load(std::memory_order_seq_cst) && GetTickCount64() < until) SwitchToThread();
+}
+
 void SelfUnshow(const char* why) {
+    FitOffWait();
     if (!g_self_shown) return;
     // Sam first, then the body: Sam is never hidden by us while our body is not shown.
     std::uint64_t m = 0;
@@ -1692,8 +2002,12 @@ bool SelfShow(std::uintptr_t sam) {
     g_self_shown = true;
     ++g_self_shows;
     g_self_not_shown = "";
-    Log("[self] showing '%s' in place of Sam (Sam's global part mask 0x%llX, reason 63 ours: his gear stays; follow mode %d; show %u)", g_me.body ? g_me.body->key : "?",
-        static_cast<unsigned long long>(m), g_self_follow.load(), g_self_shows);
+    const char* fit = FitOn();
+    g_fit_shown.store(true, std::memory_order_seq_cst);
+    Log("[self] showing '%s' in place of Sam (Sam's global part mask 0x%llX, reason 63 ours: his gear stays; follow mode %d; show %u); "
+        "fit %s",
+        g_me.body ? g_me.body->key : "?", static_cast<unsigned long long>(m), g_self_follow.load(), g_self_shows,
+        fit ? fit : "on (Sam's hidden skeleton takes the body's bone lengths: his gear sits on the body)");
     return true;
 }
 
@@ -1919,6 +2233,7 @@ void SelfTick(game::Entity* local, bool local_active, double now_ms) {
     // points back at it (SamMaskAddr; fault-free reads first), else nothing is written. (No player
     // at all is the asleep path below, which shows Sam again the same way.)
     if (sam && g_self_sam && g_self_sam != sam) {
+        FitOffWait();
         const bool cleared = SetOurReason(g_self_sam, false);
         Log("[self] the local player changed while self view was shown: %s", cleared ? "reason 63 cleared on the old entity (still a player)"
                                                                                        : "the old entity is gone (not written)");
@@ -2061,8 +2376,88 @@ void LogLatch(BodySlot& b) {
                        : "; agrees with the pelvis");
 }
 
+// Where Sam's hidden joints are against the body's (model space; both stand on the same world transform
+// in follow mode 1), sampled every tick while the self body is shown, mean / max over a second: neck 30,
+// right hand 9, left hand 38, right foot 63 (what the user sees: the gear and boots on Sam's skeleton
+// against the drawn body), and the head 31 (with the lift: about the lift).
+constexpr unsigned kFitMeterJ[5] = {30, 9, 38, 63, 31};
+double g_fit_d_sum[5] = {}, g_fit_d_max[5] = {};
+unsigned g_fit_d_n = 0;
+void FitSample() {
+    if (!g_self_shown || g_me.phase != Phase::live) return;
+    const std::uintptr_t sam_e = g_sam_e.load();
+    if (!sam_e) return;
+    double d[5];
+    for (unsigned i = 0; i < 5; ++i) {
+        float a[4][4], b[4][4];
+        const unsigned sj = kFitMeterJ[i];
+        if (!ReadJointModel(reinterpret_cast<game::Entity*>(sam_e), sj, a) || !ReadJointModel(g_me.spawn.e, g_me.inv[sj], b)) return;
+        const double dx = a[3][0] - b[3][0], dy = a[3][1] - b[3][1], dz = a[3][2] - b[3][2];
+        d[i] = std::sqrt(dx * dx + dy * dy + dz * dz) * 100.0;
+        if (!std::isfinite(d[i])) return;
+    }
+    for (unsigned i = 0; i < 5; ++i) {
+        g_fit_d_sum[i] += d[i];
+        if (d[i] > g_fit_d_max[i]) g_fit_d_max[i] = d[i];
+    }
+    ++g_fit_d_n;
+}
+
+// The fit's counters (section 16) and the meter above.
+void FitStats() {
+    static std::uint32_t pw = 0, ph = 0, pj = 0, pf = 0, pr = 0, pwpm = 0, pt = 0, ps = 0, pq = 0, pss = 0, psu = 0, psf = 0;
+    static std::uint64_t ppel[2] = {}, ppn[2] = {};
+    static std::uint32_t pto[2] = {}, plu[2] = {};
+    const std::uint32_t w = g_fit_writes.load(), h = g_fit_updates_held.load(), jh = g_fit_joints_held.load(), f = g_fit_updates_fresh.load(),
+                        r = g_fit_restores.load(), wpm = g_fit_wpm.load(), t = g_fit_torn.load(), sk = g_fit_skips.load(), q = g_fit_qheld.load(),
+                        ss = g_fit_sheld.load(), su = g_fit_sync_used.load(), sf = g_fit_sync_fallback.load();
+    std::uint64_t pel[2], pn[2];
+    for (int i = 0; i < 2; ++i) pel[i] = g_fit_pel_sum[i].load(), pn[i] = g_fit_pel_n[i].load();
+    char dist[220] = "";
+    if (g_fit_d_n) {
+        int n = 0;
+        static const char* const kName[5] = {"neck", "R hand", "L hand", "R foot", "head"};
+        for (unsigned i = 0; i < 5 && n >= 0 && n < static_cast<int>(sizeof(dist)); ++i)
+            n += std::snprintf(dist + n, sizeof(dist) - n, " %s %.1f/%.1f", kName[i], g_fit_d_sum[i] / g_fit_d_n, g_fit_d_max[i]);
+    }
+    // the leak check by bucket: joints nearer the shape per update, the largest change, which joints
+    char leak[200] = "";
+    std::uint32_t to[2], lu[2];
+    for (int i = 0; i < 2; ++i) {
+        to[i] = g_fit_toward[i].load(), lu[i] = g_fit_leak_upd[i].load();
+        const std::uint32_t du = lu[i] - plu[i];
+        const std::uint64_t b0 = g_fit_toward_bits[i][0].exchange(0), b1 = g_fit_toward_bits[i][1].exchange(0);
+        char joints[64] = "";
+        int jn = 0;
+        for (unsigned j = 0; j < kJ && jn >= 0 && jn < static_cast<int>(sizeof(joints)) - 4; ++j)
+            if ((j < 64 ? b0 >> j : b1 >> (j - 64)) & 1) jn += std::snprintf(joints + jn, sizeof(joints) - jn, "%s%u", jn ? "," : "", j);
+        const std::size_t used = std::strlen(leak);
+        std::snprintf(leak + used, sizeof(leak) - used, " %s %.2f/update over %u (largest change %.1f mm, joints %s)", i ? "on" : "off",
+                      du ? static_cast<double>(to[i] - pto[i]) / du : 0.0, du, g_fit_dev_max_um[i].exchange(0) / 1000.0, joints[0] ? joints : "-");
+    }
+    char pels[96] = "";
+    for (int i = 0; i < 2; ++i) {
+        const std::uint64_t dn = pn[i] - ppn[i];
+        const std::size_t used = std::strlen(pels);
+        std::snprintf(pels + used, sizeof(pels) - used, " %s %s", i ? "on" : "off",
+                      dn ? std::to_string(static_cast<double>(pel[i] - ppel[i]) / dn / 1e4).substr(0, 6).c_str() : "-");
+    }
+    if (w != pw || r != pr || g_fit_want.load() || lu[0] != plu[0])
+        Log("[self] fit %s: writes=%u same-pose=%u (newest %u) updates game-rewrote=%u held=%u (t joints %u, q %u, s %u) restores=%u wpm=%u torn=%u "
+            "busy=%u faults=%u; leak check (translations nearer the shape than Sam's own):%s, max %u per update; captured pelvis cm%s; "
+            "head lift %d%% (measured %.1f cm, check %.2f mm, state %d); Sam vs body cm mean/max over %u ticks:%s",
+            g_fit_want.load() ? "on" : "off", w - pw, su - psu, sf - psf, f - pf, h - ph, jh - pj, q - pq, ss - pss, r - pr, wpm - pwpm, t - pt, sk - ps,
+            g_fit_faults.load(), leak, g_fit_toward_max.exchange(0), pels, g_lift_pct.load(),
+            static_cast<double>(g_lift_cm.load()), static_cast<double>(g_lift_err_mm.load()), g_lift_diag.load(), g_fit_d_n, dist[0] ? dist : " -");
+    pw = w, ph = h, pj = jh, pf = f, pr = r, pwpm = wpm, pt = t, ps = sk, pq = q, pss = ss, psu = su, psf = sf;
+    for (int i = 0; i < 2; ++i) ppel[i] = pel[i], ppn[i] = pn[i], pto[i] = to[i], plu[i] = lu[i];
+    for (unsigned i = 0; i < 5; ++i) g_fit_d_sum[i] = 0, g_fit_d_max[i] = 0;
+    g_fit_d_n = 0;
+}
+
 void SelfStats(double now) {
     LogLatch(g_me);
+    FitSample();
     if (g_me.phase == Phase::idle || now < g_next_self_stats_ms) return;
     g_next_self_stats_ms = now + 1000;
     static std::uint32_t prev_app = 0, prev_copies = 0, prev_fail = 0, prev_stale = 0, prev_rej = 0, prev_obs = 0, prev_moves = 0;
@@ -2091,6 +2486,7 @@ void SelfStats(double now) {
         rej - prev_rej, g_me.ct.last_reject.load(), aba - prev_aba, nocap - prev_nocap, wpm - prev_wpm, g_me.ct.faults.load(), fz, sk);
     prev_app = app, prev_copies = copies, prev_fail = fail, prev_stale = stale, prev_rej = rej, prev_obs = obs, prev_moves = g_self_tick_moves;
     prev_aba = aba, prev_nocap = nocap, prev_wpm = wpm, prev_caba = caba;
+    FitStats();
     g_self_dist_sum = 0, g_self_dist_max = 0, g_self_dist_n = 0;
 }
 
@@ -2919,9 +3315,28 @@ void ConfigureSelf(const bodies::Body* body) noexcept {
     if (body) Log("[self] self view on: '%s' (%s) is shown in place of the local Sam on this screen", body->key, body->label);
 }
 bool SelfConfigured() noexcept { return g_self_on && g_self_body; }
+void ConfigureSelfFit(bool on) noexcept {
+    g_fit_cfg.store(on);
+    if (!on) FitOff();
+    Log("[self] fit %s (session.ini self_fit)", on ? "on: Sam's hidden skeleton takes the character's bone lengths while the self body is shown"
+                                                    : "off: Sam's gear stays on his own proportions");
+}
+bool HeadLift(game::Entity* sam, float (&local)[3]) noexcept {
+    local[0] = local[1] = local[2] = 0;
+    if (!sam || reinterpret_cast<std::uintptr_t>(sam) != g_sam_e.load(std::memory_order_acquire) || !g_fit_want.load(std::memory_order_acquire))
+        return false;
+    LiftPub lp;
+    if (!g_lift_pub.Read(lp) || !lp.on) return false;
+    for (int k = 0; k < 3; ++k) {
+        if (!std::isfinite(lp.local[k]) || std::fabs(lp.local[k]) > 0.2f) return false;
+        local[k] = lp.local[k];
+    }
+    return true;
+}
 
 void EmergencyStop() noexcept {
-    // The detour stops touching anything (no capture, no transform copy, no pose write).
+    // The detour stops touching anything (no capture, no transform copy, no pose write, no fit).
+    FitOffWait();
     g_sam_sm.store(0, std::memory_order_seq_cst);
     g_sam_e.store(0, std::memory_order_seq_cst);
     g_self_follow.store(3, std::memory_order_seq_cst);
@@ -3324,6 +3739,28 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
                 g_menu_on = v[1] != 0;
                 if (!g_menu_on) MenuEnd("the menu figure switched off (debug)");
                 Set(msg, cap, "cargo menu figure: %s", g_menu_on ? "the self body in its place" : "Sam");
+                return true;
+            }
+            if (v[0] == 5) {  // self_view 5 <0/1>: the fit (section 16) on / off
+                g_fit_cfg.store(v[1] != 0);
+                const char* fit = nullptr;
+                if (v[1] == 0) FitOff();
+                else if (g_self_shown) fit = FitOn();
+                Set(msg, cap, "self view fit %s%s%s", v[1] != 0 ? "on" : "off", fit ? ": " : "", fit ? fit : "");
+                Log("[self] %s", msg);
+                return true;
+            }
+            if (v[0] == 6) {  // self_view 6 <0/1>: the fit's same pose as the body (section 16.1) on / off
+                g_fit_sync.store(v[1] != 0);
+                Set(msg, cap, "self view fit: %s", v[1] != 0 ? "same pose as the body (the pose it was last written from)" : "Sam's newest pose");
+                Log("[self] %s", msg);
+                return true;
+            }
+            if (v[0] == 7) {  // self_view 7 <percent>: the fit's head lift (section 16.1), 0-150
+                const int pct = v[1] < 0 ? 0 : v[1] > 150 ? 150 : static_cast<int>(v[1]);
+                g_lift_pct.store(pct);
+                Set(msg, cap, "self view fit: head lift %d%% (measured %.1f cm, state %d)", pct, static_cast<double>(g_lift_cm.load()), g_lift_diag.load());
+                Log("[self] %s", msg);
                 return true;
             }
             if (v[0] == 4) {  // self_view 4: the menu figure's state and parts in the log

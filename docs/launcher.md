@@ -50,15 +50,27 @@ On start the launcher checks, in this order:
   `secret` from the code.
 * **Your character** (Join tab): the character the host sees you as, written as
   `my_character=<key>` (the mod sends it as STJ1 `body_id`; see
-  [real-partner-body.md](real-partner-body.md)). The list is exactly the bodies marked `offered`
+  [real-partner-body.md](real-partner-body.md)). **A guest plays Fragile in her porter suit
+  (`fragile_suit`), and only her**: the row shows her as a fixed field (a person icon and "Fragile
+  (porter suit)", screenshot `05-play-join-valid`; dimmed like the list while it cannot change, connected or a
+  local test running), with no list (`core::kGuestCharacter`,
+  `core::GuestCharacter`). The list comes back with the Debug option **Allow other characters**
+  (below; screenshot `38-play-join-characters`). With it on, the list is exactly the bodies marked `offered`
   in `native/mod/body_table.cpp` (proven in game; all 16 ids now: Sam, Bridges porter, Fragile,
   Die-Hardman, Cliff Unger, Bridges porter (no suit), Deadman, Heartman, Mama, Lockne, Amelie, Higgs,
   Bridges guard, Bridges medic, Sam (MULE suit), Fragile (porter suit)), which the launcher compiles in (`core::OfferedCharacters`), so the
   mod and the launcher share one list. The note beside it: your partner sees you as this
   character, and so do you on your own screen (the self view, Debug > "See yourself as your
   character", default on; with it off: "On your own screen you stay Sam"; with Debug > Partner body =
-  Hologram it says instead that your partner sees you as a hologram). Remembered in `launcher-settings.json`
-  `"my_character"`; a missing, unknown or no longer offered key is Sam.
+  Hologram it says instead that your partner sees you as a hologram). The pick is remembered in
+  `launcher-settings.json` `"my_character"` and counts only while other characters are allowed (turning
+  the option off and on again brings it back); a missing, unknown or no longer offered key is Fragile
+  (porter suit). **Saved choices from before** (no `"character_defaults": 2` in the file): the old default
+  `"sam"` (or nothing; compared without case, as the mod finds keys, so a hand-edited `"Sam"` too) becomes
+  `fragile_suit`, both for `"my_character"` and the local test's
+  `"test_save"` `"guest_character"`; any other pick is kept as it was (`core::GuestPickFromSettings`). The
+  marker is written with the next save, so `"sam"` picked later with the option on stays `"sam"`. Echo
+  (Solo test) and solo sessions carry the same character (`BaseIni`), and so does `--write-session`.
 * **Solo test**: role=echo. The mod spawns a clone of the player that replays
   their movement `echo_delay_s` behind (Debug page). The launcher writes it with
   `transport=udp`, `udp_peer=127.0.0.1`, ports 27555/27556 (loopback only, no
@@ -93,7 +105,9 @@ Three tabs (`ui::DebugTab`):
   your partner's name floats above their body and yours is sent to them, docs/real-partner-body.md section 10;
   unticked writes `name_tags=0`: nothing is drawn or sent); **Players block each other** (`partner_collision`,
   default on, needs Real character: your partner's body stops you like another character, docs/real-partner-body.md
-  section 11; unticked writes `partner_collision=0`); **Wake the partner clone** (`partner_activate`); **Verbose mod log**; **Reset to
+  section 11; unticked writes `partner_collision=0`); **Allow other characters** (launcher-only, default off,
+  `"debug"` `"allow_other_characters"`, never written to session.ini: off, a guest plays Fragile (porter suit)
+  on Join and in the local test; on, both offer every offered character); **Wake the partner clone** (`partner_activate`); **Verbose mod log**; **Reset to
   defaults**. Saved in `launcher-settings.json` under `"debug"` (sliders when released)
   and written into every `session.ini`, Host and Join included
   (`core::ApplyDebugOptions`).
@@ -114,8 +128,9 @@ Three tabs (`ui::DebugTab`):
   test**, the result after the game (real save tree compared by SHA-256, or the mod's refusal), and
   the **Local two-player test** (two ds.exe on this PC, started directly with `SteamAppId`,
   loopback UDP, 30 fps cap, each on its own sandbox; **Pads on the host too**; **Guest appears
-  as**: the guest game's `my_character`, the host game is always Sam; remembered in
-  `"test_save"` `"guest_character"`) with both games' link state.
+  as**: the guest game's `my_character`, Fragile (porter suit) as a fixed field unless Debug > Allow other
+  characters is on, the host game is always Sam; remembered in `"test_save"` `"guest_character"`) with both
+  games' link state.
 
 The Play > Solo test tab links to it; Tools points to it.
 
@@ -248,7 +263,8 @@ second_instance=1               local test, second game: its single-instance mut
 local_input=host|host_pad|guest local test: input split, keeps running unfocused
 local_window=left|right         local test: the window takes that half of the monitor
 frame_cap=30                    local test: at most 30 frames per second
-my_character=<key>              the character the other player sees you as: an offered body_table key; always sam for a host
+my_character=<key>              the character the other player sees you as: an offered body_table key; always sam for a host,
+                                fragile_suit for every other role unless Debug > Allow other characters is on
 partner_body=real|holo          how the partner is drawn on this screen (Debug page; default real)
 self_character=1                you see yourself as my_character too (Debug page; not for a host or sam)
 name_tags=0                     no name tags (Debug page; written only when unticked, the mod's default is on)
@@ -439,9 +455,10 @@ with faint drip lines, like the logo. `--check` compares pixels (tolerance 2).
 
 ### Screenshots
 
-`st_launcher_screens` renders 38 scenes into `build-launcher\launcher-shots\`
-(`01-play-host` ... `38-play-join-characters`), among them `36-debug-test-saves`, `37-debug-local-test`,
-`38-play-join-characters` (the character list open), `10-play-dev-build`,
+`st_launcher_screens` renders 40 scenes into `build-launcher\launcher-shots\`
+(`01-play-host` ... `40-debug-options-characters`), among them `36-debug-test-saves`, `37-debug-local-test`,
+`38-play-join-characters` (the character list open), `39-play-join-hologram`, `40-debug-options-characters`
+(Debug > Options scrolled to PARTNER BODY with "Allow other characters" ticked), `10-play-dev-build`,
 `11-play-mod-mismatch`, `13-mod-foreign`, `14-mod-disabled`,
 `20-ingame-solo`, `27-debug-options`, `28-debug-files`, `29-debug-in-game`,
 and the updater's `31-play-update-available`, `32-play-update-downloading`,

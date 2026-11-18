@@ -103,6 +103,18 @@ bool SamplePublish(double play_ms) noexcept;
 // `body` = the character to show in Sam's place, nullptr = off (the host, Sam chosen, or
 // session.ini self_character=0). Needs the pose hook.
 void ConfigureSelf(const bodies::Body* body) noexcept;
+// Self view fit (session.ini self_fit, default on): while the self body is shown, Sam's hidden
+// skeleton is reshaped to the body's bone lengths (docs/real-partner-body.md section 16).
+void ConfigureSelfFit(bool on) noexcept;
+// The fit's head lift (section 16.1): Sam's head joint sits this share (percent) of the way from the
+// character's head back to where his own head would be (his cap and glasses on HLP_Head were sinking
+// over her eyes). `self_view 7 <percent>`.
+inline constexpr int kDefaultHeadLiftPct = 100;
+// The lift now applied to `sam`'s head joint (joint 31; its subtree 31-34 moves with it), in the neck
+// joint's (30) frame of Sam's skeleton: the gear sender takes it off the head joints' frames, so items
+// on the head are measured against the character's real head and the other screen gets the same lift.
+// False (local zeroed) when no lift is applied to that entity now.
+bool HeadLift(game::Entity* sam, float (&local)[3]) noexcept;
 bool SelfConfigured() noexcept;
 bool SelfShown() noexcept;           // the body is shown and Sam hidden right now
 game::Entity* SelfEntity() noexcept;  // the self body (loading or live), nullptr when none

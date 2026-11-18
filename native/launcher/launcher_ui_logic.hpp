@@ -151,6 +151,7 @@ enum class Scene {
     debug_local_test,      // Debug > Test saves: the local two-player test running, both games linked
     play_join_characters,  // Join: the character list open
     play_join_hologram,    // Join with Debug > Partner body = Hologram: the "you are sent as a hologram" note
+    debug_options_characters,  // Debug > Options at PARTNER BODY: "Allow other characters" on
     count
 };
 int SceneCount();

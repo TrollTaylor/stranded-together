@@ -66,6 +66,9 @@ struct DebugOptions {
     // Player collision: you cannot walk through your partner's body (session.ini partner_collision;
     // the mod's default is on, so only partner_collision=0 is written).
     bool partner_collision = true;
+    // Guests play Fragile (porter suit) only; on, Join and the local test offer every character
+    // (core::GuestCharacter). Launcher-only: session.ini just gets the resulting my_character.
+    bool allow_other_characters = false;
 };
 
 // The Advanced / LAN section (transport udp).

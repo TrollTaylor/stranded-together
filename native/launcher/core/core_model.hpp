@@ -35,6 +35,13 @@ DebugOptions DebugOptionsFromSettings(const json::Value& settings);
 void DebugOptionsToSettings(const DebugOptions& options, json::Value& settings);
 void ApplyDebugOptions(const DebugOptions& options, SessionIni& ini);
 
+// launcher-settings.json "character_defaults": 2 since Fragile (porter suit) is the guest's
+// character. A stored guest pick ("my_character", "test_save"."guest_character") from before it
+// that is empty or "sam" (the old default) reads as kGuestCharacter; any other pick is kept
+// (GuestPickOrDefault) and counts only with the Debug option "Allow other characters".
+inline constexpr int kCharacterDefaults = 2;
+std::string GuestPickFromSettings(const json::Value& settings, const std::string& stored);
+
 // --watch <session_id> from the exe's folder.
 int RunWatch(const std::wstring& game_dir, const std::string& session_id);
 

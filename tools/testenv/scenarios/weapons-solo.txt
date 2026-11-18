@@ -1,0 +1,101 @@
+# Weapons in hand, solo (docs/real-partner-body.md section 17): the self view (Fragile, porter suit, fit on)
+# keeps the game's own weapon in her hand; a debug Fragile mirroring our pose and wearing our gear (the
+# partner's placement path, gear 4 1) shows each weapon as a cutscene prop on her hand joint. Weapons from
+# the 100% save's equipment wheel (D-pad right held, the stick pushed): the assault rifle (upper left),
+# aimed (LT) and fired (RT); the blood grenade (top), aimed and thrown; the electric grenade (upper right);
+# put away (right: empty hands); the rifle again (its kept prop is reused). The wheel: D-pad right held,
+# then the stick pushed, then centred, then the D-pad let go (the stick never reaches the camera).
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario weapons-solo -SeedSaves complete-100
+role solo
+timeout 360
+ini partner_body=real
+ini my_character=fragile_suit
+ini self_character=1
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+wait 2000
+action gear 4 1
+action real_spawn 16 3.0 1
+waitlog 20 \[real\] 'fragile_suit' is live
+waitlog 30 \[gear\] .*items, [1-9][0-9]* props live
+wait 3000
+action gear 0
+screenshot 01-no-weapon
+# the assault rifle: the wheel's upper left item
+pad dpad_right 600 keep
+pad dpad_right 900 lx=-23170 ly=23170 rx=-23170 ry=23170 keep
+pad dpad_right 400 keep
+pad none 0
+wait 3000
+action gear 0
+screenshot 03-rifle-drawn
+pad none 2500 lt=255 keep
+screenshot 04-rifle-aim
+pad none 400 lt=255 rt=255 keep
+screenshot 05-rifle-fire
+pad none 0
+wait 1500
+pad none 1300 rx=32767
+wait 1200
+screenshot 06-rifle-side
+pad none 1300 rx=-32767
+wait 1200
+# Sam himself (self view off), the same moment: the control
+action self_view 0
+wait 2500
+screenshot 07-sam-rifle
+action self_view 1
+waitlog 20 \[self\] showing 'fragile_suit' in place of Sam
+wait 2500
+# the blood grenade: the wheel's top item; aimed, then thrown
+pad dpad_right 600 keep
+pad dpad_right 900 lx=0 ly=32767 rx=0 ry=32767 keep
+pad dpad_right 400 keep
+pad none 0
+wait 3000
+action gear 0
+screenshot 09-blood-grenade
+pad none 2000 lt=255 keep
+screenshot 10-blood-grenade-aim
+pad none 500 lt=255 rt=255
+wait 3000
+screenshot 11-after-throw
+# the electric grenade: the wheel's upper right item
+pad dpad_right 600 keep
+pad dpad_right 900 lx=23170 ly=23170 rx=23170 ry=23170 keep
+pad dpad_right 400 keep
+pad none 0
+wait 3000
+action gear 0
+screenshot 13-electric-grenade
+# empty hands: the wheel's right item
+pad dpad_right 600 keep
+pad dpad_right 900 lx=32767 ly=0 rx=32767 ry=0 keep
+pad dpad_right 400 keep
+pad none 0
+wait 3000
+action gear 0
+screenshot 15-put-away
+# the rifle again (its prop kept hidden since it was put away)
+pad dpad_right 600 keep
+pad dpad_right 900 lx=-23170 ly=23170 rx=-23170 ry=23170 keep
+pad dpad_right 400 keep
+pad none 0
+wait 3000
+action gear 0
+screenshot 16-rifle-again
+pad none 2000 lt=255 keep
+screenshot 17-rifle-aim-again
+pad none 0
+wait 1500
+action gear 17 1
+action real_stats
+action log_status
+quit

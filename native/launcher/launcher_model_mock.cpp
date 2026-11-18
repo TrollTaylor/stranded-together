@@ -431,14 +431,20 @@ bool MockModel::clear_session(std::string& error_out) {
     return true;
 }
 
-// Like the real model: only an offered character is kept, anything else is Sam.
-void MockModel::set_my_character(const std::string& key) { my_character_ = core::CharacterKeyOrSam(key); }
-void MockModel::set_local_test_guest_character(const std::string& key) { guest_character_ = core::CharacterKeyOrSam(key); }
+// Like the real model: the stored pick is an offered character or Fragile (porter suit), set only
+// with the Debug option "Allow other characters"; without it the guest is always Fragile (porter suit).
+void MockModel::set_my_character(const std::string& key) {
+    if (debug_.allow_other_characters) my_character_ = core::GuestPickOrDefault(key);
+}
+void MockModel::set_local_test_guest_character(const std::string& key) {
+    if (debug_.allow_other_characters) guest_character_ = core::GuestPickOrDefault(key);
+}
+std::string MockModel::my_character() const { return core::GuestCharacter(my_character_, debug_.allow_other_characters); }
 
 LocalTestView MockModel::local_test() const {
     LocalTestView v;
     v.host_pad = host_pad_;
-    v.guest_character = guest_character_;
+    v.guest_character = core::GuestCharacter(guest_character_, debug_.allow_other_characters);
     if (local_start_ < 0.0) return v;
     const double t = now() - local_start_;
     v.running = true;

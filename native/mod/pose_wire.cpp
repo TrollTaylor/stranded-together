@@ -421,7 +421,7 @@ constexpr unsigned kGearJoints = 77;  // Sam's skeleton (kSamLayoutHash)
 bool GearItemOk(const GearItem& it, unsigned index) {
     const auto k = static_cast<std::uint8_t>(it.kind);
     if (k < 1 || k > kGearKindMax) return false;
-    if (it.kind == GearKind::entity && it.res >= kMaxGearRes) return false;
+    if (GearHasRes(it.kind) && it.res >= kMaxGearRes) return false;
     if (it.parent == kGearNoParent) return it.joint < kGearJoints;
     return it.parent < index;
 }
@@ -441,7 +441,7 @@ std::uint16_t GearLayoutHash(const GearFrame& f) noexcept {
         mix(it.variation);
         mix(it.parent == kGearNoParent ? it.joint : std::uint8_t{0});
         mix(it.parent);
-        mix(it.kind == GearKind::entity ? it.res : kGearNone);
+        mix(GearHasRes(it.kind) ? it.res : kGearNone);
     }
     return static_cast<std::uint16_t>((h >> 16) ^ (h & 0xFFFFu));
 }
@@ -482,7 +482,7 @@ std::size_t EncodeGear(const GearFrame& f, std::uint8_t* out, std::size_t cap) n
         Put(p, it.variation);
         Put(p, it.parent == kGearNoParent ? it.joint : std::uint8_t{0});
         Put(p, it.parent);
-        Put(p, it.kind == GearKind::entity ? it.res : kGearNone);
+        Put(p, GearHasRes(it.kind) ? it.res : kGearNone);
         for (float v : it.p) Put(p, static_cast<std::int16_t>(std::lround(v * 1000.0f)));
         const std::uint64_t b = PackQuat(it.q);
         for (unsigned k = 0; k < 6; ++k) *p++ = static_cast<std::uint8_t>(b >> (8 * k));
@@ -520,7 +520,7 @@ bool DecodeGear(const std::uint8_t* data, std::size_t size, GearFrame& out) noex
         it.joint = Get<std::uint8_t>(p);
         it.parent = Get<std::uint8_t>(p);
         it.res = Get<std::uint8_t>(p);
-        if (it.kind != GearKind::entity) it.res = kGearNone;
+        if (!GearHasRes(it.kind)) it.res = kGearNone;
         for (float& v : it.p) v = static_cast<float>(Get<std::int16_t>(p)) / 1000.0f;
         std::uint64_t b = 0;
         for (unsigned k = 0; k < 6; ++k) b |= static_cast<std::uint64_t>(*p++) << (8 * k);
@@ -568,6 +568,14 @@ bool GearResProven(const char* path, const std::uint8_t (&guid)[16], bool allow_
     if (std::strcmp(g, kPodEntity) == 0) return allow_pod_entity ? true : ((*why = "the BB pod entity (drawn as the cinematic pod)"), false);
     for (const char* d : kDenied)
         if (std::strcmp(g, d) == 0) return (*why = "an entity the mirror policy refuses (player-bound components)"), false;
+    return true;
+}
+
+bool GearResWeaponOnly(const char* path) noexcept {
+    if (!path || std::strncmp(path, "ds/entities/weapons/", 20) != 0) return false;
+    static const char* const kEntities[] = {"ds/entities/weapons/weapon_collection", "ds/entities/weapons/sam_cant", "ds/entities/weapons/sam_boot"};
+    for (const char* k : kEntities)
+        if (std::strcmp(path, k) == 0) return false;
     return true;
 }
 
@@ -634,7 +642,7 @@ std::size_t EncodeGearLook(const GearLook& l, std::uint8_t* out, std::size_t cap
     Put(p, l.item);
     Put(p, l.layout);
     Put(p, static_cast<std::uint8_t>(l.kind));
-    Put(p, l.kind == GearKind::entity ? l.res : kGearNone);
+    Put(p, GearHasRes(l.kind) ? l.res : kGearNone);
     Put(p, l.nvar);
     Put(p, l.nsv);
     Put(p, l.parts_apply);
@@ -669,7 +677,7 @@ bool DecodeGearLook(const std::uint8_t* data, std::size_t size, GearLook& out) n
     if (l.nvar > kMaxLookVariations || l.nsv > kMaxLookShaderVars || size != GearLookSize(l.nvar, l.nsv)) return false;
     l.parts_apply = Get<std::uint64_t>(p);
     l.parts_visible = Get<std::uint64_t>(p) & l.parts_apply;
-    if (l.kind != GearKind::entity) l.res = kGearNone;
+    if (!GearHasRes(l.kind)) l.res = kGearNone;
     for (unsigned i = 0; i < l.nvar; ++i) {
         std::memcpy(l.guid[i], p, 16);
         p += 16;

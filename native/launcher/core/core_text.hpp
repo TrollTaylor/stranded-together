@@ -111,6 +111,17 @@ bool IsOfferedCharacter(const std::string& key);    // exactly the key of an off
 std::string CharacterKeyOrSam(const std::string& key);
 std::string CharacterLabel(const std::string& key);   // CharacterKeyOrSam's label
 
+// The guest's character. A guest (Join, the local test's guest, echo and solo) plays Fragile in her
+// porter suit, and only her; every offered character comes back with the Debug option "Allow other
+// characters" (DebugOptions::allow_other_characters, launcher-only, never in session.ini).
+inline constexpr char kGuestCharacter[] = "fragile_suit";
+// The stored pick (any case) -> an offered key, or kGuestCharacter for anything else.
+std::string GuestPickOrDefault(const std::string& key);
+// The character the guest plays: kGuestCharacter with the option off, else GuestPickOrDefault(key).
+std::string GuestCharacter(const std::string& key, bool allow_others);
+// The list the launcher shows: kGuestCharacter alone, or every offered body (Sam first).
+std::vector<CharacterChoice> GuestCharacterChoices(bool allow_others);
+
 // ---- link-status.json -----------------------------------------------------------
 // link-status.json -> object, or null when it is not v1, has no state or
 // (expected_pid != 0) another process wrote it.

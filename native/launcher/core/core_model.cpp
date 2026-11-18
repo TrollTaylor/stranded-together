@@ -122,6 +122,7 @@ DebugOptions DebugOptionsFromSettings(const json::Value& settings) {
     o.self_character = d->Bool("self_character", o.self_character);
     o.name_tags = d->Bool("name_tags", o.name_tags);
     o.partner_collision = d->Bool("partner_collision", o.partner_collision);
+    o.allow_other_characters = d->Bool("allow_other_characters", o.allow_other_characters);
     return ClampDebugOptions(o);
 }
 
@@ -139,7 +140,15 @@ void DebugOptionsToSettings(const DebugOptions& o, json::Value& settings) {
     d["self_character"] = o.self_character;
     d["name_tags"] = o.name_tags;
     d["partner_collision"] = o.partner_collision;
+    d["allow_other_characters"] = o.allow_other_characters;
     settings["debug"] = d;
+}
+
+std::string GuestPickFromSettings(const json::Value& settings, const std::string& stored) {
+    // (The keys compare as the mod finds them, without case: a hand-edited "Sam" is the old default too.)
+    const std::string pick = GuestPickOrDefault(stored);
+    if (settings.Int("character_defaults", 0) < kCharacterDefaults && (stored.empty() || pick == kHostCharacter)) return kGuestCharacter;
+    return pick;
 }
 
 void ApplyDebugOptions(const DebugOptions& o, SessionIni& ini) {
@@ -225,9 +234,12 @@ public:
         settings_["name"] = name;
         SaveChoices();
     }
-    std::string my_character() const override { return my_character_; }
+    // The stored pick is kept as it is; the guest plays GuestCharacter(pick, option). With other
+    // characters off the choice is fixed: nothing to set.
+    std::string my_character() const override { return GuestCharacter(my_character_, debug_.allow_other_characters); }
     void set_my_character(const std::string& key) override {
-        my_character_ = CharacterKeyOrSam(key);
+        if (!debug_.allow_other_characters) return;
+        my_character_ = GuestPickOrDefault(key);
         settings_["my_character"] = my_character_;
         SaveChoices();
     }
@@ -521,7 +533,7 @@ public:
         v.detail = local_.detail;
         v.tone = local_.tone;
         v.host_pad = local_host_pad_;
-        v.guest_character = local_guest_character_;
+        v.guest_character = GuestCharacter(local_guest_character_, debug_.allow_other_characters);
         return v;
     }
 
@@ -530,7 +542,8 @@ public:
         SaveTestChoices();
     }
     void set_local_test_guest_character(const std::string& key) override {
-        local_guest_character_ = CharacterKeyOrSam(key);
+        if (!debug_.allow_other_characters) return;   // fixed: Fragile (porter suit)
+        local_guest_character_ = GuestPickOrDefault(key);
         SaveTestChoices();
     }
 
@@ -584,7 +597,7 @@ public:
         guest.second_instance = true;
         guest.local_input = "guest";
         guest.local_window = "right";
-        guest.my_character = local_guest_character_;   // the host game stays Sam (BaseIni)
+        guest.my_character = GuestCharacter(local_guest_character_, debug_.allow_other_characters);   // the host game stays Sam (BaseIni)
         for (const auto& [ini, dir] : {std::pair<const SessionIni*, std::wstring>{&host, LocalDir(L"host")}, {&guest, LocalDir(L"guest")}}) {
             std::string text, werr;
             if (!MakeSessionIniText(*ini, text, error_out)) return false;
@@ -612,7 +625,7 @@ public:
         local_.tone = LinkView::Tone::neutral;
         test_result_.clear();
         LauncherLog(*env_, paths_, "local_test=start host_pid=" + std::to_string(pid) + (local_host_pad_ ? " host_pad=1" : "") +
-                                       " guest_character=" + local_guest_character_ + " partner_body=" + host.partner_body);
+                                       " guest_character=" + guest.my_character + " partner_body=" + host.partner_body);
         return true;
     }
 
@@ -928,13 +941,22 @@ private:
         lan_.port_peer = pp >= 1 && pp <= 65535 ? static_cast<int>(pp) : kDefaultUdpPort;
         name_ = settings_.Str("name");
         if (!name_.empty() && !IsValidPlayerName(name_)) name_.clear();
-        // A hand-edited or no longer offered character falls back to Sam.
-        my_character_ = CharacterKeyOrSam(settings_.Str("my_character"));
+        // The stored picks: a hand-edited or no longer offered character, and the old default "sam"
+        // from before Fragile (porter suit) became the guest's character, become kGuestCharacter
+        // (GuestPickFromSettings). The marker goes into the next save.
+        my_character_ = GuestPickFromSettings(settings_, settings_.Str("my_character"));
         if (const json::Value* t = settings_.Find("test_save"); t && t->is_object()) {
             test_folder_ = t->Str("folder");
             test_use_ = t->Bool("use", false);
             local_host_pad_ = t->Bool("host_pad", false);
-            local_guest_character_ = CharacterKeyOrSam(t->Str("guest_character"));
+            local_guest_character_ = GuestPickFromSettings(settings_, t->Str("guest_character"));
+        }
+        if (settings_.Int("character_defaults", 0) < kCharacterDefaults) {
+            // Migrated: the picks as read go back with the marker on the next save.
+            settings_["my_character"] = my_character_;
+            if (const json::Value* t = settings_.Find("test_save"); t && t->is_object())
+                settings_["test_save"]["guest_character"] = local_guest_character_;
+            settings_["character_defaults"] = kCharacterDefaults;
         }
         RefreshTestSave();
     }
@@ -1238,7 +1260,7 @@ private:
         ini.name = name_;
         // The host is always Sam; every other role carries the Join tab's choice (the writer
         // puts sam for a host anyway).
-        ini.my_character = std::string(role) == "host" ? std::string(kHostCharacter) : my_character_;
+        ini.my_character = std::string(role) == "host" ? std::string(kHostCharacter) : my_character();
         ApplyDebugOptions(debug_, ini);
         return ini;
     }
@@ -1378,8 +1400,8 @@ private:
     std::string test_folder_;
     SeedCheck test_check_;
     bool test_use_ = false, test_seeded_ = false, local_host_pad_ = false;
-    std::string my_character_ = kHostCharacter;            // Join tab: "my_character"
-    std::string local_guest_character_ = kHostCharacter;   // local test: "test_save" / "guest_character"
+    std::string my_character_ = kGuestCharacter;            // Join tab: "my_character" (the stored pick)
+    std::string local_guest_character_ = kGuestCharacter;   // local test: "test_save" / "guest_character"
     bool session_sandbox_ = false;   // the session started from here runs on a sandbox
     bool sandbox_unconfirmed_ = false;   // that game never wrote sandbox-active.txt
     std::int64_t sandbox_check_at_ = 0;  // when to look for sandbox-active.txt (0 = not pending)
@@ -1432,7 +1454,9 @@ int RunWriteSession(const std::wstring& game_dir, const WriteSessionRequest& req
     json::Value settings;
     ReadSettings(paths, settings);
     ApplyDebugOptions(DebugOptionsFromSettings(settings), ini);   // the Debug page's options, one_shot=1
-    ini.my_character = CharacterKeyOrSam(settings.Str("my_character"));   // the Join tab's choice (a host writes sam)
+    // The Join tab's choice as the launcher would write it (a host writes sam).
+    ini.my_character = GuestCharacter(GuestPickFromSettings(settings, settings.Str("my_character")),
+                                      DebugOptionsFromSettings(settings).allow_other_characters);
     ini.transport = request.transport.empty() ? "steam" : request.transport;
     if (ini.transport == "udp") {
         ini.udp_peer = request.udp_peer.empty() ? std::string("127.0.0.1") : request.udp_peer;

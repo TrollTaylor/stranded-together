@@ -1,0 +1,71 @@
+# Fragile (porter suit) with a fitted self view in two games, hidden (docs/real-partner-body.md section 16):
+# the guest plays fragile_suit (the launcher's default guest character) with the self view and its fit;
+# the host sees her body wearing the guest's mirrored gear. With the fit on the guest's sender measures
+# each item against her proportions, so the host places it on her joints with the same fit (no wire
+# change). Each host view twice: the guest's fit on, then off (`self_view 5 0`: measured on Sam's
+# proportions, as before).
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-fit -SeedSaves complete-100
+role host
+graphics low
+timeout 360
+ini partner_body=real
+@host ini my_character=sam
+@guest ini my_character=fragile_suit
+@guest ini self_character=1
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+@guest waitlog 30 \[sync\] my character: 'fragile_suit' \(body_id 16\); joint frames \(STJ1\) sent with every pose
+wait 25000
+pad A 150
+@guest pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+@guest until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitplayer 60
+waitlog 60 \[link\] CONNECTED
+@guest waitlog 60 \[link\] CONNECTED
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+@guest until 150 3000 \[sync\] partner body: real 'sam' => pad A 120
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+@guest waitlog 30 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+waitlog 40 \[gear\] [0-9]+ items, [1-9][0-9]* props live
+@guest action gear 14 15 1
+wait 4000
+@guest screenshot 01-guest-self-back
+# the host turns round: the guest's Fragile behind it; she walks up to him, then turns back
+pad none 1300 rx=32767
+wait 1500
+@guest pad none 900 ly=32767
+wait 2500
+screenshot 02-host-sees-guest-front-fit
+@guest action self_view 5 0
+wait 3000
+screenshot 02-host-sees-guest-front-nofit
+@guest action self_view 5 1
+wait 3000
+screenshot 02-host-sees-guest-front-fit-again
+@guest pad none 700 ly=-32767
+wait 2500
+screenshot 03-host-sees-guest-back-fit
+@guest screenshot 03-guest-self-front
+@guest action self_view 5 0
+wait 3000
+screenshot 03-host-sees-guest-back-nofit
+@guest action self_view 5 1
+wait 3000
+# a quarter turn of the guest: her side towards the host
+@guest pad none 300 lx=32767
+wait 2500
+screenshot 04-host-sees-guest-side-fit
+action real_stats
+@guest action real_stats
+action gear 0
+@guest action gear 0
+action log_status
+@guest action log_status
+@guest quit
+wait 3000
+quit

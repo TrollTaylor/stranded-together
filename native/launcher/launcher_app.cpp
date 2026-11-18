@@ -193,11 +193,32 @@ bool SliderIntField(const char* id, const char* label, int* value, int lo, int h
     return changed;
 }
 
-// The character list (Join, the local test): the offered bodies of native/mod/body_table.cpp,
-// by their labels. Returns true when another character was picked (*key is set to its key).
-// open: open the list now (the screenshot scene that shows it).
-bool CharacterCombo(const char* id, std::string* key, float logical_width, bool enabled, bool open = false) {
-    const std::vector<core::CharacterChoice> choices = core::OfferedCharacters();
+// The guest's fixed character (the Debug option "Allow other characters" off): in the combo's place
+// and of its height, a frame with a person icon and the label; nothing to open.
+void FixedCharacter(const std::string& label, float logical_width, bool enabled) {
+    const Font f(GetFonts().regular, kSmall + 1.0f);
+    const float h = ImGui::GetTextLineHeight() + Px(16.0f);   // the combo's frame: padding 8 above and below
+    const float w = Px(logical_width);
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImDrawList* d = ImGui::GetWindowDrawList();
+    d->AddRectFilled(p, ImVec2(p.x + w, p.y + h), col::kField, Px(7.0f));
+    d->AddRect(p, ImVec2(p.x + w, p.y + h), col::kBorder, Px(7.0f), 0, Px(1.0f));
+    // dimmed like the combo while it cannot change (connected, a local test running)
+    DrawIcon(d, Icon::person, ImVec2(p.x + Px(17.0f), p.y + h * 0.5f), Px(14.0f), enabled ? col::kAccent : col::kTextFaint);
+    d->AddText(ImVec2(p.x + Px(32.0f), p.y + Px(8.0f)), enabled ? col::kText : col::kTextDim, label.c_str());
+    ImGui::Dummy(ImVec2(w, h));
+}
+
+// The character list (Join, the local test): core::GuestCharacterChoices, by their labels (every
+// offered body of native/mod/body_table.cpp with the Debug option "Allow other characters", else
+// Fragile (porter suit) alone, drawn as FixedCharacter). Returns true when another character was
+// picked (*key is set to its key). open: open the list now (the screenshot scene that shows it).
+bool CharacterCombo(const char* id, std::string* key, float logical_width, bool enabled, bool allow_others, bool open = false) {
+    if (!allow_others) {
+        FixedCharacter(core::CharacterLabel(core::kGuestCharacter), logical_width, enabled);
+        return false;
+    }
+    const std::vector<core::CharacterChoice> choices = core::GuestCharacterChoices(true);
     const std::string current = core::CharacterLabel(*key);
     bool picked = false;
     const Font f(GetFonts().regular, kSmall + 1.0f);
@@ -316,6 +337,7 @@ void LauncherUi::Frame(double time) {
     ImGui::SameLine(0.0f, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, Px(28.0f, 22.0f));
     ImGui::BeginChild("##page", ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding);
+    page_window_ = ImGui::GetCurrentWindow();
     ImGui::PopStyleVar(2);
     if (phase == Phase::not_in_game_folder) {
         WrongFolderPage();
@@ -788,7 +810,9 @@ void LauncherUi::JoinTab(Phase phase) {
     {
         std::string character = model_.my_character();
         const float row_y = ImGui::GetCursorPosY();
-        if (CharacterCombo("##character", &character, 220.0f, view.field_enabled, open_character_list_)) model_.set_my_character(character);
+        if (CharacterCombo("##character", &character, 220.0f, view.field_enabled, model_.debug_options().allow_other_characters,
+                           open_character_list_))
+            model_.set_my_character(character);
         open_character_list_ = false;
         ImGui::SameLine(0.0f, Px(14.0f));
         ImGui::SetCursorPosY(row_y + Px(1.0f));
@@ -1227,7 +1251,8 @@ void LauncherUi::DebugSavesTab(Phase phase) {
         ImGui::SameLine(0.0f, Px(10.0f));
         ImGui::SetCursorPosY(row_y);
         std::string character = lt.guest_character;
-        if (CharacterCombo("##guestcharacter", &character, 200.0f, !lt.running)) model_.set_local_test_guest_character(character);
+        if (CharacterCombo("##guestcharacter", &character, 200.0f, !lt.running, model_.debug_options().allow_other_characters))
+            model_.set_local_test_guest_character(character);
         ImGui::SameLine(0.0f, Px(12.0f));
         // Not row_y + 8 like the label before the combo: after SameLine ImGui already adds the
         // combo's frame padding (the line's text offset), so +8 would put this text 8 px too low.
@@ -1310,6 +1335,8 @@ void LauncherUi::DebugOptionsTab(Phase phase) {
     // session.ini partner_body: how YOUR partner is drawn on YOUR screen (the hologram is the fallback).
     // It also decides whether this game sends its character at all: the pose hook (and with it the
     // STJ1 joint frames that carry my_character) is installed only for partner_body=real.
+    if (scroll_to_partner_body_ && page_window_)   // screenshot scene 40: the page scrolled to this section
+        ImGui::SetScrollFromPosY(page_window_, ImGui::GetCursorScreenPos().y - page_window_->Pos.y - Px(12.0f), 0.0f);
     SectionLabel("PARTNER BODY");
     {
         static const char* const kBodies[2] = {"Real character (experimental)", "Hologram"};
@@ -1327,7 +1354,7 @@ void LauncherUi::DebugOptionsTab(Phase phase) {
         // Real character (the pose hook); written only for a guest whose character is not Sam.
         Gap(2.0f);
         committed |= Checkbox("See yourself as your character", &o.self_character, o.real_partner_body);
-        Text(o.real_partner_body && o.self_character ? "On your own screen you appear as the character you picked on Join (the host is always Sam)."
+        Text(o.real_partner_body && o.self_character ? "On your own screen you appear as your character, Fragile unless you picked another (the host is always Sam)."
                                                      : "On your own screen you stay Sam.",
              col::kTextFaint, kSmall, nullptr, 0.0f);
         // session.ini name_tags: the partner's name above their head; ours goes to them.
@@ -1342,6 +1369,12 @@ void LauncherUi::DebugOptionsTab(Phase phase) {
         Text(!o.real_partner_body ? "Needs Partner body = Real character: a hologram partner never blocks you."
              : o.partner_collision ? "You cannot walk through your partner's body; it stops you like another character. Off in vehicles, menus and cutscenes."
                                    : "You can walk through your partner.",
+             col::kTextFaint, kSmall, nullptr, 0.0f);
+        // Launcher-only: which characters Join and the local test offer the guest.
+        Gap(2.0f);
+        committed |= Checkbox("Allow other characters", &o.allow_other_characters, true);
+        Text(o.allow_other_characters ? "Join and the local test offer every character (experimental). The host is always Sam."
+                                      : "Guests play Fragile in her porter suit. The host is always Sam.",
              col::kTextFaint, kSmall, nullptr, 0.0f);
     }
     Gap(4.0f);
@@ -1651,9 +1684,17 @@ void LauncherUi::PrepareScene(int index, MockModel& mock) {
     lan.peer_ip = "192.168.1.20";
     mock.set_lan(lan);
     mock.set_player_name("");
-    mock.set_my_character("sam");
-    mock.set_local_test_guest_character("sam");
+    {
+        // The stored picks back to the default (they can only be set with other characters allowed).
+        DebugOptions all;
+        all.allow_other_characters = true;
+        mock.set_debug_options(all);
+        mock.set_my_character(core::kGuestCharacter);
+        mock.set_local_test_guest_character(core::kGuestCharacter);
+        mock.set_debug_options(DebugOptions{});
+    }
     open_character_list_ = false;
+    scroll_to_partner_body_ = false;
     mock.set_test_save_view(TestSaveView{});
     mock.jump_to_local_test(-1.0);
     {
@@ -1679,21 +1720,31 @@ void LauncherUi::PrepareScene(int index, MockModel& mock) {
         copy_into(bad);
         break;
     }
-    case ui::Scene::play_join_valid:
+    case ui::Scene::play_join_valid:   // the guest's fixed character: Fragile (porter suit)
         play_tab_ = ui::PlayTab::join;
         copy_into(MockModel::PartnerCode());
-        mock.set_my_character("fragile");
         break;
-    case ui::Scene::play_join_characters:   // the character list open
+    case ui::Scene::play_join_characters: {   // the character list open (Debug option "Allow other characters")
         play_tab_ = ui::PlayTab::join;
         copy_into(MockModel::PartnerCode());
+        DebugOptions o;
+        o.allow_other_characters = true;
+        mock.set_debug_options(o);
         mock.set_my_character("fragile");
         open_character_list_ = true;
         break;
+    }
+    case ui::Scene::debug_options_characters: {   // the Debug option that brings the other characters back, on
+        DebugOptions o;
+        o.allow_other_characters = true;
+        mock.set_debug_options(o);
+        scroll_to_partner_body_ = true;
+        page = Page::debug;
+        break;
+    }
     case ui::Scene::play_join_hologram: {   // Hologram sends no joint frames: the character is not shown
         play_tab_ = ui::PlayTab::join;
         copy_into(MockModel::PartnerCode());
-        mock.set_my_character("fragile");
         DebugOptions o;
         o.real_partner_body = false;
         mock.set_debug_options(o);
@@ -1804,7 +1855,6 @@ void LauncherUi::PrepareScene(int index, MockModel& mock) {
         t.folder_note = "23 save slots found";
         t.seeded = true;
         mock.set_test_save_view(t);
-        mock.set_local_test_guest_character("fragile");
         mock.jump_to_local_test(30.0);
         debug_tab_ = ui::DebugTab::saves;
         page = Page::debug;

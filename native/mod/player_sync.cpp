@@ -909,8 +909,10 @@ void Init(const Config& config, const std::wstring& mod_dir) noexcept {
             Log("[sync] self view: not needed (your character is sam%s)", own.host_forced || config.role == Role::host ? ", the host" : "");
         else if (!realbody::HookInstalled())
             Log("[sync] self view unavailable: the pose hook is not installed (partner_body=real or pose_hook=1 at start)");
-        else
+        else {
+            realbody::ConfigureSelfFit(config.self_fit);
             realbody::ConfigureSelf(g_own_body);
+        }
     }
     if (realbody::HookInstalled())
         realbody::ConfigureSmooth(config.smooth_pose ? realbody::kSmoothAll : 0u, config.role == Role::echo,

@@ -170,7 +170,7 @@ bool DecodeName(const std::uint8_t* data, std::size_t size, NameFrame& out) noex
 // prop entities there on the partner's body. Sent in its own datagram (FRAME message) when the
 // layout changes and about once a second otherwise; own magic, own sequence filter.
 //
-//   'STC1' | u32 seq | u8 version (2) | u8 count | u8 flags | u8 dropped | u16 layout hash |
+//   'STC1' | u32 seq | u8 version (3) | u8 count | u8 flags | u8 dropped | u16 layout hash |
 //   u16 reserved                                                              (16 bytes)
 //   [flags bit 1, kGearParts: u64 apply[2] | u64 visible[2]                   (32 bytes)]
 //   [flags bit 2, kGearPackParts: u64 apply | u64 visible, the backpack's ArtParts (16 bytes)]
@@ -179,9 +179,10 @@ bool DecodeName(const std::uint8_t* data, std::size_t size, NameFrame& out) noex
 // Version 2 (v0.8): the `entity` kind (a gear entity of the game's own, named by `res`, an id of
 // the sender's resource table, sent as STR1 frames below) and the parts block (which of Sam's own
 // ArtParts the sender shows: exoskeleton, BB pod pipe, hip gear, pouches). Version 1 frames are
-// refused (mixed builds never meet: HELLO build check).
+// refused (mixed builds never meet: HELLO build check). Version 3 (after v0.9): the `weapon` kind;
+// version 2 frames are refused.
 inline constexpr std::uint8_t kGearMagic[4] = {'S', 'T', 'C', '1'};
-inline constexpr std::uint8_t kGearVersion = 2;
+inline constexpr std::uint8_t kGearVersion = 3;
 inline constexpr std::size_t kGearHeaderSize = 16;
 inline constexpr std::size_t kGearPartsSize = 32;
 inline constexpr std::size_t kGearPackPartsSize = 16;
@@ -200,10 +201,16 @@ enum class GearKind : std::uint8_t {
     odradek = 2,   // the Odradek on the left shoulder
     bb_pod = 3,    // the BB pod on the chest
     cargo = 4,     // one baggage piece; model = EDSBaggage2Model
-    entity = 5,    // one of the game's own gear entities (weapon, BB pod, accessory, what hangs on the
-                   // backpack ...): `res` names its resource in the sender's table (STR1)
+    entity = 5,    // one of the game's own gear entities (BB pod, accessory, what hangs on the backpack ...):
+                   // `res` names its resource in the sender's table (STR1)
+    weapon = 6,    // version 3: a weapon or hand tool the sender shows (DSWeaponEntity: in a hand, on the backpack
+                   // hanger): `res` names the sender's weapon resource (STR1), `model` its EDSWeaponId, `variation`
+                   // its level. The receiver never spawns that resource (a copy crashes the game): it shows a
+                   // cinematic prop with the same model, or nothing (docs/real-partner-body.md section 17)
 };
-inline constexpr std::uint8_t kGearKindMax = 5;
+inline constexpr std::uint8_t kGearKindMax = 6;
+// The kinds whose `res` is a resource id of the sender's table (sent, part of the layout hash).
+inline constexpr bool GearHasRes(GearKind k) { return k == GearKind::entity || k == GearKind::weapon; }
 inline constexpr unsigned kMaxGearRes = 64;  // resource ids 0..63
 
 enum GearFlags : std::uint8_t {
@@ -220,7 +227,7 @@ struct GearItem {
                                          // own look (what this build always sends: the piece's variation is not read)
     std::uint8_t joint = 0;              // Sam-skeleton joint (0..76) the item hangs on (parent == kGearNoParent)
     std::uint8_t parent = kGearNoParent; // or an earlier item's index (cargo stacked on the backpack)
-    std::uint8_t res = kGearNone;        // entity: the resource id (< kMaxGearRes); kGearNone otherwise
+    std::uint8_t res = kGearNone;        // entity, weapon: the resource id (< kMaxGearRes); kGearNone otherwise
     float p[3] = {};                     // position in the anchor's frame (m)
     Quat q;                              // rotation in the anchor's frame
 };
@@ -266,6 +273,11 @@ bool GearResPathOk(const char* path) noexcept;
 // level-1 mirror policy refuses that the census found on Sam (the BB pod entity unless allow_pod_entity,
 // the cuff device, the baby, the boots, the chiral cylinder, the backpack belt). why: the reason when not.
 bool GearResProven(const char* path, const std::uint8_t (&guid)[16], bool allow_pod_entity, const char** why) noexcept;
+// A weapon's own resource (ds/entities/weapons/..., but not the three proven entity resources of that
+// folder: weapon_collection, sam_cant, sam_boot): its entity is a DSWeaponEntity, whose copy crashes the
+// game (real-partner-body.md section 17.1). The receiver never loads one, at any mirror level; it only
+// keeps it to show the partner's weapon items as props.
+bool GearResWeaponOnly(const char* path) noexcept;
 // A GUID as the logs print it (8-4-4-4-12, the first three groups little-endian): 37 bytes with the 0.
 void GearGuidText(const std::uint8_t (&guid)[16], char (&out)[37]) noexcept;
 std::size_t EncodeGearRes(const GearRes& r, std::uint8_t* out, std::size_t cap) noexcept;
@@ -306,7 +318,7 @@ struct GearLook {
     std::uint8_t item = 0;     // index in the sender's gear frame (< kMaxGearItems)
     std::uint16_t layout = 0;  // GearLayoutHash of that frame
     GearKind kind = GearKind::entity;
-    std::uint8_t res = kGearNone;  // entity: the resource id (as the item's); kGearNone otherwise
+    std::uint8_t res = kGearNone;  // entity, weapon: the resource id (as the item's); kGearNone otherwise
     std::uint8_t nvar = 0, nsv = 0;
     // The entity's own ArtParts (index < 64) the sender reports, and which of them are shown (the rain
     // cover's size for the load, a pouch's state ...); shown bits outside apply are dropped.

@@ -157,6 +157,20 @@ std::string CharacterLabel(const std::string& key) {
     return b ? std::string(b->label) : std::string("Sam");
 }
 
+std::string GuestPickOrDefault(const std::string& key) {
+    const bodies::Body* b = bodies::FindByKey(key.c_str());
+    return b && b->offered ? std::string(b->key) : std::string(kGuestCharacter);
+}
+
+std::string GuestCharacter(const std::string& key, bool allow_others) {
+    return allow_others ? GuestPickOrDefault(key) : std::string(kGuestCharacter);
+}
+
+std::vector<CharacterChoice> GuestCharacterChoices(bool allow_others) {
+    if (allow_others) return OfferedCharacters();
+    return {{kGuestCharacter, CharacterLabel(kGuestCharacter)}};
+}
+
 // ---- session.ini ----------------------------------------------------------------
 bool MakeSessionIniText(const SessionIni& s, std::string& text, std::string& error) {
     text.clear();

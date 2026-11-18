@@ -70,9 +70,47 @@ constexpr PropDef kProps[] = {
     {"case_l", "ds/entities/cinematics/demo_bla0_baggagelarge0_new", "39120f1e-e878-3d46-b272-90153e5ed040"},
     {"case_xl", "ds/entities/cinematics/demo_blx0_main_def", "eb084776-a437-174b-8ea0-fa40efe9da07"},
     {"cube", "ds/entities/cinematics/demo_blx1_main_def", "91243825-ad49-6a48-81e1-c4ec0f65a2b2"},
+    // Weapons and hand tools (docs/real-partner-body.md section 17): cutscene props with the player
+    // weapon's own art parts (decoded offline from the cores; a copy of the game's DSWeaponEntity crashes).
+    {"w_assault_rifle", "ds/entities/cinematics/demo_apv_asr2_main_def_v04_def", "d6215dea-4e9d-7e4c-8ef6-bd9f9751ab39"},
+    {"w_blood_grenade", "ds/entities/cinematics/demo_grbl_main_def", "76840453-91d4-6746-a01c-fada1c6c8bbb"},
+    {"w_electric_grenade", "ds/entities/cinematics/demo_grdc_main_def", "0ffe5ad6-2e4e-d34d-8ee2-86c28c78874b"},
+    {"w_grenade", "ds/entities/cinematics/demo_grfl_main_def", "7b42becd-2980-9c46-8418-c27e17fe5255"},
+    {"w_smoke_grenade", "ds/entities/cinematics/demo_grsm_main_def", "9f924eca-835d-434e-bd7e-5a06ed29c976"},
+    {"w_multi_rod", "ds/entities/cinematics/demo_mrod_main_def", "e00d083a-7090-284b-aa9f-fca80353a2d4"},
+    {"w_hand_gun", "ds/entities/cinematics/demo_hag2_main_def", "af940392-03bd-ea4f-a161-dcb1fe17a44e"},
+    {"w_shot_gun", "ds/entities/cinematics/demo_shg2_main_def", "c739ae4a-1ed9-2d47-8c91-e237dab76b69"},
 };
-enum PropId : int { kPropNone = -1, kPropBackpack = 0, kPropOdradek, kPropBbPod, kPropS, kPropM, kPropL, kPropXL, kPropCube, kPropCount };
+enum PropId : int {
+    kPropNone = -1, kPropBackpack = 0, kPropOdradek, kPropBbPod, kPropS, kPropM, kPropL, kPropXL, kPropCube,
+    kPropWAsr, kPropWGrbl, kPropWGrdc, kPropWGrfl, kPropWGrsm, kPropWMrod, kPropWHag, kPropWShg, kPropCount
+};
 static_assert(sizeof(kProps) / sizeof(kProps[0]) == kPropCount, "prop table");
+bool IsWeaponProp(int key) { return key >= kPropWAsr && key < kPropCount; }
+
+// The sender's weapon resource (its core, the path STR1 names) -> the prop drawn for it. Exact: the
+// prop's model is the player weapon's own art parts (part_asr2_main_def, part_grbl_main_def ...; only
+// the colour variation may differ). Approximate: a cutscene model of the same kind (the player's
+// handguns are hag1 / hag3, the prop hag2; the shotgun shg0, the prop shg2). Not listed (no prop
+// exists): the bola gun, grenade launchers, sticky gun, maser gun, EX grenades, PCC, ladder, climbing
+// anchor, spray, strand ... (nothing is drawn for them).
+struct WeaponMap {
+    const char* core;
+    std::int8_t prop;
+    bool exact;
+};
+constexpr WeaponMap kWeaponMap[] = {
+    {"ds/entities/weapons/assault_rifle", kPropWAsr, true},       {"ds/entities/weapons/blood_grenade", kPropWGrbl, true},
+    {"ds/entities/weapons/electrical_grenade", kPropWGrdc, true}, {"ds/entities/weapons/grenade", kPropWGrfl, true},
+    {"ds/entities/weapons/smoke_grenade", kPropWGrsm, true},      {"ds/entities/weapons/multi_rod", kPropWMrod, true},
+    {"ds/entities/weapons/hand_gun", kPropWHag, false},           {"ds/entities/weapons/shot_gun", kPropWShg, false},
+};
+const WeaponMap* WeaponFor(const char* core) {
+    if (!core) return nullptr;
+    for (const WeaponMap& m : kWeaponMap)
+        if (std::strcmp(core, m.core) == 0) return &m;
+    return nullptr;
+}
 
 // EDSBaggage2Model (the baggage config's ModelResources, decoded from ds/entities/item/baggage/
 // baggage_config) -> the prop drawn for it. Exact: the same mesh family. Approximate: a case of
@@ -101,13 +139,18 @@ constexpr ModelMap kModelMap[31] = {
     {kPropXL, false},                                   // 30 blx2
 };
 
-int PropFor(const wire::GearItem& it) {
+struct ResEntry;
+// The prop key an item needs (-1: none). `res`: the resource table its entity / weapon ids name (a
+// weapon's prop follows its resource's core; without a table a weapon has none).
+int PropFor(const wire::GearItem& it, const ResEntry* res);
+int PropForKind(const wire::GearItem& it) {
     switch (it.kind) {
         case wire::GearKind::backpack: return kPropBackpack;
         case wire::GearKind::odradek: return kPropOdradek;
         case wire::GearKind::bb_pod: return kPropBbPod;
         case wire::GearKind::cargo: return it.model < 31 ? kModelMap[it.model].prop : (it.model == wire::kGearNone ? kPropM : kPropNone);
         case wire::GearKind::entity: return it.res < wire::kMaxGearRes ? kPropCount + it.res : kPropNone;
+        case wire::GearKind::weapon: return kPropNone;
     }
     return kPropNone;
 }
@@ -157,7 +200,10 @@ bool ReadWorldAt(std::uintptr_t at, Xf* out) {
 
 bool ReadWorld(std::uintptr_t e, Xf* out) { return e && ReadWorldAt(e + kEntWorld, out); }
 
-// A joint of the entity's pose in world space (model matrix axes normalised).
+// A joint of the entity's pose in world space (model matrix axes normalised). The head joints (31-34)
+// of a Sam whose head the self view fit lifts (realbody::HeadLift, section 16.1) are read without the
+// lift: items on the head are then measured against the character's real head, so the other screen,
+// placing them on her body's head, shows them where they sit on this one.
 bool JointWorld(game::Entity* e, const Xf& world, unsigned j, Xf* out) {
     float m[4][4];
     if (!realbody::ReadJointModel(e, j, m)) return false;
@@ -169,6 +215,10 @@ bool JointWorld(game::Entity* e, const Xf& world, unsigned j, Xf* out) {
         for (int c = 0; c < 3; ++c) r[k][c] = m[k][c] / len;
         p[k] = m[3][k];
     }
+    float lift[3];
+    float neck[4][4];
+    if (j >= 31 && j <= 34 && realbody::HeadLift(e, lift) && realbody::ReadJointModel(e, 30, neck))
+        for (int k = 0; k < 3; ++k) p[k] -= static_cast<double>(lift[0]) * neck[0][k] + static_cast<double>(lift[1]) * neck[1][k] + static_cast<double>(lift[2]) * neck[2][k];
     *out = Compose(world, p, r);
     return true;
 }
@@ -193,8 +243,11 @@ const char* TypeOf(std::uintptr_t obj);
 // after copies of the Odradek (DSOdradek*Entity), the BB pod (DSBBPodComponent) and the backpack's
 // cylinder / belt were created: classes other than Entity are refused. Level 0: model components only;
 // 1 (default): also the small DS components proven in run 20261117-132631 (shields, the stowed weapons'
-// paint, hanging boots, simple animation, sound); 2 (tests only, not proven): also the chiral cylinder,
-// the backpack belt and weapons (DSWeaponEntity). `gear 7 <level>`.
+// paint, hanging boots, simple animation, sound); 2 (tests only, not proven): also the chiral cylinder and
+// the backpack belt. `gear 7 <level>`. Never a DSWeaponEntity, at any level: its update reads its weapon
+// instance (+0x338) without a null check (0x142933FA6), and a copy has none: run 20261117-133622 crashed
+// there right after a copy of the PCC (`ds/entities/weapons/builder`) was created at level 2. Weapons are
+// sent as their own kind and drawn as cutscene props (section 17).
 int g_mirror_level = 1;
 // The BB pod: the cinematic pod prop (0, demo_bbp1_main_def, the default) or a copy of the game's own
 // pod entity (1, `gear 8 1`, tests only: its DSBBPodComponent binds to the player, and both runs that
@@ -220,8 +273,8 @@ bool ComponentTier(const char* n, int* tier) {
 // The entity's class and components allow a copy at level (why: the first reason not).
 bool MirrorableAt(std::uintptr_t e, int level, const char** why) {
     const char* tn = TypeOf(e);
-    const bool weapon = std::strcmp(tn, "DSWeaponEntity") == 0;
-    if (std::strcmp(tn, "Entity") != 0 && !(weapon && level >= 2)) return (*why = weapon ? "a weapon (level 2)" : "not a plain Entity class"), false;
+    if (std::strcmp(tn, "DSWeaponEntity") == 0) return (*why = "a weapon (sent as a weapon item, never copied)"), false;
+    if (std::strcmp(tn, "Entity") != 0) return (*why = "not a plain Entity class"), false;
     std::int32_t n = 0;
     if (!Rd(e + 0x90, n) || n <= 0 || n > 64) return (*why = "component list unreadable"), false;
     const std::uintptr_t data = Q(e + 0x98);
@@ -248,8 +301,9 @@ struct LocalItem {
     std::uintptr_t e;
     bool visible;
     Xf world;
-    std::uint8_t res = wire::kGearNone;  // entity: our resource id
-    std::uintptr_t parent_e = 0;         // entity: its parent entity (anchors on that item when it is one)
+    std::uint8_t res = wire::kGearNone;  // entity, weapon: our resource id
+    std::uintptr_t parent_e = 0;         // entity, weapon: its parent entity (anchors on that item when it is one)
+    std::uint8_t hint_joint = 0xFF;      // weapon: the Sam joint its mover's helper names (in a hand), else 0xFF
 };
 
 // ---------------------------------------------------------------- gear resource tables (STR1)
@@ -257,9 +311,16 @@ struct LocalItem {
 // what its STR1 frames said (cleared with its gear on a new session).
 struct ResEntry {
     bool used = false;
+    bool weapon_only = false;  // the partner's weapon resource: shown as a prop by its core, never spawned itself
     std::uint8_t guid[16] = {};
     char path[wire::kMaxGearResPath + 1] = {};
 };
+int PropFor(const wire::GearItem& it, const ResEntry* res) {
+    if (it.kind != wire::GearKind::weapon) return PropForKind(it);
+    if (!res || it.res >= wire::kMaxGearRes || !res[it.res].used) return kPropNone;
+    const WeaponMap* m = WeaponFor(res[it.res].path);
+    return m ? m->prop : kPropNone;
+}
 ResEntry g_res_local[wire::kMaxGearRes];
 unsigned g_res_local_n = 0;
 std::uint64_t g_res_unsent = 0;  // ids not sent yet (sent first)
@@ -273,6 +334,11 @@ int LocalResId(const char* path, const std::uint8_t (&guid)[16]) {
     for (unsigned i = 0; i < g_res_local_n; ++i)
         if (std::memcmp(g_res_local[i].guid, guid, 16) == 0 && std::strcmp(g_res_local[i].path, path) == 0) return static_cast<int>(i);
     if (g_res_local_n >= wire::kMaxGearRes || !wire::GearResPathOk(path)) {
+        static bool s_full_logged = false;
+        if (g_res_local_n >= wire::kMaxGearRes && !s_full_logged) {
+            s_full_logged = true;
+            Log("[gear] the resource table is full (%u ids this session): '%s' and any later new gear resource are not sent", wire::kMaxGearRes, path);
+        }
         ++g_res_full;
         return -1;
     }
@@ -524,6 +590,16 @@ struct PropSet {
     std::uint32_t pose_seq_pub[realbody::kMaxPoseTargets] = {};
     unsigned pose_targets = 0;
     unsigned pose_target_logs = 0;  // target changes logged (the first 40)
+    // Weapon props no item wants any more (holstered into a pouch, thrown): kept hidden for 60 s and taken
+    // again by the next item of the same key (the next draw / grenade shows at once, without a load).
+    struct Spare {
+        Prop p;
+        double since = 0;
+    };
+    Spare spare[6];
+    unsigned spare_reused = 0, spare_kept = 0;
+    double layout_ms = 0;          // when the current layout was taken (the weapon props' show latency)
+    unsigned weapon_shows = 0;     // weapon props shown (logged, the first 60)
 };
 PropSet g_sets[2] = {{"gear", realbody::GearSlot::partner}, {"gear-self", realbody::GearSlot::self}};
 
@@ -625,7 +701,7 @@ bool BaggageWorld(std::uintptr_t bag, Xf* out) {
 struct NodeMemo {
     std::uintptr_t e = 0, vt = 0, res = 0, comps = 0;
     std::int32_t ncomp = -1;
-    std::int8_t cls = 0;        // 1 an entity the walk looks at (descends into), 2 not (camera, player, no Entity)
+    std::int8_t cls = 0;        // 1 an entity the walk looks at (descends into), 2 not (camera, player, no Entity), 3 a weapon
     std::int16_t verdict = -9;  // -9 not known yet, -1 no usable resource, -2 not mirrored, >= 0 our resource id
 };
 NodeMemo g_memo[512];
@@ -649,6 +725,101 @@ NodeMemo* Memo(std::uintptr_t e, const std::uint8_t (&hdr)[kNodeHdr]) {
     m.e = e, m.vt = vt, m.res = res, m.comps = comps, m.ncomp = n;
     return &m;
 }
+// ---------------------------------------------------------------- weapons (docs/real-partner-body.md section 17)
+// A DSWeaponEntity the game shows (in a hand: parent Sam, its AttachToHelperMover on MTP_R_Hand_a /
+// MTP_L_Hand_a; on the backpack hanger: parent the backpack). Read fault-free, every field checked:
+//   entity +0x70 parent, +0xB0 mover, +0x338 the weapon instance (owned by the inventory)
+//   instance +0x12 u8 EDSWeaponId, +0x18 DSWeaponParameter (+0x20 Id, +0x113 Lv), +0x300 owner (Sam),
+//            +0x308 back reference (the entity + 0x20), +0x450 flags
+//   mover (AttachToHelperMover) +0x48 its entity, +0xA0 u8 "local is identity", +0xB0 helper name
+// (static analysis: 0x142911300 AttachTo, 0x1427ABCE0 EquipToHand, 0x14239B930 the mover).
+bool g_weapons_on = true;  // gear 17 <0/1>
+struct WeaponInfo {
+    std::uint8_t id = wire::kGearNone, level = wire::kGearNone, joint = 0xFF, param_id = 0xFF, identity = 0xFF;
+    bool inst_ok = false, mover_ok = false;
+    std::uint32_t flags = 0;
+    std::uintptr_t parent = 0;
+    char helper[40] = "";
+};
+// A Decima String (character pointer; its length at ptr - 8) into buf, printable ASCII only.
+void ReadString(std::uintptr_t p, char* buf, std::size_t cap) {
+    buf[0] = 0;
+    std::int32_t len = -1;
+    if (!p || !Rd(p - 8, len) || len <= 0 || len > 256) return;
+    const std::size_t n = static_cast<std::size_t>(len) < cap - 1 ? static_cast<std::size_t>(len) : cap - 1;
+    if (!mem::Read(p, buf, n)) {
+        buf[0] = 0;
+        return;
+    }
+    buf[n] = 0;
+    for (std::size_t i = 0; i < n; ++i)
+        if (static_cast<unsigned char>(buf[i]) < 0x20 || static_cast<unsigned char>(buf[i]) > 0x7E) buf[i] = '?';
+}
+// The 77-joint layout's attach joints (the names logged by real_names).
+std::uint8_t HelperJoint(const char* n) {
+    static const struct {
+        const char* name;
+        std::uint8_t j;
+    } kHelpers[] = {{"MTP_R_Hand_a", 26}, {"MTP_R_Hand_b", 27}, {"MTP_R_Hand_c", 28}, {"MTP_L_Hand_a", 55}, {"MTP_L_Hand_b", 56},
+                    {"MTP_L_Hand_c", 57}, {"MTP_Spine_a", 58},  {"MTP_Spine_b", 59},  {"MTP_Spine_c", 60}};
+    for (const auto& h : kHelpers)
+        if (std::strcmp(n, h.name) == 0) return h.j;
+    return 0xFF;
+}
+void ReadWeaponInfo(std::uintptr_t e, std::uintptr_t sam, WeaponInfo* w) {
+    *w = WeaponInfo{};
+    w->parent = Q(e + 0x70);
+    const std::uintptr_t inst = Q(e + 0x338);
+    if (inst && Q(inst + 0x308) == e + 0x20 && Q(inst + 0x300) == sam) {
+        std::uint8_t id = 0xFF;
+        if (Rd(inst + 0x12, id) && id < 0x5D) {
+            w->id = id;
+            w->inst_ok = true;
+            const std::uintptr_t prm = Q(inst + 0x18);
+            std::uint8_t lv = 0;
+            if (prm && Derives(prm, "DSWeaponParameter")) {
+                Rd(prm + 0x20, w->param_id);
+                if (Rd(prm + 0x113, lv) && lv >= 1 && lv <= 9) w->level = lv;
+            }
+            Rd(inst + 0x450, w->flags);
+        }
+    }
+    const std::uintptr_t mover = Q(e + 0xB0);
+    if (mover && Derives(mover, "AttachToHelperMover") && Q(mover + 0x48) == e) {
+        w->mover_ok = true;
+        Rd(mover + 0xA0, w->identity);
+        ReadString(Q(mover + 0xB0), w->helper, sizeof(w->helper));
+        if (w->parent == sam) w->joint = HelperJoint(w->helper);
+    }
+}
+// What the last reads saw of each weapon (logged when it changes: drawn, holstered, the other hand).
+struct WeaponSeen {
+    std::uintptr_t e = 0, parent = 0;
+    std::uint8_t joint = 0xFF;
+    bool seen = false;
+};
+WeaponSeen g_wseen[16];
+std::uint32_t g_weapon_logs = 0;
+// The fast watch (every tick): the inventory's current weapon (0x1427A4390: the instance at inventory
+// +0xD0 + 0x70 * u8 [+0x1C78]) and its entity's visible bit and parent. A change makes the next read
+// happen at once and skips the layout debounce, so a draw / holster goes out in about one tick.
+struct WeaponWatch {
+    bool checked = false, ok = false;
+    std::uintptr_t e = 0, parent = 0;
+    bool vis = false;
+    // the weapon that was current before (put away: the inventory's current slot changes when the wheel's
+    // item is picked, the old weapon's entity is hidden later, when the hands are empty)
+    std::uintptr_t prev_e = 0, prev_parent = 0;
+    bool prev_vis = false;
+    std::uint32_t changes = 0;
+    double changed_ms = 0;  // when the watch last saw a change (latency: until the frame is taken)
+    double lat_sum = 0, lat_max = 0;
+    std::uint32_t lat_n = 0;
+    double forced_ms = -1e9;     // when the watch last asked for a read (at most one per kWatchGapMs)
+    std::uint32_t deferred = 0;  // changes whose read waited for that gap
+} g_ww;
+constexpr double kWatchGapMs = 40;  // a state that toggles every tick must not turn the 100 ms walk into a per-tick one
+
 // ReadItems' cost on the game thread (QPC), logged after 50 reads and then every 600 (about a minute).
 double g_read_us_sum = 0, g_read_us_max = 0;
 std::uint32_t g_read_timed = 0, g_read_window = 0;
@@ -683,6 +854,7 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
         it.world = w;
         it.res = wire::kGearNone;
         it.parent_e = 0;
+        it.hint_joint = 0xFF;
     };
     auto add_entity = [&](wire::GearKind k, std::uintptr_t e) {
         Xf w;
@@ -748,14 +920,76 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
             };
             NodeMemo* memo = verbose || !have_hdr ? nullptr : Memo(nd.e, hdr);
             if (memo && memo->cls == 0)
-                memo->cls = (!Derives(nd.e, "Entity") || Derives(nd.e, "CameraEntity") || Derives(nd.e, "DSPlayerEntity")) ? 2 : 1;
+                memo->cls = (!Derives(nd.e, "Entity") || Derives(nd.e, "CameraEntity") || Derives(nd.e, "DSPlayerEntity")) ? 2
+                            : std::strcmp(TypeOf(nd.e), "DSWeaponEntity") == 0                                           ? 3
+                                                                                                                         : 1;
             if (memo ? memo->cls == 2 : (!Derives(nd.e, "Entity") || Derives(nd.e, "CameraEntity") || Derives(nd.e, "DSPlayerEntity"))) continue;
+            const bool weapon = memo ? memo->cls == 3 : std::strcmp(TypeOf(nd.e), "DSWeaponEntity") == 0;
             const bool vis = (HQ(kEntFlags) & 0x2) != 0;
             // children first pushed (visited after this one: a parent is always added before them)
             if (nd.depth < 3)
                 for (std::uintptr_t c = HQ(0x78), guard = 0; c && sp < 256 && guard < 64; c = Q(c + 0x80), ++guard) stack[sp++] = {c, nd.e, nd.depth + 1};
             if (!vis || nd.e == pack || !HQ(0xB8)) continue;
             if (nd.e == pod) continue;  // sent as the cinematic BB pod (above)
+            if (weapon) {
+                // A weapon (section 17): its own kind, never the entity rule (never copied). The resource is
+                // cached like an entity's (it does not change while the node keeps its resource reference).
+                if (!g_weapons_on || (memo && memo->verdict == -1)) continue;
+                int wid = memo && memo->verdict >= 0 ? memo->verdict : -1;
+                if (wid < 0) {
+                    char wpath[wire::kMaxGearResPath + 8] = {};
+                    std::uint8_t guid[16] = {};
+                    const char* rt = nullptr;
+                    if (!realbody::ResourceIdentity(reinterpret_cast<game::Entity*>(nd.e), wpath, sizeof(wpath), guid, &rt) || !wire::GearResPathOk(wpath) ||
+                        std::strncmp(wpath, "ds/entities/weapons/", 20) != 0) {
+                        if (memo) memo->verdict = -1;
+                        continue;
+                    }
+                    if (!WeaponFor(wpath)) {
+                        // no prop on the other screen (section 17.7): not sent, and no id of the 64 used up
+                        static unsigned s_noprop_logs = 0;
+                        if (memo) memo->verdict = -1;
+                        if (++s_noprop_logs <= 20) Log("[gear] our weapon '%s': no prop for it on the other screen (not sent)", wpath);
+                        continue;
+                    }
+                    wid = LocalResId(wpath, guid);
+                    if (wid < 0) continue;
+                    if (memo) memo->verdict = static_cast<std::int16_t>(wid);
+                }
+                Xf w;
+                if (!ReadWorld(nd.e, &w) || Dist(w, sam) > 3.0) continue;
+                WeaponInfo wi;
+                ReadWeaponInfo(nd.e, p, &wi);
+                add(wire::GearKind::weapon, wi.id, 0, nd.e, true, w);
+                if (g_item_count && g_items[g_item_count - 1].e == nd.e) {
+                    LocalItem& li = g_items[g_item_count - 1];
+                    li.res = static_cast<std::uint8_t>(wid);
+                    li.parent_e = nd.parent;
+                    li.variation = wi.level;
+                    li.hint_joint = wi.joint;
+                }
+                // logged when it changes (drawn, holstered, the other hand) or in a verbose read
+                WeaponSeen* ws = nullptr;
+                for (WeaponSeen& k : g_wseen)
+                    if (k.e == nd.e) ws = &k;
+                const bool changed = !ws || ws->parent != nd.parent || ws->joint != wi.joint;
+                if (!ws)
+                    for (WeaponSeen& k : g_wseen)
+                        if (!k.e) {
+                            ws = &k;
+                            break;
+                        }
+                if (ws) ws->e = nd.e, ws->parent = nd.parent, ws->joint = wi.joint, ws->seen = true;
+                if (verbose || (changed && ++g_weapon_logs <= 200))
+                    Log("[gear] our weapon %p res %d '%s': weapon id %d (parameter id %d) level %d, flags 0x%X, %s; parent %p (%s), mover %s helper '%s' "
+                        "(joint %d, local %s), %.2f m from Sam",
+                        reinterpret_cast<void*>(nd.e), wid, static_cast<unsigned>(wid) < g_res_local_n ? g_res_local[wid].path : "?",
+                        wi.id == wire::kGearNone ? -1 : wi.id, wi.param_id == 0xFF ? -1 : wi.param_id, wi.level == wire::kGearNone ? -1 : wi.level,
+                        wi.flags, wi.inst_ok ? "instance ok" : "INSTANCE NOT CONFIRMED", reinterpret_cast<void*>(nd.parent),
+                        nd.parent == p ? "Sam" : nd.parent == pack ? "the backpack" : TypeOf(nd.parent), wi.mover_ok ? "ok" : "NOT CONFIRMED", wi.helper,
+                        wi.joint == 0xFF ? -1 : wi.joint, wi.identity == 1 ? "identity" : wi.identity == 0 ? "a matrix" : "?", Dist(w, sam));
+                continue;
+            }
             if (memo && memo->verdict == -1) {
                 ++skipped;
                 continue;
@@ -794,6 +1028,14 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
                     reinterpret_cast<void*>(nd.parent));
         }
         if (verbose) Log("[gear] entity walk: %u visited, %u not under ds/entities", visited, skipped);
+        // weapons no longer shown (holstered into a pouch, thrown, put away)
+        for (WeaponSeen& k : g_wseen) {
+            if (k.e && !k.seen) {
+                if (++g_weapon_logs <= 200) Log("[gear] our weapon %p is no longer shown", reinterpret_cast<void*>(k.e));
+                k = WeaponSeen{};
+            }
+            k.seen = false;
+        }
     }
     // While our self view hides Sam (global part mask) his parts read hidden: the last reading stands.
     if (!realbody::SelfShown()) ReadParts(p);
@@ -962,13 +1204,18 @@ bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_
         gi.res = it.res;
         const Xf* anchor = nullptr;
         int parent_item = -1;
-        if (it.kind == wire::GearKind::entity && it.parent_e)
+        if ((it.kind == wire::GearKind::entity || it.kind == wire::GearKind::weapon) && it.parent_e)
             for (unsigned k = 0; k < f.count; ++k)
                 if (frame_e[k] == it.parent_e) parent_item = static_cast<int>(k);
         if (parent_item >= 0) {
             gi.parent = static_cast<std::uint8_t>(parent_item);
             anchor = &frame_w[parent_item];
-        } else if (it.kind == wire::GearKind::entity || it.kind == wire::GearKind::bb_pod) {
+        } else if (it.kind == wire::GearKind::weapon && it.hint_joint < 77 && joint(it.hint_joint)) {
+            // a weapon in a hand: the very joint its mover's helper names (MTP_R_Hand_a ...), so its pose
+            // relative to the anchor is the mover's constant local and the hand carries it on the body
+            gi.joint = it.hint_joint;
+            anchor = joint(gi.joint);
+        } else if (it.kind == wire::GearKind::entity || it.kind == wire::GearKind::bb_pod || it.kind == wire::GearKind::weapon) {
             // the nearest joint of Sam's skeleton, kept while it is at most 15 cm farther than the nearest
             // (a layout that flips between two joints would respawn the prop)
             // Torso joints win over a limb joint that is at most 10 cm nearer (an arm swinging past the
@@ -1079,11 +1326,21 @@ bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_
     return true;
 }
 
-void DescribeFrame(const wire::GearFrame& f, const char* what) {
-    unsigned per[kPropCount] = {}, none = 0, approx = 0, pack = 0, odra = 0, pod = 0, cargo = 0, ents = 0;
+void DescribeFrame(const wire::GearFrame& f, const char* what, const ResEntry* res) {
+    unsigned per[kPropCount] = {}, none = 0, approx = 0, pack = 0, odra = 0, pod = 0, cargo = 0, ents = 0, weapons = 0, weapons_drawn = 0;
     for (unsigned i = 0; i < f.count; ++i) {
         const wire::GearItem& it = f.items[i];
-        const int p = PropFor(it);
+        const int p = PropFor(it, res);
+        if (it.kind == wire::GearKind::weapon) {
+            ++weapons;
+            weapons_drawn += p >= 0;
+            const char* path = res && it.res < wire::kMaxGearRes && res[it.res].used ? res[it.res].path : "?";
+            static unsigned logged = 0;
+            if (++logged <= 300)
+                Log("[gear] %s: weapon item %u '%s' (weapon id %d, level %d) on %s %u: %s", what, i, path, it.model == wire::kGearNone ? -1 : it.model,
+                it.variation == wire::kGearNone ? -1 : it.variation, it.parent == wire::kGearNoParent ? "joint" : "item",
+                it.parent == wire::kGearNoParent ? it.joint : it.parent, p >= 0 ? kProps[p].key : "no prop for it (not drawn)");
+        }
         if (p >= 0 && p < kPropCount) ++per[p];
         else if (p < 0) ++none;
         ents += it.kind == wire::GearKind::entity;
@@ -1103,9 +1360,9 @@ void DescribeFrame(const wire::GearFrame& f, const char* what) {
                 parts_vis += (f.parts_visible[k] >> b) & 1;
             }
     Log("[gear] %s: %u items (backpack %u, Odradek %u, BB pod %u, cargo %u: %u approximate, %u not drawn; game entities %u; dropped over the cap %u), "
-        "layout %04X; props S %u M %u L %u XL %u cube %u; Sam's gear parts %u of %u shown",
+        "layout %04X; props S %u M %u L %u XL %u cube %u; weapons %u (%u drawn); Sam's gear parts %u of %u shown",
         what, f.count, pack, odra, pod, cargo, approx, none, ents, f.dropped, wire::GearLayoutHash(f), per[kPropS], per[kPropM], per[kPropL], per[kPropXL],
-        per[kPropCube], parts_vis, parts);
+        per[kPropCube], weapons, weapons_drawn, parts_vis, parts);
 }
 
 // Our gear's looks (every 500 ms; a carried case's variation once per piece): each item of g_local that
@@ -1150,7 +1407,7 @@ void ReadLooks(double now) {
             } else if (e) {
                 ok = look::ReadBaggage(e, &l);
             } else {
-                const int p = PropFor(it);
+                const int p = PropFor(it, nullptr);
                 ok = (p == kPropS || p == kPropM || p == kPropL) && look::ReadConfigVariation(static_cast<unsigned>(p - kPropS + 1), &l);
             }
         }
@@ -1188,6 +1445,85 @@ void ReadBackpackPose() {
             g_have_pose_local = true;
         }
         return;
+    }
+}
+
+// The layout without its weapon items (16-bit FNV-1a like GearLayoutHash): two frames that differ only in
+// their weapons skip the debounce (a draw / holster goes out at once; a weapon prop is cheap to keep).
+std::uint16_t NonWeaponHash(const wire::GearFrame& f) {
+    std::uint32_t h = 2166136261u;
+    auto mix = [&h](std::uint8_t b) {
+        h ^= b;
+        h *= 16777619u;
+    };
+    for (unsigned i = 0; i < f.count && i < wire::kMaxGearItems; ++i) {
+        const wire::GearItem& it = f.items[i];
+        if (it.kind == wire::GearKind::weapon) continue;
+        mix(static_cast<std::uint8_t>(it.kind));
+        mix(it.model);
+        mix(it.variation);
+        mix(it.parent == wire::kGearNoParent ? it.joint : std::uint8_t{0});
+        mix(it.parent);
+        mix(it.res);
+    }
+    return static_cast<std::uint16_t>((h >> 16) ^ (h & 0xFFFFu));
+}
+unsigned WeaponCount(const wire::GearFrame& f) {
+    unsigned n = 0;
+    for (unsigned i = 0; i < f.count; ++i) n += f.items[i].kind == wire::GearKind::weapon;
+    return n;
+}
+
+// The fast weapon watch (every tick, a few fault-free reads; see WeaponWatch).
+void WatchWeapon(game::Entity* local, double now) {
+    if (!g_weapons_on || !local) return;
+    const std::uintptr_t b = mem::Base();
+    if (!g_ww.checked) {
+        g_ww.checked = true;
+        g_ww.ok = mem::CodeMatches(b + 0x27A4390, "0F B6 81 78 1C 00 00 48 6B D0 70 48 8B 84 0A D0 00 00 00 33 C9 80 78 12");
+        Log("[gear] weapon watch: the current-weapon getter at ds.exe+0x27A4390 %s", g_ww.ok ? "verified (watched every tick)" : "does not match: reads every 100 ms only");
+    }
+    if (!g_ww.ok) return;
+    const auto p = reinterpret_cast<std::uintptr_t>(local);
+    if (Q(p) != b + kPlayerVtable) return;
+    const std::uintptr_t inv = Q(p + kPInv);
+    if (!inv || Q(inv + kCompOwner) != p) return;
+    std::uint8_t slot = 0xFF;
+    std::uintptr_t e = 0;
+    if (Rd(inv + 0x1C78, slot) && slot < 64) {
+        const std::uintptr_t inst = Q(inv + 0xD0 + 0x70ull * slot);
+        std::uint8_t id = 0x5D;
+        if (inst && Rd(inst + 0x12, id) && id < 0x5D) {
+            const std::uintptr_t back = Q(inst + 0x308);
+            if (back > 0x20 && Q(back - 0x20 + 0x338) == inst) e = back - 0x20;
+        }
+    }
+    const bool vis = e && Visible(e);
+    const std::uintptr_t parent = e ? Q(e + 0x70) : 0;
+    // the previous weapon (while it is still a weapon entity of ours: the instance's back reference)
+    if (g_ww.prev_e && Q(Q(g_ww.prev_e + 0x338) + 0x308) != g_ww.prev_e + 0x20) g_ww.prev_e = 0;
+    const bool prev_vis = g_ww.prev_e && Visible(g_ww.prev_e);
+    const std::uintptr_t prev_parent = g_ww.prev_e ? Q(g_ww.prev_e + 0x70) : 0;
+    const bool prev_changed = g_ww.prev_e && (prev_vis != g_ww.prev_vis || prev_parent != g_ww.prev_parent);
+    g_ww.prev_vis = prev_vis, g_ww.prev_parent = prev_parent;
+    if (e == g_ww.e && vis == g_ww.vis && parent == g_ww.parent && !prev_changed) return;
+    if (e != g_ww.e && g_ww.e) {
+        g_ww.prev_e = g_ww.e;
+        g_ww.prev_vis = g_ww.vis, g_ww.prev_parent = g_ww.parent;
+    }
+    g_ww.e = e, g_ww.vis = vis, g_ww.parent = parent;
+    ++g_ww.changes;
+    g_ww.changed_ms = now;
+    // read now, or as soon as the gap since the last forced read allows (the read itself takes a
+    // weapon-only layout change without the debounce: NonWeaponHash in ReadLocalTick)
+    const double earliest = g_ww.forced_ms + kWatchGapMs;
+    if (now >= earliest) {
+        g_next_read_ms = 0;
+        g_ww.forced_ms = now;
+    } else {
+        if (g_next_read_ms > earliest) g_next_read_ms = earliest;
+        g_ww.forced_ms = earliest;
+        ++g_ww.deferred;
     }
 }
 
@@ -1232,7 +1568,9 @@ void ReadLocalTick(game::Entity* local, bool local_active, double now) {
     static std::uintptr_t fe[wire::kMaxGearItems];
     if (!BuildFrame(local, sam, realbody::SelfShown(), moving, &f, fe)) return;
     const std::uint16_t nh = wire::GearLayoutHash(f);
-    if (g_have_local && (nh != wire::GearLayoutHash(g_local) || f.count != g_local.count)) {
+    const bool new_layout = g_have_local && (nh != wire::GearLayoutHash(g_local) || f.count != g_local.count);
+    const bool weapons_only = new_layout && NonWeaponHash(f) == NonWeaponHash(g_local);
+    if (new_layout && !weapons_only) {
         if (!(g_pending && g_pending_hash == nh && g_pending_count == f.count)) {
             g_pending = true, g_pending_hash = nh, g_pending_count = f.count;
             if (++g_layout_held <= 30) {
@@ -1251,6 +1589,18 @@ void ReadLocalTick(game::Entity* local, bool local_active, double now) {
         }
     }
     g_pending = false;
+    if (weapons_only || (new_layout && WeaponCount(f) != WeaponCount(g_local))) {
+        // a weapon drawn / holstered / switched: the time from the watch's sighting to this frame
+        if (g_ww.changed_ms > 0) {
+            const double lat = now - g_ww.changed_ms;
+            g_ww.lat_sum += lat, ++g_ww.lat_n;
+            if (lat > g_ww.lat_max) g_ww.lat_max = lat;
+            if (g_ww.lat_n <= 40)
+                Log("[gear] weapon layout %04X taken %.0f ms after the watch saw the change (%u weapon item(s); mean %.0f ms, max %.0f ms over %u)", nh, lat,
+                    WeaponCount(f), g_ww.lat_sum / g_ww.lat_n, g_ww.lat_max, g_ww.lat_n);
+            g_ww.changed_ms = 0;
+        }
+    }
     if (moving && g_have_local && wire::GearLayoutHash(f) == wire::GearLayoutHash(g_local)) ++g_moving_skips;
     g_local = f;
     g_have_local = true;
@@ -1261,7 +1611,7 @@ void ReadLocalTick(game::Entity* local, bool local_active, double now) {
     const std::uint16_t h = wire::GearLayoutHash(f);
     if (h != g_logged_hash) {
         g_logged_hash = h;
-        DescribeFrame(f, "our gear");
+        DescribeFrame(f, "our gear", g_res_local);
     }
 }
 
@@ -1430,8 +1780,19 @@ void RemoveProp(PropSet& s, unsigned i, const char* why) {
     p = Prop{};
 }
 
+void RemoveSpare(PropSet& s, unsigned k, const char* why) {
+    PropSet::Spare& sp = s.spare[k];
+    if (sp.p.loading || sp.p.live || sp.p.sp.sp) {
+        char step[160] = {};
+        holo::SpawnTeardown(sp.p.sp, why, step, sizeof(step));
+        ++s.removed;
+    }
+    sp = PropSet::Spare{};
+}
+
 void RemoveAll(PropSet& s, const char* why) {
     Unpublish(s);
+    for (unsigned k = 0; k < sizeof(s.spare) / sizeof(s.spare[0]); ++k) RemoveSpare(s, k, why);
     unsigned n = 0;
     for (unsigned i = 0; i < wire::kMaxGearItems; ++i)
         if (s.props[i].loading || s.props[i].live || s.props[i].sp.sp) {
@@ -1504,7 +1865,11 @@ void SetShown(PropSet& s, unsigned i, bool on, double now) {
         if (on && p.game_owned) return;
         if (++s.reshown <= 20) Log("[%s] prop %u was %s by the game: set %s again", s.tag, i, is_on ? "shown" : "hidden", on ? "visible" : "invisible");
     }
-    if (partner::SetVisible(p.sp.e, on)) p.shown = on;
+    if (partner::SetVisible(p.sp.e, on)) {
+        if (on && !p.shown && IsWeaponProp(p.def) && ++s.weapon_shows <= 60)
+            Log("[%s] weapon prop %u '%s' shown %.0f ms after its layout was taken", s.tag, i, kProps[p.def].key, s.layout_ms > 0 ? now - s.layout_ms : -1.0);
+        p.shown = on;
+    }
 }
 
 // The path + GUID a prop key loads (false: an entity resource the table does not name yet).
@@ -1683,7 +2048,7 @@ void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_acti
         for (unsigned i = 0; i < wire::kMaxGearItems; ++i) {
             const Prop& p = s.props[i];
             old_keys[i] = (p.loading || p.live || p.failed) ? p.def : -1;
-            want[i] = i < f.count ? PropFor(f.items[i]) : -1;
+            want[i] = i < f.count ? PropFor(f.items[i], s.res) : -1;
         }
         wire::GearAssignProps(old_keys, wire::kMaxGearItems, want, f.count, map);
         Unpublish(s);
@@ -1699,19 +2064,61 @@ void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_acti
                 moved += map[j] != static_cast<int>(j);
             }
         }
+        constexpr unsigned kSpares = sizeof(s.spare) / sizeof(s.spare[0]);
         for (unsigned i = 0; i < wire::kMaxGearItems; ++i)
             if (!used[i] && (s.props[i].loading || s.props[i].live || s.props[i].sp.sp)) {
+                Prop& op = s.props[i];
+                if (IsWeaponProp(op.def) && op.live && holo::SpawnAlive(op.sp)) {
+                    // a weapon prop: kept hidden for the next draw (the oldest spare goes when all are taken)
+                    unsigned k = 0;
+                    for (unsigned m = 0; m < kSpares; ++m) {
+                        if (!s.spare[m].p.live) {
+                            k = m;
+                            break;
+                        }
+                        if (s.spare[m].since < s.spare[k].since) k = m;
+                    }
+                    if (s.spare[k].p.live || s.spare[k].p.sp.sp) RemoveSpare(s, k, "spare replaced");
+                    partner::SetVisible(op.sp.e, false);
+                    op.shown = false;
+                    s.spare[k].p = op;
+                    s.spare[k].since = now;
+                    ++s.spare_kept;
+                    op = Prop{};
+                    continue;
+                }
                 RemoveProp(s, i, "layout changed");
                 ++gone;
             }
+        // new weapon items take a kept prop of their key
+        for (unsigned j = 0; j < f.count; ++j) {
+            if (map[j] >= 0 || !IsWeaponProp(want[j])) continue;
+            for (unsigned k = 0; k < kSpares; ++k) {
+                PropSet::Spare& sp = s.spare[k];
+                if (!sp.p.live || sp.p.def != want[j]) continue;
+                if (!holo::SpawnAlive(sp.p.sp)) {
+                    RemoveSpare(s, k, "spare destroyed by the game");
+                    continue;
+                }
+                next[j] = sp.p;
+                sp = PropSet::Spare{};
+                ++s.spare_reused;
+                ++kept;
+                break;
+            }
+        }
+        s.layout_ms = now;
         for (unsigned j = 0; j < wire::kMaxGearItems; ++j) s.props[j] = next[j];
         s.kept += moved;
         if (s.published_hash != 0xFFFF || gone)
             Log("[%s] layout %04X -> %04X: %u prop(s) kept (%u moved to another item), %u removed", s.tag, s.published_hash, h, kept, moved, gone);
         s.published_hash = h;
-        DescribeFrame(f, s.tag);
+        DescribeFrame(f, s.tag, s.res);
         changed = true;
     }
+    for (unsigned k = 0; k < sizeof(s.spare) / sizeof(s.spare[0]); ++k)
+        if ((s.spare[k].p.live || s.spare[k].p.sp.sp) && (now - s.spare[k].since > 60000 || !holo::SpawnAlive(s.spare[k].p.sp)))
+            RemoveSpare(s, k, now - s.spare[k].since > 60000 ? "spare unused for 60 s" : "spare destroyed by the game");
     // Spawn the missing props (a few per tick), poll the loading ones; failures are retried.
     unsigned begun = 0, loading = 0;
     game::WorldTransform at{};
@@ -1719,7 +2126,7 @@ void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_acti
     at.pos.z -= 20.0;  // out of sight until the first placement
     for (unsigned i = 0; i < f.count; ++i) {
         Prop& p = s.props[i];
-        const int want = PropFor(f.items[i]);
+        const int want = PropFor(f.items[i], s.res);
         if (want < 0 || want >= kKeyCount || s.refused[want]) continue;
         const char* path = nullptr;
         const std::uint8_t* gid = nullptr;
@@ -1844,7 +2251,7 @@ void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_acti
         for (unsigned i = 0; i < f.count; ++i) {
             const Prop& p = s.props[i];
             live += p.live, shown += p.shown, failed_now += p.failed;
-            const int k = PropFor(f.items[i]);
+            const int k = PropFor(f.items[i], s.res);
             const char* a = nullptr;
             const std::uint8_t* b = nullptr;
             const char* c = nullptr;
@@ -1860,9 +2267,12 @@ void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_acti
             Log("[look] props: %u looks applied (%u partly, %u again, %u failed); %s; backpack pose: %s", s.looks, s.looks_partial, s.looks_reapplied,
                 s.looks_failed, lc, pc);
         }
+        unsigned spares = 0;
+        for (const PropSet::Spare& sp : s.spare) spares += sp.p.live;
         Log("[%s] %u items, %u props live (%u loading, %u shown, %u failing now, %u refused, %u waiting for their resource; %u failures, %u retries, %u "
-            "reshown, %u kept across layouts, %u removed); placements %u (aba %u, bad matrix %u)",
-            s.tag, f.count, live, loading, shown, failed_now, refused, waiting, s.failed, s.retried, s.reshown, s.kept, s.removed, pl, aba, bad);
+            "reshown, %u kept across layouts, %u removed); placements %u (aba %u, bad matrix %u); weapon spares %u (%u kept, %u reused)",
+            s.tag, f.count, live, loading, shown, failed_now, refused, waiting, s.failed, s.retried, s.reshown, s.kept, s.removed, pl, aba, bad, spares,
+            s.spare_kept, s.spare_reused);
     }
 }
 
@@ -2053,6 +2463,7 @@ bool Enabled() noexcept { return g_enabled; }
 
 void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
     if (!g_enabled || !realbody::HookInstalled()) return;
+    if (local_active && g_chk.ok) WatchWeapon(local, now_ms);
     ReadLocalTick(local, local_active, now_ms);
     // The partner slot: the partner's real body (or, debug, a mirroring debug body with our gear).
     PropSet& ps = g_sets[0];
@@ -2140,6 +2551,12 @@ bool TakeSendRes(double now_ms, wire::GearRes* out) noexcept {
 // the baby, the boots, the chiral cylinder, the backpack belt. A game whose own tests raised the mirror
 // level (gear 7 2) or chose the pod entity (gear 8 1) accepts what that level sends.
 bool ResAllowed(const char* path, const std::uint8_t (&guid)[16], const char** why) {
+    // A weapon's own resource is never loaded, at any level (its entity is a DSWeaponEntity: a copy
+    // crashes the game, section 17.1); SetPartnerRes keeps it for the weapon items' props.
+    if (wire::GearResWeaponOnly(path)) {
+        if (why) *why = "a weapon's own resource (DSWeaponEntity): never loaded";
+        return false;
+    }
     if (g_mirror_level >= 2) return true;  // tests only (gear 7 2): any ds/entities/ path the wire allows
     return wire::GearResProven(path, guid, g_pod_entity, why);
 }
@@ -2158,8 +2575,22 @@ void SetPartnerRes(const wire::GearRes& r) noexcept {
     const int key = kKeyEntity + r.id;
     const char* no = nullptr;
     if (!ResAllowed(r.path, r.guid, &no)) {
+        s.refused[key] = true;  // never spawned as an entity
+        if (wire::GearResWeaponOnly(r.path)) {
+            // a weapon resource: kept for the partner's weapon items, which show a prop by its core (section 17)
+            const bool fresh = !e.used || std::strcmp(e.path, r.path) != 0 || std::memcmp(e.guid, r.guid, 16) != 0;
+            e.used = true;
+            e.weapon_only = true;
+            std::memcpy(e.guid, r.guid, 16);
+            std::snprintf(e.path, sizeof(e.path), "%s", r.path);
+            ++g_res_rx;
+            const WeaponMap* m = WeaponFor(r.path);
+            if (fresh && ++g_res_refused <= 40)
+                Log("[gear] the partner's weapon resource %u '%s' %s: never loaded itself; its weapon items show %s", r.id, r.path, GuidStr(r.guid).c_str(),
+                    m ? (m->exact ? kProps[m->prop].key : "an approximate prop") : "nothing (no prop for this weapon)");
+            return;
+        }
         if (++g_res_refused <= 20) Log("[gear] the partner's resource %u '%s' %s not loaded: %s", r.id, r.path, GuidStr(r.guid).c_str(), no);
-        s.refused[key] = true;
         return;
     }
     if (e.used) {
@@ -2174,6 +2605,7 @@ void SetPartnerRes(const wire::GearRes& r) noexcept {
         }
     }
     e.used = true;
+    e.weapon_only = false;
     std::memcpy(e.guid, r.guid, 16);
     std::snprintf(e.path, sizeof(e.path), "%s", r.path);
     ++g_res_rx;
@@ -2270,7 +2702,7 @@ void SetPartnerGear(const wire::GearFrame* f) noexcept {
         g_have_pose_partner = false;
         return;
     }
-    if (!g_have_partner || wire::GearLayoutHash(*f) != wire::GearLayoutHash(g_partner)) DescribeFrame(*f, "the partner's gear");
+    if (!g_have_partner || wire::GearLayoutHash(*f) != wire::GearLayoutHash(g_partner)) DescribeFrame(*f, "the partner's gear", g_res_partner);
     g_partner = *f;
     g_have_partner = true;
 }
@@ -2521,6 +2953,15 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
                           g_head.why, g_head.reads, g_head.held, g_pm.applied);
             Log("[gear] %s", msg);
             return true;
+        case 17:
+            // weapons (section 17): read and sent / not (the partner's props of them follow)
+            g_weapons_on = v[1] != 0;
+            g_next_read_ms = 0;
+            std::snprintf(msg, cap, "weapons %s (watch %s, %u changes seen, %u read after the 40 ms gap; draw / holster to frame: mean %.0f ms, max %.0f ms over %u)",
+                          g_weapons_on ? "sent" : "not sent", g_ww.ok ? "on" : "off", g_ww.changes, g_ww.deferred, g_ww.lat_n ? g_ww.lat_sum / g_ww.lat_n : 0.0,
+                          g_ww.lat_max, g_ww.lat_n);
+            Log("[gear] %s", msg);
+            return true;
         case 13:
             g_poses_on = v[1] != 0;
             if (!g_poses_on) ClearPoses(g_sets[0]);
@@ -2539,7 +2980,7 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             return who != nullptr;
         }
         default:
-            std::snprintf(msg, cap, "unknown op %d (0 log, 1 partner 0/1, 2 self 0/1, 3 test cases n, 4 debug body 0/1, 5 n / 6 test faults, 7 level, 8 pod entity, 9 census 0/1/2, 10 walk cache 0/1, 11 looks 0/1, 12 looks off/on, 13 backpack pose off/on, 14 accessory list, 15 cap colour, 16 head parts off/on)", op);
+            std::snprintf(msg, cap, "unknown op %d (0 log, 1 partner 0/1, 2 self 0/1, 3 test cases n, 4 debug body 0/1, 5 n / 6 test faults, 7 level, 8 pod entity, 9 census 0/1/2, 10 walk cache 0/1, 11 looks 0/1, 12 looks off/on, 13 backpack pose off/on, 14 accessory list, 15 cap colour, 16 head parts off/on, 17 weapons off/on)", op);
             return false;
     }
 }

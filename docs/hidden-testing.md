@@ -470,6 +470,31 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   the host's standing body with the distance traced on both games, and walks back so the host sees her back.
   Note: `waitlog` matches any line of the log so far, so each check names text that cannot have appeared
   before (the cargo counts here).
+* `weapons-solo.txt` (role solo, `my_character=fragile_suit`, self view, a debug Fragile with our gear) and
+  `two-games-weapons.txt` (role host, the guest `fragile_suit` with self view): weapons in hand
+  (docs/real-partner-body.md section 17). The 100% save's equipment wheel with the game's own inputs: D-pad right
+  held, then the stick pushed, then centred, then the D-pad let go (`pad dpad_right 600 keep`, `pad dpad_right
+  900 lx=.. ly=.. rx=.. ry=.. keep`, `pad dpad_right 400 keep`, `pad none 0`; the wheel keeps its highlighted item
+  and the stick never turns the camera). Upper left: the assault rifle; top: the blood grenade; upper right: the
+  electric grenade; right: empty hands. Aim `lt=255`, fire / throw `rt=255`. In two games the guest walks past
+  the host and turns round, so both cameras look at the other player's front.
+* `self-fit.txt` (role solo, `my_character=fragile_suit`, self view, the cap on) and `two-games-fit.txt` (role
+  host, the guest `fragile_suit` with self view): the self view fit (docs/real-partner-body.md section 16). Each
+  view with the fit on and off (`self_view 5 0/1`), the same camera: back, side and front solo, a running burst,
+  Sam back after `self_view 0`; in two games the host's view of the guest front and back, the guest's fit on
+  and off.
+* `self-fit-head.txt` (role solo, the cap on): the fit's head lift at 0 / 50 / 75 / 100 % and the fit off, front
+  and side (`self_view 7`, `self_view 5`); running with the same pose on and off (`self_view 6`), uncapped and at
+  30 fps (`smooth 2 30`), and with the fit off (the leak check's comparison); last another character through
+  the self view's body switch (`self_view 1 3`). `log <text>` marks each phase in the log for the `[self] fit`
+  lines.
+* `two-games-final.txt` (role host, the guest as the launcher writes it by default: `fragile_suit`, self view,
+  fit and lift; the cap on): gear fit, boots and weapons (rifle drawn, aimed, fired, put away; the blood grenade)
+  on both screens, the guest's back from the host, the self view off and on again, and the guest running with
+  the fit on then off. Run it with a 1080p settings.cfg for detail: `-SettingsCfg <file>` with the `graphics
+  low` preset's lines (`native/mod/sandbox.hpp` `LowGraphicsSettingsCfg`) but `rendering_width` /
+  `window_right` 1920 and `rendering_height` / `window_bottom` 1080 gave 1920x1080 screenshots of both games at
+  30 fps (run `20261117-220002`; the plain preset gives 1280x720).
 * `gear-self.txt` (role solo, Fragile, self view) and `two-games-gear.txt` (role host, the guest Fragile with
   self view, `partner_collision=0`): the backpack and cargo on the bodies (docs/real-partner-body.md section
   12). Solo: the self view standing, walking and running, Sam with his real gear for comparison, a debug Fragile

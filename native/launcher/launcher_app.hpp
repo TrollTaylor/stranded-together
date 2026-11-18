@@ -7,6 +7,8 @@
 #include <string>
 
 #include "imgui.h"
+
+struct ImGuiWindow;   // imgui_internal.h (the page's window, launcher_app.cpp)
 #include "launcher_model.hpp"
 #include "launcher_ui_logic.hpp"
 
@@ -105,6 +107,8 @@ private:
     char port_peer_buf_[8] = {};
     char name_buf_[40] = {};
     bool open_character_list_ = false;   // screenshot scene: open the Join tab's character list once
+    bool scroll_to_partner_body_ = false;   // screenshot scene: Debug > Options scrolled to PARTNER BODY
+    ::ImGuiWindow* page_window_ = nullptr;   // the scrolling page (this frame)
 
     LinkView link_;   // this frame's link status (sessions only)
 

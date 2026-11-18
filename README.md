@@ -18,10 +18,10 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
 - Each player sees the other in their world, moved to the partner's position and facing
   at 30 Hz with 100 ms interpolation.
 - **Experimental:** the partner is a solid character that copies the other player's real
-  animation (walking, running, stopping). The guest picks which character the host sees;
-  the host is always Sam. A partner shown as Sam wears the other player's own suit and colour
-  (porter, silver or gold). A guest who picked another character appears as it on their own
-  screen too. If the real character cannot be shown, the partner appears as a hologram
+  animation (walking, running, stopping). The guest plays Fragile in her porter suit (other
+  characters can be picked with Debug > Allow other characters); the host is always Sam. A
+  partner shown as Sam wears the other player's own suit and colour (porter, silver or gold).
+  The guest appears as Fragile on their own screen too. If the real character cannot be shown, the partner appears as a hologram
   instead. See [docs/real-partner-body.md](docs/real-partner-body.md).
 - The partner's name floats above their head (your co-op name, or your Steam name), in the
   game's own menu font, read from your installed game (Segoe UI for characters it lacks).
@@ -35,11 +35,16 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
   parts (on a Sam body), in the colours the owner sees (a gold or silver cap, the backpack's
   paint); the backpack frame extends with the load as on the owner's screen. A partner shown as
   Sam has the other player's own hair and head (cap hair, the metal face lines).
-  When you appear as another character, your own real gear shows on you, and the cargo menu
-  (Manage Cargo) shows your character instead of Sam.
-- Not yet: weapons in hand, the Odradek, the cuff device, the weapon crate on the hip, the
-  chiral cylinder, glasses (untested), the exoskeleton on non-Sam characters, facial
-  animation, vehicles, world/BT/mission sync.
+  When you appear as another character, your own real gear, cap, equipped boots and weapons
+  show on you, fitted to your character's body, and the cargo menu (Manage Cargo) shows your
+  character instead of Sam.
+- **Experimental:** weapons in hand show on the other screen: the assault rifle, handgun,
+  shotgun, multi rod and the grenades (as the game's cutscene models, in their own colours).
+- Not yet: the equipped boots on the other screen (the partner shows the character's own),
+  other weapons in hand (bola gun, launchers, PCC ...), the Odradek, the cuff device, the
+  weapon crate on the hip, the chiral cylinder, glasses (untested), the exoskeleton on non-Sam
+  characters, facial animation, voices and sounds of the partner, vehicles, world/BT/mission
+  sync.
 
 ## Download
 
@@ -60,7 +65,7 @@ Starting the game from Steam on its own runs it unmodded: each start from the la
 ## Play
 
 1. **Host:** **Play → Host → Host game**. The game starts through Steam and a join code is copied to your clipboard; send it to your partner. The host always appears as Sam.
-2. **Join:** **Play → Join**, paste the code, pick **Your character** (Sam, Fragile, Die-Hardman, Cliff, Deadman, Higgs and others), **Join game**. The host sees you as that character when both games use the real character (Debug → Partner body), and on your own screen you appear as it too (Debug → See yourself as your character). **Advanced** switches to LAN / VPN (UDP) and sets your name.
+2. **Join:** **Play → Join**, paste the code, **Join game**. You play **Fragile (porter suit)**; with **Debug → Allow other characters** you can pick another character under **Your character** (Sam, Die-Hardman, Cliff, Deadman, Higgs and others). The host sees you as that character when both games use the real character (Debug → Partner body), and on your own screen you appear as it too (Debug → See yourself as your character). **Advanced** switches to LAN / VPN (UDP) and sets your name.
 3. **Solo test:** **Play → Solo test** starts the game with an echo, a copy of you that replays your movement. No partner, no network.
 
 Keep the launcher open to see the connection on **In game**; closing it is safe (a hidden helper tidies up after the game exits).

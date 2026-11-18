@@ -55,6 +55,10 @@ struct Config {
     // (self_character=1, Debug option, default on); off when absent. Needs the pose hook
     // (partner_body=real or pose_hook=1). docs/real-partner-body.md section 8.
     bool self_character = false;
+    // Self view fit: while the self body is shown, Sam's hidden skeleton takes the character's bone
+    // lengths, so the gear, cargo and boots the game hangs on it sit on the character
+    // (docs/real-partner-body.md section 16). Default on; self_fit=0 keeps Sam's proportions.
+    bool self_fit = true;
     bool pose_hook = false;            // install the pose hook even without partner_body=real (debug spawns)
 
     // Debug
