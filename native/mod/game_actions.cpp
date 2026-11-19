@@ -661,6 +661,27 @@ bool TeleportLocalPlayer(double x, double y, double z, TeleportMode mode, char* 
     return ok;
 }
 
+bool TeleportLocalPlayerFacing(double x, double y, double z, double fx, double fy, TeleportMode mode, char* msg, std::size_t cap) noexcept {
+    char local[160];
+    if (!msg) msg = local, cap = sizeof(local);
+    if (!Has(kFeatTeleport, msg, cap)) {
+        Log("[game] teleport to (%.2f, %.2f, %.2f) refused: %s", x, y, z, msg);
+        return false;
+    }
+    const double n = std::sqrt(fx * fx + fy * fy);
+    if (!(n > 1e-3) || !std::isfinite(n)) {
+        Put(msg, cap, "no facing");
+        return false;
+    }
+    const float f0 = static_cast<float>(fx / n), f1 = static_cast<float>(fy / n);
+    WorldTransform wt{};
+    wt.rot = RotMatrix{{{f1, -f0, 0}, {f0, f1, 0}, {0, 0, 1}}};  // rows: right = forward x up, forward, up
+    wt.pos = {x, y, z};
+    const bool ok = Place(wt, mode, mode == TeleportMode::snap_to_ground ? "snap" : "teleport", msg, cap);
+    if (!ok) Log("[game] %s", msg);
+    return ok;
+}
+
 bool Unstuck(char* msg, std::size_t cap) noexcept {
     if (!Has(kFeatUnstuck, msg, cap)) return false;
     Sam s;

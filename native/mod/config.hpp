@@ -74,10 +74,18 @@ struct Config {
     bool boots_sync = true;
     // Vehicles (docs/real-partner-body.md section 22): the vehicle the player rides is sent (STM1) and shown under the
     // partner's body on the other screen as a visual copy (a cutscene trike / truck, the roadster's hologram). 1 = on,
-    // the roadster's copy only (default; the one proven against a real drive), 3 = also the trike's and the truck's
-    // copies, 2 = solid copies only (trike, truck; no hologram roadster), 0 = nothing read, sent or spawned. Every value
-    // but 0 sends what we ride.
+    // all three copies (default; each proven against real drives), 3 = the same (the v0.12 value for all three), 2 =
+    // solid copies only (trike, truck; no hologram roadster), 4 = the roadster's copy only (the v0.12 default), 0 =
+    // nothing read, sent or spawned. Every value but 0 sends what we ride.
     int vehicle_sync = 1;
+    // The partner's vehicle copy hidden while the watcher's own vehicle of the same kind stands in the same place (two of
+    // the same vehicle in one spot; docs/real-partner-body.md section 22). Default on; 0: the copy is always shown.
+    bool vehicle_overlap_hide = true;
+    // The partner's vehicle copy wears the partner vehicle's paint and variations (gold / silver / broken / ride type;
+    // the solid trike and truck copies only) and shows its battery / defense packs (docs/real-partner-body.md section
+    // 22.7). Default on; 0: neither is read, sent or applied (the copies' own look, no packs).
+    bool vehicle_look = true;
+    bool vehicle_packs = true;
     bool pose_hook = false;           // install the pose hook even without partner_body=real (debug spawns)
 
     // Debug
@@ -148,6 +156,11 @@ struct Config {
     // percent of their normal volume (SetGameObjectOutputBusVolume on the receiver's own Wwise objects); 0 posts nothing.
     // The partner's voice is not affected. Out of range: clamped.
     int partner_volume = 100;
+    // vehicle_sound=0|1 (default 1; with sound_sync and vehicle_sync; docs/real-partner-body.md section 22.9): the engine,
+    // road noise and other sounds of the vehicle the partner rides (its own SoundComponent's Wwise events, with their
+    // RTPCs: rpm, speed, throttle, boost...) are posted at the partner's vehicle copy, at partner_volume. 0: only the
+    // player's own sounds are sent and posted (the v0.12 behaviour).
+    bool vehicle_sound = true;
 
 
     // Local two-instance test (docs/sandbox-and-local-test.md): local_input=host|host_pad|guest.

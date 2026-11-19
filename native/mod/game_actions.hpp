@@ -43,6 +43,8 @@ constexpr double kTeleportMinIntervalMs = 500.0;
 // position, partner, snap) ends here. Checks all preconditions first (see
 // docs/debug-actions.md) and verifies the result on later frames (log).
 bool TeleportLocalPlayer(double x, double y, double z, TeleportMode mode, char* msg, std::size_t cap) noexcept;
+// The same with Sam turned to face (fx, fy) (horizontal; hidden tests: a vehicle's Use Vehicle prompt, a watching point).
+bool TeleportLocalPlayerFacing(double x, double y, double z, double fx, double fy, TeleportMode mode, char* msg, std::size_t cap) noexcept;
 inline bool TeleportLocalPlayer(double x, double y, double z) noexcept {
     return TeleportLocalPlayer(x, y, z, TeleportMode::place, nullptr, 0);
 }

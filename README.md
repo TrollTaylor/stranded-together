@@ -41,14 +41,15 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
   shows your character instead of Sam. The equipped boots also show on the other screen.
 - **Experimental:** weapons in hand show on the other screen: the assault rifle, handgun,
   shotgun, multi rod and the grenades (as the game's cutscene models, in their own colours).
-- **Experimental:** vehicles: when your partner drives a roadster, you see it with
-  them seated in it, moving where they drive and parked where they leave it (a
-  hologram of the roadster; trikes and trucks with `vehicle_sync=3` in session.ini, untested
-  against a real drive).
+- **Experimental:** vehicles: when your partner drives a roadster, trike (also the
+  Kusanagi) or truck, you see it as a hologram with them seated in it, moving where they
+  drive and parked where they leave it. With `sound_sync=1` you also hear its engine and
+  road noise. `vehicle_sync=2` in session.ini shows solid trikes and trucks in your
+  partner's paint with their packs instead (you can bump into and stand on those).
 - Not yet: other weapons in hand (bola gun, launchers, PCC ...), the Odradek, the cuff device,
   the weapon crate on the hip, the chiral cylinder, the exoskeleton on non-Sam characters,
-  facial animation, the partner's gear and vehicle sounds and gunshots (footsteps, movement and
-  rifle handling are heard, experimental), solid vehicles, the vehicle's paint and cargo, carts,
+  facial animation, the partner's gear sounds and gunshots (footsteps, movement and
+  rifle handling are heard, experimental), a solid roadster, cargo on vehicles, carts,
   world/BT/mission sync.
 
 ## Download

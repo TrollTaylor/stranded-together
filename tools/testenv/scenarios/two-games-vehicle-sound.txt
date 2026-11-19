@@ -1,0 +1,159 @@
+# Vehicle sounds between two games (docs/real-partner-body.md section 22.9; sound_sync=1, vehicle_sound=1), all three
+# kinds, both directions, with the robustness cases. The host plays Sam, the guest Fragile in her porter suit with the
+# self view. The driver's vehicle sounds (its SoundComponent's engine loop, road noise, ignition, cut-off, suspension...)
+# go out as STA1 v2 items (slot 7: the offset in the vehicle's frame, their RTPCs streamed) and are posted on the
+# watcher's own Wwise objects at its copy of the driver's vehicle. The hidden games are silent: the [psound] lines are the
+# evidence (posts, held loops picked up / refreshed, rtpc items, stops, the place against the copy entity's own
+# transform; `sound_sync 3 <ms>` traces the RTPC values every 500 ms on both sides).
+# 0. The garage roadster: the host gets on and drives, the guest watches; the host opens the cuff map while seated (the
+#    sender's gate: its loops are stopped on the guest, picked up again after).
+# 1. The Kusanagi trike: the host drives; its sends are held 3 s (the copy held, its sounds stopped, back after), then
+#    12 s (the partner body and the copy go after 10 s of silence; back after); the guest opens its cuff map while the
+#    host drives (the receiver's gate: the partner's sounds stop there, the held loops come back after); the host gets off.
+# 2. The truck: the guest drives, the host watches.
+# 3. The standard trike: the host drives, then gets off and turns vehicle sync off (no vehicle reported: stopped).
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-vehicle-sound -SeedSaves complete-100
+role host
+graphics low
+timeout 360
+ini partner_body=real
+ini vehicle_sync=1
+ini partner_collision=0
+ini sound_sync=1
+ini vehicle_sound=1
+@host ini my_character=sam
+@guest ini my_character=fragile_suit
+@guest ini self_character=1
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+@guest pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+@guest until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitplayer 60
+waitlog 60 \[link\] CONNECTED
+@guest waitlog 60 \[link\] CONNECTED
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+@guest until 150 3000 \[sync\] partner body: real 'sam' => pad A 120
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+@both action sound_sync 0
+# ---- 0. the roadster in the garage: the host drives, the guest watches
+log vsound: 0 roadster
+@guest action vehicle_sync 9 -1088.0 281.5
+action vehicle_sync 9 -1094.4 276.9
+wait 1500
+until 20 4000 \[vehicle\] ours: roadster => pad X 150
+@guest waitlog 20 \[vehicle\] copy 'roadster_hologram' shown
+?@guest waitlog 10 \[psound\] partner post vehicle ev
+@guest action sound_sync 3 12000
+action sound_sync 3 12000
+wait 3000
+@guest screenshot 00-guest-sees-host-on-roadster
+pad none 1200 rt=255 lx=-32767 keep
+@guest screenshot 00-guest-sees-host-driving-a
+pad none 1500 rt=255 keep
+pad none 900 rt=255 lx=-32767 keep
+pad none 0
+wait 2000
+@both action sound_sync 0
+log vsound: 0 roadster host cuff map
+pad START 150
+waitlog 5 \[psound\] gate closed: paused / menu / cutscene \(HandcuffDevice\)
+wait 3000
+@both action sound_sync 0
+pad A 150
+wait 1500
+until 20 2500 \[psound\] gate open again .*HandcuffDevice => pad B 150
+wait 3000
+@both action sound_sync 0
+pad X 150
+wait 4000
+@both action sound_sync 0
+# ---- 1. the host drives the Kusanagi trike, the guest watches
+log vsound: 1 kusanagi
+action vehicle_sync 8 1.2 4
+@guest action vehicle_sync 8 9 4
+wait 2000
+until 20 4000 \[vehicle\] ours: trike_kusanagi => pad X 150
+wait 3500
+@guest action sound_sync 3 9000
+pad none 2000 rt=200 keep
+@guest screenshot 03-guest-sees-host-driving-a
+pad none 2000 rt=200 lx=-12000 keep
+@both action sound_sync 0
+log vsound: 1 kusanagi guest cuff map
+@guest pad START 150
+@guest waitlog 5 \[psound\] gate closed: paused / menu / cutscene \(HandcuffDevice\)
+pad none 2000 rt=200 keep
+@both action sound_sync 0
+@guest pad A 150
+pad none 1500 rt=200 lx=12000 keep
+@guest until 20 2500 \[psound\] gate open again .*HandcuffDevice => pad B 150
+pad none 2000 rt=200 keep
+@both action sound_sync 0
+log vsound: 1 kusanagi held 3 s
+action vehicle_sync 10 3000
+pad none 1500 rt=200 keep
+pad none 2500 rt=200 lx=12000 keep
+pad none 0
+wait 1500
+@both action sound_sync 0
+log vsound: 1 kusanagi held 12 s
+action vehicle_sync 10 12000
+pad none 3000 rt=160 lx=-10000 keep
+pad none 0
+?@guest waitlog 15 partner silent for 10 s
+wait 4500
+@both action sound_sync 0
+pad X 150
+wait 4000
+@both action sound_sync 0
+# ---- 2. the guest drives the truck, the host watches
+log vsound: 2 truck
+@guest action vehicle_sync 8 2.2 2
+action vehicle_sync 8 10 2
+wait 2000
+@guest until 20 4000 \[vehicle\] ours: truck => pad X 150
+waitlog 20 \[vehicle\] copy 'truck_hologram' shown
+wait 3000
+action sound_sync 3 9000
+@guest pad none 2500 rt=200 keep
+screenshot 11-host-sees-guest-driving-a
+@guest pad none 2000 rt=200 lx=-12000 keep
+@guest pad none 0
+wait 1500
+@both action sound_sync 0
+@guest pad X 150
+wait 4500
+@both action sound_sync 0
+# ---- 3. the host drives the standard trike, gets off, vehicle sync off
+log vsound: 3 trike
+action vehicle_sync 8 1.4 3
+@guest action vehicle_sync 8 9 3
+wait 2000
+until 20 4000 \[vehicle\] ours: trike (parked|getting|riding) => pad X 150
+wait 3500
+@guest action sound_sync 3 9000
+pad none 1800 lt=255 keep
+pad none 2200 rt=200 lx=-20000 keep
+@guest screenshot 16-guest-sees-host-driving-a
+pad none 2000 rt=200 keep
+pad none 0
+wait 2000
+@both action sound_sync 0
+pad X 150
+wait 4000
+log vsound: 3 trike vehicle sync off
+action vehicle_sync 1 0
+wait 3000
+@both action sound_sync 0
+action vehicle_sync 1 1
+log vsound: end
+@both action log_status
+@guest quit
+quit

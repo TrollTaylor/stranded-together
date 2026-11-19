@@ -463,18 +463,44 @@ read `denied (not on the allow-list): ...`. `session.ini partner_volume=0..100` 
   the registrations, posts and sent posts.
 * `action sound_sync 1 <0|1>`: log every mirrored post on both sides (1) or only the first 30 (0).
 * `action sound_sync 2`: stop every partner sound we play now (`StopAll` on our objects).
+* `action sound_sync 3 [ms]` (2026-11-18, real-partner-body.md section 22.9): the vehicle line of the counters now, and
+  for `ms` (at most 600,000) the vehicle sound trace every 500 ms: `vehicle trace tx obj 0x... tag T | loops <ev>/<pid>
+  ... | N rtpc(s): <id>=<value> ...` (the sound objects of the vehicle we ride with something on them) and `vehicle trace
+  rx our object i tag T active n | at (x, y, z) = the vehicle + (offset); vs the copy entity + offset d m | N rtpc(s):
+  ...` (our objects playing the partner's vehicle sounds).
+* `action sound_sync 4 <0|1>`: the vehicle sounds off / on at run time (both sides; needs `vehicle_sound=1` and
+  `vehicle_sync` not 0 at start, which install the instance create / setup hooks).
 
-Scenarios: `sound-sync-echo` (role echo: our own sounds come back through STA1 to the echo partner, then the cuff map
-holds them back), `two-games-sound` (host Sam, guest Fragile, the probe on both), `two-games-sound-own` (the same with
+**Vehicle sounds** (`session.ini vehicle_sound=1`, default, with `sound_sync=1`; real-partner-body.md section 22.9).
+Log lines: `vehicle sounds: our vehicle <p> (<class>, seated|parked): N of its sound object(s) known, M loop(s) playing
+on them` / `vehicle sounds: no vehicle reported now (was <p>): its loops stopped on the receiver`, `vehicle post ev 0x...
+pid N tag T [(held loop)] on vehicle <p> | at (x, y, z) m in its frame | N rtpc(s): ...`, `vehicle loop picked up ...`,
+`vehicle refresh ...` (the first 40 lines only), `vehicle loop ev 0x... pid N stopped by the game after n ms (fade f
+ms)[: the stop goes out]`, `vehicle loop ev 0x... pid N stopped on the receiver: <why>` (sender); `partner post vehicle
+ev 0x... (their pid N[, held loop]) -> pid M on our object i (tag T) | at (x, y, z): the partner's vehicle + (offset) m
+in its frame, d m from its origin; vs the copy entity's own transform + offset: e m | ...` (the first 60),
+`stopped N partner vehicle sound(s): <why>`, `a held partner vehicle loop (their pid N, our pid M) had no refresh for n
+ms: stopped` (receiver); a third status line `vehicle (vehicle_sound on|off): sent: ... | received: ...` (since the review
+it ends `tags skipped as still held n (forced m)`). Since the review (real-partner-body.md section 22.10) the create /
+setup hooks are their own group, installed only with `vehicle_sound=1` and `vehicle_sync` not 0: when they cannot be
+installed the log says `vehicle sounds off: <hook> (<why>)` and the partner's footsteps and foley stay on. The vehicle
+sound meter says `vs the copy entity's own transform + offset: no copy` (the copy not live yet: the sound is placed at the
+partner's vehicle frames) or `copy hidden over our own vehicle` (the copy is put below meanwhile).
+
+Scenarios: `vehicle-echo-sound` (role echo: our vehicle's sounds come back to the echo copy; cuff map, held sends, the
+key at run time, getting off, vehicle sync off; the trike and the truck), `two-games-vehicle-sound` (both directions,
+all three kinds, both sides' cuff map, held sends 3 s / 12 s), `sound-sync-echo` (role echo: our own sounds come back
+through STA1 to the echo partner, then the cuff map holds them back), `two-games-sound` (host Sam, guest Fragile, the probe on both), `two-games-sound-own` (the same with
 the partner sounds' own hooks), `sound-sync-volume` (the echo steps with `partner_volume=50`), `two-games-audio` (all
 audio with the launcher's default keys). The cuff map shows a "new ranked event" notice in these saves: A takes it away and B
 then closes the map (START does not).
 
-### Vehicle sync (`vehicle_sync`; `session.ini vehicle_sync=0|1|2|3`, default 1)
+### Vehicle sync (`vehicle_sync`; `session.ini vehicle_sync=0|1|2|3|4`, default 1; `vehicle_overlap_hide=0|1`, `vehicle_look=0|1`, `vehicle_packs=0|1`, default 1)
 
 `native/mod/vehicle_sync.cpp`, [real-partner-body.md](real-partner-body.md) section 22. The vehicle a player rides goes
-out as STM1, and the other screen shows a copy of it (the trike's or the truck's cutscene body, the roadster's
-construction hologram) under the partner's body. Log lines (`[vehicle]`): `game checks ok`, `our vehicle <ptr>:
+out as STM1, and the other screen shows a copy of it under the partner's body: the vehicle's construction hologram
+(roadster, trike, truck; the default), or with `vehicle_sync=2` the trike's or the truck's solid cutscene body (these
+carry the drivable art's collision: section 22.10). Log lines (`[vehicle]`): `game checks ok`, `our vehicle <ptr>:
 DSVehicleSpeedCar, kind 1, ride state 0; resource 'ds/entities/vehicle/pe_ds_vehicle_casp' <guid> (...); skeleton 23
 joints, layout ECF43324` (first sight), `ours: roadster riding (2), seated, at (x, y, z) v m/s, seat (x, y, z), 23
 joints ...; N frames sent (...)` (every 2 s while one is reported), `our Sam got off vehicle ...: reported as parked
@@ -482,14 +508,32 @@ joints ...; N frames sent (...)` (every 2 s while one is reported), `our Sam got
 vehicle copy '<key>' loading / live after n ms / placed / shown / posed from the partner's vehicle joints / removed
 (<why>)`, `the partner's <copy>: no copy (<why>)` (once per reason: the mode, a refusal) and, in hidden tests or
 while a trace runs, every 5 s while a copy is live `meter (5 s): partner body vs the copy's seat ... cm; play delay ... ms; the
-sent joints turned up to ... deg; the copy's pose vs the closest of the last 6 given ... deg`.
+sent joints turned up to ... deg; the copy's pose vs the closest of the last 6 given ... deg` and the frame-aligned `meter:
+while the partner's vehicle moved, N frames (ticks) and M pose writes on the copy (M/N per frame), repeats ..., interpolated
+in its update ... (held at the newer frame ...); largest joint turn per write ... deg mean, ... sd, ... max`. Since the
+second milestone also: `vehicle registry checks ok`, `overlap: copy '<key>' hidden: our own <class> <ptr> stands in its
+place (d m, dz, yaw)` / `shown again (...)`, `the partner's vehicle copy '<key>' held where it stands (<why>; the
+partner's pose is n ms old)` / `plays again`, `the partner's vehicle jumped n m between two frames ...: not slid`, `our
+last vehicle <ptr> is gone (not in the vehicle registry | its vtable / GUID changed)`, `our last vehicle <ptr> forgotten
+(a load | our Sam slept)`, `[smooth] vehicle copy update frequency 1 (14.99 Hz) -> 6 (240 Hz)`. Since the third
+milestone (section 22.7): `our <key>'s look: n variation(s), m colour index(es)`, `our vehicle <ptr> shows n pack(s)`,
+`the partner's <key>'s look: ...`, `look of the partner's <key> on copy '<copy>' (n variation(s), m colour(s); k of our
+own vehicles of that resource as sources): applied | partly applied: <why>`, `the partner's <key>: its look is not
+applied (copy '<copy>' has another model)`, `pack copy i '<battery_pack | defense_pack>' loading / placed: read back d m
+from where it was put` (hidden tests / trace), `n pack copy(ies) removed (<why>)`, `pack copy '<key>' refused for this game
+run: <why>`, and a fourth status line (`status: looks ...; packs ...; [look] ...`). Since the review (section 22.10):
+`the partner's vehicle look refused: ArtParts bits or a shader variable other than the colour index` (STV1 item 255 with
+anything the sender does not read; counted as `received (n refused)` in the status line); while a copy overlaps our own
+vehicle it is also put 20 m below (the vehicle sound meter then says `copy hidden over our own vehicle`).
 
 * `action vehicle_sync 0`: three status lines (ours, the partner's copy and the pose targets, the seat meter over the
   session); the result text is a one-line summary.
-* `action vehicle_sync 1 <0|1|2|3>`: the mode at run time (0 removes the copy and stops sending; 1 the roadster's copy
-  only, the default; 2 solid copies only: trike and truck; 3 all three). Every mode but 0 sends what we ride.
-* `action vehicle_sync 2 <0..3>`: show the partner's vehicle as copy 1 roadster hologram, 2 trike, 3 truck whatever it
-  is (0 = by its kind; the override ignores the mode). No joint pose on another skeleton. Hidden tests of the solid copies (only the roadster is
+* `action vehicle_sync 1 <0|1|2|3|4>`: the mode at run time (0 removes the copy and stops sending; 1 all three kinds as
+  holograms, the default since the review, and 3 the same; 2 the solid trike and truck copies with looks and packs and
+  the roadster's hologram; 4 the roadster's copy only, the first milestone's default). Every mode but 0 sends what we
+  ride.
+* `action vehicle_sync 2 <0..5>`: show the partner's vehicle as copy 1 roadster hologram, 2 trike (solid), 3 truck
+  (solid), 4 trike hologram, 5 truck hologram whatever it is (0 = by its kind; the override ignores the mode). No joint pose on another skeleton. Hidden tests of the solid copies (only the roadster is
   reachable at the 100% save's start).
 * `action vehicle_sync 3 <ms>`: trace for that long: `trace tx t=<QPC ms> pos=(...)` every tick on the sender (our
   vehicle) and `trace rx play=<sender ms> now=... placed=(...)` on the receiver; on one PC both games share the QPC
@@ -497,12 +541,40 @@ sent joints turned up to ... deg; the copy's pose vs the closest of the last 6 g
 * `action vehicle_sync 4 <right cm> <forward cm>` / `6 <up cm>`: an offset of the copy in the vehicle's frame (origin
   tuning; 0 by default).
 * `action vehicle_sync 5`: describe our current / last vehicle and the copy (components, resource, skeleton).
-* `action vehicle_sync 7` / `8 [m]`: the drivable vehicles in the world's entity list (7 logs them, 8 places Sam beside
-  the nearest). The 100% save's parked roadster is not in that list (82 entities): use 9.
+* `action vehicle_sync 7`: the game's vehicle registry (`registry n: <class> <ptr> '<resource>' (<allow-list key>) kind,
+  ride state, flags, at (x, y, z), d m from Sam, forward`) and the parking manager's 9 slots (raw; research). The World's
+  entity list never holds vehicles (the first milestone's 7 / 8 read it).
+* `action vehicle_sync 8 [side m] [kind]`: hidden tests: place Sam `side` m (0 = 1.8) beside the nearest registered
+  vehicle (kind 0 any within 40 m; 1 roadster, 2 truck, 3 trike, 4 the Kusanagi trike within 400 m), on the side he is
+  on, facing it (its Use Vehicle prompt needs that: run `20261118-151711`), at its height; beyond 3 m snapped to the
+  ground (a watching point). X then gets him on.
+* `action vehicle_sync 10 <ms>`: hidden tests (automation runs only): all our sends held that long (pose, joints, vehicle,
+  gear, ...), the link stays up: the other side sees a silent partner (a link stall, a load, a pause).
+* `action vehicle_sync 11 <0|1>`: overlap hiding off / on at run time (`vehicle_overlap_hide`).
+* `action vehicle_sync 12 [m] [kind]`: hidden tests: a watching point `m` m (0 = 12) back along the game camera's forward
+  from a point 8 m ahead of the nearest such vehicle, 4 m to its right, snapped to the ground.
+* `action vehicle_sync 13`: the meters logged now (a segment boundary).
+* `action vehicle_sync 16 [m] [x shift]` / `17`: hidden tests of the copies' collision: 16 places Sam `m` m (0 = 3) before
+  the live copy (moved `x shift` m on world x: in echo -4 is our own vehicle, the control) along the camera's forward,
+  facing it (`16 0.01`: at its origin, inside its body); 17 logs where he is along that line, beside it, and his height
+  over its origin (`dz`: about 1 m on the solid trike, standing on it).
+* `action vehicle_sync 18 <kind>`: hidden tests: every tick checks whether the game camera looks at the nearest
+  registered vehicle of that kind (5: the partner's vehicle copy) and logs `camera aimed #n ...` once it does within 25 deg
+  (`until 25 150 camera aimed #n => pad none 200 rx=32767` turns the camera onto it; 100 ms pulses barely move it; `#n`
+  counts per game).
+* `action vehicle_sync 14 <0|1>` / `15 <0|1>`: the partner vehicle's look / packs off / on at run time (`vehicle_look`,
+  `vehicle_packs`; looks off respawns the copy in its own look, packs off removes the pack copies).
+* `action vehicle_sync 19 [kind]`: hidden tests (automation runs only): the census of every registered vehicle of that kind
+  (0 all, as 8) within 400 m and of the live copy: its look (`[look] ... variation ... / var <hash> ... part ...`), its
+  resource's variation references with their offsets, its baggage carrier (`census ... slot i type t: n stack(s), n
+  piece(s)` and each piece's model and place in the vehicle's frame) and its child entities with their resources.
 * `action vehicle_sync 9 <x> <y>`: hidden tests on scratch saves: place Sam at x, y at his own height
   (`TeleportMode::place`). Beside the parked roadster: `9 -1094.4 276.9` (X then gets him on).
 
-Scenarios: `vehicle-echo` (role echo: our own roadster comes back through STM1, the copy 2 s behind and 4 m beside),
+Scenarios: `vehicle-echo-trike` (role echo: the roadster's meter without and with the smoothing, then the trike, the
+Kusanagi trike and the truck, the truck disposed of), `vehicle-echo-collision` (walks into the solid copies on the garage
+floor), `two-games-vehicle-trike` (all three kinds both ways, overlap, held sends), `vehicle-garage-scout` (the registry,
+the garage lift), `vehicle-echo` (role echo: our own roadster comes back through STM1, the copy 2 s behind and 4 m beside),
 `two-games-vehicle` (host Sam drives, the guest Fragile watches), `two-games-vehicle-guest` (the guest drives, the host
 watches).
 

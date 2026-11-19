@@ -520,6 +520,26 @@ void TestGearLook() {
     o = l;
     o.kind = wire::GearKind::backpack;
     CHECK(wire::DecodeGearLook(buf, wire::EncodeGearLook(o, buf, sizeof(buf)), m) && m.res == wire::kGearNone);
+    // the vehicle look (item 255): kind entity, layout = the drivable resource's index (after v0.12)
+    o = l;
+    o.item = wire::kLookVehicleItem, o.layout = 3, o.res = wire::kGearNone;
+    {
+        const std::size_t vn = wire::EncodeGearLook(o, buf, sizeof(buf));
+        CHECK(vn == n && wire::DecodeGearLook(buf, vn, m) && m.item == wire::kLookVehicleItem && m.layout == 3);
+        o.layout = wire::kVehicleResourceCount;  // no such resource
+        CHECK(wire::EncodeGearLook(o, buf, sizeof(buf)) == 0);
+        o.layout = 1, o.kind = wire::GearKind::backpack;  // only the entity kind
+        CHECK(wire::EncodeGearLook(o, buf, sizeof(buf)) == 0);
+        o.item = wire::kMaxGearItems, o.kind = wire::GearKind::entity;  // other items past the cap stay refused
+        CHECK(wire::EncodeGearLook(o, buf, sizeof(buf)) == 0);
+        // the decoder refuses a vehicle look naming no drivable resource
+        o = l;
+        o.item = wire::kLookVehicleItem, o.layout = 0;
+        const std::size_t vn2 = wire::EncodeGearLook(o, buf, sizeof(buf));
+        CHECK(vn2 > 0);
+        buf[6] = static_cast<std::uint8_t>(wire::kVehicleResourceCount), buf[7] = 0;  // layout (u16 at 6)
+        CHECK(!wire::DecodeGearLook(buf, vn2, m));
+    }
     // the largest look fits a link body
     o = l;
     o.nvar = wire::kMaxLookVariations, o.nsv = wire::kMaxLookShaderVars;
@@ -1341,7 +1361,7 @@ void TestSoundFrames() {
     std::uint8_t buf[wire::kMaxSoundFrameSize + 16];
     const std::size_t size = wire::EncodeSound(a, buf, sizeof(buf));
     CHECK(size == want);
-    CHECK(std::memcmp(buf, "STA1", 4) == 0 && buf[4] == 1 && buf[5] == 4);
+    CHECK(std::memcmp(buf, "STA1", 4) == 0 && buf[4] == 2 && buf[5] == 4);
     static wire::SoundFrame b;
     CHECK(wire::DecodeSound(buf, size, b));
     CHECK(b.n == 4 && b.seq == 65535 && b.sender_ms == 0xFFFFFF00u);
@@ -1370,12 +1390,14 @@ void TestSoundFrames() {
     const std::size_t i2 = i1 + wire::kSoundItemSize;    // item 2 (action)
     const std::size_t i3 = i2 + wire::kSoundItemSize;    // item 3 (rtpc)
     CHECK(refused(3, static_cast<std::uint8_t>('2')));  // magic
-    CHECK(refused(4, 2));                               // version
+    CHECK(refused(4, 1));                               // version 1 (before the vehicle category)
+    CHECK(refused(4, 3));                               // version 3
     CHECK(refused(5, 0));                               // n = 0
     CHECK(refused(5, 3));                               // n does not match the size
     CHECK(refused(5, 33));                              // n > 32
     CHECK(refused(i0 + 8, 4));                          // unknown op
-    CHECK(refused(i0 + 9, 7));                          // slot 7
+    CHECK(refused(i0 + 9, 7));                          // slot 7 (the vehicle's) on a category that is not vehicle
+    CHECK(refused(i0 + 9, 8));                          // slot 8
     CHECK(refused(i0 + 11, 13));                        // nrtpc 13
     std::memcpy(t, buf, size);
     std::memset(t + i0, 0, 4);  // post without an event id
@@ -1387,8 +1409,10 @@ void TestSoundFrames() {
     t[i0 + 12] = 0xD1, t[i0 + 13] = 0x07;  // age 2001
     CHECK(!wire::DecodeSound(t, size, b));
     CHECK(refused(i0 + 14, 1));  // a post with a fade
-    CHECK(refused(i0 + 22, 5));  // category 5
-    CHECK(refused(i0 + 23, 1));  // the reserved byte
+    CHECK(refused(i0 + 22, 5));  // category 5 (vehicle) on a joint slot
+    CHECK(refused(i0 + 22, 6));  // category 6
+    CHECK(refused(i0 + 23, 1));  // kSoundHeld on a post that is not a vehicle's
+    CHECK(refused(i0 + 23, 2));  // an unknown flag bit
     std::memcpy(t, buf, size);
     std::memset(t + i0 + 24, 0, 4);  // RTPC id 0
     CHECK(!wire::DecodeSound(t, size, b));
@@ -1413,7 +1437,60 @@ void TestSoundFrames() {
     CHECK(refused(i2 + 9, 5));
     CHECK(refused(i2 + 18, 1));
     CHECK(refused(i3 + 0, 1));
-    CHECK(refused(i3 + 9, 7));
+    CHECK(refused(i3 + 9, 7));   // the vehicle slot on an rtpc item of another category
+    CHECK(refused(i3 + 9, 8));
+    CHECK(refused(i1 + 23, 1));  // flags on a stop
+    CHECK(refused(i3 + 23, 1));  // flags on an rtpc item
+    // v2: the vehicle category on slot 7 (a held loop with its RTPCs, an rtpc update, an action), round trip
+    {
+        static wire::SoundFrame v, vb;
+        v.seq = 5, v.sender_ms = 1000, v.n = 3;
+        wire::SoundItem& vp = v.item[0];
+        vp.op = 0, vp.a = 0xAD19C8B9u, vp.b = 77, vp.slot = wire::kSoundSlotVehicle, vp.tag = 3, vp.category = wire::kSoundCatVehicle,
+        vp.flags = wire::kSoundHeld;
+        vp.off[0] = 0, vp.off[1] = 150, vp.off[2] = 60;
+        vp.nrtpc = 12;
+        for (unsigned k = 0; k < 12; ++k) vp.rtpc_id[k] = 0x8A199A5Du + k, vp.rtpc_value[k] = 1000.0f * static_cast<float>(k);
+        wire::SoundItem& vr = v.item[1];
+        vr.op = 3, vr.slot = wire::kSoundSlotVehicle, vr.tag = 3, vr.category = wire::kSoundCatVehicle, vr.nrtpc = 5, vr.fade_ms = 100;
+        for (unsigned k = 0; k < 5; ++k) vr.rtpc_id[k] = 0xADE31A03u + k, vr.rtpc_value[k] = -2.5f * static_cast<float>(k);
+        wire::SoundItem& va = v.item[2];
+        va.op = 2, va.a = 0xAD19C8B9u, va.b = 77, va.slot = 0, va.tag = 3, va.category = wire::kSoundCatVehicle, va.fade_ms = 300;
+        CHECK(wire::SoundItemValid(vp) && wire::SoundItemValid(vr) && wire::SoundItemValid(va));
+        std::uint8_t vbuf[wire::kMaxSoundFrameSize];
+        const std::size_t vn = wire::EncodeSound(v, vbuf, sizeof(vbuf));
+        CHECK(vn == wire::kSoundHeaderSize + 3 * wire::kSoundItemSize + 17 * wire::kSoundRtpcSize && wire::DecodeSound(vbuf, vn, vb));
+        CHECK(vb.n == 3 && vb.item[0].slot == 7 && vb.item[0].category == 5 && vb.item[0].flags == wire::kSoundHeld && vb.item[0].off[1] == 150 &&
+              vb.item[0].nrtpc == 12 && vb.item[0].rtpc_value[11] == 11000.0f && vb.item[1].slot == 7 && vb.item[1].nrtpc == 5 &&
+              vb.item[1].rtpc_value[4] == -10.0f && vb.item[2].category == 5 && vb.item[2].flags == 0);
+        wire::SoundItem bv = vp;
+        bv.slot = 6;  // the vehicle category on a joint
+        CHECK(!wire::SoundItemValid(bv));
+        bv = vp;
+        bv.category = 0;  // slot 7 on foley
+        CHECK(!wire::SoundItemValid(bv));
+        bv = vp;
+        bv.flags = 0;  // a vehicle one-shot (not held): fine
+        CHECK(wire::SoundItemValid(bv));
+        bv = vr;
+        bv.flags = wire::kSoundHeld;  // held is for posts only
+        CHECK(!wire::SoundItemValid(bv));
+        bv = va;
+        bv.flags = wire::kSoundHeld;
+        CHECK(!wire::SoundItemValid(bv));
+        bv = vp;
+        bv.flags = 0x80;
+        CHECK(!wire::SoundItemValid(bv));
+        // the decoder: the held flag moved onto the rtpc item, the slot of the post changed
+        std::uint8_t vt[sizeof(vbuf)];
+        const std::size_t r1 = wire::kSoundHeaderSize + wire::SoundItemSize(12);
+        std::memcpy(vt, vbuf, vn);
+        vt[r1 + 23] = wire::kSoundHeld;
+        CHECK(!wire::DecodeSound(vt, vn, vb));
+        std::memcpy(vt, vbuf, vn);
+        vt[wire::kSoundHeaderSize + 9] = 6;
+        CHECK(!wire::DecodeSound(vt, vn, vb));
+    }
     // the encoder: nothing invalid, at most 512 bytes, a small buffer, n = 0
     wire::SoundFrame c = a;
     c.item[1].a = 5;  // a stop with an event id
@@ -1617,6 +1694,12 @@ void TestVehicleFrames() {
     unsigned kinds[4] = {};
     for (unsigned i = 0; i < wire::kVehicleResourceCount; ++i) ++kinds[static_cast<unsigned>(res[i].kind)];
     CHECK(kinds[0] == 0 && kinds[1] == 1 && kinds[2] == 2 && kinds[3] == 2);
+    // every drivable vehicle names its skeleton's layout (the Kusanagi trike's skeleton has the standard trike's layout,
+    // 0x8DABA9B0: the same 40 joints, names and parents)
+    for (unsigned i = 0; i < wire::kVehicleResourceCount; ++i) CHECK(res[i].layout != 0);
+    const std::uint8_t bkyk[16] = {0x23, 0x85, 0x8c, 0x1d, 0x10, 0x35, 0x43, 0xff, 0x82, 0x7d, 0x7c, 0xea, 0x16, 0xe6, 0xff, 0x37};
+    const wire::VehicleResource* ky = wire::FindVehicleResource(bkyk);
+    CHECK(ky && ky->kind == wire::VehicleKind::motorbike && ky->layout == 0x8DABA9B0u && std::strcmp(ky->key, "trike_kusanagi") == 0);
 
     static wire::VehicleFrame f, back;
     f = wire::VehicleFrame{};
@@ -1674,7 +1757,9 @@ void TestVehicleFrames() {
     CHECK(refused([](wire::VehicleFrame& m) { m.kind = 4; }));
     CHECK(refused([](wire::VehicleFrame& m) { m.kind = 3; }));  // a roadster GUID with the trike's kind
     CHECK(refused([](wire::VehicleFrame& m) { m.state = 16; }));
-    CHECK(refused([](wire::VehicleFrame& m) { m.flags |= 4; }));
+    CHECK(refused([](wire::VehicleFrame& m) { m.flags |= 4; }));  // the packs flag without packs
+    CHECK(refused([](wire::VehicleFrame& m) { m.flags |= 8; }));  // an unknown flag
+    CHECK(refused([](wire::VehicleFrame& m) { m.m = 1, m.pack[0] = 1; }));  // packs without the flag
     CHECK(refused([](wire::VehicleFrame& m) { m.flags &= static_cast<std::uint8_t>(~wire::kVehJoints); }));
     CHECK(refused([](wire::VehicleFrame& m) { m.n = 65; }));
     CHECK(refused([](wire::VehicleFrame& m) { m.layout = 0; }));
@@ -1698,14 +1783,15 @@ void TestVehicleFrames() {
         return !wire::DecodeVehicle(c, n, back);
     };
     CHECK(bad_at(0, 'X'));     // magic
-    CHECK(bad_at(4, 2));       // version
+    CHECK(bad_at(4, 1));       // version 1 (before the packs block)
+    CHECK(bad_at(4, 3));       // version 3
     CHECK(bad_at(5, 0));       // kind 0
     CHECK(bad_at(5, 9));       // kind 9
     CHECK(bad_at(6, 200));     // state
     CHECK(bad_at(7, 0x81));    // unknown flag
     CHECK(bad_at(7, wire::kVehSeated));  // joints without the flag
     CHECK(bad_at(16, 0x00));   // GUID byte 0 (0x5d)
-    CHECK(bad_at(83, 1));      // reserved
+    CHECK(bad_at(83, 1));      // m = 1 without the packs flag or their bytes
     CHECK(bad_at(82, 24));     // n = 24 with 23 joints' bytes
     {
         // a NaN position
@@ -1719,6 +1805,61 @@ void TestVehicleFrames() {
         const std::int16_t big = 5000;
         std::memcpy(c + 66, &big, 2);
         CHECK(!wire::DecodeVehicle(c, n, back));
+    }
+    // version 2: the packs block (the truck's six battery / defense packs, in the vehicle's frame)
+    {
+        static wire::VehicleFrame k;
+        k = f;
+        k.kind = 2;
+        const std::uint8_t ca02[16] = {0x7e, 0x73, 0x79, 0x0f, 0x01, 0xe4, 0x49, 0xe2, 0x9d, 0x56, 0x1f, 0x09, 0xe2, 0xc5, 0xb4, 0xee};
+        std::memcpy(k.guid, ca02, 16);
+        k.layout = 0xB609EC0Du;
+        k.flags |= wire::kVehPacks;
+        k.m = 6;
+        for (unsigned i = 0; i < k.m; ++i) {
+            k.pack[i] = static_cast<std::uint8_t>(i < 3 ? 1 : 2);
+            k.pack_t[i][0] = i % 2 ? 1.364f : -1.364f, k.pack_t[i][1] = -0.483f - 0.459f * static_cast<float>(i / 2), k.pack_t[i][2] = 1.418f;
+            k.pack_q[i] = wire::Normalize(wire::Quat{0.0f, 0.0f, i % 2 ? 0.7071f : -0.7071f, 0.7071f});
+        }
+        const std::size_t kn = wire::EncodeVehicle(k, buf, sizeof(buf));
+        CHECK(kn == wire::VehicleFrameSize(23, 6) && kn == 84 + 23 * 12 + 6 * 14);
+        CHECK(wire::DecodeVehicle(buf, kn, back) && back.m == 6 && back.flags == k.flags);
+        for (unsigned i = 0; i < 6; ++i) {
+            CHECK(back.pack[i] == k.pack[i] && wire::AngleBetween(back.pack_q[i], k.pack_q[i]) < 0.02f);
+            for (unsigned c = 0; c < 3; ++c) CHECK(std::fabs(back.pack_t[i][c] - k.pack_t[i][c]) < 0.0006f);
+        }
+        CHECK(!wire::DecodeVehicle(buf, kn - 14, back));  // one pack's bytes missing
+        std::uint8_t c[wire::kMaxVehicleFrameSize];
+        const std::size_t pk = 84 + 23 * 12;  // the first pack
+        std::memcpy(c, buf, kn);
+        c[pk] = 0;  // pack kind 0
+        CHECK(!wire::DecodeVehicle(c, kn, back));
+        std::memcpy(c, buf, kn);
+        c[pk] = 3;  // pack kind 3
+        CHECK(!wire::DecodeVehicle(c, kn, back));
+        std::memcpy(c, buf, kn);
+        c[pk + 1] = 1;  // its reserved byte
+        CHECK(!wire::DecodeVehicle(c, kn, back));
+        std::memcpy(c, buf, kn);
+        const std::int16_t far = 9000;  // 9 m
+        std::memcpy(c + pk + 2, &far, 2);
+        CHECK(!wire::DecodeVehicle(c, kn, back));
+        std::memcpy(c, buf, kn);
+        c[7] = static_cast<std::uint8_t>(c[7] & ~wire::kVehPacks);  // packs without the flag
+        CHECK(!wire::DecodeVehicle(c, kn, back));
+        static wire::VehicleFrame mm;
+        mm = k;
+        mm.m = wire::kMaxVehiclePacks + 1;
+        CHECK(wire::EncodeVehicle(mm, buf, sizeof(buf)) == 0);
+        mm = k;
+        mm.pack_t[2][1] = 8.5f;
+        CHECK(wire::EncodeVehicle(mm, buf, sizeof(buf)) == 0);
+        mm = k;
+        mm.pack_q[0].x = std::numeric_limits<float>::quiet_NaN();
+        CHECK(wire::EncodeVehicle(mm, buf, sizeof(buf)) == 0);
+        static_assert(wire::kMaxVehicleFrameSize <= 1148 - 8, "STM1 fits a link body");
+        // the original frame's bytes again for the checks below
+        CHECK(wire::EncodeVehicle(f, buf, sizeof(buf)) == n);
     }
     // other frames are never taken for a vehicle frame, and a vehicle frame for nothing else
     wire::Pose pose;

@@ -1,0 +1,97 @@
+# Vehicles (docs/real-partner-body.md section 22): scouting the 100% save's garage (Mountain Knot City, Episode 15) for a
+# trike and a truck. Lists the game's vehicle registry and the parking slots (action vehicle_sync 7), then places Sam on a
+# grid over the lift beside the start (the circle marked "do not exceed lift capacity") with a screenshot at each point
+# for the lift's own prompt, and tries the prompt's buttons at the lift's centre with a screenshot after each.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario vehicle-garage-scout -SeedSaves complete-100
+role echo
+timeout 360
+ini partner_body=real
+ini echo_offset_m=4
+ini partner_collision=0
+ini vehicle_sync=3
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[sync\] partner body: real
+wait 1500
+action vehicle_sync 7
+action log_positions
+screenshot 01-start
+action vehicle_sync 9 -1105 276
+wait 1200
+screenshot 02-g1
+action vehicle_sync 9 -1102 276
+wait 1200
+screenshot 02-g2
+action vehicle_sync 9 -1099 276
+wait 1200
+screenshot 02-g3
+action vehicle_sync 9 -1105 279
+wait 1200
+screenshot 02-g4
+action vehicle_sync 9 -1102 279
+wait 1200
+screenshot 02-g5
+action vehicle_sync 9 -1099 279
+wait 1200
+screenshot 02-g6
+action vehicle_sync 9 -1105 282
+wait 1200
+screenshot 02-g7
+action vehicle_sync 9 -1102 282
+wait 1200
+screenshot 02-g8
+action vehicle_sync 9 -1099 282
+wait 1200
+screenshot 02-g9
+action vehicle_sync 9 -1108 279
+wait 1200
+screenshot 02-g10
+action vehicle_sync 9 -1102 285
+wait 1200
+screenshot 02-g11
+action vehicle_sync 9 -1108 285
+wait 1200
+screenshot 02-g12
+# the lift's centre (estimated); the camera turned round once for the floor markings
+action vehicle_sync 9 -1102.4 278.8
+wait 1200
+action log_positions
+pad none 1500 rx=32767
+wait 600
+screenshot 03-centre-turned
+pad none 1500 rx=32767
+wait 600
+screenshot 03-centre-turned-b
+# the buttons, one at a time (the lift's prompt should show which)
+pad Y 150
+wait 2500
+screenshot 04-after-y
+pad B 150
+wait 1500
+screenshot 04-after-y-b
+pad X 150
+wait 2500
+screenshot 05-after-x
+pad B 150
+wait 1500
+screenshot 05-after-x-b
+pad DPAD_UP 150
+wait 2500
+screenshot 06-after-up
+pad B 150
+wait 1500
+pad X 1500
+wait 2500
+screenshot 07-after-hold-x
+pad B 150
+wait 1500
+screenshot 07-after-hold-x-b
+action vehicle_sync 7
+action log_status
+quit

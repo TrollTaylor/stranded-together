@@ -1454,3 +1454,53 @@ differ in length (the last two have the extra sections).
   mirrored (deny list).
 - Whether stopping the voice at once shortens the talk for `DSTalkComponent` (it gets its end-of-event at once): no repeated
   post and no extra talk was seen (63 talks, 63 posts); BB's answer chain was not re-run.
+
+## 19. Vehicle sounds (2026-11-18; docs/real-partner-body.md sections 22.9 and 22.10)
+
+The partner's vehicle sounds (`session.ini vehicle_sound=1`, default, with `sound_sync=1` and `vehicle_sync` not 0) are
+mirrored like the partner's foley (STA1 version 2: category 5, slot 7 = the vehicle's frame, flag bit 0 = a held loop).
+What the game does, the sender, the receiver and the evidence are in real-partner-body.md 22.9; this section keeps the
+audio side of it.
+
+### 19.1 What was found [verified unless marked]
+
+- Every vehicle sound is played by the vehicle's own `SoundComponent`. Each Decima sound instance is its own Wwise game
+  object; a vehicle's are created and set up inside its play path (`0x141DB61A0` / `0x141DCBC30`) but registered with
+  Wwise later, outside it, so the foley rule ("registered inside a play path") never saw them: the instance create and
+  setup are hooked (byte-checked) for the vehicle sounds only.
+- The road noise and skid loops start when the vehicle spawns; the engine loop starts with the ignition and the game
+  stops it with `StopPlayingID` (fade 100 ms) at the cut-off. The roadster's engine loop carries 17 RTPCs (rpm 1000 at
+  idle to about 6,300, velocity 0 to about 25, throttle, occupant, suspension ...), set on its own object only when
+  they change.
+- The trike engine graph also posts `0x481AAE3B` / `0xC4CDE0DC` on the engine's object; they end by themselves although
+  their graph is a looping one: they are sent as one-shots since the review.
+- No RTPC was seen to change with the camera or the listener [inferred: some ids are unnamed].
+
+### 19.2 The review's sound findings (all fixed; real-partner-body.md 22.10)
+
+1. Self-ending events held as loops could evict the engine loop (a list of 6 per object) and were replayed by
+   refreshes: off the loop list; a held event posted again replaces its own entry.
+2. Tags (1..255) wrapped in about 85 s while a held engine loop kept its binding alive on the receiver: a new tag skips
+   the tags still held; the receiver's refresh restores the vehicle slot.
+3. One end of a held loop on the receiver (a kill, a playback limit) silenced it for the session: refreshes skip it for
+   30 s only, and an end while the partner is beyond 250 m is not counted.
+4. Stop / break actions of vehicle sounds that are not held loops never reached the receiver; vehicle actions were
+   checked against the body allow-list: both fixed.
+5. The create / setup hooks were part of the all-or-nothing install even with `vehicle_sync=0`: now their own group,
+   only with `vehicle_sync` not 0; a failure turns off the vehicle sounds only.
+
+### 19.3 Runs (`build-testenv\runs\`, `-SeedSaves complete-100`, one at a time; exit 0, saves unchanged, no error.txt, 0 uploads)
+
+- `20261118-182225-two-games-vehicle-sound` (final build): the guest posted and ended 38 of the host's vehicle sounds,
+  the host 5 of the guest's; 0 refused, 0 PostEvent failed, nothing left playing; the trike's self-ending pair as
+  one-shots; 11 posts while the copy was hidden over the watcher's own vehicle placed at the partner's vehicle frames.
+- `20261118-172756-two-games-vehicle-sound`, `-173144-vehicle-echo-sound` (before the review fixes): RTPCs across the link
+  (the roadster engine's velocity and rpm followed the driver's within the 100 ms glide), the cuff map and held sends on
+  either side stopping and resuming the sounds.
+
+### 19.4 Not verified
+
+- Anything by ear (the hidden runs are silent): whether the engine sounds like a vehicle passing by, the loudness, and
+  whether a parked vehicle's road noise loops are silent at speed 0.
+- Boost and the horn; a long drive (tag reuse past 255); the audio-probe forwarding path with vehicles; two vehicles at
+  once.

@@ -1,0 +1,181 @@
+# The solid vehicle copies have no collision (docs/real-partner-body.md section 22): their art parts name the drivable
+# vehicles' physics resources, so before the trike's and the truck's copies are shown by default, Sam walks straight into
+# each copy on the garage's flat floor and must come out on the other side (action vehicle_sync 16 <m> places him that
+# far before it along the camera's forward, facing it; 17 logs where he is along that line). The control: the same walk
+# into our own parked roadster (the echo copy stands 4 m beside it on world x: `16 <m> -4`) must stop him. Role echo
+# (0.5 s, 4 m): our roadster in the 100% save's garage is got on and off, so its copy stands parked 4 m beside it; the
+# copy override (`vehicle_sync 2 3` truck, `2 2` trike) shows the solid copies there. (The first runs walked into copies
+# of a trike and a truck parked outside: rocks and slopes there, nothing proven either way. Run 155304 started 5 m
+# before each copy and drifted 2 m beside its origin; since the review Sam starts 1.5 m before it, and is also placed
+# at its origin, inside its body: the solid copies proved to have collision, run 175540; the holograms, the default
+# since then, are walked through the same way.)
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario vehicle-echo-collision -SeedSaves complete-100
+role echo
+timeout 360
+ini partner_body=real
+ini echo_offset_m=4
+ini echo_delay_s=0.5
+ini partner_collision=0
+ini vehicle_sync=1
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[sync\] partner body: real
+wait 1500
+# ---- our roadster on and off: its copy parked 4 m beside it
+action vehicle_sync 9 -1094.4 276.9
+wait 1500
+until 20 4000 \[vehicle\] ours: roadster => pad X 150
+wait 4000
+pad X 150
+wait 4000
+# the truck's copy
+action vehicle_sync 2 3
+?waitlog 20 \[vehicle\] copy 'truck' (shown|NOT shown)
+wait 1500
+# centred: 1.5 m before its origin, then through it (the walk drifts off the line by up to about 20 deg: from 5 m before,
+# run 155304 passed 2 m beside the origin)
+action vehicle_sync 16 1.5
+wait 1500
+screenshot 01-before-truck-copy
+action vehicle_sync 17
+pad none 450 ly=32760 keep
+action vehicle_sync 17
+screenshot 02-in-truck-copy
+pad none 300 ly=32760 keep
+action vehicle_sync 17
+pad none 2000 ly=32760 keep
+pad none 0
+wait 800
+action vehicle_sync 17
+screenshot 03-past-truck-copy
+# placed at its origin, inside its body: a collider would push him out
+action vehicle_sync 16 0.01
+wait 2500
+action vehicle_sync 17
+screenshot 04-at-truck-copy-origin
+pad none 1500 ly=32760 keep
+pad none 0
+wait 800
+action vehicle_sync 17
+# the control: our own roadster, the same walks
+action vehicle_sync 16 5 -4
+wait 1500
+screenshot 05-before-own-roadster
+action vehicle_sync 17
+pad none 3300 ly=32760 keep
+pad none 0
+wait 800
+action vehicle_sync 17
+screenshot 06-at-own-roadster
+action vehicle_sync 16 1.5 -4
+wait 1500
+action vehicle_sync 17
+pad none 1500 ly=32760 keep
+pad none 0
+wait 800
+action vehicle_sync 17
+action vehicle_sync 16 0.01 -4
+wait 2500
+action vehicle_sync 17
+screenshot 07-at-own-roadster-origin
+# the trike's copy
+action vehicle_sync 2 2
+?waitlog 20 \[vehicle\] copy 'trike' (shown|NOT shown)
+wait 1500
+# centred: 1.5 m before its origin, then through it (the walk drifts off the line by up to about 20 deg: from 5 m before,
+# run 155304 passed 2 m beside the origin)
+action vehicle_sync 16 1.5
+wait 1500
+screenshot 08-before-trike-copy
+action vehicle_sync 17
+pad none 450 ly=32760 keep
+action vehicle_sync 17
+screenshot 09-in-trike-copy
+pad none 300 ly=32760 keep
+action vehicle_sync 17
+pad none 2000 ly=32760 keep
+pad none 0
+wait 800
+action vehicle_sync 17
+screenshot 10-past-trike-copy
+# placed at its origin, inside its body: a collider would push him out
+action vehicle_sync 16 0.01
+wait 2500
+action vehicle_sync 17
+screenshot 11-at-trike-copy-origin
+pad none 1500 ly=32760 keep
+pad none 0
+wait 800
+action vehicle_sync 17
+# the truck_hologram (the default): the same walks
+action vehicle_sync 2 5
+?waitlog 20 \[vehicle\] copy 'truck_hologram' (shown|NOT shown)
+wait 1500
+action vehicle_sync 16 1.5
+wait 1500
+screenshot 12-before-truck_hologram
+action vehicle_sync 17
+pad none 450 ly=32760 keep
+action vehicle_sync 17
+screenshot 13-in-truck_hologram
+pad none 300 ly=32760 keep
+action vehicle_sync 17
+pad none 2000 ly=32760 keep
+pad none 0
+wait 800
+action vehicle_sync 17
+screenshot 14-past-truck_hologram
+action vehicle_sync 16 0.01
+wait 2500
+action vehicle_sync 17
+screenshot 15-at-truck_hologram-origin
+pad none 1500 ly=32760 keep
+pad none 0
+wait 800
+action vehicle_sync 17
+# our roadster on and off again: its copy is reported parked for 60 s only (X on, X off)
+action vehicle_sync 9 -1094.4 276.9
+wait 1000
+action vehicle_sync 8 1.2 1
+wait 1500
+pad X 150
+wait 4000
+pad X 150
+wait 4000
+# the trike_hologram (the default): the same walks
+action vehicle_sync 2 4
+?waitlog 20 \[vehicle\] copy 'trike_hologram' (shown|NOT shown)
+wait 1500
+action vehicle_sync 16 1.5
+wait 1500
+screenshot 16-before-trike_hologram
+action vehicle_sync 17
+pad none 450 ly=32760 keep
+action vehicle_sync 17
+screenshot 17-in-trike_hologram
+pad none 300 ly=32760 keep
+action vehicle_sync 17
+pad none 2000 ly=32760 keep
+pad none 0
+wait 800
+action vehicle_sync 17
+screenshot 18-past-trike_hologram
+action vehicle_sync 16 0.01
+wait 2500
+action vehicle_sync 17
+screenshot 19-at-trike_hologram-origin
+pad none 1500 ly=32760 keep
+pad none 0
+wait 800
+action vehicle_sync 17
+action vehicle_sync 2 0
+action vehicle_sync 0
+action real_stats
+action log_status
+quit

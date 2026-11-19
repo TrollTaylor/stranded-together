@@ -1,0 +1,179 @@
+# Vehicle sync between two games for all three vehicle kinds (docs/real-partner-body.md section 22), both directions,
+# with the overlap and the robustness cases. The host plays Sam, the guest Fragile in her porter suit with the self view
+# (as the launcher writes it). Both games load the same 100% save, so each world has its own copy of every parked
+# vehicle: the watcher's own vehicle stands where the driver's copy first appears (the overlap case: the copy hidden
+# until the driver has moved it away, vehicle_overlap_hide).
+# 0. The garage (Episode 15, Mountain Knot City): the host gets on its purple roadster and drives off, the guest watches
+#    from beyond its own roadster (the hologram copy hidden over it at first: since the review also put 20 m below, as
+#    SetVisible did not stop the hologram drawing). The guest's smooth mask stays 7 (until the review it was 0 here, the
+#    baseline for the frame-aligned meter: the hologram at its own 14.99 Hz, run 160727; now the hologram is measured
+#    with smoothing on in two games too).
+# 1. Outside (the game's vehicle registry: `vehicle_sync 8 <side m> <4 Kusanagi | 2 truck | 3 trike>` places Sam beside
+#    the nearest of that kind facing it, X gets him on; the watcher stands 9-10 m beside its own copy of that vehicle and
+#    turns its camera onto it, `vehicle_sync 18 <kind>` + right-stick pulses until `camera aimed`): the host drives the Kusanagi
+#    trike; its sends are held 3 s mid-drive (`vehicle_sync 10 3000`: the copy is held where it stands, then plays on),
+#    then 12 s while it drives on (the partner body goes after 10 s of silence, the copy with it; both come back where
+#    the host is then); it stops and gets off.
+# 2. The guest drives the truck, the host watches.
+# 3. The host backs the standard trike out of the rocks it is parked against (LT) and drives it, the guest watches.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-vehicle-trike -SeedSaves complete-100
+role host
+graphics low
+timeout 360
+ini partner_body=real
+ini vehicle_sync=1
+ini partner_collision=0
+@host ini my_character=sam
+@guest ini my_character=fragile_suit
+@guest ini self_character=1
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+@guest pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+@guest until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitplayer 60
+waitlog 60 \[link\] CONNECTED
+@guest waitlog 60 \[link\] CONNECTED
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+@guest until 150 3000 \[sync\] partner body: real 'sam' => pad A 120
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+@both action vehicle_sync 3 300000
+# ---- 0. the roadster in the garage: the host drives, the guest watches
+@guest action vehicle_sync 9 -1088.0 281.5
+action vehicle_sync 9 -1094.4 276.9
+@guest action vehicle_sync 18 1
+@guest until 25 150 camera aimed #1 => pad none 200 rx=32767
+wait 1000
+until 20 4000 \[vehicle\] ours: roadster => pad X 150
+@guest waitlog 20 \[vehicle\] copy 'roadster_hologram' shown
+wait 3500
+screenshot 00-host-on-roadster
+@guest screenshot 00-guest-sees-host-on-roadster
+@guest action vehicle_sync 13
+pad none 1200 rt=255 lx=-32767 keep
+@guest screenshot 00-guest-sees-host-driving-a
+pad none 900 rt=255 keep
+@guest screenshot 00-guest-sees-host-driving-b
+screenshot 00-host-driving-b
+pad none 900 rt=255 lx=-32767 keep
+pad none 0
+wait 1500
+@guest action vehicle_sync 13
+@guest screenshot 00-guest-sees-host-stopped
+pad X 150
+wait 3000
+@both action vehicle_sync 0
+# ---- 1. the host drives the Kusanagi trike, the guest watches
+action vehicle_sync 8 1.2 4
+@guest action vehicle_sync 8 9 4
+wait 2000
+@guest action vehicle_sync 18 4
+@guest until 25 150 camera aimed #2 => pad none 200 rx=32767
+@guest screenshot 01-guest-watching-point
+until 20 4000 \[vehicle\] ours: trike_kusanagi => pad X 150
+wait 3500
+screenshot 02-host-on-trike
+@guest screenshot 02-guest-sees-host-on-trike
+@guest action vehicle_sync 13
+pad none 2000 rt=200 keep
+@guest screenshot 03-guest-sees-host-driving-a
+screenshot 03-host-driving-a
+pad none 2000 rt=200 lx=-12000 keep
+@guest screenshot 03-guest-sees-host-driving-b
+screenshot 03-host-driving-b
+@guest action vehicle_sync 13
+# held 3 s mid-drive
+action vehicle_sync 10 3000
+pad none 1500 rt=200 keep
+@guest screenshot 04-guest-host-silent
+pad none 2500 rt=200 lx=12000 keep
+@guest screenshot 04-guest-host-back
+screenshot 04-host-driving-c
+pad none 0
+wait 1500
+screenshot 05-host-stopped
+@guest screenshot 05-guest-sees-host-stopped
+@both action vehicle_sync 0
+# 12 s of silence while the host drives on: the partner body goes after 10 s, the copy with it; then both come back
+action vehicle_sync 10 12000
+pad none 3000 rt=160 lx=-10000 keep
+pad none 0
+?@guest waitlog 15 partner silent for 10 s
+@guest screenshot 06-guest-host-gone
+wait 4500
+@guest screenshot 06-guest-host-back
+screenshot 06-host-after-silence
+@both action vehicle_sync 0
+pad X 150
+wait 4000
+screenshot 08-host-off
+@guest screenshot 08-guest-sees-host-off
+@both action vehicle_sync 0
+# ---- 2. the guest drives the truck, the host watches
+@guest action vehicle_sync 8 2.2 2
+action vehicle_sync 8 10 2
+wait 2000
+action vehicle_sync 18 2
+until 25 150 camera aimed #1 => pad none 200 rx=32767
+screenshot 09-host-watching-point
+@guest until 20 4000 \[vehicle\] ours: truck => pad X 150
+waitlog 20 \[vehicle\] copy 'truck_hologram' shown
+wait 3500
+@guest screenshot 10-guest-on-truck
+screenshot 10-host-sees-guest-on-truck
+action vehicle_sync 13
+@guest pad none 2500 rt=200 keep
+screenshot 11-host-sees-guest-driving-a
+@guest screenshot 11-guest-driving-a
+@guest pad none 2000 rt=200 lx=-12000 keep
+screenshot 11-host-sees-guest-driving-b
+@guest screenshot 11-guest-driving-b
+@guest pad none 0
+wait 2000
+action vehicle_sync 13
+screenshot 12-host-sees-guest-stopped
+@guest screenshot 12-guest-stopped
+@guest pad X 150
+wait 4500
+screenshot 13-host-sees-guest-off
+@guest screenshot 13-guest-off
+@both action vehicle_sync 0
+# ---- 3. the host backs the standard trike out and drives it, the guest watches
+action vehicle_sync 8 1.4 3
+@guest action vehicle_sync 8 9 3
+wait 2000
+@guest action vehicle_sync 18 3
+@guest until 25 150 camera aimed #3 => pad none 200 rx=32767
+@guest screenshot 14-guest-watching-point
+until 20 4000 \[vehicle\] ours: trike (parked|getting|riding) => pad X 150
+wait 3500
+screenshot 15-host-on-std-trike
+@guest screenshot 15-guest-sees-host-on-std-trike
+@guest action vehicle_sync 13
+pad none 1800 lt=255 keep
+@guest screenshot 16-guest-sees-host-reversing
+pad none 2200 rt=200 lx=-20000 keep
+@guest screenshot 16-guest-sees-host-driving-a
+screenshot 16-host-driving-a
+pad none 2000 rt=200 keep
+@guest screenshot 16-guest-sees-host-driving-b
+screenshot 16-host-driving-b
+pad none 0
+wait 2000
+@guest action vehicle_sync 13
+screenshot 17-host-stopped
+@guest screenshot 17-guest-sees-host-stopped
+pad X 150
+wait 4000
+@guest screenshot 18-guest-sees-host-off
+@both action vehicle_sync 0
+@both action real_stats
+@both action log_status
+@guest quit
+quit

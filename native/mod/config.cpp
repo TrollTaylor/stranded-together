@@ -130,7 +130,13 @@ Config LoadConfig(const std::wstring& dir) {
         } else if (k == "boots_sync") {
             c.boots_sync = ParseBool(v);
         } else if (k == "vehicle_sync") {
-            c.vehicle_sync = v == "2" ? 2 : v == "3" ? 3 : (ParseBool(v) ? 1 : 0);
+            c.vehicle_sync = v == "2" ? 2 : v == "3" ? 3 : v == "4" ? 4 : (ParseBool(v) ? 1 : 0);
+        } else if (k == "vehicle_overlap_hide") {
+            c.vehicle_overlap_hide = ParseBool(v);
+        } else if (k == "vehicle_look") {
+            c.vehicle_look = ParseBool(v);
+        } else if (k == "vehicle_packs") {
+            c.vehicle_packs = ParseBool(v);
         } else if (k == "pose_hook") {
             c.pose_hook = ParseBool(v);
         } else if (k == "verbose") {
@@ -177,6 +183,8 @@ Config LoadConfig(const std::wstring& dir) {
             c.sound_sync = ParseBool(v);
         } else if (k == "sound_steps") {
             c.sound_steps = ParseBool(v);
+        } else if (k == "vehicle_sound") {
+            c.vehicle_sound = ParseBool(v);
         } else if (k == "partner_volume") {
             char* end = nullptr;
             const long pv = std::strtol(v.c_str(), &end, 10);
@@ -229,10 +237,12 @@ Config LoadConfig(const std::wstring& dir) {
         static_cast<double>(c.partner_collision_height));
     Log("[config] partner_gear=%d smooth_pose=%d self_headgear=%d self_feet_hide=%d boots_sync=%d", c.partner_gear ? 1 : 0, c.smooth_pose ? 1 : 0,
         c.self_headgear ? 1 : 0, c.self_feet_hide ? 1 : 0, c.boots_sync ? 1 : 0);
-    Log("[config] vehicle_sync=%d", c.vehicle_sync);
+    Log("[config] vehicle_sync=%d vehicle_overlap_hide=%d vehicle_look=%d vehicle_packs=%d", c.vehicle_sync, c.vehicle_overlap_hide ? 1 : 0,
+        c.vehicle_look ? 1 : 0, c.vehicle_packs ? 1 : 0);
     if (c.audio_probe) Log("[config] audio_probe=1 (logging only)");
-    Log("[config] self_voice=%s voice_sync=%d voice_subtitles=%d sound_sync=%d sound_steps=%d partner_volume=%d", selfvoice::ModeName(c.self_voice),
-        c.voice_sync ? 1 : 0, c.voice_subtitles ? 1 : 0, c.sound_sync ? 1 : 0, c.sound_steps ? 1 : 0, c.partner_volume);
+    Log("[config] self_voice=%s voice_sync=%d voice_subtitles=%d sound_sync=%d sound_steps=%d partner_volume=%d vehicle_sound=%d",
+        selfvoice::ModeName(c.self_voice), c.voice_sync ? 1 : 0, c.voice_subtitles ? 1 : 0, c.sound_sync ? 1 : 0, c.sound_steps ? 1 : 0, c.partner_volume,
+        c.vehicle_sound ? 1 : 0);
 
     return c;
 }

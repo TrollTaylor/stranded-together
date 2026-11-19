@@ -1,0 +1,88 @@
+# Vehicles: the partner vehicle's look and packs on its copy (docs/real-partner-body.md section 22.7), in one game: the
+# echo partner replays our own Sam 0.5 s later, 4 m beside us, and our vehicle (STM1 with its packs) and its look
+# (STV1 item 255) go through the encoders / decoders to it. The 100% save's nearest truck is gold with six defense
+# packs (colour index 1 on part 15), the nearest trike has two battery packs and colours 15 / 21. For each: the copy
+# with looks and packs on (the default), then off (`vehicle_sync 14 0` / `15 0`: the copy comes back in its own look,
+# no packs), then on again; a short drive with the packs following; the census of the copy (`vehicle_sync 19`).
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario vehicle-echo-look -SeedSaves complete-100
+role echo
+timeout 330
+ini partner_body=real
+ini echo_offset_m=4
+ini echo_delay_s=0.5
+ini partner_collision=0
+ini vehicle_sync=2
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[sync\] partner body: real
+wait 1500
+action vehicle_sync 7
+action vehicle_sync 3 300000
+# ---- the truck (gold, six defense packs)
+action vehicle_sync 8 2.2 2
+wait 2500
+until 20 4000 \[vehicle\] ours: truck => pad X 150
+?waitlog 10 \[vehicle\] copy 'truck' (shown|NOT shown)
+?waitlog 10 \[vehicle\] look of the partner's truck on copy
+wait 3500
+pad none 700 rx=32767
+wait 600
+screenshot 01-truck-look-on
+action vehicle_sync 14 0
+action vehicle_sync 15 0
+?waitlog 10 \[vehicle\] copy 'truck' shown
+wait 3000
+screenshot 02-truck-look-off
+action vehicle_sync 14 1
+action vehicle_sync 15 1
+?waitlog 10 \[vehicle\] look of the partner's truck on copy
+wait 3500
+screenshot 03-truck-look-on-again
+action vehicle_sync 19 2
+action vehicle_sync 0
+pad none 2500 rt=200 keep
+screenshot 04-truck-driving-a
+pad none 1500 rt=200 lx=-16000 keep
+screenshot 04-truck-driving-b
+pad none 0
+wait 2500
+screenshot 05-truck-stopped
+pad X 150
+wait 4000
+action vehicle_sync 0
+# ---- the trike (two battery packs, colours 15 / 21)
+action vehicle_sync 8 1.4 3
+wait 2500
+until 20 4000 \[vehicle\] ours: trike (parked|getting|riding) => pad X 150
+?waitlog 10 \[vehicle\] copy 'trike' (shown|NOT shown)
+?waitlog 10 \[vehicle\] look of the partner's trike on copy
+wait 3500
+pad none 700 rx=32767
+wait 600
+screenshot 06-trike-look-on
+action vehicle_sync 14 0
+action vehicle_sync 15 0
+?waitlog 10 \[vehicle\] copy 'trike' shown
+wait 3000
+screenshot 07-trike-look-off
+action vehicle_sync 14 1
+action vehicle_sync 15 1
+?waitlog 10 \[vehicle\] look of the partner's trike on copy
+wait 3500
+screenshot 08-trike-look-on-again
+action vehicle_sync 19 3
+pad none 2000 rt=200 keep
+screenshot 09-trike-driving
+pad none 0
+wait 2000
+pad X 150
+wait 3500
+action vehicle_sync 0
+action log_status
+quit

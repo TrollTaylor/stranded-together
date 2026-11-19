@@ -494,6 +494,7 @@ void LogVoiceAfter(const char* why, bool always) {
 // Instance creation / attachment: who (component, return address) made the game object.
 void* H_CreateInst(void* mgr, void* p2, void* res, std::uint32_t flags) {
     void* inst = o_create(mgr, p2, res, flags);
+    if (inst && psound::Capturing()) psound::HotCreate(reinterpret_cast<std::uint64_t>(inst), t_comp, t_emit);
     if (inst) {
         const auto ret = reinterpret_cast<std::uint64_t>(_ReturnAddress());
         Push(kCreate, static_cast<std::uint32_t>(ret), static_cast<std::uint32_t>(ret >> 32), t_in_player, reinterpret_cast<std::uint64_t>(inst), t_comp);
@@ -509,6 +510,7 @@ void* H_CreateInst(void* mgr, void* p2, void* res, std::uint32_t flags) {
 }
 void H_SetupInst(void* mgr, void* inst, void* p3, std::uint32_t flags) {
     o_setup(mgr, inst, p3, flags);
+    if (inst && psound::Capturing()) psound::HotCreate(reinterpret_cast<std::uint64_t>(inst), t_comp, t_emit);
     if (inst) {
         const auto ret = reinterpret_cast<std::uint64_t>(_ReturnAddress());
         Push(kSetup, static_cast<std::uint32_t>(ret), static_cast<std::uint32_t>(ret >> 32), t_in_player, reinterpret_cast<std::uint64_t>(inst), t_comp);

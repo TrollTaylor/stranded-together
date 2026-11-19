@@ -49,6 +49,16 @@ bool Satisfied(std::uintptr_t prop, const wire::GearLook& want) noexcept;
 // Counters for the log: applies, variations added / removed, variables set, unresolved GUIDs.
 void Counters(char* out, std::size_t cap) noexcept;
 
+// Vehicles (docs/real-partner-body.md section 22.7; vsync). Sender: the look of a drivable vehicle: its applied
+// variations (gold / silver / broken / ride type) and its paint: the shader variable colour index 0x3A3714ED per
+// ArtParts index (the customised primary / secondary colours); no parts (the game switches them itself).
+bool ReadVehicle(std::uintptr_t e, wire::GearLook* out) noexcept;
+// Receiver: Apply on a vehicle copy, with the variation GUIDs resolved only from the copy's own component
+// resources and from `own` (our own registered vehicles of the sender's drivable resource: their resources' gold /
+// silver / broken / ride-type references and their variation components). Nothing else is a source.
+ApplyResult ApplyVehicle(std::uintptr_t copy, const wire::GearLook& want, const std::uintptr_t* own, unsigned n_own, char* why,
+                         std::size_t cap) noexcept;
+
 // Skinned pose of an entity (its SkinnedModel's current local joints; read twice, equal reads only).
 bool ReadPose(std::uintptr_t e, wire::GearPose* out) noexcept;
 // The skeleton (pointer, layout hash, joint count) of an entity's current pose.
@@ -60,5 +70,8 @@ bool PoseSkeleton(std::uintptr_t e, std::uintptr_t* skel, std::uint32_t* layout,
 void Dump(const char* tag, std::uintptr_t e, std::uintptr_t ref) noexcept;
 void DumpSources(const std::uintptr_t* ents, unsigned n, std::uintptr_t player) noexcept;
 void DumpJoints(const char* tag, std::uintptr_t e) noexcept;
+// Debug: the variation resources the entity's own resource refers to (its first 0x400 bytes: direct references and
+// arrays; a vehicle's gold / silver / broken / ride-type variations), with their offsets, GUIDs and names.
+void DumpResourceVariations(const char* tag, std::uintptr_t e) noexcept;
 
 }  // namespace st::look

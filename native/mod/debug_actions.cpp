@@ -243,7 +243,7 @@ constexpr Row kRows[] = {
     {{Action::self_voice, Tab::tools, "Self voice", "Sam's voice muted for a non-Sam player (self_voice): 0 log, 1 0/1 mute off/on, 2 n cargo menu figure says list n.", false}, &DoSelfVoice},
     {{Action::voice_sync, Tab::tools, "Voice sync", "Partner voice (voice_sync=1): 0 log, 1 n play sentence n on the partner, 2 0/1 test: send as Sam, 3 rebuild the map.", false}, &DoVoiceSync},
     {{Action::sound_sync, Tab::tools, "Sound sync", "Partner sounds (sound_sync=1): 0 log, 1 0/1 log every mirrored post, 2 stop the partner's sounds.", false}, &DoSoundSync},
-    {{Action::vehicle_sync, Tab::tools, "Vehicle sync", "Vehicles (vehicle_sync): 0 log, 1 mode 0 off/1 roadster/2 solid/3 all, 2 copy override 0..3, 3 trace ms, 4 offset right/forward cm, 5 describe, 6 offset up cm.", false}, &DoVehicleSync},
+    {{Action::vehicle_sync, Tab::tools, "Vehicle sync", "Vehicles (vehicle_sync): 0 log, 1 mode 0 off/1 all/2 solid/4 roadster, 2 copy override 0..3, 3 trace ms, 4 offset right/forward cm, 5 describe, 6 offset up cm, 7 list, 11 overlap hiding 0/1, 13 meters.", false}, &DoVehicleSync},
 
 };
 constexpr std::size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);

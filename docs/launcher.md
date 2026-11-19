@@ -304,8 +304,19 @@ self_headgear=0                 the self view's cap and glasses go back to v0.11
 self_feet_hide=0                the self view keeps the character's own feet under the equipped boots (mod key only;
                                 default on; section 21)
 boots_sync=0                    the equipped boots are not sent or drawn on the partner (mod key only; default on; section 21)
-vehicle_sync=0|1|2|3            the partner's vehicle (mod key only; default 1: the roadster's copy; 3 also trike and truck
-                                copies, 2 those two only, 0 nothing read, sent or spawned; section 22)
+vehicle_sync=0|1|2|3|4          the partner's vehicle (mod key only; default 1: roadster, trike and truck as holograms,
+                                3 the same; 2 the solid trike and truck copies with paint and packs, which you can bump
+                                into and stand on, and the roadster's hologram; 4 the roadster only; 0 nothing read, sent
+                                or spawned; section 22)
+vehicle_overlap_hide=0          the partner's vehicle copy stays shown where your own vehicle of the same kind stands (mod
+                                key only; default on: hidden there until it moves away; section 22)
+vehicle_look=0                  the partner's solid trike / truck copy keeps its own look (mod key only; default on: the
+                                partner vehicle's paint and gold / silver / broken / ride-type variations; acts with
+                                vehicle_sync=2 only; section 22.7)
+vehicle_packs=0                 no battery / defense packs on the partner's solid vehicle copy (mod key only; default on;
+                                acts with vehicle_sync=2 only; section 22.7)
+vehicle_sound=0                 the partner's vehicle sounds (engine, road noise...) are not sent or played (mod key only;
+                                default on, with sound_sync=1; section 22.9)
 ```
 
 `my_character` is written for every host as `sam` (whatever was asked) and otherwise only when

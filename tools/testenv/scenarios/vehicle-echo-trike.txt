@@ -1,0 +1,147 @@
+# Vehicle sync in one game for the trike, the Kusanagi trike and the truck (docs/real-partner-body.md section 22): the
+# echo partner replays our own Sam 0.5 s later, 4 m beside us, and our vehicle goes through the STM1 encoder / decoder
+# to it. First the roadster in the garage twice for the frame-aligned meter: forward with the smooth mask 0 (the copy at
+# its own update rate, 14.99 Hz for the hologram, no interpolation in its update), back (LT) with 7; `vehicle_sync 13`
+# logs the meters at each segment's end. The 100% save has trikes, a Kusanagi trike and trucks parked outside Mountain
+# Knot City (the game's vehicle registry, action vehicle_sync 7; which ones vary between runs): `vehicle_sync 8 <side m>
+# <3 trike | 4 Kusanagi | 2 truck>` places Sam beside the nearest of that kind facing it, X gets him on (Use Vehicle), RT
+# drives. Then the truck is disposed of (hold START beside it), so the sender's "gone" path runs.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario vehicle-echo-trike -SeedSaves complete-100
+role echo
+timeout 360
+ini partner_body=real
+ini echo_offset_m=4
+ini echo_delay_s=0.5
+ini partner_collision=0
+ini vehicle_sync=1
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[sync\] partner body: real
+wait 1500
+action vehicle_sync 7
+# ---- the roadster: the meter without, then with the smoothing
+action vehicle_sync 9 -1094.4 276.9
+wait 1500
+action vehicle_sync 3 300000
+action smooth 1 0
+until 20 4000 \[vehicle\] ours: roadster => pad X 150
+?waitlog 10 \[vehicle\] copy 'roadster_hologram' shown
+wait 3000
+action vehicle_sync 13
+pad none 1200 rt=255 lx=-32767 keep
+pad none 900 rt=255 keep
+screenshot 01-roadster-off-driving
+pad none 900 rt=255 lx=-32767 keep
+pad none 0
+wait 1500
+action vehicle_sync 13
+action smooth 1 7
+wait 1200
+action vehicle_sync 13
+pad none 1300 lt=255 lx=32767 keep
+screenshot 02-roadster-on-reversing
+pad none 1200 lt=255 keep
+pad none 0
+wait 1500
+action vehicle_sync 13
+pad X 150
+wait 3000
+# ---- the trike
+action vehicle_sync 8 1.4 3
+wait 3000
+screenshot 03-at-trike
+until 20 4000 \[vehicle\] ours: trike (parked|getting|riding) => pad X 150
+wait 3000
+?waitlog 10 \[vehicle\] copy 'trike(_hologram)?' (shown|NOT shown)
+screenshot 04-trike-mounted
+action vehicle_sync 13
+pad none 2000 rt=200 keep
+screenshot 05-trike-driving-a
+pad none 2000 rt=200 lx=-16000 keep
+screenshot 05-trike-driving-b
+pad none 0
+wait 2000
+action vehicle_sync 13
+screenshot 06-trike-stopped
+pad none 700 rx=32767
+wait 400
+screenshot 06-trike-look-a
+pad none 700 rx=32767
+wait 400
+screenshot 06-trike-look-b
+pad X 150
+wait 3500
+screenshot 07-trike-off
+action vehicle_sync 0
+# ---- the Kusanagi trike
+action vehicle_sync 8 1.2 4
+wait 2500
+screenshot 08-at-kusanagi
+?until 20 4000 \[vehicle\] ours: trike_kusanagi => pad X 150
+wait 3000
+?waitlog 10 \[vehicle\] copy 'trike(_hologram)?' posed
+screenshot 09-kusanagi-mounted
+pad none 2000 rt=200 keep
+screenshot 10-kusanagi-driving-a
+pad none 2000 rt=200 lx=16000 keep
+screenshot 10-kusanagi-driving-b
+pad none 0
+wait 2000
+action vehicle_sync 13
+screenshot 11-kusanagi-stopped
+pad none 700 rx=32767
+wait 400
+screenshot 11-kusanagi-look-a
+pad none 700 rx=32767
+wait 400
+screenshot 11-kusanagi-look-b
+pad X 150
+wait 3500
+screenshot 12-kusanagi-off
+# ---- the truck
+action vehicle_sync 8 2.2 2
+wait 2500
+screenshot 13-at-truck
+until 20 4000 \[vehicle\] ours: truck => pad X 150
+wait 3500
+?waitlog 10 \[vehicle\] copy 'truck(_hologram)?' (shown|NOT shown)
+screenshot 14-truck-mounted
+action vehicle_sync 13
+pad none 2500 rt=200 keep
+screenshot 15-truck-driving-a
+pad none 2000 rt=200 lx=-16000 keep
+screenshot 15-truck-driving-b
+pad none 0
+wait 2500
+action vehicle_sync 13
+screenshot 16-truck-stopped
+pad none 700 rx=32767
+wait 400
+screenshot 16-truck-look-a
+pad none 700 rx=32767
+wait 400
+screenshot 16-truck-look-b
+pad X 150
+wait 4000
+screenshot 17-truck-off
+action vehicle_sync 0
+action vehicle_sync 5
+# ---- dispose of the truck (hold START beside it): the sender's "gone" path, the copy removed
+pad START 3000
+wait 2500
+screenshot 18-dispose-a
+?waitlog 15 \[vehicle\] our last vehicle .* (is gone|no longer reported|forgotten)
+wait 2500
+screenshot 19-after-dispose
+pad B 150
+wait 800
+action vehicle_sync 0
+action real_stats
+action log_status
+quit

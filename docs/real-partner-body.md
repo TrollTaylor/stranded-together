@@ -1757,7 +1757,8 @@ twice, equal reads only) goes out when it moved more than 1 mm / 0.5° (at most 
 
 ### 13.3 Wire: STV1 and STK1
 
-`'STV1' | u8 version 1 | u8 item | u16 layout hash | u8 kind | u8 res | u8 nvar | u8 nsv | u64 parts apply | u64
+Item 255 (after v0.12) is the look of the vehicle the sender reports (section 22.7; `layout` names its drivable
+resource). `'STV1' | u8 version 1 | u8 item | u16 layout hash | u8 kind | u8 res | u8 nvar | u8 nsv | u64 parts apply | u64
 parts shown`, then `nvar` × 16-byte GUID, then `nsv` × `{u32 hash | u16 part (0x1FF all) | u8 count 1..4 | u8 0 |
 f32 v[4]}`. At most 8 / 32: 924 bytes. `'STK1' | u8 version 1 | u8 item | u16 layout | u32 skeleton layout hash | u8 n | u8 0 | u16 0`,
 then `n` × (6-byte smallest-three rotation, i16 × 3 translation in 1e-4 m): 520 bytes for the backpack's 42
@@ -2319,8 +2320,8 @@ items):
 
 | Part | Contents |
 |---|---|
-| Header | `'STA1' \| u8 version 1 \| u8 n \| u16 seq \| u32 sender_ms` |
-| Item (24 bytes) | `u32 a \| u32 b \| u8 op \| u8 slot \| u8 tag \| u8 nrtpc \| u16 age_ms \| u16 fade_ms \| i16 off[3] \| u8 category \| u8 0` |
+| Header | `'STA1' \| u8 version 2 \| u8 n \| u16 seq \| u32 sender_ms` (version 1 before 2026-11-18, section 22.9) |
+| Item (24 bytes) | `u32 a \| u32 b \| u8 op \| u8 slot \| u8 tag \| u8 nrtpc \| u16 age_ms \| u16 fade_ms \| i16 off[3] \| u8 category \| u8 flags` |
 | RTPCs | nrtpc × `{u32 rtpc id \| f32 value}` |
 
 - **op** 0 = post (a = event id, b = the sender's playing id, both non-zero; slot 0..6 = head, left foot, right foot,
@@ -2332,18 +2333,29 @@ items):
   the receiver's object bound to it. **age_ms** (0..2,000): the item happened at `sender_ms - age_ms`, on the same
   clock as the pose's `sender_ms`; the receiver posts it when its pose play time reaches that moment. **category**
   0..4 (foley, steps, weapon, cargo, gear) is for the counters only.
-- The decoder refuses another magic or version, n = 0 or > 32, a size that does not match the items exactly or is over
-  512 bytes, an unknown op, a slot / action out of range, nrtpc > 12, ids an op needs that are 0, fields an op does
-  not use that are not 0, age > 2,000 ms, fade > 10,000 ms, category > 4, a reserved byte not 0, an RTPC id 0, and a
-  non-finite or huge (|v| > 1e7) value; a refused frame leaves the output untouched (`TestSoundFrames`). STP1, STJ1,
-  STN1, STS1 and the gear decoders refuse it, and it refuses theirs (tested).
+- *(version 2, 2026-11-18, section 22.9: the vehicle sounds)* **category 5 `vehicle`**: a sound of the vehicle the sender
+  rides (its own SoundComponent: engine loop, road noise, ignition, cut-off, suspension...). **slot 7 `vehicle`**: `off`
+  is in the vehicle's own frame (cm; x right, y forward, z up) and the receiver's object follows its copy of the
+  partner's vehicle instead of a joint. A post or rtpc item has slot 7 exactly when its category is vehicle. **flags**
+  (the reserved 0 of version 1): bit 0 `kSoundHeld`, on a vehicle post only: a loop the sender posts again every 1.5 s
+  (`kSoundHeldRefreshMs`) with the same playing id while it plays there; the receiver posts it only when it does not
+  play already and stops it when no such refresh came for 5 s (`kSoundHeldLeaseMs`). The rest of the format is
+  version 1's.
+- The decoder refuses another magic or version (1 included), n = 0 or > 32, a size that does not match the items
+  exactly or is over 512 bytes, an unknown op, a slot / action out of range (slot > 7), nrtpc > 12, ids an op needs
+  that are 0, fields an op does not use that are not 0, age > 2,000 ms, fade > 10,000 ms, category > 5, a post / rtpc
+  item on slot 7 whose category is not vehicle (or the other way round), a flag bit other than bit 0, `kSoundHeld` on
+  anything but a vehicle post, an RTPC id 0, and a non-finite or huge (|v| > 1e7) value; a refused frame leaves the
+  output untouched (`TestSoundFrames`, with a version 2 vehicle round trip and its refusals). STP1, STJ1, STN1, STS1
+  and the gear decoders refuse it, and it refuses theirs (tested).
 - **Delivery.** A FRAME message in the pose datagram (STP1 + STJ1 + STA1 + STN1); when it does not fit there it goes
   in a datagram of its own right after. Unreliable (a lost footstep is better than a late one). *(changed 2026-11-18)*
   The link drops duplicates and frames more than 64 seqs behind the newest (a bitmap, u16 wrap-safe) but keeps a
   reordered frame (its stops matter); the receiver counts gaps as lost and takes a late frame back off that count.
   Stops are sent twice more in the next frames (idempotent on the receiver). The sender checks every item alone
   (`wire::SoundItemValid`, the decoder's own rules) and drops an invalid one, not the frame. `link::Info` counts STA1
-  frames sent (and those that went alone) and accepted. The format did not change.
+  frames sent (and those that went alone) and accepted. The format did not change then (version 2 since: section
+  22.9).
 - **What the receiver does with it** *(2026-11-18, audio-research.md section 17.4)*: a post or action is carried out
   only for an event id on its allow-list (seeded ids plus the ids its own game posted on its own player's allowed
   objects); stops and actions are never dropped for timing; `partner_volume` scales its objects' output.
@@ -2535,9 +2547,46 @@ hide the feet then attaching the boots".
   partner body's feet are no longer scaled by us; whether the game keeps the last scale on that body until it updates
   it again was not checked [I]. Never seen in a run.
 
-## 22. Vehicles: the partner's vehicle under its body (`session.ini vehicle_sync`, default 1: the roadster)
+## 22. Vehicles: the partner's vehicle under its body (`session.ini vehicle_sync`, default 1: all three kinds as holograms)
 
-**Status (2026-11-18): first milestone, works in hidden runs (one game and two games, both directions).** When a player
+**Status (2026-11-18, review follow-up; 22.10): the default copies are now holograms for all three kinds.** A centred
+walk showed that the solid trike and truck copies **have collision** (their cutscene bodies carry the drivable art's
+PolySoup shapes): Sam stands on the solid trike and is stopped inside the solid truck, which breaks the rule that a copy
+never interacts with local physics; the earlier "no collision" finding (run `155304`) came from walks that slid along
+the copies' sides. The game's own construction holograms of the trike and the truck (`construction_holo_trike`,
+`construction_holo_truck`) have the drivable skeletons' layouts and no collision shapes: they are the default copies
+now, as the roadster's already was; Sam walks straight through both (run `20261118-181155`). The solid copies with
+their looks and packs (22.7) are shown only with `vehicle_sync=2`. Also: the overlap hiding now puts the copy 20 m below
+(`SetVisible(false)` did not stop the roadster hologram from drawing), the vehicle sound review findings are fixed, and
+the receiver refuses a vehicle look with anything the sender does not send.
+
+**Status (2026-11-18, fourth milestone): the partner's vehicle sounds play at its copy** (`vehicle_sound`, default 1,
+with `sound_sync=1`; 22.9). The engine loop with its RTPCs (rpm, speed, throttle, boost, reverse...), the road noise and
+skid loops, ignition, cut-off, suspension bumps, the indicator and the truck's body raise / lower reach the other game
+as STA1 version 2 items and are posted on the watcher's own Wwise objects at its copy of the driver's vehicle. Proven
+by logs in hidden one-game and two-game runs (the games are silent): for the roadster, the Kusanagi trike, the standard
+trike and the truck; loops stopped on getting off, when the vehicle is no longer reported, at either side's pause /
+menu, for a silent partner, and with the key off.
+
+**Status (2026-11-18, third milestone): the solid copies wear the partner vehicle's paint and variations and show its
+battery / defense packs** (`vehicle_look`, `vehicle_packs`, default on; 22.7). In hidden runs (one game and two games,
+both directions) the 100% save's gold truck's copy turned gold with its six defense packs where it was the plain grey
+cutscene truck before, the purple / orange trike's copy purple / orange with its two battery packs where it was grey. The
+Kusanagi trike's look is not applied (its copy is the standard trike's model), the roadster stays a hologram (22.8: no
+safe route to a solid roadster was found). STM1 is version 2 (the packs block), STV1 carries the vehicle's look as item
+255 (22.3).
+
+**Status (2026-11-18, second milestone): the trike (also the Kusanagi trike) and the truck are proven with real drives
+and are shown by default.** In hidden runs (one game and two games, both directions) each of the three vehicle kinds was
+got on with the game's own X, driven, stopped and got off, and the other screen showed its copy with the driver seated in
+it at the same place (placement error under 1 cm mean). The copy of a vehicle that overlaps the watcher's own vehicle of
+the same kind is hidden until it has moved away (`vehicle_overlap_hide`, 22.4), the copy's wheels and steering move
+every frame (22.4, "Smooth"), a silent partner (link stall, its load or its pause) no longer makes the copy vanish under
+its seated body, and the sender only reads a vehicle it has left fault-free (22.2). The first milestone's text follows
+where it still holds; the changes are in 22.1 to 22.4 and the evidence in 22.5.1.
+
+
+**Status (2026-11-18, first milestone): works in hidden runs (one game and two games, both directions).** When a player
 gets on a vehicle and drives, the other screen shows a copy of that vehicle with the player's body seated in it (the
 body's seated pose already arrives in STJ1), moving where it is driven, then parked where it is left; the copy goes when
 the player walks away (more than 30 m) or after 60 s. The reachable vehicle at the 100% save's start is the purple
@@ -2564,7 +2613,27 @@ the truck's, `2` shows those two only (every value but 0 sends what we ride).
 - **Pose.** `[vehicle + 0xB8]` is its SkinnedModel; its pose has 23 joints, layout `ECF43324` (the hologram's too), and
   its joints move while it drives (the wheels turn up to 180 degrees within 5 s, the steering, the suspension) [V:
   `meter` lines].
-- The parked roadster is **not** in the World's entity list (82 entities; `action vehicle_sync 7`) [V].
+- The parked roadster is **not** in the World's entity list (82 entities; `action vehicle_sync 7`) [V]. World::AddEntity
+  (`0x14357DFB0`) adds only entities of one RTTI range [V].
+- **The vehicle registry** [V: decompile, byte checks, runs below]. `R = [ds.exe+0x7BFECC0]` (the vehicle manager,
+  allocated in `0x142FAA2C0`): `R+0` i32 count, `R+8` `Entity**`, an SRW lock at `R+0x20` that the game takes (we read
+  without it, twice, equal reads only, at most 256). The add-to-world handlers of all three classes register a vehicle
+  (`0x142F75070`: push, then `[e+0x560] |= 2`), the remove handlers unregister it (`0x142F76180`: clear bit 2, then
+  remove); the game's own nearest-vehicle search (`0x142F7DFD0`) loops over it. Byte-checked at `0x142F7509C` /
+  `0x142F76312` (`mov rsi, [R]`, both lead to `0x147BFECC0`), `0x142F750A3`, `0x142F750BD`, `0x142F750D6`,
+  `0x142F7630B`, `0x142F7E023`, `0x142F7E076`. The 100% save's world registers 10 vehicles in every run: the garage's
+  roadster, trikes, the Kusanagi trike (`pe_ds_vehicle_bkyk`) and trucks outside Mountain Knot City, a roadster farther
+  away (which trikes and trucks varies a little between runs; the Kusanagi at (-1191.2, 243.0) and the trucks at
+  (-1214.8, 257.4) and (-1212.3, 280.5) every time) [V: `registry n:` lines, runs `151227`, `151711`, `152146`].
+- **The Kusanagi trike** (`bkyk_main_def`, skeleton `fe0cb1e3`) has the standard trike's layout `8DABA9B0`: 40 joints,
+  the same names and parents, the same default pose of joints 0..39 [V: game data; the sender read layout `8DABA9B0` from
+  it, run `152146`]. The allow-list now names it (it was 0, which only skipped the sender's layout check).
+- **Ride state.** State 0 is also reported while Sam is still seated after stopping, just before he gets off; state 3
+  was never seen. The `seated` flag (his parent is the vehicle) is the truth [V: `ours:` lines of every run].
+- **Update rates.** The copies' resources ask for 14.99 Hz (`construction_holo_roadster`; the truck hologram too) and
+  59.94 Hz (the trike and truck cutscene bodies) [V: data; the `[smooth] vehicle copy update frequency 1 (14.99 Hz) -> 6`
+  line]. At 14.99 Hz the hologram's wheels changed about 15 times a second whatever the frame rate: the "stepping" of
+  22.6 [V: the meter in 22.5.1].
 
 ### 22.2 Sender (game thread, the pose send tick)
 
@@ -2576,14 +2645,41 @@ reads only; the layout must be the resource's). After Sam gets off the same vehi
 while its vtable and per-creation GUID still check, Sam is within 30 m of it and for at most 60 s. One STM1 frame per
 send tick (30 Hz) in a datagram of its own, on the pose's `sender_ms` axis.
 
+Second milestone (robustness; no wire change):
+- **A vehicle Sam has left is only read fault-free.** It may have been destroyed or unloaded: it must still be in the
+  game's vehicle registry with its registered bit (22.1; when the registry's bytes differ, the vtable and GUID checks
+  alone, as before), and its transform is read from `+0xC8` / `+0xE0` (two equal reads, finite), never through the
+  game's getter (which locks the entity's critical section). While Sam rides, the vehicle is his parent this tick and
+  the getter is used as before [V: `our last vehicle ... is gone (not in the vehicle registry)` after it was disposed of,
+  run `155610`].
+- **Forgotten on a load.** The vehicle is remembered with the local Sam it was ours with; a new Sam (a load) or no send
+  tick for over 1 s while he is off it (he slept: a load, a menu) forgets it. One he still sits on is found again through
+  his parent.
+- **Broken.** A broken vehicle (state 5) Sam is off is reported 3 s more (the other screen drops its copy after 3 s
+  broken), then forgotten [I: not provoked in a run].
+- **Hidden tests only:** `action vehicle_sync 10 <ms>` holds all our sends (pose, joints, vehicle, gear, ...) for that
+  long while the link stays up (`vsync::SendMuted`, automation runs only): the other side sees a silent partner.
+
 ### 22.3 Wire: STM1 (`pose_wire`, ctest `st_net_tests` `TestVehicleFrames`)
 
 | Part | Contents |
 |---|---|
-| Header (84 bytes) | `'STM1' \| u8 version 1 \| u8 kind (1 roadster, 2 truck, 3 trike) \| u8 ride state \| u8 flags (bit 0 seated, bit 1 joints) \| u32 seq \| u32 sender_ms \| 16-byte resource GUID \| f64 x, y, z \| 6-byte rotation \| f32 speed \| i16 seat x, y, z (1 mm) \| 6-byte seat rotation \| u32 skeleton layout hash \| u8 n \| u8 0` |
+| Header (84 bytes) | `'STM1' \| u8 version 2 \| u8 kind (1 roadster, 2 truck, 3 trike) \| u8 ride state \| u8 flags (bit 0 seated, bit 1 joints, bit 2 packs) \| u32 seq \| u32 sender_ms \| 16-byte resource GUID \| f64 x, y, z \| 6-byte rotation \| f32 speed \| i16 seat x, y, z (1 mm) \| 6-byte seat rotation \| u32 skeleton layout hash \| u8 n \| u8 m` |
 | Joints (flags bit 1) | n x {6-byte rotation, i16 x, y, z (1 mm)}, n <= 64 |
+| Packs (flags bit 2, version 2) | m x {u8 pack (1 battery, 2 defense) \| u8 0 \| i16 x, y, z (1 mm, in the vehicle's frame) \| 6-byte rotation}, m <= 8 (14 bytes each) |
 
-Rotations are STJ1's smallest-three. The frame is 360 bytes with the roadster's 23 joints: while one is reported the
+Third milestone (after v0.12): **version 2**, the packs block (22.7): the byte after n, 0 in version 1, is the pack
+count m; version 1 frames are refused. The decoder also refuses the packs flag without packs (or packs without it), m
+over 8, a pack kind outside 1..2, a pack's reserved byte that is not 0, a pack offset beyond +-8 m and a non-finite pack
+rotation (ctest `TestVehicleFrames`). The truck with its six packs: 84 + 12 x 47 + 14 x 6 = 732 bytes (the largest frame
+964, under the link body's 1148). The vehicle's look goes as **STV1 item 255** (section 13.3): kind `entity`, no
+resource id, `layout` = the index of its drivable resource in the allow-list below (0 roadster, 1 trike, 2 Kusanagi, 3
+truck, 4 MULE truck); the decoder refuses item 255 with another kind or an index of 5 or more, and every other item at
+56 or more as before (ctest `TestGearLook`). Sent when it changes and every 2 s (68-124 bytes in the runs; on a new link session at
+once).
+
+Second milestone: no wire change; the Kusanagi trike's allow-list entry names its layout (`8DABA9B0`, ctest
+`TestVehicleFrames`). Rotations are STJ1's smallest-three. The frame is 360 bytes with the roadster's 23 joints: while one is reported the
 link payload went from 573-623 to 901-1009 bytes a send, about 10 KB/s more each way. The decoder (and the encoder)
 refuse: another magic or version, a size other than 84 + 12 n, a kind outside 1..3, a state above 15, unknown flag bits,
 the joints flag without joints or joints without it, n > 64, a non-zero reserved byte, a joint block with layout 0,
@@ -2610,9 +2706,21 @@ section 4).
   the vehicle's: refused for the game run. A transient refusal (no pose yet right at realize, a 20 s load timeout, not
   shown) backs off 30 s, doubling up to 8 min, and is forgotten at a new link session; a set-transform fault refuses for
   the game run. A load that fails is retried after 10 s, doubling up to 80 s; a start that fails after 5 s, doubling up
-  to 80 s (review follow-up: the count was reset before, so it stayed 5 s). `vehicle_sync=2` shows the solid copies
-  only, `1` (default) the roadster's only, `3` all; the override `vehicle_sync 2 <n>` ignores the mode. A reported
-  vehicle without a copy is logged once per reason (`the partner's <copy>: no copy (...)`).
+  to 80 s (review follow-up: the count was reset before, so it stayed 5 s). `vehicle_sync=1` (default since the second
+  milestone) and `3` show all three copies, `2` the solid copies only, `4` the roadster's only (the first milestone's
+  default); the override `vehicle_sync 2 <n>` ignores the mode. A reported vehicle without a copy is logged once per
+  reason (`the partner's <copy>: no copy (...)`). The Kusanagi trike's frames pose the trike copy (the same layout; it
+  looks like the standard trike: no Kusanagi cutscene body exists). ~~The solid copies have no collision~~ (wrong, 22.10:
+  the solid copies have the drivable art's collision; the holograms have none, and are the default since the review).
+
+  Since the review two more copies (`vehicle_sync=1` / `3`, the default, use them for the trike and the truck; `2` uses
+  the solid copies above):
+
+| Kind | Copy | Checks |
+|---|---|---|
+| trike | `ds/entities/npc/customize_holo/construction/construction_holo_trike` `4ffc6e8c-e6fe-9a30-aecb-ae8472e1bc8b` (art `part_bkst_main_hlo`: 3 sub models, no collision shape; skeleton `bkst_main_hlo` with SkeletonLayoutHash `8DABA9B0`, the drivable trike's) | as the roadster hologram: `holo::ValidateWelcomeHolo`, 40 joints, layout `8DABA9B0`; StartVisible |
+| truck | `ds/entities/npc/customize_holo/construction/construction_holo_truck` `53d0f9dc-e4ab-853a-b8d5-3ba6245a92d9` (art `part_cald_main_hlo_game`: 4 sub models, no collision shape; skeleton layout `B609EC0D`, the drivable truck's) | the same, 47 joints, layout `B609EC0D` |
+
 - **Timeline.** Frames go into a ring of 160 on the pose ring's unwrapped sender axis; the copy is placed every tick at
   the **same play time as the partner body** (the STP1 ring's `PlayTime`), lerped / slerped between the bracketing
   frames (a jump over 25 m is not slid), with `Entity_ExportedSetWorldTransform`. Two frames more than 0.5 s apart on
@@ -2629,11 +2737,40 @@ section 4).
   gone (loads, cutscenes; the same 1 s as the partner body, so a menu's first frames do not respawn it), a new link
   session, the kind changes, or the key is turned off. After a fault in the per-frame sync the copy is hidden where it
   stands (`vsync::EmergencyStop`). The meters (seat, play delay, the copy's read-back pose) run in hidden tests and
-  while a trace runs only. Local vehicles are never read or touched
-  on the receiving side.
+  while a trace runs only. Local vehicles are never touched on the receiving side; since the second milestone they are
+  read (the registry, below).
+- **Silent partner (second milestone).** While the partner's pose is silent too (over 0.5 s: a link stall, its load or
+  its pause), the copy is **held where it stands** instead of going at 2 s (the body stays up to 10 s): when frames come
+  again it plays on (also while the emptied ring's first new frames are still ahead of the play time), and when the body
+  goes after 10 s of silence the copy goes with it (`held where it stands` / `plays again` lines). Only when poses keep
+  arriving without vehicle frames does the copy go at 2 s, as before.
+- **Overlap with the watcher's own vehicle (second milestone; `session.ini vehicle_overlap_hide`, default 1).** Every
+  250 ms while a copy is shown, the game's vehicle registry is read (22.1; fault-free, never written): when one of the
+  watcher's own vehicles of the same kind stands within 1 m horizontally, 1 m up or down and 20 deg of yaw of the copy,
+  the copy is hidden (`partner::SetVisible(false)`, as the emergency stop does; the solid copies' re-show is suspended),
+  and shown again once the nearest such vehicle has been more than 2 m, 1.5 m in z or 35 deg away for 0.5 s. The
+  partner body stays placed, so it sits in the watcher's own vehicle meanwhile. Both players starting from one save
+  start beside the same vehicles, so this is the common case at the start of a drive. `action vehicle_sync 11 0|1`
+  switches it at run time; `0` and the key off: the copy is always shown, as before.
+- **Jumps.** Two frames are not one motion when they are further apart than 5 m plus 60 m/s over their spacing (a
+  teleport, or the partner moving from one vehicle to another of the same kind: the frame names no vehicle instance): the
+  later one stands, no sliding and no joint interpolation (logged `jumped ... not slid`). It was 25 m.
+- **Smooth (second milestone; `smooth_pose` bits, as the partner body).** The copy is moved to the game's 240 Hz update
+  group (bit `kSmoothBoost`, `realbody::BoostEntity`, checked every 500 ms and put back at its own rate without the bit),
+  so its model is updated every frame, and its joints are interpolated **in its own model update** (bit
+  `kSmoothDetourInterp`): the tick publishes the bracketing frames a, b and the frame after b (c) with the play time
+  and a QPC reference; the update computes the play time at that moment and blends a-b or b-c (sign-fixed normalised
+  lerp of the rotations, lerp of the translations), as the body's `ComposePartner` does. Without c the update often came
+  after b at 30 fps and only held b (run `153007`: 77 of 77 writes held). The world transform stays per tick (the body's
+  root is placed per tick at the same play time). Gear targets 0..7 are unchanged (no interpolation data).
+- **Frame-aligned meter (hidden tests, trace).** Written in the copy's own update: per write, the largest joint turn
+  since the previous write; counted only while the partner's vehicle moves (speed over 1 m/s): `meter: while the
+  partner's vehicle moved, N frames (ticks) and M pose writes on the copy (M/N per frame), repeats, interpolated in its
+  update, held at the newer frame; largest joint turn per write mean / sd / max`. `action vehicle_sync 13` logs it at
+  once (a segment boundary).
 - **Interplay.** Player collision (section 11.2) already takes the partner's capsule out while it rides
-  (`kPoseInVehicle`). The copies have no physics: a player can walk through the partner's vehicle. Name tag and gear
-  ride the body as before.
+  (`kPoseInVehicle`). The hologram copies have no collision: a player walks through the partner's vehicle. The solid
+  copies (`vehicle_sync=2`) do collide with the player (22.10). Name tag and gear ride the body as before.
 
 ### 22.5 Evidence (hidden, `-SeedSaves complete-100`, exit 0 (both games), no error.txt, real saves unchanged, 0 uploads)
 
@@ -2654,26 +2791,67 @@ vehicle moved.
 | `20261118-130121-two-games-release` (the same scenario before its camera fix) | `06-guest-sees-host-mounted` (enlarged): the host's Sam seated in the hologram, which overlaps her own roadster; `07-...-driving-a` the copy with Sam leaving her view at its left edge; the later frames face away (hence the camera turn). Placement error 0.53 cm mean, 1.27 cm p95, 1.94 cm max moving. |
 | `20261118-115950`, `-120309`, `-120532-vehicle-echo` | Failed setups: walking to the roadster with the stick missed it (the probe walk's length varies), and the World's entity list holds no vehicle (`vehicle_sync 8`); hence `vehicle_sync 9`. |
 
+### 22.5.1 Evidence, second milestone (hidden, `-SeedSaves complete-100`; every run below: exit 0 (both games), no error.txt, real saves unchanged and restored, 0 uploads)
+
+Placement error as in 22.5 (`vehicle_sync 3` trace; one PC, one QPC clock; echo: minus the 4 m offset), over the ticks
+where the vehicle moved; "outside the held sends" leaves out the receiver ticks from a `vehicle_sync 10` hold to 1 s after
+it (the receiver cannot know where the vehicle is then). Two ticks at a change from one parked vehicle to the next one
+got on (the trace follows the new one while the copy still plays the old) are left out where marked.
+
+| Run (`build-testenv\runs\`) | What it shows |
+|---|---|
+| **`20261118-160727-two-games-vehicle-trike`** (final build, `vehicle_sync=1` default, `graphics low`; the watcher turns its camera onto the vehicle first: `vehicle_sync 18` + right-stick pulses until `camera aimed`) | Guest (Fragile) watches, enlarged: `00-guest-sees-host-on-roadster` the host's Sam seated in **her own** purple roadster, `Host` tag (the hologram copy hidden by the log, `overlap: ... hidden ... (0.00 m, dz 0.00 m, yaw 0.0 deg)`, **but still drawn**: grey and green hologram patches through her roadster, review 22.10; fixed since); `00-...-driving-a` the hologram copy driving past on her left with Sam in it, her own roadster still parked (`shown again ... 6.70 m, yaw 58.8 deg`); `03-guest-sees-host-driving-a` the grey trike copy with the host's Sam riding it (backpack and all, enlarged crop) next to her own red Kusanagi still parked. Host (Sam) watches the guest's truck: `10-host-sees-guest-on-truck` the `Guest` tag over his own truck (copy hidden), `11-...-driving-a/b` the BRIDGES truck copy driving away from his own parked truck. Held 3 s (`held where it stands ... 1105 ms old`, `plays again ... 6 ms old`), then 12 s (`[real] teardown (partner silent for 10 s)` and the copy `removed (no partner body)`, both back 2 s after the removal, about 0.1 s after the sends resumed). Placement: roadster 0.57 cm mean, 1.30 p95, 1.75 max; Kusanagi 0.23 / 0.61 / 0.93 (re-split by copy lifetime; 0.34 / 0.95 / 1.75 was the whole run) outside the held sends; standard trike 0.32 / 0.64 / 0.82; truck 0.44 / 0.99 / 13.2 (one tick). |
+| **`20261118-155910-two-games-vehicle-trike`** (final build, defaults; the watcher's camera not turned) | All four parts pass: the host's roadster (garage), the host's Kusanagi trike, the guest's truck, the host's standard trike (backed out of its rocks with LT, then about 15 m). Each copy hidden over the watcher's own vehicle at the start and shown again at 4.1-6.2 m. Placement: roadster 0.58 / 1.44 / 1.91; Kusanagi 0.38 / 0.92 / 1.91 outside the held sends; standard trike 0.33 / 0.62 / 0.74; truck 0.40 / 1.04 / 1.28. The watcher's views mostly miss the action (rocks, a camera pitched at the ground); hence `160727`. |
+| **`20261118-155610-vehicle-echo-trike`** (final build, role echo 0.5 s / 4 m, uncapped about 90-130 fps) | The frame-aligned meter on the hologram roadster, smooth mask 0 then 7: **0.14 writes per frame** (54 over 391 frames while it moved, the hologram at its own 14.99 Hz), largest joint turn per write **92.4 deg mean**, 39.2 sd, 164.2 max, against **1.00 per frame** (220 / 220), **5.30 deg mean**, 2.87 sd, 12.6 max (`[smooth] vehicle copy update frequency 1 (14.99 Hz) -> 6 (240 Hz)`). Kusanagi 1.00 per frame (100 / 100), 4.97 deg mean; truck 1.00 (501 / 501), 9.72 deg; no write held at the newer frame. All three got on with X: the standard trike (it barely moves against rocks), the Kusanagi (`ours: trike_kusanagi`, the trike copy `posed from the partner's vehicle joints (40), interpolated in its own update`), the truck. The truck then disposed of (hold START): `our last vehicle ... is gone (not in the vehicle registry)`, the copy removed. Placement: roadster 0.67 / 1.79 / 7.85; Kusanagi and truck 0.42 / 1.22 / 5.05 (2 switch ticks left out). |
+| **`20261118-155304-vehicle-echo-collision`** (role echo, the garage's flat floor; the copy override shows the solid copies at the roadster's parked copy) | Sam placed before each copy along the camera's forward and walked into it: the **truck copy**: from 5.00 m before its origin to **10.71 m past it** (11 m walked in 3.3 s at full speed; `02-in-truck-copy` Sam inside its body); the **trike copy**: from 4.00 m before to **7.53 m past**; the control, **our own parked roadster**: from 4.99 m before to 0.68 m before, speed 0.02 m/s at the end (`05-at-own-roadster`: Sam against it, its Climb prompt). ~~The solid copies have no collision with Sam~~: the walks were not centred (Sam passed 2.04 m beside the truck's origin and 1.15 m beside the trike's: he slid along their sides); a centred walk proves the opposite (22.10, run `181155`). |
+| `20261118-153007-two-games-vehicle-trike` | The first passing two-game run (Kusanagi host to guest, truck guest to host, overlap, the 3 s and 12 s holds). Placement Kusanagi 0.26 / 0.56 / 0.93 outside the held sends (inside them up to 2.5 m: the copy stands still while the sender drives on), truck 0.33 / 0.96 / 1.19. With two frames only, the copy's update came after the newer frame at 30 fps: 77 of 77 interpolated writes held there; hence the third frame (run `153645`: 0 held). |
+| `20261118-153645-`, `-154036-two-games-vehicle-trike` | `11-host-sees-guest-driving-a` (`153645`, enlarged): the BRIDGES truck copy passing close by the host. `154036`: the truck copy driving to where the guest stopped, tilted as her own truck is against the wall it ran into (her `12-guest-stopped`); the standard trike part did not start (its `until` matched the Kusanagi's line; fixed). |
+| `20261118-152146-`, `-151711-vehicle-echo-trike` | The first drives: the Kusanagi got on only after Sam was turned to face it (`151711` placed him beside it facing away: no prompt, 5 X presses). |
+| `20261118-151227-vehicle-garage-scout` | The registry (10 vehicles, kinds, resources, positions) and the parking manager's 9 slots. The lift's buttons did not open the garage menu (Y, X, hold X; DPAD up opened photo mode): not needed, the save's world holds trikes and trucks. |
+| `20261118-154549-`, `-154832-`, `-155051-vehicle-echo-collision` | Walks into copies parked outside: rocks and slopes, nothing proven either way (the truck copy stood on a rock slope; the controls slid round). Hence the garage run `155304`. |
+| `20261118-152652-`, `-160341-`, `-160544-two-games-vehicle-trike` (failed scenario steps, games fine) | `152652`: the standard trike stuck against rocks, the host's cuff map (START) not closed by B, so the guest's part was refused (`HandcuffDevice`). `160341` / `160544`: camera pulses of 100 ms turned the camera about 1.5 deg/s (200 ms at full stick: 11-19 pulses). |
+
 ### 22.6 Not covered / still different
 
-- **Only the roadster was driven.** The trike and truck copies were spawned, validated, placed and shown (override),
-  never with a real trike or truck sending: their origin against the drivable vehicle's, their joint poses (the same
-  Skeleton, so expected to fit) and the Kusanagi trike (`bkyk`, its own skeleton: no pose) are not proven. The garage
-  terminal's vehicle menu was not scouted.
+Second milestone (the first milestone's list follows, updated):
+- **Not provoked**: a vehicle destroyed while ridden, falling off a trike, a real load or teleport mid-drive (the game's
+  teleport refuses while Sam has a parent: debug-actions "Teleport", precondition 9). The silent-partner cases were run
+  with held sends, which is what the other screen sees of a load or a pause; a disposed vehicle (hold START) ran the
+  sender's "gone" path.
+- ~~**The copies' look**~~ (third milestone, 22.7: the solid copies wear the paint and variations and show the packs;
+  the Kusanagi trike's copy stays the grey standard trike, the roadster a hologram). ~~Engine and other vehicle sounds
+  are not mirrored~~ (fourth milestone, 22.9).
+- **Collision**: the hologram copies (the default since the review) have none (Sam walks through them, 22.10). The
+  solid copies (`vehicle_sync=2`) collide with the player; whether with vehicles was not tested (nobody drove into one).
+- **Overlap** hides the copy only against the watcher's own vehicle of the same kind, within 1 m and 20 deg. A copy
+  overlapping another kind (a truck over a parked trike) or a vehicle a little further off is shown.
+- **The 3-frame interpolation** needs the frame after the bracketing pair; at the newest frame (play time at the ring's
+  end) the copy holds it as before.
+- **Two vehicles of the same kind** in a row are told apart only by distance (a jump over 5 m plus 60 m/s): two trikes
+  parked side by side within a few metres would be slid from one to the other (STM1 names no vehicle instance).
+- **Parked for 60 s at most**, and watcher screenshots outside the garage depend on the watcher's camera: the scenario
+  turns it with the right stick until `camera aimed` (`vehicle_sync 18`); on slopes the camera can still look at the
+  ground (`155910`, part 3).
+
+First milestone (still valid unless struck above):
+
+- ~~Only the roadster was driven~~ (second milestone: all three kinds driven; the Kusanagi has the trike's layout and is
+  posed; the garage's lift buttons tried did not open its menu, and it was not needed).
 - **The roadster is a hologram on the other screen** (no solid cutscene roadster exists; a forged entity resource or a
-  copy of the real `DSVehicleSpeedCar` was not attempted: the latter is the pattern that crashed with weapons, 17.1).
-- **Paint and variations** (purple, gold / silver, broken) are not mirrored; the hologram has its own look.
-- **Wheel motion** arrives at 30 Hz and is given every tick; the copy is not moved to the 240 Hz update group, so at
-  speed its wheels may step (the read-back meter shows up to 45 deg against the given poses while they spin).
-- **Cargo on the vehicle, sounds (engine, RTPCs), lights, damage effects** are not mirrored. The partner body's hands
+  copy of the real `DSVehicleSpeedCar` was not attempted: the latter is the pattern that crashed with weapons, 17.1;
+  third milestone: 22.8).
+- ~~**Paint and variations**~~ (third milestone, 22.7, solid copies only; the hologram keeps its own look).
+- ~~Wheel motion steps~~ (second milestone: the copy at 240 Hz, its joints interpolated in its own update: 1.00 pose
+  writes per frame instead of 0.14 for the hologram). Above about 33-52 m/s a wheel turns over 180 deg between two 30 Hz
+  frames and the short-arc blend turns it backwards [I: wheel radii 0.35-0.55 m; not reached in a run].
+- **Cargo on the vehicle, lights, damage effects** are not mirrored (sounds: 22.9). The partner body's hands
   and feet are Sam's seated pose: on Fragile they may not meet the wheel exactly.
-- **Not run**: link loss or a load while driving (the code removes the copy), long drives outside the garage, two
-  vehicles at once, carts and floating carriers (logged once as another parent type, not sent), a vehicle destroyed while
-  ridden.
-- **No collision** with the partner's vehicle copy.
-- **Two of the same vehicle.** In the two-game runs both games come from one save, so the watcher's own roadster is
-  parked where the partner's copy appears (`121400`: the hologram inside the guest's own purple roadster). In play a
-  partner's copy will often overlap or duplicate the local player's own vehicle of the same kind.
+- **Not run**: two vehicles at once, carts and floating carriers (logged once as another parent type, not sent), long
+  drives (the outside drives were 15-25 m: the terrain there is rocks and slopes). Link stalls (3 s and 12 s) and the
+  partner's pause now hold the copy (second milestone).
+- **No collision** with the partner's hologram copies (proven for Sam on foot, 22.10); the solid copies collide.
+- ~~Two of the same vehicle~~ (second milestone: the copy is hidden while it overlaps the watcher's own vehicle of the same
+  kind).
 - **Parked for 60 s at most.** A vehicle left by its driver stops being reported after 60 s even while the driver stands
   beside it (or once they are 30 m away): the copy goes then.
 - The echo screenshots `04-mounted-copy` / `07-look-b` (`e04_copy.png`, `e07b.png`) are from `120658`, an older
@@ -2681,3 +2859,314 @@ vehicle moved.
 - The pose targets share one fault switch: a fault writing the copy's pose turns off every gear pose (the backpack's,
   the boots prop's) for the session, as a fault on any of them already did. Kept on purpose (a fault means our write
   hit something unexpected); never seen in a run.
+
+### 22.7 Looks and packs: paint, variations and what is fixed on the vehicle (third milestone; `session.ini vehicle_look`, `vehicle_packs`, default 1)
+
+Since the review (22.10) looks and packs act on the solid copies only, which are shown only with `vehicle_sync=2` (they
+collide with the player); the default hologram copies keep the holograms' own look and carry no packs. The truck's look
+is not the driver's either: the save's gold truck looks rust-brown on the driver's screen and clean gold as a copy (its
+wear is not mirrored; below).
+
+**The census** (`action vehicle_sync 19`, run `20261118-162226-vehicle-echo-census`; [V] for every line):
+- **Paint is the colour index shader variable** `0x3A3714ED` (the cap's colour index, 13.1), set per ArtParts index:
+  the purple roadster parts 4 / 6 = 19 / 21, the trikes parts 14 / 16 (15 / 21 the purple / orange one, 4 / 15 another),
+  the trucks part 15 = 1 or parts 14 / 15 = 0 / 0. The `DSUIVehicleCustomizeColor.ShaderColorIndex` of the game's
+  customiser [I: the names].
+- **Variations**: one truck carries `f2d7a35c-...` (its resource's `GoldApv`, `+0x1F8`), one trike `4c407925-...` (the
+  motorbike resource's `RideTypeApv`, `+0x288`); the others none. The resources' references (logged with offsets):
+  `GoldApv` / `SilverApv` / `BrokenApv` / `BrokenGoldApv` / `BrokenSilverApv` at `+0x1F8..+0x218`, the motorbike's
+  `RideTypeApv` / `BrokenRideTypeApv` at `+0x288` / `+0x290`, the truck's `HalflifeApv` at `+0x2B0`.
+- **Cargo**: every vehicle's `DSBaggage2CarrierComponent` (the roadster and the trucks 2 slots, type 0 and 69 =
+  `PassengerSeat`; the trikes 1 slot, type 0) holds **no piece** in the 100% save. What the save's trucks carry on their
+  sides (the "containers" of 22.6) are **child entities**: six `ds/entities/vehicle/pe_ds_vehicle_defense_pack` or
+  `pe_ds_vehicle_battery_pack` per truck, two battery packs on each standard trike (plus the wheel holograms,
+  `pe_ds_vehicle_*_wheel_hologram`, not drawn while parked).
+- The pack entity resources (game data): `EntityResource` + `SkinnedModelResource` + `StencilBufferComponentResource` +
+  `MeshPaintTextureComponentResource` and a `DSVehicleCustomPackMoverResource`. The mover (`DSVehicleCustomPackMover`,
+  RTTI `0x144CA5810`, vtable `0x143E252D8`, base `DSSimpleAttachToEntityMover`) handles only `MsgAddedToEntityManager`
+  (`0x142FA8350` -> `0x142F71EB0`: it sets two shader variables on its own entity's ArtParts and its model's flag) and
+  its base `MsgEntityInit` (the generic mover init `0x1423B5130`); no update of its own [V: RTTI message tables,
+  decompile]. A copy has no parent: it stays where it is put (read back 0.000 m from the last placement in every run,
+  also while the vehicle moved at 6-7 m/s).
+
+**Sender** (game thread):
+- **Look** (`look::ReadVehicle`, every 500 ms while the vehicle is reported this tick): its applied variations by GUID and
+  its colour index entries (hash `0x3A3714ED`, part, value). Sent as STV1 item 255 when it changed and every 2 s.
+  `0x32D5AE44` (per body part: 1.0 on the save's rust-brown gold truck, 0.35 on its clean vehicles) and `0x0978E0A1` also
+  differ between vehicles; sent in one run (`164037`), they did not turn the truck copy rust-brown [V: screenshots], so
+  they are not sent (meaning unknown; the rust is most likely the mesh-paint texture, `MeshPaintTextureComponent` [I]).
+- **Packs** (`ReadPacks`, every 500 ms while the vehicle stands still: their place on it is fixed, and a moving vehicle
+  and its children are not read in the same instant): its child entities whose resource is one of the two pack
+  resources (path and GUID), shown (flag bit 1), each in the vehicle's frame (within +-8 m); at most 8. Sent in every
+  STM1 frame (flags bit 2).
+
+**Receiver**:
+- **Look** (solid copies only): applied when the look of the vehicle being played (its resource is the frame's) arrives
+  or changes, 0.5 s after the copy is live, and checked every 2 s (`look::Satisfied`; applied again when the copy's own
+  components changed it: 0 in every run). Only on the copy whose art the resource uses: the trike (`pe_ds_vehicle_ca03`)
+  on the trike copy, the trucks (`ca02`, `celd`: both `part_cald_main_def_game`) on the truck copy; the Kusanagi
+  trike's look is not applied (`its look is not applied (copy 'trike' has another model)`), nor any on the hologram.
+  `look::ApplyVehicle` is section 13.4's apply (the game's `ApplyArtPartsVariation`, component removal, shader variable
+  create / exists / add / set, byte-checked) with its own scope: a variation GUID is resolved only from the copy's own
+  component resources and from our own registered vehicles (22.1's registry) **of the sender's drivable resource** (their
+  resource's references and their variation components); not found: left out and logged. The copy's own variation
+  (the trike copy's `apv_bkst_main_def_v01`) is removed when the sender's vehicle has none.
+- **Packs** (solid copies only): one copy of the game's own pack entity per sent pack (`realbody::BeginByPathGuid` with
+  the pack's path and GUID: `pe_ds_vehicle_battery_pack` `e31fcbb8-1ce3-5549-a7df-c0bc519504a7`, `pe_ds_vehicle_defense_pack`
+  `a697fc82-7564-6448-870e-4804c472104b`), at most 2 started a tick, spawned 20 m below and invisible, refused for the
+  game run unless a plain `Entity` with no interaction, physics, ragdoll, controller, capsule, vehicle mover, bounder,
+  AI or sound component; placed every tick at the copy's transform times the newer frame's pack transform and shown
+  with the copy (hidden with it while it overlaps our own vehicle); removed with the copy, when the sent packs change, or
+  when `vehicle_packs` is turned off. A set-transform fault refuses that pack kind for the game run.
+- `action vehicle_sync 14 0|1` / `15 0|1` switch looks / packs at run time (looks off: the copy is respawned in its own
+  look).
+
+**Not done**: cargo in a vehicle's carrier (no piece in the save to prove a mirror with; the carrier walk is in the
+census); the rust-brown wear of the save's gold truck (its copy is clean gold); the mesh-paint mud and snow; the
+roadster (hologram) and the Kusanagi trike (another model) keep their copies' own look; burst-mode lights; parts the game
+switches itself (battery level lights). The packs' collision was not tested (their resources have no physics
+component).
+
+### 22.7.1 Evidence (hidden, `-SeedSaves complete-100`; every run: exit 0 (both games), no error.txt, real saves unchanged and restored, 0 uploads)
+
+| Run (`build-testenv\runs\`) | What it shows |
+|---|---|
+| **`20261118-164704-two-games-vehicle-look`** (final build; host Sam, guest Fragile with self view, `graphics low`) | 1. The host drives the save's gold truck (six defense packs): the guest's copy `look ... applied` (1 variation, 1 colour; 4 of her own trucks as sources), hidden over her own truck at the start, 6 pack copies placed (read back 0.000 m at 7.2 m/s). `guest\automation\02-guest-sees-host-driving-a` (enlarged): the copy driving away **gold with the defense packs** on its side, next to her own parked rust-brown truck; `03-guest-sees-host-stopped` (enlarged, camera turned onto the copy: `vehicle_sync 18 5`): the gold copy 61 m off where the host stopped it, tilted on the rocks below the road, as his own truck in `03-host-stopped-side` (rust-brown). 2. The guest drives the purple / orange trike (two battery packs): the host's copy `look ... applied` (4 colours), 2 battery pack copies; `07-host-sees-guest-stopped`: Fragile (`Guest` tag) on a **purple / orange** trike copy, his own parked trike of the same colours at the left, against her own view `guest\automation\07-guest-stopped-side`. 3. The host on the Kusanagi trike: `the partner's trike_kusanagi: its look is not applied (copy 'trike' has another model)`. Status: 0 looks failed, 0 partly, 0 again, 0 place faults, no refusal, no fault. |
+| `20261118-164347-two-games-vehicle-look` (the same build before the camera turn onto the copy) | The same applies and packs; the watchers' cameras showed their own vehicles, not the copies after the stop. |
+| `20261118-164037-two-games-vehicle-look` (`0x32D5AE44` / `0x0978E0A1` also sent: 32 shader variables) | `02-guest-sees-host-driving-a` (enlarged): the copy gold, not rust-brown: those variables do not carry the rust; hence not sent. Failed at a scenario step (the host's camera aim count), games fine. |
+| **`20261118-163641-vehicle-echo-look`** (one game, echo 0.5 s / 4 m) | Side views of our vehicle and the echo copy: `01-truck-look-on` the copy gold with three defense packs on its near side, at the places of our truck's (rust-brown) packs; `02-truck-look-off` (`vehicle_sync 14 0`, `15 0`): the copy respawned **grey, no packs** (the v0.12 view); `03-...-on-again` gold with packs again. `06-trike-look-on` our trike and the copy both purple / orange; `07-trike-look-off` the copy grey. Packs read back 0.000 m while parked. |
+| `20261118-162226-vehicle-echo-census` | The census above; `02-truck-and-copy-b` (enlarged): our rust-brown truck with three defense packs on its side, the copy grey with none (the v0.12 view). |
+
+### 22.8 A solid roadster (item 6 of the plan): not done, the hologram stays
+
+- **No safe ready-made entity**: no cutscene, figure or prop entity uses the roadster's solid art (`part_casp_main_def`)
+  [V: the prefetch list's 211k paths, research]; `ds/entities/vehicle/vehicle_casp_game_actor` is not an entity (a
+  `DSVehicleSpeedCarGameActorUnitResource` and a `GameActorSpecificData`) [V: core decode, this milestone];
+  `ds_vehicle_casp_physics` is the physics. A copy of the drivable `DSVehicleSpeedCar` is the pattern that crashed with
+  weapons (17.1) and carries 31 components (AI nav mesh, interaction, baggage carrier, sound ...).
+- **The only route found** would put the solid art into the construction hologram's `SkinnedModelResource` (`+0x30`
+  `ArtPartsDataResource`, with `DisableCollision` `+0x70`) for the hologram's realize, then restore it: a write into a
+  shared game resource (the garage's own construction hologram uses it), with unknown reference counting.
+- **It fails the safety bar of this milestone**: it writes into a shared game resource, and the solid art brings the
+  drivable roadster's collision and physics parts (`PartMotionType Dynamic`; the solid trike and truck copies' art
+  collides with the player, 22.10), whose effect on the hologram entity is unknown.
+- (Review follow-up: this used to give the hologram entity's AI components as a reason - `DSAIIndividual`, `AIBody`,
+  `BasicControlledEntityAIController`, `DSGroundMovement`, run `122455` - but the roadster hologram has been the default
+  copy since v0.12 with exactly those components, and the trike and truck holograms are the default now. The rule "no AI
+  or controller components" applies to the solid cutscene bodies; the construction holograms pass instead the welcome
+  hologram's own checks (`holo::ValidateWelcomeHolo`) and the copies' common deny-list (no interaction, physics,
+  ragdoll, player controller, capsule, vehicle mover or bounder component), are placed by us every tick, and were never
+  seen to move, act or fault in any run, also at 240 Hz (`BoostEntity`) [V: the runs; I: what their AI components would
+  do].)
+- Hence the hologram stays, and the look is not applied to it (its materials are hologram shaders): on the other screen
+  the roadster stays the blue construction hologram.
+
+### 22.9 Vehicle sounds (fourth milestone; `session.ini vehicle_sound`, default 1, with `sound_sync=1` and `vehicle_sync`)
+
+**What the game does** [V: decompiles `0x142F6CE00` / `0x142F74820` / `0x142F74B70` / `0x142F74E90`, the decoded
+`sd_sfx_vehicle_all` graphs, runs below]:
+- Every vehicle sound is played by the vehicle's own `SoundComponent` (a sound controller at `vehicle + 0x8A0`; the road
+  noise from its sound state machine). Each Decima sound instance is its own Wwise game object; the vehicle's are made
+  inside the component's play path (`0x141DB61A0` / `0x141DCBC30`, called from it) but registered with Wwise later,
+  outside it. That is why `partner_sound`'s "registered inside a play path" rule saw none of them (run
+  `20261118-171051`: 0 vehicle objects known, its posts "unowned") and why the instance create / setup are hooked now.
+- The graphs set their RTPCs on their own game object only when they change. The roadster's engine loop
+  `0xAD19C8B9` carries 17 RTPCs: `8A199A5D` rpm (1000 at idle, up to about 6,300), `ADE31A03` velocity (0 to about
+  25), `8B335EB2` throttle (0 / 1), `76B6422F` (velocity times 1.43 [I]), `20D713EF` ground distance, `ABC35145`
+  damage, `624BF273` occupant (1 while seated), `FAB65D21` (suspension, also on the bumps) and the rest of 1.3 of the
+  research (`43DEE1D1` stayed 0). The road noise objects carry 8-10 (`65669953` changes with the ground: 65535 on the
+  garage floor, 84 / 104 / 10 outside [I: a surface id]). None of them changed with the camera or the listener in
+  these runs [I: nothing listener-relative seen].
+- The road noise and skid loops (roadster `0x1B2FD579` + `0x7DED77AB`, trike `0x43582143` + `0x39FE036A`, truck
+  `0xB7A24F27` + `0x1F78808C`) start when the vehicle is spawned, long before anyone gets on; the engine loop
+  (`0xAD19C8B9` roadster, `0x384DC8EC` trike, `0x1A5C20C0` truck) starts with the ignition (`0x5403389F`, truck
+  `0xAF464419`) and the game stops it with `StopPlayingID` (fade 100 ms) at the cut-off (`0x23486788`, truck
+  `0xFA638E52`) when Sam gets off. The trike's engine graph also posts `0x481AAE3B` / `0xC4CDE0DC` on the same object
+  while driving; they end by themselves. 0x5287BC7E / 0xA009B2E2 (bush rustling), 0x96B72F2D (suspension bump, at the
+  wheel: (-0.76, -1.37, 0.47) m), 0x43B0699A (indicator), 0x3B612EA5 / 0x168503E1 / 0x9982BF94 / 0x2E6E2028 (the
+  truck's body raise / lower), 0xF0A910A3, 0x0BE96F8F, 0xFA4D5911 were seen too.
+
+**Sender** (`partner_sound.cpp`; the hot paths as before, the rest on the game thread):
+- A sound instance made or attached inside a component's play path whose owner (or an entity up to two levels above
+  it) is a drivable vehicle (vsync's vtable check, `vsync::VehicleClass`) is that vehicle's sound object. Its posts,
+  RTPCs (up to 24 kept in place), stops, actions and unregistration are followed for every vehicle of the world, also
+  while there is no local player (a load).
+- It goes out only while `vsync` reports that vehicle as the one we ride (`vsync::ReportedVehicle`: seated, or parked
+  after getting off within 60 s / 30 m) and the local game is not paused, in a menu, a cutscene or loading (the
+  partner voice's gate). Posts become STA1 v2 items (category 5, slot 7, the post's place in the vehicle's frame,
+  `vsync::ReportedVehicleLocal`, fault-free reads; its RTPCs: 12 in the item, the rest in an rtpc item right behind).
+- **Held loops**: an event of the looping graphs (23 ids, `kVehicleLoops`) is held until the game stops it
+  (`StopPlayingID`, an action stop / break, its object unregistered). A held loop is sent when it starts, picked up when
+  the vehicle becomes ours or the gate opens (the road noise that started at the spawn), re-sent every 1.5 s with the
+  same playing id (`kSoundHeld`), and stopped on the receiver (stop items, repeated twice) when the vehicle is ours no
+  more or the gate closes. After a gap of over 200 ms between send ticks (our sends held, a hitch) nothing is decided
+  for one tick (vsync's report is one tick behind psound's in the send tick).
+- **RTPC stream**: changes on an object with a sound the receiver knows go out at most every 100 ms per object, beyond a
+  deadband (0.5 %, at least 0.001) of what went out, as rtpc items with a 100 ms glide (`kVRtpcFadeMs`); what does not
+  fit in the 512-byte frame stays for the next one. Measured: 586 rtpc items (2,508 values) and 218 vehicle posts (189
+  of them refreshes) from the host over the whole of `172756` (four vehicles, about 70 s ridden).
+
+**Receiver**:
+- A vehicle post is carried out only for an id of the vehicle graphs (`kVehicleEvents`, 67 ids) or one this game
+  posted on its own vehicles' sound objects this session; never a voice. The player category's deny-list does not
+  apply (its "camera" ids `0x39FE036A` / `0x43582143` are the trike's road noise).
+- It is posted on one of our 24 Wwise objects placed at `vsync::PartnerVehicleWorld`: the place the partner's vehicle
+  frames play this tick (the copy's place, also when no copy is shown or it is hidden over the watcher's own vehicle) +
+  the offset in the vehicle's frame; the object follows it every tick. Within 250 m of the partner (the graphs' MaxDist
+  is 300 m). `partner_volume` applies (the objects' output bus volume).
+- A held loop that plays already only takes the refresh's lease, offset and RTPCs (with a 100 ms glide); one that ended
+  here by itself (its end-of-event, no stop of ours) is not posted again by a refresh. A held loop with no refresh for 5
+  s is stopped (a lost stop, the sender gone); held loops are not under the 15-minute cap.
+- All the partner's vehicle sounds stop when its vehicle has not been played here for 300 ms (no frames for 2 s, the
+  copy held for a silent partner, broken for 3 s, removed), at our gate (pause, menu, cutscene, load), with no partner
+  body, at a new link session, or with the key off; the held loops come back with the next refresh once it plays again.
+
+**Wire**: STA1 version 2 (section 19; ctest `TestSoundFrames`): category 5, slot 7, `flags` bit 0. Version 1 is
+refused; mixed builds are refused at HELLO (the wire hash, section 4).
+
+**Keys and actions**: `vehicle_sound=0` installs no create / setup hook and sends or posts nothing of a vehicle (the
+v0.12 behaviour); `sound_sync=0` (the default) turns all of it off. `action sound_sync 3 <ms>` traces both sides every
+500 ms (the vehicle objects' loops and RTPC values; our objects' places against the copy entity's own transform), `action
+sound_sync 4 0|1` switches the vehicle sounds at run time (debug-actions.md).
+
+**Evidence** (hidden, `-SeedSaves complete-100`; every run: exit 0 (both games), no error.txt, real saves unchanged and
+restored, 0 uploads):
+- `20261118-172756-two-games-vehicle-sound` (final build; host Sam, guest Fragile): the guest posted 38 of the host's
+  vehicle sounds and ended all 38 (`playing now 0` at the end), took 156 refreshes, did not post 9 refreshes of 2
+  trike sounds that had ended by themselves, stopped 6 for no vehicle; 0 refused, 0 PostEvent failed, no Wwise fault;
+  every post with a live copy and all 144 trace lines at the copy (`vs the copy entity's own transform + offset: 0.000
+  m`); 9 loop pick-ups 30-60 ms before the copy went live logged `no copy` (placed at the partner's vehicle frames). The host
+  posted 5 of the guest's truck sounds (road noise loops, ignition, engine loop, cut-off) and ended all 5. The host sent
+  218 vehicle posts (9 loops picked up, 189 refreshes) and 586 rtpc items (2,508 values). RTPCs across the link (the
+  roadster's engine, every 500 ms, the two games' own clocks): the host's velocity 0 -> 7.33 -> 13.43 -> 16.53 -> 20.01
+  -> 22.84 with rpm 1000 -> 4243 -> 5118 -> 4987 -> 6041 -> 4926; the guest's object 0 -> 8.23 -> 12.66 -> 17.02 -> 20.4
+  -> 22.84 with rpm 1000 -> 4735 -> 5337 -> 5135 -> 6158 -> 4926. The host's cuff map (the sender's gate): its three
+  loops stopped on the guest, picked up the moment it closed; the guest's cuff map (the receiver's gate): `stopped the
+  partner's sounds on 2 object(s)`, the engine loop posted again 0.2 s after it closed; the host's sends held 3 s:
+  stopped 0.4 s after the copy was held, posted again 31 ms after it played again; held 12 s: stopped, the body removed
+  after 10 s, the engine loop posted again when the copy came back; getting off: the cut-off posted, the engine loop
+  stopped by the game's own stop (fade 100 ms) on both screens; `vehicle_sync 1 0` on the host: the trike's road noise
+  stopped on the guest.
+- `20261118-173144-vehicle-echo-sound` (final build, one game, the echo copy 4 m beside us, 0.5 s behind): 38 vehicle
+  posts, every one and all 247 trace lines at the copy (0.000 m), 0 refused, 0 failed; the cuff map, held sends (`stopped
+  3 partner vehicle sound(s): the partner's vehicle is not played here any more`), `sound_sync 4 0` (`stopped 3 partner
+  vehicle sound(s): vehicle_sound off`) and `4 1`, getting off each vehicle (`vehicle loop ev 0xAD19C8B9 / 0x384DC8EC /
+  0x1A5C20C0 ... stopped by the game after 39017 / 12878 / 9961 ms (fade 100 ms): the stop goes out`) and vehicle sync off
+  (`stopped 2 partner vehicle sound(s)`). At the end the truck was still reported as parked (60 s / 30 m): its two road
+  noise loops still held, as designed.
+- Development runs: `20261118-171051` (0 vehicle objects known: registrations happen outside the play path; hence the
+  create / setup hooks), `171459` (the first working one; showed the trike's `0x481AAE3B` / `0xC4CDE0DC` re-posted by
+  refreshes after they had ended: fixed by the receiver's "ended by itself" set; and a stop / pick-up churn after held
+  sends: fixed by the send-gap rule), `172012` (two games, before the vehicle refusal counter and the seed
+  `0xFA4D5911`).
+
+**What to listen for** (not heard in the hidden runs; the games are silent):
+- Standing near the partner's parked roadster / trike / truck (up to 60 s after they got off): its road noise loops are
+  played at the copy, as the driver's game plays its own parked vehicles' (whether they are silent at speed 0 is
+  [I]). When they get on: the ignition, then the engine idling at the copy.
+- While they drive: the engine rising and falling with their throttle and speed, the road noise and skids changing
+  with the ground, suspension thuds at the wheels, the indicator, the truck's body raise / lower; the sounds move with
+  the copy and fade with distance (up to about 250 m).
+- When they get off: the cut-off and the engine stops; nothing left behind after they walk away (60 s / 30 m), pause,
+  or their game goes silent (within about 0.3 s of the copy being held).
+- `partner_volume` lowers all of it with their footsteps; `vehicle_sound=0` keeps their footsteps and foley only.
+- Worth a check by ear: whether the engine sounds like a vehicle passing by or like the listener's own (the graphs
+  computed their listener-relative inputs on the driver's game, see below).
+
+**Not covered / still different**:
+- **The listener's perspective**: the RTPC values are the driver's game's (its graphs see the driver as the local
+  player). No RTPC was seen to change with the camera or distance, but some ids are unnamed (`43DEE1D1`, `76B6422F`,
+  `FAB65D21`, the road noise's `5C347FEF`, `AFAD5E46`, `BEA713CC`, `DA1C68AC`) [I].
+- **The loop list is static**: a looping event outside `kVehicleLoops` is mirrored like a one-shot (it plays until the
+  game's stop; not picked up after a pause or a silent partner). Since the review the trike engine graph's
+  `0x481AAE3B` / `0xC4CDE0DC` (they end by themselves) are off the list; another listed event that ends by itself is
+  not posted again by refreshes for 30 s after it ended here.
+- **Boost** (the roadster's burst mode, `B6E02516`) and the horn were not driven in a run; their ids are on the list.
+- **Not run**: a long drive, a vehicle destroyed while ridden, a real load mid-drive (the copy's own paths for these
+  stop the sounds), two vehicles at once, Kusanagi-specific sounds beyond the trike's (it uses the motorbike's sound
+  resource).
+- The `vehicle_sound` key is not in the launcher (mod key only, like `vehicle_look`).
+
+### 22.10 Review follow-up (2026-11-18): holograms by default, overlap that hides, the sound fixes
+
+Two reviews of the second to fourth milestones (the uncommitted vehicle diff, and the three reports against their runs)
+were checked against the code, the logs and the screenshots. [V] read in the code, a log or an enlarged screenshot;
+[I] reasoned, not observed.
+
+**Found and fixed**:
+- **The solid copies collide** [V]. Run `155304` had walked Sam past the solid copies' sides (2.04 m beside the truck's
+  origin, 1.15 m beside the trike's, from 4-5 m before them), so "no collision" was never shown. Walks from 1.5 m before
+  the origin and placements at the origin (`vehicle_sync 16 0.01`), runs `20261118-175540`, `-180336`, `-180610`,
+  `-180901` and `-181155` (the last one passes every step): the **solid truck** stops Sam 1.98-2.09 m past its origin, at
+  the same point in every walk (`03-past-truck-copy`: his camera inside the truck's body against its front wall), while
+  he walks through that very point once the copy is gone; on the **solid trike** he ends up 0.81-1.01 m above its origin
+  (`11-at-trike-copy-origin`: standing on it), the walk from 1.5 m before is pushed 1.14 m aside, and a Climb prompt
+  shows on it (`09-in-trike-copy`; the reviewer's unexplained prompt of `155304`). The game data says why: the cutscene
+  bodies' SkinnedModelResource has `DisableCollision` false and their art (`part_bkst_main_def`, `part_cald_main_def_game`,
+  the drivable vehicles' own) holds 8 and 18 `PhysicsCollisionResource` (PolySoup). The art of the three construction
+  holograms (`part_casp_main_hlo`, `part_bkst_main_hlo`, `part_cald_main_hlo_game`) holds none, and the trike and truck
+  holograms' skeletons have the drivable layouts `8DABA9B0` / `B609EC0D` (their `SkeletonLayoutHash`). Hence the
+  **default copies are the holograms** (`kCopies` rows 4 and 5, 22.4): in run `181155` Sam walks straight through the
+  **truck hologram** (0.00 m beside at its origin, 2.66 m past it, past the solid truck's stop point) and the **trike
+  hologram** (-0.00 m beside at -0.18 m, 3.12 m past) and stays on the floor at their origins (`19-at-trike_hologram-origin`:
+  Sam inside its glowing outline); the control, our own parked roadster, stops him 0.71-0.74 m before its origin. The
+  pack copies' art has no collision resource either [V: data; not walked into].
+- **Overlap hiding did not hide the roadster hologram** [V: `160727 guest 00-guest-sees-host-on-roadster`, enlarged:
+  grey and green patches through her own roadster while the log said hidden]. `SetVisible(false)` does not stop a
+  construction hologram from drawing. While hidden, the copy is now also placed 20 m below (where it is spawned); the
+  overlap test still uses the frames' place. Run `20261118-181458` (two games, the same screenshot, enlarged): her own
+  purple roadster with the host's Sam at its wheel and no hologram patch [V].
+- **Vehicle sounds** (`partner_sound.cpp`):
+  1. The trike engine graph's `0x481AAE3B` / `0xC4CDE0DC` (they end by themselves) are no longer held loops: they stayed
+     in the object's list of 6 after they ended, were refreshed every 1.5 s (a receiver that missed them replayed them),
+     and four more posts would have evicted the engine loop with a stop to the receiver. Also, a held event posted again
+     on its object now replaces its own entry. Run `182225`: both posted once each as one-shots, the trike engine loop
+     `0x384DC8EC` held and refreshed [V].
+  2. Tags are no longer reused while held: a new tag skips every tag of an object with a held loop or a post in the last
+     60 s (they wrapped in about 85 s while the truck's engine kept its tag, run `172756`); the receiver's refresh also
+     restores the vehicle slot. Run `182225` did not wrap (tags skipped 0) [I: the skip path not exercised].
+  3. A held loop that ended on the receiver by itself is skipped by refreshes for 30 s only (it was for the session), and
+     not at all when the partner was beyond 250 m at its end (a distance kill).
+  4. A stop / break action on a vehicle object now goes out as an action too (before, only held loops' stops went out),
+     and the receiver checks vehicle actions against the vehicle allow-list.
+  5. The instance create / setup hooks are installed only with `vehicle_sound=1` **and** `vehicle_sync` not 0, as their
+     own group: when they cannot be installed only the vehicle sounds are off (before, all partner sounds were); the hot
+     path pushes nothing for them while they are off (also with the audio probe forwarding).
+  6. A pooled sound instance set up again by a non-vehicle component is no longer kept as the vehicle's [I: whether the
+     game reuses instances that way was not seen].
+- **The pose meter** (one acos per joint per update at 240 Hz) ran in normal play: now only in hidden tests or while
+  the trace runs.
+- **The receiver took any shader variable and ArtParts bits in STV1 item 255**: it now refuses a vehicle look with part
+  bits or a variable other than the colour index `0x3A3714ED` (`received (n refused)`).
+
+**Doc and report corrections** (the text above is corrected where it was wrong): the "hologram hidden" screenshot of
+`160727` (still drawn); "Sam walked straight through" (`155304`, slid along); the Kusanagi placement in `160727` (0.23 /
+0.61 / 0.93 cm by copy lifetime); "both back 2 s after the sends resume" (2 s after the removal, 0.1 s after the resume);
+"every post at the copy" (`172756`: 9 pick-ups logged `no copy`, 30-60 ms before the copy went live); "a parked vehicle
+should be silent" (its road noise loops are played at the copy; silent at speed 0 [I]); the truck look (the copy is clean
+gold, the driver's truck rust-brown); the AI components argument of 22.8. The two-game hologram meter is now measured
+with smoothing on (`181458`: 1.00 pose writes per frame for the roadster, trike and truck holograms at about 30 fps);
+the earlier two-game runs measured it off. The placement error compares receiver and sender at the same play time, so
+it does not include the play delay (100 ms in two games: about 2 m behind at 20 m/s). The pack read-back proves our
+write, not the visible place. Run `171035` (the sounds milestone) has no summary: its scenario was refused before a game
+started. The "Abandoned vehicle has been dismantled" notice in `160727 guest 11-guest-driving-a` is the game's own
+[I: a vehicle the test teleports left far away; the mod never writes to local vehicles].
+
+**Refuted / kept**: the review's own claims all held. Kept on purpose: the roadster, trike and truck holograms carry AI /
+controller components (22.8); the meter's and the overlap's registry reads stay as they were (read only).
+
+**Final runs** (hidden, `-SeedSaves complete-100`; every run: exit 0 on both games, no error.txt, real saves unchanged
+and restored, 0 cloud uploads; the final build):
+
+| Run (`build-testenv\runs\`) | What it shows |
+|---|---|
+| **`20261118-181458-two-games-vehicle-trike`** (defaults: holograms; host Sam, guest Fragile with self view) | All four parts pass: the host's roadster (garage), the host's Kusanagi (as the trike hologram), the guest's truck (truck hologram), the host's standard trike (trike hologram). Every copy loaded in 66-167 ms, `posed from the partner's vehicle joints` (23 / 40 / 47), hidden over the watcher's own vehicle at the start (0.00 m) and shown again at 4.07-7.17 m; 1.00 pose writes per frame on every hologram. Held 3 s (`held where it stands ... 1132 ms old`, `plays again`), 12 s (body and copy removed after 10 s of silence, back at once). Placement while moving (cm mean / p95 / max): roadster 0.61 / 1.53 / 1.76, Kusanagi 0.27 / 0.64 / 0.84, standard trike 0.29 / 0.69 / 0.83, truck 0.35 / 1.17 / 1.44. Enlarged: `guest\automation\00-guest-sees-host-on-roadster` (her roadster, no hologram patch), `guest\automation\03-guest-sees-host-driving-a` (the host riding the teal trike hologram beside her own red Kusanagi) against `automation\03-host-driving-a` (his red Kusanagi), `automation\11-host-sees-guest-driving-a` (the truck hologram with the `Guest` tag driving away beside his own parked truck) against `guest\automation\11-guest-driving-a`. |
+| **`20261118-181937-two-games-vehicle-look`** (`vehicle_sync=2`: the solid copies) | The gold truck: `look ... applied (1 variation(s), 1 colour(s); 4 ... sources)`, six defense pack copies placed (read back 0.000 m at 7.40 m/s), `02-guest-sees-host-driving-a` the gold copy with its packs beside her own rust-brown truck; the trike: `applied (0 variation(s), 4 colour(s))`, two battery packs, `07-host-sees-guest-stopped` Fragile on the purple / orange copy; the Kusanagi: `its look is not applied`. 0 looks refused, failed or partly applied, 0 place faults. |
+| **`20261118-182225-two-games-vehicle-sound`** (`sound_sync=1`, defaults) | The guest posted 38 of the host's vehicle sounds and ended all 38 (0 refused, 0 PostEvent failed, playing 0 at the end), 154 refreshes; the host posted the guest's 5 truck sounds and ended all 5. The trike's `0x481AAE3B` / `0xC4CDE0DC` as one-shots. Posts at the copy 0.000 m (18), with the copy hidden over the watcher's own vehicle 11 (`copy hidden over our own vehicle`, at the frames' place), before the copy was live 9. The guest's cuff map: `stopped the partner's sounds on 2 object(s)`; the held sends: `stopped 3 partner vehicle sound(s): the partner's vehicle is not played here any more` (twice). |
+| **`20261118-181155-vehicle-echo-collision`** | The collision walks above (solid truck, solid trike, truck hologram, trike hologram, our own roadster). |
+| `20261118-175540-`, `-180336-`, `-180610-`, `-180901-vehicle-echo-collision` | The same walks while the scenario was fixed (the solid parts identical; the later ones failed at re-mounting the roadster for the trike hologram, games fine). |
+
+**Not proven**: a solid copy driven into the watcher or the watcher's vehicle (what the solid copies' collision does
+then); the trike and truck holograms' look (they are holograms: no paint, no packs, no Kusanagi look); tag reuse past
+255 (not reached); the audio-probe forwarding with vehicles; boost and horn; a long drive, a real load or link loss
+mid-drive (held sends only), a vehicle destroyed while ridden; anything heard (the runs are silent).

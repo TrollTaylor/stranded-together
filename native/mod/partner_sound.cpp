@@ -21,6 +21,7 @@
 #include "partner_voice.hpp"
 #include "real_body.hpp"
 #include "self_voice.hpp"
+#include "vehicle_sync.hpp"
 
 namespace st::psound {
 namespace {
@@ -87,6 +88,50 @@ constexpr std::uint32_t kDenyEvents[] = {
     0xE9C1B3E7, 0xE9C1B3E4, 0x39FE036A, 0x43582143, 0xCB8293CB, 0x0623267B,                          // the camera's SoundComponent
     0x7913AFCB, 0x0AF4925B, 0xFD842642,                                                              // fixed posts on game objects 0 / ~0
 };
+// The voice rows of kDenyEvents alone: the vehicle category's deny-list (the "camera" ids 0x39FE036A / 0x43582143 are the
+// trike's road noise and skid loop by the vehicle sound resources, section 22.9: a vehicle's are decided by their owner).
+constexpr std::uint32_t kDenyVoiceEvents[] = {
+    0x3D4BF9E2, 0x1C5DF301, 0x3E51AF82, 0xA4D58CE8, 0x7B540EFF, 0xB4FECB5F, 0x537EDC0A, 0x83FBDDAA,
+    0x8118407C, 0xD44C68CF, 0xE5BEA679, 0x374FF1A2, 0x518FE01D,
+};
+
+// ---------------------------------------------------------------- the vehicle sounds (vehicle_sound; section 22.9)
+// Every event id the vehicle sound graphs of sd_sfx_vehicle_all post (roadster, truck, trike / Kusanagi: engine loops,
+// ignition, cut-off, road noise and skid loops, suspension, battery, horns, doors, gear change, hand brake, sparks...;
+// the graph programs' NodeConstants decoded, docs/real-partner-body.md section 22.9), plus 0x798F1DB5 (posted by the
+// roadster's SoundComponent in the probe runs), 0xF0A910A3, 0x0BE96F8F and 0xFA4D5911 (the trike's and the truck's,
+// runs 20261118-171459 / -172012). The receiver posts a partner's vehicle item only when its id is here
+// or this game posted it on one of its own vehicles' sound objects this session.
+constexpr std::uint32_t kVehicleEvents[] = {
+    0x04669F3C, 0x0C77307D, 0x0D082840, 0x0EB46BE0, 0x168503E1, 0x189AA435, 0x1A5C20C0, 0x1B2FD579, 0x1F78808C, 0x226DA6EB, 0x23486788, 0x2E6E2028,
+    0x384DC8EC, 0x39FE036A, 0x3B612EA5, 0x43582143, 0x43B0699A, 0x45211D43, 0x481AAE3B, 0x4A772656, 0x4D13F5C8, 0x5287BC7E, 0x52C04426, 0x5403389F,
+    0x5978F3E7, 0x5B91A325, 0x664A02C1, 0x6CF40D31, 0x6D5D87C3, 0x76EB6B74, 0x7A7858F9, 0x7A785925, 0x7AC9FC76, 0x7C3AD7CD, 0x7DED77AB, 0x7E8E3BC4,
+    0x8DFBBE78, 0x96B72F2D, 0x9982BF94, 0xA009B2E2, 0xA4095AF3, 0xAD19C8B9, 0xAF464419, 0xAF9325DF, 0xB7A24F27, 0xB8AB9790, 0xBE5113B0, 0xC4CDE0DC,
+    0xC884E52E, 0xD4C61138, 0xD623DD08, 0xD66BDD6E, 0xD7F41406, 0xD83E5B4C, 0xDA53C7EA, 0xDDF4EC3C, 0xE267CE79, 0xE6B7CE39, 0xE7C2C09B, 0xF5C39C7F,
+    0xF6BC1070, 0xFA638E52, 0xFC4B6B05, 0xFF986E29, 0x798F1DB5, 0xF0A910A3, 0x0BE96F8F, 0xFA4D5911,
+};
+// The ids of the looping graphs (DefaultLooping: the engine loops, road noise / skid, brake skid, bush rustling, the
+// battery charge loop). On the sender such a sound is "held": re-sent every kSoundHeldRefreshMs while it plays on the
+// vehicle we ride (the receiver stops it when the refreshes stop), and picked up when the vehicle becomes ours while it
+// already plays (the road noise starts when the vehicle is spawned, long before Sam gets on). Not here: the trike engine
+// graph's 0x481AAE3B / 0xC4CDE0DC, which end by themselves (runs 20261118-171459 / -172756): held, they stayed in the
+// object's list after they ended, were refreshed out of context and could push the engine loop out (review 2026-11-18);
+// they go out as one-shots.
+constexpr std::uint32_t kVehicleLoops[] = {
+    0x1A5C20C0, 0x1B2FD579, 0x1F78808C, 0x384DC8EC, 0x39FE036A, 0x43582143, 0x45211D43, 0x4A772656, 0x5287BC7E, 0x7AC9FC76, 0x7C3AD7CD,
+    0x7DED77AB, 0xA009B2E2, 0xAD19C8B9, 0xB7A24F27, 0xD4C61138, 0xD7F41406, 0xDA53C7EA, 0xDDF4EC3C, 0xE7C2C09B, 0xFF986E29,
+};
+bool InList(const std::uint32_t* list, std::size_t n, std::uint32_t ev) {
+    for (std::size_t i = 0; i < n; ++i)
+        if (list[i] == ev) return true;
+    return false;
+}
+bool IsVehicleLoop(std::uint32_t ev) { return InList(kVehicleLoops, std::size(kVehicleLoops), ev); }
+constexpr double kMaxVehicleDistanceM = 250.0;  // the vehicle graphs' MaxDist is 300 m
+constexpr unsigned kVRtpcs = 24;                // RTPCs kept per vehicle sound object (the roadster's engine loop sets 17)
+constexpr double kVRtpcPeriodMs = 100.0;        // RTPC changes of one vehicle object go out at most this often
+constexpr std::uint16_t kVRtpcFadeMs = 100;     // and the receiver glides to them over this time
+constexpr double kVehicleLostMs = 300.0;        // receiver: the partner's vehicle place gone this long -> its sounds stop
 
 using CallbackFn = void (*)(int, void*);
 using PostEventFn = std::uint32_t (*)(std::uint32_t, std::uint64_t, std::uint32_t, CallbackFn, void*, std::uint32_t, void*, std::uint32_t);
@@ -101,6 +146,8 @@ using ExecActionFn = int (*)(std::uint32_t, int, std::uint64_t, std::int32_t, in
 using Play6Fn = std::uint64_t (*)(void*, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t);
 using Play7Fn = std::uint64_t (*)(void*, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t);
 using EmitterStartFn = void (*)(void*);
+using CreateInstFn = void* (*)(void*, void*, void*, std::uint32_t);
+using SetupInstFn = void (*)(void*, void*, void*, std::uint32_t);
 
 constexpr int kCurveLinear = 4;      // AkCurveInterpolation_Linear
 constexpr std::uint32_t kEndOfEvent = 1;  // AK_EndOfEvent
@@ -125,7 +172,7 @@ inline bool IsPool(std::uint64_t obj) {
 }
 
 // ---------------------------------------------------------------- the hot ring (any thread -> game thread)
-enum HKind : std::uint8_t { hPost = 1, hReg, hUnreg, hRtpc, hStop, hAction, hOwnPost, hVoicePost };
+enum HKind : std::uint8_t { hPost = 1, hReg, hUnreg, hRtpc, hStop, hAction, hOwnPost, hVoicePost, hCreate };
 struct HRec {
     std::atomic<std::uint32_t> seq{0};
     std::atomic<std::uint64_t> w[6];
@@ -207,6 +254,8 @@ ExecActionFn o_exec = nullptr;
 Play6Fn o_play1 = nullptr, o_play2 = nullptr;
 Play7Fn o_play3 = nullptr;
 EmitterStartFn o_emitter = nullptr;
+CreateInstFn o_create = nullptr;
+SetupInstFn o_setup = nullptr;
 thread_local std::uintptr_t t_ctx = 0;   // the component representation (or emitter) this thread is inside
 thread_local bool t_ctx_emitter = false;
 
@@ -276,6 +325,18 @@ void H_EmitterStart(void* em) {
     t_ctx = prev, t_ctx_emitter = pe;
 }
 
+// Instance creation / attachment inside a play path (vehicle_sound only): the game object a vehicle's sound component
+// makes is known by it (its Wwise registration comes later, outside the play path).
+void* H_CreateInst(void* mgr, void* p2, void* res, std::uint32_t flags) {
+    void* inst = o_create(mgr, p2, res, flags);
+    if (inst) HotCreate(reinterpret_cast<std::uint64_t>(inst), t_ctx, t_ctx_emitter);
+    return inst;
+}
+void H_SetupInst(void* mgr, void* inst, void* p3, std::uint32_t flags) {
+    o_setup(mgr, inst, p3, flags);
+    if (inst) HotCreate(reinterpret_cast<std::uint64_t>(inst), t_ctx, t_ctx_emitter);
+}
+
 struct HookDef {
     const char* name;
     std::uintptr_t rva;
@@ -283,6 +344,7 @@ struct HookDef {
     const char* sig;
     void* detour;
     void** original;
+    bool vehicle = false;  // installed only with vehicle_sound=1
 };
 const HookDef kHooks[] = {
     {"PostEvent", kPostEvent, aPost, nullptr, reinterpret_cast<void*>(&H_PostEvent), reinterpret_cast<void**>(&o_post)},
@@ -299,6 +361,10 @@ const HookDef kHooks[] = {
      reinterpret_cast<void**>(&o_play3)},
     {"sound emitter start", kEmitterStart, -1, "4C 8B DC 53 48 83 EC 60 48 8B 05", reinterpret_cast<void*>(&H_EmitterStart),
      reinterpret_cast<void**>(&o_emitter)},
+    {"sound instance create", kCreateInst, -1, "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 80 79 20 00",
+     reinterpret_cast<void*>(&H_CreateInst), reinterpret_cast<void**>(&o_create), true},
+    {"sound instance setup", kSetupInst, -1, "48 85 D2 0F 84 37 02 00 00 48 89 5C 24 18 48 89 74 24 20 57 48 83 EC 30",
+     reinterpret_cast<void*>(&H_SetupInst), reinterpret_cast<void**>(&o_setup), true},
 };
 constexpr std::size_t kHookCount = sizeof(kHooks) / sizeof(kHooks[0]);
 
@@ -393,10 +459,12 @@ int CallBusVolume(std::uint64_t obj, float v) {
 // ---------------------------------------------------------------- joints (both sides)
 // Slot -> joint of Sam's 77-joint layout (docs/real-partner-body.md: 31 JNT_C_B_008_Head, 68 / 63 the feet, 9 / 38
 // the hands, 4 the spine the backpack hangs on, 1 the hips).
-constexpr unsigned kSlotJoint[wire::kSoundSlots] = {31, 68, 63, 9, 38, 4, 1};
-constexpr double kSlotFallbackZ[wire::kSoundSlots] = {1.55, 0.05, 0.05, 1.0, 1.0, 1.3, 1.0};  // over the root, no joints
-const char* const kSlotName[wire::kSoundSlots] = {"head", "left foot", "right foot", "right hand", "left hand", "back", "hips"};
-const char* const kCatName[wire::kSoundCategories] = {"foley", "steps", "weapon", "cargo", "gear"};
+constexpr unsigned kJointSlots = 7;  // slots 0..6 follow a joint; 7 (wire::kSoundSlotVehicle) the partner's vehicle
+constexpr unsigned kSlotJoint[kJointSlots] = {31, 68, 63, 9, 38, 4, 1};
+constexpr double kSlotFallbackZ[kJointSlots] = {1.55, 0.05, 0.05, 1.0, 1.0, 1.3, 1.0};  // over the root, no joints
+const char* const kSlotName[wire::kSoundSlots] = {"head", "left foot", "right foot", "right hand", "left hand", "back", "hips", "vehicle"};
+const char* const kCatName[wire::kSoundCategories] = {"foley", "steps", "weapon", "cargo", "gear", "vehicle"};
+constexpr unsigned kCatVehicle = wire::kSoundCatVehicle;
 
 struct Joints {
     bool ok = false;           // the root read
@@ -411,7 +479,7 @@ void ReadJoints(game::Entity* e, const game::WorldTransform* root_in, Joints* ou
     else if (!e || !game::TryGetTransform(e, &wt)) return;
     out->ok = true;
     out->root[0] = wt.pos.x, out->root[1] = wt.pos.y, out->root[2] = wt.pos.z;
-    for (unsigned s = 0; s < wire::kSoundSlots; ++s) {
+    for (unsigned s = 0; s < kJointSlots; ++s) {
         double p[3];
         if (e && realbody::JointWorld(e, kSlotJoint[s], p)) {
             out->p[s][0] = p[0], out->p[s][1] = p[1], out->p[s][2] = p[2];
@@ -427,7 +495,7 @@ double Dist(const double* a, const double* b) {
 }
 
 // ---------------------------------------------------------------- sender state (game thread)
-enum Own : std::uint8_t { oNone = 0, oComp = 1, oEmitter = 2, oDenied = 3 };
+enum Own : std::uint8_t { oNone = 0, oComp = 1, oEmitter = 2, oDenied = 3, oVehicle = 4 };
 struct Label {
     std::string text;
     bool denied = false;
@@ -448,11 +516,13 @@ struct Decision {
     std::uint8_t cat = 0;
     std::uint16_t label = 0;
     double t = 0;
+    std::uintptr_t veh = 0;  // oVehicle: the vehicle entity owning the sound component
 };
 std::unordered_map<std::uintptr_t, Decision> g_ctx_cache;
 
 struct Obj {
     Own own = oNone;
+    bool made_in_ctx = false;  // a vehicle's: known from its creation in the play path, its registration still to come
     std::uint8_t cat = 0, tag = 0, slot = 6;
     std::uint16_t label = 0;
     std::uint8_t nr = 0;
@@ -462,6 +532,66 @@ struct Obj {
 };
 std::unordered_map<std::uint64_t, Obj> g_objs;
 std::uint8_t g_next_tag = 0;
+
+// A vehicle's sound object (own == oVehicle): its vehicle, its RTPCs (kept in place: changes stream at most every
+// kVRtpcPeriodMs, a deadband against what went out) and its looping sounds playing now (until a stop, an action stop
+// or the object's unregistration).
+struct VLive {
+    std::uint32_t pid = 0, ev = 0;
+    double t = 0, last_tx = -1e9;
+    bool sent = false;  // the receiver was told (posted, refreshed since); a stop goes out when that ends
+};
+struct VObj {
+    std::uintptr_t veh = 0;
+    std::uint8_t n = 0;
+    std::uint32_t rid[kVRtpcs] = {};
+    float rv[kVRtpcs] = {}, sent[kVRtpcs] = {};
+    bool has_sent[kVRtpcs] = {}, dirty[kVRtpcs] = {};
+    double rtpc_tx_ms = -1e9, last_post_tx = -1e9;
+    float off[3] = {};  // the last post's place in the vehicle's frame (m)
+    bool have_off = false;
+    std::vector<VLive> live;
+};
+std::unordered_map<std::uint64_t, VObj> g_vobjs;
+std::unordered_map<std::uint32_t, std::uint64_t> g_vpid;  // a live loop's playing id -> its object
+std::uintptr_t g_tx_veh = 0;                              // the vehicle whose sounds went out last send tick
+std::unordered_set<std::uint32_t> g_learned_veh;          // ids this game posted on its own vehicles' sound objects
+std::uint32_t g_tx_veh_posts = 0, g_tx_veh_other = 0, g_tx_veh_adopt = 0, g_tx_veh_refresh = 0, g_tx_veh_stops = 0, g_tx_veh_rtpc = 0,
+              g_tx_veh_rtpc_values = 0, g_tx_veh_gated = 0, g_tx_veh_off = 0, g_tx_veh_game_stops = 0, g_tx_veh_unreg_stops = 0,
+              g_tx_veh_rtpc_full = 0, g_tx_veh_bypos = 0, g_logged_veh_tx = 0;
+bool g_vehicle_on = false;  // vehicle_sound=1 (and sound_sync); action sound_sync 4 switches it at run time
+bool g_vehicle_hooks = false;  // the instance create / setup hooks (installed with vehicle_sound=1 and vehicle_sync only)
+std::atomic<bool> g_create_on{false};  // the same, for the hot paths (the probe forwards its create / setup calls always)
+
+// A new tag for a sound object. Tags are 1..255 and the receiver binds one of its objects to a tag while it is used
+// (a vehicle loop's binding lives while refreshes and RTPCs come): a tag still held by a live object (a vehicle object
+// with a loop the receiver knows or a post in the last 60 s, any other object with a post in the last 60 s) is skipped,
+// so a long drive never hands the engine loop's tag to a new object (review 2026-11-18: tags wrapped in about 85 s).
+std::uint32_t g_tag_reuse_forced = 0, g_tag_skips = 0;
+std::uint8_t NewTag(double now) {
+    std::uint64_t busy[4] = {};
+    for (const auto& kv : g_objs) {
+        const Obj& o = kv.second;
+        if (!o.tag) continue;
+        bool held = now - o.last_post_ms < 60000;
+        if (!held && o.own == oVehicle) {
+            auto v = g_vobjs.find(kv.first);
+            if (v != g_vobjs.end()) {
+                held = now - v->second.last_post_tx < 60000;
+                for (const VLive& l : v->second.live) held = held || l.sent;
+            }
+        }
+        if (held) busy[o.tag >> 6] |= 1ull << (o.tag & 63);
+    }
+    for (unsigned n = 0; n < 255; ++n) {
+        g_next_tag = static_cast<std::uint8_t>(g_next_tag == 255 ? 1 : g_next_tag + 1);
+        if (!(busy[g_next_tag >> 6] & (1ull << (g_next_tag & 63)))) return g_next_tag;
+        ++g_tag_skips;
+    }
+    ++g_tag_reuse_forced;  // all 255 held (not seen): the next one anyway
+    g_next_tag = static_cast<std::uint8_t>(g_next_tag == 255 ? 1 : g_next_tag + 1);
+    return g_next_tag;
+}
 
 struct Out {
     wire::SoundItem it;
@@ -495,7 +625,8 @@ double g_lj_ms = -1;
 // counters (sender)
 std::uint32_t g_tx_cat[wire::kSoundCategories] = {}, g_tx_frames = 0, g_tx_items = 0, g_tx_stops = 0, g_tx_actions = 0, g_tx_rtpc = 0,
               g_tx_stale = 0, g_tx_gated = 0, g_tx_emitter_far = 0, g_tx_unowned = 0, g_tx_voice = 0, g_tx_own = 0, g_tx_denied = 0,
-              g_tx_nopid = 0, g_tx_overflow = 0, g_tx_far_off = 0, g_tx_regs_ctx = 0, g_tx_regs_ours = 0, g_tx_repeats = 0, g_tx_invalid = 0;
+              g_tx_nopid = 0, g_tx_overflow = 0, g_tx_far_off = 0, g_tx_regs_ctx = 0, g_tx_regs_ours = 0, g_tx_repeats = 0, g_tx_invalid = 0,
+              g_tx_regs_veh = 0, g_tx_made_veh = 0;
 double g_tx_maxoff = 0;
 const char* g_last_tx_gate = nullptr;
 bool g_verbose = false;
@@ -516,6 +647,7 @@ Decision Resolve(std::uintptr_t ctx, bool emitter, double now) {
     Decision d;
     d.t = now;
     const auto local = reinterpret_cast<std::uintptr_t>(g_local);
+    bool cache = local != 0;  // with no local player (a load) only a vehicle's decision is kept
     if (emitter) {
         d.own = g_cfg.sound_steps ? oEmitter : oDenied;
         d.cat = static_cast<std::uint8_t>(wire::SoundCategory::steps);
@@ -541,6 +673,20 @@ Decision Resolve(std::uintptr_t ctx, bool emitter, double now) {
         }
         if (depth < 0 || !local) {
             d.own = oNone;
+            // A drivable vehicle's sound component (section 22.9): the owner, or an entity up to two levels above it.
+            std::uintptr_t v = owner;
+            for (int k = 0; k < 3 && v; ++k, v = Q(v + kEntParent)) {
+                const int cls = vsync::VehicleClass(v);
+                if (cls < 0) continue;
+                char text[160];
+                std::snprintf(text, sizeof(text), "%s of %s (a drivable vehicle%s)", ctn, TypeOf(v), k ? ", above the owner" : "");
+                d.own = oVehicle;
+                d.veh = v;
+                d.cat = static_cast<std::uint8_t>(kCatVehicle);
+                d.label = static_cast<std::uint16_t>(LabelOf(text, false));
+                cache = true;
+                break;
+            }
         } else {
             const char* deny = nullptr;
             if (std::strstr(ctn, "Talk") || std::strstr(ctn, "Voice") || std::strstr(ctn, "Echo")) deny = "voice";
@@ -566,6 +712,7 @@ Decision Resolve(std::uintptr_t ctx, bool emitter, double now) {
             d.label = static_cast<std::uint16_t>(LabelOf(text, deny != nullptr));
         }
     }
+    if (!cache) return d;
     if (g_ctx_cache.size() > 4096) g_ctx_cache.clear();
     g_ctx_cache[ctx] = d;
     return d;
@@ -606,6 +753,14 @@ bool Allowed(std::uint32_t ev) {
     for (std::uint32_t s : kSeedEvents)
         if (s == ev) return true;
     return g_learned.count(ev) != 0;
+}
+// The vehicle category: never a voice; the vehicle sound graphs' ids, or one this game posted on its own vehicles.
+bool VehicleDenied(std::uint32_t ev) {
+    return InList(kDenyVoiceEvents, std::size(kDenyVoiceEvents), ev) || InList(selfvoice::kSamVoiceEvents, std::size(selfvoice::kSamVoiceEvents), ev);
+}
+bool VehicleAllowed(std::uint32_t ev) {
+    if (VehicleDenied(ev)) return false;
+    return InList(kVehicleEvents, std::size(kVehicleEvents), ev) || g_learned_veh.count(ev) != 0;
 }
 
 void Queue(const wire::SoundItem& it, double t) {
@@ -664,7 +819,7 @@ void OnPost(std::uint32_t ev, std::uint64_t obj, std::uint32_t pid, const float 
     double off[3] = {0, 0, 0};
     if (pos_ok) {
         double best = 1e18;
-        for (unsigned s = 0; s < wire::kSoundSlots; ++s) {
+        for (unsigned s = 0; s < kJointSlots; ++s) {
             const double d = Dist(p, g_lj.p[s]);
             if (d < best) best = d, slot = s;
         }
@@ -673,10 +828,7 @@ void OnPost(std::uint32_t ev, std::uint64_t obj, std::uint32_t pid, const float 
         if (m > g_tx_maxoff) g_tx_maxoff = m;
         if (m > 50.0) ++g_tx_far_off;
     }
-    if (!o.tag) {
-        g_next_tag = static_cast<std::uint8_t>(g_next_tag == 255 ? 1 : g_next_tag + 1);
-        o.tag = g_next_tag;
-    }
+    if (!o.tag) o.tag = NewTag(now);
     o.slot = static_cast<std::uint8_t>(slot);
     o.last_post_ms = now;
     // RTPC changes queued for this object are in the post's full set (they were set right before it, section 12.4)
@@ -701,6 +853,292 @@ void OnPost(std::uint32_t ev, std::uint64_t obj, std::uint32_t pid, const float 
             kCatName[o.cat], ev, pid, static_cast<unsigned long long>(obj), o.tag, o.label < g_labels.size() ? g_labels[o.label].text.c_str() : "?",
             kSlotName[slot], off[0], off[1], off[2], pos_ok ? Dist(p, g_lj.root) : -1.0, o.nr, now - t_ms);
     }
+}
+
+// ---------------------------------------------------------------- vehicle sounds, sender (vehicle_sound; section 22.9)
+// A vehicle's sound objects are known from their registration inside its SoundComponent's play path (Resolve), for
+// every drivable vehicle of the world. Their posts, RTPCs, stops and actions are recorded always; they go out only
+// while vsync reports that vehicle as the one we ride (seated, or parked after getting off) and the local game is not
+// paused / in a menu. The receiver posts them at its copy of our vehicle (slot 7: the offset in the vehicle's frame).
+bool g_tx_want = false;    // this send tick: the vehicle's sounds go out
+double g_veh_trace_until = 0, g_veh_trace_next = 0, g_veh_trace_arm_ms = 0;
+
+std::uint8_t TagOf(Obj& o, double now) {
+    if (!o.tag) o.tag = NewTag(now);
+    return o.tag;
+}
+
+void VRtpcPut(VObj& vo, std::uint32_t id, float v) {
+    for (unsigned k = 0; k < vo.n; ++k)
+        if (vo.rid[k] == id) {
+            if (vo.rv[k] != v) vo.rv[k] = v, vo.dirty[k] = true;
+            return;
+        }
+    if (vo.n >= kVRtpcs) {
+        ++g_tx_veh_rtpc_full;
+        return;
+    }
+    vo.rid[vo.n] = id, vo.rv[vo.n] = v, vo.dirty[vo.n] = true, vo.has_sent[vo.n] = false;
+    ++vo.n;
+}
+
+void QueueVehicleStop(std::uint32_t pid, std::uint16_t fade_ms, double t) {
+    wire::SoundItem item;
+    item.op = static_cast<std::uint8_t>(wire::SoundOp::stop);
+    item.b = pid;
+    item.fade_ms = fade_ms;
+    item.category = static_cast<std::uint8_t>(kCatVehicle);
+    g_tx_pids.erase(pid);
+    Queue(item, t);
+    if (g_repeat.size() < 32) g_repeat.push_back(Repeat{item, 1, 2});
+}
+
+// One of our vehicle's sounds to the receiver: a new post, or a held loop picked up / refreshed (the same playing id),
+// with every RTPC its object has (12 in the post, the rest in an rtpc item right behind it).
+void SendVehiclePost(Obj& o, VObj& vo, std::uint32_t ev, std::uint32_t pid, bool held, double t_ms, double now, const char* what) {
+    wire::SoundItem item;
+    item.op = static_cast<std::uint8_t>(wire::SoundOp::post);
+    item.a = ev, item.b = pid;
+    item.slot = wire::kSoundSlotVehicle, item.tag = TagOf(o, now), item.category = static_cast<std::uint8_t>(kCatVehicle);
+    item.flags = held ? wire::kSoundHeld : 0;
+    for (int k = 0; k < 3; ++k) {
+        const double cm = vo.have_off ? std::round(vo.off[k] * 100.0) : 0.0;
+        item.off[k] = static_cast<std::int16_t>(cm > 3000 ? 3000 : cm < -3000 ? -3000 : cm);
+    }
+    item.nrtpc = static_cast<std::uint8_t>((std::min)(static_cast<unsigned>(vo.n), wire::kMaxSoundRtpcs));
+    for (unsigned k = 0; k < item.nrtpc; ++k) item.rtpc_id[k] = vo.rid[k], item.rtpc_value[k] = vo.rv[k];
+    Queue(item, t_ms);
+    if (vo.n > wire::kMaxSoundRtpcs) {
+        wire::SoundItem r;
+        r.op = static_cast<std::uint8_t>(wire::SoundOp::rtpc);
+        r.slot = wire::kSoundSlotVehicle, r.tag = item.tag, r.category = item.category;
+        r.nrtpc = static_cast<std::uint8_t>(vo.n - wire::kMaxSoundRtpcs);
+        for (unsigned k = 0; k < r.nrtpc; ++k) r.rtpc_id[k] = vo.rid[wire::kMaxSoundRtpcs + k], r.rtpc_value[k] = vo.rv[wire::kMaxSoundRtpcs + k];
+        Queue(r, t_ms);
+    }
+    for (unsigned k = 0; k < vo.n; ++k) vo.sent[k] = vo.rv[k], vo.has_sent[k] = true, vo.dirty[k] = false;
+    vo.rtpc_tx_ms = now, vo.last_post_tx = now;
+    if (g_tx_pids.size() < 65536) g_tx_pids[pid] = TxPid{o.tag, static_cast<std::uint8_t>(kCatVehicle), now};
+    if (o.label < g_labels.size()) ++g_labels[o.label].sent;
+    ++g_tx_veh_posts;
+    if (g_verbose || g_logged_veh_tx < 40 || (std::strcmp(what, "refresh") != 0 && g_logged_veh_tx < 120)) {
+        ++g_logged_veh_tx;
+        std::string rt;
+        char buf[40];
+        for (unsigned k = 0; k < vo.n && k < 24; ++k) {
+            std::snprintf(buf, sizeof(buf), "%s%08X=%.3g", k ? " " : "", vo.rid[k], static_cast<double>(vo.rv[k]));
+            rt += buf;
+        }
+        Log("[psound] vehicle %s ev 0x%08X pid %u tag %u%s on vehicle %p | at (%.2f, %.2f, %.2f) m in its frame%s | %u rtpc(s): %s", what, ev, pid, o.tag,
+            held ? " (held loop)" : "", reinterpret_cast<void*>(vo.veh), static_cast<double>(vo.off[0]), static_cast<double>(vo.off[1]),
+            static_cast<double>(vo.off[2]), vo.have_off ? "" : " (no place: its origin)", vo.n, rt.empty() ? "-" : rt.c_str());
+    }
+}
+
+// Every sound object of a vehicle forgotten (its unregistration, a reused id, lost hot records): the loops the
+// receiver was told about are stopped there.
+void ForgetVObj(std::unordered_map<std::uint64_t, VObj>::iterator it, double t, const char* why) {
+    for (const VLive& l : it->second.live) {
+        g_vpid.erase(l.pid);
+        if (l.sent) {
+            QueueVehicleStop(l.pid, 200, t);
+            ++g_tx_veh_unreg_stops;
+            if (g_verbose || g_logged_veh_tx < 120) {
+                ++g_logged_veh_tx;
+                Log("[psound] vehicle loop ev 0x%08X pid %u stopped on the receiver: %s", l.ev, l.pid, why);
+            }
+        }
+    }
+    g_vobjs.erase(it);
+}
+
+void OnVehiclePost(std::uint32_t ev, std::uint64_t obj, std::uint32_t pid, const float (&pos)[3], bool have_pos, double t_ms, double now) {
+    auto oit = g_objs.find(obj);
+    auto vit = g_vobjs.find(obj);
+    if (oit == g_objs.end() || vit == g_vobjs.end()) return;
+    Obj& o = oit->second;
+    VObj& vo = vit->second;
+    if (o.label < g_labels.size()) ++g_labels[o.label].posts;
+    if (pid == 0) {
+        ++g_tx_nopid;
+        return;
+    }
+    if (g_learned_veh.size() < 4096) g_learned_veh.insert(ev);  // this game plays it on a vehicle: the partner's may be posted here
+    const bool loop = IsVehicleLoop(ev);
+    if (loop) {
+        // the same event posted again on this object takes its entry's place (the old one ended or was replaced: the
+        // receiver's copy of it is stopped), so the list never pushes out another loop for it (review 2026-11-18)
+        for (auto l = vo.live.begin(); l != vo.live.end(); ++l)
+            if (l->ev == ev) {
+                g_vpid.erase(l->pid);
+                if (l->sent) QueueVehicleStop(l->pid, 200, t_ms), ++g_tx_veh_unreg_stops;
+                vo.live.erase(l);
+                break;
+            }
+        if (vo.live.size() >= 6) {
+            const VLive old = vo.live.front();
+            g_vpid.erase(old.pid);
+            if (old.sent) QueueVehicleStop(old.pid, 200, t_ms), ++g_tx_veh_unreg_stops;
+            vo.live.erase(vo.live.begin());
+        }
+        VLive l;
+        l.pid = pid, l.ev = ev, l.t = now;
+        vo.live.push_back(l);
+        g_vpid[pid] = obj;
+    }
+    const std::uintptr_t v = g_vehicle_on ? vsync::ReportedVehicle(now, nullptr) : 0;
+    if (!g_vehicle_on) {
+        ++g_tx_veh_off;
+        return;
+    }
+    if (!v || vo.veh != v) {
+        ++g_tx_veh_other;  // another vehicle of the world, or ours while vsync does not report it: stays here
+        return;
+    }
+    if (VehicleDenied(ev)) {
+        ++g_tx_denied;
+        return;
+    }
+    if (!g_local || pvoice::LocalGate(g_local)) {
+        ++g_tx_veh_gated;  // a loop goes out when the gate opens (VehicleSendTick)
+        return;
+    }
+    const double p[3] = {pos[0], pos[1], pos[2]};
+    const bool pos_ok = have_pos && std::isfinite(p[0]) && std::isfinite(p[1]) && std::isfinite(p[2]) && !(p[0] == 0 && p[1] == 0 && p[2] == 0);
+    float off[3];
+    if (pos_ok && vsync::ReportedVehicleLocal(v, p, off) && std::fabs(off[0]) < 30 && std::fabs(off[1]) < 30 && std::fabs(off[2]) < 30) {
+        std::memcpy(vo.off, off, sizeof(off));
+        vo.have_off = true;
+    }
+    SendVehiclePost(o, vo, ev, pid, loop, t_ms, now, "post");
+    if (loop) vo.live.back().sent = true, vo.live.back().last_tx = now;
+}
+
+// Each send tick: the vehicle's held loops picked up (it became ours, the gate opened) or refreshed, and stopped on
+// the receiver when it is ours no more (vsync stopped reporting it: 60 s / 30 m after getting off, gone, a load) or
+// the local game is paused / in a menu.
+void VehicleSendTick(double now) {
+    // psound's send runs before vsync's in the send tick: after a gap (our sends held, a long hitch) vsync's report is
+    // stale for this one tick; nothing is decided on it (no stops, no pick-ups)
+    static double last_tick = 0;
+    const bool gap = last_tick > 0 && now - last_tick > 200;
+    last_tick = now;
+    if (gap) {
+        g_tx_want = false;
+        return;
+    }
+    bool seated = false;
+    const std::uintptr_t v = g_vehicle_on ? vsync::ReportedVehicle(now, &seated) : 0;
+    const char* gate = g_local ? pvoice::LocalGate(g_local) : "no local player";
+    const bool want = v && !gate;
+    if (v != g_tx_veh) {
+        unsigned objs = 0, loops = 0;
+        for (const auto& kv : g_vobjs)
+            if (v && kv.second.veh == v) ++objs, loops += static_cast<unsigned>(kv.second.live.size());
+        if (v)
+            Log("[psound] vehicle sounds: our vehicle %p (%s, %s): %u of its sound object(s) known, %u loop(s) playing on them%s", reinterpret_cast<void*>(v),
+                TypeOf(v), seated ? "seated" : "parked", objs, loops, gate ? " (held back: the local gate is closed)" : "");
+        else
+            Log("[psound] vehicle sounds: no vehicle reported now (was %p): its loops stopped on the receiver", reinterpret_cast<void*>(g_tx_veh));
+        g_tx_veh = v;
+    }
+    g_tx_want = want;
+    for (auto& kv : g_vobjs) {
+        VObj& vo = kv.second;
+        const bool ours = want && vo.veh == v;
+        auto oit = g_objs.find(kv.first);
+        if (oit == g_objs.end()) continue;
+        for (VLive& l : vo.live) {
+            if (ours) {
+                if (!l.sent || now - l.last_tx >= wire::kSoundHeldRefreshMs) {
+                    const bool first = !l.sent;
+                    SendVehiclePost(oit->second, vo, l.ev, l.pid, true, now, now, first ? "loop picked up" : "refresh");
+                    l.sent = true, l.last_tx = now;
+                    if (first) ++g_tx_veh_adopt;
+                    else ++g_tx_veh_refresh;
+                }
+            } else if (l.sent) {
+                QueueVehicleStop(l.pid, 300, now);
+                l.sent = false;
+                ++g_tx_veh_stops;
+                if (g_verbose || g_logged_veh_tx < 120) {
+                    ++g_logged_veh_tx;
+                    Log("[psound] vehicle loop ev 0x%08X pid %u stopped on the receiver: %s", l.ev, l.pid,
+                        !v ? "no vehicle reported" : vo.veh != v ? "another vehicle reported" : gate ? gate : "?");
+                }
+            }
+        }
+    }
+    if (g_veh_trace_until > now && now >= g_veh_trace_next) {
+        g_veh_trace_next = now + 500;
+        for (const auto& kv : g_vobjs) {
+            const VObj& vo = kv.second;
+            if (!v || vo.veh != v || (vo.n == 0 && vo.live.empty())) continue;
+            std::string rt;
+            char buf[40];
+            for (unsigned k = 0; k < vo.n; ++k) {
+                std::snprintf(buf, sizeof(buf), "%s%08X=%.4g", k ? " " : "", vo.rid[k], static_cast<double>(vo.rv[k]));
+                rt += buf;
+            }
+            std::string lv;
+            for (const VLive& l : vo.live) {
+                std::snprintf(buf, sizeof(buf), "%s%08X/%u%s", lv.empty() ? "" : " ", l.ev, l.pid, l.sent ? "" : "(not sent)");
+                lv += buf;
+            }
+            auto oit = g_objs.find(kv.first);
+            Log("[psound] vehicle trace tx obj 0x%llX tag %u | loops %s | %u rtpc(s): %s", static_cast<unsigned long long>(kv.first),
+                oit != g_objs.end() ? oit->second.tag : 0, lv.empty() ? "-" : lv.c_str(), vo.n, rt.empty() ? "-" : rt.c_str());
+        }
+    }
+}
+
+// RTPC changes on our vehicle's sound objects with a sound the receiver knows: at most every kVRtpcPeriodMs per object,
+// beyond a deadband (0.5 %, at least 0.001) of what went out; up to 12 per item. Returns false when the frame is full
+// (the rest stays dirty for the next frame).
+bool AppendVehicleRtpcs(wire::SoundFrame& f, std::size_t& size, double now) {
+    if (!g_tx_want) return true;
+    for (auto& kv : g_vobjs) {
+        VObj& vo = kv.second;
+        if (vo.veh != g_tx_veh || now - vo.rtpc_tx_ms < kVRtpcPeriodMs) continue;
+        bool active = now - vo.last_post_tx < 3000;
+        for (const VLive& l : vo.live) active = active || l.sent;
+        if (!active) continue;
+        auto oit = g_objs.find(kv.first);
+        if (oit == g_objs.end() || !oit->second.tag) continue;
+        unsigned idx[kVRtpcs];
+        unsigned m = 0;
+        for (unsigned k = 0; k < vo.n; ++k) {
+            if (!vo.dirty[k]) continue;
+            const float d = std::fabs(vo.rv[k] - vo.sent[k]);
+            if (!vo.has_sent[k] || d > (std::max)(1e-3f, 0.005f * std::fabs(vo.sent[k]))) idx[m++] = k;
+        }
+        if (!m) continue;
+        for (unsigned s = 0; s < m; s += wire::kMaxSoundRtpcs) {
+            wire::SoundItem it;
+            it.op = static_cast<std::uint8_t>(wire::SoundOp::rtpc);
+            it.slot = wire::kSoundSlotVehicle, it.tag = oit->second.tag, it.category = static_cast<std::uint8_t>(kCatVehicle);
+            it.fade_ms = kVRtpcFadeMs;
+            const unsigned c = (std::min)(wire::kMaxSoundRtpcs, m - s);
+            it.nrtpc = static_cast<std::uint8_t>(c);
+            for (unsigned j = 0; j < c; ++j) it.rtpc_id[j] = vo.rid[idx[s + j]], it.rtpc_value[j] = vo.rv[idx[s + j]];
+            const std::size_t need = wire::SoundItemSize(c);
+            if (f.n >= wire::kMaxSoundItems || size + need > wire::kMaxSoundFrameSize) return false;
+            if (!wire::SoundItemValid(it)) {
+                ++g_tx_invalid;
+                break;
+            }
+            f.item[f.n++] = it;
+            size += need;
+            for (unsigned j = 0; j < c; ++j) {
+                const unsigned k = idx[s + j];
+                vo.sent[k] = vo.rv[k], vo.has_sent[k] = true, vo.dirty[k] = false;
+            }
+            ++g_tx_veh_rtpc;
+            g_tx_veh_rtpc_values += c;
+        }
+        vo.rtpc_tx_ms = now;
+    }
+    return true;
 }
 
 void DrainHot(double now) {
@@ -732,36 +1170,79 @@ void DrainHot(double now) {
         const auto a = static_cast<std::uint32_t>(w[1]), b = static_cast<std::uint32_t>(w[1] >> 32);
         const std::uint64_t obj = w[2];
         const double t_ms = now - static_cast<double>(qnow > w[5] ? qnow - w[5] : 0) / g_qpf_ms;
-        if (!g_local) continue;
+        // With no local player (a load) only a vehicle's sound objects are followed (their road noise starts when the
+        // vehicle is spawned); the player's wait for him.
+        const bool have_local = g_local != nullptr;
         switch (k) {
         case hReg: {
             // a: 1 = registered inside a context; b: 1 = the context is a material emitter. w3 = the context.
             Obj o;
+            Decision d;
             if (a) {
+                d = Resolve(static_cast<std::uintptr_t>(w[3]), b != 0, now);
+                if (!have_local && d.own != oVehicle) break;
                 ++g_tx_regs_ctx;
-                const Decision d = Resolve(static_cast<std::uintptr_t>(w[3]), b != 0, now);
                 o.own = d.own, o.cat = d.cat, o.label = d.label;
                 if (d.own != oNone) {
                     ++g_tx_regs_ours;
                     if (d.label < g_labels.size()) ++g_labels[d.label].regs;
                 }
+            } else {
+                // a vehicle's instance made in its play path registers later, outside it: kept
+                auto made = g_objs.find(obj);
+                if (made != g_objs.end() && made->second.own == oVehicle && made->second.made_in_ctx) {
+                    made->second.made_in_ctx = false;
+                    ++g_tx_regs_veh;
+                    break;
+                }
+                if (!have_local) break;
             }
+            if (o.own == oVehicle) {  // made in the same component's play path just before: kept
+                auto made = g_objs.find(obj);
+                auto mv = g_vobjs.find(obj);
+                if (made != g_objs.end() && made->second.own == oVehicle && mv != g_vobjs.end() && mv->second.veh == d.veh) {
+                    made->second.made_in_ctx = false;
+                    ++g_tx_regs_veh;
+                    break;
+                }
+            }
+            auto vit = g_vobjs.find(obj);  // a reused id whose unregistration was not seen
+            if (vit != g_vobjs.end()) ForgetVObj(vit, t_ms, "its game object id was registered again");
             if (o.own == oNone) g_objs.erase(obj);  // not ours: forget whatever the pooled instance was before
             else {
-                if (g_objs.size() > 4096) g_objs.clear();
+                if (g_objs.size() > 4096) {
+                    for (auto it = g_vobjs.begin(); it != g_vobjs.end();) ForgetVObj(it++, t_ms, "too many sound objects followed");
+                    g_objs.clear();
+                }
+                if (o.own == oVehicle) {
+                    o.slot = wire::kSoundSlotVehicle;
+                    VObj vo;
+                    vo.veh = d.veh;
+                    g_vobjs[obj] = vo;
+                    ++g_tx_regs_veh;
+                }
                 g_objs[obj] = o;
             }
             break;
         }
-        case hUnreg:
+        case hUnreg: {
+            auto vit = g_vobjs.find(obj);
+            if (vit != g_vobjs.end()) ForgetVObj(vit, t_ms, "its game object was unregistered");
             g_objs.erase(obj);
             break;
+        }
         case hRtpc: {
             auto it = g_objs.find(obj);
-            if (it == g_objs.end() || (it->second.own != oComp && it->second.own != oEmitter)) break;
-            Obj& o = it->second;
+            if (it == g_objs.end()) break;
             const float v = Fl(a);
             if (!std::isfinite(v) || std::fabs(v) > 1e7f || id == 0) break;
+            if (it->second.own == oVehicle) {
+                auto vit = g_vobjs.find(obj);
+                if (vit != g_vobjs.end()) VRtpcPut(vit->second, id, v);
+                break;
+            }
+            if (!have_local || (it->second.own != oComp && it->second.own != oEmitter)) break;
+            Obj& o = it->second;
             RtpcPut(o, id, v);
             // A change on a sound we mirror (its object posted in the last 3 s): the receiver's copy follows.
             if (o.tag && now - o.last_post_ms < 3000 && g_rtpc_out.size() < 64) {
@@ -774,7 +1255,40 @@ void DrainHot(double now) {
         }
         case hPost: {
             const float pos[3] = {Fl(static_cast<std::uint32_t>(w[3])), Fl(static_cast<std::uint32_t>(w[3] >> 32)), Fl(static_cast<std::uint32_t>(w[4]))};
-            OnPost(id, obj, a, pos, (w[4] >> 32) != 0, t_ms, now);
+            auto it = g_objs.find(obj);
+            if (it != g_objs.end() && it->second.own == oVehicle) OnVehiclePost(id, obj, a, pos, (w[4] >> 32) != 0, t_ms, now);
+            else if (have_local) OnPost(id, obj, a, pos, (w[4] >> 32) != 0, t_ms, now);
+            break;
+        }
+        case hCreate: {
+            // w3 = the play path's component; only a drivable vehicle's are followed (vehicle_sound)
+            if (!g_vehicle_on) break;
+            const Decision d = Resolve(static_cast<std::uintptr_t>(w[3]), false, now);
+            auto have = g_objs.find(obj);
+            auto hv = g_vobjs.find(obj);
+            if (d.own != oVehicle) {
+                // a pooled instance of a vehicle's set up again by another component: no longer the vehicle's (its
+                // registration, if one follows, decides what it is now; review 2026-11-18)
+                if (hv != g_vobjs.end()) {
+                    ForgetVObj(hv, t_ms, "its sound instance was set up again by another component");
+                    if (have != g_objs.end() && have->second.own == oVehicle) g_objs.erase(have);
+                }
+                break;
+            }
+            if (have != g_objs.end() && have->second.own == oVehicle && hv != g_vobjs.end() && hv->second.veh == d.veh) break;  // known
+            if (hv != g_vobjs.end()) ForgetVObj(hv, t_ms, "its sound instance was made again");
+            if (g_objs.size() > 4096) {
+                for (auto it = g_vobjs.begin(); it != g_vobjs.end();) ForgetVObj(it++, t_ms, "too many sound objects followed");
+                g_objs.clear();
+            }
+            Obj o;
+            o.own = oVehicle, o.cat = d.cat, o.label = d.label, o.slot = wire::kSoundSlotVehicle, o.made_in_ctx = true;
+            g_objs[obj] = o;
+            VObj vo;
+            vo.veh = d.veh;
+            g_vobjs[obj] = vo;
+            ++g_tx_made_veh;
+            if (d.label < g_labels.size()) ++g_labels[d.label].regs;
             break;
         }
         case hOwnPost:
@@ -786,6 +1300,26 @@ void DrainHot(double now) {
             break;
         }
         case hStop: {
+            // a vehicle loop the game stopped: no longer held (its stop goes out below when the receiver was told)
+            auto vp = g_vpid.find(id);
+            if (vp != g_vpid.end()) {
+                auto vit = g_vobjs.find(vp->second);
+                if (vit != g_vobjs.end()) {
+                    auto& lv = vit->second.live;
+                    for (auto l = lv.begin(); l != lv.end(); ++l)
+                        if (l->pid == id) {
+                            ++g_tx_veh_game_stops;
+                            if (g_verbose || g_logged_veh_tx < 120) {
+                                ++g_logged_veh_tx;
+                                Log("[psound] vehicle loop ev 0x%08X pid %u stopped by the game after %.0f ms (fade %u ms)%s", l->ev, id, now - l->t, a,
+                                    l->sent ? ": the stop goes out" : "");
+                            }
+                            lv.erase(l);
+                            break;
+                        }
+                }
+                g_vpid.erase(vp);
+            }
             auto it = g_tx_pids.find(id);
             if (it == g_tx_pids.end()) break;
             wire::SoundItem item;
@@ -801,6 +1335,44 @@ void DrainHot(double now) {
         }
         case hAction: {
             auto it = g_objs.find(obj);
+            if (it != g_objs.end() && it->second.own == oVehicle) {
+                // stop (0) / break (3) on a vehicle object: the held loops it ends are stopped on the receiver by their
+                // playing ids; then every action (also a stop / break of a sound that is not held: a one-shot, a loop
+                // outside kVehicleLoops) goes out as it is while the vehicle is ours (review 2026-11-18: those stops were
+                // never sent)
+                auto vit = g_vobjs.find(obj);
+                if (vit == g_vobjs.end() || a > wire::kSoundActionMax) break;
+                const auto apid = static_cast<std::uint32_t>(w[3]);
+                if (a == 0 || a == 3) {
+                    auto& lv = vit->second.live;
+                    for (auto l = lv.begin(); l != lv.end();) {
+                        if (apid ? l->pid != apid : l->ev != id) {
+                            ++l;
+                            continue;
+                        }
+                        ++g_tx_veh_game_stops;
+                        if (g_verbose || g_logged_veh_tx < 120) {
+                            ++g_logged_veh_tx;
+                            Log("[psound] vehicle loop ev 0x%08X pid %u ended by the game's action %u after %.0f ms%s", l->ev, l->pid, a, now - l->t,
+                                l->sent ? ": the stop goes out" : "");
+                        }
+                        if (l->sent) QueueVehicleStop(l->pid, static_cast<std::uint16_t>((std::min)(b, 10000u)), t_ms);
+                        g_vpid.erase(l->pid);
+                        l = lv.erase(l);
+                    }
+                }
+                if (!g_tx_want || vit->second.veh != g_tx_veh || !it->second.tag) break;
+                wire::SoundItem item;
+                item.op = static_cast<std::uint8_t>(wire::SoundOp::action);
+                item.a = id;
+                item.b = apid && g_tx_pids.count(apid) ? apid : 0;
+                item.slot = static_cast<std::uint8_t>(a), item.tag = it->second.tag, item.category = static_cast<std::uint8_t>(kCatVehicle);
+                item.fade_ms = static_cast<std::uint16_t>((std::min)(b, 10000u));
+                Queue(item, t_ms);
+                ++g_tx_actions;
+                break;
+            }
+            if (!have_local) break;
             if (it == g_objs.end() || (it->second.own != oComp && it->second.own != oEmitter) || !it->second.tag || a > wire::kSoundActionMax) break;
             wire::SoundItem item;
             item.op = static_cast<std::uint8_t>(wire::SoundOp::action);
@@ -820,6 +1392,7 @@ void DrainHot(double now) {
     // Records were lost (the ring overflowed or a slot was overwritten): a lost registration could leave a reused pooled
     // id marked as the player's. Forget every ownership; the next registrations in a context set them again.
     if (g_hdropped != dropped_before) {
+        for (auto it = g_vobjs.begin(); it != g_vobjs.end();) ForgetVObj(it++, now, "hot records lost");
         g_objs.clear();
         g_ctx_cache.clear();
         Log("[psound] %u hot record(s) lost: object ownership forgotten (rebuilt from the next registrations)", g_hdropped - dropped_before);
@@ -847,7 +1420,8 @@ struct PoolObj {
     int active = 0;
     std::uint8_t nr = 0;
     bool nr_overflow = false;
-    std::uint32_t rid[16] = {};
+    std::uint32_t rid[32] = {};
+    float rv[32] = {};  // the values set last (the vehicle trace)
 };
 PoolObj g_pool[kPool];
 struct RxPid {
@@ -855,6 +1429,8 @@ struct RxPid {
     std::uint32_t remote;  // the sender's
     std::uint8_t pool, cat;
     double t;
+    bool held = false;  // a held vehicle loop: stopped when its refreshes stop (kSoundHeldLeaseMs)
+    double lease = 0;   // its last post / refresh
 };
 std::unordered_map<std::uint32_t, RxPid> g_rx_pids;     // the sender's playing id -> ours
 std::unordered_map<std::uint32_t, RxPid> g_local_pids;  // our playing id -> where (end-of-event)
@@ -877,6 +1453,19 @@ std::uint32_t g_rx_frames = 0, g_rx_lost = 0, g_rx_items = 0, g_rx_posted[wire::
               g_rx_actions = 0, g_rx_rtpc = 0, g_rx_overflow = 0, g_rx_stopall = 0, g_cb_ok = 0, g_cb_bad = 0, g_cb_unknown = 0, g_rx_rebinds = 0,
               g_rx_steals = 0, g_rx_refused = 0, g_rx_reregistered = 0, g_rx_capped = 0, g_rx_muted = 0;
 std::uint32_t g_refused_logged = 0;
+std::uint32_t g_rx_veh_refused = 0, g_rx_veh_refresh = 0, g_rx_veh_noplace = 0, g_rx_veh_lease = 0, g_rx_veh_lost = 0, g_rx_veh_off = 0, g_rx_veh_far = 0, g_logged_veh_rx = 0;
+double g_vplace_ms = -1e9;   // the last tick the partner's vehicle place was known
+double g_veh_trace_next_rx = 0;
+double g_veh_err_max = 0;    // a vehicle object of ours vs the copy entity's own transform + its offset (m)
+// A held sound that ended here by itself (its end-of-event, no stop of ours: the motorbike engine graph's shorter
+// events are on the loop list but end alone): a refresh of it is not posted again (the sender cannot tell).
+// Kept 30 s (a Wwise kill, a playback limit: the loop comes back with a refresh after that), and not recorded when the
+// partner was beyond 250 m (a distance kill; review 2026-11-18: one end silenced a loop for the rest of the session).
+constexpr double kVehEndedMs = 30000.0;
+std::unordered_map<std::uint32_t, double> g_rx_veh_ended;
+std::deque<std::uint32_t> g_rx_veh_ended_order;
+std::uint32_t g_rx_veh_ended_n = 0, g_rx_veh_ended_skip = 0;
+std::uint32_t g_veh_err_n = 0;
 float g_volume = 1.0f;     // partner_volume / 100 (SetGameObjectOutputBusVolume on our objects)
 double g_next_cap_ms = 0;  // the 15-minute cap check
 constexpr double kMaxPlayMs = 15.0 * 60.0 * 1000.0;
@@ -894,9 +1483,29 @@ void ToWwise(const double (&p)[3], float (&t)[9]) {
     t[6] = static_cast<float>(p[0]), t[7] = static_cast<float>(p[2]), t[8] = static_cast<float>(p[1]);
 }
 
-void PlaceAt(unsigned i, double (&out)[3]) {
-    const PoolObj& po = g_pool[i];
-    for (int k = 0; k < 3; ++k) out[k] = g_pj.p[po.slot][k] + po.off[k];
+bool SlotPlace(std::uint8_t slot, const double (&off)[3], double now, double (&out)[3]) {
+    if (slot == wire::kSoundSlotVehicle) {
+        const float l[3] = {static_cast<float>(off[0]), static_cast<float>(off[1]), static_cast<float>(off[2])};
+        return vsync::PartnerVehicleWorld(now, l, out);
+    }
+    if (slot >= kJointSlots) return false;
+    for (int k = 0; k < 3; ++k) out[k] = g_pj.p[slot][k] + off[k];
+    return true;
+}
+bool PlaceAt(unsigned i, double now, double (&out)[3]) { return SlotPlace(g_pool[i].slot, g_pool[i].off, now, out); }
+
+// A vehicle object of ours against the copy entity's own transform (the game's) and the item's offset: the meter that
+// the sound sits at the copy (hidden tests, the trace). -1: no copy; -2: the copy is put below while it overlaps our own
+// vehicle (vehicle_overlap_hide; the sound stays at the frames' place).
+double CopyError(const double (&p)[3], const double (&off)[3]) {
+    game::Entity* c = vsync::CopyEntity();
+    game::WorldTransform t{};
+    if (c && vsync::CopyTucked()) return -2;
+    if (!c || !game::TryGetTransform(c, &t)) return -1;
+    double w[3];
+    for (int i = 0; i < 3; ++i)
+        w[i] = (i == 0 ? t.pos.x : i == 1 ? t.pos.y : t.pos.z) + off[0] * t.rot.m[0][i] + off[1] * t.rot.m[1][i] + off[2] * t.rot.m[2][i];
+    return Dist(p, w);
 }
 
 unsigned PoolFor(std::uint8_t tag, double now) {
@@ -935,9 +1544,10 @@ void SetRtpcs(unsigned i, const wire::SoundItem& it, std::int32_t ms) {
     for (unsigned k = 0; k < it.nrtpc; ++k) {
         CallSetRtpc(it.rtpc_id[k], it.rtpc_value[k], PoolId(i), ms);
         bool known = false;
-        for (unsigned j = 0; j < po.nr; ++j) known |= po.rid[j] == it.rtpc_id[k];
+        for (unsigned j = 0; j < po.nr; ++j)
+            if (po.rid[j] == it.rtpc_id[k]) known = true, po.rv[j] = it.rtpc_value[k];
         if (!known) {
-            if (po.nr < 16) po.rid[po.nr++] = it.rtpc_id[k];
+            if (po.nr < 32) po.rid[po.nr] = it.rtpc_id[k], po.rv[po.nr] = it.rtpc_value[k], ++po.nr;
             else po.nr_overflow = true;
         }
     }
@@ -960,15 +1570,52 @@ void Execute(const In& in, double play_ms, double now) {
     const wire::SoundItem& it = in.it;
     switch (static_cast<wire::SoundOp>(it.op)) {
     case wire::SoundOp::post: {
-        if (!Allowed(it.a)) {
+        const bool veh = it.category == kCatVehicle;
+        if (veh ? !VehicleAllowed(it.a) : !Allowed(it.a)) {
             ++g_rx_refused;
+            if (veh) ++g_rx_veh_refused;
             if (g_refused_logged++ < 10)
-                Log("[psound] partner post %s ev 0x%08X refused: not on the allow-list (not seen on this game's own player, or denied)",
-                    kCatName[it.category < wire::kSoundCategories ? it.category : 0], it.a);
+                Log("[psound] partner post %s ev 0x%08X refused: not on the allow-list (%s, or denied)", kCatName[it.category < wire::kSoundCategories ? it.category : 0],
+                    it.a, veh ? "not a vehicle sound graph's id nor seen on this game's own vehicles" : "not seen on this game's own player");
+            return;
+        }
+        if (veh && !g_vehicle_on) {
+            ++g_rx_veh_off;
             return;
         }
         if (g_volume <= 0.0f) {  // partner_volume=0: nothing is posted
             ++g_rx_muted;
+            return;
+        }
+        const double off[3] = {it.off[0] / 100.0, it.off[1] / 100.0, it.off[2] / 100.0};
+        if (veh && (it.flags & wire::kSoundHeld)) {
+            auto e = g_rx_veh_ended.find(it.b);
+            if (e != g_rx_veh_ended.end()) {
+                if (now - e->second < kVehEndedMs) {
+                    ++g_rx_veh_ended_skip;  // it ended here by itself: not again for now
+                    return;
+                }
+                g_rx_veh_ended.erase(e);
+            }
+        }
+        if (veh) {
+            // it plays here already (a held loop's refresh, or a repeat): its lease, offset and RTPCs only
+            auto f = g_rx_pids.find(it.b);
+            if (f != g_rx_pids.end() && f->second.pool < kPool && g_pool[f->second.pool].tag == it.tag) {
+                PoolObj& po = g_pool[f->second.pool];
+                f->second.lease = now;
+                f->second.held = f->second.held || (it.flags & wire::kSoundHeld) != 0;
+                po.bound_ms = now, po.last_use_ms = now;
+                po.slot = it.slot;  // the vehicle's place again (a body sound on a reused tag would have moved it)
+                for (int k = 0; k < 3; ++k) po.off[k] = off[k];
+                SetRtpcs(f->second.pool, it, kVRtpcFadeMs);
+                ++g_rx_veh_refresh;
+                return;
+            }
+        }
+        double p[3];
+        if (!SlotPlace(it.slot, off, now, p)) {
+            ++g_rx_veh_noplace;  // the vehicle slot with no partner vehicle playing here (a held loop comes again with a refresh)
             return;
         }
         if (!RateOk(it.slot, now)) {
@@ -982,9 +1629,7 @@ void Execute(const In& in, double play_ms, double now) {
             return;
         }
         po.slot = it.slot;
-        for (int k = 0; k < 3; ++k) po.off[k] = it.off[k] / 100.0;
-        double p[3];
-        PlaceAt(i, p);
+        for (int k = 0; k < 3; ++k) po.off[k] = off[k];
         float t[9];
         ToWwise(p, t);
         CallSetPosition(PoolId(i), t);
@@ -1003,7 +1648,8 @@ void Execute(const In& in, double play_ms, double now) {
         const unsigned cat = it.category < wire::kSoundCategories ? it.category : 0;
         ++g_rx_posted[cat];
         // both maps lose the entry at the sound's end-of-event callback (DrainCallbacks), a stop, or StopAllOurs
-        const RxPid rp{pid, it.b, static_cast<std::uint8_t>(i), static_cast<std::uint8_t>(cat), now};
+        RxPid rp{pid, it.b, static_cast<std::uint8_t>(i), static_cast<std::uint8_t>(cat), now};
+        rp.held = (it.flags & wire::kSoundHeld) != 0, rp.lease = now;
         if (g_local_pids.size() < 8192) {
             g_rx_pids[it.b] = rp;
             g_local_pids[pid] = rp;
@@ -1011,6 +1657,22 @@ void Execute(const In& in, double play_ms, double now) {
         const double late = play_ms - in.t;
         g_lat_sum += late, ++g_lat_n;
         g_lat_min = (std::min)(g_lat_min, late), g_lat_max = (std::max)(g_lat_max, late);
+        if (veh) {
+            const double cerr = CopyError(p, off);
+            if (cerr >= 0) g_veh_err_max = (std::max)(g_veh_err_max, cerr), ++g_veh_err_n;
+            if (g_verbose || g_logged_veh_rx < 60) {
+                ++g_logged_veh_rx;
+                double o0[3];
+                const double zero[3] = {0, 0, 0};
+                const bool have_o = SlotPlace(wire::kSoundSlotVehicle, zero, now, o0);
+                Log("[psound] partner post vehicle ev 0x%08X (their pid %u%s) -> pid %u on our object %u (tag %u) | at (%.2f, %.2f, %.2f): the partner's "
+                    "vehicle + (%.2f, %.2f, %.2f) m in its frame, %.2f m from its origin; vs the copy entity's own transform + offset: %s%.3f m | the partner "
+                    "%.1f m from the local player | play time - event time %+.0f ms | %u rtpc(s)",
+                    it.a, it.b, rp.held ? ", held loop" : "", pid, i, it.tag, p[0], p[1], p[2], off[0], off[1], off[2], have_o ? Dist(p, o0) : -1.0,
+                    cerr < -1.5 ? "copy hidden over our own vehicle " : cerr < 0 ? "no copy " : "", cerr < 0 ? 0.0 : cerr, g_partner_dist, late, it.nrtpc);
+            }
+            break;
+        }
         const double want[3] = {g_pj.p[it.slot][0] + it.off[0] / 100.0, g_pj.p[it.slot][1] + it.off[1] / 100.0, g_pj.p[it.slot][2] + it.off[2] / 100.0};
         const double err = Dist(p, want);
         g_pos_err_max = (std::max)(g_pos_err_max, err);
@@ -1037,7 +1699,7 @@ void Execute(const In& in, double play_ms, double now) {
         break;
     }
     case wire::SoundOp::action: {
-        if (!Allowed(it.a)) {
+        if (it.category == kCatVehicle ? !VehicleAllowed(it.a) : !Allowed(it.a)) {
             ++g_rx_refused;
             return;
         }
@@ -1056,10 +1718,12 @@ void Execute(const In& in, double play_ms, double now) {
         break;
     }
     case wire::SoundOp::rtpc: {
+        if (it.category == kCatVehicle && !g_vehicle_on) break;
         for (unsigned k = 0; k < kPool; ++k)
             if (g_pool[k].tag == it.tag && g_pool[k].registered && now - g_pool[k].bound_ms < 60000) {
                 SetRtpcs(k, it, it.fade_ms);
                 ++g_rx_rtpc;
+                if (it.category == kCatVehicle) g_pool[k].bound_ms = now;  // a vehicle loop's binding lives while it is updated
                 break;
             }
         break;
@@ -1076,7 +1740,26 @@ void StopAllOurs(const char* why) {
     if (n) Log("[psound] stopped the partner's sounds on %u object(s): %s", n, why);
 }
 
-void DrainCallbacks() {
+// The partner's vehicle sounds we play stopped (its vehicle is gone here, the key off); held loops come back with the
+// sender's next refresh once its vehicle plays here again.
+void StopVehicleOurs(const char* why, std::int32_t fade_ms) {
+    unsigned n = 0;
+    for (auto it = g_rx_pids.begin(); it != g_rx_pids.end();) {
+        if (it->second.cat != kCatVehicle) {
+            ++it;
+            continue;
+        }
+        CallStop(it->second.local, fade_ms);
+        ++n;
+        it = g_rx_pids.erase(it);
+    }
+    if (n) {
+        g_rx_veh_lost += n;
+        Log("[psound] stopped %u partner vehicle sound(s): %s", n, why);
+    }
+}
+
+void DrainCallbacks(double now) {
     for (unsigned guard = 0; guard < kCbCap; ++guard) {
         const std::uint32_t head = g_cbhead.load(std::memory_order_acquire);
         if (head - g_cbtail > kCbCap) g_cbtail = head - kCbCap;
@@ -1098,7 +1781,18 @@ void DrainCallbacks() {
         if (f->second.pool < kPool && g_pool[f->second.pool].active > 0) --g_pool[f->second.pool].active;
         ++g_rx_ended[f->second.cat < wire::kSoundCategories ? f->second.cat : 0];
         auto rx = g_rx_pids.find(f->second.remote);  // the sender's id no longer plays here: a later stop for it is a no-op
-        if (rx != g_rx_pids.end() && rx->second.local == pid) g_rx_pids.erase(rx);
+        if (rx != g_rx_pids.end() && rx->second.local == pid) {
+            if (rx->second.cat == kCatVehicle && rx->second.held && g_partner_dist >= 0 && g_partner_dist <= kMaxVehicleDistanceM) {
+                const bool fresh = g_rx_veh_ended.find(rx->second.remote) == g_rx_veh_ended.end();
+                g_rx_veh_ended[rx->second.remote] = now;
+                if (fresh) {
+                    ++g_rx_veh_ended_n;
+                    g_rx_veh_ended_order.push_back(rx->second.remote);
+                    if (g_rx_veh_ended_order.size() > 512) g_rx_veh_ended.erase(g_rx_veh_ended_order.front()), g_rx_veh_ended_order.pop_front();
+                }
+            }
+            g_rx_pids.erase(rx);
+        }
         g_local_pids.erase(f);
     }
 }
@@ -1112,6 +1806,8 @@ std::string CatText(const std::uint32_t (&c)[wire::kSoundCategories]) {
     }
     return s;
 }
+
+void VehicleStatus(const char* why);
 
 void Status(const char* why) {
     std::uint32_t tx_total = 0, rx_total = 0, ended = 0;
@@ -1132,6 +1828,22 @@ void Status(const char* why) {
         g_rx_late, g_rx_early, g_rx_limited, g_rx_nobody, g_rx_overflow, g_rx_stopall, g_rx_rebinds, g_rx_steals, g_lat_n ? "" : "-",
         g_lat_n ? g_lat_min : 0.0, g_lat_n ? g_lat_sum / g_lat_n : 0.0, g_lat_n ? g_lat_max : 0.0, g_lat_n, g_pos_err_max, g_rx_refused, g_learned.size(),
         g_rx_reregistered, g_rx_capped, g_rx_muted, static_cast<double>(g_volume));
+    VehicleStatus(why);
+}
+
+void VehicleStatus(const char* why) {
+    unsigned playing = 0, held = 0;
+    for (const auto& kv : g_rx_pids)
+        if (kv.second.cat == kCatVehicle) ++playing, held += kv.second.held ? 1 : 0;
+    Log("[psound] %s | vehicle (vehicle_sound %s): sent: %u post(s) (%u loop(s) picked up, %u refresh(es)), %u rtpc item(s) (%u value(s)), %u stop(s) when it "
+        "stopped being ours / the gate closed, %u when an object went; not sent: %u of other vehicles, %u gated, %u key off; game stops of held loops %u; "
+        "objects known %zu (made in its play path %u, registered %u), loops held %zu, rtpc store full %u | received: %u refresh(es), %u refused (allow-list), %u not placed (no vehicle here), %u stopped "
+        "for no vehicle / key off, %u lease(s) expired, %u key off, %u far, %u held that ended here by themselves (%u refreshes of them not posted); playing now "
+        "%u (%u held); our object vs the copy + offset at the post: max %.3f m (%u); tags skipped as still held %u (forced %u)",
+        why, g_vehicle_on ? "on" : "off", g_tx_veh_posts, g_tx_veh_adopt, g_tx_veh_refresh, g_tx_veh_rtpc, g_tx_veh_rtpc_values, g_tx_veh_stops,
+        g_tx_veh_unreg_stops, g_tx_veh_other, g_tx_veh_gated, g_tx_veh_off, g_tx_veh_game_stops, g_vobjs.size(), g_tx_made_veh, g_tx_regs_veh, g_vpid.size(),
+        g_tx_veh_rtpc_full, g_rx_veh_refresh, g_rx_veh_refused, g_rx_veh_noplace, g_rx_veh_lost, g_rx_veh_lease, g_rx_veh_off, g_rx_veh_far, g_rx_veh_ended_n, g_rx_veh_ended_skip, playing, held, g_veh_err_max,
+        g_veh_err_n, g_tag_skips, g_tag_reuse_forced);
 }
 
 void LogLabels() {
@@ -1163,6 +1875,10 @@ void HotPost(std::uint32_t ev, std::uint64_t obj, std::uint32_t n_ext, std::uint
 void HotRegister(std::uint64_t obj, std::uintptr_t ctx, bool emitter) noexcept {
     if (!g_on.load(std::memory_order_relaxed) || IsPool(obj)) return;
     HPush(hReg, 0, ctx ? 1u : 0u, emitter ? 1u : 0u, obj, ctx, 0);
+}
+void HotCreate(std::uint64_t inst, std::uintptr_t ctx, bool emitter) noexcept {
+    if (!g_on.load(std::memory_order_relaxed) || !g_create_on.load(std::memory_order_relaxed) || !ctx || emitter || IsPool(inst)) return;
+    HPush(hCreate, 0, 0, 0, inst, ctx, 0);
 }
 void HotUnregister(std::uint64_t obj) noexcept {
     if (!g_on.load(std::memory_order_relaxed) || IsPool(obj)) return;
@@ -1246,37 +1962,64 @@ void Install(const Config& cfg) noexcept {
         Log("[psound] sound_sync=1 but NOT enabled: the SoundComponent play paths / emitter start call sites differ");
         return;
     }
+    // The instance create / setup hooks are installed only for the vehicle sounds (vehicle_sound=1 with vehicle_sync), as
+    // their own all-or-nothing group: when they cannot be installed only the vehicle sounds are off, the partner's
+    // footsteps and foley stay (review 2026-11-18).
+    const bool want_veh = cfg.vehicle_sound && cfg.vehicle_sync != 0;
+    bool veh_hooks = false;
     if (audioprobe::Installed()) {
         // The probe owns the hooks (one per target) and forwards every call here.
-        std::string missing;
-        for (const HookDef& h : kHooks)
-            if (!audioprobe::Hooked(h.rva)) missing += std::string(missing.empty() ? "" : ", ") + h.name;
+        std::string missing, vmissing;
+        for (const HookDef& h : kHooks) {
+            if (audioprobe::Hooked(h.rva)) continue;
+            if (!h.vehicle) missing += std::string(missing.empty() ? "" : ", ") + h.name;
+            else if (want_veh) vmissing += std::string(vmissing.empty() ? "" : ", ") + h.name;
+        }
         if (!missing.empty()) {
             Log("[psound] sound_sync=1 but NOT enabled: the audio probe owns the Wwise hooks and lacks %s", missing.c_str());
             return;
         }
-        Log("[psound] partner sounds on: the audio probe's hooks (%zu targets) forward here", kHookCount);
+        veh_hooks = want_veh && vmissing.empty();
+        if (!vmissing.empty()) Log("[psound] vehicle sounds off: the audio probe owns the Wwise hooks and lacks %s", vmissing.c_str());
+        Log("[psound] partner sounds on: the audio probe's hooks (%zu targets) forward here", kHookCount - (veh_hooks ? 0 : 2));
     } else {
         unsigned queued = 0;
-        std::string ok, why_not;
-        for (const HookDef& h : kHooks) {
-            const std::uintptr_t at = g_base + h.rva;
-            const char* why = nullptr;
-            if (h.api < 0 && !mem::CodeMatches(at, h.sig)) why = "bytes differ";
-            if (!why) {
-                const MH_STATUS s = MH_CreateHook(reinterpret_cast<void*>(at), h.detour, h.original);
-                if (s != MH_OK) why = MH_StatusToString(s);
-                else if (MH_QueueEnableHook(reinterpret_cast<void*>(at)) != MH_OK) why = "queue";
-                else ++queued;
+        std::string ok;
+        // one group: true = the vehicle hooks; returns why not (empty: all queued)
+        auto queue_group = [&](bool vehicle) {
+            std::string why_not;
+            for (const HookDef& h : kHooks) {
+                if (h.vehicle != vehicle) continue;
+                const std::uintptr_t at = g_base + h.rva;
+                const char* why = nullptr;
+                if (h.api < 0 && !mem::CodeMatches(at, h.sig)) why = "bytes differ";
+                if (!why) {
+                    const MH_STATUS s = MH_CreateHook(reinterpret_cast<void*>(at), h.detour, h.original);
+                    if (s != MH_OK) why = MH_StatusToString(s);
+                    else if (MH_QueueEnableHook(reinterpret_cast<void*>(at)) != MH_OK) why = "queue";
+                    else ++queued;
+                }
+                if (why) why_not += std::string(why_not.empty() ? "" : ", ") + h.name + " (" + why + ")";
+                else ok += std::string(ok.empty() ? "" : ", ") + h.name;
             }
-            if (why) why_not += std::string(why_not.empty() ? "" : ", ") + h.name + " (" + why + ")";
-            else ok += std::string(ok.empty() ? "" : ", ") + h.name;
-        }
+            if (!why_not.empty())  // all or nothing: remove what was created in this group
+                for (const HookDef& h : kHooks)
+                    if (h.vehicle == vehicle) MH_RemoveHook(reinterpret_cast<void*>(g_base + h.rva));
+            return why_not;
+        };
+        const std::string why_not = queue_group(false);
         if (!why_not.empty()) {
-            // all or nothing: remove what was created
-            for (const HookDef& h : kHooks) MH_RemoveHook(reinterpret_cast<void*>(g_base + h.rva));
             Log("[psound] sound_sync=1 but NOT enabled: %s", why_not.c_str());
             return;
+        }
+        if (want_veh) {
+            const unsigned before = queued;
+            const std::string vwhy = queue_group(true);
+            veh_hooks = vwhy.empty();
+            if (!veh_hooks) {
+                queued = before;
+                Log("[psound] vehicle sounds off: %s", vwhy.c_str());
+            }
         }
         const MH_STATUS applied = MH_ApplyQueued();
         if (applied != MH_OK) {
@@ -1288,6 +2031,11 @@ void Install(const Config& cfg) noexcept {
     }
     g_enabled = true;
     g_post_hooked = true;  // ours, or the probe's (it checked every target above), and both call selfvoice::PrePost
+    g_vehicle_on = want_veh && veh_hooks;
+    g_vehicle_hooks = veh_hooks;
+    g_create_on.store(veh_hooks);
+    Log("[psound] vehicle sounds %s (vehicle_sound=%d, vehicle_sync=%d)%s", g_vehicle_on ? "on" : "off", cfg.vehicle_sound ? 1 : 0, cfg.vehicle_sync,
+        g_vehicle_on ? ": the engine, road noise and other sounds of the vehicle we ride go out (STA1 v2, slot 7); the partner's play at its vehicle copy" : "");
     g_on.store(true);
     Log("[psound] footsteps by position (sound_steps) %s; our Wwise objects 0x%llX..0x%llX (%u); AkTransform = {front, top, position} floats, "
         "Decima (x, y, z) -> Wwise (x, z, y); partner_volume %d%%%s",
@@ -1304,7 +2052,8 @@ bool TakeSend(game::Entity* local, double now, wire::SoundFrame* out) noexcept {
     if (!Enabled()) return false;
     g_local = local;
     DrainHot(now);
-    if (g_out.empty() && g_rtpc_out.empty() && g_repeat.empty()) return false;
+    VehicleSendTick(now);  // held vehicle loops picked up / refreshed / stopped (into g_out)
+    if (g_out.empty() && g_rtpc_out.empty() && g_repeat.empty() && !g_tx_want) return false;
     wire::SoundFrame& f = *out;
     f.n = 0;
     f.sender_ms = static_cast<std::uint32_t>(static_cast<std::uint64_t>(now));
@@ -1353,6 +2102,7 @@ bool TakeSend(game::Entity* local, double now, wire::SoundFrame* out) noexcept {
         ++g_tx_rtpc;
     }
     g_rtpc_out.clear();  // what did not fit is superseded by the next change (or the next post's full set)
+    AppendVehicleRtpcs(f, size, now);  // what does not fit stays dirty: the next frame
     // stops again (twice after the first)
     for (auto it = g_repeat.begin(); it != g_repeat.end();) {
         if (it->skip > 0) {  // the first copy is in g_out (sent above or next time): the repeats start one frame later
@@ -1405,6 +2155,7 @@ void NewSession() noexcept {
     if (!Enabled()) return;
     StopAllOurs("new link session");
     for (PoolObj& po : g_pool) po.tag = 0, po.bound_ms = -1e9;
+    g_rx_veh_ended.clear(), g_rx_veh_ended_order.clear();
     g_in.clear();
     g_have_rx_seq = false;
     // g_local_pids is kept: the end-of-event callbacks of the sounds just stopped still come and bring each object's
@@ -1423,8 +2174,9 @@ void Tick(const Frame& fr, double now) noexcept {
         return;
     }
     g_local = fr.local;
+    if (g_veh_trace_arm_ms > 0) g_veh_trace_until = now + g_veh_trace_arm_ms, g_veh_trace_arm_ms = 0;
     DrainHot(now);
-    DrainCallbacks();
+    DrainCallbacks(now);
     // the partner body's joints (the receiver's emitters follow them)
     const bool partner = fr.have_root;
     if (partner) ReadJoints(fr.body, &fr.root, &g_pj);
@@ -1449,6 +2201,27 @@ void Tick(const Frame& fr, double now) noexcept {
     g_was_gated = gate != nullptr;
     if (g_had_partner && !partner) StopAllOurs("no partner body");
     g_had_partner = partner;
+    // The partner's vehicle sounds follow its vehicle's place here (vsync): gone for kVehicleLostMs (no frames for 2 s, the
+    // copy removed, the partner silent and the copy held, broken for 3 s) or the key off -> stopped. Held loops whose
+    // refreshes stopped (a lost stop, the sender gone) -> stopped.
+    {
+        const double zero[3] = {0, 0, 0};
+        double vp[3];
+        if (SlotPlace(wire::kSoundSlotVehicle, zero, now, vp)) g_vplace_ms = now;
+        if (!g_vehicle_on) StopVehicleOurs("vehicle_sound off", 300);
+        else if (now - g_vplace_ms > kVehicleLostMs) StopVehicleOurs("the partner's vehicle is not played here any more", 300);
+        for (auto it = g_rx_pids.begin(); it != g_rx_pids.end();) {
+            if (!it->second.held || now - it->second.lease <= wire::kSoundHeldLeaseMs) {
+                ++it;
+                continue;
+            }
+            CallStop(it->second.local, 500);
+            ++g_rx_veh_lease;
+            Log("[psound] a held partner vehicle loop (their pid %u, our pid %u) had no refresh for %.0f ms: stopped", it->second.remote, it->second.local,
+                now - it->second.lease);
+            it = g_rx_pids.erase(it);
+        }
+    }
     // due items, in arrival order. Stops and actions are never dropped for timing, the gate or a missing partner (a
     // dropped stop would leave a loop playing): they run when due, or at once when they cannot be scheduled.
     while (!g_in.empty()) {
@@ -1488,28 +2261,44 @@ void Tick(const Frame& fr, double now) noexcept {
             ++g_rx_late;
             continue;
         }
-        if (cur.it.op == static_cast<std::uint8_t>(wire::SoundOp::post) && g_partner_dist > kMaxDistanceM) {
-            ++g_rx_far;
+        if (cur.it.op == static_cast<std::uint8_t>(wire::SoundOp::post) &&
+            g_partner_dist > (cur.it.category == kCatVehicle ? kMaxVehicleDistanceM : kMaxDistanceM)) {
+            ++(cur.it.category == kCatVehicle ? g_rx_veh_far : g_rx_far);
             continue;
         }
         Execute(cur, fr.play_ms, now);
     }
-    // our objects with a sound (or a recent one) follow the partner's joints
+    // our objects with a sound (or a recent one) follow the partner's joints, or its vehicle (slot 7)
+    const bool vtrace = g_veh_trace_until > now && now >= g_veh_trace_next_rx;
+    if (vtrace) g_veh_trace_next_rx = now + 500;
     if (partner)
         for (unsigned i = 0; i < kPool; ++i) {
             PoolObj& po = g_pool[i];
             if (!po.registered || (po.active <= 0 && now - po.last_use_ms > 2000)) continue;
             double p[3];
-            PlaceAt(i, p);
+            if (!PlaceAt(i, now, p)) continue;
             float t[9];
             ToWwise(p, t);
             CallSetPosition(PoolId(i), t);
+            if (vtrace && po.slot == wire::kSoundSlotVehicle) {
+                std::string rt;
+                char buf[40];
+                for (unsigned k = 0; k < po.nr; ++k) {
+                    std::snprintf(buf, sizeof(buf), "%s%08X=%.4g", k ? " " : "", po.rid[k], static_cast<double>(po.rv[k]));
+                    rt += buf;
+                }
+                const double cerr = CopyError(p, po.off);
+                Log("[psound] vehicle trace rx our object %u tag %u active %d | at (%.2f, %.2f, %.2f) = the vehicle + (%.2f, %.2f, %.2f); vs the copy entity "
+                    "+ offset %s%.3f m | %u rtpc(s): %s",
+                    i, po.tag, po.active, p[0], p[1], p[2], po.off[0], po.off[1], po.off[2], cerr < -1.5 ? "copy hidden over our own vehicle " : cerr < 0 ? "no copy " : "", cerr < 0 ? 0.0 : cerr, po.nr,
+                    rt.empty() ? "-" : rt.c_str());
+            }
         }
     // Nothing we post plays longer than kMaxPlayMs (a loop whose stop was lost): stopped with a short fade.
     if (now >= g_next_cap_ms) {
         g_next_cap_ms = now + 10000;
         for (const auto& kv : g_local_pids)
-            if (now - kv.second.t > kMaxPlayMs && now - kv.second.t < kMaxPlayMs + 10000) {
+            if (!kv.second.held && now - kv.second.t > kMaxPlayMs && now - kv.second.t < kMaxPlayMs + 10000) {  // held loops: their lease
                 CallStop(kv.first, 500);
                 ++g_rx_capped;
                 Log("[psound] a partner sound (our pid %u) played for %.0f min with no stop: stopped", kv.first, kMaxPlayMs / 60000.0);
@@ -1518,7 +2307,7 @@ void Tick(const Frame& fr, double now) noexcept {
     if (now >= g_next_status_ms) {
         g_next_status_ms = now + 30000;
         std::uint64_t h = g_tx_frames * 1315423911ull + g_rx_frames * 2654435761ull + g_tx_gated + g_rx_gated * 7ull + g_cb_calls.load() * 13ull +
-                          g_tx_unowned * 17ull + g_tx_own * 31ull + g_rx_refused * 37ull;
+                          g_tx_unowned * 17ull + g_tx_own * 31ull + g_rx_refused * 37ull + g_tx_veh_posts * 41ull + g_rx_veh_refresh * 43ull;
         if (h != g_status_hash) {
             g_status_hash = h;
             Status("status");
@@ -1546,8 +2335,22 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
         StopAllOurs("debug action");
         std::snprintf(msg, cap, "stopped");
         return true;
+    case 3: {
+        // the vehicle trace: our vehicle's sound objects (loops, RTPCs) and the partner's on our objects, every 500 ms
+        const double ms = v[1] > 0 ? (std::min)(v[1], 600000.0) : 0.0;
+        VehicleStatus("vehicle");
+        g_veh_trace_until = 0;
+        g_veh_trace_arm_ms = ms;  // armed at the next tick (its clock)
+        std::snprintf(msg, cap, "vehicle sound trace %.0f ms", ms);
+        return true;
+    }
+    case 4:
+        g_vehicle_on = v[1] != 0 && g_cfg.vehicle_sync != 0 && g_vehicle_hooks;
+        Log("[psound] vehicle sounds %s by the debug action", g_vehicle_on ? "on" : "off");
+        std::snprintf(msg, cap, "vehicle sounds %s", g_vehicle_on ? "on" : "off");
+        return true;
     default:
-        std::snprintf(msg, cap, "unknown op %d (0 counts, 1 0|1 verbose, 2 stop all)", op);
+        std::snprintf(msg, cap, "unknown op %d (0 counts, 1 0|1 verbose, 2 stop all, 3 [ms] vehicle trace, 4 0|1 vehicle sounds)", op);
         return false;
     }
 }

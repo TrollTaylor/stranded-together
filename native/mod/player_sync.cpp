@@ -1010,7 +1010,8 @@ void Tick() noexcept {
     const double interval = 1000.0 / g_cfg.send_hz;
     if (now >= g_next_send_ms) {
         g_next_send_ms = (now - g_next_send_ms > interval) ? now + interval : g_next_send_ms + interval;
-        if (g_local_valid && g_local_active && g_cfg.role != Role::solo) {
+        // (vsync::SendMuted: hidden tests only, action vehicle_sync 10: the partner sees us silent while the link stays up)
+        if (g_local_valid && g_local_active && g_cfg.role != Role::solo && !vsync::SendMuted(now)) {
             wire::Pose p;
             p.seq = ++g_seq;
             p.sender_ms = static_cast<std::uint32_t>(static_cast<std::uint64_t>(now));
@@ -1072,6 +1073,25 @@ void Tick() noexcept {
                             vback.x += g_cfg.echo_offset_m;
                             vsync::OnFrame(vback, g_ring.Unwrapped(vback.sender_ms), now);
                         }
+                    }
+                }
+                // its look (STV1 item 255, section 22.7): after a new link session again at once
+                static wire::GearLook vl, vlback;
+                if (g_net) {
+                    static std::uint32_t vlook_gen = 0;
+                    const std::uint32_t lg = link::Generation();
+                    if (lg != vlook_gen) {
+                        vlook_gen = lg;
+                        vsync::MarkLookUnsent();
+                    }
+                }
+                if (vsync::TakeSendLook(now, &vl)) {
+                    if (g_net) {
+                        if (!link::SendGearLook(vl)) vsync::MarkLookUnsent();  // not connected yet: again later
+                    } else {
+                        std::uint8_t buf[wire::kMaxGearLookFrameSize];
+                        const std::size_t n = wire::EncodeGearLook(vl, buf, sizeof(buf));
+                        if (n && wire::DecodeGearLook(buf, n, vlback)) vsync::OnLook(vlback);  // echo: our own vehicle's look
                     }
                 }
             }
@@ -1215,7 +1235,8 @@ void Tick() noexcept {
         while (link::PopGearLook(gl, gen)) {
             if (gen > g_generation) new_session(gen);
             if (gen != g_generation) continue;
-            gear::SetPartnerLook(gl);
+            if (gl.item == wire::kLookVehicleItem) vsync::OnLook(gl);  // the partner vehicle's look (section 22.7)
+            else gear::SetPartnerLook(gl);
         }
         static wire::GearPose gp;
         while (link::PopGearPose(gp, gen)) {
@@ -1309,6 +1330,7 @@ void Tick() noexcept {
     // asleep for under 1 s (a menu's first frames) keeps the copy, as the partner body and the gear props do
     vin.local_ok = g_local_valid && (g_local_active || (g_local_asleep_since_ms > 0 && now - g_local_asleep_since_ms < 1000));
     vin.partner_present = BodyPresent();
+    vin.pose_age_ms = g_last_remote_ms > 0 ? now - g_last_remote_ms : 1e9;
     vsync::Tick(vin, now);
     vsync::SenderTick(g_local, now);
 

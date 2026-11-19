@@ -323,6 +323,9 @@ inline constexpr std::uint16_t kLookAllParts = 0x1FF;
 inline constexpr std::size_t GearLookSize(unsigned nvar, unsigned nsv) { return kGearLookHeaderSize + nvar * 16u + nsv * kGearLookVarSize; }
 inline constexpr std::size_t kMaxGearLookFrameSize = GearLookSize(kMaxLookVariations, kMaxLookShaderVars);  // 924
 
+// STV1 item 255 (after v0.12): the look of the vehicle the sender reports in STM1 (docs/real-partner-body.md section
+// 22.7): kind `entity`, res none, `layout` = the index of its drivable resource in VehicleResources() (0..4).
+inline constexpr std::uint8_t kLookVehicleItem = 0xFF;
 struct GearShaderVar {
     std::uint32_t hash = 0;
     std::uint16_t part = kLookAllParts;  // an ArtParts index of the entity, or kLookAllParts
@@ -341,7 +344,8 @@ struct GearLook {
     std::uint8_t guid[kMaxLookVariations][16] = {};
     GearShaderVar sv[kMaxLookShaderVars];
 };
-// Rejects (returns 0) item >= kMaxGearItems, an unknown kind, nvar / nsv over the caps, a count
+// Rejects (returns 0) item >= kMaxGearItems (but kLookVehicleItem with kind entity and a layout below
+// kVehicleResourceCount), an unknown kind, nvar / nsv over the caps, a count
 // outside 1..4, a part above 0x1FF and non-finite values.
 std::size_t EncodeGearLook(const GearLook& l, std::uint8_t* out, std::size_t cap) noexcept;
 // The same checks, plus bad magic / version and a size other than GearLookSize(nvar, nsv). Unused
@@ -460,9 +464,9 @@ bool DecodeSpeech(const std::uint8_t* data, std::size_t size, Speech& out) noexc
 // game object of its own kept at the partner body's matching joint, at the pose play time of the event. Rides as a
 // FRAME next to STP1 / STJ1 in the pose datagram (unreliable: a lost footstep is better than a late one).
 //
-//   'STA1' | u8 version (1) | u8 n | u16 seq | u32 sender_ms                                   (12 bytes)
+//   'STA1' | u8 version (2) | u8 n | u16 seq | u32 sender_ms                                   (12 bytes)
 //   n x item (24 bytes): u32 a | u32 b | u8 op | u8 slot | u8 tag | u8 nrtpc | u16 age_ms | u16 fade_ms |
-//                        i16 off[3] (cm, world axes) | u8 category | u8 0
+//                        i16 off[3] (cm; world axes, the vehicle's frame on slot 7) | u8 category | u8 flags
 //                        nrtpc x {u32 rtpc id | f32 value}                                   (8 bytes each)
 //
 // op 0 post:   a = event id (!= 0), b = the sender's playing id (!= 0), slot < kSoundSlots, nrtpc <= 12, fade 0.
@@ -471,9 +475,16 @@ bool DecodeSpeech(const std::uint8_t* data, std::size_t size, Speech& out) noexc
 // op 3 rtpc:   a = 0, b = 0, slot < kSoundSlots, nrtpc 1..12 (new values on the tag's object), fade_ms = the
 //              interpolation time.
 // tag: the sender's game object (1..255, reused after it is unregistered; 0 = none). The item's time is
-// sender_ms - age_ms (age <= 2,000). category < kSoundCategories (statistics only).
+// sender_ms - age_ms (age <= 2,000). category < kSoundCategories (statistics, and the vehicle rules below).
+// Version 2 (2026-11-18, docs/real-partner-body.md section 22.9): category 5 `vehicle` (the sounds of the vehicle the
+// sender rides: its SoundComponent's engine, road noise, suspension, battery...) and slot 7 `vehicle` (the offset is
+// in the vehicle's own frame, cm: x right, y forward, z up; the receiver's object follows the partner's vehicle copy,
+// not a joint). A post or rtpc item has slot 7 exactly when its category is vehicle. flags (a reserved 0 in v1):
+// bit 0 kSoundHeld, on a vehicle post only: a loop the sender posts again every kSoundHeldRefreshMs while it plays
+// there, with the same playing id (the receiver posts it only when it does not play already, and stops it when no
+// such refresh came for kSoundHeldLeaseMs). Other bits 0. Version 1 is refused (mixed builds are refused at HELLO).
 inline constexpr std::uint8_t kSoundMagic[4] = {'S', 'T', 'A', '1'};
-inline constexpr std::uint8_t kSoundVersion = 1;
+inline constexpr std::uint8_t kSoundVersion = 2;
 inline constexpr std::size_t kSoundHeaderSize = 12, kSoundItemSize = 24, kSoundRtpcSize = 8;
 inline constexpr unsigned kMaxSoundItems = 32, kMaxSoundRtpcs = 12;
 inline constexpr std::size_t kMaxSoundFrameSize = 512;  // the encoder never writes more (fits next to STP1 + STJ1)
@@ -482,13 +493,17 @@ inline constexpr std::size_t SoundItemSize(unsigned nrtpc) { return kSoundItemSi
 
 enum class SoundOp : std::uint8_t { post = 0, stop = 1, action = 2, rtpc = 3 };
 inline constexpr std::uint8_t kSoundOpMax = 3;
-// Where on the body the sound is (the joint the receiver's game object follows).
-enum class SoundSlot : std::uint8_t { head = 0, foot_l = 1, foot_r = 2, hand_r = 3, hand_l = 4, back = 5, hips = 6 };
-inline constexpr unsigned kSoundSlots = 7;
+// Where on the body the sound is (the joint the receiver's game object follows); 7: on the partner's vehicle (v2).
+enum class SoundSlot : std::uint8_t { head = 0, foot_l = 1, foot_r = 2, hand_r = 3, hand_l = 4, back = 5, hips = 6, vehicle = 7 };
+inline constexpr unsigned kSoundSlots = 8;
+inline constexpr std::uint8_t kSoundSlotVehicle = 7;
 inline constexpr std::uint8_t kSoundActionMax = 4;  // AkActionOnEventType: stop, pause, resume, break, release envelope
-// What made the sound on the sender (counters on both sides; the receiver treats them alike).
-enum class SoundCategory : std::uint8_t { foley = 0, steps = 1, weapon = 2, cargo = 3, gear = 4 };
-inline constexpr unsigned kSoundCategories = 5;
+// What made the sound on the sender (counters on both sides; the vehicle category has its own allow-list and place).
+enum class SoundCategory : std::uint8_t { foley = 0, steps = 1, weapon = 2, cargo = 3, gear = 4, vehicle = 5 };
+inline constexpr unsigned kSoundCategories = 6;
+inline constexpr std::uint8_t kSoundCatVehicle = 5;
+inline constexpr std::uint8_t kSoundHeld = 0x01;  // item flags (v2): a held vehicle loop (refreshed, leased)
+inline constexpr double kSoundHeldRefreshMs = 1500, kSoundHeldLeaseMs = 5000;
 
 struct SoundItem {
     std::uint32_t a = 0, b = 0;
@@ -496,6 +511,7 @@ struct SoundItem {
     std::uint16_t age_ms = 0, fade_ms = 0;
     std::int16_t off[3] = {};
     std::uint8_t category = 0;
+    std::uint8_t flags = 0;  // v2: kSoundHeld
     std::uint32_t rtpc_id[kMaxSoundRtpcs] = {};
     float rtpc_value[kMaxSoundRtpcs] = {};
 };
@@ -512,10 +528,11 @@ std::size_t SoundFrameSize(const SoundFrame& f) noexcept;
 std::size_t EncodeSound(const SoundFrame& f, std::uint8_t* out, std::size_t cap) noexcept;
 // One item as EncodeSound / DecodeSound check it (the sender drops an invalid item alone, not its whole frame).
 bool SoundItemValid(const SoundItem& it) noexcept;
-// Rejects bad magic, another version, n = 0 or > 32, a size that does not match the items exactly or exceeds
-// kMaxSoundFrameSize, an unknown op, a slot >= 7 (post / rtpc) or an action > 4, nrtpc > 12, an RTPC count the op
-// does not allow, event / playing ids the op needs that are 0, fields the op does not use that are not 0, age >
-// 2,000 ms, fade > 10,000 ms, category >= 5, a reserved byte that is not 0, an RTPC id 0, and a non-finite or huge
+// Rejects bad magic, another version (1 included), n = 0 or > 32, a size that does not match the items exactly or
+// exceeds kMaxSoundFrameSize, an unknown op, a slot >= 8 (post / rtpc) or an action > 4, nrtpc > 12, an RTPC count the
+// op does not allow, event / playing ids the op needs that are 0, fields the op does not use that are not 0, age >
+// 2,000 ms, fade > 10,000 ms, category >= 6, a post / rtpc item on slot 7 whose category is not vehicle (or the other
+// way round), unknown flag bits, kSoundHeld on anything but a vehicle post, an RTPC id 0, and a non-finite or huge
 // (|v| > 1e7) RTPC value.
 bool DecodeSound(const std::uint8_t* data, std::size_t size, SoundFrame& out) noexcept;
 
@@ -525,18 +542,26 @@ bool DecodeSound(const std::uint8_t* data, std::size_t size, SoundFrame& out) no
 // (wheels, steering, suspension). A FRAME message in a datagram of its own, at the pose send rate while a vehicle
 // is reported; `sender_ms` is on the same axis as STP1's (the receiver plays it at the pose play time).
 //
-//   'STM1' | u8 version (1) | u8 kind | u8 state | u8 flags | u32 seq | u32 sender_ms |
+//   'STM1' | u8 version (2) | u8 kind | u8 state | u8 flags | u32 seq | u32 sender_ms |
 //   16-byte resource GUID (raw, as the game's StreamingRef holds it) | f64 x, y, z | 6-byte rotation |
 //   f32 speed (m/s) | i16 seat x, y, z (1 mm) | 6-byte seat rotation | u32 skeleton layout hash |
-//   u8 n | u8 0                                                                            (84 bytes)
+//   u8 n | u8 m                                                                            (84 bytes)
 //   [flags & kVehJoints] n x { 6-byte rotation | i16 x, y, z (1 mm) }                   (12 bytes each)
+//   [flags & kVehPacks]  m x { u8 pack (1 battery, 2 defense) | u8 0 | i16 x, y, z (1 mm) | 6-byte rotation }
+//                                                                                        (14 bytes each)
 // Rotations are STJ1's smallest-three. The seat is the sender's Sam in the vehicle's frame (zero when not seated).
+// Version 2 (after v0.12): the packs block (the battery / defense packs the game shows on the vehicle, its child
+// entities, each in the vehicle's frame); the byte after n is their count m (it was 0). Version 1 frames are refused
+// (mixed builds never meet: the HELLO build check).
 inline constexpr std::uint8_t kVehicleMagic[4] = {'S', 'T', 'M', '1'};
-inline constexpr std::uint8_t kVehicleVersion = 1;
+inline constexpr std::uint8_t kVehicleVersion = 2;
 inline constexpr std::size_t kVehicleHeaderSize = 84;
 inline constexpr unsigned kMaxVehicleJoints = 64;
-inline constexpr std::size_t VehicleFrameSize(unsigned n) { return kVehicleHeaderSize + n * 12u; }
-inline constexpr std::size_t kMaxVehicleFrameSize = VehicleFrameSize(kMaxVehicleJoints);  // 852
+inline constexpr unsigned kMaxVehiclePacks = 8;
+inline constexpr std::size_t kVehiclePackSize = 14;
+inline constexpr float kMaxVehiclePackM = 8.0f;  // |pack offset| per axis
+inline constexpr std::size_t VehicleFrameSize(unsigned n, unsigned m = 0) { return kVehicleHeaderSize + n * 12u + m * kVehiclePackSize; }
+inline constexpr std::size_t kMaxVehicleFrameSize = VehicleFrameSize(kMaxVehicleJoints, kMaxVehiclePacks);  // 964
 inline constexpr float kMaxVehicleSeatM = 4.0f;    // |seat offset| per axis
 inline constexpr float kMaxVehicleJointM = 32.0f;  // |joint translation| per axis
 inline constexpr std::uint8_t kVehicleStateMax = 15;
@@ -545,8 +570,13 @@ enum class VehicleKind : std::uint8_t { none = 0, speedcar = 1, truck = 2, motor
 enum VehicleFlags : std::uint8_t {
     kVehSeated = 1u << 0,  // the sender's Sam has this vehicle as its parent entity (the seat is meaningful)
     kVehJoints = 1u << 1,  // the joint block follows (n > 0)
-    kVehKnown = kVehSeated | kVehJoints,
+    kVehPacks = 1u << 2,   // version 2: the packs block follows the joints (m > 0)
+    kVehKnown = kVehSeated | kVehJoints | kVehPacks,
 };
+// The packs the game shows on a vehicle (child entities: ds/entities/vehicle/pe_ds_vehicle_battery_pack and
+// pe_ds_vehicle_defense_pack); 0 is not a pack.
+enum class VehiclePack : std::uint8_t { none = 0, battery = 1, defense = 2 };
+inline constexpr std::uint8_t kVehiclePackMax = 2;
 struct VehicleFrame {
     std::uint32_t seq = 0;
     std::uint32_t sender_ms = 0;
@@ -563,6 +593,10 @@ struct VehicleFrame {
     std::uint8_t n = 0;        // joints in the block (0 without kVehJoints)
     Quat q[kMaxVehicleJoints];
     float t[kMaxVehicleJoints][3] = {};
+    std::uint8_t m = 0;  // packs in the block (0 without kVehPacks)
+    std::uint8_t pack[kMaxVehiclePacks] = {};  // VehiclePack 1..2
+    float pack_t[kMaxVehiclePacks][3] = {};    // in the vehicle's frame (m)
+    Quat pack_q[kMaxVehiclePacks];
 };
 // The drivable vehicle resources a frame may name (decoded from the game data; docs/real-partner-body.md section 22).
 struct VehicleResource {
@@ -578,9 +612,10 @@ const VehicleResource* VehicleResources() noexcept;  // kVehicleResourceCount en
 const VehicleResource* FindVehicleResource(const std::uint8_t (&guid)[16]) noexcept;
 // Returns the size, 0 when the frame cannot be encoded (any check of DecodeVehicle fails or cap is too small).
 std::size_t EncodeVehicle(const VehicleFrame& f, std::uint8_t* out, std::size_t cap) noexcept;
-// Rejects bad magic, another version, a size other than VehicleFrameSize(n), a kind outside 1..3, a state above 15,
-// unknown flag bits, joints flag without joints (or joints without the flag), n over the cap, a reserved byte that is
-// not 0, a GUID that is not a drivable resource of that kind (the allow-list above), NaN / inf anywhere, |coord| > 1e7,
+// Rejects bad magic, another version, a size other than VehicleFrameSize(n, m), a kind outside 1..3, a state above 15,
+// unknown flag bits, joints flag without joints (or joints without the flag), n over the cap, the packs flag without
+// packs (or packs without it), m over the cap, a pack kind outside 1..2, a pack's reserved byte that is not 0, a pack
+// offset beyond +-8 m, a GUID that is not a drivable resource of that kind (the allow-list above), NaN / inf anywhere, |coord| > 1e7,
 // |speed| > 1000, a seat offset beyond +-4 m (or one at all when not seated), a joint translation beyond +-32 m, and a
 // joint block whose layout hash is 0.
 bool DecodeVehicle(const std::uint8_t* data, std::size_t size, VehicleFrame& out) noexcept;

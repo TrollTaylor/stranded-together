@@ -51,6 +51,14 @@ constexpr std::uintptr_t kObjGuid = 0x08;
 constexpr std::uintptr_t kApdOwner = 0x48, kApdSv = 0xF0, kApdCount = 0x100;
 constexpr std::uintptr_t kSvApd = 0x80, kSvN = 0x50, kSvArr = 0x58;
 constexpr std::size_t kSvEntry = 0x28;
+// A vehicle's paint: the colour index shader variable (the cap's colour index too, section 13.1), set per ArtParts
+// index (the roadster's parts 4 / 6, the trikes' 14 / 16, the trucks' 14 / 15 in the 100% save: run 20261118-162226).
+constexpr std::uint32_t kVehicleColourHash = 0x3A3714EDu;
+// Only the colour index is carried: 0x32D5AE44 (per body part: 1.0 on the 100% save's rust-brown gold truck, 0.35 on
+// its clean trucks and trikes) and 0x0978E0A1 also differ between vehicles, but set on the truck copy they did not
+// turn it rust-brown (run 20261118-164037): their meaning is unknown, so they are not written (the rust is most likely
+// the vehicle's mesh-paint texture, not mirrored).
+constexpr std::uint32_t kVehicleLookHashes[] = {kVehicleColourHash};
 
 // SkinnedModel / Pose (real_body.cpp)
 constexpr std::uintptr_t kSmVtable = 0x3D0ADB8, kSmEntity = 0x48, kSmPoses = 0x170, kSmPoseIdx = 0x250, kPoseSize = 0x70;
@@ -536,7 +544,66 @@ void Missed(const std::uint8_t* gd, double now) {
 }
 // The resource of a GUID for a look of `kind` on `prop`, or 0. The prop's own components are a
 // source too (read now, not kept).
+// Vehicle scope (ApplyVehicle): the copy's own component resources and our own vehicles of the sender's resource.
+bool g_veh_scope = false;
+const std::uintptr_t* g_veh_own = nullptr;
+unsigned g_veh_own_n = 0;
+std::uint32_t g_veh_resolved = 0, g_veh_unresolved = 0;
+// The variation resource with GUID gd that `obj` (its first `bytes`) refers to: direct references and Decima arrays.
+std::uintptr_t FindApvIn(std::uintptr_t obj, std::size_t bytes, const std::uint8_t* gd) {
+    static std::uint8_t buf[0x400];
+    if (!obj || bytes > sizeof(buf) || !mem::Read(obj, buf, bytes)) return 0;
+    for (std::size_t k = 0; k + 8 <= bytes; k += 8) {
+        std::uintptr_t v = 0;
+        std::memcpy(&v, buf + k, 8);
+        if (v > 0x10000 && (v & 7) == 0 && StillGuid(v, gd)) return v;
+        if (k + 16 <= bytes) {
+            std::uint32_t cnt = 0, capa = 0;
+            std::uintptr_t data = 0;
+            std::memcpy(&cnt, buf + k, 4), std::memcpy(&capa, buf + k + 4, 4), std::memcpy(&data, buf + k + 8, 8);
+            if (cnt >= 1 && cnt <= 96 && capa >= cnt && capa <= 4096 && data > 0x10000 && (data & 7) == 0) {
+                std::uintptr_t el[96];
+                if (mem::Read(data, el, 8ull * cnt) && IsApv(el[0]))
+                    for (unsigned i = 0; i < cnt; ++i)
+                        if (StillGuid(el[i], gd)) return el[i];
+            }
+        }
+    }
+    return 0;
+}
+std::uintptr_t ResolveVehicle(const std::uint8_t* gd, std::uintptr_t prop) {
+    // 1. the copy's own component resources (the trike copy lists its own colour variation there)
+    std::int32_t n = 0;
+    if (prop && Rd(prop + kEntComps, n) && n > 0 && n <= 64) {
+        std::uintptr_t comps[64] = {};
+        if (mem::Read(Q(prop + kEntComps + 8), comps, 8ull * static_cast<unsigned>(n)))
+            for (std::int32_t i = 0; i < n; ++i) {
+                const std::uintptr_t c = comps[i];
+                if (!c || Q(c + kCompOwner) != prop) continue;
+                const std::uintptr_t r = Q(c + 0x30);
+                if (StillGuid(r, gd)) return ++g_veh_resolved, r;
+                if (!r || !mem::DerivesFrom(mem::RttiOf(r), "EntityComponentResource")) continue;
+                if (const std::uintptr_t f = FindApvIn(r, 0x300, gd)) return ++g_veh_resolved, f;
+            }
+    }
+    // 2. our own vehicles of the sender's resource: their resource's references, their variation components
+    for (unsigned i = 0; i < g_veh_own_n && g_veh_own; ++i) {
+        const std::uintptr_t e = g_veh_own[i];
+        if (const std::uintptr_t f = FindApvIn(e ? RefObject(e + kEntResRef) : 0, 0x400, gd)) return ++g_veh_resolved, f;
+        Var v[8];
+        const unsigned k = Variations(e, v, 8, false);
+        for (unsigned j = 0; j < k; ++j)
+            if (std::memcmp(v[j].guid, gd, 16) == 0 && StillGuid(v[j].res, gd)) return ++g_veh_resolved, v[j].res;
+    }
+    ++g_veh_unresolved;
+    Missed(gd, NowMs());
+    if (g_veh_unresolved <= 20)
+        Log("[look] vehicle variation %s: not held by the copy or by our own vehicles of that resource: left out", Guid(gd).c_str());
+    return 0;
+}
+
 std::uintptr_t Resolve(const std::uint8_t* gd, std::uintptr_t prop, wire::GearKind kind) {
+    if (g_veh_scope) return ResolveVehicle(gd, prop);
     const double now = NowMs();
     if (g_found_n == 0 && now - g_built_ms > 2000) Build(now);
     else if (g_built_gen != g_own_gen) BuildOwn();  // before any use: entries of gear we no longer hold go
@@ -686,6 +753,44 @@ bool ReadEntity(std::uintptr_t e, wire::GearLook* out) noexcept {
         for (unsigned c = 0; c < 4; ++c) o.v[c] = c < s.count ? s.v[c] : 0.0f;
     }
     return true;
+}
+
+bool ReadVehicle(std::uintptr_t e, wire::GearLook* out) noexcept {
+    if (!out || !ReadAvailable()) return false;
+    std::uintptr_t apd = 0;
+    std::int32_t parts = 0;
+    if (!EntityApd(e, &apd, &parts)) return false;
+    out->nvar = 0, out->nsv = 0;
+    out->parts_apply = out->parts_visible = 0;
+    Var v[wire::kMaxLookVariations];
+    const unsigned nv = Variations(e, v, wire::kMaxLookVariations, true);
+    for (unsigned i = 0; i < nv; ++i) std::memcpy(out->guid[out->nvar++], v[i].guid, 16);
+    static SvEntry sv[256];
+    const unsigned ns = ShaderVars(e, sv, 256);
+    for (std::uint32_t want : kVehicleLookHashes)
+        for (unsigned i = 0; i < ns && out->nsv < wire::kMaxLookShaderVars; ++i) {
+            const SvEntry& s = sv[i];
+            if (s.removed || static_cast<std::uint32_t>(s.key & 0xFFFFFFFFu) != want || s.count < 1 || s.count > 4) continue;
+            bool finite = true;
+            for (unsigned c = 0; c < s.count; ++c) finite = finite && std::isfinite(s.v[c]);
+            if (!finite) continue;
+            wire::GearShaderVar& o = out->sv[out->nsv++];
+            o.hash = want;
+            o.part = static_cast<std::uint16_t>((s.key >> 50) & 0x1FF);
+            o.count = s.count;
+            for (unsigned c = 0; c < 4; ++c) o.v[c] = c < s.count ? s.v[c] : 0.0f;
+        }
+    return true;
+}
+
+ApplyResult ApplyVehicle(std::uintptr_t copy, const wire::GearLook& want, const std::uintptr_t* own, unsigned n_own, char* why,
+                         std::size_t cap) noexcept {
+    g_veh_scope = true;
+    g_veh_own = own, g_veh_own_n = n_own;
+    const ApplyResult r = Apply(copy, want, why, cap);
+    g_veh_scope = false;
+    g_veh_own = nullptr, g_veh_own_n = 0;
+    return r;
 }
 
 bool ReadBaggage(std::uintptr_t bag, wire::GearLook* out) noexcept {
@@ -873,6 +978,8 @@ void Counters(char* out, std::size_t cap) noexcept {
                   g_applies, g_var_added, g_var_removed, g_sv_set, g_sv_created, g_unresolved, g_refused, g_sv_capped, g_found_n, g_src_hits[kSrcAcc],
                   g_src_hits[kSrcItem], g_src_hits[kSrcPack], g_src_hits[kSrcPackCfg], g_src_hits[kSrcBag], g_src_hits[kSrcComp], g_src_hits[kSrcOwn],
                   g_src_hits[kSrcScan], g_src_hits[kSrcProp], g_own_builds, g.off ? "; OFF (a fault)" : "");
+    const std::size_t used = std::strlen(out);
+    if (used + 1 < cap) std::snprintf(out + used, cap - used, "; vehicle variations resolved %u, left out %u", g_veh_resolved, g_veh_unresolved);
 }
 
 // ---------------------------------------------------------------- skinned pose
@@ -1005,6 +1112,44 @@ void DumpJoints(const char* tag, std::uintptr_t e) noexcept {
         Log("[look] %s joint %2d '%s' parent %d: q %.3f %.3f %.3f %.3f t %.3f %.3f %.3f s %.2f", tag, j, CStr(Q(joints + 0x10ull * j)).c_str(), parent,
             a[j][0], a[j][1], a[j][2], a[j][3], a[j][4], a[j][5], a[j][6], a[j][8]);
     }
+}
+
+void DumpResourceVariations(const char* tag, std::uintptr_t e) noexcept {
+    if (!ReadAvailable()) return;
+    const std::uintptr_t res = e ? RefObject(e + kEntResRef) : 0;
+    if (!res) {
+        Log("[look] %s %p: its resource is not loaded / unreadable", tag, reinterpret_cast<void*>(e));
+        return;
+    }
+    static std::uint8_t buf[0x400];
+    if (!mem::Read(res, buf, sizeof(buf))) return;
+    unsigned found = 0;
+    for (std::size_t k = 0; k + 8 <= sizeof(buf); k += 8) {
+        std::uintptr_t v = 0;
+        std::memcpy(&v, buf + k, 8);
+        if (v > 0x10000 && (v & 7) == 0 && IsApv(v)) {
+            std::uint8_t gd[16] = {};
+            mem::Read(v + kObjGuid, gd, 16);
+            Log("[look] %s resource %s +0x%03X: %s '%s'", tag, TypeOf(res), static_cast<unsigned>(k), Guid(gd).c_str(), ObjName(v).c_str());
+            ++found;
+        }
+        if (k + 16 <= sizeof(buf)) {
+            std::uint32_t cnt = 0, capa = 0;
+            std::uintptr_t data = 0;
+            std::memcpy(&cnt, buf + k, 4), std::memcpy(&capa, buf + k + 4, 4), std::memcpy(&data, buf + k + 8, 8);
+            if (cnt >= 1 && cnt <= 96 && capa >= cnt && capa <= 4096 && data > 0x10000 && (data & 7) == 0) {
+                std::uintptr_t el[96];
+                if (mem::Read(data, el, 8ull * cnt) && IsApv(el[0]))
+                    for (unsigned i = 0; i < cnt; ++i) {
+                        std::uint8_t gd[16] = {};
+                        if (!IsApv(el[i]) || !mem::Read(el[i] + kObjGuid, gd, 16)) continue;
+                        Log("[look] %s resource %s +0x%03X[%u]: %s '%s'", tag, TypeOf(res), static_cast<unsigned>(k), i, Guid(gd).c_str(), ObjName(el[i]).c_str());
+                        ++found;
+                    }
+            }
+        }
+    }
+    Log("[look] %s resource %p %s: %u variation reference(s)", tag, reinterpret_cast<void*>(res), TypeOf(res), found);
 }
 
 void DumpSources(const std::uintptr_t* ents, unsigned n, std::uintptr_t player) noexcept {

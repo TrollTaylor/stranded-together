@@ -445,6 +445,16 @@ struct GearPoseBuf {
     std::uint32_t n = 0;
     float q[kMaxGearPoseJ][4];
     float t[kMaxGearPoseJ][3];
+    // Interpolated in the prop's own model update (the vehicle copy, smooth bit kSmoothDetourInterp): q / t is the pose
+    // at key_a, q2 / t2 the pose at key_b (n2 == n; 0 = no interpolation); play_ref = the play time at ref_ms (QPC ms).
+    std::uint32_t n2 = 0;
+    float q2[kMaxGearPoseJ][4];
+    float t2[kMaxGearPoseJ][3];
+    // the frame after key_b (n3 == n, else 0): the update may come after key_b (it runs later in the frame than the tick)
+    std::uint32_t n3 = 0;
+    float q3[kMaxGearPoseJ][4];
+    float t3[kMaxGearPoseJ][3];
+    double key_a = 0, key_b = 0, key_c = 0, play_ref = 0, ref_ms = 0;
 };
 struct PoseTarget {
     std::atomic<std::uintptr_t> sm{0};  // published last (release); 0 = off
@@ -463,6 +473,16 @@ std::atomic<std::uint32_t> g_pt_live{0};  // targets published (the detour's fas
 std::atomic<std::uint32_t> g_pt_applies{0}, g_pt_rejects{0}, g_pt_wpm{0}, g_pt_faults{0}, g_pt_torn{0};
 std::atomic<bool> g_pt_faulted{false};  // a pose write faulted: gear poses off for the session
 bool g_pt_forced_off = false;
+// The vehicle copy's pose writes (target kVehiclePoseTarget), frame-aligned: how far the written joints turned since
+// the previous write (the largest joint angle), so a stepping wheel shows as repeats and uneven steps. Detour side
+// (one prop: its updates never overlap); the tick reads and resets the sums (VehiclePoseMeter).
+float g_vm_prev[kMaxGearPoseJ][4];
+std::uint32_t g_vm_prev_n = 0;
+std::atomic<std::uint32_t> g_vm_writes{0}, g_vm_repeats{0}, g_vm_interp{0}, g_vm_holds{0};
+std::atomic<std::uint64_t> g_vm_step_sum{0}, g_vm_step_sq{0};  // millidegrees, millidegrees^2 / 1000
+std::atomic<std::uint32_t> g_vm_step_max{0};                     // millidegrees
+std::atomic<bool> g_vm_reset{false};
+std::atomic<bool> g_vm_gate{false};  // the partner's vehicle moves: the writes count
 // The published-target count for the detour's fast check (0 for good after a fault).
 void RecountPoseTargets() {
     std::uint32_t live = 0;
@@ -1210,9 +1230,67 @@ void ApplyGearPose(unsigned k, std::uintptr_t sm) {
     }
     Joint cur[kMaxGearPoseJ];
     if (!mem::Read(lb, cur, tn * sizeof(Joint))) return;
-    for (unsigned j = 0; j < tn; ++j) {
-        std::memcpy(cur[j].q, b.q[j], sizeof(cur[j].q));
-        cur[j].t[0] = b.t[j][0], cur[j].t[1] = b.t[j][1], cur[j].t[2] = b.t[j][2];
+    if (b.n2 == tn && g_qpc_per_ms > 0 && b.key_b > b.key_a) {
+        // interpolated at this update's own time: the published play time advanced by the QPC time since it was
+        // published, clamped to [key_a, key_b] (held at key_b: counted)
+        const double play = b.play_ref + (static_cast<double>(Qpc()) / g_qpc_per_ms - b.ref_ms);
+        // the segment holding the play time: a..b, or b..c once past b (when the frame after b was published)
+        const bool second = play > b.key_b && b.n3 == tn && b.key_c > b.key_b;
+        const double a = second ? (play - b.key_b) / (b.key_c - b.key_b) : (play - b.key_a) / (b.key_b - b.key_a);
+        const float u = a <= 0 ? 0.0f : a >= 1 ? 1.0f : static_cast<float>(a);
+        if (k == kVehiclePoseTarget) {
+            g_vm_interp.fetch_add(1, std::memory_order_relaxed);
+            if (a > 1) g_vm_holds.fetch_add(1, std::memory_order_relaxed);
+        }
+        const float(*sq0)[4] = second ? b.q2 : b.q;
+        const float(*sq1)[4] = second ? b.q3 : b.q2;
+        const float(*st0)[3] = second ? b.t2 : b.t;
+        const float(*st1)[3] = second ? b.t3 : b.t2;
+        for (unsigned j = 0; j < tn; ++j) {
+            const float* qa = sq0[j];
+            float qb[4] = {sq1[j][0], sq1[j][1], sq1[j][2], sq1[j][3]};
+            if (qa[0] * qb[0] + qa[1] * qb[1] + qa[2] * qb[2] + qa[3] * qb[3] < 0)
+                for (float& c : qb) c = -c;
+            float q[4];
+            for (int c = 0; c < 4; ++c) q[c] = qa[c] + u * (qb[c] - qa[c]);
+            const float n = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+            if (n > 1e-6f) {
+                for (float& c : q) c /= n;
+            } else {
+                std::memcpy(q, qa, sizeof(q));
+            }
+            std::memcpy(cur[j].q, q, sizeof(cur[j].q));
+            for (int c = 0; c < 3; ++c) cur[j].t[c] = st0[j][c] + u * (st1[j][c] - st0[j][c]);
+        }
+    } else {
+        for (unsigned j = 0; j < tn; ++j) {
+            std::memcpy(cur[j].q, b.q[j], sizeof(cur[j].q));
+            cur[j].t[0] = b.t[j][0], cur[j].t[1] = b.t[j][1], cur[j].t[2] = b.t[j][2];
+        }
+    }
+    if (k == kVehiclePoseTarget) {
+        // the meter: the largest joint turn since the previous write (a new prop or a reset starts over)
+        if (g_vm_reset.exchange(false, std::memory_order_acq_rel)) g_vm_prev_n = 0;
+        if (g_vm_prev_n == tn && g_vm_gate.load(std::memory_order_relaxed)) {
+            float step = 0;
+            for (unsigned j = 0; j < tn; ++j) {
+                const float* p = g_vm_prev[j];
+                float d = std::fabs(p[0] * cur[j].q[0] + p[1] * cur[j].q[1] + p[2] * cur[j].q[2] + p[3] * cur[j].q[3]);
+                if (d > 1.0f) d = 1.0f;
+                const float deg = 2.0f * std::acos(d) * 57.29578f;
+                if (deg > step) step = deg;
+            }
+            const auto md = static_cast<std::uint32_t>(step * 1000.0f);
+            g_vm_writes.fetch_add(1, std::memory_order_relaxed);
+            if (md < 10) g_vm_repeats.fetch_add(1, std::memory_order_relaxed);  // under 0.01 deg: the same pose again
+            g_vm_step_sum.fetch_add(md, std::memory_order_relaxed);
+            g_vm_step_sq.fetch_add(static_cast<std::uint64_t>(md) * md / 1000u, std::memory_order_relaxed);
+            std::uint32_t mx = g_vm_step_max.load(std::memory_order_relaxed);
+            while (md > mx && !g_vm_step_max.compare_exchange_weak(mx, md, std::memory_order_relaxed)) {
+            }
+        }
+        for (unsigned j = 0; j < tn; ++j) std::memcpy(g_vm_prev[j], cur[j].q, sizeof(g_vm_prev[j]));
+        g_vm_prev_n = tn;
     }
     SIZE_T wrote = 0;
     if (!WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(lb), cur, tn * sizeof(Joint), &wrote) || wrote != tn * sizeof(Joint)) {
@@ -3419,7 +3497,11 @@ void BootsCounters(char* out, std::size_t cap) noexcept {
                   g_bt.applies.load(), g_bt.rejects.load(), g_bt.torn.load(), g_bt.wpm.load(), g_bt.forced, g_bt_faulted.load() ? ", FAULTED: off" : "");
 }
 
-bool SetGearPose(unsigned k, const holo::Spawn* sp, const wire::GearPose* pose) noexcept {
+bool PoseInterpOn() noexcept {
+    return g_hook && g_qpc_per_ms > 0 && (g_smooth.load(std::memory_order_relaxed) & kSmoothDetourInterp) != 0;
+}
+
+bool SetGearPose(unsigned k, const holo::Spawn* sp, const wire::GearPose* pose, const GearPoseInterp* ip) noexcept {
     if (k >= kMaxPoseTargets || !g_hook) return false;
     PoseTarget& t = g_pt[k];
     if (!sp || !sp->e || !pose) {
@@ -3430,12 +3512,33 @@ bool SetGearPose(unsigned k, const holo::Spawn* sp, const wire::GearPose* pose) 
     if (!holo::SpawnAlive(*sp)) return false;
     const auto e = reinterpret_cast<std::uintptr_t>(sp->e);
     if (pose->n == 0 || pose->n > kMaxGearPoseJ) return false;
-    GearPoseBuf b;
+    static GearPoseBuf b;  // game thread only (large: two poses)
     b.n = pose->n;
+    b.n2 = 0;
     for (unsigned j = 0; j < pose->n; ++j) {
         const wire::Quat q = wire::Normalize(pose->q[j]);
         b.q[j][0] = q.x, b.q[j][1] = q.y, b.q[j][2] = q.z, b.q[j][3] = q.w;
         b.t[j][0] = pose->t[j][0], b.t[j][1] = pose->t[j][1], b.t[j][2] = pose->t[j][2];
+    }
+    if (ip && ip->b && ip->b->n == pose->n && ip->b->skeleton == pose->skeleton && ip->key_b > ip->key_a && PoseInterpOn()) {
+        for (unsigned j = 0; j < pose->n; ++j) {
+            const wire::Quat q = wire::Normalize(ip->b->q[j]);
+            b.q2[j][0] = q.x, b.q2[j][1] = q.y, b.q2[j][2] = q.z, b.q2[j][3] = q.w;
+            b.t2[j][0] = ip->b->t[j][0], b.t2[j][1] = ip->b->t[j][1], b.t2[j][2] = ip->b->t[j][2];
+        }
+        b.key_a = ip->key_a, b.key_b = ip->key_b, b.play_ref = ip->play_ms;
+        b.ref_ms = static_cast<double>(Qpc()) / g_qpc_per_ms;
+        b.n2 = pose->n;
+        b.n3 = 0;
+        if (ip->c && ip->c->n == pose->n && ip->c->skeleton == pose->skeleton && ip->key_c > ip->key_b) {
+            for (unsigned j = 0; j < pose->n; ++j) {
+                const wire::Quat q = wire::Normalize(ip->c->q[j]);
+                b.q3[j][0] = q.x, b.q3[j][1] = q.y, b.q3[j][2] = q.z, b.q3[j][3] = q.w;
+                b.t3[j][0] = ip->c->t[j][0], b.t3[j][1] = ip->c->t[j][1], b.t3[j][2] = ip->c->t[j][2];
+            }
+            b.key_c = ip->key_c;
+            b.n3 = pose->n;
+        }
     }
     if (t.sm.load(std::memory_order_acquire) && t.e.load() == e) {
         // the same prop: only the joints change
@@ -3453,6 +3556,7 @@ bool SetGearPose(unsigned k, const holo::Spawn* sp, const wire::GearPose* pose) 
     t.e.store(e), t.e_vt.store(vt), t.skel.store(si.skel), t.n.store(pose->n);
     t.spawn = *sp;
     t.game_updates.store(0), t.last_game_ms = 0;
+    if (k == kVehiclePoseTarget) g_vm_reset.store(true, std::memory_order_release);  // its meter starts over
     for (int i = 0; i < 4 && !g_pt_buf[k].Write(b); ++i) SwitchToThread();
     t.sm.store(sm, std::memory_order_seq_cst);
     RecountPoseTargets();
@@ -3471,6 +3575,33 @@ void ClearGearPose(unsigned k) noexcept {
     t.e.store(0);
     t.spawn = holo::Spawn{};
 }
+
+bool VehiclePoseMeter(VehicleMeter* out) noexcept {
+    if (!out) return false;
+    out->writes = g_vm_writes.exchange(0), out->repeats = g_vm_repeats.exchange(0);
+    out->interp = g_vm_interp.exchange(0), out->holds = g_vm_holds.exchange(0);
+    const std::uint64_t sum = g_vm_step_sum.exchange(0), sq = g_vm_step_sq.exchange(0);
+    out->step_max_deg = static_cast<float>(g_vm_step_max.exchange(0)) / 1000.0f;
+    double mean = 0, var = 0;
+    if (out->writes) {
+        mean = static_cast<double>(sum) / out->writes / 1000.0;
+        var = static_cast<double>(sq) / out->writes / 1000.0 - mean * mean;  // sq is in millidegrees^2 / 1000
+    }
+    out->step_mean_deg = static_cast<float>(mean);
+    out->step_sd_deg = var > 0 ? static_cast<float>(std::sqrt(var)) : 0.0f;
+    return out->writes > 0;
+}
+
+int BoostEntity(game::Entity* e, const char* what, std::uint8_t* orig) noexcept {
+    std::uint8_t cur = 0;
+    if (!e || !orig || !Rd(reinterpret_cast<std::uintptr_t>(e) + kEntFreq, cur) || cur > 6) return -1;
+    if (*orig == 0xFF) *orig = cur == kFreq240Hz ? std::uint8_t{3} : cur;
+    const std::uint8_t want = (g_smooth.load(std::memory_order_relaxed) & kSmoothBoost) && !g_freq.off ? kFreq240Hz : *orig;
+    if (cur == want) return 0;
+    return SetFreq(reinterpret_cast<std::uintptr_t>(e), want, "smooth", what, true);
+}
+
+void VehicleMeterGate(bool moving) noexcept { g_vm_gate.store(moving, std::memory_order_relaxed); }
 
 void GearPoseCounters(char* out, std::size_t cap) noexcept {
     std::uint32_t forced = 0, live = 0;

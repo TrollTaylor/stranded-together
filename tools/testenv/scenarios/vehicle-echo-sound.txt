@@ -1,0 +1,125 @@
+# Vehicle sounds in one game (docs/real-partner-body.md section 22.9; sound_sync=1, vehicle_sound=1): the echo partner
+# replays our own Sam 0.5 s later, 4 m beside us; our vehicle goes through the STM1 encoder / decoder to its copy and our
+# vehicle's sounds (its SoundComponent's engine loop, road noise, ignition, cut-off, suspension...) through STA1 v2 to
+# our own Wwise objects at the copy (slot 7, the offset in the vehicle's frame), with their RTPCs. The hidden game is
+# silent: the [psound] lines prove it (posts, held loops picked up / refreshed, rtpc items, stops, places against the
+# copy entity's own transform; `sound_sync 3 <ms>` traces the RTPC values on both sides every 500 ms).
+# The roadster in the garage: on, idle, forward, reverse; the cuff map while seated (the gate: our partner sounds stop,
+# the held loops come back after it); our sends held 3 s (`vehicle_sync 10`: the copy held, its sounds stopped, then
+# back); vehicle_sound off and on at run time (`sound_sync 4`); off the roadster; vehicle sync off (no vehicle reported:
+# the loops stopped). Then the standard trike and the truck outside (`vehicle_sync 8 <side m> <kind>`).
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario vehicle-echo-sound -SeedSaves complete-100
+role echo
+timeout 360
+ini partner_body=real
+ini echo_offset_m=4
+ini echo_delay_s=0.5
+ini partner_collision=0
+ini vehicle_sync=1
+ini sound_sync=1
+ini vehicle_sound=1
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[sync\] partner body: real
+wait 1500
+action sound_sync 0
+# ---- the roadster in the garage
+log vsound: roadster on
+action vehicle_sync 9 -1094.4 276.9
+wait 1500
+action vehicle_sync 3 300000
+until 20 4000 \[vehicle\] ours: roadster => pad X 150
+?waitlog 10 \[vehicle\] copy 'roadster_hologram' shown
+?waitlog 10 \[psound\] partner post vehicle ev
+action sound_sync 3 30000
+wait 3000
+screenshot 01-roadster-on
+log vsound: roadster forward
+pad none 2500 rt=255 lx=-32767 keep
+screenshot 02-roadster-driving
+pad none 1000 rt=255 keep
+pad none 0
+wait 1500
+log vsound: roadster reverse
+pad none 1500 lt=255 lx=32767 keep
+pad none 0
+wait 2000
+action sound_sync 0
+log vsound: roadster cuff map
+pad START 150
+waitlog 5 \[psound\] gate closed: paused / menu / cutscene \(HandcuffDevice\)
+wait 3000
+screenshot 03-roadster-menu
+action sound_sync 0
+pad A 150
+wait 1500
+until 20 2500 \[psound\] gate open again .*HandcuffDevice => pad B 150
+wait 3000
+action sound_sync 0
+log vsound: roadster sends held 3 s
+action vehicle_sync 10 3000
+wait 5000
+action sound_sync 0
+log vsound: roadster vehicle_sound off
+action sound_sync 4 0
+wait 3000
+action sound_sync 0
+log vsound: roadster vehicle_sound on
+action sound_sync 4 1
+wait 3000
+action sound_sync 0
+log vsound: roadster off
+pad X 150
+wait 5000
+action sound_sync 0
+log vsound: roadster vehicle sync off
+action vehicle_sync 1 0
+wait 3000
+action vehicle_sync 1 1
+action sound_sync 0
+# ---- the standard trike
+log vsound: trike
+action vehicle_sync 8 1.4 3
+wait 3000
+until 20 4000 \[vehicle\] ours: trike (parked|getting|riding) => pad X 150
+wait 3000
+action sound_sync 3 12000
+screenshot 04-trike-on
+pad none 1800 lt=255 keep
+pad none 2500 rt=200 lx=-20000 keep
+screenshot 05-trike-driving
+pad none 2000 rt=200 keep
+pad none 0
+wait 2000
+action sound_sync 0
+pad X 150
+wait 4500
+action sound_sync 0
+action vehicle_sync 0
+# ---- the truck
+log vsound: truck
+action vehicle_sync 8 2.2 2
+wait 2500
+until 20 4000 \[vehicle\] ours: truck => pad X 150
+wait 3500
+action sound_sync 3 12000
+screenshot 06-truck-on
+pad none 2500 rt=200 keep
+screenshot 07-truck-driving
+pad none 2000 rt=200 lx=-16000 keep
+pad none 0
+wait 2500
+action sound_sync 0
+pad X 150
+wait 4500
+action sound_sync 0
+log vsound: end
+action vehicle_sync 0
+action log_status
+quit

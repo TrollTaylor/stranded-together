@@ -391,7 +391,7 @@ ini <key>=<value>            an extra session.ini line, for every game of the ru
                              partner_collision_layer, partner_collision_height, partner_gear, name_tag_font,
                              smooth_pose, frame_cap, audio_probe, self_voice, voice_sync, voice_subtitles, sound_sync,
                              sound_steps, partner_volume, self_headgear, self_feet_hide, boots_sync,
-                             vehicle_sync
+                             vehicle_sync, vehicle_overlap_hide, vehicle_look, vehicle_packs, vehicle_sound
                              (testenv_core ScenarioIniKeyAllowed; a scenario
                              frame_cap is written after graphics low's 30, so it wins)
 @host ini <key>=<value>      the same, for the first game only; @guest ini for the guest game only (role
@@ -628,8 +628,49 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   with its camera untouched since the load, so the drive runs through the middle of its picture. The host drives in the
   first, the guest in the second (each watcher's camera must not have been turned by a drive of its own). Run with a
   1080p `-SettingsCfg`. The trace of both games is compared offline (the same QPC clock on one PC).
-  `vehicle_sync=1` (the default) shows the roadster's copy only; `3` also the trike's and the truck's (their copies are
-  checked through the override only), `2` those two only.
+  `vehicle_sync=1` (the default) shows all three kinds as holograms (since the review; before, the trike and the truck as
+  solid copies); `4` the roadster's only (the first milestone's default), `2` the solid trike and truck copies (looks,
+  packs, collision) with the roadster's hologram.
+* `vehicle-garage-scout.txt` (role echo): the game's vehicle registry and the parking slots (`vehicle_sync 7`: the save
+  holds trikes, a Kusanagi trike and trucks outside Mountain Knot City), then Sam on a grid over the garage lift and its
+  buttons tried one at a time (none opened the garage menu; DPAD up opens photo mode).
+* `vehicle-echo-trike.txt` (role echo, `echo_delay_s=0.5`, `echo_offset_m=4`): the roadster driven forward with the smooth
+  mask 0 and back (LT) with 7, `vehicle_sync 13` at each segment's end (the frame-aligned meter); then
+  `vehicle_sync 8 <side> <3 trike | 4 Kusanagi | 2 truck>` (beside the nearest of that kind, facing it) and X for each,
+  a short drive, camera turns, off; the truck disposed of (hold START): the sender's "gone" path.
+* `vehicle-echo-census.txt` (role echo): the census of the 100% save's vehicles (`vehicle_sync 19`: looks, carriers,
+  child entities), then the truck and the trike ridden with the echo copy beside them (screenshots of both).
+* `vehicle-echo-look.txt` (role echo, `echo_delay_s=0.5`, `echo_offset_m=4`): the gold truck and the purple / orange trike
+  with the echo copy beside them, side views with looks and packs on, off (`vehicle_sync 14 0`, `15 0`: the copy in its
+  own look, no packs) and on again; a short drive; the census of the copy (docs/real-partner-body.md section 22.7).
+* `two-games-vehicle-look.txt` (role host, `graphics low`, `vehicle_sync=2`: the solid copies, which alone take looks and
+  packs; also `vehicle-echo-look.txt`; host Sam, guest `fragile_suit` with self view): the host drives
+  the gold truck, the guest the purple / orange trike, the host gets on the Kusanagi trike (its look not applied); the
+  watcher's camera is turned onto its own vehicle before the drive (`vehicle_sync 18 2|3`) and onto the copy after the
+  stop (`vehicle_sync 18 5`).
+* `vehicle-echo-sound.txt` (role echo, `sound_sync=1`, `vehicle_sound=1`, `echo_delay_s=0.5`, `echo_offset_m=4`): our
+  vehicle's sounds through STA1 v2 to our own Wwise objects at the echo copy (docs/real-partner-body.md section 22.9).
+  The garage roadster: on, idle, forward, reverse (`sound_sync 3 30000`: the RTPC trace on both sides); the cuff map
+  while seated (A, then B until `gate open again .*HandcuffDevice`); our sends held 3 s (`vehicle_sync 10 3000`);
+  `sound_sync 4 0` / `4 1`; off; `vehicle_sync 1 0` (no vehicle reported). Then the standard trike (backed out with LT)
+  and the truck. `sound_sync 0` after each step for the counters.
+* `two-games-vehicle-sound.txt` (role host, `graphics low`, `sound_sync=1`, `vehicle_sound=1`, host Sam, guest
+  `fragile_suit` with self view): the host's garage roadster with its own cuff map while seated (the sender's gate),
+  the host's Kusanagi trike with the guest's cuff map while it drives (the receiver's gate) and its sends held 3 s and
+  12 s, the guest's truck, the host's standard trike, got off, then `vehicle_sync 1 0` on the host. The watcher's camera
+  is not aimed (the evidence is the `[psound]` lines; its screenshots may not show the copy).
+* `vehicle-echo-collision.txt` (role echo): the copy override shows the truck's and the trike's solid copies, then their
+  holograms, at the garage roadster's parked copy; `vehicle_sync 16` / `17` walk Sam into each from 1.5 m before its
+  origin (from 5 m the walk drifted 2 m off the line, run 155304) and place him at its origin (`16 0.01`), and the same
+  into our own roadster (the control); the roadster is got on and off again before the last part (its parked copy is
+  reported for 60 s only; `vehicle_sync 8 1.2 1` turns Sam to face it first). Run `20261118-181155`: the solid truck
+  stops him 2 m past its origin, he stands on the solid trike (1 m up); he walks straight through both holograms.
+* `two-games-vehicle-trike.txt` (role host, `graphics low`, host Sam, guest `fragile_suit` with self view): the host's
+  roadster in the garage (smooth mask 7 throughout since the review; until then 0 here, the baseline), the host's Kusanagi trike with its sends held 3 s and
+  12 s (`vehicle_sync 10`), the guest's truck, the host's standard trike (backed out of its rocks with LT). The watcher
+  stands 9-10 m beside its own copy of the vehicle and turns its camera onto it (`vehicle_sync 18` and `until ...
+  camera aimed #n => pad none 200 rx=32767`). Note: `waitlog` / `until` search the whole log, so a regex must not match an
+  earlier line (`ours: trike` matches `ours: trike_kusanagi`: `ours: trike (parked|getting|riding)`).
 * `two-games-release.txt` (role host, the launcher's default keys: host Sam, guest `fragile_suit` with self view,
   `voice_sync=1`, `sound_sync=1`, `self_voice=auto`, partner collision on; the guest adds `audio_probe=1`): the release
   check of headgear, boots, the grunt mute and vehicle sync in one run. Her cap, then cap and glasses on both screens; her

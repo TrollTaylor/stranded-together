@@ -193,7 +193,31 @@ inline constexpr unsigned kMaxPoseTargets = 9;
 // docs/real-partner-body.md section 22).
 inline constexpr unsigned kGearPoseTargets = 8;
 inline constexpr unsigned kVehiclePoseTarget = 8;
-bool SetGearPose(unsigned k, const holo::Spawn* sp, const wire::GearPose* pose) noexcept;
+// `ip` (optional; the vehicle copy): `pose` is the pose at ip->key_a and ip->b the pose at ip->key_b (same skeleton and
+// joint count); the prop's own model update interpolates between them at that moment's play time (ip->play_ms now,
+// advanced by the QPC time since), as the partner body's does (smooth bit kSmoothDetourInterp; without it `pose` stands).
+struct GearPoseInterp {
+    const wire::GearPose* b = nullptr;
+    const wire::GearPose* c = nullptr;  // optional: the frame after b (at key_c), for an update that comes after key_b
+    double key_a = 0, key_b = 0, key_c = 0, play_ms = 0;
+};
+bool SetGearPose(unsigned k, const holo::Spawn* sp, const wire::GearPose* pose, const GearPoseInterp* ip = nullptr) noexcept;
+// The detour interpolates pose targets (the hook is installed and smooth bit kSmoothDetourInterp is set).
+bool PoseInterpOn() noexcept;
+// The vehicle copy's pose writes since the last call (frame-aligned meter, docs/real-partner-body.md section 22): writes,
+// repeats (the same pose again, < 0.01 deg), writes interpolated in the update and those held at the newer frame, and the
+// largest joint turn between consecutive writes (mean, standard deviation, max). False when nothing was written.
+struct VehicleMeter {
+    std::uint32_t writes = 0, repeats = 0, interp = 0, holds = 0;
+    float step_mean_deg = 0, step_sd_deg = 0, step_max_deg = 0;
+};
+bool VehiclePoseMeter(VehicleMeter* out) noexcept;
+// An entity we spawned (the vehicle copy) at the game's 240 Hz update group while smooth bit kSmoothBoost is set, else
+// back at its own frequency (*orig: remembered on the first call, 0xFF before). 1 changed, 0 unchanged, -1 refused or
+// faulted (a fault turns the boost off for the session). Game thread.
+int BoostEntity(game::Entity* e, const char* what, std::uint8_t* orig) noexcept;
+// The vehicle meter counts writes only while the partner's vehicle moves (set every tick by vehicle_sync).
+void VehicleMeterGate(bool moving) noexcept;
 // The partner's boots prop (docs/real-partner-body.md section 21; boots_sync): a cutscene prop on the boots' own 10-joint
 // skeleton (layout 0x9B68A8AD, parents checked), posed in its own model updates from the partner body's legs (the body's
 // pose composed at that moment, identity root). The prop is placed as a gear item on the body's joint 0. sp = nullptr

@@ -8,6 +8,11 @@
 //   game object" contexts (section 12.5). With audio_probe=1 the probe owns those hooks and forwards to the Hot*
 //   functions below (one MinHook hook per target). The hot paths only copy a few words (and, for a post, the game
 //   object's position, read with ReadProcessMemory) into a lock-free ring: no allocation, lock or logging.
+//   Vehicle sounds (vehicle_sound=1; docs/real-partner-body.md section 22.9): a sound instance made in a drivable
+//   vehicle's component play path (instance create / setup hooked too) is that vehicle's; its posts, RTPCs and stops go
+//   out as category vehicle / slot 7 (its frame) while vsync reports it as ours, its loops held (refreshed every 1.5 s,
+//   picked up, stopped when it is ours no more), its RTPCs streamed at most every 100 ms; the receiver posts them at
+//   its copy of the partner's vehicle and stops them when that vehicle is no longer played here.
 //   The game thread drains the ring in order and decides per registration whose game object it is: a registration
 //   made inside a component's play path belongs to that component's owner entity ([[rep+0x20]+0x48]); only an
 //   allow-list is "ours" (2026-11-18): the player's own DSCustomSoundComponent (animation foley) and the sound
@@ -64,6 +69,9 @@ void HotUnregister(std::uint64_t obj) noexcept;
 void HotRtpc(std::uint32_t id, float value, std::uint64_t obj, std::int32_t ms) noexcept;
 void HotStop(std::uint32_t pid, std::int32_t ms) noexcept;
 void HotAction(std::uint32_t ev, std::int32_t action, std::uint64_t obj, std::int32_t ms, std::uint32_t pid) noexcept;
+// A sound instance made / attached (0x141DB61A0 / 0x141DCBC30; the instance is its Wwise game object) inside a component's
+// play path: a vehicle's are known by it (vehicle_sound; their Wwise registration comes later, outside the play path).
+void HotCreate(std::uint64_t inst, std::uintptr_t ctx, bool emitter) noexcept;
 
 // ---- game thread
 struct Frame {
