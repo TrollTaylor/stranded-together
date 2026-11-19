@@ -1,0 +1,85 @@
+# The host-held save session (docs/coop-session.md, M1.12 #4), hidden. LONG / OPTIONAL: a New Game's intro (the
+# opening cutscenes) runs far longer than a hidden run's 360 s before the first autosave, so this scenario proves the
+# "waiting for the host's first save" state, not the first-save offer itself:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-hostsave-newgame -SeedSaves complete-100 -GuestSeed profile-only
+# The host picks New Game on its title (the menu path below was walked in runs 20261119-071826 / -072148). The host's mod sees the
+# new world (0x1426393E0): STATE new_game_pending=1, "Your partner joins at your first save" on the host, and on the
+# guest's waiting screen "<host> started a new game. You join at their first save." Its slots are then watched read
+# only at 1 Hz; a real first save is out of the run's reach, so an existing slot stands in for it (see the end).
+# Check enlarged: 02-guest-waiting-newgame (the line), 02-host-newgame.
+role host
+graphics low
+timeout 360
+ini host_save=1
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[coop\] host-held save session ON \(host
+@guest waitlog 10 \[coop\] host-held save session ON \(guest
+wait 22000
+waitlog 30 \[coop\] this game: build
+@guest waitlog 30 \[coop\] this game: build
+@guest pad A 150
+wait 2500
+@guest pad A 150
+wait 2500
+waitlog 30 \[link\] CONNECTED
+?screenshot 01-host-title
+# NEW GAME on the host's title (01-host-title of run 20261119-072148: CONTINUE, NEW GAME, LOAD GAME, ...: one DOWN). The
+# path as walked on the guest in two-games-hostsave-continue (runs 20261119-071826 / -072148): A -> "Starting a new
+# game ... overwriting" (Cancel selected) LEFT A -> Select Game Difficulty A -> "Start the game at the selected
+# difficulty level?" (Cancel selected) LEFT A -> Change Text Size A -> the start flow (0x14327B1A0) -> new world
+pad DPAD_DOWN 150
+wait 800
+screenshot 01-host-title-newgame-selected
+pad A 150
+wait 2000
+pad DPAD_LEFT 150
+wait 800
+pad A 150
+wait 2500
+screenshot 01-host-difficulty
+pad A 150
+wait 2000
+pad DPAD_LEFT 150
+wait 800
+pad A 150
+wait 2500
+screenshot 01-host-text-size
+pad A 150
+waitlog 30 \[coop\] host: New Game
+@guest waitlog 30 \[coop\] guest: the host is .*New Game: you join at the host's first save
+wait 5000
+screenshot 02-host-newgame
+@guest screenshot 02-guest-waiting-newgame
+@guest nolog \[coop\] guest: offer #
+@guest nolog \[sync\] local player entity 0+ -> 0*[1-9A-F]
+# the guest keeps waiting meanwhile
+wait 30000
+screenshot 03-host-intro
+@guest screenshot 03-guest-still-waiting
+@guest nolog \[sync\] local player entity 0+ -> 0*[1-9A-F]
+@guest nolog \[coop\] guest: offer #
+# The New Game's first autosave is out of reach in a hidden run: the intro stops at HDR Settings and then runs its
+# opening for far longer than 360 s (run 20261119-074037: 45 x START / A for 150 s did not get past HDR Settings). So an
+# existing slot stands in for it (`coop_session 9 4 18`: autosave18 is dropped from the New Game baseline; nothing is
+# written): the 1 Hz read-only poll offers it as the first save (reason 2) and the waiting guest loads it at its title.
+# This proves the poll -> offer -> guest load path, not the timing of a real first autosave.
+action coop_session 9 4 18
+waitlog 20 \[coop\] host: New Game: the first save is autosave18
+waitlog 30 \[coop\] host: offer #1 .*the first save of a New Game
+@guest waitlog 60 \[coop\] guest: offer #1 .*first save of a New Game
+@guest waitlog 60 \[coop\] guest: wrote the host's save #1 as manualsave5
+@guest waitlog 30 \[coop\] guest: title load of manualsave5 .* -> 1
+@guest waitlog 120 \[coop\] guest: in the world after .* save #1
+waitlog 60 \[coop\] host: the partner's RESULT for load #1: ok
+wait 8000
+@guest snapshot
+@guest screenshot 04-guest-world-first-save
+screenshot 04-host-intro
+action coop_session 0
+@guest action coop_session 0
+@guest quit
+wait 3000
+quit

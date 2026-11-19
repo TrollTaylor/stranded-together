@@ -48,6 +48,34 @@ On start the launcher checks, in this order:
   (`stcoop::steam_code::Parse`: blanks, case, dashes, O->0, I/L->1 tolerated;
   the player's own code is refused). Writes role=guest with `peer_steamid` and
   `secret` from the code.
+* **The host-held save** ([coop-session.md](coop-session.md); Debug option **Host holds the save**, default on):
+  Host and Join write `host_save=1`.
+  * **Host**: plays on its own saves, which hold the co-op progress. Before the game starts the launcher copies the
+    host's account folder (`%LOCALAPPDATA%\KojimaProductions\DeathStrandingDC\<account>`, read only; every slot,
+    `profile\`, the settings files, not `steam_autocloud.vdf`) to `stranded_together\backups\<yyyyMMdd-HHmmss>\`
+    (`core::BackupHostSaves`; written as `<stamp>.partial`, renamed when complete, `backup.json` inside with a `seq`
+    one higher than any backup there; the newest 5 by `seq` are kept (not by the local-time name: a clock that was set
+    ahead once or a DST fall-back never gets a fresh backup pruned; the one just made is never pruned, and
+    `later_stamped_kept=N` in `launcher.log` says when the clock went back) and only folders with our `backup.json` are
+    ever deleted; Debug option **Back up my saves before co-op**,
+    default on; a backup that fails stops Host with the reason). It also hashes every file of the real save tree that
+    is not a save slot before and after the game and logs the result (`host_save=checked nonslot_changed=N` in
+    `launcher.log`; account folders are masked). The Host card says "Co-op saves into your own save ... A backup of
+    your saves is made first".
+  * **Join**: the guest's game runs only on the private folder `stranded_together\sandbox\coop-guest`
+    (`core::SeedSessionGuest`): every slot folder and `incoming\` there is deleted at each session start (the last
+    session's copy of the host's save is a disposable cache), another account's folder is deleted, the guest's OWN
+    `profile\` and settings files are copied from its real account folder only when missing (read only; never
+    `steam_autocloud.vdf`, never a slot, never another account's `profile.dat`), so settings and bindings changed
+    during co-op stay in `coop-guest` and never reach the real tree; then the redirect probe. session.ini gets
+    `sandbox_saves=coop-guest` and `sandbox_foreign_saves=1` with `host_save=1` (`MakeSessionIniText` refuses a
+    host-save guest without exactly these two). Join refuses, before anything is deleted, when `coop-guest`, a folder
+    above it or anything below its `saves\` is a link (junction, symbolic link): the wipe never reaches through a link
+    into the real saves. The real save tree is hashed before and compared after the game,
+    and a game that does not confirm the redirect (`sandbox-active.txt`) or that the mod refused
+    (`sandbox-refused.txt`) is reported as for a test save. Without a Steam account Join refuses. The Join tab says
+    what the guest's progress is: a disposable copy of the host's world, not kept; own saves never opened.
+  * Off: the old mode, each player on their own save (no `host_save`, no backup, no `coop-guest`).
 * **Your character** (Join tab): the character the host sees you as, written as
   `my_character=<key>` (the mod sends it as STJ1 `body_id`; see
   [real-partner-body.md](real-partner-body.md)). **A guest plays Fragile in her porter suit
@@ -120,7 +148,10 @@ Three tabs (`ui::DebugTab`):
   default on, needs Real character: your partner's body stops you like another character, docs/real-partner-body.md
   section 11; unticked writes `partner_collision=0`); **Allow other characters** (launcher-only, default off,
   `"debug"` `"allow_other_characters"`, never written to session.ini: off, a guest plays Fragile (porter suit)
-  on Join and in the local test; on, both offer every offered character); **Wake the partner clone** (`partner_activate`); **Verbose mod log**; **Reset to
+  on Join and in the local test; on, both offer every offered character); **CO-OP SAVE**: **Host holds the save**
+  (`"debug"` `"host_save"`, default on: Host and Join write `host_save=1`, see Play above; off = each player on their
+  own save) and **Back up my saves before co-op** (`"backup_host_saves"`, default on, only with the first);
+  **Wake the partner clone** (`partner_activate`); **Verbose mod log**; **Reset to
   defaults**. Saved in `launcher-settings.json` under `"debug"` (sliders when released)
   and written into every `session.ini`, Host and Join included
   (`core::ApplyDebugOptions`).
@@ -273,6 +304,12 @@ sandbox_saves=<name>            Debug > Test saves: the game runs on stranded_to
 sandbox_foreign_saves=1         with sandbox_saves: skip ds.exe's save-owner check (after the redirect self-test)
 appdir_settings=1               local test: the game folder's settings.cfg -> the sandbox's
 second_instance=1               local test, second game: its single-instance mutex is renamed
+host_save=1                     the host-held save session (Host and Join, Debug "Host holds the save", default on;
+                                docs/coop-session.md). A guest with it always has sandbox_saves=coop-guest and
+                                sandbox_foreign_saves=1 (the writer refuses it otherwise; the mod ends a host-save guest
+                                in DllMain without a confirmed redirect: exit 0x53540006, sandbox-refused.txt). The
+                                launcher never writes the mod's test key coop_test_build=<text> (hidden runs only: a
+                                fake game build for the version check; ignored outside automation=1)
 local_input=host|host_pad|guest local test: input split, keeps running unfocused
 local_window=left|right         local test: the window takes that half of the monitor
 frame_cap=30                    local test: at most 30 frames per second
@@ -329,6 +366,9 @@ set; `MakeSessionIniText` refuses a key that is not an offered body (exact spell
 `my_character` is set and is not `sam`, and only when the Debug option is on and Partner body is Real
 character (`core::ApplyDebugOptions`); the mod treats a missing key as off.
 
+`host_save=1` is written only for a host or a guest; a guest's needs `sandbox_saves=coop-guest` and
+`sandbox_foreign_saves=1` in the same file (`MakeSessionIniText` refuses anything else, and `host_save` for echo or
+solo). `--write-session` follows the Debug option too (a join seeds `coop-guest` first; a host makes no backup).
 The sandbox keys are written only together (`MakeSessionIniText` refuses `second_instance`,
 `appdir_settings` or `sandbox_foreign_saves` without `sandbox_saves`, a name that is not
 `[A-Za-z0-9_-]{1,40}`, other `local_input`/`local_window` values, `frame_cap` outside 15..240).

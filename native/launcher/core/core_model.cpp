@@ -129,6 +129,8 @@ DebugOptions DebugOptionsFromSettings(const json::Value& settings) {
     o.name_tags = d->Bool("name_tags", o.name_tags);
     o.partner_collision = d->Bool("partner_collision", o.partner_collision);
     o.allow_other_characters = d->Bool("allow_other_characters", o.allow_other_characters);
+    o.host_save = d->Bool("host_save", o.host_save);
+    o.backup_host_saves = d->Bool("backup_host_saves", o.backup_host_saves);
     return ClampDebugOptions(o);
 }
 
@@ -151,6 +153,8 @@ void DebugOptionsToSettings(const DebugOptions& o, json::Value& settings) {
     d["name_tags"] = o.name_tags;
     d["partner_collision"] = o.partner_collision;
     d["allow_other_characters"] = o.allow_other_characters;
+    d["host_save"] = o.host_save;
+    d["backup_host_saves"] = o.backup_host_saves;
     settings["debug"] = d;
 }
 
@@ -276,6 +280,7 @@ public:
         }
         SessionIni ini = BaseIni("host");
         ini.secret = secret;
+        ini.host_save = debug_.host_save;   // the host plays on its own saves either way; the mod then offers them to the guest
         if (!ApplyTransport(ini, error_out)) return false;
         if (!StartSession(ini, Role::host, error_out)) return false;
         code_ = code;
@@ -302,6 +307,8 @@ public:
         ini.secret = secret;
         ini.peer_steamid = Decimal(host);
         if (!ApplyTransport(ini, error_out)) return false;
+        // The host-held save: this game runs only on the private coop-guest folder (never on your own saves).
+        if (debug_.host_save && !PrepareCoopGuest(ini, error_out)) return false;
         return StartSession(ini, Role::join, error_out);
     }
 
@@ -436,7 +443,8 @@ public:
         summary += "debug: echo_delay_s=" + std::to_string(debug_.echo_delay_s) + " echo_offset_m=" + std::to_string(debug_.echo_offset_m) +
                    " send_hz=" + std::to_string(debug_.send_hz) + " interp_delay_ms=" + std::to_string(debug_.interp_delay_ms) +
                    " partner_activate=" + (debug_.partner_activate ? "1" : "0") + " verbose=" + (debug_.verbose ? "1" : "0") +
-                   " debug_menu=" + (debug_.debug_menu ? "1" : "0") + " key=" + FunctionKeyName(debug_.debug_menu_key) + "\n";
+                   " debug_menu=" + (debug_.debug_menu ? "1" : "0") + " key=" + FunctionKeyName(debug_.debug_menu_key) +
+                   " host_save=" + (debug_.host_save ? "1" : "0") + " backup_host_saves=" + (debug_.backup_host_saves ? "1" : "0") + "\n";
         summary += std::string("transport=") + TransportName(transport_) + "\n";
         {
             const UpdateInfo u = update_info();
@@ -794,6 +802,7 @@ public:
                     LauncherLog(*env_, paths_, "game=exited");
                     CleanupSession(*env_, paths_);   // the helper may have done it already
                     FinishSandboxCheck();
+                    FinishHostCheck();
                     phase_ = Phase::after_game;
                     after_until_ = now + kAfterGameMs;
                     link_ = LinkView{};
@@ -1025,6 +1034,84 @@ private:
         test_seeded_ = true;
         LauncherLog(*env_, paths_, std::string("test_save=on sandbox=") + name);
         return true;
+    }
+
+    // The host-held save, guest (M1.2): the private coop-guest folder (its slots and incoming\ wiped, your own profile
+    // and settings copied on first use), session.ini's three keys together, the real tree hashed before the game (the
+    // same check as a test save after it).
+    bool PrepareCoopGuest(SessionIni& ini, std::string& error) {
+        const std::uint32_t account = Account();
+        if (!account) {
+            error = "Start Steam and log in first: the co-op save folder is made for your Steam account.";
+            return false;
+        }
+        const std::wstring real = RealSaveRoot();
+        SessionGuestReport report;
+        if (!SeedSessionGuest(paths_, real, account, report, error)) return false;
+        ini.host_save = true;
+        ini.sandbox_saves = kCoopGuestSandbox;
+        ini.sandbox_foreign_saves = true;   // the host's save belongs to the host's account; applied only after the redirect self-test
+        real_before_ = SaveTreeManifest(real);
+        std::string werr;
+        WriteAtomic(JoinPath2(JoinPath2(paths_.mod, L"sandbox"), L"real-saves-before.txt"), real_before_, true, werr);
+        DeleteFileChecked(SandboxRefusedPath());
+        DeleteFileChecked(SandboxActivePath());   // the mod writes it again in DllMain of this game
+        session_sandbox_ = true;
+        sandbox_unconfirmed_ = false;
+        sandbox_check_at_ = 0;
+        LauncherLog(*env_, paths_, "host_save=guest sandbox=" + std::string(kCoopGuestSandbox) + " wiped_slots=" + std::to_string(report.wiped_slots) +
+                                       " wiped_incoming=" + (report.wiped_incoming ? "1" : "0") + " removed_accounts=" +
+                                       std::to_string(report.removed_accounts) + " copied=" + std::to_string(report.copied));
+        return true;
+    }
+
+    // The host-held save, host (M1.2, M1.8): the optional backup (D1-2) and the hash of every file of the real tree that
+    // is not a save slot, compared after the game (FinishHostCheck). The host's game itself runs on the real saves.
+    bool PrepareHostSave(std::string& error) {
+        host_check_ = false;
+        const std::wstring real = RealSaveRoot();
+        std::string backup = "off";
+        if (debug_.backup_host_saves) {
+            HostBackupReport report;
+            const std::string stamp = FormatStamp(env_->LocalTime(env_->NowMs()));
+            if (!BackupHostSaves(paths_, real, Account(), stamp, kHostBackupsKept, report, error)) {
+                LauncherLog(*env_, paths_, "host_save=backup_failed");
+                error += " Turn off \"Back up my saves before co-op\" on the Debug page to host without a backup.";
+                return false;
+            }
+            backup = report.dir.empty() ? std::string("nothing_to_copy")
+                                        : "ok slots=" + std::to_string(report.slots) + " files=" + std::to_string(report.files) +
+                                              " pruned=" + std::to_string(report.pruned) +
+                                              (report.newer_named ? " later_stamped_kept=" + std::to_string(report.newer_named) +
+                                                                        " (the clock was set back: backups are ordered by their seq)"
+                                                                  : std::string());
+        }
+        host_nonslot_before_ = NonSlotManifest(SaveTreeManifest(real));
+        host_check_ = true;
+        LauncherLog(*env_, paths_, "host_save=host backup=" + backup + " nonslot_files=" + std::to_string(SplitLines(host_nonslot_before_).size()));
+        return true;
+    }
+
+    // After a hosted host-save game: every non-slot file of the real tree compared (launcher.log only; the game itself
+    // may write its profile and settings, the mod writes nothing there).
+    void FinishHostCheck() {
+        if (!host_check_) return;
+        host_check_ = false;
+        const std::vector<std::string> changes = ManifestChanges(host_nonslot_before_, NonSlotManifest(SaveTreeManifest(RealSaveRoot())));
+        std::string first;
+        if (!changes.empty()) {
+            // Account folders (all digits) never go into the log.
+            std::string c = changes[0];
+            std::string masked;
+            for (std::size_t i = 0; i < c.size();) {
+                std::size_t j = i;
+                while (j < c.size() && c[j] >= '0' && c[j] <= '9') ++j;
+                if (j > i && j - i >= 5) masked += "<id>", i = j;
+                else masked += c[i++];
+            }
+            first = " first=" + masked;
+        }
+        LauncherLog(*env_, paths_, "host_save=checked nonslot_changed=" + std::to_string(changes.size()) + first);
     }
 
     // After a game on a sandbox: did it refuse, and is the real save tree what it was?
@@ -1318,6 +1405,9 @@ private:
             session_sandbox_ = false;
             if (test_use_ && !PrepareSandbox(ini, kTestSaveSandbox, error)) return false;
         }
+        host_check_ = false;
+        // A host-save host on its real saves (not on a test save): backup and the non-slot hash first.
+        if (ini.role == "host" && ini.host_save && ini.sandbox_saves.empty() && !PrepareHostSave(error)) return false;
         std::string id;
         if (!ActivateSession(*env_, paths_, ini, id, error)) return false;
         if (!StartWatchdogFor(*env_, paths_, id))
@@ -1328,7 +1418,7 @@ private:
             return false;
         }
         LauncherLog(*env_, paths_, "launch=steam role=" + ini.role + " transport=" + ini.transport + " my_character=" + ini.my_character +
-                                       " partner_body=" + ini.partner_body);
+                                       " partner_body=" + ini.partner_body + " host_save=" + (ini.host_save ? "1" : "0"));
         session_id_ = id;
         role_ = role;
         session_transport_ = ini.transport == "udp" ? Transport::udp : Transport::steam;
@@ -1422,6 +1512,8 @@ private:
     bool sandbox_unconfirmed_ = false;   // that game never wrote sandbox-active.txt
     std::int64_t sandbox_check_at_ = 0;  // when to look for sandbox-active.txt (0 = not pending)
     std::string real_before_;        // the real save tree's manifest before that game
+    bool host_check_ = false;        // a host-save host on the real saves: compare host_nonslot_before_ after the game
+    std::string host_nonslot_before_;
     std::string test_result_;
     TestSaveView::Tone test_tone_ = TestSaveView::Tone::neutral;
     LocalTest local_;
@@ -1480,17 +1572,29 @@ int RunWriteSession(const std::wstring& game_dir, const WriteSessionRequest& req
         ini.udp_port_peer = request.udp_port_peer ? request.udp_port_peer : kDefaultUdpPort;
     }
     std::string code;
+    const bool host_save = DebugOptionsFromSettings(settings).host_save;
+    const std::uint64_t self_id = OwnSteamId(*env);
+    const std::uint32_t account = self_id > kSteamIdBase ? static_cast<std::uint32_t>(self_id - kSteamIdBase) : 0u;
     if (request.role == "host") {
         ini.role = "host";
         ini.secret = NewSecret();
-        const std::uint64_t self = OwnSteamId(*env);
-        if (!self) return fail("Steam is not logged in (no ActiveUser): a host code needs your SteamID64");
-        code = FormatJoinCode(ini.secret, self);
+        if (!self_id) return fail("Steam is not logged in (no ActiveUser): a host code needs your SteamID64");
+        code = FormatJoinCode(ini.secret, self_id);
+        ini.host_save = host_save;   // no backup here (developer tool); the Host button makes one
     } else if (request.role == "join") {
         ini.role = "guest";
         std::uint64_t host = 0;
         if (!ParseJoinCode(request.code, ini.secret, host)) return fail("--code is not a valid DST1 join code");
         ini.peer_steamid = Decimal(host);
+        if (host_save) {
+            // As Join does: the private coop-guest folder, never the real saves.
+            SessionGuestReport seeded;
+            std::string error;
+            if (!SeedSessionGuest(paths, RealSaveRoot(), account, seeded, error)) return fail(error);
+            ini.host_save = true;
+            ini.sandbox_saves = kCoopGuestSandbox;
+            ini.sandbox_foreign_saves = true;
+        }
     } else if (request.role == "echo" || request.role == "solo") {
         ini.role = request.role;
         if (request.role == "solo") ini.debug_menu = true;
@@ -1505,7 +1609,8 @@ int RunWriteSession(const std::wstring& game_dir, const WriteSessionRequest& req
     }
     std::string id, error;
     if (!ActivateSession(*env, paths, ini, id, error)) return fail(error);
-    report += "result=ok\nrole=" + ini.role + "\ntransport=" + ini.transport + "\nsession_ini=" + Utf8(paths.session_ini) + "\n";
+    report += "result=ok\nrole=" + ini.role + "\ntransport=" + ini.transport + "\nhost_save=" + (ini.host_save ? "1" : "0") +
+              "\nsession_ini=" + Utf8(paths.session_ini) + "\n";
     if (!code.empty()) report += "code=" + code + "\n";
     report += "note=one_shot: the mod renames session.ini to session.last.ini when the game reads it. No helper runs: "
               "--end-session (or the next launcher start with the game closed) removes an unread session.ini\n";

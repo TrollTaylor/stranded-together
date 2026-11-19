@@ -13,6 +13,14 @@
 //                                  (appdir_settings=1: local two-instance test)
 //   sandbox.json                   what it was seeded from (launcher only)
 // Your real save tree is only ever READ (copied from); nothing here writes below it.
+//
+// The host-held save session (M1, docs/coop-session.md) adds two folders:
+//   sandbox\coop-guest\            the guest's private session folder (SeedSessionGuest): its own profile\ and
+//                                  settings files (first use only; kept between sessions), and the copies of the
+//                                  host's save the mod writes there (manualsave5/6, incoming\), wiped at every
+//                                  session start
+//   backups\<yyyyMMdd-HHmmss>\     a read-only copy of the host's own account folder before each co-op session
+//                                  (BackupHostSaves; the newest kHostBackupsKept stay)
 #pragma once
 #include <cstdint>
 #include <string>
@@ -20,6 +28,7 @@
 
 #include "core_env.hpp"
 #include "core_paths.hpp"
+#include "core_text.hpp"
 
 namespace st::core {
 
@@ -62,6 +71,53 @@ bool SeedSandbox(const InstancePaths& paths, const SandboxPaths& sandbox, const 
                  std::uint32_t account, const std::string& seed_label, std::string& error);
 // Deletes a sandbox (only below M\sandbox).
 bool ResetSandbox(const InstancePaths& paths, const SandboxPaths& sandbox, std::string& error);
+
+// autosaveN / manualsaveN / quicksaveN (any case): a save slot folder of the game.
+bool IsSaveSlotName(const std::wstring& name);
+
+// ---- The host-held save session (M1) ------------------------------------------------------
+// The guest's private session folder (M1.2): <M>\sandbox\coop-guest.
+//  - every slot folder (autosave*, manualsave*, quicksave*) of every account folder and incoming\ are deleted (the
+//    session's copies of the host's save are a disposable cache: D1-9, wiped at the next session start); another
+//    account's folder is deleted whole (its profile.dat would stall the game's boot);
+//  - first use only (what is missing): the guest's OWN profile\ and the settings files next to it
+//    (game_settings.cfg, bindings.cfg...) from <real_root>\DeathStrandingDC\<account>\, read only;
+//    steam_autocloud.vdf and slots are never copied. What the game changes there stays in coop-guest (D1-6);
+//  - the redirect probe (written last: a folder that could not be prepared is never taken for seeded).
+// Never writes below real_root. account = the guest's Steam account id (0 = refused). Refused, before anything is
+// deleted, when the co-op folder, a folder above it or ANY entry below its saves\ is a link (junction, symbolic link):
+// the wipe never reaches through one.
+struct SessionGuestReport {
+    int wiped_slots = 0;        // slot folders deleted
+    bool wiped_incoming = false;
+    int removed_accounts = 0;   // other account folders deleted
+    int copied = 0;             // profile\ and settings files copied (first use)
+};
+bool SeedSessionGuest(const InstancePaths& paths, const std::wstring& real_root, std::uint32_t account, SessionGuestReport& report,
+                      std::string& error);
+
+// The host's backup before a co-op session (D1-2): <M>\backups\<stamp>\DeathStrandingDC\<account>\ is a copy of the
+// host's account folder (every slot, profile\, the settings files; not steam_autocloud.vdf), read only, written as
+// <stamp>.partial and renamed when complete, with backup.json ("seq": one more than the highest of the backups there).
+// Then only the newest `keep` complete backups stay, newest by seq (not by the local-time stamp: a clock set ahead once,
+// or a DST fall-back, gives older backups later names); the one just made is never pruned; only folders with our
+// backup.json are ever deleted. A host without an account folder yet: nothing copied, true.
+inline constexpr int kHostBackupsKept = 5;
+struct HostBackupReport {
+    std::wstring dir;     // the new backup ("" when there was nothing to copy)
+    int slots = 0;
+    int files = 0;        // files copied
+    int pruned = 0;       // older backups deleted
+    int newer_named = 0;  // backups kept whose time stamp is later than this one's (the clock went back): logged
+};
+std::wstring HostBackupsDir(const InstancePaths& paths);   // <M>\backups
+// stamp: FormatStamp of the local time (yyyyMMdd-HHmmss; digits and '-' only).
+bool BackupHostSaves(const InstancePaths& paths, const std::wstring& real_root, std::uint32_t account, const std::string& stamp, int keep,
+                     HostBackupReport& report, std::string& error);
+
+// SaveTreeManifest's lines without the save slots (any path with a slot folder in it): the host's files the game does
+// not write as saves (profile, settings). Pure. M1.8: hashed before and after a host's game.
+std::string NonSlotManifest(const std::string& manifest);
 
 // "relative\path\tsize\tSHA-256" for every file below root, sorted ("" for a missing root).
 std::string SaveTreeManifest(const std::wstring& root);

@@ -21,6 +21,10 @@
 //                               process only. Only with an active redirect (two games must never
 //                               share one save tree).
 //   local_input=host|host_pad|guest   input split of the local two-instance test (overlay_input).
+//   role=guest + host_save=1    the host-held save session's guest (docs/coop-session.md, M1.2): it must run on a
+//                               confirmed save redirect (sandbox_saves=coop-guest from the launcher, or a hidden run's
+//                               automation redirect). Without one the mod ends ds.exe in DllMain (Mode::refuse_host_save):
+//                               a guest never runs a co-op session on its own saves.
 //
 // Without these keys nothing here runs. When a requested redirect cannot be installed the
 // mod ends ds.exe in DllMain (exit code kRefusedExitCode) and leaves
@@ -46,6 +50,9 @@ constexpr const wchar_t* kActiveFile = L"sandbox-active.txt";       // in the in
 constexpr const wchar_t* kInstanceEnv = L"ST_INSTANCE_DIR";
 constexpr const char* kAppMutex = "DeathStrandingDCAppMutex";
 constexpr const char* kMutexSuffix = "-StrandedTogether-2";
+// The host-held save session's guest folder (stranded_together\sandbox\coop-guest; the launcher's
+// core::kCoopGuestSandbox is the same name).
+constexpr const char* kCoopGuestSandbox = "coop-guest";
 
 // [A-Za-z0-9_-], 1..40 characters: a folder name under stranded_together\sandbox.
 inline bool ValidSandboxName(const std::string& s) {
@@ -147,6 +154,8 @@ struct Request {
     // (a one-shot file already consumed, deleted, or ds.exe restarted itself) it must not run on
     // the real saves.
     bool instance_env = false;
+    // role=guest with host_save=1 (the host-held save session): only on a redirect.
+    bool guest_host_save = false;
 };
 enum class Mode : std::uint8_t {
     none,              // nothing requested: no hooks, no change (every normal launch)
@@ -155,10 +164,14 @@ enum class Mode : std::uint8_t {
     refuse_bad_name,   // sandbox_saves is not a valid name: refuse (never guess a folder)
     refuse_orphan,     // second_instance / appdir_settings / sandbox_foreign_saves without any redirect: refuse
     refuse_instance,   // ST_INSTANCE_DIR set but no redirect requested: refuse (a local-test game never uses the real saves)
+    refuse_host_save,  // role=guest + host_save=1 but no redirect requested: refuse (the guest never has the save)
 };
+// automation and sandbox install the redirect and self-test it, or refuse (automation.cpp): a host-save guest on
+// either runs only redirected.
 inline Mode Decide(const Request& r) {
     if (r.automation) return Mode::automation;
     if (!r.sandbox.empty()) return ValidSandboxName(r.sandbox) ? Mode::sandbox : Mode::refuse_bad_name;
+    if (r.guest_host_save) return Mode::refuse_host_save;
     if (r.second_instance || r.appdir_settings || r.sandbox_foreign) return Mode::refuse_orphan;
     if (r.instance_env) return Mode::refuse_instance;
     return Mode::none;

@@ -101,11 +101,19 @@ struct Scenario {
     std::vector<std::string> host_ini;   // "@host ini key=value": the first game only, written after `ini`
     std::vector<std::string> guest_ini;  // "@guest ini key=value": the guest game only (role host), after `ini`
     int guest_ini_line = 0;              // for the role-host check's error message
+    // "guest unredirected" (role host): the guest's session.ini is the host-held save session's guest WITHOUT any save
+    // redirect (no automation=1, no sandbox_saves; role=guest host_save=1). The run expects the guest's mod to end
+    // ds.exe in DllMain (exit 0x53540006, sandbox-refused.txt) before ds.exe's own code runs; no @guest step may follow.
+    bool guest_unredirected = false;
+    int guest_unredirected_line = 0;
     std::vector<Step> steps;
 };
 // Keys a scenario may add to session.ini with "ini key=value" (nothing that touches saves,
 // automation, isolation or instances).
 bool ScenarioIniKeyAllowed(const std::string& key);
+// The guest session.ini of "guest unredirected": role=guest, host_save=1, loopback ports, second_instance=1, and no
+// automation / sandbox key at all (the mod must refuse it in DllMain).
+std::string UnredirectedGuestIniText(unsigned port_local, unsigned port_peer);
 bool ParseScenario(const std::string& text, Scenario* out, std::string* error);
 // Seconds the supervisor waits for the ack of one mod command.
 unsigned AckTimeoutSeconds(const std::string& mod_command);
@@ -150,6 +158,11 @@ bool SeedScratch(const std::wstring& run_dir, const std::wstring& scratch, std::
 // game_settings.cfg, steam_autocloud.vdf) stays the user's. Only ever touches the scratch
 // copy. *accounts = how many account folders were seeded.
 bool ApplySeedSaves(const std::wstring& scratch, const std::wstring& seed, int* accounts, std::string* error);
+// --guest-seed profile-only (the host-held save session, docs/coop-session.md): the guest game's scratch copy keeps
+// only what is not a save slot (profile\, the settings files) in every Steam account folder: every
+// autosave*/manualsave*/quicksave* folder is deleted, as the launcher's coop-guest folder has none at a session's
+// start. Only ever touches the scratch copy (refused unless `scratch` has the redirect probe). *slots = folders removed.
+bool StripScratchSlots(const std::wstring& scratch, int* slots, std::string* error);
 // HashManifest(dir) without the redirect probe line (the probe is deleted before the after-hash).
 std::string ManifestWithoutProbe(const std::wstring& dir);
 struct SavesCheck {

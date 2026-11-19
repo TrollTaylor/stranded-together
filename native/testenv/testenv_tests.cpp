@@ -77,6 +77,10 @@ void CommandParser() {
     Check(au::NormalizeActionName("Respawn partner") == "respawn_partner" && au::NormalizeActionName("LOG-status ") == "log_status" &&
               au::NormalizeActionName("Teleport to partner") == "teleport_to_partner",
           "action names: label <-> snake case");
+    // session.ini saved as "UTF-8 with BOM": its first key reads as itself in every reader (DllMain's EarlyInit, Init).
+    Check(au::detail::StripBom("\xEF\xBB\xBFrole=guest") == "role=guest" && au::detail::StripBom("role=guest") == "role=guest" &&
+              au::detail::StripBom("\xEF\xBB") == "\xEF\xBB" && au::detail::StripBom("\xEFrole") == "\xEFrole",
+          "session.ini: a UTF-8 BOM is stripped from the first line only when it is all three bytes");
 }
 
 void ScenarioParser(const std::wstring& dir) {
@@ -366,6 +370,15 @@ void SavesGuard(const std::wstring& work) {
               "seed: the real saves are untouched");
         Check(!te::ApplySeedSaves(scratch, base + L"\\no-seed", &accounts, &err), "seed: a folder without DeathStrandingDC is refused");
         Check(te::ManifestWithoutProbe(scratch).find(".st-redirect-probe") == std::string::npos, "seed: manifest without the probe");
+        // --guest-seed profile-only: the guest's scratch keeps the profile and settings, no slot at all.
+        Put(sa + L"\\bindings.cfg", "binds");
+        int slots = 0;
+        Check(te::StripScratchSlots(scratch, &slots, &err) && slots == 1 && !te::DirExists(sa + L"\\manualsave4") &&
+                  Get(sa + L"\\profile\\profile.dat") == "profile" && Get(sa + L"\\bindings.cfg") == "binds" &&
+                  Get(sa + L"\\steam_autocloud.vdf") == "vdf",
+              "guest seed profile-only: every slot removed, profile and settings kept", err);
+        Check(!te::StripScratchSlots(real, &slots, &err) && te::DirExists(dc + L"\\autosave0"),
+              "guest seed profile-only: never a folder without the redirect probe (the real tree)");
         te::RemoveTree(scratch);
         Check(te::SeedScratch(run, scratch, &err), "scratch re-seeded from the backup after the seed test", err);
     }
@@ -752,6 +765,24 @@ void SandboxRules() {
     r.instance_env = true;
     r.automation = true;
     Check(sb::Decide(r) == sb::Mode::automation, "ST_INSTANCE_DIR with automation=1: a hidden two-game run's guest");
+    // The host-held save's guest (role=guest host_save=1): only on a redirect, never on the real saves.
+    r = sb::Request{};
+    r.guest_host_save = true;
+    Check(sb::Decide(r) == sb::Mode::refuse_host_save, "role=guest host_save=1 without a redirect: refused (exit 0x53540006)");
+    r.sandbox = sb::kCoopGuestSandbox;
+    Check(sb::Decide(r) == sb::Mode::sandbox, "role=guest host_save=1 with sandbox_saves=coop-guest: the redirect");
+    r.sandbox.clear();
+    r.automation = true;
+    Check(sb::Decide(r) == sb::Mode::automation, "role=guest host_save=1 in a hidden run: the automation redirect");
+    r = sb::Request{};
+    r.guest_host_save = true;
+    r.sandbox = "..\\x";
+    Check(sb::Decide(r) == sb::Mode::refuse_bad_name, "role=guest host_save=1 with a bad sandbox name: refused");
+    r = sb::Request{};
+    r.guest_host_save = true;
+    r.instance_env = true;
+    r.second_instance = true;
+    Check(sb::Decide(r) == sb::Mode::refuse_host_save, "a host-save guest's refusal comes first (one reason)");
     Check(sb::SandboxForeignAllowed(true, true) && !sb::SandboxForeignAllowed(true, false) && !sb::SandboxForeignAllowed(false, true),
           "test-save foreign-save bypass: only requested and after the redirect self-test");
     Check(sb::ParseLocalInput("host") == sb::LocalInput::host && sb::ParseLocalInput("guest") == sb::LocalInput::guest &&
@@ -817,6 +848,20 @@ void SandboxRules() {
     Check(!te::ParseScenario("role solo\n@guest pad A 100\n", &sc, &err), "scenario: @guest without role host is refused");
     Check(!te::ParseScenario("role host\n@both waitlog 5 x\n", &sc, &err), "scenario: @both only for mod commands and waitready");
     Check(!te::ParseScenario("role host\n@guest @guest quit\n", &sc, &err), "scenario: one @ prefix per step");
+    // guest unredirected (guest-refuse-unredirected): role host only, no @guest step / ini, the guest's file has no redirect
+    Check(te::ParseScenario("role host\nguest unredirected\nini host_save=1\nwaitready 5\nquit\n", &sc, &err) && sc.guest_unredirected,
+          "scenario: guest unredirected", err);
+    Check(!te::ParseScenario("role solo\nguest unredirected\nquit\n", &sc, &err), "scenario: guest unredirected needs role host");
+    Check(!te::ParseScenario("role host\nguest unredirected\n@guest pad A 100\nquit\n", &sc, &err), "scenario: guest unredirected refuses @guest steps");
+    Check(!te::ParseScenario("role host\nguest unredirected\n@guest ini name=x\nquit\n", &sc, &err), "scenario: guest unredirected refuses @guest ini");
+    Check(!te::ParseScenario("role host\n?guest unredirected\nquit\n", &sc, &err), "scenario: guest unredirected cannot be optional");
+    Check(te::ScenarioIniKeyAllowed("host_save") && te::ScenarioIniKeyAllowed("coop_test_build") && !te::ScenarioIniKeyAllowed("sandbox_saves"),
+          "scenario ini: host_save and coop_test_build allowed, sandbox_saves not");
+    const std::string ug = te::UnredirectedGuestIniText(27556, 27555);
+    Check(ug.find("role=guest\n") != std::string::npos && ug.find("host_save=1\n") != std::string::npos && ug.find("automation") == std::string::npos &&
+              ug.find("sandbox_saves") == std::string::npos && ug.find("udp_port_local=27556\n") != std::string::npos &&
+              ug.rfind("# Generated by Stranded Together", 0) != 0,
+          "guest unredirected: role=guest host_save=1, no automation or sandbox key");
 }
 
 int wmain(int argc, wchar_t** argv) {

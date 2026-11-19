@@ -384,6 +384,10 @@ before/after, no violation, game folder restored (`restored.txt` ok), no `error.
 
 ```
 role solo|echo|host          session role (default solo); host: a second (guest) game too ("Two games")
+guest unredirected           role host only: the guest's session.ini is role=guest host_save=1 WITHOUT any save
+                             redirect (no automation=1, no sandbox_saves); the supervisor expects its mod to end it in
+                             DllMain (exit 0x53540006 + sandbox-refused.txt naming host_save) within 15 s and stops
+                             the whole run otherwise (summary.json "guest_refused_as_expected"); no @guest step or ini
 ini <key>=<value>            an extra session.ini line, for every game of the run; only partner_body,
                              partner_character, my_character, self_character, partner_holo, partner_marker, partner_voice,
                              partner_activate, pose_hook, echo_delay_s, echo_offset_m, send_hz,
@@ -391,7 +395,9 @@ ini <key>=<value>            an extra session.ini line, for every game of the ru
                              partner_collision_layer, partner_collision_height, partner_gear, name_tag_font,
                              smooth_pose, frame_cap, audio_probe, self_voice, voice_sync, voice_subtitles, sound_sync,
                              sound_steps, partner_volume, self_headgear, self_feet_hide, boots_sync,
-                             vehicle_sync, vehicle_overlap_hide, vehicle_look, vehicle_packs, vehicle_sound
+                             vehicle_sync, vehicle_overlap_hide, vehicle_look, vehicle_packs, vehicle_sound,
+                             host_save, coop_test_build (the host-held save session, docs/coop-session.md;
+                             coop_test_build: a fake game build, honoured in hidden runs only)
                              (testenv_core ScenarioIniKeyAllowed; a scenario
                              frame_cap is written after graphics low's 30, so it wins)
 @host ini <key>=<value>      the same, for the first game only; @guest ini for the guest game only (role
@@ -868,6 +874,26 @@ hidden: `Start-TestRun.ps1 -Scenario two-games -SeedSaves complete-100`.
   evidence gate (`guest saves redirect: CONFIRMED`). `second_instance=1` renames ds.exe's
   single-instance mutex for that process only (`[mod] second instance: mutex=renamed (1 call(s)
   ...)`; without it the second ds.exe exits with code 1).
+* **Guest seed (`-GuestSeed full|profile-only`, supervisor `--guest-seed`).** `full` (default): the guest's scratch
+  is seeded like the host's (your saves, then `-SeedSaves`' slots). `profile-only`: the guest's scratch keeps only
+  what is not a save slot (`profile\`, `game_settings.cfg`, `bindings.cfg`...): every `autosave*`/`manualsave*`/
+  `quicksave*` folder is removed after seeding (`te::StripScratchSlots`, refused for a folder without the redirect
+  probe, so never the real tree) and `-SeedSaves` is applied to the host only. That is the host-held save session's
+  guest at a session start (docs/coop-session.md): it has no save of its own and gets the host's over the link.
+  Logged as `guest seed: profile-only (N slot folder(s) removed ...)`; `summary.json` `"guest_seed"`; the guest's own
+  "before" manifest is `saves-guest-scratch-before.txt` (so `guest_scratch_changes` lists only what the guest's game
+  changed). Example:
+  `Start-TestRun.ps1 -Scenario two-games-hostsave-continue -SeedSaves complete-100 -GuestSeed profile-only`. Ignored
+  (logged) without a second game.
+* **The host-held save scenarios** (`ini host_save=1`, docs/coop-session.md section 8): `two-games-hostsave-continue`,
+  `-reload`, `-retry`, `-newgame`, `-linkloss`, `-late`, `-version` (all with `-GuestSeed profile-only`) and
+  `guest-refuse-unredirected` (the `guest unredirected` directive); all pass (2026-11-19, docs/coop-session.md section
+  9). `action coop_session 1 <ms>` drops every received datagram for ms on that game (hidden runs only; `@both` for an
+  outage on both sides), `5 <type> <index>` / `6` / `7 [1|2]` make the host's in-world Load / QuitGame / checkpoint
+  retry (`7 1` asks, `7 2` requests without a checkpoint), `8 <0|1|2>` hides the guest's waiting panel for a screenshot
+  of its title (2: the input block lifted too, the gate alone holds the title), `9 <type> <index>` lets a slot stand in
+  for a New Game's first save. The title's New Game path for a pad: one DOWN from CONTINUE (on a title with a save), A,
+  LEFT + A (the confirmation selects Cancel), A on the difficulty, LEFT + A, A on Change Text Size.
 * **Steps.** `@guest <step>` sends a mod command / `waitready` / `waitlog` / `until` to the guest;
   `@both` a mod command to both. Each game's log is matched separately. A guest that exits after
   `@guest quit` does not end the run; otherwise either game exiting does.

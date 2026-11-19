@@ -622,6 +622,13 @@ void Draw(Context& c) {
     bool open = true;
     if (ImGui::Begin(title, &open, ImGuiWindowFlags_NoCollapse)) {
         Header(c);
+        if (c.coop) {  // the host-held save session (docs/coop-session.md)
+            Text(c.coop->banner_warn ? &kAmber : &kDim, "Co-op save: %s", c.coop->status[0] ? c.coop->status : "-");
+            if (c.coop->teleport_offer) {
+                if (ImGui::Button("Teleport to host")) c.coop_teleport = true;
+                Tooltip("You joined while the host was playing: go to where the host is now (once).");
+            }
+        }
         if (ImGui::BeginTabBar("tabs")) {
             const auto flags = [](int i) {
                 return g_select_tab == i ? ImGuiTabItemFlags_SetSelected : ImGuiTabItemFlags_None;

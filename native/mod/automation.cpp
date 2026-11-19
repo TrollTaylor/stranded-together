@@ -1428,13 +1428,21 @@ DWORD WINAPI Thread(LPVOID) {
 
 }  // namespace
 
+void RefuseUnredirected(const char* why) noexcept {
+    LogShutdown();
+    g_mode.store(2);
+    RefuseAndExit(why);
+}
+
 bool Init(const std::wstring& mod_dir) noexcept {
     try {
         std::ifstream in(mod_dir + L"\\session.ini");
         if (!in) return false;
         std::string line;
-        bool on = false, mute = true, isolate = true, sandbox = false;
+        bool on = false, mute = true, isolate = true, sandbox = false, role_guest = false, host_save = false, first = true;
         while (std::getline(in, line)) {
+            if (first) line = detail::StripBom(line);   // as LoadConfig and EarlyInit
+            first = false;
             line = detail::Trim(line);
             if (line.empty() || line[0] == '#' || line[0] == ';') continue;
             const auto eq = line.find('=');
@@ -1445,6 +1453,17 @@ bool Init(const std::wstring& mod_dir) noexcept {
             else if (k == "automation_mute") mute = b;
             else if (k == "automation_isolate") isolate = b;
             else if (k == "sandbox_saves" && !v.empty()) sandbox = true;
+            else if (k == "role") role_guest = v == "guest";
+            else if (k == "host_save") host_save = b;
+        }
+        if (!on && role_guest && host_save && !g_rd_active.load()) {
+            // A host-save guest (M1.2): DllMain refuses it without a redirect; never let it run on if that was missed.
+            Log("[sandbox] saves=NOT redirected although this is a host-save guest (role=guest host_save=1): ending ds.exe before it "
+                "can touch your saves");
+            LogShutdown();
+            g_mode.store(2);
+            RefuseAndExit("role=guest with host_save=1 but the save redirect was not installed in DllMain");
+            return false;
         }
         if (!on && sandbox) {
             // Launcher test save (sandbox.hpp): DllMain installed the redirect, or the game must not run.
@@ -1746,6 +1765,7 @@ bool WaitForGameD3D12(unsigned timeout_ms, bool log_create_device) noexcept {
 bool Enabled() noexcept { return g_enabled.load(); }
 std::wstring OutDir() noexcept { return g_enabled.load() ? g_out : std::wstring(); }
 bool SavesRedirected() noexcept { return g_rd_active.load(); }
+const wchar_t* SavesScratchRoot() noexcept { return g_rd_active.load() && g_scratch[0] ? g_scratch : nullptr; }
 bool ForeignSavesBypassed() noexcept { return g_foreign_bypassed.load(); }
 bool MuteRequested() noexcept { return g_mute.load(); }
 bool IsolateRequested() noexcept { return g_isolate.load(); }
@@ -1952,12 +1972,17 @@ void EarlyInit() noexcept {
         }
         return;
     }
-    bool exit_trace = true, foreign = false;
+    bool exit_trace = true, foreign = false, role_guest = false, host_save = false;
     sandbox::Request req;
     req.instance_env = instanced;
     std::wstring extra_root;
     try {
-        std::size_t at = 0;
+        // A file saved as "UTF-8 with BOM": its first key must still read as itself (LoadConfig strips the BOM too; a
+        // differently read role= / host_save= would leave a host-save guest unredirected).
+        std::size_t at = ini.size() >= 3 && static_cast<unsigned char>(ini[0]) == 0xEF && static_cast<unsigned char>(ini[1]) == 0xBB &&
+                                 static_cast<unsigned char>(ini[2]) == 0xBF
+                             ? 3
+                             : 0;
         while (at < ini.size()) {
             std::size_t nl = ini.find('\n', at);
             if (nl == std::string::npos) nl = ini.size();
@@ -1976,6 +2001,8 @@ void EarlyInit() noexcept {
             else if (k == "sandbox_foreign_saves") req.sandbox_foreign = b;
             else if (k == "appdir_settings") req.appdir_settings = b;
             else if (k == "second_instance") req.second_instance = b;
+            else if (k == "role") role_guest = lv == "guest";
+            else if (k == "host_save") host_save = b;
             else if (k == "automation_save_root" && !v.empty()) {  // tests: an extra root (UTF-8)
                 const int wn = MultiByteToWideChar(CP_UTF8, 0, v.data(), static_cast<int>(v.size()), nullptr, 0);
                 extra_root.assign(static_cast<std::size_t>(wn > 0 ? wn : 0), L'\0');
@@ -1986,9 +2013,11 @@ void EarlyInit() noexcept {
         req.automation = true;  // unreadable but present: refuse below rather than guess
         extra_root.clear();
     }
+    req.guest_host_save = role_guest && host_save;
     const sandbox::Mode mode = sandbox::Decide(req);
-    // (a test-save sandbox session is redirected too: allowed, the supervisor's --sandbox-session)
-    if (supervised && mode != sandbox::Mode::automation && mode != sandbox::Mode::sandbox) {
+    // (a test-save sandbox session is redirected too: allowed, the supervisor's --sandbox-session; a host-save guest
+    // without a redirect is refused below with its own reason: the hidden test "guest-refuse-unredirected")
+    if (supervised && mode != sandbox::Mode::automation && mode != sandbox::Mode::sandbox && mode != sandbox::Mode::refuse_host_save) {
         g_mode.store(1);
         RefuseAndExit("started by st_testenv_supervisor but session.ini has no automation=1 (not the run's file): not running on the "
                       "real saves");
@@ -2014,6 +2043,11 @@ void EarlyInit() noexcept {
     if (mode == sandbox::Mode::refuse_instance) {
         RefuseAndExit("started for the local two-player test (ST_INSTANCE_DIR) but its session.ini asks for no test save "
                       "(sandbox_saves=): not running on the real saves");
+        return;
+    }
+    if (mode == sandbox::Mode::refuse_host_save) {
+        RefuseAndExit("role=guest with host_save=1 but no save redirect (sandbox_saves=coop-guest): the guest of a host-held save "
+                      "session never runs on its own saves");
         return;
     }
     // Only st_testenv_supervisor starts a hidden run (it sets this variable for its child).

@@ -37,6 +37,10 @@ param(
     [string]$GameSettings,
     # The launcher's "Play with test save" session.ini (sandbox_saves, no automation channel; scenario sandbox-alive).
     [switch]$SandboxSession,
+    # Two-game runs: what the guest game's scratch saves hold. full (default): the user's saves (and -SeedSaves' slots),
+    # as the host. profile-only: the guest's own profile\ and settings only, no save slot (the host-held save session's
+    # guest: it gets the host's save over the link; docs/coop-session.md). The host's scratch is seeded as always.
+    [ValidateSet('full', 'profile-only')][string]$GuestSeed = 'full',
     [switch]$KeepAudio,
     [switch]$NoBuild,
     # Bisecting a game that does not start (docs/hidden-testing.md "When the game exits at once"):
@@ -109,6 +113,7 @@ if ($SeedSaves -and $SeedSaves -ne 'own') {
 if ($GameSettings) { $supArgs += @('--game-settings', (Resolve-Path $GameSettings).Path) }
 if ($SettingsCfg) { $supArgs += @('--settings-cfg', (Resolve-Path $SettingsCfg).Path) }
 if ($SandboxSession) { $supArgs += '--sandbox-session' }
+if ($GuestSeed -ne 'full') { $supArgs += @('--guest-seed', $GuestSeed) }
 if ($KeepAudio) { $supArgs += '--keep-audio' }
 if ($NoMod) { $supArgs += '--no-mod' }
 if ($NoUiLimits) { $supArgs += '--no-ui-limits' }

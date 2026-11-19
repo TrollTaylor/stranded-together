@@ -289,6 +289,15 @@ inline constexpr std::size_t kMaxReliableMessage = 1024;
 inline constexpr unsigned kReliableWindow = 32;
 inline constexpr std::size_t kRetransmitBudgetBytes = 2400;  // retransmitted payload per 20 ms tick
 inline constexpr std::uint64_t kZeroWindowProbeMs = 1000;
+// Reliable DATA packets per 20 ms transport tick: 4 normally, so the pose stream is never starved; up to 16 while
+// the save channel (4) has queued data and its sender is at the title or on a loading screen (the host-held save's
+// transfer, docs/coop-session.md: about 32 KB per round trip instead of 8).
+inline constexpr unsigned kSaveChannel = 4;
+inline constexpr unsigned kReliablePacketsPerTick = 4;
+inline constexpr unsigned kSaveBurstPacketsPerTick = 16;
+inline constexpr unsigned ReliablePacketsPerTick(bool save_queued, bool save_burst_phase) noexcept {
+    return save_queued && save_burst_phase ? kSaveBurstPacketsPerTick : kReliablePacketsPerTick;
+}
 inline constexpr std::uint32_t kMaxRtoMs = 2000;
 
 enum class ReliableResult : std::uint8_t { queued, replaced, full, not_connected, too_large, bad_channel };

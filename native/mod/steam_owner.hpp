@@ -27,6 +27,11 @@ Phase GetPhase() noexcept;
 const char* FailReason() noexcept;
 std::uint64_t SelfId() noexcept;
 const char* PersonaName() noexcept;  // empty until ready
+// The Steam id of the user the game itself runs as, asked from the game's own steam_api64.dll (ISteamUser
+// SteamUser021 GetSteamID) without the transport: works with transport=udp and while Pump() never runs. SelfId() when
+// ready; 0 until steam_api is initialized, when it is not an individual id, or after a fault (SEH; then never again).
+// Game thread (as Pump). Its low 32 bits name the game's save folder (DeathStrandingDC\<account id>).
+std::uint64_t QuerySelfId() noexcept;
 
 // SteamTransportConfig::resolve target: 1 ready, -1 failed, 0 pending.
 int Resolve(void* ctx, stcoop::lab::SteamNetApi& out, const char*& reason) noexcept;

@@ -26,7 +26,7 @@ if(GIT_FOUND)
       # fail the check instead of silently dropping each other's frames; editing one of them re-runs
       # this configure step. The commit is shortened when needed to stay within the 16 bytes.
       set(_st_wire_files native/mod/pose_wire.hpp native/mod/pose_wire.cpp native/include/stcoop/link_protocol.hpp
-                         native/net/link_protocol.cpp)
+                         native/net/link_protocol.cpp native/mod/save_xfer.hpp native/mod/save_xfer.cpp)
       set(_st_wire_text "")
       foreach(_f IN LISTS _st_wire_files)
         file(READ "${CMAKE_CURRENT_SOURCE_DIR}/${_f}" _t)
@@ -138,6 +138,9 @@ add_library(st_mod SHARED
   native/mod/partner_voice.cpp
   native/mod/partner_sound.cpp
   native/mod/vehicle_sync.cpp
+  native/mod/save_xfer.cpp
+  native/mod/save_xfer_io.cpp
+  native/mod/coop_session.cpp
   native/mod/automation.cpp
 
   native/mod/sandbox.cpp
@@ -182,6 +185,15 @@ target_link_libraries(st_net_tests PRIVATE st_net)
 target_compile_options(st_net_tests PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_net_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_test(NAME st_net_tests COMMAND st_net_tests)
+
+# ---- The host-held save's transfer (STX1, native/mod/save_xfer.*): the wire, the sender and receiver state
+# machines, SHA-256, checkpoint.dat validation, the link's burst cap, and the read-only reader / sandbox writer on
+# temporary folders (never a real save).
+add_executable(st_save_xfer_tests tests/save_xfer_tests.cpp native/mod/save_xfer.cpp native/mod/save_xfer_io.cpp)
+target_include_directories(st_save_xfer_tests PRIVATE native/mod native/include)
+target_compile_options(st_save_xfer_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_save_xfer_tests PRIVATE _CRT_SECURE_NO_WARNINGS UNICODE _UNICODE)
+add_test(NAME st_save_xfer_tests COMMAND st_save_xfer_tests)
 
 # ---- st_fakepeer: console stand-in for the second player (UDP), + self-test
 add_executable(st_fakepeer tools/fakepeer/fakepeer.cpp native/mod/link.cpp native/mod/steam_owner.cpp

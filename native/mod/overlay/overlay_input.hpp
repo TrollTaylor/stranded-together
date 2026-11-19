@@ -158,6 +158,12 @@ void ClearHeldForTest() noexcept;
 
 void SetOpen(bool open) noexcept;
 bool IsOpen() noexcept;
+// The co-op waiting screen (host-held save session, docs/coop-session.md): the game's input is blocked exactly as
+// for the open menu (keys, mouse, raw input, cursor, XInput), except pad A, Enter and Space, which still reach the
+// game so a notice behind the screen (the offline-mode notice) can be dismissed; the mod's own gate refuses any world
+// start the title menu would make. Any thread. Independent of the menu (closing the menu keeps this block).
+void SetWaitBlock(bool on) noexcept;
+bool WaitBlocked() noexcept;
 
 std::size_t Drain(Event* out, std::size_t max) noexcept;
 // Cursor position in client pixels of the attached window.

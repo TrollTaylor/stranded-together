@@ -69,6 +69,10 @@ enum class Action : std::uint8_t {
                           //   6 offset up v[1] cm, 7 list, 8 / 12 / 9 / 16 / 17 placements (hidden tests), 10 hold sends v[1] ms,
                           //   11 overlap hiding v[1], 13 meters, 21 the copy's collision, 22 / 23 pin the copy (hidden tests)
                           //   (session.ini vehicle_sync; docs/real-partner-body.md section 22)
+    coop_session,         // v[0] = 0 log, 1 test link blackout v[1] ms, 2 offer the newest save (host), 3 accept the teleport offer
+                          //   (guest), 4 log the slots (host), 5 test in-world load type v[1] index v[2] (host), 6 test QuitGame,
+                          //   7 test checkpoint retry (host), 8 test: waiting panel hidden v[1] (guest); 1 and 5-8 hidden runs only
+                          //   (session.ini host_save=1; docs/coop-session.md)
     count
 
 };

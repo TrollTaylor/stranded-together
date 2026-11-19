@@ -1,0 +1,79 @@
+# The host-held save session (docs/coop-session.md, M1.12 #2), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-hostsave-reload -SeedSaves complete-100 -GuestSeed profile-only
+# Both start from the host's Continue (as two-games-hostsave-continue). Then the host loads autosave18 in the world (the
+# pause menu's Load, called by `action coop_session 5 4 18`, as the proof run did): the host's mod offers it (load #2),
+# the guest writes manualsave6 (never the slot in use) and follows through the in-world load. Both stand at the same
+# spot again (compare the snapshots). Then the host quits to its title (`action coop_session 6`: QuitGame): the guest
+# follows to its title (D1-4) and shows the waiting screen again; if QuitGame were to end the game instead of reaching
+# the title, the guest would stay in the world with "<host> is at the title screen" (its log says which).
+# Check enlarged: 03-host-world2 / 03-guest-world2 (the same place, the roadster of the first view gone on both),
+# 05-guest-waiting-again.
+role host
+graphics low
+timeout 360
+ini host_save=1
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[coop\] host-held save session ON \(host
+@guest waitlog 10 \[coop\] host-held save session ON \(guest
+wait 22000
+@guest screenshot 01-guest-waiting
+waitlog 30 \[coop\] this game: build
+@guest waitlog 30 \[coop\] this game: build
+# A on the guest only dismisses the offline-mode notice (the gate holds the title)
+@guest pad A 150
+wait 2500
+@guest pad A 150
+wait 2500
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 90 \[coop\] guest: wrote the host's save #1 as manualsave5
+@guest waitlog 30 \[coop\] guest: title load of manualsave5 .* -> 1
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+waitlog 60 \[coop\] host: the partner's RESULT for load #1: ok
+wait 15000
+snapshot
+@guest snapshot
+screenshot 02-host-world1
+@guest screenshot 02-guest-world1
+# the host loads autosave18 in the world; the guest follows (manualsave6, in-world load)
+action coop_session 5 4 18
+waitlog 20 \[coop\] host: in-world Load \(type 0x4, index 18
+waitlog 60 \[coop\] host: offer #2
+@guest waitlog 90 \[coop\] guest: wrote the host's save #2 as manualsave6
+@guest waitlog 30 \[coop\] guest: in-world load of manualsave6 .* requested
+@guest waitlog 180 \[coop\] guest: in the world after .* save #2
+waitlog 120 \[coop\] host: the partner's RESULT for load #2: ok
+wait 15000
+snapshot
+@guest snapshot
+screenshot 03-host-world2
+@guest screenshot 03-guest-world2
+# the host quits to its title: the guest follows (QuitGame) and waits again
+action coop_session 6
+waitlog 60 \[coop\] host: back at the title
+@guest waitlog 30 \[coop\] guest: the host went back to the title: QuitGame
+?@guest waitlog 60 \[coop\] guest: back at the title
+wait 8000
+screenshot 05-host-title
+@guest screenshot 05-guest-waiting-again
+# the guest's title now offers CONTINUE (its manualsave6): the gate refuses it too (input block lifted for the test)
+@guest action coop_session 8 2
+wait 1500
+@guest screenshot 06-guest-title-continue
+@guest pad A 150
+@guest waitlog 15 \[coop\] gate: BLOCKED the title menu's start \(choice \+0x130 = 0
+wait 4000
+@guest screenshot 06-guest-continue-held
+@guest action coop_session 8 0
+@guest action coop_session 0
+action coop_session 0
+@guest action coop_session 0
+@guest quit
+wait 3000
+quit

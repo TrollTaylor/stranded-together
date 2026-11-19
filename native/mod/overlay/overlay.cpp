@@ -94,6 +94,12 @@ std::atomic<bool> g_create_hooks{false};
 SetFullscreenStateFn g_orig_set_fullscreen = nullptr;
 std::atomic<bool> g_logged_fullscreen{false};
 
+// Co-op session screens (SetCoopView): a copy under a lock, drawn by the render thread.
+SRWLOCK g_coop_lock = SRWLOCK_INIT;
+CoopView g_coop;
+std::atomic<bool> g_coop_shown{false};  // the waiting panel or a banner is up
+std::atomic<unsigned> g_coop_requests{0};
+
 // Screenshots (RequestCapture / TakeCapture). Serviced inside Present.
 struct CaptureSlot {
     std::uint32_t id = 0;  // 0 = free
@@ -293,6 +299,78 @@ bool HintActive(double now) noexcept {
     return true;
 }
 
+CoopView CoopCopy() noexcept {
+    AcquireSRWLockShared(&g_coop_lock);
+    CoopView v = g_coop;
+    ReleaseSRWLockShared(&g_coop_lock);
+    return v;
+}
+
+// Text centred at y with an explicit size (the draw list: no window, no layout).
+float CentredText(ImDrawList* dl, float y, float size, ImU32 color, const char* text) noexcept {
+    const ImVec2 ds = ImGui::GetIO().DisplaySize;
+    const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(size, ds.x * 0.9f, ds.x * 0.9f, text);
+    dl->AddText(ImGui::GetFont(), size, ImVec2((ds.x - sz.x) * 0.5f, y), color, text, nullptr, ds.x * 0.9f);
+    return sz.y;
+}
+
+// The guest's waiting screen: opaque, full screen, the host's progress and the Leave button.
+void DrawCoopWaiting(const CoopView& v) noexcept {
+    const ImVec2 ds = ImGui::GetIO().DisplaySize;
+    const float base = ImGui::GetFontSize();
+    ImGui::SetNextWindowPos(ImVec2(0, 0));
+    ImGui::SetNextWindowSize(ds);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.03f, 0.04f, 0.055f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                                   ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoFocusOnAppearing |
+                                   ImGuiWindowFlags_NoNav;
+    if (ImGui::Begin("###st_coop_waiting", nullptr, flags)) {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        float y = ds.y * 0.30f;
+        y += CentredText(dl, y, base * 2.4f, IM_COL32(235, 240, 245, 255), v.title[0] ? v.title : "Waiting for the host to start the game");
+        y += base * 1.6f;
+        for (const auto& line : v.lines) {
+            if (!line[0]) continue;
+            y += CentredText(dl, y, base * 1.25f, IM_COL32(170, 182, 196, 255), line) + base * 0.5f;
+        }
+        if (v.progress >= 0.0f) {
+            y += base * 1.0f;
+            const float w = ds.x * 0.36f, h = base * 0.9f, x = (ds.x - w) * 0.5f;
+            const float p = v.progress > 1.0f ? 1.0f : v.progress;
+            dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), IM_COL32(40, 48, 60, 255), h * 0.3f);
+            dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w * p, y + h), IM_COL32(90, 170, 230, 255), h * 0.3f);
+            y += h + base * 0.5f;
+            if (v.progress_text[0]) y += CentredText(dl, y, base * 1.1f, IM_COL32(170, 182, 196, 255), v.progress_text);
+        }
+        if (v.leave) {
+            const ImVec2 bs(base * 9.0f, base * 2.2f);
+            ImGui::SetCursorPos(ImVec2((ds.x - bs.x) * 0.5f, ds.y * 0.78f));
+            if (ImGui::Button("Leave", bs)) {
+                // Closed from here, not from the game thread's tick: Leave works even when that tick no longer runs.
+                g_coop_requests.fetch_or(kCoopLeave);
+                const HWND w = input::Window();
+                if (w) PostMessageW(w, WM_CLOSE, 0, 0);
+                Log("[overlay] co-op waiting screen: Leave pressed: %s", w ? "WM_CLOSE posted to the game window" : "no game window known");
+            }
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+}
+
+void DrawCoopBanner(const CoopView& v) noexcept {
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    const ImVec2 ds = ImGui::GetIO().DisplaySize;
+    const float size = ImGui::GetFontSize() * 1.3f, pad = 10.0f * g_ui_scale;
+    const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(size, ds.x * 0.8f, ds.x * 0.8f, v.banner);
+    const ImVec2 at((ds.x - sz.x) * 0.5f, ds.y * 0.06f);
+    dl->AddRectFilled(ImVec2(at.x - pad, at.y - pad), ImVec2(at.x + sz.x + pad, at.y + sz.y + pad), IM_COL32(10, 14, 20, 215), 6.0f);
+    dl->AddText(ImGui::GetFont(), size, at, v.banner_warn ? IM_COL32(250, 192, 80, 255) : IM_COL32(235, 240, 245, 255), v.banner,
+                nullptr, ds.x * 0.8f);
+}
+
 void DrawHint() noexcept {
     char key[24];
     char text[160];
@@ -489,7 +567,15 @@ void FrameMain(IDXGISwapChain* chain) noexcept {
         logged = true;
         name_tags = false;
     }
-    if (!g_open && !hint && !name_tags) {  // closed menu, no tags: nothing is drawn, nothing is kept
+    // The co-op screens (SetCoopView) stay up for long, like the name tags: only with the swapchain creation hooks.
+    bool coop = g_coop_shown.load(std::memory_order_acquire);
+    if (coop && !g_create_hooks.load()) {
+        static bool logged = false;
+        if (!logged) Log("[overlay] co-op screens not drawn: the swapchain creation hooks are unavailable");
+        logged = true;
+        coop = false;
+    }
+    if (!g_open && !hint && !name_tags && !coop) {  // closed menu, no tags: nothing is drawn, nothing is kept
         ReleaseRendererWhenIdle();
         return;
     }
@@ -537,13 +623,16 @@ void FrameMain(IDXGISwapChain* chain) noexcept {
     if (io.DeltaTime <= 0 || io.DeltaTime > 1.0f) io.DeltaTime = 1.0f / 60.0f;
     g_last_frame = t;
     io.DisplaySize = ImVec2(static_cast<float>(w), static_cast<float>(h));
-    io.MouseDrawCursor = g_open;
+    CoopView coop_view = coop || g_open ? CoopCopy() : CoopView{};
+    if (!coop) coop_view.waiting = false, coop_view.banner[0] = 0;  // the menu header only
+    io.MouseDrawCursor = g_open || (coop_view.waiting && coop_view.leave);
     ApplyScale(h);
     FeedInput(w, h);
 
     if (name_tags) font::BetweenFrames();  // the atlas is unlocked here (outside NewFrame..Render)
     ImGui::NewFrame();
     if (name_tags) tags::Draw(ImGui::GetBackgroundDrawList(), static_cast<float>(w), static_cast<float>(h), g_ui_scale);
+    if (coop_view.waiting) DrawCoopWaiting(coop_view);  // under the menu
     if (g_open) {
         const debug::Snapshot snap = debug::GetSnapshot();
         const Stats stats = GetStats();
@@ -554,11 +643,14 @@ void FrameMain(IDXGISwapChain* chain) noexcept {
         ctx.toggle_vk = input::ToggleKey();
         ctx.build = g_opt.build.c_str();
         ctx.ui_scale = &g_ui_scale;
+        ctx.coop = coop_view.active ? &coop_view : nullptr;
         menu::Draw(ctx);
         if (ctx.close) ApplyOpen(false);
-    } else if (hint) {
+        if (ctx.coop_teleport) g_coop_requests.fetch_or(kCoopTeleport);
+    } else if (hint && !coop_view.waiting) {
         DrawHint();
     }
+    if (coop_view.banner[0]) DrawCoopBanner(coop_view);
     ImGui::Render();
     ImDrawData* dd = ImGui::GetDrawData();
     if (g_renderer.Draw(dd)) {
@@ -1085,6 +1177,17 @@ void Shutdown() noexcept {
 }
 
 bool Installed() noexcept { return g_installed.load(); }
+
+void SetCoopView(const CoopView& v) noexcept {
+    AcquireSRWLockExclusive(&g_coop_lock);
+    g_coop = v;
+    ReleaseSRWLockExclusive(&g_coop_lock);
+    g_coop_shown.store(v.waiting || v.banner[0] != 0, std::memory_order_release);
+    // The waiting screen keeps the game's input (as the open menu does); only with the menu's input hooks.
+    if (g_opt.menu || !v.block_input) input::SetWaitBlock(v.block_input);
+}
+
+unsigned TakeCoopRequests() noexcept { return g_coop_requests.exchange(0); }
 bool Disabled() noexcept { return g_disabled.load(); }
 bool IsOpen() noexcept { return input::IsOpen(); }
 void SetOpen(bool open) noexcept { g_open_request.store(open ? 1 : 0); }  // ignored without the menu (Options::menu)

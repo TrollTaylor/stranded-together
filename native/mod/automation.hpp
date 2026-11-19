@@ -89,6 +89,14 @@ inline std::string Lower(std::string s) {
     for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     return s;
 }
+// session.ini's first line without a UTF-8 byte order mark (EF BB BF), as every reader of the file takes it
+// (LoadConfig, EarlyInit in DllMain, Init).
+inline std::string StripBom(const std::string& s) {
+    return s.size() >= 3 && static_cast<unsigned char>(s[0]) == 0xEF && static_cast<unsigned char>(s[1]) == 0xBB &&
+                   static_cast<unsigned char>(s[2]) == 0xBF
+               ? s.substr(3)
+               : s;
+}
 inline std::string Trim(const std::string& s) {
     const auto b = s.find_first_not_of(" \t\r\n");
     if (b == std::string::npos) return {};
@@ -580,6 +588,13 @@ inline bool CheckSites(Read&& read, std::string* why) {
 void EarlyInit() noexcept;
 // After Init (log open): "[auto] saves=redirected ..." and the places seen so far.
 bool SavesRedirected() noexcept;
+// The folder every save-root access goes to while SavesRedirected() (hidden run: <mod>\automation\saves; test save /
+// co-op guest: <game>\stranded_together\sandbox\<name>\saves); nullptr otherwise. The host-save guest writes the
+// received save only below it, spelled this way (never through the real root's spelling): save_xfer.hpp.
+const wchar_t* SavesScratchRoot() noexcept;
+// A host-save guest found without the save redirect after DllMain (coop::Install's backstop): writes
+// <mod>\sandbox-refused.txt and ends ds.exe with sandbox::kRefusedExitCode, as DllMain's own refusal.
+void RefuseUnredirected(const char* why) noexcept;
 // True when DllMain installed the foreign-saves bypass in this process.
 bool ForeignSavesBypassed() noexcept;
 

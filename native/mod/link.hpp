@@ -36,6 +36,8 @@ struct Info {
     // Sound event frames (STA1, partner sounds) sent (in a pose datagram or, without room, one of their own) /
     // accepted, and those that went alone.
     std::uint64_t rx_sound = 0, tx_sound = 0, tx_sound_alone = 0;
+    // Save transfer messages (STX1, channel 4) queued / delivered.
+    std::uint64_t rx_save = 0, tx_save = 0;
 };
 
 bool Start(const Config& config) noexcept;  // game thread, once
@@ -98,6 +100,27 @@ bool PopSpeech(wire::Speech& out, std::uint32_t& generation) noexcept;
 // The current link session counter (the `generation` the Pop* calls report; bumped by each new
 // handshake). Game thread: tells the sender that the partner's tables were cleared.
 std::uint32_t Generation() noexcept;
+// ---- Save transfer (STX1, save_xfer.hpp; docs/coop-session.md): the reliable ordered channel 4.
+// Any thread: queues one STX1 message (1..1024 bytes; resent until acknowledged, in order). False when not connected,
+// too large, or the channel's window (32 unacknowledged messages) is full: keep the message and try again later.
+bool SendSave(const void* bytes, std::size_t size) noexcept;
+// Channel 4 messages queued and not yet acknowledged (0..32): the sender's flow control.
+unsigned SaveQueued() noexcept;
+// The received channel 4 messages, in order, exactly once per link session. With a sink registered they are handed
+// to it on the transport thread, outside the link's locks, as they complete (keep it short: decode and queue, no
+// file I/O); without one they wait in a queue of 64 for PopSave (any thread). Only while the queue has room are
+// messages taken from the channel, so a slow reader slows the sender (the channel's window) instead of losing data.
+// A new link session clears the queue; `generation` is the session (as PopPose's).
+using SaveSink = void (*)(void* ctx, const std::uint8_t* bytes, std::size_t size, std::uint32_t generation);
+void SetSaveSink(SaveSink sink, void* ctx) noexcept;   // nullptr: back to the queue
+bool PopSave(std::uint8_t* out, std::size_t cap, std::size_t& size, std::uint32_t& generation) noexcept;
+// The sender's phase for the burst cap (link_protocol.hpp ReliablePacketsPerTick): true while this game is at the
+// title or on a loading screen. Default false (4 packets per tick).
+void SetSaveBurst(bool title_or_loading) noexcept;
+// Hidden tests only (the co-op link-loss scenario; coop_session.cpp allows it only in automation runs): every datagram
+// this game receives is dropped for `ms` (0: ends now), so its session times out and reconnects as after a real outage.
+void TestBlackout(std::uint32_t ms) noexcept;
+std::uint64_t TestBlackoutDropped() noexcept;
 // Millisecond clock from QueryPerformanceCounter (shared by link and sync).
 std::uint64_t NowMs() noexcept;
 double NowMsPrecise() noexcept;

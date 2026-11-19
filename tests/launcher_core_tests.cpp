@@ -24,6 +24,7 @@
 #include "launcher_join_code.hpp"
 #include "launcher_model_mock.hpp"
 #include "launcher_ui_logic.hpp"
+#include "mod/sandbox.hpp"   // the mod's side of the coop-guest folder name
 
 using namespace st;
 using namespace st::core;
@@ -39,6 +40,37 @@ void Check(bool ok, const char* what, int line) {
     }
 }
 #define CHECK(x) Check((x), #x, __LINE__)
+
+// A directory junction at `link` (created) to `target` (FSCTL_SET_REPARSE_POINT; no admin rights needed). Removed with
+// RemoveDirectoryW(link), which never touches the target.
+bool MakeJunction(const std::wstring& link, const std::wstring& target) {
+    wchar_t full[MAX_PATH * 2] = {};
+    if (!GetFullPathNameW(target.c_str(), MAX_PATH * 2, full, nullptr)) return false;
+    const std::wstring sub = std::wstring(L"\\??\\") + full;
+    if (!CreateDirectoryW(link.c_str(), nullptr)) return false;
+    HANDLE h = CreateFileW(link.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        RemoveDirectoryW(link.c_str());
+        return false;
+    }
+    // REPARSE_DATA_BUFFER, MountPointReparseBuffer: tag, data length, reserved, then four USHORT offsets / lengths and
+    // the substitute name and an empty print name, each NUL terminated.
+    const USHORT sub_bytes = static_cast<USHORT>(sub.size() * sizeof(wchar_t));
+    const USHORT data_len = static_cast<USHORT>(8 + sub_bytes + sizeof(wchar_t) + sizeof(wchar_t));
+    std::string buf(8 + data_len, '\0');
+    unsigned char* p = reinterpret_cast<unsigned char*>(&buf[0]);
+    const ULONG tag = IO_REPARSE_TAG_MOUNT_POINT;
+    const USHORT fields[4] = {0, sub_bytes, static_cast<USHORT>(sub_bytes + sizeof(wchar_t)), 0};
+    std::memcpy(p, &tag, 4);
+    std::memcpy(p + 4, &data_len, 2);
+    std::memcpy(p + 8, fields, sizeof(fields));
+    std::memcpy(p + 16, sub.c_str(), sub_bytes);
+    DWORD got = 0;
+    const BOOL ok = DeviceIoControl(h, 0x000900A4 /* FSCTL_SET_REPARSE_POINT */, p, static_cast<DWORD>(buf.size()), nullptr, 0, &got, nullptr);
+    CloseHandle(h);
+    if (!ok) RemoveDirectoryW(link.c_str());
+    return ok != 0;
+}
 
 // A fake Env: no processes, no registry, fixed clock.
 class FakeEnv final : public Env {
@@ -656,6 +688,17 @@ void DebugOptionsPersist() {
     const DebugOptions r = DebugOptionsFromSettings(back);
     CHECK(r.echo_delay_s == 4.5 && r.send_hz == 60 && r.interp_delay_ms == 200 && !r.partner_activate && r.verbose && !r.debug_menu &&
           r.debug_menu_key == 5);
+    // The host-held save: on by default (also for settings from before it); off is remembered.
+    CHECK(DebugOptions{}.host_save && DebugOptions{}.backup_host_saves && DebugOptionsFromSettings(json::Value::Object()).host_save &&
+          DebugOptionsFromSettings(json::Value::Object()).backup_host_saves && r.host_save && r.backup_host_saves);
+    {
+        DebugOptions off;
+        off.host_save = false;
+        off.backup_host_saves = false;
+        json::Value s = json::Value::Object(), sb;
+        DebugOptionsToSettings(off, s);
+        CHECK(json::Parse(json::Dump(s), sb) && !DebugOptionsFromSettings(sb).host_save && !DebugOptionsFromSettings(sb).backup_host_saves);
+    }
     SessionIni ini;
     ApplyDebugOptions(r, ini);
     CHECK(ini.one_shot && ini.echo_delay_s == 4.5 && ini.debug_menu_key == 5 && !ini.debug_menu && ini.verbose);
@@ -1435,6 +1478,268 @@ void LocalTestSettings() {
     CHECK(merged.find("\"nvidia_dlss\" \"0\"") != std::string::npos);  // the game's other keys stay
 }
 
+// The host-held save (M1): session.ini's refuse rule, the guest's coop-guest folder, the host's backups and the
+// non-slot manifest, and the real model's Host / Join with the Debug option on and off. On a fake save root only.
+void HostSaveSession() {
+    const std::wstring local = NewTempDir(L"st-launcher-hs-local-");
+    wchar_t old_local[1024]{};
+    const DWORD had = GetEnvironmentVariableW(L"LOCALAPPDATA", old_local, 1024);
+    SetEnvironmentVariableW(L"LOCALAPPDATA", local.c_str());
+    const std::wstring real = JoinPath2(local, L"KojimaProductions");
+    const std::wstring acct = JoinPath2(real, L"DeathStrandingDC\\104729");
+    WriteFile(JoinPath2(acct, L"profile\\profile.dat"), "own profile");
+    WriteFile(JoinPath2(acct, L"profile\\game_settings.cfg"), "\"GameDifficulty\" \"4\"\r\n");
+    WriteFile(JoinPath2(acct, L"bindings.cfg"), "own bindings");
+    WriteFile(JoinPath2(acct, L"autosave0\\checkpoint.dat"), "own slot 0");
+    WriteFile(JoinPath2(acct, L"manualsave1\\checkpoint.dat"), "own manual 1");
+    WriteFile(JoinPath2(acct, L"steam_autocloud.vdf"), "steam");
+    WriteFile(JoinPath2(real, L"DeathStrandingDC\\555\\profile\\profile.dat"), "another account's profile");
+    const std::string real_before = SaveTreeManifest(real);
+
+    // ---- session.ini: the refuse rule (a host-save guest only with the private folder's keys) ----
+    CHECK(std::string(kCoopGuestSandbox) == st::sandbox::kCoopGuestSandbox);
+    std::string text, error;
+    SessionIni g;
+    g.role = "guest";
+    g.secret = "K7RD3WQ9MP2XVB6TZHN4";
+    g.peer_steamid = "76561197960370457";
+    g.host_save = true;
+    CHECK(!MakeSessionIniText(g, text, error) && error.find("coop-guest") != std::string::npos && text.empty());   // no sandbox at all
+    g.sandbox_saves = kCoopGuestSandbox;
+    CHECK(!MakeSessionIniText(g, text, error));   // without sandbox_foreign_saves
+    g.sandbox_saves = "test";
+    g.sandbox_foreign_saves = true;
+    CHECK(!MakeSessionIniText(g, text, error));   // another sandbox name
+    g.sandbox_saves = kCoopGuestSandbox;
+    CHECK(MakeSessionIniText(g, text, error));
+    CHECK(text.find("host_save=1\n") != std::string::npos && text.find("sandbox_saves=coop-guest\n") != std::string::npos &&
+          text.find("sandbox_foreign_saves=1\n") != std::string::npos);
+    SessionIni back;
+    CHECK(ParseSessionIniText(text, back, error) && back.host_save && back.sandbox_saves == "coop-guest" && back.sandbox_foreign_saves);
+    g.host_save = false;   // the old mode: no key
+    CHECK(MakeSessionIniText(g, text, error) && text.find("host_save") == std::string::npos);
+    SessionIni h;
+    h.role = "host";
+    h.secret = "K7RD3WQ9MP2XVB6TZHN4";
+    h.host_save = true;   // the host plays on its own saves: no sandbox needed
+    CHECK(MakeSessionIniText(h, text, error) && text.find("host_save=1\n") != std::string::npos && text.find("sandbox") == std::string::npos);
+    CHECK(ParseSessionIniText(text, back, error) && back.host_save && back.role == "host");
+    for (const char* role : {"echo", "solo"}) {
+        SessionIni other;
+        other.role = role;
+        other.host_save = true;
+        CHECK(!MakeSessionIniText(other, text, error) && error.find("host_save") != std::string::npos);
+    }
+
+    // ---- NonSlotManifest ----
+    CHECK(IsSaveSlotName(L"autosave0") && IsSaveSlotName(L"ManualSave12") && !IsSaveSlotName(L"profile") && !IsSaveSlotName(L"autosave"));
+    const std::string ns = NonSlotManifest(SaveTreeManifest(real));
+    CHECK(ns.find("profile.dat") != std::string::npos && ns.find("bindings.cfg") != std::string::npos);
+    CHECK(ns.find("autosave0") == std::string::npos && ns.find("manualsave1") == std::string::npos);
+    CHECK(NonSlotManifest("a\\autosave3\\checkpoint.dat\t5\tX\nb\\profile\\p.dat\t1\tY\na\\autosave3\\\t-\t-\nquicksave0x\\f\t1\tZ\n") ==
+          "b\\profile\\p.dat\t1\tY\nquicksave0x\\f\t1\tZ\n");
+
+    // ---- SeedSessionGuest ----
+    const std::wstring dir = NewTempDir(L"st-launcher-hs-game-");
+    CHECK(WriteAtomic(JoinPath2(dir, L"ds.exe"), std::string(), true, error));
+    CHECK(WriteAtomic(JoinPath2(dir, L"winhttp.dll"), FakeOurDll(), true, error));
+    const InstancePaths paths = GetInstancePaths(dir);
+    const SandboxPaths cg = GetSandboxPaths(paths, kCoopGuestSandbox);
+    SessionGuestReport rep;
+    CHECK(!SeedSessionGuest(paths, real, 0, rep, error) && !SandboxSeeded(cg));   // the account must be known
+    CHECK(SeedSessionGuest(paths, real, 104729, rep, error) && SandboxSeeded(cg));
+    const std::wstring gacct = JoinPath2(cg.saves, L"DeathStrandingDC\\104729");
+    CHECK(ReadTextShared(JoinPath2(gacct, L"profile\\profile.dat"), text) && text == "own profile");
+    CHECK(ReadTextShared(JoinPath2(gacct, L"bindings.cfg"), text) && text == "own bindings");
+    CHECK(IsFile(JoinPath2(gacct, L"profile\\game_settings.cfg")) && !IsFile(JoinPath2(gacct, L"steam_autocloud.vdf")));
+    CHECK(!IsDir(JoinPath2(gacct, L"autosave0")) && !IsDir(JoinPath2(gacct, L"manualsave1")));   // never the guest's own slots
+    CHECK(!IsDir(JoinPath2(cg.saves, L"DeathStrandingDC\\555")));   // never another account's profile
+    CHECK(rep.copied == 2 && rep.wiped_slots == 0 && !rep.wiped_incoming);
+    // A session ran: the host's save arrived, the guest's game autosaved, settings changed, another account appeared.
+    WriteFile(JoinPath2(gacct, L"manualsave5\\checkpoint.dat"), "host save copy");
+    WriteFile(JoinPath2(gacct, L"autosave2\\checkpoint.dat"), "guest autosave of the host's world");
+    WriteFile(JoinPath2(cg.saves, L"incoming\\ab.part"), "partial");
+    WriteFile(JoinPath2(gacct, L"bindings.cfg"), "bindings changed in co-op");
+    WriteFile(JoinPath2(cg.saves, L"DeathStrandingDC\\31337\\profile\\profile.dat"), "stray account");
+    CHECK(SeedSessionGuest(paths, real, 104729, rep, error) && SandboxSeeded(cg));
+    CHECK(rep.wiped_slots == 2 && rep.wiped_incoming && rep.removed_accounts == 1 && rep.copied == 0);
+    CHECK(!IsDir(JoinPath2(gacct, L"manualsave5")) && !IsDir(JoinPath2(gacct, L"autosave2")) && !IsDir(JoinPath2(cg.saves, L"incoming")));
+    CHECK(!IsDir(JoinPath2(cg.saves, L"DeathStrandingDC\\31337")));
+    CHECK(ReadTextShared(JoinPath2(gacct, L"bindings.cfg"), text) && text == "bindings changed in co-op");   // D1-6: kept in coop-guest
+    CHECK(ReadTextShared(JoinPath2(acct, L"bindings.cfg"), text) && text == "own bindings");                // never the real tree
+    CHECK(SaveTreeManifest(real) == real_before);
+    // Never inside the real tree.
+    CHECK(!SeedSessionGuest(paths, cg.root, 104729, rep, error));
+    // A link below the co-op folder (the account folder, or DeathStrandingDC itself, pointing at the real one): refused
+    // before anything is deleted; the real slots and the other accounts' folders stay.
+    {
+        WriteFile(JoinPath2(real, L"DeathStrandingDC\\555\\autosave1\\checkpoint.dat"), "another account's real save");
+        const std::string real_with_555 = SaveTreeManifest(real);   // 555 is another (real) account with a slot now
+        CHECK(RemoveTree(gacct) && MakeJunction(gacct, acct));
+        CHECK(IsReparsePoint(gacct) && IsFile(JoinPath2(gacct, L"autosave0\\checkpoint.dat")));   // the real slot, through the link
+        CHECK(!SeedSessionGuest(paths, real, 104729, rep, error) && error.find("link") != std::string::npos);
+        CHECK(SaveTreeManifest(real) == real_with_555 && rep.wiped_slots == 0);
+        CHECK(RemoveDirectoryW(gacct.c_str()) != 0 && SaveTreeManifest(real) == real_with_555);
+        const std::wstring gdc = JoinPath2(cg.saves, L"DeathStrandingDC");
+        CHECK(RemoveTree(gdc) && MakeJunction(gdc, JoinPath2(real, L"DeathStrandingDC")));
+        CHECK(!SeedSessionGuest(paths, real, 104729, rep, error) && error.find("link") != std::string::npos);
+        CHECK(SaveTreeManifest(real) == real_with_555 && rep.removed_accounts == 0);
+        CHECK(RemoveDirectoryW(gdc.c_str()) != 0 && SaveTreeManifest(real) == real_with_555);
+        CHECK(RemoveTree(JoinPath2(real, L"DeathStrandingDC\\555\\autosave1")) && SaveTreeManifest(real) == real_before);
+        CHECK(SeedSessionGuest(paths, real, 104729, rep, error) && SandboxSeeded(cg));   // a normal folder again: seeded
+    }
+
+    // ---- BackupHostSaves ----
+    HostBackupReport br;
+    CHECK(!BackupHostSaves(paths, real, 104729, "not-a-stamp", 5, br, error));
+    CHECK(!BackupHostSaves(paths, real, 0, "20261119-120000", 5, br, error));
+    CHECK(BackupHostSaves(paths, real, 777, "20261119-120000", 5, br, error) && br.dir.empty());   // no saves yet: nothing to copy
+    CHECK(BackupHostSaves(paths, real, 104729, "20261119-120000", 5, br, error));
+    const std::wstring b0 = JoinPath2(HostBackupsDir(paths), L"20261119-120000");
+    CHECK(IEquals(br.dir, b0) && br.slots == 2 && br.files == 5 && br.pruned == 0);
+    CHECK(ReadTextShared(JoinPath2(b0, L"DeathStrandingDC\\104729\\autosave0\\checkpoint.dat"), text) && text == "own slot 0");
+    CHECK(IsFile(JoinPath2(b0, L"DeathStrandingDC\\104729\\profile\\profile.dat")) && !IsFile(JoinPath2(b0, L"DeathStrandingDC\\104729\\steam_autocloud.vdf")));
+    CHECK(ReadTextShared(JoinPath2(b0, L"backup.json"), text) && text.find("stranded-together-backup") != std::string::npos);
+    CHECK(CheckSeedFolder(b0).ok && CheckSeedFolder(b0).slots == 2);   // a backup can be picked as a test save
+    // The same second again: its own folder.
+    CHECK(BackupHostSaves(paths, real, 104729, "20261119-120000", 5, br, error) && IEquals(br.dir, b0 + L"-2"));
+    // Folders that are not ours are never pruned; half-done ones are cleared.
+    WriteFile(JoinPath2(HostBackupsDir(paths), L"20200101-000000\\keep.txt"), "the user's own folder");
+    WriteFile(JoinPath2(HostBackupsDir(paths), L"notes\\keep.txt"), "x");
+    WriteFile(JoinPath2(HostBackupsDir(paths), L"20261119-110000.partial\\x"), "half done");
+    for (int i = 1; i <= 6; ++i) CHECK(BackupHostSaves(paths, real, 104729, "20261119-12000" + std::to_string(i), 5, br, error));
+    int ours = 0;
+    for (const DirEntry& e : ListDirectory(HostBackupsDir(paths)))
+        if (e.directory && IsFile(JoinPath2(JoinPath2(HostBackupsDir(paths), e.name), L"backup.json"))) ++ours;
+    CHECK(ours == kHostBackupsKept);
+    CHECK(!IsDir(b0) && !IsDir(b0 + L"-2") && IsDir(JoinPath2(HostBackupsDir(paths), L"20261119-120006")));   // the oldest went
+    CHECK(IsFile(JoinPath2(HostBackupsDir(paths), L"20200101-000000\\keep.txt")) && IsFile(JoinPath2(HostBackupsDir(paths), L"notes\\keep.txt")));
+    CHECK(!IsDir(JoinPath2(HostBackupsDir(paths), L"20261119-110000.partial")));
+    CHECK(ReadTextShared(JoinPath2(JoinPath2(HostBackupsDir(paths), L"20261119-120006"), L"backup.json"), text) &&
+          text.find("\"seq\":8") != std::string::npos);
+    // The clock was set ahead once (five backups stamped 2030): a backup made after it was corrected is kept, the oldest
+    // by seq goes, and the later-stamped ones that stay are counted for the log.
+    CHECK(RemoveTree(HostBackupsDir(paths)));
+    for (int i = 1; i <= 5; ++i) CHECK(BackupHostSaves(paths, real, 104729, "2030010" + std::to_string(i) + "-000000", 5, br, error));
+    CHECK(BackupHostSaves(paths, real, 104729, "20261119-130000", 5, br, error));
+    CHECK(IsDir(br.dir) && IEquals(br.dir, JoinPath2(HostBackupsDir(paths), L"20261119-130000")) && br.pruned == 1 && br.newer_named == 4);
+    CHECK(!IsDir(JoinPath2(HostBackupsDir(paths), L"20300101-000000")) && IsDir(JoinPath2(HostBackupsDir(paths), L"20300105-000000")));
+    CHECK(BackupHostSaves(paths, real, 104729, "20261119-130500", 5, br, error) && IsDir(br.dir) && br.pruned == 1);
+    CHECK(IsDir(JoinPath2(HostBackupsDir(paths), L"20261119-130000")) && !IsDir(JoinPath2(HostBackupsDir(paths), L"20300102-000000")));
+    CHECK(SaveTreeManifest(real) == real_before);   // only read
+
+    // ---- The real model: Host / Join with the default (host_save on) and with the Debug option off ----
+    auto env = std::make_shared<FakeEnv>();
+    env->steam = true;
+    {
+        auto m = MakeRealModelWithEnv(dir, env);
+        CHECK(m->phase() == Phase::ready && m->debug_options().host_save && m->debug_options().backup_host_saves);
+        RemoveTree(HostBackupsDir(paths));
+        std::string code;
+        CHECK(m->host(code, error));
+        SessionIni ini;
+        CHECK(ReadTextShared(paths.session_ini, text) && ParseSessionIniText(text, ini, error));
+        CHECK(ini.role == "host" && ini.host_save && ini.sandbox_saves.empty());   // the host plays on its own saves
+        int backups = 0;
+        for (const DirEntry& e : ListDirectory(HostBackupsDir(paths))) backups += e.directory ? 1 : 0;
+        CHECK(backups == 1);
+        // The game runs and exits: the non-slot files are compared (launcher.log).
+        env->game_running = true;
+        env->game.pid = 9;
+        env->game.path = paths.exe;
+        m->tick();
+        WriteFile(JoinPath2(acct, L"autosave3\\checkpoint.dat"), "the host's game saved");   // a slot: not reported
+        env->game_running = false;
+        m->tick();
+        env->now += 5000;
+        m->tick();
+        CHECK(m->phase() == Phase::after_game);
+        CHECK(ReadTextShared(paths.launcher_log, text) && text.find("host_save=checked nonslot_changed=0") != std::string::npos &&
+              text.find("host_save=host backup=ok") != std::string::npos);
+        env->now += 5000;
+        m->tick();
+        DeleteFileChecked(JoinPath2(acct, L"autosave3\\checkpoint.dat"));
+        RemoveTree(JoinPath2(acct, L"autosave3"));
+
+        // Join: the guest's game runs only on coop-guest (seeded, its keys together in session.ini).
+        WriteFile(JoinPath2(gacct, L"manualsave6\\checkpoint.dat"), "last session");
+        const std::string partner = FormatJoinCode("7QK2MX9RT4PB8WZ3HCNA", kSteamIdBase + 7919ull);
+        CHECK(m->join(partner, error));
+        CHECK(ReadTextShared(paths.session_ini, text) && ParseSessionIniText(text, ini, error));
+        CHECK(ini.role == "guest" && ini.host_save && ini.sandbox_saves == "coop-guest" && ini.sandbox_foreign_saves && !ini.second_instance);
+        CHECK(!IsDir(JoinPath2(gacct, L"manualsave6")) && SandboxSeeded(cg));   // the last session's copy wiped (D1-9)
+        // A refusal by the mod (no redirect) ends the session and says so.
+        WriteFile(JoinPath2(paths.mod, L"sandbox-refused.txt"), "sandbox=REFUSED\nreason=role=guest with host_save=1 but no save redirect\n");
+        m->tick();
+        CHECK(m->phase() == Phase::ready && m->test_save().tone == TestSaveView::Tone::bad &&
+              m->test_save().result.find("host_save") != std::string::npos);
+        DeleteFileChecked(JoinPath2(paths.mod, L"sandbox-refused.txt"));
+        // A normal guest game: confirmed redirect, the real tree checked after it.
+        CHECK(m->join(partner, error));
+        env->game_running = true;
+        m->tick();
+        WriteFile(JoinPath2(paths.mod, L"sandbox-active.txt"), "sandbox=redirected\n");
+        env->now += 25000;
+        m->tick();
+        env->game_running = false;
+        m->tick();
+        env->now += 5000;
+        m->tick();
+        CHECK(m->phase() == Phase::after_game && m->test_save().tone == TestSaveView::Tone::good);
+        env->now += 5000;
+        m->tick();
+
+        // The Debug option off: the old mode (each on their own save), no backup, no coop-guest keys.
+        DebugOptions o = m->debug_options();
+        o.host_save = false;
+        m->set_debug_options(o);
+        RemoveTree(HostBackupsDir(paths));
+        CHECK(m->host(code, error));
+        CHECK(ReadTextShared(paths.session_ini, text) && ParseSessionIniText(text, ini, error) && !ini.host_save &&
+              text.find("host_save") == std::string::npos);
+        CHECK(!IsDir(HostBackupsDir(paths)));
+        CHECK(m->cancel_launch(error));
+        CHECK(m->join(partner, error));
+        CHECK(ReadTextShared(paths.session_ini, text) && ParseSessionIniText(text, ini, error) && !ini.host_save && ini.sandbox_saves.empty());
+        CHECK(m->cancel_launch(error));
+        // Backups off, host_save on: no backup.
+        o.host_save = true;
+        o.backup_host_saves = false;
+        m->set_debug_options(o);
+        CHECK(m->host(code, error) && !IsDir(HostBackupsDir(paths)));
+        CHECK(m->cancel_launch(error));
+    }
+    {
+        // Remembered (launcher-settings.json).
+        auto m = MakeRealModelWithEnv(dir, env);
+        CHECK(m->debug_options().host_save && !m->debug_options().backup_host_saves);
+    }
+    // Without a Steam account the guest's folder cannot be made: Join refuses (never the real saves).
+    {
+        auto nosteam = std::make_shared<FakeEnv>();
+        auto m = MakeRealModelWithEnv(dir, nosteam);
+        const std::string partner = FormatJoinCode("7QK2MX9RT4PB8WZ3HCNA", kSteamIdBase + 7919ull);
+        CHECK(!m->join(partner, error) && error.find("Steam") != std::string::npos && !IsFile(paths.session_ini));
+    }
+    CHECK(SaveTreeManifest(real) == real_before);   // after everything: the real tree untouched
+
+    SetEnvironmentVariableW(L"LOCALAPPDATA", had ? old_local : nullptr);
+    RemoveTree(dir);
+    RemoveTree(local);
+}
+
+// Runs `f` with %LOCALAPPDATA% on an empty temporary folder: the real model's Host and Join (backups, the guest's
+// folder) never read the user's own save tree in a test.
+void WithFakeSaveRoot(void (*f)()) {
+    const std::wstring local = NewTempDir(L"st-launcher-noroot-");
+    wchar_t old_local[1024]{};
+    const DWORD had = GetEnvironmentVariableW(L"LOCALAPPDATA", old_local, 1024);
+    SetEnvironmentVariableW(L"LOCALAPPDATA", local.c_str());
+    f();
+    SetEnvironmentVariableW(L"LOCALAPPDATA", had ? old_local : nullptr);
+    RemoveTree(local);
+}
+
 int main() {
     JoinCodes();
     SessionIniText();
@@ -1447,8 +1752,9 @@ int main() {
     UiLogic();
     MockFlow();
     SessionRoundTrip();
-    RealModelFlow();
+    WithFakeSaveRoot(&RealModelFlow);
     TestSaves();
+    HostSaveSession();
     LocalTestSettings();
     std::printf("launcher core tests: %d/%d passed\n", g_checks - g_failures, g_checks);
     return g_failures == 0 ? 0 : 1;

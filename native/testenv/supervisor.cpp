@@ -5,7 +5,7 @@
 //   st_testenv_supervisor --probe <st_testenv_probe.exe> --run-dir <dir> [--seconds N]
 //   st_testenv_supervisor --game-dir <dir> --mod <winhttp.dll> --scenario <file> --run-dir <dir>
 //                         [--timeout-s N (<=360)] [--saves <dir>] [--seed-saves <dir>] [--no-steam-check] [--keep-audio] [--no-game-stdout]
-//                         [--no-mod] [--no-ui-limits] [--steam-env] [--no-isolation]
+//                         [--no-mod] [--no-ui-limits] [--steam-env] [--no-isolation] [--guest-seed full|profile-only]
 //   (bisecting a game that does not start: --no-mod runs the game without the mod's session,
 //    overlay and game hooks -- winhttp.dll only redirects the saves -- (scenario with
 //    supervisor steps only),
@@ -372,6 +372,10 @@ struct Args {
     std::wstring probe, game_dir, mod, scenario, run_dir, restore, saves, seed, settings_cfg, game_settings;
     bool steam_check = true, mute = true, no_mod = false, ui_limits = true, steam_env = false, isolation = true, game_stdout = true;
     bool sandbox_session = false;   // --sandbox-session: the launcher's test-save session.ini (no automation channel)
+    // --guest-seed full|profile-only: a two-game run's guest scratch. full (default): the user's saves (and --seed-saves'
+    // slots) as the host; profile-only: no slot at all, only profile\ and the settings (the host-held save's guest,
+    // docs/coop-session.md).
+    bool guest_profile_only = false;
     unsigned timeout_s = kMaxRunSeconds, probe_seconds = 6;
 };
 
@@ -401,6 +405,12 @@ bool ParseArgs(Args& a, std::string* err) {
         else if (k == L"--keep-audio") a.mute = false;
         else if (k == L"--no-mod") a.no_mod = true;
         else if (k == L"--sandbox-session") a.sandbox_session = true;
+        else if (k == L"--guest-seed") {
+            std::wstring v;
+            val(v);
+            if (v == L"profile-only") a.guest_profile_only = true;
+            else if (v != L"full") ok = false, *err = "--guest-seed must be full or profile-only";
+        }
         else if (k == L"--no-ui-limits") a.ui_limits = false;
         else if (k == L"--steam-env") a.steam_env = true;
         else if (k == L"--no-isolation") a.isolation = false;
@@ -476,6 +486,8 @@ struct Guest {
     std::string evidence;
     double lifetime_s = 0, cpu_s = 0;
     unsigned long exit_code = 0;
+    // "guest unredirected": the guest must be refused in DllMain (exit 0x53540006 + sandbox-refused.txt).
+    bool expect_refused = false, refused_ok = false;
 };
 
 // Resource use of the game processes (two-game runs: what two low-settings games cost).
@@ -1167,7 +1179,12 @@ int RunGame(Args& a) {
         // The shared ini lines, then "@guest ini" (not the host's own lines; the mod keeps a key's last value).
         go.extra = r.scenario.ini;
         go.extra.insert(go.extra.end(), r.scenario.guest_ini.begin(), r.scenario.guest_ini.end());
-        deployed = te::EnsureDir(r.g.auto_in) && te::EnsureDir(r.g.auto_out) && te::WriteFileAtomic(r.g.dir + L"\\session.ini", te::SessionIniText(go));
+        r.g.expect_refused = r.scenario.guest_unredirected;
+        deployed = te::EnsureDir(r.g.auto_in) && te::EnsureDir(r.g.auto_out) &&
+                   te::WriteFileAtomic(r.g.dir + L"\\session.ini", r.g.expect_refused ? te::UnredirectedGuestIniText(static_cast<unsigned>(go.port_local), static_cast<unsigned>(go.port_peer))
+                                                                                     : te::SessionIniText(go));
+        if (deployed && r.g.expect_refused)
+            Out("guest unredirected: the guest's session.ini is role=guest host_save=1 with NO save redirect; its mod must end it in DllMain");
         if (deployed && appdir) deployed = te::WriteFileAtomic(r.g.dir + L"\\automation\\settings.cfg", settings_text);
         if (deployed && !te::SeedScratch(r.run, r.g.scratch, &err)) {
             Out("setup failed (guest): %s", err.c_str());
@@ -1196,7 +1213,7 @@ int RunGame(Args& a) {
         int accounts = 0;
         int guest_accounts = 0;
         if (!te::ApplySeedSaves(scratch, te::FullPath(a.seed), &accounts, &err) ||
-            (r.g.on && !te::ApplySeedSaves(r.g.scratch, te::FullPath(a.seed), &guest_accounts, &err))) {
+            (r.g.on && !a.guest_profile_only && !te::ApplySeedSaves(r.g.scratch, te::FullPath(a.seed), &guest_accounts, &err))) {
             Out("setup failed: %s", err.c_str());
             deployed = false;
         } else {
@@ -1204,7 +1221,21 @@ int RunGame(Args& a) {
                 te::Narrow(te::FullPath(a.seed)).c_str(), accounts);
         }
     }
+    // --guest-seed profile-only: the guest's scratch without any slot (its own profile and settings only).
+    if (deployed && r.g.on && a.guest_profile_only) {
+        int slots = 0;
+        if (!te::StripScratchSlots(r.g.scratch, &slots, &err)) {
+            Out("setup failed (guest seed): %s", err.c_str());
+            deployed = false;
+        } else {
+            Out("guest seed: profile-only (%d slot folder(s) removed from the guest's scratch; profile and settings kept)", slots);
+        }
+    } else if (a.guest_profile_only && !r.g.on) {
+        Out("--guest-seed profile-only ignored: not a two-game run (scenario role host)");
+    }
     if (deployed) te::WriteFileAtomic(r.run + L"\\saves-scratch-before.txt", te::ManifestWithoutProbe(scratch));
+    // The guest's own "before" (a profile-only guest's scratch differs from the host's: its slots were stripped).
+    if (deployed && r.g.on) te::WriteFileAtomic(r.run + L"\\saves-guest-scratch-before.txt", te::ManifestWithoutProbe(r.g.scratch));
     DeleteFileW((r.mod_dir + L"\\session.last.ini").c_str());
     if (a.no_mod) Out("--no-mod: winhttp.dll only redirects the saves (no session, no overlay, no game hooks)");
     else
@@ -1249,6 +1280,36 @@ int RunGame(Args& a) {
                                {L"ST_INSTANCE_DIR=automation\\guest"}, &r.g.process, &r.g.pid)) {
                 r.end_reason = "the guest game could not be started";
                 redirected = false;
+            } else if (r.g.expect_refused) {
+                // The refusal is the test: the guest's mod ends ds.exe in DllMain, before ds.exe's own code runs. Its exit is
+                // expected (quit_sent); anything else ends the whole run at once (the title only reads, docs/hidden-testing.md).
+                r.g.quit_sent = true;
+                const ULONGLONG t0 = GetTickCount64();
+                bool exited = false;
+                while (GetTickCount64() - t0 < 15000) {
+                    if (!GuestAlive(r)) {
+                        exited = true;
+                        break;
+                    }
+                    if (!Watch(r, 50)) break;
+                }
+                DWORD gcode = 0;
+                if (exited) GetExitCodeProcess(r.g.process, &gcode);
+                std::string rtext;
+                const bool file = te::ReadFileBytes(r.g.dir + L"\\sandbox-refused.txt", &rtext);
+                for (char& c : rtext)
+                    if (c == '\n' || c == '\r') c = ' ';
+                r.g.refused_ok = exited && gcode == 0x53540006ul && file && rtext.find("host_save") != std::string::npos;
+                char head[160];
+                std::snprintf(head, sizeof(head), "exit %s0x%08lX after %.2f s, sandbox-refused.txt %s: ", exited ? "" : "(still running) ",
+                              static_cast<unsigned long>(gcode), static_cast<double>(GetTickCount64() - t0) / 1000.0, file ? "present" : "MISSING");
+                r.g.evidence = head + rtext;
+                Out("guest refusal (expected): %s -- %s", r.g.refused_ok ? "CONFIRMED" : "NOT CONFIRMED", r.g.evidence.c_str());
+                if (!r.g.refused_ok) {
+                    redirected = false;
+                    evidence += " | guest: NOT refused: " + r.g.evidence;
+                    r.end_reason = "the unredirected guest was not refused: " + r.g.evidence;
+                }
             } else {
                 r.g.redirected = WaitSavesEvidence(r, &r.g.evidence, 1);
                 Out("guest saves redirect: %s -- %s", r.g.redirected ? "CONFIRMED" : "NOT CONFIRMED", r.g.evidence.c_str());
@@ -1323,7 +1384,7 @@ int RunGame(Args& a) {
         }
         r.exit_code = code;
         Out("ds.exe exit code %lu (0x%08lX) after %.2f s alive, %.2f s CPU", code, code, r.lifetime_s, r.cpu_s);
-        rc = r.o.violation ? 3 : (steps_ok && r.failures == 0 && redirected ? 0 : 1);
+        rc = r.o.violation ? 3 : (steps_ok && r.failures == 0 && redirected && (!r.g.expect_refused || r.g.refused_ok) ? 0 : 1);
     }
     CloseOwned(r.o);
 
@@ -1352,14 +1413,15 @@ int RunGame(Args& a) {
     if (r.g.on) {
         const std::wstring gg = r.run + L"\\guest";
         te::EnsureDir(gg + L"\\game");
-        for (const wchar_t* n : {L"stranded_together.log", L"session.last.ini", L"session.ini", L"link-status.json"})
+        for (const wchar_t* n : {L"stranded_together.log", L"session.last.ini", L"session.ini", L"link-status.json", L"sandbox-refused.txt"})
             CopyFileW((r.g.dir + L"\\" + n).c_str(), (gg + L"\\game\\" + n).c_str(), FALSE);
         for (const wchar_t* n : {L"saves-redirect.txt", L"saves-redirect-failed.txt", L"exit-trace.txt"})
             CopyFileW((r.g.dir + L"\\automation\\" + n).c_str(), (gg + L"\\game\\" + n).c_str(), FALSE);
         if (te::DirExists(r.g.auto_out)) te::CopyTree(r.g.auto_out, gg + L"\\automation");
         if (te::DirExists(r.g.scratch)) {
             std::string before;
-            te::ReadFileBytes(r.run + L"\\saves-scratch-before.txt", &before);
+            if (!te::ReadFileBytes(r.run + L"\\saves-guest-scratch-before.txt", &before))
+                te::ReadFileBytes(r.run + L"\\saves-scratch-before.txt", &before);
             DeleteFileW((r.g.scratch + L"\\.st-redirect-probe").c_str());
             const std::string after = te::HashManifest(r.g.scratch);
             te::WriteFileAtomic(gg + L"\\saves-scratch-after.txt", after);
@@ -1467,6 +1529,7 @@ int RunGame(Args& a) {
     j += ",\"cloud_uploads\":" + JsonList(cloud_uploads);
     j += ",\"exit_trace\":\"" + te::JsonEscape(exit_trace) + "\",\"game_stdout_tail\":\"" + te::JsonEscape(LastLines(game_stdout, 25)) + "\"";
     j += ",\"two_games\":" + std::string(r.g.on ? "true" : "false");
+    j += ",\"guest_seed\":\"" + std::string(a.guest_profile_only ? "profile-only" : "full") + "\"";
     j += ",\"sandbox_session\":" + std::string(a.sandbox_session ? "true" : "false") + ",\"sandbox_changes\":" + JsonList(sandbox_changes);
     if (r.g.on) {
         char gl[200];
@@ -1474,6 +1537,7 @@ int RunGame(Args& a) {
                       r.g.lifetime_s, r.g.cpu_s, r.g.redirected ? "true" : "false");
         j += gl;
         j += ",\"guest_saves_evidence\":\"" + te::JsonEscape(r.g.evidence) + "\",\"guest_scratch_changes\":" + JsonList(guest_scratch_changes);
+        if (r.g.expect_refused) j += ",\"guest_refused_as_expected\":" + std::string(r.g.refused_ok ? "true" : "false");
     }
     j += ",\"graphics_settings_cfg\":\"" + te::JsonEscape(appdir ? (a.settings_cfg.empty() ? std::string("low") : te::Narrow(a.settings_cfg)) : std::string()) + "\"";
     j += ",\"resources\":" + resources;

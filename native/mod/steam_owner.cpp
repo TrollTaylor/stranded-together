@@ -211,6 +211,40 @@ void Pump() noexcept {
 Phase GetPhase() noexcept { return static_cast<Phase>(g_phase.load(std::memory_order_acquire)); }
 const char* FailReason() noexcept { return g_reason; }
 std::uint64_t SelfId() noexcept { return GetPhase() == Phase::ready ? g_self : 0; }
+
+namespace {
+volatile long g_query_halt = 0;
+bool TryQueryId(GetHSteamUserFn get_user, FindOrCreateUserInterfaceFn find, GetSteamIdFn get_id, std::uint64_t& out) noexcept {
+    __try {
+        out = 0;
+        const std::int32_t user = get_user();
+        if (user == 0) return true;   // SteamAPI_Init has not run yet
+        void* user_if = find(user, kUserVersion);
+        if (user_if) out = get_id(user_if);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+}  // namespace
+
+std::uint64_t QuerySelfId() noexcept {
+    if (const std::uint64_t id = SelfId()) return id;
+    if (g_halt || g_query_halt) return 0;
+    HMODULE mod = GetModuleHandleW(L"steam_api64.dll");
+    if (!mod) return 0;
+    const auto get_user = reinterpret_cast<GetHSteamUserFn>(GetProcAddress(mod, "SteamAPI_GetHSteamUser"));
+    const auto find = reinterpret_cast<FindOrCreateUserInterfaceFn>(GetProcAddress(mod, "SteamInternal_FindOrCreateUserInterface"));
+    const auto get_id = reinterpret_cast<GetSteamIdFn>(GetProcAddress(mod, "SteamAPI_ISteamUser_GetSteamID"));
+    if (!get_user || !find || !get_id) return 0;
+    std::uint64_t id = 0;
+    if (!TryQueryId(get_user, find, get_id, id)) {
+        InterlockedExchange(&g_query_halt, 1);
+        Log("[steam] fault while asking steam_api for the game's user id: not asked again");
+        return 0;
+    }
+    return stcoop::steam::is_individual_steamid(id) ? id : 0;
+}
 const char* PersonaName() noexcept { return GetPhase() == Phase::ready ? g_persona : ""; }
 
 int Resolve(void*, stcoop::lab::SteamNetApi& out, const char*& reason) noexcept {

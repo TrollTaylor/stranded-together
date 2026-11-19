@@ -150,6 +150,58 @@ constexpr unsigned kSQueue = 32;
 RxS g_squeue[kSQueue];
 unsigned g_sq_head = 0, g_sq_count = 0;
 volatile LONG64 g_rx_speech = 0, g_tx_speech = 0, g_rx_speech_bad = 0;
+// Received save transfer messages (STX1, channel 4; under g_save_lock, taken inside g_tx or alone, never the other
+// way round), in delivery order. The sink (SetSaveSink) is called outside every lock.
+struct RxSave {
+    std::uint8_t bytes[lk::kMaxReliableMessage];
+    std::uint16_t size;
+    std::uint32_t generation;
+};
+constexpr unsigned kSaveQueue = 64;
+SRWLOCK g_save_lock = SRWLOCK_INIT;
+RxSave g_save_q[kSaveQueue];
+unsigned g_save_head = 0, g_save_count = 0;
+SaveSink g_save_sink = nullptr;
+void* g_save_ctx = nullptr;
+volatile long g_save_burst = 0;
+volatile LONG64 g_rx_save = 0, g_tx_save = 0;
+// Hidden tests (TestBlackout): received datagrams are dropped until this NowMs().
+volatile LONG64 g_blackout_until = 0, g_blackout_dropped = 0;
+
+// Under g_tx: in-order channel 4 messages into the save queue while it has room (the rest stays in the receiver).
+void DrainSaveLocked(std::uint64_t now, std::uint32_t generation) noexcept {
+    AcquireSRWLockExclusive(&g_save_lock);
+    std::size_t got = 0;
+    while (g_save_count < kSaveQueue) {
+        RxSave& slot = g_save_q[(g_save_head + g_save_count) % kSaveQueue];
+        if (!g_rel_rx[lk::kSaveChannel].Drain(slot.bytes, sizeof(slot.bytes), got, now)) break;
+        slot.size = static_cast<std::uint16_t>(got);
+        slot.generation = generation;
+        ++g_save_count;
+        InterlockedIncrement64(&g_rx_save);
+    }
+    ReleaseSRWLockExclusive(&g_save_lock);
+}
+
+// Outside every lock: hand the queued save messages to the sink, if one is registered.
+void DeliverSaves() noexcept {
+    for (;;) {
+        static thread_local RxSave item;  // transport thread
+        SaveSink sink = nullptr;
+        void* ctx = nullptr;
+        AcquireSRWLockExclusive(&g_save_lock);
+        if (g_save_sink && g_save_count) {
+            sink = g_save_sink;
+            ctx = g_save_ctx;
+            item = g_save_q[g_save_head];
+            g_save_head = (g_save_head + 1) % kSaveQueue;
+            --g_save_count;
+        }
+        ReleaseSRWLockExclusive(&g_save_lock);
+        if (!sink) return;
+        sink(ctx, item.bytes, item.size, item.generation);
+    }
+}
 // Received sound event frames (STA1, under g_rx): newest-seq filter (u16, wrap-safe), oldest dropped when full.
 struct RxA {
     wire::SoundFrame f;
@@ -248,6 +300,10 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
     lk::Event events[kMaxEvents];
     unsigned event_count = 0;
     const std::uint64_t now = NowMs();
+    if (static_cast<LONG64>(now) < InterlockedCompareExchange64(&g_blackout_until, 0, 0)) {
+        InterlockedIncrement64(&g_blackout_dropped);  // hidden tests: a link outage on this side
+        return;
+    }
     bool new_session = false;
     lab::Endpoint committed{};
     wire::NameFrame name;
@@ -331,9 +387,17 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
             if (wire::DecodeSpeech(buf, got, speech[speech_count])) ++speech_count;
             else InterlockedIncrement64(&g_rx_speech_bad);
         }
+        // Channel 4: the save transfer (STX1), queued for its reader. The generation is the session's (bumped below
+        // under g_rx for a new one; this thread is its only writer).
+        if (new_session) {
+            AcquireSRWLockExclusive(&g_save_lock);
+            g_save_count = 0;
+            ReleaseSRWLockExclusive(&g_save_lock);
+        }
+        DrainSaveLocked(now, g_generation + (new_session ? 1u : 0u));
         // Other channels are not used by this build: drained and dropped so their windows never fill.
         for (unsigned ch = 1; ch < lk::kReliableChannels; ++ch)
-            if (ch != wire::kSpeechChannel)
+            if (ch != wire::kSpeechChannel && ch != lk::kSaveChannel)
                 while (g_rel_rx[ch].Drain(buf, sizeof(buf), got, now)) {
                 }
     }
@@ -475,6 +539,7 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
         }
         ReleaseSRWLockExclusive(&g_rx);
     }
+    DeliverSaves();
     LogEvents(events, event_count);
 }
 
@@ -489,7 +554,9 @@ void OnIdle(void*) noexcept {
     if (g_session.CanSendData()) {
         std::size_t budget = lk::kRetransmitBudgetBytes;
         const std::uint32_t rto = g_session.rtt().rto_ms();
-        for (unsigned packets = 0; packets < 4; ++packets) {
+        // 4 packets per tick; up to 16 while the save transfer has data queued at the title / loading screen.
+        const unsigned cap = lk::ReliablePacketsPerTick(!g_rel_tx[lk::kSaveChannel].idle(), InterlockedCompareExchange(&g_save_burst, 0, 0) != 0);
+        for (unsigned packets = 0; packets < cap; ++packets) {
             const bool due = lk::ReliableDue(g_rel_tx, now, rto, budget);
             lk::RelAckState acks[lk::kReliableChannels];
             bool any_ack = false;
@@ -509,10 +576,13 @@ void OnIdle(void*) noexcept {
         }
     }
     g_session.OnTimer(now);
+    // Save messages left in the channel while the queue was full: taken as soon as it has room again.
+    DrainSaveLocked(now, g_generation);
     lk::Event e{};
     while (event_count < kMaxEvents && g_session.PopEvent(e)) events[event_count++] = e;
     InterlockedExchange(&g_state, static_cast<long>(g_session.state()));
     ReleaseSRWLockExclusive(&g_tx);
+    DeliverSaves();
     LogEvents(events, event_count);
 }
 
@@ -921,6 +991,56 @@ bool SendSpeech(const wire::Speech& s) noexcept {
     return queued;  // the transport thread puts it on the wire within one idle tick (20 ms)
 }
 
+bool SendSave(const void* bytes, std::size_t size) noexcept {
+    if (!bytes || size == 0 || size > lk::kMaxReliableMessage) return false;
+    bool queued = false;
+    AcquireSRWLockExclusive(&g_tx);
+    if (g_session.CanSendData())
+        queued = g_rel_tx[lk::kSaveChannel].Queue(bytes, size, lk::ReliableMode::append) == lk::ReliableResult::queued;
+    ReleaseSRWLockExclusive(&g_tx);
+    if (queued) InterlockedIncrement64(&g_tx_save);
+    return queued;
+}
+
+unsigned SaveQueued() noexcept {
+    AcquireSRWLockExclusive(&g_tx);
+    const unsigned n = g_rel_tx[lk::kSaveChannel].queued();
+    ReleaseSRWLockExclusive(&g_tx);
+    return n;
+}
+
+void SetSaveSink(SaveSink sink, void* ctx) noexcept {
+    AcquireSRWLockExclusive(&g_save_lock);
+    g_save_sink = sink;
+    g_save_ctx = ctx;
+    ReleaseSRWLockExclusive(&g_save_lock);
+}
+
+bool PopSave(std::uint8_t* out, std::size_t cap, std::size_t& size, std::uint32_t& generation) noexcept {
+    bool ok = false;
+    AcquireSRWLockExclusive(&g_save_lock);
+    if (g_save_count && out && g_save_q[g_save_head].size <= cap) {
+        const RxSave& s = g_save_q[g_save_head];
+        std::memcpy(out, s.bytes, s.size);
+        size = s.size;
+        generation = s.generation;
+        g_save_head = (g_save_head + 1) % kSaveQueue;
+        --g_save_count;
+        ok = true;
+    }
+    ReleaseSRWLockExclusive(&g_save_lock);
+    return ok;
+}
+
+void SetSaveBurst(bool title_or_loading) noexcept { InterlockedExchange(&g_save_burst, title_or_loading ? 1 : 0); }
+
+void TestBlackout(std::uint32_t ms) noexcept {
+    InterlockedExchange64(&g_blackout_until, ms ? static_cast<LONG64>(NowMs() + ms) : 0);
+    Log("[link] test blackout: %s", ms ? "every received datagram is dropped from now on" : "ended");
+}
+
+std::uint64_t TestBlackoutDropped() noexcept { return static_cast<std::uint64_t>(InterlockedCompareExchange64(&g_blackout_dropped, 0, 0)); }
+
 bool PopSpeech(wire::Speech& out, std::uint32_t& generation) noexcept {
     bool ok = false;
     AcquireSRWLockExclusive(&g_rx);
@@ -1034,6 +1154,8 @@ Info GetInfo() noexcept {
     i.rx_gear_frames = static_cast<std::uint64_t>(g_rx_gears);
     i.tx_gear_frames = static_cast<std::uint64_t>(g_tx_gears);
     i.rx_speech = static_cast<std::uint64_t>(g_rx_speech);
+    i.rx_save = static_cast<std::uint64_t>(g_rx_save);
+    i.tx_save = static_cast<std::uint64_t>(g_tx_save);
     i.tx_speech = static_cast<std::uint64_t>(g_tx_speech);
     i.rx_sound = static_cast<std::uint64_t>(g_rx_sound);
     i.tx_sound = static_cast<std::uint64_t>(g_tx_sound);

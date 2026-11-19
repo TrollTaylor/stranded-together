@@ -93,4 +93,28 @@ void CancelCapture(std::uint32_t id) noexcept;
 using AfterDrawFn = void (*)(IDXGISwapChain3* chain, ID3D12CommandQueue* queue, void* user);
 void SetAfterDrawForTest(AfterDrawFn fn, void* user) noexcept;
 
+// ---- Co-op session screens (the host-held save session, coop_session.cpp; docs/coop-session.md). Any thread.
+// The co-op module publishes what to show; the overlay draws it (and keeps its renderer while anything is shown).
+struct CoopView {
+    bool active = false;               // a host-held save session (the menu header shows `status`)
+    // The guest's full-screen waiting panel; the game's input is blocked as for the open menu (input::SetWaitBlock).
+    bool waiting = false;
+    // The game's input blocked as for the open menu, except the confirm inputs (input::SetWaitBlock): with the waiting
+    // panel (and while a hidden test hides the panel for a screenshot of the title behind it).
+    bool block_input = false;
+    char title[160] = {};              // "Waiting for <host> to start the game"
+    char lines[4][200] = {};           // link, host phase, notes ("" = none)
+    float progress = -1.0f;            // the transfer bar, 0..1 (< 0: hidden)
+    char progress_text[120] = {};
+    bool leave = false;                // the Leave button (quits the game)
+    char banner[240] = {};             // a notice at the top centre ("" = none): in the world or over the title
+    bool banner_warn = false;          // amber instead of white
+    bool teleport_offer = false;       // the menu header offers "Teleport to host"
+    char status[200] = {};             // one line in the menu header
+};
+void SetCoopView(const CoopView& v) noexcept;
+// What the player pressed on the co-op screens since the last call: kCoopLeave, kCoopTeleport.
+inline constexpr unsigned kCoopLeave = 1u, kCoopTeleport = 2u;
+unsigned TakeCoopRequests() noexcept;
+
 }  // namespace st::overlay

@@ -82,6 +82,13 @@ struct DebugOptions {
     // Guests play Fragile (porter suit) only; on, Join and the local test offer every character
     // (core::GuestCharacter). Launcher-only: session.ini just gets the resulting my_character.
     bool allow_other_characters = false;
+    // The host-held save (docs/coop-session.md, M1): Host and Join write host_save=1. The host plays on its own saves and
+    // its save holds the co-op progress; the guest's game runs on the private coop-guest folder and loads the copy of the
+    // host's save the link brings (its own saves are never opened). Off = the old mode: each player on their own save.
+    bool host_save = true;
+    // With host_save, before each hosted session: a read-only copy of your account's save folder in
+    // stranded_together\backups (the newest 5 stay).
+    bool backup_host_saves = true;
 };
 
 // The Advanced / LAN section (transport udp).

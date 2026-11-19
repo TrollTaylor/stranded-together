@@ -243,6 +243,16 @@ bool MakeSessionIniText(const SessionIni& s, std::string& text, std::string& err
         error = "sandbox_foreign_saves, appdir_settings and second_instance need sandbox_saves";
         return false;
     }
+    if (s.host_save && !host && !guest) {
+        error = "host_save is only for a host or a guest";
+        return false;
+    }
+    // The one rule of the host-held save: a guest never runs it on its own saves. The private folder's keys come with
+    // host_save, or nothing is written.
+    if (guest && s.host_save && (s.sandbox_saves != kCoopGuestSandbox || !s.sandbox_foreign_saves)) {
+        error = std::string("a host_save guest needs sandbox_saves=") + kCoopGuestSandbox + " and sandbox_foreign_saves=1 (it never runs on its own saves)";
+        return false;
+    }
     if (!s.local_input.empty() && s.local_input != "host" && s.local_input != "host_pad" && s.local_input != "guest") {
         error = "local_input must be host, host_pad or guest";
         return false;
@@ -307,6 +317,7 @@ bool MakeSessionIniText(const SessionIni& s, std::string& text, std::string& err
         if (s.appdir_settings) t += "appdir_settings=1\n";
         if (s.second_instance) t += "second_instance=1\n";
     }
+    if (s.host_save) t += "host_save=1\n";
     if (!s.local_input.empty()) t += "local_input=" + s.local_input + "\n";
     if (s.frame_cap) t += "frame_cap=" + std::to_string(s.frame_cap) + "\n";
     if (!s.local_window.empty()) t += "local_window=" + s.local_window + "\n";
@@ -357,6 +368,7 @@ bool ParseSessionIniText(const std::string& text, SessionIni& out, std::string& 
         else if (k == "sandbox_foreign_saves") out.sandbox_foreign_saves = IniBool(v);
         else if (k == "appdir_settings") out.appdir_settings = IniBool(v);
         else if (k == "second_instance") out.second_instance = IniBool(v);
+        else if (k == "host_save") out.host_save = IniBool(v);
         else if (k == "local_input") out.local_input = v;
         else if (k == "frame_cap") ok = ParseIntStrict(v, 0, 240, out.frame_cap);
         else if (k == "local_window") out.local_window = v;

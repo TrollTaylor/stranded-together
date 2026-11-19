@@ -703,6 +703,15 @@ void LauncherUi::HostTab(Phase phase, const InstallChecks& checks) {
     Gap(2.0f);
     // The guest picks a character on Join; the host has no choice (my_character=sam).
     Message(Icon::person, col::kAccent, "You appear as: Sam (the host is always Sam)", kSmall, 0.0f, col::kText);
+    // The host-held save (M1.11): said plainly before the host starts.
+    if (model_.debug_options().host_save)
+        Message(Icon::info, col::kCool,
+                model_.debug_options().backup_host_saves
+                    ? "Co-op saves into your own save: it holds the session's progress. Your partner waits until you pick Continue or "
+                      "New Game. A backup of your saves is made first (stranded_together\\backups, the newest 5 kept)."
+                    : "Co-op saves into your own save: it holds the session's progress. Your partner waits until you pick Continue or "
+                      "New Game. No backup is made (Debug page).",
+                kSmall, 0.0f, col::kTextDim);
     // partner_body=holo installs no pose hook, so this game sends no joint frames: the partner
     // sees a hologram whatever this game's character is (docs/real-partner-body.md section 5).
     if (!model_.debug_options().real_partner_body)
@@ -824,6 +833,15 @@ void LauncherUi::JoinTab(Phase phase) {
         else
             Text("Partner body is Hologram (Debug page): your partner\nsees you as a hologram, not this character.", col::kWarn, kSmall,
                  nullptr, 0.0f);
+    }
+    if (model_.debug_options().host_save) {
+        Gap(2.0f);
+        // M1.11: what the guest's progress is.
+        Message(Icon::info, col::kCool,
+                "You play in your partner's world: your game loads a copy of their save once they start, and shows a waiting screen "
+                "until then. Progress you make there (orders, deliveries, equipment) is a disposable copy and is not kept; your own "
+                "saves are never opened. Your settings and key bindings from co-op are kept for the next co-op game.",
+                kSmall, 0.0f, col::kTextDim);
     }
     Gap(6.0f);
     if (Button("Join game", ButtonKind::primary, ImVec2(190.0f, 46.0f), view.can_join && ui::CanStartSession(phase), Icon::play, true)) {
@@ -1408,6 +1426,20 @@ void LauncherUi::DebugOptionsTab(Phase phase) {
                                       : "Guests play Fragile in her porter suit. The host is always Sam.",
              col::kTextFaint, kSmall, nullptr, 0.0f);
     }
+    Gap(4.0f);
+    // session.ini host_save (Host and Join): the host-held save (docs/coop-session.md). Off = the old mode.
+    SectionLabel("CO-OP SAVE");
+    committed |= Checkbox("Host holds the save", &o.host_save, true);
+    Text(o.host_save ? "The host's save is the one save of the session. Your partner's game loads a copy of it and waits until the host "
+                       "starts; a guest's own saves are never opened."
+                     : "Old mode: each player plays on their own save, and the two worlds are not the same.",
+         col::kTextFaint, kSmall, nullptr, 0.0f);
+    Gap(2.0f);
+    committed |= Checkbox("Back up my saves before co-op", &o.backup_host_saves, o.host_save);
+    Text(o.host_save && o.backup_host_saves ? "Before each game you host, a copy of your save folder goes to stranded_together\\backups "
+                                              "(the newest 5 are kept)."
+                                            : "No backup is made when you host.",
+         col::kTextFaint, kSmall, nullptr, 0.0f);
     Gap(4.0f);
     committed |= Checkbox("In-game debug menu", &o.debug_menu, true);
     ImGui::SameLine(0.0f, Px(10.0f));

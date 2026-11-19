@@ -26,6 +26,9 @@ inline constexpr std::uint64_t kSteamIdBase = 76561197960265728ull;
 // A link-status.json older than this (or written by a process that is gone) is stale.
 inline constexpr std::int64_t kStatusStaleMs = 15000;
 inline constexpr int kDefaultUdpPort = 27555;
+// The guest's private session folder of a host-held save session (stranded_together\sandbox\coop-guest; the mod's
+// st::sandbox::kCoopGuestSandbox is the same name).
+inline constexpr char kCoopGuestSandbox[] = "coop-guest";
 
 // ---- Secrets, Steam IDs -------------------------------------------------------
 bool IsCanonicalSecret(const std::string& secret);   // 20 characters of kAlphabet
@@ -63,6 +66,11 @@ struct SessionIni {
     bool sandbox_foreign_saves = false;   // skip ds.exe's save-owner check (another account's save)
     bool appdir_settings = false;     // the game folder's settings.cfg -> the sandbox's settings.cfg
     bool second_instance = false;     // the second game on this PC (its single-instance mutex is renamed)
+    // The host-held save session (M1, docs/coop-session.md): the host plays on its own saves and the guest's game only
+    // ever runs on the private coop-guest folder, loading the copy of the host's save the link brings. Written as
+    // host_save=1 for a host or a guest. A guest with host_save is refused unless sandbox_saves=coop-guest and
+    // sandbox_foreign_saves=1 come with it (the guest never runs a co-op session on its own saves; the mod refuses too).
+    bool host_save = false;
     std::string local_input;          // host | host_pad | guest ("" = a normal game)
     int frame_cap = 0;                // 0 or 15..240 frames per second
     std::string local_window;         // left | right: the game window takes that half of the monitor

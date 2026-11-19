@@ -1,0 +1,59 @@
+# The host-held save session (docs/coop-session.md, M1.12 #6), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-hostsave-late -SeedSaves complete-100 -GuestSeed profile-only
+# A late join: the two games start together, so the link is cut first (`@both action coop_session 1 ...`: every
+# received datagram dropped on both sides, hidden runs only) while the host Continues and plays; the guest waits
+# behind its waiting screen. Then the link is restored: the host's unanswered Continue offer is stale (the host is in
+# the world), so the host's mod offers its newest save (reason late join, D1-7); the guest loads it at its title and
+# is offered "Teleport to host" once, which it accepts (`@guest action coop_session 3`: the Teleport to partner action).
+# Check enlarged: 01-guest-waiting-alone, 03-guest-teleport-offer (the banner), 04-host-world / 04-guest-after-teleport.
+role host
+graphics low
+timeout 360
+ini host_save=1
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[coop\] host-held save session ON \(host
+@guest waitlog 10 \[coop\] host-held save session ON \(guest
+waitlog 60 \[coop\] this game: build
+@guest waitlog 60 \[coop\] this game: build
+# no link from here until the host is in the world
+@both action coop_session 1 240000
+wait 20000
+@guest pad A 150
+wait 2500
+@guest pad A 150
+wait 2500
+@guest screenshot 01-guest-waiting-alone
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+waitlog 60 \[coop\] host: in the world \(load #1\)
+wait 10000
+@guest nolog \[coop\] guest: offer #
+# the partner arrives
+@both action coop_session 1 0
+waitlog 60 \[coop\] host: the unanswered offer #1 .* is stale
+waitlog 60 \[coop\] host: the partner is waiting while you are in the world: offering the newest save \(late join, load #2\)
+@guest waitlog 90 \[coop\] guest: offer #2 .*late join
+@guest waitlog 90 \[coop\] guest: wrote the host's save #2 as manualsave5
+@guest waitlog 180 \[coop\] guest: in the world after .* save #2
+@guest waitlog 5 \[coop\] guest: you joined while the host was playing
+wait 12000
+@guest screenshot 03-guest-teleport-offer
+snapshot
+@guest snapshot
+@guest action coop_session 3
+?@guest waitlog 20 to the partner \(
+wait 8000
+snapshot
+@guest snapshot
+screenshot 04-host-world
+@guest screenshot 04-guest-after-teleport
+action coop_session 0
+@guest action coop_session 0
+@guest quit
+wait 3000
+quit

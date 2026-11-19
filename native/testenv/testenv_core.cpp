@@ -269,6 +269,15 @@ std::string SessionIniText(const SessionOptions& o) {
     return s;
 }
 
+std::string UnredirectedGuestIniText(unsigned port_local, unsigned port_peer) {
+    std::string s = "# Stranded Together testenv: hidden test run (guest-refuse-unredirected): a host-held save guest WITHOUT a save "
+                    "redirect; the mod must end ds.exe in DllMain. The supervisor removes this file afterwards.\n";
+    s += "role=guest\ntransport=udp\nudp_peer=127.0.0.1\nudp_port_local=" + std::to_string(port_local) +
+         "\nudp_port_peer=" + std::to_string(port_peer) + "\n";
+    s += "debug_menu=0\none_shot=1\nsecond_instance=1\nhost_save=1\n";
+    return s;
+}
+
 bool ScenarioIniKeyAllowed(const std::string& key) {
     static const char* const kAllowed[] = {"partner_body", "partner_character", "my_character", "self_character", "partner_holo",
                                            "partner_marker", "partner_voice", "partner_activate", "pose_hook", "echo_delay_s",
@@ -277,7 +286,7 @@ bool ScenarioIniKeyAllowed(const std::string& key) {
                                            "smooth_pose", "frame_cap", "audio_probe", "self_voice", "voice_sync", "voice_subtitles",
                                            "sound_sync", "sound_steps", "partner_volume", "self_headgear", "self_feet_hide",
                                            "boots_sync", "vehicle_sync", "vehicle_overlap_hide", "vehicle_look",
-                                           "vehicle_packs", "vehicle_sound"};
+                                           "vehicle_packs", "vehicle_sound", "host_save", "coop_test_build"};
 
     for (const char* k : kAllowed)
         if (key == k) return true;
@@ -318,6 +327,13 @@ bool ParseScenario(const std::string& text, Scenario* out, std::string* error) {
             if (words.size() != 2 || (words[1] != "solo" && words[1] != "echo" && words[1] != "host"))
                 return fail("role solo|echo|host (host: a second, guest game is started too)");
             out->role = words[1];
+            continue;
+        }
+        if (verb == "guest") {
+            if (words.size() != 2 || automation::detail::Lower(words[1]) != "unredirected" || st.optional)
+                return fail("guest unredirected (role host: the guest must be refused in DllMain)");
+            out->guest_unredirected = true;
+            out->guest_unredirected_line = lineno;
             continue;
         }
         // "ini k=v" goes to every game's session.ini; "@host ini" / "@guest ini" to one game of a
@@ -447,6 +463,21 @@ bool ParseScenario(const std::string& text, Scenario* out, std::string* error) {
     if (!out->guest_ini.empty() && out->role != "host") {
         *error = "line " + std::to_string(out->guest_ini_line) + ": @guest ini needs 'role host' (two games)";
         return false;
+    }
+    if (out->guest_unredirected) {
+        if (out->role != "host") {
+            *error = "line " + std::to_string(out->guest_unredirected_line) + ": guest unredirected needs 'role host' (two games)";
+            return false;
+        }
+        for (const Step& s : out->steps)
+            if (s.target != 0) {
+                *error = "line " + std::to_string(s.line) + ": no @guest / @both step with 'guest unredirected' (the guest never runs)";
+                return false;
+            }
+        if (!out->guest_ini.empty()) {
+            *error = "line " + std::to_string(out->guest_ini_line) + ": no @guest ini with 'guest unredirected' (its session.ini is fixed)";
+            return false;
+        }
     }
     return true;
 }
@@ -820,6 +851,23 @@ bool ApplySeedSaves(const std::wstring& scratch, const std::wstring& seed, int* 
         ++*accounts;
     }
     if (!*accounts) return *error = "seed saves: no Steam account folder (digits) under " + Narrow(game), false;
+    return true;
+}
+
+bool StripScratchSlots(const std::wstring& scratch, int* slots, std::string* error) {
+    *slots = 0;
+    // Only a seeded scratch copy (it has the redirect probe; the real tree never does).
+    if (!FileExists(scratch + L"\\.st-redirect-probe")) return *error = "guest seed: " + Narrow(scratch) + " is not a seeded scratch copy", false;
+    const std::wstring game = scratch + L"\\DeathStrandingDC";
+    for (const std::wstring& acct : SubDirs(game)) {
+        if (!AllDigits(acct)) continue;
+        const std::wstring dir = game + L"\\" + acct;
+        for (const std::wstring& n : SubDirs(dir)) {
+            if (!IsSlotOrProfile(n)) continue;
+            if (!RemoveTree(dir + L"\\" + n)) return *error = "guest seed: cannot remove " + Narrow(dir + L"\\" + n), false;
+            ++*slots;
+        }
+    }
     return true;
 }
 

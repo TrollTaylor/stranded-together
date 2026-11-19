@@ -1,0 +1,63 @@
+# The host-held save session (docs/coop-session.md, M1.12 #3), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-hostsave-retry -SeedSaves complete-100 -GuestSeed profile-only
+# Both start from the host's Continue. Then the host makes the checkpoint retry the Game Over screen's Retry makes
+# (`action coop_session 7`: 0x14362D750 with index -2, reason 5, only while the game says a checkpoint exists; a test
+# stand-in for dying and pressing Retry). There is no file for the in-memory checkpoint: the host's mod offers its
+# newest autosave marked approx (reason Retry) and the guest loads it in the world. The distance between the host's
+# and the guest's spawn after the retry measures the -2 versus newest-autosave question (compare the snapshots).
+# Check enlarged: 03-host-after-retry / 03-guest-after-retry (the guest at the newest autosave; the host where it was, see
+# below: no checkpoint exists in a freshly loaded world, so the game ignores the request).
+role host
+graphics low
+timeout 360
+ini host_save=1
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[coop\] host-held save session ON \(host
+@guest waitlog 10 \[coop\] host-held save session ON \(guest
+wait 22000
+waitlog 30 \[coop\] this game: build
+@guest waitlog 30 \[coop\] this game: build
+@guest pad A 150
+wait 2500
+@guest pad A 150
+wait 2500
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 90 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+waitlog 60 \[coop\] host: the partner's RESULT for load #1: ok
+wait 15000
+snapshot
+@guest snapshot
+screenshot 02-host-world1
+@guest screenshot 02-guest-world1
+action coop_session 4
+# the retry: the newest autosave stands in for the in-memory checkpoint (approx). A freshly loaded world has no
+# checkpoint (every load request clears it; runs 20261119-072858 / -073105 polled 0x14362B4A0 for 3 minutes of walking: absent),
+# so the Game Over screen could not offer Retry here: `7 2` makes the same request anyway. The game itself ignores a
+# -2 / reason 5 request without a checkpoint (0x14362D750 checks 0x14362B4A0), so the HOST DOES NOT MOVE: this proves
+# the detection, the approx offer and the guest's in-world load, not where a real retry puts the host.
+action coop_session 7 1
+action coop_session 7 2
+waitlog 20 \[coop\] host: Retry \(the in-memory checkpoint\)
+waitlog 60 \[coop\] host: offer #2 .*approx
+@guest waitlog 90 \[coop\] guest: offer #2 .*Retry
+@guest waitlog 90 \[coop\] guest: wrote the host's save #2 as manualsave6
+@guest waitlog 180 \[coop\] guest: in the world after .* save #2
+waitlog 120 \[coop\] host: the partner's RESULT for load #2: ok
+wait 15000
+snapshot
+@guest snapshot
+screenshot 03-host-after-retry
+@guest screenshot 03-guest-after-retry
+action coop_session 0
+@guest action coop_session 0
+@guest quit
+wait 3000
+quit

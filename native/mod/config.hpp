@@ -172,6 +172,14 @@ struct Config {
     // appdir_settings, second_instance) are read by automation.cpp in DllMain.
     std::string local_input;           // "" = a normal game
     std::string sandbox_saves;         // the test-save sandbox this game runs on ("" = the real saves)
+    // host_save=1 (docs/coop-session.md, M1): the host-held save session. Host: plays on its own saves and offers them to
+    // the guest (read only). Guest: never has a save of its own; DllMain refuses it without a confirmed save redirect
+    // (sandbox.hpp Mode::refuse_host_save) and it loads the host's save the link brings. 0 / absent: each player on their
+    // own save (the old mode).
+    bool host_save = false;
+    // coop_test_build=<text> (hidden tests only, the version scenario): this game reports that game build instead of its
+    // own in the co-op save session's version check. Ignored outside a hidden run (automation=1).
+    std::string coop_test_build;
     unsigned frame_cap = 0;            // frame_cap=<15..240>: at most this many frames per second (0 = off)
     std::string local_window;          // local_window=left|right: the game window takes that half of the monitor
 };

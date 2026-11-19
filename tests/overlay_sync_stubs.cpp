@@ -266,6 +266,11 @@ bool VehicleSyncCommand(int, const double (&)[3], char* msg, std::size_t cap) no
     Say(msg, cap, "vehicle sync (stub)");
     return true;
 }
+bool CoopSessionCommand(int, const double (&)[3], char* msg, std::size_t cap) noexcept {
+    Seen();
+    Say(msg, cap, "coop session (stub)");
+    return true;
+}
 
 void ReadDiagnostics(Diagnostics* d) noexcept {
     *d = Diagnostics{};

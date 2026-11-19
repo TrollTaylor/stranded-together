@@ -1,0 +1,15 @@
+# The host-held save session's DllMain rule (docs/coop-session.md, M1.12 #8; sandbox.hpp Mode::refuse_host_save), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario guest-refuse-unredirected -SeedSaves complete-100
+# "guest unredirected": the guest game's session.ini is role=guest host_save=1 with NO save redirect (no automation=1,
+# no sandbox_saves). Its mod must end ds.exe in DllMain, before ds.exe's own code runs, with exit code 0x53540006 and
+# <guest mod folder>\sandbox-refused.txt naming host_save; the supervisor checks both within 15 s (summary.json
+# "guest_refused_as_expected") and stops the whole run otherwise. The host game runs on as usual (redirected).
+role host
+guest unredirected
+timeout 120
+ini host_save=1
+waitready 90
+waitlog 30 \[coop\] host-held save session ON \(host
+wait 3000
+action coop_session 0
+quit

@@ -18,6 +18,8 @@ struct Context {
     const char* build = "";
     float* ui_scale = nullptr;  // the overlay applies changes next frame
     bool close = false;         // set by the menu (Close button / Esc)
+    const CoopView* coop = nullptr;  // a host-held save session: its status line (and the teleport offer)
+    bool coop_teleport = false;      // set by the menu: "Teleport to host" pressed
 };
 
 // Loads <mod_dir>\positions.txt.

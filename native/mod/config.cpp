@@ -64,7 +64,10 @@ Config LoadConfig(const std::wstring& dir) {
     int lineno = 0;
     while (std::getline(in, line)) {
         ++lineno;
-        if (lineno == 1 && line.size() >= 3 && static_cast<unsigned char>(line[0]) == 0xEF) line = line.substr(3);
+        // A UTF-8 BOM (EF BB BF): the same rule as DllMain's EarlyInit and automation::Init (automation.hpp StripBom).
+        if (lineno == 1 && line.size() >= 3 && static_cast<unsigned char>(line[0]) == 0xEF && static_cast<unsigned char>(line[1]) == 0xBB &&
+            static_cast<unsigned char>(line[2]) == 0xBF)
+            line = line.substr(3);
         line = Trim(line);
         if (line.empty() || line[0] == '#' || line[0] == ';' || line[0] == '[') continue;
         const auto eq = line.find('=');
@@ -153,6 +156,10 @@ Config LoadConfig(const std::wstring& dir) {
             // read by automation.cpp before the one-shot rename (DllMain)
         } else if (k == "sandbox_saves") {
             c.sandbox_saves = v;  // the redirect itself is installed in DllMain (automation.cpp)
+        } else if (k == "host_save") {
+            c.host_save = ParseBool(v);  // a guest's redirect rule is DllMain's (automation.cpp)
+        } else if (k == "coop_test_build") {
+            c.coop_test_build = v.substr(0, 24);  // hidden tests only (coop_session.cpp checks automation)
         } else if (k == "frame_cap") {
             const unsigned long fc = std::strtoul(v.c_str(), nullptr, 10);
             c.frame_cap = fc == 0 ? 0u : static_cast<unsigned>(fc < 15 ? 15 : fc > 240 ? 240 : fc);
@@ -224,6 +231,10 @@ Config LoadConfig(const std::wstring& dir) {
         RoleName(c.role), c.transport == Transport::udp ? "udp" : "steam",
         static_cast<unsigned long long>(c.peer_steam_id), c.udp_peer.c_str(), c.udp_port_local, c.udp_port_peer,
         c.send_hz, c.interp_delay_ms, c.debug_menu ? 1 : 0, c.debug_menu_vk);
+    if (c.host_save)
+        Log("[config] host_save=1: host-held save session (%s)", c.role == Role::guest ? "guest: runs only on the redirected co-op folder"
+                                                              : c.role == Role::host ? "host: plays on its own saves, offers them read only"
+                                                                                     : "ignored for this role");
     if (!c.sandbox_saves.empty() || !c.local_input.empty())
         Log("[config] test save sandbox=%s local_input=%s", c.sandbox_saves.empty() ? "-" : c.sandbox_saves.c_str(),
             c.local_input.empty() ? "-" : c.local_input.c_str());

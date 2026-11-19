@@ -11,6 +11,7 @@
 #include "audio_probe.hpp"
 #include "automation.hpp"
 #include "config.hpp"
+#include "coop_session.hpp"
 #include "debug_actions.hpp"
 #include "self_voice.hpp"
 #include "partner_sound.hpp"
@@ -81,12 +82,15 @@ bool GuardedStop(void (*stop)() noexcept) noexcept {
         return false;
     }
 }
+// The host-held save session (its gate, the guest's waiting screen and input block live on only through the tick).
+void CoopStopAfterFault() noexcept { st::coop::EmergencyStop("the mod's per-frame tick faulted (see the log); restart both games to play co-op"); }
 bool GuardedEmergencyStop() noexcept {
     const bool coll = GuardedStop(&st::collision::EmergencyStop);
     const bool body = GuardedStop(&st::realbody::EmergencyStop);
     const bool gear = GuardedStop(&st::gear::EmergencyStop);
     const bool veh = GuardedStop(&st::vsync::EmergencyStop);
-    return coll && body && gear && veh;
+    const bool coop = GuardedStop(&CoopStopAfterFault);
+    return coll && body && gear && veh && coop;
 }
 
 // frame_cap=<fps> (session.ini; the launcher's local two-instance test and hidden two-game
@@ -176,6 +180,9 @@ DWORD WINAPI Bootstrap(LPVOID) {
         return 0;
     }
     st::debug::SetRoleLabel(st::RoleName(cfg.role));
+    // The host-held save session (host_save=1, docs/coop-session.md): its byte checks and hooks go in now, before the
+    // overlay waits for the game's d3d12 below, so the guest's title menu is gated before it can ever be shown.
+    st::coop::Install(cfg);
 
     // Local two-instance test: which input this game takes and that it keeps running unfocused
     // (overlay_input.hpp "local test"). The overlay installs these hooks, so it is always on then.
@@ -196,7 +203,11 @@ DWORD WINAPI Bootstrap(LPVOID) {
     // can fail below, so the menu's Status tab can show why co-op is off. Name tags draw through
     // it too (docs/real-partner-body.md section 10): with debug_menu=0 it is installed for them
     // alone, without the menu (no toggle key, no window hooks).
-    const bool menu = cfg.debug_menu || local != st::sandbox::LocalInput::off || !cfg.local_window.empty();
+    // The host-held save session's screens (the guest's waiting screen, the notices) need the overlay with its input
+    // hooks: on for that session even with debug_menu=0.
+    const bool coop_screens = st::coop::Active();
+    const bool menu = cfg.debug_menu || local != st::sandbox::LocalInput::off || !cfg.local_window.empty() || coop_screens;
+    if (coop_screens && !cfg.debug_menu) st::Log("[mod] host_save: the overlay is on for the co-op screens (debug_menu=0 asked for none)");
     const bool tags = cfg.name_tags && (cfg.role == st::Role::host || cfg.role == st::Role::guest || cfg.role == st::Role::echo);
     if (menu || tags) {
         st::overlay::Options ov;
@@ -223,9 +234,12 @@ DWORD WINAPI Bootstrap(LPVOID) {
         st::Log("[mod] second instance: mutex=renamed (%lu call(s) of ds.exe's single-instance check went to %s%s)",
                 st::sandbox::MutexRenames(), st::sandbox::kAppMutex, st::sandbox::kMutexSuffix);
 
+    // From here on an early return means the per-frame tick never runs: the co-op save session (installed above) is
+    // stopped too, or the guest would sit behind a waiting screen and a gate nothing ever lifts.
     if (!st::game::Resolve()) {
         st::Log("[mod] this ds.exe build is not supported (functions not found): co-op disabled");
         st::debug::SetModState("ds.exe build not supported: game functions not found");
+        st::coop::EmergencyStop("this game build is not supported (game functions not found)");
         return 0;
     }
 
@@ -233,6 +247,7 @@ DWORD WINAPI Bootstrap(LPVOID) {
     if (init != MH_OK && init != MH_ERROR_ALREADY_INITIALIZED) {
         st::Log("[mod] MinHook init failed (%s)", MH_StatusToString(init));
         st::debug::SetModState("MinHook init failed");
+        st::coop::EmergencyStop("MinHook init failed");
         return 0;
     }
     // Real partner body (docs/real-partner-body.md): the pose hook goes in at start-up, never
@@ -259,6 +274,7 @@ DWORD WINAPI Bootstrap(LPVOID) {
     if (s != MH_OK) {
         st::Log("[mod] could not hook the frame pump (%s): co-op disabled", MH_StatusToString(s));
         st::debug::SetModState("frame pump hook failed: no tick, actions never run");
+        st::coop::EmergencyStop("the frame pump could not be hooked (no per-frame tick)");
         return 0;
     }
     st::Log("[mod] frame pump hooked");

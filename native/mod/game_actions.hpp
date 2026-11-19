@@ -162,6 +162,8 @@ bool VoiceSyncCommand(int op, const double (&v)[3], char* msg, std::size_t cap) 
 bool SoundSyncCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 // Vehicle sync debug command (vehicle_sync.cpp, session.ini vehicle_sync): see docs/debug-actions.md "Vehicle sync".
 bool VehicleSyncCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
+// Host-held save session debug command (coop_session.cpp, session.ini host_save=1): see docs/coop-session.md "Debug action".
+bool CoopSessionCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 
 // Name tags debug command (nametags.cpp): 0 normal, 1 self test (a tag above your own Sam),
 // 2 log the camera numbers, 3 <0/1> tags off / on.

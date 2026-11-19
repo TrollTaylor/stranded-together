@@ -12,6 +12,12 @@ ctest --test-dir build -C Release --output-on-failure
 - `st_net_tests`: pose codec, rotation round-trips, DST1 join codes (incl. typo detection),
   a full link v2 handshake + pose exchange between two in-process sessions, and a
   wrong-secret session that must never connect.
+- `st_save_xfer_tests`: the host-held save's transfer (STX1, [coop-session.md](coop-session.md)): SHA-256 known
+  answers, every decoder rejection, the sender and receiver against each other (resume, supersede, SHA mismatch
+  retries, version refusal, disk and parse errors), checkpoint.dat validation, the guest's allowed paths, the link's
+  burst cap, the read-only reader / sandbox writer / part store on temporary folders (never a real save), and the game
+  side's decision rules (`coop_rules.hpp`: the -2 follow-up rule, the host's phase, late join, a stale offer on
+  reconnect, the guest's slot alternation).
 - `st_fakepeer_selftest`: two `st_fakepeer` processes connect over UDP on 127.0.0.1 and
   exchange ~30 poses/s for 6 s using the same `link.cpp` the game DLL uses.
 

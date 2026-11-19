@@ -55,6 +55,12 @@ int RunSelfTest(const std::wstring& exe_dir, std::string& report) {
     SessionIni bad = ini;
     bad.peer_steamid.clear();
     check(!MakeSessionIniText(bad, text, error), "a Steam guest without the host's id is refused");
+    SessionIni hs = ini;
+    hs.host_save = true;
+    check(!MakeSessionIniText(hs, text, error), "a host-save guest without the co-op folder is refused (never its own saves)");
+    hs.sandbox_saves = kCoopGuestSandbox;
+    hs.sandbox_foreign_saves = true;
+    check(MakeSessionIniText(hs, text, error) && text.find("host_save=1\n") != std::string::npos, "a host-save guest on coop-guest is written");
     SessionIni udp;
     udp.role = "host";
     udp.secret = secret;

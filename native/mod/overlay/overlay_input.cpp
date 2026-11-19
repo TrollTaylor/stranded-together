@@ -20,6 +20,8 @@ using XInputSetStateFn = DWORD(WINAPI*)(DWORD, XINPUT_VIBRATION*);
 using GetForegroundWindowFn = HWND(WINAPI*)();
 
 std::atomic<bool> g_open{false};
+// The co-op waiting screen (SetWaitBlock; coop_session.cpp): blocked like the open menu, except the confirm inputs.
+std::atomic<bool> g_wait{false};
 std::atomic<std::uint32_t> g_toggle_vk{0x78};
 std::atomic<unsigned> g_toggles{0};
 std::atomic<bool> g_close_request{false};
@@ -121,6 +123,20 @@ bool IsHeldRelease(LPARAM lp) noexcept {
 
 bool IsButtonUp(UINT m) noexcept { return m == WM_LBUTTONUP || m == WM_RBUTTONUP || m == WM_MBUTTONUP || m == WM_XBUTTONUP; }
 
+// The game's input is kept away while the menu is open or the co-op waiting screen is up.
+bool Blocking() noexcept { return g_open.load(std::memory_order_acquire) || g_wait.load(std::memory_order_acquire); }
+// The waiting screen alone (menu closed): pad A, Enter and Space still reach the game, so a notice behind the screen
+// (the offline-mode notice) can be dismissed; the co-op gate refuses any world start the title menu would make.
+bool WaitOnly() noexcept { return g_wait.load(std::memory_order_acquire) && !g_open.load(std::memory_order_acquire); }
+bool ConfirmKey(std::uint32_t vk) noexcept { return vk == VK_RETURN || vk == VK_SPACE; }
+bool RawConfirmKey(LPARAM lp) noexcept {
+    RAWINPUT ri;
+    UINT size = sizeof(ri);
+    if (GetRawInputData(reinterpret_cast<HRAWINPUT>(lp), RID_INPUT, &ri, &size, sizeof(RAWINPUTHEADER)) == static_cast<UINT>(-1))
+        return false;
+    return ri.header.dwType == RIM_TYPEKEYBOARD && ConfirmKey(ri.data.keyboard.VKey);
+}
+
 // Event ring
 constexpr std::size_t kCap = 512;
 SRWLOCK g_ev_lock = SRWLOCK_INIT;
@@ -209,8 +225,9 @@ LRESULT CALLBACK KeyboardProc(int code, WPARAM wp, LPARAM lp) {
         if (code == HC_ACTION && !up && !was_down) Toggle();
         return 1;  // the toggle key never reaches the game
     }
-    if (g_open.load(std::memory_order_acquire)) {
+    if (Blocking()) {
         if (vk == VK_F4 && alt) return CallNextHookEx(nullptr, code, wp, lp);  // Alt+F4 still closes the game
+        if (WaitOnly() && ConfirmKey(vk)) return CallNextHookEx(nullptr, code, wp, lp);  // waiting screen: confirm
         if (up && Held(vk)) {  // releasing a key held since before the menu opened
             if (code == HC_ACTION) PushKey(vk, false, extended);
             return CallNextHookEx(nullptr, code, wp, lp);
@@ -312,11 +329,12 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT m, WPARAM wp, LPARAM lp) {
         if ((m == WM_KEYDOWN || m == WM_SYSKEYDOWN) && !(lp & (1LL << 30))) Toggle();
         return 0;
     }
-    if (!g_open.load(std::memory_order_acquire)) return pass();
+    if (!Blocking()) return pass();
 
-    // ---- menu open: nothing below reaches the game
+    // ---- menu open (or the co-op waiting screen): nothing below reaches the game
     if (m == WM_INPUT) {
         if (IsHeldRelease(lp)) return pass();
+        if (WaitOnly() && RawConfirmKey(lp)) return pass();
         g_blocked_raw.fetch_add(1, std::memory_order_relaxed);
         return DefWindowProcW(hwnd, m, wp, lp);  // lets the system clean up the raw input handle
     }
@@ -354,6 +372,8 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT m, WPARAM wp, LPARAM lp) {
     }
     if (IsKeyMessage(m)) {
         if ((m == WM_SYSKEYDOWN || m == WM_SYSKEYUP) && wp == VK_F4) return pass();  // Alt+F4
+        if (WaitOnly() && (m == WM_KEYDOWN || m == WM_KEYUP || m == WM_CHAR) && ConfirmKey(static_cast<std::uint32_t>(wp)))
+            return pass();
         const bool hooked = g_kb_hook_on.load(std::memory_order_relaxed);
         if (!hooked) {
             if (m == WM_KEYDOWN || m == WM_SYSKEYDOWN || m == WM_KEYUP || m == WM_SYSKEYUP)
@@ -387,7 +407,7 @@ bool LocalCursorKept() noexcept {
 }
 
 BOOL WINAPI HookSetCursorPos(int x, int y) {
-    if (g_open.load(std::memory_order_acquire) || g_automation.load(std::memory_order_relaxed) || LocalCursorKept()) {
+    if (Blocking() || g_automation.load(std::memory_order_relaxed) || LocalCursorKept()) {
         g_supp_pos.fetch_add(1, std::memory_order_relaxed);
         return TRUE;
     }
@@ -403,7 +423,7 @@ BOOL WINAPI HookClipCursor(const RECT* r) {
         g_supp_clip.fetch_add(1, std::memory_order_relaxed);
         return TRUE;
     }
-    if (g_open.load(std::memory_order_acquire)) {
+    if (Blocking()) {
         AcquireSRWLockExclusive(&g_clip_lock);
         g_game_clip_set = true;
         g_game_clip_null = r == nullptr;
@@ -429,7 +449,7 @@ DWORD AnswerXInput(XInputGetStateFn orig, DWORD index, XINPUT_STATE* state) {
         if (!state) return ERROR_BAD_ARGUMENTS;
         std::memset(state, 0, sizeof(*state));
         state->dwPacketNumber = packet;
-        if (!g_open.load(std::memory_order_acquire)) {  // an open menu keeps the pad idle, as for a real pad
+        if (!Blocking()) {  // an open menu keeps the pad idle, as for a real pad
             state->Gamepad.wButtons = p.buttons;
             state->Gamepad.bLeftTrigger = p.lt;
             state->Gamepad.bRightTrigger = p.rt;
@@ -437,6 +457,8 @@ DWORD AnswerXInput(XInputGetStateFn orig, DWORD index, XINPUT_STATE* state) {
             state->Gamepad.sThumbLY = p.ly;
             state->Gamepad.sThumbRX = p.rx;
             state->Gamepad.sThumbRY = p.ry;
+        } else if (WaitOnly()) {
+            state->Gamepad.wButtons = p.buttons & XINPUT_GAMEPAD_A;  // the waiting screen: A only (dismiss a notice)
         }
         g_virtual_reads.fetch_add(1, std::memory_order_relaxed);
         return ERROR_SUCCESS;
@@ -448,8 +470,10 @@ DWORD AnswerXInput(XInputGetStateFn orig, DWORD index, XINPUT_STATE* state) {
     }
     if (!orig) return ERROR_DEVICE_NOT_CONNECTED;
     const DWORD r = orig(index, state);
-    if (r == ERROR_SUCCESS && state && g_open.load(std::memory_order_acquire)) {
+    if (r == ERROR_SUCCESS && state && Blocking()) {
+        const WORD keep = WaitOnly() ? static_cast<WORD>(state->Gamepad.wButtons & XINPUT_GAMEPAD_A) : 0;  // waiting screen: A
         std::memset(&state->Gamepad, 0, sizeof(state->Gamepad));  // connected, idle
+        state->Gamepad.wButtons = keep;
         g_idle_pads.fetch_add(1, std::memory_order_relaxed);
     }
     return r;
@@ -761,12 +785,10 @@ bool TakeCloseRequest() noexcept { return g_close_request.exchange(false); }
 void RequestToggleForTest() noexcept { Toggle(); }
 LRESULT KeyboardProcForTest(int code, WPARAM vk, LPARAM lp) noexcept { return KeyboardProc(code, vk, lp); }
 
-void SetOpen(bool open) noexcept {
-    const bool was = g_open.exchange(open);
-    if (was == open) return;
+// The game's input became blocked (menu opened / waiting screen shown) or free again: the cursor clip bookkeeping.
+static void OnBlockChange(bool open) noexcept {
     const HWND hwnd = g_hwnd.load();
     if (open) {
-        g_close_request.store(false);
         ClearEvents();
         CaptureHeld(g_toggle_vk.load());
         AcquireSRWLockExclusive(&g_clip_lock);
@@ -779,7 +801,9 @@ void SetOpen(bool open) noexcept {
         g_clip_rect = r;
         g_game_clip_set = false;
         ReleaseSRWLockExclusive(&g_clip_lock);
-        if (!g_automation.load()) RealClipCursor(nullptr);  // free the cursor for the menu
+        // free the cursor for the menu (only once our window is known: the co-op waiting screen is set before the overlay
+        // attaches, and the clip is desktop-global)
+        if (!g_automation.load() && hwnd) RealClipCursor(nullptr);
     } else {
         AcquireSRWLockExclusive(&g_clip_lock);
         bool apply = false, null_clip = true;
@@ -801,6 +825,24 @@ void SetOpen(bool open) noexcept {
         ClearHeld();
     }
 }
+
+void SetOpen(bool open) noexcept {
+    const bool before = Blocking();
+    const bool was = g_open.exchange(open);
+    if (was == open) return;
+    if (open) g_close_request.store(false);
+    if (before != Blocking()) OnBlockChange(open);
+    else ClearEvents();  // the menu over the waiting screen (or back to it): the input stays blocked
+}
+
+void SetWaitBlock(bool on) noexcept {
+    const bool before = Blocking();
+    if (g_wait.exchange(on) == on) return;
+    if (before != Blocking()) OnBlockChange(on);
+    Log("[overlay] co-op waiting screen %s", on ? "shown: game input blocked (pad A, Enter and Space still reach the game)"
+                                                 : "hidden: game input restored");
+}
+bool WaitBlocked() noexcept { return g_wait.load(); }
 
 void MarkHeldForTest(std::uint32_t vk) noexcept { MarkHeld(vk); }
 void ClearHeldForTest() noexcept { ClearHeld(); }

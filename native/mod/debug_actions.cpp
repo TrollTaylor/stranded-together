@@ -163,6 +163,7 @@ bool DoSelfVoice(const Request& r, char* msg, std::size_t cap) { return game::Se
 bool DoVoiceSync(const Request& r, char* msg, std::size_t cap) { return game::VoiceSyncCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoSoundSync(const Request& r, char* msg, std::size_t cap) { return game::SoundSyncCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoVehicleSync(const Request& r, char* msg, std::size_t cap) { return game::VehicleSyncCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
+bool DoCoopSession(const Request& r, char* msg, std::size_t cap) { return game::CoopSessionCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoVoicePing(const Request& r, char* msg, std::size_t cap) {
     // The live partner entity, exactly as the Partner tab sees it (0 when there is none).
     Snapshot s;
@@ -244,6 +245,7 @@ constexpr Row kRows[] = {
     {{Action::voice_sync, Tab::tools, "Voice sync", "Partner voice (voice_sync=1): 0 log, 1 n play sentence n on the partner, 2 0/1 test: send as Sam, 3 rebuild the map.", false}, &DoVoiceSync},
     {{Action::sound_sync, Tab::tools, "Sound sync", "Partner sounds (sound_sync=1): 0 log, 1 0/1 log every mirrored post, 2 stop the partner's sounds.", false}, &DoSoundSync},
     {{Action::vehicle_sync, Tab::tools, "Vehicle sync", "Vehicles (vehicle_sync): 0 log, 1 mode 0 off/1, 2 solid/3 holograms/4 roadster, 2 copy override 0..5, 3 trace ms, 4 offset right/forward cm, 5 describe, 6 offset up cm, 7 list, 11 overlap hiding 0/1, 13 meters.", false}, &DoVehicleSync},
+    {{Action::coop_session, Tab::tools, "Coop session", "Host-held save session (host_save=1): 0 log, 1 ms test link blackout, 2 offer the newest save (host), 3 accept the teleport offer (guest), 4 log the slots (host), 5 t i test load (host), 6 test quit, 7 [1|2] test retry [query|forced] (host), 8 0/1/2 test: hide the waiting panel [and lift the input block] (guest), 9 t i test: a slot stands in for a New Game's first save (host); 1 and 5-9 in hidden runs only.", false}, &DoCoopSession},
 
 };
 constexpr std::size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);

@@ -683,6 +683,19 @@ offered or not (the debug way to prove a new body before it gets `offered`). The
 session comes from the peer's `my_character`; `session.ini partner_character` overrides it for debugging
 (docs/real-partner-body.md section 5).
 
+### Coop session (`coop_session`; `session.ini host_save=1`)
+
+The host-held save session (docs/coop-session.md). `action coop_session 0` logs the status (`[coop] status: ...`):
+host phase, load counter, the offer's phase and progress, the partner's phase and loaded save, both game builds; on
+the guest the host's phase, the bytes received, the save loaded, the gate's blocks. `2` (host) offers the newest save
+now (as for a late join), `3` (guest) accepts the one-time "Teleport to host" offer (the Teleport to partner action),
+`4` (host) logs the save slots and their write times. Hidden runs only (refused otherwise): `1 <ms>` drops every
+received datagram for ms (`0` ends it), `5 <type> <index>` the pause menu's Load on the host (`0x142636990`), `6`
+QuitGame (`0x142642B20`), `7` the checkpoint retry request (`0x14362D750` with index -2, as the Game Over screen's
+Retry; the host's detection sees it as a Retry), `8 <0|1>` the guest's waiting panel hidden (the input block and the
+gate stay). The menu's header shows the session's one-line status and, after a late join, the **Teleport to host**
+button.
+
 ## Byte-check table
 
 | Check | RVA | Gates |

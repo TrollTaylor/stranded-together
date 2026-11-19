@@ -1,0 +1,63 @@
+# The host-held save session (docs/coop-session.md, M1.12 #5), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-hostsave-linkloss -SeedSaves complete-100 -GuestSeed profile-only
+# Both start from the host's Continue. Then a 20 s outage (`@both action coop_session 1 20000`: every received datagram
+# is dropped on both sides, hidden runs only): the guest keeps playing with the "Connection to <host> lost.
+# Reconnecting..." banner; when the link is back the host compares (load counter, save) and offers nothing (the guest
+# is still in the host's world). Then an outage over 60 s (D1-5): the guest goes back to its title (QuitGame) and the
+# waiting screen; when the link is back the host sees the guest waiting and offers its newest save (late join rule),
+# which the guest loads at its title.
+# Check enlarged: 02-guest-reconnecting (the banner), 04-guest-waiting-after-loss, 05-host-world / 05-guest-world.
+role host
+graphics low
+timeout 360
+ini host_save=1
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[coop\] host-held save session ON \(host
+@guest waitlog 10 \[coop\] host-held save session ON \(guest
+wait 22000
+waitlog 30 \[coop\] this game: build
+@guest waitlog 30 \[coop\] this game: build
+@guest pad A 150
+wait 2500
+@guest pad A 150
+wait 2500
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 90 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+waitlog 60 \[coop\] host: the partner's RESULT for load #1: ok
+wait 8000
+# a 20 s outage: the banner, then the link is back; the guest stays in the host's world
+@both action coop_session 1 20000
+@guest waitlog 30 \[coop\] guest: the link to the host is lost
+wait 3000
+@guest screenshot 02-guest-reconnecting
+@guest waitlog 60 \[coop\] guest: the link is back after
+@guest nolog \[coop\] guest: the link stayed lost
+wait 5000
+@guest action coop_session 0
+# an outage longer than 60 s: back to the title and the waiting screen, then the newest save when the link is back
+@both action coop_session 1 75000
+@guest waitlog 30 \[coop\] guest: the link to the host is lost
+@guest waitlog 90 \[coop\] guest: the link stayed lost for 60 s: QuitGame
+?@guest waitlog 40 \[coop\] guest: back at the title
+?@guest screenshot 04-guest-waiting-after-loss
+waitlog 60 \[coop\] host: the partner is waiting while you are in the world: offering the newest save
+@guest waitlog 90 \[coop\] guest: wrote the host's save #2
+@guest waitlog 180 \[coop\] guest: in the world after .* save #2
+wait 10000
+snapshot
+@guest snapshot
+screenshot 05-host-world
+@guest screenshot 05-guest-world
+action coop_session 0
+@guest action coop_session 0
+@guest quit
+wait 3000
+quit

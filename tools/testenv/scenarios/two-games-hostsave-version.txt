@@ -1,0 +1,44 @@
+# The host-held save session (docs/coop-session.md, M1.12 #7), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-hostsave-version -SeedSaves complete-100 -GuestSeed profile-only
+# The guest fakes another game build (coop_test_build, honoured in hidden runs only). Both overlays say "Game versions
+# differ: <host> vs <guest>. Update both games."; the host's Continue offer is refused by the guest (RESULT version) and
+# no file is written in the guest's folder (its scratch diff has no manualsave5/6, see summary.json guest_scratch_changes).
+# Check enlarged: 02-guest-refused (the waiting screen's line), 03-host-world-refused (the host's banner).
+role host
+graphics low
+timeout 360
+ini host_save=1
+@guest ini coop_test_build=dsq 000/0000000
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[coop\] host-held save session ON \(host
+@guest waitlog 10 \[coop\] host-held save session ON \(guest
+@guest waitlog 60 \[coop\] this game: build 'dsq 000/0000000'.*FAKE
+wait 22000
+@guest pad A 150
+wait 2500
+@guest pad A 150
+wait 2500
+waitlog 30 \[link\] CONNECTED
+@guest waitlog 30 \[coop\] guest: Game versions differ
+waitlog 30 \[coop\] host: the partner's game: build 'dsq 000/0000000'.*DIFFERS
+wait 3000
+@guest screenshot 02-guest-refused
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+waitlog 60 \[coop\] host: offer #1
+waitlog 60 \[coop\] host: the partner's RESULT for load #1: FAILED \(version\)
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+wait 15000
+screenshot 03-host-world-refused
+@guest screenshot 04-guest-still-waiting
+@guest nolog \[coop\] guest: wrote the host's save
+@guest nolog \[coop\] guest: in the world
+action coop_session 0
+@guest action coop_session 0
+@guest quit
+wait 3000
+quit

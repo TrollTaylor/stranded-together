@@ -10,6 +10,7 @@
 
 #include "audio_probe.hpp"
 #include "body_choice.hpp"
+#include "coop_session.hpp"
 #include "self_voice.hpp"
 #include "partner_sound.hpp"
 #include "partner_voice.hpp"
@@ -1399,6 +1400,7 @@ void Tick() noexcept {
     PublishStatus(now);
     audioprobe::Tick(g_local, now);  // audio_probe=1 only: drains the probe rings (docs/audio-research.md section 9)
     selfvoice::Tick(g_local, now);   // self_voice muting only: publishes the local player and the menu figure, logs counts
+    coop::Tick(now);     // host_save=1 only: the host-held save session (docs/coop-session.md)
     debug::OnTick(now);  // debug-menu actions + snapshot (game thread)
 }
 

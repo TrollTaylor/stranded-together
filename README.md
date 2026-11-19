@@ -80,6 +80,19 @@ Starting the game from Steam on its own runs it unmodded: each start from the la
 
 Keep the launcher open to see the connection on **In game**; closing it is safe (a hidden helper tidies up after the game exits).
 
+### One world: the host holds the save (new, experimental)
+
+With **Debug → Host holds the save** (on by default) there is one world, the host's. See [docs/coop-session.md](docs/coop-session.md).
+
+- **Host:** you play on your own saves, exactly as in single player. Pick **Continue**, **Load** or **New Game** on your title screen as usual; your partner joins the world you start. Co-op progress is saved into **your own save** by the game itself. Before each co-op session the launcher copies your saves to `stranded_together\backups` (the newest 5 are kept; **Debug → Back up my saves before co-op**).
+- **Guest:** your game never opens your own saves. It starts on a screen that says **Waiting for <host> to start the game** (with the connection, what the host is doing and a progress bar) and cannot enter a world by itself. When the host starts, the host's save comes over the connection and your game loads it: you appear where the host's Sam was when that save was made. **Leave** quits the game.
+- **What the guest's progress means:** the guest plays a **disposable copy of the host's world**. Orders, deliveries, porter grade, likes, equipment, materials, structures and story progress made only on the guest's side are **not kept**: they are gone at the host's next load and when the session ends. The guest spawns as a copy of the host's Sam at save time (the same cargo and orders); delivering that cargo on the guest's side changes nothing for the host. Your settings and controls changed during co-op are kept for the next co-op session (in the co-op folder only). Your real saves are never touched.
+- **When the host...** loads another save, retries after a Game Over or quits to the title, the guest follows: it loads the same save (a Retry uses the host's newest autosave, which can differ slightly from the exact retry point), or goes back to its title and waits again. A **New Game** host: the guest waits until the host's first save. A guest who joins while the host is already playing loads the host's newest save and is offered **Teleport to host** once (in the F9 menu).
+- **Connection lost:** the guest keeps playing with a "Reconnecting..." notice; after 60 s it goes back to the waiting screen and rejoins the host's world when the connection is back.
+- **Game versions:** both games must be the same version; otherwise both screens say "Game versions differ" and the guest does not load anything.
+- **Not verified yet:** achievements, Steam stats and online features (likes, shared structures) on the guest's account may still react to events in the host's world.
+- Turn the option off for the old mode: each player on their own save.
+
 ## Debug
 
 The launcher's **Debug** page:
