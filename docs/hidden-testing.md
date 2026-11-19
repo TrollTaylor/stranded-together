@@ -628,9 +628,9 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   with its camera untouched since the load, so the drive runs through the middle of its picture. The host drives in the
   first, the guest in the second (each watcher's camera must not have been turned by a drive of its own). Run with a
   1080p `-SettingsCfg`. The trace of both games is compared offline (the same QPC clock on one PC).
-  `vehicle_sync=1` (the default) shows all three kinds as holograms (since the review; before, the trike and the truck as
-  solid copies); `4` the roadster's only (the first milestone's default), `2` the solid trike and truck copies (looks,
-  packs, collision) with the roadster's hologram.
+  `vehicle_sync=1` (the default) and `2` show the solid trike and truck copies (looks, packs; their collision turned off
+  on each copy since section 22.11) with the roadster's hologram; `3` all three kinds as holograms (v0.13's default); `4`
+  the roadster's only (the first milestone's default).
 * `vehicle-garage-scout.txt` (role echo): the game's vehicle registry and the parking slots (`vehicle_sync 7`: the save
   holds trikes, a Kusanagi trike and trucks outside Mountain Knot City), then Sam on a grid over the garage lift and its
   buttons tried one at a time (none opened the garage menu; DPAD up opens photo mode).
@@ -643,11 +643,26 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
 * `vehicle-echo-look.txt` (role echo, `echo_delay_s=0.5`, `echo_offset_m=4`): the gold truck and the purple / orange trike
   with the echo copy beside them, side views with looks and packs on, off (`vehicle_sync 14 0`, `15 0`: the copy in its
   own look, no packs) and on again; a short drive; the census of the copy (docs/real-partner-body.md section 22.7).
-* `two-games-vehicle-look.txt` (role host, `graphics low`, `vehicle_sync=2`: the solid copies, which alone take looks and
-  packs; also `vehicle-echo-look.txt`; host Sam, guest `fragile_suit` with self view): the host drives
+* `two-games-vehicle-look.txt` (role host, `graphics low`, `vehicle_sync=1`: the solid copies, the default since section
+  22.11, which alone take looks and packs; also `vehicle-echo-look.txt`; host Sam, guest `fragile_suit` with self view): the host drives
   the gold truck, the guest the purple / orange trike, the host gets on the Kusanagi trike (its look not applied); the
   watcher's camera is turned onto its own vehicle before the drive (`vehicle_sync 18 2|3`) and onto the copy after the
   stop (`vehicle_sync 18 5`).
+* `vehicle-echo-state.txt` (role echo, `echo_delay_s=0.5`, `echo_offset_m=4`, `vehicle_sync=1`; docs/real-partner-body.md
+  section 22.12): the gold truck, the standard trike and the Kusanagi got on in turn; our vehicle's wear and lights
+  (`our <key>'s state: wear ...`) on the echo copy (`wear / lights of the partner's ... on copy`, `... read back on copy
+  ...`); side views with the looks on, off (`vehicle_sync 14 0`: the copy in its own look, the control) and on again;
+  six synthetic cases on the truck's roof and three on the trike (`vehicle_sync 24`), then off; a short drive; the
+  Kusanagi's wear and lights not applied (another model). Since section 22.13 also: on the trike, `vehicle_sync 1 3`
+  (the hologram opt-in: `copy 'trike_hologram' shown`, screenshot `09b`) and `1 1` back (`09c`); the Kusanagi got on
+  while the trike is still reported parked (`the partner's vehicle changed from trike to trike_kusanagi`: the copy comes
+  back in its own look); then 64 s parked (`our parked vehicle ... still reported after 60 s`, `the partner's parked
+  trike_kusanagi still shown after 60 s`, screenshot `11`). Final run `20261118-205413-vehicle-echo-state`.
+* `two-games-vehicle-state.txt` (role host, `graphics low`, `vehicle_sync=1`, host Sam, guest `fragile_suit` with self
+  view; section 22.12): the host's gold truck (rust-brown) with six synthetic cases, driven a few metres so the copy
+  leaves the guest's own truck (overlap hiding), the guest's camera turned onto the copy (`vehicle_sync 18 5`); the
+  guest's trike with three cases; the host's Kusanagi (not applied). The trike part's host views depend on the camera
+  (run `20261118-202559`: rocks and another player's trike).
 * `vehicle-echo-sound.txt` (role echo, `sound_sync=1`, `vehicle_sound=1`, `echo_delay_s=0.5`, `echo_offset_m=4`): our
   vehicle's sounds through STA1 v2 to our own Wwise objects at the echo copy (docs/real-partner-body.md section 22.9).
   The garage roadster: on, idle, forward, reverse (`sound_sync 3 30000`: the RTPC trace on both sides); the cuff map
@@ -658,13 +673,24 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   `fragile_suit` with self view): the host's garage roadster with its own cuff map while seated (the sender's gate),
   the host's Kusanagi trike with the guest's cuff map while it drives (the receiver's gate) and its sends held 3 s and
   12 s, the guest's truck, the host's standard trike, got off, then `vehicle_sync 1 0` on the host. The watcher's camera
-  is not aimed (the evidence is the `[psound]` lines; its screenshots may not show the copy).
+  is not aimed (the evidence is the `[psound]` lines; its screenshots may not show the copy). Since section 22.13 the
+  truck step waits for `copy 'truck' shown` (the solid copy; run `20261118-211028` still waited for `truck_hologram`
+  and failed there, games fine); final run `20261118-211341-two-games-vehicle-sound`.
 * `vehicle-echo-collision.txt` (role echo): the copy override shows the truck's and the trike's solid copies, then their
   holograms, at the garage roadster's parked copy; `vehicle_sync 16` / `17` walk Sam into each from 1.5 m before its
   origin (from 5 m the walk drifted 2 m off the line, run 155304) and place him at its origin (`16 0.01`), and the same
   into our own roadster (the control); the roadster is got on and off again before the last part (its parked copy is
-  reported for 60 s only; `vehicle_sync 8 1.2 1` turns Sam to face it first). Run `20261118-181155`: the solid truck
-  stops him 2 m past its origin, he stands on the solid trike (1 m up); he walks straight through both holograms.
+  reported for 60 s only before section 22.13; `vehicle_sync 8 1.2 1` turns Sam to face it first). Run `20261118-181155` (v0.13, the solid
+  copies' collision still on): the solid truck stops him 2 m past its origin, he stands on the solid trike (1 m up); he
+  walks straight through both holograms.
+* `vehicle-echo-solid.txt` (role echo, `echo_delay_s=0.5`, `echo_offset_m=4`; docs/real-partner-body.md section 22.11):
+  the solid copies with their collision off, at the garage roadster's parked copy (copy override `2 3` truck, `2 2`
+  trike): `vehicle_sync 21` (their collision state), a view from 5-7 m, the centred walk from 1.5 m before the origin
+  through it, Sam at its origin (`16 0.01`: dz must stay about 0.1 m) and 0.9 m before it (no Climb prompt). Then our
+  own roadster got on, turned left out of its place, straightened (`lx=0`), and the solid truck copy pinned 8 m ahead of
+  it (`vehicle_sync 22 8 0`) is driven through at full throttle; backed out with LT; the solid trike pinned 6 m ahead
+  and driven through. The trace (`vehicle_sync 3`) shows the speed and height of our roadster along the pinned copy's
+  axis (closest approach, speed before / in / after it, z steps). Final run `20261118-205827-vehicle-echo-solid`.
 * `two-games-vehicle-trike.txt` (role host, `graphics low`, host Sam, guest `fragile_suit` with self view): the host's
   roadster in the garage (smooth mask 7 throughout since the review; until then 0 here, the baseline), the host's Kusanagi trike with its sends held 3 s and
   12 s (`vehicle_sync 10`), the guest's truck, the host's standard trike (backed out of its rocks with LT). The watcher
@@ -676,10 +702,12 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   check of headgear, boots, the grunt mute and vehicle sync in one run. Her cap, then cap and glasses on both screens; her
   boots on the host's screen off, then on again with five frames right after (the boots prop must not show before it is
   posed and its parts mirrored); the first steps of her walk across his view; her walk, run and six jumps with the probe's
-  bus meters and the `[voice]` counts; then the host's roadster drive seen by the guest (as `two-games-vehicle`), and the
-  copy gone after he is placed beyond 30 m. Her camera faces the host for the mount (`06`) and is then turned back round
+  bus meters and the `[voice]` counts; then the host's roadster drive seen by the guest (as `two-games-vehicle`), and
+  the parked copy still there after he is placed away from it (`10-guest-after-host-left`; until section 22.13 it went
+  beyond 30 m). Her camera faces the host for the mount (`06`) and is then turned back round
   (`@guest pad none 1300 rx=-32767`) to face his drive: without that turn (run `20261118-130121`) the copy left her view
-  after the first drive frame. Run with a 1080p `-SettingsCfg`; final run `20261118-130839-two-games-release`.
+  after the first drive frame. Run with a 1080p `-SettingsCfg`; final run `20261118-130839-two-games-release` (v0.11);
+  after section 22.13 `20261118-211715-two-games-release` (default settings).
 * `boot.txt`: no input, a screenshot every 10-15 s for 80 s (title flow discovery).
 * `alive.txt`: supervisor steps only (works with `-NoMod`): watch the game for 45 s.
 * `fake-smoke.txt`: the ctest's fake game.

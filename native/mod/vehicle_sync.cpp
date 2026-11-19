@@ -13,6 +13,7 @@
 #include "link.hpp"
 #include "log.hpp"
 #include "nametags.hpp"
+#include "partner_gear.hpp"
 #include "partner_holo.hpp"
 #include "partner_source.hpp"
 #include "real_body.hpp"
@@ -82,43 +83,38 @@ struct CopyDef {
     const char* guid;
     std::uint32_t layout;
     std::int32_t joints;
-    bool welcome;  // a welcome / construction hologram (StartVisible; its own checks)
+    bool welcome;  // a welcome / construction hologram entity (StartVisible; its own checks)
+    bool solid;    // draws a drivable vehicle's own art: its collision is turned off on the copy (CollisionOff)
 };
-// The holograms (the construction holograms of the garage's vehicle customiser) are the default: their art has no
-// collision shapes (part_*_hlo: no PhysicsCollisionResource; game data) and their skeletons have the drivable vehicles'
-// layouts (SkeletonLayoutHash 8DABA9B0 trike, B609EC0D truck). The solid cutscene bodies carry the drivable art and its
-// collision (part_bkst_main_def 8 and part_cald_main_def_game 18 PolySoup shapes, SkinnedModelResource DisableCollision
-// false): Sam stands on the trike copy and is stopped inside the truck copy (run 20261118-175540; review 2026-11-18), so
-// they are shown only with vehicle_sync=2.
+// Section 22.11 (after v0.13): the SOLID copies are the default. Their art carries the drivable vehicles' collision
+// (part_bkst_main_def 8 and part_cald_main_def_game 18 PolySoup shapes; Sam stood on the trike copy and was stopped inside
+// the truck copy, 22.10), so every solid copy has its collision turned off on its own entity before it is shown
+// (Entity::SetCollisionEnabled(false), the game's own per-instance switch; nothing shared is written) and checked every
+// 250 ms (CollisionWatch). The construction holograms (no collision shapes; the drivable skeletons' layouts) are the
+// opt-in vehicle_sync=3, the roadster's copy (no solid roadster copy exists: 22.8, 22.11) and the logged fallback when a
+// solid copy cannot be made safe.
 constexpr unsigned kCopyCount = 5;
+constexpr int kDefRoadsterHolo = 0, kDefTrike = 1, kDefTruck = 2, kDefTrikeHolo = 3, kDefTruckHolo = 4;
 constexpr CopyDef kCopies[kCopyCount] = {
     // the roadster: no cutscene body exists; its construction hologram (ForConstruction: no fade near the player),
     // spawned safely in the catalog (docs/character-catalog.md #89), the drivable roadster's 23-joint layout
     {"roadster_hologram", "ds/entities/npc/customize_holo/construction/construction_holo_roadster", "8b3517fe-5706-d73b-b6c8-3427b5af39a6",
-     0xECF43324u, 23, true},
-    // the reverse trike's cutscene body: the drivable trike's art (part_bkst_main_def) and Skeleton
-    {"trike", "ds/entities/cinematics/demo_bkst_main_def_pro_new", "161eefa7-9549-c74f-a8b4-550e9eedfb85", 0x8DABA9B0u, 40, false},
+     0xECF43324u, 23, true, false},
+    // the reverse trike's cutscene body: the drivable trike's art (part_bkst_main_def) and Skeleton (also the Kusanagi's copy)
+    {"trike", "ds/entities/cinematics/demo_bkst_main_def_pro_new", "161eefa7-9549-c74f-a8b4-550e9eedfb85", 0x8DABA9B0u, 40, false, true},
     // the truck's cutscene body: the drivable truck's art (part_cald_main_def_game) and Skeleton
-    {"truck", "ds/entities/cinematics/demo_cald_main_def_game", "58c639c3-76ef-3446-bfae-fda96943f5d8", 0xB609EC0Du, 47, false},
+    {"truck", "ds/entities/cinematics/demo_cald_main_def_game", "58c639c3-76ef-3446-bfae-fda96943f5d8", 0xB609EC0Du, 47, false, true},
     // the trike's and the truck's construction holograms (customize_holo_*_HoloNpcNotHuman, 14.99 Hz)
     {"trike_hologram", "ds/entities/npc/customize_holo/construction/construction_holo_trike", "4ffc6e8c-e6fe-9a30-aecb-ae8472e1bc8b", 0x8DABA9B0u, 40,
-     true},
+     true, false},
     {"truck_hologram", "ds/entities/npc/customize_holo/construction/construction_holo_truck", "53d0f9dc-e4ab-853a-b8d5-3ba6245a92d9", 0xB609EC0Du, 47,
-     true},
+     true, false},
 };
+// 0 off; 1 (default) and 2: the solid copies (2 was v0.13's "solid copies" value); 3: all three kinds as construction
+// holograms (opt-in; v0.13's default); 4: the roadster's copy only (the v0.12 default)
 int g_mode = 1;
-int CopyForKind(std::uint8_t kind) {
-    switch (kind) {
-        case 1: return 0;
-        case 3: return g_mode == 2 ? 1 : 3;
-        case 2: return g_mode == 2 ? 2 : 4;
-        default: return -1;
-    }
-}
 
 // ---------------------------------------------------------------- state
-// 0 off, 1 all three kinds as holograms (default), 2 the solid trike and truck copies (looks, packs; they have collision)
-// and the roadster's hologram, 3 = 1 (the v0.12 value for "all"), 4 the roadster's copy only (the v0.12 default)
 bool g_checked = false, g_ok = false;
 char g_why[160] = "not checked";
 bool g_reg_checked = false, g_reg_ok = false;  // the vehicle registry's bytes (overlap, the parked vehicle's liveness)
@@ -136,6 +132,7 @@ struct Ours {
     std::uint8_t res_guid[16] = {};
     bool seated = false;
     double left_ms = 0;  // when Sam got off (0 while seated)
+    bool parked_logged = false;
     double last_ms = 0;
     double last_pos[3] = {};
     float speed = 0;
@@ -148,8 +145,27 @@ struct Ours {
     std::uint8_t pack[wire::kMaxVehiclePacks] = {};
     float pack_t[wire::kMaxVehiclePacks][3] = {};
     wire::Quat pack_q[wire::kMaxVehiclePacks];
+    // its wear and lights (section 22.12: STM1 version 3's state block), read every 100 ms
+    bool st_read = false;
+    double st_next_ms = 0;
+    look::VehicleState st;
+    std::uint32_t st_hash = 0;
+    // the cargo in its carrier (the cargo block): read every 500 ms while it stands still, sent on change and every 1 s
+    bool cargo_read = false;
+    double cargo_next_ms = 0, cargo_resend_ms = 0;
+    std::uint8_t nc = 0, cargo_dropped = 0;
+    wire::VehicleCargo cargo[wire::kMaxVehicleCargo];
+    std::uint32_t cargo_hash = 0, cargo_sent_hash = 0;
+    unsigned cargo_blocks = 0;
 };
 Ours g_ours;
+// A parked vehicle is reported while we stay within this distance of it (section 22.13; no time limit). Beyond it the
+// other screen's copy goes (a fast travel, a long walk away), so a vehicle left far behind is not streamed for ever.
+constexpr double kParkedReportM = 250.0;
+// Hidden tests (action vehicle_sync 24 <n> [model]): n synthetic cargo pieces added to the cargo of the vehicle we
+// report (laid out on its bed / rack), to prove the cargo block and the receiver's case props without the game's menu.
+unsigned g_test_cargo = 0;
+std::uint8_t g_test_cargo_model = 2;
 // Looks and packs (section 22.7; session.ini vehicle_look / vehicle_packs)
 bool g_look_on = true, g_packs_on = true;
 double g_look_next_ms = 0, g_look_resend_ms = 0;
@@ -185,8 +201,46 @@ struct Copy {
     std::uint8_t freq_orig = 0xFF;  // its own update frequency (BoostEntity)
     unsigned fails = 0;
     double retry_ms = 0;
+    // a solid copy: its collision off (CollisionOff at realize), checked every 250 ms (CollisionWatch)
+    double coll_next_ms = 0;
+    unsigned coll_again = 0;  // times it was found on again and turned off again
+    // section 22.12: the partner vehicle's wear and lights as last set on it (DriveState), and the cargo block in play
+    bool st_applied = false;
+    std::uint16_t st_wear = 0;
+    std::uint64_t st_parts[2] = {};
+    std::uint8_t st_nl = 0;
+    wire::VehicleLight st_light[wire::kMaxVehicleLights];
+    double st_full_ms = 0, st_fail_ms = 0;
+    std::uint32_t st_look = 0;
+    unsigned st_checks = 0;
+    std::uint32_t cargo_seq = 0;
+    bool cargo_have = false;
+    std::uint8_t nc = 0;
+    wire::VehicleCargo cargo[wire::kMaxVehicleCargo];
+    // section 22.13: the drivable resource whose frames it plays (another model on the same copy, the standard trike and
+    // the Kusanagi, respawns it in its own look), and since when it plays a parked vehicle
+    const wire::VehicleResource* res = nullptr;
+    double parked_since = 0;
+    bool parked_logged = false;
 };
 Copy g_copy;
+std::uint32_t g_state_applies = 0, g_state_full = 0, g_state_sets = 0, g_state_failed = 0, g_state_mismatch = 0;
+// The case props of the partner vehicle's cargo (section 22.12): one per piece, placed in the copy's frame.
+struct CargoCopy {
+    holo::Spawn sp;
+    const char* path = nullptr;  // the prop it loads (gear::CargoProp), nullptr: none
+    const char* key = nullptr;
+    std::uint8_t variation = wire::kGearNone;
+    bool loading = false, live = false, shown = false, looked = false, checked = false;
+    double begin_ms = 0, live_ms = 0, retry_ms = 0;
+    WorldTransform last{};
+    double coll_next_ms = 0;  // its collision checked again every second (section 22.13; also right after its colour)
+    unsigned coll_again = 0;
+};
+CargoCopy g_cargo[wire::kMaxVehicleCargo];
+bool g_cargo_refused = false;  // a cargo prop failed its checks or a set-transform: none for this game run
+std::uint32_t g_cargo_spawns = 0, g_cargo_removes = 0, g_cargo_faults = 0, g_cargo_looks = 0;
+float g_cargo_err_max = 0;
 // A copy refused until this time (ms on the tick clock; kForever: for the game run, a structural reason: its class,
 // components or skeleton, or a set-transform fault). A transient refusal (load timeout, no pose yet at realize, not
 // shown) backs off 30 s, doubling up to 8 min, and is forgotten at a new link session.
@@ -230,6 +284,8 @@ struct PackCopy {
     bool loading = false, live = false, shown = false, checked = false, placed = false;
     double begin_ms = 0, live_ms = 0, retry_ms = 0;
     WorldTransform last{};  // where it was put last tick
+    double coll_next_ms = 0;  // its collision checked again every second (section 22.13)
+    unsigned coll_again = 0;
 };
 PackCopy g_pack[wire::kMaxVehiclePacks];
 bool g_pack_refused[wire::kVehiclePackMax] = {};
@@ -372,6 +428,178 @@ bool ReadXf(std::uintptr_t e, WorldTransform& out) {
         for (float v : row)
             if (!std::isfinite(v) || std::fabs(v) > 1.5f) return false;
     return true;
+}
+
+// ---------------------------------------------------------------- solid copies made safe (section 22.11)
+// Entity::SetCollisionEnabled(Entity*, bool) (entity vtable slot +0xF0, the base function in DSControlledEntity's and the
+// construction holograms' vtables; checked per call): with false it clears the entity's collision flag (+0x88 bit
+// 0x4000) and sends MsgDestroyCollisionVolume to its components, so the model's parts lose their physics instances
+// (part +0xD0). The game's own cutscene event DisableEntityCollisionEventInstance (0x1424B7250) does exactly this per
+// instance. Nothing shared is written. A part enabled later recreates its physics only while the flag is set
+// (0x14238EF60).
+constexpr std::uintptr_t kSetColl = 0x234A530;
+constexpr std::uintptr_t kSetCollSlot = 0xF0;
+constexpr const char* kSetCollSig =
+    "40 53 48 83 EC 50 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 40 48 8B 81 88 00 00 00 48 8B D9 48 C1 E8 0E 24 01 3A C2 0F 84 ?? ?? ?? ?? 84 D2 74 ?? "
+    "80 B9 21 03 00 00 00";
+constexpr std::uintptr_t kEntFlags = 0x88;
+constexpr std::uint64_t kEntCollision = 0x4000;
+constexpr std::uintptr_t kEntModel = 0xB8;  // its Model / SkinnedModel component
+// The Model component: +0x48 its entity, +0x58 the part count, +0x60 the parts (0x100 bytes each; +0xD0 the part's
+// PhysicsCollisionInstance). Model::OnModelResourceChanged (0x142393380) reads the count and the parts here:
+constexpr std::uintptr_t kCompEntity = 0x48, kModelParts = 0x58, kModelPartArr = 0x60, kPartSize = 0x100, kPartPhysics = 0xD0;
+constexpr Site kModelSite = {0x23933A6,
+                             "83 78 20 00 75 0A 83 7F 20 00 0F 84 F0 00 00 00 48 89 6C 24 50 33 C0 48 89 74 24 58 48 8B CB 4C 89 74 24 20 44 8B 73 58 "
+                             "48 89 43 58 48 8B 6B 60 48 89 43 60"};
+bool g_coll_checked = false, g_coll_ok = false;
+std::uint32_t g_coll_offs = 0, g_coll_again = 0, g_coll_fails = 0;
+
+bool CollCheck() {
+    if (g_coll_checked) return g_coll_ok;
+    g_coll_checked = true;
+    const std::uintptr_t b = mem::Base();
+    g_coll_ok = b && mem::CodeMatches(b + kSetColl, kSetCollSig) && mem::CodeMatches(b + kModelSite.rva, kModelSite.sig);
+    Log("[vehicle] solid copies: collision switch checks %s (Entity::SetCollisionEnabled ds.exe+0x%llX, the model's parts +0x58 / +0x60)",
+        g_coll_ok ? "ok" : "FAILED: the solid copies are off, the holograms stand in", static_cast<unsigned long long>(kSetColl));
+    return g_coll_ok;
+}
+
+struct CollState {
+    bool read = false, on = false;
+    int parts = -1, insts = 0;
+};
+// Fault-free reads: the entity's collision flag and how many of its model's parts carry a physics instance.
+CollState ReadColl(std::uintptr_t e) {
+    CollState s;
+    std::uint64_t fl = 0;
+    if (!e || !mem::Read(e + kEntFlags, &fl, sizeof(fl))) return s;
+    s.on = (fl & kEntCollision) != 0;
+    const std::uintptr_t model = mem::Q(e + kEntModel);
+    std::int32_t n = -1;
+    if (!model || mem::Q(model + kCompEntity) != e || !mem::Read(model + kModelParts, &n, 4) || n < 0 || n > 512) return s;
+    const std::uintptr_t arr = mem::Q(model + kModelPartArr);
+    if (n && !arr) return s;
+    for (std::int32_t i = 0; i < n; ++i) {
+        std::uintptr_t inst = 0;
+        if (!mem::Read(arr + kPartSize * static_cast<std::uintptr_t>(i) + kPartPhysics, &inst, sizeof(inst))) return s;
+        if (inst) ++s.insts;
+    }
+    s.parts = n;
+    s.read = true;
+    return s;
+}
+
+bool CallSetColl(std::uintptr_t fn, std::uintptr_t e, bool on) {
+    __try {
+        reinterpret_cast<void (*)(void*, bool)>(fn)(reinterpret_cast<void*>(e), on);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// Collision off on our own copy (game thread). True when it reads off afterwards: the flag clear and no part with a
+// physics instance. A fault turns the solid copies off for the session (the holograms stand in).
+bool CollisionOff(Entity* ent, const char* what) {
+    const auto e = reinterpret_cast<std::uintptr_t>(ent);
+    if (!e || !CollCheck()) return false;
+    const CollState before = ReadColl(e);
+    if (!before.read) {
+        Log("[vehicle] %s: its collision state is unreadable", what);
+        return false;
+    }
+    if (!before.on && before.insts == 0) return true;
+    const std::uintptr_t b = mem::Base();
+    const std::uintptr_t vt = mem::Q(e);
+    if (!vt || mem::Q(vt + kSetCollSlot) != b + kSetColl) {
+        Log("[vehicle] %s: its class overrides SetCollisionEnabled (vtable %p): collision not switched", what, reinterpret_cast<void*>(vt));
+        return false;
+    }
+    if (!CallSetColl(b + kSetColl, e, false)) {
+        g_coll_ok = false;
+        ++g_coll_fails;
+        Log("[vehicle] %s: SetCollisionEnabled(false) FAULTED: the solid copies are off for this session", what);
+        return false;
+    }
+    ++g_coll_offs;
+    const CollState after = ReadColl(e);
+    const bool ok = after.read && !after.on && after.insts == 0;
+    if (g_coll_offs <= 40 || !ok)
+        Log("[vehicle] %s: collision turned off on the copy: flag %d -> %d, physics instances %d -> %d of %d parts%s", what, before.on ? 1 : 0,
+            after.on ? 1 : 0, before.insts, after.insts, after.parts, ok ? "" : " - NOT off");
+    if (!ok) ++g_coll_fails;
+    return ok;
+}
+
+// A live copy's collision checked again (packs, cargo props, the gear props: section 22.13). 1 off; 0 it was found on
+// again and turned off again (logged); -1 unreadable, or it could not be turned off again.
+std::uint32_t g_coll_watch_checks = 0;
+int CollisionKeepOff(Entity* ent, const char* what) {
+    const auto e = reinterpret_cast<std::uintptr_t>(ent);
+    ++g_coll_watch_checks;
+    const CollState s = ReadColl(e);
+    if (!s.read) {
+        Log("[vehicle] %s: its collision state is unreadable", what);
+        return -1;
+    }
+    if (!s.on && s.insts == 0) return 1;
+    ++g_coll_again;
+    Log("[vehicle] %s: collision found ON again (flag %d, %d physics instances of %d parts): turning it off again", what, s.on ? 1 : 0, s.insts, s.parts);
+    return CollisionOff(ent, what) ? 0 : -1;
+}
+
+// Where a copy, a pack copy or a cargo prop is spawned: its collision is live until its realize tick turns it off
+// (section 22.13), so never near the watcher: 20 m below its place, or, when the watcher stands within 40 m of that
+// point, 60 m below the lower of the watcher and its place (under the ground both stand on).
+WorldTransform g_watcher{};
+bool g_watcher_ok = false;
+std::uint32_t g_spawn_deep = 0;
+WorldTransform SpawnPlace(const WorldTransform& at) {
+    WorldTransform s = at;
+    s.pos.z -= 20.0;
+    if (g_watcher_ok) {
+        const double dx = s.pos.x - g_watcher.pos.x, dy = s.pos.y - g_watcher.pos.y, dz = s.pos.z - g_watcher.pos.z;
+        if (dx * dx + dy * dy + dz * dz < 40.0 * 40.0) {
+            s.pos.z = (at.pos.z < g_watcher.pos.z ? at.pos.z : g_watcher.pos.z) - 60.0;
+            if (++g_spawn_deep <= 5) Log("[vehicle] spawned 60 m below (the watcher stands within 40 m of the usual spawn point)");
+        }
+    }
+    return s;
+}
+
+// The copy for the partner's frame (section 22.11): the solid one, else the logged fallback (the construction
+// hologram). The roadster has no solid copy (22.8, 22.11): its hologram stands in, logged once.
+int CopyFor(const wire::VehicleFrame& f, double now) {
+    const wire::VehicleResource* r = wire::FindVehicleResource(f.guid);
+    const bool holo = g_mode == 3;
+    const bool solid_ok = !holo && CollCheck();
+    auto usable = [&](int d) { return !Refused(d, now); };
+    int def = -1;
+    const char* why = nullptr;
+    switch (f.kind) {
+        case 1:
+            def = kDefRoadsterHolo;
+            why = holo ? "vehicle_sync=3: holograms" : "no solid roadster copy exists (section 22.11)";
+            break;
+        case 3:
+            def = solid_ok && usable(kDefTrike) ? kDefTrike : kDefTrikeHolo;
+            if (def == kDefTrikeHolo) why = holo ? "vehicle_sync=3: holograms" : !solid_ok ? "the collision switch did not check out" : "the solid trike was refused";
+            break;
+        case 2:
+            def = solid_ok && usable(kDefTruck) ? kDefTruck : kDefTruckHolo;
+            if (def == kDefTruckHolo) why = holo ? "vehicle_sync=3: holograms" : !solid_ok ? "the collision switch did not check out" : "the solid truck was refused";
+            break;
+        default:
+            return -1;
+    }
+    static int logged_def[4] = {-1, -1, -1, -1};
+    static const char* logged_why[4] = {};
+    if (logged_def[f.kind] != def || logged_why[f.kind] != why) {
+        logged_def[f.kind] = def, logged_why[f.kind] = why;
+        if (why) Log("[vehicle] the partner's %s: copy '%s' (%s)", r ? r->key : "?", kCopies[def].key, why);
+        else Log("[vehicle] the partner's %s: copy '%s'", r ? r->key : "?", kCopies[def].key);
+    }
+    return def;
 }
 
 double Yaw(const WorldTransform& t) { return std::atan2(static_cast<double>(t.rot.m[1][1]), static_cast<double>(t.rot.m[1][0])); }
@@ -581,6 +809,150 @@ void ReadPacks(std::uintptr_t v, const WorldTransform& vt) {
     }
 }
 
+// The baggage config's colour variation index of a variation GUID (kGearNone: not in the config), cached.
+std::uint8_t ConfigIndexOf(const std::uint8_t (&g)[16]) {
+    struct Memo {
+        std::uint8_t g[16];
+        std::uint8_t idx;
+    };
+    static Memo memo[16];
+    static unsigned memo_n = 0;
+    for (unsigned i = 0; i < memo_n; ++i)
+        if (std::memcmp(memo[i].g, g, 16) == 0) return memo[i].idx;
+    std::uint8_t idx = wire::kGearNone;
+    for (unsigned i = 0; i < wire::kVehicleCargoVariations; ++i) {
+        wire::GearLook l;
+        if (!look::ReadConfigVariation(i, &l)) break;
+        if (l.nvar == 1 && std::memcmp(l.guid[0], g, 16) == 0) {
+            idx = static_cast<std::uint8_t>(i);
+            break;
+        }
+    }
+    Memo& m = memo[memo_n < 16 ? memo_n++ : 15];
+    std::memcpy(m.g, g, 16);
+    m.idx = idx;
+    return idx;
+}
+
+// Sender: the cargo in vehicle v's DSBaggage2 carrier (every slot: Default 0, PassengerSeat 69 ...), each drawn piece
+// (gear::CargoModelOf: delivery cases) in v's frame from its own world transform (+0x38 position, +0x50 rotation rows),
+// its colour variation as the baggage config's index. Fault-free reads; at most kMaxVehicleCargo (the rest counted).
+void ReadCargo(std::uintptr_t v, const WorldTransform& vt) {
+    const std::uintptr_t comp = partner::FindComponentByName(reinterpret_cast<Entity*>(v), "DSBaggage2CarrierComponent");
+    const std::uintptr_t car = comp && mem::Q(comp + 0x48) == v ? mem::Q(comp + 0x50) : 0;
+    std::int32_t slots = -1;
+    g_ours.nc = 0, g_ours.cargo_dropped = 0;
+    unsigned seen = 0, not_drawn = 0, unplaced = 0;
+    if (car && mem::Read(car + 0x10, &slots, 4) && slots >= 0 && slots <= 64) {
+        const std::uintptr_t slot_arr = mem::Q(car + 0x18);
+        unsigned walked = 0;
+        for (std::int32_t si = 0; si < slots && walked < 256; ++si) {
+            const std::uintptr_t s = mem::Q(slot_arr + 8ull * static_cast<unsigned>(si));
+            std::int32_t nstack = 0;
+            if (!s || !mem::Read(s + 0x18, &nstack, 4) || nstack < 0 || nstack > 64) continue;
+            const std::uintptr_t st_arr = mem::Q(s + 0x20);
+            for (std::int32_t ti = 0; ti < nstack && walked < 256; ++ti, ++walked) {
+                const std::uintptr_t t = mem::Q(st_arr + 8ull * static_cast<unsigned>(ti));
+                std::int32_t n = 0;
+                if (!t || !mem::Read(t + 0x10, &n, 4) || n < 0 || n > 64) continue;
+                const std::uintptr_t items = mem::Q(t + 0x18);
+                for (std::int32_t bi = 0; bi < n && walked < 256; ++bi, ++walked) {
+                    const std::uintptr_t bag = mem::Q(items + 8ull * static_cast<unsigned>(bi));
+                    if (!bag) continue;
+                    ++seen;
+                    const std::uint8_t model = gear::CargoModelOf(bag);
+                    if (model >= wire::kVehicleCargoModels) {
+                        ++not_drawn;
+                        static unsigned nd_logs = 0;
+                        if (++nd_logs <= 12) {
+                            std::uint8_t mb = 0, lf[5] = {};
+                            std::uint8_t slot_type = 0;
+                            mem::Read(s + 1, &slot_type, 1);
+                            mem::Read(bag + 0x20, &mb, 1);
+                            const std::uintptr_t li = mem::Q(bag + 0x28);
+                            if (li) mem::Read(li + 0x3A, lf, sizeof(lf));
+                            const char* bt = partner::TypeName(reinterpret_cast<const void*>(bag));
+                            std::uint8_t raw[0x3C] = {};
+                            WorldTransform bw{};
+                            float p[3] = {}, r[3][3] = {};
+                            if (mem::Read(bag + 0x38, raw, sizeof(raw))) {
+                                std::memcpy(&bw.pos, raw, 0x18);
+                                std::memcpy(&bw.rot, raw + 0x18, 0x24);
+                                LocalOf(vt, bw, p, r);
+                            }
+                            Log("[vehicle] our vehicle's carrier: slot %d (type %u) piece %p %s, model byte %u, attribute %u, case type %u, volume %u, at "
+                                "(%.2f, %.2f, %.2f) in the vehicle's frame: not drawn (equipment / tools)",
+                                si, slot_type, reinterpret_cast<void*>(bag), bt ? bt : "?", mb, lf[0], lf[1], lf[4], static_cast<double>(p[0]),
+                                static_cast<double>(p[1]), static_cast<double>(p[2]));
+                        }
+                        continue;
+                    }
+                    std::uint8_t raw[0x3C] = {};
+                    WorldTransform bw{};
+                    if (!mem::Read(bag + 0x38, raw, sizeof(raw))) {
+                        ++unplaced;
+                        continue;
+                    }
+                    std::memcpy(&bw.pos, raw, 0x18);
+                    std::memcpy(&bw.rot, raw + 0x18, 0x24);
+                    float p[3], r[3][3];
+                    LocalOf(vt, bw, p, r);
+                    bool ok = std::isfinite(p[0]) && std::isfinite(p[1]) && std::isfinite(p[2]);
+                    for (int a = 0; a < 3 && ok; ++a) ok = std::fabs(p[a]) < wire::kMaxVehicleCargoM;
+                    for (int k = 0; k < 3 && ok; ++k) {
+                        const float len = bw.rot.m[k][0] * bw.rot.m[k][0] + bw.rot.m[k][1] * bw.rot.m[k][1] + bw.rot.m[k][2] * bw.rot.m[k][2];
+                        ok = len > 0.9f && len < 1.1f;
+                    }
+                    if (!ok) {
+                        ++unplaced;
+                        continue;
+                    }
+                    if (g_ours.nc >= wire::kMaxVehicleCargo) {
+                        ++g_ours.cargo_dropped;
+                        continue;
+                    }
+                    wire::VehicleCargo& c = g_ours.cargo[g_ours.nc++];
+                    c.model = model;
+                    wire::GearLook gl;
+                    c.variation = look::ReadBaggage(bag, &gl) && gl.nvar == 1 ? ConfigIndexOf(gl.guid[0]) : wire::kGearNone;
+                    for (int a = 0; a < 3; ++a) c.t[a] = p[a];
+                    c.q = wire::QuatFromMatrix(r);
+                }
+            }
+        }
+    }
+    // hidden tests: synthetic pieces on its bed / rack (vehicle_sync 24)
+    for (unsigned i = 0; i < g_test_cargo && g_ours.nc < wire::kMaxVehicleCargo; ++i) {
+        const int cls = g_ours.cls;
+        // on its roof / behind the rider, where a watcher sees them (the truck's bed is closed)
+        const float z = cls == 1 ? 2.75f : cls == 2 ? 1.3f : 1.45f, y0 = cls == 1 ? -0.9f : cls == 2 ? -0.95f : -1.3f;
+        wire::VehicleCargo& c = g_ours.cargo[g_ours.nc++];
+        c.model = g_test_cargo_model;
+        wire::GearLook gl;
+        c.variation = look::ReadConfigVariation(i % 4, &gl) ? static_cast<std::uint8_t>(i % 4) : wire::kGearNone;
+        c.t[0] = -0.45f + 0.45f * static_cast<float>(i % 3);
+        c.t[1] = y0 - 0.5f * static_cast<float>((i / 3) % 6);
+        c.t[2] = z + 0.45f * static_cast<float>(i / 18);
+        c.q = wire::Quat{};
+    }
+    std::uint32_t h = 2166136261u;
+    auto mix = [&](std::uint32_t x) { h = (h ^ x) * 16777619u; };
+    mix(g_ours.nc), mix(g_ours.cargo_dropped);
+    for (unsigned i = 0; i < g_ours.nc; ++i) {
+        const wire::VehicleCargo& c = g_ours.cargo[i];
+        mix(c.model), mix(c.variation);
+        for (float x : c.t) mix(static_cast<std::uint32_t>(std::lround(x * 100.0f)));
+    }
+    const bool changed = !g_ours.cargo_read || h != g_ours.cargo_hash;
+    g_ours.cargo_hash = h ? h : 1;
+    if (changed)
+        Log("[vehicle] our vehicle %p carries %u cargo piece(s) drawn (%u in its carrier, %u not drawn: equipment / tools, %u not placed, %u over the cap; "
+            "%u synthetic)",
+            reinterpret_cast<void*>(v), static_cast<unsigned>(g_ours.nc), seen, not_drawn, unplaced, static_cast<unsigned>(g_ours.cargo_dropped),
+            g_test_cargo < wire::kMaxVehicleCargo ? g_test_cargo : wire::kMaxVehicleCargo);
+    g_ours.cargo_read = true;
+}
+
 // Receiver: a pack copy (the game's own pack entity, by path + GUID) must be a plain Entity with no interaction,
 // physics, ragdoll, controller, capsule, vehicle mover, bounder or AI component (its mover, DSVehicleCustomPackMover,
 // only sets its own shader variables when added: section 22.7).
@@ -618,7 +990,7 @@ void ClearPacks(const char* why) {
 // The copies of the partner vehicle's packs, placed in the copy's frame every tick (the newer frame's pack places:
 // they are fixed on the vehicle), shown with the copy (hidden with it while it overlaps our own vehicle).
 void DrivePacks(const WorldTransform& v, const wire::VehicleFrame& f, bool show, double now) {
-    const unsigned want = g_packs_on && g_copy.def >= 0 && !kCopies[g_copy.def].welcome ? f.m : 0;
+    const unsigned want = g_packs_on && g_copy.def >= 0 && kCopies[g_copy.def].solid ? f.m : 0;
     unsigned started = 0;
     for (unsigned i = 0; i < wire::kMaxVehiclePacks; ++i) {
         PackCopy& p = g_pack[i];
@@ -637,8 +1009,7 @@ void DrivePacks(const WorldTransform& v, const wire::VehicleFrame& f, bool show,
             if (now < p.retry_ms || started >= 2) continue;
             std::uint8_t g[16];
             char why[200] = {};
-            WorldTransform below = at;
-            below.pos.z -= 20.0;
+            const WorldTransform below = SpawnPlace(at);
             if (!bodies::ParseGuid(kPacks[def].guid, g)) {
                 g_pack_refused[def] = true;
                 continue;
@@ -683,6 +1054,13 @@ void DrivePacks(const WorldTransform& v, const wire::VehicleFrame& f, bool show,
                     }
                     partner::SetVisible(p.sp.e, false);
                     partner::WakeIfAsleep(p.sp.e);
+                    // each pack copy carries one physics instance (run 20261118-194926): off as on the vehicle copies (section 22.11)
+                    if (!CollisionOff(p.sp.e, kPacks[def].key)) {
+                        g_pack_refused[def] = true;
+                        Log("[vehicle] pack copy '%s' refused for this game run: its collision could not be turned off", kPacks[def].key);
+                        ClearPack(p, "collision not off");
+                        continue;
+                    }
                     p.live = true;
                     p.live_ms = now;
                     static bool described[wire::kVehiclePackMax] = {};
@@ -699,6 +1077,18 @@ void DrivePacks(const WorldTransform& v, const wire::VehicleFrame& f, bool show,
             ClearPack(p, "destroyed by the game");
             p.def = def, p.retry_ms = now + 10000;
             continue;
+        }
+        // its collision stays off (every second, section 22.13): on again more than 3 times, or not off: refused
+        if (now >= p.coll_next_ms) {
+            p.coll_next_ms = now + 1000;
+            const int k = CollisionKeepOff(p.sp.e, kPacks[def].key);
+            if (k == 0) ++p.coll_again;
+            if (k < 0 || p.coll_again > 3) {
+                g_pack_refused[def] = true;
+                Log("[vehicle] pack copy '%s' refused for this game run: its collision %s", kPacks[def].key, k < 0 ? "could not be kept off" : "kept coming back");
+                ClearPack(p, "collision not off");
+                continue;
+            }
         }
         // where the game left it since our last placement (its mover must not move it): hidden tests / trace only
         if ((automation::Enabled() || g_trace_until > now) && p.shown && p.placed && now - p.live_ms > 1000) {
@@ -735,16 +1125,16 @@ void DrivePacks(const WorldTransform& v, const wire::VehicleFrame& f, bool show,
 // copy a hologram.
 int ArtCopyOf(const wire::VehicleResource* r) {
     if (!r) return -1;
-    if (std::strcmp(r->key, "trike") == 0) return 1;
-    if (std::strcmp(r->key, "truck") == 0 || std::strcmp(r->key, "truck_npc") == 0) return 2;
-    return -1;
+    if (std::strcmp(r->key, "trike") == 0) return kDefTrike;
+    if (std::strcmp(r->key, "truck") == 0 || std::strcmp(r->key, "truck_npc") == 0) return kDefTruck;
+    return -1;  // the roadster (hologram) and the Kusanagi (the trike copy: another model)
 }
 std::uint32_t LookKey(const wire::GearLook& l) { return wire::GearLookHash(l) ^ (0x9E3779B1u * (l.layout + 1u)); }
 
 // The partner vehicle's look on the copy: applied when it changed, checked every 2 s (applied again when the copy's
 // own components changed it). Only on the solid copy of the same art, only the look of the vehicle being played.
 void DriveLook(int def, const wire::VehicleFrame& f, double now) {
-    if (!g_look_on || !g_lrx.have || kCopies[def].welcome || !g_copy.shown || now - g_copy.live_ms < 500) return;
+    if (!g_look_on || !g_lrx.have || !kCopies[def].solid || !g_copy.shown || now - g_copy.live_ms < 500) return;
     if (g_lrx.l.layout >= wire::kVehicleResourceCount) return;
     const wire::VehicleResource* r = &wire::VehicleResources()[g_lrx.l.layout];
     if (wire::FindVehicleResource(f.guid) != r) return;  // the look of another vehicle (a frame or two at a change)
@@ -760,7 +1150,7 @@ void DriveLook(int def, const wire::VehicleFrame& f, double now) {
     if (g_copy.look_applied == g_lrx.hash) {
         if (now < g_copy.look_check_ms) return;
         g_copy.look_check_ms = now + 2000;
-        if (look::Satisfied(copy, g_lrx.l)) return;
+        if (look::SatisfiedVehicle(copy, g_lrx.l)) return;
         ++g_look_again;
     }
     // our own vehicles of the sender's resource: sources of its variations (fault-free reads of the registry)
@@ -780,6 +1170,7 @@ void DriveLook(int def, const wire::VehicleFrame& f, double now) {
     const look::ApplyResult res = look::ApplyVehicle(copy, g_lrx.l, own, n_own, why, sizeof(why));
     g_copy.look_applied = g_lrx.hash;
     g_copy.look_check_ms = now + 2000;
+    g_copy.st_full_ms = 0;  // a variation rebuilds the materials: the wear and lights all set again (DriveState, this tick)
     ++g_look_applies;
     if (res == look::ApplyResult::partial) ++g_look_partial;
     if (res == look::ApplyResult::failed || res == look::ApplyResult::off) ++g_look_failed;
@@ -788,6 +1179,335 @@ void DriveLook(int def, const wire::VehicleFrame& f, double now) {
             r->key, kCopies[def].key, g_lrx.l.nvar, g_lrx.l.nsv, n_own,
             res == look::ApplyResult::done ? "applied" : res == look::ApplyResult::partial ? "partly applied" : res == look::ApplyResult::off ? "looks OFF" : "FAILED",
             why[0] ? ": " : "", why);
+}
+
+// The partner vehicle's wear and lights (STM1 version 3's state block, section 22.12) on the solid copy of the same art:
+// what changed since the last frame, and everything every 2 s and after each look apply (a variation rebuilds the
+// materials). Wear on every part the sender's bits name, a part no longer named set to 0; a light the sender no longer
+// names set to 0. Fails closed: a failed set waits 2 s (logged); a fault turns the looks off (gear_look).
+void DriveState(int def, const wire::VehicleFrame& f, double now) {
+    if (!g_look_on || !kCopies[def].solid || !g_copy.shown || now - g_copy.live_ms < 500 || !(f.flags & wire::kVehState)) return;
+    const wire::VehicleResource* r = wire::FindVehicleResource(f.guid);
+    if (ArtCopyOf(r) != def) {
+        static const wire::VehicleResource* logged = nullptr;
+        if (logged != r) {
+            logged = r;
+            Log("[vehicle] the partner's %s: its wear and lights are not applied (copy '%s' has another model)", r ? r->key : "?", kCopies[def].key);
+        }
+        return;
+    }
+    if (now < g_copy.st_fail_ms) return;
+    const bool full = !g_copy.st_applied || now >= g_copy.st_full_ms;  // DriveLook sets st_full_ms 0 after every look apply
+    static wire::GearShaderVar vars[wire::kMaxVehicleWearParts + 2 * wire::kMaxVehicleLights];
+    unsigned n = 0;
+    const bool wear_changed = full || f.wear != g_copy.st_wear || f.wear_parts[0] != g_copy.st_parts[0] || f.wear_parts[1] != g_copy.st_parts[1];
+    if (wear_changed) {
+        const float w = static_cast<float>(f.wear) / 65535.0f;
+        for (unsigned part = 0; part < wire::kMaxVehicleWearParts; ++part) {
+            const bool now_on = (f.wear_parts[part / 64] >> (part % 64)) & 1u;
+            const bool was_on = g_copy.st_applied && ((g_copy.st_parts[part / 64] >> (part % 64)) & 1u);
+            if (!now_on && !was_on) continue;
+            wire::GearShaderVar& s = vars[n++];
+            s = wire::GearShaderVar{};
+            s.hash = wire::kVehWearHash, s.part = static_cast<std::uint16_t>(part), s.count = 1, s.v[0] = now_on ? w : 0.0f;
+        }
+    }
+    auto find = [](const wire::VehicleLight* ls, unsigned ln, const wire::VehicleLight& l) -> const wire::VehicleLight* {
+        for (unsigned k = 0; k < ln; ++k)
+            if (ls[k].part == l.part && ls[k].kind == l.kind) return &ls[k];
+        return nullptr;
+    };
+    for (unsigned i = 0; i < f.nl; ++i) {
+        const wire::VehicleLight& l = f.light[i];
+        const wire::VehicleLight* was = g_copy.st_applied ? find(g_copy.st_light, g_copy.st_nl, l) : nullptr;
+        if (!full && was && was->v[0] == l.v[0] && was->v[1] == l.v[1] && was->v[2] == l.v[2]) continue;
+        wire::GearShaderVar& s = vars[n++];
+        s = wire::GearShaderVar{};
+        const bool colour = l.kind == static_cast<std::uint8_t>(wire::VehicleLightKind::colour);
+        s.hash = colour ? wire::kVehGaugeHash : wire::kVehLightHash, s.part = l.part, s.count = static_cast<std::uint8_t>(colour ? 3 : 1);
+        for (int c = 0; c < 3; ++c) s.v[c] = l.v[c];
+    }
+    for (unsigned i = 0; g_copy.st_applied && i < g_copy.st_nl; ++i) {
+        const wire::VehicleLight& l = g_copy.st_light[i];
+        if (l.kind != static_cast<std::uint8_t>(wire::VehicleLightKind::intensity) || find(f.light, f.nl, l)) continue;
+        wire::GearShaderVar& s = vars[n++];
+        s = wire::GearShaderVar{};
+        s.hash = wire::kVehLightHash, s.part = l.part, s.count = 1;  // gone on the sender: dark
+    }
+    if (n == 0) return;
+    const auto copy = reinterpret_cast<std::uintptr_t>(g_copy.sp.e);
+    char why[200] = {};
+    const look::ApplyResult res = look::SetVehicleVars(copy, vars, n, why, sizeof(why));
+    ++g_state_applies;  // every apply: a full one (everything) or only what changed
+    if (full) ++g_state_full;
+    g_state_sets += n;
+    if (res == look::ApplyResult::failed || res == look::ApplyResult::off) {
+        ++g_state_failed;
+        g_copy.st_fail_ms = now + 2000;
+        static unsigned fail_logs = 0;
+        if (++fail_logs <= 10) Log("[vehicle] wear / lights of the partner's %s on copy '%s': %s%s%s", r->key, kCopies[def].key,
+                                   res == look::ApplyResult::off ? "looks OFF" : "FAILED", why[0] ? ": " : "", why);
+        return;
+    }
+    g_copy.st_applied = true;
+    g_copy.st_wear = f.wear;
+    g_copy.st_parts[0] = f.wear_parts[0], g_copy.st_parts[1] = f.wear_parts[1];
+    g_copy.st_nl = f.nl;
+    for (unsigned i = 0; i < f.nl; ++i) g_copy.st_light[i] = f.light[i];
+    if (full) {
+        g_copy.st_full_ms = now + 2000;
+        g_copy.st_look = g_copy.look_applied;
+    }
+    static unsigned logs = 0;
+    if (full && ++logs <= 30) {
+        unsigned wear_parts = 0;
+        for (std::uint64_t w : f.wear_parts)
+            for (std::uint64_t b = w; b; b &= b - 1) ++wear_parts;
+        Log("[vehicle] wear / lights of the partner's %s on copy '%s': wear %.3f on %u part(s), %u light(s); %u variable(s) set%s%s%s", r->key,
+            kCopies[def].key, f.wear / 65535.0, wear_parts, static_cast<unsigned>(f.nl), n, res == look::ApplyResult::partial ? " (partly)" : "",
+            why[0] ? ": " : "", why);
+    }
+    // hidden tests / trace: read back what the copy holds now (every full apply, the first 20 times)
+    if (full && (automation::Enabled() || g_trace_until > now) && g_copy.st_checks < 20) {
+        ++g_copy.st_checks;
+        static wire::GearShaderVar back[256];
+        const unsigned nw = look::ReadVars(copy, wire::kVehWearHash, back, 256);
+        unsigned wear_ok = 0, wear_bad = 0;
+        for (unsigned i = 0; i < nw; ++i) {
+            const unsigned part = back[i].part;
+            const bool want_on = part < wire::kMaxVehicleWearParts && ((f.wear_parts[part / 64] >> (part % 64)) & 1u);
+            const float want = want_on ? static_cast<float>(f.wear) / 65535.0f : 0.0f;
+            if (std::fabs(back[i].v[0] - want) <= 1e-3f) ++wear_ok;
+            else ++wear_bad;
+        }
+        // the lamp intensities and the battery gauge's colour (three channels)
+        unsigned light_ok = 0, light_bad = 0, colour_ok = 0, colour_bad = 0;
+        for (int pass = 0; pass < 2; ++pass) {
+            const bool colour = pass == 1;
+            const auto kind = static_cast<std::uint8_t>(colour ? wire::VehicleLightKind::colour : wire::VehicleLightKind::intensity);
+            const unsigned nlb = look::ReadVars(copy, colour ? wire::kVehGaugeHash : wire::kVehLightHash, back, 256);
+            for (unsigned i = 0; i < f.nl; ++i) {
+                if (f.light[i].kind != kind) continue;
+                bool ok = false;
+                for (unsigned k = 0; k < nlb && !ok; ++k) {
+                    if (back[k].part != f.light[i].part) continue;
+                    ok = true;
+                    for (int c = 0; c < (colour ? 3 : 1); ++c)
+                        ok = ok && std::fabs(back[k].v[c] - f.light[i].v[c]) <= 1e-3f * (1 + std::fabs(f.light[i].v[c]));
+                }
+                if (colour) ok ? ++colour_ok : ++colour_bad;
+                else ok ? ++light_ok : ++light_bad;
+            }
+        }
+        if (wear_bad || light_bad || colour_bad) ++g_state_mismatch;
+        Log("[vehicle] wear / lights read back on copy '%s': wear entries %u (%u as sent, %u not), lights %u of %u as sent, gauge colours %u of %u as sent",
+            kCopies[def].key, nw, wear_ok, wear_bad, light_ok, light_ok + light_bad, colour_ok, colour_ok + colour_bad);
+    }
+}
+
+void ClearCargoCopy(CargoCopy& c, const char* why) {
+    if (c.loading || c.live || c.sp.sp) {
+        char step[160] = {};
+        holo::SpawnTeardown(c.sp, why, step, sizeof(step));
+        ++g_cargo_removes;
+    }
+    c = CargoCopy{};
+}
+void ClearCargo(const char* why) {
+    unsigned n = 0;
+    for (CargoCopy& c : g_cargo) {
+        n += (c.loading || c.live || c.sp.sp) ? 1u : 0u;
+        ClearCargoCopy(c, why);
+    }
+    if (n) Log("[vehicle] %u cargo prop(s) removed (%s)", n, why);
+}
+// A cargo prop (the gear's cutscene case, by path + GUID) must not be a Humanoid / player / vehicle and carry none of
+// the components the copies may not have.
+const char* ValidateCargoProp(Entity* e) {
+    const auto a = reinterpret_cast<std::uintptr_t>(e);
+    const std::uintptr_t rtti = mem::RttiOf(a);
+    if (!rtti) return "entity type unknown";
+    if (mem::DerivesFrom(rtti, "Humanoid") || mem::DerivesFrom(rtti, "DSPlayerEntity") || mem::DerivesFrom(rtti, "VehicleEntity") || ClassOf(a) >= 0)
+        return "a Humanoid / player / vehicle entity";
+    for (const char* bad : {"DSInteractionComponent", "PhysicsCollisionComponent", "PhysicsRagdollComponent", "DSPlayerControllerComponent",
+                            "HumanoidController", "CapsuleComponent", "VehicleMover", "DSBounderComponent", "AIIndividualComponent", "AIBodyComponent",
+                            "DSAIIndividualComponent", "BasicControlledEntityAIController", "SoundComponent"})
+        if (partner::FindComponentByName(e, bad)) return bad;
+    return nullptr;
+}
+
+// The partner vehicle's cargo (section 22.12): the newest cargo block at or before the frame in play (kept until the
+// next one: it comes when it changes and every second), one case prop per piece placed every tick at the copy's place
+// times the piece's place in the vehicle's frame, shown with the copy (hidden with it), coloured with the baggage
+// config's variation the sender named (gear_look, as the cargo on the partner's back).
+void DriveCargo(const WorldTransform& v, const Rx* b, bool show, double now) {
+    if (!g_look_on || g_cargo_refused) return;
+    // the newest cargo block at or before b
+    const unsigned bi = static_cast<unsigned>((static_cast<std::size_t>(b - g_ring) + kRing - g_head) % kRing);
+    for (unsigned k = bi + 1; k-- > 0;) {
+        const Rx& x = At(k);
+        if (!(x.f.flags & wire::kVehCargo)) continue;
+        if (!g_copy.cargo_have || x.f.seq != g_copy.cargo_seq) {
+            const bool changed = !g_copy.cargo_have || x.f.nc != g_copy.nc ||
+                                 std::memcmp(x.f.cargo, g_copy.cargo, sizeof(wire::VehicleCargo) * x.f.nc) != 0;
+            g_copy.cargo_have = true;
+            g_copy.cargo_seq = x.f.seq;
+            g_copy.nc = x.f.nc;
+            for (unsigned i = 0; i < x.f.nc; ++i) g_copy.cargo[i] = x.f.cargo[i];
+            static unsigned logs = 0;
+            if (changed && ++logs <= 30)
+                Log("[vehicle] the partner's vehicle carries %u cargo piece(s) (%u left out by the sender)", static_cast<unsigned>(x.f.nc),
+                    static_cast<unsigned>(x.f.cargo_dropped));
+        }
+        break;
+    }
+    const unsigned want = g_copy.cargo_have ? g_copy.nc : 0;
+    unsigned started = 0;
+    for (unsigned i = 0; i < wire::kMaxVehicleCargo; ++i) {
+        CargoCopy& c = g_cargo[i];
+        const char* key = nullptr;
+        const char* path = nullptr;
+        const char* guid_text = nullptr;
+        if (i >= want || !gear::CargoProp(g_copy.cargo[i].model, &key, &path, &guid_text)) path = nullptr;
+        const std::uint8_t var = i < want ? g_copy.cargo[i].variation : wire::kGearNone;
+        if (c.path != path || (c.live && c.variation != var)) {
+            if (c.loading || c.live || c.sp.sp) ClearCargoCopy(c, "the partner's cargo changed");
+            c = CargoCopy{};
+            c.path = path, c.key = key, c.variation = var;
+        }
+        if (!path) continue;
+        WorldTransform at{};
+        float r[3][3];
+        wire::MatrixFromQuat(g_copy.cargo[i].q, r);
+        Compose(v, g_copy.cargo[i].t, r, at);
+        if (!c.loading && !c.live) {
+            if (now < c.retry_ms || started >= 2) continue;
+            std::uint8_t g[16];
+            char why[200] = {};
+            const WorldTransform below = SpawnPlace(at);
+            if (!bodies::ParseGuid(guid_text, g)) {
+                g_cargo_refused = true;
+                Log("[vehicle] cargo prop '%s': bad GUID text; cargo props off for this game run", key);
+                return;
+            }
+            ++started;
+            if (realbody::BeginByPathGuid(path, g, below, 0x78000000u + i, &c.sp, why, sizeof(why))) {
+                c.loading = true;
+                c.begin_ms = now;
+                ++g_cargo_spawns;
+                if (g_cargo_spawns <= 40) Log("[vehicle] cargo prop %u '%s' loading", i, key);
+            } else {
+                c.retry_ms = now + 10000;
+                Log("[vehicle] cargo prop %u '%s' not started: %s", i, key, why);
+            }
+            continue;
+        }
+        if (c.loading) {
+            char why[200] = {};
+            switch (holo::SpawnPoll(c.sp, why, sizeof(why))) {
+                case holo::SpawnState::loading:
+                    if (now - c.begin_ms > 20000) {
+                        Log("[vehicle] cargo prop %u '%s' did not load in 20 s", i, key);
+                        ClearCargoCopy(c, "load timeout");
+                        c.path = path, c.key = key, c.variation = var, c.retry_ms = now + 30000;
+                    }
+                    continue;
+                case holo::SpawnState::cancelled:
+                case holo::SpawnState::failed:
+                    Log("[vehicle] cargo prop %u '%s' did not load: %s", i, key, why);
+                    ClearCargoCopy(c, "load failed");
+                    c.path = path, c.key = key, c.variation = var, c.retry_ms = now + 10000;
+                    continue;
+                case holo::SpawnState::realized: {
+                    c.loading = false;
+                    const char* bad = c.sp.e ? ValidateCargoProp(c.sp.e) : "no entity";
+                    if (bad) {
+                        g_cargo_refused = true;
+                        Log("[vehicle] cargo prop '%s' refused: %s; cargo props off for this game run", key, bad);
+                        if (c.sp.e) partner::DescribeEntity(c.sp.e, "refused cargo prop");
+                        ClearCargo("refused");
+                        return;
+                    }
+                    partner::SetVisible(c.sp.e, false);
+                    partner::WakeIfAsleep(c.sp.e);
+                    if (!CollisionOff(c.sp.e, key)) {
+                        g_cargo_refused = true;
+                        Log("[vehicle] cargo prop '%s' refused: its collision could not be turned off; cargo props off for this game run", key);
+                        ClearCargo("collision not off");
+                        return;
+                    }
+                    c.live = true;
+                    c.live_ms = now;
+                    static bool described = false;
+                    if (!described) {
+                        described = true;
+                        partner::DescribeEntity(c.sp.e, "cargo prop");
+                    }
+                    break;
+                }
+            }
+        }
+        if (!c.live) continue;
+        if (!holo::SpawnAlive(c.sp)) {
+            ClearCargoCopy(c, "destroyed by the game");
+            c.path = path, c.key = key, c.variation = var, c.retry_ms = now + 10000;
+            continue;
+        }
+        // its colour (the baggage config's variation, resolved in this game), once
+        if (!c.looked && c.variation != wire::kGearNone) {
+            c.looked = true;
+            wire::GearLook gl;
+            if (look::ReadConfigVariation(c.variation, &gl)) {
+                gl.item = 0, gl.kind = wire::GearKind::cargo, gl.res = wire::kGearNone, gl.nsv = 0;
+                char why[200] = {};
+                const look::ApplyResult res = look::Apply(reinterpret_cast<std::uintptr_t>(c.sp.e), gl, why, sizeof(why));
+                ++g_cargo_looks;
+                if (g_cargo_looks <= 20)
+                    Log("[vehicle] cargo prop %u '%s': colour variation %u %s%s%s", i, key, c.variation,
+                        res == look::ApplyResult::done ? "applied" : res == look::ApplyResult::partial ? "partly applied" : "NOT applied", why[0] ? ": " : "", why);
+            }
+            c.coll_next_ms = 0;  // its collision read again right after the colour (it rebuilds the materials)
+        }
+        // its collision stays off (every second, section 22.13): on again more than 3 times, or not off: cargo props off
+        if (now >= c.coll_next_ms) {
+            c.coll_next_ms = now + 1000;
+            const int k = CollisionKeepOff(c.sp.e, key);
+            if (k == 0) ++c.coll_again;
+            if (k < 0 || c.coll_again > 3) {
+                g_cargo_refused = true;
+                Log("[vehicle] cargo prop '%s' refused: its collision %s; cargo props off for this game run", key, k < 0 ? "could not be kept off" : "kept coming back");
+                ClearCargo("collision not off");
+                return;
+            }
+        }
+        if ((automation::Enabled() || g_trace_until > now) && c.shown && !c.checked && now - c.live_ms > 1000) {
+            WorldTransform back{};
+            if (ReadXf(reinterpret_cast<std::uintptr_t>(c.sp.e), back)) {
+                c.checked = true;
+                const float d = static_cast<float>(Dist(back, c.last));
+                if (d > g_cargo_err_max) g_cargo_err_max = d;
+                Log("[vehicle] cargo prop %u '%s' placed at (%.3f, %.3f, %.3f) in the vehicle's frame: read back %.3f m from where it was put", i, key,
+                    static_cast<double>(g_copy.cargo[i].t[0]), static_cast<double>(g_copy.cargo[i].t[1]), static_cast<double>(g_copy.cargo[i].t[2]),
+                    static_cast<double>(d));
+            }
+        }
+        if (!game::TrySetTransform(c.sp.e, at)) {
+            ++g_cargo_faults;
+            g_cargo_refused = true;
+            ClearCargo("set transform fault");
+            return;
+        }
+        c.last = at;
+        if (show != c.shown) {
+            partner::SetVisible(c.sp.e, show);
+            c.shown = show;
+            static unsigned shown_logs = 0;
+            if (show && ++shown_logs <= 4) partner::DescribeEntity(c.sp.e, "cargo prop shown");
+        } else if (show) {
+            std::uint64_t fl = 0;
+            if (partner::ReadFlags(c.sp.e, &fl) && (fl & 0x2) == 0) partner::SetVisible(c.sp.e, true);
+        }
+    }
 }
 
 // ---------------------------------------------------------------- receiver helpers
@@ -896,11 +1616,13 @@ const char* ValidateCopy(Entity* e, const CopyDef& d) {
 
 void ClearCopy(const char* why, bool count) {
     if (!g_copy.loading && !g_copy.live && !g_copy.sp.sp) {
+        ClearCargo(why);
         g_copy = Copy{};
         return;
     }
     realbody::ClearGearPose(realbody::kVehiclePoseTarget);
     ClearPacks(why);
+    ClearCargo(why);
     char step[160] = {};
     const int def = g_copy.def;
     holo::SpawnTeardown(g_copy.sp, why, step, sizeof(step));
@@ -913,8 +1635,7 @@ void ClearCopy(const char* why, bool count) {
 }
 
 void Begin(int def, const WorldTransform& v, double now) {
-    WorldTransform at = v;
-    at.pos.z -= 20.0;  // out of sight until it is placed
+    const WorldTransform at = SpawnPlace(v);  // out of sight (and away from the watcher) until it is placed
     std::uint8_t g[16];
     char why[200] = {};
     const CopyDef& d = kCopies[def];
@@ -979,12 +1700,23 @@ void PollCopy(double now) {
             partner::WakeIfAsleep(g_copy.sp.e);
             partner::ReadVtable(g_copy.sp.e, &g_copy.vt);
             partner::ReadGuid(g_copy.sp.e, &g_copy.guid);
+            // A solid copy: its collision off before anything else (it stands 20 m below, not shown; section 22.11).
+            // Failing: refused for the game run, the hologram stands in (CopyFor).
+            if (d.solid) {
+                if (!CollisionOff(g_copy.sp.e, d.key)) {
+                    Refuse(g_copy.def, true, now);
+                    Log("[vehicle] copy '%s' refused for this game run: its collision could not be turned off", d.key);
+                    ClearCopy("collision not off", false);
+                    return;
+                }
+                g_copy.coll_next_ms = now;  // checked again on its first placement, before it is shown
+            }
             g_copy.live = true;
             g_copy.live_ms = now;
             g_copy.fails = 0;
             g_refusals[g_copy.def] = 0;
             Log("[vehicle] the partner's vehicle copy '%s' live after %.0f ms (%s)", d.key, now - g_copy.begin_ms,
-                d.welcome ? "hologram" : "solid cutscene body");
+                d.solid ? "solid cutscene body, collision off" : "hologram");
             static bool described[kCopyCount] = {};
             if (!described[g_copy.def]) {
                 described[g_copy.def] = true;
@@ -1049,6 +1781,37 @@ void DriveOverlap(const WorldTransform& v, std::uint8_t kind, double now) {
         best_yaw, vis ? "set" : "NOT set");
 }
 
+// A solid copy's collision checked every 250 ms (section 22.11): found on again (a game path re-creating it), it is
+// turned off again and logged; more than 3 times, or not off after the call, or unreadable: the copy goes and is refused
+// for the game run (the fallback stands in). True when the copy was removed.
+bool CollisionWatch(int def, double now) {
+    if (!kCopies[def].solid || now < g_copy.coll_next_ms) return false;
+    g_copy.coll_next_ms = now + 250;
+    const CollState s = ReadColl(reinterpret_cast<std::uintptr_t>(g_copy.sp.e));
+    if (s.read && !s.on && s.insts == 0) return false;
+    const char* why = nullptr;
+    if (!s.read) {
+        why = "its collision state is unreadable";
+    } else {
+        ++g_copy.coll_again, ++g_coll_again;
+        Log("[vehicle] copy '%s': collision found ON again (flag %d, %d physics instances of %d parts; #%u): turning it off again", kCopies[def].key,
+            s.on ? 1 : 0, s.insts, s.parts, g_copy.coll_again);
+        if (g_copy.coll_again > 3) why = "its collision kept coming back";
+        else if (!CollisionOff(g_copy.sp.e, kCopies[def].key)) why = "its collision could not be turned off again";
+    }
+    if (!why) return false;
+    Refuse(def, true, now);
+    Log("[vehicle] copy '%s' refused for this game run: %s", kCopies[def].key, why);
+    RemoveCopy(why);
+    return true;
+}
+
+// Hidden tests (action vehicle_sync 22 / 23): the copy pinned at a world place (the watcher drives into it).
+struct Pin {
+    bool on = false;
+    WorldTransform at{};
+} g_pin;
+
 void LogMeters(double now, bool force) {
     if (!force && now < g_next_meter_ms) return;
     g_next_meter_ms = now + 5000;
@@ -1084,23 +1847,27 @@ void Init(const Config& config) noexcept {
         g_overlap_on ? 1 : 0, g_look_on ? "on" : "off", g_look_on ? 1 : 0, g_packs_on ? "on" : "off", g_packs_on ? 1 : 0);
     Log("[vehicle] vehicle sync %s (vehicle_sync=%d)",
         g_mode == 0   ? "off"
-        : g_mode == 2 ? "on: the solid trike and truck copies (looks, packs; with collision), the roadster's hologram"
+        : g_mode == 3 ? "on: roadster, trike and truck as construction holograms (opt-in)"
         : g_mode == 4 ? "on: the roadster's copy only"
-                      : "on: roadster, trike and truck holograms",
+                      : "on: solid trike and truck copies with their collision off on each copy; the roadster's hologram (no solid roadster copy exists)",
         g_mode);
 }
 
 bool TakeSend(Entity* local, const WorldTransform& local_wt, std::uint32_t sender_ms, std::uint32_t seq, double now, wire::VehicleFrame* out) noexcept {
     if (g_mode == 0 || !local || !out || !Check()) return false;
     const auto sam = reinterpret_cast<std::uintptr_t>(local);
-    // A load makes a new Sam, and no send tick runs while ours sleeps (loads, menus): a vehicle we had left is forgotten
-    // then (it may be gone with the old area); one we still sit on is found again through his parent.
+    // A load makes a new Sam: a vehicle we had left is forgotten then (it may be gone with the old area); one we still
+    // sit on is found again through his parent. A menu (no send tick while our Sam sleeps, the same Sam) keeps a parked
+    // vehicle (section 22.13): the registry, vtable, GUID and distance checks below still run on it.
     const double gap = g_last_take_ms > 0 ? now - g_last_take_ms : 0;
     g_last_take_ms = now;
-    if (g_ours.e && (g_ours.sam != sam || (!g_ours.seated && gap > 1000))) {
-        Log("[vehicle] our last vehicle %p forgotten (%s)", reinterpret_cast<void*>(g_ours.e),
-            g_ours.sam != sam ? "our Sam is a new entity: a load" : "no send tick for over 1 s: our Sam slept");
+    if (g_ours.e && g_ours.sam != sam) {
+        Log("[vehicle] our last vehicle %p forgotten (our Sam is a new entity: a load)", reinterpret_cast<void*>(g_ours.e));
         g_ours = Ours{};
+    }
+    if (g_ours.e && !g_ours.seated && gap > 1000) {
+        static unsigned slept_logs = 0;
+        if (++slept_logs <= 5) Log("[vehicle] our parked vehicle %p kept after %.0f ms without a send tick (our Sam slept: a menu)", reinterpret_cast<void*>(g_ours.e), gap);
     }
     std::uintptr_t v = 0;
     bool seated = false;
@@ -1142,8 +1909,9 @@ bool TakeSend(Entity* local, const WorldTransform& local_wt, std::uint32_t sende
     }
     if (!v) {
         // Got off: the same vehicle as parked, while it still checks (in the game's vehicle registry, its vtable and
-        // per-creation GUID), Sam stays within 30 m and for 60 s at most. Only fault-free reads on it from here: it may
-        // have been destroyed or unloaded.
+        // per-creation GUID) and Sam stays within kParkedReportM of it, with no time limit (section 22.13: it stands on the
+        // other screen as long as on ours; v0.13 dropped it after 60 s or 30 m). Only fault-free reads on it from here: it
+        // may have been destroyed or unloaded.
         if (!g_ours.e) return false;
         game::Guid g;
         const int reg = Registered(g_ours.e);
@@ -1155,13 +1923,19 @@ bool TakeSend(Entity* local, const WorldTransform& local_wt, std::uint32_t sende
         }
         if (g_ours.seated || g_ours.left_ms == 0) {
             g_ours.left_ms = now;
-            Log("[vehicle] our Sam got off vehicle %p: reported as parked for up to 60 s within 30 m", reinterpret_cast<void*>(g_ours.e));
+            Log("[vehicle] our Sam got off vehicle %p: reported as parked while it is there and we stay within %.0f m", reinterpret_cast<void*>(g_ours.e),
+                kParkedReportM);
         }
         g_ours.seated = false;
-        if (now - g_ours.left_ms > 60000 || DistXyz(g_ours.last_pos, local_wt.pos.x, local_wt.pos.y, local_wt.pos.z) > 30.0) {
-            Log("[vehicle] our last vehicle %p: no longer reported (%s)", reinterpret_cast<void*>(g_ours.e), now - g_ours.left_ms > 60000 ? "60 s" : "beyond 30 m");
+        if (DistXyz(g_ours.last_pos, local_wt.pos.x, local_wt.pos.y, local_wt.pos.z) > kParkedReportM) {
+            Log("[vehicle] our last vehicle %p: no longer reported (we are beyond %.0f m, after %.0f s parked)", reinterpret_cast<void*>(g_ours.e),
+                kParkedReportM, (now - g_ours.left_ms) / 1000);
             g_ours = Ours{};
             return false;
+        }
+        if (!g_ours.parked_logged && now - g_ours.left_ms > 60000) {
+            g_ours.parked_logged = true;
+            Log("[vehicle] our parked vehicle %p still reported after 60 s", reinterpret_cast<void*>(g_ours.e));
         }
         v = g_ours.e;
     } else {
@@ -1261,6 +2035,75 @@ bool TakeSend(Entity* local, const WorldTransform& local_wt, std::uint32_t sende
         }
     } else {
         ++g_pose_unread;
+    }
+    // Version 3 (section 22.12): its wear and lights in every frame (read every 100 ms), its cargo when it changed and
+    // every second (read every 500 ms while it stands still: the pieces and the vehicle are not read in the same instant).
+    if (g_look_on) {
+        if (now >= g_ours.st_next_ms) {
+            g_ours.st_next_ms = now + 100;
+            look::VehicleState st;
+            if (look::ReadVehicleState(v, &st)) {
+                std::uint32_t h = 2166136261u;
+                auto mix = [&](std::uint32_t x) { h = (h ^ x) * 16777619u; };
+                mix(st.wear), mix(static_cast<std::uint32_t>(st.wear_parts[0])), mix(static_cast<std::uint32_t>(st.wear_parts[0] >> 32)),
+                    mix(static_cast<std::uint32_t>(st.wear_parts[1])), mix(st.nl);
+                for (unsigned i = 0; i < st.nl; ++i) {
+                    mix(st.light[i].part | (st.light[i].kind << 8));
+                    for (float x : st.light[i].v) mix(wire::FloatToHalf(x));
+                }
+                static unsigned logs = 0;
+                if ((!g_ours.st_read || h != g_ours.st_hash) && ++logs <= 60) {
+                    char lights[400] = {};
+                    std::size_t used = 0;
+                    for (unsigned i = 0; i < st.nl && used + 40 < sizeof(lights); ++i)
+                        used += static_cast<std::size_t>(std::snprintf(lights + used, sizeof(lights) - used, " %u%s=%.2f", st.light[i].part,
+                                                                       st.light[i].kind == 2 ? "c" : "", static_cast<double>(st.light[i].v[0])));
+                    unsigned wear_parts = 0;
+                    for (std::uint64_t w : st.wear_parts)
+                        for (std::uint64_t b = w; b; b &= b - 1) ++wear_parts;
+                    Log("[vehicle] our %s's state: wear %.3f on %u part(s) (spread %.3f), %u light(s):%s; %u entries, %u left out%s", g_ours.res->key,
+                        st.wear / 65535.0, wear_parts, static_cast<double>(st.wear_spread), static_cast<unsigned>(st.nl), lights, st.entries, st.left_out,
+                        g_ours.st_read ? " (changed)" : "");
+                }
+                g_ours.st = st;
+                g_ours.st_hash = h;
+                g_ours.st_read = true;
+            }
+        }
+        if (g_ours.st_read) {
+            f.flags |= wire::kVehState;
+            f.wear = g_ours.st.wear;
+            f.wear_parts[0] = g_ours.st.wear_parts[0], f.wear_parts[1] = g_ours.st.wear_parts[1];
+            if (f.wear_parts[0] == 0 && f.wear_parts[1] == 0) f.wear = 0;
+            f.nl = g_ours.st.nl;
+            for (unsigned i = 0; i < f.nl; ++i) f.light[i] = g_ours.st.light[i];
+        }
+        if (now >= g_ours.cargo_next_ms && (!g_ours.cargo_read || g_ours.speed < 0.3f)) {
+            g_ours.cargo_next_ms = now + 500;
+            ReadCargo(v, vt);
+        }
+        if (g_ours.cargo_read && (g_ours.cargo_hash != g_ours.cargo_sent_hash || now >= g_ours.cargo_resend_ms)) {
+            // as many pieces as fit the frame (kMaxVehicleFrameSize); the rest counted as dropped
+            f.flags |= wire::kVehCargo;
+            const std::size_t used = wire::VehicleFrameBytes(f) + wire::kVehicleCargoHeaderSize;
+            const unsigned room = used < wire::kMaxVehicleFrameSize ? static_cast<unsigned>((wire::kMaxVehicleFrameSize - used) / wire::kVehicleCargoSize) : 0;
+            f.nc = static_cast<std::uint8_t>(g_ours.nc < room ? g_ours.nc : room);
+            const unsigned dropped = g_ours.cargo_dropped + (g_ours.nc - f.nc);
+            f.cargo_dropped = static_cast<std::uint8_t>(dropped < 255 ? dropped : 255);
+            for (unsigned i = 0; i < f.nc; ++i) f.cargo[i] = g_ours.cargo[i];
+            g_ours.cargo_sent_hash = g_ours.cargo_hash;
+            g_ours.cargo_resend_ms = now + 1000;
+            ++g_ours.cargo_blocks;
+        }
+        // fail closed: a frame the encoder would refuse goes without the version 3 blocks (logged), never not at all
+        static std::uint8_t probe[wire::kMaxVehicleFrameSize];
+        if ((f.flags & (wire::kVehState | wire::kVehCargo)) && wire::EncodeVehicle(f, probe, sizeof(probe)) == 0) {
+            static unsigned bad = 0;
+            if (++bad <= 5) Log("[vehicle] our vehicle's state / cargo blocks do not encode (%u lights, %u pieces): sent without them", f.nl, f.nc);
+            f.flags = static_cast<std::uint8_t>(f.flags & ~(wire::kVehState | wire::kVehCargo));
+            f.nl = 0, f.wear = 0, f.wear_parts[0] = f.wear_parts[1] = 0, f.nc = 0, f.cargo_dropped = 0;
+            g_ours.cargo_sent_hash = 0;
+        }
     }
     ++g_ours.sent;
     g_ours.last_sent_ms = now;
@@ -1370,10 +2213,15 @@ void EmergencyStop() noexcept {
     if ((g_copy.live || g_copy.loading) && g_copy.sp.e && holo::SpawnAlive(g_copy.sp)) partner::SetVisible(g_copy.sp.e, false);
     for (PackCopy& p : g_pack)
         if (p.live && p.sp.e && holo::SpawnAlive(p.sp)) partner::SetVisible(p.sp.e, false);
+    for (CargoCopy& c : g_cargo)
+        if (c.live && c.sp.e && holo::SpawnAlive(c.sp)) partner::SetVisible(c.sp.e, false);
     g_mode = 0;
 }
 
 void RemoveCopy(const char* why) noexcept { ClearCopy(why, true); }
+
+bool CopyCollisionOff(Entity* e, const char* what) noexcept { return CollisionOff(e, what); }
+int CopyCollisionKeepOff(Entity* e, const char* what) noexcept { return CollisionKeepOff(e, what); }
 
 bool SendMuted(double now) noexcept { return now < g_mute_until; }
 
@@ -1456,6 +2304,8 @@ bool PartnerVehicleWorld(double now, const float (&local)[3], double (&out)[3]) 
 
 void Tick(const TickIn& in, double now) noexcept {
     LogMeters(now, false);
+    // the watcher's place (fault-free reads): the copies are spawned away from it (SpawnPlace)
+    g_watcher_ok = in.local_ok && in.local && ReadXf(reinterpret_cast<std::uintptr_t>(in.local), g_watcher);
     const bool have_any = g_copy.loading || g_copy.live || g_copy.sp.sp;
     const char* why_none = nullptr;
     if (g_mode == 0) why_none = "vehicle_sync off";
@@ -1506,9 +2356,9 @@ void Tick(const TickIn& in, double now) noexcept {
     }
     int def = -1;
     if (!why_none) {
-        def = g_override > 0 ? g_override - 1 : CopyForKind(b->f.kind);
+        def = g_override > 0 ? g_override - 1 : CopyFor(b->f, now);
         if (def < 0) why_none = "unknown kind";
-        else if (g_override == 0 && g_mode == 4 && def != 0) why_none = "trike / truck copies off (vehicle_sync=4: the roadster only)";
+        else if (g_override == 0 && g_mode == 4 && b->f.kind != 1) why_none = "trike / truck copies off (vehicle_sync=4: the roadster only)";
         else if (Refused(def, now)) why_none = "its copy was refused";
     }
     if (why_none) {
@@ -1523,6 +2373,15 @@ void Tick(const TickIn& in, double now) noexcept {
     }
     // the copy wanted: another one first goes
     if (have_any && g_copy.def != def) RemoveCopy("the partner's vehicle changed");
+    // The same copy for another model (a standard trike, then the Kusanagi within the parked report: both the trike copy,
+    // section 22.13): the copy goes and comes back in its own look, so no paint, wear or lamp of the earlier vehicle stays
+    // on it (DriveLook / DriveState apply nothing for the Kusanagi).
+    const wire::VehicleResource* fres = wire::FindVehicleResource(b->f.guid);
+    if ((g_copy.loading || g_copy.live) && g_copy.def == def && g_copy.res && fres && fres != g_copy.res && ArtCopyOf(fres) != ArtCopyOf(g_copy.res)) {
+        Log("[vehicle] the partner's vehicle changed from %s to %s (another model on copy '%s'): the copy comes back in its own look", g_copy.res->key,
+            fres->key, kCopies[def].key);
+        RemoveCopy("the partner's vehicle changed model");
+    }
     WorldTransform v{};
     float seat[3], seat_r[3][3];
     static wire::GearPose pose;
@@ -1542,10 +2401,23 @@ void Tick(const TickIn& in, double now) noexcept {
         Compose(v, g_off, ident, o);
         v = o;
     }
+    if (g_pin.on) v = g_pin.at;  // hidden tests: pinned where the watcher drives into it
     if (!g_copy.loading && !g_copy.live) {
         if (g_copy.def == def && now < g_copy.retry_ms) return;
         Begin(def, v, now);
+        g_copy.res = fres;
         return;
+    }
+    if (!g_copy.res) g_copy.res = fres;
+    // a parked vehicle stays as long as the driver's game reports it (section 22.13: no 60 s limit any more)
+    if (b->f.flags & wire::kVehSeated) {
+        g_copy.parked_since = 0;
+    } else if (g_copy.live) {
+        if (g_copy.parked_since == 0) g_copy.parked_since = now;
+        if (!g_copy.parked_logged && now - g_copy.parked_since > 60000) {
+            g_copy.parked_logged = true;
+            Log("[vehicle] the partner's parked %s still shown after 60 s (copy '%s')", fres ? fres->key : "?", kCopies[def].key);
+        }
     }
     PollCopy(now);
     if (!g_copy.live) return;
@@ -1571,6 +2443,8 @@ void Tick(const TickIn& in, double now) noexcept {
         g_copy.placed = true;
         Log("[vehicle] copy '%s' placed at (%.2f, %.2f, %.2f)", kCopies[def].key, v.pos.x, v.pos.y, v.pos.z);
     }
+    // a solid copy's collision stays off (checked every 250 ms; before it is first shown too)
+    if (CollisionWatch(def, now)) return;
     // Its model updated every frame (the hologram asks for 14.99 Hz, the cutscene bodies for 59.94 Hz), so its wheels and
     // steering move every frame: smooth bit kSmoothBoost, checked every 500 ms (the mask may change at run time; back at
     // its own rate without it).
@@ -1599,6 +2473,8 @@ void Tick(const TickIn& in, double now) noexcept {
     DriveOverlap(v, b->f.kind, now);
     DrivePacks(v, b->f, g_copy.shown && !g_ovl.hidden, now);
     DriveLook(def, b->f, now);
+    DriveState(def, b->f, now);
+    DriveCargo(v, b, g_copy.shown && !g_ovl.hidden, now);
     // its pose: the partner vehicle's joints when they are on its skeleton
     // The meters (hidden tests and the trace only; never in play): the joints' turn, the copy's read-back pose, the seat.
     const bool meter = automation::Enabled() || g_trace_until > now;
@@ -1712,6 +2588,22 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
                     static_cast<unsigned>(g_ours.m), g_pack_spawns, g_pack_removes, live, g_pack_faults, static_cast<double>(g_pack_err_max),
                     g_pack_refused[0] ? 1 : 0, g_pack_refused[1] ? 1 : 0, lc);
             }
+            {
+                unsigned cl = 0;
+                for (const CargoCopy& c : g_cargo) cl += c.live ? 1u : 0u;
+                Log("[vehicle] status: wear / lights: ours %s (wear %.3f, %u lights), %u applies on the copy (%u full, %u of changes only; %u variables "
+                    "set, %u failed, %u read-back mismatches); cargo: ours %u piece(s) (%u blocks sent), the partner's %u, %u props live, %u spawned, %u "
+                    "removed, %u colours, %u place faults, read back %.3f m max%s",
+                    g_ours.st_read ? "read" : "-", g_ours.st.wear / 65535.0, static_cast<unsigned>(g_ours.st.nl), g_state_applies, g_state_full,
+                    g_state_applies - g_state_full, g_state_sets, g_state_failed, g_state_mismatch, static_cast<unsigned>(g_ours.nc), g_ours.cargo_blocks, g_copy.cargo_have ? static_cast<unsigned>(g_copy.nc) : 0u, cl,
+                    g_cargo_spawns, g_cargo_removes, g_cargo_looks, g_cargo_faults, static_cast<double>(g_cargo_err_max),
+                    g_cargo_refused ? "; cargo props REFUSED" : "");
+            }
+            Log("[vehicle] status: solid copies: collision switch %s, %u turned off, %u found on again, %u failures, %u checks of packs / cargo / gear "
+                "props, %u spawned 60 m below (the watcher near); refused at some point:%s%s%s%s%s",
+                g_coll_ok ? "ok" : (g_coll_checked ? "FAILED" : "not checked"), g_coll_offs, g_coll_again, g_coll_fails, g_coll_watch_checks, g_spawn_deep,
+                g_refused_until[0] > 0 ? " roadster_hologram" : "", g_refused_until[1] > 0 ? " trike" : "", g_refused_until[2] > 0 ? " truck" : "",
+                g_refused_until[3] > 0 ? " trike_hologram" : "", g_refused_until[4] > 0 ? " truck_hologram" : "");
             std::snprintf(msg, cap, "mode %d; ours %s; copy %s %s; seat error %.1f / %.1f cm", g_mode, g_ours.res ? g_ours.res->key : "-",
                           g_copy.def >= 0 ? kCopies[g_copy.def].key : "-", g_copy.live ? "live" : "none",
                           g_seat_total.n ? g_seat_total.sum / g_seat_total.n * 100 : 0.0, g_seat_total.max * 100);
@@ -1719,16 +2611,19 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
         }
         case 1: {
             const int m = static_cast<int>(v[1]);
-            if (m < 0 || m > 4) return std::snprintf(msg, cap, "mode 0 off, 1 / 3 all, 2 solid only, 4 roadster only"), false;
+            if (m < 0 || m > 4) return std::snprintf(msg, cap, "mode 0 off, 1 / 2 solid, 3 holograms, 4 roadster only"), false;
+            const bool holo_change = (g_mode == 3) != (m == 3);
             g_mode = m;
             if (m == 0) RemoveCopy("vehicle_sync turned off");
+            else if (holo_change) RemoveCopy("vehicle_sync switched between solid copies and holograms");
             std::snprintf(msg, cap, "vehicle sync mode %d", m);
             return true;
         }
         case 2: {
             const int o = static_cast<int>(v[1]);
             if (o < 0 || o > static_cast<int>(kCopyCount))
-                return std::snprintf(msg, cap, "copy 0 auto, 1 roadster hologram, 2 trike, 3 truck, 4 trike hologram, 5 truck hologram"), false;
+                return std::snprintf(msg, cap, "copy 0 auto, 1 roadster hologram, 2 trike, 3 truck, 4 trike hologram, 5 truck hologram"),
+                       false;
             g_override = o;
             std::snprintf(msg, cap, "copy override %s", o ? kCopies[o - 1].key : "off (auto)");
             Log("[vehicle] %s", msg);
@@ -1920,6 +2815,22 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             std::snprintf(msg, cap, "%s (%.2f, %.2f, %.2f): %s", ok ? "placed at" : "not placed at", v[1], v[2], swt.pos.z, why);
             return ok;
         }
+        case 24: {
+            // Hidden tests: v[1] synthetic cargo pieces (0..32) of EDSBaggage2Model v[2] (0 = 2, a medium case) added to the
+            // cargo of the vehicle we report, laid out on its bed / rack (the cargo block and the receiver's props without
+            // the game's cargo menu).
+            if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden tests only"), false;
+            const int n = static_cast<int>(v[1]);
+            const int model = v[2] > 0 ? static_cast<int>(v[2]) : 2;
+            if (n < 0 || n > static_cast<int>(wire::kMaxVehicleCargo) || model >= wire::kVehicleCargoModels)
+                return std::snprintf(msg, cap, "0..32 pieces, model 1..30"), false;
+            g_test_cargo = static_cast<unsigned>(n);
+            g_test_cargo_model = static_cast<std::uint8_t>(model);
+            g_ours.cargo_read = false, g_ours.cargo_next_ms = 0;
+            std::snprintf(msg, cap, "%d synthetic cargo piece(s) of model %d on our vehicle", n, model);
+            Log("[vehicle] test: %s", msg);
+            return true;
+        }
         case 14:
         case 15: {
             // 14 <0/1>: the partner vehicle's look off / on (off: the copy goes and comes back in its own look), 15 <0/1> packs
@@ -1977,6 +2888,38 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
                 look::DumpResourceVariations("the partner's vehicle copy", reinterpret_cast<std::uintptr_t>(c));
             }
             return std::snprintf(msg, cap, "census of %u vehicle(s)", done), true;
+        }
+        case 21: {
+            // 21: the live copy's collision state (and our own vehicle's, as a control), logged
+            const CollState ours = ReadColl(g_ours.e);
+            Entity* c = CopyEntity();
+            const CollState cs = ReadColl(reinterpret_cast<std::uintptr_t>(c));
+            Log("[vehicle] collision state: copy '%s' %s: flag %d, %d physics instances of %d parts%s; our own vehicle %p: flag %d, %d instances of %d parts; "
+                "collision offs %u, found on again %u, failures %u",
+                g_copy.def >= 0 ? kCopies[g_copy.def].key : "-", c ? "live" : "none", cs.on ? 1 : 0, cs.insts, cs.parts, cs.read ? "" : " (unread)",
+                reinterpret_cast<void*>(g_ours.e), ours.on ? 1 : 0, ours.insts, ours.parts, g_coll_offs, g_coll_again, g_coll_fails);
+            return std::snprintf(msg, cap, "copy '%s' collision %d, %d instances", g_copy.def >= 0 ? kCopies[g_copy.def].key : "-", cs.on ? 1 : 0, cs.insts), true;
+        }
+        case 22:
+        case 23: {
+            // Hidden tests: 22 <forward m> [right m] pins the copy at our own vehicle's place plus that offset in its frame
+            // (the watcher then drives into it); 23 unpins it.
+            if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden tests only"), false;
+            if (op == 23) {
+                g_pin.on = false;
+                Log("[vehicle] pin: the copy follows its frames again");
+                return std::snprintf(msg, cap, "unpinned"), true;
+            }
+            WorldTransform vt{};
+            if (!g_ours.e || !ReadXf(g_ours.e, vt)) return std::snprintf(msg, cap, "no vehicle of ours"), false;
+            const float off[3] = {static_cast<float>(v[2]), static_cast<float>(v[1]), 0.0f};
+            const float ident[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+            Compose(vt, off, ident, g_pin.at);
+            g_pin.on = true;
+            Log("[vehicle] pin: the copy pinned %.1f m ahead, %.1f m right of our vehicle %p at (%.2f, %.2f, %.2f), forward (%.2f, %.2f)", v[1], v[2],
+                reinterpret_cast<void*>(g_ours.e), g_pin.at.pos.x, g_pin.at.pos.y, g_pin.at.pos.z, static_cast<double>(g_pin.at.rot.m[1][0]),
+                static_cast<double>(g_pin.at.rot.m[1][1]));
+            return std::snprintf(msg, cap, "pinned at (%.2f, %.2f, %.2f)", g_pin.at.pos.x, g_pin.at.pos.y, g_pin.at.pos.z), true;
         }
         case 5:
             if (!g_ours.e) return std::snprintf(msg, cap, "no vehicle of ours"), false;

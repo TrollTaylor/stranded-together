@@ -41,15 +41,19 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
   shows your character instead of Sam. The equipped boots also show on the other screen.
 - **Experimental:** weapons in hand show on the other screen: the assault rifle, handgun,
   shotgun, multi rod and the grenades (as the game's cutscene models, in their own colours).
-- **Experimental:** vehicles: when your partner drives a roadster, trike (also the
-  Kusanagi) or truck, you see it as a hologram with them seated in it, moving where they
-  drive and parked where they leave it. With `sound_sync=1` you also hear its engine and
-  road noise. `vehicle_sync=2` in session.ini shows solid trikes and trucks in your
-  partner's paint with their packs instead (you can bump into and stand on those).
+- **Experimental:** vehicles: when your partner drives a trike (also the Kusanagi, shown
+  as a plain standard trike) or a truck, you see a solid copy of it in their paint, with
+  its rust (wear), its lamps and battery gauge, its battery / defense packs and the cargo
+  on it, and them seated in it, moving where they drive and parked where they leave it for
+  as long as it stands there on their screen (while they stay within 250 m of it); you walk
+  and drive through it (it never pushes you). A roadster still shows as a hologram (no
+  solid roadster exists yet). With `sound_sync=1` you also hear its engine and road noise.
+  `vehicle_sync=3` in session.ini shows all three as holograms.
 - Not yet: other weapons in hand (bola gun, launchers, PCC ...), the Odradek, the cuff device,
   the weapon crate on the hip, the chiral cylinder, the exoskeleton on non-Sam characters,
   facial animation, the partner's gear sounds and gunshots (footsteps, movement and
-  rifle handling are heard, experimental), a solid roadster, cargo on vehicles, carts,
+  rifle handling are heard, experimental), a solid roadster, the Kusanagi's own look, mud /
+  snow on vehicles, the light the lamps throw, vehicle damage, carts,
   world/BT/mission sync.
 
 ## Download

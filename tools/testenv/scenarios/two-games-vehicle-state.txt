@@ -1,0 +1,124 @@
+# The partner vehicle's wear, lights and cargo between two games (docs/real-partner-body.md section 22.12; STM1 version
+# 3). Both games load the same 100% save. 1. The host drives the nearest truck (gold, fully worn: rust-brown, six
+# defense packs), the guest watches from 10 m: the copy should be rust-brown like the host's own truck (v0.13: clean
+# gold), its lamps as the host's (read back); then six synthetic cases on the host's truck (`vehicle_sync 24 6`, hidden
+# tests: no delivery cargo in the save) show on the copy's roof. 2. The guest drives the nearest standard trike
+# (purple / orange, worn 0.35, two battery packs) with three synthetic cases behind her, the host watches. 3. The host
+# on the Kusanagi trike: its wear and lights are not applied (the trike copy is another model). Screenshot pairs: the
+# driver's own vehicle, the watcher's view of the copy.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-vehicle-state -SeedSaves complete-100
+role host
+graphics low
+timeout 360
+ini partner_body=real
+ini vehicle_sync=1
+ini partner_collision=0
+@host ini my_character=sam
+@guest ini my_character=fragile_suit
+@guest ini self_character=1
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+@guest pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+@guest until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitplayer 60
+waitlog 60 \[link\] CONNECTED
+@guest waitlog 60 \[link\] CONNECTED
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+@guest until 150 3000 \[sync\] partner body: real 'sam' => pad A 120
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+@both action vehicle_sync 3 300000
+# ---- 1. the host drives the gold truck, the guest watches
+action vehicle_sync 8 2.2 2
+@guest action vehicle_sync 8 10 2
+wait 2000
+@guest action vehicle_sync 18 2
+@guest until 25 150 camera aimed #1 => pad none 200 rx=32767
+until 20 4000 \[vehicle\] ours: truck => pad X 150
+waitlog 10 \[vehicle\] our truck's state: wear
+@guest waitlog 20 \[vehicle\] copy 'truck' shown
+wait 3000
+screenshot 01-host-on-truck
+@guest screenshot 01-guest-sees-host-on-truck
+@guest waitlog 10 \[vehicle\] wear / lights of the partner's truck on copy 'truck': wear 1\.000
+@guest waitlog 10 \[vehicle\] wear / lights read back on copy 'truck'
+action vehicle_sync 24 6
+@guest waitlog 15 \[vehicle\] the partner's vehicle carries 6 cargo piece
+# a few metres forward: the copy leaves the guest's own truck (overlap hiding) and stops beside her
+pad none 1400 rt=140 keep
+pad none 0
+wait 2500
+@guest waitlog 15 \[vehicle\] cargo prop 5 '.*' placed at .*2\.750
+@guest action vehicle_sync 18 5
+@guest until 25 150 camera aimed #2 => pad none 200 rx=32767
+@guest screenshot 02-guest-sees-host-truck-cargo
+pad none 700 rx=32767
+wait 600
+screenshot 02-host-truck-side
+pad none 2500 rt=200 keep
+@guest screenshot 03-guest-sees-host-driving-a
+screenshot 03-host-driving-a
+pad none 1200 rt=200 keep
+@guest screenshot 03-guest-sees-host-driving-b
+pad none 0
+wait 2000
+@guest action vehicle_sync 0
+action vehicle_sync 24 0
+pad X 150
+wait 4000
+@guest screenshot 04-guest-sees-host-off
+@both action vehicle_sync 0
+# ---- 2. the guest drives the standard trike with three cases, the host watches
+@guest action vehicle_sync 8 1.4 3
+action vehicle_sync 8 9 3
+wait 2000
+action vehicle_sync 18 3
+until 25 150 camera aimed #1 => pad none 200 rx=32767
+@guest until 20 4000 \[vehicle\] ours: trike (parked|getting|riding) => pad X 150
+waitlog 20 \[vehicle\] copy 'trike' shown
+@guest action vehicle_sync 24 3 1
+waitlog 15 \[vehicle\] wear / lights of the partner's trike on copy 'trike'
+waitlog 15 \[vehicle\] cargo prop 2 'case_s': colour
+wait 2000
+@guest screenshot 05-guest-on-trike
+screenshot 05-host-sees-guest-on-trike
+@guest pad none 1800 lt=255 keep
+screenshot 06-host-sees-guest-reversing
+@guest pad none 2200 rt=200 lx=-20000 keep
+screenshot 06-host-sees-guest-driving-a
+@guest screenshot 06-guest-driving-a
+@guest pad none 0
+wait 1500
+action vehicle_sync 18 5
+until 25 150 camera aimed #2 => pad none 200 rx=32767
+?waitlog 10 \[vehicle\] cargo prop 2 'case_s' placed
+screenshot 07-host-sees-guest-stopped
+@guest pad none 700 rx=32767
+wait 600
+@guest screenshot 07-guest-stopped-side
+action vehicle_sync 0
+@guest action vehicle_sync 24 0
+@guest pad X 150
+wait 3500
+@both action vehicle_sync 0
+# ---- 3. the host on the Kusanagi trike: its wear and lights are not applied to the trike copy
+action vehicle_sync 8 1.2 4
+@guest action vehicle_sync 8 9 4
+wait 2000
+until 20 4000 \[vehicle\] ours: trike_kusanagi => pad X 150
+@guest ?waitlog 15 \[vehicle\] the partner's trike_kusanagi: its wear and lights are not applied
+wait 2500
+@guest screenshot 08-guest-sees-host-on-kusanagi
+pad X 150
+wait 3000
+@both action vehicle_sync 0
+@both action real_stats
+@both action log_status
+@guest quit
+quit

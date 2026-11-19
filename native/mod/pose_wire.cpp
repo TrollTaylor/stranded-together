@@ -1093,7 +1093,51 @@ bool VehicleOk(const VehicleFrame& f) {
         for (float v : f.pack_t[i])
             if (!std::isfinite(v) || std::fabs(v) > kMaxVehiclePackM) return false;
     }
-    return true;
+    // the state block: wear and lights
+    if (f.flags & kVehState) {
+        if (f.nl > kMaxVehicleLights) return false;
+        if (f.wear != 0 && f.wear_parts[0] == 0 && f.wear_parts[1] == 0) return false;
+        for (unsigned i = 0; i < f.nl; ++i) {
+            const VehicleLight& l = f.light[i];
+            if (l.part >= kMaxVehicleWearParts) return false;
+            for (unsigned k = 0; k < i; ++k)
+                if (f.light[k].part == l.part && f.light[k].kind == l.kind) return false;
+            for (float v : l.v)
+                if (!std::isfinite(v) || v < 0.0f) return false;
+            if (l.kind == static_cast<std::uint8_t>(VehicleLightKind::intensity)) {
+                if (l.v[0] > kMaxVehicleLightIntensity || l.v[1] != 0.0f || l.v[2] != 0.0f) return false;
+            } else if (l.kind == static_cast<std::uint8_t>(VehicleLightKind::colour)) {
+                for (float v : l.v)
+                    if (v > kMaxVehicleLightColour) return false;
+            } else {
+                return false;
+            }
+        }
+    } else if (f.nl != 0 || f.wear != 0 || f.wear_parts[0] != 0 || f.wear_parts[1] != 0) {
+        return false;
+    }
+    // the cargo block
+    if (f.flags & kVehCargo) {
+        if (f.nc > kMaxVehicleCargo) return false;
+        for (unsigned i = 0; i < f.nc; ++i) {
+            const VehicleCargo& c = f.cargo[i];
+            if (c.model >= kVehicleCargoModels || (c.variation >= kVehicleCargoVariations && c.variation != kGearNone) || !FiniteQ(c.q)) return false;
+            for (float v : c.t)
+                if (!std::isfinite(v) || std::fabs(v) > kMaxVehicleCargoM) return false;
+        }
+    } else if (f.nc != 0 || f.cargo_dropped != 0) {
+        return false;
+    }
+    const std::size_t bytes = VehicleFrameBytes(f);
+    return bytes != 0 && bytes <= kMaxVehicleFrameSize;
+}
+
+void PutHalf3(std::uint8_t*& p, const float (&v)[3]) {
+    for (float x : v) {
+        const std::uint16_t h = FloatToHalf(x);
+        *p++ = static_cast<std::uint8_t>(h & 0xFF);
+        *p++ = static_cast<std::uint8_t>(h >> 8);
+    }
 }
 
 void PutQ6(std::uint8_t*& p, const Quat& q) {
@@ -1107,6 +1151,61 @@ Quat GetQ6(const std::uint8_t*& p) {
 }
 }  // namespace
 
+std::uint16_t FloatToHalf(float v) noexcept {
+    std::uint32_t b = 0;
+    std::memcpy(&b, &v, 4);
+    const std::uint32_t sign = (b >> 16) & 0x8000u;
+    const std::uint32_t exp = (b >> 23) & 0xFFu;
+    std::uint32_t man = b & 0x7FFFFFu;
+    if (exp == 0xFF) return static_cast<std::uint16_t>(sign | 0x7C00u | (man ? 0x200u : 0u));  // inf / NaN
+    const int e = static_cast<int>(exp) - 127 + 15;
+    if (e >= 31) return static_cast<std::uint16_t>(sign | 0x7C00u);  // beyond the half range: infinity
+    if (e <= 0) {
+        if (e < -10) return static_cast<std::uint16_t>(sign);  // too small: zero
+        man |= 0x800000u;
+        const unsigned shift = static_cast<unsigned>(14 - e);
+        std::uint32_t h = man >> shift;
+        const std::uint32_t rest = man & ((1u << shift) - 1u), half = 1u << (shift - 1u);
+        if (rest > half || (rest == half && (h & 1u))) ++h;
+        return static_cast<std::uint16_t>(sign | h);
+    }
+    std::uint32_t h = (static_cast<std::uint32_t>(e) << 10) | (man >> 13);
+    const std::uint32_t rest = man & 0x1FFFu;
+    if (rest > 0x1000u || (rest == 0x1000u && (h & 1u))) ++h;  // may carry into the exponent (up to infinity): correct
+    return static_cast<std::uint16_t>(sign | h);
+}
+
+float HalfToFloat(std::uint16_t h) noexcept {
+    const std::uint32_t sign = (static_cast<std::uint32_t>(h) & 0x8000u) << 16;
+    const std::uint32_t exp = (h >> 10) & 0x1Fu;
+    std::uint32_t man = h & 0x3FFu;
+    std::uint32_t b = 0;
+    if (exp == 0) {
+        if (man == 0) {
+            b = sign;
+        } else {
+            int e = -1;
+            do {
+                ++e;
+                man <<= 1;
+            } while ((man & 0x400u) == 0);
+            b = sign | (static_cast<std::uint32_t>(127 - 15 - e) << 23) | ((man & 0x3FFu) << 13);
+        }
+    } else if (exp == 31) {
+        b = sign | 0x7F800000u | (man << 13);
+    } else {
+        b = sign | ((exp - 15 + 127) << 23) | (man << 13);
+    }
+    float v = 0;
+    std::memcpy(&v, &b, 4);
+    return v;
+}
+
+std::size_t VehicleFrameBytes(const VehicleFrame& f) noexcept {
+    if (f.n > kMaxVehicleJoints || f.m > kMaxVehiclePacks || f.nl > kMaxVehicleLights || f.nc > kMaxVehicleCargo) return 0;
+    return VehicleFrameSize(f.n, f.m, (f.flags & kVehState) ? f.nl : -1, (f.flags & kVehCargo) ? f.nc : -1);
+}
+
 const VehicleResource* VehicleResources() noexcept { return kVehicleRes; }
 
 const VehicleResource* FindVehicleResource(const std::uint8_t (&guid)[16]) noexcept {
@@ -1119,7 +1218,7 @@ const VehicleResource* FindVehicleResource(const std::uint8_t (&guid)[16]) noexc
 
 std::size_t EncodeVehicle(const VehicleFrame& f, std::uint8_t* out, std::size_t cap) noexcept {
     if (!out || !VehicleOk(f)) return 0;
-    const std::size_t size = VehicleFrameSize(f.n, f.m);
+    const std::size_t size = VehicleFrameBytes(f);
     if (cap < size) return 0;
     std::uint8_t* p = out;
     std::memcpy(p, kVehicleMagic, 4);
@@ -1152,6 +1251,28 @@ std::size_t EncodeVehicle(const VehicleFrame& f, std::uint8_t* out, std::size_t 
         for (float v : f.pack_t[i]) Put(p, static_cast<std::int16_t>(std::lround(v * 1000.0f)));
         PutQ6(p, f.pack_q[i]);
     }
+    if (f.flags & kVehState) {
+        Put(p, f.nl);
+        Put(p, std::uint8_t{0});
+        Put(p, f.wear);
+        Put(p, f.wear_parts[0]);
+        Put(p, f.wear_parts[1]);
+        for (unsigned i = 0; i < f.nl; ++i) {
+            Put(p, f.light[i].part);
+            Put(p, f.light[i].kind);
+            PutHalf3(p, f.light[i].v);
+        }
+    }
+    if (f.flags & kVehCargo) {
+        Put(p, f.nc);
+        Put(p, f.cargo_dropped);
+        for (unsigned i = 0; i < f.nc; ++i) {
+            Put(p, f.cargo[i].model);
+            Put(p, f.cargo[i].variation);
+            for (float v : f.cargo[i].t) Put(p, static_cast<std::int16_t>(std::lround(v * 1000.0f)));
+            PutQ6(p, f.cargo[i].q);
+        }
+    }
     return static_cast<std::size_t>(p - out);
 }
 
@@ -1178,7 +1299,10 @@ bool DecodeVehicle(const std::uint8_t* data, std::size_t size, VehicleFrame& out
     f.layout = Get<std::uint32_t>(p);
     f.n = Get<std::uint8_t>(p);
     f.m = Get<std::uint8_t>(p);
-    if (f.n > kMaxVehicleJoints || f.m > kMaxVehiclePacks || size != VehicleFrameSize(f.n, f.m)) return false;
+    if (f.n > kMaxVehicleJoints || f.m > kMaxVehiclePacks || size > kMaxVehicleFrameSize) return false;
+    const std::uint8_t* const end = data + size;
+    std::size_t need = VehicleFrameSize(f.n, f.m);
+    if (size < need) return false;
     for (unsigned j = 0; j < f.n; ++j) {
         f.q[j] = GetQ6(p);
         for (float& v : f.t[j]) v = static_cast<float>(Get<std::int16_t>(p)) / 1000.0f;
@@ -1189,7 +1313,36 @@ bool DecodeVehicle(const std::uint8_t* data, std::size_t size, VehicleFrame& out
         for (float& v : f.pack_t[i]) v = static_cast<float>(Get<std::int16_t>(p)) / 1000.0f;
         f.pack_q[i] = GetQ6(p);
     }
-    if (!VehicleOk(f)) return false;
+    if (f.flags & kVehState) {
+        if (static_cast<std::size_t>(end - p) < kVehicleStateHeaderSize) return false;
+        f.nl = Get<std::uint8_t>(p);
+        if (Get<std::uint8_t>(p) != 0 || f.nl > kMaxVehicleLights) return false;
+        need += kVehicleStateHeaderSize + f.nl * kVehicleLightSize;
+        if (size < need) return false;
+        f.wear = Get<std::uint16_t>(p);
+        f.wear_parts[0] = Get<std::uint64_t>(p);
+        f.wear_parts[1] = Get<std::uint64_t>(p);
+        for (unsigned i = 0; i < f.nl; ++i) {
+            f.light[i].part = Get<std::uint8_t>(p);
+            f.light[i].kind = Get<std::uint8_t>(p);
+            for (float& v : f.light[i].v) v = HalfToFloat(Get<std::uint16_t>(p));
+        }
+    }
+    if (f.flags & kVehCargo) {
+        if (static_cast<std::size_t>(end - p) < kVehicleCargoHeaderSize) return false;
+        f.nc = Get<std::uint8_t>(p);
+        f.cargo_dropped = Get<std::uint8_t>(p);
+        if (f.nc > kMaxVehicleCargo) return false;
+        need += kVehicleCargoHeaderSize + f.nc * kVehicleCargoSize;
+        if (size < need) return false;
+        for (unsigned i = 0; i < f.nc; ++i) {
+            f.cargo[i].model = Get<std::uint8_t>(p);
+            f.cargo[i].variation = Get<std::uint8_t>(p);
+            for (float& v : f.cargo[i].t) v = static_cast<float>(Get<std::int16_t>(p)) / 1000.0f;
+            f.cargo[i].q = GetQ6(p);
+        }
+    }
+    if (p != end || size != need || !VehicleOk(f)) return false;
     out = f;
     return true;
 }

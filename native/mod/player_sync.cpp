@@ -1331,6 +1331,7 @@ void Tick() noexcept {
     vin.local_ok = g_local_valid && (g_local_active || (g_local_asleep_since_ms > 0 && now - g_local_asleep_since_ms < 1000));
     vin.partner_present = BodyPresent();
     vin.pose_age_ms = g_last_remote_ms > 0 ? now - g_last_remote_ms : 1e9;
+    vin.local = g_local;
     vsync::Tick(vin, now);
     vsync::SenderTick(g_local, now);
 

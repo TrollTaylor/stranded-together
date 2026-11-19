@@ -69,6 +69,13 @@ void SetPartnerPose(const wire::GearPose& p) noexcept;
 // The per-frame sync faulted: the detour stops placing props (they stay where they are).
 void EmergencyStop() noexcept;
 
+// Cargo on the partner's vehicle (vsync, docs/real-partner-body.md section 22.12) uses the gear's own tables:
+// the EDSBaggage2Model a carried DSBaggage2 is drawn as (the same rules as the cargo on the back: delivery case types
+// only, the model from its list item; kGearNone: not drawn), fault-free reads; and the cutscene case prop drawn for a
+// model (false: none).
+std::uint8_t CargoModelOf(std::uintptr_t bag) noexcept;
+bool CargoProp(std::uint8_t model, const char** key, const char** path, const char** guid) noexcept;
+
 // Debug (docs/debug-actions.md "Gear"): 0 log (our gear in full, the props), 1 <0/1> partner props
 // off/on, 2 <0/1> self-view props off/on, 3 <n> hidden tests only: n synthetic delivery cases on our
 // backpack, 4 <0/1> debug: our own gear on the debug body (real_spawn) on/off, 5 <n> / 6 hidden tests:

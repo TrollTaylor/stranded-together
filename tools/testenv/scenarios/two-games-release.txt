@@ -10,7 +10,8 @@
 #    after mute` meters on her game; the host's partner voice / sound counts (nothing of hers played as voice).
 # 3. Vehicle: both beside their own parked roadster (the 100% save's garage); the host gets on with X, drives (hard left,
 #    straight, left), stops and gets off; the guest watches from about 5 m to its left and sees the copy (the roadster's
-#    hologram) with Sam seated, moving, parked; then the host walks away beyond 30 m and the copy goes. Her camera still
+#    hologram) with Sam seated, moving, parked; then the host walks away (since docs/real-partner-body.md 22.13 the parked
+#    copy stays while he is within 250 m, as his roadster stays on his screen). Her camera still
 #    faces the host's start from section 1 (the mount, `06`); it is then turned back round (the right stick, about 180
 #    degrees) to face where he drives (`07`-`10`): run 20261118-130121 kept it and the copy left her view mid-drive.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-release -SeedSaves complete-100 -SettingsCfg <1080p cfg>
@@ -163,9 +164,9 @@ screenshot 09-host-off
 @guest screenshot 09-guest-sees-host-off
 @both action vehicle_sync 0
 action vehicle_sync 9 -1100 270
-@guest waitlog 20 \[vehicle\] the partner's vehicle copy 'roadster_hologram' removed
-wait 1500
+wait 3000
 @guest screenshot 10-guest-after-host-left
+@both action vehicle_sync 0
 log final: end
 @guest log final: end
 @both action vehicle_sync 0

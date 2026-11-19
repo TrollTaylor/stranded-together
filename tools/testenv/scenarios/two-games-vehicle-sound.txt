@@ -119,7 +119,7 @@ log vsound: 2 truck
 action vehicle_sync 8 10 2
 wait 2000
 @guest until 20 4000 \[vehicle\] ours: truck => pad X 150
-waitlog 20 \[vehicle\] copy 'truck_hologram' shown
+waitlog 20 \[vehicle\] copy 'truck' shown
 wait 3000
 action sound_sync 3 9000
 @guest pad none 2500 rt=200 keep

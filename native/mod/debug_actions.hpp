@@ -67,7 +67,8 @@ enum class Action : std::uint8_t {
     sound_sync,           // v[0] = 0 log, 1 verbose v[1] 0/1, 2 stop the partner's sounds (session.ini sound_sync=1; docs/audio-research.md section 16)
     vehicle_sync,         // v[0] = 0 log, 1 mode v[1], 2 copy override v[1], 3 trace v[1] ms, 4 offset right v[1] / forward v[2] cm, 5 describe,
                           //   6 offset up v[1] cm, 7 list, 8 / 12 / 9 / 16 / 17 placements (hidden tests), 10 hold sends v[1] ms,
-                          //   11 overlap hiding v[1], 13 meters (session.ini vehicle_sync; docs/real-partner-body.md section 22)
+                          //   11 overlap hiding v[1], 13 meters, 21 the copy's collision, 22 / 23 pin the copy (hidden tests)
+                          //   (session.ini vehicle_sync; docs/real-partner-body.md section 22)
     count
 
 };

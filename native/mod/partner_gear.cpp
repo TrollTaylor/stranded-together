@@ -15,6 +15,7 @@
 #include "partner_outfit.hpp"
 #include "partner_source.hpp"
 #include "real_body.hpp"
+#include "vehicle_sync.hpp"
 
 namespace st::gear {
 namespace {
@@ -572,6 +573,8 @@ struct Prop {
     double live_ms = 0;       // when it became live (looks wait 0.5 s)
     std::uint32_t look_hash = 0;  // the look applied (wire::GearLookHash; 0 none)
     double look_check_ms = 0;     // next check that it still shows it
+    double coll_next_ms = 0;      // its collision (off since it was realized) checked again every second
+    unsigned coll_again = 0;      // times it was found on again
 };
 struct PropSet {
     const char* tag;
@@ -2623,6 +2626,19 @@ void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_acti
                     }
                     partner::SetVisible(p.sp.e, false);
                     partner::WakeIfAsleep(p.sp.e);
+                    // Its collision off on this one prop (docs/real-partner-body.md section 22.13): the cutscene case props
+                    // carry a physics instance on a model part (case_s, case_m: `physics instances 1 -> 0`), and a prop set
+                    // on a moving body every tick must never push or block the local player. Not off: refused.
+                    if (!vsync::CopyCollisionOff(p.sp.e, label)) {
+                        Log("[%s] prop %u '%s' refused for this session: its collision could not be turned off", s.tag, i, label);
+                        RemoveProp(s, i, "collision not off");
+                        s.props[i].def = want;
+                        s.props[i].failed = true;
+                        s.refused[want] = true;
+                        ++s.failed;
+                        break;
+                    }
+                    p.coll_next_ms = now + 1000;
                     partner::ReadVtable(p.sp.e, &p.vt);
                     partner::ReadGuid(p.sp.e, &p.guid);
                     p.live = true;
@@ -2654,6 +2670,23 @@ void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_acti
             ++s.failed;
             if (s.failed <= 30) Log("[%s] prop %u '%s' was destroyed by the game: again in %.0f s", s.tag, i, label, wire::GearRetryDelayMs(fails) / 1000);
             changed = true;
+        }
+        // its collision stays off (every second; a look apply rebuilds its materials): found on again more than 3 times,
+        // or not off: refused for the session (section 22.13)
+        if (p.live && now >= p.coll_next_ms) {
+            p.coll_next_ms = now + 1000;
+            const int k = vsync::CopyCollisionKeepOff(p.sp.e, label);
+            if (k == 0) ++p.coll_again;
+            if (k < 0 || p.coll_again > 3) {
+                Log("[%s] prop %u '%s' refused for this session: its collision %s", s.tag, i, label, k < 0 ? "could not be kept off" : "kept coming back");
+                Unpublish(s);
+                RemoveProp(s, i, "collision not off");
+                s.props[i].def = want;
+                s.props[i].failed = true;
+                s.refused[want] = true;
+                ++s.failed;
+                changed = true;
+            }
         }
     }
     if (&s == &g_sets[0]) {
@@ -3218,6 +3251,22 @@ void EmergencyStop() noexcept {
     const std::uint32_t before = g_hg.restores;
     HeadgearTick(static_cast<double>(GetTickCount64()), true);
     if (g_hg.restores != before) Log("[headgear] emergency stop: %u accessory mover(s) put back", g_hg.restores - before);
+}
+
+std::uint8_t CargoModelOf(std::uintptr_t bag) noexcept {
+    if (!bag || std::strcmp(TypeOf(bag), "DSBaggage2") != 0) return wire::kGearNone;
+    const std::uintptr_t li = Q(bag + kBagListItem);
+    if (!li || std::strcmp(TypeOf(li), "DSGameBaggageListItem") != 0) return wire::kGearNone;
+    std::uint8_t lf[5] = {};
+    if (!mem::Read(li + kListAttribute, lf, sizeof(lf))) return wire::kGearNone;
+    return Drawn(lf[1], 0) ? ModelFromListItem(li) : wire::kGearNone;
+}
+
+bool CargoProp(std::uint8_t model, const char** key, const char** path, const char** guid) noexcept {
+    if (model >= 31 || kModelMap[model].prop < 0 || !key || !path || !guid) return false;
+    const PropDef& d = kProps[kModelMap[model].prop];
+    *key = d.key, *path = d.path, *guid = d.guid;
+    return true;
 }
 
 bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept {

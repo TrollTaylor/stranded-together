@@ -549,19 +549,44 @@ bool DecodeSound(const std::uint8_t* data, std::size_t size, SoundFrame& out) no
 //   [flags & kVehJoints] n x { 6-byte rotation | i16 x, y, z (1 mm) }                   (12 bytes each)
 //   [flags & kVehPacks]  m x { u8 pack (1 battery, 2 defense) | u8 0 | i16 x, y, z (1 mm) | 6-byte rotation }
 //                                                                                        (14 bytes each)
+//   [flags & kVehState]  u8 nl | u8 0 | u16 wear (0..65535 = 0..1) | u64 wear parts[2] |
+//                        nl x { u8 part | u8 light kind (1 intensity, 2 colour) | f16 v[3] }   (20 + 8 nl bytes)
+//   [flags & kVehCargo]  u8 nc | u8 dropped | nc x { u8 model | u8 variation | i16 x, y, z (1 mm) | 6-byte rotation }
+//                                                                                        (2 + 14 nc bytes)
 // Rotations are STJ1's smallest-three. The seat is the sender's Sam in the vehicle's frame (zero when not seated).
 // Version 2 (after v0.12): the packs block (the battery / defense packs the game shows on the vehicle, its child
 // entities, each in the vehicle's frame); the byte after n is their count m (it was 0). Version 1 frames are refused
 // (mixed builds never meet: the HELLO build check).
+// Version 3 (after v0.13, docs/real-partner-body.md section 22.12): the state block (in every frame: the vehicle's wear,
+// the timefall corrosion shader variable 0x32D5AE44, one value on the ArtParts the bits name; and its lights, the
+// emissive intensity 0x2B11751D and the battery gauge's colour 0x0978E0A1 per ArtParts index: head / tail / brake
+// lamps, indicators, the battery gauge, burst) and the cargo block (the pieces in its DSBaggage2 carrier, each in the
+// vehicle's frame; sent when they change and every second, absent otherwise: the receiver keeps the last list; a block
+// with nc 0 means no cargo). A frame is never larger than kMaxVehicleFrameSize. Version 2 frames are refused.
 inline constexpr std::uint8_t kVehicleMagic[4] = {'S', 'T', 'M', '1'};
-inline constexpr std::uint8_t kVehicleVersion = 2;
+inline constexpr std::uint8_t kVehicleVersion = 3;
 inline constexpr std::size_t kVehicleHeaderSize = 84;
 inline constexpr unsigned kMaxVehicleJoints = 64;
 inline constexpr unsigned kMaxVehiclePacks = 8;
 inline constexpr std::size_t kVehiclePackSize = 14;
 inline constexpr float kMaxVehiclePackM = 8.0f;  // |pack offset| per axis
-inline constexpr std::size_t VehicleFrameSize(unsigned n, unsigned m = 0) { return kVehicleHeaderSize + n * 12u + m * kVehiclePackSize; }
-inline constexpr std::size_t kMaxVehicleFrameSize = VehicleFrameSize(kMaxVehicleJoints, kMaxVehiclePacks);  // 964
+inline constexpr std::size_t kVehicleStateHeaderSize = 20, kVehicleLightSize = 8;
+inline constexpr unsigned kMaxVehicleLights = 24;
+inline constexpr unsigned kMaxVehicleWearParts = 128;  // ArtParts indices the wear bits can name
+inline constexpr std::size_t kVehicleCargoHeaderSize = 2, kVehicleCargoSize = 14;
+inline constexpr unsigned kMaxVehicleCargo = 32;
+inline constexpr float kMaxVehicleCargoM = 8.0f;          // |piece offset| per axis, in the vehicle's frame
+inline constexpr std::uint8_t kVehicleCargoModels = 31;   // EDSBaggage2Model 0..30 (the baggage config's ModelResources)
+inline constexpr std::uint8_t kVehicleCargoVariations = 128;  // the baggage config's colour variation index, or kGearNone
+inline constexpr float kMaxVehicleLightIntensity = 4096.0f;  // 0x2B11751D (the census: 0, 20, 50)
+inline constexpr float kMaxVehicleLightColour = 64.0f;       // 0x0978E0A1 per channel (the census: 0.01 .. 1.0)
+// The total frame (the link body less one message header and some room); the encoder never writes more.
+inline constexpr std::size_t kMaxVehicleFrameSize = 1140;
+inline constexpr std::size_t VehicleFrameSize(unsigned n, unsigned m = 0, int nl = -1, int nc = -1) {
+    return kVehicleHeaderSize + n * 12u + m * kVehiclePackSize +
+           (nl >= 0 ? kVehicleStateHeaderSize + static_cast<unsigned>(nl) * kVehicleLightSize : 0) +
+           (nc >= 0 ? kVehicleCargoHeaderSize + static_cast<unsigned>(nc) * kVehicleCargoSize : 0);
+}
 inline constexpr float kMaxVehicleSeatM = 4.0f;    // |seat offset| per axis
 inline constexpr float kMaxVehicleJointM = 32.0f;  // |joint translation| per axis
 inline constexpr std::uint8_t kVehicleStateMax = 15;
@@ -571,8 +596,29 @@ enum VehicleFlags : std::uint8_t {
     kVehSeated = 1u << 0,  // the sender's Sam has this vehicle as its parent entity (the seat is meaningful)
     kVehJoints = 1u << 1,  // the joint block follows (n > 0)
     kVehPacks = 1u << 2,   // version 2: the packs block follows the joints (m > 0)
-    kVehKnown = kVehSeated | kVehJoints | kVehPacks,
+    kVehState = 1u << 3,   // version 3: the state block (wear, lights) follows the packs
+    kVehCargo = 1u << 4,   // version 3: the cargo block follows the state block (nc may be 0: no cargo)
+    kVehKnown = kVehSeated | kVehJoints | kVehPacks | kVehState | kVehCargo,
 };
+// The shader variables the state block carries (gear_look reads and writes them; their hashes are the game's).
+inline constexpr std::uint32_t kVehWearHash = 0x32D5AE44u;     // timefall corrosion, one value per vehicle (0..1)
+inline constexpr std::uint32_t kVehLightHash = 0x2B11751Du;    // emissive intensity per ArtParts index
+inline constexpr std::uint32_t kVehGaugeHash = 0x0978E0A1u;    // the battery gauge's emissive colour (rgb)
+enum class VehicleLightKind : std::uint8_t { intensity = 1, colour = 2 };
+struct VehicleLight {
+    std::uint8_t part = 0;  // ArtParts index (< kMaxVehicleWearParts)
+    std::uint8_t kind = 1;  // VehicleLightKind
+    float v[3] = {};        // intensity: v[0] (v[1], v[2] 0); colour: rgb
+};
+struct VehicleCargo {
+    std::uint8_t model = 0;               // EDSBaggage2Model (< kVehicleCargoModels)
+    std::uint8_t variation = kGearNone;   // the baggage config's colour variation index, kGearNone = the prop's own
+    float t[3] = {};                      // in the vehicle's frame (m)
+    Quat q;
+};
+// IEEE half floats (the state block's values): round to nearest; values beyond the half range become infinity.
+std::uint16_t FloatToHalf(float v) noexcept;
+float HalfToFloat(std::uint16_t h) noexcept;
 // The packs the game shows on a vehicle (child entities: ds/entities/vehicle/pe_ds_vehicle_battery_pack and
 // pe_ds_vehicle_defense_pack); 0 is not a pack.
 enum class VehiclePack : std::uint8_t { none = 0, battery = 1, defense = 2 };
@@ -597,7 +643,17 @@ struct VehicleFrame {
     std::uint8_t pack[kMaxVehiclePacks] = {};  // VehiclePack 1..2
     float pack_t[kMaxVehiclePacks][3] = {};    // in the vehicle's frame (m)
     Quat pack_q[kMaxVehiclePacks];
+    // kVehState (version 3): wear on the parts whose bits are set (no bits: wear 0), the lights
+    std::uint16_t wear = 0;
+    std::uint64_t wear_parts[2] = {};
+    std::uint8_t nl = 0;
+    VehicleLight light[kMaxVehicleLights];
+    // kVehCargo (version 3): the pieces in the vehicle's carrier (nc 0: none), `dropped` the ones the sender left out
+    std::uint8_t nc = 0, cargo_dropped = 0;
+    VehicleCargo cargo[kMaxVehicleCargo];
 };
+// The frame's encoded size (0 when its counts are over the caps).
+std::size_t VehicleFrameBytes(const VehicleFrame& f) noexcept;
 // The drivable vehicle resources a frame may name (decoded from the game data; docs/real-partner-body.md section 22).
 struct VehicleResource {
     const char* key;
@@ -612,12 +668,17 @@ const VehicleResource* VehicleResources() noexcept;  // kVehicleResourceCount en
 const VehicleResource* FindVehicleResource(const std::uint8_t (&guid)[16]) noexcept;
 // Returns the size, 0 when the frame cannot be encoded (any check of DecodeVehicle fails or cap is too small).
 std::size_t EncodeVehicle(const VehicleFrame& f, std::uint8_t* out, std::size_t cap) noexcept;
-// Rejects bad magic, another version, a size other than VehicleFrameSize(n, m), a kind outside 1..3, a state above 15,
+// Rejects bad magic, another version, a size other than the blocks' (VehicleFrameBytes) or over kMaxVehicleFrameSize,
+// a kind outside 1..3, a state above 15,
 // unknown flag bits, joints flag without joints (or joints without the flag), n over the cap, the packs flag without
 // packs (or packs without it), m over the cap, a pack kind outside 1..2, a pack's reserved byte that is not 0, a pack
 // offset beyond +-8 m, a GUID that is not a drivable resource of that kind (the allow-list above), NaN / inf anywhere, |coord| > 1e7,
 // |speed| > 1000, a seat offset beyond +-4 m (or one at all when not seated), a joint translation beyond +-32 m, and a
-// joint block whose layout hash is 0.
+// joint block whose layout hash is 0. Version 3: a state block (or state values without its flag) with nl over 24, a
+// reserved byte not 0, wear without wear bits, a light on part 128 or more, a light kind outside 1..2, a light (part,
+// kind) twice, an intensity outside 0..4096 or with v[1] / v[2] not 0, a colour channel outside 0..64, a non-finite
+// half; a cargo block (or pieces without its flag) with nc over 32, a model of 31 or more, a variation of 128 or more
+// (but 0xFF), an offset beyond +-8 m, a non-finite rotation.
 bool DecodeVehicle(const std::uint8_t* data, std::size_t size, VehicleFrame& out) noexcept;
 
 }  // namespace st::wire

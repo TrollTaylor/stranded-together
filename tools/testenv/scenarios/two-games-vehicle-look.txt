@@ -4,14 +4,14 @@
 # gold with the six packs. 2. The guest drives the nearest standard trike (purple / orange, two battery packs), the
 # host watches. 3. The host gets on the Kusanagi trike: its look is not applied (the trike copy is another model).
 # Screenshot pairs: the driver's own vehicle, the watcher's view of the copy (after a stop the watcher turns its camera
-# onto the copy: `vehicle_sync 18 5`). Looks and packs are on the solid copies only, shown with vehicle_sync=2 since the
-# review (they have the drivable art's collision; the default shows the holograms).
+# onto the copy: `vehicle_sync 18 5`). Looks and packs are on the solid copies only: the default since section 22.11 (their
+# collision turned off on each copy; v0.13 showed them only with vehicle_sync=2).
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-vehicle-look -SeedSaves complete-100
 role host
 graphics low
 timeout 360
 ini partner_body=real
-ini vehicle_sync=2
+ini vehicle_sync=1
 ini partner_collision=0
 @host ini my_character=sam
 @guest ini my_character=fragile_suit

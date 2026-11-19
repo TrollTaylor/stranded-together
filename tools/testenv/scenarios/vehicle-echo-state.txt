@@ -1,0 +1,112 @@
+# Vehicles: the partner vehicle's wear, lights and cargo on its solid copy (docs/real-partner-body.md section 22.12), in
+# one game: the echo partner replays our own Sam 0.5 s later, 4 m beside us, and our vehicle (STM1 version 3 with its
+# state and cargo blocks) goes through the encoder / decoder to it. The 100% save's nearest truck is gold and fully worn
+# (wear 1.0: rust-brown), the nearest trike purple / orange (wear about 0.35). For each: seated (its lamps on), a side
+# view of our vehicle and the copy; the looks off (`vehicle_sync 14 0`: the copy in its own look, the control) and on
+# again; synthetic cargo on our vehicle (`vehicle_sync 24 6`: six cases on its bed) and the copy's case props; a short
+# drive. The Kusanagi: its wear and lights are not applied (the trike copy is another model).
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario vehicle-echo-state -SeedSaves complete-100
+role echo
+timeout 360
+ini partner_body=real
+ini echo_offset_m=4
+ini echo_delay_s=0.5
+ini partner_collision=0
+ini vehicle_sync=1
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[sync\] partner body: real
+wait 1500
+action vehicle_sync 3 300000
+# ---- the truck (gold, worn rust-brown, six defense packs)
+action vehicle_sync 8 2.2 2
+wait 2500
+until 20 4000 \[vehicle\] ours: truck => pad X 150
+waitlog 10 \[vehicle\] our truck's state: wear
+?waitlog 10 \[vehicle\] copy 'truck' (shown|NOT shown)
+waitlog 10 \[vehicle\] wear / lights of the partner's truck on copy 'truck'
+waitlog 10 \[vehicle\] wear / lights read back on copy 'truck'
+wait 3500
+pad none 700 rx=32767
+wait 600
+screenshot 01-truck-state-on
+action vehicle_sync 14 0
+?waitlog 10 \[vehicle\] copy 'truck' shown
+wait 3000
+screenshot 02-truck-look-off
+action vehicle_sync 14 1
+waitlog 10 \[vehicle\] wear / lights of the partner's truck on copy 'truck'
+wait 3500
+screenshot 03-truck-state-on-again
+action vehicle_sync 24 6
+waitlog 10 \[vehicle\] the partner's vehicle carries 6 cargo piece
+?waitlog 15 \[vehicle\] cargo prop 5 '.*' placed
+wait 2000
+screenshot 04-truck-cargo
+action vehicle_sync 19 2
+action vehicle_sync 0
+pad none 2500 rt=200 keep
+screenshot 05-truck-driving-a
+pad none 1500 rt=200 lx=-16000 keep
+screenshot 05-truck-driving-b
+pad none 0
+wait 2500
+screenshot 06-truck-stopped
+action vehicle_sync 24 0
+waitlog 10 \[vehicle\] the partner's vehicle carries 0 cargo piece
+wait 1500
+screenshot 07-truck-cargo-gone
+pad X 150
+wait 4000
+action vehicle_sync 0
+# ---- the trike (purple / orange, two battery packs)
+action vehicle_sync 8 1.4 3
+wait 2500
+until 20 4000 \[vehicle\] ours: trike (parked|getting|riding) => pad X 150
+waitlog 10 \[vehicle\] wear / lights of the partner's trike on copy 'trike'
+wait 3500
+pad none 700 rx=32767
+wait 600
+screenshot 08-trike-state-on
+action vehicle_sync 24 3 1
+?waitlog 15 \[vehicle\] cargo prop 2 '.*' placed
+wait 2000
+screenshot 09-trike-cargo
+# the hologram opt-in at run time (vehicle_sync=3) and back to the solid copy (section 22.13)
+action vehicle_sync 1 3
+waitlog 15 \[vehicle\] copy 'trike_hologram' shown
+wait 2000
+screenshot 09b-trike-hologram-optin
+action vehicle_sync 1 1
+waitlog 15 \[vehicle\] the partner's vehicle copy 'trike_hologram' removed \(vehicle_sync switched
+wait 3500
+screenshot 09c-trike-solid-again
+action vehicle_sync 24 0
+pad X 150
+wait 3500
+action vehicle_sync 0
+# ---- the Kusanagi: not applied (another model); the parked trike's copy goes and comes back in its own look
+action vehicle_sync 8 1.2 4
+wait 2500
+until 20 4000 \[vehicle\] ours: trike_kusanagi => pad X 150
+waitlog 15 \[vehicle\] the partner's vehicle changed from trike to trike_kusanagi
+?waitlog 15 \[vehicle\] the partner's trike_kusanagi: its wear and lights are not applied
+wait 2500
+screenshot 10-kusanagi
+pad X 150
+wait 3000
+action vehicle_sync 0
+# ---- parked for over 60 s: still reported and its copy still shown (no 60 s limit since section 22.13)
+wait 64000
+waitlog 10 \[vehicle\] our parked vehicle .* still reported after 60 s
+waitlog 10 \[vehicle\] the partner's parked trike_kusanagi still shown after 60 s
+screenshot 11-kusanagi-parked-65s
+action vehicle_sync 0
+action log_status
+quit

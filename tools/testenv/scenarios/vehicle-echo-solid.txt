@@ -1,0 +1,141 @@
+# The solid vehicle copies are the default (docs/real-partner-body.md section 22.11): each solid copy's collision is
+# turned off on its own entity (Entity::SetCollisionEnabled(false), the game's own per-instance switch) before it is
+# shown and checked every 250 ms. Role echo (0.5 s, 4 m) in the 100% save's garage: our roadster is got on and off, so
+# its copy stands parked 4 m beside it (the roadster's copy: its hologram, no solid roadster exists); the copy override
+# shows the solid truck (2 3) and the solid trike (2 2) there. Each is looked at, walked through from 1.5 m before its
+# origin (vehicle_sync 16 / 17), Sam is placed at its origin (he must stay on the floor) and 0.9 m before it (no Climb
+# prompt). Then the watcher drives its own roadster into a solid copy pinned ahead of it (vehicle_sync 22: the truck,
+# then the trike): the drive goes on through it (the trace), Sam stays seated, nothing is launched.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario vehicle-echo-solid -SeedSaves complete-100
+role echo
+timeout 360
+ini partner_body=real
+ini echo_offset_m=4
+ini echo_delay_s=0.5
+ini partner_collision=0
+ini vehicle_sync=1
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[sync\] partner body: real
+wait 1500
+# ---- our roadster on and off: its copy parked 4 m beside it
+action vehicle_sync 9 -1094.4 276.9
+wait 1500
+until 20 4000 \[vehicle\] ours: roadster => pad X 150
+wait 4000
+pad X 150
+?waitlog 20 \[vehicle\] copy 'roadster_hologram' (shown|NOT shown)
+wait 1500
+action vehicle_sync 21
+# ==== A: the solid truck (copy override)
+action vehicle_sync 2 3
+?waitlog 20 \[vehicle\] copy 'truck' (shown|NOT shown)
+wait 1500
+action vehicle_sync 21
+action vehicle_sync 16 7
+wait 1500
+screenshot A0-view-truck
+action vehicle_sync 16 1.5
+wait 1200
+action vehicle_sync 17
+pad none 450 ly=32760 keep
+action vehicle_sync 17
+screenshot A1-in-truck
+pad none 2300 ly=32760 keep
+pad none 0
+wait 800
+action vehicle_sync 17
+screenshot A2-past-truck
+action vehicle_sync 16 0.01
+wait 2000
+action vehicle_sync 17
+screenshot A3-at-truck-origin
+action vehicle_sync 16 0.9
+wait 1500
+action vehicle_sync 17
+screenshot A4-before-truck
+# ==== B: the solid trike
+action vehicle_sync 2 2
+?waitlog 20 \[vehicle\] copy 'trike' (shown|NOT shown)
+wait 1500
+action vehicle_sync 21
+action vehicle_sync 16 5
+wait 1500
+screenshot B0-view-trike
+action vehicle_sync 16 1.5
+wait 1200
+action vehicle_sync 17
+pad none 450 ly=32760 keep
+action vehicle_sync 17
+screenshot B1-in-trike
+pad none 2300 ly=32760 keep
+pad none 0
+wait 800
+action vehicle_sync 17
+screenshot B2-past-trike
+action vehicle_sync 16 0.01
+wait 2000
+action vehicle_sync 17
+screenshot B3-at-trike-origin
+action vehicle_sync 16 0.9
+wait 1500
+action vehicle_sync 17
+screenshot B4-before-trike
+action vehicle_sync 21
+# ==== C: driving our own roadster into the solid truck copy pinned ahead of it
+action vehicle_sync 2 3
+action vehicle_sync 9 -1094.4 276.9
+wait 1000
+action vehicle_sync 8 1.2 1
+wait 1500
+pad X 150
+wait 4000
+?waitlog 10 \[vehicle\] copy 'truck' (shown|NOT shown|placed)
+wait 1000
+action vehicle_sync 3 20000
+pad none 1200 rt=255 lx=-32767 keep
+pad none 700 rt=160 lx=0 keep
+action vehicle_sync 22 8 0
+pad none 400 rt=255 lx=0 keep
+screenshot C1-driving-into-truck
+pad none 400 rt=255 lx=0 keep
+screenshot C2-in-truck
+pad none 800 rt=255 lx=0 keep
+pad none 0
+wait 2500
+action vehicle_sync 21
+action vehicle_sync 0
+screenshot C3-stopped
+action vehicle_sync 23
+# backed out (LT), then D: the solid trike pinned 6 m ahead
+pad none 1800 lt=255 lx=0 keep
+pad none 0
+wait 2000
+action vehicle_sync 2 2
+?waitlog 20 \[vehicle\] copy 'trike' (shown|NOT shown|placed)
+wait 1500
+action vehicle_sync 22 6 0
+wait 500
+screenshot D0-trike-pinned-ahead
+pad none 600 rt=255 lx=0 keep
+screenshot D1-into-trike
+pad none 700 rt=255 lx=0 keep
+pad none 0
+wait 2500
+action vehicle_sync 21
+action vehicle_sync 0
+screenshot D2-stopped
+action vehicle_sync 23
+pad X 150
+wait 3500
+action vehicle_sync 2 0
+action vehicle_sync 0
+action real_stats
+action log_status
+quit

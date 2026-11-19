@@ -58,6 +58,29 @@ bool ReadVehicle(std::uintptr_t e, wire::GearLook* out) noexcept;
 // silver / broken / ride-type references and their variation components). Nothing else is a source.
 ApplyResult ApplyVehicle(std::uintptr_t copy, const wire::GearLook& want, const std::uintptr_t* own, unsigned n_own, char* why,
                          std::size_t cap) noexcept;
+// Satisfied with the vehicle copies' shader-variable cap (160 entries instead of 48).
+bool SatisfiedVehicle(std::uintptr_t copy, const wire::GearLook& want) noexcept;
+
+// Vehicles, the state the game changes as it drives (docs/real-partner-body.md section 22.12; vsync, STM1 version 3).
+// Sender: the wear (timefall corrosion 0x32D5AE44: one value, the largest of its entries, on the parts it is set on) and
+// the lights (every 0x2B11751D intensity and 0x0978E0A1 battery-gauge colour entry, by ArtParts index) of a vehicle,
+// fault-free reads of its ArtPartsShaderVariableComponent. The 0x42A726AA entries (1.0 on every part: the camera's
+// dither / fade, the watcher's own) are never read.
+struct VehicleState {
+    std::uint16_t wear = 0;            // 0..65535 = 0..1
+    std::uint64_t wear_parts[2] = {};  // the parts carrying 0x32D5AE44 (index < 128)
+    unsigned wear_n = 0;               // entries read
+    float wear_spread = 0;             // the largest value less the smallest (one value is expected)
+    std::uint8_t nl = 0;
+    wire::VehicleLight light[wire::kMaxVehicleLights];
+    unsigned left_out = 0;             // entries over the caps (part >= 128, more than 24 lights)
+    unsigned entries = 0;              // all shader-variable entries of the vehicle
+};
+bool ReadVehicleState(std::uintptr_t e, VehicleState* out) noexcept;
+// Receiver: shader variables added (up to the vehicle cap) and set on a vehicle copy, nothing else (no variation change).
+ApplyResult SetVehicleVars(std::uintptr_t copy, const wire::GearShaderVar* vars, unsigned n, char* why, std::size_t cap) noexcept;
+// Hidden tests: the live entries of one hash on an entity (fault-free), for the read-back checks.
+unsigned ReadVars(std::uintptr_t e, std::uint32_t hash, wire::GearShaderVar* out, unsigned cap) noexcept;
 
 // Skinned pose of an entity (its SkinnedModel's current local joints; read twice, equal reads only).
 bool ReadPose(std::uintptr_t e, wire::GearPose* out) noexcept;

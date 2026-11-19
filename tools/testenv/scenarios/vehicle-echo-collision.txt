@@ -139,7 +139,7 @@ pad none 1500 ly=32760 keep
 pad none 0
 wait 800
 action vehicle_sync 17
-# our roadster on and off again: its copy is reported parked for 60 s only (X on, X off)
+# our roadster on and off again: its copy is reported parked (X on, X off)
 action vehicle_sync 9 -1094.4 276.9
 wait 1000
 action vehicle_sync 8 1.2 1

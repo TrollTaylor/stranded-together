@@ -4,7 +4,7 @@
 # gets off again; WATCHER watches from beyond the parked roadster, about 5 m to its left (its camera untouched
 # since the load, so it looks along the drive; partner_collision=0 so the car never meets the watcher's body): the
 # driver's body seated in the roadster's copy (the hologram), moving where it drives, then parked; then the driver is
-# placed beyond 30 m of it and the copy goes. two-games-vehicle.txt: the host
+# placed away from it (the parked copy stays, 22.13). two-games-vehicle.txt: the host
 # drives; two-games-vehicle-guest.txt: the guest drives (the host sees her Fragile body in the copy).
 # `action vehicle_sync 9 x y` places a player beside the parked roadster (where X got Sam on in run 20261117-072538) or
 # at the watching point; `vehicle_sync 3` logs the trace both games' logs are compared with (sender transform at tick
@@ -65,9 +65,8 @@ wait 4000
 @guest screenshot 04-guest-off
 screenshot 04-host-sees-guest-off
 @both action vehicle_sync 0
-# the driver walks away (beyond 30 m of its parked roadster): the copy goes
+# the driver walks away: since docs/real-partner-body.md 22.13 the parked copy stays (he is within 250 m)
 @guest action vehicle_sync 9 -1100 270
-waitlog 20 \[vehicle\] the partner's vehicle copy 'roadster_hologram' removed
 wait 1500
 screenshot 05-host-after-guest-left
 @both action vehicle_sync 0

@@ -1758,7 +1758,10 @@ void TestVehicleFrames() {
     CHECK(refused([](wire::VehicleFrame& m) { m.kind = 3; }));  // a roadster GUID with the trike's kind
     CHECK(refused([](wire::VehicleFrame& m) { m.state = 16; }));
     CHECK(refused([](wire::VehicleFrame& m) { m.flags |= 4; }));  // the packs flag without packs
-    CHECK(refused([](wire::VehicleFrame& m) { m.flags |= 8; }));  // an unknown flag
+    CHECK(refused([](wire::VehicleFrame& m) { m.flags |= 0x20; }));  // an unknown flag
+    CHECK(refused([](wire::VehicleFrame& m) { m.nl = 1; }));  // a light without the state flag
+    CHECK(refused([](wire::VehicleFrame& m) { m.wear = 5; }));  // wear without the state flag
+    CHECK(refused([](wire::VehicleFrame& m) { m.nc = 1; }));  // a piece without the cargo flag
     CHECK(refused([](wire::VehicleFrame& m) { m.m = 1, m.pack[0] = 1; }));  // packs without the flag
     CHECK(refused([](wire::VehicleFrame& m) { m.flags &= static_cast<std::uint8_t>(~wire::kVehJoints); }));
     CHECK(refused([](wire::VehicleFrame& m) { m.n = 65; }));
@@ -1784,11 +1787,15 @@ void TestVehicleFrames() {
     };
     CHECK(bad_at(0, 'X'));     // magic
     CHECK(bad_at(4, 1));       // version 1 (before the packs block)
-    CHECK(bad_at(4, 3));       // version 3
+    CHECK(bad_at(4, 2));       // version 2 (before the state and cargo blocks)
+    CHECK(bad_at(4, 4));       // version 4
     CHECK(bad_at(5, 0));       // kind 0
     CHECK(bad_at(5, 9));       // kind 9
     CHECK(bad_at(6, 200));     // state
     CHECK(bad_at(7, 0x81));    // unknown flag
+    CHECK(bad_at(7, 0x20 | wire::kVehSeated | wire::kVehJoints));  // flag bit 5 (unknown)
+    CHECK(bad_at(7, wire::kVehState | wire::kVehSeated | wire::kVehJoints));  // the state flag without its block's bytes
+    CHECK(bad_at(7, wire::kVehCargo | wire::kVehSeated | wire::kVehJoints));  // the cargo flag without its block's bytes
     CHECK(bad_at(7, wire::kVehSeated));  // joints without the flag
     CHECK(bad_at(16, 0x00));   // GUID byte 0 (0x5d)
     CHECK(bad_at(83, 1));      // m = 1 without the packs flag or their bytes
@@ -1858,6 +1865,149 @@ void TestVehicleFrames() {
         mm.pack_q[0].x = std::numeric_limits<float>::quiet_NaN();
         CHECK(wire::EncodeVehicle(mm, buf, sizeof(buf)) == 0);
         static_assert(wire::kMaxVehicleFrameSize <= 1148 - 8, "STM1 fits a link body");
+
+        // version 3: the state block (the gold truck's wear on its body parts, its lamps and battery gauge) and the cargo
+        // block (pieces on its bed), after the packs
+        static wire::VehicleFrame s, sb;
+        s = k;
+        s.flags |= wire::kVehState | wire::kVehCargo;
+        s.wear = 65535;
+        const unsigned wear_parts[] = {0, 4, 5, 14, 15, 16, 17, 18, 22, 40, 70, 127};
+        for (unsigned p : wear_parts) s.wear_parts[p / 64] |= 1ull << (p % 64);
+        s.nl = 12;
+        for (unsigned i = 0; i < 11; ++i) {
+            s.light[i].part = static_cast<std::uint8_t>(i + 1);
+            s.light[i].kind = 1;
+            s.light[i].v[0] = i == 5 ? 50.0f : i == 9 ? 20.0f : i == 2 ? 0.333f : 0.0f;
+        }
+        s.light[11].part = 6, s.light[11].kind = 2;
+        s.light[11].v[0] = 0.025f, s.light[11].v[1] = 0.7f, s.light[11].v[2] = 0.5f;
+        s.nc = 5;
+        s.cargo_dropped = 3;
+        for (unsigned i = 0; i < s.nc; ++i) {
+            s.cargo[i].model = static_cast<std::uint8_t>(1 + i);
+            s.cargo[i].variation = i == 4 ? wire::kGearNone : static_cast<std::uint8_t>(i);
+            s.cargo[i].t[0] = -0.45f + 0.45f * static_cast<float>(i % 3), s.cargo[i].t[1] = -0.9f - 0.5f * static_cast<float>(i / 3),
+            s.cargo[i].t[2] = 1.55f;
+            s.cargo[i].q = wire::Normalize(wire::Quat{0.0f, 0.0f, 0.2f * static_cast<float>(i), 1.0f});
+        }
+        const std::size_t sn = wire::EncodeVehicle(s, buf, sizeof(buf));
+        CHECK(sn == wire::VehicleFrameSize(23, 6, 12, 5) && sn == 84 + 23 * 12 + 6 * 14 + 20 + 12 * 8 + 2 + 5 * 14);
+        CHECK(sn == wire::VehicleFrameBytes(s));
+        CHECK(wire::DecodeVehicle(buf, sn, sb));
+        CHECK(sb.flags == s.flags && sb.m == 6 && sb.wear == 65535 && sb.wear_parts[0] == s.wear_parts[0] && sb.wear_parts[1] == s.wear_parts[1]);
+        CHECK(sb.nl == 12 && sb.nc == 5 && sb.cargo_dropped == 3);
+        for (unsigned i = 0; i < 12; ++i) {
+            CHECK(sb.light[i].part == s.light[i].part && sb.light[i].kind == s.light[i].kind);
+            for (unsigned ch = 0; ch < 3; ++ch) CHECK(std::fabs(sb.light[i].v[ch] - s.light[i].v[ch]) <= 0.001f * (1.0f + s.light[i].v[ch]));
+        }
+        CHECK(sb.light[5].v[0] == 50.0f && sb.light[9].v[0] == 20.0f && sb.light[0].v[0] == 0.0f);  // exact in half precision
+        for (unsigned i = 0; i < 5; ++i) {
+            CHECK(sb.cargo[i].model == s.cargo[i].model && sb.cargo[i].variation == s.cargo[i].variation);
+            CHECK(wire::AngleBetween(sb.cargo[i].q, s.cargo[i].q) < 0.02f);
+            for (unsigned ch = 0; ch < 3; ++ch) CHECK(std::fabs(sb.cargo[i].t[ch] - s.cargo[i].t[ch]) < 0.0006f);
+        }
+        // a cargo block with no pieces (the cargo was unloaded) and a state block with no wear and no lights
+        {
+            static wire::VehicleFrame e;
+            e = k;
+            e.flags |= wire::kVehState | wire::kVehCargo;
+            const std::size_t en = wire::EncodeVehicle(e, buf, sizeof(buf));
+            CHECK(en == wire::VehicleFrameSize(23, 6, 0, 0) && wire::DecodeVehicle(buf, en, sb) && sb.nc == 0 && sb.nl == 0 && sb.flags == e.flags);
+            e.flags = static_cast<std::uint8_t>(e.flags & ~wire::kVehState);  // the cargo block alone
+            const std::size_t cn = wire::EncodeVehicle(e, buf, sizeof(buf));
+            CHECK(cn == wire::VehicleFrameSize(23, 6, -1, 0) && wire::DecodeVehicle(buf, cn, sb) && sb.flags == e.flags);
+        }
+        // the encoder refuses what the decoder would
+        auto refused3 = [&](void (*mut)(wire::VehicleFrame&)) {
+            static wire::VehicleFrame m3;
+            m3 = s;
+            mut(m3);
+            return wire::EncodeVehicle(m3, buf, sizeof(buf)) == 0;
+        };
+        CHECK(refused3([](wire::VehicleFrame& m) { m.nl = wire::kMaxVehicleLights + 1; }));
+        CHECK(refused3([](wire::VehicleFrame& m) { m.wear_parts[0] = m.wear_parts[1] = 0; }));  // wear without parts
+        CHECK(refused3([](wire::VehicleFrame& m) { m.light[3].part = 128; }));
+        CHECK(refused3([](wire::VehicleFrame& m) { m.light[3].kind = 0; }));
+        CHECK(refused3([](wire::VehicleFrame& m) { m.light[3].kind = 3; }));
+        CHECK(refused3([](wire::VehicleFrame& m) { m.light[4].part = m.light[3].part; }));  // the same light twice
+        CHECK(refused3([](wire::VehicleFrame& m) { m.light[3].v[0] = -1.0f; }));
+        CHECK(refused3([](wire::VehicleFrame& m) { m.light[3].v[0] = 5000.0f; }));
+        CHECK(refused3([](wire::VehicleFrame& m) { m.light[3].v[1] = 1.0f; }));  // an intensity with a second value
+        CHECK(refused3([](wire::VehicleFrame& m) { m.light[11].v[2] = 65.0f; }));
+        CHECK(refused3([](wire::VehicleFrame& m) { m.light[11].v[0] = std::numeric_limits<float>::quiet_NaN(); }));
+        CHECK(refused3([](wire::VehicleFrame& m) { m.flags = static_cast<std::uint8_t>(m.flags & ~wire::kVehState); }));  // lights without the flag
+        CHECK(refused3([](wire::VehicleFrame& m) { m.flags = static_cast<std::uint8_t>(m.flags & ~wire::kVehCargo); }));  // pieces without the flag
+        CHECK(refused3([](wire::VehicleFrame& m) { m.nc = wire::kMaxVehicleCargo + 1; }));
+        CHECK(refused3([](wire::VehicleFrame& m) { m.cargo[1].model = 31; }));
+        CHECK(refused3([](wire::VehicleFrame& m) { m.cargo[1].variation = 128; }));
+        CHECK(refused3([](wire::VehicleFrame& m) { m.cargo[1].t[1] = -8.5f; }));
+        CHECK(refused3([](wire::VehicleFrame& m) { m.cargo[1].q.w = std::numeric_limits<float>::infinity(); }));
+        CHECK(refused3([](wire::VehicleFrame& m) {
+            // over kMaxVehicleFrameSize: 64 joints, 8 packs, 24 lights and 32 pieces
+            m.n = 64, m.m = 8, m.nl = 24, m.nc = 32;
+            for (unsigned i = 0; i < 64; ++i) m.q[i] = m.q[0];
+            for (unsigned i = 0; i < 8; ++i) m.pack[i] = 1, m.pack_q[i] = m.pack_q[0];
+            for (unsigned i = 0; i < 24; ++i) m.light[i].part = static_cast<std::uint8_t>(i), m.light[i].kind = 1, m.light[i].v[1] = m.light[i].v[2] = 0;
+            for (unsigned i = 0; i < 32; ++i) m.cargo[i] = m.cargo[0];
+        }));
+        // the decoder: block bytes it must refuse
+        std::uint8_t d[wire::kMaxVehicleFrameSize];
+        const std::size_t st = 84 + 23 * 12 + 6 * 14;  // the state block
+        const std::size_t ct = st + 20 + 12 * 8;        // the cargo block
+        auto bad3 = [&](std::size_t off, std::uint8_t v) {
+            std::memcpy(d, buf, sn);
+            d[off] = v;
+            return !wire::DecodeVehicle(d, sn, sb);
+        };
+        CHECK(wire::EncodeVehicle(s, buf, sizeof(buf)) == sn);
+        CHECK(bad3(st, 13));                  // nl 13 with 12 lights' bytes
+        CHECK(bad3(st, 25));                  // nl over the cap
+        CHECK(bad3(st + 1, 1));               // the reserved byte
+        CHECK(bad3(st + 20, 200));            // a light's part over 127
+        CHECK(bad3(st + 21, 7));              // a light kind
+        CHECK(bad3(st + 20 + 8, 1));          // light 1 on light 0's part (the same light twice)
+        {
+            std::memcpy(d, buf, sn);
+            const std::uint16_t inf = 0x7C00, neg = 0xBC00;  // +infinity, -1.0
+            std::memcpy(d + st + 20 + 2, &inf, 2);
+            CHECK(!wire::DecodeVehicle(d, sn, sb));
+            std::memcpy(d, buf, sn);
+            std::memcpy(d + st + 20 + 2, &neg, 2);
+            CHECK(!wire::DecodeVehicle(d, sn, sb));
+            std::memcpy(d, buf, sn);
+            const std::uint16_t one = 0x3C00;  // 1.0 in an intensity's second value
+            std::memcpy(d + st + 20 + 4, &one, 2);
+            CHECK(!wire::DecodeVehicle(d, sn, sb));
+            std::memcpy(d, buf, sn);
+            const std::uint64_t none[2] = {0, 0};  // wear without its parts
+            std::memcpy(d + st + 4, none, 16);
+            CHECK(!wire::DecodeVehicle(d, sn, sb));
+        }
+        CHECK(bad3(ct, 6));                   // nc 6 with 5 pieces' bytes
+        CHECK(bad3(ct, 33));                  // nc over the cap
+        CHECK(bad3(ct + 2, 31));              // a model over the table
+        CHECK(bad3(ct + 3, 128));             // a variation over the config
+        {
+            std::memcpy(d, buf, sn);
+            const std::int16_t far9 = -9000;  // -9 m
+            std::memcpy(d + ct + 2 + 4, &far9, 2);
+            CHECK(!wire::DecodeVehicle(d, sn, sb));
+        }
+        CHECK(!wire::DecodeVehicle(buf, sn - 1, sb));
+        CHECK(!wire::DecodeVehicle(buf, sn - 14, sb));  // one piece's bytes missing
+        {
+            std::uint8_t big[wire::kMaxVehicleFrameSize + 16] = {};
+            std::memcpy(big, buf, sn);
+            CHECK(!wire::DecodeVehicle(big, sn + 1, sb));  // a trailing byte
+        }
+        // the half floats the lights use
+        CHECK(wire::HalfToFloat(wire::FloatToHalf(50.0f)) == 50.0f && wire::HalfToFloat(wire::FloatToHalf(0.0f)) == 0.0f);
+        CHECK(wire::HalfToFloat(wire::FloatToHalf(4096.0f)) == 4096.0f && wire::FloatToHalf(1e6f) == 0x7C00);
+        CHECK(std::fabs(wire::HalfToFloat(wire::FloatToHalf(0.01f)) - 0.01f) < 1e-5f);
+        CHECK(std::fabs(wire::HalfToFloat(wire::FloatToHalf(1e-6f)) - 1e-6f) < 1e-7f);  // a subnormal half
+        CHECK(wire::FloatToHalf(-2.0f) == 0xC000 && wire::HalfToFloat(0xC000) == -2.0f);
+        CHECK(std::isnan(wire::HalfToFloat(wire::FloatToHalf(std::numeric_limits<float>::quiet_NaN()))));
         // the original frame's bytes again for the checks below
         CHECK(wire::EncodeVehicle(f, buf, sizeof(buf)) == n);
     }

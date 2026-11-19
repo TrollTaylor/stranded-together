@@ -73,17 +73,21 @@ struct Config {
     // boots_sync=0: nothing read, sent or spawned (the partner shows its own model's boots).
     bool boots_sync = true;
     // Vehicles (docs/real-partner-body.md section 22): the vehicle the player rides is sent (STM1) and shown under the
-    // partner's body on the other screen as a visual copy (a cutscene trike / truck, the roadster's hologram). 1 = on,
-    // all three copies (default; each proven against real drives), 3 = the same (the v0.12 value for all three), 2 =
-    // solid copies only (trike, truck; no hologram roadster), 4 = the roadster's copy only (the v0.12 default), 0 =
-    // nothing read, sent or spawned. Every value but 0 sends what we ride.
+    // partner's body on the other screen as a visual copy. Section 22.11 (after v0.13): 1 = on, SOLID trike and truck
+    // copies (default; each copy's collision turned off on its own entity), the roadster as its construction hologram (no
+    // solid roadster copy exists); 2 = the same (v0.13's value for the solid copies); 3 = all three as the garage's
+    // construction holograms (opt-in; v0.13's default look); 4 = the roadster's copy only (the v0.12 default); 0 =
+    // nothing read, sent or spawned. Every value but 0 sends what we ride. A solid copy that cannot be made safe is
+    // replaced by its hologram (logged).
     int vehicle_sync = 1;
     // The partner's vehicle copy hidden while the watcher's own vehicle of the same kind stands in the same place (two of
     // the same vehicle in one spot; docs/real-partner-body.md section 22). Default on; 0: the copy is always shown.
     bool vehicle_overlap_hide = true;
-    // The partner's vehicle copy wears the partner vehicle's paint and variations (gold / silver / broken / ride type;
-    // the solid trike and truck copies only) and shows its battery / defense packs (docs/real-partner-body.md section
-    // 22.7). Default on; 0: neither is read, sent or applied (the copies' own look, no packs).
+    // vehicle_look: the partner's vehicle copy wears the partner vehicle's paint and variations (gold / silver / broken /
+    // ride type), its wear (rust), lamps and battery gauge (the solid trike and truck copies only; docs/real-partner-body.md
+    // sections 22.7, 22.12) and carries its cargo as case props (every copy, the holograms too). Default on; 0: none of it
+    // is read, sent or applied (the copies' own look, no cargo). vehicle_packs: its battery / defense packs (solid copies
+    // only; default on; 0: not read, sent or shown).
     bool vehicle_look = true;
     bool vehicle_packs = true;
     bool pose_hook = false;           // install the pose hook even without partner_body=real (debug spawns)

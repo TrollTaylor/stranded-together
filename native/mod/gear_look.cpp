@@ -54,10 +54,11 @@ constexpr std::size_t kSvEntry = 0x28;
 // A vehicle's paint: the colour index shader variable (the cap's colour index too, section 13.1), set per ArtParts
 // index (the roadster's parts 4 / 6, the trikes' 14 / 16, the trucks' 14 / 15 in the 100% save: run 20261118-162226).
 constexpr std::uint32_t kVehicleColourHash = 0x3A3714EDu;
-// Only the colour index is carried: 0x32D5AE44 (per body part: 1.0 on the 100% save's rust-brown gold truck, 0.35 on
-// its clean trucks and trikes) and 0x0978E0A1 also differ between vehicles, but set on the truck copy they did not
-// turn it rust-brown (run 20261118-164037): their meaning is unknown, so they are not written (the rust is most likely
-// the vehicle's mesh-paint texture, not mirrored).
+// Only the colour index is carried in the look (STV1 item 255). The wear 0x32D5AE44 (the timefall corrosion: 1.0 on the
+// 100% save's rust-brown gold truck) and the lights 0x2B11751D / 0x0978E0A1 change while the vehicle drives: they go in
+// every STM1 frame (version 3's state block; ReadVehicleState / SetVehicleVars, docs/real-partner-body.md section 22.12).
+// Run 20261118-164037 had sent only the first 31 wear entries (STV1's cap): the copy's wheels turned rust-brown, its body
+// stayed gold; with all 39 the copy is rust-brown (run 20261118-201916).
 constexpr std::uint32_t kVehicleLookHashes[] = {kVehicleColourHash};
 
 // SkinnedModel / Pose (real_body.cpp)
@@ -662,8 +663,73 @@ std::uint32_t g_applies = 0, g_var_added = 0, g_var_removed = 0, g_sv_set = 0, g
 // gear has 1-8; a sender naming ever new hashes cannot grow it without bound). Variables only ever
 // get added or set: one the sender stops naming keeps its last value on the copy.
 constexpr std::int32_t kSvCap = 48;
+// A vehicle copy carries more (docs/real-partner-body.md section 22.12): its paint (1-2), the wear on up to 39 parts and
+// up to 24 lights (the truck: 1 + 39 + 12 = 52). The game's own vehicles hold 50-130 entries (run 20261118-162226).
+constexpr std::int32_t kSvCapVehicle = 160;
+std::int32_t SvCapNow() { return g_veh_scope ? kSvCapVehicle : kSvCap; }
 
 bool CompStillOwned(std::uintptr_t c, std::uintptr_t e) { return c && Q(c + kCompOwner) == e; }
+
+// Step 2 of Apply (and SetVehicleVars): each shader variable added (at most up to the cap) and set, on the entity's
+// shader-variable component (created and linked as the game's own cap colour does when it has none).
+ApplyResult ApplyVars(std::uintptr_t prop, std::uintptr_t apd, std::int32_t parts, const wire::GearShaderVar* vars, unsigned n, char* why, std::size_t cap,
+                      bool* partial) {
+    if (!n) return ApplyResult::done;
+    std::uintptr_t sv = Q(apd + kApdSv);
+    if (sv && (Q(sv + kSvApd) != apd || !IsType(sv, "ArtPartsShaderVariableComponent"))) {
+        std::snprintf(why, cap, "its shader variable component does not check out");
+        return ApplyResult::failed;
+    }
+    if (!sv) {
+        // as the game's own cap colour does (0x14284AA8D): create, then link both ways
+        std::uintptr_t c = 0;
+        if (!CallSvCreate(prop, &c)) {
+            g.off = true;
+            Log("[look] shader variable component create FAULTED: gear looks off for this session");
+            return ApplyResult::off;
+        }
+        if (!c || !IsType(c, "ArtPartsShaderVariableComponent") || Q(c + kCompOwner) != prop) {
+            std::snprintf(why, cap, "the created shader variable component does not check out");
+            return ApplyResult::failed;
+        }
+        if (!WriteQ(c + kSvApd, apd) || !WriteQ(apd + kApdSv, c)) {
+            std::snprintf(why, cap, "the shader variable component could not be linked");
+            return ApplyResult::failed;
+        }
+        sv = c;
+        ++g_sv_created;
+    }
+    const std::int32_t cap_n = SvCapNow();
+    for (unsigned i = 0; i < n; ++i) {
+        const wire::GearShaderVar& s = vars[i];
+        if (s.part != wire::kLookAllParts && static_cast<std::int32_t>(s.part) >= parts) {
+            *partial = true;
+            continue;
+        }
+        const int part = s.part == wire::kLookAllParts ? -1 : static_cast<int>(s.part);
+        bool exists = false;
+        static const float kZero[4] = {};
+        if (!CallSvExists(sv, s.hash, part, &exists)) {
+            g.off = true;
+            Log("[look] a shader variable call FAULTED: gear looks off for this session");
+            return ApplyResult::off;
+        }
+        std::int32_t have_n = 0;
+        if (!exists && (!Rd(sv + kSvN, have_n) || have_n < 0 || have_n >= cap_n)) {
+            ++g_sv_capped;
+            *partial = true;
+            if (why && !why[0]) std::snprintf(why, cap, "shader variable %08X not added: the copy holds %d (cap %d)", s.hash, have_n, cap_n);
+            continue;
+        }
+        if ((!exists && !CallSvAddSet(sv, s.hash, kZero, s.count, part, true)) || !CallSvAddSet(sv, s.hash, s.v, s.count, part, false)) {
+            g.off = true;
+            Log("[look] a shader variable call FAULTED: gear looks off for this session");
+            return ApplyResult::off;
+        }
+        ++g_sv_set;
+    }
+    return ApplyResult::done;
+}
 
 }  // namespace
 
@@ -783,6 +849,13 @@ bool ReadVehicle(std::uintptr_t e, wire::GearLook* out) noexcept {
     return true;
 }
 
+bool SatisfiedVehicle(std::uintptr_t copy, const wire::GearLook& want) noexcept {
+    g_veh_scope = true;
+    const bool r = Satisfied(copy, want);
+    g_veh_scope = false;
+    return r;
+}
+
 ApplyResult ApplyVehicle(std::uintptr_t copy, const wire::GearLook& want, const std::uintptr_t* own, unsigned n_own, char* why,
                          std::size_t cap) noexcept {
     g_veh_scope = true;
@@ -883,61 +956,98 @@ ApplyResult Apply(std::uintptr_t prop, const wire::GearLook& want, char* why, st
         ++g_var_added;
     }
     // 2. Shader variables (after the variations: a variation change rebuilds the materials).
-    if (want.nsv) {
-        std::uintptr_t sv = Q(apd + kApdSv);
-        if (sv && (Q(sv + kSvApd) != apd || !IsType(sv, "ArtPartsShaderVariableComponent"))) {
-            std::snprintf(why, cap, "its shader variable component does not check out");
-            return ApplyResult::failed;
-        }
-        if (!sv) {
-            // as the game's own cap colour does (0x14284AA8D): create, then link both ways
-            std::uintptr_t c = 0;
-            if (!CallSvCreate(prop, &c)) {
-                g.off = true;
-                Log("[look] shader variable component create FAULTED: gear looks off for this session");
-                return ApplyResult::off;
-            }
-            if (!c || !IsType(c, "ArtPartsShaderVariableComponent") || Q(c + kCompOwner) != prop) {
-                std::snprintf(why, cap, "the created shader variable component does not check out");
-                return ApplyResult::failed;
-            }
-            if (!WriteQ(c + kSvApd, apd) || !WriteQ(apd + kApdSv, c)) {
-                std::snprintf(why, cap, "the shader variable component could not be linked");
-                return ApplyResult::failed;
-            }
-            sv = c;
-            ++g_sv_created;
-        }
-        for (unsigned i = 0; i < want.nsv; ++i) {
-            const wire::GearShaderVar& s = want.sv[i];
-            if (s.part != wire::kLookAllParts && static_cast<std::int32_t>(s.part) >= parts) {
-                partial = true;
+    const ApplyResult vr = ApplyVars(prop, apd, parts, want.sv, want.nsv, why, cap, &partial);
+    if (vr != ApplyResult::done) return vr;
+    return partial ? ApplyResult::partial : ApplyResult::done;
+}
+
+bool ReadVehicleState(std::uintptr_t e, VehicleState* out) noexcept {
+    if (!out || !ReadAvailable()) return false;
+    std::uintptr_t apd = 0;
+    std::int32_t parts = 0;
+    if (!EntityApd(e, &apd, &parts)) return false;
+    *out = VehicleState{};
+    static SvEntry sv[256];
+    const unsigned ns = ShaderVars(e, sv, 256);
+    out->entries = ns;
+    float wmin = 1e9f, wmax = -1e9f;
+    for (unsigned i = 0; i < ns; ++i) {
+        const SvEntry& s = sv[i];
+        const std::uint32_t h = static_cast<std::uint32_t>(s.key & 0xFFFFFFFFu);
+        const unsigned part = static_cast<unsigned>((s.key >> 50) & 0x1FF);
+        if (s.removed || s.count < 1 || s.count > 4) continue;
+        bool finite = true;
+        for (unsigned c = 0; c < s.count; ++c) finite = finite && std::isfinite(s.v[c]);
+        if (!finite) continue;
+        if (h == wire::kVehWearHash) {
+            if (part >= wire::kMaxVehicleWearParts) {
+                ++out->left_out;
                 continue;
             }
-            const int part = s.part == wire::kLookAllParts ? -1 : static_cast<int>(s.part);
-            bool exists = false;
-            static const float kZero[4] = {};
-            if (!CallSvExists(sv, s.hash, part, &exists)) {
-                g.off = true;
-                Log("[look] a shader variable call FAULTED: gear looks off for this session");
-                return ApplyResult::off;
-            }
-            std::int32_t have_n = 0;
-            if (!exists && (!Rd(sv + kSvN, have_n) || have_n < 0 || have_n >= kSvCap)) {
-                ++g_sv_capped;
-                partial = true;
-                if (why && !why[0]) std::snprintf(why, cap, "shader variable %08X not added: the copy holds %d (cap %d)", s.hash, have_n, kSvCap);
+            out->wear_parts[part / 64] |= 1ull << (part % 64);
+            if (s.v[0] < wmin) wmin = s.v[0];
+            if (s.v[0] > wmax) wmax = s.v[0];
+            ++out->wear_n;
+        } else if (h == wire::kVehLightHash || (h == wire::kVehGaugeHash && s.count >= 3)) {
+            const bool colour = h == wire::kVehGaugeHash;
+            const std::uint8_t kind = static_cast<std::uint8_t>(colour ? wire::VehicleLightKind::colour : wire::VehicleLightKind::intensity);
+            bool dup = false;
+            for (unsigned k = 0; k < out->nl && !dup; ++k) dup = out->light[k].part == part && out->light[k].kind == kind;
+            if (dup) continue;  // the census logged some entries twice (removed and added again)
+            if (part >= wire::kMaxVehicleWearParts || out->nl >= wire::kMaxVehicleLights) {
+                ++out->left_out;
                 continue;
             }
-            if ((!exists && !CallSvAddSet(sv, s.hash, kZero, s.count, part, true)) || !CallSvAddSet(sv, s.hash, s.v, s.count, part, false)) {
-                g.off = true;
-                Log("[look] a shader variable call FAULTED: gear looks off for this session");
-                return ApplyResult::off;
+            wire::VehicleLight& l = out->light[out->nl++];
+            l.part = static_cast<std::uint8_t>(part);
+            l.kind = kind;
+            const float hi = colour ? wire::kMaxVehicleLightColour : wire::kMaxVehicleLightIntensity;
+            for (unsigned c = 0; c < 3; ++c) {
+                const float v = (colour || c == 0) ? s.v[c] : 0.0f;
+                l.v[c] = v < 0.0f ? 0.0f : (v > hi ? hi : v);
             }
-            ++g_sv_set;
         }
     }
+    if (out->wear_n) {
+        const float w = wmax < 0.0f ? 0.0f : (wmax > 1.0f ? 1.0f : wmax);
+        out->wear = static_cast<std::uint16_t>(std::lround(w * 65535.0f));
+        out->wear_spread = wmax - wmin;
+    }
+    return true;
+}
+
+ApplyResult SetVehicleVars(std::uintptr_t copy, const wire::GearShaderVar* vars, unsigned n, char* why, std::size_t cap) noexcept {
+    if (why && cap) why[0] = 0;
+    if (!ApplyAvailable()) return ApplyResult::off;
+    std::uintptr_t apd = 0;
+    std::int32_t parts = 0;
+    if (!EntityApd(copy, &apd, &parts)) {
+        std::snprintf(why, cap, "its ArtPartsData does not check out");
+        return ApplyResult::failed;
+    }
+    g_veh_scope = true;
+    bool partial = false;
+    const ApplyResult r = ApplyVars(copy, apd, parts, vars, n, why, cap, &partial);
+    g_veh_scope = false;
+    if (r != ApplyResult::done) return r;
     return partial ? ApplyResult::partial : ApplyResult::done;
+}
+
+unsigned ReadVars(std::uintptr_t e, std::uint32_t hash, wire::GearShaderVar* out, unsigned cap) noexcept {
+    if (!out || !ReadAvailable()) return 0;
+    static SvEntry sv[256];
+    const unsigned ns = ShaderVars(e, sv, 256);
+    unsigned k = 0;
+    for (unsigned i = 0; i < ns && k < cap; ++i) {
+        const SvEntry& s = sv[i];
+        if (s.removed || static_cast<std::uint32_t>(s.key & 0xFFFFFFFFu) != hash || s.count < 1 || s.count > 4) continue;
+        wire::GearShaderVar& o = out[k++];
+        o.hash = hash;
+        o.part = static_cast<std::uint16_t>((s.key >> 50) & 0x1FF);
+        o.count = s.count;
+        for (unsigned c = 0; c < 4; ++c) o.v[c] = c < s.count ? s.v[c] : 0.0f;
+    }
+    return k;
 }
 
 bool Satisfied(std::uintptr_t prop, const wire::GearLook& want) noexcept {
@@ -964,7 +1074,7 @@ bool Satisfied(std::uintptr_t prop, const wire::GearLook& want) noexcept {
             ok = present = true;
             for (unsigned c = 0; c < w.count && c < 4; ++c) ok = ok && std::fabs(s.v[c] - w.v[c]) <= 1e-3f * (1.0f + std::fabs(w.v[c]));
         }
-        if (!ok && !present && ns >= static_cast<unsigned>(kSvCap)) continue;  // not added at the cap (Apply): nothing to wait for
+        if (!ok && !present && ns >= static_cast<unsigned>(SvCapNow())) continue;  // not added at the cap (Apply): nothing to wait for
         if (!ok) return false;
     }
     return true;

@@ -3,12 +3,14 @@
 // Sender: the vehicle the local Sam rides (his parent entity, +0x70, checked against the three drivable vehicle
 // classes' vtables) is read every pose send tick: its kind and ride state, its drivable resource (path + GUID, an
 // allow-list), its world transform, Sam relative to it (the seat) and its skinned pose (wheels, steering). After he
-// gets off, the same vehicle is still reported as parked for up to 60 s while he stays within 30 m, so the other
-// screen's copy neither pops in nor out at the mount and the dismount. One STM1 frame per send tick.
+// gets off, the same vehicle is still reported as parked while it is there (the game's registry) and he stays within
+// 250 m of it, with no time limit (section 22.13), so the other screen's copy stands where it stands on his. One STM1
+// frame per send tick.
 //
 // Receiver: a visual, non-drivable copy of the partner's vehicle (a cutscene actor: the trike's and the truck's
-// demo bodies, on the same art and skeleton as the drivable ones; the roadster has no cutscene body, so its
-// construction hologram), spawned through the bodies' path + GUID route, checked (no AI, controller, physics or
+// demo bodies, on the same art and skeleton as the drivable ones, their collision turned off on each copy before it is
+// shown and checked every 250 ms (section 22.11); the roadster has no cutscene body, so its construction hologram),
+// spawned through the bodies' path + GUID route, checked (no AI, controller, physics or
 // interaction components; the hologram must pass the welcome hologram's checks; the vehicle's skeleton), placed every
 // tick at the partner's play time (the same timeline as the partner body) and posed from the sent joints through a
 // pose target of the animate hook (realbody::kVehiclePoseTarget). Removed when the partner reports no vehicle, frames
@@ -17,9 +19,11 @@
 // until the body goes). Local vehicles are only read (the game's vehicle registry): a copy is hidden while the watcher's
 // own vehicle of the same kind stands in its place (vehicle_overlap_hide). The solid copies wear the partner vehicle's
 // paint and variations and show its battery / defense packs (vehicle_look, vehicle_packs: section 22.7; the packs are
-// copies of the game's own pack entities, placed in the copy's frame). The copy's model is updated every frame (the
-// 240 Hz group) and its joints interpolated in its own update (smooth_pose). vehicle_sync=1 (default) shows all three
-// copies; 2 the trike's and the truck's only; 4 the roadster's only (3 = 1).
+// copies of the game's own pack entities, placed in the copy's frame), and its wear, lights and cargo (STM1 version 3,
+// section 22.12: the corrosion and lamp shader variables set on the copy, the carrier's pieces drawn as case props). The copy's model is updated every frame (the
+// 240 Hz group) and its joints interpolated in its own update (smooth_pose). vehicle_sync=1 (default) and 2: the solid
+// trike and truck copies and the roadster's hologram; 3 all three kinds as construction holograms (opt-in); 4 the
+// roadster's copy only. A solid copy whose collision cannot be made safe is replaced by its hologram (logged).
 //
 // Game thread only (st::sync::Tick).
 #pragma once
@@ -61,9 +65,17 @@ struct TickIn {
     bool have_body = false;         // the partner body's target transform this tick (the STP1 sample)
     game::WorldTransform body{};
     double pose_age_ms = 1e9;       // since the partner's last pose frame (STP1): over 0.5 s, the partner is silent
+    game::Entity* local = nullptr;  // the local Sam (only read: the copies are spawned away from the watcher)
 };
 void Tick(const TickIn& in, double now_ms) noexcept;
 void RemoveCopy(const char* why) noexcept;  // the copy goes (and its pose target first)
+
+// ---- collision off on our own spawned copies (section 22.11 / 22.13; game thread). Entity::SetCollisionEnabled(false)
+// on that one entity (byte-checked; the vtable slot checked per call), then read back: true when its collision flag is
+// clear and no model part carries a physics instance. The gear props (partner_gear) use it too.
+bool CopyCollisionOff(game::Entity* e, const char* what) noexcept;
+// A live copy checked again: 1 off; 0 found on again and turned off again (logged); -1 unreadable or not off.
+int CopyCollisionKeepOff(game::Entity* e, const char* what) noexcept;
 // The per-frame sync faulted and Tick will not run again: the copy is hidden where it stands, nothing more is sent.
 void EmergencyStop() noexcept;
 // Hidden tests (action vehicle_sync 10 <ms>, automation runs only): our sends are held until then, so the other side
@@ -86,12 +98,14 @@ bool ReportedVehicleLocal(std::uintptr_t e, const double (&p)[3], float (&out)[3
 // without a copy). False while no frame plays (none for 2 s, the partner silent / held, broken for 3 s, off).
 bool PartnerVehicleWorld(double now_ms, const float (&local)[3], double (&out)[3]) noexcept;
 
-// action vehicle_sync: 0 log, 1 mode v[1] (0 off / 1, 3 all / 2 solid only / 4 roadster), 2 copy override v[1] (0 auto, 1 roadster
-// hologram, 2 trike, 3 truck), 3 trace for v[1] ms, 4 copy offset in the vehicle's frame (v[1] forward, v[2] up, cm),
+// action vehicle_sync: 0 log, 1 mode v[1] (0 off / 1, 2 solid / 3 holograms / 4 roadster), 2 copy override v[1] (0 auto, 1 roadster
+// hologram, 2 trike, 3 truck, 4 trike hologram, 5 truck hologram), 3 trace for v[1] ms, 4 copy offset in the vehicle's frame (v[1] forward, v[2] up, cm),
 // 5 describe our current / last vehicle, 7 the registered vehicles (and the parking slots), 8 [m] [kind] Sam placed beside
 // the nearest, 9 x y Sam placed there, 10 ms our sends held (hidden tests), 11 0/1 overlap hiding off / on, 12 [m] [kind] a
 // watching point, 13 the meters now, 14 0/1 looks off / on, 15 0/1 packs off / on, 16 [m] [x shift] / 17 the copies'
-// collision test, 19 [kind] the census of the registered vehicles (hidden tests).
+// collision test, 19 [kind] the census of the registered vehicles (hidden tests), 21 the copy's collision state, 22 <forward m>
+// [right m] / 23 the copy pinned ahead of our own vehicle / free again (hidden tests: driving into it), 24 <n> [model]
+// n synthetic cargo pieces on the vehicle we report (hidden tests).
 bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 
 }  // namespace st::vsync

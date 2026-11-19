@@ -4,10 +4,9 @@
 # vehicle: the watcher's own vehicle stands where the driver's copy first appears (the overlap case: the copy hidden
 # until the driver has moved it away, vehicle_overlap_hide).
 # 0. The garage (Episode 15, Mountain Knot City): the host gets on its purple roadster and drives off, the guest watches
-#    from beyond its own roadster (the hologram copy hidden over it at first: since the review also put 20 m below, as
-#    SetVisible did not stop the hologram drawing). The guest's smooth mask stays 7 (until the review it was 0 here, the
-#    baseline for the frame-aligned meter: the hologram at its own 14.99 Hz, run 160727; now the hologram is measured
-#    with smoothing on in two games too).
+#    from beyond its own roadster (the roadster's copy, its hologram: no solid roadster exists, section 22.11; hidden over
+#    it at first, also put 20 m below). Since section 22.11 the trike (also the Kusanagi) and the truck are the SOLID copies
+#    by default, their collision turned off on each copy (ehicle_sync 21 logs it on the watcher after each drive).
 # 1. Outside (the game's vehicle registry: `vehicle_sync 8 <side m> <4 Kusanagi | 2 truck | 3 trike>` places Sam beside
 #    the nearest of that kind facing it, X gets him on; the watcher stands 9-10 m beside its own copy of that vehicle and
 #    turns its camera onto it, `vehicle_sync 18 <kind>` + right-stick pulses until `camera aimed`): the host drives the Kusanagi
@@ -99,6 +98,7 @@ pad none 0
 wait 1500
 screenshot 05-host-stopped
 @guest screenshot 05-guest-sees-host-stopped
+@guest action vehicle_sync 21
 @both action vehicle_sync 0
 # 12 s of silence while the host drives on: the partner body goes after 10 s, the copy with it; then both come back
 action vehicle_sync 10 12000
@@ -123,7 +123,7 @@ action vehicle_sync 18 2
 until 25 150 camera aimed #1 => pad none 200 rx=32767
 screenshot 09-host-watching-point
 @guest until 20 4000 \[vehicle\] ours: truck => pad X 150
-waitlog 20 \[vehicle\] copy 'truck_hologram' shown
+waitlog 20 \[vehicle\] copy 'truck' shown
 wait 3500
 @guest screenshot 10-guest-on-truck
 screenshot 10-host-sees-guest-on-truck
@@ -139,6 +139,7 @@ wait 2000
 action vehicle_sync 13
 screenshot 12-host-sees-guest-stopped
 @guest screenshot 12-guest-stopped
+action vehicle_sync 21
 @guest pad X 150
 wait 4500
 screenshot 13-host-sees-guest-off
@@ -169,6 +170,7 @@ wait 2000
 @guest action vehicle_sync 13
 screenshot 17-host-stopped
 @guest screenshot 17-guest-sees-host-stopped
+@guest action vehicle_sync 21
 pad X 150
 wait 4000
 @guest screenshot 18-guest-sees-host-off
