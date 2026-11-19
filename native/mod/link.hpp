@@ -90,6 +90,13 @@ bool PopGearPose(wire::GearPose& out, std::uint32_t& generation) noexcept;
 bool SendVehicle(const wire::VehicleFrame& f) noexcept;
 bool PopVehicle(wire::VehicleFrame& out, std::uint32_t& generation) noexcept;
 void VehicleCounts(std::uint64_t* sent, std::uint64_t* received) noexcept;
+// The real shared vehicles' driven / parked vehicle frames (STD1, vehicle_wire.hpp DriveFrame; docs/real-partner-body.md
+// section 23.11): one FRAME message in a datagram of its own (only "STD1" with one of its two sizes is sent); received
+// ones as raw bytes, oldest first (a queue of 64, the oldest dropped when full; no sequence filter: the drive module keeps
+// one per vehicle), with the generation counter. The game thread decodes them (vwire::DecodeDrive).
+bool SendDrive(const std::uint8_t* bytes, std::size_t size) noexcept;
+bool PopDrive(std::uint8_t* out, std::size_t cap, std::size_t& size, std::uint32_t& generation) noexcept;
+void DriveCounts(std::uint64_t* sent, std::uint64_t* received, std::uint64_t* dropped) noexcept;
 // Partner voice (docs/audio-research.md section 15). Game thread: one STS1 frame queued on the link's
 // reliable ordered channel (wire::kSpeechChannel; resent until acknowledged, in order). False when not
 // connected, the frame does not encode, or the channel's window (32 unacknowledged messages) is full.
@@ -117,6 +124,19 @@ bool PopSave(std::uint8_t* out, std::size_t cap, std::size_t& size, std::uint32_
 // The sender's phase for the burst cap (link_protocol.hpp ReliablePacketsPerTick): true while this game is at the
 // title or on a loading screen. Default false (4 packets per tick).
 void SetSaveBurst(bool title_or_loading) noexcept;
+// ---- Vehicle events (SVM1, vehicle_wire.hpp; docs/real-partner-body.md section 23): the reliable ordered channel 3.
+inline constexpr unsigned kVehicleEventChannel = 3;
+// Any thread: queues one message (1..1024 bytes; resent until acknowledged, in order). Append only: the channel mixes
+// message types, so a "latest" replacement could drop another type's message. False when not connected, too large, or the
+// channel's window (32 unacknowledged messages) is full: keep it and try again later.
+bool SendVehicleEvent(const void* bytes, std::size_t size) noexcept;
+// Channel 3 messages queued and not yet acknowledged (0..32): the sender's flow control.
+unsigned VehicleEventsQueued() noexcept;
+// The received channel 3 messages, in order, exactly once per link session (a queue of 64; taken from the channel only
+// while it has room, so a slow reader slows the sender instead of losing data). A new link session clears the queue;
+// `generation` is the session (as PopPose's). Any thread (vehicle_share pops on the game thread).
+bool PopVehicleEvent(std::uint8_t* out, std::size_t cap, std::size_t& size, std::uint32_t& generation) noexcept;
+void VehicleEventCounts(std::uint64_t* sent, std::uint64_t* received) noexcept;
 // Hidden tests only (the co-op link-loss scenario; coop_session.cpp allows it only in automation runs): every datagram
 // this game receives is dropped for `ms` (0: ends now), so its session times out and reconnects as after a real outage.
 void TestBlackout(std::uint32_t ms) noexcept;

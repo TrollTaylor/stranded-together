@@ -73,6 +73,15 @@ enum class Action : std::uint8_t {
                           //   (guest), 4 log the slots (host), 5 test in-world load type v[1] index v[2] (host), 6 test QuitGame,
                           //   7 test checkpoint retry (host), 8 test: waiting panel hidden v[1] (guest); 1 and 5-8 hidden runs only
                           //   (session.ini host_save=1; docs/coop-session.md)
+    vehicle_share,        // v[0] = 0 status, 1 dump [tag], 2 summon kind [m], 3 snapshot now, 4 binding report, 5 mirror path v[1] (tests),
+                          //   6 remove the nearest vehicle of kind v[1] within v[2] m (tests), 7 counters, 8 persisted entries (host; vehicle_sync=5;
+                          //   docs/real-partner-body.md section 23)
+    vehicle_dump,         // v[0] = tag: every in-use vehicle unit of the three pools, with its binding (vehicle_share)
+    vehicle_summon,       // v[0] = kind (1 roadster, 2 truck, 3 trike), v[1] = metres ahead (0 = 8): through the game's own request path
+    vehicle_drive,        // v[0] = 0 status, 1 vehicles, 2 native correction v[1], 3 ignore bands v[1] / v[2] m, 4 corrections v[1] (tests),
+                          //   5 native fx v[1], 6 kind v[1] [m v[2]] test push (tests), 7 life v[1] test (tests), 8 battery probe,
+                          //   9 [m] our Sam beside the vehicle the partner drives (tests)
+                          //   (vehicle_drive.cpp; docs/real-partner-body.md section 23.11)
     count
 
 };

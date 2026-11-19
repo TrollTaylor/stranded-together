@@ -41,19 +41,22 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
   shows your character instead of Sam. The equipped boots also show on the other screen.
 - **Experimental:** weapons in hand show on the other screen: the assault rifle, handgun,
   shotgun, multi rod and the grenades (as the game's cutscene models, in their own colours).
-- **Experimental:** vehicles: when your partner drives a trike (also the Kusanagi, shown
-  as a plain standard trike) or a truck, you see a solid copy of it in their paint, with
-  its rust (wear), its lamps and battery gauge, its battery / defense packs and the cargo
-  on it, and them seated in it, moving where they drive and parked where they leave it for
-  as long as it stands there on their screen (while they stay within 250 m of it); you walk
-  and drive through it (it never pushes you). A roadster still shows as a hologram (no
-  solid roadster exists yet). With `sound_sync=1` you also hear its engine and road noise.
-  `vehicle_sync=3` in session.ini shows all three as holograms.
+- **Experimental:** vehicles are shared (with **Host holds the save**, the default): every
+  vehicle is **one real vehicle**, the same one on both screens, never a copy and never a
+  hologram. Each of you can summon your own (the guest's summons come from the host's garage
+  stock); when your partner drives, the vehicle drives in your world too, with them seated in
+  it, and when they park it, it stands there for you as well. One driver at a time: while
+  your partner drives a vehicle you cannot get in (if you both press X at once, the host
+  gets it). The driver's game decides the damage; the other world copies it. Cargo your
+  partner put on the vehicle shows on it (cannot be picked up yet). Online vehicles of other
+  players are hidden during co-op. Without **Host holds the save** you see a solid copy of
+  your partner's trike or truck (no roadster, no hologram).
 - Not yet: other weapons in hand (bola gun, launchers, PCC ...), the Odradek, the cuff device,
   the weapon crate on the hip, the chiral cylinder, the exoskeleton on non-Sam characters,
   facial animation, the partner's gear sounds and gunshots (footsteps, movement and
-  rifle handling are heard, experimental), a solid roadster, the Kusanagi's own look, mud /
-  snow on vehicles, the light the lamps throw, vehicle damage, carts,
+  rifle handling are heard, experimental), riding together in one vehicle, being hit by your
+  partner's vehicle, shared cargo on vehicles, carts (and for the copies without Host holds the
+  save: a roadster, the Kusanagi's own look, mud / snow, the light the lamps throw, damage),
   world/BT/mission sync.
 
 ## Download

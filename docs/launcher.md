@@ -341,12 +341,18 @@ self_headgear=0                 the self view's cap and glasses go back to v0.11
 self_feet_hide=0                the self view keeps the character's own feet under the equipped boots (mod key only;
                                 default on; section 21)
 boots_sync=0                    the equipped boots are not sent or drawn on the partner (mod key only; default on; section 21)
-vehicle_sync=0|1|2|3|4          the partner's vehicle (mod key only; default 1: solid trike and truck copies with the
-                                partner's paint and packs, their collision off on each copy (you walk and drive through
-                                them), the roadster as its hologram (no solid roadster exists); 2 the same; 3 all three
-                                as holograms (v0.13's default); 4 the roadster only; 0 nothing read, sent or spawned;
-                                a parked vehicle stays shown while its driver is within 250 m of it; sections 22.11,
-                                22.13)
+vehicle_sync=0|1|2|3|4|5        the partner's vehicle (mod key only). Default with host_save=1: 5 ("real", section 23):
+                                every vehicle is one real game vehicle in both worlds, no copies (off with a one-line
+                                reason when its byte checks fail: then 1). Default otherwise 1: solid trike and truck
+                                copies with the partner's paint and packs, their collision off on each copy (you walk
+                                and drive through them), no roadster and no hologram (decision D2-1); 2 the same; 3 all
+                                three as holograms (opt-in); 4 the roadster's hologram only (opt-in); 0 nothing read,
+                                sent or spawned; a parked vehicle stays shown while its driver is within 250 m of it;
+                                sections 22.11, 22.13, 23)
+vehicle_real_native=1           vehicle_sync=5 only (mod key only; default 0): the real follower vehicle's lamps and engine /
+                                road sounds are the game's own only; 0 keeps the v0.14 lamp writes and the STA1
+                                vehicle-sound mirror on the real vehicle until a hidden run proves the native ones
+                                (section 23.16)
 vehicle_overlap_hide=0          the partner's vehicle copy stays shown where your own vehicle of the same kind stands (mod
                                 key only; default on: hidden there until it moves away; section 22)
 vehicle_look=0                  the partner's vehicle copy keeps its own look and carries no cargo (mod key only; default

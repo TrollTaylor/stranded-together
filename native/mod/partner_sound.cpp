@@ -1485,6 +1485,8 @@ void ToWwise(const double (&p)[3], float (&t)[9]) {
 
 bool SlotPlace(std::uint8_t slot, const double (&off)[3], double now, double (&out)[3]) {
     if (slot == wire::kSoundSlotVehicle) {
+        // the real shared vehicles with vehicle_real_native=1: the follower vehicle's own engine and road sounds only
+        if (!vsync::MirrorVehicleSounds()) return false;
         const float l[3] = {static_cast<float>(off[0]), static_cast<float>(off[1]), static_cast<float>(off[2])};
         return vsync::PartnerVehicleWorld(now, l, out);
     }

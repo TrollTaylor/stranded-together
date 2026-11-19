@@ -596,7 +596,8 @@ parked vehicle <ptr> kept after n ms without a send tick (our Sam slept: a menu)
   vehicle's place plus that offset in its frame (`pin: the copy pinned ... at (x, y, z), forward (fx, fy)`), so we can
   drive into it; 23 lets it follow its frames again.
 * `action vehicle_sync 18 <kind>`: hidden tests: every tick checks whether the game camera looks at the nearest
-  registered vehicle of that kind (5: the partner's vehicle copy) and logs `camera aimed #n ...` once it does within 25 deg
+  registered vehicle of that kind (5: the partner's vehicle copy; 6: the real shared vehicle the partner drives here or
+  drove last, which is not in the registry's list while the NPC controller holds it) and logs `camera aimed #n ...` once it does within 25 deg
   (`until 25 150 camera aimed #n => pad none 200 rx=32767` turns the camera onto it; 100 ms pulses barely move it; `#n`
   counts per game).
 * `action vehicle_sync 14 <0|1>` / `15 <0|1>`: the partner vehicle's look / packs off / on at run time (`vehicle_look`,
@@ -695,6 +696,45 @@ QuitGame (`0x142642B20`), `7` the checkpoint retry request (`0x14362D750` with i
 Retry; the host's detection sees it as a Retry), `8 <0|1>` the guest's waiting panel hidden (the input block and the
 gate stay). The menu's header shows the session's one-line status and, after a late join, the **Teleport to host**
 button.
+
+### Vehicle share, Vehicle dump, Vehicle summon (`vehicle_share`, `vehicle_dump`, `vehicle_summon`; `session.ini vehicle_sync=5` with `host_save=1`)
+
+The real shared vehicles (docs/real-partner-body.md section 23). `action vehicle_share 0` logs the status
+(`[vshare] status: ...`): role, on / off and why, the world, the poll, messages sent / received, the gate's counters
+(passed, the mod's own, the guest's load window, online dropped, forwarded, dropped) and the victim chooser's; on the
+guest the table, bindings, mirrors per path, removals and re-placements; on the host the snapshots, ADD / REM and the
+guest's requests. `1 [tag]` = `vehicle_dump`, `2 <kind> [m]` = `vehicle_summon`, `3` a snapshot now (guest: asks; host:
+sends one unasked), `4` (guest) the last binding plan per vehicle, `7` the gate and eviction counters. Hidden runs only:
+`5 <0..3>` the guest's mirror path (0 auto, 1 exact-id only, 2 fallback spawn only, 3 re-place only), `6 <kind> [m]` the
+removal bit on the nearest vehicle of that kind within m (default 60).
+
+`action vehicle_dump [tag]` logs every in-use unit of the roadster, truck and trike pools (`[vshare] unit T<tag>: ...`:
+pool index, id, actor state, flags, +0x19C bytes, area, rider, GUID, life, battery, entity, place, and on the guest its
+binding) and a summary line (`[vshare] dump T<tag>: N units in use (roadster a, truck b, trike c) ...`). It works
+without the sync too (a diagnostic), when the pool layout's bytes match.
+
+`action vehicle_summon <kind> [m]` (1 roadster, 2 truck, 3 trike; m ahead of Sam, default 8) asks for a vehicle through
+the game's own request path: a parking manager slot of that kind through the garage slot spawn `0x142D5CB20`, else
+`0x142F830A0` with a record like one of this world's vehicles of that kind. On the guest its gate drops it and forwards it
+to the host (the whole summon path of M2.3).
+
+`action vehicle_share 8 [kind] [m]` (host) logs the game's own persisted entry of every live vehicle of that kind (0 any)
+within m (default 400) of Sam: what the host's next save writes for it (`[vshare] persisted entry of ...: place ..., x m
+from where it stands now`).
+
+### Vehicle drive (`vehicle_drive`; `session.ini vehicle_sync=5` with `host_save=1`)
+
+Remote driving, ownership and state on the real shared vehicles (docs/real-partner-body.md sections 23.11 - 23.21).
+`action vehicle_drive 0` logs the status (`[vdrive] status: ...`): on / off and why, frames sent (DRIVE, PARK) and
+received (refused: not from the owner), followers attached / detached / failed, VOWN messages, claims, grants, denies,
+forced ride-offs, input updates, the battery probe. `1` one line per vehicle with drive state: owner and epoch, the
+follower, our Sam on it, frames, the placement error mean / max and angle, corrections per band, life / battery writes.
+`2 <0|1> [0|1]` the native net correction off / on (the second value: on parked vehicles too; off by default, they are teleported), `3 <parked m> <driven m>` the ignore bands (0 = 0.1 / 0.3), `5 <0|1>`
+native lamps and sounds (as `vehicle_real_native`), `8` the battery probe. Hidden runs only: `4 <0|1>` corrections off /
+on (the open-loop replay), `6 <kind> [m]` moves the nearest vehicle of that kind m (0 = 0.6) sideways with RequestTeleport
+(a push), `7 <life>` sets the life of the vehicle our Sam drives (else the nearest within 30 m), `9 [m]` places our Sam m
+(0 = 9) to the left of the vehicle the partner drives here, facing it (snapped to the ground; with a third value 1
+  placed at the vehicle's height instead, for the underground garage) (then `vehicle_sync 18 6` aims the camera at it).
 
 ## Byte-check table
 

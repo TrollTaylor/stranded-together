@@ -396,7 +396,7 @@ ini <key>=<value>            an extra session.ini line, for every game of the ru
                              smooth_pose, frame_cap, audio_probe, self_voice, voice_sync, voice_subtitles, sound_sync,
                              sound_steps, partner_volume, self_headgear, self_feet_hide, boots_sync,
                              vehicle_sync, vehicle_overlap_hide, vehicle_look, vehicle_packs, vehicle_sound,
-                             host_save, coop_test_build (the host-held save session, docs/coop-session.md;
+                             vehicle_real_native, host_save, coop_test_build (the host-held save session, docs/coop-session.md;
                              coop_test_build: a fake game build, honoured in hidden runs only)
                              (testenv_core ScenarioIniKeyAllowed; a scenario
                              frame_cap is written after graphics low's 30, so it wins)
@@ -894,6 +894,19 @@ hidden: `Start-TestRun.ps1 -Scenario two-games -SeedSaves complete-100`.
   of its title (2: the input block lifted too, the gate alone holds the title), `9 <type> <index>` lets a slot stand in
   for a New Game's first save. The title's New Game path for a pad: one DOWN from CONTINUE (on a title with a save), A,
   LEFT + A (the confirmation selects Cancel), A on the difficulty, LEFT + A, A on Change Text Size.
+* **The shared real vehicles scenario** (`ini host_save=1`, docs/real-partner-body.md section 23):
+  `two-games-veh-identity` (with `-GuestSeed profile-only`): the host's table, the guest's binding (all bound at 0.00 m),
+  both pools dumped (`vehicle_dump`), then a guest `vehicle_summon 3` through its gate to the host and back (the exact-id
+  mirror); passes (2026-11-19, section 23.9). `action vehicle_share 5 <0..3>` / `6 <kind> [m]` (hidden runs only) pick
+  the guest's mirror path / set the removal bit on the nearest vehicle. Stage 2 (remote driving, ownership, state;
+  section 23.19): `two-games-veh-summon`, `two-games-veh-drive` (host drives the truck, the guest's camera near it:
+  `action vehicle_drive 9` puts the watcher beside the vehicle it follows, `vehicle_sync 18` aims the camera),
+  `two-games-veh-drive-guest`, `-drive-trike`, `-drive-roadster`, `two-games-veh-handoff`, `two-games-veh-remove`,
+  `two-games-veh-persist`, all with `-GuestSeed profile-only`. `vehicle_drive 1` logs each vehicle's owner, follower,
+  placement error and corrections; `4`, `6`, `7`, `9` are hidden runs only. Smoke run 2026-11-19 (section 23.20); all
+  nine pass in hidden runs on 2026-11-19 (section 23.22). The scenarios name counted log lines (`follower of ...
+  attached #2`, `our Sam drives ... #2`, `got off ... (#2)`): `waitlog` matches the whole log, so a repeated event must
+  name its count.
 * **Steps.** `@guest <step>` sends a mod command / `waitready` / `waitlog` / `until` to the guest;
   `@both` a mod command to both. Each game's log is matched separately. A guest that exits after
   `@guest quit` does not end the run; otherwise either game exiting does.

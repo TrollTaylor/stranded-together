@@ -17,6 +17,8 @@
 #include "partner_holo.hpp"
 #include "partner_source.hpp"
 #include "real_body.hpp"
+#include "vehicle_drive.hpp"
+#include "vehicle_share.hpp"
 
 namespace st::vsync {
 namespace {
@@ -113,6 +115,7 @@ constexpr CopyDef kCopies[kCopyCount] = {
 // 0 off; 1 (default) and 2: the solid copies (2 was v0.13's "solid copies" value); 3: all three kinds as construction
 // holograms (opt-in; v0.13's default); 4: the roadster's copy only (the v0.12 default)
 int g_mode = 1;
+bool g_real_fallback = false;  // mode 5 fell back to 1 at run time (vshare not in effect); back to 5 when it is
 
 // ---------------------------------------------------------------- state
 bool g_checked = false, g_ok = false;
@@ -567,11 +570,14 @@ WorldTransform SpawnPlace(const WorldTransform& at) {
     return s;
 }
 
-// The copy for the partner's frame (section 22.11): the solid one, else the logged fallback (the construction
-// hologram). The roadster has no solid copy (22.8, 22.11): its hologram stands in, logged once.
+// The copy for the partner's frame (section 22.11): the solid one. The roadster has no solid copy (22.8, 22.11).
+// Decision D2-1 ("no hologram vehicles", section 23): in the default modes (1, 2: the fallback of the real shared vehicles)
+// no hologram stands in, so the roadster and a solid copy that cannot be made safe show nothing (-1); only the opt-in
+// hologram modes 3 and 4 still use the construction holograms.
 int CopyFor(const wire::VehicleFrame& f, double now) {
     const wire::VehicleResource* r = wire::FindVehicleResource(f.guid);
     const bool holo = g_mode == 3;
+    const bool holo_ok = g_mode == 3 || g_mode == 4;
     const bool solid_ok = !holo && CollCheck();
     auto usable = [&](int d) { return !Refused(d, now); };
     int def = -1;
@@ -591,6 +597,15 @@ int CopyFor(const wire::VehicleFrame& f, double now) {
             break;
         default:
             return -1;
+    }
+    if (!holo_ok && def >= 0 && kCopies[def].welcome) {
+        static const char* none_logged[4] = {};
+        const char* nwhy = f.kind == 1 ? "no solid roadster copy exists and holograms are off (D2-1)" : why;
+        if (f.kind < 4 && none_logged[f.kind] != nwhy) {
+            none_logged[f.kind] = nwhy;
+            Log("[vehicle] the partner's %s: no copy (%s)", r ? r->key : "?", nwhy ? nwhy : "?");
+        }
+        return -1;
     }
     static int logged_def[4] = {-1, -1, -1, -1};
     static const char* logged_why[4] = {};
@@ -837,11 +852,14 @@ std::uint8_t ConfigIndexOf(const std::uint8_t (&g)[16]) {
 // Sender: the cargo in vehicle v's DSBaggage2 carrier (every slot: Default 0, PassengerSeat 69 ...), each drawn piece
 // (gear::CargoModelOf: delivery cases) in v's frame from its own world transform (+0x38 position, +0x50 rotation rows),
 // its colour variation as the baggage config's index. Fault-free reads; at most kMaxVehicleCargo (the rest counted).
-void ReadCargo(std::uintptr_t v, const WorldTransform& vt) {
+// The carrier walk (also for the real vehicles of section 23.16: which of the partner's pieces our own vehicle carries already).
+unsigned WalkCarrier(std::uintptr_t v, const WorldTransform& vt, wire::VehicleCargo* out, unsigned cap, std::uint8_t* dropped, unsigned* seen_out,
+                     unsigned* not_drawn_out, unsigned* unplaced_out, bool log_not_drawn) {
     const std::uintptr_t comp = partner::FindComponentByName(reinterpret_cast<Entity*>(v), "DSBaggage2CarrierComponent");
     const std::uintptr_t car = comp && mem::Q(comp + 0x48) == v ? mem::Q(comp + 0x50) : 0;
     std::int32_t slots = -1;
-    g_ours.nc = 0, g_ours.cargo_dropped = 0;
+    unsigned nc = 0;
+    *dropped = 0;
     unsigned seen = 0, not_drawn = 0, unplaced = 0;
     if (car && mem::Read(car + 0x10, &slots, 4) && slots >= 0 && slots <= 64) {
         const std::uintptr_t slot_arr = mem::Q(car + 0x18);
@@ -864,7 +882,7 @@ void ReadCargo(std::uintptr_t v, const WorldTransform& vt) {
                     if (model >= wire::kVehicleCargoModels) {
                         ++not_drawn;
                         static unsigned nd_logs = 0;
-                        if (++nd_logs <= 12) {
+                        if (log_not_drawn && ++nd_logs <= 12) {
                             std::uint8_t mb = 0, lf[5] = {};
                             std::uint8_t slot_type = 0;
                             mem::Read(s + 1, &slot_type, 1);
@@ -907,11 +925,11 @@ void ReadCargo(std::uintptr_t v, const WorldTransform& vt) {
                         ++unplaced;
                         continue;
                     }
-                    if (g_ours.nc >= wire::kMaxVehicleCargo) {
-                        ++g_ours.cargo_dropped;
+                    if (nc >= cap) {
+                        ++*dropped;
                         continue;
                     }
-                    wire::VehicleCargo& c = g_ours.cargo[g_ours.nc++];
+                    wire::VehicleCargo& c = out[nc++];
                     c.model = model;
                     wire::GearLook gl;
                     c.variation = look::ReadBaggage(bag, &gl) && gl.nvar == 1 ? ConfigIndexOf(gl.guid[0]) : wire::kGearNone;
@@ -921,6 +939,15 @@ void ReadCargo(std::uintptr_t v, const WorldTransform& vt) {
             }
         }
     }
+    if (seen_out) *seen_out = seen;
+    if (not_drawn_out) *not_drawn_out = not_drawn;
+    if (unplaced_out) *unplaced_out = unplaced;
+    return nc;
+}
+
+void ReadCargo(std::uintptr_t v, const WorldTransform& vt) {
+    unsigned seen = 0, not_drawn = 0, unplaced = 0;
+    g_ours.nc = static_cast<std::uint8_t>(WalkCarrier(v, vt, g_ours.cargo, wire::kMaxVehicleCargo, &g_ours.cargo_dropped, &seen, &not_drawn, &unplaced, true));
     // hidden tests: synthetic pieces on its bed / rack (vehicle_sync 24)
     for (unsigned i = 0; i < g_test_cargo && g_ours.nc < wire::kMaxVehicleCargo; ++i) {
         const int cls = g_ours.cls;
@@ -1340,7 +1367,7 @@ const char* ValidateCargoProp(Entity* e) {
 // next one: it comes when it changes and every second), one case prop per piece placed every tick at the copy's place
 // times the piece's place in the vehicle's frame, shown with the copy (hidden with it), coloured with the baggage
 // config's variation the sender named (gear_look, as the cargo on the partner's back).
-void DriveCargo(const WorldTransform& v, const Rx* b, bool show, double now) {
+void DriveCargo(const WorldTransform& v, const Rx* b, bool show, double now, std::uintptr_t own_vehicle = 0) {
     if (!g_look_on || g_cargo_refused) return;
     // the newest cargo block at or before b
     const unsigned bi = static_cast<unsigned>((static_cast<std::size_t>(b - g_ring) + kRing - g_head) % kRing);
@@ -1362,13 +1389,44 @@ void DriveCargo(const WorldTransform& v, const Rx* b, bool show, double now) {
         break;
     }
     const unsigned want = g_copy.cargo_have ? g_copy.nc : 0;
+    // Real shared vehicles (section 23.16, D2-4): the partner's pieces our own world's vehicle carries already (the same model
+    // within 0.35 m in the vehicle's frame) get no prop; read again every 500 ms.
+    static std::uint32_t own_skip = 0;
+    static double own_next_ms = 0;
+    static std::uintptr_t own_last = 0;
+    if (!own_vehicle) {
+        own_skip = 0, own_last = 0;
+    } else if (own_vehicle != own_last || now >= own_next_ms) {
+        own_last = own_vehicle;
+        own_next_ms = now + 500;
+        static wire::VehicleCargo mine[wire::kMaxVehicleCargo];
+        std::uint8_t dropped = 0;
+        const unsigned nm = WalkCarrier(own_vehicle, v, mine, wire::kMaxVehicleCargo, &dropped, nullptr, nullptr, nullptr, false);
+        std::uint32_t skip = 0;
+        bool used[wire::kMaxVehicleCargo] = {};
+        for (unsigned i = 0; i < want && i < 32; ++i)
+            for (unsigned k = 0; k < nm; ++k) {
+                if (used[k] || mine[k].model != g_copy.cargo[i].model) continue;
+                const float dx = mine[k].t[0] - g_copy.cargo[i].t[0], dy = mine[k].t[1] - g_copy.cargo[i].t[1], dz = mine[k].t[2] - g_copy.cargo[i].t[2];
+                if (dx * dx + dy * dy + dz * dz > 0.35f * 0.35f) continue;
+                used[k] = true;
+                skip |= 1u << i;
+                break;
+            }
+        if (skip != own_skip) {
+            unsigned ns = 0;
+            for (std::uint32_t x = skip; x; x &= x - 1) ++ns;
+            Log("[vehicle] the partner's real vehicle: %u of its %u cargo piece(s) are on ours already (no prop), %u shown as props", ns, want, want - ns);
+        }
+        own_skip = skip;
+    }
     unsigned started = 0;
     for (unsigned i = 0; i < wire::kMaxVehicleCargo; ++i) {
         CargoCopy& c = g_cargo[i];
         const char* key = nullptr;
         const char* path = nullptr;
         const char* guid_text = nullptr;
-        if (i >= want || !gear::CargoProp(g_copy.cargo[i].model, &key, &path, &guid_text)) path = nullptr;
+        if (i >= want || (i < 32 && ((own_skip >> i) & 1u)) || !gear::CargoProp(g_copy.cargo[i].model, &key, &path, &guid_text)) path = nullptr;
         const std::uint8_t var = i < want ? g_copy.cargo[i].variation : wire::kGearNone;
         if (c.path != path || (c.live && c.variation != var)) {
             if (c.loading || c.live || c.sp.sp) ClearCargoCopy(c, "the partner's cargo changed");
@@ -1508,6 +1566,140 @@ void DriveCargo(const WorldTransform& v, const Rx* b, bool show, double now) {
             if (partner::ReadFlags(c.sp.e, &fl) && (fl & 0x2) == 0) partner::SetVisible(c.sp.e, true);
         }
     }
+}
+
+// ---------------------------------------------------------------- the real shared vehicles (vehicle_sync=5, section 23.16)
+// The partner's lamps (STM1 state block) on our real vehicle it drives or stands at: the v0.14 lamp writes, kept until a
+// hidden run proves the follower's own lamps (session.ini vehicle_real_native=1 turns them off). Only the lamp intensities and
+// the gauge colours: the wear is the same vehicle's in both worlds.
+struct RealLights {
+    std::uintptr_t e = 0;
+    bool applied = false;
+    std::uint8_t nl = 0;
+    wire::VehicleLight light[wire::kMaxVehicleLights];
+    double full_ms = 0, fail_ms = 0;
+    unsigned applies = 0;
+};
+RealLights g_real_lights;
+void DriveRealLights(std::uintptr_t e, const wire::VehicleFrame& f, double now) {
+    RealLights& r = g_real_lights;
+    if (r.e != e) r = RealLights{}, r.e = e;
+    if (!g_look_on || !(f.flags & wire::kVehState) || now < r.fail_ms) return;
+    const bool full = !r.applied || now >= r.full_ms;
+    static wire::GearShaderVar vars[2 * wire::kMaxVehicleLights];
+    unsigned n = 0;
+    auto find = [](const wire::VehicleLight* ls, unsigned ln, const wire::VehicleLight& l) -> const wire::VehicleLight* {
+        for (unsigned k = 0; k < ln; ++k)
+            if (ls[k].part == l.part && ls[k].kind == l.kind) return &ls[k];
+        return nullptr;
+    };
+    for (unsigned i = 0; i < f.nl; ++i) {
+        const wire::VehicleLight& l = f.light[i];
+        const wire::VehicleLight* was = r.applied ? find(r.light, r.nl, l) : nullptr;
+        if (!full && was && was->v[0] == l.v[0] && was->v[1] == l.v[1] && was->v[2] == l.v[2]) continue;
+        wire::GearShaderVar& sv = vars[n++];
+        sv = wire::GearShaderVar{};
+        const bool colour = l.kind == static_cast<std::uint8_t>(wire::VehicleLightKind::colour);
+        sv.hash = colour ? wire::kVehGaugeHash : wire::kVehLightHash, sv.part = l.part, sv.count = static_cast<std::uint8_t>(colour ? 3 : 1);
+        for (int c = 0; c < 3; ++c) sv.v[c] = l.v[c];
+    }
+    for (unsigned i = 0; r.applied && i < r.nl && n < 2 * wire::kMaxVehicleLights; ++i) {
+        const wire::VehicleLight& l = r.light[i];
+        if (l.kind != static_cast<std::uint8_t>(wire::VehicleLightKind::intensity) || find(f.light, f.nl, l)) continue;
+        wire::GearShaderVar& sv = vars[n++];
+        sv = wire::GearShaderVar{};
+        sv.hash = wire::kVehLightHash, sv.part = l.part, sv.count = 1;
+    }
+    if (n == 0) return;
+    char why[200] = {};
+    const look::ApplyResult res = look::SetVehicleVars(e, vars, n, why, sizeof(why));
+    if (res == look::ApplyResult::failed || res == look::ApplyResult::off) {
+        r.fail_ms = now + 2000;
+        static unsigned fail_logs = 0;
+        if (++fail_logs <= 5)
+            Log("[vehicle] the partner's lamps on our real vehicle: %s%s%s", res == look::ApplyResult::off ? "looks OFF" : "FAILED", why[0] ? ": " : "", why);
+        return;
+    }
+    r.applied = true;
+    r.nl = f.nl;
+    for (unsigned i = 0; i < f.nl; ++i) r.light[i] = f.light[i];
+    if (full) r.full_ms = now + 2000;
+    if (++r.applies <= 3)
+        Log("[vehicle] the partner's lamps on our real vehicle %p: %u light(s), %u variable(s) set (vehicle_real_native=0)", reinterpret_cast<void*>(e),
+            static_cast<unsigned>(f.nl), n);
+}
+
+// Guest only (the host's world is the persisted one): the host's look on our real vehicle when ours differs (a mirror built
+// from a record, a paint change on the host). Checked every 2 s, at most 5 applies per vehicle.
+void DriveRealLook(std::uintptr_t e, const wire::VehicleFrame& f, double now) {
+    static std::uintptr_t last_e = 0;
+    static double next_ms = 0;
+    static unsigned applies = 0;
+    if (e != last_e) last_e = e, next_ms = 0, applies = 0;
+    if (!g_look_on || !g_lrx.have || now < next_ms || applies >= 5) return;
+    next_ms = now + 2000;
+    if (g_lrx.l.layout >= wire::kVehicleResourceCount) return;
+    const wire::VehicleResource* r = &wire::VehicleResources()[g_lrx.l.layout];
+    if (wire::FindVehicleResource(f.guid) != r) return;
+    if (look::SatisfiedVehicle(e, g_lrx.l)) return;
+    static std::uintptr_t list[kRegCap];
+    std::uintptr_t own[16];
+    unsigned n_own = 0;
+    const int n = ReadRegistry(list);
+    for (int i = 0; i < n && n_own < 16; ++i) {
+        std::uint32_t fl = 0;
+        if (list[i] == e || ClassOf(list[i]) < 0 || !Rd32(list[i] + kVehFlags, fl) || !(fl & 2)) continue;
+        char path[160] = {};
+        std::uint8_t g[16] = {};
+        if (realbody::ResourceIdentity(reinterpret_cast<Entity*>(list[i]), path, sizeof(path), g, nullptr) && wire::FindVehicleResource(g) == r)
+            own[n_own++] = list[i];
+    }
+    char why[200] = {};
+    const look::ApplyResult res = look::ApplyVehicle(e, g_lrx.l, own, n_own, why, sizeof(why));
+    ++applies;
+    Log("[vehicle] the host's look on our real %s %p (it differed; %u source(s)): %s%s%s", r->key, reinterpret_cast<void*>(e), n_own,
+        res == look::ApplyResult::done      ? "applied"
+        : res == look::ApplyResult::partial ? "partly applied"
+        : res == look::ApplyResult::off     ? "looks OFF"
+                                            : "FAILED",
+        why[0] ? ": " : "", why);
+}
+
+// Mode 5: no copy. The partner's real vehicle in our world (the one we follow while it drives, else the shared vehicle of its
+// kind nearest the frames' place) carries the cargo the partner has on it and ours lacks (D2-4: props, collision off), the
+// partner's lamps (until vehicle_real_native=1), and on the guest the host's look.
+void RealVehicleTick(const Rx* b, double now) {
+    std::uintptr_t e = 0;
+    WorldTransform vt{};
+    bool have = false;
+    if (vdrive::PartnerDrivenEntity(&e) && ClassOf(e) == static_cast<int>(b->f.kind) - 1 && ReadXf(e, vt)) {
+        have = true;
+    } else {
+        vshare::Unit u;
+        const double p[3] = {b->f.x, b->f.y, b->f.z};
+        // the poll is 10 Hz: the unit and its actor are checked again before the look and lamp game calls use the entity
+        if (vshare::FindNear(b->f.kind, p, 3.0, &u) && u.entity && vshare::UnitLive(u) && ClassOf(u.entity) == static_cast<int>(b->f.kind) - 1 &&
+            ReadXf(u.entity, vt)) {
+            e = u.entity;
+            have = true;
+        }
+    }
+    static std::uintptr_t logged = 1;
+    if (have != (logged != 0) || (have && logged != e)) {
+        logged = have ? e : 0;
+        if (have)
+            Log("[vehicle] the partner's vehicle is our real %s %p (%s)", b->f.kind == 1 ? "roadster" : b->f.kind == 2 ? "truck" : "trike", reinterpret_cast<void*>(e),
+                (b->f.flags & wire::kVehSeated) ? "it drives it" : "parked");
+        else
+            Log("[vehicle] the partner's vehicle is not in our world here (not spawned, or not shared)");
+    }
+    if (!have) {
+        ClearCargo("the partner's vehicle is not here");
+        return;
+    }
+    DriveCargo(vt, b, true, now, e);
+    if (!vdrive::NativeFx()) DriveRealLights(e, b->f, now);
+    if (vshare::Role() == 2) DriveRealLook(e, b->f, now);
 }
 
 // ---------------------------------------------------------------- receiver helpers
@@ -1839,7 +2031,12 @@ void LogMeters(double now, bool force) {
 // ---------------------------------------------------------------- API
 void Init(const Config& config) noexcept {
     g_mode = config.vehicle_sync;
-    if (g_mode < 0 || g_mode > 4) g_mode = 1;
+    // vehicle_sync=5 (the real shared vehicles, vehicle_share.cpp) when that module is on; its fallback is 1 (D2-1)
+    if (vshare::Active()) g_mode = 5;
+    else if (g_mode == 5) g_mode = 1;
+    if (g_mode < 0 || g_mode > 5) g_mode = 1;
+    if (g_mode == 1 && vshare::OffReason()[0] && config.host_save)
+        Log("[vehicle] the real shared vehicles are off (%s): the solid trike / truck copies stand in, no roadster", vshare::OffReason());
     g_overlap_on = config.vehicle_overlap_hide;
     g_look_on = config.vehicle_look;
     g_packs_on = config.vehicle_packs;
@@ -1849,7 +2046,8 @@ void Init(const Config& config) noexcept {
         g_mode == 0   ? "off"
         : g_mode == 3 ? "on: roadster, trike and truck as construction holograms (opt-in)"
         : g_mode == 4 ? "on: the roadster's copy only"
-                      : "on: solid trike and truck copies with their collision off on each copy; the roadster's hologram (no solid roadster copy exists)",
+        : g_mode == 5 ? "real: the vehicles are shared game vehicles (vehicle_share); no copies, STM1 still carries the seat and ride state"
+                      : "on: solid trike and truck copies with their collision off on each copy; no roadster (no holograms, D2-1)",
         g_mode);
 }
 
@@ -2131,13 +2329,18 @@ void CheckAim(Entity* local, double now) {
         return;
     }
     static std::uintptr_t list[kRegCap];
-    const int n = g_aim_kind == 5 ? 0 : ReadRegistry(list);
+    const int n = g_aim_kind == 5 || g_aim_kind == 6 ? 0 : ReadRegistry(list);
     double best_d = 1e9;
     WorldTransform best{};
-    // 5: the partner's vehicle copy (the watcher's view of it after a drive)
+    // 5: the partner's vehicle copy (the watcher's view of it after a drive); 6: the real shared vehicle the partner drives
+    // here (or drove last): the followed vehicle is not in the registry's list while the NPC controller holds it
     if (g_aim_kind == 5) {
         Entity* c = CopyEntity();
         if (c && ReadXf(reinterpret_cast<std::uintptr_t>(c), best)) best_d = Dist(best, swt);
+    }
+    if (g_aim_kind == 6) {
+        std::uintptr_t e = 0;
+        if (vdrive::PartnerVehicleEntity(&e) && ReadXf(e, best)) best_d = Dist(best, swt);
     }
     for (int i = 0; i < n; ++i) {
         std::uint32_t kind = 0, fl = 0;
@@ -2294,6 +2497,22 @@ bool ReportedVehicleLocal(std::uintptr_t e, const double (&p)[3], float (&out)[3
     return std::isfinite(out[0]) && std::isfinite(out[1]) && std::isfinite(out[2]);
 }
 
+bool PartnerSeatAt(double play_ms, float (&seat)[3], float (&seat_r)[3][3], std::uint8_t* kind) noexcept {
+    if (g_mode == 0) return false;
+    const Rx* a = nullptr;
+    const Rx* b = nullptr;
+    double f = 0;
+    if (!Bracket(play_ms, &a, &b, &f) || play_ms - b->key > 500) return false;
+    if (!(a->f.flags & wire::kVehSeated) || !(b->f.flags & wire::kVehSeated)) return false;
+    if (b->key - a->key > 500) a = b, f = 0;
+    WorldTransform v{};
+    Lerp(a->f, b->f, f, Jump(*a, *b), v, seat, seat_r, nullptr);
+    if (kind) *kind = b->f.kind;
+    return true;
+}
+
+bool MirrorVehicleSounds() noexcept { return !(g_mode == 5 && vdrive::NativeFx()); }
+
 bool PartnerVehicleWorld(double now, const float (&local)[3], double (&out)[3]) noexcept {
     if (g_mode == 0 || now - g_snd_ms > 150) return false;
     const WorldTransform& v = g_snd_place;
@@ -2355,11 +2574,34 @@ void Tick(const TickIn& in, double now) noexcept {
         g_snd_ms = now;
     }
     int def = -1;
+    // The real sharing stopped at run time (a fault, the co-op session's stop) or the host's game does not share real vehicles:
+    // the v0.14 solid trike / truck copies stand in (vehicle_sync=1, no roadster: D2-1); back to real when it is in effect again.
+    if (g_mode == 5 && !vshare::RealInEffect()) {
+        g_mode = 1;
+        g_real_fallback = true;
+        Log("[vehicle] the real shared vehicles are not in effect (%s): the solid trike / truck copies stand in, no roadster",
+            vshare::Active() ? "the host's game shares none now" : vshare::OffReason());
+    } else if (g_real_fallback && g_mode == 1 && vshare::RealInEffect()) {
+        g_mode = 5;
+        g_real_fallback = false;
+        Log("[vehicle] the real shared vehicles are in effect again: no copies");
+    }
+    if (!why_none && g_mode == 5 && g_override == 0) {
+        if (have_any) RemoveCopy("real shared vehicles (vehicle_sync=5)");
+        RealVehicleTick(b, now);
+        return;
+    }
+    if (g_mode == 5 && why_none) ClearCargo(why_none);
     if (!why_none) {
-        def = g_override > 0 ? g_override - 1 : CopyFor(b->f, now);
-        if (def < 0) why_none = "unknown kind";
-        else if (g_override == 0 && g_mode == 4 && b->f.kind != 1) why_none = "trike / truck copies off (vehicle_sync=4: the roadster only)";
-        else if (Refused(def, now)) why_none = "its copy was refused";
+        def = why_none ? -1 : g_override > 0 ? g_override - 1 : CopyFor(b->f, now);
+        if (why_none) {
+        } else if (def < 0) {
+            why_none = b->f.kind >= 1 && b->f.kind <= 3 ? "no copy for this vehicle (no holograms)" : "unknown kind";
+        } else if (g_override == 0 && g_mode == 4 && b->f.kind != 1) {
+            why_none = "trike / truck copies off (vehicle_sync=4: the roadster only)";
+        } else if (Refused(def, now)) {
+            why_none = "its copy was refused";
+        }
     }
     if (why_none) {
         g_holding = false;
@@ -2614,6 +2856,7 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             if (m < 0 || m > 4) return std::snprintf(msg, cap, "mode 0 off, 1 / 2 solid, 3 holograms, 4 roadster only"), false;
             const bool holo_change = (g_mode == 3) != (m == 3);
             g_mode = m;
+            g_real_fallback = false;
             if (m == 0) RemoveCopy("vehicle_sync turned off");
             else if (holo_change) RemoveCopy("vehicle_sync switched between solid copies and holograms");
             std::snprintf(msg, cap, "vehicle sync mode %d", m);

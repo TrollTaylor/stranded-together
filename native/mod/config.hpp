@@ -77,9 +77,17 @@ struct Config {
     // copies (default; each copy's collision turned off on its own entity), the roadster as its construction hologram (no
     // solid roadster copy exists); 2 = the same (v0.13's value for the solid copies); 3 = all three as the garage's
     // construction holograms (opt-in; v0.13's default look); 4 = the roadster's copy only (the v0.12 default); 0 =
-    // nothing read, sent or spawned. Every value but 0 sends what we ride. A solid copy that cannot be made safe is
-    // replaced by its hologram (logged).
+    // nothing read, sent or spawned. Every value but 0 sends what we ride. 5 ("real", design M2; docs/real-partner-body.md
+    // section 23): one real game vehicle per vehicle in both worlds (vehicle_share.cpp), no copies; the DEFAULT when the key
+    // is absent and host_save=1 and its byte checks pass. Without host_save, or when a check fails, the copies of 1 stand
+    // in, and the defaults (1, 2) show no roadster hologram (decision D2-1: "no hologram vehicles"); a solid
+    // copy that cannot be made safe shows nothing. 3 and 4 stay the opt-in hologram modes.
     int vehicle_sync = 1;
+    bool vehicle_sync_set = false;     // the key was in session.ini (else the default above decides)
+    // vehicle_sync=5 only (docs/real-partner-body.md section 23.16): 1 = the real follower vehicle's lamps and engine / road
+    // sounds are the game's own only (the NPC driver controller's engine); default 0 keeps the v0.14 lamp writes and the
+    // STA1 vehicle-sound mirror on the real vehicle until a hidden run proves the native ones.
+    bool vehicle_real_native = false;
     // The partner's vehicle copy hidden while the watcher's own vehicle of the same kind stands in the same place (two of
     // the same vehicle in one spot; docs/real-partner-body.md section 22). Default on; 0: the copy is always shown.
     bool vehicle_overlap_hide = true;

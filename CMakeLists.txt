@@ -138,6 +138,9 @@ add_library(st_mod SHARED
   native/mod/partner_voice.cpp
   native/mod/partner_sound.cpp
   native/mod/vehicle_sync.cpp
+  native/mod/vehicle_wire.cpp
+  native/mod/vehicle_share.cpp
+  native/mod/vehicle_drive.cpp
   native/mod/save_xfer.cpp
   native/mod/save_xfer_io.cpp
   native/mod/coop_session.cpp
@@ -194,6 +197,14 @@ target_include_directories(st_save_xfer_tests PRIVATE native/mod native/include)
 target_compile_options(st_save_xfer_tests PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_save_xfer_tests PRIVATE _CRT_SECURE_NO_WARNINGS UNICODE _UNICODE)
 add_test(NAME st_save_xfer_tests COMMAND st_save_xfer_tests)
+
+# ---- The real shared vehicles' pure part (SVM1 on link channel 3, native/mod/vehicle_wire.*): every message's strict
+# decoder, the snapshot's chunking and reassembly, the spawn request flags, the gate, the binding and the host's rules.
+add_executable(st_vehicle_wire_tests tests/vehicle_wire_tests.cpp native/mod/vehicle_wire.cpp)
+target_include_directories(st_vehicle_wire_tests PRIVATE native/mod)
+target_compile_options(st_vehicle_wire_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_vehicle_wire_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_vehicle_wire_tests COMMAND st_vehicle_wire_tests)
 
 # ---- st_fakepeer: console stand-in for the second player (UDP), + self-test
 add_executable(st_fakepeer tools/fakepeer/fakepeer.cpp native/mod/link.cpp native/mod/steam_owner.cpp

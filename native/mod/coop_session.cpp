@@ -183,6 +183,11 @@ struct PendingLoad {
 PendingLoad g_pending;
 int g_load_result = -1;          // game thread -> worker: a stx::ResultCode
 bool g_guest_world = false;      // the guest's game is in a world (session and player)
+// The shared vehicles' notice (vehicle_share.cpp: "Summoning...", why the real vehicles are off): shown in the banner
+// while no session notice is.
+char g_vnotice[200] = {};
+bool g_vnotice_warn = false;
+double g_vnotice_until = 0;
 bool g_guest_title = true;       // the guest's game session is 0
 
 // What the screens show (worker -> game thread)
@@ -1613,6 +1618,13 @@ void BuildView(double now, bool at_title, bool in_world) {
                       : ui.gstate.phase == stx::GuestPhase::world      ? "in the world"
                                                                        : "refused");
     }
+    {
+        Lock l;
+        if (!v.banner[0] && g_vnotice[0] && now < g_vnotice_until) {
+            std::snprintf(v.banner, sizeof(v.banner), "%s", g_vnotice);
+            v.banner_warn = g_vnotice_warn;
+        }
+    }
     if (g_off[0]) {
         // The reason on screen for the first minute (then in the menu header only).
         static double first = 0;
@@ -1740,6 +1752,28 @@ void Install(const Config& config) noexcept {
 }
 
 bool Active() noexcept { return g_active.load(); }
+
+int SessionRole() noexcept { return g_active.load() ? g_role : 0; }
+
+bool WorldReady(std::uint32_t* load_counter) noexcept {
+    if (!g_active.load() || g_role == 0) return false;
+    Lock l;
+    if (g_role == 1) {
+        if (g_host_phase != stx::HostPhase::world) return false;
+        if (load_counter) *load_counter = g_load_counter;
+        return true;
+    }
+    if (!g_guest_world || g_ts.load != TickState::Load::idle || g_ts.loaded_counter == 0) return false;
+    if (load_counter) *load_counter = g_ts.loaded_counter;
+    return true;
+}
+
+void SetVehicleNotice(const char* text, bool warn, double until_ms) noexcept {
+    Lock l;
+    std::snprintf(g_vnotice, sizeof(g_vnotice), "%s", text ? text : "");
+    g_vnotice_warn = warn;
+    g_vnotice_until = until_ms;
+}
 
 void EmergencyStop(const char* reason) noexcept {
     if (g_role == 0 || !g_active.exchange(false)) return;   // never on, or stopped already

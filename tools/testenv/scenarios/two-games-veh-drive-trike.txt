@@ -1,0 +1,132 @@
+# Shared real vehicles, remote driving (design M2.10 #3; docs/real-partner-body.md sections 23.11 - 23.15), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-veh-drive-trike -SeedSaves complete-100 -GuestSeed profile-only
+# host_save=1 on both games, vehicle_sync unset: the real shared vehicles (vehicle_sync=5) with remote driving. The host
+# drives the trike with the game's own X and pad (straight, a turn, a hard stop, a reverse) while the guest stands 9 m
+# beside it with the camera turned onto it (vehicle_sync 18). The watcher's game drives ITS OWN unit of that vehicle
+# with the game's NPC driver controller, fed the driver's 48 input bytes (STD1) at the partner body's play time, and
+# corrects it in bands (vehicle_drive 1 logs the placement error mean / max and the corrections per band; every second
+# a "[vdrive] ... followed: placement error" line). Pass (in the logs): the follower attached and detached, errors under
+# 0.5 m in normal driving, no teleport while driving straight, the partner body seated on the real vehicle (the
+# screenshots), one unit per vehicle in each world (vehicle_dump 1 / 2 on both: the same ids, no new unit).
+# Check enlarged: T01..07 pairs (wheels turning, the partner seated in the real vehicle, the vehicle where the driver's
+# screen has it).
+role host
+graphics low
+timeout 360
+ini host_save=1
+ini partner_body=real
+ini partner_collision=0
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[coop\] host-held save session ON \(host
+@guest waitlog 10 \[coop\] host-held save session ON \(guest
+waitlog 60 \[vshare\] shared real vehicles ON \(host
+@guest waitlog 60 \[vshare\] shared real vehicles ON \(guest
+waitlog 10 \[vdrive\] remote driving ON \(host
+@guest waitlog 10 \[vdrive\] remote driving ON \(guest
+# the title menus (~20 s after the first frame); the host Continues (CONTINUE is selected on its title)
+wait 22000
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+@guest waitlog 60 \[vshare\] guest: the host's snapshot #[0-9]+ is complete
+@guest waitlog 30 \[vshare\] guest: binding:
+wait 12000
+# the saved Kusanagi trike outside (a trike summoned in the start garage was driven into its pillars, and the watcher's
+# ground snap put her on the hill above the garage: run 20261119-112511)
+# ---- host drives the trike, guest watches from beside it (the camera NEAR the vehicle)
+action vehicle_sync 8 1.8 4
+wait 1500
+@guest action vehicle_sync 8 9 4
+wait 2000
+@guest action vehicle_sync 18 4
+@guest until 25 150 camera aimed #1 => pad none 200 rx=32767
+action vehicle_dump 1
+@guest action vehicle_dump 1
+until 20 4000 \[vdrive\] host: our Sam drives trike => pad X 150
+@guest waitlog 20 \[vdrive\] follower of trike 0x[0-9A-F]+ attached
+wait 3500
+screenshot T01-host-mounted
+@guest screenshot T01-guest-sees-host-mounted
+# straight
+pad none 2500 rt=150 keep
+@guest screenshot T02a-guest-straight
+wait 700
+@guest screenshot T02b-guest-straight
+screenshot T02-host-straight
+pad none 1200 lt=255 keep
+pad none 0
+wait 800
+@guest action vehicle_drive 9 9
+wait 600
+@guest action vehicle_sync 18 6
+?@guest until 12 150 camera aimed #2 => pad none 200 rx=32767
+@guest screenshot T02c-guest-sees-stopped
+# a gentle turn
+pad none 2500 rt=140 lx=9000 keep
+@guest screenshot T03a-guest-turn
+wait 700
+@guest screenshot T03b-guest-turn
+screenshot T03-host-turn
+pad none 1200 lt=255 keep
+pad none 0
+wait 800
+@guest action vehicle_drive 9 9
+wait 600
+@guest action vehicle_sync 18 6
+?@guest until 12 150 camera aimed #3 => pad none 200 rx=32767
+@guest screenshot T03c-guest-sees-stopped
+# reverse
+pad none 2500 lt=200 keep
+@guest screenshot T04a-guest-reverse
+wait 700
+@guest screenshot T04b-guest-reverse
+screenshot T04-host-reverse
+pad none 0
+wait 1500
+@guest action vehicle_drive 9 9
+wait 600
+@guest action vehicle_sync 18 6
+?@guest until 12 150 camera aimed #4 => pad none 200 rx=32767
+# a hard stop from speed
+pad none 2200 rt=220 keep
+@guest screenshot T05a-guest-fast
+pad none 1000 lt=255 keep
+@guest screenshot T05b-guest-hard-stop
+pad none 0
+wait 2500
+screenshot T06-host-end
+@guest action vehicle_drive 9 9
+wait 600
+@guest action vehicle_sync 18 6
+?@guest until 12 150 camera aimed #5 => pad none 200 rx=32767
+@guest screenshot T06-guest-sees-end
+@both action vehicle_drive 1
+pad X 150
+waitlog 20 \[vdrive\] host: our Sam got off trike
+@guest waitlog 20 \[vdrive\] follower of trike 0x[0-9A-F]+ detached
+wait 3000
+screenshot T07-host-off
+@guest screenshot T07-guest-sees-off
+action vehicle_dump 2
+@guest action vehicle_dump 2
+@both action vehicle_drive 0
+@both action vehicle_drive 1
+@both action vehicle_share 0
+@both action log_status
+nolog \[vshare\].*FAULT
+@guest nolog \[vshare\].*FAULT
+nolog \[vdrive\].*FAULT
+@guest nolog \[vdrive\].*FAULT
+@guest quit
+wait 3000
+quit

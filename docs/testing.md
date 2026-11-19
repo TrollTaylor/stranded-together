@@ -12,6 +12,14 @@ ctest --test-dir build -C Release --output-on-failure
 - `st_net_tests`: pose codec, rotation round-trips, DST1 join codes (incl. typo detection),
   a full link v2 handshake + pose exchange between two in-process sessions, and a
   wrong-secret session that must never connect.
+- `st_vehicle_wire_tests`: the real shared vehicles' pure part (SVM1 on link channel 3,
+  [real-partner-body.md](real-partner-body.md) section 23): every message's round trip and decoder rejection, the
+  snapshot's chunking and reassembly (out of order, duplicates, a newer snapshot), the spawn request flags against
+  0x142F830A0's own formula for every bit pattern, the guest's gate, the binding rules (GUID, same id within 5 m,
+  re-place / remove + mirror, riders, mappings) and the host's removal guard, eviction refusal and rate limit. Stage 2
+  (section 23.11 - 23.21): the STD1 drive / park frames and the VOWN messages (every round trip and rejection, the 48
+  input bytes' rules), the ownership rules (claim, the host wins ties, release at rest, silence, epochs), the rest
+  detector, the correction bands and the clamped nudge, the teleport clearance footprints and the rotation helpers.
 - `st_save_xfer_tests`: the host-held save's transfer (STX1, [coop-session.md](coop-session.md)): SHA-256 known
   answers, every decoder rejection, the sender and receiver against each other (resume, supersede, SHA mismatch
   retries, version refusal, disk and parse errors), checkpoint.dat validation, the guest's allowed paths, the link's

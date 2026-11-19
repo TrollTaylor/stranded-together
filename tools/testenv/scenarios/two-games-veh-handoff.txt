@@ -1,0 +1,127 @@
+# Shared real vehicles, ownership handoff (design M2.10 #4, M2.7; docs/real-partner-body.md section 23.13), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-veh-handoff -SeedSaves complete-100 -GuestSeed profile-only
+# 1. The host drives the truck a few metres and gets off (RELEASE); the guest's follower lets go. 2. The guest, placed
+# beside it, gets on with X: CLAIM, the host GRANTs it, the guest drives away and the host's world follows; the guest gets
+# off, the truck comes to rest and goes back to the host (RELEASE at rest, GRANT handback). 3. The lock: the host drives
+# again; the guest, beside it, presses X: its game does not board (the follower holds the seat). 4. Both press X together
+# at a parked truck: the host wins (DENY or GRANT host), the guest's Sam is put off (RideOffVehicleForcibly) if it got on.
+# Pass: one driver at a time (never both "[vdrive] ... our Sam drives" for one id at once past the race), no fault.
+role host
+graphics low
+timeout 360
+ini host_save=1
+ini partner_body=real
+ini partner_collision=0
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[coop\] host-held save session ON \(host
+@guest waitlog 10 \[coop\] host-held save session ON \(guest
+waitlog 60 \[vshare\] shared real vehicles ON \(host
+@guest waitlog 60 \[vshare\] shared real vehicles ON \(guest
+waitlog 10 \[vdrive\] remote driving ON \(host
+@guest waitlog 10 \[vdrive\] remote driving ON \(guest
+# the title menus (~20 s after the first frame); the host Continues (CONTINUE is selected on its title)
+wait 22000
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+@guest waitlog 60 \[vshare\] guest: the host's snapshot #[0-9]+ is complete
+@guest waitlog 30 \[vshare\] guest: binding:
+wait 12000
+# ---- 1. the host drives and gets off
+action vehicle_sync 8 1.8 2
+@guest action vehicle_sync 8 7 2
+wait 1500
+@guest action vehicle_sync 18 2
+@guest until 25 150 camera aimed #1 => pad none 200 rx=32767
+until 20 4000 \[vdrive\] host: our Sam drives truck => pad X 150
+@guest waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached
+pad none 2500 rt=170 keep
+pad none 1500 lt=255 keep
+pad none 0
+wait 1500
+pad X 150
+waitlog 20 \[vdrive\] host: our Sam got off truck
+@guest waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ detached
+screenshot H1-host-off
+@guest screenshot H1-guest-sees-host-off
+# ---- 2. the guest takes the wheel (the host walks away a little; the get-off animation keeps Sam attached to the truck
+# for a moment: "Sam is attached to a parent entity", runs 20261119-114447 and -115100 after 3 s)
+wait 6000
+action vehicle_sync 8 8 2
+@guest action vehicle_sync 8 1.8 2
+wait 1500
+action vehicle_sync 18 2
+until 25 150 camera aimed #1 => pad none 200 rx=32767
+@guest until 20 4000 \[vdrive\] guest: our Sam drives truck => pad X 150
+waitlog 20 \[vdrive\] host: the guest claims truck 0x[0-9A-F]+ \(get on, epoch [0-9]+\): granted
+@guest waitlog 20 \[vdrive\] guest: GRANT for truck
+waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached
+@guest pad none 3000 rt=170 keep
+screenshot H2a-host-sees-guest-driving
+@guest pad none 1500 lt=255 keep
+@guest pad none 0
+wait 1500
+screenshot H2b-host-sees-guest-stopped
+@guest screenshot H2-guest-driving
+@guest pad X 150
+@guest waitlog 20 \[vdrive\] guest: our Sam got off truck
+?@guest waitlog 30 \[vdrive\] guest: RELEASE truck 0x[0-9A-F]+ \(owner guest, reason 1
+?waitlog 30 \[vdrive\] host: the guest releases truck 0x[0-9A-F]+ \(at rest
+?@guest waitlog 10 \[vdrive\] guest: GRANT for truck 0x[0-9A-F]+: owner host
+@both action vehicle_drive 1
+# (the "#n" counters: waitlog matches the whole log, so a repeated event names its count; run 20261119-114649 matched the
+# first drive and went on before the host boarded)
+# ---- 3. the lock: the host drives, the guest presses X beside it and does not board
+# (the guest stands beside the truck the host drives, vehicle_drive 9: the nearest registered truck was another one,
+# 0x020006, which she boarded in run 20261119-115252; a followed truck is not in the registry list)
+action vehicle_sync 8 1.8 2
+wait 1500
+until 20 4000 \[vdrive\] host: our Sam drives truck 0x[0-9A-F]+ \(owner host, epoch [0-9]+\) #2 => pad X 150
+@guest waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached #2
+@guest action vehicle_drive 9 2.5 1
+wait 1500
+@guest pad X 150
+wait 3000
+@guest pad X 150
+wait 3000
+@guest screenshot H3-guest-locked-out
+screenshot H3-host-driving
+pad X 150
+waitlog 20 \[vdrive\] host: our Sam got off truck 0x[0-9A-F]+ \(#2\)
+wait 6000
+# ---- 4. both press X together at the parked truck: the host wins
+action vehicle_sync 8 1.8 2
+@guest action vehicle_drive 9 2.5 1
+wait 2000
+@both pad X 150
+wait 4000
+@both action vehicle_drive 1
+screenshot H4-host-race
+@guest screenshot H4-guest-race
+?waitlog 10 \[vdrive\] host: our Sam drives truck 0x[0-9A-F]+ \(owner host, epoch [0-9]+\) #3
+?@guest waitlog 10 \[vdrive\] guest: (our Sam put off|DENY for truck|GRANT for truck 0x[0-9A-F]+: owner host)
+wait 2000
+pad X 150
+?@guest pad X 150
+wait 3000
+@both action vehicle_drive 0
+@both action vehicle_drive 1
+@both action vehicle_share 0
+@both action log_status
+nolog \[vshare\].*FAULT
+@guest nolog \[vshare\].*FAULT
+nolog \[vdrive\].*FAULT
+@guest nolog \[vdrive\].*FAULT
+@guest quit
+wait 3000
+quit

@@ -21,6 +21,7 @@
 // a one-line reason in the log and on the overlay. Game calls run on the game thread under SEH.
 #pragma once
 #include <cstddef>
+#include <cstdint>
 
 #include "config.hpp"
 
@@ -32,6 +33,16 @@ namespace st::coop {
 void Install(const Config& config) noexcept;
 // A host-held save session is running on this game (installed, byte checks passed).
 bool Active() noexcept;
+// 1 host, 2 guest while a session is running (Active), else 0.
+int SessionRole() noexcept;
+// Game thread. This game is in the session's world: the host in its phase "world", the guest with the host's save loaded,
+// its player stable and no load of its own running. `load_counter` = that world's load number (the host's counter; the
+// guest: the loaded save's). False at the title, while loading, or without a session. vehicle_share.cpp asks the host for
+// its vehicles each time the guest's counter changes.
+bool WorldReady(std::uint32_t* load_counter) noexcept;
+// The shared vehicles' notice in the co-op banner (any thread): shown until `until_ms` (the tick clock) while no session
+// notice is. "" clears it.
+void SetVehicleNotice(const char* text, bool warn, double until_ms) noexcept;
 // Game thread, every tick (sync::Tick): the game's phase, the guest's load calls, the session events, the screens.
 void Tick(double now_ms) noexcept;
 // Everything Tick maintains, undone when Tick will never run again (the per-frame tick faulted, or Bootstrap stopped

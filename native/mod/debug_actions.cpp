@@ -164,6 +164,10 @@ bool DoVoiceSync(const Request& r, char* msg, std::size_t cap) { return game::Vo
 bool DoSoundSync(const Request& r, char* msg, std::size_t cap) { return game::SoundSyncCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoVehicleSync(const Request& r, char* msg, std::size_t cap) { return game::VehicleSyncCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoCoopSession(const Request& r, char* msg, std::size_t cap) { return game::CoopSessionCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
+bool DoVehicleShare(const Request& r, char* msg, std::size_t cap) { return game::VehicleShareCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
+bool DoVehicleDump(const Request& r, char* msg, std::size_t cap) { return game::VehicleShareCommand(1, {1, r.v[0], 0}, msg, cap); }
+bool DoVehicleSummon(const Request& r, char* msg, std::size_t cap) { return game::VehicleShareCommand(2, {2, r.v[0], r.v[1]}, msg, cap); }
+bool DoVehicleDrive(const Request& r, char* msg, std::size_t cap) { return game::VehicleDriveCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoVoicePing(const Request& r, char* msg, std::size_t cap) {
     // The live partner entity, exactly as the Partner tab sees it (0 when there is none).
     Snapshot s;
@@ -246,6 +250,10 @@ constexpr Row kRows[] = {
     {{Action::sound_sync, Tab::tools, "Sound sync", "Partner sounds (sound_sync=1): 0 log, 1 0/1 log every mirrored post, 2 stop the partner's sounds.", false}, &DoSoundSync},
     {{Action::vehicle_sync, Tab::tools, "Vehicle sync", "Vehicles (vehicle_sync): 0 log, 1 mode 0 off/1, 2 solid/3 holograms/4 roadster, 2 copy override 0..5, 3 trace ms, 4 offset right/forward cm, 5 describe, 6 offset up cm, 7 list, 11 overlap hiding 0/1, 13 meters.", false}, &DoVehicleSync},
     {{Action::coop_session, Tab::tools, "Coop session", "Host-held save session (host_save=1): 0 log, 1 ms test link blackout, 2 offer the newest save (host), 3 accept the teleport offer (guest), 4 log the slots (host), 5 t i test load (host), 6 test quit, 7 [1|2] test retry [query|forced] (host), 8 0/1/2 test: hide the waiting panel [and lift the input block] (guest), 9 t i test: a slot stands in for a New Game's first save (host); 1 and 5-9 in hidden runs only.", false}, &DoCoopSession},
+    {{Action::vehicle_share, Tab::tools, "Vehicle share", "Real shared vehicles (vehicle_sync=5, host_save=1): 0 status, 1 dump, 2 kind [m] summon, 3 snapshot now, 4 binding report, 5 0..3 mirror path (tests), 6 kind [m] test removal, 7 counters, 8 [kind] [m] persisted entries (host).", false}, &DoVehicleShare},
+    {{Action::vehicle_dump, Tab::tools, "Vehicle dump", "Every vehicle unit in use (roadster, truck, trike pools) with its id, flags, GUID, place and binding, to the log. v0 = tag.", false}, &DoVehicleDump},
+    {{Action::vehicle_summon, Tab::tools, "Vehicle summon", "Summon a vehicle through the game's own request path: v0 kind (1 roadster, 2 truck, 3 trike), v1 metres ahead (default 8). On the guest the request goes to the host.", false}, &DoVehicleSummon},
+    {{Action::vehicle_drive, Tab::tools, "Vehicle drive", "Real shared vehicles, remote driving (vehicle_sync=5): 0 status, 1 vehicles (owner, follower, errors), 2 0/1 native correction, 3 parked m / driven m ignore bands, 4 0/1 corrections (tests), 5 0/1 native lamps / sounds, 6 kind [m] test push (tests), 7 life test (tests), 8 battery probe, 9 [m] our Sam beside the partner's vehicle (tests).", false}, &DoVehicleDrive},
 
 };
 constexpr std::size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);

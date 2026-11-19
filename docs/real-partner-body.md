@@ -2547,7 +2547,9 @@ hide the feet then attaching the boots".
   partner body's feet are no longer scaled by us; whether the game keeps the last scale on that body until it updates
   it again was not checked [I]. Never seen in a run.
 
-## 22. Vehicles: the partner's vehicle under its body (`session.ini vehicle_sync`, default 1: solid trike and truck copies, collision off on each; the roadster's hologram)
+## 22. Vehicles: the partner's vehicle under its body (`session.ini vehicle_sync`, default 1: solid trike and truck copies, collision off on each; no roadster since M2)
+
+With the host-held save session the default is the real shared vehicles (`vehicle_sync=5`, section 23): no copies at all. This section's copies are their fallback, and since M2 (decision D2-1, "no hologram vehicles") the default modes show no roadster and no hologram (the holograms only in the opt-in modes 3 and 4).
 
 **Status (after v0.13, 22.13: the final review of 22.11 / 22.12).** Every copy, pack and cargo prop, and now also every
 gear prop (the case props on the partner's back, weapons, boots, the pod), has its collision turned off on its own entity
@@ -3450,3 +3452,522 @@ error.txt, real saves unchanged and restored, no violation, 0 cloud uploads):
 the ground, boost particles (22.12); damage (a broken vehicle's copy goes after 3 s broken); real delivery cargo on a
 vehicle (synthetic pieces only); a player standing below a spawn point; NPCs / BTs meeting a copy; the truck's Climb
 prompt (out of view); only one copy at a time (a parked vehicle's copy goes when its driver gets on another one).
+
+## 23. Shared real vehicles (`session.ini vehicle_sync=5`, design milestone M2: identity, spawns, removals, eviction; remote driving, ownership, state)
+
+"There should only be 1 copy of each individual vehicle, synced completely with both players. Each player can summon
+their own vehicle. No copies." With the host-held save session (`host_save=1`, [coop-session.md](coop-session.md)) both
+worlds come from the host's save, so every saved vehicle is the same game unit in both games (same game-actor id, same
+placement GUID, same place). `native/mod/vehicle_share.*` keeps it that way: each vehicle is ONE real game vehicle in
+each world, bound by an identity; the guest's world never makes a vehicle of its own. The pure part
+(`native/mod/vehicle_wire.*`: the messages, the binding and the host's rules) is unit-tested in `st_vehicle_wire_tests`.
+
+Stage 1 (23.1 - 23.10): identity, the host's table after every guest load, spawn and removal sync, eviction refusal,
+online vehicles hidden. Stage 2 (23.11 - 23.21, `native/mod/vehicle_drive.*`): remote driving with the game's NPC
+driver controller, the correction bands, parked vehicles, ownership handoff (VOWN), life / broken / explode copies, the
+partner body on the real vehicle, cargo props, lamps and looks on it. Riding together (M3) and hits (M4) are not part of
+it.
+
+### 23.1 The mode and its fallback (decision D2-1)
+
+- `vehicle_sync=5` ("real") is the default when the key is absent, `host_save=1`, the role is host or guest, the co-op
+  save session is on and every required byte check (23.7) passes. `vehicle_sync=5` written in `session.ini` asks for it
+  explicitly (same conditions); any other value keeps the v0.14 copies.
+- In it `vehicle_sync.cpp` spawns no copy (`[vehicle] ... no copy (real shared vehicles ...)`), but still sends STM1 (the
+  seat and ride state for the partner body) and keeps the partner vehicle's place for its sounds and for the host's
+  eviction refusal.
+- **Fallback** (`host_save=0`, a failed check, `vehicle_sync=1|2`): the v0.14 solid trike / truck copies, and **no
+  roadster and no hologram at all** (D2-1: "I don't want hologram vehicles"); a solid copy that cannot be made safe
+  shows nothing. The holograms stay only in the opt-in modes 3 and 4. The reason is logged once
+  (`[vshare] shared real vehicles OFF: <reason>; the v0.14 solid trike / truck copies stand in (no roadster)`) and shown
+  for a minute in the co-op banner ("Shared vehicles off: ...").
+
+### 23.2 Identity (M2.2)
+
+- Key `VKey = {u32 the host's game-actor id (unit+0x08 = (actorType << 13) | slot; 0x20 roadster, 0x10 truck, 0x0F
+  trike), u8 kind (1 roadster, 2 truck, 3 trike = EVehicleType = the pool index), u8[16] placement GUID (unit+0x188)}`.
+  The host's ids are canonical; the guest keeps host id -> its own unit.
+- **Pool poll** (both games, game thread, 10 Hz, only in the world): R = `[ds.exe+0x7BFECC0]`, pools `[R+0x28+i*8]`
+  (i = 1..3, each checked by its vtable), count `[pool+0x40]`, `Unit** [pool+0x48]`, count and array read twice and
+  equal; each unit's 0x1B0-byte block read twice (id, in-use, flags, GUID and entity ref equal). Fields: +0x08 id, +0x20
+  in use, +0x24 actor state, +0x28 the unit's own transform, +0x68 entity ref (entity = ref - 0x20, checked against the
+  three vehicle classes and `entity+0x8A8 == unit`), +0x150 health, +0x154 battery, +0x158 rider (0x1FFFFF none),
+  +0x188 GUID, +0x198 flags (0x2000 remove request, bits 22..27 variant), +0x19C flag bytes (0x40 removed but
+  remembered; +0x19E & 8 reserved), +0x1A2 record +2, +0x1A4 area. The transform is the entity's when its actor is in
+  the world, else the unit's own (+0x28).
+- **After every guest load** the guest asks (`SNAP_REQ`, once its world is ready and settled 5 s; again every 5 s until a
+  complete table arrives, and every 30 s after); the host answers when its own world is settled with its whole table
+  (`SNAP`, 9 units per chunk on channel 3: every in-use unit with its transform, flags, area, life, battery, rider).
+- **Binding** (`vwire::PlanBinding`, every second and at once after a table, an ADD or a REM):
+  1. an earlier id mapping (a fallback mirror) or the same placement GUID binds (the GUID is the proof);
+  2. else the guest's unit with the same id binds when it is within 5 m (no position on one side: bound, unverified);
+  3. the same id but another vehicle (> 5 m, or a GUID on one side only): a same-kind, no-GUID, spawned unit is
+     **re-placed** onto the host's spot (RequestTeleport `0x142F7CA20`, at most once per 30 s per vehicle; proven in the
+     drive2 proof), else **removed** (`unit+0x198 |= 0x2000`, the game's own removal request) and the host's one
+     mirrored; a vehicle driven on the host (rider set) is bound, never re-placed (stage 2 follows it);
+  4. the host removed it (removed but remembered): the guest's counterpart is removed;
+  5. the guest has nothing for it: after a 10 s grace (placement vehicles stream in first), if it is in the guest's
+     area and has a place, it is **mirrored** (23.3);
+  6. guest units nobody claims are removed once nobody rides them (`+0x158 == 0x1FFFFF`); a unit a pending fallback
+     mirror made is left alone.
+
+  A rider (the guest's Sam or an NPC) always wins: nothing is removed or re-placed under a rider. Every removal re-reads
+  the unit (id, in use, GUID) first and sets the bit with an interlocked OR.
+
+### 23.3 Spawns (M2.3)
+
+- **The guest's gate**: a detour on the pool enqueue `0x142F654E0`. The save's own spawns replay during the guest's load
+  window (from the title until its world is ready + 5 s: they are the same as on the host and are bound after). After
+  it, every request the mod did not issue (a thread-local flag) is dropped and, while the link is up and the first
+  binding is done, forwarded to the host (`REQ`, at most 3 per 6 s): the request's transform, flags (+0x60), +0x54,
+  +0x58, name, and the parking manager's slot when it came through the garage slot spawn `0x142D5CB20` (a second
+  detour, guest only, records the slot and the transform passed to it). The banner says "Summoning the trike..." until
+  the answer.
+- **The host** refuses a request while its world is not settled or beyond 4 per 10 s; a duplicate (the slot's vehicle
+  is out already, or one of that kind stands within 6 m) is answered `duplicate` and that vehicle announced again.
+  Otherwise a garage slot of that kind spawns through `0x142D5CB20(PM, slot, xf)` (the host's own garage stock: D2-2),
+  anything else through `0x142F830A0(R, record, xf, p4, 0, 0)` with the record rebuilt from the request flags (`p6`
+  always 0; `vwire::RecordFromRequestFlags`, tested against the game's own formula for every bit pattern). The new unit
+  (same kind, within 40 m, within 10 s) answers the request.
+- **ADD** (host -> guest) for every new unit of the host's world once its actor is in the world (or after 2 s): its
+  table entry plus the game's own persisted entry for it (0x74 bytes from the save writer `0x142F7CF20`), the record's
+  +0 and p4.
+- **The guest's mirror**, in this order, logged with its path:
+  1. **exact id**: the persistence loader's call shape, pool vfunc +0x30 = `0x142DCFFB0(pool, desc, host id)` with the
+     loader's 0x58-byte desc (type `0x4A91A5B3`, the transform, no placement, `{entry, current area}`) and the host's
+     entry (online handle 0, category LOCAL, destroyed bit clear, its place moved to the newest one when an older ADD's
+     differs by more than 1 m). It only takes the free unit with exactly that id and never evicts;
+  2. **fallback**: `0x142F830A0` with `p6 = 0` after a free-unit check; the new unit near the spot is mapped to the
+     host's id;
+  3. **re-place**: a free unbound guest unit of that kind is moved there (RequestTeleport) and mapped.
+
+  A path that gives no unit within 5 s (exact) / 6 s (fallback) hands over to the next; all failing waits 60 s.
+
+### 23.4 Removals (M2.4)
+
+- The host's poll sees a unit go (in use -> 0, or removed but remembered) and sends `REM` (from host); the guest removes
+  its bound unit (0x2000) unless somebody rides it there.
+- A bound guest unit that goes without the mod removing it is reported (`REM`, from guest). The host applies it only
+  when the drive module says the guest owns the vehicle (`SetGuestOwnsQuery`; stage 1: never) AND its guard agrees
+  (`vwire::HostRemovalAllowed`: in use, the same id, kind and GUID, not removed, within 5 m of the guest's position);
+  otherwise it keeps the vehicle and announces it again (`ADD`, re-announce) and the guest mirrors it again.
+- The guest asks with `NEED` for a vehicle it must mirror and has no entry for; the host answers with an `ADD`.
+
+### 23.5 Eviction and online vehicles (M2.5)
+
+- A detour on the victim chooser `0x142F7DB10` (its three callers handle 0: checked): the **guest** returns 0 always
+  (never evicts); the **host** returns 0 for a shared-active unit: the partner's vehicle place (STM1, played) within 4 m
+  of it, the partner body within 150 m of it in the last 60 s, or the partner drove it in the last 10 min
+  (`vwire::SharedActive`; `NotePartnerDrove`).
+- Online vehicles of other players (request flag 0x800, the `0xC0A` requests) are dropped at the enqueue on both games
+  while the sync is on (D2-3). `0x142F830A0` can never set 0x800 (tested), so the sync's own spawns are never trimmed.
+
+### 23.6 Wire: SVM1 on the reliable ordered channel 3 (`link::SendVehicleEvent` / `PopVehicleEvent`)
+
+Every message: `"SVM1" | u8 type | u8 version 1 | u16 0`, then the body (little endian, reserved bytes zero, exact
+sizes, strict decoders). Append only (the channel mixes types). A new link session clears both sides' tables (the guest
+asks again).
+
+| Type | Direction | Body |
+|---|---|---|
+| 1 SNAP_REQ | guest -> host | u32 req id, u32 the guest's loaded save counter, u8 reason (0 load, 1 periodic, 2 test), 3 x 0 (12 B) |
+| 2 SNAP | host -> guest | u32 snap id, u32 req id, u32 the host's load counter, u16 area, u8 index, u8 count (<= 32), u16 total (<= 256), u8 n (<= 9), u8 0, then n x 108-byte entries |
+| 3 ADD | host -> guest | u32 token (the guest's request, else 0), u8 source (0 own spawn, 1 the guest's request, 2 re-announce), u8 has entry, u16 record +0, u8 p4, 3 x 0, a 108-byte entry, the 0x74-byte persisted entry (zeros without) (236 B) |
+| 4 REM | both | u8 reason, u8 from (0 host, 1 guest), u8 has pos, u8 0, VKey (24 B), f64 x3 (52 B) |
+| 5 REQ | guest -> host | u32 token, u8 kind, i8 garage slot (-1, 0..8), u8 reason, u8 0, u32 request flags, u16 request +0x54, u16 0, u64 request +0x58, f64 x3, f32 x9, char[32] name (116 B) |
+| 6 RESULT | host -> guest | u32 token, u8 result (spawned, refused, failed, timeout, duplicate), u8 path, u16 0, VKey (32 B) |
+| 7 NEED | guest -> host | VKey, u8 reason, 3 x 0 (28 B) |
+| 16..63 | either | the drive module's (ownership 16..31, driving 32..63): `vshare::RegisterHandler` / `SendEvent` |
+
+VKey on the wire: u32 id, u8 kind, u8[16] GUID, 3 x 0. Entry (108 B): u32 id, u8 kind, u8 actor state, u8 flags (1
+entity, 2 transform, 4 removed, 8 reserved, 16 ridden), u8 0, GUID, f64 x3 position, f32 x9 rotation (zeros without a
+transform), u32 +0x198, u8 x4 +0x19C, u16 area, u16 +0x1A2, f32 life, f32 battery, u32 rider.
+
+### 23.7 Byte checks (`kSites` in vehicle_share.cpp: 44 at start; a failed required group turns the mode off)
+
+| Group | Sites |
+|---|---|
+| core (required) | the manager global (`0x142F7509C`, RIP target `0x147BFECC0`), pools at +0x28 (`0x142F6C86F`), pool +0x40 / +0x48 and unit +0x20 / +0x08 (`0x142DCFFB0`, `0x142DCFFD7`), unit release and its 0x2000 test (`0x142F69A70`, `0x142F69A9D`), entity ref +0x68 (`0x142F69AA9`), the game's removal write (`0x142FA7AB1`), entity +0x8A8 (`0x142F761A9`), the unit transform getter +0x28 (`0x141A87230`, and slot +0x18 of the unit vtables `0x143E26070` / `0x143E26A48` / `0x143E27790`), the current area (`0x14262A860`), the victim chooser's in-use / reserved / rider reads (`0x142F7DC53`, `0x142F7DC59`, `0x142F7DC62`), the unit spawn's GUID +0x188 / area +0x1A4 writes (`0x142F6DA80`), the pool vtables `0x143E278E0` / `0x143E26B98` / `0x143E261C0` (+0x30 = `0x142DCFFB0`, +0x150 kind getters `0x141925D10` / `0x141921DC0` / `0x141921EF0`) |
+| gate (required) | the enqueue `0x142F654E0`, the queue's online flag test at request +0x60 (`0x142F98FF0`) |
+| spawn (required) | `0x142F830A0`, its empty string (`0x142F830FC` -> `0x144562CB0`), its record +8 / +0x10 / +0 / +2 / +0x14 reads (`0x142F8315E`, `0x142F8316E`, `0x142F8317B`), the flags mask (`0x142F831BC`) |
+| evict (required) | `0x142F7DB10`, its three callers (`0x142F867BD`, `0x142F867FF`, `0x142F993C9`: the call target and the 0 test) |
+| teleport (required) | RequestTeleport `0x142F7CA20` |
+| exact (optional: else the fallback mirror) | the loader `0x142F70660`, its desc type (`0x142F70819`) and vfunc +0x30 call (`0x142F70893`), the entry writer `0x142F7CF20` |
+| garage (optional: else plain spawns) | `0x142D5CB20`, the parking manager global (`0x142D6ECEA` -> `0x147BF5798`) |
+
+### 23.8 API for the drive module (vehicle_share.hpp)
+
+- `FindByKey(VKey, Unit*)`, `FindByHostId(id, Unit*)`, `FindByEntity(entity, Unit*)`: this world's unit, entity, local
+  id, shared key, transform and rider (from the newest poll plus a fresh id / in-use check); `Bound()`.
+- `RegisterHandler(type 16..63, fn)` / `SendEvent(msg)` (a full SVM1 message: `vwire::WriteHeader` + body): channel 3,
+  in order behind vehicle_share's own messages.
+- `SetGuestOwnsQuery(fn)` (the host applies the guest's removals of what it drives), `SetFollowedQuery(fn)` (the binding
+  never re-places a vehicle the drive module moves), `NotePartnerDrove(key, now)` (eviction refusal for 10 min).
+- `RequestTeleport(entity, xf)`: the byte-checked deferred vehicle teleport.
+- Added in stage 2: `SharedUnits` (every shared vehicle of this world, keyed by the host's id), `FindNear(kind, pos, m)`,
+  `Footprints` (the teleport clearance), `NoteHostPlace(host id, xf)` (guest: the table entry follows the owner's frames),
+  `WorldReadyNow`, `Role`; `vehicle_share 8 [kind] [m]` logs the host's persisted entries (the save writer's place).
+
+### 23.9 Evidence (hidden, `two-games-veh-identity`, `-SeedSaves complete-100 -GuestSeed profile-only`)
+
+Run `20261119-095315-two-games-veh-identity`: pass, exit 0 (both games), real saves unchanged and restored, 0 uploads,
+no `[vshare]` fault.
+
+- 44 byte checks passed on both games; the copies off (`vehicle sync real`).
+- After the guest's load: the host's table, 22 vehicles in 3 chunks; **all 22 bound at 0.00 m** (same ids, flags,
+  GUIDs, actor states); nothing re-placed, removed or mirrored. Both T1 dumps are equal.
+- The guest's game dropped 3 online-vehicle requests (D2-3).
+- The guest summoned a trike through its game's own request path (`vehicle_summon 3`): its gate dropped it and sent
+  `REQ #1`; the host spawned trike `0x01E001` (a record spawn) and announced it with its entry 0.1 s later; the guest
+  mirrored it by the **exact-id path** (`0x142DCFFB0` with the host's entry) in 0.1 s: the same id `0x01E001`, its
+  actor in the world at once, its class, 0.01 m from the host's spot, life 7500, battery 1.00, flags `0x20410100` as on
+  the host. T2: 23 units in both worlds, one new trike in each.
+- The mirror stayed at the spawn height (0.48 m above the host's, which fell to the floor): the exact-id spawn appears
+  to start with its physics at rest (as a persisted vehicle). The drive module's correction places it.
+
+### 23.10 Not done / not proven (stage 1)
+
+- Remote driving, ownership (VOWN), life / battery / broken / explode copies, cargo props on the real vehicle (D2-4) and
+  the vehicle sound mirror for real vehicles: stage 2 (23.11 - 23.21). The snap back to the host's place at the guest's
+  next table is fixed there (23.13: the table entry follows the owner's frames; the binding leaves a followed vehicle
+  alone).
+- The garage relay is not proven (the summon above found no garage slot of that kind and took the record path), and the
+  guest's garage UI may show a stock change the host did not make; the garage-store function is not found.
+- Not run: the fallback and re-place mirror paths, removal sync, the eviction refusal under pressure, a vehicle far from
+  the guest (its exact-id mirror is logged complete when its actor comes), MULE-taken and NPC-driven vehicles.
+
+### 23.11 Remote driving (M2.6; stage 2, `native/mod/vehicle_drive.*`)
+
+The game whose Sam holds the driver seat **owns** the vehicle; when nobody drives it the host owns it (its world is the
+persisted one). The other world **follows** with its own unit of the same vehicle: one real vehicle per world, never a
+copy, never keyframed.
+
+- **Sender** (the pose send tick, game thread): while our Sam drives a shared vehicle (his parent entity +0x70 is the
+  vehicle, `+0x63C != 0`, the driver id `+0x8B0` is not 0x1FFFFF) and we own it, one STD1 **DRIVE** frame per send tick
+  (30 Hz) on the pose's `sender_ms` axis: the 48 input bytes the game feeds the vehicle (`[vehicle+0x528]` +0x08..+0x37,
+  read twice and equal, checked: 11 finite floats |x| <= 4, bytes +0x34..+0x36 0/1, +0x37 cleared), the transform,
+  velocities measured from successive reads, speed (`[[vehicle+0x330]+0xF0]`, km/h), life / max, the ride state and
+  state bits.
+- **Follower** (the other game): the frames are played back at the partner body's play time (`interp_delay_ms`, the
+  same as the body). When a DRIVE frame plays and the vehicle is spawned here, nobody holds its seat (`+0x63C == 0`, not
+  broken) and our Sam is not on it, the mod attaches **the game's NPC driver controller**, the proven recipe: a 0x2000
+  byte VirtualAlloc block, ctor `0x142F51C60`, `Attach 0x142F5A590(ctl, vehicle, &0x1FFFFF)`, `SetEngine 0x142F5A310(ctl,
+  1)`; then `[vehicle+0x528] == ctl+0x30` is checked. The input object gets the mod's copy of vtable `0x143E229B8`
+  (checked slot by slot) whose slot +0x08 calls the game's `0x142F54440` (reset and route follower, run by the vehicle's
+  update `0x142F8D920` before every physics step) and then copies the received 48 bytes over +0x08..+0x37, read through
+  a sequence lock from a buffer at block+0x1800 (the vehicle may update on another thread). Each tick the inputs of the
+  frame at the play time go into that buffer; frames older than 300 ms give an idle driver (no throttle, hold on).
+- **Vehicles without an AI drive component** (the trikes, run 20261119-111839): Attach looks the component up
+  (`0x1422B2A60(vehicle+0x90, key 0x144B35D30)`) and calls into it unchecked (`0x14242D660`, then `[+0x30]`); without
+  one it faults (the game's crash reporter ran for 44 s) after it already took the seat. The mod repeats the lookup
+  first: a component with a route source takes the full Attach (the truck, the roadster); none takes the **lite
+  attach**: the ctor, SetDriver (`vehicle vt+0x110`), the vehicle handle at ctl+0, SetController, ctl+0x100 = 0 (the
+  input reset then returns before the route part), ctl+0x1C / +0x18 / +0x20 as Attach writes them, input+0x38 = 0, then
+  SetEngine. Input+0x38 is 1 from the ctor and the vehicle update reads the inputs only while it is 0 (`0x142F8DA1B`);
+  after the full Attach it is 0 (which call clears it was not traced). Without that write the trike's follower got 0
+  input updates in 44 s (run 20261119-113138); with it 1341 (run 20261119-113626).
+- **Detach** when the partner's frames end (a RELEASE, a newer PARK frame, nothing for 1.5 s), our Sam takes the seat,
+  the vehicle changes or goes, the world reloads or the link session changes: the vtable restored, `SetEngine 0`,
+  `Detach 0x142F5A3D0`, dtor `0x142F521F0`, the block freed. On the host the vehicle then goes back on the recent
+  player vehicles (Touch `0x142F52740(R+0x58, unit, 0)`: the NPC attach took it off). A vehicle that is no longer alive
+  (entity gone) is never called into: its block is left allocated.
+- **The lock** (M2.7): while the follower holds the seat the local get-on fails (SetDriver refuses `+0x63C != 0`, checked
+  at `0x142F7C50F`): one driver at a time.
+
+### 23.12 Corrections (M2.6 bands)
+
+Against the owner's frames at the play time (DRIVE: interpolated, PARK: the newest), at most every tick (driven) / every
+100 ms (parked):
+
+| Error | Driven (the partner drives it) | Parked (the owner's PARK frames) |
+|---|---|---|
+| < 0.3 m (driven) / < 0.1 m (parked), and < 3 deg | nothing (the input replay alone stays within ~0.1 m: proof drive, smoke run 23.20) | nothing |
+| < 2 m and < 45 deg | the clamped velocity nudge, at most every 100 ms: the game's drive-to-transform `0x141C43E10` toward where the vehicle should be one step on (the owner's velocity plus what closes the error in 0.5 s, at most +2 m/s; the rotation turned by the owner's yaw rate plus at most 1 rad/s), after the instance's activate (vt+0xE0); when both its vehicle and ours stand still (under 0.3 m/s), the teleport as parked (the nudge left a stopped truck 0.48 m off for 12 s: run 20261119-110534) | RequestTeleport onto the owner's place (at once from 0.25 m or 10 deg, after 1.5 s below that; at most every 2 s). The game's net correction `0x1423B80E0` and the nudge did not close a parked error (run 20261119-105428: a truck summoned into a trike went from 0.5 to 1.27 m, pushed up onto it, after 69 native calls and 54 nudges); they are used for parked vehicles only with `vehicle_drive 2 1 1` |
+| 2..5 m, or >= 45 deg | RequestTeleport `0x142F7CA20` (at most every 0.5 s) | the same |
+| > 5 m | RequestTeleport (at most every 1 s) | the same |
+
+A teleport only where the vehicle fits: its footprint at the target (an oriented box per kind, `vwire::TeleportClear`)
+must hold neither the local Sam (with 0.6 m) nor another vehicle; otherwise it waits (logged every 3 s). A vehicle the
+partner owns that stands within 0.5 m of its newest PARK frame does not count: the owner's world holds both there (two
+summoned vehicles side by side blocked each other's teleport for good before, run 20261119-105928). Deviation from
+the design: the native correction's 2..5 m branch (`0x1422DFF80` + `0x1423964D0`) set the entity's transform but not the
+vehicle's physics (47 calls, 0.7 m / 131 deg unchanged, run 23.20), so RequestTeleport takes that band. Every second a
+`[vdrive] <kind> <id> followed|parked: placement error mean / max, angle max, corrections per band` line; `action
+vehicle_drive 1` sums them per vehicle. Debug: `vehicle_drive 2 0|1 [0|1]` native on / off (the second value: on parked vehicles too), `3 <parked m> <driven m>` the
+ignore bands, `4 0|1` corrections off / on (hidden runs: the open-loop replay).
+
+The Mat44 the mod builds for the game's correction calls copies the three rotation rows as they are (`0x1419C8510`:
+`out[4] = rot+0x0C`, `out[8] = rot+0x18`). An earlier transposed copy drove every corrected vehicle toward the inverse
+heading (a summoned trike and truck 69 deg off, run 20261119-104937).
+
+### 23.13 Ownership (M2.7, VOWN on channel 3)
+
+| Event | What happens |
+|---|---|
+| The guest's Sam gets on a vehicle the host owns | CLAIM (repeated every 1.5 s, at most 5, while seated); the host GRANTs (owner guest, epoch + 1) unless its own Sam holds it or got on within 300 ms (DENY); until then the guest's frames are not followed |
+| The host's Sam gets on a vehicle the guest owns (both pressed X within the latency) | the host takes it (GRANT owner host, epoch + 1): the host wins every tie |
+| DENY / GRANT(host) while the guest's Sam is on it | the guest's Sam is put off with the game's own `RideOffVehicleForcibly 0x1426E7100` (`[[0x147BE7980]+0x206D1] |= 8`, once a second, at most 6 times) |
+| The owner's Sam gets off | RELEASE (got off, with the final transform and velocity); the follower lets go after the last frames play; the owner keeps sending PARK frames |
+| The guest's vehicle at rest (< 0.2 m/s for 1 s) after its Sam got off | RELEASE (at rest; again every 3 s, at most 5) -> the host GRANTs it back (handback); the host's PARK frames rule from then |
+| No frame from the guest owner for 10 s (its world reloaded, it left) | the host takes it back (GRANT, timeout) |
+| The non-owner's Sam pushes a parked vehicle (within 6 m of it, the vehicle > 0.1 m off the owner's place and moving > 0.3 m/s here) | guest: CLAIM (push), granted; host: takes it |
+| A new link session, a world reload | every vehicle is the host's again (epoch 0), followers detach |
+
+Frames carry the owner's epoch: the host follows the guest's only with the current epoch; a host frame with a newer
+epoch tells the guest the host took it back. The rules are pure (`vwire::HostOnClaim`, `HostOnHostTakes`,
+`HostOnRelease`, `HostOnSilence`, `GuestOnAnswer`, `GuestOnHostFrame`, `RestDetector`) and unit-tested. Vehicle_share's
+queries are answered from this: the host applies a guest's removal of a vehicle the guest owns (`SetGuestOwnsQuery`);
+the binding never re-places or removes a vehicle the drive module owns or follows (`SetFollowedQuery`; frames in the last
+5 s); the guest's table entry moves with the owner's frames (`vshare::NoteHostPlace`), so a vehicle driven away is never
+put back onto its old spot at the 30 s table refresh (the stage-1 gap). The host's eviction refusal counts a vehicle the
+guest drives (`NotePartnerDrove`).
+
+### 23.14 State: life, battery, broken, explode (M2.8, D2-5)
+
+- **Life** (`+0x6E8`, max `+0x6EC`): the owner's value, written on the follower when it differs by more than 0.5 (every
+  100 ms); the unit's health (`+0x150`, what the save keeps) too when it held the same value (the game set the entity's
+  back from it after an entity-only write: run 23.20). Life 0 from the owner breaks the follower through its own
+  ride-state machine. Hidden tests: `vehicle_drive 7 <life>` sets the life of the vehicle our Sam drives (the owner's
+  damage).
+- **Battery**: the field the ride-state machine tests (`+0x5A4 <= 0` while parked: state 6, checked at `0x142F9BD50`)
+  is probed at start against the unit's persisted 0..1 battery (`+0x154`); it is copied only when the two agree on two
+  vehicles. Run 23.20: `+0x5A4` read 1.00 on every vehicle against 0.663 / 0.000: **not copied** (the probe now refuses
+  it; `vehicle_drive 8` reports it).
+- **Broken** (`+0x560 & 0x2000`) and **exploded** (`+0xBD8 & 0x100000`, latched by the state machine): the owner's
+  frames carry them; on the first frame that has one the follower ORs the same request (`+0x560 |= 0x2000`; `+0x564 |=
+  0x200000`, the explosion request the state machine consumes at `0x142F9BC70`), so its own state machine plays the
+  effects. Once per follower attach / park sequence.
+
+### 23.15 The partner body on the real vehicle; vehicle_sync=5 (M2.9)
+
+- While the partner drives a vehicle we follow, its body is placed at **our real vehicle's transform times the
+  partner's seat** (the STM1 frames at the play time, `vsync::PartnerSeatAt`), one frame ahead along the vehicle's
+  measured velocity (the vehicle moves by its own physics later in the frame than the body is placed). The partner
+  capsule rules are unchanged (`kPoseInVehicle`: partner_collision takes the body's capsule out).
+- In mode 5 the cutscene copies, the overlap hiding, the STM1 joint writes and every hologram are not used; STM1 still
+  carries the seat, the ride state, the lamps and the cargo.
+- **Fallback** (D2-1, 23.1): with `host_save=0` or a failed vehicle_share check, the v0.14 solid trike / truck copies
+  and no roadster. A failed vehicle_drive check (23.18) keeps the vehicles shared without remote driving, with a one-line
+  reason in the log and the co-op banner ("Shared vehicles: remote driving off: ...").
+
+### 23.16 Looks, lamps, sounds and cargo on the real vehicle (M2.8, D2-4)
+
+The partner's real vehicle in our world is the one we follow while it drives, else the shared vehicle of its kind
+nearest the STM1 frames' place (within 3 m: parked).
+
+- **Cargo** (D2-4): the STM1 cargo block's pieces become the v0.14 case props (collision off, checked every second)
+  placed on that real vehicle, except the pieces our own world's vehicle carries already (the same model within 0.35 m in
+  the vehicle's frame, read every 500 ms from its DSBaggage2 carrier). Real cargo sync is later.
+- **Lamps**: the follower's engine runs (the NPC controller's SetEngine 1), so its own lamps should follow [I]. Until a
+  hidden run shows them, the v0.14 lamp writes (the STM1 state block's lamp intensities and gauge colours, not the wear:
+  the same vehicle in both worlds) go onto the real vehicle (`[vehicle] the partner's lamps on our real vehicle`).
+- **Engine and road sounds**: the follower's own [I]; the STA1 vehicle-sound mirror stays on until proven.
+  `session.ini vehicle_real_native=1` (mod key; also `vehicle_drive 5 1`) turns the lamp writes and the STA1 vehicle
+  sounds off for the real vehicles (`vsync::MirrorVehicleSounds`).
+- **Looks** (paint, variations): the same save gives the same looks. On the **guest** only (the host's world is the
+  persisted one), the host's STV1 look of the vehicle it reports is applied to our real one when ours differs
+  (`look::SatisfiedVehicle` every 2 s, at most 5 applies per vehicle, with the v0.14 look code). No VLOOK message of its
+  own: STV1 item 255 carries the look and its hash already. Packs are the real vehicle's own (no copies).
+
+### 23.17 Wire: STD1 (unreliable FRAME) and VOWN (channel 3)
+
+STD1, one FRAME message in a datagram of its own (`link::SendDrive` / `PopDrive`: raw bytes queued after a magic and
+size check, decoded on the game thread by `vwire::DecodeDrive`), little endian:
+
+```
+"STD1" | u8 version 1 | u8 type (1 DRIVE, 2 PARK) | u8 flags | u8 ride state (0..15) | u32 seq | u32 sender_ms
+| u32 epoch | VKey (u32 id, u8 kind, u8[16] GUID, 3 x 0) | f64 pos[3] | f32 quat[4] (x, y, z, w of the rotation rows)
+| f32 vel[3] | f32 angular vel[3] | f32 speed km/h | f32 life | f32 life max | f32 battery
+| [DRIVE] u8 inputs[48]                                                  (PARK 124 bytes, DRIVE 172 bytes)
+flags: 1 seated (DRIVE only, always there), 2 engine, 4 broken, 8 exploded, 16 at rest, 32 battery valid
+```
+
+Strict decoder: the magic, version 1, the type's exact size, known flags, ride state <= 15, a valid key, |pos| <= 1e7, a
+unit quaternion within 10 %, |vel| <= 200 m/s, |angular| <= 50 rad/s, |speed| <= 1000, 0 <= life <= max <= 1e6, a
+battery only with its flag, valid inputs. Rate: DRIVE 30 Hz while driving (~5.2 KB/s); PARK 1 Hz per owned vehicle
+within 300 m of either player and at once on a change of 5 cm / 2 deg (10 Hz while it moves), at most 8 frames per send
+tick. Deviation: VPARK goes as an unreliable STD1 PARK frame (it repeats every second) instead of a channel 3 "latest"
+message (channel 3 is append only: 23.6).
+
+VOWN, channel 3 types 16..19 (`vshare::RegisterHandler` / `SendEvent`): the SVM1 header, then `VKey (24) | u8 owner (0
+host, 1 guest) | u8 reason | u8 has transform | u8 0 | u32 epoch | u32 sender_ms | f64 pos[3] | f32 quat[4] | f32 vel[3] | u32 world`
+(92 bytes; the world since 23.23). 16 CLAIM (guest -> host; reason 0 get on, 1 push), 17 GRANT (owner now; reason 0 claim, 1 the host took it,
+2 handback, 3 timeout), 18 DENY (owner host; reason 0 the host drives, 1 the host was first, 2 busy, 3 the guest's Sam not at it), 19 RELEASE (the
+owner; reason 0 got off, 1 at rest; the transform). Unit-tested in `st_vehicle_wire_tests`.
+
+### 23.18 Byte checks (`kSites` in vehicle_drive.cpp: 43 sites + 3 structural at start; the 3 NPC-bit sites since 23.23)
+
+| Group | Sites |
+|---|---|
+| controller (required) | ctor `0x142F51C60`, Attach `0x142F5A590`, SetEngine `0x142F5A310`, Detach `0x142F5A3D0`, dtor `0x142F521F0`, the input reset `0x142F54440`, the vehicle update that calls it `0x142F8D920`, SetDriver `0x142F7C4C0` / truck `0x142F7C310` and its refusal of a held seat or state 5 (`0x142F7C50F`), SetController `0x142F80310`, is-driven `+0x63C` / `+0x528` (`0x142F6F4A0`), the ride-state machine `+0x4CC` (`0x142F9BC20`) and its driver-id test `+0x8B0` (`0x142F9BD76`); structural: the input vtable `0x143E229B8` slots 0..4 and the vehicles' SetDriver slot +0x110 |
+| ride-off (required) | `0x1426E7100` and its global (RIP target `0x147BE7980`) |
+| state (optional: no state copy) | life `+0x6E8` (`0x142F9BC40`), broken (`0x142F9BC54`), explode / latch (`0x142F9BC70`), speed `[+0x330]+0xF0` (`0x142F8AC5D`) |
+| battery (optional) | `+0x5A4` (`0x142F9BD50`) and the run-time probe (23.14) |
+| touch (optional, host) | `0x142F52740` |
+| native (optional: nudge / teleports) | the net correction `0x1423B80E0`, first physics instance `0x14234DCD0`, Mat44 inverse `0x141940080`, the WorldTransform -> Mat44 layout the mod builds (`0x1419C8510`) |
+| nudge (optional) | drive-to-transform `0x141C43E10`, Mat44 multiply `0x1419333D0`, Mat44 -> WorldTransform `0x1419C7000`, `0x14234DCD0` |
+| controller, added (required) | the component lookup `0x1422B2A60`, Attach's lookup site `0x142F5A678` (entity+0x90, key `0x144B35D30`), the route source `0x14242D660` (+0x78 / +0x98 / +0x88) |
+| lite (optional: vehicles without the AI drive component are not followed) | handle addref `0x14191C790` / release `0x14191C810`; Attach's writes it replays: `0x142F5A624` (handle), `0x142F5A65A` (SetController), `0x142F5A68B` (ctl+0x100), `0x142F5A6B2` (ctl+0x1C), `0x142F5A785` (state, driver id); the update's input+0x38 test `0x142F8DA01` |
+
+A failed required group: remote driving off (`[vdrive] remote driving OFF: ...`), the vehicles stay shared.
+
+### 23.19 Hidden scenarios (all `-SeedSaves complete-100 -GuestSeed profile-only`, `ini host_save=1`)
+
+| Scenario | What |
+|---|---|
+| `two-games-veh-identity` | 23.9, plus the host's PARK frames and `vehicle_drive 0 / 1` |
+| `two-games-veh-summon` | the guest summons a trike (REQ, the host's spawn, ADD, the mirror path), the host a truck; the mirrors placed by the PARK frames; `vehicle_share 8` the host's persisted entries |
+| `two-games-veh-drive` | the host drives the truck (straight, a turn, a reverse, a hard stop) with the guest's camera NEAR it (`vehicle_drive 9`: the watcher 9 m beside the real vehicle it follows, then `vehicle_sync 18` aims the camera) |
+| `two-games-veh-drive-guest` | the same, the guest drives, the host follows |
+| `two-games-veh-drive-trike` | the host drives the saved Kusanagi trike outside (lite attach) |
+| `two-games-veh-drive-roadster` | the host drives the garage's roadster; the watcher is placed without the ground snap (`vehicle_drive 9 <m> 1`) |
+| `two-games-veh-handoff` | host drives / gets off, the guest takes the wheel (CLAIM, GRANT, handback at rest), the lock, both press X together |
+| `two-games-veh-remove` | a host trike removed with the game's removal request (REM), the truck destroyed by its driver's game (life 0) |
+| `two-games-veh-persist` | the guest drives a host truck ~100 m and parks it; handback; the host's persisted entry holds the parked spot |
+
+New debug: `vehicle_drive` (debug-actions.md), `vehicle_share 8 [kind] [m]` (the host's persisted entries).
+
+### 23.20 Evidence (stage 2 smoke run)
+
+Run `20261119-103440-two-games-veh-drive` (an earlier version of the scenario; one foreground hidden run): pass, exit
+0 (both games), real saves unchanged and restored, 0 uploads, no `[vdrive]` / `[vshare]` fault.
+
+- 32 drive byte checks passed on both games; 22 vehicles bound at 0.00 m.
+- The host drove truck `0x020005`: the guest's follower attached at once (the game's NPC controller, driver 0x1FFFFF,
+  `[+0x528] == ctl+0x30`, the input vtable ours); 2040 input updates in 34 s. **Driving straight and into the turn the
+  guest's truck stayed within 0.04..0.13 m of the host's, angle under 1 deg, with no correction at all** (the input
+  replay alone).
+- The host's turn ran the truck off the road into rocks (the old scenario's full lock); the two worlds' crashes then
+  differed (as in the proof): 1..4.75 m, large angles. The native correction's 2..5 m branch did not move the vehicle
+  (47 calls); RequestTeleport takes that band now (23.12). The guest's own crash damage (life 431 -> 421) was overwritten
+  with the host's but came back: the unit's health is written too now (23.14).
+- The release: the follower detached when the host got off (`the host released truck ... (got off)`), then re-attached
+  for 0.1 s on a stale frame: fixed (no attach on frames older than 300 ms, the release marker kept).
+- The PARK frames kept the 6 other vehicles near both players at 0.00..0.02 m.
+- The guest's camera in that version did not follow the truck after it drove off (it aimed at the nearest parked
+  truck): the scenario now re-places the watcher beside the followed vehicle before each screenshot.
+- The partner body sat at the truck's cab just after the get-on (D01, enlarged: its head above the roof line, likely
+  still in the get-on animation): to check in the full run.
+
+### 23.21 Not done / not proven (stage 2; see 23.22 for what the full runs proved since)
+
+- Every scenario of 23.19 but one early drive run is still to run (the next stage); the guest-drives, trike, roadster,
+  handoff, race, push, remove, destroy and persistence paths are unproven in a game.
+- The native net correction's velocity drive (parked < 2 m) and the clamped nudge (driven) were called only a few times;
+  their effect is unmeasured. The native 2..5 m branch is replaced by RequestTeleport (23.12).
+- The lamps and engine / road sounds of the follower are not proven native: the v0.14 lamp writes and the STA1 mirror
+  stay on (`vehicle_real_native=0`).
+- The battery is not copied (the probed field does not follow the unit's battery).
+- The seat placement of the partner body in the real vehicle (the STM1 seat) and the camera near it: to check enlarged.
+- A vehicle driven out of the other world's streaming range has no actor there: nothing follows it; when it comes back
+  it is put onto the owner's place (a teleport where it fits). The host's persisted place of a vehicle the guest drove
+  while its actor was not spawned on the host is not updated (no write to the unit's own transform); since 23.23 the host
+  keeps the guest's place of it (snapshot, and a teleport there when its actor is back).
+- The NPC attach sets `+0x408 |= 0x10` and `[+0x898]+0x48 |= 2` (NPC-driven) on the host's vehicle; Detach does not
+  clear them [I: effect on AI and the save unknown]. Measured since (23.23): after the game's Detach both read 0 on the
+  truck, the trike and the roadster; the truck keeps `+0x408 & 0x08` (0 before the attach) [I: what it is]. The mod
+  clears the two NPC bits after a detach anyway (a guard), as SetDriver's own get-off path does.
+- The garage relay (23.10), MULE-taken and NPC-driven vehicles, riding together (M3) and hits (M4) are not part of M2.
+- No forced save: the persistence scenario checks the host's persisted entry, not a reload.
+
+### 23.22 Hidden proof of M2 (2026-11-19, every scenario of 23.19 foreground, one at a time)
+
+All runs `-SeedSaves complete-100 -GuestSeed profile-only`, `ini host_save=1`, `ini partner_body=real` (the launcher's
+default; the earlier scenarios ran the hologram body), the final build (the trike, roadster and remove runs one build
+earlier: without the handback placement and the aim fallback below, neither on their paths). Every one: result pass, both games exit 0, real
+saves unchanged and restored, no violation, 0 cloud uploads, no `[vshare]` / `[vdrive]` FAULT.
+
+| Run | Result |
+|---|---|
+| `20261119-120812-two-games-veh-identity` | 22 bound at 0.00 m (one truck 0.08 m), T1 22 = 22 units, 3 online requests dropped on the guest; the guest's trike summon mirrored by the exact-id path (same id 0x01E001); T2 23 = 23 |
+| `20261119-120948-two-games-veh-summon` | trike (guest REQ) and truck (host) each exactly one new unit per world (T1 22 -> T2 23 -> T3 24 on both, same ids); the exact-id mirrors placed by parked teleports (trike mean 0.03 m; the truck, summoned into the trike, is pushed by it in the guest's world and kept at mean 0.14, max 0.43 m by a teleport every ~2 s) |
+| `20261119-121145-two-games-veh-drive` | host drives the truck, guest follows: moving windows mean 0.18 m (max 0.71 m, 14 deg after the turn into the rocks), stopped 0.11 m; 1 teleport (stopped), no teleport while driving straight; the partner seated in the cab (D01 enlarged) |
+| `20261119-121403-two-games-veh-drive-guest` | guest drives, host follows: CLAIM / GRANT / handback at rest; moving mean 0.30 m (max 0.76 m), stopped 0.12 m |
+| `20261119-113626-two-games-veh-drive-trike` | the Kusanagi trike by the lite attach: moving mean 0.20 m (max 0.66), stopped 0.05 m; the partner riding it (T02a) |
+| `20261119-114220-two-games-veh-drive-roadster` | the roadster in the garage: moving mean 0.16 m (max 0.64), stopped 0.09 m; Host seated, the guest beside it |
+| `20261119-121645-two-games-veh-handoff` | host drives / gets off, the guest claims and drives, handback at rest, the host drives with the guest pressing X beside the truck (not boarded: the lock), both press X: the host boards, the guest does not; never two drivers |
+| `20261119-115836-two-games-veh-remove` | REM: the guest's trike removed ~0.1 s after the host's (clock-aligned by the paired dump actions); life 0 on the host's truck -> the guest's 0.15 s later, its ride state 5 (broken) |
+| `20261119-120536-two-games-veh-persist` | guest drives the truck ~85 m and parks; handback; the host places its truck where the guest parked it (0.17 m, new); T2 dumps both (-1285.24, 280.79), the host's persisted entry the same place |
+
+Fixes found by these runs (all in the working tree):
+
+- **The Mat44 for the game's correction calls was transposed** (`MatFromWt`; `0x1419C8510` copies the rotation rows as
+  they are): every corrected vehicle was driven toward the inverse heading (69 deg on the summoned trike and truck).
+- **Parked vehicles**: RequestTeleport instead of the native correction / nudge, which never closed a parked error
+  (23.12); the same for a stopped vehicle with its driver.
+- **Teleport clearance**: a partner-owned vehicle within 0.5 m of its newest PARK frame no longer blocks one (two
+  summoned vehicles side by side blocked each other for good).
+- **The lite attach** (23.11) for vehicles without the AI drive component, and the lookup precheck: the trike's Attach
+  had faulted inside the game.
+- **Handback**: the host puts its unit where the guest parked (the RELEASE's final place) instead of pulling the
+  guest's truck 0.2 m back to the host's follower.
+- Scenarios: `ini partner_body=real`; `vehicle_sync 18 6` aims at the followed vehicle (it is not in the registry
+  list while the NPC controller holds it); `vehicle_drive 9 <m> 1` without the ground snap (indoors); counted log
+  lines (`attached #n`, `drives ... #n`, `got off ... (#n)`) because `waitlog` matches the whole log.
+
+Not proven or not done:
+
+- **Persistence across a reload**: the game made no save during any run (the host's scratch folder changed only
+  `profile.dat`) and the mod has no save entry point; the host's persisted entry (`vehicle_share 8`, the save writer's
+  own output) holding the parked spot is the evidence.
+- **Garage store** as the removal: the test uses the game's removal request (`vehicle_share 6`); the garage-store path
+  itself is not driven by a scenario.
+- The summoned truck overlapping the summoned trike (a scenario artifact) is held by repeated parked teleports in the
+  guest's world, a visible 0.1..0.4 m jitter every ~2 s while they touch.
+- A guest standing next to the truck she just parked blocks its teleport (the clearance keeps 0.6 m around the local
+  Sam): her truck can stay up to ~0.2 m off the host's until she walks away (run `20261119-120115`, before the handback
+  fix moved the host's truck instead).
+- Native lamps / sounds (`vehicle_real_native`), the battery, the push claim and force-off paths, MULE / NPC vehicles,
+  vehicles driven out of the other world's streaming range: unchanged from 23.21.
+
+### 23.23 Review fixes (host-world safety, game thread, sync logic)
+
+A review of the M2 working tree found ways a buggy or malicious peer, a race or a stale read could change the host's
+persisted world. Every fix is on the host's side unless it says otherwise; the pure rules are in vehicle_wire and
+unit-tested (`TestReviewRules`, `TestBinding`, `TestGate`, the message tests).
+
+| Area | Before | Now |
+|---|---|---|
+| CLAIM | granted whenever the host's Sam was not on the vehicle | granted only with the partner body within 3 m of the vehicle's footprint (get on) or 6 m (push), at the host's unit place (or the guest's far place, below); else DENY `kDenyNotThere` (reason 3), and a vehicle the guest owned comes back to the host |
+| Guest owns it parked, its Sam away | kept until silence (never, while PARK frames come) | no DRIVE frame for 2 s and the partner body more than 30 m from it for 5 s: the host takes it back (GRANT, timeout) |
+| Guest frames (STD1) | any place | a frame more than 40 m from the host's unit and from the partner body is refused (one bad frame never teleports a host vehicle across the map) |
+| Worlds | VOWN / REM / STD1 carried no world | VOWN and REM carry the sender's world (coop's load counter, a u32 at the end: VOWN body 92 bytes, REM 56); the receiver drops another world's; the host takes the guest's VOWN / REM / STD1 only while the guest's last SNAP_REQ named the host's current world (`vshare::PeerInOurWorld`), the guest the host's only while the host's newest snapshot / VOWN / REM named its world |
+| Guest removals | applied when the guest owned the vehicle; no place needed; a unit missing from one poll counted as removed | applied only to a vehicle the guest owns that is destroyed on the host too (life 0 or the explosion latch: what the follower copied, D2-5), with the guest's last place of it within 5 m (a removal without a place is refused for a unit that has one) and the partner body within 60 m; anything else (a guest garage store, a removal request) is kept and announced again, and the guest's game shows "The host's game keeps the ...". The guest reports only a unit its poll sees not alive and that still reads not alive; a unit missing from a poll is carried for 5 polls, and the binding waits up to 10 rounds while a bound unit is missing |
+| Emergency stop | followers kept the seats until the world reloaded | the next game-thread pass (`vdrive::AfterStop`, from vdrive's tick or dllmain's frame pump after a whole-mod stop) detaches every follower once, guarded: the live Detach, the host's Touch, the NPC bits |
+| NPC bits | left set after a detach [I] | cleared after a live detach (only bits that were clear before our attach) and on an actor that spawns again after ours went, when nobody drives it: `+0x408 &= ~0x10`, `[+0x898]+0x48 &= ~2`, the writes of SetDriver's own get-off path (byte-checked, group kGNpc, optional). The runs below log the bits after the first detaches: both were already 0 (the game's Detach clears them), so the clearing is a guard; the truck keeps `+0x408 & 0x08` (0 before the attach), not touched |
+| Actor streamed out under the follower | no Touch, nothing remembered | the unit is remembered; when it is seen again with its actor: the host's Touch and the NPC bits. The guest's place of a vehicle whose actor is not spawned on the host (from its frames and its RELEASE, within reach of the partner body) is kept: the host's snapshot and ADDs carry it (`vshare::SetPlaceOverride`), and the host puts the vehicle there once its actor is back and nobody else places it |
+| Stale entities | ParkedTick wrote the state into the poll's entity (up to 100 ms old); vsync's real-vehicle look and lamps the same | the entity is checked again right before (`EntityLive`, `vshare::UnitLive`); the poll is cleared at every world change |
+| Start-up | a frame-pump hook failure left the pool detours on | vshare and vdrive are stopped there too; the detours pass everything through whenever the co-op session is not active, and vshare stops itself when it stops |
+| Fallback | vehicle_sync chose mode 5 once | vehicle_sync falls back to the copies (mode 1, no roadster) whenever the real sharing is not in effect (stopped, or the host's game sent no snapshot 20 s after the guest asked) and returns to 5 when it is; the guest's gate passes its own game's spawns until the host has answered with a snapshot in this world |
+| Binding | a same-id vehicle without an actor here more than 5 m off was removed and mirrored again; the re-place and mirror path 3 teleported without the clearance; the mod's mirrors of placement vehicles (no GUID) were removed again by the next binding | a same-kind, same-GUID (or none) unit without an actor is bound (re-placed once its actor is back); both teleports only where the vehicle fits (the local Sam, other vehicles), else they wait; the mod remembers its mirrors (`LocalUnit::mirrored_for`) and binds them whatever their GUID |
+| Host diff | a unit released and reused within one poll (an eviction for a spawn) kept `alive`: no REM, no ADD, the guest's request timed out | the unit's vehicle signature (GUID, spawn record +2), and a request answered by a unit that stood elsewhere before (> 20 m): the old vehicle's REM right before the new one's ADD (with the request's token) |
+| Push / late GRANT | a GRANT while the guest's Sam was not on the vehicle had no handback | such a GRANT arms the at-rest RELEASE; a push counts only 2 s after our follower let go and 2.5 s after the partner's last DRIVE frame |
+| Handback race | a handback crossing the guest getting on again put its Sam off | the guest claims again instead; the host ignores a RELEASE at rest while the guest's DRIVE frames still come (< 0.5 s) |
+| Parked teleports | every 2 s forever where the worlds differ | after two onto the same place that did not hold, the gap doubles (4, 8, 16, 32 s, at most 60 s); 10 s in the ignore band or a new place start over |
+| Requests | an unreadable transform went out as zeros | dropped on the guest; EncodeReq / DecodeReq refuse the origin and rows that are not a rotation; the host refuses a request without a place |
+
+Not done: the push check does not require the host's unit to move (the partner body's place is the evidence); STD1 frames
+carry no world (the host takes them only while the guest is in its world, by the SNAP_REQ); the host's persisted place of a
+vehicle left out of its streaming range changes only when its actor is back (the snapshot carries the guest's place
+meanwhile); a host in mode 1 with a guest in mode 5 is detected on the guest only.
+
+Hidden runs of this state (2026-11-19, foreground, one at a time; all `-SeedSaves complete-100`, the host-save ones
+`-GuestSeed profile-only`): every one result pass, both games exit 0, real saves unchanged and restored, no violation,
+0 cloud uploads, no `[vshare]` / `[vdrive]` FAULT.
+
+| Run | Result |
+|---|---|
+| `20261119-130850-two-games-veh-identity` | 22 bound, the guest's trike summon mirrored (exact id 0x01E001), 23 = 23 |
+| `20261119-131047-two-games-veh-summon` | trike (guest REQ, answered in 0.2 s) and truck each one unit per world (22 -> 23 -> 24); the truck summoned into the trike: after two teleports that did not hold the backoff logged and the gap grew |
+| `20261119-131238-two-games-veh-drive` | host drives, guest follows: moving windows mean 0.24 m (max 1.03 m) |
+| `20261119-131508-two-games-veh-drive-guest` | the guest's CLAIM granted (its Sam at the truck), handback at rest |
+| `20261119-131752-two-games-veh-drive-trike` | the lite attach; bits after the detach 0 |
+| `20261119-132015-two-games-veh-drive-roadster` | the full attach; bits after the detach 0 |
+| `20261119-132245-two-games-veh-handoff` | host drives / gets off, the guest claims (granted) and drives, handback, the lock, the race (the host boards) |
+| `20261119-132955-two-games-veh-remove` | the host's trike REM; new step: the guest removes truck 0x020005 it does not own -> the host keeps it and announces it again, the guest shows the notice, mirrors it by the exact id and later follows it; the truck's life 0 copied |
+| `20261119-133203-two-games-veh-persist` | the guest drives the truck away and parks it; handback; both worlds hold it at (-1317.3, 299.3) within 0.04 m |
+| `20261119-133403-two-games-hostsave-continue` | the M1 session unchanged; 22 bound |
+| `20261119-133610-two-games-vehicle-state` | host_save=0: vshare off, the v0.14 copies (mode 1) as before |
+
+(`20261119-132806-two-games-veh-remove` failed at the new step only: no truck within its first 30 m radius; the step now
+takes the nearest within 150 m.)

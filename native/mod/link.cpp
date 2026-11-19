@@ -136,6 +136,22 @@ unsigned g_mq_head = 0, g_mq_count = 0;
 std::uint32_t g_last_rx_mseq = 0;
 bool g_have_rx_mseq = false;
 volatile LONG64 g_rx_vehicle = 0, g_tx_vehicle = 0;
+// Driven / parked vehicle frames (STD1, vehicle_wire.hpp; the real shared vehicles' drive module): raw bytes (the magic and
+// one of the two sizes checked here, the strict decoder runs on the game thread), oldest first; when full the oldest goes.
+// No sequence filter: the receiver keeps its own per vehicle.
+constexpr std::size_t kDriveMax = 172;  // vwire::kMaxDriveFrameSize
+struct RxD {
+    std::uint8_t bytes[kDriveMax];
+    std::uint8_t size;
+    std::uint32_t generation;
+};
+constexpr unsigned kDQueue = 64;
+RxD g_dqueue[kDQueue];
+unsigned g_dq_head = 0, g_dq_count = 0;
+volatile LONG64 g_rx_drive = 0, g_tx_drive = 0, g_rx_drive_dropped = 0;
+bool LooksLikeDriveFrame(const std::uint8_t* d, std::size_t n) noexcept {
+    return d && (n == 124 || n == kDriveMax) && d[0] == 'S' && d[1] == 'T' && d[2] == 'D' && d[3] == '1';
+}
 
 // The reliable ordered channel (docs/link-protocol.md "Reliable channel"; under g_tx with the session):
 // channel 2 (wire::kSpeechChannel) carries STS1. Reset on every new session.
@@ -165,6 +181,13 @@ SaveSink g_save_sink = nullptr;
 void* g_save_ctx = nullptr;
 volatile long g_save_burst = 0;
 volatile LONG64 g_rx_save = 0, g_tx_save = 0;
+// Received vehicle events (SVM1, channel 3; vehicle_wire.hpp; under g_veh_lock, taken inside g_tx or alone, never the other
+// way round), in delivery order, for PopVehicleEvent (game thread).
+constexpr unsigned kVehQueue = 64;
+SRWLOCK g_veh_lock = SRWLOCK_INIT;
+RxSave g_veh_q[kVehQueue];
+unsigned g_veh_head = 0, g_veh_count = 0;
+volatile LONG64 g_rx_veh_events = 0, g_tx_veh_events = 0;
 // Hidden tests (TestBlackout): received datagrams are dropped until this NowMs().
 volatile LONG64 g_blackout_until = 0, g_blackout_dropped = 0;
 
@@ -181,6 +204,21 @@ void DrainSaveLocked(std::uint64_t now, std::uint32_t generation) noexcept {
         InterlockedIncrement64(&g_rx_save);
     }
     ReleaseSRWLockExclusive(&g_save_lock);
+}
+
+// Under g_tx: in-order channel 3 messages into the vehicle event queue while it has room (the rest stays in the receiver).
+void DrainVehicleEventsLocked(std::uint64_t now, std::uint32_t generation) noexcept {
+    AcquireSRWLockExclusive(&g_veh_lock);
+    std::size_t got = 0;
+    while (g_veh_count < kVehQueue) {
+        RxSave& slot = g_veh_q[(g_veh_head + g_veh_count) % kVehQueue];
+        if (!g_rel_rx[kVehicleEventChannel].Drain(slot.bytes, sizeof(slot.bytes), got, now)) break;
+        slot.size = static_cast<std::uint16_t>(got);
+        slot.generation = generation;
+        ++g_veh_count;
+        InterlockedIncrement64(&g_rx_veh_events);
+    }
+    ReleaseSRWLockExclusive(&g_veh_lock);
 }
 
 // Outside every lock: hand the queued save messages to the sink, if one is registered.
@@ -326,6 +364,9 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
     unsigned sound_count = 0;
     static thread_local wire::VehicleFrame vehicle;  // transport thread only
     bool have_vehicle = false;
+    constexpr unsigned kMaxDrive = 16;
+    static thread_local RxD drive[kMaxDrive];  // transport thread only
+    unsigned drive_count = 0;
 
     AcquireSRWLockExclusive(&g_tx);
     const lk::Delivery d = g_session.OnDatagram(data, size, from, now);
@@ -362,6 +403,14 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
                     ++sound_count;
                 } else if (wire::DecodeVehicle(m.data, m.size, vehicle)) {
                     have_vehicle = true;  // the newest in the datagram wins
+                } else if (LooksLikeDriveFrame(m.data, m.size)) {
+                    if (drive_count < kMaxDrive) {
+                        std::memcpy(drive[drive_count].bytes, m.data, m.size);
+                        drive[drive_count].size = static_cast<std::uint8_t>(m.size);
+                        ++drive_count;
+                    } else {
+                        InterlockedIncrement64(&g_rx_drive_dropped);
+                    }
                 }
             } else if (m.type == static_cast<std::uint8_t>(lk::MsgType::reliable)) {
                 lk::ReliableMsg r{};
@@ -395,9 +444,16 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
             ReleaseSRWLockExclusive(&g_save_lock);
         }
         DrainSaveLocked(now, g_generation + (new_session ? 1u : 0u));
+        // Channel 3: the vehicle events (SVM1, vehicle_share.cpp), queued for the game thread the same way.
+        if (new_session) {
+            AcquireSRWLockExclusive(&g_veh_lock);
+            g_veh_count = 0;
+            ReleaseSRWLockExclusive(&g_veh_lock);
+        }
+        DrainVehicleEventsLocked(now, g_generation + (new_session ? 1u : 0u));
         // Other channels are not used by this build: drained and dropped so their windows never fill.
         for (unsigned ch = 1; ch < lk::kReliableChannels; ++ch)
-            if (ch != wire::kSpeechChannel && ch != lk::kSaveChannel)
+            if (ch != wire::kSpeechChannel && ch != lk::kSaveChannel && ch != kVehicleEventChannel)
                 while (g_rel_rx[ch].Drain(buf, sizeof(buf), got, now)) {
                 }
     }
@@ -410,9 +466,10 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
     if (g_use_steam && new_session && g_host && committed.address) g_steam.set_peer(lab::SteamIdOf(committed));
 
     if (pose_count || joint_count || have_name || have_gear || res_count || look_count || have_gpose || speech_count || sound_count || have_vehicle ||
-        new_session) {
+        drive_count || new_session) {
         AcquireSRWLockExclusive(&g_rx);
         if (new_session) {
+            g_dq_count = 0;
             g_mq_count = 0;
             g_have_rx_mseq = false;
             g_aq_count = 0;
@@ -480,6 +537,14 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
             if (g_mq_count < kMQueue) ++g_mq_count;
             else g_mq_head = (g_mq_head + 1) % kMQueue;
             InterlockedIncrement64(&g_rx_vehicle);
+        }
+        for (unsigned i = 0; i < drive_count; ++i) {
+            RxD& slot = g_dqueue[(g_dq_head + g_dq_count) % kDQueue];
+            slot = drive[i];
+            slot.generation = g_generation;
+            if (g_dq_count < kDQueue) ++g_dq_count;
+            else g_dq_head = (g_dq_head + 1) % kDQueue, InterlockedIncrement64(&g_rx_drive_dropped);
+            InterlockedIncrement64(&g_rx_drive);
         }
         if (have_gpose) {
             RxK& slot = g_kqueue[(g_kq_head + g_kq_count) % kKQueue];
@@ -942,6 +1007,35 @@ bool PopVehicle(wire::VehicleFrame& out, std::uint32_t& generation) noexcept {
     return ok;
 }
 
+bool SendDrive(const std::uint8_t* bytes, std::size_t size) noexcept {
+    if (!LooksLikeDriveFrame(bytes, size)) return false;
+    const bool sent = SendFrameBytes(bytes, size);
+    if (sent) InterlockedIncrement64(&g_tx_drive);
+    return sent;
+}
+
+bool PopDrive(std::uint8_t* out, std::size_t cap, std::size_t& size, std::uint32_t& generation) noexcept {
+    bool ok = false;
+    AcquireSRWLockExclusive(&g_rx);
+    if (g_dq_count && out && g_dqueue[g_dq_head].size <= cap) {
+        const RxD& d = g_dqueue[g_dq_head];
+        std::memcpy(out, d.bytes, d.size);
+        size = d.size;
+        generation = d.generation;
+        g_dq_head = (g_dq_head + 1) % kDQueue;
+        --g_dq_count;
+        ok = true;
+    }
+    ReleaseSRWLockExclusive(&g_rx);
+    return ok;
+}
+
+void DriveCounts(std::uint64_t* sent, std::uint64_t* received, std::uint64_t* dropped) noexcept {
+    if (sent) *sent = static_cast<std::uint64_t>(InterlockedCompareExchange64(&g_tx_drive, 0, 0));
+    if (received) *received = static_cast<std::uint64_t>(InterlockedCompareExchange64(&g_rx_drive, 0, 0));
+    if (dropped) *dropped = static_cast<std::uint64_t>(InterlockedCompareExchange64(&g_rx_drive_dropped, 0, 0));
+}
+
 void VehicleCounts(std::uint64_t* sent, std::uint64_t* received) noexcept {
     if (sent) *sent = static_cast<std::uint64_t>(InterlockedCompareExchange64(&g_tx_vehicle, 0, 0));
     if (received) *received = static_cast<std::uint64_t>(InterlockedCompareExchange64(&g_rx_vehicle, 0, 0));
@@ -1030,6 +1124,48 @@ bool PopSave(std::uint8_t* out, std::size_t cap, std::size_t& size, std::uint32_
     }
     ReleaseSRWLockExclusive(&g_save_lock);
     return ok;
+}
+
+bool SendVehicleEvent(const void* bytes, std::size_t size) noexcept {
+    if (!bytes || size == 0 || size > lk::kMaxReliableMessage) return false;
+    bool queued = false;
+    AcquireSRWLockExclusive(&g_tx);
+    if (g_session.CanSendData())
+        queued = g_rel_tx[kVehicleEventChannel].Queue(bytes, size, lk::ReliableMode::append) == lk::ReliableResult::queued;
+    ReleaseSRWLockExclusive(&g_tx);
+    if (queued) {
+        InterlockedIncrement64(&g_tx_veh_events);
+        InterlockedAdd64(&g_tx_payload, static_cast<LONG64>(size));
+    }
+    return queued;
+}
+
+unsigned VehicleEventsQueued() noexcept {
+    AcquireSRWLockExclusive(&g_tx);
+    const unsigned n = g_rel_tx[kVehicleEventChannel].queued();
+    ReleaseSRWLockExclusive(&g_tx);
+    return n;
+}
+
+bool PopVehicleEvent(std::uint8_t* out, std::size_t cap, std::size_t& size, std::uint32_t& generation) noexcept {
+    bool ok = false;
+    AcquireSRWLockExclusive(&g_veh_lock);
+    if (g_veh_count && out && g_veh_q[g_veh_head].size <= cap) {
+        const RxSave& s = g_veh_q[g_veh_head];
+        std::memcpy(out, s.bytes, s.size);
+        size = s.size;
+        generation = s.generation;
+        g_veh_head = (g_veh_head + 1) % kVehQueue;
+        --g_veh_count;
+        ok = true;
+    }
+    ReleaseSRWLockExclusive(&g_veh_lock);
+    return ok;
+}
+
+void VehicleEventCounts(std::uint64_t* sent, std::uint64_t* received) noexcept {
+    if (sent) *sent = static_cast<std::uint64_t>(g_tx_veh_events);
+    if (received) *received = static_cast<std::uint64_t>(g_rx_veh_events);
 }
 
 void SetSaveBurst(bool title_or_loading) noexcept { InterlockedExchange(&g_save_burst, title_or_loading ? 1 : 0); }

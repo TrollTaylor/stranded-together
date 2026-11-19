@@ -28,6 +28,8 @@
 #include "real_body.hpp"
 #include "status.hpp"
 #include "steam_owner.hpp"
+#include "vehicle_drive.hpp"
+#include "vehicle_share.hpp"
 #include "vehicle_sync.hpp"
 
 namespace st::sync {
@@ -1095,6 +1097,14 @@ void Tick() noexcept {
                         if (n && wire::DecodeGearLook(buf, n, vlback)) vsync::OnLook(vlback);  // echo: our own vehicle's look
                     }
                 }
+                // The real shared vehicles (vehicle_sync=5; docs/real-partner-body.md section 23.11): STD1 frames for the vehicle
+                // our Sam drives (the inputs the game feeds it) and the vehicles we own that nobody drives, on the same axis.
+                if (g_net) {
+                    static std::uint8_t dbuf[8][vwire::kMaxDriveFrameSize];
+                    std::size_t dsz[8] = {};
+                    const unsigned nd = vdrive::TakeSend(g_local, p.sender_ms, now, dbuf, dsz, 8);
+                    for (unsigned i = 0; i < nd; ++i) link::SendDrive(dbuf[i], dsz[i]);
+                }
             }
             if (!g_net && have_joints) {
                 std::uint8_t buf[wire::kMaxJointFrameSize];
@@ -1202,6 +1212,7 @@ void Tick() noexcept {
                 pvoice::NewSession();
                 psound::NewSession();
                 vsync::NewSession();
+                vdrive::NewSession();
                 Log("[sync] new link session (#%u): interpolation reset", gen);
                 if (BodyPresent()) RemoveBody("new link session");  // session end of the previous partner
             }
@@ -1263,6 +1274,19 @@ void Tick() noexcept {
             if (gen != g_generation) continue;
             vsync::OnFrame(vf, g_ring.Unwrapped(vf.sender_ms), now);  // played at the pose play time (vsync::Tick)
         }
+        {
+            // the real shared vehicles' driven / parked frames (STD1): the strict decoder here, played at the pose play time
+            std::uint8_t dbuf[vwire::kMaxDriveFrameSize];
+            std::size_t dn = 0;
+            static std::uint32_t bad_drive = 0;
+            while (link::PopDrive(dbuf, sizeof(dbuf), dn, gen)) {
+                if (gen > g_generation) new_session(gen);
+                if (gen != g_generation) continue;
+                vwire::DriveFrame df;
+                if (vwire::DecodeDrive(dbuf, dn, df)) vdrive::OnFrame(df, g_ring.Unwrapped(df.sender_ms), now);
+                else if (++bad_drive <= 10) Log("[sync] dropped an STD1 frame (%zu bytes): not valid", dn);
+            }
+        }
     }
     g_ring.Settle();
 
@@ -1287,6 +1311,9 @@ void Tick() noexcept {
         WorldTransform target{};
         ComposeTransform(pos, q, target);
         if (g_pin) target = g_pin_wt;  // collision tests: the body stands still (its last pose held)
+        // The real shared vehicles (section 23.15): while the partner drives one of our real vehicles here, its body sits at
+        // that vehicle's transform times the partner's seat (the vehicle moves by its own physics; the body never drifts off it).
+        else vdrive::SeatTarget(g_ring.PlayTime(now, delay), &target);
         vin.have_play = true, vin.play_ms = g_ring.PlayTime(now, delay);
         vin.have_body = true, vin.body = target;
         sndf.have_root = true, sndf.root = target;
@@ -1335,6 +1362,25 @@ void Tick() noexcept {
     vin.local = g_local;
     vsync::Tick(vin, now);
     vsync::SenderTick(g_local, now);
+    // The real shared vehicles (vehicle_sync=5 with host_save=1; vehicle_share.hpp): after vsync, whose partner vehicle place
+    // tells the host's eviction refusal which vehicle the partner rides.
+    {
+        vshare::TickIn sin;
+        sin.local = g_local;
+        sin.local_ok = vin.local_ok;
+        sin.have_partner = vin.have_body;
+        sin.partner = vin.body;
+        vshare::Tick(sin, now);
+        // remote driving, ownership and state on them (vehicle_drive.hpp): the partner's inputs at the body's play time
+        vdrive::TickIn din;
+        din.local = g_local;
+        din.local_ok = vin.local_ok;
+        din.have_play = vin.have_play;
+        din.play_ms = vin.play_ms;
+        din.have_partner = vin.have_body;
+        din.partner = vin.body;
+        vdrive::Tick(din, now);
+    }
 
     // Player collision (partner_collision.hpp): only the partner slot's real body, never the
     // hologram or the self view's body.

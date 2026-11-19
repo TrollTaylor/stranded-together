@@ -271,6 +271,16 @@ bool CoopSessionCommand(int, const double (&)[3], char* msg, std::size_t cap) no
     Say(msg, cap, "coop session (stub)");
     return true;
 }
+bool VehicleShareCommand(int, const double (&)[3], char* msg, std::size_t cap) noexcept {
+    Seen();
+    Say(msg, cap, "vehicle share (stub)");
+    return true;
+}
+bool VehicleDriveCommand(int, const double (&)[3], char* msg, std::size_t cap) noexcept {
+    Seen();
+    Say(msg, cap, "vehicle drive (stub)");
+    return true;
+}
 
 void ReadDiagnostics(Diagnostics* d) noexcept {
     *d = Diagnostics{};

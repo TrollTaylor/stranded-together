@@ -1,0 +1,93 @@
+# Shared real vehicles, removals and destruction (design M2.10 #5; docs/real-partner-body.md sections 23.4, 23.14), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-veh-remove -SeedSaves complete-100 -GuestSeed profile-only
+# 1. The host summons a trike and then removes it with the game's own removal request (vehicle_share 6: unit+0x198 |=
+# 0x2000, what storing it in the garage does): REM, the guest removes its unit. The guest then removes a truck it does not
+# own: the host keeps it (23.23). 2. The host drives the truck and its life
+# is set to 0 (vehicle_drive 7 0: the owner's damage, D2-5): the guest's follower gets life 0 and the broken edge, its
+# own ride-state machine breaks it (state 5). Pass: removed in both worlds within 1 s; the guest's truck broken; no fault.
+role host
+graphics low
+timeout 360
+ini host_save=1
+ini partner_body=real
+ini partner_collision=0
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[coop\] host-held save session ON \(host
+@guest waitlog 10 \[coop\] host-held save session ON \(guest
+waitlog 60 \[vshare\] shared real vehicles ON \(host
+@guest waitlog 60 \[vshare\] shared real vehicles ON \(guest
+waitlog 10 \[vdrive\] remote driving ON \(host
+@guest waitlog 10 \[vdrive\] remote driving ON \(guest
+# the title menus (~20 s after the first frame); the host Continues (CONTINUE is selected on its title)
+wait 22000
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+@guest waitlog 60 \[vshare\] guest: the host's snapshot #[0-9]+ is complete
+@guest waitlog 30 \[vshare\] guest: binding:
+wait 12000
+action vehicle_summon 3 6
+waitlog 20 \[vshare\] host: ADD trike
+@guest waitlog 30 \[vshare\] guest: mirror 0x[0-9A-F]+ \(trike\)
+wait 5000
+action vehicle_dump 1
+@guest action vehicle_dump 1
+screenshot X1-host-trike
+@guest screenshot X1-guest-trike
+action vehicle_share 6 3 30
+waitlog 10 \[vshare\] host: REM trike
+@guest waitlog 10 \[vshare\] guest: REM from the host: trike
+@guest waitlog 10 \[vshare\] guest: removed trike
+wait 3000
+action vehicle_dump 2
+@guest action vehicle_dump 2
+screenshot X2-host-removed
+@guest screenshot X2-guest-removed
+# the guest removes a truck it does not own (docs 23.23): the host keeps it and announces it again, the guest's game
+# mirrors it again and shows why
+@guest action vehicle_share 6 2 150
+@guest waitlog 10 \[vshare\] guest: our truck 0x[0-9A-F]+ \(the host's 0x[0-9A-F]+\) went in our world: told the host
+waitlog 10 \[vshare\] host: the guest removed truck 0x[0-9A-F]+: kept, announced again
+@guest waitlog 10 \[vshare\] guest: the host kept the truck 0x[0-9A-F]+ we removed
+wait 4000
+@guest action vehicle_dump 4
+# the truck destroyed by its driver's game
+action vehicle_sync 8 1.8 2
+@guest action vehicle_sync 8 9 2
+wait 1500
+@guest action vehicle_sync 18 2
+@guest until 25 150 camera aimed #1 => pad none 200 rx=32767
+until 20 4000 \[vdrive\] host: our Sam drives truck => pad X 150
+@guest waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached
+pad none 1500 rt=150 keep
+pad none 0
+wait 1000
+action vehicle_drive 7 0
+?@guest waitlog 10 \[vdrive\] truck 0x[0-9A-F]+: life [0-9.]+ -> 0.0
+wait 5000
+screenshot X3-host-broken
+@guest screenshot X3-guest-broken
+@both action vehicle_drive 1
+action vehicle_dump 3
+@guest action vehicle_dump 3
+@both action vehicle_drive 0
+@both action vehicle_drive 1
+@both action vehicle_share 0
+@both action log_status
+nolog \[vshare\].*FAULT
+@guest nolog \[vshare\].*FAULT
+nolog \[vdrive\].*FAULT
+@guest nolog \[vdrive\].*FAULT
+@guest quit
+wait 3000
+quit

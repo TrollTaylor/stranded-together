@@ -97,6 +97,13 @@ bool ReportedVehicleLocal(std::uintptr_t e, const double (&p)[3], float (&out)[3
 // Receiver: a point in the partner vehicle's frame to the world, at the place its frames play this tick (with or
 // without a copy). False while no frame plays (none for 2 s, the partner silent / held, broken for 3 s, off).
 bool PartnerVehicleWorld(double now_ms, const float (&local)[3], double (&out)[3]) noexcept;
+// The partner's seat in its vehicle at the play time (the STM1 frames bracketing it, both seated): the offset and rotation in
+// the vehicle's frame, and the vehicle's kind. False when the partner is not seated then. vehicle_drive.cpp places the partner
+// body at our real vehicle times this seat while the partner drives (docs/real-partner-body.md section 23.15).
+bool PartnerSeatAt(double play_ms, float (&seat)[3], float (&seat_r)[3][3], std::uint8_t* kind) noexcept;
+// partner_sound plays the partner's STA1 vehicle sounds at its vehicle: false with the real shared vehicles and
+// vehicle_real_native=1 (the follower vehicle's own engine and road sounds; section 23.16).
+bool MirrorVehicleSounds() noexcept;
 
 // action vehicle_sync: 0 log, 1 mode v[1] (0 off / 1, 2 solid / 3 holograms / 4 roadster), 2 copy override v[1] (0 auto, 1 roadster
 // hologram, 2 trike, 3 truck, 4 trike hologram, 5 truck hologram), 3 trace for v[1] ms, 4 copy offset in the vehicle's frame (v[1] forward, v[2] up, cm),
