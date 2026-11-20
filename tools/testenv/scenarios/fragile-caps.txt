@@ -1,0 +1,131 @@
+# Fragile's four head items of the cap class, one by one (docs/real-partner-body.md section 26.3), solo self view. The
+# cap colour (`gear 15 <c>`) does not pick the item (run 20261120-023729: cap00 for all 25 colours); the accessory type
+# does (run 20261120-024053, named by the `[headgear] self cap (<item>)` meter): 0x0F (15) cap00 the Bridges cap, 0x24
+# (36) cap01 the Santa hat, 0x31 (49) cap02 the headcrab, 0x32 (50) cap03 the hair ornament. Each worn in turn (`gear 14
+# <type> 1`) with the camera kept still, from the front, then from behind: "after" with this build's own offset per
+# item (no tuning), then "before" at v0.18's 5.0 cm for every cap (`self_view 8 0 50`). Run 20261120-024449 (an earlier
+# version of this file: 5.0 / 4.3 / 3.6 cm on each) chose the values.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario fragile-caps -SeedSaves complete-100 [-SettingsCfg <1440p cfg>]
+role solo
+timeout 360
+ini partner_body=real
+ini my_character=fragile_suit
+ini self_character=1
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+action gear 14 15 0
+wait 1000
+pad none 1300 rx=32767
+wait 2500
+screenshot front-none
+action gear 14 15 1
+wait 2500
+log front after type 15
+screenshot front-t15-after
+action gear 14 15 0
+wait 1200
+action gear 14 36 1
+wait 2500
+log front after type 36
+screenshot front-t36-after
+action gear 14 36 0
+wait 1200
+action gear 14 49 1
+wait 2500
+log front after type 49
+screenshot front-t49-after
+action gear 14 49 0
+wait 1200
+action gear 14 50 1
+wait 2500
+log front after type 50
+screenshot front-t50-after
+action gear 14 50 0
+wait 1200
+pad none 1300 rx=32767
+wait 2500
+action gear 14 15 1
+wait 2500
+log back after type 15
+screenshot back-t15-after
+action gear 14 15 0
+wait 1200
+action gear 14 36 1
+wait 2500
+log back after type 36
+screenshot back-t36-after
+action gear 14 36 0
+wait 1200
+action gear 14 49 1
+wait 2500
+log back after type 49
+screenshot back-t49-after
+action gear 14 49 0
+wait 1200
+action gear 14 50 1
+wait 2500
+log back after type 50
+screenshot back-t50-after
+action gear 14 50 0
+wait 1200
+action self_view 8 0 50
+action gear 14 15 1
+wait 2500
+log back before type 15
+screenshot back-t15-before
+action gear 14 15 0
+wait 1200
+action gear 14 36 1
+wait 2500
+log back before type 36
+screenshot back-t36-before
+action gear 14 36 0
+wait 1200
+action gear 14 49 1
+wait 2500
+log back before type 49
+screenshot back-t49-before
+action gear 14 49 0
+wait 1200
+action gear 14 50 1
+wait 2500
+log back before type 50
+screenshot back-t50-before
+action gear 14 50 0
+wait 1200
+pad none 1300 rx=32767
+wait 2500
+action gear 14 15 1
+wait 2500
+log front before type 15
+screenshot front-t15-before
+action gear 14 15 0
+wait 1200
+action gear 14 36 1
+wait 2500
+log front before type 36
+screenshot front-t36-before
+action gear 14 36 0
+wait 1200
+action gear 14 49 1
+wait 2500
+log front before type 49
+screenshot front-t49-before
+action gear 14 49 0
+wait 1200
+action gear 14 50 1
+wait 2500
+log front before type 50
+screenshot front-t50-before
+action gear 14 50 0
+wait 1200
+action real_stats
+action log_status
+quit

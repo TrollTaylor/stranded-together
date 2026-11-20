@@ -41,6 +41,10 @@ param(
     # as the host. profile-only: the guest's own profile\ and settings only, no save slot (the host-held save session's
     # guest: it gets the host's save over the link; docs/coop-session.md). The host's scratch is seeded as always.
     [ValidateSet('full', 'profile-only')][string]$GuestSeed = 'full',
+    # Two-game runs on the launcher's own session.ini (the Local test's host.ini + guest.ini, written by
+    # StrandedTogether.exe --write-session local-test from the game folder's launcher settings, read only). Only the save
+    # location is swapped for the run's redirect. Automatic for a scenario with a 'launcherini' line.
+    [switch]$LauncherIni,
     [switch]$KeepAudio,
     [switch]$NoBuild,
     # Bisecting a game that does not start (docs/hidden-testing.md "When the game exits at once"):
@@ -79,7 +83,7 @@ if (-not $NoBuild) {
         & cmake -S $repo -B $BuildDir -G 'Visual Studio 17 2022' -A x64 | Out-Host
         if ($LASTEXITCODE) { throw 'cmake configure failed' }
     }
-    & cmake --build $BuildDir --config $Config --target st_mod st_testenv_supervisor st_testenv_probe -- '/m' '/verbosity:minimal' | Out-Host
+    & cmake --build $BuildDir --config $Config --target st_mod st_testenv_supervisor st_testenv_probe st_launcher -- '/m' '/verbosity:minimal' | Out-Host
     if ($LASTEXITCODE) { throw 'build failed' }
 }
 $sup = Join-Path $bin 'st_testenv_supervisor.exe'
@@ -114,6 +118,17 @@ if ($GameSettings) { $supArgs += @('--game-settings', (Resolve-Path $GameSetting
 if ($SettingsCfg) { $supArgs += @('--settings-cfg', (Resolve-Path $SettingsCfg).Path) }
 if ($SandboxSession) { $supArgs += '--sandbox-session' }
 if ($GuestSeed -ne 'full') { $supArgs += @('--guest-seed', $GuestSeed) }
+if (-not $LauncherIni -and (Select-String -Path $scenarioFile -Pattern '^\s*launcherini\s' -Quiet)) { $LauncherIni = $true }
+if ($LauncherIni) {
+    # Exactly what the launcher's Local test button writes (MakeLocalTestInis + MakeSessionIniText), into the run folder.
+    $launcher = Join-Path $bin 'StrandedTogether.exe'
+    if (-not (Test-Path $launcher)) { throw "missing $launcher (build st_launcher first)" }
+    $iniDir = Join-Path $run 'launcher-ini'
+    & $launcher --write-session local-test --out $iniDir --game-dir $GameDir | Out-Host
+    if (-not (Test-Path (Join-Path $iniDir 'host.ini')) -or -not (Test-Path (Join-Path $iniDir 'guest.ini'))) { throw "the launcher wrote no local-test ini into $iniDir" }
+    Write-Host "launcher ini: $iniDir (host.ini, guest.ini as the Local test writes them)"
+    $supArgs += @('--launcher-ini', $iniDir)
+}
 if ($KeepAudio) { $supArgs += '--keep-audio' }
 if ($NoMod) { $supArgs += '--no-mod' }
 if ($NoUiLimits) { $supArgs += '--no-ui-limits' }

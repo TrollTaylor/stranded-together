@@ -1,0 +1,40 @@
+# host_save=0 is never silent (v0.19; docs/coop-session.md "When the features are off"), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-features-off -SeedSaves complete-100
+# No host_save in either session.ini (the old mode, what v0.18.0's Local test wrote): the host-held save session, the
+# shared vehicles, riding together and vehicle hits are off. Each game logs it and shows the amber overlay notice "Co-op
+# features OFF: host_save=0 ..." at the title (F1) and for the first minute in the world (F2); link-status.json carries
+# "features_off" for the launcher. Pass: both notices logged, the screenshots show the banner, no fault.
+role host
+graphics low
+timeout 300
+ini partner_body=real
+ini partner_collision=0
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[coop\] host_save=0 \(host\): the host-held save session is OFF
+@guest waitlog 10 \[coop\] host_save=0 \(guest\): the host-held save session is OFF
+waitlog 10 \[vshare\] shared real vehicles off: host_save=0
+@guest waitlog 10 \[vshare\] shared real vehicles off: host_save=0
+waitlog 60 \[coop\] notice shown: co-op features OFF: host_save=0
+@guest waitlog 60 \[coop\] notice shown: co-op features OFF: host_save=0
+wait 22000
+screenshot F1-host-title
+@guest screenshot F1-guest-title
+pad A 150
+@guest pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+@guest until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitplayer 60
+wait 5000
+screenshot F2-host-world
+@guest screenshot F2-guest-world
+@both action log_status
+nolog \[coop\].*FAULT
+@guest nolog \[coop\].*FAULT
+@guest quit
+wait 3000
+quit

@@ -74,6 +74,8 @@ int ParseFunctionKey(const std::string& text) {
 std::string FunctionKeyName(int key) { return key >= 1 && key <= 12 ? "F" + std::to_string(key) : std::string(); }
 
 // ---- Secrets, Steam IDs -------------------------------------------------------
+bool IsHostSaveGuestSandbox(const std::string& name) { return name == kCoopGuestSandbox || name == kLocalTestGuestSandbox; }
+
 bool IsCanonicalSecret(const std::string& secret) {
     if (secret.size() != 20) return false;
     for (char c : secret)
@@ -249,8 +251,9 @@ bool MakeSessionIniText(const SessionIni& s, std::string& text, std::string& err
     }
     // The one rule of the host-held save: a guest never runs it on its own saves. The private folder's keys come with
     // host_save, or nothing is written.
-    if (guest && s.host_save && (s.sandbox_saves != kCoopGuestSandbox || !s.sandbox_foreign_saves)) {
-        error = std::string("a host_save guest needs sandbox_saves=") + kCoopGuestSandbox + " and sandbox_foreign_saves=1 (it never runs on its own saves)";
+    if (guest && s.host_save && (!IsHostSaveGuestSandbox(s.sandbox_saves) || !s.sandbox_foreign_saves)) {
+        error = std::string("a host_save guest needs sandbox_saves=") + kCoopGuestSandbox + " (or " + kLocalTestGuestSandbox +
+                " in the local test) and sandbox_foreign_saves=1 (it never runs on its own saves)";
         return false;
     }
     if (!s.local_input.empty() && s.local_input != "host" && s.local_input != "host_pad" && s.local_input != "guest") {
@@ -309,6 +312,7 @@ bool MakeSessionIniText(const SessionIni& s, std::string& text, std::string& err
     t += std::string("verbose=") + (s.verbose ? "1" : "0") + "\n";
     t += std::string("debug_menu=") + (s.debug_menu ? "1" : "0") + "\n";
     t += "debug_menu_key=" + FunctionKeyName(s.debug_menu_key) + "\n";
+    if (s.dev_tools) t += "dev_tools=1\n";
     t += std::string("one_shot=") + (s.one_shot ? "1" : "0") + "\n";
     if (!s.name.empty()) t += "name=" + s.name + "\n";
     if (!s.sandbox_saves.empty()) {
@@ -362,6 +366,7 @@ bool ParseSessionIniText(const std::string& text, SessionIni& out, std::string& 
         else if (k == "verbose") out.verbose = IniBool(v);
         else if (k == "partner_activate") out.partner_activate = IniBool(v);
         else if (k == "debug_menu") out.debug_menu = IniBool(v);
+        else if (k == "dev_tools") out.dev_tools = IniBool(v);
         else if (k == "one_shot") out.one_shot = IniBool(v);
         else if (k == "debug_menu_key") ok = (out.debug_menu_key = ParseFunctionKey(v)) != 0;
         else if (k == "name") out.name = v;
@@ -463,6 +468,7 @@ StatusView StatusViewOf(const json::Value& status, bool fresh, const std::string
     v.peer = PeerDisplay(status.Str("peer"));
     v.remote = status.Str("remote");
     v.reason = status.Str("reason");
+    v.features_off = status.Str("features_off");
     v.rtt_ms = static_cast<int>(status.Int("rtt_ms", 0));
     v.fresh = fresh;
     if (!fresh) {

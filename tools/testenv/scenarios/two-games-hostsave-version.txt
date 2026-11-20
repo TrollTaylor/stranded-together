@@ -3,7 +3,8 @@
 # The guest fakes another game build (coop_test_build, honoured in hidden runs only). Both overlays say "Game versions
 # differ: <host> vs <guest>. Update both games."; the host's Continue offer is refused by the guest (RESULT version) and
 # no file is written in the guest's folder (its scratch diff has no manualsave5/6, see summary.json guest_scratch_changes).
-# Check enlarged: 02-guest-refused (the waiting screen's line), 03-host-world-refused (the host's banner).
+# Check enlarged: 02-guest-refused (the guest's title label "Game versions differ: update both games" and the banner with
+# both builds), 03-host-world-refused (the host's banner).
 role host
 graphics low
 timeout 360
@@ -24,6 +25,8 @@ wait 2500
 waitlog 30 \[link\] CONNECTED
 @guest waitlog 30 \[coop\] guest: Game versions differ
 waitlog 30 \[coop\] host: the partner's game: build 'dsq 000/0000000'.*DIFFERS
+# the guest's own title menu says so (the builds in the banner above it)
+@guest waitlog 30 \[title\] label: Game versions differ: update both games
 wait 3000
 @guest screenshot 02-guest-refused
 pad A 150

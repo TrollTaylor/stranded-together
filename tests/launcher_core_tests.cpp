@@ -424,6 +424,21 @@ void Characters() {
     CHECK(ParseSessionIniText(text, back, error) && !back.partner_vehicle_damage);
     CHECK(ParseSessionIniText(text + "partner_vehicle_damage=1\n", back, error) && back.partner_vehicle_damage);
     host.partner_vehicle_damage = true;
+    // Dev tools (the Debug page's checkbox): off by default and then not written; dev_tools=1 when set, parsed back; the
+    // Debug options reach every session through ApplyDebugOptions (the Local test's two games too).
+    CHECK(text.find("dev_tools") == std::string::npos && !back.dev_tools);
+    host.dev_tools = true;
+    CHECK(MakeSessionIniText(host, text, error) && text.find("dev_tools=1\n") != std::string::npos);
+    CHECK(ParseSessionIniText(text, back, error) && back.dev_tools);
+    host.dev_tools = false;
+    {
+        DebugOptions dbg;
+        CHECK(!dbg.dev_tools);
+        dbg.dev_tools = true;
+        SessionIni applied;
+        ApplyDebugOptions(dbg, applied);
+        CHECK(applied.dev_tools);
+    }
     // Self voice (docs/audio-research.md Phase 1): auto by default, written for every role, parsed back; only
     // auto / sam / mute; a file without it parses back as "" (the mod keeps Sam's voice).
     CHECK(SessionIni{}.self_voice == "auto");
@@ -510,6 +525,12 @@ void StatusParse() {
     CHECK(!v.connected && v.rtt_ms == 0 && v.headline == "The game is not responding");
     v = StatusViewOf(json::Value(), false, "host");
     CHECK(v.headline == "Waiting for the mod");
+    CHECK(StatusViewOf(s, true, "guest").features_off.empty());   // an older mod / everything on: no key
+    {
+        json::Value off = s;
+        off["features_off"] = "host_save=0 (the launcher's Debug > Host holds the save is off)";
+        CHECK(StatusViewOf(off, true, "host").features_off.find("host_save=0") == 0);
+    }
 
     for (const char* state : {"idle", "listening", "waiting", "connecting", "handshake", "reconnecting", "lost", "rejected", "error"}) {
         json::Value x = s;
@@ -899,7 +920,15 @@ void UiLogic() {
     }
     const ui::Options so = ui::ParseCommandLine({L"--write-session", L"solo"});
     CHECK(so.error.empty() && so.write_role == L"solo");
-    CHECK(ui::SceneCount() == static_cast<int>(ui::Scene::count) && ui::SceneCount() == 40);
+    // The local test's two files for the testenv (-LauncherIni): only into --out, never the game folder.
+    const ui::Options lo = ui::ParseCommandLine({L"--write-session", L"local-test", L"--out", L"C:\\x\\launcher-ini", L"--game-dir", L"C:\\g"});
+    CHECK(lo.error.empty() && lo.write_role == L"local-test" && lo.write_out == L"C:\\x\\launcher-ini");
+    CHECK(!ui::ParseCommandLine({L"--write-session", L"local-test"}).error.empty());
+    CHECK(!ui::ParseCommandLine({L"--write-session", L"host", L"--out", L"C:\\x"}).error.empty());
+    CHECK(!ui::ParseCommandLine({L"--out", L"C:\\x"}).error.empty());
+    CHECK(ui::SceneCount() == static_cast<int>(ui::Scene::count) && ui::SceneCount() == 42);
+    CHECK(std::string(ui::SceneName(ui::Scene::debug_options_coop)) == "41-debug-options-coop" &&
+          std::string(ui::SceneName(ui::Scene::debug_local_test_off)) == "42-debug-local-test-off");
     CHECK(std::string(ui::SceneName(ui::Scene::debug_test_saves)) == "36-debug-test-saves" &&
           std::string(ui::SceneName(ui::Scene::debug_local_test)) == "37-debug-local-test" &&
           std::string(ui::SceneName(ui::Scene::play_join_characters)) == "38-play-join-characters" &&
@@ -1415,6 +1444,27 @@ void TestSaves() {
         CHECK(ini.role == "guest" && ini.udp_port_local == 27556 && ini.udp_port_peer == 27555 && ini.sandbox_saves == "local-guest" &&
               ini.second_instance && ini.local_input == "guest" && ini.secret == secret && ini.local_window == "right");
         CHECK(ini.my_character == "cliff" && ini.partner_body == "real" && ini.self_character);   // the guest sees itself as Cliff
+        // v0.19: the local test plays the online session (host_save=1, the Debug default): the guest's waiting screen and
+        // the save transfer, and on them the shared vehicles, riding together and vehicle hits. v0.18.0 wrote no host_save,
+        // so all four were off in the user's play test and nothing said so.
+        CHECK(ini.host_save && ini.sandbox_foreign_saves && text.find("host_save=1\n") != std::string::npos);
+        for (const char* off : {"partner_vehicle_damage=0", "partner_collision=0", "ride_together", "vehicle_sync"})
+            CHECK(text.find(off) == std::string::npos);
+        {
+            SessionIni hi;
+            std::string ht;
+            CHECK(ReadTextShared(host_ini, ht) && ParseSessionIniText(ht, hi, error) && hi.host_save && hi.sandbox_saves == "local-host" &&
+                  hi.sandbox_foreign_saves && ht.find("host_save=1\n") != std::string::npos);
+        }
+        // The guest's folder is prepared like coop-guest: its own profile, no save slot (the host's save arrives over the
+        // link); the host plays its local-host copy of the test save: no backup of the real saves is made.
+        {
+            const std::wstring gacct = JoinPath2(GetSandboxPaths(paths, kLocalGuestSandbox).saves, L"DeathStrandingDC\\104729");
+            CHECK(IsFile(JoinPath2(gacct, L"profile\\profile.dat")) && !IsDir(JoinPath2(gacct, L"autosave3")) && !IsDir(JoinPath2(gacct, L"manualsave1")));
+            CHECK(SandboxIsSessionGuest(GetSandboxPaths(paths, kLocalGuestSandbox)));
+            CHECK(IsFile(JoinPath2(GetSandboxPaths(paths, kLocalHostSandbox).saves, L"DeathStrandingDC\\104729\\autosave3\\checkpoint.dat")));
+            CHECK(!IsDir(HostBackupsDir(paths)));
+        }
         CHECK(SandboxSeeded(GetSandboxPaths(paths, kLocalHostSandbox)) && SandboxSeeded(GetSandboxPaths(paths, kLocalGuestSandbox)));
         CHECK(IsFile(GetSandboxPaths(paths, kLocalGuestSandbox).settings));
         CHECK(m->local_test().running && m->local_test().host_pid == 31 && m->local_test().guest_pid == 0);
@@ -1431,6 +1481,35 @@ void TestSaves() {
         {
             auto reopened = MakeRealModelWithEnv(dir, env);   // the guest's character is remembered
             CHECK(reopened->local_test().guest_character == "cliff");
+        }
+        // Debug > Host holds the save off: the old local test (each game on its own copy of the test save); the guest
+        // folder the host-save test left without slots gets its copy back. The game window says what that costs.
+        {
+            DebugOptions a = m->debug_options();
+            a.host_save = false;
+            m->set_debug_options(a);
+            CHECK(m->start_local_test(error));
+            CHECK(ReadTextShared(guest_ini, text) && ParseSessionIniText(text, ini, error) && !ini.host_save && text.find("host_save") == std::string::npos);
+            CHECK(ReadTextShared(host_ini, text) && ParseSessionIniText(text, ini, error) && !ini.host_save);
+            const SandboxPaths lg = GetSandboxPaths(paths, kLocalGuestSandbox);
+            CHECK(!SandboxIsSessionGuest(lg) && IsFile(JoinPath2(lg.saves, L"DeathStrandingDC\\104729\\autosave3\\checkpoint.dat")));
+            env->now += 9000;
+            m->tick();
+            // what a game reports off reaches the local test's card
+            WriteFile(JoinPath2(paths.mod, L"instances\\guest\\link-status.json"),
+                      "{\"v\":1,\"pid\":" + std::to_string(m->local_test().guest_pid) +
+                          ",\"state\":\"connected\",\"features_off\":\"host_save=0 (test)\",\"time_utc\":\"2026-01-01T00:00:00Z\"}");
+            CHECK(m->local_test().guest_pid != 0);
+            env->now += 1500;
+            m->tick();
+            CHECK(m->local_test().features_off.find("Guest game: host_save=0 (test)") != std::string::npos);
+            env->alive.clear();
+            m->tick();
+            env->now += 4000;
+            m->tick();
+            CHECK(!m->local_test().running && m->local_test().features_off.empty());
+            a.host_save = true;
+            m->set_debug_options(a);
         }
 
         // A local game's refusal left behind never speaks for a later "Play with test save" game.
@@ -1547,6 +1626,58 @@ void HostSaveSession() {
         other.host_save = true;
         CHECK(!MakeSessionIniText(other, text, error) && error.find("host_save") != std::string::npos);
     }
+    // The local test's guest game runs the host-held save on its own sandbox local-guest (prepared like coop-guest);
+    // never on the host's local-host copy, a test-save folder or the real saves.
+    CHECK(std::string(kLocalTestGuestSandbox) == kLocalGuestSandbox && IsHostSaveGuestSandbox("local-guest") &&
+          IsHostSaveGuestSandbox("coop-guest") && !IsHostSaveGuestSandbox("local-host") && !IsHostSaveGuestSandbox("") &&
+          !IsHostSaveGuestSandbox("test"));
+    {
+        SessionIni lg = g;
+        lg.host_save = true;
+        lg.transport = "udp";
+        lg.udp_peer = "127.0.0.1";
+        lg.udp_port_local = 27556;
+        lg.udp_port_peer = 27555;
+        lg.peer_steamid.clear();
+        lg.sandbox_foreign_saves = true;
+        lg.second_instance = true;
+        lg.sandbox_saves = kLocalGuestSandbox;
+        CHECK(MakeSessionIniText(lg, text, error) && text.find("host_save=1\n") != std::string::npos);
+        lg.sandbox_saves = kLocalHostSandbox;
+        CHECK(!MakeSessionIniText(lg, text, error) && error.find("local-guest") != std::string::npos);
+    }
+
+    // ---- MakeLocalTestInis: what the Local test button writes (the launcher's defaults) ----
+    {
+        SessionIni lh, lgu;
+        LocalTestChoices ch;
+        ch.guest_character = "";   // the default pick
+        MakeLocalTestInis(DebugOptions{}, ch, lh, lgu);
+        std::string ht, gt;
+        CHECK(MakeSessionIniText(lh, ht, error) && MakeSessionIniText(lgu, gt, error));
+        // both games: the host-held save session and, on it, the shared vehicles (vehicle_sync default 5 with host_save),
+        // riding together (ride_together default 1) and vehicle hits (partner_vehicle_damage default 1): no key turns
+        // one of them off
+        for (const std::string* t : {&ht, &gt}) {
+            CHECK(t->find("host_save=1\n") != std::string::npos && t->find("transport=udp\n") != std::string::npos &&
+                  t->find("sandbox_foreign_saves=1\n") != std::string::npos && t->find("partner_body=real\n") != std::string::npos &&
+                  t->find("one_shot=1\n") != std::string::npos && t->find("debug_menu=1\n") != std::string::npos);
+            for (const char* off : {"vehicle_sync", "ride_together", "partner_vehicle_damage=0", "partner_collision=0", "automation"})
+                CHECK(t->find(off) == std::string::npos);
+        }
+        CHECK(ht.find("role=host\n") != std::string::npos && ht.find("sandbox_saves=local-host\n") != std::string::npos &&
+              ht.find("my_character=sam\n") != std::string::npos && ht.find("local_input=host\n") != std::string::npos &&
+              ht.find("local_window=left\n") != std::string::npos && ht.find("second_instance") == std::string::npos);
+        CHECK(gt.find("role=guest\n") != std::string::npos && gt.find("sandbox_saves=local-guest\n") != std::string::npos &&
+              gt.find("my_character=fragile_suit\n") != std::string::npos && gt.find("self_character=1\n") != std::string::npos &&
+              gt.find("second_instance=1\n") != std::string::npos && gt.find("local_input=guest\n") != std::string::npos &&
+              gt.find("udp_port_local=27556\n") != std::string::npos && gt.find("udp_port_peer=27555\n") != std::string::npos);
+        CHECK(lh.secret == lgu.secret && IsCanonicalSecret(lh.secret));
+        DebugOptions old_mode;
+        old_mode.host_save = false;
+        MakeLocalTestInis(old_mode, ch, lh, lgu);
+        CHECK(!lh.host_save && !lgu.host_save && MakeSessionIniText(lgu, gt, error) && gt.find("host_save") == std::string::npos);
+    }
 
     // ---- NonSlotManifest ----
     CHECK(IsSaveSlotName(L"autosave0") && IsSaveSlotName(L"ManualSave12") && !IsSaveSlotName(L"profile") && !IsSaveSlotName(L"autosave"));
@@ -1657,6 +1788,9 @@ void HostSaveSession() {
         SessionIni ini;
         CHECK(ReadTextShared(paths.session_ini, text) && ParseSessionIniText(text, ini, error));
         CHECK(ini.role == "host" && ini.host_save && ini.sandbox_saves.empty());   // the host plays on its own saves
+        // the online session's features: nothing turns the shared vehicles, riding or hits off
+        CHECK(text.find("host_save=1\n") != std::string::npos && text.find("partner_body=real\n") != std::string::npos);
+        for (const char* off : {"vehicle_sync", "ride_together", "partner_vehicle_damage=0"}) CHECK(text.find(off) == std::string::npos);
         int backups = 0;
         for (const DirEntry& e : ListDirectory(HostBackupsDir(paths))) backups += e.directory ? 1 : 0;
         CHECK(backups == 1);
@@ -1684,6 +1818,8 @@ void HostSaveSession() {
         CHECK(m->join(partner, error));
         CHECK(ReadTextShared(paths.session_ini, text) && ParseSessionIniText(text, ini, error));
         CHECK(ini.role == "guest" && ini.host_save && ini.sandbox_saves == "coop-guest" && ini.sandbox_foreign_saves && !ini.second_instance);
+        CHECK(text.find("host_save=1\n") != std::string::npos && text.find("partner_body=real\n") != std::string::npos);
+        for (const char* off : {"vehicle_sync", "ride_together", "partner_vehicle_damage=0"}) CHECK(text.find(off) == std::string::npos);
         CHECK(!IsDir(JoinPath2(gacct, L"manualsave6")) && SandboxSeeded(cg));   // the last session's copy wiped (D1-9)
         // A refusal by the mod (no redirect) ends the session and says so.
         WriteFile(JoinPath2(paths.mod, L"sandbox-refused.txt"), "sandbox=REFUSED\nreason=role=guest with host_save=1 but no save redirect\n");
@@ -1730,6 +1866,26 @@ void HostSaveSession() {
         // Remembered (launcher-settings.json).
         auto m = MakeRealModelWithEnv(dir, env);
         CHECK(m->debug_options().host_save && !m->debug_options().backup_host_saves);
+    }
+    // --write-session local-test --out: the local test's two files from this folder's settings (read only), written only
+    // into --out (the testenv's -LauncherIni runs play exactly these).
+    {
+        const std::wstring out = NewTempDir(L"st-launcher-ltini-");
+        const std::string mod_before = SaveTreeManifest(paths.mod);
+        std::string report;
+        CHECK(RunWriteLocalTestIni(dir, JoinPath2(out, L"launcher-ini"), report) == 0 && report.find("result=ok") != std::string::npos);
+        CHECK(report.find("host_save=1") != std::string::npos);
+        SessionIni hi, gi;
+        CHECK(ReadTextShared(JoinPath2(out, L"launcher-ini\\host.ini"), text) && ParseSessionIniText(text, hi, error) && hi.role == "host" &&
+              hi.host_save && hi.sandbox_saves == "local-host");
+        CHECK(ReadTextShared(JoinPath2(out, L"launcher-ini\\guest.ini"), text) && ParseSessionIniText(text, gi, error) && gi.role == "guest" &&
+              gi.host_save && gi.sandbox_saves == "local-guest" && gi.secret == hi.secret);
+        CHECK(SaveTreeManifest(paths.mod) == mod_before);   // nothing written in the game folder
+        CHECK(RunWriteLocalTestIni(dir, L"", report) != 0);
+        // A folder without launcher settings: the launcher's defaults
+        CHECK(RunWriteLocalTestIni(out, JoinPath2(out, L"defaults"), report) == 0 &&
+              ReadTextShared(JoinPath2(out, L"defaults\\guest.ini"), text) && text.find("host_save=1\n") != std::string::npos);
+        RemoveTree(out);
     }
     // Without a Steam account the guest's folder cannot be made: Join refuses (never the real saves).
     {

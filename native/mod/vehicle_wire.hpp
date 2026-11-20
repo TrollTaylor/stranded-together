@@ -137,7 +137,9 @@ struct Rem {
     std::uint32_t world = 0;  // the sender's world (coop_session's load counter): the receiver drops one of another world
 };
 
-enum class ReqReason : std::uint8_t { game = 0, garage = 1, test = 2 };
+// dev: the guest's dev tools (dev_tools.cpp): the host serves it only when its own saves are sandboxed (dev_rules.hpp).
+// A v0.18 host's decoder refuses it (reason > 2): nothing spawns.
+enum class ReqReason : std::uint8_t { game = 0, garage = 1, test = 2, dev = 3 };
 struct Req {
     std::uint32_t token = 0;
     std::uint8_t kind = 0;           // the pool the request went to

@@ -9,11 +9,13 @@
 #include <utility>
 #include <cstring>
 
+#include "dev_tools.hpp"
 #include "log.hpp"
 #include "player_sync.hpp"
 #include "partner_tackle.hpp"
 #include "ride_together.hpp"
 #include "save_guard.hpp"
+#include "story_state.hpp"
 
 namespace st::debug {
 namespace {
@@ -124,8 +126,21 @@ bool DoTeleportToPartner(const Request&, char* msg, std::size_t cap) {
 }
 bool DoUnstuck(const Request&, char* msg, std::size_t cap) { return game::Unstuck(msg, cap); }
 bool DoHeal(const Request& r, char* msg, std::size_t cap) { return game::HealLocalPlayer(r.f[0], msg, cap); }
-bool DoSetTimeOfDay(const Request& r, char* msg, std::size_t cap) { return game::SetTimeOfDay(r.f[0], msg, cap); }
-bool DoDayNightCycle(const Request& r, char* msg, std::size_t cap) { return game::SetDayNightCycle(r.flag, msg, cap); }
+// The world time is world state a save may keep: never on a real save (dev_rules.hpp's rule, from every tab).
+bool RefusedOnRealSave(const char* what, char* msg, std::size_t cap) {
+    const char* why = dev::RealSaveRefusal();
+    if (!why) return false;
+    std::snprintf(msg, cap, "%s %s", what, why);  // the action's result line logs it
+    return true;
+}
+bool DoSetTimeOfDay(const Request& r, char* msg, std::size_t cap) {
+    if (RefusedOnRealSave("time of day", msg, cap)) return false;
+    return game::SetTimeOfDay(r.f[0], msg, cap);
+}
+bool DoDayNightCycle(const Request& r, char* msg, std::size_t cap) {
+    if (RefusedOnRealSave("day/night cycle", msg, cap)) return false;
+    return game::SetDayNightCycle(r.flag, msg, cap);
+}
 bool DoHoloCatalog(const Request& r, char* msg, std::size_t cap) {
     const int start = static_cast<int>(r.v[0]);
     const int count = r.v[1] >= 1 ? static_cast<int>(r.v[1]) : 1;
@@ -178,6 +193,12 @@ bool DoSeatMeasure(const Request& r, char* msg, std::size_t cap) { return ride::
 bool DoRideTest(const Request& r, char* msg, std::size_t cap) { return ride::Command(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoSaveGuard(const Request& r, char* msg, std::size_t cap) { return saveguard::Command(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoVehicleHit(const Request& r, char* msg, std::size_t cap) { return vhit::Command(static_cast<int>(r.v[0]), r.v, msg, cap); }
+template <dev::Op kOp>
+bool DoDev(const Request& r, char* msg, std::size_t cap) {
+    return dev::Command(kOp, r.v, msg, cap);
+}
+bool DoStory(const Request& r, char* msg, std::size_t cap) { return story::Command(story::Op::show, r.v, msg, cap); }
+bool DoStoryLoad(const Request& r, char* msg, std::size_t cap) { return story::Command(story::Op::load, r.v, msg, cap); }
 bool DoVoicePing(const Request& r, char* msg, std::size_t cap) {
     // The live partner entity, exactly as the Partner tab sees it (0 when there is none).
     Snapshot s;
@@ -271,7 +292,29 @@ constexpr Row kRows[] = {
     {{Action::ride_test, Tab::tools, "Ride test", "Hidden tests: 1 solo seat carry, 2 end, 4 crash, 5 flip / 6 stop our vehicle, 7 taken, 30-33 seat tuning.", false}, &DoRideTest},
     {{Action::vehicle_hit, Tab::tools, "Vehicle hit", "Vehicle hits (vehicle_sync=5): 0 state and counters, 1 kind path (0 auto, 1 direct, 2 bracket), 2 one hit on our Sam now (tests), 8 [m ahead] [m right] our Sam in front of the partner's vehicle (tests), 9 the capsule's vehicle boxes.", false}, &DoVehicleHit},
     {{Action::save_guard, Tab::tools, "Save guard", "No save captures Sam while he rides as a passenger: 0 state, 1 [type] a save now (tests: 4 auto, 1 manual), 2 Sam's place vs the last held save, 3 load the run's newest save (host, tests), 4 0/1 the hold off/on (tests), 5 why a save is refused now (tests), 6 / 7 [s] the next forced save stays pending until a boarding / without one (tests).", false}, &DoSaveGuard},
-
+    // Dev tools (the Dev tools page draws them with its own widgets; the labels are the hidden scenarios' action names)
+    {{Action::dev_status, Tab::dev, "Dev status", "Dev tools: 0 log which tools this session allows; 1 0/1 test: act as on a real save (hidden runs).", false},
+     &DoDev<dev::Op::status>},
+    {{Action::dev_vehicle, Tab::dev, "Dev vehicle", "Spawn a vehicle ahead of Sam: kind (1 roadster, 2 truck, 3 trike), variant, metres (sandboxed saves only).", false},
+     &DoDev<dev::Op::vehicle>},
+    {{Action::dev_vehicle_remove, Tab::dev, "Dev vehicle remove", "Remove the nearest vehicle nobody is on (within m, default 15; sandboxed saves only).", false},
+     &DoDev<dev::Op::vehicle_remove>},
+    {{Action::dev_vehicle_fix, Tab::dev, "Dev vehicle fix", "Repair and recharge the nearest vehicle (within m, default 10; sandboxed saves only).", false},
+     &DoDev<dev::Op::vehicle_fix>},
+    {{Action::dev_refill, Tab::dev, "Dev refill", "Health, stamina, battery and blood to full (the game's RecoverFull).", false}, &DoDev<dev::Op::refill>},
+    {{Action::dev_god, Tab::dev, "Dev god", "God mode: 0 off, 1 on, 2 invulnerable (the game's DebugSettings).", false}, &DoDev<dev::Op::god>},
+    {{Action::dev_ammo, Tab::dev, "Dev ammo", "Infinite ammo 0/1 (the game's DebugSettings).", false}, &DoDev<dev::Op::ammo>},
+    {{Action::dev_weather, Tab::dev, "Dev weather", "Weather in this area: 0 clear, 1 timefall, 2 heavy timefall, 3 the game's mix (sandboxed saves only).", false},
+     &DoDev<dev::Op::weather>},
+    {{Action::dev_enemies, Tab::dev, "Dev enemies", "1 resurrect every MULE / terrorist, 2 remove them, 3 reset the BTs (sandboxed saves only).", false},
+     &DoDev<dev::Op::enemies>},
+    {{Action::dev_places, Tab::dev, "Dev places", "The current area's places (delivery points) to the log.", false}, &DoDev<dev::Op::places>},
+    {{Action::dev_place, Tab::dev, "Dev place", "Teleport to place n of the current area's list (nearest first).", false}, &DoDev<dev::Op::place>},
+    {{Action::dev_items, Tab::dev, "Dev items", "1 new boots, 2 n chiral crystals (sandboxed saves only).", false}, &DoDev<dev::Op::items>},
+    {{Action::story, Tab::dev, "Story", "Story state: 0 the episode and orders to the log, 1 every main / sub mission's state, 2 the manual slots (story points), 3 the load's gate here.", false},
+     &DoStory},
+    {{Action::story_load, Tab::dev, "Story load", "Load story point manualsave<n> (the story library's are 10..19; sandboxed saves only, never on the guest).", false},
+     &DoStoryLoad},
 };
 constexpr std::size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);
 static_assert(kRowCount == static_cast<std::size_t>(Action::count), "every Action needs exactly one registry row");
@@ -387,6 +430,7 @@ std::size_t Drain() noexcept {
 void OnTick(double now_ms) noexcept {
     g_last_tick_ms = now_ms;
     game::ActionsTick(now_ms);  // resolves game_actions once, post-teleport checks
+    dev::Tick(now_ms);          // the dev tools' checks, place list and page view
     Drain();
     const bool open = MenuOpen();
     if (open || now_ms >= g_next_publish_ms) {

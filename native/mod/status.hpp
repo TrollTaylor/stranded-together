@@ -14,6 +14,7 @@ struct Snapshot {
     char peer[48] = {};
     char reason[96] = {};
     char code[96] = {};
+    char features_off[240] = {};  // the co-op features off on this game, with the reason ("" = all on)
     std::uint32_t rtt_ms = 0;
     std::uint64_t rx = 0, tx = 0;
     bool local_valid = false;

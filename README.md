@@ -110,7 +110,8 @@ With **Debug → Host holds the save** (on by default) there is one world, the h
 - **Connection lost:** the guest keeps playing with a "Reconnecting..." notice; after 60 s it goes back to the waiting screen and rejoins the host's world when the connection is back.
 - **Game versions:** both games must be the same version; otherwise both screens say "Game versions differ" and the guest does not load anything.
 - **Not verified yet:** achievements, Steam stats and online features (likes, shared structures) on the guest's account may still react to events in the host's world.
-- Turn the option off for the old mode: each player on their own save.
+- Turn the option off for the old mode: each player on their own save. That mode has no waiting screen, no shared vehicles (the partner's vehicles are see-through copies), no riding together and no vehicle hits: the launcher says so on the Play page and both games show an amber "Co-op features OFF" notice.
+- **Debug → Test saves → Local two-player test** (two games on one PC) plays this same session since v0.19: the guest window waits for the host and loads the host's save, the vehicles are shared, you can ride together. Both games run on copies of the test save, never on your own saves.
 
 ## Debug
 
@@ -119,6 +120,26 @@ The launcher's **Debug** page:
 - **Options:** **Debug tools only (solo)** starts the game with just the in-game debug menu and logging (no partner, no network), or the **Echo test**; echo delay and offset, send rate, interpolation delay, waking the partner clone, verbose logging, the **in-game debug menu** on/off with its key (**F9** by default, F1–F12), and **Partner body**: **Real character (experimental)** (default) or **Hologram**: how your partner is drawn on your screen, and with Hologram your partner sees you as a hologram too (a hologram game does not send your character). These options go into every game started from the launcher.
 - **Files and log:** open the mod folder or log, a live tail of `stranded_together.log` with **Copy log**, **Copy error.txt** (the game's crash report), **Disable mod / Enable mod** (renames `winhttp.dll` ↔ `winhttp.dll.disabled`) and **Clear session** (deletes `session.ini`).
 - **Tools → Collect logs** puts a zip for a bug report on the Desktop (codes, secrets and Steam IDs removed).
+
+### Dev tools
+
+Tick **Dev tools** on the Debug page and the in-game debug menu (F9) gets a **Dev tools** tab (mouse or pad, on the host and
+the guest): spawn any of the game's 14 vehicles (roadster, truck, trike and their variants) in front of you, remove the last
+one or the nearest, repair and recharge a vehicle; refill health, stamina and battery; god mode and infinite ammo; teleport
+to your partner or to any delivery point, city, prepper, camp or distribution center of the current region; time of day;
+timefall on (light or heavy) or clear skies; bring back every MULE and terrorist, remove them, or reset the BTs; new boots
+and chiral crystals.
+
+Anything that changes what a save keeps (vehicles, weather, enemies, items) works only on a test save, such as the Local
+test: a game on your real save refuses it and says why. In a co-op session a vehicle you spawn is the host's, shared with
+both games; the guest's spawn is asked of the host's game. God mode does not stop a fatal fall. Every tool is also a debug
+action for the hidden tests (docs/debug-actions.md, "Dev tools").
+
+The tab's **Story** section shows where the story stands (episode, the orders in progress, how many are done) and lists the
+test save's manual saves as **story points**: pick one and **Load story point** jumps there with the game's own Load Game
+(test saves only; in a co-op session the host loads and the guest follows). `tools\testenv\Story-Library.ps1` collects saves
+at known story points into one test-save folder (`testenv-saves\story-pack`) to pick for the Local test. There is no mission
+skip: the game's orders are scripted and a forced start can soft-lock the story (docs/dev-tools.md).
 
 ## Uninstall
 

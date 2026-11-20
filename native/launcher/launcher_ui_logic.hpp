@@ -152,6 +152,8 @@ enum class Scene {
     play_join_characters,  // Join: the character list open
     play_join_hologram,    // Join with Debug > Partner body = Hologram: the "you are sent as a hologram" note
     debug_options_characters,  // Debug > Options at PARTNER BODY: "Allow other characters" on
+    debug_options_coop,        // Debug > Options at CO-OP SAVE: "Host holds the save" and "Dev tools" on
+    debug_local_test_off,      // Debug > Test saves with "Host holds the save" off: the local test card's warning
     count
 };
 int SceneCount();
@@ -164,7 +166,8 @@ struct Options {
     std::wstring watch_session;     // --watch <session>
     // Developer: --write-session host|join|echo|solo [--code <code>] [--game-dir <dir>]
     //            [--transport steam|udp] [--udp-peer <ip>] [--udp-port-local <n>] [--udp-port-peer <n>]
-    std::wstring write_role;        // host | join | echo | solo
+    std::wstring write_role;        // host | join | echo | solo | local-test
+    std::wstring write_out;         // local-test: --out <dir> (host.ini + guest.ini go there)
     std::wstring write_code;
     std::wstring write_transport;
     std::wstring write_udp_peer;

@@ -1,0 +1,162 @@
+# Dev tools, solo (docs/debug-actions.md "Dev tools"), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario dev-tools-solo -SeedSaves complete-100
+# A hidden run has the dev tools on (dev_tools=1 is written too, as the launcher's Debug page does) and runs on a sandboxed
+# save, so every tool is allowed. Steps: the gates; the current area's places (teleport to the two nearest); refill; the
+# weather (heavy timefall, clear); all 14 vehicle kind / variant pairs (each spawned 10 m ahead, checked 2.5 s later:
+# "[dev] vehicle check: new <kind> ... unit variant N (asked N), entity +0x4C8 N", a screenshot each, removed again);
+# repair; MULEs / BTs; items; infinite ammo; the real-save refusal (the test override acts as a real save: world tools
+# refused, player tools still allowed); the Dev tools page; last, god mode 2 with a 40 m fall (health before / after in
+# the [debug] status lines).
+# Pass: every step ok (the dev steps are optional so that one failure does not hide the rest: results.txt has each), the [dev]
+# lines named above, no FAULTED, saves unchanged.
+role solo
+timeout 360
+ini dev_tools=1
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+wait 6000
+waitlog 30 \[dev\] dev tools: [0-9]+/[0-9]+ byte checks ok
+action dev_status 0
+action log_status
+screenshot 00-start
+# ---- places (delivery points of this area, nearest first): the nearest, then the second (outdoors in the 100% save)
+?action dev_places
+?action dev_place 0
+wait 3500
+screenshot 01-place-0
+?action dev_place 1
+wait 3500
+# a short walk so the camera settles behind Sam, then the camera pitched up a little
+pad none 700 ly=32000
+pad none 400 ry=-20000
+wait 1500
+screenshot 02-place-1
+?action dev_refill
+# ---- weather in this area
+?action dev_weather 2
+wait 9000
+screenshot 04-heavy-timefall
+?action dev_weather 0
+wait 9000
+screenshot 05-clear
+?action dev_weather 3
+# ---- vehicles: all 14 pairs, each 10 m ahead, checked, screenshot, removed again
+?action dev_vehicle 1 0 10
+wait 3000
+screenshot 10-roadster-0
+?action dev_vehicle_remove 0 1
+wait 1500
+?action dev_vehicle 1 1 10
+wait 3000
+screenshot 11-roadster-1
+?action dev_vehicle_remove 0 1
+wait 1500
+?action dev_vehicle 2 0 10
+wait 3000
+screenshot 12-truck-0
+?action dev_vehicle_remove 0 1
+wait 1500
+?action dev_vehicle 2 1 10
+wait 3000
+screenshot 13-truck-1
+?action dev_vehicle_remove 0 1
+wait 1500
+?action dev_vehicle 2 2 10
+wait 3000
+screenshot 14-truck-2
+?action dev_vehicle_remove 0 1
+wait 1500
+?action dev_vehicle 2 4 10
+wait 3000
+screenshot 15-truck-4
+?action dev_vehicle_remove 0 1
+wait 1500
+?action dev_vehicle 2 5 10
+wait 3000
+screenshot 16-truck-5
+?action dev_vehicle_remove 0 1
+wait 1500
+?action dev_vehicle 2 6 10
+wait 3000
+screenshot 17-truck-6
+?action dev_vehicle_remove 0 1
+wait 1500
+?action dev_vehicle 3 0 10
+wait 3000
+screenshot 18-trike-0
+?action dev_vehicle_remove 0 1
+wait 1500
+?action dev_vehicle 3 1 10
+wait 3000
+screenshot 19-trike-1
+?action dev_vehicle_remove 0 1
+wait 1500
+?action dev_vehicle 3 2 10
+wait 3000
+screenshot 20-trike-2
+?action dev_vehicle_remove 0 1
+wait 1500
+?action dev_vehicle 3 3 10
+wait 3000
+screenshot 21-trike-3
+?action dev_vehicle_remove 0 1
+wait 1500
+?action dev_vehicle 3 7 10
+wait 3000
+screenshot 22-trike-7
+?action dev_vehicle_remove 0 1
+wait 1500
+?action dev_vehicle 3 8 10
+wait 3000
+screenshot 23-trike-8
+?action dev_vehicle_remove 0 1
+wait 1500
+?action dev_vehicle 2 0 10
+wait 3000
+?action dev_vehicle_fix 20
+?action dev_vehicle_remove 0 1
+# ---- enemies, items, ammo
+?action dev_enemies 1
+?action dev_enemies 2
+?action dev_enemies 3
+?action dev_items 1
+?action dev_items 2 500
+?action dev_ammo 1
+?action dev_ammo 0
+# ---- the real-save refusal (test override): world tools refused, player tools allowed
+action dev_status 1 1
+action dev_status 0
+waitlog 5 \[dev\] status: world tools: refused: this game plays on its real save
+waitlog 5 \[dev\] status: vehicle spawn tools: refused: this game plays on its real save
+waitlog 5 \[dev\] status: player tools: allowed
+action dev_refill
+# the world time is world state a save may keep: set_time_of_day / freeze_time refuse on a real save from every tab (a
+# refused action fails its step, so the gate is read here; the action's own refusal: st_overlay_tests)
+waitlog 5 \[dev\] status: time of day: refused: this game plays on its real save
+action dev_status 1 0
+# and allowed again on the sandboxed save (the time the run had: 12:00, the cycle frozen)
+action dev_status 0
+waitlog 5 \[dev\] status: time of day: allowed
+action set_time_of_day 12
+# ---- the Dev tools page
+menu open
+action dev_status 2
+wait 1200
+screenshot 30-dev-tools-page
+menu close
+# ---- god mode and falls, last (a fatal fall sends Sam to the knot space and back): invulnerable, 40 m
+?action dev_god 2
+action log_status
+action dev_status 3 40
+wait 7000
+action log_status
+screenshot 31-after-fall-invulnerable
+?action dev_god 0
+nolog \[dev\].*FAULT
+nolog \[dev\] byte check FAILED
+quit

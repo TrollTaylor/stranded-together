@@ -41,6 +41,7 @@ std::wstring SessionFolder(const std::wstring& game_dir) {
 int RunWatch(const std::wstring& session) { return core::RunWatch(ExeFolder(), core::Utf8(session)); }
 
 int RunWriteSession(const ui::Options& o, std::string& report) {
+    if (core::Utf8(o.write_role) == "local-test") return core::RunWriteLocalTestIni(SessionFolder(o.game_dir), core::FullPath(o.write_out), report);
     core::WriteSessionRequest r;
     r.role = core::Utf8(o.write_role);
     r.code = core::Utf8(o.write_code);

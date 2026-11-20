@@ -105,6 +105,7 @@ Commands (one per line in `automation\in\*.cmd`, files in name order):
 | `waitlog <s> <text>` | until a new log line contains `<text>` |
 | `snapshot` | the tick's snapshot as the result line |
 | `quit` | `WM_CLOSE` to the game window, `TerminateProcess` after 20 s |
+| `quit pad` | the game quits by its own menu: pad A on the selected item (e.g. the guest title's Quit Game after `pad DPAD_DOWN`); the supervisor expects the exit as after `quit`; `TerminateProcess` after 20 s if the game stays |
 
 Results: one line per command in `out\results.txt`, `out\NNNN.done` (`ok|fail`, count,
 last detail), `out\status.txt` every second (presents, fps, back buffer, queue, pad
@@ -559,7 +560,23 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   the `[headgear] self ...` / `partner head prop ...` and `[boots] boots' feet vs the drawn feet ...` meter lines and
   the screenshots. (A 3840x2160 `-SettingsCfg` with only the resolution keys still gave 2560x1440 solo.) The meters run
   in hidden tests only (`gear 19` turns them on in play). In `self-headgear.txt` each tuning variant is followed by the
-  shipped offsets again (cap `8 0 50` / `9 0 -12`, glasses `8 1 11`), so the walk and the 30 fps run use them.
+  shipped offsets again (cap `8 0 50` / `9 0 -12`, glasses `8 1 11`), so the walk and the 30 fps run use them. Those
+  are v0.12-v0.18's values: since v0.19 each head item has its own (docs/real-partner-body.md section 26.3), and
+  `self_view 8 0 <mm>` sets every item of the cap class at once.
+* `fragile-attach.txt` (role echo, one game, `-SeedSaves complete-100`, a 1440p `-SettingsCfg` for detail): Fragile's
+  accessories while she moves (docs/real-partner-body.md section 26). Our `fragile_suit` self view and a `fragile_suit`
+  echo partner 0.3 s behind and 1.2 m aside (the other screen's view) in every picture, at 30 fps (`smooth 2 30`), the
+  cap and glasses on: running across the camera's view with the self body's follow mode 1 (v0.18), 2 and 4 (this
+  build), then walking, turning and moving crouched (B), follow 1 against 4. Evidence: the screenshots (the cap and
+  glasses ahead of her face in follow 1 and 2, on her in 4) and the `[self] follow 4:` lines (predictions, the step).
+* `fragile-caps.txt` (role solo, `fragile_suit` self view, 1440p): the four head items of the cap class one by one
+  (`gear 14 <type> 1`: 15 the Bridges cap, 36 the Santa hat, 49 the headcrab, 50 the hair ornament), the camera kept
+  still, front then back: this build's per-item offsets, then v0.18's 5.0 cm (`self_view 8 0 50`). The
+  `[headgear] self cap (<item>)` meter names the item shown.
+* `two-games-fragile-attach.txt` (role host, `launcherini local-test`, `-SeedSaves complete-100 -GuestSeed
+  profile-only`): the same on the launcher's own Local test files in two games at 30 fps: the host looks back at the
+  guest (Fragile, cap and glasses on), who runs towards and across the host's view (her own screen in follow 1, then
+  4), walks, turns and moves crouched; then the Santa hat on both screens.
 * `two-games-final.txt` (role host, the guest as the launcher writes it by default: `fragile_suit`, self view,
   fit and lift; the cap on): gear fit, boots and weapons (rifle drawn, aimed, fired, put away; the blood grenade)
   on both screens, the guest's back from the host, the self view off and on again, and the guest running with
@@ -715,6 +732,25 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   (`@guest pad none 1300 rx=-32767`) to face his drive: without that turn (run `20261118-130121`) the copy left her view
   after the first drive frame. Run with a 1080p `-SettingsCfg`; final run `20261118-130839-two-games-release` (v0.11);
   after section 22.13 `20261118-211715-two-games-release` (default settings).
+* `dev-tools-solo.txt` (role solo, `dev_tools=1`, `-SeedSaves complete-100`; docs/debug-actions.md "Dev tools"): the
+  gates, the place list and two teleports, refill, heavy timefall then clear, all 14 vehicle kind / variant pairs (each 10 m
+  ahead with its `[dev] vehicle check` line and a screenshot, then removed), repair, MULEs / BTs, boots, chiral crystals,
+  infinite ammo, the real-save refusal (`dev_status 1 1`), the Dev tools page, last a 40 m fall with god mode 2 (Sam dies:
+  god mode is no fall guard). Final run `20261120-041615-dev-tools-solo` (pass).
+* `two-games-dev-tools.txt` (role host, `host_save=1`, `dev_tools=1`, `-GuestSeed profile-only`): the host's dev truck is
+  shared (host ADD, guest mirror), the guest's dev trike is a dev request the host serves, the guest's remove is refused,
+  the host's removal reaches the guest, the host's real-save override refuses the guest's request, the guest's world tools
+  and its Dev tools page. Final run `20261120-041914-two-games-dev-tools` (pass).
+* `story-points.txt` (role solo, `dev_tools=1`, `-SeedSaves story-pack`; docs/dev-tools.md "Story tools"; build the pack
+  first with `tools\testenv\Story-Library.ps1 -Pack`): the story tools' byte checks, Continue, the probe's first state, the
+  slot list, the Dev tools page's Story section, every story point of the pack loaded with `story_load` (its `[story] after
+  the load of manualsave<N>` line and a screenshot each), the full mission list once, the real-save refusal (`dev_status 1
+  1`, then `story 3`). `Story-Library.ps1 -Probe <run>` writes each entry's episode from that run. Final run
+  `20261120-045106-story-points` (pass).
+* `two-games-story.txt` (role host, `host_save=1`, `dev_tools=1`, `-SeedSaves story-pack -GuestSeed profile-only`): both
+  probes read the same state after the host's Continue; the guest's load gate refuses, the host's allows; the host loads
+  story point manualsave13 and the guest follows through M1; both probes then log the same Episode 2 state (crc equal).
+  Final run `20261120-044929-two-games-story` (pass).
 * `boot.txt`: no input, a screenshot every 10-15 s for 80 s (title flow discovery).
 * `alive.txt`: supervisor steps only (works with `-NoMod`): watch the game for 45 s.
 * `fake-smoke.txt`: the ctest's fake game.
@@ -1016,6 +1052,55 @@ machine; a GPU with 8 GB will likely page.
 | `20261116-193649-two-games-real-cliff` | **pass**: a scratch copy of `two-games-real` with the guest as Cliff (not in the repo) |
 | (runs above) | built before the Heartman leg latch (19:57) and ids 6-16 offered (20:05); see docs/real-partner-body.md section 6 item 1 for which build each run used |
 | `20261116-202426-two-games-real` | **pass** on the final build (after the review fixes): guest sees a solid Sam walking, host sees a solid Fragile standing and running; 300/300 joint frames per 10 s, 565 B per datagram. `two-games-real-fallback` was not rerun on this build. |
+
+## The launcher's own session.ini (`launcherini`, `-LauncherIni`)
+
+The hidden two-game scenarios used to write their own session.ini (`ini host_save=1` ...), so they never ran the file
+the launcher's Local test button writes: v0.18.0's button wrote no `host_save`, every scenario passed, and the user's
+play test had none of the session's features. A scenario with the line `launcherini local-test` (role host, `graphics
+low`, no `ini` lines) runs both games on the launcher's own files:
+
+* `Start-TestRun.ps1` sees the line (or `-LauncherIni`), builds `st_launcher` too and runs `StrandedTogether.exe
+  --write-session local-test --out <run>\launcher-ini --game-dir <game>`: `host.ini` and `guest.ini` from
+  `core::MakeLocalTestInis` with the Debug options read from the game folder's launcher settings (read only).
+* The supervisor (`--launcher-ini <dir>`, refused without the scenario line and the other way round) keeps every line of
+  each file and swaps only where the saves are: `sandbox_saves` / `sandbox_foreign_saves` become the run's automation
+  redirect (`automation=1`, `automation_foreign_saves=1` with a seed) and the launcher's header comment goes
+  (`te::HiddenIniFromLauncher`; supervisor.log names the replaced lines). The deployed files are kept as
+  `session-host-deployed.ini` / `session-guest-deployed.ini` in the run folder, `summary.json` has `"launcher_ini":
+  true`. A guest file with `host_save=1` makes the guest's scratch profile-only (as the launcher's `local-guest`).
+
+`two-games-launcher-local-test` (`-SeedSaves complete-100`): every session feature ON in both games from the
+launcher's file (`[config] host_save=1`, the input split, coop, vshare, vdrive, ride, vhit), the guest's waiting
+screen (W1), the save transfer, the start garage's roadster bound and driven by the host with the guest's follower
+attached (G1), a summon each way mirrored within seconds without anyone getting on (S1 truck by the host, S2 trike by
+the guest), the guest riding as the host's passenger (R1..R3), no `[coop] notice`, no FAULT. Run
+`20261120-015937-two-games-launcher-local-test`: **pass** (22 vehicles bound 22; summons mirrored by the exact-id path;
+ACCEPTED, Sam vs the seat mean 0.003 m; real tree unchanged, 0 uploads, both games exit 0).
+Its screenshots are not aimed: the host's S1 / S2 face the roadster, and in R1 the garage pillar pushed the host's
+camera into the truck's body, so the truck is not drawn around him (the guest's R1 shows both in the cab).
+
+`two-games-launcher-views` (`-SeedSaves complete-100`, the launcher's file): what each player SEES, every screenshot with
+that game's camera aimed at the vehicle (`vehicle_sync 18 <kind>`): V1 the guest's summoned trike standing in the
+host's world and its own, V2 the host's summoned truck standing in the guest's world and his own, V3 the host driving
+it (the guest placed 4 m beside it, `vehicle_drive 9 4 1`), V4 / V5 the guest riding as the passenger (standing,
+moving), V7 the guest off. Run `20261120-060338-two-games-launcher-views`: **pass**, all of them on both screens.
+
+`two-games-veh-block` (`-SeedSaves complete-100 -GuestSeed profile-only`, `partner_collision=0`): is the partner's real
+vehicle solid for Sam on foot? On the start garage's floor, ten 300 ms steps of full stick at the vehicle's middle with
+`log_positions` after each (the camera turned onto it within 6 deg: `vehicle_sync 18 <kind> 6`). Run
+`20261120-021803-two-games-veh-block` **pass**: the roadster nobody drives (control) stops her 1.09 m from its centre
+line; the truck the host sits on (her unit is the follower) 1.66 m, then she slides along its side at 1.57-1.62 m for
+the remaining 2.5 s; the same truck parked after the host got off 1.66 / 1.59 m; the host creeping into her from 3.4 m
+pushes her 2.7 m ahead of its front (never inside). Earlier run `20261120-020541` placed her on a road's lower
+shoulder (she pressed into the slope) and `20261120-021010` had the same 1.67 / 1.69 m stops (there the creep then
+carried her up onto the truck's front).
+
+`two-games-features-off` (`-SeedSaves complete-100`, no `host_save` in either file: what v0.18.0's Local test wrote):
+both games log `[coop] host_save=0 (...)` and `[coop] notice shown: co-op features OFF: host_save=0 ...`, the amber
+banner is on both title screens (F1) and over the load into the world (F2), `link-status.json` carries
+`"features_off"`. Run `20261120-022427-two-games-features-off`: **pass** (real tree unchanged, 0 uploads). The
+launcher-ini run's `link-status.json` has no `features_off` (everything on).
 
 ## Test-save session (`--sandbox-session`)
 

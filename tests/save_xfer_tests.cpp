@@ -1079,6 +1079,59 @@ void TestSandboxWriter() {
 }
 
 // The game side's decision rules (coop_rules.hpp; docs/coop-session.md section 5).
+void TestTitleLabel() {
+    namespace r = st::coop::rules;
+    CHECK(r::SafeHostName("player") == "player");
+    CHECK(r::SafeHostName("  player  ") == "player");
+    CHECK(r::SafeHostName("") == "the host" && r::SafeHostName(nullptr) == "the host" && r::SafeHostName("   ") == "the host");
+    CHECK(r::SafeHostName("pl\xC3\xA4yer") == "the host");   // non-ASCII: the game font may have no glyph
+    CHECK(r::SafeHostName("a-very-long-player-name-here") == "a-very-long-p...");
+    r::TitleLabelIn in;
+    in.host = "player";
+    CHECK(r::TitleLabel(in) == "Connecting to player...");
+    in.ever_connected = true;
+    CHECK(r::TitleLabel(in) == "Reconnecting to player...");
+    in.connected = true;
+    CHECK(r::TitleLabel(in) == "Waiting for player...");
+    in.no_reply = true;
+    CHECK(r::TitleLabel(in) == "No reply from player's save session");
+    in.no_reply = false;
+    in.have_host_state = true;
+    CHECK(r::TitleLabel(in) == "Waiting for player to start the game");
+    in.host_phase = st::stx::HostPhase::loading;
+    CHECK(r::TitleLabel(in) == "Waiting while player loads the game");
+    in.host_phase = st::stx::HostPhase::world;
+    CHECK(r::TitleLabel(in) == "Joining player's game...");
+    in.new_game_pending = true;
+    CHECK(r::TitleLabel(in) == "Waiting for player's first save");
+    in.receiving = true;
+    in.have = 450;
+    in.size = 1000;
+    CHECK(r::TitleLabel(in) == "Receiving player's save: 45%");
+    in.have = 5000;   // never above 100%
+    CHECK(r::TitleLabel(in) == "Receiving player's save: 100%");
+    in.connected = false;   // the link first
+    CHECK(r::TitleLabel(in) == "Reconnecting to player...");
+    in.loading = true;      // our own load beats the link
+    CHECK(r::TitleLabel(in) == "Loading player's save...");
+    in.version_mismatch = true;
+    CHECK(r::TitleLabel(in) == "Game versions differ: update both games");
+    // Every label fits the menu item (at most 46 characters with a 16-character name).
+    r::TitleLabelIn lg;
+    lg.host = r::SafeHostName("a-very-long-player-name-here");
+    lg.connected = lg.ever_connected = lg.have_host_state = true;
+    CHECK(r::TitleLabel(lg).size() <= 46);
+    lg.connected = false;
+    CHECK(r::TitleLabel(lg).size() <= 46);
+    lg.connected = lg.receiving = true;
+    lg.size = lg.have = 1;
+    CHECK(r::TitleLabel(lg).size() <= 46);
+    CHECK(r::TitleItemHidden("itm_config_menu") && r::TitleItemHidden("itm_update_info") && r::TitleItemHidden("itm_credit_menu"));
+    CHECK(r::TitleItemHidden("itm_something_new"));
+    CHECK(!r::TitleItemHidden("itm_new_game") && !r::TitleItemHidden("itm_exit_game_menu") && !r::TitleItemHidden("itm_continue") &&
+          !r::TitleItemHidden("itm_load_game") && !r::TitleItemHidden("itm_load_game_PS4_to_PS5") && !r::TitleItemHidden(""));
+}
+
 void TestCoopRules() {
     namespace r = st::coop::rules;
     // The -2 follow-up (run 20261119-065746: 0.7 s after the title Continue, before a stable player) is not a Retry.
@@ -1186,6 +1239,7 @@ int main() {
     TestReadOnlyReader();
     TestSandboxWriter();
     TestCoopRules();
+    TestTitleLabel();
     if (g_fail) {
         std::printf("st_save_xfer_tests: %d of %d checks FAILED\n", g_fail, g_checks);
         return 1;

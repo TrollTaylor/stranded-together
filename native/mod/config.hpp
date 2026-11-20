@@ -113,7 +113,10 @@ struct Config {
     bool verbose = false;
     bool debug_menu = true;            // in-game ImGui debug menu (D3D12 overlay)
     std::uint32_t debug_menu_vk = 0x78;  // virtual-key that toggles it (default VK_F9)
-    bool one_shot = false;             // consumed on load (renamed to session.last.ini)
+    // dev_tools=1: the debug menu's Dev tools page and the dev_* debug actions (dev_tools.hpp; the launcher's Debug page
+    // "Dev tools"). Tools that change what a save keeps run only on a sandboxed save (dev_rules.hpp). Hidden runs have them on.
+    bool dev_tools = false;
+    bool one_shot = false;            // consumed on load (renamed to session.last.ini)
     // name=<text>: the name shown above this player's head on the partner's screen (name tags);
     // "" = the Steam persona name. Sent over the link (STN1), never logged in full.
     std::string player_name;

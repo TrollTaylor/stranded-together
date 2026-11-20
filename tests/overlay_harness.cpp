@@ -536,10 +536,10 @@ int main(int argc, char** argv) {
           "ImGui draw data non-empty, one live renderer", d);
     Check(std::strstr(s.queue_source, "creation") != nullptr,
           "game queue taken from the swapchain's creation (CreateSwapChainForHwnd hook)", s.queue_source);
-    const char* tabs[] = {"Partner", "Player", "Log", "Settings"};
+    const char* tabs[] = {"Partner", "Player", "Log", "Settings", "Dev tools"};
     const wchar_t* files[] = {L"overlay_menu_partner.png", L"overlay_menu_player.png", L"overlay_menu_log.png",
-                              L"overlay_menu_settings.png"};
-    for (int i = 0; i < 4; ++i) {
+                              L"overlay_menu_settings.png", L"overlay_menu_dev.png"};
+    for (int i = 0; i < 5; ++i) {
         st::overlay::menu::SelectTab(i + 1);
         char what[64];
         std::snprintf(what, sizeof(what), "open menu: %s tab drawn", tabs[i]);

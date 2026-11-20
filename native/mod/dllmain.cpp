@@ -18,6 +18,7 @@
 #include "vehicle_drive.hpp"
 #include "vehicle_share.hpp"
 #include "debug_actions.hpp"
+#include "dev_tools.hpp"
 #include "self_voice.hpp"
 #include "partner_sound.hpp"
 #include "partner_voice.hpp"
@@ -227,7 +228,9 @@ DWORD WINAPI Bootstrap(LPVOID) {
     const bool menu = cfg.debug_menu || local != st::sandbox::LocalInput::off || !cfg.local_window.empty() || coop_screens;
     if (coop_screens && !cfg.debug_menu) st::Log("[mod] host_save: the overlay is on for the co-op screens (debug_menu=0 asked for none)");
     const bool tags = cfg.name_tags && (cfg.role == st::Role::host || cfg.role == st::Role::guest || cfg.role == st::Role::echo);
-    if (menu || tags) {
+    // host_save=0 for a host / guest: the amber "Co-op features OFF" notice needs the overlay (no menu without debug_menu).
+    const bool notice = st::coop::PlainNoticeWanted();
+    if (menu || tags || notice) {
         st::overlay::Options ov;
         ov.menu = menu;
         ov.game_font = cfg.name_tag_game_font;
@@ -243,7 +246,7 @@ DWORD WINAPI Bootstrap(LPVOID) {
         const bool overlay_ok = st::automation::WaitForGameD3D12(
             120000, local != st::sandbox::LocalInput::off || !cfg.local_window.empty() || st::automation::Enabled());
         if (!overlay_ok || !st::overlay::Install(ov)) st::Log("[mod] debug menu unavailable this run (see [overlay] above)");
-        else if (!menu) st::Log("[mod] overlay installed for the name tags only (debug_menu=0)");
+        else if (!menu) st::Log("[mod] overlay installed for the %s only (debug_menu=0)", tags ? "name tags" : "co-op features notice");
     } else {
         st::Log("[mod] debug menu off (debug_menu=0)");
     }
@@ -276,6 +279,7 @@ DWORD WINAPI Bootstrap(LPVOID) {
     // the save guard: no save captures a carried passenger (section 24.12; the save processor's detour goes in now)
     if (st::ride::Active() || st::automation::Enabled()) st::saveguard::Install(cfg);
     st::vhit::Install(cfg);    // vehicle hits: the partner's vehicle knocks our Sam down (section 25; its damage-handler detour goes in now)
+    st::dev::Install(cfg);     // dev tools (dev_tools=1 / hidden runs): no hooks; byte checks on the first tick
     // Real partner body (docs/real-partner-body.md): the pose hook goes in at start-up, never
     // mid-game (enabling a hook suspends every thread while job threads may be inside it).
     if (cfg.partner_body == st::PartnerBody::real || cfg.pose_hook) st::realbody::InstallHook();

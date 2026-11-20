@@ -21,6 +21,10 @@ constexpr float kSidebarWidth = 204.0f;
 // Debug > Partner body = Hologram: shown next to every "you appear as" choice, because a hologram
 // game sends no joint frames and so never shows its character to the partner.
 constexpr const char* kHologramNote = "Partner body is Hologram (Debug page): your partner sees you as a hologram.";
+// Debug > "Host holds the save" off (session.ini host_save=0): the features that need the shared save are off in the game.
+constexpr const char* kHostSaveOffNote =
+    "Host holds the save is off (Debug page): no waiting screen, no shared vehicles, no riding together, no vehicle hits. "
+    "Each player plays their own save and the partner's vehicles are the old see-through copies.";
 
 ImU32 ToneColor(ui::Tone tone) {
     switch (tone) {
@@ -676,6 +680,9 @@ void LauncherUi::SessionNote(Phase phase) {
         }
     } else {
         Message(Icon::signal, col::kCool, phase == Phase::after_game ? "The game has closed." : "You're in the game.", kBody, 0.0f, col::kText);
+        // What the running game reports off (the mod's link-status.json "features_off"): never silent.
+        if (phase == Phase::in_game && !model_.link().features_off.empty())
+            Message(Icon::warning, col::kWarn, "Off in this game: " + model_.link().features_off, kSmall, 0.0f, col::kText);
         if (Button("See the connection", ButtonKind::quiet, ImVec2(0, 34.0f), true, Icon::signal, true)) Navigate(Page::in_game);
     }
     Message(Icon::warning, col::kBad, play_error_);
@@ -712,6 +719,8 @@ void LauncherUi::HostTab(Phase phase, const InstallChecks& checks) {
                     : "Co-op saves into your own save: it holds the session's progress. Your partner waits until you pick Continue or "
                       "New Game. No backup is made (Debug page).",
                 kSmall, 0.0f, col::kTextDim);
+    else
+        Message(Icon::warning, col::kWarn, kHostSaveOffNote, kSmall, 0.0f, col::kTextDim);
     // partner_body=holo installs no pose hook, so this game sends no joint frames: the partner
     // sees a hologram whatever this game's character is (docs/real-partner-body.md section 5).
     if (!model_.debug_options().real_partner_body)
@@ -842,6 +851,9 @@ void LauncherUi::JoinTab(Phase phase) {
                 "until then. Progress you make there (orders, deliveries, equipment) is a disposable copy and is not kept; your own "
                 "saves are never opened. Your settings and key bindings from co-op are kept for the next co-op game.",
                 kSmall, 0.0f, col::kTextDim);
+    } else {
+        Gap(2.0f);
+        Message(Icon::warning, col::kWarn, kHostSaveOffNote, kSmall, 0.0f, col::kTextDim);
     }
     Gap(6.0f);
     if (Button("Join game", ButtonKind::primary, ImVec2(190.0f, 46.0f), view.can_join && ui::CanStartSession(phase), Icon::play, true)) {
@@ -989,6 +1001,8 @@ void LauncherUi::InGamePage(Phase phase) {
     Text(l.headline.empty() ? "Waiting for the game..." : l.headline.c_str(), col::kText, kHeading, GetFonts().semibold, -1.0f);
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() - Px(4.0f));
     Text(l.detail.c_str(), col::kTextDim, kBody, nullptr, 0.0f);
+    if (!l.features_off.empty() && phase == Phase::in_game)
+        Message(Icon::warning, col::kWarn, "Off in this game: " + l.features_off, kSmall, 0.0f, col::kText);
     ImGui::EndGroup();
     if (phase == Phase::launching) {
         Gap(2.0f);
@@ -1279,6 +1293,8 @@ void LauncherUi::DebugSavesTab(Phase phase) {
         // Both local-test games get the Debug option's partner_body: with Hologram neither sends
         // joint frames, so the host window shows the guest as a hologram.
         if (!model_.debug_options().real_partner_body) Message(Icon::warning, col::kWarn, kHologramNote, kSmall, 0.0f, col::kTextDim);
+        // The local test plays the online session (host_save=1): the waiting screen, shared vehicles, riding, hits.
+        if (!model_.debug_options().host_save) Message(Icon::warning, col::kWarn, kHostSaveOffNote, kSmall, 0.0f, col::kTextDim);
     }
     if (lt.running || !lt.headline.empty()) {
         const ImU32 c = lt.tone == LinkView::Tone::good ? col::kGood : lt.tone == LinkView::Tone::bad ? col::kBad
@@ -1292,6 +1308,7 @@ void LauncherUi::DebugSavesTab(Phase phase) {
             Text(games.c_str(), col::kTextDim, kSmall, GetFonts().mono, 0.0f);
         }
         Text(lt.detail.c_str(), col::kTextDim, kSmall, nullptr, 0.0f);
+        if (!lt.features_off.empty()) Message(Icon::warning, col::kWarn, "Off: " + lt.features_off, kSmall, 0.0f, col::kText);
     }
     EndCard();
     ResultLine(debug_result_);
@@ -1435,6 +1452,8 @@ void LauncherUi::DebugOptionsTab(Phase phase) {
     }
     Gap(4.0f);
     // session.ini host_save (Host and Join): the host-held save (docs/coop-session.md). Off = the old mode.
+    if (scroll_to_coop_save_ && page_window_)   // screenshot scene 41: the page scrolled to this section
+        ImGui::SetScrollFromPosY(page_window_, ImGui::GetCursorScreenPos().y - page_window_->Pos.y - Px(12.0f), 0.0f);
     SectionLabel("CO-OP SAVE");
     committed |= Checkbox("Host holds the save", &o.host_save, true);
     Text(o.host_save ? "The host's save is the one save of the session. Your partner's game loads a copy of it and waits until the host "
@@ -1466,6 +1485,11 @@ void LauncherUi::DebugOptionsTab(Phase phase) {
     }
     ImGui::SameLine(0.0f, Px(8.0f));
     Text("opens it", col::kTextFaint, kSmall, nullptr, -1.0f);
+    Gap(2.0f);
+    committed |= Checkbox("Dev tools", &o.dev_tools, o.debug_menu);
+    Text("A Dev tools page in the debug menu: spawn vehicles, change the weather, bring back enemies, refill, god mode, "
+         "teleport to places. Spawning and world changes work only on a test save (the Local test).",
+         col::kTextFaint, kSmall, nullptr, 0.0f);
     Gap(2.0f);
     const float row_right = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
     committed |= Checkbox("Wake the partner clone", &o.partner_activate, true);
@@ -1765,6 +1789,7 @@ void LauncherUi::PrepareScene(int index, MockModel& mock) {
     }
     open_character_list_ = false;
     scroll_to_partner_body_ = false;
+    scroll_to_coop_save_ = false;
     mock.set_test_save_view(TestSaveView{});
     mock.jump_to_local_test(-1.0);
     {
@@ -1809,6 +1834,30 @@ void LauncherUi::PrepareScene(int index, MockModel& mock) {
         o.allow_other_characters = true;
         mock.set_debug_options(o);
         scroll_to_partner_body_ = true;
+        page = Page::debug;
+        break;
+    }
+    case ui::Scene::debug_options_coop: {   // the host-held save and the dev tools, both on
+        DebugOptions o;
+        o.host_save = true;
+        o.dev_tools = true;
+        mock.set_debug_options(o);
+        scroll_to_coop_save_ = true;
+        page = Page::debug;
+        break;
+    }
+    case ui::Scene::debug_local_test_off: {   // "Host holds the save" off: the local test card says what is off
+        DebugOptions o;
+        o.host_save = false;
+        mock.set_debug_options(o);
+        TestSaveView t = mock.test_save();
+        t.folder = "D:\\Downloads\\DeathStranding-100-percent-save";
+        t.folder_ok = true;
+        t.folder_note = "23 save slots found";
+        t.seeded = true;
+        mock.set_test_save_view(t);
+        mock.jump_to_local_test(-1.0);
+        debug_tab_ = ui::DebugTab::saves;
         page = Page::debug;
         break;
     }

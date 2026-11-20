@@ -158,4 +158,31 @@ bool PlaceClear(std::uintptr_t except_unit, std::uint8_t kind, const game::World
 void SetPlaceOverride(std::uint32_t id, const game::WorldTransform& xf) noexcept;
 void ClearPlaceOverride(std::uint32_t id) noexcept;
 
+// ---------------------------------------------------------------- dev tools (dev_tools.cpp; docs/debug-actions.md "Dev tools")
+// Game thread. The caller (dev_tools.cpp) has applied the real-save rule (dev_rules.hpp) already. These work with the shared
+// vehicles on or off: without them the pool layout and the spawn path are byte-checked here on first use.
+// A vehicle of `kind` (1 roadster, 2 truck, 3 trike) and `variant` (dev_rules.hpp kVehiclePairs) `dist` m ahead of our Sam,
+// through 0x142F830A0 with a fresh record (rec0 = kind | variant << 6, rec2 0). Refused when its pool has no free unit (a spawn
+// into a full pool would evict one of the save's vehicles). With the shared vehicles on: on the host it is the host's own
+// spawn (announced to the guest by the next diff); on the guest the request goes to the host marked as a dev request
+// (vwire::ReqReason::dev), which the host serves only when its own saves are sandboxed.
+bool DevSpawn(int kind, int variant, double dist, char* msg, std::size_t cap) noexcept;
+// Removal (the game's removal bit 0x2000) of the live vehicle nearest to our Sam within `max_m`, nobody on it; with `last`
+// the newest vehicle DevSpawn made instead (wherever it is).
+bool DevRemove(double max_m, bool last, char* msg, std::size_t cap) noexcept;
+// Repair and recharge the vehicle nearest to our Sam within `max_m` (0 or less = 10 m; ridden or not): the game's own sequence
+// of its race reset (0x142D6ED80): vehicle vt+0x118 (Repair), battery [+0x898]+8 = +0xC, 0x142F5A260, +0x34 = 0.
+bool DevRepair(double max_m, char* msg, std::size_t cap) noexcept;
+// Game thread, every tick (dev_tools.cpp): logs what a DevSpawn made 2 s later (unit, variant, entity +0x4C8).
+void DevTick(double now_ms) noexcept;
+// Game thread: the vehicle tools' byte checks (the pool / spawn sites when the shared vehicles did not check them, the
+// Repair functions and their vtable slots, the battery notify, the variant read-back), run once on the first call (the dev
+// tools' first tick, dev::Check) and logged then; afterwards the result, with the first mismatch for the Dev tools page.
+// A Repair that faulted at run time turns `repair` off too.
+struct DevChecks {
+    bool pools = false, spawn = false, repair = false;
+    char off[160] = {};  // "" or the first reason, e.g. "vehicle repair: truck Repair"
+};
+DevChecks DevCheckResult() noexcept;
+
 }  // namespace st::vshare

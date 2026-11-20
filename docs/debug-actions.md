@@ -162,6 +162,11 @@ says "unchanged". Effect untested.
   `WriteProcessMemory` and reads it back. The game may set it again on its own (scripted
   events); the Status tab shows the live value. Whether a frozen cycle also stops weather
   or sky updates is unknown.
+* Both are **refused when this game plays on its real save** (`dev::RealSaveRefusal`:
+  `automation::SavesRedirected()`, the hidden-run real-save override counting as a real
+  save): the world time may be kept by a save, so it follows the dev tools' real-save rule
+  (dev_rules.hpp) from every tab, with or without the dev tools on. The result line says
+  `time of day refused: this game plays on its real save ...`.
 
 ### Voice ping (`voice_ping`, Partner tab)
 
@@ -291,8 +296,9 @@ Scenarios: `collision`, `collision-off`, `two-games-collision`, `two-games-all`.
 * `action gear 13 <0/1>`: the backpack's skinned pose (STK1) off / on (default on).
 * `action gear 14 [type] [0/1]` (writes only in hidden test runs on scratch saves): lists the inventory's
   accessory list (inv `+0x37F9 + 0x40 i`: type, worn flag `+0x1D`, item `+0x1F`); with a type (0x0F = 15 the
-  cap, 0x0D / 0x0E glasses) sets the first such entry's worn flag: the game puts the cap on or takes it off
-  itself.
+  Bridges cap (cap00), 0x24 = 36 the Santa hat (cap01), 0x31 = 49 the headcrab (cap02), 0x32 = 50 the hair ornament
+  (cap03), 0x0D / 0x0E glasses; docs/real-partner-body.md section 26.3) sets the first such entry's worn flag: the
+  game puts the item on or takes it off itself. The cap colour (`gear 15`) does not pick the head item.
 * `action gear 15 <0..24>` (hidden test runs on scratch saves only): our cap colour byte (inv `+0x4BE0`:
   0..22 a colour index, 23 silver, 24 gold); the game re-colours the cap itself.
 * `action gear 17 <0/1>`: weapons in hand and on the backpack (docs/real-partner-body.md section 17) not sent /
@@ -595,11 +601,13 @@ parked vehicle <ptr> kept after n ms without a send tick (our Sam slept: a menu)
 * `action vehicle_sync 22 <forward m> [right m]` / `23`: hidden tests (automation runs only): the copy pinned at our own
   vehicle's place plus that offset in its frame (`pin: the copy pinned ... at (x, y, z), forward (fx, fy)`), so we can
   drive into it; 23 lets it follow its frames again.
-* `action vehicle_sync 18 <kind>`: hidden tests: every tick checks whether the game camera looks at the nearest
+* `action vehicle_sync 18 <kind> [deg]`: hidden tests: every tick checks whether the game camera looks at the nearest
   registered vehicle of that kind (5: the partner's vehicle copy; 6: the real shared vehicle the partner drives here or
   drove last, which is not in the registry's list while the NPC controller holds it) and logs `camera aimed #n ...` once it does within 25 deg
+  (or within `deg`, 1..25: a walk-in test, where Sam walks where the camera looks)
   (`until 25 150 camera aimed #n => pad none 200 rx=32767` turns the camera onto it; 100 ms pulses barely move it; `#n`
-  counts per game).
+  counts per game; for 6 deg: first 25 with 200 ms pulses, then `vehicle_sync 18 <kind> 6` with `pad none 60
+  rx=26000` pulses, about 0.6 deg each: scenario `two-games-veh-block`).
 * `action vehicle_sync 14 <0|1>` / `15 <0|1>`: the partner vehicle's look / packs off / on at run time (`vehicle_look`,
   `vehicle_packs`; looks off respawns the copy in its own look, packs off removes the pack copies).
 * `action vehicle_sync 24 <n> [model]`: hidden tests (automation runs only): n synthetic cargo pieces (0..32) of
@@ -641,8 +649,10 @@ hook, which is installed at start-up only with `session.ini partner_body=real` o
 * `action self_view <0/1> [body id] [follow]`: the self view (docs/real-partner-body.md section 8). 1: a body
   (`body id`, 0 = this game's `my_character`) is shown in place of the local Sam on this screen; 0: off, the
   body goes and Sam is shown. `follow`: how the body follows Sam (1 Sam's own model update copies his world
-  transform, the default; 2 the body's own update; 3 the tick only; 0 unchanged). `real_stats` reports it too,
-  and a `[self]` line is logged every second while the body exists.
+  transform, v0.18's default; 2 the body's own update; 3 the tick only; 4 the default since v0.19: mode 1 plus, in the
+  body's own update, Sam's world predicted for this frame (docs/real-partner-body.md section 26); 0 unchanged).
+  `real_stats` reports it too, and a `[self]` line is logged every second while the body exists (with follow 4 also
+  `[self] follow 4: predicted N, after Sam N, skipped N ...; step cm mean / max`).
   `self_view 2 <reason 0..63> <0/1>` sets / clears one hide reason on the local Sam's Root mask (26 =
   photo mode's "hide Sam", 63 = a stray bit of ours, to test the repair). Only in hidden tests on
   redirected scratch saves; refused otherwise.
@@ -657,9 +667,10 @@ hook, which is installed at start-up only with `session.ini partner_body=real` o
   (0-150, default 100): the fit's head lift, how far Sam's head joint (the cap, the glasses) sits from her head
   back towards his own (0: her head; the cap sinks over her eyes). The `[self] fit` line every second has the
   meter (Sam vs body per joint, mean / max), the leak check and the lift.
-  `self_view 8|9 <item> <mm>` (item 0 the cap, 1 the glasses; -100..100): the headgear offset up (8) / forward
-  (9) in Sam's head helper's frame (docs/real-partner-body.md section 20), at run time (it then stays for later
-  shows). `self_view 10 <0/1>`: the per-item headgear offsets (1, the default with `self_headgear=1`) or the v0.11
+  `self_view 8|9 <which> <mm>` (-100..100; which: 0 every item of the cap class, 1 every pair of glasses, 10-17 one
+  item: 10 eyewear0, 11-13 glasses00-02, 14 cap00 the Bridges cap, 15 cap01 the Santa hat, 16 cap02 the headcrab, 17
+  cap03 the hair ornament): the headgear offset up (8) / forward (9) in Sam's head helper's frame
+  (docs/real-partner-body.md sections 20 and 26.3), at run time (it then stays for later shows). `self_view 10 <0/1>`: the per-item headgear offsets (1, the default with `self_headgear=1`) or the v0.11
   head lift (0: `self_view 7`'s lift applies again, the movers go back to the identity). `self_view 11 <percent>`
   (1-100, default 1): her feet's scale under Sam's equipped boots (section 21); `self_view 12 <0/1>`: her feet
   scaled (1, the default with `self_feet_hide=1`) or kept.
@@ -787,6 +798,101 @@ that kind |m| m in front of the vehicle the partner drives here (else of our Sam
 broadside). `vehicle_hit 11` logs the life (`+0x6E8` / `+0x6EC`) and place of every shared vehicle within 300 m (compare
 both games). `vehicle_hit 12 <kind> <m>` (hidden tests) puts the nearest free vehicle of that kind m along the nearest free
 truck's forward (negative: behind it), on its heading.
+
+## Dev tools (`dev_*`; `session.ini dev_tools=1`, the launcher's Debug page "Dev tools"; always on in hidden runs)
+
+Spawning, world control and player cheats for play-testing and for hidden scenarios. Code: `native/mod/dev_tools.{hpp,cpp}`
+(`st::dev`), the rules in `native/mod/dev_rules.hpp` (unit-tested by `st_dev_rules_tests`), the vehicles in
+`native/mod/vehicle_share.cpp` (`DevSpawn`, `DevRemove`, `DevRepair`). In game: the debug menu's **Dev tools** tab (F9; mouse
+and pad), on the host and on the guest. Every tool is one debug action, so scenarios use the same calls as the buttons.
+
+### The real-save rule (`dev_rules.hpp` `Decide`)
+
+| Tool class | Tools | Solo / echo, or host with `host_save=0` | Host, `host_save=1` | Guest, `host_save=1` |
+|---|---|---|---|---|
+| player | refill, god mode, infinite ammo, places, teleports | any save | any save | yes |
+| world | weather, MULEs / BTs, boots, chiral crystals | sandboxed save only (that world only) | sandboxed save only, the host's world only | its own world only (a copy of the host's save, never kept) |
+| vehicle spawn | `dev_vehicle` | sandboxed save only | sandboxed save only; shared with the guest (M2) | asked of the host's game, which spawns it only when **its** dev tools are on and **its** saves are sandboxed |
+| vehicle edit | remove, repair | sandboxed save only | sandboxed save only (a removal reaches the guest) | refused: shared vehicles live in the host's world |
+
+"Sandboxed" = `automation::SavesRedirected()`: the launcher's Local test (and Play with test save), a hidden run, or a co-op
+guest. The online host with `host_save=1` plays on its real saves, so there every world tool is refused with
+`refused: this game plays on its real save and this changes what the save keeps (use the launcher's Local test with a test
+save)`. The page shows each class's state (green / amber with the reason) and greys its buttons. A guest's dev vehicle
+request carries `vwire::ReqReason::dev` (3) in the SVM1 request; the host logs `[vshare] host: the guest's dev request #N
+refused: refused by the host: its game plays on its real save` (or `... its dev tools are off`) and sends a refused result
+(the guest's "could not summon" notice). A v0.18 host's decoder refuses reason 3 outright: nothing spawns.
+
+### Actions
+
+| Action | Numbers | What it does (proof run) |
+|---|---|---|
+| `dev_status` | `0` | Logs `[dev] status: <class> tools: allowed / <reason>` for the four classes, and `[dev] status: time of day: allowed / <reason>` (the Player tab's time actions' real-save rule). `1 1` / `1 0` (hidden runs) acts as if this game played on its real save / back. `2` (hidden runs) selects the open menu's Dev tools tab. `3 <m>` (hidden runs) puts Sam m metres up (fall tests). |
+| `dev_vehicle` | `kind variant [m]` | A vehicle `m` metres ahead (default 8, 3..40): the game's spawn `0x142F830A0(R, record, xf, 1, 0, 0)` with a fresh record `rec0 = kind | variant << 6`, `rec2 = 0`. Refused when that kind's pool has no free unit (the game would evict a vehicle the save holds). 2.5 s later `[dev] vehicle check: new <kind> 0x<id>, unit variant N (asked N), entity ... +0x4C8 N`. All 14 pairs proven in `20261120-041615-dev-tools-solo`; host-shared and guest-asked in `20261120-041914-two-games-dev-tools`. |
+| `dev_vehicle_remove` | `[m] [1]` | The game's removal bit (`unit+0x198 |= 0x2000`) on the nearest vehicle within m (default 15) nobody is on; with `1` the newest dev vehicle instead (the page's "Remove last spawned"). "Nobody" includes the partner on the host of a shared-vehicle session: a vehicle the guest drives (the host game's rider field stays empty, the guest drives it through the mod) or rides is skipped (the shared-active set's riding mark, or vdrive's follower for the partner); "last" on it is refused with `the partner is on it`. |
+| `dev_vehicle_fix` | `[m]` | Repair and recharge the nearest vehicle within m (default 10), ridden or not: the game's own race-reset sequence (`0x142D6ED80`): vt `+0x118` Repair (per kind), battery `B = [e+0x898]`, `B+8 = B+0xC`, `0x142F5A260(B)`, `B+0x34 = 0`. Proven: the garage roadster's life 8271 -> 12500 (`20261120-035314`). |
+| `dev_refill` | | `RecoverFull` body `0x142738940(Sam, 0)` (the export `0x1426E6F50` passes flags 0): health, stamina, battery, the BB, paint / frost. Status, equipment and parameter objects (`Sam+0x54E0`, `+0x54C8`, `+0x54C0`) are checked non-null first. Stamina 942 -> 1000 in `035314`. |
+| `dev_god` | `0 / 1 / 2` | The retail `DebugSettings` (`[0x147BE6A50]`, RTTI checked) `+0x24` EGodMode: 0 off, 1 on, 2 invulnerable. Restored by `dev_god 0`; the game never saves it. **Not a fall guard**: a 40 m fall killed Sam with 1 and with 2 (`035314`, `041615`: health 0, knot space): a fatal fall is not a damage message. |
+| `dev_ammo` | `0 / 1` | `DebugSettings +0x28` infinite ammo (read by the weapon code at `0x1435BD545`). |
+| `dev_weather` | `0` clear, `1` timefall, `2` heavy, `3` the game's mix | `SetForecastTypeOfRegionDirectEx 0x142E1FE20(area, region, type)` for the 64 regions of the current area (types 6 SunnyOnly, 3 RainyOnly, 5 HeavyRainOnly, 2 Average), then `ResetForecastTime 0x142E1FC80(1)`: the sky follows within seconds (rain and Sam's hood in `041615` 04, clear in 05). Without the reset nothing visible changed in 9 s (`035801`). |
+| `dev_enemies` | `1` / `2` / `3` | 1: `ResetAndResurrectAllMulesByMissionChange` (`0x142B64420`): every killed MULE and terrorist (one manager, 150 members in the 100% save) comes back at its camp. 2: `RemoveAllMulesFromWorld(0)` (`0x142B645F0`). 3: `ResetAllGazers` (`0x1429A7220`): the BT fields start again. There is no "spawn an enemy here" in the game: go to a camp or a BT area with the place list. |
+| `dev_places` | | The current area's delivery points (`DSMissionSystem [0x147C0AFF8] +0x78820`: `Array<Ref<DSDeliveryPointInfoResource>>`, u32 count, u32 capacity, data at `+8`; entry RTTI checked; `+0x68` area, `+0x6A` type, `+0x78` order, `+0x80` transform), nearest first, to the log. The name is the entry's own localized text (`DescriptionText +0x20`, the text pointer inside the LocalizedTextResource), read at runtime (nothing shipped); without one, the type's name from the game's `EDSConstructionPointType` RTTI. Area 200 of the 100% save: Mountain Knot City, the preppers, MULE camps, terrorist camps, Distribution Center North of Mountain Knot City, Lake Knot City ... (more than 64; the page lists the nearest 64). |
+| `dev_place` | `n` | Teleport (PlaceOn mode 1, facing the place's forward) to entry n of that list. Only within the current area: the game has no cross-area teleport (story points: test saves, docs/sandbox-and-local-test.md). |
+| `dev_items` | `1` / `2 n` | 1: `RecoverOrSupplyShoes` body `0x142744B40(status, 0, 1)` (new or repaired boots). 2: `AddChiralCrystalCount(n)` (`0x1426E6530`, default 100; 18753 -> 19253 in `035314`). |
+
+Time of day and teleport to the partner are the existing actions (`set_time_of_day`, `teleport_to_partner`); the page has
+buttons for them (Dawn / Noon / Dusk / Night). The time buttons sit under the world tools' gate with the weather (greyed on a
+real save), and the action itself refuses on a real save from every tab ("Time of day" above).
+
+### Story tools (`story`, `story_load`; docs/dev-tools.md "Story tools")
+
+Code: `native/mod/story_state.{hpp,cpp}` (`st::story`, ticked from `dev::Tick`), the rules in `native/mod/story_rules.hpp`
+(`st_story_rules_tests`). The page's **Story** section (top of the Dev tools tab) shows the state line, the manual slots of the
+sandbox (story points) and a Load button.
+
+| Action | Numbers | What it does (proof run) |
+|---|---|---|
+| `story` | `0` | The story state to the log: `[story] summary: Episode 2 "Amelie" \| in progress: Order 6 (sub, id 65), Order 5 (main, id 60) \| main done 4/60 (highest Order 4, 1 started), sub done 0/37 \| crc 0x41CFDF14; facts: episode index -2, episode hash 0x...`. Read only (any session with the dev tools on). |
+| `story` | `1` | Every main / sub order: `[story] mission id 60 Order 5 (main, episode 2): order started (2), state in progress (4)`. |
+| `story` | `2` | The sandbox's manual slots with their `[Slot]` title and detail (`[story] slot manualsave13 (story library): Order In Progress: No. 5 ...`). |
+| `story` | `3` | The load's gate here: `[story] load gate: allowed` or the refusal (scenarios check refusals with it: a refused `story_load` fails its step). |
+| `story_load` | `n` | The game's own Load Game of `manualsave<n>` (`0x142636990(app, 1, n)` after the slot refresh `0x141A00DA0(0)` and the exists check `0x1426376E0`): in a world only, sandboxed saves only, never on a host-held save session's guest. Logs `[story] load of manualsave<n>: in the world after N s` and `[story] after the load of manualsave<n>: <state>`. A host with `host_save=1` offers the load to the guest (M1's in-world Load detection). `20261120-045106-story-points`, `20261120-044929-two-games-story`. |
+
+The place list and the page's view are refreshed once a second on the game thread, and only while the world is played (Sam
+awake, nothing loading, no stopping game event): `GetCurrentArea`'s slow path, called during a load, held the game thread for
+200 s (runs `20261120-040412` / `040828`, the guest's load).
+
+### Byte checks (`dev_tools.cpp kSites` + `vehicle_share.cpp kDevSites`)
+
+On the dev tools' first tick (`dev::Check`, which also runs `vshare::DevCheckResult`): `[dev] dev tools: 31/31 byte checks ok;
+on: refill, god mode / ammo, weather, MULEs, BTs, places, boots, chiral crystals` and `[dev] vehicles: pools ok, spawn ok,
+repair ok, variant read-back ok`. A mismatch turns that tool off with `[dev] byte check FAILED: <site>` and the page shows
+`Off (game build differs): <tool>: <site>` (the vehicle tools' as `vehicle tools / spawning / repair: <site>`; their buttons
+are greyed: no pools greys spawn, remove and repair, no spawn path greys spawn, no Repair greys "Repair nearest"). A Repair
+or battery notify that faults at run time turns repair off for the run with the same line.
+
+| Check | Address | Gates |
+|---|---|---|
+| RecoverFull body (status / equipment / params offsets), its export, the battery body | `0x142738940`, `0x1426E6F50`, `0x1427E1010` | refill |
+| god mode readers (`>= 1`, `== 2`), infinite ammo reader, SetGodMode, EnableInfiniteAmmo; the DebugSettings global's RIP target; RTTI `DebugSettings` `0x144F10E90` | `0x1434F6EFE`, `0x1434F6F43`, `0x1435BD53E`, `0x1438282B0`, `0x143828300` | god mode / ammo |
+| SetForecastTypeOfRegionDirectEx, its table row, ResetForecastTime, the weather global, GetCurrentArea | `0x142E1FE20`, `0x142E1FE79`, `0x142E1FC80`, `0x142E1FE34`, `0x14262A860` | weather (and places: area) |
+| MULE resurrect thunk / body / its player-object call, remove-all thunk / body; the MULE manager global | `0x142B64420`, `0x142B168F0`, `0x142B169BA`, `0x142B645F0`, `0x142B140C0` | MULEs |
+| ResetAllGazers thunk / body, the gazer global | `0x1429A7220`, `0x1429A17A0` | BTs |
+| GetDeliveryPointInfoResources (DSMissionSystem global `+0x78820`); RTTI `DSDeliveryPointInfoResource` `0x144DD5E50`; enum `EDSConstructionPointType` `0x144C33550` (names only) | `0x1433CA80A` | places |
+| RecoverOrSupplyShoes export; AddChiralCrystalCount (DSPlayerSystem global) | `0x1426E6F80`, `0x1426E6530` | boots, chiral crystals |
+| the race reset's repair + battery sequence, the three Repair functions, the battery notify, each vehicle vtable `+0x118` = its Repair | `0x142D6EE21`, `0x142F7B090`, `0x142F7B140`, `0x142F7B320`, `0x142F5A260` | vehicle repair |
+| the variant write (unit `+0x198 >> 22` -> entity `+0x4C8`) | `0x142F77023` | the check's read-back only |
+| the pools, the unit layout, the spawn and its record (vehicle_share's `kCore` / `kSpawnG` sites, checked here when the shared vehicles are off) | see section 23 | vehicle spawn / remove / repair |
+
+### Not done
+
+* No free camera (photo mode's pan range and `SetObserverPositionOverride` are the leads, docs research only), no "MULE
+  here" (moving a live MULE to Sam through its actor's `vt+0x40`: unproven), no cargo or weapon giving (the baggage export's
+  name codes are not decoded), no mission start / skip (story points are saves of the story library loaded with
+  `story_load`: docs/dev-tools.md "Story tools" says why).
+* God mode does not survive a fatal fall (above).
+* The vehicle variants' names are not known: the page shows "truck, variant 6". From the screenshots: truck 0 grey, truck 6
+  yellow; trike 7 is the one the 100% save holds (`0x01E005`), likely the Kusanagi.
 
 ## Byte-check table
 

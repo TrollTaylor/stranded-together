@@ -686,7 +686,10 @@ A mismatch turns the self view off (logged); Sam stays.
   it to Sam, `SetParent 0x142361DD0`, so both share one update group [I]) would remove that frame; not
   tried (the child must be unparented before every removal, and a load that frees Sam would take a
   parented body with it).
-- **Transform (follow mode 1, the default):** Sam's own model update (the detour's Sam branch) reads his
+- **Since v0.19 the default is follow mode 4 (section 26):** mode 1 below plus, in the body's own update before its pose
+  write, Sam's world predicted for this frame. Mode 1 alone left everything the game hangs on Sam one frame ahead of
+  her while moving (the user's v0.18.0 play test: "everything ... get detached from her when she moves").
+- **Transform (follow mode 1, the default until v0.18):** Sam's own model update (the detour's Sam branch) reads his
   world transform fault-free (twice, compared) and sets it on the body through
   `Entity_ExportedSetWorldTransform 0x142361EA0` (the body's own transform lock and dirty flags). That
   is the only game call made with a lock from a detour; it touches only our entity. Sam's model is
@@ -2404,7 +2407,7 @@ not in the right spot, hats too feel a little high up and when starts walking it
   identity nor ours, or whose flag the game changed, is left alone (`refused`, `changed by the game`: 0 in every run).
   The resource is never written (the partner's props and every copy share it). No new game call or hook.
 - The offsets are per self body head rig (`kHeadgearRows` in `real_body.cpp`; fragile and fragile_suit share
-  `fgl_head_def`): **cap (0, -1.2 forward, 5.0 up) cm, glasses / eyewear (0, -0.4, 1.1) cm**, chosen from 2560x1440
+  `fgl_head_def`; since v0.19 one offset per item, section 26.3): **cap (0, -1.2 forward, 5.0 up) cm, glasses / eyewear (0, -0.4, 1.1) cm**, chosen from 2560x1440
   front and back close-ups of 4.5 / 4.8 / 5.0 cm (the lower two let hair strands through the cap's band from behind;
   5.0 cm with 1.2 cm back is snug, brim on her brow, eyes free) and 0.7 / 1.1 / 1.5 cm for the glasses. A body
   without a row keeps the head lift.
@@ -3972,6 +3975,33 @@ Hidden runs of this state (2026-11-19, foreground, one at a time; all `-SeedSave
 (`20261119-132806-two-games-veh-remove` failed at the new step only: no truck within its first 30 m radius; the step now
 takes the nearest within 150 m.)
 
+### 23.24 Solid for Sam on foot (v0.19)
+
+The play test of v0.18.0 ("the non-driver can't collide with a vehicle the other player is driving") ran without
+`host_save` (the launcher's Local test wrote none, docs/coop-session.md), so its partner vehicles were the v0.14
+copies, which are collision-free by design (22.11). The real shared vehicles were never changed: nothing in the mod
+turns a real vehicle's collision off (`CollisionOff` only touches copies, packs, cargo and gear props), and the
+follower's attach (`SetDriver 0x142F7C4C0`, `SetController 0x142F80310`) writes no collision, filter or physics
+instance. Static research: the truck's chassis (layer 17) does not meet Player (8) at all (`Disable(17,8)` at
+`0x1422ACAF4`); Sam is stopped by the vehicle's keyframed "Player blocker" part (layer 11, `Enable(11,8)` at
+`0x1422AC94A`; layer 15 copies row 11 at `0x1422AC96C`), the same on every unit. No new game address is used.
+
+Proof, hidden scenario `two-games-veh-block` (partner_collision=0, so only the vehicle can stop her; on the start
+garage's floor; ten 300 ms steps of full stick at the vehicle's middle, `log_positions` after each). Run
+`20261120-021803` (her distance from the vehicle's centre line, the truck frame from `vehicle_drive 9`):
+
+| Case | Stops at | Then (2.5 s more full stick) |
+| --- | --- | --- |
+| B0 control: the garage roadster nobody drives | 1.09 m | stays at 1.09 m |
+| B1 the truck with the host on it (her unit is the follower) | 1.66 m | slides along its side at 1.57-1.62 m (the walk is 6 deg off square) |
+| B3 the same truck parked after the host got off | 1.66 m | slides along at 1.59-1.62 m |
+| B2 the host creeps (rt 70, 3 s, 5.8 m) into her from 3.4 m ahead of the bumper | pushed 2.7 m ahead of it | never inside (1.97 m ahead of the origin both runs; the cab is ~0.8 m behind the front) |
+
+The repeat `20261120-021010` stopped her at 1.67 / 1.69 m; there the creep then carried her up onto the truck's front
+(z +2.5 m), the game's own contact. So no change: the follower is never keyframed by the mod, `partner_collision` rules
+are as before (25.6), and the v0.14 copies stay collision-free for the `host_save=0` mode, which now says on screen
+that it is the old mode.
+
 ## 24. Riding together (`session.ini ride_together`, default 1, with `vehicle_sync=5`; design milestone M3)
 
 "Players can ride together in vehicles", "make sure you look into letting players ride in the passenger seat too". The
@@ -4672,3 +4702,124 @@ Scenarios: `two-games-vehicle-hit`, `two-games-vehicle-hit-fast`, `two-games-veh
   was seen from it.
 - **The partner capsule rule** was seen with the local Sam in a vehicle (the rule comes before that gate in the log
   order); with both on foot and an NPC truck passing, it is the same rule, not run.
+
+## 26. Fragile's accessories stay on her while she moves; one offset per head item (v0.19)
+
+**Status (2026-11-20): works in hidden runs, solo, echo and two games on the launcher's own Local test files.** The
+user's v0.18.0 play test (Local test, guest Fragile in her porter suit, 30 fps): "the glasses seem fine but everything
+including the glasses seem to still get detached from her when she moves even the cargo attach spots. the hats are still
+a little high too."
+
+### 26.1 Why her gear came off while moving (the guest's own screen)
+
+- The self view draws Sam's own gear (cap, glasses, backpack, cargo, BB pod, hip cases, boots) on his hidden fitted
+  skeleton (section 16) at **Sam's world transform of this frame**. The game updates the self body **before** Sam in
+  most frames (section 8.2: `capture age ~1 frame` in every `[smooth]` line of the user's guest log), and in follow
+  mode 1 its world transform was only set afterwards, in Sam's own update. Every meter (`body-Sam distance 0.0`,
+  `Sam vs body 0.0/0.0`, `[headgear] ... sd 0.00`) reads the entity fields at tick time, after both updates, so none of
+  them could see it.
+- **What the game draws for the body is what it has in its own update** [V: pictures]. In run
+  `20261120-024819-fragile-attach` (one game at 30 fps, running across the camera's view), with follow 1 (v0.18) the
+  cap sits ahead of her head and the glasses float in front of her face in the running direction; with follow 2 (the
+  copy inside the body's own update: still the previous frame's world) the same or further; with follow 4 (below) both
+  sit on her. The same in two games on the launcher's own files (run `20261120-025353-two-games-fragile-attach`,
+  `03-guest-self-run-f1-*` against `04-guest-self-run-f4-*`). If the renderer read the entity's world at the end of the
+  frame, follow 1 would have looked attached; it did not. Where exactly the renderer latches a SkinnedModel's world was
+  not found statically (`0x1423A49D0`, MsgEntityPostUpdate, refreshes per-part worlds right after the update; not
+  proven to be the render path).
+- Size of the gap: Sam's step in one frame. At the 30 fps cap the `[self] follow 4` lines measured 13 cm mean, 17-20 cm
+  max running and 6 cm walking solo; 8-11 cm mean running in two games [V].
+- **The host's screen** (Fragile as the partner body, props from the gear sender) was already right: the body's world is
+  set from the tick and every prop is placed on that same world and the pose just written (`PlaceGearNow`, `PlaceGear`
+  in the body's update). The echo partner in every `fragile-attach` picture (running, walking, turning, crouched) and
+  the host's pictures in the two-game run show the cap and glasses on her head and the pod on her chest [V: pictures].
+  Nothing changed there except the head items' offsets, which reach it through the sender (section 20.2).
+
+### 26.2 Follow mode 4: Sam's world predicted in the body's own update (the default) [V: runs below]
+
+- **Sam's update** (`TrackSam`, after the capture): his world (read fault-free twice, compared, finite) with a QPC stamp.
+  The game updates his model about twice per frame; an update within half a frame of the last replaces the newest
+  record, a later one starts a frame, so the track holds his world after his last update of this frame and of the
+  frame before. Then the mode 1 copy as before (it keeps the entity field exact for the tick, the gear sender and the
+  slot-1 props, and corrects a wrong prediction within the frame).
+- **The body's own update** (`PredictSelfWorld`, before the pose write; not in a forced update from the tick, not while
+  the cargo menu's figure is the source): the same identity checks as the copy (entity vtable, model, back pointer),
+  then:
+  - Sam's newest record under half a frame old: he already updated this frame (`after Sam`): his world now, as is.
+  - Otherwise his world now plus his last per-frame step: the position delta and the rotation delta (rows: r_cur =
+    r_prev M, so M = r_prev^T r_cur), applied once. The step is not scaled by a dt ratio: his newest record is often
+    the second, partial update of a frame, and scaling by its dt overshot by 30-60 % (first run
+    `20261120-023358-fragile-attach`: step max 38.8 cm, the cap behind her head in one frame).
+  - No step (his world now: the plain mode 2 copy) without a previous frame, with records over 2.5 frames old (Sam not
+    updated: asleep, a cutscene), or after a jump over 3 m in a frame (a teleport, a load, a vehicle snap).
+  - No step either when something outside his own update moved him, because that move is already in his world now and the
+    step would put her a vehicle step ahead of the gear on him (about 0.67 m at 20 m/s and 30 fps): `moved` when his
+    world now is more than 5 mm from his newest record (the ride carry's teleport from the game tick lands between his
+    update and the body's next one), `ride` while he is carried as a passenger (`ride::Carried`, published by the self
+    tick) or has a parent entity (`Sam+0x70`, driving in the game).
+  - The setter is the same exported `Entity_ExportedSetWorldTransform` as in modes 1 and 2; a fault switches to mode 3
+    for the run as before. **No new game call, no new game address, no hook.**
+- The premise was measured: `Sam moved outside his update` (his world at the body's update against his newest record)
+  0.00 cm in every line of every run [V].
+- Log, every second while follow is 4: `[self] follow 4: predicted N, after Sam N, skipped N (no history, stale, jump,
+  read, moved, ride), failed N, aba N; step cm mean / max; Sam's frame span ms; Sam moved outside his update cm`. At 30 fps solo:
+  30-31 predictions/s, 3-14 `after Sam` (the body updates a second time in some frames), 0 failed, 0 aba, `stale 2`
+  only around a mode switch; in two games 30-31 predicted, 0 after Sam [V].
+- Switch: `self_view 1 0 <1|2|3|4>` (docs/debug-actions.md).
+
+### 26.3 One offset per head item; the four "caps" are four different hats [V: runs below]
+
+- `kHeadgearRows` now holds an offset per item (`realbody::kHeadItems` = 8, in the order of partner_gear's
+  `kHeadItemRes`: eyewear0, glasses00-02, cap00-03; static_asserts tie the two together), `SelfHeadItemOffset(item)`
+  takes the item, and the `[self] fit` line lists them (`cap a/b/c,...` for cap00-03, `glasses ...` for eyewear0 and
+  glasses00-02).
+- **The four items of the cap class are different hats**, picked by the accessory type, not by the cap colour (run
+  `20261120-023729-fragile-caps`: cap00 for all 25 colours of `gear 15`; run `20261120-024053-fragile-caps2`, the
+  meter naming the item): type 0x0F the Bridges cap (cap00), 0x24 the Santa hat (cap01), 0x31 the headcrab (cap02),
+  0x32 a hair ornament (cap03). The user wore cap00, cap03 and then cap01 (the Santa hat) for most of the session; the
+  v0.12 value was tuned on cap00 only. The `[headgear] self cap (<item>)` meter line now names the item.
+- Chosen from 2560x1440 front and back close-ups at 5.0 / 4.3 / 3.6 cm up (run `20261120-024449-fragile-caps`), all
+  1.2 cm back:
+
+  | Item | Up | Why |
+  | --- | --- | --- |
+  | cap00 Bridges cap | 4.2 cm | 5.0 left a gap between the brim and her brow; 3.6 put the brim on her eyes; no hair through the band from behind at 4.3 / 3.6 |
+  | cap01 Santa hat | 3.5 cm | at 5.0 the white band sat a forehead above her brows (the "a little high"); at 3.6 on her brow, and on her hair behind |
+  | cap02 headcrab | 4.0 cm | between: it sits on her crown, the legs over her face as on Sam |
+  | cap03 hair ornament | 3.8 cm | at 5.0 it floats above her hair at the back |
+  | eyewear0, glasses00-02 | 1.1 cm (0.4 cm back) | unchanged (the user: the glasses look fine) |
+
+- Both Fragile bodies (fragile, fragile_suit) share `fgl_head_def` and the row; only fragile_suit was looked at.
+- A swap can put the new accessory at the freed address of the old one (same class, same size). partner_gear's slot is
+  keyed on the address, so `NoteHeadItem` also compares the item: another item at the same address sets the slot up again
+  (`[headgear] our <entity> is now cap01 (was cap00, same address): set up again`), our offset first taken out of the old
+  mover if it still holds exactly our write. Without it the Santa hat would keep the Bridges cap's 4.2 cm.
+- `self_view 8|9 <which> <mm>`: 0 every cap-class item, 1 every pair of glasses, 10-17 one item. `gear 14 <type> 1`
+  puts on any of them (types above).
+
+### 26.4 Evidence (hidden, `-SeedSaves complete-100`, all pass: game exit 0 (guest exit 0), saves unchanged, restored, no violation, 0 cloud uploads)
+
+- `20261120-023358-fragile-attach` (first build, dt-scaled step): follow 1 and 2 detached, follow 4 attached running
+  right; running left, one frame showed the cap behind her head (the overshoot, 26.2); fixed.
+- `20261120-024819-fragile-attach` (final): `10-run-f1-*` cap and glasses ahead of her face; `11-run-f2-*` further
+  ahead; `12-run-f4-*` and `13-run-f4-back-*` on her; `20-walk-f1-b` against `21-walk-f4-b`, `30-turn-f1-b` against
+  `31-turn-f4-b`, `41-crouch-f1-*` against `42-crouch-f4-*` the same; the echo partner (the other screen's view) on her
+  in every picture.
+- `20261120-025048-fragile-caps`: each hat front and back, this build against v0.18's 5.0 cm; the meter reads 4.20 /
+  3.50 / 3.96 / 3.88 cm up for cap00-03 (cap02 / cap03 within a few ticks of being put on).
+- `20261120-025353-two-games-fragile-attach` (`launcherini local-test`: host_save=1, frame_cap=30, guest `fragile_suit`
+  self view, exactly the launcher's files): the guest's own screen in follow 1 (`03-guest-self-run-f1-*`: cap and
+  glasses ahead of her face) and 4 (`04-guest-self-run-f4-*`, `05-guest-self-walk`, `06-guest-self-turn`: on her); the
+  host's screen: her cap, glasses and pod on her walking, turning, crouched, and the Santa hat (`05..08-host-sees-*`;
+  720p, `graphics low`).
+
+### 26.5 Not covered
+
+- A one-frame prediction error at a sudden change: a start, a stop or an instant reversal leaves the body up to one
+  step off for one frame (up to about 15-20 cm at a running reversal at 30 fps; a few cm at normal acceleration). Not
+  seen in the turn pictures.
+- Riding or driving with the self view: the step is skipped then (26.2, `moved` / `ride`); not run with the self view in
+  a hidden run yet.
+- Tall cargo stacks and cargo carried in the hands: the runs used the save's own load (backpack, cases, BB pod).
+- The renderer's latch point is shown by pictures, not found in the code.
+- `self-headgear.txt` (section 20) still restores the v0.12 cap value (`self_view 8 0 50` now sets every cap-class item).

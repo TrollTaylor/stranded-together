@@ -129,6 +129,12 @@ only (its profile / its settings.cfg), never into your own.
   through Steam), `SteamGameId` and `ST_INSTANCE_DIR`, the guest 8 s after the host; shows both
   games' link state; when both have exited it removes unread session.ini files and compares the
   real save tree. Steam must run (both games sign in with your account).
+  Since v0.19, with Debug > **Host holds the save** (default on) both files also carry `host_save=1`
+  (`core::MakeLocalTestInis`): the guest game is the host-held save session's guest on `local-guest`, which is
+  prepared like `coop-guest` before every start (no slot of its own: the host's save arrives over the link), and the
+  host game plays its `local-host` copy. So the local test shows the waiting screen, the save transfer, the shared
+  vehicles, riding together and vehicle hits (docs/coop-session.md). With the option off, each game plays its own
+  copy as before, and both windows show the amber "Co-op features OFF: host_save=0" notice.
 * The second game shows **"Unable to log in to Death Stranding game server. Launching in Offline
   Mode... Error Code: 50000"** (the game server refuses the same account twice; hidden run
   20261116-155336): press OK (A / Enter) and it continues offline.

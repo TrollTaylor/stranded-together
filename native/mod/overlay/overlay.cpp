@@ -365,7 +365,10 @@ void DrawCoopBanner(const CoopView& v) noexcept {
     const ImVec2 ds = ImGui::GetIO().DisplaySize;
     const float size = ImGui::GetFontSize() * 1.3f, pad = 10.0f * g_ui_scale;
     const ImVec2 sz = ImGui::GetFont()->CalcTextSizeA(size, ds.x * 0.8f, ds.x * 0.8f, v.banner);
-    const ImVec2 at((ds.x - sz.x) * 0.5f, ds.y * 0.06f);
+    // Below the startup hint's box (DrawHint: 16 px from the top, its text plus 8 px padding each side), which it overlapped
+    // in a small (local test) window.
+    const float hint_bottom = (16.0f + 2 * 8.0f) * g_ui_scale + ImGui::GetFontSize();
+    const ImVec2 at((ds.x - sz.x) * 0.5f, std::fmax(ds.y * 0.06f, hint_bottom + pad + 6.0f * g_ui_scale));
     dl->AddRectFilled(ImVec2(at.x - pad, at.y - pad), ImVec2(at.x + sz.x + pad, at.y + sz.y + pad), IM_COL32(10, 14, 20, 215), 6.0f);
     dl->AddText(ImGui::GetFont(), size, at, v.banner_warn ? IM_COL32(250, 192, 80, 255) : IM_COL32(235, 240, 245, 255), v.banner,
                 nullptr, ds.x * 0.8f);

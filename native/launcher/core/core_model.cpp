@@ -116,6 +116,7 @@ DebugOptions DebugOptionsFromSettings(const json::Value& settings) {
     o.partner_activate = d->Bool("partner_activate", o.partner_activate);
     o.verbose = d->Bool("verbose", o.verbose);
     o.debug_menu = d->Bool("debug_menu", o.debug_menu);
+    o.dev_tools = d->Bool("dev_tools", o.dev_tools);
     const int key = ParseFunctionKey(d->Str("debug_menu_key"));
     if (key) o.debug_menu_key = key;
     // Only an explicit "holo" picks the hologram: missing or unknown keeps the default (real).
@@ -144,6 +145,7 @@ void DebugOptionsToSettings(const DebugOptions& o, json::Value& settings) {
     d["partner_activate"] = o.partner_activate;
     d["verbose"] = o.verbose;
     d["debug_menu"] = o.debug_menu;
+    d["dev_tools"] = o.dev_tools;
     d["debug_menu_key"] = FunctionKeyName(o.debug_menu_key);
     d["partner_body"] = o.real_partner_body ? "real" : "holo";
     d["self_character"] = o.self_character;
@@ -167,6 +169,39 @@ std::string GuestPickFromSettings(const json::Value& settings, const std::string
     return pick;
 }
 
+void MakeLocalTestInis(const DebugOptions& options, const LocalTestChoices& choices, SessionIni& host, SessionIni& guest) {
+    host = SessionIni{};
+    host.role = "host";
+    host.name = choices.name;
+    host.my_character = kHostCharacter;   // the host game stays Sam
+    ApplyDebugOptions(options, host);
+    host.secret = choices.secret.empty() ? NewSecret() : choices.secret;
+    host.transport = "udp";
+    host.udp_peer = "127.0.0.1";
+    host.udp_port_local = kDefaultUdpPort;
+    host.udp_port_peer = kDefaultUdpPort + 1;
+    host.debug_menu = true;   // the input split lives in the overlay
+    host.sandbox_saves = kLocalHostSandbox;
+    host.sandbox_foreign_saves = true;
+    host.appdir_settings = true;
+    host.local_input = choices.host_pad ? "host_pad" : "host";
+    host.frame_cap = 30;
+    host.local_window = "left";   // the two windows side by side
+    // The host-held save (the Debug option, default on): the session the online Host / Join play, so the local test
+    // shows the waiting screen, the save transfer, the shared vehicles, riding together and vehicle hits. The host
+    // plays its local-host copy (never the real saves); the guest's local-guest folder is wiped like coop-guest.
+    host.host_save = options.host_save;
+    guest = host;
+    guest.role = "guest";
+    guest.udp_port_local = kDefaultUdpPort + 1;
+    guest.udp_port_peer = kDefaultUdpPort;
+    guest.sandbox_saves = kLocalGuestSandbox;
+    guest.second_instance = true;
+    guest.local_input = "guest";
+    guest.local_window = "right";
+    guest.my_character = GuestCharacter(choices.guest_character, options.allow_other_characters);
+}
+
 void ApplyDebugOptions(const DebugOptions& o, SessionIni& ini) {
     ini.echo_delay_s = o.echo_delay_s;
     ini.echo_offset_m = o.echo_offset_m;
@@ -176,6 +211,7 @@ void ApplyDebugOptions(const DebugOptions& o, SessionIni& ini) {
     ini.verbose = o.verbose;
     ini.debug_menu = o.debug_menu;
     ini.debug_menu_key = o.debug_menu_key;
+    ini.dev_tools = o.dev_tools;
     ini.partner_body = o.real_partner_body ? "real" : "holo";
     // The self view needs the pose hook, which only partner_body=real installs; the writer adds
     // the key only for a non-host whose character is not Sam.
@@ -558,6 +594,7 @@ public:
         v.guest_state = local_.guest_state;
         v.headline = local_.headline;
         v.detail = local_.detail;
+        v.features_off = local_.running ? local_.features_off : std::string();
         v.tone = local_.tone;
         v.host_pad = local_host_pad_;
         v.guest_character = GuestCharacter(local_guest_character_, debug_.allow_other_characters);
@@ -588,11 +625,20 @@ public:
         // windowed graphics, a frame cap, loopback UDP between them, the input split.
         const SeedCheck* seed = test_check_.ok ? &test_check_ : nullptr;
         const std::wstring real = RealSaveRoot();
+        const bool host_save = debug_.host_save;
+        SessionGuestReport guest_report;
         for (const char* name : {kLocalHostSandbox, kLocalGuestSandbox}) {
             const SandboxPaths sp = GetSandboxPaths(paths_, name);
-            if (!SandboxSeeded(sp) &&
-                !SeedSandbox(paths_, sp, seed, real, Account(), seed ? test_folder_ : std::string("your own saves"), error_out))
-                return false;
+            const bool guest_folder = std::string(name) == kLocalGuestSandbox;
+            if (guest_folder && host_save) {
+                // The host-held save: the guest game gets the host's save over the link, as an online guest does. Its
+                // folder is prepared like coop-guest every time (slots and incoming\ wiped, your profile kept).
+                if (!SeedSessionGuest(paths_, real, Account(), guest_report, error_out, kLocalGuestSandbox)) return false;
+            } else if (!SandboxSeeded(sp) || (guest_folder && SandboxIsSessionGuest(sp))) {
+                // (a guest folder left without slots by a host-save local test gets its test-save copy back)
+                if (!SeedSandbox(paths_, sp, seed, real, Account(), seed ? test_folder_ : std::string("your own saves"), error_out))
+                    return false;
+            }
             std::string werr;
             // Every time: the game rewrites this file on exit (fullscreen again, its own size).
             std::string current;
@@ -602,29 +648,12 @@ public:
                 return false;
             }
         }
-        const std::string secret = NewSecret();
-        SessionIni host = BaseIni("host");
-        host.secret = secret;
-        host.transport = "udp";
-        host.udp_peer = "127.0.0.1";
-        host.udp_port_local = kDefaultUdpPort;
-        host.udp_port_peer = kDefaultUdpPort + 1;
-        host.debug_menu = true;   // the input split lives in the overlay
-        host.sandbox_saves = kLocalHostSandbox;
-        host.sandbox_foreign_saves = true;
-        host.appdir_settings = true;
-        host.local_input = local_host_pad_ ? "host_pad" : "host";
-        host.frame_cap = kLocalTestFrameCap;
-        host.local_window = "left";   // the two windows side by side
-        SessionIni guest = host;
-        guest.role = "guest";
-        guest.udp_port_local = kDefaultUdpPort + 1;
-        guest.udp_port_peer = kDefaultUdpPort;
-        guest.sandbox_saves = kLocalGuestSandbox;
-        guest.second_instance = true;
-        guest.local_input = "guest";
-        guest.local_window = "right";
-        guest.my_character = GuestCharacter(local_guest_character_, debug_.allow_other_characters);   // the host game stays Sam (BaseIni)
+        LocalTestChoices choices;
+        choices.name = name_;
+        choices.guest_character = local_guest_character_;
+        choices.host_pad = local_host_pad_;
+        SessionIni host, guest;
+        MakeLocalTestInis(debug_, choices, host, guest);
         for (const auto& [ini, dir] : {std::pair<const SessionIni*, std::wstring>{&host, LocalDir(L"host")}, {&guest, LocalDir(L"guest")}}) {
             std::string text, werr;
             if (!MakeSessionIniText(*ini, text, error_out)) return false;
@@ -644,6 +673,7 @@ public:
         }
         local_ = LocalTest{};
         local_.running = true;
+        local_.host_save = host.host_save;
         local_.host_pid = pid;
         local_.started_ms = env_->NowMs();
         local_.guest_due_ms = local_.started_ms + kLocalGuestDelayMs;
@@ -652,7 +682,9 @@ public:
         local_.tone = LinkView::Tone::neutral;
         test_result_.clear();
         LauncherLog(*env_, paths_, "local_test=start host_pid=" + std::to_string(pid) + (local_host_pad_ ? " host_pad=1" : "") +
-                                       " guest_character=" + guest.my_character + " partner_body=" + host.partner_body);
+                                       " guest_character=" + guest.my_character + " partner_body=" + host.partner_body +
+                                       " host_save=" + (host.host_save ? "1" : "0") +
+                                       (host.host_save ? " guest_wiped_slots=" + std::to_string(guest_report.wiped_slots) : std::string()));
         return true;
     }
 
@@ -1164,13 +1196,13 @@ private:
 
     // ---- local two-instance test --------------------------------------------------------
     static constexpr std::int64_t kLocalGuestDelayMs = 8000;
-    static constexpr int kLocalTestFrameCap = 30;
     struct LocalTest {
         bool running = false;
         bool guest_started = false;
         std::uint32_t host_pid = 0, guest_pid = 0;
         std::int64_t started_ms = 0, guest_due_ms = 0, gone_since = 0, next_status_ms = 0;
-        std::string host_state, guest_state, headline, detail;
+        std::string host_state, guest_state, headline, detail, features_off;
+        bool host_save = false;   // the two games run the host-held save session
         LinkView::Tone tone = LinkView::Tone::neutral;
     };
 
@@ -1183,10 +1215,11 @@ private:
     void CleanupLocalIni() {
         for (const wchar_t* who : {L"host", L"guest"}) DeleteFileChecked(JoinPath2(LocalDir(who), L"session.ini"));
     }
-    std::string LocalState(const wchar_t* who, std::uint32_t pid) {
+    std::string LocalState(const wchar_t* who, std::uint32_t pid, std::string* features_off = nullptr) {
         std::string text;
         if (!ReadTextShared(JoinPath2(LocalDir(who), L"link-status.json"), text, 1u << 20)) return {};
         const json::Value st = ParseStatusText(text, pid);
+        if (features_off && st.is_object()) *features_off = st.Str("features_off");
         return st.is_object() ? st.Str("state") : std::string();
     }
 
@@ -1211,8 +1244,12 @@ private:
         const bool guest_alive = local_.guest_pid && env_->ProcessAlive(local_.guest_pid);
         if (now >= local_.next_status_ms) {
             local_.next_status_ms = now + 1000;
-            local_.host_state = host_alive ? LocalState(L"host", local_.host_pid) : std::string();
-            local_.guest_state = guest_alive ? LocalState(L"guest", local_.guest_pid) : std::string();
+            std::string host_off, guest_off;
+            local_.host_state = host_alive ? LocalState(L"host", local_.host_pid, &host_off) : std::string();
+            local_.guest_state = guest_alive ? LocalState(L"guest", local_.guest_pid, &guest_off) : std::string();
+            local_.features_off = (host_off.empty() ? std::string() : "Host game: " + host_off) +
+                                  (!host_off.empty() && !guest_off.empty() ? "\n" : "") +
+                                  (guest_off.empty() ? std::string() : "Guest game: " + guest_off);
         }
         if (host_alive || guest_alive || !local_.guest_started) {
             local_.gone_since = 0;
@@ -1220,7 +1257,10 @@ private:
             const bool linked = local_.host_state == "connected" && local_.guest_state == "connected";
             local_.headline = linked ? "Both games are linked" : both ? "Both games are running" : host_alive ? "The first game (host) runs" : "The second game (guest) runs";
             local_.detail = linked ? "Each window shows the other player. Keyboard + mouse play the host window, a pad plays the guest."
-                                   : "Load a save in each window (Continue). The second game may first say it cannot reach the game server: press OK.";
+                            : local_.host_save
+                                ? "Continue (or New Game) in the host window; the guest window waits for the host and then loads the host's save. "
+                                  "The second game may first say it cannot reach the game server: press OK."
+                                : "Load a save in each window (Continue). The second game may first say it cannot reach the game server: press OK.";
             local_.tone = linked ? LinkView::Tone::good : LinkView::Tone::neutral;
             return;
         }
@@ -1477,6 +1517,7 @@ private:
         l.headline = v.headline;
         l.detail = v.detail;
         l.tone = ToneOf(v.tone);
+        l.features_off = v.fresh ? v.features_off : std::string();
         if (!status.is_object() && phase_ == Phase::in_game && now - launch_ms_ > 120000) {
             l.headline = "The mod has not reported in";
             l.detail = "The game runs, but co-op has not written its status. Check that winhttp.dll is the Stranded Together one, "
@@ -1617,6 +1658,41 @@ int RunWriteSession(const std::wstring& game_dir, const WriteSessionRequest& req
     if (!code.empty()) report += "code=" + code + "\n";
     report += "note=one_shot: the mod renames session.ini to session.last.ini when the game reads it. No helper runs: "
               "--end-session (or the next launcher start with the game closed) removes an unread session.ini\n";
+    return 0;
+}
+
+int RunWriteLocalTestIni(const std::wstring& game_dir, const std::wstring& out_dir, std::string& report) {
+    auto fail = [&](const std::string& why) {
+        report += "result=failed\nerror=" + why + "\n";
+        return 1;
+    };
+    if (out_dir.empty()) return fail("--out <folder> is needed (nothing is written into the game folder)");
+    // The Debug page's options and the local test's picks as the launcher in that folder has them (read only).
+    json::Value settings;
+    if (!game_dir.empty()) {
+        const InstancePaths paths = GetInstancePaths(game_dir);
+        ReadSettings(paths, settings);
+    }
+    const DebugOptions options = DebugOptionsFromSettings(settings);
+    LocalTestChoices choices;
+    choices.name = settings.Str("name");
+    if (!choices.name.empty() && !IsValidPlayerName(choices.name)) choices.name.clear();
+    std::string stored_pick;
+    if (const json::Value* t = settings.Find("test_save"); t && t->is_object()) {
+        stored_pick = t->Str("guest_character");
+        choices.host_pad = t->Bool("host_pad", false);
+    }
+    choices.guest_character = GuestPickFromSettings(settings, stored_pick);
+    SessionIni host, guest;
+    MakeLocalTestInis(options, choices, host, guest);
+    if (!CreateDirectories(out_dir)) return fail("could not create " + Utf8(out_dir));
+    for (const auto& [ini, file] : {std::pair<const SessionIni*, const wchar_t*>{&host, L"host.ini"}, {&guest, L"guest.ini"}}) {
+        std::string text, error, werr;
+        if (!MakeSessionIniText(*ini, text, error)) return fail(std::string(file == std::wstring(L"host.ini") ? "host" : "guest") + ": " + error);
+        if (!WriteAtomic(JoinPath2(out_dir, file), text, true, werr)) return fail("could not write " + Utf8(JoinPath2(out_dir, file)) + ": " + werr);
+    }
+    report += "result=ok\nhost_save=" + std::string(host.host_save ? "1" : "0") + "\nhost_ini=" + Utf8(JoinPath2(out_dir, L"host.ini")) +
+              "\nguest_ini=" + Utf8(JoinPath2(out_dir, L"guest.ini")) + "\n";
     return 0;
 }
 

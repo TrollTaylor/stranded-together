@@ -1,0 +1,67 @@
+# Story tools in a host-held save session (docs/dev-tools.md "Story tools"), hidden:
+#   pwsh -File tools\testenv\Story-Library.ps1 -Pack
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-story -SeedSaves story-pack -GuestSeed profile-only
+# host_save=1, dev_tools=1 on both games (both sandboxed, as in the launcher's Local test). Both start from the host's
+# Continue (M1). Both games' story probes log the same story state. The host loads story point manualsave13 (Episode 2)
+# with story_load: the host's mod offers that load (M1, in-world Load), the guest follows, and both games log the same
+# story state again ("[story] changed: Episode 2 ..."). The guest's story_load is refused (the host holds the world: its
+# load gate, `story 3`, says so; the host's says allowed).
+role host
+graphics low
+timeout 360
+ini host_save=1
+ini dev_tools=1
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[coop\] host-held save session ON \(host
+@guest waitlog 10 \[coop\] host-held save session ON \(guest
+waitlog 30 \[story\] story tools: [0-9]+/[0-9]+ byte checks ok; probe on, load on
+@guest waitlog 30 \[story\] story tools: [0-9]+/[0-9]+ byte checks ok; probe on, load on
+wait 22000
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+waitlog 30 \[story\] (Prologue|Episode [0-9]+|episode unknown) "
+@guest waitlog 30 \[story\] (Prologue|Episode [0-9]+|episode unknown) "
+wait 5000
+@both action story 0
+screenshot 01-host-start
+@guest screenshot 01-guest-start
+# ---- the guest may not load a story point
+@guest action story 3
+@guest waitlog 5 \[story\] load gate: refused on the guest: the host's game holds the world
+action story 3
+waitlog 5 \[story\] load gate: allowed
+# ---- the host loads story point manualsave13; the guest follows through M1
+action story 2
+action story_load 13
+waitlog 20 \[coop\] host: in-world Load \(type 0x1, index 13
+waitlog 150 \[story\] load of manualsave13: in the world after
+@guest waitlog 120 \[coop\] guest: wrote the host's save #2 as manualsave6
+@guest waitlog 180 \[coop\] guest: in the world after .* save #2
+waitlog 20 \[story\] after the load of manualsave13: Episode 2
+@guest waitlog 30 \[story\] changed: Episode 2
+wait 8000
+@both action story 0
+screenshot 02-host-ep2
+@guest screenshot 02-guest-ep2
+# the Dev tools page on the guest (the load refused there, with the reason)
+@guest menu open
+@guest action dev_status 2
+wait 1500
+@guest screenshot 03-guest-dev-page
+@guest menu close
+nolog \[story\].*FAULT
+@guest nolog \[story\].*FAULT
+nolog \[story\] byte check FAILED
+@guest nolog \[story\] byte check FAILED
+@guest quit
+wait 3000
+quit

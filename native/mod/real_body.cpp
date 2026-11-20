@@ -20,6 +20,7 @@
 #include "partner_collision.hpp"
 #include "partner_outfit.hpp"
 #include "partner_source.hpp"
+#include "ride_together.hpp"
 
 namespace st::realbody {
 namespace {
@@ -267,8 +268,9 @@ Counters& g_ct = g_slots[0].ct;  // also counts Sam's captures and every detour 
 // Self view, detour side.
 // How the self body follows Sam: 1 = Sam's own model update copies his world transform onto
 // the body (the frame's transform, no tick jitter), 2 = the body's own model update copies it,
-// 3 = the tick only (like the partner). Default 1.
-std::atomic<int> g_self_follow{1};
+// 3 = the tick only (like the partner), 4 = mode 1 plus, in the body's own update, Sam's world
+// predicted for this frame (PredictSelfWorld, section 26). Default 4.
+std::atomic<int> g_self_follow{4};
 std::uintptr_t g_fn_setwt = 0;  // Entity_ExportedSetWorldTransform, byte-checked (CheckMeshSites)
 std::atomic<std::uint32_t> g_self_copies{0}, g_self_copy_fail{0}, g_self_copy_aba{0}, g_self_stale{0};
 std::atomic<std::uint64_t> g_self_age_us{0}, g_self_age_n{0}, g_self_age_max_us{0};
@@ -373,19 +375,26 @@ std::atomic<int> g_lift_diag{0};  // g_lift_state, for the log
 // mover (partner_gear.cpp), and the lift is 0. Rows by the self body's head rig; a body without a row keeps the lift.
 struct HeadgearRow {
     std::uint8_t body_id;
-    std::int16_t mm[kHeadItemClasses][3];  // per class (cap, glasses), helper frame, mm
+    std::int16_t mm[kHeadItems][3];  // per item (eyewear0, glasses00-02, cap00-03), helper frame, mm
 };
 // Chosen from 2560x1440 front and back close-ups (run 20261118-105952-self-headgear): the cap 5.0 cm up and 1.2 cm back
 // (snug: no hair through its band from behind, the brim on her brow, eyes free; 4.5 / 4.8 cm let strands through), the
 // glasses 1.1 cm up and 0.4 cm back (her eye-lid joints sit 1.1 cm higher above the head joint than Sam's: lenses on her
 // eyes; 0.7 / 1.5 cm checked).
+// v0.19 (section 26.3): one offset per item. The four items of the cap class are four different hats (the accessory type
+// picks one; run 20261120-024449, front and back at 5.0 / 4.3 / 3.6 cm): cap00 the Bridges cap 4.2 cm (5.0 left a gap
+// over her brow, 3.6 put the brim on her eyes), cap01 the Santa hat 3.5 cm (its white band sat a forehead above her brows
+// at 5.0, the user's "a little high"), cap02 the headcrab 4.0 cm, cap03 the hair ornament 3.8 cm (on her hair at the back,
+// not floating). The glasses keep 1.1 cm up, 0.4 cm back (the user: fine). Both Fragile bodies share fgl_head_def.
+#define ST_FGL_HEAD {{0, -4, 11}, {0, -4, 11}, {0, -4, 11}, {0, -4, 11}, {0, -12, 42}, {0, -12, 35}, {0, -12, 40}, {0, -12, 38}}
 constexpr HeadgearRow kHeadgearRows[] = {
-    {3, {{0, -12, 50}, {0, -4, 11}}},   // fragile (demo_fgl_new): fgl_head_def
-    {16, {{0, -12, 50}, {0, -4, 11}}},  // fragile_suit (demo_fgl_body_suiti): fgl_head_def
+    {3, ST_FGL_HEAD},   // fragile (demo_fgl_new): fgl_head_def
+    {16, ST_FGL_HEAD},  // fragile_suit (demo_fgl_body_suiti): fgl_head_def
 };
+#undef ST_FGL_HEAD
 std::atomic<bool> g_hg_cfg{true};  // session.ini self_headgear / `self_view 10 <0/1>`
 std::atomic<int> g_hg_row{-1};     // the self body's row (FitOn), -1 none
-std::atomic<int> g_hg_mm[kHeadItemClasses][3] = {};  // the offsets in use (the row's, or `self_view 8/9`)
+std::atomic<int> g_hg_mm[kHeadItems][3] = {};  // the offsets in use (the row's, or `self_view 8/9`)
 std::atomic<bool> g_hg_tuned{false};  // `self_view 8/9` set them: FitOn keeps them
 // partner_gear.cpp says every tick whether it writes the offsets (its site check passed, `gear 18` on, no shown head
 // item of ours refused or unknown): GetTickCount64 of the last "ready", 0 = not ready. Stale after 500 ms (gear off,
@@ -1077,6 +1086,180 @@ void CopySamTransform(bool menu = false) {
     }
 }
 
+// Self view follow mode 4 (the default since v0.19; docs/real-partner-body.md section 26). The game updates the self body
+// before Sam in a frame (section 8.2: `capture age ~1 frame` in every `[smooth]` line), and what it latches for the
+// body's drawing in that update uses the world transform the body has then: in mode 1 that is Sam's of the previous frame
+// (the copy comes later, in Sam's own update), while everything the game hangs on Sam (his cap, glasses, backpack, cargo,
+// hip cases, boots) is drawn at Sam's world of this frame. Moving, all of it ran ahead of her by Sam's step in one frame
+// (about 15-20 cm running at the 30 fps cap of two games). Mode 4 keeps the mode 1 copy and, in the body's own update
+// before its pose write, puts the body where Sam will be after his update of this frame: his world now plus his last
+// per-frame step (the position delta and the rotation delta, applied once). No new game call and no new address: the
+// same exported setter as modes 1 and 2, the same identity checks.
+struct SamWorldRec {
+    std::int64_t qpc = 0;
+    float dt = 0;  // the game's dt of that Sam update
+    double p[3] = {};
+    float r[3][3] = {};
+};
+struct SamTrack {
+    SamWorldRec cur, prev;  // Sam's world after his last update, and after his last update of an earlier frame
+    std::uint32_t n = 0;    // records kept (2 = both valid)
+};
+SeqLock<SamTrack> g_sam_track;
+SamTrack g_sam_track_w;  // Sam's update only (under g_fit_busy's sibling below)
+std::atomic<bool> g_sam_track_busy{false};
+std::atomic<std::uint32_t> g_pred_n{0}, g_pred_after{0}, g_pred_skip_hist{0}, g_pred_skip_stale{0}, g_pred_skip_jump{0}, g_pred_skip_read{0},
+    g_pred_fail{0}, g_pred_aba{0};
+std::atomic<std::uint64_t> g_pred_step_um{0}, g_pred_step_max_um{0}, g_pred_pre_um{0}, g_pred_pre_n{0};
+std::atomic<std::uint32_t> g_pred_scale_n{0};
+std::atomic<std::uint64_t> g_pred_scale_sum{0};  // the span between Sam's two frame records, us
+// The step is only Sam's own movement in his own update. Something else moving him (the ride carry's teleport from the game
+// tick, a vehicle he drives as his parent) lands between his last record and the body's next update and is already in his
+// world now: adding his last step on top would put the body a vehicle step ahead of the gear hung on him. Then the plain
+// copy (mode 2). g_pred_skip_moved: Sam's world now differs from his newest record by more than kPredMovedM;
+// g_pred_skip_ride: carried as a passenger (ride::Carried, published by SelfTick) or Sam has a parent entity (driving).
+constexpr double kPredMovedM = 0.005;
+constexpr std::uintptr_t kEntParent = 0x70;  // Entity: parent (Sam's vehicle while he drives / rides it in the game)
+std::atomic<bool> g_sam_carried{false};      // game thread (SelfTick) -> the body's update
+std::atomic<std::uint32_t> g_pred_skip_moved{0}, g_pred_skip_ride{0};
+
+// A world transform (+0xC8 position, +0xE0 rotation) read fault-free twice and compared, finite.
+bool ReadWorldTwice(std::uintptr_t e, std::uint8_t (&a)[kWorldBytes + 4]) {
+    alignas(8) std::uint8_t b2[kWorldBytes + 4] = {};
+    if (!mem::Read(e + kEntWorld, a, kWorldBytes) || !mem::Read(e + kEntWorld, b2, kWorldBytes) || std::memcmp(a, b2, kWorldBytes) != 0) return false;
+    double p[3];
+    float r[9];
+    std::memcpy(p, a, sizeof(p));
+    std::memcpy(r, a + 0x18, sizeof(r));
+    for (double v : p)
+        if (!std::isfinite(v)) return false;
+    for (float v : r)
+        if (!std::isfinite(v)) return false;
+    return true;
+}
+
+// Sam's update (after the capture): his world for this frame. A second update of Sam within half a frame of the last
+// replaces the newest record (the game updates his model about twice per frame); an update after that starts a new
+// frame and the newest record becomes the previous one.
+void TrackSam(float dt) {
+    const std::uintptr_t sam = g_sam_e.load(std::memory_order_acquire);
+    if (!sam || g_qpc_per_ms <= 0) return;
+    alignas(8) std::uint8_t a[kWorldBytes + 4] = {};
+    if (!ReadWorldTwice(sam, a)) return;
+    if (g_sam_track_busy.exchange(true, std::memory_order_acquire)) return;
+    SamWorldRec r;
+    r.qpc = Qpc();
+    r.dt = dt;
+    std::memcpy(r.p, a, sizeof(r.p));
+    std::memcpy(r.r, a + 0x18, sizeof(r.r));
+    SamTrack& t = g_sam_track_w;
+    const double half = 0.5 * g_frame_ms.load(std::memory_order_relaxed);
+    if (t.n == 0) {
+        t.cur = r, t.n = 1;
+    } else if (static_cast<double>(r.qpc - t.cur.qpc) / g_qpc_per_ms >= half) {
+        t.prev = t.cur, t.cur = r, t.n = 2;
+    } else {
+        t.cur = r;  // the same frame's second update: its newest world (the previous frame's record stays)
+    }
+    g_sam_track.Write(t);
+    g_sam_track_busy.store(false, std::memory_order_release);
+}
+
+// The body's own update, before its pose write (follow mode 4): this frame's world for the body. Sam already updated in
+// this frame (his newest record is under half a frame old): his world now is this frame's, copied as is. Otherwise his
+// world now plus his last per-frame step (his world after his last update of this frame minus that of the frame before);
+// no step after a jump (over 3 m in a frame:
+// a teleport, a load, a vehicle snap), without a previous frame, or when his records are over 2.5 frames old (he is not
+// updated: asleep, a cutscene), nor when something outside his update moved him (the ride carry, a vehicle he drives as
+// his parent, his world now more than 5 mm from his newest record: that move is already in his world now); then the
+// plain copy (mode 2), which mode 1's copy in his update corrects anyway.
+void PredictSelfWorld() {
+    const std::uintptr_t self_e = g_me.e.load(std::memory_order_seq_cst);
+    const std::uintptr_t self_sm = g_me.sm.load(std::memory_order_seq_cst);
+    const std::uintptr_t sam = g_sam_e.load(std::memory_order_acquire);
+    if (!self_e || !self_sm || !sam || !g_fn_setwt || g_qpc_per_ms <= 0) return;
+    std::uintptr_t ev = 0, em = 0, smv = 0, sme = 0;
+    if (!Rd(self_e, ev) || ev != g_me.e_vt || !Rd(self_e + kEntModel, em) || em != self_sm || !Rd(self_sm, smv) || smv != g_sm_vt ||
+        !Rd(self_sm + kSmEntity, sme) || sme != self_e) {
+        g_pred_aba.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    alignas(8) std::uint8_t a[kWorldBytes + 4] = {};
+    if (!ReadWorldTwice(sam, a)) {
+        g_pred_skip_read.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    PackedWt now;
+    std::memcpy(&now, a, kWorldBytes);
+    SamTrack t;
+    const double frame = g_frame_ms.load(std::memory_order_relaxed);
+    bool step = false;
+    double dp[3] = {};
+    float m[3][3] = {};
+    std::uintptr_t parent = 0;
+    if (g_sam_carried.load(std::memory_order_relaxed) || !Rd(sam + kEntParent, parent) || parent != 0) {
+        g_pred_skip_ride.fetch_add(1, std::memory_order_relaxed);
+    } else if (!g_sam_track.Read(t) || t.n < 2 || frame <= 0) {
+        g_pred_skip_hist.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        const double age = static_cast<double>(Qpc() - t.cur.qpc) / g_qpc_per_ms;
+        const double span = static_cast<double>(t.cur.qpc - t.prev.qpc) / g_qpc_per_ms;
+        if (age < 0.5 * frame) {
+            g_pred_after.fetch_add(1, std::memory_order_relaxed);  // Sam first this frame: his world is this frame's
+        } else if (age > 2.5 * frame || span > 2.5 * frame) {
+            g_pred_skip_stale.fetch_add(1, std::memory_order_relaxed);
+        } else {
+            double len2 = 0;
+            for (int k = 0; k < 3; ++k) dp[k] = t.cur.p[k] - t.prev.p[k], len2 += dp[k] * dp[k];
+            // Sam's world now against his newest record (he should not have moved since his update): the meter
+            double pre2 = 0;
+            for (int k = 0; k < 3; ++k) pre2 += (now.p[k] - t.cur.p[k]) * (now.p[k] - t.cur.p[k]);
+            g_pred_pre_um.fetch_add(static_cast<std::uint64_t>(std::sqrt(pre2) * 1e6), std::memory_order_relaxed);
+            g_pred_pre_n.fetch_add(1, std::memory_order_relaxed);
+            if (!std::isfinite(pre2) || pre2 > kPredMovedM * kPredMovedM) {
+                g_pred_skip_moved.fetch_add(1, std::memory_order_relaxed);  // moved since his update: his world now is this frame's
+            } else if (!std::isfinite(len2) || len2 > 3.0 * 3.0) {
+                g_pred_skip_jump.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                // The step is not scaled by a dt ratio: Sam's newest record is often his second, partial update of a frame
+                // (its dt a fraction of the frame's), and scaling by it overshot by 30-60 % (run 20261120-023358). The
+                // span between his records of the two frames is logged instead (about one frame time).
+                g_pred_scale_sum.fetch_add(static_cast<std::uint64_t>(span * 1000.0), std::memory_order_relaxed);
+                g_pred_scale_n.fetch_add(1, std::memory_order_relaxed);
+                // the rotation step (rows: the frame's axes): r_cur = r_prev * M, so M = r_prev^T * r_cur, applied once
+                for (int i = 0; i < 3; ++i)
+                    for (int j = 0; j < 3; ++j)
+                        m[i][j] = t.prev.r[0][i] * t.cur.r[0][j] + t.prev.r[1][i] * t.cur.r[1][j] + t.prev.r[2][i] * t.cur.r[2][j];
+                step = true;
+            }
+        }
+    }
+    PackedWt w = now;
+    if (step) {
+        for (int k = 0; k < 3; ++k) w.p[k] = now.p[k] + dp[k];
+        for (int k = 0; k < 3; ++k)
+            for (int j = 0; j < 3; ++j) w.r[k][j] = now.r[k][0] * m[0][j] + now.r[k][1] * m[1][j] + now.r[k][2] * m[2][j];
+        bool finite = true;
+        for (int k = 0; k < 3; ++k)
+            for (int j = 0; j < 3; ++j) finite = finite && std::isfinite(w.r[k][j]);
+        if (!finite) w = now, step = false;
+    }
+    if (!CallSetWt(self_e, &w)) {
+        g_pred_fail.fetch_add(1, std::memory_order_relaxed);
+        g_self_follow.store(3, std::memory_order_relaxed);  // never again from a detour this run
+        return;
+    }
+    if (step) {
+        const double len = std::sqrt(dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2]);
+        const auto um = static_cast<std::uint64_t>(len * 1e6);
+        g_pred_n.fetch_add(1, std::memory_order_relaxed);
+        g_pred_step_um.fetch_add(um, std::memory_order_relaxed);
+        std::uint64_t mx = g_pred_step_max_um.load(std::memory_order_relaxed);
+        while (um > mx && !g_pred_step_max_um.compare_exchange_weak(mx, um, std::memory_order_relaxed)) {
+        }
+    }
+}
+
 // The partner (or debug) body's pose now (not the self view's live capture): the bracketing frames interpolated at this
 // moment's play time, or the published frame; latch translations and scales, the pelvis times the ratio. Pure math on
 // the published buffers (the body's own update and the boots prop's, section 21). `stats`: the body's counters.
@@ -1495,7 +1678,9 @@ void Detour(void* sm, float dt) {
     const bool menu_src = g_self_src.load(std::memory_order_seq_cst) == 1;
     if (s == g_sam_sm.load(std::memory_order_seq_cst)) {
         CaptureSam(s);
-        if (g_self_follow.load(std::memory_order_relaxed) == 1 && !menu_src) CopySamTransform();
+        const int follow = g_self_follow.load(std::memory_order_relaxed);
+        if (follow == 4) TrackSam(dt);
+        if ((follow == 1 || follow == 4) && !menu_src) CopySamTransform();
     } else if (s == g_menu_sm.load(std::memory_order_seq_cst)) {
         // The cargo menu's figure: its pose for the self body, then its transform onto it (follow 1 and 2
         // alike; follow 3 leaves it to the tick).
@@ -1508,7 +1693,9 @@ void Detour(void* sm, float dt) {
     } else if (s == g_me.sm.load(std::memory_order_seq_cst)) {
         if (!t_forcing) g_me.game_updates.fetch_add(1, std::memory_order_relaxed);
         g_me.updates.fetch_add(1, std::memory_order_relaxed);
-        if (g_self_follow.load(std::memory_order_relaxed) == 2 && !menu_src) CopySamTransform();
+        const int follow = g_self_follow.load(std::memory_order_relaxed);
+        if (follow == 2 && !menu_src) CopySamTransform();
+        else if (follow == 4 && !menu_src && !t_forcing) PredictSelfWorld();
         ApplyBody(g_me, s, true);
     }
     g_inflight.fetch_sub(1, std::memory_order_seq_cst);
@@ -2281,7 +2468,7 @@ const char* FitOn() {
         for (unsigned i = 0; i < sizeof(kHeadgearRows) / sizeof(kHeadgearRows[0]); ++i)
             if (g_me.body && kHeadgearRows[i].body_id == g_me.body->id) row = static_cast<int>(i);
         if (row >= 0 && !g_hg_tuned.load())
-            for (int c = 0; c < kHeadItemClasses; ++c)
+            for (int c = 0; c < kHeadItems; ++c)
                 for (int k = 0; k < 3; ++k) g_hg_mm[c][k].store(kHeadgearRows[row].mm[c][k]);
         g_hg_row.store(row, std::memory_order_seq_cst);
     }
@@ -2558,6 +2745,7 @@ void MenuWatch(double now_ms) {
 
 void SelfTick(game::Entity* local, bool local_active, double now_ms) {
     const auto sam = reinterpret_cast<std::uintptr_t>(local);
+    g_sam_carried.store(ride::Carried(), std::memory_order_relaxed);  // follow mode 4: no step while the carry moves Sam
     // Another player entity (load, return to title) while our reason was set on the old one: it is
     // cleared there only if the old entity still reads as a live DSPlayerEntity whose controller
     // points back at it (SamMaskAddr; fault-free reads first), else nothing is written. (No player
@@ -2772,16 +2960,22 @@ void FitStats() {
         std::snprintf(pels + used, sizeof(pels) - used, " %s %s", i ? "on" : "off",
                       dn ? std::to_string(static_cast<double>(pel[i] - ppel[i]) / dn / 1e4).substr(0, 6).c_str() : "-");
     }
+    // the per-item headgear offsets (section 26.3): caps cap00-03, then glasses eyewear0, glasses00-02, x/forward/up mm each
+    char hgc[96] = "", hgg[96] = "";
+    for (int i = 0; i < kHeadItems; ++i) {
+        char* o = i >= kHeadItemFirstCap ? hgc : hgg;
+        const std::size_t used = std::strlen(o);
+        std::snprintf(o + used, 96 - used, "%s%d/%d/%d", used ? "," : "", g_hg_mm[i][0].load(), g_hg_mm[i][1].load(), g_hg_mm[i][2].load());
+    }
     if (w != pw || r != pr || g_fit_want.load() || lu[0] != plu[0])
         Log("[self] fit %s: writes=%u same-pose=%u (newest %u) updates game-rewrote=%u held=%u (t joints %u, q %u, s %u) restores=%u wpm=%u torn=%u "
             "busy=%u faults=%u; leak check (translations nearer the shape than Sam's own):%s, max %u per update; captured pelvis cm%s; "
-            "head lift %d%% (measured %.1f cm, check %.2f mm, state %d); headgear %s row %d cap %d/%d/%d glasses %d/%d/%d mm; feet %s %d%% boots %s "
+            "head lift %d%% (measured %.1f cm, check %.2f mm, state %d); headgear %s row %d cap %s glasses %s mm; feet %s %d%% boots %s "
             "writes %u; Sam vs body cm mean/max over %u ticks:%s",
             g_fit_want.load() ? "on" : "off", w - pw, su - psu, sf - psf, f - pf, h - ph, jh - pj, q - pq, ss - pss, r - pr, wpm - pwpm, t - pt, sk - ps,
             g_fit_faults.load(), leak, g_fit_toward_max.exchange(0), pels, EffectiveLiftPct(),
             static_cast<double>(g_lift_cm.load()), static_cast<double>(g_lift_err_mm.load()), g_lift_diag.load(), g_hg_cfg.load() ? "on" : "off",
-            g_hg_row.load(), g_hg_mm[0][0].load(), g_hg_mm[0][1].load(), g_hg_mm[0][2].load(), g_hg_mm[1][0].load(), g_hg_mm[1][1].load(),
-            g_hg_mm[1][2].load(), g_feet_cfg.load() ? "on" : "off", g_feet_pct.load(), g_feet_boots.load() ? "shown" : "not shown", g_feet_writes.load(),
+            g_hg_row.load(), hgc, hgg, g_feet_cfg.load() ? "on" : "off", g_feet_pct.load(), g_feet_boots.load() ? "shown" : "not shown", g_feet_writes.load(),
             g_fit_d_n, dist[0] ? dist : " -");
     pw = w, ph = h, pj = jh, pf = f, pr = r, pwpm = wpm, pt = t, ps = sk, pq = q, pss = ss, psu = su, psf = sf;
     for (int i = 0; i < 2; ++i) ppel[i] = pel[i], ppn[i] = pn[i], pto[i] = to[i], plu[i] = lu[i];
@@ -2820,6 +3014,30 @@ void SelfStats(double now) {
         rej - prev_rej, g_me.ct.last_reject.load(), aba - prev_aba, nocap - prev_nocap, wpm - prev_wpm, g_me.ct.faults.load(), fz, sk);
     prev_app = app, prev_copies = copies, prev_fail = fail, prev_stale = stale, prev_rej = rej, prev_obs = obs, prev_moves = g_self_tick_moves;
     prev_aba = aba, prev_nocap = nocap, prev_wpm = wpm, prev_caba = caba;
+    // Follow mode 4 (section 26): the body's updates that got this frame's predicted world, those after Sam's update
+    // (his world as is), the skips, the step put in (cm), and how far Sam's world moved between his update and the body's
+    // next one (0: nothing moves him outside his update; the prediction's premise).
+    {
+        static std::uint32_t pp = 0, pa = 0, ph = 0, ps = 0, pj = 0, pr = 0, pf = 0, pab = 0, psn = 0, pmv = 0, prd = 0;
+        static std::uint64_t pum = 0, ppre = 0, ppren = 0, pss = 0;
+        const std::uint32_t pn = g_pred_n.load(), an = g_pred_after.load(), hn = g_pred_skip_hist.load(), sn = g_pred_skip_stale.load(),
+                            jn = g_pred_skip_jump.load(), rn = g_pred_skip_read.load(), fn = g_pred_fail.load(), abn = g_pred_aba.load(),
+                            scn = g_pred_scale_n.load(), mvn = g_pred_skip_moved.load(), rdn = g_pred_skip_ride.load();
+        const std::uint64_t um = g_pred_step_um.load(), pre = g_pred_pre_um.load(), pren = g_pred_pre_n.load(), ss = g_pred_scale_sum.load();
+        const int follow = g_self_follow.load();
+        if (follow == 4 || pn != pp || an != pa) {
+            const std::uint32_t dn = pn - pp, dsn = scn - psn;
+            const std::uint64_t dpre = pren - ppren;
+            Log("[self] follow %d: predicted %u, after Sam %u, skipped %u (no history %u, stale %u, jump %u, read %u, moved %u, ride %u), failed %u, "
+                "aba %u; step cm mean %.1f max %.1f; Sam's frame span ms %.1f; Sam moved outside his update cm %.2f",
+                follow, dn, an - pa, (hn - ph) + (sn - ps) + (jn - pj) + (rn - pr) + (mvn - pmv) + (rdn - prd), hn - ph, sn - ps, jn - pj, rn - pr,
+                mvn - pmv, rdn - prd, fn - pf, abn - pab,
+                dn ? static_cast<double>(um - pum) / dn / 1e4 : 0.0, static_cast<double>(g_pred_step_max_um.exchange(0)) / 1e4,
+                dsn ? static_cast<double>(ss - pss) / dsn / 1000.0 : 0.0, dpre ? static_cast<double>(pre - ppre) / dpre / 1e4 : 0.0);
+        }
+        pp = pn, pa = an, ph = hn, ps = sn, pj = jn, pr = rn, pf = fn, pab = abn, psn = scn, pmv = mvn, prd = rdn, pum = um, ppre = pre,
+        ppren = pren, pss = ss;
+    }
     FitStats();
     g_self_dist_sum = 0, g_self_dist_max = 0, g_self_dist_n = 0;
 }
@@ -3879,12 +4097,12 @@ bool HeadLift(game::Entity* sam, float (&local)[3]) noexcept {
     return true;
 }
 
-bool SelfHeadItemOffset(int cls, float (&off)[3]) noexcept {
+bool SelfHeadItemOffset(int item, float (&off)[3]) noexcept {
     off[0] = off[1] = off[2] = 0;
-    if (cls < 0 || cls >= kHeadItemClasses || !g_hg_cfg.load(std::memory_order_relaxed) || g_hg_row.load(std::memory_order_relaxed) < 0 ||
+    if (item < 0 || item >= kHeadItems || !g_hg_cfg.load(std::memory_order_relaxed) || g_hg_row.load(std::memory_order_relaxed) < 0 ||
         !g_fit_want.load(std::memory_order_acquire) || !g_fit_cfg.load(std::memory_order_relaxed) || g_fit_faulted.load(std::memory_order_relaxed))
         return false;
-    for (int k = 0; k < 3; ++k) off[k] = static_cast<float>(g_hg_mm[cls][k].load(std::memory_order_relaxed)) / 1000.0f;
+    for (int k = 0; k < 3; ++k) off[k] = static_cast<float>(g_hg_mm[item][k].load(std::memory_order_relaxed)) / 1000.0f;
     return true;
 }
 void SetHeadgearReady(bool ready) noexcept { g_hg_ready_ms.store(ready ? GetTickCount64() : 0, std::memory_order_release); }
@@ -4304,7 +4522,7 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             Set(msg, cap, "mirror %s", g_p.mirror ? "on" : "off");
             return true;
         }
-        case 8: {  // self view <0/1> [body id, 0 = the configured one] [follow 1 Sam's update / 2 the body's / 3 tick, 0 = unchanged]
+        case 8: {  // self view <0/1> [body id, 0 = the configured one] [follow 1 Sam's update / 2 the body's / 3 tick / 4 predicted, 0 = unchanged]
             if (v[0] == 2) {  // hidden tests only: self_view 2 <reason 0..63> <0/1> sets / clears a hide reason on Sam's mask
                 if (!automation::Enabled() || !automation::SavesRedirected()) {
                     Set(msg, cap, "refused: only in a hidden test run on scratch saves");
@@ -4370,16 +4588,25 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
                 Log("[menu] %s", msg);
                 return ok;
             }
-            if (v[0] == 8 || v[0] == 9) {  // self_view 8|9 <item 0 cap / 1 glasses> <mm>: the headgear offset up (8) / forward (9)
-                const int cls = static_cast<int>(v[1]);
-                if (cls < 0 || cls >= kHeadItemClasses || !(v[2] >= -100 && v[2] <= 100)) {
-                    Set(msg, cap, "self_view %d <item 0 cap / 1 glasses> <mm -100..100>", static_cast<int>(v[0]));
+            if (v[0] == 8 || v[0] == 9) {
+                // self_view 8|9 <which> <mm>: the headgear offset up (8) / forward (9); which: 0 every cap, 1 every pair of
+                // glasses, 10-17 one item (10 eyewear0, 11-13 glasses00-02, 14-17 cap00-03)
+                const int which = static_cast<int>(v[1]);
+                const bool one = which >= 10 && which < 10 + kHeadItems;
+                if (!(which == 0 || which == 1 || one) || !(v[2] >= -100 && v[2] <= 100)) {
+                    Set(msg, cap, "self_view %d <0 caps / 1 glasses / 10-17 one item> <mm -100..100>", static_cast<int>(v[0]));
                     return false;
                 }
-                g_hg_mm[cls][v[0] == 8 ? 2 : 1].store(static_cast<int>(v[2]));
+                int first = 0, last = kHeadItems - 1;
+                if (one) first = last = which - 10;
+                else if (which == kHeadItemCap) first = kHeadItemFirstCap;
+                else last = kHeadItemFirstCap - 1;
+                for (int i = first; i <= last; ++i) g_hg_mm[i][v[0] == 8 ? 2 : 1].store(static_cast<int>(v[2]));
                 g_hg_tuned.store(true);
-                Set(msg, cap, "self view headgear: %s offset (x %d, forward %d, up %d mm)%s", cls == kHeadItemCap ? "cap" : "glasses", g_hg_mm[cls][0].load(),
-                    g_hg_mm[cls][1].load(), g_hg_mm[cls][2].load(), g_hg_row.load() >= 0 ? "" : " (this body has no headgear row: not used)");
+                static const char* const kItemName[kHeadItems] = {"eyewear0", "glasses00", "glasses01", "glasses02", "cap00", "cap01", "cap02", "cap03"};
+                Set(msg, cap, "self view headgear: %s offset (x %d, forward %d, up %d mm)%s", one ? kItemName[first] : which == kHeadItemCap ? "every cap" : "every glasses",
+                    g_hg_mm[first][0].load(), g_hg_mm[first][1].load(), g_hg_mm[first][2].load(),
+                    g_hg_row.load() >= 0 ? "" : " (this body has no headgear row: not used)");
                 Log("[self] %s", msg);
                 return true;
             }
@@ -4404,7 +4631,7 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
                 return true;
             }
             const int follow = static_cast<int>(v[2]);
-            if (follow >= 1 && follow <= 3) g_self_follow.store(follow);
+            if (follow >= 1 && follow <= 4) g_self_follow.store(follow);
             if (v[0] == 0) {
                 const bool had = g_me.phase != Phase::idle || g_me.spawn.sp;
                 g_self_on = false;

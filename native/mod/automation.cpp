@@ -1277,14 +1277,25 @@ Outcome DoWaitLog(const Command& c) {
     }
 }
 
-void DoQuit() {
+void DoQuit(bool by_pad) {
     g_quitting.store(true);
     const HWND w = GameWindow();
-    Log("[auto] quit: WM_CLOSE to the game window %p; the process ends within 20 s", static_cast<void*>(w));
-    if (w) PostMessageW(w, WM_CLOSE, 0, 0);
+    if (by_pad) {
+        // The game's own quit: pad A on the item the scenario selected (the title's EXIT GAME).
+        Log("[auto] quit: pad A (the game's own menu quits); the process ends within 20 s");
+        overlay::input::PadState p;
+        p.connected = true;
+        p.buttons = kPadA;
+        overlay::input::SetVirtualPad(p);
+        Sleep(150);
+        overlay::input::SetVirtualPad(overlay::input::PadState{true});
+    } else {
+        Log("[auto] quit: WM_CLOSE to the game window %p; the process ends within 20 s", static_cast<void*>(w));
+        if (w) PostMessageW(w, WM_CLOSE, 0, 0);
+    }
     HANDLE t = CreateThread(nullptr, 0, [](LPVOID) -> DWORD {
         Sleep(20000);
-        Log("[auto] quit: the game did not exit after WM_CLOSE: ending the process");
+        Log("[auto] quit: the game did not exit within 20 s: ending the process");
         LogShutdown();
         TerminateProcess(GetCurrentProcess(), 0);
         return 0;
@@ -1305,7 +1316,7 @@ Outcome Execute(const Command& c) {
         case Kind::waitplayer: return DoWaitPlayer(c);
         case Kind::waitlog: return DoWaitLog(c);
         case Kind::snapshot: return Fmt(true, "%s", SnapshotText().c_str());
-        case Kind::quit: return Fmt(true, "quitting");
+        case Kind::quit: return Fmt(true, c.text == "pad" ? "quitting by the game's own menu (pad A)" : "quitting");
         default: return Fmt(false, "unknown command");
     }
 }
@@ -1325,7 +1336,7 @@ void RunFile(const std::wstring& name) {
     bool all_ok = true;
     std::string last;
     int lineno = 0, ran = 0;
-    bool quit = false;
+    bool quit = false, quit_pad = false;
     std::size_t at = 0;
     while (at <= text.size() && !quit) {
         std::size_t nl = text.find('\n', at);
@@ -1351,6 +1362,7 @@ void RunFile(const std::wstring& name) {
             std::snprintf(took, sizeof(took), " (%.0f ms)", NowMs() - t0);
             o.detail += took;
             quit = c.kind == Kind::quit;
+            quit_pad = quit && c.text == "pad";
         }
         ++ran;
         g_commands.fetch_add(1);
@@ -1364,7 +1376,7 @@ void RunFile(const std::wstring& name) {
         if (!o.ok) break;  // a failed line ends its file
     }
     WriteAtomic(g_out + L"\\" + base + L".done", std::string(all_ok ? "ok" : "fail") + "\n" + std::to_string(ran) + "\n" + last + "\n");
-    if (quit) DoQuit();
+    if (quit) DoQuit(quit_pad);
 }
 
 void WriteStatus(double started) {

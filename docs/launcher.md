@@ -155,6 +155,8 @@ Three tabs (`ui::DebugTab`):
   on Join and in the local test; on, both offer every offered character); **CO-OP SAVE**: **Host holds the save**
   (`"debug"` `"host_save"`, default on: Host and Join write `host_save=1`, see Play above; off = each player on their
   own save) and **Back up my saves before co-op** (`"backup_host_saves"`, default on, only with the first);
+  **Dev tools** (`"debug"` `"dev_tools"`, default off, needs the debug menu: writes `dev_tools=1`, the debug menu's Dev
+  tools tab; world-changing tools only on a test save, docs/debug-actions.md "Dev tools");
   **Wake the partner clone** (`partner_activate`); **Verbose mod log**; **Reset to
   defaults**. Saved in `launcher-settings.json` under `"debug"` (sliders when released)
   and written into every `session.ini`, Host and Join included
@@ -178,7 +180,19 @@ Three tabs (`ui::DebugTab`):
   loopback UDP, 30 fps cap, each on its own sandbox; **Pads on the host too**; **Guest appears
   as**: the guest game's `my_character`, Fragile (porter suit) as a fixed field unless Debug > Allow other
   characters is on, the host game is always Sam; remembered in `"test_save"` `"guest_character"`) with both
-  games' link state.
+  games' link state. Since v0.19 it plays the online session: with **Host holds the save** (the default) both
+  files carry `host_save=1` (`core::MakeLocalTestInis`, the one place that builds them), so the guest window shows the
+  waiting screen, gets the host's save over the link, and the shared vehicles, riding together and vehicle hits run as
+  online. The host game plays its `local-host` copy of the test save (never your saves; no backup is made); the guest
+  game runs on `local-guest`, prepared like `coop-guest` before every start (`SeedSessionGuest(local-guest)`: its slots
+  and `incoming\` wiped, your profile kept). With the option off, the old local test (each game on its own copy; a
+  `local-guest` left without slots by a host-save test gets its copy back). v0.18.0's local test wrote no `host_save`
+  at all: none of those features ran in a play test and nothing said so.
+* **Never silent when they are off.** With Host holds the save off, Host, Join and the local test card say what that
+  costs ("no waiting screen, no shared vehicles, no riding together, no vehicle hits"). While a game runs, the Play
+  page's session note, the In game page and the local test card show the mod's own `features_off` line from
+  `link-status.json` (the features that game has off and why: `host_save=0`, a byte check that failed, a session
+  stopped); the game shows the same as an amber overlay notice (docs/coop-session.md "When the features are off").
 
 The Play > Solo test tab links to it; Tools points to it.
 
@@ -302,6 +316,7 @@ partner_activate=1              wake the partner clone (Debug page)
 verbose=0                       (Debug page)
 debug_menu=1                    the in-game debug menu (Debug page)
 debug_menu_key=F9               F1..F12 (Debug page)
+dev_tools=1                     only when the Debug page's Dev tools is ticked: the debug menu's Dev tools tab
 one_shot=1                      always: the mod renames the file to session.last.ini once read
 name=<display name>             optional; printable ASCII, no # ; = quotes, <= 32 chars
 sandbox_saves=<name>            Debug > Test saves: the game runs on stranded_together\sandbox\<name>
@@ -380,9 +395,9 @@ set; `MakeSessionIniText` refuses a key that is not an offered body (exact spell
 `my_character` is set and is not `sam`, and only when the Debug option is on and Partner body is Real
 character (`core::ApplyDebugOptions`); the mod treats a missing key as off.
 
-`host_save=1` is written only for a host or a guest; a guest's needs `sandbox_saves=coop-guest` and
-`sandbox_foreign_saves=1` in the same file (`MakeSessionIniText` refuses anything else, and `host_save` for echo or
-solo). `--write-session` follows the Debug option too (a join seeds `coop-guest` first; a host makes no backup).
+`host_save=1` is written only for a host or a guest; a guest's needs `sandbox_saves=coop-guest` (or `local-guest`,
+the local test's guest game: `core::IsHostSaveGuestSandbox`) and `sandbox_foreign_saves=1` in the same file
+(`MakeSessionIniText` refuses anything else, and `host_save` for echo or solo). `--write-session` follows the Debug option too (a join seeds `coop-guest` first; a host makes no backup).
 The sandbox keys are written only together (`MakeSessionIniText` refuses `second_instance`,
 `appdir_settings` or `sandbox_foreign_saves` without `sandbox_saves`, a name that is not
 `[A-Za-z0-9_-]{1,40}`, other `local_input`/`local_window` values, `frame_cap` outside 15..240).
@@ -499,6 +514,7 @@ StrandedTogether.exe                      the window (real model)
 Developer only (no window, no Steam launch, no helper):
   --write-session host|join|echo|solo [--code <code>] [--transport steam|udp]
                   [--udp-peer <ip>] [--udp-port-local <n>] [--udp-port-peer <n>] [--game-dir <dir>]
+  --write-session local-test --out <dir> [--game-dir <dir>]
   --end-session [--game-dir <dir>]
   --update-feed <url> [--update-now]      releases from a loopback test feed; install at once
 ```
@@ -508,6 +524,12 @@ Developer only (no window, no Steam launch, no helper):
 page's saved options and `one_shot=1`, prints the host code, and leaves the
 file until the game reads it, `--end-session` or the next launcher start with
 the game closed. `--selftest` also reports the mod state and `package.json`.
+
+`--write-session local-test --out <dir>` writes the local two-player test's `host.ini` and `guest.ini` into `<dir>`
+only (never into the game folder, nothing seeded, no game started): `core::MakeLocalTestInis` + `MakeSessionIniText`
+with the Debug options and test-save picks read (read only) from that game folder's `launcher-settings.json`, the
+launcher's defaults without one (`core::RunWriteLocalTestIni`). The hidden test environment plays exactly these files
+(docs/hidden-testing.md "The launcher's own session.ini").
 
 ## Build and tests
 
@@ -558,10 +580,12 @@ with faint drip lines, like the logo. `--check` compares pixels (tolerance 2).
 
 ### Screenshots
 
-`st_launcher_screens` renders 40 scenes into `build-launcher\launcher-shots\`
-(`01-play-host` ... `40-debug-options-characters`), among them `36-debug-test-saves`, `37-debug-local-test`,
+`st_launcher_screens` renders 42 scenes into `build-launcher\launcher-shots\`
+(`01-play-host` ... `42-debug-local-test-off`), among them `36-debug-test-saves`, `37-debug-local-test`,
 `38-play-join-characters` (the character list open), `39-play-join-hologram`, `40-debug-options-characters`
-(Debug > Options scrolled to PARTNER BODY with "Allow other characters" ticked), `10-play-dev-build`,
+(Debug > Options scrolled to PARTNER BODY with "Allow other characters" ticked), `41-debug-options-coop`
+(Debug > Options scrolled to CO-OP SAVE: "Host holds the save" and "Dev tools" ticked), `42-debug-local-test-off`
+(the Local test card with "Host holds the save" off: its warning), `10-play-dev-build`,
 `11-play-mod-mismatch`, `13-mod-foreign`, `14-mod-disabled`,
 `20-ingame-solo`, `27-debug-options`, `28-debug-files`, `29-debug-in-game`,
 and the updater's `31-play-update-available`, `32-play-update-downloading`,

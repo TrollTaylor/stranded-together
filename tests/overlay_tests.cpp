@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "debug_actions.hpp"
+#include "dev_rules.hpp"
 #include "log.hpp"
 #include "overlay_keys.hpp"
 #include "overlay_positions.hpp"
@@ -41,6 +42,9 @@ extern int last_real_op;
 extern int last_catalog_start, last_catalog_count;
 extern double last_catalog_distance;
 }  // namespace st::game::stub
+namespace st::dev {
+extern const char* stub_real_save_refusal;
+}  // namespace st::dev
 
 namespace {
 int g_failures = 0;
@@ -205,6 +209,19 @@ void TestActions() {
     CHECK(debug::ResultFor(sp, &r) && r.ok);
     CHECK(debug::ResultFor(su, &r) && !r.ok);
     CHECK(LogHas("FAILED: the game has no safe position recorded"));
+
+    // The world time is world state a save may keep: refused on a real save (from every tab), the game is not called.
+    dev::stub_real_save_refusal = devrules::kRealSaveReason;
+    const int times1 = game::stub::times.load(), cycles1 = game::stub::cycles.load();
+    tod.f[0] = 12.0f;
+    const std::uint32_t st_real = debug::Queue(tod);
+    const std::uint32_t sc_real = debug::Queue(cyc);
+    CHECK(debug::Drain() == 2);
+    CHECK(game::stub::times.load() == times1 && game::stub::cycles.load() == cycles1);
+    CHECK(debug::ResultFor(st_real, &r) && !r.ok && std::strstr(r.text, "real save") != nullptr);
+    CHECK(debug::ResultFor(sc_real, &r) && !r.ok && std::strstr(r.text, "real save") != nullptr);
+    dev::stub_real_save_refusal = nullptr;
+
     sync::stub::have_partner = false;
     debug::Request ping;
     ping.action = debug::Action::voice_ping;

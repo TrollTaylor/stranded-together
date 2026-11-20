@@ -430,7 +430,7 @@ bool DecodeRem(const std::uint8_t* in, std::size_t size, Rem& out) noexcept {
 }
 
 std::size_t EncodeReq(const Req& m, std::uint8_t* out, std::size_t cap) noexcept {
-    if (m.kind < 1 || m.kind > 3 || m.garage_slot < -1 || m.garage_slot > 8 || static_cast<std::uint8_t>(m.reason) > 2 || m.token == 0) return 0;
+    if (m.kind < 1 || m.kind > 3 || m.garage_slot < -1 || m.garage_slot > 8 || static_cast<std::uint8_t>(m.reason) > 3 || m.token == 0) return 0;
     // the name up to its NUL (printable ASCII), NUL padded
     char name[kNameChars] = {};
     for (std::size_t i = 0; i < kNameChars && m.name[i]; ++i) name[i] = m.name[i];
@@ -469,7 +469,7 @@ bool DecodeReq(const std::uint8_t* in, std::size_t size, Req& out) noexcept {
     for (float& v : m.rot) v = r.f32();
     r.bytes(m.name, kNameChars);
     m.name[kNameChars] = 0;
-    if (!r.done() || m.token == 0 || m.kind < 1 || m.kind > 3 || m.garage_slot < -1 || m.garage_slot > 8 || reason > 2) return false;
+    if (!r.done() || m.token == 0 || m.kind < 1 || m.kind > 3 || m.garage_slot < -1 || m.garage_slot > 8 || reason > 3) return false;
     m.reason = static_cast<ReqReason>(reason);
     if (!PosOk(m.pos) || AllZero(m.pos) || !RotOk(m.rot) || !RotRowsOk(m.rot) || !NameOk(m.name, kNameChars)) return false;
     out = m;

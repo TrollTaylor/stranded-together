@@ -1,0 +1,119 @@
+# The launcher's Local test, exactly as the button writes it (v0.19; docs/hidden-testing.md "launcherini"), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-launcher-local-test -SeedSaves complete-100
+# Start-TestRun.ps1 sees the 'launcherini' line, has StrandedTogether.exe --write-session local-test write host.ini and
+# guest.ini (core::MakeLocalTestInis, the Debug options read from the game folder's launcher settings) into the run
+# folder, and the supervisor runs both games on those files with only sandbox_saves / sandbox_foreign_saves swapped for
+# the run's automation redirect (session-host-deployed.ini / session-guest-deployed.ini in the run folder). No "ini" line
+# may change them. The guest's scratch is profile-only, as the launcher's local-guest folder.
+# v0.18.0's Local test wrote no host_save: the waiting screen, the save transfer, the shared vehicles, riding together and
+# vehicle hits never ran in the user's play test (the vehicles were the old see-through copies). Pass: all of them ON in
+# both games from the launcher's own file; the guest's waiting screen (W1); the save transfer; the roadster in the start
+# garage bound in both worlds and driven by the host with the guest's follower attached (G1); a summon (the host's truck,
+# the guest's trike) mirrored in the other world within seconds, without anyone getting on (S1 / S2); the guest rides
+# as the host's passenger (R1); no "co-op features OFF" notice and no FAULT.
+role host
+graphics low
+timeout 360
+launcherini local-test
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[config\] host_save=1
+@guest waitlog 10 \[config\] host_save=1
+waitlog 10 \[mod\] local two-instance test: input host
+@guest waitlog 10 \[mod\] local two-instance test: input guest
+waitlog 10 \[coop\] host-held save session ON \(host
+@guest waitlog 10 \[coop\] host-held save session ON \(guest
+waitlog 60 \[vshare\] shared real vehicles ON \(host
+@guest waitlog 60 \[vshare\] shared real vehicles ON \(guest
+waitlog 10 \[vdrive\] remote driving ON \(host
+@guest waitlog 10 \[vdrive\] remote driving ON \(guest
+waitlog 10 \[ride\] riding together ON \(host
+@guest waitlog 10 \[ride\] riding together ON \(guest
+waitlog 10 \[vhit\] vehicle hits ON \(host
+@guest waitlog 10 \[vhit\] vehicle hits ON \(guest
+# ---- M1: the guest waits behind its waiting screen until the host starts the world
+wait 22000
+waitlog 30 \[link\] CONNECTED
+@guest screenshot W1-guest-waiting
+screenshot W1-host-title
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+@guest waitlog 60 \[vshare\] guest: the host's snapshot #[0-9]+ is complete
+@guest waitlog 30 \[vshare\] guest: binding:
+wait 10000
+# ---- M2: the roadster in the start garage is one vehicle in both worlds
+@both action vehicle_dump 1
+@guest action vehicle_share 4
+action vehicle_sync 8 1.8 1
+wait 1500
+@guest action vehicle_sync 8 3 1
+wait 1500
+@guest action vehicle_sync 18 1
+?@guest until 20 150 camera aimed #1 => pad none 200 rx=32767
+until 20 4000 \[vdrive\] host: our Sam drives roadster => pad X 150
+@guest waitlog 20 \[vdrive\] follower of roadster 0x[0-9A-F]+ attached
+wait 3000
+screenshot G1-host-roadster
+@guest screenshot G1-guest-sees-roadster
+pad X 150
+waitlog 20 \[vdrive\] host: our Sam got off roadster
+wait 4000
+# ---- M2: summons show in the other world at once (nobody gets on)
+action vehicle_summon 2 12
+waitlog 20 \[vshare\] host: ADD truck
+@guest waitlog 30 \[vshare\] guest: mirror 0x[0-9A-F]+ \(truck\)
+wait 3000
+screenshot S1-host-summoned-truck
+@guest screenshot S1-guest-sees-truck
+@guest action vehicle_summon 3 8
+waitlog 20 \[vshare\] host: the guest's game asks for a trike
+waitlog 20 \[vshare\] host: ADD trike
+@guest waitlog 30 \[vshare\] guest: mirror 0x[0-9A-F]+ \(trike\)
+wait 3000
+screenshot S2-host-sees-trike
+@guest screenshot S2-guest-summoned-trike
+@both action vehicle_dump 2
+# ---- M3: the guest rides as the host's passenger
+action vehicle_sync 8 1.8 2
+@guest action vehicle_sync 8 8 2
+wait 1500
+until 20 4000 \[vdrive\] host: our Sam drives truck => pad X 150
+@guest waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached
+wait 2500
+@guest action ride_test 8
+wait 1500
+@guest until 15 3000 \[ride\] guest: our Sam carried on the truck => pad X 800
+waitlog 10 \[ride\] host: the partner asks to ride our truck .*ACCEPTED
+wait 2500
+screenshot R1-host-sees-passenger
+@guest screenshot R1-guest-riding
+pad none 2500 rt=140 keep
+@guest screenshot R2-guest-moving
+pad none 1500 lt=255 keep
+pad none 0
+wait 2000
+@both action ride_state
+@guest pad X 800
+@guest waitlog 6 \[ride\] guest: our Sam off the truck .*got off
+waitlog 6 \[ride\] host: the partner's ride .* is over
+wait 1500
+@guest screenshot R3-guest-off
+@both action vehicle_hit 0
+@both action vehicle_share 0
+@both action log_status
+nolog \[coop\] notice
+@guest nolog \[coop\] notice
+nolog \[(vshare|vdrive|ride|vhit)\].*FAULT
+@guest nolog \[(vshare|vdrive|ride|vhit)\].*FAULT
+@guest quit
+wait 3000
+quit

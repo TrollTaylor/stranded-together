@@ -101,6 +101,10 @@ void Write(const Snapshot& s) noexcept {
     AppendEscaped(j, s.reason);
     j += ",\"code\":";
     AppendEscaped(j, s.code);
+    if (s.features_off[0]) {
+        j += ",\"features_off\":";
+        AppendEscaped(j, s.features_off);
+    }
     j += ",\"rx\":";
     j += std::to_string(s.rx);
     j += ",\"tx\":";

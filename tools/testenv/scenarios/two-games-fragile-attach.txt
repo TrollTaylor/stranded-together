@@ -1,0 +1,115 @@
+# Fragile's accessories in two games on the launcher's own Local test files (docs/real-partner-body.md section 26), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-fragile-attach -SeedSaves complete-100
+# The user's v0.18.0 play test: "everything including the glasses seem to still get detached from her when she moves even
+# the cargo attach spots" and "the hats are still a little high". Both games run exactly what the launcher's Local test
+# writes (host Sam, guest Fragile in her porter suit with self view, both at the 30 fps cap). The host walks ahead and
+# looks back; the guest (wearing Sam's cap and glasses) runs towards the host, across the host's view (follow 1 = v0.18,
+# then follow 4 = this build, on the guest's own screen), walks, turns and moves crouched, with screenshots from both
+# screens; then the Santa hat (cap01, the hat the user wore most) on both screens.
+role host
+graphics low
+timeout 360
+launcherini local-test
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[config\] host_save=1
+@guest waitlog 10 \[config\] host_save=1
+wait 22000
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+@guest waitlog 60 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+@guest action gear 14 15 1
+@guest action gear 14 13 1
+wait 6000
+@guest action real_stats
+action real_stats
+# the host walks ahead, then looks back at the guest
+until 60 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+pad none 1200 ly=32767
+pad none 1300 rx=32767
+wait 2500
+screenshot 01-host-sees-guest-standing
+@guest screenshot 01-guest-self-standing
+# the guest runs towards the host (follow 4)
+@guest log run towards the host
+@guest pad none 1 ly=32767 keep
+@guest wait 500
+screenshot 02-host-sees-guest-run-a
+@guest screenshot 02-guest-self-run-a
+screenshot 02-host-sees-guest-run-b
+@guest screenshot 02-guest-self-run-b
+@guest pad none 0
+wait 2000
+# across the host's view: follow 1 (v0.18) on the guest's own screen
+@guest action self_view 1 0 1
+@guest log run across follow 1
+@guest pad none 1 lx=32767 keep
+@guest wait 600
+@guest screenshot 03-guest-self-run-f1-a
+screenshot 03-host-sees-guest-run-a
+@guest screenshot 03-guest-self-run-f1-b
+screenshot 03-host-sees-guest-run-b
+@guest pad none 0
+wait 2000
+# back across: follow 4 (this build)
+@guest action self_view 1 0 4
+@guest log run across follow 4
+@guest pad none 1 lx=-32767 keep
+@guest wait 600
+@guest screenshot 04-guest-self-run-f4-a
+screenshot 04-host-sees-guest-run-c
+@guest screenshot 04-guest-self-run-f4-b
+screenshot 04-host-sees-guest-run-d
+@guest pad none 0
+wait 2000
+# walking across, then turning (one way, then the other at once)
+@guest log walk
+@guest pad none 1 lx=18000 keep
+@guest wait 800
+@guest screenshot 05-guest-self-walk
+screenshot 05-host-sees-guest-walk
+@guest pad none 0
+wait 1500
+@guest log turn
+@guest pad none 700 lx=-32767
+@guest pad none 1 lx=32767 keep
+@guest screenshot 06-guest-self-turn
+screenshot 06-host-sees-guest-turn
+@guest pad none 0
+wait 1500
+# crouched (B), moving
+@guest log crouch
+@guest pad B 150
+wait 1500
+@guest pad none 1 lx=-20000 keep
+@guest wait 800
+@guest screenshot 07-guest-self-crouch
+screenshot 07-host-sees-guest-crouch
+@guest pad none 0
+@guest pad B 150
+wait 1500
+@guest action real_stats
+action real_stats
+# the Santa hat (cap01): the guest stands and faces the host
+@guest action gear 14 15 0
+@guest action gear 14 36 1
+wait 3000
+screenshot 08-host-sees-santa
+@guest pad none 1300 rx=32767
+@guest wait 1500
+@guest screenshot 08-guest-self-santa
+@guest log santa
+wait 1000
+@both action log_status
+@guest quit
+wait 3000
+quit

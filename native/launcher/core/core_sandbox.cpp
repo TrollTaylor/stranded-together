@@ -237,17 +237,27 @@ std::wstring FirstLinkBelow(const std::wstring& dir, const std::wstring& rel, in
 
 }  // namespace
 
+bool SandboxIsSessionGuest(const SandboxPaths& sandbox) {
+    std::string text;
+    return ReadTextShared(sandbox.marker, text, 1u << 16) && text.find("\"seed\":\"session-guest\"") != std::string::npos;
+}
+
 bool SeedSessionGuest(const InstancePaths& paths, const std::wstring& real_root, std::uint32_t account, SessionGuestReport& report,
-                      std::string& error) {
+                      std::string& error, const char* name) {
     report = SessionGuestReport{};
-    const SandboxPaths sb = GetSandboxPaths(paths, kCoopGuestSandbox);
+    if (!name || !IsHostSaveGuestSandbox(name)) {
+        error = "Not a co-op guest folder.";
+        return false;
+    }
+    const std::string where = std::string("stranded_together\\sandbox\\") + name;
+    const SandboxPaths sb = GetSandboxPaths(paths, name);
     if (!SandboxPlaceOk(paths, sb, real_root, error)) return false;
     if (!account) {
         error = "Your Steam account is not known (start Steam and log in), so the co-op folder has no account folder.";
         return false;
     }
     if (HasReparsePoint(sb.saves, paths.game)) {
-        error = "The co-op save folder (stranded_together\\sandbox\\coop-guest) is a link (junction or symbolic link). Make it a normal folder.";
+        error = "The co-op save folder (" + where + ") is a link (junction or symbolic link). Make it a normal folder.";
         return false;
     }
     // Nothing below it may be a link either: the wipe below deletes slot folders and other accounts' folders, and a link
@@ -256,7 +266,7 @@ bool SeedSessionGuest(const InstancePaths& paths, const std::wstring& real_root,
     if (IsDir(sb.saves)) {
         const std::wstring link = FirstLinkBelow(sb.saves, L"", 12);
         if (!link.empty()) {
-            error = "A folder inside the co-op save folder (stranded_together\\sandbox\\coop-guest\\saves\\" + Utf8(link) +
+            error = "A folder inside the co-op save folder (" + where + "\\saves\\" + Utf8(link) +
                     ") is a link (junction or symbolic link). Nothing was deleted. Remove the link (or make it a normal folder).";
             return false;
         }

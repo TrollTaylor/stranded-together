@@ -92,6 +92,24 @@ enum class Action : std::uint8_t {
     save_guard,           // the save guard (save_guard.cpp; docs/real-partner-body.md section 24.12): v[0] = 0 state, 1 [type] a save now (tests),
                           //   2 our Sam's place vs the last held save, 3 load the newest save of the run (host, tests), 4 0/1 the hold off / on (tests),
                           //   5 why a save is refused now (tests), 6 / 7 [s] the next forced save stays pending until a boarding / without one (tests)
+    // Dev tools (dev_tools.hpp; dev_tools=1 or a hidden run; docs/debug-actions.md "Dev tools"). Tools that change what a save
+    // keeps are refused unless this game's saves are sandboxed (dev_rules.hpp).
+    dev_status,           // v[0] = 0 log the gates, 1 v[1] = 1 test: act as on a real save (hidden runs), 0 back
+    dev_vehicle,          // v[0] = kind (1 roadster, 2 truck, 3 trike), v[1] = variant, v[2] = metres ahead (0 = 8)
+    dev_vehicle_remove,   // v[0] = max metres (0 = 15): the nearest vehicle nobody is on; v[1] = 1 the newest dev vehicle instead
+    dev_vehicle_fix,      // v[0] = max metres (0 = 10): repair and recharge the nearest vehicle
+    dev_refill,           // health, stamina, battery, blood (RecoverFull)
+    dev_god,              // v[0] = 0 off, 1 on, 2 invulnerable
+    dev_ammo,             // v[0] = 0 / 1 infinite ammo
+    dev_weather,          // v[0] = 0 clear, 1 timefall, 2 heavy timefall, 3 the game's mix
+    dev_enemies,          // v[0] = 1 resurrect every MULE / terrorist, 2 remove them, 3 reset the BTs
+    dev_places,           // the current area's places (delivery points) to the log
+    dev_place,            // v[0] = index in the place list: teleport there
+    dev_items,            // v[0] = 1 boots, 2 chiral crystals +v[1] (0 = 100)
+    // Story tools (story_state.hpp; docs/dev-tools.md "Story tools"): read only, except the load (sandboxed saves only)
+    story,                // v[0] = 0 the story state to the log, 1 every main / sub mission's state, 2 the manual slots (story points),
+                          //   3 whether story_load is allowed here (and why not)
+    story_load,           // v[0] = manual slot: the game's Load Game of manualsave<v0> (the story library's are 10..19)
     count
 
 };
@@ -106,7 +124,7 @@ struct Request {
 };
 
 // Where an action shows up in the menu (and whether it needs a partner).
-enum class Tab : std::uint8_t { status, partner, player, tools };
+enum class Tab : std::uint8_t { status, partner, player, tools, dev };
 struct ActionInfo {
     Action id;
     Tab tab;

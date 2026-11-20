@@ -1,0 +1,149 @@
+# Fragile's accessories while she moves (docs/real-partner-body.md section 26), one game at 30 fps (the cap two games run
+# at): our self view (Fragile in her porter suit in place of Sam: the game draws Sam's own cap, glasses, backpack, cargo
+# and cases on his hidden fitted skeleton) and the echo partner (the same Fragile, 0.3 s behind and 1.2 m aside, wearing
+# our gear as props: what the other screen shows) in every picture. The self body follows Sam three ways, each while
+# running across the camera's view: follow 1 (v0.18: Sam's world copied in his own update, after the body's), 2 (copied
+# in the body's own update: the previous frame's) and 4 (v0.19: Sam's world predicted for this frame in the body's
+# update, then the copy). Then walking, crouching and turning, follow 1 against 4. The `[self] follow 4:` line says how
+# many body updates got the prediction and how long the step was.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario fragile-attach -SeedSaves complete-100 [-SettingsCfg <1440p cfg>]
+role echo
+timeout 360
+ini partner_body=real
+ini partner_character=fragile_suit
+ini my_character=fragile_suit
+ini self_character=1
+ini echo_delay_s=0.3
+ini echo_offset_m=-1.2
+ini partner_collision=0
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[sync\] partner body: real
+waitlog 40 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+action gear 14 15 1
+action gear 14 13 1
+wait 3000
+action smooth 2 30
+# the camera round to her front
+pad none 1300 rx=32767
+wait 2000
+screenshot 00-stand
+# running across the view: follow 1 (v0.18)
+action self_view 1 0 1
+wait 1500
+log run follow 1
+pad none 1 lx=32767 keep
+wait 600
+screenshot 10-run-f1-a
+screenshot 10-run-f1-b
+screenshot 10-run-f1-c
+screenshot 10-run-f1-d
+pad none 0
+action real_stats
+wait 1500
+# follow 2 (the copy in the body's own update)
+action self_view 1 0 2
+wait 1500
+log run follow 2
+pad none 1 lx=-32767 keep
+wait 600
+screenshot 11-run-f2-a
+screenshot 11-run-f2-b
+screenshot 11-run-f2-c
+screenshot 11-run-f2-d
+pad none 0
+action real_stats
+wait 1500
+# follow 4 (v0.19)
+action self_view 1 0 4
+wait 1500
+log run follow 4
+pad none 1 lx=32767 keep
+wait 600
+screenshot 12-run-f4-a
+screenshot 12-run-f4-b
+screenshot 12-run-f4-c
+screenshot 12-run-f4-d
+pad none 0
+action real_stats
+wait 1500
+# follow 4 the other way (the same direction as follow 2's run)
+pad none 1 lx=-32767 keep
+wait 600
+screenshot 13-run-f4-back-a
+screenshot 13-run-f4-back-b
+pad none 0
+wait 1500
+# walking: follow 1, then 4
+action self_view 1 0 1
+wait 1000
+log walk follow 1
+pad none 1 lx=18000 keep
+wait 800
+screenshot 20-walk-f1-a
+screenshot 20-walk-f1-b
+pad none 0
+wait 1500
+action self_view 1 0 4
+wait 1000
+log walk follow 4
+pad none 1 lx=-18000 keep
+wait 800
+screenshot 21-walk-f4-a
+screenshot 21-walk-f4-b
+pad none 0
+wait 1500
+# turning: running one way, then the other at once (the turn), follow 1, then 4
+action self_view 1 0 1
+wait 1000
+log turn follow 1
+pad none 700 lx=32767
+pad none 1 lx=-32767 keep
+screenshot 30-turn-f1-a
+screenshot 30-turn-f1-b
+screenshot 30-turn-f1-c
+pad none 0
+wait 1500
+action self_view 1 0 4
+wait 1000
+log turn follow 4
+pad none 700 lx=32767
+pad none 1 lx=-32767 keep
+screenshot 31-turn-f4-a
+screenshot 31-turn-f4-b
+screenshot 31-turn-f4-c
+pad none 0
+wait 1500
+# crouching (B) and moving crouched: follow 1, then 4
+log crouch
+pad B 150
+wait 1500
+screenshot 40-crouch-stand
+action self_view 1 0 1
+wait 500
+pad none 1 lx=20000 keep
+wait 800
+screenshot 41-crouch-f1-a
+screenshot 41-crouch-f1-b
+pad none 0
+wait 1000
+action self_view 1 0 4
+wait 500
+pad none 1 lx=-20000 keep
+wait 800
+screenshot 42-crouch-f4-a
+screenshot 42-crouch-f4-b
+pad none 0
+pad B 150
+wait 1500
+log crouch done
+action smooth 2 0
+action real_stats
+action log_status
+quit

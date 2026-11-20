@@ -1,13 +1,14 @@
 # The host-held save session (docs/coop-session.md, M1.12 #1), hidden:
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-hostsave-continue -SeedSaves complete-100 -GuestSeed profile-only
-# host_save=1 on both games. The guest's scratch has no slot (-GuestSeed profile-only): it boots to the full-screen
-# waiting panel; behind it only pad A reaches the title (NEW GAME's confirmation can only be cancelled); then, with the
-# input block lifted for the test, the whole New Game path is walked and the gate refuses the start flow (no world, no player).
+# host_save=1 on both games. The guest's scratch has no slot (-GuestSeed profile-only): it boots behind the full-screen
+# waiting panel until its title menu carries the label; A on the label does nothing; then, with the game's own menu
+# back for the test, the whole New Game path is walked and the gate refuses the start flow (no world, no player).
 # The host Continues: its mod names the slot, reads it read only, offers it on link
 # channel 4 (STX1); the guest receives it, writes manualsave5 below its redirected folder, refreshes the slot cache and
 # loads it with the game's own title load. Both stand at the same spot (compare the two snapshots: within 0.5 m).
-# Check enlarged: 01-guest-waiting / 02-guest-still-waiting (the panel, "Waiting for ... to start the game"), then
-# 04-host-world and 04-guest-world side by side (the same place).
+# Check enlarged: 01-guest-waiting / 02-guest-still-waiting (the game's own title: "Waiting for ... to start the game" and
+# Quit Game only), 02a-guest-menu-restored (the test's restore: every item back), then 04-host-world and 04-guest-world
+# side by side (the same place).
 role host
 graphics low
 timeout 360
@@ -25,29 +26,22 @@ wait 22000
 ?screenshot 01-host-title
 waitlog 30 \[coop\] this game: build
 @guest waitlog 30 \[coop\] this game: build
-# the guest tries to start a world on its own. A profile-only guest's title has NEW GAME selected; A opens "Starting a new
-# game ... overwriting your previous save data" with Cancel selected (run 20261119-071338). Behind the waiting screen only
-# pad A (and Enter / Space) reach the game: LEFT is blocked, so A can only cancel the dialog.
-@guest pad A 150
-wait 2500
-@guest action coop_session 8 1
-wait 800
-@guest screenshot 02a-guest-newgame-dialog
-@guest action coop_session 8 0
-@guest pad DPAD_LEFT 150
-wait 800
-@guest action coop_session 8 1
-wait 800
-@guest screenshot 02a-guest-left-blocked
-@guest action coop_session 8 0
+# the guest tries to start a world on its own. Its title is the game's own menu with only the label (NEW GAME's place)
+# and EXIT GAME (docs/coop-session.md "The guest's title screen"): A on the label does nothing (no dialog, no gate block).
+@guest waitlog 30 \[title\] native waiting title ON \(title page #1\)
 @guest pad A 150
 wait 2500
 @guest screenshot 02-guest-still-waiting
-# the gate alone (hidden tests: the panel and the input block lifted, `coop_session 8 2`): A, LEFT to OK, A (run
-# 20261119-071826: the difficulty page, then a second OK); the title's start flow is refused by the gate ("[coop] gate:
-# BLOCKED"), no world, no player
-@guest action coop_session 8 2
-wait 800
+@guest waitlog 5 \[title\] the label \(NEW GAME\) pressed on the waiting title: ignored #1
+@guest nolog \[coop\] gate: BLOCKED
+# the gate alone (hidden tests, `coop_session 8 3`: the panel and the input block lifted and the game's own title menu
+# back, its items restored): A, LEFT to OK, A (run 20261119-071826: the difficulty page, then a second OK); the title's
+# start flow is refused by the gate ("[coop] gate: BLOCKED"), no world, no player
+@guest action coop_session 8 3
+@guest waitlog 10 \[title\] the game's own title menu is back
+@guest waitlog 10 \[title\] the hidden title menu items are visible again
+wait 1500
+@guest screenshot 02a-guest-menu-restored
 @guest pad A 150
 wait 2000
 @guest pad DPAD_LEFT 150

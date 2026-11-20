@@ -25,8 +25,8 @@ struct Context {
 // Loads <mod_dir>\positions.txt.
 void Init(const std::wstring& mod_dir);
 void Draw(Context& ctx);
-// Selects a tab on the next Draw (0 Status, 1 Partner, 2 Player, 3 Log, 4 Settings).
-// Used by the harness for screenshots.
+// Selects a tab on the next Draw (0 Status, 1 Partner, 2 Player, 3 Log, 4 Settings, 5 Dev tools).
+// Used by the harness for screenshots (and by the dev tools' hidden-run screenshot op, dev_tools.cpp).
 void SelectTab(int index);
 
 }  // namespace st::overlay::menu

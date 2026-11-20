@@ -1,0 +1,47 @@
+# The guest's title screen with the launcher's Local test ini, exactly as the button writes it (docs/hidden-testing.md
+# "launcherini"), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-launcher-local-title -SeedSaves complete-100
+# The play test's lesson: the hidden runs set host_save in their own ini and never saw what the launcher writes. Here
+# both games run on the launcher's own host.ini / guest.ini (only the save redirect swapped). Pass: the session ON in both
+# games from the launcher's file; the guest's title is the game's own menu with only "Waiting for <host> to start the
+# game" and EXIT GAME (no full-screen panel); the label follows the transfer and the load; the host's title unchanged.
+# Check enlarged: L1-guest-waiting / L1-host-title, L2-guest-receiving, L3-guest-loading, L4-host-world / L4-guest-world.
+role host
+graphics low
+timeout 330
+launcherini local-test
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[config\] host_save=1
+@guest waitlog 10 \[config\] host_save=1
+waitlog 10 \[coop\] host-held save session ON \(host
+@guest waitlog 10 \[coop\] host-held save session ON \(guest
+@guest waitlog 10 \[title\] the guest's title in the game's own menu: .* hooks in
+nolog \[title\]
+@guest waitlog 90 \[title\] native waiting title ON \(title page #1\)
+wait 3000
+@guest screenshot L1-guest-waiting
+screenshot L1-host-title
+@guest action coop_session 0
+@guest waitlog 10 \[coop\] status: native title installed; wanted 1, label in the menu 1
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 60 \[title\] label: Receiving
+@guest screenshot L2-guest-receiving
+@guest waitlog 60 \[title\] label: Loading
+@guest screenshot L3-guest-loading
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+wait 15000
+screenshot L4-host-world
+@guest screenshot L4-guest-world
+@guest nolog \[title\] FAULT
+@guest nolog \[coop\] gate: BLOCKED
+@guest quit
+wait 3000
+quit

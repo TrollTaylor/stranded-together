@@ -149,6 +149,9 @@ add_library(st_mod SHARED
   native/mod/save_xfer.cpp
   native/mod/save_xfer_io.cpp
   native/mod/coop_session.cpp
+  native/mod/title_wait.cpp
+  native/mod/dev_tools.cpp
+  native/mod/story_state.cpp
   native/mod/automation.cpp
 
   native/mod/sandbox.cpp
@@ -226,6 +229,22 @@ target_include_directories(st_tackle_rules_tests PRIVATE native/mod)
 target_compile_options(st_tackle_rules_tests PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_tackle_rules_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_test(NAME st_tackle_rules_tests COMMAND st_tackle_rules_tests)
+
+# ---- Dev tools' pure part (native/mod/dev_rules.hpp): which tool runs in which session (the real-save rule), the vehicle
+# kinds and variants, the weather presets, the place labels.
+add_executable(st_dev_rules_tests tests/dev_rules_tests.cpp)
+target_include_directories(st_dev_rules_tests PRIVATE native/mod)
+target_compile_options(st_dev_rules_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_dev_rules_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_dev_rules_tests COMMAND st_dev_rules_tests)
+
+# ---- Story tools' pure part (native/mod/story_rules.hpp): the episodes, the episode hash (CRC-32C as the game's crc32
+# instruction), the mission states, the summary line, the story-point load rule, the [Slot] text of a save.
+add_executable(st_story_rules_tests tests/story_rules_tests.cpp)
+target_include_directories(st_story_rules_tests PRIVATE native/mod)
+target_compile_options(st_story_rules_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_story_rules_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_story_rules_tests COMMAND st_story_rules_tests)
 
 # ---- st_fakepeer: console stand-in for the second player (UDP), + self-test
 add_executable(st_fakepeer tools/fakepeer/fakepeer.cpp native/mod/link.cpp native/mod/steam_owner.cpp

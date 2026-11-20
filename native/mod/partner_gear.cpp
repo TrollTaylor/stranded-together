@@ -1696,11 +1696,16 @@ constexpr HeadItemRes kHeadItemRes[] = {
     {"dbd027af-9b73-ca4f-bca1-3d708ee2f8c8", realbody::kHeadItemCap, "cap02"},
     {"6247acf7-74d5-a846-8e29-6459ef4b1f71", realbody::kHeadItemCap, "cap03"},
 };
+// the row index is the item index realbody's per-item offsets use (section 26.3)
+static_assert(sizeof(kHeadItemRes) / sizeof(kHeadItemRes[0]) == realbody::kHeadItems, "one offset per head item");
+static_assert(kHeadItemRes[realbody::kHeadItemFirstCap - 1].cls == realbody::kHeadItemGlasses &&
+                  kHeadItemRes[realbody::kHeadItemFirstCap].cls == realbody::kHeadItemCap,
+              "glasses first, then the caps");
 constexpr std::uintptr_t kMoverUseLocal = 0x23A7773;  // in the mover update: the +0xA0 test and the +0x60 local
 constexpr std::uintptr_t kEntMover = 0xB0, kMoverEntity = 0x48, kMoverLocal = 0x60, kMoverLocalT = 0x90, kMoverNoLocal = 0xA0, kMoverHelper = 0xB0;
 struct HeadItem {
     std::uintptr_t e = 0, e_vt = 0, mover = 0, mover_vt = 0;
-    int cls = -1;
+    int cls = -1, item = -1;  // class (cap / glasses) and item (kHeadItemRes row)
     const char* name = "";
     double seen_ms = -1e9;  // the last read that saw it shown
     bool ours = false;      // our offset is in its mover (put back to 0 when no longer wanted)
@@ -1749,20 +1754,42 @@ void NoteUnknownHeadItem(std::uintptr_t e, double now) {
     if (p->head) g_unknown_head_ms = now;
 }
 
-int HeadItemClassOf(int res_id, const char** name) {
+// The kHeadItemRes row (the item index) of resource `res_id`, -1 when it is none of them.
+int HeadItemOf(int res_id, const char** name) {
     if (res_id < 0 || res_id >= static_cast<int>(wire::kMaxGearRes) || !g_res_local[res_id].used) return -1;
     char g[37];
     wire::GearGuidText(g_res_local[res_id].guid, g);
-    for (const HeadItemRes& h : kHeadItemRes)
-        if (std::strcmp(g, h.guid) == 0) return (*name = h.name), h.cls;
+    for (int i = 0; i < realbody::kHeadItems; ++i)
+        if (std::strcmp(g, kHeadItemRes[i].guid) == 0) return (*name = kHeadItemRes[i].name), i;
     return -1;
+}
+
+// Our offset out of a slot's mover before the slot is used for another item: only when the entity and mover still check
+// (fault-free reads) and the mover still holds exactly our write (flag 0, our translation); a fresh mover is the game's
+// and is left alone. The flag back first, then the translation (as HeadgearTick's restore).
+void RestoreHeadMover(HeadItem& h) {
+    if (!h.ours) return;
+    h.ours = false;
+    std::uint8_t no_local = 1;
+    float t[3] = {};
+    if (Q(h.e) != h.e_vt || Q(h.e + kEntMover) != h.mover || Q(h.mover) != h.mover_vt || Q(h.mover + kMoverEntity) != h.e ||
+        !Rd(h.mover + kMoverNoLocal, no_local) || !mem::Read(h.mover + kMoverLocalT, t, sizeof(t)) || no_local != 0 || t[0] != h.written[0] ||
+        t[1] != h.written[1] || t[2] != h.written[2])
+        return;
+    const float zero[3] = {0, 0, 0};
+    SIZE_T wrote = 0, wrote_f = 0;
+    if (WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(h.mover + kMoverNoLocal), &h.orig_flag, 1, &wrote_f) && wrote_f == 1 &&
+        WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(h.mover + kMoverLocalT), zero, sizeof(zero), &wrote) && wrote == sizeof(zero))
+        ++g_hg.restores;
+    else
+        ++g_hg.bad;
 }
 
 // The entity walk saw a shown entity of resource `res_id` (game thread).
 void NoteHeadItem(std::uintptr_t e, int res_id, double now) {
     const char* name = "";
-    const int cls = HeadItemClassOf(res_id, &name);
-    if (cls < 0) {
+    const int item = HeadItemOf(res_id, &name);
+    if (item < 0) {
         NoteUnknownHeadItem(e, now);
         return;
     }
@@ -1779,6 +1806,14 @@ void NoteHeadItem(std::uintptr_t e, int res_id, double now) {
         g_unknown_head_ms = now;  // more head items than slots: the lift stays
         return;
     }
+    if (h->e == e && h->item != item) {
+        // Another accessory at the freed address of the one before (a swap: same class, same size): the slot is set up
+        // again for the new item (its own offset, section 26.3), our offset out of the old mover first.
+        if (g_hg.logs++ < 40)
+            Log("[headgear] our %p is now %s (was %s, same address): set up again", reinterpret_cast<void*>(e), name, h->name);
+        RestoreHeadMover(*h);
+        h->e = 0;
+    }
     if (h->e != e) {
         *h = HeadItem{};
         std::uintptr_t mover = 0;
@@ -1788,7 +1823,7 @@ void NoteHeadItem(std::uintptr_t e, int res_id, double now) {
             Log("[headgear] our %s %p (res %d): mover %p %s helper '%s'%s", name, reinterpret_cast<void*>(e), res_id, reinterpret_cast<void*>(mover),
                 mover ? TypeOf(mover) : "-", helper, ok ? "" : ": not used (not an AttachToHelperMover on HLP_Head: not on the head)");
         if (!ok) return;
-        h->e = e, h->e_vt = Q(e), h->mover = mover, h->mover_vt = Q(mover), h->cls = cls, h->name = name;
+        h->e = e, h->e_vt = Q(e), h->mover = mover, h->mover_vt = Q(mover), h->cls = kHeadItemRes[item].cls, h->item = item, h->name = name;
     }
     h->seen_ms = now;
 }
@@ -1814,7 +1849,7 @@ void HeadgearTick(double now, bool stop = false) {
         if (!h.e) continue;
         const bool shown = now - h.seen_ms < 600;
         float want[3] = {0, 0, 0};
-        const bool on = ready && shown && realbody::SelfHeadItemOffset(h.cls, want);
+        const bool on = ready && shown && realbody::SelfHeadItemOffset(h.item, want);
         if (!on && !h.ours) {
             if (!shown) h = HeadItem{};  // gone and nothing of ours in it
             continue;
@@ -1904,6 +1939,7 @@ struct HeadSeries {
     void Reset() { *this = HeadSeries{}; }
 };
 HeadSeries g_hm_self[2], g_hm_sam[2], g_hm_partner[4];
+const char* g_hm_item[2] = {"", ""};  // the item last measured per class (cap00..03, eyewear0 / glasses00..02)
 double g_bm_self[4] = {}, g_bm_p[4] = {};  // R sum, L sum, R max, L max
 unsigned g_bm_self_n = 0, g_bm_p_n = 0;
 double g_hm_next_ms = 0;
@@ -1929,6 +1965,7 @@ void HeadMeter(game::Entity* local, double now) {
             Xf w;
             if (!ReadWorld(h.e, &w)) continue;
             double v[3];
+            g_hm_item[h.cls] = h.name;
             if (have_h) InFrame(hp, hr, w, v), g_hm_self[h.cls].Add(v);
             if (have_s) InFrame(sp, sr, w, v), g_hm_sam[h.cls].Add(v);
         }
@@ -1995,7 +2032,8 @@ void HeadMeter(game::Entity* local, double now) {
             char b[160] = "-";
             g_hm_self[c].Describe(a, sizeof(a));
             if (g_hm_sam[c].n > 0) g_hm_sam[c].Describe(b, sizeof(b));
-            Log("[headgear] self %s in her drawn head joint's frame cm (x, y up, z forward): %s; in Sam's fitted head joint's frame: %s", kCls[c], a, b);
+            Log("[headgear] self %s (%s) in her drawn head joint's frame cm (x, y up, z forward): %s; in Sam's fitted head joint's frame: %s", kCls[c],
+                g_hm_item[c], a, b);
         }
         g_hm_self[c].Reset(), g_hm_sam[c].Reset();
     }

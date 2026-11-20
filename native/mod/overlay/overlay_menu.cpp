@@ -10,10 +10,12 @@
 #include <cstring>
 #include <vector>
 
+#include "dev_tools.hpp"
 #include "imgui.h"
 #include "log.hpp"
 #include "overlay_keys.hpp"
 #include "overlay_positions.hpp"
+#include "story_state.hpp"
 
 namespace st::overlay::menu {
 namespace {
@@ -465,7 +467,7 @@ void PlayerTab(const Context& c) {
         r.f[0] = g_tod_hours;
         Send(r);
     }
-    Tooltip("GameWorldTimeState::SetTimeOfDay, instant.");
+    Tooltip("GameWorldTimeState::SetTimeOfDay, instant. Refused when this game plays on its real save (world state a save keeps).");
     ImGui::SameLine();
     bool frozen = d.tod_valid && !d.day_night_cycle;
     if (ImGui::Checkbox("Freeze time", &frozen)) {
@@ -474,7 +476,7 @@ void PlayerTab(const Context& c) {
         r.flag = !frozen;
         Send(r);
     }
-    Tooltip("EnableDayNightCycle off/on.");
+    Tooltip("EnableDayNightCycle off/on. Refused when this game plays on its real save.");
     ImGui::EndDisabled();
     if (d.tod_valid) {
         game::FormatClock(d.time_of_day, clock, sizeof(clock));
@@ -488,6 +490,240 @@ void PlayerTab(const Context& c) {
     ImGui::SeparatorText("More");
     if (d.health_valid) Text(&kDim, "Health %.1f / %.1f", static_cast<double>(d.health), static_cast<double>(d.health_max));
     ActionButtons(debug::Tab::player);
+}
+
+// ---------------------------------------------------------------- Dev tools (dev_tools.hpp; docs/debug-actions.md "Dev tools")
+int g_dev_vehicle = 0;  // index into devrules::kVehiclePairs
+float g_dev_dist = 8.0f;
+int g_dev_place = -1;
+int g_dev_chiral = 100;
+
+void DevSend(debug::Action a, double v0 = 0, double v1 = 0, double v2 = 0) {
+    debug::Request r;
+    r.action = a;
+    r.v[0] = v0, r.v[1] = v1, r.v[2] = v2;
+    Send(r);
+}
+
+// A tool class's state line: allowed (with its note) or why not. Returns whether its buttons are enabled.
+bool DevGate(const dev::View& v, int tool, const char* what) {
+    if (v.ok[tool]) {
+        if (v.note[tool][0]) Text(&kDim, "%s: %s", what, v.note[tool]);
+        return true;
+    }
+    ImGui::PushTextWrapPos(0.0f);
+    Text(&kAmber, "%s off: %s", what, v.why[tool]);
+    ImGui::PopTextWrapPos();
+    return false;
+}
+
+// Story tools (story_state.hpp; docs/dev-tools.md "Story tools"): the story state, the story points (this sandbox's manual
+// slots; the story library's are manualsave10..19) and their load.
+int g_story_slot = -1;  // a manual slot index
+void StorySection() {
+    ImGui::SeparatorText("Story");
+    const story::View sv = story::GetView();
+    if (sv.off[0]) {
+        ImGui::PushTextWrapPos(0.0f);
+        Text(&kRed, "Off (game build differs): %s", sv.off);
+        ImGui::PopTextWrapPos();
+    }
+    ImGui::PushTextWrapPos(0.0f);
+    Text(sv.summary.valid ? nullptr : &kDim, "%s", sv.line[0] ? sv.line : "no story state yet");
+    ImGui::PopTextWrapPos();
+    if (ImGui::Button("Log story")) DevSend(debug::Action::story, 0);
+    Tooltip("The episode, the orders in progress and what is done, to the log.");
+    ImGui::SameLine();
+    if (ImGui::Button("Log missions")) DevSend(debug::Action::story, 1);
+    Tooltip("Every main and sub order with its state, to the log.");
+    ImGui::SameLine();
+    if (ImGui::Button("Refresh points")) DevSend(debug::Action::story, 2);
+    Chip(debug::Action::story);
+    Text(&kDim, "Story points: the manual saves of this sandbox (%d; the story library's are manualsave10..19)", sv.slot_count);
+    if (!sv.load_allowed) {
+        ImGui::PushTextWrapPos(0.0f);
+        Text(&kAmber, "Load %s", sv.load_why);
+        ImGui::PopTextWrapPos();
+    }
+    if (ImGui::BeginListBox("##storyslots", ImVec2(-FLT_MIN, ImGui::GetTextLineHeightWithSpacing() * 5))) {
+        for (int i = 0; i < sv.slot_count; ++i) {
+            char label[140];
+            std::snprintf(label, sizeof(label), "manualsave%d  %s##s%d", sv.slots[i].index, sv.slots[i].title, i);
+            if (ImGui::Selectable(label, g_story_slot == sv.slots[i].index, ImGuiSelectableFlags_AllowDoubleClick)) {
+                g_story_slot = sv.slots[i].index;
+                if (sv.load_allowed && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) DevSend(debug::Action::story_load, g_story_slot);
+            }
+            if (sv.slots[i].detail[0]) Tooltip(sv.slots[i].detail);
+        }
+        ImGui::EndListBox();
+    }
+    ImGui::BeginDisabled(!sv.load_allowed || g_story_slot < 0);
+    if (ImGui::Button("Load story point")) DevSend(debug::Action::story_load, g_story_slot);
+    Tooltip("The game's own Load Game of that slot (in the world). In a host-held save session the guest follows the host's load.");
+    ImGui::EndDisabled();
+    Chip(debug::Action::story_load);
+    if (sv.load_state[0]) Text(&kDim, "%s", sv.load_state);
+}
+
+void DevTab(const Context& c) {
+    const debug::Snapshot& s = *c.snap;
+    const dev::View v = dev::GetView();
+    if (!v.enabled) {
+        ImGui::PushTextWrapPos(0.0f);
+        Text(&kAmber, "Dev tools are off. Turn on \"Dev tools\" on the launcher's Debug page (session.ini dev_tools=1) and start again.");
+        ImGui::PopTextWrapPos();
+        return;
+    }
+    if (v.serial == 0) {
+        Text(&kDim, "Waiting for the game...");
+        return;
+    }
+    Text(&kDim, "save");
+    ImGui::SameLine();
+    ImGui::TextColored(std::strncmp(v.session, "sandboxed", 9) == 0 ? kGreen : kAmber, "%s", v.session);
+    if (v.off[0]) {
+        ImGui::PushTextWrapPos(0.0f);
+        Text(&kRed, "Off (game build differs): %s", v.off);
+        ImGui::PopTextWrapPos();
+    }
+
+    StorySection();
+
+    ImGui::SeparatorText("Player");
+    const bool player = DevGate(v, 0, "player tools");
+    ImGui::BeginDisabled(!player);
+    if (ImGui::Button("Refill")) DevSend(debug::Action::dev_refill);
+    Tooltip("Health, stamina, battery and blood to full (the game's RecoverFull).");
+    Chip(debug::Action::dev_refill);
+    Text(&kDim, "God mode");
+    const char* god_names[3] = {"Off", "On", "Invulnerable"};
+    for (int m = 0; m < 3; ++m) {
+        ImGui::SameLine();
+        if (ImGui::RadioButton(god_names[m], v.god == m)) DevSend(debug::Action::dev_god, m);
+    }
+    Tooltip("The game's own DebugSettings god mode: On ignores damage, Invulnerable also for the game's invulnerability checks.");
+    Chip(debug::Action::dev_god);
+    bool ammo = v.ammo > 0;
+    if (ImGui::Checkbox("Infinite ammo", &ammo)) DevSend(debug::Action::dev_ammo, ammo ? 1 : 0);
+    Chip(debug::Action::dev_ammo);
+    ImGui::EndDisabled();
+
+    ImGui::SeparatorText("Teleport");
+    ImGui::BeginDisabled(!player);
+    if (const debug::ActionInfo* a = debug::Find(debug::Action::teleport_to_partner)) {
+        ImGui::BeginDisabled(!s.partner_pos_valid && !s.remote_fresh);
+        if (ImGui::Button(a->label)) Send(a->id);
+        Tooltip(a->help);
+        ImGui::EndDisabled();
+        Chip(debug::Action::teleport_to_partner);
+    }
+    Text(&kDim, "Places in this area (%d, nearest first; coordinates: Player tab)", v.place_count);
+    if (ImGui::BeginListBox("##devplaces", ImVec2(-FLT_MIN, ImGui::GetTextLineHeightWithSpacing() * 6))) {
+        for (int i = 0; i < v.place_count; ++i) {
+            char label[96];
+            std::snprintf(label, sizeof(label), "%s   %.0f m##p%d", v.places[i].label, static_cast<double>(v.places[i].dist_m), i);
+            if (ImGui::Selectable(label, g_dev_place == i, ImGuiSelectableFlags_AllowDoubleClick)) {
+                g_dev_place = i;
+                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) DevSend(debug::Action::dev_place, i);
+            }
+        }
+        ImGui::EndListBox();
+    }
+    ImGui::BeginDisabled(g_dev_place < 0 || g_dev_place >= v.place_count);
+    if (ImGui::Button("Teleport to place")) DevSend(debug::Action::dev_place, g_dev_place);
+    ImGui::EndDisabled();
+    Chip(debug::Action::dev_place);
+    ImGui::EndDisabled();
+
+    ImGui::SeparatorText("Time and weather");
+    const bool world = DevGate(v, 1, "world tools");
+    const struct {
+        const char* label;
+        float hours;
+    } kTimes[] = {{"Dawn 6:00", 6.0f}, {"Noon 12:00", 12.0f}, {"Dusk 18:00", 18.0f}, {"Night 0:00", 0.0f}};
+    // the world time is world state a save may keep: the same gate as the weather (the action refuses on a real save too)
+    ImGui::BeginDisabled(!world);
+    for (int i = 0; i < 4; ++i) {
+        if (i) ImGui::SameLine();
+        if (ImGui::Button(kTimes[i].label)) {
+            debug::Request r;
+            r.action = debug::Action::set_time_of_day;
+            r.f[0] = kTimes[i].hours;
+            Send(r);
+        }
+    }
+    Chip(debug::Action::set_time_of_day);
+    const char* weather[4] = {"Clear", "Timefall", "Heavy timefall", "Game's mix"};
+    for (int i = 0; i < 4; ++i) {
+        if (i) ImGui::SameLine();
+        if (ImGui::Button(weather[i])) DevSend(debug::Action::dev_weather, i);
+    }
+    Tooltip("The DS forecast of every region of this area (the sky follows within a few seconds).");
+    Chip(debug::Action::dev_weather);
+    ImGui::EndDisabled();
+
+    ImGui::SeparatorText("Vehicles");
+    // the session rules (DevGate) and the vehicle tools' byte checks (the reason is in the page's "Off" line)
+    const bool spawn = DevGate(v, 2, "spawning") && v.veh_pools && v.veh_spawn;
+    const bool edit = DevGate(v, 3, "remove / repair") && v.veh_pools;
+    char current[48];
+    const devrules::VehiclePair& sel = devrules::kVehiclePairs[g_dev_vehicle];
+    std::snprintf(current, sizeof(current), "%s, variant %d", devrules::KindName(sel.kind), sel.variant);
+    ImGui::BeginDisabled(!spawn);
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12);
+    if (ImGui::BeginCombo("##devveh", current)) {
+        for (int i = 0; i < static_cast<int>(devrules::kVehiclePairCount); ++i) {
+            char label[48];
+            std::snprintf(label, sizeof(label), "%s, variant %d", devrules::KindName(devrules::kVehiclePairs[i].kind), devrules::kVehiclePairs[i].variant);
+            if (ImGui::Selectable(label, g_dev_vehicle == i)) g_dev_vehicle = i;
+        }
+        ImGui::EndCombo();
+    }
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8);
+    ImGui::SliderFloat("m ahead", &g_dev_dist, 4.0f, 30.0f, "%.0f");
+    if (ImGui::Button("Spawn vehicle")) DevSend(debug::Action::dev_vehicle, sel.kind, sel.variant, g_dev_dist);
+    Tooltip("Through the game's own spawn request; refused when that vehicle's pool is full (it would evict a saved vehicle).");
+    Chip(debug::Action::dev_vehicle);
+    ImGui::EndDisabled();
+    ImGui::BeginDisabled(!edit);
+    if (ImGui::Button("Remove last spawned")) DevSend(debug::Action::dev_vehicle_remove, 0, 1);
+    Tooltip("The newest vehicle these tools spawned (nobody on it).");
+    ImGui::SameLine();
+    if (ImGui::Button("Remove nearest")) DevSend(debug::Action::dev_vehicle_remove, 15);
+    Tooltip("The nearest vehicle within 15 m that nobody is on (on the host: not the one the partner drives or rides either).");
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!v.veh_repair);
+    if (ImGui::Button("Repair nearest")) DevSend(debug::Action::dev_vehicle_fix, 10);
+    Tooltip("Repair and recharge the nearest vehicle within 10 m (the one you ride too).");
+    ImGui::EndDisabled();
+    Chip(debug::Action::dev_vehicle_remove);
+    Chip(debug::Action::dev_vehicle_fix);
+    ImGui::EndDisabled();
+
+    ImGui::SeparatorText("Enemies");
+    ImGui::BeginDisabled(!world);
+    if (ImGui::Button("Resurrect MULEs")) DevSend(debug::Action::dev_enemies, 1);
+    Tooltip("Every MULE and terrorist the game has killed comes back at its camp (the game's mission-change reset).");
+    ImGui::SameLine();
+    if (ImGui::Button("Remove MULEs")) DevSend(debug::Action::dev_enemies, 2);
+    ImGui::SameLine();
+    if (ImGui::Button("Reset BTs")) DevSend(debug::Action::dev_enemies, 3);
+    Tooltip("The BT fields start again (the game's ResetAllGazers). There is no 'spawn a BT here': go to a BT area.");
+    Chip(debug::Action::dev_enemies);
+    ImGui::EndDisabled();
+
+    ImGui::SeparatorText("Items");
+    ImGui::BeginDisabled(!world);
+    if (ImGui::Button("New boots")) DevSend(debug::Action::dev_items, 1);
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6);
+    ImGui::InputInt("##chiral", &g_dev_chiral, 100, 1000);
+    if (g_dev_chiral < 1) g_dev_chiral = 1;
+    ImGui::SameLine();
+    if (ImGui::Button("Add chiral crystals")) DevSend(debug::Action::dev_items, 2, g_dev_chiral);
+    Chip(debug::Action::dev_items);
+    ImGui::EndDisabled();
 }
 
 bool MatchesFilter(const char* line, const char* filter) {
@@ -651,6 +887,10 @@ void Draw(Context& c) {
             }
             if (ImGui::BeginTabItem("Settings", nullptr, flags(4))) {
                 SettingsTab(c);
+                ImGui::EndTabItem();
+            }
+            if (ImGui::BeginTabItem("Dev tools", nullptr, flags(5))) {
+                DevTab(c);
                 ImGui::EndTabItem();
             }
             g_select_tab = -1;

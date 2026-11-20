@@ -29,6 +29,12 @@ inline constexpr int kDefaultUdpPort = 27555;
 // The guest's private session folder of a host-held save session (stranded_together\sandbox\coop-guest; the mod's
 // st::sandbox::kCoopGuestSandbox is the same name).
 inline constexpr char kCoopGuestSandbox[] = "coop-guest";
+// The local two-player test's second game (Debug > Test saves > Local test; core_sandbox.hpp kLocalGuestSandbox is the
+// same name). With the host-held save it is that test's guest folder: prepared like coop-guest (SeedSessionGuest).
+inline constexpr char kLocalTestGuestSandbox[] = "local-guest";
+// The folders a host-held save guest may run on (MakeSessionIniText's rule): coop-guest (Join) and local-guest (the local
+// two-player test). Never "" (the real saves) and never a test-save folder the host plays on.
+bool IsHostSaveGuestSandbox(const std::string& name);
 
 // ---- Secrets, Steam IDs -------------------------------------------------------
 bool IsCanonicalSecret(const std::string& secret);   // 20 characters of kAlphabet
@@ -56,6 +62,7 @@ struct SessionIni {
     bool verbose = false;
     bool debug_menu = true;           // the in-game debug menu
     int debug_menu_key = 9;           // its key, F1..F12 (written as "F9")
+    bool dev_tools = false;           // dev_tools=1: the debug menu's Dev tools page (written only when set)
     // The mod renames session.ini to session.last.ini as soon as it has read it,
     // so a later plain Steam launch runs unmodded. Every launch writes it.
     bool one_shot = true;
@@ -159,6 +166,7 @@ struct StatusView {
     bool connected = false;
     int rtt_ms = 0;           // <= 0 unknown
     std::string transport, route, peer, remote, reason;
+    std::string features_off; // the mod's "features_off" (co-op features off on that game, with the reason)
     std::string headline;     // one short line
     std::string detail;       // one or two plain sentences
     enum class Tone { neutral, good, warn, bad } tone = Tone::neutral;

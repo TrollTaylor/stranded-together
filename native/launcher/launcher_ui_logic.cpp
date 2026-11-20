@@ -247,6 +247,7 @@ const char* const kSceneNames[static_cast<int>(Scene::count)] = {
     "29-debug-in-game",       "30-about",               "31-play-update-available", "32-play-update-downloading",
     "33-play-update-failed",  "34-play-updated",        "35-about-updates",       "36-debug-test-saves",
     "37-debug-local-test",    "38-play-join-characters", "39-play-join-hologram",   "40-debug-options-characters",
+    "41-debug-options-coop",  "42-debug-local-test-off",
 };
 }  // namespace
 
@@ -478,8 +479,9 @@ Options ParseCommandLine(const std::vector<std::wstring>& args) {
             ++modes;
         } else if (Is(a, L"--write-session")) {
             if (!has_value ||
-                (!Is(args[i + 1], L"host") && !Is(args[i + 1], L"join") && !Is(args[i + 1], L"echo") && !Is(args[i + 1], L"solo"))) {
-                o.error = L"--write-session needs host, join, echo or solo.";
+                (!Is(args[i + 1], L"host") && !Is(args[i + 1], L"join") && !Is(args[i + 1], L"echo") && !Is(args[i + 1], L"solo") &&
+                 !Is(args[i + 1], L"local-test"))) {
+                o.error = L"--write-session needs host, join, echo, solo or local-test.";
                 return o;
             }
             o.mode = Options::Mode::write_session;
@@ -488,6 +490,10 @@ Options ParseCommandLine(const std::vector<std::wstring>& args) {
         } else if (Is(a, L"--end-session")) {
             o.mode = Options::Mode::end_session;
             ++modes;
+        } else if (Is(a, L"--out")) {
+            if (!has_value || args[i + 1].empty()) { o.error = L"--out needs a folder."; return o; }
+            o.write_out = args[++i];
+            session_extras = true;
         } else if (Is(a, L"--code")) {
             if (!has_value || args[i + 1].empty()) { o.error = L"--code needs the host's join code."; return o; }
             o.write_code = args[++i];
@@ -532,9 +538,13 @@ Options ParseCommandLine(const std::vector<std::wstring>& args) {
     const bool session_flag = o.mode == Options::Mode::write_session || o.mode == Options::Mode::end_session;
     if (!o.game_dir.empty() && !session_flag) o.error = L"--game-dir goes with --write-session or --end-session.";
     else if (session_extras && o.mode != Options::Mode::write_session)
-        o.error = L"--code, --transport, --udp-peer and --udp-port-* go with --write-session.";
+        o.error = L"--code, --out, --transport, --udp-peer and --udp-port-* go with --write-session.";
     else if (o.mode == Options::Mode::write_session && o.write_role == L"join" && o.write_code.empty())
         o.error = L"--write-session join needs --code <the host's code>.";
+    else if (o.mode == Options::Mode::write_session && Is(o.write_role, L"local-test") && o.write_out.empty())
+        o.error = L"--write-session local-test needs --out <folder> (it never writes into the game folder).";
+    else if (o.mode == Options::Mode::write_session && !Is(o.write_role, L"local-test") && !o.write_out.empty())
+        o.error = L"--out goes with --write-session local-test.";
     else if (session_flag && o.mock) o.error = L"--mock does not go with --write-session or --end-session.";
     else if ((o.after_update || !o.update_feed.empty() || o.update_now) && (o.mode != Options::Mode::gui || o.mock))
         o.error = L"--after-update, --update-feed and --update-now go with the window on the real model (no --mock).";
@@ -562,6 +572,8 @@ const wchar_t* UsageText() {
            L"    --transport steam|udp   default steam (echo: loopback udp)\n"
            L"    --udp-peer <ip> --udp-port-local <n> --udp-port-peer <n>\n"
            L"    --game-dir <dir>        the game folder (default: this program's folder)\n"
+           L"  --write-session local-test --out <dir>   the local two-player test's host.ini + guest.ini, exactly as\n"
+           L"                            Debug > Local test writes them, into <dir> (testenv -LauncherIni)\n"
            L"  --end-session [--game-dir <dir>]  remove session.ini again (not while the game runs)\n"
            L"  --update-feed <url>       read releases from a test feed on this PC (http://127.0.0.1:<port>/...)\n"
            L"  --update-now              with --update-feed: install an update found there at once\n"

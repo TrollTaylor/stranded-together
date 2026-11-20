@@ -1,0 +1,93 @@
+# What each player SEES on the launcher's own Local test files (docs/hidden-testing.md "launcherini"), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-launcher-views -SeedSaves complete-100
+# The user's v0.18.0 play test: "when i summoned a vehicle it didnt show up until the summoning player entered it" and
+# "couldnt get the passenger seat to work". Every screenshot is taken with that game's camera aimed at the vehicle
+# (vehicle_sync 18): V1 the guest's summoned trike in the HOST's world, nobody on it; V2 the host's summoned truck in
+# the GUEST's world, nobody on it; V3 the host driving it (both screens); V4/V5 the guest riding as the passenger (both
+# screens, standing and moving); V7 the guest off again. Pass: every step, no FAULT.
+role host
+graphics low
+timeout 360
+launcherini local-test
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[coop\] host-held save session ON \(host
+@guest waitlog 10 \[coop\] host-held save session ON \(guest
+waitlog 60 \[vshare\] shared real vehicles ON \(host
+@guest waitlog 60 \[vshare\] shared real vehicles ON \(guest
+wait 22000
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+@guest waitlog 60 \[vshare\] guest: the host's snapshot #[0-9]+ is complete
+@guest waitlog 30 \[vshare\] guest: binding:
+wait 8000
+# ---- the guest summons a trike: the HOST must see it standing there (nobody on it)
+@guest action vehicle_summon 3 8
+waitlog 20 \[vshare\] host: ADD trike
+@guest waitlog 30 \[vshare\] guest: mirror 0x[0-9A-F]+ \(trike\)
+wait 2500
+action vehicle_sync 18 3
+?until 25 300 camera aimed #1 at vehicle kind 3 => pad none 200 rx=32767
+screenshot V1-host-sees-guest-trike
+@guest action vehicle_sync 18 3
+?@guest until 25 300 camera aimed #1 at vehicle kind 3 => pad none 200 rx=32767
+@guest screenshot V1-guest-own-trike
+# ---- the host summons a truck: the GUEST must see it (nobody on it), the host too
+action vehicle_summon 2 12
+waitlog 20 \[vshare\] host: ADD truck
+@guest waitlog 30 \[vshare\] guest: mirror 0x[0-9A-F]+ \(truck\)
+wait 2500
+@guest action vehicle_sync 18 2
+?@guest until 25 300 camera aimed #2 at vehicle kind 2 => pad none 200 rx=32767
+@guest screenshot V2-guest-sees-host-truck
+action vehicle_sync 18 2
+?until 25 300 camera aimed #2 at vehicle kind 2 => pad none 200 rx=32767
+screenshot V2-host-own-truck
+# ---- the host gets on the truck: host's own view
+action vehicle_sync 8 1.8 2
+wait 1500
+until 20 4000 \[vdrive\] host: our Sam drives truck => pad X 150
+@guest waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached
+wait 3000
+@guest action vehicle_drive 9 4 1
+wait 1200
+@guest action vehicle_sync 18 6
+?@guest until 25 300 camera aimed #3 at vehicle kind 6 => pad none 200 rx=32767
+screenshot V3-host-driving-truck
+@guest screenshot V3-guest-sees-host-driving
+# ---- the guest rides: host's view
+@guest action ride_test 8
+wait 1500
+@guest until 15 3000 \[ride\] guest: our Sam carried on the truck => pad X 800
+waitlog 10 \[ride\] host: the partner asks to ride our truck .*ACCEPTED
+wait 2500
+screenshot V4-host-with-passenger
+@guest screenshot V4-guest-riding
+pad none 2500 rt=140 keep
+screenshot V5-host-moving
+@guest screenshot V5-guest-moving
+pad none 1500 lt=255 keep
+pad none 0
+wait 2000
+screenshot V6-host-stopped
+@guest pad X 800
+@guest waitlog 6 \[ride\] guest: our Sam off the truck .*got off
+wait 2500
+screenshot V7-host-after-guest-off
+@guest screenshot V7-guest-off
+@both action vehicle_dump 2
+nolog \[(vshare|vdrive|ride|vhit)\].*FAULT
+@guest nolog \[(vshare|vdrive|ride|vhit)\].*FAULT
+@guest quit
+wait 3000
+quit

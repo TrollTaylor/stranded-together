@@ -93,8 +93,12 @@ struct SessionGuestReport {
     int removed_accounts = 0;   // other account folders deleted
     int copied = 0;             // profile\ and settings files copied (first use)
 };
+// `name`: the folder below stranded_together\sandbox (IsHostSaveGuestSandbox: coop-guest for Join, local-guest for the
+// local two-player test's guest game).
 bool SeedSessionGuest(const InstancePaths& paths, const std::wstring& real_root, std::uint32_t account, SessionGuestReport& report,
-                      std::string& error);
+                      std::string& error, const char* name = kCoopGuestSandbox);
+// The sandbox was last prepared by SeedSessionGuest (its sandbox.json says "session-guest": no save slot of its own).
+bool SandboxIsSessionGuest(const SandboxPaths& sandbox);
 
 // The host's backup before a co-op session (D1-2): <M>\backups\<stamp>\DeathStrandingDC\<account>\ is a copy of the
 // host's account folder (every slot, profile\, the settings files; not steam_autocloud.vdf), read only, written as

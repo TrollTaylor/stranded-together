@@ -6,8 +6,11 @@
 # spot again (compare the snapshots). Then the host quits to its title (`action coop_session 6`: QuitGame): the guest
 # follows to its title (D1-4) and shows the waiting screen again; if QuitGame were to end the game instead of reaching
 # the title, the guest would stay in the world with "<host> is at the title screen" (its log says which).
+# Back at its title the guest has its own manualsave5/6, yet its menu (a new title page, #2) shows only the label and
+# EXIT GAME: CONTINUE / LOAD GAME stay hidden, A on the label does nothing. Last, EXIT GAME on the guest (DOWN, then
+# `quit pad`) ends its game cleanly by the game's own menu (guest_exit_code 0).
 # Check enlarged: 03-host-world2 / 03-guest-world2 (the same place, the roadster of the first view gone on both),
-# 05-guest-waiting-again.
+# 05-guest-waiting-again, 07-guest-quit-selected.
 role host
 graphics low
 timeout 360
@@ -62,18 +65,21 @@ waitlog 60 \[coop\] host: back at the title
 wait 8000
 screenshot 05-host-title
 @guest screenshot 05-guest-waiting-again
-# the guest's title now offers CONTINUE (its manualsave6): the gate refuses it too (input block lifted for the test)
-@guest action coop_session 8 2
-wait 1500
-@guest screenshot 06-guest-title-continue
+# the guest has its own manualsave5/6 now: its new title page still hides CONTINUE / LOAD GAME; A on the label does
+# nothing (no dialog, no load, no gate block)
+@guest waitlog 30 \[title\] native waiting title ON \(title page #2\)
 @guest pad A 150
-@guest waitlog 15 \[coop\] gate: BLOCKED the title menu's start \(choice \+0x130 = 0
-wait 4000
-@guest screenshot 06-guest-continue-held
-@guest action coop_session 8 0
+wait 3000
+@guest screenshot 06-guest-after-a
+@guest nolog \[coop\] gate: BLOCKED
+@guest nolog \[coop\] guest: in the world after .* save #3
 @guest action coop_session 0
 action coop_session 0
-@guest action coop_session 0
-@guest quit
-wait 3000
+# EXIT GAME on the guest: the game's own quit
+@guest pad DPAD_DOWN 150
+wait 1500
+@guest screenshot 07-guest-quit-selected
+@guest quit pad
+wait 25000
+action coop_session 0
 quit

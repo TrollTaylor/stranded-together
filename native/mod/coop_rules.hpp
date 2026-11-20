@@ -90,6 +90,71 @@ inline bool TitleReady(double now_ms, double first_tick_ms, bool at_title, doubl
     return at_title && now_ms - first_tick_ms >= kTitleBootMs && now_ms - title_since_ms >= kTitleSettleMs;
 }
 
+// ---- The guest's title screen (title_wait.cpp): the game's own menu shows the session's state on NEW GAME's label.
+
+// The host's name as the game's font can show it: printable ASCII only, at most 16 characters (cut with "..."); anything
+// else (empty, non-ASCII: the font may have no glyph) is "the host".
+inline std::string SafeHostName(const char* name) {
+    std::string out;
+    if (!name) return "the host";
+    for (const char* p = name; *p; ++p) {
+        const unsigned char c = static_cast<unsigned char>(*p);
+        if (c < 0x20 || c > 0x7E) return "the host";
+        out.push_back(static_cast<char>(c));
+    }
+    while (!out.empty() && out.back() == ' ') out.pop_back();
+    std::size_t lead = 0;
+    while (lead < out.size() && out[lead] == ' ') ++lead;
+    out.erase(0, lead);
+    if (out.empty()) return "the host";
+    if (out.size() > 16) out = out.substr(0, 13) + "...";
+    return out;
+}
+
+// What the guest's title says, most important first: a version mismatch, our own load of the host's save, the link,
+// the transfer, then where the host is. Short: at most 46 characters (the menu item is about that wide).
+struct TitleLabelIn {
+    std::string host = "the host";   // SafeHostName
+    bool connected = false, ever_connected = false;
+    bool version_mismatch = false;
+    bool loading = false;            // the guest's own load of the host's save runs (or the game took it)
+    bool receiving = false;
+    std::uint32_t have = 0, size = 0;
+    bool no_reply = false;           // linked for a while without the host's session messages
+    bool have_host_state = false;
+    stx::HostPhase host_phase = stx::HostPhase::title;
+    bool new_game_pending = false;
+};
+inline std::string TitleLabel(const TitleLabelIn& in) {
+    const std::string& h = in.host;
+    if (in.version_mismatch) return "Game versions differ: update both games";
+    if (in.loading) return "Loading " + h + "'s save...";
+    if (!in.connected) return (in.ever_connected ? "Reconnecting to " : "Connecting to ") + h + "...";
+    if (in.receiving && in.size) {
+        const std::uint64_t pct = std::min<std::uint64_t>(100, static_cast<std::uint64_t>(in.have) * 100 / in.size);
+        return "Receiving " + h + "'s save: " + std::to_string(pct) + "%";
+    }
+    if (in.no_reply) return "No reply from " + h + "'s save session";
+    if (!in.have_host_state) return "Waiting for " + h + "...";
+    if (in.new_game_pending) return "Waiting for " + h + "'s first save";
+    switch (in.host_phase) {
+        case stx::HostPhase::loading: return "Waiting while " + h + " loads the game";
+        case stx::HostPhase::world: return "Joining " + h + "'s game...";
+        case stx::HostPhase::title: break;
+    }
+    return "Waiting for " + h + " to start the game";
+}
+
+// The title menu's items (lst_title_menu_list, by element name) the waiting guest's title hides with SetVisible: all but
+// NEW GAME (it carries the label) and EXIT GAME (the way out), and the three the data source's bools hide already
+// (CONTINUE, LOAD GAME: "has a save"; the PS4->PS5 item: its own bool). An item a later game build adds is hidden too.
+inline bool TitleItemHidden(const char* name) {
+    if (!name || !*name) return false;
+    const std::string n = name;
+    return n != "itm_new_game" && n != "itm_exit_game_menu" && n != "itm_continue" && n != "itm_load_game" &&
+           n != "itm_load_game_PS4_to_PS5";
+}
+
 // "The newest save" (a Retry: autosaves only; a late join or "offer now": any slot) as the host's CURRENT world allows:
 // only slots written at or after that world's load (world_ft, FILETIME; 0 = not known: every slot), newest first, at
 // most three (one that cannot be read is skipped for the next). None: the current world's own slot (the one the host

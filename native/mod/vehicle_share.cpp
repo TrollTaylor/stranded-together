@@ -16,10 +16,13 @@
 #include "MinHook.h"
 #include "automation.hpp"
 #include "coop_session.hpp"
+#include "dev_rules.hpp"
+#include "dev_tools.hpp"
 #include "game_actions.hpp"
 #include "link.hpp"
 #include "log.hpp"
 #include "partner_source.hpp"
+#include "vehicle_drive.hpp"
 #include "vehicle_sync.hpp"
 
 namespace st::vshare {
@@ -154,6 +157,7 @@ FnVictim o_victim = nullptr;
 
 // the detours' view (any thread)
 thread_local bool t_mod_call = false;
+thread_local bool t_dev_call = false;  // DevSpawn: a forwarded request goes as ReqReason::dev
 thread_local int t_garage_slot = -1;
 thread_local double t_garage_xf[8] = {};  // pos (3 doubles) + rot (9 floats) as 0x3C bytes
 thread_local bool t_garage_has_xf = false;
@@ -787,6 +791,16 @@ void HostDiff(double now) {
 }
 
 void HostServeRequest(const vwire::Req& q, double now) {
+    if (q.reason == vwire::ReqReason::dev) {
+        // the guest's dev tools (dev_rules.hpp): a dev vehicle would stay in this game's real save
+        if (const char* why = dev::HostRefusesGuestDev()) {
+            SendResult(q.token, vwire::ReqResult::refused, 0);
+            Log("[vshare] host: the guest's dev request #%u refused: %s", q.token, why);
+            ++g_reqs_refused;
+            return;
+        }
+        Log("[vshare] host: the guest's request #%u is a dev request: allowed (the dev tools are on, this game runs on a sandboxed save)", q.token);
+    }
     if (!Settled(now)) {
         SendResult(q.token, vwire::ReqResult::refused, 0);
         Log("[vshare] host: the guest's request #%u refused (our world is not ready)", q.token);
@@ -1838,7 +1852,7 @@ bool ReadReq(std::uintptr_t pool, std::uintptr_t req, vwire::Req* q) noexcept {
     mem::Rd(req + kReqRec2, q->rec2);
     mem::Rd(req + kReqRec14, q->rec14);
     q->garage_slot = static_cast<std::int8_t>(t_garage_slot);
-    q->reason = t_garage_slot >= 0 ? vwire::ReqReason::garage : vwire::ReqReason::game;
+    q->reason = t_dev_call ? vwire::ReqReason::dev : t_garage_slot >= 0 ? vwire::ReqReason::garage : vwire::ReqReason::game;
     const std::uintptr_t name = mem::Q(req + kReqName);
     char nm[vwire::kNameChars + 1] = {};
     if (name && name != A(kEmptyString) && mem::Read(name, nm, vwire::kNameChars)) {
@@ -2509,6 +2523,322 @@ bool SummonCommand(const double (&v)[3], char* msg, std::size_t cap) noexcept {
     return std::snprintf(msg, cap, "summon %s: spawn asked (record 0x%04X)%s", vwire::KindName(static_cast<std::uint8_t>(kind)), rec0,
                          g_role == 2 ? "; the guest's gate forwards it to the host" : ""),
            ok;
+}
+
+// ---------------------------------------------------------------- dev tools (dev_tools.cpp; docs/debug-actions.md "Dev tools")
+namespace {
+// Repair and recharge: the race reset's own sequence (0x142D6ED80), the three vehicle kinds' Repair (vt+0x118), the battery
+// object's notify. The variant write (entity +0x4C8) is only read back for the log.
+constexpr std::uintptr_t kRepairFn[4] = {0, 0x142F7B090, 0x142F7B140, 0x142F7B320};  // speedcar, truck, motorbike vt+0x118
+constexpr std::uintptr_t kBatteryNotify = 0x142F5A260;
+constexpr std::uintptr_t kEBattery = 0x898, kELifeMax = 0x6EC, kEVariant = 0x4C8;
+constexpr std::uintptr_t kBatCur = 0x08, kBatMax = 0x0C, kBatFlags = 0x48, kBatTimer = 0x34;
+// clang-format off
+constexpr Site kDevSites[] = {
+    {0x142D6EE21, "48 8B 06 48 8B CE FF 90 18 01 00 00 48 8B 8E 98 08 00 00 8B 41 0C 89 41 08 E8 21 B4 1E 00 48 8B 86 98 08 00 00 44 89 70 34",
+     "race reset: Repair vt+0x118, battery +0x898 (+8 = +0xC, notify, +0x34 = 0)", 1},
+    {0x142F7B090, "40 53 48 83 EC 20 8B 81 EC 06 00 00 48 8B D9 89 81 E8 06 00 00 C7 81 F4", "roadster Repair", 1},
+    {0x142F7B140, "48 89 5C 24 10 48 89 7C 24 18 55 48 8B EC 48 83 EC 30 8B 81 EC 06 00 00", "truck Repair", 1},
+    {0x142F7B320, "8B 81 EC 06 00 00 89 81 E8 06 00 00 C7 81 F4 06 00 00 00 00 80 3F 80 89", "trike Repair", 1},
+    {kBatteryNotify, "40 53 48 83 EC 30 F6 41 48 01 48 8B D9 74 1E 45 33 C9 C7 44 24 20 00 00", "battery state notify", 1},
+    {0x142F77023, "8B 82 98 01 00 00 C1 E8 16 83 E0 3F C5 F8 2F 86 E8 06 00 00 89 86 C8 04", "spawn: variant (unit +0x198 >> 22) -> entity +0x4C8", 2},
+};
+// clang-format on
+bool g_dev_checked = false;
+unsigned g_dev_groups = 0;   // kCore / kSpawnG when the shared vehicles did not check them
+bool g_dev_repair = false, g_dev_variant = false;
+char g_dev_off[160] = {};
+char g_dev_repair_off[96] = {};  // the first repair site that failed its check, or "faulted this run"
+
+struct DevPending {
+    bool active = false;
+    int kind = 0, variant = 0;
+    double t0 = 0;
+    double pos[3] = {};
+    bool forwarded = false;
+    std::vector<std::uint32_t> before;
+};
+DevPending g_dev_pending;
+std::uint32_t g_dev_last_id = 0;  // the newest vehicle DevSpawn made (its check found it)
+int g_dev_last_kind = 0;
+
+void DevCheck() {
+    if (g_dev_checked) return;
+    g_dev_checked = true;
+    unsigned bad = 0;
+    if (g_on.load()) {
+        g_dev_groups = g_groups_ok;
+    } else {
+        for (const Site& s : kSites)
+            if ((s.group & (kCore | kSpawnG)) && !mem::CodeMatches(A(s.va), s.sig)) {
+                bad |= s.group;
+                if (!g_dev_off[0]) std::snprintf(g_dev_off, sizeof(g_dev_off), "%s", s.name);
+            }
+        if (mem::RipTarget(A(0x142F7509C), 3, 7) != A(kRegGlobal)) bad |= kCore;
+        if (mem::RipTarget(A(0x142F830FC), 3, 7) != A(kEmptyString)) bad |= kSpawnG;
+        for (int k = 1; k <= 3; ++k)
+            if (mem::Q(A(kPoolVt[k]) + 0x150) != A(kKindGetter[k])) bad |= kCore;
+        for (std::uintptr_t vt : kUnitVt)
+            if (mem::Q(A(vt) + 0x18) != A(kUnitXf)) bad |= kCore;
+        g_dev_groups = (kCore | kSpawnG) & ~bad;
+    }
+    bool repair = true, variant = true;
+    for (const Site& s : kDevSites)
+        if (!mem::CodeMatches(A(s.va), s.sig)) {
+            Log("[dev] byte check FAILED: %s at 0x%llX", s.name, static_cast<unsigned long long>(s.va));
+            if (s.group == 1) {
+                if (repair) std::snprintf(g_dev_repair_off, sizeof(g_dev_repair_off), "%s", s.name);
+                repair = false;
+            } else {
+                variant = false;
+            }
+        }
+    for (int k = 1; k <= 3; ++k)
+        if (mem::Q(A(kVehVt[k]) + 0x118) != A(kRepairFn[k])) {
+            Log("[dev] byte check FAILED: the %s entity vtable +0x118 is not its Repair", vwire::KindName(static_cast<std::uint8_t>(k)));
+            if (repair) std::snprintf(g_dev_repair_off, sizeof(g_dev_repair_off), "the %s vtable's Repair slot", vwire::KindName(static_cast<std::uint8_t>(k)));
+            repair = false;
+        }
+    g_dev_repair = repair;
+    g_dev_variant = variant;
+    Log("[dev] vehicles: pools %s, spawn %s, repair %s, variant read-back %s%s%s", (g_dev_groups & kCore) ? "ok" : "OFF",
+        (g_dev_groups & kSpawnG) ? "ok" : "OFF", repair ? "ok" : "OFF", variant ? "ok" : "off", g_dev_off[0] ? "; first mismatch: " : "", g_dev_off);
+}
+
+DevChecks Checks() {
+    DevCheck();
+    DevChecks c;
+    c.pools = (g_dev_groups & kCore) != 0;
+    c.spawn = c.pools && (g_dev_groups & kSpawnG) != 0;
+    c.repair = c.pools && g_dev_repair;
+    if (!c.pools || !c.spawn)
+        std::snprintf(c.off, sizeof(c.off), "vehicle %s: %s", !c.pools ? "tools" : "spawning", g_dev_off[0] ? g_dev_off : "the pool / spawn byte checks");
+    else if (!c.repair)
+        std::snprintf(c.off, sizeof(c.off), "vehicle repair: %s", g_dev_repair_off[0] ? g_dev_repair_off : "a byte check");
+    return c;
+}
+
+bool DevReady(unsigned need, char* msg, std::size_t cap) {
+    DevCheck();
+    if ((g_dev_groups & need) == need) return true;
+    std::snprintf(msg, cap, "vehicle dev tools are off: this game build differs (%s)", g_dev_off[0] ? g_dev_off : "the pool / spawn byte checks");
+    return false;
+}
+
+bool WriteU32(std::uintptr_t a, std::uint32_t v) {
+    SIZE_T put = 0;
+    return a >= 0x10000 && WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(a), &v, sizeof(v), &put) && put == sizeof(v);
+}
+bool CallRepair(std::uintptr_t fn, std::uintptr_t e) noexcept {
+    __try {
+        reinterpret_cast<void (*)(std::uintptr_t)>(fn)(e);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+bool CallBatteryNotify(std::uintptr_t b) noexcept {
+    __try {
+        reinterpret_cast<void (*)(std::uintptr_t)>(A(kBatteryNotify))(b);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+const PUnit* Nearest(const std::vector<PUnit>& units, const WorldTransform& sam, double max_m, bool need_entity, bool skip_ridden, double* d_out) {
+    const PUnit* best = nullptr;
+    double bd = max_m;
+    const double sp[3] = {sam.pos.x, sam.pos.y, sam.pos.z};
+    for (const PUnit& p : units) {
+        if (!p.alive() || !p.has_xf || (need_entity && !p.entity) || (skip_ridden && p.ridden())) continue;
+        const double d = DistXf(p.xf, sp);
+        if (d < bd) bd = d, best = &p;
+    }
+    if (d_out) *d_out = bd;
+    return best;
+}
+}  // namespace
+
+DevChecks DevCheckResult() noexcept { return Checks(); }
+
+bool DevSpawn(int kind, int variant, double dist, char* msg, std::size_t cap) noexcept {
+    if (!devrules::ValidVehicle(kind, variant))
+        return std::snprintf(msg, cap, "no such vehicle: kind %d variant %d (roadster 0/1, truck 0/1/2/4/5/6, trike 0/1/2/3/7/8)", kind, variant), false;
+    if (!DevReady(kCore | kSpawnG, msg, cap)) return false;
+    if (g_dev_pending.active) Log("[dev] vehicle check: the %s variant %d asked before is not checked (a new request)", devrules::KindName(g_dev_pending.kind), g_dev_pending.variant);
+    if (!(dist > 0)) dist = 8.0;
+    dist = (std::min)(40.0, (std::max)(3.0, dist));
+    WorldTransform sam{};
+    if (!LocalSam(&sam)) return std::snprintf(msg, cap, "no local player (title screen or loading)"), false;
+    std::vector<PUnit> units;
+    if (!Poll(units)) return std::snprintf(msg, cap, "no vehicle pools (no world?)"), false;
+    unsigned total = 0, used = 0;
+    DevPending pend;
+    for (const PUnit& p : units) {
+        if (p.pool_kind != kind) continue;
+        ++total;
+        if (p.in_use) ++used;
+        if (p.in_use) pend.before.push_back(p.id);
+    }
+    const char* kn = devrules::KindName(kind);
+    if (!total) return std::snprintf(msg, cap, "the %s pool has no units", kn), false;
+    if (used >= total)
+        return std::snprintf(msg, cap, "the %s pool is full (%u of %u in use): a spawn would evict one of the save's vehicles; remove one first", kn, used,
+                             total),
+               false;
+    const bool forward = g_on.load() && g_role == 2 && coop::Active() && g_host_real_gate.load();
+    if (forward && !g_can_forward.load()) return std::snprintf(msg, cap, "the host's game cannot take a request now (not bound or not settled yet)"), false;
+    WorldTransform xf = sam;
+    const double here[3] = {sam.pos.x, sam.pos.y, sam.pos.z};
+    double at[3] = {};
+    devrules::Ahead(here, sam.rot.m[1][0], sam.rot.m[1][1], dist, at);
+    xf.pos.x = at[0], xf.pos.y = at[1], xf.pos.z = at[2];
+    const std::uint16_t rec0 = devrules::VehicleRec0(kind, variant);
+    Record rec;
+    rec.Set(rec0, 0, 0);
+    const bool was = t_dev_call;
+    t_dev_call = true;
+    const bool ok = CallSpawn(reinterpret_cast<std::uintptr_t>(rec.b), &xf, 1, false);
+    t_dev_call = was;
+    Log("[dev] vehicle: %s variant %d (record 0x%04X, pool %u/%u in use) at (%.2f, %.2f, %.2f), %.0f m ahead: %s", kn, variant, rec0, used, total, xf.pos.x,
+        xf.pos.y, xf.pos.z, dist, !ok ? "FAULTED" : forward ? "asked the host (dev request)" : g_on.load() && g_role == 1 ? "spawn asked (shared with the guest)" : "spawn asked");
+    if (!ok) return std::snprintf(msg, cap, "the spawn call faulted"), false;
+    pend.active = true;
+    pend.kind = kind, pend.variant = variant;
+    pend.t0 = link::NowMsPrecise();
+    pend.pos[0] = xf.pos.x, pend.pos[1] = xf.pos.y, pend.pos[2] = xf.pos.z;
+    pend.forwarded = forward;
+    g_dev_pending = std::move(pend);
+    if (forward) return std::snprintf(msg, cap, "%s variant %d: asked the host's game (it spawns it only on a sandboxed save)", kn, variant), true;
+    return std::snprintf(msg, cap, "%s variant %d asked %.0f m ahead%s", kn, variant, dist, g_on.load() && g_role == 1 ? " (shared with the guest)" : ""), true;
+}
+
+void DevTick(double now_ms) noexcept {
+    if (!g_dev_pending.active || now_ms - g_dev_pending.t0 < 2500) return;
+    std::vector<PUnit> units;
+    const PUnit* found = nullptr;
+    if (Poll(units))
+        for (const PUnit& p : units) {
+            if (!p.alive() || p.pool_kind != g_dev_pending.kind) continue;
+            if (std::find(g_dev_pending.before.begin(), g_dev_pending.before.end(), p.id) != g_dev_pending.before.end()) continue;
+            if (!found || (p.has_xf && found->has_xf && DistXf(p.xf, g_dev_pending.pos) < DistXf(found->xf, g_dev_pending.pos))) found = &p;
+        }
+    const char* kn = devrules::KindName(g_dev_pending.kind);
+    if (!found) {
+        if (now_ms - g_dev_pending.t0 < 10000) return;  // a forwarded request: the host's ADD and our mirror take longer
+        Log("[dev] vehicle check: NO new %s 10 s after the request (variant %d)%s", kn, g_dev_pending.variant,
+            g_dev_pending.forwarded ? "; the host's game refused or did not answer (see [vshare] lines)" : "");
+        g_dev_pending.active = false;
+        return;
+    }
+    std::uint32_t ent_variant = 0xFFFFFFFFu;
+    if (found->entity && g_dev_variant) mem::Rd(found->entity + kEVariant, ent_variant);
+    Log("[dev] vehicle check: new %s 0x%06X, unit variant %u (asked %d), entity %p +0x4C8 %d, state %u, life %.0f, battery %.2f, at (%.2f, %.2f, %.2f), "
+        "%.1f m from the asked place%s",
+        kn, found->id, (found->flags >> 22) & 0x3Fu, g_dev_pending.variant, reinterpret_cast<void*>(found->entity), static_cast<int>(ent_variant), found->state,
+        found->life, found->battery, found->has_xf ? found->xf.pos.x : 0, found->has_xf ? found->xf.pos.y : 0, found->has_xf ? found->xf.pos.z : 0,
+        found->has_xf ? DistXf(found->xf, g_dev_pending.pos) : -1.0, found->entity ? "" : " (no actor yet: out of streaming range?)");
+    g_dev_last_id = found->id;
+    g_dev_last_kind = g_dev_pending.kind;
+    g_dev_pending.active = false;
+}
+
+// Host with the shared vehicles: the partner drives this unit (through the mod, so the game's own rider field stays empty
+// here) or rides on it: the shared-active set's riding mark (UpdateActive) or the follower vdrive runs for the partner.
+bool PartnerOnUnit(const PUnit& p) noexcept {
+    if (!g_on.load() || g_role != 1) return false;
+    const auto it = g_active.find(p.id);
+    if (it != g_active.end() && it->second.riding) return true;
+    std::uintptr_t pe = 0;
+    return p.entity && vdrive::PartnerDrivenEntity(&pe) && pe == p.entity;
+}
+
+bool DevRemove(double max_m, bool last, char* msg, std::size_t cap) noexcept {
+    if (!DevReady(kCore, msg, cap)) return false;
+    if (!(max_m > 0)) max_m = 15.0;
+    WorldTransform sam{};
+    if (!LocalSam(&sam)) return std::snprintf(msg, cap, "no local player"), false;
+    std::vector<PUnit> units;
+    if (!Poll(units)) return std::snprintf(msg, cap, "no vehicle pools (no world?)"), false;
+    double d = 0;
+    const PUnit* best = nullptr;
+    const double sp[3] = {sam.pos.x, sam.pos.y, sam.pos.z};
+    if (last) {
+        for (const PUnit& p : units)
+            if (p.alive() && p.id == g_dev_last_id && p.pool_kind == g_dev_last_kind && !p.ridden()) best = &p, d = p.has_xf ? DistXf(p.xf, sp) : -1;
+        if (!best) return std::snprintf(msg, cap, "no dev vehicle to remove (none spawned, gone, or someone is on it)"), false;
+        if (PartnerOnUnit(*best))
+            return std::snprintf(msg, cap, "%s 0x%06X not removed: the partner is on it", vwire::KindName(static_cast<std::uint8_t>(best->pool_kind)), best->id),
+                   false;
+    } else {
+        // the nearest that nobody is on: neither our Sam (the game's rider field) nor the partner (the shared-active set)
+        bool partner_skipped = false;
+        d = max_m;
+        for (const PUnit& p : units) {
+            if (!p.alive() || !p.has_xf || p.ridden()) continue;
+            const double pd = DistXf(p.xf, sp);
+            if (pd >= d) continue;
+            if (PartnerOnUnit(p)) {
+                partner_skipped = true;
+                continue;
+            }
+            d = pd, best = &p;
+        }
+        if (!best)
+            return std::snprintf(msg, cap, "no vehicle within %.0f m that nobody is on%s", max_m, partner_skipped ? " (the partner is on the nearest)" : ""),
+                   false;
+    }
+    if (!StillSame(*best) || !OrRemoveBit(best->unit)) return std::snprintf(msg, cap, "removal failed"), false;
+    Log("[dev] vehicle: removal requested for %s 0x%06X %.1f m away%s", vwire::KindName(static_cast<std::uint8_t>(best->pool_kind)), best->id, d,
+        g_on.load() && g_role == 1 ? " (the guest's copy goes too)" : "");
+    return std::snprintf(msg, cap, "%s 0x%06X removed (%.1f m away)", vwire::KindName(static_cast<std::uint8_t>(best->pool_kind)), best->id, d), true;
+}
+
+bool DevRepair(double max_m, char* msg, std::size_t cap) noexcept {
+    if (!DevReady(kCore, msg, cap)) return false;
+    if (!g_dev_repair)
+        return std::snprintf(msg, cap, "repair is off: %s (see the [dev] lines)", g_dev_repair_off[0] ? g_dev_repair_off : "this game build differs"), false;
+    if (!(max_m > 0)) max_m = 10.0;
+    WorldTransform sam{};
+    if (!LocalSam(&sam)) return std::snprintf(msg, cap, "no local player"), false;
+    std::vector<PUnit> units;
+    if (!Poll(units)) return std::snprintf(msg, cap, "no vehicle pools (no world?)"), false;
+    double d = 0;
+    const PUnit* best = Nearest(units, sam, max_m, true, false, &d);
+    if (!best) return std::snprintf(msg, cap, "no vehicle within %.0f m", max_m), false;
+    const int kind = best->pool_kind;
+    const std::uintptr_t e = best->entity;
+    const std::uintptr_t vt = mem::Q(e);
+    if (kind < 1 || kind > 3 || vt != A(kVehVt[kind]) || mem::Q(vt + 0x118) != A(kRepairFn[kind]))
+        return std::snprintf(msg, cap, "the vehicle's vtable is not the checked one"), false;
+    const std::uintptr_t b = mem::Q(e + kEBattery);
+    std::uint32_t bmax = 0, bflags = 0;
+    float life0 = 0, lmax = 0, bat0 = 0;
+    if (!b || !mem::Rd(b + kBatMax, bmax) || !mem::Rd(b + kBatFlags, bflags) || !mem::Rd(b + kBatCur, bat0) || !mem::Rd(e + kELife, life0) ||
+        !mem::Rd(e + kELifeMax, lmax))
+        return std::snprintf(msg, cap, "the vehicle's life / battery is unreadable"), false;
+    if (!CallRepair(A(kRepairFn[kind]), e)) {
+        g_dev_repair = false;
+        std::snprintf(g_dev_repair_off, sizeof(g_dev_repair_off), "Repair faulted this run");
+        return std::snprintf(msg, cap, "Repair faulted; repair off for this run"), false;
+    }
+    bool bat_ok = WriteU32(b + kBatCur, bmax);
+    if (bat_ok && !CallBatteryNotify(b)) {
+        g_dev_repair = false;
+        std::snprintf(g_dev_repair_off, sizeof(g_dev_repair_off), "the battery notify faulted this run");
+        return std::snprintf(msg, cap, "the battery notify faulted; repair off for this run"), false;
+    }
+    bat_ok = bat_ok && WriteU32(b + kBatTimer, 0);
+    float life1 = 0, bat1 = 0, bmaxf = 0;
+    mem::Rd(e + kELife, life1);
+    mem::Rd(b + kBatCur, bat1);
+    std::memcpy(&bmaxf, &bmax, 4);
+    Log("[dev] vehicle repair: %s 0x%06X %.1f m away: life %.0f -> %.0f / %.0f, battery %.1f -> %.1f / %.1f%s", vwire::KindName(static_cast<std::uint8_t>(kind)),
+        best->id, d, life0, life1, lmax, bat0, bat1, bmaxf, bat_ok ? "" : " (battery write FAILED)");
+    return std::snprintf(msg, cap, "%s repaired: life %.0f -> %.0f, battery %.0f -> %.0f", vwire::KindName(static_cast<std::uint8_t>(kind)), life0, life1, bat0,
+                         bat1),
+           bat_ok;
 }
 
 }  // namespace st::vshare

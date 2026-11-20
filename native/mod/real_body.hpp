@@ -119,8 +119,12 @@ bool HeadLift(game::Entity* sam, float (&local)[3]) noexcept;
 // self body whose head rig has a row, each of Sam's head accessories gets a constant offset of its own in his head
 // helper's frame (HLP_Head: x = -lateral, y = forward, z = up; metres), written into the accessory's own mover by
 // partner_gear.cpp, and the head lift above is 0. False (off zeroed): no offset now (the mover's identity applies).
+// One offset per item (section 26.3): the items of ds_player_inventory in this order (partner_gear.cpp kHeadItemRes):
+// eyewear0, glasses00-02 (class glasses), cap00-03 (class cap).
 inline constexpr int kHeadItemCap = 0, kHeadItemGlasses = 1, kHeadItemClasses = 2;
-bool SelfHeadItemOffset(int cls, float (&off)[3]) noexcept;
+inline constexpr int kHeadItems = 8, kHeadItemFirstCap = 4;
+inline constexpr int HeadItemClass(int item) noexcept { return item >= kHeadItemFirstCap ? kHeadItemCap : kHeadItemGlasses; }
+bool SelfHeadItemOffset(int item, float (&off)[3]) noexcept;
 // The offsets are wanted now (the key, a row for the self body, the fit on): partner_gear decides whether it can write them.
 bool HeadgearWanted() noexcept;
 // partner_gear.cpp, every tick (game thread): true while it writes the offsets into every shown head item of ours (its

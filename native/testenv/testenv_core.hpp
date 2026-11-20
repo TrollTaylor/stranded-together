@@ -62,6 +62,17 @@ inline bool WantForeignSaves(const std::wstring& seed, bool no_mod) { return !se
 std::string SandboxSessionIniText(const std::string& name, bool foreign_saves);
 // --no-mod runs: the mod only redirects the saves (no role, no overlay, no game hooks).
 std::string RedirectOnlyIniText(const std::wstring& save_root = {});
+// --launcher-ini runs (scenario "launcherini local-test"; Start-TestRun.ps1 writes the files with
+// StrandedTogether.exe --write-session local-test): the launcher's own session.ini for one game, kept line for line,
+// except where the saves are: sandbox_saves (a folder in the game folder's stranded_together\sandbox) and
+// sandbox_foreign_saves become the run's automation redirect (automation=1, automation_foreign_saves=1 with a seed,
+// automation_save_root). The launcher's header comment is replaced (a launcher window would take a file with it for its
+// own leftover). Then the automation channel's keys (automation_mute, automation_isolate). Every other key
+// (host_save, partner_body, my_character, local_input, frame_cap, appdir_settings, second_instance, ...) is the
+// launcher's. False (with *error) for a file that is not the launcher's, has no role, or already carries automation keys.
+// *replaced: the launcher lines that were replaced (for supervisor.log).
+bool HiddenIniFromLauncher(const std::string& launcher_text, const SessionOptions& options, std::string* out,
+                           std::vector<std::string>* replaced, std::string* error);
 
 // ------------------------------------------------------------------ scenarios
 // One line each:
@@ -70,6 +81,8 @@ std::string RedirectOnlyIniText(const std::wstring& save_root = {});
 //                                too, on the same private desktop (two-game run)
 //   graphics low                 both games read sandbox.hpp's low-quality windowed settings.cfg
 //   @guest <step>                the step goes to the second game (role host); @both <mod command> to both
+//   launcherini local-test       role host only: both games run the session.ini the launcher's Local test writes
+//                                (supervisor --launcher-ini <dir>, HiddenIniFromLauncher); no "ini" lines then
 //   timeout <s>                  whole run limit, 30..360 (default 360)
 //   waitready <s>                until the mod's automation channel is up
 //   waitlog <s> <regex>          until a stranded_together.log line matches (ECMAScript)
@@ -106,6 +119,10 @@ struct Scenario {
     // ds.exe in DllMain (exit 0x53540006, sandbox-refused.txt) before ds.exe's own code runs; no @guest step may follow.
     bool guest_unredirected = false;
     int guest_unredirected_line = 0;
+    // "launcherini local-test": the two games' session.ini are the launcher's own (the supervisor refuses the run without
+    // --launcher-ini, and --launcher-ini without this line).
+    std::string launcher_ini;
+    int launcher_ini_line = 0;
     std::vector<Step> steps;
 };
 // Keys a scenario may add to session.ini with "ini key=value" (nothing that touches saves,

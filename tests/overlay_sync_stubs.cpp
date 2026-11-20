@@ -10,7 +10,9 @@
 #include <cstring>
 
 #include "debug_actions.hpp"
+#include "dev_tools.hpp"
 #include "player_sync.hpp"
+#include "story_state.hpp"
 
 namespace st::sync::stub {
 std::atomic<int> respawns{0}, removes{0}, visible_calls{0}, log_positions{0}, log_partner{0}, tuning_calls{0};
@@ -325,3 +327,54 @@ bool Command(int, const double (&)[3], char* msg, std::size_t cap) noexcept { re
 namespace st::saveguard {
 bool Command(int, const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "save guard (stub)"), true; }
 }  // namespace st::saveguard
+
+// Dev tools (dev_tools.cpp): the debug rows' handler, the tick, the Dev tools page's view.
+namespace st::dev {
+void Tick(double) noexcept {}
+const char* stub_real_save_refusal = nullptr;  // tests set kRealSaveReason to play a real-save game
+const char* RealSaveRefusal() noexcept { return stub_real_save_refusal; }
+bool Command(Op op, const double (&)[3], char* msg, std::size_t cap) noexcept {
+    return std::snprintf(msg, cap, "dev op %d (stub)", static_cast<int>(op)), true;
+}
+View GetView() noexcept {
+    View v;
+    v.serial = 1;
+    v.enabled = true;
+    std::snprintf(v.session, sizeof(v.session), "sandboxed save (stub)");
+    for (int i = 0; i < 4; ++i) v.ok[i] = true;
+    std::snprintf(v.note[1], sizeof(v.note[1]), "your world only (not shared)");
+    v.god = 0;
+    v.ammo = 0;
+    v.area = 200;
+    v.place_count = 2;
+    std::snprintf(v.places[0].label, sizeof(v.places[0].label), "delivery base #1");
+    v.places[0].dist_m = 12;
+    std::snprintf(v.places[1].label, sizeof(v.places[1].label), "prepper shelter #4");
+    v.places[1].dist_m = 820;
+    return v;
+}
+}  // namespace st::dev
+
+// Story tools (story_state.cpp): the debug rows' handler and the Dev tools page's Story section.
+namespace st::story {
+bool Command(Op op, const double (&)[3], char* msg, std::size_t cap) noexcept {
+    return std::snprintf(msg, cap, "story op %d (stub)", static_cast<int>(op)), true;
+}
+View GetView() noexcept {
+    View v;
+    v.serial = 1;
+    v.probe_ok = v.load_ok = v.load_allowed = true;
+    v.summary.valid = true;
+    v.summary.episode = 2;
+    v.summary.main_total = 48, v.summary.main_done = 4, v.summary.sub_total = 34, v.summary.highest_done_order = 4;
+    storyrules::AddProgress(v.summary, 60, 5, true);
+    storyrules::FormatSummary(v.summary, v.line, sizeof(v.line));
+    v.slot_count = 2;
+    v.slots[0].index = 10;
+    std::snprintf(v.slots[0].title, sizeof(v.slots[0].title), "Order In Progress: No. 1 \"Smart Drug Delivery\" - 00:21:07");
+    v.slots[1].index = 13;
+    std::snprintf(v.slots[1].title, sizeof(v.slots[1].title), "Order In Progress: No. 5 \"Rare Metal Delivery\" - 02:34:08");
+    std::snprintf(v.slots[1].detail, sizeof(v.slots[1].detail), "Head west! / Waystation West of Capital Knot City");
+    return v;
+}
+}  // namespace st::story

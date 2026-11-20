@@ -1,0 +1,185 @@
+# Is the partner's real vehicle solid for Sam on foot? (v0.19, docs/real-partner-body.md section 23.24), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-veh-block -SeedSaves complete-100 -GuestSeed profile-only
+# host_save=1: the real shared vehicles (vehicle_sync=5). The guest's game holds its own unit of the host's truck; while the
+# host drives, that unit is the follower (the NPC driver controller fed the host's inputs). Nothing in the mod turns a
+# real vehicle's collision off (only the v0.14 copies of host_save=0 are collision-free), and the truck's keyframed
+# "Player blocker" part (layer 11 against Player 8) should stop Sam. partner_collision=0: the partner's capsule is out of
+# the way, so only the vehicle can stop Sam; partner_vehicle_damage=0: no knock-down; ride_together=0: no boarding.
+# On the start garage's flat floor, a truck the host summons there. Every walk-in: the guest 4 m left of the truck's
+# middle, facing it, the camera turned onto it within 6 deg (vehicle_sync 18 <kind> 6; Sam walks where the camera
+# looks), then ten 300 ms steps of full stick with log_positions after each (her track against the truck: 0.3 s apart).
+# B0 control: the garage roadster nobody drives (a plain game vehicle in her world; 3 m beside it).
+# B1: the same truck with the host on it (stationary): her unit is the follower (NPC controller).
+# B2: she stands 5 m in front of it, the host creeps into her at a walking pace (rt 70, 3 s).
+# B3: the host has got off: the parked shared truck.
+# Pass (from the logs: the guest's [sync] local= lines in the vehicle's frame): in B0, B1 and B3 she stops against the
+# vehicle's side and stays there for the remaining steps (run 20261120-021010: the truck at 1.67 m from its centre
+# line with the host on it, 1.69 m parked); in B2 she is pushed, never passed through (that run: shoved 2.2 m, then
+# carried up onto the creeping truck's front, z +2.5 m); screenshots B0..B3; no fault.
+role host
+graphics low
+timeout 360
+ini host_save=1
+ini partner_body=real
+ini partner_collision=0
+ini partner_vehicle_damage=0
+ini ride_together=0
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[coop\] host-held save session ON \(host
+@guest waitlog 10 \[coop\] host-held save session ON \(guest
+waitlog 60 \[vshare\] shared real vehicles ON \(host
+@guest waitlog 60 \[vshare\] shared real vehicles ON \(guest
+waitlog 10 \[vdrive\] remote driving ON \(host
+@guest waitlog 10 \[vdrive\] remote driving ON \(guest
+wait 22000
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+@guest waitlog 60 \[vshare\] guest: the host's snapshot #[0-9]+ is complete
+@guest waitlog 30 \[vshare\] guest: binding:
+wait 8000
+# ---- the start garage's flat floor: the host summons a truck there (a hillside road put the walker below its edge,
+# run 20261120-020237: she pressed into the slope, never reached the truck)
+action vehicle_summon 2 12
+waitlog 20 \[vshare\] host: ADD truck
+@guest waitlog 30 \[vshare\] guest: mirror 0x[0-9A-F]+ \(truck\)
+wait 5000
+# ---- control: a free 3 s walk (how far 3 s go with nothing in the way)
+@guest action log_positions
+@guest pad none 3000 ly=32767
+@guest action log_positions
+# ---- B0 control: the garage roadster nobody drives (a plain game vehicle; 3 m: placed at its height, the 4 m ground
+# snap put her on the floor above, run 20261120-021010)
+@guest action vehicle_sync 8 3 1
+wait 1200
+@guest action vehicle_dump 0
+@guest action vehicle_sync 18 1
+?@guest until 25 300 camera aimed #1 at vehicle kind 1 => pad none 200 rx=32767
+@guest action vehicle_sync 18 1 6
+?@guest until 15 120 camera aimed #2 at vehicle kind 1 => pad none 60 rx=26000
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 0
+@guest screenshot B0-guest-against-roadster
+# ---- B1: the host on the truck (stationary): her unit is the follower
+action vehicle_sync 8 1.8 2
+wait 1500
+until 20 4000 \[vdrive\] host: our Sam drives truck => pad X 150
+@guest waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached
+wait 2500
+@guest action vehicle_drive 9 4 1
+wait 1200
+@guest action vehicle_sync 18 6
+?@guest until 25 300 camera aimed #3 at vehicle kind 6 => pad none 200 rx=32767
+@guest action vehicle_sync 18 6 6
+?@guest until 15 120 camera aimed #4 at vehicle kind 6 => pad none 60 rx=26000
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 0
+@guest screenshot B1-guest-against-follower
+screenshot B1-host-view
+@guest action vehicle_drive 1
+# ---- B2: she stands 5 m in front of it; the host creeps into her at a walking pace
+@guest action vehicle_hit 8 5 0
+wait 1000
+@guest action log_positions
+pad none 3000 rt=70 keep
+@guest screenshot B2a-guest-creep
+@guest action log_positions
+pad none 0
+pad none 800 lt=255 keep
+pad none 0
+wait 1500
+@guest action log_positions
+@guest screenshot B2b-guest-after-creep
+screenshot B2-host-after-creep
+@guest action vehicle_drive 1
+# ---- B3: the host gets off: the parked shared truck
+pad X 150
+waitlog 20 \[vdrive\] host: our Sam got off truck
+wait 4000
+@guest action vehicle_drive 9 4 1
+wait 1200
+@guest action vehicle_sync 18 6
+?@guest until 25 300 camera aimed #5 at vehicle kind 6 => pad none 200 rx=32767
+@guest action vehicle_sync 18 6 6
+?@guest until 15 120 camera aimed #6 at vehicle kind 6 => pad none 60 rx=26000
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 300 ly=32767 keep
+@guest action log_positions
+@guest pad none 0
+@guest screenshot B3-guest-against-parked
+screenshot B3-host-view
+@both action vehicle_drive 1
+@both action vehicle_share 0
+nolog \[(vshare|vdrive)\].*FAULT
+@guest nolog \[(vshare|vdrive)\].*FAULT
+@guest quit
+wait 3000
+quit

@@ -54,6 +54,9 @@ struct DebugOptions {
     bool verbose = false;          // verbose mod log
     bool debug_menu = true;        // the in-game debug menu
     int debug_menu_key = 9;        // its key: F1..F12 (the number)
+    // Dev tools (session.ini dev_tools=1): the in-game debug menu's Dev tools page (spawn vehicles, weather, enemies, refill,
+    // god mode, teleport to places). Tools that change what a save keeps work only on a test save (the Local test).
+    bool dev_tools = false;
     // How your partner is drawn on your screen: true = partner_body=real (a solid character that
     // copies their real animation; experimental), false = partner_body=holo (the hologram).
     bool real_partner_body = true;
@@ -113,6 +116,9 @@ struct LinkView {
     std::string headline;          // one short line, e.g. "Connected to Sam"
     std::string detail;            // plain-language sentence(s)
     enum class Tone { neutral, good, warn, bad } tone = Tone::neutral;
+    // The co-op features the running game has off, with the reason (link-status.json "features_off", written by the
+    // mod: the waiting screen, shared vehicles, riding together, vehicle hits). "" = all on (or an older mod).
+    std::string features_off;
 };
 
 // The launcher's update from GitHub Releases (core/core_update.hpp).
@@ -174,6 +180,8 @@ struct LocalTestView {
     LinkView::Tone tone = LinkView::Tone::neutral;
     bool host_pad = false;         // the option: XInput pads on the host too (else keyboard + mouse only)
     std::string guest_character = "sam";   // the guest game's my_character (the host game is always Sam)
+    // What either game reports off (link-status.json "features_off"): "Host: ...", "Guest: ..." lines; "" = all on.
+    std::string features_off;
 };
 
 class LauncherModel {

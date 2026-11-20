@@ -755,6 +755,32 @@ void DriveVoice(const WorldTransform& at, double now) {
         g_next_voice_ms = now + 30000;
 }
 
+// The co-op features this game has off, with the reason ("" = all on, or not a host / guest): the overlay notice
+// (coop::NoticeTick), link-status.json "features_off" and through it the launcher's Play / In game pages. Never silent
+// (the v0.18.0 Local test ran without host_save and nothing on screen said the vehicles were the old copies).
+void FeaturesOff(char* out, std::size_t cap) {
+    out[0] = 0;
+    if (g_cfg.role != Role::host && g_cfg.role != Role::guest) return;
+    const auto real = [](const char* r) { return r && r[0] && std::strcmp(r, "not installed") != 0; };
+    if (!g_cfg.host_save) {
+        std::snprintf(out, cap, "host_save=0 (the launcher's Debug > Host holds the save is off): no waiting screen, no shared vehicles, "
+                                "no riding together, no vehicle hits (the partner's vehicles are the old copies)");
+        return;
+    }
+    if (!coop::Active()) {
+        std::snprintf(out, cap, "the co-op save session is off (%s): no waiting screen, no shared vehicles, no riding together, no vehicle hits",
+                      coop::OffReason());
+        return;
+    }
+    if (real(vshare::OffReason())) {
+        std::snprintf(out, cap, "shared vehicles (%s), so no riding together or vehicle hits", vshare::OffReason());
+        return;
+    }
+    std::size_t n = 0;
+    if (real(ride::OffReason())) n += std::snprintf(out + n, cap - n, "riding together (%s)", ride::OffReason());
+    if (n < cap && real(vhit::OffReason())) std::snprintf(out + n, cap - n, "%svehicle hits (%s)", n ? "; " : "", vhit::OffReason());
+}
+
 void PublishStatus(double now) {
     if (now < g_next_status_ms) return;
     g_next_status_ms = now + 1000;
@@ -782,6 +808,7 @@ void PublishStatus(double now) {
         s.state = "echo";
         s.transport = "";
     }
+    FeaturesOff(s.features_off, sizeof(s.features_off));
     status::Publish(s);
 }
 
@@ -1476,6 +1503,11 @@ void Tick() noexcept {
     audioprobe::Tick(g_local, now);  // audio_probe=1 only: drains the probe rings (docs/audio-research.md section 9)
     selfvoice::Tick(g_local, now);   // self_voice muting only: publishes the local player and the menu figure, logs counts
     coop::Tick(now);     // host_save=1 only: the host-held save session (docs/coop-session.md)
+    if (coop::PlainNoticeWanted()) {   // host_save=0 for a host / guest: the features it costs, on screen
+        char off[200];
+        FeaturesOff(off, sizeof(off));
+        coop::NoticeTick(off, g_local_valid, now);
+    }
     debug::OnTick(now);  // debug-menu actions + snapshot (game thread)
 }
 

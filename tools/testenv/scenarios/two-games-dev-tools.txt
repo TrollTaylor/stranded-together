@@ -1,0 +1,86 @@
+# Dev tools in a host-held save session (docs/debug-actions.md "Dev tools"), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-dev-tools -SeedSaves complete-100 -GuestSeed profile-only
+# host_save=1 with the real shared vehicles (M2) and dev_tools=1 on both games (both run on sandboxed saves here, as in the
+# launcher's Local test). Proves: a vehicle the host spawns with the dev tools is the host's own spawn, shared with the guest
+# (the host's ADD, the guest's mirror); a vehicle the guest spawns goes to the host as a dev request (vwire ReqReason::dev),
+# which the host serves (its spawn, then the same ADD / mirror); the guest may not remove a shared vehicle (refused with the
+# reason); the host's removal reaches the guest; with the host's real-save test override the host refuses the guest's dev
+# request ("dev request #N refused"); the guest's world tools run in its own world only; the Dev tools page on the guest.
+role host
+graphics low
+timeout 360
+ini host_save=1
+ini dev_tools=1
+ini partner_body=real
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[coop\] host-held save session ON \(host
+@guest waitlog 10 \[coop\] host-held save session ON \(guest
+waitlog 60 \[vshare\] shared real vehicles ON \(host
+@guest waitlog 60 \[vshare\] shared real vehicles ON \(guest
+wait 22000
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+@guest waitlog 60 \[vshare\] guest: the host's snapshot #[0-9]+ is complete
+@guest waitlog 30 \[vshare\] guest: binding:
+wait 8000
+@both action dev_status 0
+# ---- the host spawns a truck (variant 6) with the dev tools: shared with the guest
+action dev_vehicle 2 6 12
+waitlog 20 \[vshare\] host: ADD truck
+@guest waitlog 30 \[vshare\] guest: mirror 0x[0-9A-F]+ \(truck\)
+waitlog 10 \[dev\] vehicle check: new truck .* unit variant 6
+wait 3000
+screenshot 01-host-dev-truck
+@guest action vehicle_dump 1
+# ---- the guest spawns a trike (variant 7): a dev request the host serves
+@guest action vehicle_sync 8 3 1
+wait 1500
+@guest action dev_vehicle 3 7 10
+waitlog 20 \[vshare\] host: the guest's request #[0-9]+: spawn trike \(record 0x01C3
+waitlog 20 \[vshare\] host: ADD trike
+@guest waitlog 30 \[dev\] vehicle check: new trike .* unit variant 7
+wait 3000
+@guest screenshot 02-guest-dev-trike
+screenshot 02-host-guest-trike
+# ---- the guest may not remove or repair a shared vehicle; the host may (the guest's copy goes too)
+@guest action dev_status 0
+@guest waitlog 5 \[dev\] status: vehicle edit tools: refused on the guest: shared vehicles live in the host's world
+action dev_vehicle_remove 0 1
+waitlog 20 \[vshare\] host: REM truck
+@guest waitlog 30 \[vshare\] guest: REM from the host: truck
+# ---- the host acts as on a real save: it refuses the guest's dev request
+action dev_status 1 1
+action dev_status 0
+waitlog 5 \[dev\] status: vehicle spawn tools: refused: this game plays on its real save
+@guest action dev_vehicle 1 0 10
+waitlog 20 \[vshare\] host: the guest's dev request #[0-9]+ refused: refused by the host: its game plays on its real save
+action dev_status 1 0
+# ---- the guest's world tools (its own world only) and player tools
+@guest action dev_weather 1
+@guest action dev_refill
+@guest action dev_god 1
+@guest action dev_god 0
+# ---- the Dev tools page on the guest
+@guest menu open
+@guest action dev_status 2
+wait 1500
+@guest screenshot 03-guest-dev-page
+@guest menu close
+nolog \[dev\].*FAULT
+@guest nolog \[dev\].*FAULT
+nolog \[dev\] byte check FAILED
+@guest nolog \[dev\] byte check FAILED
+@guest quit
+wait 3000
+quit

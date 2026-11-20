@@ -153,6 +153,8 @@ Config LoadConfig(const std::wstring& dir) {
             c.verbose = ParseBool(v);
         } else if (k == "debug_menu") {
             c.debug_menu = ParseBool(v);
+        } else if (k == "dev_tools") {
+            c.dev_tools = ParseBool(v);
         } else if (k == "debug_menu_key") {
             const std::uint32_t vk = ParseKey(v);
             if (vk) c.debug_menu_vk = vk;

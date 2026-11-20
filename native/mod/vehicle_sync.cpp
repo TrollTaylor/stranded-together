@@ -328,6 +328,7 @@ wire::GearPose g_last_given[6];  // the last poses given to the copy
 unsigned g_last_given_i = 0;
 double g_trace_until = 0;
 int g_aim_kind = 0;      // hidden tests (action vehicle_sync 18): the camera aim check is on for this vehicle filter
+double g_aim_tol = 25;   // its tolerance (deg; vehicle_sync 18 <kind> [deg])
 unsigned g_aims = 0;
 std::uint32_t g_moving_ticks = 0;  // ticks while the partner's vehicle moved (the frame-aligned meter's frames)
 
@@ -2316,7 +2317,7 @@ bool TakeSend(Entity* local, const WorldTransform& local_wt, std::uint32_t sende
 }
 
 // Hidden tests: whether the game camera looks at the nearest registered vehicle matching the filter (1 roadster, 2 truck,
-// 3 trike, 4 the Kusanagi trike; 5 the partner's vehicle copy), horizontally within 25 deg.
+// 3 trike, 4 the Kusanagi trike; 5 the partner's vehicle copy), horizontally within 25 deg (or the action's own tolerance).
 void CheckAim(Entity* local, double now) {
     if (!g_aim_kind || !local) return;
     static double next_log = 0;
@@ -2365,7 +2366,7 @@ void CheckAim(Entity* local, double now) {
     double diff = (std::atan2(dy, dx) - std::atan2(cf[1], cf[0])) * 57.29577951308232;
     while (diff > 180) diff -= 360;
     while (diff < -180) diff += 360;
-    if (std::fabs(diff) > 25) {
+    if (std::fabs(diff) > g_aim_tol) {
         if (log) Log("[vehicle] camera aim: %.1f deg off the vehicle %.1f m away (camera forward %.2f, %.2f)", diff, best_d, cf[0], cf[1]);
         return;
     }
@@ -3004,7 +3005,8 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             // with short right-stick pulses until then: `until ... camera aimed #n => pad none 200 rx=32767`).
             if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden tests only"), false;
             g_aim_kind = static_cast<int>(v[1]);
-            return std::snprintf(msg, cap, "aiming the camera at vehicle kind %d", g_aim_kind), true;
+            g_aim_tol = v[2] >= 1 && v[2] <= 25 ? v[2] : 25;   // a finer aim (the walk-in tests: Sam walks where the camera looks)
+            return std::snprintf(msg, cap, "aiming the camera at vehicle kind %d (within %.0f deg)", g_aim_kind, g_aim_tol), true;
         case 16:
         case 17: {
             // Hidden tests (the solid copies' collision): 16 places Sam v[1] m (0 = 3) before the live copy (moved v[2] m

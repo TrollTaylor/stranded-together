@@ -376,6 +376,9 @@ struct Args {
     // slots) as the host; profile-only: no slot at all, only profile\ and the settings (the host-held save's guest,
     // docs/coop-session.md).
     bool guest_profile_only = false;
+    // --launcher-ini <dir>: host.ini + guest.ini as the launcher's Local test writes them (StrandedTogether.exe
+    // --write-session local-test --out <dir>; Start-TestRun.ps1 -LauncherIni). The scenario must say "launcherini".
+    std::wstring launcher_ini;
     unsigned timeout_s = kMaxRunSeconds, probe_seconds = 6;
 };
 
@@ -405,6 +408,7 @@ bool ParseArgs(Args& a, std::string* err) {
         else if (k == L"--keep-audio") a.mute = false;
         else if (k == L"--no-mod") a.no_mod = true;
         else if (k == L"--sandbox-session") a.sandbox_session = true;
+        else if (k == L"--launcher-ini") val(a.launcher_ini);
         else if (k == L"--guest-seed") {
             std::wstring v;
             val(v);
@@ -1037,6 +1041,29 @@ int RunGame(Args& a) {
         return 2;
     }
     te::WriteFileAtomic(r.run + L"\\scenario.txt", text);
+    // launcherini: the launcher's own two files (read now; the run refuses before anything changes when they are missing)
+    std::string launcher_host_ini, launcher_guest_ini;
+    if (r.scenario.launcher_ini.empty() != a.launcher_ini.empty()) {
+        Out("REFUSED: %s", a.launcher_ini.empty() ? "the scenario says 'launcherini': run it with --launcher-ini <dir> (Start-TestRun.ps1 does this itself)"
+                                                  : "--launcher-ini given but the scenario has no 'launcherini' line");
+        return 2;
+    }
+    if (!a.launcher_ini.empty()) {
+        const std::wstring d = te::FullPath(a.launcher_ini);
+        if (!te::ReadFileBytes(d + L"\\host.ini", &launcher_host_ini) || !te::ReadFileBytes(d + L"\\guest.ini", &launcher_guest_ini)) {
+            Out("REFUSED: --launcher-ini %s: host.ini / guest.ini unreadable", te::Narrow(d).c_str());
+            return 2;
+        }
+        if (a.sandbox_session || a.no_mod) {
+            Out("REFUSED: --launcher-ini does not go with --sandbox-session / --no-mod");
+            return 2;
+        }
+        // The launcher's host-save guest folder has no save slot (SeedSessionGuest): the same for the guest's scratch.
+        if (launcher_guest_ini.find("\nhost_save=1") != std::string::npos && !a.guest_profile_only) {
+            a.guest_profile_only = true;
+            Out("--launcher-ini: the guest's file has host_save=1: guest seed profile-only (as the launcher's local-guest folder)");
+        }
+    }
     const unsigned limit = std::min(a.timeout_s, r.scenario.timeout_s);
     // role host: a second (guest) game in <mod>\automation\guest (ST_INSTANCE_DIR=automation\guest)
     r.g.on = r.scenario.role == "host";
@@ -1148,9 +1175,22 @@ int RunGame(Args& a) {
     if (r.g.on) so.local_window = "left";              // the two windows side by side (as the launcher's local test)
     so.extra = r.scenario.ini;                         // scenario "ini key=value" lines (allow-listed)
     so.extra.insert(so.extra.end(), r.scenario.host_ini.begin(), r.scenario.host_ini.end());  // "@host ini": this game only
-    deployed = deployed && te::WriteFileAtomic(r.mod_dir + L"\\session.ini", a.no_mod            ? te::RedirectOnlyIniText(extra_root)
-                                                                   : a.sandbox_session ? te::SandboxSessionIniText(sandbox_name, foreign)
-                                                                                       : te::SessionIniText(so));
+    // launcherini: each game's file is the launcher's, with only the save location swapped for this run's redirect
+    std::string host_text = a.no_mod ? te::RedirectOnlyIniText(extra_root) : a.sandbox_session ? te::SandboxSessionIniText(sandbox_name, foreign) : te::SessionIniText(so);
+    if (!launcher_host_ini.empty()) {
+        std::vector<std::string> swapped;
+        std::string lerr;
+        if (!te::HiddenIniFromLauncher(launcher_host_ini, so, &host_text, &swapped, &lerr)) {
+            Out("setup failed: --launcher-ini host.ini: %s", lerr.c_str());
+            deployed = false;
+        } else {
+            std::string list;
+            for (const std::string& l : swapped) list += (list.empty() ? "" : ", ") + l;
+            Out("launcherini: the host game runs the launcher's own host.ini (%s replaced by the run's automation redirect)", list.c_str());
+        }
+    }
+    deployed = deployed && te::WriteFileAtomic(r.mod_dir + L"\\session.ini", host_text);
+    if (deployed && !launcher_host_ini.empty()) te::WriteFileAtomic(r.run + L"\\session-host-deployed.ini", host_text);
     if (deployed && a.sandbox_session) {
         if (!te::SeedScratch(r.run, sandbox_scratch, &err)) {
             Out("setup failed (sandbox): %s", err.c_str());
@@ -1180,9 +1220,22 @@ int RunGame(Args& a) {
         go.extra = r.scenario.ini;
         go.extra.insert(go.extra.end(), r.scenario.guest_ini.begin(), r.scenario.guest_ini.end());
         r.g.expect_refused = r.scenario.guest_unredirected;
-        deployed = te::EnsureDir(r.g.auto_in) && te::EnsureDir(r.g.auto_out) &&
-                   te::WriteFileAtomic(r.g.dir + L"\\session.ini", r.g.expect_refused ? te::UnredirectedGuestIniText(static_cast<unsigned>(go.port_local), static_cast<unsigned>(go.port_peer))
-                                                                                     : te::SessionIniText(go));
+        std::string guest_text = r.g.expect_refused ? te::UnredirectedGuestIniText(static_cast<unsigned>(go.port_local), static_cast<unsigned>(go.port_peer))
+                                                    : te::SessionIniText(go);
+        bool guest_ok = true;
+        if (!launcher_guest_ini.empty()) {
+            std::vector<std::string> swapped;
+            std::string lerr;
+            guest_ok = te::HiddenIniFromLauncher(launcher_guest_ini, go, &guest_text, &swapped, &lerr);
+            if (!guest_ok) Out("setup failed: --launcher-ini guest.ini: %s", lerr.c_str());
+            else {
+                std::string list;
+                for (const std::string& l : swapped) list += (list.empty() ? "" : ", ") + l;
+                Out("launcherini: the guest game runs the launcher's own guest.ini (%s replaced by the run's automation redirect)", list.c_str());
+                te::WriteFileAtomic(r.run + L"\\session-guest-deployed.ini", guest_text);
+            }
+        }
+        deployed = guest_ok && te::EnsureDir(r.g.auto_in) && te::EnsureDir(r.g.auto_out) && te::WriteFileAtomic(r.g.dir + L"\\session.ini", guest_text);
         if (deployed && r.g.expect_refused)
             Out("guest unredirected: the guest's session.ini is role=guest host_save=1 with NO save redirect; its mod must end it in DllMain");
         if (deployed && appdir) deployed = te::WriteFileAtomic(r.g.dir + L"\\automation\\settings.cfg", settings_text);
@@ -1530,6 +1583,7 @@ int RunGame(Args& a) {
     j += ",\"exit_trace\":\"" + te::JsonEscape(exit_trace) + "\",\"game_stdout_tail\":\"" + te::JsonEscape(LastLines(game_stdout, 25)) + "\"";
     j += ",\"two_games\":" + std::string(r.g.on ? "true" : "false");
     j += ",\"guest_seed\":\"" + std::string(a.guest_profile_only ? "profile-only" : "full") + "\"";
+    j += ",\"launcher_ini\":" + std::string(a.launcher_ini.empty() ? "false" : "true");
     j += ",\"sandbox_session\":" + std::string(a.sandbox_session ? "true" : "false") + ",\"sandbox_changes\":" + JsonList(sandbox_changes);
     if (r.g.on) {
         char gl[200];

@@ -2,8 +2,10 @@
 // session.ini host_save=1 for role host or guest; otherwise nothing here is installed.
 //
 // "The host holds the save, the guest never has the save." The host's game plays on the host's own saves; the guest's
-// game runs on its redirected co-op folder (DllMain refuses it otherwise, sandbox.hpp) and waits on its title screen
-// behind a full-screen waiting panel until the host starts a world. Then:
+// game runs on its redirected co-op folder (DllMain refuses it otherwise, sandbox.hpp) and waits on its title screen,
+// whose own menu then shows only "Waiting for <host> to start the game" and Quit Game (title_wait.hpp; the full-screen
+// waiting panel covers the boot screens and stands in when the game's menu cannot be used), until the host starts a
+// world. Then:
 //
 //   host (game thread, hooks)   the title load / converted load / New Game / in-world load request (Retry, pause-menu
 //                                Load) are detected; the slot is named through the game's own slot cache.
@@ -33,6 +35,16 @@ namespace st::coop {
 void Install(const Config& config) noexcept;
 // A host-held save session is running on this game (installed, byte checks passed).
 bool Active() noexcept;
+// Why it is not ("" while Active): "host_save=0", the byte check / hook that failed, "stopped: ...", "not installed".
+const char* OffReason() noexcept;
+// host_save=0 for a host or a guest: nothing of the session runs, but the overlay says so (NoticeTick). The overlay is
+// installed for it even with debug_menu=0 and name_tags=0.
+bool PlainNoticeWanted() noexcept;
+// Game thread, every tick (sync::Tick), with the co-op features this game has off ("" = none; player_sync.cpp
+// FeaturesOff): with host_save=0 an amber banner "Co-op features OFF: <text>" at the title, while loading and for the
+// first minute in the world (again after each return to the title), and the menu header's status line. A running
+// session shows its own notices (SetVehicleNotice); nothing here then.
+void NoticeTick(const char* features_off, bool local_in_world, double now_ms) noexcept;
 // 1 host, 2 guest while a session is running (Active), else 0.
 int SessionRole() noexcept;
 // Game thread. This game is in the session's world: the host in its phase "world", the guest with the host's save loaded,
@@ -51,7 +63,8 @@ void Tick(double now_ms) noexcept;
 void EmergencyStop(const char* reason) noexcept;
 // Debug action "Coop session" (debug_actions.cpp; game thread): 0 log the status, 1 <ms> hidden tests: drop every
 // received datagram for ms (the link-loss scenario), 2 host: offer the newest save now, 3 guest: accept the teleport
-// offer, 4 host: log the save slots.
+// offer, 4 host: log the save slots; hidden tests: 5..9 (8 <0..3>: the waiting panel / input block / the game's own
+// title menu back for a gate test).
 bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 
 }  // namespace st::coop

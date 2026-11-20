@@ -42,6 +42,26 @@ void ApplyDebugOptions(const DebugOptions& options, SessionIni& ini);
 inline constexpr int kCharacterDefaults = 2;
 std::string GuestPickFromSettings(const json::Value& settings, const std::string& stored);
 
+// The local two-player test's two session.ini (Debug > Test saves > Local test; docs/launcher.md): one place for the
+// launcher (start_local_test) and the testenv (--write-session local-test, Start-TestRun.ps1 -LauncherIni), so a hidden
+// run plays exactly what the button writes. The host game (Sam, left, keyboard + mouse) on sandbox local-host, the guest
+// game (the guest's character, right, pads) on sandbox local-guest; loopback UDP between them; the Debug page's options.
+// With options.host_save (default on) both carry host_save=1: the host-held save session (the guest's waiting screen,
+// the save transfer) and on it the shared vehicles, riding together and vehicle hits (docs/coop-session.md). Its guest
+// folder is then prepared like coop-guest (SeedSessionGuest(local-guest)); the host plays its test-save copy, never the
+// real saves, so no host backup is made.
+struct LocalTestChoices {
+    std::string name;              // the player name ("" = none)
+    std::string guest_character;   // the stored pick (GuestCharacter applies the Debug option)
+    bool host_pad = false;         // "Pads on the host too"
+    std::string secret;            // "" = a new one
+};
+void MakeLocalTestInis(const DebugOptions& options, const LocalTestChoices& choices, SessionIni& host, SessionIni& guest);
+// Developer / testenv: the two files MakeLocalTestInis + MakeSessionIniText give, written as <out_dir>\host.ini and
+// <out_dir>\guest.ini, with the Debug page's options and test-save picks read (read only) from the game folder's
+// launcher-settings.json (defaults when there is none). Writes nothing in the game folder.
+int RunWriteLocalTestIni(const std::wstring& game_dir, const std::wstring& out_dir, std::string& report);
+
 // --watch <session_id> from the exe's folder.
 int RunWatch(const std::wstring& game_dir, const std::string& session_id);
 

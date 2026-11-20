@@ -301,6 +301,10 @@ inline bool ParseCommand(const std::string& raw, Command* out, std::string* erro
     } else if (verb == "snapshot") {
         out->kind = Kind::snapshot;
     } else if (verb == "quit") {
+        // "quit pad": the game quits by its own menu (pad A on the selected item, e.g. the title's EXIT GAME); the
+        // supervisor expects the exit as after "quit"
+        if (w.size() > 2 || (w.size() == 2 && detail::Lower(w[1]) != "pad")) return *error = "quit [pad]", false;
+        out->text = w.size() == 2 ? "pad" : "";
         out->kind = Kind::quit;
     } else {
         *error = "unknown command '" + w[0] + "'";

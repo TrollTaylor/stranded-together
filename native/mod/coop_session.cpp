@@ -26,6 +26,7 @@
 #include "partner_source.hpp"
 #include "save_xfer.hpp"
 #include "steam_owner.hpp"
+#include "title_wait.hpp"
 
 namespace st::coop {
 namespace {
@@ -128,6 +129,14 @@ Config g_cfg;
 int g_role = 0;  // 1 host, 2 guest
 std::atomic<bool> g_active{false};
 char g_off[220] = {};          // why the session is off ("" = on)
+// host_save=0 for a host or a guest (the old mode: each player on their own save): nothing of the session is installed,
+// only the notice that its features are off (NoticeTick; docs/coop-session.md "When the features are off").
+int g_plain = 0;               // 1 host, 2 guest; 0 = a session (or not a host / guest)
+struct PlainNotice {
+    double next_ms = 0, world_since = 0, away_since = 0;
+    bool shown = false, published = false;
+    char text[200] = {};
+} g_pn;
 bool g_load_call = false;      // guest: the direct load calls passed their byte check
 bool g_quit_ok = false;        // guest: QuitGame passed its byte check
 bool g_test_retry_ok = false;  // hidden tests: the retry request's guard passed its byte check
@@ -189,6 +198,8 @@ char g_vnotice[200] = {};
 bool g_vnotice_warn = false;
 double g_vnotice_until = 0;
 bool g_guest_title = true;       // the guest's game session is 0
+// Why the guest's title is not shown in the game's own menu (title_wait.cpp; "" = it is): the full-screen panel then.
+char g_title_off[160] = {};
 
 // What the screens show (worker -> game thread)
 struct Ui {
@@ -1333,6 +1344,7 @@ struct TickState {
     double seen_since = 0;
     bool hide_panel = false;       // hidden tests (Command 8): the panel is not drawn (the input block and the gate stay)
     bool lift_block = false;       // hidden tests (Command 8 2): the input block lifted too (the gate alone holds the title)
+    bool title_test_off = false;   // hidden tests (Command 8 3): the game's own title menu back as well (title_wait off)
 };
 TickState g_ts;
 
@@ -1527,6 +1539,39 @@ void BuildView(double now, bool at_title, bool in_world) {
         const bool loading = t.load != TickState::Load::idle;
         v.block_input = at_title && !t.title_accepted && !t.lift_block;
         v.waiting = at_title && !t.title_accepted && !t.hide_panel;
+        // The game's own title menu carries the state (title_wait.cpp): NEW GAME's label, everything but EXIT GAME hidden.
+        // The full-screen panel covers the boot screens until that label is on screen, and stays the fallback.
+        {
+            rules::TitleLabelIn tl;
+            tl.host = rules::SafeHostName(ui.peer_name);
+            tl.connected = ui.connected;
+            tl.ever_connected = ui.ever_connected;
+            tl.version_mismatch = ui.version_mismatch;
+            bool pending = false;   // received and written, our load call not started yet: "Loading" already
+            {
+                Lock l;
+                pending = g_pending.ready;
+            }
+            tl.loading = loading || t.title_accepted || pending;
+            tl.receiving = ui.receiving;
+            tl.have = ui.have;
+            tl.size = ui.size;
+            tl.no_reply = ui.connected && !ui.have_host_state && now - ui.connected_since > kNoReplyMs;
+            tl.have_host_state = ui.have_host_state;
+            tl.host_phase = ui.host_state.phase;
+            tl.new_game_pending = ui.have_host_state && ui.host_state.new_game_pending;
+            // Kept through our own title load until the world is there: the title page fades out under it (never a flash
+            // of the game's own items).
+            title_wait::Set((at_title || (t.title_accepted && !in_world)) && !t.title_test_off, rules::TitleLabel(tl).c_str());
+            if (at_title && title_wait::Showing(now)) {
+                v.waiting = false;
+                v.block_input = false;
+                if (ui.version_mismatch) {   // the label says so; the builds in the banner
+                    std::snprintf(v.banner, sizeof(v.banner), "Game versions differ: %s vs %s. Update both games.", ui.host_build, g_version.build);
+                    v.banner_warn = true;
+                }
+            }
+        }
         std::snprintf(v.title, sizeof(v.title), "Waiting for %s to start the game", host);
         if (!ui.connected) std::snprintf(v.lines[0], sizeof(v.lines[0]), "Link: %s", ui.ever_connected ? "reconnecting..." : "connecting...");
         else std::snprintf(v.lines[0], sizeof(v.lines[0]), "Link: connected (%u ms)", li.rtt_ms);
@@ -1550,6 +1595,7 @@ void BuildView(double now, bool at_title, bool in_world) {
             std::snprintf(v.progress_text, sizeof(v.progress_text), "Loading %s's save...", host);
         }
         std::snprintf(v.lines[2], sizeof(v.lines[2]), "You play a copy of %s's world. Your own saves are not used.", host);
+        if (g_title_off[0]) std::snprintf(v.lines[3], sizeof(v.lines[3]), "(The game's own title menu is not used: %s)", g_title_off);
         v.leave = true;
         // In the world: notices.
         if (in_world || !at_title) {
@@ -1578,6 +1624,7 @@ void BuildView(double now, bool at_title, bool in_world) {
                                                                          : "in the game",
                       t.loaded_counter);
     } else if (!g_off[0]) {
+        title_wait::Set(false, "");
         // Host notices.
         bool new_game = false;
         stx::HostPhase host_phase = stx::HostPhase::title;
@@ -1626,6 +1673,7 @@ void BuildView(double now, bool at_title, bool in_world) {
         }
     }
     if (g_off[0]) {
+        title_wait::Set(false, "");
         // The reason on screen for the first minute (then in the menu header only).
         static double first = 0;
         if (!first) first = now;
@@ -1641,7 +1689,15 @@ void BuildView(double now, bool at_title, bool in_world) {
 // ---------------------------------------------------------------- public
 void Install(const Config& config) noexcept {
     g_cfg = config;
-    if (!config.host_save) return;
+    if (!config.host_save) {
+        if (config.role == Role::host || config.role == Role::guest) {
+            g_plain = config.role == Role::host ? 1 : 2;
+            Log("[coop] host_save=0 (%s): the host-held save session is OFF, and with it the guest's waiting screen, the shared vehicles, "
+                "riding together and vehicle hits; each player plays their own save (an overlay notice says so)",
+                g_plain == 1 ? "host" : "guest");
+        }
+        return;
+    }
     if (config.role != Role::host && config.role != Role::guest) {
         Log("[coop] host_save=1 ignored: role %s (only host and guest)", RoleName(config.role));
         return;
@@ -1704,6 +1760,13 @@ void Install(const Config& config) noexcept {
         Log("[coop] host-held save session OFF: %s", g_off);
         return;
     }
+    // The guest's title in the game's own menu (its byte checks are its own: a mismatch leaves the full-screen panel).
+    // Not with the hidden-run virtual-pad fallback: that one presses CONTINUE on the game's menu.
+    if (g_role == 2) {
+        if (!g_load_call) std::snprintf(g_title_off, sizeof(g_title_off), "the direct load calls are unavailable");
+        else if (!title_wait::Install(g_title_off, sizeof(g_title_off)) && !g_title_off[0])
+            std::snprintf(g_title_off, sizeof(g_title_off), "not installed");
+    }
     if (g_role == 2) {
         const wchar_t* root = automation::SavesScratchRoot();
         if (!root) {
@@ -1753,6 +1816,41 @@ void Install(const Config& config) noexcept {
 
 bool Active() noexcept { return g_active.load(); }
 
+const char* OffReason() noexcept {
+    if (g_plain) return "host_save=0";
+    return g_active.load() ? "" : (g_off[0] ? g_off : "not installed");
+}
+
+bool PlainNoticeWanted() noexcept { return g_plain != 0; }
+
+void NoticeTick(const char* features_off, bool local_in_world, double now) noexcept {
+    if (!g_plain || now < g_pn.next_ms) return;
+    g_pn.next_ms = now + 500;
+    // Shown at the title, while loading and for the first minute of each stay in the world; the menu header keeps it.
+    if (local_in_world) {
+        g_pn.away_since = 0;
+        if (!g_pn.world_since) g_pn.world_since = now;
+    } else {
+        if (!g_pn.away_since) g_pn.away_since = now;
+        if (now - g_pn.away_since > 3000) g_pn.world_since = 0;
+    }
+    const bool show = !g_pn.world_since || now - g_pn.world_since < 60000;
+    const char* text = features_off && features_off[0] ? features_off : "host_save=0";
+    if (g_pn.published && show == g_pn.shown && std::strcmp(text, g_pn.text) == 0) return;
+    g_pn.published = true;
+    g_pn.shown = show;
+    std::snprintf(g_pn.text, sizeof(g_pn.text), "%s", text);
+    overlay::CoopView v;
+    v.active = true;   // the menu header's status line
+    std::snprintf(v.status, sizeof(v.status), "OFF: %s", text);
+    if (show) {
+        std::snprintf(v.banner, sizeof(v.banner), "Co-op features OFF: %s", text);
+        v.banner_warn = true;
+    }
+    overlay::SetCoopView(v);
+    Log("[coop] notice %s: co-op features OFF: %s", show ? "shown" : "hidden (the menu header keeps it)", text);
+}
+
 int SessionRole() noexcept { return g_active.load() ? g_role : 0; }
 
 bool WorldReady(std::uint32_t* load_counter) noexcept {
@@ -1783,6 +1881,7 @@ void EmergencyStop(const char* reason) noexcept {
     Log("[coop] host-held save session STOPPED (%s): %s; the gate is open, the waiting screen and its input block are gone",
         g_role == 1 ? "host" : "guest", reason ? reason : "?");
     if (g_ts.fallback_until) overlay::input::SetVirtualPad(overlay::input::PadState{true});   // the hidden-run fallback's A released
+    title_wait::Set(false, "");   // the game's own title menu back at its next update
     overlay::CoopView v;
     v.active = true;
     v.waiting = false;
@@ -1949,6 +2048,11 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept 
                               ui.host_state.load_counter, ui.have, ui.size, g_ts.loaded_counter, g_blocked.load(), g_version.build,
                               ui.version_mismatch ? " (the host's DIFFERS)" : "");
             Log("[coop] status: %s", msg);
+            if (g_role == 2) {
+                char tw[220];
+                title_wait::Describe(tw, sizeof(tw));
+                Log("[coop] status: %s%s%s", tw, g_title_off[0] ? "; off: " : "", g_title_off);
+            }
             return true;
         }
         case 1: {
@@ -2041,21 +2145,25 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept 
             std::snprintf(msg, cap, "test: %s stands in for the New Game's first save (dropped from the baseline)", g_test_forget);
             return true;
         }
-        case 8: {  // hidden tests: the waiting panel not drawn (1; 2: the input block lifted too, the gate stays) / drawn again (0)
+        case 8: {  // hidden tests: the waiting panel not drawn (1; 2: the input block lifted too; 3: and the game's own title menu
+                   // back, title_wait off: the gate alone holds the title) / everything as it was (0)
             if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden runs only"), false;
             if (g_role != 2) return std::snprintf(msg, cap, "guest only"), false;
             g_ts.hide_panel = v[1] != 0;
             g_ts.lift_block = v[1] >= 2;
+            g_ts.title_test_off = v[1] >= 3;
             g_ts.next_view_ms = 0;
             std::snprintf(msg, cap, "test: the waiting panel is %s (%s)", g_ts.hide_panel ? "hidden" : "drawn",
-                          g_ts.lift_block ? "the input block lifted too: the gate alone holds the title" : "the input block and the gate stay");
+                          g_ts.title_test_off ? "the input block lifted and the game's own title menu back: the gate alone holds the title"
+                          : g_ts.lift_block   ? "the input block lifted too: the gate alone holds the title"
+                                              : "the input block and the gate stay");
             Log("[coop] %s", msg);
             return true;
         }
         default: break;
     }
     return std::snprintf(msg, cap, "coop_session: 0 log, 1 ms blackout, 2 offer the newest save (host), 3 teleport (guest), 4 slots (host), 5 t i load, "
-                                   "6 quit, 7 [1|2] retry [query|forced], 8 0/1/2 panel, 9 t i New Game first save (5-9 and 1: hidden tests)"),
+                                   "6 quit, 7 [1|2] retry [query|forced], 8 0/1/2/3 panel, 9 t i New Game first save (5-9 and 1: hidden tests)"),
            false;
 }
 

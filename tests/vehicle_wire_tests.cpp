@@ -439,7 +439,10 @@ void TestRejections() {
         b[kHeaderSize + 5] = static_cast<std::uint8_t>(-2);
         CHECK(!DecodeReq(b.data(), b.size(), qo));
         b = qg;
-        b[kHeaderSize + 6] = 3;  // reason
+        b[kHeaderSize + 6] = 3;  // reason 3: the guest's dev tools (dev_tools.cpp) decode
+        CHECK(DecodeReq(b.data(), b.size(), qo) && qo.reason == ReqReason::dev);
+        b = qg;
+        b[kHeaderSize + 6] = 4;  // reason
         CHECK(!DecodeReq(b.data(), b.size(), qo));
         b = qg;
         b[kHeaderSize + 7] = 1;  // reserved

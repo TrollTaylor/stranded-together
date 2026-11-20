@@ -1,0 +1,71 @@
+# Story tools, solo (docs/dev-tools.md "Story tools"), hidden:
+#   pwsh -File tools\testenv\Story-Library.ps1 -Pack
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario story-points -SeedSaves story-pack
+#   pwsh -File tools\testenv\Story-Library.ps1 -Probe build-testenv\runs\<this run>     (writes each entry's episode)
+# The story pack holds the library's entries as manualsave10..19 (a hidden run's saves are sandboxed, so every story tool
+# is allowed). Steps: the byte checks; Continue; the story probe's first state; the slot list; the Dev tools page's Story
+# section; every library entry loaded with story_load (the game's own Load Game) and its story state logged ("[story]
+# after the load of manualsave<N>: ..."), a screenshot each; the full mission list once; last, the real-save refusal (the
+# dev tools' test override acts as a real save: the load's gate, `story 3`, says refused with the reason (a refused
+# story_load would fail its step); the probe still reads).
+# Pass: every step ok, the [story] lines named above, no FAILED / FAULT, saves unchanged.
+role solo
+timeout 360
+ini dev_tools=1
+waitready 90
+waitlog 120 \[overlay\] input attached
+waitlog 30 \[story\] story tools: [0-9]+/[0-9]+ byte checks ok; probe on, load on
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+wait 6000
+waitlog 30 \[story\] (Prologue|Episode [0-9]+|episode unknown) "
+action story 0
+action story 2
+waitlog 5 \[story\] slot manualsave10 \(story library\)
+screenshot 00-continue
+# ---- the Dev tools page with the Story section
+menu open
+action dev_status 2
+wait 1500
+screenshot 01-dev-page-story
+menu close
+# ---- every story point of the pack
+action story_load 10
+waitlog 150 \[story\] load of manualsave10: in the world after
+waitlog 20 \[story\] after the load of manualsave10:
+wait 6000
+screenshot 10-manualsave10
+action story_load 11
+waitlog 150 \[story\] load of manualsave11: in the world after
+waitlog 20 \[story\] after the load of manualsave11:
+wait 6000
+screenshot 11-manualsave11
+action story_load 12
+waitlog 150 \[story\] load of manualsave12: in the world after
+waitlog 20 \[story\] after the load of manualsave12:
+wait 6000
+screenshot 12-manualsave12
+action story_load 13
+waitlog 150 \[story\] load of manualsave13: in the world after
+waitlog 20 \[story\] after the load of manualsave13:
+wait 6000
+screenshot 13-manualsave13
+?action story 1
+action story_load 14
+waitlog 150 \[story\] load of manualsave14: in the world after
+waitlog 20 \[story\] after the load of manualsave14:
+wait 6000
+screenshot 14-manualsave14
+# ---- the real-save rule: refused with the reason (the probe still reads)
+action dev_status 1 1
+action story 3
+waitlog 5 \[story\] load gate: refused: this game plays on its real save
+action story 0
+action dev_status 1 0
+nolog \[story\].*FAULT
+nolog \[story\] byte check FAILED
+nolog \[story\] load of manualsave[0-9]+: .*FAILED
+quit
