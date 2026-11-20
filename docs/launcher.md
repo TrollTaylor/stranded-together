@@ -157,6 +157,11 @@ Three tabs (`ui::DebugTab`):
   own save) and **Back up my saves before co-op** (`"backup_host_saves"`, default on, only with the first);
   **Dev tools** (`"debug"` `"dev_tools"`, default off, needs the debug menu: writes `dev_tools=1`, the debug menu's Dev
   tools tab; world-changing tools only on a test save, docs/debug-actions.md "Dev tools");
+  **Lock the mouse to the focused game window (Local test)** (`"debug"` `"mouse_lock"`, default on: the Local test writes
+  `mouse_lock=1` into BOTH games' files, `core::MakeLocalTestInis`; Host and Join never write it, `ApplyDebugOptions`
+  leaves it out. In the game: the cursor stays inside the client area of the game window that is in front, F10 (F11
+  when the menu key is F10) moves to the other game's window, Alt+Tab / the Win key / minimising leave; see "Mouse lock"
+  below);
   **Wake the partner clone** (`partner_activate`); **Verbose mod log**; **Reset to
   defaults**. Saved in `launcher-settings.json` under `"debug"` (sliders when released)
   and written into every `session.ini`, Host and Join included
@@ -195,6 +200,36 @@ Three tabs (`ui::DebugTab`):
   stopped); the game shows the same as an amber overlay notice (docs/coop-session.md "When the features are off").
 
 The Play > Solo test tab links to it; Tools points to it.
+
+### Mouse lock (Local test)
+
+Play test 2 (v0.19.0): with two windowed games side by side the cursor walked out of the game being played into the other
+one. ds.exe clips the cursor only in gameplay (one pixel at the window centre, and only while its window has the focus
+when that request changes) and frees it in the title, every menu, the map and after any focus change; the guest's game
+never clipped at all (its clips are kept from the system: it is the pad player). With `mouse_lock=1`
+(`native/mod/overlay/mouse_lock.hpp`, decided every Present):
+
+* The cursor stays inside the **client area of the game window that really is in front** (the real foreground, never the
+  guest's hooked `GetForegroundWindow` answer), from the moment the cursor is inside it (a click into it, moving into
+  it, or F10). Coming to the front by Alt+Tab or the taskbar with the cursor elsewhere does not grab it. The game's own
+  tighter one-pixel clip in gameplay is left alone; its `ClipCursor(NULL)` (menus, title, map) becomes the client area;
+  the F9 menu keeps the cursor inside the window too.
+* **Leaving:** F10 (F11 when the menu key is F10) puts the cursor in the centre of the other game's window and brings it
+  to the front (found by the window property `StrandedTogether.LocalSlot` both Local test windows carry); Alt+Tab, the
+  Win key, minimising and Ctrl+Alt+Del work as always. Losing the focus, minimising and a title-bar drag release the
+  clip at once; only our own clip is ever released (never one another program set). The clip also goes when the game
+  window closes or the game exits. The game that is not in front never frees the focused game's clip: ds.exe calls
+  `ClipCursor(NULL)` whenever its window lacks the focus (on every menu / map / cutscene edge), and that release only
+  goes through when the clip in effect is one this game set itself (`[mouse] the game freed the cursor while another
+  window is in front: not applied`). This holds in the Local test with or without the lock.
+* The startup hint (top left, 4 s after you are in the world, for 12 s) reads `F9: debug menu | F10: other game window |
+  Alt+Tab: leave`; the debug menu's Settings tab has a "Lock the mouse to this game window" switch and the state line.
+* Log: `[config] mouse_lock=1`, `[mouse] lock ON (local test) ...`, `[mouse] lock: holding the cursor inside the game
+  window (client ...)` / `cursor free: <why>`, `[mouse] lock: released (<why>)`, `[mouse] F10: switched to the right
+  (guest) game window`.
+* Hidden runs never clip, move or activate anything (the cursor belongs to the user's desktop): they log `[mouse] lock
+  (hidden run, not applied): would hold ...` and `[mouse] F10: would switch to ...` (docs/hidden-testing.md,
+  `two-games-launcher-f9`).
 
 ## In game
 
@@ -331,6 +366,8 @@ host_save=1                     the host-held save session (Host and Join, Debug
                                 fake game build for the version check; ignored outside automation=1)
 local_input=host|host_pad|guest local test: input split, keeps running unfocused
 local_window=left|right         local test: the window takes that half of the monitor
+mouse_lock=1                    local test, Debug "Lock the mouse to the focused game window" (default on; written only when
+                                set, 0/1 only): the cursor stays in the game window in front, F10 switches game
 frame_cap=30                    local test: at most 30 frames per second
 my_character=<key>              the character the other player sees you as: an offered body_table key; always sam for a host,
                                 fragile_suit for every other role unless Debug > Allow other characters is on

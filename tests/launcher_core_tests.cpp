@@ -1448,6 +1448,7 @@ void TestSaves() {
         // the save transfer, and on them the shared vehicles, riding together and vehicle hits. v0.18.0 wrote no host_save,
         // so all four were off in the user's play test and nothing said so.
         CHECK(ini.host_save && ini.sandbox_foreign_saves && text.find("host_save=1\n") != std::string::npos);
+        CHECK(ini.mouse_lock && text.find("mouse_lock=1\n") != std::string::npos);   // the mouse lock (Debug default on)
         for (const char* off : {"partner_vehicle_damage=0", "partner_collision=0", "ride_together", "vehicle_sync"})
             CHECK(text.find(off) == std::string::npos);
         {
@@ -1572,6 +1573,49 @@ void LocalTestSettings() {
     CHECK(merged.find("\"rendering_width\" \"1280\"") != std::string::npos);
     CHECK(merged.find("1920") == std::string::npos);
     CHECK(merged.find("\"nvidia_dlss\" \"0\"") != std::string::npos);  // the game's other keys stay
+}
+
+// The mouse lock (play test 2: the cursor walked out of the game window into the other one): a Debug option, on by
+// default, written as mouse_lock=1 into BOTH Local test files (MakeLocalTestInis, the files the button and the hidden
+// `launcherini local-test` runs use), never by Host / Join (ApplyDebugOptions), parsed strictly.
+void MouseLockSettings() {
+    CHECK(DebugOptions{}.mouse_lock && DebugOptionsFromSettings(json::Value::Object()).mouse_lock);
+    {
+        DebugOptions off;
+        off.mouse_lock = false;
+        json::Value s = json::Value::Object(), sb;
+        DebugOptionsToSettings(off, s);
+        CHECK(json::Parse(json::Dump(s), sb) && !DebugOptionsFromSettings(sb).mouse_lock);
+        DebugOptionsToSettings(DebugOptions{}, s);
+        CHECK(json::Parse(json::Dump(s), sb) && DebugOptionsFromSettings(sb).mouse_lock);
+    }
+    LocalTestChoices choices;
+    choices.secret = "K7RD3WQ9MP2XVB6TZHN4";
+    SessionIni host, guest, back;
+    std::string text, error;
+    MakeLocalTestInis(DebugOptions{}, choices, host, guest);
+    CHECK(host.mouse_lock && guest.mouse_lock);
+    CHECK(MakeSessionIniText(host, text, error) && text.find("mouse_lock=1\n") != std::string::npos);
+    CHECK(ParseSessionIniText(text, back, error) && back.mouse_lock);
+    CHECK(MakeSessionIniText(guest, text, error) && text.find("mouse_lock=1\n") != std::string::npos);
+    CHECK(ParseSessionIniText(text, back, error) && back.mouse_lock && back.local_window == "right");
+    DebugOptions off;
+    off.mouse_lock = false;
+    MakeLocalTestInis(off, choices, host, guest);
+    CHECK(!host.mouse_lock && !guest.mouse_lock);
+    CHECK(MakeSessionIniText(guest, text, error) && text.find("mouse_lock") == std::string::npos);
+    CHECK(ParseSessionIniText(text, back, error) && !back.mouse_lock);
+    // Host / Join (ApplyDebugOptions): never written, whatever the option says (one game, the game's own cursor handling).
+    SessionIni online;
+    online.role = "host";
+    online.secret = choices.secret;
+    ApplyDebugOptions(DebugOptions{}, online);
+    CHECK(!online.mouse_lock && MakeSessionIniText(online, text, error) && text.find("mouse_lock") == std::string::npos);
+    // Strict: 0 / 1 only.
+    CHECK(ParseSessionIniText(text + "mouse_lock=0\n", back, error) && !back.mouse_lock);
+    CHECK(ParseSessionIniText(text + "mouse_lock=1\n", back, error) && back.mouse_lock);
+    CHECK(!ParseSessionIniText(text + "mouse_lock=yes\n", back, error) && error.find("mouse_lock") != std::string::npos);
+    CHECK(!ParseSessionIniText(text + "mouse_lock=2\n", back, error));
 }
 
 // The host-held save (M1): session.ini's refuse rule, the guest's coop-guest folder, the host's backups and the
@@ -1929,6 +1973,7 @@ int main() {
     TestSaves();
     HostSaveSession();
     LocalTestSettings();
+    MouseLockSettings();
     std::printf("launcher core tests: %d/%d passed\n", g_checks - g_failures, g_checks);
     return g_failures == 0 ? 0 : 1;
 }

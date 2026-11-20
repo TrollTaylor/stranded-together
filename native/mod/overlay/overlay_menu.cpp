@@ -811,6 +811,23 @@ void SettingsTab(Context& c) {
          VkName(c.toggle_vk, key, sizeof(key)), c.toggle_vk);
     Text(&kDim, "Esc or the key closes the menu. While it is open the game gets no mouse, keyboard or XInput pad.");
 
+    const input::MouseLockStatus ml = input::GetMouseLockStatus();
+    ImGui::SeparatorText("Mouse");
+    if (ml.configured) {
+        bool on = ml.on;
+        if (ImGui::Checkbox("Lock the mouse to this game window", &on)) input::SetMouseLockOn(on);
+        char sw[24];
+        Tooltip("While this game window is in front the cursor stays inside it (session.ini mouse_lock=1, the launcher's Local test).");
+        if (ml.switch_enabled)
+            Text(&kDim, "%s switches to the other game's window; Alt+Tab, the Win key or minimising leave it.", VkName(ml.switch_vk, sw, sizeof(sw)));
+        else
+            Text(&kDim, "Alt+Tab, the Win key or minimising leave the window.");
+        Text(nullptr, "Mouse lock: %s, %s (%lu clips, %lu releases, %lu game releases kept inside, %lu switches)", ml.on ? "on" : "off", ml.state,
+             ml.clips, ml.releases, ml.replaced, ml.switches);
+    } else {
+        Text(&kDim, "Mouse lock off (the launcher's Local test turns it on: Debug page, \"Lock the mouse to the focused game window\").");
+    }
+
     ImGui::SeparatorText("Tools");
     ActionButtons(debug::Tab::tools);
 
@@ -834,6 +851,8 @@ void SettingsTab(Context& c) {
             Prop("blocked", "%lu keys, %lu messages, %lu raw input, %lu idle pads", c.input.blocked_keys, c.input.blocked_messages,
                  c.input.blocked_raw_input, c.input.idle_pads);
             Prop("suppressed", "%lu ClipCursor, %lu SetCursorPos", c.input.suppressed_clip, c.input.suppressed_cursor_pos);
+            const input::HookCounts hc = input::GetHookCounts();
+            Prop("keyboard hook", "%lu HC_NOREMOVE / %lu HC_ACTION calls, %lu menu toggles", hc.noremove, hc.action, c.input.toggles);
             ImGui::EndTable();
         }
     }
@@ -898,7 +917,13 @@ void Draw(Context& c) {
         }
     }
     ImGui::End();
-    if (!open || (ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !ImGui::IsAnyItemActive())) c.close = true;
+    if (!open) {
+        c.close = true;
+        c.close_reason = "by the menu's close button";
+    } else if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !ImGui::IsAnyItemActive()) {
+        c.close = true;
+        c.close_reason = "by Esc";
+    }
 }
 
 }  // namespace st::overlay::menu

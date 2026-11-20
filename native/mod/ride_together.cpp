@@ -14,6 +14,7 @@
 #include "coop_session.hpp"
 #include "game_actions.hpp"
 #include "link.hpp"
+#include "MinHook.h"
 #include "log.hpp"
 #include "overlay/overlay_input.hpp"
 #include "partner_source.hpp"
@@ -134,9 +135,15 @@ struct Pass {
     double test_crash_dv = 0;
     bool test_taken = false;
     double exit_wait_until = 0;        // a hold to get off came while too fast: off once it slows down (until then)
+    bool native = false;               // asked through the game's own "Use Vehicle" (kReqNative)
+    bool off_hint_done = false;        // carried: the ImGui get-off hint (the game showed no RideOff prompt)
+    double last_exit_ms = -1e18;       // the last get-off press (a native press and our own read of it count once)
 };
 Pass g_p;
-rwire::HoldDetector g_hold;            // board (idle) / get off (riding)
+rwire::HoldDetector g_hold;            // board (ImGui fallback) / get off (ImGui fallback)
+rwire::PressDetector g_press;          // get off (native prompt): a press
+double g_np_last_press_ms = -1e18;     // the game's TryStart repeats while the button is held: one press per gap
+unsigned g_np_seen_presses = 0;
 double g_cooldown_until = 0;
 double g_prompt_ms = 0;
 // Boarding waits while our Sam was just hurt (a vehicle hit, a fall: he lies on the ground and gets up): no ride prompt
@@ -191,6 +198,209 @@ unsigned g_roll_left = 0;
 // seat measure
 std::uintptr_t g_meas_e = 0, g_meas_unit = 0;
 std::uint8_t g_meas_kind = 0;
+
+// ---------------------------------------------------------------- the game's own "Use Vehicle" prompt (native)
+// Play test 2 (v0.19.0): the ImGui "Hold [X] / [F]" prompt showed but never boarded (our button reads missed the user's
+// pad and keys), and the user wants the game's own "Use Vehicle", which the game crosses out on the partner's vehicle.
+// The prompt is EDSUIActionLocalizedId 5 (RideOn; 6 RideOff), requested by Sam's ride action (vtable 0x143D82CF8) from
+// its icon provider vt+0xF0 for action slots 3 and 6 (the two control schemes); request+0x09 is the cross-out, +0x98 the
+// target vehicle's game-actor id (vehicle +0x314). A press of an enabled slot reaches the action's TryStart (vt+0x08), which
+// writes that id to action+0x1E0 and returns 1; the game then gets on (SetDriver, which our follower's seat refuses).
+// Two detours, both reached only through the ride vtable (the vptr is checked first):
+//   provider post-hook  for the partner-driven vehicle while boarding is allowed: the cross-out lifted (+0x09 = 0, +0x06 = 1,
+//                       reason 0, a real distance key) and the action's disabled latch (+0x13A bit 0x20) as before the call;
+//                       carried: the RideOn the game offers on the vehicle we ride becomes an enabled RideOff;
+//   TryStart post-hook  a start on the partner's vehicle (or the one we ride) is undone (action+0x1E0 / +0x10A as before)
+//                       and returns 0, so the game never starts its own get-on there; the press goes to the tick as ours
+//                       (REQUEST, or getting off). Any other vehicle keeps the game's own get-on.
+// The press is the game's own input (keyboard F, any pad the game reads), whatever the device. docs section 24.3.
+constexpr std::uintptr_t kRideVt = 0x143D82CF8;        // Sam's ride action
+constexpr std::uintptr_t kRideIcon = 0x14279D870;      // its icon provider (vt+0xF0): (action, slot, request*)
+constexpr std::uintptr_t kRideTryStart = 0x1427D5A80;  // its TryStart (vt+0x08): bool (action)
+constexpr std::uintptr_t kRideSlotQuery = 0x1427A4950; // its slot query (vt+0xA8): jmp 0x1427A4970
+constexpr std::uintptr_t kActionQuery = 0x1427A4970;   // the action context's slot query (X, action, kind, out)
+constexpr std::uintptr_t kVtIcon = kRideVt + 0xF0, kVtTry = kRideVt + 0x08, kVtQuery = kRideVt + 0xA8;
+constexpr std::uintptr_t kAFlags = 0x13A, kATarget = 0x1E0, kAStart = 0x10A;
+constexpr std::uint32_t kNoActorId = 0x1FFFFF;
+constexpr std::int32_t kIconRideOn = 5, kIconRideOff = 6;
+// clang-format off
+constexpr Site kNativeSites[] = {
+    {kRideIcon,      "40 53 56 57 41 56 41 57 B8 B0 C9 04 00 E8", "the ride action's icon provider"},
+    {0x14279E693,    "C6 46 09 01 C7 06 05 00 00 00 40 38 7E 09 74 06", "the provider's cross-out (request +0x09) and RideOn (+0x00 = 5)"},
+    {0x14279E6EC,    "89 86 88 00 00 00 89 9E 98 00 00 00 C7 46 20 74 55 96 03 44 89 66 24", "the provider's target id (+0x98) and reason (+0x24)"},
+    {0x14279E9A5,    "41 80 8E 3A 01 00 00 20", "the provider's disabled latch (action +0x13A bit 0x20)"},
+    {kRideTryStart,  "40 53 48 81 EC 90 00 00 00 48 8B 05 A0 B5 78 02 48 33 C4 48 89 84 24 80 00 00 00", "the ride action's TryStart"},
+    {0x1427D5B97,    "89 83 E0 01 00 00 0F B6 44 24 24 88 83 0A 01 00 00 B0 01 C6 83 0B 01 00 00 00", "TryStart's target write (action +0x1E0, +0x10A, +0x10B)"},
+    {kRideSlotQuery, "4D 8B C8 44 8B C2 48 8B D1 48 8B 49 60 E9 0E 00 00 00", "the ride action's slot query (vt+0xA8)"},
+    {kActionQuery,   "4D 63 D0 4D 69 C2 E0 03 00 00 49 39 94 08 38 53 00 00", "the action slot query (owner, generation, disabled, pressed)"},
+};
+// The game's own pad state (device-neutral: XInput, a PlayStation pad through scePad, Steam Input, HID): the input manager
+// 0x147BE6330 has 7 player slots of 0xF0 bytes (+0xE4 1 = read, +0x108 player id, +0x30 its controller (+0x28 device), +0x40
+// the 0xB0-byte pad state); both converters write X / Square to +0x13 and B / Circle to +0x11 (0xFF while held). For getting
+// off a carried ride and the ImGui fallback (the native prompt reads the game's input itself).
+constexpr std::uintptr_t kInputMgr = 0x147BE6330, kInSlotSize = 0xF0, kInSlotPad = 0x40, kInSlotState = 0xE4, kInSlotPlayer = 0x108;
+constexpr std::uintptr_t kPadX = 0x13, kPadB = 0x11;
+constexpr std::uintptr_t kInputMgrLoad = 0x1418E9E60;  // lea rcx, [kInputMgr] (byte-checked: its RIP target is kInputMgr)
+constexpr Site kPadSites[] = {
+    {0x1419B3090, "40 53 56 57 41 56 48 83 EC 48", "the game's pad reader"},
+    {0x1419B21CC, "B8 00 40 00 00", "XInput X (0x4000) to the pad state"},
+    {0x1419B21EC, "41 88 49 13", "XInput X to pad state +0x13"},
+    {0x1419B21C0, "41 88 41 11", "XInput B to pad state +0x11"},
+    {0x1419B8850, "41 88 4E 13", "PlayStation Square to pad state +0x13"},
+    {0x1419B882E, "41 88 46 11", "PlayStation Circle to pad state +0x11"},
+};
+// clang-format on
+
+using FnIcon = void (*)(std::uintptr_t, int, std::uint8_t*);
+using FnTry = bool (*)(std::uintptr_t);
+FnIcon o_icon = nullptr;
+FnTry o_try = nullptr;
+std::uintptr_t g_ride_vt = 0;              // A(kRideVt)
+bool g_pad_ok = false;                     // kPadSites checked
+char g_np_off[160] = "not installed";
+std::atomic<bool> g_np_hooked{false};      // both detours on
+std::atomic<bool> g_np_enabled{true};      // ride_test 12 (hidden tests: the ImGui fallback)
+std::atomic<std::uint32_t> g_np_seen{0};   // the partner-driven vehicle's actor id here (0 none)
+std::atomic<std::uint32_t> g_np_lift{0};   // ... while boarding it is allowed: its prompt is lifted
+std::atomic<std::uint32_t> g_np_ride{0};   // carried: the vehicle we ride (its RideOn becomes RideOff)
+std::atomic<float> g_np_dist{2.0f};        // our Sam to that vehicle (the request's distance key when the game wrote 1e6)
+std::atomic<unsigned> g_np_icon_calls{0}, g_np_lifts{0}, g_np_offs{0}, g_np_refused{0};
+std::atomic<unsigned> g_np_presses{0};     // TryStart starts we took (board or get off)
+std::atomic<std::uint32_t> g_np_press_id{0};
+// What the provider made of the partner's vehicle, per slot (3, 6): valid 31 | lifted 30 | off 29 | disabled 28 |
+// reason (4 bits) 20 | icon 0..7 (the tick logs every change).
+std::atomic<std::uint32_t> g_np_obs[2]{};
+
+bool NativeOn() noexcept { return g_np_hooked.load(std::memory_order_relaxed) && g_np_enabled.load(std::memory_order_relaxed); }
+// The detours act only while riding together runs: after an emergency stop (or with it off) the game's prompt and its
+// get-on pass unchanged, whatever ids were left behind.
+bool NativeActs() noexcept {
+    return g_np_enabled.load(std::memory_order_relaxed) && g_on.load(std::memory_order_relaxed) && !g_stop.load(std::memory_order_relaxed);
+}
+
+void H_Icon(std::uintptr_t a, int slot, std::uint8_t* req) {
+    const std::uint8_t latch = *reinterpret_cast<std::uint8_t*>(a + kAFlags) & 0x20;
+    o_icon(a, slot, req);
+    if ((slot != 3 && slot != 6) || !req || *reinterpret_cast<std::uint64_t*>(a) != g_ride_vt || !NativeActs()) return;
+    g_np_icon_calls.fetch_add(1, std::memory_order_relaxed);
+    const std::int32_t icon = *reinterpret_cast<std::int32_t*>(req);
+    const std::uint32_t id = *reinterpret_cast<std::uint32_t*>(req + 0x98);
+    if (icon != kIconRideOn || id == 0 || id == kNoActorId) return;
+    const std::uint32_t seen = g_np_seen.load(std::memory_order_relaxed), lift = g_np_lift.load(std::memory_order_relaxed),
+                        ride = g_np_ride.load(std::memory_order_relaxed);
+    if (id != seen && id != ride) return;  // another vehicle: the game's own prompt as it is
+    const std::uint8_t dis0 = req[0x09];
+    const std::int32_t reason0 = *reinterpret_cast<std::int32_t*>(req + 0x24);
+    bool lifted = false, off = false;
+    if (ride && id == ride) {
+        *reinterpret_cast<std::int32_t*>(req) = kIconRideOff;  // carried: getting off, enabled
+        off = true;
+        g_np_offs.fetch_add(1, std::memory_order_relaxed);
+    } else if (lift && id == lift) {
+        lifted = true;
+        g_np_lifts.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (lifted || off) {
+        req[0x09] = 0;
+        req[0x06] = 1;
+        *reinterpret_cast<std::int32_t*>(req + 0x24) = 0;
+        if (!(*reinterpret_cast<float*>(req + 0x50) < 1e5f)) *reinterpret_cast<float*>(req + 0x50) = off ? 0.1f : g_np_dist.load(std::memory_order_relaxed);
+        std::uint8_t& f = *reinterpret_cast<std::uint8_t*>(a + kAFlags);
+        f = static_cast<std::uint8_t>((f & ~0x20) | latch);
+    }
+    const std::uint32_t obs = 0x80000000u | (lifted ? 0x40000000u : 0) | (off ? 0x20000000u : 0) | (dis0 ? 0x10000000u : 0) |
+                              (static_cast<std::uint32_t>(reason0 & 0xF) << 20) | static_cast<std::uint32_t>(icon & 0xFF);
+    g_np_obs[slot == 3 ? 0 : 1].store(obs, std::memory_order_relaxed);
+}
+
+bool H_TryStart(std::uintptr_t a) {
+    const std::uint32_t t0 = *reinterpret_cast<std::uint32_t*>(a + kATarget);
+    const std::uint16_t b0 = *reinterpret_cast<std::uint16_t*>(a + kAStart);
+    const bool r = o_try(a);
+    if (!r || *reinterpret_cast<std::uint64_t*>(a) != g_ride_vt || !NativeActs()) return r;
+    const std::uint32_t id = *reinterpret_cast<std::uint32_t*>(a + kATarget);
+    if (id == 0 || id == kNoActorId) return r;
+    const std::uint32_t seen = g_np_seen.load(std::memory_order_relaxed), lift = g_np_lift.load(std::memory_order_relaxed),
+                        ride = g_np_ride.load(std::memory_order_relaxed);
+    if (id != seen && id != ride && id != lift) return r;  // another vehicle: the game's own get-on
+    // the partner's vehicle (or the one we ride): never the game's get-on (our follower holds its seat); every start is
+    // passed on (the tick counts one press per press: TryStart repeats while the button is held)
+    *reinterpret_cast<std::uint32_t*>(a + kATarget) = t0;
+    *reinterpret_cast<std::uint16_t*>(a + kAStart) = b0;
+    if (id != lift && id != ride) g_np_refused.fetch_add(1, std::memory_order_relaxed);
+    g_np_press_id.store(id, std::memory_order_relaxed);
+    g_np_presses.fetch_add(1, std::memory_order_release);
+    return false;
+}
+
+// Bootstrap thread (riding together ON): the checks and both detours; any failure leaves the ImGui hold prompt.
+void InstallNative() {
+    g_ride_vt = A(kRideVt);
+    unsigned bad = 0;
+    const char* first = nullptr;
+    for (const Site& s : kNativeSites)
+        if (!mem::CodeMatches(A(s.va), s.sig)) {
+            ++bad;
+            if (!first) first = s.name;
+            Log("[ride] native prompt: byte check FAILED: %s at 0x%llX", s.name, static_cast<unsigned long long>(s.va));
+        }
+    const bool vt_ok = mem::Q(A(kVtIcon)) == A(kRideIcon) && mem::Q(A(kVtTry)) == A(kRideTryStart) && mem::Q(A(kVtQuery)) == A(kRideSlotQuery);
+    if (!vt_ok) {
+        ++bad;
+        if (!first) first = "the ride action's vtable (provider / TryStart / query slots)";
+        Log("[ride] native prompt: byte check FAILED: the ride action's vtable 0x%llX", static_cast<unsigned long long>(kRideVt));
+    }
+    const unsigned n = static_cast<unsigned>(sizeof(kNativeSites) / sizeof(kNativeSites[0])) + 1;
+    if (bad) {
+        std::snprintf(g_np_off, sizeof(g_np_off), "this game build differs (%s)", first);
+        Log("[ride] native Use Vehicle prompt OFF: %s (%u of %u checks failed): the ImGui hold prompt boards instead", g_np_off, bad, n);
+        return;
+    }
+    void* ti = reinterpret_cast<void*>(A(kRideIcon));
+    void* tt = reinterpret_cast<void*>(A(kRideTryStart));
+    MH_STATUS s = MH_CreateHook(ti, reinterpret_cast<void*>(&H_Icon), reinterpret_cast<void**>(&o_icon));
+    if (s == MH_OK) {
+        s = MH_CreateHook(tt, reinterpret_cast<void*>(&H_TryStart), reinterpret_cast<void**>(&o_try));
+        if (s != MH_OK) MH_RemoveHook(ti);
+    }
+    // TryStart first: the prompt is never lifted without the press being ours
+    if (s == MH_OK) s = MH_EnableHook(tt);
+    if (s == MH_OK) {
+        s = MH_EnableHook(ti);
+        if (s != MH_OK) MH_DisableHook(tt);
+    }
+    if (s != MH_OK) {
+        std::snprintf(g_np_off, sizeof(g_np_off), "the hooks failed (%s)", MH_StatusToString(s));
+        Log("[ride] native Use Vehicle prompt OFF: %s: the ImGui hold prompt boards instead", g_np_off);
+        return;
+    }
+    g_np_off[0] = 0;
+    g_np_hooked.store(true);
+    Log("[ride] native Use Vehicle prompt ON: %u checks; the game's own prompt on the partner's vehicle (lifted while boarding is allowed), "
+        "its press asks to ride; carried, the prompt gets off",
+        n);
+}
+
+// The game's pad state: that button (pad state offset) is down for the local player's slot; `device` its controller's
+// device (1 PlayStation, 2 Steam Input, 3 XInput, 4 HID).
+bool GamePadDown(std::uintptr_t off, int* device) noexcept {
+    if (!g_pad_ok) return false;
+    for (int i = 0; i < 7; ++i) {
+        const std::uintptr_t slot = A(kInputMgr) + static_cast<std::uintptr_t>(i) * kInSlotSize;
+        std::int32_t state = 0, player = -1;
+        std::uint8_t b = 0;
+        if (!mem::Rd(slot + kInSlotState, state) || state != 1 || !mem::Rd(slot + kInSlotPlayer, player) || player != 0) continue;
+        if (!mem::Rd(slot + kInSlotPad + off, b) || !b) continue;
+        if (device) {
+            std::uintptr_t ctl = 0;
+            std::int32_t dev = -1;
+            if (mem::Rd(slot + 0x30, ctl) && ctl) mem::Rd(ctl + 0x28, dev);
+            *device = dev;
+        }
+        return true;
+    }
+    return false;
+}
 
 // ---------------------------------------------------------------- reads
 bool ReadXf(std::uintptr_t e, WorldTransform& out) noexcept {
@@ -522,6 +732,8 @@ void EndCarry(rwire::End reason, bool place, bool tell_driver) {
     }
     g_p = Pass{};
     g_hold.Reset();
+    g_press.Reset();
+    g_np_ride.store(0, std::memory_order_relaxed);
     g_cooldown_until = g_now + 1500;
     PublishSaveState();
 }
@@ -571,6 +783,14 @@ bool StartCarry(const vwire::VKey& key, std::uint8_t kind, std::uintptr_t entity
     ApplyCarryState(true);
     PublishSaveState();
     g_hold.Reset();  // the hold that boarded must be released before one gets off
+    g_press.Reset(); // ... and the press (native prompt)
+    g_np_last_press_ms = g_now;  // a native press still held from boarding never gets off
+    {
+        std::uint32_t aid = 0;
+        if (!solo && mem::Rd(entity + 0x314, aid) && aid != 0 && aid != kNoActorId) g_np_ride.store(aid, std::memory_order_relaxed);
+        g_np_lift.store(0, std::memory_order_relaxed);
+        g_np_offs.store(0, std::memory_order_relaxed);
+    }
     ++g_boards;
     Log("[ride] %s: our Sam carried on the %s 0x%06X (%s, ride #%08X, #%u): capsule off (counter %d -> %d, on byte %d), seat (%.2f, %.2f, %.2f), "
         "input blocked, pose %s",
@@ -579,6 +799,7 @@ bool StartCarry(const vwire::VKey& key, std::uint8_t kind, std::uintptr_t entity
     char label[96], text[200];
     PeerLabel(label, sizeof(label));
     if (solo) std::snprintf(text, sizeof(text), "Seat test: carried on the %s.", vwire::KindName(kind));
+    else if (NativeOn()) std::snprintf(text, sizeof(text), "Riding with %s. Press [X] / [F] to get off.", label);
     else std::snprintf(text, sizeof(text), "Riding with %s. Hold [X] / [F] to get off.", label);
     Notice(text, false, 5000);
     return true;
@@ -617,13 +838,50 @@ TakenBy Taken(const char** why) {
     return TakenBy::none;
 }
 
-bool ExitButtonDown() {
-    const std::uint16_t b = overlay::input::RidePadButtons(500);
-    return (b & (XINPUT_GAMEPAD_X | XINPUT_GAMEPAD_B)) != 0 || overlay::input::RideKeyDown();
+// Our own read of the ride buttons (getting off while carried, the ImGui fallback's hold): any XInput pad (0..3, before our
+// carry mask), the game's own pad state (a pad the game reads without XInput: the PlayStation pad, Steam Input, HID; the
+// carry mask zeroes an XInput pad there, so both are read), and the ride key at either hook code. In the launcher's Local
+// test the host game is keyboard + mouse only (the pads are the guest's): no pad source there. `how` names the source.
+// (v0.19: XInput index 0 and the key at HC_ACTION only: neither saw the user's DualSense nor, with ds.exe's hook above
+// ours, his F; play test 2.)
+bool PadSourcesAllowed() { return overlay::input::GetLocalMode() != overlay::input::LocalMode::host; }
+bool RideButtonDown(bool exit, const char** how) {
+    static char buf[48];
+    if (PadSourcesAllowed()) {
+        int idx = -1;
+        const std::uint16_t want = exit ? (XINPUT_GAMEPAD_X | XINPUT_GAMEPAD_B) : XINPUT_GAMEPAD_X;
+        if (overlay::input::RidePadButtons(500, &idx) & want) {
+            std::snprintf(buf, sizeof(buf), "XInput pad #%d", idx);
+            return *how = buf, true;
+        }
+        int dev = -1;
+        if (GamePadDown(kPadX, &dev) || (exit && GamePadDown(kPadB, &dev))) {
+            std::snprintf(buf, sizeof(buf), "the game's pad state (device %d)", dev);
+            return *how = buf, true;
+        }
+    }
+    if (overlay::input::RideKeyDown()) return *how = "key F", true;
+    return *how = "", false;
 }
-bool BoardButtonDown() {
-    const std::uint16_t b = overlay::input::RidePadButtons(500);
-    return (b & XINPUT_GAMEPAD_X) != 0 || overlay::input::RideKeyDown();
+bool ExitButtonDown(const char** how) { return RideButtonDown(true, how); }
+bool BoardButtonDown(const char** how) { return RideButtonDown(false, how); }
+
+// The game's TryStart starts on the partner's vehicle since the last tick (native prompt), drained every tick whatever the
+// state (a start while asking or riding never counts later): one press per press (TryStart repeats while it is held).
+std::uint32_t g_np_tick_press = 0;     // this tick: the vehicle id of a new press, 0 none
+void PollNativePress() {
+    g_np_tick_press = 0;
+    const unsigned n = g_np_presses.load(std::memory_order_acquire);
+    if (n == g_np_seen_presses) return;
+    g_np_seen_presses = n;
+    const bool fresh = rwire::NativePressIsNew(g_np_last_press_ms, g_now);
+    g_np_last_press_ms = g_now;
+    if (fresh) g_np_tick_press = g_np_press_id.load(std::memory_order_relaxed);
+}
+bool TakeNativePress(std::uint32_t want_id) {
+    if (!want_id || g_np_tick_press != want_id) return false;
+    g_np_tick_press = 0;
+    return true;
 }
 
 void CarryTick() {
@@ -710,21 +968,45 @@ void CarryTick() {
         EndCarry(forced == rwire::End::driver_ended && g_p.driver_reason == static_cast<std::uint8_t>(rwire::End::driver_off) ? rwire::End::driver_off : forced, place, tell);
         return;
     }
-    // getting off by choice: a hold while it is too fast waits up to 3 s for it to slow down; a second hold within that
-    // wait gets off at any speed (jumped: put off away from the vehicle's path, above 8 m/s the D3-3 hit), so a driver who
-    // keeps going never holds the passenger (only while awake: a menu's buttons are the menu's)
-    if (g_hold.Update(g_in.local_active && ExitButtonDown(), g_now)) {
+    // getting off by choice (native prompt: a press of X / F, or the game's own RideOff press; the ImGui fallback: a hold):
+    // while it is too fast it waits up to 3 s for it to slow down; a second press within that wait gets off at any speed
+    // (jumped: put off away from the vehicle's path, above 8 m/s the D3-3 hit), so a driver who keeps going never holds the
+    // passenger (only while awake: a menu's buttons are the menu's)
+    const char* exit_how = "";
+    const bool exit_down = g_in.local_active && ExitButtonDown(&exit_how);
+    bool exit_now = false;
+    if (NativeOn()) {
+        const bool ours = g_press.Update(exit_down);
+        const bool game = TakeNativePress(g_np_ride.load(std::memory_order_relaxed)) && g_in.local_active;
+        if ((ours || game) && g_now - g_p.last_exit_ms >= rwire::kNativePressGapMs) {
+            exit_now = true;
+            g_p.last_exit_ms = g_now;
+            Log("[ride] get off: pressed (%s)", game ? "the game's RideOff prompt" : exit_how);
+        }
+        if (!g_p.off_hint_done && g_now - g_p.since > 2500) {
+            // the game's ride action offers no prompt while its Sam is carried (its provider is not asked: runs
+            // 20261120-102245): the boarding notice says how to get off
+            g_p.off_hint_done = true;
+            Log("[ride] carried: %s", g_np_offs.load(std::memory_order_relaxed) ? "the game's own RideOff prompt is shown"
+                                                                                : "the game offers no RideOff prompt here (the notice says X / F)");
+        }
+    } else {
+        exit_now = g_hold.Update(exit_down, g_now);
+        if (exit_now) Log("[ride] get off: held (%s)", exit_how);
+    }
+    if (exit_now) {
         if (g_p.exit_wait_until > g_now && speed >= rwire::kExitMaxSpeed) {
-            Log("[ride] get off: a second hold while the %s moves at %.1f m/s: jumping off", vwire::KindName(g_p.kind), speed);
+            Log("[ride] get off: a second %s while the %s moves at %.1f m/s: jumping off", NativeOn() ? "press" : "hold", vwire::KindName(g_p.kind), speed);
             g_p.last_speed = (std::max)(g_p.last_speed, speed);
             EndCarry(rwire::End::jumped, true, true);
             return;
         }
         g_p.exit_wait_until = g_now + 3000;
         if (speed >= rwire::kExitMaxSpeed) {
-            Log("[ride] get off: the %s moves at %.1f m/s; off as soon as it is under %.0f m/s (3 s), or at a second hold", vwire::KindName(g_p.kind), speed,
-                rwire::kExitMaxSpeed);
-            Notice("Too fast to get off: slow down, or hold again to jump off.", true, 3000);
+            Log("[ride] get off: the %s moves at %.1f m/s; off as soon as it is under %.0f m/s (3 s), or at a second %s", vwire::KindName(g_p.kind), speed,
+                rwire::kExitMaxSpeed, NativeOn() ? "press" : "hold");
+            Notice(NativeOn() ? "Too fast to get off: slow down, or press again to jump off." : "Too fast to get off: slow down, or hold again to jump off.", true,
+                   3000);
         }
     }
     if (g_p.exit_wait_until > g_now && speed < rwire::kExitMaxSpeed) {
@@ -809,9 +1091,12 @@ bool RecentlyHurt() {
 struct BoardView {
     rwire::Block block = rwire::Block::no_vehicle;
     vdrive::DrivenView v;
-    double dist = 1e9;
+    double dist = 1e9;                 // our Sam to its passenger door (horizontal)
+    double origin_dist = 1e9;          // ... to its origin (horizontal)
+    double dist3 = 1e9;                // ... to its origin (3D: the native prompt's distance key)
+    bool native = false;
 };
-BoardView ViewBoard() {
+BoardView ViewBoard(bool native) {
     BoardView b;
     rwire::BoardIn in;
     in.feature_on = g_on.load();
@@ -830,14 +1115,20 @@ BoardView ViewBoard() {
         rwire::ToWorld(p, Rows(xf), door, w);
         PosOf(sam, s);
         b.dist = Dist2D(w, s);
+        b.origin_dist = Dist2D(p, s);
+        b.dist3 = Dist3(xf, sam);
     }
     in.door_dist_m = b.dist;
+    // the native 7 m rule only for a board asked through the game's own prompt (kReqNative): a debug / test board
+    // (kReqTest) is judged by the door rule here, as the driver and the ACCEPT check judge it
+    in.native = b.native = native && NativeOn();
+    in.origin_dist_m = b.origin_dist;
     in.vehicle_speed = b.v.meas ? b.v.speed_mps : 0;
     b.block = rwire::BoardCheck(in);
     return b;
 }
 
-void Request(const BoardView& b, std::uint8_t reason) {
+void Request(const BoardView& b, std::uint8_t reason, const char* how) {
     g_p = Pass{};
     g_p.st = PState::requesting;
     g_p.ride_id = (static_cast<std::uint32_t>(GetTickCount64()) * 2654435761u) | 1u;
@@ -846,19 +1137,51 @@ void Request(const BoardView& b, std::uint8_t reason) {
     g_p.entity = b.v.entity;
     g_p.unit = b.v.unit;
     g_p.req_ms = g_now;
+    g_p.native = reason == rwire::kReqNative;
     ++g_requests;
-    Log("[ride] %s: asking to ride the %s 0x%06X (%s, %.2f m from its door, ride #%08X)", g_role == 1 ? "host" : "guest", vwire::KindName(g_p.kind), g_p.key.id,
-        reason == rwire::kReqTest ? "test" : "held X", b.dist, g_p.ride_id);
+    Log("[ride] %s: asking to ride the %s 0x%06X (%s, %.2f m from its door, %.2f m from its origin, ride #%08X)", g_role == 1 ? "host" : "guest",
+        vwire::KindName(g_p.kind), g_p.key.id, reason == rwire::kReqTest ? "test" : how, b.dist, b.origin_dist, g_p.ride_id);
     Send(rwire::MsgType::request, g_p.ride_id, g_p.key.id, g_p.kind, reason);
     Notice("Asking to ride...", false, 3000);
 }
 
+// The native prompt's view of the partner's vehicle (the hooks read it on whatever thread the game runs them): its actor
+// id, whether boarding it is allowed now (the prompt is lifted), our distance to it. And the provider's observations of it
+// logged on every change (which of the game's reasons crosses it out; whether the lift took).
+std::uint32_t ActorIdOf(std::uintptr_t entity) {
+    std::uint32_t id = 0;
+    if (!entity || !mem::Rd(entity + 0x314, id) || id == kNoActorId) return 0;
+    return id;
+}
+void NativeObsLog() {
+    static std::uint32_t last[2] = {};
+    static unsigned lines = 0;
+    for (int i = 0; i < 2; ++i) {
+        const std::uint32_t o = g_np_obs[i].load(std::memory_order_relaxed);
+        if (o == last[i]) continue;
+        last[i] = o;
+        if (!o || ++lines > 80) continue;
+        Log("[ride] native prompt (slot %d): %s on the partner's vehicle 0x%06X; the game %s (reason %u)%s", i == 0 ? 3 : 6,
+            (o & 0x20000000u) ? "RideOff" : "Use Vehicle", g_np_seen.load(std::memory_order_relaxed), (o & 0x10000000u) ? "crossed it out" : "offered it",
+            (o >> 20) & 0xF,
+            (o & 0x40000000u) ? ": lifted (available)" : (o & 0x20000000u) ? ": carried, offered as get off" : ": left as the game has it");
+    }
+}
+
 void PassengerTick() {
+    NativeObsLog();
+    PollNativePress();
     if (g_p.st == PState::riding) {
+        g_np_seen.store(g_np_ride.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        g_np_lift.store(0, std::memory_order_relaxed);
         CarryTick();
         return;
     }
+    g_np_ride.store(0, std::memory_order_relaxed);
     if (g_p.st == PState::requesting) {
+        // the prompt stays available while the driver answers (its presses are drained, not counted)
+        g_np_lift.store(NativeOn() ? g_np_seen.load(std::memory_order_relaxed) : 0, std::memory_order_relaxed);
+
         if (g_now - g_p.req_ms > rwire::kRequestTimeoutMs) {
             Log("[ride] ride #%08X: no answer in %.0f s", g_p.ride_id, rwire::kRequestTimeoutMs / 1000);
             Notice("No answer from the driver.", true, 3000);
@@ -867,9 +1190,36 @@ void PassengerTick() {
         }
         return;
     }
-    if (!g_on.load()) return;
-    const BoardView b = ViewBoard();
-    const bool down = BoardButtonDown();
+    if (!g_on.load()) {
+        g_np_seen.store(0, std::memory_order_relaxed);
+        g_np_lift.store(0, std::memory_order_relaxed);
+        return;
+    }
+    const BoardView b = ViewBoard(NativeOn());
+    const std::uint32_t aid = b.v.entity && b.block != rwire::Block::no_vehicle && b.block != rwire::Block::no_link ? ActorIdOf(b.v.entity) : 0;
+    g_np_seen.store(aid, std::memory_order_relaxed);
+    g_np_dist.store(static_cast<float>((std::min)(b.dist3, 50.0)), std::memory_order_relaxed);
+    const bool allowed = b.block == rwire::Block::ok && aid != 0;
+    g_np_lift.store(allowed && NativeOn() ? aid : 0, std::memory_order_relaxed);
+    if (NativeOn()) {
+        // the game's own "Use Vehicle": lifted while allowed (the game's cross-out otherwise); its press asks to ride
+        static rwire::Block last_block = rwire::Block::count;
+        if (b.block != last_block && aid) {
+            Log("[ride] native prompt: the partner's %s 0x%06X: boarding %s (%.2f m from its origin, %.2f m from its door)", vwire::KindName(b.v.key.kind), aid,
+                b.block == rwire::Block::ok ? "allowed: the game's prompt is lifted" : rwire::BlockName(b.block), b.origin_dist, b.dist);
+        }
+        last_block = aid ? b.block : rwire::Block::count;
+        if (TakeNativePress(aid)) {
+            if (allowed) {
+                Request(b, rwire::kReqNative, "the game's Use Vehicle");
+            } else {
+                Log("[ride] native press on the partner's vehicle refused: %s", rwire::BlockName(b.block));
+            }
+        }
+        return;
+    }
+    const char* how = "";
+    const bool down = BoardButtonDown(&how);
     if (b.block != rwire::Block::ok) {
         g_hold.Update(down, g_now);  // keeps track of releases
         return;
@@ -880,10 +1230,21 @@ void PassengerTick() {
     if (down && held > 0) std::snprintf(text, sizeof(text), "Hold [X] / [F] to ride with %s... %d%%", label, static_cast<int>((std::min)(100.0, held * 100.0 / rwire::kHoldMs)));
     else std::snprintf(text, sizeof(text), "Hold [X] / [F] to ride with %s", label);
     if (g_now - g_prompt_ms > 100) {
+        if (g_prompt_ms == 0 || g_now - g_prompt_ms > 2000) {
+            // the prompt opens: what our button reads see now (play test 2: the prompt showed and nothing counted)
+            unsigned ages[4];
+            const int pads = overlay::input::RidePadAges(ages);
+            int dev = -1;
+            const bool gp = GamePadDown(kPadX, &dev);
+            Log("[ride] prompt: the %s %.2f m from its door; XInput pads read %d (ages %u/%u/%u/%u ms), game pad X %d (device %d, checks %s), key F %d, "
+                "pad sources %s",
+                vwire::KindName(b.v.key.kind), b.dist, pads, ages[0], ages[1], ages[2], ages[3], gp ? 1 : 0, dev, g_pad_ok ? "ok" : "off",
+                overlay::input::RideKeyDown() ? 1 : 0, PadSourcesAllowed() ? "on" : "off (Local test host: keyboard only)");
+        }
         Notice(text, false, 400);
         g_prompt_ms = g_now;
     }
-    if (g_hold.Update(down, g_now)) Request(b, rwire::kReqHold);
+    if (g_hold.Update(down, g_now)) Request(b, rwire::kReqHold, how);
 }
 
 // ---------------------------------------------------------------- the driver
@@ -924,6 +1285,7 @@ void OnRequest(const rwire::Msg& m) {
     in.same_world = m.world == OurWorld() && vshare::PeerInOurWorld();
     vdrive::DrivenView v;
     in.we_drive_it = vdrive::LocalDriving(&v) && v.key.id == m.vehicle_id && v.key.kind == m.kind;
+    in.native = m.reason == rwire::kReqNative;
     in.seat_taken = g_d.accepted && g_d.ride_id != m.ride_id;
     in.speed = v.meas ? v.speed_mps : 0;
     WorldTransform xf{};
@@ -935,6 +1297,7 @@ void OnRequest(const rwire::Msg& m) {
         PosOf(g_in.partner, s);
         in.have_partner = true;
         in.partner_dist_m = Dist2D(w, s);
+        in.partner_origin_dist_m = Dist2D(p, s);
     }
     rwire::Deny why = rwire::Deny::count;
     if (g_d.accepted && g_d.ride_id == m.ride_id) {
@@ -943,8 +1306,9 @@ void OnRequest(const rwire::Msg& m) {
     }
     if (!rwire::DriverAccepts(in, &why)) {
         ++g_denies;
-        Log("[ride] %s: the partner asks to ride our %s 0x%06X (ride #%08X): DENIED, %s (speed %.1f m/s, partner %.2f m from the door)", g_role == 1 ? "host" : "guest",
-            vwire::KindName(m.kind), m.vehicle_id, m.ride_id, rwire::DenyName(static_cast<std::uint8_t>(why)), in.speed, in.partner_dist_m);
+        Log("[ride] %s: the partner asks to ride our %s 0x%06X (ride #%08X%s): DENIED, %s (speed %.1f m/s, partner %.2f m from the door, %.2f m from the origin)",
+            g_role == 1 ? "host" : "guest", vwire::KindName(m.kind), m.vehicle_id, m.ride_id, in.native ? ", the game's Use Vehicle" : "",
+            rwire::DenyName(static_cast<std::uint8_t>(why)), in.speed, in.partner_dist_m, in.partner_origin_dist_m);
         Send(rwire::MsgType::deny, m.ride_id, m.vehicle_id, m.kind, static_cast<std::uint8_t>(why));
         return;
     }
@@ -956,8 +1320,9 @@ void OnRequest(const rwire::Msg& m) {
     g_d.accept_ms = g_now;
     g_d.log_ms = g_now;
     ++g_accepts;
-    Log("[ride] %s: the partner asks to ride our %s 0x%06X (ride #%08X): ACCEPTED (#%u; partner %.2f m from the door, %.1f m/s)", g_role == 1 ? "host" : "guest",
-        vwire::KindName(m.kind), m.vehicle_id, m.ride_id, g_accepts, in.partner_dist_m, in.speed);
+    Log("[ride] %s: the partner asks to ride our %s 0x%06X (ride #%08X%s): ACCEPTED (#%u; partner %.2f m from the door, %.2f m from the origin, %.1f m/s)",
+        g_role == 1 ? "host" : "guest", vwire::KindName(m.kind), m.vehicle_id, m.ride_id, in.native ? ", the game's Use Vehicle" : "", g_accepts, in.partner_dist_m,
+        in.partner_origin_dist_m, in.speed);
     Send(rwire::MsgType::accept, m.ride_id, m.vehicle_id, m.kind, 0);
     char label[96], text[200];
     PeerLabel(label, sizeof(label));
@@ -1007,8 +1372,10 @@ void OnMsg(std::uint8_t /*type*/, const std::uint8_t* msg, std::size_t size, std
                 Send(rwire::MsgType::end, m.ride_id, m.vehicle_id, m.kind, static_cast<std::uint8_t>(rwire::End::timeout));
                 break;
             }
-            const BoardView b = ViewBoard();
-            const bool still = b.v.key.id == g_p.key.id && b.dist <= rwire::kBoardRadiusM + 1.5 && OnFoot();
+            const BoardView b = ViewBoard(g_p.native);
+            const bool still = b.v.key.id == g_p.key.id && OnFoot() &&
+                               (b.dist <= rwire::kBoardRadiusM + 1.5 || (g_p.native && b.origin_dist <= rwire::kNativeReachM + 1.5));
+
             Log("[ride] the driver accepted ride #%08X after %.0f ms (%.2f m from the door)", m.ride_id, g_now - g_p.req_ms, b.dist);
             const vwire::VKey key = g_p.key;
             const std::uint32_t id = g_p.ride_id;
@@ -1164,10 +1531,32 @@ void Install(const Config& config) noexcept {
         return;
     }
     g_off[0] = 0;
+    // the game's pad state (our own reads: getting off, the ImGui fallback); off alone on a mismatch
+    unsigned pad_bad = 0;
+    for (const Site& s : kPadSites)
+        if (!mem::CodeMatches(A(s.va), s.sig)) {
+            ++pad_bad;
+            Log("[ride] byte check FAILED: %s at 0x%llX: the game's pad state is not read (XInput and the F key only)", s.name, static_cast<unsigned long long>(s.va));
+        }
+    // the input manager global itself: an instruction that loads it must point at kInputMgr (the code alone could match
+    // on a build whose .data moved)
+    if (!mem::CodeMatches(A(kInputMgrLoad), "48 8D 0D ?? ?? ?? ??") || mem::RipTarget(A(kInputMgrLoad), 3, 7) != A(kInputMgr)) {
+        ++pad_bad;
+        Log("[ride] byte check FAILED: the input manager global 0x%llX (lea at 0x%llX): the game's pad state is not read (XInput and the F key "
+            "only)",
+            static_cast<unsigned long long>(kInputMgr), static_cast<unsigned long long>(kInputMgrLoad));
+    }
+    g_pad_ok = pad_bad == 0;
+    InstallNative();
     g_on.store(true);
-    Log("[ride] riding together ON (%s): %u byte checks; hold X (pad) / F (keyboard) 0.6 s beside the partner's vehicle; seats roadster / truck / "
-        "trike pillion as in ride_wire.cpp",
-        g_role == 1 ? "host" : "guest", n);
+    if (g_np_hooked.load())
+        Log("[ride] riding together ON (%s): %u byte checks; the game's own Use Vehicle on the partner's vehicle boards (a press), the same "
+            "button gets off; the game's pad state %s; seats roadster / truck / trike pillion as in ride_wire.cpp",
+            g_role == 1 ? "host" : "guest", n, g_pad_ok ? "read" : "OFF (checks)");
+    else
+        Log("[ride] riding together ON (%s): %u byte checks; hold X (pad) / F (keyboard) 0.6 s beside the partner's vehicle (the native prompt is "
+            "off: %s); the game's pad state %s; seats roadster / truck / trike pillion as in ride_wire.cpp",
+            g_role == 1 ? "host" : "guest", n, g_np_off, g_pad_ok ? "read" : "OFF (checks)");
 }
 
 bool Active() noexcept { return g_on.load(); }
@@ -1213,6 +1602,13 @@ static void TickInner(const TickIn& in, double now) noexcept {
         }
         return;
     }
+    static bool np_notice = false;
+    if (!np_notice && g_on.load() && !g_np_hooked.load() && coop::Active()) {
+        np_notice = true;
+        char text[240];
+        std::snprintf(text, sizeof(text), "The game's own Use Vehicle is off for riding together (%s): hold X / F beside the partner's vehicle.", g_np_off);
+        coop::SetVehicleNotice(text, true, now + 15000);
+    }
     if (!TickGuarded(in, now)) {
         Log("[ride] FAULT in the riding tick: stopped (input and pose back, capsule back on)");
         EmergencyStop();
@@ -1228,6 +1624,12 @@ void EmergencyStop() noexcept {
     if (!g_stop.load()) std::snprintf(g_off, sizeof(g_off), "stopped");
     g_on.store(false);
     g_stop.store(true);
+    // The native prompt's detours stay installed but act on nothing any more (they also pass everything once g_stop is
+    // set): the stopped tick never runs PassengerTick, the only code that rewrites these ids.
+    g_np_enabled.store(false);
+    g_np_seen.store(0);
+    g_np_lift.store(0);
+    g_np_ride.store(0);
     overlay::input::SetRideCarry(false);
     realbody::SetRidePose(0);
     vdrive::SetCarriedUnit(0);
@@ -1300,15 +1702,20 @@ bool StateCommand(char* msg, std::size_t cap) noexcept {
                   pads, keys, raw, CapCounter(SamCapsule(reinterpret_cast<std::uintptr_t>(g_in.local))),
                   CapOnByte(SamCapsule(reinterpret_cast<std::uintptr_t>(g_in.local))), s1[0], s1[1], s1[2], s2[0], s2[1], s2[2], s3[0], s3[1], s3[2]);
     Log("[ride] state: %s", full);
+    Log("[ride] state: native prompt %s%s%s; partner vehicle 0x%06X lifted 0x%06X riding 0x%06X; provider passes %u lifts %u get-off %u; presses %u "
+        "(refused %u); game pad state %s; obs slot 3 0x%08X slot 6 0x%08X",
+        NativeOn() ? "ON" : "OFF", NativeOn() ? "" : ": ", NativeOn() ? "" : (g_np_hooked.load() ? "ride_test 12 0" : g_np_off), g_np_seen.load(), g_np_lift.load(),
+        g_np_ride.load(), g_np_icon_calls.load(), g_np_lifts.load(), g_np_offs.load(), g_np_presses.load(), g_np_refused.load(), g_pad_ok ? "read" : "off",
+        g_np_obs[0].load(), g_np_obs[1].load());
     std::snprintf(msg, cap, "%s", full);
     return true;
 }
 
 bool BoardCommand(char* msg, std::size_t cap) noexcept {
     if (!g_on.load()) return std::snprintf(msg, cap, "riding together is off: %s", g_off), false;
-    const BoardView b = ViewBoard();
+    const BoardView b = ViewBoard(false);
     if (b.block != rwire::Block::ok) return std::snprintf(msg, cap, "cannot board: %s (door %.2f m)", rwire::BlockName(b.block), b.dist), false;
-    Request(b, rwire::kReqTest);
+    Request(b, rwire::kReqTest, "test");
     return std::snprintf(msg, cap, "asked to ride the %s 0x%06X (ride #%08X)", vwire::KindName(g_p.kind), g_p.key.id, g_p.ride_id), true;
 }
 
@@ -1459,16 +1866,24 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept 
             // always arrives after the stop (the late ACCEPT of a fault between the request and the answer)
             if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden tests only"), false;
             if (!g_on.load()) return std::snprintf(msg, cap, "riding together is off: %s", g_off), false;
-            const BoardView b = ViewBoard();
+            const BoardView b = ViewBoard(false);
             if (b.block != rwire::Block::ok) return std::snprintf(msg, cap, "cannot board: %s (door %.2f m)", rwire::BlockName(b.block), b.dist), false;
-            Request(b, rwire::kReqTest);
+            Request(b, rwire::kReqTest, "test");
             Log("[ride] test: emergency stop right after the request");
             EmergencyStop();
             return std::snprintf(msg, cap, "asked to ride (ride #%08X), then the emergency stop", g_p.ride_id), true;
         }
+        case 12:
+            // hidden tests: the game's own Use Vehicle off (0: the ImGui hold prompt, as when the native checks fail) or back on (1)
+            if (!g_np_hooked.load()) return std::snprintf(msg, cap, "the native prompt is not installed: %s", g_np_off), false;
+            g_np_enabled.store(v[1] != 0);
+            g_np_lift.store(0);
+            Log("[ride] test: the native Use Vehicle prompt %s", v[1] != 0 ? "ON" : "OFF (the ImGui hold prompt boards)");
+            return std::snprintf(msg, cap, "native prompt %s", v[1] != 0 ? "on" : "off"), true;
         case 11: {
+
             // hidden tests: the boarding check now, logged (the action succeeds whatever it says: a scenario waits on the line)
-            const BoardView b = ViewBoard();
+            const BoardView b = ViewBoard(NativeOn());
             Log("[ride] test: boarding now: %s (door %.2f m)", rwire::BlockName(b.block), b.dist);
             return std::snprintf(msg, cap, "boarding now: %s (door %.2f m)", rwire::BlockName(b.block), b.dist), true;
         }

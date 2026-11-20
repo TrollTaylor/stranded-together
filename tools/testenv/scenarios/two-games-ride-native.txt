@@ -1,0 +1,142 @@
+# Riding together through the game's own "Use Vehicle" prompt, on the launcher's own Local test files (play test 2,
+# v0.19.0: the ImGui "Hold [X] / [F]" prompt showed but never boarded; the user wants the game's own prompt, which the game
+# crossed out on the partner's vehicle). docs/real-partner-body.md section 24.3. Hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-ride-native -SeedSaves complete-100
+# Real input only: nothing here boards or gets off through a debug action. The guest presses X on its (virtual XInput) pad:
+# the game reads it, shows / presses its own prompt, its ride action's TryStart starts, our TryStart hook takes the start
+# (REQUEST "the game's Use Vehicle"). The host boards the same way on its pad. F through `hookkey` (our keyboard hook in
+# ds.exe's call order, then ds.exe's own keyboard procedure at HC_ACTION) reaches our ride-key read (getting off, the
+# fallback's hold) but not the game's own input in a hidden run (the game keeps no keys for a window that is never in front:
+# run 20261120-102245 pressed F five times at the lifted prompt, no TryStart); the user's real F is the game's own binding
+# of the same prompt ("F Use Vehicle" in the keyboard scheme, N1).
+# `action ride_test 8` only puts Sam beside the vehicle (a teleport), as a walk would.
+# 1. The host drives the truck; the guest at its passenger door sees the game's prompt available (N1), presses X once:
+#    ACCEPTED, carried (N2, both screens, and the RideOff prompt on the guest's); a short drive; X once more: off (N4).
+# 2. The swap: the guest drives, the host stands at the passenger door (M1: the prompt available on the host's screen),
+#    presses X: carried (M2, both screens); F: off (M3).
+# 3. The ImGui fallback (what the native checks failing leaves): ride_test 12 0 on the guest; its hold of X boards.
+# Pass: both boardings say "the game's Use Vehicle", the native prompt lines say "lifted (available)", both exits "pressed",
+# the fallback boards by its hold, no FAULT.
+role host
+graphics low
+timeout 360
+launcherini local-test
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[config\] host_save=1
+@guest waitlog 10 \[config\] host_save=1
+waitlog 10 \[ride\] native Use Vehicle prompt ON
+@guest waitlog 10 \[ride\] native Use Vehicle prompt ON
+waitlog 10 \[ride\] riding together ON \(host
+@guest waitlog 10 \[ride\] riding together ON \(guest
+wait 22000
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+@guest waitlog 60 \[vshare\] guest: the host's snapshot #[0-9]+ is complete
+@guest waitlog 30 \[vshare\] guest: binding:
+wait 10000
+# ---- 1. the host drives the truck, the guest boards with one press of X on the game's own prompt
+action vehicle_sync 8 1.8 2
+@guest action vehicle_sync 8 8 2
+wait 1500
+until 20 4000 \[vdrive\] host: our Sam drives truck => pad X 150
+@guest waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached
+wait 2500
+@guest action ride_test 8
+@guest waitlog 8 \[ride\] native prompt: the partner's truck 0x[0-9A-F]+: boarding allowed
+@guest waitlog 8 \[ride\] native prompt \(slot [36]\): Use Vehicle on the partner's vehicle 0x[0-9A-F]+; the game .*lifted \(available\)
+wait 800
+@guest screenshot N1-guest-native-prompt
+@guest action ride_state
+@guest until 15 3000 \[ride\] guest: our Sam carried on the truck => pad X 150
+@guest waitlog 3 \[ride\] guest: asking to ride the truck 0x[0-9A-F]+ \(the game's Use Vehicle
+waitlog 10 \[ride\] host: the partner asks to ride our truck .*the game's Use Vehicle\): ACCEPTED
+wait 2500
+@guest waitlog 4 \[ride\] carried: the game
+screenshot N2-host-sees-passenger
+@guest screenshot N2-guest-riding
+@guest pad none 600 rx=32767
+@guest screenshot N2b-guest-riding-side
+pad none 600 rx=32767
+screenshot N2b-host-side
+@guest action ride_state
+pad none 2500 rt=140 keep
+@guest screenshot N3-guest-moving
+pad none 1500 lt=255 keep
+pad none 0
+wait 2500
+@guest pad X 150
+@guest waitlog 6 \[ride\] get off: pressed
+@guest waitlog 6 \[ride\] guest: our Sam off the truck .*got off
+waitlog 6 \[ride\] host: the partner's ride .* is over
+wait 2000
+@guest screenshot N4-guest-off
+screenshot N4-host-sees-off
+# ---- 2. the swap: the guest drives, the host boards with one press of X on the game's own prompt; gets off with F
+# (our keyboard hook's read of the ride key; a hidden window's game ignores keys for its own input, run 20261120-102245)
+pad X 150
+waitlog 20 \[vdrive\] host: our Sam got off truck
+wait 5000
+action vehicle_sync 8 8 2
+@guest action vehicle_sync 8 1.8 2
+wait 1500
+@guest until 20 4000 \[vdrive\] guest: our Sam drives truck => pad X 150
+waitlog 20 \[vdrive\] host: the guest claims truck 0x[0-9A-F]+ \(get on, epoch [0-9]+\): granted
+waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached
+wait 2500
+action ride_test 8
+waitlog 8 \[ride\] native prompt: the partner's truck 0x[0-9A-F]+: boarding allowed
+waitlog 8 \[ride\] native prompt \(slot [36]\): Use Vehicle on the partner's vehicle 0x[0-9A-F]+; the game .*lifted \(available\)
+wait 800
+screenshot M1-host-native-prompt
+action ride_state
+until 15 3000 \[ride\] host: our Sam carried on the truck => pad X 150
+waitlog 3 \[ride\] host: asking to ride the truck 0x[0-9A-F]+ \(the game's Use Vehicle
+@guest waitlog 10 \[ride\] guest: the partner asks to ride our truck .*the game's Use Vehicle\): ACCEPTED
+wait 2500
+screenshot M2-host-riding
+@guest screenshot M2-guest-sees-passenger
+pad none 600 rx=32767
+screenshot M2b-host-riding-side
+@guest pad none 600 rx=32767
+@guest screenshot M2b-guest-side
+action ride_state
+@guest pad none 2500 lt=200 keep
+@guest pad none 0
+wait 2500
+hookkey 0x46 150
+waitlog 6 \[ride\] get off: pressed \(key F\)
+waitlog 6 \[ride\] host: our Sam off the truck .*got off
+@guest waitlog 6 \[ride\] guest: the partner's ride .* is over
+wait 2000
+screenshot M3-host-off
+# ---- 3. the ImGui fallback (the native checks failing leave it): the host's hold of F boards
+action ride_test 12 0
+wait 2500
+action ride_test 8
+wait 1500
+screenshot F0-host-fallback-prompt
+until 15 3000 \[ride\] host: our Sam carried on the truck .*#2\) => hookkey 0x46 900
+waitlog 3 \[ride\] host: asking to ride the truck 0x[0-9A-F]+ \(key F
+wait 2000
+screenshot F1-host-fallback-riding
+hookkey 0x46 900
+waitlog 6 \[ride\] get off: held \(key F\)
+waitlog 6 \[ride\] host: our Sam off the truck .*#2, got off
+action ride_test 12 1
+@both action ride_state
+nolog \[(vshare|vdrive|ride|vhit)\].*FAULT
+@guest nolog \[(vshare|vdrive|ride|vhit)\].*FAULT
+@guest quit
+wait 3000
+quit

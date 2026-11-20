@@ -1491,6 +1491,12 @@ void LauncherUi::DebugOptionsTab(Phase phase) {
          "teleport to places. Spawning and world changes work only on a test save (the Local test).",
          col::kTextFaint, kSmall, nullptr, 0.0f);
     Gap(2.0f);
+    committed |= Checkbox("Lock the mouse to the focused game window (Local test)", &o.mouse_lock, true);
+    Text(o.mouse_lock ? "The cursor stays inside the game window you play in. F10 switches to the other game's window "
+                        "(F11 when the menu key is F10); Alt+Tab leaves."
+                      : "The cursor can leave the game window (the game holds it only in gameplay).",
+         col::kTextFaint, kSmall, nullptr, 0.0f);
+    Gap(2.0f);
     const float row_right = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
     committed |= Checkbox("Wake the partner clone", &o.partner_activate, true);
     ImGui::SameLine(0.0f, Px(28.0f));

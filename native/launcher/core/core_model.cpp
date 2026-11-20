@@ -117,6 +117,7 @@ DebugOptions DebugOptionsFromSettings(const json::Value& settings) {
     o.verbose = d->Bool("verbose", o.verbose);
     o.debug_menu = d->Bool("debug_menu", o.debug_menu);
     o.dev_tools = d->Bool("dev_tools", o.dev_tools);
+    o.mouse_lock = d->Bool("mouse_lock", o.mouse_lock);
     const int key = ParseFunctionKey(d->Str("debug_menu_key"));
     if (key) o.debug_menu_key = key;
     // Only an explicit "holo" picks the hologram: missing or unknown keeps the default (real).
@@ -146,6 +147,7 @@ void DebugOptionsToSettings(const DebugOptions& o, json::Value& settings) {
     d["verbose"] = o.verbose;
     d["debug_menu"] = o.debug_menu;
     d["dev_tools"] = o.dev_tools;
+    d["mouse_lock"] = o.mouse_lock;
     d["debug_menu_key"] = FunctionKeyName(o.debug_menu_key);
     d["partner_body"] = o.real_partner_body ? "real" : "holo";
     d["self_character"] = o.self_character;
@@ -191,6 +193,8 @@ void MakeLocalTestInis(const DebugOptions& options, const LocalTestChoices& choi
     // shows the waiting screen, the save transfer, the shared vehicles, riding together and vehicle hits. The host
     // plays its local-host copy (never the real saves); the guest's local-guest folder is wiped like coop-guest.
     host.host_save = options.host_save;
+    // Two windows side by side: the cursor stays in the one in front (the Debug option, default on; Local test only).
+    host.mouse_lock = options.mouse_lock;
     guest = host;
     guest.role = "guest";
     guest.udp_port_local = kDefaultUdpPort + 1;

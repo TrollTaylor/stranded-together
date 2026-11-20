@@ -22,6 +22,14 @@ teleport offer, the version refusal and the DllMain refusal. The hidden runs fou
 launcher's Local test wrote no `host_save`). The guest's title now shows the session in the game's own title menu
 (section 5 "The guest's title screen"): proven hidden, also on the launcher's own Local test files (section 9).
 
+**2026-11-20 (later), native only:** the play test of v0.19.0 still saw the full-screen ImGui panel for the whole wait
+(it covered the boot logos, 1.3-19.9 s, and the title page only came after them). Now the guest never shows that panel
+while the game's own title menu works: it skips the four boot logos by the splash page's own skip-all branch (the title
+page is up ~6 s after the start instead of ~20 s), then shows "Waiting for <host> to start the game" and Quit Game on
+the game's own title; its load of the host's save starts 3 s after that page is up instead of 25 s after the first
+tick. The panel is only the fallback when the native title fails its byte checks, or at run time (no input block) while
+the title page is up without the label for 2 s or no title page came 45 s after the start.
+
 ## 1. For players
 
 * **Host:** play as in single player. Co-op progress is saved into your own save by the game. The launcher backs up
@@ -31,10 +39,11 @@ launcher's Local test wrote no `host_save`). The guest's title now shows the ses
   lines: **Waiting for <host> to start the game** and **Quit Game**. The first line follows the session: "Connecting to
   <host>...", "Waiting while <host> loads the game", "Waiting for <host>'s first save" (a New Game), "Receiving
   <host>'s save: 45%", "Loading <host>'s save...", "Reconnecting to <host>...", "Game versions differ: update both
-  games" (the two builds in a banner above it). Selecting it does nothing; Quit Game closes the game as always.
-  Continue, Load Game, Options, Update Overview and Open Source Licenses are hidden while you wait. During the boot
-  screens, and when the game's menu cannot be used (another game build), a full-screen panel with the same information
-  and **Leave** stands in (only pad A, Enter and Space reach the game behind it, for notices).
+  games" (the two builds are in the log). Selecting it does nothing; Quit Game closes the game as always.
+  Continue, Load Game, Options, Update Overview and Open Source Licenses are hidden while you wait. The boot logos are
+  skipped (a black screen with the game's spinner for a moment, then the title). Only when the game's menu cannot be
+  used (another game build) a full-screen panel with the same information and **Leave** stands in from the start (only
+  pad A, Enter and Space reach the game behind it, for notices).
 * **The guest's progress is not kept:** the guest plays a disposable copy of the host's world (orders, deliveries,
   grade, likes, equipment, materials, structures, story flags: gone at the host's next load and at the session's end).
   The guest spawns as a copy of the host's Sam at save time. Settings and controls changed during co-op stay in the
@@ -203,8 +212,11 @@ decision), `0x142624A70` (title load, second layer), `0x142624C80` (converted lo
 without acting ("[coop] gate: BLOCKED ...") unless the mod's own `allow` flag is set, which is set only around the mod's
 own title-load call on the game thread.
 
-**The guest's waiting screen** (overlay, `overlay::SetCoopView`): a full-screen opaque panel while the guest's session
-global is 0 and no title load of ours has been accepted; the game's input is blocked as for the open menu
+**The guest's waiting screen, fallback only** (overlay, `overlay::SetCoopView`): used only when the native title below is
+off (its byte checks failed, the direct load calls are unavailable, or the hidden tests' `coop_test_title_off=1` / op
+`8 3`); its last line gives the reason ("(The game's own title menu is not used: ...)"). Then a full-screen opaque panel,
+from coop::Install on, while the guest's session global is 0 and no title load of ours has been accepted; the game's
+input is blocked as for the open menu
 (`input::SetWaitBlock`: keyboard hook, window subclass, raw input, cursor, XInput) except pad A, Enter and Space; the
 Leave button posts WM_CLOSE from the overlay itself (it works even when the game thread's tick is dead). The menu (F9)
 still opens over it.
@@ -234,10 +246,32 @@ the hooks log the same thread id), after the original:
   guest waits (`[title] the label (NEW GAME) pressed on the waiting title: ignored #n`): no "start a new game?" dialog,
   no gate block. `OnExitGame 0x143277AD0` is untouched: Quit Game quits (no confirmation; run 20261120-031529: the
   guest's game exited with code 0 about 4 s after A).
-* The full-screen panel (overlay) covers the boot screens and goes once the label is in the current page's data source
-  and the menu's update ran within 1.5 s (`title_wait::Showing`); the game's input is then not blocked. From the end of
-  the transfer ("Loading <host>'s save...") the label stays through the guest's own title load until the world is there
-  (the page fades out under it). The gate (above) stays the hard layer.
+* No full-screen panel and no input block on this path at all (BuildView: `waiting` and `block_input` only when the
+  native title is not installed): from its first frame the guest sees the game's own screens (`[coop] guest: no
+  waiting panel: ...` at install, never `[overlay] co-op waiting screen shown`). Nothing can start a game before the
+  title page (the splash page has no start handler; pad A / START during the boot did nothing, run
+  20261120-095126), and on the title page the handlers above ignore the label; the gate (above) tests only
+  `Guarding()` (role guest, active, not allowed), never the overlay, and stays the hard layer. The game's own notices
+  (dialogs the title page opens itself: TMF::Update title phase 3, the save-data checks 5/6/7) can be answered with the
+  game's own OK. From the end of the transfer ("Loading <host>'s save...") the label stays through the guest's own
+  title load until the world is there (the page fades out under it). The version difference is the label "Game
+  versions differ: update both games"; both builds are in the log (`[coop] guest: Game versions differ: host '...' vs
+  ours '...'`), no ImGui banner at the title. The in-world banners are unchanged.
+* **The boot logos skipped** (guest only, `guest_skip_logos=1`, the default; `0` lets them play): the page before the
+  title page is `DSUISplashScreenMenuFunction` (vtable `0x143E94988`, Update vt[14] `0x143278770(this, float dt)`;
+  OnPageOn `0x143279AC0` sets `*(u16*)(this+0xA0) = 0x100`: state 0, next 1). Its Update's state 0 holds the game's own
+  "skip the whole splash" branch (`0x1432787CC`): `if (platform->vt[0x158/8]()) { SetFocus 0x141B4E7D0(this+0xA8,
+  this+0xA8, 0); 0x141B1EB60(*(u64*)0x1457965F8); return; }`, the platform object `*(u64*)0x14577D3F0` whose slot
+  answers `xor al,al; ret` on PC, so it is never taken by the game itself. OnFinishDecimaLogo (`0x143277BC0`) ends the
+  splash with the same call. A MinHook pre-hook on the splash's Update takes that branch at its very first update
+  (vtable checked, state 0 and next state 1, the settings-reset dialog flag `0x145558F78` clear: a pending
+  settings dialog keeps the logos and the game's own flow), once per game, SEH-wrapped, on the game's menu thread, and
+  returns without the original; anything else calls the original. `[title] boot logos skipped (the splash page's own
+  skip-all path)`, then `[title] the first title page is up 0.1 s after the boot logos were skipped` (all runs:
+  0.1 s; the skip at ~5.5-6.1 s after the start, the waiting label at ~5.7-6.2 s, before it ~19.9 s). There is no "press
+  any button" screen in this game; the logos (SIE 6-9 s, Kojima Productions 10-12 s, 505 Games 14 s, Decima 17-18 s,
+  the title at ~19.5 s, run 20261120-084913) cannot be skipped by pad A, B or START (run 20261120-085041). The host's
+  logos always play.
 * Back to the game's menu (the session stops, the guest is in the world, hidden-test op `8 3`): at the menu's next
   update the bools and the label are written back, `ds+0x88 = 1` (the game asks "has a save" again), the title state's
   `+0x81 = 1` (`*(*(u64*)0x147C00128 + 0x2D0)`: the game rewrites all 8 labels from its localized texts), and the items
@@ -259,10 +293,18 @@ idles, the waiting screen and the input block go, the game's own title menu come
 
 **The guest's receive and load:** the Receiver writes `incoming\<sha>.part`; at END the SHA-256 and `ValidateCheckpoint`;
 the worker writes `manualsave5`, the next one `manualsave6`, alternating (never the slot just loaded, never an autosave);
-then the game thread: at the title only once the title menu can be up (`rules::TitleReady`: the game has no ready
-signal the mod reads, so 25 s after the mod's first tick, ~30 s after the start, past the boot logos, "press any button"
-and notices, and the session global 0 for 8 s without a break, past the world's teardown after QuitGame; until then
-the save waits, `the title load waits until the title menu has been up for a while`), `0x141A00DA0(0)` slot-cache
+then the game thread: at the title only once the title menu is up (`rules::GuestTitleLoadReady`): with the native
+title, the relabelled title page on screen (`title_wait::Showing`) for 3 s without a break (`rules::NativeTitleReady`,
+`kNativeTitleSettleMs`; its first updates keep the page's black cover, and a player pressing CONTINUE that soon is
+normal); otherwise, and as the backstop when no title page is ever seen, the time rule `rules::TitleReady` (25 s after
+the mod's first tick, ~30 s after the start, past the boot logos, and the session global 0 for 8 s without a break,
+past the world's teardown after QuitGame). Until then the save waits (`the title load waits until the title menu has
+been up for a while`); then `[coop] guest: the title is ready for the load (the game's own title page is up | the time
+rule)`. With no title page 45 s after the first tick one line says so (`[title] no title page 45 s after the start`) and
+the panel comes back without the input block (reason "no title page yet"); likewise while the title page is up but the
+label is not in it for 2 s (`title_wait::LabelMissing`: a fault in the data-source write, the NEW GAME key not found):
+`[title] the game's own title does not show the session: the waiting panel is back (no input block): ...`, hidden again
+when the label shows. Then `0x141A00DA0(0)` slot-cache
 refresh, `0x1426376E0(&app, 1, K)` exists check, 200 ms later the load: at the title `0x142624A70(&app, 1, K)` through its trampoline with the gate open for that call; in the world
 `0x142636990(&app, 1, K)` (the pause menu's Load). Done when a new local player entity has been stable for 5 s
 (RESULT ok), after 150 s RESULT load_failed. Fallback when the load calls fail their byte check: in hidden runs only,
@@ -316,6 +358,19 @@ on both games (the test guard was added after it).
 TMF vt[13] = `0x143278430` and vt[14] = `0x143278AB0`, and the two globals through the instructions that name them). A
 mismatch leaves it off (`[title] byte check FAILED: ...`, `[title] the guest's title in the game's own menu is OFF
 (...): the full-screen waiting panel is used`; the panel's last line says so too); the session itself is not affected.
+The boot-logo skip has its own checks (`kSkipSites`, 6, plus the splash vtable's slot 14 = `0x143278770` and the RIP
+operands: `0x1432787CC` -> `0x14577D3F0`, `0x1432787F2` -> `0x1457965F8`, `0x14327887B` -> `0x145558F78`); a mismatch
+leaves only the skip off (`[title] boot-logo skip OFF: this game build differs (...); the logos play`), the native
+title is unaffected. Armed: `[title] boot-logo skip armed: 6 byte checks ok`.
+
+| Address | What (boot-logo skip) | Bytes checked |
+|---|---|---|
+| 0x143278770 | DSUISplashScreenMenuFunction::Update (vt[14]) | `48 89 5C 24 10 57 48 83 EC 30 C5 F8 29 74 24 20 48 8B D9 C5 F8 28 F1 E8 14 9E D9 FF C5 CA 58 83` |
+| 0x1432787CC | its skip-all branch (platform check, SetFocus(+0xA8), menu system, jmp to "page finished") | `48 8B 0D 1D 4C 50 02 48 8B 01 FF 90 58 01 00 00 84 C0 74 28 48 8B 8B A8 00 00 00 45 33 C0 48 8B D1 E8 DE 5F 8D FE 48 8B 0D FF DD 51 02 48 8B 5C 24 48 48 83 C4 30 5F E9 58 63 8A FE` |
+| 0x14327887B | state 1 reads the settings-reset dialog flag | `80 3D F6 06 2E 02 00` |
+| 0x143277BC0 | OnFinishDecimaLogo (the same end call) | `C7 81 F8 00 00 00 00 00 00 00 48 8B 0D 27 EA 51 02 E9 8A 6F 8A FE` |
+| 0x141B1EB60 | menu system: the current page finished | `48 89 5C 24 08 57 48 83 EC 30 48 8B F9 48 8D 0D 4C F8 D6 02 E8 77 27 ED` |
+| 0x141B4E7D0 | SetFocus | `48 8B 0D 21 7E C4 03 45 0F B6 C8 45 33 C0 48 8B 89 B8 00 00 00 E9 16 27` |
 
 | Address | What | Bytes checked |
 |---|---|---|
@@ -344,7 +399,8 @@ after N s", gate blocks (the first 20, then every 50th), phases, link loss and r
 The guest's title: `[title]` lines (hooks in, or OFF with the reason; `lst_title_menu_list (title page #n): 8 items
 (...); 3 to hide`; `native waiting title ON (title page #n)`; each new label, the transfer's percentage at most once a
 second; presses ignored; `the game's own title menu is back`). `coop_session 0` on the guest adds `[coop] status:
-native title installed; wanted 1, label in the menu 1, menu update 0.0 s ago, items hidden 3, presses ignored 0, faults 0`.
+native title installed; wanted 1, label in the menu 1, menu update 0.0 s ago, items hidden 3, presses ignored 0, faults 0;
+boot logos skipped` (or `skip armed`, `not skipped`, `skip faulted`, `played`).
 
 Debug action **Coop session** (`action coop_session <op> [a b]`): 0 status; 1 `<ms>` drop every received datagram for
 ms (hidden runs only: the link-loss and late-join scenarios use it on both games); 2 offer the newest save of the
@@ -354,9 +410,10 @@ current world now (host);
 `0x142DCAC60` makes it: `0x14362D750(session+0x2A0, 4, -2, 2, 5, -1, 1)` while `0x14362B4A0` says a checkpoint exists
 (host, hidden runs; the -1 argument is a guess, the caller passes its own); `7 1` only asks whether a checkpoint exists
 (always ok, for polling); `7 2` makes the request even without one (the game itself ignores a -2 / reason 5 request
-without a checkpoint, so only the host's detection sees it); 8 `<0|1|2|3>` hide the waiting panel for a screenshot of
-the title behind it (guest, hidden runs; 1: the input block and the gate stay; 2: the input block is lifted too; 3: the
-game's own title menu comes back as well (title_wait restores it), so the gate alone holds the title; 0: all as before); 9 `<type> <index>` a slot stands in for a New Game's first save: it is dropped from the New Game
+without a checkpoint, so only the host's detection sees it); 8 `<0|1|2|3>` (guest, hidden runs) 3: the game's own title
+menu comes back (title_wait restores it), no panel, no input block, so the gate alone holds the title; 1 / 2 hide the
+fallback panel / lift its input block too (with the native title there is no panel: "the native waiting title is on");
+0: all as before; 9 `<type> <index>` a slot stands in for a New Game's first save: it is dropped from the New Game
 baseline, so the read-only 1 Hz poll offers it (host, hidden runs; nothing is written).
 
 The overlay draws the co-op screens only with its swapchain-creation hooks (like the name tags); with a host-save
@@ -370,15 +427,16 @@ is profile-only already), foreground, one at a time:
 
 | Scenario | Proves |
 |---|---|
-| `two-games-hostsave-title` | the guest's title in the game's own menu: only the label and Quit Game (`T1`), DOWN selects Quit Game (`T2`), A on the label ignored (no dialog, no gate block), a 12 s link loss ("Reconnecting to the host...", `T3b`), the transfer's percentage (`T4`) and "Loading the host's save..." (`T5`), then the world; the host's title the game's own (`T1-host-title`) |
-| `two-games-launcher-local-title` | the same on the launcher's own Local test files (`launcherini local-test`, no `-GuestSeed`): the session ON from the launcher's `host_save=1`, the guest's native title, transfer and load |
+| `two-games-hostsave-title` | the guest's title in the game's own menu, never the ImGui panel (`T0-guest-boot` black, `nolog [overlay] co-op waiting screen shown`), the boot logos skipped: only the label and Quit Game (`T1`), DOWN selects Quit Game (`T2`), A on the label ignored (no dialog, no gate block), a 12 s link loss ("Reconnecting to the host...", `T3b`), the transfer's percentage (`T4`) and "Loading the host's save..." (`T5`), then the world; the host's title the game's own (`T1-host-title`) |
+| `two-games-launcher-local-title` | the same on the launcher's own Local test files (`launcherini local-test`, no `-GuestSeed`): the session ON from the launcher's `host_save=1`; the guest filmed from its first frame (`L0-guest-boot-00..07`, ~0.7 s apart, pad A / START between them: black, then the title, never the panel), the boot logos skipped, the title page's first frame (`L0-guest-title-first`), the native label and Quit Game (`L1`), A on the label ignored (`L1b`), no world, no player and no gate block before the host's Continue, transfer (`L2`), "Loading" (`L3`), the load 3 s after the page (`the title is ready for the load (the game's own title page is up)`), world (`L4`); the host's title and logos unchanged (no `[title]` line) |
+| `two-games-hostsave-title-fallback` | `@guest ini coop_test_title_off=1` (hidden runs only): the native title not installed, so the old full-screen panel from the start with its reason line (`FB1-guest-panel`), the logos play, the load by the time rule (`the title is ready for the load (the time rule)`), the world |
 | `two-games-hostsave-continue` | the guest's native title; A on the label ignored; with the game's own menu back for the test (`8 3`: every item and the "New Game" label restored, `02a`) the whole New Game path (OK, difficulty, OK, text size) ends at the gate (`gate: BLOCKED ... New Game`); the host's Continue over channel 4; the guest's title load from that state; both at the same spot (snapshots) |
 | `two-games-hostsave-reload` | the host's in-world Load of autosave18 (`coop_session 5 4 18`) followed in the guest's world (manualsave6); then the host's QuitGame and the guest following it to the title (D1-4); its new title page (#2) hides CONTINUE / LOAD GAME although the guest now has manualsave5/6; A on the label ignored; Quit Game (DOWN, then `@guest quit pad`) ends the guest's game with exit code 0 |
 | `two-games-hostsave-retry` | the -2 Retry request (`coop_session 7 2`: no checkpoint exists in a freshly loaded world, see 9), the approx newest-autosave offer, the guest's in-world load |
 | `two-games-hostsave-newgame` | the host's New Game (one DOWN, OK, difficulty, OK, text size), the guest's "you join at their first save" state for 35 s, then autosave18 standing in for the first save (`coop_session 9 4 18`): offered (reason 2) and loaded at the guest's title |
 | `two-games-hostsave-linkloss` | a 20 s outage (banner, no reload), then a 75 s outage (back to the waiting screen after 60 s, the newest save on return) |
 | `two-games-hostsave-late` | the host in the world before the link exists; the stale Continue offer cancelled; late join with the newest save; the teleport offer accepted |
-| `two-games-hostsave-version` | `@guest ini coop_test_build=...`: both sides report the difference (the guest's title label, a banner with both builds), RESULT version, nothing written |
+| `two-games-hostsave-version` | `@guest ini coop_test_build=...`: both sides report the difference (the guest's title label, the host's banner with both builds; the guest's builds in its log), RESULT version, nothing written |
 | `guest-refuse-unredirected` | the supervisor's `guest unredirected` directive: the guest's session.ini has `host_save=1` and no redirect; exit `0x53540006` and `sandbox-refused.txt` within 15 s (summary `guest_refused_as_expected`) |
 
 Checks on every run (supervisor): real tree unchanged, 0 cloud uploads, restore complete; the guest's scratch diff
@@ -398,6 +456,19 @@ uploads, no violation):
 | 20261120-032439 | two-games-hostsave-continue | found: after `8 3` the restored NEW GAME label was empty (the saved label had been taken before the game wrote its own); fixed with the title state's `+0x81` (the game rewrites its labels) |
 | 20261120-032712 | two-games-hostsave-continue | final build: the restore shows every item and "New Game" (`02a`), the New Game path ends at the gate, Continue, world |
 | 20261120-032917 | two-games-launcher-local-title | final build, on the launcher's Local test files (`host_save=1`, `second_instance=1`, `my_character=fragile_suit`): native title, transfer, "Loading" straight after the transfer, world |
+
+**2026-11-20 (later), native only** (all `pass`: game and guest exit 0, real saves unchanged, restored, 0 cloud
+uploads, no violation):
+
+| Run | Scenario | Result |
+|---|---|---|
+| 20261120-095126 | two-games-launcher-local-title | the launcher's Local test files: guest black from its first frame (no panel), logos skipped at 6.06 s, title page 6.14 s, "Waiting for the host to start the game" 6.19 s; pad A / START during the boot and A on the label: nothing; transfer, load 0.0 s after the save was written (the page had been up for 13 s), world |
+| 20261120-095318 | two-games-hostsave-title | title page 5.86 s; label, Quit Game, A ignored, Reconnecting, transfer, load, world; no panel |
+| 20261120-095458 | two-games-hostsave-continue | no panel; A ignored; `8 3`: the New Game path ends at the gate (`gate: BLOCKED ... New Game`); Continue; load; same spot |
+| 20261120-095720 | two-games-hostsave-title-fallback | `coop_test_title_off=1`: the panel with the reason line, the logos play, the load by the time rule (31.4 s), world, the panel hidden |
+| 20261120-095852 | two-games-hostsave-reload | title page #1 at 5.6 s; in-world reload; QuitGame back to the title (page #2, the label) |
+| 20261120-100132 | two-games-hostsave-late | late join: the save written at 64.7 s, the load at once (the page up since 5.8 s), world |
+| 20261120-100337 | two-games-launcher-local-test | regression on the Local test files: no panel (W1 the native title), transfer, vehicles, riding accepted |
 
 Not verified for the title: a real mouse on the menu (the handlers are the same for a click); a non-English game
 language (the label is our English text; the restored labels are the game's own); a host name other than "the host"

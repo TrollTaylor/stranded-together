@@ -167,17 +167,40 @@ a `WH_KEYBOARD` thread hook (`SetWindowsHookExA`, set up at 0x1419B8250, proc
 delay-loaded `XINPUTUAP.dll` and HID (`HidD_*`, DualSense). No DirectInput, no
 `GetAsyncKeyState`.
 
+**The toggle key and ds.exe's message pump.** The pump (`FUN_141A19350`) calls
+`PeekMessageA(PM_NOREMOVE)` before `GetMessageA`, so every key reaches the thread's
+`WH_KEYBOARD` hooks first with `HC_NOREMOVE` and, only if no hook ate it there, once more
+with `HC_ACTION` (a nonzero answer at `HC_NOREMOVE` removes the message). Up to v0.19 our
+hook ate F9 at `HC_NOREMOVE` but toggled only at `HC_ACTION`, so F9 never opened the
+menu in the real game (play test 2; the harness called `HC_ACTION` only). Every key is
+now handled at its first sighting, whatever the code (the `HC_ACTION` sighting of a
+message already seen at `HC_NOREMOVE` only repeats the answer); key state (the ride key)
+is recorded at both. ds.exe's own hook (`0x1419B9920`) keeps every `HC_ACTION` key without
+calling the next hook and passes the other codes on: if it sits above ours, `HC_NOREMOVE`
+is the only sighting we get, which is now enough. A press neither the hook nor the window
+reported within 400 ms (the key-state poll, only while the game window really is in
+front) toggles too; a press the hook or the window reported at any time since the poll last
+saw the key up is never toggled again by the poll (however late the next Present), and a late
+hook sighting of a press the poll toggled for is dropped only while that press is the same
+one (still held with no release seen, or already up); a new press toggles. Log: `[overlay] keyboard hook: first key seen (vk, HC_NOREMOVE |
+HC_ACTION)`, after 30 s of keys the calls by code, and every toggle with its path
+(`menu opened by F9 (keyboard hook, HC_NOREMOVE)`, `(window message)`, `(key-state
+poll ...)`, `menu closed by Esc` / `by the menu's close button` / `because the window lost
+the focus`), `F9 pressed 2 times within one frame: no change`, `F9 waited N ms for a
+Present`, `F9 ignored: the overlay is disabled (<reason>)`.
+
 While the menu is open:
 
-* Our own `WH_KEYBOARD` hook on the game window's thread (installed after the game's,
-  so it runs first) swallows every key and hands it (and its character via
-  `ToUnicode`) to ImGui; the game's hook and window never see it. Alt+F4 passes.
+* Our own `WH_KEYBOARD` hook on the game window's thread swallows every key at its first
+  sighting and hands it (and its character via `ToUnicode`) to ImGui; the game's hook and
+  window never see it. Alt+F4 passes.
 * A window-procedure subclass eats `WM_INPUT` (passed to `DefWindowProc` so the system
   frees the handle) and all mouse/keyboard messages, turning mouse messages into ImGui
   events; `WM_SETCURSOR` hides the system cursor (ImGui draws its own).
 * `SetCursorPos` and `ClipCursor` from the game are ignored (the game's last clip
   request is applied when the menu closes); `XInputGetState` reports a connected but
-  idle pad.
+  idle pad. The cursor is freed for the menu, except with the Local test's mouse lock
+  (`mouse_lock=1`, docs/launcher.md "Mouse lock"): then it stays inside the window.
 * Focus loss (`WM_KILLFOCUS`, `WM_ACTIVATEAPP` false) closes the menu.
 * Exception: keys and mouse buttons that were physically down when the menu opened
   (`GetAsyncKeyState` at open) get their RELEASE through to the game: in our keyboard

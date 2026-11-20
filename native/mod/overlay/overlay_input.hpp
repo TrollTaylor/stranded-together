@@ -12,9 +12,9 @@
 //             0x1419B1C57 (function pointer at +0x16818 of its pad poller, called at
 //             0x1419B1DC7), XINPUTUAP.dll (delay-loaded) only as the fallback; HID (DualSense)
 // While the menu is open:
-//   - our own WH_KEYBOARD hook on the window thread (installed after the game's,
-//     so it runs first) swallows every key: the game's hook and window never
-//     see them; the keys and their characters go to ImGui instead,
+//   - our own WH_KEYBOARD hook on the window thread swallows every key at its first
+//     sighting (HC_NOREMOVE in ds.exe's pump, see TakeToggles): the game's hook and
+//     window never see them; the keys and their characters go to ImGui instead,
 //   - a window-procedure subclass eats WM_INPUT and mouse/keyboard messages,
 //   - SetCursorPos and ClipCursor calls are ignored (the game's last clip
 //     request is applied when the menu closes), XInputGetState returns an idle pad,
@@ -141,16 +141,63 @@ void Detach() noexcept;
 HWND Window() noexcept;
 
 // Toggle presses since the last call (from the keyboard hook / window messages,
-// or GetAsyncKeyState polling when neither saw the key).
+// or the key-state poll for a press neither reported).
+//
+// The toggle key and ds.exe's message pump: the pump (FUN_141A19350) peeks with PM_NOREMOVE before GetMessage, so every
+// key reaches WH_KEYBOARD hooks first with HC_NOREMOVE, and a hook that eats it there removes the message (no HC_ACTION
+// follows). Our hook handles each key at its first sighting, whatever the code (v0.19 toggled at HC_ACTION only and ate
+// F9 at HC_NOREMOVE: the menu never opened in the real game).
 unsigned TakeToggles() noexcept;
+enum class ToggleSource : std::uint8_t { none, hook_noremove, hook_action, window_message, key_poll, test };
+struct ToggleInfo {
+    ToggleSource source = ToggleSource::none;  // the last toggle's
+    unsigned long long tick = 0;               // GetTickCount64 when the key came
+};
+ToggleInfo LastToggle() noexcept;
+const char* ToggleSourceName(ToggleSource s) noexcept;
+// Render thread, every Present: a physical press of the toggle key (GetAsyncKeyState) while our window is really in
+// front that neither the hook nor the window reported within 400 ms toggles from here (never in a hidden run).
 void PollToggleFallback() noexcept;
 // Requested by focus loss (WM_KILLFOCUS / WM_ACTIVATEAPP): close the menu.
-bool TakeCloseRequest() noexcept;
+enum class CloseReason : std::uint8_t { none, focus_lost, app_inactive };
+CloseReason TakeCloseRequest() noexcept;
+const char* CloseReasonText(CloseReason r) noexcept;
 void RequestToggleForTest() noexcept;
 // Runs our WH_KEYBOARD procedure as the system would (call it on the window's
 // thread). Posted key messages never reach WH_KEYBOARD hooks, so the harness
 // drives the hook through this.
 LRESULT KeyboardProcForTest(int code, WPARAM vk, LPARAM lp) noexcept;
+// Hidden runs (scenario `hookkey`): SendMessage this registered message to the game window with (vk, keystroke lParam);
+// on the window's thread our hook runs in ds.exe's order (HC_NOREMOVE, then HC_ACTION only if not eaten; a key nobody
+// ate is posted on as WM_KEYDOWN/UP). Answers 1 eaten at HC_NOREMOVE, 2 eaten at HC_ACTION, 3 passed to the game, 0 not
+// a hidden run.
+UINT HookKeyMessage() noexcept;
+struct HookCounts {
+    unsigned long noremove = 0, action = 0;  // our hook's calls by code
+};
+HookCounts GetHookCounts() noexcept;
+// The window that really is in front (never the guest's hooked GetForegroundWindow answer) belongs to this process.
+// Always false in a hidden run (the keyboard and the desktop are the user's).
+bool RealForegroundIsOurs() noexcept;
+
+// Mouse lock (mouse_lock.hpp; session.ini mouse_lock=1, the launcher's Local test). Set before Attach.
+void SetMouseLock(bool on) noexcept;
+bool MouseLockConfigured() noexcept;
+void SetMouseLockOn(bool on) noexcept;  // the debug menu's switch (only with mouse_lock=1)
+// Render thread, every Present: gathers the state, decides and clips / releases through the unhooked ClipCursor (a hidden
+// run logs what it would do and touches nothing).
+void MouseLockFrame() noexcept;
+struct MouseLockStatus {
+    bool configured = false, on = false, engaged = false, switch_enabled = false;
+    std::uint32_t switch_vk = 0;
+    const char* state = "-";  // the last decision, in words
+    unsigned long clips = 0, releases = 0, replaced = 0, switches = 0;
+};
+MouseLockStatus GetMouseLockStatus() noexcept;
+std::uint32_t SwitchKey() noexcept;  // F10, or F11 when the menu key is F10
+// DllMain, DLL_PROCESS_DETACH (the game quits with its window still up, so WndProc never sees WM_NCDESTROY): our own clip
+// does not outlive the game. No logging (loader lock).
+void ReleaseMouseLockAtExit() noexcept;
 // Pretends `vk` was physically down when the menu opened (call after opening).
 void MarkHeldForTest(std::uint32_t vk) noexcept;
 // Forgets what CaptureHeld saw physically down (the harness runs on a desktop someone may be using).
@@ -172,10 +219,15 @@ bool WaitBlocked() noexcept;
 // lose that packet's motion). The open menu and the waiting screen block as before. Any thread.
 void SetRideCarry(bool on) noexcept;
 bool RideCarry() noexcept;
-// The XInput buttons of pad 0 as the game last read them, BEFORE any masking (automation: the virtual pad); 0 when the
-// game has not read the pad for `max_age_ms`.
-std::uint16_t RidePadButtons(unsigned max_age_ms) noexcept;
-// The ride key (default F, the game's RideAndGetOff binding) is down, as our keyboard hook saw it (never in automation).
+// The XInput buttons of every pad (indices 0..3, OR'ed) as the game last read them, BEFORE any masking (automation: the
+// virtual pad); an index the game has not read for `max_age_ms` counts as up. `index`: the first index with a button
+// down, -1 none. (v0.19 read index 0 only.) Pads the game reads without XInput (a PlayStation pad through scePad, Steam
+// Input, HID) never show here: ride_together reads the game's own pad state for those.
+std::uint16_t RidePadButtons(unsigned max_age_ms, int* index = nullptr) noexcept;
+// Per index: ms since the game last read it (999999 never); returns how many were read in the last second.
+int RidePadAges(unsigned (&age_ms)[4]) noexcept;
+// The ride key (default F, the game's RideAndGetOff binding) is down, as our keyboard hook saw it at either hook code
+// (confirmed by the key's physical state; hidden runs: the `hookkey` command's press).
 bool RideKeyDown() noexcept;
 void SetRideKey(std::uint32_t vk) noexcept;
 void RideCounters(unsigned long* pads, unsigned long* keys, unsigned long* raw) noexcept;

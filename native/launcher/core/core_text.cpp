@@ -325,6 +325,7 @@ bool MakeSessionIniText(const SessionIni& s, std::string& text, std::string& err
     if (!s.local_input.empty()) t += "local_input=" + s.local_input + "\n";
     if (s.frame_cap) t += "frame_cap=" + std::to_string(s.frame_cap) + "\n";
     if (!s.local_window.empty()) t += "local_window=" + s.local_window + "\n";
+    if (s.mouse_lock) t += "mouse_lock=1\n";
     // The host is always Sam (only the guest picks a character). Written for every host, so the
     // rule is plain in the file; the mod applies it too.
     if (host) t += std::string("my_character=") + kHostCharacter + "\n";
@@ -378,6 +379,7 @@ bool ParseSessionIniText(const std::string& text, SessionIni& out, std::string& 
         else if (k == "local_input") out.local_input = v;
         else if (k == "frame_cap") ok = ParseIntStrict(v, 0, 240, out.frame_cap);
         else if (k == "local_window") out.local_window = v;
+        else if (k == "mouse_lock") ok = (v == "0" || v == "1") && (out.mouse_lock = v == "1", true);
         else if (k == "my_character") out.my_character = v;
         else if (k == "partner_body") out.partner_body = v;
         else if (k == "self_character") out.self_character = IniBool(v);

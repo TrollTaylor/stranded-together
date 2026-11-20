@@ -673,7 +673,10 @@ hook, which is installed at start-up only with `session.ini partner_body=real` o
   (docs/real-partner-body.md sections 20 and 26.3), at run time (it then stays for later shows). `self_view 10 <0/1>`: the per-item headgear offsets (1, the default with `self_headgear=1`) or the v0.11
   head lift (0: `self_view 7`'s lift applies again, the movers go back to the identity). `self_view 11 <percent>`
   (1-100, default 1): her feet's scale under Sam's equipped boots (section 21); `self_view 12 <0/1>`: her feet
-  scaled (1, the default with `self_feet_hide=1`) or kept.
+  scaled (1, the default with `self_feet_hide=1`) or kept. `self_view 13 <0/1>`: follow mode 4's rule, 1 v0.20's (the
+  default: the step also while driving, the consistency gate, the dt scale) or 0 v0.19's (no step while Sam has a
+  parent; for before / after pictures). The `[self] follow 4 meter` lines score both on the same frames
+  (docs/real-partner-body.md section 26.6).
   `self_view 4`: the
   subspace work object's state and menu kind, and every ArtPart of the menu's figure (asked / effective
   visible, top-level, children) in the log. In hidden tests a `[menu] subspace state ...` line is logged on
@@ -752,7 +755,9 @@ on (the open-loop replay), `6 <kind> [m]` moves the nearest vehicle of that kind
 Carried passengers in the shared real vehicles (docs/real-partner-body.md section 24). `action ride_state` logs the state
 (`[ride] state: ...`): on / off and why, the passenger side (idle, requesting, riding: the vehicle and ride id), the
 driver side (carrying: the ride id), boards, exits, requests, denies, accepts, ENDs sent / received, dropped messages, the
-pose override's writes, the input block's counters, the capsule's counter and on byte, the seats in use. `ride_board`
+pose override's writes, the input block's counters, the capsule's counter and on byte, the seats in use (a second line:
+the native prompt, on / off and why, the partner's vehicle id, lifted, riding, the provider's passes, lifts and RideOff
+passes, the presses taken from TryStart, the game's last answer per slot). `ride_board`
 boards the vehicle the partner drives here now (a completed hold: every boarding check applies). `ride_exit [1]` gets off
 now (by choice: under 2 m/s; 1 also above, hidden tests; in the game a second hold within the 3 s wait above 2 m/s
 jumps off). `seat_measure` logs, for the vehicle our Sam drives (or the
@@ -764,7 +769,8 @@ axis by RequestTeleport), `6` stops the vehicle our Sam drives dead (RequestTele
 takes our Sam next tick, `8 [m]` places our Sam at the passenger door of the vehicle the partner drives here, facing it,
 `9` the riding module's emergency stop (riding stays off), `10` asks to ride (as `ride_board`) and runs the emergency
 stop in the same call (the driver's ACCEPT then always arrives after the stop: it is ended at once, never a carry), `11`
-logs the boarding check now (`[ride] test: boarding now: <block>`; the action succeeds either way), `31` / `32` / `33 <m>` the x / y / z of the measured kind's
+logs the boarding check now (`[ride] test: boarding now: <block>`; the action succeeds either way), `12 <0|1>` turns the
+game's own "Use Vehicle" prompt off (the ImGui hold prompt boards, as when its byte checks fail) or back on, `31` / `32` / `33 <m>` the x / y / z of the measured kind's
 passenger seat (this session), `30` the seat table again.
 
 ### Save guard (`save_guard`; with riding together, or in a hidden run)

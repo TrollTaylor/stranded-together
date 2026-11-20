@@ -21,6 +21,7 @@
 #include "partner_outfit.hpp"
 #include "partner_source.hpp"
 #include "ride_together.hpp"
+#include "self_predict.hpp"
 
 namespace st::realbody {
 namespace {
@@ -1097,31 +1098,64 @@ void CopySamTransform(bool menu = false) {
 // same exported setter as modes 1 and 2, the same identity checks.
 struct SamWorldRec {
     std::int64_t qpc = 0;
-    float dt = 0;  // the game's dt of that Sam update
+    float dt = 0;            // the game's dt of that Sam update
+    float dtsum = 0;         // the game's dts of Sam's updates in this frame up to this one
+    std::uint32_t bseq = 0;  // the self body's update counter at this record (g_body_seq)
     double p[3] = {};
     float r[3][3] = {};
 };
 struct SamTrack {
-    SamWorldRec cur, prev;  // Sam's world after his last update, and after his last update of an earlier frame
-    std::uint32_t n = 0;    // records kept (2 = both valid)
+    SamWorldRec cur, prev, prev2;  // Sam's world after his last update, and after his last update of the two frames before
+    std::uint32_t n = 0;           // records kept (3 = all valid)
 };
 SeqLock<SamTrack> g_sam_track;
 SamTrack g_sam_track_w;  // Sam's update only (under g_fit_busy's sibling below)
 std::atomic<bool> g_sam_track_busy{false};
+std::atomic<std::uint32_t> g_body_seq{0};  // the self body's own updates in follow mode 4: a Sam update after one starts his next frame
 std::atomic<std::uint32_t> g_pred_n{0}, g_pred_after{0}, g_pred_skip_hist{0}, g_pred_skip_stale{0}, g_pred_skip_jump{0}, g_pred_skip_read{0},
-    g_pred_fail{0}, g_pred_aba{0};
+    g_pred_fail{0}, g_pred_aba{0}, g_pred_seated{0}, g_pred_skip_gate{0};
 std::atomic<std::uint64_t> g_pred_step_um{0}, g_pred_step_max_um{0}, g_pred_pre_um{0}, g_pred_pre_n{0};
 std::atomic<std::uint32_t> g_pred_scale_n{0};
 std::atomic<std::uint64_t> g_pred_scale_sum{0};  // the span between Sam's two frame records, us
-// The step is only Sam's own movement in his own update. Something else moving him (the ride carry's teleport from the game
-// tick, a vehicle he drives as his parent) lands between his last record and the body's next update and is already in his
-// world now: adding his last step on top would put the body a vehicle step ahead of the gear hung on him. Then the plain
-// copy (mode 2). g_pred_skip_moved: Sam's world now differs from his newest record by more than kPredMovedM;
-// g_pred_skip_ride: carried as a passenger (ride::Carried, published by SelfTick) or Sam has a parent entity (driving).
-constexpr double kPredMovedM = 0.005;
+std::atomic<std::uint64_t> g_pred_k_sum{0};      // the step's dt scale x 1000
+// Something outside Sam's own update moving him (the ride carry's teleport from the game tick) lands between his last record
+// and the body's next update and is already in his world now: adding his last step on top would put the body a step ahead
+// of the gear hung on him. Then the plain copy (mode 2). g_pred_skip_moved: Sam's world now differs from his newest record
+// by more than selfpred::kMovedM; g_pred_skip_ride: carried as a passenger (ride::Carried, published by SelfTick). A
+// vehicle he drives as his parent does NOT move him outside his update (section 26.6: 0.00 cm in every seated second): the
+// step applies while seated since v0.20, with the consistency gate for the seat snaps (self_predict.hpp).
 constexpr std::uintptr_t kEntParent = 0x70;  // Entity: parent (Sam's vehicle while he drives / rides it in the game)
 std::atomic<bool> g_sam_carried{false};      // game thread (SelfTick) -> the body's update
 std::atomic<std::uint32_t> g_pred_skip_moved{0}, g_pred_skip_ride{0};
+std::atomic<int> g_pred_rule{1};  // `self_view 13 <0|1>`: 0 applies v0.19's rule (seated: copy; no gate, no scale), 1 v0.20's
+
+// The meter (section 26.6): every candidate of a body update scored at the body's next update against Sam's world then (his
+// world after his last update of the frame the prediction was for: where the game drew his gear). Moving frames only (Sam's
+// world moved more than 5 mm in the frame). Candidates: 0 the v0.20 rule, 1 v0.19's, 2 the plain copy (his previous
+// frame's world). Classes: 0 on foot, 1 seated (driving in the game), 2 carried as a passenger. Carried, the carry's
+// teleport from the game tick lands between Sam's update and the body's next one (it places him for the NEXT frame, one
+// frame ahead along the vehicle's velocity), so there the reference is his world right after his own last update of the
+// frame (`own`: where his update put his gear; the copy reads 0.0 cm against it, run 20261120-111415), and the carry's move
+// is metered (`moved`).
+constexpr int kPmCand = 3, kPmCls = 3;
+struct PredMeterCls {
+    std::uint32_t n = 0;
+    double sum[kPmCand] = {}, mx[kPmCand] = {}, asum[kPmCand] = {}, amx[kPmCand] = {};
+    std::uint32_t o3[kPmCand] = {}, o8[kPmCand] = {};
+    double own_sum[kPmCand] = {}, own_mx[kPmCand] = {}, moved_sum = 0, moved_mx = 0;
+};
+struct PredMeter {
+    PredMeterCls c[kPmCls];
+};
+PredMeter g_pm;  // under g_pm_busy
+struct PredLast {
+    bool have = false;
+    std::int64_t qpc = 0;
+    int cls = 0;
+    Xf cand[kPmCand] = {};
+};
+PredLast g_pm_last;  // the body's update only (under g_pm_busy)
+std::atomic<bool> g_pm_busy{false}, g_pm_drop{false};
 
 // A world transform (+0xC8 position, +0xE0 rotation) read fault-free twice and compared, finite.
 bool ReadWorldTwice(std::uintptr_t e, std::uint8_t (&a)[kWorldBytes + 4]) {
@@ -1138,9 +1172,10 @@ bool ReadWorldTwice(std::uintptr_t e, std::uint8_t (&a)[kWorldBytes + 4]) {
     return true;
 }
 
-// Sam's update (after the capture): his world for this frame. A second update of Sam within half a frame of the last
-// replaces the newest record (the game updates his model about twice per frame); an update after that starts a new
-// frame and the newest record becomes the previous one.
+// Sam's update (after the capture): his world for this frame. Frames are told apart by the self body's update counter: a
+// Sam update after a body update starts his next frame (the newest record becomes the previous one); another Sam update
+// before the body's next replaces the newest record, and its dt is added to the frame's (v0.19 used "within half a frame
+// of the last", which disagreed with the body's updates in a quarter of the frames at an uneven pace: section 26.6).
 void TrackSam(float dt) {
     const std::uintptr_t sam = g_sam_e.load(std::memory_order_acquire);
     if (!sam || g_qpc_per_ms <= 0) return;
@@ -1150,30 +1185,63 @@ void TrackSam(float dt) {
     SamWorldRec r;
     r.qpc = Qpc();
     r.dt = dt;
+    r.bseq = g_body_seq.load(std::memory_order_acquire);
     std::memcpy(r.p, a, sizeof(r.p));
     std::memcpy(r.r, a + 0x18, sizeof(r.r));
+    const float d = std::isfinite(dt) && dt > 0 && dt < 1 ? dt : 0;
     SamTrack& t = g_sam_track_w;
-    const double half = 0.5 * g_frame_ms.load(std::memory_order_relaxed);
     if (t.n == 0) {
+        r.dtsum = d;
         t.cur = r, t.n = 1;
-    } else if (static_cast<double>(r.qpc - t.cur.qpc) / g_qpc_per_ms >= half) {
-        t.prev = t.cur, t.cur = r, t.n = 2;
+    } else if (r.bseq != t.cur.bseq) {
+        r.dtsum = d;
+        t.prev2 = t.prev, t.prev = t.cur, t.cur = r, t.n = t.n < 3 ? t.n + 1 : 3;
     } else {
-        t.cur = r;  // the same frame's second update: its newest world (the previous frame's record stays)
+        r.dtsum = t.cur.dtsum + d;
+        t.cur = r;  // the same frame's second update: its newest world (the earlier frames' records stay)
     }
     g_sam_track.Write(t);
     g_sam_track_busy.store(false, std::memory_order_release);
 }
 
+// The meter's score of the last body update's candidates against Sam's world now (body update, under g_pm_busy).
+void PredMeterScore(const PackedWt& now, const SamTrack& t) {
+    if (!g_pm_last.have || t.n < 1 || t.cur.qpc <= g_pm_last.qpc) return;  // Sam not updated since: not a frame's end yet
+    PredMeterCls& c = g_pm.c[g_pm_last.cls];
+    double e[kPmCand], an[kPmCand];
+    for (int k = 0; k < kPmCand; ++k) {
+        double d2 = 0;
+        for (int i = 0; i < 3; ++i) d2 += (g_pm_last.cand[k].p[i] - now.p[i]) * (g_pm_last.cand[k].p[i] - now.p[i]);
+        e[k] = std::sqrt(d2) * 100.0;
+        an[k] = selfpred::RotAngleDeg(g_pm_last.cand[k].r, now.r);
+    }
+    g_pm_last.have = false;
+    if (!(e[2] > 0.5) || !(e[2] < 300.0)) return;  // not moving, or a teleport / load
+    ++c.n;
+    double mv2 = 0;
+    for (int i = 0; i < 3; ++i) mv2 += (now.p[i] - t.cur.p[i]) * (now.p[i] - t.cur.p[i]);
+    const double mv = std::sqrt(mv2) * 100.0;
+    c.moved_sum += mv, c.moved_mx = (std::max)(c.moved_mx, mv);
+    for (int k = 0; k < kPmCand; ++k) {
+        c.sum[k] += e[k], c.asum[k] += an[k];
+        if (e[k] > c.mx[k]) c.mx[k] = e[k];
+        if (an[k] > c.amx[k]) c.amx[k] = an[k];
+        if (e[k] > 3.0) ++c.o3[k];
+        if (e[k] > 8.0) ++c.o8[k];
+        double d2 = 0;
+        for (int i = 0; i < 3; ++i) d2 += (g_pm_last.cand[k].p[i] - t.cur.p[i]) * (g_pm_last.cand[k].p[i] - t.cur.p[i]);
+        const double eo = std::sqrt(d2) * 100.0;
+        c.own_sum[k] += eo, c.own_mx[k] = (std::max)(c.own_mx[k], eo);
+    }
+}
+
 // The body's own update, before its pose write (follow mode 4): this frame's world for the body. Sam already updated in
 // this frame (his newest record is under half a frame old): his world now is this frame's, copied as is. Otherwise his
-// world now plus his last per-frame step (his world after his last update of this frame minus that of the frame before);
-// no step after a jump (over 3 m in a frame:
-// a teleport, a load, a vehicle snap), without a previous frame, or when his records are over 2.5 frames old (he is not
-// updated: asleep, a cutscene), nor when something outside his update moved him (the ride carry, a vehicle he drives as
-// his parent, his world now more than 5 mm from his newest record: that move is already in his world now); then the
-// plain copy (mode 2), which mode 1's copy in his update corrects anyway.
-void PredictSelfWorld() {
+// world now plus his last per-frame step, scaled by this frame's dt against his last frame's (selfpred::Decide: no step
+// without a previous frame, with records over 2.5 frames old, after a jump over 3 m, when something outside his update
+// moved him, while carried, or when his newest step is not consistent with the one before: a seat snap); then the plain
+// copy (mode 2), which mode 1's copy in his update corrects anyway. `dt_body`: the game's dt of this body update.
+void PredictSelfWorld(float dt_body) {
     const std::uintptr_t self_e = g_me.e.load(std::memory_order_seq_cst);
     const std::uintptr_t self_sm = g_me.sm.load(std::memory_order_seq_cst);
     const std::uintptr_t sam = g_sam_e.load(std::memory_order_acquire);
@@ -1182,81 +1250,99 @@ void PredictSelfWorld() {
     if (!Rd(self_e, ev) || ev != g_me.e_vt || !Rd(self_e + kEntModel, em) || em != self_sm || !Rd(self_sm, smv) || smv != g_sm_vt ||
         !Rd(self_sm + kSmEntity, sme) || sme != self_e) {
         g_pred_aba.fetch_add(1, std::memory_order_relaxed);
+        g_pm_drop.store(true, std::memory_order_relaxed);
         return;
     }
     alignas(8) std::uint8_t a[kWorldBytes + 4] = {};
     if (!ReadWorldTwice(sam, a)) {
         g_pred_skip_read.fetch_add(1, std::memory_order_relaxed);
+        g_pm_drop.store(true, std::memory_order_relaxed);
         return;
     }
+    const std::int64_t qnow = Qpc();
     PackedWt now;
     std::memcpy(&now, a, kWorldBytes);
     SamTrack t;
-    const double frame = g_frame_ms.load(std::memory_order_relaxed);
-    bool step = false;
-    double dp[3] = {};
-    float m[3][3] = {};
+    if (!g_sam_track.Read(t)) t.n = 0;
     std::uintptr_t parent = 0;
-    if (g_sam_carried.load(std::memory_order_relaxed) || !Rd(sam + kEntParent, parent) || parent != 0) {
-        g_pred_skip_ride.fetch_add(1, std::memory_order_relaxed);
-    } else if (!g_sam_track.Read(t) || t.n < 2 || frame <= 0) {
-        g_pred_skip_hist.fetch_add(1, std::memory_order_relaxed);
-    } else {
-        const double age = static_cast<double>(Qpc() - t.cur.qpc) / g_qpc_per_ms;
-        const double span = static_cast<double>(t.cur.qpc - t.prev.qpc) / g_qpc_per_ms;
-        if (age < 0.5 * frame) {
-            g_pred_after.fetch_add(1, std::memory_order_relaxed);  // Sam first this frame: his world is this frame's
-        } else if (age > 2.5 * frame || span > 2.5 * frame) {
-            g_pred_skip_stale.fetch_add(1, std::memory_order_relaxed);
-        } else {
-            double len2 = 0;
-            for (int k = 0; k < 3; ++k) dp[k] = t.cur.p[k] - t.prev.p[k], len2 += dp[k] * dp[k];
-            // Sam's world now against his newest record (he should not have moved since his update): the meter
-            double pre2 = 0;
-            for (int k = 0; k < 3; ++k) pre2 += (now.p[k] - t.cur.p[k]) * (now.p[k] - t.cur.p[k]);
-            g_pred_pre_um.fetch_add(static_cast<std::uint64_t>(std::sqrt(pre2) * 1e6), std::memory_order_relaxed);
-            g_pred_pre_n.fetch_add(1, std::memory_order_relaxed);
-            if (!std::isfinite(pre2) || pre2 > kPredMovedM * kPredMovedM) {
-                g_pred_skip_moved.fetch_add(1, std::memory_order_relaxed);  // moved since his update: his world now is this frame's
-            } else if (!std::isfinite(len2) || len2 > 3.0 * 3.0) {
-                g_pred_skip_jump.fetch_add(1, std::memory_order_relaxed);
-            } else {
-                // The step is not scaled by a dt ratio: Sam's newest record is often his second, partial update of a frame
-                // (its dt a fraction of the frame's), and scaling by it overshot by 30-60 % (run 20261120-023358). The
-                // span between his records of the two frames is logged instead (about one frame time).
-                g_pred_scale_sum.fetch_add(static_cast<std::uint64_t>(span * 1000.0), std::memory_order_relaxed);
-                g_pred_scale_n.fetch_add(1, std::memory_order_relaxed);
-                // the rotation step (rows: the frame's axes): r_cur = r_prev * M, so M = r_prev^T * r_cur, applied once
-                for (int i = 0; i < 3; ++i)
-                    for (int j = 0; j < 3; ++j)
-                        m[i][j] = t.prev.r[0][i] * t.cur.r[0][j] + t.prev.r[1][i] * t.cur.r[1][j] + t.prev.r[2][i] * t.cur.r[2][j];
-                step = true;
-            }
-        }
+    selfpred::In in;
+    in.carried = g_sam_carried.load(std::memory_order_relaxed);
+    in.seated = !Rd(sam + kEntParent, parent) || parent != 0;
+    in.records = static_cast<int>(t.n);
+    in.frame_ms = g_frame_ms.load(std::memory_order_relaxed);
+    in.dt_body = std::isfinite(dt_body) && dt_body > 0 && dt_body < 1 ? dt_body : 0;
+    float m[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    if (t.n >= 1) {
+        in.age_ms = static_cast<double>(qnow - t.cur.qpc) / g_qpc_per_ms;
+        double d2 = 0;
+        for (int k = 0; k < 3; ++k) d2 += (now.p[k] - t.cur.p[k]) * (now.p[k] - t.cur.p[k]);
+        in.moved_m = std::sqrt(d2);
     }
+    if (t.n >= 2) {
+        in.span_ms = static_cast<double>(t.cur.qpc - t.prev.qpc) / g_qpc_per_ms;
+        for (int k = 0; k < 3; ++k) in.dp[k] = t.cur.p[k] - t.prev.p[k];
+        in.dt_sam = t.cur.dtsum;
+        selfpred::RotStep(t.prev.r, t.cur.r, m);
+    }
+    if (t.n >= 3) {
+        in.span2_ms = static_cast<double>(t.prev.qpc - t.prev2.qpc) / g_qpc_per_ms;
+        for (int k = 0; k < 3; ++k) in.dp_prev[k] = t.prev.p[k] - t.prev2.p[k];
+    }
+    const selfpred::Out o_new = selfpred::Decide(in), o_old = selfpred::Decide(in, true);
+    Xf cand[kPmCand];
+    for (Xf& x : cand) std::memcpy(x.p, now.p, sizeof(x.p)), std::memcpy(x.r, now.r, sizeof(x.r));
+    if (o_new.why == selfpred::Why::step) selfpred::Apply(now.p, now.r, in.dp, m, o_new.k, cand[0].p, cand[0].r);
+    if (o_old.why == selfpred::Why::step) selfpred::Apply(now.p, now.r, in.dp, m, o_old.k, cand[1].p, cand[1].r);
+    const bool rule_new = g_pred_rule.load(std::memory_order_relaxed) != 0;
+    const selfpred::Out& o = rule_new ? o_new : o_old;
+    const Xf& pick = cand[rule_new ? 0 : 1];
     PackedWt w = now;
-    if (step) {
-        for (int k = 0; k < 3; ++k) w.p[k] = now.p[k] + dp[k];
-        for (int k = 0; k < 3; ++k)
-            for (int j = 0; j < 3; ++j) w.r[k][j] = now.r[k][0] * m[0][j] + now.r[k][1] * m[1][j] + now.r[k][2] * m[2][j];
-        bool finite = true;
-        for (int k = 0; k < 3; ++k)
-            for (int j = 0; j < 3; ++j) finite = finite && std::isfinite(w.r[k][j]);
-        if (!finite) w = now, step = false;
-    }
+    std::memcpy(w.p, pick.p, sizeof(w.p));
+    std::memcpy(w.r, pick.r, sizeof(w.r));
     if (!CallSetWt(self_e, &w)) {
         g_pred_fail.fetch_add(1, std::memory_order_relaxed);
         g_self_follow.store(3, std::memory_order_relaxed);  // never again from a detour this run
         return;
     }
-    if (step) {
-        const double len = std::sqrt(dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2]);
-        const auto um = static_cast<std::uint64_t>(len * 1e6);
-        g_pred_n.fetch_add(1, std::memory_order_relaxed);
-        g_pred_step_um.fetch_add(um, std::memory_order_relaxed);
-        std::uint64_t mx = g_pred_step_max_um.load(std::memory_order_relaxed);
-        while (um > mx && !g_pred_step_max_um.compare_exchange_weak(mx, um, std::memory_order_relaxed)) {
+    switch (o.why) {
+        case selfpred::Why::step: {
+            const double len = selfpred::Len(in.dp);
+            const auto um = static_cast<std::uint64_t>(len * 1e6);
+            g_pred_n.fetch_add(1, std::memory_order_relaxed);
+            if (in.seated) g_pred_seated.fetch_add(1, std::memory_order_relaxed);
+            g_pred_step_um.fetch_add(um, std::memory_order_relaxed);
+            std::uint64_t mx = g_pred_step_max_um.load(std::memory_order_relaxed);
+            while (um > mx && !g_pred_step_max_um.compare_exchange_weak(mx, um, std::memory_order_relaxed)) {
+            }
+            g_pred_scale_sum.fetch_add(static_cast<std::uint64_t>(in.span_ms * 1000.0), std::memory_order_relaxed);
+            g_pred_k_sum.fetch_add(static_cast<std::uint64_t>(o.k * 1000.0), std::memory_order_relaxed);
+            g_pred_scale_n.fetch_add(1, std::memory_order_relaxed);
+            break;
         }
+        case selfpred::Why::after: g_pred_after.fetch_add(1, std::memory_order_relaxed); break;
+        case selfpred::Why::ride: g_pred_skip_ride.fetch_add(1, std::memory_order_relaxed); break;
+        case selfpred::Why::no_history: g_pred_skip_hist.fetch_add(1, std::memory_order_relaxed); break;
+        case selfpred::Why::stale: g_pred_skip_stale.fetch_add(1, std::memory_order_relaxed); break;
+        case selfpred::Why::moved: g_pred_skip_moved.fetch_add(1, std::memory_order_relaxed); break;
+        case selfpred::Why::jump: g_pred_skip_jump.fetch_add(1, std::memory_order_relaxed); break;
+        case selfpred::Why::gate: g_pred_skip_gate.fetch_add(1, std::memory_order_relaxed); break;
+    }
+    // Sam's world now against his newest record (he should not have moved since his update): the premise's meter
+    if (o.why == selfpred::Why::step || o.why == selfpred::Why::moved || o.why == selfpred::Why::jump || o.why == selfpred::Why::gate) {
+        g_pred_pre_um.fetch_add(static_cast<std::uint64_t>(in.moved_m * 1e6), std::memory_order_relaxed);
+        g_pred_pre_n.fetch_add(1, std::memory_order_relaxed);
+    }
+    // the meter (never blocks the body: a busy logger drops this frame)
+    if (!g_pm_busy.exchange(true, std::memory_order_acquire)) {
+        if (g_pm_drop.exchange(false, std::memory_order_relaxed)) g_pm_last.have = false;
+        PredMeterScore(now, t);
+        g_pm_last.have = true;
+        g_pm_last.qpc = qnow;
+        g_pm_last.cls = in.carried ? 2 : in.seated ? 1 : 0;
+        for (int k = 0; k < kPmCand; ++k) g_pm_last.cand[k] = cand[k];
+        g_pm_busy.store(false, std::memory_order_release);
+    } else {
+        g_pm_drop.store(true, std::memory_order_relaxed);
     }
 }
 
@@ -1695,7 +1781,10 @@ void Detour(void* sm, float dt) {
         g_me.updates.fetch_add(1, std::memory_order_relaxed);
         const int follow = g_self_follow.load(std::memory_order_relaxed);
         if (follow == 2 && !menu_src) CopySamTransform();
-        else if (follow == 4 && !menu_src && !t_forcing) PredictSelfWorld();
+        else if (follow == 4 && !menu_src && !t_forcing) {
+            g_body_seq.fetch_add(1, std::memory_order_acq_rel);
+            PredictSelfWorld(dt);
+        }
         ApplyBody(g_me, s, true);
     }
     g_inflight.fetch_sub(1, std::memory_order_seq_cst);
@@ -2746,6 +2835,18 @@ void MenuWatch(double now_ms) {
 void SelfTick(game::Entity* local, bool local_active, double now_ms) {
     const auto sam = reinterpret_cast<std::uintptr_t>(local);
     g_sam_carried.store(ride::Carried(), std::memory_order_relaxed);  // follow mode 4: no step while the carry moves Sam
+    {
+        // Sam's parent entity (a vehicle he drives / sits in, in the game): every change logged, numbered (follow mode 4
+        // predicts him seated since v0.20; hidden scenarios wait on the "out of the vehicle" line, section 26.6)
+        static std::uintptr_t s_parent = 0;
+        static unsigned s_in = 0, s_out = 0;
+        std::uintptr_t parent = 0;
+        if (sam && g_self_on && Rd(sam + kEntParent, parent) && parent != s_parent) {
+            if (parent) Log("[self] Sam in a vehicle (parent %p, #%u)%s", reinterpret_cast<void*>(parent), ++s_in, s_parent ? " (another)" : "");
+            else Log("[self] Sam out of the vehicle (#%u)", ++s_out);
+            s_parent = parent;
+        }
+    }
     // Another player entity (load, return to title) while our reason was set on the old one: it is
     // cleared there only if the old entity still reads as a live DSPlayerEntity whose controller
     // points back at it (SamMaskAddr; fault-free reads first), else nothing is written. (No player
@@ -3014,29 +3115,56 @@ void SelfStats(double now) {
         rej - prev_rej, g_me.ct.last_reject.load(), aba - prev_aba, nocap - prev_nocap, wpm - prev_wpm, g_me.ct.faults.load(), fz, sk);
     prev_app = app, prev_copies = copies, prev_fail = fail, prev_stale = stale, prev_rej = rej, prev_obs = obs, prev_moves = g_self_tick_moves;
     prev_aba = aba, prev_nocap = nocap, prev_wpm = wpm, prev_caba = caba;
-    // Follow mode 4 (section 26): the body's updates that got this frame's predicted world, those after Sam's update
-    // (his world as is), the skips, the step put in (cm), and how far Sam's world moved between his update and the body's
-    // next one (0: nothing moves him outside his update; the prediction's premise).
+    // Follow mode 4 (section 26): the body's updates that got this frame's predicted world (of them seated), those after Sam's
+    // update (his world as is), the skips, the step put in (cm), its dt scale, and how far Sam's world moved between his update
+    // and the body's next one (0: nothing moves him outside his update; the prediction's premise).
     {
-        static std::uint32_t pp = 0, pa = 0, ph = 0, ps = 0, pj = 0, pr = 0, pf = 0, pab = 0, psn = 0, pmv = 0, prd = 0;
-        static std::uint64_t pum = 0, ppre = 0, ppren = 0, pss = 0;
+        static std::uint32_t pp = 0, pa = 0, ph = 0, ps = 0, pj = 0, pr = 0, pf = 0, pab = 0, psn = 0, pmv = 0, prd = 0, pse = 0, pg = 0;
+        static std::uint64_t pum = 0, ppre = 0, ppren = 0, pss = 0, pk = 0;
         const std::uint32_t pn = g_pred_n.load(), an = g_pred_after.load(), hn = g_pred_skip_hist.load(), sn = g_pred_skip_stale.load(),
                             jn = g_pred_skip_jump.load(), rn = g_pred_skip_read.load(), fn = g_pred_fail.load(), abn = g_pred_aba.load(),
-                            scn = g_pred_scale_n.load(), mvn = g_pred_skip_moved.load(), rdn = g_pred_skip_ride.load();
-        const std::uint64_t um = g_pred_step_um.load(), pre = g_pred_pre_um.load(), pren = g_pred_pre_n.load(), ss = g_pred_scale_sum.load();
+                            scn = g_pred_scale_n.load(), mvn = g_pred_skip_moved.load(), rdn = g_pred_skip_ride.load(), sen = g_pred_seated.load(),
+                            gn = g_pred_skip_gate.load();
+        const std::uint64_t um = g_pred_step_um.load(), pre = g_pred_pre_um.load(), pren = g_pred_pre_n.load(), ss = g_pred_scale_sum.load(),
+                            kk = g_pred_k_sum.load();
         const int follow = g_self_follow.load();
         if (follow == 4 || pn != pp || an != pa) {
             const std::uint32_t dn = pn - pp, dsn = scn - psn;
             const std::uint64_t dpre = pren - ppren;
-            Log("[self] follow %d: predicted %u, after Sam %u, skipped %u (no history %u, stale %u, jump %u, read %u, moved %u, ride %u), failed %u, "
-                "aba %u; step cm mean %.1f max %.1f; Sam's frame span ms %.1f; Sam moved outside his update cm %.2f",
-                follow, dn, an - pa, (hn - ph) + (sn - ps) + (jn - pj) + (rn - pr) + (mvn - pmv) + (rdn - prd), hn - ph, sn - ps, jn - pj, rn - pr,
-                mvn - pmv, rdn - prd, fn - pf, abn - pab,
-                dn ? static_cast<double>(um - pum) / dn / 1e4 : 0.0, static_cast<double>(g_pred_step_max_um.exchange(0)) / 1e4,
+            Log("[self] follow %d (rule %s): predicted %u (seated %u), after Sam %u, skipped %u (no history %u, stale %u, jump %u, read %u, moved %u, "
+                "ride %u, gate %u), failed %u, aba %u; step cm mean %.1f max %.1f, scale %.2f; Sam's frame span ms %.1f; Sam moved outside his update "
+                "cm %.2f",
+                follow, g_pred_rule.load() ? "v0.20" : "v0.19", dn, sen - pse, an - pa,
+                (hn - ph) + (sn - ps) + (jn - pj) + (rn - pr) + (mvn - pmv) + (rdn - prd) + (gn - pg), hn - ph, sn - ps, jn - pj, rn - pr, mvn - pmv,
+                rdn - prd, gn - pg, fn - pf, abn - pab, dn ? static_cast<double>(um - pum) / dn / 1e4 : 0.0,
+                static_cast<double>(g_pred_step_max_um.exchange(0)) / 1e4, dsn ? static_cast<double>(kk - pk) / dsn / 1000.0 : 0.0,
                 dsn ? static_cast<double>(ss - pss) / dsn / 1000.0 : 0.0, dpre ? static_cast<double>(pre - ppre) / dpre / 1e4 : 0.0);
         }
         pp = pn, pa = an, ph = hn, ps = sn, pj = jn, pr = rn, pf = fn, pab = abn, psn = scn, pmv = mvn, prd = rdn, pum = um, ppre = pre,
-        ppren = pren, pss = ss;
+        ppren = pren, pss = ss, pse = sen, pg = gn, pk = kk;
+        // The meter (section 26.6): the body against Sam's world after the frame, moving frames, per class: the v0.20 rule, v0.19's,
+        // and the plain copy (cm mean / max, frames over 3 and 8 cm, degrees mean / max).
+        if (!g_pm_busy.exchange(true, std::memory_order_acquire)) {
+            const PredMeter pmv2 = g_pm;
+            g_pm = PredMeter{};
+            g_pm_busy.store(false, std::memory_order_release);
+            static const char* const kCls[kPmCls] = {"on foot", "seated", "carried"};
+            static const char* const kCand[kPmCand] = {"v0.20", "v0.19", "copy"};
+            for (int c = 0; c < kPmCls; ++c) {
+                const PredMeterCls& q = pmv2.c[c];
+                if (!q.n) continue;
+                char txt[900];
+                std::size_t o = 0;
+                for (int k = 0; k < kPmCand && o + 140 < sizeof(txt); ++k)
+                    o += static_cast<std::size_t>(std::snprintf(txt + o, sizeof(txt) - o, "%s%s %.1f/%.1f cm (>3 cm %u, >8 cm %u) %.2f/%.1f deg", k ? "; " : "",
+                                                                kCand[k], q.sum[k] / q.n, q.mx[k], q.o3[k], q.o8[k], q.asum[k] / q.n, q.amx[k]));
+                if (c == 2 && o + 200 < sizeof(txt))
+                    o += static_cast<std::size_t>(std::snprintf(txt + o, sizeof(txt) - o,
+                                                                " | vs his own update's world: v0.20 %.1f/%.1f cm; the carry moved him after it %.1f/%.1f cm",
+                                                                q.own_sum[0] / q.n, q.own_mx[0], q.moved_sum / q.n, q.moved_mx));
+                Log("[self] follow 4 meter %s, %u moving frames, body vs Sam after the frame: %s", kCls[c], q.n, txt);
+            }
+        }
     }
     FitStats();
     g_self_dist_sum = 0, g_self_dist_max = 0, g_self_dist_n = 0;
@@ -4627,6 +4755,13 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             if (v[0] == 12) {  // self_view 12 <0/1>: her feet hidden under Sam's boots on / off
                 g_feet_cfg.store(v[1] != 0);
                 Set(msg, cap, "self view feet %s", v[1] != 0 ? "hidden under Sam's boots" : "kept");
+                Log("[self] %s", msg);
+                return true;
+            }
+            if (v[0] == 13) {  // self_view 13 <0/1>: follow mode 4's rule: 1 v0.20 (default), 0 v0.19's (for before / after pictures)
+                g_pred_rule.store(v[1] != 0 ? 1 : 0);
+                Set(msg, cap, "self view follow 4 rule %s", v[1] != 0 ? "v0.20 (the step also seated, the consistency gate, the dt scale)"
+                                                                       : "v0.19 (no step while seated, no gate, no scale)");
                 Log("[self] %s", msg);
                 return true;
             }

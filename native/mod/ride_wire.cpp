@@ -21,7 +21,7 @@ std::uint32_t GetU32(const std::uint8_t* p) noexcept {
 
 bool ReasonOk(MsgType t, std::uint8_t r) noexcept {
     switch (t) {
-        case MsgType::request: return r == kReqHold || r == kReqTest;
+        case MsgType::request: return r == kReqHold || r == kReqTest || r == kReqNative;
         case MsgType::accept: return r == 0;
         case MsgType::deny: return r < static_cast<std::uint8_t>(Deny::count);
         case MsgType::end: return r < static_cast<std::uint8_t>(End::count);
@@ -171,7 +171,7 @@ Block BoardCheck(const BoardIn& in) noexcept {
     if (!in.local_on_foot) return Block::not_on_foot;
     if (in.busy) return Block::busy;
     if (in.saving) return Block::saving;
-    if (!(in.door_dist_m <= kBoardRadiusM)) return Block::too_far;
+    if (in.native ? !(in.origin_dist_m <= kNativeReachM) : !(in.door_dist_m <= kBoardRadiusM)) return Block::too_far;
     if (!(std::fabs(in.vehicle_speed) < kBoardMaxSpeed)) return Block::moving;
     return Block::ok;
 }
@@ -183,7 +183,9 @@ bool DriverAccepts(const DriverIn& in, Deny* why) noexcept {
     else if (!in.we_drive_it) d = Deny::not_driving;
     else if (in.seat_taken) d = Deny::seat_taken;
     else if (!(std::fabs(in.speed) < kDriverMaxSpeed)) d = Deny::moving;
-    else if (!in.have_partner || !(in.partner_dist_m <= kDriverSeesRadiusM)) d = Deny::not_near;
+    else if (!in.have_partner || !(in.native ? in.partner_origin_dist_m <= kDriverSeesNativeM || in.partner_dist_m <= kDriverSeesRadiusM
+                                             : in.partner_dist_m <= kDriverSeesRadiusM))
+        d = Deny::not_near;
     if (why) *why = d;
     return d == Deny::count;
 }

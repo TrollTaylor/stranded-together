@@ -57,6 +57,9 @@ struct DebugOptions {
     // Dev tools (session.ini dev_tools=1): the in-game debug menu's Dev tools page (spawn vehicles, weather, enemies, refill,
     // god mode, teleport to places). Tools that change what a save keeps work only on a test save (the Local test).
     bool dev_tools = false;
+    // Mouse lock (session.ini mouse_lock=1, the Local test only): the cursor stays inside the game window you play in;
+    // F10 switches to the other game's window, Alt+Tab leaves. Host and Join never write it.
+    bool mouse_lock = true;
     // How your partner is drawn on your screen: true = partner_body=real (a solid character that
     // copies their real animation; experimental), false = partner_body=holo (the hologram).
     bool real_partner_body = true;

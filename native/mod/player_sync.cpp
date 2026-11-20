@@ -20,6 +20,7 @@
 #include "link.hpp"
 #include "log.hpp"
 #include "nametags.hpp"
+#include "overlay/overlay_input.hpp"
 #include "partner_collision.hpp"
 #include "partner_gear.hpp"
 #include "partner_holo.hpp"
@@ -842,10 +843,10 @@ void LogPositionsNow() {
 
 void Hotkeys(double now) {
     // Only react while the game window is focused, and not while the debug
-    // menu has the keyboard (typing there must not trigger F6/F7).
-    DWORD pid = 0;
-    GetWindowThreadProcessId(GetForegroundWindow(), &pid);
-    if (pid != GetCurrentProcessId() || debug::MenuOpen()) {
+    // menu has the keyboard (typing there must not trigger F6/F7). The REAL foreground: the Local test guest's
+    // GetForegroundWindow is hooked to answer its own window (F6/F7 pressed in the host window fired in the guest too),
+    // and a hidden run's keyboard is the user's (never).
+    if (!overlay::input::RealForegroundIsOurs() || debug::MenuOpen()) {
         g_prev_f6 = g_prev_f7 = false;
         return;
     }

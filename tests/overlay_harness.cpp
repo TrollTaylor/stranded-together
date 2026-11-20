@@ -398,10 +398,15 @@ LPARAM KeyLParam(UINT vk, bool down, bool alt = false) {
     return lp;
 }
 
-// Our WH_KEYBOARD procedure, called as the system would for a real key press
-// (posted messages never reach WH_KEYBOARD hooks).
+// Our WH_KEYBOARD procedure, called as the system calls it for a real key press inside ds.exe's message pump
+// (FUN_141A19350: PeekMessage(PM_NOREMOVE), then GetMessage): HC_NOREMOVE first, and HC_ACTION only if no hook ate the
+// key there (a nonzero answer at HC_NOREMOVE removes the message). Posted messages never reach WH_KEYBOARD hooks.
+// v0.19's harness called HC_ACTION only, so it never saw that F9 was eaten at HC_NOREMOVE without a toggle.
 LRESULT HookKey(UINT vk, bool down, bool alt = false) {
-    return st::overlay::input::KeyboardProcForTest(HC_ACTION, vk, KeyLParam(vk, down, alt));
+    const LPARAM lp = KeyLParam(vk, down, alt);
+    const LRESULT r = st::overlay::input::KeyboardProcForTest(HC_NOREMOVE, vk, lp);
+    if (r) return r;
+    return st::overlay::input::KeyboardProcForTest(HC_ACTION, vk, lp);
 }
 
 void PostKey(HWND hwnd, UINT vk, bool down) {
@@ -655,6 +660,46 @@ int main(int argc, char** argv) {
     HookKey(VK_F9, false);
     Frames(2);
     Check(!st::overlay::IsOpen() && !st::debug::MenuOpen(), "menu closed");
+
+    // ---- 7b. ds.exe's pump order, call by call (play test 2: F9 never opened the menu in the real game)
+    {
+        using st::overlay::input::KeyboardProcForTest;
+        const LPARAM f9_dn = KeyLParam(VK_F9, true), f9_upl = KeyLParam(VK_F9, false);
+        const unsigned long t0 = st::overlay::input::GetStats().toggles;
+        Check(KeyboardProcForTest(HC_NOREMOVE, VK_F9, f9_dn) == 1, "F9 is eaten at HC_NOREMOVE (the pump's PM_NOREMOVE peek)");
+        Frames(1);
+        Check(st::overlay::IsOpen() && st::overlay::input::GetStats().toggles == t0 + 1,
+              "F9 eaten at HC_NOREMOVE opens the menu by itself (no HC_ACTION call follows a removed message)");
+        Check(st::overlay::input::LastToggle().source == st::overlay::input::ToggleSource::hook_noremove, "the toggle is logged as HC_NOREMOVE");
+        KeyboardProcForTest(HC_NOREMOVE, VK_F9, f9_upl);
+        KeyboardProcForTest(HC_NOREMOVE, VK_F9, f9_dn | (1LL << 30));  // autorepeat
+        Frames(1);
+        Check(st::overlay::IsOpen() && st::overlay::input::GetStats().toggles == t0 + 1, "autorepeat of F9 does not toggle");
+        KeyboardProcForTest(HC_NOREMOVE, VK_F9, f9_upl);
+        const unsigned long chars0b = st::overlay::input::GetStats().characters;
+        const LRESULT q_dn = KeyboardProcForTest(HC_NOREMOVE, 'Q', KeyLParam('Q', true));
+        const LRESULT q_dn2 = KeyboardProcForTest(HC_ACTION, 'Q', KeyLParam('Q', true));  // only if a hook above ignored our answer
+        KeyboardProcForTest(HC_NOREMOVE, 'Q', KeyLParam('Q', false));
+        Frames(1);
+        std::snprintf(d, sizeof(d), "answers %lld/%lld, characters +%lu", static_cast<long long>(q_dn), static_cast<long long>(q_dn2),
+                      st::overlay::input::GetStats().characters - chars0b);
+        Check(q_dn == 1 && st::overlay::input::GetStats().characters == chars0b + 1,
+              "open menu: a key eaten at HC_NOREMOVE reaches ImGui once (key + character), also if seen again at HC_ACTION", d);
+        // The same F9 message at HC_NOREMOVE and again at HC_ACTION (a hook above ours ignored our answer): one toggle.
+        KeyboardProcForTest(HC_NOREMOVE, VK_F9, f9_dn);
+        KeyboardProcForTest(HC_ACTION, VK_F9, f9_dn);
+        KeyboardProcForTest(HC_NOREMOVE, VK_F9, f9_upl);
+        Frames(1);
+        Check(!st::overlay::IsOpen() && st::overlay::input::GetStats().toggles == t0 + 2, "one F9 press seen at both codes toggles once");
+        // Closed menu: a key we pass is answered 0 at both codes (the game's hook gets it at HC_ACTION).
+        Check(KeyboardProcForTest(HC_NOREMOVE, 'W', KeyLParam('W', true)) == 0 && KeyboardProcForTest(HC_ACTION, 'W', KeyLParam('W', true)) == 0,
+              "closed menu: a game key passes at HC_NOREMOVE and at HC_ACTION");
+        KeyboardProcForTest(HC_NOREMOVE, 'W', KeyLParam('W', false));
+        KeyboardProcForTest(HC_ACTION, 'W', KeyLParam('W', false));
+        const st::overlay::input::HookCounts hc = st::overlay::input::GetHookCounts();
+        std::snprintf(d, sizeof(d), "%lu HC_NOREMOVE / %lu HC_ACTION", hc.noremove, hc.action);
+        Check(hc.noremove > 0 && hc.action > 0, "the hook counts its calls by code (the play-test log proves the hook order)", d);
+    }
     const unsigned long drawn = st::overlay::GetStats().frames_drawn;
     Frames(5);
     Check(st::overlay::GetStats().frames_drawn == drawn, "closed again: nothing drawn");
@@ -683,6 +728,16 @@ int main(int argc, char** argv) {
     Check(st::overlay::Install(opt), "overlay re-installed (startup hint on)");
     st::overlay::SetAfterDrawForTest(&AfterDraw, nullptr);
     Frames(3);
+    Check(st::overlay::GetStats().frames_drawn == 0, "startup hint waits until the player stayed in the world for 4 s (not over the loading)");
+    {
+        const ULONGLONG t0 = GetTickCount64();
+        while (st::overlay::GetStats().frames_drawn == 0 && GetTickCount64() - t0 < 9000) {
+            Frames(1);
+            Sleep(20);
+        }
+        std::snprintf(d, sizeof(d), "after %llu ms", static_cast<unsigned long long>(GetTickCount64() - t0));
+        Check(GetTickCount64() - t0 >= 3500, "startup hint: not before 4 s of a valid player", d);
+    }
     Check(!st::overlay::IsOpen() && st::overlay::GetStats().frames_drawn > 0, "startup hint drawn with the menu closed");
     // Installed after the swapchain was created: the ExecuteCommandLists capture finds the queue.
     Check(std::strstr(st::overlay::GetStats().queue_source, "ExecuteCommandLists") != nullptr,
@@ -808,6 +863,49 @@ int main(int argc, char** argv) {
         in = st::overlay::input::GetStats();
         Check(in.suppressed_clip == clip0 + 1 && in.suppressed_cursor_pos == pos0 + 1,
               "automation: SetCursorPos/ClipCursor never reach the system (menu closed)");
+        // The scenario command `hookkey`: our hook in ds.exe's order on the window thread (HookKeyMessage).
+        {
+            const UINT hk = st::overlay::input::HookKeyMessage();
+            const LRESULT dn = SendMessageW(hwnd, hk, VK_F9, KeyLParam(VK_F9, true));
+            const LRESULT upr = SendMessageW(hwnd, hk, VK_F9, KeyLParam(VK_F9, false));
+            Frames(2);
+            std::snprintf(d, sizeof(d), "answers %lld / %lld", static_cast<long long>(dn), static_cast<long long>(upr));
+            Check(hk && dn == 1 && upr == 1 && st::overlay::IsOpen(), "automation: hookkey F9 is eaten at HC_NOREMOVE and opens the menu", d);
+            const unsigned long c0 = st::overlay::input::GetStats().characters;
+            const LRESULT a = SendMessageW(hwnd, hk, 'Q', KeyLParam('Q', true));
+            SendMessageW(hwnd, hk, 'Q', KeyLParam('Q', false));
+            Check(a == 1 && st::overlay::input::GetStats().characters == c0 + 1, "automation: hookkey Q types into the open menu");
+            SendMessageW(hwnd, hk, VK_F9, KeyLParam(VK_F9, true));
+            SendMessageW(hwnd, hk, VK_F9, KeyLParam(VK_F9, false));
+            Frames(2);
+            Check(!st::overlay::IsOpen(), "automation: hookkey F9 again closes the menu");
+            Pump();
+            const int keys0 = g_game_keys;
+            const LRESULT c = SendMessageW(hwnd, hk, 'C', KeyLParam('C', true));
+            SendMessageW(hwnd, hk, 'C', KeyLParam('C', false));
+            Pump();
+            std::snprintf(d, sizeof(d), "answer %lld, window keys +%d", static_cast<long long>(c), g_game_keys - keys0);
+            Check(c == 3 && g_game_keys == keys0 + 2, "automation: hookkey of a game key passes both codes and reaches the game window", d);
+        }
+        // The mouse lock in a hidden run: it decides (and logs what it would do) but never touches the real cursor.
+        {
+            RECT c0{}, c1{};
+            GetClipCursor(&c0);
+            st::overlay::input::SetMouseLock(true);
+            Frames(3);
+            st::overlay::SetOpen(true);
+            Frames(2);
+            st::overlay::SetOpen(false);
+            Frames(2);
+            ClipCursor(nullptr);  // the game's release: swallowed in automation, never replaced
+            GetClipCursor(&c1);
+            const st::overlay::input::MouseLockStatus ml = st::overlay::input::GetMouseLockStatus();
+            std::snprintf(d, sizeof(d), "clips=%lu releases=%lu replaced=%lu state=%s", ml.clips, ml.releases, ml.replaced, ml.state);
+            Check(ml.configured && ml.on && ml.clips == 0 && ml.releases == 0 && ml.replaced == 0 && EqualRect(&c0, &c1) &&
+                      std::strstr(ml.state, "clipping") != nullptr,
+                  "automation: the mouse lock decides (would clip) but never clips the real cursor", d);
+            st::overlay::input::SetMouseLock(false);
+        }
         const HRESULT p0 = GameFrame(), p1 = g.chain->Present(0, DXGI_PRESENT_TEST);
         std::snprintf(d, sizeof(d), "Present=0x%08lX test=0x%08lX masked so far=%lu", static_cast<unsigned long>(p0),
                       static_cast<unsigned long>(p1), st::overlay::GetStats().occluded_masked);

@@ -18,6 +18,7 @@ struct Context {
     const char* build = "";
     float* ui_scale = nullptr;  // the overlay applies changes next frame
     bool close = false;         // set by the menu (Close button / Esc)
+    const char* close_reason = "";  // with close: "by Esc" / "by the menu's close button" (the log line)
     const CoopView* coop = nullptr;  // a host-held save session: its status line (and the teleport offer)
     bool coop_teleport = false;      // set by the menu: "Teleport to host" pressed
 };

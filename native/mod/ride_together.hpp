@@ -5,11 +5,14 @@
 // vehicle: the driver, whose game owns and drives it (M2); the other game's unit of that vehicle is driven by the game's NPC
 // controller (our follower). The partner rides along as a CARRIED passenger:
 //
-//   boarding (M3.2)   beside the partner-driven vehicle (within 2.5 m of its passenger door, under 1 m/s, on foot) the
-//                     co-op banner says "Hold [X] to ride with <partner>"; a 0.6 s hold of X (pad) or F (keyboard: the
-//                     game's RideAndGetOff key) sends RIDE REQUEST (STQ1 in SVM1 type 48, channel 3, ride_wire.hpp). A tap
-//                     stays the game's own get-on, which the M2 lock refuses. The driver's game ACCEPTs unless its Sam does
-//                     not drive that vehicle, the seat is taken, it moves (2 m/s) or it does not see the partner beside it.
+//   boarding (M3.2)   the game's own "Use Vehicle" (play test 2): the game crosses it out on the partner-driven vehicle;
+//                     while boarding is allowed (under 1 m/s, on foot, within 7 m of it, nothing pending) our hook on the
+//                     ride action's icon provider shows it available, and our hook on its TryStart turns the game's own
+//                     press (F, X on any pad the game reads) into RIDE REQUEST (STQ1 in SVM1 type 48, channel 3,
+//                     ride_wire.hpp; reason kReqNative) instead of the game's get-on. Fallback (those byte checks failed,
+//                     ride_test 12 0): the co-op banner "Hold [X] / [F] to ride with <partner>" within 2.5 m of the door
+//                     and a 0.6 s hold. The driver's game ACCEPTs unless its Sam does not drive that vehicle, the seat is
+//                     taken, it moves (2 m/s) or it does not see the partner beside it.
 //   carried           the passenger's own Sam: capsule off (0x14243A740, a counter: exactly one Enable 0x14243A9E0 later),
 //                     placed every tick at the vehicle's transform (one frame ahead along its velocity) times the seat with
 //                     the game's entity teleport 0x14235A010(Sam, &wt, 0, 0) (proven at 0.000 m over 1137 ticks); the game's
@@ -19,10 +22,11 @@
 //                     (the driver's game takes the partner capsule out and sits the partner body in its own vehicle).
 //   driver's screen   the partner body at OUR vehicle's transform times the passenger seat (PassengerTarget), its pose the
 //                     partner's STJ1 (seated, from the override above).
-//   exits (M3.3)      hold X / B (or F) under 2 m/s: put beside the passenger door with the game's PlaceOn (mode 1, its ground
-//                     probe), capsule on, input and pose back, END to the driver. Above 2 m/s the hold waits up to 3 s for the
-//                     vehicle to slow down; a second hold meanwhile jumps off at any speed (forced placement; above 8 m/s the
-//                     D3-3 hit).
+//   exits (M3.3)      a press of X / B (any XInput pad, the game's own pad state) or F (the fallback: a 0.6 s hold), or the
+//                     game's RideOff where it offers one, under 2 m/s: put beside the passenger door with the game's PlaceOn
+//                     (mode 1, its ground probe), capsule on, input and pose back, END to the driver. Above 2 m/s it waits up
+//                     to 3 s for the vehicle to slow down; a second press meanwhile jumps off at any speed (forced placement;
+//                     above 8 m/s the D3-3 hit).
 //   forced (M3.4)     the passenger's game decides for its own Sam: the partner silent for 1 s, our follower lets go (the
 //                     driver got off: also its END), the vehicle gone, broken or out of battery, flipped 0.5 s, a crash (a
 //                     one-frame velocity change over 8 m/s in the driver's frames: then the M4 hit handler, D3-3), the game
@@ -38,7 +42,8 @@
 //   ownership         unchanged (VOWN, M2.7): the passenger never owns. The driver getting off ends the ride.
 //
 // Every game address is in the start-up byte-check table (kSites in ride_together.cpp); a mismatch turns riding off with
-// a one-line reason in the log and the co-op banner. Game calls run on the game thread under SEH; nothing of the game's is
+// a one-line reason in the log and the co-op banner. The native prompt's (kNativeSites) and the game pad state's
+// (kPadSites) tables turn only that piece off. Game calls run on the game thread under SEH; nothing of the game's is
 // freed or evicted.
 #pragma once
 #include <cstddef>
@@ -108,7 +113,8 @@ void SetCrashHitHandler(CrashHitFn fn) noexcept;
 //     of the measured kind's passenger seat (tuning, this session), 30 the seat table again, 8 [m] our Sam at the passenger door
 //     of the vehicle the partner drives here, 9 the module's emergency stop (hidden tests; riding stays off), 10 ask to ride
 //     and the emergency stop in the same call (hidden tests: the driver's ACCEPT arrives after the stop), 11 log the boarding
-//     check now ("the game is saving" while a save is pending or written; the action succeeds either way).
+//     check now ("the game is saving" while a save is pending or written; the action succeeds either way), 12 <0|1> the
+//     game's own Use Vehicle prompt off (the ImGui hold prompt boards) / on.
 bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 bool StateCommand(char* msg, std::size_t cap) noexcept;
 bool BoardCommand(char* msg, std::size_t cap) noexcept;

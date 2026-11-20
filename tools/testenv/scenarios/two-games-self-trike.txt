@@ -1,0 +1,107 @@
+# Fragile's self body on the Kusanagi trike, driving and as the pillion, side views from a stop (play test 2 of v0.19.0:
+# "she is all the way back when the vehicle starts moving"), on the launcher's own Local test files. docs/real-partner-body.md
+# 26.6. Hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-self-trike -SeedSaves complete-100 -GuestSeed profile-only
+# 1. The guest drives the trike from a stop: v0.19's rule (`self_view 13 0`, D1*) then v0.20's (D2*). 2. The host drives the
+# trike (part throttle), the guest rides pillion through the game's own Use Vehicle (carried: the plain copy, P1*). The
+# `[self] follow 4 meter` lines score every rule on the same frames (carried also against Sam's own update's world).
+# Pass: the meter lines seated and carried, no FAULT.
+role host
+graphics low
+timeout 360
+launcherini local-test
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[config\] host_save=1
+@guest waitlog 10 \[config\] host_save=1
+wait 22000
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+@guest waitlog 60 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+@guest waitlog 30 \[vshare\] guest: binding:
+wait 3000
+# ---- 1. the guest drives the trike from a stop, side view: v0.19's rule, then v0.20's
+@guest action vehicle_sync 8 1.8 4
+wait 1500
+@guest until 20 4000 \[vdrive\] guest: our Sam drives trike => pad X 150
+wait 2500
+@guest action self_view 13 0
+@guest log self-trike: drive v0.19
+@guest pad none 700 rx=32767
+@guest screenshot D1a-still-v019
+@guest pad none 1 rt=255 keep
+wait 200
+@guest screenshot D1b-start-v019
+wait 200
+@guest screenshot D1c-start-v019
+wait 300
+@guest screenshot D1d-moving-v019
+wait 500
+@guest screenshot D1e-moving-v019
+@guest pad none 1 lt=255 keep
+wait 2000
+@guest pad none 0
+wait 1500
+@guest action self_view 13 1
+@guest log self-trike: drive v0.20
+@guest pad none 300 rx=32767
+@guest screenshot D2a-still-v020
+@guest pad none 1 rt=255 keep
+wait 200
+@guest screenshot D2b-start-v020
+wait 200
+@guest screenshot D2c-start-v020
+wait 300
+@guest screenshot D2d-moving-v020
+wait 500
+@guest screenshot D2e-moving-v020
+@guest pad none 1 lt=255 keep
+wait 2000
+@guest pad none 0
+wait 1000
+@guest pad X 150
+@guest waitlog 20 \[vdrive\] guest: our Sam got off trike
+@guest waitlog 20 \[self\] Sam out of the vehicle \(#1\)
+wait 2000
+# ---- 2. the host drives the trike, the guest rides pillion (one press of X on the game's own prompt)
+action vehicle_sync 8 1.8 4
+@guest action vehicle_sync 8 9 4
+wait 1500
+until 20 4000 \[vdrive\] host: our Sam drives trike => pad X 150
+@guest waitlog 20 \[vdrive\] follower of trike 0x[0-9A-F]+ attached
+wait 2500
+@guest action ride_test 8
+wait 1500
+@guest until 15 3000 \[ride\] guest: our Sam carried on the trike => pad X 150
+waitlog 10 \[ride\] host: the partner asks to ride our trike .*ACCEPTED
+wait 2500
+@guest log self-trike: pillion v0.20
+@guest pad none 700 rx=32767
+@guest screenshot P1a-pillion-still
+pad none 1 rt=170 keep
+wait 300
+@guest screenshot P1b-pillion-start
+wait 300
+@guest screenshot P1c-pillion-start
+wait 500
+@guest screenshot P1d-pillion-moving
+pad none 1 lt=255 keep
+wait 2000
+pad none 0
+wait 1500
+@guest waitlog 3 \[self\] follow 4 meter carried
+@both action ride_state
+nolog \[(vshare|vdrive|ride|vhit)\].*FAULT
+@guest nolog \[(vshare|vdrive|ride|vhit)\].*FAULT
+@guest quit
+wait 3000
+quit

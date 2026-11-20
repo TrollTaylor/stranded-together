@@ -78,16 +78,28 @@ inline stx::GuestPhase GuestPhaseOf(stx::GuestPhase receiver_phase, bool at_titl
 // The guest's slots: manualsave5 / manualsave6 alternating (never the one just loaded, never an autosave).
 inline int NextGuestSlot(int last) noexcept { return last == 5 ? 6 : 5; }
 
-// The guest's title load is called only once its title menu can be up: the game has no "title menu ready" signal the
-// mod reads, so time stands in for it. The title menu comes about 20 s after the game starts (boot logos, "press any
-// button", notices such as the offline-mode one) and the mod's first tick is ~5 s after the start, so: kTitleBootMs
-// after the first tick, and the session global 0 without a break for kTitleSettleMs (after QuitGame, the title menu is
-// rebuilt after the world's teardown). Until then the received save waits. first_tick_ms / title_since_ms: when the
-// first tick ran / since when the session has been 0 (both on the same clock as now_ms).
+// The guest's title load is called only once its title menu is up. With the guest's title in the game's own menu
+// (title_wait.cpp) the mod sees the title page itself: NativeTitleReady, the relabelled title page on screen without a
+// break for kNativeTitleSettleMs (the page's first updates keep its black cover; a player pressing CONTINUE that soon
+// is normal). Without it (the native title failed its byte checks) time stands in: the title menu comes about 20 s
+// after the game starts (four boot logos, no "press any button" screen; notices such as the offline-mode one are dialogs
+// on the title page itself) and the mod's first tick is ~5 s after the start, so: kTitleBootMs after the first tick,
+// and the session global 0 without a break for kTitleSettleMs (after QuitGame, the title menu is rebuilt after the
+// world's teardown). The time rule also stays the backstop when no title page is ever seen. Until then the received
+// save waits. first_tick_ms / title_since_ms: when the first tick ran / since when the session has been 0;
+// native_since_ms: since when the relabelled title page has been on screen (0 = not now). All on now_ms's clock.
 inline constexpr double kTitleBootMs = 25000;
 inline constexpr double kTitleSettleMs = 8000;
+inline constexpr double kNativeTitleSettleMs = 3000;
 inline bool TitleReady(double now_ms, double first_tick_ms, bool at_title, double title_since_ms) noexcept {
     return at_title && now_ms - first_tick_ms >= kTitleBootMs && now_ms - title_since_ms >= kTitleSettleMs;
+}
+inline bool NativeTitleReady(double now_ms, bool at_title, double native_since_ms) noexcept {
+    return at_title && native_since_ms > 0 && now_ms - native_since_ms >= kNativeTitleSettleMs;
+}
+// Either rule (the guest's title load may start).
+inline bool GuestTitleLoadReady(double now_ms, double first_tick_ms, bool at_title, double title_since_ms, double native_since_ms) noexcept {
+    return NativeTitleReady(now_ms, at_title, native_since_ms) || TitleReady(now_ms, first_tick_ms, at_title, title_since_ms);
 }
 
 // ---- The guest's title screen (title_wait.cpp): the game's own menu shows the session's state on NEW GAME's label.

@@ -1,12 +1,13 @@
 # The guest's title screen in the game's own menu (docs/coop-session.md "The guest's title screen"), hidden:
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-hostsave-title -SeedSaves complete-100 -GuestSeed profile-only
 # host_save=1 on both games. The guest's title menu shows only "Waiting for <host> to start the game" (NEW GAME's label)
-# and EXIT GAME; CONTINUE, LOAD GAME, OPTIONS, UPDATE INFO and CREDITS are hidden and the full-screen panel is gone once
-# the label is on screen. DOWN / UP move between the two; A on the label does nothing (no dialog, no gate block). A lost
+# and EXIT GAME; CONTINUE, LOAD GAME, OPTIONS, UPDATE INFO and CREDITS are hidden; the full-screen ImGui panel is never
+# shown (the boot logos are skipped by the splash page's own skip-all path, the game's own screens until the title).
+# DOWN / UP move between the two; A on the label does nothing (no dialog, no gate block). A lost
 # link shows "Reconnecting to <host>..." in the same place. The host Continues: the label follows the transfer
 # ("Receiving <host>'s save: NN%"), then "Loading <host>'s save...", and the guest is in the host's world. The host's
 # title is the game's own, unchanged.
-# Check enlarged: T1-guest-waiting / T1-host-title, T2-guest-exit-selected, T3-guest-after-a, T3b-guest-reconnecting,
+# Check enlarged: T0-guest-boot (the guest's first frame: black / the game's spinner, never the panel), T1-guest-waiting / T1-host-title, T2-guest-exit-selected, T3-guest-after-a, T3b-guest-reconnecting,
 # T3c-guest-waiting-again, T4-guest-receiving, T5-guest-loading, T6-host-world / T6-guest-world.
 role host
 graphics low
@@ -16,6 +17,7 @@ waitready 90
 @guest waitready 120
 waitlog 120 \[overlay\] input attached
 @guest waitlog 120 \[overlay\] input attached
+@guest screenshot T0-guest-boot
 waitlog 10 \[coop\] host-held save session ON \(host
 @guest waitlog 10 \[coop\] host-held save session ON \(guest
 @guest waitlog 10 \[title\] the guest's title in the game's own menu: .* hooks in
@@ -23,6 +25,8 @@ nolog \[title\]
 # the title menus (~20 s after the first frame): the guest's own menu carries the label
 @guest waitlog 90 \[title\] native waiting title ON \(title page #1\)
 @guest waitlog 30 \[title\] lst_title_menu_list \(title page #1\): 8 items
+@guest waitlog 10 \[title\] boot logos skipped
+@guest nolog \[overlay\] co-op waiting screen shown
 wait 3000
 @guest screenshot T1-guest-waiting
 screenshot T1-host-title
@@ -65,6 +69,7 @@ screenshot T6-host-world
 @guest screenshot T6-guest-world
 @guest action coop_session 0
 @guest nolog \[title\] FAULT
+@guest nolog \[overlay\] co-op waiting screen shown
 @guest quit
 wait 3000
 quit

@@ -34,8 +34,9 @@ const char* MsgTypeName(std::uint8_t t) noexcept;
 enum class Seat : std::uint8_t { none = 0, passenger = 1, pillion = 2 };
 const char* SeatName(std::uint8_t s) noexcept;
 
-// REQUEST reasons
-inline constexpr std::uint8_t kReqHold = 0, kReqTest = 1;
+// REQUEST reasons: the ImGui fallback's hold (kReqHold), a debug action (kReqTest), the game's own "Use Vehicle" prompt
+// pressed beside the partner's vehicle (kReqNative: the driver's game checks the passenger near the vehicle, not the door)
+inline constexpr std::uint8_t kReqHold = 0, kReqTest = 1, kReqNative = 2;
 // DENY reasons
 enum class Deny : std::uint8_t {
     not_driving = 0,  // the driver's Sam does not drive that vehicle (any more)
@@ -136,7 +137,12 @@ struct BoardIn {
     double vehicle_speed = 0;       // m/s
     bool busy = false;
     bool saving = false;            // a save is pending or being written (save_guard::Busy)
+    // The game's own "Use Vehicle" prompt (native): the game's finder already wants Sam close to and facing the vehicle,
+    // from any side, so the door rule becomes "within kNativeReachM of the vehicle's origin" (horizontal).
+    bool native = false;
+    double origin_dist_m = 1e9;
 };
+inline constexpr double kNativeReachM = 7.0;
 Block BoardCheck(const BoardIn& in) noexcept;
 
 // The driver's game answers a REQUEST.
@@ -148,8 +154,11 @@ struct DriverIn {
     double speed = 0;               // the vehicle's speed (m/s)
     bool have_partner = false;      // the partner body's place is known
     double partner_dist_m = 1e9;    // the partner body to the door point (horizontal)
+    bool native = false;            // a kReqNative request: the partner pressed the game's "Use Vehicle" from any side
+    double partner_origin_dist_m = 1e9;  // the partner body to the vehicle's origin (horizontal)
 };
 inline constexpr double kDriverSeesRadiusM = 5.0;  // the driver's game accepts the passenger's Sam within this of the door
+inline constexpr double kDriverSeesNativeM = 8.5;  // ... or, for kReqNative, within this of the vehicle's origin
 bool DriverAccepts(const DriverIn& in, Deny* why) noexcept;
 
 // While the driver's game carries the partner: the partner body sits in our vehicle while the ride is accepted and the
@@ -200,6 +209,29 @@ private:
     bool fired_ = false;
     bool need_release_ = true;
 };
+
+// Press to get off (the game's own "Use Vehicle" prompt is a press, so getting off is one too): true once on a press that
+// follows a release. After Reset (the press that boarded may still be held) the button must be seen up first.
+class PressDetector {
+public:
+    bool Update(bool down) noexcept {
+        if (!down) {
+            need_release_ = false;
+            return false;
+        }
+        if (need_release_) return false;
+        need_release_ = true;
+        return true;
+    }
+    void Reset() noexcept { need_release_ = true; }
+private:
+    bool need_release_ = true;
+};
+
+// The native press from the game (the ride action's TryStart, polled every frame while the button is down): a new press
+// only after kNativePressGapMs without one, so one held button is one press.
+inline constexpr double kNativePressGapMs = 400.0;
+inline bool NativePressIsNew(double last_press_ms, double now_ms) noexcept { return !(now_ms - last_press_ms < kNativePressGapMs); }
 
 // Up axis z (the vehicle's third row, world z) under kFlipUpZ for kFlipMs.
 class FlipDetector {

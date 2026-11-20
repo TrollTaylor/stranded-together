@@ -15,6 +15,7 @@
 #include "debug_actions.hpp"
 #include "dev_rules.hpp"
 #include "log.hpp"
+#include "mouse_lock.hpp"
 #include "overlay_keys.hpp"
 #include "overlay_positions.hpp"
 #include "player_sync.hpp"
@@ -476,6 +477,123 @@ void TestKeys() {
     CHECK(VkToImGuiKey(0xFF, false) == ImGuiKey_None);
 }
 
+// The mouse lock's decision (mouse_lock.hpp), rule by rule. Pure: nothing here touches the real cursor.
+void TestMouseLock() {
+    using namespace st::overlay::mouselock;
+    State s;
+    s.enabled = true;
+    s.foreground = true;
+    s.engaged = true;
+    s.client = RECT{100, 50, 1380, 770};  // 1280 x 720 at (100, 50)
+    // 6: no clip in effect -> clip to the client area
+    Decision d = Decide(s);
+    CHECK(d.act == Act::clip && d.why == Why::clipping && SameRect(d.rect, s.client));
+    // 5: our clip (== the client area) held -> keep
+    s.have_clip = true;
+    s.clip = s.client;
+    s.ours = true;
+    d = Decide(s);
+    CHECK(d.act == Act::keep && d.why == Why::held);
+    // 5: the game's one-pixel centre clip inside the window (gameplay) -> keep, it is tighter
+    s.ours = false;
+    s.clip = RECT{739, 409, 740, 410};
+    d = Decide(s);
+    CHECK(d.act == Act::keep && d.why == Why::game_clip);
+    // 6: a clip outside / bigger than the window (the game's window-rect clip with the title bar, a foreign one) -> clip
+    s.clip = RECT{92, 19, 1388, 778};
+    d = Decide(s);
+    CHECK(d.act == Act::clip && SameRect(d.rect, s.client));
+    // 3: not in front -> release ONLY our own clip, never a clip someone else set
+    s.foreground = false;
+    s.clip = s.client;
+    s.ours = true;
+    d = Decide(s);
+    CHECK(d.act == Act::release && d.why == Why::not_front);
+    s.ours = false;
+    d = Decide(s);
+    CHECK(d.act == Act::keep && d.why == Why::not_front);
+    s.have_clip = false;
+    d = Decide(s);
+    CHECK(d.act == Act::keep);
+    // 3: minimised, moving, an empty (zero-size) client area -> released when ours
+    s.foreground = true;
+    s.have_clip = true;
+    s.ours = true;
+    s.iconic = true;
+    d = Decide(s);
+    CHECK(d.act == Act::release && d.why == Why::minimised);
+    s.iconic = false;
+    s.size_move = true;
+    d = Decide(s);
+    CHECK(d.act == Act::release && d.why == Why::moving);
+    s.size_move = false;
+    const RECT keep_client = s.client;
+    s.client = RECT{-32000, -32000, -32000, -32000};
+    d = Decide(s);
+    CHECK(d.act == Act::release && d.why == Why::no_client);
+    s.client = keep_client;
+    // 4: in front but not engaged (activated by the taskbar / Alt+Tab with the cursor elsewhere) -> keep
+    s.engaged = false;
+    s.have_clip = false;
+    s.ours = false;
+    d = Decide(s);
+    CHECK(d.act == Act::keep && d.why == Why::not_engaged);
+    s.engaged = true;
+    // 1: off -> release only ours
+    s.enabled = false;
+    d = Decide(s);
+    CHECK(d.act == Act::keep && d.why == Why::off);
+    s.have_clip = true;
+    s.clip = s.client;
+    s.ours = true;
+    d = Decide(s);
+    CHECK(d.act == Act::release && d.why == Why::off);
+    s.enabled = true;
+    // 2: a hidden run never acts, whatever the state
+    s.automation = true;
+    s.have_clip = false;
+    d = Decide(s);
+    CHECK(d.act == Act::keep && d.why == Why::automation);
+    s.foreground = false;
+    s.ours = true;
+    s.have_clip = true;
+    d = Decide(s);
+    CHECK(d.act == Act::keep && d.why == Why::automation);
+    s.automation = false;
+    s.foreground = true;
+    // multi-monitor: a window on a monitor left of the primary (negative coordinates)
+    State m;
+    m.enabled = m.foreground = m.engaged = true;
+    m.client = RECT{-1900, -200, -620, 520};
+    d = Decide(m);
+    CHECK(d.act == Act::clip && SameRect(d.rect, m.client));
+    m.have_clip = true;
+    m.clip = RECT{-1261, 159, -1260, 160};  // the game's centre pixel there
+    CHECK(Decide(m).why == Why::game_clip);
+    m.clip = RECT{0, 0, 1, 1};  // a pixel on the primary monitor: not inside this window
+    CHECK(Decide(m).act == Act::clip);
+    // the game's ClipCursor(NULL) is replaced only while the lock holds
+    CHECK(ReplaceGameRelease(s));
+    State r = s;
+    r.engaged = false;
+    CHECK(!ReplaceGameRelease(r));
+    r = s;
+    r.foreground = false;
+    CHECK(!ReplaceGameRelease(r));
+    r = s;
+    r.automation = true;
+    CHECK(!ReplaceGameRelease(r));
+    r = s;
+    r.enabled = false;
+    CHECK(!ReplaceGameRelease(r));
+    r = s;
+    r.size_move = true;
+    CHECK(!ReplaceGameRelease(r));
+    // the switch key: F10, F11 when the menu key is F10
+    CHECK(SwitchKey(VK_F9) == VK_F10 && SwitchKey(VK_F10) == VK_F11 && SwitchKey(VK_F11) == VK_F10);
+    for (int w = 0; w <= static_cast<int>(Why::clipping); ++w) CHECK(WhyText(static_cast<Why>(w))[0] != '?');
+}
+
 }  // namespace
 
 int main() {
@@ -489,6 +607,7 @@ int main() {
     TestLogRing();
     TestPositions();
     TestKeys();
+    TestMouseLock();
     std::printf("%s: %d checks, %d failures\n", g_failures ? "FAILED" : "PASSED", g_checks, g_failures);
     return g_failures ? 1 : 0;
 }

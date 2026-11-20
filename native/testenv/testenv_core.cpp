@@ -325,7 +325,8 @@ bool ScenarioIniKeyAllowed(const std::string& key) {
                                            "smooth_pose", "frame_cap", "audio_probe", "self_voice", "voice_sync", "voice_subtitles",
                                            "sound_sync", "sound_steps", "partner_volume", "self_headgear", "self_feet_hide",
                                            "boots_sync", "vehicle_sync", "vehicle_overlap_hide", "vehicle_look",
-                                           "vehicle_packs", "vehicle_sound", "vehicle_real_native", "host_save", "coop_test_build", "ride_together",
+                                           "vehicle_packs", "vehicle_sound", "vehicle_real_native", "host_save", "coop_test_build", "coop_test_title_off",
+                                           "guest_skip_logos", "ride_together",
                                            "partner_vehicle_damage", "dev_tools"};
 
     for (const char* k : kAllowed)
@@ -543,7 +544,8 @@ unsigned AckTimeoutSeconds(const std::string& mod_command) {
     switch (c.kind) {
         case automation::Kind::wait:
         case automation::Kind::pad:
-        case automation::Kind::key: return c.ms / 1000 + 15;
+        case automation::Kind::key:
+        case automation::Kind::hookkey: return c.ms / 1000 + 15;
         case automation::Kind::waitplayer:
         case automation::Kind::waitlog: return c.ms / 1000 + 15;
         case automation::Kind::screenshot: return 40;

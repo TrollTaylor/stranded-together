@@ -122,7 +122,7 @@ pad none 2000 lt=200 keep
 @guest pad none 300
 @guest pad X 800
 pad none 0
-@guest waitlog 4 \[ride\] get off: a second hold while the truck moves at
+@guest waitlog 4 \[ride\] get off: a second (hold|press) while the truck moves at
 @guest waitlog 4 \[ride\] guest: our Sam off the truck .*\(#5, jumped off, forced\)
 waitlog 8 \[ride\] host: the partner's ride .* is over \(jumped off\)
 wait 2500

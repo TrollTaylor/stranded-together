@@ -51,11 +51,13 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
   partner put on the vehicle shows on it (cannot be picked up yet). Online vehicles of other
   players are hidden during co-op. Without **Host holds the save** you see a solid copy of
   your partner's trike or truck (no roadster, no hologram).
-- **Experimental:** riding together (with the shared vehicles): stand beside the passenger
-  door of the vehicle your partner drives and **hold X** (pad) or **F** (keyboard) for about
-  half a second to ride along in the passenger seat (the trike: on the pillion behind the
-  driver). A tap stays the game's own get-on. Hold X / F again to get off (below walking
-  pace; at speed you get off as soon as it slows down). You are put off by yourself if the
+- **Experimental:** riding together (with the shared vehicles): walk up to the vehicle your
+  partner drives; the game's own **Use Vehicle** is available on it while it stands still.
+  Press it (F on the keyboard, X / Square on the pad) to ride along in the passenger seat
+  (the trike: on the pillion behind the driver). Press X / F again to get off (below walking
+  pace; at speed you get off as soon as it slows down, a second press jumps off). If this
+  game build differs, a co-op banner says so and you hold X / F beside the passenger door
+  instead. You are put off by yourself if the
   link drops, the driver gets off, the vehicle crashes, flips or breaks, or the game needs
   your Sam (a cutscene, a load). While you ride you can look around but not move or act;
   you sit in your partner's driving pose (hands on a wheel that is not there).
@@ -104,7 +106,7 @@ Keep the launcher open to see the connection on **In game**; closing it is safe 
 With **Debug → Host holds the save** (on by default) there is one world, the host's. See [docs/coop-session.md](docs/coop-session.md).
 
 - **Host:** you play on your own saves, exactly as in single player. Pick **Continue**, **Load** or **New Game** on your title screen as usual; your partner joins the world you start. Co-op progress is saved into **your own save** by the game itself. Before each co-op session the launcher copies your saves to `stranded_together\backups` (the newest 5 are kept; **Debug → Back up my saves before co-op**).
-- **Guest:** your game never opens your own saves. It starts on a screen that says **Waiting for <host> to start the game** (with the connection, what the host is doing and a progress bar) and cannot enter a world by itself. When the host starts, the host's save comes over the connection and your game loads it: you appear where the host's Sam was when that save was made. **Leave** quits the game.
+- **Guest:** your game never opens your own saves. It skips the boot logos and opens on the game's own title screen, whose menu has only **Waiting for <host> to start the game** and **Quit Game**; that line follows the connection, the transfer ("Receiving <host>'s save: 45%") and the load. It cannot enter a world by itself. When the host starts, the host's save comes over the connection and your game loads it: you appear where the host's Sam was when that save was made. **Quit Game** quits the game.
 - **What the guest's progress means:** the guest plays a **disposable copy of the host's world**. Orders, deliveries, porter grade, likes, equipment, materials, structures and story progress made only on the guest's side are **not kept**: they are gone at the host's next load and when the session ends. The guest spawns as a copy of the host's Sam at save time (the same cargo and orders); delivering that cargo on the guest's side changes nothing for the host. Your settings and controls changed during co-op are kept for the next co-op session (in the co-op folder only). Your real saves are never touched.
 - **When the host...** loads another save, retries after a Game Over or quits to the title, the guest follows: it loads the same save (a Retry uses the host's newest autosave, which can differ slightly from the exact retry point), or goes back to its title and waits again. A **New Game** host: the guest waits until the host's first save. A guest who joins while the host is already playing loads the host's newest save and is offered **Teleport to host** once (in the F9 menu).
 - **Connection lost:** the guest keeps playing with a "Reconnecting..." notice; after 60 s it goes back to the waiting screen and rejoins the host's world when the connection is back.
@@ -112,12 +114,13 @@ With **Debug → Host holds the save** (on by default) there is one world, the h
 - **Not verified yet:** achievements, Steam stats and online features (likes, shared structures) on the guest's account may still react to events in the host's world.
 - Turn the option off for the old mode: each player on their own save. That mode has no waiting screen, no shared vehicles (the partner's vehicles are see-through copies), no riding together and no vehicle hits: the launcher says so on the Play page and both games show an amber "Co-op features OFF" notice.
 - **Debug → Test saves → Local two-player test** (two games on one PC) plays this same session since v0.19: the guest window waits for the host and loads the host's save, the vehicles are shared, you can ride together. Both games run on copies of the test save, never on your own saves.
+- **Local test controls:** the mouse stays inside the game window you play in (Debug option **Lock the mouse to the focused game window (Local test)**, on by default): **F10** jumps to the other game's window (F11 when your menu key is F10), **Alt+Tab** or the Win key leave, **F9** opens the debug menu in the game in front. The hint at the top left says so when you are in the world.
 
 ## Debug
 
 The launcher's **Debug** page:
 
-- **Options:** **Debug tools only (solo)** starts the game with just the in-game debug menu and logging (no partner, no network), or the **Echo test**; echo delay and offset, send rate, interpolation delay, waking the partner clone, verbose logging, the **in-game debug menu** on/off with its key (**F9** by default, F1–F12), and **Partner body**: **Real character (experimental)** (default) or **Hologram**: how your partner is drawn on your screen, and with Hologram your partner sees you as a hologram too (a hologram game does not send your character). These options go into every game started from the launcher.
+- **Options:** **Debug tools only (solo)** starts the game with just the in-game debug menu and logging (no partner, no network), or the **Echo test**; echo delay and offset, send rate, interpolation delay, waking the partner clone, verbose logging, the **in-game debug menu** on/off with its key (**F9** by default, F1–F12; v0.19.0 and earlier swallowed the key in the real game without opening the menu: fixed), **Lock the mouse to the focused game window (Local test)** (default on, Local test only), and **Partner body**: **Real character (experimental)** (default) or **Hologram**: how your partner is drawn on your screen, and with Hologram your partner sees you as a hologram too (a hologram game does not send your character). These options go into every game started from the launcher.
 - **Files and log:** open the mod folder or log, a live tail of `stranded_together.log` with **Copy log**, **Copy error.txt** (the game's crash report), **Disable mod / Enable mod** (renames `winhttp.dll` ↔ `winhttp.dll.disabled`) and **Clear session** (deletes `session.ini`).
 - **Tools → Collect logs** puts a zip for a bug report on the Desktop (codes, secrets and Steam IDs removed).
 

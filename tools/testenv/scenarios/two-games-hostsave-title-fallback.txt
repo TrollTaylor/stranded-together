@@ -1,0 +1,46 @@
+# The guest's waiting screen FALLBACK (docs/coop-session.md "The guest's title screen"), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-hostsave-title-fallback -SeedSaves complete-100 -GuestSeed profile-only
+# host_save=1 on both games; the guest has coop_test_title_off=1 (hidden runs only): its title in the game's own menu is
+# not installed, as if its byte checks had failed. Then, and only then, the old full-screen ImGui panel is used from the
+# start, with the one-line reason "(The game's own title menu is not used: coop_test_title_off=1 ...)", the input to the
+# game blocked; the boot logos play (no skip without the native title); the guest's load waits for the time rule (25 s
+# after its first tick); the host Continues and the guest is in its world.
+# Check enlarged: FB1-guest-panel (the panel with the reason line), FB2-guest-world.
+role host
+graphics low
+timeout 330
+ini host_save=1
+@guest ini coop_test_title_off=1
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[coop\] host-held save session ON \(host
+@guest waitlog 10 \[coop\] host-held save session ON \(guest
+@guest waitlog 10 \[title\] the guest's title in the game's own menu is OFF \(coop_test_title_off=1
+@guest waitlog 30 \[overlay\] co-op waiting screen shown
+@guest nolog \[coop\] guest: no waiting panel
+@guest nolog \[title\] boot-logo skip
+wait 22000
+@guest screenshot FB1-guest-panel
+screenshot FB1-host-title
+@guest action coop_session 0
+@guest waitlog 10 \[coop\] status: native title OFF.*off: coop_test_title_off=1
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: the title is ready for the load \(the time rule\)
+@guest waitlog 30 \[coop\] guest: title load of manualsave5 .* -> 1
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+@guest waitlog 30 \[overlay\] co-op waiting screen hidden
+wait 15000
+screenshot FB2-host-world
+@guest screenshot FB2-guest-world
+@guest nolog \[title\] native waiting title ON
+@guest nolog \[title\] FAULT
+@guest quit
+wait 3000
+quit

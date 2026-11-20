@@ -217,6 +217,9 @@ DWORD WINAPI Bootstrap(LPVOID) {
         st::overlay::input::SetWindowSlot(cfg.local_window == "left" ? st::overlay::input::WindowSlot::left : st::overlay::input::WindowSlot::right);
         st::Log("[mod] local test: the game window goes to the %s half of the monitor", cfg.local_window.c_str());
     }
+    // The mouse lock (mouse_lock=1, the launcher's Local test): the cursor stays in the game window that is in front
+    // (overlay/mouse_lock.hpp). Applied by the overlay, so only with it.
+    if (cfg.mouse_lock) st::overlay::input::SetMouseLock(true);
 
     // In-game debug menu (Direct3D 12 overlay). Installed before anything that
     // can fail below, so the menu's Status tab can show why co-op is off. Name tags draw through
@@ -350,6 +353,8 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
             HANDLE t = CreateThread(nullptr, 0, &Bootstrap, nullptr, 0, nullptr);
             if (t) CloseHandle(t);
         }
+    } else if (reason == DLL_PROCESS_DETACH) {
+        st::overlay::input::ReleaseMouseLockAtExit();  // the mouse lock's clip never outlives the game (no-op without it)
     }
     return TRUE;
 }

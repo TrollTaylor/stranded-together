@@ -63,7 +63,7 @@ void Start(const std::wstring& mod_dir, const char* build) noexcept;
 // ------------------------------------------------------------- parsing
 // Pure functions (header-only so tests/testenv can check them without the mod).
 enum class Kind : std::uint8_t {
-    unknown, wait, log, screenshot, pad, padoff, key, menu, action, waitplayer, waitlog, snapshot, quit
+    unknown, wait, log, screenshot, pad, padoff, key, menu, action, waitplayer, waitlog, snapshot, quit, hookkey
 };
 
 // XInput button bits (same values as XINPUT_GAMEPAD_*).
@@ -270,6 +270,13 @@ inline bool ParseCommand(const std::string& raw, Command* out, std::string* erro
         if (!ParseKeyName(w[1], &out->vk)) return *error = "key: unknown key '" + w[1] + "'", false;
         if (!detail::Uint(w[2], 0, 60000, &out->ms)) return *error = "key: hold time 0..60000 ms", false;
         out->kind = Kind::key;
+    } else if (verb == "hookkey") {
+        // our keyboard hook in ds.exe's call order (HC_NOREMOVE, then HC_ACTION), on the game's window thread: the closest a
+        // hidden run gets to a physical key (posted keys never reach WH_KEYBOARD; SendInput would type on the user's desktop)
+        if (!need(3, "hookkey <name|0xVK> <ms>")) return false;
+        if (!ParseKeyName(w[1], &out->vk)) return *error = "hookkey: unknown key '" + w[1] + "'", false;
+        if (!detail::Uint(w[2], 0, 60000, &out->ms)) return *error = "hookkey: hold time 0..60000 ms", false;
+        out->kind = Kind::hookkey;
     } else if (verb == "menu") {
         if (!need(2, "menu open|close|toggle")) return false;
         out->text = detail::Lower(w[1]);

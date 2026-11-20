@@ -169,11 +169,17 @@ Config LoadConfig(const std::wstring& dir) {
             c.host_save = ParseBool(v);  // a guest's redirect rule is DllMain's (automation.cpp)
         } else if (k == "coop_test_build") {
             c.coop_test_build = v.substr(0, 24);  // hidden tests only (coop_session.cpp checks automation)
+        } else if (k == "coop_test_title_off") {
+            c.coop_test_title_off = ParseBool(v);  // hidden tests only (coop_session.cpp checks automation)
+        } else if (k == "guest_skip_logos") {
+            c.guest_skip_logos = ParseBool(v);
         } else if (k == "frame_cap") {
             const unsigned long fc = std::strtoul(v.c_str(), nullptr, 10);
             c.frame_cap = fc == 0 ? 0u : static_cast<unsigned>(fc < 15 ? 15 : fc > 240 ? 240 : fc);
         } else if (k == "local_window") {
             if (v == "left" || v == "right") c.local_window = v;
+        } else if (k == "mouse_lock") {
+            c.mouse_lock = ParseBool(v);
         } else if (k == "local_input") {
             if (v == "host" || v == "host_pad" || v == "guest") c.local_input = v;
             else Log("[config] session.ini:%d local_input '%s' not understood; ignored", lineno, v.c_str());
@@ -247,6 +253,7 @@ Config LoadConfig(const std::wstring& dir) {
     if (!c.sandbox_saves.empty() || !c.local_input.empty())
         Log("[config] test save sandbox=%s local_input=%s", c.sandbox_saves.empty() ? "-" : c.sandbox_saves.c_str(),
             c.local_input.empty() ? "-" : c.local_input.c_str());
+    if (c.mouse_lock) Log("[config] mouse_lock=1: the cursor stays inside the game window that is in front");
     Log("[config] partner_body=%s partner_holo=%08X partner_marker=%d partner_voice=%d partner_character=%s my_character=%s "
         "self_character=%d self_fit=%d pose_hook=%d",
         PartnerBodyName(c.partner_body), c.partner_holo, c.partner_marker, c.partner_voice ? 1 : 0,

@@ -860,6 +860,8 @@ void SandboxRules() {
     Check(!te::ParseScenario("role host\n?guest unredirected\nquit\n", &sc, &err), "scenario: guest unredirected cannot be optional");
     Check(te::ScenarioIniKeyAllowed("host_save") && te::ScenarioIniKeyAllowed("coop_test_build") && !te::ScenarioIniKeyAllowed("sandbox_saves"),
           "scenario ini: host_save and coop_test_build allowed, sandbox_saves not");
+    Check(te::ScenarioIniKeyAllowed("coop_test_title_off") && te::ScenarioIniKeyAllowed("guest_skip_logos"),
+          "scenario ini: coop_test_title_off and guest_skip_logos allowed");
     // launcherini (the launcher's own Local test files): role host, graphics low, no ini lines
     Check(te::ParseScenario("role host\ngraphics low\nlauncherini local-test\nwaitready 5\nquit\n", &sc, &err) && sc.launcher_ini == "local-test",
           "scenario: launcherini local-test", err);

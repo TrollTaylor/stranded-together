@@ -1205,6 +1205,15 @@ void TestCoopRules() {
     CHECK(!r::TitleReady(100000, 5000, false, 5000));                              // in the world: never the title load
     CHECK(!r::TitleReady(100000, 5000, true, 100000 - r::kTitleSettleMs + 1));     // just back at the title (QuitGame)
     CHECK(r::TitleReady(100000, 5000, true, 100000 - r::kTitleSettleMs));
+    // The game's own title page seen (the native waiting title): kNativeTitleSettleMs on screen, long before the time rule.
+    CHECK(!r::NativeTitleReady(20000, true, 0));                                     // no title page seen
+    CHECK(!r::NativeTitleReady(20000 + r::kNativeTitleSettleMs - 1, true, 20000));   // the page just came up
+    CHECK(r::NativeTitleReady(20000 + r::kNativeTitleSettleMs, true, 20000));
+    CHECK(!r::NativeTitleReady(100000, false, 20000));                               // in the world: never
+    CHECK(r::GuestTitleLoadReady(9000 + r::kNativeTitleSettleMs, 5000, true, 5000, 9000));    // the page: 4 s after the first tick
+    CHECK(!r::GuestTitleLoadReady(9000 + r::kNativeTitleSettleMs - 1, 5000, true, 5000, 9000));
+    CHECK(r::GuestTitleLoadReady(5000 + r::kTitleBootMs, 5000, true, 5000, 0));              // no page ever seen: the time backstop
+    CHECK(!r::GuestTitleLoadReady(100000, 5000, false, 5000, 20000));
     // The newest save for the host's current world.
     const std::vector<r::SlotTime> slots = {{"autosave17", 900}, {"manualsave3", 100}, {"autosave2", 50}, {"quicksave0", 950}, {"autosave5", 1200}};
     bool own = true;

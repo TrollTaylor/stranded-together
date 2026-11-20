@@ -1,0 +1,153 @@
+# Fragile's self body in a vehicle and on foot (play test 2 of v0.19.0: "her sitting in vehicle pose that is all out of
+# whack she is all the way back when the vehicle starts moving"; "i still notice it twitching a bit when she moves"), on the
+# launcher's own Local test files (frame_cap 30, host_save 1, guest fragile_suit self view). docs/real-partner-body.md 26.6.
+# Hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-self-vehicle -SeedSaves complete-100 -GuestSeed profile-only
+# The guest's `[self] follow 4 meter` lines score the v0.20 rule, v0.19's and the plain copy on the same frames (the body
+# against Sam's world after the frame: where the game draws his gear); the host's `[vdrive] partner body vs the seat` lines
+# the partner body against the seat while the guest drives. `self_view 13 0` applies v0.19's rule for the "before" pictures.
+# 1. On foot: running, stopping, turning, a reversal. 2. The guest drives the truck from a stop: side view, v0.19 (S1*) then
+# v0.20 (S2*), the host watching (H1*, H2*); gets off (the seat snap: the gate). 3. The guest rides in the host's truck
+# (carried, C*). 4. The guest drives the Kusanagi trike (T*). Pass: the meter lines in all three classes, no FAULT.
+role host
+graphics low
+timeout 360
+launcherini local-test
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[config\] host_save=1
+@guest waitlog 10 \[config\] host_save=1
+wait 22000
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+@guest waitlog 60 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+@guest waitlog 30 \[vshare\] guest: binding:
+# ---- 1. the guest on foot: run, stop, run, reverse, diagonal, run back, stop
+@guest log self-vehicle: on foot
+@guest pad none 1500 ly=32767
+@guest pad none 500
+@guest pad none 1200 lx=32767
+@guest pad none 500 lx=-32767
+@guest pad none 400
+@guest pad none 800 lx=-20000 ly=20000
+@guest pad none 1500 ly=-32767
+@guest pad none 600
+@guest waitlog 3 \[self\] follow 4 meter on foot
+# ---- 2. the guest drives the truck from a stop, side view: v0.19's rule, then v0.20's
+@guest action vehicle_sync 8 1.8 2
+action vehicle_sync 8 8 2
+wait 1500
+@guest until 20 4000 \[vdrive\] guest: our Sam drives truck => pad X 150
+waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached
+wait 2500
+@guest action self_view 13 0
+@guest log self-vehicle: drive v0.19
+@guest pad none 700 rx=32767
+@guest screenshot S1a-guest-still-v019
+@guest pad none 1 rt=255 keep
+wait 250
+@guest screenshot S1b-guest-start-v019
+wait 250
+@guest screenshot S1c-guest-start-v019
+screenshot H1c-host-sees-start
+wait 400
+@guest screenshot S1d-guest-moving-v019
+wait 700
+@guest screenshot S1e-guest-moving-v019
+screenshot H1e-host-sees-moving
+wait 1000
+@guest pad none 1 lt=255 keep
+wait 2500
+@guest pad none 0
+wait 1000
+@guest action self_view 13 1
+@guest log self-vehicle: drive v0.20
+@guest pad none 700 rx=32767
+@guest screenshot S2a-guest-still-v020
+@guest pad none 1 rt=255 keep
+wait 250
+@guest screenshot S2b-guest-start-v020
+wait 250
+@guest screenshot S2c-guest-start-v020
+screenshot H2c-host-sees-start
+wait 400
+@guest screenshot S2d-guest-moving-v020
+wait 700
+@guest screenshot S2e-guest-moving-v020
+screenshot H2e-host-sees-moving
+wait 1000
+@guest pad none 1 rt=255 lx=15000 keep
+wait 1500
+@guest screenshot S2f-guest-turning-v020
+@guest pad none 1 lt=255 keep
+wait 2500
+@guest pad none 0
+@guest log self-vehicle: get off
+@guest pad X 150
+@guest waitlog 20 \[vdrive\] guest: our Sam got off truck
+# (the guest's Sam stays attached to the truck for a few seconds after "got off")
+@guest waitlog 20 \[self\] Sam out of the vehicle \(#1\)
+@guest screenshot S3-guest-off
+# ---- 3. the host drives, the guest rides (carried) through the game's own Use Vehicle
+action vehicle_sync 8 1.8 2
+@guest action vehicle_sync 8 8 2
+wait 1500
+until 20 4000 \[vdrive\] host: our Sam drives truck => pad X 150
+@guest waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached
+wait 2500
+@guest action ride_test 8
+wait 1500
+@guest until 15 3000 \[ride\] guest: our Sam carried on the truck => pad X 150
+waitlog 10 \[ride\] host: the partner asks to ride our truck .*ACCEPTED
+wait 2500
+@guest log self-vehicle: carried
+@guest pad none 700 rx=32767
+pad none 1 rt=200 keep
+wait 600
+@guest screenshot C1-guest-carried-start
+wait 900
+@guest screenshot C2-guest-carried-moving
+screenshot C2-host-sees-passenger
+wait 1500
+pad none 1 lt=255 keep
+wait 2500
+pad none 0
+wait 1500
+@guest waitlog 3 \[self\] follow 4 meter carried
+@guest pad X 150
+@guest waitlog 8 \[ride\] guest: our Sam off the truck
+wait 3000
+# ---- 4. the guest drives the Kusanagi trike from a stop (v0.20), side view
+@guest action vehicle_sync 8 1.8 4
+wait 1500
+@guest until 20 4000 \[vdrive\] guest: our Sam drives trike => pad X 150
+wait 2500
+@guest log self-vehicle: trike v0.20
+@guest pad none 700 rx=32767
+@guest screenshot T1a-guest-trike-still
+@guest pad none 1 rt=255 keep
+wait 400
+@guest screenshot T1b-guest-trike-start
+wait 600
+@guest screenshot T1c-guest-trike-moving
+wait 1200
+@guest screenshot T1d-guest-trike-fast
+@guest pad none 1 lt=255 keep
+wait 2000
+@guest pad none 0
+wait 1500
+@both action ride_state
+nolog \[(vshare|vdrive|ride|vhit)\].*FAULT
+@guest nolog \[(vshare|vdrive|ride|vhit)\].*FAULT
+@guest quit
+wait 3000
+quit

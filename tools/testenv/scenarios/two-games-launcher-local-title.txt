@@ -3,29 +3,70 @@
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-launcher-local-title -SeedSaves complete-100
 # The play test's lesson: the hidden runs set host_save in their own ini and never saw what the launcher writes. Here
 # both games run on the launcher's own host.ini / guest.ini (only the save redirect swapped). Pass: the session ON in both
-# games from the launcher's file; the guest's title is the game's own menu with only "Waiting for <host> to start the
-# game" and EXIT GAME (no full-screen panel); the label follows the transfer and the load; the host's title unchanged.
-# Check enlarged: L1-guest-waiting / L1-host-title, L2-guest-receiving, L3-guest-loading, L4-host-world / L4-guest-world.
+# games from the launcher's file; the guest never shows the full-screen ImGui panel (no "co-op waiting screen shown" at
+# all): it skips the boot logos by the splash page's own skip-all path, then its title is the game's own menu with only
+# "Waiting for <host> to start the game" and EXIT GAME; pad presses during the boot and A on the label start nothing; the
+# label follows the transfer and the load; the host's title unchanged (its logos play, no [title] line).
+# Check enlarged: L0-guest-boot-00..07 (the guest from its first frame: black / the game's spinner, never the panel, then
+# the title), L0-guest-title-first (the title page's first frame: black cover or the label, never the game's full menu),
+# L1-guest-waiting / L1-host-title, L2-guest-receiving, L3-guest-loading, L4-host-world / L4-guest-world.
 role host
 graphics low
 timeout 330
 launcherini local-test
 waitready 90
 @guest waitready 120
-waitlog 120 \[overlay\] input attached
 @guest waitlog 120 \[overlay\] input attached
+# the guest from its first frame, ~0.7 s apart (pad A / START pressed in between: nothing starts)
+@guest log film 00
+@guest screenshot L0-guest-boot-00
+@guest pad A 100
+@guest log film 01
+@guest screenshot L0-guest-boot-01
+@guest pad START 100
+@guest log film 02
+@guest screenshot L0-guest-boot-02
+@guest pad A 100
+@guest log film 03
+@guest screenshot L0-guest-boot-03
+@guest pad START 100
+@guest log film 04
+@guest screenshot L0-guest-boot-04
+@guest pad A 100
+@guest log film 05
+@guest screenshot L0-guest-boot-05
+@guest pad START 100
+@guest log film 06
+@guest screenshot L0-guest-boot-06
+@guest pad A 100
+@guest log film 07
+@guest screenshot L0-guest-boot-07
+waitlog 120 \[overlay\] input attached
 waitlog 10 \[config\] host_save=1
 @guest waitlog 10 \[config\] host_save=1
 waitlog 10 \[coop\] host-held save session ON \(host
 @guest waitlog 10 \[coop\] host-held save session ON \(guest
 @guest waitlog 10 \[title\] the guest's title in the game's own menu: .* hooks in
+@guest waitlog 10 \[title\] boot-logo skip armed
+@guest waitlog 10 \[coop\] guest: no waiting panel
 nolog \[title\]
+@guest waitlog 60 \[title\] boot logos skipped
 @guest waitlog 90 \[title\] native waiting title ON \(title page #1\)
+@guest screenshot L0-guest-title-first
+@guest waitlog 10 \[title\] the first title page is up
 wait 3000
 @guest screenshot L1-guest-waiting
 screenshot L1-host-title
 @guest action coop_session 0
-@guest waitlog 10 \[coop\] status: native title installed; wanted 1, label in the menu 1
+@guest waitlog 10 \[coop\] status: native title installed; wanted 1, label in the menu 1.*boot logos skipped
+# A on the label: nothing (no dialog, no gate block, no world)
+@guest pad A 150
+wait 2000
+@guest screenshot L1b-guest-after-a
+@guest nolog \[overlay\] co-op waiting screen shown
+@guest nolog \[coop\] gate: BLOCKED
+@guest nolog \[coop\] guest: in the world
+@guest nolog \[sync\] local player entity 0+ -> 0*[1-9A-F]
 waitlog 30 \[link\] CONNECTED
 pad A 150
 waitlog 30 \[coop\] host: title Continue
@@ -33,6 +74,7 @@ waitlog 30 \[coop\] host: title Continue
 @guest screenshot L2-guest-receiving
 @guest waitlog 60 \[title\] label: Loading
 @guest screenshot L3-guest-loading
+@guest waitlog 60 \[coop\] guest: the title is ready for the load \(the game's own title page is up\)
 until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
 waitplayer 60
 @guest waitlog 180 \[coop\] guest: in the world after
@@ -40,8 +82,10 @@ waitplayer 60
 wait 15000
 screenshot L4-host-world
 @guest screenshot L4-guest-world
+@guest nolog \[overlay\] co-op waiting screen shown
 @guest nolog \[title\] FAULT
 @guest nolog \[coop\] gate: BLOCKED
+nolog \[overlay\] co-op waiting screen shown
 @guest quit
 wait 3000
 quit

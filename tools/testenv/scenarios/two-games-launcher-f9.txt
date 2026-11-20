@@ -1,0 +1,96 @@
+# The F9 debug menu and the mouse lock on the launcher's Local test files (play test 2, v0.19.0: F9 never opened the
+# menu in either game, and the cursor walked out of the focused game window), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-launcher-f9 -SeedSaves complete-100
+# Root cause: ds.exe's message pump (FUN_141A19350) peeks with PM_NOREMOVE before GetMessage, so every key reaches
+# WH_KEYBOARD hooks first with HC_NOREMOVE; our hook ate F9 there but toggled only at HC_ACTION, which never came.
+# What this run can and cannot drive: a physical key is impossible in a hidden run (posted keys never reach WH_KEYBOARD
+# hooks, and SendInput would type on the user's desktop: never). So:
+#   hookkey  = OUR INSTALLED HOOK PROCEDURE IN DS.EXE'S CALL ORDER on the game's window thread (HC_NOREMOVE first,
+#              HC_ACTION only if not eaten), not physical input;
+#   key      = WM_KEYDOWN / WM_KEYUP posted to the game window, through ds.exe's own pump (PeekMessage PM_NOREMOVE,
+#              GetMessage, DispatchMessage) to our window procedure: the real message path.
+# The physical proof is the user's next Local test: "[overlay] keyboard hook: first key seen (vk 0x78, HC_NOREMOVE)",
+# "menu opened by F9 (keyboard hook, HC_NOREMOVE)" and the hook-order line after 30 s.
+# Pass: mouse_lock=1 from the launcher's own files in both games; the lock ON with the switch key, its decisions logged
+# as "would hold" (never applied); F10 finds the other game's window in both directions at the title (nothing moved or
+# activated in a hidden run); the startup hint names F10 (H1; the hint is only shown until the menu was first opened,
+# so the menu stays shut until then); in the world F9 opens the menu in both games (F1, screenshots), typing reaches it,
+# F9 closes it; the posted F9 path too (F2), Esc closes. (Run 20261120-092454 also opened and closed the menu at the
+# host's title and over the guest's waiting screen.)
+role host
+graphics low
+timeout 360
+launcherini local-test
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[config\] mouse_lock=1
+@guest waitlog 10 \[config\] mouse_lock=1
+waitlog 10 \[mod\] local two-instance test: input host
+@guest waitlog 10 \[mod\] local two-instance test: input guest
+waitlog 10 \[mouse\] lock ON \(local test\).*F10 switches
+@guest waitlog 10 \[mouse\] lock ON \(local test\).*F10 switches
+waitlog 30 \[overlay\] local test: game window placed on the left
+@guest waitlog 30 \[overlay\] local test: game window placed on the right
+waitlog 30 \[mouse\] lock \(hidden run, not applied\): would hold the cursor inside the game window
+@guest waitlog 30 \[mouse\] lock \(hidden run, not applied\): would hold the cursor inside the game window
+wait 15000
+# ---- M1: the switch key finds the other game's window, both ways (a hidden run moves and activates nothing)
+hookkey f10 80
+waitlog 5 \[mouse\] F10: would switch to the right \(guest\) game window \(0*[1-9A-F][0-9A-F]*\) -- hidden run
+@guest hookkey f10 80
+@guest waitlog 5 \[mouse\] F10: would switch to the left \(host\) game window \(0*[1-9A-F][0-9A-F]*\) -- hidden run
+# ---- into the world (the host-held save, as the Local test plays it)
+waitlog 60 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+# ---- H1: the startup hint names the switch key (6 s after the player stayed in the world, for 12 s)
+waitlog 40 \[overlay\] startup hint shown: .*F9: debug menu  \|  F10: other game window  \|  Alt\+Tab: leave
+wait 500
+screenshot H1-host-hint
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+@guest waitlog 40 \[overlay\] startup hint shown: .*F9: debug menu  \|  F10: other game window  \|  Alt\+Tab: leave
+wait 500
+@guest screenshot H1-guest-hint
+wait 12000
+# ---- F1: F9 through our hook in ds.exe's order, in the world, both games; typing reaches the open menu
+hookkey f9 120
+waitlog 5 \[overlay\] menu opened by F9 \(keyboard hook, HC_NOREMOVE\)
+@guest hookkey f9 120
+@guest waitlog 5 \[overlay\] menu opened by F9 \(keyboard hook, HC_NOREMOVE\)
+wait 1500
+screenshot F1-host-menu-open
+@guest screenshot F1-guest-menu-open
+hookkey a 80
+@guest hookkey a 80
+hookkey f9 120
+waitlog 5 \[overlay\] menu closed by F9 \(keyboard hook, HC_NOREMOVE\) .*1 character
+@guest hookkey f9 120
+@guest waitlog 5 \[overlay\] menu closed by F9 \(keyboard hook, HC_NOREMOVE\) .*1 character
+# ---- F2: a posted F9 through ds.exe's own message pump to our window procedure; Esc (our hook) closes
+key f9 120
+waitlog 5 \[overlay\] menu opened by F9 \(window message\)
+@guest key f9 120
+@guest waitlog 5 \[overlay\] menu opened by F9 \(window message\)
+wait 1000
+screenshot F2-host-menu-open-posted
+@guest screenshot F2-guest-menu-open-posted
+hookkey esc 80
+waitlog 5 \[overlay\] menu closed by Esc
+@guest hookkey esc 80
+@guest waitlog 5 \[overlay\] menu closed by Esc
+@both action log_status
+nolog \[overlay\] DISABLED
+@guest nolog \[overlay\] DISABLED
+nolog \[overlay\] F9 ignored
+@guest nolog \[overlay\] F9 ignored
+nolog \[mouse\] lock: released
+@guest nolog \[mouse\] lock: released
+@guest quit
+wait 3000
+quit

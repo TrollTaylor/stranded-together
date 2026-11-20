@@ -192,6 +192,7 @@ std::uint32_t g_counter = 0;
 bool g_ready = false;
 double g_ready_since = 0;
 double g_last_tick = 0;
+double g_tick_ms = 16.7;  // the tick interval (EMA): one frame
 bool g_battery_ok = false;     // the battery probe passed
 unsigned g_battery_reads = 0, g_battery_bad = 0;
 
@@ -1858,7 +1859,7 @@ void TickBody(const TickIn& in, double now) {
     g_local = in.local;
     const double since_last = now - g_last_tick;
     g_last_tick = now;
-    (void)since_last;
+    if (since_last > 0 && since_last < 1000) g_tick_ms = g_tick_ms * 0.9 + (std::min)(100.0, since_last) * 0.1;  // SeatTarget's lead
     // the link session and the world
     const std::uint32_t gen = link::Generation();
     if (gen != g_gen) {
@@ -2195,6 +2196,22 @@ void AfterStop() noexcept {
     if (!DetachAfterStopGuarded()) Log("[vdrive] FAULT while the followers let go after the stop: the rest stay attached");
 }
 
+namespace {
+// SeatTarget's meter (section 26.6), once a second while the partner drives a moving vehicle here.
+struct SeatMeter {
+    bool have = false, moving = false;
+    std::uintptr_t entity = 0;
+    WorldTransform last[2] = {};  // the placement made, the one v0.19's lead would have made
+    double last_speed = 0, log_ms = 0, sum[2] = {}, mx[2] = {}, speed = 0, ahead_sum = 0;
+    std::uint32_t n = 0, calls = 0;
+};
+SeatMeter g_seat_meter;
+double SeatDist(const game::WorldPosition& a, const game::WorldPosition& b) {
+    const double x = a.x - b.x, y = a.y - b.y, z = a.z - b.z;
+    return std::sqrt(x * x + y * y + z * z);
+}
+}  // namespace
+
 bool SeatTarget(double play_ms, game::WorldTransform* target) noexcept {
     if (!Active() || !target) return false;
     for (auto& kv : g_veh) {
@@ -2205,19 +2222,57 @@ bool SeatTarget(double play_ms, game::WorldTransform* target) noexcept {
         if (!vsync::PartnerSeatAt(play_ms, seat, seat_r, &kind) || kind != v.key.kind) return false;
         WorldTransform vx{};
         if (!EntityLive(v.ctl_unit, v.ctl_entity, v.key.kind) || !ReadXf(v.ctl_entity, vx)) return false;
-        // one frame ahead along its velocity (the vehicle moves later in this frame than the body is placed)
-        const double ahead = (std::min)(0.05, (std::max)(0.0, (g_now - v.meas_ms) / 1000.0) + 1.0 / 60.0);
-        if (v.meas_have && g_now - v.meas_ms < 100 && v.speed_mps > 0.5 && v.speed_mps < 80) {
-            vx.pos.x += v.vel[0] * ahead, vx.pos.y += v.vel[1] * ahead, vx.pos.z += v.vel[2] * ahead;
+        // One frame ahead along its velocity: the body is placed here, before this frame's vehicle physics, and is drawn with
+        // the vehicle where that physics leaves it (at the next tick's read). The lead is the tick interval (as the ride's
+        // passenger and carry). v0.19 led by 1/60 s plus the velocity's age, which is 0 here (this runs before vdrive::Tick
+        // measures it): half a frame short at 30 fps, the body 18.6 cm behind the seat at 11 m/s (section 26.6).
+        const double ahead = (std::min)(0.05, g_tick_ms / 1000.0);
+        const bool lead = v.meas_have && g_now - v.meas_ms < 100 && v.speed_mps > 0.5 && v.speed_mps < 80;
+        const WorldTransform now_x = vx;
+        const auto led = [&](double t) {
+            WorldTransform o = now_x;
+            if (lead) o.pos.x += v.vel[0] * t, o.pos.y += v.vel[1] * t, o.pos.z += v.vel[2] * t;
+            return o;
+        };
+        const auto on_seat = [&](const WorldTransform& b) {
+            WorldTransform o = b;
+            for (int i = 0; i < 3; ++i) {
+                const double d = static_cast<double>(seat[0]) * b.rot.m[0][i] + static_cast<double>(seat[1]) * b.rot.m[1][i] + static_cast<double>(seat[2]) * b.rot.m[2][i];
+                (i == 0 ? o.pos.x : i == 1 ? o.pos.y : o.pos.z) += d;
+            }
+            for (int r = 0; r < 3; ++r)
+                for (int c = 0; c < 3; ++c) o.rot.m[r][c] = seat_r[r][0] * b.rot.m[0][c] + seat_r[r][1] * b.rot.m[1][c] + seat_r[r][2] * b.rot.m[2][c];
+            return o;
+        };
+        const WorldTransform out = on_seat(led(ahead));
+        // the meter: the last placement against the seat on the vehicle now (where the game drew the vehicle last frame), and
+        // v0.19's lead on the same frames (a yaw-rate lead on top was measured too: no difference, run 20261120-112205)
+        {
+            const WorldTransform exact = on_seat(now_x);
+            SeatMeter& m = g_seat_meter;
+            if (m.have && m.entity == v.ctl_entity && m.moving) {
+                double e[2];
+                for (int k = 0; k < 2; ++k) e[k] = SeatDist(m.last[k].pos, exact.pos) * 100.0;
+                if (e[0] < 300 && e[1] < 300) {
+                    ++m.n, m.speed += m.last_speed;
+                    for (int k = 0; k < 2; ++k) m.sum[k] += e[k], m.mx[k] = (std::max)(m.mx[k], e[k]);
+                }
+            }
+            const double ahead_old = (std::min)(0.05, (std::max)(0.0, (g_now - v.meas_ms) / 1000.0) + 1.0 / 60.0);
+            m.last[0] = out, m.last[1] = on_seat(led(ahead_old));
+            m.entity = v.ctl_entity, m.have = true, m.moving = lead, m.last_speed = v.speed_mps;
+            m.ahead_sum += ahead * 1000.0, ++m.calls;
+            if (g_now - m.log_ms >= 1000) {
+                if (m.n)
+                    Log("[vdrive] partner body vs the seat after the frame (driving, moving): lead %.1f ms mean %.1f max %.1f cm; v0.19's lead mean %.1f "
+                        "max %.1f cm; %u frames, %.1f m/s",
+                        m.ahead_sum / m.calls, m.sum[0] / m.n, m.mx[0], m.sum[1] / m.n, m.mx[1], m.n, m.speed / m.n);
+                SeatMeter keep;
+                for (int k = 0; k < 2; ++k) keep.last[k] = m.last[k];
+                keep.entity = m.entity, keep.have = true, keep.moving = lead, keep.last_speed = m.last_speed, keep.log_ms = g_now;
+                m = keep;
+            }
         }
-        WorldTransform out = vx;
-        for (int i = 0; i < 3; ++i) {
-            const double o = static_cast<double>(seat[0]) * vx.rot.m[0][i] + static_cast<double>(seat[1]) * vx.rot.m[1][i] + static_cast<double>(seat[2]) * vx.rot.m[2][i];
-            (i == 0 ? out.pos.x : i == 1 ? out.pos.y : out.pos.z) += o;
-        }
-        for (int r = 0; r < 3; ++r)
-            for (int c = 0; c < 3; ++c)
-                out.rot.m[r][c] = seat_r[r][0] * vx.rot.m[0][c] + seat_r[r][1] * vx.rot.m[1][c] + seat_r[r][2] * vx.rot.m[2][c];
         *target = out;
         return true;
     }

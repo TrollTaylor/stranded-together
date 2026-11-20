@@ -98,6 +98,7 @@ target_link_libraries(st_mod_imgui PUBLIC dxgi d3dcompiler)
 set(ST_OVERLAY_SOURCES
   native/mod/overlay/overlay.cpp
   native/mod/overlay/overlay_input.cpp
+  native/mod/overlay/mouse_lock.cpp
   native/mod/overlay/overlay_keys.cpp
   native/mod/overlay/overlay_menu.cpp
   native/mod/overlay/overlay_positions.cpp
@@ -170,7 +171,7 @@ target_link_options(st_mod PRIVATE /DELAYLOAD:dxgi.dll /DELAYLOAD:d3dcompiler_47
 # player_sync's debug accessors.
 add_executable(st_overlay_tests tests/overlay_tests.cpp tests/overlay_sync_stubs.cpp
                native/mod/debug_actions.cpp native/mod/log.cpp
-               native/mod/overlay/overlay_keys.cpp native/mod/overlay/overlay_positions.cpp)
+               native/mod/overlay/overlay_keys.cpp native/mod/overlay/overlay_positions.cpp native/mod/overlay/mouse_lock.cpp)
 target_include_directories(st_overlay_tests PRIVATE native/mod native/mod/overlay third_party/imgui)
 target_compile_definitions(st_overlay_tests PRIVATE "IMGUI_USER_CONFIG=\"overlay_imconfig.h\"" UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS)
 target_compile_options(st_overlay_tests PRIVATE ${ST_WARNINGS})
@@ -245,6 +246,14 @@ target_include_directories(st_story_rules_tests PRIVATE native/mod)
 target_compile_options(st_story_rules_tests PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_story_rules_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_test(NAME st_story_rules_tests COMMAND st_story_rules_tests)
+
+# ---- Self view follow mode 4's pure part (native/mod/self_predict.hpp): the step / copy decision, the seated step, the
+# consistency gate on a seat snap, the dt scale, the rotation power.
+add_executable(st_self_predict_tests tests/self_predict_tests.cpp)
+target_include_directories(st_self_predict_tests PRIVATE native/mod)
+target_compile_options(st_self_predict_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_self_predict_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_self_predict_tests COMMAND st_self_predict_tests)
 
 # ---- st_fakepeer: console stand-in for the second player (UDP), + self-test
 add_executable(st_fakepeer tools/fakepeer/fakepeer.cpp native/mod/link.cpp native/mod/steam_owner.cpp

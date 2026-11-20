@@ -1194,6 +1194,27 @@ Outcome DoKey(const Command& c) {
     return Fmt(true, "vk 0x%02X posted to window %p (window procedure only, not WH_KEYBOARD)", c.vk, static_cast<void*>(w));
 }
 
+// The `hookkey` command: overlay_input.hpp HookKeyMessage, sent to the game window (its thread runs our hook in ds.exe's
+// order: HC_NOREMOVE first, HC_ACTION only if not eaten, a key nobody ate goes on as WM_KEYDOWN / WM_KEYUP).
+Outcome DoHookKey(const Command& c) {
+    const HWND w = GameWindow();
+    const UINT msg = overlay::input::HookKeyMessage();
+    if (!w) return Fmt(false, "no game window yet");
+    if (!msg) return Fmt(false, "no registered message");
+    const UINT scan = MapVirtualKeyW(c.vk, MAPVK_VK_TO_VSC);
+    const LPARAM down = 1 | (static_cast<LPARAM>(scan) << 16);
+    const LPARAM up = down | (1LL << 30) | (1LL << 31);
+    static const char* const kAnswer[] = {"not handled (no hidden run?)", "eaten at HC_NOREMOVE", "eaten at HC_ACTION",
+                                          "passed to ds.exe's keyboard procedure and the game window"};
+    DWORD_PTR rd = 0, ru = 0;
+    if (!SendMessageTimeoutW(w, msg, c.vk, down, SMTO_ABORTIFHUNG, 5000, &rd)) return Fmt(false, "the game window did not answer (down)");
+    SleepFor(c.ms);
+    if (!SendMessageTimeoutW(w, msg, c.vk, up, SMTO_ABORTIFHUNG, 5000, &ru)) return Fmt(false, "the game window did not answer (up)");
+    const auto text = [&](DWORD_PTR r) { return kAnswer[r < 4 ? r : 0]; };
+    return Fmt(rd != 0 && ru != 0, "vk 0x%02X through our keyboard hook in ds.exe's order (HC_NOREMOVE first) on the window thread: down %s, up %s",
+               c.vk, text(rd), text(ru));
+}
+
 Outcome DoMenu(const Command& c) {
     if (!overlay::Installed()) return Fmt(false, "no overlay");
     const bool want = c.text == "open" ? true : c.text == "close" ? false : !overlay::IsOpen();
@@ -1311,6 +1332,7 @@ Outcome Execute(const Command& c) {
         case Kind::pad: return DoPad(c);
         case Kind::padoff: overlay::input::SetVirtualPad(overlay::input::PadState{}); return Fmt(true, "virtual pad disconnected");
         case Kind::key: return DoKey(c);
+        case Kind::hookkey: return DoHookKey(c);
         case Kind::menu: return DoMenu(c);
         case Kind::action: return DoAction(c);
         case Kind::waitplayer: return DoWaitPlayer(c);

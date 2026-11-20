@@ -13,22 +13,34 @@
 // menu thread, after the original, each guarded by a vtable check. When the session stops (or wants the game's menu
 // back) the next update puts back what was changed: the saved labels and bools, the hidden items. Every address is
 // byte-checked at start-up (kSites in title_wait.cpp); a mismatch leaves this off and the full-screen waiting panel
-// (overlay CoopView) is used instead.
+// (overlay CoopView) is used instead. At run time the panel (without the input block) also comes back while the title page
+// is up without our label for 2 s, or no title page came 45 s after the start (coop_session.cpp BuildView).
 #pragma once
 #include <cstddef>
 
 namespace st::title_wait {
 
 // Bootstrap thread (coop::Install, the guest of a host-held save session, MinHook initialised): byte checks and hooks.
-// False with a one-line reason in `why` when off (the overlay's full-screen waiting panel is used then).
-bool Install(char* why, std::size_t cap) noexcept;
+// False with a one-line reason in `why` when off (the overlay's full-screen waiting panel is used then). skip_logos
+// (guest_skip_logos): also the boot-logo skip, the splash page's own skip-all branch taken at its first update, so the
+// title page comes ~12 s sooner; its own byte checks, a mismatch leaves only the skip off (the logos play).
+bool Install(char* why, std::size_t cap, bool skip_logos) noexcept;
 bool Installed() noexcept;
+// A title page has had its first update in this game (since the start).
+bool PageSeen() noexcept;
 // Game thread (coop Tick): whether the guest's title shows the session (`label` = NEW GAME's text, ASCII) or the game's
 // own menu. Applied by the menu's next update. Logs each new label.
 void Set(bool want, const char* label) noexcept;
 // The relabelled menu is on screen: wanted, the label written into the current title page's data source and the
 // title page's per-frame update seen within the last 1.5 s (now_ms on link::NowMsPrecise's clock).
 bool Showing(double now_ms) noexcept;
+// The run-time failure the waiting panel falls back on: the session wants the label and the title page's per-frame update
+// was seen within the last 1.5 s, but the label is not in its data source (a fault in the write, the NEW GAME key not
+// found, a data source whose vtable does not match). The caller waits a moment (a new page gets the label at its first
+// data-source update).
+bool LabelMissing(double now_ms) noexcept;
+// Faults in the title data source write so far (the fallback's reason).
+unsigned Faults() noexcept;
 // One line for the log / the hidden tests: applied state, the items hidden, the presses ignored.
 void Describe(char* out, std::size_t cap) noexcept;
 

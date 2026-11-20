@@ -41,6 +41,22 @@ constexpr std::uintptr_t kUiGlobalsRead = 0x1430125B9;  // in GetUIGlobals: mov 
 constexpr std::uintptr_t kUiGlobals = 0x147C00128;      // *(u64*): UI globals; +0x2D0 = the title menu's state
 constexpr std::uintptr_t kUiTitleState = 0x2D0, kTitleLabelsDirty = 0x81;   // state+0x81: DS::Update rewrites the 8 labels
 
+// The boot logos (DSUISplashScreenMenuFunction, the page before the title page; docs/coop-session.md "The guest's title
+// screen"): its Update's state 0 holds the game's own "skip the whole splash" branch (0x1432787CC: a platform check that
+// is always false on PC, then SetFocus(this+0xA8) and "page finished" to the menu system, which opens the title page).
+// The guest takes that branch on the splash's first update; everything else is the game's own code.
+constexpr std::uintptr_t kSplashUpdate = 0x143278770;     // DSUISplashScreenMenuFunction::Update(this, float dt) (vt[14])
+constexpr std::uintptr_t kSplashSkipAll = 0x1432787CC;    // its skip-all branch (state 0)
+constexpr std::uintptr_t kSplashSkipMenuSys = 0x1432787F2;  // in it: mov rcx, [menu system]
+constexpr std::uintptr_t kSplashPlatform = 0x14577D3F0;   // the platform object its check asks (named by the branch)
+constexpr std::uintptr_t kSplashDialogRead = 0x14327887B; // state 1: cmp byte [settings-reset dialog flag], 0
+constexpr std::uintptr_t kSplashDialogFlag = 0x145558F78; // set when the graphics init reset the display mode: a dialog
+constexpr std::uintptr_t kSplashOnDecima = 0x143277BC0;   // OnFinishDecimaLogo: the same end call (reference)
+constexpr std::uintptr_t kPageFinished = 0x141B1EB60;     // (menu system): the current page finished -> the next page
+constexpr std::uintptr_t kSetFocus = 0x141B4E7D0;         // (tag, tag, u8)
+constexpr std::uintptr_t kSplashVtable = 0x143E94988;
+constexpr std::uintptr_t kSplashState = 0xA0, kSplashNext = 0xA1, kSplashEndTag = 0xA8;
+
 // Data-source keys (crc32c of the binding's name) and layout (DS::Update's own writes, docs/coop-session.md).
 constexpr std::uint32_t kKeyHasSave = 0x7339FA72;    // bool: CONTINUE and LOAD GAME visible (HasSlot(app, 0xF, 0xFF))
 constexpr std::uint32_t kKeyPs4 = 0x1A8722BC;        // bool: the PS4->PS5 item visible (DS::Refresh sets it)
@@ -75,6 +91,16 @@ constexpr Site kSites[] = {
     {kOnExit,         "48 83 EC 28 66 C7 05 7B E8 96 04 01 01 E8 BE AA D9 FF", "OnExitGame"},
     {kUiGlobalsRead,  "48 8B 05 68 DB BE 04 48 85 C0 75 1B", "UI globals (title menu state)"},
 };
+// The boot-logo skip's own checks: a mismatch leaves only the skip off (the logos play).
+constexpr Site kSkipSites[] = {
+    {kSplashUpdate,     "48 89 5C 24 10 57 48 83 EC 30 C5 F8 29 74 24 20 48 8B D9 C5 F8 28 F1 E8 14 9E D9 FF C5 CA 58 83", "splash Update"},
+    {kSplashSkipAll,    "48 8B 0D 1D 4C 50 02 48 8B 01 FF 90 58 01 00 00 84 C0 74 28 48 8B 8B A8 00 00 00 45 33 C0 48 8B D1 E8 DE 5F 8D FE "
+                        "48 8B 0D FF DD 51 02 48 8B 5C 24 48 48 83 C4 30 5F E9 58 63 8A FE", "splash skip-all branch"},
+    {kSplashDialogRead, "80 3D F6 06 2E 02 00", "splash settings-dialog flag"},
+    {kSplashOnDecima,   "C7 81 F8 00 00 00 00 00 00 00 48 8B 0D 27 EA 51 02 E9 8A 6F 8A FE", "splash OnFinishDecimaLogo"},
+    {kPageFinished,     "48 89 5C 24 08 57 48 83 EC 30 48 8B F9 48 8D 0D 4C F8 D6 02 E8 77 27 ED", "menu page finished"},
+    {kSetFocus,         "48 8B 0D 21 7E C4 03 45 0F B6 C8 45 33 C0 48 8B 89 B8 00 00 00 E9 16 27", "menu SetFocus"},
+};
 // clang-format on
 
 // ---------------------------------------------------------------- function types and state
@@ -86,10 +112,19 @@ using FnStrAssign = std::uintptr_t (*)(std::uintptr_t, const char*);
 using FnSetVisible = void (*)(std::uintptr_t, std::uint8_t);
 using FnFindTag = std::uintptr_t (*)(std::uintptr_t, std::uintptr_t, std::uintptr_t);
 
+using FnSplashUpdate = void (*)(std::uintptr_t, float);
+using FnSetFocus = void (*)(std::uintptr_t, std::uintptr_t, std::uint8_t);
+using FnPageFinished = void (*)(std::uintptr_t);
+
 FnDsUpdate o_ds = nullptr;
 FnTmfUpdate o_tmf = nullptr;
 FnHandler o_continue = nullptr, o_newgame = nullptr, o_loadslot = nullptr;
+FnSplashUpdate o_splash = nullptr;
 bool g_installed = false;
+std::atomic<bool> g_skip_armed{false};     // the boot-logo skip is in and not used yet
+std::atomic<int> g_skip_result{0};         // 0 not tried, 1 skipped, -1 faulted, -2 not taken (the splash not in its first state)
+std::atomic<double> g_skip_ms{0};          // when the logos were skipped (link::NowMsPrecise)
+std::atomic<double> g_first_page_ms{0};    // the first title page's first update (link::NowMsPrecise)
 
 constexpr std::size_t kLabelCap = 96;
 SRWLOCK g_mx = SRWLOCK_INIT;  // g_label (game thread -> the menu's thread)
@@ -373,6 +408,11 @@ void H_tmf(std::uintptr_t self, float dt) {
         s.self = self;
         s.list = list;
         s.page = ++g_pages;
+        if (s.page == 1) {
+            g_first_page_ms.store(now);
+            const double skipped = g_skip_ms.load();
+            if (skipped > 0) Log("[title] the first title page is up %.1f s after the boot logos were skipped", (now - skipped) / 1000.0);
+        }
     } else if (gap > kPageGapMs && (s.resolved || s.n_hide)) {
         Revalidate(self, list, s, gap);
     }
@@ -415,6 +455,48 @@ void H_tmf(std::uintptr_t self, float dt) {
     s.told = false;
 }
 
+// ---------------------------------------------------------------- the boot logos: the splash's own skip-all branch
+int SplashSkipSeh(std::uintptr_t tag, std::uintptr_t menu_sys) noexcept {
+    __try {
+        reinterpret_cast<FnSetFocus>(A(kSetFocus))(tag, tag, 0);
+        reinterpret_cast<FnPageFinished>(A(kPageFinished))(menu_sys);
+        return 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+
+// Pre-hook on the splash page's Update (the game's menu thread). Only its very first update after OnPageOn (state 0, next
+// state 1: before the settings dialog and the first logo), no settings-reset dialog pending (that flow stays the
+// game's), once per game: what the game's own branch does, then return without the original. Anything else: the original.
+void H_splash(std::uintptr_t self, float dt) {
+    if (g_skip_armed.load()) {
+        std::uintptr_t vt = 0, tag = 0, menu_sys = 0;
+        std::uint8_t state = 0xFF, next = 0xFF, dialog = 1;
+        if (mem::Rd(self, vt) && vt == A(kSplashVtable) && mem::Rd(self + kSplashState, state) && mem::Rd(self + kSplashNext, next)) {
+            g_skip_armed.store(false);   // decided at the splash's first update, whatever the outcome
+            const bool first = state == 0 && next == 1;
+            const bool ok = first && mem::Rd(A(kSplashDialogFlag), dialog) && dialog == 0 && mem::Rd(self + kSplashEndTag, tag) && tag &&
+                            mem::Rd(A(kMenuSysGlobal), menu_sys) && menu_sys;
+            if (ok) {
+                const int r = SplashSkipSeh(tag, menu_sys);
+                g_skip_result.store(r);
+                if (r == 1) {
+                    g_skip_ms.store(link::NowMsPrecise());
+                    Log("[title] boot logos skipped (the splash page's own skip-all path): the title page comes next");
+                    return;
+                }
+                Log("[title] FAULT in the boot-logo skip: the logos play");
+            } else {
+                g_skip_result.store(-2);
+                Log("[title] boot logos not skipped (splash state %u, next %u, settings dialog %u, end tag %s): the logos play",
+                    state, next, dialog, tag ? "set" : "missing");
+            }
+        }
+    }
+    o_splash(self, dt);
+}
+
 // ---------------------------------------------------------------- the start handlers: nothing while the guest waits
 void Ignored(const char* what) noexcept {
     const unsigned n = g_ignored.fetch_add(1) + 1;
@@ -444,9 +526,35 @@ bool Hook(std::uintptr_t va, void* detour, void** orig, const char* name, char* 
     return true;
 }
 
+// The boot-logo skip (Install, after the title's own hooks): its own byte checks; a mismatch leaves only the skip off.
+void InstallSkip() noexcept {
+    const char* bad = nullptr;
+    for (const Site& s : kSkipSites)
+        if (!mem::CodeMatches(A(s.va), s.sig)) {
+            bad = s.name;
+            break;
+        }
+    if (!bad && mem::RipTarget(A(kSplashSkipAll), 3, 7) != A(kSplashPlatform)) bad = "splash skip-all branch (the platform object)";
+    if (!bad && mem::RipTarget(A(kSplashSkipMenuSys), 3, 7) != A(kMenuSysGlobal)) bad = "splash skip-all branch (the menu system)";
+    if (!bad && mem::RipTarget(A(kSplashDialogRead), 2, 7) != A(kSplashDialogFlag)) bad = "splash settings-dialog flag (its address)";
+    if (!bad && mem::Q(A(kSplashVtable) + 14 * 8) != A(kSplashUpdate)) bad = "the splash page's vtable";
+    if (bad) {
+        Log("[title] boot-logo skip OFF: this game build differs (%s byte check failed); the logos play", bad);
+        return;
+    }
+    char why[120] = "";
+    if (!Hook(kSplashUpdate, reinterpret_cast<void*>(&H_splash), reinterpret_cast<void**>(&o_splash), "splash Update", why, sizeof(why))) {
+        Log("[title] boot-logo skip OFF: %s; the logos play", why);
+        return;
+    }
+    g_skip_armed.store(true);
+    Log("[title] boot-logo skip armed: %u byte checks ok (the splash page's own skip-all path at its first update)",
+        static_cast<unsigned>(sizeof(kSkipSites) / sizeof(kSkipSites[0])));
+}
+
 }  // namespace
 
-bool Install(char* why, std::size_t cap) noexcept {
+bool Install(char* why, std::size_t cap, bool skip_logos) noexcept {
     why[0] = 0;
     for (const Site& s : kSites)
         if (!mem::CodeMatches(A(s.va), s.sig)) {
@@ -486,10 +594,14 @@ bool Install(char* why, std::size_t cap) noexcept {
     Log("[title] the guest's title in the game's own menu: %u byte checks ok, hooks in (title data source / menu Update, "
         "OnNewGame / OnContinueGame / OnSelectLoadSlot); EXIT GAME untouched",
         static_cast<unsigned>(sizeof(kSites) / sizeof(kSites[0])));
+    if (skip_logos) InstallSkip();
+    else Log("[title] boot-logo skip off (guest_skip_logos=0): the logos play");
     return true;
 }
 
 bool Installed() noexcept { return g_installed; }
+
+bool PageSeen() noexcept { return g_first_page_ms.load() > 0; }
 
 void Set(bool want, const char* label) noexcept {
     if (!g_installed) return;
@@ -522,11 +634,20 @@ bool Showing(double now_ms) noexcept {
     return Want() && g_label_on.load() && now_ms - g_tmf_seen_ms.load() < 1500;
 }
 
+bool LabelMissing(double now_ms) noexcept {
+    return g_installed && Want() && !g_label_on.load() && now_ms - g_tmf_seen_ms.load() < 1500;
+}
+
+unsigned Faults() noexcept { return g_faults.load(); }
+
 void Describe(char* out, std::size_t cap) noexcept {
     const double now = link::NowMsPrecise();
-    std::snprintf(out, cap, "native title %s; wanted %d, label in the menu %d, menu update %.1f s ago, items hidden %u, presses ignored %u, faults %u",
+    const int sk = g_skip_result.load();
+    std::snprintf(out, cap, "native title %s; wanted %d, label in the menu %d, menu update %.1f s ago, items hidden %u, presses ignored %u, faults %u; "
+                  "boot logos %s",
                   g_installed ? "installed" : "OFF", g_want.load() ? 1 : 0, g_label_on.load() ? 1 : 0, (now - g_tmf_seen_ms.load()) / 1000.0,
-                  g_hidden_count.load(), g_ignored.load(), g_faults.load());
+                  g_hidden_count.load(), g_ignored.load(), g_faults.load(),
+                  sk == 1 ? "skipped" : sk == -1 ? "skip faulted" : sk == -2 ? "not skipped" : g_skip_armed.load() ? "skip armed" : "played");
 }
 
 }  // namespace st::title_wait

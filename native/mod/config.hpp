@@ -200,8 +200,18 @@ struct Config {
     // coop_test_build=<text> (hidden tests only, the version scenario): this game reports that game build instead of its
     // own in the co-op save session's version check. Ignored outside a hidden run (automation=1).
     std::string coop_test_build;
+    // coop_test_title_off=1 (hidden tests only): the guest's title in the game's own menu is not installed, as if its byte
+    // checks failed: the full-screen waiting panel fallback with its one-line reason. Ignored outside a hidden run.
+    bool coop_test_title_off = false;
+    // guest_skip_logos (default 1): the guest of a host-held save session skips the game's four boot logos by the splash
+    // page's own skip-all path (title_wait.cpp), so its waiting title is up ~12 s sooner. 0: the logos play as always.
+    bool guest_skip_logos = true;
     unsigned frame_cap = 0;            // frame_cap=<15..240>: at most this many frames per second (0 = off)
     std::string local_window;          // local_window=left|right: the game window takes that half of the monitor
+    // mouse_lock=1 (the launcher's Local test, Debug page "Lock the mouse to the focused game window"): the cursor stays
+    // inside the client area of the game window that is in front; F10 (F11 when the menu key is F10) switches to the
+    // other game's window, Alt+Tab leaves (overlay/mouse_lock.hpp). Absent / 0: the game's own cursor handling only.
+    bool mouse_lock = false;
 };
 
 // Loads <dir>\session.ini. Never throws; unknown keys are logged and ignored.

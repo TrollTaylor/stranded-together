@@ -148,6 +148,8 @@ bool g_logged_first_draw = false;
 // Startup hint
 bool g_hint_done = false;
 double g_hint_until = 0;
+double g_hint_valid_since = 0;  // the same local player valid, nothing loading, without a break since
+std::uintptr_t g_hint_entity = 0;
 
 double NowSeconds() noexcept {
     LARGE_INTEGER t;
@@ -172,7 +174,11 @@ void SetQueueSource(const char* text) noexcept {
                 text);
 }
 
-void ApplyOpen(bool open) noexcept {
+// Keys and characters the open menu received (logged when it closes: proves typing reaches ImGui).
+unsigned long g_open_keys0 = 0, g_open_chars0 = 0;
+
+// `why`: what opened / closed it, for the log line ("by F9 (keyboard hook, HC_NOREMOVE)", "by Esc", ...).
+void ApplyOpen(bool open, const char* why) noexcept {
     if (open == g_open) return;
     g_open = open;
     input::SetOpen(open);
@@ -191,7 +197,14 @@ void ApplyOpen(bool open) noexcept {
         }
     }
     if (open) g_hint_done = true;
-    Log("[overlay] menu %s", open ? "opened (game input blocked)" : "closed (game input restored)");
+    const input::Stats in = input::GetStats();
+    if (open) {
+        g_open_keys0 = in.blocked_keys, g_open_chars0 = in.characters;
+        Log("[overlay] menu opened %s (game input blocked)", why);
+    } else {
+        Log("[overlay] menu closed %s (game input restored; the menu got %lu key(s), %lu character(s))", why,
+            in.blocked_keys - g_open_keys0, in.characters - g_open_chars0);
+    }
 }
 
 void ReleaseRenderer() noexcept;
@@ -204,7 +217,7 @@ void Disable(const char* reason) noexcept {
         s.disabled = true;
         std::snprintf(s.disabled_reason, sizeof(s.disabled_reason), "%s", static_cast<const char*>(a));
     }, reason);
-    ApplyOpen(false);
+    ApplyOpen(false, "because the overlay was disabled");
     ReleaseRenderer();
     input::Detach();
 }
@@ -294,7 +307,17 @@ bool HintActive(double now) noexcept {
         return false;
     }
     const debug::Snapshot s = debug::GetSnapshot();
-    if (!s.local_valid) return false;
+    // The player entity comes and goes while a save loads (hidden run 20261120-092717: valid at 27.6 s, gone, another
+    // entity at 31.3 s, the world on screen at 36.4 s; the published snapshot can miss the short gaps): the 12 s start
+    // once the same entity stayed valid with nothing loading for 4 s, so the hint is seen in the world, not the loading.
+    const bool loading = s.diag.module_valid && s.diag.load_mask != 0;
+    if (!s.local_valid || loading || s.local_entity != g_hint_entity) {
+        g_hint_entity = s.local_valid ? s.local_entity : 0;
+        g_hint_valid_since = s.local_valid && !loading ? now : 0;
+        return false;
+    }
+    if (g_hint_valid_since <= 0) g_hint_valid_since = now;
+    if (now - g_hint_valid_since < 4.0) return false;
     g_hint_until = now + 12.0;
     return true;
 }
@@ -374,11 +397,26 @@ void DrawCoopBanner(const CoopView& v) noexcept {
                 nullptr, ds.x * 0.8f);
 }
 
+// The startup hint's text: the menu key, and in the Local test with the mouse lock the switch key and the way out.
+void HintText(char* text, std::size_t size) noexcept {
+    char key[24], sw[24];
+    VkName(input::ToggleKey(), key, sizeof(key));
+    const input::MouseLockStatus ml = input::GetMouseLockStatus();
+    if (ml.configured && ml.switch_enabled)
+        std::snprintf(text, size, "Stranded Together %s  |  %s: debug menu  |  %s: other game window  |  Alt+Tab: leave", g_opt.build.c_str(), key,
+                      VkName(ml.switch_vk, sw, sizeof(sw)));
+    else if (ml.configured)
+        std::snprintf(text, size, "Stranded Together %s  |  %s: debug menu  |  Alt+Tab: leave", g_opt.build.c_str(), key);
+    else
+        std::snprintf(text, size, "Stranded Together %s  |  %s: debug menu", g_opt.build.c_str(), key);
+}
+
 void DrawHint() noexcept {
-    char key[24];
-    char text[160];
-    std::snprintf(text, sizeof(text), "Stranded Together %s  |  %s: debug menu", g_opt.build.c_str(),
-                  VkName(input::ToggleKey(), key, sizeof(key)));
+    char text[200];
+    HintText(text, sizeof(text));
+    static bool logged = false;
+    if (!logged) Log("[overlay] startup hint shown: %s", text);
+    logged = true;
     ImDrawList* dl = ImGui::GetForegroundDrawList();
     const ImVec2 size = ImGui::CalcTextSize(text);
     const float pad = 8.0f * g_ui_scale;
@@ -556,9 +594,23 @@ void FrameMain(IDXGISwapChain* chain) noexcept {
     if (g_opt.menu) {  // name tags only (debug_menu=0): no window hooks, no toggles, no menu
         AttachWindow(chain);
         input::PollToggleFallback();
-        if (req >= 0) ApplyOpen(req != 0);
-        if (input::TakeToggles() & 1u) ApplyOpen(!g_open);
-        if (input::TakeCloseRequest()) ApplyOpen(false);
+        if (req >= 0) ApplyOpen(req != 0, "by request (scenario `menu` / SetOpen)");
+        if (const unsigned toggles = input::TakeToggles()) {
+            const input::ToggleInfo ti = input::LastToggle();
+            char key[24], why[120];
+            VkName(input::ToggleKey(), key, sizeof(key));
+            std::snprintf(why, sizeof(why), "by %s (%s)", key, input::ToggleSourceName(ti.source));
+            if (toggles & 1u) ApplyOpen(!g_open, why);
+            else Log("[overlay] %s pressed %u times within one frame (%s): no change", key, toggles, input::ToggleSourceName(ti.source));
+            const unsigned long long waited = ti.tick ? GetTickCount64() - ti.tick : 0;
+            if (waited > 500) Log("[overlay] %s waited %llu ms for a Present (minimised or loading)", key, waited);
+        }
+        if (const input::CloseReason cr = input::TakeCloseRequest(); cr != input::CloseReason::none) {
+            char why[96];
+            std::snprintf(why, sizeof(why), "because %s", input::CloseReasonText(cr));
+            ApplyOpen(false, why);
+        }
+        input::MouseLockFrame();
     }
 
     const bool hint = !g_open && HintActive(now);
@@ -601,7 +653,11 @@ void FrameMain(IDXGISwapChain* chain) noexcept {
             if (!g_logged_unsupported) Log("[overlay] back-buffer format %d is not supported: menu not drawn", static_cast<int>(fmt));
             g_logged_unsupported = true;
             // An open menu that cannot be seen must not keep the game's input.
-            if (g_open) ApplyOpen(false);
+            if (g_open) {
+                char why[96];
+                std::snprintf(why, sizeof(why), "again at once: back-buffer format %d is not supported", static_cast<int>(fmt));
+                ApplyOpen(false, why);
+            }
             return;
         }
         Disable("could not rebuild the ImGui pipeline for a new back-buffer format");
@@ -648,7 +704,7 @@ void FrameMain(IDXGISwapChain* chain) noexcept {
         ctx.ui_scale = &g_ui_scale;
         ctx.coop = coop_view.active ? &coop_view : nullptr;
         menu::Draw(ctx);
-        if (ctx.close) ApplyOpen(false);
+        if (ctx.close) ApplyOpen(false, ctx.close_reason);
         if (ctx.coop_teleport) g_coop_requests.fetch_or(kCoopTeleport);
     } else if (hint && !coop_view.waiting) {
         DrawHint();
@@ -752,7 +808,25 @@ bool GuardedFrame(IDXGISwapChain* chain) noexcept {
     }
 }
 
+// The overlay turned itself off: a press of the menu key gets a log line with the reason (at most one a second), so a
+// play-test log says why F9 did nothing.
+void NoteToggleWhileDisabled() noexcept {
+    if (!g_opt.menu || input::Automation()) return;
+    static bool prev = false;
+    static ULONGLONG last = 0;
+    const bool down = input::RealForegroundIsOurs() && (GetAsyncKeyState(static_cast<int>(input::ToggleKey())) & 0x8000) != 0;
+    const ULONGLONG now = GetTickCount64();
+    if (down && !prev && now - last > 1000) {
+        last = now;
+        char key[24];
+        const Stats st = GetStats();
+        Log("[overlay] %s ignored: the overlay is disabled (%s)", VkName(input::ToggleKey(), key, sizeof(key)), st.disabled_reason);
+    }
+    prev = down;
+}
+
 void OnPresent(IDXGISwapChain* chain, UINT flags) noexcept {
+    if (chain && !(flags & DXGI_PRESENT_TEST) && g_disabled.load(std::memory_order_acquire) && !t_in_present) NoteToggleWhileDisabled();
     if ((flags & DXGI_PRESENT_TEST) || !chain || g_disabled.load(std::memory_order_acquire) || t_in_present) return;
     t_in_present = true;
     g_present_thread.store(GetCurrentThreadId(), std::memory_order_relaxed);
@@ -1141,7 +1215,7 @@ void Shutdown() noexcept {
     // Hooks first (MinHook freezes threads while unpatching), then the objects.
     RemoveHooks();
     AcquireSRWLockExclusive(&g_render);
-    ApplyOpen(false);
+    ApplyOpen(false, "by the overlay's shutdown");
     ReleaseRenderer();
     if (g_ctx) {
         ImGui::DestroyContext(g_ctx);
@@ -1173,6 +1247,8 @@ void Shutdown() noexcept {
     g_logged_first_draw = false;
     g_hint_done = false;
     g_hint_until = 0;
+    g_hint_valid_since = 0;
+    g_hint_entity = 0;
     AcquireSRWLockExclusive(&g_stats_lock);
     g_stats = Stats{};
     ReleaseSRWLockExclusive(&g_stats_lock);

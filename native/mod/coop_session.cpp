@@ -1345,8 +1345,18 @@ struct TickState {
     bool hide_panel = false;       // hidden tests (Command 8): the panel is not drawn (the input block and the gate stay)
     bool lift_block = false;       // hidden tests (Command 8 2): the input block lifted too (the gate alone holds the title)
     bool title_test_off = false;   // hidden tests (Command 8 3): the game's own title menu back as well (title_wait off)
+    double native_since = 0;       // since when the relabelled title page has been on screen (title_wait::Showing; 0 = not now)
+    bool told_native_title = false;
+    bool told_no_page = false;
+    // The native title's run-time fallback: since when the title page is up but our label is not in it (title_wait::
+    // LabelMissing; 0 = not now). After kNativeFallbackMs (or 45 s without any title page) the panel comes back, without
+    // the input block, with the reason, until the relabel shows again.
+    double label_missing_since = 0;
+    bool native_fallback = false;  // the panel is up as the fallback (logged on each change)
 };
 TickState g_ts;
+constexpr double kNativeFallbackMs = 2000;
+constexpr double kNoTitlePageMs = 45000;
 
 void PostLoadResult(stx::ResultCode code) {
     Lock l;
@@ -1391,16 +1401,21 @@ void GuestLoadTick(double now, std::uintptr_t session, game::Entity* player, con
                 Lock l;
                 if (!g_pending.ready) return;
             }
-            // At the title: only once its menu can be up (rules::TitleReady; boot screens and notices, the teardown
-            // after QuitGame). Until then the save waits; nothing of the game is called.
-            if (session == 0 && !rules::TitleReady(now, t.first_tick_ms, true, t.title_since)) {
+            // At the title: only once its menu is up (rules::GuestTitleLoadReady: the relabelled title page on screen for
+            // a moment, or, without it, the time rule past the boot screens / the teardown after QuitGame). Until then
+            // the save waits; nothing of the game is called.
+            if (session == 0 && !rules::GuestTitleLoadReady(now, t.first_tick_ms, true, t.title_since, t.native_since)) {
                 if (!t.told_title_wait) {
                     t.told_title_wait = true;
                     Log("[coop] guest: the host's save is here; the title load waits until the title menu has been up for a while "
-                        "(%.0f s after the start, %.0f s at the title)", rules::kTitleBootMs / 1000.0, rules::kTitleSettleMs / 1000.0);
+                        "(the game's own title page %.0f s on screen, or %.0f s after the start and %.0f s at the title)",
+                        rules::kNativeTitleSettleMs / 1000.0, rules::kTitleBootMs / 1000.0, rules::kTitleSettleMs / 1000.0);
                 }
                 return;
             }
+            if (session == 0)
+                Log("[coop] guest: the title is ready for the load (%s)",
+                    rules::NativeTitleReady(now, true, t.native_since) ? "the game's own title page is up" : "the time rule");
             t.told_title_wait = false;
             Lock l;
             t.job = g_pending;
@@ -1425,7 +1440,7 @@ void GuestLoadTick(double now, std::uintptr_t session, game::Entity* player, con
         }
         case TickState::Load::call: {
             if (now < t.load_t) return;
-            if (session == 0 && !rules::TitleReady(now, t.first_tick_ms, true, t.title_since)) return;   // left a world meanwhile
+            if (session == 0 && !rules::GuestTitleLoadReady(now, t.first_tick_ms, true, t.title_since, t.native_since)) return;   // left a world meanwhile
             t.load_at_title = session == 0;
             t.start_player = reinterpret_cast<std::uintptr_t>(player);
             t.start_guid = guid;
@@ -1537,10 +1552,30 @@ void BuildView(double now, bool at_title, bool in_world) {
     if (!g_off[0] && g_role == 2) {
         TickState& t = g_ts;
         const bool loading = t.load != TickState::Load::idle;
-        v.block_input = at_title && !t.title_accepted && !t.lift_block;
-        v.waiting = at_title && !t.title_accepted && !t.hide_panel;
         // The game's own title menu carries the state (title_wait.cpp): NEW GAME's label, everything but EXIT GAME hidden.
-        // The full-screen panel covers the boot screens until that label is on screen, and stays the fallback.
+        // Then there is no full-screen panel and no input block at all: the guest sees the game's own screens (the boot
+        // logos, or nothing but black and the game's spinner while they are skipped), then its own title with the label;
+        // the gate (Guarding) holds every start without the overlay. The panel is only the fallback when the native title
+        // is off (its byte checks, or the hidden tests' Command 8 3 / coop_test_title_off).
+        const bool native_title = title_wait::Installed() && !t.title_test_off;
+        // Run-time fallback of the native title: the page is up but the label never got into it (a fault in the data
+        // source write, the NEW GAME key not found, another data source), or no title page at all after 45 s. The panel
+        // explains the wait again (no input block: the game's own screen stays usable); hidden as soon as the label shows.
+        const char* native_fail = nullptr;
+        if (native_title && at_title && !t.title_accepted) {
+            if (t.label_missing_since && now - t.label_missing_since > kNativeFallbackMs)
+                native_fail = title_wait::Faults() ? "its label write faulted" : "the label is not in the menu";
+            else if (!title_wait::PageSeen() && t.first_tick_ms && now - t.first_tick_ms > kNoTitlePageMs)
+                native_fail = "no title page yet";
+        }
+        if ((native_fail != nullptr) != t.native_fallback) {
+            t.native_fallback = native_fail != nullptr;
+            Log("[title] %s%s", t.native_fallback ? "the game's own title does not show the session: the waiting panel is back (no input block): "
+                                                  : "the game's own title shows the session again: the waiting panel is hidden",
+                native_fail ? native_fail : "");
+        }
+        v.block_input = at_title && !t.title_accepted && !t.lift_block && !native_title;
+        v.waiting = at_title && !t.title_accepted && !t.hide_panel && (!native_title || native_fail);
         {
             rules::TitleLabelIn tl;
             tl.host = rules::SafeHostName(ui.peer_name);
@@ -1562,15 +1597,8 @@ void BuildView(double now, bool at_title, bool in_world) {
             tl.new_game_pending = ui.have_host_state && ui.host_state.new_game_pending;
             // Kept through our own title load until the world is there: the title page fades out under it (never a flash
             // of the game's own items).
+            // (A version mismatch: the label says "Game versions differ: update both games"; both builds are in the log.)
             title_wait::Set((at_title || (t.title_accepted && !in_world)) && !t.title_test_off, rules::TitleLabel(tl).c_str());
-            if (at_title && title_wait::Showing(now)) {
-                v.waiting = false;
-                v.block_input = false;
-                if (ui.version_mismatch) {   // the label says so; the builds in the banner
-                    std::snprintf(v.banner, sizeof(v.banner), "Game versions differ: %s vs %s. Update both games.", ui.host_build, g_version.build);
-                    v.banner_warn = true;
-                }
-            }
         }
         std::snprintf(v.title, sizeof(v.title), "Waiting for %s to start the game", host);
         if (!ui.connected) std::snprintf(v.lines[0], sizeof(v.lines[0]), "Link: %s", ui.ever_connected ? "reconnecting..." : "connecting...");
@@ -1596,6 +1624,7 @@ void BuildView(double now, bool at_title, bool in_world) {
         }
         std::snprintf(v.lines[2], sizeof(v.lines[2]), "You play a copy of %s's world. Your own saves are not used.", host);
         if (g_title_off[0]) std::snprintf(v.lines[3], sizeof(v.lines[3]), "(The game's own title menu is not used: %s)", g_title_off);
+        else if (native_fail) std::snprintf(v.lines[3], sizeof(v.lines[3]), "(The game's own title menu does not show the session: %s)", native_fail);
         v.leave = true;
         // In the world: notices.
         if (in_world || !at_title) {
@@ -1764,8 +1793,12 @@ void Install(const Config& config) noexcept {
     // Not with the hidden-run virtual-pad fallback: that one presses CONTINUE on the game's menu.
     if (g_role == 2) {
         if (!g_load_call) std::snprintf(g_title_off, sizeof(g_title_off), "the direct load calls are unavailable");
-        else if (!title_wait::Install(g_title_off, sizeof(g_title_off)) && !g_title_off[0])
+        else if (config.coop_test_title_off && automation::Enabled()) {
+            std::snprintf(g_title_off, sizeof(g_title_off), "coop_test_title_off=1 (hidden test of the fallback)");
+            Log("[title] the guest's title in the game's own menu is OFF (%s): the full-screen waiting panel is used", g_title_off);
+        } else if (!title_wait::Install(g_title_off, sizeof(g_title_off), config.guest_skip_logos) && !g_title_off[0])
             std::snprintf(g_title_off, sizeof(g_title_off), "not installed");
+        if (config.coop_test_title_off && !automation::Enabled()) Log("[title] coop_test_title_off ignored (hidden runs only)");
     }
     if (g_role == 2) {
         const wchar_t* root = automation::SavesScratchRoot();
@@ -1800,7 +1833,8 @@ void Install(const Config& config) noexcept {
                     : g_load_call ? (g_quit_ok ? "loads by the game's own calls; follows the host to the title"
                                                : "loads by the game's own calls; QuitGame unavailable: stays in the world when the host quits")
                                   : "the direct load calls are unavailable: hidden-run virtual-pad fallback only");
-    if (g_role == 2) {
+    if (g_role == 2 && g_title_off[0]) {
+        // The fallback only (the game's own title menu is not used): the full-screen panel from the start, the reason in it.
         overlay::CoopView v;
         v.active = true;
         v.waiting = true;
@@ -1809,6 +1843,15 @@ void Install(const Config& config) noexcept {
         std::snprintf(v.title, sizeof(v.title), "Waiting for the host to start the game");
         std::snprintf(v.lines[0], sizeof(v.lines[0]), "Link: connecting...");
         std::snprintf(v.lines[2], sizeof(v.lines[2]), "You play a copy of the host's world. Your own saves are not used.");
+        std::snprintf(v.lines[3], sizeof(v.lines[3]), "(The game's own title menu is not used: %s)", g_title_off);
+        std::snprintf(v.status, sizeof(v.status), "guest; starting");
+        overlay::SetCoopView(v);
+    } else if (g_role == 2) {
+        // The game's own screens from the start: no panel, no input block; the menu header's status only.
+        Log("[coop] guest: no waiting panel: the game's own title menu shows the session (\"Waiting for <host> to start the game\", "
+            "EXIT GAME); the gate holds every start");
+        overlay::CoopView v;
+        v.active = true;
         std::snprintf(v.status, sizeof(v.status), "guest; starting");
         overlay::SetCoopView(v);
     }
@@ -1970,6 +2013,28 @@ void Tick(double now) noexcept {
         }
     }
     if (g_role == 2) {
+        // The relabelled title page on screen (the native title's "title menu is up" signal for the load rule).
+        if (at_title && title_wait::Showing(now)) {
+            if (!t.native_since) {
+                t.native_since = now;
+                if (!t.told_native_title) {
+                    t.told_native_title = true;
+                    Log("[coop] guest: the game's own title page shows the session %.1f s after the first tick", (now - t.first_tick_ms) / 1000.0);
+                }
+            }
+        } else {
+            t.native_since = 0;
+        }
+        if (at_title && title_wait::LabelMissing(now)) {
+            if (!t.label_missing_since) t.label_missing_since = now;
+        } else {
+            t.label_missing_since = 0;
+        }
+        if (at_title && title_wait::Installed() && !title_wait::PageSeen() && !t.told_no_page && now - t.first_tick_ms > kNoTitlePageMs) {
+            t.told_no_page = true;
+            Log("[title] no title page 45 s after the start (the game still in its boot screens, or a notice before them?): the waiting "
+                "panel explains the wait (no input block); the gate holds; the load waits for the title (the time rule is the backstop)");
+        }
         GuestLoadTick(now, session, player, guid, stable);
         // The host is at the title: follow it there (D1-4), once the guest's own world is up.
         if (have_hs && connected && hs.phase == stx::HostPhase::title && in_world && t.load == TickState::Load::idle) {
@@ -2153,10 +2218,13 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept 
             g_ts.lift_block = v[1] >= 2;
             g_ts.title_test_off = v[1] >= 3;
             g_ts.next_view_ms = 0;
-            std::snprintf(msg, cap, "test: the waiting panel is %s (%s)", g_ts.hide_panel ? "hidden" : "drawn",
-                          g_ts.title_test_off ? "the input block lifted and the game's own title menu back: the gate alone holds the title"
-                          : g_ts.lift_block   ? "the input block lifted too: the gate alone holds the title"
-                                              : "the input block and the gate stay");
+            if (title_wait::Installed() && !g_ts.title_test_off)   // the native title: there is no panel to hide or draw
+                std::snprintf(msg, cap, "test: the native waiting title is on (no panel, no input block; the gate stays)");
+            else
+                std::snprintf(msg, cap, "test: the waiting panel is %s (%s)", g_ts.hide_panel ? "hidden" : "drawn",
+                              g_ts.title_test_off ? "the input block lifted and the game's own title menu back: the gate alone holds the title"
+                              : g_ts.lift_block   ? "the input block lifted too: the gate alone holds the title"
+                                                  : "the input block and the gate stay");
             Log("[coop] %s", msg);
             return true;
         }

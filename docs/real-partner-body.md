@@ -4008,7 +4008,7 @@ that it is the old mode.
 game seats one player per vehicle: the driver, whose game owns and drives it (section 23). The other player rides along
 as a **carried passenger**: their own Sam, his capsule off, placed every tick at the vehicle's transform times a seat,
 with the driver's seated pose. `native/mod/ride_together.*` does it in the game; the pure part (`native/mod/ride_wire.*`:
-the message, the seats, the rules, the detectors, the exit spot) is unit-tested in `st_ride_wire_tests` (239 checks).
+the message, the seats, the rules, the detectors, the exit spot) is unit-tested in `st_ride_wire_tests` (313 checks).
 Ownership (VOWN, 23.13) is unchanged: the passenger never owns; the driver getting off ends the ride.
 
 ### 24.1 On each screen
@@ -4070,20 +4070,61 @@ helper's offset along joint 1's axes.
 - Screenshots (enlarged): the truck M04 (Sam in the right-hand seat through the windscreen, hands forward), the roadster
   M13 / M14 (in the right-hand seat), the trike M23 (on the pillion behind the seat).
 
-### 24.3 Boarding (M3.2, decision D3-4)
+### 24.3 Boarding (M3.2, decision D3-4; the game's own "Use Vehicle" since play test 2)
 
-- Beside a vehicle the partner drives here (our follower attached), within 2.5 m of its passenger door point (truck
-  (1.8, 0.8, 0), roadster (1.4, -0.6, 0), trike (0.9, -0.9, 0) in its frame), the vehicle under 1 m/s, our Sam on foot and
-  awake, the partner's frames under 1 s old and in our world: the co-op banner says **"Hold [X] / [F] to ride with
-  <partner>"** (with a percentage while held).
-- A 0.6 s hold of X (pad) or F (keyboard: the game's own RideAndGetOff key, `bindings.cfg`) sends **REQUEST** (24.6). A tap
-  stays the game's own get-on, which the M2 lock refuses (the follower holds the seat). A button held from before never
-  counts until it is released.
+**The game's own prompt (default).** Play test 2 (v0.19.0, the launcher's Local test): our ImGui "Hold [X] / [F] to ride"
+banner showed but never boarded, and the user asked for the game's own **"Use Vehicle"**, which the game showed crossed
+out on the partner's vehicle. Now:
+
+- Beside a vehicle the partner drives here (our follower attached), when the game itself offers "Use Vehicle" for it (its
+  own finder: Sam close to and facing the vehicle, any side), and boarding is allowed (the vehicle under 1 m/s, our Sam
+  on foot and awake and not hurt in the last 5 s, within 7 m of the vehicle's origin, no request pending or ride ended in
+  the last 1.5 s, no save pending, the partner's frames under 1 s old and in our world), **the game's prompt is shown
+  available** instead of crossed out. Otherwise it stays as the game has it (crossed out: the game's own denial sound on a
+  press, nothing else).
+- **One press** of the game's button for it (keyboard F, X / Square on any pad the game reads: XInput, a PlayStation pad
+  through scePad, Steam Input, HID) sends **REQUEST** with reason `kReqNative` (24.6;
+  `[ride] guest: asking to ride the truck 0x020005 (the game's Use Vehicle, ...)`). The game never starts its own get-on on
+  that vehicle (our follower holds the seat): the press is the game's own, read where the game turns it into a start.
+- No ImGui prompt; the banners "Asking to ride...", "Cannot ride: ..." and "No answer from the driver." stay. While the
+  driver answers, the prompt stays available (presses then are ignored).
+
+How (two MinHook detours, both reached only through the ride action's vtable; `kNativeSites` in ride_together.cpp):
+
+| Piece | What |
+|---|---|
+| the prompt | `EDSUIActionLocalizedId` 5 RideOn ("Use Vehicle"; 6 RideOff), requested by Sam's ride action (vtable `0x143D82CF8`) from its icon provider (vt+0xF0 `0x14279D870`, `(action, slot, request*)`) for action slots 3 and 6 (the two control schemes) |
+| the request | +0x00 icon id, +0x06 enabled, **+0x09 disabled (crossed out)**, +0x24 the provider's reason, +0x50 the distance key (nearest wins; 1e6 when disabled with reason 0), **+0x98 the target vehicle's game-actor id** (vehicle +0x314) |
+| provider post-hook | slot 3 / 6, RideOn, the id our follower's vehicle: while boarding is allowed, +0x09 = 0, +0x06 = 1, +0x24 = 0, a distance key of our own when the game wrote 1e6, and the action's "disabled" latch (+0x13A bit 0x20) as it was before the call. Every change of what the game made of it is logged: `[ride] native prompt (slot 3): Use Vehicle on the partner's vehicle 0x020005; the game crossed it out (reason 0): lifted (available)` |
+| the press | the game's slot query (`0x1427A4970`: owner, generation, not disabled, pressed) lets the ride action's TryStart (vt+0x08 `0x1427D5A80`) write the id to action +0x1E0 and return 1 |
+| TryStart post-hook | a start on our follower's vehicle (or, carried, the one we ride) is undone (+0x1E0 and +0x10A / +0x10B as before), returns 0, and counts as our press: one per press (TryStart repeats while the button is held; a new press after 400 ms without one: `NativePressIsNew`). A start on any other vehicle is the game's own |
+
+The reason the game crosses the partner's vehicle out was measured in the first run: **reason 0** (the provider's global
+check `[0x147BF9A58]+0x10`), on the truck, the roadster and the trike, both games.
+
+**The fallback (the native checks fail, or `ride_test 12 0`):** the ImGui banner **"Hold [X] / [F] to ride with
+<partner>"** within 2.5 m of the passenger door point (truck (1.8, 0.8, 0), roadster (1.4, -0.6, 0), trike (0.9, -0.9, 0)
+in its frame), a 0.6 s hold of X or F (REQUEST `kReqHold`). A button held from before never counts until it is released.
+On a mismatch the log says `[ride] native Use Vehicle prompt OFF: <reason>: the ImGui hold prompt boards instead` and the
+co-op banner says so once.
+
+**Our own button reads** (getting off, the fallback's hold). Play test 2's root cause: they read XInput pad index 0 and
+the F key at `HC_ACTION` only. The user's DualSense Edge is read by the game without XInput (its PlayStation path), and
+ds.exe's own keyboard hook, when it sits above ours, keeps every `HC_ACTION` key (it never chains them), so neither the
+hold nor F ever counted. Now: every XInput index 0..3 (before our carry mask), **the game's own pad state** (input manager
+`0x147BE6330`, 7 player slots of 0xF0: +0xE4 = 1 read, +0x108 player 0, pad state at +0x40; X / Square at +0x13 and
+B / Circle at +0x11 in both the XInput and the PlayStation converters; `kPadSites`, off alone on a mismatch), and the
+ride key as our hook sees it at either code (`HC_NOREMOVE` too, overlay_input). The launcher's Local test host game is
+keyboard + mouse only (its pads are the guest's): no pad source there. The fallback's banner logs once what the reads see
+(`[ride] prompt: ... XInput pads read n (ages ...), game pad X ..., key F ...`), and every board / exit names its source
+(`held (XInput pad #0)`, `(the game's pad state (device 1))`, `(key F)`).
+
 - The driver's game **ACCEPTs** unless (in this order): riding is off there (`ride_together=0`, a failed check), another
   world, its Sam does not hold that vehicle's seat, another ride holds the seat, the vehicle moves at 2 m/s or more, or it
-  does not see the partner body within 5 m of the door point; else **DENY** with the reason (banner "Cannot ride: ...").
+  does not see the partner body near it (within 5 m of the door point; for `kReqNative` also within 8.5 m of the vehicle's
+  origin, since the game's prompt works from any side); else **DENY** with the reason (banner "Cannot ride: ...").
   A repeated REQUEST of an accepted ride gets ACCEPT again. No answer in 3 s: "No answer from the driver."
-- On ACCEPT (the passenger still within 4 m of the door): the capsule off (`0x14243A740`; a counter at capsule +0x58:
+- On ACCEPT (the passenger still within 4 m of the door, or for the native prompt 8.5 m of the origin): the capsule off (`0x14243A740`; a counter at capsule +0x58:
   exactly one enable later, logged before / after), the input block, the pose override, the per-tick carry.
 - No boarding for 5 s after our Sam's health drops (`[ride] our Sam was hurt (health a -> b): no boarding for 5 s`): a
   partner's vehicle that just knocked him down stops beside him, and the banner offered the ride while he lay on the
@@ -4091,12 +4132,16 @@ helper's offset along joint 1's axes.
 
 ### 24.4 Exits
 
-**By choice (M3.3)**: hold X / B (or F) 0.6 s. Under 2 m/s the passenger is put beside the passenger door
+**By choice (M3.3)**: with the game's own prompt, **one press** of X / B (any pad, read as in 24.3) or F, or the game's
+own RideOff prompt where it shows one (24.3: carried, the game's RideOn on the vehicle we ride is turned into an enabled
+RideOff, and its TryStart is our press; the game asks its provider while Sam is carried on the roadster and the trike
+(logged; the prompt itself not yet seen in a screenshot), not in the truck's cab; the boarding banner says "Riding with <partner>. Press [X] / [F] to get off."); a press while the boarding press is still
+held never counts. The fallback: a 0.6 s hold. Under 2 m/s the passenger is put beside the passenger door
 (`ExitPlacement`: the door row, half the vehicle's width + 0.7 m out, facing it) with the game's PlaceOn (mode 1: its
 ground probe from 0.5 m above the vehicle's base; through `game::TeleportLocalPlayerFacing`, every guard of the debug
-teleport). Then the capsule on, the input and the pose back, END to the driver. A hold above 2 m/s ("Too fast to get off:
-slow down, or hold again to jump off.") gets off as soon as the vehicle is under 2 m/s within 3 s (run
-`20261119-142942`: a trike rolling at 5.6 m/s); **a second hold within those 3 s jumps off at any speed** (END
+teleport). Then the capsule on, the input and the pose back, END to the driver. A press (hold) above 2 m/s ("Too fast to get off:
+slow down, or press again to jump off.") gets off as soon as the vehicle is under 2 m/s within 3 s (run
+`20261119-142942`: a trike rolling at 5.6 m/s); **a second press (hold) within those 3 s jumps off at any speed** (END
 `jumped`, a forced placement: away from the sideways velocity, moved back along the path; above 8 m/s also the D3-3
 hit), so a driver who keeps going never holds the passenger (run `20261119-181006`: off the reversing truck at 4.6 m/s).
 Holds count only while Sam is awake (a menu's buttons are the menu's).
@@ -4197,6 +4242,26 @@ shared and driven.
 | the capsule switch `0x14243AA30` (`+0x60` physics object, `+0x5C` on) | `40 57 48 83 EC 60 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 58 44 0F B6 C2 48 8B F9 48 8B 51 60 48 85 D2 0F 84 ?? ?? ?? ?? 0F B6 41 5C` |
 | structural: the player capsule vtable `0x143D1BD08` in the image, its slot 0 in .text; at run time Sam `+0x5A0` - 0x20 must carry it and its `+0x48` must be Sam | |
 
+**The native prompt** (`kNativeSites`, 8 sites + 1 structural; a mismatch or a failed hook: the native prompt off, one
+log line and one co-op banner, the ImGui hold prompt boards; riding stays on):
+
+| Site | Bytes |
+|---|---|
+| the ride action's icon provider `0x14279D870` | `40 53 56 57 41 56 41 57 B8 B0 C9 04 00 E8` |
+| its cross-out `0x14279E693` (request +0x09 = 1, +0x00 = 5) | `C6 46 09 01 C7 06 05 00 00 00 40 38 7E 09 74 06` |
+| its target id and reason `0x14279E6EC` (+0x88, +0x98 = vehicle +0x314, +0x20, +0x24) | `89 86 88 00 00 00 89 9E 98 00 00 00 C7 46 20 74 55 96 03 44 89 66 24` |
+| its disabled latch `0x14279E9A5` (action +0x13A bit 0x20) | `41 80 8E 3A 01 00 00 20` |
+| TryStart `0x1427D5A80` | `40 53 48 81 EC 90 00 00 00 48 8B 05 A0 B5 78 02 48 33 C4 48 89 84 24 80 00 00 00` |
+| TryStart's target write `0x1427D5B97` (+0x1E0, +0x10A, +0x10B) | `89 83 E0 01 00 00 0F B6 44 24 24 88 83 0A 01 00 00 B0 01 C6 83 0B 01 00 00 00` |
+| the ride action's slot query `0x1427A4950` (vt+0xA8) | `4D 8B C8 44 8B C2 48 8B D1 48 8B 49 60 E9 0E 00 00 00` |
+| the action slot query `0x1427A4970` | `4D 63 D0 4D 69 C2 E0 03 00 00 49 39 94 08 38 53 00 00` |
+| structural: the ride vtable's slots `[0x143D82DE8]` = the provider, `[0x143D82D00]` = TryStart, `[0x143D82DA0]` = the slot query | |
+
+**The game's pad state** (`kPadSites`; a mismatch: that source off alone, XInput and F still read): the pad reader
+`0x1419B3090` `40 53 56 57 41 56 48 83 EC 48`; XInput X `0x1419B21CC` `B8 00 40 00 00` and `0x1419B21EC` `41 88 49 13`;
+XInput B `0x1419B21C0` `41 88 41 11`; PlayStation Square `0x1419B8850` `41 88 4E 13`; PlayStation Circle `0x1419B882E`
+`41 88 46 11`.
+
 Reused, checked by their own modules: PlaceOn `0x142634F00` (game_actions), RequestTeleport `0x142F7CA20` (vehicle_share;
 the hidden-test roll / stop), the vehicle vtables and `+0x8A8` / `+0x4CC` / `+0x560` (vehicle_drive), the SkinnedModel pose
 (real_body), the XInput / keyboard hooks (overlay).
@@ -4210,6 +4275,10 @@ the hidden-test roll / stop), the vehicle vtables and `+0x8A8` / `+0x4CC` / `+0x
 | `two-games-ride-roadster` | the same in the garage's roadster |
 | `two-games-ride-trike` | the same on the Kusanagi trike's pillion (the lite-attached follower) |
 | `two-games-ride-forced` | the guest rides and is put off by: a 2.5 s link blackout, a crash (the driver's game stops its moving truck dead: `ride_test 6`), the game taking Sam (`ride_test 7`), the driver getting off, the truck rolled over (`ride_test 5`) |
+| `two-games-ride-native` (`launcherini local-test`, no `-GuestSeed`) | the launcher's own Local test files; real input only: the guest at the host's truck sees the game's "Use Vehicle" available (N1), one press of X boards (REQUEST "the game's Use Vehicle"), both screens (N2 / N2b), a drive, X gets off (N4); the swap: the host sees it (M1), X boards, F (`hookkey`: our keyboard hook, then ds.exe's own keyboard procedure) gets off; the ImGui fallback (`ride_test 12 0`): the host's 0.9 s hold of F boards and gets off (F0 / F1) |
+
+The other ride scenarios board with `pad X 800` at the door: since play test 2 that is the game's own press (the native
+prompt), so they all go through it (`asking to ride ... (the game's Use Vehicle`).
 
 New debug actions (docs/debug-actions.md "Riding together"): `ride_state`, `ride_board`, `ride_exit`, `seat_measure`,
 `ride_test`.
@@ -4254,7 +4323,29 @@ Screenshots checked enlarged (both screens): the truck R04b on the host (the gue
 and R02 / R03 on the guest (the carried view over the cab); the roadster P02 / P04b / Q03d / Q04; the trike K02 / K02b /
 L02 / L04; seat-measure M04 / M13 / M23 / M25.
 
+**Play test 2 fix (2026-11-20, the game's own prompt; hidden, foreground, one at a time).** Every run: both games exit 0,
+real saves unchanged and restored, no violation, 0 cloud uploads, no FAULT.
+
+| Run | Result |
+|---|---|
+| `20261120-102245-two-games-ride-native` | fail (the scenario's keyboard part): the guest's X on the lifted prompt boarded (the game crossed the truck out with reason 0; lifted; REQUEST, ACCEPT in 98 ms, carried, X off). The host's F through `hookkey` reached ds.exe's own keyboard procedure five times at the lifted prompt and the game never started: a hidden window's game keeps no keys for its own input. The host boards with X now |
+| `20261120-102707-two-games-ride-native` | **pass**: both directions through the game's prompt (guest X, host X), the host's F gets off through our hook (`get off: pressed (key F)`), the fallback's hold of F boards and gets off |
+| `20261120-102959-two-games-ride-truck` / `-103259-two-games-ride-roadster` / `-103553-two-games-ride-trike` | **pass**: every board `(the game's Use Vehicle)`, every exit `pressed (XInput pad #0)`; on the roadster and the trike the game asked its provider while carried and our hook made it RideOff (`carried: the game's own RideOff prompt is shown`; not seen in a screenshot), in the truck's cab it never asked |
+| `20261120-103855-two-games-ride-forced` | **pass**: every forced exit; part 5 `a second press while the truck moves at 5.0 m/s: jumping off` |
+| `20261120-104202-two-games-ride-save-host` | **pass**: boarded through the game's prompt; the save guard's exit as before |
+| `20261120-104414-two-games-ride-native` | **pass** (final build): N1 (guest: "Use Vehicle" available, keyboard glyph F) / M1 (host: available, pad glyph); N2b / M2b side views of the passenger seated on both screens |
+
 ### 24.11 Not done / not proven
+
+- **The physical keyboard F on the game's prompt** is not provable in a hidden run (the game ignores keys in a window
+  that is never in front; run `20261120-102245`). It is the game's own binding of the same prompt ("F Use Vehicle" in its
+  keyboard scheme, N1); the user's Local test proves it. The F key for getting off is our hook's (proven with `hookkey`).
+- **A PlayStation pad** (the user's DualSense Edge) is read by the game itself: the native prompt needs nothing of ours.
+  Getting off reads the game's pad state (+0x13 / +0x11): proven statically for the PlayStation converter, at run time
+  for XInput only. While carried, a PlayStation pad is NOT blocked from the game (our carry block masks XInput and the
+  keyboard only): X then also presses the game's RideOff where shown (the same exit), but other buttons reach the game.
+- **The game's RideOff while carried**: offered (logged) on the roadster and the trike only, not yet seen on screen; in
+  the truck's cab the game's provider is not asked (our notice says how to get off).
 
 - **The flip exit** is proven only in the unit tests: every hidden flip (an upside-down teleport, a 1.5 s roll) made the
   owner's truck tumble, and a crash exit came first (the order puts a crash, with its M4 hit, before a flip). The exit
@@ -4268,9 +4359,11 @@ L02 / L04; seat-measure M04 / M13 / M23 / M25.
   answer (the ride ended at the load mask's "save bit" `0x100`, then a placement after the save) never fired: `0x100` is
   not a save bit, and the save records Sam's live transform, so a save while carried would have loaded him at the seat.
 - **The camera**: the on-foot camera as it is (24.5); no vehicle camera for the passenger.
-- **Keyboard**: the ride key F is read from our keyboard hook (hidden runs use the virtual pad only). A release missed
-  while the window loses focus no longer leaves it "down": the hook's state is confirmed by the key's physical state
-  (fixed in M4's stage).
+- **Keyboard**: the ride key F (getting off, the fallback) is read from our keyboard hook at either hook code
+  (`HC_NOREMOVE` too: ds.exe's pump peeks first, and ds.exe's own hook keeps every `HC_ACTION` key when it sits above
+  ours). A release missed while the window loses focus no longer leaves it "down": the hook's state is confirmed by the
+  key's physical state (hidden runs: the `hookkey` press itself).
+
 - **The pose**: the driver's pose on the passenger (hands on a wheel that is not there, on the roadster and the truck);
   the game's `BotRiding` (v2) not tried. With the hologram partner body there is no seated pose.
 - **D3-3**: done in M4 (section 25.5, run `20261119-155208-two-games-vehicle-hit-fast`).
@@ -4740,7 +4833,7 @@ a little high too."
 - **Sam's update** (`TrackSam`, after the capture): his world (read fault-free twice, compared, finite) with a QPC stamp.
   The game updates his model about twice per frame; an update within half a frame of the last replaces the newest
   record, a later one starts a frame, so the track holds his world after his last update of this frame and of the
-  frame before. Then the mode 1 copy as before (it keeps the entity field exact for the tick, the gear sender and the
+  frame before (v0.20: a Sam update after a body update starts a frame, and the track keeps a third record; 26.6). Then the mode 1 copy as before (it keeps the entity field exact for the tick, the gear sender and the
   slot-1 props, and corrects a wrong prediction within the frame).
 - **The body's own update** (`PredictSelfWorld`, before the pose write; not in a forced update from the tick, not while
   the cargo menu's figure is the source): the same identity checks as the copy (entity vtable, model, back pointer),
@@ -4749,14 +4842,14 @@ a little high too."
   - Otherwise his world now plus his last per-frame step: the position delta and the rotation delta (rows: r_cur =
     r_prev M, so M = r_prev^T r_cur), applied once. The step is not scaled by a dt ratio: his newest record is often
     the second, partial update of a frame, and scaling by its dt overshot by 30-60 % (first run
-    `20261120-023358-fragile-attach`: step max 38.8 cm, the cap behind her head in one frame).
+    `20261120-023358-fragile-attach`: step max 38.8 cm, the cap behind her head in one frame). (v0.20 scales by the
+    SUM of his update dts in his last frame, which is 1.00 at an even pace: 26.6.)
   - No step (his world now: the plain mode 2 copy) without a previous frame, with records over 2.5 frames old (Sam not
     updated: asleep, a cutscene), or after a jump over 3 m in a frame (a teleport, a load, a vehicle snap).
-  - No step either when something outside his own update moved him, because that move is already in his world now and the
-    step would put her a vehicle step ahead of the gear on him (about 0.67 m at 20 m/s and 30 fps): `moved` when his
-    world now is more than 5 mm from his newest record (the ride carry's teleport from the game tick lands between his
-    update and the body's next one), `ride` while he is carried as a passenger (`ride::Carried`, published by the self
-    tick) or has a parent entity (`Sam+0x70`, driving in the game).
+  - No step either when something outside his own update moved him, because that move is already in his world now:
+    `moved` when his world now is more than 5 mm from his newest record, `ride` while he is carried as a passenger
+    (`ride::Carried`, published by the self tick). v0.19 also skipped it while he had a parent entity (`Sam+0x70`,
+    driving in the game); v0.20 steps there too, with a consistency gate and a dt scale (26.6).
   - The setter is the same exported `Entity_ExportedSetWorldTransform` as in modes 1 and 2; a fault switches to mode 3
     for the run as before. **No new game call, no new game address, no hook.**
 - The premise was measured: `Sam moved outside his update` (his world at the body's update against his newest record)
@@ -4818,8 +4911,82 @@ a little high too."
 - A one-frame prediction error at a sudden change: a start, a stop or an instant reversal leaves the body up to one
   step off for one frame (up to about 15-20 cm at a running reversal at 30 fps; a few cm at normal acceleration). Not
   seen in the turn pictures.
-- Riding or driving with the self view: the step is skipped then (26.2, `moved` / `ride`); not run with the self view in
-  a hidden run yet.
+- Riding or driving with the self view: see 26.6 (v0.20).
 - Tall cargo stacks and cargo carried in the hands: the runs used the save's own load (backpack, cases, BB pod).
 - The renderer's latch point is shown by pictures, not found in the code.
 - `self-headgear.txt` (section 20) still restores the v0.12 cap value (`self_view 8 0 50` now sets every cap-class item).
+
+### 26.6 In a vehicle, and the on-foot residue (v0.20, play test 2 of v0.19.0) [V: runs below]
+
+The user's play test 2 (Local test, guest Fragile, 30 fps): "with fragile accessories its certainly way better but i still
+notice it twitching a bit when she moves and as far as her sitting in vehicle pose that is all out of wack she is all the
+way back when the vehicle starts moving and her accessories seem to stay in the right spot". Their guest log: `ride` in
+7104 of about 14800 body updates (half the session driving), and once `step cm max 87.6` on foot (a seat snap stepped
+again).
+
+- **Cause (seated)** [V]: v0.19 skipped the step while Sam had a parent (`ride`), on the assumption that the vehicle moves
+  him outside his update. It does not: his world at the body's update equals his newest record (`Sam moved outside his
+  update cm 0.00` in every seated second). So in a vehicle the body showed his world of the previous frame: **20-40 cm
+  behind his gear at 11 m/s** (more with speed: v·dt), the "all the way back when the vehicle starts moving". The gear
+  hangs on Sam, so it was right. The seated pose itself is Sam's (the same 77-joint fit as on foot), one frame old as on
+  foot; the "out of whack" was the trailing (pictures below).
+- **Fix** (`native/mod/self_predict.hpp`, pure and unit-tested in `tests/self_predict_tests.cpp`; `real_body.cpp`
+  `TrackSam` / `PredictSelfWorld`):
+  - the step also while seated (only carried keeps the plain copy, see below);
+  - a **consistency gate**: Sam's newest per-frame step may differ from the one before by at most
+    max(25 cm, 0.75 x the one before), else the plain copy (`gate`). A seat snap (85-137 cm in one frame getting on or
+    off, a teleport) is not repeated; a vehicle accelerating at 5 m/s² changes its step by 0.6 cm a frame; running starts,
+    turns and reversals stay under it;
+  - the step **scaled by this frame's dt** (the body update's `dt`) over the sum of the dts of Sam's updates in his last
+    frame, clamped 0.5-2 (1.00 at the 30 fps cap; it halves the error at an uneven pace: research run, one game at about
+    40 fps, 2.1 -> 1.1 cm mean);
+  - Sam's frames told apart by the **body-update counter** (a Sam update after a body update starts his next frame)
+    instead of "half a frame since the last" (which disagreed with the body's updates in a quarter of the frames at an
+    uneven pace).
+  - No new game address, call or hook: the parent read (`Sam+0x70`) and the exported setter were already in use.
+- **Carried (the passenger)** [V]: the carry teleports Sam from the game tick **after** his own update, to the seat one
+  frame ahead (for the next frame). The meter against his world right after his own update: **0.0 / 0.0 cm** (the plain
+  copy is exact: the body, his update and so his gear agree); the carry's move after it 11.6 cm mean at 2-10 m/s (the
+  next frame's placement). So carried keeps the copy. The meter's main reference (his world at the body's next update)
+  reads that next-frame move for carried, so the carried line also prints `vs his own update's world`.
+- **The host's view of the guest driving** (`vdrive::SeatTarget`) [V]: the partner body led the vehicle by
+  `min(50 ms, velocity age + 1/60 s)`; it runs before `vdrive::Tick` measures the velocity, so the age is 0 and the lead
+  was 16.7 ms against a 33 ms frame: **the body half a frame behind the seat** (18.6 cm at 11 m/s in the research run).
+  Now the lead is the tick interval (EMA, `g_tick_ms`), as the ride's passenger and carry already did. A yaw-rate lead on
+  top was measured too and made no difference (dropped). The remaining spikes are the follower's own corrections.
+- **On foot** [V]: at the 30 fps cap the v0.19 step was already 1.1 cm mean (the dt scale is 1.00 there, the gate never
+  fires running): the residue is single frames at stops, starts and sharp turns (max about 10 cm, 1 % of moving frames
+  over 8 cm). What v0.20 removes on foot is the **seat snap stepped again** after getting off (the user's
+  `step cm max 87.6`; v0.19 had no gate): one frame of the body 0.9-1.4 m off.
+- **Meter** (every second, guest, per class with moving frames): `[self] follow 4 meter <on foot|seated|carried>, N moving
+  frames, body vs Sam after the frame: v0.20 mean/max cm (>3 cm N, >8 cm N) mean/max deg; v0.19 ...; copy ...` (carried:
+  `| vs his own update's world: v0.20 mean/max cm; the carry moved him after it mean/max cm`): every rule scored on the
+  same frames against Sam's world at the body's next update (where the game drew his gear). The `[self] follow 4 (rule
+  v0.20): predicted N (seated N), ... gate N ..., scale k` line has the counters. `[self] Sam in a vehicle (parent ..., #N)`
+  / `[self] Sam out of the vehicle (#N)` on every change of his parent. Host: `[vdrive] partner body vs the seat after the
+  frame (driving, moving): lead ms mean/max cm; v0.19's lead mean/max cm`.
+- Switch: `self_view 13 <0|1>` (0 applies v0.19's rule, for the "before" pictures; 1 the default).
+
+Numbers (hidden, two games on the launcher's own Local test files, 30 fps; mean / max cm, moving frames):
+
+| What | v0.19 | v0.20 | Run |
+| --- | --- | --- | --- |
+| guest drives the truck from a stop to about 11 m/s, straight (205 frames) | 22.4 / 37.2 (87 % > 8 cm) | **0.7 / 4.1** (0 % > 8 cm) | `20261120-110837-two-games-self-vehicle` |
+| the same with a turn at speed (208 frames) | 18.2 / 44.7 | **1.6 / 18.9** | same |
+| guest drives the Kusanagi trike from a stop (142 + 210 frames) | 19.5 / 39.2 and 13.0 / 47.9 | **2.5 / 39.2 and 1.6 / 47.6** (the max: the launch frame itself, the same for every rule) | `20261120-112205-two-games-self-trike` |
+| the trike in the first run (158 frames) | 17.9 / 41.9 | **2.3 / 40.3** | `20261120-110837` |
+| getting on (the 85.3 cm seat snap) | the next frame copied (seated) | the snap frame itself, then `gate` 2 | both |
+| guest on foot: run, stop, run, reverse, diagonal (235 frames) | 1.2 / 9.9 | 1.1 / 9.9 (copy: 7.8 / 16.0) | `20261120-110837` |
+| guest carried in the host's truck / on the trike | copy, 0.0 / 0.0 against his own update | the same (kept) | `110837`, `112205` |
+| host sees the guest drive the truck, straight, 3-11 m/s | 3.4-19.1 mean per second | **0.4-3.9** | `20261120-110129-two-games-self-vehicle` |
+| host sees the guest drive the trike | 8.6-17.3 mean per second | **2.4-7.8** | `20261120-112205` |
+
+Pictures (guest's own screen, side view, the trike from a stop; enlarged crops in the play-test notes): `D1c-start-v019`
+(v0.19): her BB pod floats in front of her chest and the cap ahead of her head (the gear a frame ahead of her body);
+`D2c-start-v020` / `D2d-moving-v020`: the pod on her chest, the backpack on her back, her hands on the bars. The truck's
+cab hides the driver from outside (no usable picture).
+
+Not covered: the dt scale at an uneven pace in two games (proven only in the one-game research run); the pillion seen
+from the side at speed (the host's trike crashed in the first try); a stop on foot still overshoots for one frame (it is
+seen only after it happens); her shorter limbs on Sam's seated rotations (hands and feet a few cm off the bars / pedals)
+not measured; the fit writes the hand attach helpers (MTP_R/L_Hand_a/b) while seated, nothing hung on them seen.

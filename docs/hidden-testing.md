@@ -99,6 +99,7 @@ Commands (one per line in `automation\in\*.cmd`, files in name order):
 | `pad <buttons> <ms> [lx= ly= rx= ry= lt= rt=]` | virtual XInput pad 0: `A`, `A+START`, `DPAD_DOWN`, `none`...; then idle but connected (a last word `keep`: the pad stays held after the command, for mid-walk screenshots; `pad none 0` releases it). Result: pad reads, `player moved <m> m (speed <v>)` (x/y distance of the local player over the hold) and, for holds >= 600 ms, the `game pad state` 300 ms in (see "Pad input in gameplay") |
 | `padoff` | virtual pad disconnected |
 | `key <F9\|esc\|w\|0xNN> <ms>` | `WM_KEYDOWN/UP` posted to the game window (window procedure only; posted keys never reach `WH_KEYBOARD` hooks, so most game keys will not react) |
+| `hookkey <F9\|esc\|a\|0xNN> <ms>` | our installed `WH_KEYBOARD` procedure, run on the game's window thread in ds.exe's call order: `HC_NOREMOVE` first (its pump's `PeekMessage(PM_NOREMOVE)`), `HC_ACTION` only if not eaten, a key nobody ate then goes to ds.exe's own keyboard procedure at `HC_ACTION` (`0x1419B9920`, byte-checked) and is posted on as `WM_KEYDOWN/UP`. The closest a hidden run gets to a physical key (never `SendInput`: it would type on the user's desktop); the result says "eaten at HC_NOREMOVE" / "passed to ds.exe's keyboard procedure and the game window". The game itself still ignores the key for its own input in a hidden window (run `20261120-102245`: F on the game's Use Vehicle did nothing); our hook's reads (F9, the ride key) see it |
 | `menu open\|close\|toggle` | the F9 debug menu |
 | `action <name> [n n n]` | a debug action by its label in snake case (`respawn_partner`, `log_status`, `teleport x y z`) |
 | `waitplayer <s>` | until the tick's snapshot has the local player |
@@ -398,8 +399,11 @@ ini <key>=<value>            an extra session.ini line, for every game of the ru
                              sound_steps, partner_volume, self_headgear, self_feet_hide, boots_sync,
                              vehicle_sync, vehicle_overlap_hide, vehicle_look, vehicle_packs, vehicle_sound,
                              vehicle_real_native, host_save, ride_together, partner_vehicle_damage,
-                             coop_test_build (the host-held save session, docs/coop-session.md;
-                             coop_test_build: a fake game build, honoured in hidden runs only)
+                             coop_test_build, coop_test_title_off, guest_skip_logos (the host-held
+                             save session, docs/coop-session.md; coop_test_build: a fake game build;
+                             coop_test_title_off=1: the guest's native title not installed, the
+                             full-screen panel fallback; both honoured in hidden runs only;
+                             guest_skip_logos=0: the guest's boot logos play)
                              (testenv_core ScenarioIniKeyAllowed; a scenario
                              frame_cap is written after graphics low's 30, so it wins)
 @host ini <key>=<value>      the same, for the first game only; @guest ini for the guest game only (role
@@ -577,6 +581,14 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   profile-only`): the same on the launcher's own Local test files in two games at 30 fps: the host looks back at the
   guest (Fragile, cap and glasses on), who runs towards and across the host's view (her own screen in follow 1, then
   4), walks, turns and moves crouched; then the Santa hat on both screens.
+* `two-games-self-vehicle.txt` (role host, `launcherini local-test`, `-SeedSaves complete-100 -GuestSeed profile-only`):
+  the guest's self body on foot (run, stop, reverse, diagonal), driving the truck from a stop in v0.19's rule
+  (`self_view 13 0`) then v0.20's, side views (S1*/S2*), the host watching (H1*/H2*); getting off (the guest waits on
+  `[self] Sam out of the vehicle (#1)`: his Sam stays attached a few seconds after "got off"); carried in the host's
+  truck (C*); driving the Kusanagi trike (T*). The `[self] follow 4 meter` lines (guest) and `[vdrive] partner body vs
+  the seat` lines (host) carry the numbers (docs/real-partner-body.md section 26.6).
+* `two-games-self-trike.txt` (the same setup): the guest drives the Kusanagi trike from a stop, side view, v0.19's rule
+  (D1*) then v0.20's (D2*); then rides pillion behind the host (P1*, part throttle).
 * `two-games-final.txt` (role host, the guest as the launcher writes it by default: `fragile_suit`, self view,
   fit and lift; the cap on): gear fit, boots and weapons (rifle drawn, aimed, fired, put away; the blood grenade)
   on both screens, the guest's back from the host, the self view off and on again, and the guest running with
@@ -927,8 +939,9 @@ hidden: `Start-TestRun.ps1 -Scenario two-games -SeedSaves complete-100`.
   `guest-refuse-unredirected` (the `guest unredirected` directive); all pass (2026-11-19, docs/coop-session.md section
   9). `action coop_session 1 <ms>` drops every received datagram for ms on that game (hidden runs only; `@both` for an
   outage on both sides), `5 <type> <index>` / `6` / `7 [1|2]` make the host's in-world Load / QuitGame / checkpoint
-  retry (`7 1` asks, `7 2` requests without a checkpoint), `8 <0|1|2>` hides the guest's waiting panel for a screenshot
-  of its title (2: the input block lifted too, the gate alone holds the title), `9 <type> <index>` lets a slot stand in
+  retry (`7 1` asks, `7 2` requests without a checkpoint), `8 3` gives the guest the game's own title menu back (the
+  gate alone holds the title; `8 1` / `8 2` only touch the fallback panel, which the native title never shows),
+  `two-games-hostsave-title-fallback` (`@guest ini coop_test_title_off=1`) proves the fallback panel, `9 <type> <index>` lets a slot stand in
   for a New Game's first save. The title's New Game path for a pad: one DOWN from CONTINUE (on a title with a save), A,
   LEFT + A (the confirmation selects Cancel), A on the difficulty, LEFT + A, A on Change Text Size.
 * **The shared real vehicles scenario** (`ini host_save=1`, docs/real-partner-body.md section 23):
@@ -954,7 +967,11 @@ hidden: `Start-TestRun.ps1 -Scenario two-games -SeedSaves complete-100`.
   on 2026-11-19 (section 24.10). `ride_test 8` puts a game's Sam at the passenger door of the vehicle its partner drives;
   the boards and exits are counted in the log (`carried on the truck ... #2)`, `off the truck ... (#2, crash, forced)`).
   `two-games-ride-truck` ends with `ride_test 10` on the host (a request and the module's stop in one call: the late
-  ACCEPT is ended, the host walks away). All re-run after the review fixes on 2026-11-19 (section 24.10).
+  ACCEPT is ended, the host walks away). All re-run after the review fixes on 2026-11-19 (section 24.10). Since play
+  test 2 their `pad X 800` at the door presses the game's own "Use Vehicle" (section 24.3). `two-games-ride-native`
+  (`launcherini local-test`, `-SeedSaves complete-100` only) boards and gets off with real input only (the guest's and
+  the host's X on the game's prompt, the host's F through `hookkey` to get off) and checks the ImGui fallback
+  (`ride_test 12 0`); screenshots N1 / M1 (the prompt available), N2b / M2b (seated, both screens).
 * **The save guard scenarios** (`ini host_save=1`, `-GuestSeed profile-only`, docs/real-partner-body.md section 24.12):
   `two-games-ride-save-host` (a save on foot runs at once; a save while the host rides is held, the ride ends, Sam is
   put beside the truck, then the save is written; the host loads it and stands where he was put),
@@ -1079,6 +1096,25 @@ the guest), the guest riding as the host's passenger (R1..R3), no `[coop] notice
 ACCEPTED, Sam vs the seat mean 0.003 m; real tree unchanged, 0 uploads, both games exit 0).
 Its screenshots are not aimed: the host's S1 / S2 face the roadster, and in R1 the garage pillar pushed the host's
 camera into the truck's body, so the truck is not drawn around him (the guest's R1 shows both in the cab).
+
+`two-games-launcher-f9` (`-SeedSaves complete-100`, the launcher's file): the F9 debug menu and the mouse lock (play
+test 2, v0.19.0: F9 never opened the menu in either game; the cursor walked out of the focused window). Root cause of
+F9: ds.exe's message pump (`FUN_141A19350`) peeks with `PM_NOREMOVE` before `GetMessage`, so every key reaches
+`WH_KEYBOARD` hooks first with `HC_NOREMOVE`; our hook ate F9 there (a nonzero answer removes the message) but toggled
+only at `HC_ACTION`, which therefore never came. Every key is now handled at its first sighting (overlay_input.cpp
+`KeyboardProc`). A physical key is impossible in a hidden run, so the scenario drives the two closest paths and says
+which: `hookkey` (our installed hook procedure in ds.exe's call order) and `key` (a posted F9 through ds.exe's own pump
+to our window procedure). Pass: `mouse_lock=1` from the launcher's files in both games, `[mouse] lock ON (local test)`,
+the lock's decisions logged as "would hold" (never applied), F10 finds the other game's window both ways at the title
+("would switch", nothing moved or activated), the startup hint names F10 in the world (H1), F9 opens the menu in both
+games in the world (F1, screenshots) and a typed key reaches it ("the menu got 2 key(s), 1 character(s)"), F9 closes it,
+the posted F9 opens it (F2) and Esc closes it. Runs `20261120-093235` and (final build) `20261120-094019-two-games-launcher-f9`: **pass** (both games exit 0,
+real tree unchanged, 0 uploads). Run `20261120-092454` (same build, an earlier order of the scenario) also opened and
+closed the menu at the host's title and over the guest's waiting screen with both paths; its only failure was the hint
+check (the hint is not shown once the menu was opened), which led to the hint now waiting until the player is in the
+world (it used to start during the loading screen). The physical proof is the user's next Local test: `[overlay]
+keyboard hook: first key seen (vk 0x78, HC_NOREMOVE)`, `menu opened by F9 (keyboard hook, HC_NOREMOVE)` and, after
+30 s of keys, the `HC_NOREMOVE / HC_ACTION` counts (no `HC_ACTION` at all means ds.exe's own hook sits above ours).
 
 `two-games-launcher-views` (`-SeedSaves complete-100`, the launcher's file): what each player SEES, every screenshot with
 that game's camera aimed at the vehicle (`vehicle_sync 18 <kind>`): V1 the guest's summoned trike standing in the

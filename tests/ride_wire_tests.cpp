@@ -79,8 +79,10 @@ void TestMessages() {
         CHECK(EncodeMsg(m, buf, sizeof(buf)) == 0);
         m = Req(), m.from = 2;
         CHECK(EncodeMsg(m, buf, sizeof(buf)) == 0);
-        m = Req(), m.reason = 2;  // REQUEST reasons 0..1
+        m = Req(), m.reason = 3;  // REQUEST reasons 0..2
         CHECK(EncodeMsg(m, buf, sizeof(buf)) == 0);
+        m = Req(), m.reason = kReqNative;  // the game's own Use Vehicle
+        CHECK(EncodeMsg(m, buf, sizeof(buf)) == kMessageSize);
         m = Req(), m.type = MsgType::deny, m.reason = static_cast<std::uint8_t>(Deny::count);
         CHECK(EncodeMsg(m, buf, sizeof(buf)) == 0);
         m = Req(), m.type = MsgType::end, m.reason = static_cast<std::uint8_t>(End::count);
@@ -120,6 +122,7 @@ void TestMessages() {
         CHECK(!flip(13, 2));      // pillion on a truck
         CHECK(!flip(13, 0));      // no seat
         CHECK(!flip(14, 9));      // request reason
+        CHECK(!flip(14, 3));      // request reason 3 (0 hold, 1 test, 2 native)
         CHECK(!flip(15, 2));      // from
         CHECK(!flip(28, 3));      // kind 3 with a truck id
         CHECK(!flip(28, 0));
@@ -211,6 +214,17 @@ void TestBoarding() {
     CHECK(BoardCheck(b) == Block::moving);
     b = in, b.vehicle_speed = -1.5;
     CHECK(BoardCheck(b) == Block::moving);
+    // the game's own "Use Vehicle" prompt: from any side, within kNativeReachM of the vehicle's origin (the door ignored)
+    b = in, b.native = true, b.door_dist_m = 6.0, b.origin_dist_m = 7.0;
+    CHECK(BoardCheck(b) == Block::ok);
+    b.origin_dist_m = 7.01;
+    CHECK(BoardCheck(b) == Block::too_far);
+    b.origin_dist_m = std::nan("");
+    CHECK(BoardCheck(b) == Block::too_far);
+    b = in, b.native = true, b.origin_dist_m = 2, b.vehicle_speed = 1.2;
+    CHECK(BoardCheck(b) == Block::moving);  // the native prompt stays crossed out on a moving vehicle
+    b = in, b.native = true, b.origin_dist_m = 2, b.busy = true;
+    CHECK(BoardCheck(b) == Block::busy);
 
     // the driver's answer
     DriverIn d;
@@ -232,6 +246,15 @@ void TestBoarding() {
     CHECK(!DriverAccepts(x, &why) && why == Deny::not_near);
     x = d, x.partner_dist_m = 5.01;
     CHECK(!DriverAccepts(x, &why) && why == Deny::not_near);
+    // a native request: the partner near the vehicle from any side
+    x = d, x.native = true, x.partner_dist_m = 7.0, x.partner_origin_dist_m = 8.5;
+    CHECK(DriverAccepts(x, &why) && why == Deny::count);
+    x.partner_origin_dist_m = 8.6;
+    CHECK(!DriverAccepts(x, &why) && why == Deny::not_near);
+    x.partner_dist_m = 4.0;  // the door rule still accepts
+    CHECK(DriverAccepts(x, &why));
+    x = d, x.native = true, x.partner_origin_dist_m = 2.0, x.speed = 2.5;
+    CHECK(!DriverAccepts(x, &why) && why == Deny::moving);
     CHECK(DriverAccepts(d, nullptr));
 
     // the driver's body placement and timeout
@@ -298,6 +321,26 @@ void TestForced() {
 }
 
 void TestDetectors() {
+    {
+        // get off by a press (native prompt): one press after a release; the boarding press still held never counts
+        PressDetector p;
+        CHECK(!p.Update(true));
+        CHECK(!p.Update(true));
+        CHECK(!p.Update(false));
+        CHECK(p.Update(true));
+        CHECK(!p.Update(true));  // once per press
+        CHECK(!p.Update(false));
+        CHECK(p.Update(true));
+        p.Reset();
+        CHECK(!p.Update(true));
+        CHECK(!p.Update(false));
+        CHECK(p.Update(true));
+        // the game's TryStart repeats while held: a new press only after a gap
+        CHECK(NativePressIsNew(-1e18, 0));
+        CHECK(!NativePressIsNew(1000, 1100));
+        CHECK(!NativePressIsNew(1000, 1399));
+        CHECK(NativePressIsNew(1000, 1400));
+    }
     HoldDetector h;
     // a button already down when it starts never counts until released
     CHECK(!h.Update(true, 0));
