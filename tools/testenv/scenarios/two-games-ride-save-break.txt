@@ -1,0 +1,151 @@
+# The save guard under stress (docs/real-partner-body.md section 24.12), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-ride-save-break -SeedSaves complete-100 -GuestSeed profile-only
+# The host drives the truck, the guest rides; forced saves on the guest's game (its sandbox scratch):
+# A. two saves in a row: a save while carried (held, the ride ends, released, written) and more asked for at once while it
+#    is held or written (the game or the guard refuses them; one that is taken runs at once on foot); then
+# B. a save while the truck drives fast (the guest is put off at speed beside its path, on the ground, before the capture);
+# C. a link blackout on both games (2.5 s) together with a save while carried (the ride ends by the save or the link; any
+#    save taken is written once);
+# D. a save pending while the guest boards (the guard holds it once he is carried and puts him off), and a save posted while
+#    a boarding request is on its way (the carry is refused while it is pending, or the game / the guard handles it).
+# Finally every request the guest's guard saw was issued and finished ok exactly once (`save_guard 0`'s counters).
+role host
+graphics low
+timeout 360
+ini host_save=1
+ini partner_body=real
+ini partner_collision=0
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[coop\] host-held save session ON \(host
+@guest waitlog 10 \[coop\] host-held save session ON \(guest
+waitlog 60 \[vshare\] shared real vehicles ON \(host
+@guest waitlog 60 \[vshare\] shared real vehicles ON \(guest
+waitlog 10 \[ride\] riding together ON \(host
+@guest waitlog 10 \[ride\] riding together ON \(guest
+waitlog 10 \[save\] save guard ON
+@guest waitlog 10 \[save\] save guard ON
+# the title menus (~20 s after the first frame); the host Continues (CONTINUE is selected on its title)
+wait 22000
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+@guest waitlog 60 \[vshare\] guest: the host's snapshot #[0-9]+ is complete
+@guest waitlog 30 \[vshare\] guest: binding:
+wait 8000
+# ---- the host drives, the guest boards (ride #1)
+action vehicle_sync 8 1.8 2
+@guest action vehicle_sync 8 8 2
+wait 1500
+until 20 4000 \[vdrive\] host: our Sam drives truck => pad X 150
+@guest waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached
+wait 2500
+@guest action ride_test 8
+wait 1200
+@guest until 15 3000 \[ride\] guest: our Sam carried on the truck .*#1\) => pad X 800
+waitlog 10 \[ride\] host: the partner asks to ride our truck .*ACCEPTED \(#1;
+wait 2000
+# ---- A. a save while carried, and two more asked for at once (held / being written: refused, or run at once on foot)
+@guest until 20 1000 \[save\] #[0-9]+ pending \(forced save F1\): auto save.*our Sam CARRIED => action save_guard 1 4 2
+@guest waitlog 3 \[save\] test: a second DSCreateSaveGame\(type 4\) while F1 is pending: called
+@guest action save_guard 1 4 1
+@guest action save_guard 1 4 1
+@guest waitlog 5 \[save\] #[0-9]+ HELD: our Sam is carried
+@guest waitlog 5 \[ride\] guest: our Sam off the truck .*\(#1, the game saves, forced\)
+@guest waitlog 5 \[save\] #[0-9]+ \(forced save F1\) capture started \(after the hold\): our Sam not carried
+@guest waitlog 60 \[save\] finished ok: #[0-9]+ \(forced save F1\) \(after the hold
+waitlog 8 \[ride\] host: the partner's ride .* is over \(the game saves\)
+wait 1000
+@guest screenshot A1-guest-off
+@guest action save_guard 0
+# ---- B. ride #2: a save while the truck drives fast (posted on foot, kept pending by the test until the guest is carried
+# at 8 m/s or more: the game's post refuses a save now and then while he is carried; then the guard's own hold)
+wait 1500
+@guest action save_guard 6 40 2
+@guest until 15 500 \[save\] #[0-9]+ test: kept pending until our Sam is carried at 8 m/s or more => action save_guard 1 4 1
+@guest action ride_test 8
+wait 1200
+@guest until 15 3000 \[ride\] guest: our Sam carried on the truck .*#2\) => pad X 800
+waitlog 10 \[ride\] host: the partner asks to ride our truck .*ACCEPTED \(#2;
+wait 1000
+pad none 3000 rt=255 keep
+@guest waitlog 10 \[save\] #[0-9]+ test: our Sam is carried now \(the vehicle at ([89]|[1-9][0-9])\.[0-9] m/s\)
+@guest waitlog 3 \[ride\] guest: our Sam off the truck .*\(#2, the game saves, forced\)
+@guest screenshot B1-guest-off-fast
+screenshot B1-host
+@guest waitlog 3 \[save\] #[0-9]+ released after [0-9]+ frames .*our Sam is off the ride and placed .*outside the vehicle's box
+@guest waitlog 60 \[save\] finished ok: #[0-9]+ \(forced save F2\) \(after the hold;
+@guest action save_guard 2 1
+pad none 0
+pad none 2500 lt=255 keep
+pad none 0
+wait 1000
+@guest screenshot B2-guest-after
+@guest action save_guard 2 2
+# ---- C. ride #3: a link blackout on both games and a save while carried
+wait 2500
+@guest action ride_test 8
+wait 1200
+@guest until 15 3000 \[ride\] guest: our Sam carried on the truck .*#3\) => pad X 800
+waitlog 10 \[ride\] host: the partner asks to ride our truck .*ACCEPTED \(#3;
+wait 1500
+@both action coop_session 1 2500
+@guest until 6 300 \[ride\] guest: our Sam off the truck .*\(#3, => action save_guard 1 4 1
+wait 4000
+@guest screenshot C1-guest-off
+@guest action save_guard 0
+# ---- D1. a save pending while the guest boards (kept pending by the test, boarding allowed for it): the guard holds it
+# as soon as he is carried and puts him off (ride #4)
+@guest action ride_test 8
+wait 2500
+@guest action save_guard 6 20
+@guest until 15 500 \[save\] #[0-9]+ test: kept pending until our Sam boards => action save_guard 1 4 1
+@guest action ride_board
+@guest waitlog 4 \[ride\] guest: our Sam carried on the truck .*#4\)
+@guest waitlog 3 \[ride\] guest: our Sam off the truck .*\(#4, the game saves, forced\)
+@guest waitlog 3 \[save\] #[0-9]+ \(forced save F[0-9]+\) capture started \(after the hold\): our Sam not carried
+wait 3000
+@guest screenshot D1-guest
+# ---- D2. a save posted while the boarding request is on its way: the host drops what it receives for 1 s (the link
+# delivers the REQUEST afterwards, within the 3 s the request waits), meanwhile the guest's save is posted and kept pending (no boarding: `save_guard 7`);
+# the driver's ACCEPT then finds a pending save: the carry is refused (END to the driver), the save runs on foot
+wait 8000
+@guest action ride_test 8
+wait 2500
+action coop_session 1 1000
+@guest action ride_board
+@guest action save_guard 7 5
+@guest until 2 250 \[save\] #[0-9]+ test: kept pending \(no boarding meanwhile\) => action save_guard 1 4 1
+@guest waitlog 5 \[ride\] cannot carry our Sam: the game has a save pending or is saving
+@guest waitlog 1 \[ride\] ride #[0-9A-F]+ not started: the carry did not start
+waitlog 5 \[ride\] the partner ended ride #[0-9A-F]+: not seen seated
+@guest waitlog 8 \[save\] #[0-9]+ test: the test.s wait is over \(nobody boarded\)
+@guest waitlog 3 \[save\] finished ok: #[0-9]+ \(forced save F[0-9]+\) \(at once;
+@guest nolog \[ride\] guest: our Sam carried on the truck .*#5\)
+wait 1500
+# ---- every request seen was issued and written exactly once
+@both action ride_state
+@guest action save_guard 0
+@guest waitlog 5 \[save\] state: ON; hold on; pending no .*save system none; requests ([0-9]+): .* issued \1, dropped by the game 0, gone 0; finished ok \1, not ok 0
+# (waitlog searches the whole log: no state line of this run may show a request not issued or a save not finished ok)
+@guest nolog \[save\] state: .*requests ([0-9]+): .* issued (?!\1,)[0-9]+
+@guest nolog \[save\] state: .*requests ([0-9]+): .* finished ok (?!\1,)[0-9]+
+@guest nolog \[save\] state: .*(dropped by the game|gone|not ok) [1-9]
+nolog \[ride\].*FAULT
+@guest nolog \[ride\].*FAULT
+nolog \[save\].*FAULT
+@guest nolog \[save\].*FAULT
+@guest nolog \[save\] #[0-9]+ CAP
+@guest nolog \[save\] #[0-9]+ .*capture started .*our Sam CARRIED
+@guest quit
+wait 3000
+quit

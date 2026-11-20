@@ -196,6 +196,11 @@ void TestBoarding() {
     CHECK(BoardCheck(b) == Block::not_on_foot);
     b = in, b.busy = true;
     CHECK(BoardCheck(b) == Block::busy);
+    b = in, b.saving = true;  // a save pending or being written: no boarding (save_guard)
+    CHECK(BoardCheck(b) == Block::saving);
+    CHECK(std::strcmp(BlockName(Block::saving), "the game is saving") == 0);
+    b.busy = true;
+    CHECK(BoardCheck(b) == Block::busy);
     b = in, b.door_dist_m = 2.5;
     CHECK(BoardCheck(b) == Block::ok);
     b = in, b.door_dist_m = 2.51;
@@ -270,6 +275,13 @@ void TestForced() {
     CHECK(ForcedExit(f) == End::world);
     f = ok, f.driver_ended = true;
     CHECK(ForcedExit(f) == End::driver_ended);
+    f = ok, f.saving = true;
+    CHECK(ForcedExit(f) == End::saving);
+    CHECK(std::strcmp(EndName(static_cast<std::uint8_t>(End::saving)), "the game saves") == 0);
+    f.taken = true;  // the game has Sam: its own placement, not ours
+    CHECK(ForcedExit(f) == End::taken);
+    f.taken = false, f.link_silent_ms = 5000, f.crash_dv = 20, f.driver_ended = true;  // the save first: it must not capture him carried
+    CHECK(ForcedExit(f) == End::saving);
     // the order: the mod's and the game's reasons first, then the link, then the vehicle
     f = ok, f.stopped = true, f.world_changed = true, f.taken = true, f.link_silent_ms = 5000, f.crash_dv = 20;
     CHECK(ForcedExit(f) == End::stopped);
@@ -413,6 +425,153 @@ void TestExit() {
     }
 }
 
+// The save guard's per-frame decision (save_guard.cpp's kick detour: the capture's hold).
+void TestSaveGate() {
+    SaveHoldIn idle;
+    idle.settled_frames = 1000;
+    CHECK(SaveGate(idle) == SaveStep::run);  // nothing pending
+    SaveHoldIn p = idle;
+    p.pending = true;
+    CHECK(SaveGate(p) == SaveStep::run);  // nobody carried: the save runs at once (no delay)
+    // carried: held, also on the first frame (held_ms 0) and just under the cap
+    SaveHoldIn c = p;
+    c.carried = true, c.settled_frames = 0, c.held_ms = -1;
+    CHECK(SaveGate(c) == SaveStep::hold);
+    c.held_ms = 0;
+    CHECK(SaveGate(c) == SaveStep::hold);
+    c.held_ms = kSaveHoldCapMs - 1;
+    CHECK(SaveGate(c) == SaveStep::hold);
+    // the cap: the save runs unchanged (never dropped)
+    c.held_ms = kSaveHoldCapMs;
+    CHECK(SaveGate(c) == SaveStep::run_capped);
+    c.held_ms = 1e9;
+    CHECK(SaveGate(c) == SaveStep::run_capped);
+    // off the ride but the placement still waits (PlaceOn's rate limit): held
+    SaveHoldIn pl = p;
+    pl.placing = true, pl.settled_frames = 0, pl.held_ms = 100;
+    CHECK(SaveGate(pl) == SaveStep::hold);
+    // off and placed: held until kSaveSettleFrames frames in a row, then run
+    SaveHoldIn s = p;
+    s.held_ms = 200;
+    for (unsigned f = 0; f < kSaveSettleFrames; ++f) {
+        s.settled_frames = f;
+        CHECK(SaveGate(s) == SaveStep::hold);
+    }
+    s.settled_frames = kSaveSettleFrames;
+    CHECK(SaveGate(s) == SaveStep::run);
+    // the post-load save is never held, carried or not
+    SaveHoldIn pls = c;
+    pls.held_ms = 0, pls.post_load = true;
+    CHECK(SaveGate(pls) == SaveStep::run);
+    // not pending: run, whatever the ride does (no hold without a save)
+    SaveHoldIn np = c;
+    np.pending = false, np.held_ms = 50;
+    CHECK(SaveGate(np) == SaveStep::run);
+    // just after a ride, our Sam's entity still in the vehicle's box (the game has him, no placement of ours): held, the
+    // settled frames do not count meanwhile; capped at the cap like the rest
+    SaveHoldIn box = p;
+    box.in_vehicle = true, box.settled_frames = 1000, box.held_ms = 10;
+    CHECK(SaveGate(box) == SaveStep::hold);
+    box.held_ms = kSaveHoldCapMs;
+    CHECK(SaveGate(box) == SaveStep::run_capped);
+    // the cap is per capture: once released or capped (done), the same capture is never held again (a game's own wait
+    // after the cap must not restart a 3 s hold), carried, placing or in the box
+    SaveHoldIn d = c;
+    d.done = true, d.held_ms = -1;
+    CHECK(SaveGate(d) == SaveStep::run);
+    d.placing = true, d.in_vehicle = true, d.settled_frames = 0;
+    CHECK(SaveGate(d) == SaveStep::run);
+    CHECK(std::strcmp(SaveStepName(SaveStep::hold), "hold") == 0);
+    CHECK(std::strcmp(SaveStepName(SaveStep::run_capped), "run (cap)") == 0);
+    // the END reason travels in STQ1: END "the game saves" round trips
+    std::uint8_t buf[64];
+    Msg m = Req();
+    m.type = MsgType::end;
+    m.reason = static_cast<std::uint8_t>(End::saving);
+    const std::size_t n = EncodeMsg(m, buf, sizeof(buf));
+    CHECK(n == kMessageSize);
+    Msg o;
+    CHECK(DecodeMsg(buf, n, o) && o.reason == static_cast<std::uint8_t>(End::saving));
+}
+
+// The guard's "placed" check: our Sam out of the ridden vehicle's box; the sleeping passenger's ground-safe height.
+void TestSaveBoxAndSpot() {
+    const float flat[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+    const double origin[3] = {100, 200, 50};
+    const std::uint8_t truck = 2, trike = 3, roadster = 1;
+    auto at = [&](double r, double f, double u) {
+        static double p[3];
+        p[0] = origin[0] + r, p[1] = origin[1] + f, p[2] = origin[2] + u;
+        return p;
+    };
+    // the truck's passenger seat (measured: 0.44, 0.80, 1.95) is inside; the guard's release spot (2.20, 0.80, 0.18) is not
+    {
+        const double* s = at(0.44, 0.80, 1.95);
+        const double seat[3] = {s[0], s[1], s[2]};
+        CHECK(InVehicleBox(truck, origin, flat, seat));
+        const double* r = at(2.20, 0.80, 0.18);
+        const double rel[3] = {r[0], r[1], r[2]};
+        CHECK(!InVehicleBox(truck, origin, flat, rel));
+    }
+    // every kind's exit spot (ExitPlacement, upright, at rest) is outside its box; its seat inside
+    for (std::uint8_t k : {roadster, truck, trike}) {
+        const float zero[3] = {};
+        const ExitSpot e = ExitPlacement(k, origin, flat, zero, false);
+        const double sp[3] = {e.pos[0], e.pos[1], e.pos[2] + 0.5};
+        CHECK(!InVehicleBox(k, origin, flat, sp));
+        float seat[3];
+        CHECK(PassengerSeat(k, seat));
+        double w[3];
+        ToWorld(origin, flat, seat, w);
+        CHECK(InVehicleBox(k, origin, flat, w));
+    }
+    // a rotated truck (90 deg yaw: right = +y): the seat follows the rotation
+    {
+        const float yaw[9] = {0, 1, 0, -1, 0, 0, 0, 0, 1};
+        const float seat[3] = {0.44f, 0.80f, 1.95f};
+        double w[3];
+        ToWorld(origin, yaw, seat, w);
+        CHECK(InVehicleBox(truck, origin, yaw, w));
+        const double beside[3] = {origin[0], origin[1] + 2.3, origin[2] + 0.2};
+        CHECK(!InVehicleBox(truck, origin, yaw, beside));
+    }
+    // far below or above: outside
+    {
+        const double* u = at(0, 0, -1.0);
+        const double under[3] = {u[0], u[1], u[2]};
+        CHECK(!InVehicleBox(truck, origin, flat, under));
+        const double* o = at(0, 0, 5.0);
+        const double over[3] = {o[0], o[1], o[2]};
+        CHECK(!InVehicleBox(truck, origin, flat, over));
+    }
+    // the save-time height: flat ground: the exit spot's height + the lift
+    {
+        const double sp[3] = {origin[0] + 2.2, origin[1] + 0.8, origin[2]};
+        CHECK(std::fabs(SaveSpotHeight(origin, flat, sp) - (origin[2] + kSaveSpotLiftM)) < 1e-6);
+    }
+    // a truck parked across a 15 deg slope, its passenger (right) side uphill: ExitPlacement's spot is under the slope there,
+    // the save-time spot is lifted onto the vehicle's ground plane (plus the lift), never inside the hillside
+    {
+        const double a = 15.0 * 3.14159265358979 / 180.0;
+        const float tilt[9] = {static_cast<float>(std::cos(a)), 0, static_cast<float>(std::sin(a)), 0, 1, 0,
+                               static_cast<float>(-std::sin(a)), 0, static_cast<float>(std::cos(a))};
+        const float zero[3] = {};
+        const ExitSpot e = ExitPlacement(truck, origin, tilt, zero, false);
+        CHECK(e.side == 1);
+        const double ground = origin[2] + (e.pos[0] - origin[0]) * std::tan(a);  // the slope's plane under the spot
+        CHECK(e.pos[2] < ground);                                                  // the bug: the exit spot is in the hill
+        const double h = SaveSpotHeight(origin, tilt, e.pos);
+        CHECK(h >= ground + kSaveSpotLiftM - 1e-3);
+        // downhill (the left side): the exit spot's own height already clears the plane, nothing lowers it
+        const double left[3] = {origin[0] - 2.2, origin[1], origin[2] - 0.2};
+        CHECK(SaveSpotHeight(origin, tilt, left) >= left[2] + kSaveSpotLiftM - 1e-9);
+        // a vehicle on its side (up z 0): no plane, the exit spot's height + the lift
+        const float side[9] = {0, 0, 1, 0, 1, 0, -1, 0, 0};
+        const double sp[3] = {origin[0] + 3, origin[1], origin[2] - 1.5};
+        CHECK(std::fabs(SaveSpotHeight(origin, side, sp) - (sp[2] + kSaveSpotLiftM)) < 1e-9);
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -423,6 +582,8 @@ int main() {
     TestForced();
     TestDetectors();
     TestExit();
+    TestSaveGate();
+    TestSaveBoxAndSpot();
     if (g_fail) {
         std::printf("st_ride_wire_tests: %d of %d checks FAILED\n", g_fail, g_checks);
         return 1;

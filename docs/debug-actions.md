@@ -52,7 +52,7 @@ Read every snapshot (2 Hz, every frame while the menu is open), reads only.
 |---|---|---|
 | game state | `DSGameState` `[0x147BF6E88]`: `+8` current flags, `+0x10` requested by script | Bits named after `EDSGameStateForScript` (RTTI enum `0x144C66648`): 1 TerminalOperation ... 0x40 Cutscene ... 0x400000 Loading ... 0x4000000 Setup ... 0x40000000 DirectIntoPrivateRoom; higher bits are internal, shown as `bitN`. "(stopping event)" = `(+8 \| +0x10) & 0x184F407FEC7F7F` (the mask of `IsStoppingGameEvent` `0x142DD3760`). That the bits equal the enum is *inferred* (high confidence: the Setup bit matches the `+0x5E0 == 2` phase). |
 | load phase | `DSGameState+0x5E0` (`0x142E0E950`: `== 2`) | 2 = the post-load "Setup" settle phase. |
-| load mask | `GameModule` `[0x147BE6318]` `+0x44C` (u32), `+0x450` (load-reason byte) | Recomputed every frame by `0x142627640`; non-zero = loading/suspended. Bit names *inferred*: 0x2 loading/area change, 0x4/0x8 pending, 0x40 streaming not ready, 0x80 streaming settle, 0x100 saving. |
+| load mask | `GameModule` `[0x147BE6318]` `+0x44C` (u32), `+0x450` (load-reason byte) | Recomputed every frame by `0x142627640`; non-zero = loading/suspended. Bit names *inferred*: 0x2 loading/area change, 0x4/0x8 pending, 0x40 streaming not ready, 0x80 streaming settle, 0x100 scene wait (a used sequence waits for its scene: `0x142627640`; NOT a save, whose path never touches the mask: docs/real-partner-body.md 24.12). |
 | area | `[0x147AE90E8]`: if byte `+0xA8` is set, `u16 +0x48` | The read-only fast path of `GetCurrentArea` (`0x14262A860`). Outside an area change the game computes the area through hash lookups, which the mod does not call, so the row says n/a. Values: EDSArea (Area00=0, Area01=100 ... Beach01=600, Frange01=700, Nm01=1100 ..., Empty=65535). |
 | time of day | `GameWorldTimeState` = `[GameModule+0x58]` (vtable `0x143F19A00`, RTTI `0x144E6B540`): `+0x20` float hours, `+0x28` day counter (*inferred*), `+0x2C` bool EnableDayNightCycle | `+0x58` and `+0x2C` confirmed by the game's SetTimeOfDay event `0x1435720E0`. |
 | health | `[[Sam+0x54C0]+0x2E0]` `+0xC0` health, `+0xC4` max (floats) | Same reads and clamp as DSPlayerEntity GetHealth/GetMaxHealth (`0x1427105E0`, `0x142710F60`, vtable `+0x78`/`+0x80`). |
@@ -752,8 +752,25 @@ crash of dv m/s (0 = 12) next tick while riding, `5` rolls the vehicle our Sam d
 axis by RequestTeleport), `6` stops the vehicle our Sam drives dead (RequestTeleport onto its own place), `7` the game
 takes our Sam next tick, `8 [m]` places our Sam at the passenger door of the vehicle the partner drives here, facing it,
 `9` the riding module's emergency stop (riding stays off), `10` asks to ride (as `ride_board`) and runs the emergency
-stop in the same call (the driver's ACCEPT then always arrives after the stop: it is ended at once, never a carry), `31` / `32` / `33 <m>` the x / y / z of the measured kind's
+stop in the same call (the driver's ACCEPT then always arrives after the stop: it is ended at once, never a carry), `11`
+logs the boarding check now (`[ride] test: boarding now: <block>`; the action succeeds either way), `31` / `32` / `33 <m>` the x / y / z of the measured kind's
 passenger seat (this session), `30` the seat table again.
+
+### Save guard (`save_guard`; with riding together, or in a hidden run)
+
+No save of the game captures our Sam while he rides as a passenger (docs/real-partner-body.md section 24.12): the game's
+save system's capture kick `0x14362DB80` is hooked: a save's capture waits (at most 3 s) until the ride has put him beside the vehicle (the save processor runs unchanged).
+`action save_guard 0` logs the state (`[save] state: ...`): on / off and why, the hold, the pending request, the save
+system's state, the counters (requests, at once, held, released, capped, issued, dropped by the game, gone, finished ok /
+not ok, waited for a held capture, capped unplaced), the processor's, the kick's and the tick's threads. `save_guard 2` logs our Sam's place, his parent, and his distance from
+where the last held save released him (in the frame the vehicle had then); `save_guard 2 <n>` logs the same as
+`[save] where (check n): ...`, so a scenario's `waitlog` (which searches the whole log) matches that one call. Hidden runs only: `1 [type] [1]` a save now
+through the game's own DSCreateSaveGame (type 4 the next autosave, 1 manual; into the run's scratch copy; the game may
+refuse it: its reasons are logged; a third value 1 makes a refusal succeed for a scenario's `until`; 2 the same plus a
+second DSCreateSaveGame at once while the first is pending: the log says whether the holder still has the same request), `3` the pause
+menu's Load of the run's newest save (host; coop_session 5), `4 0/1` the hold off / on, `5` the game's refusal reasons
+now (its query `0x1433FEA20`, the autosave cooldown, the save queue), `6 [s] [1|2]` the next forced save stays pending until
+our Sam boards (1: and sleeps in a menu; 2: and the vehicle drives at 8 m/s or more), `7 [s]` the same without letting anyone board.
 
 ### Vehicle hits (`vehicle_hit`; `session.ini partner_vehicle_damage=1` with `vehicle_sync=5`)
 
@@ -797,7 +814,7 @@ truck's forward (negative: behind it), on its heading.
 | Vehicle classes: vtable slot 0 = the RTTI getter (`DSVehicleSpeedCar` / `DSVehicleTruck` / `DSVehicleMotorbike`), the constructors' `+0x4C4` kind writes, the type / ride state reads (`+0x4C4`, `+0x4CC`), Entity_ExportedGetParent (`+0x70`) | `0x3E274D8`/`0x2F6BC10`, `0x3E26790`/`0x2F6BCB0`, `0x3E25DB8`/`0x2F6BB60`; `0x2F62201`, `0x2F62571`, `0x2F61CFC`; `0x2FA73B6`, `0x2FA74B8`, `0x2361B80` | vehicle sync (sender) |
 
 Regenerate the hex with `DS.load().rd(va, n).hex()` from `tools/re/dsre.py` after a game
-patch, re-verifying each meaning first.
+patch, re-verifying each meaning first. The save guard's own 18 checks are in docs/real-partner-body.md section 24.12.
 
 ## Tests
 

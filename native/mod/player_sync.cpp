@@ -30,6 +30,7 @@
 #include "steam_owner.hpp"
 #include "partner_tackle.hpp"
 #include "ride_together.hpp"
+#include "save_guard.hpp"
 #include "vehicle_drive.hpp"
 #include "vehicle_share.hpp"
 #include "vehicle_sync.hpp"
@@ -1388,6 +1389,8 @@ void Tick() noexcept {
         din.have_partner = vin.have_body;
         din.partner = vin.body;
         vdrive::Tick(din, now);
+        // the save guard (save_guard.hpp): watches the game's saves (before the ride, which reads its hold)
+        saveguard::Tick(g_local, g_local_active, now);
         // riding together (ride_together.hpp): boarding, the carried passenger, the driver's side
         ride::TickIn rin;
         rin.local = g_local;

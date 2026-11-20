@@ -14,6 +14,7 @@
 #include "coop_session.hpp"
 #include "partner_tackle.hpp"
 #include "ride_together.hpp"
+#include "save_guard.hpp"
 #include "vehicle_drive.hpp"
 #include "vehicle_share.hpp"
 #include "debug_actions.hpp"
@@ -89,6 +90,8 @@ bool GuardedStop(void (*stop)() noexcept) noexcept {
 // The host-held save session (its gate, the guest's waiting screen and input block live on only through the tick).
 void CoopStopAfterFault() noexcept { st::coop::EmergencyStop("the mod's per-frame tick faulted (see the log); restart both games to play co-op"); }
 bool GuardedEmergencyStop() noexcept {
+    // the save guard first: no tick will refresh the ride's state it holds captures on (its detours pass everything through)
+    const bool save = GuardedStop(&st::saveguard::EmergencyStop);
     const bool coll = GuardedStop(&st::collision::EmergencyStop);
     const bool body = GuardedStop(&st::realbody::EmergencyStop);
     const bool gear = GuardedStop(&st::gear::EmergencyStop);
@@ -98,7 +101,7 @@ bool GuardedEmergencyStop() noexcept {
     const bool ride = GuardedStop(&st::ride::EmergencyStop);      // the carried passenger's input block and pose override go
     const bool hit = GuardedStop(&st::vhit::EmergencyStop);       // no more vehicle-hit calls
     const bool coop = GuardedStop(&CoopStopAfterFault);
-    return coll && body && gear && veh && share && drive && ride && hit && coop;
+    return save && coll && body && gear && veh && share && drive && ride && hit && coop;
 }
 
 // frame_cap=<fps> (session.ini; the launcher's local two-instance test and hidden two-game
@@ -270,6 +273,8 @@ DWORD WINAPI Bootstrap(LPVOID) {
     st::vshare::Install(cfg);
     st::vdrive::Install(cfg);  // remote driving, ownership and state on the shared vehicles (section 23.11)
     st::ride::Install(cfg);    // riding together on them (section 24)
+    // the save guard: no save captures a carried passenger (section 24.12; the save processor's detour goes in now)
+    if (st::ride::Active() || st::automation::Enabled()) st::saveguard::Install(cfg);
     st::vhit::Install(cfg);    // vehicle hits: the partner's vehicle knocks our Sam down (section 25; its damage-handler detour goes in now)
     // Real partner body (docs/real-partner-body.md): the pose hook goes in at start-up, never
     // mid-game (enabling a hook suspends every thread while job threads may be inside it).

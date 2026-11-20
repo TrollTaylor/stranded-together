@@ -919,6 +919,22 @@ hidden: `Start-TestRun.ps1 -Scenario two-games -SeedSaves complete-100`.
   the boards and exits are counted in the log (`carried on the truck ... #2)`, `off the truck ... (#2, crash, forced)`).
   `two-games-ride-truck` ends with `ride_test 10` on the host (a request and the module's stop in one call: the late
   ACCEPT is ended, the host walks away). All re-run after the review fixes on 2026-11-19 (section 24.10).
+* **The save guard scenarios** (`ini host_save=1`, `-GuestSeed profile-only`, docs/real-partner-body.md section 24.12):
+  `two-games-ride-save-host` (a save on foot runs at once; a save while the host rides is held, the ride ends, Sam is
+  put beside the truck, then the save is written; the host loads it and stands where he was put),
+  `two-games-ride-save-guest` (the same with the guest carried; no boarding while a save is pending; the hold off: the
+  ride's last-resort exit), `two-games-ride-save-none` (nobody rides: no hold, no delay) and `two-games-ride-save-break`
+  (the guest carried: a second DSCreateSaveGame while the first is held (`save_guard 1 4 2`: the holder keeps one
+  request); a save while the truck drives at 8 m/s or more (`save_guard 6 40 2`); a link blackout on both games with a
+  save; a save pending while the guest boards (`save_guard 6`); a save posted while the boarding request is on its way (a
+  1 s blackout on the host delays the REQUEST: the ACCEPT finds the save pending, the carry is refused, END to the
+  driver); finally no request lost, dropped or not written (`save_guard 0`'s counters)). `save_guard 1 4` forces a
+  save through the game's own DSCreateSaveGame into the run's scratch copy (hidden runs only); the game's post refuses
+  one now and then while Sam is carried (reason `0x400`), so the scenarios ask with `until ... => action save_guard 1 4 1`.
+  Each save is named in the log (`#N (forced save Fn)`) and its `issued` / `finished ok` lines say how it ran (`at once`,
+  `after the hold`, `the hold was off`): `waitlog` matches the whole log, so the checks name the forced save's number
+  (and `save_guard 2 <n>` logs `where (check n)`, so the reload's check matches its own line, not the one before the load).
+  The game's autosave cooldown (7 s after an autosave) refuses a second forced autosave sooner. All pass on 2026-11-19.
 * **The vehicle hit scenarios** (`ini host_save=1`, docs/real-partner-body.md section 25): `two-games-vehicle-hit` (the
   host's truck into the guest at ~28 km/h, the guest's truck into the host, the host's Kusanagi trike into the guest at
   40 km/h), `two-games-vehicle-hit-fast` (the truck and the trike at 40 km/h: knocked down, not killed; the passenger

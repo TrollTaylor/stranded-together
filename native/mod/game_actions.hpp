@@ -149,15 +149,16 @@ bool ReadStopGates(std::uint64_t* state_flags, std::uint32_t* load_mask) noexcep
 // ControlledEntity_ExportedIsBoundToSequence, byte-checked). Reads only otherwise.
 const char* LocalCollisionBlock(bool sequence) noexcept;
 // Game thread. Riding together's exit placement (ride_together.cpp): whether the game's PlaceOn would take the local Sam
-// now. 0 yes (the 500 ms rate limit may still refuse); 1 not yet: Sam asleep (a menu) or the game saving (the load mask's
-// save bit 0x100 alone), try again later; 2 the game has Sam (a load, a stopping game event, the post-load setup, a parent,
+// now. 0 yes (the 500 ms rate limit may still refuse); 1 not yet: Sam asleep (a menu), the game capturing or writing a save
+// (save_guard::InProgress) or the world waiting for a scene (the load mask's bit 0x100 alone), try again later; 2 the game has Sam (a load, a stopping game event, the post-load setup, a parent,
 // Sam+0x678, a ground snap or pushed transform, a sequence): no placement of the mod's; 3 the teleport is off (a byte
-// check). `why` (may be null) gets the reason. Reads only, plus the byte-checked sequence call.
-int PlacementGate(char* why, std::size_t cap) noexcept;
-// Game thread. Riding together: why the game has the carried local Sam now, or nullptr: the load mask (`*saving` true when
-// it is only the save bit 0x100), a DSGameState flag of `state_bits` current or requested, Sam+0x678 (the game's warp
+// check). `why` (may be null) gets the reason. Reads only, plus the byte-checked sequence call. `asleep_ok`: the same checks
+// with a sleeping Sam (the save guard's entity teleport of a sleeping passenger: never where the game has him, gate 2).
+int PlacementGate(char* why, std::size_t cap, bool asleep_ok = false) noexcept;
+// Game thread. Riding together: why the game has the carried local Sam now, or nullptr: the load mask (`*ours` true when
+// it is only bit 0x100: the world waits for a scene; the mod places him once it is over), a DSGameState flag of `state_bits` current or requested, Sam+0x678 (the game's warp
 // guard), a pushed player transform, with `sequence` bound to a sequence. nullptr also when it cannot tell (byte checks).
-const char* CarriedSamTaken(std::uint64_t state_bits, bool sequence, bool* saving) noexcept;
+const char* CarriedSamTaken(std::uint64_t state_bits, bool sequence, bool* ours) noexcept;
 // Player collision debug command (partner_collision.cpp): see docs/debug-actions.md "Player collision".
 bool CollisionCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 // Gear debug command (partner_gear.cpp): see docs/debug-actions.md "Gear".
@@ -235,7 +236,7 @@ inline std::size_t DescribeLoadMask(std::uint32_t mask, char* out, std::size_t c
         const char* name;
     };
     static const Bit kBits[] = {{0x2, "loading/area change"}, {0x4, "pending"}, {0x8, "pending2"},
-                                {0x40, "streaming not ready"}, {0x80, "streaming settle"}, {0x100, "saving"}};
+                                {0x40, "streaming not ready"}, {0x80, "streaming settle"}, {0x100, "scene wait"}};
     out[0] = 0;
     std::size_t n = 0;
     std::uint32_t rest = mask;

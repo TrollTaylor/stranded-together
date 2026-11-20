@@ -14,6 +14,7 @@
 #include "anim_census.hpp"
 #include "holo_catalog.hpp"
 #include "real_body.hpp"
+#include "save_guard.hpp"
 #include "log.hpp"
 
 namespace st::game {
@@ -939,7 +940,7 @@ const char* LocalCollisionBlock(bool sequence) noexcept {
     return nullptr;
 }
 
-int PlacementGate(char* why, std::size_t cap) noexcept {
+int PlacementGate(char* why, std::size_t cap, bool asleep_ok) noexcept {
     char local[96];
     if (!why) why = local, cap = sizeof(local);
     why[0] = 0;
@@ -954,14 +955,21 @@ int PlacementGate(char* why, std::size_t cap) noexcept {
         Put(why, cap, "no local player");
         return 2;
     }
-    if (s.flags & kFlagAsleep) {
+    if ((s.flags & kFlagAsleep) && !asleep_ok) {
         Put(why, cap, "Sam is asleep (a menu, a cutscene or a load)");
+        return 1;
+    }
+    // a save being captured or written (the save system's queue; save_guard.cpp): no teleport may race its capture
+    if (saveguard::InProgress()) {
+        Put(why, cap, "the game is saving (its capture or write)");
         return 1;
     }
     const World w = ReadWorld();
     std::uint32_t mask = 0;
     if (w.gm && Rd(w.gm + kGmLoadMask, mask) && mask == 0x100) {
-        Put(why, cap, "the game is saving");
+        // bit 0x100 alone: a used sequence waits for its scene, the world suspended (ComputeSuspendMask 0x142627640; NOT a
+        // save, whose path never touches the load mask: docs/real-partner-body.md 24.12)
+        Put(why, cap, "the world waits for a scene (load mask 0x100)");
         return 1;
     }
     if (const char* b = Blocked(s, kNeedPlacement | kNeedSequenceCall, nullptr)) {
@@ -971,8 +979,8 @@ int PlacementGate(char* why, std::size_t cap) noexcept {
     return 0;
 }
 
-const char* CarriedSamTaken(std::uint64_t state_bits, bool sequence, bool* saving) noexcept {
-    if (saving) *saving = false;
+const char* CarriedSamTaken(std::uint64_t state_bits, bool sequence, bool* ours) noexcept {
+    if (ours) *ours = false;
     EnsureResolved();
     if (!(g_features & kFeatState) || !(g_features & kFeatModule)) return nullptr;
     Sam s;
@@ -981,8 +989,8 @@ const char* CarriedSamTaken(std::uint64_t state_bits, bool sequence, bool* savin
     std::uint32_t mask = 0;
     if (w.gm && Rd(w.gm + kGmLoadMask, mask) && mask) {
         if (mask == 0x100) {
-            if (saving) *saving = true;
-            return "the game is saving";
+            if (ours) *ours = true;
+            return "the world waits for a scene (load mask 0x100)";
         }
         return "a load";
     }

@@ -320,3 +320,8 @@ bool Command(int, const double (&)[3], char* msg, std::size_t cap) noexcept { re
 namespace st::vhit {
 bool Command(int, const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "vehicle hit (stub)"), true; }
 }  // namespace st::vhit
+
+// The save guard (save_guard.cpp): the debug row's handler.
+namespace st::saveguard {
+bool Command(int, const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "save guard (stub)"), true; }
+}  // namespace st::saveguard

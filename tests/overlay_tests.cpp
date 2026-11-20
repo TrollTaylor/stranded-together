@@ -325,7 +325,7 @@ void TestDecoders() {
     game::DescribeLoadMask(0, b, sizeof(b));
     CHECK(std::strcmp(b, "none") == 0);
     game::DescribeLoadMask(0x102 | 0x1000, b, sizeof(b));
-    CHECK(std::strcmp(b, "loading/area change|saving|0x1000") == 0);
+    CHECK(std::strcmp(b, "loading/area change|scene wait|0x1000") == 0);  // 0x100: a sequence waits for its scene, not a save
     CHECK(std::strcmp(game::AreaName(100), "Area01") == 0 && std::strcmp(game::AreaName(0xFFFF), "Empty") == 0);
     CHECK(game::AreaName(123) == nullptr);
     CHECK(game::TeleportTargetSane(1000, -2000, 300));

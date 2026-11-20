@@ -4074,8 +4074,8 @@ Holds count only while Sam is awake (a menu's buttons are the menu's).
 **Every placement** first asks `game::PlacementGate` (the guards of `Place`, without the rate limit), so the mod never
 warps Sam where the game's own warp would refuse: the game has Sam (a load, a stopping game event, the post-load setup, a
 parent, Sam+0x678, a ground snap or pushed transform, a sequence): no placement (the game places him; the capsule and the
-input come back where he is); Sam asleep (a menu) or the game saving (the load mask's save bit `0x100` alone): the
-placement waits up to 2 minutes and goes through once he is awake (dropped when the game takes him meanwhile or he was
+input come back where he is); Sam asleep (a menu), the game capturing or writing a save (`save_guard::InProgress`, 24.12)
+or the world waiting for a scene (the load mask's bit `0x100` alone; not a save, 24.12): the placement waits up to 2 minutes and goes through once he is awake (dropped when the game takes him meanwhile or he was
 moved over 4 m from where he was left); only PlaceOn's 500 ms rate limit (or the teleport's byte checks off, Sam awake)
 lets the entity teleport stand in, with PlaceOn again for 2 s, never after that call faulted in this ride. When Sam was
 left behind (asleep while the vehicle drove on), the spot is beside where the vehicle was at our last teleport of him.
@@ -4090,7 +4090,8 @@ beside it, never along its tilted axes under or onto the wreck (unit-tested at 9
 | the mod's emergency stop (a fault of the per-frame tick) | stopped | the input and the pose back at once (any thread); on the next game-thread pass: put beside, capsule on (`AfterStop`, once); a pending REQUEST is withdrawn (END `stopped`), and every later ride message is refused (a late ACCEPT gets END at once, never a carry; `ride_test 10`) |
 | a world change (load, reload, title: coop's load counter) or our Sam another entity | a load or the title | none: the capsule back on only on the same Sam (a new Sam has a new capsule) |
 | the game takes our Sam: a parent entity, a load bit, a DSGameState bit of a cutscene / game over / faint / fast travel / private room / knot space / boss battle / area change ... (`kTakenBits`, current or requested), Sam+0x678 (the game's warp guard), a pushed transform, a sequence binding (every 250 ms) (`game::CarriedSamTaken`, every tick) | the game took Sam | none (the game places him) |
-| ... or nothing of the game's places him: a health drop over 1 (a MULE spear, a BT, a fall), the game saving (load mask `0x100` alone), asleep 60 s | the game took Sam | beside (waiting while he sleeps or the game saves) |
+| ... or nothing of the game's places him: a health drop over 1 (a MULE spear, a BT, a fall), the world waiting for a scene (load mask `0x100` alone), asleep 60 s | the game took Sam | beside (waiting while he sleeps) |
+| a save: pending and held for us by the save guard (`save_guard::WantsOff`), or pending / being written without the hold (`save_guard::Busy`: the guard off, its cap, the post-load save) | the game saves | beside with PlaceOn before the held save is released (24.12); without the hold the placement waits for the write |
 | nothing from the partner for 1 s | link lost | beside |
 | the driver's END (its Sam got off: `driver_off`; a new session) | the driver got off / ended it | beside |
 | the vehicle not live here for 300 ms | the vehicle is gone | beside (its last place) |
@@ -4229,18 +4230,13 @@ L02 / L04; seat-measure M04 / M13 / M23 / M25.
   owner's truck tumble, and a crash exit came first (the order puts a crash, with its M4 hit, before a flip). The exit
   spot of a rolled vehicle was along its tilted right axis (under the wreck on its right side, on top of it on its left)
   until the review; now on the ground plane (unit tests at 90 deg each way, the roof, the nose).
-- **The new taken triggers** (Sam+0x678, a sequence, the requested state flags) and the waiting placement (asleep,
-  saving) came up in no hidden run; they cut none of the re-run rides short (no false trigger while carried).
+- **The new taken triggers** (Sam+0x678, a sequence, the requested state flags) and the waiting placement (asleep)
+  came up in no hidden run; they cut none of the re-run rides short (no false trigger while carried).
 - **The host carried and forced off**: proven on the truck in `two-games-ride-forced-host` (`20261119-172958`: link lost,
   crash, taken, the driver got off); the roll-over and the other kinds ran with the guest as the passenger only.
-- **A save while the host is carried** (a decision for the user): there is no save hook. The game's save raises its load
-  mask's save bit (`0x100`, inferred from the code that sets it); the ride ends there ("the game is saving") and Sam is put
-  beside the vehicle once the save is over. The save itself may still record the host's Sam at the seat (above the
-  vehicle's floor, inside its box): the alternatives are to deny the host the passenger seat (only the guest rides) or
-  to hook the save. The game's load then places him (not tried: no way to force a save in a hidden run).
-  The nearest evidence: the "taken" exit turns the capsule back on with Sam still at the seat, and in run
-  `20261119-164402` the game pushed him out of the truck's cab onto the ground beside it within 3 s (`[sync] trace` and the
-  next teleport's "from" point at ground height); not stuck, not under the ground.
+- **A save while the host is carried**: solved by the save guard (24.12, the user's choice "hook the save"). The old
+  answer (the ride ended at the load mask's "save bit" `0x100`, then a placement after the save) never fired: `0x100` is
+  not a save bit, and the save records Sam's live transform, so a save while carried would have loaded him at the seat.
 - **The camera**: the on-foot camera as it is (24.5); no vehicle camera for the passenger.
 - **Keyboard**: the ride key F is read from our keyboard hook (hidden runs use the virtual pad only). A release missed
   while the window loses focus no longer leaves it "down": the hook's state is confirmed by the key's physical state
@@ -4250,6 +4246,201 @@ L02 / L04; seat-measure M04 / M13 / M23 / M25.
 - **D3-3**: done in M4 (section 25.5, run `20261119-155208-two-games-vehicle-hit-fast`).
 - A vehicle driven out of the other world's streaming range (23.21) ends the ride (the vehicle is gone here).
 - `ride_together=0` is a mod key only (no launcher checkbox).
+
+### 24.12 The save guard (`native/mod/save_guard.*`): no save captures a carried Sam
+
+The user's choice for 24.11's open problem: hook the save. Before any save of the game captures the player, a carried
+Sam (host or guest) is taken off the ride and put on the ground beside the vehicle with his capsule on, the pose override
+off and the input back; only then does the save run. The driver's own Sam is never touched (the game saves a driver
+natively). Static research of the save path on ds.exe (Ghidra, `tools/re/dsre.py`), then hidden runs.
+
+**The save path** ([P] proven by decompile / disassembly / xrefs, [R] seen in hidden runs):
+
+- Every save the game makes is posted into ONE pending-save holder `M = [[0x147C0D6B0]+8]` through `0x143411580` ->
+  `0x143411590`, which accepts or refuses it (a refused one never reaches the holder) [P]. Holder: `+0xC8` slot type
+  (1 manual, 2 quick, 4 auto; `0xFF` = nothing pending), `+0xC9` index (-1 the next / newest, -2 the in-memory retry
+  checkpoint), `+0xC0` reason, `+0xC4` id, `+0xE1` kind, `+0x118` "issued this frame", `+0x114` the autosave cooldown
+  (7 s after an autosave [R]). Posters: the pause menu's Save `0x143236110`, the scripts' DSCreateSaveGame* `0x14365C770`
+  (area / mission checkpoints), the autosaves `0x1428FE750` / `0x143419760` / `0x143422E60` / `0x143422FC0` /
+  `0x14289C9D0`, the retry checkpoint `0x142DCE8B0` / `0x14365C5C0`, the post-load quick save `0x14263FA90` [P].
+- Each frame `GameModule::Update 0x14263BAD0` calls `0x143632D60(GameModule+0x2A0)`, which calls the holder's processor
+  `0x14341C350(M, float dt)` (through the thunk `0x14341C100`), then the save system's executor `0x143633640` [P]. The
+  processor is the ONLY caller of the enqueue `0x143630440` (at `0x14341CA1A`); the executor turns the queued task into
+  the capture job `0x1436297C0`, which reads the player entity's `+0xC8` position and `+0xE0` rotation and is joined at
+  `SaveGameSystem::OnEndUpdateRendering 0x14362DCF0` in the same frame [P]. The processor runs on the mod's tick thread
+  (`[save] the game's save processor runs on thread N (the mod's tick: N)` in every run) [R].
+- The processor keeps a request pending across frames by itself (its "not now" paths just return) [P], but delaying
+  it is NOT safe for every poster [P]: the autosave task `0x143419760` (a state-machine task, handlers `0x144DE8850`)
+  posts its save (type 4, id `0x38E9493C`, `+0xC2` bit 2), sets its flag `0x20` and, at its next update, clears the
+  holder (`0x143402D50`) when the save queue is empty (`0x14362D480`: `S+0x88 == 0`); the retry checkpoint
+  `0x142DCE8B0` sets `0x20` the same way. A request the processor has not issued by then is wiped. The processor also
+  drops (not delays) a request whose refusal reasons (`0x1433FEA20`) are set when it looks (`LAB_14341CBC0` ->
+  `0x143402D50`), so looking later can lose a save. The guard therefore never delays the processor for the game's own
+  saves (a first version did; review 2026-11-19).
+- The save system's kick `0x14362DB80` (its vtable slot `0x143F199F0`, once per frame, on the tick thread [R]) submits
+  the prepared capture job `S+0x98` (the task `S+0xA0`, in state 2, set by the executor at `0x1436338C6`). Its own wait
+  [P]: while the game refuses (`0x1434022A0`) it counts `S+0xAC` and returns before submitting, up to 91 frames, then
+  submits anyway (never a cancel); nothing joins the job before it is submitted (`OnEndUpdateRendering` joins `S+0xA8`,
+  0 then). Returning from it early is that wait: the save stays queued (`S+0x88` 1, so the autosave task above sees it
+  queued and waits), its job prepared exactly as the game made it, and the game's own kick submits it later.
+- The saved position is the live entity transform; the load places Sam there with `SetWorldTransform 0x14235A010`, no
+  ground snap (`PlayerGame::Save 0x142641A30`, spawn `0x142636A60`) [P]. A save while carried would load him at the seat.
+- **The load mask's bit `0x100` is not a save bit** [P]: `ComputeSuspendMask 0x142627640` sets it while the SceneManager
+  `[0x147BC9228]` has a waiting sequence ("a used sequence waits for its scene", the world suspended); the save path
+  never touches the load mask. The old "the game is saving" checks in `game::PlacementGate` / `CarriedSamTaken` now say
+  "the world waits for a scene (load mask 0x100)" (`DescribeLoadMask`: "scene wait").
+
+**The hook**: MinHook detours of the kick `0x14362DB80` (the hold) and of the processor `0x14341C350` (logs, and a hidden
+test's forced save kept pending; `dt` in `xmm1` passed through). The processor runs unchanged: every request is issued
+when the game decides, so a poster finds its save queued as without the mod (`issued ... (at once, processor frame 1,
+... the save queue now holds 1)` in every run, also while carried). Each frame with a capture job prepared, the kick
+detour asks `rwire::SaveGate` (ride_wire.cpp, unit-tested):
+
+| Step | When | What the kick detour does |
+|---|---|---|
+| run | no job; the post-load save (task kind 10, or the request's `+0xC0` 0x0F / id 0x43005559: its load flow waits on the queue; no ride survives a load); this capture was released or capped already (`done`: the cap is per capture and never restarts); our Sam not carried, no placement waiting and, within 10 s after his last carry, his entity (`+0xC8`) outside the ridden vehicle's body box (`rwire::InVehicleBox`), for 2 kick frames in a row | calls the game's kick (it submits, or waits by its own rules) |
+| hold | our Sam carried; his exit placement still waiting for PlaceOn (its 500 ms rate limit); his entity still in the vehicle's box (an exit that did not move him: the game has him, gate 2, or a sleeping Sam's teleport not applied yet); fewer than 2 settled frames | returns without calling it; while he is carried the ride is asked to end (`WantsOff`) |
+| run (cap) | held 3 s | calls the kick: the save runs unchanged, logged `CAP` (`in the vehicle's box (NOT placed)` when he is) |
+
+`WantsOff` is set as soon as a request is pending while our Sam is carried (before the executor prepares its job), so
+the ride usually ends in the frame the save is posted. While a held capture's job is prepared, a second request waits in
+the processor (the executor would give it the job and orphan the held task; the queue is not empty meanwhile, so the
+autosave task waits too), only while that job is there and at most the cap plus 1 s.
+
+The ride (ride_together.cpp, same thread, the same frame in every run) ends at `WantsOff` with END reason 15 **the game
+saves** (STQ1; `ForcedExit` order: after taken, before the link): `PlaceBeside` (PlaceOn mode 1, its ground probe, on
+the passenger's side unless the vehicle slides that way), capsule on, input and pose back, END to the driver ("Off the
+truck: the game saves." in the banner). The ride publishes "carried" and "placement waiting" to the guard every tick
+and at each carry start / end (`saveguard::SetRideState`).
+
+**Why the save is never lost**: the mod never writes the holder, a task or the job, never re-posts or copies a request
+and never touches save bytes; the processor is never delayed for the game's own saves (issued as the game decides);
+holding the kick is the kick's own wait, which ends in a submit, never a cancel, and is capped at 3 s per capture (a
+capture released or capped is never held again); the post-load save is never held; with a failed byte check of the hold
+or its reads there is no hook (saves are never delayed); after a whole-mod fault (`dllmain`'s emergency stop) the guard
+is stopped first: both detours pass everything through and the ride's last published state is dropped (no tick would
+refresh it). Side effects of a hold (2 frames, 62 to 78 ms in every run): the game's post refuses a second auto / manual
+save meanwhile (reason `0x200000`, "pending or saving"; the autosave poster `0x1428FE750` skips its turn), as it does
+while any save is queued or written.
+
+**Boarding** waits while a save is pending or being written (`Block::saving` "the game is saving": the holder, the save
+queue's head in states 1..4 or the capture job `S+0x98`); `StartCarry` refuses too (an ACCEPT arriving then is ended).
+Without the guard's reads (a byte check) boarding as a passenger is refused altogether ("Save guard off: ... Riding as a
+passenger is refused." in the co-op banner).
+**Last resort**: a save pending or written without the hold (the guard off, its cap, the post-load save) also ends the
+ride (`the save was not held: the last-resort exit`), and `PlacementGate` waits while the game captures or writes a save
+(except a capture the guard holds), so no teleport of the mod races the capture; PlaceOn follows (run
+`20261119-195908`, part 3).
+**The sleeping passenger** (asleep in a menu while a save comes: the pause menu's Save): PlaceOn refuses a sleeping Sam,
+so for a held save (never during a capture, and only when the game's other placement checks pass: `PlacementGate(...,
+asleep_ok)`, the gate-2 checks of a sequence, a stopping game state, a snap ...) the carry's own entity teleport puts
+him beside the vehicle and PlaceOn follows when he is awake. There is no ground probe: the spot is lifted to the
+vehicle's own ground plane under it (a slope rising beside the vehicle) plus 0.8 m (`rwire::SaveSpotHeight`,
+unit-tested on a 15 deg slope), so the save never records him inside the ground (he drops onto it after the load); the
+guard still waits until his entity reads outside the box. Not seen in a hidden run (below).
+**The game refuses some saves itself** [R]: its post (reason query `0x1433FEA20`) refused auto saves while Sam drives
+(reason `0x200`, from its player state) and, now and then, while he is carried (`0x400`, its player state `+4` bit 13;
+for 20 s straight with the cuff map open in run `20261119-200541`); other times it took them while carried. The guard
+handles every save the game takes.
+
+**Byte checks** (`kSites` in save_guard.cpp, 17 sites, plus the save system's vtable slot `0x143F199F0` holding the
+kick: 18 checks; a mismatch turns that part off with one line in the log and, for the hold or its reads, "Save guard off:
+<reason>. A save while riding as a passenger may record Sam at the seat." (reads off: "Riding as a passenger is
+refused.") in the co-op banner; a failed reads site turns the hold off too):
+
+| Site | Bytes | Part |
+|---|---|---|
+| the processor `0x14341C350` (`M+0x118`, `xmm1`) | `40 57 48 81 EC C0 00 00 00 48 8B 05 D0 4C B4 01 48 33 C4 48 89 84 24 90 00 00 00 C6 81 18 01 00 00 00 48 8B F9 48 8B 05 9C 9F 7C 04 C5 F8 29 B4` | hook (both detours) |
+| its thunk `0x14341C100` (`[W+8]`) | `48 8B 49 08 E9 47 02 00 00` | hook, reads |
+| the save system per frame `0x143632D60` (GameModule `0x147BE6318`, W `0x147C0D6B0`, the thunk, the executor) | `40 53 48 83 EC 20 48 83 3D AA 35 5B 04 00 48 8B D9 74 1E 48 8B 0D 36 A9 5D 04 48 85 C9 74 05 E8 7C 93 DE FF 48 8B CB 48 83 C4 20 5B E9 AF 08 00 00 48 83 C4 20 5B C3` | hook, reads |
+| nothing pending `0x14341C432` | `80 BF C8 00 00 00 FF` | hook, reads |
+| the issue `0x14341C9AD` (the holder's fields, `M+0x118 = 1`, `GameModule+0x2A0`, the enqueue) | `80 BF C0 00 00 00 0A 44 8B 8F CC 00 00 00 44 0F B6 87 C9 00 00 00 0F 95 C0 0F B6 97 C8 00 00 00 88 87 E2 00 00 00 0F B6 87 E1 00 00 00 48 89 7C 24 40 88 44 24 38 0F B6 87 E0 00 00 00 88 44 24 30 48 8B 87 D8 00 00 00 48 89 44 24 28 0F B6 87 D0 00 00 00 C6 87 18 01 00 00 01 48 8B 0D 09 99 7C 04 48 81 C1 A0 02 00 00 88 44 24 20 E8 21 3A 21 00` | hook, reads |
+| is saving `0x1436323B0` (`S+0x88`, `S+0x90`, head `+0xC`) | `83 B9 88 00 00 00 00 74 1D 48 8B 81 90 00 00 00 48 8B 08 8B 51 0C 8D 42 FF 83 F8 02 76 05 83 FA 04 75 03 B0 01 C3 32 C0 C3` | hook, reads |
+| pending or saving `0x143409C30` | `40 53 48 83 EC 20 48 8B D9 48 8B 0D D8 C6 7D 04 48 81 C1 A0 02 00 00 E8 64 87 22 00 84 C0 75 15 48 8B 43 08 80 B8 C8 00 00 00 FF 75 08 32 C0 48 83 C4 20 5B C3` | hook, reads |
+| the capture job's kick `0x14362DB80` (`S+0x98` job, `S+0xA0` task, its own wait `S+0xAC` < 91, `S+0xA8` in flight); its vtable slot `0x143F199F0` | `48 89 5C 24 10 57 48 83 EC 30 40 32 FF 48 8B D9 48 83 B9 98 00 00 00 00 0F 84 97 00 00 00 48 8B 81 A0 00 00 00 48 85 C0 74 66 40 38 78 6D 74 60 4C 8B 15 F9 FA 5D 04 4D 85 D2 74 51 80 78 48 05 0F B6 48 10 44 0F B6 40 6F 41 0F 94 C3 80 F9 04 74 09 80 F9 01 74 04 33 D2 EB 02 B2 01 44 0F B6 48 6E 49 8B CA 44 88 44 24 20 45 0F B6 C3 E8 AD 46 DD FF 0F B6 F8 84 C0 74 16 FF 83 AC 00 00 00 83 BB AC 00 00 00 5A 0F 8E 9D 00 00 00 40 32 FF B8 01 00 00 00 F0 0F C1 83 A8 00 00 00 48 8B 93 98 00 00 00 48 8D 0D 55 DB 14 02 E8 10 85 3D FE 40 84 FF 75 75`; the slot holds the kick | hook, reads |
+| the executor's capture job `0x1436338C6` (`S+0xA0` task, `S+0xAC`, task state 2) | `48 8B 45 E7 48 89 87 A0 00 00 00 B8 FF FF FF FF 44 89 BF AC 00 00 00 C7 46 0C 02 00 00 00` | hook, reads |
+| the executor's result `0x143633A39` (`S+0x12F`) / the finished slot `0x14341D160` (`M+0x10C` / `+0x10D`) | `E8 22 97 DE FF 80 7E 48 0A 75 2D 80 BF 2F 01 00 00 01` / `48 8B 41 08 88 90 0C 01 00 00 44 88 80 0D 01 00 00 C3` | result (logs; the site also the hook: the post-load task kind `+0x48` 10) |
+| DSCreateSaveGame `0x14365C560` / its body `0x14365C770` | `48 83 EC 58 48 8D 44 24 40 48 C7 44 24 40 00 00 00 00 48 89 44 24 38 41 BA 40 00 00 00 48 8B 84 24 88 00 00 00 48 89 44 24 30 0F B6 84 24 80 00 00 00 88 44 24 28 66 44 89 54 24 20 48 C7 44 24 48 00 00 00 00 E8 C6 01 00 00 48 83 C4 58 C3` / `48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20 57 41 56 41 57 48 81 EC 20 01 00 00 48 8B 05 9E 48` | forced save (tests) |
+| the refusal reasons `0x1433FEA20`, the post's call `0x143411745` and cooldown read `0x143411785` (`M+0x114`), DSCanSaveGame `0x143634FB0` (`GameModule+0x328`) | `40 53 48 83 EC 20 48 89 6C 24 30 48 8B DA 48 89 74 24 40 41 0F B6 E9 C7 02 00 00 00 00 41 0F B6` / `E8 D6 D2 FE FF` / `C5 FA 10 86 14 01 00 00` / `48 8B 05 61 13 5B 04 48 85 C0 74 0C 83 B8 28 03 00 00 00 75 03 B0 01 C3 32 C0 C3` | diagnostics (tests) |
+
+The guard is installed with riding together (`ride::Active()`) or in a hidden run.
+
+**Debug action** `save_guard` (docs/debug-actions.md "Save guard"): `0` state and counters; `1 [type] [1|2]` a save now
+through the game's own DSCreateSaveGame (hidden runs with the save redirect: the scratch copy), as the scripts post one
+(2: a second call at once while the first is pending);
+`2 [n]` our Sam's place against where the last held save released him (`where (check n)`); `3` the pause menu's Load of the run's newest save
+(host, the M1 path); `4 0/1` the hold off / on; `5` the game's refusal reasons now; `6 [s] [1|2]` / `7 [s]` keep the next
+forced save pending until our Sam boards (1: and sleeps; 2: and the vehicle drives at 8 m/s or more) / without letting anyone board. The log names each save (`#N`,
+`(forced save Fn)`) and how it ran: `pending`, `runs at once`, `HELD`, `released after N frames`, `CAP`, `issued ... (at
+once | after the hold | the hold was off | after the cap)`, the save system's states, `finished ok: #N ... the newest save
+file in this run's scratch folder`.
+
+**Hidden scenarios** (`-SeedSaves complete-100 -GuestSeed profile-only`, `ini host_save=1`):
+
+| Scenario | What |
+|---|---|
+| `two-games-ride-save-host` | 0. no ride: a forced save runs at once; 1. the guest drives the truck, the host rides; a forced save on the host (asked again each second while the game refuses it) is held, the ride ends "the game saves", Sam beside the truck, capsule 1 -> 0, the input back, then released, issued "after the hold" with Sam not carried, written; 2. the host loads that autosave (`save_guard 3`, the guest follows): Sam stands where the guard put him; walks |
+| `two-games-ride-save-guest` | the same with the guest carried (its sandbox scratch); no boarding while a save is pending (`save_guard 7`, `ride_test 11` "the game is saving"); the hold off: the last-resort exit |
+| `two-games-ride-save-none` | nobody rides: a forced save on each game runs at once; the host driving: the guard never holds (the game itself refuses, reason `0x200`) |
+| `two-games-ride-save-break` | the guest carried, under stress: A. a second DSCreateSaveGame while the first is held (`save_guard 1 4 2`); B. a save while the truck drives at 8 m/s or more (`save_guard 6 40 2`: posted on foot, kept pending until then); C. a 2.5 s link blackout on both games and a save; D1. a save pending while the guest boards (`save_guard 6`); D2. a save posted while the REQUEST is on its way (a 1 s blackout on the host delays it): the ACCEPT finds the save pending, the carry is refused, END to the driver, the save runs on foot; finally `save_guard 0`: every request issued and finished ok, none dropped or gone |
+
+**Evidence** (hidden, foreground, one at a time, 2026-11-19; every run: both games exit 0, real saves unchanged and
+restored, no violation, 0 cloud uploads):
+
+| Run | Result |
+|---|---|
+| `20261119-195448-two-games-ride-save-host` | **pass**. F1 (on foot) runs at once, written as autosave4 in 0.19 s. F2 posted while the host rides the truck: `HELD`, in the same frame the ride ends (`the game saves`), PlaceOn puts Sam on the truck's right side on the road, capsule 1 -> 0, the input and pose back, END to the guest; released after 2 frames (62 ms) with Sam at (2.20, 0.80, 0.18) in the truck's frame (the passenger seat is (0.44, 0.80, 1.95)); issued "after the hold", Sam not carried; written as autosave5. The host's in-world Load of autosave5 (the guest followed, RESULT ok): Sam 0.00 m from the release spot, no parent; S3 on both screens: standing on the road beside the truck, not at the seat, not inside it, not under the ground; then walked 0.58 m |
+| `20261119-195908-two-games-ride-save-guest` | **pass**. The guest's F1 while carried: held 2 frames (62 ms), the same exit and placement, written as autosave0 in the guest's scratch; G1 (host): the guest standing beside the truck. F2 kept pending (`save_guard 7`): `boarding now: the game is saving`. F3 with the hold off: issued with Sam CARRIED at the seat (0.44, 0.80, 1.95), what the guard prevents; the last-resort exit, `put beside the truck once possible (the game is saving (its capture or write))`, PlaceOn 230 ms later |
+| `20261119-201433-two-games-ride-save-host` | **pass** on the final build (the same: held 2 frames, 62 ms; autosave5 reloaded, Sam 0.04 m from the release spot, no parent) |
+| `20261119-200326-two-games-ride-save-none` | **pass**: the host's and the guest's saves on foot at once (0 ms); the host driving: the game refused the save (reason `0x200`), nothing held |
+| `20261119-194258` / `-194901` / `-195122-two-games-ride-save-host` | development: the first forced save while carried refused by the game (no diagnostics yet); then the real path (`HELD` -> released after 2 frames -> written); `-195122` passed every step, the reload included (0.02 m), and failed only on an optional step that counted as a failure (removed) |
+| `20261119-195648-two-games-ride-save-guest` | development: the game refused the carried guest's save (reason `0x400`); the scenarios now ask again each second |
+| `20261119-200137-two-games-ride-save-none` | development: the driving host's save refused (`0x200`); the scenario now accepts either outcome |
+| `20261119-200541` / `-200902` (a pause-menu scenario, dropped) | START opens the cuff map with Sam awake (the game refused carried saves for 20 s, `0x400`); BACK opened nothing: no way found to make Sam sleep in a hidden run |
+
+Screenshots checked: S1-guest-sees-host and S3-host-loaded / S3-guest (`-195448`), G1-host and G1-guest-off (`-195908`).
+
+**Independent verification** (a second pass on 2026-11-19, the same rules; every run: both games exit 0, saves unchanged,
+restored, no violation, 0 cloud uploads, no FAULT line):
+
+| Run | Result |
+|---|---|
+| `20261119-210219-two-games-ride-save-host` | **pass** with the reload check made strict (`save_guard 2 2`: before, `waitlog ... where:` also matched the line from before the load). F2 held 2 frames, released with Sam at (2.20, 0.80, 0.18) in the truck's frame; after the in-world Load of autosave5 (a new Sam entity, no parent): 0.04 m from the release spot; S3: standing on the road beside the truck |
+| `20261119-210426-two-games-ride-save-guest` | **pass** (also `-202139` before the test-option changes) |
+| `20261119-202416-two-games-ride-save-none` | **pass** |
+| `20261119-205834-two-games-ride-save-break` | **pass**. A: the second DSCreateSaveGame while F1 was held left the holder unchanged ("the same request"): one request, held once, issued once; later attempts refused by the autosave cooldown. B: held at 8.1 m/s, Sam put on the truck's right side, 1.5 m back along its path, on the road; written; 1.5 s and 5 s later still 0.00 m from the release spot (B2: standing on the road). C: the save during the blackout was held and written; the END reached the host after the blackout (the link resends). D1: held in the frame the carry started. D2: `cannot carry our Sam: the game has a save pending`, END to the driver, the save ran on foot. Counters: requests 5, held 4, released 4, issued 5, dropped 0, gone 0, finished ok 5 |
+| `-202558-two-games-ride-truck`, `-202906-two-games-ride-forced-host`, `-203134-two-games-hostsave-reload`, `-203346-two-games-hostsave-continue`, `-203552-two-games-veh-drive` | **pass** (regressions; no save was posted in them while anyone was carried) |
+| `-204107` / `-204648` / `-205003` / `-205303` / `-205545-two-games-ride-save-break` | development of that scenario: an optional step counted as a failure; B's save came only at 3 m/s (the game refused carried saves, `0x400`, so the test now posts it on foot and keeps it pending until 8 m/s); a regex for the issue line used on the finish line; a 2 s blackout delayed the REQUEST past its 3 s wait (1 s now). The guard itself never failed: every request issued and finished ok once |
+
+**After the review** (2026-11-19/20: the hold moved from the processor to the kick, the per-capture cap, the box check,
+the emergency stop, no boarding without the reads, the sleeping passenger's checks and height; the same rules, every run:
+both games exit 0, saves unchanged, restored, no violation, 0 cloud uploads, no FAULT line):
+
+| Run | Result |
+|---|---|
+| `20261119-213714` / `20261120-002543` / `-004837-two-games-ride-save-host` | **pass**. F2 posted while the host rides: issued by the game at once (processor frame 1, the queue holding 1: the autosave task's step-2 check finds it queued), its capture HELD at the kick, the ride ends, released after 2 frames (62 to 78 ms) with Sam at (2.20, 0.80, 0.17) in the truck's frame, outside its box; written. The truck was driven ~10 m after the boarding: the reloaded Sam stands 0.00 m from the release spot and 6.3 to 7.3 m from where he boarded (`where (check 2)`), so the save holds the placed spot, not a stale one; S3: on the road beside the truck |
+| `20261120-002809` / `-003915-two-games-ride-save-guest` | **pass** (the same for the guest; `boarding now: the game is saving`; the hold off: the last-resort exit) |
+| `20261120-003032` / `-005047-two-games-ride-save-none` | **pass** (at once on foot; the driving host's save refused by the game) |
+| `20261120-003209-two-games-ride-save-break` | **fail**, B only: the test's own processor wait (Command 6) released F2 while the game's reasons had `0x400` set (carried), and the game's processor dropped it (`not issued: the game's processor dropped it`), the delayed-processor loss the review predicted. The test wait now releases only while none of the processor's drop reasons is set (`kProcessorDropMask`, logged `would drop the save now`); the game's own saves are never delayed there |
+| `20261120-003625-two-games-ride-save-break` | **pass**: B waited 78 ms for reasons `0x00200400` to clear, then held at 8.8 m/s, Sam put 1.9 m back along the path on the road; counters: requests 4, held 3, released 3, issued 4, finished ok 4, dropped 0, gone 0 |
+| `20261120-004135-two-games-ride-forced-host`, `-004412-two-games-hostsave-reload`, `-004628-two-games-hostsave-continue` | **pass** (regressions) |
+
+**Not proven / open**:
+
+- **The sleeping passenger** (a save while Sam sleeps in the pause menu): the entity teleport before the release came
+  up in no hidden run (no menu that makes Sam sleep is reachable with the virtual pad).
+- **The cap and the box check**: no run held a capture to its 3 s cap, or held one because Sam's entity was still in the
+  vehicle's box after an exit that did not move him (unit-tested only). The autosave task `0x143419760` was not
+  triggered in a run; the runs only show its condition (the queue holds the save while the capture is held).
+- **The game's own saves**: only the scripts' DSCreateSaveGame request was forced; every other poster goes through the
+  same holder and processor [P], none came up in a run while carried. Which of them the game refuses while carried
+  (`0x400`) is not mapped; what bit 13 of the player state means is not known.
+- **The pause menu's Save** during a hold (2 frames): the game refuses a second save meanwhile; how its menu shows that
+  was not seen.
+- **On the move**: an autosave while the vehicle drives puts the passenger off at speed (the forced placement, back
+  along the path); no automatic re-boarding after the save.
+- What else of the carried state the save serialises (the capsule, the pose: mod state; the vehicle mount: the game
+  saved no parent, Sam loaded standing) beyond the position checked here.
 
 ## 25. Vehicle hits (`session.ini partner_vehicle_damage`, default 1, with `vehicle_sync=5`; design milestone M4)
 

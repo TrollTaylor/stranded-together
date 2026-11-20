@@ -89,6 +89,9 @@ enum class Action : std::uint8_t {
     ride_test,            // v[0] = 1 solo seat carry, 2 end, 4 crash dv v[1], 5 flip / 6 stop our vehicle, 7 taken, 30-33 seat tuning (tests)
     vehicle_hit,          // vehicle hits (partner_tackle.cpp; docs/real-partner-body.md section 25): v[0] = 0 state, 1 kind v[1] path v[2],
                           //   2 one hit on our Sam now (tests), 8 [m ahead] [m right] our Sam in front of the partner's vehicle (tests), 9 the capsule's boxes
+    save_guard,           // the save guard (save_guard.cpp; docs/real-partner-body.md section 24.12): v[0] = 0 state, 1 [type] a save now (tests),
+                          //   2 our Sam's place vs the last held save, 3 load the newest save of the run (host, tests), 4 0/1 the hold off / on (tests),
+                          //   5 why a save is refused now (tests), 6 / 7 [s] the next forced save stays pending until a boarding / without one (tests)
     count
 
 };

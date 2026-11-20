@@ -65,11 +65,13 @@ const char* DenyName(std::uint8_t r) noexcept {
 const char* EndName(std::uint8_t r) noexcept {
     static const char* const k[] = {"got off",          "link lost",    "the driver got off", "the vehicle is gone", "the vehicle is broken",
                                      "flipped",          "crash",        "the game took Sam",  "a load or the title", "the mod stopped",
-                                     "the driver ended it", "nobody drives it", "not seen seated", "test", "jumped off"};
+                                     "the driver ended it", "nobody drives it", "not seen seated", "test", "jumped off",
+                                     "the game saves"};
     return r < sizeof(k) / sizeof(k[0]) ? k[r] : "?";
 }
 const char* BlockName(Block b) noexcept {
-    static const char* const k[] = {"ok", "off", "no link", "no partner vehicle", "not on foot", "too far", "the vehicle moves", "no seat", "busy"};
+    static const char* const k[] = {"ok", "off", "no link", "no partner vehicle", "not on foot", "too far", "the vehicle moves", "no seat", "busy",
+                                     "the game is saving"};
     const auto i = static_cast<unsigned>(b);
     return i < sizeof(k) / sizeof(k[0]) ? k[i] : "?";
 }
@@ -168,6 +170,7 @@ Block BoardCheck(const BoardIn& in) noexcept {
     if (SeatOf(in.kind) == Seat::none) return Block::no_seat;
     if (!in.local_on_foot) return Block::not_on_foot;
     if (in.busy) return Block::busy;
+    if (in.saving) return Block::saving;
     if (!(in.door_dist_m <= kBoardRadiusM)) return Block::too_far;
     if (!(std::fabs(in.vehicle_speed) < kBoardMaxSpeed)) return Block::moving;
     return Block::ok;
@@ -197,6 +200,7 @@ End ForcedExit(const ForcedIn& in) noexcept {
     if (in.stopped) return End::stopped;
     if (in.world_changed) return End::world;
     if (in.taken) return End::taken;
+    if (in.saving) return End::saving;
     if (in.link_silent_ms > kLinkSilentMs) return End::link;
     if (in.driver_ended) return End::driver_ended;
     if (!in.vehicle_live) return End::vehicle_gone;
@@ -300,6 +304,48 @@ ExitSpot ExitPlacement(std::uint8_t kind, const double (&pos)[3], const float (&
     s.facing[0] = static_cast<float>(-side * rx), s.facing[1] = static_cast<float>(-side * ry);
     s.side = side;
     return s;
+}
+
+// ---------------------------------------------------------------- the save guard
+const char* SaveStepName(SaveStep s) noexcept {
+    switch (s) {
+        case SaveStep::run: return "run";
+        case SaveStep::hold: return "hold";
+        case SaveStep::run_capped: return "run (cap)";
+    }
+    return "?";
+}
+
+SaveStep SaveGate(const SaveHoldIn& in) noexcept {
+    if (!in.pending || in.post_load || in.done) return SaveStep::run;
+    const bool busy = in.carried || in.placing || in.in_vehicle || in.settled_frames < kSaveSettleFrames;
+    if (!busy) return SaveStep::run;
+    if (in.held_ms >= kSaveHoldCapMs) return SaveStep::run_capped;
+    return SaveStep::hold;
+}
+
+bool InVehicleBox(std::uint8_t kind, const double (&veh)[3], const float (&rows)[9], const double (&p)[3]) noexcept {
+    float half[3];
+    vwire::KindHalfExtents(kind, half);
+    const double d[3] = {p[0] - veh[0], p[1] - veh[1], p[2] - veh[2]};
+    double l[3];
+    for (int i = 0; i < 3; ++i) l[i] = d[0] * rows[i * 3] + d[1] * rows[i * 3 + 1] + d[2] * rows[i * 3 + 2];
+    for (double v : l)
+        if (!std::isfinite(v)) return false;
+    return std::fabs(l[0]) <= half[0] + kBoxMarginM && std::fabs(l[1]) <= half[1] + kBoxMarginM && l[2] >= -kBoxMarginBelowM &&
+           l[2] <= 2.0 * half[2] + kBoxMarginBelowM;
+}
+
+double SaveSpotHeight(const double (&veh)[3], const float (&rows)[9], const double (&spot)[3]) noexcept {
+    double z = spot[2];
+    const double nz = rows[6 + 2];
+    // upright enough: the vehicle's own ground plane (through its base, normal its up axis) at the spot, so a slope that
+    // rises toward the spot never puts it inside the hillside
+    if (std::isfinite(nz) && nz >= 0.5) {
+        const double plane = veh[2] - (rows[6] * (spot[0] - veh[0]) + rows[7] * (spot[1] - veh[1])) / nz;
+        if (std::isfinite(plane) && plane > z) z = plane;
+    }
+    return z + kSaveSpotLiftM;
 }
 
 }  // namespace st::rwire

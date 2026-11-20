@@ -13,6 +13,7 @@
 #include "player_sync.hpp"
 #include "partner_tackle.hpp"
 #include "ride_together.hpp"
+#include "save_guard.hpp"
 
 namespace st::debug {
 namespace {
@@ -175,6 +176,7 @@ bool DoRideBoard(const Request&, char* msg, std::size_t cap) { return ride::Boar
 bool DoRideExit(const Request& r, char* msg, std::size_t cap) { return ride::ExitCommand(r.v, msg, cap); }
 bool DoSeatMeasure(const Request& r, char* msg, std::size_t cap) { return ride::SeatMeasureCommand(r.v, msg, cap); }
 bool DoRideTest(const Request& r, char* msg, std::size_t cap) { return ride::Command(static_cast<int>(r.v[0]), r.v, msg, cap); }
+bool DoSaveGuard(const Request& r, char* msg, std::size_t cap) { return saveguard::Command(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoVehicleHit(const Request& r, char* msg, std::size_t cap) { return vhit::Command(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoVoicePing(const Request& r, char* msg, std::size_t cap) {
     // The live partner entity, exactly as the Partner tab sees it (0 when there is none).
@@ -268,6 +270,7 @@ constexpr Row kRows[] = {
     {{Action::seat_measure, Tab::tools, "Seat measure", "The vehicle our Sam drives (or last drove): his root and pelvis, the game's seat helpers, in its frame.", false}, &DoSeatMeasure},
     {{Action::ride_test, Tab::tools, "Ride test", "Hidden tests: 1 solo seat carry, 2 end, 4 crash, 5 flip / 6 stop our vehicle, 7 taken, 30-33 seat tuning.", false}, &DoRideTest},
     {{Action::vehicle_hit, Tab::tools, "Vehicle hit", "Vehicle hits (vehicle_sync=5): 0 state and counters, 1 kind path (0 auto, 1 direct, 2 bracket), 2 one hit on our Sam now (tests), 8 [m ahead] [m right] our Sam in front of the partner's vehicle (tests), 9 the capsule's vehicle boxes.", false}, &DoVehicleHit},
+    {{Action::save_guard, Tab::tools, "Save guard", "No save captures Sam while he rides as a passenger: 0 state, 1 [type] a save now (tests: 4 auto, 1 manual), 2 Sam's place vs the last held save, 3 load the run's newest save (host, tests), 4 0/1 the hold off/on (tests), 5 why a save is refused now (tests), 6 / 7 [s] the next forced save stays pending until a boarding / without one (tests).", false}, &DoSaveGuard},
 
 };
 constexpr std::size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);

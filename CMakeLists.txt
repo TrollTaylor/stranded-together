@@ -143,6 +143,7 @@ add_library(st_mod SHARED
   native/mod/vehicle_drive.cpp
   native/mod/ride_wire.cpp
   native/mod/ride_together.cpp
+  native/mod/save_guard.cpp
   native/mod/tackle_rules.cpp
   native/mod/partner_tackle.cpp
   native/mod/save_xfer.cpp

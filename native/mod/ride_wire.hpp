@@ -64,6 +64,7 @@ enum class End : std::uint8_t {
     timeout = 12,      // the driver's game did not see the passenger seated in time
     test = 13,         // hidden tests
     jumped = 14,       // the passenger held X / B again while waiting for the vehicle to slow down: off at any speed
+    saving = 15,       // the game is about to save (or saves): the save guard holds the save until our Sam is off and placed
     count
 };
 const char* EndName(std::uint8_t r) noexcept;
@@ -121,6 +122,7 @@ enum class Block : std::uint8_t {
     moving,        // the vehicle moves
     no_seat,       // no seat for that kind
     busy,          // a request is pending, or the last ride ended under 1.5 s ago
+    saving,        // the game has a save pending or is saving (save_guard): no boarding until it is written
     count
 };
 const char* BlockName(Block b) noexcept;
@@ -133,6 +135,7 @@ struct BoardIn {
     double door_dist_m = 1e9;       // horizontal
     double vehicle_speed = 0;       // m/s
     bool busy = false;
+    bool saving = false;            // a save is pending or being written (save_guard::Busy)
 };
 Block BoardCheck(const BoardIn& in) noexcept;
 
@@ -176,6 +179,7 @@ struct ForcedIn {
     bool world_changed = false;
     bool stopped = false;
     bool driver_ended = false;      // the driver's END arrived
+    bool saving = false;            // a save is pending (the save guard holds it for us) or being written
 };
 // The first reason that applies, in the order of the fields above (stopped, world and taken first: they are the game's or
 // the mod's); End::count when the ride goes on.
@@ -231,5 +235,45 @@ struct ExitSpot {
 // right and forward axes projected onto it (a vehicle on its side or roof: the spot is outside its footprint, at the
 // height of its lowest point, never along its tilted up or right axis into the ground or onto the wreck).
 ExitSpot ExitPlacement(std::uint8_t kind, const double (&pos)[3], const float (&rows)[9], const float (&vel)[3], bool forced) noexcept;
+
+// ---------------------------------------------------------------- the save guard (save_guard.cpp; docs section 24.12)
+// Every save the game makes is posted into one pending-save holder; the game's save processor issues it into the save
+// system's queue at once (never delayed by the mod: some posters, e.g. the autosave task 0x143419760, clear a request
+// that is not queued by their next step). The save system then prepares the capture job (S+0x98, task state 2) and its
+// kick 0x14362DB80 (once per frame) submits it; the job reads Sam's entity transform. The kick itself waits by returning
+// early (its own refusal path, up to 91 frames), so the guard's detour of the kick decides each frame with SaveGate:
+//   run         call the game's kick now (nobody carried, or our Sam is off, placed and settled);
+//   hold        return without calling it: the save stays queued with its job prepared, exactly as the game made them, and
+//               the kick (the game's own code) submits it on a later frame. Meanwhile the ride ends (End::saving): our
+//               Sam is put on the ground beside the vehicle with the capsule on, the pose and the input back;
+//   run_capped  held for kSaveHoldCapMs already: call the kick anyway (the save runs unchanged, logged). A save is never
+//               dropped or edited by the mod: the worst case is a save with Sam where he is.
+// Once a capture was released or capped (`done`), it is never held again (the cap is per capture, not per frame).
+// The post-load save (the game's own quick save after a load, kind 10) is never held: the load flow waits for it through
+// the save queue, and no ride survives a load.
+enum class SaveStep : std::uint8_t { run = 0, hold, run_capped };
+const char* SaveStepName(SaveStep s) noexcept;
+inline constexpr unsigned kSaveSettleFrames = 2;    // kick frames in a row with our Sam neither carried, placing nor in the box
+inline constexpr double kSaveHoldCapMs = 3000.0;    // the longest hold of one capture
+struct SaveHoldIn {
+    bool pending = false;           // a capture job is prepared and not submitted yet (S+0x98)
+    bool post_load = false;         // it is the post-load save
+    bool done = false;              // this capture was released or capped already: never held again
+    bool carried = false;           // our Sam is carried (ride_together)
+    bool placing = false;           // his exit placement still waits for the game's PlaceOn (its rate limit, a ground probe)
+    bool in_vehicle = false;        // just after a ride: his entity still reads inside the ridden vehicle's box (not placed)
+    unsigned settled_frames = 0;    // kick frames in a row with none of the three (saturating)
+    double held_ms = -1;            // since this capture was first held (< 0: not held)
+};
+SaveStep SaveGate(const SaveHoldIn& in) noexcept;
+// Our Sam at `p` is inside the vehicle's body box (vwire::KindHalfExtents: right / forward +-half + kBoxMarginM, up from
+// -kBoxMarginBelowM to 2 half + kBoxMarginBelowM in its frame `rows` at `veh`, its base): the seat is, the exit spot is not.
+inline constexpr double kBoxMarginM = 0.3, kBoxMarginBelowM = 0.5;
+bool InVehicleBox(std::uint8_t kind, const double (&veh)[3], const float (&rows)[9], const double (&p)[3]) noexcept;
+// The height for the save-time entity teleport (a sleeping passenger: no ground probe of PlaceOn): the higher of the exit
+// spot's (ExitPlacement) and the vehicle's ground plane under the spot (upright, its up axis z >= 0.5), plus
+// kSaveSpotLiftM, so the spot is never inside a slope that rises beside the vehicle (he drops onto the ground).
+inline constexpr double kSaveSpotLiftM = 0.8;
+double SaveSpotHeight(const double (&veh)[3], const float (&rows)[9], const double (&spot)[3]) noexcept;
 
 }  // namespace st::rwire

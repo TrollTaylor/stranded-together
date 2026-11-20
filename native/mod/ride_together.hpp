@@ -27,12 +27,14 @@
 //                     driver got off: also its END), the vehicle gone, broken or out of battery, flipped 0.5 s, a crash (a
 //                     one-frame velocity change over 8 m/s in the driver's frames: then the M4 hit handler, D3-3), the game
 //                     takes our Sam (a parent, a cutscene / load / game-over state current or requested, Sam+0x678, a pushed
-//                     transform, a sequence binding, a health drop, the game saving, asleep 60 s), a world change, the mod's
-//                     stop. Put beside the vehicle away from its sideways velocity, moved back along a fast one's path,
+//                     transform, a sequence binding, a health drop, the world waiting for a scene, asleep 60 s), a save (the
+//                     save guard, save_guard.hpp: a pending save waits until our Sam is off and placed), a world change,
+//                     the mod's stop. Put beside the vehicle away from its sideways velocity, moved back along a fast one's path,
 //                     always on the ground plane (a vehicle on its side or roof too), capsule on. Every placement first asks
 //                     game::PlacementGate: when the game has Sam (a load, a game state, +0x678, a sequence ...) there is
-//                     none (the game places him; the capsule and the input come back); while he sleeps or the game saves it
-//                     waits; the entity teleport only stands in for PlaceOn's rate limit.
+//                     none (the game places him; the capsule and the input come back); while he sleeps or the game captures
+//                     or writes a save it waits; the entity teleport only stands in for PlaceOn's rate limit (and, for a
+//                     save the guard holds, for PlaceOn's refusal of a sleeping Sam).
 //   ownership         unchanged (VOWN, M2.7): the passenger never owns. The driver getting off ends the ride.
 //
 // Every game address is in the start-up byte-check table (kSites in ride_together.cpp); a mismatch turns riding off with
@@ -105,7 +107,8 @@ void SetCrashHitHandler(CrashHitFn fn) noexcept;
 //     (RequestTeleport onto its own place: a crash in its frames), 7 the taken exit next tick, 31 / 32 / 33 <m> the x / y / z
 //     of the measured kind's passenger seat (tuning, this session), 30 the seat table again, 8 [m] our Sam at the passenger door
 //     of the vehicle the partner drives here, 9 the module's emergency stop (hidden tests; riding stays off), 10 ask to ride
-//     and the emergency stop in the same call (hidden tests: the driver's ACCEPT arrives after the stop).
+//     and the emergency stop in the same call (hidden tests: the driver's ACCEPT arrives after the stop), 11 log the boarding
+//     check now ("the game is saving" while a save is pending or written; the action succeeds either way).
 bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 bool StateCommand(char* msg, std::size_t cap) noexcept;
 bool BoardCommand(char* msg, std::size_t cap) noexcept;

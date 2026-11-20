@@ -20,6 +20,7 @@
 #include "pose_wire.hpp"
 #include "real_body.hpp"
 #include "ride_wire.hpp"
+#include "save_guard.hpp"
 #include "vehicle_drive.hpp"
 #include "vehicle_share.hpp"
 #include "vehicle_wire.hpp"
@@ -161,7 +162,7 @@ Drv g_d;
 unsigned g_accepts = 0, g_denies = 0, g_ends_rx = 0, g_ends_tx = 0, g_bad_rx = 0;
 
 // A pending ground placement after the exit: PlaceOn refused for its rate limit (retried for 2 s after the entity
-// teleport), or not possible yet (our Sam asleep in a menu, the game saving: retried for up to 2 minutes). Dropped when the
+// teleport), or not possible yet (our Sam asleep in a menu, the game writing a save: retried for up to 2 minutes). Dropped when the
 // game takes Sam meanwhile or he was moved over 4 m from where he was left.
 constexpr double kPlaceRetryMs = 2000.0, kPlaceWaitMs = 120000.0, kPlaceMovedM = 4.0;
 struct PendingPlace {
@@ -171,8 +172,17 @@ struct PendingPlace {
     float facing[2] = {};
     bool have_from = false;
     double from[3] = {};               // our Sam's place when it was armed
+    bool at_spot = false;              // our Sam already stands at the spot (the entity teleport while he slept, for a save,
+                                       // at a ground-safe height): the save guard need not wait for this PlaceOn
 };
 PendingPlace g_place;
+
+// The save guard's view of the ride (save_guard.hpp): our Sam carried; his exit placement still waiting for PlaceOn; the
+// vehicle and its kind (the guard checks that he is out of its box before it lets a held capture run).
+void PublishSaveState() noexcept {
+    const bool riding = g_p.st == PState::riding;
+    saveguard::SetRideState(riding, g_place.on && !g_place.at_spot, riding ? g_p.entity : 0, riding ? g_p.kind : 0, riding ? g_p.last_speed : 0.0);
+}
 
 // hidden tests (ride_test 5): our driven vehicle rolled over about its forward axis, 4 deg a tick around a point 1 m above
 // its origin, by the game's own deferred vehicle teleport (a "flip" whose frames show no velocity jump)
@@ -336,7 +346,9 @@ void ArmPlace(const double (&pos)[3], const float (&facing)[2], const double* fr
 // game::PlacementGate first, so the mod never warps Sam where the game's own guards would refuse:
 //   the game has Sam (a load, a stopping game event, the post-load setup, a parent, Sam+0x678, a snap or pushed transform,
 //     a sequence): no placement (the game places him; the capsule comes back on where he is);
-//   Sam asleep (a menu) or the game saving: the placement waits (up to 2 minutes, while he stays where he was left);
+//   Sam asleep (a menu), a save being captured / written, the world waiting for a scene: the placement waits (up to 2
+//     minutes, while he stays where he was left; for a save the guard holds, a sleeping Sam is put at the spot first, at a
+//     ground-safe height, only when the game's other checks (gate 2: a sequence, a stopping game state ...) pass too);
 //   PlaceOn refused for its rate limit only, or the teleport off (its byte checks) with Sam awake: the entity teleport
 //     there (the carry's own call; never after it faulted this ride) and PlaceOn again for 2 s.
 // The spot is beside the vehicle where our Sam is: its transform now, or at our newest teleport when he was left behind (a
@@ -372,7 +384,37 @@ void PlaceBeside(bool forced, bool allow_raw) {
         return;
     }
     if (gate == 1) {
-        ArmPlace(spot, s.facing, have_sam ? &from[0] : nullptr, kPlaceWaitMs);
+        // A save waits for our Sam (the save guard holds its capture) while he sleeps in a menu (the pause menu's Save):
+        // PlaceOn refuses a sleeping Sam, so the carry's own entity teleport puts him at the spot now (the save then records
+        // him there), and PlaceOn follows once he is awake. Never while the game captures or writes a save, and never where
+        // the game has him (the same checks as an awake placement: a sequence, a stopping game state, a snap ...). There is
+        // no ground probe: the spot is lifted to the vehicle's own ground plane there (a slope rising beside it) plus
+        // kSaveSpotLiftM, so the save never records him inside the ground (he drops onto it).
+        bool for_save = saveguard::WantsOff() && !saveguard::InProgress() && !g_in.local_active && have_sam && allow_raw;
+        char why2[160] = {};
+        if (for_save) {
+            const int awake_gate = game::PlacementGate(why2, sizeof(why2), true);
+            if (awake_gate != 0) {
+                for_save = false;
+                Log("[ride] a save waits and our Sam sleeps (%s), but %s (gate %d): no entity teleport; the placement waits", why, why2, awake_gate);
+            }
+        }
+        bool raw = false;
+        double save_spot[3] = {spot[0], spot[1], spot[2]};
+        if (for_save) {
+            save_spot[2] = rwire::SaveSpotHeight(p, Rows(xf), s.pos);
+            WorldTransform t{};
+            t.pos.x = save_spot[0], t.pos.y = save_spot[1], t.pos.z = save_spot[2];
+            t.rot.m[0][0] = s.facing[1], t.rot.m[0][1] = -s.facing[0], t.rot.m[0][2] = 0;
+            t.rot.m[1][0] = s.facing[0], t.rot.m[1][1] = s.facing[1], t.rot.m[1][2] = 0;
+            t.rot.m[2][0] = 0, t.rot.m[2][1] = 0, t.rot.m[2][2] = 1;
+            raw = CallTeleport(g_p.sam, &t);
+            Log("[ride] a save waits and our Sam sleeps (%s): entity teleport beside the %s %s at (%.2f, %.2f, %.2f) (ground-safe: %.2f m over the exit "
+                "spot's height)",
+                why, vwire::KindName(g_p.kind), raw ? "done" : "FAULTED", save_spot[0], save_spot[1], save_spot[2], save_spot[2] - s.pos[2]);
+        }
+        ArmPlace(spot, s.facing, raw ? &save_spot[0] : (have_sam ? &from[0] : nullptr), kPlaceWaitMs);
+        g_place.at_spot = raw;
         Log("[ride] put beside the %s once possible (%s): waiting up to %.0f s at (%.2f, %.2f, %.2f)", vwire::KindName(g_p.kind), why, kPlaceWaitMs / 1000, spot[0],
             spot[1], spot[2]);
         return;
@@ -481,11 +523,20 @@ void EndCarry(rwire::End reason, bool place, bool tell_driver) {
     g_p = Pass{};
     g_hold.Reset();
     g_cooldown_until = g_now + 1500;
+    PublishSaveState();
 }
 
 bool StartCarry(const vwire::VKey& key, std::uint8_t kind, std::uintptr_t entity, std::uintptr_t unit, std::uint32_t ride_id, bool solo) {
     if (g_stop.load()) {
         Log("[ride] cannot carry our Sam: riding together stopped");
+        return false;
+    }
+    if (!saveguard::ReadsOk()) {
+        Log("[ride] cannot carry our Sam: the save checks are off (this game build differs): a save could record him at the seat");
+        return false;
+    }
+    if (saveguard::Busy() && !saveguard::TestAllowsCarry()) {
+        Log("[ride] cannot carry our Sam: the game has a save pending or is saving");
         return false;
     }
     const std::uintptr_t sam = reinterpret_cast<std::uintptr_t>(g_in.local);
@@ -518,6 +569,7 @@ bool StartCarry(const vwire::VKey& key, std::uint8_t kind, std::uintptr_t entity
         return false;
     }
     ApplyCarryState(true);
+    PublishSaveState();
     g_hold.Reset();  // the hold that boarded must be released before one gets off
     ++g_boards;
     Log("[ride] %s: our Sam carried on the %s 0x%06X (%s, ride #%08X, #%u): capsule off (counter %d -> %d, on byte %d), seat (%.2f, %.2f, %.2f), "
@@ -535,8 +587,9 @@ bool StartCarry(const vwire::VKey& key, std::uint8_t kind, std::uintptr_t entity
 // The game takes our Sam. Two kinds:
 //   game  the game moves or holds him itself (a parent, a load, a cutscene / game-over / fast-travel state current or
 //         requested, Sam+0x678 (its warp guard), a pushed transform, a sequence binding): no placement of ours;
-//   ours  nothing of the game's places him (a health drop: a MULE spear, a BT, a fall; asleep for a minute; the game
-//         saving): he is put beside the vehicle (PlaceBeside waits while he sleeps or the game saves).
+//   ours  nothing of the game's places him (a health drop: a MULE spear, a BT, a fall; asleep for a minute; the world
+//         waiting for a scene, load mask 0x100): he is put beside the vehicle (PlaceBeside waits while he sleeps).
+// A save is not "taken": the save guard's own exit (End::saving, CarryTick) comes before the save captures him.
 // Every tick (the sequence answer every 250 ms; the health every 100 ms). A BT / tar grab has no trigger of its own (the
 // game's "Hugged" state is not researched): it ends the ride by its health drop or its game state.
 constexpr std::uint64_t kTakenBits = (1ull << 3) | (1ull << 6) | (1ull << 8) | (1ull << 9) | (1ull << 10) | (1ull << 11) | (1ull << 12) | (1ull << 13) |
@@ -548,8 +601,8 @@ TakenBy Taken(const char** why) {
     if (mem::Q(sam + kEParent) != 0) return *why = "Sam has a parent entity", TakenBy::game;
     const bool seq = g_now >= g_p.next_seq_ms;
     if (seq) g_p.next_seq_ms = g_now + 250;
-    bool saving = false;
-    if (const char* t = game::CarriedSamTaken(kTakenBits, seq, &saving)) return *why = t, saving ? TakenBy::ours : TakenBy::game;
+    bool ours = false;
+    if (const char* t = game::CarriedSamTaken(kTakenBits, seq, &ours)) return *why = t, ours ? TakenBy::ours : TakenBy::game;
     if (g_p.asleep_since > 0 && g_now - g_p.asleep_since > 60000) return *why = "asleep for a minute", TakenBy::ours;
     if (g_now >= g_p.next_health_ms) {
         g_p.next_health_ms = g_now + 100;
@@ -640,9 +693,15 @@ void CarryTick() {
     f.crash_dv = g_p.crash_dv;
     f.speed = speed;
     f.driver_ended = g_p.driver_ended;
+    // a save: the save guard holds a pending one until our Sam is off (WantsOff); a save pending or written without the
+    // hold (the guard off, its cap, the post-load save) ends the ride too: the last resort, the placement waits for the write
+    f.saving = saveguard::WantsOff() || (saveguard::Busy() && !saveguard::TestAllowsCarry());
     const rwire::End forced = rwire::ForcedExit(f);
     if (forced != rwire::End::count) {
         if (forced == rwire::End::taken) Log("[ride] the game took our Sam: %s", taken_why ? taken_why : "?");
+        if (forced == rwire::End::saving)
+            Log("[ride] the game %s: our Sam gets off first (%s)", saveguard::InProgress() ? "is saving" : "is about to save",
+                saveguard::WantsOff() ? "the save guard holds the save until he is placed" : "the save was not held: the last-resort exit");
         if (forced == rwire::End::driver_ended) Log("[ride] the driver's game ended the ride (%s)", rwire::EndName(g_p.driver_reason));
         if (forced == rwire::End::crash) g_p.last_speed = (std::max)(g_p.last_speed, speed);
         // no placement when the game has Sam (Taken's "game" kind) or the world changed; the driver's END needs no answer
@@ -761,6 +820,7 @@ BoardView ViewBoard() {
     in.kind = b.v.key.kind;
     in.local_on_foot = OnFoot() && !RecentlyHurt();
     in.busy = g_p.st != PState::idle || g_now < g_cooldown_until;
+    in.saving = !saveguard::ReadsOk() || (saveguard::Busy() && !saveguard::TestAllowsCarry());
     WorldTransform xf{}, sam{};
     float door[3];
     if (in.partner_drives && ReadXf(b.v.entity, xf) && g_in.local_ok && ReadXf(reinterpret_cast<std::uintptr_t>(g_in.local), sam) &&
@@ -1051,6 +1111,7 @@ void RestoreAfterStop() {
     CapsuleBack("the mod stopped");
     Log("[ride] the mod stopped while our Sam was carried: input and pose back, capsule %s", sam == g_p.sam ? "back on, put beside the vehicle" : "with the old Sam");
     g_p = Pass{};
+    PublishSaveState();
 }
 bool RestoreGuarded() noexcept {
     __try {
@@ -1125,14 +1186,19 @@ void SeatWatch(const TickIn& in) noexcept {
     else Log("[ride] our Sam is out of the vehicle");
 }
 
+static void TickInner(const TickIn& in, double now) noexcept;
 void Tick(const TickIn& in, double now) noexcept {
+    TickInner(in, now);
+    PublishSaveState();
+}
+static void TickInner(const TickIn& in, double now) noexcept {
     if (!g_checks_ok) return;
     SeatWatch(in);
     if (g_stop.load()) {
         g_in = in;
         g_now = now;
         AfterStop();
-        // a placement that waits (Sam asleep, the game saving) or retries PlaceOn goes on; nothing else
+        // a placement that waits (Sam asleep, a save being written) or retries PlaceOn goes on; nothing else
         if (g_place.on && !PendingPlaceGuarded()) Log("[ride] FAULT in the exit's placement after the stop: dropped");
         return;
     }
@@ -1399,6 +1465,12 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept 
             Log("[ride] test: emergency stop right after the request");
             EmergencyStop();
             return std::snprintf(msg, cap, "asked to ride (ride #%08X), then the emergency stop", g_p.ride_id), true;
+        }
+        case 11: {
+            // hidden tests: the boarding check now, logged (the action succeeds whatever it says: a scenario waits on the line)
+            const BoardView b = ViewBoard();
+            Log("[ride] test: boarding now: %s (door %.2f m)", rwire::BlockName(b.block), b.dist);
+            return std::snprintf(msg, cap, "boarding now: %s (door %.2f m)", rwire::BlockName(b.block), b.dist), true;
         }
         case 31:
         case 32:
