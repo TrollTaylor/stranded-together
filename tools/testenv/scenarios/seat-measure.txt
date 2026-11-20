@@ -1,0 +1,105 @@
+# Riding together (design M3.5 #1; docs/real-partner-body.md section 24.2), one game, hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario seat-measure -SeedSaves complete-100
+# For each kind (truck, roadster, the Kusanagi trike): Sam drives it (X), `seat_measure` logs his root and pelvis in the
+# vehicle's frame, the vehicle's joint 1 and the game's seat helpers (HLP_Driver / HLP_Passenger / HLP_C_Driver) through it,
+# and keeps his seated pose; he gets off; `ride_test 1` carries him on that vehicle's passenger seat (the trike: the pillion)
+# with the kept pose exactly as a passenger is carried (capsule off, the entity teleport every tick, the input blocked),
+# the camera turned for a side view; `ride_test 2` puts him off beside it (the trike: `ride_test 9`, the emergency stop).
+# Pass (in the logs): every kind measured, carried with a small seat error, put off with the capsule back on (counter back
+# to its value), no fault. Check enlarged: the Mxx-carried screenshots (Sam sitting in the passenger seat / on the pillion, not outside, not standing on the seat).
+role echo
+timeout 360
+ini partner_body=real
+ini echo_offset_m=40
+ini echo_delay_s=0.5
+ini partner_collision=0
+ini vehicle_sync=0
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+wait 1500
+action ride_state
+# ---- the truck
+action vehicle_sync 8 1.8 2
+wait 1500
+until 20 4000 \[ride\] our Sam is seated in the truck => pad X 150
+wait 3500
+action seat_measure
+screenshot M01-truck-driver
+pad X 150
+waitlog 15 \[ride\] our Sam is out of the vehicle
+wait 3000
+action ride_test 1
+waitlog 5 \[ride\] solo: our Sam carried on the truck
+wait 2500
+screenshot M02-truck-carried
+pad none 700 rx=32767
+wait 800
+screenshot M03-truck-carried-side
+pad none 700 rx=32767
+wait 800
+screenshot M04-truck-carried-front
+action ride_state
+action ride_test 2
+waitlog 5 \[ride\] capsule back ON
+wait 2000
+screenshot M05-truck-off
+# ---- the roadster (the garage)
+action vehicle_sync 8 1.8 1
+wait 1500
+until 20 4000 \[ride\] our Sam is seated in the roadster => pad X 150
+wait 3500
+action seat_measure
+screenshot M11-roadster-driver
+pad X 150
+waitlog 15 \[ride\] our Sam is out of the vehicle
+wait 3000
+action ride_test 1
+waitlog 5 \[ride\] solo: our Sam carried on the roadster
+wait 2500
+screenshot M12-roadster-carried
+pad none 700 rx=32767
+wait 800
+screenshot M13-roadster-carried-side
+pad none 700 rx=32767
+wait 800
+screenshot M14-roadster-carried-front
+action ride_test 2
+waitlog 5 \[ride\] capsule back ON
+wait 2000
+screenshot M15-roadster-off
+# ---- the Kusanagi trike (outside)
+action vehicle_sync 8 1.8 4
+wait 1500
+until 20 4000 \[ride\] our Sam is seated in the trike => pad X 150
+wait 3500
+action seat_measure
+screenshot M21-trike-driver
+pad X 150
+waitlog 15 \[ride\] our Sam is out of the vehicle
+wait 3000
+action ride_test 1
+waitlog 5 \[ride\] solo: our Sam carried on the trike
+wait 2500
+screenshot M22-trike-carried
+pad none 700 rx=32767
+wait 800
+screenshot M23-trike-carried-side
+pad none 700 rx=32767
+wait 800
+screenshot M24-trike-carried-front
+# the emergency-stop path while carried (what a fault of the per-frame tick does): input and pose back at once, the next
+# tick puts Sam beside the trike and turns his capsule back on; riding stays off
+action ride_test 9
+waitlog 5 \[ride\] capsule back ON \(the mod stopped\)
+wait 2000
+screenshot M25-trike-off
+action ride_state
+nolog \[ride\].*FAULT
+action log_status
+quit

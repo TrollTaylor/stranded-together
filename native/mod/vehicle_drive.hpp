@@ -85,6 +85,28 @@ void AfterStop() noexcept;
 bool SeatTarget(double play_ms, game::WorldTransform* target) noexcept;
 // The vehicle the partner drives here (a follower we run): its entity, false otherwise.
 bool PartnerDrivenEntity(std::uintptr_t* entity) noexcept;
+
+// Riding together (ride_together.cpp, M3): the vehicle our Sam drives (LocalDriving), or the vehicle the partner drives here
+// through our follower (PartnerDriving). Game thread, after vdrive::Tick.
+struct DrivenView {
+    vwire::VKey key;
+    std::uintptr_t entity = 0, unit = 0;
+    bool meas = false;              // the vehicle's velocity measured here in the last 200 ms
+    float vel[3] = {};
+    double speed_mps = 0;
+    bool have_frame = false;        // the partner's newest DRIVE frame (followers)
+    double frame_key = 0;           // its key (the pose ring's sender axis)
+    double frame_rx_age_ms = 1e9;   // since one arrived
+    float frame_vel[3] = {};
+    bool frame_seated = false, frame_broken = false;
+    std::uint8_t frame_ride_state = 0;
+};
+bool LocalDriving(DrivenView* out) noexcept;
+bool PartnerDriving(DrivenView* out) noexcept;
+// The partner's DRIVE frame at or before `play_ms` for that vehicle: its sender-measured velocity and key.
+bool FrameAtPlay(std::uint32_t host_id, double play_ms, float (&vel)[3], double* key_ms) noexcept;
+// Our Sam is carried as the passenger of the vehicle with this unit (0: none): the teleport clearance leaves him out for it.
+void SetCarriedUnit(std::uintptr_t unit) noexcept;
 // Hidden tests: the vehicle the partner drives here (its follower), else the one whose DRIVE frames from the partner came
 // last (the one it just drove, even after the handback). Game thread.
 bool PartnerVehicleEntity(std::uintptr_t* entity) noexcept;

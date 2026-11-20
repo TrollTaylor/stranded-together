@@ -1,0 +1,114 @@
+# Vehicle against vehicle (design M4.4 / M4.5 #3; docs/real-partner-body.md section 25.6), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-vehicle-bump -SeedSaves complete-100 -GuestSeed profile-only
+# Both real vehicles are dynamic bodies in each world (layer pair (17,17) = 1): the local one reacts for real, the partner's
+# follower is pulled back by the drive module's correction bands; RequestTeleport only where its footprint is clear (no
+# teleport into an overlap); vehicle life is the owner's (M2.8). 1. The guest drives the truck into the host's parked trike
+# (put 12 m in front of it, facing it, by the game's RequestTeleport). 2. Head-on: the host takes the trike, both drive at
+# each other. 3. The partner capsule (partner_collision on): the guest on foot, the host's trike passes 3 m beside the
+# partner body: on the host's game "[coll] off: a vehicle moves within 5 m of the partner".
+# Pass (in the logs): both contacts, the follower's error spike and its recovery in the "[vdrive] ... followed" / "parked"
+# lines, no "teleport" correction into a blocked place (the "blocked" counter instead), the life of both vehicles equal on
+# both games 2 s after each contact ("[vhit] life:"), no fault. Check enlarged: B1a / B1b (the ram on both screens),
+# B2a / B2b (head-on).
+role host
+graphics low
+timeout 360
+ini host_save=1
+ini partner_body=real
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[coop\] host-held save session ON \(host
+@guest waitlog 10 \[coop\] host-held save session ON \(guest
+waitlog 60 \[vshare\] shared real vehicles ON \(host
+@guest waitlog 60 \[vshare\] shared real vehicles ON \(guest
+waitlog 10 \[vhit\] vehicle hits ON \(host
+@guest waitlog 10 \[vhit\] vehicle hits ON \(guest
+wait 22000
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+@guest waitlog 60 \[vshare\] guest: the host's snapshot #[0-9]+ is complete
+@guest waitlog 30 \[vshare\] guest: binding:
+wait 8000
+# ---- 1. the guest's truck rams the host's parked trike
+@guest action vehicle_sync 8 1.8 2
+action vehicle_sync 8 9 2
+wait 1500
+@guest until 20 4000 \[vdrive\] guest: our Sam drives truck => pad X 150
+waitlog 20 \[vdrive\] host: the guest claims truck 0x[0-9A-F]+ \(get on, epoch [0-9]+\): granted
+waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached
+wait 1500
+action vehicle_hit 10 3 12
+wait 3000
+@both action vehicle_hit 11
+@guest screenshot B0-guest-before
+@guest pad none 3000 rt=200 keep
+@guest screenshot B1a-guest-moment
+screenshot B1a-host-moment
+@guest pad none 1000 lt=255 keep
+@guest screenshot B1b-guest
+screenshot B1b-host
+@guest pad none 0
+wait 2000
+@both action vehicle_hit 11
+@both action vehicle_drive 1
+wait 3000
+@both action vehicle_hit 11
+# ---- 2. head-on: the guest backs off, the trike (at rest: the host's again) is put 16 m in front of the truck facing it
+@guest pad none 2000 lt=200 keep
+@guest pad none 800 rt=255 keep
+@guest pad none 0
+wait 4000
+action vehicle_hit 10 3 16
+wait 3000
+action vehicle_sync 8 1.8 4
+wait 1500
+until 20 4000 \[vdrive\] host: our Sam drives trike => pad X 150
+@guest waitlog 20 \[vdrive\] follower of trike 0x[0-9A-F]+ attached
+wait 2000
+pad none 0 rt=190 keep
+@guest pad none 2200 rt=190 keep
+screenshot B2a-host-moment
+@guest screenshot B2a-guest-moment
+pad none 0 lt=255 keep
+@guest pad none 1200 lt=255 keep
+screenshot B2b-host
+@guest screenshot B2b-guest
+pad none 0
+@guest pad none 0
+wait 2000
+@both action vehicle_hit 11
+@both action vehicle_drive 1
+wait 3000
+@both action vehicle_hit 11
+# ---- 3. the partner capsule: the guest on foot, the host's trike passes 3 m beside the partner body
+@guest pad X 150
+@guest waitlog 20 \[vdrive\] guest: our Sam got off truck
+wait 6000
+@guest action vehicle_hit 8 14 3
+wait 2500
+pad none 2400 rt=170 keep
+screenshot B3a-host-passing
+pad none 1200 lt=255 keep
+pad none 0
+waitlog 4 \[coll\] off: a vehicle moves within 5 m of the partner
+wait 1500
+@both action vehicle_hit 0
+@both action vehicle_drive 1
+@guest nolog \[vhit\] partner vehicle trike .* hit Sam
+nolog \[vhit\].*FAULT
+@guest nolog \[vhit\].*FAULT
+nolog \[vdrive\].*FAULT
+@guest nolog \[vdrive\].*FAULT
+@guest quit
+wait 3000
+quit

@@ -51,11 +51,27 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
   partner put on the vehicle shows on it (cannot be picked up yet). Online vehicles of other
   players are hidden during co-op. Without **Host holds the save** you see a solid copy of
   your partner's trike or truck (no roadster, no hologram).
+- **Experimental:** riding together (with the shared vehicles): stand beside the passenger
+  door of the vehicle your partner drives and **hold X** (pad) or **F** (keyboard) for about
+  half a second to ride along in the passenger seat (the trike: on the pillion behind the
+  driver). A tap stays the game's own get-on. Hold X / F again to get off (below walking
+  pace; at speed you get off as soon as it slows down). You are put off by yourself if the
+  link drops, the driver gets off, the vehicle crashes, flips or breaks, or the game needs
+  your Sam (a cutscene, a load). While you ride you can look around but not move or act;
+  you sit in your partner's driving pose (hands on a wheel that is not there).
+- **Experimental:** your partner's vehicle hits you like an enemy MULE truck: drive into
+  your partner above about 15 km/h and they are knocked down and hurt on their screen (the
+  game's own hit; you see them fall on yours). It never kills at once, however fast. A
+  passenger thrown off in a crash is knocked down the same way. The truck hits only you in
+  your world (not the NPCs or the cargo lying around you); the trike and the roadster use the
+  game's own hit area. Vehicles bump into each other on both screens. Turn it off for
+  yourself on the launcher's Debug page: **Partner's vehicles can knock me down** (each
+  player decides for their own Sam).
 - Not yet: other weapons in hand (bola gun, launchers, PCC ...), the Odradek, the cuff device,
   the weapon crate on the hip, the chiral cylinder, the exoskeleton on non-Sam characters,
   facial animation, the partner's gear sounds and gunshots (footsteps, movement and
-  rifle handling are heard, experimental), riding together in one vehicle, being hit by your
-  partner's vehicle, shared cargo on vehicles, carts (and for the copies without Host holds the
+  rifle handling are heard, experimental), the game's own passenger animation, a vehicle
+  camera for the passenger, shared cargo on vehicles, carts (and for the copies without Host holds the
   save: a roadster, the Kusanagi's own look, mud / snow, the light the lamps throw, damage),
   world/BT/mission sync.
 

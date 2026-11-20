@@ -128,6 +128,7 @@ DebugOptions DebugOptionsFromSettings(const json::Value& settings) {
     o.partner_volume = whole("partner_volume", o.partner_volume, 0, 100);
     o.name_tags = d->Bool("name_tags", o.name_tags);
     o.partner_collision = d->Bool("partner_collision", o.partner_collision);
+    o.partner_vehicle_damage = d->Bool("partner_vehicle_damage", o.partner_vehicle_damage);
     o.allow_other_characters = d->Bool("allow_other_characters", o.allow_other_characters);
     o.host_save = d->Bool("host_save", o.host_save);
     o.backup_host_saves = d->Bool("backup_host_saves", o.backup_host_saves);
@@ -152,6 +153,7 @@ void DebugOptionsToSettings(const DebugOptions& o, json::Value& settings) {
     d["partner_volume"] = o.partner_volume;
     d["name_tags"] = o.name_tags;
     d["partner_collision"] = o.partner_collision;
+    d["partner_vehicle_damage"] = o.partner_vehicle_damage;
     d["allow_other_characters"] = o.allow_other_characters;
     d["host_save"] = o.host_save;
     d["backup_host_saves"] = o.backup_host_saves;
@@ -186,6 +188,7 @@ void ApplyDebugOptions(const DebugOptions& o, SessionIni& ini) {
 
     ini.name_tags = o.name_tags;
     ini.partner_collision = o.partner_collision;
+    ini.partner_vehicle_damage = o.partner_vehicle_damage;
     ini.one_shot = true;
 }
 

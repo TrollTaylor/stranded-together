@@ -15,6 +15,7 @@ inline constexpr std::uint8_t kPoseMagic[4] = {'S', 'T', 'P', '1'};
 enum PoseFlags : std::uint32_t {
     kPoseValid = 1u << 0,     // sender has a live local player
     kPoseInVehicle = 1u << 1, // the sender rides something (a parent entity: vehicle, mount); player collision
+    kPosePassenger = 1u << 2, // the sender's Sam is carried as the passenger of the receiver's vehicle (riding together, M3)
 };
 
 struct Quat {

@@ -417,6 +417,13 @@ void Characters() {
     CHECK(MakeSessionIniText(host, text, error) && text.find("partner_collision=0\n") != std::string::npos);
     CHECK(ParseSessionIniText(text, back, error) && !back.partner_collision);
     CHECK(ParseSessionIniText(text + "partner_collision=1\n", back, error) && back.partner_collision);
+    // Vehicle hits: the same pattern (default on, only partner_vehicle_damage=0 written).
+    CHECK(text.find("partner_vehicle_damage") == std::string::npos && back.partner_vehicle_damage);
+    host.partner_vehicle_damage = false;
+    CHECK(MakeSessionIniText(host, text, error) && text.find("partner_vehicle_damage=0\n") != std::string::npos);
+    CHECK(ParseSessionIniText(text, back, error) && !back.partner_vehicle_damage);
+    CHECK(ParseSessionIniText(text + "partner_vehicle_damage=1\n", back, error) && back.partner_vehicle_damage);
+    host.partner_vehicle_damage = true;
     // Self voice (docs/audio-research.md Phase 1): auto by default, written for every role, parsed back; only
     // auto / sam / mute; a file without it parses back as "" (the mod keeps Sam's voice).
     CHECK(SessionIni{}.self_voice == "auto");
@@ -754,6 +761,16 @@ void DebugOptionsPersist() {
     CHECK(!pc.partner_collision);
     ApplyDebugOptions(pc, ini);
     CHECK(!ini.partner_collision);
+    // Vehicle hits: on by default (older settings files too), saved, copied into the session.ini.
+    CHECK(DebugOptions{}.partner_vehicle_damage && DebugOptionsFromSettings(json::Value::Object()).partner_vehicle_damage && ini.partner_vehicle_damage);
+    d.partner_vehicle_damage = false;
+    DebugOptionsToSettings(d, settings);
+    CHECK(json::Parse(json::Dump(settings), back));
+    const DebugOptions vd = DebugOptionsFromSettings(back);
+    CHECK(!vd.partner_vehicle_damage);
+    ApplyDebugOptions(vd, ini);
+    CHECK(!ini.partner_vehicle_damage);
+    d.partner_vehicle_damage = true;
     // Self voice: muting on by default (older settings files too: self_voice=auto), saved as auto / sam, copied in.
     CHECK(DebugOptions{}.mute_sam_voice && DebugOptionsFromSettings(json::Value::Object()).mute_sam_voice && ini.self_voice == "auto");
     d.mute_sam_voice = false;

@@ -28,6 +28,8 @@
 #include "real_body.hpp"
 #include "status.hpp"
 #include "steam_owner.hpp"
+#include "partner_tackle.hpp"
+#include "ride_together.hpp"
 #include "vehicle_drive.hpp"
 #include "vehicle_share.hpp"
 #include "vehicle_sync.hpp"
@@ -169,6 +171,7 @@ double g_last_joints_ms = 0;         // our clock at the newest received (or ech
 unsigned g_joints_since_fallback = 0;
 double g_rx_pos[3] = {};             // the newest received transform's position
 bool g_rx_in_vehicle = false;        // the newest received pose has kPoseInVehicle (player collision)
+std::uint32_t g_rx_flags = 0;        // the newest received pose's STP1 flags (riding together: kPosePassenger)
 double g_joints_pos[3] = {};         // ... when the newest playable STJ1 frame arrived
 // When the real body began waiting for the session's first joint frame (TrySpawn). Its own timer,
 // cleared whenever that wait is interrupted (link down, partner silent, Sam asleep, new link
@@ -1022,6 +1025,8 @@ void Tick() noexcept {
             // Riding something (Sam has a parent entity: vehicle, mount): the partner's player
             // collision takes our body's capsule out of its world (partner_collision.hpp).
             if (partner::mem::Q(reinterpret_cast<std::uintptr_t>(g_local) + kEntityParent) != 0) p.flags |= wire::kPoseInVehicle;
+            // Carried as the partner's passenger (ride_together.hpp): kPosePassenger | kPoseInVehicle (its capsule out there too).
+            p.flags |= ride::PoseFlags();
             p.x = g_local_wt.pos.x, p.y = g_local_wt.pos.y, p.z = g_local_wt.pos.z;
             p.rot = wire::QuatFromMatrix(g_local_wt.rot.m);
             p.speed = g_speed;
@@ -1056,6 +1061,7 @@ void Tick() noexcept {
                 g_last_remote_ms = now;
                 g_rx_pos[0] = p.x + g_cfg.echo_offset_m, g_rx_pos[1] = p.y, g_rx_pos[2] = p.z;
                 g_rx_in_vehicle = (p.flags & wire::kPoseInVehicle) != 0;
+                g_rx_flags = p.flags;
             }
             if (!g_net && have_sound) {
                 std::uint8_t buf[wire::kMaxSoundFrameSize];
@@ -1222,6 +1228,7 @@ void Tick() noexcept {
             if (!(p.flags & wire::kPoseValid)) continue;
             g_rx_pos[0] = p.x, g_rx_pos[1] = p.y, g_rx_pos[2] = p.z;
             g_rx_in_vehicle = (p.flags & wire::kPoseInVehicle) != 0;
+            g_rx_flags = p.flags;
             if (g_ring.Push(p.sender_ms, static_cast<double>(recv), p.x, p.y, p.z, p.rot))
                 g_last_remote_ms = static_cast<double>(recv);
         }
@@ -1313,7 +1320,8 @@ void Tick() noexcept {
         if (g_pin) target = g_pin_wt;  // collision tests: the body stands still (its last pose held)
         // The real shared vehicles (section 23.15): while the partner drives one of our real vehicles here, its body sits at
         // that vehicle's transform times the partner's seat (the vehicle moves by its own physics; the body never drifts off it).
-        else vdrive::SeatTarget(g_ring.PlayTime(now, delay), &target);
+        // Riding together (section 24): the partner rides OUR vehicle as its passenger: its body sits at our vehicle times the seat.
+        else if (!ride::PassengerTarget(&target)) vdrive::SeatTarget(g_ring.PlayTime(now, delay), &target);
         vin.have_play = true, vin.play_ms = g_ring.PlayTime(now, delay);
         vin.have_body = true, vin.body = target;
         sndf.have_root = true, sndf.root = target;
@@ -1380,6 +1388,24 @@ void Tick() noexcept {
         din.have_partner = vin.have_body;
         din.partner = vin.body;
         vdrive::Tick(din, now);
+        // riding together (ride_together.hpp): boarding, the carried passenger, the driver's side
+        ride::TickIn rin;
+        rin.local = g_local;
+        rin.local_ok = g_local_valid;
+        rin.local_active = g_local_active;
+        rin.have_partner = vin.have_body;
+        rin.partner = vin.body;
+        rin.partner_rx_ms = g_last_remote_ms > 0 ? g_last_remote_ms : -1e18;
+        rin.partner_flags = g_rx_flags;
+        rin.have_play = vin.have_play;
+        rin.play_ms = vin.play_ms;
+        ride::Tick(rin, now);
+        // vehicle hits (partner_tackle.hpp): the partner's vehicle hits our Sam (the game's own attack), the crash hit (D3-3)
+        vhit::TickIn hin;
+        hin.local = g_local;
+        hin.local_ok = g_local_valid;
+        hin.local_active = g_local_active;
+        vhit::Tick(hin, now);
     }
 
     // Player collision (partner_collision.hpp): only the partner slot's real body, never the

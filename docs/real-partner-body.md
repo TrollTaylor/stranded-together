@@ -3971,3 +3971,513 @@ Hidden runs of this state (2026-11-19, foreground, one at a time; all `-SeedSave
 
 (`20261119-132806-two-games-veh-remove` failed at the new step only: no truck within its first 30 m radius; the step now
 takes the nearest within 150 m.)
+
+## 24. Riding together (`session.ini ride_together`, default 1, with `vehicle_sync=5`; design milestone M3)
+
+"Players can ride together in vehicles", "make sure you look into letting players ride in the passenger seat too". The
+game seats one player per vehicle: the driver, whose game owns and drives it (section 23). The other player rides along
+as a **carried passenger**: their own Sam, his capsule off, placed every tick at the vehicle's transform times a seat,
+with the driver's seated pose. `native/mod/ride_together.*` does it in the game; the pure part (`native/mod/ride_wire.*`:
+the message, the seats, the rules, the detectors, the exit spot) is unit-tested in `st_ride_wire_tests` (239 checks).
+Ownership (VOWN, 23.13) is unchanged: the passenger never owns; the driver getting off ends the ride.
+
+### 24.1 On each screen
+
+| | The driver's screen | The passenger's screen |
+|---|---|---|
+| the vehicle | the driver's own (native ride) | our follower of it (23.11: the game's NPC controller replays the driver's inputs) |
+| the driver | native | the partner body at our vehicle times the driver's STM1 seat (23.15) |
+| the passenger | the partner body at **our vehicle's transform (one frame ahead along its velocity) times the passenger seat**, its pose the partner's STJ1 (seated, below); its capsule out (`kPoseInVehicle`) | **our own Sam, carried**: capsule off, the entity teleport `0x14235A010(Sam, &wt, 0, 0)` every tick to the vehicle's transform (one frame ahead along its velocity) times the seat, the movement / action input blocked, the driver's seated pose |
+
+- **Seated pose (decision D3-2, v1)**: the passenger's own Sam ends his model update with the driver's pose
+  (`realbody::SetRidePose(1)`; `RideOverride` in Sam's capture detour, before the capture is published): every joint's
+  rotation and the root / pelvis translations of the partner's published STJ1 frame (the driver's local Sam, Sam's
+  layout, at the body's play time, under 500 ms old), Sam's own bone lengths, then the game's model-matrix and bounds
+  steps (as the self-view fit, section 16). The capture then carries the seated pose, so the wire (the partner body on
+  the driver's screen sits too), the self view and the gear on Sam follow it. As with the fit, a value the game left as
+  we wrote it reads as Sam's clean one, and his clean values go back when the override ends. Source 2 is a snapshot of
+  our own driving pose (`seat_measure`, the solo seat test). The game's `BotRiding` animation variable (a native
+  passenger sit) stays the v2 candidate: not tried (the copied pose looked right in every screenshot, 24.10). It needs
+  the real partner body (`partner_body=real`, the default): with the hologram there is no STJ1 frame, and the carried
+  Sam keeps his own pose at the seat.
+- **The input while carried** (`overlay::input::SetRideCarry`, only while our Sam is awake: asleep in the game's pause
+  menu or a notice the whole block is lifted, so the menu gets the pad, the mouse and the keys; back once he is awake):
+  the pad answers keep the right stick (look) and a tap of Start (its first 250 ms: the pause menu opens, a hold never
+  reaches the game); every other button, the left stick and the triggers read idle to the game (Start held beside a
+  vehicle is the game's "Dispose of Vehicle", Back its "Like": both prompts are on screen while carried, so neither may
+  reach it). Key presses of the
+  movement / action keys (letters, digits, Space, Shift, Ctrl, arrows) are swallowed by our keyboard hook and dropped
+  from raw input and the window messages; their releases pass (nothing stays down). Mouse button presses are dropped (a
+  raw packet with a press loses its motion). Escape, Tab, Alt and the function keys pass. The pad buttons and the ride
+  key are recorded before the masking, so the mod sees the hold that gets off.
+- **STP1**: the carried passenger's pose frames say `kPosePassenger | kPoseInVehicle` (`wire::kPosePassenger`, bit 2).
+- **Teleport clearance**: our follower's teleport corrections (23.12) leave our carried Sam out of the clearance of the
+  vehicle he rides (`vdrive::SetCarriedUnit`).
+
+### 24.2 Seats (measured: `seat_measure`, run `20261119-143916-seat-measure`)
+
+`seat_measure` (while our Sam drives) logs his root and pelvis in the vehicle's frame (rows right, forward, up), the
+vehicle's joint 1 (its model matrix from the vehicle's SkinnedModel pose, `realbody::ReadJointModelAny`) and the game's
+seat helpers through it. The helpers are static data of each vehicle's SkeletonHelpers resource (positions in joint 1's
+frame, from the passenger research's dumps); a helper's place in the vehicle's frame is joint 1's position plus the
+helper's offset along joint 1's axes.
+
+| Kind | Joint 1 | Driver root (as the game seats Sam) | HLP_Driver / HLP_Passenger in the vehicle's frame | Passenger root used |
+|---|---|---|---|---|
+| truck | `JNT_C_B_001_Hips` of 47 at (0, 0, 0.157), axes = the vehicle's | (-0.439, 0.801, 1.950), yaw 0.0 deg; pelvis (-0.439, 0.802, 2.132) | (-0.473, 0.720, 1.950) / (0.473, 0.720, 1.950) | **(0.44, 0.80, 1.95)** |
+| roadster | `JNT_C_B_001_Hips` of 23 at (0, 0, 0.100), axes = the vehicle's | (-0.302, -0.623, 0.660), yaw 0.0; pelvis (-0.312, -0.620, 0.759) | (-0.313, -0.660, 0.660) / (0.313, -0.660, 0.660) | **(0.31, -0.61, 0.66)** |
+| trike (the Kusanagi) | `JNT_C_B_001_Hips` of 40 at (0.074, 0, 0.608), tilted 7.5 deg (parked on its stand) | (0.177, -0.551, 0.018), yaw 0.0; pelvis (0.217, -0.551, 1.031) | HLP_C_Driver (0.111, -0.528, 0.892); no passenger helper | **pillion (0, -0.85, 0.12)** (D3-1) |
+
+- On the roadster and the truck HLP_Passenger is exactly HLP_Driver mirrored across the vehicle's centre plane. The
+  passenger root is the measured driver root mirrored (the helper delta would give (0.506, 0.801) / (0.325, -0.623): the
+  driver's root sits 0.034 / 0.011 m inboard of HLP_Driver, so the passenger's mirrors that). The STM1 seats of the M2
+  runs agree (truck (-0.44, 0.80, 1.95) in 368 frames, roadster (-0.31, -0.61, 0.66)).
+- The design's proof offset (0.47, 0.72, 1.79) was HLP_Passenger in joint 1's frame without joint 1's height (0.157 m) and
+  without the root's inboard / forward shift: Sam crouched on the outside front.
+- The trike's pillion: 0.30 m behind the driver's root, 0.10 m higher (the rear of the seat over the rear wheel); the
+  first try (0, -1.00, 0.12) put Sam behind the seat (run `20261119-141112-seat-measure`, M23 enlarged).
+- The seat rotation is the vehicle's (the driver's root yaw in the vehicle's frame measured 0.0 deg on all three).
+- Screenshots (enlarged): the truck M04 (Sam in the right-hand seat through the windscreen, hands forward), the roadster
+  M13 / M14 (in the right-hand seat), the trike M23 (on the pillion behind the seat).
+
+### 24.3 Boarding (M3.2, decision D3-4)
+
+- Beside a vehicle the partner drives here (our follower attached), within 2.5 m of its passenger door point (truck
+  (1.8, 0.8, 0), roadster (1.4, -0.6, 0), trike (0.9, -0.9, 0) in its frame), the vehicle under 1 m/s, our Sam on foot and
+  awake, the partner's frames under 1 s old and in our world: the co-op banner says **"Hold [X] / [F] to ride with
+  <partner>"** (with a percentage while held).
+- A 0.6 s hold of X (pad) or F (keyboard: the game's own RideAndGetOff key, `bindings.cfg`) sends **REQUEST** (24.6). A tap
+  stays the game's own get-on, which the M2 lock refuses (the follower holds the seat). A button held from before never
+  counts until it is released.
+- The driver's game **ACCEPTs** unless (in this order): riding is off there (`ride_together=0`, a failed check), another
+  world, its Sam does not hold that vehicle's seat, another ride holds the seat, the vehicle moves at 2 m/s or more, or it
+  does not see the partner body within 5 m of the door point; else **DENY** with the reason (banner "Cannot ride: ...").
+  A repeated REQUEST of an accepted ride gets ACCEPT again. No answer in 3 s: "No answer from the driver."
+- On ACCEPT (the passenger still within 4 m of the door): the capsule off (`0x14243A740`; a counter at capsule +0x58:
+  exactly one enable later, logged before / after), the input block, the pose override, the per-tick carry.
+- No boarding for 5 s after our Sam's health drops (`[ride] our Sam was hurt (health a -> b): no boarding for 5 s`): a
+  partner's vehicle that just knocked him down stops beside him, and the banner offered the ride while he lay on the
+  ground (H1b of run `20261119-164745`; gone in `20261119-171723`). A health of 0 (a world loading) is not read as a drop.
+
+### 24.4 Exits
+
+**By choice (M3.3)**: hold X / B (or F) 0.6 s. Under 2 m/s the passenger is put beside the passenger door
+(`ExitPlacement`: the door row, half the vehicle's width + 0.7 m out, facing it) with the game's PlaceOn (mode 1: its
+ground probe from 0.5 m above the vehicle's base; through `game::TeleportLocalPlayerFacing`, every guard of the debug
+teleport). Then the capsule on, the input and the pose back, END to the driver. A hold above 2 m/s ("Too fast to get off:
+slow down, or hold again to jump off.") gets off as soon as the vehicle is under 2 m/s within 3 s (run
+`20261119-142942`: a trike rolling at 5.6 m/s); **a second hold within those 3 s jumps off at any speed** (END
+`jumped`, a forced placement: away from the sideways velocity, moved back along the path; above 8 m/s also the D3-3
+hit), so a driver who keeps going never holds the passenger (run `20261119-181006`: off the reversing truck at 4.6 m/s).
+Holds count only while Sam is awake (a menu's buttons are the menu's).
+
+**Every placement** first asks `game::PlacementGate` (the guards of `Place`, without the rate limit), so the mod never
+warps Sam where the game's own warp would refuse: the game has Sam (a load, a stopping game event, the post-load setup, a
+parent, Sam+0x678, a ground snap or pushed transform, a sequence): no placement (the game places him; the capsule and the
+input come back where he is); Sam asleep (a menu) or the game saving (the load mask's save bit `0x100` alone): the
+placement waits up to 2 minutes and goes through once he is awake (dropped when the game takes him meanwhile or he was
+moved over 4 m from where he was left); only PlaceOn's 500 ms rate limit (or the teleport's byte checks off, Sam awake)
+lets the entity teleport stand in, with PlaceOn again for 2 s, never after that call faulted in this ride. When Sam was
+left behind (asleep while the vehicle drove on), the spot is beside where the vehicle was at our last teleport of him.
+The spot is always on the ground plane: the vehicle's right and forward axes projected onto it, the edge of its body
+(base up to twice its half height) on that side, the height of its lowest point; a vehicle on its side or roof puts Sam
+beside it, never along its tilted axes under or onto the wreck (unit-tested at 90 deg each way, on the roof, on the nose).
+
+**Forced (M3.4; the passenger's game decides for its own Sam)**, in this order:
+
+| Trigger | End reason | Placement |
+|---|---|---|
+| the mod's emergency stop (a fault of the per-frame tick) | stopped | the input and the pose back at once (any thread); on the next game-thread pass: put beside, capsule on (`AfterStop`, once); a pending REQUEST is withdrawn (END `stopped`), and every later ride message is refused (a late ACCEPT gets END at once, never a carry; `ride_test 10`) |
+| a world change (load, reload, title: coop's load counter) or our Sam another entity | a load or the title | none: the capsule back on only on the same Sam (a new Sam has a new capsule) |
+| the game takes our Sam: a parent entity, a load bit, a DSGameState bit of a cutscene / game over / faint / fast travel / private room / knot space / boss battle / area change ... (`kTakenBits`, current or requested), Sam+0x678 (the game's warp guard), a pushed transform, a sequence binding (every 250 ms) (`game::CarriedSamTaken`, every tick) | the game took Sam | none (the game places him) |
+| ... or nothing of the game's places him: a health drop over 1 (a MULE spear, a BT, a fall), the game saving (load mask `0x100` alone), asleep 60 s | the game took Sam | beside (waiting while he sleeps or the game saves) |
+| nothing from the partner for 1 s | link lost | beside |
+| the driver's END (its Sam got off: `driver_off`; a new session) | the driver got off / ended it | beside |
+| the vehicle not live here for 300 ms | the vehicle is gone | beside (its last place) |
+| broken / out of battery (ride state 5 / 6, `+0x560 & 0x2000`, the frames' broken / exploded flags) | broken | beside |
+| a velocity jump over 8 m/s between two of the driver's DRIVE frames at most 100 ms apart (sender-measured) | crash | beside, away from the sideways velocity, moved back up to 3 m along a fast vehicle's path; **then the M4 hit handler** (D3-3, 24.7) |
+| up axis z under 0.3 for 0.5 s (our follower's transform) | flipped | beside, on the ground plane (never along the tilted axes) |
+| the entity teleport faulted | the mod stopped | beside with PlaceOn only |
+| a second hold within the 3 s wait above 2 m/s | jumped off | beside, as a crash; above 8 m/s the M4 hit handler |
+| our follower let go of that vehicle for 400 ms (the driver's frames ended) | the driver got off | beside |
+
+Asleep (a menu): Sam is held, not teleported, the ride goes on; the input block is lifted meanwhile. A BT / tar grab has
+no trigger of its own (the game's "Hugged" state is not researched): it ends the ride through its health drop or game state. The passenger's END tells the driver's game, which stops
+placing the body. The driver's game also ends a ride itself when its Sam gets off (END `driver_off`) and when the
+partner's pose has not said `kPosePassenger` for 5 s after the accept (`timeout`).
+
+### 24.5 Camera
+
+The passenger keeps the game's on-foot camera on his carried Sam (no camera code). In the runs it reads as a chase view a
+little above the vehicle: behind and above the truck's cab (the passenger hidden under the roof: R02 / R03), beside the
+roadster's passenger seat (P02, the driver and the passenger side by side), behind the two riders on the trike (K02 /
+K03). The right stick turns it as usual. Two things were seen and are not fixed (documented):
+- after the host had been placed at the door with a steep downward camera, its carried view looked almost straight down
+  onto the cab roof (S02 / S03 of run `20261119-141914`): the right stick brings it up;
+- right after a forced exit beside the truck the camera sat at Sam's head for 2-3 s (F01 / F02 / F04 of run
+  `20261119-143414`: Sam out of view, the "Use Vehicle" prompt in the middle of the screen), then came back by itself (F05).
+  Seen again in run `20261119-164402` (F01 "Off the truck: link lost.", F02 "Thrown off in the crash.") and with the host
+  as the passenger in `20261119-172958` / `-173506`: after a placed forced exit (link lost, crash, the driver got off) the
+  camera sits in Sam's head and the game fades his model out (E4 of `-173506`: Sam half transparent in the foreground,
+  "Use Vehicle" in the middle), for as long as he stands still (still so 4.7 s after the crash exit, E2b); one step and it
+  is back (E5). The exit by choice (R05 / S05 / P05 / K05) did not show it;
+- the host carried in the truck again looked almost straight down from above the truck (S02 / S03a / S03c of run
+  `20261119-163121`: the truck and the road in view, a top-down follow view); the guest's carried view in the same run was
+  the chase view over the cab.
+
+### 24.6 Wire: STQ1 inside SVM1 type 48 (channel 3, `vshare::RegisterHandler` / `SendEvent`)
+
+```
+"SVM1" | u8 type 48 | u8 version 1 | u16 0                                     (the vehicle event header, 23.6)
+"STQ1" | u8 type (1 REQUEST, 2 ACCEPT, 3 DENY, 4 END) | u8 seat (1 passenger, 2 pillion) | u8 reason
+| u8 from (0 host, 1 guest) | u32 ride id | u32 sender_ms | u32 vehicle id (the host's) | u8 kind | 3 x 0 | u32 world
+                                                                               (28 + 8 = 36 bytes, little endian)
+```
+
+Strict decoder: the header, the exact size, the magic, a known type, the seat the kind takes (roadster / truck:
+passenger, trike: pillion), the reason in the type's range (REQUEST 0 hold / 1 test, ACCEPT 0, DENY 0..5, END 0..14), from
+0 / 1 and the partner's (our own role is dropped), ride id != 0, a kind whose actor type is the id's, zero reserved bytes.
+A REQUEST or ACCEPT of another world never starts a ride (a REQUEST is DENYed `world`, an ACCEPT answered END `world`); a
+DENY or END carries the sender's world, which differs exactly when it answers across a world change, so it passes (it acts
+only on its own ride id; the `world` DENY used to be dropped there and never arrived). The ride id is the passenger's; every message of a
+ride carries it.
+
+### 24.7 For M4: the passenger's crash hit (D3-3)
+
+`ride::SetCrashHitHandler(CrashHitFn)` with `bool fn(std::uintptr_t vehicle_entity, double dv_mps, double speed_mps)
+noexcept`: called on the game thread right after a crash exit put our Sam beside the vehicle and turned his capsule back
+on (the entity of this world's unit he rode, the velocity jump, the speed before it); it returns true when the game's
+hit was applied. M4 installs it (partner_tackle.cpp, section 25.5): the game's own hit on the passenger 150 ms later.
+Without it (an older build, or the hits off) the exit logs `crash exit (dv ... at ...): no hit handler ...` or `the hit
+handler refused`. Also for M4: `ride::Carried()` (our Sam is a passenger: no PartnerTackle on him) and
+`ride::RideVehicle()` (the vehicle the partner rides in our world, or we ride in theirs: never a hit on its own passenger).
+
+### 24.8 Byte checks (`kSites` in ride_together.cpp: 6 sites + 1 structural)
+
+A mismatch: riding off, a one-line reason in the log and the co-op banner ("Riding together off: ..."); the vehicles stay
+shared and driven.
+
+| Site | Bytes |
+|---|---|
+| Entity teleport `0x14235A010` (PlaceOn mode 0's call) | `48 8B C4 48 89 58 18 48 89 70 20 55 57 41 56 48 8D A8 48 FF FF FF 48 81` |
+| capsule disable `0x14243A740` (`++[c+0x58]`, the switch off) | `40 53 48 83 EC 20 48 8B D9 48 83 C1 58 E8 EE 2D FD FF 33 D2 48 8B CB 48 83 C4 20 5B E9` |
+| capsule enable `0x14243A9E0` (`--[c+0x58]`; on again at 0 when the entity's collision flag `+0x88` bit 14 is set) | `48 89 5C 24 08 57 48 83 EC 20 48 8B D9 48 83 C1 58 E8 8A CC FD FF 48 8B 43 48 48 8B 90 88 00 00 00 48 C1 EA 0E F6 C2 01 74 0F 83 7B 58 00` |
+| the counter increment `0x14240D540` / decrement `0x142417680` | `FF 01 C3` / `FF 09 C3` |
+| the capsule switch `0x14243AA30` (`+0x60` physics object, `+0x5C` on) | `40 57 48 83 EC 60 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 58 44 0F B6 C2 48 8B F9 48 8B 51 60 48 85 D2 0F 84 ?? ?? ?? ?? 0F B6 41 5C` |
+| structural: the player capsule vtable `0x143D1BD08` in the image, its slot 0 in .text; at run time Sam `+0x5A0` - 0x20 must carry it and its `+0x48` must be Sam | |
+
+Reused, checked by their own modules: PlaceOn `0x142634F00` (game_actions), RequestTeleport `0x142F7CA20` (vehicle_share;
+the hidden-test roll / stop), the vehicle vtables and `+0x8A8` / `+0x4CC` / `+0x560` (vehicle_drive), the SkinnedModel pose
+(real_body), the XInput / keyboard hooks (overlay).
+
+### 24.9 Hidden scenarios (`-SeedSaves complete-100`, the two-game ones `-GuestSeed profile-only`, `ini host_save=1`)
+
+| Scenario | What |
+|---|---|
+| `seat-measure` (echo, one game) | per kind: drive, `seat_measure`, get off, `ride_test 1` (the solo carry with the kept driver pose), screenshots from three sides, off (the trike: `ride_test 9`, the emergency-stop path) |
+| `two-games-ride-truck` | the host drives, the guest holds X at the door and rides (forward, stop, back, stop, forward, stop), gets off with X while the host brakes; the swap: the guest drives, the host rides and gets off |
+| `two-games-ride-roadster` | the same in the garage's roadster |
+| `two-games-ride-trike` | the same on the Kusanagi trike's pillion (the lite-attached follower) |
+| `two-games-ride-forced` | the guest rides and is put off by: a 2.5 s link blackout, a crash (the driver's game stops its moving truck dead: `ride_test 6`), the game taking Sam (`ride_test 7`), the driver getting off, the truck rolled over (`ride_test 5`) |
+
+New debug actions (docs/debug-actions.md "Riding together"): `ride_state`, `ride_board`, `ride_exit`, `seat_measure`,
+`ride_test`.
+
+### 24.10 Evidence (hidden, foreground, one at a time, 2026-11-19)
+
+Every run: both games exit 0, real saves unchanged and restored, no violation, 0 cloud uploads, no `[ride]` / `[vdrive]`
+FAULT.
+
+| Run | Result |
+|---|---|
+| `20261119-141112-seat-measure` | pass: the first seat check (the pillion then at y -1.00: behind the seat) |
+| `20261119-143916-seat-measure` | pass: the measurements of 24.2; the solo carry 0.000 m from the seat over 754..900 teleports per kind; the emergency stop while carried on the trike: input and pose back, put beside it, capsule counter 1 -> 0 (M25) |
+| `20261119-141615-two-games-ride-truck` | fail (the scenario): the route's turn ran the host's truck off the raised road into the gap; the guest's game put its Sam off by itself, **a real crash: dv 8.0 m/s at 10.0 m/s**, placed on the left (away from the slide), capsule back on; the exit step was never reached. Route changed to straight moves |
+| `20261119-141914-two-games-ride-truck` | pass: the guest rides 33 s (moving 2.5..11 m/s; Sam vs the seat mean 0.003..0.007 m, max 0.020 m per second), gets off with X; the swap: the host rides 24 s, gets off |
+| `20261119-145308-two-games-ride-truck` | pass on the final build; two RequestTeleport corrections of the follower (2.1 m: the worlds diverged when the host reversed into something) moved the truck under the carried guest for one frame (max 2.09 m once, on the seat again the next tick) |
+| `20261119-142403-two-games-ride-roadster` | pass: both directions; the host's screen shows the guest's body in the right-hand seat (P02b / P04b), the guest's both riders side by side (P02, Q03d) |
+| `20261119-145709-two-games-ride-roadster` | pass on the final build: Sam vs the seat over the ride mean 0.004 m, max 0.12 / 0.17 m, 0 ticks over 0.25 m (the host and the guest as the passenger) |
+| `20261119-142702-two-games-ride-trike` | fail: the guest's exit hold came at 2.7 m/s (the trike rolled on) and was refused; fixed: a hold above 2 m/s gets off once under 2 m/s (3 s), and the scenario's driver brakes |
+| `20261119-142942-two-games-ride-trike` | pass: both directions on the pillion (K02 / L02: two Sams in tandem, both seated); an exit waited for the trike to slow down (5.6 m/s: on the trike LT reverses) |
+| `20261119-143414-two-games-ride-forced` | link lost (the exit 1.0 s after the blackout began), crash (dv 10.2 m/s; the M4 handler asked: none yet), taken (no placement), the driver got off: all pass; the flip step failed: the test then teleported the truck upside down 2 m up, a crash in the frames (dv 59.7) |
+| `20261119-144141` / `-144457-two-games-ride-forced` | the roll test (18 x 10 deg, then 45 x 4 deg by RequestTeleport): the rolled truck tumbled in the owner's world, a crash (dv 8.5 / 17.4 m/s) before the follower was upside down for 0.5 s |
+| `20261119-144802-two-games-ride-forced` | pass: link lost, crash (dv 10.3), taken, the driver got off, the roll (crash, dv 36.3); every exit: capsule counter 1 -> 0, the input back |
+| `20261119-161939-seat-measure` | pass (independent re-check): the solo carry 0.000 m from the seat on all three kinds, the emergency stop on the trike (capsule 1 -> 0, put beside it); M04 (the passenger seen through the windscreen on the right), M13 / M14 (roadster), M22 / M23 (pillion) |
+| `20261119-162230-two-games-ride-truck` | fail (the scenario): the "brake" before the passenger's exit held LT for 2.5 s from a standstill, which reverses: the truck backed away at 5 m/s and the guest's hold was refused (3 s window). The earlier passes got off at 2.6 m/s by luck. The exit steps of the three ride scenarios now let go of the pedals (the vehicle is already stopped) |
+| `20261119-162547-two-games-ride-truck` | pass, but the swap's route (forward first) ran the truck off the end of the raised road's straight with the host carried (S03-guest-moving: the truck nose down over the edge; S04: under the road): no crash exit (dv under 8 m/s), the truck lost 10 life (the owner's value restored it), the host got off under the road, standing. The swap route now backs up first, then goes forward |
+| `20261119-163121-two-games-ride-truck` | **pass** (final scenario): the guest rides 34.2 s (seat error mean 0.006 m, max 0.554 m, 4 of 1026 ticks over 0.25 m: follower corrections), the host rides 25.1 s (mean 0.003 m, max 0.425 m); on the road all the way; R02b / R04b: the guest seated at the passenger window on the host's screen; R02 / R03b: the guest's own Sam in the cab under the roof; R05 / S05: standing at the door |
+| `20261119-163428-two-games-ride-roadster` | **pass**: guest 29.5 s (max 0.309 m), host 22.4 s (max 0.076 m); P02 / P04b / Q02 / Q04 / Q05: two riders side by side on both screens, the passenger standing beside the door after |
+| `20261119-163727-two-games-ride-trike` | fail (the scenario): without the 2.5 s LT before the exit the trike stopped beside a post with an online hologram; the guest placed at the trike for the swap stood 2.5 m off, facing away, and its X never got it on. The swap now starts with the host backing the trike off (2.5 s LT) |
+| `20261119-164044-two-games-ride-trike` | **pass**: both directions on the pillion (K02 / L02 / L04: two Sams in tandem, both seated, on both screens), exits beside the trike |
+| `20261119-172958-two-games-ride-forced-host` | **pass** (new scenario: the guest drives, the HOST rides; the host's game puts its own Sam off each time): link lost (2.5 s of the host's received datagrams dropped), crash (dv 11.0 m/s at 10.4 m/s: the D3-3 hit 1000 -> 881), taken (no placement), the driver got off; every exit capsule 1 -> 0 and the input back; afterwards the host walked 2.66 m on the pad (E5). The host's Sam stood on the road beside the truck after every exit (E3 / E5, and the guest's E2a) |
+| `20261119-173506-two-games-ride-forced-host` | pass again (an experiment build that held the stopped truck's speed field at 29.5 km/h during the D3-3 call, reverted: no change, see 25.5) |
+| `20261119-164402-two-games-ride-forced` | **pass**: link lost, crash (dv 10.3: the M4 hit, 1000 -> 881), taken (no placement: the guest's Sam, capsule on at the seat, was pushed out of the cab onto the ground beside it within 3 s), the driver got off, the roll (crash, dv 54.5: hit again); every exit capsule 1 -> 0 |
+| `20261119-180508-two-games-ride-forced` | review build. Fail (the scenario): parts 1..4 pass with the placement gate; part 1's 2.5 s blackout started a new link session this time, which numbered the host's drive and the guest's attach `#2` early, so the re-drive's `until ... #2` matched an old line. The re-drive now waits on the ride module's seat counter |
+| `20261119-181006-two-games-ride-forced` | **pass** (review build): link lost, crash (dv 10.2, the hit 1000 -> 881), taken, the driver got off, **jumped off** (a first hold at 4.7 m/s waits, the second at 4.6 m/s: put beside the reversing truck, capsule 1 -> 0, F05a "Off the truck: jumped off."), the roll (crash, dv 8.0, hit) |
+| `20261119-181329-two-games-ride-forced-host` | **pass** (review build): the host as the passenger, every forced exit as before |
+| `20261119-181555-two-games-ride-truck` | review build. Fail (the scenario): the new part 3 sent `ride_board` and `ride_test 9` as two steps; the guest's ACCEPT came in 67 ms, before the stop, so the host was carried and the stop's restore ran (put beside the truck, capsule 1 -> 0). `ride_test 10` now asks and stops in one call |
+| `20261119-181926-two-games-ride-truck` | **pass** (final): both directions; part 3: `the mod stopped while asking to ride (#2D26D8D9): the request is withdrawn`, the guest `the partner ended ride #2D26D8D9: the mod stopped`, the late `ACCEPT for ride #2D26D8D9 after riding together stopped: ended at once`; the host then walked 4.14 m (never carried, input his) |
+| `20261119-182234-two-games-ride-roadster` / `-182522-two-games-ride-trike` / `-182821-seat-measure` | **pass** (final): both directions; the pillion (K02b); the solo carries and the trike's emergency stop (put beside, capsule 1 -> 0) |
+
+Screenshots checked enlarged (both screens): the truck R04b on the host (the guest's body seated at the passenger window)
+and R02 / R03 on the guest (the carried view over the cab); the roadster P02 / P04b / Q03d / Q04; the trike K02 / K02b /
+L02 / L04; seat-measure M04 / M13 / M23 / M25.
+
+### 24.11 Not done / not proven
+
+- **The flip exit** is proven only in the unit tests: every hidden flip (an upside-down teleport, a 1.5 s roll) made the
+  owner's truck tumble, and a crash exit came first (the order puts a crash, with its M4 hit, before a flip). The exit
+  spot of a rolled vehicle was along its tilted right axis (under the wreck on its right side, on top of it on its left)
+  until the review; now on the ground plane (unit tests at 90 deg each way, the roof, the nose).
+- **The new taken triggers** (Sam+0x678, a sequence, the requested state flags) and the waiting placement (asleep,
+  saving) came up in no hidden run; they cut none of the re-run rides short (no false trigger while carried).
+- **The host carried and forced off**: proven on the truck in `two-games-ride-forced-host` (`20261119-172958`: link lost,
+  crash, taken, the driver got off); the roll-over and the other kinds ran with the guest as the passenger only.
+- **A save while the host is carried** (a decision for the user): there is no save hook. The game's save raises its load
+  mask's save bit (`0x100`, inferred from the code that sets it); the ride ends there ("the game is saving") and Sam is put
+  beside the vehicle once the save is over. The save itself may still record the host's Sam at the seat (above the
+  vehicle's floor, inside its box): the alternatives are to deny the host the passenger seat (only the guest rides) or
+  to hook the save. The game's load then places him (not tried: no way to force a save in a hidden run).
+  The nearest evidence: the "taken" exit turns the capsule back on with Sam still at the seat, and in run
+  `20261119-164402` the game pushed him out of the truck's cab onto the ground beside it within 3 s (`[sync] trace` and the
+  next teleport's "from" point at ground height); not stuck, not under the ground.
+- **The camera**: the on-foot camera as it is (24.5); no vehicle camera for the passenger.
+- **Keyboard**: the ride key F is read from our keyboard hook (hidden runs use the virtual pad only). A release missed
+  while the window loses focus no longer leaves it "down": the hook's state is confirmed by the key's physical state
+  (fixed in M4's stage).
+- **The pose**: the driver's pose on the passenger (hands on a wheel that is not there, on the roadster and the truck);
+  the game's `BotRiding` (v2) not tried. With the hologram partner body there is no seated pose.
+- **D3-3**: done in M4 (section 25.5, run `20261119-155208-two-games-vehicle-hit-fast`).
+- A vehicle driven out of the other world's streaming range (23.21) ends the ride (the vehicle is gone here).
+- `ride_together=0` is a mod key only (no launcher checkbox).
+
+## 25. Vehicle hits (`session.ini partner_vehicle_damage`, default 1, with `vehicle_sync=5`; design milestone M4)
+
+"When the vehicle collides with players it should damage them and knock them down like an NPC enemy driven vehicle";
+"they can collide with players and other player vehicles too". `native/mod/partner_tackle.{hpp,cpp}` (the game side),
+`native/mod/tackle_rules.{hpp,cpp}` (the pure rules, ctest `st_tackle_rules_tests`). Decisions: D4-1 the MULE truck hit
+(fallback: the proven player-vehicle hit), D4-2 no instant kill, D4-3 the partner's vehicle hits only you, D4-4 on with a
+launcher checkbox to turn it off; D3-3 the passenger thrown off in a crash takes the same hit.
+
+### 25.1 How the game hurts Sam with a vehicle, and why the mod must help
+
+The vehicle body never touches Sam's proxy (layer pair (17 Vehicle, 8 Player) = 0). The damage is an attack: every frame
+`VehicleEntity::Update` calls `VehicleTackleEmit` `0x142F8ABF0`, which casts a sphere (the vehicle's local offset
+`[V+0xA70]`, forward component negated while reversing, radius `[V+0x57C]`) and sends a DamageInfo to whatever it overlaps,
+only while: the driver id `[V+0x8B0]` is not `0x1FFFFF` (or the ride state `+0x4CC` is 4), the speed field
+`[[V+0x330]+0xF0]` is over 15 km/h, and two flag gates pass. An NPC driver (a MULE truck) uses the attack in slot `+0x9E0`,
+`VehicleTackle 0x157` (trucks only: 100 damage, reaction **Blow**); a player driver, slot `+0xA00`, `VehicleTacklePlayer
+0x158` (every vehicle: 400 damage, Blow). The amount passed is 100 up to 30 km/h and **10000** above.
+
+On the victim's screen the partner-driven vehicle is our follower (the game's NPC controller, driver `0x1FFFFF`, ride
+state 2): the game never lets it hit anything (proof runs `20261118-224252-zz-proof-hit`, `-224528-zz-proof-hit2`: the
+follower truck shoved Sam 3 m, no damage). So **the victim's game decides the hit on its own Sam** and runs the game's
+attack for the follower (`PartnerTackle`). The driver's game never tackles the partner body (a cutscene actor with only the
+layer-10 capsule); it sees the knock-down through the pose stream (STJ1), and gets an STH1 report for its log.
+
+### 25.2 The gate (`trules::Gate`, every tick, game thread)
+
+In this order: the feature on (checks, the shared vehicles with remote driving); `partner_vehicle_damage=1`; the partner
+drives a vehicle we follow; its newest frame says it holds the driver seat and the vehicle's driver id is `0x1FFFFF` with
+ride state 2 (never a vehicle with a driver of its own); our Sam present, awake, on foot (no parent), not carried as a
+passenger (`ride::Carried`); no load / menu / cutscene / post-load setup / sequence (`game::LocalCollisionBlock`, the
+sequence answer held 250 ms) and the attack gates of `VehicleTackleEmit` itself (`+0x560` bits 4 and 8, the global stop
+bit); within 50 m (the game's MULE gate); the speed field over 15 km/h; no hold-off for this vehicle; a path for its kind;
+our Sam's centre (root + 1 m) within the attack sphere's radius + 2 m of its centre (the bracket: inside its radius, since
+the game's sphere hits whatever it catches there). Each change of the answer is one
+`[vhit] partner vehicle ...` line (a flapping answer at most one a second).
+
+### 25.3 The hit: two paths (D4-1)
+
+| Kind | Path | Attack | What runs |
+|---|---|---|---|
+| truck (its `+0x9E0` slot present); trike, roadster (`0x158`, slot `+0xA00`) | **direct** | `0x157` VehicleTackle, the MULE truck attack; `0x158` VehicleTacklePlayer | the game's attack sphere query `0x1429934E0` called by the mod: the slot's context (`[[V+0x9E0]+0x18] - 0x20`, the wrapper's own step), the vehicle's own sphere (centre from `[V+0xA70]` / `[V+0x580]` and the entity transform, radius `[V+0x57C]`), amount **100**, the game's filter (vtable `0x143BA8938`, init `0x14382FD30(f, V, 0x36)`: the vehicle's own bodies left out, its list released with `0x1419D5870` as the game does), and **our callback** (`cb(ctx, receiver, &DamageInfo, user)`, called by the query for each hit owner): a hit is delivered only when its point (DamageInfo+0x80, three doubles) is within 1.5 m of our Sam's centre (D4-3: Sam and the cargo on him; NPCs, MULEs, BTs and cargo on the ground are not hit). The preliminary capsule (0 damage) is not run |
+| any kind, only when the direct path's checks failed | **state-4 bracket** (proven, `20261118-224729-zz-proof-hit3`) | `0x158` VehicleTacklePlayer | the vehicle's ride state `+0x4CC` = 4 for one call of the game's `VehicleTackleEmit` and back (it selects slot `+0xA00` and skips the driver-id write); above 30 km/h the speed field is held at 29.5 km/h for the call and restored, so the game passes 100, not 10000 |
+
+`trules::PathFor`: auto: the direct path for every kind whenever its checks passed (`0x157` where the vehicle has the
+`+0x9E0` slot, else `0x158`): it alone keeps the hit to our Sam (D4-3); the bracket only when the direct path's checks
+failed. Until the review the trike and the roadster took the bracket, so NPCs, MULEs and cargo on the ground inside the
+sphere were hit too, and while our Sam stood only near it the call repeated every tick with no hit to end the pass. No
+call goes through an empty attack slot: the game empties `+0x9E0` / `+0xA00` / `+0xA20` / `+0xA40` together when a vehicle
+leaves the world (`0x142F76180`), and `VehicleTackleEmit` reads through them without a null check, so the direct path
+needs its context and the bracket `+0xA00` and `+0xA20` (else `[vhit] ... no attack context in its slot ...: not
+called`, once). `vehicle_hit 1 <kind>
+<0|1|2>` forces a path (tests). The direct path never writes the vehicle; the bracket writes `+0x4CC` (and the speed field)
+for one synchronous call on the game thread and restores them; a fault in either turns that path off for the session
+(`[vhit] FAULT ...`). The hazard of the research: never an NPC-range driver id in `+0x8B0` of a trike or roadster (a null
+attack context): the mod never writes `+0x8B0`.
+
+**The cap (D4-2).** Three layers: the direct path passes 100 at any speed; the bracket holds the speed field at 29.5 km/h
+over 30; and Sam's MsgDamage handler `0x14271BC00` (detoured at start-up, with `partner_vehicle_damage=1` only; every
+message passes) caps a message of the attack we used in the last 1.5 s at 100. The message (run `20261119-153401`):
+`+0x20` the DamageInfo; its `+0x28` the attack reference `[ctx+0xE8] + 0x20`, its `+0x40` the context the query was given,
+its `+0x78` the amount. In every hidden run the cap had nothing to cut (0 capped): 100 arrived at 40 km/h.
+
+**Rate.** `trules::HitLimiter`: the mod calls every tick while the gate passes until Sam's damage handler sees a damaging
+message of that attack (or his health drops), then holds off 1.5 s for that vehicle; a pass with no call for 1 s is over
+(a later hit or fall is never counted for it; run `20261119-154830` showed why). Measured: 6..9 calls and **2 damage
+messages per pass** (the second call's message is queued before the first one is handled).
+
+**Log.** One line per hit, numbered: `[vhit] partner vehicle truck 0x020005 hit Sam (#1): attack 0x157 speed 28.2 km/h
+health 1000.0 -> 881.0 (direct; 9 call(s) this pass, 2 damage message(s) of the attack, 0 capped, 0 preliminary; seen by
+Sam's damage handler)`, and an overlay notice "Hit by your partner's vehicle.". The victim sends STH1 to the driver, whose
+log says `[vhit] the partner's game reports (#1) our truck 0x020005 hit their Sam: attack 0x157 (direct) speed 28.2 km/h
+health 1000.0 -> 881.0; ...`.
+
+### 25.4 What a hit does (measured)
+
+| Vehicle, path | Speed at the hit | Health (one pass: 2 messages) | On screen |
+|---|---|---|---|
+| truck, direct 0x157 | 28.2 / 28.6 km/h (both directions) | 1000 -> 881 (first message, 119), then 845.3 (second, 35.7) | thrown, lying on the road, cargo shaken off, "Lou's stress level is increasing", the health popup (846/1000), getting up |
+| truck, direct 0x157 | 40.0 km/h (full throttle from 22 m) | 1000 -> 881 -> 845.3 | the same: knocked down, never killed |
+| Kusanagi trike, bracket 0x158 | 40.0 km/h (held at 29.5 for the call) | 1000 -> 881 -> 845.3 | the same |
+| truck, D3-3 crash exit (dv 8.8 m/s at 8.2 m/s; final build: dv 14.2 m/s at 13.6 m/s, 49 km/h) | the passenger beside it | 1000 -> 881 | "Thrown off in the crash.", the health popup; knocked down only while the vehicle still moves (25.5) |
+
+The same 119 + 35.7 as the proof's bracket at 16-18 km/h: the hit is the game's own knock-down damage, whatever the speed.
+The driver's screen shows the partner body thrown and lying through the pose stream (H1b-host-side of
+`20261119-160320`: the guest lying in front of the host's truck; F1b-host-side of `20261119-155208`).
+
+### 25.5 The passenger thrown off in a crash (D3-3)
+
+`ride::SetCrashHitHandler` (section 24.7). On a crash exit the ride module puts our Sam beside the vehicle and turns his
+capsule on; the handler then (150 ms later, so the placement has gone through) runs the direct path once a tick for up to
+1 s with a 1 m sphere 0.6 m from his centre toward the vehicle (the truck's `0x157`, else `0x158`), until his damage handler
+sees the hit, with the regular tackle's gates (`LocalCollisionBlock` with the sequence, the game's attack stop): while one
+blocks, the hit waits (`crash exit: the hit waits: ...`), and the window ends without a hit. `partner_vehicle_damage=0` turns this off too (the exit then only puts him beside the vehicle). Proven on the
+truck (`20261119-155208`, F3a / F3b); on the trike and the roadster the same call with `0x158` (not run hidden).
+
+**The knock-down is not reliable (verification, 2026-11-19).** The damage always arrives (1000 -> 881 in every crash exit),
+but the knock-down only when the vehicle in the passenger's world still moves at the hit: in `20261119-165049` (the
+follower truck at 3.3 m/s, tilting) the guest was thrown 1 m in 0.5 s (speed 3.6 m/s) and fell off the road's edge; in
+`20261119-164402` (the guest) and `20261119-172958` / `-173506` (the host) the truck had stopped dead (`ride_test 6`) and
+Sam never moved from the placement (`[sync] trace` identical for 5 s, speed 0) and stood upright on the partner's screen
+(E2a-guest-sees-host). The game's own `VehicleTackleEmit` passes the same zero vectors as the mod and only runs above
+15 km/h, so the reaction presumably comes from the attacker's motion; holding the speed field at 29.5 km/h for the call
+changed nothing (`-173506`). Open: a knock-down for a passenger thrown off a vehicle that stopped dead needs the reaction
+side of Sam's damage handling researched.
+
+### 25.6 Vehicle against vehicle (M4.4)
+
+Both real vehicles are dynamic bodies in each world ((17,17) = 1): the local one reacts for real, the follower is pulled
+back by the drive module's correction bands (section 23); vehicle life stays the owner's. Measured
+(`20261119-155954-two-games-vehicle-bump`):
+
+- **The ram** (the guest's truck at 7.3 m/s into the host's parked Kusanagi trike): the host's game granted the guest's
+  push CLAIM of the trike (`the guest claims trike 0x01E005 (push, epoch 0): granted`); the host's follower truck error
+  max 0.17 m in that second; life equal on both games before and 2 s / 5 s after (truck 431.0 / 15000, trike 4862.0 / 7500).
+- **Head-on** (the host's trike and the guest's truck driving at each other, contact B2a): the guest's follower trike
+  error spike 1.05 m / 4.1 deg, back to 0.17 m within 2 s by velocity nudges (22 nudges, 0 teleports, 0 blocked); the host's
+  follower truck 0.48 m / 2.4 deg, back within 2 s (9 nudges, 0 teleports). The follower trike lost 10 life in the guest's
+  world; the owner's value overwrote it (`life 4852.0 -> 4862.0 (the owner's)`).
+- No RequestTeleport into an overlap: the drive module teleports only where the footprint is clear. In the final run
+  (`20261119-161456`) the head-on left the host's follower truck 0.35 m off with the trike in its place: "its place is
+  taken (the local Sam or another vehicle): waiting" (3 times), then the teleport once clear.
+
+**The partner capsule** (`partner_collision.cpp`, layer 10, section 11): two rules added, from the drive module's vehicle
+footprints (`vshare::Footprints`, speeds from their movement between the drive module's polls, over the polls' own time
+apart (`vshare::FootprintsMs`; sampling every 50 ms read every other sample as standing or twice as fast, and the 1 m/s
+rule flapped), moving on over 1 m/s and off at 0.6 m/s, `vhit::CapsuleVehicleBlock`): out of the world
+while a vehicle moving over 1 m/s is within 5 m of the partner body ("off: a vehicle moves within 5 m of the partner":
+NPC trucks, a rolling vehicle, the partner's own just after they got off), and it does not come back (nor attach) while a
+vehicle's box overlaps the capsule (its point and 1 m / 2 m above it, within 0.4 m: "waiting: a vehicle overlaps the
+partner"). Seen in `20261119-155954` part 3 (the host's trike passing 3 m from the guest's body).
+
+### 25.7 Settings
+
+`partner_vehicle_damage` (session.ini, default 1; the launcher's Debug page **Partner's vehicles can knock me down**,
+unticked writes `partner_vehicle_damage=0`): each game decides for its own Sam. Off: the partner's vehicles never hurt or
+knock down this player's Sam (also not when thrown off in a crash); the game's own vehicle contact still shoves him (as
+before M4); the partner, if their own setting is on, is still hit by ours (run `20261119-155455-two-games-vehicle-hit-off`).
+
+### 25.8 Byte checks (`kSites` in partner_tackle.cpp: 22 sites + 2 structural)
+
+Groups: common (both paths: the emit and its gates), direct, bracket, the damage-handler detour. A mismatch turns off the
+path it belongs to (both: the hits are off, with a one-line reason in the log and the co-op banner "Vehicle hits off:
+..."); a failed detour check leaves the hits on, seen by the health drop only.
+
+| Site | Bytes | Group |
+|---|---|---|
+| `0x142F8ABF0` VehicleTackleEmit | `40 55 53 48 8D 6C 24 88 48 81 EC 78 01 00 00 48 8B 05 2A 64 FD 01 48 33 C4 48 89 45 20 48 8B D9` | common |
+| `0x142F8AC10` its gates (`+0x560` & 0x10, the global's `+8` bit 6, driver / state 4, `+0x560` bit 8, speed > 15) | `8B 89 60 05 00 00 F6 C1 10 0F 85 31 04 00 00 48 8B 05 62 C2 C6 04 0F B6 50 08 C0 EA 06 F6 C2 01 0F 85 1A 04 00 00 8B 93 B0 08 00 00 81 FA FF FF 1F 00 75 0D 83 BB CC 04 00 00 04 0F 85 FF 03 00 00 C1 E9 08 F6 C1 01 0F 85 F3 03 00 00 48 8B 83 30 03 00 00 C5 FA 10 80 F0 00 00 00 C5 F8 2F 05 E0 12 C4 00 0F 86 D6 03 00 00` | common |
+| `0x142F8ACB9` the attack choice | `81 FA FF FF 1F 00 74 0C F7 C2 00 E0 1F 00 0F 84 9B 00 00 00 83 BB CC 04 00 00 04 0F 84 8E 00 00 00` | direct, bracket |
+| `0x142F8AD61` the slots `+0x9E0` / `+0xA00` | `BF E0 09 00 00 EB 05 BF 00 0A 00 00` | direct, bracket |
+| `0x142F751E3` every vehicle's add-to-world: 0x158 into `+0xA00` | `BA 58 01 00 00 48 8B CF E8 A0 5A A1 FF 48 8D 8F 00 0A 00 00 48 8B 90 E8 00 00 00 E8 0D E2 4E FF` | direct, bracket |
+| `0x142F7500D` the truck's add-to-world: 0x157 into `+0x9E0` | `BA 57 01 00 00 48 8B CF E8 76 5C A1 FF 48 8D 8F E0 09 00 00 48 8B 90 E8 00 00 00 E8 E3 E3 4E FF` | direct |
+| `0x142F8AC94` the attack's filter on its stack (vtable, 2, 0xFF, zeros) | `4C 8D 3D 9D DC C1 00 4C 89 7D B0 C7 45 B8 02 00 00 00 48 C7 45 BC FF 00 00 00 48 89 75 C4 89 75 CC 48 89 75 D0` | direct |
+| `0x142F8AD82` the filter's layer 54 | `41 B8 36 00 00 00` | direct |
+| `0x142F8ADA6` the filter init call, `+0xC` = 1 | `E8 85 4F 8A 00 8B 93 B0 08 00 00 41 BE 38 00 00 00 C7 45 BC 01 00 00 00` | direct |
+| `0x142F8AE19` the amount by speed, the sphere's direction by `+0x580` | `48 8B 83 30 03 00 00 48 8D 54 24 58 C5 FA 10 05 5B E0 BF 00 C5 FA 10 0D 3F 82 C0 00 48 8B 8B 40 03 00 00 C5 FA C2 90 F0 00 00 00 01 C5 FA 10 83 80 05 00 00` | direct |
+| `0x142F8AE85` the sphere's local offset `+0xA70` | `C5 E8 59 83 70 0A 00 00` | direct |
+| `0x142F8AEB0` the sphere's radius `+0x57C` | `C5 FA 10 93 7C 05 00 00` | direct |
+| `0x142F8AEBB` the hit call's arguments | `C7 44 24 40 20 00 00 00 C5 FA 11 7C 24 38 48 8D 48 E0 89 74 24 30 48 8D 45 A0 48 0F 44 CE 48 89 44 24 28 48 8D 45 B0` | direct |
+| `0x142F8AFFF` the filter's list freed | `48 8B 4D D0 4C 89 7D B0 E8 64 A8 A4 FE` | direct |
+| `0x142993440` the hit wrapper (the query's argument layout: callback 0, zero vectors, 1.0, 0x20) | 112 bytes from `4C 8B DC 48 81 EC 98 00 00 00 4C 8B 41 38` to the call `E8 12 00 00 00` (partner_tackle.cpp) | direct |
+| `0x1429934E0` the attack sphere query | `40 55 53 56 57 41 56 41 57 48 8D AC 24 C8 F4 FF FF 48 81 EC 38 0C 00 00` | direct |
+| `0x1429938B2` its hit callback call (ctx, receiver, &DamageInfo, user; delivered when true) | `48 8B 45 88 48 85 C0 74 2A 4C 8B 4D 90 4C 8D 85 C0 00 00 00 48 8B 4C 24 78 48 8B D6 FF D0 84 C0 75 11` | direct |
+| `0x14231881F` DamageInfo+0x80 the hit position | `C5 F8 10 42 08 C5 F8 11 81 80 00 00 00 C5 FB 10 4A 18 C5 FB 11 89 90 00 00 00` | direct |
+| `0x14382FD30` the filter init | `48 89 5C 24 18 57 48 83 EC 20 44 89 41 08 48 8B DA 48 8B F9 48 85 D2 74 30` | direct |
+| `0x1419D5870` the game's free | `48 83 EC 28 4C 8B C1 48 85 C9 0F 84 BB 00 00 00` | direct |
+| `0x14271BC00` Sam's MsgDamage handler (detoured) | `48 89 5C 24 08 57 48 83 EC 20 48 8B F9 48 8B DA 48 8B 89 20 05 00 00` | detour |
+| `0x142314242` DamageInfo `+0x78` amount, `+0x28` attack reference | `C5 FB 11 43 70 C5 FA 11 73 78 48 89 AB 80 00 00 00 48 8D 4B 28` | detour |
+| structural: the filter vtable `0x143BA8938` in the image, slot 0 in .text, and the RIP target of `0x142F8AC94` | | direct |
+| structural: the attack-stop global from the RIP operand of `0x142F8AC1F`, in the image | | common |
+
+Reused and checked by their own modules: the vehicle kinds, `+0x8B0` / `+0x4CC` / `+0x8A8` and the follower
+(vehicle_drive), RequestTeleport (vehicle_share; the tests' placements), PlaceOn (game_actions; the tests' placements),
+LocalCollisionBlock (game_actions), the capsule calls (partner_collision).
+
+### 25.9 Hidden scenarios and evidence (2026-11-19, foreground, one at a time)
+
+Every run: both games exit 0, real saves unchanged and restored, no violation, 0 cloud uploads, no `[vhit]` / `[vdrive]`
+/ `[ride]` FAULT, no game over.
+
+| Run | Result |
+|---|---|
+| `20261119-153001-two-games-vehicle-hit` | fail (scenario): the truck both ways hit (1000 -> 881, direct 0x157 at 33.9 / 35.3 km/h; seen by the health drop: the hook's match was wrong); the trike step came 3 s after the guest got off, still parented |
+| `20261119-153401-two-games-vehicle-hit` | fail (scenario): the trike's own spot faces rocks (it climbed them); the message layout found (25.3) |
+| `20261119-153742-two-games-vehicle-hit` | fail (scenario): `vehicle_sync 8 1.8 3` picks another trike than the one moved onto the road (the Kusanagi is kind 4 there) |
+| `20261119-154034-two-games-vehicle-hit` | fail (scenario): the trike at rt=160 reached 17.8 km/h and braked 3.6 m short |
+| `20261119-154317-two-games-vehicle-hit` | **pass**: truck host -> guest 28.2 km/h, guest -> host 28.6 km/h (0x157, 2 messages each), trike host -> guest 40.0 km/h (0x158, bracket, speed held) |
+| `20261119-160320-two-games-vehicle-hit` | **pass** on the final build, the same numbers; the driver-side screenshots taken while braking (H1b-host-side: the guest's body lying in front of the truck) |
+| `20261119-154830-two-games-vehicle-hit-fast` | fail (scenario regex); it showed a stale pass reporting a phantom hit after another vehicle's hit: the pass now ends after 1 s without calls |
+| `20261119-155208-two-games-vehicle-hit-fast` | **pass**: truck 40.0 km/h and trike 40.0 km/h knocked down (1000 -> 881 -> 845.3), never killed; D3-3: crash exit dv 8.8 m/s -> the hit 150 ms later (1000 -> 881, "Thrown off in the crash.") |
+| `20261119-155455-two-games-vehicle-hit-off` | **pass**: the guest (`partner_vehicle_damage=0`) not hit by the host's truck at ~28 km/h, health 1000, standing (O1b / O1c); the host (on) hit by the guest's truck (1000 -> 881) |
+| `20261119-155657-two-games-vehicle-bump` | pass, but the truck stopped 11.7 m short of the trike (the scenario put it 18 m away); tuned |
+| `20261119-155954-two-games-vehicle-bump` | **pass**: the ram, the head-on, the capsule rule (25.6) |
+| `20261119-161016-two-games-vehicle-hit-fast` | **pass** on the final build: truck and trike at 40.0 km/h (1000 -> 881, 2 messages, 0 capped), D3-3 at 49 km/h (dv 14.2 m/s): 1000 -> 881 |
+| `20261119-161256-two-games-vehicle-hit-off` | **pass** on the final build: the guest (off) not hit, the host (on) hit at 28.8 km/h |
+| `20261119-164745-two-games-vehicle-hit` | **pass** (independent re-check): truck host -> guest 28.2 km/h, guest -> host 28.7 km/h, Kusanagi trike -> guest 38.4 km/h, each 1000 -> 881 (2 messages, 0 capped). H1a..H1d: the guest thrown, lying, "Seriously?", up; H1b-host-side: the guest's body lying in front of the truck; J1a..J1d the host the same; J1b-guest-side: the host's body lying in front of the truck; T1b / T1c the trike's hit. H1b also showed "Hold [X] / [F] to ride with the host" while the guest lay beside the truck: fixed (24.3) |
+| `20261119-165049-two-games-vehicle-hit-fast` | **pass**: truck 40.0 km/h, trike 40.0 km/h, D3-3 dv 9.5 m/s at 10.7 m/s: each 1000 -> 881, none killed; F1a..F1d thrown / lying / up; F3a "Off the truck: crash.", F3b "Thrown off in the crash." with the popup; the hit threw the guest off the raised road's edge (F3c: up again on the ground under the road) |
+| `20261119-165357-two-games-vehicle-hit-off` | **pass**: the guest (off) stood against the truck's front unhurt (O1a / O1b, health 1000); the host (on) knocked down at 28.5 km/h (O2a..O2c) |
+| `20261119-165610-two-games-vehicle-bump` | **pass**: the push CLAIM granted, the head-on, the capsule rule ("a vehicle moves within 5 m of the partner"); life equal on both games at all 5 snapshots (truck 431.0, trike 4862.0) |
+| `20261119-171723-two-games-vehicle-hit` | **pass** with the boarding gate (24.3): `[ride] our Sam was hurt (health 1000.0 -> 881.0): no boarding for 5 s` on each hit; H1b now shows "Hit by your partner's vehicle." instead of the ride prompt |
+| `20261119-172247-two-games-vehicle-hit-roadster` | fail (the scenario): the roadster put 22 m behind the truck faced the road's raised edge and could not climb it (16 km/h, never near the guest); moved to 8 m ahead of the truck |
+| `20261119-172519-two-games-vehicle-hit-roadster` | **pass**: roadster host -> guest and guest -> host at 34.9 km/h, the state-4 bracket with 0x158 (sphere 1.31 m at local (0, 1.73, 0.86)), each 1000 -> 881; G1a..G1d the guest thrown / lying / up, G1b-host-side the guest's body falling beside the roadster, G2a..G2d the host the same. A second pass 1.6 s later (the braking roadster still at the lying guest, 22.8 km/h) logged "hit Sam (#2)" with health 845.3 -> 845.3: the game's messages came, no damage, no second knock-down |
+| `20261119-183039-two-games-vehicle-hit` | **pass** (review build): the truck both ways (0x157, 1000 -> 881); **the Kusanagi trike on the direct path** with 0x158 (sphere 0.91 m at local (0, 0.73, 0.73)) at 40.0 km/h: 1000 -> 881, 2 messages, 0 capped, T1b the guest lying |
+| `20261119-183324-two-games-vehicle-hit-fast` | **pass** (review build): truck 40.0 km/h, trike 39.2 km/h on the direct path (amount 100: 0 capped), D3-3 dv 10.4 m/s: each 1000 -> 881 |
+| `20261119-183604-two-games-vehicle-hit-off` | **pass** (review build) |
+| `20261119-183801-two-games-vehicle-hit-roadster` | **pass** (review build): **the roadster on the direct path** with 0x158 both ways at 34.9 km/h, 1000 -> 881 (G2b: the host knocked down, "Hit by your partner's vehicle.") |
+| `20261119-184015-two-games-vehicle-bump` | **pass** (review build): the capsule rule from the poll-timed speeds ("a vehicle moves within 5 m of the partner"), no enable while the trike passed; life equal |
+| `20261119-161456-two-games-vehicle-bump` | **pass** on the final build: the push CLAIM granted; head-on: the host's follower truck 0.49 m / 3.1 deg, 3 corrections refused while the trike stood in its place ("its place is taken ...: waiting"), the one RequestTeleport (0.35 m) only once clear; life equal on both games at every snapshot (truck 431.0, trike 4862.0); the capsule rule on the host |
+
+Scenarios: `two-games-vehicle-hit`, `two-games-vehicle-hit-fast`, `two-games-vehicle-hit-off`, `two-games-vehicle-bump`
+(tools/testenv/scenarios). Debug action: `vehicle_hit` (docs/debug-actions.md "Vehicle hits").
+
+### 25.10 Not done / not proven
+
+- **The roadster** runs hidden in `two-games-vehicle-hit-roadster` (both ways, 34.9 km/h, the direct path); not at 40 km/h.
+- **A second pass on a downed Sam**: the next pass (after the 1.5 s hold-off) can reach a victim still lying in front of
+  the braking vehicle: the game sends its messages but takes no health and plays no second knock-down (run
+  `20261119-172519` on the bracket; `20261119-183801` on the direct path: #2 / #3 at 22.8 / 15.3 km/h, 845.3 -> 845.3);
+  the log counts it as a hit.
+- **The bracket** is now only the fallback when the direct path's byte checks fail: there whatever the game's sphere
+  catches is hit (an NPC or cargo on the ground right in front of the partner's trike in your world), so it is called only
+  while your Sam's centre is inside the sphere. Every hidden run used the direct path.
+- **Two messages per pass**: the second (35.7 damage) is the game's next-tick message queued before the first is handled
+  (the proof's bracket did the same); the hold-off starts once the first is seen.
+- **Above 40 km/h** a hit on foot was not run (the runs' full-throttle passes reached 40.0 km/h); the crash hit at 49 km/h
+  was 100 like every other (the direct path never passes more).
+- **Sam's ragdoll and vehicles**: once Sam is down, his ragdoll layers meet vehicles; the game's own physics, no damage
+  was seen from it.
+- **The partner capsule rule** was seen with the local Sam in a vehicle (the rule comes before that gate in the log
+  order); with both on foot and an NPC truck passing, it is the same rule, not run.

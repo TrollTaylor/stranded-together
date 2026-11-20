@@ -396,7 +396,8 @@ ini <key>=<value>            an extra session.ini line, for every game of the ru
                              smooth_pose, frame_cap, audio_probe, self_voice, voice_sync, voice_subtitles, sound_sync,
                              sound_steps, partner_volume, self_headgear, self_feet_hide, boots_sync,
                              vehicle_sync, vehicle_overlap_hide, vehicle_look, vehicle_packs, vehicle_sound,
-                             vehicle_real_native, host_save, coop_test_build (the host-held save session, docs/coop-session.md;
+                             vehicle_real_native, host_save, ride_together, partner_vehicle_damage,
+                             coop_test_build (the host-held save session, docs/coop-session.md;
                              coop_test_build: a fake game build, honoured in hidden runs only)
                              (testenv_core ScenarioIniKeyAllowed; a scenario
                              frame_cap is written after graphics low's 30, so it wins)
@@ -907,6 +908,28 @@ hidden: `Start-TestRun.ps1 -Scenario two-games -SeedSaves complete-100`.
   nine pass in hidden runs on 2026-11-19 (section 23.22). The scenarios name counted log lines (`follower of ...
   attached #2`, `our Sam drives ... #2`, `got off ... (#2)`): `waitlog` matches the whole log, so a repeated event must
   name its count.
+* **The riding together scenarios** (`ini host_save=1`, docs/real-partner-body.md section 24): `seat-measure` (one game,
+  echo: the seats measured per kind and the solo carry), `two-games-ride-truck`, `two-games-ride-roadster`,
+  `two-games-ride-trike` (the guest rides, then the swap: the host rides), `two-games-ride-forced` (link loss, crash,
+  the game taking Sam, the driver getting off, a second hold that jumps off the reversing truck, a roll-over; the
+  re-drive waits on the ride module's seat counter `our Sam is seated in the truck (#2)`, since part 1's blackout can
+  start a new link session that numbers the drive and the attach again) and `two-games-ride-forced-host` (the same forced exits with
+  the host as the passenger, without the roll-over), the two-game ones with `-GuestSeed profile-only`; all pass
+  on 2026-11-19 (section 24.10). `ride_test 8` puts a game's Sam at the passenger door of the vehicle its partner drives;
+  the boards and exits are counted in the log (`carried on the truck ... #2)`, `off the truck ... (#2, crash, forced)`).
+  `two-games-ride-truck` ends with `ride_test 10` on the host (a request and the module's stop in one call: the late
+  ACCEPT is ended, the host walks away). All re-run after the review fixes on 2026-11-19 (section 24.10).
+* **The vehicle hit scenarios** (`ini host_save=1`, docs/real-partner-body.md section 25): `two-games-vehicle-hit` (the
+  host's truck into the guest at ~28 km/h, the guest's truck into the host, the host's Kusanagi trike into the guest at
+  40 km/h), `two-games-vehicle-hit-fast` (the truck and the trike at 40 km/h: knocked down, not killed; the passenger
+  thrown off in a crash, D3-3), `two-games-vehicle-hit-off` (`@guest ini partner_vehicle_damage=0`: the guest is not hit,
+  the host still is), `two-games-vehicle-hit-roadster` (the roadster both ways at ~35 km/h, the direct path with 0x158) and
+  `two-games-vehicle-bump` (the guest's truck rams the host's parked trike, a head-on, the partner capsule's vehicle
+  rule), all with `-GuestSeed profile-only`; all pass on 2026-11-19 (section 25.9). `vehicle_hit 8 <m>` puts a game's Sam
+  in front of the vehicle its partner drives; `vehicle_hit 12 3 -22` puts the Kusanagi trike onto the trucks' straight
+  road (its own spot faces rocks), `vehicle_hit 12 1 8` the roadster 8 m ahead of the truck (22 m behind it, it faces the
+  road's raised edge). Each hit is numbered in the victim's log (`hit Sam (#2)`) and in the
+  driver's (`reports (#2)`).
 * **Steps.** `@guest <step>` sends a mod command / `waitready` / `waitlog` / `until` to the guest;
   `@both` a mod command to both. Each game's log is matched separately. A guest that exits after
   `@guest quit` does not end the run; otherwise either game exiting does.

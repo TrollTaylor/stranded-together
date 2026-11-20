@@ -306,3 +306,17 @@ void ReadDiagnostics(Diagnostics* d) noexcept {
 }
 
 }  // namespace st::game
+
+// Riding together (ride_together.cpp): the debug rows' handlers.
+namespace st::ride {
+bool StateCommand(char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "ride state (stub)"), true; }
+bool BoardCommand(char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "ride board (stub)"), true; }
+bool ExitCommand(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "ride exit (stub)"), true; }
+bool SeatMeasureCommand(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "seat measure (stub)"), true; }
+bool Command(int, const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "ride test (stub)"), true; }
+}  // namespace st::ride
+
+// Vehicle hits (partner_tackle.cpp): the debug row's handler.
+namespace st::vhit {
+bool Command(int, const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "vehicle hit (stub)"), true; }
+}  // namespace st::vhit

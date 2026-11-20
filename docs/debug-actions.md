@@ -736,6 +736,41 @@ on (the open-loop replay), `6 <kind> [m]` moves the nearest vehicle of that kind
 (0 = 9) to the left of the vehicle the partner drives here, facing it (snapped to the ground; with a third value 1
   placed at the vehicle's height instead, for the underground garage) (then `vehicle_sync 18 6` aims the camera at it).
 
+### Riding together (`ride_state`, `ride_board`, `ride_exit`, `seat_measure`, `ride_test`; `session.ini ride_together=1` with `vehicle_sync=5`)
+
+Carried passengers in the shared real vehicles (docs/real-partner-body.md section 24). `action ride_state` logs the state
+(`[ride] state: ...`): on / off and why, the passenger side (idle, requesting, riding: the vehicle and ride id), the
+driver side (carrying: the ride id), boards, exits, requests, denies, accepts, ENDs sent / received, dropped messages, the
+pose override's writes, the input block's counters, the capsule's counter and on byte, the seats in use. `ride_board`
+boards the vehicle the partner drives here now (a completed hold: every boarding check applies). `ride_exit [1]` gets off
+now (by choice: under 2 m/s; 1 also above, hidden tests; in the game a second hold within the 3 s wait above 2 m/s
+jumps off). `seat_measure` logs, for the vehicle our Sam drives (or the
+last one measured), his root and pelvis in its frame, its joint 1 and the game's seat helpers through it, the passenger
+seat from the helpers and the one in use, and keeps his seated pose for the solo test. `ride_test <op>` (hidden tests):
+`1` carries our Sam on the measured vehicle as a passenger is carried (no partner, the kept pose), `2` ends it, `4 [dv]` a
+crash of dv m/s (0 = 12) next tick while riding, `5` rolls the vehicle our Sam drives over (45 x 4 deg about its forward
+axis by RequestTeleport), `6` stops the vehicle our Sam drives dead (RequestTeleport onto its own place), `7` the game
+takes our Sam next tick, `8 [m]` places our Sam at the passenger door of the vehicle the partner drives here, facing it,
+`9` the riding module's emergency stop (riding stays off), `10` asks to ride (as `ride_board`) and runs the emergency
+stop in the same call (the driver's ACCEPT then always arrives after the stop: it is ended at once, never a carry), `31` / `32` / `33 <m>` the x / y / z of the measured kind's
+passenger seat (this session), `30` the seat table again.
+
+### Vehicle hits (`vehicle_hit`; `session.ini partner_vehicle_damage=1` with `vehicle_sync=5`)
+
+The partner's vehicle hitting our Sam (docs/real-partner-body.md section 25). `action vehicle_hit 0` logs the state
+(`[vhit] state: ...`): on / off and why, the direct path / the state-4 bracket / the damage-handler detour, the calls per
+kind and path, faults, hits, Sam's damage messages (all, of our attack, capped, preliminary, other), STH1 sent / received,
+the forced paths, the partner capsule's vehicle boxes, our health. `vehicle_hit 1 <kind> <0 | 1 | 2>` forces a kind's
+path (auto: direct for every kind, the bracket only when the direct path's checks failed; direct, bracket; this
+session). `vehicle_hit 2` (hidden tests) one hit on our Sam now from the vehicle the
+partner drives here (the crash sphere, the direct path). `vehicle_hit 8 [m ahead] [m right]` (hidden tests) puts our Sam
+that far in front of the vehicle the partner drives here (default 15 m), facing it. `vehicle_hit 9` logs the vehicle boxes
+the partner capsule rule sees. `vehicle_hit 10 <kind> <m>` (hidden tests, the owner's game) puts the nearest free vehicle of
+that kind |m| m in front of the vehicle the partner drives here (else of our Sam) by RequestTeleport, facing it (negative m:
+broadside). `vehicle_hit 11` logs the life (`+0x6E8` / `+0x6EC`) and place of every shared vehicle within 300 m (compare
+both games). `vehicle_hit 12 <kind> <m>` (hidden tests) puts the nearest free vehicle of that kind m along the nearest free
+truck's forward (negative: behind it), on its heading.
+
 ## Byte-check table
 
 | Check | RVA | Gates |

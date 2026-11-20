@@ -252,6 +252,21 @@ bool JointWorld(game::Entity* e, unsigned sam_joint, double (&pos)[3]) noexcept;
 // a shown self body hidden, so a dead tick never leaves the player invisible. Logged.
 void EmergencyStop() noexcept;
 
+// Riding together (ride_together.cpp; docs/real-partner-body.md section 24, decision D3-2). The local Sam's own update ends
+// with a seated pose: 1 = the partner's published frame (the driver's STJ1 at the body's play time; the partner body must be
+// the real body), 2 = the snapshot SnapshotRidePose took, 0 = off (Sam's clean values come back). The capture (the wire, the
+// self view) carries it. Any thread.
+void SetRidePose(int src) noexcept;
+int RidePose() noexcept;
+// Game thread: our Sam's newest captured pose becomes the source-2 snapshot (taken while he drives: `seat_measure`).
+bool SnapshotRidePose() noexcept;
+void RidePoseCounters(std::uint32_t* writes, std::uint32_t* nosrc, std::uint32_t* restores, std::uint32_t* failed) noexcept;
+// The partner's frame was published within `max_age_ms` (the source-1 pose is there).
+bool PartnerFrameFresh(unsigned max_age_ms) noexcept;
+// Any entity with a SkinnedModel: joint j's model matrix (rows: the three axes, then the position, in the entity's frame),
+// the joint count and (optional) its name. Fault-free reads only.
+bool ReadJointModelAny(game::Entity* e, unsigned j, unsigned* count, float (&m)[4][4], char* name, std::size_t name_cap) noexcept;
+
 // ---- smooth animation above 60 fps (docs/real-partner-body.md section 3.5; session.ini smooth_pose)
 // kSmoothBoost: our bodies and gear props are moved to the game's 240 Hz update group (Entity
 //   SetUpdateFrequency, byte-checked; the game's own cutscene bodies and props ask for 59.94 Hz), so

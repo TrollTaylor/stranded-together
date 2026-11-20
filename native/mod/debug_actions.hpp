@@ -82,6 +82,13 @@ enum class Action : std::uint8_t {
                           //   5 native fx v[1], 6 kind v[1] [m v[2]] test push (tests), 7 life v[1] test (tests), 8 battery probe,
                           //   9 [m] our Sam beside the vehicle the partner drives (tests)
                           //   (vehicle_drive.cpp; docs/real-partner-body.md section 23.11)
+    ride_state,           // riding together (ride_together.cpp; docs/real-partner-body.md section 24): the state and counters
+    ride_board,           // board the partner-driven vehicle now (a completed hold; the boarding checks apply)
+    ride_exit,            // get off now; v[0] = 1 also above 2 m/s (tests)
+    seat_measure,         // the vehicle our Sam drives (or last drove): his root / pelvis and the game's seat helpers in its frame
+    ride_test,            // v[0] = 1 solo seat carry, 2 end, 4 crash dv v[1], 5 flip / 6 stop our vehicle, 7 taken, 30-33 seat tuning (tests)
+    vehicle_hit,          // vehicle hits (partner_tackle.cpp; docs/real-partner-body.md section 25): v[0] = 0 state, 1 kind v[1] path v[2],
+                          //   2 one hit on our Sam now (tests), 8 [m ahead] [m right] our Sam in front of the partner's vehicle (tests), 9 the capsule's boxes
     count
 
 };

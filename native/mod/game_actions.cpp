@@ -939,6 +939,69 @@ const char* LocalCollisionBlock(bool sequence) noexcept {
     return nullptr;
 }
 
+int PlacementGate(char* why, std::size_t cap) noexcept {
+    char local[96];
+    if (!why) why = local, cap = sizeof(local);
+    why[0] = 0;
+    EnsureResolved();
+    if (!(g_features & kFeatTeleport)) {
+        Put(why, cap, "the teleport is off (%s)", g_feature_reason[0] ? g_feature_reason[0] : "byte check");
+        return 3;
+    }
+    Sam s;
+    ReadSam(&s);
+    if (!s.e) {
+        Put(why, cap, "no local player");
+        return 2;
+    }
+    if (s.flags & kFlagAsleep) {
+        Put(why, cap, "Sam is asleep (a menu, a cutscene or a load)");
+        return 1;
+    }
+    const World w = ReadWorld();
+    std::uint32_t mask = 0;
+    if (w.gm && Rd(w.gm + kGmLoadMask, mask) && mask == 0x100) {
+        Put(why, cap, "the game is saving");
+        return 1;
+    }
+    if (const char* b = Blocked(s, kNeedPlacement | kNeedSequenceCall, nullptr)) {
+        Put(why, cap, "%s", b);
+        return 2;
+    }
+    return 0;
+}
+
+const char* CarriedSamTaken(std::uint64_t state_bits, bool sequence, bool* saving) noexcept {
+    if (saving) *saving = false;
+    EnsureResolved();
+    if (!(g_features & kFeatState) || !(g_features & kFeatModule)) return nullptr;
+    Sam s;
+    if (!ReadSam(&s)) return nullptr;
+    const World w = ReadWorld();
+    std::uint32_t mask = 0;
+    if (w.gm && Rd(w.gm + kGmLoadMask, mask) && mask) {
+        if (mask == 0x100) {
+            if (saving) *saving = true;
+            return "the game is saving";
+        }
+        return "a load";
+    }
+    std::uint64_t f = 0, r = 0;
+    if (w.gs && Rd(w.gs + kGsFlags, f) && Rd(w.gs + kGsRequested, r) && ((f | r) & state_bits))
+        return "a game state (cutscene, game over, fast travel, private room ...)";
+    if (g_features & kNeedsGuards) {
+        std::uint8_t guard = 0;
+        if (SamSlot(s, 0xD8, kGetPlayer) && Rd(s.e + kSamPopGuard, guard) && guard) return "Sam+0x678 is set (a game warp)";
+        std::uint8_t pushed = 0;
+        if (w.ps && Rd(w.ps + kPsPushedTransform, pushed) && (pushed & 1)) return "a pushed transform";
+    }
+    if (sequence && (g_features & kFeatTeleport)) {
+        bool bound = false;
+        if (CallIsBoundToSequence(s.e, &bound) && bound) return "Sam is bound to a sequence (scripted scene)";
+    }
+    return nullptr;
+}
+
 void ReadDiagnostics(Diagnostics* d) noexcept {
     *d = Diagnostics{};
     EnsureResolved();

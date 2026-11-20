@@ -1,0 +1,118 @@
+# Roadster hits (design M4.5; docs/real-partner-body.md section 25.3: the roadster uses the direct path with
+# VehicleTacklePlayer 0x158 like the trike), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-vehicle-hit-roadster -SeedSaves complete-100 -GuestSeed profile-only
+# host_save=1, the real shared vehicles with remote driving. 1. The roadster is moved onto the trucks' straight road; the
+# host drives it into the guest standing 12 m in front of it: the guest's game runs the direct path on its follower:
+# "[vhit] partner vehicle roadster ... hit Sam (#1): attack 0x158"; the host's game logs the guest's STH1 report.
+# 2. The swap: the guest drives the roadster into the host: the host's game logs the hit (#1 there).
+# Pass (in the logs): both hits with a health drop (knocked down, not killed), the driver's game logs each report, no
+# fault. Check enlarged: G1a..G1d / G2a..G2d (the victim thrown, lying, the health popup, getting up; the partner body
+# falling on the driver's screen).
+role host
+graphics low
+timeout 360
+ini host_save=1
+ini partner_body=real
+ini partner_collision=0
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[coop\] host-held save session ON \(host
+@guest waitlog 10 \[coop\] host-held save session ON \(guest
+waitlog 60 \[vshare\] shared real vehicles ON \(host
+@guest waitlog 60 \[vshare\] shared real vehicles ON \(guest
+waitlog 10 \[vhit\] vehicle hits ON \(host
+@guest waitlog 10 \[vhit\] vehicle hits ON \(guest
+# the title menus (~20 s after the first frame); the host Continues (CONTINUE is selected on its title)
+wait 22000
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+@guest waitlog 60 \[vshare\] guest: the host's snapshot #[0-9]+ is complete
+@guest waitlog 30 \[vshare\] guest: binding:
+wait 8000
+# ---- 1. the host drives the roadster into the guest (the direct path, 0x158)
+# the roadster (in the garage below the facility) onto the trucks' straight road, 8 m ahead of the nearest free truck on
+# its heading (22 m behind it, as the Kusanagi trike in two-games-vehicle-hit, it faced the road's raised edge and could
+# not climb it: run 20261119-172247); the host owns it parked
+action vehicle_hit 12 1 8
+wait 2500
+action vehicle_hit 11
+action vehicle_sync 8 1.8 1
+@guest action vehicle_sync 8 9 1
+wait 1500
+until 20 4000 \[vdrive\] host: our Sam drives roadster => pad X 150
+@guest waitlog 20 \[vdrive\] follower of roadster 0x[0-9A-F]+ attached
+wait 2000
+@guest action vehicle_hit 8 12
+wait 2500
+@guest screenshot G0-guest-before
+pad none 2400 rt=200 keep
+@guest screenshot G1a-guest-moment
+screenshot G1a-host-moment
+pad none 800 lt=255 rx=-32767 keep
+@guest screenshot G1b-guest
+screenshot G1b-host-side
+pad none 600 lt=255 keep
+pad none 0
+@guest waitlog 6 \[vhit\] partner vehicle roadster 0x[0-9A-F]+ hit Sam \(#1\).*attack 0x158
+@guest screenshot G1c-guest-2s
+pad none 700 rx=-32767
+screenshot G1c-host-side
+waitlog 6 \[vhit\] the partner's game reports \(#1\) our roadster
+wait 3000
+@guest screenshot G1d-guest-up
+screenshot G1d-host
+@both action vehicle_hit 0
+# ---- 2. the swap: the guest drives the roadster into the host
+pad X 150
+waitlog 20 \[vdrive\] host: our Sam got off roadster
+wait 4000
+# the roadster back to 8 m ahead of the truck (the host owns it parked again), so the second run stays on the straight
+action vehicle_hit 12 1 8
+wait 2500
+@guest action vehicle_sync 8 1.8 1
+wait 1500
+@guest until 20 4000 \[vdrive\] guest: our Sam drives roadster => pad X 150
+waitlog 20 \[vdrive\] host: the guest claims roadster 0x[0-9A-F]+ \(get on, epoch [0-9]+\): granted
+waitlog 20 \[vdrive\] follower of roadster 0x[0-9A-F]+ attached
+wait 2000
+action vehicle_hit 8 12
+wait 2500
+screenshot G2-host-before
+@guest pad none 2400 rt=200 keep
+screenshot G2a-host-moment
+@guest screenshot G2a-guest-moment
+@guest pad none 800 lt=255 rx=-32767 keep
+screenshot G2b-host
+@guest screenshot G2b-guest-side
+@guest pad none 600 lt=255 keep
+@guest pad none 0
+waitlog 6 \[vhit\] partner vehicle roadster 0x[0-9A-F]+ hit Sam \(#1\).*attack 0x158
+screenshot G2c-host-2s
+@guest pad none 700 rx=-32767
+@guest screenshot G2c-guest-side
+@guest waitlog 6 \[vhit\] the partner's game reports \(#1\) our roadster
+wait 3000
+screenshot G2d-host-up
+@guest screenshot G2d-guest
+@both action vehicle_hit 0
+@both action vehicle_hit 11
+@both action vehicle_drive 1
+nolog \[vhit\].*FAULT
+@guest nolog \[vhit\].*FAULT
+nolog \[vdrive\].*FAULT
+@guest nolog \[vdrive\].*FAULT
+@guest nolog \[ride\].*FAULT
+nolog \[ride\].*FAULT
+@guest quit
+wait 3000
+quit

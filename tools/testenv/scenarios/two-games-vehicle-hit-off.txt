@@ -1,0 +1,95 @@
+# Partner vehicle damage off (decision D4-4: the launcher's "Partner's vehicles can knock me down" unticked writes
+# partner_vehicle_damage=0; docs/real-partner-body.md section 25), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-vehicle-hit-off -SeedSaves complete-100 -GuestSeed profile-only
+# The guest's game has partner_vehicle_damage=0, the host's the default (on): each game decides for its own Sam. 1. The host
+# drives the truck into the guest at ~28 km/h: no hit on the guest (no "[vhit] partner vehicle ... hit Sam" line, health
+# unchanged, no knock-down: the truck only shoves the guest as the game's own vehicle contact does). 2. The swap: the guest
+# drives the truck into the host: the host is hit as usual (its own setting is on).
+# Pass (in the logs): the guest's "vehicle hits OFF on this game: session.ini partner_vehicle_damage=0", no hit line and its
+# health 1000 after part 1; the host's hit line in part 2; no fault. Check enlarged: O1a..O1c (the guest standing),
+# O2b (the host knocked down).
+role host
+graphics low
+timeout 360
+ini host_save=1
+ini partner_body=real
+ini partner_collision=0
+@guest ini partner_vehicle_damage=0
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[coop\] host-held save session ON \(host
+@guest waitlog 10 \[coop\] host-held save session ON \(guest
+waitlog 60 \[vshare\] shared real vehicles ON \(host
+@guest waitlog 60 \[vshare\] shared real vehicles ON \(guest
+waitlog 10 \[vhit\] vehicle hits ON \(host
+@guest waitlog 10 \[vhit\] vehicle hits OFF on this game: session.ini partner_vehicle_damage=0
+@guest waitlog 10 \[config\] ride_together=1 partner_vehicle_damage=0
+wait 22000
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+@guest waitlog 60 \[vshare\] guest: the host's snapshot #[0-9]+ is complete
+@guest waitlog 30 \[vshare\] guest: binding:
+wait 8000
+# ---- 1. the host drives the truck into the guest: nothing happens to the guest's Sam beyond the game's own shove
+action vehicle_sync 8 1.8 2
+@guest action vehicle_sync 8 8 2
+wait 1500
+until 20 4000 \[vdrive\] host: our Sam drives truck => pad X 150
+@guest waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached
+wait 2000
+@guest action vehicle_hit 8 12
+wait 2500
+@guest screenshot O1-guest-before
+pad none 2400 rt=180 keep
+@guest screenshot O1a-guest-moment
+pad none 800 lt=255 rx=-32767 keep
+@guest screenshot O1b-guest
+screenshot O1b-host-side
+pad none 600 lt=255 keep
+pad none 0
+wait 2000
+@guest screenshot O1c-guest-2s
+@guest action vehicle_hit 0
+@guest waitlog 3 \[vhit\] state: OFF: session.ini partner_vehicle_damage=0;.*our health 1000\.0
+@guest nolog \[vhit\] partner vehicle .* hit Sam
+@guest nolog \[vhit\] partner vehicle .* calling its attack
+# ---- 2. the swap: the guest drives the truck into the host (the host's setting is on)
+pad X 150
+waitlog 20 \[vdrive\] host: our Sam got off truck
+wait 4000
+@guest action vehicle_sync 8 1.8 2
+wait 1500
+@guest until 20 4000 \[vdrive\] guest: our Sam drives truck => pad X 150
+waitlog 20 \[vdrive\] host: the guest claims truck 0x[0-9A-F]+ \(get on, epoch [0-9]+\): granted
+waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached
+wait 2000
+action vehicle_hit 8 12
+wait 2500
+@guest pad none 2400 rt=180 keep
+screenshot O2a-host-moment
+@guest pad none 800 lt=255 rx=-32767 keep
+screenshot O2b-host
+@guest screenshot O2b-guest-side
+@guest pad none 600 lt=255 keep
+@guest pad none 0
+waitlog 6 \[vhit\] partner vehicle truck 0x[0-9A-F]+ hit Sam \(#1\)
+@guest waitlog 6 \[vhit\] the partner's game reports \(#1\) our truck
+wait 2000
+screenshot O2c-host-2s
+@both action vehicle_hit 0
+nolog \[vhit\].*FAULT
+@guest nolog \[vhit\].*FAULT
+@guest nolog \[vhit\] partner vehicle .* hit Sam
+@guest quit
+wait 3000
+quit

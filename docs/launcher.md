@@ -146,7 +146,11 @@ Three tabs (`ui::DebugTab`):
   sounds are not played; their voice is not affected; saved as `"partner_volume": N`; docs/audio-research.md section
   17.3); **Players block each other** (`partner_collision`,
   default on, needs Real character: your partner's body stops you like another character, docs/real-partner-body.md
-  section 11; unticked writes `partner_collision=0`); **Allow other characters** (launcher-only, default off,
+  section 11; unticked writes `partner_collision=0`); **Partner's vehicles can knock me down** (`partner_vehicle_damage`,
+  default on: your partner's truck, trike or roadster hits you like an enemy MULE truck, damage and the knock-down, never
+  an instant kill, also when you are thrown off it in a crash; each player's own setting decides for their own Sam;
+  docs/real-partner-body.md section 25; unticked writes `partner_vehicle_damage=0`; saved as
+  `"partner_vehicle_damage": true|false`); **Allow other characters** (launcher-only, default off,
   `"debug"` `"allow_other_characters"`, never written to session.ini: off, a guest plays Fragile (porter suit)
   on Join and in the local test; on, both offer every offered character); **CO-OP SAVE**: **Host holds the save**
   (`"debug"` `"host_save"`, default on: Host and Join write `host_save=1`, see Play above; off = each player on their
@@ -332,6 +336,10 @@ partner_volume=0..100           the partner's footsteps and sounds at this perce
                                 0..100; the mod's default is 100). docs/audio-research.md section 17.3
 name_tags=0                     no name tags (Debug page; written only when unticked, the mod's default is on)
 partner_collision=0             you can walk through your partner (Debug page; written only when unticked, default on)
+partner_vehicle_damage=0        your partner's vehicles never hurt or knock down YOUR Sam (Debug page "Partner's vehicles can
+                                knock me down"; written only when unticked, the mod's default is on; with vehicle_sync=5;
+                                docs/real-partner-body.md section 25)
+ride_together=0                 no riding together on this game (mod key only; default on; section 24)
 partner_gear=0                  no backpack or cargo on the bodies, none sent (mod key only, not written by the launcher; default on)
 smooth_pose=0                   the bodies keep the game's 60 Hz updates (v0.7; mod key only, not written by the launcher; default on)
 partner_collision_height=0      the partner's capsule at Sam's own 1.65 m, climbable as in v0.7 (mod key only; default 4.0 m: no climbing)

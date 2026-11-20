@@ -88,6 +88,15 @@ struct Config {
     // sounds are the game's own only (the NPC driver controller's engine); default 0 keeps the v0.14 lamp writes and the
     // STA1 vehicle-sound mirror on the real vehicle until a hidden run proves the native ones.
     bool vehicle_real_native = false;
+    // Riding together (design M3; docs/real-partner-body.md section 24), with vehicle_sync=5: hold X (pad) / F (keyboard) 0.6 s
+    // beside the partner's vehicle to ride as its passenger (the trike: a pillion). Default on; 0 = off on this game (its
+    // driver's game denies requests, nothing is offered).
+    bool ride_together = true;
+    // Vehicle hits (design M4; docs/real-partner-body.md section 25), with vehicle_sync=5: the partner's vehicle hits our Sam
+    // like an NPC-driven truck (the game's own vehicle attack: damage and the Blow knock-down, never an instant kill), and a
+    // passenger thrown off in a crash takes the same hit. Default on; 0 = the partner's vehicles never hurt THIS player's Sam
+    // (each game decides for its own Sam; the launcher's Debug page "Partner's vehicles can knock me down").
+    bool partner_vehicle_damage = true;
     // The partner's vehicle copy hidden while the watcher's own vehicle of the same kind stands in the same place (two of
     // the same vehicle in one spot; docs/real-partner-body.md section 22). Default on; 0: the copy is always shown.
     bool vehicle_overlap_hide = true;

@@ -2255,6 +2255,8 @@ std::size_t Footprints(std::uintptr_t except_unit, vwire::Footprint* out, std::s
     return n;
 }
 
+double FootprintsMs() noexcept { return g_poll.t; }
+
 void NoteHostPlace(std::uint32_t host_id, const WorldTransform& xf) noexcept {
     if (g_role != 2 || !g_on.load()) return;
     auto t = g_table.find(host_id);

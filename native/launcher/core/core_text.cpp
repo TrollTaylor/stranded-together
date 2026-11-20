@@ -334,6 +334,7 @@ bool MakeSessionIniText(const SessionIni& s, std::string& text, std::string& err
     if (s.sound_sync && s.partner_volume < 100) t += "partner_volume=" + std::to_string(s.partner_volume) + "\n";
     if (!s.name_tags) t += "name_tags=0\n";
     if (!s.partner_collision) t += "partner_collision=0\n";
+    if (!s.partner_vehicle_damage) t += "partner_vehicle_damage=0\n";
     text = std::move(t);
     return true;
 }
@@ -381,6 +382,7 @@ bool ParseSessionIniText(const std::string& text, SessionIni& out, std::string& 
         else if (k == "partner_volume") ok = ParseIntStrict(v, 0, 100, out.partner_volume);
         else if (k == "name_tags") out.name_tags = IniBool(v);
         else if (k == "partner_collision") out.partner_collision = IniBool(v);
+        else if (k == "partner_vehicle_damage") out.partner_vehicle_damage = IniBool(v);
         if (!ok) {
             error = "session.ini: " + k + " is malformed";
             return false;

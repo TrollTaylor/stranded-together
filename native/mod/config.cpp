@@ -137,6 +137,10 @@ Config LoadConfig(const std::wstring& dir) {
             c.vehicle_sync_set = true;
         } else if (k == "vehicle_real_native") {
             c.vehicle_real_native = ParseBool(v);
+        } else if (k == "ride_together") {
+            c.ride_together = ParseBool(v);
+        } else if (k == "partner_vehicle_damage") {
+            c.partner_vehicle_damage = ParseBool(v);
         } else if (k == "vehicle_overlap_hide") {
             c.vehicle_overlap_hide = ParseBool(v);
         } else if (k == "vehicle_look") {
@@ -254,6 +258,7 @@ Config LoadConfig(const std::wstring& dir) {
     Log("[config] vehicle_sync=%d%s vehicle_overlap_hide=%d vehicle_look=%d vehicle_packs=%d vehicle_real_native=%d", c.vehicle_sync,
         c.vehicle_sync_set ? "" : " (default: 5 real with host_save=1 when its checks pass, else 1)", c.vehicle_overlap_hide ? 1 : 0,
         c.vehicle_look ? 1 : 0, c.vehicle_packs ? 1 : 0, c.vehicle_real_native ? 1 : 0);
+    Log("[config] ride_together=%d partner_vehicle_damage=%d", c.ride_together ? 1 : 0, c.partner_vehicle_damage ? 1 : 0);
     if (c.audio_probe) Log("[config] audio_probe=1 (logging only)");
     Log("[config] self_voice=%s voice_sync=%d voice_subtitles=%d sound_sync=%d sound_steps=%d partner_volume=%d vehicle_sound=%d",
         selfvoice::ModeName(c.self_voice), c.voice_sync ? 1 : 0, c.voice_subtitles ? 1 : 0, c.sound_sync ? 1 : 0, c.sound_steps ? 1 : 0, c.partner_volume,

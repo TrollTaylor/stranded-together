@@ -1149,6 +1149,7 @@ bool Nudge(Veh& v, std::uintptr_t e, const WorldTransform& cur, const WorldTrans
     return ok;
 }
 
+std::atomic<std::uintptr_t> g_carried_unit{0};  // ride_together: the unit our Sam rides on as a passenger (0 none)
 bool Clear(std::uintptr_t unit, std::uint8_t kind, const WorldTransform& target, const game::Entity* local) noexcept {
     vwire::Footprint fp;
     fp.c[0] = target.pos.x, fp.c[1] = target.pos.y, fp.c[2] = target.pos.z;
@@ -1172,7 +1173,9 @@ bool Clear(std::uintptr_t unit, std::uint8_t kind, const WorldTransform& target,
     }
     n = kept;
     WorldTransform sam{};
-    const bool have_sam = local && ReadXf(reinterpret_cast<std::uintptr_t>(local), sam);
+    // our Sam carried as the passenger of this very vehicle (ride_together) moves with it: he never blocks its teleport
+    const bool carried_here = unit && g_carried_unit.load(std::memory_order_relaxed) == unit;
+    const bool have_sam = !carried_here && local && ReadXf(reinterpret_cast<std::uintptr_t>(local), sam);
     const double sp[3] = {sam.pos.x, sam.pos.y, sam.pos.z};
     return vwire::TeleportClear(fp, have_sam, sp, others, n);
 }
@@ -2237,6 +2240,64 @@ bool PartnerVehicleEntity(std::uintptr_t* entity) noexcept {
     }
     *entity = e;
     return e != 0;
+}
+
+namespace {
+void FillView(const Veh& v, std::uintptr_t entity, std::uintptr_t unit, DrivenView* out) noexcept {
+    DrivenView d;
+    d.key = v.key;
+    d.entity = entity;
+    d.unit = unit;
+    d.meas = v.meas_have && g_now - v.meas_ms < 200;
+    if (d.meas) {
+        std::memcpy(d.vel, v.vel, sizeof(d.vel));
+        d.speed_mps = v.speed_mps;
+    }
+    if (!v.track.empty()) {
+        const Frm& f = v.track.back();
+        d.have_frame = true;
+        d.frame_key = f.key;
+        std::memcpy(d.frame_vel, f.f.vel, sizeof(d.frame_vel));
+        d.frame_seated = f.f.Has(vwire::kDrvSeated);
+        d.frame_broken = f.f.Has(vwire::kDrvBroken) || f.f.Has(vwire::kDrvExploded);
+        d.frame_ride_state = f.f.ride_state;
+        d.frame_rx_age_ms = g_now - v.track_rx_ms;
+    }
+    *out = d;
+}
+}  // namespace
+
+void SetCarriedUnit(std::uintptr_t unit) noexcept { g_carried_unit.store(unit, std::memory_order_relaxed); }
+
+bool LocalDriving(DrivenView* out) noexcept {
+    if (!Active() || !g_drive.on) return false;
+    const Veh* v = FindV(g_drive.key.id);
+    if (!v || !EntityLive(g_drive.unit, g_drive.entity, g_drive.key.kind)) return false;
+    if (out) FillView(*v, g_drive.entity, g_drive.unit, out);
+    return true;
+}
+
+bool PartnerDriving(DrivenView* out) noexcept {
+    if (!Active()) return false;
+    for (auto& kv : g_veh) {
+        const Veh& v = kv.second;
+        if (!v.block || !v.ctl_entity || !EntityLive(v.ctl_unit, v.ctl_entity, v.key.kind)) continue;
+        if (out) FillView(v, v.ctl_entity, v.ctl_unit, out);
+        return true;
+    }
+    return false;
+}
+
+bool FrameAtPlay(std::uint32_t host_id, double play_ms, float (&vel)[3], double* key_ms) noexcept {
+    const Veh* v = FindV(host_id);
+    if (!v || v->track.empty()) return false;
+    const Frm* a = nullptr;
+    const Frm* b = nullptr;
+    double f = 0;
+    if (!Bracket(v->track, play_ms, &a, &b, &f) || !a) return false;
+    std::memcpy(vel, a->f.vel, sizeof(vel));
+    if (key_ms) *key_ms = a->key;
+    return true;
 }
 
 bool PartnerDrivenEntity(std::uintptr_t* entity) noexcept {

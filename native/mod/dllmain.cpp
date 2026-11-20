@@ -12,6 +12,8 @@
 #include "automation.hpp"
 #include "config.hpp"
 #include "coop_session.hpp"
+#include "partner_tackle.hpp"
+#include "ride_together.hpp"
 #include "vehicle_drive.hpp"
 #include "vehicle_share.hpp"
 #include "debug_actions.hpp"
@@ -93,8 +95,10 @@ bool GuardedEmergencyStop() noexcept {
     const bool veh = GuardedStop(&st::vsync::EmergencyStop);
     const bool share = GuardedStop(&st::vshare::EmergencyStop);  // its detours pass everything through
     const bool drive = GuardedStop(&st::vdrive::EmergencyStop);  // the follower inputs stop
+    const bool ride = GuardedStop(&st::ride::EmergencyStop);      // the carried passenger's input block and pose override go
+    const bool hit = GuardedStop(&st::vhit::EmergencyStop);       // no more vehicle-hit calls
     const bool coop = GuardedStop(&CoopStopAfterFault);
-    return coll && body && gear && veh && share && drive && coop;
+    return coll && body && gear && veh && share && drive && ride && hit && coop;
 }
 
 // frame_cap=<fps> (session.ini; the launcher's local two-instance test and hidden two-game
@@ -148,7 +152,10 @@ void HookedRunCallbacks() {
     FrameCap();
     if (!g_sync_enabled.load(std::memory_order_acquire)) {
         // after a whole-mod stop: the real vehicles' followers let go on the game thread, once (guarded; no-op otherwise)
-        if (g_faulted.load()) st::vdrive::AfterStop();
+        if (g_faulted.load()) {
+            st::vdrive::AfterStop();
+            st::ride::AfterStop();  // a carried passenger: capsule back on, put beside the vehicle (once)
+        }
         return;
     }
     if (!GuardedTick()) {
@@ -262,6 +269,8 @@ DWORD WINAPI Bootstrap(LPVOID) {
     // the pool detours (the guest's spawn gate, the eviction refusal) go in at start-up, before any world loads.
     st::vshare::Install(cfg);
     st::vdrive::Install(cfg);  // remote driving, ownership and state on the shared vehicles (section 23.11)
+    st::ride::Install(cfg);    // riding together on them (section 24)
+    st::vhit::Install(cfg);    // vehicle hits: the partner's vehicle knocks our Sam down (section 25; its damage-handler detour goes in now)
     // Real partner body (docs/real-partner-body.md): the pose hook goes in at start-up, never
     // mid-game (enabling a hook suspends every thread while job threads may be inside it).
     if (cfg.partner_body == st::PartnerBody::real || cfg.pose_hook) st::realbody::InstallHook();
@@ -290,6 +299,8 @@ DWORD WINAPI Bootstrap(LPVOID) {
         // the real shared vehicles' detours went in above: they pass everything through from now on (no tick ever runs)
         st::vshare::EmergencyStop();
         st::vdrive::EmergencyStop();
+        st::ride::EmergencyStop();
+        st::vhit::EmergencyStop();
         return 0;
     }
     st::Log("[mod] frame pump hooked");

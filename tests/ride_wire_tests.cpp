@@ -1,0 +1,432 @@
+// STQ1 (native/mod/ride_wire.*), riding together's pure part: the message round trip and every decoder rejection, the seats,
+// boarding, the driver's answer, the forced exits, the hold / flip / crash detectors and the exit placement. No game, no link.
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <vector>
+
+#include "ride_wire.hpp"
+#include "vehicle_wire.hpp"
+
+using namespace st::rwire;
+
+namespace {
+int g_checks = 0, g_fail = 0;
+#define CHECK(c)                                                     \
+    do {                                                             \
+        ++g_checks;                                                  \
+        if (!(c)) {                                                  \
+            std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); \
+            ++g_fail;                                                \
+        }                                                            \
+    } while (0)
+
+constexpr std::uint32_t kTruck = 0x020005, kRoadster = 0x040003, kTrike = 0x01E001;
+
+Msg Req() {
+    Msg m;
+    m.type = MsgType::request;
+    m.seat = Seat::passenger;
+    m.reason = kReqHold;
+    m.from = 1;
+    m.ride_id = 0x1234;
+    m.sender_ms = 987654;
+    m.vehicle_id = kTruck;
+    m.kind = 2;
+    m.world = 3;
+    return m;
+}
+
+bool Same(const Msg& a, const Msg& b) {
+    return a.type == b.type && a.seat == b.seat && a.reason == b.reason && a.from == b.from && a.ride_id == b.ride_id && a.sender_ms == b.sender_ms &&
+           a.vehicle_id == b.vehicle_id && a.kind == b.kind && a.world == b.world;
+}
+
+void TestMessages() {
+    std::uint8_t buf[64];
+    // every type round trips
+    for (std::uint8_t t = 1; t <= 4; ++t) {
+        Msg m = Req();
+        m.type = static_cast<MsgType>(t);
+        m.reason = t == 3 ? static_cast<std::uint8_t>(Deny::not_near) : t == 4 ? static_cast<std::uint8_t>(End::crash) : 0;
+        const std::size_t n = EncodeMsg(m, buf, sizeof(buf));
+        CHECK(n == kMessageSize);
+        CHECK(n == 36);
+        Msg o;
+        CHECK(DecodeMsg(buf, n, o));
+        CHECK(Same(m, o));
+        std::uint8_t type = 0;
+        CHECK(st::vwire::PeekType(buf, n, &type) && type == kSvmType);
+    }
+    // the trike carries a pillion, the roadster a passenger
+    {
+        Msg m = Req();
+        m.vehicle_id = kTrike, m.kind = 3, m.seat = Seat::pillion;
+        const std::size_t n = EncodeMsg(m, buf, sizeof(buf));
+        Msg o;
+        CHECK(n && DecodeMsg(buf, n, o) && o.seat == Seat::pillion && o.kind == 3);
+        m.seat = Seat::passenger;
+        CHECK(EncodeMsg(m, buf, sizeof(buf)) == 0);
+        m.vehicle_id = kRoadster, m.kind = 1;
+        CHECK(EncodeMsg(m, buf, sizeof(buf)) == kMessageSize);
+    }
+    // the encoder refuses what the decoder would
+    {
+        Msg m = Req();
+        m.ride_id = 0;
+        CHECK(EncodeMsg(m, buf, sizeof(buf)) == 0);
+        m = Req(), m.kind = 3;  // a truck id with the trike's kind
+        CHECK(EncodeMsg(m, buf, sizeof(buf)) == 0);
+        m = Req(), m.from = 2;
+        CHECK(EncodeMsg(m, buf, sizeof(buf)) == 0);
+        m = Req(), m.reason = 2;  // REQUEST reasons 0..1
+        CHECK(EncodeMsg(m, buf, sizeof(buf)) == 0);
+        m = Req(), m.type = MsgType::deny, m.reason = static_cast<std::uint8_t>(Deny::count);
+        CHECK(EncodeMsg(m, buf, sizeof(buf)) == 0);
+        m = Req(), m.type = MsgType::end, m.reason = static_cast<std::uint8_t>(End::count);
+        CHECK(EncodeMsg(m, buf, sizeof(buf)) == 0);
+        m = Req(), m.type = MsgType::accept, m.reason = 1;
+        CHECK(EncodeMsg(m, buf, sizeof(buf)) == 0);
+        m = Req(), m.type = static_cast<MsgType>(5);
+        CHECK(EncodeMsg(m, buf, sizeof(buf)) == 0);
+        m = Req();
+        CHECK(EncodeMsg(m, buf, kMessageSize - 1) == 0);
+    }
+    // the decoder: every byte that matters
+    {
+        Msg m = Req();
+        const std::size_t n = EncodeMsg(m, buf, sizeof(buf));
+        Msg o;
+        CHECK(!DecodeMsg(buf, n - 1, o));
+        std::vector<std::uint8_t> longer(buf, buf + n);
+        longer.push_back(0);
+        CHECK(!DecodeMsg(longer.data(), longer.size(), o));
+        CHECK(!DecodeMsg(nullptr, n, o));
+        const auto flip = [&](std::size_t at, std::uint8_t v) {
+            std::uint8_t b[64];
+            std::memcpy(b, buf, n);
+            b[at] = v;
+            Msg x;
+            return DecodeMsg(b, n, x);
+        };
+        CHECK(!flip(0, 'X'));     // SVM1 magic
+        CHECK(!flip(4, 47));      // another SVM1 type
+        CHECK(!flip(5, 2));       // SVM1 version
+        CHECK(!flip(6, 1));       // SVM1 reserved
+        CHECK(!flip(8, 'X'));     // STQ1 magic
+        CHECK(!flip(11, '2'));
+        CHECK(!flip(12, 0));      // type 0
+        CHECK(!flip(12, 5));      // type 5
+        CHECK(!flip(13, 2));      // pillion on a truck
+        CHECK(!flip(13, 0));      // no seat
+        CHECK(!flip(14, 9));      // request reason
+        CHECK(!flip(15, 2));      // from
+        CHECK(!flip(28, 3));      // kind 3 with a truck id
+        CHECK(!flip(28, 0));
+        CHECK(!flip(29, 1));      // reserved
+        CHECK(!flip(30, 1));
+        CHECK(!flip(31, 1));
+        std::uint8_t b[64];
+        std::memcpy(b, buf, n);
+        std::memset(b + 16, 0, 4);  // ride id 0
+        CHECK(!DecodeMsg(b, n, o));
+        std::memcpy(b, buf, n);
+        b[24] = 0x00, b[25] = 0x00, b[26] = 0x00, b[27] = 0x00;  // vehicle id 0: no kind
+        CHECK(!DecodeMsg(b, n, o));
+        // the sender time and the world are free values
+        std::memcpy(b, buf, n);
+        b[20] = 0xFF, b[32] = 0xFF;
+        CHECK(DecodeMsg(b, n, o));
+    }
+    CHECK(std::strcmp(MsgTypeName(1), "REQUEST") == 0 && std::strcmp(MsgTypeName(9), "?") == 0);
+    CHECK(std::strcmp(EndName(static_cast<std::uint8_t>(End::crash)), "crash") == 0);
+    CHECK(std::strcmp(DenyName(200), "?") == 0);
+    CHECK(std::strcmp(BlockName(Block::too_far), "too far") == 0);
+}
+
+void TestSeats() {
+    float p[3], d[3], door[3];
+    for (std::uint8_t k = 1; k <= 3; ++k) {
+        CHECK(PassengerSeat(k, p));
+        CHECK(DriverSeat(k, d));
+        CHECK(DoorPoint(k, door));
+        CHECK(SeatOf(k) != Seat::none);
+        // every seat inside the vehicle's footprint, the door outside it on the right
+        float half[3];
+        st::vwire::KindHalfExtents(k, half);
+        CHECK(std::fabs(p[0]) < half[0] && std::fabs(p[1]) < half[1] && p[2] >= 0 && p[2] < 2 * half[2]);
+        CHECK(door[0] > 0.5f);
+    }
+    // roadster and truck: the passenger is the driver mirrored across the centre plane (HLP_Passenger = HLP_Driver mirrored)
+    for (std::uint8_t k = 1; k <= 2; ++k) {
+        PassengerSeat(k, p), DriverSeat(k, d);
+        CHECK(p[0] > 0 && d[0] < 0 && std::fabs(p[0] + d[0]) < 1e-6f && p[1] == d[1] && p[2] == d[2]);
+        CHECK(SeatOf(k) == Seat::passenger);
+    }
+    // the trike: a pillion behind the driver, on the centre line
+    PassengerSeat(3, p), DriverSeat(3, d);
+    CHECK(SeatOf(3) == Seat::pillion && p[1] < d[1] - 0.2f && std::fabs(p[0]) < 0.05f);
+    CHECK(!PassengerSeat(0, p) && !PassengerSeat(4, p) && SeatOf(4) == Seat::none && !DoorPoint(9, door));
+
+    // to the world and back, with a vehicle turned 90 deg (right = +y, forward = -x)
+    const double pos[3] = {100, 200, 10};
+    const float rows[9] = {0, 1, 0, -1, 0, 0, 0, 0, 1};
+    const float off[3] = {1, 2, 3};
+    double w[3], l[3];
+    ToWorld(pos, rows, off, w);
+    CHECK(std::fabs(w[0] - 98) < 1e-9 && std::fabs(w[1] - 201) < 1e-9 && std::fabs(w[2] - 13) < 1e-9);
+    ToLocal(pos, rows, w, l);
+    CHECK(std::fabs(l[0] - 1) < 1e-6 && std::fabs(l[1] - 2) < 1e-6 && std::fabs(l[2] - 3) < 1e-6);
+}
+
+void TestBoarding() {
+    BoardIn in;
+    in.feature_on = true, in.link_up = true, in.partner_drives = true, in.kind = 2, in.local_on_foot = true, in.door_dist_m = 1.0, in.vehicle_speed = 0.2;
+    CHECK(BoardCheck(in) == Block::ok);
+    BoardIn b = in;
+    b.feature_on = false;
+    CHECK(BoardCheck(b) == Block::off);
+    b = in, b.link_up = false;
+    CHECK(BoardCheck(b) == Block::no_link);
+    b = in, b.partner_drives = false;
+    CHECK(BoardCheck(b) == Block::no_vehicle);
+    b = in, b.kind = 0;
+    CHECK(BoardCheck(b) == Block::no_seat);
+    b = in, b.local_on_foot = false;
+    CHECK(BoardCheck(b) == Block::not_on_foot);
+    b = in, b.busy = true;
+    CHECK(BoardCheck(b) == Block::busy);
+    b = in, b.door_dist_m = 2.5;
+    CHECK(BoardCheck(b) == Block::ok);
+    b = in, b.door_dist_m = 2.51;
+    CHECK(BoardCheck(b) == Block::too_far);
+    b = in, b.door_dist_m = std::nan("");
+    CHECK(BoardCheck(b) == Block::too_far);
+    b = in, b.vehicle_speed = 1.0;
+    CHECK(BoardCheck(b) == Block::moving);
+    b = in, b.vehicle_speed = -1.5;
+    CHECK(BoardCheck(b) == Block::moving);
+
+    // the driver's answer
+    DriverIn d;
+    d.feature_on = true, d.we_drive_it = true, d.speed = 0.5, d.have_partner = true, d.partner_dist_m = 3;
+    Deny why = Deny::off;
+    CHECK(DriverAccepts(d, &why) && why == Deny::count);
+    DriverIn x = d;
+    x.feature_on = false;
+    CHECK(!DriverAccepts(x, &why) && why == Deny::off);
+    x = d, x.same_world = false;
+    CHECK(!DriverAccepts(x, &why) && why == Deny::world);
+    x = d, x.we_drive_it = false;
+    CHECK(!DriverAccepts(x, &why) && why == Deny::not_driving);
+    x = d, x.seat_taken = true;
+    CHECK(!DriverAccepts(x, &why) && why == Deny::seat_taken);
+    x = d, x.speed = 2.0;
+    CHECK(!DriverAccepts(x, &why) && why == Deny::moving);
+    x = d, x.have_partner = false;
+    CHECK(!DriverAccepts(x, &why) && why == Deny::not_near);
+    x = d, x.partner_dist_m = 5.01;
+    CHECK(!DriverAccepts(x, &why) && why == Deny::not_near);
+    CHECK(DriverAccepts(d, nullptr));
+
+    // the driver's body placement and timeout
+    CHECK(!DriverPlacesBody(false, 0, 0));
+    CHECK(DriverPlacesBody(true, 100, 1e9));        // just accepted: the partner's pose follows within the grace
+    CHECK(DriverPlacesBody(true, 10000, 200));      // its pose says passenger
+    CHECK(!DriverPlacesBody(true, 10000, 1500));    // it stopped saying so
+    CHECK(!DriverTimedOut(true, 4000, 1e9));
+    CHECK(DriverTimedOut(true, 5000, 5000));
+    CHECK(!DriverTimedOut(true, 9000, 300));
+    CHECK(!DriverTimedOut(false, 9000, 9000));
+}
+
+void TestForced() {
+    ForcedIn ok;
+    CHECK(ForcedExit(ok) == End::count);
+    ForcedIn f = ok;
+    f.link_silent_ms = 1000;
+    CHECK(ForcedExit(f) == End::count);
+    f.link_silent_ms = 1001;
+    CHECK(ForcedExit(f) == End::link);
+    f = ok, f.not_driven_ms = 401;
+    CHECK(ForcedExit(f) == End::driver_off);
+    f = ok, f.vehicle_live = false;
+    CHECK(ForcedExit(f) == End::vehicle_gone);
+    f = ok, f.broken = true;
+    CHECK(ForcedExit(f) == End::broken);
+    f = ok, f.flipped = true;
+    CHECK(ForcedExit(f) == End::flipped);
+    f = ok, f.crash_dv = 8.0;
+    CHECK(ForcedExit(f) == End::count);
+    f.crash_dv = 8.5;
+    CHECK(ForcedExit(f) == End::crash);
+    f = ok, f.driver_not_seated = true, f.speed = 1.0;
+    CHECK(ForcedExit(f) == End::count);
+    f.speed = 3.0;
+    CHECK(ForcedExit(f) == End::not_seated);
+    f = ok, f.taken = true;
+    CHECK(ForcedExit(f) == End::taken);
+    f = ok, f.world_changed = true;
+    CHECK(ForcedExit(f) == End::world);
+    f = ok, f.driver_ended = true;
+    CHECK(ForcedExit(f) == End::driver_ended);
+    // the order: the mod's and the game's reasons first, then the link, then the vehicle
+    f = ok, f.stopped = true, f.world_changed = true, f.taken = true, f.link_silent_ms = 5000, f.crash_dv = 20;
+    CHECK(ForcedExit(f) == End::stopped);
+    f.stopped = false;
+    CHECK(ForcedExit(f) == End::world);
+    f.world_changed = false;
+    CHECK(ForcedExit(f) == End::taken);
+    f.taken = false;
+    CHECK(ForcedExit(f) == End::link);
+    f.link_silent_ms = 0;
+    CHECK(ForcedExit(f) == End::crash);
+    f = ok, f.crash_dv = 9, f.flipped = true;
+    CHECK(ForcedExit(f) == End::crash);
+}
+
+void TestDetectors() {
+    HoldDetector h;
+    // a button already down when it starts never counts until released
+    CHECK(!h.Update(true, 0));
+    CHECK(!h.Update(true, 1000));
+    CHECK(!h.Update(false, 1100));
+    CHECK(!h.Update(true, 1200));
+    CHECK(!h.Update(true, 1799));
+    CHECK(h.Update(true, 1800));   // 600 ms
+    CHECK(!h.Update(true, 2500));  // once
+    CHECK(!h.Update(false, 2600));
+    CHECK(!h.Update(true, 2700));
+    CHECK(!h.Update(false, 2800));  // a tap
+    CHECK(!h.Update(true, 2900));
+    CHECK(h.Update(true, 3500));
+    h.Reset();
+    CHECK(!h.Update(true, 4000));
+    CHECK(!h.Update(true, 5000));  // still held from before the reset
+    CHECK(!h.Update(false, 5100));
+    CHECK(!h.Update(true, 5200));
+    CHECK(h.HeldMs(5500) == 300);
+    CHECK(h.Update(true, 5800));
+
+    FlipDetector fl;
+    CHECK(!fl.Update(1.0, 0));
+    CHECK(!fl.Update(0.2, 100));
+    CHECK(!fl.Update(-0.5, 599));
+    CHECK(fl.Update(-0.5, 600));
+    CHECK(!fl.Update(0.31, 700));  // upright again
+    CHECK(!fl.Update(0.1, 800));
+    CHECK(!fl.Update(std::nan(""), 1400));  // not a reading: not flipped
+    CHECK(!fl.Update(0.1, 1500));
+    CHECK(fl.Update(0.1, 2000));
+
+    CrashDetector c;
+    const float v0[3] = {15, 0, 0}, v1[3] = {14, 0.5f, 0}, v2[3] = {3, 0, 0}, v3[3] = {3, 0, 0};
+    CHECK(c.Update(v0, 1000) == 0);
+    CHECK(c.Update(v1, 1033) == 0);  // braking
+    CHECK(c.Update(v2, 1066) > 8);   // 11 m/s in one frame
+    CHECK(c.Update(v3, 1066) == 0);  // the same key again
+    CHECK(c.Update(v0, 1050) == 0);  // older
+    CHECK(c.Update(v0, 1300) == 0);  // after a gap: starts over
+    CHECK(c.Update(v2, 1500) == 0);  // 200 ms later: not one frame
+    const float bad[3] = {std::nanf(""), 0, 0};
+    CHECK(c.Update(bad, 1530) == 0);
+    c.Reset();
+    CHECK(c.Update(v2, 10) == 0);
+}
+
+void TestExit() {
+    const double pos[3] = {0, 0, 5};
+    const float rows[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+    const float still[3] = {0, 0, 0};
+    float half[3];
+    for (std::uint8_t k = 1; k <= 3; ++k) {
+        st::vwire::KindHalfExtents(k, half);
+        // by choice: on the passenger's (right) side, beside the seat row, at the vehicle's height, facing it
+        const ExitSpot s = ExitPlacement(k, pos, rows, still, false);
+        CHECK(s.side == 1);
+        CHECK(std::fabs(s.pos[0] - (half[0] + 0.7)) < 1e-5 && s.pos[2] == 5);
+        CHECK(std::fabs(s.facing[0] + 1) < 1e-6 && std::fabs(s.facing[1]) < 1e-6);
+        float door[3];
+        DoorPoint(k, door);
+        CHECK(std::fabs(s.pos[1] - door[1]) < 1e-5);
+    }
+    // forced, sliding right: put off on the left
+    const float slide_right[3] = {4, 10, 0};
+    ExitSpot s = ExitPlacement(2, pos, rows, slide_right, true);
+    st::vwire::KindHalfExtents(2, half);
+    CHECK(s.side == -1 && s.pos[0] < -half[0] && s.facing[0] > 0.99f);
+    // forced, fast forward: moved back (at most 3 m)
+    const float fast[3] = {0, 30, 0};
+    s = ExitPlacement(2, pos, rows, fast, true);
+    float door[3];
+    DoorPoint(2, door);
+    CHECK(s.side == 1 && std::fabs(s.pos[1] - (door[1] - 3.0)) < 1e-5);
+    const float slow_back[3] = {0, -4, 0};
+    s = ExitPlacement(2, pos, rows, slow_back, true);
+    CHECK(std::fabs(s.pos[1] - (door[1] + 1.0)) < 1e-5);
+    // by choice the velocity does not move it
+    s = ExitPlacement(2, pos, rows, fast, false);
+    CHECK(s.side == 1 && std::fabs(s.pos[1] - door[1]) < 1e-5);
+    // a turned vehicle: right = +y
+    const float turned[9] = {0, 1, 0, -1, 0, 0, 0, 0, 1};
+    s = ExitPlacement(1, pos, turned, still, false);
+    st::vwire::KindHalfExtents(1, half);
+    DoorPoint(1, door);
+    CHECK(std::fabs(s.pos[1] - (half[0] + 0.7)) < 1e-5 && std::fabs(s.pos[0] - (-door[1])) < 1e-5);
+    CHECK(std::fabs(s.facing[1] + 1) < 1e-6);
+
+    // rolled over (the flip exit): never under or inside the wreck, never on it; beside its body, at its lowest point
+    for (std::uint8_t k = 1; k <= 3; ++k) {
+        st::vwire::KindHalfExtents(k, half);
+        DoorPoint(k, door);
+        const double h = 2.0 * half[2];
+        // on its right side: right = down, up = +x (the roof toward +x, the underside at x 0)
+        const float right_side[9] = {0, 0, -1, 0, 1, 0, 1, 0, 0};
+        for (const float* v : {still, slide_right}) {
+            const float vel[3] = {v[0], v[1], v[2]};
+            s = ExitPlacement(k, pos, right_side, vel, true);
+            const bool beside = s.pos[0] >= h + 0.7 - 1e-5 || s.pos[0] <= -0.7 + 1e-5;  // past the roof or the underside
+            CHECK(beside);
+            CHECK(std::fabs(s.pos[2] - (5 - half[0])) < 1e-5);  // its right side's height (lying on it), not 2 m under the origin
+            CHECK(std::fabs(s.facing[0]) > 0.99f && std::fabs(s.facing[1]) < 1e-6);
+            CHECK((s.pos[0] > 0) == (s.facing[0] < 0));  // facing the vehicle
+        }
+        s = ExitPlacement(k, pos, right_side, still, true);
+        CHECK(std::fabs(s.pos[0] - (h + 0.7)) < 1e-5 && std::fabs(s.pos[1] - door[1]) < 1e-5);
+        // on its left side: right = up, up = -x
+        const float left_side[9] = {0, 0, 1, 0, 1, 0, -1, 0, 0};
+        s = ExitPlacement(k, pos, left_side, still, true);
+        CHECK(std::fabs(s.pos[0] - 0.7) < 1e-5);  // beside its underside (the body lies toward -x)
+        CHECK(std::fabs(s.pos[2] - (5 - half[0])) < 1e-5);
+        CHECK(s.facing[0] < -0.99f);
+        // on its roof: right = -x, up = down
+        const float roof[9] = {-1, 0, 0, 0, 1, 0, 0, 0, -1};
+        s = ExitPlacement(k, pos, roof, still, true);
+        CHECK(std::fabs(s.pos[0] + (half[0] + 0.7)) < 1e-5);  // beside it on its (now left) passenger side
+        CHECK(std::fabs(s.pos[2] - (5 - h)) < 1e-5);  // its roof's height under the base
+        CHECK(s.facing[0] > 0.99f);
+        // standing on its nose: forward = down, up = +y; right stays horizontal
+        const float nose[9] = {1, 0, 0, 0, 0, -1, 0, 1, 0};
+        s = ExitPlacement(k, pos, nose, still, true);
+        CHECK(std::fabs(s.pos[0] - (half[0] + 0.7)) < 1e-5 && std::fabs(s.pos[2] - (5 - half[1])) < 1e-5);
+        CHECK(std::isfinite(s.pos[1]));
+    }
+}
+
+}  // namespace
+
+int main() {
+    setvbuf(stdout, nullptr, _IONBF, 0);
+    TestMessages();
+    TestSeats();
+    TestBoarding();
+    TestForced();
+    TestDetectors();
+    TestExit();
+    if (g_fail) {
+        std::printf("st_ride_wire_tests: %d of %d checks FAILED\n", g_fail, g_checks);
+        return 1;
+    }
+    std::printf("st_ride_wire_tests: all %d checks passed\n", g_checks);
+    return 0;
+}

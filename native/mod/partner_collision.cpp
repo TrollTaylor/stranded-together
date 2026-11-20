@@ -11,6 +11,7 @@
 #include "game_actions.hpp"
 #include "log.hpp"
 #include "partner_source.hpp"
+#include "partner_tackle.hpp"
 #include "player_sync.hpp"
 
 namespace st::collision {
@@ -522,6 +523,15 @@ void Init(const Config& config) noexcept {
             g_layer, static_cast<double>(g_height));
 }
 
+namespace {
+// The body's place as the vehicle rules take it.
+const double (&BodyPoint(const game::WorldTransform& w))[3] {
+    static double p[3];
+    p[0] = w.pos.x, p[1] = w.pos.y, p[2] = w.pos.z;
+    return p;
+}
+}  // namespace
+
 void Tick(game::Entity* local, bool local_active, game::Entity* body_e, bool partner_in_vehicle, double remote_age_ms, double now) noexcept {
     const std::uintptr_t body = reinterpret_cast<std::uintptr_t>(body_e);
     const std::uintptr_t sam = reinterpret_cast<std::uintptr_t>(local);
@@ -587,6 +597,9 @@ void Tick(game::Entity* local, bool local_active, game::Entity* body_e, bool par
     else if (partner_in_vehicle) why = "off: the partner is in a vehicle";
     else if (g_b.speed > kFastMps) why = "off: the partner moves fast (vehicle?)";
     else if (now < g_b.hold_until_ms) why = "off: the partner jumped (snap or teleport)";
+    // M4.4 (partner_tackle.hpp): a vehicle moving over 1 m/s within 5 m of the body (an NPC truck, a rolling vehicle, the
+    // partner's just after they got off) meets no invisible pillar
+    else if (const char* vb = vhit::CapsuleVehicleBlock(BodyPoint(bw), false)) why = vb;
     else if (-dz > kSamAboveM) why = "off: Sam is above the partner (over 1.6 m)";
     else if (!SamCapsuleInWorld(SamCapsule(sam))) why = "off: Sam's own capsule is not in the world (ladder, zipline, ...)";
     else {
@@ -606,9 +619,12 @@ void Tick(game::Entity* local, bool local_active, game::Entity* body_e, bool par
         why = "off: overlapping Sam (waits until 0.9 m apart)";
     }
 
-    // Attach once (only when it can go straight into the world, apart from Sam).
+    // Attach once (only when it can go straight into the world, apart from Sam and every vehicle).
     if (want && !g_b.comp && !g_b.failed) {
-        if (!separated) {
+        if (const char* vb = vhit::CapsuleVehicleBlock(BodyPoint(bw), true)) {
+            want = false;
+            why = vb;
+        } else if (!separated) {
             want = false;
             why = "waiting: Sam too close to attach";
         } else if (g_attach_failures >= 3) {
@@ -629,7 +645,11 @@ void Tick(game::Entity* local, bool local_active, game::Entity* body_e, bool par
         if (!want) {
             if (!g_b.disabled && !SetInWorld(false, bw)) Log("[coll] Capsule::Disable faulted");
         } else if (g_b.disabled) {
-            if (separated) {
+            const char* vb = vhit::CapsuleVehicleBlock(BodyPoint(bw), true);  // M4.4: never back into a vehicle
+            if (vb) {
+                why = vb;
+                want = false;
+            } else if (separated) {
                 if (!SetInWorld(true, bw)) {
                     Log("[coll] Capsule::Enable faulted: collision off for this body");
                     g_b.failed = true;

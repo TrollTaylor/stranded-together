@@ -558,6 +558,80 @@ bool FitWrite(std::uintptr_t sm, std::uintptr_t pose, std::uintptr_t local, cons
     return true;
 }
 
+// Riding together (ride_together.cpp; docs/real-partner-body.md section 24, decision D3-2): while the local Sam is carried as
+// a passenger, his own update ends with the DRIVER's seated pose: every joint's rotation and the root / pelvis translations
+// of the source (Sam's layout), his own bone lengths kept, then the game's model-matrix and bounds steps (as the fit). The
+// capture then holds that pose, so the wire (STJ1: the partner body on the driver's screen sits too), the self view and the
+// gear on Sam all follow it. Source 1: the partner's published frame (the driver's STJ1 at the body's play time, under
+// 500 ms old); source 2: a snapshot of our own Sam's pose taken while he drove (hidden tests: `seat_measure`). As the fit, a
+// value the game left as we wrote it reads as Sam's clean one, and Sam's clean values go back when the override ends.
+std::atomic<int> g_ride_src{0};
+std::atomic<std::uint64_t> g_apply_tick{0};  // GetTickCount64 of the newest PublishFrame
+SeqLock<Capture> g_ride_snap;
+std::atomic<bool> g_ride_have_snap{false};
+std::atomic<std::uint32_t> g_ride_writes{0}, g_ride_nosrc{0}, g_ride_restores{0}, g_ride_failed{0};
+bool g_ride_active = false;  // Sam's update only (under g_fit_busy)
+Joint g_ride_written[kJ] = {};
+Joint g_ride_clean[kJ] = {};
+
+void RideOverride(std::uintptr_t sm, std::uintptr_t pose, std::uintptr_t local, Capture& c) {
+    unsigned held = 0;
+    if (g_ride_active) {
+        for (unsigned j = 0; j < kJ; ++j) {
+            if (std::memcmp(c.j[j].q, g_ride_written[j].q, 4 * sizeof(float)) == 0 &&
+                std::memcmp(c.j[j].q, g_ride_clean[j].q, 4 * sizeof(float)) != 0) {
+                std::memcpy(c.j[j].q, g_ride_clean[j].q, 4 * sizeof(float));
+                ++held;
+            }
+            if (std::memcmp(c.j[j].t, g_ride_written[j].t, 3 * sizeof(float)) == 0 &&
+                std::memcmp(c.j[j].t, g_ride_clean[j].t, 3 * sizeof(float)) != 0) {
+                std::memcpy(c.j[j].t, g_ride_clean[j].t, 3 * sizeof(float));
+                ++held;
+            }
+        }
+    }
+    const int src = g_ride_src.load(std::memory_order_acquire);
+    static thread_local ApplyBuf a;
+    static thread_local Capture snap;
+    bool have = false;
+    if (src == 1) have = GetTickCount64() - g_apply_tick.load(std::memory_order_acquire) < 500 && g_apply.Read(a);
+    else if (src == 2) have = g_ride_have_snap.load(std::memory_order_acquire) && g_ride_snap.Read(snap);
+    if (!have) {
+        if (src) g_ride_nosrc.fetch_add(1, std::memory_order_relaxed);
+        if (g_ride_active) {
+            if (held && FitWrite(sm, pose, local, c.j, true)) g_ride_restores.fetch_add(1, std::memory_order_relaxed);
+            g_ride_active = false;
+        }
+        return;
+    }
+    std::memcpy(g_ride_clean, c.j, sizeof(g_ride_clean));
+    Joint cur[kJ];
+    std::memcpy(cur, c.j, sizeof(cur));
+    for (unsigned j = 0; j < kJ; ++j) {
+        float q[4];
+        if (src == 1) q[0] = a.q[j].x, q[1] = a.q[j].y, q[2] = a.q[j].z, q[3] = a.q[j].w;
+        else std::memcpy(q, snap.j[j].q, sizeof(q));
+        const float n = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+        if (!(n > 0.5f && n < 1.5f)) continue;  // a joint the frame does not carry: Sam's own
+        for (float& v : q) v /= n;
+        std::memcpy(cur[j].q, q, sizeof(q));
+    }
+    const float* troot = src == 1 ? a.troot : snap.j[kSamRoot].t;
+    const float* tpel = src == 1 ? a.tpelvis : snap.j[kSamPelvis].t;
+    for (int k = 0; k < 3; ++k) {
+        if (std::isfinite(troot[k]) && std::fabs(troot[k]) < 3.0f) cur[kSamRoot].t[k] = troot[k];
+        if (std::isfinite(tpel[k]) && std::fabs(tpel[k]) < 3.0f) cur[kSamPelvis].t[k] = tpel[k];
+    }
+    if (!FitWrite(sm, pose, local, cur, true)) {
+        g_ride_failed.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    std::memcpy(g_ride_written, cur, sizeof(g_ride_written));
+    std::memcpy(c.j, cur, sizeof(c.j));
+    g_ride_active = true;
+    g_ride_writes.fetch_add(1, std::memory_order_relaxed);
+}
+
 void CaptureSam(std::uintptr_t sm) {
     std::uint8_t hdr[kPoseSize];
     std::uintptr_t pose = 0, local = 0;
@@ -602,6 +676,7 @@ void CaptureSam(std::uintptr_t sm) {
         g_fit_qheld.fetch_add(qheld, std::memory_order_relaxed);
         g_fit_sheld.fetch_add(sheld, std::memory_order_relaxed);
     }
+    if (g_ride_src.load(std::memory_order_relaxed) || g_ride_active) RideOverride(sm, pose, local, c);
     {
         // The review's leak check: the captured pelvis length with the fit on / off, and (fit on) how
         // many of the translations the fit changes came back nearer the shape than Sam's own.
@@ -2110,6 +2185,7 @@ void PublishFrame(const wire::JointFrame& f, double play = 0) {
         if (f.t_joint[i] == kSamPelvis) std::memcpy(a.tpelvis, f.t[i], sizeof(a.tpelvis));
     }
     g_apply.Write(a);
+    g_apply_tick.store(GetTickCount64(), std::memory_order_release);
     g_last_published = a;
     g_have_published = true;
 }
@@ -3735,6 +3811,47 @@ bool JointWorld(game::Entity* e, unsigned sam_joint, double (&pos)[3]) noexcept 
     return true;
 }
 
+void SetRidePose(int src) noexcept {
+    const int was = g_ride_src.exchange(src == 1 || src == 2 ? src : 0, std::memory_order_acq_rel);
+    if (was != g_ride_src.load(std::memory_order_relaxed))
+        Log("[real] riding: Sam's pose override %s", src == 1 ? "ON (the driver's seated pose from the partner's frames)"
+                                                     : src == 2 ? "ON (the driver pose snapshot)" : "off");
+}
+int RidePose() noexcept { return g_ride_src.load(std::memory_order_relaxed); }
+bool SnapshotRidePose() noexcept {
+    Capture c;
+    if (!g_capture.Read(c) || c.frame == 0) return false;
+    if (!g_ride_snap.Write(c)) return false;
+    g_ride_have_snap.store(true, std::memory_order_release);
+    return true;
+}
+void RidePoseCounters(std::uint32_t* writes, std::uint32_t* nosrc, std::uint32_t* restores, std::uint32_t* failed) noexcept {
+    if (writes) *writes = g_ride_writes.load(std::memory_order_relaxed);
+    if (nosrc) *nosrc = g_ride_nosrc.load(std::memory_order_relaxed);
+    if (restores) *restores = g_ride_restores.load(std::memory_order_relaxed);
+    if (failed) *failed = g_ride_failed.load(std::memory_order_relaxed);
+}
+bool PartnerFrameFresh(unsigned max_age_ms) noexcept { return GetTickCount64() - g_apply_tick.load(std::memory_order_acquire) < max_age_ms; }
+bool ReadJointModelAny(game::Entity* e, unsigned j, unsigned* count, float (&m)[4][4], char* name, std::size_t name_cap) noexcept {
+    const std::uintptr_t ent = reinterpret_cast<std::uintptr_t>(e);
+    const std::uintptr_t sm = e ? ModelOf(ent) : 0;
+    if (!sm) return false;
+    std::uint8_t hdr[kPoseSize];
+    std::uintptr_t pose = 0;
+    if (!ReadPoseHdr(sm, hdr, &pose) || Field<std::int32_t>(hdr, kHdrState) != kPoseStateModel) return false;
+    const std::uintptr_t mb = Field<std::uintptr_t>(hdr, kHdrModel), me = Field<std::uintptr_t>(hdr, kHdrModelEnd);
+    if (!mb || me <= mb || (me - mb) % 0x40 != 0 || (me - mb) / 0x40 > 1024) return false;
+    const unsigned n = static_cast<unsigned>((me - mb) / 0x40);
+    if (count) *count = n;
+    if (j >= n || !mem::Read(mb + 0x40ull * j, m, sizeof(m))) return false;
+    if (name && name_cap) {
+        name[0] = 0;
+        const SkelInfo si = PoseSkeleton(sm);
+        if (si.skel && si.count > static_cast<std::int32_t>(j)) std::snprintf(name, name_cap, "%s", JointName(si, j).c_str());
+    }
+    return true;
+}
+
 void ConfigureSelf(const bodies::Body* body) noexcept {
     g_self_body = body;
 
@@ -3812,6 +3929,7 @@ bool JointFrameWorld(game::Entity* e, unsigned sam_joint, double (&p)[3], float 
 void EmergencyStop() noexcept {
     // The detour stops touching anything (no capture, no transform copy, no pose write, no fit).
     FitOffWait();
+    g_ride_src.store(0, std::memory_order_seq_cst);  // riding: no pose override (Sam's own pose stays as the game wrote it)
     g_sam_sm.store(0, std::memory_order_seq_cst);
     g_sam_e.store(0, std::memory_order_seq_cst);
     g_self_follow.store(3, std::memory_order_seq_cst);

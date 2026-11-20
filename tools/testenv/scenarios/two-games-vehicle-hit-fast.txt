@@ -1,0 +1,128 @@
+# Fast vehicle hits and the crash exit (design M4.5 #1 at 40 km/h, D4-2, D3-3; docs/real-partner-body.md section 25), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-vehicle-hit-fast -SeedSaves complete-100 -GuestSeed profile-only
+# Above 30 km/h the game's own vehicle attack passes amount 10000 (possibly lethal). The mod caps every hit of the partner's
+# vehicle at the knock-down hit (D4-2). 1. The host drives the truck into the guest at ~40 km/h (the direct path: amount 100).
+# 2. The host drives the Kusanagi trike into the guest at ~45 km/h (the direct path with 0x158: amount 100; the damage
+# handler caps a message over 100). 3. D3-3: the guest rides as the host's passenger; the host's
+# truck is stopped dead (a crash in its frames): the guest's crash exit puts the guest beside it and the game's own hit
+# knocks the guest down ("[vhit] crash exit ..." then "hit Sam ... thrown off in a crash").
+# Pass (in the logs): every hit knocks down without killing (health after > 0, the guest stays in the world, no game over),
+# no fault. Check enlarged: F1b / F2b (thrown, lying, the health popup), F3b (the passenger thrown off).
+role host
+graphics low
+timeout 360
+ini host_save=1
+ini partner_body=real
+ini partner_collision=0
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[coop\] host-held save session ON \(host
+@guest waitlog 10 \[coop\] host-held save session ON \(guest
+waitlog 60 \[vshare\] shared real vehicles ON \(host
+@guest waitlog 60 \[vshare\] shared real vehicles ON \(guest
+waitlog 10 \[vhit\] vehicle hits ON \(host
+@guest waitlog 10 \[vhit\] vehicle hits ON \(guest
+wait 22000
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+@guest waitlog 60 \[vshare\] guest: the host's snapshot #[0-9]+ is complete
+@guest waitlog 30 \[vshare\] guest: binding:
+wait 8000
+# ---- 1. the truck at ~40 km/h
+action vehicle_sync 8 1.8 2
+@guest action vehicle_sync 8 8 2
+wait 1500
+until 20 4000 \[vdrive\] host: our Sam drives truck => pad X 150
+@guest waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached
+wait 2000
+@guest action vehicle_hit 8 22
+wait 2500
+pad none 3300 rt=255 keep
+@guest screenshot F1a-guest-moment
+pad none 800 lt=255 rx=-32767 keep
+@guest screenshot F1b-guest
+screenshot F1b-host-side
+pad none 800 lt=255 keep
+pad none 0
+@guest waitlog 6 \[vhit\] partner vehicle truck 0x[0-9A-F]+ hit Sam \(#1\)
+@guest screenshot F1c-guest-2s
+waitlog 6 \[vhit\] the partner's game reports \(#1\) our truck
+wait 2500
+@guest screenshot F1d-guest-up
+@guest action vehicle_hit 0
+pad X 150
+waitlog 20 \[vdrive\] host: our Sam got off truck
+wait 6000
+# ---- 2. the Kusanagi trike at ~45 km/h (onto the trucks' straight road first)
+action vehicle_hit 12 3 -26
+wait 2500
+action vehicle_sync 8 1.8 4
+@guest action vehicle_sync 8 9 4
+wait 1500
+until 20 4000 \[vdrive\] host: our Sam drives trike => pad X 150
+@guest waitlog 20 \[vdrive\] follower of trike 0x[0-9A-F]+ attached
+wait 2000
+@guest action vehicle_hit 8 20
+wait 2500
+pad none 3200 rt=255 keep
+@guest screenshot F2a-guest-moment
+pad none 800 lt=255 rx=-32767 keep
+@guest screenshot F2b-guest
+screenshot F2b-host-side
+pad none 800 lt=255 keep
+pad none 0
+@guest waitlog 6 \[vhit\] partner vehicle trike 0x[0-9A-F]+ hit Sam \(#2\)
+@guest screenshot F2c-guest-2s
+waitlog 6 \[vhit\] the partner's game reports \(#2\) our trike
+wait 2500
+@guest screenshot F2d-guest-up
+@guest action vehicle_hit 0
+pad X 150
+waitlog 20 \[vdrive\] host: our Sam got off trike
+wait 6000
+# ---- 3. D3-3: the guest rides the host's truck; the truck stops dead (a crash): thrown off with the game's hit
+action vehicle_sync 8 1.8 2
+@guest action vehicle_sync 8 8 2
+wait 1500
+until 20 4000 \[vdrive\] host: our Sam drives truck 0x[0-9A-F]+ .*#3 => pad X 150
+@guest waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached #3
+wait 2500
+@guest action ride_test 8
+wait 1200
+@guest until 15 3000 \[ride\] guest: our Sam carried on the truck => pad X 800
+waitlog 10 \[ride\] host: the partner asks to ride our truck .*ACCEPTED
+wait 1500
+pad none 3500 rt=170 keep
+action ride_test 6
+pad none 0
+@guest waitlog 4 \[ride\] crash exit
+@guest waitlog 4 \[vhit\] crash exit from the truck
+@guest screenshot F3a-guest-crash
+@guest waitlog 6 \[vhit\] partner vehicle truck 0x[0-9A-F]+ hit Sam \(#3\).*thrown off in a crash
+@guest screenshot F3b-guest
+pad none 600 rx=-32767
+screenshot F3b-host-side
+waitlog 6 \[vhit\] the partner's game reports \(#3\) our truck .*thrown off in a crash
+wait 2500
+@guest screenshot F3c-guest-up
+@both action vehicle_hit 0
+@both action ride_state
+nolog \[vhit\].*FAULT
+@guest nolog \[vhit\].*FAULT
+nolog \[ride\].*FAULT
+@guest nolog \[ride\].*FAULT
+@guest nolog \[vhit\] partner vehicle .* health [0-9.]+ -> 0\.0
+@guest nolog \[coop\].*game over
+@guest quit
+wait 3000
+quit

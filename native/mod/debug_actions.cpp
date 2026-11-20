@@ -11,6 +11,8 @@
 
 #include "log.hpp"
 #include "player_sync.hpp"
+#include "partner_tackle.hpp"
+#include "ride_together.hpp"
 
 namespace st::debug {
 namespace {
@@ -168,6 +170,12 @@ bool DoVehicleShare(const Request& r, char* msg, std::size_t cap) { return game:
 bool DoVehicleDump(const Request& r, char* msg, std::size_t cap) { return game::VehicleShareCommand(1, {1, r.v[0], 0}, msg, cap); }
 bool DoVehicleSummon(const Request& r, char* msg, std::size_t cap) { return game::VehicleShareCommand(2, {2, r.v[0], r.v[1]}, msg, cap); }
 bool DoVehicleDrive(const Request& r, char* msg, std::size_t cap) { return game::VehicleDriveCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
+bool DoRideState(const Request&, char* msg, std::size_t cap) { return ride::StateCommand(msg, cap); }
+bool DoRideBoard(const Request&, char* msg, std::size_t cap) { return ride::BoardCommand(msg, cap); }
+bool DoRideExit(const Request& r, char* msg, std::size_t cap) { return ride::ExitCommand(r.v, msg, cap); }
+bool DoSeatMeasure(const Request& r, char* msg, std::size_t cap) { return ride::SeatMeasureCommand(r.v, msg, cap); }
+bool DoRideTest(const Request& r, char* msg, std::size_t cap) { return ride::Command(static_cast<int>(r.v[0]), r.v, msg, cap); }
+bool DoVehicleHit(const Request& r, char* msg, std::size_t cap) { return vhit::Command(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoVoicePing(const Request& r, char* msg, std::size_t cap) {
     // The live partner entity, exactly as the Partner tab sees it (0 when there is none).
     Snapshot s;
@@ -254,6 +262,12 @@ constexpr Row kRows[] = {
     {{Action::vehicle_dump, Tab::tools, "Vehicle dump", "Every vehicle unit in use (roadster, truck, trike pools) with its id, flags, GUID, place and binding, to the log. v0 = tag.", false}, &DoVehicleDump},
     {{Action::vehicle_summon, Tab::tools, "Vehicle summon", "Summon a vehicle through the game's own request path: v0 kind (1 roadster, 2 truck, 3 trike), v1 metres ahead (default 8). On the guest the request goes to the host.", false}, &DoVehicleSummon},
     {{Action::vehicle_drive, Tab::tools, "Vehicle drive", "Real shared vehicles, remote driving (vehicle_sync=5): 0 status, 1 vehicles (owner, follower, errors), 2 0/1 native correction, 3 parked m / driven m ignore bands, 4 0/1 corrections (tests), 5 0/1 native lamps / sounds, 6 kind [m] test push (tests), 7 life test (tests), 8 battery probe, 9 [m] our Sam beside the partner's vehicle (tests).", false}, &DoVehicleDrive},
+    {{Action::ride_state, Tab::tools, "Ride state", "Riding together (vehicle_sync=5): the state, the counters and the seats.", true}, &DoRideState},
+    {{Action::ride_board, Tab::tools, "Ride board", "Ride the partner's vehicle now (as a 0.6 s hold of X beside its door).", true}, &DoRideBoard},
+    {{Action::ride_exit, Tab::tools, "Ride exit", "Get off the partner's vehicle now (1: also above 2 m/s, tests).", false}, &DoRideExit},
+    {{Action::seat_measure, Tab::tools, "Seat measure", "The vehicle our Sam drives (or last drove): his root and pelvis, the game's seat helpers, in its frame.", false}, &DoSeatMeasure},
+    {{Action::ride_test, Tab::tools, "Ride test", "Hidden tests: 1 solo seat carry, 2 end, 4 crash, 5 flip / 6 stop our vehicle, 7 taken, 30-33 seat tuning.", false}, &DoRideTest},
+    {{Action::vehicle_hit, Tab::tools, "Vehicle hit", "Vehicle hits (vehicle_sync=5): 0 state and counters, 1 kind path (0 auto, 1 direct, 2 bracket), 2 one hit on our Sam now (tests), 8 [m ahead] [m right] our Sam in front of the partner's vehicle (tests), 9 the capsule's vehicle boxes.", false}, &DoVehicleHit},
 
 };
 constexpr std::size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);

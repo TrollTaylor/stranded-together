@@ -104,6 +104,9 @@ struct SessionIni {
     // Player collision (the partner's real body blocks you). The mod's default is on: only
     // partner_collision=0 is written.
     bool partner_collision = true;
+    // Vehicle hits (docs/real-partner-body.md section 25): the partner's vehicles damage and knock down THIS player's Sam
+    // (each game decides for its own Sam). The mod's default is on: only partner_vehicle_damage=0 is written.
+    bool partner_vehicle_damage = true;
 };
 inline constexpr double kMaxEchoDelayS = 10.0;
 inline constexpr double kMaxEchoOffsetM = 20.0;

@@ -164,6 +164,21 @@ bool IsOpen() noexcept;
 // start the title menu would make. Any thread. Independent of the menu (closing the menu keeps this block).
 void SetWaitBlock(bool on) noexcept;
 bool WaitBlocked() noexcept;
+// Riding together (ride_together.cpp; docs/real-partner-body.md section 24): while on, the local Sam is carried as a
+// passenger. The pad answers keep the right stick (look) only (Start held beside a vehicle is the game's Dispose of
+// Vehicle, Back its Like: never while carried); key presses of the movement / action keys
+// (letters, digits, Space, Shift, Ctrl, arrows) are swallowed by our keyboard hook and dropped from raw input and the
+// window messages (their releases pass, so nothing stays down); mouse button presses are dropped (raw packets with a press
+// lose that packet's motion). The open menu and the waiting screen block as before. Any thread.
+void SetRideCarry(bool on) noexcept;
+bool RideCarry() noexcept;
+// The XInput buttons of pad 0 as the game last read them, BEFORE any masking (automation: the virtual pad); 0 when the
+// game has not read the pad for `max_age_ms`.
+std::uint16_t RidePadButtons(unsigned max_age_ms) noexcept;
+// The ride key (default F, the game's RideAndGetOff binding) is down, as our keyboard hook saw it (never in automation).
+bool RideKeyDown() noexcept;
+void SetRideKey(std::uint32_t vk) noexcept;
+void RideCounters(unsigned long* pads, unsigned long* keys, unsigned long* raw) noexcept;
 
 std::size_t Drain(Event* out, std::size_t max) noexcept;
 // Cursor position in client pixels of the attached window.

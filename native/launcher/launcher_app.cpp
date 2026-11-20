@@ -1419,6 +1419,13 @@ void LauncherUi::DebugOptionsTab(Phase phase) {
              : o.partner_collision ? "You cannot walk through your partner's body; it stops you like another character. Off in vehicles, menus and cutscenes."
                                    : "You can walk through your partner.",
              col::kTextFaint, kSmall, nullptr, 0.0f);
+        // session.ini partner_vehicle_damage: the partner's vehicles hit you (docs/real-partner-body.md section 25).
+        Gap(2.0f);
+        committed |= Checkbox("Partner's vehicles can knock me down", &o.partner_vehicle_damage, true);
+        Text(o.partner_vehicle_damage ? "Your partner's truck, trike or car knocks you down and hurts you like an enemy truck (never an instant kill), "
+                                        "also when you are thrown off in a crash. Your partner's own setting decides for them."
+                                      : "Your partner's vehicles never hurt or knock you down.",
+             col::kTextFaint, kSmall, nullptr, 0.0f);
         // Launcher-only: which characters Join and the local test offer the guest.
         Gap(2.0f);
         committed |= Checkbox("Allow other characters", &o.allow_other_characters, true);

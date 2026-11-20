@@ -124,6 +124,9 @@ bool FindNear(std::uint8_t kind, const double (&pos)[3], double radius_m, Unit* 
 // The footprints of every live vehicle with a place except the one whose unit is `except_unit` (teleport clearance).
 // `host_ids` (optional, cap entries): the host's id of each (host: its own id; guest: the bound host id, 0 if unbound).
 std::size_t Footprints(std::uintptr_t except_unit, vwire::Footprint* out, std::size_t cap, std::uint32_t* host_ids = nullptr) noexcept;
+// The tick time (ms, the Tick's `now`) of the pool poll Footprints reads: its places change only when this does (every
+// 100 ms). Game thread.
+double FootprintsMs() noexcept;
 // Guest: the host's vehicle `host_id` is now at `xf` (its owner's frames, or the guest's own while it owns it): the table
 // entry the binding compares with moves too, so a vehicle moved by driving is never re-placed onto an old spot. Host: no-op.
 void NoteHostPlace(std::uint32_t host_id, const game::WorldTransform& xf) noexcept;

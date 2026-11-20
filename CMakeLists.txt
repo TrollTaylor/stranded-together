@@ -141,6 +141,10 @@ add_library(st_mod SHARED
   native/mod/vehicle_wire.cpp
   native/mod/vehicle_share.cpp
   native/mod/vehicle_drive.cpp
+  native/mod/ride_wire.cpp
+  native/mod/ride_together.cpp
+  native/mod/tackle_rules.cpp
+  native/mod/partner_tackle.cpp
   native/mod/save_xfer.cpp
   native/mod/save_xfer_io.cpp
   native/mod/coop_session.cpp
@@ -205,6 +209,22 @@ target_include_directories(st_vehicle_wire_tests PRIVATE native/mod)
 target_compile_options(st_vehicle_wire_tests PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_vehicle_wire_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_test(NAME st_vehicle_wire_tests COMMAND st_vehicle_wire_tests)
+
+# ---- Riding together's pure part (STQ1 inside SVM1 type 48 on link channel 3, native/mod/ride_wire.*): the message's strict
+# decoder, the seats, boarding, the driver's answer, the forced exits, the detectors and the exit placement.
+add_executable(st_ride_wire_tests tests/ride_wire_tests.cpp native/mod/ride_wire.cpp native/mod/vehicle_wire.cpp)
+target_include_directories(st_ride_wire_tests PRIVATE native/mod)
+target_compile_options(st_ride_wire_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_ride_wire_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_ride_wire_tests COMMAND st_ride_wire_tests)
+
+# ---- Vehicle hits' pure part (native/mod/tackle_rules.*): the path per kind, the gate, the sphere, the hit filter, the damage
+# cap, the rate limit, the STH1 hit event on channel 3 and the partner capsule's vehicle rules.
+add_executable(st_tackle_rules_tests tests/tackle_rules_tests.cpp native/mod/tackle_rules.cpp native/mod/vehicle_wire.cpp)
+target_include_directories(st_tackle_rules_tests PRIVATE native/mod)
+target_compile_options(st_tackle_rules_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_tackle_rules_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_tackle_rules_tests COMMAND st_tackle_rules_tests)
 
 # ---- st_fakepeer: console stand-in for the second player (UDP), + self-test
 add_executable(st_fakepeer tools/fakepeer/fakepeer.cpp native/mod/link.cpp native/mod/steam_owner.cpp

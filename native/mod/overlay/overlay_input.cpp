@@ -22,6 +22,16 @@ using GetForegroundWindowFn = HWND(WINAPI*)();
 std::atomic<bool> g_open{false};
 // The co-op waiting screen (SetWaitBlock; coop_session.cpp): blocked like the open menu, except the confirm inputs.
 std::atomic<bool> g_wait{false};
+// Riding together (ride_together.cpp, docs/real-partner-body.md section 24): while the local Sam is carried as a passenger,
+// movement and actions are kept from the game (the pad keeps its right stick only; key downs of the movement and
+// action keys are swallowed, releases pass; mouse button presses are dropped), look stays. The pad buttons and the ride
+// key are recorded before any masking, so the mod sees the hold that gets off.
+std::atomic<bool> g_carry{false};
+std::atomic<std::uint16_t> g_ride_buttons{0};
+std::atomic<std::uint64_t> g_ride_buttons_tick{0};
+std::atomic<std::uint32_t> g_ride_vk{'F'};
+std::atomic<bool> g_ride_key{false};
+std::atomic<unsigned long> g_carry_pads{0}, g_carry_keys{0}, g_carry_raw{0};
 std::atomic<std::uint32_t> g_toggle_vk{0x78};
 std::atomic<unsigned> g_toggles{0};
 std::atomic<bool> g_close_request{false};
@@ -117,6 +127,48 @@ bool IsHeldRelease(LPARAM lp) noexcept {
         constexpr USHORT kUp = RI_MOUSE_LEFT_BUTTON_UP | RI_MOUSE_RIGHT_BUTTON_UP | RI_MOUSE_MIDDLE_BUTTON_UP |
                                RI_MOUSE_BUTTON_4_UP | RI_MOUSE_BUTTON_5_UP;
         return (f & kUp) != 0 && (f & ~kUp) == 0;  // releases only: no press, no wheel
+    }
+    return false;
+}
+
+// Carried: the keys of the game's default movement / action bindings (bindings.cfg) are kept from the game; Escape, the
+// function keys, Tab, Alt (Alt+F4) and the rest pass.
+bool CarryBlocksKey(std::uint32_t vk) noexcept {
+    if ((vk >= 'A' && vk <= 'Z') || (vk >= '0' && vk <= '9')) return true;
+    switch (vk) {
+        case VK_SPACE: case VK_SHIFT: case VK_LSHIFT: case VK_RSHIFT: case VK_CONTROL: case VK_LCONTROL: case VK_RCONTROL:
+        case VK_UP: case VK_DOWN: case VK_LEFT: case VK_RIGHT:
+            return true;
+        default:
+            return false;
+    }
+}
+bool Carrying() noexcept { return g_carry.load(std::memory_order_acquire) && !g_open.load(std::memory_order_acquire); }
+// Carried: the pad buttons the game still gets. Only a tap of Start (its first 250 ms: the pause menu opens, while a hold,
+// the game's "Dispose of Vehicle" beside a vehicle, never reaches the game); every other button reads idle. (Riding
+// together lifts the whole block while Sam is asleep, so the game's menu then gets the pad as usual.)
+constexpr ULONGLONG kCarryStartTapMs = 250;
+std::atomic<ULONGLONG> g_carry_start_since{0};
+WORD CarryPassButtons(WORD buttons) noexcept {
+    if (!(buttons & XINPUT_GAMEPAD_START)) {
+        g_carry_start_since.store(0, std::memory_order_relaxed);
+        return 0;
+    }
+    const ULONGLONG now = GetTickCount64();
+    ULONGLONG since = g_carry_start_since.load(std::memory_order_relaxed);
+    if (!since) g_carry_start_since.store(since = now, std::memory_order_relaxed);
+    return now - since <= kCarryStartTapMs ? static_cast<WORD>(XINPUT_GAMEPAD_START) : static_cast<WORD>(0);
+}
+// Carried: a raw keyboard press of a blocked key, or a raw mouse packet with a button press, is dropped (releases pass).
+bool CarryDropsRaw(LPARAM lp) noexcept {
+    RAWINPUT ri;
+    UINT size = sizeof(ri);
+    if (GetRawInputData(reinterpret_cast<HRAWINPUT>(lp), RID_INPUT, &ri, &size, sizeof(RAWINPUTHEADER)) == static_cast<UINT>(-1)) return false;
+    if (ri.header.dwType == RIM_TYPEKEYBOARD) return (ri.data.keyboard.Flags & RI_KEY_BREAK) == 0 && CarryBlocksKey(ri.data.keyboard.VKey);
+    if (ri.header.dwType == RIM_TYPEMOUSE) {
+        constexpr USHORT kDown = RI_MOUSE_LEFT_BUTTON_DOWN | RI_MOUSE_RIGHT_BUTTON_DOWN | RI_MOUSE_MIDDLE_BUTTON_DOWN | RI_MOUSE_BUTTON_4_DOWN |
+                                 RI_MOUSE_BUTTON_5_DOWN;
+        return (ri.data.mouse.usButtonFlags & kDown) != 0;
     }
     return false;
 }
@@ -225,6 +277,11 @@ LRESULT CALLBACK KeyboardProc(int code, WPARAM wp, LPARAM lp) {
         if (code == HC_ACTION && !up && !was_down) Toggle();
         return 1;  // the toggle key never reaches the game
     }
+    if (code == HC_ACTION && vk == g_ride_vk.load(std::memory_order_relaxed)) g_ride_key.store(!up, std::memory_order_relaxed);
+    if (!Blocking() && Carrying() && !up && CarryBlocksKey(vk)) {
+        if (code == HC_ACTION) g_carry_keys.fetch_add(1, std::memory_order_relaxed);
+        return 1;  // carried: the key's press never reaches the game (its release does)
+    }
     if (Blocking()) {
         if (vk == VK_F4 && alt) return CallNextHookEx(nullptr, code, wp, lp);  // Alt+F4 still closes the game
         if (WaitOnly() && ConfirmKey(vk)) return CallNextHookEx(nullptr, code, wp, lp);  // waiting screen: confirm
@@ -329,7 +386,19 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT m, WPARAM wp, LPARAM lp) {
         if ((m == WM_KEYDOWN || m == WM_SYSKEYDOWN) && !(lp & (1LL << 30))) Toggle();
         return 0;
     }
-    if (!Blocking()) return pass();
+    if (!Blocking()) {
+        if (Carrying()) {
+            if (m == WM_INPUT && CarryDropsRaw(lp)) {
+                g_carry_raw.fetch_add(1, std::memory_order_relaxed);
+                return DefWindowProcW(hwnd, m, wp, lp);
+            }
+            if (m == WM_LBUTTONDOWN || m == WM_RBUTTONDOWN || m == WM_MBUTTONDOWN || m == WM_XBUTTONDOWN || m == WM_LBUTTONDBLCLK ||
+                m == WM_RBUTTONDBLCLK || m == WM_MBUTTONDBLCLK || m == WM_XBUTTONDBLCLK)
+                return m == WM_XBUTTONDOWN || m == WM_XBUTTONDBLCLK ? TRUE : 0;
+            if ((m == WM_KEYDOWN || m == WM_SYSKEYDOWN) && CarryBlocksKey(static_cast<std::uint32_t>(wp))) return 0;
+        }
+        return pass();
+    }
 
     // ---- menu open (or the co-op waiting screen): nothing below reaches the game
     if (m == WM_INPUT) {
@@ -449,6 +518,8 @@ DWORD AnswerXInput(XInputGetStateFn orig, DWORD index, XINPUT_STATE* state) {
         if (!state) return ERROR_BAD_ARGUMENTS;
         std::memset(state, 0, sizeof(*state));
         state->dwPacketNumber = packet;
+        g_ride_buttons.store(p.buttons, std::memory_order_relaxed);
+        g_ride_buttons_tick.store(GetTickCount64(), std::memory_order_relaxed);
         if (!Blocking()) {  // an open menu keeps the pad idle, as for a real pad
             state->Gamepad.wButtons = p.buttons;
             state->Gamepad.bLeftTrigger = p.lt;
@@ -457,6 +528,12 @@ DWORD AnswerXInput(XInputGetStateFn orig, DWORD index, XINPUT_STATE* state) {
             state->Gamepad.sThumbLY = p.ly;
             state->Gamepad.sThumbRX = p.rx;
             state->Gamepad.sThumbRY = p.ry;
+            if (Carrying()) {
+                state->Gamepad.wButtons = CarryPassButtons(p.buttons);  // Start held beside a vehicle disposes of it, Back likes it: a Start tap only
+                state->Gamepad.bLeftTrigger = state->Gamepad.bRightTrigger = 0;
+                state->Gamepad.sThumbLX = state->Gamepad.sThumbLY = 0;
+                g_carry_pads.fetch_add(1, std::memory_order_relaxed);
+            }
         } else if (WaitOnly()) {
             state->Gamepad.wButtons = p.buttons & XINPUT_GAMEPAD_A;  // the waiting screen: A only (dismiss a notice)
         }
@@ -470,6 +547,16 @@ DWORD AnswerXInput(XInputGetStateFn orig, DWORD index, XINPUT_STATE* state) {
     }
     if (!orig) return ERROR_DEVICE_NOT_CONNECTED;
     const DWORD r = orig(index, state);
+    if (r == ERROR_SUCCESS && state && index == 0) {
+        g_ride_buttons.store(state->Gamepad.wButtons, std::memory_order_relaxed);
+        g_ride_buttons_tick.store(GetTickCount64(), std::memory_order_relaxed);
+    }
+    if (r == ERROR_SUCCESS && state && !Blocking() && Carrying()) {
+        state->Gamepad.wButtons = CarryPassButtons(state->Gamepad.wButtons);  // Start held beside a vehicle disposes of it, Back likes it: a Start tap only
+        state->Gamepad.bLeftTrigger = state->Gamepad.bRightTrigger = 0;
+        state->Gamepad.sThumbLX = state->Gamepad.sThumbLY = 0;
+        g_carry_pads.fetch_add(1, std::memory_order_relaxed);
+    }
     if (r == ERROR_SUCCESS && state && Blocking()) {
         const WORD keep = WaitOnly() ? static_cast<WORD>(state->Gamepad.wButtons & XINPUT_GAMEPAD_A) : 0;  // waiting screen: A
         std::memset(&state->Gamepad, 0, sizeof(state->Gamepad));  // connected, idle
@@ -843,6 +930,33 @@ void SetWaitBlock(bool on) noexcept {
                                                  : "hidden: game input restored");
 }
 bool WaitBlocked() noexcept { return g_wait.load(); }
+
+void SetRideCarry(bool on) noexcept {
+    if (g_carry.exchange(on, std::memory_order_acq_rel) != on)
+        Log("[overlay] riding: the game's movement and action input %s", on ? "blocked (carried as a passenger; look passes)" : "back");
+}
+bool RideCarry() noexcept { return g_carry.load(std::memory_order_acquire); }
+std::uint16_t RidePadButtons(unsigned max_age_ms) noexcept {
+    const std::uint64_t t = g_ride_buttons_tick.load(std::memory_order_relaxed);
+    if (!t || GetTickCount64() - t > max_age_ms) return 0;
+    return g_ride_buttons.load(std::memory_order_relaxed);
+}
+// The hook's state, confirmed by the key's physical state: a release missed during a focus change (the hook never saw it)
+// cannot leave the key "down" (stage 1's known gap).
+bool RideKeyDown() noexcept {
+    if (g_automation.load(std::memory_order_relaxed) || !g_ride_key.load(std::memory_order_relaxed)) return false;
+    if ((GetAsyncKeyState(static_cast<int>(g_ride_vk.load(std::memory_order_relaxed))) & 0x8000) != 0) return true;
+    g_ride_key.store(false, std::memory_order_relaxed);
+    return false;
+}
+void SetRideKey(std::uint32_t vk) noexcept {
+    if (vk > 0 && vk < 256) g_ride_vk.store(vk, std::memory_order_relaxed);
+}
+void RideCounters(unsigned long* pads, unsigned long* keys, unsigned long* raw) noexcept {
+    if (pads) *pads = g_carry_pads.load(std::memory_order_relaxed);
+    if (keys) *keys = g_carry_keys.load(std::memory_order_relaxed);
+    if (raw) *raw = g_carry_raw.load(std::memory_order_relaxed);
+}
 
 void MarkHeldForTest(std::uint32_t vk) noexcept { MarkHeld(vk); }
 void ClearHeldForTest() noexcept { ClearHeld(); }
