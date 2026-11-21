@@ -34,6 +34,10 @@ class Fixture(unittest.TestCase):
         shutil.copytree(os.path.join(HERE, 'testdata'), os.path.join(self.tmp, 'td'))
         self.td = os.path.join(self.tmp, 'td')
         self.runs_root = os.path.join(self.td, 'runs')
+        # probe-1 has no supervisor.log: its state comes from its folder's age, so pin that age (a checkout or a copy
+        # sets it to "now", which some tests' fixed clocks would see as a run still starting)
+        old = dd_util.local_iso_ms('2026-11-21T09:00:00.000') / 1000.0
+        os.utime(os.path.join(self.runs_root, 'probe-1'), (old, old))
         self.state = os.path.join(self.td, 'state')
         self.projects = os.path.join(self.td, 'claude')
         # the batch fixture names its run by path: point it at this copy
