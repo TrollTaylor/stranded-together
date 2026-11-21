@@ -175,6 +175,12 @@ void PublishGear(GearSlot slot, const GearProp* props, unsigned n) noexcept;
 unsigned PlaceGearNow(GearSlot slot) noexcept;
 // Detour placement counters (per slot): placements, ABA refusals, bad matrices.
 void GearCounters(GearSlot slot, std::uint32_t* placed, std::uint32_t* aba, std::uint32_t* bad) noexcept;
+// The placement fixes (docs/real-partner-body.md section 26.7) and their counters as text: placements in the body's own
+// update, the tick's placements extrapolated one frame and those placed the plain way.
+void GearPlacementInfo(GearSlot slot, char* out, std::size_t cap) noexcept;
+// Hidden test runs (`self_view 15 1`): the drawn-vs-anchor meter, once a tick before the tick's own placements; a line a
+// second per slot. Game thread; nothing while it is off.
+void GearMeterTick(double now_ms) noexcept;
 // The body entity of a slot when live (partner slot: also a debug body), nullptr otherwise.
 game::Entity* SlotEntity(GearSlot slot) noexcept;
 // Starts loading any DSControlledEntity by path + GUID (the bodies' route, BeginSlot), for props.
@@ -260,10 +266,38 @@ void EmergencyStop() noexcept;
 // with a seated pose: 1 = the partner's published frame (the driver's STJ1 at the body's play time; the partner body must be
 // the real body), 2 = the snapshot SnapshotRidePose took, 0 = off (Sam's clean values come back). The capture (the wire, the
 // self view) carries it. Any thread.
+// 3 = the seated idle (v0.21, play test 3; section 24.14): a held seated base of the vehicle kind (SetRideSeat), the
+// hands resting on the thighs (two-bone IK), the hands and fingers of our Sam's pose as the carry started.
 void SetRidePose(int src) noexcept;
 int RidePose() noexcept;
+// The ride tick, every carry tick: the carried vehicle's kind and, when it drives calmly (3 - 30 m/s, yaw rate under
+// 3 deg/s for 0.5 s), its speed (else 0): source 3 latches the driver's frame then. Any thread.
+void SetRideSeat(int kind, double calm_mps) noexcept;
+// The ride tick: our own Sam drives this kind calmly (speed, else 0): his pose becomes that kind's seated base.
+void SetOwnDriving(int kind, double calm_mps) noexcept;
+// The hands' travel (the size of the box joints 9 / 38 moved in, in Sam's model space) since the last take; on while the
+// ride tick says (our Sam carried or driving). False: no update meanwhile.
+void SetHandMeter(bool on) noexcept;
+bool TakeHandTravel(float* right_cm, float* left_cm, unsigned* updates) noexcept;
+// Source 3's tuning (ride_test 22 / 23): 0 the arms (IK) 0 / 1, 1 along the thigh (0..1), 2 up (m), 3 inward (m), 4 the
+// forearm twist (deg).
+void RidePoseTune(int what, double v) noexcept;
+struct RidePoseStats {
+    int ik_state = -1;            // -1 not measured yet, 0 / 1 the joint convention, 2 refused (the arms off)
+    bool ik_on = true, ik_off_by_error = false;
+    float gate_err[2] = {};
+    std::uint32_t solves = 0, fails = 0;
+    std::uint32_t err_n = 0;      // since the last call: the hands vs their targets
+    float err_mean_cm = 0, err_max_cm = 0;
+    std::uint32_t latches = 0;    // the newest base latched: kind, from (1 the partner's frame, 2 our own driving), final, speed
+    int latch_kind = 0, latch_from = 0;
+    bool latch_final = false;
+    float latch_speed = 0;
+    float along = 0, up = 0, in = 0, twist_deg = 0;
+};
+bool RidePoseStatus(RidePoseStats* s, bool take_errors = true) noexcept;
 // Game thread: our Sam's newest captured pose becomes the source-2 snapshot (taken while he drives: `seat_measure`).
-bool SnapshotRidePose() noexcept;
+bool SnapshotRidePose(int kind = 0) noexcept;
 void RidePoseCounters(std::uint32_t* writes, std::uint32_t* nosrc, std::uint32_t* restores, std::uint32_t* failed) noexcept;
 // The partner's frame was published within `max_age_ms` (the source-1 pose is there).
 bool PartnerFrameFresh(unsigned max_age_ms) noexcept;

@@ -978,7 +978,7 @@ void TestDriveFrames() {
         f.flags = static_cast<std::uint8_t>(f.flags & ~kDrvSeated);
         rejects(f, "a drive frame without seated");
         f = Drive(DriveType::park);
-        f.flags |= 64;
+        f.flags |= 128;
         rejects(f, "unknown flag");
         f = Drive(DriveType::park);
         f.ride_state = 16;
@@ -1333,8 +1333,207 @@ void TestBandsAndClearance() {
 
 }  // namespace
 
+// v0.21 driven follower: the Hermite target, the dead reckoning, the velocity law and the teleport rules.
+void TestFollower() {
+    // Hermite: the ends, a straight constant-velocity track is exact, a curve uses the tangents
+    {
+        const double a[3] = {0, 0, 0}, b[3] = {0.366, 0, 0};
+        const float v[3] = {11, 0, 0};
+        double o[3];
+        HermitePos(a, v, b, v, 0.0333, 0, o);
+        CHECK(std::fabs(o[0]) < 1e-9);
+        HermitePos(a, v, b, v, 0.0333, 1, o);
+        CHECK(std::fabs(o[0] - 0.366) < 1e-9);
+        HermitePos(a, v, b, v, 0.0333, 0.5, o);
+        CHECK(std::fabs(o[0] - 0.18315) < 0.002);
+        // a turn: the tangents bend the path off the chord
+        const double c[3] = {1, 1, 0};
+        const float va[3] = {3, 0, 0}, vb[3] = {0, 3, 0};
+        HermitePos(a, va, c, vb, 0.5, 0.5, o);
+        CHECK(o[0] > 0.5 && o[1] < 0.5);
+        // bad velocities: the chord
+        const float bad[3] = {std::numeric_limits<float>::quiet_NaN(), 0, 0};
+        HermitePos(a, bad, c, vb, 0.5, 0.5, o);
+        CHECK(std::fabs(o[0] - 0.5) < 1e-9 && std::fabs(o[1] - 0.5) < 1e-9);
+        HermitePos(a, va, c, vb, 0.5, 2.0, o);  // clamped to b
+        CHECK(std::fabs(o[0] - 1) < 1e-9);
+    }
+    // dead reckoning: up to 250 ms
+    {
+        const double p[3] = {10, 0, 5};
+        const float v[3] = {10, -2, 0};
+        double o[3];
+        Extrapolate(p, v, 100, o);
+        CHECK(std::fabs(o[0] - 11) < 1e-9 && std::fabs(o[1] + 0.2) < 1e-9 && o[2] == 5);
+        Extrapolate(p, v, 1000, o);
+        CHECK(std::fabs(o[0] - 12.5) < 1e-9);
+        Extrapolate(p, v, -5, o);
+        CHECK(o[0] == 10);
+    }
+    // the velocity law
+    {
+        FollowGains g;
+        double bias[3] = {};
+        FollowIn in;
+        FollowOut o;
+        // on target, same velocity: nothing to change (forward is +y by default)
+        in.v_now[1] = in.v_target[1] = 11;
+        FollowVelocity(in, g, bias, &o);
+        CHECK(std::fabs(o.dv[1]) < 1e-6 && std::fabs(o.v_set[1] - 11) < 1e-6 && o.dw == 0);
+        // 0.5 m behind (target ahead along y): speeds up, within the per-tick clamp; the vertical stays
+        in.err[1] = 0.5;
+        in.err[2] = 0.3;
+        in.v_now[2] = -1.5f;
+        bias[0] = bias[1] = bias[2] = 0;
+        FollowVelocity(in, g, bias, &o);
+        CHECK(o.dv[1] > 0.1 && o.dv[1] <= 0.25f + 1e-6);
+        CHECK(std::fabs(o.dv[2]) < 1e-6 && std::fabs(o.v_set[2] + 1.5f) < 1e-6);
+        CHECK(bias[0] > 0);
+        // a big error: clamped (x1.5 far gain)
+        in.err[1] = 3.0;
+        in.err[2] = 0;
+        FollowVelocity(in, g, bias, &o);
+        CHECK(o.dv[1] <= 0.375f + 1e-6 && o.dv[1] > 0.25f);
+        // sideways (target 1 m to the right, +x): only a small push, the rest through the yaw (turns right)
+        FollowIn sd;
+        sd.err[0] = 1.0;
+        sd.v_now[1] = sd.v_target[1] = 10;
+        double bs[3] = {};
+        FollowVelocity(sd, g, bs, &o);
+        CHECK(o.dv[0] > 0 && o.dv[0] <= 0.05f + 1e-6 && o.dw < 0);
+        // a tilted vehicle: the correction stays in its plane (no push along its up axis)
+        FollowIn t;
+        t.up[0] = 0, t.up[1] = -0.6f, t.up[2] = 0.8f;
+        t.fwd[0] = 0, t.fwd[1] = 0.8f, t.fwd[2] = 0.6f;
+        t.err[1] = 1.0;
+        double b2[3] = {};
+        FollowVelocity(t, g, b2, &o);
+        const double along_up = o.dv[0] * t.up[0] + o.dv[1] * t.up[1] + o.dv[2] * t.up[2];
+        CHECK(std::fabs(along_up) < 1e-5 && o.dv[1] > 0);
+        // the yaw: behind in yaw turns toward the target, clamped
+        FollowIn y;
+        y.yaw_err = 0.1;
+        double b3[3] = {};
+        FollowVelocity(y, g, b3, &o);
+        CHECK(o.dw > 0 && o.dw <= 0.3f);
+        y.yaw_err = 3.0;
+        y.w_now_z = -2;
+        FollowVelocity(y, g, b3, &o);
+        CHECK(o.dw <= 0.45f + 1e-6);
+        // a sideways error is steered away through the yaw: forward with the target to the right turns right (negative), in
+        // reverse the other way; standing still: no turn
+        FollowIn p;
+        p.fwd[0] = 0, p.fwd[1] = 1, p.fwd[2] = 0;  // forward +y, right +x
+        p.err[0] = 0.5;
+        p.v_now[1] = p.v_target[1] = 10;
+        double b7[3] = {};
+        FollowVelocity(p, g, b7, &o);
+        CHECK(o.dw < 0);
+        p.v_now[1] = p.v_target[1] = -3;
+        FollowVelocity(p, g, b7, &o);
+        CHECK(o.dw > 0);
+        p.v_now[1] = p.v_target[1] = 0.2f;
+        FollowVelocity(p, g, b7, &o);
+        CHECK(std::fabs(o.dw) < 1e-6);
+        // the steering trim: a yaw command to the right (negative) steers right (positive), reversing the other way
+        CHECK(SteerTrim(-0.05, 8, g) > 0 && SteerTrim(0.05, 8, g) < 0);
+        CHECK(SteerTrim(-0.05, -3, g) < 0);
+        CHECK(SteerTrim(-1.0, 8, g) == g.max_steer && SteerTrim(0.3, 0.4, g) == 0);
+        CHECK(SteerTrim(-0.05, 0.8, g) > 0);  // v0.21: steers from 0.5 m/s (was 1 m/s)
+        // standing still clears the integral
+        double b4[3] = {0.5, 0, 0};
+        FollowIn s;
+        s.still = true;
+        FollowVelocity(s, g, b4, &o);
+        CHECK(b4[0] == 0);
+        // the integral is clamped
+        double b5[3] = {};
+        FollowIn w;
+        w.err[1] = 1.0;
+        w.dt_s = 0.1;
+        for (int i = 0; i < 200; ++i) FollowVelocity(w, g, b5, &o);
+        CHECK(std::fabs(b5[0] - g.max_bias_mps) < 1e-9);
+        // NaN inputs: no NaN out
+        FollowIn n;
+        n.err[0] = std::numeric_limits<double>::quiet_NaN();
+        n.v_now[1] = std::numeric_limits<float>::quiet_NaN();
+        double b6[3] = {};
+        FollowVelocity(n, g, b6, &o);
+        CHECK(std::isfinite(o.v_set[0]) && std::isfinite(o.v_set[1]) && std::isfinite(o.w_set_z));
+    }
+    // yaw helpers
+    {
+        const float rows[9] = {0, -1, 0, 1, 0, 0, 0, 0, 1};  // forward +x
+        CHECK(std::fabs(YawOfRows(rows)) < 1e-9);
+        const float rows2[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};  // forward +y
+        CHECK(std::fabs(YawOfRows(rows2) - 1.5707963) < 1e-6);
+        CHECK(std::fabs(WrapPi(3.5) - (3.5 - 6.283185307179586)) < 1e-9);
+        CHECK(std::fabs(WrapPi(-3.5) - (-3.5 + 6.283185307179586)) < 1e-9);
+    }
+    // teleports
+    {
+        DriveTpIn in;
+        CHECK(DriveTeleport(in) == DriveTp::none);
+        in.err_m = 4.1;
+        CHECK(DriveTeleport(in) == DriveTp::too_far);
+        in.carried = true;
+        CHECK(DriveTeleport(in) == DriveTp::none);  // carried: only over 8 m
+        in.err_m = 8.5;
+        CHECK(DriveTeleport(in) == DriveTp::too_far);
+        in.since_last_tp_ms = 500;
+        CHECK(DriveTeleport(in) == DriveTp::none);
+        DriveTpIn a;
+        a.ang_deg = 50;
+        CHECK(DriveTeleport(a) == DriveTp::angle);
+        a.carried = true;
+        CHECK(DriveTeleport(a) == DriveTp::none);
+        DriveTpIn s;
+        s.err_m = 1.8, s.stuck_ms = 2100, s.stuck_err0 = 1.9;
+        CHECK(DriveTeleport(s) == DriveTp::stuck);
+        s.stuck_err0 = 3.0;  // it is closing: no
+        CHECK(DriveTeleport(s) == DriveTp::none);
+        s.stuck_err0 = 1.9, s.carried = true;
+        CHECK(DriveTeleport(s) == DriveTp::none);
+        DriveTpIn p;
+        p.err_m = 0.4, p.still_ms = 1600;
+        CHECK(DriveTeleport(p) == DriveTp::stopped);
+        p.sam_dist_m = 2.0;
+        CHECK(DriveTeleport(p) == DriveTp::none);
+        p.sam_dist_m = 9, p.carried = true;
+        CHECK(DriveTeleport(p) == DriveTp::none);
+        p.carried = false, p.err_m = 0.2;
+        CHECK(DriveTeleport(p) == DriveTp::none);
+        // the owner stands, ours lies askew or 1 m off: at once (0.5 s), even with our Sam beside it
+        DriveTpIn k;
+        k.owner_still_ms = 600, k.ang_deg = 20, k.err_m = 0.4, k.sam_dist_m = 1.5;
+        CHECK(DriveTeleport(k) == DriveTp::stopped);
+        k.ang_deg = 2, k.err_m = 1.2;
+        CHECK(DriveTeleport(k) == DriveTp::stopped);
+        k.owner_still_ms = 300;
+        CHECK(DriveTeleport(k) == DriveTp::none);
+        k.owner_still_ms = 600, k.carried = true;
+        CHECK(DriveTeleport(k) == DriveTp::none);
+        // v0.21: carried, a standstill re-seat once both stand 1.5 s (the owner's 0.5 s) and it is 0.3 m or 10 deg off
+        DriveTpIn c;
+        c.carried = true, c.err_m = 0.57, c.still_ms = 1600, c.owner_still_ms = 1600;
+        CHECK(DriveTeleport(c) == DriveTp::stopped);
+        c.still_ms = 1000;
+        CHECK(DriveTeleport(c) == DriveTp::none);
+        c.still_ms = 1600, c.owner_still_ms = 300;
+        CHECK(DriveTeleport(c) == DriveTp::none);
+        c.owner_still_ms = 1600, c.err_m = 0.2;
+        CHECK(DriveTeleport(c) == DriveTp::none);
+        c.ang_deg = 12;
+        CHECK(DriveTeleport(c) == DriveTp::stopped);
+        c.since_last_tp_ms = 1000;
+        CHECK(DriveTeleport(c) == DriveTp::none);
+        CHECK(std::strcmp(DriveTpName(DriveTp::stuck), "stuck") == 0);
+    }
+}
+
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
+    TestFollower();
     TestDriveFrames();
     TestOwnMessages();
     TestOwnership();

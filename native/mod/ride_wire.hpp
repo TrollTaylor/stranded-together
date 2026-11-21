@@ -36,7 +36,10 @@ const char* SeatName(std::uint8_t s) noexcept;
 
 // REQUEST reasons: the ImGui fallback's hold (kReqHold), a debug action (kReqTest), the game's own "Use Vehicle" prompt
 // pressed beside the partner's vehicle (kReqNative: the driver's game checks the passenger near the vehicle, not the door)
-inline constexpr std::uint8_t kReqHold = 0, kReqTest = 1, kReqNative = 2;
+// kReqResume (v0.21): the passenger's game asks for the seat back after a save put him off (End::saving): the same ride id,
+// accepted by the driver's game only for the ride it ended for that save, within kResumeWindowMs, at any speed and distance
+inline constexpr std::uint8_t kReqHold = 0, kReqTest = 1, kReqNative = 2, kReqResume = 3;
+inline constexpr double kResumeWindowMs = 10000.0;
 // DENY reasons
 enum class Deny : std::uint8_t {
     not_driving = 0,  // the driver's Sam does not drive that vehicle (any more)
@@ -171,12 +174,19 @@ bool DriverTimedOut(bool accepted, double since_accept_ms, double passenger_bit_
 
 // ---------------------------------------------------------------- forced exits (M3.4), the passenger's game
 inline constexpr double kLinkSilentMs = 1000.0;
+// v0.21: a carried passenger is not put off by a short silence (Wi-Fi roaming, a relay hiccup, a loss burst): the ride
+// ends on the link only once the link says the session is gone, or after kLinkSilentCarriedMs without a pose (under the
+// driver's kDriverTimeoutMs, so both games end it alike). Meanwhile our follower keeps the vehicle (vehicle_drive: idle
+// inputs, it rolls to a stop, no detach until vwire::kStallEndCarriedMs) and our Sam stays on its seat.
+inline constexpr double kLinkSilentCarriedMs = 4500.0;
+static_assert(kLinkSilentCarriedMs < kDriverTimeoutMs, "the passenger's grace ends before the driver's timeout");
 inline constexpr double kCrashDvMps = 8.0;
 inline constexpr double kFlipUpZ = 0.3, kFlipMs = 500.0;
 inline constexpr double kNotDrivenMs = 400.0;     // our follower let go (the driver's frames ended) this long
 inline constexpr double kNotSeatedSpeed = 2.0;    // m/s: the driver's frames say nobody holds the seat at this speed
 struct ForcedIn {
     double link_silent_ms = 0;      // since the partner's last pose
+    bool link_lost = false;         // the link's own state: not connected (any silence over kLinkSilentMs then ends it)
     double not_driven_ms = 0;       // since our follower last drove that vehicle (0 while it does)
     bool vehicle_live = true;       // in the registry, its entity live
     bool broken = false;            // broken (+0x560 & 0x2000) or ride state 5 / 6
@@ -253,6 +263,37 @@ private:
     bool have_ = false;
     double key_ = 0;
     float vel_[3] = {};
+};
+
+// v0.21 (play test 3: a false crash exit at a steady 11 m/s from one odd frame): a crash only when the driver's vehicle
+// really changed speed and stays changed. On each newer frame k: the median horizontal velocity of the frames in
+// [k - kConfirmBeforeFromMs, k - kConfirmBeforeToMs] against those in [k - kConfirmAfterMs, k] differ by over kCrashDvMps,
+// the newest 3 frames agree within kConfirmSpreadMps, and the game's own speed field (km/h, the frames' speed_kmh; < 0
+// unknown) dropped by kConfirmKmhDrop or more. Horizontal only (a crest or a landing changes z). Fires once per
+// kConfirmRefireMs. A one-frame jump the v0.20 rule would have taken that is not confirmed within kConfirmWaitMs is reported
+// once through TakeRejected (for the log).
+inline constexpr double kConfirmBeforeFromMs = 350.0, kConfirmBeforeToMs = 200.0, kConfirmAfterMs = 150.0;
+inline constexpr double kConfirmSpreadMps = 3.0, kConfirmKmhDrop = 28.8, kConfirmRefireMs = 1000.0, kConfirmWaitMs = 400.0;
+class CrashConfirm {
+public:
+    double Update(const float (&vel)[3], float speed_kmh, double key_ms) noexcept;
+    // the one-frame jump (m/s) that was not confirmed, once; 0 none
+    double TakeRejected() noexcept {
+        const double r = rejected_;
+        rejected_ = 0;
+        return r;
+    }
+    void Reset() noexcept { *this = CrashConfirm{}; }
+private:
+    struct S {
+        double key = 0;
+        float vx = 0, vy = 0, kmh = -1;
+    };
+    static constexpr int kN = 32;
+    S s_[kN];
+    int n_ = 0;
+    double fired_key_ = -1e18;
+    double cand_key_ = -1e18, cand_dv_ = 0, rejected_ = 0;
 };
 
 // ---------------------------------------------------------------- where the passenger is put off

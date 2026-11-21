@@ -1,0 +1,95 @@
+# The "before" run of two-games-veh-route (play test 3 of v0.20.0), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-veh-route-v020 -SeedSaves complete-100
+# The same drive with v0.20's behaviour switched back on in this build (hidden tests only): the follower's lerp target,
+# sample-and-hold inputs, bands and nudge and measured velocities in the frames (vehicle_drive 13 1 on both), the game's
+# landing check on the carried Sam (ride_test 16 0) and the one-frame crash rule with its exit and hit (ride_test 17 0).
+# Expected (the user's report): the follower drifts toward 2 m and snaps, the passenger may be thrown out on the downhill
+# (the game's landing damage) and by the one odd frame (a crash exit). Nothing here fails on an ejection.
+role host
+graphics low
+timeout 360
+launcherini local-test
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[config\] host_save=1
+@guest waitlog 10 \[config\] host_save=1
+waitlog 10 \[ride\] riding together ON \(host
+@guest waitlog 10 \[ride\] riding together ON \(guest
+waitlog 10 \[vdrive\] the driven follower: the v0.21 controller
+@guest waitlog 10 \[vdrive\] the driven follower: the v0.21 controller
+wait 22000
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+@guest waitlog 60 \[vshare\] guest: the host's snapshot #[0-9]+ is complete
+@guest waitlog 30 \[vshare\] guest: binding:
+wait 8000
+@both action vehicle_drive 13 1
+@both action ride_test 16 0
+@both action ride_test 17 0
+# ---- the guest drives the nearest truck, put at the road's start (on the elevated road, as in the play test)
+@guest action vehicle_sync 8 1.8 2
+wait 1500
+@guest until 20 4000 \[vdrive\] guest: our Sam drives truck => pad X 150
+waitlog 20 \[vdrive\] host: the guest claims truck 0x[0-9A-F]+ \(get on, epoch [0-9]+\): granted
+waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached
+wait 1500
+@guest action vehicle_drive 14 1
+wait 4000
+# ---- lap 1: the host boards as the passenger with the game's own Use Vehicle; the guest's autopilot drives the road once
+action ride_test 8
+waitlog 8 \[ride\] native prompt: the partner's truck 0x[0-9A-F]+: boarding allowed
+until 15 3000 \[ride\] host: our Sam carried on the truck => pad X 150
+@guest waitlog 10 \[ride\] guest: the partner asks to ride our truck .*ACCEPTED
+wait 1500
+screenshot R0-host-riding-start
+@guest screenshot R0-guest-start
+@guest action vehicle_drive 12 10 1
+wait 20000
+screenshot R1-host-riding
+@guest screenshot R1-guest-driving
+wait 17000
+screenshot R2-host-downhill
+@guest screenshot R2-guest-downhill
+wait 19000
+screenshot R2c-host-bottom
+@guest screenshot R2c-guest-bottom
+@guest waitlog 40 \[vdrive\] autopilot: done \(#1\)
+wait 1500
+action ride_test 15
+# ---- back to the start: the host gets off (a press), the truck is put at the start, the host boards again
+?hookkey 0x46 150
+?waitlog 6 \[ride\] host: our Sam off the truck
+@guest action vehicle_drive 14 1
+wait 4000
+action ride_test 8
+wait 800
+?until 15 3000 \[ride\] host: our Sam carried on the truck .*#2\) => pad X 150
+wait 1500
+# ---- lap 2: one drive frame 9.8 m/s off at 15 s (play test 3's false crash)
+@guest action vehicle_drive 12 10 1
+wait 15000
+@guest action vehicle_drive 10 9.8
+wait 9000
+pad none 700 rx=32767
+screenshot R3-host-side-view
+@guest screenshot R3-guest-driving
+@guest waitlog 60 \[vdrive\] autopilot: done \(#2\)
+wait 1500
+action ride_test 15
+@both action vehicle_drive 1
+@both action ride_state
+nolog \[(vshare|vdrive|ride|vhit)\].*FAULT
+@guest nolog \[(vshare|vdrive|ride|vhit)\].*FAULT
+@guest quit
+wait 3000
+quit

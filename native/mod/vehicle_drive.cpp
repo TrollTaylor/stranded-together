@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <limits>
 #include <map>
 #include <vector>
 
@@ -18,6 +19,7 @@
 #include "game_actions.hpp"
 #include "link.hpp"
 #include "log.hpp"
+#include "overlay/overlay_input.hpp"
 #include "partner_source.hpp"
 #include "vehicle_share.hpp"
 #include "vehicle_sync.hpp"
@@ -57,6 +59,8 @@ constexpr std::uintptr_t kDriveCompKey = 0x144B35D30; // the key Attach looks up
 constexpr std::uintptr_t kHandleAddRef = 0x14191C790; // vehicle handle addref (handle*)
 constexpr std::uintptr_t kHandleRelease = 0x14191C810; // vehicle handle release (handle*)
 constexpr std::uintptr_t kSetController = 0x142F80310; // SetController (vehicle, input object)
+constexpr std::uintptr_t kSetVel = 0x141C34330;      // SetLinearAndAngularVelocity (u32 body id, float* lin world, float* ang world)
+constexpr std::uintptr_t kPhysSys = 0x14578C140;     // the physics system global: [+0x20]+0x28 bodies (0xB0 each), +0x158 motions (0x80 each)
 
 // vehicle entity fields
 constexpr std::uintptr_t kEParent = 0x70;            // Entity: parent (Sam's vehicle while riding)
@@ -89,6 +93,8 @@ enum Group : unsigned {
                      // roadsters are then not followed)
     kGNpc = 256u,    // the NPC-driven bits SetDriver sets for the NPC controller and clears on its own get-off (optional: then
                      // left set after a detach, as before)
+    kGBody = 512u,   // v0.21: the chassis body's physics velocities (read on both sides, set by the driven follower's controller);
+                     // optional: without it the owner sends measured velocities and the follower keeps v0.20's bands and nudge
 };
 constexpr unsigned kRequired = kGCtl | kGRideOff;
 struct Site {
@@ -150,6 +156,18 @@ constexpr Site kSites[] = {
     {0x142F7C74A, "48 8B 87 98 08 00 00 83 48 48 02", "SetDriver (NPC): [+0x898]+0x48 |= 2", kGNpc},
     {0x142F7C774, "80 8F 08 04 00 00 10", "SetDriver (NPC): +0x408 |= 0x10", kGNpc},
     {0x142F7C88F, "48 8B 87 98 08 00 00 83 60 48 FD 80 A7 08 04 00 00 ED", "SetDriver (get off): clears [+0x898]+0x48 bit 2 and +0x408 bits 0x12", kGNpc},
+    // v0.21 (play test 3): the chassis body's velocities. The drive-to reads the body id at instance +0x90 when +0xDB is 0;
+    // SetLinearAndAngularVelocity takes the body's lock, checks its id and writes the motion's linear (world) and angular
+    // (stored in the body's frame: rotated by the motion's quaternion) velocity.
+    {kFirstInst,  "48 8B 89 B8 00 00 00 48 85 C9", "first physics instance", kGBody},
+    {0x141C43E24, "80 B9 DB 00 00 00 00 75 41 33 C0 4C 8B C2 8B 91 90 00 00 00 48 8B 49 68", "drive-to: instance +0xDB, body id +0x90", kGBody},
+    {kSetVel,     "48 89 5C 24 10 48 89 6C 24 18 56 57 41 56 48 83 EC 30 33 C0 8B F1 89 44", "SetLinearAndAngularVelocity", kGBody},
+    {0x141C3439A, "48 8B 05 ?? ?? ?? ?? 48 69 CE B0 00 00 00 48 8B 50 20 48 03 4A 28 3B 59 70 75 1B", "its body table: [sys+0x20]+0x28, 0xB0 per body, id +0x70", kGBody},
+    {0x141C34400, "4C 8B DC 55 56 57 48 81 EC C0 00 00 00 C4 41 78 29 53 98 C4 41 78 29 5B", "the velocity writer", kGBody},
+    {0x141C3446E, "F6 C1 02 0F 84 26 03 00 00 49 89 5B 10 8B 5F 40", "the writer: dynamic +0x44 & 2, motion index +0x40", kGBody},
+    {0x141C34496, "48 C1 E3 07 48 03 9D 58 01 00 00", "the writer: motion = [sys+0x20]+0x158 + index * 0x80", kGBody},
+    {0x141C344B5, "C5 78 10 63 40", "the writer: linear velocity at motion +0x40", kGBody},
+    {0x141C344E0, "C5 78 10 43 10 C5 F8 10 73 50", "the writer: quaternion +0x10, angular velocity +0x50 (body frame)", kGBody},
 };
 // clang-format on
 
@@ -170,6 +188,7 @@ using FnActivate = void (*)(std::uintptr_t);
 using FnLookup = std::uintptr_t (*)(std::uintptr_t, std::uintptr_t);
 using FnSetDriverV = std::uint8_t (*)(std::uintptr_t, std::uint32_t*, std::uint8_t, std::uint8_t);
 using FnSetCtl = void (*)(std::uintptr_t, std::uintptr_t);
+using FnSetVel = void (*)(std::uint32_t, const float*, const float*);
 
 // ---------------------------------------------------------------- state
 std::atomic<bool> g_on{false};
@@ -570,6 +589,27 @@ struct Veh {
     double tp_target[3] = {};
     double held_since_ms = 0;          // in the ignore band since (10 s there: the teleports held)
     double reach_log_ms = -1e18;
+    // v0.21 driven follower (DriveCorrect)
+    double bias[3] = {};               // the controller's integral (m/s, world horizontal)
+    double stuck_since = 0, stuck_err0 = 0, still_since = 0, owner_still_since = 0;
+    double rest_ref_err = -1, rest_ref_ms = 0;  // both standing: the error 0.5 s ago (a push that no longer closes it stops)
+    bool resting = false;                       // ... so it is left asleep until either moves
+    unsigned n_rest = 0;                        // ticks a standing follower was left asleep (no velocity set)
+    unsigned n_vel = 0, n_no_body = 0, n_extrap = 0, n_tp_driven = 0;
+    double extrap_max_ms = 0;
+    double w_al_sum = 0, w_al_max = 0, w_lat_sum = 0, w_lat_max = 0, w_up_sum = 0, w_up_max = 0, w_yaw_max = 0;
+    double ride_sum = 0, ride_max = 0;  // the whole follow (the summary at the detach)
+    unsigned ride_n = 0, ride_over = 0; // ... ticks over 0.25 m
+    double tp_req_ms = -1e18;          // our newest RequestTeleport of this follower (ride_together re-seats a carried Sam)
+    WorldTransform tp_req_xf{};
+    std::uintptr_t tp_req_entity = 0;
+    bool body_logged = false;
+    double steer_trim = 0;             // added to the replayed steering axis (+0x0C, signed by g_ssign) next tick
+    // owner: the chassis body's velocities (FillFrame) and their check against the measured ones
+    bool body_vel = false;
+    double fd_speed = 0;               // the finite-difference speed (Measure), against the body's
+    double body_disagree_since = 0;
+    bool body_vel_bad = false;
 };
 std::map<std::uint32_t, Veh> g_veh;
 Veh& V(const vwire::VKey& k) {
@@ -960,6 +1000,10 @@ void Detach(Veh& v, const char* why) {
     Log("[vdrive] follower of %s 0x%06X detached #%llu (%s) after %.1f s, %ld input updates%s%s", vwire::KindName(v.key.kind), v.key.id,
         static_cast<unsigned long long>(g_detaches), why, (g_now - v.attach_ms) / 1000.0, static_cast<long>(calls), ok ? "" : " (FAULT in detach)",
         touched ? "; put back on the recent vehicles (Touch)" : "");
+    if (v.ride_n)
+        Log("[vdrive] follower of %s 0x%06X over the follow: placement error mean %.3f max %.3f m, %u of %u ticks over 0.25 m; %u driven teleports, %u "
+            "velocity sets",
+            vwire::KindName(v.key.kind), v.key.id, v.ride_sum / v.ride_n, v.ride_max, v.ride_over, v.ride_n, v.n_tp_driven, v.n_vel);
     if (ok) VirtualFree(reinterpret_cast<void*>(v.block), 0, MEM_RELEASE);  // a fault leaves the block (it may still be referenced)
     v.block = 0;
     v.ctl_entity = 0;
@@ -1040,6 +1084,13 @@ bool Attach(Veh& v, const vshare::Unit& u) {
     v.ctl_entity = e;
     v.ctl_unit = u.unit;
     v.attach_ms = g_now;
+    v.ride_sum = v.ride_max = 0, v.ride_n = v.ride_over = 0;
+    v.n_tp_driven = v.n_vel = v.n_no_body = v.n_extrap = 0;
+    v.bias[0] = v.bias[1] = v.bias[2] = 0;
+    v.stuck_since = v.still_since = v.owner_still_since = 0;
+    v.rest_ref_err = -1, v.resting = false, v.n_rest = 0;
+    v.body_logged = false;
+    v.steer_trim = 0;
     ++g_attaches;
     Log("[vdrive] follower of %s 0x%06X attached #%llu: the game's NPC controller%s (driver 0x%X, [+0x528] %s ctl+0x30, input vtable %s)",
         vwire::KindName(v.key.kind), v.key.id, static_cast<unsigned long long>(g_attaches), full ? "" : " without its route part (no AI drive component)", drv,
@@ -1077,6 +1128,115 @@ float StepTime(std::uintptr_t e) noexcept {
 }
 
 bool InstOk(std::uintptr_t inst) noexcept { return inst && mem::InImage(mem::Q(inst)) && mem::InText(mem::Q(mem::Q(inst) + 0xE0)); }
+
+// ---------------------------------------------------------------- v0.21: the chassis body (kGBody)
+// The vehicle's first physics instance holds its chassis body id (+0x90, used by the drive-to when +0xDB is 0). The body
+// table: [[0x14578C140]+0x20]+0x28 + (id & 0xFFFFFF) * 0xB0 (+0x70 its id, +0x44 & 2 dynamic, +0x40 its motion index); the
+// motion: [[0x14578C140]+0x20]+0x158 + index * 0x80 (+0x10 quaternion x y z w, +0x40 linear velocity world, +0x50 angular
+// velocity in the body's frame). Read only here; set through SetLinearAndAngularVelocity (its own lock and id check).
+bool g_legacy = false;          // debug (vehicle_drive 13 1): v0.20's follower (lerp, sample-and-hold, bands and nudge) and
+                                // measured velocities in the frames, for before / after runs
+double g_in_lead_ms = 16.0;     // debug (vehicle_drive 15): the inputs of the frame nearest to play time + this
+vwire::FollowGains g_gains;     // debug (vehicle_drive 16 / 17)
+struct BodyRef {
+    std::uint32_t id = 0;
+    std::uintptr_t motion = 0;
+};
+bool FindBody(std::uintptr_t e, BodyRef* out) noexcept {
+    if (!(g_groups_ok & kGBody) || !e) return false;
+    int idx = -1;
+    const std::uintptr_t inst = CallFirstInst(e, &idx);
+    if (!InstOk(inst)) return false;
+    std::uint8_t db = 1;
+    std::uint32_t id = 0;
+    if (!mem::Rd(inst + 0xDB, db) || db != 0 || !mem::Rd(inst + 0x90, id) || (id & 0xFFFFFFu) == 0xFFFFFFu) return false;
+    const std::uintptr_t sys = mem::Q(A(kPhysSys));
+    const std::uintptr_t w = sys ? mem::Q(sys + 0x20) : 0;
+    const std::uintptr_t bodies = w ? mem::Q(w + 0x28) : 0, motions = w ? mem::Q(w + 0x158) : 0;
+    if (!bodies || !motions) return false;
+    const std::uintptr_t b = bodies + static_cast<std::uintptr_t>(id & 0xFFFFFFu) * 0xB0;
+    std::uint32_t bid = 0, fl = 0, mi = 0;
+    if (!mem::Rd(b + 0x70, bid) || bid != id || !mem::Rd(b + 0x44, fl) || !(fl & 2u) || !mem::Rd(b + 0x40, mi) || mi > (1u << 20)) return false;
+    out->id = id;
+    out->motion = motions + static_cast<std::uintptr_t>(mi) * 0x80;
+    return true;
+}
+// The world vector of a body-frame one: R(q) v = 2 (q.v) q + (2 w^2 - 1) v + 2 w (q x v) (the writer's own formula at
+// 0x141C344E0).
+void RotByQuat(const float (&q)[4], const float (&v)[3], float (&o)[3]) noexcept {
+    const double qx = q[0], qy = q[1], qz = q[2], qw = q[3];
+    const double d = qx * v[0] + qy * v[1] + qz * v[2];
+    const double cx = qy * v[2] - qz * v[1], cy = qz * v[0] - qx * v[2], cz = qx * v[1] - qy * v[0];
+    const double s = 2 * qw * qw - 1;
+    o[0] = static_cast<float>(2 * d * qx + s * v[0] + 2 * qw * cx);
+    o[1] = static_cast<float>(2 * d * qy + s * v[1] + 2 * qw * cy);
+    o[2] = static_cast<float>(2 * d * qz + s * v[2] + 2 * qw * cz);
+}
+// Linear (world) and angular (world) velocity, read twice and equal, finite and plausible.
+bool ReadBody(const BodyRef& b, float (&lin)[3], float (&ang)[3]) noexcept {
+    float m1[20], m2[20];
+    if (!b.motion || !mem::Read(b.motion + 0x10, m1, sizeof(m1)) || !mem::Read(b.motion + 0x10, m2, sizeof(m2)) || std::memcmp(m1, m2, sizeof(m1)) != 0) return false;
+    for (float x : m1)
+        if (!std::isfinite(x)) return false;
+    const float q[4] = {m1[0], m1[1], m1[2], m1[3]};
+    const double qn = static_cast<double>(q[0]) * q[0] + static_cast<double>(q[1]) * q[1] + static_cast<double>(q[2]) * q[2] + static_cast<double>(q[3]) * q[3];
+    if (qn < 0.9 || qn > 1.1) return false;
+    for (int i = 0; i < 3; ++i) lin[i] = m1[12 + i];               // +0x40
+    const float al[3] = {m1[16], m1[17], m1[18]};                   // +0x50
+    for (int i = 0; i < 3; ++i)
+        if (std::fabs(lin[i]) > 150.0f || std::fabs(al[i]) > 100.0f) return false;
+    RotByQuat(q, al, ang);
+    return true;
+}
+bool CallSetVel(std::uint32_t id, const float* lin, const float* ang) noexcept {
+    __try {
+        reinterpret_cast<FnSetVel>(A(kSetVel))(id, lin, ang);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+bool g_body_fault = false;      // SetLinearAndAngularVelocity faulted once: never again (v0.20's corrections from then on)
+// The chassis body's angular velocity z against the yaw rate of its transform rows (atan2 of the forward row: counter-
+// clockwise positive): +1 or -1, measured on the first turns (0 until then: the measured yaw rate in the frames, no yaw
+// steering). Hidden run 20261120-155755 steered the yaw the wrong way round with the sign assumed.
+int g_wsign = 0;
+double g_ws_prod = 0, g_ws_a = 0, g_ws_b = 0;
+unsigned g_ws_n = 0;
+// The steering axis (the input object's +0x0C, ramped by 0x142F5AB50 into [-1, 1]) against the yaw rate driving forward:
+// +1 when a positive value steers right (clockwise), -1 the other way; measured on the first turns (0: no steering trim).
+int g_ssign = 0;
+double g_ss_prod = 0, g_ss_a = 0, g_ss_b = 0;
+unsigned g_ss_n = 0;
+void NoteSteerSample(double steer, double rows_rate, double v_along) noexcept {
+    if (g_ssign || !std::isfinite(steer) || !std::isfinite(rows_rate) || std::fabs(steer) < 0.15 || std::fabs(steer) > 1.01 || v_along < 2.0) return;
+    g_ss_prod += steer * rows_rate, g_ss_a += steer * steer, g_ss_b += rows_rate * rows_rate;
+    if (++g_ss_n < 30) return;
+    const double c = g_ss_a > 0 && g_ss_b > 0 ? g_ss_prod / std::sqrt(g_ss_a * g_ss_b) : 0;
+    if (c < -0.6 || c > 0.6) {
+        g_ssign = c < 0 ? 1 : -1;
+        Log("[vdrive] the steering axis (+0x0C): a positive value steers %s (correlation with the yaw rate %.2f over %u samples): the steering trim on",
+            g_ssign > 0 ? "right" : "left", c, g_ss_n);
+    } else {
+        Log("[vdrive] the steering axis against the yaw rate: correlation %.2f over %u samples: not decided, measured again", c, g_ss_n);
+    }
+    g_ss_prod = g_ss_a = g_ss_b = 0, g_ss_n = 0;
+}
+void NoteYawSample(double rows_rate, double body_z) noexcept {
+    if (g_wsign || !std::isfinite(rows_rate) || !std::isfinite(body_z) || std::fabs(rows_rate) < 0.15 || std::fabs(rows_rate) > 5) return;
+    g_ws_prod += rows_rate * body_z, g_ws_a += rows_rate * rows_rate, g_ws_b += body_z * body_z;
+    if (++g_ws_n < 30) return;
+    const double c = g_ws_a > 0 && g_ws_b > 0 ? g_ws_prod / std::sqrt(g_ws_a * g_ws_b) : 0;
+    if (c > 0.8 || c < -0.8) {
+        g_wsign = c > 0 ? 1 : -1;
+        Log("[vdrive] the chassis body's yaw rate is %s the transform's (correlation %.2f over %u turning samples): the yaw steering on", g_wsign > 0 ? "+" : "-",
+            c, g_ws_n);
+    } else {
+        Log("[vdrive] the chassis body's yaw rate against the transform's: correlation %.2f over %u samples: not decided, measured again", c, g_ws_n);
+    }
+    g_ws_prod = g_ws_a = g_ws_b = 0, g_ws_n = 0;
+}
+double g_spike_dv = 0;          // hidden tests (vehicle_drive 10): added to the next DRIVE frame's velocity x
 
 bool NativeCorrect(Veh& v, std::uintptr_t e, const WorldTransform& target, const vwire::BandLimits& lim) {
     int idx = -1;
@@ -1183,6 +1343,14 @@ bool Clear(std::uintptr_t unit, std::uint8_t kind, const WorldTransform& target,
 
 game::Entity* g_local = nullptr;
 
+// Our RequestTeleport of a follower: kept for ride_together (a Sam carried on it is put on the seat of the target in the
+// same tick; the crash and hit paths ignore what follows it).
+void NoteTp(Veh& v, std::uintptr_t e, const WorldTransform& target) noexcept {
+    v.tp_req_ms = g_now;
+    v.tp_req_xf = target;
+    v.tp_req_entity = e;
+}
+
 // One correction of our vehicle toward where its owner has it (`target`: the frames at the play time). Driven (the partner
 // drives it, our NPC controller replays the inputs): the bands start at g_ignore_drive_m (the replay alone stays within about
 // 0.1 m: proof drive), the impulse band nudges with the owner's velocity (at most every 100 ms). Parked: the game's own net
@@ -1274,6 +1442,7 @@ void Correct(Veh& v, const vshare::Unit& u, const WorldTransform& target, bool d
         v.last_tp_ms = v.last_interp_ms = g_now;
         note_parked_tp();
         if (vshare::RequestTeleport(e, target)) {
+            NoteTp(v, e, target);
             ++v.n_tp;
             Log("[vdrive] %s 0x%06X %.2f m off (%.0f deg), %s: RequestTeleport onto the owner's place", vwire::KindName(v.key.kind), v.key.id, err, ang,
                 driving ? "stopped with its driver" : "parked");
@@ -1327,12 +1496,215 @@ void Correct(Veh& v, const vshare::Unit& u, const WorldTransform& target, bool d
             v.last_tp_ms = v.last_interp_ms = g_now;
             note_parked_tp();
             if (vshare::RequestTeleport(e, target)) {
+                NoteTp(v, e, target);
                 if (interp) ++v.n_interp;
                 else ++v.n_tp;
                 Log("[vdrive] %s 0x%06X %.1f m off (%.0f deg): RequestTeleport onto the owner's place", vwire::KindName(v.key.kind), v.key.id, err, ang);
             }
             return;
         }
+    }
+}
+
+// ---------------------------------------------------------------- v0.21: the driven follower's controller
+// Play test 3 (v0.20.0): the follower was 0.9 m off on average at 11 m/s locally, up to 2 m, then snapped onto the owner's
+// place (a visible jump, the passenger 1.7 m off the seat for a frame); every stop ended with a 0.4 - 0.6 m snap. The 100 ms
+// nudge (the game's drive-to) replaced all six velocities and did not close the error. Now, every tick: the input replay
+// stays (wheels, sounds, suspension are the game's), and the chassis body's horizontal velocity and yaw rate are steered
+// toward the owner's (vwire::FollowVelocity) through SetLinearAndAngularVelocity, added to what the physics has now; the
+// vertical velocity, pitch and roll are never touched. RequestTeleport only by vwire::DriveTeleport (far, angle, stuck,
+// stopped), each logged with its reason.
+struct StepTest {
+    double until = 0, log_until = 0, fwd = 0, lat = 0, t0 = 0;
+};
+StepTest g_step;
+double g_trace_until = 0;  // debug (vehicle_drive 19 <s>): the controller logged every tick
+void DriveCorrect(Veh& v, const vshare::Unit& u, const WorldTransform& target_in, const float (&tvel)[3], float tyaw_rate) {
+    v.steer_trim = 0;  // set again below when the controller runs
+    if (!g_corr_on) return;
+    const std::uintptr_t e = u.entity;
+    if (!EntityLive(u.unit, e, v.key.kind)) return;
+    WorldTransform cur{};
+    if (!ReadXf(e, cur)) return;
+    WorldTransform target = target_in;
+    const bool step_on = g_now < g_step.until;
+    if (step_on) {
+        // hidden tests (vehicle_drive 11): the target moved along its own forward / right axes
+        target.pos.x += g_step.fwd * target.rot.m[1][0] + g_step.lat * target.rot.m[0][0];
+        target.pos.y += g_step.fwd * target.rot.m[1][1] + g_step.lat * target.rot.m[0][1];
+        target.pos.z += g_step.fwd * target.rot.m[1][2] + g_step.lat * target.rot.m[0][2];
+    }
+    const double ev[3] = {target.pos.x - cur.pos.x, target.pos.y - cur.pos.y, target.pos.z - cur.pos.z};
+    const double err = std::sqrt(ev[0] * ev[0] + ev[1] * ev[1] + ev[2] * ev[2]);
+    const double ang = vwire::AngleBetweenRows(Rows(cur), Rows(target));
+    const float(&R)[9] = Rows(cur);
+    const double e_al = ev[0] * R[3] + ev[1] * R[4] + ev[2] * R[5];
+    const double e_lat = ev[0] * R[0] + ev[1] * R[1] + ev[2] * R[2];
+    const double e_up = ev[0] * R[6] + ev[1] * R[7] + ev[2] * R[8];
+    const double yaw_err = vwire::WrapPi(vwire::YawOfRows(Rows(target)) - vwire::YawOfRows(R));
+    BodyRef body;
+    float lin[3] = {}, angw[3] = {};
+    const bool have_body = !g_body_fault && FindBody(e, &body) && ReadBody(body, lin, angw);
+    if (!have_body) ++v.n_no_body;
+    if (have_body && !v.body_logged) {
+        v.body_logged = true;
+        Log("[vdrive] follower of %s 0x%06X: chassis body 0x%X, velocity (%.2f, %.2f, %.2f) m/s, yaw rate %.2f rad/s: the v0.21 controller drives it",
+            vwire::KindName(v.key.kind), v.key.id, body.id, lin[0], lin[1], lin[2], angw[2]);
+    }
+    const double ours = have_body ? std::sqrt(static_cast<double>(lin[0]) * lin[0] + static_cast<double>(lin[1]) * lin[1] + static_cast<double>(lin[2]) * lin[2])
+                                  : v.speed_mps;
+    const double tspeed = std::sqrt(static_cast<double>(tvel[0]) * tvel[0] + static_cast<double>(tvel[1]) * tvel[1] + static_cast<double>(tvel[2]) * tvel[2]);
+    // the meters (the v0.20 line's first part kept for the parsers)
+    v.err_sum += err, ++v.err_n;
+    v.err_max = (std::max)(v.err_max, err);
+    v.ang_max = (std::max)(v.ang_max, ang);
+    v.win_sum += err, ++v.win_n;
+    v.win_max = (std::max)(v.win_max, err);
+    v.win_ang = (std::max)(v.win_ang, ang);
+    v.w_al_sum += std::fabs(e_al), v.w_al_max = (std::max)(v.w_al_max, std::fabs(e_al));
+    v.w_lat_sum += std::fabs(e_lat), v.w_lat_max = (std::max)(v.w_lat_max, std::fabs(e_lat));
+    v.w_up_sum += std::fabs(e_up), v.w_up_max = (std::max)(v.w_up_max, std::fabs(e_up));
+    v.w_yaw_max = (std::max)(v.w_yaw_max, std::fabs(yaw_err) * 57.29577951308232);
+    if (!step_on) {
+        v.ride_sum += err, ++v.ride_n;
+        v.ride_max = (std::max)(v.ride_max, err);
+        if (err > 0.25) ++v.ride_over;
+    }
+    const bool carried_here = u.unit && g_carried_unit.load(std::memory_order_relaxed) == u.unit;
+    if (g_now - v.win_log_ms >= 1000) {
+        if (v.win_n) {
+            std::int32_t rs = -1;
+            float ax = 0;
+            mem::Rd(e + kVRideState, rs);
+            const std::uintptr_t inp = mem::Q(e + kVInput);
+            if (inp) mem::Rd(inp + 8, ax);
+            const double n = v.win_n;
+            Log("[vdrive] %s 0x%06X followed: placement error mean %.2f max %.2f m, angle max %.1f deg (1 s; now target-ours %.2f %.2f %.2f; speed ours %.1f owner "
+                "%.1f m/s, ride state %d, throttle %.2f); corrections none %u impulse %u interp %u teleport %u blocked %u nudge %u; v0.21: along mean %.2f max "
+                "%.2f, lateral mean %.2f max %.2f, vertical mean %.2f max %.2f m, yaw max %.1f deg; velocity sets %u, no body %u, extrapolated %u ticks (max "
+                "%.0f ms), driven teleports %u, rested %u%s",
+                vwire::KindName(v.key.kind), v.key.id, v.win_sum / n, v.win_max, v.win_ang, ev[0], ev[1], ev[2], ours, tspeed, rs, static_cast<double>(ax), v.n_none,
+                v.n_imp, v.n_interp, v.n_tp, v.n_blocked, v.n_nudge, v.w_al_sum / n, v.w_al_max, v.w_lat_sum / n, v.w_lat_max, v.w_up_sum / n, v.w_up_max,
+                v.w_yaw_max, v.n_vel, v.n_no_body, v.n_extrap, v.extrap_max_ms, v.n_tp_driven, v.n_rest, carried_here ? "; our Sam carried on it" : "");
+        }
+        v.win_sum = v.win_max = v.win_ang = 0, v.win_n = 0, v.win_log_ms = g_now;
+        v.w_al_sum = v.w_al_max = v.w_lat_sum = v.w_lat_max = v.w_up_sum = v.w_up_max = v.w_yaw_max = 0;
+        v.extrap_max_ms = 0;
+    }
+    // standing still (both), stuck over 1.5 m
+    const bool still = tspeed < 0.3 && ours < 0.3 && std::fabs(tyaw_rate) < 0.1f;
+    if (!still) v.still_since = 0;
+    else if (v.still_since == 0) v.still_since = g_now;
+    const bool owner_still = tspeed < 0.3 && std::fabs(tyaw_rate) < 0.1f;
+    if (!owner_still) v.owner_still_since = 0;
+    else if (v.owner_still_since == 0) v.owner_still_since = g_now;
+    if (err < vwire::kTpStuckM) {
+        v.stuck_since = 0;
+    } else if (v.stuck_since == 0) {
+        v.stuck_since = g_now;
+        v.stuck_err0 = err;
+    }
+    vwire::DriveTpIn ti;
+    ti.err_m = err;
+    ti.ang_deg = ang;
+    ti.carried = carried_here;
+    ti.stuck_ms = v.stuck_since ? g_now - v.stuck_since : 0;
+    ti.stuck_err0 = v.stuck_err0;
+    ti.still_ms = v.still_since ? g_now - v.still_since : 0;
+    ti.owner_still_ms = v.owner_still_since ? g_now - v.owner_still_since : 0;
+    ti.since_last_tp_ms = g_now - v.last_tp_ms;
+    WorldTransform sam{};
+    if (g_local && ReadXf(reinterpret_cast<std::uintptr_t>(g_local), sam)) ti.sam_dist_m = Dist3(cur, sam);
+    const vwire::DriveTp tp = step_on ? vwire::DriveTp::none : vwire::DriveTeleport(ti);
+    if (tp != vwire::DriveTp::none) {
+        if (!Clear(u.unit, v.key.kind, target, g_local)) {
+            ++v.n_blocked;
+            if (g_now - v.blocked_log_ms > 3000) {
+                v.blocked_log_ms = g_now;
+                Log("[vdrive] %s 0x%06X is %.2f m off (%s) but its place is taken (the local Sam or another vehicle): waiting", vwire::KindName(v.key.kind), v.key.id,
+                    err, vwire::DriveTpName(tp));
+            }
+        } else {
+            v.last_tp_ms = v.last_interp_ms = g_now;
+            if (vshare::RequestTeleport(e, target)) {
+                NoteTp(v, e, target);
+                ++v.n_tp, ++v.n_tp_driven;
+                v.stuck_since = 0;
+                v.bias[0] = v.bias[1] = v.bias[2] = 0;
+                Log("[vdrive] %s 0x%06X TELEPORT (%s): %.2f m off (along %.2f, lateral %.2f, vertical %.2f), %.0f deg, %.1f / %.1f m/s%s: RequestTeleport onto the "
+                    "owner's place",
+                    vwire::KindName(v.key.kind), v.key.id, vwire::DriveTpName(tp), err, e_al, e_lat, e_up, ang, ours, tspeed,
+                    carried_here ? ", our Sam carried on it (re-seated)" : "");
+            }
+        }
+        return;
+    }
+    if (!have_body) return;
+    // the owner's vehicle stands and ours is far off or askew: never dragged (the stopped teleport comes; carried: held)
+    if (owner_still && !carried_here && (err >= vwire::kTpParkedM || ang >= vwire::kTpParkedDeg)) {
+        v.bias[0] = v.bias[1] = v.bias[2] = 0;
+        return;
+    }
+    if (still && err < 0.05 && std::fabs(yaw_err) < 0.01) {
+        ++v.n_none;
+        v.bias[0] = v.bias[1] = v.bias[2] = 0;
+        return;
+    }
+    // v0.21: both stand past the stopped rules' wait and the push has stopped closing the error (the tyres hold a side
+    // error: hidden run 20261120-210244 set 0 m/s every tick for 8 s at 0.57 m): no more velocity sets, the body sleeps.
+    // The standstill re-seat (carried) or the stopped teleport takes what is left; driving off steers it away.
+    if (!still) {
+        v.rest_ref_err = -1, v.resting = false;
+    } else if (!v.resting && (v.rest_ref_err < 0 || g_now - v.rest_ref_ms >= 500)) {
+        const bool closing = v.rest_ref_err < 0 || v.rest_ref_err - err > 0.01;
+        v.rest_ref_err = err, v.rest_ref_ms = g_now;
+        v.resting = !closing && v.still_since && g_now - v.still_since >= vwire::kTpStoppedMs;
+    }
+    if (still && v.resting) {
+        ++v.n_none, ++v.n_rest;
+        v.bias[0] = v.bias[1] = v.bias[2] = 0;
+        return;
+    }
+    vwire::FollowIn fi;
+    std::memcpy(fi.err, ev, sizeof(ev));
+    for (int i = 0; i < 3; ++i) fi.up[i] = R[6 + i], fi.fwd[i] = R[3 + i];
+    std::memcpy(fi.v_now, lin, sizeof(lin));
+    std::memcpy(fi.v_target, tvel, sizeof(fi.v_target));
+    fi.yaw_err = yaw_err;
+    fi.yaw = g_wsign != 0;
+    fi.w_now_z = g_wsign ? static_cast<float>(g_wsign) * angw[2] : 0.0f;
+    fi.w_target_z = tyaw_rate;
+    fi.dt_s = g_tick_ms / 1000.0;
+    fi.still = still;
+    vwire::FollowOut o;
+    vwire::FollowVelocity(fi, g_gains, v.bias, &o);
+    const float aset[3] = {angw[0], angw[1], g_wsign ? static_cast<float>(g_wsign) * o.w_set_z : angw[2]};
+    {
+        const double v_al = lin[0] * R[3] + lin[1] * R[4] + lin[2] * R[5];
+        v.steer_trim = g_ssign && g_wsign && !still ? vwire::SteerTrim(o.yaw_cmd, v_al, g_gains) : 0.0;
+    }
+    if (!CallSetVel(body.id, o.v_set, aset)) {
+        g_body_fault = true;
+        Log("[vdrive] FAULT in SetLinearAndAngularVelocity on 0x%06X: the v0.20 corrections from now on", v.key.id);
+        return;
+    }
+    ++v.n_vel;
+    if (g_now < g_trace_until) {
+        const double v_lat = lin[0] * R[0] + lin[1] * R[1] + lin[2] * R[2];
+        const double dv_lat = o.dv[0] * R[0] + o.dv[1] * R[1] + o.dv[2] * R[2];
+        Log("[vdrive] trace: e along %+.3f lat %+.3f up %+.3f yaw %+.2f deg ang %.1f; up z ours %.3f target %.3f; w ours %+.3f owner %+.3f set dw %+.3f (world x %+.2f y "
+            "%+.2f); v lat %+.2f dv lat %+.3f; speed %.1f; yaw cmd %+.2f deg, steer trim %+.3f (sign %d)",
+            e_al, e_lat, e_up, yaw_err * 57.29577951308232, ang, R[8], target.rot.m[2][2], static_cast<double>(fi.w_now_z), static_cast<double>(tyaw_rate),
+            static_cast<double>(o.dw), static_cast<double>(angw[0]), static_cast<double>(angw[1]), v_lat, dv_lat, ours, o.yaw_cmd * 57.29577951308232, v.steer_trim,
+            g_ssign);
+    }
+    if (step_on || g_now < g_step.log_until) {
+        const double v_al = lin[0] * R[3] + lin[1] * R[4] + lin[2] * R[5], v_lat = lin[0] * R[0] + lin[1] * R[1] + lin[2] * R[2];
+        const double dv_al = o.dv[0] * R[3] + o.dv[1] * R[4] + o.dv[2] * R[5], dv_lat = o.dv[0] * R[0] + o.dv[1] * R[1] + o.dv[2] * R[2];
+        const double t_al = tvel[0] * R[3] + tvel[1] * R[4] + tvel[2] * R[5];
+        Log("[vdrive] step %+.0f ms: error along %+.3f lateral %+.3f m yaw %+.2f deg; ours along %.2f lateral %+.2f (owner %.2f) m/s; set dv along %+.3f lateral "
+            "%+.3f m/s, dw %+.3f; bias (%.2f, %.2f)",
+            g_now - g_step.t0, e_al, e_lat, yaw_err * 57.29577951308232, v_al, v_lat, t_al, dv_al, dv_lat, static_cast<double>(o.dw), v.bias[0], v.bias[1]);
     }
 }
 
@@ -1399,6 +1771,7 @@ void Measure(Veh& v, const WorldTransform& xf) {
             if (!std::isfinite(c) || std::fabs(c) > 199.0f) c = 0;
         if (!std::isfinite(v.avel[2]) || std::fabs(v.avel[2]) > 49.0f) v.avel[2] = 0;
         v.speed_mps = std::sqrt(static_cast<double>(v.vel[0]) * v.vel[0] + static_cast<double>(v.vel[1]) * v.vel[1] + static_cast<double>(v.vel[2]) * v.vel[2]);
+        v.fd_speed = v.speed_mps;
         v.meas_last = xf;
         v.meas_ms = g_now;
         v.rest.Update(v.speed_mps, g_now);
@@ -1420,6 +1793,24 @@ bool FillFrame(Veh& v, std::uintptr_t e, const WorldTransform& xf, vwire::DriveT
     vwire::QuatFromRows(Rows(xf), f.quat);
     std::memcpy(f.vel, v.vel, sizeof(f.vel));
     std::memcpy(f.avel, v.avel, sizeof(f.avel));
+    if (!g_legacy && !v.body_vel_bad && !g_body_fault) {
+        // v0.21: the chassis body's own velocities, read now (v0.20 sent the previous tick's finite difference: a frame with
+        // an odd step gave a spike, play test 3's false crash exit)
+        BodyRef br;
+        float lin[3], angw[3];
+        if (FindBody(e, &br) && ReadBody(br, lin, angw)) {
+            std::memcpy(f.vel, lin, sizeof(f.vel));
+            // the yaw rate as v0.20 sent it (counter-clockwise about z), from the body once its sign is known
+            if (g_wsign) f.avel[0] = f.avel[1] = 0, f.avel[2] = static_cast<float>(g_wsign) * angw[2];
+            f.flags |= vwire::kDrvPhysVel;
+        }
+    }
+    if (type == vwire::DriveType::drive && g_spike_dv != 0) {
+        // hidden tests (vehicle_drive 10): one frame's velocity off by dv (x), as play test 3's odd frame
+        f.vel[0] += static_cast<float>(g_spike_dv);
+        Log("[vdrive] test: this drive frame's velocity x %+.1f m/s (one frame)", g_spike_dv);
+        g_spike_dv = 0;
+    }
     std::int32_t st = 0;
     if (mem::Rd(e + kVRideState, st) && st >= 0 && st <= 15) f.ride_state = static_cast<std::uint8_t>(st);
     if (type == vwire::DriveType::drive) f.flags |= vwire::kDrvSeated;
@@ -1679,7 +2070,8 @@ void FollowTick(const TickIn& in) {
         double f = 0;
         const bool have = in.have_play && partner_owner && Bracket(v.track, in.play_ms, &a, &b, &f);
         const bool stale = have && in.play_ms - v.track.back().key > 300;
-        const bool ended = have && (in.play_ms - v.track.back().key > 1500 || (v.release_detach_ms > 0 && g_now >= v.release_detach_ms) ||
+        const bool carried_on = u && u->unit && g_carried_unit.load(std::memory_order_relaxed) == u->unit;
+        const bool ended = have && (in.play_ms - v.track.back().key > (carried_on ? vwire::kStallEndCarriedMs : vwire::kStallEndMs) || (v.release_detach_ms > 0 && g_now >= v.release_detach_ms) ||
                                     (v.have_park && v.park.key > v.track.back().key && in.play_ms >= v.park.key));
         const bool want = have && !ended && !local_on_it && u && u->entity && (v.block || !stale);
         if (v.block && (!want || !u || u->unit != v.ctl_unit || u->entity != v.ctl_entity || !EntityLive(v.ctl_unit, v.ctl_entity, v.key.kind))) {
@@ -1700,6 +2092,69 @@ void FollowTick(const TickIn& in) {
         if (!v.block || !have) continue;
         // two frames more than 0.5 s apart are not one motion (a gap in the partner's frames): the later one stands
         if (b->key - a->key > 500) a = b, f = 0;
+        const bool v021 = !g_legacy && (g_groups_ok & kGBody) && !g_body_fault;
+        if (v021) {
+            // v0.21: the inputs of the frame nearest to the play time (+ the lead): v0.20's frame at or before it applied them
+            // half a frame late on average (0.2 m behind at 11 m/s, runs 20261120-151404 / -151847)
+            std::uint8_t inputs[vwire::kDriveInputBytes];
+            // v0.21: our Sam carried on it and the frames stalled (a link hiccup): the newest frame's inputs a little longer
+            // (the driver most likely kept going), then an idle driver (it rolls to a stop); never detached before
+            // kStallEndCarriedMs
+            if (stale && carried_on && in.play_ms - v.track.back().key <= vwire::kStallHoldInputsMs) {
+                std::memcpy(inputs, v.track.back().f.input, sizeof(inputs));
+            } else if (stale) {
+                IdleInputs(inputs);
+            } else {
+                const Frm* ia = nullptr;
+                const Frm* ib = nullptr;
+                double fi = 0;
+                const Frm* src = a;
+                if (Bracket(v.track, in.play_ms + g_in_lead_ms, &ia, &ib, &fi) && ia && ib) src = fi >= 0.5 ? ib : ia;
+                std::memcpy(inputs, src->f.input, sizeof(inputs));
+                if (g_ssign && v.steer_trim != 0) {
+                    // the controller's steering trim on the steering axis (+0x0C = data + 4)
+                    float stv = 0;
+                    std::memcpy(&stv, inputs + 4, 4);
+                    double ns = stv + g_ssign * v.steer_trim;
+                    ns = ns > 1 ? 1 : ns < -1 ? -1 : ns;
+                    stv = static_cast<float>(ns);
+                    std::memcpy(inputs + 4, &stv, 4);
+                }
+            }
+            WriteInputs(v.block, inputs);
+            if (stale) continue;
+            // the target: Hermite between the frames (their velocities the tangents); past the newest frame (late or lost
+            // frames) dead reckoning from it for up to 250 ms, never held
+            WorldTransform target{};
+            float tvel[3];
+            float tyaw = 0;
+            const Frm& nf = v.track.back();
+            const double beyond = in.play_ms - nf.key;
+            if (beyond > 0 && a == &nf) {
+                double p[3];
+                const double np[3] = {nf.f.pos[0], nf.f.pos[1], nf.f.pos[2]};
+                vwire::Extrapolate(np, nf.f.vel, beyond, p);
+                target = XfOfFrame(nf.f);
+                const double t = (std::min)(beyond, vwire::kExtrapolateMaxMs) / 1000.0;
+                if (std::isfinite(nf.f.avel[2]) && std::fabs(nf.f.avel[2]) < 10.0f) RotateYaw(target, static_cast<double>(nf.f.avel[2]) * t);
+                target.pos.x = p[0], target.pos.y = p[1], target.pos.z = p[2];
+                std::memcpy(tvel, nf.f.vel, sizeof(tvel));
+                tyaw = nf.f.avel[2];
+                ++v.n_extrap;
+                v.extrap_max_ms = (std::max)(v.extrap_max_ms, beyond);
+            } else {
+                target = Lerp(a->f, b->f, f);
+                const double pa[3] = {a->f.pos[0], a->f.pos[1], a->f.pos[2]}, pb[3] = {b->f.pos[0], b->f.pos[1], b->f.pos[2]};
+                double p[3];
+                vwire::HermitePos(pa, a->f.vel, pb, b->f.vel, (b->key - a->key) / 1000.0, f, p);
+                target.pos.x = p[0], target.pos.y = p[1], target.pos.z = p[2];
+                for (int k = 0; k < 3; ++k) tvel[k] = static_cast<float>(a->f.vel[k] + (b->f.vel[k] - a->f.vel[k]) * f);
+                tyaw = static_cast<float>(a->f.avel[2] + (b->f.avel[2] - a->f.avel[2]) * f);
+            }
+            DriveCorrect(v, *u, target, tvel, tyaw);
+            ApplyState(v, u->unit, u->entity, a->f);
+            continue;
+        }
         // inputs at the play time (the frame at or before it); stale frames: an idle driver
         std::uint8_t inputs[vwire::kDriveInputBytes];
         if (stale) IdleInputs(inputs);
@@ -1847,10 +2302,209 @@ void MeasureTick(const TickIn& in) {
         WorldTransform xf{};
         if (!ReadXf(u.entity, xf)) continue;
         Measure(vv, xf);
+        const float fd_yaw = vv.meas_ms == g_now ? vv.avel[2] : std::numeric_limits<float>::quiet_NaN();
+        if (!g_legacy && !vv.body_vel_bad && !g_body_fault && (driving || vv.block)) {
+            // v0.21: the chassis body's velocity for what we drive and what we follow (the seat lead, the ride's carry lead, the
+            // rest detector's speed); checked against the measured one: over 3 m/s apart for 2 s, the body read is not trusted
+            BodyRef br;
+            float lin[3], angw[3];
+            if (FindBody(u.entity, &br) && ReadBody(br, lin, angw)) {
+                const double bs = std::sqrt(static_cast<double>(lin[0]) * lin[0] + static_cast<double>(lin[1]) * lin[1] + static_cast<double>(lin[2]) * lin[2]);
+                if (std::fabs(bs - vv.fd_speed) > 3.0) {
+                    if (vv.body_disagree_since == 0) vv.body_disagree_since = g_now;
+                    else if (g_now - vv.body_disagree_since > 2000) {
+                        vv.body_vel_bad = true;
+                        Log("[vdrive] %s 0x%06X: its chassis body says %.1f m/s, its transform %.1f m/s for 2 s: the measured velocities for it from now on",
+                            vwire::KindName(vv.key.kind), vv.key.id, bs, vv.fd_speed);
+                    }
+                } else {
+                    vv.body_disagree_since = 0;
+                }
+                NoteYawSample(fd_yaw, angw[2]);
+                {
+                    // the steering axis the vehicle uses now (ours driven by our Sam, or our follower's replayed one)
+                    const std::uintptr_t inp = mem::Q(u.entity + kVInput);
+                    float st = 0;
+                    const double v_al = lin[0] * xf.rot.m[1][0] + lin[1] * xf.rot.m[1][1] + lin[2] * xf.rot.m[1][2];
+                    if (inp && mem::Rd(inp + 0x0C, st)) NoteSteerSample(st, fd_yaw, v_al);
+                }
+                if (!vv.body_vel_bad) {
+                    std::memcpy(vv.vel, lin, sizeof(vv.vel));
+                    if (g_wsign) vv.avel[0] = vv.avel[1] = 0, vv.avel[2] = static_cast<float>(g_wsign) * angw[2];
+                    vv.speed_mps = bs;
+                    vv.body_vel = true;
+                }
+            }
+        }
         if (g_role == 2 && WeOwn(vv) && g_now - vv.place_note_ms > 1000) {
             vv.place_note_ms = g_now;
             vshare::NoteHostPlace(vv.key.id, xf);  // the host follows us: the table entry moves with it
         }
+    }
+}
+
+// ---------------------------------------------------------------- hidden tests: the owner's autopilot (vehicle_drive 12)
+// Play test 3's road (the guest's own "[vehicle] ours" places, host 186 - 572 s): from the parking spot by the start
+// area's garage up to z 366 and down a gentle slope to z 325 (the two passenger ejections were on its downhill). The
+// owner's virtual pad (automation only) steers toward the next point and holds a speed; at the end it brakes, puts the
+// vehicle back at the start (the game's vehicle teleport, heading along the road) and drives the next lap.
+constexpr double kRoute[][3] = {
+    {-1220.6, 284.9, 361.3}, {-1250.0, 286.2, 360.2}, {-1262.6, 289.7, 359.6}, {-1281.2, 301.7, 359.1}, {-1298.5, 316.0, 359.0},
+    {-1309.0, 335.9, 359.5}, {-1317.8, 356.8, 360.9}, {-1321.6, 369.1, 362.0}, {-1324.6, 373.9, 362.8}, {-1335.1, 387.2, 365.1},
+    {-1340.2, 408.1, 366.2}, {-1340.9, 430.1, 365.6}, {-1348.1, 450.7, 363.6}, {-1367.5, 460.7, 361.4}, {-1385.6, 473.7, 358.6},
+    {-1392.8, 476.2, 357.5}, {-1403.6, 477.8, 355.7}, {-1411.6, 476.5, 354.3}, {-1425.0, 471.4, 351.7}, {-1435.7, 463.3, 349.1},
+    {-1446.4, 444.2, 343.9}, {-1445.9, 422.3, 338.1}, {-1446.3, 414.8, 336.4}, {-1448.2, 403.1, 334.7}, {-1450.7, 393.7, 334.1},
+    {-1465.3, 384.7, 332.0}, {-1487.1, 379.6, 326.6}, {-1499.2, 379.5, 324.6},
+};
+constexpr int kRouteN = static_cast<int>(sizeof(kRoute) / sizeof(kRoute[0]));
+// The points as a smooth path (Catmull-Rom, a point every ~2 m): the autopilot follows it by pure pursuit (hidden run
+// 20261120-155755 went off the elevated road between two of the raw points).
+struct PathPt {
+    double x, y, s;
+};
+std::vector<PathPt> g_path;
+void BuildPath() {
+    if (!g_path.empty()) return;
+    for (int i = 0; i + 1 < kRouteN; ++i) {
+        const double* p0 = kRoute[i > 0 ? i - 1 : 0];
+        const double* p1 = kRoute[i];
+        const double* p2 = kRoute[i + 1];
+        const double* p3 = kRoute[i + 2 < kRouteN ? i + 2 : kRouteN - 1];
+        const double len = std::sqrt((p2[0] - p1[0]) * (p2[0] - p1[0]) + (p2[1] - p1[1]) * (p2[1] - p1[1]));
+        const int n = (std::max)(1, static_cast<int>(len / 2.0));
+        for (int k = 0; k < n; ++k) {
+            const double t = static_cast<double>(k) / n, t2 = t * t, t3 = t2 * t;
+            PathPt q{};
+            q.x = 0.5 * (2 * p1[0] + (-p0[0] + p2[0]) * t + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * t2 + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * t3);
+            q.y = 0.5 * (2 * p1[1] + (-p0[1] + p2[1]) * t + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * t2 + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * t3);
+            g_path.push_back(q);
+        }
+    }
+    g_path.push_back(PathPt{kRoute[kRouteN - 1][0], kRoute[kRouteN - 1][1], 0});
+    for (std::size_t i = 1; i < g_path.size(); ++i)
+        g_path[i].s = g_path[i - 1].s + std::sqrt((g_path[i].x - g_path[i - 1].x) * (g_path[i].x - g_path[i - 1].x) + (g_path[i].y - g_path[i - 1].y) * (g_path[i].y - g_path[i - 1].y));
+}
+std::size_t PathAt(std::size_t from, double ahead_m) {
+    std::size_t i = from;
+    while (i + 1 < g_path.size() && g_path[i].s - g_path[from].s < ahead_m) ++i;
+    return i;
+}
+struct AutoPilot {
+    bool on = false;
+    double speed = 11;
+    std::size_t pi = 0;                        // progress on g_path
+    int laps = 1, lap = 0, wp = 1, phase = 0;  // 0 drive, 1 brake at the end, 2 placed at the start (settling)
+    double phase_ms = 0, log_ms = 0, lap_ms = 0;
+    bool wait_logged = false;
+    double steer_sign = 1.0;
+    double weave = 0, weave_period_s = 3, weave_t0 = 0;  // vehicle_drive 21: a slalom added to the steering (the passenger pose test)
+};
+AutoPilot g_auto;
+WorldTransform PlaceXf(int place) noexcept {
+    // 1 the route's start, 2 the top of play test 3's downhill, 3 its bottom; heading along the road
+    const int i = place == 2 ? 18 : place == 3 ? 22 : 0;
+    const double* p = kRoute[i];
+    const double* q = kRoute[i + 1];
+    double fx = q[0] - p[0], fy = q[1] - p[1];
+    const double n = std::sqrt(fx * fx + fy * fy);
+    fx /= n, fy /= n;
+    WorldTransform t{};
+    t.pos.x = p[0], t.pos.y = p[1], t.pos.z = p[2] + 0.6;
+    t.rot.m[0][0] = static_cast<float>(fy), t.rot.m[0][1] = static_cast<float>(-fx), t.rot.m[0][2] = 0;
+    t.rot.m[1][0] = static_cast<float>(fx), t.rot.m[1][1] = static_cast<float>(fy), t.rot.m[1][2] = 0;
+    t.rot.m[2][0] = 0, t.rot.m[2][1] = 0, t.rot.m[2][2] = 1;
+    return t;
+}
+void AutoPad(double steer, double throttle, double brake) noexcept {
+    overlay::input::PadState p;
+    p.connected = true;
+    steer = steer > 1 ? 1 : steer < -1 ? -1 : steer;
+    p.lx = static_cast<std::int16_t>(steer * 32767);
+    p.rt = static_cast<std::uint8_t>((throttle < 0 ? 0 : throttle > 1 ? 1 : throttle) * 255);
+    p.lt = static_cast<std::uint8_t>((brake < 0 ? 0 : brake > 1 ? 1 : brake) * 255);
+    overlay::input::SetVirtualPad(p);
+}
+void AutoTick() {
+    if (!g_auto.on) return;
+    if (!g_drive.on) {
+        AutoPad(0, 0, 0);
+        if (!g_auto.wait_logged) Log("[vdrive] autopilot: waiting for our Sam to drive");
+        g_auto.wait_logged = true;
+        return;
+    }
+    WorldTransform xf{};
+    if (!ReadXf(g_drive.entity, xf)) return;
+    const Veh* v = FindV(g_drive.key.id);
+    const double speed = v ? v->speed_mps : 0;
+    if (g_auto.phase == 2) {
+        AutoPad(0, 0, 0);
+        if (g_now - g_auto.phase_ms > 3000) {
+            g_auto.phase = 0, g_auto.wp = 1, g_auto.pi = 0, g_auto.lap_ms = g_now;
+            Log("[vdrive] autopilot: lap %d of %d starts", g_auto.lap + 1, g_auto.laps);
+        }
+        return;
+    }
+    if (g_auto.phase == 1) {
+        AutoPad(0, 0, 1);
+        if (speed < 0.5 && g_now - g_auto.phase_ms > 800) {
+            ++g_auto.lap;
+            Log("[vdrive] autopilot: lap %d of %d done in %.1f s", g_auto.lap, g_auto.laps, (g_now - g_auto.lap_ms) / 1000.0);
+            if (g_auto.lap >= g_auto.laps) {
+                g_auto.on = false;
+                AutoPad(0, 0, 0);
+                static unsigned runs = 0;
+                Log("[vdrive] autopilot: done (#%u)", ++runs);  // "#n" counts per game (a scenario's waitlog matches the whole log)
+                return;
+            }
+            const WorldTransform t = PlaceXf(1);
+            const bool ok = vshare::RequestTeleport(g_drive.entity, t);
+            Log("[vdrive] autopilot: %s 0x%06X back at the start %s", vwire::KindName(g_drive.key.kind), g_drive.key.id, ok ? "(teleport requested)" : "FAILED");
+            g_auto.phase = 2, g_auto.phase_ms = g_now;
+        }
+        return;
+    }
+    // drive: the nearest path point ahead of the progress, a pursuit point 6..14 m further on; slower before bends
+    BuildPath();
+    {
+        double best = 1e18;
+        std::size_t bi = g_auto.pi;
+        for (std::size_t i = g_auto.pi; i < g_path.size() && i < g_auto.pi + 40; ++i) {
+            const double ex = g_path[i].x - xf.pos.x, ey = g_path[i].y - xf.pos.y;
+            if (ex * ex + ey * ey < best) best = ex * ex + ey * ey, bi = i;
+        }
+        g_auto.pi = bi;
+    }
+    const std::size_t last = g_path.size() - 1;
+    const double to_end = g_path[last].s - g_path[g_auto.pi].s;
+    if (to_end < 6.0) {
+        g_auto.phase = 1, g_auto.phase_ms = g_now;
+        Log("[vdrive] autopilot: the end of the road, braking at %.1f m/s", speed);
+        AutoPad(0, 0, 1);
+        return;
+    }
+    const std::size_t ti = PathAt(g_auto.pi, (std::min)(14.0, (std::max)(6.0, speed * 0.9)));
+    const double dx = g_path[ti].x - xf.pos.x, dy = g_path[ti].y - xf.pos.y;
+    const double d = std::sqrt(dx * dx + dy * dy);
+    g_auto.wp = static_cast<int>(g_auto.pi);
+    const double fx = xf.rot.m[1][0], fy = xf.rot.m[1][1];
+    const double herr = std::atan2(fx * dy - fy * dx, fx * dx + fy * dy);  // > 0: the point is to the left
+    const double steer = -g_auto.steer_sign * 2.0 * herr +
+                         (g_auto.weave > 0 ? g_auto.weave * std::sin(6.283185307179586 * (g_now - g_auto.weave_t0) / 1000.0 / g_auto.weave_period_s) : 0.0);
+    // the bend ahead: the path's heading change over the next 25 m
+    const std::size_t a1 = (std::min)(g_auto.pi + 1, last), b0 = PathAt(g_auto.pi, 25.0), b1 = (std::min)(b0 + 1, last);
+    const double h0 = std::atan2(g_path[a1].y - g_path[g_auto.pi].y, g_path[a1].x - g_path[g_auto.pi].x);
+    const double h1 = std::atan2(g_path[b1].y - g_path[b0].y, g_path[b1].x - g_path[b0].x);
+    const double bend = std::fabs(vwire::WrapPi(h1 - h0));
+    const double want = g_auto.speed * (std::max)(0.45, (std::min)(1.0, 1.0 - bend / 1.2 - std::fabs(herr) / 1.5));
+    const double throttle = (std::min)(1.0, 0.55 + 0.35 * (want - speed));
+    const double brake = speed > want + 3 ? 0.3 * (speed - want - 3) : 0;
+    AutoPad(steer, brake > 0 ? 0 : throttle, brake);
+    if (g_now - g_auto.log_ms >= 1000) {
+        g_auto.log_ms = g_now;
+        Log("[vdrive] autopilot: lap %d at %.0f of %.0f m of the road, pursuit point %.1f m ahead, heading error %+.1f deg, bend %.0f deg; %.1f m/s (want %.1f), "
+            "steer %+.2f throttle %.2f brake %.2f; at (%.1f, %.1f, %.1f)",
+            g_auto.lap + 1, g_path[g_auto.pi].s, g_path[last].s, d, herr * 57.29577951308232, bend * 57.29577951308232, speed, want, steer, throttle, brake, xf.pos.x,
+            xf.pos.y, xf.pos.z);
     }
 }
 
@@ -1888,6 +2542,7 @@ void TickBody(const TickIn& in, double now) {
         if (kv.second.block && !UnitFor(kv.first)) Detach(kv.second, "the vehicle is gone here");
     DetectLocalDrive(in);
     MeasureTick(in);
+    AutoTick();
     OwnershipTick(in);
     PushTick(in);
     FollowTick(in);
@@ -1966,7 +2621,9 @@ void Install(const Config& config) noexcept {
                    mem::Q(A(kVehVt[2]) + 0x110) == A(kSetDriverTruck),
                "the vehicles' SetDriver slot (+0x110)", kGCtl);
     structural(mem::RipTarget(A(kRideOff), 3, 7) == A(kRideOffGlobal), "RideOffVehicleForcibly's global", kGRideOff);
-    g_groups_ok = ~bad & 511u;
+    structural(mem::RipTarget(A(0x141C3439A), 3, 7) == A(kPhysSys) && mem::RipTarget(A(0x141C34428), 3, 7) == A(kPhysSys),
+               "the physics system global 0x14578C140 (SetLinearAndAngularVelocity's and its writer's loads)", kGBody);
+    g_groups_ok = ~bad & 1023u;
     if (bad & kRequired) {
         std::snprintf(g_off, sizeof(g_off), "this game build differs (%s)", first_bad ? first_bad : "byte check");
         Log("[vdrive] remote driving OFF: %s; the vehicles stay shared, a partner's driving does not move them here", g_off);
@@ -1991,6 +2648,11 @@ void Install(const Config& config) noexcept {
         (g_groups_ok & kGNative) ? "on" : "OFF", (g_groups_ok & kGNudge) ? "on" : "OFF", (g_groups_ok & kGTouch) ? "on" : "OFF",
         (g_groups_ok & kGLite) ? "on" : "OFF", (g_groups_ok & kGNpc) ? "on" : "OFF", g_native_fx ? 1 : 0,
         g_native_fx ? "the follower's own lamps and sounds only" : "the v0.14 lamp writes and the STA1 vehicle sounds stay on real vehicles");
+    if (g_groups_ok & kGBody)
+        Log("[vdrive] the driven follower: the v0.21 controller (the chassis body's velocities sent and steered every tick; teleports only far / angle / "
+            "stuck / stopped)");
+    else
+        Log("[vdrive] the driven follower's v0.21 controller OFF: this game build differs (the chassis body checks): v0.20's bands and nudge");
 }
 
 bool Active() noexcept { return g_on.load() && vshare::Active(); }
@@ -2143,6 +2805,11 @@ void Tick(const TickIn& in, double now) noexcept {
     if (!vshare::Active()) {
         ResetAll("vehicle sharing stopped");
         return;
+    }
+    static bool body_notice = false;
+    if (!body_notice && !(g_groups_ok & kGBody) && coop::Active()) {
+        body_notice = true;
+        coop::SetVehicleNotice("Shared vehicles: the smooth follower is off (this game build differs): v0.20's corrections.", true, now + 30000);
     }
     if (!TickGuarded(in, now)) {
         Log("[vdrive] FAULT in the remote driving tick: stopped");
@@ -2343,7 +3010,7 @@ bool PartnerDriving(DrivenView* out) noexcept {
     return false;
 }
 
-bool FrameAtPlay(std::uint32_t host_id, double play_ms, float (&vel)[3], double* key_ms) noexcept {
+bool FrameAtPlay(std::uint32_t host_id, double play_ms, float (&vel)[3], double* key_ms, float* speed_kmh) noexcept {
     const Veh* v = FindV(host_id);
     if (!v || v->track.empty()) return false;
     const Frm* a = nullptr;
@@ -2352,7 +3019,20 @@ bool FrameAtPlay(std::uint32_t host_id, double play_ms, float (&vel)[3], double*
     if (!Bracket(v->track, play_ms, &a, &b, &f) || !a) return false;
     std::memcpy(vel, a->f.vel, sizeof(vel));
     if (key_ms) *key_ms = a->key;
+    if (speed_kmh) *speed_kmh = (g_groups_ok & kGState) ? a->f.speed_kmh : -1.0f;
     return true;
+}
+
+bool RecentTeleport(std::uintptr_t entity, double within_ms, game::WorldTransform* target, double* age_ms) noexcept {
+    if (!Active() || !entity) return false;
+    for (auto& kv : g_veh) {
+        const Veh& v = kv.second;
+        if (v.tp_req_entity != entity || g_now - v.tp_req_ms > within_ms) continue;
+        if (target) *target = v.tp_req_xf;
+        if (age_ms) *age_ms = g_now - v.tp_req_ms;
+        return true;
+    }
+    return false;
 }
 
 bool PartnerDrivenEntity(std::uintptr_t* entity) noexcept {
@@ -2475,8 +3155,89 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept 
                                                             indoor ? game::TeleportMode::place : game::TeleportMode::snap_to_ground, why, sizeof(why));
             return std::snprintf(msg, cap, "our Sam %.1f m left of the partner's vehicle at (%.2f, %.2f): %s", side, vx.pos.x, vx.pos.y, why), ok;
         }
+        case 10:
+            // hidden tests: the next DRIVE frame's velocity x off by v[1] m/s (one odd frame, as play test 3's false crash)
+            if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden runs only"), false;
+            g_spike_dv = v[1] != 0 ? v[1] : 9.8;
+            return std::snprintf(msg, cap, "the next drive frame's velocity x %+.1f m/s", g_spike_dv), true;
+        case 11:
+            // hidden tests: the follower's target moved v[1] m forward and v[2] m right for 1.5 s (the controller's step
+            // response, logged every tick until 2 s after)
+            if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden runs only"), false;
+            g_step.fwd = v[1], g_step.lat = v[2], g_step.t0 = g_now, g_step.until = g_now + 1500, g_step.log_until = g_now + 3500;
+            Log("[vdrive] step: the follower's target %+.2f m forward, %+.2f m right for 1.5 s", v[1], v[2]);
+            return std::snprintf(msg, cap, "step %+.2f m forward %+.2f m right", v[1], v[2]), true;
+        case 12:
+            // hidden tests: the owner's autopilot on play test 3's road: v[1] m/s (0 = off), v[2] laps (0 = 1)
+            if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden runs only"), false;
+            if (v[1] <= 0) {
+                g_auto.on = false;
+                AutoPad(0, 0, 0);
+                return std::snprintf(msg, cap, "autopilot off"), true;
+            }
+            g_auto = AutoPilot{};
+            g_auto.on = true, g_auto.speed = v[1], g_auto.laps = v[2] >= 1 ? static_cast<int>(v[2]) : 1, g_auto.lap_ms = g_now;
+            Log("[vdrive] autopilot: %.1f m/s, %d lap(s) of play test 3's road (%d points)", g_auto.speed, g_auto.laps, kRouteN);
+            return std::snprintf(msg, cap, "autopilot %.1f m/s, %d lap(s)", g_auto.speed, g_auto.laps), true;
+        case 13:
+            g_legacy = v[1] != 0;
+            Log("[vdrive] the driven follower: %s", g_legacy ? "v0.20's (lerp target, sample-and-hold inputs, bands and nudge, measured velocities in the frames)"
+                                                                 : "v0.21's controller");
+            return std::snprintf(msg, cap, "follower %s", g_legacy ? "v0.20 (legacy)" : "v0.21"), true;
+        case 14: {
+            // hidden tests: the vehicle our Sam drives (else the nearest within 30 m) put at place v[1] (1 the road's start, 2 the
+            // top of the downhill, 3 its bottom), heading along the road (the game's vehicle teleport)
+            if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden runs only"), false;
+            std::uintptr_t e = g_drive.on ? g_drive.entity : 0;
+            if (!e) {
+                WorldTransform sam{};
+                double bd = 30;
+                if (g_local && ReadXf(reinterpret_cast<std::uintptr_t>(g_local), sam))
+                    for (const vshare::Unit& u : g_units)
+                        if (u.entity && u.has_xf && Dist3(u.xf, sam) < bd) bd = Dist3(u.xf, sam), e = u.entity;
+            }
+            if (!e) return std::snprintf(msg, cap, "no vehicle"), false;
+            const int place = v[1] >= 1 && v[1] <= 3 ? static_cast<int>(v[1]) : 1;
+            const WorldTransform t = PlaceXf(place);
+            const bool ok = vshare::RequestTeleport(e, t);
+            Log("[vdrive] test: our vehicle put at place %d (%.1f, %.1f, %.1f) %s", place, t.pos.x, t.pos.y, t.pos.z, ok ? "requested" : "FAILED");
+            return std::snprintf(msg, cap, "place %d %s", place, ok ? "requested" : "failed"), ok;
+        }
+        case 15:
+            g_in_lead_ms = v[1] >= -100 && v[1] <= 100 ? v[1] : 16.0;
+            return std::snprintf(msg, cap, "inputs of the frame nearest to play time %+.0f ms", g_in_lead_ms), true;
+        case 16:
+            if (v[1] > 0 && v[1] < 20) g_gains.kp = v[1];
+            if (v[2] >= 0 && v[2] < 20) g_gains.ki = v[2];
+            return std::snprintf(msg, cap, "gains kp %.2f ki %.2f kyaw %.2f tau %.3f", g_gains.kp, g_gains.ki, g_gains.kyaw, g_gains.tau_s), true;
+        case 17:
+            if (v[1] >= 0 && v[1] < 20) g_gains.kyaw = v[1];
+            if (v[2] > 0.005 && v[2] < 2) g_gains.tau_s = v[2];
+            return std::snprintf(msg, cap, "gains kp %.2f ki %.2f kyaw %.2f tau %.3f", g_gains.kp, g_gains.ki, g_gains.kyaw, g_gains.tau_s), true;
+        case 19:
+            g_trace_until = g_now + (v[1] > 0 && v[1] < 60 ? v[1] : 5) * 1000.0;
+            return std::snprintf(msg, cap, "trace %.0f s", v[1]), true;
+        case 21:
+            // hidden tests: the autopilot's slalom: v[1] of full lock (0 = off) every v[2] s (the passenger's pose while the driver
+            // steers hard)
+            if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden runs only"), false;
+            g_auto.weave = v[1] > 0 && v[1] <= 1 ? v[1] : 0;
+            g_auto.weave_period_s = v[2] > 0.5 ? v[2] : 3.0;
+            g_auto.weave_t0 = g_now;
+            Log("[vdrive] autopilot: slalom %.2f every %.1f s", g_auto.weave, g_auto.weave_period_s);
+            return std::snprintf(msg, cap, "slalom %.2f every %.1f s", g_auto.weave, g_auto.weave_period_s), true;
+        case 20:
+            g_gains.lat_sign = v[1] < 0 ? -1.0 : 1.0;
+            if (v[2] >= 0 && v[2] < 1.0) g_gains.lat_max_rad = v[2];
+            Log("[vdrive] the sideways pursuit: sign %+.0f, at most %.2f rad", g_gains.lat_sign, g_gains.lat_max_rad);
+            return std::snprintf(msg, cap, "pursuit sign %+.0f max %.2f rad", g_gains.lat_sign, g_gains.lat_max_rad), true;
+        case 18:
+            if (v[1] > 0.05 && v[1] < 5) g_gains.max_dv_mps = v[1];
+            if (v[2] > 0.1 && v[2] < 20) g_gains.max_corr_mps = v[2];
+            return std::snprintf(msg, cap, "max dv %.2f m/s per tick, max correction %.2f m/s", g_gains.max_dv_mps, g_gains.max_corr_mps), true;
     }
-    return std::snprintf(msg, cap, "vehicle_drive: 0 status, 1 vehicles, 2 native 0/1, 3 ignore m, 4 corrections 0/1, 5 native fx 0/1, 6 kind [m] test push, 7 life test, 8 battery"),
+    return std::snprintf(msg, cap, "vehicle_drive: 0 status, 1 vehicles, 2 native 0/1, 3 ignore m, 4 corrections 0/1, 5 native fx 0/1, 6 kind [m] test push, 7 life test, 8 battery, "
+                                   "9 beside, 10 dv spike, 11 fwd lat step, 12 speed laps autopilot, 13 legacy 0/1, 14 place, 15 input lead ms, 16 kp ki, 17 kyaw tau, 18 dv corr, 21 slalom amp period"),
            false;
 }
 

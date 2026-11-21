@@ -1,0 +1,131 @@
+# Fragile's accessories (docs/real-partner-body.md section 26.7): the drawn-vs-anchor meter on both games (`self_view 15 1`),
+# A = v0.20's placement (`self_view 14 0`), B = v0.21's (`self_view 14 3`: the self view's props also placed in the self body's
+# own update, the tick's placement extrapolated one frame), the same moves in each phase: the guest's Fragile runs, stops and
+# turns on foot, then drives the truck. Two games on the launcher's Local test files (30 fps, host_save=1). Evidence: the
+# `[gear] drawn vs anchor self|partner` lines (self = the guest's BB pod on her own screen, partner = the host's view of her
+# props), the screenshots of the guest's own screen (the pod on her chest) and of the host's.
+# pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-gear-twitch -SeedSaves complete-100 -GuestSeed profile-only
+role host
+graphics low
+timeout 360
+launcherini local-test
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[config\] host_save=1
+@guest waitlog 10 \[config\] host_save=1
+wait 22000
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+@guest waitlog 60 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+@guest action gear 14 15 1
+@guest action gear 14 13 1
+@both action self_view 15 1
+wait 5000
+until 60 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+pad none 1200 ly=32767
+pad none 1300 rx=32767
+wait 1500
+# ---- phase A: v0.20
+@both action self_view 14 0
+@guest log gear phase A foot
+@guest pad none 1500 lx=32767
+@guest pad none 500
+@guest pad none 1500 lx=-32767
+@guest pad none 600 ly=32767
+@guest pad none 600 ly=-32767
+@guest pad none 600 lx=32767
+@guest pad none 600 lx=-32767
+@guest pad none 400
+@guest pad none 1 lx=-32767 keep
+@guest wait 700
+@guest screenshot A1-guest-self-run
+screenshot A1-host-sees-guest-run
+@guest screenshot A1b-guest-self-run
+@guest pad none 0
+@guest screenshot A1c-guest-self-stop
+@guest wait 150
+@guest screenshot A1d-guest-self-stopped
+@guest pad none 1 lx=32767 keep
+@guest wait 250
+@guest screenshot A1e-guest-self-turn
+@guest wait 500
+@guest pad none 0
+@guest pad none 1200 lx=20000 ly=20000
+@guest pad none 1500 lx=18000
+@guest wait 500
+@guest log gear phase A host moves
+pad none 1200 ly=32767
+pad none 400
+pad none 1200 ly=-32767
+wait 800
+# ---- phase B: v0.21
+@both action self_view 14 3
+@guest log gear phase B foot
+@guest pad none 1500 lx=32767
+@guest pad none 500
+@guest pad none 1500 lx=-32767
+@guest pad none 600 ly=32767
+@guest pad none 600 ly=-32767
+@guest pad none 600 lx=32767
+@guest pad none 600 lx=-32767
+@guest pad none 400
+@guest pad none 1 lx=-32767 keep
+@guest wait 700
+@guest screenshot B1-guest-self-run
+screenshot B1-host-sees-guest-run
+@guest screenshot B1b-guest-self-run
+@guest pad none 0
+@guest screenshot B1c-guest-self-stop
+@guest wait 150
+@guest screenshot B1d-guest-self-stopped
+@guest pad none 1 lx=32767 keep
+@guest wait 250
+@guest screenshot B1e-guest-self-turn
+@guest wait 500
+@guest pad none 0
+@guest pad none 1200 lx=-20000 ly=20000
+@guest pad none 1500 lx=-18000
+@guest wait 500
+@guest log gear phase B host moves
+pad none 1200 ly=32767
+pad none 400
+pad none 1200 ly=-32767
+wait 800
+# ---- the guest drives the truck: A then B
+@both action self_view 14 0
+@guest log gear phase A drives
+@guest action vehicle_sync 8 1.8 2
+action vehicle_sync 8 8 2
+wait 1500
+@guest until 20 4000 \[vdrive\] guest: our Sam drives truck => pad X 150
+waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached
+wait 1500
+@guest pad none 1 rt=255 keep
+wait 2500
+@guest screenshot A2-guest-self-driving
+@guest pad none 1 rt=255 lx=15000 keep
+wait 1500
+@both action self_view 14 3
+@guest log gear phase B drives
+@guest pad none 1 rt=255 lx=-15000 keep
+wait 1500
+@guest pad none 1 rt=255 keep
+wait 2000
+@guest screenshot B2-guest-self-driving
+@guest pad none 1 lt=255 keep
+wait 2000
+@guest pad none 0
+wait 800
+@both action log_status
+@guest quit
+wait 3000
+quit

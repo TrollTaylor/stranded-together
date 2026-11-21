@@ -21,7 +21,7 @@ std::uint32_t GetU32(const std::uint8_t* p) noexcept {
 
 bool ReasonOk(MsgType t, std::uint8_t r) noexcept {
     switch (t) {
-        case MsgType::request: return r == kReqHold || r == kReqTest || r == kReqNative;
+        case MsgType::request: return r == kReqHold || r == kReqTest || r == kReqNative || r == kReqResume;
         case MsgType::accept: return r == 0;
         case MsgType::deny: return r < static_cast<std::uint8_t>(Deny::count);
         case MsgType::end: return r < static_cast<std::uint8_t>(End::count);
@@ -203,7 +203,7 @@ End ForcedExit(const ForcedIn& in) noexcept {
     if (in.world_changed) return End::world;
     if (in.taken) return End::taken;
     if (in.saving) return End::saving;
-    if (in.link_silent_ms > kLinkSilentMs) return End::link;
+    if (in.link_silent_ms > kLinkSilentMs && (in.link_lost || in.link_silent_ms > kLinkSilentCarriedMs)) return End::link;
     if (in.driver_ended) return End::driver_ended;
     if (!in.vehicle_live) return End::vehicle_gone;
     if (in.broken) return End::broken;
@@ -252,6 +252,75 @@ double CrashDetector::Update(const float (&vel)[3], double key_ms) noexcept {
     key_ = key_ms;
     std::memcpy(vel_, vel, sizeof(vel_));
     return dv > kCrashDvMps ? dv : 0;
+}
+
+namespace {
+float Median(float* v, int n) noexcept {
+    for (int i = 1; i < n; ++i)
+        for (int j = i; j > 0 && v[j] < v[j - 1]; --j) std::swap(v[j], v[j - 1]);
+    return n % 2 ? v[n / 2] : 0.5f * (v[n / 2 - 1] + v[n / 2]);
+}
+}  // namespace
+
+double CrashConfirm::Update(const float (&vel)[3], float speed_kmh, double key_ms) noexcept {
+    if (!std::isfinite(vel[0]) || !std::isfinite(vel[1]) || !std::isfinite(key_ms)) return 0;
+    if (n_ > 0 && key_ms <= s_[n_ - 1].key) return 0;
+    // the one-frame jump of v0.20's rule (horizontal), as the candidate
+    if (n_ > 0 && key_ms - s_[n_ - 1].key <= 100.0) {
+        const double dx = vel[0] - s_[n_ - 1].vx, dy = vel[1] - s_[n_ - 1].vy;
+        const double d = std::sqrt(dx * dx + dy * dy);
+        if (d > kCrashDvMps && cand_key_ < -1e17) cand_key_ = key_ms, cand_dv_ = d;
+    }
+    if (n_ == kN) {
+        for (int i = 1; i < kN; ++i) s_[i - 1] = s_[i];
+        --n_;
+    }
+    S& s = s_[n_++];
+    s.key = key_ms;
+    s.vx = vel[0], s.vy = vel[1];
+    s.kmh = std::isfinite(speed_kmh) && speed_kmh >= 0 ? std::fabs(speed_kmh) : -1.0f;
+    // forget what is older than the windows
+    int drop = 0;
+    while (drop < n_ - 1 && s_[drop].key < key_ms - kConfirmBeforeFromMs - 100.0) ++drop;
+    if (drop) {
+        for (int i = drop; i < n_; ++i) s_[i - drop] = s_[i];
+        n_ -= drop;
+    }
+    float bx[kN], by[kN], bk[kN], ax[kN], ay[kN], ak[kN];
+    int nb = 0, na = 0, nbk = 0, nak = 0;
+    for (int i = 0; i < n_; ++i) {
+        const double age = key_ms - s_[i].key;
+        if (age >= kConfirmBeforeToMs && age <= kConfirmBeforeFromMs) {
+            bx[nb] = s_[i].vx, by[nb] = s_[i].vy, ++nb;
+            if (s_[i].kmh >= 0) bk[nbk++] = s_[i].kmh;
+        } else if (age <= kConfirmAfterMs) {
+            ax[na] = s_[i].vx, ay[na] = s_[i].vy, ++na;
+            if (s_[i].kmh >= 0) ak[nak++] = s_[i].kmh;
+        }
+    }
+    double fired = 0;
+    if (nb >= 2 && na >= 3 && key_ms - fired_key_ >= kConfirmRefireMs) {
+        const double mdx = Median(ax, na) - Median(bx, nb), mdy = Median(ay, na) - Median(by, nb);
+        const double dv = std::sqrt(mdx * mdx + mdy * mdy);
+        bool agree = true;
+        for (int i = n_ - 3; i < n_; ++i)
+            for (int j = i + 1; j < n_; ++j) {
+                const double ex = s_[i].vx - s_[j].vx, ey = s_[i].vy - s_[j].vy;
+                if (std::sqrt(ex * ex + ey * ey) > kConfirmSpreadMps) agree = false;
+            }
+        const bool kmh_known = nbk >= 2 && nak >= 3;
+        const bool kmh_ok = !kmh_known || Median(bk, nbk) - Median(ak, nak) >= kConfirmKmhDrop;
+        if (dv > kCrashDvMps && agree && kmh_ok) {
+            fired = dv;
+            fired_key_ = key_ms;
+            cand_key_ = -1e18;
+        }
+    }
+    if (!fired && cand_key_ > -1e17 && key_ms - cand_key_ > kConfirmWaitMs) {
+        rejected_ = cand_dv_;
+        cand_key_ = -1e18;
+    }
+    return fired;
 }
 
 ExitSpot ExitPlacement(std::uint8_t kind, const double (&pos)[3], const float (&rows)[9], const float (&vel)[3], bool forced) noexcept {

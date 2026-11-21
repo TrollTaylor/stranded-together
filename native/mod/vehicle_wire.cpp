@@ -1102,6 +1102,173 @@ void NudgeVelocity(const double (&err)[3], const float (&measured)[3], double ta
     }
 }
 
+// ---------------------------------------------------------------- the driven follower (v0.21)
+namespace {
+bool VelOk(const float (&v)[3]) noexcept {
+    for (float c : v)
+        if (!std::isfinite(c) || std::fabs(c) > 100.0f) return false;
+    return true;
+}
+double Len3(const double (&v)[3]) noexcept { return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); }
+void ClampLen(double (&v)[3], double max) noexcept {
+    const double n = Len3(v);
+    if (n > max && n > 0)
+        for (double& c : v) c *= max / n;
+}
+}  // namespace
+
+void HermitePos(const double (&pa)[3], const float (&va)[3], const double (&pb)[3], const float (&vb)[3], double h_s, double f,
+                double (&out)[3]) noexcept {
+    if (!(f >= 0)) f = 0;
+    if (f > 1) f = 1;
+    const bool cubic = VelOk(va) && VelOk(vb) && h_s > 0 && h_s < 1.0;
+    if (!cubic) {
+        for (int i = 0; i < 3; ++i) out[i] = pa[i] + (pb[i] - pa[i]) * f;
+        return;
+    }
+    const double f2 = f * f, f3 = f2 * f;
+    const double h00 = 2 * f3 - 3 * f2 + 1, h10 = f3 - 2 * f2 + f, h01 = -2 * f3 + 3 * f2, h11 = f3 - f2;
+    for (int i = 0; i < 3; ++i) out[i] = h00 * pa[i] + h10 * h_s * va[i] + h01 * pb[i] + h11 * h_s * vb[i];
+}
+
+void Extrapolate(const double (&p)[3], const float (&vel)[3], double ahead_ms, double (&out)[3]) noexcept {
+    double t = ahead_ms;
+    if (!(t > 0)) t = 0;
+    if (t > kExtrapolateMaxMs) t = kExtrapolateMaxMs;
+    const bool ok = VelOk(vel);
+    for (int i = 0; i < 3; ++i) out[i] = p[i] + (ok ? vel[i] * t / 1000.0 : 0.0);
+}
+
+double WrapPi(double a) noexcept {
+    if (!std::isfinite(a)) return 0;
+    while (a > 3.141592653589793) a -= 6.283185307179586;
+    while (a < -3.141592653589793) a += 6.283185307179586;
+    return a;
+}
+double YawOfRows(const float (&rows)[9]) noexcept { return std::atan2(static_cast<double>(rows[4]), static_cast<double>(rows[3])); }
+
+void FollowVelocity(const FollowIn& in, const FollowGains& g, double (&bias)[3], FollowOut* out) noexcept {
+    FollowOut o;
+    double dt = in.dt_s;
+    if (!(dt > 0.001)) dt = 0.001;
+    if (dt > 0.1) dt = 0.1;
+    double up[3] = {in.up[0], in.up[1], in.up[2]};
+    const double un = Len3(up);
+    if (!(un > 0.5) || !std::isfinite(un)) up[0] = 0, up[1] = 0, up[2] = 1;
+    else
+        for (double& c : up) c /= un;
+    auto horiz = [&](const double (&v)[3], double (&h)[3]) {
+        const double d = v[0] * up[0] + v[1] * up[1] + v[2] * up[2];
+        for (int i = 0; i < 3; ++i) h[i] = v[i] - d * up[i];
+    };
+    double e[3] = {in.err[0], in.err[1], in.err[2]};
+    for (double& c : e)
+        if (!std::isfinite(c)) c = 0;
+    // our forward and right axes in the plane of our up axis
+    double f[3] = {in.fwd[0], in.fwd[1], in.fwd[2]};
+    horiz(f, f);
+    double fn = Len3(f);
+    if (!(fn > 0.3) || !std::isfinite(fn)) f[0] = 0, f[1] = 1, f[2] = 0, fn = 1;
+    for (double& c : f) c /= fn;
+    const double right[3] = {f[1] * up[2] - f[2] * up[1], f[2] * up[0] - f[0] * up[2], f[0] * up[1] - f[1] * up[0]};
+    auto dot = [](const double (&x)[3], const double (&y)[3]) { return x[0] * y[0] + x[1] * y[1] + x[2] * y[2]; };
+    const double en = Len3(e);
+    const double gain = en > g.far_m ? g.far_gain : 1.0;
+    const double beta = 1.0 - std::exp(-dt / (g.tau_s > 0.001 ? g.tau_s : 0.001));
+    double vn[3], vt[3];
+    for (int i = 0; i < 3; ++i) {
+        vn[i] = std::isfinite(in.v_now[i]) ? in.v_now[i] : 0.0;
+        vt[i] = std::isfinite(in.v_target[i]) ? in.v_target[i] : 0.0;
+    }
+    const double e_al = dot(e, f), e_lat = dot(e, right);
+    const double v_al = dot(vn, f), v_lat = dot(vn, right), t_al = dot(vt, f), t_lat = dot(vt, right);
+    // along (what the wheels roll): the owner's speed plus the error closed in 1 / kp, an integral for what the tyres hold
+    if (in.still) {
+        bias[0] = bias[1] = bias[2] = 0;
+    } else {
+        bias[0] += g.ki * e_al * dt;
+        if (bias[0] > g.max_bias_mps) bias[0] = g.max_bias_mps;
+        if (bias[0] < -g.max_bias_mps) bias[0] = -g.max_bias_mps;
+        bias[1] = bias[2] = 0;
+    }
+    double c_al = g.kp * gain * e_al + bias[0];
+    const double mc = g.max_corr_mps * gain;
+    if (c_al > mc) c_al = mc;
+    if (c_al < -mc) c_al = -mc;
+    double dv_al = beta * (t_al + c_al - v_al);
+    const double mal = g.max_dv_mps * gain;
+    if (dv_al > mal) dv_al = mal;
+    if (dv_al < -mal) dv_al = -mal;
+    // sideways only a little: the tyres hold a truck's side, and a sideways push at its centre of mass tips it over
+    // (hidden run 20261120-161614: 0.6 m/s a tick rolled the follower 40 degrees onto the road's barrier); the side error
+    // is steered away through the yaw below
+    double dv_lat = beta * (t_lat + g.kp_lat * e_lat - v_lat);
+    if (dv_lat > g.max_dv_lat_mps) dv_lat = g.max_dv_lat_mps;
+    if (dv_lat < -g.max_dv_lat_mps) dv_lat = -g.max_dv_lat_mps;
+    for (int i = 0; i < 3; ++i) {
+        const double d = dv_al * f[i] + dv_lat * right[i];
+        o.dv[i] = static_cast<float>(d);
+        o.v_set[i] = static_cast<float>(vn[i] + d);
+    }
+    // the sideways error steered away through the yaw (pure pursuit)
+    double yaw_err = WrapPi(in.yaw_err);
+    if (std::fabs(v_al) > g.lat_min_speed_mps) {
+        const double ahead = (std::max)(g.lat_min_m, std::fabs(v_al) * g.lat_ahead_s);
+        double th = std::atan2(e_lat, ahead);
+        if (th > g.lat_max_rad) th = g.lat_max_rad;
+        if (th < -g.lat_max_rad) th = -g.lat_max_rad;
+        th *= g.lat_sign;
+        yaw_err -= v_al > 0 ? th : -th;  // target to the right: turn right (negative yaw) going forward
+    }
+    double yc = g.kyaw * gain * yaw_err;
+    if (yc > g.max_yaw_corr) yc = g.max_yaw_corr;
+    if (yc < -g.max_yaw_corr) yc = -g.max_yaw_corr;
+    const double wn = std::isfinite(in.w_now_z) ? in.w_now_z : 0.0, wt = std::isfinite(in.w_target_z) ? in.w_target_z : 0.0;
+    double dw = in.yaw ? beta * (wt + yc - wn) : 0.0;
+    const double mdw = g.max_dw_rad * gain;
+    if (dw > mdw) dw = mdw;
+    if (dw < -mdw) dw = -mdw;
+    o.dw = static_cast<float>(dw);
+    o.w_set_z = static_cast<float>(wn + dw);
+    o.yaw_cmd = yaw_err;
+    *out = o;
+}
+
+double SteerTrim(double yaw_cmd, double v_along, const FollowGains& g) noexcept {
+    if (!std::isfinite(yaw_cmd) || !std::isfinite(v_along) || std::fabs(v_along) < g.lat_min_speed_mps) return 0;
+    double t = -g.k_steer * yaw_cmd * (v_along > 0 ? 1.0 : -1.0);
+    if (t > g.max_steer) t = g.max_steer;
+    if (t < -g.max_steer) t = -g.max_steer;
+    return t;
+}
+
+const char* DriveTpName(DriveTp t) noexcept {
+    switch (t) {
+        case DriveTp::none: return "none";
+        case DriveTp::too_far: return "far";
+        case DriveTp::angle: return "angle";
+        case DriveTp::stuck: return "stuck";
+        case DriveTp::stopped: return "stopped";
+    }
+    return "?";
+}
+
+DriveTp DriveTeleport(const DriveTpIn& in) noexcept {
+    if (in.since_last_tp_ms < kTpGapMs) return DriveTp::none;
+    if (in.err_m >= (in.carried ? kTpFarCarriedM : kTpFarM)) return DriveTp::too_far;
+    if (in.ang_deg >= (in.carried ? kTpAngleCarriedDeg : kTpAngleDeg)) return DriveTp::angle;
+    if (in.carried) {
+        // a standstill re-seat (v0.21): both stand, the owner's for kTpParkedMs, ours still kTpStoppedM or kTpParkedDeg off
+        if (in.still_ms >= kTpStoppedMs && in.owner_still_ms >= kTpParkedMs && (in.err_m >= kTpStoppedM || in.ang_deg >= kTpParkedDeg))
+            return DriveTp::stopped;
+        return DriveTp::none;
+    }
+    if (in.stuck_ms >= kTpStuckMs && in.err_m >= kTpStuckM && in.err_m >= kTpStuckFall * in.stuck_err0) return DriveTp::stuck;
+    if (in.owner_still_ms >= kTpParkedMs && (in.err_m >= kTpParkedM || in.ang_deg >= kTpParkedDeg)) return DriveTp::stopped;
+    if (in.still_ms >= kTpStoppedMs && in.err_m >= kTpStoppedM && in.sam_dist_m > kTpStoppedNearM) return DriveTp::stopped;
+    return DriveTp::none;
+}
+
 void KindHalfExtents(std::uint8_t kind, float (&half)[3]) noexcept {
     // the drivable art's size plus a margin (right, forward, up)
     switch (kind) {

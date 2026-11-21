@@ -47,6 +47,9 @@ waitlog 60 \[vshare\] host: world ready
 @guest waitlog 60 \[vshare\] guest: the host's snapshot #[0-9]+ is complete
 @guest waitlog 30 \[vshare\] guest: binding:
 wait 8000
+# v0.21's seat back after a save (ride_test 29) off: this run checks where the save put him and loads it there
+# (two-games-ride-save-resume: the seat back while the truck drives)
+action ride_test 29 0
 # ---- 0. no ride: a save runs at once
 action save_guard 1 4
 waitlog 5 \[save\] #[0-9]+ pending \(forced save F1\): auto save.*our Sam not carried
@@ -69,7 +72,7 @@ until 15 3000 \[ride\] host: our Sam carried on the truck .*#1\) => pad X 800
 wait 2500
 screenshot S0-host-riding
 # the guest drives the truck forward ~2 s and stops (the host carried): the save below is far from the boarding spot
-@guest pad none 2000 rt=255 keep
+@guest pad none 2600 rt=255 keep
 @guest pad none 0
 @guest pad none 2500 lt=255 keep
 @guest pad none 0

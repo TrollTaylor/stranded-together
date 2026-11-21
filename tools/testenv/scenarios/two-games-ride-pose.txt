@@ -1,0 +1,116 @@
+# The passenger's seated idle on the trike's pillion, on both screens (v0.21; docs/real-partner-body.md section 24.14), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-ride-pose -SeedSaves complete-100
+# two-games-ride-camera on the Kusanagi trike (open: the riders in view from both chase cameras): the guest drives play
+# test 3's road with a slalom (vehicle_drive 21), the host rides the pillion. Lap 1 (P shots): the seated idle (hands on
+# the thighs, still); lap 2 (Q shots): v0.20's copy of the driver's live pose (ride_test 22 0: steering arms through the
+# driver). "[ride] hands (passenger|driver, trike)" every 10 s on each game: the passenger's hands under 2 cm while the
+# driver's travel over 10 cm (lap 1).
+role host
+graphics low
+timeout 360
+launcherini local-test
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[config\] host_save=1
+@guest waitlog 10 \[config\] host_save=1
+waitlog 10 \[ride\] riding together ON \(host
+@guest waitlog 10 \[ride\] riding together ON \(guest
+waitlog 10 \[ridecam\] the passenger's ride camera ON
+@guest waitlog 10 \[ridecam\] the passenger's ride camera ON
+wait 22000
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+@guest waitlog 60 \[vshare\] guest: the host's snapshot #[0-9]+ is complete
+@guest waitlog 30 \[vshare\] guest: binding:
+wait 6000
+action ride_test 21 1
+@guest action ride_test 21 1
+# ---- the guest drives the nearest trike, put at the road's start
+@guest action vehicle_sync 8 1.8 4
+wait 1500
+@guest until 20 4000 \[vdrive\] guest: our Sam drives trike => pad X 150
+waitlog 20 \[vdrive\] host: the guest claims trike 0x[0-9A-F]+ \(get on, epoch [0-9]+\): granted
+waitlog 20 \[vdrive\] follower of trike 0x[0-9A-F]+ attached
+wait 1500
+@guest action vehicle_drive 14 1
+wait 4000
+# ---- lap 1 (v0.21): the host boards with the game's own Use Vehicle
+action ride_test 8
+waitlog 8 \[ride\] native prompt: the partner's trike 0x[0-9A-F]+: boarding allowed
+until 15 3000 \[ride\] host: our Sam carried on the trike => pad X 150
+@guest waitlog 10 \[ride\] guest: the partner asks to ride our trike .*ACCEPTED
+wait 2500
+screenshot P0-host-boarded
+@guest screenshot P0-guest-boarded
+@guest action vehicle_drive 12 10 1
+@guest action vehicle_drive 21 0.45 2.5
+wait 7000
+screenshot P1-host-slalom
+@guest screenshot P1-guest-slalom
+wait 7000
+@guest action vehicle_drive 21 0
+wait 8000
+screenshot P2-host-bend
+@guest screenshot P2-guest-bend
+wait 15000
+screenshot P3-host-downhill
+@guest screenshot P3-guest-downhill
+wait 12000
+screenshot P4-host-bottom
+@guest screenshot P4-guest-bottom
+@guest waitlog 40 \[vdrive\] autopilot: done \(#1\)
+wait 1500
+action ride_test 24
+# ---- back to the start: the host gets off, the trike is put at the start, the host boards again (v0.20's passenger)
+hookkey 0x46 150
+waitlog 6 \[ride\] host: our Sam off the trike .*#1, got off
+wait 2500
+screenshot P5-host-off
+action ride_test 22 0
+action ride_test 20 0
+action ride_test 25 0
+@guest action vehicle_drive 14 1
+wait 4000
+action ride_test 8
+wait 800
+until 15 3000 \[ride\] host: our Sam carried on the trike .*#2\) => pad X 150
+wait 2500
+screenshot Q0-host-boarded
+@guest screenshot Q0-guest-boarded
+@guest action vehicle_drive 12 10 1
+@guest action vehicle_drive 21 0.45 2.5
+wait 7000
+screenshot Q1-host-slalom
+@guest screenshot Q1-guest-slalom
+wait 7000
+@guest action vehicle_drive 21 0
+wait 8000
+screenshot Q2-host-bend
+@guest screenshot Q2-guest-bend
+wait 15000
+screenshot Q3-host-downhill
+@guest screenshot Q3-guest-downhill
+@guest waitlog 40 \[vdrive\] autopilot: done \(#2\)
+action ride_test 22 1
+action ride_test 20 1
+action ride_test 25 1
+@both action ride_state
+nolog \[ride\] the game took our Sam
+# a save puts him off for its capture and gives the seat back (v0.21, two-games-ride-save-resume): every other forced exit fails
+nolog \[ride\] host: our Sam off the trike .*\(#[0-9]+, (?!the game saves)[^)]*forced\)
+nolog \[ride\] no seat back after the save
+nolog \[(vshare|vdrive|ride|ridecam|vhit)\].*FAULT
+@guest nolog \[(vshare|vdrive|ride|ridecam|vhit)\].*FAULT
+@guest quit
+wait 3000
+quit

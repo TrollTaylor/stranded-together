@@ -85,6 +85,15 @@ void AfterStop() noexcept;
 std::uint32_t PoseFlags() noexcept;
 // Our Sam is carried as a passenger (or the solo seat test carries him).
 bool Carried() noexcept;
+// v0.21 (any thread): `entity` is our Sam while he is carried or within 1.5 s after the ride ended (the landing shield's
+// window): no damage reaches him then (partner_tackle's damage hook zeroes what is not our own vehicle hit, and logs it).
+bool ShieldCovers(std::uintptr_t entity) noexcept;
+// partner_tackle's damage hook (any thread): a message of our own vehicle hit (D3-3, a jump-off over 8 m/s) passed it with
+// this amount (capped). The health guard then lets our Sam's health go down by up to twice that within 0.5 s (only that:
+// never a kill, never another source); without it the knock-down played and his health stayed at 1000.
+void AllowOwnHit(float amount) noexcept;
+// Our Sam got off this vehicle under 3 s ago (partner_tackle: the vehicle he just rode never hits him; v0.21).
+bool JustRode(std::uintptr_t vehicle_entity) noexcept;
 // Driver's game: while the partner rides our vehicle, its body's place this tick (our vehicle's transform, one frame ahead,
 // times the passenger seat). False otherwise.
 bool PassengerTarget(game::WorldTransform* target) noexcept;

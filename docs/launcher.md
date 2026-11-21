@@ -148,7 +148,9 @@ Three tabs (`ui::DebugTab`):
   default on, needs Real character: your partner's body stops you like another character, docs/real-partner-body.md
   section 11; unticked writes `partner_collision=0`); **Partner's vehicles can knock me down** (`partner_vehicle_damage`,
   default on: your partner's truck, trike or roadster hits you like an enemy MULE truck, damage and the knock-down, never
-  an instant kill, also when you are thrown off it in a crash; each player's own setting decides for their own Sam;
+  an instant kill, also when you jump off it above 8 m/s; riding as the passenger nothing hurts you, from any source,
+  until 1.5 s after you are off (the ride's health guard, docs/real-partner-body.md section 24.13); each player's own
+  setting decides for their own Sam;
   docs/real-partner-body.md section 25; unticked writes `partner_vehicle_damage=0`; saved as
   `"partner_vehicle_damage": true|false`); **Allow other characters** (launcher-only, default off,
   `"debug"` `"allow_other_characters"`, never written to session.ini: off, a guest plays Fragile (porter suit)

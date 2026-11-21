@@ -92,6 +92,12 @@ struct Config {
     // beside the partner's vehicle to ride as its passenger (the trike: a pillion). Default on; 0 = off on this game (its
     // driver's game denies requests, nothing is offered).
     bool ride_together = true;
+    // The carried passenger's pose (section 24.14): 1 (default) the seated idle (a held seated base of the vehicle kind, the
+    // hands resting on the thighs); 0 = v0.20's copy of the driver's live pose (steering, leaning with the driver).
+    int ride_pose = 1;
+    // The carried passenger's camera (section 24.15): 1 (default) the game's own ride camera of the vehicle he rides (the
+    // driver's camera); 0 = v0.20's on-foot camera on the carried Sam.
+    bool ride_camera = true;
     // Vehicle hits (design M4; docs/real-partner-body.md section 25), with vehicle_sync=5: the partner's vehicle hits our Sam
     // like an NPC-driven truck (the game's own vehicle attack: damage and the Blow knock-down, never an instant kill), and a
     // passenger thrown off in a crash takes the same hit. Default on; 0 = the partner's vehicles never hurt THIS player's Sam
@@ -212,6 +218,11 @@ struct Config {
     // inside the client area of the game window that is in front; F10 (F11 when the menu key is F10) switches to the
     // other game's window, Alt+Tab leaves (overlay/mouse_lock.hpp). Absent / 0: the game's own cursor handling only.
     bool mouse_lock = false;
+    // test_net_latency_ms / test_net_jitter_ms / test_net_loss_permille / test_net_burst (hidden tests only, the UDP link):
+    // this game's datagrams leave late (latency + uniform jitter) and some are lost (per mille; burst > 0: Gilbert-Elliott
+    // bursts of that mean length), through the transport's lab impairment (udp_transport.hpp). Both games set: the round
+    // trip is twice the latency plus the jitter. Ignored outside a hidden run (automation=1) and on the Steam transport.
+    unsigned test_net_latency_ms = 0, test_net_jitter_ms = 0, test_net_loss_permille = 0, test_net_burst = 0;
 };
 
 // Loads <dir>\session.ini. Never throws; unknown keys are logged and ignored.

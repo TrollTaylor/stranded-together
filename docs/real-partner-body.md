@@ -4002,6 +4002,93 @@ The repeat `20261120-021010` stopped her at 1.67 / 1.69 m; there the creep then 
 are as before (25.6), and the v0.14 copies stay collision-free for the `host_save=0` mode, which now says on screen
 that it is the old mode.
 
+### 23.25 The driven follower's controller (v0.21, play test 3)
+
+Play test 3 (v0.20.0, Local test at 30 fps, the guest driving its truck with the host as its passenger): the host's
+follower was 0.9 m off on average at 11 m/s, up to 2.0 m, then snapped onto the owner's place (a visible jump, the
+carried Sam 1.7 m off the seat for a frame: "phasing through the car"); every stop ended in a 0.4 - 0.6 m snap. The
+"before" run `two-games-veh-route-v020` (this build with v0.20's follower switched back on) shows the same: mean 0.50 m,
+max 2.01 m at 5 m/s and more, 12 teleports of 2.0 m while driving and 2 stop snaps in 2 laps.
+
+Causes (proven): the 100 ms nudge (the game's drive-to-transform) replaced all six velocities of the chassis and did not
+close the error, so the only working correction was RequestTeleport; the inputs played were those of the frame at or
+before the play time (half a frame late); the owner sent the previous tick's finite-difference velocity (spikes on an odd
+frame); past the newest frame the target stood still.
+
+v0.21 (`vehicle_drive.cpp` DriveCorrect, `vehicle_wire` FollowVelocity / SteerTrim / DriveTeleport, unit-tested):
+
+- **The owner** sends its chassis body's own velocities (STD1 flag `kDrvPhysVel`): the linear world velocity and the yaw
+  rate, read from the body's motion (below) when the frame is filled.
+- **The target**: cubic Hermite between the two frames at the play time (their velocities the tangents); past the newest
+  frame dead reckoning for up to 250 ms (a late or lost frame), then held as before.
+- **The inputs** of the frame nearest to the play time (+16 ms).
+- **Every tick** the follower's chassis body gets a small velocity change through the game's
+  SetLinearAndAngularVelocity (`0x141C34330`, on top of what the physics has now): along its forward axis toward the
+  owner's speed plus the error closed in 0.5 s (an integral for what the tyres hold; at most 0.25 m/s a tick); sideways
+  only 0.05 m/s a tick (a sideways push at the centre of mass tipped a truck 40 degrees onto the road's barrier, run
+  `20261120-161614`); the yaw rate toward the owner's plus the heading error and a pure-pursuit turn toward a side error;
+  and the same yaw command as a **steering trim** on the replayed steering axis (input +0x0C, at most 0.3): the tyres
+  take the chassis back to where the wheels point (run `20261120-162308`), so the side error is steered away as a driver
+  would. Vertical velocity, pitch and roll are never touched. The signs of the body's yaw rate and of the steering axis
+  are measured on the first turns (`[vdrive] the chassis body's yaw rate is + ...`, `the steering axis (+0x0C): a
+  positive value steers right`); until then no yaw steering.
+- **RequestTeleport only for a reason**, each logged (`[vdrive] truck ... TELEPORT (<reason>): ... m off (along, lateral,
+  vertical) ...`): `far` over 4 m (8 m while our Sam rides it), `angle` over 30 degrees (60 carried), `stuck` over 1.5 m
+  for 2 s without closing (never while carried), `stopped` the owner stands and ours is 1 m / 10 degrees off (never
+  dragged there: run `20261120-160609` pushed a truck lying askew into the Sam at its door) or both stand and it is
+  0.3 m off with nobody carried and our Sam over 3 m away. A Sam carried on it is put on the seat where the teleport goes
+  in the same tick (`vdrive::RecentTeleport`), and the crash and flip rules ignore the 0.5 s after it.
+- **The meter**, once a second: `[vdrive] truck ... followed: placement error mean .. max .. m, ...; v0.21: along mean
+  .. max .., lateral .., vertical .., yaw max ..; velocity sets .., extrapolated .. ticks (max .. ms), driven teleports
+  ..`; and at the detach `over the follow: placement error mean .. max .., .. of .. ticks over 0.25 m`.
+
+The chassis body (byte group `kGBody`, 9 sites + the physics global's RIP, optional: without it v0.20's bands and nudge
+and a co-op notice): the vehicle's first physics instance (`0x14234DCD0`) holds the body id at +0x90 (+0xDB 0; the
+drive-to's own read at `0x141C43E24`); bodies `[[0x14578C140]+0x20]+0x28 + (id & 0xFFFFFF) * 0xB0` (+0x70 its id, +0x44 & 2
+dynamic, +0x40 the motion index); motions `[[0x14578C140]+0x20]+0x158 + index * 0x80` (+0x10 quaternion, +0x40 linear
+velocity, +0x50 angular velocity in the body's frame: world = R(q) local, the writer's own formula at `0x141C344E0`).
+Reads are double reads; the set is SEH-wrapped (one fault: v0.20's corrections from then on).
+
+Evidence (hidden, foreground, `-SeedSaves complete-100`; the launcher's own Local test files unless said):
+
+| Run | What | Follower at 5 m/s and more | Teleports while driving |
+|---|---|---|---|
+| `20261120-174030-two-games-veh-route-v020` | v0.20 (before): the guest drives, the host follows and rides, 2 laps of play test 3's road | mean 0.50 m, max 2.01 m (8 m/s+: 0.51 / 2.01) | 12 x 2.0 m, 2 stop snaps |
+| `20261120-173615-two-games-veh-route` | v0.21 (after), the same drive | mean 0.049 m, max 0.62 m (8 m/s+: 0.035 / 0.44); along 0.034, lateral 0.024, vertical 0.001 mean | 0 (3 test placements) |
+| `20261120-174520-two-games-veh-route-net` | v0.21, the host drives, the guest follows and rides; `ini` files, +60 ms, jitter 0..40 ms, 1.5 % loss in bursts of 2 on both games | mean 0.064 m, max 0.74 m (8 m/s+: 0.025 / 0.22) | 0 (2 test placements) |
+| `20261120-162849-vehdev3` (dev) | step responses at 8 m/s | a 1 m step along closed to 0.15 m in 0.8 s; 0.8 m sideways in about 2 s | 0 |
+
+The road's few bumps (a joint, a dip) still give one-second excursions of 0.4 - 0.7 m that close within 2 s, where the
+two worlds' tyres meet them differently.
+
+**Slow driving and stops (review of the v0.21 work)**: the roadster in `two-games-ride-roadster` (run `20261120-210244`,
+the host carried) let a side error grow to 0.57 m at 3 - 7 m/s and then stood 0.57 m off for the whole stop, with a
+velocity set of 0 m/s every tick (`placement error mean 0.219 max 0.574 m, 367 of 1065 ticks over 0.25 m; 589 velocity
+sets`): the yaw pursuit and the steering trim only acted over 1 m/s, the sideways push is too small for the tyres, and
+no `stopped` teleport ran while carried. Now: the pursuit and the trim act from 0.5 m/s (`FollowGains::lat_min_speed_mps`);
+**a carried standstill re-seat** (`DriveTeleport`: our Sam carried, both stand 1.5 s, the owner 0.5 s, 0.3 m or 10
+degrees off: `stopped`, the passenger re-seated in the same tick); and a standing follower whose error has stopped closing
+(less than 1 cm in 0.5 s after the stopped rules' 1.5 s) gets no more velocity sets: its body sleeps (the 1 s line ends
+`rested <n>`). After: `20261120-224850-two-games-ride-roadster`, host: `mean 0.039 max 0.319 m, 86 of 1059 ticks over
+0.25 m; 1 driven teleports` (the re-seat at a stop, 0.32 m), 337 velocity sets; guest `mean 0.095 max 0.228 m, 0 over
+0.25 m`. In `two-games-ride-forced` the re-seat also put the passenger's truck back on the owner's after the roll test
+left it 4.3 m aside at a standstill (`20261120-222305`).
+
+**A link stall while carried** (review): a driver's DRIVE frames that stop (a link hiccup) leave the follower on idle
+inputs after 300 ms and detached after 1.5 s, which put the passenger off ("the driver got off") even when the ride
+itself waited. While our Sam is carried on it: the newest frame's inputs are kept until 1.5 s past it
+(`vwire::kStallHoldInputsMs`; the driver most likely kept going), then idle inputs (it rolls to a stop); no detach before
+4.5 s (`kStallEndCarriedMs`, the ride's own grace, 24.4). `two-games-veh-route-net` `20261120-221535`: 1.5 s of the
+guest's received datagrams dropped at 6 m/s: the follower 0.91 m off at most, closed in 3 s, no teleport. Regressions passed on this build: `two-games-veh-drive` (0 teleports on the
+host, 2 stop teleports of 0.6 m on the guest), `two-games-ride-truck`, `-roadster`, `-trike`, `-forced`,
+`two-games-vehicle-hit`.
+
+Hidden-test tools: `vehicle_drive 12` the owner's autopilot (its virtual pad) on play test 3's road (the guest's own
+places in the play test, as a smoothed path), `14` the road's places, `10` one odd frame, `11` the step response, `13`
+v0.20's follower for "before" runs, `19` a per-tick trace (docs/debug-actions.md). Simulated internet: session.ini
+`test_net_latency_ms`, `test_net_jitter_ms`, `test_net_loss_permille`, `test_net_burst` (hidden runs only; the UDP
+transport's lab impairment on this game's sends: `[link] TEST impairment ...`; ignored outside a hidden run and on Steam).
+
 ## 24. Riding together (`session.ini ride_together`, default 1, with `vehicle_sync=5`; design milestone M3)
 
 "Players can ride together in vehicles", "make sure you look into letting players ride in the passenger seat too". The
@@ -4017,9 +4104,11 @@ Ownership (VOWN, 23.13) is unchanged: the passenger never owns; the driver getti
 |---|---|---|
 | the vehicle | the driver's own (native ride) | our follower of it (23.11: the game's NPC controller replays the driver's inputs) |
 | the driver | native | the partner body at our vehicle times the driver's STM1 seat (23.15) |
-| the passenger | the partner body at **our vehicle's transform (one frame ahead along its velocity) times the passenger seat**, its pose the partner's STJ1 (seated, below); its capsule out (`kPoseInVehicle`) | **our own Sam, carried**: capsule off, the entity teleport `0x14235A010(Sam, &wt, 0, 0)` every tick to the vehicle's transform (one frame ahead along its velocity) times the seat, the movement / action input blocked, the driver's seated pose |
+| the passenger | the partner body at **our vehicle's transform (one frame ahead along its velocity) times the passenger seat**, its pose the partner's STJ1 (seated, below); its capsule out (`kPoseInVehicle`) | **our own Sam, carried**: capsule off, the entity teleport `0x14235A010(Sam, &wt, 0, 0)` every tick to the vehicle's transform (one frame ahead along its velocity) times the seat, the movement / action input blocked, the seated idle (24.14), the driver's ride camera (24.15) |
 
-- **Seated pose (decision D3-2, v1)**: the passenger's own Sam ends his model update with the driver's pose
+- **Seated pose**: since v0.21 the **seated idle** (24.14, `session.ini ride_pose=1`, the default): a held seated base of
+  the vehicle kind, the hands resting on the thighs, no steering or lean. v0.20's pose (decision D3-2, v1, `ride_pose=0`):
+  the passenger's own Sam ends his model update with the driver's pose
   (`realbody::SetRidePose(1)`; `RideOverride` in Sam's capture detour, before the capture is published): every joint's
   rotation and the root / pelvis translations of the partner's published STJ1 frame (the driver's local Sam, Sam's
   layout, at the body's play time, under 500 ms old), Sam's own bone lengths, then the game's model-matrix and bounds
@@ -4167,7 +4256,7 @@ beside it, never along its tilted axes under or onto the wreck (unit-tested at 9
 | the game takes our Sam: a parent entity, a load bit, a DSGameState bit of a cutscene / game over / faint / fast travel / private room / knot space / boss battle / area change ... (`kTakenBits`, current or requested), Sam+0x678 (the game's warp guard), a pushed transform, a sequence binding (every 250 ms) (`game::CarriedSamTaken`, every tick) | the game took Sam | none (the game places him) |
 | ... or nothing of the game's places him: a health drop over 1 (a MULE spear, a BT, a fall), the world waiting for a scene (load mask `0x100` alone), asleep 60 s | the game took Sam | beside (waiting while he sleeps) |
 | a save: pending and held for us by the save guard (`save_guard::WantsOff`), or pending / being written without the hold (`save_guard::Busy`: the guard off, its cap, the post-load save) | the game saves | beside with PlaceOn before the held save is released (24.12); without the hold the placement waits for the write |
-| nothing from the partner for 1 s | link lost | beside |
+| nothing from the partner for 4.5 s (`kLinkSilentCarriedMs`, under the driver's 5 s timeout), or for 1 s once the link itself says it is not connected (v0.21; v0.20: 1 s, so a Wi-Fi or relay hiccup put the passenger on the road; `[ride] no pose from the driver for .. ms: our Sam stays on the seat` / `the driver's poses are back after .. ms: the ride goes on`). Note: the guest's link reconnects after about 2 s without a datagram (`kGuestReconnectMs`), the host's after 3 s, and a new link session ends the ride (`NewSession`), so in practice the grace covers stalls under 2 s (guest) / 3 s (host); a reconnect of the same partner keeping the ride is not done | link lost | beside |
 | the driver's END (its Sam got off: `driver_off`; a new session) | the driver got off / ended it | beside |
 | the vehicle not live here for 300 ms | the vehicle is gone | beside (its last place) |
 | broken / out of battery (ride state 5 / 6, `+0x560 & 0x2000`, the frames' broken / exploded flags) | broken | beside |
@@ -4184,7 +4273,8 @@ partner's pose has not said `kPosePassenger` for 5 s after the accept (`timeout`
 
 ### 24.5 Camera
 
-The passenger keeps the game's on-foot camera on his carried Sam (no camera code). In the runs it reads as a chase view a
+Since v0.21 the passenger gets the driver's ride camera (24.15, `session.ini ride_camera=1`, the default). Up to v0.20
+(below) the passenger kept the game's on-foot camera on his carried Sam (no camera code). In the runs it reads as a chase view a
 little above the vehicle: behind and above the truck's cab (the passenger hidden under the roof: R02 / R03), beside the
 roadster's passenger seat (P02, the driver and the passenger side by side), behind the two riders on the trike (K02 /
 K03). The right stick turns it as usual. Two things were seen and are not fixed (documented):
@@ -4282,6 +4372,10 @@ prompt), so they all go through it (`asking to ride ... (the game's Use Vehicle`
 
 New debug actions (docs/debug-actions.md "Riding together"): `ride_state`, `ride_board`, `ride_exit`, `seat_measure`,
 `ride_test`.
+
+v0.21 (24.14 / 24.15): `seat-pose` (one game: seat-measure's route with the seated idle, the ride camera and close-ups),
+`two-games-ride-camera` (the launcher's Local test files: the truck on play test 3's road with a slalom, lap 1 v0.21, lap 2
+v0.20's pose and camera; both games' camera and hands meters), `two-games-ride-pose` (the same on the trike's pillion).
 
 ### 24.10 Evidence (hidden, foreground, one at a time, 2026-11-19)
 
@@ -4564,6 +4658,214 @@ both games exit 0, saves unchanged, restored, no violation, 0 cloud uploads, no 
   along the path); no automatic re-boarding after the save.
 - What else of the carried state the save serialises (the capsule, the pose: mod state; the vehicle mount: the game
   saved no parent, Sam loaded standing) beyond the position checked here.
+
+### 24.13 The passenger is never thrown out by the mod or hurt by the ride (v0.21, play test 3)
+
+Play test 3: the host Sam riding in the guest's truck was put off twice: (1) "the game took our Sam: a health drop"
+(1000 -> 479.3) where play test 3's road comes down to the big hologram and the elevated road ends in a small drop
+(-1446, 415, 336); (2) a "crash exit" at a steady 11 m/s (dv 9.8 m/s from one odd frame of the driver's), then the
+D3-3 hit (-> 881). `two-games-veh-route-v020` reproduces both on this build with v0.20's rules (1000 -> 505.6 at the same
+place; a crash exit from one frame 9.8 m/s off, then 1000 -> 881).
+
+Causes (proven):
+
+- **The game itself damages and kills the carried Sam.** A write watchpoint on his health (`ride_test 18`, run
+  `20261120-170125-vehdev4`) caught the game setting it to 0 in one write at that place, through its health setter
+  `0x1427400F0` (called at `0x142702432` from the damage path of the message handler `0x14271C150`, not the MsgDamage
+  handler vhit hooks), with the value -inf: an instant kill (the setter also asks for the PlayerDied game state, bit 42;
+  the user's 520 came at 1.7 m/s, our 8 m/s laps died: the Seam). 6 s later a second hit of 111.8. His capsule is off for
+  the ride, so his own movement state never lands; the HumanoidMover landing check proposed by the research never runs
+  for him (0 calls while carried and on foot) and the exported GetFallingHeight is never asked: neither is the path.
+- **The crash rule took one frame for a crash**: `CrashDetector` fired on a single frame's jump over 8 m/s of the driver's
+  finite-difference velocity.
+- Neither came from the follower's corrections; v0.20's 2 m snaps only moved the carried Sam off the seat for a frame.
+
+v0.21:
+
+- **The health guard** (`ride_together.cpp`, 4 sites + the call's RIP; off alone with a one-line reason in the log and
+  a co-op notice): a detour on the health setter keeps our Sam's health when it would go down while he is carried and
+  1.5 s after the ride (the game's own "no decrease" path, its entity flag +0x5C8 bit 23, returns the same way), so no
+  health drop, no PlayerDied, no "the game took our Sam" from damage; each kept write is logged (`[ride] health guard:
+  our Sam's health kept at 1000.0 (the game set -inf, called from ds.exe+0x2702437)`). vhit's MsgDamage hook also zeroes a
+  damage message to a carried Sam that is not our own vehicle hit (`[ride] damage to our Sam while carried (or just off)
+  blocked`). **Scope, on purpose: every source.** A carried Sam (and our Sam for 1.5 s after any exit, whatever its
+  reason: crash, jump-off, "the game took our Sam", world, stopped, saving) loses no health to anything: a MULE spear,
+  gunfire, a BT or a fall. The kill of play test 3 comes through the game's generic damage path (the handler
+  `0x14271C150` -> `0x1427023C0` -> the setter), the same path enemy damage takes, so a filter by caller cannot tell the
+  fall from an enemy; the game's own reactions and states (a knock-down, a BT grab) still play and can still put him off
+  as "the game took our Sam". The one exception is our own vehicle hit (D3-3, a jump-off above 8 m/s): when vhit's
+  MsgDamage hook passes its message it calls `ride::AllowOwnHit` with the capped amount, and for 0.5 s the guard lets the
+  health go down by up to twice that (never to 0, never another write); logged `[ride] health guard: our own vehicle hit
+  (D3-3) let through`. Before this exception the shield window (set by the exit before the hit, 150 ms later) kept his
+  health at 1000 while the knock-down played. `two-games-veh-route` lap 3 (run `20261120-221835`): a jump-off by two presses at 10.1 m/s, "the
+  game's hit applied", "let through (1 write(s) so far): our Sam's health now 881.0", the knock-down; laps 1 and 2
+  unchanged (carried through, health kept at 1000 at the hologram).
+- **The landing shield** (7 sites): the mover's landing check `0x14360C0B0` resets the fall reference and skips for our
+  Sam in the 1.5 s after any exit (the placement's drop: play test 3's 50 damage at a crash exit's placement).
+- **The confirmed crash rule** (`rwire::CrashConfirm`, unit-tested): the median horizontal velocity 200 - 350 ms before
+  against the last 150 ms differs by over 8 m/s, the newest 3 frames agree within 3 m/s, and the game's own speed field
+  (km/h, in every frame) dropped by 28.8 km/h or more. A one-frame jump is logged and ignored (`[ride] crash candidate
+  (one frame, dv .. m/s at .. m/s): not confirmed by the driver's frames: no exit`). A confirmed crash: the truck's and
+  the roadster's cab keep their passenger as they keep their driver (`[ride] the driver's truck crashed (dv .., confirmed):
+  our Sam stays in the cab`); the trike's pillion is put off, with no hit (the ridden vehicle never hurts its passenger;
+  a jump-off above 8 m/s by the passenger's own second press keeps the D3-3 hit). The 0.5 s after our follower's own
+  teleport is never a crash or a flip.
+- partner_tackle: the vehicle our Sam got off under 3 s ago never hits him (`ride::JustRode`).
+
+Evidence: `two-games-veh-route` (run `20261120-173615`): the host carried 70.7 s and 72.0 s through both laps; at the
+hologram both laps "health kept at 1000.0 (the game set -inf ...)" and "(the game set 887.5 ...)"; the one-frame 9.8 m/s
+jump "not confirmed"; no forced exit. `two-games-veh-route-net` (`20261120-174520`): the guest the same over the
+simulated internet. `two-games-ride-forced` (`20261120-180935`): the dead stop is a confirmed crash, the guest stays in
+the cab and gets off by choice; the roll's one-frame jumps are not a crash.
+
+Not proven: what in the game decides the kill at that place (the -inf comes from the damage path of the handler
+`0x14271C150`; its message and sender were not traced). By design (above) a carried Sam takes no damage at all (a MULE
+spear or a BT no longer puts him off by a health drop; the game's own states still do).
+
+### 24.14 The passenger sits still: the seated idle (v0.21, play test 3; `session.ini ride_pose`, default 1)
+
+Play test 3: "the passenger is doing the exact same animation as the driver even when turning". v0.20's pose override
+(source 1, 24.1) copied the driver's live frame: steering arms, the lean into turns, the trike's foot down; on the trike's
+pillion the copied arms reach for the handlebars through the driver. The game has no passenger or seated-idle animation
+for Sam (his anim variables have only driver states; `BotRiding` needs the Director's Cut delivery bot; `TakeABreak` is
+the ground sit with stamina side effects; the bed sit belongs to the private room), so the pose is built in the override
+(`RideOverride` source 3, real_body.cpp; the pure maths in `native/mod/ride_pose_math.hpp`, `st_ride_pose_tests`, 1662
+checks):
+
+| Joints | Source |
+|---|---|
+| every rotation, the root / pelvis translations | **the base**: ONE seated driver frame of this vehicle kind, held. The driver's published STJ1 frame latched once the vehicle drives calmly (3 - 30 m/s, yaw rate under 3 deg/s for 0.5 s: no steering, no lean, no foot down); until then the ride's first frame ("held for now"). Our own Sam's calm driving fills the same cache; `seat_measure`'s kept pose too (the solo test). Kept per kind for the session; a new base blends in (~0.3 s). |
+| upper arms / forearms 7 / 8, 36 / 37 | **two-bone IK**: the wrist on top of the thigh (60 % from the hip joint to the knee, 9 cm up, 3 cm inward), the elbow out and back; the elbow's hinge axis kept (the frame of the bone and its bend normal mapped onto the solution) |
+| hands and fingers 9 - 28, 38 - 57 | our Sam's own pose at the moment the carry starts (he stands at the door): relaxed hands, not the wheel grip |
+| other translations, scales | Sam's own (bone lengths), as before |
+
+Order (Sam's update, under the fit's guard): the base and the hands into his locals, the game's model step (the
+byte-checked `0x141D8AA20`, no bounds), the 77 model matrices read once; **the convention gate** (once per session): the
+child's rows predicted from the parent's rows and the local quaternion we wrote, for 6 -> 7, 7 -> 8, 36 -> 37, 61 -> 62,
+1 -> 2, both conventions; the one under 1e-3 wins (measured: convention 0, the rows are R(q)^T, error 1e-7; the other
+1.7), neither: the arms off for the session (the base and the hands stay); then both arms solved, the model and bounds
+steps as before, the wrists read back (over 5 cm for 30 updates in a row: the arms off for the session). The capture is
+written after the override, so the wire (STJ1), the self view, the gear and the partner body on the driver's screen all
+carry the seated idle. No new game address; no wire change.
+
+Logs: `[real] riding: Sam's pose override ON (seated idle ...)`; `[ride] seated idle: the <kind>'s base held for now |
+latched (the driver's frame, driving calmly at x m/s | our own Sam's calm driving | the kept snapshot)`; every 10 s while
+carried and at the end `[ride] seated idle: arms ON (convention 0, gate error ...), n solves, n refused; hands vs their
+targets mean / max cm`; on both games (carried or driving) `[ride] hands (passenger|driver, <kind>): travel in Sam's
+model space over 10 s right x cm left y cm` (the size of the box the wrists moved in).
+
+Evidence (hidden, foreground, the launcher's Local test files unless noted):
+- `two-games-ride-camera` (`20261120-192620`, truck, the guest drives play test 3's road with a slalom then the bends and
+  the downhill, the host rides): passenger hands 0.0 - 1.4 cm per 10 s after the base latched (3.6 cm in the window of the
+  latch); the driver's 11 - 22 cm in the same windows. Lap 2 with v0.20's pose (`ride_test 22 0`): the passenger's 10 - 21
+  cm, the driver's numbers.
+- `two-games-ride-pose` (`20261120-193111`, trike pillion, the same road): the passenger 7 - 11 cm per 10 s against the
+  driver's 70 - 127 cm; lap 2 (v0.20) the passenger 68 - 149 cm. Screenshots (both screens): lap 1 the pillion sits
+  upright, the arms down, the hands on the thighs; lap 2 the arms reach forward through the driver.
+- `seat-pose` (`20261120-190205`, solo, the kept driving pose as the base): arms ON, convention 0, the hands on their
+  targets (0.00 cm) on the truck, the roadster and the trike; close-ups (P16 - P18, P26 - P28) with the ride camera off.
+- Regressions `two-games-ride-truck` (`193620`; the guest, Fragile's fitted self view, also rides: arms ON, 1.3 - 1.4 cm),
+  `-roadster` (`193922`), `-trike` (`194205`), `two-games-ride-save-host` (`194511`): pass.
+
+Not done / not proven: on the roadster and the trike the passenger's hands still travel 6 - 20 cm per 10 s in the short
+regression rides and 7 - 11 cm on the route (the truck: under 1.5 cm). The base and the IK targets are held; the cause is
+not traced (the windows include boarding, stops and reversing; the legs may be moved by the game's own model step). No
+passive sway, breathing or head look (each was a design option); the trike pillion's hands rest on the thighs, not on the
+driver's waist. `ride_test 23 <what> <value>` tunes the rest pose at run time (1 along, 2 up, 3 in, 4 forearm twist in
+degrees, 0 the arms off / on).
+
+### 24.15 The passenger's camera: the driver's ride camera (v0.21, play test 3; `session.ini ride_camera`, default 1; `native/mod/ride_camera.*`)
+
+Play test 3: "the camera for the passenger ... is zoomed in a bunch ... glitches out a lot ... weirdly phasing through
+the car". The passenger kept the game's on-foot camera ("Around Basic Stand": 4.15 m from Sam + 1.45 m, BaseType
+Normal) on a Sam the carry teleports every tick: 3 - 7 m from the truck, often inside it (the v0.20 lap of
+`20261120-192620`: parameter 0x0D, distance in use 2 - 4.15 m, up to 31 of 31 camera frames inside the truck's box).
+
+The game has no "Sam rides" camera mode. Its ride action (state 2, `0x142774A40`) requests the ride parameter from the
+player's `DSCameraMode` (`ctl +0x54D0` = mode + 0x20) every frame; `ridecam::Feed` (every carry tick, game thread) makes
+the same writes for the carried Sam with the vehicle he rides (the follower of the partner's):
+
+| Mode field | Value (as the native ride action) |
+|---|---|
+| +0x598 (u16) | the Around module's request: truck 0x2B / 0x2E on a road, roadster 0x2D / 0x30, trike 0x2C / 0x2F (`0x142F6B370(vehicle, 1, 1)`: its wheels on road materials). Reset by every camera update (0x17B), so it is written every tick. |
+| +0x5BC (u32) | 0xF (the request's flags) |
+| +0x630 (float4) | the "Manual" base: the vehicle's camera point (its local +0xA60 through its transform, as `0x14283E090`), one frame ahead along its velocity (as the seat) |
+| +0x147B | \|= 0x80 (in a vehicle) |
+| +0x730 / +0x147F | the vehicle's yaw quaternion (yaw and pitch, no roll; computed here: the game's own matrix / angle helpers take arguments that faulted, run `20261120-191327`, so it is built from the forward axis; equal to the native value on the driver's game to 4 decimals, run `20261120-191630`) / \|= 0x60 |
+
+Two more things make it the driver's camera:
+- **The camera's collision ignores the vehicle.** Every camera query builds its filter with the player's PARENT entity
+  ignored (`FUN_142698A50(mode, filter)`: Sam +0x70, the vehicle a driver sits in, via `0x142380B00`) and with the
+  entity tree he is MOUNTED on (`FilterIgnorePlayer 0x14382FD30`: his `MounterComponent`'s mount). A carried passenger has
+  neither, and the ride camera stopped at the truck's walls from inside: 3.1 m from the base with 11.25 in use, inside the
+  truck, the same with the seat teleport held (`ride_test 26`: the teleport is not the cause), runs `20261120-183653`,
+  `-184648`, `-185030`, `-185944`. Two MinHook detours add the ridden vehicle for our carried Sam only (camera callers
+  only: the return address in the camera's code `0x142660000 .. 0x142700000`): `H_CamFilterBuild` puts it on the filter
+  as the parent is for a driver, `H_FilterIgnorePlayer` adds its tree as the mount's. With them: 11.7 m (`ride_test 25 0`
+  in the same run: back to 3.09 m).
+- **The heading follows the vehicle.** The game's ride camera recentres behind the vehicle only for its driver (the yaw
+  quaternion alone did not do it, run `20261120-192044`); `ridecam::Follow` eases the passenger's heading (+0xC14)
+  toward the vehicle's forward while it moves over 3 m/s and he has not turned the camera for 2 s (k 0.2 / s, at most
+  25 deg/s; any other change of the heading counts as look input and pauses it 2 s). The heading's sign against the world
+  is measured once by a 0.02 rad nudge (`heading follow: the camera turned +0.020 rad ... sign +1`). Look input is
+  unchanged (the on-foot look axes: the player's ride id stays "none").
+
+The carry's end stops the writes; the game blends back to the on-foot camera (0.4 s). Any thread hazard is limited to
+plain stores of the request (as the native ride action does) and the two detours on the camera's thread, which only read
+atomics the feed publishes (a feed older than 250 ms is ignored).
+
+Byte checks (`kCamSites`, 19 sites + 3 vtable slots: the camera update's select / reset / base, the Around select's
+request, the attach (+0x278 / +0x280 / ctl +0x54D0), the ride action's writes and its base point `0x14283E0D4` (+0xA60 /
++0xC8), the look's heading `0x1426D89B6` / `0x1426D8A06`, the yaw writes `0x142775D2A`; `kCollSites`, 7 sites + 3 call
+targets: `0x14382FD30`, `0x142380B80`, `0x1426C8FB7`, `0x141C390E0`, `0x142698A50`, `0x142698ADD`, `0x142380B00`). A
+mismatch: `[ridecam] ... OFF` with the reason; the collision detours alone off: the camera may sit inside the vehicle.
+The detour on `0x14382FD30` is installed before vehicle hits (25) check that function's first bytes (its filter init):
+vhit accepts the hooked prologue when `ridecam::FilterInitHooked()` (ridecam's own check, a superset of vhit's, passed
+before the hook went in; vhit's calls pass through the detour unchanged) and logs `[vhit] the filter init at 0x14382FD30
+carries the ride camera's detour ...: ok`. Without that, v0.21's camera turned vhit's direct path off (`direct path OFF
+(checks)`, hidden run `20261120-201517`).
+
+The meter (`[ridecam] passenger|driver <kind>: parameter, BaseType, distance in use; the camera to the vehicle mean / min
+/ max, above it, behind it, heading off its own; base vs the vehicle; steps over 0.3 / 1 m; inside the vehicle; ...`)
+logs every 5 s while carried or driving (`ride_test 21 1`: every second); the driver's line is the reference.
+
+Evidence: `two-games-ride-camera` (`20261120-192620`, truck), lap 1: parameter 0x2E, BaseType 3 in every sample, the
+camera 11.9 - 12.9 m from the truck (the driver's 11.7 - 12.2), 4.4 m above it (the pitch is each player's), 0 steps over
+0.3 m and 0 frames inside the truck over 70 s; the heading from 122 deg off to 2 deg in 8 s, then within 2 - 49 deg in the
+bends; screenshots C1 - C4 (both screens) against lap 2 (v0.20: V1 - V3, the camera over and in the cab). The guest
+(driver) is unchanged.
+
+Not proven: the camera's own collision against other vehicles and the world is the game's (unchanged); the boost and race
+parameters are not fed; the follow's rate is our choice (the driver's recentring was measured at roughly 0.1 - 0.3 / s and
+partly not at all in long bends).
+
+### 24.16 A save gives the seat back (v0.21, play test 3: "the passenger flew out of the car")
+
+The save guard (24.12) puts a carried Sam off for every save of the game: no save may record him at the seat. The game
+saves by itself while the partner drives (its periodic and area autosaves: hidden run `20261120-202822-two-games-ride-pose`
+had one with reason 0x09 at 6.8 m/s on the elevated road's end, near the big hologram), so the passenger was left
+standing on the road while the vehicle drove on: to the player the same as being thrown out.
+
+Now the exit for a save (`End::saving`) arms the seat back: once the save is written (`saveguard::Busy` false) and any
+placement done, our Sam on foot, the link up and the partner still driving that vehicle, his game sends a REQUEST with
+the same ride id and the new reason `kReqResume` (3; `ride_wire.hpp`). The driver's game accepts it only for the ride it
+ended for a save (its END "the game saves"), within `kResumeWindowMs` (10 s), while it drives that vehicle and the seat
+is free, at any speed and distance (no door rule); any other resume is denied with its reason. The ACCEPT starts the
+carry as a board does (capsule off, the seat teleport, the seated idle, the ride camera). One try: a deny, no answer or
+the window running out leaves him on foot as before (`[ride] no seat back after the save ...`). Logs: `[ride] once the
+save is written our Sam asks for the <kind>'s seat back`, `[ride] <role>: asking for the <kind> 0x...'s seat back after
+the save (... ms after the exit, ... m/s)`, the driver's `... (ride #..., the seat back after a save): ACCEPTED`, `[ride]
+<role>: our Sam back on the <kind>'s seat after the save`; the notice "The game saves: back on the seat in a moment."
+`ride_test 29 0` (hidden tests) gives back v0.20's exit. An older peer drops reason 3 as an invalid message: no answer, he stays on foot (3 s timeout).
+
+Evidence: `two-games-ride-save-resume` (`20261120-203916`, launcher Local test ini): a save on the host at 7.7 m/s,
+held, Sam off for the capture (released after 2 frames), written; the seat back asked 202 ms after the exit, accepted by
+the guest at 7.6 m/s (4.8 m from the door), carried again 297 ms after the exit and to the end of the lap (51 s, past the
+hologram; the health guard kept the game's -inf there). Screenshots A1 (before), A2 (back on: the chase camera behind
+the truck on both screens), A3.
+
+Not proven: over a real internet link the seat comes back one round trip later (the passenger stands on the road that
+long, a few metres behind at speed); the guest as the saving passenger (the same code path) was not run.
 
 ## 25. Vehicle hits (`session.ini partner_vehicle_damage`, default 1, with `vehicle_sync=5`; design milestone M4)
 
@@ -4990,3 +5292,85 @@ Not covered: the dt scale at an uneven pace in two games (proven only in the one
 from the side at speed (the host's trike crashed in the first try); a stop on foot still overshoots for one frame (it is
 seen only after it happens); her shorter limbs on Sam's seated rotations (hands and feet a few cm off the bars / pedals)
 not measured; the fit writes the hand attach helpers (MTP_R/L_Hand_a/b) while seated, nothing hung on them seen.
+
+### 26.7 The accessories drawn with her body: the BB pod and the race on the partner's props (v0.21, play test 3 of v0.20.0) [V: runs below]
+
+The user's play test 3 (Local test, host Sam, guest Fragile, 30 fps): "ok lets fix the accessories please". Which screen
+was not said; both had a fault, found with a meter of what each prop actually draws (below).
+
+- **What a prop draws** [V]: the game stamps every entity's update with the TSC (`Entity::Update 0x14234D760`: `+0x250` at
+  its start, `0x14234D7A9`; `+0x258` at its end, `0x14234DA87`). A prop draws the placement it has when its own update
+  runs. Order in a frame, guest: the tick, the self body, its props (the BB pod), Sam, then Sam's attached gear (cap,
+  glasses, backpack, cases, boots: after Sam in 90 of 90 checks a second). Host: the tick, the partner body, its props
+  (90-99 % after the body).
+- **Cause 1, the guest's own screen (the big one)** [V]: the self view's only prop is the BB pod (`[gear-self] 1 items`;
+  the game stops drawing Sam's pod while his parts are hidden). It was placed in Sam's update (`CopySamTransform`) and in
+  the tick (`PlaceGearNow`), never in the self body's own update, so it drew the previous frame's tick placement (Sam's
+  world one frame old, the pose before that) while her body drew this frame's predicted world (follow mode 4): **9 cm
+  mean running (64 % of frames over 8 cm), 29-35 cm every frame driving the truck at 11 m/s** (the user's own session, by
+  the `copy` column of their `[self] follow 4 meter`: about 19 cm mean, 41 cm max seated). The pod floats off her chest.
+- **Cause 2, the host's view of her (13-16 props)** [V]: in 1-10 % of prop updates (about 10 % while she drives) a prop's
+  update starts on another worker thread while the body is still in its update, before the body's placement. It then
+  draws the tick's placement: the right world (the tick moved the body) and the previous frame's pose. Single-frame flicks
+  of 1-2 cm mean, up to 6-10 cm, a few a second over all the props. The guest's view of the partner Sam has the same race.
+- **Fix 1** (`real_body.cpp` `ApplyBody`): the self view's props are also placed in the self body's own update, on the
+  world it has then (follow 4's prediction) and the pose just written, as the partner's props already were. The
+  `CopySamTransform` and tick placements stay (they come after the pod's update in a frame). No new game address or call:
+  the same exported setter and vtable / GUID checks as the partner slot.
+- **Fix 2** (`native/mod/gear_extrap.hpp`, pure and unit-tested in `tests/gear_extrap_tests.cpp`; `real_body.cpp`
+  `PlaceGear`): every placement made in a body's own update is kept in the body's frame (`l.p = W.r (w.p - W.p)`,
+  `l.r = w.r W.r^T`), the last two per prop, keyed by the prop entity, its GUID and the published list's generation
+  (`PublishGear` bumps it before and after a new list). The tick then places each prop one body update ahead of the
+  newest record: `p = 2 cur - prev`, `r = cur (prev^T cur)`, on the body's world now. The plain placement (as v0.20)
+  when: fewer than two records, the newest over 2.5 frames old, the two less than half a frame or over 2.5 frames apart
+  (a forced update, a gap), a step over 25 cm or a turn over 30 degrees (a seat snap, a layout change), or anything not
+  finite. Both slots.
+- **Switch**: `self_view 14 <mask>`: bit 1 fix 1, bit 2 fix 2; 3 is the default, 0 is v0.20 (for before / after runs).
+  The `[gear]` / `[gear-self]` 5 s line ends with `fix N: <n> in the body's update, the tick's <n> extrapolated / <n>
+  plain`.
+- **Meter** (hidden test runs only, `self_view 15 1`; off with a one-line reason when the two stamp sites do not match
+  `48 89 81 50 02 00 00` / `48 89 87 58 02 00 00`): each placement is stamped (`__rdtsc`, kind tick / body update / Sam's
+  update) and each body update's world kept; the tick finds, for every prop's newest update while the body moves, the
+  placement stamped last before it started, and scores it against the prop's anchor on the body as drawn (the body's
+  world in its update times its pose times the prop's offset). A line a second per slot: `[gear] drawn vs anchor
+  <partner|self> (fix N): N moving prop updates, cm mean max (>3 N, >8 N); drew the tick's N (mean/max), the body
+  update's N, Sam's update's N; raced the body's update N (mean/max)`. The tick-time meters (`[headgear]`, `Sam vs body`)
+  cannot see any of this: at tick time everything agrees. Sanity check: a prop that drew the body update's placement
+  scores 0.00 cm.
+
+Numbers (hidden, two games on the launcher's own Local test files, 30 fps; the guest runs, stops and turns, then drives
+the truck; the same moves for A = `self_view 14 0` (v0.20) and B = 3 (v0.21); run `20261120-195953-two-games-gear-twitch`,
+scenario `two-games-gear-twitch.txt`; the first meter line after each switch dropped):
+
+| What | v0.20 (A) mean / max cm | v0.21 (B) mean / max cm |
+| --- | --- | --- |
+| guest's own screen, BB pod, on foot (407 / 413 prop updates) | **9.15 / 16.95** (87 % > 3 cm, 64 % > 8 cm), all the tick's | **0.00 / 0.00** in this run (all the body update's); run `204717`: one race frame at 13.2 cm |
+| guest's own screen, BB pod, driving the truck at 11 m/s | **29.2-35.0 every frame** | 0.00 except the race frames: one of 224 at 16.1 cm here; run `20261120-204717` **two of about 250 at 41.1 and 30.7 cm** (one frame of motion at 11 m/s is about 37 cm) |
+| host sees her on foot, all props (6624 / 6704 updates) | 0.10 / 6.21; race frames 751: 0.88 / 6.21; > 3 cm 45 | 0.06 / 6.09; race frames 759: **0.52** / 6.09; > 3 cm 15 |
+| host sees her drive the truck (2882 / 3420 updates) | 0.11 / 7.76; race frames 235: 1.35 / 7.76; > 3 cm 28 | **0.00 / 0.89**; race frames 286: **0.06 / 0.89**; > 3 cm 0 |
+| guest sees Sam on foot (the host's props, 1904 / 1938 updates) | 0.03 / 9.15; race frames 117: 0.48 / 9.15 | 0.01 / 5.15; race frames 71: 0.20 / 5.15 |
+
+The tick's placement was extrapolated in 93-99 % of the tick's placements (the rest plain: the gates above, boarding).
+Pictures (`guest\automation\A1*` / `B1*`, the guest's own screen, running across, stopping, turning): with v0.20 the pod
+hangs in front of her chest (A1, the stop A1c, the turn A1e); with v0.21 it sits on her chest in every frame. The host's
+flicks are single frames of a few cm (the meter is the evidence). The truck's cab hides the driver.
+
+Regressions, all pass (game exit 0, guest exit 0, saves unchanged, restored, no violation, 0 cloud uploads):
+`20261120-200334-two-games-fragile-attach`, `20261120-200528-fragile-caps`, `20261120-200747-two-games-self-vehicle`.
+
+Not covered:
+- The race on foot keeps single frames up to 5-6 cm: a swinging joint's second difference (a one-frame extrapolation is
+  exact only for a steady step).
+- **The self slot's own race (fixed after these runs, not yet measured)**: when the pod's update starts before the self
+  body's placement (about one frame in 100-400 driving, 1 in about 400 on foot) it draws the tick's placement. The tick
+  runs before the self body's update moves it (follow 4), so that placement's world was the previous update's: one
+  frame of motion behind, **30-41 cm at 11 m/s** (run `20261120-204717`, guest, fix 3: 41.09 cm at 105.0 s and 30.65 cm
+  at 108.1 s driving, 13.15 cm at 75.5 s on foot; the 16 cm of run `195953` was the smallest such frame). Since then the
+  self slot's tick also extrapolates the body's own world from its last two updates (`gearx::Extrapolate` on a `body`
+  history kept with the props', step limit `kMaxBodyStepM` 1.5 m, the same gates otherwise) and composes the props'
+  extrapolated locals with it; the `[gear-self]` line adds `(<n> on the body's extrapolated world)`. Only with fix bits
+  1 and 2 (the body-update records come from fix 1).
+- Follow mode 4's own residue on the guest's screen: Sam's attached gear (cap, glasses, backpack) is drawn at Sam's world
+  of the frame, her body at the prediction; single frames of 4-13 cm at stops and sharp turns on foot (2-5 cm seated),
+  about 1 % of moving frames over 8 cm (26.6). Removing it needs the body to update after Sam (parented or attached to
+  him, `SetParent 0x142361DD0`): untested, it changes the body's lifetime rules.

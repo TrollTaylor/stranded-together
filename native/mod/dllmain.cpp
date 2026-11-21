@@ -328,6 +328,7 @@ DWORD WINAPI Bootstrap(LPVOID) {
             st::link::Shutdown();
             Sleep(100);  // the transport sends CLOSE, closes the session and parks
         });
+        st::link::AllowTestImpairment(st::automation::Enabled());
         if (!st::link::Start(cfg)) st::Log("[mod] link did not start; see the reason above");
     }
     st::sync::Init(cfg, mod_dir);

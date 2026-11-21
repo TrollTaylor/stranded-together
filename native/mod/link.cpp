@@ -39,6 +39,7 @@ lk::Session g_session;
 std::uint8_t g_body[lk::kLinkMaxBody];
 
 lab::UdpTransport g_udp;
+bool g_test_impair_allowed = false;  // hidden runs only (dllmain: automation::Enabled()): the test_net_* impairment
 lab::SteamTransport g_steam;
 bool g_use_steam = false;
 bool g_host = false;
@@ -689,6 +690,8 @@ double NowMsPrecise() noexcept {
 
 std::uint64_t NowMs() noexcept { return static_cast<std::uint64_t>(NowMsPrecise()); }
 
+void AllowTestImpairment(bool on) noexcept { g_test_impair_allowed = on; }
+
 bool Start(const Config& c) noexcept {
     if (InterlockedCompareExchange(&g_running, 1, 0) != 0) return true;
     g_host = c.role == Role::host;
@@ -756,6 +759,7 @@ bool Start(const Config& c) noexcept {
         }
         Log("[link] steam %s started; peer=%llu", g_host ? "host" : "guest",
             static_cast<unsigned long long>(c.peer_steam_id));
+        if (c.test_net_latency_ms || c.test_net_jitter_ms || c.test_net_loss_permille) Log("[link] test_net_* ignored (the UDP link only)");
     } else {
         std::uint32_t peer_addr = 0x7F000001;
         if (!ParseIpv4(c.udp_peer, peer_addr)) Log("[link] udp_peer '%s' is not IPv4; using 127.0.0.1", c.udp_peer.c_str());
@@ -773,6 +777,21 @@ bool Start(const Config& c) noexcept {
         t.peer_address = peer_addr;
         t.any_source = true;
         t.allow_ephemeral = false;
+        const bool impair = c.test_net_latency_ms || c.test_net_jitter_ms || c.test_net_loss_permille;
+        if (impair && g_test_impair_allowed) {
+            // hidden tests only: this game's sends go through the transport's lab impairment (play test 3: the vehicle sync
+            // over a simulated internet)
+            t.impair.latency_ms = c.test_net_latency_ms;
+            t.impair.jitter_ms = c.test_net_jitter_ms;
+            t.impair.loss_permille = c.test_net_loss_permille;
+            t.impair.burst_model = c.test_net_burst > 0;
+            t.impair.burst = c.test_net_burst > 0 ? c.test_net_burst : 2;
+            t.impair.seed = g_host ? 12345u : 54321u;
+            Log("[link] TEST impairment on this game's sends: +%u ms, jitter 0..%u ms, loss %u per mille%s", c.test_net_latency_ms, c.test_net_jitter_ms,
+                c.test_net_loss_permille, t.impair.burst_model ? " (bursts)" : "");
+        } else if (impair) {
+            Log("[link] test_net_* ignored (hidden runs only)");
+        }
         lab::DatagramSink sink{};
         sink.on_datagram = &OnDatagram;
         sink.on_idle = &OnIdle;

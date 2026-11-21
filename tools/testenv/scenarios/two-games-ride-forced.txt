@@ -1,14 +1,17 @@
 # Riding together, the forced exits (design M3.5 #3, M3.4; docs/real-partner-body.md section 24), hidden:
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-ride-forced -SeedSaves complete-100 -GuestSeed profile-only
 # The host drives the truck, the guest rides; each time the guest's game puts its own Sam off by itself:
-#   1. the link: the guest's game drops every datagram for 2.5 s (coop_session 1) -> off after 1 s silent ("link lost"),
-#   2. a crash: the host's game stops its moving truck dead (ride_test 6: RequestTeleport onto its own place) -> the
-#      driver's frames jump ("crash"; the M4 hit handler is called: "no hit handler" until M4),
+#   1. the link: the guest's game drops every datagram for 1.5 s (coop_session 1) -> v0.21: ridden out on the seat (the
+#      ride ends on the link only when the link says it is gone, or after 4.5 s without a pose; v0.20 put him off after
+#      1 s silent, "link lost"); then the guest gets off by choice. (Over 2 s the guest's link reconnects: a new session.)
+#   2. a crash: the host's game stops its moving truck dead (ride_test 6: RequestTeleport onto its own place) -> v0.21: a
+#      confirmed crash of the driver's truck, the guest stays in the cab (no exit, no hit), then gets off by choice,
 #   3. the game takes the guest's Sam (ride_test 7) -> off without a placement, capsule back on,
 #   4. the driver gets off while the guest rides -> "the driver got off",
 #   5. the host's game rolls its truck over (ride_test 5: 45 x 4 deg about its forward axis by RequestTeleport) -> "flipped"
-#      after 0.5 s upside down, or "crash" first: the rolled truck tumbles in the owner's world (runs 20261119-144141 /
-#      -144457: dv 8.5 / 17.4 m/s before 0.5 s upside down on the follower).
+#      after 0.5 s upside down on the guest's copy; v0.21: never "crash" (the roll's one-frame jumps are not confirmed;
+#      v0.20 took them for a crash, runs 20261119-144141 / -144457), and when the rolled truck rights itself in the
+#      owner's world before 0.5 s the guest stays seated.
 #   (before 5) the host reverses with the guest carried: the guest holds X (too fast: it waits), lets go and holds X again:
 #      "jumped off" at that speed (above 8 m/s also the D3-3 hit).
 # (The emergency-stop path with a carried Sam runs in seat-measure: ride_test 9.)
@@ -57,27 +60,36 @@ wait 1200
 @guest until 15 3000 \[ride\] guest: our Sam carried on the truck .*#1\) => pad X 800
 waitlog 10 \[ride\] host: the partner asks to ride our truck .*ACCEPTED \(#1;
 wait 1500
-# ---- 1. the link: 2.5 s of the guest's received datagrams dropped
-@guest action coop_session 1 2500
-@guest waitlog 6 \[ride\] guest: our Sam off the truck .*\(#1, link lost, forced\)
+# ---- 1. the link: 1.5 s of the guest's received datagrams dropped: ridden out on the seat (v0.21)
+@guest action coop_session 1 1500
+@guest waitlog 4 \[ride\] no pose from the driver for [0-9]+ ms: our Sam stays on the seat \(link still connected
+@guest waitlog 6 \[ride\] the driver's poses are back after [0-9]+ ms: the ride goes on
+@guest screenshot F01-guest-link-stall
+wait 1500
+@guest action ride_state
+@guest waitlog 3 \[ride\] state: .*riding
+@guest pad X 150
+@guest waitlog 6 \[ride\] guest: our Sam off the truck .*\(#1, got off\)
 waitlog 8 \[ride\] host: the partner's ride .* is over
-@guest screenshot F01-guest-link-lost
 wait 4000
 @guest action ride_test 8
 wait 1200
 @guest until 15 3000 \[ride\] guest: our Sam carried on the truck .*#2\) => pad X 800
 waitlog 10 \[ride\] host: the partner asks to ride our truck .*ACCEPTED \(#2;
 wait 1500
-# ---- 2. a crash: moving, then stopped dead by the driver's game
+# ---- 2. a crash: moving, then stopped dead by the driver's game. v0.21 (play test 3): the truck's cab keeps its passenger,
+#      as it keeps its driver (no exit, no hit; the crash is confirmed by the driver's frames and speed field); the guest
+#      then gets off by choice
 pad none 3500 rt=170 keep
 action ride_test 6
 pad none 0
-@guest waitlog 4 \[ride\] crash exit
-@guest waitlog 4 \[ride\] guest: our Sam off the truck .*\(#2, crash, forced\)
-waitlog 8 \[ride\] host: the partner's ride .* is over
+@guest waitlog 4 \[ride\] the driver's truck crashed \(dv .* confirmed\): our Sam stays in the cab
 wait 2500
 @guest screenshot F02-guest-after-crash
 screenshot F02-host-after-crash
+@guest pad X 150
+@guest waitlog 6 \[ride\] guest: our Sam off the truck .*\(#2, got off\)
+waitlog 8 \[ride\] host: the partner's ride .* is over
 pad none 1500 lt=255 keep
 pad none 0
 wait 2000
@@ -136,7 +148,14 @@ waitlog 10 \[ride\] host: the partner asks to ride our truck .*ACCEPTED \(#6;
 wait 1500
 # ---- 6. the host's game rolls its truck over
 action ride_test 5
-@guest waitlog 8 \[ride\] guest: our Sam off the truck .*\(#6, (flipped|crash), forced\)
+# v0.21: the roll's per-tick teleports in the driver's world are no crash (one-frame jumps, not confirmed); the passenger is
+# put off only when his own copy of the truck lies upside down for 0.5 s (the driver's truck may right itself first: run
+# 20261120-175540, the guest stayed seated and the roll's jump was logged as a crash candidate not confirmed)
+# (run 20261120-222305: the roll gave no crash candidate at all and the truck righted itself 4.3 m aside in the owner's
+# world; the guest's follower re-seated onto it at the standstill, v0.21's carried "stopped" rule): seated or "flipped"
+# are both right, any other exit fails
+wait 8000
+@guest nolog \[ride\] guest: our Sam off the truck .*\(#6, (?!flipped)[^)]*\)
 wait 2000
 @guest screenshot F05-guest-after-flip
 screenshot F05-host-after-flip
@@ -144,6 +163,8 @@ screenshot F05-host-after-flip
 @both action vehicle_drive 1
 nolog \[ride\].*FAULT
 @guest nolog \[ride\].*FAULT
+@guest nolog \[ride\] .*\(#[0-9]+, crash, forced\)
+@guest nolog \[ride\] .*\(#[0-9]+, link lost, forced\)
 nolog \[vdrive\].*FAULT
 @guest nolog \[vdrive\].*FAULT
 @guest quit

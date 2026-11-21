@@ -1,0 +1,146 @@
+# The carried passenger's seated idle and ride camera, solo (v0.21, play test 3; docs/real-partner-body.md sections 24.14 /
+# 24.15), one game, hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario seat-pose -SeedSaves complete-100
+# seat-measure's route (truck, roadster, the Kusanagi trike: Sam drives it, `seat_measure` keeps his seated pose, gets off,
+# `ride_test 1` carries him on its passenger seat / the pillion) with the seated idle (source 3: the kept driving pose as
+# the base, the hands resting on the thighs by IK, the relaxed hands from his pose at the door) and the passenger's ride
+# camera (the game's own ride camera parameter on the vehicle). Pass (in the logs): "[ride] seated idle: arms ON
+# (convention 0|1 ...)", the hands vs their targets under 2 cm, "[ridecam] passenger <kind>: parameter 0x2B / 0x2D / 0x2C
+# ... BaseType 3", no fault. Check enlarged: the Pxx-carried screenshots (hands on the thighs, no steering pose; the
+# chase camera as the driver's); Px6..Px8 close up (the on-foot camera with the ride camera off, `ride_test 20 0`).
+role echo
+timeout 360
+ini partner_body=real
+ini echo_offset_m=40
+ini echo_delay_s=0.5
+ini partner_collision=0
+ini vehicle_sync=0
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+wait 1500
+action ride_state
+action ride_test 21 1
+# ---- the truck
+action vehicle_sync 8 1.8 2
+wait 1500
+until 20 4000 \[ride\] our Sam is seated in the truck => pad X 150
+wait 3500
+action seat_measure
+screenshot P01-truck-driver
+pad X 150
+waitlog 15 \[ride\] our Sam is out of the vehicle
+wait 3000
+action ride_test 1
+waitlog 5 \[ride\] solo: our Sam carried on the truck
+wait 2500
+action ride_test 24
+screenshot P02-truck-carried
+pad none 700 rx=32767
+wait 800
+screenshot P03-truck-carried-side
+pad none 700 rx=32767
+wait 800
+screenshot P04-truck-carried-front
+# close up: the on-foot camera on the carried Sam (the feed off; its collision still ignores the vehicle)
+action ride_test 20 0
+wait 1500
+screenshot P06-truck-close-a
+pad none 450 rx=32767
+wait 700
+screenshot P07-truck-close-b
+pad none 450 rx=32767
+wait 700
+screenshot P08-truck-close-c
+action ride_test 20 1
+wait 1000
+action ride_state
+action ride_test 2
+waitlog 5 \[ride\] capsule back ON
+wait 2000
+screenshot P05-truck-off
+# ---- the roadster (the garage)
+action vehicle_sync 8 1.8 1
+wait 1500
+until 20 4000 \[ride\] our Sam is seated in the roadster => pad X 150
+wait 3500
+action seat_measure
+screenshot P11-roadster-driver
+pad X 150
+waitlog 15 \[ride\] our Sam is out of the vehicle
+wait 3000
+action ride_test 1
+waitlog 5 \[ride\] solo: our Sam carried on the roadster
+wait 2500
+action ride_test 24
+screenshot P12-roadster-carried
+pad none 700 rx=32767
+wait 800
+screenshot P13-roadster-carried-side
+pad none 700 rx=32767
+wait 800
+screenshot P14-roadster-carried-front
+# close up: the on-foot camera on the carried Sam (the feed off; its collision still ignores the vehicle)
+action ride_test 20 0
+wait 1500
+screenshot P16-roadster-close-a
+pad none 450 rx=32767
+wait 700
+screenshot P17-roadster-close-b
+pad none 450 rx=32767
+wait 700
+screenshot P18-roadster-close-c
+action ride_test 20 1
+wait 1000
+action ride_test 2
+waitlog 5 \[ride\] capsule back ON
+wait 2000
+screenshot P15-roadster-off
+# ---- the Kusanagi trike (outside)
+action vehicle_sync 8 1.8 4
+wait 1500
+until 20 4000 \[ride\] our Sam is seated in the trike => pad X 150
+wait 3500
+action seat_measure
+screenshot P21-trike-driver
+pad X 150
+waitlog 15 \[ride\] our Sam is out of the vehicle
+wait 3000
+action ride_test 1
+waitlog 5 \[ride\] solo: our Sam carried on the trike
+wait 2500
+action ride_test 24
+screenshot P22-trike-carried
+pad none 700 rx=32767
+wait 800
+screenshot P23-trike-carried-side
+pad none 700 rx=32767
+wait 800
+screenshot P24-trike-carried-front
+# close up: the on-foot camera on the carried Sam (the feed off; its collision still ignores the vehicle)
+action ride_test 20 0
+wait 1500
+screenshot P26-trike-close-a
+pad none 450 rx=32767
+wait 700
+screenshot P27-trike-close-b
+pad none 450 rx=32767
+wait 700
+screenshot P28-trike-close-c
+action ride_test 20 1
+wait 1000
+# the emergency-stop path while carried (what a fault of the per-frame tick does): input and pose back at once, the next
+# tick puts Sam beside the trike and turns his capsule back on; riding stays off
+action ride_test 9
+waitlog 5 \[ride\] capsule back ON \(the mod stopped\)
+wait 2000
+screenshot P25-trike-off
+action ride_state
+nolog \[ride\].*FAULT
+action log_status
+quit

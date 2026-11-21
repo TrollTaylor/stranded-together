@@ -1440,7 +1440,8 @@ void LauncherUi::DebugOptionsTab(Phase phase) {
         Gap(2.0f);
         committed |= Checkbox("Partner's vehicles can knock me down", &o.partner_vehicle_damage, true);
         Text(o.partner_vehicle_damage ? "Your partner's truck, trike or car knocks you down and hurts you like an enemy truck (never an instant kill), "
-                                        "also when you are thrown off in a crash. Your partner's own setting decides for them."
+                                        "also when you jump off it at speed. Riding as the passenger, nothing hurts you. Your partner's own setting "
+                                        "decides for them."
                                       : "Your partner's vehicles never hurt or knock you down.",
              col::kTextFaint, kSmall, nullptr, 0.0f);
         // Launcher-only: which characters Join and the local test offer the guest.

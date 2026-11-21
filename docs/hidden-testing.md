@@ -581,6 +581,13 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   profile-only`): the same on the launcher's own Local test files in two games at 30 fps: the host looks back at the
   guest (Fragile, cap and glasses on), who runs towards and across the host's view (her own screen in follow 1, then
   4), walks, turns and moves crouched; then the Santa hat on both screens.
+* `two-games-gear-twitch.txt` (role host, `launcherini local-test`, `-SeedSaves complete-100 -GuestSeed profile-only`):
+  Fragile's accessories (docs/real-partner-body.md section 26.7). The drawn-vs-anchor meter on both games
+  (`self_view 15 1`), then the same moves with v0.20's gear placement (`self_view 14 0`, A) and v0.21's (`self_view 14
+  3`, B): the guest runs, stops and turns (screenshots of her own screen A1* / B1*, the host's A1 / B1), the host walks,
+  then the guest drives the truck. Evidence: the `[gear] drawn vs anchor self|partner` lines per phase (self = the
+  guest's BB pod on her own screen, partner = the host's view of her props). Run
+  `20261120-195953-two-games-gear-twitch`: pod 9.15 / 16.95 cm -> 0.00 / 0.00 on foot, 29-35 cm -> 0.00 driving.
 * `two-games-self-vehicle.txt` (role host, `launcherini local-test`, `-SeedSaves complete-100 -GuestSeed profile-only`):
   the guest's self body on foot (run, stop, reverse, diagonal), driving the truck from a stop in v0.19's rule
   (`self_view 13 0`) then v0.20's, side views (S1*/S2*), the host watching (H1*/H2*); getting off (the guest waits on
@@ -972,6 +979,33 @@ hidden: `Start-TestRun.ps1 -Scenario two-games -SeedSaves complete-100`.
   (`launcherini local-test`, `-SeedSaves complete-100` only) boards and gets off with real input only (the guest's and
   the host's X on the game's prompt, the host's F through `hookkey` to get off) and checks the ImGui fallback
   (`ride_test 12 0`); screenshots N1 / M1 (the prompt available), N2b / M2b (seated, both screens).
+* **The vehicle sync and passenger safety scenarios** (play test 3 of v0.20.0; docs/real-partner-body.md sections 23.25
+  and 24.13): `two-games-veh-route` (`launcherini local-test`, `-SeedSaves complete-100`): the guest's autopilot
+  (`vehicle_drive 12`) drives play test 3's own road twice with the host carried as its passenger (getting off and on
+  between the laps with F and X); the follower's per-second meter, every teleport with its reason, the health guard's
+  lines at the big hologram, one odd drive frame (`vehicle_drive 10 9.8`: "not confirmed"). `two-games-veh-route-v020`
+  is the same drive with v0.20's follower, landing check and crash rule switched back on (`vehicle_drive 13 1`,
+  `ride_test 16 0`, `ride_test 17 0`): the "before" numbers (it fails nothing on an ejection).
+  `two-games-veh-route-net` (`ini` files, `-GuestSeed profile-only`): the host drives, the guest rides and follows, both
+  games' sends impaired (`ini test_net_latency_ms=60`, `test_net_jitter_ms=40`, `test_net_loss_permille=15`,
+  `test_net_burst=2`: the UDP transport's lab impairment, hidden runs only, `[link] TEST impairment ...`). The
+  autopilot's `[vdrive] autopilot: done (#n)` counts per game. Since v0.21 `two-games-ride-forced` expects the dead stop
+  to be a confirmed crash the guest rides out in the cab (then gets off by choice), and no crash exit at all.
+* **The passenger's pose and camera scenarios** (play test 3 of v0.20.0; docs/real-partner-body.md sections 24.14 and
+  24.15): `seat-pose` (one game, `-SeedSaves complete-100`): seat-measure's route with the seated idle (the kept driving
+  pose as the base, the IK arms), the passenger's ride camera at 1 s (`ride_test 21 1`) and close-ups with the ride camera
+  off (`ride_test 20 0`). `two-games-ride-camera` (`launcherini local-test`, `-SeedSaves complete-100`): the guest's
+  autopilot drives the truck on play test 3's road with a slalom (`vehicle_drive 21 0.45 2.5`) and the host rides; lap 1
+  v0.21, lap 2 v0.20's pose and camera (`ride_test 22 0`, `20 0`, `25 0`); both games log `[ridecam] passenger|driver ...`
+  every second and `[ride] hands (passenger|driver, ...)` every 10 s; screenshots C0 - C5 / V0 - V3 on both screens.
+  `two-games-ride-pose`: the same on the trike's pillion (P / Q shots).
+* **The seat back after a save** (v0.21, docs/real-partner-body.md section 24.16): `two-games-ride-save-resume`
+  (`launcherini local-test`, `-SeedSaves complete-100`): the guest's autopilot drives the truck on play test 3's road, the
+  host rides; 15 s in, at ~10 m/s, a save on the host (`save_guard 1 4 1`): held, the host's Sam put off for the capture,
+  the save written, then `[ride] host: asking for the truck ...'s seat back after the save`, the guest's ACCEPT ("the
+  seat back after a save") and `[ride] host: our Sam back on the truck's seat after the save`; carried to the end of the
+  lap. `two-games-ride-save-host` turns the seat back off (`ride_test 29 0`): it checks where the save put him and loads
+  it there.
 * **The save guard scenarios** (`ini host_save=1`, `-GuestSeed profile-only`, docs/real-partner-body.md section 24.12):
   `two-games-ride-save-host` (a save on foot runs at once; a save while the host rides is held, the ride ends, Sam is
   put beside the truck, then the save is written; the host loads it and stands where he was put),

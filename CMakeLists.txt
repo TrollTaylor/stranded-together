@@ -25,8 +25,12 @@ if(GIT_FOUND)
       # normalised), so two development builds with different frames (a version bump of STC1, ...) also
       # fail the check instead of silently dropping each other's frames; editing one of them re-runs
       # this configure step. The commit is shortened when needed to stay within the 16 bytes.
+      # (v0.21: also the shared-vehicle frames, the ride messages and STH1: a new DRIVE flag or ride
+      # REQUEST reason passed HELLO between two dirty builds of one commit and then every such frame was dropped)
       set(_st_wire_files native/mod/pose_wire.hpp native/mod/pose_wire.cpp native/include/stcoop/link_protocol.hpp
-                         native/net/link_protocol.cpp native/mod/save_xfer.hpp native/mod/save_xfer.cpp)
+                         native/net/link_protocol.cpp native/mod/save_xfer.hpp native/mod/save_xfer.cpp
+                         native/mod/vehicle_wire.hpp native/mod/vehicle_wire.cpp native/mod/ride_wire.hpp native/mod/ride_wire.cpp
+                         native/mod/tackle_rules.hpp native/mod/tackle_rules.cpp)
       set(_st_wire_text "")
       foreach(_f IN LISTS _st_wire_files)
         file(READ "${CMAKE_CURRENT_SOURCE_DIR}/${_f}" _t)
@@ -144,6 +148,7 @@ add_library(st_mod SHARED
   native/mod/vehicle_drive.cpp
   native/mod/ride_wire.cpp
   native/mod/ride_together.cpp
+  native/mod/ride_camera.cpp
   native/mod/save_guard.cpp
   native/mod/tackle_rules.cpp
   native/mod/partner_tackle.cpp
@@ -254,6 +259,22 @@ target_include_directories(st_self_predict_tests PRIVATE native/mod)
 target_compile_options(st_self_predict_tests PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_self_predict_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_test(NAME st_self_predict_tests COMMAND st_self_predict_tests)
+
+# ---- The carried passenger's seated idle pose, the pure part (native/mod/ride_pose_math.hpp): quaternions and joint rows,
+# the frame alignment, the two-bone arm IK that rests the hands on the thighs.
+add_executable(st_ride_pose_tests tests/ride_pose_tests.cpp)
+target_include_directories(st_ride_pose_tests PRIVATE native/mod)
+target_compile_options(st_ride_pose_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_ride_pose_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_ride_pose_tests COMMAND st_ride_pose_tests)
+
+# ---- Gear props' one-frame extrapolation of the tick's placement, the pure part (native/mod/gear_extrap.hpp): the body frame,
+# the history and its key, constant velocity and turn, the gates.
+add_executable(st_gear_extrap_tests tests/gear_extrap_tests.cpp)
+target_include_directories(st_gear_extrap_tests PRIVATE native/mod)
+target_compile_options(st_gear_extrap_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_gear_extrap_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_gear_extrap_tests COMMAND st_gear_extrap_tests)
 
 # ---- st_fakepeer: console stand-in for the second player (UDP), + self-test
 add_executable(st_fakepeer tools/fakepeer/fakepeer.cpp native/mod/link.cpp native/mod/steam_owner.cpp

@@ -41,6 +41,8 @@ struct Info {
 };
 
 bool Start(const Config& config) noexcept;  // game thread, once
+// Hidden runs only (dllmain sets it from automation::Enabled() before Start): session.ini test_net_* impair the UDP link.
+void AllowTestImpairment(bool on) noexcept;
 bool Running() noexcept;
 // `sound` (optional): an STA1 frame (partner sounds, docs/audio-research.md section 16) added to the same
 // datagram; when it does not fit there it goes in a datagram of its own right after.

@@ -3,6 +3,8 @@
 
 #include <windows.h>
 #include <xinput.h>
+#include <tlhelp32.h>
+#include <intrin.h>
 
 #include <algorithm>
 #include <atomic>
@@ -20,6 +22,7 @@
 #include "partner_source.hpp"
 #include "pose_wire.hpp"
 #include "real_body.hpp"
+#include "ride_camera.hpp"
 #include "ride_wire.hpp"
 #include "save_guard.hpp"
 #include "vehicle_drive.hpp"
@@ -72,6 +75,8 @@ using FnVoid1 = void (*)(std::uintptr_t);
 // ---------------------------------------------------------------- state
 bool g_checks_ok = false;
 bool g_cfg_on = true;
+bool g_test_hold_tp = false;           // ride_test 26: no seat teleport while the vehicle stands (hidden tests)
+int g_pose_mode = 1;                   // session.ini ride_pose (ride_test 22): 1 the seated idle (source 3), 0 v0.20's driver copy
 std::atomic<bool> g_on{false};
 std::atomic<bool> g_stop{false};       // the emergency stop: AfterStop restores once
 char g_off[200] = "not installed";
@@ -110,6 +115,8 @@ struct Pass {
     std::uint32_t world = 0;
     double req_ms = 0, since = 0;
     double not_driven_since = 0, gone_since = 0, asleep_since = 0;
+    double stall_since = 0;  // no pose from the driver over kLinkSilentMs since (0: not); stalls ridden out
+    unsigned stalls = 0;
     bool driver_ended = false;
     std::uint8_t driver_reason = 0;
     float health0 = -1;
@@ -131,13 +138,21 @@ struct Pass {
     double log_ms = 0;
     rwire::FlipDetector flip;
     rwire::CrashDetector crash;
+    rwire::CrashConfirm crash2;        // v0.21: a confirmed crash only
+    unsigned cab_crashes = 0, crash_rejects = 0;
     double crash_dv = 0;
     double test_crash_dv = 0;
     bool test_taken = false;
     double exit_wait_until = 0;        // a hold to get off came while too fast: off once it slows down (until then)
     bool native = false;               // asked through the game's own "Use Vehicle" (kReqNative)
+    bool resume = false;               // asked for the seat back after a save (kReqResume)
     bool off_hint_done = false;        // carried: the ImGui get-off hint (the game showed no RideOff prompt)
     double last_exit_ms = -1e18;       // the last get-off press (a native press and our own read of it count once)
+    // the seated idle's calm test (realbody::SetRideSeat): the vehicle's yaw rate, low-passed
+    bool have_yaw = false;
+    double yaw = 0, yaw_ms = 0, yaw_rate = 0, calm_since = 0;
+    double pose_log_ms = 0;
+    std::uint32_t pose_latches = 0;
 };
 Pass g_p;
 rwire::HoldDetector g_hold;            // board (ImGui fallback) / get off (ImGui fallback)
@@ -167,6 +182,25 @@ struct Drv {
 };
 Drv g_d;
 unsigned g_accepts = 0, g_denies = 0, g_ends_rx = 0, g_ends_tx = 0, g_bad_rx = 0;
+
+// v0.21 (play test 3: "the passenger flew out of the car"): a save puts the carried Sam off (the save guard, 24.12: no save
+// captures him at the seat); once it is written his game asks for the seat back (kReqResume, the same ride id) and the
+// driver's game gives it for the ride it ended for that save. ride_test 29 0 turns it off (hidden tests: v0.20's exit).
+bool g_resume_enabled = true;
+struct Resume {
+    bool on = false;
+    std::uint32_t ride_id = 0;
+    vwire::VKey key;
+    double since = 0, saved_ms = 0;
+};
+Resume g_resume;                       // the passenger's side
+struct DrvResume {
+    std::uint32_t ride_id = 0;
+    std::uint32_t vehicle_id = 0;
+    double until = 0;
+};
+DrvResume g_dres;                      // the driver's side: the ride it ended for a save
+unsigned g_resumes = 0;
 
 // A pending ground placement after the exit: PlaceOn refused for its rate limit (retried for 2 s after the entity
 // teleport), or not possible yet (our Sam asleep in a menu, the game writing a save: retried for up to 2 minutes). Dropped when the
@@ -402,6 +436,350 @@ bool GamePadDown(std::uintptr_t off, int* device) noexcept {
     return false;
 }
 
+// ---------------------------------------------------------------- v0.21: the landing shield (play test 3's ejections)
+// While carried, Sam's capsule is off, so his HumanoidMover never touches ground and keeps the place he boarded as its fall
+// reference (mover +0x220..+0x230). Its landing check 0x14360C0B0 (every mover update, from 0x143608A6A) takes his vertical
+// speed from his entity's own position change (|z - prev z| / dt: our teleport to the seat every tick counts) and, when
+// that speed drops by more than a threshold since the last frame (mover +0x274), deals ImpactDamage(falling height = the
+// reference's z - his z). Down a slope that height grows (play test 3: 22.9 m -> 520 damage, the "health drop" exit; 5.7 m
+// at a crash exit's placement -> 50). The shield skips that check for our carried Sam (and for 1.5 s after any exit, so the
+// placement's drop lands on a fresh reference), doing what the game itself does at 0x143605C52 (the reference = his place
+// now) and clearing the last vertical speed. Real falls count again once he stands. Reads and plain writes only, no game
+// call: safe on whatever thread runs the mover update.
+constexpr std::uintptr_t kLanding = 0x14360C0B0;
+constexpr double kShieldAfterMs = 1500.0;
+// clang-format off
+constexpr Site kLandSites[] = {
+    {kLanding,    "40 55 56 48 8D AC 24 D8 FE FF FF 48 81 EC 28 02 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 85 D0 00 00 00 48 8B F1 48 8B 49 48 E8",
+                  "the mover's landing check (mover +0x48 its entity)"},
+    {0x14360C108, "C5 FB 10 80 D8 00 00 00 C5 FB 5C 88 18 01 00 00", "its vertical speed: entity +0xD8 - +0x118"},
+    {0x14360C179, "C5 FA 5E B8 00 02 00 00", "... over the entity's step +0x200"},
+    {0x14360C2BB, "C5 FB 10 86 30 02 00 00 C5 FB 10 96 28 02 00 00", "its falling height: mover +0x230 / +0x228"},
+    {0x14360C55D, "C5 FA 11 BE 74 02 00 00", "its last vertical speed: mover +0x274"},
+    {0x143605C52, "C5 F8 10 87 C8 00 00 00 C5 F8 11 83 20 02 00 00 C5 FB 10 8F D8 00 00 00 C5 FB 11 8B 30 02 00 00",
+                  "the game's own fall-reference reset (mover +0x220..+0x230 = entity +0xC8..+0xD8)"},
+    {0x143608A6A, "E8 41 36 00 00", "the mover update's call of the landing check"},
+    // the game's own reset of the falling state (0x14360944F): +0x140 vertical speed 0, +0x214 / +0x218 (time in the air, no
+    // contact) 0, +0xE4 0, then the reference at the place (+0x220..+0x230)
+    {0x14360944F, "48 8B 03 48 8B CB 44 89 AB 40 01 00 00 4C 89 AB 14 02 00 00 44 89 AB E4 00 00 00 C5 F8 10 06",
+                  "the game's falling-state reset (mover +0x140, +0x214, +0xE4)"},
+};
+// clang-format on
+std::atomic<std::uintptr_t> g_diag_sam{0};         // the local Sam (diagnostics: does his mover run its landing check)
+std::atomic<std::uint32_t> g_land_calls_sam{0};
+using FnLanding = void (*)(std::uintptr_t);
+FnLanding o_landing = nullptr;
+std::atomic<bool> g_shield_hooked{false};
+char g_shield_off[160] = "not installed";
+std::atomic<std::uintptr_t> g_shield_sam{0};       // our Sam while carried, and for kShieldAfterMs after an exit
+std::atomic<std::uint64_t> g_shield_until{0};      // GetTickCount64 end; 0 = no end (carried)
+std::atomic<bool> g_shield_enabled{true};          // ride_test 16 0/1 (hidden tests: v0.20's behaviour)
+std::atomic<std::uint32_t> g_shield_skips{0};
+std::atomic<std::uint32_t> g_shield_drop_bits{0}, g_shield_h_bits{0};  // maxima since the last log (float bits)
+void MaxBits(std::atomic<std::uint32_t>& a, float v) noexcept {
+    if (!(v > 0) || !std::isfinite(v)) return;
+    std::uint32_t nb;
+    std::memcpy(&nb, &v, 4);
+    std::uint32_t cur = a.load(std::memory_order_relaxed);
+    for (;;) {
+        float c;
+        std::memcpy(&c, &cur, 4);
+        if (c >= v || a.compare_exchange_weak(cur, nb, std::memory_order_relaxed)) return;
+    }
+}
+float TakeBits(std::atomic<std::uint32_t>& a) noexcept {
+    const std::uint32_t b = a.exchange(0, std::memory_order_relaxed);
+    float f;
+    std::memcpy(&f, &b, 4);
+    return f;
+}
+void H_Landing(std::uintptr_t mover) {
+    const std::uintptr_t sam = g_shield_sam.load(std::memory_order_acquire);
+    {
+        const std::uintptr_t ds = g_diag_sam.load(std::memory_order_relaxed);
+        if (ds && *reinterpret_cast<const volatile std::uintptr_t*>(mover + 0x48) == ds) g_land_calls_sam.fetch_add(1, std::memory_order_relaxed);
+    }
+    // the game's own first read (mov rcx, [rcx+0x48]): the mover is the game's live object
+    if (sam && g_shield_enabled.load(std::memory_order_relaxed) && *reinterpret_cast<const volatile std::uintptr_t*>(mover + 0x48) == sam) {
+        const std::uint64_t until = g_shield_until.load(std::memory_order_relaxed);
+        if (until == 0 || GetTickCount64() < until) {
+            const double z = *reinterpret_cast<const volatile double*>(sam + 0xD8);
+            const double pz = *reinterpret_cast<const volatile double*>(sam + 0x118);
+            const float dt = *reinterpret_cast<const volatile float*>(sam + 0x200);
+            const float last = *reinterpret_cast<const volatile float*>(mover + 0x274);
+            if (dt > 1e-4f) MaxBits(g_shield_drop_bits, last - static_cast<float>(std::fabs(z - pz)) / dt);
+            MaxBits(g_shield_h_bits, static_cast<float>(*reinterpret_cast<const volatile double*>(mover + 0x230) - z));
+            // the game's own reset (0x143605C52): the fall reference is where he is now; the last vertical speed 0
+            for (int i = 0; i < 3; ++i)
+                *reinterpret_cast<volatile double*>(mover + 0x220 + 8 * i) = *reinterpret_cast<const volatile double*>(sam + 0xC8 + 8 * i);
+            *reinterpret_cast<volatile float*>(mover + 0x274) = 0.0f;
+            g_shield_skips.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+    }
+    o_landing(mover);
+}
+bool ShieldActiveFor(std::uintptr_t entity) noexcept {
+    if (!entity || entity != g_shield_sam.load(std::memory_order_acquire) || !g_shield_enabled.load(std::memory_order_relaxed)) return false;
+    const std::uint64_t until = g_shield_until.load(std::memory_order_relaxed);
+    return until == 0 || GetTickCount64() < until;
+}
+// ---------------------------------------------------------------- v0.21: the health guard (the root of play test 3's ejections)
+// Hidden run 20261120-170125 (a write watchpoint on the carried Sam's health): 57 s down play test 3's road, where the
+// elevated road ends in a small drop by the big hologram, the game set his health from 1000 to 0 in one write, through
+// its health setter 0x1427400F0 (from 0x1427023C0, the damage path of the message handler 0x14271C150, not the MsgDamage
+// handler vhit hooks): with his capsule off his own movement state never lands, and the drop counts as a fatal fall
+// (the user's play test: 520 damage at the same place, at 1.7 m/s). The setter itself also asks for the PlayerDied game
+// state (bit 42, 0x142DCE3D0) at 0. While the shield covers our Sam (carried, and 1.5 s after the ride), the setter keeps
+// his health when it would go down: the game's own "no decrease" path (its entity flag +0x5C8 bit 23 returns the same
+// way). Logged with the amount and the caller. (The object's +0x98 is not the Sam entity; it is matched by its address.)
+constexpr std::uintptr_t kSetHealth = 0x1427400F0;
+constexpr Site kHealthSites[] = {
+    {kSetHealth,  "40 53 48 83 EC 30 48 8B 81 98 00 00 00 48 8B D9 8B 88 C8 05 00 00 0F BA E1 19", "the health setter (obj +0x98 owner, +0xC0 health)"},
+    {0x14274019B, "C5 FA 11 83 C0 00 00 00", "its health write (+0xC0)"},
+    {0x1427401EF, "48 BA 00 00 00 00 00 04 00 00 E8", "its PlayerDied request (game state bit 42)"},
+    {0x142702432, "E8 B9 DC 03 00", "the damage path's call of the setter"},
+};
+using FnSetHealth = void (*)(std::uintptr_t, float, int, int);
+FnSetHealth o_sethealth = nullptr;
+std::atomic<bool> g_health_hooked{false};
+std::atomic<std::uintptr_t> g_shield_hobj{0};      // our Sam's health object (Sam +0x54C0 -> +0x2E0), set with the shield
+std::atomic<std::uint32_t> g_health_blocked{0};
+// our own hit (AllowOwnHit): until when, and how much health it may still take (float bits)
+std::atomic<std::uint64_t> g_own_hit_until{0};
+std::atomic<std::uint32_t> g_own_hit_left{0};
+std::atomic<std::uint32_t> g_health_own{0};
+unsigned g_health_own_logged = 0;  // game thread
+struct HealthBlock {
+    float from = 0, to = 0;
+    std::uint64_t caller = 0;
+};
+HealthBlock g_hb[8];
+std::atomic<unsigned> g_hb_n{0}, g_hb_logged{0};
+void H_SetHealth(std::uintptr_t obj, float value, int mode, int flag) {
+    if (obj && obj == g_shield_hobj.load(std::memory_order_acquire)) {
+        const float cur = *reinterpret_cast<const volatile float*>(obj + 0xC0);
+        // !(value >= cur): also a NaN or an infinite "kill" (the clamps in the setter make those 0)
+        if (ShieldActiveFor(g_shield_sam.load(std::memory_order_relaxed)) && !(value >= cur)) {
+            // our own vehicle hit (D3-3) that partner_tackle's damage hook let through: its amount, once, never a kill
+            if (std::isfinite(value) && value > 0.0f && GetTickCount64() < g_own_hit_until.load(std::memory_order_acquire)) {
+                const std::uint32_t lb = g_own_hit_left.load(std::memory_order_relaxed);
+                float left;
+                std::memcpy(&left, &lb, 4);
+                const float take = cur - value;
+                if (take <= left) {
+                    left -= take;
+                    std::uint32_t nb;
+                    std::memcpy(&nb, &left, 4);
+                    g_own_hit_left.store(nb, std::memory_order_relaxed);
+                    g_health_own.fetch_add(1, std::memory_order_relaxed);
+                    o_sethealth(obj, value, mode, flag);
+                    return;
+                }
+            }
+            g_health_blocked.fetch_add(1, std::memory_order_relaxed);
+            const unsigned i = g_hb_n.fetch_add(1, std::memory_order_relaxed);
+            if (i < 8) g_hb[i].from = cur, g_hb[i].to = value, g_hb[i].caller = reinterpret_cast<std::uint64_t>(_ReturnAddress());
+            return;
+        }
+    }
+    o_sethealth(obj, value, mode, flag);
+}
+void AllowOwnHitImpl(float amount) noexcept {
+    if (!(amount > 0.0f) || !std::isfinite(amount)) return;
+    const float budget = 2.0f * amount + 1.0f;
+    std::uint32_t b;
+    std::memcpy(&b, &budget, 4);
+    g_own_hit_left.store(b, std::memory_order_relaxed);
+    g_own_hit_until.store(GetTickCount64() + 500, std::memory_order_release);
+}
+void InstallHealthGuard() {
+    for (const Site& s : kHealthSites)
+        if (!mem::CodeMatches(A(s.va), s.sig)) {
+            Log("[ride] byte check FAILED: %s at 0x%llX: the health guard is OFF (a carried Sam can be hurt or killed by a drop)", s.name,
+                static_cast<unsigned long long>(s.va));
+            return;
+        }
+    if (mem::RipTarget(A(0x142702432), 1, 5) != A(kSetHealth)) {
+        Log("[ride] byte check FAILED: the damage path's call does not reach 0x1427400F0: the health guard is OFF");
+        return;
+    }
+    void* t = reinterpret_cast<void*>(A(kSetHealth));
+    MH_STATUS s = MH_CreateHook(t, reinterpret_cast<void*>(&H_SetHealth), reinterpret_cast<void**>(&o_sethealth));
+    if (s == MH_OK) s = MH_EnableHook(t);
+    if (s != MH_OK) {
+        Log("[ride] the health guard is OFF: the hook failed (%s)", MH_StatusToString(s));
+        return;
+    }
+    g_health_hooked.store(true);
+    Log("[ride] health guard ON: %u byte checks; a carried Sam (and 1.5 s after the ride) loses no health and is never killed",
+        static_cast<unsigned>(sizeof(kHealthSites) / sizeof(kHealthSites[0])) + 1);
+}
+void HealthGuardTick() {
+    const unsigned n = (std::min)(8u, g_hb_n.load());
+    for (unsigned i = g_hb_logged.load(); i < n; ++i)
+        Log("[ride] health guard: our Sam's health kept at %.1f (the game set %.1f, called from ds.exe+0x%llX)", g_hb[i].from, g_hb[i].to,
+            static_cast<unsigned long long>(g_hb[i].caller - mem::Base()));
+    g_hb_logged.store(n);
+    const unsigned own = g_health_own.load(std::memory_order_relaxed);
+    if (own != g_health_own_logged) {
+        const std::uintptr_t hobj = g_shield_hobj.load(std::memory_order_relaxed);
+        float h = -1;
+        if (hobj) mem::Rd(hobj + 0xC0, h);
+        Log("[ride] health guard: our own vehicle hit (D3-3) let through (%u write(s) so far): our Sam's health now %.1f", own, h);
+        g_health_own_logged = own;
+    }
+}
+void InstallShield() {
+    InstallHealthGuard();
+    for (const Site& s : kLandSites)
+        if (!mem::CodeMatches(A(s.va), s.sig)) {
+            std::snprintf(g_shield_off, sizeof(g_shield_off), "this game build differs (%s)", s.name);
+            Log("[ride] byte check FAILED: %s at 0x%llX: the landing shield is OFF (a carried Sam can take fall damage on a slope)", s.name,
+                static_cast<unsigned long long>(s.va));
+            return;
+        }
+    // the mover update's call really reaches the landing check
+    if (mem::RipTarget(A(0x143608A6A), 1, 5) != A(kLanding)) {
+        std::snprintf(g_shield_off, sizeof(g_shield_off), "this game build differs (the landing check's call)");
+        Log("[ride] byte check FAILED: the call at 0x143608A6A does not reach 0x14360C0B0: the landing shield is OFF");
+        return;
+    }
+    void* t = reinterpret_cast<void*>(A(kLanding));
+    MH_STATUS s = MH_CreateHook(t, reinterpret_cast<void*>(&H_Landing), reinterpret_cast<void**>(&o_landing));
+    if (s == MH_OK) s = MH_EnableHook(t);
+    if (s != MH_OK) {
+        std::snprintf(g_shield_off, sizeof(g_shield_off), "the hook failed (%s)", MH_StatusToString(s));
+        Log("[ride] the landing shield is OFF: %s", g_shield_off);
+        return;
+    }
+    g_shield_off[0] = 0;
+    g_shield_hooked.store(true);
+    Log("[ride] landing shield ON: %u byte checks; a carried Sam (and 1.5 s after any exit) never takes the game's landing damage",
+        static_cast<unsigned>(sizeof(kLandSites) / sizeof(kLandSites[0])) + 1);
+}
+// Our Sam is shielded from now on (carried: no end).
+void ShieldOn(std::uintptr_t sam) noexcept {
+    {
+        const std::uintptr_t pc = mem::Q(sam + 0x54C0);
+        const std::uintptr_t hobj = pc ? mem::Q(pc + 0x2E0) : 0;
+        float hv = 0;
+        g_shield_hobj.store(hobj && mem::Rd(hobj + 0xC0, hv) && std::isfinite(hv) ? hobj : 0, std::memory_order_release);
+    }
+    g_shield_until.store(0, std::memory_order_relaxed);
+    g_shield_sam.store(sam, std::memory_order_release);
+    g_shield_skips.store(0, std::memory_order_relaxed);
+    TakeBits(g_shield_drop_bits), TakeBits(g_shield_h_bits);
+}
+// ... until kShieldAfterMs from now (an exit, the stop).
+void ShieldAfter() noexcept {
+    if (g_shield_sam.load(std::memory_order_relaxed)) g_shield_until.store(GetTickCount64() + static_cast<std::uint64_t>(kShieldAfterMs), std::memory_order_relaxed);
+}
+// ---------------------------------------------------------------- hidden-test diagnostics: who writes our Sam's health
+// ride_test 18 1 arms a write watchpoint (debug register 0, every thread of the game) on his health (Sam +0x54C0 -> +0x2E0
+// -> +0xC0) while he is carried; each write records the writing instruction and the code addresses on its stack (logged by
+// the tick). Hidden runs only; disarmed 5 s after the ride.
+struct WpHit {
+    std::uint64_t rip = 0;
+    std::uint64_t ret[8] = {};
+    float value = 0;
+};
+WpHit g_wp_hits[16];
+std::atomic<unsigned> g_wp_n{0}, g_wp_logged{0};
+std::atomic<std::uintptr_t> g_wp_addr{0};
+bool g_wp_enabled = false, g_wp_armed = false;
+double g_wp_disarm_ms = 0;
+PVOID g_wp_veh = nullptr;
+LONG CALLBACK WpHandler(EXCEPTION_POINTERS* ep) {
+    if (!ep || ep->ExceptionRecord->ExceptionCode != EXCEPTION_SINGLE_STEP) return EXCEPTION_CONTINUE_SEARCH;
+    CONTEXT* c = ep->ContextRecord;
+    if (!(c->Dr6 & 1)) return EXCEPTION_CONTINUE_SEARCH;
+    c->Dr6 = 0;
+    const unsigned i = g_wp_n.fetch_add(1);
+    if (i < 16) {
+        WpHit& h = g_wp_hits[i];
+        h.rip = c->Rip;
+        const std::uintptr_t a = g_wp_addr.load();
+        if (a) h.value = *reinterpret_cast<const volatile float*>(a);
+        const std::uint64_t* sp = reinterpret_cast<const std::uint64_t*>(c->Rsp);
+        unsigned k = 0;
+        for (int j = 0; j < 160 && k < 8; ++j) {
+            const std::uint64_t q = sp[j];
+            if (mem::InText(q)) h.ret[k++] = q;
+        }
+    }
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
+DWORD WINAPI WpSetAll(LPVOID p) {
+    const std::uintptr_t addr = reinterpret_cast<std::uintptr_t>(p);
+    const DWORD self = GetCurrentThreadId(), pid = GetCurrentProcessId();
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE) return 0;
+    THREADENTRY32 te{};
+    te.dwSize = sizeof(te);
+    unsigned n = 0;
+    for (BOOL ok = Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
+        if (te.th32OwnerProcessID != pid || te.th32ThreadID == self) continue;
+        HANDLE t = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME, FALSE, te.th32ThreadID);
+        if (!t) continue;
+        if (SuspendThread(t) != static_cast<DWORD>(-1)) {
+            CONTEXT c{};
+            c.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+            if (GetThreadContext(t, &c)) {
+                if (addr) {
+                    c.Dr0 = addr;
+                    c.Dr7 = (c.Dr7 & ~0xF0003ull) | 1ull | (1ull << 16) | (3ull << 18);  // L0, write, 4 bytes
+                } else {
+                    c.Dr0 = 0;
+                    c.Dr7 &= ~0xF0003ull;
+                }
+                if (SetThreadContext(t, &c)) ++n;
+            }
+            ResumeThread(t);
+        }
+        CloseHandle(t);
+    }
+    CloseHandle(snap);
+    return n;
+}
+void WpArm(std::uintptr_t addr) {
+    if (!g_wp_veh) g_wp_veh = AddVectoredExceptionHandler(1, &WpHandler);
+    g_wp_addr.store(addr);
+    HANDLE th = CreateThread(nullptr, 0, &WpSetAll, reinterpret_cast<LPVOID>(addr), 0, nullptr);
+    DWORD n = 0;
+    if (th) {
+        WaitForSingleObject(th, 2000);
+        GetExitCodeThread(th, &n);
+        CloseHandle(th);
+    }
+    g_wp_armed = addr != 0;
+    Log("[ride] test: health watchpoint %s at %p on %lu threads", addr ? "armed" : "disarmed", reinterpret_cast<void*>(addr), static_cast<unsigned long>(n));
+}
+void WpTick(double now) {
+    const unsigned n = (std::min)(16u, g_wp_n.load());
+    for (unsigned i = g_wp_logged.load(); i < n; ++i) {
+        const WpHit& h = g_wp_hits[i];
+        char st[400] = {};
+        std::size_t k = 0;
+        for (std::uint64_t r : h.ret)
+            if (r) k += std::snprintf(st + k, sizeof(st) - k, " +0x%llX", static_cast<unsigned long long>(r - mem::Base()));
+        Log("[ride] test: health write #%u by ds.exe+0x%llX (health now %.1f); code on its stack:%s", i + 1, static_cast<unsigned long long>(h.rip - mem::Base()),
+            h.value, st);
+    }
+    g_wp_logged.store(n);
+    if (g_wp_armed && g_wp_disarm_ms > 0 && now > g_wp_disarm_ms) {
+        g_wp_disarm_ms = 0;
+        WpArm(0);
+    }
+}
+
+// v0.21: the crash rule. g_crash_legacy (ride_test 17 0): v0.20's one-frame rule, the exit and the hit for every kind.
+std::atomic<bool> g_crash_legacy{false};
+// The vehicle our Sam last rode, and when he got off (partner_tackle: no hit from it right after).
+std::uintptr_t g_last_ride_entity = 0;
+double g_last_ride_end_ms = -1e18;
+constexpr double kAfterRideNoHitMs = 3000.0;
+
 // ---------------------------------------------------------------- reads
 bool ReadXf(std::uintptr_t e, WorldTransform& out) noexcept {
     std::uint8_t b1[0x3C], b2[0x3C];
@@ -518,10 +896,14 @@ void PeerLabel(char* out, std::size_t cap) {
 }
 
 // ---------------------------------------------------------------- the passenger: carry
+void PoseLog(bool now);
+int CarryPoseSource() { return g_pose_mode ? 3 : g_p.solo ? 2 : 1; }
 void ApplyCarryState(bool on) {
     overlay::input::SetRideCarry(on);
-    realbody::SetRidePose(on ? (g_p.solo ? 2 : 1) : 0);
+    realbody::SetRideSeat(on ? g_p.kind : 0, 0);
+    realbody::SetRidePose(on ? CarryPoseSource() : 0);
     vdrive::SetCarriedUnit(on ? g_p.unit : 0);
+    if (!on) ridecam::Stop("the ride ended");
 }
 
 // Turns the capsule back on exactly once (it is a counter), and only on the Sam we turned it off on.
@@ -704,7 +1086,13 @@ void EndCarry(rwire::End reason, bool place, bool tell_driver) {
     const double rode = (g_now - g_p.since) / 1000.0;
     const std::uintptr_t sam = reinterpret_cast<std::uintptr_t>(g_in.local);
     const bool same_sam = sam && sam == g_p.sam;
+    PoseLog(true);
     ApplyCarryState(false);
+    // the landing shield stays 1.5 s more: the placement's drop and the first ground contact land on a fresh fall reference
+    ShieldAfter();
+    if (g_wp_armed) g_wp_disarm_ms = g_now + 5000;
+    g_last_ride_entity = g_p.entity;
+    g_last_ride_end_ms = g_now;
     if (place && same_sam) PlaceBeside(forced, !g_p.tp_fault);
     CapsuleBack(rwire::EndName(static_cast<std::uint8_t>(reason)));
     ++g_exits;
@@ -714,7 +1102,11 @@ void EndCarry(rwire::End reason, bool place, bool tell_driver) {
         forced ? ", forced" : "", rode, g_p.ride_err_n ? g_p.ride_err_sum / g_p.ride_err_n : 0.0, g_p.ride_err_max, g_p.ride_err_over, g_p.ride_err_n,
         g_p.teleports, g_p.solo ? " (solo seat test)" : "");
     const bool jumped_fast = reason == rwire::End::jumped && g_p.last_speed > rwire::kCrashDvMps;
-    if ((reason == rwire::End::crash || jumped_fast) && same_sam) {
+    if (reason == rwire::End::crash && !g_crash_legacy.load()) {
+        // v0.21: the ridden vehicle never hurts its passenger (no D3-3 hit); the pillion thrown off a confirmed crash lands
+        // under the landing shield
+        Log("[ride] crash exit (dv %.1f m/s at %.1f m/s): put off, no hit (the ridden vehicle never hurts its passenger)", g_p.crash_dv, g_p.last_speed);
+    } else if ((reason == rwire::End::crash || jumped_fast) && same_sam) {
         // D3-3: the passenger takes the game's own hit and knock-down (M4's handler); also when he jumps off above 8 m/s
         const double dv = jumped_fast ? g_p.last_speed : g_p.crash_dv;
         bool hit = false;
@@ -723,8 +1115,20 @@ void EndCarry(rwire::End reason, bool place, bool tell_driver) {
             !g_crash_hit ? "no hit handler (M4 partner_tackle not installed): put off only" : hit ? "the game's hit applied" : "the hit handler refused");
     }
     if (tell_driver && !g_p.solo) Send(rwire::MsgType::end, g_p.ride_id, g_p.key.id, g_p.kind, static_cast<std::uint8_t>(reason));
+    const bool resume = reason == rwire::End::saving && g_resume_enabled && !g_p.solo && same_sam && tell_driver && !g_stop.load();
+    if (resume) {
+        g_resume = Resume{};
+        g_resume.on = true;
+        g_resume.ride_id = g_p.ride_id;
+        g_resume.key = g_p.key;
+        g_resume.since = g_now;
+        Log("[ride] once the save is written our Sam asks for the %s's seat back (ride #%08X, within %.0f s)", vwire::KindName(g_p.kind), g_p.ride_id,
+            rwire::kResumeWindowMs / 1000);
+    }
     char text[160];
-    if (forced && reason != rwire::End::stopped) {
+    if (resume) {
+        Notice("The game saves: back on the seat in a moment.", false, 3000);
+    } else if (forced && reason != rwire::End::stopped) {
         std::snprintf(text, sizeof(text), "Off the %s: %s.", vwire::KindName(g_p.kind), rwire::EndName(static_cast<std::uint8_t>(reason)));
         Notice(text, true, 4000);
     } else {
@@ -773,10 +1177,19 @@ bool StartCarry(const vwire::VKey& key, std::uint8_t kind, std::uintptr_t entity
     g_p.world = OurWorld();
     g_p.log_ms = g_now;
     g_p.cap_counter0 = CapCounter(cap);
+    ShieldOn(sam);  // before the capsule goes off: no landing damage (and no other damage, vhit's guard) while carried
+    if (g_health_hooked.load() && !g_shield_hobj.load()) Log("[ride] health guard: our Sam's health object is not readable (Sam +0x54C0 -> +0x2E0): not guarded");
+    if (g_wp_enabled && automation::Enabled()) {
+        const std::uintptr_t pc = mem::Q(sam + 0x54C0);
+        const std::uintptr_t hobj = pc ? mem::Q(pc + 0x2E0) : 0;
+        if (hobj) WpArm(hobj + 0xC0);
+        g_wp_disarm_ms = 0;
+    }
     const bool ok = CallCapsule(A(kCapsuleOff), cap);
     g_p.cap_off = ok;
     if (!ok) {
         Log("[ride] FAULT in the capsule disable: not carried");
+        ShieldAfter();
         g_p = Pass{};
         return false;
     }
@@ -795,7 +1208,8 @@ bool StartCarry(const vwire::VKey& key, std::uint8_t kind, std::uintptr_t entity
     Log("[ride] %s: our Sam carried on the %s 0x%06X (%s, ride #%08X, #%u): capsule off (counter %d -> %d, on byte %d), seat (%.2f, %.2f, %.2f), "
         "input blocked, pose %s",
         g_role == 1 ? "host" : g_role == 2 ? "guest" : "solo", vwire::KindName(kind), key.id, rwire::SeatName(static_cast<std::uint8_t>(rwire::SeatOf(kind))), ride_id,
-        g_boards, g_p.cap_counter0, CapCounter(cap), CapOnByte(cap), seat[0], seat[1], seat[2], solo ? "the kept driver pose (solo test)" : "the driver's");
+        g_boards, g_p.cap_counter0, CapCounter(cap), CapOnByte(cap), seat[0], seat[1], seat[2],
+        g_pose_mode ? "seated idle" : solo ? "the kept driver pose (solo test)" : "the driver's");
     char label[96], text[200];
     PeerLabel(label, sizeof(label));
     if (solo) std::snprintf(text, sizeof(text), "Seat test: carried on the %s.", vwire::KindName(kind));
@@ -884,6 +1298,32 @@ bool TakeNativePress(std::uint32_t want_id) {
     return true;
 }
 
+// The seated idle's state (source 3): a new base at once, the arms every 10 s while carried, and at the end.
+void PoseLog(bool now) {
+    if (realbody::RidePose() != 3) return;
+    realbody::RidePoseStats s;
+    const bool line = now || g_now - g_p.pose_log_ms >= 10000;
+    realbody::RidePoseStatus(&s, line);
+    if (s.latches != g_p.pose_latches) {
+        g_p.pose_latches = s.latches;
+        char from[96];
+        if (s.latch_from == 2) std::snprintf(from, sizeof(from), "our own Sam's calm driving at %.1f m/s", s.latch_speed);
+        else if (s.latch_from == 3) std::snprintf(from, sizeof(from), "the kept snapshot (seat_measure)");
+        else if (s.latch_final) std::snprintf(from, sizeof(from), "the driver's frame, driving calmly at %.1f m/s", s.latch_speed);
+        else std::snprintf(from, sizeof(from), "the driver's frame as the ride started");
+        Log("[ride] seated idle: the %s's base %s (%s)", vwire::KindName(static_cast<std::uint8_t>(s.latch_kind)), s.latch_final ? "latched" : "held for now", from);
+    }
+    if (!line) return;
+    g_p.pose_log_ms = g_now;
+    Log("[ride] seated idle: arms %s (convention %d, gate error %.1e / %.1e), %u solves, %u refused; hands vs their targets mean %.2f cm max %.2f cm over "
+        "%u updates; rest along %.2f up %.2f in %.2f twist %.0f deg",
+        !s.ik_on ? (s.ik_off_by_error ? "OFF (the hands missed their targets: off for the session)" : "off (ride_test 23 0 0)")
+        : s.ik_state == 2 ? "OFF (the joint convention did not check)"
+        : s.ik_state < 0  ? "not measured yet"
+                          : "ON",
+        s.ik_state, s.gate_err[0], s.gate_err[1], s.solves, s.fails, s.err_mean_cm, s.err_max_cm, s.err_n, s.along, s.up, s.in, s.twist_deg);
+}
+
 void CarryTick() {
     const std::uintptr_t sam = reinterpret_cast<std::uintptr_t>(g_in.local);
     if (!sam || sam != g_p.sam) {
@@ -932,19 +1372,56 @@ void CarryTick() {
     const TakenBy taken = Taken(&taken_why);
     f.taken = taken != TakenBy::none;
     f.link_silent_ms = g_p.solo ? 0 : g_now - g_in.partner_rx_ms;
+    if (f.link_silent_ms > rwire::kLinkSilentMs) {
+        // v0.21: a stall is ridden out on the seat (up to kLinkSilentCarriedMs); a link that says it is gone ends it now
+        f.link_lost = !link::GetInfo().connected;
+        if (g_p.stall_since == 0) {
+            g_p.stall_since = g_now;
+            Log("[ride] no pose from the driver for %.0f ms: our Sam stays on the seat (link %s; the ride ends after %.1f s without one)", f.link_silent_ms,
+                f.link_lost ? "lost" : "still connected", rwire::kLinkSilentCarriedMs / 1000);
+        }
+    } else if (g_p.stall_since != 0) {
+        Log("[ride] the driver's poses are back after %.0f ms: the ride goes on", g_now - g_p.stall_since);
+        g_p.stall_since = 0;
+        ++g_p.stalls;
+    }
     f.not_driven_ms = g_p.not_driven_since > 0 ? g_now - g_p.not_driven_since : 0;
     f.vehicle_live = g_p.gone_since == 0 || g_now - g_p.gone_since < 300;
     std::int32_t rs = 0;
     std::uint32_t f560 = 0;
     f.broken = (live && mem::Rd(g_p.entity + kVRideState, rs) && (rs == 5 || rs == 6)) || (live && mem::Rd(g_p.entity + kVFlags560, f560) && (f560 & 0x2000)) ||
                (driven && view.have_frame && view.frame_broken);
-    f.flipped = have_xf && g_p.flip.Update(xf.rot.m[2][2], g_now);
+    // our follower's own teleport (vdrive, at most every 2 s, only far off: 8 m while we ride it) is never a crash or a flip
+    WorldTransform tp_xf{};
+    double tp_age = 1e9;
+    const bool own_tp = !g_p.solo && vdrive::RecentTeleport(g_p.entity, 500, &tp_xf, &tp_age);
+    f.flipped = have_xf && g_p.flip.Update(own_tp ? 1.0 : xf.rot.m[2][2], g_now);
     if (driven && g_in.have_play) {
         float fv[3];
         double key = 0;
-        if (vdrive::FrameAtPlay(g_p.key.id, g_in.play_ms, fv, &key)) {
-            const double dv = g_p.crash.Update(fv, key);
-            if (dv > 0) g_p.crash_dv = dv;
+        float kmh = -1;
+        if (vdrive::FrameAtPlay(g_p.key.id, g_in.play_ms, fv, &key, &kmh)) {
+            if (g_crash_legacy.load()) {
+                const double dv = g_p.crash.Update(fv, key);
+                if (dv > 0) g_p.crash_dv = dv;
+            } else {
+                // v0.21: only a crash the driver's frames confirm (its speed changed and stayed changed, the game's speed field
+                // dropped); the cab (truck, roadster) keeps its passenger, as it keeps its driver; the trike's pillion is thrown off
+                const double dv = g_p.crash2.Update(fv, kmh, key);
+                const double rej = g_p.crash2.TakeRejected();
+                if (rej > 0) {
+                    ++g_p.crash_rejects;
+                    Log("[ride] crash candidate (one frame, dv %.1f m/s at %.1f m/s): not confirmed by the driver's frames: no exit", rej, speed);
+                }
+                if (dv > 0) {
+                    if (g_p.kind == 3) {
+                        g_p.crash_dv = dv;
+                    } else {
+                        ++g_p.cab_crashes;
+                        Log("[ride] the driver's %s crashed (dv %.1f m/s at %.1f m/s, confirmed): our Sam stays in the cab", vwire::KindName(g_p.kind), dv, speed);
+                    }
+                }
+            }
         }
     }
     if (g_p.test_crash_dv > 0) g_p.crash_dv = g_p.test_crash_dv, g_p.test_crash_dv = 0;
@@ -1020,7 +1497,8 @@ void CarryTick() {
     const float zero[3] = {};
     const WorldTransform seat_now = SeatXf(xf, zero, 0, seat);
     WorldTransform sam_xf{};
-    if (g_p.have_last && g_in.local_active && ReadXf(sam, sam_xf)) {
+    const bool sam_xf_ok = ReadXf(sam, sam_xf);
+    if (g_p.have_last && g_in.local_active && sam_xf_ok) {
         const double e = Dist3(sam_xf, seat_now), ev = Dist3(sam_xf, g_p.last_target);
         g_p.err_sum += e, g_p.err_n++;
         if (e > g_p.err_max) g_p.err_max = e;
@@ -1033,11 +1511,41 @@ void CarryTick() {
     std::memcpy(g_p.last_vel, vel, sizeof(vel));
     g_p.last_speed = speed;
     g_p.last_xf = xf;
-    // the carry: the seat one frame ahead along the vehicle's velocity (it moves by its own physics later in this frame)
+    // the seated idle's calm test: 3 - 30 m/s, the yaw rate (low-passed 0.25 s) under 3 deg/s, for 0.5 s; never across our
+    // follower's own teleport
+    {
+        const double yaw = std::atan2(xf.rot.m[1][1], xf.rot.m[1][0]);
+        if (g_p.have_yaw && g_now > g_p.yaw_ms) {
+            const double dt = (g_now - g_p.yaw_ms) / 1000.0;
+            const double rate = std::fabs(vwire::WrapPi(yaw - g_p.yaw)) / dt * 57.29577951308232;
+            const double k = 1.0 - std::exp(-dt / 0.25);
+            g_p.yaw_rate += ((own_tp ? 99.0 : (std::min)(rate, 99.0)) - g_p.yaw_rate) * k;
+        }
+        g_p.have_yaw = true, g_p.yaw = yaw, g_p.yaw_ms = g_now;
+        const bool calm_now = speed >= 3.0 && speed <= 30.0 && g_p.yaw_rate < 3.0 && !own_tp;
+        if (!calm_now) g_p.calm_since = 0;
+        else if (g_p.calm_since == 0) g_p.calm_since = g_now;
+        realbody::SetRideSeat(g_p.kind, g_p.calm_since > 0 && g_now - g_p.calm_since >= 500 ? speed : 0.0);
+    }
+    // the carry: the seat one frame ahead along the vehicle's velocity (it moves by its own physics later in this frame); our
+    // follower's own teleport requested and not applied yet: the seat where it goes (v0.20 left Sam 1.7 m off the seat for
+    // a frame: "phasing through the car")
     if (g_in.local_active) {
         const double lead = (std::min)(0.05, g_dt_ms / 1000.0);
-        const WorldTransform target = SeatXf(xf, vel, speed > 0.3 ? lead : 0.0, seat);
-        if (CallTeleport(sam, &target)) {
+        const bool to_tp = own_tp && tp_age < 200 && Dist3(xf, tp_xf) > 0.5;
+        if (to_tp) Log("[ride] our %s's follower teleport (%.0f ms ago, %.1f m): Sam put on the seat where it goes", vwire::KindName(g_p.kind), tp_age, Dist3(xf, tp_xf));
+        const WorldTransform target = to_tp ? SeatXf(tp_xf, zero, 0.0, seat) : SeatXf(xf, vel, speed > 0.3 ? lead : 0.0, seat);
+        {
+            // the camera: the game's own ride camera on the vehicle (its position, one frame ahead as the seat)
+            const WorldTransform& vb = to_tp ? tp_xf : xf;
+            const double ahead = to_tp || speed <= 0.3 ? 0.0 : lead;
+            const double shift[3] = {vel[0] * ahead, vel[1] * ahead, vel[2] * ahead};
+            ridecam::Feed(reinterpret_cast<game::Entity*>(sam), g_p.entity, g_p.kind, vb, shift);
+            ridecam::Follow(reinterpret_cast<game::Entity*>(sam), vb, speed);
+        }
+        if (g_test_hold_tp && speed < 0.3 && g_p.have_last) {
+            // hidden tests (ride_test 26 1): not teleported while the vehicle stands (the camera's reaction to the teleport)
+        } else if (CallTeleport(sam, &target)) {
             ++g_p.teleports;
             g_p.last_target = target;
             g_p.have_last = true;
@@ -1056,10 +1564,19 @@ void CarryTick() {
             "capsule counter %d on %d; pose %d",
             vwire::KindName(g_p.kind), g_p.key.id, speed, g_p.err_n ? g_p.err_sum / g_p.err_n : 0.0, g_p.err_max, g_p.err_n ? g_p.err_veh_sum / g_p.err_n : 0.0,
             g_p.err_veh_max, g_p.err_n, CapCounter(g_p.cap), CapOnByte(g_p.cap), realbody::RidePose());
+        if (g_shield_hooked.load()) {
+            const unsigned n = g_shield_skips.exchange(0, std::memory_order_relaxed);
+            const float drop = TakeBits(g_shield_drop_bits), h = TakeBits(g_shield_h_bits);
+            const unsigned lc = g_land_calls_sam.exchange(0, std::memory_order_relaxed);
+            Log("[ride] carried: the game's landing check skipped %u times%s (it would have seen a vertical speed drop up to %.1f m/s, a falling height "
+                "up to %.1f m; his mover ran it %u times); health kept %u times so far",
+                n, g_shield_enabled.load() ? "" : " (shield OFF: ride_test 16 0)", drop, h, lc, g_health_blocked.load());
+        }
         g_p.log_ms = g_now;
         g_p.err_sum = g_p.err_max = g_p.err_veh_sum = g_p.err_veh_max = 0;
         g_p.err_n = 0;
     }
+    PoseLog(false);
 }
 
 // ---------------------------------------------------------------- the passenger: boarding
@@ -1168,9 +1685,50 @@ void NativeObsLog() {
     }
 }
 
+// After a save's exit: once the save is written (and any placement done), our Sam on foot, the partner still driving that
+// vehicle: ask for the seat back (once; a deny or no answer leaves him on foot, as before).
+void ResumeTick() {
+    if (!g_resume.on || g_p.st != PState::idle) return;
+    const char* why = nullptr;
+    if (g_now - g_resume.since > rwire::kResumeWindowMs) why = "not in time (the save or the placement took too long)";
+    else if (!g_on.load() || g_stop.load()) why = "riding together is off";
+    if (!why) {
+        if (saveguard::Busy() || g_place.on) return;  // the save is not written yet, or the placement waits
+        if (g_resume.saved_ms == 0) g_resume.saved_ms = g_now;
+        vdrive::DrivenView v;
+        const bool link_up = g_now - g_in.partner_rx_ms < rwire::kLinkSilentMs && vshare::PeerInOurWorld();
+        if (!link_up) {
+            why = "the link is down";
+        } else if (!vdrive::PartnerDriving(&v) || v.key.id != g_resume.key.id) {
+            why = "the partner no longer drives it";
+        } else if (!OnFoot()) {
+            return;  // the game holds him this frame: wait (the window caps it)
+        } else {
+            g_p = Pass{};
+            g_p.st = PState::requesting;
+            g_p.ride_id = g_resume.ride_id;
+            g_p.key = v.key;
+            g_p.kind = v.key.kind;
+            g_p.entity = v.entity;
+            g_p.unit = v.unit;
+            g_p.req_ms = g_now;
+            g_p.resume = true;
+            ++g_requests;
+            Log("[ride] %s: asking for the %s 0x%06X's seat back after the save (ride #%08X, %.0f ms after the exit, %.1f m/s)", g_role == 1 ? "host" : "guest",
+                vwire::KindName(g_p.kind), g_p.key.id, g_p.ride_id, g_now - g_resume.since, v.meas ? v.speed_mps : 0.0);
+            Send(rwire::MsgType::request, g_p.ride_id, g_p.key.id, g_p.kind, rwire::kReqResume);
+            g_resume.on = false;
+            return;
+        }
+    }
+    Log("[ride] no seat back after the save (ride #%08X): %s", g_resume.ride_id, why);
+    g_resume.on = false;
+}
+
 void PassengerTick() {
     NativeObsLog();
     PollNativePress();
+    ResumeTick();
     if (g_p.st == PState::riding) {
         g_np_seen.store(g_np_ride.load(std::memory_order_relaxed), std::memory_order_relaxed);
         g_np_lift.store(0, std::memory_order_relaxed);
@@ -1250,6 +1808,7 @@ void PassengerTick() {
 // ---------------------------------------------------------------- the driver
 void DriverEnd(rwire::End reason, bool tell) {
     if (!g_d.accepted) return;
+    if (reason == rwire::End::saving) g_dres = DrvResume{g_d.ride_id, g_d.key.id, g_now + rwire::kResumeWindowMs + 2000};
     Log("[ride] %s: the partner's ride #%08X in our %s 0x%06X is over (%s) after %.1f s; body vs seat mean %.3f m", g_role == 1 ? "host" : "guest", g_d.ride_id,
         vwire::KindName(g_d.key.kind), g_d.key.id, rwire::EndName(static_cast<std::uint8_t>(reason)), (g_now - g_d.accept_ms) / 1000.0,
         g_d.err_n ? g_d.err_sum / g_d.err_n : 0.0);
@@ -1304,7 +1863,26 @@ void OnRequest(const rwire::Msg& m) {
         Send(rwire::MsgType::accept, m.ride_id, m.vehicle_id, m.kind, 0);  // a repeat: the same answer
         return;
     }
-    if (!rwire::DriverAccepts(in, &why)) {
+    // the seat back after a save: the ride we ended for that save, in time, still driving that vehicle, the seat free
+    const bool resume = m.reason == rwire::kReqResume;
+    if (resume) {
+        const bool ok = in.feature_on && in.same_world && in.we_drive_it && !g_d.accepted && m.ride_id == g_dres.ride_id && m.vehicle_id == g_dres.vehicle_id &&
+                        g_now < g_dres.until;
+        g_dres = DrvResume{};
+        if (!ok) {
+            ++g_denies;
+            why = !in.we_drive_it ? rwire::Deny::not_driving : g_d.accepted ? rwire::Deny::seat_taken : !in.same_world ? rwire::Deny::world : rwire::Deny::off;
+            Log("[ride] %s: the partner asks for our %s 0x%06X's seat back after a save (ride #%08X): DENIED, %s", g_role == 1 ? "host" : "guest",
+                vwire::KindName(m.kind), m.vehicle_id, m.ride_id,
+                !in.feature_on    ? "riding together is off"
+                : !in.same_world  ? "another world"
+                : !in.we_drive_it ? "we no longer drive it"
+                : g_d.accepted    ? "the seat is taken"
+                                  : "not the ride we ended for a save, or too late");
+            Send(rwire::MsgType::deny, m.ride_id, m.vehicle_id, m.kind, static_cast<std::uint8_t>(why));
+            return;
+        }
+    } else if (!rwire::DriverAccepts(in, &why)) {
         ++g_denies;
         Log("[ride] %s: the partner asks to ride our %s 0x%06X (ride #%08X%s): DENIED, %s (speed %.1f m/s, partner %.2f m from the door, %.2f m from the origin)",
             g_role == 1 ? "host" : "guest", vwire::KindName(m.kind), m.vehicle_id, m.ride_id, in.native ? ", the game's Use Vehicle" : "",
@@ -1321,7 +1899,8 @@ void OnRequest(const rwire::Msg& m) {
     g_d.log_ms = g_now;
     ++g_accepts;
     Log("[ride] %s: the partner asks to ride our %s 0x%06X (ride #%08X%s): ACCEPTED (#%u; partner %.2f m from the door, %.2f m from the origin, %.1f m/s)",
-        g_role == 1 ? "host" : "guest", vwire::KindName(m.kind), m.vehicle_id, m.ride_id, in.native ? ", the game's Use Vehicle" : "", g_accepts, in.partner_dist_m,
+        g_role == 1 ? "host" : "guest", vwire::KindName(m.kind), m.vehicle_id, m.ride_id,
+        in.native ? ", the game's Use Vehicle" : resume ? ", the seat back after a save" : "", g_accepts, in.partner_dist_m,
         in.partner_origin_dist_m, in.speed);
     Send(rwire::MsgType::accept, m.ride_id, m.vehicle_id, m.kind, 0);
     char label[96], text[200];
@@ -1374,7 +1953,8 @@ void OnMsg(std::uint8_t /*type*/, const std::uint8_t* msg, std::size_t size, std
             }
             const BoardView b = ViewBoard(g_p.native);
             const bool still = b.v.key.id == g_p.key.id && OnFoot() &&
-                               (b.dist <= rwire::kBoardRadiusM + 1.5 || (g_p.native && b.origin_dist <= rwire::kNativeReachM + 1.5));
+                               (g_p.resume || b.dist <= rwire::kBoardRadiusM + 1.5 || (g_p.native && b.origin_dist <= rwire::kNativeReachM + 1.5));
+            const bool was_resume = g_p.resume;
 
             Log("[ride] the driver accepted ride #%08X after %.0f ms (%.2f m from the door)", m.ride_id, g_now - g_p.req_ms, b.dist);
             const vwire::VKey key = g_p.key;
@@ -1384,6 +1964,10 @@ void OnMsg(std::uint8_t /*type*/, const std::uint8_t* msg, std::size_t size, std
                 Log("[ride] ride #%08X not started: %s", id, still ? "the carry did not start" : "we are no longer at the vehicle");
                 Send(rwire::MsgType::end, id, key.id, key.kind, static_cast<std::uint8_t>(rwire::End::timeout));
                 g_cooldown_until = g_now + 1500;
+            } else if (was_resume) {
+                ++g_resumes;
+                Log("[ride] %s: our Sam back on the %s's seat after the save (ride #%08X, #%u)", g_role == 1 ? "host" : "guest", vwire::KindName(key.kind), id,
+                    g_resumes);
             }
             break;
         }
@@ -1437,8 +2021,59 @@ void RollTick() {
     if (--g_roll_left == 0) Log("[ride] test: roll done (up z %.2f)", t.rot.m[2][2]);
 }
 
+// Every tick: our own Sam's calm driving (the seated idle's base from our own pose), the hands' travel (both seats: the
+// passenger's hands still, the driver's on the wheel) and the camera meter.
+struct OwnDrive {
+    std::uint32_t id = 0;
+    bool have_yaw = false;
+    double yaw = 0, yaw_ms = 0, yaw_rate = 0, calm_since = 0;
+};
+OwnDrive g_own;
+double g_hand_log_ms = 0;
+void MeterTick() {
+    const bool carried = g_p.st == PState::riding;
+    vdrive::DrivenView v;
+    const bool driving = !carried && vdrive::LocalDriving(&v);
+    WorldTransform xf{};
+    if (driving && ReadXf(v.entity, xf)) {
+        if (g_own.id != v.key.id) g_own = OwnDrive{}, g_own.id = v.key.id;
+        const double yaw = std::atan2(xf.rot.m[1][1], xf.rot.m[1][0]);
+        if (g_own.have_yaw && g_now > g_own.yaw_ms) {
+            const double dt = (g_now - g_own.yaw_ms) / 1000.0;
+            const double rate = std::fabs(vwire::WrapPi(yaw - g_own.yaw)) / dt * 57.29577951308232;
+            g_own.yaw_rate += ((std::min)(rate, 99.0) - g_own.yaw_rate) * (1.0 - std::exp(-dt / 0.25));
+        }
+        g_own.have_yaw = true, g_own.yaw = yaw, g_own.yaw_ms = g_now;
+        const double speed = v.speed_mps;
+        if (!(speed >= 3.0 && speed <= 30.0 && g_own.yaw_rate < 3.0)) g_own.calm_since = 0;
+        else if (g_own.calm_since == 0) g_own.calm_since = g_now;
+        realbody::SetOwnDriving(v.key.kind, g_own.calm_since > 0 && g_now - g_own.calm_since >= 500 ? speed : 0.0);
+    } else {
+        if (g_own.id) realbody::SetOwnDriving(0, 0);
+        g_own = OwnDrive{};
+    }
+    const bool meter = carried || driving;
+    realbody::SetHandMeter(meter);
+    if (!meter) {
+        g_hand_log_ms = g_now;
+    } else if (g_now - g_hand_log_ms >= 10000) {
+        g_hand_log_ms = g_now;
+        float r = 0, l = 0;
+        unsigned n = 0;
+        if (realbody::TakeHandTravel(&r, &l, &n))
+            Log("[ride] hands (%s, %s): travel in Sam's model space over 10 s right %.1f cm left %.1f cm (%u updates)", carried ? "passenger" : "driver",
+                vwire::KindName(carried ? g_p.kind : v.key.kind), r, l, n);
+    }
+    if (carried) ridecam::Meter(g_in.local, g_p.entity, g_p.kind, true, g_now);
+    else if (driving) ridecam::Meter(g_in.local, v.entity, v.key.kind, false, g_now);
+    else ridecam::Meter(nullptr, 0, 0, false, g_now);
+}
+
 void TickBody(const TickIn& in, double now) {
     g_in = in;
+    g_diag_sam.store(reinterpret_cast<std::uintptr_t>(in.local), std::memory_order_relaxed);
+    if (g_wp_armed || g_wp_n.load()) WpTick(now);
+    if (g_hb_n.load() != g_hb_logged.load() || g_health_own.load(std::memory_order_relaxed) != g_health_own_logged) HealthGuardTick();
     if (g_last_tick > 0 && now > g_last_tick) g_dt_ms = g_dt_ms * 0.9 + (std::min)(100.0, now - g_last_tick) * 0.1;
     g_last_tick = now;
     g_now = now;
@@ -1454,6 +2089,7 @@ void TickBody(const TickIn& in, double now) {
     PassengerTick();
     DriverTick();
     RollTick();
+    MeterTick();
 }
 bool TickGuarded(const TickIn& in, double now) noexcept {
     __try {
@@ -1494,6 +2130,8 @@ bool RestoreGuarded() noexcept {
 // ---------------------------------------------------------------- public
 void Install(const Config& config) noexcept {
     g_cfg_on = config.ride_together;
+    g_pose_mode = config.ride_pose;
+    ridecam::Install(config);
     unsigned bad = 0;
     for (const Site& s : kSites) {
         if (!mem::CodeMatches(A(s.va), s.sig)) {
@@ -1548,6 +2186,7 @@ void Install(const Config& config) noexcept {
     }
     g_pad_ok = pad_bad == 0;
     InstallNative();
+    InstallShield();
     g_on.store(true);
     if (g_np_hooked.load())
         Log("[ride] riding together ON (%s): %u byte checks; the game's own Use Vehicle on the partner's vehicle boards (a press), the same "
@@ -1602,6 +2241,16 @@ static void TickInner(const TickIn& in, double now) noexcept {
         }
         return;
     }
+    static bool shield_notice = false;
+    if (!shield_notice && g_on.load() && (!g_shield_hooked.load() || !g_health_hooked.load()) && coop::Active()) {
+        shield_notice = true;
+        char text[240];
+        if (!g_health_hooked.load())
+            std::snprintf(text, sizeof(text), "Riding together: the health guard is off (this game build differs): a passenger can be hurt and put off.");
+        else
+            std::snprintf(text, sizeof(text), "Riding together: the landing shield is off (%s): a passenger can take fall damage getting off.", g_shield_off);
+        coop::SetVehicleNotice(text, true, now + 15000);
+    }
     static bool np_notice = false;
     if (!np_notice && g_on.load() && !g_np_hooked.load() && coop::Active()) {
         np_notice = true;
@@ -1632,7 +2281,10 @@ void EmergencyStop() noexcept {
     g_np_ride.store(0);
     overlay::input::SetRideCarry(false);
     realbody::SetRidePose(0);
+    realbody::SetHandMeter(false);
     vdrive::SetCarriedUnit(0);
+    ridecam::Stop("the mod stopped");
+    ShieldAfter();  // the restore puts him beside the vehicle: that drop lands under the shield too
 }
 
 void AfterStop() noexcept {
@@ -1646,6 +2298,11 @@ std::uint32_t PoseFlags() noexcept {
     return g_p.st == PState::riding && !g_p.solo ? (wire::kPosePassenger | wire::kPoseInVehicle) : 0u;
 }
 bool Carried() noexcept { return g_p.st == PState::riding; }
+bool ShieldCovers(std::uintptr_t entity) noexcept { return ShieldActiveFor(entity); }
+void AllowOwnHit(float amount) noexcept { AllowOwnHitImpl(amount); }
+bool JustRode(std::uintptr_t vehicle_entity) noexcept {
+    return vehicle_entity && vehicle_entity == g_last_ride_entity && g_now - g_last_ride_end_ms < kAfterRideNoHitMs;
+}
 
 bool PassengerTarget(game::WorldTransform* target) noexcept {
     if (!target || !g_d.accepted || g_stop.load()) return false;
@@ -1779,7 +2436,7 @@ bool SeatMeasureCommand(const double (&v)[3], char* msg, std::size_t cap) noexce
     if (nh == 2 && have_j && seated)
         std::snprintf(derived, sizeof(derived), "(%.3f, %.3f, %.3f)", root[0] + hl[1][0] - hl[0][0], root[1] + hl[1][1] - hl[0][1], root[2] + hl[1][2] - hl[0][2]);
     g_meas_e = e, g_meas_unit = mem::Q(e + kVUnit), g_meas_kind = kind;
-    const bool snap = seated && realbody::SnapshotRidePose();
+    const bool snap = seated && realbody::SnapshotRidePose(kind);
     char full[1200];
     std::snprintf(full, sizeof(full),
                   "%s %s: Sam root (%.3f, %.3f, %.3f) yaw %.1f deg, pelvis %s(%.3f, %.3f, %.3f); joint 1 '%s' of %u at (%.3f, %.3f, %.3f) axes x (%.2f, %.2f, %.2f) "
@@ -1904,6 +2561,68 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept 
         case 30:
             for (bool& b : g_seat_override) b = false;
             return std::snprintf(msg, cap, "seat overrides off"), true;
+        case 15: {
+            // the landing shield and our Sam's health (logged)
+            game::Diagnostics d;
+            game::ReadDiagnostics(&d);
+            const std::uint64_t until = g_shield_until.load();
+            const std::uint64_t now64 = GetTickCount64();
+            Log("[ride] landing shield: %s%s, %s; %u skipped since the last line; our Sam's health %.1f; crash rule %s; cab crashes kept %u, candidates "
+                "rejected %u",
+                g_shield_hooked.load() ? "installed" : "NOT installed: ", g_shield_hooked.load() ? "" : g_shield_off,
+                !g_shield_enabled.load() ? "off (ride_test 16 0)"
+                : !g_shield_sam.load()   ? "idle"
+                : until == 0             ? "on (carried)"
+                : now64 < until          ? "on (after an exit)"
+                                         : "idle",
+                g_shield_skips.load(), d.health_valid ? d.health : -1.0f, g_crash_legacy.load() ? "v0.20 (one frame)" : "v0.21 (confirmed)", g_p.cab_crashes,
+                g_p.crash_rejects);
+            return std::snprintf(msg, cap, "shield %s, health %.1f", g_shield_hooked.load() ? "installed" : "off", d.health_valid ? d.health : -1.0f), true;
+        }
+        case 16:
+            if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden tests only"), false;
+            g_shield_enabled.store(v[1] != 0);
+            Log("[ride] test: the landing shield %s", v[1] != 0 ? "ON" : "OFF (v0.20: the game's landing check runs on a carried Sam)");
+            return std::snprintf(msg, cap, "landing shield %s", v[1] != 0 ? "on" : "off"), true;
+        case 18:
+            if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden tests only"), false;
+            g_wp_enabled = v[1] != 0;
+            return std::snprintf(msg, cap, "health watchpoint on carry %s", g_wp_enabled ? "on" : "off"), true;
+        case 20:
+        case 21:
+        case 25:
+        case 27:
+        case 28: return ridecam::Command(op, v, msg, cap);
+        case 22: {
+            // the passenger's pose: 0 v0.20's copy of the driver's live pose, 1 the seated idle (now, if riding)
+            g_pose_mode = v[1] != 0 ? 1 : 0;
+            if (g_p.st == PState::riding) realbody::SetRidePose(CarryPoseSource());
+            Log("[ride] test: the passenger's pose %s", g_pose_mode ? "the seated idle" : "v0.20 (the driver's live pose)");
+            return std::snprintf(msg, cap, "passenger pose %s", g_pose_mode ? "seated idle" : "the driver's (v0.20)"), true;
+        }
+        case 23:
+            // the seated idle's tuning: 23 <what> <value> (0 arms 0/1, 1 along, 2 up m, 3 in m, 4 twist deg)
+            realbody::RidePoseTune(static_cast<int>(v[1]), v[2]);
+            PoseLog(true);
+            return std::snprintf(msg, cap, "pose tune %d = %.3f", static_cast<int>(v[1]), v[2]), true;
+        case 26:
+            if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden tests only"), false;
+            g_test_hold_tp = v[1] != 0;
+            Log("[ride] test: the seat teleport %s while the vehicle stands", g_test_hold_tp ? "HELD" : "on");
+            return std::snprintf(msg, cap, "teleport hold %d", g_test_hold_tp ? 1 : 0), true;
+        case 24:
+            PoseLog(true);
+            return std::snprintf(msg, cap, "pose state logged"), true;
+        case 29:
+            if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden tests only"), false;
+            g_resume_enabled = v[1] != 0;
+            Log("[ride] test: the seat back after a save %s", g_resume_enabled ? "ON" : "OFF (v0.20: the save's exit leaves our Sam on foot)");
+            return std::snprintf(msg, cap, "seat back after a save %s", g_resume_enabled ? "on" : "off"), true;
+        case 17:
+            if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden tests only"), false;
+            g_crash_legacy.store(v[1] == 0);
+            Log("[ride] test: the crash rule %s", v[1] == 0 ? "v0.20 (one frame over 8 m/s: exit and hit, every kind)" : "v0.21 (confirmed; the cab keeps its passenger)");
+            return std::snprintf(msg, cap, "crash rule %s", v[1] == 0 ? "v0.20" : "v0.21"), true;
         default: return std::snprintf(msg, cap, "unknown op %d", op), false;
     }
 }

@@ -1,0 +1,86 @@
+# A save while the HOST rides in the guest's moving truck (play test 3 of v0.20.0: "the passenger flew out of the car"; the
+# save guard, docs/real-partner-body.md sections 24.12 and 24.16), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-ride-save-resume -SeedSaves complete-100
+# The launcher's own Local test files (host Sam left, guest Fragile right, 30 fps). The guest drives the truck on play test
+# 3's road (its autopilot, vehicle_drive 12), the host rides (the game's own Use Vehicle). 15 s in, at ~10 m/s, a save on
+# the host (save_guard 1 4 1: the game's own autosave call, as its periodic and area autosaves): the guard holds it, the
+# host's Sam gets off for the capture (no save records him at the seat), the save is written, and then (v0.21) his game
+# asks for the seat back (kReqResume, the same ride id) and the guest's game gives it at speed. Pass: "back on the truck's
+# seat after the save", carried from then to the end of the lap, no other forced exit, no FAULT.
+role host
+graphics low
+timeout 360
+launcherini local-test
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[config\] host_save=1
+@guest waitlog 10 \[config\] host_save=1
+waitlog 10 \[ride\] riding together ON \(host
+@guest waitlog 10 \[ride\] riding together ON \(guest
+waitlog 10 \[ride\] landing shield ON
+@guest waitlog 10 \[ride\] landing shield ON
+waitlog 10 \[ride\] health guard ON
+@guest waitlog 10 \[ride\] health guard ON
+waitlog 10 \[vdrive\] the driven follower: the v0.21 controller
+@guest waitlog 10 \[vdrive\] the driven follower: the v0.21 controller
+wait 22000
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+@guest waitlog 60 \[vshare\] guest: the host's snapshot #[0-9]+ is complete
+@guest waitlog 30 \[vshare\] guest: binding:
+wait 8000
+@guest action vehicle_sync 8 1.8 2
+wait 1500
+@guest until 20 4000 \[vdrive\] guest: our Sam drives truck => pad X 150
+waitlog 20 \[vdrive\] host: the guest claims truck 0x[0-9A-F]+ \(get on, epoch [0-9]+\): granted
+waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached
+wait 1500
+@guest action vehicle_drive 14 1
+wait 4000
+action ride_test 8
+waitlog 8 \[ride\] native prompt: the partner's truck 0x[0-9A-F]+: boarding allowed
+until 15 3000 \[ride\] host: our Sam carried on the truck => pad X 150
+@guest waitlog 10 \[ride\] guest: the partner asks to ride our truck .*ACCEPTED
+wait 1500
+screenshot R0-host-riding-start
+@guest screenshot R0-guest-start
+@guest action vehicle_drive 12 10 1
+wait 15000
+screenshot A1-host-before-save
+until 20 1000 \[save\] #[0-9]+ pending \(forced save F1\): auto save.*our Sam CARRIED => action save_guard 1 4 1
+waitlog 5 \[save\] #[0-9]+ HELD: our Sam is carried
+waitlog 5 \[ride\] host: our Sam off the truck .*\(#1, the game saves, forced\)
+waitlog 5 \[ride\] once the save is written our Sam asks for the truck's seat back
+waitlog 5 \[save\] #[0-9]+ \(forced save F1\) capture started \(after the hold\): our Sam not carried
+waitlog 30 \[save\] finished ok: #[0-9]+ \(forced save F1\) \(after the hold
+waitlog 10 \[ride\] host: asking for the truck 0x[0-9A-F]+'s seat back after the save
+@guest waitlog 10 \[ride\] guest: the partner asks to ride our truck .*the seat back after a save\): ACCEPTED
+waitlog 10 \[ride\] host: our Sam back on the truck's seat after the save
+wait 1500
+screenshot A2-host-back-on
+@guest screenshot A2-guest-driving
+@guest waitlog 60 \[vdrive\] autopilot: done \(#1\)
+wait 1000
+screenshot A3-host-end
+action ride_test 15
+@both action ride_state
+@both action save_guard 0
+nolog \[ride\] host: our Sam off the truck .*\(#2
+nolog \[ride\] no seat back after the save
+nolog \[ride\] the game took our Sam
+nolog \[save\] #[0-9]+ .*capture started .*our Sam CARRIED
+nolog \[(vshare|vdrive|ride|vhit|save)\].*FAULT
+@guest nolog \[(vshare|vdrive|ride|vhit|save)\].*FAULT
+@guest quit
+wait 3000
+quit

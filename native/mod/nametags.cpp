@@ -308,6 +308,17 @@ bool CameraForward(game::Entity* local, double (&fwd)[2]) noexcept {
     return true;
 }
 
+bool CameraView(game::Entity* local, double (&pos)[3], double (&fwd)[3]) noexcept {
+    if (!local || !Resolve()) return false;
+    nametag::View v;
+    if (!ReadView(ViewOf(local), &v)) return false;
+    const double x = v.axis[1][0], y = v.axis[1][1], z = v.axis[1][2], n = std::sqrt(x * x + y * y + z * z);
+    if (!(n > 0.5)) return false;
+    for (int k = 0; k < 3; ++k) pos[k] = v.pos[k];
+    fwd[0] = x / n, fwd[1] = y / n, fwd[2] = z / n;
+    return true;
+}
+
 }  // namespace st::nametags
 
 namespace st::game {

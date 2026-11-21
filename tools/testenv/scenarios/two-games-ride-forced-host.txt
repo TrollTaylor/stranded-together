@@ -2,9 +2,11 @@
 # the host plays its real save in real use, so its carried Sam must come back whole every time), hidden:
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-ride-forced-host -SeedSaves complete-100 -GuestSeed profile-only
 # The guest drives the truck (CLAIM / GRANT), the host rides; each time the host's game puts its own Sam off by itself:
-#   1. the link: the host's game drops every datagram for 2.5 s (coop_session 1) -> off after 1 s silent ("link lost"),
-#   2. a crash: the guest's game stops its moving truck dead (ride_test 6) -> "crash", the game's hit on the host's Sam
-#      (D3-3: "[vhit] ... hit Sam (#1) ... thrown off in a crash", knocked down, not killed),
+#   1. the link: the host's game drops every datagram for 2.5 s (coop_session 1) -> v0.21: ridden out on the seat (the
+#      ride ends on the link only when the link says it is gone, or after 4.5 s without a pose; the host's link waits 3 s
+#      before it reconnects); then the host gets off by choice. (v0.20: off after 1 s silent, "link lost".)
+#   2. a crash: the guest's game stops its moving truck dead (ride_test 6) -> v0.21: a confirmed crash of the driver's
+#      truck, the host stays in the cab (no exit, no hit), then gets off by choice,
 #   3. the game takes the host's Sam (ride_test 7) -> off without a placement, capsule back on,
 #   4. the driver (the guest) gets off while the host rides -> "the driver got off".
 # Pass: every exit with the capsule counter back to 0 and the input back ("[overlay] riding: ... back"), the host on the
@@ -54,13 +56,17 @@ wait 1200
 until 15 3000 \[ride\] host: our Sam carried on the truck .*#1\) => pad X 800
 @guest waitlog 10 \[ride\] guest: the partner asks to ride our truck .*ACCEPTED \(#1;
 wait 1500
-# ---- 1. the link: 2.5 s of the host's received datagrams dropped
+# ---- 1. the link: 2.5 s of the host's received datagrams dropped: ridden out on the seat (v0.21)
 action coop_session 1 2500
-waitlog 6 \[ride\] host: our Sam off the truck .*\(#1, link lost, forced\)
+waitlog 4 \[ride\] no pose from the driver for [0-9]+ ms: our Sam stays on the seat
+waitlog 6 \[ride\] the driver's poses are back after [0-9]+ ms: the ride goes on
+screenshot E1-host-link-stall
+wait 1500
+pad X 150
+waitlog 6 \[ride\] host: our Sam off the truck .*\(#1, got off\)
 waitlog 4 \[overlay\] riding: the game's movement and action input back
 @guest waitlog 8 \[ride\] guest: the partner's ride .* is over
 wait 3000
-screenshot E1-host-link-lost
 wait 1500
 action ride_test 8
 wait 1200
@@ -72,14 +78,15 @@ wait 1500
 screenshot E2-host-riding
 @guest action ride_test 6
 @guest pad none 0
-waitlog 4 \[ride\] crash exit
-waitlog 4 \[ride\] host: our Sam off the truck .*\(#2, crash, forced\)
-@guest waitlog 8 \[ride\] guest: the partner's ride .* is over
-waitlog 4 \[vhit\] partner vehicle truck 0x[0-9A-F]+ hit Sam \(#1\).*thrown off in a crash
-screenshot E2a-host-thrown
+waitlog 4 \[ride\] the driver's truck crashed \(dv .* confirmed\): our Sam stays in the cab
+wait 2500
+screenshot E2a-host-after-crash
 @guest screenshot E2a-guest-sees-host
+pad X 150
+waitlog 6 \[ride\] host: our Sam off the truck .*\(#2, got off\)
+@guest waitlog 8 \[ride\] guest: the partner's ride .* is over
 wait 3000
-screenshot E2b-host-up
+screenshot E2b-host-off
 @guest pad none 1500 lt=255 keep
 @guest pad none 0
 wait 4000
@@ -118,6 +125,8 @@ nolog \[ride\].*FAULT
 @guest nolog \[ride\].*FAULT
 nolog \[vdrive\].*FAULT
 @guest nolog \[vdrive\].*FAULT
+nolog \[ride\] .*\(#[0-9]+, crash, forced\)
+nolog \[ride\] .*\(#[0-9]+, link lost, forced\)
 nolog \[vhit\].*FAULT
 @guest nolog \[vhit\].*FAULT
 @guest quit

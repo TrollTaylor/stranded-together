@@ -20,5 +20,8 @@ void Tick(game::Entity* local, bool local_active, game::Entity* partner, bool pa
 // The game camera's forward direction, horizontal and normalised (what the pad's forward walks
 // towards). False when the camera view is unavailable. Collision tests (action collision 3).
 bool CameraForward(game::Entity* local, double (&fwd)[2]) noexcept;
+// The game camera's position and forward axis (unit) as the view object holds them this frame. False when unavailable.
+// The ride camera's meter (ride_camera.cpp).
+bool CameraView(game::Entity* local, double (&pos)[3], double (&fwd)[3]) noexcept;
 
 }  // namespace st::nametags

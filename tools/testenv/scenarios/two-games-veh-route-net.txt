@@ -1,0 +1,90 @@
+# Vehicle sync over a simulated internet (play test 3 of v0.20.0; docs/real-partner-body.md section 23.25), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-veh-route-net -SeedSaves complete-100 -GuestSeed profile-only
+# The other direction of two-games-veh-route: the HOST drives (its autopilot, vehicle_drive 12) and the guest rides as its
+# passenger, so the guest's follower is measured. Both games' sends go through the UDP transport's lab impairment
+# (session.ini test_net_*, hidden runs only): +60 ms, uniform jitter 0..40 ms, 1.5 % loss in bursts of 2 (a round trip
+# of 120..200 ms). Pass: the guest carried for the whole lap past the hologram where the elevated road ends (no "game
+# took our Sam", no exit), the follower without a teleport while driving, both "[link] TEST impairment" lines.
+# v0.21 (review): 25 s in, the guest's game also drops every received datagram for 1.5 s while the truck moves (a link
+# hiccup over the 1 s that put v0.20's passenger off on the road): the guest stays on the seat ("no pose from the driver
+# ... stays on the seat", "poses are back ... the ride goes on"); its follower holds the last inputs, then catches up.
+role host
+graphics low
+timeout 360
+ini host_save=1
+ini partner_body=real
+ini partner_collision=0
+ini frame_cap=30
+ini test_net_latency_ms=60
+ini test_net_jitter_ms=40
+ini test_net_loss_permille=15
+ini test_net_burst=2
+@guest ini my_character=fragile_suit
+@guest ini self_character=1
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 30 \[link\] TEST impairment on this game's sends: \+60 ms, jitter 0\.\.40 ms, loss 15 per mille \(bursts\)
+@guest waitlog 30 \[link\] TEST impairment on this game's sends: \+60 ms
+waitlog 10 \[coop\] host-held save session ON \(host
+@guest waitlog 10 \[coop\] host-held save session ON \(guest
+waitlog 60 \[vshare\] shared real vehicles ON \(host
+@guest waitlog 60 \[vshare\] shared real vehicles ON \(guest
+waitlog 10 \[ride\] riding together ON \(host
+@guest waitlog 10 \[ride\] riding together ON \(guest
+waitlog 10 \[ride\] health guard ON
+@guest waitlog 10 \[ride\] health guard ON
+wait 22000
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+@guest waitlog 60 \[vshare\] guest: the host's snapshot #[0-9]+ is complete
+@guest waitlog 30 \[vshare\] guest: binding:
+wait 8000
+# ---- the host drives the nearest truck, put at the road's start
+action vehicle_sync 8 1.8 2
+wait 1500
+until 20 4000 \[vdrive\] host: our Sam drives truck => pad X 150
+@guest waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached
+wait 1500
+action vehicle_drive 14 1
+wait 4000
+# ---- the guest boards as the passenger (the game's own Use Vehicle)
+@guest action ride_test 8
+@guest waitlog 8 \[ride\] native prompt: the partner's truck 0x[0-9A-F]+: boarding allowed
+@guest until 15 3000 \[ride\] guest: our Sam carried on the truck => pad X 150
+waitlog 10 \[ride\] host: the partner asks to ride our truck .*ACCEPTED
+wait 1500
+action vehicle_drive 12 10 1
+wait 25000
+screenshot N1-host-driving
+@guest screenshot N1-guest-riding
+@guest action coop_session 1 1500
+@guest waitlog 4 \[ride\] no pose from the driver for [0-9]+ ms: our Sam stays on the seat \(link still connected
+@guest waitlog 6 \[ride\] the driver's poses are back after [0-9]+ ms: the ride goes on
+@guest screenshot N1b-guest-after-stall
+wait 24000
+screenshot N2-host-bottom
+@guest screenshot N2-guest-riding-bottom
+waitlog 40 \[vdrive\] autopilot: done \(#1\)
+wait 1500
+@guest action ride_test 15
+@both action vehicle_drive 1
+@both action ride_state
+@guest action ride_state
+@guest waitlog 3 \[ride\] guest: our Sam carried on the truck .*#1\)
+@guest nolog \[ride\] the game took our Sam
+@guest nolog \[ride\] guest: our Sam off the truck
+nolog \[(vshare|vdrive|ride|vhit)\].*FAULT
+@guest nolog \[(vshare|vdrive|ride|vhit)\].*FAULT
+@guest quit
+wait 3000
+quit

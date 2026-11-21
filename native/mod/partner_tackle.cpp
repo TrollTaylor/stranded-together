@@ -17,6 +17,7 @@
 #include "link.hpp"
 #include "log.hpp"
 #include "partner_source.hpp"
+#include "ride_camera.hpp"
 #include "ride_together.hpp"
 #include "tackle_rules.hpp"
 #include "vehicle_drive.hpp"
@@ -267,9 +268,34 @@ float Health() noexcept {
 }
 
 // ---------------------------------------------------------------- the damage hook (worker threads: atomics and reads only)
+std::atomic<unsigned> g_ride_blocked{0};
 std::uint64_t H_Damage(std::uintptr_t sam, std::uintptr_t msg) {
     g_msgs_all.fetch_add(1, std::memory_order_relaxed);
     const std::uintptr_t want = g_want_ref.load(std::memory_order_acquire);
+    if (ride::ShieldCovers(sam)) {
+        // v0.21 (play test 3): our Sam carried as a passenger (or just put off) takes no damage: his capsule is off and the
+        // game's own checks see our seat teleports as falls and blows (hidden run 20261120-155755: 71 damage while carried
+        // down the road). Only our own vehicle hit (a jump-off at speed, D3-3) gets through. Logged with its source.
+        std::uintptr_t ref = 0, ctx_field = 0;
+        float amount = 0;
+        mem::Rd(msg + 0x20 + 0x28, ref);
+        mem::Rd(msg + 0x20 + 0x40, ctx_field);
+        const std::uintptr_t want_ctx = g_want_ctx.load(std::memory_order_relaxed);
+        const bool recent = GetTickCount64() - g_call_tick.load(std::memory_order_relaxed) < 1500;
+        const bool ours = recent && ((want_ctx && ctx_field == want_ctx) || (want && ref && (ref == want || ref == want + 0x20)));
+        // our own hit: the health guard (ride_together's setter hook) lets its amount (capped as below) through
+        if (ours && mem::Rd(msg + 0x20 + 0x78, amount) && std::isfinite(amount) && amount > 0.0f) ride::AllowOwnHit(trules::CapAmount(amount));
+        if (!ours && mem::Rd(msg + 0x20 + 0x78, amount) && std::isfinite(amount) && amount > 0.0f) {
+            *reinterpret_cast<volatile float*>(msg + 0x20 + 0x78) = 0.0f;
+            if (g_ride_blocked.fetch_add(1, std::memory_order_relaxed) < 24) {
+                const char* rn = ref ? mem::RttiName(mem::RttiOf(ref)) : nullptr;
+                const char* rn2 = !rn && ref ? mem::RttiName(mem::RttiOf(ref - 0x20)) : nullptr;
+                const char* cn = ctx_field ? mem::RttiName(mem::RttiOf(ctx_field)) : nullptr;
+                Log("[ride] damage to our Sam while carried (or just off) blocked: amount %.1f; attack %p (%s), context %p (%s)", amount, reinterpret_cast<void*>(ref),
+                    rn ? rn : rn2 ? rn2 : "?", reinterpret_cast<void*>(ctx_field), cn ? cn : "?");
+            }
+        }
+    }
     if (want && !g_stopped.load(std::memory_order_relaxed)) {
         std::uintptr_t ref = 0;
         float amount = 0;
@@ -514,7 +540,7 @@ void FinishLogs() {
             r.log_crash ? ", thrown off in a crash" : "", r.log_calls, ours, capped, prelim, r.log_how);
         if (key.kind) SendHit(key, r.log_path, r.log_attack, r.log_crash, r.log_speed, r.health_pass0, after);
         char text[160];
-        std::snprintf(text, sizeof(text), "%s", r.log_crash ? "Thrown off in the crash." : "Hit by your partner's vehicle.");
+        std::snprintf(text, sizeof(text), "%s", r.log_crash ? "Hurt jumping off the moving vehicle." :"Hit by your partner's vehicle.");
         Notice(text, true, 2500);
     }
 }
@@ -582,7 +608,7 @@ void TackleTick() {
     g.local_ok = sam && g_in.local_ok;
     g.local_awake = g_in.local_active;
     g.local_on_foot = sam && mem::Q(sam + kEParent) == 0;
-    g.carried = ride::Carried();
+    g.carried = ride::Carried() || ride::JustRode(v);  // v0.21: nor the vehicle he just got off
     static double next_seq_ms = 0;
     static const char* seq_block = nullptr;
     {
@@ -839,6 +865,12 @@ void Install(const Config& config) noexcept {
     const char* first_bad = nullptr;
     for (const Site& s : kSites) {
         if (!mem::CodeMatches(A(s.va), s.sig)) {
+            if (s.va == kFilterInit && ridecam::FilterInitHooked()) {
+                // ridecam's camera filter detour went in first (its own byte check covers these bytes); our calls pass through it
+                Log("[vhit] the filter init at 0x%llX carries the ride camera's detour (checked before it went in): ok",
+                    static_cast<unsigned long long>(s.va));
+                continue;
+            }
             bad_groups |= s.group;
             if (!first_bad) first_bad = s.name;
             Log("[vhit] byte check FAILED: %s at 0x%llX", s.name, static_cast<unsigned long long>(s.va));

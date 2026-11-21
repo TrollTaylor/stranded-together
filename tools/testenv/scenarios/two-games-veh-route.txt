@@ -1,0 +1,136 @@
+# Vehicle sync and passenger safety (play test 3 of v0.20.0; docs/real-partner-body.md sections 23.25 and 24.13), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-veh-route -SeedSaves complete-100
+# The launcher's own Local test files (host Sam left, guest Fragile right, 30 fps). As in the user's play test the guest
+# drives the truck and the host rides as the passenger; the guest's autopilot (vehicle_drive 12, hidden tests) drives play
+# test 3's own road twice (from the start area's elevated road up to z 366 and down the gentle slope where both
+# ejections happened, past the big hologram where the elevated road ends, to z 325; between the laps the host gets off,
+# the truck is put back at the start and the host boards again). The host's
+# follower is measured every second ("[vdrive] truck ... followed: placement error ... along / lateral / vertical") and
+# every correction teleport is logged with its reason ("TELEPORT (far|angle|stuck|stopped)"); the carried host logs the
+# health guard ("[ride] health guard: our Sam's health kept at ...": the game kills a carried Sam where the
+# elevated road ends). In lap 2 one drive frame is sent
+# 9.8 m/s off (play test 3's false crash). Pass: the host is carried from boarding to the end (no "game took our Sam", no
+# exit), the crash candidate not confirmed, no teleport while driving except the lap restarts, no FAULT.
+# v0.21 (review): a short lap 3: 2.5 s at the autopilot's 14 m/s, then the host presses get-off twice (a jump-off above
+# 8 m/s): the D3-3 hit applies and the health guard lets it through ("health guard: our own vehicle hit (D3-3) let
+# through ... health now" under 1000), not "health kept".
+# two-games-veh-route-v020 is the same drive on v0.20's follower, landing check and crash rule (the "before" numbers).
+role host
+graphics low
+timeout 360
+launcherini local-test
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[config\] host_save=1
+@guest waitlog 10 \[config\] host_save=1
+waitlog 10 \[ride\] riding together ON \(host
+@guest waitlog 10 \[ride\] riding together ON \(guest
+waitlog 10 \[ride\] landing shield ON
+@guest waitlog 10 \[ride\] landing shield ON
+waitlog 10 \[ride\] health guard ON
+@guest waitlog 10 \[ride\] health guard ON
+waitlog 10 \[vdrive\] the driven follower: the v0.21 controller
+@guest waitlog 10 \[vdrive\] the driven follower: the v0.21 controller
+wait 22000
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+@guest waitlog 60 \[vshare\] guest: the host's snapshot #[0-9]+ is complete
+@guest waitlog 30 \[vshare\] guest: binding:
+wait 8000
+# ---- the guest drives the nearest truck, put at the road's start (on the elevated road, as in the play test)
+@guest action vehicle_sync 8 1.8 2
+wait 1500
+@guest until 20 4000 \[vdrive\] guest: our Sam drives truck => pad X 150
+waitlog 20 \[vdrive\] host: the guest claims truck 0x[0-9A-F]+ \(get on, epoch [0-9]+\): granted
+waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached
+wait 1500
+@guest action vehicle_drive 14 1
+wait 4000
+# ---- lap 1: the host boards as the passenger with the game's own Use Vehicle; the guest's autopilot drives the road once
+action ride_test 8
+waitlog 8 \[ride\] native prompt: the partner's truck 0x[0-9A-F]+: boarding allowed
+until 15 3000 \[ride\] host: our Sam carried on the truck => pad X 150
+@guest waitlog 10 \[ride\] guest: the partner asks to ride our truck .*ACCEPTED
+wait 1500
+screenshot R0-host-riding-start
+@guest screenshot R0-guest-start
+@guest action vehicle_drive 12 10 1
+wait 20000
+screenshot R1-host-riding
+@guest screenshot R1-guest-driving
+wait 17000
+screenshot R2-host-downhill
+@guest screenshot R2-guest-downhill
+wait 19000
+screenshot R2c-host-bottom
+@guest screenshot R2c-guest-bottom
+@guest waitlog 40 \[vdrive\] autopilot: done \(#1\)
+wait 1500
+action ride_test 15
+# ---- back to the start: the host gets off (a press), the truck is put at the start, the host boards again
+hookkey 0x46 150
+waitlog 6 \[ride\] host: our Sam off the truck .*#1, got off
+@guest action vehicle_drive 14 1
+wait 4000
+action ride_test 8
+wait 800
+until 15 3000 \[ride\] host: our Sam carried on the truck .*#2\) => pad X 150
+wait 1500
+# ---- lap 2: one drive frame 9.8 m/s off at 15 s (play test 3's false crash)
+@guest action vehicle_drive 12 10 1
+wait 15000
+@guest action vehicle_drive 10 9.8
+wait 9000
+pad none 700 rx=32767
+screenshot R3-host-side-view
+@guest screenshot R3-guest-driving
+@guest waitlog 60 \[vdrive\] autopilot: done \(#2\)
+wait 1500
+action ride_test 15
+# laps 1 and 2: never hurt while riding (checked here: lap 3's jump-off hurts him on purpose)
+nolog \[ride\] our Sam was hurt
+# ---- lap 3: a jump-off at speed (D3-3 hit, health let through)
+hookkey 0x46 150
+waitlog 6 \[ride\] host: our Sam off the truck .*#2, got off
+@guest action vehicle_drive 14 1
+wait 4000
+action ride_test 8
+wait 800
+until 15 3000 \[ride\] host: our Sam carried on the truck .*#3\) => pad X 150
+wait 1500
+# (the road's first 30 m are straight and downhill: at 14 m/s wanted the truck does 10-12 m/s about 2.5 s in; run
+# 20261120-220555 at 10 m/s wanted and 12 s in jumped at 7.7 m/s, below the 8 m/s of the hit)
+@guest action vehicle_drive 12 14 1
+wait 2500
+hookkey 0x46 150
+wait 500
+hookkey 0x46 150
+waitlog 4 \[ride\] host: our Sam off the truck .*\(#3, jumped off, forced\)
+waitlog 4 \[ride\] jump-off exit \(dv [0-9.]+ m/s at (8\.[1-9]|9|1[0-9])[0-9.]* m/s\): the game's hit applied
+waitlog 6 \[ride\] health guard: our own vehicle hit \(D3-3\) let through .*health now [1-9][0-9]?[0-9]?\.
+wait 2000
+screenshot R4-host-jumped-off
+@guest action vehicle_drive 12 0 0
+@both action vehicle_drive 1
+@both action ride_state
+action ride_state
+nolog \[ride\] the game took our Sam
+# a save puts him off for its capture and gives the seat back (v0.21, two-games-ride-save-resume): every other forced exit fails
+nolog \[ride\] host: our Sam off the truck .*\(#[0-9]+, (?!the game saves|jumped off)[^)]*forced\)
+nolog \[ride\] no seat back after the save
+nolog \[ride\] .*crash exit
+nolog \[(vshare|vdrive|ride|vhit)\].*FAULT
+@guest nolog \[(vshare|vdrive|ride|vhit)\].*FAULT
+@guest quit
+wait 3000
+quit

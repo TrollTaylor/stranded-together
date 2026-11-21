@@ -1,0 +1,125 @@
+# The passenger's seated idle and ride camera on both screens (v0.21, play test 3 of v0.20; docs/real-partner-body.md
+# sections 24.14 / 24.15), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-ride-camera -SeedSaves complete-100
+# The launcher's own Local test files (host Sam left, guest Fragile right, 30 fps). As in the user's play test the guest
+# drives the truck and the host rides as the passenger (the game's own Use Vehicle). The guest's autopilot drives play test
+# 3's road (vehicle_drive 12: its bends, the gentle downhill), the first 14 s with a slalom (vehicle_drive 21: the driver
+# steers hard). Both games log the camera every second ("[ridecam] passenger truck ..." on the host: the ride parameter
+# 0x2B / 0x2E, BaseType 3, the camera's distance to the truck, steps, inside; "[ridecam] driver truck ..." on the guest:
+# the game's own ride camera, the reference) and the hands' travel every 10 s ("[ride] hands (passenger|driver, truck)":
+# the passenger's hands still while the driver's steer). Lap 1: v0.21 (the seated idle, the ride camera). Lap 2: the same
+# road with v0.20's passenger (ride_test 22 0: the driver's live pose; ride_test 20 0 / 25 0: the on-foot camera, its
+# collision against the truck), the "before". Screenshots on both screens at the same moments of each lap: C0 boarded,
+# C1 slalom, C2 the bend, C3 downhill, C4 the bottom (C = lap 1, V = lap 2).
+# Pass: carried both laps, no fault; lap 1's camera lines: the ride parameter, BaseType 3, the distance within 15 % of
+# the driver's, 0 frames inside the truck; the passenger's hands under 2 cm of travel per 10 s while the driver's travel
+# over 10 cm.
+role host
+graphics low
+timeout 360
+launcherini local-test
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[config\] host_save=1
+@guest waitlog 10 \[config\] host_save=1
+waitlog 10 \[ride\] riding together ON \(host
+@guest waitlog 10 \[ride\] riding together ON \(guest
+waitlog 10 \[ridecam\] the passenger's ride camera ON
+@guest waitlog 10 \[ridecam\] the passenger's ride camera ON
+wait 22000
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+@guest waitlog 60 \[vshare\] guest: the host's snapshot #[0-9]+ is complete
+@guest waitlog 30 \[vshare\] guest: binding:
+wait 6000
+action ride_test 21 1
+@guest action ride_test 21 1
+# ---- the guest drives the nearest truck, put at the road's start
+@guest action vehicle_sync 8 1.8 2
+wait 1500
+@guest until 20 4000 \[vdrive\] guest: our Sam drives truck => pad X 150
+waitlog 20 \[vdrive\] host: the guest claims truck 0x[0-9A-F]+ \(get on, epoch [0-9]+\): granted
+waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached
+wait 1500
+@guest action vehicle_drive 14 1
+wait 4000
+# ---- lap 1 (v0.21): the host boards with the game's own Use Vehicle
+action ride_test 8
+waitlog 8 \[ride\] native prompt: the partner's truck 0x[0-9A-F]+: boarding allowed
+until 15 3000 \[ride\] host: our Sam carried on the truck => pad X 150
+@guest waitlog 10 \[ride\] guest: the partner asks to ride our truck .*ACCEPTED
+wait 2500
+screenshot C0-host-boarded
+@guest screenshot C0-guest-boarded
+@guest action vehicle_drive 12 10 1
+@guest action vehicle_drive 21 0.45 2.5
+wait 7000
+screenshot C1-host-slalom
+@guest screenshot C1-guest-slalom
+wait 7000
+@guest action vehicle_drive 21 0
+wait 8000
+screenshot C2-host-bend
+@guest screenshot C2-guest-bend
+wait 15000
+screenshot C3-host-downhill
+@guest screenshot C3-guest-downhill
+wait 12000
+screenshot C4-host-bottom
+@guest screenshot C4-guest-bottom
+@guest waitlog 40 \[vdrive\] autopilot: done \(#1\)
+wait 1500
+action ride_test 24
+# ---- back to the start: the host gets off, the truck is put at the start, the host boards again (v0.20's passenger)
+hookkey 0x46 150
+waitlog 6 \[ride\] host: our Sam off the truck .*#1, got off
+wait 2500
+screenshot C5-host-off
+action ride_test 22 0
+action ride_test 20 0
+action ride_test 25 0
+@guest action vehicle_drive 14 1
+wait 4000
+action ride_test 8
+wait 800
+until 15 3000 \[ride\] host: our Sam carried on the truck .*#2\) => pad X 150
+wait 2500
+screenshot V0-host-boarded
+@guest screenshot V0-guest-boarded
+@guest action vehicle_drive 12 10 1
+@guest action vehicle_drive 21 0.45 2.5
+wait 7000
+screenshot V1-host-slalom
+@guest screenshot V1-guest-slalom
+wait 7000
+@guest action vehicle_drive 21 0
+wait 8000
+screenshot V2-host-bend
+@guest screenshot V2-guest-bend
+wait 15000
+screenshot V3-host-downhill
+@guest screenshot V3-guest-downhill
+@guest waitlog 40 \[vdrive\] autopilot: done \(#2\)
+action ride_test 22 1
+action ride_test 20 1
+action ride_test 25 1
+@both action ride_state
+nolog \[ride\] the game took our Sam
+# a save puts him off for its capture and gives the seat back (v0.21, two-games-ride-save-resume): every other forced exit fails
+nolog \[ride\] host: our Sam off the truck .*\(#[0-9]+, (?!the game saves)[^)]*forced\)
+nolog \[ride\] no seat back after the save
+nolog \[(vshare|vdrive|ride|ridecam|vhit)\].*FAULT
+@guest nolog \[(vshare|vdrive|ride|ridecam|vhit)\].*FAULT
+@guest quit
+wait 3000
+quit

@@ -1,6 +1,7 @@
 #include "real_body.hpp"
 
 #include <windows.h>
+#include <intrin.h>
 
 #include <atomic>
 #include <cmath>
@@ -20,6 +21,8 @@
 #include "partner_collision.hpp"
 #include "partner_outfit.hpp"
 #include "partner_source.hpp"
+#include "ride_pose_math.hpp"
+#include "gear_extrap.hpp"
 #include "ride_together.hpp"
 #include "self_predict.hpp"
 
@@ -446,6 +449,21 @@ struct GearSet {
 SeqLock<GearSet> g_gear[2];
 std::atomic<std::uint32_t> g_gear_n[2] = {};  // 0: nothing published (the detour skips at once)
 std::atomic<std::uint32_t> g_gear_placed[2] = {}, g_gear_aba[2] = {}, g_gear_bad[2] = {};
+// The placement fixes of v0.21 (docs/real-partner-body.md section 26.7; `self_view 14 <mask>`, default 3, 0 = v0.20): bit 1
+// the self view's props are also placed in the self body's own update (they update after it and before Sam: the BB pod drew
+// the previous frame's tick placement, 9 cm running and 34-37 cm driving at 11 m/s), bit 2 the tick's placement is
+// extrapolated one frame in the body's frame (the props whose update races the body's on another worker thread).
+std::atomic<int> g_gear_fix{3};
+std::atomic<std::uint32_t> g_gear_gen[2] = {};  // PublishGear bumps it: a new list starts the history again
+struct GearHistSet {
+    gearx::Hist h[kMaxGearProps];
+    gearx::Hist body;  // the body's own world at its updates (the self slot's tick extrapolates it; section 26.7)
+};
+SeqLock<GearHistSet> g_gear_hist[2];       // written in the body's own update, read by the tick
+GearHistSet g_gear_hist_w[2];              // the writer's copy, under g_gear_hist_busy
+std::atomic<bool> g_gear_hist_busy[2] = {};  // a forced update colliding with the game's: that record is skipped
+std::atomic<std::uint32_t> g_gear_body_pl[2] = {}, g_gear_xtrap[2] = {}, g_gear_xplain[2] = {};
+std::atomic<std::uint32_t> g_gear_xbody{0};  // self slot ticks placed on the body's extrapolated world
 
 // Gear skinned poses (partner_gear.cpp publishes them): the partner's backpack pose written onto our
 // copies of it (the backpack prop, the rain cover ...) in their own model updates, after the original
@@ -584,7 +602,295 @@ bool g_ride_active = false;  // Sam's update only (under g_fit_busy)
 Joint g_ride_written[kJ] = {};
 Joint g_ride_clean[kJ] = {};
 
-void RideOverride(std::uintptr_t sm, std::uintptr_t pose, std::uintptr_t local, Capture& c) {
+// ---- source 3: the seated idle (play test 3 of v0.20: "the passenger is doing the exact same animation as the driver even
+// when turning"; docs/real-partner-body.md section 24.14). The passenger sits still in his seat whatever the driver does:
+//   the base  every joint's rotation and the root / pelvis translations of ONE seated driver frame of this vehicle kind,
+//             held: the driver's published frame (STJ1) latched while the vehicle drives calmly (3 - 30 m/s, its yaw rate
+//             under 3 deg/s for 0.5 s: no steering, no lean, no foot down), else (until then) the ride's first frame; our
+//             own Sam's calm driving fills the same cache. Kept per kind for the session; a change of base blends in.
+//   the arms  the upper arms and forearms (7 / 8, 36 / 37) by two-bone IK: the hands rest on the thighs, the elbows out and
+//             back (ride_pose_math.hpp), from the model matrices the game builds of the base (its model step, the
+//             byte-checked g_fn_model), its joint convention measured once (the gate) on that very pass.
+//   the hands the hands and fingers (9 - 28, 38 - 57) of our own Sam's pose as the carry started (he stood at the door).
+// Then the game's model and bounds steps as for source 1; the capture carries it (the wire, the self view, the gear).
+constexpr unsigned kSeatHandA0 = 9, kSeatHandA1 = 28, kSeatHandB0 = 38, kSeatHandB1 = 57;
+bool IsSeatHand(unsigned j) { return (j >= kSeatHandA0 && j <= kSeatHandA1) || (j >= kSeatHandB0 && j <= kSeatHandB1); }
+struct SeatBase {
+    bool have = false, final_ = false;
+    float q[kJ][4] = {};
+    float troot[3] = {}, tpel[3] = {};
+};
+SeatBase g_seat[4];                                     // per vehicle kind (Sam's update only)
+std::atomic<int> g_seat_kind{0};                        // the carried vehicle's kind (the ride tick)
+std::atomic<std::uint32_t> g_seat_calm_cms{0};          // the carried vehicle drives calmly: its speed (cm/s), else 0
+std::atomic<int> g_own_kind{0};                         // our own Sam drives this kind ...
+std::atomic<std::uint32_t> g_own_calm_cms{0};           // ... calmly (cm/s), else 0
+std::atomic<int> g_snap_kind{0};                        // the kind SnapshotRidePose was taken in (seat_measure)
+std::atomic<bool> g_relax_want{false};                  // take the relaxed hands on the next override
+float g_relax_q[kJ][4] = {};
+bool g_relax_ok = false;
+float g_seat_out[kJ][4] = {}, g_seat_out_root[3] = {}, g_seat_out_pel[3] = {};
+std::int64_t g_seat_out_qpc = 0;
+// the arms (IK) and its tuning (ride_test 22 / 23)
+std::atomic<bool> g_ik_want{true};
+std::atomic<bool> g_ik_off{false};                      // the hand error stayed over 5 cm: off for the session
+int g_ik_conv = -1;                                     // -1 not measured, 0 / 1 the convention, 2 refused (Sam's update only)
+unsigned g_ik_bad_run = 0;
+std::atomic<int> g_ik_state{-1};                        // g_ik_conv for the tick's log
+std::atomic<float> g_ik_gate_err[2] = {};
+std::atomic<float> g_rest_along{0.60f}, g_rest_up{0.09f}, g_rest_in{0.03f}, g_rest_twist_deg{0.0f};
+std::atomic<std::uint32_t> g_ik_solves{0}, g_ik_fails{0}, g_ik_err_n{0}, g_ik_err_um_max{0};
+std::atomic<std::uint64_t> g_ik_err_um_sum{0};
+std::atomic<std::uint32_t> g_seat_latches{0}, g_seat_latch_info{0};  // info: kind | from << 4 | final << 8 | speed cm/s << 12
+// the hands' travel in Sam's model space (both the driver and the passenger: the proof's "hands still" metric)
+struct HandBox {
+    std::uint32_t gen = 0, n = 0;
+    float lo[2][3] = {}, hi[2][3] = {};
+};
+SeqLock<HandBox> g_hand_box;
+std::atomic<bool> g_hand_meter{false};
+std::atomic<std::uint32_t> g_hand_gen{1};
+HandBox g_hand_acc;  // Sam's update only
+
+void NoteLatch(int kind, int from, bool final_, float speed) {
+    const std::uint32_t sp = static_cast<std::uint32_t>(std::fmin(std::fmax(speed, 0.0f), 600.0f) * 100.0f);
+    g_seat_latch_info.store(static_cast<std::uint32_t>(kind) | (static_cast<std::uint32_t>(from) << 4) | ((final_ ? 1u : 0u) << 8) | (sp << 12),
+                            std::memory_order_relaxed);
+    g_seat_latches.fetch_add(1, std::memory_order_relaxed);
+}
+bool LatchQuat(const float (&src)[4], float (&dst)[4]) {
+    const float n = std::sqrt(src[0] * src[0] + src[1] * src[1] + src[2] * src[2] + src[3] * src[3]);
+    if (!(n > 0.5f && n < 1.5f)) return false;
+    for (int k = 0; k < 4; ++k) dst[k] = src[k] / n;
+    return true;
+}
+// A base from the driver's published frame (Sam's layout); joints the frame does not carry: Sam's own (`own`).
+void LatchFromApply(const ApplyBuf& a, const Joint (&own)[kJ], SeatBase& b) {
+    for (unsigned j = 0; j < kJ; ++j) {
+        const float q[4] = {a.q[j].x, a.q[j].y, a.q[j].z, a.q[j].w};
+        if (!LatchQuat(q, b.q[j])) LatchQuat(own[j].q, b.q[j]);
+    }
+    for (int k = 0; k < 3; ++k) {
+        b.troot[k] = std::isfinite(a.troot[k]) && std::fabs(a.troot[k]) < 3.0f ? a.troot[k] : own[kSamRoot].t[k];
+        b.tpel[k] = std::isfinite(a.tpelvis[k]) && std::fabs(a.tpelvis[k]) < 3.0f ? a.tpelvis[k] : own[kSamPelvis].t[k];
+    }
+    b.have = true;
+}
+// Our own Sam drives calmly (Sam's update, before the capture is written): his pose is the base of that kind.
+void LatchFromOwn(const Capture& c) {
+    const int kind = g_own_kind.load(std::memory_order_relaxed);
+    const std::uint32_t calm = g_own_calm_cms.load(std::memory_order_relaxed);
+    if (kind < 1 || kind > 3 || !calm || g_ride_active || g_ride_src.load(std::memory_order_relaxed)) return;
+    SeatBase& b = g_seat[kind];
+    if (b.final_) return;
+    for (unsigned j = 0; j < kJ; ++j)
+        if (!LatchQuat(c.j[j].q, b.q[j])) return;
+    for (int k = 0; k < 3; ++k) b.troot[k] = c.j[kSamRoot].t[k], b.tpel[k] = c.j[kSamPelvis].t[k];
+    b.have = b.final_ = true;
+    NoteLatch(kind, 2, true, static_cast<float>(calm) / 100.0f);
+}
+// Source 3's base is there (latched now if due). `c` holds Sam's own (clean) pose of this update.
+bool SeatedReady(const Capture& c) {
+    if (g_relax_want.exchange(false, std::memory_order_acq_rel)) {
+        g_relax_ok = !g_ride_active;  // Sam's own pose, not one of ours
+        for (unsigned j = 0; j < kJ && g_relax_ok; ++j)
+            if (IsSeatHand(j) && !LatchQuat(c.j[j].q, g_relax_q[j])) g_relax_ok = false;
+    }
+    const int kind = g_seat_kind.load(std::memory_order_relaxed);
+    if (kind < 1 || kind > 3) return false;
+    SeatBase& b = g_seat[kind];
+    const std::uint32_t calm = g_seat_calm_cms.load(std::memory_order_relaxed);
+    if (!b.have && g_snap_kind.load(std::memory_order_relaxed) == kind && g_ride_have_snap.load(std::memory_order_acquire)) {
+        // the solo seat test: our own driving pose kept by seat_measure
+        static thread_local Capture snap;
+        if (g_ride_snap.Read(snap)) {
+            bool ok = true;
+            for (unsigned j = 0; j < kJ && ok; ++j) ok = LatchQuat(snap.j[j].q, b.q[j]);
+            if (ok) {
+                for (int k = 0; k < 3; ++k) b.troot[k] = snap.j[kSamRoot].t[k], b.tpel[k] = snap.j[kSamPelvis].t[k];
+                b.have = b.final_ = true;
+                NoteLatch(kind, 3, true, 0);
+            }
+        }
+    }
+    if ((!b.have || (!b.final_ && calm)) && GetTickCount64() - g_apply_tick.load(std::memory_order_acquire) < 200) {
+        static thread_local ApplyBuf a;
+        if (g_apply.Read(a)) {
+            LatchFromApply(a, c.j, b);
+            b.final_ = calm != 0;
+            NoteLatch(kind, 1, b.final_, static_cast<float>(calm) / 100.0f);
+        }
+    }
+    return b.have;
+}
+
+using ridepose::V;
+V MdlPos(const float (&m)[4][4]) { return {m[3][0], m[3][1], m[3][2]}; }
+bool MdlRows(const float (&m)[4][4], ridepose::M3* r) {
+    for (int k = 0; k < 3; ++k) {
+        const V a{m[k][0], m[k][1], m[k][2]};
+        const double n = ridepose::Len(a);
+        if (!(n > 0.2 && n < 5.0)) return false;
+        ridepose::SetRow(*r, k, a * (1.0 / n));
+    }
+    return true;
+}
+void QuatToJoint(const double (&q)[4], float (&dst)[4]) {
+    // the hemisphere of the joint's previous value (the partner body interpolates frames)
+    const double d = q[0] * dst[0] + q[1] * dst[1] + q[2] * dst[2] + q[3] * dst[3];
+    const double s = d < 0 ? -1.0 : 1.0;
+    for (int k = 0; k < 4; ++k) dst[k] = static_cast<float>(q[k] * s);
+}
+
+// The arms by IK on the base (Sam's update; the base and the hands are in `cur`). Writes `cur` and runs the game's model
+// step on it (no bounds), reads the model matrices, measures the convention once, solves both arms into cur[7 / 8 / 36 /
+// 37]. `tw` gets the wrists' targets. False: nothing solved (cur unchanged but for what was written).
+bool SeatedArms(std::uintptr_t sm, std::uintptr_t pose, std::uintptr_t local, std::uintptr_t mb, Joint (&cur)[kJ], V (&tw)[2]) {
+    if (!mb || g_ik_conv == 2 || !g_ik_want.load(std::memory_order_relaxed) || g_ik_off.load(std::memory_order_relaxed)) return false;
+    if (!FitWrite(sm, pose, local, cur, false)) return false;
+    if (!CallPoseFns(sm, pose, false)) {
+        g_fit_faults.fetch_add(1, std::memory_order_relaxed);
+        g_fit_faulted.store(true, std::memory_order_seq_cst);
+        return false;
+    }
+    static thread_local float m[kJ][4][4];
+    if (!mem::Read(mb, m, sizeof(m))) return false;
+    ridepose::M3 r[kJ];
+    for (unsigned j : {1u, 2u, 5u, 6u, 7u, 8u, 9u, 35u, 36u, 37u, 38u, 61u, 62u, 66u, 67u})
+        if (!MdlRows(m[j], &r[j])) return false;
+    if (g_ik_conv < 0) {
+        // the gate: the child's rows predicted from the parent's and the local quaternion we wrote, both conventions
+        static const unsigned kPairs[][2] = {{6, 7}, {7, 8}, {36, 37}, {61, 62}, {1, 2}};
+        double err[2] = {0, 0};
+        for (int conv = 0; conv < 2; ++conv)
+            for (const auto& p : kPairs) {
+                const double q[4] = {cur[p[1]].q[0], cur[p[1]].q[1], cur[p[1]].q[2], cur[p[1]].q[3]};
+                err[conv] = std::fmax(err[conv], ridepose::MaxDiff(ridepose::Mul(ridepose::LocalRows(q, conv), r[p[0]]), r[p[1]]));
+            }
+        g_ik_gate_err[0].store(static_cast<float>(err[0]), std::memory_order_relaxed);
+        g_ik_gate_err[1].store(static_cast<float>(err[1]), std::memory_order_relaxed);
+        g_ik_conv = err[0] < 1e-3 && err[0] <= err[1] ? 0 : err[1] < 1e-3 ? 1 : 2;
+        g_ik_state.store(g_ik_conv, std::memory_order_relaxed);
+        if (g_ik_conv == 2) return false;
+    }
+    ridepose::HandRest rest;
+    rest.along = g_rest_along.load(std::memory_order_relaxed);
+    rest.up = g_rest_up.load(std::memory_order_relaxed);
+    rest.in = g_rest_in.load(std::memory_order_relaxed);
+    rest.twist = g_rest_twist_deg.load(std::memory_order_relaxed) * 0.017453292519943295;
+    const V p1 = MdlPos(m[1]), p5 = MdlPos(m[5]), p61 = MdlPos(m[61]), p62 = MdlPos(m[62]), p66 = MdlPos(m[66]), p67 = MdlPos(m[67]);
+    const V up = ridepose::Norm(p5 - p1);
+    const V lat = ridepose::Norm(MdlPos(m[7]) - MdlPos(m[36]));  // to the right
+    V fwd = (p62 - p61) + (p67 - p66);
+    fwd = ridepose::Norm(fwd - up * ridepose::Dot(fwd, up));
+    if (ridepose::Len(up) < 0.5 || ridepose::Len(lat) < 0.5 || ridepose::Len(fwd) < 0.5) return false;
+    const V bend = ridepose::Cross(up * -1.0, fwd);  // an arm hanging down, bending forward
+    bool any = false;
+    for (int side = 0; side < 2; ++side) {
+        const unsigned js = side ? 36 : 7, je = side ? 37 : 8, jw = side ? 38 : 9, jp = side ? 35 : 6;
+        const V hip = side ? p66 : p61, knee = side ? p67 : p62, other = side ? p61 : p66;
+        ridepose::ArmIn in;
+        in.s = MdlPos(m[js]), in.e = MdlPos(m[je]), in.w = MdlPos(m[jw]);
+        in.parent = r[jp], in.upper = r[js], in.fore = r[je];
+        in.target = ridepose::RestTarget(hip, knee, up, ridepose::Norm(other - hip), rest);
+        in.pole = ridepose::PoleDir(side ? lat * -1.0 : lat, fwd, up, rest);
+        in.fallback_n = bend;
+        in.twist = side ? -rest.twist : rest.twist;
+        in.conv = g_ik_conv;
+        ridepose::ArmOut o;
+        if (!ridepose::SolveArm(in, &o)) {
+            g_ik_fails.fetch_add(1, std::memory_order_relaxed);
+            tw[side] = in.w;
+            continue;
+        }
+        QuatToJoint(o.q_upper, cur[js].q);
+        QuatToJoint(o.q_fore, cur[je].q);
+        tw[side] = o.wrist;
+        any = true;
+    }
+    if (any) g_ik_solves.fetch_add(1, std::memory_order_relaxed);
+    return any;
+}
+
+// Source 3 into `cur` (Sam's own joints): the smoothed base, the relaxed hands, the arms; then the game's model and bounds
+// steps. False: not written.
+bool SeatedIdle(std::uintptr_t sm, std::uintptr_t pose, std::uintptr_t local, std::uintptr_t mb, Joint (&cur)[kJ]) {
+    const int kind = g_seat_kind.load(std::memory_order_relaxed);
+    if (kind < 1 || kind > 3 || !g_seat[kind].have) return false;
+    const SeatBase& b = g_seat[kind];
+    // a new base (the ride's first frame, then the calm one) blends in over ~0.3 s; the first update of a ride snaps
+    const std::int64_t now = Qpc();
+    double k = 1.0;
+    if (g_ride_active && g_seat_out_qpc && g_qpc_per_ms > 0) {
+        const double dt = static_cast<double>(now - g_seat_out_qpc) / g_qpc_per_ms / 1000.0;
+        k = dt > 0 && dt < 1.0 ? 1.0 - std::exp(-dt / 0.12) : 1.0;
+    }
+    g_seat_out_qpc = now;
+    for (unsigned j = 0; j < kJ; ++j) {
+        float* o = g_seat_out[j];
+        const float* t = b.q[j];
+        const float d = o[0] * t[0] + o[1] * t[1] + o[2] * t[2] + o[3] * t[3];
+        const float s = d < 0 ? -1.0f : 1.0f;
+        float n2 = 0;
+        for (int i = 0; i < 4; ++i) {
+            o[i] = k >= 1.0 ? t[i] : static_cast<float>(o[i] + (s * t[i] - o[i]) * k);
+            n2 += o[i] * o[i];
+        }
+        const float n = std::sqrt(n2);
+        if (!(n > 0.5f)) std::memcpy(o, t, sizeof(float) * 4);
+        else
+            for (int i = 0; i < 4; ++i) o[i] /= n;
+    }
+    for (int i = 0; i < 3; ++i) {
+        g_seat_out_root[i] = k >= 1.0 ? b.troot[i] : static_cast<float>(g_seat_out_root[i] + (b.troot[i] - g_seat_out_root[i]) * k);
+        g_seat_out_pel[i] = k >= 1.0 ? b.tpel[i] : static_cast<float>(g_seat_out_pel[i] + (b.tpel[i] - g_seat_out_pel[i]) * k);
+    }
+    for (unsigned j = 0; j < kJ; ++j) std::memcpy(cur[j].q, IsSeatHand(j) && g_relax_ok ? g_relax_q[j] : g_seat_out[j], sizeof(cur[j].q));
+    for (int i = 0; i < 3; ++i) cur[kSamRoot].t[i] = g_seat_out_root[i], cur[kSamPelvis].t[i] = g_seat_out_pel[i];
+    V tw[2];
+    const bool arms = SeatedArms(sm, pose, local, mb, cur, tw);
+    if (g_fit_faulted.load(std::memory_order_relaxed)) return false;
+    if (!FitWrite(sm, pose, local, cur, true)) return false;
+    if (arms) {
+        // the hands where the IK put them (the model step of what we wrote): a mismatch means the frames are not what the
+        // gate measured; 30 updates in a row over 5 cm: the arms off for the session
+        float w0[4][4], w1[4][4];
+        if (mem::Read(mb + 0x40ull * 9, w0, sizeof(w0)) && mem::Read(mb + 0x40ull * 38, w1, sizeof(w1))) {
+            const double e = std::fmax(ridepose::Len(MdlPos(w0) - tw[0]), ridepose::Len(MdlPos(w1) - tw[1]));
+            if (std::isfinite(e)) {
+                const std::uint32_t um = static_cast<std::uint32_t>(std::fmin(e, 10.0) * 1e6);
+                g_ik_err_um_sum.fetch_add(um, std::memory_order_relaxed);
+                g_ik_err_n.fetch_add(1, std::memory_order_relaxed);
+                std::uint32_t mx = g_ik_err_um_max.load(std::memory_order_relaxed);
+                while (um > mx && !g_ik_err_um_max.compare_exchange_weak(mx, um, std::memory_order_relaxed)) {
+                }
+                g_ik_bad_run = e > 0.05 ? g_ik_bad_run + 1 : 0;
+                if (g_ik_bad_run >= 30) g_ik_off.store(true, std::memory_order_relaxed);
+            }
+        }
+    }
+    return true;
+}
+
+// The hands' place in Sam's model space, accumulated per window (the tick takes it).
+void HandMeter(std::uintptr_t mb) {
+    if (!g_hand_meter.load(std::memory_order_relaxed) || !mb) return;
+    float w[2][4][4];
+    if (!mem::Read(mb + 0x40ull * 9, w[0], sizeof(w[0])) || !mem::Read(mb + 0x40ull * 38, w[1], sizeof(w[1]))) return;
+    const std::uint32_t gen = g_hand_gen.load(std::memory_order_acquire);
+    if (g_hand_acc.gen != gen) g_hand_acc = HandBox{}, g_hand_acc.gen = gen;
+    for (int s = 0; s < 2; ++s)
+        for (int k = 0; k < 3; ++k) {
+            const float v = w[s][3][k];
+            if (!std::isfinite(v)) return;
+            if (g_hand_acc.n == 0 || v < g_hand_acc.lo[s][k]) g_hand_acc.lo[s][k] = v;
+            if (g_hand_acc.n == 0 || v > g_hand_acc.hi[s][k]) g_hand_acc.hi[s][k] = v;
+        }
+    ++g_hand_acc.n;
+    g_hand_box.Write(g_hand_acc);
+}
+
+void RideOverride(std::uintptr_t sm, std::uintptr_t pose, std::uintptr_t local, std::uintptr_t mb, Capture& c) {
     unsigned held = 0;
     if (g_ride_active) {
         for (unsigned j = 0; j < kJ; ++j) {
@@ -606,6 +912,7 @@ void RideOverride(std::uintptr_t sm, std::uintptr_t pose, std::uintptr_t local, 
     bool have = false;
     if (src == 1) have = GetTickCount64() - g_apply_tick.load(std::memory_order_acquire) < 500 && g_apply.Read(a);
     else if (src == 2) have = g_ride_have_snap.load(std::memory_order_acquire) && g_ride_snap.Read(snap);
+    else if (src == 3) have = SeatedReady(c);
     if (!have) {
         if (src) g_ride_nosrc.fetch_add(1, std::memory_order_relaxed);
         if (g_ride_active) {
@@ -617,6 +924,17 @@ void RideOverride(std::uintptr_t sm, std::uintptr_t pose, std::uintptr_t local, 
     std::memcpy(g_ride_clean, c.j, sizeof(g_ride_clean));
     Joint cur[kJ];
     std::memcpy(cur, c.j, sizeof(cur));
+    if (src == 3) {
+        if (!SeatedIdle(sm, pose, local, mb, cur)) {
+            g_ride_failed.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        std::memcpy(g_ride_written, cur, sizeof(g_ride_written));
+        std::memcpy(c.j, cur, sizeof(c.j));
+        g_ride_active = true;
+        g_ride_writes.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
     for (unsigned j = 0; j < kJ; ++j) {
         float q[4];
         if (src == 1) q[0] = a.q[j].x, q[1] = a.q[j].y, q[2] = a.q[j].z, q[3] = a.q[j].w;
@@ -686,7 +1004,9 @@ void CaptureSam(std::uintptr_t sm) {
         g_fit_qheld.fetch_add(qheld, std::memory_order_relaxed);
         g_fit_sheld.fetch_add(sheld, std::memory_order_relaxed);
     }
-    if (g_ride_src.load(std::memory_order_relaxed) || g_ride_active) RideOverride(sm, pose, local, c);
+    if (g_ride_src.load(std::memory_order_relaxed) || g_ride_active) RideOverride(sm, pose, local, Field<std::uintptr_t>(hdr, kHdrModel), c);
+    else LatchFromOwn(c);
+    HandMeter(Field<std::uintptr_t>(hdr, kHdrModel));
     {
         // The review's leak check: the captured pelvis length with the fit on / off, and (fit on) how
         // many of the translations the fit changes came back nearer the shape than Sam's own.
@@ -907,16 +1227,106 @@ bool JointFrame(const float (&m)[4][4], double (&p)[3], float (&r)[3][3]) {
     return std::fabs(d) < 0.2f;
 }
 
+// ---- The drawn-vs-anchor meter (hidden test runs only, `self_view 15 1`; docs/real-partner-body.md section 26.7). The game
+// stamps every entity update with the TSC: +0x250 at the start of Entity::Update (0x14234D7A9), +0x258 at its end
+// (0x14234DA87). Each of our gear placements is stamped too, with its kind, and each body update's world is kept. The tick
+// then finds, for each prop's newest update, the placement it had when it ran (what the game draws for it) and how far that
+// is from the prop's anchor on the body as the body drew it: the body's world in its update times its pose, times the
+// prop's offset. The tick-time meters ([headgear], `Sam vs body`) cannot see this: at tick time everything agrees.
+constexpr std::uintptr_t kEntStampStart = 0x250, kEntStampEnd = 0x258;
+constexpr std::uintptr_t kStampStartSite = 0x234D7A9, kStampEndSite = 0x234DA87;
+enum GearPlaceKind : int { kPlaceTick = 0, kPlaceBody = 1, kPlaceSam = 2 };
+struct GmPlace {
+    std::uint64_t tsc = 0;
+    int kind = 0;
+    double p[3] = {};
+};
+constexpr unsigned kGmRing = 8;
+struct GmRing {
+    GmPlace e[kGmRing];
+    std::uint32_t n = 0;
+};
+struct GmBody {
+    std::uint64_t tsc = 0;
+    Xf w{};
+    bool ok = false;
+};
+std::atomic<bool> g_gm_on{false};
+std::atomic<bool> g_gm_lock{false};
+GmRing g_gm_ring[2][kMaxGearProps];
+GmBody g_gm_body[2][4];
+std::uint32_t g_gm_body_n[2] = {};
+void GmLock() {
+    while (g_gm_lock.exchange(true, std::memory_order_acquire)) _mm_pause();
+}
+void GmUnlock() { g_gm_lock.store(false, std::memory_order_release); }
+void GmRecPlace(int slot, unsigned i, int kind, const double (&p)[3]) {
+    const std::uint64_t t = __rdtsc();
+    GmLock();
+    GmRing& r = g_gm_ring[slot][i];
+    GmPlace& d = r.e[r.n++ % kGmRing];
+    d.tsc = t, d.kind = kind;
+    std::memcpy(d.p, p, sizeof(d.p));
+    GmUnlock();
+}
+void GmRecBody(int slot, const Xf& w) {
+    const std::uint64_t t = __rdtsc();
+    GmLock();
+    GmBody& d = g_gm_body[slot][g_gm_body_n[slot]++ % 4];
+    d.tsc = t, d.w = w, d.ok = true;
+    GmUnlock();
+}
+
+double QpcMs() { return g_qpc_per_ms > 0 ? static_cast<double>(Qpc()) / g_qpc_per_ms : 0; }
+
 // Places the slot's published props on a body whose world transform is `world` and whose pose's
 // model matrices start at `mb` (77 x 0x40 bytes). Fault-free reads; the game's own setter per prop
-// after its vtable + GUID check. Returns the props placed.
-unsigned PlaceGear(int slot, const Xf& world, std::uintptr_t mb, const std::uint8_t* inv) {
+// after its vtable + GUID check. Returns the props placed. `kind`: who places (the meter's stamp).
+// From the body's own update each prop's placement is also kept in the body's frame; from the tick
+// (fix bit 2) a prop with two such records from consecutive body updates is placed one body update
+// ahead of the newest (section 26.7).
+unsigned PlaceGear(int slot, const Xf& world, std::uintptr_t mb, const std::uint8_t* inv, int kind = kPlaceTick) {
     if (!g_fn_setwt || !mb || g_gear_n[slot].load(std::memory_order_acquire) == 0) return 0;
+    // the list's generation before the list: PublishGear bumps it before and after writing, so a record never pairs a
+    // list with the generation of a later one
+    const std::uint32_t gen = g_gear_gen[slot].load(std::memory_order_acquire);
     static thread_local GearSet set;
     if (!g_gear[slot].Read(set) || set.n == 0 || set.n > kMaxGearProps) return 0;
     Xf w[kMaxGearProps];
     bool have[kMaxGearProps] = {};
     unsigned placed = 0;
+    const bool meter = g_gm_on.load(std::memory_order_relaxed);
+    const double now_ms = QpcMs();
+    // the tick: the body-update records (fix bit 2)
+    static thread_local GearHistSet xh;
+    const bool xtrap = kind == kPlaceTick && (g_gear_fix.load(std::memory_order_relaxed) & 2) && now_ms > 0 && g_gear_hist[slot].Read(xh);
+    const double frame_ms = g_frame_ms.load(std::memory_order_relaxed);
+    std::uint32_t xt = 0, xp = 0;
+    // the body's own update: keep the placements (one writer; a colliding forced update skips)
+    const bool record = kind == kPlaceBody && now_ms > 0 && !g_gear_hist_busy[slot].exchange(true, std::memory_order_acquire);
+    GearHistSet* hw = record ? &g_gear_hist_w[slot] : nullptr;
+    // v0.21: the self body moves in its own update, after the tick (follow 4), so the tick's world is the previous
+    // update's: the self slot's tick composes the extrapolated locals with the body's world one update ahead too (a prop
+    // racing the body's update otherwise drew one frame of motion behind: 30-41 cm driving, run 20261120-204717)
+    Xf xworld = world;
+    bool xbody = false;
+    if (xtrap && slot == 1) {
+        double bp[3];
+        float br[3][3];
+        if (gearx::Matches(xh.body, gen, 1, 0, 0) && gearx::Extrapolate(xh.body, now_ms, frame_ms, bp, br, gearx::kMaxBodyStepM) == gearx::Why::ok) {
+            std::memcpy(xworld.p, bp, sizeof(bp));
+            std::memcpy(xworld.r, br, sizeof(br));
+            xbody = true;
+        }
+    }
+    if (xbody) g_gear_xbody.fetch_add(1, std::memory_order_relaxed);
+    if (hw) {
+        gearx::Rec br;
+        std::memcpy(br.p, world.p, sizeof(br.p));
+        std::memcpy(br.r, world.r, sizeof(br.r));
+        br.t_ms = now_ms;
+        gearx::Push(hw->body, gen, 1, 0, 0, br);
+    }
     for (unsigned i = 0; i < set.n; ++i) {
         const GearProp& g = set.p[i];
         Xf anchor;
@@ -945,16 +1355,43 @@ unsigned PlaceGear(int slot, const Xf& world, std::uintptr_t mb, const std::uint
             g_gear_aba[slot].fetch_add(1, std::memory_order_relaxed);
             continue;
         }
+        Xf put = w[i];
+        if (xtrap) {
+            const gearx::Hist& h = xh.h[i];
+            double lp[3];
+            float lr[3][3];
+            if (gearx::Matches(h, gen, g.e, id.lo, id.hi) && gearx::Extrapolate(h, now_ms, frame_ms, lp, lr) == gearx::Why::ok) {
+                put = Compose(xworld, lp, lr);
+                ++xt;
+            } else {
+                ++xp;
+            }
+        }
         PackedWt wt;
-        std::memcpy(wt.p, w[i].p, sizeof(wt.p));
-        std::memcpy(wt.r, w[i].r, sizeof(wt.r));
+        std::memcpy(wt.p, put.p, sizeof(wt.p));
+        std::memcpy(wt.r, put.r, sizeof(wt.r));
         if (!CallSetWt(g.e, &wt)) {
             g_gear_bad[slot].fetch_add(1, std::memory_order_relaxed);
             g_gear_n[slot].store(0, std::memory_order_release);  // never again until republished
+            if (hw) g_gear_hist_busy[slot].store(false, std::memory_order_release);
             return placed;
         }
         ++placed;
+        if (meter) GmRecPlace(slot, i, kind, put.p);
+        if (hw) {
+            gearx::Rec r;
+            gearx::ToLocal(world.p, world.r, put.p, put.r, r.p, r.r);
+            r.t_ms = now_ms;
+            gearx::Push(hw->h[i], gen, g.e, id.lo, id.hi, r);
+        }
     }
+    if (hw) {
+        g_gear_hist[slot].Write(*hw);
+        g_gear_hist_busy[slot].store(false, std::memory_order_release);
+        g_gear_body_pl[slot].fetch_add(placed, std::memory_order_relaxed);
+    }
+    if (xt) g_gear_xtrap[slot].fetch_add(xt, std::memory_order_relaxed);
+    if (xp) g_gear_xplain[slot].fetch_add(xp, std::memory_order_relaxed);
     g_gear_placed[slot].fetch_add(placed, std::memory_order_relaxed);
     return placed;
 }
@@ -1082,7 +1519,7 @@ void CopySamTransform(bool menu = false) {
             Xf w;
             std::memcpy(w.p, p, sizeof(w.p));
             std::memcpy(w.r, a + 0x18, sizeof(w.r));
-            PlaceGear(1, w, Field<std::uintptr_t>(hdr, kHdrModel), g_me.inv);
+            PlaceGear(1, w, Field<std::uintptr_t>(hdr, kHdrModel), g_me.inv, kPlaceSam);
         }
     }
 }
@@ -1533,10 +1970,24 @@ void ApplyBody(BodySlot& b, std::uintptr_t sm, bool live) {
     ct.applies.fetch_add(1, std::memory_order_relaxed);
     if (live) (from_menu ? g_menu_last_apply : g_self_last_apply).store(GetTickCount64(), std::memory_order_relaxed);
     if (live && !from_menu) g_self_applied.Write(c);  // the fit hangs Sam's gear on this same pose
+    const bool meter = g_gm_on.load(std::memory_order_relaxed) && !from_menu;
     // Gear props on the partner (or debug) body: its world transform now, the pose just written.
-    if (!live && g_gear_n[0].load(std::memory_order_acquire)) {
+    if (!live && (g_gear_n[0].load(std::memory_order_acquire) || meter)) {
         Xf w;
-        if (ReadWorld(owner, &w)) PlaceGear(0, w, Field<std::uintptr_t>(hdr, kHdrModel), b.inv);
+        if (ReadWorld(owner, &w)) {
+            if (meter) GmRecBody(0, w);
+            PlaceGear(0, w, Field<std::uintptr_t>(hdr, kHdrModel), b.inv, kPlaceBody);
+        }
+    }
+    // The self view's props (the BB pod) update after the self body and before Sam (section 26.7): only a placement made
+    // here, on the world the body has now (follow 4's prediction) and the pose just written, is what they draw with it.
+    // CopySamTransform's and the tick's placements stay (they come after the props' update in a frame).
+    if (live && !from_menu && (meter || ((g_gear_fix.load(std::memory_order_relaxed) & 1) && g_gear_n[1].load(std::memory_order_acquire)))) {
+        Xf w;
+        if (ReadWorld(owner, &w)) {
+            if (meter) GmRecBody(1, w);
+            if (g_gear_fix.load(std::memory_order_relaxed) & 1) PlaceGear(1, w, Field<std::uintptr_t>(hdr, kHdrModel), b.inv, kPlaceBody);
+        }
     }
 }
 
@@ -3835,10 +4286,12 @@ void PublishGear(GearSlot slot, const GearProp* props, unsigned n) noexcept {
     static GearSet set;
     set.n = props && g_fn_setwt ? (n < kMaxGearProps ? n : kMaxGearProps) : 0;
     for (unsigned k = 0; k < set.n; ++k) set.p[k] = props[k];
+    g_gear_gen[i].fetch_add(1, std::memory_order_acq_rel);  // the extrapolation's history starts again (section 26.7)
     if (set.n == 0) {
         // Unpublish, then wait until no detour can still be placing the old list.
         g_gear_n[i].store(0, std::memory_order_seq_cst);
         g_gear[i].Write(set);
+        g_gear_gen[i].fetch_add(1, std::memory_order_acq_rel);
         const ULONGLONG until = GetTickCount64() + 50;
         while (g_inflight.load(std::memory_order_seq_cst) != 0 && GetTickCount64() < until) SwitchToThread();
         if (g_inflight.load(std::memory_order_seq_cst) != 0)
@@ -3846,6 +4299,7 @@ void PublishGear(GearSlot slot, const GearProp* props, unsigned n) noexcept {
         return;
     }
     g_gear[i].Write(set);
+    g_gear_gen[i].fetch_add(1, std::memory_order_acq_rel);
     g_gear_n[i].store(set.n, std::memory_order_release);
 }
 
@@ -3860,7 +4314,7 @@ unsigned PlaceGearNow(GearSlot slot) noexcept {
     if (!ReadPoseHdr(sm, hdr, &pose) || CheckHdr(hdr, b.skel.load(std::memory_order_acquire), &local) != 0) return 0;
     Xf w;
     if (!ReadWorld(e, &w)) return 0;
-    return PlaceGear(i, w, Field<std::uintptr_t>(hdr, kHdrModel), b.inv);
+    return PlaceGear(i, w, Field<std::uintptr_t>(hdr, kHdrModel), b.inv, kPlaceTick);
 }
 
 void GearCounters(GearSlot slot, std::uint32_t* placed, std::uint32_t* aba, std::uint32_t* bad) noexcept {
@@ -3868,6 +4322,166 @@ void GearCounters(GearSlot slot, std::uint32_t* placed, std::uint32_t* aba, std:
     if (placed) *placed = g_gear_placed[i].load();
     if (aba) *aba = g_gear_aba[i].load();
     if (bad) *bad = g_gear_bad[i].load();
+}
+
+void GearPlacementInfo(GearSlot slot, char* out, std::size_t cap) noexcept {
+    const int i = slot == GearSlot::self ? 1 : 0;
+    const int fix = g_gear_fix.load(std::memory_order_relaxed);
+    std::snprintf(out, cap, "fix %d: %u in the body's update, the tick's %u extrapolated / %u plain", fix, g_gear_body_pl[i].load(),
+                  g_gear_xtrap[i].load(), g_gear_xplain[i].load());
+    if (i == 1) {
+        const std::size_t n = std::strlen(out);
+        if (n < cap) std::snprintf(out + n, cap - n, " (%u on the body's extrapolated world)", g_gear_xbody.load());
+    }
+}
+
+// ---- the drawn-vs-anchor meter's evaluation (see GmRecPlace): the tick, before its own placements.
+namespace {
+struct GmStat {
+    std::uint32_t n = 0, other = 0, nobody = 0, used[3] = {}, race = 0, o3 = 0, o8 = 0;
+    double sum = 0, mx = 0, ksum[3] = {}, kmx[3] = {}, rsum = 0, rmx = 0;
+};
+GmStat g_gm_st[2];
+std::uint64_t g_gm_last_sp[2][kMaxGearProps] = {};
+double g_gm_prev_p[2][3] = {};
+bool g_gm_prev_ok[2] = {};
+double g_gm_tsc_ms = 0;
+std::uint64_t g_gm_tsc0 = 0;
+std::int64_t g_gm_qpc0 = 0;
+double g_gm_next_ms = 0;
+std::atomic<int> g_gm_sites{-1};  // -1 not checked, 0 mismatch, 1 ok
+}  // namespace
+
+// The two stamp sites the meter reads (Entity::Update's rdtsc writes into the entity).
+bool GearMeterSites(char* why, std::size_t cap) {
+    int s = g_gm_sites.load();
+    if (s < 0) {
+        const bool a = mem::CodeMatches(mem::Base() + kStampStartSite, "48 89 81 50 02 00 00");
+        const bool b = mem::CodeMatches(mem::Base() + kStampEndSite, "48 89 87 58 02 00 00");
+        s = a && b ? 1 : 0;
+        g_gm_sites.store(s);
+        if (!s) Log("[gear] drawn-vs-anchor meter off: Entity::Update's stamp sites do not match (start %s, end %s)", a ? "ok" : "MISMATCH", b ? "ok" : "MISMATCH");
+    }
+    if (!s && why) std::snprintf(why, cap, "Entity::Update's stamp sites (0x14234D7A9 / 0x14234DA87) do not match this game build");
+    return s == 1;
+}
+
+void GearMeterTick(double now_ms) noexcept {
+    if (!g_gm_on.load(std::memory_order_relaxed)) return;
+    const std::uint64_t tnow = __rdtsc();
+    if (!g_gm_tsc0) {
+        g_gm_tsc0 = tnow, g_gm_qpc0 = Qpc();
+        return;
+    }
+    if (g_gm_tsc_ms <= 0) {
+        if (g_qpc_per_ms <= 0) return;
+        const double ms = static_cast<double>(Qpc() - g_gm_qpc0) / g_qpc_per_ms;
+        if (ms < 1000) return;
+        g_gm_tsc_ms = static_cast<double>(tnow - g_gm_tsc0) / ms;
+    }
+    const double fr = g_frame_ms.load(std::memory_order_relaxed);
+    const auto half = static_cast<std::uint64_t>(0.5 * fr * g_gm_tsc_ms);
+    static GearSet set;
+    static GmRing rings[kMaxGearProps];
+    for (int s = 0; s < 2; ++s) {
+        BodySlot& b = g_slots[s];
+        const std::uintptr_t e = b.e.load(std::memory_order_acquire), sm = b.sm.load(std::memory_order_acquire);
+        if (!e || !sm || b.phase != Phase::live) continue;
+        if (Q(sm) != g_sm_vt || Q(sm + kSmEntity) != e || Q(e) != b.e_vt) continue;
+        const std::uint64_t Sb = Q(e + kEntStampStart), Eb = Q(e + kEntStampEnd);
+        GmStat& st = g_gm_st[s];
+        GmBody br{};
+        GmLock();
+        for (const GmBody& r : g_gm_body[s])
+            if (r.ok && r.tsc >= Sb && r.tsc <= Eb && r.tsc > br.tsc) br = r;
+        std::memcpy(rings, g_gm_ring[s], sizeof(rings));
+        GmUnlock();
+        if (!br.ok) {
+            ++st.nobody;
+            continue;
+        }
+        bool moving = false;
+        if (g_gm_prev_ok[s]) {
+            double d2 = 0;
+            for (int k = 0; k < 3; ++k) d2 += (br.w.p[k] - g_gm_prev_p[s][k]) * (br.w.p[k] - g_gm_prev_p[s][k]);
+            moving = d2 > 0.005 * 0.005;
+        }
+        std::memcpy(g_gm_prev_p[s], br.w.p, sizeof(br.w.p));
+        g_gm_prev_ok[s] = true;
+        std::uint8_t hdr[kPoseSize];
+        std::uintptr_t pose = 0, local = 0;
+        if (!ReadPoseHdr(sm, hdr, &pose) || CheckHdr(hdr, b.skel.load(std::memory_order_acquire), &local) != 0) continue;
+        const std::uintptr_t mb = Field<std::uintptr_t>(hdr, kHdrModel);
+        if (g_gear_n[s].load(std::memory_order_acquire) == 0 || !g_gear[s].Read(set) || set.n == 0 || set.n > kMaxGearProps) continue;
+        // each prop's anchor as the body drew it: its world in its update, its pose (the tick runs before this frame's)
+        Xf w[kMaxGearProps];
+        bool have[kMaxGearProps] = {};
+        for (unsigned i = 0; i < set.n; ++i) {
+            const GearProp& gp = set.p[i];
+            Xf anchor;
+            if (gp.parent >= 0) {
+                if (static_cast<unsigned>(gp.parent) >= i || !have[gp.parent]) continue;
+                anchor = w[gp.parent];
+            } else {
+                if (gp.joint >= kJ) continue;
+                float m[4][4];
+                double jp[3];
+                float jr[3][3];
+                if (!mem::Read(mb + 0x40ull * b.inv[gp.joint], m, sizeof(m)) || !JointFrame(m, jp, jr)) continue;
+                anchor = Compose(br.w, jp, jr);
+            }
+            const double p3[3] = {gp.p[0], gp.p[1], gp.p[2]};
+            w[i] = Compose(anchor, p3, gp.r);
+            have[i] = true;
+        }
+        for (unsigned i = 0; i < set.n; ++i) {
+            const GearProp& gp = set.p[i];
+            if (!gp.e || !have[i] || Q(gp.e) != gp.e_vt) continue;
+            const std::uint64_t Sp = Q(gp.e + kEntStampStart);
+            if (!Sp || Sp == g_gm_last_sp[s][i]) continue;
+            g_gm_last_sp[s][i] = Sp;
+            if (!moving) continue;
+            if ((Sp > Sb ? Sp - Sb : Sb - Sp) > half) {  // not this frame's prop update
+                ++st.other;
+                continue;
+            }
+            // the placement it had when its update started: the newest one stamped before it
+            const GmRing& r = rings[i];
+            const GmPlace* used = nullptr;
+            const unsigned cnt = r.n < kGmRing ? r.n : kGmRing;
+            for (unsigned k = 0; k < cnt; ++k) {
+                const GmPlace& d = r.e[k];
+                if (d.tsc < Sp && (!used || d.tsc > used->tsc)) used = &d;
+            }
+            if (!used) continue;
+            double d2 = 0;
+            for (int k = 0; k < 3; ++k) d2 += (used->p[k] - w[i].p[k]) * (used->p[k] - w[i].p[k]);
+            const double err = std::sqrt(d2) * 100.0;
+            ++st.n;
+            st.sum += err;
+            if (err > st.mx) st.mx = err;
+            st.o3 += err > 3.0, st.o8 += err > 8.0;
+            const int k = used->kind >= 0 && used->kind < 3 ? used->kind : 0;
+            ++st.used[k], st.ksum[k] += err;
+            if (err > st.kmx[k]) st.kmx[k] = err;
+            if (Sp >= Sb && Sp <= Eb) {  // the prop's update started during the body's (another worker thread)
+                ++st.race, st.rsum += err;
+                if (err > st.rmx) st.rmx = err;
+            }
+        }
+    }
+    if (now_ms < g_gm_next_ms) return;
+    g_gm_next_ms = now_ms + 1000;
+    for (int s = 0; s < 2; ++s) {
+        GmStat& st = g_gm_st[s];
+        if (st.n || st.other || st.nobody)
+            Log("[gear] drawn vs anchor %s (fix %d): %u moving prop updates, cm mean %.2f max %.2f (>3 %u, >8 %u); drew the tick's %u (%.2f/%.2f), the "
+                "body update's %u (%.2f/%.2f), Sam's update's %u (%.2f/%.2f); raced the body's update %u (%.2f/%.2f); other frame %u, no body record %u",
+                s ? "self" : "partner", g_gear_fix.load(), st.n, st.n ? st.sum / st.n : 0, st.mx, st.o3, st.o8, st.used[0],
+                st.used[0] ? st.ksum[0] / st.used[0] : 0, st.kmx[0], st.used[1], st.used[1] ? st.ksum[1] / st.used[1] : 0, st.kmx[1], st.used[2],
+                st.used[2] ? st.ksum[2] / st.used[2] : 0, st.kmx[2], st.race, st.race ? st.rsum / st.race : 0, st.rmx, st.other, st.nobody);
+        st = GmStat{};
+    }
 }
 
 void ClearBootsProp() noexcept {
@@ -4158,16 +4772,81 @@ bool JointWorld(game::Entity* e, unsigned sam_joint, double (&pos)[3]) noexcept 
 }
 
 void SetRidePose(int src) noexcept {
-    const int was = g_ride_src.exchange(src == 1 || src == 2 ? src : 0, std::memory_order_acq_rel);
+    if (src == 3) g_relax_want.store(true, std::memory_order_release);
+    const int was = g_ride_src.exchange(src >= 1 && src <= 3 ? src : 0, std::memory_order_acq_rel);
     if (was != g_ride_src.load(std::memory_order_relaxed))
-        Log("[real] riding: Sam's pose override %s", src == 1 ? "ON (the driver's seated pose from the partner's frames)"
-                                                     : src == 2 ? "ON (the driver pose snapshot)" : "off");
+        Log("[real] riding: Sam's pose override %s", src == 1   ? "ON (the driver's seated pose from the partner's frames)"
+                                                     : src == 2 ? "ON (the driver pose snapshot)"
+                                                     : src == 3 ? "ON (seated idle: a held seated base, the hands on the thighs)"
+                                                                : "off");
+}
+void SetRideSeat(int kind, double calm_mps) noexcept {
+    g_seat_kind.store(kind >= 1 && kind <= 3 ? kind : 0, std::memory_order_relaxed);
+    g_seat_calm_cms.store(calm_mps > 0 ? static_cast<std::uint32_t>(std::fmin(calm_mps, 600.0) * 100.0 + 1.0) : 0u, std::memory_order_relaxed);
+}
+void SetOwnDriving(int kind, double calm_mps) noexcept {
+    g_own_kind.store(kind >= 1 && kind <= 3 ? kind : 0, std::memory_order_relaxed);
+    g_own_calm_cms.store(calm_mps > 0 ? static_cast<std::uint32_t>(std::fmin(calm_mps, 600.0) * 100.0 + 1.0) : 0u, std::memory_order_relaxed);
+}
+void SetHandMeter(bool on) noexcept {
+    if (on && !g_hand_meter.exchange(true, std::memory_order_acq_rel)) g_hand_gen.fetch_add(1, std::memory_order_acq_rel);  // a new window
+    if (!on) g_hand_meter.store(false, std::memory_order_relaxed);
+}
+bool TakeHandTravel(float* right_cm, float* left_cm, unsigned* updates) noexcept {
+    HandBox b;
+    const bool ok = g_hand_box.Read(b) && b.gen == g_hand_gen.load(std::memory_order_acquire) && b.n > 0;
+    g_hand_gen.fetch_add(1, std::memory_order_acq_rel);
+    if (!ok) return false;
+    float* out[2] = {right_cm, left_cm};
+    for (int s = 0; s < 2; ++s) {
+        double d2 = 0;
+        for (int k = 0; k < 3; ++k) d2 += static_cast<double>(b.hi[s][k] - b.lo[s][k]) * (b.hi[s][k] - b.lo[s][k]);
+        if (out[s]) *out[s] = static_cast<float>(std::sqrt(d2) * 100.0);
+    }
+    if (updates) *updates = b.n;
+    return true;
+}
+void RidePoseTune(int what, double v) noexcept {
+    switch (what) {
+        case 0: g_ik_want.store(v != 0); if (v != 0) g_ik_off.store(false); break;
+        case 1: if (v > 0.1 && v < 1.0) g_rest_along.store(static_cast<float>(v)); break;
+        case 2: if (v > -0.2 && v < 0.3) g_rest_up.store(static_cast<float>(v)); break;
+        case 3: if (v > -0.2 && v < 0.2) g_rest_in.store(static_cast<float>(v)); break;
+        case 4: if (v > -120 && v < 120) g_rest_twist_deg.store(static_cast<float>(v)); break;
+        default: break;
+    }
+}
+bool RidePoseStatus(RidePoseStats* s, bool take) noexcept {
+    if (!s) return false;
+    s->ik_state = g_ik_state.load(std::memory_order_relaxed);
+    s->ik_on = g_ik_want.load(std::memory_order_relaxed) && !g_ik_off.load(std::memory_order_relaxed);
+    s->ik_off_by_error = g_ik_off.load(std::memory_order_relaxed);
+    s->gate_err[0] = g_ik_gate_err[0].load(std::memory_order_relaxed);
+    s->gate_err[1] = g_ik_gate_err[1].load(std::memory_order_relaxed);
+    s->solves = g_ik_solves.load(std::memory_order_relaxed);
+    s->fails = g_ik_fails.load(std::memory_order_relaxed);
+    if (take) {
+        const std::uint32_t n = g_ik_err_n.exchange(0, std::memory_order_relaxed);
+        const std::uint64_t sum = g_ik_err_um_sum.exchange(0, std::memory_order_relaxed);
+        s->err_n = n;
+        s->err_mean_cm = n ? static_cast<float>(static_cast<double>(sum) / n / 1e4) : 0.0f;
+        s->err_max_cm = static_cast<float>(g_ik_err_um_max.exchange(0, std::memory_order_relaxed) / 1e4);
+    }
+    s->latches = g_seat_latches.load(std::memory_order_relaxed);
+    const std::uint32_t info = g_seat_latch_info.load(std::memory_order_relaxed);
+    s->latch_kind = static_cast<int>(info & 0xF);
+    s->latch_from = static_cast<int>((info >> 4) & 0xF);
+    s->latch_final = ((info >> 8) & 1) != 0;
+    s->latch_speed = static_cast<float>(info >> 12) / 100.0f;
+    s->along = g_rest_along.load(), s->up = g_rest_up.load(), s->in = g_rest_in.load(), s->twist_deg = g_rest_twist_deg.load();
+    return true;
 }
 int RidePose() noexcept { return g_ride_src.load(std::memory_order_relaxed); }
-bool SnapshotRidePose() noexcept {
+bool SnapshotRidePose(int kind) noexcept {
     Capture c;
     if (!g_capture.Read(c) || c.frame == 0) return false;
     if (!g_ride_snap.Write(c)) return false;
+    g_snap_kind.store(kind, std::memory_order_relaxed);
     g_ride_have_snap.store(true, std::memory_order_release);
     return true;
 }
@@ -4763,6 +5442,32 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
                 Set(msg, cap, "self view follow 4 rule %s", v[1] != 0 ? "v0.20 (the step also seated, the consistency gate, the dt scale)"
                                                                        : "v0.19 (no step while seated, no gate, no scale)");
                 Log("[self] %s", msg);
+                return true;
+            }
+            if (v[0] == 14) {  // self_view 14 <mask>: the gear placement fixes (section 26.7): 3 v0.21 (default), 0 v0.20
+                const int mask = static_cast<int>(v[1]) & 3;
+                g_gear_fix.store(mask);
+                Set(msg, cap, "gear placement fixes %d: self props in the self body's update %s, the tick's placement extrapolated %s", mask,
+                    mask & 1 ? "on" : "off", mask & 2 ? "on" : "off");
+                Log("[gear] %s", msg);
+                return true;
+            }
+            if (v[0] == 15) {  // hidden tests only: self_view 15 <0/1>: the drawn-vs-anchor meter (section 26.7)
+                if (v[1] != 0) {
+                    char why[160] = "";
+                    if (!automation::Enabled() || !automation::SavesRedirected()) {
+                        Set(msg, cap, "refused: only in a hidden test run on scratch saves");
+                        return false;
+                    }
+                    if (!GearMeterSites(why, sizeof(why))) {
+                        Set(msg, cap, "drawn-vs-anchor meter off: %s", why);
+                        Log("[gear] %s", msg);
+                        return false;
+                    }
+                }
+                g_gm_on.store(v[1] != 0);
+                Set(msg, cap, "drawn-vs-anchor meter %s", v[1] != 0 ? "on" : "off");
+                Log("[gear] %s", msg);
                 return true;
             }
             const int follow = static_cast<int>(v[2]);

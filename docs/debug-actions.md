@@ -676,7 +676,11 @@ hook, which is installed at start-up only with `session.ini partner_body=real` o
   scaled (1, the default with `self_feet_hide=1`) or kept. `self_view 13 <0/1>`: follow mode 4's rule, 1 v0.20's (the
   default: the step also while driving, the consistency gate, the dt scale) or 0 v0.19's (no step while Sam has a
   parent; for before / after pictures). The `[self] follow 4 meter` lines score both on the same frames
-  (docs/real-partner-body.md section 26.6).
+  (docs/real-partner-body.md section 26.6). `self_view 14 <mask>`: the gear placement fixes of v0.21 (section 26.7):
+  bit 1 the self view's props (the BB pod) also placed in the self body's own update, bit 2 the tick's placement
+  extrapolated one frame in the body's frame; 3 the default, 0 v0.20's (for before / after runs). Hidden test runs
+  only: `self_view 15 <0/1>`, the drawn-vs-anchor meter (`[gear] drawn vs anchor <partner|self>` lines; off with a
+  one-line reason when Entity::Update's stamp sites do not match).
   `self_view 4`: the
   subspace work object's state and menu kind, and every ArtPart of the menu's figure (asked / effective
   visible, top-level, children) in the log. In hidden tests a `[menu] subspace state ...` line is logged on
@@ -749,6 +753,18 @@ on (the open-loop replay), `6 <kind> [m]` moves the nearest vehicle of that kind
 (a push), `7 <life>` sets the life of the vehicle our Sam drives (else the nearest within 30 m), `9 [m]` places our Sam m
 (0 = 9) to the left of the vehicle the partner drives here, facing it (snapped to the ground; with a third value 1
   placed at the vehicle's height instead, for the underground garage) (then `vehicle_sync 18 6` aims the camera at it).
+v0.21 (the driven follower's controller, docs/real-partner-body.md section 23.25): `13 <0|1>` v0.20's follower (lerp
+target, sample-and-hold inputs, bands and 100 ms nudge, measured velocities in the frames; set it on both games for a
+"before" run), `15 <ms>` the input lead (inputs of the frame nearest to play time + ms, 16 by default), `16 <kp> <ki>`,
+`17 <kyaw> <tau s>`, `18 <max dv m/s a tick> <max correction m/s>`, `19 <s>` logs the controller every tick for s seconds
+(`[vdrive] trace: ...`), `20 <+1|-1> <max rad>` the side-error pursuit's sign and limit. Hidden runs only: `10 <dv>` the
+next DRIVE frame's velocity x off by dv (one odd frame, as play test 3's false crash), `11 <fwd m> <right m>` moves the
+follower's target for 1.5 s and logs the step response every tick (`[vdrive] step ...`), `12 <m/s> <laps>` the owner's
+autopilot (its virtual pad) on play test 3's road from the start area's garage down past the big hologram (0 = off; at
+the end of a lap it brakes and, with laps left, puts the vehicle back at the start; `[vdrive] autopilot: done (#n)`),
+`14 <place>` puts the vehicle our Sam drives (else the nearest within 30 m) at 1 the road's start, 2 the top of its
+downhill, 3 its bottom, heading along the road. `21 <amount> <period s>` (hidden runs) adds a slalom to the
+autopilot's steering (`amount` of full lock, 0 = off), after `12`.
 
 ### Riding together (`ride_state`, `ride_board`, `ride_exit`, `seat_measure`, `ride_test`; `session.ini ride_together=1` with `vehicle_sync=5`)
 
@@ -771,7 +787,19 @@ takes our Sam next tick, `8 [m]` places our Sam at the passenger door of the veh
 stop in the same call (the driver's ACCEPT then always arrives after the stop: it is ended at once, never a carry), `11`
 logs the boarding check now (`[ride] test: boarding now: <block>`; the action succeeds either way), `12 <0|1>` turns the
 game's own "Use Vehicle" prompt off (the ImGui hold prompt boards, as when its byte checks fail) or back on, `31` / `32` / `33 <m>` the x / y / z of the measured kind's
-passenger seat (this session), `30` the seat table again.
+passenger seat (this session), `30` the seat table again. v0.21 (section 24.13): `15` logs the landing shield, the health
+guard, our Sam's health and the crash rule; `16 <0|1>` the landing shield and the health guard off (v0.20: the game hurts
+or kills a carried Sam) / on; `17 <0|1>` v0.20's one-frame crash rule (exit and the D3-3 hit for every kind) / the
+confirmed one; `18 <0|1>` arms a write watchpoint (debug register 0 on every thread) on our Sam's health for the next
+carry and logs each write's instruction and the code on its stack (`[ride] test: health write #n by ds.exe+...`;
+disarmed 5 s after the ride). The passenger's pose and camera (v0.21, docs/real-partner-body.md sections 24.14 / 24.15):
+`20 <0|1>` the passenger's ride camera off (the on-foot camera) / on, `21 <0|1>` the camera meter (`[ridecam] passenger|driver
+...`) every 5 s / every second, `22 <0|1>` the passenger's pose v0.20 (the driver's live pose) / the seated idle (now, if
+carried), `23 <what> <value>` the seated idle's tuning (0 the arms 0/1, 1 along the thigh 0..1, 2 up m, 3 inward m, 4 the
+forearm twist deg), `24` logs the seated idle's state, `25 <0|1>` the camera's collision against the ridden vehicle on (v0.20)
+/ ignored, `26 <0|1>` (hidden tests) the seat teleport held while the vehicle stands, `27 <0|1|2>` the vehicle's yaw
+quaternion for the camera off / on / its conjugate, `28 <0|1>` the heading's slow follow off / on. `29 <0|1>` (hidden tests)
+the seat back after a save off (v0.20: the save's exit leaves our Sam on foot) / on (docs/real-partner-body.md 24.16).
 
 ### Save guard (`save_guard`; with riding together, or in a hidden run)
 

@@ -19,6 +19,12 @@
 //                    (the owner's velocity plus at most 2 m/s, every 100 ms); beyond: RequestTeleport 0x142F7CA20, only
 //                    where the vehicle fits (its footprint holds neither the local Sam nor another vehicle). The native
 //                    2..5 m branch did not move the vehicle in a hidden run, so it is not used. Never keyframed.
+//   v0.21 (driven)   play test 3: the owner sends its chassis body's physics velocities (kDrvPhysVel); the follower plays the
+//                    inputs of the frame nearest to the play time, targets a Hermite curve between the frames (dead
+//                    reckoning up to 250 ms past the newest), and every tick steers the body's horizontal velocity and yaw
+//                    rate toward the owner's (vwire::FollowVelocity, SetLinearAndAngularVelocity 0x141C34330); vertical,
+//                    pitch and roll stay the game's. RequestTeleport only by vwire::DriveTeleport (over 4 m / 30 deg; 8 m /
+//                    60 deg while our Sam rides it; stuck; the owner stopped and ours apart), each logged with its reason. Section 23.25.
 //   parked           the owner sends STD1 PARK frames for every vehicle it owns that nobody drives, within 300 m of either
 //                    player: 1 Hz, at once on a change of 5 cm or 2 deg. The other world corrects with the same bands
 //                    (no controller).
@@ -103,8 +109,12 @@ struct DrivenView {
 };
 bool LocalDriving(DrivenView* out) noexcept;
 bool PartnerDriving(DrivenView* out) noexcept;
-// The partner's DRIVE frame at or before `play_ms` for that vehicle: its sender-measured velocity and key.
-bool FrameAtPlay(std::uint32_t host_id, double play_ms, float (&vel)[3], double* key_ms) noexcept;
+// The partner's DRIVE frame at or before `play_ms` for that vehicle: its velocity (v0.21: the chassis body's, kDrvPhysVel),
+// key and the game's speed field (km/h; < 0 unknown).
+bool FrameAtPlay(std::uint32_t host_id, double play_ms, float (&vel)[3], double* key_ms, float* speed_kmh = nullptr) noexcept;
+// Our RequestTeleport of the follower `entity` within the last `within_ms`: its target (the vehicle is there once the
+// game applies it) and age. ride_together puts a carried Sam on that seat and ignores crash / hit signs right after it.
+bool RecentTeleport(std::uintptr_t entity, double within_ms, game::WorldTransform* target, double* age_ms) noexcept;
 // Our Sam is carried as the passenger of the vehicle with this unit (0: none): the teleport clearance leaves him out for it.
 void SetCarriedUnit(std::uintptr_t unit) noexcept;
 // Hidden tests: the vehicle the partner drives here (its follower), else the one whose DRIVE frames from the partner came
@@ -119,7 +129,11 @@ bool NativeFx() noexcept;
 // 3 <parked m> <driven m> the ignore bands (0 = 0.1 / 0.3), 4 <0/1> corrections off / on (hidden tests: the open-loop
 // replay), 5 <0/1> native fx, 6 <kind> [m] (hidden tests) push the nearest vehicle of that kind sideways by RequestTeleport
 // (a "push"), 7 <life> (hidden tests) set the life of the vehicle our Sam drives or stands nearest (the owner's damage),
-// 8 the battery probe, 9 [m] (hidden tests) our Sam m (0 = 9) beside the vehicle the partner drives here, facing it.
+// 8 the battery probe, 9 [m] (hidden tests) our Sam m (0 = 9) beside the vehicle the partner drives here, facing it;
+// v0.21: 10 <dv> (tests) the next DRIVE frame's velocity x off by dv, 11 <fwd> <right> (tests) the follower's target
+// moved for 1.5 s (step response, logged per tick), 12 <m/s> <laps> (tests) the owner's autopilot on play test 3's road
+// (0 off), 13 <0/1> v0.20's follower (before / after runs), 14 <place> (tests) the vehicle put at 1 the road's start, 2 the
+// downhill's top, 3 its bottom, 15 <ms> the input lead, 16 <kp> <ki>, 17 <kyaw> <tau>, 18 <max dv> <max corr> the gains.
 bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 
 }  // namespace st::vdrive

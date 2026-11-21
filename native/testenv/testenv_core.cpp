@@ -326,8 +326,9 @@ bool ScenarioIniKeyAllowed(const std::string& key) {
                                            "sound_sync", "sound_steps", "partner_volume", "self_headgear", "self_feet_hide",
                                            "boots_sync", "vehicle_sync", "vehicle_overlap_hide", "vehicle_look",
                                            "vehicle_packs", "vehicle_sound", "vehicle_real_native", "host_save", "coop_test_build", "coop_test_title_off",
-                                           "guest_skip_logos", "ride_together",
-                                           "partner_vehicle_damage", "dev_tools"};
+                                           "guest_skip_logos", "ride_together", "ride_pose", "ride_camera",
+                                           "partner_vehicle_damage", "dev_tools", "test_net_latency_ms", "test_net_jitter_ms",
+                                           "test_net_loss_permille", "test_net_burst"};
 
     for (const char* k : kAllowed)
         if (key == k) return true;

@@ -364,7 +364,9 @@ inline constexpr std::uint8_t kDrvBroken = 4u;      // +0x560 & 0x2000 (broken)
 inline constexpr std::uint8_t kDrvExploded = 8u;    // +0xBD8 & 0x100000 (the explosion latched by the ride-state machine)
 inline constexpr std::uint8_t kDrvAtRest = 16u;     // under 0.2 m/s for 1 s on the sender
 inline constexpr std::uint8_t kDrvBattery = 32u;    // `battery` carries the probed battery field (else 0)
-inline constexpr std::uint8_t kDrvAllFlags = 63u;
+inline constexpr std::uint8_t kDrvPhysVel = 64u;    // v0.21: vel / avel are the chassis body's physics velocities (world;
+                                                    // avel all three axes), not a finite difference of the transform
+inline constexpr std::uint8_t kDrvAllFlags = 127u;
 struct DriveFrame {
     DriveType type = DriveType::park;
     std::uint8_t flags = 0;
@@ -501,6 +503,105 @@ Band ChooseBand(double err_m, double err_deg, const BandLimits& l = BandLimits{}
 // The clamped velocity nudge: the velocity that closes `err` (target - current, m) in `tau_s`, at most `max_mps`, added to
 // the measured velocity, the sum at most |measured| + max_mps.
 void NudgeVelocity(const double (&err)[3], const float (&measured)[3], double tau_s, double max_mps, float (&out)[3]) noexcept;
+
+// ---------------------------------------------------------------- the driven follower (v0.21, docs section 23.25)
+// The target between two DRIVE frames: cubic Hermite on the position with the frames' velocities as tangents (`h_s` the
+// key gap in seconds, `f` 0..1). Velocities that are not finite or over 100 m/s give the straight line instead.
+void HermitePos(const double (&pa)[3], const float (&va)[3], const double (&pb)[3], const float (&vb)[3], double h_s, double f,
+                double (&out)[3]) noexcept;
+// Past the newest frame (late or lost frames): dead reckoning from it, at most kExtrapolateMaxMs (then held).
+inline constexpr double kExtrapolateMaxMs = 250.0;
+void Extrapolate(const double (&p)[3], const float (&vel)[3], double ahead_ms, double (&out)[3]) noexcept;
+
+// The follower's velocity correction, every tick (applied through the chassis body's SetLinearAndAngularVelocity, on top
+// of the game's own physics and the replayed inputs): only the velocity in the plane of the vehicle's up axis and the yaw
+// rate are steered; vertical velocity, pitch and roll stay the game's (suspension, slopes). Along its forward axis:
+//   v_des = v_target + clamp(Kp * e_along + I, max_corr)      I += Ki * e_along * dt (|I| <= max_bias)
+//   dv    = clamp(beta * (v_des - v_now), max_dv)            beta = 1 - exp(-dt / tau)
+// sideways only kp_lat and at most max_dv_lat a tick (a sideways push tips a truck over), the side error mostly through
+// the yaw (below);
+//   w_des = w_target_z + clamp(Kyaw * e_yaw, kMaxYawCorr)    dw = clamp(beta * (w_des - w_now_z), kMaxDwRad)
+// Gains x kFarGain from kFarM (a larger error closes faster). The integral is cleared while both stand still.
+// The tyres take a sideways velocity back within a few frames (hidden run 20261120-155059: a 1 m step along closed in
+// 0.8 s, sideways only 50 % in 1.5 s), so a sideways error is also steered away like a driver would: the yaw target turns
+// toward a point `lat_ahead_s` x speed (at least lat_min_m) ahead, by at most lat_max_rad, while it moves over
+// lat_min_speed_mps (reversing: the other way). v0.21: 0.5 m/s, was 1 m/s (hidden run 20261120-210244: a roadster driven
+// slowly kept 0.57 m of side error through a whole stop; under 1 m/s nothing steered it away).
+struct FollowGains {
+    double kp = 2.0, ki = 0.6, kyaw = 2.0, tau_s = 0.12, kp_lat = 0.5;
+    double max_corr_mps = 3.0, max_bias_mps = 1.0, max_dv_mps = 0.25, max_dv_lat_mps = 0.05, max_yaw_corr = 1.0, max_dw_rad = 0.3;
+    double far_m = 1.5, far_gain = 1.5;
+    double lat_ahead_s = 0.7, lat_min_m = 3.0, lat_max_rad = 0.35, lat_sign = 1.0, lat_min_speed_mps = 0.5;
+    // the steering input trim (vehicle_drive.cpp adds it to the replayed steering axis): the yaw error the controller
+    // steers, x k_steer per rad, at most max_steer (the tyres take the chassis back to where the wheels point: the yaw is
+    // turned through the wheels; hidden run 20261120-162308)
+    double k_steer = 2.0, max_steer = 0.3;
+};
+// The steering trim (positive: steer right) for the controller's yaw command: -k_steer * yaw_cmd, reversing the other way,
+// clamped; 0 under lat_min_speed_mps along.
+double SteerTrim(double yaw_cmd, double v_along, const FollowGains& g) noexcept;
+struct FollowIn {
+    double err[3] = {};        // target - ours (world, the entity origins)
+    float up[3] = {0, 0, 1};   // our vehicle's up axis (unit)
+    float fwd[3] = {0, 1, 0};  // ... and its forward axis (unit)
+    float v_now[3] = {};       // our chassis body's velocity (world)
+    float v_target[3] = {};    // the owner's (interpolated)
+    double yaw_err = 0;        // target yaw - ours (rad, about world z, wrapped)
+    float w_now_z = 0, w_target_z = 0;  // yaw rates (rad/s, world z)
+    double dt_s = 1.0 / 30;
+    bool still = false;        // both stand still (the integral is cleared, no bias)
+    bool yaw = true;           // the yaw rate is steered (false: dw 0, the yaw rate left as it is)
+};
+struct FollowOut {
+    float v_set[3] = {};       // the velocity to set (v_now + dv)
+    float w_set_z = 0;         // the yaw rate to set (w_now_z + dw)
+    float dv[3] = {};
+    float dw = 0;
+    double yaw_cmd = 0;        // the yaw error the controller steers (the heading error plus the pursuit's), rad
+};
+// `bias` is the integral (horizontal, world), kept by the caller between ticks.
+void FollowVelocity(const FollowIn& in, const FollowGains& g, double (&bias)[3], FollowOut* out) noexcept;
+// The vehicle's yaw (rad, about world z) from its forward row (rows[3..5]).
+double YawOfRows(const float (&rows)[9]) noexcept;
+double WrapPi(double a) noexcept;
+
+// The follower lets go once the owner's DRIVE frames have stopped this long (the play time past the newest frame);
+// v0.21: kStallEndCarriedMs while our Sam is carried on it (ride_wire's kLinkSilentCarriedMs: a stall is ridden out on
+// the seat, the vehicle rolls to a stop on idle inputs).
+inline constexpr double kStallEndMs = 1500.0, kStallEndCarriedMs = 4500.0;
+// ... and, carried, the newest frame's inputs are kept until the play time is this far past it (then idle inputs)
+inline constexpr double kStallHoldInputsMs = 1500.0;
+
+// When the driven follower is put onto its owner's place by RequestTeleport (a visible jump; never otherwise):
+//   far     over kTpFarM (kTpFarCarriedM while our Sam is carried on it);
+//   angle   over kTpAngleDeg (kTpAngleCarriedDeg carried);
+//   stuck   over kTpStuckM for kTpStuckMs without getting under kTpStuckFall of where it started (a rock only one world
+//           has); never while carried (only `far`);
+//   stopped the owner's vehicle stands still for kTpParkedMs and ours is over kTpParkedM or kTpParkedDeg off (never
+//           dragged there: hidden run 20261120-160609 pushed a truck lying askew into the Sam at its door); or both stand
+//           still for kTpStoppedMs and it is over kTpStoppedM off, nobody carried and our Sam over kTpStoppedNearM from
+//           it (a stop the replay ended a little apart: the controller had its 1.5 s first); or, with our Sam carried on
+//           it (v0.21), both stand still for kTpStoppedMs, the owner's for kTpParkedMs, and it is over kTpStoppedM or
+//           kTpParkedDeg off: a re-seat at a standstill (ride_together re-seats the passenger in the same tick; hidden run
+//           20261120-210244 stood 0.57 m off for a whole stop, and the next drive began with that correction).
+// At most one every kTpGapMs.
+enum class DriveTp : std::uint8_t { none = 0, too_far, angle, stuck, stopped };
+const char* DriveTpName(DriveTp t) noexcept;
+inline constexpr double kTpFarM = 4.0, kTpFarCarriedM = 8.0, kTpAngleDeg = 30.0, kTpAngleCarriedDeg = 60.0;
+inline constexpr double kTpStuckM = 1.5, kTpStuckMs = 2000.0, kTpStuckFall = 0.8;
+inline constexpr double kTpStoppedM = 0.3, kTpStoppedMs = 1500.0, kTpStoppedNearM = 3.0, kTpGapMs = 2000.0;
+inline constexpr double kTpParkedM = 1.0, kTpParkedDeg = 10.0, kTpParkedMs = 500.0;
+struct DriveTpIn {
+    double err_m = 0, ang_deg = 0;
+    bool carried = false;          // our Sam rides it as the passenger
+    double stuck_ms = 0;           // over kTpStuckM since (0: not)
+    double stuck_err0 = 0;         // the error when that began
+    double still_ms = 0;           // both stand still since (0: not)
+    double owner_still_ms = 0;     // the owner's vehicle stands still since (0: not)
+    double sam_dist_m = 1e9;       // our Sam (on foot) to the vehicle
+    double since_last_tp_ms = 1e9;
+};
+DriveTp DriveTeleport(const DriveTpIn& in) noexcept;
 
 // A vehicle's footprint for the teleport clearance: an oriented box (rows right, forward, up) around its centre.
 struct Footprint {

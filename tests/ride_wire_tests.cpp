@@ -1,5 +1,6 @@
 // STQ1 (native/mod/ride_wire.*), riding together's pure part: the message round trip and every decoder rejection, the seats,
 // boarding, the driver's answer, the forced exits, the hold / flip / crash detectors and the exit placement. No game, no link.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -79,8 +80,10 @@ void TestMessages() {
         CHECK(EncodeMsg(m, buf, sizeof(buf)) == 0);
         m = Req(), m.from = 2;
         CHECK(EncodeMsg(m, buf, sizeof(buf)) == 0);
-        m = Req(), m.reason = 3;  // REQUEST reasons 0..2
+        m = Req(), m.reason = 4;  // REQUEST reasons 0..3
         CHECK(EncodeMsg(m, buf, sizeof(buf)) == 0);
+        m = Req(), m.reason = kReqResume;  // v0.21: the seat back after a save
+        CHECK(EncodeMsg(m, buf, sizeof(buf)) == kMessageSize);
         m = Req(), m.reason = kReqNative;  // the game's own Use Vehicle
         CHECK(EncodeMsg(m, buf, sizeof(buf)) == kMessageSize);
         m = Req(), m.type = MsgType::deny, m.reason = static_cast<std::uint8_t>(Deny::count);
@@ -122,7 +125,7 @@ void TestMessages() {
         CHECK(!flip(13, 2));      // pillion on a truck
         CHECK(!flip(13, 0));      // no seat
         CHECK(!flip(14, 9));      // request reason
-        CHECK(!flip(14, 3));      // request reason 3 (0 hold, 1 test, 2 native)
+        CHECK(!flip(14, 4));      // request reason 4 (0 hold, 1 test, 2 native, 3 resume)
         CHECK(!flip(15, 2));      // from
         CHECK(!flip(28, 3));      // kind 3 with a truck id
         CHECK(!flip(28, 0));
@@ -275,6 +278,14 @@ void TestForced() {
     f.link_silent_ms = 1000;
     CHECK(ForcedExit(f) == End::count);
     f.link_silent_ms = 1001;
+    CHECK(ForcedExit(f) == End::count);  // v0.21: a stall is ridden out while the link is up
+    f.link_lost = true;
+    CHECK(ForcedExit(f) == End::link);
+    f.link_silent_ms = 900;
+    CHECK(ForcedExit(f) == End::count);  // the link's own state alone: not before a second of silence
+    f.link_lost = false, f.link_silent_ms = kLinkSilentCarriedMs;
+    CHECK(ForcedExit(f) == End::count);
+    f.link_silent_ms = kLinkSilentCarriedMs + 1;
     CHECK(ForcedExit(f) == End::link);
     f = ok, f.not_driven_ms = 401;
     CHECK(ForcedExit(f) == End::driver_off);
@@ -387,6 +398,70 @@ void TestDetectors() {
     CHECK(c.Update(bad, 1530) == 0);
     c.Reset();
     CHECK(c.Update(v2, 10) == 0);
+
+    // v0.21: the confirmed crash
+    {
+        // play test 3: a steady 11 m/s with one odd frame (dv 9.8): never a crash, reported as rejected
+        CrashConfirm k;
+        double t = 0, fired = 0;
+        for (int i = 0; i < 30; ++i, t += 33.3) {
+            float v[3] = {11.0f, 0.3f, -1.0f};
+            if (i == 15) v[0] = 1.2f;
+            fired += k.Update(v, 40.0f, t);
+        }
+        CHECK(fired == 0);
+        CHECK(k.TakeRejected() > 8);
+        CHECK(k.TakeRejected() == 0);
+        // a steady drive with a vertical jolt (a crest): not a crash
+        CrashConfirm z;
+        fired = 0, t = 0;
+        for (int i = 0; i < 30; ++i, t += 33.3) {
+            const float v[3] = {11.0f, 0, i >= 15 ? 9.0f : -1.0f};
+            fired += z.Update(v, 40.0f, t);
+        }
+        CHECK(fired == 0);
+        // a real crash: 11 m/s to 1 m/s and it stays, the speed field drops: fires once
+        CrashConfirm r;
+        int fires = 0;
+        t = 0;
+        for (int i = 0; i < 40; ++i, t += 33.3) {
+            const float v[3] = {i < 15 ? 11.0f : 1.0f, 0, 0};
+            if (r.Update(v, i < 15 ? 40.0f : 3.0f, t) > 8) ++fires;
+        }
+        CHECK(fires == 1);
+        // the same velocity change while the game's speed field does not drop (a measurement artefact): no crash
+        CrashConfirm s;
+        fires = 0, t = 0;
+        for (int i = 0; i < 40; ++i, t += 33.3) {
+            const float v[3] = {i < 15 ? 11.0f : 1.0f, 0, 0};
+            if (s.Update(v, 40.0f, t) > 8) ++fires;
+        }
+        CHECK(fires == 0);
+        // the speed field unknown: the velocities decide
+        CrashConfirm u;
+        fires = 0, t = 0;
+        for (int i = 0; i < 40; ++i, t += 33.3) {
+            const float v[3] = {i < 15 ? 11.0f : 1.0f, 0, 0};
+            if (u.Update(v, -1.0f, t) > 8) ++fires;
+        }
+        CHECK(fires == 1);
+        // a hard brake (11 -> 0 over 1.5 s): not a crash
+        CrashConfirm b;
+        fires = 0, t = 0;
+        for (int i = 0; i < 60; ++i, t += 33.3) {
+            const float sp = i < 10 ? 11.0f : (std::max)(0.0f, 11.0f - 0.25f * (i - 10));
+            const float v[3] = {sp, 0, 0};
+            if (b.Update(v, sp * 3.6f, t) > 8) ++fires;
+        }
+        CHECK(fires == 0);
+        // NaN, older keys
+        CrashConfirm q;
+        const float nanv[3] = {std::nanf(""), 0, 0};
+        CHECK(q.Update(nanv, 10, 0) == 0);
+        const float ok[3] = {1, 0, 0};
+        CHECK(q.Update(ok, 10, 100) == 0);
+        CHECK(q.Update(ok, 10, 50) == 0);
+    }
 }
 
 void TestExit() {

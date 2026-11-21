@@ -2774,6 +2774,8 @@ void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_acti
         }
         std::uint32_t pl = 0, aba = 0, bad = 0;
         realbody::GearCounters(s.slot, &pl, &aba, &bad);
+        char fixes[160];
+        realbody::GearPlacementInfo(s.slot, fixes, sizeof(fixes));
         if (&s == &g_sets[0] && (s.looks || s.pose_targets)) {
             char lc[400], pc[200];
             look::Counters(lc, sizeof(lc));
@@ -2784,9 +2786,9 @@ void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_acti
         unsigned spares = 0;
         for (const PropSet::Spare& sp : s.spare) spares += sp.p.live;
         Log("[%s] %u items, %u props live (%u loading, %u shown, %u failing now, %u refused, %u waiting for their resource; %u failures, %u retries, %u "
-            "reshown, %u kept across layouts, %u removed); placements %u (aba %u, bad matrix %u); weapon spares %u (%u kept, %u reused)",
-            s.tag, f.count, live, loading, shown, failed_now, refused, waiting, s.failed, s.retried, s.reshown, s.kept, s.removed, pl, aba, bad, spares,
-            s.spare_kept, s.spare_reused);
+            "reshown, %u kept across layouts, %u removed); placements %u (aba %u, bad matrix %u; %s); weapon spares %u (%u kept, %u reused)",
+            s.tag, f.count, live, loading, shown, failed_now, refused, waiting, s.failed, s.retried, s.reshown, s.kept, s.removed, pl, aba, bad, fixes,
+            spares, s.spare_kept, s.spare_reused);
     }
 }
 
@@ -3036,6 +3038,7 @@ void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
     if (local_active && g_chk.ok) WatchWeapon(local, now_ms);
     ReadLocalTick(local, local_active, now_ms);
     HeadgearTick(static_cast<double>(GetTickCount64()), false);
+    realbody::GearMeterTick(now_ms);  // hidden tests: before this tick's placements (section 26.7)
     // The partner slot: the partner's real body (or, debug, a mirroring debug body with our gear).
     PropSet& ps = g_sets[0];
     game::Entity* pbody = g_partner_on ? realbody::SlotEntity(realbody::GearSlot::partner) : nullptr;
