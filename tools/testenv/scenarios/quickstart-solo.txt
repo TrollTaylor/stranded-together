@@ -1,0 +1,19 @@
+# Quickstart, one game (docs/hidden-testing.md "start"), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario quickstart-solo -SeedSaves complete-100
+# No menu step at all: the "start" line makes the supervisor write automation_quickstart=continue; the mod skips the boot
+# logos, calls the title's own Continue (Application.ContinueLastSave) once the title page has been up 3 s, and the
+# scenario's waitworld (part of "start") waits until Sam is playable and still for 1.5 s.
+# Pass: every step ok; "[quick] title Continue called (#1" and "[quick] in the world after"; the time to the world is the
+# waitworld step's "after N s" plus the waitready before it (supervisor.log), compared with the old menu flow (~40 s).
+role solo
+timeout 180
+start
+waitlog 5 \[quick\] title Continue called \(#1
+action log_status
+waitlog 10 \[quick\] in the world after
+screenshot 01-in-world
+pad none 1500 ly=32000
+waitworld 20
+screenshot 02-walked
+nolog \[quick\].*(FAULT|REFUSED|OFF|gave up|not in the world)
+quit

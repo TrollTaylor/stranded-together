@@ -50,6 +50,9 @@ struct SessionOptions {
     int port_local = 27555, port_peer = 27556;
     unsigned frame_cap = 0;         // frame_cap=<fps> (graphics low: 30; the mod waits once per frame)
     std::string local_window;       // local_window=left|right (two-game runs: the windows side by side)
+    // scenario "start": automation_quickstart=<spec> (quickstart.hpp: "continue", "load <type> <index>", "story <n>"). Written by
+    // the supervisor only (never an allow-listed "ini" key), into the launcher's file too (launcherini).
+    std::string quickstart;
     std::vector<std::string> extra;  // scenario "ini key=value" lines (allow-listed keys only)
 };
 std::string SessionIniText(const SessionOptions& options);
@@ -74,6 +77,18 @@ std::string RedirectOnlyIniText(const std::wstring& save_root = {});
 bool HiddenIniFromLauncher(const std::string& launcher_text, const SessionOptions& options, std::string* out,
                            std::vector<std::string>* replaced, std::string* error);
 
+// ------------------------------------------------------------------ named places (tools/testenv/places.txt)
+// One place a line: "<name> <area> <x> <y> <z> [# note]" (name [a-z0-9-], 1..32 chars; z 0 = the ground under x, y). The
+// scenario's "goto <name>" reads it (supervisor --places <file>; Start-TestRun.ps1 passes tools\testenv\places.txt).
+struct Place {
+    std::string name;
+    int area = 0;
+    double x = 0, y = 0, z = 0;
+    std::string note;
+};
+bool ParsePlaces(const std::string& text, std::vector<Place>* out, std::string* error);
+const Place* FindPlace(const std::vector<Place>& places, const std::string& name);
+
 // ------------------------------------------------------------------ scenarios
 // One line each:
 //   # comment / blank
@@ -89,12 +104,24 @@ bool HiddenIniFromLauncher(const std::string& launcher_text, const SessionOption
 //   until <s> <every_ms> <regex> => <mod command>
 //                                send the command every N ms until the log matches
 //   sleep <ms>                   supervisor-side pause
+//   start [continue | load <type> <index> | story <n>] [control <s>]
+//                                quickstart (docs/hidden-testing.md "start"): no menu steps. The supervisor writes
+//                                automation_quickstart=<spec> (default continue) into every game's session.ini; the mod calls the
+//                                title's own Continue / Load once its title page has been up 3 s (a host-held save guest waits for
+//                                the host's save). Expands, where the line stands, to "waitready 90" and "waitworld <s>" (default
+//                                120) for every game (@both in a two-game run). Once per scenario.
+//   goto <place> | goto <x> <y> [<z>]
+//                                Sam to a named place (places.txt) or coordinates (z 0 / left out: the ground under x, y),
+//                                then the ground streams in: "action dev_goto x y z" + "waitworld 45 goto". Sandboxed saves only
+//                                (every hidden run). "@guest goto" moves the other game's Sam, "@both goto" both.
+//   waitnew <s> <regex>          as waitlog, but only log lines written since the PREVIOUS step started (an action's own
+//                                lines count; older matches never do: no counted regexes needed)
 //   note <text>                  a line in supervisor.log
 //   <anything else>              one mod command (native/mod/automation.hpp), checked here
 // A leading '?' makes a step optional: its failure is recorded, the run goes on.
 // Any other failed step ends the scenario (the supervisor still screenshots and quits).
 // nolog: fails when the log already has a matching line (a negative check, no waiting).
-enum class StepKind { mod, waitready, waitlog, nolog, until, sleep, note };
+enum class StepKind { mod, waitready, waitlog, nolog, until, sleep, note, waitnew };
 struct Step {
     StepKind kind = StepKind::mod;
     int line = 0;
@@ -123,6 +150,10 @@ struct Scenario {
     // --launcher-ini, and --launcher-ini without this line).
     std::string launcher_ini;
     int launcher_ini_line = 0;
+    // "start": the quickstart spec ("" = no start line) and how long the world may take
+    std::string quickstart;
+    int quickstart_line = 0;
+    std::uint32_t quickstart_control_s = 120;
     std::vector<Step> steps;
 };
 // Keys a scenario may add to session.ini with "ini key=value" (nothing that touches saves,
@@ -131,7 +162,8 @@ bool ScenarioIniKeyAllowed(const std::string& key);
 // The guest session.ini of "guest unredirected": role=guest, host_save=1, loopback ports, second_instance=1, and no
 // automation / sandbox key at all (the mod must refuse it in DllMain).
 std::string UnredirectedGuestIniText(unsigned port_local, unsigned port_peer);
-bool ParseScenario(const std::string& text, Scenario* out, std::string* error);
+// places: the named places "goto <name>" may use (nullptr: none, only coordinates).
+bool ParseScenario(const std::string& text, Scenario* out, std::string* error, const std::vector<Place>* places = nullptr);
 // Seconds the supervisor waits for the ack of one mod command.
 unsigned AckTimeoutSeconds(const std::string& mod_command);
 

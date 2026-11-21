@@ -1,0 +1,28 @@
+@echo off
+rem devdash: a local page that shows the hidden test runs, batches, posted tasks and Claude workflow
+rem runs of this repo, live (docs/devdash.md). A separate program: it never starts, stops or touches
+rem the game, and only reads. Copy this file to the repo root as devdash.bat (gitignored) and
+rem double-click it. It opens an app window (Edge or Chrome; else the default browser). Closing the
+rem window is enough: the server exits on its own 15 minutes after the page stops asking.
+rem A Python that does not run (the Windows Store "python.exe" stand-in without Python installed) is
+rem skipped: each candidate must run "import sys" and be Python 3.7 or newer first. Problems while
+rem starting are written to build-devdash\devdash.log and shown in a message box.
+setlocal
+cd /d "%~dp0"
+if not exist "tools\devdash\devdash.py" cd /d "%~dp0..\.."
+set "CHECK=import sys; sys.exit(0 if sys.version_info >= (3, 7) else 1)"
+py -3 -c "%CHECK%" >nul 2>nul && (
+    where pyw >nul 2>nul && (start "" pyw -3 tools\devdash\devdash.py --open & exit /b 0)
+    start "devdash" /min py -3 tools\devdash\devdash.py --open & exit /b 0
+)
+python -c "%CHECK%" >nul 2>nul || goto nopython
+set "PYW="
+for /f "delims=" %%i in ('python -c "import os, sys; print(os.path.join(os.path.dirname(sys.executable), 'pythonw.exe'))"') do set "PYW=%%i"
+if defined PYW if exist "%PYW%" (start "" "%PYW%" tools\devdash\devdash.py --open & exit /b 0)
+start "devdash" /min python tools\devdash\devdash.py --open & exit /b 0
+:nopython
+echo devdash needs Python 3.7 or newer (python.org; nothing else to install).
+echo The "python" on PATH did not run: on Windows 10/11 that is often the Microsoft Store stand-in
+echo (Settings, Apps, Advanced app settings, App execution aliases).
+pause
+exit /b 1

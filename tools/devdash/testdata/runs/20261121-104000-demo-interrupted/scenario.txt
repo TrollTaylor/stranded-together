@@ -1,0 +1,6 @@
+# Interrupted demo
+role host
+waitready 90
+pad A 150
+screenshot S1
+quit

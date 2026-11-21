@@ -1,0 +1,9 @@
+[   0.000] st_testenv_supervisor (pid 1115) started 2026-11-21T10:50:00.000
+[   0.030] game C:\Games\DEATH STRANDING DIRECTORS CUT, mod C:\repo\build-testenv\Release\winhttp.dll, scenario C:\repo\tools\testenv\scenarios\demo.txt (1 steps, role echo, steps limit 300 s, game lifetime cap 360 s)
+[   5.000] step line 3 quit -> ok (0.1 s): quitting
+[   5.100] scenario completed
+[   6.000] game folder restore INCOMPLETE (see notes)
+[   7.000] run FAILED (exit 1). Run folder: x
+[   0.000] restore requested for C:\repo\build-testenv\runs\20261121-105000-demo-repaired
+[   0.500] game folder restore complete
+[   0.600] restore: done (exit 0)

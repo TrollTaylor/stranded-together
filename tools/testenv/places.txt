@@ -1,0 +1,33 @@
+# Named places for hidden runs' "goto <name>" (docs/hidden-testing.md "goto", docs/dev-tools.md "Go anywhere").
+# One place a line: <name> <area> <x> <y> <z>  # what it is
+#   name  [a-z0-9-], 1..32 chars; area: the game's area id (200 = the central region: Mountain Knot / Lake Knot / South Knot,
+#         100 = the east: Capital / Port Knot City); z 0 = "the topmost ground under x, y" (the game's own snap).
+# The coordinates come from the game itself: "[dev] place N: ..." lines of action dev_places (the delivery points' own
+# transforms, run 20261120-121423-dev-tools-solo, the 100% save), or code that already drives there (vehicle_drive.cpp kRoute).
+# A goto only works within the area the save is in: complete-100 is at Mountain Knot City (area 200) in every slot.
+# Add a place: stand there in a hidden run, "action log_positions" (or dev_places), copy the numbers.
+
+# ---- area 200 (central): knot cities and delivery bases
+mknot              200 -1100.09   270.64  352.49  # Mountain Knot City (delivery base)
+lake-knot          200  2587.29  2013.84  208.63  # Lake Knot City (delivery base), 4 km from Mountain Knot City
+south-knot         200  1378.90 -1284.69  138.43  # South Knot City (delivery base)
+dc-north-mknot     200 -1741.90  2037.95  226.17  # Distribution Center North of Mountain Knot City
+# ---- area 200: preppers and shelters
+heartman           200 -1213.11  -221.44  531.95  # Heartman's Lab
+weather-station    200    36.47   -73.98  310.49  # Weather Station
+mama               200  1024.51  -982.48  162.18  # Mama's Lab
+doctor             200 -1427.25    56.98  359.71  # the Doctor
+timefall-farm      200    91.08 -1619.15  108.85  # Timefall Farm
+junk-dealer        200  1620.10  -275.70  135.50  # the Junk Dealer
+craftsman          200  1226.28  1318.63  183.88  # the Craftsman
+engineer           200  2193.54  1189.78  177.65  # the Engineer
+chiral-artist      200  2153.55  -910.83  155.56  # the Chiral Artist's Studio
+aaron-hill         200 -2631.38 -2038.59   84.80  # Aaron Hill's Safe House (far south-west)
+incinerator-lkc    200  -341.64  2226.21  218.15  # Incinerator West of Lake Knot City
+# ---- area 200: enemy camps (MULEs / terrorists: action dev_enemies 1 resurrects them)
+terrorist-camp-nw  200 -1694.60  1086.98  219.68  # Terrorist Camp Northwest of Mountain Knot City
+mule-camp-sw-ckc   200   -48.75 -1266.14  117.12  # MULE Camp Southwest of Capital Knot City
+mule-camp-sw-lkc   200  1517.90   992.00  172.07  # MULE Camp Southwest of Lake Knot City
+# ---- area 200: roads (vehicle tests)
+road-holo          200 -1448.20   403.10  334.70  # the road start of vehicle_drive.cpp's autopilot route (kRoute), on the highway
+mknot-road         200 -1217.21   291.45  361.61  # the road rebuilder next to Mountain Knot City

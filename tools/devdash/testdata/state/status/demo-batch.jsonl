@@ -1,0 +1,10 @@
+{"v": 1, "t": "2026-11-21T10:00:00.000Z", "op": "open", "id": "demo-batch", "kind": "batch", "title": "Demo batch", "total": 3}
+{"v": 1, "t": "2026-11-21T10:00:01.000Z", "op": "item", "key": "01-demo-pass", "status": "queued", "scenario": "demo-pass"}
+{"v": 1, "t": "2026-11-21T10:00:01.000Z", "op": "item", "key": "02-demo-fail", "status": "queued", "scenario": "demo-fail"}
+{"v": 1, "t": "2026-11-21T10:00:01.000Z", "op": "item", "key": "03-demo-other", "status": "queued"}
+{"v": 1, "t": "2026-11-21T10:15:00.000Z", "op": "item", "key": "01-demo-pass", "status": "running"}
+{"v": 1, "t": "2026-11-21T10:16:00.000Z", "op": "item", "key": "01-demo-pass", "status": "pass", "run_dir": "RUNS/20261121-101500-demo-pass"}
+{"v": 1, "t": "2026-11-21T10:20:00.000Z", "op": "item", "key": "02-demo-fail", "status": "running"}
+{"v": 1, "t": "2026-11-21T10:20:30.000Z", "op": "log", "level": "warn", "msg": "demo-fail is slow"}
+{"v": 1, "t": "2026-11-21T10:20:31.000Z", "op": "mystery", "x": 1}
+{"v":1,"t":"2026-11-21T10:21:00.000Z","op":"item","key":"02-demo-fail","sta

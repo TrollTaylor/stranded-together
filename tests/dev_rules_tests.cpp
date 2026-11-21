@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
 
 #include "dev_rules.hpp"
 
@@ -127,6 +128,47 @@ void TestPlaces() {
     CHECK(!PrintableName("bad\x01", 64));
     CHECK(!PrintableName("\xC3\xA9t\xC3\xA9", 64));  // UTF-8 (not ASCII): shown as the type name instead
 }
+void TestGoto() {
+    CHECK(GotoTargetOk(-1100.09, 270.64, 352.49) && GotoTargetOk(1, 2, 0));
+    CHECK(!GotoTargetOk(60000, 0, 0) && !GotoTargetOk(0, 0, 20000) && !GotoTargetOk(std::numeric_limits<double>::infinity(), 0, 0));
+    // a known z: still for 1.5 s at the target settles; moving restarts the window
+    GotoTrack t;
+    t.x = 100, t.y = 200, t.z = 50, t.t0 = 0, t.last_place = 0;
+    double p[3] = {100.5, 200.5, 50.2};
+    CHECK(GotoAdvance(t, true, p, 100) == GotoStep::wait);
+    CHECK(GotoAdvance(t, true, p, 1000) == GotoStep::wait);
+    p[2] = 51.0;  // moved 0.8 m: the window restarts
+    CHECK(GotoAdvance(t, true, p, 1200) == GotoStep::wait);
+    CHECK(GotoAdvance(t, true, p, 2600) == GotoStep::wait);
+    CHECK(GotoAdvance(t, true, p, 2800) == GotoStep::settled);
+    // not playable: never settles; the timeout after 25 s
+    GotoTrack u = t;
+    u.still_since = -1;
+    CHECK(GotoAdvance(u, false, p, 10000) == GotoStep::wait);
+    CHECK(GotoAdvance(u, false, p, 26000) == GotoStep::timeout);
+    // fell through the ground: placed again (at most 4 placements, 1 s apart), never settled down there
+    GotoTrack f;
+    f.x = 0, f.y = 0, f.z = 300, f.t0 = 0, f.last_place = 0;
+    double low[3] = {0.5, 0.5, 280};
+    CHECK(GotoAdvance(f, true, low, 500) == GotoStep::wait);  // 1 s after the last placement only
+    CHECK(GotoAdvance(f, true, low, 1000) == GotoStep::place_again && f.placements == 2);
+    CHECK(GotoAdvance(f, true, low, 1500) == GotoStep::wait);
+    CHECK(GotoAdvance(f, true, low, 2000) == GotoStep::place_again);
+    CHECK(GotoAdvance(f, true, low, 3000) == GotoStep::place_again && f.placements == 4);
+    CHECK(GotoAdvance(f, true, low, 4500) == GotoStep::wait);
+    CHECK(GotoAdvance(f, true, low, 9000) == GotoStep::wait);  // still too low: no settle
+    // far from x, y (the teleport did not take): no settle
+    GotoTrack g;
+    g.x = 0, g.y = 0, g.z = 0;
+    double away[3] = {30, 0, 5};
+    CHECK(GotoAdvance(g, true, away, 100) == GotoStep::wait && GotoAdvance(g, true, away, 2000) == GotoStep::wait);
+    // the ground (z 0): any height settles
+    double there[3] = {1, 1, 812.4};
+    CHECK(GotoAdvance(g, true, there, 3000) == GotoStep::wait && GotoAdvance(g, true, there, 4600) == GotoStep::settled);
+    float r = -1;
+    CHECK(BootsRate(100, &r) && r == 1.0f && BootsRate(0, &r) && r == 0.0f && BootsRate(42.5, &r) && r > 0.42f && r < 0.43f);
+    CHECK(!BootsRate(101, &r) && !BootsRate(-1, &r));
+}
 }  // namespace
 
 int main() {
@@ -136,6 +178,7 @@ int main() {
     TestVehicles();
     TestWeatherGod();
     TestPlaces();
+    TestGoto();
     std::printf("%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

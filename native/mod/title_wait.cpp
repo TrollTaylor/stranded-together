@@ -121,6 +121,8 @@ FnTmfUpdate o_tmf = nullptr;
 FnHandler o_continue = nullptr, o_newgame = nullptr, o_loadslot = nullptr;
 FnSplashUpdate o_splash = nullptr;
 bool g_installed = false;
+bool g_observing = false;                  // InstallObserver: the title menu's Update hook only watches (hidden runs' quickstart)
+std::atomic<double> g_page_since_ms{0};    // the current title page's first update (link::NowMsPrecise; 0 = none yet)
 std::atomic<bool> g_skip_armed{false};     // the boot-logo skip is in and not used yet
 std::atomic<int> g_skip_result{0};         // 0 not tried, 1 skipped, -1 faulted, -2 not taken (the splash not in its first state)
 std::atomic<double> g_skip_ms{0};          // when the logos were skipped (link::NowMsPrecise)
@@ -397,7 +399,7 @@ void Revalidate(std::uintptr_t self, std::uintptr_t list, TmfState& s, double ga
 void H_tmf(std::uintptr_t self, float dt) {
     o_tmf(self, dt);
     std::uintptr_t vt = 0;
-    if (!g_installed || !mem::Rd(self, vt) || vt != A(kTmfVtable)) return;
+    if (!(g_installed || g_observing) || !mem::Rd(self, vt) || vt != A(kTmfVtable)) return;
     const std::uintptr_t list = mem::Q(self + kTmfList);
     if (!list) return;
     const double now = link::NowMsPrecise();
@@ -408,6 +410,7 @@ void H_tmf(std::uintptr_t self, float dt) {
         s.self = self;
         s.list = list;
         s.page = ++g_pages;
+        g_page_since_ms.store(now);
         if (s.page == 1) {
             g_first_page_ms.store(now);
             const double skipped = g_skip_ms.load();
@@ -416,6 +419,8 @@ void H_tmf(std::uintptr_t self, float dt) {
     } else if (gap > kPageGapMs && (s.resolved || s.n_hide)) {
         Revalidate(self, list, s, gap);
     }
+    if (gap > kPageGapMs) g_page_since_ms.store(now);  // the page came back (another menu was in front): its time starts again
+    if (!g_installed) return;  // InstallObserver: watching only
     const bool want = Want();
     if (want) {
         if (!s.resolved) Resolve(self, list, s);
@@ -600,6 +605,30 @@ bool Install(char* why, std::size_t cap, bool skip_logos) noexcept {
 }
 
 bool Installed() noexcept { return g_installed; }
+
+bool InstallObserver(bool skip_logos, char* why, std::size_t cap) noexcept {
+    why[0] = 0;
+    if (g_installed || g_observing) return true;
+    if (!mem::CodeMatches(A(kTmfUpdate), "48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20 57 48 83 EC 40 C5 F8 29 74 24 30")) {
+        std::snprintf(why, cap, "this game build differs (title menu Update byte check failed)");
+        return false;
+    }
+    if (mem::Q(A(kTmfVtable) + 14 * 8) != A(kTmfUpdate)) {
+        std::snprintf(why, cap, "this game build differs (the title menu's vtable)");
+        return false;
+    }
+    if (!Hook(kTmfUpdate, reinterpret_cast<void*>(&H_tmf), reinterpret_cast<void**>(&o_tmf), "title menu Update", why, cap)) return false;
+    g_observing = true;
+    Log("[title] title page watch on (the title menu's Update, observe only: hidden runs' quickstart)");
+    if (skip_logos) InstallSkip();
+    return true;
+}
+
+double TitlePageUpMs(double now_ms) noexcept {
+    const double since = g_page_since_ms.load();
+    if (!(g_installed || g_observing) || since <= 0 || now_ms - g_tmf_seen_ms.load() > 500) return -1;
+    return now_ms - since;
+}
 
 bool PageSeen() noexcept { return g_first_page_ms.load() > 0; }
 

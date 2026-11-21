@@ -1,0 +1,70 @@
+# Spawn showcase (docs/dev-tools.md "Spawn"), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario spawn-showcase -SeedSaves complete-100
+# Straight into the world (start), then on the highway near Mountain Knot City (goto road-holo): the three vehicle kinds
+# spawned ahead of Sam (dev_vehicle: a truck, a roadster, a trike), the weather (heavy timefall, clear) and the time of day
+# (night, noon); the MULEs back at their camp (goto terrorist-camp-nw, dev_enemies 1); equipment: the Bridges cap and the
+# glasses put on through the inventory's own worn flag (gear 14 <type> 1), then off again; the boots' life read, set to 40 %
+# and back to full (dev_boots, the game's SetShoesLifeByRate). Cargo has no proven spawn call yet (docs/dev-tools.md gaps).
+# Pass: every step ok, the [dev] lines named below, screenshots 01..09, saves unchanged.
+role solo
+timeout 330
+start
+goto road-holo
+action dev_weather 0
+action set_time_of_day 12
+wait 2000
+screenshot 00-road
+# ---- vehicles: truck, roadster, trike, 10 m ahead (each checked 2.5 s later by the mod, then removed)
+action dev_vehicle 2 0 10
+wait 3000
+waitnew 2 \[dev\] vehicle check: new truck
+screenshot 01-truck
+action dev_vehicle_remove 0 1
+wait 1500
+action dev_vehicle 1 0 10
+wait 3000
+waitnew 2 \[dev\] vehicle check: new roadster
+screenshot 02-roadster
+action dev_vehicle_remove 0 1
+wait 1500
+action dev_vehicle 3 0 10
+wait 3000
+waitnew 2 \[dev\] vehicle check: new trike
+screenshot 03-trike
+action dev_vehicle_remove 0 1
+# ---- weather and time
+action dev_weather 2
+wait 9000
+screenshot 04-heavy-timefall
+action dev_weather 0
+action set_time_of_day 22
+wait 4000
+screenshot 05-night-clear
+action set_time_of_day 12
+# ---- equipment: the Bridges cap (type 15) and the glasses (13), the inventory's own worn flag
+action gear 14
+action gear 14 15 1
+action gear 14 13 1
+wait 2500
+pad none 900 rx=32767
+wait 800
+screenshot 06-cap-glasses
+action gear 14 15 0
+action gear 14 13 0
+# ---- boots: read, 40 %, read, full
+action dev_boots 0
+action dev_boots 1 40
+waitnew 2 \[dev\] boots: set to 40%.* -> durability 1440\.0 / 3600\.0
+action dev_boots 0
+action dev_boots 1 100
+# ---- MULEs at their camp (invulnerable first)
+action dev_god 2
+goto terrorist-camp-nw
+action dev_enemies 1
+wait 4000
+screenshot 07-camp
+action dev_enemies 2
+action dev_god 0
+nolog \[dev\].*FAULT
+nolog \[dev\] byte check FAILED
+quit

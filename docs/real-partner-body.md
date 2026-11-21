@@ -4867,6 +4867,87 @@ the truck on both screens), A3.
 Not proven: over a real internet link the seat comes back one round trip later (the passenger stands on the road that
 long, a few metres behind at speed); the guest as the saving passenger (the same code path) was not run.
 
+### 24.17 The passenger's boots do not wear (v0.22, the user's v0.21 play test: "their footwear gets damaged as the vehicle moves")
+
+Cause (proven, hidden run `20261121-101840-two-games-boots-ride`, the boots guard off): a carried Sam's boots lost
+**397.0 of 3600 durability in one 92 s ride** (3598.643 -> 3201.613, 11 %) down play test 3's road at 7 m/s, about 9
+points a second while the truck moved; standing 15 s lost nothing and walking 14.6 s lost 1.35. The driver's boots
+(the host, both laps, 201.7 s) did not change. DS applies all boots wear in one per-frame tick, `0x142753FF0(status, dt)`
+(status = `[Sam+0x54E0]`, the boots at status +0x320: life +0x32C, second layer +0x33C; its only caller the status update
+at `0x142732761`): walking wear (dt x DecSpeedIn{Walk,Run,Dash} while the on-foot state's flag `+0x5CC` bit 0x40 is set)
+plus the event wear queued in status +0x358 (+0x35C / +0x360 foot-injury values) by `0x14271DA10(status, type, scale)`
+(0 jump, 1 tumble, 2 landed, 3 sliding, 4 slipping; `DecValueOn<type>` of the ShoesConfig at settings +0x664..+0x684).
+The carried Sam is a native on-foot Sam whose capsule is off and who is teleported to the seat every tick, so the game's
+own speed (from his position change, `0x14282A870`) is the vehicle's, and his on-foot states keep firing wear events:
+
+| ride | wear events (j/t/l/s/p) | from |
+|---|---|---|
+| the guest's Fragile in the truck's passenger seat, 92 s | 141 / 1 / 2 / 0 / 0 | the landing state's call `0x1428D14B9` (ds.exe+0x28D14BE; type 0 on its `xor dl, dl` branch at `0x1428D1480`, 2 on the other), the tumble state's `0x1428D3417` |
+| the host's Sam on the trike's pillion, 96 s | 0 / 0 / 0 / 583 / 0 | the on-foot update's sliding call `0x142851428` (every 0.1 s, scale = min(speed / 5 m/s, 1)) |
+| the host's Sam in the roadster, 84 s | 0 / 0 / 0 / 492 / 0 | the same |
+
+Each jump event cost 3.0 (about 3 a second while moving); the user saw the BootsInfo gauge drop. A vanilla driver is not
+in the on-foot state: no flag, no events, no wear.
+
+Fix: **the boots guard** (`ride_together.cpp`, `InstallBootsGuard`; gameplay, on every save, not a sandbox tool). While the
+shield covers our Sam (carried, and 1.5 s after any exit, the window of 24.13), a detour on the tick `0x142753FF0`
+(matched by the game's own owner read, status +0x88 == our Sam) empties the queue (status +0x358..+0x363, what the tick
+clears at its end, `0x142754D08`) and skips the tick: no walking wear, no event wear, no foot-injury counters, no
+"serious injury" from the teleport's speed, no BootsInfo notice. A second detour on the event adder `0x14271DA10` counts
+our Sam's events by type (the meter names the source) and drops them while guarded (so a barefoot passenger also skips
+the adder's immediate foot damage `0x142701F90`). Walking wears the boots again as soon as the window ends. A seat back
+after a save (24.16) continues the same ride. Logs: `[ride] boots guard ON: 13 byte checks; a carried Sam (and 1.5 s
+after the ride) wears no boots`, every 10 s while carried `[ride] carried: boots guard on: n wear ticks skipped, wear
+events dropped j/t/l/s/p ...; boots life a (at boarding b)`, 2 s after the exit `[ride] boots over the ride on the <kind>
+(and 1.5 s after): life a -> b, unchanged|LOST; guard on, n wear ticks skipped; wear events ..., dropped ...` and the newest
+caller per type. Hidden tests: `ride_test 34 0/1` the meter, `34 2` a mark, `35 0/1` the guard off / on.
+
+Byte checks (`kBootsSites`, 11 sites + 2 call targets; on a mismatch the guard is off with `[ride] byte check FAILED:
+... the boots guard is OFF (a passenger's boots can wear as the vehicle moves)`):
+
+| address | bytes | what |
+|---|---|---|
+| `0x142753FF0` | `40 55 53 56 57 41 54 41 55 41 57 48 8D 6C 24 D9 48 81 EC F0 00 00 00` | the tick's prologue |
+| `0x14275401E` | `48 8B 81 B0 00 00 00 48 8D B1 20 03 00 00` | boots = status +0x320 |
+| `0x142754067` | `48 8B 8F 88 00 00 00 0F B7 D8 F6 81 BC 54 00 00 02` | owner Sam = status +0x88 |
+| `0x1427540FA` | `F6 81 CC 05 00 00 40` | the on-foot wear flag |
+| `0x1427541F2` | `C4 C1 2A 59 87 4C 06 00 00` | dt x DecSpeedInWalk |
+| `0x142754D08` | `48 C7 46 38 00 00 00 00 44 89 66 40` | the queue cleared |
+| `0x142732759` | `C4 C1 78 28 C9 48 8B CB E8 8A 18 02 00` | the status update's call (its target must be the tick) |
+| `0x14271DA10` | `48 83 EC 58 4C 8B 81 B8 00 00 00 C5 F8 29 74 24 40` | the event adder |
+| `0x14271DB85` | `C5 FA 58 89 58 03 00 00 C4 C1 52 59 C0 C5 FA 11 89 58 03 00 00` | its add to status +0x358 |
+| `0x142851428` | `E8 E3 C5 EC FF` | the sliding call (its target must be the adder) |
+| `0x1426E74B7` | `48 8B 88 E0 54 00 00` | SetShoesLife: status = Sam +0x54E0 |
+
+Evidence (hidden, foreground, one at a time, `-SeedSaves complete-100 -GuestSeed profile-only`; every run: saves
+unchanged, restored, no violation, 0 cloud uploads):
+
+- `two-games-boots-ride` (`20261121-101840`, the launcher's Local test ini): the guest stands 15.3 s: unchanged; walks
+  14.6 s: -1.350; lap A, guard OFF, 92.3 s: **3598.643 -> 3201.613, LOST**; lap B, guard on, 92.4 s: **3600.000 ->
+  3600.000**, 2817 ticks skipped, 146 / 1 / 2 / 0 / 0 dropped; the host (the driver) unchanged over 201.7 s; the guest
+  walks after: -3.628 in 14.5 s. The first run (`20261121-095003`) the same: lap A 3598.653 -> 3190.445 (-408.2 in
+  92.7 s), lap B unchanged across a save's exit and the seat back.
+- `two-games-boots-ride-host` (`20261121-101340`): the host on the trike's pillion 96.3 s: unchanged (2933 ticks skipped,
+  583 sliding dropped); in the roadster 67.8 s, a save's exit, the seat back, 15.8 s: unchanged (2559 skipped, 492
+  sliding dropped); the guest (the driver) unchanged over the 84.8 s roadster lap; the host walks after: -12.995 in 14.6 s.
+- Regressions, all pass with the guard on: `two-games-ride-truck` (`20261121-102421`), `two-games-ride-trike`
+  (`20261121-103032`; the first try `102727` failed at the swap's boarding: the host's game never offered its Use Vehicle
+  for the guest's trike, no prompt call at all, unrelated), `two-games-ride-forced` (`20261121-103329`: 6 rides with the
+  crash, flip and jump-off exits, every one unchanged), `two-games-vehicle-hit` (`20261121-103647`).
+
+Not done / not proven:
+
+- **Stamina.** The meter also logs status +0x140 / +0x144 (the stamina tick `0x142750490`'s first fields; RecoverFull
+  raises +0x140 to +0x148: most likely the stamina gauge and its cap). The carried guest's went 1000 -> 956.9 over lap A
+  and 956.9 -> 912.3 over lap B (the guard keeps the boots only), in steps at the road's drop (the tumble / landing
+  there) and at the stop, while the driver's stayed at 1000; the host on the pillion went down and back up between 976
+  and 1000. For scale, walking 14 s took 47 - 75. Not fixed: it comes from the same landing / tumble states (they also
+  send messages 0x110 / 0x113 through `0x14271D650` / `0x14271D280` to the object the health guard watches). The root fix
+  for both would keep a carried Sam out of those states.
+- Fatigue, the play record's moving distance and cargo in slide states (they read the teleport's speed) were not measured.
+- The tick's own "no wear" gates (Sam +0x54BC bit 1, areas 500 / 510 / 520, Sam +0x54B8 == 0x45CD02AC) are not used and
+  not traced.
+
 ## 25. Vehicle hits (`session.ini partner_vehicle_damage`, default 1, with `vehicle_sync=5`; design milestone M4)
 
 "When the vehicle collides with players it should damage them and knock them down like an NPC enemy driven vehicle";
@@ -5374,3 +5455,107 @@ Not covered:
   of the frame, her body at the prediction; single frames of 4-13 cm at stops and sharp turns on foot (2-5 cm seated),
   about 1 % of moving frames over 8 cm (26.6). Removing it needs the body to update after Sam (parented or attached to
   him, `SetParent 0x142361DD0`): untested, it changes the body's lifetime rules.
+
+### 26.8 Her headgear on every screen: the head items on her drawn head, and her hat in the rain (v0.22, play test 4 of v0.21.0) [V: runs below]
+
+The user's play test 4 (Local test, host Sam, guest Fragile, 30 fps): "the glasses seem better but still jitter and detach a
+bit on fragile and for whatever reason the hats just dont show up anymore".
+
+**Why the hat was gone (not a regression)** [V: the user's logs, disassembly, runs]:
+- The game hides Sam's worn hat while his hood is up (timefall). The inventory update (`0x1427EFE76`) sets each hat
+  entity invisible (`0x14235F640`, entity `+0x88` bit 1) while the hood state (inventory `+0x4970`) is up: cap00 (type
+  0x0F, entity `+0x4E18`) for states 6-11 (5 and 12 by the hood's progress `+0x4974`), the Santa hat (0x24, `+0x4E20`),
+  the headcrab (0x31, `+0x4E28`) and the hair ornament (0x32, `+0x4E30`) for 5 and over. The worn flag stays 1; the
+  glasses are not under this rule.
+- Sam's hood covers his head; Fragile has no hood, so she was bare-headed. In the user's v0.21 session the cap was shown
+  at load and hidden by the game about 1 s later on both games (guest 35.3 s, host 38.6 s, with Sam's head parts going
+  from the porter hood down to up); it first went in their v0.20 session, mid-session, on both games at once. v0.19 kept
+  it all session (clear weather). The headgear code had not changed since v0.19.
+- Run `20261121-074710-hg-load` (research, v0.21 build) drew the cap and glasses on her on both screens in clear weather,
+  also when worn from a save loaded in the world.
+
+**Why the glasses jittered on her own screen** [V: the user's log, round 3, runs below]: Sam's head items hang on HIS
+`HLP_Head` and update after Sam, so they are drawn at his world of this frame; her body is drawn at the world it had in its
+own update earlier in the frame (follow 4's prediction, 26.2). The item's error is the prediction's error: the user's
+v0.21 log, on foot, 2.0 cm mean, 10.6 % of moving frames over 3 cm, single frames of 64 and 71 cm in a fast fall. The
+tick-time meters cannot see it (at tick time the mode 1 copy has put the body's entity field on Sam).
+
+**Fix A: the head items on her drawn head** (`real_body.cpp` `HeadRecord` / `HeadCorrect`, `partner_gear.cpp`
+`HeadgearTick`; `self_view 16 <0/1>`, default 1; no new game address, call or hook):
+- The self body's own live update (not a forced one, not the menu figure) records her `HLP_Head` in world space as it
+  draws it: its world then (follow 4's prediction), joint 31's model matrix just posed, the helper's axes (x = -head x,
+  y = head z, z = head y; zero translation, 20.1).
+- Sam's own update, after the capture, the fit and the transform copy (his world and his fitted joint 31 are final:
+  26.2's premise, `Sam moved outside his update 0.00`), writes each published head item's FULL local matrix:
+  `L = O * Gb * Gs^-1` (rows; O the item's offset in the helper's frame, Gb her drawn helper, Gs his), so the item's world
+  `L * Gs` is `O * Gb`: exactly on her drawn head. The mover multiplies the whole local by the helper's world
+  (`0x14195DF70`, every row of the product kept), the site `0x1423A7773` is checked as before (20.2).
+- The plain offset (v0.21) when her body's record is not from this frame (older than 0.75 of a frame), with the cargo
+  menu's figure as the source, or for a jump of more than 1.5 m or 45 degrees (a teleport: one frame).
+- partner_gear publishes the movers it owns (`realbody::PublishHeadMovers`: entity, mover, their vtables, the item, its
+  offset); Sam's update checks each (vtables, back pointers, flag `+0xA0` 0) before the 64-byte write and writes only on
+  change. A mover leaves the set before partner_gear puts it back (the publish then waits until no detour can still
+  write into it). The tick's "ours" test now accepts any rigid matrix within 1.6 m of our offset with the flag cleared;
+  its restore writes the identity matrix (not only the translation). Emergency stop: the set is cleared first.
+- The gear sender sends every head item it offsets as the constant pose on joint 31 (the offset in the helper's axes;
+  `realbody::HeadItemOnJoint`) instead of a reading that would now carry the per-frame correction. Its first readings are
+  logged against the constant (`[headgear] sender: cap00 on joint 31 sent as (0.00, 4.20, -1.20) cm; read off Sam now
+  (0.00, 4.20, -1.20) cm, 0.00 cm / 0.0 deg apart` for every item: the helper's axes and the offsets proven on Sam).
+- Log: `[headgear] her drawn head on: N corrected, N plain (N no fresh body update, N over 1.5 m / 45 deg), N busy, N aba,
+  N failed writes; body records N; correction cm mean/max` every second in hidden tests, every 10 s in play.
+
+**Fix H: her hat in the rain** (`partner_gear.cpp` `ReadHoodHat`, `HeadConst`; `gear 22 <0/1>`, default 1): while our
+character has no hood (`fragile`, `fragile_suit`: from `my_character`), a worn hat whose entity the game hid with the hood
+state 5-12 is treated as shown: its slot keeps its offset, the sender adds it (the constant pose on joint 31, so the other
+screen draws it on her with its colour through the existing STV1 look; no wire change), and the self view draws it as a
+prop of the self slot (placed in her body's own update like the BB pod, 26.7; its look is our own cap's, `WantLook`'s self
+branch). Nothing is written into the game's state; Sam's real hat stays hidden. 13 sites byte-checked at the first read
+(the accessory list, each hat's type compare and entity load, the hood state loads, the visibility setter); a mismatch
+turns it off with one line. `[headgear] Sam's hood is up (state 5): the game hides his worn cap00 ...; her character has
+no hood, so it stays on her` / `... no longer hidden by the hood` on each change. Not used on a character with a hood
+(Sam keeps the game's look). The user was not asked yet whether they want the hat in timefall; `gear 22 0` gives the
+game's look (bare-headed) back.
+
+**Meter** (hidden tests, `self_view 15 1`): `[headgear] drawn vs her drawn head, <what> (corr N): N moving updates, cm
+mean max (>1 N, >3 N, >8 N), deg mean max; all N updates max`. `self: Sam's caps|glasses`: each of Sam's head items after
+its own update against her drawn head (her world in her body's update and the pose, times the offset), read at the very
+start of the tick, before the ride carry's teleport (a teleport moves the world fields of his children at once: read later
+they show the next frame's place; the first vehicle run read 25 cm "errors" as a passenger that way). `self: head props`
+(the hat in the rain on her own screen) and `partner: head props` (the host's cap and glasses props on her): the
+drawn-vs-anchor meter of 26.7 for the props on joints 31-34.
+
+Numbers (hidden, two games on the launcher's own Local test files, 30 fps; the guest in the user's outfit: cap colour 24,
+glasses A lens 4 frame 3, B lens 4 frame 23 (`gear 15`, `gear 23`); A = `self_view 16 0` (v0.21), B = 1; moving frames):
+
+| What | v0.21 (A) cm mean / max, > 1 cm | v0.22 (B) | Run |
+| --- | --- | --- | --- |
+| guest's own screen, cap00 and glasses00 on foot (run, stop, reverse, diagonal, crouch; 496 / 485 frames) | 1.20 / 15.8, 35.5 % (> 8 cm 9 frames), up to 9.9 deg | **0.00 / 0.00**, 0 %, 0.07 deg | `20261121-092819-two-games-headgear` |
+| the same, earlier runs | 0.86 / 5.0 (33 %); 1.59 / 35.4 (45 %) | 0.00 / 0.00 | `091932`, `091202` |
+| guest's own screen, driving the Kusanagi trike (207 / 220) | 2.07 / 13.3, 65 % (> 8 cm 6) | **0.00 / 0.17**, 0 % | `20261121-092558-two-games-headgear-vehicle` |
+| guest's own screen, driving the truck (440 frames) | - | 0.00 / 0.00 | `20261121-093802-two-games-gear-twitch` |
+| guest's own screen, carried in the host's truck (269 / 298) | 0.00 / 0.00 | 0.00 / 0.00 | `092558` |
+| guest's own screen, the hat in the rain (prop, 95 frames) | (not drawn) | 0.03 / 2.58, 1 frame > 1 cm (the self slot's race, 26.7) | `092819` |
+| host sees her cap and glasses props on foot (all phases, 2536 updates) | unchanged by A | 0.01 / 2.5-3.2, 0.3-0.7 % > 1 cm, 0 > 8 cm | `092819` |
+| host sees her ride / drive | unchanged by A | 0.00 / 1.5-3.4 | `092558` |
+
+The host's residue is 26.7's race (a prop's update that starts while her body's update is still running draws the tick's
+extrapolated placement): single frames of 1-6 cm, under 1 % of updates; not changed here.
+
+Pictures (`round4\shots-hg` of the play-test notes, enlarged crops): `hat-in-the-rain-both-screens.png` (run `092819`: clear,
+heavy timefall with the hat on her on both screens, heavy timefall with `gear 22 0` = v0.21, bare-headed on both);
+`guest-self-onfoot-A1-v021.png` / `-B1-v022.png`, `guest-self-trike-v021/-v022.png`, `guest-self-passenger-v021/-v022.png`
+(her own screen; at 720p the error of a few cm is a few pixels: the meter is the evidence). Other hats: the Santa hat,
+the headcrab, eyewear0 (`H1-H3*`) in `092819`.
+
+Regressions, all pass (game exit 0, guest exit 0, saves unchanged, restored, no violation, 0 cloud uploads, no `left
+alone`, aba or failed write): `20261121-093110-two-games-fragile-attach`, `20261121-093303-fragile-caps`,
+`20261121-093523-two-games-self-vehicle`, `20261121-093802-two-games-gear-twitch`.
+
+Not covered:
+- The host's view keeps the props' race (above); the structural cure (the props updated after her body, `SetParent
+  0x142361DD0`) is untested.
+- A teleport frame (over 1.5 m) leaves the items on Sam for that one frame (as v0.21).
+- The hat in the rain is detected as "worn, hidden, hood state 5-12": a hat the game hid for another reason while the hood
+  is up would be drawn too (not seen).
+- glasses01 / glasses02 were not put on by `gear 14` (type 0x0E gave glasses00); they share the class's offset and the
+  same code path.

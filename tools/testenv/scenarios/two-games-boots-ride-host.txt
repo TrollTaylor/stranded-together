@@ -1,0 +1,93 @@
+# The passenger's boots, the host as the passenger (v0.22; docs/real-partner-body.md section 24.17), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-boots-ride-host -SeedSaves complete-100 -GuestSeed profile-only
+# The launcher's own Local test files. The mirror of two-games-boots-ride: the guest's Fragile drives, the host's Sam rides
+# (the trike's pillion, then the roadster) with the boots guard on (default), the guest's autopilot on play test 3's road.
+# Lap A (trike, 7 m/s, ~65 s), lap B (roadster, 10 m/s, ~50 s). Each ride's summary "[ride] boots over the ride on the
+# <kind> (and 1.5 s after): life a -> b, unchanged; guard on, n wear ticks skipped; wear events j/t/l/s/p ..., dropped ..."
+# on the host; the guest drove: its boots unchanged over the roadster lap (marks #2 / #3). Then the host walks 14 s: dropped (the guard ended).
+# The host gets off with F (hookkey: the Local test's host plays on keyboard and mouse, its pad reads are the guest's).
+# Pass: every step ok, no FAULT, summary.json result pass.
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+waitlog 5 \[ride\] boots guard ON
+@guest waitlog 30 \[vshare\] guest: binding:
+@both action ride_test 34 1
+action dev_items 1
+action dev_boots 1 100
+@guest action dev_items 1
+@guest action dev_boots 1 100
+wait 1500
+@both action ride_test 34 2
+# ---- lap A: the guest drives the trike, the host rides the pillion
+action vehicle_sync 8 9 4
+@guest action vehicle_sync 8 1.8 4
+wait 1500
+@guest until 20 4000 \[vdrive\] guest: our Sam drives trike => pad X 150
+waitlog 20 \[vdrive\] host: the guest claims trike 0x[0-9A-F]+ \(get on, epoch [0-9]+\): granted
+waitlog 20 \[vdrive\] follower of trike 0x[0-9A-F]+ attached
+wait 1500
+@guest action vehicle_drive 14 1
+wait 4000
+log boots lap A: the host on the trike's pillion
+action ride_test 8
+wait 1500
+until 15 3000 \[ride\] host: our Sam carried on the trike .*#1\) => pad X 150
+@guest waitlog 10 \[ride\] guest: the partner asks to ride our trike .*ACCEPTED
+wait 2000
+@guest action vehicle_drive 12 7 1
+wait 20000
+screenshot A1-host-pillion
+@guest screenshot A1-guest-driving
+@guest waitlog 100 \[vdrive\] autopilot: done \(#1\)
+wait 1000
+until 12 3000 \[ride\] host: our Sam off the trike .*#1, got off\) => hookkey 0x46 150
+waitlog 6 \[ride\] boots over the ride on the trike .*unchanged; guard on, [1-9][0-9]* wear ticks skipped
+# ---- lap B: the roadster (both back at Mountain Knot City first)
+@guest pad X 150
+@guest waitnew 15 \[ride\] our Sam is out of the vehicle
+@guest waitlog 5 \[vdrive\] guest: our Sam got off trike
+wait 1000
+@both goto mknot
+action vehicle_sync 8 9 1
+@guest action vehicle_sync 8 1.8 1
+wait 1500
+@guest until 20 4000 \[vdrive\] guest: our Sam drives roadster => pad X 150
+waitlog 20 \[vdrive\] host: the guest claims roadster 0x[0-9A-F]+ \(get on, epoch [0-9]+\): granted
+waitlog 20 \[vdrive\] follower of roadster 0x[0-9A-F]+ attached
+@guest action ride_test 34 2
+wait 1500
+@guest action vehicle_drive 14 1
+wait 4000
+log boots lap B: the host in the roadster
+action ride_test 8
+wait 1500
+until 15 3000 \[ride\] host: our Sam carried on the roadster .*#2\) => pad X 150
+@guest waitlog 10 \[ride\] guest: the partner asks to ride our roadster .*ACCEPTED
+wait 2000
+@guest action vehicle_drive 12 10 1
+wait 15000
+screenshot B1-host-roadster
+@guest screenshot B1-guest-driving
+@guest waitlog 90 \[vdrive\] autopilot: done \(#2\)
+# the driver (the guest): no wear over the lap (vanilla)
+@guest action ride_test 34 2
+@guest waitnew 3 \[ride\] boots mark #3: .*unchanged
+wait 1000
+until 12 3000 \[ride\] host: our Sam off the roadster .*#[23], got off\) => hookkey 0x46 150
+waitlog 6 \[ride\] boots over the ride on the roadster .*unchanged; guard on, [1-9][0-9]* wear ticks skipped
+# ---- the host walks again: the guard has ended
+action ride_test 34 2
+log boots control: the host walks after the rides
+pad none 7000 ly=32767
+pad none 7000 ly=-32767
+action ride_test 34 2
+waitnew 3 \[ride\] boots mark #3: .*dropped
+@both action ride_test 34 0
+nolog \[(vshare|vdrive|ride|vhit)\].*FAULT
+@guest nolog \[(vshare|vdrive|ride|vhit)\].*FAULT
+@guest quit
+wait 3000
+quit

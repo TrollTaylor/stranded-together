@@ -1,0 +1,7 @@
+{"type": "launched"}
+{"type": "started", "key": "v2:1", "agentId": "a0000000000000001", "label": "research:alpha", "phase": "Research"}
+{"type": "started", "key": "v2:2", "agentId": "a0000000000000002", "label": "research:beta", "phase": "Research"}
+{"type": "result", "key": "v2:1", "agentId": "a0000000000000001", "result": {"report": "Alpha report: found the cause in C:\\Users\\player\\x.txt"}}
+{"type": "started", "key": "v2:3", "agentId": "a0000000000000003", "label": "research:beta", "phase": "Research"}
+{"type": "result", "key": "v2:3", "agentId": "a0000000000000003", "result": "Beta done"}
+{"type": "started", "key": "v2:4", "agentId": "a0000000000000004", "label": "implement:one", "phase": "Implement"}

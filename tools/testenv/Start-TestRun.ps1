@@ -7,6 +7,11 @@
   pwsh -File tools\testenv\Start-TestRun.ps1 -Probe            # D3D12 on a private desktop, no game
   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario smoke   # the real game, one smoke run
 
+.EXAMPLE
+  # Inline steps, no scenario file: straight into the world (quickstart), then the steps (docs/hidden-testing.md "-Steps")
+  pwsh -File tools\testenv\Start-TestRun.ps1 -SeedSaves complete-100 -Steps 'goto lake-knot','screenshot lake'
+  pwsh -File tools\testenv\Start-TestRun.ps1 -SeedSaves complete-100 -LauncherIni -Steps '@guest goto mknot','screenshot a'
+
 .NOTES
   Refuses when ds.exe is already running. The game folder's winhttp.dll and
   stranded_together files are backed up to the run folder and restored afterwards.
@@ -17,7 +22,7 @@
   Output: build-testenv\runs\<yyyyMMdd-HHmmss>-<scenario>\ (summary.json, supervisor.log,
   game\stranded_together.log, automation\*.png, results.txt, saves-*.txt).
 #>
-[CmdletBinding()]
+[CmdletBinding(PositionalBinding = $false)]
 param(
     [string]$Scenario = 'smoke',
     [switch]$Probe,
@@ -52,7 +57,19 @@ param(
     [switch]$NoUiLimits,     # job without UI restrictions (kill-on-close stays)
     [switch]$SteamEnv,       # the environment variables Steam sets for a game it launches
     [switch]$NoIsolation,    # automation channel without the overlay's isolation hooks
-    [switch]$NoGameStdout    # do not hand ds.exe a file as stdout (its own log -> game-stdout.txt)
+    [switch]$NoGameStdout,   # do not hand ds.exe a file as stdout (its own log -> game-stdout.txt)
+    # Inline steps (no scenario file): scenario lines, one per element (an element may hold several lines). Start-TestRun.ps1
+    # writes <run>\steps.txt: the header (role, timeout, graphics, launcherini), "start <Start>" (unless -NoStart), the steps,
+    # then "quit". Every scenario line works, "goto <place>" too (tools\testenv\places.txt).
+    [string[]]$Steps,
+    [ValidateSet('solo', 'host')][string]$Role = 'solo',  # -Steps: one game, or two (role host; -LauncherIni: the Local test's)
+    [string]$Start = 'continue',                          # -Steps: the start line's spec (continue | story <n> | load <type> <i>)
+    [switch]$NoStart,                                     # -Steps: no start line (the title flow is the test)
+    [string]$Name,                                        # -Steps: the run folder's name (default "steps")
+    # A held session (docs/hidden-testing.md "Held sessions"; Start-TestSession.ps1 sets it): the supervisor runs on after the
+    # scenario, taking steps from <run>\inbox (Send-TestStep.ps1) until Stop-TestSession.ps1, its time limit or 60 s without a
+    # heartbeat. This script then returns once the session is ready; Stop-TestSession.ps1 checks the restore.
+    [switch]$Hold
 )
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
@@ -89,7 +106,7 @@ if (-not $NoBuild) {
 $sup = Join-Path $bin 'st_testenv_supervisor.exe'
 if (-not (Test-Path $sup)) { throw "missing $sup (build first)" }
 
-$name = if ($Probe) { 'probe' } else { [IO.Path]::GetFileNameWithoutExtension($Scenario) }
+$name = if ($Probe) { 'probe' } elseif ($Steps) { if ($Name) { $Name } else { 'steps' } } else { [IO.Path]::GetFileNameWithoutExtension($Scenario) }
 $run = Join-Path $BuildDir ("runs\{0}-{1}" -f (Get-Date -Format 'yyyyMMdd-HHmmss'), $name)
 New-Item -ItemType Directory -Force $run | Out-Null
 
@@ -102,11 +119,50 @@ if ($Probe) {
 
 if (Get-Process -Name ds -ErrorAction SilentlyContinue) { throw 'ds.exe is running: close the game first (the hidden run refuses to share it)' }
 if (-not $GameDir) { $GameDir = Find-GameDir }
-$scenarioFile = if (Test-Path $Scenario) { (Resolve-Path $Scenario).Path } else { Join-Path $PSScriptRoot "scenarios\$Scenario.txt" }
+# Interrupted runs (restore.txt without restored.txt = ok): never restored automatically (an old run's backup would put back
+# files the user has changed since), but no new run starts over one: its backup would record the interrupted run's DLL and
+# session.ini as the user's own (the supervisor also refuses while <mod>\automation or an automation=1 session.ini is left).
+# Skipped while another supervisor runs (its own run is not restored yet; the supervisor refuses this run then anyway).
+if (-not (Get-Process -Name st_testenv_supervisor -ErrorAction SilentlyContinue)) {
+    $cut = (Get-Date).AddHours(-48)
+    $unrestored = @()
+    foreach ($d in (Get-ChildItem (Join-Path $BuildDir 'runs') -Directory -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $cut -and $_.FullName -ne $run })) {
+        $needs = ((Test-Path (Join-Path $d.FullName 'restore.txt')) -and -not ((Test-Path (Join-Path $d.FullName 'restored.txt')) -and (Get-Content (Join-Path $d.FullName 'restored.txt') -TotalCount 1) -eq 'ok')) -or
+                 ((Test-Path (Join-Path $d.FullName 'saves-restore.txt')) -and -not ((Test-Path (Join-Path $d.FullName 'saves-restored.txt')) -and (Get-Content (Join-Path $d.FullName 'saves-restored.txt') -TotalCount 1) -eq 'ok'))
+        if ($needs) { $unrestored += $d.FullName }
+    }
+    if ($unrestored) {
+        Remove-Item -LiteralPath $run -Recurse -Force -ErrorAction SilentlyContinue  # created above, still empty
+        throw ("refusing to start: {0} interrupted run(s) never restored. Check, then restore each:`n{1}" -f $unrestored.Count,
+            (($unrestored | ForEach-Object { "  tools\testenv\Restore-TestRun.ps1 -RunDir `"$_`"" }) -join "`n"))
+    }
+}
+if ($Steps) {
+    # Inline steps: a scenario file in the run folder (the supervisor keeps a copy as scenario.txt too)
+    $lines = @("# Start-TestRun.ps1 -Steps ($(Get-Date -Format s))")
+    if ($LauncherIni) { $lines += 'role host', 'graphics low', 'launcherini local-test' }
+    else {
+        $lines += "role $Role"
+        if ($Role -eq 'host') { $lines += 'graphics low' }
+    }
+    $lines += "timeout $TimeoutSec"
+    if (-not $NoStart) { $lines += "start $Start" }
+    # one step per element, per line, or separated by " ; " (pwsh -File passes one string: -Steps 'goto mknot ; screenshot a')
+    foreach ($e in $Steps) { foreach ($l in ($e -split "`r?`n| ; ")) { if ($l.Trim()) { $lines += $l.Trim() } } }
+    if ($lines[-1] -notmatch '^\s*(@\w+\s+)?quit\b' -and -not $Hold) { $lines += 'quit' }
+    $scenarioFile = Join-Path $run 'steps.txt'
+    Set-Content -LiteralPath $scenarioFile -Value ($lines -join "`r`n") -Encoding ascii
+    Write-Host ("inline steps -> {0}:`n  {1}" -f $scenarioFile, ($lines -join "`n  "))
+} else {
+    $scenarioFile = if (Test-Path $Scenario) { (Resolve-Path $Scenario).Path } else { Join-Path $PSScriptRoot "scenarios\$Scenario.txt" }
+}
 if (-not (Test-Path $scenarioFile)) { throw "scenario not found: $Scenario" }
 $mod = Join-Path $bin 'winhttp.dll'
 
 $supArgs = @('--game-dir', $GameDir, '--mod', $mod, '--scenario', $scenarioFile, '--run-dir', $run, '--timeout-s', $TimeoutSec)
+$places = Join-Path $PSScriptRoot 'places.txt'
+if (Test-Path $places) { $supArgs += @('--places', $places) }  # the scenario's "goto <name>"
+if ($Hold) { $supArgs += '--hold' }
 if ($Saves) { $supArgs += @('--saves', $Saves) }
 if ($SeedSaves -and $SeedSaves -ne 'own') {
     if (-not (Test-Path $SeedSaves)) { $SeedSaves = Join-Path $repo ('testenv-saves\' + $SeedSaves) }
@@ -136,8 +192,29 @@ if ($SteamEnv) { $supArgs += '--steam-env' }
 if ($NoIsolation) { $supArgs += '--no-isolation' }
 if ($NoGameStdout) { $supArgs += '--no-game-stdout' }
 Write-Host "hidden run: $name -> $run"
-& $sup @supArgs 2>&1 | Out-Host
-$code = $LASTEXITCODE
+if ($Hold) {
+    # A held session: the supervisor runs on in the background (GUI subsystem: no window), this script returns once it takes steps
+    $p = Start-Process -FilePath $sup -ArgumentList ($supArgs | ForEach-Object { if ("$_" -match '\s') { '"' + $_ + '"' } else { "$_" } }) -PassThru -WindowStyle Hidden
+    @{ pid = $p.Id; run = $run; started = (Get-Date -Format s) } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $run 'session.json') -Encoding ascii
+    New-Item -ItemType Directory -Force (Join-Path $run 'inbox') | Out-Null
+    Set-Content -LiteralPath (Join-Path $run 'inbox\alive') -Value (Get-Date -Format o) -Encoding ascii
+    $deadline = (Get-Date).AddSeconds(360)
+    while (-not (Test-Path (Join-Path $run 'session-ready.txt')) -and -not $p.HasExited -and (Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 500
+        Set-Content -LiteralPath (Join-Path $run 'inbox\alive') -Value (Get-Date -Format o) -Encoding ascii
+    }
+    if (Test-Path (Join-Path $run 'session-ready.txt')) {
+        Write-Host "held session ready: $run (pid $($p.Id)). Send-TestStep.ps1 -Steps '...'; Stop-TestSession.ps1 ends it (60 s without a step or heartbeat ends it too)"
+        Write-Output $run
+        exit 0
+    }
+    $p.WaitForExit()
+    Write-Warning "the held session ended before it was ready (supervisor exit $($p.ExitCode)): see $run\supervisor.log"
+    $code = $p.ExitCode
+} else {
+    & $sup @supArgs 2>&1 | Out-Host
+    $code = $LASTEXITCODE
+}
 
 # A supervisor that died mid-run leaves restore.txt without restored.txt (or saves-restore.txt
 # without saves-restored.txt), and a restore that met a locked file says INCOMPLETE: restore

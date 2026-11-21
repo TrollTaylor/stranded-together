@@ -9,6 +9,10 @@ dist/
 build-config.log
 *.log
 !docs/**/*.log
+!tools/devdash/testdata/**/*.log
 
 # third-party / personal test saves for hidden runs (never published)
 testenv-saves/
+
+# devdash launcher (a local copy of tools/devdash/devdash.bat.example)
+/devdash.bat

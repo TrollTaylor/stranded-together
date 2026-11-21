@@ -47,6 +47,10 @@ enum class Op : std::uint8_t {
     places,          // log the current area's places
     place,           // v0 = index in the place list: teleport there
     items,           // v0 = 1 new boots, 2 chiral crystals +v1 (0 = 100)
+    go_to,           // v0 x, v1 y, v2 z (0 = the topmost ground under x, y): Sam there, then waits for the ground (sandboxed saves
+                     // only: a place anywhere in the world); "[dev] goto #n: settled ..." / "NOT settled" (GetGotoState)
+    boots,           // v0 = 0 log the boots' life; 1 v1 = percent: set it (the game's SetShoesLifeByRate; sandboxed saves only);
+                     // 2 v1 = 0/1: a 1 s "[dev] boots meter" line (hidden tests: the passenger's boots)
 };
 bool Command(Op op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 
@@ -77,5 +81,15 @@ struct View {
     Place places[kMaxPlaces];
 };
 View GetView() noexcept;
+
+// The newest dev_goto (Op::go_to), any thread (the automation thread's "waitworld <s> goto").
+struct GotoState {
+    enum Phase : std::uint8_t { none, moving, settled, failed };
+    Phase phase = none;
+    std::uint32_t serial = 0;  // 1, 2, ... per game; 0 = none asked
+    char text[160] = {};       // the settle / failure line
+};
+GotoState GetGotoState() noexcept;
+std::uint32_t GotoSerial() noexcept;
 
 }  // namespace st::dev

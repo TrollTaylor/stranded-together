@@ -1,4 +1,4 @@
-# Dev tools, solo (docs/debug-actions.md "Dev tools"), hidden:
+# Dev tools, solo (docs/debug-actions.md "Dev tools"), hidden (v0.22: straight into the world with "start", no menu steps):
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario dev-tools-solo -SeedSaves complete-100
 # A hidden run has the dev tools on (dev_tools=1 is written too, as the launcher's Debug page does) and runs on a sandboxed
 # save, so every tool is allowed. Steps: the gates; the current area's places (teleport to the two nearest); refill; the
@@ -12,14 +12,8 @@
 role solo
 timeout 360
 ini dev_tools=1
-waitready 90
-waitlog 120 \[overlay\] input attached
-wait 25000
-pad A 150
-wait 4000
-until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
-waitplayer 60
-wait 6000
+start
+wait 3000
 waitlog 30 \[dev\] dev tools: [0-9]+/[0-9]+ byte checks ok
 action dev_status 0
 action log_status

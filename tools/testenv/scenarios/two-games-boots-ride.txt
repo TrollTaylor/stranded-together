@@ -1,0 +1,103 @@
+# The passenger's boots (v0.22; docs/real-partner-body.md section 24.17), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-boots-ride -SeedSaves complete-100 -GuestSeed profile-only
+# The launcher's own Local test files (host Sam, guest Fragile, host_save=1). As in the user's v0.21 play test the host
+# drives the truck and the guest's Fragile rides as the passenger (the game's own Use Vehicle). Both games run the boots
+# meter (ride_test 34 1: "[ride] boots meter: life ..., on-foot flag, move level, speed, wear events by type" every second)
+# and take marks (ride_test 34 2: "[ride] boots mark #n: life ... (unchanged|dropped ... since mark #n-1)").
+# Controls: the guest stands 15 s (unchanged), walks 14 s (dropped). Lap A: the boots guard OFF (ride_test 35 0, v0.21):
+# the host's autopilot drives play test 3's road at 7 m/s (~65 s); the ride's summary "[ride] boots over the ride on the
+# truck: life a -> b, LOST|unchanged; ... wear events j/t/l/s/p" names what the game charged. Lap B: fresh boots again
+# (dev_boots 1 100), the guard ON (default): the same road, the summary must say unchanged (and 1.5 s after getting off).
+# Then the guest walks 14 s again: dropped (the guard ended). The host drove both laps: its own boots unchanged (a driver
+# wears none, vanilla).
+# Pass: every step ok (marks #2 unchanged / #3 dropped / #5 dropped on the guest, the host's mark #3 unchanged, lap B
+# unchanged with skipped ticks), no FAULT, summary.json result pass.
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+waitlog 5 \[ride\] boots guard ON
+@guest waitlog 5 \[ride\] boots guard ON
+@guest waitlog 30 \[vshare\] guest: binding:
+@both action ride_test 34 1
+@guest action dev_items 1
+@guest action dev_boots 1 100
+action dev_items 1
+action dev_boots 1 100
+wait 1500
+# ---- controls: standing 15 s (no wear), walking 14 s (the game's own wear)
+@both log boots control: standing
+@both action ride_test 34 2
+wait 15000
+@guest action ride_test 34 2
+@guest waitnew 3 \[ride\] boots mark #2: .*unchanged
+action ride_test 34 2
+waitnew 3 \[ride\] boots mark #2:
+@guest log boots control: walking
+@guest pad none 7000 ly=32767
+@guest pad none 7000 ly=-32767
+@guest action ride_test 34 2
+@guest waitnew 3 \[ride\] boots mark #3: .*dropped
+# ---- the host drives the truck, put at the road's start
+action vehicle_sync 8 1.8 2
+wait 1500
+until 20 4000 \[vdrive\] host: our Sam drives truck => pad X 150
+@guest waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached
+wait 1500
+action vehicle_drive 14 1
+wait 4000
+action ride_test 34 2
+waitnew 3 \[ride\] boots mark #3:
+# ---- lap A: the boots guard OFF (v0.21)
+@guest action ride_test 35 0
+@guest log boots lap A: guard off
+@guest action ride_test 8
+wait 1500
+@guest until 15 3000 \[ride\] guest: our Sam carried on the truck .*#1\) => pad X 150
+waitlog 10 \[ride\] host: the partner asks to ride our truck .*ACCEPTED
+wait 2000
+action vehicle_drive 12 7 1
+wait 20000
+screenshot A1-host-driving
+@guest screenshot A1-guest-carried
+waitlog 100 \[vdrive\] autopilot: done \(#1\)
+wait 1000
+@guest until 12 3000 \[ride\] guest: our Sam off the truck .*#1, got off\) => pad X 150
+@guest waitlog 6 \[ride\] boots over the ride on the truck .*guard OFF
+wait 1000
+# ---- lap B: fresh boots, the guard ON
+@guest action dev_boots 1 100
+@guest action ride_test 35 1
+@guest log boots lap B: guard on
+action vehicle_drive 14 1
+wait 4000
+@guest action ride_test 8
+wait 1500
+@guest until 15 3000 \[ride\] guest: our Sam carried on the truck .*#2\) => pad X 150
+waitlog 10 \[ride\] host: the partner asks to ride our truck .*ACCEPTED
+wait 2000
+action vehicle_drive 12 7 1
+wait 20000
+screenshot B1-host-driving
+@guest screenshot B1-guest-carried
+waitlog 100 \[vdrive\] autopilot: done \(#2\)
+wait 1000
+@guest until 12 3000 \[ride\] guest: our Sam off the truck .*#[23], got off\) => pad X 150
+@guest waitlog 6 \[ride\] boots over the ride on the truck .*unchanged; guard on, [1-9][0-9]* wear ticks skipped
+# the driver: no wear over both laps (vanilla)
+action ride_test 34 2
+waitnew 3 \[ride\] boots mark #4: .*unchanged
+# ---- walking again: the guard has ended, the game wears the boots
+@guest action ride_test 34 2
+@guest log boots control: walking after the ride
+@guest pad none 7000 ly=32767
+@guest pad none 7000 ly=-32767
+@guest action ride_test 34 2
+@guest waitnew 3 \[ride\] boots mark #5: .*dropped
+@both action ride_test 34 0
+nolog \[(vshare|vdrive|ride|vhit)\].*FAULT
+@guest nolog \[(vshare|vdrive|ride|vhit)\].*FAULT
+@guest quit
+wait 3000
+quit

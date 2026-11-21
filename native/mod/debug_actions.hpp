@@ -110,6 +110,9 @@ enum class Action : std::uint8_t {
     story,                // v[0] = 0 the story state to the log, 1 every main / sub mission's state, 2 the manual slots (story points),
                           //   3 whether story_load is allowed here (and why not)
     story_load,           // v[0] = manual slot: the game's Load Game of manualsave<v0> (the story library's are 10..19)
+    // Hidden-test world tools (docs/dev-tools.md "Go anywhere", "Boots"; dev_tools.cpp)
+    dev_goto,             // v[0] x, v[1] y, v[2] z (0 = the ground under x, y): Sam there, then the ground streams in (sandboxed saves only)
+    dev_boots,            // v[0] = 0 log the boots' life, 1 v[1] = percent: set it (sandboxed saves only), 2 v[1] = 0/1 a 1 s meter
     count
 
 };

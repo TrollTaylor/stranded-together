@@ -4,6 +4,47 @@ The dev tools (vehicles, player cheats, weather, enemies, items, places) and the
 [debug-actions.md](debug-actions.md) "Dev tools". This file covers the **story tools**: reading where the story stands, and
 going to a story point, built as groundwork for a later story sync (story sync itself is not built).
 
+## Hidden tests: quickstart, go anywhere, spawn (v0.22)
+
+For hidden runs (docs/hidden-testing.md "Quickstart, go anywhere, inline steps, held sessions"). Every world-changing tool
+is the `world` class of `dev_rules.hpp` `Decide`: sandboxed saves only (a hidden run, a Local test on a test save), never a real
+save; `dev_status 1 1` acts as a real save to prove the refusal.
+
+### Go anywhere (`dev_goto`, scenario `goto`)
+
+| What | How |
+|---|---|
+| Sam to a named place | `goto <place>` (tools\testenv\places.txt: 20 places of area 200 from the game's own delivery points) |
+| Sam to coordinates | `goto x y z`, or `goto x y` for the topmost ground under x, y |
+| The partner (the other game's Sam) | `@guest goto <place>`; both: `@both goto <place>` |
+| A vehicle at a place | `goto <place>`, then `action dev_vehicle <kind> <variant> <m>` (spawned m metres ahead of Sam) |
+| A new place | stand there, `action log_positions` (or `dev_places`: the area's delivery points), add a line to places.txt |
+
+Within the area the save is in (complete-100: area 200 in every slot). Far jumps stream in after the teleport: the mod places
+Sam again when he falls more than 5 m below the target (ground not loaded yet) and the step waits until he stands there; 3.3 to
+8 s for 0.1 to 4 km (`20261121-084610-goto-places`). Gaps: no cross-area travel yet (leads in debug-actions.md "Not done");
+places of area 100 (Capital / Port Knot City) need a save there (`dev_places` on the story pack's early slots); "Fragile's
+safehouse" is not a delivery point of area 200: which spot is meant is open.
+
+### Spawn and set (all proven in `20261121-084433-spawn-showcase`)
+
+| What | Action |
+|---|---|
+| Truck / roadster / trike, any of the 14 variants | `dev_vehicle 2 0 10`, `dev_vehicle 1 0 10`, `dev_vehicle 3 0 10` (kind, variant, metres ahead); `dev_vehicle_remove 0 1` the newest |
+| Weather | `dev_weather 0` clear, `1` timefall, `2` heavy timefall, `3` the game's mix |
+| Time of day | `set_time_of_day <h>`; `freeze_time 0/1` (the cycle) |
+| MULEs / terrorists / BTs | `goto terrorist-camp-nw` (or `mule-camp-sw-ckc`, `mule-camp-sw-lkc`), `dev_enemies 1` resurrect, `2` remove, `3` reset the BTs |
+| A cap / hat | `gear 14 15 1` the Bridges cap (36 Santa hat, 49 headcrab, 50 hair ornament; `0` takes it off): the inventory's own worn flag, the game puts it on |
+| Glasses | `gear 14 13 1` / `gear 14 14 1` (the two glasses types); `gear 14` lists the accessory entries |
+| Cap colour | `gear 15 <0..24>` |
+| Boots' durability | `dev_boots 0` read, `dev_boots 1 <percent>` set (SetShoesLifeByRate), `dev_boots 2 1` a 1 s meter, `dev_items 1` new boots |
+| God mode / ammo / refill | `dev_god 2`, `dev_ammo 1`, `dev_refill` |
+| A story point | `start story <n>` with `-SeedSaves story-pack`, or `story_load <n>` in the world |
+
+Not done: cargo (`CreateAndAddBaggageToPlayer` resolves to `0x142CD6A60(u32 id, u8)`, its ids are not decoded), an enemy
+"here" (`MultiSpawnpoint_ExportedSpawn` / `AIBehaviorGroup_ExportedSpawn` are leads), a vehicle moved to a place (spawn one
+there instead).
+
 ## Story tools
 
 ### What works

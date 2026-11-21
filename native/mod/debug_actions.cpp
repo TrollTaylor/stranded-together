@@ -289,7 +289,7 @@ constexpr Row kRows[] = {
     {{Action::ride_board, Tab::tools, "Ride board", "Ride the partner's vehicle now (as a 0.6 s hold of X beside its door).", true}, &DoRideBoard},
     {{Action::ride_exit, Tab::tools, "Ride exit", "Get off the partner's vehicle now (1: also above 2 m/s, tests).", false}, &DoRideExit},
     {{Action::seat_measure, Tab::tools, "Seat measure", "The vehicle our Sam drives (or last drove): his root and pelvis, the game's seat helpers, in its frame.", false}, &DoSeatMeasure},
-    {{Action::ride_test, Tab::tools, "Ride test", "Hidden tests: 1 solo seat carry, 2 end, 4 crash, 5 flip / 6 stop our vehicle, 7 taken, 30-33 seat tuning; v0.21: 15 shield and health state, 16 0/1 landing shield and health guard off / on, 17 0/1 v0.20's crash rule / the confirmed one, 18 0/1 health write watchpoint; passenger pose / camera: 20 0/1 ride camera, 21 0/1 camera meter 1 s, 22 0/1 pose v0.20 / seated idle, 23 <what> <v> pose tuning, 24 pose state, 25 0/1 camera ignores the vehicle, 26 0/1 hold the seat teleport while stopped, 27 0/1/2 yaw quaternion, 28 0/1 heading follow.", false}, &DoRideTest},
+    {{Action::ride_test, Tab::tools, "Ride test", "Hidden tests: 1 solo seat carry, 2 end, 4 crash, 5 flip / 6 stop our vehicle, 7 taken, 30-33 seat tuning; v0.21: 15 shield and health state, 16 0/1 landing shield and health guard off / on, 17 0/1 v0.20's crash rule / the confirmed one, 18 0/1 health write watchpoint; passenger pose / camera: 20 0/1 ride camera, 21 0/1 camera meter 1 s, 22 0/1 pose v0.20 / seated idle, 23 <what> <v> pose tuning, 24 pose state, 25 0/1 camera ignores the vehicle, 26 0/1 hold the seat teleport while stopped, 27 0/1/2 yaw quaternion, 28 0/1 heading follow; v0.22: 34 0/1 boots meter 1 s, 34 2 boots mark, 35 0/1 boots guard off / on.", false}, &DoRideTest},
     {{Action::vehicle_hit, Tab::tools, "Vehicle hit", "Vehicle hits (vehicle_sync=5): 0 state and counters, 1 kind path (0 auto, 1 direct, 2 bracket), 2 one hit on our Sam now (tests), 8 [m ahead] [m right] our Sam in front of the partner's vehicle (tests), 9 the capsule's vehicle boxes.", false}, &DoVehicleHit},
     {{Action::save_guard, Tab::tools, "Save guard", "No save captures Sam while he rides as a passenger: 0 state, 1 [type] a save now (tests: 4 auto, 1 manual), 2 Sam's place vs the last held save, 3 load the run's newest save (host, tests), 4 0/1 the hold off/on (tests), 5 why a save is refused now (tests), 6 / 7 [s] the next forced save stays pending until a boarding / without one (tests).", false}, &DoSaveGuard},
     // Dev tools (the Dev tools page draws them with its own widgets; the labels are the hidden scenarios' action names)
@@ -315,6 +315,10 @@ constexpr Row kRows[] = {
      &DoStory},
     {{Action::story_load, Tab::dev, "Story load", "Load story point manualsave<n> (the story library's are 10..19; sandboxed saves only, never on the guest).", false},
      &DoStoryLoad},
+    {{Action::dev_goto, Tab::dev, "Dev goto", "Teleport Sam anywhere in this area: x y [z] (z 0 = the topmost ground), then wait for the ground to stream in (sandboxed saves only).", false},
+     &DoDev<dev::Op::go_to>},
+    {{Action::dev_boots, Tab::dev, "Dev boots", "Boots' life: 0 log, 1 <percent> set it (sandboxed saves only), 2 <0/1> a 1 s meter in the log.", false},
+     &DoDev<dev::Op::boots>},
 };
 constexpr std::size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);
 static_assert(kRowCount == static_cast<std::size_t>(Action::count), "every Action needs exactly one registry row");

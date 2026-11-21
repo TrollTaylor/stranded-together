@@ -630,8 +630,226 @@ void HealthGuardTick() {
         g_health_own_logged = own;
     }
 }
+// ---------------------------------------------------------------- v0.22: the boots guard (the passenger's boots wore as the vehicle moved)
+// The user's v0.21 play test: riding as the passenger, the footwear lost durability as the vehicle moved. DS applies all
+// boots wear in one per-frame tick, 0x142753FF0(status, dt) (status = Sam +0x54E0, the boots at status +0x320; its only
+// caller is the status update at 0x142732761): walking wear (dt * DecSpeedIn{Walk,Run,Dash} while the on-foot state's
+// flag is set) plus the event wear queued in status +0x358 (+0x35C / +0x360 the foot-injury values) by 0x14271DA10(status,
+// type, scale): 0 jump, 1 tumble, 2 landed, 3 sliding (every 0.1 s, scale = min(speed / 5 m/s, 1)), 4 slipping. The speed
+// those read is the game's own, from Sam's position change (0x14282A870), so the carry's teleport to the seat every tick
+// reads as Sam moving at the vehicle's speed. A vanilla driver is not in the on-foot state: no wear. While the shield
+// covers our Sam (carried, and 1.5 s after any exit) the guard skips the tick and empties the queue (the lives stay as they
+// are, no foot-injury counters, no "serious injury" from the teleport's speed, no BootsInfo notice) and drops the events;
+// walking wears the boots again as soon as the window ends. Docs: docs/real-partner-body.md 24.17.
+constexpr std::uintptr_t kShoesTick = 0x142753FF0;
+constexpr std::uintptr_t kShoesEvent = 0x14271DA10;
+// clang-format off
+constexpr Site kBootsSites[] = {
+    {kShoesTick,  "40 55 53 56 57 41 54 41 55 41 57 48 8D 6C 24 D9 48 81 EC F0 00 00 00", "the boots tick (status, dt)"},
+    {0x14275401E, "48 8B 81 B0 00 00 00 48 8D B1 20 03 00 00", "its boots at status +0x320"},
+    {0x142754067, "48 8B 8F 88 00 00 00 0F B7 D8 F6 81 BC 54 00 00 02", "its owner Sam at status +0x88"},
+    {0x1427540FA, "F6 81 CC 05 00 00 40", "its on-foot wear flag (+0x5CC bit 0x40)"},
+    {0x1427541F2, "C4 C1 2A 59 87 4C 06 00 00", "its walking wear (dt * DecSpeedInWalk)"},
+    {0x142754D08, "48 C7 46 38 00 00 00 00 44 89 66 40", "its queue cleared (status +0x358..+0x363)"},
+    {0x142732759, "C4 C1 78 28 C9 48 8B CB E8 8A 18 02 00", "the status update's call of the tick"},
+    {kShoesEvent, "48 83 EC 58 4C 8B 81 B8 00 00 00 C5 F8 29 74 24 40", "the wear event adder (status, type, scale)"},
+    {0x14271DB85, "C5 FA 58 89 58 03 00 00 C4 C1 52 59 C0 C5 FA 11 89 58 03 00 00", "its add to the queue (status +0x358)"},
+    {0x142851428, "E8 E3 C5 EC FF", "the on-foot update's sliding wear call"},
+    {0x1426E74B7, "48 8B 88 E0 54 00 00", "SetShoesLife: status = Sam +0x54E0"},
+};
+// clang-format on
+using FnShoesTick = void (*)(std::uintptr_t, float);
+using FnShoesEvent = void (*)(std::uintptr_t, std::uint8_t, float);
+FnShoesTick o_shoes_tick = nullptr;
+FnShoesEvent o_shoes_event = nullptr;
+std::atomic<bool> g_boots_hooked{false}, g_boots_ev_hooked{false};
+std::atomic<bool> g_boots_enabled{true};  // ride_test 35 0/1 (hidden tests: v0.21's behaviour)
+std::atomic<std::uint32_t> g_boots_skips{0};
+std::atomic<std::uint32_t> g_boots_ev[5] = {}, g_boots_ev_blocked[5] = {};  // our Sam's wear events by type (all / dropped)
+std::atomic<std::uint64_t> g_boots_ev_from[5] = {};                            // the newest caller per type (diagnostics)
+bool BootsGuarded(std::uintptr_t owner) noexcept {
+    if (!owner || owner != g_shield_sam.load(std::memory_order_acquire) || !g_boots_enabled.load(std::memory_order_relaxed)) return false;
+    const std::uint64_t until = g_shield_until.load(std::memory_order_relaxed);
+    return until == 0 || GetTickCount64() < until;
+}
+void H_ShoesTick(std::uintptr_t status, float dt) {
+    // the game's own read (0x142754067): the status' owner Sam
+    if (BootsGuarded(*reinterpret_cast<const volatile std::uintptr_t*>(status + 0x88))) {
+        *reinterpret_cast<volatile std::uint64_t*>(status + 0x358) = 0;  // what the tick itself clears at its end (0x142754D08)
+        *reinterpret_cast<volatile std::uint32_t*>(status + 0x360) = 0;
+        g_boots_skips.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    o_shoes_tick(status, dt);
+}
+void H_ShoesEvent(std::uintptr_t status, std::uint8_t type, float scale) {
+    const std::uintptr_t owner = *reinterpret_cast<const volatile std::uintptr_t*>(status + 0x88);
+    const unsigned t = type < 5 ? type : 4;
+    if (owner && owner == g_diag_sam.load(std::memory_order_relaxed)) {
+        g_boots_ev[t].fetch_add(1, std::memory_order_relaxed);
+        g_boots_ev_from[t].store(reinterpret_cast<std::uint64_t>(_ReturnAddress()), std::memory_order_relaxed);
+    }
+    if (g_boots_hooked.load(std::memory_order_relaxed) && BootsGuarded(owner)) {
+        g_boots_ev_blocked[t].fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    o_shoes_event(status, type, scale);
+}
+void InstallBootsGuard() {
+    for (const Site& s : kBootsSites)
+        if (!mem::CodeMatches(A(s.va), s.sig)) {
+            Log("[ride] byte check FAILED: %s at 0x%llX: the boots guard is OFF (a passenger's boots can wear as the vehicle moves)", s.name,
+                static_cast<unsigned long long>(s.va));
+            return;
+        }
+    if (mem::RipTarget(A(0x142732761), 1, 5) != A(kShoesTick) || mem::RipTarget(A(0x142851428), 1, 5) != A(kShoesEvent)) {
+        Log("[ride] byte check FAILED: the calls at 0x142732761 / 0x142851428 do not reach the boots tick / the wear event adder: the boots guard is OFF");
+        return;
+    }
+    void* t = reinterpret_cast<void*>(A(kShoesTick));
+    MH_STATUS s = MH_CreateHook(t, reinterpret_cast<void*>(&H_ShoesTick), reinterpret_cast<void**>(&o_shoes_tick));
+    if (s == MH_OK) s = MH_EnableHook(t);
+    if (s != MH_OK) {
+        Log("[ride] the boots guard is OFF: the hook failed (%s)", MH_StatusToString(s));
+        return;
+    }
+    g_boots_hooked.store(true);
+    // the events: counted (the meter names the source) and dropped while guarded; the tick's hook alone keeps the lives
+    void* e = reinterpret_cast<void*>(A(kShoesEvent));
+    MH_STATUS se = MH_CreateHook(e, reinterpret_cast<void*>(&H_ShoesEvent), reinterpret_cast<void**>(&o_shoes_event));
+    if (se == MH_OK) se = MH_EnableHook(e);
+    g_boots_ev_hooked.store(se == MH_OK);
+    Log("[ride] boots guard ON: %u byte checks; a carried Sam (and 1.5 s after the ride) wears no boots%s%s",
+        static_cast<unsigned>(sizeof(kBootsSites) / sizeof(kBootsSites[0])) + 2, se == MH_OK ? "" : " (the event counter is off: ",
+        se == MH_OK ? "" : MH_StatusToString(se));
+}
+// The boots as the game keeps them (reads only): the meter, the ride's before / after.
+struct BootsNow {
+    bool ok = false;
+    std::uint8_t kind = 0;
+    std::uint32_t state = 0;
+    float main = 0, layer = 0, bare = 0, pending = 0, item = -1, speed = 0, st140 = 0, st144 = 0;
+    int flag = -1, level = -1;
+    float Life() const noexcept { return main + layer; }
+};
+bool ReadBootsOf(std::uintptr_t sam, BootsNow& b) noexcept {
+    b = BootsNow{};
+    const std::uintptr_t st = sam ? mem::Q(sam + 0x54E0) : 0;
+    if (!st || mem::Q(st + 0x88) != sam) return false;
+    const std::uintptr_t sh = st + 0x320;
+    if (!mem::Rd(sh + 0x08, b.kind) || !mem::Rd(sh + 0x0C, b.main) || !mem::Rd(sh + 0x1C, b.layer) || !mem::Rd(sh + 0x24, b.bare) ||
+        !mem::Rd(sh + 0x34, b.state) || !mem::Rd(sh + 0x38, b.pending))
+        return false;
+    if (const std::uintptr_t item = mem::Q(sh + 0x48)) mem::Rd(item + 0x34, b.item);
+    const std::uintptr_t bo = mem::Q(st + 0xB0);
+    const std::uintptr_t y = bo ? mem::Q(bo + 0x428) : 0;
+    std::uint32_t f = 0;
+    std::int32_t lv = 0;
+    if (y && mem::Rd(y + 0x5CC, f)) b.flag = (f & 0x40) ? 1 : 0;
+    if (y && mem::Rd(y + 0x354, lv)) b.level = lv;
+    if (const std::uintptr_t p = mem::Q(st + 0x98)) mem::Rd(p + 0xA0C, b.speed);
+    mem::Rd(st + 0x140, b.st140), mem::Rd(st + 0x144, b.st144);  // the stamina tick's (0x142750490) first fields: logged, not interpreted
+    b.ok = true;
+    return true;
+}
+void EventCounts(char* out, std::size_t cap, std::atomic<std::uint32_t> (&a)[5]) noexcept {
+    std::snprintf(out, cap, "%u/%u/%u/%u/%u", a[0].load(), a[1].load(), a[2].load(), a[3].load(), a[4].load());
+}
+// the ride's before / after (game thread)
+struct BootsRide {
+    bool on = false, due = false;
+    BootsNow at_board;
+    double end_ms = 0;
+    std::uint32_t skips0 = 0, ev0[5] = {}, blk0[5] = {};
+    char kind[16] = {};
+};
+BootsRide g_boots_ride;
+bool g_boots_meter = false;  // ride_test 34 1 (game thread)
+double g_boots_meter_ms = 0;
+float g_boots_meter_last = -1;
+unsigned g_boots_marks = 0;
+BootsNow g_boots_mark;
+double g_boots_mark_ms = 0;
+void BootsRideStart(std::uintptr_t sam, const char* kind) noexcept {
+    // the seat back after a save (Resume) before the summary: one ride, measured from the first boarding
+    if (g_boots_ride.due) {
+        g_boots_ride.due = false;
+        return;
+    }
+    g_boots_ride = BootsRide{};
+    g_boots_ride.on = ReadBootsOf(sam, g_boots_ride.at_board);
+    g_boots_ride.skips0 = g_boots_skips.load();
+    for (int i = 0; i < 5; ++i) g_boots_ride.ev0[i] = g_boots_ev[i].load(), g_boots_ride.blk0[i] = g_boots_ev_blocked[i].load();
+    std::snprintf(g_boots_ride.kind, sizeof(g_boots_ride.kind), "%s", kind);
+}
+void BootsRideEnd(double now) noexcept {
+    if (g_boots_ride.on) g_boots_ride.due = true, g_boots_ride.end_ms = now + kShieldAfterMs + 500;
+}
+void BootsRideTick(std::uintptr_t sam, double now) noexcept {
+    if (!g_boots_ride.due || now < g_boots_ride.end_ms || g_resume.on || (g_p.st == PState::requesting && g_p.resume)) return;  // a seat back after a save continues the ride
+    g_boots_ride.due = false;
+    g_boots_ride.on = false;
+    BootsNow b;
+    if (!ReadBootsOf(sam, b)) {
+        Log("[ride] boots over the ride on the %s: unreadable now", g_boots_ride.kind);
+        return;
+    }
+    std::uint32_t ev[5], blk[5];
+    for (int i = 0; i < 5; ++i) ev[i] = g_boots_ev[i].load() - g_boots_ride.ev0[i], blk[i] = g_boots_ev_blocked[i].load() - g_boots_ride.blk0[i];
+    const float d = b.Life() - g_boots_ride.at_board.Life();
+    Log("[ride] boots over the ride on the %s (and 1.5 s after): life %.3f -> %.3f, %s; guard %s, %u wear ticks skipped; wear events j/t/l/s/p "
+        "%u/%u/%u/%u/%u, dropped %u/%u/%u/%u/%u",
+        g_boots_ride.kind, g_boots_ride.at_board.Life(), b.Life(), std::fabs(d) < 0.001f ? "unchanged" : "LOST",
+        !g_boots_hooked.load() ? "not installed" : g_boots_enabled.load() ? "on" : "OFF (ride_test 35 0)", g_boots_skips.load() - g_boots_ride.skips0, ev[0], ev[1],
+        ev[2], ev[3], ev[4], blk[0], blk[1], blk[2], blk[3], blk[4]);
+    char from[200] = {};
+    int n = 0;
+    static const char* const kNames[5] = {"jump", "tumble", "landed", "sliding", "slipping"};
+    for (int i = 0; i < 5; ++i) {
+        const std::uint64_t r = g_boots_ev_from[i].load();
+        if (ev[i] && r && n >= 0 && n < static_cast<int>(sizeof(from)))
+            n += std::snprintf(from + n, sizeof(from) - n, "%s%s from ds.exe+0x%llX", n ? ", " : "", kNames[i], static_cast<unsigned long long>(r - mem::Base()));
+    }
+    if (from[0]) Log("[ride] boots over the ride: the newest wear event callers: %s", from);
+}
+void BootsMeterLine(std::uintptr_t sam, const char* what) noexcept {
+    BootsNow b;
+    if (!ReadBootsOf(sam, b)) {
+        Log("[ride] boots %s: unreadable (no Sam or status)", what);
+        return;
+    }
+    char ev[64], blk[64];
+    EventCounts(ev, sizeof(ev), g_boots_ev);
+    EventCounts(blk, sizeof(blk), g_boots_ev_blocked);
+    Log("[ride] boots %s: life %.3f (main %.3f layer %.3f bare %.3f, kind %u state %u, item %.3f), %+.3f in 1 s; queued %.3f; on-foot flag %d, move "
+        "level %d, speed %.2f m/s; status +0x140 %.2f +0x144 %.2f; skipped %u; events j/t/l/s/p %s, dropped %s",
+        what, b.Life(), b.main, b.layer, b.bare, b.kind, b.state, b.item, g_boots_meter_last < 0 ? 0.0 : static_cast<double>(b.Life() - g_boots_meter_last),
+        b.pending, b.flag, b.level, b.speed, b.st140, b.st144, g_boots_skips.load(), ev, blk);
+    g_boots_meter_last = b.Life();
+}
+void BootsMeterTick(std::uintptr_t sam, double now) noexcept {
+    BootsRideTick(sam, now);
+    if (!g_boots_meter || now - g_boots_meter_ms < 1000) return;
+    g_boots_meter_ms = now;
+    BootsMeterLine(sam, "meter");
+}
+// ride_test 34 2: a mark; logs the life and its change since the last mark (a scenario's control steps)
+bool BootsMark(std::uintptr_t sam, double now, char* msg, std::size_t cap) noexcept {
+    BootsNow b;
+    if (!ReadBootsOf(sam, b)) return std::snprintf(msg, cap, "boots unreadable"), false;
+    ++g_boots_marks;
+    const bool first = g_boots_marks == 1 || !g_boots_mark.ok;
+    const float d = first ? 0.0f : b.Life() - g_boots_mark.Life();
+    Log("[ride] boots mark #%u: life %.3f (%s %+.3f since mark #%u, %.1f s); main %.3f layer %.3f, kind %u; carried %s", g_boots_marks, b.Life(),
+        first ? "first" : std::fabs(d) < 0.001f ? "unchanged" : d < 0 ? "dropped" : "rose", d, g_boots_marks - 1, first ? 0.0 : (now - g_boots_mark_ms) / 1000.0,
+        b.main, b.layer, b.kind, BootsGuarded(sam) ? "or guarded" : "no");
+    g_boots_mark = b;
+    g_boots_mark_ms = now;
+    return std::snprintf(msg, cap, "boots mark #%u: life %.3f (%+.3f)", g_boots_marks, b.Life(), d), true;
+}
 void InstallShield() {
     InstallHealthGuard();
+    InstallBootsGuard();
     for (const Site& s : kLandSites)
         if (!mem::CodeMatches(A(s.va), s.sig)) {
             std::snprintf(g_shield_off, sizeof(g_shield_off), "this game build differs (%s)", s.name);
@@ -1090,6 +1308,7 @@ void EndCarry(rwire::End reason, bool place, bool tell_driver) {
     ApplyCarryState(false);
     // the landing shield stays 1.5 s more: the placement's drop and the first ground contact land on a fresh fall reference
     ShieldAfter();
+    BootsRideEnd(g_now);
     if (g_wp_armed) g_wp_disarm_ms = g_now + 5000;
     g_last_ride_entity = g_p.entity;
     g_last_ride_end_ms = g_now;
@@ -1178,6 +1397,7 @@ bool StartCarry(const vwire::VKey& key, std::uint8_t kind, std::uintptr_t entity
     g_p.log_ms = g_now;
     g_p.cap_counter0 = CapCounter(cap);
     ShieldOn(sam);  // before the capsule goes off: no landing damage (and no other damage, vhit's guard) while carried
+    BootsRideStart(sam, vwire::KindName(kind));
     if (g_health_hooked.load() && !g_shield_hobj.load()) Log("[ride] health guard: our Sam's health object is not readable (Sam +0x54C0 -> +0x2E0): not guarded");
     if (g_wp_enabled && automation::Enabled()) {
         const std::uintptr_t pc = mem::Q(sam + 0x54C0);
@@ -1571,6 +1791,17 @@ void CarryTick() {
             Log("[ride] carried: the game's landing check skipped %u times%s (it would have seen a vertical speed drop up to %.1f m/s, a falling height "
                 "up to %.1f m; his mover ran it %u times); health kept %u times so far",
                 n, g_shield_enabled.load() ? "" : " (shield OFF: ride_test 16 0)", drop, h, lc, g_health_blocked.load());
+        }
+        static double boots_log_ms = 0;
+        if (g_boots_hooked.load() && g_now - boots_log_ms >= 10000) {
+            boots_log_ms = g_now;
+            BootsNow b;
+            const bool rd = ReadBootsOf(g_p.sam, b);
+            std::uint32_t blk[5];
+            for (int i = 0; i < 5; ++i) blk[i] = g_boots_ev_blocked[i].load() - g_boots_ride.blk0[i];
+            Log("[ride] carried: boots guard %s: %u wear ticks skipped, wear events dropped j/t/l/s/p %u/%u/%u/%u/%u; boots life %.3f (at boarding %.3f)",
+                g_boots_enabled.load() ? "on" : "OFF (ride_test 35 0)", g_boots_skips.load() - g_boots_ride.skips0, blk[0], blk[1], blk[2], blk[3], blk[4],
+                rd ? b.Life() : -1.0f, g_boots_ride.on ? g_boots_ride.at_board.Life() : -1.0f);
         }
         g_p.log_ms = g_now;
         g_p.err_sum = g_p.err_max = g_p.err_veh_sum = g_p.err_veh_max = 0;
@@ -2077,6 +2308,7 @@ void TickBody(const TickIn& in, double now) {
     if (g_last_tick > 0 && now > g_last_tick) g_dt_ms = g_dt_ms * 0.9 + (std::min)(100.0, now - g_last_tick) * 0.1;
     g_last_tick = now;
     g_now = now;
+    BootsMeterTick(reinterpret_cast<std::uintptr_t>(in.local), now);
     PendingPlaceTick();
     const std::uint32_t gen = link::Generation();
     if (gen != g_gen) {
@@ -2584,6 +2816,23 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept 
             g_shield_enabled.store(v[1] != 0);
             Log("[ride] test: the landing shield %s", v[1] != 0 ? "ON" : "OFF (v0.20: the game's landing check runs on a carried Sam)");
             return std::snprintf(msg, cap, "landing shield %s", v[1] != 0 ? "on" : "off"), true;
+        case 34: {
+            // the boots: 34 1 / 0 the meter (a line a second), 34 2 a mark (the life and its change since the last mark)
+            const std::uintptr_t sam = reinterpret_cast<std::uintptr_t>(g_in.local);
+            if (static_cast<int>(v[1]) == 2) return BootsMark(sam, g_now, msg, cap);
+            g_boots_meter = v[1] != 0;
+            g_boots_meter_last = -1;
+            g_boots_meter_ms = 0;
+            Log("[ride] test: the boots meter %s (boots guard %s)", g_boots_meter ? "ON" : "off",
+                !g_boots_hooked.load() ? "not installed" : g_boots_enabled.load() ? "on" : "OFF");
+            return std::snprintf(msg, cap, "boots meter %s", g_boots_meter ? "on" : "off"), true;
+        }
+        case 35:
+            if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden tests only"), false;
+            if (!g_boots_hooked.load()) return std::snprintf(msg, cap, "the boots guard is not installed"), false;
+            g_boots_enabled.store(v[1] != 0);
+            Log("[ride] test: the boots guard %s", v[1] != 0 ? "ON" : "OFF (v0.21: a carried Sam's boots wear)");
+            return std::snprintf(msg, cap, "boots guard %s", v[1] != 0 ? "on" : "off"), true;
         case 18:
             if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden tests only"), false;
             g_wp_enabled = v[1] != 0;

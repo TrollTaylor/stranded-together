@@ -8,6 +8,7 @@
 #include <string>
 
 #include "automation.hpp"
+#include "body_choice.hpp"
 #include "game_actions.hpp"
 #include "gear_look.hpp"
 #include "log.hpp"
@@ -610,6 +611,7 @@ struct PropSet {
     unsigned weapon_shows = 0;     // weapon props shown (logged, the first 60)
 };
 PropSet g_sets[2] = {{"gear", realbody::GearSlot::partner}, {"gear-self", realbody::GearSlot::self}};
+std::uint8_t g_self_src[wire::kMaxGearItems] = {};  // the self set's item i shows item g_self_src[i] of our own frame (g_local)
 
 bool Check(const char* name, std::uintptr_t rva, const char* sig) {
     if (mem::CodeMatches(mem::Base() + rva, sig)) return true;
@@ -833,6 +835,8 @@ double g_read_us_sum = 0, g_read_us_max = 0;
 std::uint32_t g_read_timed = 0, g_read_window = 0;
 
 void NoteHeadItem(std::uintptr_t e, int res_id, double now);  // section 20 (below)
+void ReadHoodHat(std::uintptr_t p, std::uintptr_t inv, const Xf& sam, double now);  // section 26.8 (below)
+bool HeadConst(std::uintptr_t e, float (&p)[3], float (&r)[3][3], const char** name);  // section 26.8 (below)
 void ReadBootsShown(std::uintptr_t inv);                     // section 21 (below)
 // Boots (section 21; session.ini boots_sync): ours sent as STC1 kind 7, the partner's drawn as the boots prop.
 struct BootsRead {
@@ -1076,6 +1080,8 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
             k.seen = false;
         }
     }
+    // Her hat in the rain (section 26.8): the worn hat the game hides while Sam's hood is up, as a shown head item.
+    ReadHoodHat(p, inv, sam, static_cast<double>(GetTickCount64()));
     // While our self view hides Sam (global part mask) his parts read hidden: the last reading stands.
     if (!realbody::SelfShown()) ReadParts(p);
     // The backpack's own ArtParts (its bag, rain cover, pouches: 24 parts in the 100% save).
@@ -1219,6 +1225,7 @@ bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_
     Xf pack_world;
     bool boots_added = false;
     unsigned cargo = 0, dropped = 0;
+    bool head_c[wire::kMaxGearItems] = {};
     std::uintptr_t frame_e[wire::kMaxGearItems] = {};
     Xf frame_w[wire::kMaxGearItems];
     (void)self_hidden;  // the self view hides Sam through the global part mask: his gear stays shown (real flags)
@@ -1244,12 +1251,21 @@ bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_
         gi.res = it.res;
         const Xf* anchor = nullptr;
         int parent_item = -1;
+        float hc_p[3], hc_r[3][3];
+        const char* hc_name = "";
+        bool head_const = false;
         if ((it.kind == wire::GearKind::entity || it.kind == wire::GearKind::weapon) && it.parent_e)
             for (unsigned k = 0; k < f.count; ++k)
                 if (frame_e[k] == it.parent_e) parent_item = static_cast<int>(k);
         if (parent_item >= 0) {
             gi.parent = static_cast<std::uint8_t>(parent_item);
             anchor = &frame_w[parent_item];
+        } else if (it.kind == wire::GearKind::entity && HeadConst(it.e, hc_p, hc_r, &hc_name) && joint(31)) {
+            // a head item we offset (section 26.8): its pose on joint 31 is a constant (the helper's axes, the offset), so
+            // the other screen gets exactly that, never a reading that mixes Sam's frame with the per-frame correction
+            gi.joint = 31;
+            anchor = joint(31);
+            head_const = true;
         } else if (it.kind == wire::GearKind::weapon && it.hint_joint < 77 && joint(it.hint_joint)) {
             // a weapon in a hand: the very joint its mover's helper names (MTP_R_Hand_a ...), so its pose
             // relative to the anchor is the mover's constant local and the hand carries it on the body
@@ -1308,6 +1324,26 @@ bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_
         double rp[3];
         float rr[3][3];
         Relative(*anchor, it.world, rp, rr);
+        if (head_const) {
+            // the reading against the constant, a few times per session (the helper's axes and the offset proven on Sam)
+            static unsigned s_cmp_logs = 0;
+            float rq[3][3];
+            for (int a = 0; a < 3; ++a)
+                for (int c = 0; c < 3; ++c) rq[a][c] = rr[a][c];
+            double dp = 0, dot = 0;
+            for (int k = 0; k < 3; ++k) dp += (rp[k] - hc_p[k]) * (rp[k] - hc_p[k]);
+            for (int a = 0; a < 3; ++a)
+                for (int c = 0; c < 3; ++c) dot += static_cast<double>(rq[a][c]) * hc_r[a][c];
+            const double cosang = (dot - 1.0) / 2.0, ang = std::acos(cosang < -1 ? -1 : cosang > 1 ? 1 : cosang) * 57.29578;
+            if (s_cmp_logs < 12 && Visible(it.e) && std::isfinite(dp)) {
+                ++s_cmp_logs;
+                Log("[headgear] sender: %s on joint 31 sent as (%.2f, %.2f, %.2f) cm; read off Sam now (%.2f, %.2f, %.2f) cm, %.2f cm / %.1f deg apart", hc_name,
+                    hc_p[0] * 100.0, hc_p[1] * 100.0, hc_p[2] * 100.0, rp[0] * 100.0, rp[1] * 100.0, rp[2] * 100.0, std::sqrt(dp) * 100.0, ang);
+            }
+            for (int k = 0; k < 3; ++k) rp[k] = hc_p[k];
+            for (int a = 0; a < 3; ++a)
+                for (int c = 0; c < 3; ++c) rr[a][c] = hc_r[a][c];
+        }
         if (std::fabs(rp[0]) > 30 || std::fabs(rp[1]) > 30 || std::fabs(rp[2]) > 30) continue;
         gi.p[0] = static_cast<float>(rp[0]), gi.p[1] = static_cast<float>(rp[1]), gi.p[2] = static_cast<float>(rp[2]);
         gi.q = wire::Normalize(wire::QuatFromMatrix(rr));
@@ -1324,6 +1360,7 @@ bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_
         }
         frame_e[f.count] = it.e;
         frame_w[f.count] = it.world;
+        head_c[f.count] = head_const;
         f.items[f.count++] = gi;
     }
     if (boots_added) {
@@ -1368,7 +1405,7 @@ bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_
     // stack's sway).
     if (keep_poses && g_have_local && wire::GearLayoutHash(f) == wire::GearLayoutHash(g_local) && f.count == g_local.count) {
         for (unsigned i = 0; i < f.count; ++i) {
-            if (f.items[i].parent != wire::kGearNoParent) continue;
+            if (f.items[i].parent != wire::kGearNoParent || head_c[i]) continue;
             std::memcpy(f.items[i].p, g_local.items[i].p, sizeof(f.items[i].p));
             f.items[i].q = g_local.items[i].q;
         }
@@ -1764,22 +1801,68 @@ int HeadItemOf(int res_id, const char** name) {
     return -1;
 }
 
+// A mover's local matrix is ours: the flag cleared and a rigid matrix (rows orthonormal, column 3 zero, 1 at [3][3])
+// whose translation is within 1.6 m of the offset we gave it (Sam's update writes the offset corrected onto her drawn
+// head every frame, section 26.8: at most 1.5 m off); the identity: the game's own.
+bool RigidLocal(const float (&m)[4][4]) {
+    if (std::fabs(m[3][3] - 1.0f) > 1e-4f) return false;
+    for (int r = 0; r < 3; ++r) {
+        if (std::fabs(m[r][3]) > 1e-4f) return false;
+        for (int c = 0; c < 3; ++c) {
+            const float d = m[r][0] * m[c][0] + m[r][1] * m[c][1] + m[r][2] * m[c][2];
+            if (std::fabs(d - (r == c ? 1.0f : 0.0f)) > 2e-3f) return false;
+        }
+    }
+    return true;
+}
+bool IdentityRot(const float (&m)[4][4]) {
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 4; ++c)
+            if (std::fabs(m[r][c] - (r == c ? 1.0f : 0.0f)) >= 1e-5f) return false;
+    return std::fabs(m[3][3] - 1.0f) < 1e-5f;
+}
+bool NearOurs(const float (&m)[4][4], const float (&written)[3]) {
+    const double d = std::sqrt(static_cast<double>(m[3][0] - written[0]) * (m[3][0] - written[0]) + static_cast<double>(m[3][1] - written[1]) * (m[3][1] - written[1]) +
+                               static_cast<double>(m[3][2] - written[2]) * (m[3][2] - written[2]));
+    return RigidLocal(m) && d <= 1.6;
+}
+// The identity (rotation rows and zero translation, 1 at [3][3]) into a mover's local matrix.
+bool WriteIdentity(std::uintptr_t mover) {
+    const float id[4][4] = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {0, 0, 0, 1}};
+    SIZE_T wrote = 0;
+    return WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(mover + kMoverLocal), id, sizeof(id), &wrote) && wrote == sizeof(id);
+}
+
+// The movers Sam's update corrects (section 26.8): every slot that is ours now. Before a slot's mover is put back, it
+// leaves this set (PublishHeadMovers then waits until no Sam update can still write into it).
+void PublishOurMovers(const HeadItem* except = nullptr) {
+    realbody::HeadMoverPub pub[realbody::kMaxHeadMovers];
+    unsigned n = 0;
+    for (const HeadItem& h : g_hi)
+        if (h.e && h.ours && &h != except && n < realbody::kMaxHeadMovers) {
+            realbody::HeadMoverPub& p = pub[n++];
+            p.e = h.e, p.e_vt = h.e_vt, p.mover = h.mover, p.mover_vt = h.mover_vt, p.item = h.item;
+            std::memcpy(p.off, h.written, sizeof(p.off));
+        }
+    realbody::PublishHeadMovers(pub, n);
+}
+
 // Our offset out of a slot's mover before the slot is used for another item: only when the entity and mover still check
-// (fault-free reads) and the mover still holds exactly our write (flag 0, our translation); a fresh mover is the game's
-// and is left alone. The flag back first, then the translation (as HeadgearTick's restore).
+// (fault-free reads) and the mover still holds our write (flag 0, a rigid matrix near our offset); a fresh mover is the
+// game's and is left alone. Out of the corrected set first, then the flag back, then the identity (as HeadgearTick's
+// restore).
 void RestoreHeadMover(HeadItem& h) {
     if (!h.ours) return;
+    PublishOurMovers(&h);
     h.ours = false;
     std::uint8_t no_local = 1;
-    float t[3] = {};
+    float m[4][4];
     if (Q(h.e) != h.e_vt || Q(h.e + kEntMover) != h.mover || Q(h.mover) != h.mover_vt || Q(h.mover + kMoverEntity) != h.e ||
-        !Rd(h.mover + kMoverNoLocal, no_local) || !mem::Read(h.mover + kMoverLocalT, t, sizeof(t)) || no_local != 0 || t[0] != h.written[0] ||
-        t[1] != h.written[1] || t[2] != h.written[2])
+        !Rd(h.mover + kMoverNoLocal, no_local) || !realbody::ReadHeadMoverLocal(h.mover + kMoverLocal, m) || no_local != 0 || !NearOurs(m, h.written))
         return;
-    const float zero[3] = {0, 0, 0};
-    SIZE_T wrote = 0, wrote_f = 0;
+    SIZE_T wrote_f = 0;
     if (WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(h.mover + kMoverNoLocal), &h.orig_flag, 1, &wrote_f) && wrote_f == 1 &&
-        WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(h.mover + kMoverLocalT), zero, sizeof(zero), &wrote) && wrote == sizeof(zero))
+        WriteIdentity(h.mover))
         ++g_hg.restores;
     else
         ++g_hg.bad;
@@ -1836,8 +1919,148 @@ bool HeadgearChecked() {
     return g_hg.ok;
 }
 
-// Every tick (game thread): each accessory's mover translation = the offset wanted now (0 when none). `stop` (the
-// emergency stop): every offset of ours goes back to the identity and the game's flag, and the lift is told so.
+// ---- Her hat in the rain (docs/real-partner-body.md section 26.8). The game hides Sam's worn hat while his hood is up
+// (timefall): the inventory update (0x1427EFE76) sets each hat entity invisible (0x14235F640) when the hood state
+// (inventory +0x4970) is up: cap00 (type 0x0F, entity +0x4E18) for states 6-11 (5 and 12 by the hood's progress
+// +0x4974), the Santa hat (0x24, +0x4E20), the headcrab (0x31, +0x4E28) and the hair ornament (0x32, +0x4E30) for 5 and
+// over. Sam's hood covers his head; her character has no hood, so she ended up bare-headed (the user's play tests 3 and
+// 4). While our character has no hood (fragile, fragile_suit) a worn hat that is hidden with the hood up is treated as
+// shown: its slot keeps its offset, the sender sends it (as the constant pose on joint 31: the other screen draws it on
+// her), and the self view draws it as a prop on her body (the self slot, placed in her body's own update). Nothing is
+// written into the game's state; the real hat stays hidden. `gear 22 <0/1>` (default on).
+struct HoodHat {
+    std::uintptr_t e = 0, vt = 0;  // the hidden hat now (0: none)
+    int res = -1, item = -1;
+    const char* name = "";
+    std::int32_t hood = 0;
+    std::uintptr_t memo_e = 0, memo_vt = 0;  // the resource of the last hat looked at
+    int memo_res = -1;
+    unsigned logs = 0;
+} g_hood;
+bool g_hood_on = true;        // `gear 22 <0/1>`
+bool g_own_hoodless = false;  // Init: the character both screens show for us has no hood
+int g_hood_sites = -1;        // -1 not checked, 0 mismatch (off), 1 ok
+constexpr std::uintptr_t kInvHood = 0x4970, kInvAccList = 0x37F9, kAccStride = 0x40, kAccWorn = 0x1D;
+struct HatSlot {
+    std::uint8_t type;
+    std::uintptr_t ent;  // the inventory's entity pointer for that hat
+};
+constexpr HatSlot kHats[4] = {{0x0F, 0x4E18}, {0x24, 0x4E20}, {0x31, 0x4E28}, {0x32, 0x4E30}};
+
+bool HoodSites() {
+    if (g_hood_sites >= 0) return g_hood_sites == 1;
+    const std::uintptr_t b = mem::Base();
+    struct Site {
+        std::uintptr_t rva;
+        const char* sig;
+    };
+    static const Site kSites[] = {
+        {0x27F0FD9, "48 8D BE 16 38 00 00"},                    // the accessory list (type at -0x1D, worn at +0)
+        {0x27F14B6, "80 78 E3 0F 75 19 44 38 20"},              // cap00's loop: type 0x0F, worn
+        {0x27F14E4, "0F B6 8E 80 4C 00 00 8B 96 70 49 00 00"},  // cap00: the hood state +0x4970
+        {0x27F156B, "48 8B 8E 18 4E 00 00 41 0F B6 D6"},        // cap00's entity +0x4E18 -> its visibility
+        {0x27F15C0, "80 78 E3 24 75 1D"},                       // the Santa hat (0x24)
+        {0x27F15FD, "83 BE 70 49 00 00 05"},                    // hidden with the hood state 5 and over
+        {0x27F161F, "48 8B 8E 20 4E 00 00 41 0F B6 D4"},        // its entity +0x4E20
+        {0x27F1674, "80 78 E3 31 75 1D"},                       // the headcrab (0x31)
+        {0x27F16AD, "44 8B 86 70 49 00 00"},                    // the hood state again
+        {0x27F16D2, "80 78 E3 32 75 1D"},                       // the hair ornament (0x32)
+        {0x27F17B5, "48 8B 8E 28 4E 00 00 41 0F B6 D7"},        // the headcrab's entity +0x4E28
+        {0x27F1819, "48 8B 8E 30 4E 00 00 40 0F B6 D7"},        // the hair ornament's entity +0x4E30
+        {0x235F640, "40 53 48 83 EC 40"},                       // the visibility setter (+0x88 bit 1), not called by us
+    };
+    bool ok = true;
+    for (const Site& x : kSites)
+        if (!mem::CodeMatches(b + x.rva, x.sig)) {
+            Log("[headgear] her hat in the rain off: the inventory's hat site ds.exe+0x%llX does not match this game build", static_cast<unsigned long long>(x.rva));
+            ok = false;
+            break;
+        }
+    g_hood_sites = ok ? 1 : 0;
+    if (ok) Log("[headgear] her hat in the rain: the inventory's hat and hood sites verified (%s)", g_own_hoodless ? "our character has no hood: on" : "our character has a hood: not used");
+    return ok;
+}
+
+// Every read (100 ms, game thread): the worn hat hidden by the hood, if any, noted as a shown head item and added to the
+// frame. `sam`: Sam's world.
+void ReadHoodHat(std::uintptr_t p, std::uintptr_t inv, const Xf& sam, double now) {
+    std::uintptr_t found = 0, found_vt = 0;
+    int found_res = -1, found_item = -1;
+    const char* found_name = "";
+    std::int32_t hood = 0;
+    const bool sites = g_own_hoodless && HoodSites() && Rd(inv + kInvHood, hood);
+    if (g_hood_on && sites && hood >= 5 && hood <= 12) {
+        for (const HatSlot& hs : kHats) {
+            bool worn = false;
+            for (unsigned i = 0; i < 64 && !worn; ++i) {
+                std::uint8_t type = 0, w = 0;
+                worn = Rd(inv + kInvAccList + kAccStride * i, type) && type == hs.type && Rd(inv + kInvAccList + kAccStride * i + kAccWorn, w) && w != 0;
+            }
+            if (!worn) continue;
+            const std::uintptr_t e = Q(inv + hs.ent);
+            if (!e || !Derives(e, "Entity") || Q(e + 0x70) != p || Visible(e)) continue;
+            int id = -1;
+            if (g_hood.memo_e == e && g_hood.memo_vt == Q(e)) {
+                id = g_hood.memo_res;
+            } else {
+                char path[wire::kMaxGearResPath + 8] = {};
+                std::uint8_t guid[16] = {};
+                const char* rt = nullptr;
+                if (realbody::ResourceIdentity(reinterpret_cast<game::Entity*>(e), path, sizeof(path), guid, &rt) && wire::GearResPathOk(path))
+                    id = LocalResId(path, guid);
+                g_hood.memo_e = e, g_hood.memo_vt = Q(e), g_hood.memo_res = id;
+            }
+            const char* name = "";
+            const int item = HeadItemOf(id, &name);
+            if (item < realbody::kHeadItemFirstCap) continue;
+            found = e, found_vt = Q(e), found_res = id, found_item = item, found_name = name;
+            break;
+        }
+    }
+    if (found != g_hood.e && g_hood.logs++ < 40) {
+        if (found)
+            Log("[headgear] Sam's hood is up (state %d): the game hides his worn %s %p; her character has no hood, so it stays on her (a prop on her "
+                "head on both screens)", hood, found_name, reinterpret_cast<void*>(found));
+        else if (g_hood.e)
+            Log("[headgear] her hat in the rain: %s no longer hidden by the hood (hood state %d)", g_hood.name, hood);
+    }
+    g_hood.e = found, g_hood.vt = found_vt, g_hood.res = found_res, g_hood.item = found_item, g_hood.name = found_name, g_hood.hood = hood;
+    if (!found || g_item_count >= kMaxLocal) return;
+    NoteHeadItem(found, found_res, now);  // its slot keeps its offset (no flash at its normal place when the hood goes down)
+    LocalItem& it = g_items[g_item_count++];
+    it = LocalItem{};
+    it.kind = wire::GearKind::entity;
+    it.model = wire::kGearNone;
+    it.variation = wire::kGearNone;
+    it.slot_type = 0;
+    it.e = found;
+    it.visible = true;
+    it.world = sam;  // not read: the sender sends the constant pose on joint 31 (HeadConst)
+    it.res = static_cast<std::uint8_t>(found_res);
+    it.parent_e = p;
+    it.hint_joint = 0xFF;
+}
+
+// The constant pose on joint 31 of a head item the sender sends so (section 26.8): one we offset (its offset), or the
+// hat hidden by the hood (its offset when we offset it, else none: Sam's own head).
+bool HeadConst(std::uintptr_t e, float (&p)[3], float (&r)[3][3], const char** name) {
+    if (!e) return false;
+    for (const HeadItem& h : g_hi)
+        if (h.e == e && h.ours) {
+            realbody::HeadItemOnJoint(h.written, p, r);
+            *name = h.name;
+            return true;
+        }
+    if (e != g_hood.e) return false;
+    const float zero[3] = {0, 0, 0};
+    realbody::HeadItemOnJoint(zero, p, r);
+    *name = g_hood.name;
+    return true;
+}
+
+// Every tick (game thread): each accessory's mover = the offset wanted now (identity when none); Sam's own update then
+// corrects every mover that is ours onto her drawn head each frame (section 26.8, realbody::PublishHeadMovers). `stop`
+// (the emergency stop): every mover of ours goes back to the identity and the game's flag, and the lift is told so.
 void HeadgearTick(double now, bool stop = false) {
     // Ready: the offsets can be written into every shown head item of ours; else none is written and the lift holds
     // them all up as in v0.11 (realbody::EffectiveLiftPct).
@@ -1845,11 +2068,35 @@ void HeadgearTick(double now, bool stop = false) {
     for (const HeadItem& h : g_hi) refused_any |= h.e && h.refused && now - h.seen_ms < 600;
     const bool ready = !stop && g_hg_on && realbody::HeadgearWanted() && HeadgearChecked() && !refused_any && now - g_unknown_head_ms >= 600;
     realbody::SetHeadgearReady(ready);
-    for (HeadItem& h : g_hi) {
+    // What each slot wants now; a slot that stops being ours (or changes its offset) leaves the corrected set before its
+    // mover is touched below.
+    float want_all[8][3] = {};
+    bool on_all[8] = {}, leaving = false;
+    for (unsigned i = 0; i < 8; ++i) {
+        HeadItem& h = g_hi[i];
         if (!h.e) continue;
         const bool shown = now - h.seen_ms < 600;
-        float want[3] = {0, 0, 0};
-        const bool on = ready && shown && realbody::SelfHeadItemOffset(h.item, want);
+        on_all[i] = ready && shown && realbody::SelfHeadItemOffset(h.item, want_all[i]);
+        leaving = leaving || (h.ours && (!on_all[i] || std::memcmp(want_all[i], h.written, sizeof(h.written)) != 0));
+    }
+    if (leaving) {
+        realbody::HeadMoverPub pub[realbody::kMaxHeadMovers];
+        unsigned n = 0;
+        for (unsigned i = 0; i < 8; ++i) {
+            const HeadItem& h = g_hi[i];
+            if (!h.e || !h.ours || !on_all[i] || std::memcmp(want_all[i], h.written, sizeof(h.written)) != 0 || n >= realbody::kMaxHeadMovers) continue;
+            realbody::HeadMoverPub& p = pub[n++];
+            p.e = h.e, p.e_vt = h.e_vt, p.mover = h.mover, p.mover_vt = h.mover_vt, p.item = h.item;
+            std::memcpy(p.off, h.written, sizeof(p.off));
+        }
+        realbody::PublishHeadMovers(pub, n);
+    }
+    for (unsigned i = 0; i < 8; ++i) {
+        HeadItem& h = g_hi[i];
+        if (!h.e) continue;
+        const bool shown = now - h.seen_ms < 600;
+        float want[3] = {want_all[i][0], want_all[i][1], want_all[i][2]};
+        const bool on = on_all[i];
         if (!on && !h.ours) {
             if (!shown) h = HeadItem{};  // gone and nothing of ours in it
             continue;
@@ -1863,41 +2110,63 @@ void HeadgearTick(double now, bool stop = false) {
             h = HeadItem{};
             continue;
         }
+        // Read under the lock Sam's update writes an owned mover with (HeadCorrect, every frame): an unlocked read could
+        // see half of one frame's corrected matrix and half of the next and refuse our own item for the session.
         float m[4][4];
-        if (!mem::Read(h.mover + kMoverLocal, m, sizeof(m))) {
-            ++g_hg.bad;
+        if (!realbody::ReadHeadMoverLocal(h.mover + kMoverLocal, m)) {
+            if (!h.ours) ++g_hg.bad;  // ours: Sam's update held the lock; judged next tick
             continue;
         }
-        bool rot_ok = std::fabs(m[3][3] - 1.0f) < 1e-5f;
-        for (int r = 0; r < 3 && rot_ok; ++r)
-            for (int c = 0; c < 4; ++c) rot_ok = rot_ok && std::fabs(m[r][c] - (r == c ? 1.0f : 0.0f)) < 1e-5f;
         // +0xA0 set: the update skips the local matrix (the game's movers of these accessories have it set, their
         // local being the identity); ours goes in with it cleared, and the game's value comes back with the identity.
-        const bool is_zero = m[3][0] == 0 && m[3][1] == 0 && m[3][2] == 0 && (!h.ours || no_local == h.orig_flag);
-        const bool is_ours = h.ours && no_local == 0 && m[3][0] == h.written[0] && m[3][1] == h.written[1] && m[3][2] == h.written[2];
-        if (!rot_ok || (!is_zero && !is_ours) || no_local > 1) {
+        const bool is_zero = IdentityRot(m) && m[3][0] == 0 && m[3][1] == 0 && m[3][2] == 0 && (!h.ours || no_local == h.orig_flag);
+        const bool is_ours = h.ours && no_local == 0 && NearOurs(m, h.written);
+        if ((!is_zero && !is_ours) || no_local > 1) {
             if (!h.refused) {
                 h.refused = true;
                 ++g_hg.refusals;
                 Log("[headgear] our %s %p: its mover's local matrix is not the identity or ours (translation %.3f %.3f %.3f, +0xA0 %u): left alone", h.name,
                     reinterpret_cast<void*>(h.e), static_cast<double>(m[3][0]), static_cast<double>(m[3][1]), static_cast<double>(m[3][2]), no_local);
             }
-            if (h.ours) ++g_hg.game_changed, h.ours = false;
+            if (h.ours) {
+                // Out of the corrected set first (returns once no Sam update can still write into it); then, if the mover
+                // still holds a write of ours (flag 0, translation within 1.6 m of our offset), the game's flag and the
+                // identity go back, so the item is not left on a stale corrected matrix.
+                ++g_hg.game_changed;
+                PublishOurMovers(&h);
+                h.ours = false;
+                std::uint8_t f2 = 1;
+                float m2[4][4];
+                if (Rd(h.mover + kMoverNoLocal, f2) && f2 == 0 && realbody::ReadHeadMoverLocal(h.mover + kMoverLocal, m2)) {
+                    const double dx = m2[3][0] - h.written[0], dy = m2[3][1] - h.written[1], dz = m2[3][2] - h.written[2];
+                    SIZE_T wrote_f = 0;
+                    if (std::sqrt(dx * dx + dy * dy + dz * dz) <= 1.6 &&
+                        WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(h.mover + kMoverNoLocal), &h.orig_flag, 1, &wrote_f) && wrote_f == 1 &&
+                        WriteIdentity(h.mover)) {
+                        ++g_hg.restores;
+                        Log("[headgear] our %s %p: refused while ours: taken out of the corrected set and put back to the identity", h.name, reinterpret_cast<void*>(h.e));
+                    }
+                }
+            }
             continue;
         }
         h.refused = false;
         if (!h.ours) h.orig_flag = no_local;
         const bool any = want[0] != 0 || want[1] != 0 || want[2] != 0;
         const std::uint8_t want_flag = any ? 0 : h.orig_flag;
-        if (m[3][0] == want[0] && m[3][1] == want[1] && m[3][2] == want[2] && no_local == want_flag) continue;
+        // ours with the same offset: Sam's update owns the matrix (corrected every frame)
+        if (h.ours && any && std::memcmp(want, h.written, sizeof(want)) == 0 && no_local == 0) continue;
+        if (!h.ours && !any && is_zero && no_local == want_flag) continue;
         SIZE_T wrote = 0, wrote_f = 0;
         bool ok;
-        if (any)  // the translation first, then the flag: an update between the two still skips the local
-            ok = WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(h.mover + kMoverLocalT), want, sizeof(want), &wrote) && wrote == sizeof(want) &&
+        if (any) {  // the matrix first (identity rotation, the offset), then the flag: an update between the two still skips the local
+            const float mm[4][4] = {{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}, {want[0], want[1], want[2], 1}};
+            ok = WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(h.mover + kMoverLocal), mm, sizeof(mm), &wrote) && wrote == sizeof(mm) &&
                  WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(h.mover + kMoverNoLocal), &want_flag, 1, &wrote_f) && wrote_f == 1;
-        else  // the flag back first, then the translation
+        } else {  // the flag back first, then the identity
             ok = WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(h.mover + kMoverNoLocal), &want_flag, 1, &wrote_f) && wrote_f == 1 &&
-                 WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(h.mover + kMoverLocalT), want, sizeof(want), &wrote) && wrote == sizeof(want);
+                 WriteIdentity(h.mover);
+        }
         if (!ok) {
             ++g_hg.bad;
             continue;
@@ -1908,6 +2177,17 @@ void HeadgearTick(double now, bool stop = false) {
         if (g_hg.logs++ < 60)
             Log("[headgear] our %s %p: mover offset %s (%.1f, %.1f, %.1f) cm in HLP_Head's frame (x = -lateral, y forward, z up)", h.name, reinterpret_cast<void*>(h.e),
                 any ? "set to" : "back to the identity", static_cast<double>(want[0]) * 100, static_cast<double>(want[1]) * 100, static_cast<double>(want[2]) * 100);
+    }
+    PublishOurMovers();
+    // the correction's counters: every second in hidden tests, every 10 s in play, while it has movers
+    static double next_ms = 0;
+    bool any_ours = false;
+    for (const HeadItem& h : g_hi) any_ours = any_ours || (h.e && h.ours);
+    if (any_ours && now >= next_ms) {
+        next_ms = now + (automation::Enabled() ? 1000 : 10000);
+        char info[320];
+        realbody::HeadCorrInfo(info, sizeof(info));
+        Log("[headgear] %s", info);
     }
 }
 
@@ -2394,6 +2674,17 @@ bool LookPartsMatch(std::uintptr_t e, const wire::GearLook& l, bool set, unsigne
 // debug body: our own), or nullptr.
 const wire::GearLook* WantLook(const PropSet& s, unsigned i, std::uint32_t* hash) {
     const wire::GearFrame& f = s.want;
+    if (&s == &g_sets[1]) {
+        // the self view's props: the look of the item of our own frame each one shows (the hat in the rain's colour)
+        if (i >= f.count || g_self_src[i] >= g_local.count) return nullptr;
+        const unsigned src = g_self_src[i];
+        const LocalLook& L = g_look[src];
+        if (!L.have || L.l.layout != wire::GearLayoutHash(g_local) || L.l.item != src || L.l.kind != f.items[i].kind ||
+            (L.l.kind == wire::GearKind::entity && L.l.res != f.items[i].res))
+            return nullptr;
+        *hash = L.hash;
+        return &L.l;
+    }
     const std::uint16_t h = wire::GearLayoutHash(f);
     const bool debug = realbody::GetOwner() == realbody::Owner::debug;
     const wire::GearLook* l = nullptr;
@@ -2730,6 +3021,8 @@ void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_acti
     if (&s == &g_sets[0]) {
         ApplyLooks(s, now);
         ApplyPoses(s, now);
+    } else if (g_hood.e) {
+        ApplyLooks(s, now);  // the self view's hat in the rain: our own cap's colour (WantLook's self branch; section 26.8)
     }
     // Publish when anything changed (new props live, new poses), and again when a placement fault
     // switched the detour's list off (at most 3 times a session: a fault fires the crash reporter).
@@ -2972,6 +3265,10 @@ void Census(game::Entity* who, bool sam_like) {
 
 void Init(const Config& config) noexcept {
     g_enabled = config.partner_gear;
+    {
+        const bodies::OwnChoice own = bodies::ChooseOwn(config.role == Role::host, config.my_character.c_str());
+        g_own_hoodless = own.body && std::strncmp(own.body->key, "fragile", 7) == 0;  // fragile, fragile_suit: no hood
+    }
     g_boots_sync = config.boots_sync;
     Log("[gear] gear on bodies %s (partner_gear=%d); boots %s (boots_sync=%d)", g_enabled ? "on" : "off", g_enabled ? 1 : 0,
         g_boots_sync ? "sent and drawn on the partner" : "not sent or drawn", g_boots_sync ? 1 : 0);
@@ -3087,8 +3384,11 @@ void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
     self_frame = wire::GearFrame{};
     self_frame.flags = g_local.flags & wire::kGearValid;
     for (unsigned i = 0; i < g_local.count; ++i)
-        if (g_local.items[i].kind == wire::GearKind::bb_pod && g_local.items[i].parent == wire::kGearNoParent)
+        if ((g_local.items[i].kind == wire::GearKind::bb_pod && g_local.items[i].parent == wire::kGearNoParent) ||
+            (g_local.items[i].kind == wire::GearKind::entity && g_hood.e && g_local_e[i] == g_hood.e)) {  // her hat in the rain (26.8)
+            g_self_src[self_frame.count] = static_cast<std::uint8_t>(i);
             self_frame.items[self_frame.count++] = g_local.items[i];
+        }
     ss.want = self_frame;
     ss.have_want = g_have_local && self_frame.count > 0;
     ss.res = g_res_local;
@@ -3480,7 +3780,8 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             return true;
         }
         case 14:
-        case 15: {
+        case 15:
+        case 23: {
             // hidden tests: what the player wears on the head (the inventory's accessory list, inv +0x37F9 +
             // 0x40 i: type at +0 (0x0D / 0x0E glasses, 0x0F cap), worn flag at +0x1D, the item at +0x1F; read
             // by the inventory update 0x1427F0FD9 / 0x1427F14B6) and the cap colour (inv +0x4BE0)
@@ -3498,7 +3799,7 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
                 std::snprintf(msg, cap, "no local player inventory");
                 return false;
             }
-            const bool write = op == 15 || v[1] != 0 || v[2] != 0;
+            const bool write = op == 15 || op == 23 || v[1] != 0 || v[2] != 0;
             if (write && (!automation::Enabled() || !automation::SavesRedirected())) {
                 std::snprintf(msg, cap, "refused: only in a hidden test run on scratch saves");
                 return false;
@@ -3507,6 +3808,22 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
                 SIZE_T w = 0;
                 return WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(at), &val, 1, &w) && w == 1;
             };
+            if (op == 23) {
+                // hidden tests: gear 23 <which> <value>: the glasses' colours (inventory +0x4BDC: 0 A lens, 1 B lens, 2 A frame, 3 B frame;
+                // partner_outfit.cpp reads them), to wear the user's outfit in a run
+                const int which = static_cast<int>(v[1]);
+                if (which < 0 || which > 3 || v[2] < 0 || v[2] > 63) {
+                    std::snprintf(msg, cap, "gear 23 <0 A lens / 1 B lens / 2 A frame / 3 B frame> <0..63>");
+                    return false;
+                }
+                std::uint8_t was = 0;
+                Rd(inv + 0x4BDC + static_cast<unsigned>(which), was);
+                const bool ok = put(inv + 0x4BDC + static_cast<unsigned>(which), static_cast<std::uint8_t>(v[2]));
+                static const char* const kWhat[4] = {"A lens", "B lens", "A frame", "B frame"};
+                std::snprintf(msg, cap, "TEST: our glasses %s colour %u -> %d%s", kWhat[which], was, static_cast<int>(v[2]), ok ? "" : " (write failed)");
+                Log("[look] %s", msg);
+                return ok;
+            }
             if (op == 15) {
                 const std::uint8_t c = static_cast<std::uint8_t>(v[1] < 0 ? 0 : v[1] > 24 ? 24 : v[1]);
                 std::uint8_t was = 0;
@@ -3542,6 +3859,14 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
                     for (Prop& p : s.props) p.look_hash = 0;
             std::snprintf(msg, cap, "gear looks (colours, variations) %s", g_looks_on ? "on" : "off");
             Log("[look] %s", msg);
+            return true;
+        case 22:
+            // her hat in the rain (section 26.8): the worn hat the game hides under Sam's hood drawn on her, on / off
+            g_hood_on = v[1] != 0;
+            std::snprintf(msg, cap, "her hat in the rain %s (our character %s; sites %s; now %s, hood state %d)", g_hood_on ? "on" : "off",
+                          g_own_hoodless ? "has no hood" : "has a hood: not used", g_hood_sites < 0 ? "not checked yet" : g_hood_sites ? "ok" : "MISMATCH",
+                          g_hood.e ? g_hood.name : "no hat hidden", g_hood.hood);
+            Log("[headgear] %s", msg);
             return true;
         case 16:
             // Sam's head parts (hair, hood, face lines) named in our frames: off / on (section 14). Off only

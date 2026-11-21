@@ -1,0 +1,5 @@
+{"type": "launched"}
+{"type": "started", "agentId": "a0000000000000011", "label": "build", "phase": "Build"}
+{"type": "result", "agentId": "a0000000000000011", "result": {"report": "built"}}
+{"type": "started", "agentId": "a0000000000000012", "label": "review", "phase": "Review"}
+{"type": "result", "agentId": "a0000000000000012", "result": {"report": "reviewed"}}

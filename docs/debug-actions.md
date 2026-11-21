@@ -314,6 +314,10 @@ Scenarios: `collision`, `collision-off`, `two-games-collision`, `two-games-all`.
 * `action gear 20 <percent>` (1-100, default 1): the partner body's feet scale under its boots prop (section 21;
   100: not scaled). `action gear 21 <0/1>`: boots sync at run time (section 21): our boots item not sent and the
   partner's boots prop not drawn (0) / both (1, the default with `boots_sync=1`).
+* `action gear 22 <0/1>`: her hat in the rain (docs/real-partner-body.md section 26.8): the worn hat the game hides under
+  Sam's hood drawn on our hoodless character on both screens (1, the default) / the game's look (0). `action gear 23
+  <which> <0..63>` (hidden test runs on scratch saves only): the glasses' colour bytes (inv `+0x4BDC`: 0 A lens, 1 B lens,
+  2 A frame, 3 B frame), to wear a user's outfit in a run.
 * `action gear 16 <0/1>`: Sam's head parts (hair, hood, face lines; docs/real-partner-body.md section 14) not
   named / named in our frames (default on). Off only stops naming them, so a partner body keeps what it had
   last: to see the cutscene defaults, set 0 before the body comes. The result says whether the last read was
@@ -681,6 +685,8 @@ hook, which is installed at start-up only with `session.ini partner_body=real` o
   extrapolated one frame in the body's frame; 3 the default, 0 v0.20's (for before / after runs). Hidden test runs
   only: `self_view 15 <0/1>`, the drawn-vs-anchor meter (`[gear] drawn vs anchor <partner|self>` lines; off with a
   one-line reason when Entity::Update's stamp sites do not match).
+  `self_view 16 <0/1>`: Sam's head items onto her drawn head every frame (docs/real-partner-body.md section 26.8): 1
+  (the default) v0.22, 0 the plain offset of v0.21 (for before / after runs).
   `self_view 4`: the
   subspace work object's state and menu kind, and every ArtPart of the menu's figure (asked / effective
   visible, top-level, children) in the log. In hidden tests a `[menu] subspace state ...` line is logged on
@@ -800,6 +806,10 @@ forearm twist deg), `24` logs the seated idle's state, `25 <0|1>` the camera's c
 / ignored, `26 <0|1>` (hidden tests) the seat teleport held while the vehicle stands, `27 <0|1|2>` the vehicle's yaw
 quaternion for the camera off / on / its conjugate, `28 <0|1>` the heading's slow follow off / on. `29 <0|1>` (hidden tests)
 the seat back after a save off (v0.20: the save's exit leaves our Sam on foot) / on (docs/real-partner-body.md 24.16).
+The passenger's boots (v0.22, docs/real-partner-body.md 24.17): `34 <0|1>` the boots meter (`[ride] boots meter: life ... (main
+layer bare, kind state, item), +/- in 1 s; queued; on-foot flag, move level, speed; status +0x140 +0x144; skipped; events
+j/t/l/s/p ..., dropped ...`) off / every second, `34 2` a mark (`[ride] boots mark #n: life ... (unchanged|dropped|rose
++/-... since mark #n-1, ... s)`), `35 <0|1>` (hidden tests) the boots guard off (v0.21: a carried Sam's boots wear) / on.
 
 ### Save guard (`save_guard`; with riding together, or in a hidden run)
 
@@ -873,6 +883,8 @@ refused: refused by the host: its game plays on its real save` (or `... its dev 
 | `dev_places` | | The current area's delivery points (`DSMissionSystem [0x147C0AFF8] +0x78820`: `Array<Ref<DSDeliveryPointInfoResource>>`, u32 count, u32 capacity, data at `+8`; entry RTTI checked; `+0x68` area, `+0x6A` type, `+0x78` order, `+0x80` transform), nearest first, to the log. The name is the entry's own localized text (`DescriptionText +0x20`, the text pointer inside the LocalizedTextResource), read at runtime (nothing shipped); without one, the type's name from the game's `EDSConstructionPointType` RTTI. Area 200 of the 100% save: Mountain Knot City, the preppers, MULE camps, terrorist camps, Distribution Center North of Mountain Knot City, Lake Knot City ... (more than 64; the page lists the nearest 64). |
 | `dev_place` | `n` | Teleport (PlaceOn mode 1, facing the place's forward) to entry n of that list. Only within the current area: the game has no cross-area teleport (story points: test saves, docs/sandbox-and-local-test.md). |
 | `dev_items` | `1` / `2 n` | 1: `RecoverOrSupplyShoes` body `0x142744B40(status, 0, 1)` (new or repaired boots). 2: `AddChiralCrystalCount(n)` (`0x1426E6530`, default 100; 18753 -> 19253 in `035314`). |
+| `dev_goto` | `x y [z]` | Sam anywhere in this area (sandboxed saves only: world class), then the ground (docs/dev-tools.md "Go anywhere"). z 0 / left out: the topmost ground (PlaceOn mode 2 at the ray centre 500); else PlaceOn mode 1 at z + 0.5. Refused while the placement gate is shut (on a vehicle, a load, a menu). Every tick `devrules::GotoAdvance`: within 25 m of x, y (a place's point inside a terminal: the game pushes Sam out, 3.5-8.3 m seen) and 5 m of z, playable and still for 1.5 s: `[dev] goto #n: settled at (...) after N s (k placement(s))`; more than 5 m below z: placed again (at most 4, 1 s apart); 25 s: `NOT settled`. The scenario's `goto` and `waitworld <s> goto` wait for it. 7 places up to 4 km apart in `20261121-084610-goto-places`. |
+| `dev_boots` | `0` / `1 p` / `2 0/1` | 0: the boots' durability to the log. 1: set it to p % (sandboxed saves only): `SetShoesLifeByRate`'s body `0x142741860(status, p/100, 0)` with Sam's status `[Sam+0x54E0]` read and checked first. 2: a `[dev] boots meter: ...; +x in 1 s` line every second (hidden tests: the passenger's boots). The durability is two parts (the setter `0x142741720(status+0x320, v)`): the first `+0x334` (200) points at `+0x33C`, the rest at `+0x32C` up to `+0x330` (3400); 40 % = 1440 of 3600 (`20261121-084433-spawn-showcase`: 200 + 926.6 before, 200 + 1240 after). Refused without worn boots (`+0x368` empty: the game's setter would do nothing). |
 
 Time of day and teleport to the partner are the existing actions (`set_time_of_day`, `teleport_to_partner`); the page has
 buttons for them (Dawn / Noon / Dusk / Night). The time buttons sit under the world tools' gate with the weather (greyed on a
@@ -914,12 +926,15 @@ or battery notify that faults at run time turns repair off for the run with the 
 | ResetAllGazers thunk / body, the gazer global | `0x1429A7220`, `0x1429A17A0` | BTs |
 | GetDeliveryPointInfoResources (DSMissionSystem global `+0x78820`); RTTI `DSDeliveryPointInfoResource` `0x144DD5E50`; enum `EDSConstructionPointType` `0x144C33550` (names only) | `0x1433CA80A` | places |
 | RecoverOrSupplyShoes export; AddChiralCrystalCount (DSPlayerSystem global) | `0x1426E6F80`, `0x1426E6530` | boots, chiral crystals |
+| SetShoesLifeByRate export (status `+0x54E0`, r8 0, jump to the body), its body (`+0x368`, the r8 test), its `(+0x334 + +0x330) x rate` and setter call, the setter (`+0x1C` / `+0xC` / `+0x8C`, flags `+0x90`), SetShoesForcibly (type `+0x3B8`) | `0x1426E7460`, `0x142741860`, `0x1427418EB`, `0x142741720`, `0x142741757`, `0x1426E7430` | boots' life (`dev_boots`) |
 | the race reset's repair + battery sequence, the three Repair functions, the battery notify, each vehicle vtable `+0x118` = its Repair | `0x142D6EE21`, `0x142F7B090`, `0x142F7B140`, `0x142F7B320`, `0x142F5A260` | vehicle repair |
 | the variant write (unit `+0x198 >> 22` -> entity `+0x4C8`) | `0x142F77023` | the check's read-back only |
 | the pools, the unit layout, the spawn and its record (vehicle_share's `kCore` / `kSpawnG` sites, checked here when the shared vehicles are off) | see section 23 | vehicle spawn / remove / repair |
 
 ### Not done
 
+* No cross-area travel (the script exports `DSMissionLogicCommand_sFastTravel` -> `0x1433C9A10` and `sChangeArea` -> `0x1433CB320`
+  are leads, not decompiled: Ghidra was down in round 4); `dev_goto` stays within the save's area.
 * No free camera (photo mode's pan range and `SetObserverPositionOverride` are the leads, docs research only), no "MULE
   here" (moving a live MULE to Sam through its actor's `vt+0x40`: unproven), no cargo or weapon giving (the baggage export's
   name codes are not decoded), no mission start / skip (story points are saves of the story library loaded with

@@ -11,6 +11,11 @@ safety rules and current status: [docs/hidden-testing.md](../../docs/hidden-test
 | `Start-TestRun.ps1 -Scenario smoke` | one hidden run of the real game (<= 6 min), results in `build-testenv\runs\<stamp>-smoke` |
 | `Start-TestRun.ps1 -Scenario echo-holo-100 -SeedSaves complete-100` | the hidden game loads another save (scratch copy only); saves of another account load because the supervisor writes `automation_foreign_saves=1` (docs: "Using another save") |
 | `Start-TestRun.ps1 -Scenario alive -NoMod` | start-up bisection switches: `-NoMod` (the DLL only redirects the saves), `-NoUiLimits`, `-SteamEnv`, `-NoIsolation`; `-NoGameStdout` |
+| `Start-TestRun.ps1 -SeedSaves complete-100 -Steps 'goto lake-knot ; screenshot a'` | inline steps, no scenario file: straight into the world (`start`), the steps, quit (`-Role host`, `-LauncherIni`, `-Start 'story 12'`, `-NoStart`, `-Name`) |
+| `Start-TestSession.ps1` / `Send-TestStep.ps1` / `Stop-TestSession.ps1` | a held session: the game stays and takes steps until Stop (the 360 s cap, restore and checks unchanged; one foreground command for agents) |
+| `places.txt` | the named places of a scenario's `goto <name>` (area 200 of complete-100) |
+| `scenarios\quickstart-solo.txt`, `two-games-quickstart.txt` | `start`: into the world with no menu step (one game; the launcher's Local test) |
+| `scenarios\goto-places.txt`, `spawn-showcase.txt` | `goto` to 7 places with screenshots; vehicles, weather, time, MULEs, cap / glasses, boots' durability |
 | `Restore-TestRun.ps1 -RunDir <run>` | put the game folder back and check/restore the saves after a crash (safe to repeat) |
 | `scenarios\smoke.txt` | title -> Continue (virtual pad) -> Sam in the world -> debug menu -> quit |
 | `scenarios\walk.txt` | Continue, wait out the save's scripted BT hold, walk 6 s (must move >= 5 m), turn the camera |

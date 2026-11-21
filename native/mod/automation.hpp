@@ -27,6 +27,10 @@
 //                                  also sets flag (!= 0) and, when it is the only one, i
 //   waitplayer <s>                 until the tick's snapshot has the local player
 //   waitlog <s> <text>             until a NEW log line contains <text>
+//   waitworld <s> [goto]           until the local Sam is playable and still for 1.5 s: a player, awake, nothing loading,
+//                                  no menu / cutscene / setup phase, the game's placement gate open, his place steady
+//                                  (a new player entity restarts the window: a save load re-creates him). "goto": the
+//                                  newest dev_goto settled too (it fails when that goto failed). docs/hidden-testing.md
 //   snapshot                       the tick's snapshot as one result line
 //   quit                           WM_CLOSE to the game window, process ends after 20 s at most
 //
@@ -52,6 +56,9 @@ bool Enabled() noexcept;
 // <mod>utomation\out (screenshots, results), or empty when automation is off.
 std::wstring OutDir() noexcept;
 bool MuteRequested() noexcept;
+// automation_quickstart= (written by the supervisor only, docs/hidden-testing.md "start"): "continue", "load <type> <index>",
+// "story <n>" or "" (none). Always "" without automation=1.
+const char* QuickstartRequested() noexcept;
 // automation_isolate (default 1): the overlay's automation hooks (virtual pad only,
 // GetForegroundWindow, cursor isolation, no exclusive fullscreen, no occlusion).
 // 0 keeps the command channel and screenshots without them (bisecting a start-up problem).
@@ -63,7 +70,7 @@ void Start(const std::wstring& mod_dir, const char* build) noexcept;
 // ------------------------------------------------------------- parsing
 // Pure functions (header-only so tests/testenv can check them without the mod).
 enum class Kind : std::uint8_t {
-    unknown, wait, log, screenshot, pad, padoff, key, menu, action, waitplayer, waitlog, snapshot, quit, hookkey
+    unknown, wait, log, screenshot, pad, padoff, key, menu, action, waitplayer, waitlog, snapshot, quit, hookkey, waitworld
 };
 
 // XInput button bits (same values as XINPUT_GAMEPAD_*).
@@ -305,6 +312,14 @@ inline bool ParseCommand(const std::string& raw, Command* out, std::string* erro
         out->ms = s * 1000;
         out->text = detail::Rest(line, 2);
         out->kind = Kind::waitlog;
+    } else if (verb == "waitworld") {
+        std::uint32_t s = 0;
+        if (!need(2, "waitworld <seconds> [goto]")) return false;
+        if (!detail::Uint(w[1], 1, 600, &s)) return *error = "waitworld: 1..600 s", false;
+        if (w.size() > 3 || (w.size() == 3 && detail::Lower(w[2]) != "goto")) return *error = "waitworld <seconds> [goto]", false;
+        out->ms = s * 1000;
+        out->text = w.size() == 3 ? "goto" : "";
+        out->kind = Kind::waitworld;
     } else if (verb == "snapshot") {
         out->kind = Kind::snapshot;
     } else if (verb == "quit") {

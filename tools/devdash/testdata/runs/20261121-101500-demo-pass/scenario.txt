@@ -1,0 +1,10 @@
+# Demo scenario: walk, ride and take a picture (synthetic fixture)
+role host
+timeout 360
+
+waitready 90
+pad A 150
+until \[sync\] a -> b => pad A 120
+screenshot S0-host
+@guest screenshot S0-guest
+quit

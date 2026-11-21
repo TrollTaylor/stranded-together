@@ -1,0 +1,172 @@
+# Fragile's headgear (docs/real-partner-body.md section 26.8, v0.22): Sam's cap and glasses on her drawn head on the guest's own
+# screen (the per-frame correction in Sam's update, `self_view 16`), her hat in the rain (the worn hat the game hides under
+# Sam's hood drawn on her on both screens, `gear 22`), other hats and glasses. Two games on the launcher's Local test files
+# (30 fps, host_save=1), the guest's Fragile in the user's outfit (cap colour 24, glasses A lens 4 frame 3, B lens 4 frame 23).
+# The drawn-vs-anchor meter on both games (`self_view 15 1`): `[headgear] drawn vs her drawn head, self: Sam's caps|glasses`
+# (the guest's own screen), `... partner: head props` (the host's view of her), `... self: head props` (her hat in the rain on
+# her own screen). A = v0.21 (`self_view 16 0`), B = v0.22 (`self_view 16 1`), the same moves in each phase.
+# pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-headgear -SeedSaves complete-100 -GuestSeed profile-only
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+@guest waitlog 60 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+@both action self_view 15 1
+@guest action gear 15 24
+@guest action gear 23 0 4
+@guest action gear 23 2 3
+@guest action gear 23 1 4
+@guest action gear 23 3 23
+@guest action gear 14 15 1
+@guest action gear 14 14 1
+@both action dev_weather 0
+@both goto mknot-road
+wait 6000
+@guest pad none 2400 ly=32767
+@guest pad none 900 ly=-32767
+wait 2500
+@guest action gear 14
+@guest log headgear: standing (v0.22)
+screenshot 00-host-sees-guest
+@guest screenshot 00-guest-self-front
+# ---- her hat in the rain (both screens; first, while the two face each other)
+@both action dev_weather 2
+wait 14000
+@both log headgear: heavy timefall (Sam's hood up)
+@guest action gear 14
+@guest action gear 22 1
+screenshot R1-host-sees-guest-rain
+@guest screenshot R1-guest-self-front-rain
+@guest action gear 22 0
+wait 1500
+screenshot R2-host-sees-guest-rain-off
+@guest screenshot R2-guest-self-rain-off
+@guest action gear 22 1
+wait 1500
+screenshot R1c-host-sees-guest-rain-again
+@guest pad none 1500 lx=32767
+@guest pad none 1 lx=-32767 keep
+@guest wait 700
+@guest screenshot R1b-guest-self-run-rain
+@guest pad none 0
+@guest wait 1000
+@both action dev_weather 0
+wait 15000
+@both log headgear: clear again
+screenshot R3-host-sees-guest-clear
+@guest screenshot R3-guest-self-clear
+# ---- phase A: v0.21 (the plain offset on Sam's head)
+@guest action self_view 16 0
+@guest log headgear phase A foot
+@guest pad none 1500 lx=32767
+@guest pad none 500
+@guest pad none 1500 lx=-32767
+@guest pad none 600 ly=32767
+@guest pad none 600 ly=-32767
+@guest pad none 600 lx=32767
+@guest pad none 600 lx=-32767
+@guest pad none 400
+@guest pad none 1 lx=-32767 keep
+@guest wait 700
+@guest screenshot A1a-guest-self-run
+@guest screenshot A1b-guest-self-run
+screenshot A1-host-sees-guest-run
+@guest pad none 0
+@guest screenshot A1c-guest-self-stop
+@guest screenshot A1d-guest-self-stop
+@guest wait 100
+@guest screenshot A1e-guest-self-stopped
+@guest pad none 1 lx=32767 keep
+@guest wait 200
+@guest screenshot A1f-guest-self-turn
+@guest screenshot A1g-guest-self-turn
+@guest wait 500
+@guest pad none 0
+@guest pad none 1200 lx=20000 ly=20000
+@guest pad none 1500 lx=18000
+@guest pad B 150
+@guest wait 1200
+@guest pad none 1 lx=-20000 keep
+@guest wait 900
+@guest screenshot A1h-guest-self-crouch
+@guest pad none 0
+@guest pad B 150
+@guest wait 1200
+# ---- phase B: v0.22 (corrected onto her drawn head every frame)
+@guest action self_view 16 1
+@guest log headgear phase B foot
+@guest pad none 1500 lx=32767
+@guest pad none 500
+@guest pad none 1500 lx=-32767
+@guest pad none 600 ly=32767
+@guest pad none 600 ly=-32767
+@guest pad none 600 lx=32767
+@guest pad none 600 lx=-32767
+@guest pad none 400
+@guest pad none 1 lx=-32767 keep
+@guest wait 700
+@guest screenshot B1a-guest-self-run
+@guest screenshot B1b-guest-self-run
+screenshot B1-host-sees-guest-run
+@guest pad none 0
+@guest screenshot B1c-guest-self-stop
+@guest screenshot B1d-guest-self-stop
+@guest wait 100
+@guest screenshot B1e-guest-self-stopped
+@guest pad none 1 lx=32767 keep
+@guest wait 200
+@guest screenshot B1f-guest-self-turn
+@guest screenshot B1g-guest-self-turn
+@guest wait 500
+@guest pad none 0
+@guest pad none 1200 lx=-20000 ly=20000
+@guest pad none 1500 lx=-18000
+@guest pad B 150
+@guest wait 1200
+@guest pad none 1 lx=20000 keep
+@guest wait 900
+@guest screenshot B1h-guest-self-crouch
+@guest pad none 0
+@guest pad B 150
+@guest wait 1200
+@guest log headgear: host moves (her props on the host's screen)
+pad none 1200 ly=32767
+pad none 400
+pad none 1200 ly=-32767
+wait 800
+# ---- other hats and glasses
+@guest action gear 14 15 0
+@guest action gear 14 36 1
+wait 2500
+@guest log headgear: Santa hat
+screenshot H1-host-sees-santa
+@guest screenshot H1-guest-self-santa
+@guest action gear 14 36 0
+@guest action gear 14 49 1
+wait 2500
+@guest log headgear: headcrab
+screenshot H2-host-sees-headcrab
+@guest screenshot H2-guest-self-headcrab
+@guest action gear 14 49 0
+@guest action gear 14 14 0
+@guest action gear 14 13 1
+@guest action gear 14 15 1
+wait 2500
+@guest log headgear: cap00 and eyewear0
+screenshot H3-host-sees-eyewear
+@guest screenshot H3-guest-self-eyewear
+@guest pad none 1500 lx=32767
+@guest pad none 1 lx=-32767 keep
+@guest wait 700
+@guest screenshot H3b-guest-self-run-eyewear
+@guest pad none 0
+@guest wait 1500
+@guest action gear 14
+@both action log_status
+@guest nolog \[headgear\].*left alone
+nolog \[headgear\].*left alone
+@guest quit
+wait 3000
+quit

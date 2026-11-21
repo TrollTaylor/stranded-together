@@ -157,6 +157,7 @@ add_library(st_mod SHARED
   native/mod/coop_session.cpp
   native/mod/title_wait.cpp
   native/mod/dev_tools.cpp
+  native/mod/quickstart.cpp
   native/mod/story_state.cpp
   native/mod/automation.cpp
 
@@ -284,6 +285,13 @@ target_compile_definitions(st_fakepeer PRIVATE "ST_BUILD_ID=\"${ST_BUILD_ID}\"" 
 target_compile_options(st_fakepeer PRIVATE ${ST_WARNINGS})
 target_link_libraries(st_fakepeer PRIVATE st_net st_minhook)
 add_test(NAME st_fakepeer_selftest COMMAND st_fakepeer --selftest)
+
+# ---- devdash (tools/devdash): parser and API tests, only when a Python 3 is found (never needed to build)
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME st_devdash_tests
+           COMMAND ${Python3_EXECUTABLE} -B -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/tools/devdash" -p "test_*.py")
+endif()
 
 # ---- Launcher (StrandedTogether.exe)
 include(cmake/launcher.cmake OPTIONAL)

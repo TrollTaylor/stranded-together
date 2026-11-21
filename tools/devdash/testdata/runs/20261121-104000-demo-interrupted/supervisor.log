@@ -1,0 +1,5 @@
+[   0.000] st_testenv_supervisor (pid 4242) started 2026-11-21T10:40:00.000
+[   0.030] game C:\Games\DEATH STRANDING DIRECTORS CUT, mod C:\repo\build-testenv\Release\winhttp.dll, scenario C:\repo\tools\testenv\scenarios\demo.txt (4 steps, role host, steps limit 300 s, game lifetime cap 360 s)
+[   0.900] started C:\Games\DEATH STRANDING DIRECTORS CUT\ds.exe pid 2004 on WinSta0\StTestEnv_4242_1 (job: kill on close, UI restricted)
+[   3.000] saves redirect: CONFIRMED -- marker after 2 s
+[   9.000] step line 3 waitready 90 -> ok (0.0 s): ready

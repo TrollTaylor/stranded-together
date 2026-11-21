@@ -1,0 +1,2 @@
+[   0.000] st_testenv_supervisor (pid 1113) started 2026-11-21T10:30:00.000
+[   0.000] REFUSED: scenario C:\repo\tools\testenv\scenarios\demo-refused.txt: line 11: timeout <30..360 s>

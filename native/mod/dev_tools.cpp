@@ -16,6 +16,7 @@
 #include "log.hpp"
 #include "overlay/overlay_menu.hpp"
 #include "partner_source.hpp"
+#include "quickstart.hpp"
 #include "story_state.hpp"
 #include "vehicle_share.hpp"
 
@@ -55,10 +56,19 @@ constexpr std::uintptr_t kDpArray = 0x78820;
 constexpr std::uintptr_t kDpRtti = 0x144DD5E50;
 constexpr std::uintptr_t kDpText = 0x20, kDpArea = 0x68, kDpType = 0x6A, kDpOrder = 0x78, kDpXf = 0x80;
 constexpr std::uintptr_t kPointTypeEnum = 0x144C33550;  // EDSConstructionPointType: +8 u16 count, +0x10 name, +0x18 values (0x28 each)
+// Boots' life (dev_boots; capstone over ds.exe, round 4): the export DSPlayerSystem_sExportedSetShoesLifeByRate 0x1426E7460(float)
+// takes [player +0x54E0] (Sam's status) and jumps to 0x142741860(status, rate, 0): when [status +0x368] is set (worn boots) it
+// writes (status +0x334 + status +0x330) x rate through 0x142741720(status +0x320, durability): the first +0x334 points at +0x1C
+// of that block (status +0x33C), the rest at +0xC (status +0x32C, at most +0x330). SetShoesForcibly 0x1426E7430 names the boots' type
+// byte status +0x3B8. We call the body with the status we read and checked ourselves (the export does not null-check it).
+constexpr std::uintptr_t kShoesByRate = 0x142741860;
+constexpr std::uintptr_t kShoes = 0x320, kShoesLife = 0x33C, kShoesMax = 0x334, kShoesSpare = 0x330, kShoesOver = 0x32C, kShoesFlags = 0x3B0,
+                         kShoesItem = 0x368, kShoesType = 0x3B8;
 
 enum Feature : unsigned {
-    kFRefill = 1u, kFGod = 2u, kFWeather = 4u, kFMules = 8u, kFBts = 16u, kFPlaces = 32u, kFBoots = 64u, kFChiral = 128u,
+    kFRefill = 1u, kFGod = 2u, kFWeather = 4u, kFMules = 8u, kFBts = 16u, kFPlaces = 32u, kFBoots = 64u, kFChiral = 128u, kFBootsLife = 256u,
 };
+constexpr unsigned kFLast = kFBootsLife;
 const char* FeatureName(unsigned f) {
     switch (f) {
         case kFRefill: return "refill";
@@ -69,6 +79,7 @@ const char* FeatureName(unsigned f) {
         case kFPlaces: return "places";
         case kFBoots: return "boots";
         case kFChiral: return "chiral crystals";
+        case kFBootsLife: return "boots' life";
         default: return "?";
     }
 }
@@ -112,6 +123,19 @@ constexpr Site kSites[] = {
     {0x1426E6F80, "48 83 EC 28 E8 A7 7C 15 00 41 B0 01 33 D2 48 8B 88 E0 54 00 00 48 83 C4 28 E9 A2 DB 05 00", "RecoverOrSupplyShoes export", kFBoots},
     // AddChiralCrystalCount: DSPlayerSystem global (not null-checked: we check), local player null-checked
     {kAddChiral, "48 89 5C 24 10 57 48 83 EC 20 48 8B 1D 3F 14 50 05 8B F9 E8 E8 86 15 00 4C 8B C0 48 85 C0 74 2D 8B 93 7C 1B 00 00", "AddChiralCrystalCount", kFChiral},
+    // Boots' life: the export (status +0x54E0, r8 0, jmp 0x142741860), the body (+0x368 test, the r8 test, +0x320 / +0x334 / +0x330,
+    // the setter call), the setter (life +0x1C when worn, +0x8C when not), SetShoesForcibly (the type byte +0x3B8)
+    {0x1426E7460, "48 83 EC 38 C5 F8 29 74 24 20 C5 F8 28 F0 E8 BD 77 15 00 45 33 C0 C5 F8 28 CE 48 8B 88 E0 54 00 00 C5 F8 28 74 24 20 48 83 C4 38 E9 D0 A3 05 00",
+     "SetShoesLifeByRate export -> body", kFBootsLife},
+    {kShoesByRate, "48 89 6C 24 18 56 48 83 EC 40 48 83 B9 68 03 00 00 00 48 8B F1 C5 F8 29 74 24 30 C5 F8 28 F1 75 6A 45 84 C0 0F 84 84 00 00 00",
+     "SetShoesLifeByRate body", kFBootsLife},
+    {0x1427418EB, "48 8D A9 20 03 00 00 C5 FA 10 86 34 03 00 00 C5 FA 58 8E 30 03 00 00 C5 F2 59 CE 48 8B CD E8 12 FE FF FF",
+     "SetShoesLifeByRate: (max + spare) x rate", kFBootsLife},
+    {0x142741720, "40 53 48 83 EC 30 0F B6 81 90 00 00 00 48 8B D9 A8 01 75 0E C5 FA 11 89 8C 00 00 00 48 83 C4 30 5B C3 C5 FA 10 41 14 C5 F8 2F C1",
+     "shoes life setter", kFBootsLife},
+    {0x142741757, "C5 FA 11 49 1C C5 E8 57 D2 EB 16 C5 FA 11 41 1C C5 F2 5C C0 C5 FA 5D 51 10", "shoes life setter: life +0x1C, spare +0xC", kFBootsLife},
+    {0x1426E7430, "40 53 48 83 EC 20 0F B6 D9 E8 F2 77 15 00 48 85 C0 74 0D 48 8B 80 E0 54 00 00 88 98 B8 03 00 00", "SetShoesForcibly (type +0x3B8)",
+     kFBootsLife},
 };
 // clang-format on
 
@@ -127,6 +151,7 @@ int g_god_set = -1;  // what we wrote (restore on off)
 SRWLOCK g_view_lock = SRWLOCK_INIT;
 View g_view;
 double g_next_view = 0;
+double g_now_ms = 0;  // the newest tick's time (game thread)
 char g_enum_names[64][28] = {};
 int g_enum_count = 0;
 
@@ -153,11 +178,11 @@ bool RttiNamed(std::uintptr_t rtti, const char* name) {
 void Check() {
     if (g_checked) return;
     g_checked = true;
-    unsigned features = kFRefill | kFGod | kFWeather | kFMules | kFBts | kFPlaces | kFBoots | kFChiral;
+    unsigned features = kFRefill | kFGod | kFWeather | kFMules | kFBts | kFPlaces | kFBoots | kFChiral | kFBootsLife;
     int ok = 0, total = 0;
     auto fail = [&](unsigned f, const char* why) {
         if (!g_off[0]) {
-            for (unsigned b = 1; b <= kFChiral; b <<= 1)
+            for (unsigned b = 1; b <= kFLast; b <<= 1)
                 if (f & b) {
                     Put(g_off, sizeof(g_off), "%s: %s", FeatureName(b), why);
                     break;
@@ -216,7 +241,7 @@ void Check() {
     g_features = features;
     char on[200] = {};
     std::size_t k = 0;
-    for (unsigned b = 1; b <= kFChiral; b <<= 1)
+    for (unsigned b = 1; b <= kFLast; b <<= 1)
         if (features & b) k += static_cast<std::size_t>(std::snprintf(on + k, sizeof(on) - k, "%s%s", k ? ", " : "", FeatureName(b)));
     Log("[dev] dev tools: %d/%d byte checks ok; on: %s%s%s", ok, total, k ? on : "none", g_off[0] ? "; OFF: " : "", g_off);
     // the vehicle tools' own byte checks (vehicle_share.cpp kDevSites, and the pools / spawn path when the shared vehicles
@@ -589,6 +614,191 @@ bool GoPlace(int index, char* msg, std::size_t cap) {
     return ok;
 }
 
+// ---------------------------------------------------------------- dev_goto: a place anywhere in this area, then the ground
+// The teleport is the debug menu's own (game::TeleportLocalPlayer: PlaceOn mode 1 at a known z, mode 2 "the topmost ground" for
+// z 0). Far places stream in after the teleport: every tick (game thread) devrules::GotoAdvance decides whether Sam stands there
+// yet, fell through ground that was not loaded (placed again) or never got there (failed after 25 s).
+struct GotoRun {
+    bool on = false;
+    devrules::GotoTrack t;
+};
+GotoRun g_goto;
+SRWLOCK g_goto_lock = SRWLOCK_INIT;
+GotoState g_goto_state;  // published (g_goto_lock)
+std::uint32_t g_goto_serial = 0;
+
+void PublishGoto(GotoState::Phase phase, const char* fmt, ...) {
+    GotoState st;
+    st.phase = phase;
+    st.serial = g_goto_serial;
+    va_list ap;
+    va_start(ap, fmt);
+    std::vsnprintf(st.text, sizeof(st.text), fmt, ap);
+    va_end(ap);
+    AcquireSRWLockExclusive(&g_goto_lock);
+    g_goto_state = st;
+    ReleaseSRWLockExclusive(&g_goto_lock);
+}
+
+bool PlaceSam(const devrules::GotoTrack& t, char* why, std::size_t cap) {
+    if (t.z == 0) return game::TeleportLocalPlayer(t.x, t.y, game::kSnapRayCentreZ, game::TeleportMode::snap_to_ground, why, cap);
+    return game::TeleportLocalPlayer(t.x, t.y, t.z + 0.5, game::TeleportMode::place, why, cap);
+}
+
+// A goto refused before it placed Sam still takes a serial and publishes 'failed' (any older goto still running is
+// dropped): a 'waitworld <s> goto' after it then fails at once instead of reading the older goto's 'settled' (an
+// optional '?goto' step whose action was refused would otherwise pass without Sam having moved).
+bool RefuseGoto(const char* msg) {
+    if (g_goto.on) {
+        g_goto.on = false;
+        PublishGoto(GotoState::failed, "goto #%u: replaced by a newer goto", g_goto_serial);
+    }
+    ++g_goto_serial;
+    PublishGoto(GotoState::failed, "goto #%u: %s", g_goto_serial, msg);
+    Log("[dev] goto #%u: %s", g_goto_serial, msg);
+    return false;
+}
+
+bool Goto(double x, double y, double z, double now_ms, char* msg, std::size_t cap) {
+    if (!Gate(Tool::world, msg, cap)) return RefuseGoto(msg);
+    if (!devrules::GotoTargetOk(x, y, z)) return Put(msg, cap, "goto: x y [z] in the map's range (z 0 = the ground under x, y)"), RefuseGoto(msg);
+    Sam s;
+    if (const char* why = Playing(&s)) return Put(msg, cap, "goto refused: %s", why), RefuseGoto(msg);
+    char why[160] = {};
+    const int gate = game::PlacementGate(why, sizeof(why));
+    if (gate != 0) return Put(msg, cap, "goto refused (on a vehicle? get off first): %s", why), RefuseGoto(msg);
+    if (g_goto.on) PublishGoto(GotoState::failed, "goto #%u: replaced by a newer goto", g_goto_serial);
+    g_goto = GotoRun{};
+    g_goto.t.x = x, g_goto.t.y = y, g_goto.t.z = z;
+    g_goto.t.t0 = g_goto.t.last_place = now_ms;
+    ++g_goto_serial;
+    const double dx = x - s.xf.pos.x, dy = y - s.xf.pos.y;
+    const double dist = std::sqrt(dx * dx + dy * dy);
+    char zs[32];
+    if (z == 0) Put(zs, sizeof(zs), "the ground");
+    else Put(zs, sizeof(zs), "%.2f", z);
+    if (!PlaceSam(g_goto.t, why, sizeof(why))) {
+        PublishGoto(GotoState::failed, "goto #%u: the teleport was refused: %s", g_goto_serial, why);
+        Log("[dev] goto #%u: to (%.2f, %.2f, %s) refused: %s", g_goto_serial, x, y, zs, why);
+        return Put(msg, cap, "goto #%u refused: %s", g_goto_serial, why), false;
+    }
+    g_goto.on = true;
+    Log("[dev] goto #%u: from (%.2f, %.2f, %.2f) to (%.2f, %.2f, %s), %.0f m: %s", g_goto_serial, s.xf.pos.x, s.xf.pos.y, s.xf.pos.z, x, y, zs, dist, why);
+    PublishGoto(GotoState::moving, "goto #%u: placed, waiting for the ground", g_goto_serial);
+    return Put(msg, cap, "goto #%u: %.0f m to (%.0f, %.0f, %s); waiting for the ground", g_goto_serial, dist, x, y, zs), true;
+}
+
+void GotoTick(double now_ms) {
+    if (!g_goto.on) return;
+    Sam s;
+    const char* block = Playing(&s);
+    double pos[3] = {s.xf.pos.x, s.xf.pos.y, s.xf.pos.z};
+    char why[160] = {};
+    const bool playable = !block && game::PlacementGate(why, sizeof(why)) == 0;
+    if (!s.e) pos[0] = pos[1] = pos[2] = 1e9;  // no player (a load): never "at" the target
+    const devrules::GotoStep step = devrules::GotoAdvance(g_goto.t, playable, pos, now_ms);
+    const double secs = (now_ms - g_goto.t.t0) / 1000.0;
+    const char* reason = block ? block : why;
+    if (step == devrules::GotoStep::place_again) {
+        const bool ok = PlaceSam(g_goto.t, why, sizeof(why));
+        Log("[dev] goto #%u: Sam at z %.2f, %.1f m below the target after %.1f s (the ground was not in yet): placed again (#%d): %s", g_goto_serial, pos[2],
+            g_goto.t.z - pos[2], secs, g_goto.t.placements, ok ? why : "refused");
+    } else if (step == devrules::GotoStep::settled) {
+        g_goto.on = false;
+        Log("[dev] goto #%u: settled at (%.2f, %.2f, %.2f) after %.1f s (%d placement(s))", g_goto_serial, pos[0], pos[1], pos[2], secs, g_goto.t.placements);
+        PublishGoto(GotoState::settled, "goto #%u: settled at (%.2f, %.2f, %.2f) after %.1f s", g_goto_serial, pos[0], pos[1], pos[2], secs);
+    } else if (step == devrules::GotoStep::timeout) {
+        g_goto.on = false;
+        Log("[dev] goto #%u: NOT settled after %.1f s: Sam at (%.2f, %.2f, %.2f)%s%s", g_goto_serial, secs, pos[0], pos[1], pos[2], reason[0] ? "; " : "", reason);
+        PublishGoto(GotoState::failed, "goto #%u: NOT settled after %.0f s (Sam at %.0f, %.0f, %.0f%s%s)", g_goto_serial, secs, pos[0], pos[1], pos[2],
+                    reason[0] ? "; " : "", reason);
+    }
+}
+
+// ---------------------------------------------------------------- boots' life (dev_boots)
+struct Boots {
+    float life = -1, max = -1, spare = -1, over = -1;
+    std::uint8_t flags = 0, type = 0;
+    std::uintptr_t item = 0, status = 0;
+};
+bool ReadBoots(const Sam& s, Boots* b) {
+    b->status = mem::Q(s.e + kSamStatus);
+    if (!b->status) return false;
+    const std::uintptr_t st = b->status;
+    return mem::Rd(st + kShoesLife, b->life) && mem::Rd(st + kShoesMax, b->max) && mem::Rd(st + kShoesSpare, b->spare) &&
+           mem::Rd(st + kShoesOver, b->over) && mem::Rd(st + kShoesFlags, b->flags) && mem::Rd(st + kShoesType, b->type) && mem::Rd(st + kShoesItem, b->item);
+}
+// The boots' durability is two parts (the setter 0x142741720): the first +0x334 (200) points at +0x33C, the rest above it at
+// +0x32C up to +0x330 (3400); SetShoesLifeByRate sets their sum to rate x (+0x334 + +0x330). Run 20261121-084433-spawn-showcase:
+// 200 + 926.6 of 200 + 3400 before, 40 % gave 200 + 1240 = 1440 of 3600.
+float BootsNow(const Boots& b) { return b.life + (b.over > 0 ? b.over : 0); }
+float BootsMax(const Boots& b) { return b.max + (b.spare > 0 ? b.spare : 0); }
+void FormatBoots(const Boots& b, char* out, std::size_t cap) {
+    const float now = BootsNow(b), max = BootsMax(b);
+    Put(out, cap, "durability %.1f / %.1f (%.0f%%; first part %.1f / %.1f, rest %.1f / %.1f), worn item %s, flags 0x%02X, type %u", now, max,
+        max > 0 ? 100.0 * now / max : 0.0, b.life, b.max, b.over, b.spare, b.item ? "set" : "none", b.flags, b.type);
+}
+bool CallShoesRate(std::uintptr_t status, float rate) noexcept {
+    __try {
+        reinterpret_cast<void (*)(std::uintptr_t, float, bool)>(A(kShoesByRate))(status, rate, false);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+bool g_boots_meter = false;
+double g_boots_next = 0;
+float g_boots_last = -1;
+
+bool BootsCmd(int op, double v, char* msg, std::size_t cap) {
+    if (!Gate(op == 1 ? Tool::world : Tool::player, msg, cap) || !Has(kFBootsLife, msg, cap)) return false;
+    if (op == 2) {
+        g_boots_meter = v != 0;
+        g_boots_last = -1;
+        Log("[dev] boots meter %s", g_boots_meter ? "on (one line a second)" : "off");
+        return Put(msg, cap, "boots meter %s", g_boots_meter ? "on" : "off"), true;
+    }
+    Sam s;
+    if (!ReadSam(&s)) return Put(msg, cap, "no local player"), false;
+    Boots b;
+    if (!ReadBoots(s, &b)) return Put(msg, cap, "Sam's status is not there"), false;
+    char line[200];
+    FormatBoots(b, line, sizeof(line));
+    if (op == 0) {
+        Log("[dev] boots: %s", line);
+        return Put(msg, cap, "boots: %s", line), true;
+    }
+    if (op != 1) return Put(msg, cap, "boots 0 log, 1 <percent> set the life, 2 <0/1> meter"), false;
+    float rate = 0;
+    if (!devrules::BootsRate(v, &rate)) return Put(msg, cap, "boots 1 <percent 0..100>"), false;
+    if (const char* why = Playing(&s)) return Put(msg, cap, "refused: %s", why), false;
+    if (!b.item) return Put(msg, cap, "no boots worn (status +0x368 empty): the game's setter would do nothing"), false;
+    if (!CallShoesRate(b.status, rate)) {
+        g_features &= ~kFBootsLife;
+        return Put(msg, cap, "SetShoesLifeByRate faulted; boots' life off for this run"), false;
+    }
+    Boots a;
+    ReadBoots(s, &a);
+    char after[200];
+    FormatBoots(a, after, sizeof(after));
+    Log("[dev] boots: set to %.0f%% (SetShoesLifeByRate %.3f): %s -> %s", v, rate, line, after);
+    return Put(msg, cap, "boots durability %.1f -> %.1f / %.1f", BootsNow(b), BootsNow(a), BootsMax(a)), true;
+}
+
+void BootsTick(double now_ms) {
+    if (!g_boots_meter || now_ms < g_boots_next || !(g_features & kFBootsLife)) return;
+    g_boots_next = now_ms + 1000;
+    Sam s;
+    Boots b;
+    if (!ReadSam(&s) || !ReadBoots(s, &b)) return;
+    const std::uintptr_t parent = mem::Q(s.e + 0x70);  // entity +0x70: the parent (game_actions.cpp kEntParent)
+    char line[200];
+    FormatBoots(b, line, sizeof(line));
+    Log("[dev] boots meter: %s; %+.2f in 1 s; Sam at (%.1f, %.1f, %.1f)%s", line, g_boots_last < 0 ? 0.0 : static_cast<double>(BootsNow(b) - g_boots_last),
+        s.xf.pos.x, s.xf.pos.y, s.xf.pos.z, parent ? ", attached to a parent (a vehicle)" : "");
+    g_boots_last = BootsNow(b);
+}
+
 // ---------------------------------------------------------------- view
 void FillView(double now_ms) {
     View v;
@@ -651,8 +861,14 @@ const char* RealSaveRefusal() noexcept {
 }
 
 void Tick(double now_ms) noexcept {
+    g_now_ms = now_ms;
+    quickstart::Tick(now_ms);  // hidden runs' "start" (quickstart.cpp): the title's Continue / Load, no menu steps
     vshare::DevTick(now_ms);
     story::Tick(now_ms, g_enabled, SessionNow());  // the story tools (story_state.cpp): the probe, the slots, a pending load
+    if (g_enabled) {
+        GotoTick(now_ms);
+        BootsTick(now_ms);
+    }
     if (!g_enabled || now_ms < g_next_view) return;
     g_next_view = now_ms + 1000;
     Check();
@@ -723,6 +939,8 @@ bool Command(Op op, const double (&v)[3], char* msg, std::size_t cap) noexcept {
         case Op::places: return Places(msg, cap);
         case Op::place: return GoPlace(static_cast<int>(v[0]), msg, cap);
         case Op::items: return Items(static_cast<int>(v[0]), v[1], msg, cap);
+        case Op::go_to: return Goto(v[0], v[1], v[2], g_now_ms, msg, cap);
+        case Op::boots: return BootsCmd(static_cast<int>(v[0]), v[1], msg, cap);
     }
     return Put(msg, cap, "unknown dev op"), false;
 }
@@ -733,5 +951,14 @@ View GetView() noexcept {
     ReleaseSRWLockShared(&g_view_lock);
     return v;
 }
+
+GotoState GetGotoState() noexcept {
+    AcquireSRWLockShared(&g_goto_lock);
+    GotoState g = g_goto_state;
+    ReleaseSRWLockShared(&g_goto_lock);
+    return g;
+}
+
+std::uint32_t GotoSerial() noexcept { return GetGotoState().serial; }
 
 }  // namespace st::dev

@@ -131,6 +131,27 @@ bool HeadgearWanted() noexcept;
 // site check passed, the mover writes on, no head item refused or unknown). The lift is 0 only while this was said true
 // within the last 500 ms; otherwise the v0.11 lift holds the items up.
 void SetHeadgearReady(bool ready) noexcept;
+// Sam's head items on her drawn head (section 26.8): the movers partner_gear writes its offsets into (each checked by it:
+// an AttachToHelperMover on HLP_Head, flag +0xA0 cleared by it, its matrix ours). Sam's own update then writes each one's
+// full local matrix every frame so the item lands on the self body's head as the body drew it this frame (the offset
+// alone while that is not known). Game thread; a set that drops a mover returns only once no detour can still write
+// into it (call before putting that mover back).
+struct HeadMoverPub {
+    std::uintptr_t e = 0, e_vt = 0, mover = 0, mover_vt = 0;
+    int item = 0;         // the kHeadItemRes row
+    float off[3] = {};    // the item's offset in HLP_Head's frame (m)
+};
+inline constexpr unsigned kMaxHeadMovers = 8;
+void PublishHeadMovers(const HeadMoverPub* m, unsigned n) noexcept;
+// A published mover's local matrix (`local` = mover + its local-matrix offset), read under the lock Sam's update writes
+// it with (never a torn matrix); false: not readable or Sam's update held the lock over 2 ms (judge it next tick).
+bool ReadHeadMoverLocal(std::uintptr_t local, float (&m)[4][4]) noexcept;
+// The correction's counters since the last call, as text (partner_gear's 5 s headgear line).
+void HeadCorrInfo(char* out, std::size_t cap) noexcept;
+// A head item with offset `off` (HLP_Head's frame, m) relative to joint 31's frame: position (m) and rotation rows (the
+// helper's axes: x = -head x, y = head z (forward), z = head y (up)). The gear sender sends this constant for every head
+// item it offsets (the other screen places the prop on her head exactly so; no wire change).
+void HeadItemOnJoint(const float (&off)[3], float (&p)[3], float (&r)[3][3]) noexcept;
 void ConfigureSelfHeadgear(bool on) noexcept;
 // Self view feet (section 21; session.ini self_feet_hide, default on): her foot joints take a near-zero scale on the
 // self body while the game draws Sam's equipped boots (the gear tick says so with SetSamBootsShown).

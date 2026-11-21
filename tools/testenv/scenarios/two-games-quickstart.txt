@@ -1,0 +1,32 @@
+# Quickstart with two games on the launcher's own Local test files (docs/hidden-testing.md "start"), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-quickstart -SeedSaves complete-100
+# The Local test as the user plays it (launcherini: host_save=1, the real shared vehicles, riding) with no menu step: the
+# host's mod calls its title's own Continue (Application.ContinueLastSave) once its title page has been up 3 s; that call
+# ends in the title load the host-held save session hooks, so the save is offered to the guest exactly as when A is
+# pressed (or, when the guest connects later, as a late join); the guest makes no call: it loads the host's save at its
+# waiting title. "start" waits until both Sams are playable and still (@both waitworld).
+# Pass: every step ok; the host's "[quick] title Continue called" and "[coop] host: title Continue"; the guest's
+# "[quick] ... host-held save guest" and "[coop] guest: in the world after"; both screenshots in the world.
+role host
+graphics low
+timeout 300
+launcherini local-test
+start control 200
+waitlog 5 \[quick\] title Continue called \(#1
+waitlog 5 \[coop\] host: title Continue
+@guest waitlog 5 \[quick\] quickstart 'continue': this game is the host-held save guest
+@guest waitlog 5 \[coop\] guest: in the world after
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+wait 3000
+screenshot 01-host-in-world
+@guest screenshot 01-guest-in-world
+@both action log_status
+@both action vehicle_dump 1
+nolog \[quick\].*(FAULT|REFUSED|OFF|gave up)
+@guest nolog \[quick\].*(FAULT|REFUSED|OFF|gave up)
+nolog \[coop\] notice
+@guest nolog \[coop\] notice
+@guest quit
+wait 3000
+quit

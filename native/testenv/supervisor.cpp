@@ -6,6 +6,11 @@
 //   st_testenv_supervisor --game-dir <dir> --mod <winhttp.dll> --scenario <file> --run-dir <dir>
 //                         [--timeout-s N (<=360)] [--saves <dir>] [--seed-saves <dir>] [--no-steam-check] [--keep-audio] [--no-game-stdout]
 //                         [--no-mod] [--no-ui-limits] [--steam-env] [--no-isolation] [--guest-seed full|profile-only]
+//                         [--places <places.txt>] [--hold]
+//   (--places: the named places of the scenario's "goto <name>"; --hold: a held session -- after the scenario the run takes
+//    more steps from <run>\inbox\NNNN.txt (Send-TestStep.ps1) until "end", the run's time limit, a game exit or a client
+//    heartbeat (<run>\inbox\alive) older than 60 s; the answers go to <run>\outbox\NNNN.json; docs/hidden-testing.md
+//    "Held sessions")
 //   (bisecting a game that does not start: --no-mod runs the game without the mod's session,
 //    overlay and game hooks -- winhttp.dll only redirects the saves -- (scenario with
 //    supervisor steps only),
@@ -379,6 +384,8 @@ struct Args {
     // --launcher-ini <dir>: host.ini + guest.ini as the launcher's Local test writes them (StrandedTogether.exe
     // --write-session local-test --out <dir>; Start-TestRun.ps1 -LauncherIni). The scenario must say "launcherini".
     std::wstring launcher_ini;
+    std::wstring places;  // --places <file>: the scenario's "goto <name>" places (tools\testenv\places.txt)
+    bool hold = false;    // --hold: a held session (inbox / outbox after the scenario)
     unsigned timeout_s = kMaxRunSeconds, probe_seconds = 6;
 };
 
@@ -409,6 +416,8 @@ bool ParseArgs(Args& a, std::string* err) {
         else if (k == L"--no-mod") a.no_mod = true;
         else if (k == L"--sandbox-session") a.sandbox_session = true;
         else if (k == L"--launcher-ini") val(a.launcher_ini);
+        else if (k == L"--places") val(a.places);
+        else if (k == L"--hold") a.hold = true;
         else if (k == L"--guest-seed") {
             std::wstring v;
             val(v);
@@ -528,6 +537,10 @@ struct Run {
     void* pdh_gpu_shared = nullptr;
     std::vector<std::string> results;  // per step, JSON objects
     int failures = 0;
+    std::vector<te::Place> places;     // --places
+    // waitnew: each game's log size when the previous step started and when this one started
+    unsigned long long log_prev[2] = {}, log_cur[2] = {};
+    std::size_t step_index = 0, step_total = 0;  // progress.jsonl
     std::string end_reason;
     std::string error_before;  // sha256 of <game>\error.txt before the run ("" = none)
     double lifetime_s = 0, cpu_s = 0;
@@ -535,6 +548,7 @@ struct Run {
 };
 
 bool Expired(const Run& r) { return GetTickCount64() >= r.deadline; }
+unsigned long long FileSize(const std::wstring& path);
 
 // "graphics low" / --game-settings: `"Key" "Value"` lines merged into every account's
 // profile\game_settings.cfg of a SCRATCH copy (the graphics menu's options live there).
@@ -778,10 +792,14 @@ bool ModCommand(Run& r, const std::string& cmd, std::string* detail, int target 
     return false;
 }
 
-bool LogMatches(Run& r, const std::regex& re, std::string* line_out, int target = 0) {
+bool LogMatches(Run& r, const std::regex& re, std::string* line_out, int target = 0, unsigned long long from = 0) {
     std::string text;
     if (!te::ReadFileBytes(target == 1 && r.g.on ? r.g.log_path : r.log_path, &text)) return false;
-    std::size_t at = 0;
+    std::size_t at = from <= text.size() ? static_cast<std::size_t>(from) : 0;  // a shorter log (rotated): all of it
+    if (at > 0 && text[at - 1] != '\n') {  // the offset fell inside a line: from the next one
+        const std::size_t nl = text.find('\n', at);
+        at = nl == std::string::npos ? text.size() : nl + 1;
+    }
     while (at < text.size()) {
         std::size_t nl = text.find('\n', at);
         if (nl == std::string::npos) nl = text.size();
@@ -796,6 +814,40 @@ bool LogMatches(Run& r, const std::regex& re, std::string* line_out, int target 
     return false;
 }
 
+// <run>\progress.jsonl: one JSON object a line, appended (never replaced: a reader may hold the file open). Events: "plan" (the
+// step count), "step" (each step's result, with its index), "hold" (a held session's steps), "end" (the verdict). For a task UI
+// (tools/devdash); supervisor.log stays the full record.
+void Progress(const Run& r, const std::string& json) {
+    HANDLE f = CreateFileW((r.run + L"\\progress.jsonl").c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return;
+    char t[64];
+    std::snprintf(t, sizeof(t), "{\"t\":%.3f,", static_cast<double>(GetTickCount64() - g_t0) / 1000.0);
+    const std::string line = t + json.substr(1) + "\n";
+    DWORD w = 0;
+    WriteFile(f, line.data(), static_cast<DWORD>(line.size()), &w, nullptr);
+    CloseHandle(f);
+}
+
+std::string LastLines(const std::string& text, std::size_t n);
+
+// A failed step: <run>\fail-context.txt gets the step, the last 30 lines of each game's log and the mod's status.txt (appended).
+void FailContext(const Run& r, const te::Step& s, const char* what, const std::string& detail) {
+    std::string c = "==== step line " + std::to_string(s.line) + (s.optional ? " (optional)" : "") + ": " + what + "\n" + detail + "\n";
+    for (int g = 0; g < (r.g.on ? 2 : 1); ++g) {
+        std::string log, status;
+        te::ReadFileBytes(g ? r.g.log_path : r.log_path, &log);
+        te::ReadFileBytes((g ? r.g.auto_out : r.auto_out) + L"\\status.txt", &status);
+        c += std::string("---- ") + (g ? "guest" : "game") + " log, last 30 lines\n" + LastLines(log, 30);
+        c += std::string("---- ") + (g ? "guest" : "game") + " status.txt\n" + status + "\n";
+    }
+    HANDLE f = CreateFileW((r.run + L"\\fail-context.txt").c_str(), FILE_APPEND_DATA, FILE_SHARE_READ, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return;
+    DWORD w = 0;
+    WriteFile(f, c.data(), static_cast<DWORD>(c.size()), &w, nullptr);
+    CloseHandle(f);
+}
+
 void Record(Run& r, const te::Step& s, const char* what, bool ok, const std::string& detail, ULONGLONG t0) {
     const double secs = static_cast<double>(GetTickCount64() - t0) / 1000.0;
     Out("step line %d %s%s -> %s (%.1f s): %s", s.line, s.optional ? "?" : "", what, ok ? "ok" : "FAIL", secs, detail.c_str());
@@ -804,11 +856,18 @@ void Record(Run& r, const te::Step& s, const char* what, bool ok, const std::str
                   ok ? "true" : "false", secs);
     r.results.push_back(std::string(head) + "\"step\":\"" + te::JsonEscape(what) + "\",\"detail\":\"" + te::JsonEscape(detail) + "\"}");
     if (!ok) ++r.failures;
+    char idx[96];
+    std::snprintf(idx, sizeof(idx), "{\"event\":\"step\",\"index\":%zu,\"total\":%zu,", ++r.step_index, r.step_total);
+    Progress(r, std::string(idx) + r.results.back().substr(1));
+    if (!ok) FailContext(r, s, what, detail);
 }
 
-// Runs the scenario. False = a required step failed (or the run ended).
-bool RunSteps(Run& r) {
-    for (const te::Step& s : r.scenario.steps) {
+// Runs one step (recorded). Returns its ok.
+bool RunStep(Run& r, const te::Step& s) {
+        // waitnew: the logs' sizes when the previous step started
+        r.log_prev[0] = r.log_cur[0], r.log_prev[1] = r.log_cur[1];
+        r.log_cur[0] = FileSize(r.log_path);
+        r.log_cur[1] = r.g.on ? FileSize(r.g.log_path) : 0;
         const ULONGLONG t0 = GetTickCount64();
         bool ok = false;
         std::string detail, what;
@@ -847,6 +906,17 @@ bool RunSteps(Run& r) {
                 while (!(ok = LogMatches(r, re, &detail, s.target)) && GetTickCount64() < end && Watch(r, 500)) {
                 }
                 if (!ok) detail = r.end_reason.empty() || Alive(r.o) ? "no matching log line" : r.end_reason;
+                break;
+            }
+            case te::StepKind::waitnew: {
+                // Only lines written since the previous step started (an action's own lines count, older matches never do).
+                what = std::string(s.target == 1 ? "@guest " : "") + "waitnew " + std::to_string(s.seconds) + " " + s.text;
+                const std::regex re(s.text);
+                const unsigned long long from = r.log_prev[s.target == 1 ? 1 : 0];
+                const ULONGLONG end = t0 + s.seconds * 1000ull;
+                while (!(ok = LogMatches(r, re, &detail, s.target, from)) && GetTickCount64() < end && Watch(r, 300)) {
+                }
+                if (!ok) detail = r.end_reason.empty() || Alive(r.o) ? "no matching NEW log line (since the previous step started)" : r.end_reason;
                 break;
             }
             case te::StepKind::nolog: {
@@ -892,15 +962,116 @@ bool RunSteps(Run& r) {
                 break;
         }
         Record(r, s, what.c_str(), ok, detail, t0);
-        if (!ok && (!Alive(r.o) || !GuestAlive(r))) return false;
-        if (!ok && !r.end_reason.empty() && r.end_reason != "the game exited") return false;
-        if (!ok && !s.optional) return false;
-        if (Expired(r)) {
-            r.end_reason = "run timeout";
-            return false;
-        }
+        return ok;
+}
+
+// Whether the run goes on after a step. False = stop (a required step failed, a game ended, the time is up).
+bool GoOn(Run& r, const te::Step& s, bool ok) {
+    if (!ok && (!Alive(r.o) || !GuestAlive(r))) return false;
+    if (!ok && !r.end_reason.empty() && r.end_reason != "the game exited") return false;
+    if (!ok && !s.optional) return false;
+    if (Expired(r)) {
+        r.end_reason = "run timeout";
+        return false;
     }
     return true;
+}
+
+// Runs the scenario. False = a required step failed (or the run ended).
+bool RunSteps(Run& r) {
+    r.step_total = r.scenario.steps.size();
+    Progress(r, "{\"event\":\"plan\",\"total\":" + std::to_string(r.step_total) + ",\"role\":\"" + r.scenario.role + "\",\"quickstart\":\"" +
+                    te::JsonEscape(r.scenario.quickstart) + "\"}");
+    for (const te::Step& s : r.scenario.steps)
+        if (!GoOn(r, s, RunStep(r, s))) return false;
+    return true;
+}
+
+// ---- held sessions (--hold): after the scenario, step files from <run>\inbox until "end" (docs/hidden-testing.md "Held sessions").
+// Every rule of a run holds: the same time limit (the steps' share of the 360 s cap), the same safety checks (Watch), the same end
+// (final screenshot, quit, restore). The client's heartbeat: <run>\inbox\alive touched at least every 60 s (Send-TestStep.ps1 does).
+constexpr ULONGLONG kHoldHeartbeatMs = 60000;
+
+ULONGLONG FileAgeMs(const std::wstring& path) {
+    WIN32_FILE_ATTRIBUTE_DATA a{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &a)) return ~0ull;
+    FILETIME now{};
+    GetSystemTimeAsFileTime(&now);
+    const auto t = [](const FILETIME& f) { return (static_cast<ULONGLONG>(f.dwHighDateTime) << 32) | f.dwLowDateTime; };
+    const ULONGLONG m = t(a.ftLastWriteTime), n = t(now);
+    return n > m ? (n - m) / 10000 : 0;
+}
+
+void Hold(Run& r) {
+    const std::wstring inbox = r.run + L"\\inbox", outbox = r.run + L"\\outbox";
+    te::EnsureDir(inbox);
+    te::EnsureDir(outbox);
+    const ULONGLONG since = GetTickCount64();
+    te::WriteFileAtomic(r.run + L"\\session-ready.txt", "ready\n" + te::IsoNow() + "\n");
+    Out("held session: taking steps from %s (\"end\" ends it; time left %.0f s; heartbeat inbox\\alive, %llu s)", te::Narrow(inbox).c_str(),
+        static_cast<double>(r.deadline - GetTickCount64()) / 1000.0, kHoldHeartbeatMs / 1000);
+    Progress(r, "{\"event\":\"hold\",\"state\":\"ready\"}");
+    for (;;) {
+        if (!Watch(r, 250)) {
+            Out("held session: ends (%s)", r.end_reason.c_str());
+            return;
+        }
+        const ULONGLONG alive_age = FileAgeMs(inbox + L"\\alive");
+        if ((alive_age == ~0ull ? GetTickCount64() - since : alive_age) > kHoldHeartbeatMs) {
+            r.end_reason = "held session: no client heartbeat (inbox\\alive) for 60 s";
+            Out("%s", r.end_reason.c_str());
+            return;
+        }
+        std::vector<std::wstring> files;
+        for (const std::wstring& n : te::ListFiles(inbox, false))
+            if (n.size() > 4 && n.substr(n.size() - 4) == L".txt") files.push_back(n);
+        for (const std::wstring& n : files) {
+            std::string text;
+            const std::wstring path = inbox + L"\\" + n;
+            if (!te::ReadFileBytes(path, &text)) continue;
+            DeleteFileW(path.c_str());
+            const std::wstring base = n.substr(0, n.size() - 4);
+            std::string trimmed = text;
+            while (!trimmed.empty() && (trimmed.back() == '\n' || trimmed.back() == '\r' || trimmed.back() == ' ')) trimmed.pop_back();
+            if (trimmed == "end") {
+                te::WriteFileAtomic(outbox + L"\\" + base + L".json", "{\"ok\":true,\"end\":true}\n");
+                Out("held session: \"end\" from the client");
+                Progress(r, "{\"event\":\"hold\",\"state\":\"end\"}");
+                return;
+            }
+            // The steps parse as a scenario of the run's role; nothing that changes the run's set-up.
+            te::Scenario sc;
+            std::string err;
+            const bool parsed = te::ParseScenario("role " + r.scenario.role + "\n" + text, &sc, &err, &r.places);
+            if (parsed && (!sc.quickstart.empty() || !sc.ini.empty() || !sc.host_ini.empty() || !sc.guest_ini.empty() || !sc.launcher_ini.empty() ||
+                           sc.low_graphics || sc.guest_unredirected || sc.timeout_s != 360))
+                err = "a held session's steps cannot set start / ini / graphics / timeout / launcherini / guest (the run is set up already)";
+            if (!parsed || !err.empty()) {
+                Out("held session %s: REFUSED: %s", te::Narrow(base).c_str(), err.c_str());
+                te::WriteFileAtomic(outbox + L"\\" + base + L".json", "{\"ok\":false,\"error\":\"" + te::JsonEscape(err) + "\",\"steps\":[]}\n");
+                continue;
+            }
+            const std::size_t first = r.results.size();
+            r.step_total += sc.steps.size();
+            bool all = true;
+            for (const te::Step& s : sc.steps) {
+                const bool ok = RunStep(r, s);
+                all = all && (ok || s.optional);
+                const bool go = GoOn(r, s, ok);
+                if (!go && (Expired(r) || !Alive(r.o) || !GuestAlive(r))) break;
+                if (!ok && !s.optional) break;  // the rest of this file is skipped; the session goes on
+            }
+            std::string j = std::string("{\"ok\":") + (all ? "true" : "false") + ",\"steps\":[";
+            for (std::size_t i = first; i < r.results.size(); ++i) j += (i > first ? "," : "") + r.results[i];
+            j += "]}\n";
+            te::WriteFileAtomic(outbox + L"\\" + base + L".json", j);
+            if (Expired(r) || !Alive(r.o) || !GuestAlive(r)) {
+                if (r.end_reason.empty()) r.end_reason = Expired(r) ? "run timeout" : "a game exited";
+                Out("held session: ends (%s)", r.end_reason.c_str());
+                return;
+            }
+        }
+    }
 }
 
 std::string PreflightGame(Run& r) {
@@ -916,6 +1087,18 @@ std::string PreflightGame(Run& r) {
     if (r.args.steam_check && te::FindProcesses(L"steam.exe").empty())
         return "Steam is not running: the game's SteamAPI_Init would fail (start Steam, log in)";
     if (te::FileExists(r.game + L"\\steam_appid.txt")) return "steam_appid.txt exists in the game folder (not ours): refusing";
+    // A hidden run that was never restored leaves its automation channel folder (only a hidden run's mod creates it) or its
+    // session.ini (automation=1): a backup now would record that run's DLL and files as the user's own.
+    const char* const restore_hint = ": an interrupted hidden run was never restored (tools\\testenv\\Restore-TestRun.ps1 -RunDir <that run>, then try again)";
+    if (te::DirExists(r.mod_dir + L"\\automation")) return te::Narrow(r.mod_dir) + "\\automation exists" + restore_hint;
+    std::string ini;
+    if (te::ReadFileBytes(r.mod_dir + L"\\session.ini", &ini, 1 << 20)) {
+        std::size_t at = 0;
+        while ((at = ini.find("automation=1", at)) != std::string::npos) {
+            if (at == 0 || ini[at - 1] == '\n') return te::Narrow(r.mod_dir) + "\\session.ini has automation=1" + restore_hint;
+            ++at;
+        }
+    }
     return {};
 }
 
@@ -1036,7 +1219,18 @@ int RunGame(Args& a) {
 
     // ---- preflight (nothing changed yet)
     std::string text, err;
-    if (!te::ReadFileBytes(te::FullPath(a.scenario), &text) || !te::ParseScenario(text, &r.scenario, &err)) {
+    if (!a.places.empty()) {
+        std::string ptext, perr;
+        if (!te::ReadFileBytes(te::FullPath(a.places), &ptext) || !te::ParsePlaces(ptext, &r.places, &perr)) {
+            Out("REFUSED: --places %s: %s", te::Narrow(a.places).c_str(), perr.empty() ? "unreadable" : perr.c_str());
+            return 2;
+        }
+    }
+    if (a.hold && (a.no_mod || a.sandbox_session)) {
+        Out("REFUSED: --hold needs the automation channel (not with --no-mod / --sandbox-session)");
+        return 2;
+    }
+    if (!te::ReadFileBytes(te::FullPath(a.scenario), &text) || !te::ParseScenario(text, &r.scenario, &err, &r.places)) {
         Out("REFUSED: scenario %s: %s", te::Narrow(a.scenario).c_str(), err.empty() ? "unreadable" : err.c_str());
         return 2;
     }
@@ -1094,6 +1288,9 @@ int RunGame(Args& a) {
         Out("REFUSED: another st_testenv_supervisor run is active");
         return 2;
     }
+    // <runs>\current.txt: the newest run's folder (a task UI's pointer; a failed write is harmless)
+    te::WriteFileAtomic(te::JoinPath(r.run.substr(0, r.run.find_last_of(L'\\')), L"current.txt"),
+                        te::Narrow(r.run) + "\n" + te::IsoNow() + "\n" + (a.hold ? "held session\n" : "run\n"));
     Out("game %s, mod %s, scenario %s (%zu steps, role %s, steps limit %u s, game lifetime cap %u s)", te::Narrow(r.game).c_str(),
         te::Narrow(r.args.mod).c_str(), te::Narrow(a.scenario).c_str(), r.scenario.steps.size(), r.scenario.role.c_str(),
         std::min(limit, kMaxRunSeconds - kShutdownReserveSeconds), kMaxRunSeconds);
@@ -1173,6 +1370,7 @@ int RunGame(Args& a) {
     so.appdir_settings = appdir;
     if (r.scenario.low_graphics) so.frame_cap = 30;  // two games on one GPU: neither renders uncapped
     if (r.g.on) so.local_window = "left";              // the two windows side by side (as the launcher's local test)
+    so.quickstart = r.scenario.quickstart;             // scenario "start": automation_quickstart=<spec> (every game)
     so.extra = r.scenario.ini;                         // scenario "ini key=value" lines (allow-listed)
     so.extra.insert(so.extra.end(), r.scenario.host_ini.begin(), r.scenario.host_ini.end());  // "@host ini": this game only
     // launcherini: each game's file is the launcher's, with only the save location swapped for this run's redirect
@@ -1380,6 +1578,11 @@ int RunGame(Args& a) {
             Out("the game is gone right after start: %s", r.end_reason.c_str());
         } else {
             steps_ok = RunSteps(r);
+            if (a.hold && Alive(r.o) && GuestAlive(r) && !Expired(r)) {
+                Hold(r);
+                steps_ok = steps_ok && r.failures == 0;
+                if (r.end_reason.rfind("held session: no client", 0) == 0) steps_ok = false;
+            }
         }
         Out("scenario %s%s%s", steps_ok ? "completed" : "stopped", r.end_reason.empty() ? "" : ": ", r.end_reason.c_str());
         // The end of the run (final screenshot, quit, exit) stays inside the hard cap.
@@ -1584,6 +1787,7 @@ int RunGame(Args& a) {
     j += ",\"two_games\":" + std::string(r.g.on ? "true" : "false");
     j += ",\"guest_seed\":\"" + std::string(a.guest_profile_only ? "profile-only" : "full") + "\"";
     j += ",\"launcher_ini\":" + std::string(a.launcher_ini.empty() ? "false" : "true");
+    j += ",\"quickstart\":\"" + te::JsonEscape(r.scenario.quickstart) + "\",\"held_session\":" + (a.hold ? "true" : "false");
     j += ",\"sandbox_session\":" + std::string(a.sandbox_session ? "true" : "false") + ",\"sandbox_changes\":" + JsonList(sandbox_changes);
     if (r.g.on) {
         char gl[200];
@@ -1600,6 +1804,9 @@ int RunGame(Args& a) {
     j += "]}\n";
     te::WriteFileAtomic(r.run + L"\\summary.json", j);
     if (!restored.ok && rc == 0) rc = 1;
+    Progress(r, std::string("{\"event\":\"end\",\"result\":\"") + (rc == 0 ? "pass" : rc == 3 ? "violation" : "fail") + "\",\"exit\":" + std::to_string(rc) +
+                    ",\"failures\":" + std::to_string(r.failures) + ",\"restored\":" + (restored.ok ? "true" : "false") + ",\"saves_unchanged\":" +
+                    (saves.unchanged ? "true" : "false") + "}");
     Out("run %s (exit %d). Run folder: %s", rc == 0 ? "PASSED" : rc == 3 ? "STOPPED: SAFETY VIOLATION" : "FAILED", rc, te::Narrow(r.run).c_str());
     if (mutex) ReleaseMutex(mutex), CloseHandle(mutex);
     return rc;

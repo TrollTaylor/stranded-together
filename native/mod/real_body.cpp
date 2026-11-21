@@ -1783,6 +1783,169 @@ void PredictSelfWorld(float dt_body) {
     }
 }
 
+// ---- Sam's head items on her drawn head (docs/real-partner-body.md section 26.8, v0.22). The self view draws Sam's cap
+// and glasses on HIS head helper (HLP_Head), and they update after Sam: they are drawn at Sam's world of this frame. Her
+// body is drawn at the world it had in its own update, earlier in the frame (follow 4's prediction): a stop, a turn or a
+// fast slide leaves the two apart by the prediction's error (the user's v0.21 log: 2.0 cm mean, single frames of 13 cm
+// and up to 71 cm). Each head item's mover takes a full local matrix (+0x60 rows x, y, z, +0x90 the translation; the
+// mover's update multiplies it by the helper's world, 0x14195DF70, every row of the product kept), so Sam's own update,
+// once his world is final, writes L = O * Gb * Gs^-1 into each: O the item's offset (helper frame), Gb her HLP_Head as
+// her body drew it this frame (its world in its update, its joint 31 just posed, the helper's axes), Gs Sam's HLP_Head
+// now. The item's world is then L * Gs = O * Gb: exactly on her drawn head. No new game address, call or hook: the
+// mover fields and the site 0x1423A7773 are byte-checked by partner_gear (section 20.2); the writes go only into
+// movers partner_gear published, each checked (vtables, back pointers, flag 0) before the write.
+constexpr float kHlp[3][3] = {{-1, 0, 0}, {0, 0, 1}, {0, 1, 0}};  // HLP_Head's axes in joint 31's frame (section 20.1)
+constexpr std::uintptr_t kHmEntMover = 0xB0, kHmMoverEntity = 0x48, kHmMoverLocal = 0x60, kHmMoverFlag = 0xA0;
+struct HeadMoverSet {
+    std::uint32_t n = 0, gen = 0;  // gen: bumped by every publish (Sam's update forgets what it wrote before)
+    HeadMoverPub m[kMaxHeadMovers];
+};
+SeqLock<HeadMoverSet> g_hms;               // partner_gear's published movers (game thread writes)
+std::atomic<std::uint32_t> g_hms_n{0};     // their count (0: nothing to do in Sam's update)
+struct HeadRec {
+    std::int64_t qpc = 0;
+    Xf g{};  // her HLP_Head in world space as her body's update drew it
+};
+SeqLock<HeadRec> g_head_rec;               // the self body's live update -> Sam's update and the meter
+std::atomic<int> g_hcorr_on{1};            // `self_view 16 <0/1>`: the correction (0: v0.21, the plain offset)
+std::atomic<bool> g_hc_busy{false};
+struct HeadWritten {
+    std::uintptr_t mover = 0;
+    float m[4][4] = {};
+};
+HeadWritten g_hc_last[kMaxHeadMovers];     // Sam's update only (under g_hc_busy): what each mover was given last
+std::atomic<std::uint32_t> g_hc_corr{0}, g_hc_plain{0}, g_hc_stale{0}, g_hc_big{0}, g_hc_aba{0}, g_hc_wpm{0}, g_hc_skip{0}, g_hc_recs{0};
+std::atomic<std::uint64_t> g_hc_um_sum{0}, g_hc_um_max{0}, g_hc_um_n{0};  // the correction's size (micrometres) per corrected update
+
+// Her drawn HLP_Head (the self body's live update, after its pose write): its world now (follow 4's prediction) and joint
+// 31's model matrix just written.
+void HeadRecord(BodySlot& b, std::uintptr_t owner, std::uintptr_t mb) {
+    Xf w;
+    float m[4][4];
+    double jp[3];
+    float jr[3][3];
+    const unsigned bj = b.inv[kSamHeadJ];
+    if (!mb || bj >= kJ || !ReadWorld(owner, &w) || !mem::Read(mb + 0x40ull * bj, m, sizeof(m)) || !JointFrame(m, jp, jr)) return;
+    const double zero[3] = {0, 0, 0};
+    HeadRec r;
+    r.qpc = Qpc();
+    r.g = Compose(Compose(w, jp, jr), zero, kHlp);
+    if (g_head_rec.Write(r)) g_hc_recs.fetch_add(1, std::memory_order_relaxed);
+}
+
+// L = O * Gb * Gs^-1 (rows; O = identity rotation with translation off): R = Rb Rs^T, t = (off Rb + pb - ps) Rs^T.
+void HeadLocal(const float (&off)[3], const Xf* gb, const Xf* gs, float (&m)[4][4]) {
+    for (int r = 0; r < 4; ++r)
+        for (int c = 0; c < 4; ++c) m[r][c] = r == c ? 1.0f : 0.0f;
+    if (!gb || !gs) {
+        m[3][0] = off[0], m[3][1] = off[1], m[3][2] = off[2];
+        return;
+    }
+    for (int i = 0; i < 3; ++i)
+        for (int c = 0; c < 3; ++c)
+            m[i][c] = gb->r[i][0] * gs->r[c][0] + gb->r[i][1] * gs->r[c][1] + gb->r[i][2] * gs->r[c][2];
+    double v[3];
+    for (int c = 0; c < 3; ++c) v[c] = off[0] * gb->r[0][c] + off[1] * gb->r[1][c] + off[2] * gb->r[2][c] + (gb->p[c] - gs->p[c]);
+    for (int c = 0; c < 3; ++c) m[3][c] = static_cast<float>(v[0] * gs->r[c][0] + v[1] * gs->r[c][1] + v[2] * gs->r[c][2]);
+}
+
+// Sam's update, after the capture, the fit and the transform copy: his world and his fitted joint 31 are what his head
+// items will hang on this frame. Each published mover gets the corrected matrix (her body updated earlier in this frame:
+// a record under 0.75 of a frame old), else the plain offset (no record of this frame, the correction off, the cargo
+// menu's figure as the source, a jump over 1.5 m or 45 degrees: a seat snap, a teleport).
+void HeadCorrect(std::uintptr_t sam_sm) {
+    if (!g_hms_n.load(std::memory_order_acquire)) return;
+    static thread_local HeadMoverSet set;
+    if (!g_hms.Read(set) || set.n == 0 || set.n > kMaxHeadMovers) return;
+    if (g_hc_busy.exchange(true, std::memory_order_acquire)) {
+        g_hc_skip.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    static std::uint32_t s_gen = 0;
+    if (set.gen != s_gen) {
+        s_gen = set.gen;
+        for (HeadWritten& h : g_hc_last) h = HeadWritten{};
+    }
+    Xf gb, gs;
+    bool corr = false;
+    if (g_hcorr_on.load(std::memory_order_relaxed) && g_self_src.load(std::memory_order_relaxed) == 0 && g_qpc_per_ms > 0) {
+        HeadRec r;
+        const double fr = g_frame_ms.load(std::memory_order_relaxed);
+        const double age = g_head_rec.Read(r) ? static_cast<double>(Qpc() - r.qpc) / g_qpc_per_ms : 1e9;
+        const std::uintptr_t sam = g_sam_e.load(std::memory_order_acquire);
+        std::uint8_t hdr[kPoseSize];
+        std::uintptr_t pose = 0, local = 0;
+        alignas(8) std::uint8_t a[kWorldBytes + 4] = {};
+        float m[4][4];
+        double jp[3];
+        float jr[3][3];
+        if (!(age >= 0 && age < 0.75 * (fr > 1 ? fr : 16.7))) {
+            g_hc_stale.fetch_add(1, std::memory_order_relaxed);
+        } else if (sam && ReadPoseHdr(sam_sm, hdr, &pose) && CheckHdr(hdr, g_sam_skel.load(std::memory_order_acquire), &local) == 0 &&
+                   ReadWorldTwice(sam, a) && mem::Read(Field<std::uintptr_t>(hdr, kHdrModel) + 0x40ull * kSamHeadJ, m, sizeof(m)) && JointFrame(m, jp, jr)) {
+            PackedWt ws;
+            std::memcpy(&ws, a, kWorldBytes);
+            Xf w;
+            std::memcpy(w.p, ws.p, sizeof(w.p));
+            std::memcpy(w.r, ws.r, sizeof(w.r));
+            const double zero[3] = {0, 0, 0};
+            gs = Compose(Compose(w, jp, jr), zero, kHlp);
+            gb = r.g;
+            double d2 = 0;
+            for (int k = 0; k < 3; ++k) d2 += (gb.p[k] - gs.p[k]) * (gb.p[k] - gs.p[k]);
+            const double d = std::sqrt(d2);
+            if (std::isfinite(d) && d < 1.5 && selfpred::RotAngleDeg(gb.r, gs.r) < 45.0) {
+                corr = true;
+                const auto um = static_cast<std::uint64_t>(d * 1e6);
+                g_hc_um_sum.fetch_add(um, std::memory_order_relaxed);
+                g_hc_um_n.fetch_add(1, std::memory_order_relaxed);
+                std::uint64_t mx = g_hc_um_max.load(std::memory_order_relaxed);
+                while (um > mx && !g_hc_um_max.compare_exchange_weak(mx, um, std::memory_order_relaxed)) {
+                }
+            } else {
+                g_hc_big.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+    }
+    (corr ? g_hc_corr : g_hc_plain).fetch_add(1, std::memory_order_relaxed);
+    for (unsigned i = 0; i < set.n; ++i) {
+        const HeadMoverPub& p = set.m[i];
+        float m[4][4];
+        HeadLocal(p.off, corr ? &gb : nullptr, corr ? &gs : nullptr, m);
+        bool finite = true;
+        for (auto& row : m)
+            for (float f : row) finite = finite && std::isfinite(f);
+        HeadWritten* last = nullptr;
+        for (HeadWritten& h : g_hc_last)
+            if (h.mover == p.mover) last = &h;
+        if (!finite || (last && std::memcmp(last->m, m, sizeof(m)) == 0)) continue;
+        std::uintptr_t evt = 0, em = 0, mvt = 0, me = 0;
+        std::uint8_t flag = 1;
+        if (!Rd(p.e, evt) || evt != p.e_vt || !Rd(p.e + kHmEntMover, em) || em != p.mover || !Rd(p.mover, mvt) || mvt != p.mover_vt ||
+            !Rd(p.mover + kHmMoverEntity, me) || me != p.e || !Rd(p.mover + kHmMoverFlag, flag) || flag != 0) {
+            g_hc_aba.fetch_add(1, std::memory_order_relaxed);
+            continue;
+        }
+        SIZE_T wrote = 0;
+        if (!WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(p.mover + kHmMoverLocal), m, sizeof(m), &wrote) || wrote != sizeof(m)) {
+            g_hc_wpm.fetch_add(1, std::memory_order_relaxed);
+            continue;
+        }
+        if (!last) {
+            for (HeadWritten& h : g_hc_last) {
+                bool used = false;
+                for (unsigned k = 0; k < set.n && !used; ++k) used = h.mover && h.mover == set.m[k].mover;
+                if (!used) {
+                    last = &h;
+                    break;
+                }
+            }
+        }
+        if (last) last->mover = p.mover, std::memcpy(last->m, m, sizeof(m));
+    }
+    g_hc_busy.store(false, std::memory_order_release);
+}
+
 // The partner (or debug) body's pose now (not the self view's live capture): the bracketing frames interpolated at this
 // moment's play time, or the published frame; latch translations and scales, the pelvis times the ratio. Pure math on
 // the published buffers (the body's own update and the boots prop's, section 21). `stats`: the body's counters.
@@ -1970,6 +2133,9 @@ void ApplyBody(BodySlot& b, std::uintptr_t sm, bool live) {
     ct.applies.fetch_add(1, std::memory_order_relaxed);
     if (live) (from_menu ? g_menu_last_apply : g_self_last_apply).store(GetTickCount64(), std::memory_order_relaxed);
     if (live && !from_menu) g_self_applied.Write(c);  // the fit hangs Sam's gear on this same pose
+    // her drawn head for Sam's head items (section 26.8): only the game's own updates (a forced one from the tick is not
+    // what this frame draws)
+    if (live && !from_menu && !t_forcing && g_hms_n.load(std::memory_order_relaxed)) HeadRecord(b, owner, Field<std::uintptr_t>(hdr, kHdrModel));
     const bool meter = g_gm_on.load(std::memory_order_relaxed) && !from_menu;
     // Gear props on the partner (or debug) body: its world transform now, the pose just written.
     if (!live && (g_gear_n[0].load(std::memory_order_acquire) || meter)) {
@@ -2218,6 +2384,7 @@ void Detour(void* sm, float dt) {
         const int follow = g_self_follow.load(std::memory_order_relaxed);
         if (follow == 4) TrackSam(dt);
         if ((follow == 1 || follow == 4) && !menu_src) CopySamTransform();
+        if (!t_forcing) HeadCorrect(s);  // his head items onto her drawn head (section 26.8)
     } else if (s == g_menu_sm.load(std::memory_order_seq_cst)) {
         // The cargo menu's figure: its pose for the self body, then its transform onto it (follow 1 and 2
         // alike; follow 3 leaves it to the tick).
@@ -4342,6 +4509,25 @@ struct GmStat {
     double sum = 0, mx = 0, ksum[3] = {}, kmx[3] = {}, rsum = 0, rmx = 0;
 };
 GmStat g_gm_st[2];
+// Head items against her drawn head (section 26.8): per slot the props anchored on the head joints (31-34: the partner's
+// cap and glasses props, the self view's hat in the rain), and on the self slot Sam's own head items (the movers
+// partner_gear published), by class (0 caps, 1 glasses). Moving frames; the all-frames max beside.
+struct HdStat {
+    std::uint32_t n = 0, o1 = 0, o3 = 0, o8 = 0, all = 0;
+    double sum = 0, mx = 0, asum = 0, amx = 0, all_mx = 0;
+    void Add(double cm, double deg, bool moving) {
+        ++all;
+        if (cm > all_mx) all_mx = cm;
+        if (!moving) return;
+        ++n, sum += cm, asum += deg;
+        if (cm > mx) mx = cm;
+        if (deg > amx) amx = deg;
+        o1 += cm > 1.0, o3 += cm > 3.0, o8 += cm > 8.0;
+    }
+};
+HdStat g_hd_props[2], g_hd_sam[2];
+std::uint64_t g_hd_last_sp[kMaxHeadMovers] = {};
+std::uintptr_t g_hd_last_e[kMaxHeadMovers] = {};
 std::uint64_t g_gm_last_sp[2][kMaxGearProps] = {};
 double g_gm_prev_p[2][3] = {};
 bool g_gm_prev_ok[2] = {};
@@ -4457,6 +4643,7 @@ void GearMeterTick(double now_ms) noexcept {
             double d2 = 0;
             for (int k = 0; k < 3; ++k) d2 += (used->p[k] - w[i].p[k]) * (used->p[k] - w[i].p[k]);
             const double err = std::sqrt(d2) * 100.0;
+            if (gp.parent < 0 && gp.joint >= kSamHeadJ && gp.joint <= kSamHeadJ + 3) g_hd_props[s].Add(err, 0.0, true);
             ++st.n;
             st.sum += err;
             if (err > st.mx) st.mx = err;
@@ -4481,6 +4668,74 @@ void GearMeterTick(double now_ms) noexcept {
                 st.used[0] ? st.ksum[0] / st.used[0] : 0, st.kmx[0], st.used[1], st.used[1] ? st.ksum[1] / st.used[1] : 0, st.kmx[1], st.used[2],
                 st.used[2] ? st.ksum[2] / st.used[2] : 0, st.kmx[2], st.race, st.race ? st.rsum / st.race : 0, st.rmx, st.other, st.nobody);
         st = GmStat{};
+    }
+    auto hd = [](const char* what, HdStat& h) {
+        if (h.all)
+            Log("[headgear] drawn vs her drawn head, %s (corr %d): %u moving updates, cm mean %.2f max %.2f (>1 %u, >3 %u, >8 %u), deg mean %.2f max %.2f; "
+                "all %u updates max %.2f cm",
+                what, g_hcorr_on.load(), h.n, h.n ? h.sum / h.n : 0, h.mx, h.o1, h.o3, h.o8, h.n ? h.asum / h.n : 0, h.amx, h.all, h.all_mx);
+        h = HdStat{};
+    };
+    hd("self: Sam's caps", g_hd_sam[0]);
+    hd("self: Sam's glasses", g_hd_sam[1]);
+    hd("self: head props", g_hd_props[1]);
+    hd("partner: head props", g_hd_props[0]);
+}
+
+// Sam's head items against her drawn head (section 26.8), hidden test runs (`self_view 15 1`): at the very start of the tick,
+// before anything of this tick moves Sam (the ride carry teleports him from the tick, and a teleport moves the world fields of
+// his attached children at once: read later, they show the next frame's place, not what was drawn). Each published item's
+// world after its own update of the last frame against her HLP_Head as her body drew it in that frame (its world in its
+// update, the pose the tick still finds) times the item's offset.
+void HeadMeterSam() noexcept {
+    if (!g_gm_on.load(std::memory_order_relaxed) || !g_hms_n.load(std::memory_order_acquire) || g_gm_tsc_ms <= 0) return;
+    BodySlot& b = g_slots[1];
+    const std::uintptr_t e = b.e.load(std::memory_order_acquire), sm = b.sm.load(std::memory_order_acquire);
+    if (!e || !sm || b.phase != Phase::live || Q(sm) != g_sm_vt || Q(sm + kSmEntity) != e || Q(e) != b.e_vt) return;
+    const std::uint64_t Sb = Q(e + kEntStampStart), Eb = Q(e + kEntStampEnd);
+    GmBody br{};
+    GmLock();
+    for (const GmBody& r : g_gm_body[1])
+        if (r.ok && r.tsc >= Sb && r.tsc <= Eb && r.tsc > br.tsc) br = r;
+    GmUnlock();
+    if (!br.ok) return;
+    static double prev[3] = {};
+    static bool have_prev = false;
+    double d2 = 0;
+    for (int k = 0; k < 3; ++k) d2 += (br.w.p[k] - prev[k]) * (br.w.p[k] - prev[k]);
+    const bool moving = have_prev && d2 > 0.005 * 0.005;
+    std::memcpy(prev, br.w.p, sizeof(prev));
+    have_prev = true;
+    std::uint8_t hdr[kPoseSize];
+    std::uintptr_t pose = 0, local = 0;
+    if (!ReadPoseHdr(sm, hdr, &pose) || CheckHdr(hdr, b.skel.load(std::memory_order_acquire), &local) != 0) return;
+    static HeadMoverSet hset;
+    float m[4][4];
+    double jp[3];
+    float jr[3][3];
+    const unsigned bj = b.inv[kSamHeadJ];
+    if (!g_hms.Read(hset) || hset.n > kMaxHeadMovers || bj >= kJ || !mem::Read(Field<std::uintptr_t>(hdr, kHdrModel) + 0x40ull * bj, m, sizeof(m)) ||
+        !JointFrame(m, jp, jr))
+        return;
+    const double fr = g_frame_ms.load(std::memory_order_relaxed);
+    const auto frame = static_cast<std::uint64_t>(fr * g_gm_tsc_ms);
+    const double zero[3] = {0, 0, 0};
+    const Xf g = Compose(Compose(br.w, jp, jr), zero, kHlp);
+    for (unsigned i = 0; i < hset.n; ++i) {
+        const HeadMoverPub& hp = hset.m[i];
+        if (Q(hp.e) != hp.e_vt) continue;
+        const std::uint64_t Sp = Q(hp.e + kEntStampStart);
+        if (!Sp || (g_hd_last_e[i] == hp.e && Sp == g_hd_last_sp[i])) continue;
+        g_hd_last_e[i] = hp.e, g_hd_last_sp[i] = Sp;
+        if ((Sp > Sb ? Sp - Sb : Sb - Sp) > frame) continue;  // not the item update of the body's frame
+        Xf iw;
+        if (!ReadWorld(hp.e, &iw)) continue;
+        const double o3[3] = {hp.off[0], hp.off[1], hp.off[2]};
+        const float id[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+        const Xf want = Compose(g, o3, id);
+        double e2 = 0;
+        for (int k = 0; k < 3; ++k) e2 += (iw.p[k] - want.p[k]) * (iw.p[k] - want.p[k]);
+        g_hd_sam[HeadItemClass(hp.item) == kHeadItemCap ? 0 : 1].Add(std::sqrt(e2) * 100.0, selfpred::RotAngleDeg(iw.r, want.r), moving);
     }
 }
 
@@ -4913,6 +5168,60 @@ bool SelfHeadItemOffset(int item, float (&off)[3]) noexcept {
     return true;
 }
 void SetHeadgearReady(bool ready) noexcept { g_hg_ready_ms.store(ready ? GetTickCount64() : 0, std::memory_order_release); }
+void PublishHeadMovers(const HeadMoverPub* m, unsigned n) noexcept {
+    static HeadMoverSet s_pub;  // the last published (game thread)
+    if (n > kMaxHeadMovers) n = kMaxHeadMovers;
+    bool same = s_pub.n == n;
+    for (unsigned i = 0; i < n && same; ++i)
+        same = s_pub.m[i].mover == m[i].mover && s_pub.m[i].e == m[i].e && std::memcmp(s_pub.m[i].off, m[i].off, sizeof(m[i].off)) == 0;
+    if (same) return;
+    bool dropped = false;
+    for (unsigned i = 0; i < s_pub.n; ++i) {
+        bool kept = false;
+        for (unsigned k = 0; k < n && !kept; ++k) kept = m[k].mover == s_pub.m[i].mover;
+        dropped = dropped || !kept;
+    }
+    HeadMoverSet next;
+    next.n = n;
+    next.gen = s_pub.gen + 1;
+    for (unsigned i = 0; i < n; ++i) next.m[i] = m[i];
+    g_hms_n.store(0, std::memory_order_seq_cst);
+    for (int tries = 0; tries < 1000 && !g_hms.Write(next); ++tries) SwitchToThread();
+    s_pub = next;
+    g_hms_n.store(n, std::memory_order_seq_cst);
+    if (dropped) {
+        // a mover leaves the set: no Sam update may still write into it once this returns (the caller restores it next)
+        const ULONGLONG until = GetTickCount64() + 50;
+        while ((g_hc_busy.load(std::memory_order_seq_cst) || g_inflight.load(std::memory_order_seq_cst) != 0) && GetTickCount64() < until) SwitchToThread();
+    }
+}
+bool ReadHeadMoverLocal(std::uintptr_t local, float (&m)[4][4]) noexcept {
+    // Sam's update writes these 64 bytes under g_hc_busy (HeadCorrect): the read takes the same flag, so it never sees half
+    // of one frame's matrix and half of the next. Busy for over 2 ms: no read (the caller skips this tick).
+    const ULONGLONG until = GetTickCount64() + 2;
+    while (g_hc_busy.exchange(true, std::memory_order_acquire)) {
+        if (GetTickCount64() > until) return false;
+        SwitchToThread();
+    }
+    const bool ok = mem::Read(local, m, sizeof(m));
+    g_hc_busy.store(false, std::memory_order_release);
+    return ok;
+}
+void HeadCorrInfo(char* out, std::size_t cap) noexcept {
+    const std::uint64_t n = g_hc_um_n.exchange(0);
+    const std::uint64_t sum = g_hc_um_sum.exchange(0), mx = g_hc_um_max.exchange(0);
+    std::snprintf(out, cap, "her drawn head %s: %u corrected, %u plain (%u no fresh body update, %u over 1.5 m / 45 deg), %u busy, %u aba, %u failed writes; "
+                  "body records %u; correction cm mean %.2f max %.2f over %llu",
+                  g_hcorr_on.load() ? "on" : "OFF (self_view 16 0)", g_hc_corr.exchange(0), g_hc_plain.exchange(0), g_hc_stale.exchange(0), g_hc_big.exchange(0),
+                  g_hc_skip.exchange(0), g_hc_aba.exchange(0), g_hc_wpm.exchange(0), g_hc_recs.exchange(0), n ? static_cast<double>(sum) / n / 1e4 : 0.0,
+                  static_cast<double>(mx) / 1e4, static_cast<unsigned long long>(n));
+}
+void HeadItemOnJoint(const float (&off)[3], float (&p)[3], float (&r)[3][3]) noexcept {
+    for (int c = 0; c < 3; ++c) {
+        p[c] = off[0] * kHlp[0][c] + off[1] * kHlp[1][c] + off[2] * kHlp[2][c];
+        for (int k = 0; k < 3; ++k) r[c][k] = kHlp[c][k];
+    }
+}
 bool HeadgearWanted() noexcept {
     return HeadgearRowWanted() && g_fit_want.load(std::memory_order_acquire) && g_fit_cfg.load(std::memory_order_relaxed) &&
            !g_fit_faulted.load(std::memory_order_relaxed);
@@ -4966,6 +5275,7 @@ void EmergencyStop() noexcept {
     g_pt_live.store(0, std::memory_order_seq_cst);
     g_bt.sm.store(0, std::memory_order_seq_cst);
     g_pfeet_on.store(false, std::memory_order_seq_cst);
+    g_hms_n.store(0, std::memory_order_seq_cst);  // Sam's update stops correcting head items (partner_gear puts the movers back)
     Unpublish(g_p);
     Unpublish(g_me);
     // Sam first (fault-free checked), then the body.
@@ -4998,6 +5308,7 @@ game::Entity* SelfEntity() noexcept {
 
 void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
     g_now = now_ms;
+    HeadMeterSam();  // hidden tests: before this tick moves Sam (section 26.8)
     // Publish Sam's model to the detour (0 while asleep / loading / absent).
     std::uintptr_t sm = 0;
     if (g_hook && local && local_active) sm = ModelOf(reinterpret_cast<std::uintptr_t>(local));
@@ -5468,6 +5779,13 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
                 g_gm_on.store(v[1] != 0);
                 Set(msg, cap, "drawn-vs-anchor meter %s", v[1] != 0 ? "on" : "off");
                 Log("[gear] %s", msg);
+                return true;
+            }
+            if (v[0] == 16) {  // self_view 16 <0/1>: Sam's head items onto her drawn head (section 26.8): 1 v0.22 (default), 0 v0.21
+                g_hcorr_on.store(v[1] != 0 ? 1 : 0);
+                Set(msg, cap, "self view head items %s", v[1] != 0 ? "on her drawn head (corrected every frame in Sam's update)"
+                                                                    : "on Sam's head with the plain offset (v0.21)");
+                Log("[headgear] %s", msg);
                 return true;
             }
             const int follow = static_cast<int>(v[2]);

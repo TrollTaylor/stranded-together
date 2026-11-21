@@ -1,0 +1,117 @@
+# Fragile's headgear in vehicles (docs/real-partner-body.md section 26.8): the guest's Fragile in cap00 and glasses drives the
+# Kusanagi trike (the rider is seen: the truck's cab hides its driver), then rides on the host's truck as a passenger, each with
+# A = v0.21 (`self_view 16 0`) and B = v0.22 (`self_view 16 1`). The drawn-vs-anchor meter on both games (`self_view 15 1`):
+# `[headgear] drawn vs her drawn head, self: Sam's caps|glasses` on the guest, `... partner: head props` on the host.
+# Two games on the launcher's Local test files (30 fps, host_save=1).
+# pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-headgear-vehicle -SeedSaves complete-100 -GuestSeed profile-only
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+@guest waitlog 60 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+@guest waitlog 30 \[vshare\] guest: binding:
+@both action self_view 15 1
+@guest action gear 15 24
+@guest action gear 14 15 1
+@guest action gear 14 14 1
+@both action dev_weather 0
+wait 2000
+# ---- the guest drives the Kusanagi trike: A then B
+@guest action vehicle_sync 8 1.8 4
+wait 1500
+@guest until 20 4000 \[vdrive\] guest: our Sam drives trike => pad X 150
+wait 2500
+@guest action self_view 16 0
+@guest log headgear vehicle phase A trike
+@guest pad none 700 rx=32767
+@guest pad none 1 rt=255 keep
+wait 400
+@guest screenshot TA1-guest-trike-start
+wait 600
+@guest screenshot TA2-guest-trike-moving
+@guest screenshot TA3-guest-trike-moving
+wait 1200
+@guest pad none 1 rt=255 lx=15000 keep
+wait 1200
+@guest screenshot TA4-guest-trike-turn
+@guest pad none 1 lt=255 keep
+wait 2000
+@guest screenshot TA5-guest-trike-braking
+@guest pad none 0
+wait 1500
+@guest action self_view 16 1
+@guest log headgear vehicle phase B trike
+@guest pad none 1 rt=255 keep
+wait 400
+@guest screenshot TB1-guest-trike-start
+wait 600
+@guest screenshot TB2-guest-trike-moving
+@guest screenshot TB3-guest-trike-moving
+wait 1200
+@guest pad none 1 rt=255 lx=-15000 keep
+wait 1200
+@guest screenshot TB4-guest-trike-turn
+@guest pad none 1 lt=255 keep
+wait 2000
+@guest screenshot TB5-guest-trike-braking
+@guest pad none 0
+wait 1500
+@guest log headgear vehicle: get off
+@guest pad X 150
+@guest waitlog 20 \[vdrive\] guest: our Sam got off trike
+wait 2000
+# ---- the host drives the truck, the guest rides as a passenger: A then B
+action vehicle_sync 8 1.8 2
+wait 1500
+until 20 4000 \[vdrive\] host: our Sam drives truck => pad X 150
+@guest waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached
+wait 2500
+@guest action ride_test 8
+wait 1500
+@guest until 15 3000 \[ride\] guest: our Sam carried on the truck => pad X 150
+waitlog 10 \[ride\] host: the partner asks to ride our truck .*ACCEPTED
+wait 2500
+@guest action self_view 16 0
+@guest log headgear vehicle phase A carried
+@guest pad none 700 rx=32767
+pad none 1 rt=200 keep
+wait 600
+@guest screenshot CA1-guest-carried-start
+wait 900
+@guest screenshot CA2-guest-carried-moving
+screenshot CA2-host-sees-passenger
+wait 1500
+pad none 1 rt=200 lx=12000 keep
+wait 1500
+pad none 1 lt=255 keep
+wait 2500
+pad none 0
+wait 1000
+@guest action self_view 16 1
+@guest log headgear vehicle phase B carried
+pad none 1 rt=200 keep
+wait 600
+@guest screenshot CB1-guest-carried-start
+wait 900
+@guest screenshot CB2-guest-carried-moving
+screenshot CB2-host-sees-passenger
+wait 1500
+pad none 1 rt=200 lx=-12000 keep
+wait 1500
+pad none 1 lt=255 keep
+wait 2500
+pad none 0
+wait 1500
+@guest pad X 150
+@guest waitlog 8 \[ride\] guest: our Sam off the truck
+wait 2000
+@both action log_status
+@guest nolog \[headgear\].*left alone
+nolog \[headgear\].*left alone
+nolog \[(vshare|vdrive|ride|vhit)\].*FAULT
+@guest nolog \[(vshare|vdrive|ride|vhit)\].*FAULT
+@guest quit
+wait 3000
+quit

@@ -159,4 +159,63 @@ inline bool PrintableName(const char* s, std::size_t max) noexcept {
     return i < max && i < 64;
 }
 
+// ---------------------------------------------------------------- dev_goto (a place anywhere in this area: sandboxed saves only)
+// The settle rule the game thread runs every tick after the teleport (dev_tools.cpp): Sam within kGotoNearM of x, y (25 m: a place's
+// own point may sit in a terminal or a wall, and the game pushes Sam out of it: 3.5 m at South Knot City, run
+// 20261121-082806-goto-places; 8.3 m at the Weather Station, 20261121-084340; a teleport that did not take is kilometres off) (and, with a
+// known z, within kGotoHighM of it), playable (the caller's gates), and still (z and x, y within kGotoStillM) for kGotoStillMs.
+// Below z by more than kGotoFallM (the ground was not streamed in yet: he fell through) he is placed again, at most
+// kGotoMaxPlacements times, kGotoRetryMs apart. kGotoTimeoutMs without that: failed.
+inline constexpr double kGotoNearM = 25.0, kGotoHighM = 5.0, kGotoFallM = 5.0, kGotoStillM = 0.3;
+inline constexpr double kGotoStillMs = 1500, kGotoRetryMs = 1000, kGotoTimeoutMs = 25000;
+inline constexpr int kGotoMaxPlacements = 4;
+// z == 0: "the ground under x, y" (the game's snap, PlaceOn mode 2).
+inline bool GotoTargetOk(double x, double y, double z) noexcept {
+    const auto finite = [](double v) { return v == v && v - v == 0; };
+    return finite(x) && finite(y) && finite(z) && x > -50000 && x < 50000 && y > -50000 && y < 50000 && z > -10000 && z < 10000;
+}
+struct GotoTrack {
+    double x = 0, y = 0, z = 0;  // the target (z 0: the ground)
+    double t0 = 0;               // the first placement
+    double still_since = -1;     // the still window's start (-1: not still)
+    double ref[3] = {};          // the place the window started at
+    double last_place = 0;       // the newest placement
+    int placements = 1;
+};
+enum class GotoStep : std::uint8_t { wait, settled, place_again, timeout };
+inline GotoStep GotoAdvance(GotoTrack& t, bool playable, const double (&pos)[3], double now_ms) noexcept {
+    const double dx = pos[0] - t.x, dy = pos[1] - t.y;
+    const bool close_xy = dx * dx + dy * dy <= kGotoNearM * kGotoNearM;
+    const bool ground = t.z == 0;
+    const bool fell = !ground && pos[2] < t.z - kGotoFallM;
+    if (close_xy && fell && t.placements < kGotoMaxPlacements && now_ms - t.last_place >= kGotoRetryMs) {
+        ++t.placements;
+        t.last_place = now_ms;
+        t.still_since = -1;
+        return GotoStep::place_again;
+    }
+    const bool at = close_xy && (ground || (pos[2] - t.z <= kGotoHighM && t.z - pos[2] <= kGotoHighM));
+    const auto moved = [&]() {
+        const double ax = pos[0] - t.ref[0], ay = pos[1] - t.ref[1], az = pos[2] - t.ref[2];
+        return ax * ax + ay * ay + az * az > kGotoStillM * kGotoStillM;
+    };
+    if (!playable || !at) {
+        t.still_since = -1;
+    } else if (t.still_since < 0 || moved()) {
+        t.still_since = now_ms;
+        t.ref[0] = pos[0], t.ref[1] = pos[1], t.ref[2] = pos[2];
+    } else if (now_ms - t.still_since >= kGotoStillMs) {
+        return GotoStep::settled;
+    }
+    return now_ms - t.t0 >= kGotoTimeoutMs ? GotoStep::timeout : GotoStep::wait;
+}
+
+// ---------------------------------------------------------------- boots (the game's SetShoesLifeByRate: rate x (max + spare))
+// dev_boots 1 <percent>: 0..100 -> the rate 0..1 (0 = worn through).
+inline bool BootsRate(double percent, float* rate) noexcept {
+    if (!(percent >= 0 && percent <= 100)) return false;
+    *rate = static_cast<float>(percent / 100.0);
+    return true;
+}
+
 }  // namespace st::devrules

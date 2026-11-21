@@ -1,0 +1,19 @@
+[   0.000] st_testenv_supervisor (pid 1111) started 2026-11-21T10:15:00.100
+[   0.030] game C:\Games\DEATH STRANDING DIRECTORS CUT, mod C:\repo\build-testenv\Release\winhttp.dll, scenario C:\repo\tools\testenv\scenarios\demo.txt (5 steps, role host, steps limit 300 s, game lifetime cap 360 s)
+[   0.500] game folder backed up (restore.txt written before any change)
+[   0.900] started C:\Games\DEATH STRANDING DIRECTORS CUT\ds.exe pid 2001 on WinSta0\StTestEnv_1111_1 (job: kill on close, UI restricted)
+[   3.200] saves redirect: CONFIRMED -- marker after 2.4 s; saves=redirected: 1 save root(s) -> C:\Users\player\AppData\Local\KojimaProductions\DeathStrandingDC\12345678
+[  10.000] step line 5 waitready 90 -> ok (0.0 s): automation channel up: ready pid=2001 build=0.21.0+abc
+[  10.500] step line 6 pad A 150 -> ok (0.2 s): buttons=0x1000 held 150 ms
+[  14.000] step line 7 until \[sync\] a -> b => pad A 120 -> ok (3.1 s): after 2 x pad A 120
+[  15.000] step line 8 screenshot S0-host -> ok (0.4 s): S0-host.png 1280x720 mean=88.1
+[  15.600] step line 9 ?@guest screenshot S0-guest -> ok (0.4 s): S0-guest.png 1280x720 mean=80.2
+[  16.000] scenario completed
+[  17.000] ds.exe exit code 0 (0x00000000) after 16.10 s alive, 40.00 s CPU
+[  17.100] exit trace: ExitProcess(0) on thread 1, stack: a
+second line of the exit trace
+[  17.200] restore: removed C:\Games\DEATH STRANDING DIRECTORS CUT\stranded_together\automation
+[  17.300] game folder restore complete
+[  19.000] Steam cloud_log: 10 line(s) for app 1850570 since the start (AutoCloud ran), 0 upload line(s)
+[  19.100] saves: UNCHANGED (hash manifest identical to the one before the run)
+[  19.100] run PASSED (exit 0). Run folder: C:\repo\build-testenv\runs\20261121-101500-demo-pass

@@ -75,7 +75,15 @@ bool WriteFileAtomic(const std::wstring& path, const std::string& bytes) {
     DWORD wrote = 0;
     const bool ok = WriteFile(f, bytes.data(), static_cast<DWORD>(bytes.size()), &wrote, nullptr) && wrote == bytes.size();
     CloseHandle(f);
-    if (!ok || !MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+    // A reader that has the target open (devdash, an editor, a virus scanner) makes the replace fail even when it shares
+    // delete: retry for up to ~1 s, so a marker such as restored.txt is not left saying INCOMPLETE after a good restore.
+    bool moved = false;
+    for (int i = 0; ok && i < 20 && !(moved = MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)); ++i) {
+        const DWORD e = GetLastError();
+        if (e != ERROR_ACCESS_DENIED && e != ERROR_SHARING_VIOLATION && e != ERROR_LOCK_VIOLATION) break;
+        Sleep(50);
+    }
+    if (!moved) {
         DeleteFileW(tmp.c_str());
         return false;
     }
@@ -265,6 +273,7 @@ std::string SessionIniText(const SessionOptions& o) {
     if (o.second_instance) s += "second_instance=1\n";
     if (o.frame_cap) s += "frame_cap=" + std::to_string(o.frame_cap) + "\n";
     if (!o.local_window.empty()) s += "local_window=" + o.local_window + "\n";
+    if (!o.quickstart.empty()) s += "automation_quickstart=" + o.quickstart + "\n";
     for (const std::string& line : o.extra) s += line + "\n";
     return s;
 }
@@ -313,6 +322,7 @@ bool HiddenIniFromLauncher(const std::string& launcher_text, const SessionOption
     if (!o.isolate) s += "automation_isolate=0\n";
     if (!o.save_root.empty()) s += "automation_save_root=" + Narrow(o.save_root) + "\n";
     if (o.foreign_saves) s += "automation_foreign_saves=1\n";
+    if (!o.quickstart.empty()) s += "automation_quickstart=" + o.quickstart + "\n";
     *out = s;
     return true;
 }
@@ -341,10 +351,66 @@ std::string Trim(const std::string& s) { return automation::detail::Trim(s); }
 bool ParseU(const std::string& s, std::uint32_t lo, std::uint32_t hi, std::uint32_t* v) {
     return automation::detail::Uint(s, lo, hi, v);
 }
+bool PlaceName(const std::string& n) {
+    if (n.empty() || n.size() > 32) return false;
+    for (char c : n)
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) return false;
+    return true;
+}
+// "%.3f" without trailing zeros: the numbers a dev_goto action line carries.
+std::string Num(double v) {
+    char b[48];
+    std::snprintf(b, sizeof(b), "%.3f", v);
+    std::string t = b;
+    while (!t.empty() && t.back() == '0') t.pop_back();
+    if (!t.empty() && t.back() == '.') t.pop_back();
+    return t == "-0" ? "0" : t;
+}
 }  // namespace
 
-bool ParseScenario(const std::string& text, Scenario* out, std::string* error) {
+bool ParsePlaces(const std::string& text, std::vector<Place>* out, std::string* error) {
+    out->clear();
+    std::istringstream in(text);
+    std::string raw;
+    int lineno = 0;
+    while (std::getline(in, raw)) {
+        ++lineno;
+        if (lineno == 1 && raw.size() >= 3 && static_cast<unsigned char>(raw[0]) == 0xEF) raw = raw.substr(3);
+        std::string note;
+        const auto hash = raw.find('#');
+        if (hash != std::string::npos) note = Trim(raw.substr(hash + 1)), raw = raw.substr(0, hash);
+        const std::string line = Trim(raw);
+        if (line.empty()) continue;
+        const auto w = automation::detail::Split(line);
+        Place p;
+        double area = 0;
+        const auto fail = [&](const std::string& why) {
+            *error = "places line " + std::to_string(lineno) + ": " + why;
+            return false;
+        };
+        if (w.size() != 5) return fail("<name> <area> <x> <y> <z> [# note]");
+        if (!PlaceName(w[0])) return fail("name '" + w[0] + "': [a-z0-9-], 1..32 chars");
+        if (!automation::detail::Number(w[1], 0, 65535, &area) || !automation::detail::Number(w[2], -50000, 50000, &p.x) ||
+            !automation::detail::Number(w[3], -50000, 50000, &p.y) || !automation::detail::Number(w[4], -10000, 10000, &p.z))
+            return fail("area 0..65535, x y -50000..50000, z -10000..10000");
+        if (FindPlace(*out, w[0])) return fail("'" + w[0] + "' twice");
+        p.name = w[0];
+        p.area = static_cast<int>(area);
+        p.note = note;
+        out->push_back(p);
+    }
+    return true;
+}
+
+const Place* FindPlace(const std::vector<Place>& places, const std::string& name) {
+    for (const Place& p : places)
+        if (p.name == name) return &p;
+    return nullptr;
+}
+
+bool ParseScenario(const std::string& text, Scenario* out, std::string* error, const std::vector<Place>* places) {
     *out = Scenario{};
+    std::size_t start_at = 0;  // where the "start" line's steps go (inserted once the role is known)
     std::istringstream in(text);
     std::string raw;
     int lineno = 0;
@@ -375,6 +441,34 @@ bool ParseScenario(const std::string& text, Scenario* out, std::string* error) {
             if (words.size() != 2 || words[1] != "local-test" || st.optional) return fail("launcherini local-test");
             out->launcher_ini = words[1];
             out->launcher_ini_line = lineno;
+            continue;
+        }
+        if (verb == "start") {
+            if (st.optional) return fail("start cannot be optional");
+            if (!out->quickstart.empty()) return fail("one start line per scenario");
+            std::string spec = "continue";
+            std::size_t i = 1;
+            if (i < words.size() && words[i] == "continue") ++i;
+            else if (i < words.size() && words[i] == "load") {
+                std::uint32_t type = 0, index = 0;
+                if (i + 2 >= words.size() || !ParseU(words[i + 1], 1, 15, &type) || !ParseU(words[i + 2], 0, 127, &index))
+                    return fail("start load <type 1..15> <index 0..127> (type 1 manualsave, 4 autosave)");
+                spec = "load " + std::to_string(type) + " " + std::to_string(index);
+                i += 3;
+            } else if (i < words.size() && words[i] == "story") {
+                std::uint32_t n = 0;
+                if (i + 1 >= words.size() || !ParseU(words[i + 1], 0, 127, &n)) return fail("start story <n> (manualsave<n>, the story library's 10..19)");
+                spec = "story " + std::to_string(n);
+                i += 2;
+            }
+            if (i < words.size() && words[i] == "control") {
+                if (i + 1 >= words.size() || !ParseU(words[i + 1], 10, 300, &out->quickstart_control_s)) return fail("start ... control <10..300 s>");
+                i += 2;
+            }
+            if (i != words.size()) return fail("start [continue | load <type> <index> | story <n>] [control <s>]");
+            out->quickstart = spec;
+            out->quickstart_line = lineno;
+            start_at = out->steps.size();
             continue;
         }
         if (verb == "guest") {
@@ -424,19 +518,22 @@ bool ParseScenario(const std::string& text, Scenario* out, std::string* error) {
         if (st.target != 0 && !verb2.empty() && verb2[0] == '@') return fail("one @ prefix per step");
         if (st.target != 0 && (verb2 == "role" || verb2 == "timeout" || verb2 == "graphics" || verb2 == "sleep" || verb2 == "note" || verb2 == "ini"))
             return fail(verb2 + " cannot take a @guest / @both prefix" + (verb2 == "ini" ? " (@both ini: write plain ini, it goes to both games)" : ""));
-        if (st.target == 2 && verb2 != "waitready" && (verb2 == "waitlog" || verb2 == "nolog" || verb2 == "until"))
-            return fail("@both: only mod commands and waitready");
+        if (st.target == 2 && verb2 != "waitready" && (verb2 == "waitlog" || verb2 == "nolog" || verb2 == "until" || verb2 == "waitnew"))
+            return fail("@both: only mod commands, goto and waitready");
         if (st.target != 0) {
             // re-dispatch the rest of the line
             Step inner;
             Scenario one;
             std::string err;
-            if (!ParseScenario(line, &one, &err) || one.steps.size() != 1) return fail(err.empty() ? "bad step after the prefix" : err);
-            inner = one.steps[0];
-            inner.line = lineno;
-            inner.optional = st.optional;
-            inner.target = st.target;
-            out->steps.push_back(inner);
+            if (verb2 == "start") return fail("start takes no prefix (it is for every game)");
+            if (!ParseScenario(line, &one, &err, places) || one.steps.empty()) return fail(err.empty() ? "bad step after the prefix" : err);
+            if (one.steps.size() > 1 && verb2 != "goto") return fail("bad step after the prefix");
+            for (Step inner2 : one.steps) {
+                inner2.line = lineno;
+                inner2.optional = st.optional;
+                inner2.target = st.target;
+                out->steps.push_back(inner2);
+            }
             continue;
         }
         if (verb == "timeout") {
@@ -457,6 +554,35 @@ bool ParseScenario(const std::string& text, Scenario* out, std::string* error) {
             } catch (const std::regex_error&) {
                 return fail("waitlog: bad regex '" + st.text + "'");
             }
+        } else if (verb == "waitnew") {
+            if (words.size() < 3 || !ParseU(words[1], 1, 360, &st.seconds)) return fail("waitnew <s> <regex>");
+            st.kind = StepKind::waitnew;
+            st.text = automation::detail::Rest(line, 2);
+            try {
+                std::regex re(st.text);
+            } catch (const std::regex_error&) {
+                return fail("waitnew: bad regex '" + st.text + "'");
+            }
+        } else if (verb == "goto") {
+            double x = 0, y = 0, z = 0;
+            if (words.size() == 2) {
+                const Place* p = places ? FindPlace(*places, words[1]) : nullptr;
+                if (!p) return fail("goto: no place '" + words[1] + "' in places.txt" + (places ? "" : " (no places table given)"));
+                x = p->x, y = p->y, z = p->z;
+            } else if (words.size() == 3 || words.size() == 4) {
+                if (!automation::detail::Number(words[1], -50000, 50000, &x) || !automation::detail::Number(words[2], -50000, 50000, &y) ||
+                    (words.size() == 4 && !automation::detail::Number(words[3], -10000, 10000, &z)))
+                    return fail("goto <x> <y> [<z>] (z 0 or left out: the ground under x, y)");
+            } else {
+                return fail("goto <place> | goto <x> <y> [<z>]");
+            }
+            Step a = st, w = st;
+            a.kind = w.kind = StepKind::mod;
+            a.text = "action dev_goto " + Num(x) + " " + Num(y) + " " + Num(z);
+            w.text = "waitworld 45 goto";
+            out->steps.push_back(a);
+            out->steps.push_back(w);
+            continue;
         } else if (verb == "nolog") {
             if (words.size() < 2) return fail("nolog <regex>");
             st.kind = StepKind::nolog;
@@ -498,6 +624,19 @@ bool ParseScenario(const std::string& text, Scenario* out, std::string* error) {
             st.text = line;
         }
         out->steps.push_back(st);
+    }
+    if (!out->quickstart.empty()) {
+        // the start line's steps, for every game (the role is known now)
+        const int both = out->role == "host" && !out->guest_unredirected ? 2 : 0;
+        Step r, w;
+        r.line = w.line = out->quickstart_line;
+        r.kind = StepKind::waitready;
+        r.seconds = 90;
+        r.target = both;
+        w.kind = StepKind::mod;
+        w.text = "waitworld " + std::to_string(out->quickstart_control_s);
+        w.target = both;
+        out->steps.insert(out->steps.begin() + static_cast<std::ptrdiff_t>(start_at), {r, w});
     }
     if (out->steps.empty()) {
         *error = "the scenario has no steps";
@@ -548,6 +687,7 @@ unsigned AckTimeoutSeconds(const std::string& mod_command) {
         case automation::Kind::key:
         case automation::Kind::hookkey: return c.ms / 1000 + 15;
         case automation::Kind::waitplayer:
+        case automation::Kind::waitworld:
         case automation::Kind::waitlog: return c.ms / 1000 + 15;
         case automation::Kind::screenshot: return 40;
         case automation::Kind::action: return 30;
@@ -678,7 +818,9 @@ GuardResult RestoreGameFolder(const std::wstring& run_dir) {
     for (const Entry& e : entries) {
         if (e.kind != "tree" || !Inside(e.path, game)) continue;
         if (DirExists(e.path)) {
-            const bool gone = RemoveTree(e.path);
+            // a reader holding one of its files for a moment (devdash, a virus scanner) fails one pass: try again
+            bool gone = RemoveTree(e.path);
+            for (int i = 0; !gone && i < 5; ++i) Sleep(200), gone = RemoveTree(e.path);
             ok = ok && gone;
             r.notes.push_back(std::string(gone ? "removed " : "COULD NOT remove ") + Narrow(e.path));
         }

@@ -1,0 +1,45 @@
+# Go anywhere (docs/hidden-testing.md "goto", docs/dev-tools.md "Go anywhere"), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario goto-places -SeedSaves complete-100
+# Straight into the world (start), then Sam to six named places of tools\testenv\places.txt across the central region
+# (area 200: up to 4 km from Mountain Knot City, where every complete-100 slot starts) and to bare coordinates on the ground
+# (z left out: the game's topmost-ground snap). Each goto is "action dev_goto x y z" + "waitworld 45 goto": the mod places
+# Sam, watches the ground stream in (placed again when he falls through ground that is not loaded yet) and the step ends once
+# he stands there, playable and still, for 1.5 s ("[dev] goto #n: settled at ... after N s"). A screenshot at each.
+# Then the real-save rule: with the test override (dev_status 1 1) the world tools (dev_goto is one) are refused.
+# Pass: every step ok, six "[dev] goto #n: settled" lines, screenshots 01..07 showing the places, saves unchanged.
+role solo
+timeout 330
+start
+screenshot 00-start-mknot
+goto weather-station
+wait 1500
+screenshot 01-weather-station
+goto lake-knot
+wait 1500
+screenshot 02-lake-knot
+goto south-knot
+wait 1500
+screenshot 03-south-knot
+goto aaron-hill
+wait 1500
+screenshot 04-aaron-hill
+goto timefall-farm
+wait 1500
+screenshot 05-timefall-farm
+# bare coordinates, the ground found by the game (between the Weather Station and Mountain Knot City)
+goto -500 100
+wait 1500
+screenshot 06-ground-snap
+goto mknot
+wait 1500
+screenshot 07-back-at-mknot
+waitlog 2 \[dev\] goto #7: settled
+action log_status
+# the real-save rule (the test override acts as a real save): refused, Sam stays
+action dev_status 1 1
+action dev_status 0
+waitnew 3 \[dev\] status: world tools: refused: this game plays on its real save
+action dev_status 1 0
+nolog \[dev\] goto #[0-9]+: NOT settled
+nolog \[dev\].*FAULT
+quit

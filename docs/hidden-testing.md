@@ -9,11 +9,18 @@ reaches it. Modelled on Diamond Dogs Together's `tools/worker` (MGSV), much smal
 pwsh -File tools\testenv\Start-TestRun.ps1 -Probe            # D3D12 on a private desktop, no game (~10 s)
 pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario smoke   # the real game, <= 6 minutes
 pwsh -File tools\testenv\Restore-TestRun.ps1 -RunDir build-testenv\runs\<run>   # only after a crash
+# no scenario file: straight into the world, then these steps (see "Quickstart, go anywhere, inline steps")
+pwsh -File tools\testenv\Start-TestRun.ps1 -SeedSaves complete-100 -Steps 'goto lake-knot ; screenshot lake'
 ```
 
 Build: `cmake -S . -B build-testenv -G "Visual Studio 17 2022" -A x64` then
 `cmake --build build-testenv --config Release` (Start-TestRun builds `st_mod`,
 the supervisor and the probe itself unless `-NoBuild`).
+
+Watch runs live (step k of N, progress, logs, screenshots), batches
+(`tools\testenv\Run-Batch.ps1 -Scenarios a,b,c`) and Claude workflow runs in **devdash**, a separate
+read-only page outside the game: `devdash.bat` at the repo root (copy of
+`tools\devdash\devdash.bat.example`). See [devdash.md](devdash.md).
 
 ## Status (2026-11-16)
 
@@ -421,8 +428,23 @@ waitlog <s> <regex>          until a stranded_together.log line matches (ECMAScr
 nolog <regex>                fails at once if any log line so far matches (a negative check; @guest too)
 until <s> <ms> <regex> => <mod command>   repeat the command until the log matches
 sleep <ms> / note <text>     supervisor side
+start [continue | load <type> <index> | story <n>] [control <s>]
+                             quickstart: into the world with no menu step (below). Expands where it stands to
+                             "waitready 90" + "waitworld <s>" (default 120) for every game (@both in a two-game run)
+goto <place> | goto <x> <y> [<z>]
+                             Sam to a named place (tools\testenv\places.txt) or coordinates (z 0 or left out: the ground
+                             under x, y), then the ground streams in: "action dev_goto x y z" + "waitworld 45 goto".
+                             @guest goto / @both goto / ?goto as any step
+waitnew <s> <regex>          as waitlog, but only lines written since the PREVIOUS step started (no counted regexes)
 <anything else>              one mod command (checked when the scenario is parsed)
 ```
+
+Mod commands added in v0.22: `waitworld <s> [goto]` (until the local Sam is playable and still for 1.5 s: a player, awake,
+nothing loading, no menu / cutscene / setup phase, the placement gate open, his place steady; a new player entity restarts the
+window. `goto`: the newest `dev_goto` settled too, and the step fails with its reason when it did not; a `dev_goto` that was
+refused before it moved Sam (sandbox gate, target, not playable, on a vehicle) still takes a new goto number and publishes
+`failed`, so a `?goto` whose action was refused fails its `waitworld` at once instead of passing on the older goto). `waitplayer` stays
+(a player entity exists: it is there seconds before he can be played).
 
 A leading `?` makes a step optional. A failed required step ends the scenario; the
 supervisor then takes `screenshot zz-final` and sends `quit`.
@@ -588,6 +610,14 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   then the guest drives the truck. Evidence: the `[gear] drawn vs anchor self|partner` lines per phase (self = the
   guest's BB pod on her own screen, partner = the host's view of her props). Run
   `20261120-195953-two-games-gear-twitch`: pod 9.15 / 16.95 cm -> 0.00 / 0.00 on foot, 29-35 cm -> 0.00 driving.
+* `two-games-headgear.txt` and `two-games-headgear-vehicle.txt` (role host, `launcherini local-test`, `start`,
+  `-SeedSaves complete-100 -GuestSeed profile-only`): Fragile's headgear (docs/real-partner-body.md section 26.8). The
+  guest in the user's outfit (`gear 15`, `gear 23`), cap00 and glasses; both at `mknot-road` facing each other; heavy
+  timefall with her hat in the rain on / off (`gear 22`, R1* / R2* on both screens), then on foot with v0.21's head items
+  (`self_view 16 0`, A1*) and v0.22's (B1*), the Santa hat, the headcrab, eyewear0; the vehicle one drives the Kusanagi
+  trike (TA* / TB*) and rides in the host's truck (CA* / CB*). Evidence: the `[headgear] drawn vs her drawn head` lines
+  per phase (`self_view 15 1`). Runs `20261121-092819-two-games-headgear` (on foot 1.20 / 15.8 cm -> 0.00 / 0.00),
+  `20261121-092558-two-games-headgear-vehicle` (trike 2.07 / 13.3 -> 0.00 / 0.17).
 * `two-games-self-vehicle.txt` (role host, `launcherini local-test`, `-SeedSaves complete-100 -GuestSeed profile-only`):
   the guest's self body on foot (run, stop, reverse, diagonal), driving the truck from a stop in v0.19's rule
   (`self_view 13 0`) then v0.20's, side views (S1*/S2*), the host watching (H1*/H2*); getting off (the guest waits on
@@ -777,6 +807,98 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
 `-NoMod` (`--no-mod`) still deploys `winhttp.dll`, with a `session.ini` that has only
 `automation=1`: the mod redirects the saves and does nothing else (no session, overlay,
 automation channel or game hooks).
+
+## Quickstart, go anywhere, inline steps, held sessions (v0.22)
+
+### `start`: into the world with no menu steps
+
+`start [continue | load <type> <index> | story <n>] [control <s>]` replaces the title flow every scenario carried (`waitready`,
+`input attached`, a blind 20-25 s wait, `pad A`, `until ... local player entity => pad A`, `waitplayer`, the stick probe). The
+supervisor writes `automation_quickstart=<spec>` into every game's session.ini (also into the launcher's own files of a
+`launcherini` run; never an allow-listed `ini` key: scenarios cannot set it). The mod (`native/mod/quickstart.cpp`):
+
+* only in a hidden run: `automation=1`, `ST_TESTENV_SUPERVISED` set, the saves redirected; otherwise one `[quick] ... REFUSED` line;
+* skips the boot logos on every game (the splash page's own skip-all branch, `title_wait.cpp`, 6 byte checks: before only the
+  host-held save guest had it) and watches the title page (`title_wait::InstallObserver`: the title menu's Update hook, observe
+  only);
+* once the title page has been up 3 s (the rule the guest's own title load uses) and the session global `[0x147BE6318]` is 0,
+  calls on the game thread `Application.ContinueLastSave 0x142642A00` (`continue`: its full bytes, both RIP globals and its jump
+  to the title load `0x142624A70` are checked) or the title load `0x142624A70(app [0x147BE6330], type, index)` itself (`load` /
+  `story n` = `load 1 n`; entry `40 56` or a hook's `E9`, bytes from +6 checked). These are the calls the title menu's own
+  CONTINUE / LOAD GAME end in, so a host-held save host's coop hook on the title load offers the save to the guest exactly as
+  when A is pressed: `[coop] host: title Continue (type 0xF, index -1)`. A refused call (0) is tried again after 3 s, 3 times;
+* makes no call on a host-held save guest (`[quick] ... this game is the host-held save guest`): the host's save loads it;
+* logs `[quick] title Continue called (#1, the title page up 3.0 s, 10.0 s after ds.exe started) -> 1` and
+  `[quick] in the world after 7.7 s from the call (17.7 s after ds.exe started)`.
+
+A byte-check mismatch leaves the quickstart off with one line; the scenario's `waitworld` then fails (nothing is pressed blind).
+Title-flow scenarios (the waiting title, W1, retries) keep their `pad A` steps.
+
+Time to the world (supervisor clock, from the run's start to the step that proves Sam playable):
+
+| | Before (menu steps) | `start` |
+|---|---|---|
+| One game, complete-100 | `waitplayer` ok at 36.6 / 37.9 s (`20261120-065135`, `121423-dev-tools-solo`), then a 6 s wait; the stick probe at 39.8 s (seat-pose) | playable and still at 18.3-18.8 s (`20261121-082732-quickstart-solo`, `082934-goto-places`, `083112-spawn-showcase`, `083403-dev-tools-solo`) |
+| Two games, the launcher's Local test (`launcherini`, host_save) | `waitplayer` host 41-44 s, guest 50-54 s (`20261120-093802` .. `205445-two-games-launcher-local-test`); in control 59-61 s | both playable and still at 29.9-32.8 s (`20261121-083314-two-games-quickstart`, `083634-two-games-dev-tools`, `083901-steps-partner-goto`) |
+
+Converted to `start`: `dev-tools-solo`, `two-games-dev-tools` (both pass, `20261121-083403`, `083634`). New: `quickstart-solo`,
+`two-games-quickstart`, `goto-places`, `spawn-showcase`.
+
+### `goto`: anywhere in the save's area
+
+`goto <place>` reads `tools\testenv\places.txt` (`<name> <area> <x> <y> <z> # note`; the supervisor's `--places`, which
+Start-TestRun.ps1 always passes). 20 places of area 200 (the central region: Mountain Knot / Lake Knot / South Knot City,
+preppers, camps, the highway), all taken from the game's own delivery points (`dev_places`). The mod's `dev_goto`
+(docs/dev-tools.md "Go anywhere") places Sam with the debug menu's teleport and watches the ground stream in; the step ends when
+he stands there playable and still for 1.5 s. 4 km jumps settle in 3.8-8 s (`20261121-084610-goto-places`). Sandboxed saves
+only (every hidden run). Only within the area the save is in: complete-100 is area 200 in every slot; other areas come from
+other saves (`-SeedSaves story-pack`, `start story <n>`).
+
+### Inline steps (`-Steps`): no scenario file
+
+```powershell
+pwsh -File tools\testenv\Start-TestRun.ps1 -SeedSaves complete-100 -Steps 'goto lake-knot ; screenshot lake'
+pwsh -File tools\testenv\Start-TestRun.ps1 -SeedSaves complete-100 -LauncherIni -Steps '@guest goto mknot-road ; goto mknot-road ; screenshot a'
+```
+
+Start-TestRun.ps1 writes `<run>\steps.txt`: `role <-Role solo|host>` (or the Local test's `role host` / `graphics low` /
+`launcherini local-test` with `-LauncherIni`), `timeout <-TimeoutSec>`, `start <-Start continue>` (none with `-NoStart`), the steps
+(one per array element, per line, or separated by ` ; ` since `pwsh -File` hands an array over as one string), then `quit`.
+`-Name` names the run folder (default `steps`). Proof: `20261121-083901-steps-partner-goto`.
+
+### Held sessions (`Start-TestSession.ps1`, `Send-TestStep.ps1`, `Stop-TestSession.ps1`)
+
+```powershell
+$run = pwsh -File tools\testenv\Start-TestSession.ps1 -SeedSaves complete-100 -Steps 'goto weather-station' | Select-Object -Last 1
+pwsh -File tools\testenv\Send-TestStep.ps1 -Run $run -Steps 'action dev_weather 2 ; wait 6000 ; screenshot rain'
+pwsh -File tools\testenv\Stop-TestSession.ps1 -Run $run
+```
+
+The supervisor's `--hold`: after the scenario it takes step files from `<run>\inbox\NNNN.txt` (parsed as scenario lines of the
+run's role; `start`, `ini`, `graphics`, `timeout`, `launcherini` and `guest` are refused: the run is set up already) and answers
+in `<run>\outbox\NNNN.json` (`ok` and every step's result). A failed required step skips the rest of that file; the session
+goes on. It ends on `end` (Stop-TestSession.ps1), the run's time limit (the 360 s lifetime cap is unchanged: about 5 minutes
+from the start), a game exit, or 60 s without a client heartbeat (`<run>\inbox\alive`, touched by Send-TestStep.ps1 while it
+waits). Every end goes through the normal end of a run: final screenshot, quit, the game folder restored, the saves compared and
+restored. Stop-TestSession.ps1 then checks `restored.txt` / `saves-restored.txt` as Start-TestRun.ps1 does and prints the
+summary. Start-TestSession.ps1 starts the supervisor in the background (it has no window) and returns once
+`<run>\session-ready.txt` appears; `<run>\session.json` holds its pid. Agents: Start, every Send and Stop in one foreground
+command (one hidden run at a time still holds: the supervisor's mutex refuses a second one). Proof: `20261121-083749-session`.
+
+### Smaller changes
+
+* `waitnew <s> <regex>`: only lines written since the previous step started (each step records the logs' sizes when it starts).
+* `<run>\progress.jsonl`: one JSON object a line, appended, never replaced (a reader may hold it open): `plan` (the step count,
+  role, quickstart), `step` (index / total, line, ok, seconds, what, detail), `hold` (a held session's states), `end` (result,
+  exit, failures, restored, saves_unchanged). For a task UI; `supervisor.log` stays the full record and keeps its format.
+* `build-testenv\runs\current.txt`: the newest run's folder, when it started, `run` or `held session`.
+* `<run>\fail-context.txt`: for every failed step, the step, the last 30 lines of each game's log and its `status.txt`.
+* Start-TestRun.ps1 refuses to start while a run of the last 48 h was never restored (`restore.txt` without `restored.txt` =
+  ok, or the saves' pair; checked while no other supervisor runs) and prints the Restore-TestRun.ps1 command for each. It never
+  restores them itself: an old run's backup would put back files changed since. The supervisor refuses too while the game
+  folder holds a hidden run's leftovers (`stranded_together\automation`, or a `session.ini` with `automation=1`): a backup then
+  would record that run's DLL and files as the user's own.
+* summary.json: `quickstart`, `held_session`.
 
 ## Outputs
 
@@ -999,6 +1121,16 @@ hidden: `Start-TestRun.ps1 -Scenario two-games -SeedSaves complete-100`.
   v0.21, lap 2 v0.20's pose and camera (`ride_test 22 0`, `20 0`, `25 0`); both games log `[ridecam] passenger|driver ...`
   every second and `[ride] hands (passenger|driver, ...)` every 10 s; screenshots C0 - C5 / V0 - V3 on both screens.
   `two-games-ride-pose`: the same on the trike's pillion (P / Q shots).
+* **The passenger's boots** (v0.22, docs/real-partner-body.md section 24.17): `two-games-boots-ride` (`launcherini
+  local-test`, `-SeedSaves complete-100 -GuestSeed profile-only`): the guest's Fragile stands 15 s (mark: unchanged) and
+  walks 14 s (dropped), rides the host's truck down play test 3's road (the host's autopilot, 7 m/s, ~92 s) with the boots
+  guard off (`ride_test 35 0`: the summary says LOST), gets fresh boots (`dev_boots 1 100`), rides it again with the guard
+  on (`[ride] boots over the ride on the truck ...: unchanged; guard on, n wear ticks skipped`), walks again (dropped);
+  the host drove both laps (its mark unchanged). `two-games-boots-ride-host`: the mirror, the guest drives, the host rides
+  the trike's pillion and then the roadster (guard on: unchanged), the guest's own boots unchanged over the roadster lap,
+  the host walks after (dropped). The Local test's host gets off with F (`hookkey 0x46 150`): its pad reads belong to the
+  guest. A get-off step waits for `got off\)` (a save's own exit and seat back can come first). Both games run the meter
+  (`ride_test 34 1`); `ride_test 34 2` takes the marks.
 * **The seat back after a save** (v0.21, docs/real-partner-body.md section 24.16): `two-games-ride-save-resume`
   (`launcherini local-test`, `-SeedSaves complete-100`): the guest's autopilot drives the truck on play test 3's road, the
   host rides; 15 s in, at ~10 m/s, a save on the host (`save_guard 1 4 1`): held, the host's Sam put off for the capture,

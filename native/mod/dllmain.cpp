@@ -12,6 +12,7 @@
 #include "automation.hpp"
 #include "config.hpp"
 #include "coop_session.hpp"
+#include "quickstart.hpp"
 #include "partner_tackle.hpp"
 #include "ride_together.hpp"
 #include "save_guard.hpp"
@@ -202,6 +203,9 @@ DWORD WINAPI Bootstrap(LPVOID) {
     // The host-held save session (host_save=1, docs/coop-session.md): its byte checks and hooks go in now, before the
     // overlay waits for the game's d3d12 below, so the guest's title menu is gated before it can ever be shown.
     st::coop::Install(cfg);
+    // Hidden runs' quickstart (automation_quickstart=, docs/hidden-testing.md "start"): the title page watch and the boot-logo skip
+    // go in now too, before the splash's first update.
+    st::quickstart::Install(cfg);
 
     // Local two-instance test: which input this game takes and that it keeps running unfocused
     // (overlay_input.hpp "local test"). The overlay installs these hooks, so it is always on then.

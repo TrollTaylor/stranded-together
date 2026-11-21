@@ -1,4 +1,5 @@
-# Dev tools in a host-held save session (docs/debug-actions.md "Dev tools"), hidden:
+# Dev tools in a host-held save session (docs/debug-actions.md "Dev tools"), hidden (v0.22: "start", no menu steps: the
+# host's mod calls its title's Continue, which offers the save to the guest as when A is pressed):
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-dev-tools -SeedSaves complete-100 -GuestSeed profile-only
 # host_save=1 with the real shared vehicles (M2) and dev_tools=1 on both games (both run on sandboxed saves here, as in the
 # launcher's Local test). Proves: a vehicle the host spawns with the dev tools is the host's own spawn, shared with the guest
@@ -12,23 +13,15 @@ timeout 360
 ini host_save=1
 ini dev_tools=1
 ini partner_body=real
-waitready 90
-@guest waitready 120
-waitlog 120 \[overlay\] input attached
-@guest waitlog 120 \[overlay\] input attached
+start control 200
 waitlog 10 \[coop\] host-held save session ON \(host
 @guest waitlog 10 \[coop\] host-held save session ON \(guest
-waitlog 60 \[vshare\] shared real vehicles ON \(host
-@guest waitlog 60 \[vshare\] shared real vehicles ON \(guest
-wait 22000
-waitlog 30 \[link\] CONNECTED
-pad A 150
-waitlog 30 \[coop\] host: title Continue
-@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
-until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
-waitplayer 60
-@guest waitlog 180 \[coop\] guest: in the world after
-@guest waitplayer 60
+waitlog 10 \[vshare\] shared real vehicles ON \(host
+@guest waitlog 10 \[vshare\] shared real vehicles ON \(guest
+waitlog 5 \[quick\] title Continue called \(#1
+waitlog 5 \[coop\] host: title Continue
+@guest waitlog 5 \[coop\] guest: wrote the host's save #1 as manualsave5
+@guest waitlog 5 \[coop\] guest: in the world after
 waitlog 60 \[vshare\] host: world ready
 @guest waitlog 60 \[vshare\] guest: world ready
 @guest waitlog 60 \[vshare\] guest: the host's snapshot #[0-9]+ is complete

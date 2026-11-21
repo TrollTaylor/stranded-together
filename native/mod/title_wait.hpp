@@ -26,6 +26,13 @@ namespace st::title_wait {
 // title page comes ~12 s sooner; its own byte checks, a mismatch leaves only the skip off (the logos play).
 bool Install(char* why, std::size_t cap, bool skip_logos) noexcept;
 bool Installed() noexcept;
+// Hidden runs' quickstart (quickstart.cpp) in a game that is not a host-held save guest: only the title menu's Update hook, which
+// watches (nothing is written; Installed() stays false) for TitlePageUpMs, plus the boot-logo skip with skip_logos. True when
+// already in (Install or an earlier call). False with a one-line reason.
+bool InstallObserver(bool skip_logos, char* why, std::size_t cap) noexcept;
+// How long the title page has been up without a pause (now_ms on link::NowMsPrecise's clock; another page in front restarts it),
+// -1 when no title page updated within the last 0.5 s (or neither Install nor InstallObserver ran).
+double TitlePageUpMs(double now_ms) noexcept;
 // A title page has had its first update in this game (since the start).
 bool PageSeen() noexcept;
 // Game thread (coop Tick): whether the guest's title shows the session (`label` = NEW GAME's text, ASCII) or the game's

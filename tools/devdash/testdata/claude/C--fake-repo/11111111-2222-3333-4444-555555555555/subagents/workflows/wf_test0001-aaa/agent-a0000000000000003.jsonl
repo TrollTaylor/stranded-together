@@ -1,0 +1,2 @@
+{"type": "user", "message": {"role": "user", "content": "task"}, "timestamp": "2026-11-21T10:06:00.000Z", "agentId": "a0000000000000003"}
+{"type": "assistant", "message": {"content": [{"type": "text", "text": "beta"}]}, "timestamp": "2026-11-21T10:09:00.000Z", "agentId": "a0000000000000003"}

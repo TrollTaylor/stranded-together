@@ -1,0 +1,5 @@
+# Failing demo
+role echo
+waitready 90
+waitlog 30 \[link\] CONNECTED
+quit

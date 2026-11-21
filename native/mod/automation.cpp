@@ -25,6 +25,7 @@
 
 #include "MinHook.h"
 #include "debug_actions.hpp"
+#include "dev_tools.hpp"
 #include "log.hpp"
 #include "overlay/overlay.hpp"
 #include "overlay/overlay_input.hpp"
@@ -36,6 +37,7 @@ namespace {
 
 std::atomic<bool> g_enabled{false};
 std::atomic<bool> g_mute{true};
+char g_quickstart[48] = {};  // automation_quickstart= (supervisor only): read in Init, before any other thread asks
 std::atomic<bool> g_isolate{true};
 std::atomic<bool> g_started{false};
 std::wstring g_in, g_out;
@@ -1279,6 +1281,59 @@ Outcome DoWaitPlayer(const Command& c) {
     }
 }
 
+// waitworld: the local Sam playable and still for 1.5 s (automation.hpp). The tick's snapshot (2 Hz) carries the player and the
+// game's own gates (debug::Snapshot diag): nothing is read here but that copy.
+Outcome DoWaitWorld(const Command& c) {
+    const bool want_goto = c.text == "goto";
+    const std::uint32_t goto_serial = want_goto ? dev::GotoSerial() : 0;
+    if (want_goto && goto_serial == 0) return Fmt(false, "waitworld goto: no dev_goto was asked in this game");
+    const double t0 = NowMs();
+    double since = -1;
+    std::uintptr_t entity = 0;
+    double last_pos[3] = {};
+    std::uint64_t last_serial = 0;
+    char why[160] = "no snapshot yet";
+    for (;;) {
+        const debug::Snapshot s = debug::GetSnapshot();
+        const double now = NowMs();
+        if (s.serial != last_serial) {
+            last_serial = s.serial;
+            const game::Diagnostics& d = s.diag;
+            const char* block = nullptr;
+            if (want_goto) {  // the paired dev_goto first: a refused one fails here at once (dev_tools' RefuseGoto)
+                const dev::GotoState g = dev::GetGotoState();
+                if (g.serial != goto_serial) return Fmt(false, "waitworld goto: a newer dev_goto (#%u) than this step's (#%u)", g.serial, goto_serial);
+                if (g.phase == dev::GotoState::failed) return Fmt(false, "dev_goto #%u failed: %s", g.serial, g.text);
+            }
+            if (!s.local_valid) block = "no local player";
+            else if (!s.local_awake) block = "Sam is asleep (loading, menu or cutscene)";
+            else if (!d.module_valid || d.load_mask != 0) block = "the game is loading";
+            else if (!d.state_valid || (d.state_flags & game::kStoppingGameEventMask)) block = "a menu, cutscene or scripted scene";
+            else if (d.state_phase == 2) block = "the post-load setup phase";
+            else if (!d.teleport_ready) block = d.teleport_block[0] ? d.teleport_block : "the placement gate is closed";
+            if (!block && want_goto) {
+                const dev::GotoState g = dev::GetGotoState();
+                if (g.phase != dev::GotoState::settled) block = "the dev_goto is not settled yet";
+            }
+            const double dx = s.local_pos[0] - last_pos[0], dy = s.local_pos[1] - last_pos[1], dz = s.local_pos[2] - last_pos[2];
+            const bool moved = std::sqrt(dx * dx + dy * dy + dz * dz) > 0.5;
+            std::memcpy(last_pos, s.local_pos, sizeof(last_pos));
+            if (block || s.local_entity != entity || moved) {
+                since = block ? -1 : now;
+                entity = s.local_entity;
+                if (block) std::snprintf(why, sizeof(why), "%s", block);
+            } else if (since < 0) {
+                since = now;
+            }
+            if (!block && since >= 0 && now - since >= 1500)
+                return Fmt(true, "in the world at (%.2f, %.2f, %.2f) after %.1f s (playable and still for 1.5 s)%s", s.local_pos[0], s.local_pos[1],
+                           s.local_pos[2], (now - t0) / 1000.0, want_goto ? "; the dev_goto settled" : "");
+        }
+        if (now - t0 > c.ms) return Fmt(false, "not in the world within %u s: %s (%s)", c.ms / 1000, why, SnapshotText().c_str());
+        Sleep(100);
+    }
+}
+
 Outcome DoWaitLog(const Command& c) {
     std::uint64_t after = LogNewestSeq();
     const double t0 = NowMs();
@@ -1337,6 +1392,7 @@ Outcome Execute(const Command& c) {
         case Kind::action: return DoAction(c);
         case Kind::waitplayer: return DoWaitPlayer(c);
         case Kind::waitlog: return DoWaitLog(c);
+        case Kind::waitworld: return DoWaitWorld(c);
         case Kind::snapshot: return Fmt(true, "%s", SnapshotText().c_str());
         case Kind::quit: return Fmt(true, c.text == "pad" ? "quitting by the game's own menu (pad A)" : "quitting");
         default: return Fmt(false, "unknown command");
@@ -1489,7 +1545,9 @@ bool Init(const std::wstring& mod_dir) noexcept {
             else if (k == "sandbox_saves" && !v.empty()) sandbox = true;
             else if (k == "role") role_guest = v == "guest";
             else if (k == "host_save") host_save = b;
+            else if (k == "automation_quickstart") std::snprintf(g_quickstart, sizeof(g_quickstart), "%s", v.c_str());
         }
+        if (!on) g_quickstart[0] = 0;  // only ever with automation=1 (a hidden run)
         if (!on && role_guest && host_save && !g_rd_active.load()) {
             // A host-save guest (M1.2): DllMain refuses it without a redirect; never let it run on if that was missed.
             Log("[sandbox] saves=NOT redirected although this is a host-save guest (role=guest host_save=1): ending ds.exe before it "
@@ -1802,6 +1860,7 @@ bool SavesRedirected() noexcept { return g_rd_active.load(); }
 const wchar_t* SavesScratchRoot() noexcept { return g_rd_active.load() && g_scratch[0] ? g_scratch : nullptr; }
 bool ForeignSavesBypassed() noexcept { return g_foreign_bypassed.load(); }
 bool MuteRequested() noexcept { return g_mute.load(); }
+const char* QuickstartRequested() noexcept { return g_enabled.load() ? g_quickstart : ""; }
 bool IsolateRequested() noexcept { return g_isolate.load(); }
 
 void Start(const std::wstring& mod_dir, const char* build) noexcept {
