@@ -57,6 +57,7 @@ add_library(st_launcher_core STATIC
   native/launcher/core/core_sandbox.cpp
   native/launcher/core/core_selftest.cpp
   native/launcher/core/core_session.cpp
+  native/launcher/core/core_textures.cpp
   native/launcher/core/core_text.cpp
   native/launcher/core/core_update.cpp
   native/launcher/core/core_util.cpp
@@ -74,7 +75,7 @@ target_include_directories(st_launcher_core PRIVATE native/mod)
 # st_net brings stcoop/steam_join_code + link_crypto (the DST1 code). Never winhttp.lib: the
 # launcher lives in the game folder next to the mod's winhttp.dll proxy, so the update check
 # loads System32's winhttp.dll itself (core_update.cpp; st_launcher_no_winhttp_import checks it).
-target_link_libraries(st_launcher_core PUBLIC st_net shell32 ole32 user32 advapi32 bcrypt)
+target_link_libraries(st_launcher_core PUBLIC st_net st_textures_extract shell32 ole32 user32 advapi32 bcrypt)
 target_compile_definitions(st_launcher_core PRIVATE "ST_LAUNCHER_VERSION=\"${ST_BUILD_ID}\"" UNICODE _UNICODE)
 target_compile_options(st_launcher_core PRIVATE /W4 /WX /utf-8 /permissive-)
 
