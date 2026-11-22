@@ -127,6 +127,16 @@ public:
     void set_local_test_fps(int fps) override { fps_ = fps; }
     void set_local_test_guest_character(const std::string& key) override;
     bool start_local_test(std::string& error_out) override;
+    // Tools > Fragile's textures: a simulated extraction (6 s on the mock clock) into a placeholder folder.
+    TexturesView textures() const override;
+    bool extract_textures(std::string& error_out) override;
+    void cancel_textures() override;
+    bool check_textures(std::string& error_out) override;
+    bool textures_folder_for_open(std::string& path_out, std::string& error_out) override;
+    bool set_textures_folder(const std::string& folder, std::string& error_out) override;
+    void set_boots_look(bool own) override;
+    // screenshot driver: the card in a given state (not_extracted, extracting at `progress`, extracted with edits)
+    void set_textures_state(TexturesView::State state, float progress = 0.0f);
     // screenshot driver: the local test `seconds` after it started (< 0: not running)
     void jump_to_local_test(double seconds);
     void set_test_save_view(const TestSaveView& v) { test_ = v; }
@@ -185,6 +195,13 @@ private:
     int fps_ = 60;
     std::string guest_character_ = "fragile_suit";   // core::kGuestCharacter
     double local_start_ = -1.0;   // mock clock; < 0 when no local test runs
+    std::string tex_folder_;          // "" = the default placeholder
+    bool tex_boots_own_ = true;       // her boots: her own, painted / Sam's boots
+    bool tex_extracted_ = false;
+    double tex_start_ = -1.0;         // mock clock; < 0 when no extraction runs
+    float tex_frozen_ = -1.0f;        // screenshot driver: a fixed progress
+    std::string tex_result_, tex_report_;
+    TexturesView::Tone tex_tone_ = TexturesView::Tone::neutral;
 };
 
 std::unique_ptr<LauncherModel> MakeMockModel(const MockOptions& options);

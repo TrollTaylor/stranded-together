@@ -10,6 +10,8 @@
 role host
 graphics low
 timeout 360
+# Round 6: the tint is the fallback option now (session.ini fragile_suit_colour, default 0): this scenario turns it on.
+ini fragile_suit_colour=1
 launcherini local-test
 start control 200
 @guest waitlog 60 \[self\] showing 'fragile_suit' in place of Sam .*fit on

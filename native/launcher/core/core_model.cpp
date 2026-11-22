@@ -17,6 +17,8 @@
 #include "core_paths.hpp"
 #include "core_sandbox.hpp"
 #include "core_session.hpp"
+#include "core_textures.hpp"
+#include "extract_plan.hpp"
 #include "core_text.hpp"
 #include "core_update.hpp"
 #include "launcher_join_code.hpp"
@@ -208,6 +210,9 @@ void MakeLocalTestInis(const DebugOptions& options, const LocalTestChoices& choi
     host.mouse_lock = options.mouse_lock;
     // Shared structures, ladders and ropes (docs/world-sync.md): the Debug option (default on), as for the online sessions.
     host.world_sync = options.share_world;
+    // Fragile's textures (docs/textures.md): both games get the folder; only the guest's Fragile uses it.
+    host.textures_dir = choices.textures_dir;
+    host.boots_look = choices.boots_look;
     guest = host;
     guest.role = "guest";
     guest.udp_port_local = kDefaultUdpPort + 1;
@@ -677,6 +682,8 @@ public:
         choices.guest_character = local_guest_character_;
         choices.host_pad = local_host_pad_;
         choices.fps = local_fps_;
+        choices.textures_dir = TexturesDirForSession(settings_, paths_.game);
+        choices.boots_look = BootsLookFromSettings(settings_);
         SessionIni host, guest;
         MakeLocalTestInis(debug_, choices, host, guest);
         for (const auto& [ini, dir] : {std::pair<const SessionIni*, std::wstring>{&host, LocalDir(L"host")}, {&guest, LocalDir(L"guest")}}) {
@@ -786,7 +793,149 @@ public:
         RunUpdateJob([this, target, args]() { UpdateJob(target, args); });
     }
 
+    // ---- Tools > Fragile's textures ----
+    std::wstring TexturesDir() const { return TexturesDirFromSettings(settings_); }
+
+    TexturesView textures() const override {
+        tex_wanted_ = true;   // the Tools page shows the card: tick() scans the folder once
+        TexturesView v;
+        const std::wstring dir = TexturesDir();
+        v.folder = Utf8(dir);
+        if (const json::Value* t = settings_.Find("textures"); t && t->is_object()) v.custom_folder = !t->Str("dir").empty();
+        v.folder_note = TexturesFolderNote(dir, v.custom_folder, paths_.game);
+        v.estimate = "about " + FormatMegabytes(st::tex::EstimatedBytes(TexturePreviewsFromSettings(settings_)));
+        v.result = tex_result_;
+        v.tone = tex_tone_;
+        v.checking = tex_checking_;
+        v.boots_own = BootsLookFromSettings(settings_) != "prop";
+        if (tex_.extracting()) {
+            const ExtractProgress p = tex_.progress();
+            v.state = TexturesView::State::extracting;
+            v.progress = p.total > 0 ? static_cast<float>(p.done) / static_cast<float>(p.total) : 0.0f;
+            v.progress_text = p.current;
+            v.status = "Extracting...";
+            return v;
+        }
+        const TextureTasks::ScanResult r = tex_.scan();
+        v.report = r.full ? r.report : std::string();
+        if (!r.valid) {
+            v.state = TexturesView::State::unknown;
+            v.status = "Looking at the folder...";
+            return v;
+        }
+        if (!r.extracted) {
+            v.state = TexturesView::State::not_extracted;
+            v.status = "Not extracted yet.";
+            return v;
+        }
+        v.edited = r.edited;
+        const bool outdated = !r.table_ok || !r.extract_ok || r.game != st::tex::GameStamp(paths_.game);
+        v.state = outdated ? TexturesView::State::outdated : TexturesView::State::extracted;
+        v.status = outdated ? std::string("The game or Stranded Together was updated since the extraction: press Extract textures again.")
+                            : "Extracted " + r.extracted_at + ": " + std::to_string(r.colour_folders) + " suit colours, " +
+                                  std::to_string(r.boot_folders) + " boot types.";
+        if (r.outdated_seeds)
+            v.status += " " + std::to_string(r.outdated_seeds) + " unedited pictures are from an older game version: delete them to refresh.";
+        return v;
+    }
+
+    bool extract_textures(std::string& error_out) override {
+        if (tex_.extracting()) return error_out = "The textures are already being extracted.", false;
+        if (AnyGameRunningIn(*env_, paths_.game) || local_.running)
+            return error_out = "Quit DEATH STRANDING first: the textures are extracted while the game is closed.", false;
+        const std::wstring dir = TexturesDir();
+        if (dir.empty()) return error_out = "Windows names no Documents folder: pick a folder with Change folder... first.", false;
+        const std::string problem = TexturesFolderProblem(dir, paths_.game);
+        if (!problem.empty()) return error_out = problem, false;
+        if (!tex_.StartExtract(SelfExePath(), paths_.game, dir, TexturePreviewsFromSettings(settings_), error_out)) return false;
+        tex_result_.clear();
+        tex_tone_ = TexturesView::Tone::neutral;
+        LauncherLog(*env_, paths_, "textures=extract");
+        return true;
+    }
+
+    void cancel_textures() override {
+        if (!tex_.extracting()) return;
+        tex_.Cancel();
+        tex_cancelled_ = true;
+    }
+
+    bool check_textures(std::string& error_out) override {
+        if (tex_.extracting()) return error_out = "Wait for the extraction to finish.", false;
+        const std::wstring dir = TexturesDir();
+        if (dir.empty()) return error_out = "No textures folder.", false;
+        tex_.StartScan(dir, true);
+        tex_checking_ = true;
+        return true;
+    }
+
+    bool textures_folder_for_open(std::string& path_out, std::string& error_out) override {
+        const std::wstring dir = TexturesDir();
+        if (dir.empty()) return error_out = "Windows names no Documents folder: pick a folder with Change folder... first.", false;
+        const std::string problem = TexturesFolderProblem(dir, paths_.game);
+        if (!problem.empty()) return error_out = problem, false;
+        if (!IsDir(dir) && !CreateDirectories(dir)) return error_out = "Could not create " + Utf8(dir) + ".", false;
+        path_out = Utf8(dir);
+        return true;
+    }
+
+    void set_boots_look(bool own) override {
+        json::Value t = json::Value::Object();
+        if (const json::Value* old = settings_.Find("textures"); old && old->is_object()) t = *old;
+        t["boots"] = std::string(own ? "own" : "prop");
+        settings_["textures"] = t;
+        SaveChoices();
+    }
+
+    bool set_textures_folder(const std::string& folder, std::string& error_out) override {
+        if (tex_.extracting()) return error_out = "Wait for the extraction to finish.", false;
+        if (!folder.empty()) {
+            const std::string problem = TexturesFolderProblem(Wide(folder), paths_.game);
+            if (!problem.empty()) return error_out = problem, false;
+        }
+        json::Value t = json::Value::Object();
+        if (const json::Value* old = settings_.Find("textures"); old && old->is_object()) t = *old;
+        t["dir"] = folder;
+        settings_["textures"] = t;
+        SaveChoices();
+        tex_result_.clear();
+        tex_.StartScan(TexturesDir(), false);
+        return true;
+    }
+
+    void TickTextures() {
+        ExtractProgress p;
+        int code = 0;
+        if (tex_.TakeFinished(p, code)) {
+            if (tex_cancelled_) {
+                tex_result_ = "Extraction cancelled. Your edited pictures are untouched; press Extract textures to finish.";
+                tex_tone_ = TexturesView::Tone::warn;
+            } else if (code == 0 && p.finished) {
+                tex_result_ = "Done: " + std::to_string(p.written) + " pictures (" + FormatMegabytes(p.bytes) + ") in " +
+                              std::to_string((p.ms + 500) / 1000) + " s." + (p.kept ? " Your edited pictures were kept." : "");
+                if (p.skipped) tex_result_ += " " + std::to_string(p.skipped) + " picture(s) could not be read (see launcher.log).";
+                if (!p.note.empty()) tex_result_ += " " + p.note + ".";
+                tex_tone_ = TexturesView::Tone::good;
+            } else {
+                tex_result_ = p.error.empty() ? "The extraction stopped (exit code " + std::to_string(code) + ")." : p.error;
+                tex_tone_ = TexturesView::Tone::bad;
+            }
+            LauncherLog(*env_, paths_, "textures=" + std::string(tex_cancelled_ ? "cancelled" : code == 0 ? "done" : "failed") + " exit=" +
+                                           std::to_string(code) + " sets=" + std::to_string(p.sets) + " skipped=" + std::to_string(p.skipped) +
+                                           " written=" + std::to_string(p.written) + " kept=" + std::to_string(p.kept) + " bytes=" +
+                                           std::to_string(p.bytes) + " ms=" + std::to_string(p.ms));
+            tex_cancelled_ = false;
+            tex_.StartScan(TexturesDir(), false);
+        }
+        if (tex_wanted_ && !tex_scanned_ && !tex_.extracting()) {
+            tex_scanned_ = true;
+            tex_.StartScan(TexturesDir(), false);
+        }
+        if (tex_checking_ && !tex_.scanning()) tex_checking_ = false;
+    }
+
     void tick() override {
+        TickTextures();
         if (start_.check_on_start && !auto_checked_ && phase_ != Phase::not_in_game_folder) {
             auto_checked_ = true;   // at most once per launch; Check for updates is always there
             bool check = !start_.update_feed.empty();
@@ -1435,6 +1584,8 @@ private:
         // puts sam for a host anyway).
         ini.my_character = std::string(role) == "host" ? std::string(kHostCharacter) : my_character();
         ApplyDebugOptions(debug_, ini);
+        ini.textures_dir = TexturesDirForSession(settings_, paths_.game);   // Fragile's textures (read by the guest's mod; "" when not usable)
+        ini.boots_look = BootsLookFromSettings(settings_);             // her boots (the guest's choice is sent to the host)
         return ini;
     }
 
@@ -1589,6 +1740,12 @@ private:
     std::string test_result_;
     TestSaveView::Tone test_tone_ = TestSaveView::Tone::neutral;
     LocalTest local_;
+    // Tools > Fragile's textures (core_textures.hpp).
+    TextureTasks tex_;
+    mutable bool tex_wanted_ = false;   // textures() was asked for (the Tools page): tick() scans the folder once
+    bool tex_scanned_ = false, tex_checking_ = false, tex_cancelled_ = false;
+    std::string tex_result_;
+    TexturesView::Tone tex_tone_ = TexturesView::Tone::neutral;
     Transport session_transport_ = Transport::steam;
     std::int64_t launch_ms_ = 0, gone_since_ = 0, after_until_ = 0;
     std::int64_t next_check_ms_ = 0, next_status_ms_ = 0;
@@ -1646,6 +1803,8 @@ int RunWriteSession(const std::wstring& game_dir, const WriteSessionRequest& req
     std::string code;
     const bool host_save = DebugOptionsFromSettings(settings).host_save;
     ini.world_sync = DebugOptionsFromSettings(settings).share_world;   // written with host_save (world_sync=0 when off)
+    ini.textures_dir = TexturesDirForSession(settings, paths.game);
+    ini.boots_look = BootsLookFromSettings(settings);
     const std::uint64_t self_id = OwnSteamId(*env);
     const std::uint32_t account = self_id > kSteamIdBase ? static_cast<std::uint32_t>(self_id - kSteamIdBase) : 0u;
     if (request.role == "host") {
@@ -1713,6 +1872,8 @@ int RunWriteLocalTestIni(const std::wstring& game_dir, const std::wstring& out_d
         choices.fps = LocalTestFps(static_cast<int>(t->Int("fps", kLocalTestFpsDefault)));
     }
     choices.guest_character = GuestPickFromSettings(settings, stored_pick);
+    choices.textures_dir = TexturesDirForSession(settings, game_dir);   // as the launcher writes it (the testenv swaps it)
+    choices.boots_look = BootsLookFromSettings(settings);
     SessionIni host, guest;
     MakeLocalTestInis(options, choices, host, guest);
     if (!CreateDirectories(out_dir)) return fail("could not create " + Utf8(out_dir));

@@ -142,6 +142,13 @@ void VehicleEventCounts(std::uint64_t* sent, std::uint64_t* received) noexcept;
 // ---- World events (SWS1, world_wire.hpp; docs/world-sync.md): the reliable ordered channel 1 ("world"), the same contract
 // as the vehicle events above (append only, a receive queue of 64, cleared by a new link session).
 inline constexpr unsigned kWorldEventChannel = 1;
+// ---- Assets (STT1, texture_wire.hpp; docs/textures.md): the reliable ordered channel 5, the same contract as the world events
+// (append only, 1..1024 bytes, a receive queue of 64, cleared by a new link session). The sender paces itself.
+bool SendAsset(const void* bytes, std::size_t size) noexcept;
+unsigned AssetsQueued() noexcept;
+bool SaveBusy() noexcept;  // the save channel (4) has data queued: the assets wait
+bool PopAsset(std::uint8_t* out, std::size_t cap, std::size_t& size, std::uint32_t& generation) noexcept;
+void AssetCounts(std::uint64_t* sent, std::uint64_t* received) noexcept;
 bool SendWorldEvent(const void* bytes, std::size_t size) noexcept;
 unsigned WorldEventsQueued() noexcept;
 bool PopWorldEvent(std::uint8_t* out, std::size_t cap, std::size_t& size, std::uint32_t& generation) noexcept;

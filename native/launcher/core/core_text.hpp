@@ -122,6 +122,12 @@ struct SessionIni {
     // Vehicle hits (docs/real-partner-body.md section 25): the partner's vehicles damage and knock down THIS player's Sam
     // (each game decides for its own Sam). The mod's default is on: only partner_vehicle_damage=0 is written.
     bool partner_vehicle_damage = true;
+    // Fragile's textures (docs/textures.md): the folder of the player's edited PNGs (UTF-8, absolute; "" = not written).
+    // The launcher writes it for every session; the guest's mod reads its .manifest.txt (the host ignores it).
+    std::string textures_dir;
+    // Her boots (docs/textures.md, docs/real-partner-body.md section 30): "own" (her own boots, painted with the boot
+    // pictures; the mod's default) or "prop" (Sam's boots on her feet). Written for host and guest; "" = not written.
+    std::string boots_look;
 };
 inline constexpr double kMaxEchoDelayS = 10.0;
 inline constexpr double kMaxEchoOffsetM = 20.0;

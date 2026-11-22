@@ -125,7 +125,7 @@ const Place* FindPlace(const std::vector<Place>& places, const std::string& name
 // A leading '?' makes a step optional: its failure is recorded, the run goes on.
 // Any other failed step ends the scenario (the supervisor still screenshots and quits).
 // nolog: fails when the log already has a matching line (a negative check, no waiting).
-enum class StepKind { mod, waitready, waitlog, nolog, until, sleep, note, waitnew };
+enum class StepKind { mod, waitready, waitlog, nolog, until, sleep, note, waitnew, textures };
 struct Step {
     StepKind kind = StepKind::mod;
     int line = 0;
@@ -159,8 +159,17 @@ struct Scenario {
     std::string quickstart;
     int quickstart_line = 0;
     std::uint32_t quickstart_control_s = 120;
+    // "textures extract | pattern <name> <folder> | none" (docs/hidden-testing.md "Fragile's textures"): the run gets its
+    // own textures folder <run>\textures (every game's session.ini then names it, and automation_run_dir the run); the
+    // lines before "start" run before the games start (textures_pre: "extract", "pattern <name> <folder>"), later ones
+    // are steps (StepKind::textures, text = the same words).
+    bool textures = false;
+    std::vector<std::string> textures_pre;
     std::vector<Step> steps;
 };
+// Keys a "launcherini" scenario may still add with "ini" / "@host ini" / "@guest ini": test switches on top of the
+// launcher's own file (Fragile's textures and the v0.23 tint), never anything about saves, roles or the link.
+bool LauncherIniOverrideAllowed(const std::string& key);
 // Keys a scenario may add to session.ini with "ini key=value" (nothing that touches saves,
 // automation, isolation or instances).
 bool ScenarioIniKeyAllowed(const std::string& key);

@@ -1,0 +1,48 @@
+# Fragile's edited textures, the probe (docs/real-partner-body.md section 29.3; design T2.0), solo, hidden: the self
+# view's fragile_suit body gets an in-memory test pattern (tex 9: a magenta / green checker made by the mod, no files, no
+# game data) through the game's texture loader and the per-drawable override, rebuilt by the detoured override rebuild.
+# The probe dumps every slot of our override entries with the texture it holds before ours goes in and after (tex 2).
+# First every slot keeps the pattern (tex 5 2: the v0.23 behaviour, the pattern also lands on her boots, neck and parts),
+# then the product filter (tex 5 0): only the slots that held one of her suit's own textures keep it.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario fragile-textures-probe -SeedSaves complete-100
+role solo
+timeout 330
+ini partner_body=real
+ini pose_hook=1
+ini my_character=fragile_suit
+ini self_character=1
+ini self_feet_hide=0
+start
+waitlog 40 \[self\] showing 'fragile_suit'
+pad none 1300 rx=32767
+wait 1500
+screenshot 00-own
+# 1) keep every slot and dump them
+action tex 5 2
+action tex 2 2
+action tex 9 1
+waitlog 60 \[tex\] pattern 1 built
+waitlog 30 \[tex\] body self .*: look .* bound
+wait 1500
+screenshot 01-keep-all-front
+# 2) the product filter: her suit's slots only
+action tex 5 0
+action tex 2 2
+action tex 4 0
+waitnew 10 \[tex\] body self .*: look .* taken off
+wait 800
+action tex 4 1
+waitnew 15 \[tex\] body self .*: look .* bound
+wait 1500
+screenshot 02-filtered-front
+pad none 1300 rx=32767
+wait 1500
+screenshot 03-filtered-back
+# walk a little (LOD / rebuilds) and look again
+pad none 2000 ly=32767
+pad none 1300 rx=32767
+wait 1500
+screenshot 04-filtered-after-walk
+action tex 0
+nolog \[tex\] .*FAULTED
+quit

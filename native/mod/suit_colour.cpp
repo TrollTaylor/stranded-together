@@ -505,14 +505,14 @@ void Undo(Dress& d, const char* why) noexcept {
     d.applied = 0;
 }
 
-void Apply(Dress& d, std::uintptr_t e, std::uint8_t colour, double now_ms) noexcept {
+void Apply(Dress& d, std::uintptr_t e, std::uint8_t colour, double now_ms, int tint) noexcept {
     if (!e) return;
     if (d.e != e) {
         Forget(d);
         d.e = e;
     }
     if (!Available()) return;
-    if (!g.cfg) colour = 0;
+    if (tint < 0 ? !g.cfg : tint == 0) colour = 0;
     if (colour > kGold) colour = 0;
     if (now_ms < d.next_ms) return;
     d.next_ms = now_ms + 250;

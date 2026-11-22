@@ -470,9 +470,108 @@ bool MockModel::start_local_test(std::string& error_out) {
     return true;
 }
 
+namespace {
+constexpr double kMockExtractSeconds = 6.0;
+constexpr char kMockTexturesDir[] = "C:\\Users\\player\\Documents\\Stranded Together\\Textures";
+}  // namespace
+
+TexturesView MockModel::textures() const {
+    TexturesView v;
+    v.folder = tex_folder_.empty() ? kMockTexturesDir : tex_folder_;
+    v.custom_folder = !tex_folder_.empty();
+    v.estimate = "about 330 MB";
+    v.result = tex_result_;
+    v.tone = tex_tone_;
+    v.report = tex_report_;
+    v.boots_own = tex_boots_own_;
+    if (tex_start_ >= 0.0 || tex_frozen_ >= 0.0) {
+        v.state = TexturesView::State::extracting;
+        v.progress = tex_frozen_ >= 0.0 ? tex_frozen_ : static_cast<float>(std::fmin(1.0, (now() - tex_start_) / kMockExtractSeconds));
+        v.progress_text = v.progress < 0.25f ? "Fragile porter suit\\Original\\Suit" : v.progress < 0.7f ? "Sam porter suit\\16 Gold\\Suit"
+                                                                                                 : "Boots (Sam, reference)\\Mk3 boots";
+        v.status = "Extracting...";
+        return v;
+    }
+    if (!tex_extracted_) {
+        v.state = TexturesView::State::not_extracted;
+        v.status = "Not extracted yet.";
+        return v;
+    }
+    v.state = TexturesView::State::extracted;
+    v.status = "Extracted 2026-11-22 10:15: 17 suit colours, 10 boot types.";
+    v.edited = "Edited: 16 Gold (Colour, Reflectance), 09 Chiral boots (Colour)";
+    return v;
+}
+
+bool MockModel::extract_textures(std::string& error_out) {
+    if (ui::SessionActive(phase_) || local_start_ >= 0.0) {
+        error_out = "Quit DEATH STRANDING first: the textures are extracted while the game is closed.";
+        return false;
+    }
+    if (tex_start_ >= 0.0) {
+        error_out = "The textures are already being extracted.";
+        return false;
+    }
+    tex_start_ = now();
+    tex_result_.clear();
+    tex_report_.clear();
+    return true;
+}
+
+void MockModel::cancel_textures() {
+    if (tex_start_ < 0.0) return;
+    tex_start_ = -1.0;
+    tex_result_ = "Extraction cancelled. Your edited pictures are untouched; press Extract textures to finish.";
+    tex_tone_ = TexturesView::Tone::warn;
+}
+
+bool MockModel::check_textures(std::string& error_out) {
+    if (!tex_extracted_) {
+        error_out = "Extract the textures first.";
+        return false;
+    }
+    tex_report_ = "17 suit colour folders, 10 boot type folders (extracted 2026-11-22 10:15).\n"
+                  "Edited: 16 Gold (Colour, Reflectance), 09 Chiral boots (Colour).\n"
+                  "16 Gold\\Suit - Reflectance.png is 2048x2048: it will be resized to 1024x1024.";
+    return true;
+}
+
+bool MockModel::textures_folder_for_open(std::string& path_out, std::string&) {
+    path_out = textures().folder;
+    return true;
+}
+
+bool MockModel::set_textures_folder(const std::string& folder, std::string&) {
+    tex_folder_ = folder;
+    tex_extracted_ = false;
+    return true;
+}
+
+void MockModel::set_boots_look(bool own) { tex_boots_own_ = own; }
+
+void MockModel::set_textures_state(TexturesView::State state, float progress) {
+    tex_start_ = -1.0;
+    tex_frozen_ = -1.0f;
+    tex_result_.clear();
+    tex_report_.clear();
+    tex_tone_ = TexturesView::Tone::neutral;
+    tex_extracted_ = state == TexturesView::State::extracted;
+    if (state == TexturesView::State::extracting) tex_frozen_ = progress;
+    if (tex_extracted_) {
+        tex_result_ = "Done: 284 pictures (272 MB) in 8 s. Your edited pictures were kept.";
+        tex_tone_ = TexturesView::Tone::good;
+    }
+}
+
 void MockModel::jump_to_local_test(double seconds) { local_start_ = seconds < 0.0 ? -1.0 : now() - seconds; }
 
 void MockModel::tick() {
+    if (tex_start_ >= 0.0 && now() - tex_start_ >= kMockExtractSeconds) {
+        tex_start_ = -1.0;
+        tex_extracted_ = true;
+        tex_result_ = "Done: 284 pictures (272 MB) in 8 s. Your edited pictures were kept.";
+        tex_tone_ = TexturesView::Tone::good;
+    }
     if (local_start_ >= 0.0 && now() - local_start_ >= 90.0) {
         local_start_ = -1.0;
         test_.result = "Your own saves were not changed (every file checked by SHA-256 before and after).";

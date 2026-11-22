@@ -284,7 +284,7 @@ private:
 };
 
 // --- Reliable ordered channel (docs/link-protocol.md "Reliable channel").
-inline constexpr unsigned kReliableChannels = 5;  // 0 link, 1 world, 2..3 game, 4 save handoff
+inline constexpr unsigned kReliableChannels = 6;  // 0 link, 1 world, 2..3 game, 4 save handoff, 5 assets
 inline constexpr std::size_t kMaxReliableMessage = 1024;
 inline constexpr unsigned kReliableWindow = 32;
 inline constexpr std::size_t kRetransmitBudgetBytes = 2400;  // retransmitted payload per 20 ms tick
@@ -293,6 +293,9 @@ inline constexpr std::uint64_t kZeroWindowProbeMs = 1000;
 // the save channel (4) has queued data and its sender is at the title or on a loading screen (the host-held save's
 // transfer, docs/coop-session.md: about 32 KB per round trip instead of 8).
 inline constexpr unsigned kSaveChannel = 4;
+// Channel 5 ("assets": Fragile's edited textures, STT1, docs/textures.md): the last channel, so PackBody fills it only
+// with what channels 1..4 leave; its sender paces itself (texture_share.cpp) and waits while the save channel has data.
+inline constexpr unsigned kAssetChannel = 5;
 inline constexpr unsigned kReliablePacketsPerTick = 4;
 inline constexpr unsigned kSaveBurstPacketsPerTick = 16;
 inline constexpr unsigned ReliablePacketsPerTick(bool save_queued, bool save_burst_phase) noexcept {

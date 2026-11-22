@@ -1,0 +1,116 @@
+# Fragile's boots, her own (round 6 T3; docs/real-partner-body.md section 30, docs/textures.md), hidden, on the launcher's own
+# Local test files (host Sam, guest Fragile, host_save, boots_look=own as the launcher writes it):
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-fragile-boots-own -SeedSaves complete-100 -GuestSeed profile-only
+# The run's own textures folder (the extractor reads the game read-only into <run>\textures): bold generated patterns (no
+# game data) in "Fragile boots\09 Chiral boots" (checker) and "03 Porter boots" (stripes). The guest's Sam starts as a copy
+# of the host's (Chiral boots, gold suit). Both screens must show HER boots (no boots prop on the host's partner Fragile,
+# her feet never scaled, Sam's boots entity hidden under the guest's self view) painted with the boot type's pictures:
+# Chiral = the checker; worn out (dev_boots 1 5) = Chiral's Worn\ (dark); then the guest's Sam gets new porter boots
+# (dev_boots 3 3, the game's SetShoesForcibly) = the stripes.
+# Screenshots of her feet on both screens standing, walking and on a trike the guest drives.
+role host
+graphics low
+timeout 360
+launcherini local-test
+textures extract
+textures pattern checker 09 Chiral boots
+textures pattern stripes 03 Porter boots
+textures pattern metal 09 Chiral boots\Worn
+start control 200
+@guest waitlog 60 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+@both goto mknot-road
+wait 6000
+@guest pad none 2400 ly=32767
+@guest pad none 900 ly=-32767
+# her own boots: Sam's hidden under her self view, no boots prop on the host's partner Fragile
+@guest waitlog 60 \[boots\] Sam's boots entity .* hidden under the self view
+@guest waitlog 30 \[boots\] self view: her own boots, Sam's hidden \(boots_look=own
+waitlog 60 \[boots\] partner: her own boots \(no prop\) \(boots_look=own from the partner's look
+# Chiral boots (type 9): the checker on her boots on both screens
+@guest waitlog 90 \[tex\] boots look [0-9a-f]{8} for boots 9 gold: Fragile boots\\09 Chiral boots \(B1 B2\)
+@guest waitlog 60 \[tex\] body self .*: look .* bound .* kept [1-9]
+waitlog 150 \[tex\] partner look .*: complete for colour 16 \(2 blob
+waitlog 30 \[tex\] body partner .*: look .* bound .* kept [1-9]
+wait 1500
+@both action tex 0
+@both action gear 25 2
+screenshot 00-host-sees-guest-chiral
+@guest screenshot 00-guest-self-chiral
+# walking (the pad held while both screens are taken)
+@guest pad none 1200 ly=32767 keep
+screenshot 01-host-sees-guest-chiral-walking
+@guest screenshot 01-guest-self-chiral-walking
+@guest pad none 0
+wait 1500
+# worn out (5 %: a broken shaft and a loose sole): Worn\ of the Chiral folder (the dark "metal" pattern) on both screens
+@guest action dev_boots 1 5
+waitnew 150 \[tex\] partner look .*: complete for colour 16 \(2 blob
+waitnew 30 \[tex\] body partner .*: look .* bound .* kept [1-9]
+@guest waitlog 30 \[tex\] boots look [0-9a-f]{8} for boots 9 worn gold: Fragile boots\\09 Chiral boots\\Worn \(B1 B2\)
+@guest waitlog 30 \[tex\] body self .*: look .* bound .* kept [1-9]
+wait 1500
+@both action gear 25 2
+@guest pad none 900 ly=-32767
+wait 1500
+screenshot 01b-host-sees-guest-chiral-worn
+@guest screenshot 01b-guest-self-chiral-worn
+# porter boots (type 3): the stripes (the host's checks first: they come after the guest's own)
+@guest action dev_boots 3 3
+waitnew 150 \[tex\] partner look .*: complete for colour 16 \(2 blob
+waitnew 30 \[tex\] body partner .*: look .* bound .* kept [1-9]
+@guest waitlog 30 \[tex\] boots look [0-9a-f]{8} for boots 3 gold: Fragile boots\\03 Porter boots \(B1 B2\)
+@guest waitlog 30 \[tex\] body self .*: look .* bound .* kept [1-9]
+wait 1500
+@guest action dev_boots 0
+@both action gear 25 2
+@guest pad none 900 ly=-32767
+wait 1500
+screenshot 02-host-sees-guest-porter
+@guest screenshot 02-guest-self-porter
+@guest pad none 1200 ly=32767 keep
+screenshot 03-host-sees-guest-porter-walking
+@guest screenshot 03-guest-self-porter-walking
+@guest pad none 0
+wait 1000
+# on a vehicle: the guest drives the Kusanagi trike near the start (its rider is seen; a truck's cab hides its passenger),
+# the host stands 5 m beside it, facing it
+@both goto -1100.18 273.92 352.49
+wait 4000
+action vehicle_sync 8 5 4
+wait 1500
+@guest action vehicle_sync 8 1.8 4
+wait 1500
+@guest until 20 4000 \[vdrive\] guest: our Sam drives trike => pad X 150
+wait 4000
+@guest action dev_boots 0
+# the host faces the trike: its camera turns round to look at it
+pad none 1300 rx=32767
+wait 1500
+screenshot 04-host-sees-guest-trike-standing
+@guest screenshot 04-guest-trike-standing
+@guest pad none 1 rt=255 keep
+wait 1200
+screenshot 05-host-sees-guest-trike-moving
+@guest screenshot 05-guest-trike-moving
+@guest pad none 1 lt=255 keep
+wait 1500
+@guest pad none 0
+wait 1000
+@both action gear 25 2
+@both action tex 0
+# never Sam's boots on her: no boots prop shown, her feet never scaled, no texture or boots fault
+nolog \[boots\] the partner's boots prop .* follows the partner body's legs
+nolog \[boots\] the partner body's feet scaled away
+@guest nolog \[boots\] self view: Sam's boots on her feet
+nolog \[tex\] .*FAULTED
+@guest nolog \[tex\] .*FAULTED
+nolog \[boots\] .*FAULTED
+@guest nolog \[boots\] .*FAULTED
+nolog \[tex\] refused
+@guest nolog \[tex\] host refused
+nolog \[tex\] .*NOT valid
+@both action log_status
+@guest quit
+wait 3000
+quit

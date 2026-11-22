@@ -154,6 +154,9 @@ enum class Scene {
     debug_options_characters,  // Debug > Options at PARTNER BODY: "Allow other characters" on
     debug_options_coop,        // Debug > Options at CO-OP SAVE: "Host holds the save" and "Dev tools" on
     debug_local_test_off,      // Debug > Test saves with "Host holds the save" off: the local test card's warning
+    tools_textures,            // Tools > Fragile's textures: not extracted yet
+    tools_textures_extracting, // ... extracting (progress bar, Cancel)
+    tools_textures_done,       // ... extracted, edited folders listed, Check my edits report
     count
 };
 int SceneCount();
@@ -161,7 +164,7 @@ const char* SceneName(Scene scene);   // "" when out of range
 
 // ---- Command line ----------------------------------------------------------
 struct Options {
-    enum class Mode { gui, watch, selftest, screenshots, help, write_session, end_session } mode = Mode::gui;
+    enum class Mode { gui, watch, selftest, screenshots, help, write_session, end_session, extract_textures, check_textures } mode = Mode::gui;
     bool mock = false;              // --mock (developer flag; the real model is the default)
     std::wstring watch_session;     // --watch <session>
     // Developer: --write-session host|join|echo|solo [--code <code>] [--game-dir <dir>]
@@ -174,6 +177,12 @@ struct Options {
     int write_port_local = 0;
     int write_port_peer = 0;
     std::wstring game_dir;          // --game-dir <dir> (default: the exe's folder)
+    // Fragile's textures (core_textures.hpp): --extract-textures / --check-textures --out <dir> [--game-dir <dir>]
+    //   [--no-previews] [--allow-out-under <dir>] [--cancel-after-sets <n>]. The launcher window starts the first as its
+    //   child; the hidden check (tools/testenv/Test-TextureExtract.ps1) runs it into a run folder.
+    std::wstring textures_allow_under;
+    bool textures_previews = true;
+    int textures_cancel_after = -1;
     std::wstring screenshot_dir;    // --screenshot-all <dir>
     std::wstring scenario;          // --mock-scenario <name>
     double mock_speed = 1.0;        // --mock-speed <factor>

@@ -1021,6 +1021,15 @@ void LogWelcomeHolo(game::Entity* e, const char* what) {
 }
 
 bool SpawnTeardown(Spawn& s, const char* why, char* step_out, std::size_t cap) {
+    if (s.direct) {
+        // our own entity (held items): removed when it is still the same object; no spawner to release
+        bool release = true;
+        const char* step = !s.e ? "no entity" : !g_fn.remove ? (release = false, "remove function not resolved: entity left")
+                                                             : RemoveSteps(nullptr, true, SpawnAlive(s), s.e, &release);
+        Set(step_out, cap, "%s (own entity: %s)", step, why ? why : "");
+        s = Spawn{};
+        return release;
+    }
     if (!s.sp) {
         Set(step_out, cap, "nothing to tear down");
         s = Spawn{};

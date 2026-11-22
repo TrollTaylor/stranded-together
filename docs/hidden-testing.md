@@ -599,6 +599,13 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   cap and glasses on: running across the camera's view with the self body's follow mode 1 (v0.18), 2 and 4 (this
   build), then walking, turning and moving crouched (B), follow 1 against 4. Evidence: the screenshots (the cap and
   glasses ahead of her face in follow 1 and 2, on her in 4) and the `[self] follow 4:` lines (predictions, the step).
+* `two-games-fragile-cover.txt` (role host, `launcherini local-test`, `start`, `-SeedSaves complete-100 -GuestSeed
+  profile-only`; docs/real-partner-body.md section 28): the user's "her cargo went after a ladder". Part A, clear weather:
+  the guest takes a ladder from the real tools radial, holds LT, places it with RT and collapses it (Hold START), with
+  screenshots of her back on both screens at every stage and `nolog` of any `rain cover is gone` line. Part B, heavy
+  timefall: the 100% save's rain cover (4 %) wears out in about 96 s in each world and the game removes it; both sides
+  log `wear: the backpack's rain cover broke`, `our gear: ... is gone` and `the partner's gear: ... is gone`. Run
+  `20261122-090554` (pass).
 * `fragile-caps.txt` (role solo, `fragile_suit` self view, 1440p): the four head items of the cap class one by one
   (`gear 14 <type> 1`: 15 the Bridges cap, 36 the Santa hat, 49 the headcrab, 50 the hair ornament), the camera kept
   still, front then back: this build's per-item offsets, then v0.18's 5.0 cm (`self_view 8 0 50`). The
@@ -1333,7 +1340,9 @@ low`, no `ini` lines) runs both games on the launcher's own files:
 * The supervisor (`--launcher-ini <dir>`, refused without the scenario line and the other way round) keeps every line of
   each file and swaps only where the saves are: `sandbox_saves` / `sandbox_foreign_saves` become the run's automation
   redirect (`automation=1`, `automation_foreign_saves=1` with a seed) and the launcher's header comment goes
-  (`te::HiddenIniFromLauncher`; supervisor.log names the replaced lines). The deployed files are kept as
+  (`te::HiddenIniFromLauncher`; supervisor.log names the replaced lines). The launcher's `textures_dir` (the player's
+  own Fragile's textures folder, round 6) is dropped the same way: a hidden game never reads the player's Documents
+  (`two-games-launcher-local-test` checks `[config] textures_dir=- (none)` in both games). The deployed files are kept as
   `session-host-deployed.ini` / `session-guest-deployed.ini` in the run folder, `summary.json` has `"launcher_ini":
   true`. A guest file with `host_save=1` makes the guest's scratch profile-only (as the launcher's `local-guest`).
 
@@ -1387,6 +1396,105 @@ both games log `[coop] host_save=0 (...)` and `[coop] notice shown: co-op featur
 banner is on both title screens (F1) and over the load into the world (F2), `link-status.json` carries
 `"features_off"`. Run `20261120-022427-two-games-features-off`: **pass** (real tree unchanged, 0 uploads). The
 launcher-ini run's `link-status.json` has no `features_off` (everything on).
+
+## Fragile's textures: the extraction check (`Test-TextureExtract.ps1`, round 6)
+
+The launcher's "Extract textures" (docs/textures.md) starts no game, so it has no scenario file: the check is a script
+that takes Start-TestRun.ps1's arguments and runs as Run-Batch's `-RunScript` (one at a time with every other run, posted
+to devdash):
+
+```
+pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios textures-extract -RunScript tools\testenv\Test-TextureExtract.ps1 -Id r6-tex -Title 'Extract textures'
+pwsh -File tools\testenv\Test-TextureExtract.ps1 [-KeepTextures]          # alone (refuses while ds.exe runs)
+```
+
+It runs `StrandedTogether.exe --extract-textures --out <run>\textures --allow-out-under <run>` (the build folder's
+launcher; the game folder read only) and checks: exit 0 and a `done` line; all 31 sets extracted or skipped with a reason
+(the sea otter hood's three BC6H normals are skipped by design); her suit (S0-S3) and boots (B0-B2) maps in `Original`;
+every manifest row's file there with its size; the manifest hidden with the slot rows; `Original` read-only; all 81
+seeds byte copies of their `Original`; her Colour's mean about (67, 71, 81); Sam's gold Reflectance's metal pixels about
+(220, 176, 112) and his silver's grey-white; her Normal a tangent-space map; the sizes (2048 / 1024); a second run keeps
+an edited seed byte-identical and says `kept`, and seeds a deleted one again; `--check-textures` names the edit; a run
+ended in the middle of set 10 (`--cancel-after-sets 10`, a `.partial` left) followed by a full run leaves no `.partial`;
+the game's `data` folder and `oo2core_7_win64.dll` (size + time of all 145 files) unchanged. Output:
+`<run>\summary.json` (the usual verdict fields: no game, so `saves_unchanged` / `restored` are trivially true),
+`supervisor.log` (one ok / FAIL line per check, `run PASSED (exit 0)`), `extract-*.log` (the extractor's lines),
+`listing-before.txt` / `listing-after.txt`. The extracted pictures are game data: they are deleted at the end unless
+`-KeepTextures`, and never copied anywhere else.
+
+Run `20261122-095029-textures-extract` (batch `round6-t1`): **pass**, 19 checks, 18 s (the extraction itself 7.5 s for
+284 pictures, 272 MB). Regressions with the launcher now writing `textures_dir`: `20261122-095109-two-games-launcher-local-test`
+and `20261122-095328-two-games-fragile-suit` (batch `round6-t1-reg`): **pass**.
+
+
+## Fragile's textures in the game (round 6 T2)
+
+**Directive** `textures` (docs/textures.md): the run gets its own textures folder `<run>\textures`; every game's
+session.ini then names it (`textures_dir=`, also on a `launcherini` run, where the launcher's own `textures_dir` is
+dropped) and the run folder (`automation_run_dir=`; a hidden run's mod reads a textures folder only inside it). The
+mod caches its built textures in `<run>\textures-cache`; the supervisor deletes both folders at the run's end
+(`textures: the run's built-textures cache deleted (N entries)`).
+- `textures extract`: the launcher's own extractor (`StrandedTogether.exe --extract-textures --no-previews
+  --allow-out-under <runs>`, next to the supervisor) reads the installed game read-only into it (about 7 s).
+- `textures pattern <checker|stripes|metal> <NN folder>`: `st_textool pattern` paints a bold generated pattern (no game
+  data) over that colour folder's (or `Fragile boots` folder's, when the name says boots) editable pictures, as a user's
+  edit would be. A boots folder's `Worn`, `Gold` or `Silver` subfolder too: `textures pattern metal 09 Chiral boots\Worn`
+  (round 6 T3; nothing deeper, no other subfolder).
+- `textures none`: nothing.
+Lines before `start` run before the games start (a failure stops the run: "setup failed: textures ..."); later lines are
+steps (a mid-run save: the mod's hot reload). Output in `<run>\textures-<n>.log`. The pictures (game data) live in the
+run folder only while the run lasts: the supervisor deletes `<run>\textures` at the end ("textures: the run's textures
+folder deleted"); nothing is copied anywhere else.
+
+**launcherini and test switches**: a `launcherini` scenario may still add `ini` / `@host ini` / `@guest ini` lines for
+`fragile_suit_colour`, `fragile_textures`, `textures_send`, `textures_receive`, `textures_hot_reload`, `textures_free`,
+`boots_look` and `boots_own_porter` (appended after
+the launcher's file under a "# testenv:" comment); any other key is refused as before. The v0.23 tint scenarios
+(`fragile-suit-colours`, `fragile-suit-tune`, `two-games-fragile-suit`, `two-games-fragile-suit-remember`) add
+`ini fragile_suit_colour=1` (the tint is off by default now).
+
+**Scenarios**:
+- `fragile-textures-probe` (solo): `tex 9 1` (an in-memory checker), `tex 5 2` + `tex 2` (every slot, dumped), then
+  `tex 5 0` (her suit's slots only); screenshots keep-all / filtered / after walking.
+- `fragile-textures-solo` (solo): `textures extract`, a checker in `16 Gold`; gold = checker, silver = her own suit, a
+  stripes picture saved mid-run (reload), `tex 4 0` / `1`.
+- `two-games-fragile-textures` (`launcherini`, `-GuestSeed profile-only`): checker in `16 Gold`, stripes in `09 Mustard`;
+  the host receives the guest's look over the link (about a minute per 2048 texture) and shows it; colours 9, 0, 16 (the
+  last one from the host's cache); the host's own Sam stays gold. About 3 min 15 s.
+- `two-games-fragile-textures-reload` (`launcherini`): the guest picks 9, the host saves and loads in the world, the
+  guest follows; both re-dress the new bodies from the textures they have.
+Pass also needs no `[tex] ... FAULTED`, no `[tex] refused`, no `NOT valid`.
+
+## Held items (round 6)
+
+docs/real-partner-body.md section 31: anything in a player's hand drawn on the other screen as a held clone of the item's
+own resource, with its own skinned pose.
+- `held-items-solo` (solo; a debug Fragile that mirrors us and wears our gear, `gear 4 1`, `real_spawn 16 3.0 1`; about
+  2 min): from the tools radial (D-pad right held + right stick) the ladder (5 o'clock), the PCC (7:30), the climbing anchor
+  (down), each equipped and with LT held; the ladder again (the 60 s spare); from the weapon wheel the spray (left) and the
+  rifle (upper left, the cutscene-prop control); empty hands; then it waits for a put-away clone's removal after 60 s.
+  `waitlog` on each `[gear] held clone '...'`, `gear 26 9` status lines, `nolog` of a held-clone fault or a byte check.
+  Batch `round6-h`.
+- `two-games-held-items` (`launcherini`, `-GuestSeed profile-only`; about 2 min 20 s): the guest equips and aims the
+  ladder, PCC, anchor, spray and rifle (host screenshots `0N-host-sees-guest-*`, her own `0N-guest-self-*`), then the
+  guest turns her camera round and the host does the ladder and the PCC (`1N-guest-sees-host-*`). `waitlog` on the
+  receiver's `held clone <i> '<path>' shown` per item.
+
+## Her boots (round 6 T3)
+
+docs/real-partner-body.md section 30. `dev_boots 3 <type>` equips a boot type (the game's SetShoesForcibly; sandboxed
+saves only), `gear 25 2` logs the boots style's state.
+- `two-games-fragile-boots-own` (`launcherini`, `-GuestSeed profile-only`; about 2 min 30 s): `textures extract`, a
+  checker in `09 Chiral boots`, the dark "metal" pattern in `09 Chiral boots\Worn`, stripes in `03 Porter boots`. Her own
+  boots on both screens (Sam's boots entity hidden under the guest's self view, no boots prop on the host, her feet never
+  scaled): Chiral = the checker, worn (`dev_boots 1 5`) = Worn, porter (`dev_boots 3 3`) = the stripes, standing, walking
+  and on the Kusanagi trike the guest drives (the host 5 m beside it, its camera turned round). `nolog` of the prop, the
+  feet scaling and `Sam's boots on her feet`.
+- `two-games-boots-prop` (`launcherini` + `ini boots_look=prop`): the host barefoot (`dev_boots 3 0`); the guest's Chiral
+  = the prop on both screens; All-terrain Lv1 (`3 4`) and sole grass (`3 2`) = her own boots; porter (`3 3`) = the prop
+  again (its parts mirrored onto the prop's own on the barefoot host); `nolog` of a look setting the boots prop's parts.
+- `fragile-boots-types` (solo, `boots_look=prop boots_own_porter=0`): every boot type in turn, the parts it shows and a
+  screenshot (section 30.2's table).
 
 ## Test-save session (`--sandbox-session`)
 

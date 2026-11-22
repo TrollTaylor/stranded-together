@@ -195,6 +195,12 @@ SRWLOCK g_world_lock = SRWLOCK_INIT;
 RxSave g_world_q[kWorldQueue];
 unsigned g_world_head = 0, g_world_count = 0;
 volatile LONG64 g_rx_world_events = 0, g_tx_world_events = 0;
+// Received assets (STT1, channel 5; texture_wire.hpp), the same way (under g_asset_lock, taken inside g_tx or alone).
+constexpr unsigned kAssetQueue = 64;
+SRWLOCK g_asset_lock = SRWLOCK_INIT;
+RxSave g_asset_q[kAssetQueue];
+unsigned g_asset_head = 0, g_asset_count = 0;
+volatile LONG64 g_rx_assets = 0, g_tx_assets = 0;
 // Hidden tests (TestBlackout): received datagrams are dropped until this NowMs().
 volatile LONG64 g_blackout_until = 0, g_blackout_dropped = 0;
 
@@ -241,6 +247,21 @@ void DrainWorldEventsLocked(std::uint64_t now, std::uint32_t generation) noexcep
         InterlockedIncrement64(&g_rx_world_events);
     }
     ReleaseSRWLockExclusive(&g_world_lock);
+}
+
+// Under g_tx: in-order channel 5 messages into the asset queue while it has room.
+void DrainAssetsLocked(std::uint64_t now, std::uint32_t generation) noexcept {
+    AcquireSRWLockExclusive(&g_asset_lock);
+    std::size_t got = 0;
+    while (g_asset_count < kAssetQueue) {
+        RxSave& slot = g_asset_q[(g_asset_head + g_asset_count) % kAssetQueue];
+        if (!g_rel_rx[lk::kAssetChannel].Drain(slot.bytes, sizeof(slot.bytes), got, now)) break;
+        slot.size = static_cast<std::uint16_t>(got);
+        slot.generation = generation;
+        ++g_asset_count;
+        InterlockedIncrement64(&g_rx_assets);
+    }
+    ReleaseSRWLockExclusive(&g_asset_lock);
 }
 
 // Outside every lock: hand the queued save messages to the sink, if one is registered.
@@ -480,9 +501,16 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
             ReleaseSRWLockExclusive(&g_world_lock);
         }
         DrainWorldEventsLocked(now, g_generation + (new_session ? 1u : 0u));
+        // Channel 5: the assets (STT1, texture_share.cpp), the same way.
+        if (new_session) {
+            AcquireSRWLockExclusive(&g_asset_lock);
+            g_asset_count = 0;
+            ReleaseSRWLockExclusive(&g_asset_lock);
+        }
+        DrainAssetsLocked(now, g_generation + (new_session ? 1u : 0u));
         // Other channels are not used by this build: drained and dropped so their windows never fill.
         for (unsigned ch = 1; ch < lk::kReliableChannels; ++ch)
-            if (ch != wire::kSpeechChannel && ch != lk::kSaveChannel && ch != kVehicleEventChannel && ch != kWorldEventChannel)
+            if (ch != wire::kSpeechChannel && ch != lk::kSaveChannel && ch != kVehicleEventChannel && ch != kWorldEventChannel && ch != lk::kAssetChannel)
                 while (g_rel_rx[ch].Drain(buf, sizeof(buf), got, now)) {
                 }
     }
@@ -672,6 +700,7 @@ void OnIdle(void*) noexcept {
     g_session.OnTimer(now);
     // Save messages left in the channel while the queue was full: taken as soon as it has room again.
     DrainSaveLocked(now, g_generation);
+    DrainAssetsLocked(now, g_generation);
     lk::Event e{};
     while (event_count < kMaxEvents && g_session.PopEvent(e)) events[event_count++] = e;
     InterlockedExchange(&g_state, static_cast<long>(g_session.state()));
@@ -1258,6 +1287,55 @@ void WorldEventCounts(std::uint64_t* sent, std::uint64_t* received) noexcept {
 }
 
 void SetSaveBurst(bool title_or_loading) noexcept { InterlockedExchange(&g_save_burst, title_or_loading ? 1 : 0); }
+
+bool SendAsset(const void* bytes, std::size_t size) noexcept {
+    if (!bytes || size == 0 || size > lk::kMaxReliableMessage) return false;
+    bool queued = false;
+    AcquireSRWLockExclusive(&g_tx);
+    if (g_session.CanSendData())
+        queued = g_rel_tx[lk::kAssetChannel].Queue(bytes, size, lk::ReliableMode::append) == lk::ReliableResult::queued;
+    ReleaseSRWLockExclusive(&g_tx);
+    if (queued) {
+        InterlockedIncrement64(&g_tx_assets);
+        InterlockedAdd64(&g_tx_payload, static_cast<LONG64>(size));
+    }
+    return queued;
+}
+
+unsigned AssetsQueued() noexcept {
+    AcquireSRWLockExclusive(&g_tx);
+    const unsigned n = g_rel_tx[lk::kAssetChannel].queued();
+    ReleaseSRWLockExclusive(&g_tx);
+    return n;
+}
+
+bool SaveBusy() noexcept {
+    AcquireSRWLockExclusive(&g_tx);
+    const bool busy = !g_rel_tx[lk::kSaveChannel].idle();
+    ReleaseSRWLockExclusive(&g_tx);
+    return busy;
+}
+
+bool PopAsset(std::uint8_t* out, std::size_t cap, std::size_t& size, std::uint32_t& generation) noexcept {
+    bool ok = false;
+    AcquireSRWLockExclusive(&g_asset_lock);
+    if (g_asset_count && out && g_asset_q[g_asset_head].size <= cap) {
+        const RxSave& s = g_asset_q[g_asset_head];
+        std::memcpy(out, s.bytes, s.size);
+        size = s.size;
+        generation = s.generation;
+        g_asset_head = (g_asset_head + 1) % kAssetQueue;
+        --g_asset_count;
+        ok = true;
+    }
+    ReleaseSRWLockExclusive(&g_asset_lock);
+    return ok;
+}
+
+void AssetCounts(std::uint64_t* sent, std::uint64_t* received) noexcept {
+    if (sent) *sent = static_cast<std::uint64_t>(g_tx_assets);
+    if (received) *received = static_cast<std::uint64_t>(g_rx_assets);
+}
 
 void TestBlackout(std::uint32_t ms) noexcept {
     InterlockedExchange64(&g_blackout_until, ms ? static_cast<LONG64>(NowMs() + ms) : 0);

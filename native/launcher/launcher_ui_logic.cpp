@@ -247,7 +247,8 @@ const char* const kSceneNames[static_cast<int>(Scene::count)] = {
     "29-debug-in-game",       "30-about",               "31-play-update-available", "32-play-update-downloading",
     "33-play-update-failed",  "34-play-updated",        "35-about-updates",       "36-debug-test-saves",
     "37-debug-local-test",    "38-play-join-characters", "39-play-join-hologram",   "40-debug-options-characters",
-    "41-debug-options-coop",  "42-debug-local-test-off",
+    "41-debug-options-coop",  "42-debug-local-test-off", "43-tools-textures",     "44-tools-textures-extracting",
+    "45-tools-textures-done",
 };
 }  // namespace
 
@@ -487,6 +488,22 @@ Options ParseCommandLine(const std::vector<std::wstring>& args) {
             o.mode = Options::Mode::write_session;
             o.write_role = args[++i];
             ++modes;
+        } else if (Is(a, L"--extract-textures")) {
+            o.mode = Options::Mode::extract_textures;
+            ++modes;
+        } else if (Is(a, L"--check-textures")) {
+            o.mode = Options::Mode::check_textures;
+            ++modes;
+        } else if (Is(a, L"--no-previews")) {
+            o.textures_previews = false;
+        } else if (Is(a, L"--allow-out-under")) {
+            if (!has_value || args[i + 1].empty()) { o.error = L"--allow-out-under needs a folder."; return o; }
+            o.textures_allow_under = args[++i];
+        } else if (Is(a, L"--cancel-after-sets")) {
+            double v = 0.0;
+            if (!has_value || !ParseNumber(args[i + 1], 0.0, 99.0, v)) { o.error = L"--cancel-after-sets needs a number from 0 to 99."; return o; }
+            o.textures_cancel_after = static_cast<int>(v);
+            ++i;
         } else if (Is(a, L"--end-session")) {
             o.mode = Options::Mode::end_session;
             ++modes;
@@ -532,7 +549,19 @@ Options ParseCommandLine(const std::vector<std::wstring>& args) {
         }
     }
     if (modes > 1) {
-        o.error = L"Use only one of --watch, --selftest, --screenshot-all, --write-session, --end-session and --help.";
+        o.error = L"Use only one of --watch, --selftest, --screenshot-all, --write-session, --end-session, --extract-textures, "
+                  L"--check-textures and --help.";
+        return o;
+    }
+    const bool textures_mode = o.mode == Options::Mode::extract_textures || o.mode == Options::Mode::check_textures;
+    if (textures_mode) {
+        if (o.write_out.empty()) o.error = L"--extract-textures and --check-textures need --out <folder>.";
+        else if (o.mock || !o.write_code.empty() || !o.write_transport.empty() || !o.write_udp_peer.empty() || o.write_port_local || o.write_port_peer)
+            o.error = L"--extract-textures goes only with --out, --game-dir, --no-previews, --allow-out-under and --cancel-after-sets.";
+        return o;
+    }
+    if (!o.textures_allow_under.empty() || !o.textures_previews || o.textures_cancel_after >= 0) {
+        o.error = L"--no-previews, --allow-out-under and --cancel-after-sets go with --extract-textures.";
         return o;
     }
     const bool session_flag = o.mode == Options::Mode::write_session || o.mode == Options::Mode::end_session;
@@ -575,6 +604,10 @@ const wchar_t* UsageText() {
            L"  --write-session local-test --out <dir>   the local two-player test's host.ini + guest.ini, exactly as\n"
            L"                            Debug > Local test writes them, into <dir> (testenv -LauncherIni)\n"
            L"  --end-session [--game-dir <dir>]  remove session.ini again (not while the game runs)\n"
+           L"  --extract-textures --out <dir> [--game-dir <dir>] [--no-previews]   Fragile's textures from the game's\n"
+           L"                            archives (read-only) into <dir>: the folder the launcher's settings name, or\n"
+           L"    --allow-out-under <dir> (tests) any folder inside <dir> outside Documents; --cancel-after-sets <n> (tests)\n"
+           L"  --check-textures --out <dir>   the Check my edits report of an extracted folder\n"
            L"  --update-feed <url>       read releases from a test feed on this PC (http://127.0.0.1:<port>/...)\n"
            L"  --update-now              with --update-feed: install an update found there at once\n"
            L"Used by the updater:\n"

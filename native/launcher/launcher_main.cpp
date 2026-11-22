@@ -755,6 +755,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         Print(Wide(report));
         return code;
     }
+    case Options::Mode::extract_textures:
+    case Options::Mode::check_textures:
+        // No window: one line per step on stdout (the window's child pipe, or a console).
+        return st::RunTextures(o, [](const std::string& line) { Print(Wide(line) + L"\n"); });
     case Options::Mode::screenshots:
     case Options::Mode::gui: break;
     }

@@ -1,0 +1,72 @@
+# Fragile's boots in the prop style (round 6 T3; docs/real-partner-body.md section 30.4): boots_look=prop, the v0.22 look
+# (Sam's real boots on her feet) with the fixes of the boots research. Hidden, on the launcher's own Local test files:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-boots-prop -SeedSaves complete-100 -GuestSeed profile-only
+# The host's own Sam goes barefoot first (dev_boots 3 0): a receiver without boots must still show the partner's boots prop
+# (its parts mirrored onto the prop's own). The guest's Chiral boots: the prop on the host's partner Fragile and Sam's boots
+# entity drawn over her self view (her feet scaled away). Intact All-terrain Lv1 boots (dev_boots 3 4: the mk1 mesh, her own
+# boots' design) and sole grass (3 2): her own boots on both screens (boots_own_porter=1), no prop, her feet not scaled.
+# Porter boots (3 3: the "mule" mesh): the prop is back. The
+# boots prop's 32 parts have one writer (the boots block): no look line ever sets its parts.
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini boots_look=prop
+start control 200
+@guest waitlog 60 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+action dev_boots 3 0
+waitnew 5 \[dev\] boots: SetShoesForcibly\(0\) requested
+wait 3000
+action gear 25 2
+@both goto mknot-road
+wait 6000
+@guest pad none 2400 ly=32767
+@guest pad none 900 ly=-32767
+# Chiral boots: Sam's boots on her feet on both screens (the barefoot host mirrors the parts onto the prop's own)
+waitlog 60 \[boots\] partner: Sam's boots on the body \(the prop\) \(boots_look=prop from the partner's look
+waitlog 40 \[boots\] the partner's boots prop .* follows the partner body's legs
+waitlog 40 \[gear\] boots prop .*: 32 ArtParts \(ours 32\), [0-9]+ of [0-9]+ named parts are the same resources: the partner's parts are mirrored
+waitlog 20 \[boots\] the partner body's feet scaled away under the boots prop
+@guest waitlog 30 \[boots\] self view: Sam's boots on her feet \(boots_look=prop
+wait 2000
+@both action gear 25 2
+screenshot 00-host-sees-guest-chiral-prop
+@guest screenshot 00-guest-self-chiral-prop
+# intact All-terrain Lv1 boots (mk1, her own boots' design): her own boots (boots_own_porter), no prop, feet not scaled
+@guest action dev_boots 3 4
+waitnew 30 \[boots\] partner: her own boots \(no prop\) \(boots_look=prop from the partner's look
+waitnew 10 \[boots\] the partner's boots prop: no pose target now
+@guest waitlog 30 \[boots\] self view: her own boots, Sam's hidden \(boots_look=prop, Sam's boots entity shown, parts 0000000[0-3]\)
+@guest waitlog 10 \[boots\] Sam's boots entity .* hidden under the self view
+wait 2000
+screenshot 01-host-sees-guest-lv1-own
+@guest screenshot 01-guest-self-lv1-own
+# sole grass: her own boots too
+@guest action dev_boots 3 2
+@guest waitnew 30 \[boots\] our boots' ArtParts: 32, shown 0000000C of FFFFFFFF
+wait 2000
+@guest screenshot 02-guest-self-solegrass-own
+screenshot 02-host-sees-guest-solegrass-own
+# porter boots (NormalBoots, the "mule" mesh): the prop is back on both screens
+@guest action dev_boots 3 3
+waitnew 30 \[boots\] the partner body's feet scaled away under the boots prop
+waitlog 5 \[boots\] partner: Sam's boots on the body \(the prop\) \(boots_look=prop from the partner's look, parts 00204000\)
+waitlog 5 \[gear\] boots prop: [0-9]+ part\(s\) set \(total (3[1-9]|[4-9][0-9])\)
+@guest waitlog 30 \[boots\] self view: Sam's boots on her feet \(boots_look=prop, Sam's boots entity shown, parts 00204000\)
+@guest waitlog 10 \[boots\] Sam's boots entity .* shown again
+wait 2000
+screenshot 03-host-sees-guest-porter-prop
+@guest screenshot 03-guest-self-porter-prop
+@both action gear 25 2
+@both action gear 0
+# one writer for the boots prop's parts: the look never sets them
+nolog \[look\] prop [0-9]+ 'boots'.* [1-9][0-9]* part\(s\) set
+nolog \[boots\] .*FAULTED
+@guest nolog \[boots\] .*FAULTED
+nolog \[gear\] .*FAULT
+@guest nolog \[gear\] .*FAULT
+@both action log_status
+@guest quit
+wait 3000
+quit

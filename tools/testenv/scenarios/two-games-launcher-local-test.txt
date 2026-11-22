@@ -21,6 +21,10 @@ waitlog 120 \[overlay\] input attached
 @guest waitlog 120 \[overlay\] input attached
 waitlog 10 \[config\] host_save=1
 @guest waitlog 10 \[config\] host_save=1
+# Fragile's textures (round 6): the launcher writes the player's own textures folder (textures_dir); a hidden run never
+# gets it (HiddenIniFromLauncher drops it), so neither game reads the player's Documents.
+waitlog 10 \[config\] textures_dir=- \(none\)
+@guest waitlog 10 \[config\] textures_dir=- \(none\)
 waitlog 10 \[mod\] local two-instance test: input host
 @guest waitlog 10 \[mod\] local two-instance test: input guest
 waitlog 10 \[coop\] host-held save session ON \(host

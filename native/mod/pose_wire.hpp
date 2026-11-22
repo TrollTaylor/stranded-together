@@ -361,17 +361,22 @@ std::uint32_t GearLookHash(const GearLook& l) noexcept;
 // frame extends with the cargo stacked on it, its cover joints shape the rain cover; docs/real-
 // partner-body.md section 13). Rotations as STJ1's smallest-three, translations in 1e-4 m.
 //
-//   'STK1' | u8 version (1) | u8 item | u16 layout hash | u32 skeleton layout hash | u8 n | u8 0 | u16 0  (16 bytes)
+//   'STK1' | u8 version (1) | u8 item | u16 layout hash | u32 skeleton layout hash | u8 n | u8 flags | u16 0  (16 bytes)
+//   flags bit 0 (round 6): the held item's stream (section 31), else the backpack's. Older senders send 0 (the receiver then
+//   tells the streams apart by its own copy of the layout).
 //   n x { 6-byte rotation | i16 x, y, z }                                             (12 bytes each)
 inline constexpr std::uint8_t kGearPoseMagic[4] = {'S', 'T', 'K', '1'};
 inline constexpr std::uint8_t kGearPoseVersion = 1;
 inline constexpr std::size_t kGearPoseHeaderSize = 16;
-inline constexpr unsigned kMaxGearPoseJoints = 64;
+// 80 since round 6: a held item's own skeleton (the folding ladder has 70 joints, section 31).
+inline constexpr unsigned kMaxGearPoseJoints = 80;
 inline constexpr std::size_t GearPoseSize(unsigned n) { return kGearPoseHeaderSize + n * 12u; }
-inline constexpr std::size_t kMaxGearPoseFrameSize = GearPoseSize(kMaxGearPoseJoints);  // 784
+inline constexpr std::size_t kMaxGearPoseFrameSize = GearPoseSize(kMaxGearPoseJoints);  // 976
 
+inline constexpr std::uint8_t kGearPoseHeld = 1;
 struct GearPose {
     std::uint8_t item = 0;
+    std::uint8_t flags = 0;      // kGearPoseHeld: the held item's pose (not the backpack's)
     std::uint16_t layout = 0;
     std::uint32_t skeleton = 0;  // the skeleton's layout hash (the receiver's copy must have the same)
     std::uint8_t n = 0;          // joints (1..kMaxGearPoseJoints)

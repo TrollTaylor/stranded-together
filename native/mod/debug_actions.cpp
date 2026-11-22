@@ -176,6 +176,7 @@ bool DoNameTags(const Request& r, char* msg, std::size_t cap) { return game::Nam
 bool DoCollision(const Request& r, char* msg, std::size_t cap) { return game::CollisionCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoGear(const Request& r, char* msg, std::size_t cap) { return game::GearCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoSmooth(const Request& r, char* msg, std::size_t cap) { return game::RealBodyCommand(10, r.v, msg, cap); }
+bool DoTex(const Request& r, char* msg, std::size_t cap) { return game::RealBodyCommand(11, r.v, msg, cap); }
 bool DoAudioProbe(const Request& r, char* msg, std::size_t cap) { return game::AudioProbeCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoSelfVoice(const Request& r, char* msg, std::size_t cap) { return game::SelfVoiceCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoVoiceSync(const Request& r, char* msg, std::size_t cap) { return game::VoiceSyncCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
@@ -321,7 +322,7 @@ constexpr Row kRows[] = {
      &DoStoryLoad},
     {{Action::dev_goto, Tab::dev, "Dev goto", "Teleport Sam anywhere in this area: x y [z] (z 0 = the topmost ground), then wait for the ground to stream in (sandboxed saves only).", false},
      &DoDev<dev::Op::go_to>},
-    {{Action::dev_boots, Tab::dev, "Dev boots", "Boots' life: 0 log, 1 <percent> set it (sandboxed saves only), 2 <0/1> a 1 s meter in the log.", false},
+    {{Action::dev_boots, Tab::dev, "Dev boots", "Boots: 0 log, 1 <percent> set the life (sandboxed saves only), 2 <0/1> a 1 s meter in the log, 3 <type 0..10> equip that boot type (sandboxed saves only).", false},
      &DoDev<dev::Op::boots>},
     {{Action::world_dump, Tab::dev, "World dump", "Structures (world sync): the census to the log: counts per category and net type, the nearest n (category c or -1 all, n default 16). Read only.", false},
      &DoWorld<0>},
@@ -339,6 +340,8 @@ constexpr Row kRows[] = {
      &DoWorld<6>},
     {{Action::dev_rope, Tab::dev, "Dev rope", "A climbing anchor with its rope in front of Sam: <length 1..30 m> <level 0..2> [m ahead, default 3] (offline; sandboxed saves only; the guest asks the host).", false},
      &DoWorld<7>},
+    {{Action::tex, Tab::tools, "Tex", "Fragile's edited textures: 0 status, 1 rescan the folder, 7 resend the look; hidden runs: 2 probe dump, 3 c colour (-1 follow), 4 0/1 off/on, 5 filter 0/1/2, 9 n test pattern.", false},
+     &DoTex},
 };
 constexpr std::size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);
 static_assert(kRowCount == static_cast<std::size_t>(Action::count), "every Action needs exactly one registry row");

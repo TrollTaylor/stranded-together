@@ -1,0 +1,95 @@
+# Fragile's back through a ladder and the rain cover wearing out (docs/real-partner-body.md section 28), hidden, on the
+# launcher's own Local test files:
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-fragile-cover -Id round6-cargo -SeedSaves complete-100 -GuestSeed profile-only
+# The user (after v0.23.0): "i weirdly got fragiles cargo to dispear off her back im guessing after i placed a ladder with her".
+# Their logs: no delivery cargo; the piece that went was the backpack's RAIN COVER (backpack_temp 0dfece64), from the host's
+# own Sam too (no ladder there): timefall wore it out in both worlds (the host's save, loaded twice) and the game removed it.
+# Part A, clear weather: the guest takes a ladder from the real tools radial, holds LT (hologram), places it with RT and
+# collapses it again (Hold START): her back on both screens before, in hand, hologram, placed and after; nothing goes.
+# Part B, heavy timefall: the 100% save's cover is at 4 % (180 of 4500, level 2), nearly worn out like the user's; the game's own
+# timefall update wears it out in about 100 s in each world and removes it (no write of ours: `gear 24 <percent>` would
+# only make it quicker). The logs say it in one line on both sides; the cover goes from her back and his on both screens.
+# Both stand on the same spot (as two-games-world-ladder-ui): the host's screen shows her back with his own Sam beside it.
+# Pass: the log lines below; no FAULT, no OTGC WRITE, both games exit 0.
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+waitlog 10 \[world\] world sync ON \(host\): shared structures \(PCC structures, ladders and climbing ropes
+@guest waitlog 120 \[world\] guest: snapshot #1 complete: bound [0-9]+, created 0, removed 0, replaced 0
+waitlog 20 \[gear\] wear: the backpack's rain cover \(level [1-3]\): durability [0-9.]+ %
+@guest waitlog 20 \[gear\] wear: the backpack's rain cover \(level [1-3]\): durability [0-9.]+ %
+@both goto -1153.4 338.0
+wait 3000
+@guest action world_sync 15 0 15
+@guest until 45 300 \[world\] camera aimed #1 => pad none 120 rx=32767
+@guest wait 1500
+note A0 before (clear weather)
+@guest action gear 0
+action gear 0
+@guest screenshot A0-guest-before
+screenshot A0-host-before
+note A1 the ladder from the tools radial (in her hand)
+@guest pad DPAD_RIGHT 1200 keep
+@guest pad DPAD_RIGHT 900 rx=18795 ry=-26840 keep
+@guest pad none 0
+@guest wait 2500
+@guest action gear 0
+@guest screenshot A1-guest-ladder-in-hand
+screenshot A1-host-ladder-in-hand
+note A2 the hologram (LT held)
+@guest pad none 1500 lt=255 keep
+@guest screenshot A2-guest-hologram
+screenshot A2-host-hologram
+@guest pad none 300 lt=255 rt=255 keep
+@guest pad none 1500 lt=255 keep
+@guest pad none 0
+@guest waitlog 10 \[world\] guest: local build type 25 \(ladder\) held, request #[0-9]+ sent
+@guest waitlog 10 \[world\] guest: build #[0-9]+ confirmed as hid [0-9]+
+@guest waitlog 10 \[world\] guest: mirror hid [0-9]+ ok: gid [0-9]+ state 2
+wait 2500
+note A3 placed
+@guest action gear 0
+action gear 0
+@guest screenshot A3-guest-placed
+screenshot A3-host-placed
+note A4 she collapses it again (Hold START)
+@guest pad START 2600
+@guest wait 2500
+@guest waitlog 10 \[world\] guest: we picked up hid [0-9]+ \(ladder, durability [0-9]+ s left\) -> REMREQ pickup
+wait 3000
+@guest action gear 0
+action gear 0
+@guest screenshot A4-guest-after-collapse
+screenshot A4-host-after-collapse
+# nothing left her back (or his) through the ladder
+@guest nolog \[gear\] our gear: the backpack's rain cover is gone
+nolog \[gear\] the partner's gear: the backpack's rain cover is gone
+@guest nolog \[gear\] wear: the backpack's rain cover broke
+note B0 heavy timefall: both covers wearing (4 % left)
+@both action dev_weather 2
+wait 5000
+@guest screenshot B0-guest-timefall
+screenshot B0-host-timefall
+@guest waitlog 160 \[gear\] wear: the backpack's rain cover broke: worn out in timefall
+@guest waitlog 10 \[gear\] our gear: the backpack's rain cover is gone
+waitlog 20 \[gear\] the partner's gear: the backpack's rain cover is gone
+waitlog 60 \[gear\] wear: the backpack's rain cover broke: worn out in timefall
+waitlog 10 \[gear\] our gear: the backpack's rain cover is gone
+@guest waitlog 20 \[gear\] the partner's gear: the backpack's rain cover is gone
+wait 2500
+note B1 both covers gone
+@guest action gear 0
+action gear 0
+@guest screenshot B1-guest-covers-gone
+screenshot B1-host-covers-gone
+@both action dev_weather 0
+wait 2000
+nolog \[world\].*FAULT
+@guest nolog \[world\].*FAULT
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@guest quit
+wait 3000
+quit

@@ -6,6 +6,8 @@
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario fragile-suit-colours -SeedSaves complete-100
 role solo
 timeout 300
+# Round 6: the tint is the fallback option now (session.ini fragile_suit_colour, default 0): this scenario turns it on.
+ini fragile_suit_colour=1
 ini partner_body=real
 ini pose_hook=1
 ini my_character=fragile_suit

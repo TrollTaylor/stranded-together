@@ -1,0 +1,104 @@
+# Round 6 held items (docs/real-partner-body.md section 31), solo: the partner's placement path on a debug Fragile that mirrors
+# us and wears our gear (`gear 4 1`, `real_spawn 16 3.0 1`), and our own self view Fragile (porter suit, fit on). From the
+# 100% save's tools (D-pad right held + right stick): the ladder (5 o'clock), the PCC (7:30), the climbing anchor (down);
+# from the weapon wheel: the container repair spray (left) and the assault rifle (upper left, the v0.9 cutscene prop: the
+# control). Each equipped, then LT held (aiming / the hologram); the debug Fragile must hold the same item as our self view.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios held-items-solo -Id round6-h -SeedSaves complete-100
+role solo
+timeout 360
+ini partner_body=real
+ini my_character=fragile_suit
+ini self_character=1
+ini dev_tools=1
+start
+waitlog 60 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+goto mknot-road
+wait 4000
+waitlog 5 \[config\] held_items=2
+action gear 4 1
+action real_spawn 16 3.0 1
+waitlog 30 \[real\] 'fragile_suit' is live
+wait 3000
+action gear 26 9
+screenshot 01-empty
+# the ladder
+pad DPAD_RIGHT 1200 keep
+pad DPAD_RIGHT 900 rx=18795 ry=-26840 keep
+pad none 0
+waitlog 10 \[gear\] held clone 'ds/entities/weapons/ladder'
+wait 2000
+screenshot 02-ladder-equipped
+action gear 26 9
+pad none 2500 lt=255 keep
+screenshot 03-ladder-lt
+action gear 26 9
+pad none 0
+wait 800
+action gear 26 9
+# the PCC
+pad DPAD_RIGHT 1200 keep
+pad DPAD_RIGHT 900 rx=-26200 ry=-19700 keep
+pad none 0
+waitlog 10 \[gear\] held clone 'ds/entities/weapons/builder'
+wait 2000
+screenshot 04-pcc-equipped
+action gear 26 9
+pad none 2500 lt=255 keep
+screenshot 05-pcc-lt
+pad none 0
+wait 800
+# the climbing anchor
+pad DPAD_RIGHT 1200 keep
+pad DPAD_RIGHT 900 rx=0 ry=-32767 keep
+pad none 0
+waitlog 10 \[gear\] held clone 'ds/entities/weapons/pile
+wait 2000
+screenshot 06-anchor-equipped
+pad none 2500 lt=255 keep
+screenshot 07-anchor-lt
+pad none 0
+wait 800
+# the ladder again (the 60 s spare: shown at once)
+pad DPAD_RIGHT 1200 keep
+pad DPAD_RIGHT 900 rx=18795 ry=-26840 keep
+pad none 0
+wait 1500
+screenshot 08-ladder-again
+# the container repair spray (the weapon wheel's left)
+pad dpad_right 600 keep
+pad dpad_right 900 lx=-32767 ly=0 rx=-32767 ry=0 keep
+pad dpad_right 400 keep
+pad none 0
+wait 3000
+screenshot 09-spray
+pad none 2000 lt=255 keep
+screenshot 10-spray-lt
+pad none 0
+wait 800
+# the rifle (the cutscene prop, the control)
+pad dpad_right 600 keep
+pad dpad_right 900 lx=-23170 ly=23170 rx=-23170 ry=23170 keep
+pad dpad_right 400 keep
+pad none 0
+wait 3000
+screenshot 11-rifle
+pad none 2000 lt=255 keep
+screenshot 12-rifle-lt
+pad none 0
+wait 800
+# empty hands (the wheel's right)
+pad dpad_right 600 keep
+pad dpad_right 900 lx=32767 ly=0 rx=32767 ry=0 keep
+pad dpad_right 400 keep
+pad none 0
+wait 3000
+screenshot 13-put-away
+action gear 26 9
+# the put-away clones are kept hidden for 60 s for the next draw, then removed (our own entities: no spawner to release)
+waitlog 75 \[gear\] held clone '.*' removed: entity removed
+action gear 26 9
+action real_stats
+action log_status
+nolog \[gear\] creating a held clone .* FAULTED
+nolog \[gear\] held items: .* does not match
+quit

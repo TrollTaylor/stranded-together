@@ -9,6 +9,7 @@
 #include "launcher_entry.hpp"
 
 #include "core/core_model.hpp"
+#include "core/core_textures.hpp"
 #include "core/core_update.hpp"
 #include "core/core_util.hpp"
 #include "launcher_join_code.hpp"
@@ -53,6 +54,17 @@ int RunWriteSession(const ui::Options& o, std::string& report) {
 }
 
 int RunEndSession(const std::wstring& game_dir, std::string& report) { return core::RunEndSession(SessionFolder(game_dir), report); }
+
+int RunTextures(const ui::Options& o, const std::function<void(const std::string&)>& print) {
+    core::ExtractRequest r;
+    r.game_dir = SessionFolder(o.game_dir);
+    r.out_dir = core::FullPath(o.write_out);
+    if (!o.textures_allow_under.empty()) r.allow_under = core::FullPath(o.textures_allow_under);
+    r.previews = o.textures_previews;
+    r.cancel_after_sets = o.textures_cancel_after;
+    r.check_only = o.mode == ui::Options::Mode::check_textures;
+    return core::RunExtractTextures(r, print);
+}
 
 void* ClaimFolderInstance(const std::wstring& name, const std::function<bool()>& bring_forward) {
     HANDLE mutex = CreateMutexW(nullptr, TRUE, name.c_str());

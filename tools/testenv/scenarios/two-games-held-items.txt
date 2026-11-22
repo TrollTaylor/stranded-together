@@ -1,0 +1,127 @@
+# Round 6 held items between two games (docs/real-partner-body.md section 31), hidden, on the launcher's own Local test files:
+# whatever a player holds is in that player's hand on the other screen: the ladder (folded in the hand; unfolded over the
+# shoulder while LT is held), the PCC, the climbing anchor, the container repair spray (held clones of the item's own
+# resource, with the item's own skinned pose), and the assault rifle (the v0.9 cutscene prop: the control). First the guest
+# (her Fragile on the host's screen), then the host (his Sam on the guest's screen).
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-held-items -Id round6-h -SeedSaves complete-100 -GuestSeed profile-only
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+@guest waitlog 60 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+waitlog 5 \[config\] held_items=2
+@guest waitlog 5 \[config\] held_items=2
+@both goto mknot-road
+wait 6000
+@guest pad none 2400 ly=32767
+@guest pad none 900 ly=-32767
+wait 2500
+screenshot 00-host-sees-guest
+@guest screenshot 00-guest-self
+# ---- the guest: the ladder (tools: D-pad right held, right stick to 5 o'clock)
+@guest pad DPAD_RIGHT 1200 keep
+@guest pad DPAD_RIGHT 900 rx=18795 ry=-26840 keep
+@guest pad none 0
+waitlog 15 \[gear\] held clone [0-9]+ 'ds/entities/weapons/ladder' shown
+wait 1500
+screenshot 01-host-sees-guest-ladder
+@guest screenshot 01-guest-self-ladder
+@guest pad none 2500 lt=255 keep
+screenshot 02-host-sees-guest-ladder-lt
+@guest screenshot 02-guest-self-ladder-lt
+@guest pad none 0
+wait 800
+action gear 26 9
+# the PCC (7:30)
+@guest pad DPAD_RIGHT 1200 keep
+@guest pad DPAD_RIGHT 900 rx=-26200 ry=-19700 keep
+@guest pad none 0
+waitlog 15 \[gear\] held clone [0-9]+ 'ds/entities/weapons/builder' shown
+wait 1500
+screenshot 03-host-sees-guest-pcc
+@guest pad none 2500 lt=255 keep
+screenshot 04-host-sees-guest-pcc-lt
+@guest screenshot 04-guest-self-pcc-lt
+@guest pad none 0
+wait 800
+# the climbing anchor (down)
+@guest pad DPAD_RIGHT 1200 keep
+@guest pad DPAD_RIGHT 900 rx=0 ry=-32767 keep
+@guest pad none 0
+waitlog 15 \[gear\] held clone [0-9]+ 'ds/entities/weapons/pile
+wait 1500
+screenshot 05-host-sees-guest-anchor
+@guest pad none 2500 lt=255 keep
+screenshot 06-host-sees-guest-anchor-lt
+@guest pad none 0
+wait 800
+# the container repair spray (the weapon wheel's left)
+@guest pad dpad_right 600 keep
+@guest pad dpad_right 900 lx=-32767 ly=0 rx=-32767 ry=0 keep
+@guest pad dpad_right 400 keep
+@guest pad none 0
+waitlog 15 \[gear\] held clone [0-9]+ 'ds/entities/weapons/coating_spray' shown
+wait 1500
+screenshot 07-host-sees-guest-spray
+# the assault rifle (upper left: the cutscene prop, the control)
+@guest pad dpad_right 600 keep
+@guest pad dpad_right 900 lx=-23170 ly=23170 rx=-23170 ry=23170 keep
+@guest pad dpad_right 400 keep
+@guest pad none 0
+wait 3000
+screenshot 08-host-sees-guest-rifle
+# empty hands (right)
+@guest pad dpad_right 600 keep
+@guest pad dpad_right 900 lx=32767 ly=0 rx=32767 ry=0 keep
+@guest pad dpad_right 400 keep
+@guest pad none 0
+wait 3000
+screenshot 09-host-sees-guest-put-away
+@guest action gear 26 9
+action gear 26 9
+# ---- the host: the guest turns her camera round to look at him
+@guest pad none 1300 rx=32767
+wait 1500
+@guest screenshot 10-guest-sees-host
+pad DPAD_RIGHT 1200 keep
+pad DPAD_RIGHT 900 rx=18795 ry=-26840 keep
+pad none 0
+@guest waitlog 15 \[gear\] held clone [0-9]+ 'ds/entities/weapons/ladder' shown
+wait 1500
+@guest screenshot 11-guest-sees-host-ladder
+screenshot 11-host-self-ladder
+pad none 2500 lt=255 keep
+@guest screenshot 12-guest-sees-host-ladder-lt
+pad none 0
+wait 800
+pad DPAD_RIGHT 1200 keep
+pad DPAD_RIGHT 900 rx=-26200 ry=-19700 keep
+pad none 0
+@guest waitlog 15 \[gear\] held clone [0-9]+ 'ds/entities/weapons/builder' shown
+wait 1500
+@guest screenshot 13-guest-sees-host-pcc
+pad none 2500 lt=255 keep
+@guest screenshot 14-guest-sees-host-pcc-lt
+pad none 0
+wait 800
+pad dpad_right 600 keep
+pad dpad_right 900 lx=32767 ly=0 rx=32767 ry=0 keep
+pad dpad_right 400 keep
+pad none 0
+wait 3000
+@guest screenshot 15-guest-sees-host-put-away
+action gear 26 9
+@guest action gear 26 9
+action log_status
+@guest action log_status
+nolog \[gear\] creating a held clone .* FAULTED
+@guest nolog \[gear\] creating a held clone .* FAULTED
+nolog \[gear\] held items: .* (does not match|off)
+@guest nolog \[gear\] held items: .* (does not match|off)
+nolog \[gear\] a held clone of .* held clones off
+@guest nolog \[gear\] a held clone of .* held clones off
+@guest quit
+wait 3000
+quit

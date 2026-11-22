@@ -26,6 +26,12 @@
 #include "ride_together.hpp"
 #include "self_predict.hpp"
 #include "suit_colour.hpp"
+#include "coop_session.hpp"
+#include "fragile_textures.hpp"
+#include "texture_looks.hpp"
+#include "texture_share.hpp"
+#include "boots_look.hpp"
+#include "partner_gear.hpp"
 #include "suit_colour_math.hpp"
 
 namespace st::realbody {
@@ -470,7 +476,7 @@ std::atomic<std::uint32_t> g_gear_xbody{0};  // self slot ticks placed on the bo
 // Gear skinned poses (partner_gear.cpp publishes them): the partner's backpack pose written onto our
 // copies of it (the backpack prop, the rain cover ...) in their own model updates, after the original
 // animate, like the bodies (docs/real-partner-body.md section 13).
-constexpr unsigned kMaxGearPoseJ = 64;
+constexpr unsigned kMaxGearPoseJ = wire::kMaxGearPoseJoints;  // 80: a held item's own skeleton too (section 31)
 struct GearPoseBuf {
     std::uint32_t n = 0;
     float q[kMaxGearPoseJ][4];
@@ -2731,6 +2737,9 @@ outfit::Dress g_dress;              // what was done to the partner slot's body
 // fragile_suit bodies; -1 = follow the colour, 0..16 the debug override (real_outfit 5).
 suitcol::Dress g_suit_p, g_suit_me;
 int g_suit_override = -1;
+// Round 6 T2: the user's edited textures on the same bodies (fragile_textures.hpp, docs section 29); one owner per body:
+// ftex while a look of edited textures exists, else the v0.23 tint (fragile_suit_colour=1), else her own suit.
+ftex::Dress g_tex_p, g_tex_me;
 
 // ---------------------------------------------------------------- body slot (game thread)
 double g_now = 0;                  // the tick's clock (link::NowMsPrecise), for debug-started spawns
@@ -2738,6 +2747,7 @@ double g_now = 0;                  // the tick's clock (link::NowMsPrecise), for
 void ResetSlot(BodySlot& b) {
     if (&b == &g_slots[0]) outfit::Forget(g_dress);
     suitcol::Forget(&b == &g_slots[0] ? g_suit_p : g_suit_me);
+    ftex::Forget(&b == &g_slots[0] ? g_tex_p : g_tex_me);
     b.owner = Owner::none;
     b.phase = Phase::idle;
     b.spawn = holo::Spawn{};
@@ -3923,23 +3933,101 @@ bool IsFragileSuit(const bodies::Body* b) { return b && std::strcmp(b->key, "fra
 // slot's fragile_suit body wears the colour the other player sent (STJ1 outfit: that player's own Sam's suit colour),
 // the self view's wears our own Sam's colour, so both screens show the same. Only while our player is up, 0.5 s after the
 // body became live; suit_colour rate-limits, waits for a change to hold and logs every step.
+// Round 6 T2: one body's suit from the edited textures when `look` has any (taking the v0.23 tint off first), else the tint
+// (fragile_suit_colour=1) or her own suit. `have_look`: false while the look is not known yet (the worker rebuilds it
+// after an edit or a boots change): nothing changes meanwhile, the bound look stays on until the new one is ready.
+// `tint`: the v0.23 tint for an empty look (-1 this game's fragile_suit_colour, 0 off, 1 on: the guest's choice, LOOK bit 1).
+void DressOne(ftex::Dress& td, suitcol::Dress& sd, std::uintptr_t e, bool have_look, const ftex::Look& look, std::uint8_t colour, double now_ms,
+              int tint = -1) {
+    if (ftex::Enabled() && !have_look) {
+        ftex::Keep(td, e, now_ms);
+        return;
+    }
+    if (ftex::Enabled() && !look.Empty()) {
+        if (sd.nh) return suitcol::Undo(sd, "edited textures");
+        ftex::Apply(td, e, look, now_ms);
+        return;
+    }
+    if (td.nh || td.bound) {
+        ftex::Apply(td, e, ftex::Look{}, now_ms);  // takes ours off first (one step), then the tint may apply
+        if (td.nh) return;
+    }
+    suitcol::Apply(sd, e, colour, now_ms, tint);
+}
+
+// Round 6 T3 (section 30): the boots look she wears: our Sam's boot type's folder, worn (a broken or loose-sole part shows)
+// and the gold / silver suit (Gold\ / Silver\ inside it). -1 while the type is unknown (no boots pictures then).
+int OwnBootsKey(int colour, int* type_out, bool* worn_out, bool* own_out) {
+    int type = -1;
+    std::uint32_t visible = 0;
+    bool own = true;
+    gear::OwnBoots(&type, &visible, &own);
+    const int forced = ftex::ForcedBoots();
+    if (forced >= 0) type = forced;
+    const bool worn = bootslook::Worn(visible);
+    *type_out = type, *worn_out = worn, *own_out = own;
+    return bootslook::Key(bootslook::FolderForType(type), worn, bootslook::MetalOfColour(colour));
+}
+
+// The guest's own look for colour c and her boots (the test pattern while tex 9 is on). False while the worker has not
+// settled.
+bool OwnTextureLook(int c, ftex::Look* l) {
+    if (!ftex::Enabled()) return false;
+    const int forced = ftex::ForcedColour();
+    if (forced >= 0) c = forced;
+    int type = -1;
+    bool worn = false, own = true;
+    const int bk = OwnBootsKey(c, &type, &worn, &own);
+    ftex::looks::SetWantedColour(c);
+    ftex::looks::SetWantedBoots(bk);
+    static int logged = -2;
+    if (bk != logged) {
+        logged = bk;
+        Log("[tex] her boots: type %d%s (look key %d, boots_look=%s)", type, worn ? ", worn" : "", bk, own ? "own" : "prop");
+    }
+    if (ftex::PatternOn()) return ftex::looks::PatternLook(l);
+    return ftex::looks::OwnLook(c, bk, l);
+}
+
 void DressFragile(game::Entity* local, bool local_active, double now_ms) {
     if (!local || !local_active) return;
+    ftex::NoteGameThread();
+    ftex::FreeTick(now_ms, coop::WorldReady(nullptr) || !coop::Active());  // the local player is up here
+    g_tex_p.who = "partner";
+    g_tex_me.who = "self";
     if (g_p.phase == Phase::live && IsFragileSuit(g_p.body) && GetTickCount64() - g_p.live_tick >= 500 && holo::SpawnAlive(g_p.spawn)) {
         std::uint8_t c = 0xFF;
         wire::Outfit o;
         if (g_p.owner == Owner::partner && g_have_partner_outfit) c = g_partner_outfit.suit_colour;
         else if (g_p.owner == Owner::debug && outfit::ReadLocal(reinterpret_cast<std::uintptr_t>(local), &o)) c = o.suit_colour;
+        ftex::Look l;
+        bool have = false;
+        int tint = -1;
+        if (g_p.owner == Owner::partner) {
+            have = texshare::PartnerLook(&l);  // the guest's look over the link (host side)
+            tint = texshare::PartnerTint();    // and the guest's own fragile_suit_colour choice (-1: none received)
+        } else if (c != 0xFF) {
+            g_tex_p.who = "debug";
+            have = OwnTextureLook(suitcol::Wanted(g_suit_override, c), &l);
+        }
         if (c != 0xFF || g_suit_override >= 0)
-            suitcol::Apply(g_suit_p, reinterpret_cast<std::uintptr_t>(g_p.spawn.e), suitcol::Wanted(g_suit_override, c), now_ms);
+            DressOne(g_tex_p, g_suit_p, reinterpret_cast<std::uintptr_t>(g_p.spawn.e), have, l, suitcol::Wanted(g_suit_override, c), now_ms, tint);
     }
     if (g_me.phase == Phase::live && IsFragileSuit(g_me.body) && GetTickCount64() - g_me.live_tick >= 500 && holo::SpawnAlive(g_me.spawn)) {
         wire::Outfit o;
         const bool have = outfit::ReadLocal(reinterpret_cast<std::uintptr_t>(local), &o);
         // round 5: on a host-held save guest, her remembered pick (suit_colour.hpp GuestColour) when she has not picked since this load
-        if (have || g_suit_override >= 0)
-            suitcol::Apply(g_suit_me, reinterpret_cast<std::uintptr_t>(g_me.spawn.e),
-                           suitcol::Wanted(g_suit_override, have ? suitcol::GuestColour(o.suit_colour) : 0), now_ms);
+        if (have || g_suit_override >= 0) {
+            const std::uint8_t colour = suitcol::Wanted(g_suit_override, have ? suitcol::GuestColour(o.suit_colour) : 0);
+            ftex::Look l;
+            const bool have_look = OwnTextureLook(colour, &l);
+            texshare::SetOwnLook(have_look, l, colour);
+            int btype = -1;
+            bool bworn = false, bown = true;
+            OwnBootsKey(colour, &btype, &bworn, &bown);
+            texshare::SetOwnBoots(btype, bworn, bown);
+            DressOne(g_tex_me, g_suit_me, reinterpret_cast<std::uintptr_t>(g_me.spawn.e), have_look, l, colour, now_ms);
+        }
     }
 }
 
@@ -5173,6 +5261,7 @@ void ConfigureSelf(const bodies::Body* body) noexcept {
     if (body) Log("[self] self view on: '%s' (%s) is shown in place of the local Sam on this screen", body->key, body->label);
 }
 bool SelfConfigured() noexcept { return g_self_on && g_self_body; }
+const bodies::Body* SelfBody() noexcept { return g_self_on ? g_self_body : nullptr; }
 void ConfigureSelfFit(bool on) noexcept {
     g_fit_cfg.store(on);
     if (!on) FitOff();
@@ -5953,6 +6042,21 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
                 g_freq.calls, g_freq.faults, g_freq.off ? ", OFF" : "", g_prop_boosts, g_prop_restores);
             Log("[smooth] %s", msg);
             return true;
+        }
+        case 11: {  // tex <mode> <a> <b>: Fragile's edited textures (fragile_textures.hpp DebugCommand)
+            const std::uintptr_t es = g_me.phase == Phase::live && IsFragileSuit(g_me.body) ? reinterpret_cast<std::uintptr_t>(g_me.spawn.e) : 0;
+            const std::uintptr_t ep = g_p.phase == Phase::live && IsFragileSuit(g_p.body) ? reinterpret_cast<std::uintptr_t>(g_p.spawn.e) : 0;
+            const int mode = static_cast<int>(v[0]);
+            if (mode == 0) {
+                char a[200], c2[200];
+                Log("[tex] bodies: %s; %s", ftex::Describe(g_tex_me, a, sizeof(a)), ftex::Describe(g_tex_p, c2, sizeof(c2)));
+                texshare::LogStatus();
+            }
+            if (mode == 4 && v[1] <= 0) {
+                ftex::Undo(g_tex_me, "tex 4 0");
+                ftex::Undo(g_tex_p, "tex 4 0");
+            }
+            return ftex::DebugCommand(mode, v[1], v[2], es, ep, msg, cap);
         }
         default:
             Set(msg, cap, "unknown op %d", op);

@@ -1,0 +1,57 @@
+# Fragile's edited textures across a load (docs/textures.md; docs/real-partner-body.md section 29), hidden, on the
+# launcher's own Local test files. The run's own textures folder with generated patterns in "16 Gold" (checker) and
+# "09 Mustard" (stripes). The guest picks palette 9 (its Sam's inventory byte; remembered, round 5): both screens show the
+# stripes (sent over the link). Then the host saves and loads that save in the world; the guest follows (her Sam is gold
+# again in the host's save, Fragile keeps the pick). After the load both games dress the new Fragile bodies again from
+# the textures they already have: no new transfer, no fault.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-fragile-textures-reload -SeedSaves complete-100 -GuestSeed profile-only
+role host
+graphics low
+timeout 360
+launcherini local-test
+textures extract
+textures pattern checker 16 Gold
+textures pattern stripes 09 Mustard
+start control 200
+@guest waitlog 60 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+@both goto mknot-road
+wait 6000
+# the guest picks palette 9 before the first transfer
+@guest action real_outfit 4 9
+@guest waitnew 15 \[suit\] the guest picked suit colour 9: remembered
+@guest waitlog 60 \[tex\] body self .*: look .* bound .* kept [1-9]
+waitlog 150 \[tex\] partner look .*: complete for colour 9
+waitlog 30 \[tex\] body partner .*: look .* bound .* kept [1-9]
+wait 1500
+screenshot 01-host-sees-guest-9
+@guest screenshot 01-guest-self-9
+# ---- the host's game saves, then loads that save in the world; the guest loads it too
+until 30 1500 \[save\] #[0-9]+ pending \(forced save F[0-9]+\): auto save => action save_guard 1 4 1
+waitlog 60 \[save\] finished ok: #[0-9]+ \(forced save F[0-9]+\)
+wait 2000
+action save_guard 3
+waitnew 20 \[coop\] host: in-world Load \(type 0x4
+@guest waitnew 120 \[coop\] guest: wrote the host's save #[0-9]+ .*
+@guest waitnew 180 \[coop\] guest: in the world after .* save #[0-9]+
+waitnew 120 \[coop\] host: the partner's RESULT for load #[0-9]+: ok
+# the guest's in-world line can come before its Sam is playable (a goto 0.3 s later was refused: run 20261122-140833)
+@both waitworld 60
+@both goto mknot-road
+wait 8000
+@guest pad none 1500 ly=32767
+wait 2000
+@both action tex 0
+@guest waitnew 10 \[tex\] bodies: self [0-9A-F]+ look [0-9a-f]{8} overrides 2
+waitlog 10 \[tex\] bodies: .*partner [0-9A-F]+ look [0-9a-f]{8} overrides 2
+screenshot 02-host-sees-guest-after-load
+@guest screenshot 02-guest-self-after-load
+@both action log_status
+nolog \[tex\] .*FAULTED
+@guest nolog \[tex\] .*FAULTED
+nolog \[tex\] refused
+nolog \[tex\] .*not undone
+@guest nolog \[tex\] .*not undone
+@guest quit
+wait 3000
+quit

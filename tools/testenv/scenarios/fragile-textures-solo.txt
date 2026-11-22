@@ -1,0 +1,63 @@
+# Fragile's edited textures from the user's folder (docs/textures.md; docs/real-partner-body.md section 29; design T2.1),
+# solo, hidden. The run gets its own textures folder: the launcher's extractor reads the game's archives (read-only) into
+# <run>\textures, then st_textool paints a bold generated checker (no game data) over "16 Gold"'s editable pictures, as a
+# user would. The self view's fragile_suit body wears the colour folder of our Sam's suit colour (the 100% save: gold):
+# the checker on her suit only (boots, neck, badge stay hers). Silver (15, no edit): her own suit (the v0.23 tint is off by
+# default). Gold again; then the folder's picture is replaced by stripes while the game runs (hot reload); the feature off
+# and on (tex 4). A texture nobody wears is released after 5 s (tex 6: at once) and made again when needed.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario fragile-textures-solo -SeedSaves complete-100
+role solo
+timeout 330
+ini partner_body=real
+ini pose_hook=1
+ini my_character=fragile_suit
+ini self_character=1
+ini self_feet_hide=0
+textures extract
+textures pattern checker 16 Gold
+start
+waitlog 40 \[self\] showing 'fragile_suit'
+waitlog 30 \[tex\] ready: manifest table
+waitlog 60 \[tex\] look .* for colour 16 .*: 1 slot\(s\) edited \(S0\)
+waitlog 30 \[tex\] body self .*: look .* bound .* kept [1-9]
+pad none 1300 rx=32767
+wait 1500
+action tex 0
+screenshot 01-gold-checker
+# silver: nothing edited in "15 Silver": her own suit
+action real_outfit 5 15
+waitnew 30 \[tex\] body self .*: look .* taken off
+wait 1500
+screenshot 02-silver-own
+# gold again (the texture is kept: no new clone)
+action real_outfit 5 16
+waitnew 30 \[tex\] body self .*: look .* bound .* kept [1-9]
+wait 1500
+screenshot 03-gold-again
+# the user saves another picture while the game runs
+textures pattern stripes 16 Gold
+waitnew 30 \[tex\] reload: colour 16
+# no flicker (review fix): the old look stays on until the new one is made, then one swap (never her own look between)
+waitnew 30 \[tex\] body self .*: look .* taken off \([0-9]+ override\(s\) undone, look change\)
+waitnew 30 \[tex\] body self .*: look .* bound .* kept [1-9]
+wait 1500
+screenshot 04-gold-stripes
+# the checker texture nobody wears any more is released after 5 s (textures_free, the game's own Texture release)
+waitnew 15 \[tex\] clone S0 .* released \(unused for 5 s
+# off and on
+action tex 4 0
+waitnew 10 \[tex\] body self .*: look .* taken off
+wait 1500
+screenshot 05-off
+# released at once while off (tex 6); on again: made again from the blob in RAM
+action tex 6
+waitnew 10 \[tex\] clone S0 .* released \(tex 6
+action tex 4 1
+waitnew 15 \[tex\] body self .*: look .* bound
+wait 1500
+screenshot 06-on-again
+action tex 0
+nolog \[tex\] .*FAULTED
+nolog \[tex\] refused
+nolog \[tex\] .*NOT USED
+quit

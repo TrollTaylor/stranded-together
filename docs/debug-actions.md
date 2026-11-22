@@ -299,6 +299,27 @@ Scenarios: `collision`, `collision-off`, `two-games-collision`, `two-games-all`.
   Bridges cap (cap00), 0x24 = 36 the Santa hat (cap01), 0x31 = 49 the headcrab (cap02), 0x32 = 50 the hair ornament
   (cap03), 0x0D / 0x0E glasses; docs/real-partner-body.md section 26.3) sets the first such entry's worn flag: the
   game puts the item on or takes it off itself. The cap colour (`gear 15`) does not pick the head item.
+* `action gear 26 <0|1|2|9>` (round 6; docs/real-partner-body.md section 31): what is in a hand on the other screen
+  (`held_items`): 0 off (only v0.9's cutscene-prop weapons), 1 the ladder / PCC / climbing anchor, 2 every item in a hand
+  (the default); any other value only logs `[gear] held_items 2; held clones on (ok): n resource(s) re-typed, n entities
+  created (n approximate), n not owned, n refused, n faults; held props n live, n shown; ...; the item's own pose: n sent,
+  n received, n written` and, per held item, ours (`[gear]   ours: weapon item ...`) and each clone (`[gear]   gear held
+  clone ...: ... m from the body's joint ...; skeleton ...; pose target ...`).
+* `action gear 25 <0|1|2>` (round 6 T3; docs/real-partner-body.md section 30): her boots' style at run time: 0 `prop`
+  (Sam's boots on her feet), 1 `own` (her own boots, painted with the boot pictures; no boots prop, feet not scaled, Sam's
+  boots entity hidden under the self view), 2 only the status line: `[gear] boots_look own (partner: own (the partner's
+  look) | prop ... | ours; self: Sam's boots shown, hidden by us yes, sets n clears n reasserts n; parts <hex> sent <hex>)`.
+  The `[boots]` lines say each decision: `[boots] self view: her own boots, Sam's hidden (boots_look=own, ...)` /
+  `... Sam's boots on her feet ...`, `[boots] partner: her own boots (no prop) (boots_look=own from the partner's look,
+  parts <hex>)` / `... Sam's boots on the body (the prop) ...`, `[boots] Sam's boots entity <p> hidden under the self view`
+  / `... shown again`.
+* `action gear 24 <percent>` (hidden test runs on scratch saves only): our backpack's rain cover's durability, in percent of
+  its level's maximum, in both copies of its data block (docs/real-partner-body.md section 28); in timefall the game's own
+  update then wears it out and removes it (0.2 % broke within 7 s, run `20261122-085045`). The cover's wear is logged
+  without it: `[gear] wear: the backpack's rain cover (level 2): durability 4.00 % (180 of 4500)` at first sight, at every
+  step (1 % under 10 %, 10 % above), and `... broke: worn out in timefall ...` when the game removes it; a gear layout
+  change names what it lost or gained (`[gear] our gear lost 1 item(s) of resource 2 '...backpack_temp' 0dfece64...`,
+  `[gear] our gear: the backpack's rain cover is gone ...`, `[gear] the partner's gear: ...`).
 * `action gear 15 <0..24>` (hidden test runs on scratch saves only): our cap colour byte (inv `+0x4BE0`:
   0..22 a colour index, 23 silver, 24 gold); the game re-colours the cap itself.
 * `action gear 17 <0/1>`: weapons in hand and on the backpack (docs/real-partner-body.md section 17) not sent /
@@ -326,7 +347,7 @@ Scenarios: `collision`, `collision-off`, `two-games-collision`, `two-games-all`.
   lines).
 
 Scenarios: `gear-self`, `two-games-gear`, `two-games-all`, `gear-full`, `two-games-full-gear`, `two-games-gear-look`,
-`echo-hair`, `two-games-hair`, `two-games-looks-menu`.
+`echo-hair`, `two-games-hair`, `two-games-looks-menu`, `two-games-fragile-cover`.
 
 ### Smooth animation (`smooth`; scenarios only)
 
@@ -933,7 +954,7 @@ refused: refused by the host: its game plays on its real save` (or `... its dev 
 | `dev_place` | `n` | Teleport (PlaceOn mode 1, facing the place's forward) to entry n of that list. Only within the current area: the game has no cross-area teleport (story points: test saves, docs/sandbox-and-local-test.md). |
 | `dev_items` | `1` / `2 n` | 1: `RecoverOrSupplyShoes` body `0x142744B40(status, 0, 1)` (new or repaired boots). 2: `AddChiralCrystalCount(n)` (`0x1426E6530`, default 100; 18753 -> 19253 in `035314`). |
 | `dev_goto` | `x y [z]` | Sam anywhere in this area (sandboxed saves only: world class), then the ground (docs/dev-tools.md "Go anywhere"). z 0 / left out: the topmost ground (PlaceOn mode 2 at the ray centre 500); else PlaceOn mode 1 at z + 0.5. Refused while the placement gate is shut (on a vehicle, a load, a menu). Every tick `devrules::GotoAdvance`: within 25 m of x, y (a place's point inside a terminal: the game pushes Sam out, 3.5-8.3 m seen) and 5 m of z, playable and still for 1.5 s: `[dev] goto #n: settled at (...) after N s (k placement(s))`; more than 5 m below z: placed again (at most 4, 1 s apart); 25 s: `NOT settled`. The scenario's `goto` and `waitworld <s> goto` wait for it. 7 places up to 4 km apart in `20261121-084610-goto-places`. |
-| `dev_boots` | `0` / `1 p` / `2 0/1` | 0: the boots' durability to the log. 1: set it to p % (sandboxed saves only): `SetShoesLifeByRate`'s body `0x142741860(status, p/100, 0)` with Sam's status `[Sam+0x54E0]` read and checked first. 2: a `[dev] boots meter: ...; +x in 1 s` line every second (hidden tests: the passenger's boots). The durability is two parts (the setter `0x142741720(status+0x320, v)`): the first `+0x334` (200) points at `+0x33C`, the rest at `+0x32C` up to `+0x330` (3400); 40 % = 1440 of 3600 (`20261121-084433-spawn-showcase`: 200 + 926.6 before, 200 + 1240 after). Refused without worn boots (`+0x368` empty: the game's setter would do nothing). |
+| `dev_boots` | `0` / `1 p` / `2 0/1` / `3 t` | 3 (round 6 T3; sandboxed saves only): equip boot type t (EDSPlayerShoesType 0..10: 0 barefoot, 2 sole grass, 3 porter, 4-6 all-terrain Lv1-3, 7 mule, 8 terrorist, 9 chiral, 10 reflect) with the game's `SetShoesForcibly` `0x1426E7430` (the request byte status `+0x3B8`; the status tick `0x14273251B` equips it): `[dev] boots: SetShoesForcibly(t) requested (worn type now n; ...)`, then `[boots] our boots' ArtParts: 32, shown <hex>` (the shape: docs/real-partner-body.md section 30.2). 0: the boots' durability to the log. 1: set it to p % (sandboxed saves only): `SetShoesLifeByRate`'s body `0x142741860(status, p/100, 0)` with Sam's status `[Sam+0x54E0]` read and checked first. 2: a `[dev] boots meter: ...; +x in 1 s` line every second (hidden tests: the passenger's boots). The durability is two parts (the setter `0x142741720(status+0x320, v)`): the first `+0x334` (200) points at `+0x33C`, the rest at `+0x32C` up to `+0x330` (3400); 40 % = 1440 of 3600 (`20261121-084433-spawn-showcase`: 200 + 926.6 before, 200 + 1240 after). Refused without worn boots (`+0x368` empty: the game's setter would do nothing). |
 
 Time of day and teleport to the partner are the existing actions (`set_time_of_day`, `teleport_to_partner`); the page has
 buttons for them (Dawn / Noon / Dusk / Night). The time buttons sit under the world tools' gate with the weather (greyed on a
@@ -1041,3 +1062,52 @@ teleport answers "not implemented in the test stub" by default, which the harnes
 5. Unstuck after walking a bit: should land on a recent safe spot.
 6. Heal after a fall; Set time of day 03:00 and 15:00; Freeze time and wait a few minutes.
 7. Voice ping with role=echo: hear a line from the partner; if refused, note the state.
+
+## Fragile's textures in the game (`tex`; round 6 T2; `session.ini fragile_textures=1`, default on)
+
+`action tex <mode> [a] [b]` (Tools tab, scenarios; docs/textures.md, docs/real-partner-body.md section 29.3). Modes 0, 1,
+4 and 7 work in any session; the others only in a hidden run (refused otherwise).
+
+* `tex 0`: the state to the log: `[tex] bodies: self ... look <id8> overrides N entries N ...; partner ...` (both
+  bodies), `[tex] link: ...` (STT1 counters: messages, chunks and blobs sent / received, refused, cache hits),
+  `[tex] status: ...` (ring size, rebuilds and slots kept / dropped, clones made / failed, the filter mode, the worker's
+  state and the looks it settled), one line per clone and per filtered override entry.
+* `tex 1`: rescan the textures folder now (as the hot reload does after a save).
+* `tex 2 [n]` (hidden): dump the slots of our override entries in the next n (default 2) rebuilds: per slot the texture
+  it holds before ours goes in (`S0`..`B2` = one of the slot table's originals, `OURS`, `other(<guid8>)`) and after.
+* `tex 3 <c>` (hidden): our own Fragile bodies use colour folder c (0..16; -1 = follow the suit colour).
+* `tex 4 0|1`: the feature off (her looks undone at once) / on again.
+* `tex 5 0|1|2` (hidden): the slot filter: 0 the product (her suit's slots only), 1 keep every slot (the v0.23
+  behaviour: shows the pattern on her boots and neck too), 2 = 1 and the probe dump.
+* `tex 6` (hidden): release at once every texture of ours nobody used for 0.6 s (the 5 s rule of `textures_free=1`, default).
+* `tex 7`: the guest sends its look again; the host lets go of the partner look's RAM copies and shows the newest LOOK
+  again at once (its blobs are read from the disk cache when a body needs them): `[tex] host: tex 7: N of the guest's M
+  blob(s) let go of from RAM ...; look #E shown again`.
+* `tex 9 <n>` (hidden): an in-memory test pattern on our own Fragile bodies (no files, no game data): 1 a magenta /
+  green checker on her suit (S0), 2 also yellow / black stripes for her boots' colour (B1, the boots rule, T3), 3 the
+  boots stripes only; 0 off.
+* `tex 10 <t>` (hidden; round 6 T3): her boots' pictures follow boot type t (0..10; -1 = our Sam's).
+
+Log lines the scenarios match: `[tex] ready: manifest table <hex> ok`, `[tex] look <id8> for colour <c> (<folder>): <k>
+slot(s) edited (<slots>)`, `[tex] built <slot> <id8> in <ms> ms`, `[tex] clone <slot> <id8>: hw ...`, `[tex] body
+self|partner|debug ...: look <id8> bound (...), rebuild kept <n> / dropped <m> slot(s)`, `[tex] body ...: look ... taken
+off`, `[tex] reload: colour <c>'s pictures changed`, `[tex] boots look <id8> for boots <n>[ worn][ gold|silver]: <folder> (<slots>)` / `... nothing edited (her own boots)`,
+`[tex] her boots: type <t>[, worn] (look key <k>, boots_look=own|prop)`, `[tex] look #<n> sent: colour <c>, <k> blob(s);
+boots <t>[ worn], her own boots|Sam's boots (prop)` (guest), `[tex] partner boots: her own boots (no prop) ...` (host), `[tex]
+partner look #<n>: received <slot> <id8> (<bytes> B in <ms> ms, <rate> KB/s) valid`, `[tex] partner look <id8>: complete
+for colour <c> (<k> blob(s), cache hit <h>)` (host), `[tex] clone <slot> <id8>: hw ... released (unused for 5 s | tex 6; ...)`, `[tex] refused <id8>: <reason>`, `[tex] off: <reason>`, `[tex] ...
+FAULTED`.
+
+## Fragile's textures: the launcher's command-line test actions (round 6, T1)
+
+The extractor is driven from the launcher's command line (docs/textures.md "For developers", docs/launcher.md
+"Command line"):
+
+* `StrandedTogether.exe --extract-textures --out <dir> [--game-dir <game>] [--no-previews]`: the Tools card's Extract
+  textures, without the window; `--out` must be the folder the launcher's settings name.
+* `--allow-out-under <dir>` (tests, the hidden check): any `--out` inside `<dir>`, never the user's Documents, Desktop,
+  Pictures, OneDrive or the user profile outside the temp folder.
+* `--cancel-after-sets <n>` (tests): the process ends itself in the middle of set n with a `.partial` on disk (exit 3),
+  to prove the next run cleans up.
+* `--check-textures --out <dir>`: the Check my edits report (`check ...` lines).
+* The hidden check: `tools/testenv/Test-TextureExtract.ps1` (docs/hidden-testing.md).

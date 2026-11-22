@@ -18,6 +18,10 @@ int RunWatch(const std::wstring& session);
 int RunWriteSession(const ui::Options& options, std::string& report);
 int RunEndSession(const std::wstring& game_dir, std::string& report);
 
+// --extract-textures / --check-textures (Fragile's textures, core_textures.hpp): lines go to `print` as they come
+// (the launcher window reads them from its child's stdout pipe).
+int RunTextures(const ui::Options& options, const std::function<void(const std::string&)>& print);
+
 // --selftest: the mock model through every phase plus the core's pure checks
 // and a read-only report on this folder. 0 = passed. `report` gets one line per
 // failure and the summaries.

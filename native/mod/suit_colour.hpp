@@ -43,7 +43,8 @@ struct Dress {
 
 // Brings `e` (a live fragile_suit body of ours) towards `colour` (0..16; 0 = her own look), one step per call and at most
 // one step per 250 ms; a change must hold 0.5 s first. Logged.
-void Apply(Dress& d, std::uintptr_t e, std::uint8_t colour, double now_ms) noexcept;
+// `tint`: -1 this game's fragile_suit_colour, 0 / 1 the other player's choice (the host drawing the guest's Fragile).
+void Apply(Dress& d, std::uintptr_t e, std::uint8_t colour, double now_ms, int tint = -1) noexcept;
 // The body is still alive: take our overrides off now (game thread). Logged.
 void Undo(Dress& d, const char* why) noexcept;
 void Forget(Dress& d) noexcept;  // the body is gone: its drawable took the overrides with it, nothing to call

@@ -17,6 +17,14 @@ namespace {
 
 bool InAlphabet(char c) { return c != 0 && std::strchr(kAlphabet, c) != nullptr; }
 
+// session.ini textures_dir: an absolute drive path ("C:" then a slash), no control characters, at most 1024 bytes.
+bool TexturesDirValid(const std::string& v) {
+    if (v.size() < 4 || v.size() > 1024 || v[1] != ':' || (v[2] != '/' && v[2] != 92)) return false;
+    for (char c : v)
+        if (static_cast<unsigned char>(c) < 32) return false;
+    return true;
+}
+
 bool IsWordChar(char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
 }
@@ -182,6 +190,14 @@ bool MakeSessionIniText(const SessionIni& s, std::string& text, std::string& err
         error = "role must be host, guest, echo or solo";
         return false;
     }
+    if (!s.boots_look.empty() && s.boots_look != "own" && s.boots_look != "prop") {
+        error = "boots_look must be own or prop";
+        return false;
+    }
+    if (!s.textures_dir.empty() && !TexturesDirValid(s.textures_dir)) {
+        error = "textures_dir must be a full folder path";
+        return false;
+    }
     if (solo && !s.secret.empty()) {
         error = "a solo (debug tools only) session has no secret";
         return false;
@@ -326,6 +342,8 @@ bool MakeSessionIniText(const SessionIni& s, std::string& text, std::string& err
     if (s.frame_cap) t += "frame_cap=" + std::to_string(s.frame_cap) + "\n";
     if (!s.local_window.empty()) t += "local_window=" + s.local_window + "\n";
     if (s.mouse_lock) t += "mouse_lock=1\n";
+    if (!s.textures_dir.empty()) t += "textures_dir=" + s.textures_dir + "\n";
+    if (!s.boots_look.empty()) t += "boots_look=" + s.boots_look + "\n";
     if (s.world_sync) t += "world_sync=1\n";
     else if (s.host_save) t += "world_sync=0\n";  // the mod's default is on with host_save=1 (W3): a session says which
     // The host is always Sam (only the guest picks a character). Written for every host, so the
@@ -382,6 +400,8 @@ bool ParseSessionIniText(const std::string& text, SessionIni& out, std::string& 
         else if (k == "frame_cap") ok = ParseIntStrict(v, 0, 240, out.frame_cap);
         else if (k == "local_window") out.local_window = v;
         else if (k == "mouse_lock") ok = (v == "0" || v == "1") && (out.mouse_lock = v == "1", true);
+        else if (k == "textures_dir") ok = TexturesDirValid(v) && (out.textures_dir = v, true);
+        else if (k == "boots_look") ok = (v == "own" || v == "prop") && (out.boots_look = v, true);
         else if (k == "world_sync") ok = (v == "0" || v == "1") && (out.world_sync = v == "1", true);
         else if (k == "my_character") out.my_character = v;
         else if (k == "partner_body") out.partner_body = v;

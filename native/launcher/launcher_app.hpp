@@ -68,6 +68,7 @@ private:
     void CodeCard(bool compact);
     void InGamePage(Phase phase);
     void ToolsPage(Phase phase);
+    void TexturesCard(Phase phase);   // Tools > Fragile's textures
     void DebugPage(Phase phase);
     void DebugOptionsTab(Phase phase);
     void DebugFilesTab(Phase phase);
@@ -116,6 +117,8 @@ private:
     // Tools
     Result tool_result_;
     Result logs_result_;   // Collect logs from the not-ready card
+    Result tex_result_;    // Fragile's textures: a refused button
+    bool scroll_to_textures_ = false;   // screenshot scenes: Tools scrolled to the textures card
 
     // Debug
     ui::DebugTab debug_tab_ = ui::DebugTab::options;

@@ -2264,10 +2264,8 @@ So about 70-150 ms at 30 fps; the hand's motion afterwards is the pose stream's 
 ### 17.7 Not covered
 
 - **Weapons with no cutscene model** (the bola gun, grenade launchers, sticky gun, maser gun, EX grenades, the
-  PCC, ladder, climbing anchor, spray, strand): nothing is drawn for them on the other screen. Drawing them needs
-  a plain entity built from the loaded weapon resource's model components (a private `EntityResource` and the
-  game's own entity creation, as `DSWeaponEntity::OnInit` `0x14292D290` does for its cartridges), with its own
-  lifetime: not attempted.
+  PCC, ladder, climbing anchor, spray, strand): nothing was drawn for them on the other screen until round 6; section 31
+  draws them as held clones of the item's own resource.
 - **Colours**: the rifle prop keeps its own dark variation; the player's rifle (gold Lv4, non-lethal blue) is
   not matched (the look sync of section 13 does not resolve weapon variations yet). Handgun and shotgun props
   are other models of the same kind.
@@ -2464,6 +2462,9 @@ not in the right spot, hats too feel a little high up and when starts walking it
 | `20261118-130121-two-games-release` (the same scenario before its camera fix) | The same meters (cap and glasses sd 0.00 while she walks, on both screens). |
 
 ## 21. Boots: her feet scaled away, the equipped boots on them (`self_feet_hide`, `boots_sync`, default on)
+
+**Round 6 T3: for Fragile in her porter suit this is now the `boots_look=prop` style; the default (`own`) keeps her own
+boots on both screens, painted per boot type: section 30.**
 
 **Status (2026-11-18): works in hidden runs, solo, echo and two games.** The user's idea: "scaling the feet bones to
 hide the feet then attaching the boots".
@@ -5635,7 +5636,7 @@ Not covered:
 - glasses01 / glasses02 were not put on by `gear 14` (type 0x0E gave glasses00); they share the class's offset and the
   same code path.
 
-## 27. Fragile's porter suit in Sam's suit colours (v0.23; `session.ini fragile_suit_colour`, default 1)
+## 27. Fragile's porter suit in Sam's suit colours (v0.23; `session.ini fragile_suit_colour`, default 1 until round 6, now 0: the fallback of section 29.3)
 
 **Status (2026-11-21): works in hidden runs (solo and two games on the launcher's own Local test files).** The guest's
 Fragile in her porter suit (`fragile_suit`, the launcher's default) wears the suit colour of the guest's own Sam: the
@@ -5757,3 +5758,506 @@ for the session (`[suit] ... FAULTED`).
 - The uniform menu (private room) was not driven in a run; the runs change the inventory byte it sets (`real_outfit 4`).
 - Her suit is one mesh: the neck piece and her own boots (under Sam's, shown with `self_feet_hide=0`) take the colour too.
 - The cargo menu's figure, two PCs, 120 fps / uncapped: not run.
+
+## 28. Her "cargo" gone after a ladder: the backpack's rain cover wears out (round 6, after v0.23.0)
+
+The user (after v0.23.0): "i weirdly got fragiles cargo to dispear off her back im guessing after i placed a ladder with
+her". **Not a co-op fault and not the ladder**: the big black **rain cover** over the top of the backpack wore out in
+timefall and the game removed it, from the guest's Sam (drawn as Fragile on both screens) and from the host's own Sam
+too, in each world on its own. The mod mirrored that faithfully. What changed: the logs now say it in one line, with the
+cover's durability in steps, and every gear layout change names what it lost or gained.
+
+### 28.1 The user's logs [V: their Local test logs, read only]
+
+- No delivery cargo at any time (`cargo 0: 0 approximate, 0 not drawn` in every gear line, both sides); no ride.
+- Guest: the ladder taken at 78.5 s (`our weapon 'ds/entities/weapons/ladder'`), her gear 15 -> 14 items at 80.9 s
+  (`a new layout 710E ... first difference at item 4: ... res 2/15`; the pairs are **was / now**, now labelled so), the
+  ladder placed at 86.3 s. The host's own Sam lost the same item at 78.97 s (host clock, about 9.5 s ahead) with no
+  ladder; at 90.6 s the host's copy of her dropped it too (`278F -> 710E: 14 kept, 1 removed`).
+- res 2 = `ds/entities/item/backpack/backpack_temp` GUID 0dfece64...: in that core the entity is followed by
+  `part_bak0_cove_def` and `HLP_RainCover`, the rain cover. Both worlds were in timefall from the start (her hood up at
+  30.3 s) and both had loaded the host's save, so both covers had the same small durability left: about 45-50 s of
+  timefall each after the load.
+
+### 28.2 The game: where the cover's durability lives [V: disassembly + runs]
+
+- `DSBackpackConfig` (RTTI members `RainCoverDurability` / `Lv2` / `Lv3` at +0x20 / +0x24 / +0x28, `RainCoverLv2Apv` /
+  `Lv3Apv` +0x30 / +0x38; the config at settings +0x5D6C0, the settings global read at `0x1429235C1`). Level 2's maximum
+  is 4500.
+- The cover's state is a data block of the inventory's backpack object: inventory (Sam +0x54C8) `+0x4CB8`, block at
+  `+0x3E0` (the HUD's read `0x1427D9F8E`: `mov rcx,[rax+0x54C8]; mov rax,[rcx+0x4CB8]; lea rcx,[rax+0x3E0]`), 0x21D8 bytes:
+  `+0x21C8` byte worn (`0x1429268E0`), `+0x21CC` level 0..2, `+0x21D0` f32 durability (the ratio getter `0x1429235B0`
+  divides it by the level's maximum). The block is read by `0x1429234B0` (a copy) and committed through a second copy at
+  `+0x21D8` by `0x142937010` (dirty flags `+0x51F8`).
+- The timefall update `0x142BE8E70` (called from `0x142BE3ECB`) takes the rain's damage off it: `0x142BE90E4`
+  `new = max(old - damage, 0)`; at 0 the worn byte is cleared and the game removes the cover entity from Sam.
+- The 100% test save's cover is level 2 at **4 % (180 of 4500)**; heavy timefall wears it out in about 96 s (about 1.9
+  per second; nothing in clear weather). The inventory accessory list's `item +0x34` values that fall in timefall (types
+  0x2C / 0x3A, research run `081331`) are not the cover: setting them to 0 removed nothing (runs `083535`, `083853`).
+- `HideRainCover` is something else: a cutscene event's flag (`DSPlayerHideBaggageEventInstance`, section 24.18,
+  inventory `+0x4C7C`); nothing set it in the user's session.
+
+### 28.3 What the mod does (`native/mod/partner_gear.cpp`, `gear_wear.hpp`; read only, game thread)
+
+- **The cover's wear in the log** (`ReadRainCover`, every second with the gear read): at first sight, at every step
+  (1 % steps under 10 %, 10 % steps above; `gearwear::Bucket`) and when it breaks:
+  `[gear] wear: the backpack's rain cover (level 2): durability 0.98 % (44 of 4500): nearly worn out, in timefall the
+  game removes it soon (from Sam, and so from Fragile)`, then `[gear] wear: the backpack's rain cover broke: worn out in
+  timefall (durability 0.04 % before): the game removes it from Sam, and so from Fragile on both screens`. With no cover:
+  `[gear] wear: no rain cover on our backpack`. Sites checked once (`0x1429268E0`, `0x1427D9F8E`, `0x142BE90CD`,
+  `0x142BE90E4`, `0x142BE90B5`, `0x1429235C1`, `0x142937010`); on a mismatch one line
+  (`... do not match this game build: the rain cover's wear is not logged`) and nothing is read. A block that does not read
+  sane (worn not 0/1, level not 0..2, durability over its maximum) is logged once and not used.
+- **What a layout change lost or gained** (sender: a new layout taken; receiver: `the partner's gear`, from the props'
+  keys): `[gear] our gear lost 1 item(s) of resource 2 'ds/entities/item/backpack/backpack_temp' 0dfece64...`, and for the
+  cover (`gearwear::IsRainCover`: that path and GUID) `[gear] our gear: the backpack's rain cover is gone (the game removed
+  it: worn out in timefall, or taken off; Sam loses it, and Fragile with him on both screens)` /
+  `[gear] the partner's gear: ...`; a new one worn: `... is back (a new one worn)`.
+- The held-read line now says `first difference at item N (was / now): ...`.
+- Nothing is drawn differently: a broken cover is gone in the game (the player has to equip a new one), so drawing it
+  would misstate the game. The ladder, the world-sync hold, the self view and the partner props were proven not to touch
+  her back (28.4).
+- Test only: `action gear 24 <percent>` (hidden runs on scratch saves) sets our cover's durability in both copies of the
+  block; the game's own timefall update then breaks it (run `085045`: 0.2 % broke 6.4 s later).
+
+### 28.4 Proof (hidden, `-SeedSaves complete-100 -GuestSeed profile-only`, `launcherini local-test`; all: game exit 0, guest exit 0, saves unchanged, restored, no violation, 0 cloud uploads, 0 game-server writes, online gate ok)
+
+| Run | What it shows |
+|---|---|
+| `20261122-090554-two-games-fragile-cover` (the repo scenario, final) | Part A, clear weather: the guest takes the ladder from the real tools radial, LT hologram, RT place (held -> GBUILD -> confirmed), Hold START collapse: her gear layout A5C0 (14 items) at every stage, the host's props of her 14 / 14 shown; no `rain cover is gone` line (nolog). Screenshots A0..A4 on both screens: the black cover on her back throughout. Part B, heavy timefall, no write of ours: 4.00 -> 2.97 -> 1.97 -> 0.98 % -> broke after 96 s (guest) and 97 s (host); each side logs `our gear: the backpack's rain cover is gone` and the other `the partner's gear: ...` (props `1 removed`); guest 14 -> 13 items (FF1F), host 17 -> 16 (DE89). B1 on both screens: no black cover on either back. |
+| `20261122-085045-two-games-fragile-cover` (first version, `gear 24 0.2`) | The same part A; each cover set to 0.2 % broke in the game's update within 7 s; the same lines. |
+| `20261122-083535-r6-cover-break-probe`, `20261122-083853-r6-cover-ladder-probe` (scratch) | The accessory list's decaying `+0x34` values set to 0: nothing removed, with or without a ladder (not the cover). |
+| `20261122-081331-r6-cover-rain` (research) | 200 s of heavy timefall: the cover (res 2) went at 150 s (`A5C0 -> FF1F`), 97 s after the rain began: the same natural wear. |
+| Regressions: `20261122-085356-two-games-world-ladders`, `20261122-085604-two-games-world-ladder-ui`, `20261122-085834-two-games-fragile-attach` | All pass; the cover meter's first line (4.00 %) on both sides. |
+
+### 28.5 Not covered
+
+- The user's own save was not run (the hard rule): its cover's value is unknown; their next log shows it at load.
+- Equipping a new cover was not driven in a run (`... is back` is untested).
+- Other gear that wears (boots, skeletons) is not logged by this meter.
+
+## 29. Fragile's textures: the user paints her suit and boots (round 6: T1 the extractor and the folder, T2 her suit in the game)
+
+The user found the v0.23 suit colour (section 27: constant textures tinting her navy) "a little weird" and asked to edit
+the texture files himself: her suit per Sam suit colour, every Sam style as reference (gold, silver...), and her boots
+that way too (section 21's boots prop is still buggy). Player guide: docs/textures.md. Design: the round 6 notes
+(`design-final.md`: T1 extractor + folder + launcher card, T2 the runtime loader with a filtered texture bind and link
+sharing, T3 boots on her own model).
+
+### 29.1 T1 (done): the extraction
+
+- **What is read** (the user's own installed game, read-only): 31 TextureSets in `data\*.bin` (Decima packfiles; the
+  format is `tools/re/ds_archive.py`'s, ported to C++ in `native/textures/decima_archive.cpp`: Murmur3 table masks, MD5
+  chunk masks, the game's own `oo2core_7_win64.dll` loaded by full path in a child process). Texture and TextureSet
+  objects are parsed with hard-coded layouts (`decima_core.cpp`; research-archive section 2), every size checked (the
+  tight mip chain = streamed + embedded, the stream slice inside its `.core.stream`).
+- **Her sets**: `fgl_body_suiti_v00_set` (suit: Colour + Roughness BC7 sRGB 2048, Reflectance + AO BC7 1024, Normal BC5U
+  2048, Mask BC1 1024) and `sam_body_boot_v00_set` (her boots primitive draws Sam's porter-boot set: Colour BC1 sRGB
+  1024, Normal BC5U 1024, AO / Roughness / Reflectance packed in one BC1 1024). These seven textures are the slot table
+  `native/textures/tex_slots.hpp` (`S0..S3`, `B0..B2`; GUIDs, content GUIDs (the game's texture-cache key), sizes,
+  formats, PackingInfo, the u64 view word; `kTableVersion` = CRC-32 of the rows = `9a182ce3`), the only textures the
+  runtime loader may replace. Correction to the design table: S3 (her Mask) has view word 0, not `0x06000649`; B2 has
+  `0x0000064906000692` (read by the extractor's own parser).
+- **Decoders**: BC1 / BC3 / BC4 / BC5 / BC7 (all 8 modes), project-authored (`tex_codec.cpp`); BC6H is not decoded (Sam's
+  sea otter hood normals: skipped with a line). Encoders BC1 / BC3 / BC4 / BC5 (for T2; 2048 BC3 in about 0.1 s).
+- **The folder** (default `<Documents>\Stranded Together\Textures`): `Fragile porter suit\Original` (read-only),
+  17 editable colour folders seeded as byte copies of her Colour / Roughness / Reflectance, 10 editable boot-type
+  folders (her boots' layout) with `Gold` / `Silver` / `Worn`, Sam's suits (palette, 15 Silver, 16 Gold, the dark
+  cutscene suit) and boots for reference, palette previews and swatches, `README.txt`, the hidden `.manifest.txt`.
+  284 pictures, 272 MB, 7.5 s on the test PC; a re-run with nothing to do takes 0.2 s.
+- **Never losing an edit**: an editable file is only ever created (`<name>.partial` then a rename without replace); an
+  existing one is never opened for writing; a deleted one is seeded again; a renamed `NN ...` folder is reused.
+  Reference files are replaced one by one through `.partial` files; a cancelled run's partials are deleted by the next.
+  The design's folder-level swap through `.extract-tmp` was not needed (per-file replacement is atomic; nothing in a
+  reference folder is the user's).
+- **The launcher** (docs/launcher.md "Tools: Fragile's textures"): the Tools card runs the extractor as its own child
+  process; session.ini `textures_dir` for every session; hidden runs drop it.
+- **Proof**: `st_texture_tests` (codec PSNR / angle error, BC7 hand-built blocks, mips, packing, slot rows, manifest, PNG,
+  a synthetic encrypted archive, the whole extraction and re-run rules on a synthetic game folder), the hidden check
+  `Test-TextureExtract.ps1` run `20261122-095029-textures-extract` (pass, 19 checks: docs/hidden-testing.md), the
+  pictures looked at (her navy suit with the prints, the normal maps, Sam's gold and silver reflectance, every boot type).
+
+### 29.2 Not done yet
+
+- T3: boots on her own model with the user's boot textures instead of the boots prop (the boots rule of 29.3 already
+  tells her boot slots apart: `B1` / `B2` in the probe dump).
+- The `--seed tinted` option (colour folders pre-tinted from Sam's palette) is not implemented; the seeds are her
+  original pictures, as the lead's default asks.
+- Launcher switches for `fragile_textures`, `textures_send` and the tint fallback (the mod's defaults are the design's:
+  on, on, off); the card has no checkboxes for them yet.
+
+### 29.3 T2 (done): her suit in the user's edited pictures, on both screens [V: decompiles, byte checks, runs below]
+
+**What the player sees.** The guest's Fragile (`fragile_suit`) wears the pictures the user edited in the folder of the
+guest's Sam suit colour (`Fragile porter suit\NN ...`, matched by the number; the round 5 remembered pick counts); an
+untouched folder is her own navy suit; the v0.23 tint (section 27) is only the fallback for colours without edits and
+now off by default (`fragile_suit_colour=0`). Her own screen (self view) and the host's (partner Fragile, over the link)
+show the same. Saving a picture while the game runs shows it a few seconds later. Sam and every other model keep the
+game's textures. Only the suit's textures (S0..S3) are bound; her boots, neck, badge, gloves and suit parts keep theirs.
+
+**Files** (worker, no game calls): `texture_looks.cpp` reads `<Textures>\.manifest.txt` (refused: another version or a
+`table` value other than `9a182ce3`), finds the colour folder, hashes its pictures (re-hashed only when size or time
+changed) and compares them with the manifest's seed hashes. A slot with an edited picture is packed from that folder's
+pictures plus `Original\` for the others (`InsertChannels` by the manifest's component), resized when the size differs
+(one log line), mipped (sRGB-aware for S0, renormalised for the normal), encoded (BC3 for S0 / S1, BC5 for S2, BC1 for
+S3; deterministic), and written as a **blob**: the game's own serialized Texture form, fully embedded (header `+0x0D
+0xA9`, `+0x0E 0` = no streaming mips, GUID "STTX" + SHA-256[0..11], `+0x30` the slot's view word; `tex_blob.hpp`).
+2048 BC3 full chain: 0.17-0.44 s on the test PC. Cached in `<mod dir>\cache\built-textures\<key>.sttx` (hidden runs
+`<run>\textures-cache`, deleted with the run; key = SHA-256 of the encoder version, the slot and the input hashes; LRU
+256 MB): never inside the textures folder (it may be synced to the cloud, and the watch would see our own writes). Hot
+reload: `FindFirstChangeNotificationW` on the folder, 1 s settle; every built look is then marked stale and answers
+with its old pictures until the new one is built and swapped in (no 'her own look' between: review fix, round 6). A
+picture bigger than twice its map (8192 at most) is refused from its PNG header before it is decoded; the worker's loop
+catches every C++ exception (out of memory: her own look until the pictures change again, never the game's end).
+**Blob store** (`ftex::StoreBlob`): at most 64 MB of blobs in RAM, least recently used out first; a blob with a disk
+file (the built cache, the partner cache) keeps its entry and is read again, validated against its id, when a body needs
+it (`tex 0` shows the RAM total).
+
+**Making the texture** (game thread, one per tick and per 250 ms): the blob through v0.23's reader into the game's
+loader `0x141D24460` (as section 27's 1x1 constants), after the guards: the renderer `*0x144F6D430` exists, the upload
+ring `*(R+0xB50)` (512 MiB on the test PC) is at least the largest mip's footprint (4 MiB), the factory class, the
+strict `ValidateBlob`. Checked after: the reader consumed exactly, hw vtable `0x143B9B488`, `hw+0x70 == 0` (not
+streamed), `hw+0x78` = our GUID (run: `fmt 68 dims 0x24000800 mips 0x580000A9`, loader 1 ms). Bound only after
+`hw+0x98` (upload in flight) cleared: 250 ms. A texture of ours that no body wore or wanted for 5 s is released the way the Texture destructor `0x141D24160` releases its own: when `(hw+0x38 & 0x28) == 0x28` the GUID-cache entry (`0x14196F480(R+0x2CDF8, hw)`), then the reference at `hw+8` (the last one: `hw->vtbl[0](hw, 1)` = `0x14195E740`); not during a load, one per tick (`textures_free=1`, default; `tex 6` releases at once). A later look makes it again from the blob in RAM (1 ms + the 250 ms upload).
+
+**The filtered bind.** v0.23's override (`0x14237CA20`, the per-drawable texture-set override) puts a texture into
+every slot of her model whose shader binding has the channel's name: her suit model is one mesh whose primitives (suit,
+boots, neck, badge, parts) all bind `inSampler_Main_TextureSet...` (the v0.23 tint also coloured her neck and boots,
+27.5). A full picture there would paint her suit's layout onto her boots. So:
+- Decompiled: `0x141DF4720(table, nodes)` (the override table's rebuild; called by the drawable update `0x14237E9CC` and
+  8 other sites) sets `table+0 = nodes`, collects every live entry's slots again by name hash (entries whose hash is the
+  free sentinel `*0x144563070` are skipped) and pushes each kind-5 entry's `+0x30` Texture's hardware texture into
+  **all** its slots (`0x14198A320` -> slot `vtbl[+0x68]`). The core's tail (`0x141DF1FF0`) forces such a rebuild after
+  every bind. A one-time filter would be undone by the next rebuild.
+- **Detour** on `0x141DF4720` (MinHook, installed when the byte checks pass): for our registered entries (table, index,
+  hash, kind 5, `+0x30` in {0, ours}) the hash is set to the sentinel so the original skips them; after the original,
+  each is rebuilt by the detour with the original's own two functions: collect `0x141C974F0(nodes, hash, entry+8)`
+  (as `0x141DF4040` does), keep only the slots its rule keeps, store `+0x30 / +0x38`, push `0x141DF56A0(entry+8, hw,
+  swizzle)`. A fault switches the detour to pass-through for the session. **The rebuild runs on a render worker thread,
+  not the game thread** (logged: "NOT the game thread"); the detour makes no other game call, only reruns, on the
+  game's own table inside the game's own call, what the original itself calls. The registry is copied under a shared
+  SRW lock that is never held across a game call.
+- **The rule**: a slot (`pair[0]`, class vtable `0x143B9B7E8`) is kept when the hardware texture it holds now is one of
+  her suit's originals (content GUID at `hw+0x78` = a S row). Decompiled where a slot keeps it: its `vtbl[+0x68]`
+  (`0x14198A380`) finds the copy-on-write block of the binding (`pair[1]`, a packed u64) with `0x14196E390` (slot
+  `+0x10/+0x18/+0x20` tagged block pointers, the layout at `*(*(slot+8)+0x38) & ~0xF`) and writes the record `{hw,
+  swizzle, ...}` at `block + 0x10 + u16[layout + ((l1>>24&3) + (l1&0xF) + 2)*6 + ((l1>>4&0xF) + (l0>>14&7))*4 + idx*10
+  + 4] + (binding>>45 & 0xFFFF)`, `idx = binding>>38 & 0x7F`. The mod reads that record without a call (fault-free
+  reads), both byte-checked below.
+- **Probe** (`tex 2`, run `20261122-102548-fragile-textures-probe`): per binding name her model has 12 slots (4 LODs x
+  primitives): `S0 x4` (suit), `B1 x2` (boots), 6 others (neck, badge, parts); after the push all 12 hold ours in
+  keep-all mode (`tex 5 2`, the v0.23 behaviour: the pattern on boots and neck) and only the 4 suit slots in the
+  product mode ("rebuild kept 16 / dropped 32" over the two entries of a Colour + Roughness texture at 4 LODs).
+- **First bind**: per slot texture, per map type of its packing, per mesh, the core with a TextureSet of ours whose
+  entry has the original packing and a **null** Texture (the core creates the entry and binds nothing), then the
+  swizzle from `0x141D25E50` on an entry with our Texture, the registration, the refresh `0x142378C20`; the rebuild
+  that follows pushes ours (7-28 ms later). No rebuild within 1 s: undone and tried again (seen once at a world's start).
+  A look change keeps the old look until the new textures are uploaded, then undo + bind (250 ms apart). While the look
+  is not known yet (`OwnLook` false: a colour or boots key not built yet) `ftex::Keep` leaves whatever is bound.
+- **Which bodies**: `realbody::DressFragile`: the self view (`g_me`, `fragile_suit`) wears the guest's own look; the
+  partner slot (host) the look from the link; a debug slot body the local look. One owner per body: the edited textures
+  when the look has any (the tint is taken off first), else the tint when `fragile_suit_colour=1`, else nothing.
+
+**Link (STT1, `texture_wire.hpp`, the reliable channel 5 "assets", `link_protocol.hpp kReliableChannels` 5 -> 6).**
+The guest sends LOOK (epoch, slot table, colour, n x {slot, blob SHA-256, size}) on every change and new link session;
+the host answers HAVE (its RAM or disk cache, validated again) and WANT (with a resume offset); the guest sends 980-byte
+CHUNKs, paced by a token bucket (128 KB/s in the world, 400 KB/s at the title or loading, at most 8 / 24 messages
+queued, nothing while the save channel has data, at most 64 MB per 10 minutes: past it the sending pauses, the host is
+told once (RESULT `kBudget` from the guest, a notice on both screens) and keeps the previous look, and it resumes
+with the next window); the host reassembles (fixed pieces: out of
+range, misaligned or duplicate pieces are dropped), runs `ValidateBlob` against **its own** slot row (every header
+byte, the sizes, the views, the recomputed GUID, the SHA-256) before anything else, answers RESULT, caches it
+(`<mod dir>\cache\partner-textures`, hidden runs `<OutDir>\cache`, LRU 256 MB) and shows the look once all its blobs
+are there (until then the previous look). The host keeps only the newest LOOK's half-received blobs (a buffer is
+allocated with its first piece), accepts at most 160 MB per 10 minutes of its own (else RESULT `kBudget`), forgets the
+previous guest's look, boots style and tint on a new link session (`texshare::NewSession`, and a newer generation on
+channel 5), and follows the guest's `fragile_suit_colour` for her own look (LOOK flags bit 1) so both screens agree.
+`tex 7` on the host lets go of the look's RAM copies and shows the newest LOOK again (from the disk cache). Measured: one 2048 BC3 texture (5,592,488 B) in 57-60 s in the world
+(93-97 KB/s); a look the host has: "complete ... cache hit 1", no transfer.
+
+**Byte checks** (`ftex::Available`, once; a mismatch turns the feature off with one line; section 27.3's table must
+pass too):
+
+| Address | What | Bytes |
+|---|---|---|
+| `0x141DF4720` | the override rebuild (detoured) | `48 89 5C 24 20 56 57 41 55 41 56 41 57 48 83 EC 60 48 8B 05` |
+| `0x141DF4740` | `table+0 = nodes` | `48 63 59 10 45 33 ED 48 89 11 4C 8B F1` |
+| `0x141DF47C0` / `0x141DF4830` | the two sentinel compares (RIP -> `0x144563070`) | `49 8B 4E 18 8B 05 ?? ?? ?? ?? 39 04 39 74 21` / `49 8B 4E 18 8B 05 ?? ?? ?? ?? 49 03 CC 39 01 0F 84` |
+| `0x141DF4845` | kind 5: `+0x30` Texture, `+0x38` swizzle | `8B 71 18 83 FE 05 75 51 48 8B 69 30 0F B7 59 38` |
+| `0x141DF4040` (+ call `0x141DF40D2` -> `0x141C974F0`) | the entry create and its collect | `48 89 5C 24 10 48 89 6C 24 18 56 41 54 41 55 41 56 41 57 48 83 EC 20` |
+| `0x141C974F0` | slot collect | `40 55 56 57 41 56 48 81 EC F8 00 00 00 48 8B 05` |
+| `0x141DF56A0` | slot push | `48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 20 48 8B 79 08` |
+| `0x141D25E50` | swizzle from packing | `48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 0F B7 05` |
+| `0x141967665` | upload ring compare (RIP -> `0x144F6D430`) | `48 8B 0D ?? ?? ?? ?? 4C 8B 45 F8 48 81 C1 48 0B 00 00 4C 3B 41 08` |
+| `0x14198A380` (= data `0x143B9B7E8[+0x68]`; call `0x14198A3CF` -> `0x14196E390`) | the slot's record write | `48 89 5C 24 10 57 48 83 EC 70 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 68 48 8B DA` |
+| `0x14198A3FD` | its record address (0x71 bytes) | `4C 8B 00 49 83 E0 F0 41 8B 48 04 8B D1 41 8B 00 C1 E8 0E 83 E0 07 ... 48 C1 EB 2D 0F B7 CB 48 03 C8` (full in `fragile_textures.cpp`) |
+| `0x14196E390` | the block of a binding | `48 89 5C 24 08 48 89 6C 24 18 48 89 74 24 20 48 89 54 24 10 57 41 54 41 55 41 56 41 57 48 83 EC` |
+| `0x14196E466` | its range table read (0x5E bytes) | `4C 8B 5E 38 45 8B CE 4D 8B C3 41 C1 E9 06 ... F6 C2 01` (full in `fragile_textures.cpp`) |
+| `0x141D241A6` (call `0x141D241BC` -> `0x14196F480`) | the Texture release's GUID-cache step | `48 85 D2 74 16 8B 42 38 83 E0 28 3C 28 75 0C 48 81 C1 F8 CD 02 00 E8` |
+| `0x14196F480` | the GUID-cache release | `48 85 D2 74 5D 48 89 74 24 10 57 48 83 EC 20 48 8B FA 48 89 5C 24 30 48` |
+| `0x14195E740` (= data `0x143B9B488[0]`) | the 2D texture's deleting destructor | `48 89 5C 24 08 57 48 83 EC 20 8B DA 48 8B F9 E8` |
+
+**Proof** (hidden, `-SeedSaves complete-100` (`-GuestSeed profile-only` for two games), every run: game exit 0 (guest
+exit 0), saves unchanged, restored, no violation, 0 cloud uploads, 0 game-server writes, online gate ok):
+- `20261122-102548-fragile-textures-probe`: the probe dump above; keep-all vs filtered screenshots (the checker on her
+  boots and neck, then on her suit only, still after walking).
+- `20261122-112235-fragile-textures-solo` (earlier `20261122-103257`; scenario `fragile-textures-solo`, the run's own extracted folder + a generated
+  checker in `16 Gold`): gold = the checker; silver (`15`, unedited) = her own suit; gold again; stripes saved mid-run
+  -> "reload: colour 16's pictures changed" and bound 1.3 s later; the checker texture released 5 s after it was last
+  worn, the stripes one by `tex 6` while off, made again for `tex 4 1`; the run folder's pictures deleted at the end.
+- `20261122-111129-two-games-fragile-textures` (earlier `20261122-105715`; launcher Local test files; checker in `16 Gold`, stripes in `09 Mustard`):
+  both screens gold checker; the guest's colour 9 -> both stripes (second transfer); 0 -> her own suit on both; 16 ->
+  the host's "cache hit 1", no transfer; `04-host-own-sam`: the host's Sam gold next to the guest's checker Fragile.
+- `20261122-111455-two-games-fragile-textures-reload` (earlier `20261122-104623`): after the host's in-world load (the guest follows) both games
+  dress the new Fragile bodies from the textures they have (no new transfer, no fault).
+- Regressions: `20261122-104922-two-games-fragile-suit` (the v0.23 tint with `ini fragile_suit_colour=1`),
+  `20261122-105053-two-games-launcher-local-test`.
+
+## 30. Her boots: her own boots, painted per boot type (round 6 T3; `session.ini boots_look`, default `own`)
+
+The user: "maybe that's a way we can do the boots because the way we are doing boots are still buggy". Section 21's boots
+(Sam's boots on her feet: the guest's self view draws Sam's real boots entity on his fitted skeleton, the host's partner
+Fragile gets the cutscene boots prop posed from her legs, her own feet scaled to 1 % under them) had these open defects
+(round 6 boots research, run `20261122-080513`): the Sam-sized shafts and straps cut through her trouser hems on both
+screens; the prop's 32 parts had two writers (the STV1 look and the STC1 boots block) and flipped back for 0.3 s on every
+type or wear change; a receiver without boots of its own (barefoot) showed no prop (the parts check needed our own boots
+entity); the 5-7 s after every load, when all 32 parts read shown, were sent as they were; one frame of spawn pop.
+
+### 30.1 What the screens show now
+
+**`boots_look=own` (the default; launcher Tools > Fragile's textures > "Her own boots, painted")**: her own model's boots on
+both screens, never Sam's.
+- **Self view (guest)**: Sam's boots entity (inventory `+0x4D80`) is hidden while the self view shows her
+  (`[boots] Sam's boots entity ... hidden under the self view`), and her feet are no longer scaled.
+- **Partner (host)**: no boots prop is shown on her and her feet are not scaled (`[boots] partner: her own boots (no prop)
+  (boots_look=own from the partner's look ...)`). The boots item (STC1 kind 7) and its parts block are still sent and
+  received (riding and the boots meter read them); its prop is spawned but never shown.
+- **Her boots' pictures**: the guest's look (section 29) now holds her boots' textures too: the slots `B0` (Normal),
+  `B1` (Colour), `B2` (Ambient occlusion R, Roughness G, Reflectance B) of `sam_body_boot_v00_set`, her boot primitive's
+  set, built from `Fragile boots\NN <type>\` of the boot type the guest's Sam wears. Inside it `Worn\` is used while a
+  broken or loose-sole part shows, `Gold\` / `Silver\` with the gold / silver suit, each only when it holds an edited
+  picture (`bootslook::Candidates`). They are bound through section 29.3's filtered override with the **boots rule**
+  (keep a slot only while it holds one of the `B*` originals), so her suit's pictures and her boots' pictures go into
+  their own slots of the same mesh, and they travel to the host in the same STT1 LOOK (now with flags bit 0 = her own
+  boots, the boot type and worn).
+- The trade-off: the shape is always her own boots'; a Chiral, terrorist, mule or broken boot changes only its look
+  (the user paints one per type, `Worn\` for worn out).
+
+**`boots_look=prop`** (launcher: "Sam's boots on her feet"): section 21's look with the fixes below. Barefoot, sole grass
+and (`boots_own_porter=1`, default) intact All-terrain Lv1 boots, the mk1 mesh of her own boots' design, show her own
+boots instead (no prop, feet not scaled, Sam's boots entity hidden under the self view).
+
+The guest's choice decides both screens: the host takes the style from the guest's LOOK (`texshare::PartnerBootsStyle`);
+until a LOOK came, its own `boots_look`. Sam bodies (the guest's screen) always keep the prop.
+
+### 30.2 The boot types (proven)
+
+`dev_boots 3 <type>` calls the game's `SetShoesForcibly` (`0x1426E7430`: it writes the request byte status `+0x3B8`; the
+status tick `0x14273251B` equips boots of that type when it differs from the worn type at status `+0x328` and resets the
+request to `0xB`). Run `20261122-120624-fragile-boots-types` (solo, `boots_look=prop boots_own_porter=0`), the parts each
+type shows (`[boots] our boots' ArtParts`):
+
+| Type | Name | Parts shown | Mesh |
+|---|---|---|---|
+| 0 | BareFoot | `00000000` (the entity stays) | none |
+| 2 | SoleGrass | `0000000C` | solegrass |
+| 3 | NormalBoots (porter boots) | `00204000` | "mule" (muleinl / muleinr) |
+| 4 | StableBootsLv1 | `00000003` | mk1 (her own boots' design: `sam_body_boot_v00_set`) |
+| 5 | StableBootsLv2 | `20100000` | mk2 |
+| 6 | StableBootsLv3 | `80010000` | mk3 |
+| 7 | MuleBoots | `00204000` | as porter boots |
+| 8 | TerroristBoots | `00800080` | terro |
+| 9 | ChiralBoots | `80010000` | mk3 |
+| 10 | ReflectBoots | `80010000` | mk3 |
+
+Chiral at 5 %: `8A000000` (mk3l + mk3breakr + mk3soler). The research's guess "NormalBoots = mk1" was wrong: the porter
+boots are the mule mesh, so `boots_own_porter` keeps her own boots for intact **mk1** (Lv1) boots, the design her model
+copies. The type comes from status `+0x320 +0x08` (`gear::OwnBoots`; the design's `+0x3B8` is only the request byte).
+
+### 30.3 How (code)
+
+- `native/mod/boots_look.hpp` (pure, `st_boots_look_tests`): the style, `Ready` (at most 6 parts shown), `Worn` (a
+  broken / loose-sole part), `KeepsOwnBoots`, `FolderForType`, the Worn / Gold / Silver order, the look key
+  (`folder x worn x metal`), `Decide` (prop / hide Sam's boots / scale her feet).
+- `partner_gear.cpp`: `SelfBootsTick` (every gear read): `Decide` for the self view; Sam's boots entity hidden with the
+  game's entity hide flag (`+0x88` bit 2) through its setter `0x14234D6B0` (`HideSamBoots`). The inventory's visual
+  update only ever writes bit 1 (`0x14235F640`, called at `0x1427F1D69`; visible = bit 1 and not bit 2), so the hide
+  holds without a fight; a bit 2 the game set itself is never taken over or cleared; cleared when the self view stops
+  showing her. `realbody::SetSamBootsShown` (her feet scaled) only when Sam's boots are drawn over her. `BootsTick` (the
+  partner): `Decide` with the guest's style; no pose target, no feet scaling, the prop hidden unless `prop`.
+- `texture_looks.cpp`: `BuildFolder` (one group's edited slots from one folder), `BuildBoots` (the first candidate folder
+  with an edit), `OwnLook(colour, boots key)` = her suit's slots + her boots' slots. `real_body.cpp` `OwnBootsKey` /
+  `OwnTextureLook`: the key from our Sam's type, worn and suit colour; `texshare::SetOwnBoots` for the LOOK.
+- `fragile_textures.cpp`: a body may register up to 24 filtered entries (her full suit + boots = 11 per mesh).
+- `texture_share.cpp`: the host accepts `B*` slots, logs `[tex] partner boots: ...`; the guest resends the LOOK when the
+  boot type, worn or the style changes.
+
+### 30.4 `prop` fixes
+
+1. **One writer**: `ApplyLooks` no longer sets the boots prop's parts from the STV1 look (`LookPartsMatch` skipped for
+   kind 7); the STC1 boots block (`MirrorParts`) is the only writer. Hidden run `two-games-boots-prop`: no `[look] prop
+   ... 'boots' ... N part(s) set` with N > 0.
+2. **Receiver independence**: without boots of its own (barefoot: no part shown, or no entity) the receiver mirrors the
+   parts onto the prop's own (the known boots cutscene prop). Run `two-games-boots-prop`: the host barefoot
+   (`dev_boots 3 0`), the guest's porter boots still drawn (`[gear] boots prop: 4 part(s) set (total 34)`).
+3. **The load window**: a frame with more than 6 parts shown is never sent; the last settled parts are (`[boots] our
+   boots' ArtParts: ... (not settled: the last settled parts are sent)`); no boots item until the first settled read. The
+   self view keeps her own boots meanwhile.
+4. **Her own boots for barefoot, sole grass and intact Lv1 boots** (both screens, no wire change).
+Not done: the shaft slimming (the design's `gear 24`; `gear 24` is the rain cover's now). With `own` as the default the
+hem clipping is gone; in `prop` the Sam-sized mk3 shafts still cut her hems.
+
+### 30.5 Debug actions and settings
+
+- `gear 25 <0 prop | 1 own | 2 log>`: the style at run time, and a status line (partner style, Sam's boots hidden by us,
+  sets / clears / reasserts, parts read and sent).
+- `dev_boots 3 <type 0..10>` (sandboxed saves only): `SetShoesForcibly`.
+- `tex 9 3`: an in-memory stripes pattern on her boots only (`tex 9 2`: suit checker + boots stripes). `tex 10 <type>`
+  (hidden runs): her boots' pictures follow that type (-1 our Sam's).
+- session.ini `boots_look=own|prop` (the launcher writes it for host and guest from `launcher-settings.json`
+  `"textures"."boots"`), `boots_own_porter=0|1`. Both allowed in scenarios (`ini`, also on top of `launcherini`).
+
+### 30.6 Addresses (each byte-checked once; a mismatch turns that part off with one line)
+
+| Address | What | Bytes | Off on mismatch |
+|---|---|---|---|
+| `0x14234D6B0` | Entity hide flag setter (`+0x88` bit 2, locked, then the visibility job `0x14233C8F0`) | `48 83 EC 48 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 38 48 8B 81 88 00 00 00 C0 E8 02 24 01 3A D0 74 6E 84 D2 74 0B F0 48 83 89 88 00 00 00 04` | Sam's boots stay drawn under the self view; her feet are scaled away (v0.22) |
+| `0x14273251B` | the status tick: request `+0x3B8` vs the worn type `+0x328` | `0F B6 BB B8 03 00 00 40 80 FF 0B 74 68 40 38 BB 28 03 00 00` | her boots pictures follow no type (`03` folder) |
+| `0x1426E7430` | SetShoesForcibly (status `+0x54E0`, `+0x3B8`) | `40 53 48 83 EC 20 0F B6 D9 E8 ?? ?? ?? ?? 48 85 C0 74 0D 48 8B 80 E0 54 00 00 88 98 B8 03 00 00` (dev_tools' table has it exact) | as above; `dev_boots 3` off |
+
+### 30.7 Proof (hidden; every run: game exit 0, guest exit 0, saves unchanged, restored, no violation, 0 cloud uploads, 0 game-server writes, online gate ok)
+
+- `20261122-120145-two-games-fragile-boots-own` (launcher Local test files; generated patterns: checker in
+  `09 Chiral boots`, dark "metal" in `09 Chiral boots\Worn`, stripes in `03 Porter boots`): Chiral = the checker on her
+  boots on both screens, her suit untouched; worn (5 %) = the Worn pattern; porter boots (`dev_boots 3 3`) = the stripes;
+  walking and on the Kusanagi trike the guest drives. No `[boots] the partner's boots prop ... follows`, no feet
+  scaling, no `Sam's boots on her feet`.
+- `20261122-121436-two-games-boots-prop` (`ini boots_look=prop`): Chiral = Sam's mk3 boots on both screens; Lv1 = her
+  own; sole grass = her own; porter = the mule boots, with the host barefoot.
+- `20261122-120624-fragile-boots-types` (solo): the type table above.
+- Regressions: `20261122-121553-two-games-launcher-local-test`, `20261122-121808-two-games-fragile-suit`,
+  `20261122-121936-two-games-fragile-textures`, `20261122-122753-two-games-boots-ride`.
+
+## 31. What is in a hand, on the other screen: held clones (round 6; `session.ini held_items`, default 2)
+
+The user's report after v0.23.0: the ladder (and anything else) did not show in the player's hand on the partner's screen,
+neither equipped nor while aiming / placing it. Cause [V-log, the user's Local test logs]: the sender dropped every item in a
+hand that has no cutscene prop of the same model (section 17.7): `our weapon 'ds/entities/weapons/ladder': no prop for it on
+the other screen (not sent)`; both games logged `weapons 0 (0 drawn)` for the whole session. The guest's own self view was not
+affected: the game draws its own DSWeaponEntity on Sam's hidden, fitted skeleton (run `20261122-081817`, round 6 research).
+
+### 31.1 The held clone [V: static analysis round 6, then the runs below]
+
+Every item in a hand (ladder `ds/entities/weapons/ladder`, PCC `.../builder`, climbing anchor `.../pile`, container repair
+spray `.../coating_spray`, rifles, bola gun, grenades ...) is a `DSWeaponEntity` built from a `DSWeaponEntityResource` R.
+A copy of that entity crashes (its update reads a weapon instance, `0x142933FA6`). The receiver therefore makes a **plain
+`Entity` from its own game's R** (`held_items.cpp`): R is the same item in the receiver's own inventory (a hidden
+DSWeaponEntity under its Sam or backpack; in a host-held session both own the host's items), found by the sender's STR1
+path + GUID (another GUID of the same path: logged as approximate).
+
+What the game proved along the way (each a hidden run that crashed or drew nothing; the design was adapted each time):
+
+1. **A private copy of R does not work.** Entity::Init (`0x14235DBB0`, Entity vt+0x28) points the entity's resource
+   reference (+0x58) at the resource through the streaming manager (`0x141DDB370`: the StreamingRefTarget's path +0x30 and
+   the object UUID +0x08 pick the proxy). A copy with R's identity resolves to R itself (run `20261122-125117`: R's
+   components, SoundComponent included, and DSWeaponEntity's MsgEntityUpdate handler on a plain Entity: the `0x142933FA6`
+   crash in a worker); a copy with its own identity resolves to nothing (run `20261122-125554`: `0x142385D90` read a null
+   resource). So the creation uses **R itself, seen as an EntityResource for the one CreateEntity call** and restored at
+   once (game thread): R +0x00 / +0x28 get EntityResource's vtables (`0x143CF3990` / `0x143CF3A40`; the builder
+   `0x142366570` -> `0x142373940` allocates `res->vt[+0x68]()`, the entity representation comes from `vt[+0x70]`), R
+   +0x90 / +0x98 a filtered component list (kept: SkinnedModel, ArtPartsData, ArtPartsVariation, shader variables,
+   StencilBuffer, ExternalAnimation, DSSimpleAnimation, AttachToHelperMover; dropped: SoundComponent, the anchor's
+   DSBuildCheckEffect, anything else: `heldrules::KeepComponent`).
+2. **The resource's message-handler tables** (+0xA0 the entity's, +0xD0 its representation's; built when R loaded and copied
+   onto the new entity by CreateEntity's `0x14234F3E0`) hold DSWeaponEntity's and DSWeaponEntityRep's handlers (run
+   `20261122-130107`: MsgEntityInit `0x14292D290` faulted on the plain Entity). The clone's copy of the tables has each of
+   those 12 handlers replaced.
+3. **A class's table holds only its most derived handler per message** (the derived one calls its base itself). Replaced
+   by the game's empty handler `0x1418E9B10` (`ret 0`), the clones were created but never drawn (run `20261122-132320`).
+   Each weapon handler is now replaced by the plain class's handler of the same message, read from the RTTI message tables
+   (Entity's MsgEntityInit / MsgEntityUpdate, EntityRep's MsgEntityInit / MsgPrepareForRemoval), or the empty one where the
+   plain class has none (MsgPostMoverUpdate, MsgGetAnimatedPose, MsgModifyAnimatedPose, MsgBoundToSequence /
+   MsgUnboundFromSequence, MsgEntitySleep, MsgEntityRepUpdate). Run `20261122-132754`: every tool drawn in the hand.
+4. After the call: the entity must be exactly `Entity`, without SoundComponent, its representation not a weapon one;
+   otherwise it is removed at once (before its first update) and held clones go off for the session. Then the usual prop
+   checks (section 12: class, `MirrorableAt`, collision off on the copy).
+
+R is pinned (+1, never released) and the filtered component list and handler tables are made once per R (a few KB per item
+per process). Held clones are props of their own key (`kKeyHeld + resource id`), placed by the detour on the joint the
+item's mover names (`MTP_R_Hand_a` 26 ...), shown with the body, kept hidden 60 s after they are put away for the next draw
+(the weapon spares of 17.4), and removed with the game's RemoveEntity (`holo::Spawn::direct`: our own entity, no spawner).
+
+### 31.2 The item's own pose (the ladder folding, the PCC's arms)
+
+The ladder is a 70-joint skinned model: folded in the hand, unfolded over the shoulder while LT is held. The sender reads
+the held item's local joints (`look::ReadPose`) and sends them as a second STK1 stream on the weapon item's index (every
+100 ms while it changes, else once a second); the receiver writes them on the clone through pose target 7
+(`realbody::SetGearPose`). STK1 carries up to 80 joints now (was 64; 976 bytes at most, inside a link body); its header's
+reserved byte is now flags, bit 0 = the held stream, so a held pose that arrives before its layout's STC1 (one
+unreliable send per layout change) never lands in the backpack's pose slot (which took the frame's and cover's pose off
+until the next backpack pose; review fix, round 6; an older sender's 0 falls back to the layout lookup). The clone's
+ArtParts and variation come with the item's look (STV1, as for entity items).
+
+### 31.3 Sender
+
+Every visible DSWeaponEntity under Sam (in a hand, or shown on the backpack: the PCC on the hip, the rifle on its hanger)
+is sent as STC1 kind 6 with its STR1 id when it has a cutscene prop (unchanged) **or** when `held_items` wants it:
+`heldrules::Wanted` (0 off: v0.23; 1 the ladder, PCC and climbing anchor; 2, the default, every weapon resource without a
+cutscene prop). Mapped weapons keep their cutscene props (proven since v0.9). Wire unchanged apart from STK1's joint cap
+and its held flag.
+
+### 31.4 Settings and debug
+
+- session.ini `held_items=0|1|2` (also `tools` / `all`); allowed in scenarios (`ini`, also on top of `launcherini`).
+- `gear 26 <0|1|2>` sets the mode at run time (both sides; resets the walk memo); any other value only logs: the byte
+  checks, clones made / refused / faults, held props live / shown, the item pose stream (sent, received, written), and per
+  held item ours (joint, relative pose, skeleton) and each clone (its distance from the body's joint, flags, skeleton,
+  pose target, a few joint distances).
+- Log lines: `[gear] held items: ...` (byte checks), `[gear] held clone '<path>': resource ...: n component(s) kept
+  (...), m dropped (...); weapon message handlers replaced ...`, `[gear] held clone <e> (Entity, representation
+  EntityRep) of resource ...`, `[gear] held clone <i> '<path>' shown <ms> ms after its layout was taken`, `[gear] held
+  item pose target: ...`, `[gear] the partner's held item pose: item i, n joints`, `[gear] held clone '<path>' removed:
+  entity removed (own entity: ...)`.
+
+### 31.5 Addresses (one startup table in `held::Available`; any mismatch: held clones off with one line, v0.9's props stay)
+
+| Address | What | Bytes / value |
+|---|---|---|
+| `0x14236CEF7` | EntityResource ctor: vtable stores (+0x00 `0x143CF3990`, +0x28 `0x143CF3A40`) | `48 8D 05 ?? ?? ?? ?? C7 41 38 FF FF FF FF 48 89 01 48 8D 05 ?? ?? ?? ?? 48 89 41 28` (RIP targets checked) |
+| `0x14290C2D8` | DSWeaponEntityResource ctor: the 0x100-byte EntityResource base, then its ctor `0x14236CED0` | `41 B8 00 01 00 00 48 8B D9 E8 ?? ?? ?? ?? 48 8B CB E8` (call target checked) |
+| `0x14290C2EE` | DSWeaponEntityResource ctor: vtable stores (`0x143D9C7A0`, +0x28 `0x143D9C850`) | `48 8D 05 ?? ?? ?? ?? 48 89 03 48 8D 05 ?? ?? ?? ?? 48 89 43 28` (RIP targets checked) |
+| `0x143CF3990` | EntityResource vtable: +0x00 = `0x1422B7D90` (`48 8D 05 ?? ?? ?? ?? C3` -> RTTI `0x144B02810`), +0x68 = `0x1422B7D70` (`48 8B 05 ?? ?? ?? ?? C3` -> `[0x144B01048]`), +0x80 = `0x142366570` | data |
+| `0x143D9C7A0` | DSWeaponEntityResource vtable +0x80 = `0x142366570` | data |
+| `0x142366570` | the entity builder thunk | `E9` -> `0x142373940` |
+| `0x142373940` | the entity builder (`call [rax+0x68]`) | `48 89 5C 24 18 48 89 6C 24 20 56 57 41 56 48 83 EC 40 48 8B 05 ?? ?? ?? ?? 48 8B EA 48 89 44 24 28 4C 8B F1 48 8D 05 ?? ?? ?? ?? 48 89 44 24 20 48 8B 01 FF 50 68` |
+| `0x1418E9B10` | the empty message handler | `C2 00 00 CC` |
+| `0x14294E640`..`0x14294E6F0` | DSWeaponEntity's / DSWeaponEntityRep's 12 handler thunks (16 bytes apart) | `E9 ?? ?? ?? ?? CC` each |
+| RTTI `0x144BDF5E0` / `0x144BDF6A0` / `0x144AFCDB0` / `0x144B02680` | DSWeaponEntity / DSWeaponEntityRep / Entity / EntityRep: +0x09 handler count, +0x78 table | 9 / `0x144BDFBE0`, 3 / `0x144BDFC70`, 26 / `0x144AFD580`, 11 / `0x144B0C8B0` |
+
+Per item (R): vtables `0x143D9C7A0` / `0x143D9C850` and RTTI name `DSWeaponEntityResource`; its component list (+0x90 count
+1..64) and handler tables (+0xC0 / +0xF0 count 0..512) readable; R restored exactly after the call (else off).
+CreateEntity `0x1423806A0` is game_api's.
+
+### 31.6 Proof (hidden; every run: game exit 0, guest exit 0, saves unchanged, restored, no violation, 0 cloud uploads, 0 game-server writes, online gate ok)
+
+- `20261122-132754-held-items-solo` and `20261122-133456-held-items-solo` (solo; a debug Fragile mirroring us with our
+  gear on the partner's placement path, `gear 4 1`): the folded ladder in her right hand, unfolded over her shoulder with
+  LT, the PCC, the climbing anchor (LT: the anchor pole), the spray, the rifle (cutscene prop); put away: gone; a put-away
+  clone removed after its 60 s (`held clone 'ds/entities/weapons/builder' removed: entity removed`).
+- `20261122-133051-two-games-held-items` (launcher Local test files): the host sees the guest's Fragile holding the ladder
+  (folded, and unfolded with LT), the PCC (and with LT), the anchor, the spray, the rifle; the guest sees the host's Sam
+  holding the ladder (folded, unfolded) and the PCC; `the partner's held item pose: item 14, 70 joints`.
+- Regressions: `20261122-133708-two-games-launcher-local-test`, `20261122-133925-two-games-fragile-suit`,
+  `20261122-134059-two-games-fragile-attach`, `20261122-134247-two-games-headgear`,
+  `20261122-134542-two-games-world-ladder-ui`, `20261122-134826-two-games-weapons`.
+
+### 31.7 Not covered
+
+- Tried: ladder, PCC, climbing anchor, container repair spray (held clones), assault rifle, blood / electric grenades
+  (cutscene props, `two-games-weapons`). Not tried in a run: the bola gun, grenade launchers, sticky gun, maser gun, the
+  strand, the left hand; they take the same path (any `ds/entities/weapons/` resource).
+- An item the receiver's own game does not have loaded (not in its inventory) is not drawn (`not in our own inventory`).
+- R's vtables and lists are changed for the length of one CreateEntity call on the game thread; a worker thread that read
+  R's vtable in that window would see an EntityResource (not seen; the window is one call).
+- The tool's effects (the PCC's and the anchor's build holograms, the spray's mist, sounds) stay on the player's own screen.
+- Cargo carried in a hand: delivery cases are drawn as before (section 13); equipment carried as cargo is not.

@@ -112,7 +112,7 @@ enum class Action : std::uint8_t {
     story_load,           // v[0] = manual slot: the game's Load Game of manualsave<v0> (the story library's are 10..19)
     // Hidden-test world tools (docs/dev-tools.md "Go anywhere", "Boots"; dev_tools.cpp)
     dev_goto,             // v[0] x, v[1] y, v[2] z (0 = the ground under x, y): Sam there, then the ground streams in (sandboxed saves only)
-    dev_boots,            // v[0] = 0 log the boots' life, 1 v[1] = percent: set it (sandboxed saves only), 2 v[1] = 0/1 a 1 s meter
+    dev_boots,            // v[0] = 0 log the boots' life, 1 v[1] = percent: set it (sandboxed saves only), 2 v[1] = 0/1 a 1 s meter, 3 v[1] = boot type (SetShoesForcibly)
     // Shared structures (world_share.cpp; docs/world-sync.md, docs/debug-actions.md "World sync")
     world_dump,           // v[0] = category (-1 all), v[1] = n nearest (0 = 16): the census to the log (read only)
     world_sync,           // v[0] = op (0 status, 1 snapshot, 2 binding, 3 counters, 4 one CP, 5 hold sends, 10 count check, 11 round trip, 13 gate, 14 watch)
@@ -122,6 +122,8 @@ enum class Action : std::uint8_t {
     dev_build_mats,       // v[0] = id (0 = nearest), v[1] = 0 contribute / 1 repair, v[2] = share of the next level's need (0..1] / repair units
     dev_ladder,           // v[0] = length m (0 = 9.65), v[1] = mode 0/1, v[2] = m ahead (W3; sandboxed saves only; the guest asks the host)
     dev_rope,             // v[0] = length 1..30 m, v[1] = level 0..2, v[2] = m ahead (W3)
+    // Fragile's edited textures (fragile_textures.hpp; docs/debug-actions.md "Fragile's textures")
+    tex,                  // v[0] = mode (0 status, 1 rescan, 2 probe, 3 colour, 4 off/on, 5 filter, 6 slot offset, 7 resend, 9 pattern), v[1], v[2]
     count
 
 };

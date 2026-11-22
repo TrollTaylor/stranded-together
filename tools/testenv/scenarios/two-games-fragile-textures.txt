@@ -1,0 +1,98 @@
+# Fragile's edited textures between two games on the launcher's own Local test files (docs/textures.md; docs/real-partner-
+# body.md section 29; design T2.2), hidden. The run's own textures folder (the extractor reads the game read-only into
+# <run>\textures; both games' session.ini name it): bold generated patterns (no game data) in "16 Gold" (checker) and
+# "09 Mustard" (stripes); every other colour folder untouched. The guest (Fragile) builds her look from the folder of her
+# Sam's suit colour and wears it in her self view; the host gets the look over the link (STT1, channel 5), validates every
+# blob and shows it on his partner Fragile. host_save: the guest's Sam starts as a copy of the host's (gold, 16). Then the
+# guest's colour goes to 9 (stripes, sent too), 0 (her own suit on both screens) and 16 again (the host has it: no new
+# transfer). The host's own Sam stays gold.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-fragile-textures -SeedSaves complete-100 -GuestSeed profile-only
+role host
+graphics low
+timeout 360
+launcherini local-test
+textures extract
+textures pattern checker 16 Gold
+textures pattern stripes 09 Mustard
+start control 200
+@guest waitlog 60 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+@both goto mknot-road
+wait 6000
+@guest pad none 2400 ly=32767
+@guest pad none 900 ly=-32767
+@guest waitlog 60 \[tex\] body self .*: look .* bound .* kept [1-9]
+@guest waitlog 30 \[tex\] look #[0-9]+ sent: colour 16, 1 blob
+waitlog 150 \[tex\] partner look .*: received S0 .* valid
+waitlog 30 \[tex\] body partner .*: look .* bound .* kept [1-9]
+wait 1500
+@both action tex 0
+screenshot 00-host-sees-guest-gold
+@guest screenshot 00-guest-self-gold
+# mustard: the stripes, sent too (the host's checks first: they come after the guest's own)
+@guest action real_outfit 4 9
+waitlog 150 \[tex\] partner look .*: complete for colour 9
+waitnew 30 \[tex\] body partner .*: look .* bound .* kept [1-9]
+@both action tex 0
+@guest waitnew 10 \[tex\] bodies: self [0-9A-F]+ look [0-9a-f]{8} overrides 2
+wait 1500
+# the host stands up (an idle Sam sits down during the transfer) and looks ahead again
+pad none 500 ly=32767
+wait 3000
+pad none 300 rx=32767
+wait 1000
+screenshot 01-host-sees-guest-mustard
+@guest screenshot 01-guest-self-mustard
+# 0: nothing edited in "00 Default": her own suit on both screens
+@guest action real_outfit 4 0
+waitnew 30 \[tex\] partner look: her own suit \(colour 0\)
+waitnew 30 \[tex\] body partner .*: look .* taken off
+wait 1000
+@both action tex 0
+@guest waitnew 10 \[tex\] bodies: self [0-9A-F]+ look - overrides 0
+wait 500
+# the host stands up (an idle Sam sits down during the transfer) and looks ahead again
+pad none 500 ly=32767
+wait 3000
+pad none 300 rx=32767
+wait 1000
+screenshot 02-host-sees-guest-own
+@guest screenshot 02-guest-self-own
+# gold again: the host has the texture already (no transfer)
+@guest action real_outfit 4 16
+waitnew 60 \[tex\] partner look .*: complete for colour 16 .*cache hit 1
+waitnew 30 \[tex\] body partner .*: look .* bound .* kept [1-9]
+wait 1000
+@both action tex 0
+@guest waitnew 10 \[tex\] bodies: self [0-9A-F]+ look [0-9a-f]{8} overrides 2
+wait 500
+# the host stands up (an idle Sam sits down during the transfer) and looks ahead again
+pad none 500 ly=32767
+wait 3000
+pad none 300 rx=32767
+wait 1000
+screenshot 03-host-sees-guest-gold-again
+@guest screenshot 03-guest-self-gold-again
+# the host's own Sam: still gold (his outfit line), never touched by the textures
+action real_outfit 0
+pad none 1300 rx=32767
+wait 1500
+screenshot 04-host-own-sam
+# tex 7 on the host (review fix): the partner look's RAM copies are let go of and the same look shown again (read from the
+# disk cache when needed), never her own suit for good
+action tex 7
+waitnew 10 \[tex\] host: tex 7: [0-9]+ of the guest's 1 blob\(s\) let go of from RAM .*look #[0-9]+ shown again
+wait 1500
+@both action tex 0
+waitnew 10 \[tex\] bodies: .*partner [0-9A-F]+ look [0-9a-f]{8} overrides 2
+@both action tex 0
+nolog \[tex\] .*FAULTED
+@guest nolog \[tex\] .*FAULTED
+nolog \[tex\] refused
+@guest nolog \[tex\] host refused
+nolog \[tex\] .*NOT valid
+nolog \[tex\] body self
+@both action log_status
+@guest quit
+wait 3000
+quit

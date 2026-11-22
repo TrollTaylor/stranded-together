@@ -37,10 +37,15 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
   Sam has the other player's own hair and head (cap hair, the metal face lines).
   When you appear as another character, your own real gear, cap, glasses, equipped boots and
   weapons show on you, fitted to your character's body (the cap and glasses placed for
-  Fragile's head; her own shoes hidden inside the boots), and the cargo menu (Manage Cargo)
-  shows your character instead of Sam. The equipped boots also show on the other screen.
+  Fragile's head), and the cargo menu (Manage Cargo) shows your character instead of Sam. Fragile
+  keeps her own boots on both screens, painted with your boots pictures of the equipped boot type
+  (or, with Tools > Fragile's textures > "Sam's boots on her feet", Sam's real boots over hers).
 - **Experimental:** weapons in hand show on the other screen: the assault rifle, handgun,
   shotgun, multi rod and the grenades (as the game's cutscene models, in their own colours).
+- **Experimental (round 6):** whatever else is in a player's hand shows in that hand on the other screen too: the
+  ladder (folded, and unfolded over the shoulder while aiming it), the PCC, the climbing anchor, the container repair
+  spray and any other tool or weapon, drawn from the item's own model (docs/real-partner-body.md section 31;
+  session.ini `held_items`, default 2).
 - **Experimental:** structures either player builds with the PCC (postboxes, watchtowers, generators, shelters,
   bridges, ...) appear in both worlds with the build-up on both screens, a dismantle removes them from both, and they
   stay in the host's save (docs/world-sync.md; on with **Host holds the save**, Debug option **Share structures,
@@ -78,7 +83,7 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
   game's own hit area. Vehicles bump into each other on both screens. Turn it off for
   yourself on the launcher's Debug page: **Partner's vehicles can knock me down** (each
   player decides for their own Sam).
-- Not yet: other weapons in hand (bola gun, launchers, PCC ...), the Odradek, the cuff device,
+- Not yet: the tools' effects (the PCC's and anchor's build holograms, the spray), the Odradek, the cuff device,
   the weapon crate on the hip, the chiral cylinder, the exoskeleton on non-Sam characters,
   facial animation, the partner's gear sounds and gunshots (footsteps, movement and
   rifle handling are heard, experimental), the game's own passenger animation, a vehicle
@@ -117,6 +122,7 @@ With **Debug → Host holds the save** (on by default) there is one world, the h
 - **Host:** you play on your own saves, exactly as in single player. Pick **Continue**, **Load** or **New Game** on your title screen as usual; your partner joins the world you start. Co-op progress is saved into **your own save** by the game itself. Before each co-op session the launcher copies your saves to `stranded_together\backups` (the newest 5 are kept; **Debug → Back up my saves before co-op**).
 - **Guest:** your game never opens your own saves. It skips the boot logos and opens on the game's own title screen, whose menu has only **Waiting for <host> to start the game** and **Quit Game**; that line follows the connection, the transfer ("Receiving <host>'s save: 45%") and the load. It cannot enter a world by itself. When the host starts, the host's save comes over the connection and your game loads it: you appear where the host's Sam was when that save was made. **Quit Game** quits the game.
 - **What the guest's progress means:** the guest plays a **disposable copy of the host's world**. Orders, deliveries, porter grade, likes, equipment, materials, structures and story progress made only on the guest's side are **not kept**: they are gone at the host's next load and when the session ends. The guest spawns as a copy of the host's Sam at save time (the same cargo and orders); delivering that cargo on the guest's side changes nothing for the host. Your settings and controls changed during co-op are kept for the next co-op session (in the co-op folder only). Your real saves are never touched.
+- **The black rain cover over the backpack wears out in timefall** (single player does the same). Both games load the host's save, so both Sams' covers wear out at about the same time; when one breaks, the game removes it from that Sam, so it also disappears from Fragile's back on both screens. Fabricate and equip a new one to get it back. The log says so: `[gear] wear: the backpack's rain cover broke`.
 - **When the host...** loads another save, retries after a Game Over or quits to the title, the guest follows: it loads the same save (a Retry uses the host's newest autosave, which can differ slightly from the exact retry point), or goes back to its title and waits again. A **New Game** host: the guest waits until the host's first save. A guest who joins while the host is already playing loads the host's newest save and is offered **Teleport to host** once (in the F9 menu).
 - **Connection lost:** the guest keeps playing with a "Reconnecting..." notice; after 60 s it goes back to the waiting screen and rejoins the host's world when the connection is back.
 - **Game versions:** both games must be the same version; otherwise both screens say "Game versions differ" and the guest does not load anything.
@@ -124,6 +130,10 @@ With **Debug → Host holds the save** (on by default) there is one world, the h
 - Turn the option off for the old mode: each player on their own save. That mode has no waiting screen, no shared vehicles (the partner's vehicles are see-through copies), no riding together and no vehicle hits: the launcher says so on the Play page and both games show an amber "Co-op features OFF" notice.
 - **Debug → Test saves → Local two-player test** (two games on one PC) plays this same session since v0.19: the guest window waits for the host and loads the host's save, the vehicles are shared, you can ride together. Both games run on copies of the test save, never on your own saves.
 - **Local test controls:** the mouse stays inside the game window you play in (Debug option **Lock the mouse to the focused game window (Local test)**, on by default): **F10** jumps to the other game's window (F11 when your menu key is F10), **Alt+Tab** or the Win key leave, **F9** opens the debug menu in the game in front. The hint at the top left says so when you are in the world.
+
+### Fragile's textures: paint her suit and boots (new)
+
+**Tools → Fragile's textures → Extract textures** copies Fragile's porter suit and boots pictures, and every Sam suit style (palette, silver, gold) and boot type for reference, out of your own game into `Documents\Stranded Together\Textures` as PNG files you can paint: one folder per Sam suit colour (`00 Default` ... `16 Gold`) and per boot type. Extracting again never overwrites what you painted; **Check my edits** lists what you changed. In a co-op session the guest's Fragile wears the suit pictures you edited for your Sam's suit colour, on your screen and on your partner's (sent over the link, then cached); a saved picture shows a few seconds later, and a colour you did not edit is her own navy suit (the v0.23 colour tint is now an option, `fragile_suit_colour=1`). Her boots wear the pictures you painted for the boot type the guest's Sam has equipped (her own boots' shape, on both screens; worn-out boots use `Worn\`); the card's "Her boots" choice switches to Sam's real boots on her feet instead. See [docs/textures.md](docs/textures.md).
 
 ## Debug
 

@@ -320,7 +320,8 @@ bool HiddenIniFromLauncher(const std::string& launcher_text, const SessionOption
         const std::string key = eq == std::string::npos ? line : automation::detail::Trim(line.substr(0, eq));
         if (key.rfind("automation", 0) == 0) return *error = "the launcher's file already has " + key, false;
         if (key == "role") role = true;
-        if (key == "sandbox_saves" || key == "sandbox_foreign_saves") {
+        // textures_dir: the launcher writes the player's own textures folder (Documents); a hidden run never reads it.
+        if (key == "sandbox_saves" || key == "sandbox_foreign_saves" || key == "textures_dir") {
             if (replaced) replaced->push_back(line);
             continue;
         }
@@ -337,8 +338,20 @@ bool HiddenIniFromLauncher(const std::string& launcher_text, const SessionOption
     if (!o.save_root.empty()) s += "automation_save_root=" + Narrow(o.save_root) + "\n";
     if (o.foreign_saves) s += "automation_foreign_saves=1\n";
     if (!o.quickstart.empty()) s += "automation_quickstart=" + o.quickstart + "\n";
+    if (!o.extra.empty()) {
+        s += "# testenv: the scenario's test switches and the run's own textures folder\n";
+        for (const std::string& line : o.extra) s += line + "\n";
+    }
     *out = s;
     return true;
+}
+
+bool LauncherIniOverrideAllowed(const std::string& key) {
+    static const char* const kAllowed[] = {"fragile_suit_colour", "fragile_textures", "textures_send", "textures_receive", "textures_hot_reload", "textures_free",
+                                           "boots_look", "boots_own_porter", "held_items"};
+    for (const char* k : kAllowed)
+        if (key == k) return true;
+    return false;
 }
 
 bool ScenarioIniKeyAllowed(const std::string& key) {
@@ -353,7 +366,9 @@ bool ScenarioIniKeyAllowed(const std::string& key) {
                                            "guest_skip_logos", "ride_together", "ride_pose", "ride_camera", "ride_hide_pack", "fragile_suit_colour",
                                            "world_sync", "world_anim", "world_contrib", "world_ladders", "world_ziplines", "world_test_fail",
                                            "partner_vehicle_damage", "dev_tools", "test_net_latency_ms", "test_net_jitter_ms",
-                                           "test_net_loss_permille", "test_net_burst"};
+                                           "test_net_loss_permille", "test_net_burst", "fragile_textures", "textures_send",
+                                           "textures_receive", "textures_hot_reload", "textures_free", "boots_look", "boots_own_porter",
+                                           "held_items"};
 
     for (const char* k : kAllowed)
         if (key == k) return true;
@@ -507,6 +522,37 @@ bool ParseScenario(const std::string& text, Scenario* out, std::string* error, c
             if (st.optional) return fail("ini cannot be optional");
             (host_ini ? out->host_ini : guest_ini ? out->guest_ini : out->ini).push_back(key + "=" + val);
             if (guest_ini && !out->guest_ini_line) out->guest_ini_line = lineno;
+            continue;
+        }
+        if (verb == "textures") {
+            // textures extract | pattern <checker|stripes|metal> <folder, e.g. 16 Gold> | none
+            if (st.optional) return fail("textures cannot be optional");
+            std::string cmd;
+            if (words.size() == 2 && (words[1] == "extract" || words[1] == "none")) {
+                cmd = words[1];
+            } else if (words.size() >= 4 && words[1] == "pattern" && (words[2] == "checker" || words[2] == "stripes" || words[2] == "metal")) {
+                // a colour or boots folder ("16 Gold", "09 Chiral boots"), or a boots folder's Worn / Gold / Silver subfolder
+                // ("09 Chiral boots\Worn"): nothing else, never a path out of the run's textures folder
+                const std::string folder = automation::detail::Rest(line, 3);
+                const std::size_t bs = folder.find('\\');
+                const std::string top = folder.substr(0, bs), sub = bs == std::string::npos ? std::string() : folder.substr(bs + 1);
+                if (top.size() < 3 || top[0] < '0' || top[0] > '9' || top[1] < '0' || top[1] > '9' || top[2] != ' ' ||
+                    top.find_first_of("\\/:*?\"<>|") != std::string::npos || top.find("..") != std::string::npos ||
+                    (bs != std::string::npos && (top.find("oots") == std::string::npos || (sub != "Worn" && sub != "Gold" && sub != "Silver"))))
+                    return fail("textures pattern: the folder is a colour or boots folder name like '16 Gold' or '09 Chiral boots\\Worn'");
+                cmd = "pattern " + words[2] + " " + folder;
+            } else {
+                return fail("textures extract | textures pattern <checker|stripes|metal> <NN folder> | textures none");
+            }
+            out->textures = out->textures || cmd != "none";
+            if (cmd == "none") continue;
+            if (out->quickstart_line == 0) {
+                out->textures_pre.push_back(cmd);
+                continue;
+            }
+            st.kind = StepKind::textures;
+            st.text = cmd;
+            out->steps.push_back(st);
             continue;
         }
         if (verb == "graphics") {
@@ -670,8 +716,12 @@ bool ParseScenario(const std::string& text, Scenario* out, std::string* error, c
     if (!out->launcher_ini.empty()) {
         const std::string at = "line " + std::to_string(out->launcher_ini_line) + ": launcherini ";
         if (out->role != "host") return *error = at + "needs 'role host' (the local test's two games)", false;
-        if (!out->ini.empty() || !out->host_ini.empty() || !out->guest_ini.empty())
-            return *error = at + "plays the launcher's file exactly: no ini / @host ini / @guest ini lines", false;
+        for (const auto* list : {&out->ini, &out->host_ini, &out->guest_ini})
+            for (const std::string& kv : *list)
+                if (!LauncherIniOverrideAllowed(kv.substr(0, kv.find('='))))
+                    return *error = at + "plays the launcher's file: only test switches may be added (" + kv.substr(0, kv.find('=')) +
+                                    " is not one: fragile_suit_colour, fragile_textures, textures_send, textures_receive, textures_hot_reload, textures_free, boots_look, boots_own_porter, held_items)",
+                           false;
         if (out->guest_unredirected) return *error = at + "and guest unredirected do not go together", false;
         if (!out->low_graphics) return *error = at + "needs 'graphics low' (the launcher's file has appdir_settings=1)", false;
     }

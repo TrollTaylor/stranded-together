@@ -63,7 +63,8 @@ constexpr std::uintptr_t kPointTypeEnum = 0x144C33550;  // EDSConstructionPointT
 // byte status +0x3B8. We call the body with the status we read and checked ourselves (the export does not null-check it).
 constexpr std::uintptr_t kShoesByRate = 0x142741860;
 constexpr std::uintptr_t kShoes = 0x320, kShoesLife = 0x33C, kShoesMax = 0x334, kShoesSpare = 0x330, kShoesOver = 0x32C, kShoesFlags = 0x3B0,
-                         kShoesItem = 0x368, kShoesType = 0x3B8;
+                         kShoesItem = 0x368, kShoesType = 0x3B8, kShoesWornType = 0x328;
+constexpr std::uintptr_t kSetShoesForcibly = 0x1426E7430;
 
 enum Feature : unsigned {
     kFRefill = 1u, kFGod = 2u, kFWeather = 4u, kFMules = 8u, kFBts = 16u, kFPlaces = 32u, kFBoots = 64u, kFChiral = 128u, kFBootsLife = 256u,
@@ -752,6 +753,14 @@ bool CallShoesRate(std::uintptr_t status, float rate) noexcept {
         return false;
     }
 }
+bool CallShoesForcibly(std::uint8_t type) noexcept {
+    __try {
+        reinterpret_cast<void (*)(std::uint8_t)>(A(kSetShoesForcibly))(type);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
 bool g_boots_meter = false;
 double g_boots_next = 0;
 float g_boots_last = -1;
@@ -770,11 +779,27 @@ bool BootsCmd(int op, double v, char* msg, std::size_t cap) {
     if (!ReadBoots(s, &b)) return Put(msg, cap, "Sam's status is not there"), false;
     char line[200];
     FormatBoots(b, line, sizeof(line));
+    if (op == 3) {
+        // round 6 T3: SetShoesForcibly(type) (0x1426E7430, byte-checked above): the request byte status +0x3B8; the status
+        // tick (0x14273251B) equips boots of that type when it differs from the worn type (status +0x328) and clears it
+        // (0xB). Hidden runs / sandboxed saves only (Gate world): it changes what the save's Sam wears.
+        if (!(v >= 0 && v <= 10)) return Put(msg, cap, "boots 3 <type 0..10> (0 barefoot, 2 sole grass, 3 porter, 4-6 all-terrain, 7 mule, 8 terrorist, 9 chiral, 10 reflect)"), false;
+        if (!Gate(Tool::world, msg, cap)) return false;
+        if (const char* why = Playing(&s)) return Put(msg, cap, "refused: %s", why), false;
+        if (!CallShoesForcibly(static_cast<std::uint8_t>(v))) {
+            g_features &= ~kFBootsLife;
+            return Put(msg, cap, "SetShoesForcibly faulted; boots' life off for this run"), false;
+        }
+        std::uint8_t worn_type = 0xFF;
+        mem::Rd(b.status + kShoesWornType, worn_type);
+        Log("[dev] boots: SetShoesForcibly(%.0f) requested (worn type now %u; the status tick equips it): %s", v, worn_type, line);
+        return Put(msg, cap, "boots type %.0f requested (was %u)", v, worn_type), true;
+    }
     if (op == 0) {
         Log("[dev] boots: %s", line);
         return Put(msg, cap, "boots: %s", line), true;
     }
-    if (op != 1) return Put(msg, cap, "boots 0 log, 1 <percent> set the life, 2 <0/1> meter"), false;
+    if (op != 1) return Put(msg, cap, "boots 0 log, 1 <percent> set the life, 2 <0/1> meter, 3 <type> equip a boot type"), false;
     float rate = 0;
     if (!devrules::BootsRate(v, &rate)) return Put(msg, cap, "boots 1 <percent 0..100>"), false;
     if (const char* why = Playing(&s)) return Put(msg, cap, "refused: %s", why), false;

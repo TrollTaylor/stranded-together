@@ -238,6 +238,41 @@ never clipped at all (its clips are kept from the system: it is the pad player).
   (hidden run, not applied): would hold ...` and `[mouse] F10: would switch to ...` (docs/hidden-testing.md,
   `two-games-launcher-f9`).
 
+## Tools: Fragile's textures (round 6)
+
+The Tools page's **Fragile's textures** card (docs/textures.md has the player's guide):
+
+* **Extract textures** starts the launcher's own exe as a child (`--extract-textures`, `CREATE_NO_WINDOW`, below normal
+  priority, stdout on a pipe read by a worker thread: `core::TextureTasks`), so the game's `oo2core_7_win64.dll` never
+  loads into the window's process and a crash there cannot take the window down. A progress bar follows its
+  `progress <done> <total> <what>` lines; **Cancel** is `TerminateProcess` on that child only (the next run deletes its
+  `.partial` files). Refused while a game started from this folder runs. The result line says how many pictures and MB,
+  and that edited pictures were kept; `launcher.log` gets one `textures=done|failed|cancelled exit=.. sets=.. skipped=..
+  written=.. kept=.. bytes=.. ms=..` line.
+* **Open folder** creates the folder when missing and opens it; **Check my edits** scans it on a worker thread (every
+  edited picture decoded) and lists the edited folders, wrong sizes, unreadable files and unused names; **Change
+  folder...** picks another folder (not a network path, not inside the game folder, Windows or Program Files), **Use the
+  default folder** goes back. The status line comes from the folder's `.manifest.txt` and a hash of the editable pictures
+  (worker thread, only when the Tools page is shown): "Not extracted yet", "Extracted <date>: 17 suit colours, 10 boot
+  types", the edited folders, or "updated since the extraction" when ds.exe or the slot table changed.
+* **Her boots** (round 6 T3; docs/real-partner-body.md section 30): two choices under the buttons, "Her own boots,
+  painted" (default: her own model's boots on both screens, painted with the boot pictures of the guest's boot type) and
+  "Sam's boots on her feet" (Sam's real boots of that type over her feet, v0.22). Written as `boots_look=own|prop` into
+  every session.ini (Host, Join, Solo test, Debug tools only, both Local test files); the guest's choice is what both
+  screens show (it travels in the textures LOOK).
+* Settings: `launcher-settings.json` `"textures": {"dir": "" (= <Documents>\Stranded Together\Textures, resolved with
+  SHGetKnownFolderPath at use; <LocalAppData>\Stranded Together\Textures when Documents is inside OneDrive or not a local
+  drive folder, so the game pictures are never uploaded; the card says why), "previews": true, "boots": "own" | "prop"}`. Nothing is created in Documents until
+  Extract / Open is pressed.
+* Every session.ini (Host, Join, Solo test, Debug tools only, both Local test files) gets `textures_dir=<the folder>`
+  when the mod can use it (`TexturesDirForSession`); an unusable one (a network path) is left out and named on the card,
+  so it never stops a session from starting. A picked folder inside OneDrive gets a warning on the card.
+* In the game (round 6 T2, T3): the guest's mod reads that folder and puts the edited suit and boots pictures on
+  Fragile, on both screens (docs/textures.md "See your pictures in the game", "Her boots"); the host's mod gets them over
+  the link. Besides `boots_look` the launcher writes no other texture key: the mod's defaults are `fragile_textures=1`, `textures_send=1`, `textures_receive=1`,
+  `textures_hot_reload=1` and `fragile_suit_colour=0` (the v0.23 tint, now only a fallback; add the keys by hand to
+  change them). The card has no checkboxes for them yet.
+
 ## In game
 
 While the game starts or runs, the In game page polls `link-status.json`
@@ -379,6 +414,15 @@ world_sync=1|0                  shared structures, ziplines, ladders and climbin
                                 structures, ladders, ropes and ziplines" (`"share_world"`, default on, CO-OP SAVE, only with Host holds the save)
                                 for Host, Join and both Local test files; with host_save=1 the line is always written
                                 (world_sync=0 when off: the mod's own default is on with host_save=1; both games must agree)
+boots_look=own|prop             her boots (round 6 T3, the Tools card's choice; "textures"."boots"): her own boots painted
+                                (own, the mod's default) or Sam's boots on her feet (prop); every session and both Local test
+                                files; parsed strictly (own / prop)
+textures_dir=<folder>           Fragile's textures (docs/textures.md): the Tools card's folder (default <Documents>\Stranded
+                                Together\Textures, <LocalAppData>\... when OneDrive syncs Documents), every session and both Local test files; parsed strictly (a full drive
+                                path, no control characters). The mod reads it for Fragile's edited suit (round 6 T2) and
+                                never writes there (its cache is its own cache\built-textures); a folder the mod cannot use
+                                (a network path) is left out, never an error; hidden runs drop it (a run with a `textures` line gets
+                                its own <run>\textures instead)
 frame_cap=60                    local test: at most that many frames per second (the Frame rate choice: 30 / 60 (default) /
                                 120; not written for Uncapped, where the game's own limit of 240 in settings.cfg holds)
 my_character=<key>              the character the other player sees you as: an offered body_table key; always sam for a host,
@@ -557,7 +601,7 @@ StrandedTogether.exe                      the window (real model)
   --scale <f>                             force a UI scale
   --selftest                              built-in checks (exit 0 = passed); reports, but does not
                                           fail on, a folder without ds.exe
-  --screenshot-all <dir> [--scale 1]      render every page hidden and save PNGs (35 scenes)
+  --screenshot-all <dir> [--scale 1]      render every page hidden and save PNGs (45 scenes)
   --watch <session>                       the hidden helper
   --after-update <pid>                    (the updater) the new window waits for the old one to close
 Developer only (no window, no Steam launch, no helper):
@@ -566,7 +610,16 @@ Developer only (no window, no Steam launch, no helper):
   --write-session local-test --out <dir> [--game-dir <dir>]
   --end-session [--game-dir <dir>]
   --update-feed <url> [--update-now]      releases from a loopback test feed; install at once
+Fragile's textures (no window; the Tools card runs the first as its child):
+  --extract-textures --out <dir> [--game-dir <dir>] [--no-previews]
+                  [--allow-out-under <dir>] [--cancel-after-sets <n>]
+  --check-textures --out <dir>
 ```
+
+`--extract-textures` reads the game's archives read-only and writes only under `--out`, which must be the folder the
+launcher's settings name; tests and the hidden check pass `--allow-out-under <dir>` instead (the out folder inside it,
+never the user's Documents, Desktop, Pictures, OneDrive or the profile outside the temp folder). Exit 0 with a `done`
+line, 1 with an `error <sentence>` line, 3 for the test hook `--cancel-after-sets`. docs/textures.md "For developers".
 
 `--write-session` is meant for testing the mod without the window: it writes
 `session.ini` (and the record) exactly as the buttons do, with the Debug

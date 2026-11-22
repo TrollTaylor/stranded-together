@@ -90,6 +90,9 @@ struct Spawn {
     game::Entity* e = nullptr;
     std::uintptr_t vt = 0;
     game::Guid guid;
+    // Round 6 (held items): an entity the mod created itself (CreateEntity, no spawner): `realized` and `e` are set, `sp` is
+    // null; SpawnTeardown removes the entity (when it is still the same object) and releases nothing.
+    bool direct = false;
 };
 // Starts loading `item_ptr`'s DisplayEntityResource at `at` (item read this frame).
 bool SpawnBegin(std::uintptr_t item_ptr, std::uint32_t hash, const game::WorldTransform& at, Spawn* s, char* why,

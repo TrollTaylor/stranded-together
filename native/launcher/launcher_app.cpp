@@ -1185,11 +1185,131 @@ void LauncherUi::ToolsPage(Phase phase) {
     }
     ResultLine(tool_result_);
     Gap(6.0f);
+    TexturesCard(phase);
+    Gap(6.0f);
     SectionLabel("GAME FOLDER");
     Text(model_.game_dir().c_str(), col::kTextDim, kSmall, GetFonts().mono, 0.0f);
     Gap(2.0f);
     Message(Icon::sliders, col::kCool, "Test options, the live mod log and switching the mod off are on the Debug page.", kSmall, 0.0f,
             col::kTextFaint);
+}
+
+// Tools > Fragile's textures (docs/textures.md): extract the game's suit and boots pictures into a folder the player edits.
+void LauncherUi::TexturesCard(Phase phase) {
+    const TexturesView t = model_.textures();
+    const bool in_game = phase == Phase::in_game || phase == Phase::launching;
+    const bool busy = t.state == TexturesView::State::extracting;
+    if (scroll_to_textures_ && page_window_)   // screenshot scenes: the page scrolled to this card
+        ImGui::SetScrollFromPosY(page_window_, ImGui::GetCursorScreenPos().y - page_window_->Pos.y - Px(12.0f), 0.0f);
+    BeginCard("##textures");
+    IconBadge(Icon::folder, col::kAccent, col::kAccentSoft, 30.0f);
+    ImGui::SameLine(0.0f, Px(10.0f));
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + Px(4.0f));
+    Text("Fragile's textures", col::kText, kBody + 1.0f, GetFonts().semibold, -1.0f);
+    Text("Fragile's suit and boots pictures from your game, in a folder you can paint: one set per Sam suit colour (Default ... "
+         "Gold) and per boot type, with Sam's suits and boots next to them to copy details from. Only pictures you change are used.",
+         col::kTextDim, kSmall, nullptr, 0.0f);
+    Gap(2.0f);
+    {
+        const Font f(GetFonts().mono, kSmall);
+        Text(t.folder.empty() ? "No Documents folder: pick one with Change folder..." : t.folder.c_str(),
+             t.folder.empty() ? col::kWarn : col::kText, kSmall, GetFonts().mono, 0.0f);
+    }
+    if (!t.folder_note.empty()) Message(Icon::warning, col::kWarn, t.folder_note, kSmall);
+    const ImU32 status_col = t.state == TexturesView::State::outdated ? col::kWarn
+                             : t.state == TexturesView::State::extracted ? col::kGood
+                                                                         : col::kTextFaint;
+    const Icon status_icon = t.state == TexturesView::State::outdated ? Icon::warning
+                             : t.state == TexturesView::State::extracted ? Icon::check
+                                                                         : Icon::info;
+    if (busy) {
+        Gap(2.0f);
+        const float w = ImGui::GetContentRegionAvail().x / Scale();
+        ProgressBar(t.progress, w, 6.0f, col::kAccent);
+        Text(("Extracting: " + t.progress_text).c_str(), col::kTextDim, kSmall, nullptr, 0.0f);
+    } else {
+        Message(status_icon, status_col, t.status, kSmall);
+        if (!t.edited.empty()) Message(Icon::sliders, col::kCool, t.edited, kSmall);
+        if (t.state == TexturesView::State::not_extracted || t.state == TexturesView::State::outdated)
+            Message(Icon::info, col::kTextFaint, "Needs " + t.estimate + " of disk space. The game's own files are only read.", kSmall);
+    }
+    Gap(2.0f);
+    const float avail = ImGui::GetContentRegionAvail().x / Scale();
+    const float w4 = std::floor((avail - 3.0f * 8.0f) / 4.0f);
+    if (busy) {
+        if (Button("Cancel##texcancel", ButtonKind::secondary, ImVec2(w4, 34.0f), true, Icon::stop, true)) model_.cancel_textures();
+    } else if (Button("Extract textures##texextract", ButtonKind::primary, ImVec2(w4, 34.0f), !in_game && !t.folder.empty(), Icon::download,
+                      true)) {
+        std::string error;
+        if (!model_.extract_textures(error)) tex_result_ = Result{false, error, ""};
+        else tex_result_ = Result{};
+    }
+    ImGui::SameLine(0.0f, Px(8.0f));
+    if (Button("Open folder##texopen", ButtonKind::secondary, ImVec2(w4, 34.0f), !t.folder.empty(), Icon::folder, true)) {
+        std::string path, error;
+        if (model_.textures_folder_for_open(path, error)) {
+            if (shell_.open_folder) shell_.open_folder(path);
+        } else {
+            tex_result_ = Result{false, error, ""};
+        }
+    }
+    ImGui::SameLine(0.0f, Px(8.0f));
+    const bool extracted = t.state == TexturesView::State::extracted || t.state == TexturesView::State::outdated;
+    if (Button("Check my edits##texcheck", ButtonKind::secondary, ImVec2(w4, 34.0f), extracted && !busy && !t.checking, Icon::check, true)) {
+        std::string error;
+        if (!model_.check_textures(error)) tex_result_ = Result{false, error, ""};
+        else tex_result_ = Result{};
+    }
+    ImGui::SameLine(0.0f, Px(8.0f));
+    if (Button("Change folder...##texfolder", ButtonKind::secondary, ImVec2(w4, 34.0f), !busy && shell_.pick_folder != nullptr, Icon::sliders,
+               true)) {
+        std::string folder;
+        if (shell_.pick_folder(folder)) {
+            std::string error;
+            const bool ok = model_.set_textures_folder(folder, error);
+            tex_result_ = Result{ok, ok ? "Textures folder set. Press Extract textures to fill it." : error, ""};
+        }
+    }
+    // Her boots (docs/real-partner-body.md section 30): her own boots painted with the boot pictures, or Sam's boots.
+    Gap(4.0f);
+    SectionLabel("HER BOOTS");
+    {
+        static const char* const kBoots[] = {"Her own boots, painted", "Sam's boots on her feet"};
+        int boots = t.boots_own ? 0 : 1;
+        if (Segmented("##texboots", kBoots, 2, &boots, std::fmin(ImGui::GetContentRegionAvail().x / Scale(), 460.0f), !in_game))
+            model_.set_boots_look(boots == 0);
+        Text(t.boots_own ? "Fragile keeps her own porter boots on both screens, painted with your pictures of the boot type the guest wears "
+                           "(Fragile boots\\NN <type>). Their shape is always her porter boot."
+                         : "Sam's real boots of the type the guest wears are drawn over her feet (their own shape and wear). Your boot pictures "
+                           "are hidden under them.",
+             col::kTextDim, kSmall, nullptr, 0.0f);
+    }
+    if (t.custom_folder && !busy) {
+        if (Button("Use the default folder##texdefault", ButtonKind::quiet, ImVec2(0.0f, 28.0f))) {
+            std::string error;
+            const bool ok = model_.set_textures_folder("", error);
+            tex_result_ = Result{ok, ok ? "Back to the default folder." : error, ""};
+        }
+    }
+    if (!t.result.empty() && !busy)
+        Message(t.tone == TexturesView::Tone::good ? Icon::check : t.tone == TexturesView::Tone::bad ? Icon::warning : Icon::info,
+                t.tone == TexturesView::Tone::good ? col::kGood : t.tone == TexturesView::Tone::bad ? col::kBad : col::kWarn, t.result, kSmall);
+    if (t.checking) Message(Icon::info, col::kTextFaint, "Checking your pictures...", kSmall);
+    if (!t.report.empty() && !t.checking) {
+        Gap(2.0f);
+        SectionLabel("CHECK MY EDITS");
+        std::size_t start = 0;
+        while (start < t.report.size()) {
+            std::size_t end = t.report.find('\n', start);
+            if (end == std::string::npos) end = t.report.size();
+            const std::string line = t.report.substr(start, end - start);
+            if (!line.empty()) Text(line.c_str(), col::kTextDim, kSmall, nullptr, 0.0f);
+            start = end + 1;
+        }
+    }
+    ResultLine(tex_result_);
+    if (in_game) Message(Icon::info, col::kTextFaint, "Extract textures is available while the game is closed.", kSmall);
+    EndCard();
 }
 
 // ---- Debug -----------------------------------------------------------------
@@ -1849,6 +1969,9 @@ void LauncherUi::PrepareScene(int index, MockModel& mock) {
     open_character_list_ = false;
     scroll_to_partner_body_ = false;
     scroll_to_coop_save_ = false;
+    scroll_to_textures_ = false;
+    tex_result_ = Result{};
+    mock.set_textures_state(TexturesView::State::not_extracted);
     mock.set_test_save_view(TestSaveView{});
     mock.jump_to_local_test(-1.0);
     {
@@ -1986,6 +2109,23 @@ void LauncherUi::PrepareScene(int index, MockModel& mock) {
         std::string path, error;
         const bool ok = mock.collect_logs(path, error);
         tool_result_ = Result{ok, ok ? "Saved to your Desktop: " + FileName(path) + "." : error, path};
+        break;
+    }
+    case ui::Scene::tools_textures:   // Tools: Fragile's textures, not extracted yet
+        scroll_to_textures_ = true;
+        page = Page::tools;
+        break;
+    case ui::Scene::tools_textures_extracting:
+        mock.set_textures_state(TexturesView::State::extracting, 0.42f);
+        scroll_to_textures_ = true;
+        page = Page::tools;
+        break;
+    case ui::Scene::tools_textures_done: {   // extracted, two folders edited, Check my edits run
+        mock.set_textures_state(TexturesView::State::extracted);
+        std::string error;
+        mock.check_textures(error);
+        scroll_to_textures_ = true;
+        page = Page::tools;
         break;
     }
     case ui::Scene::tools_in_game:

@@ -979,6 +979,11 @@ int CheckImports(const std::wstring& exe) {
     for (const std::string& d : dlls) {
         std::printf(" %s", d.c_str());
         if (StartsWith(LowerAscii(d), "winhttp")) ++failures;
+        // Fragile's textures: the game's Oodle DLL is only ever loaded by full path in the --extract-textures child.
+        if (StartsWith(LowerAscii(d), "oo2core")) {
+            ++failures;
+            std::printf("\nFAIL: StrandedTogether.exe imports %s (the game's Oodle DLL must only be loaded by full path)\n", d.c_str());
+        }
     }
     std::printf("\n");
     if (dlls.empty()) {

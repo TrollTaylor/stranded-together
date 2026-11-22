@@ -423,7 +423,7 @@ class TestTasks(Fixture):
         self.assertEqual(len(msgs), n0 + 20)
         self.assertEqual(len(set(m for m in msgs if m.startswith('line '))), 20)
         # a stale batch (abandoned) leaves the overview after a day without a record; ?all=1 keeps it
-        day_later = self.tasks(now=lambda: dd_util.utc_iso_ms('2026-11-23T10:25:00.000Z') / 1000.0)
+        day_later = self.tasks(now=lambda: time.time() + 86400 + 600)  # the posts above carry today's real time
         self.assertNotIn('demo-batch', [t['id'] for t in day_later.list()])
         self.assertIn('demo-batch', [t['id'] for t in day_later.list(include_old=True)])
 
@@ -476,7 +476,8 @@ class TestServer(Fixture):
     def setUp(self):
         super().setUp()
         dash = devdash.Dash(repo=self.td, state_dir=self.state, projects_dir=self.projects, procs=FakeProcs(),
-                            extra_roots=[self.runs_root])
+                            extra_roots=[self.runs_root],
+                            now=lambda: dd_util.utc_iso_ms('2026-11-21T10:25:00.000Z') / 1000.0)  # the fixture batch's day
         dash.flows.repo = FAKE_REPO
         self.srv = devdash.Server(('127.0.0.1', 0), devdash.Handler)
         devdash.Handler.dash = dash

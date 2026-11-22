@@ -56,6 +56,8 @@ struct LocalTestChoices {
     bool host_pad = false;         // "Pads on the host too"
     int fps = 60;                  // "Frame rate" (v0.23): 30, 60 (default), 120 or 0 = the game's maximum (LocalTestFps)
     std::string secret;            // "" = a new one
+    std::string textures_dir;      // Fragile's textures folder for both games (session.ini textures_dir; "" = none)
+    std::string boots_look;        // her boots: "own" / "prop" (session.ini boots_look; "" = not written)
 };
 // The Local test's frame rate choice: 30, 60, 120 or 0 (uncapped: the game's own maximum, 240); anything else -> 60.
 constexpr int kLocalTestFpsDefault = 60;

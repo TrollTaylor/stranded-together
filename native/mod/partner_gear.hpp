@@ -31,6 +31,9 @@ namespace st::gear {
 
 void Init(const Config& config) noexcept;
 bool Enabled() noexcept;
+// Round 6 T3 (docs/real-partner-body.md section 30): our Sam's boots for her boots pictures: the boot type (EDSPlayerShoesType
+// 0..10, -1 unknown), the boots entity's shown ArtParts (0 while not shown) and whether our boots_look is `own`. Game thread.
+bool OwnBoots(int* type, std::uint32_t* visible, bool* own_style) noexcept;
 
 // Per tick, after realbody::Tick and the partner body's move: reads our gear (every 100 ms),
 // keeps the partner's and the self view's props in step with their bodies.

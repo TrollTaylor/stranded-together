@@ -1,0 +1,67 @@
+# Fragile's boots: which of the boots' 32 ArtParts each boot type shows (round 6 T3; docs/real-partner-body.md section 30),
+# solo, hidden. The self view's fragile_suit body with boots_look=prop and boots_own_porter=0 (Sam's boots drawn over her
+# feet for every type); dev_boots 3 <type> (the game's SetShoesForcibly) equips each EDSPlayerShoesType in turn; the
+# "[boots] our boots' ArtParts" line names the parts and a screenshot shows the shape. The map decides which bits keep her
+# own boots in the prop style (sole grass, intact porter boots).
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario fragile-boots-types -SeedSaves complete-100
+role solo
+timeout 300
+ini partner_body=real
+ini pose_hook=1
+ini my_character=fragile_suit
+ini self_character=1
+ini boots_look=prop
+ini boots_own_porter=0
+start
+waitlog 40 \[self\] showing 'fragile_suit'
+waitlog 30 \[boots\] self view: Sam's boots on her feet
+pad none 1300 rx=32767
+wait 1500
+action gear 25 2
+screenshot t09-start
+action dev_boots 3 0
+wait 3000
+action gear 25 2
+screenshot t00
+action dev_boots 3 2
+wait 3000
+action gear 25 2
+screenshot t02
+action dev_boots 3 3
+wait 3000
+action gear 25 2
+screenshot t03
+action dev_boots 3 4
+wait 3000
+action gear 25 2
+screenshot t04
+action dev_boots 3 5
+wait 3000
+action gear 25 2
+screenshot t05
+action dev_boots 3 6
+wait 3000
+action gear 25 2
+screenshot t06
+action dev_boots 3 7
+wait 3000
+action gear 25 2
+screenshot t07
+action dev_boots 3 8
+wait 3000
+action gear 25 2
+screenshot t08
+action dev_boots 3 10
+wait 3000
+action gear 25 2
+screenshot t10
+action dev_boots 3 9
+wait 3000
+action gear 25 2
+screenshot t09
+action dev_boots 1 5
+wait 3000
+action gear 25 2
+screenshot t09-worn5
+nolog \[boots\] .*FAULTED
+quit

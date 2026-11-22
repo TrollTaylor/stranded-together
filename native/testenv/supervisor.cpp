@@ -44,6 +44,7 @@
 #include <algorithm>
 #include <cstdarg>
 #include <cstdio>
+#include <filesystem>
 #include <regex>
 #include <string>
 #include <vector>
@@ -862,6 +863,69 @@ void Record(Run& r, const te::Step& s, const char* what, bool ok, const std::str
     if (!ok) FailContext(r, s, what, detail);
 }
 
+// "textures ..." (docs/hidden-testing.md "Fragile's textures"): the run's own textures folder <run>\textures. "extract":
+// the launcher's own extractor (StrandedTogether.exe --extract-textures, next to this supervisor) reads the game's archives
+// read-only into it; "pattern <name> <folder>": st_textool paints a bold generated pattern (no game data) over that folder's
+// editable pictures. Both hidden (no window), their output in <run>\textures-<n>.log. The folder is the run's only.
+bool TexturesCommand(Run& r, const std::string& cmd, std::string* detail) {
+    wchar_t self[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, self, MAX_PATH);
+    std::wstring dir = self;
+    dir = dir.substr(0, dir.find_last_of(L'\\'));
+    const std::wstring tex = r.run + L"\\textures";
+    const std::wstring runs = r.run.substr(0, r.run.find_last_of(L'\\'));
+    std::wstring exe, args;
+    if (cmd == "extract") {
+        exe = dir + L"\\StrandedTogether.exe";
+        args = L"\"" + exe + L"\" --extract-textures --no-previews --out \"" + tex + L"\" --game-dir \"" + r.game + L"\" --allow-out-under \"" + runs + L"\"";
+    } else if (cmd.rfind("pattern ", 0) == 0) {
+        const std::string rest = cmd.substr(8);
+        const std::size_t sp = rest.find(' ');
+        exe = dir + L"\\st_textool.exe";
+        args = L"\"" + exe + L"\" pattern --dir \"" + tex + L"\" --name " + te::Widen(rest.substr(0, sp)) + L" --folder \"" + te::Widen(rest.substr(sp + 1)) +
+               L"\"";
+    } else {
+        *detail = "unknown textures command";
+        return false;
+    }
+    static int n = 0;
+    const std::wstring log = r.run + L"\\textures-" + std::to_wstring(++n) + L".log";
+    SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
+    const HANDLE out = CreateFileW(log.c_str(), GENERIC_WRITE, FILE_SHARE_READ, &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdOutput = out;
+    si.hStdError = out;
+    PROCESS_INFORMATION pi{};
+    std::wstring cmdline = args;
+    const BOOL ok = CreateProcessW(exe.c_str(), cmdline.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, dir.c_str(), &si, &pi);
+    if (out != INVALID_HANDLE_VALUE) CloseHandle(out);
+    if (!ok) {
+        *detail = "could not start " + te::Narrow(exe) + " (error " + std::to_string(GetLastError()) + ")";
+        return false;
+    }
+    const DWORD w = WaitForSingleObject(pi.hProcess, 240000);
+    DWORD code = 1;
+    if (w == WAIT_OBJECT_0) GetExitCodeProcess(pi.hProcess, &code);
+    else TerminateProcess(pi.hProcess, 1);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    std::string text;
+    te::ReadFileBytes(log, &text);
+    std::string last;
+    for (std::size_t p = 0; p < text.size();) {
+        const std::size_t e = text.find('\n', p);
+        std::string l = text.substr(p, e == std::string::npos ? std::string::npos : e - p);
+        if (!l.empty() && l.back() == '\r') l.pop_back();
+        if (!l.empty()) last = l;
+        if (e == std::string::npos) break;
+        p = e + 1;
+    }
+    *detail = cmd + ": exit " + std::to_string(code) + (w == WAIT_OBJECT_0 ? "" : " (TIMEOUT)") + "; " + last;
+    return w == WAIT_OBJECT_0 && code == 0;
+}
+
 // Runs one step (recorded). Returns its ok.
 bool RunStep(Run& r, const te::Step& s) {
         // waitnew: the logs' sizes when the previous step started
@@ -872,6 +936,10 @@ bool RunStep(Run& r, const te::Step& s) {
         bool ok = false;
         std::string detail, what;
         switch (s.kind) {
+            case te::StepKind::textures:
+                what = "textures " + s.text;
+                ok = TexturesCommand(r, s.text, &detail);
+                break;
             case te::StepKind::note:
                 what = "note " + s.text;
                 ok = true;
@@ -1360,6 +1428,23 @@ int RunGame(Args& a) {
                 from_launcher ? "the launcher's Local test rate" : r.scenario.low_graphics_fps_set ? "the scenario's" : "the hidden default");
         }
     }
+    // "textures ...": the run's own textures folder, prepared before the games start (the mod reads it at the world's start)
+    std::vector<std::string> tex_lines;
+    if (deployed && r.scenario.textures) {
+        te::EnsureDir(r.run + L"\\textures");
+        for (const std::string& c : r.scenario.textures_pre) {
+            std::string d;
+            const bool ok = TexturesCommand(r, c, &d);
+            Out("textures %s", d.c_str());
+            if (!ok) {
+                Out("setup failed: textures %s", c.c_str());
+                deployed = false;
+                break;
+            }
+        }
+        tex_lines.push_back("textures_dir=" + te::Narrow(r.run + L"\\textures"));
+        tex_lines.push_back("automation_run_dir=" + te::Narrow(r.run));
+    }
     te::SessionOptions so;
     so.role = r.scenario.role;
     so.mute = a.mute;
@@ -1372,6 +1457,7 @@ int RunGame(Args& a) {
     so.quickstart = r.scenario.quickstart;             // scenario "start": automation_quickstart=<spec> (every game)
     so.extra = r.scenario.ini;                         // scenario "ini key=value" lines (allow-listed)
     so.extra.insert(so.extra.end(), r.scenario.host_ini.begin(), r.scenario.host_ini.end());  // "@host ini": this game only
+    so.extra.insert(so.extra.end(), tex_lines.begin(), tex_lines.end());                      // "textures": the run's folder
     // launcherini: each game's file is the launcher's, with only the save location swapped for this run's redirect
     std::string host_text = a.no_mod ? te::RedirectOnlyIniText(extra_root) : a.sandbox_session ? te::SandboxSessionIniText(sandbox_name, foreign) : te::SessionIniText(so);
     if (!launcher_host_ini.empty()) {
@@ -1416,6 +1502,7 @@ int RunGame(Args& a) {
         // The shared ini lines, then "@guest ini" (not the host's own lines; the mod keeps a key's last value).
         go.extra = r.scenario.ini;
         go.extra.insert(go.extra.end(), r.scenario.guest_ini.begin(), r.scenario.guest_ini.end());
+        go.extra.insert(go.extra.end(), tex_lines.begin(), tex_lines.end());
         r.g.expect_refused = r.scenario.guest_unredirected;
         std::string guest_text = r.g.expect_refused ? te::UnredirectedGuestIniText(static_cast<unsigned>(go.port_local), static_cast<unsigned>(go.port_peer))
                                                     : te::SessionIniText(go);
@@ -1799,6 +1886,16 @@ int RunGame(Args& a) {
         for (const std::string& c : saves.changes) Out("  real save %s", c.c_str());
         for (const std::string& n : saves.notes) Out("  %s", n.c_str());
         if (rc == 0) rc = 1;
+    }
+
+    // ---- "textures": the run's extracted pictures (game data) are deleted with the run's end; the logs stay
+    if (r.scenario.textures) {
+        std::error_code ec;
+        const auto n = std::filesystem::remove_all(std::filesystem::path(r.run + L"\\textures"), ec);
+        Out("textures: the run's textures folder deleted (%llu entries)%s", static_cast<unsigned long long>(n), ec ? " (NOT completely)" : "");
+        std::error_code ec2;  // the mod's built textures of the run (textures_dir + "-cache")
+        const auto n2 = std::filesystem::remove_all(std::filesystem::path(r.run + L"\\textures-cache"), ec2);
+        if (n2 || ec2) Out("textures: the run's built-textures cache deleted (%llu entries)%s", static_cast<unsigned long long>(n2), ec2 ? " (NOT completely)" : "");
     }
 
     // ---- summary

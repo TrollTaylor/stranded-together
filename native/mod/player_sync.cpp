@@ -37,6 +37,9 @@
 #include "world_share.hpp"
 #include "vehicle_sync.hpp"
 #include "suit_colour.hpp"
+#include "fragile_textures.hpp"
+#include "texture_share.hpp"
+#include "automation.hpp"
 
 namespace st::sync {
 namespace {
@@ -910,6 +913,54 @@ void TeardownTriggers(double now) {
 
 }  // namespace
 
+// The textures folder from session.ini (UTF-8). Hidden runs: only a folder inside the run's own output folder.
+void ConfigureTextures(const Config& config, const std::wstring& mod_dir) noexcept {
+    auto wide = [](const std::string& s) {
+        std::wstring w;
+        const int n = s.empty() ? 0 : MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+        if (n > 0) {
+            w.assign(static_cast<std::size_t>(n), L' ');
+            MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), w.data(), n);
+        }
+        while (!w.empty() && (w.back() == L'\\' || w.back() == L'/')) w.pop_back();
+        return w;
+    };
+    std::wstring dir = wide(config.textures_dir);
+    if (automation::Enabled() && !dir.empty()) {
+        // a hidden run never reads the player's own folder: only one inside the run's folder the supervisor names
+        const std::wstring run = wide(config.automation_run_dir);
+        const bool inside = !run.empty() && dir.size() > run.size() && dir[run.size()] == L'\\' &&
+                            CompareStringOrdinal(dir.c_str(), static_cast<int>(run.size()), run.c_str(), static_cast<int>(run.size()), TRUE) == CSTR_EQUAL &&
+                            dir.find(L"..") == std::wstring::npos;
+        if (!inside) {
+            Log("[tex] hidden run: textures_dir is not inside the run's folder (%s): ignored", run.empty() ? "no automation_run_dir" : "outside it");
+            dir.clear();
+        }
+    }
+    const bool on = config.fragile_textures && realbody::HookInstalled() && (config.role == Role::guest || config.role == Role::host || config.role == Role::solo);
+    ftex::Settings s;
+    s.on = on;
+    s.hot_reload = config.textures_hot_reload;
+    s.free_unused = config.textures_free;
+    s.send = config.textures_send;
+    s.receive = config.textures_receive;
+    s.guest = config.role == Role::guest || config.role == Role::solo;
+    s.dir = dir;
+    // the built textures' cache: never inside the textures folder (it may be synced to the cloud, and its watch would see
+    // our own writes); a hidden run's next to the run's textures folder (the supervisor deletes both at the run's end)
+    if (automation::Enabled()) s.cache = dir.empty() ? std::wstring() : dir + L"-cache";
+    else s.cache = mod_dir + L"\\cache\\built-textures";
+    ftex::Configure(s);
+    texshare::Settings t;
+    t.on = on && (config.role == Role::guest || config.role == Role::host);
+    t.guest = config.role == Role::guest;
+    t.send = config.textures_send;
+    t.receive = config.textures_receive;
+    t.tint = config.fragile_suit_colour;
+    t.cache = (automation::Enabled() ? automation::OutDir() : mod_dir) + L"\\cache\\partner-textures";
+    texshare::Configure(t);
+}
+
 void Init(const Config& config, const std::wstring& mod_dir) noexcept {
     g_cfg = config;
     g_net = config.role == Role::host || config.role == Role::guest;
@@ -962,7 +1013,9 @@ void Init(const Config& config, const std::wstring& mod_dir) noexcept {
     }
     if (realbody::HookInstalled()) suitcol::Configure(config.fragile_suit_colour);
     // round 5: the guest's own suit colour pick outlives the host's loads (her sandboxed copy of the host's save is never saved)
-    suitcol::ConfigureGuestPick(realbody::HookInstalled() && config.fragile_suit_colour && config.role == Role::guest && config.host_save, mod_dir);
+    suitcol::ConfigureGuestPick(realbody::HookInstalled() && (config.fragile_suit_colour || config.fragile_textures) && config.role == Role::guest && config.host_save, mod_dir);
+    // round 6 T2: Fragile's edited textures (fragile_textures.hpp, texture_looks.hpp, texture_share.hpp; docs/textures.md)
+    ConfigureTextures(config, mod_dir);
     if (realbody::HookInstalled())
         realbody::ConfigureSmooth(config.smooth_pose ? realbody::kSmoothAll : 0u, config.role == Role::echo,
                                   static_cast<double>(config.echo_delay_s) * 1000.0);
@@ -1253,6 +1306,7 @@ void Tick() noexcept {
                 psound::NewSession();
                 vsync::NewSession();
                 vdrive::NewSession();
+                texshare::NewSession(gen);  // the host forgets the previous guest's textures look
                 Log("[sync] new link session (#%u): interpolation reset", gen);
                 if (BodyPresent()) RemoveBody("new link session");  // session end of the previous partner
             }
@@ -1518,6 +1572,7 @@ void Tick() noexcept {
     audioprobe::Tick(g_local, now);  // audio_probe=1 only: drains the probe rings (docs/audio-research.md section 9)
     selfvoice::Tick(g_local, now);   // self_voice muting only: publishes the local player and the menu figure, logs counts
     coop::Tick(now);     // host_save=1 only: the host-held save session (docs/coop-session.md)
+    texshare::Tick(now, coop::WorldReady(nullptr) || (!coop::Active() && g_local_valid));  // Fragile's edited textures over the link (texture_share.hpp)
     if (coop::PlainNoticeWanted()) {   // host_save=0 for a host / guest: the features it costs, on screen
         char off[200];
         FeaturesOff(off, sizeof(off));

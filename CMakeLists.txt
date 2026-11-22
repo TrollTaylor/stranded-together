@@ -31,7 +31,7 @@ if(GIT_FOUND)
                          native/net/link_protocol.cpp native/mod/save_xfer.hpp native/mod/save_xfer.cpp
                          native/mod/vehicle_wire.hpp native/mod/vehicle_wire.cpp native/mod/ride_wire.hpp native/mod/ride_wire.cpp
                          native/mod/tackle_rules.hpp native/mod/tackle_rules.cpp native/mod/world_wire.hpp native/mod/world_wire.cpp
-                         native/mod/world_rules.hpp)
+                         native/mod/world_rules.hpp native/mod/texture_wire.hpp native/mod/texture_wire.cpp)
       set(_st_wire_text "")
       foreach(_f IN LISTS _st_wire_files)
         file(READ "${CMAKE_CURRENT_SOURCE_DIR}/${_f}" _t)
@@ -135,9 +135,14 @@ add_library(st_mod SHARED
   native/mod/real_body.cpp
   native/mod/partner_outfit.cpp
   native/mod/suit_colour.cpp
+  native/mod/fragile_textures.cpp
+  native/mod/texture_looks.cpp
+  native/mod/texture_wire.cpp
+  native/mod/texture_share.cpp
   native/mod/nametags.cpp
   native/mod/partner_collision.cpp
   native/mod/partner_gear.cpp
+  native/mod/held_items.cpp
   native/mod/gear_look.cpp
   native/mod/menu_figure.cpp
   native/mod/audio_probe.cpp
@@ -172,10 +177,11 @@ set_target_properties(st_mod PROPERTIES OUTPUT_NAME winhttp PREFIX "")
 target_include_directories(st_mod PRIVATE native/mod)
 target_compile_definitions(st_mod PRIVATE "ST_BUILD_ID=\"${ST_BUILD_ID}\"" UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS)
 target_compile_options(st_mod PRIVATE ${ST_WARNINGS})
-target_link_libraries(st_mod PRIVATE st_net st_minhook user32 st_mod_imgui delayimp)
+target_link_libraries(st_mod PRIVATE st_net st_minhook user32 st_mod_imgui st_textures delayimp)
 # The proxy emits its own winhttp.lib; never link the SDK one into the mod.
 # Graphics DLLs load only when the debug menu is used (the game delay-loads them too).
-target_link_options(st_mod PRIVATE /DELAYLOAD:dxgi.dll /DELAYLOAD:d3dcompiler_47.dll)
+target_link_options(st_mod PRIVATE /DELAYLOAD:dxgi.dll /DELAYLOAD:d3dcompiler_47.dll /DELAYLOAD:windowscodecs.dll /DELAYLOAD:ole32.dll
+                    /DELAYLOAD:bcrypt.dll)
 
 # ---- Debug menu checks (no game, no GPU): action queue/registry, log ring,
 # saved-position parsing, key names. tests/overlay_sync_stubs.cpp stands in for
@@ -282,6 +288,30 @@ target_compile_options(st_gear_extrap_tests PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_gear_extrap_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_test(NAME st_gear_extrap_tests COMMAND st_gear_extrap_tests)
 
+# ---- Gear that wears out, the pure part (native/mod/gear_wear.hpp): the durability's percent and log steps, the rain cover's
+# resource (docs/real-partner-body.md section 28).
+add_executable(st_gear_wear_tests tests/gear_wear_tests.cpp)
+target_include_directories(st_gear_wear_tests PRIVATE native/mod)
+target_compile_options(st_gear_wear_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_gear_wear_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_gear_wear_tests COMMAND st_gear_wear_tests)
+
+# ---- Fragile's boots, the pure part (native/mod/boots_look.hpp): the style, the boots' ArtParts bits (settled, worn, her own
+# boots), the boot type -> folder, Worn / Gold / Silver and the look keys (docs/real-partner-body.md section 30).
+add_executable(st_boots_look_tests tests/boots_look_tests.cpp)
+target_include_directories(st_boots_look_tests PRIVATE native/mod)
+target_compile_options(st_boots_look_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_boots_look_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_boots_look_tests COMMAND st_boots_look_tests)
+
+# ---- Held items on the other screen, the pure part (native/mod/held_rules.hpp): which weapon resources become held clones in
+# each held_items mode, which component resources a clone keeps, the prop keys (docs/real-partner-body.md section 31).
+add_executable(st_held_rules_tests tests/held_rules_tests.cpp)
+target_include_directories(st_held_rules_tests PRIVATE native/mod)
+target_compile_options(st_held_rules_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_held_rules_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_held_rules_tests COMMAND st_held_rules_tests)
+
 # ---- Fragile's porter suit in Sam's suit colours, the pure part (native/mod/suit_colour_math.hpp): the colour -> constant
 # textures mapping (her own look at 0, the palette scaled to her navy, the silver / gold metals), the debug override.
 add_executable(st_suit_colour_tests tests/suit_colour_tests.cpp)
@@ -297,6 +327,44 @@ target_include_directories(st_world_wire_tests PRIVATE native/mod)
 target_compile_options(st_world_wire_tests PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_world_wire_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_test(NAME st_world_wire_tests COMMAND st_world_wire_tests)
+
+# ---- Fragile's textures (docs/textures.md): st_textures = the pure pixel code, PNG (WIC), hashes, the slot table and
+# the manifest (the launcher now; the mod's loader later); st_textures_extract = the read-only Decima archive reader,
+# the game's Oodle loaded by full path and the extraction plan: only the launcher's --extract-textures child and the
+# tests link it, never the mod.
+add_library(st_textures STATIC native/textures/tex_codec.cpp native/textures/png_wic.cpp native/textures/tex_hash.cpp
+            native/textures/tex_manifest.cpp native/textures/tex_blob.cpp)
+target_include_directories(st_textures PUBLIC native/textures)
+target_compile_options(st_textures PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_textures PRIVATE UNICODE _UNICODE)
+target_link_libraries(st_textures PUBLIC bcrypt windowscodecs ole32)
+add_library(st_textures_extract STATIC native/textures/decima_archive.cpp native/textures/decima_core.cpp
+            native/textures/oodle_dyn.cpp native/textures/extract_plan.cpp)
+# native/mod/suit_colour_math.hpp (header only): Sam's palette colours for the swatches and previews
+target_include_directories(st_textures_extract PRIVATE native/mod)
+target_compile_options(st_textures_extract PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_textures_extract PRIVATE UNICODE _UNICODE)
+target_link_libraries(st_textures_extract PUBLIC st_textures)
+# Codecs, packing, mips, manifest, slot table, PNG, the archive reader on a synthetic archive and the extraction's
+# folder rules on a temp folder (no game data).
+add_executable(st_texture_tests tests/texture_tests.cpp)
+target_include_directories(st_texture_tests PRIVATE native/mod)
+target_compile_options(st_texture_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_texture_tests PRIVATE UNICODE _UNICODE)
+target_link_libraries(st_texture_tests PRIVATE st_textures_extract)
+add_test(NAME st_texture_tests COMMAND st_texture_tests)
+# Round 6 T2: the blob (build / strict validate), the STT1 messages, the receiver's reassembly and the sender's pacing.
+add_executable(st_texture_wire_tests tests/texture_wire_tests.cpp native/mod/texture_wire.cpp)
+target_include_directories(st_texture_wire_tests PRIVATE native/mod)
+target_compile_options(st_texture_wire_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_texture_wire_tests PRIVATE UNICODE _UNICODE)
+target_link_libraries(st_texture_wire_tests PRIVATE st_textures)
+add_test(NAME st_texture_wire_tests COMMAND st_texture_wire_tests)
+# st_textool: hidden scenarios' bold generated test patterns over a textures folder's editable pictures (no game data).
+add_executable(st_textool tools/textool/textool.cpp)
+target_compile_options(st_textool PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_textool PRIVATE UNICODE _UNICODE)
+target_link_libraries(st_textool PRIVATE st_textures)
 
 # ---- st_fakepeer: console stand-in for the second player (UDP), + self-test
 add_executable(st_fakepeer tools/fakepeer/fakepeer.cpp native/mod/link.cpp native/mod/steam_owner.cpp

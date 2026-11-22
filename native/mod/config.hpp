@@ -69,13 +69,35 @@ struct Config {
     // self_feet_hide=0 keeps her own boots under his.
     bool self_feet_hide = true;
     // v0.23: Fragile's porter suit (fragile_suit) in the suit colour of the player she stands for (that player's own Sam's
-    // porter-suit colour: the palette, silver, gold), on both screens (docs/real-partner-body.md section 27). Default on;
-    // 0 = her own navy suit always.
-    bool fragile_suit_colour = true;
+    // porter-suit colour: the palette, silver, gold), on both screens (docs/real-partner-body.md section 27). Round 6: the
+    // fallback when that colour has no edited textures; default off (her own navy suit); 1 = the v0.23 tint.
+    bool fragile_suit_colour = false;
+    // Fragile's textures (docs/textures.md): the folder of the player's edited PNGs, as the launcher writes it (UTF-8).
+    // The mod only reads it (its built textures are cached in its own cache\built-textures). Hidden runs: only a folder inside the run's own folder.
+    std::string textures_dir;
+    std::string automation_run_dir;  // hidden runs: the run's folder the supervisor names (textures_dir must lie inside it)
+    // Round 6 T2 (docs/textures.md, docs/real-partner-body.md section 29): the guest's edited pictures on Fragile's suit, by
+    // her Sam suit colour, on both screens. 0 = no loader, no detour, no texture messages. send: the guest sends its look to
+    // the host; receive: the host takes it; hot_reload: a saved PNG shows again a few seconds later.
+    bool fragile_textures = true;
+    bool textures_send = true;
+    bool textures_receive = true;
+    bool textures_hot_reload = true;
+    bool textures_free = true;  // a texture of ours unused for 5 s is released (0: kept for the session, at most 48)
     // Partner boots (section 21): the sender's equipped boots as a gear item (STC1 kind 7) and, on the other screen, a
     // cutscene boots prop posed from the partner body's legs with the partner's own feet scaled away. Default on;
     // boots_sync=0: nothing read, sent or spawned (the partner shows its own model's boots).
     bool boots_sync = true;
+    // Round 6 T3 (docs/real-partner-body.md section 30, docs/textures.md): how her boots look on both screens. boots_look_own
+    // (session.ini boots_look=own, the default): her own model's porter boots, painted with the user's pictures of the guest's
+    // boot type; no boots prop, her feet never scaled, Sam's boots entity hidden under the self view. boots_look=prop: Sam's
+    // boots on her feet (v0.22). boots_own_porter (prop only, default on): sole grass and intact porter boots keep her own.
+    bool boots_look_own = true;
+    bool boots_own_porter = true;
+    // Round 6 (docs/real-partner-body.md section 31): what is in a player's hand on the other screen. held_items (0 off: only
+    // the cutscene-prop weapons of v0.9; 1 the ladder, PCC and climbing anchor; 2, the default, every weapon / tool without a
+    // cutscene prop) is drawn as a plain entity made from the item's own resource ("held clone").
+    int held_items = 2;
     // Vehicles (docs/real-partner-body.md section 22): the vehicle the player rides is sent (STM1) and shown under the
     // partner's body on the other screen as a visual copy. Section 22.11 (after v0.13): 1 = on, SOLID trike and truck
     // copies (default; each copy's collision turned off on its own entity), the roadster as its construction hologram (no

@@ -100,7 +100,7 @@ if (-not $NoBuild) {
         & cmake -S $repo -B $BuildDir -G 'Visual Studio 17 2022' -A x64 | Out-Host
         if ($LASTEXITCODE) { throw 'cmake configure failed' }
     }
-    & cmake --build $BuildDir --config $Config --target st_mod st_testenv_supervisor st_testenv_probe st_launcher -- '/m' '/verbosity:minimal' | Out-Host
+    & cmake --build $BuildDir --config $Config --target st_mod st_testenv_supervisor st_testenv_probe st_launcher st_textool -- '/m' '/verbosity:minimal' | Out-Host
     if ($LASTEXITCODE) { throw 'build failed' }
 }
 $sup = Join-Path $bin 'st_testenv_supervisor.exe'

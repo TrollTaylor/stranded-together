@@ -165,6 +165,7 @@ bool JointFrameWorld(game::Entity* e, unsigned sam_joint, double (&p)[3], float 
 // Joint j of an entity whose skeleton has n joints (any layout: the boots' 10), position in world space (row 3 only).
 bool JointWorldN(game::Entity* e, unsigned j, unsigned n, double (&pos)[3]) noexcept;
 bool SelfConfigured() noexcept;
+const bodies::Body* SelfBody() noexcept;  // the character the self view shows (nullptr: off)
 bool SelfShown() noexcept;           // the body is shown and Sam hidden right now
 game::Entity* SelfEntity() noexcept;  // the self body (loading or live), nullptr when none
 // The cargo menu's Sam figure (DSPlayerAKukanEntity) while the self body stands in for it (Manage Cargo open, the

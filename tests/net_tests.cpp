@@ -632,7 +632,7 @@ void TestGearLook() {
     CHECK(wire::GearPoseDiff(p, q, &dm, &dd) && std::fabs(dm - 0.01f) < 2e-4f);
     q.skeleton = 1;
     CHECK(!wire::GearPoseDiff(p, q, &dm, &dd));
-    static_assert(wire::kMaxGearPoseFrameSize == 784 && wire::kMaxGearPoseFrameSize <= 1148 - 8, "STK1 fits a link body");
+    static_assert(wire::kMaxGearPoseFrameSize == 976 && wire::kMaxGearPoseFrameSize <= 1148 - 8, "STK1 fits a link body");
     wire::GearPose b = p;
     b.t[0][0] = 3.3f;  // beyond +-3.2 m
     CHECK(wire::EncodeGearPose(b, pb, sizeof(pb)) == 0);
@@ -657,6 +657,14 @@ void TestGearLook() {
     pbad[4] = 9;  // version
     CHECK(!wire::DecodeGearPose(pbad, pn2, q));
     CHECK(!wire::DecodeGearLook(pb, pn2, m) && !wire::DecodeGear(pb, pn2, gf));
+    // round 6: the held stream's flag (byte 13) survives; a backpack pose carries 0, unknown bits are dropped
+    CHECK(pb[13] == 0 && q.flags == 0);
+    b = p;
+    b.flags = wire::kGearPoseHeld | 0x80;
+    const std::size_t pn3 = wire::EncodeGearPose(b, pb, sizeof(pb));
+    CHECK(pn3 == pn2 && pb[13] == wire::kGearPoseHeld && wire::DecodeGearPose(pb, pn3, q) && q.flags == wire::kGearPoseHeld);
+    pb[13] = 0xFF;
+    CHECK(wire::DecodeGearPose(pb, pn3, q) && q.flags == wire::kGearPoseHeld);
 }
 
 void TestGearV2() {

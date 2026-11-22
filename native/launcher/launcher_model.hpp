@@ -191,6 +191,26 @@ struct LocalTestView {
     std::string features_off;
 };
 
+// Tools > Fragile's textures (docs/textures.md): the game's suit and boots textures extracted into a folder of PNGs the
+// player edits (core/core_textures.hpp). The folder is created only by Extract textures / Open textures folder.
+struct TexturesView {
+    std::string folder;            // where they are (or will go); "" when Windows names no Documents folder
+    bool custom_folder = false;    // picked with Change folder... (else the default: <Documents>\Stranded Together\Textures, or
+                                   // <LocalAppData>\... when Documents is synced by OneDrive or not on this PC)
+    std::string folder_note;       // a warning about the folder (OneDrive-synced, not usable by the mod) or "" (TexturesFolderNote)
+    enum class State { unknown, not_extracted, extracted, outdated, extracting } state = State::unknown;
+    std::string status;            // one line: "Not extracted yet" / "Extracted 2026-11-22 10:15: 17 suit colours, 10 boot types"
+    std::string edited;            // "Edited: 16 Gold (Colour, Reflectance), 09 Chiral boots (Colour)" or ""
+    std::string estimate;          // "about 330 MB": shown before an extraction
+    float progress = 0.0f;         // 0..1 while extracting
+    std::string progress_text;     // what it works on
+    bool checking = false;         // Check my edits runs
+    std::string result;            // the last extraction's / check's sentence(s)
+    enum class Tone { neutral, good, warn, bad } tone = Tone::neutral;
+    std::string report;            // Check my edits: several lines
+    bool boots_own = true;         // her boots: her own, painted (true) / Sam's boots on her feet (session.ini boots_look)
+};
+
 class LauncherModel {
 public:
     virtual ~LauncherModel() = default;
@@ -276,6 +296,21 @@ public:
     virtual void set_local_test_fps(int fps) = 0;   // persisted, like host_pad (30 / 60 / 120 / 0 = maximum)
     virtual void set_local_test_guest_character(const std::string& key) = 0;   // persisted, like host_pad
     virtual bool start_local_test(std::string& error_out) = 0;
+
+    // Tools > Fragile's textures.
+    virtual TexturesView textures() const = 0;
+    // Starts the extraction (refused while a game started here runs, or while one runs already).
+    virtual bool extract_textures(std::string& error_out) = 0;
+    virtual void cancel_textures() = 0;
+    // Check my edits: a full scan of the folder (every edited picture decoded); the result arrives in textures().report.
+    virtual bool check_textures(std::string& error_out) = 0;
+    // Open textures folder: creates it when missing and returns its path.
+    virtual bool textures_folder_for_open(std::string& path_out, std::string& error_out) = 0;
+    // Change folder...: "" goes back to the default. Persisted ("textures"."dir").
+    virtual bool set_textures_folder(const std::string& folder, std::string& error_out) = 0;
+    // Her boots: her own boots painted with the boot pictures (true, the default) or Sam's boots on her feet. Persisted
+    // ("textures"."boots"); written into session.ini boots_look at the next launch.
+    virtual void set_boots_look(bool own) = 0;
 
     virtual void tick() = 0;
 };
