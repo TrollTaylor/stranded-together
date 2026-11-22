@@ -184,7 +184,8 @@ try {
             $s = Get-Content (Join-Path $runDir 'summary.json') -Raw | ConvertFrom-Json
             $verdict = @{ result = $s.result; game_exit_code = $s.game_exit_code; guest_exit_code = $s.guest_exit_code
                 saves_unchanged = $s.saves_unchanged; restored = (Test-RunRestored $runDir); violation = $s.violation
-                cloud_uploads = @($s.cloud_uploads).Count; failures = $s.failures }
+                cloud_uploads = @($s.cloud_uploads).Count; game_server_writes = @($s.game_server_writes).Count
+                online_blocked = $s.online_blocked; failures = $s.failures }
             $steps = @($s.steps)
             $failed = @($steps | Where-Object { -not $_.ok -and -not $_.optional })
             $detail = "{0}: {1} step(s), {2} failed, {3} s" -f $s.result, $steps.Count, $failed.Count, $secs

@@ -497,6 +497,24 @@ void SavesGuard(const std::wstring& work) {
     const auto lines = te::CloudLogLines(cloud, "1850570");
     const auto ups = te::CloudUploads(lines);
     Check(lines.size() == 4 && ups.size() == 2 && lines[0].back() != '\r', "Steam cloud_log: app lines and upload lines");
+    // the online gate's lines (docs/world-sync.md): write requests, and the largest dropped total
+    const std::string gate_log =
+        "[  1.0] [gate] OTGC request (read): getQpidObjects (first of its kind)\r\n"
+        "[  2.0] [gate] counts: dropped register 1, drain 0, telemetry 2, upload 0 (total 3); passed register 0\r\n"
+        "[  3.0] [gate] OTGC WRITE request: createObject\r\n"
+        "[  4.0] [gate] counts: dropped register 4, drain 0, telemetry 2, upload 1 (total 7); passed register 0\n"
+        "[  5.0] [world] something (total 99)\n";
+    const auto writes = te::GameServerWrites(gate_log);
+    Check(writes.size() == 1 && writes[0] == "createObject", "the gate's OTGC WRITE lines");
+    Check(te::OnlineBlocked(gate_log) == 7, "the gate's dropped total (the largest of its count lines, [gate] lines only)");
+    Check(te::GameServerWrites("[gate] OTGC request (read): x\n").empty() && te::OnlineBlocked("") == 0, "no gate lines");
+    // round 5: the gate must be in for the writes check to mean anything
+    Check(te::GateState("[ 1.0] [gate] online gate ON (host, hidden run): ...\r\n") == "on", "the gate's ON line");
+    Check(te::GateState("[ 1.0] [world] byte check FAILED: x\r\n[ 1.0] [gate] OFF: this game build differs (x)\r\n") == "off: this game build differs (x)",
+          "the gate's OFF line and its reason");
+    Check(te::GateState("[ 1.0] [mod] started\n").empty(), "no gate line at all");
+    Check(te::GateState("[ 1.0] [mod] this ds.exe build is not supported (functions not found): co-op disabled\n").rfind("inactive", 0) == 0,
+          "the mod stopped at start-up: inactive");
     te::RemoveTree(base);
 }
 
@@ -889,6 +907,15 @@ void SandboxRules() {
         std::string gerr;
         Check(te::ParseScenario("role host\ngraphics low 120\nquit\n", &g, &gerr) && g.low_graphics && g.low_graphics_fps == 120, "graphics low 120", gerr);
         Check(te::ParseScenario("role host\ngraphics low\nquit\n", &g, &gerr) && g.low_graphics_fps == 30, "graphics low: 30 fps", gerr);
+        Check(!g.low_graphics_fps_set, "graphics low: no rate named");
+        Check(te::ParseScenario("role host\ngraphics low 60\nquit\n", &g, &gerr) && g.low_graphics_fps_set && g.low_graphics_fps == 60, "graphics low 60: named", gerr);
+        // v0.23: launcherini runs take the launcher's Local test rate from its host.ini frame_cap (0 / none = its maximum)
+        Check(te::LauncherIniGameFps("role=host\r\nframe_cap=60\r\n") == 60 && te::LauncherIniGameFps("role=host\nframe_cap=120\n") == 120 &&
+                  te::LauncherIniGameFps("role=host\n") == 240 && te::LauncherIniGameFps("frame_cap=0\n") == 240 && te::LauncherIniGameFps("frame_cap=30\n") == 30,
+              "launcherini: the launcher's frame rate");
+        Check(st::sandbox::LowGraphicsSettingsCfgAt(60).find("\"fps\" \"60\"\r\n\"limit_fps\" \"60\"\r\n") != std::string::npos &&
+                  st::sandbox::LowGraphicsSettingsCfgAt(60).size() == std::string(st::sandbox::LowGraphicsSettingsCfg()).size(),
+              "LowGraphicsSettingsCfgAt: only the two rate lines change");
         Check(!te::ParseScenario("role host\ngraphics low 20\nquit\n", &g, &gerr) && !te::ParseScenario("role host\ngraphics low 12x\nquit\n", &g, &gerr),
               "graphics low <fps>: 30..240 digits only");
     }

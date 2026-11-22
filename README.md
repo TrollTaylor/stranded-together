@@ -41,6 +41,15 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
   shows your character instead of Sam. The equipped boots also show on the other screen.
 - **Experimental:** weapons in hand show on the other screen: the assault rifle, handgun,
   shotgun, multi rod and the grenades (as the game's cutscene models, in their own colours).
+- **Experimental:** structures either player builds with the PCC (postboxes, watchtowers, generators, shelters,
+  bridges, ...) appear in both worlds with the build-up on both screens, a dismantle removes them from both, and they
+  stay in the host's save (docs/world-sync.md; on with **Host holds the save**, Debug option **Share structures,
+  ladders, ropes and ziplines**). Both players can pay materials into the same structure (upgrades, repairs) from their own
+  inventories toward one shared total, and the level-up plays on both screens. Ladders and climbing ropes either player
+  places appear in both worlds, both players can climb them, and collapsing / recovering one removes it from both
+  worlds (the item goes back to whoever picked it up). Ziplines either player builds appear in both worlds, connect to
+  the same ziplines in both, can be upgraded by either player and stay in the host's save. Nothing the mod creates is
+  sent to the game's online servers.
 - **Experimental:** vehicles are shared (with **Host holds the save**, the default): every
   vehicle is **one real vehicle**, the same one on both screens, never a copy and never a
   hologram. Each of you can summon your own (the guest's summons come from the host's garage

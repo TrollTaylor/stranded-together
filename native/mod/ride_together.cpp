@@ -2069,6 +2069,177 @@ void DriverTick() {
     }
 }
 
+// ---------------------------------------------------------------- the trike driver's back (v0.23)
+// The user: "hide the driver's back cargo on the trike when he has a passenger behind him". The pillion passenger sits
+// where the driver's backpack and its stacked cargo are (run 20261121-103032: inside them on both screens). While the
+// partner rides our trike (accepted, its body seated: DriverPlacesBody, as PassengerTarget), our Sam's inventory carries
+// the game's own HideBackpack and HideSpareShoes: the cutscene event DSPlayerHideBaggageEventInstance's apply (0x14293A380)
+// writes inventory +0x4C7C bits 0 and 1, and the inventory's per-frame update (0x1427EEC30) then hides the backpack entity
+// (Entity_SetVisible; what hangs on it with it), every carried piece (the carrier's hide reason 0, 0x142CB27A0) and the spare
+// boots hanging behind him (inventory +0x4D90: run 20261121-133429 E3a showed them left in the air with bit 0 alone), and
+// shows them again (with the carrier's refresh) once the bits clear, as the event's end does. Runtime state only (no
+// serializer reads the byte), set and cleared on the game thread, never a game call. Only the bits we set are cleared (a
+// bit the game's own event holds is left to it), and only on the same Sam's same inventory
+// (a new Sam / world: forgotten, the new inventory starts clear). The passenger's game sees it through our gear frame
+// (partner_gear: a hidden backpack, what hangs on it and hidden cargo are not sent) and hides the partner's backpack props
+// itself meanwhile (PillionNow). The truck and the roadster are unchanged (their passenger sits beside the driver).
+constexpr std::uintptr_t kPlayerVt = 0x143D7D0D8;  // DSPlayerEntity
+constexpr std::uintptr_t kSamInv = 0x54C8, kInvOwner = 0x48, kInvHide = 0x4C7C;
+constexpr std::uint8_t kHideBits = 0x03;  // bit 0 HideBackpack, bit 1 HideSpareShoes
+// clang-format off
+constexpr Site kPackSites[] = {
+    {0x14293A446, "41 80 A3 7C 4C 00 00 FE", "the HideBaggage event's HideBackpack (inventory +0x4C7C bit 0)"},
+    {0x1427F04E8, "F6 C2 02 40 0F B6 C7", "the inventory update's HideSpareShoes test (bit 1)"},
+    {0x1427F04AA, "0F B6 96 7C 4C 00 00 F6 C2 01 74 32", "the inventory update's HideBackpack test"},
+    {0x1427F0F06, "F6 86 7E 4C 00 00 04 48 8B 86 B8 4C 00 00", "the inventory update's backpack visibility (+0x4C7E, +0x4CB8)"},
+    {0x1427F2A9A, "0F B6 54 24 31 45 33 C0 4C 8B E0 48 89 45 D0 48 8B 48 50 E8 EE FC 4B 00", "the inventory update's cargo hide (reason 0)"},
+    {0x142CB27A0, "8B 81 8C 00 00 00 4C 8B C9 85 C0", "the carrier's hide-reason mask (+0x8C)"},
+    {0x14271FC22, "48 89 83 C8 54 00 00", "Sam's inventory component (+0x54C8)"},
+};
+// clang-format on
+bool g_pack_cfg = true;                // session.ini ride_hide_pack
+bool g_pack_ok = false;                // its checks passed (and the flag on)
+int g_pack_test = -1;                  // ride_test 36 <1|0|-1>: hidden tests force it on / off; -1 follows the ride
+struct PackHide {
+    std::uintptr_t sam = 0, inv = 0;   // held on this Sam's inventory
+    bool held = false;                 // we set bits and have not cleared them
+    std::uint8_t ours = 0;             // ... these (of kHideBits)
+    bool foreign_logged = false;       // the game's own event held it when we wanted it (not ours: never cleared by us)
+    double since = 0;
+    unsigned reasserts = 0;            // the game cleared it while we held it (an event's end): set again
+};
+PackHide g_pack;
+unsigned g_pack_hides = 0, g_pack_releases = 0;
+std::uintptr_t g_inv_sam = 0, g_inv_ok = 0;  // the last inventory checked (type name read once per Sam / inventory)
+
+// Our Sam's inventory component, checked (DSPlayerEntity, the component's owner, its RTTI type); 0 when it does not.
+std::uintptr_t SamInventory(std::uintptr_t sam) {
+    if (!sam || mem::Q(sam) != A(kPlayerVt)) return 0;
+    const std::uintptr_t inv = mem::Q(sam + kSamInv);
+    if (!inv || mem::Q(inv + kInvOwner) != sam) return 0;
+    if (sam == g_inv_sam && inv == g_inv_ok) return inv;
+    const char* t = mem::RttiName(mem::RttiOf(inv));
+    if (!t || std::strcmp(t, "DSPlayerInventoryComponent") != 0) return 0;
+    g_inv_sam = sam, g_inv_ok = inv;
+    return inv;
+}
+// The byte, OR / AND `mask` (game thread; the game writes this byte only there). False on a fault.
+bool PackBit(std::uintptr_t inv, int op, std::uint8_t* before, std::uint8_t mask = kHideBits) noexcept {
+    __try {
+        volatile std::uint8_t* b = reinterpret_cast<volatile std::uint8_t*>(inv + kInvHide);
+        const std::uint8_t v = *b;
+        if (before) *before = v;
+        if (op > 0) *b = static_cast<std::uint8_t>(v | mask);
+        else if (op < 0) *b = static_cast<std::uint8_t>(v & ~mask);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+// Gives back what we hold (the ride ended, the mod stops): clears bit 0 on the same Sam's same inventory.
+void PackRelease(std::uintptr_t sam, const char* why) {
+    if (!g_pack.held) return;
+    const std::uintptr_t inv = SamInventory(sam);
+    if (sam != g_pack.sam || inv != g_pack.inv || !inv) {
+        Log("[ride] trike pillion: our Sam or his inventory changed (%s): the hide is forgotten (the new inventory starts clear)", why);
+    } else {
+        std::uint8_t b = 0;
+        const bool ok = PackBit(inv, -1, &b, g_pack.ours);
+        ++g_pack_releases;
+        Log("[ride] trike pillion: the driver's backpack and cargo shown again (%s) after %.1f s%s (inventory +0x4C7C 0x%02X -> 0x%02X%s; #%u)", why,
+            (g_now - g_pack.since) / 1000.0, g_pack.reasserts ? ", the game cleared it meanwhile and it was set again" : "", b,
+            static_cast<unsigned>(b & ~g_pack.ours), ok ? "" : ", FAULTED", g_pack_releases);
+    }
+    g_pack = PackHide{};
+}
+// Game thread, every tick (Tick, after the driver's side): hidden while the partner rides our trike's pillion.
+void PackTick(const TickIn& in) {
+    if (!g_pack_ok) return;
+    const std::uintptr_t sam = reinterpret_cast<std::uintptr_t>(in.local);
+    if (!sam || !in.local_ok) return;  // a load / no Sam this tick: the next tick decides (a new Sam forgets)
+    const bool ride = !g_stop.load() && g_on.load() && g_d.accepted && g_d.key.kind == 3 &&
+                      rwire::DriverPlacesBody(true, g_now - g_d.accept_ms, g_now - g_d.last_bit_ms);
+    const bool want = !g_stop.load() && (g_pack_test >= 0 ? g_pack_test == 1 : ride);
+    if (g_pack.held && sam != g_pack.sam) {
+        PackRelease(sam, "a new Sam");
+        if (!want) return;
+    }
+    if (!want) {
+        if (g_pack.held) PackRelease(sam, g_pack_test == 0 ? "test" : g_d.accepted ? "the passenger's body is not seated" : "the ride is over");
+        g_pack.foreign_logged = false;
+        return;
+    }
+    const std::uintptr_t inv = SamInventory(sam);
+    if (!inv) return;
+    if (g_pack.held && inv != g_pack.inv) PackRelease(sam, "a new inventory");
+    std::uint8_t b = 0;
+    if (!PackBit(inv, 0, &b)) return;
+    const std::uint8_t missing = static_cast<std::uint8_t>(kHideBits & ~b);
+    if (!missing) {
+        if (!g_pack.held && !g_pack.foreign_logged) {
+            g_pack.foreign_logged = true;
+            Log("[ride] trike pillion: the game itself hides the backpack now (+0x4C7C 0x%02X, a scripted event): left to it", b);
+        }
+        return;
+    }
+    if (!PackBit(inv, 1, nullptr, missing)) {
+        Log("[ride] trike pillion: FAULT setting the inventory's HideBackpack: off for this session");
+        g_pack_ok = false;
+        g_pack = PackHide{};
+        return;
+    }
+    if (g_pack.held) {
+        g_pack.ours = static_cast<std::uint8_t>(g_pack.ours | missing);
+        if (++g_pack.reasserts <= 5) Log("[ride] trike pillion: the game cleared the backpack hide (0x%02X) while the passenger rides: set again", missing);
+        return;
+    }
+    g_pack.held = true;
+    g_pack.ours = missing;
+    g_pack.sam = sam, g_pack.inv = inv, g_pack.since = g_now, g_pack.reasserts = 0;
+    ++g_pack_hides;
+    Log("[ride] trike pillion%s: the driver's backpack and cargo hidden (the game's HideBackpack + HideSpareShoes, inventory %p +0x4C7C 0x%02X -> "
+        "0x%02X; #%u)",
+        g_pack_test >= 0 ? " (test)" : "", reinterpret_cast<void*>(inv), b, static_cast<unsigned>(b | missing), g_pack_hides);
+}
+bool PackTickGuarded(const TickIn& in) noexcept {
+    __try {
+        PackTick(in);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+bool PackReleaseGuarded(std::uintptr_t sam, const char* why) noexcept {
+    __try {
+        PackRelease(sam, why);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+void InstallPack(const Config& config) {
+    g_pack_cfg = config.ride_hide_pack;
+    unsigned bad = 0;
+    const char* first = nullptr;
+    for (const Site& s : kPackSites)
+        if (!mem::CodeMatches(A(s.va), s.sig)) {
+            ++bad;
+            if (!first) first = s.name;
+            Log("[ride] trike pillion: byte check FAILED: %s at 0x%llX", s.name, static_cast<unsigned long long>(s.va));
+        }
+    const unsigned n = static_cast<unsigned>(sizeof(kPackSites) / sizeof(kPackSites[0]));
+    if (bad) {
+        Log("[ride] trike pillion: the driver's backpack stays shown with a passenger: this game build differs (%s; %u of %u checks failed)", first, bad, n);
+        return;
+    }
+    if (!g_pack_cfg) {
+        Log("[ride] trike pillion: the driver's backpack stays shown with a passenger (session.ini ride_hide_pack=0; %u byte checks ok)", n);
+        return;
+    }
+    g_pack_ok = true;
+    Log("[ride] trike pillion: the driver's backpack and cargo are hidden while the partner rides behind him (%u byte checks ok)", n);
+}
+
 void OnRequest(const rwire::Msg& m) {
     rwire::DriverIn in;
     in.feature_on = g_on.load();
@@ -2364,6 +2535,7 @@ void Install(const Config& config) noexcept {
     g_cfg_on = config.ride_together;
     g_pose_mode = config.ride_pose;
     ridecam::Install(config);
+    InstallPack(config);
     unsigned bad = 0;
     for (const Site& s : kSites) {
         if (!mem::CodeMatches(A(s.va), s.sig)) {
@@ -2450,6 +2622,11 @@ static void TickInner(const TickIn& in, double now) noexcept;
 void Tick(const TickIn& in, double now) noexcept {
     TickInner(in, now);
     PublishSaveState();
+    // the trike driver's back (v0.23): after the driver's side decided this tick
+    if (g_pack_ok && !g_stop.load() && !PackTickGuarded(in)) {
+        Log("[ride] trike pillion: FAULT in its tick: off for this session");
+        g_pack_ok = false;
+    }
 }
 static void TickInner(const TickIn& in, double now) noexcept {
     if (!g_checks_ok) return;
@@ -2523,6 +2700,7 @@ void AfterStop() noexcept {
     static std::atomic<bool> done{false};
     if (!g_stop.load() || done.exchange(true)) return;
     if (!RestoreGuarded()) Log("[ride] FAULT while restoring after the stop (the capsule may stay off until a load)");
+    if (!PackReleaseGuarded(reinterpret_cast<std::uintptr_t>(g_in.local), "the mod stopped")) Log("[ride] FAULT while showing the driver's backpack again");
     g_d = Drv{};
 }
 
@@ -2530,6 +2708,13 @@ std::uint32_t PoseFlags() noexcept {
     return g_p.st == PState::riding && !g_p.solo ? (wire::kPosePassenger | wire::kPoseInVehicle) : 0u;
 }
 bool Carried() noexcept { return g_p.st == PState::riding; }
+Pillion PillionNow() noexcept {
+    if (g_stop.load()) return Pillion::none;
+    if (g_p.st == PState::riding && !g_p.solo && g_p.kind == 3) return Pillion::we_ride;
+    if (g_d.accepted && g_d.key.kind == 3 && rwire::DriverPlacesBody(true, g_now - g_d.accept_ms, g_now - g_d.last_bit_ms)) return Pillion::we_drive;
+    return Pillion::none;
+}
+bool PackHidden() noexcept { return g_pack.held; }
 bool ShieldCovers(std::uintptr_t entity) noexcept { return ShieldActiveFor(entity); }
 void AllowOwnHit(float amount) noexcept { AllowOwnHitImpl(amount); }
 bool JustRode(std::uintptr_t vehicle_entity) noexcept {
@@ -2596,6 +2781,13 @@ bool StateCommand(char* msg, std::size_t cap) noexcept {
         NativeOn() ? "ON" : "OFF", NativeOn() ? "" : ": ", NativeOn() ? "" : (g_np_hooked.load() ? "ride_test 12 0" : g_np_off), g_np_seen.load(), g_np_lift.load(),
         g_np_ride.load(), g_np_icon_calls.load(), g_np_lifts.load(), g_np_offs.load(), g_np_presses.load(), g_np_refused.load(), g_pad_ok ? "read" : "off",
         g_np_obs[0].load(), g_np_obs[1].load());
+    {
+        std::uint8_t b = 0;
+        const std::uintptr_t inv = SamInventory(reinterpret_cast<std::uintptr_t>(g_in.local));
+        const bool have = inv && PackBit(inv, 0, &b);
+        Log("[ride] state: trike pillion hide %s, held %d (%u hide(s), %u release(s)), test %d, inventory +0x4C7C %s0x%02X", g_pack_ok ? "on" : "OFF",
+            g_pack.held ? 1 : 0, g_pack_hides, g_pack_releases, g_pack_test, have ? "" : "unread ", b);
+    }
     std::snprintf(msg, cap, "%s", full);
     return true;
 }
@@ -2826,6 +3018,19 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept 
             Log("[ride] test: the boots meter %s (boots guard %s)", g_boots_meter ? "ON" : "off",
                 !g_boots_hooked.load() ? "not installed" : g_boots_enabled.load() ? "on" : "OFF");
             return std::snprintf(msg, cap, "boots meter %s", g_boots_meter ? "on" : "off"), true;
+        }
+        case 36: {
+            // v0.23: the trike driver's back hide forced on (1) / off (0) / back to following the ride (-1), hidden tests
+            if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden tests only"), false;
+            if (!g_pack_ok) return std::snprintf(msg, cap, "the trike pillion hide is off (see the log)"), false;
+            const int want = v[1] > 0.5 ? 1 : v[1] < -0.5 ? -1 : 0;
+            g_pack_test = want;
+            std::uint8_t b = 0;
+            const std::uintptr_t inv = SamInventory(reinterpret_cast<std::uintptr_t>(g_in.local));
+            const bool have = inv && PackBit(inv, 0, &b);
+            Log("[ride] test: the trike pillion hide %s (held %d, inventory +0x4C7C %s0x%02X)", want == 1 ? "forced ON" : want == 0 ? "forced off" : "follows the ride",
+                g_pack.held ? 1 : 0, have ? "" : "unread ", b);
+            return std::snprintf(msg, cap, "pillion hide %s", want == 1 ? "on" : want == 0 ? "off" : "auto"), true;
         }
         case 35:
             if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden tests only"), false;

@@ -1,0 +1,78 @@
+# The trike driver's back comes back on every way a pillion ride ends (v0.23; docs/real-partner-body.md section 24.18), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-ride-trike-pack-exits -SeedSaves complete-100
+# The launcher's own Local test files. The host drives the Kusanagi trike, the guest rides its pillion; the host's
+# backpack and cargo are hidden each time she sits behind him and shown again each time the ride ends:
+#   1. a crash (the guest's ride_test 4: the pillion is thrown off),
+#   2. the host's game rolls its trike over (ride_test 5: the guest's copy lies on its side, "flipped", or the guest stays
+#      seated when the trike rights itself first and gets off by choice; either way the hide follows the ride),
+#   3. the riding module's emergency stop with the hide held (ride_test 36 1 forces it, ride_test 9 stops: AfterStop
+#      clears it, "the mod stopped").
+# The link (the guest's game dropping every datagram for 6 s, coop_session 1 6000) ran in run 20261121-133024: the hide went
+# with the passenger bit ("not seated") and the ride ended "link lost"; a ride after that blackout did not board again in
+# that run, so it is not a step here.
+# Pass: every step (a "hidden" line for each ride, a "shown again" line after each end, the cargo count back to 0 hidden),
+# E1-E3 screenshots of the host's back after each end (the backpack and the stack back), no FAULT.
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+waitlog 5 \[ride\] trike pillion: the driver's backpack and cargo are hidden while the partner rides behind him
+@guest waitlog 30 \[vshare\] guest: binding:
+action vehicle_sync 8 1.8 4
+wait 1500
+until 20 4000 \[vdrive\] host: our Sam drives trike => pad X 150
+@guest waitlog 20 \[vdrive\] follower of trike 0x[0-9A-F]+ attached
+wait 2500
+# ---- 1. a crash
+@guest action ride_test 8
+wait 1500
+@guest until 15 3000 \[ride\] guest: our Sam carried on the trike .*#1\) => pad X 800
+waitlog 10 \[ride\] host: the partner asks to ride our trike .*ACCEPTED
+waitlog 6 \[ride\] trike pillion: the driver's backpack and cargo hidden .*#1\)
+wait 2000
+screenshot E0-host-hidden
+@guest action ride_test 4 12
+@guest waitlog 6 \[ride\] guest: our Sam off the trike .*\(#1, crash, forced\)
+waitlog 8 \[ride\] trike pillion: the driver's backpack and cargo shown again \(the ride is over\) .*#1\)
+wait 3000
+screenshot E1-host-after-crash
+@guest screenshot E1-guest-after-crash
+wait 4000
+# ---- 2. the host rolls its trike over with the guest behind him
+@guest action ride_test 8
+wait 1500
+@guest until 20 3000 \[ride\] guest: our Sam carried on the trike .*#2\) => pad X 800
+waitlog 10 \[ride\] host: the partner asks to ride our trike .*ACCEPTED \(#2;
+wait 1000
+action ride_state
+waitnew 3 \[ride\] state: trike pillion hide on, held 1
+wait 1500
+action ride_test 5
+wait 8000
+@guest nolog \[ride\] guest: our Sam off the trike .*\(#2, (?!flipped)[^)]*\)
+@guest screenshot E2-guest-after-roll
+screenshot E2-host-after-roll
+@both action ride_state
+# off by choice if still seated (the roll righted itself)
+?@guest until 8 3000 \[ride\] guest: our Sam off the trike .*\(#2, => pad X 150
+until 15 1000 \[ride\] state: trike pillion hide on, held 0 \(([2-9]|[1-9][0-9]+) hide\(s\), \1 release\(s\)\) => action ride_state
+# ---- 3. the module's emergency stop while the hide is held
+wait 2000
+action ride_test 36 1
+waitlog 4 \[ride\] trike pillion \(test\): the driver's backpack and cargo hidden
+action ride_state
+waitnew 3 \[ride\] state: trike pillion hide on, held 1 .*test 1
+wait 1500
+screenshot E3a-host-forced-hidden
+action ride_test 9
+waitnew 4 \[ride\] trike pillion: the driver's backpack and cargo shown again \(the mod stopped\)
+action ride_state
+waitnew 3 \[ride\] state: trike pillion hide on, held 0 \(([3-9]|[1-9][0-9]+) hide\(s\), \1 release\(s\)\), test 1
+wait 2500
+screenshot E3-host-after-stop
+nolog \[(vshare|vdrive|ride|vhit|gear)\].*FAULT
+@guest nolog \[(vshare|vdrive|ride|vhit|gear)\].*FAULT
+@guest quit
+wait 3000
+quit

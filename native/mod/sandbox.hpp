@@ -286,6 +286,19 @@ inline std::string MergeGameSettings(const std::string& original, const std::str
     return out;
 }
 
+// v0.23: the launcher's Local test runs at 60 fps by default (its "Frame rate" choice: 30, 60, 120 or the game's maximum);
+// the hidden env's "graphics low" stays at 30 unless a scenario says "graphics low <fps>" or runs the launcher's own files
+// (launcherini: the launcher's frame rate). The game reads "fps" at boot clamped to 15..240 (0 becomes 15: there is no
+// "unlimited", so the maximum is written as 240) and writes "limit_fps" from the same value on exit: both keys are set.
+inline constexpr unsigned kLocalTestFps = 60;
+inline constexpr unsigned kGameMaxFps = 240;
+inline unsigned ClampGameFps(unsigned fps) { return fps < 15 ? 15u : fps > kGameMaxFps ? kGameMaxFps : fps; }
+// LowGraphicsSettingsCfg with its "fps" / "limit_fps" lines at `fps` (clamped 15..240); every other key unchanged. Pure.
+inline std::string LowGraphicsSettingsCfgAt(unsigned fps) {
+    const std::string n = std::to_string(ClampGameFps(fps));
+    return MergeGameSettings(LowGraphicsSettingsCfg(), "\"fps\" \"" + n + "\"\r\n\"limit_fps\" \"" + n + "\"\r\n");
+}
+
 // ---- runtime (sandbox.cpp) ------------------------------------------------------------
 // DllMain: hooks CreateMutexA/W and CreateMutexExA/W (kernelbase) so that this process
 // creates kAppMutex + kMutexSuffix instead of kAppMutex. MinHook must be initialised.

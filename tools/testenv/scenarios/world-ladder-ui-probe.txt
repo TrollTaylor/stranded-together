@@ -1,0 +1,49 @@
+# Shared structures W3 (docs/world-sync.md), solo: calibration only. How the game's own UI places a ladder with the hidden
+# env's virtual pad: a dev ladder is collapsed ("Hold START: Collapse Ladder": the item goes into Sam's inventory), then the
+# tools selection (D-pad right: "Select Tools") and the placement inputs, a screenshot after each.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios world-ladder-ui-probe -Id round5-w3 -SeedSaves complete-100
+role solo
+timeout 300
+ini dev_tools=1
+start
+wait 2000
+goto mknot-road
+wait 3000
+action dev_ladder 0 0 4
+wait 2000
+pad none 700 ly=32767
+wait 1200
+pad START 2600
+wait 2500
+action world_sync 10 25 40
+screenshot U0-collapsed
+pad DPAD_RIGHT 1200 keep
+pad DPAD_RIGHT 900 rx=12540 ry=-30273 keep
+screenshot U1-radial-ladder-a
+pad none 0
+wait 1500
+screenshot U2-after-radial
+pad none 1500 lt=255 keep
+screenshot U3-lt-held
+pad none 300 lt=255 rt=255 keep
+pad none 1200 lt=255 keep
+screenshot U4-lt-rt-tap
+pad none 0
+wait 3000
+screenshot U5-after
+action world_sync 10 25 40
+pad DPAD_RIGHT 1200 keep
+pad DPAD_RIGHT 900 rx=18795 ry=-26840 keep
+screenshot U6-radial-ladder-b
+pad none 0
+wait 1500
+screenshot U7-after-radial-2
+pad none 1500 lt=255 keep
+screenshot U8-lt-held
+pad none 300 lt=255 rt=255 keep
+pad none 1200 lt=255 keep
+pad none 0
+wait 3000
+screenshot U9-after
+action world_sync 10 25 40
+quit

@@ -1425,6 +1425,12 @@ void TestSaves() {
         }
         m->set_local_test_guest_character("cliff");
         CHECK(m->local_test().guest_character == "cliff");
+        // v0.23: the frame rate choice (60 by default; 30 / 60 / 120 / 0 = the game's maximum, anything else the default)
+        CHECK(m->local_test().fps == 60);
+        m->set_local_test_fps(7);
+        CHECK(m->local_test().fps == 60);
+        m->set_local_test_fps(120);
+        CHECK(m->local_test().fps == 120);
         CHECK(m->start_local_test(error));
         CHECK(env->started.size() == 1 && IEquals(env->started_exe, paths.exe));
         const auto has = [&](std::size_t i, const std::wstring& v) {
@@ -1437,7 +1443,7 @@ void TestSaves() {
         CHECK(ReadTextShared(host_ini, text) && ParseSessionIniText(text, ini, error));
         CHECK(ini.role == "host" && ini.transport == "udp" && ini.udp_port_local == 27555 && ini.udp_port_peer == 27556 &&
               ini.sandbox_saves == "local-host" && ini.appdir_settings && !ini.second_instance && ini.local_input == "host_pad" &&
-              ini.frame_cap == 30 && ini.debug_menu && ini.local_window == "left");
+              ini.frame_cap == 120 && ini.debug_menu && ini.local_window == "left");
         CHECK(ini.my_character == "sam" && ini.partner_body == "real" && !ini.self_character);   // the host game is always Sam
         const std::string secret = ini.secret;
         CHECK(ReadTextShared(guest_ini, text) && ParseSessionIniText(text, ini, error));
@@ -1468,6 +1474,11 @@ void TestSaves() {
         }
         CHECK(SandboxSeeded(GetSandboxPaths(paths, kLocalHostSandbox)) && SandboxSeeded(GetSandboxPaths(paths, kLocalGuestSandbox)));
         CHECK(IsFile(GetSandboxPaths(paths, kLocalGuestSandbox).settings));
+        for (const char* sb : {kLocalHostSandbox, kLocalGuestSandbox}) {
+            std::string cfg;
+            CHECK(ReadTextShared(GetSandboxPaths(paths, sb).settings, cfg) && cfg.find("\"fps\" \"120\"") != std::string::npos &&
+                  cfg.find("\"limit_fps\" \"120\"") != std::string::npos && cfg.find("\"fps\" \"30\"") == std::string::npos);
+        }
         CHECK(m->local_test().running && m->local_test().host_pid == 31 && m->local_test().guest_pid == 0);
         CHECK(!m->start_local_test(error) && !m->reset_test_saves(error));
         CHECK(!m->play_test_save(error) && error.find("local two-player test") != std::string::npos);   // one test at a time
@@ -1573,6 +1584,25 @@ void LocalTestSettings() {
     CHECK(merged.find("\"rendering_width\" \"1280\"") != std::string::npos);
     CHECK(merged.find("1920") == std::string::npos);
     CHECK(merged.find("\"nvidia_dlss\" \"0\"") != std::string::npos);  // the game's other keys stay
+    // v0.23: 60 fps by default (was 30), the game's own rewrite of limit_fps replaced; the maximum is 240, never 0 (the game
+    // turns 0 into 15); the hidden env's plain "graphics low" text stays at 30.
+    CHECK(fresh.find("\"fps\" \"60\"\r\n") != std::string::npos && fresh.find("\"limit_fps\" \"60\"\r\n") != std::string::npos);
+    CHECK(fresh.find("\"fps\" \"30\"") == std::string::npos && fresh.find("\"limit_fps\" \"30\"") == std::string::npos);
+    const std::string rewritten = LocalTestSettingsCfg("\"wait_vsync\" \"1\"\r\n\"fps\" \"30\"\r\n\"limit_fps\" \"30\"\r\n", 120);
+    CHECK(rewritten.find("\"limit_fps\" \"120\"") != std::string::npos && rewritten.find("\"fps\" \"120\"") != std::string::npos &&
+          rewritten.find("\"30\"") == std::string::npos);
+    CHECK(LocalTestSettingsCfg("", LocalTestGameFps(0)).find("\"fps\" \"240\"") != std::string::npos);
+    CHECK(LocalTestSettingsCfg("", 5).find("\"fps\" \"15\"") != std::string::npos);
+    CHECK(std::string(st::sandbox::LowGraphicsSettingsCfg()).find("\"fps\" \"30\"") != std::string::npos);
+    CHECK(LocalTestFps(30) == 30 && LocalTestFps(60) == 60 && LocalTestFps(120) == 120 && LocalTestFps(0) == 0 && LocalTestFps(45) == 60);
+    CHECK(LocalTestGameFps(0) == 240 && LocalTestGameFps(120) == 120 && LocalTestGameFps(-3) == 60 && LocalTestFrameCap(0) == 0);
+    LocalTestChoices c;
+    SessionIni h, g;
+    MakeLocalTestInis(DebugOptions{}, c, h, g);
+    CHECK(h.frame_cap == 60 && g.frame_cap == 60);
+    c.fps = 0;
+    MakeLocalTestInis(DebugOptions{}, c, h, g);
+    CHECK(h.frame_cap == 0 && g.frame_cap == 0);
 }
 
 // The mouse lock (play test 2: the cursor walked out of the game window into the other one): a Debug option, on by
@@ -1598,6 +1628,10 @@ void MouseLockSettings() {
     CHECK(MakeSessionIniText(host, text, error) && text.find("mouse_lock=1\n") != std::string::npos);
     CHECK(ParseSessionIniText(text, back, error) && back.mouse_lock);
     CHECK(MakeSessionIniText(guest, text, error) && text.find("mouse_lock=1\n") != std::string::npos);
+    // world sync (docs/world-sync.md): on in both Local test files (the Debug option, default on), parsed back, strict
+    CHECK(host.world_sync && guest.world_sync && text.find("world_sync=1\n") != std::string::npos);
+    CHECK(ParseSessionIniText(text, back, error) && back.world_sync);
+    CHECK(!ParseSessionIniText(text + "world_sync=yes\n", back, error));
     CHECK(ParseSessionIniText(text, back, error) && back.mouse_lock && back.local_window == "right");
     DebugOptions off;
     off.mouse_lock = false;
@@ -1611,6 +1645,27 @@ void MouseLockSettings() {
     online.secret = choices.secret;
     ApplyDebugOptions(DebugOptions{}, online);
     CHECK(!online.mouse_lock && MakeSessionIniText(online, text, error) && text.find("mouse_lock") == std::string::npos);
+    CHECK(!online.world_sync && text.find("world_sync") == std::string::npos);   // without host_save: not written (the mod: off)
+    // W3: "Share structures, ladders and ropes" (default on): the Local test writes it; off -> world_sync=0 with host_save
+    // (the mod's own default is on with host_save=1), and it round-trips through the settings.
+    {
+        DebugOptions so;
+        CHECK(so.share_world && so.host_save);
+        so.share_world = false;
+        MakeLocalTestInis(so, choices, host, guest);
+        CHECK(!host.world_sync && !guest.world_sync && host.host_save);
+        CHECK(MakeSessionIniText(host, text, error) && text.find("world_sync=0\n") != std::string::npos);
+        CHECK(ParseSessionIniText(text, back, error) && !back.world_sync);
+        json::Value sset = json::Value::Object(), sb;
+        DebugOptionsToSettings(so, sset);
+        CHECK(json::Parse(json::Dump(sset), sb) && !DebugOptionsFromSettings(sb).share_world);
+        SessionIni hs;
+        hs.role = "host";
+        hs.secret = choices.secret;
+        hs.host_save = true;
+        hs.world_sync = true;
+        CHECK(MakeSessionIniText(hs, text, error) && text.find("world_sync=1\n") != std::string::npos);
+    }
     // Strict: 0 / 1 only.
     CHECK(ParseSessionIniText(text + "mouse_lock=0\n", back, error) && !back.mouse_lock);
     CHECK(ParseSessionIniText(text + "mouse_lock=1\n", back, error) && back.mouse_lock);

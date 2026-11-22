@@ -1,0 +1,106 @@
+# Shared structures W1 (docs/world-sync.md) between two games on the launcher's own Local test files (world_sync=1 there),
+# hidden: a structure built in either world appears in the other with the game's own build-up and printer, and a dismantle
+# in either world removes it from both.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-world-build -SeedSaves complete-100 -GuestSeed profile-only
+# 1. Join: the guest loads the host's save; the join check finds every shared structure bound (same ids, same places).
+# 2. Host builds (dev_build: the PCC commit's steps, through the game's own queue, offline): the census sends ADD; the guest
+#    mirrors it with the host's id and plays the build-up and printer. Screenshots from both screens.
+# 3. Guest builds: her commit's record is HELD by the EnqueueInfo detour (it never enters her queue), GBUILD goes to the
+#    host, the host creates it (offline 1, its id from the game's NewId) and answers ADD with her request; she mirrors it
+#    with the host's id. Screenshots from both screens.
+# 4. Counts in both worlds: one of each at the place, offline 1, the same ids.
+# 5. The host dismantles the postbox (REM manual: the guest's copy plays the dismantle too); the guest dismantles the
+#    generator (REMREQ: the host removes it). Counts 0 in both worlds.
+# Pass: the log lines named below, counts equal in both worlds, no FAULT, no byte check failure, no OTGC WRITE, both exit 0.
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+waitlog 10 \[world\] world sync ON \(host\)
+@guest waitlog 90 \[world\] world sync ON \(guest\)
+@guest waitlog 120 \[world\] guest: snapshot #1 complete: bound [0-9]+, created 0, removed 0, replaced 0
+waitlog 30 \[world\] host: SNAP_REQ \(reason 0\): SUM sent
+@both goto mknot-road
+wait 5000
+action world_sync 10 -1 60
+@guest action world_sync 10 -1 60
+# ---- 2. the host builds a postbox 10 m in front of its Sam
+action dev_build 6 1 10
+waitnew 5 \[world\] dev build: id [0-9]+ type 6 \(postbox\) anim 1 .* offline 1
+waitlog 5 \[world\] host: new structure hid [0-9]+ type 6 \(postbox\) origin host anim 1 printer 1 offline 1 -> ADD
+@guest waitlog 10 \[world\] guest: mirror hid [0-9]+ -> gid [0-9]+ \(exact\) type 6 \(postbox\) anim 1 printer 1 \(the host's build\)
+wait 1500
+screenshot H1-host-builds-2s
+@guest screenshot H1-guest-sees-2s
+wait 3500
+screenshot H2-host-builds-5s
+@guest screenshot H2-guest-sees-5s
+@guest waitlog 10 \[world\] guest: mirror hid [0-9]+ ok: gid [0-9]+ state [0-9] level [0-9] offline 1 server id empty
+wait 9000
+screenshot H3-host-built
+@guest screenshot H3-guest-built
+# ---- 3. the guest steps a few metres to the right (so the generator does not stand behind the postbox on screen), then builds a
+# generator 14 m in front of her Sam
+@guest pad none 1400 lx=32767
+@guest pad none 450 ly=32767
+@guest wait 2000
+@guest action dev_build 15 1 14
+@guest waitnew 5 \[world\] dev build: type 15 \(generator\) .*held for the host
+@guest waitlog 10 \[world\] guest: local build type 15 \(generator\) held, request #1 sent
+waitlog 10 \[world\] host: the guest's build #1: created hid [0-9]+ type 15 \(generator\) offline 1 anim 1 printer 1 \(dev\)
+waitlog 10 \[world\] host: new structure hid [0-9]+ type 15 \(generator\) origin guest anim 1 printer 1 offline 1 -> ADD
+@guest waitlog 10 \[world\] guest: build #1 confirmed as hid [0-9]+
+wait 1500
+screenshot G1-host-sees-2s
+@guest screenshot G1-guest-builds-2s
+wait 3500
+screenshot G2-host-sees-5s
+@guest screenshot G2-guest-builds-5s
+wait 10000
+screenshot G3-host-built
+@guest screenshot G3-guest-built
+# ---- 4. counts in both worlds
+action world_sync 10 6 60
+waitnew 3 \[world\] check: type 6 within 60 m: 1 \(ids [0-9]+\) offline 1
+@guest action world_sync 10 6 60
+@guest waitnew 3 \[world\] check: type 6 within 60 m: 1 \(ids [0-9]+\) offline 1
+action world_sync 10 15 60
+waitnew 3 \[world\] check: type 15 within 60 m: 1 \(ids [0-9]+\) offline 1
+@guest action world_sync 10 15 60
+@guest waitnew 3 \[world\] check: type 15 within 60 m: 1 \(ids [0-9]+\) offline 1
+@both action world_sync 0
+@guest action world_sync 2
+# ---- 5. removals: the host dismantles its postbox, the guest dismantles the generator
+action world_dump -1 4
+action dev_build_remove 0 1
+waitnew 3 \[world\] dev remove: id [0-9]+ \(postbox\) dismantled
+waitlog 5 \[world\] host: hid [0-9]+ \(postbox\) removed \(manual\).* -> REM
+@guest waitlog 10 \[world\] guest: REM hid [0-9]+ \(postbox\) manual: removed gid [0-9]+ \(dismantle animation\)
+wait 2000
+screenshot R1-host-dismantles
+@guest screenshot R1-guest-sees-dismantle
+wait 12000
+@guest action dev_build_remove 0 1
+@guest waitnew 3 \[world\] dev remove: id [0-9]+ \(generator\) dismantled
+@guest waitlog 5 \[world\] guest: we dismantled hid [0-9]+ \(generator\) -> REMREQ
+waitlog 10 \[world\] host: the guest dismantled hid [0-9]+ \(generator\): removed here too
+wait 15000
+action world_sync 10 -1 60
+waitnew 3 \[world\] check: type -1 within 60 m: 0
+@guest action world_sync 10 -1 60
+@guest waitnew 3 \[world\] check: type -1 within 60 m: 0
+screenshot R2-host-after
+@guest screenshot R2-guest-after
+@both action world_sync 3
+nolog \[world\].*FAULT
+@guest nolog \[world\].*FAULT
+nolog \[world\] byte check FAILED
+@guest nolog \[world\] byte check FAILED
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+nolog \[world\] guest: mirror FAIL
+@guest nolog \[world\] guest: mirror FAIL
+@guest quit
+wait 3000
+quit

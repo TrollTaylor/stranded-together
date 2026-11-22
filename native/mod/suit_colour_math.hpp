@@ -1,0 +1,125 @@
+// Fragile's porter suit in Sam's suit colours: the pure part (no game, tested by tests/suit_colour_tests.cpp).
+// docs/real-partner-body.md section 27.
+//
+// Sam's suit colour (inventory +0x4BE1): 0..14 a row of the game's 8x16 colour LUT (cm_cvar_b002, column 0 = the full
+// colour) multiplied into his light grey suit texture; 15 silver and 16 gold whole texture-set swaps (a dark metal
+// albedo and a silver / gold reflectance). Fragile's suit has neither (no LUT in her shader, no other texture set), so
+// the mod binds three small constant textures to her suit's Main_TextureSet channels instead: what they hold is decided
+// here.
+//   0 (and anything above 16): her own textures, nothing bound (her navy is LUT row 0's colour already).
+//   1..14: her albedo becomes LUT[c] scaled per channel so that row 0 gives exactly her own navy (67, 71, 81); her
+//          reflectance and roughness stay hers (cloth).
+//   15 / 16: a metal: albedo, reflectance and a low roughness. Sam's silver / gold set measured where it is metal (the
+//          decoded v02 / v03 textures' bright islands: albedo (79, 71, 72), reflectance (218, 219, 219) / (220, 176,
+//          112)) looked a dull olive on her suit in the game (run 20261121-141717: hard to tell from palette 9), so the
+//          product uses brighter, warmer values picked from the screenshots of run 20261121-141927 (variant 2 there), the
+//          gold toned down a little after the sunlit two-game run 20261121-142205 (a flat yellow next to Sam's gold).
+// All values are 8-bit texture bytes as the game stores them (albedo sRGB, reflectance and roughness linear).
+#pragma once
+#include <cstdint>
+
+namespace st::suitcol {
+
+struct Rgb {
+    std::uint8_t r = 0, g = 0, b = 0;
+};
+constexpr bool operator==(const Rgb& a, const Rgb& b) { return a.r == b.r && a.g == b.g && a.b == b.b; }
+
+constexpr int kColours = 17;          // 0..14 palette, 15 silver, 16 gold
+constexpr std::uint8_t kSilver = 15, kGold = 16;
+constexpr Rgb kHerBase{67, 71, 81};   // fgl_body_suiti_v00_clr, average of the decoded low mip
+// cm_cvar_b002 column 0, rows 0..14 (decoded from the game data; the colours the uniform menu shows on Sam).
+constexpr Rgb kLut[15] = {{0x50, 0x59, 0x69}, {0xC2, 0x7D, 0x5B}, {0x9C, 0x39, 0x2E}, {0x47, 0x47, 0x47}, {0xAF, 0xA4, 0x90},
+                          {0x92, 0x90, 0x90}, {0x6D, 0x5E, 0x50}, {0x72, 0x6C, 0x7B}, {0x60, 0x4C, 0x4C}, {0x9D, 0x84, 0x55},
+                          {0x82, 0x4C, 0x47}, {0x5D, 0x5D, 0x5D}, {0x59, 0x5B, 0x41}, {0x62, 0x85, 0xA9}, {0xCA, 0x90, 0x87}};
+constexpr Rgb kSilverAlbedo{96, 96, 100};
+constexpr Rgb kGoldAlbedo{100, 80, 44};
+constexpr Rgb kSilverF0{235, 235, 235};
+constexpr Rgb kGoldF0{240, 190, 100};
+constexpr std::uint8_t kMetalRoughness = 60;  // ~0.24
+// Sam's own sets as measured (the tuning's reference).
+constexpr Rgb kSamMetalAlbedo{79, 71, 72};
+constexpr Rgb kSamSilverF0{218, 219, 219};
+constexpr Rgb kSamGoldF0{220, 176, 112};
+
+// Channels bound (a bit set): the TextureSet channel types the game's ETextureSetType names.
+enum Channel : unsigned { kChColor = 1u, kChReflectance = 2u, kChRoughness = 4u };
+constexpr std::uint32_t kTypeColor = 1, kTypeReflectance = 4, kTypeRoughness = 6;
+
+struct Look {
+    bool own = true;           // nothing bound: her own textures
+    unsigned channels = 0;     // Channel bits bound
+    Rgb color{}, reflectance{};
+    std::uint8_t roughness = 0;
+};
+
+constexpr std::uint8_t ScaleChannel(std::uint8_t lut, std::uint8_t lut0, std::uint8_t base) {
+    const unsigned v = (static_cast<unsigned>(base) * lut + lut0 / 2u) / (lut0 ? lut0 : 1u);
+    return static_cast<std::uint8_t>(v > 255u ? 255u : v);
+}
+
+// Metal variants (hidden-test tuning, real_outfit 8): 0 the product's; 1 Sam's measured values as they are; 2 the same as
+// 0 (the name the tuning run used).
+struct Metal {
+    Rgb silver_albedo, gold_albedo, silver_f0, gold_f0;
+    std::uint8_t roughness;
+};
+constexpr int kMetalVariants = 3;
+constexpr Metal kMetals[kMetalVariants] = {
+    {kSilverAlbedo, kGoldAlbedo, kSilverF0, kGoldF0, kMetalRoughness},
+    {kSamMetalAlbedo, kSamMetalAlbedo, kSamSilverF0, kSamGoldF0, 90},
+    {kSilverAlbedo, kGoldAlbedo, kSilverF0, kGoldF0, kMetalRoughness},
+};
+
+constexpr Look LookFor(std::uint8_t colour, int metal = 0) {
+    Look l;
+    if (colour == 0 || colour > kGold) return l;
+    l.own = false;
+    if (colour == kSilver || colour == kGold) {
+        const Metal& m = kMetals[metal >= 0 && metal < kMetalVariants ? metal : 0];
+        l.channels = kChColor | kChReflectance | kChRoughness;
+        l.color = colour == kGold ? m.gold_albedo : m.silver_albedo;
+        l.reflectance = colour == kGold ? m.gold_f0 : m.silver_f0;
+        l.roughness = m.roughness;
+        return l;
+    }
+    l.channels = kChColor;
+    const Rgb& c = kLut[colour];
+    l.color = Rgb{ScaleChannel(c.r, kLut[0].r, kHerBase.r), ScaleChannel(c.g, kLut[0].g, kHerBase.g), ScaleChannel(c.b, kLut[0].b, kHerBase.b)};
+    return l;
+}
+
+// The colour a body should wear: the debug override when set (0..16), else the wanted colour; 0xFF = leave as it is.
+constexpr std::uint8_t Wanted(int override_colour, std::uint8_t colour) {
+    if (override_colour >= 0 && override_colour <= kGold) return static_cast<std::uint8_t>(override_colour);
+    return colour <= kGold ? colour : std::uint8_t{0};
+}
+
+// Round 5: the guest's own pick, remembered across the host's loads. Her world is the host's save loaded into a sandbox
+// that is never saved, so a colour she picks for Sam's porter suit in the private room is gone at the next load: the mod
+// keeps her last pick (her own folder) and Fragile wears it until she picks again. See(world, her Sam's colour) every frame
+// the colour is read: a new world counter takes the loaded colour as the base; a different colour after that is her pick.
+struct GuestPick {
+    std::uint8_t saved = 0xFF;      // her last pick (0..16), 0xFF none
+    std::uint8_t last = 0xFF;       // her Sam's colour last seen in this world
+    bool picked = false;            // she picked in this world
+    std::uint32_t world = 0xFFFFFFFFu;
+    // true when `saved` changed (to be written)
+    bool See(std::uint32_t world_counter, std::uint8_t cur) {
+        if (world_counter != world) {
+            world = world_counter;
+            last = cur;
+            picked = false;
+            return false;
+        }
+        if (cur == last) return false;
+        last = cur;
+        picked = true;
+        if (cur > kGold || cur == saved) return false;
+        saved = cur;
+        return true;
+    }
+    std::uint8_t Effective(std::uint8_t cur) const { return picked || saved > kGold ? cur : saved; }
+};
+
+}  // namespace st::suitcol

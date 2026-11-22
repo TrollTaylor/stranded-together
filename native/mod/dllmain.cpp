@@ -18,6 +18,7 @@
 #include "save_guard.hpp"
 #include "vehicle_drive.hpp"
 #include "vehicle_share.hpp"
+#include "world_share.hpp"
 #include "debug_actions.hpp"
 #include "dev_tools.hpp"
 #include "self_voice.hpp"
@@ -102,8 +103,9 @@ bool GuardedEmergencyStop() noexcept {
     const bool drive = GuardedStop(&st::vdrive::EmergencyStop);  // the follower inputs stop
     const bool ride = GuardedStop(&st::ride::EmergencyStop);      // the carried passenger's input block and pose override go
     const bool hit = GuardedStop(&st::vhit::EmergencyStop);       // no more vehicle-hit calls
+    const bool world = GuardedStop(&st::wshare::EmergencyStop);   // shared structures: the detours pass everything through
     const bool coop = GuardedStop(&CoopStopAfterFault);
-    return save && coll && body && gear && veh && share && drive && ride && hit && coop;
+    return save && coll && body && gear && veh && share && drive && ride && hit && world && coop;
 }
 
 // frame_cap=<fps> (session.ini; the launcher's local two-instance test and hidden two-game
@@ -282,6 +284,9 @@ DWORD WINAPI Bootstrap(LPVOID) {
     // the pool detours (the guest's spawn gate, the eviction refusal) go in at start-up, before any world loads.
     st::vshare::Install(cfg);
     st::vdrive::Install(cfg);  // remote driving, ownership and state on the shared vehicles (section 23.11)
+    // Shared structures (world_sync=1 with host_save=1; docs/world-sync.md): the online gate (also in every hidden run: nothing the
+    // tests build may reach the game server), the byte checks and the build / dismantle detours, before any world loads.
+    st::wshare::Install(cfg);
     st::ride::Install(cfg);    // riding together on them (section 24)
     // the save guard: no save captures a carried passenger (section 24.12; the save processor's detour goes in now)
     if (st::ride::Active() || st::automation::Enabled()) st::saveguard::Install(cfg);
@@ -314,6 +319,7 @@ DWORD WINAPI Bootstrap(LPVOID) {
         st::coop::EmergencyStop("the frame pump could not be hooked (no per-frame tick)");
         // the real shared vehicles' detours went in above: they pass everything through from now on (no tick ever runs)
         st::vshare::EmergencyStop();
+        st::wshare::EmergencyStop();
         st::vdrive::EmergencyStop();
         st::ride::EmergencyStop();
         st::vhit::EmergencyStop();

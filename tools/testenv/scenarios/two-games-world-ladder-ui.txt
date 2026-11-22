@@ -1,0 +1,97 @@
+# Shared structures W3 (docs/world-sync.md): the GUEST places a real ladder through the game's own UI (her virtual pad),
+# hidden, on the launcher's own Local test files:
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-world-ladder-ui -Id round5-w3 -SeedSaves complete-100 -GuestSeed profile-only
+# At a cliff edge (where the 100% save has an online climbing rope), her camera turned down the slope (world_sync 15), she
+# selects the ladder from her tools (D-pad right held, right stick toward "Custom Chiral Ladder"), holds LT ("Adjust
+# Position": the hologram) and taps RT ("Place Ladder"). The game's own commit (0x1428D8070) enqueues it: our EnqueueInfo
+# detour HOLDS it, GBUILD, the host creates it (offline 1), ADD answers her request and she mirrors it with the host's id.
+# Then she collapses it again (REMREQ pickup: gone in both worlds), and the HOST places one through the same UI (his commit
+# is vanilla, offline 0: his own structure; the census sends ADD and she mirrors it).
+# Pass: the log lines below; no FAULT, no byte check failure, no OTGC WRITE, both games exit 0.
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+waitlog 10 \[world\] world sync ON \(host\): shared structures \(PCC structures, ladders and climbing ropes
+@guest waitlog 120 \[world\] guest: snapshot #1 complete: bound [0-9]+, created 0, removed 0, replaced 0
+waitlog 10 \[world\] host: the partner's HELLO: world sync on, parts 15
+@both goto -1153.4 338.0
+wait 3000
+@guest action world_sync 15 0 15
+@guest until 45 300 \[world\] camera aimed #1 => pad none 120 rx=32767
+@guest wait 800
+@guest screenshot U0-guest-facing-the-edge
+@guest pad DPAD_RIGHT 1200 keep
+@guest pad DPAD_RIGHT 900 rx=18795 ry=-26840 keep
+@guest screenshot U1-guest-tools
+@guest pad none 0
+@guest wait 1500
+@guest pad none 1500 lt=255 keep
+@guest screenshot U2-guest-hologram
+@guest pad none 300 lt=255 rt=255 keep
+@guest pad none 1500 lt=255 keep
+@guest pad none 0
+@guest waitlog 10 \[world\] guest: local build type 25 \(ladder\) held, request #[0-9]+ sent
+waitlog 10 \[world\] host: the guest's build #[0-9]+: created hid [0-9]+ type 25 \(ladder\) offline 1 anim 1 printer 0$
+waitlog 10 \[world\] host: new structure hid [0-9]+ type 25 \(ladder\) origin guest anim 1 printer 0 offline 1 -> ADD
+@guest waitlog 10 \[world\] guest: build #[0-9]+ confirmed as hid [0-9]+
+@guest waitlog 10 \[world\] guest: mirror hid [0-9]+ ok: gid [0-9]+ state 2
+wait 2500
+screenshot U3-host-sees-her-ladder
+@guest screenshot U3-guest-placed
+action world_sync 10 25 30
+waitnew 3 \[world\] check: type 25 within 30 m: 1 \(ids [0-9]+\) offline 1
+@guest action world_sync 10 25 30
+@guest waitnew 3 \[world\] check: type 25 within 30 m: 1 \(ids [0-9]+\) offline 1
+action world_sync 4 0
+@guest action world_sync 4 0
+# she collapses it again with the game's own prompt ("Hold START: Collapse Ladder"): REMREQ pickup, the host's copy goes
+@guest pad START 2600
+@guest wait 2500
+@guest waitlog 10 \[world\] guest: we picked up hid [0-9]+ \(ladder, durability [0-9]+ s left\) -> REMREQ pickup
+waitlog 10 \[world\] host: the guest picked up hid [0-9]+ \(ladder\): removed here too \(removal bits, no item\)
+wait 2000
+action world_sync 10 25 30
+waitnew 3 \[world\] check: type 25 within 30 m: 0
+@guest action world_sync 10 25 30
+@guest waitnew 3 \[world\] check: type 25 within 30 m: 0
+screenshot U4-host-after-her-pickup
+@guest screenshot U4-guest-after-her-pickup
+# the HOST places one through the same UI (his commit is vanilla; the census sends ADD)
+action world_sync 15 0 15
+until 45 300 \[world\] camera aimed #1 => pad none 120 rx=32767
+wait 800
+pad DPAD_RIGHT 1200 keep
+pad DPAD_RIGHT 900 rx=18795 ry=-26840 keep
+pad none 0
+wait 1500
+pad none 1500 lt=255 keep
+screenshot U5-host-hologram
+pad none 300 lt=255 rt=255 keep
+pad none 1500 lt=255 keep
+pad none 0
+waitlog 10 \[world\] host: new structure hid [0-9]+ type 25 \(ladder\) origin host anim 1 printer 0 offline 0 -> ADD
+@guest waitlog 10 \[world\] guest: mirror hid [0-9]+ -> gid [0-9]+ \(exact\) type 25 \(ladder\) anim 1 printer 0 \(the host's build\)
+@guest waitlog 10 \[world\] guest: mirror hid [0-9]+ ok: gid [0-9]+ state 2
+wait 2500
+screenshot U6-host-placed
+@guest screenshot U6-guest-sees-his-ladder
+action world_sync 10 25 30
+waitnew 3 \[world\] check: type 25 within 30 m: 1 \(ids [0-9]+\) offline 0
+@guest action world_sync 10 25 30
+@guest waitnew 3 \[world\] check: type 25 within 30 m: 1 \(ids [0-9]+\) offline 1
+action world_sync 4 0
+@guest action world_sync 4 0
+wait 12000
+@guest nolog \[world\] guest: CHECK differs twice
+@both action world_sync 3
+nolog \[world\].*FAULT
+@guest nolog \[world\].*FAULT
+nolog \[world\] byte check FAILED
+@guest nolog \[world\] byte check FAILED
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@guest quit
+wait 3000
+quit

@@ -1,0 +1,107 @@
+# Shared structures W4 (docs/world-sync.md): ziplines built through the game's REAL PCC UI by both players, hidden, on the
+# launcher's own Local test files (the hidden env's virtual pad, never SendInput):
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-world-zipline-ui -Id round5-w4 -SeedSaves complete-100 -GuestSeed profile-only
+# The PCC from the tools radial (D-pad right held, right stick to about 7:30), the zipline from the structure radial (D-pad
+# down held, right stick to about 4:30), LT held = the hologram ("Adjust Structure Location"), RT = Build (calibrated in
+# world-pcc-ui-probe..probe5; the 100% save's Sam carries one PCC Lv. 2, spent by the build). At -1195 320 the preview is
+# allowed (a road site: "Building on Road Sites", yellow but buildable); the guest builds hers at -1260 250.
+# 1. The host builds a zipline: its vanilla commit (offline 0) -> census -> ADD -> the guest mirrors it (exact id).
+# 2. The guest steps aside and builds one: her native commit is HELD by the EnqueueInfo detour -> GBUILD (no dev flag) ->
+#    the host creates it (offline 1) -> ADD -> confirmed.
+# Pass: both in both worlds with the same ids, linked to each other in both worlds; no FAULT, no OTGC WRITE, both exit 0.
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+waitlog 10 \[world\] world sync ON \(host\): shared structures \(PCC structures, ladders and climbing ropes, ziplines
+@guest waitlog 120 \[world\] guest: snapshot #1 complete: bound [0-9]+, created 0, removed 0, replaced 0
+@both goto -1195 320
+wait 4000
+action world_sync 10 22 100
+waitnew 3 \[world\] check: type 22 within 100 m: 0
+# ---- 1. the host: PCC, zipline, LT, RT
+pad DPAD_RIGHT 1200 keep
+pad DPAD_RIGHT 900 rx=-26200 ry=-19700 keep
+pad none 0
+wait 1500
+pad DPAD_DOWN 1200 keep
+pad DPAD_DOWN 900 rx=25300 ry=-20800 keep
+screenshot U0-host-structure-radial
+pad none 0
+wait 1500
+pad none 1500 lt=255 keep
+screenshot U1-host-hologram
+pad none 300 lt=255 rt=255 keep
+pad none 800 lt=255 keep
+pad none 0
+waitlog 10 \[world\] host: new structure hid [0-9]+ type 22 \(zipline\) origin host anim 1 printer 1 offline 0 -> ADD
+@guest waitlog 10 \[world\] guest: mirror hid [0-9]+ -> gid [0-9]+ \(exact\) type 22 \(zipline\) anim 1 printer 1 \(the host's build\)
+wait 1500
+screenshot U2-host-builds
+@guest screenshot U2-guest-sees
+wait 5000
+screenshot U3-host-builds-6s
+@guest screenshot U3-guest-sees-6s
+# ---- 2. the guest: to -1260 250 (a zipline keeps its distance from other structures: next to the host's the hologram
+# says "Another Structure Detected Nearby"), then PCC, zipline, LT, RT
+# (the game builds one structure at a time: while the host's zipline still prints in her world her hologram says "Another
+# Structure Is Already Being Built"; it finishes about 18 s after the build)
+wait 12000
+@guest goto -1260 250
+@guest wait 4000
+@guest pad DPAD_RIGHT 1200 keep
+@guest pad DPAD_RIGHT 900 rx=-26200 ry=-19700 keep
+@guest pad none 0
+@guest wait 1500
+@guest pad DPAD_DOWN 1200 keep
+@guest pad DPAD_DOWN 900 rx=25300 ry=-20800 keep
+@guest screenshot V0-guest-structure-radial
+@guest pad none 0
+@guest wait 1500
+@guest pad none 1500 lt=255 keep
+@guest screenshot V1-guest-hologram
+@guest pad none 300 lt=255 rt=255 keep
+@guest pad none 800 lt=255 keep
+@guest pad none 0
+@guest waitlog 10 \[world\] guest: local build type 22 \(zipline\) held, request #1 sent
+waitlog 10 \[world\] host: GBUILD #1 \(nonce [0-9A-F]+\) type 22 \(zipline\)
+waitlog 10 \[world\] host: the guest's build #1: created hid [0-9]+ type 22 \(zipline\) offline 1 anim 1 printer 1
+@guest waitlog 10 \[world\] guest: build #1 confirmed as hid [0-9]+
+action world_sync 15 10167
+?until 20 150 \[world\] camera aimed #1 => pad none 200 rx=32767
+wait 1500
+screenshot V2-host-sees
+@guest screenshot V2-guest-builds
+wait 5000
+screenshot V3-host-sees-6s
+@guest screenshot V3-guest-builds-6s
+wait 14000
+action world_sync 10 22 40
+waitnew 3 \[world\] check: type 22 within 40 m: 1 \(ids 10166\) offline 0 level 1
+@guest action world_sync 10 22 40
+@guest waitnew 3 \[world\] check: type 22 within 40 m: 1 \(ids 10167\) offline 1 level 1
+action world_sync 4 10166
+waitnew 3 \[world\] structure id 10166 \(hid 10166\) type 22 \(zipline\) state 2 level 1 .* offline 0
+action world_sync 4 10167
+waitnew 3 \[world\] structure id 10167 \(hid 10167\) type 22 \(zipline\) state 2 level 1 .* offline 1
+@guest action world_sync 4 10166
+@guest waitnew 3 \[world\] structure id 10166 \(hid 10166\) type 22 \(zipline\) state 2 level 1 .* offline 1
+@guest action world_sync 4 10167
+@guest waitnew 3 \[world\] structure id 10167 \(hid 10167\) type 22 \(zipline\) state 2 level 1 .* offline 1
+action world_sync 16 0 100
+@guest action world_sync 16 0 100
+screenshot V4-host-both
+@guest screenshot V4-guest-both
+@both action world_sync 3
+nolog \[world\].*FAULT
+@guest nolog \[world\].*FAULT
+nolog \[world\] byte check FAILED
+@guest nolog \[world\] byte check FAILED
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+nolog \[world\] guest: mirror FAIL
+@guest nolog \[world\] guest: mirror FAIL
+@guest quit
+wait 3000
+quit

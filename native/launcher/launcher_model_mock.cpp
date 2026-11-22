@@ -444,6 +444,7 @@ std::string MockModel::my_character() const { return core::GuestCharacter(my_cha
 LocalTestView MockModel::local_test() const {
     LocalTestView v;
     v.host_pad = host_pad_;
+    v.fps = fps_;
     v.guest_character = core::GuestCharacter(guest_character_, debug_.allow_other_characters);
     if (local_start_ < 0.0) return v;
     const double t = now() - local_start_;

@@ -34,7 +34,9 @@
 #include "save_guard.hpp"
 #include "vehicle_drive.hpp"
 #include "vehicle_share.hpp"
+#include "world_share.hpp"
 #include "vehicle_sync.hpp"
+#include "suit_colour.hpp"
 
 namespace st::sync {
 namespace {
@@ -958,6 +960,9 @@ void Init(const Config& config, const std::wstring& mod_dir) noexcept {
             realbody::ConfigureSelf(g_own_body);
         }
     }
+    if (realbody::HookInstalled()) suitcol::Configure(config.fragile_suit_colour);
+    // round 5: the guest's own suit colour pick outlives the host's loads (her sandboxed copy of the host's save is never saved)
+    suitcol::ConfigureGuestPick(realbody::HookInstalled() && config.fragile_suit_colour && config.role == Role::guest && config.host_save, mod_dir);
     if (realbody::HookInstalled())
         realbody::ConfigureSmooth(config.smooth_pose ? realbody::kSmoothAll : 0u, config.role == Role::echo,
                                   static_cast<double>(config.echo_delay_s) * 1000.0);
@@ -1408,6 +1413,15 @@ void Tick() noexcept {
         sin.have_partner = vin.have_body;
         sin.partner = vin.body;
         vshare::Tick(sin, now);
+        // shared structures (world_share.hpp): the census, the join check, the mirrors
+        {
+            wshare::TickIn win;
+            win.local = g_local;
+            win.local_ok = vin.local_ok;
+            win.have_partner = vin.have_body;
+            win.partner = vin.body;
+            wshare::Tick(win, now);
+        }
         // remote driving, ownership and state on them (vehicle_drive.hpp): the partner's inputs at the body's play time
         vdrive::TickIn din;
         din.local = g_local;

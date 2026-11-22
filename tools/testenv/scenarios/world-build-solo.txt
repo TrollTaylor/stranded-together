@@ -1,0 +1,54 @@
+# Shared structures W1a (docs/world-sync.md), solo: a structure built through the game's own creation queue (dev_build: the
+# PCC commit's steps without an item, the offline bit set), its build-up and printer, a second one without animation, the
+# census and the record round trip of the new ones, a dismantle, hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario world-build-solo -SeedSaves complete-100
+# Pass: "[world] dev build: id N type 6 (postbox) anim 1 ... offline 1"; 12 s later the count check finds it (offline 1,
+# level >= 1) and its round trip is EQUAL; the game's RegisterNew of it was dropped by the gate (hidden run); the watchtower
+# (no animation) is there at once; the dismantle removes it (count 0 for the postbox after 15 s); no OTGC WRITE; screenshots
+# of the build-up at +0.5 / 2 / 5 / 10 s.
+role solo
+timeout 300
+ini dev_tools=1
+start
+wait 3000
+waitlog 5 \[world\] byte checks: ok
+goto mknot-road
+wait 4000
+action world_sync 10 -1 60
+action dev_build 6 1 10
+waitnew 3 \[world\] dev build: id [0-9]+ type 6 \(postbox\) anim 1 .* offline 1
+wait 500
+screenshot 00-build-0s5
+wait 1500
+screenshot 01-build-2s
+wait 3000
+screenshot 02-build-5s
+wait 5000
+screenshot 03-build-10s
+waitlog 5 \[gate\] dropped RegisterNew of structure [0-9]+ \(postbox\)
+action world_sync 10 6 40
+waitnew 3 \[world\] check: type 6 within 40 m: 1 .* offline 1
+until 60 3000 \[world\] structure id [0-9]+ \(hid [0-9]+\) type 6 \(postbox\) state [12] level [1-5] => action world_sync 4 0
+screenshot 03b-built
+action world_sync 11 0
+waitnew 3 \[world\] round trip id [0-9]+ type 6 .*: EQUAL
+# a watchtower without the animation, further ahead
+action dev_build 9 0 22
+waitnew 3 \[world\] dev build: id [0-9]+ type 9 \(watchtower\) anim 0
+wait 3000
+action world_sync 10 9 50
+waitnew 3 \[world\] check: type 9 within 50 m: 1 .* offline 1
+screenshot 04-both
+# the nearest shared structure (the postbox) dismantled
+action dev_build_remove 0 1
+waitnew 3 \[world\] dev remove: id [0-9]+ \(postbox\) dismantled
+wait 15000
+action world_sync 10 6 40
+waitnew 3 \[world\] check: type 6 within 40 m: 0
+screenshot 05-dismantled
+action world_dump -1 8
+action world_sync 3
+nolog \[world\].*FAULT
+nolog \[world\] byte check FAILED
+nolog \[gate\] OTGC WRITE
+quit

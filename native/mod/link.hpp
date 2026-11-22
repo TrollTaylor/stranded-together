@@ -139,6 +139,13 @@ unsigned VehicleEventsQueued() noexcept;
 // `generation` is the session (as PopPose's). Any thread (vehicle_share pops on the game thread).
 bool PopVehicleEvent(std::uint8_t* out, std::size_t cap, std::size_t& size, std::uint32_t& generation) noexcept;
 void VehicleEventCounts(std::uint64_t* sent, std::uint64_t* received) noexcept;
+// ---- World events (SWS1, world_wire.hpp; docs/world-sync.md): the reliable ordered channel 1 ("world"), the same contract
+// as the vehicle events above (append only, a receive queue of 64, cleared by a new link session).
+inline constexpr unsigned kWorldEventChannel = 1;
+bool SendWorldEvent(const void* bytes, std::size_t size) noexcept;
+unsigned WorldEventsQueued() noexcept;
+bool PopWorldEvent(std::uint8_t* out, std::size_t cap, std::size_t& size, std::uint32_t& generation) noexcept;
+void WorldEventCounts(std::uint64_t* sent, std::uint64_t* received) noexcept;
 // Hidden tests only (the co-op link-loss scenario; coop_session.cpp allows it only in automation runs): every datagram
 // this game receives is dropped for `ms` (0: ends now), so its session times out and reconnects as after a real outage.
 void TestBlackout(std::uint32_t ms) noexcept;

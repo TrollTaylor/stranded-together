@@ -1,0 +1,92 @@
+# The trike driver's back with a passenger on the pillion (v0.23; docs/real-partner-body.md section 24.18), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-ride-trike-pack -SeedSaves complete-100
+# The launcher's own Local test files (v0.23: 60 fps by default; graphics low takes the launcher's rate). 1. The host drives
+# the Kusanagi trike, the guest rides the pillion: the host's backpack and its cargo stack hidden while she sits behind him
+# (the game's own HideBackpack on the host's inventory; the guest's game gets a gear frame without them and hides the
+# partner's backpack props itself meanwhile), shown again when she gets off. 2. The swap: the guest drives, the host rides:
+# the same with the roles turned round. Pass: every step; P02 / Q02 (both screens: no backpack and no cargo stack on the
+# driver's back, the passenger behind him), P01 / P03 and Q01 / Q03 (the backpack and the stack before and after); both
+# games' [smooth] fps about 60 with the cap 60; no FAULT.
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+waitlog 5 \[ride\] trike pillion: the driver's backpack and cargo are hidden while the partner rides behind him
+@guest waitlog 5 \[ride\] trike pillion: the driver's backpack and cargo are hidden while the partner rides behind him
+waitlog 5 \[gear\] the game's cargo hides verified
+@guest waitlog 5 \[gear\] the game's cargo hides verified
+@guest waitlog 30 \[vshare\] guest: binding:
+# the frame rate of both games (the launcher's Local test: settings.cfg fps 60, frame_cap=60)
+waitlog 20 \[smooth\] fps (5[4-9]|6[0-9])\.[0-9] .*cap 60
+@guest waitlog 20 \[smooth\] fps (5[4-9]|6[0-9])\.[0-9] .*cap 60
+@both action gear 0
+# ---- 1. the host drives the trike, the guest rides the pillion
+action vehicle_sync 8 1.8 4
+wait 1500
+until 20 4000 \[vdrive\] host: our Sam drives trike => pad X 150
+@guest waitlog 20 \[vdrive\] follower of trike 0x[0-9A-F]+ attached
+wait 2500
+@guest action ride_test 8
+wait 2000
+screenshot P01-host-driver-before
+@guest screenshot P01-guest-sees-driver-before
+@guest until 15 3000 \[ride\] guest: our Sam carried on the trike => pad X 800
+waitlog 10 \[ride\] host: the partner asks to ride our trike .*ACCEPTED
+waitlog 6 \[ride\] trike pillion: the driver's backpack and cargo hidden .*#1\)
+@guest waitlog 5 \[gear\] the partner's backpack props hidden
+?waitlog 5 \[gear\] our carried cargo: [1-9][0-9]* of [1-9][0-9]* pieces hidden by the game now
+wait 3000
+screenshot P02-host-pillion
+@guest screenshot P02-guest-pillion
+@guest pad none 600 rx=32767
+@guest screenshot P02b-guest-pillion-side
+@guest pad none 0
+@both action gear 0
+@both action ride_state
+wait 1000
+@guest until 12 3000 \[ride\] guest: our Sam off the trike .*got off\) => pad X 150
+waitlog 8 \[ride\] trike pillion: the driver's backpack and cargo shown again \(the ride is over\) .*#1\)
+@guest waitlog 6 \[gear\] the partner's backpack props follow its frame again
+?waitlog 5 \[gear\] our carried cargo: 0 of [1-9][0-9]* pieces hidden by the game now
+wait 3500
+screenshot P03-host-after
+@guest screenshot P03-guest-sees-driver-after
+@both action gear 0
+# ---- 2. the swap: the host gets off, the guest drives, the host rides the pillion
+pad X 150
+waitlog 20 \[vdrive\] host: our Sam got off trike
+wait 4000
+action vehicle_sync 8 9 4
+@guest action vehicle_sync 8 1.8 4
+wait 1500
+@guest until 20 4000 \[vdrive\] guest: our Sam drives trike => pad X 150
+waitlog 20 \[vdrive\] host: the guest claims trike 0x[0-9A-F]+ \(get on, epoch [0-9]+\): granted
+waitlog 20 \[vdrive\] follower of trike 0x[0-9A-F]+ attached
+wait 2500
+action ride_test 8
+wait 2000
+screenshot Q01-host-sees-driver-before
+@guest screenshot Q01-guest-driver-before
+until 15 3000 \[ride\] host: our Sam carried on the trike => pad X 150
+@guest waitlog 10 \[ride\] guest: the partner asks to ride our trike .*ACCEPTED
+@guest waitlog 6 \[ride\] trike pillion: the driver's backpack and cargo hidden .*#1\)
+waitlog 5 \[gear\] the partner's backpack props hidden
+wait 3000
+screenshot Q02-host-pillion
+@guest screenshot Q02-guest-pillion
+@both action gear 0
+@both action ride_state
+wait 1000
+until 12 3000 \[ride\] host: our Sam off the trike .*got off\) => hookkey 0x46 150
+@guest waitlog 8 \[ride\] trike pillion: the driver's backpack and cargo shown again \(the ride is over\) .*#1\)
+waitlog 6 \[gear\] the partner's backpack props follow its frame again
+wait 3500
+screenshot Q03-host-sees-driver-after
+@guest screenshot Q03-guest-driver-after
+@both action gear 0
+nolog \[(vshare|vdrive|ride|vhit|gear)\].*FAULT
+@guest nolog \[(vshare|vdrive|ride|vhit|gear)\].*FAULT
+@guest quit
+wait 3000
+quit

@@ -199,6 +199,10 @@ bool DoDev(const Request& r, char* msg, std::size_t cap) {
 }
 bool DoStory(const Request& r, char* msg, std::size_t cap) { return story::Command(story::Op::show, r.v, msg, cap); }
 bool DoStoryLoad(const Request& r, char* msg, std::size_t cap) { return story::Command(story::Op::load, r.v, msg, cap); }
+template <int kTool>
+bool DoWorld(const Request& r, char* msg, std::size_t cap) {
+    return game::WorldShareCommand(kTool, r.v, msg, cap);
+}
 bool DoVoicePing(const Request& r, char* msg, std::size_t cap) {
     // The live partner entity, exactly as the Partner tab sees it (0 when there is none).
     Snapshot s;
@@ -270,7 +274,7 @@ constexpr Row kRows[] = {
     {{Action::real_mirror, Tab::tools, "Real mirror", "The debug real body copies Sam's live pose (1) or keeps its own (0).", false}, &DoRealMirror},
     {{Action::real_control, Tab::tools, "Real control", "Load the n-th streamed-out collectors hologram through the real body's path+GUID route.", false}, &DoRealControl},
     {{Action::self_view, Tab::tools, "Self view", "Show yourself as a character in place of Sam on this screen (1/0, body id, follow mode).", false}, &DoSelfView},
-    {{Action::real_outfit, Tab::tools, "Real outfit", "Partner Sam's outfit: 0 log, 1 like your Sam, 2 exos + suit colour, 3 override off.", false}, &DoRealOutfit},
+    {{Action::real_outfit, Tab::tools, "Real outfit", "Partner Sam's outfit: 0 log, 1 like your Sam, 2 exos + suit colour, 3 override off. Fragile's porter suit: 5 c colour (-1 follow), 6 log.", false}, &DoRealOutfit},
     {{Action::name_tags, Tab::tools, "Name tags", "Name tags: 0 normal, 1 self test above your own Sam, 2 log the camera, 3 0/1 off/on.", false}, &DoNameTags},
     {{Action::collision, Tab::tools, "Collision", "Player collision: 0 log, 1 0/1 off/on, 2 ms trace, 3 m pin the partner ahead, 4 layer type.", false}, &DoCollision},
     {{Action::gear, Tab::tools, "Gear", "Gear on the bodies: 0 log, 1 0/1 partner props, 2 0/1 self-view props, 4 0/1 own gear on the debug body, 7 0..2 mirror level, 9 0/1/2 census.", false}, &DoGear},
@@ -319,6 +323,22 @@ constexpr Row kRows[] = {
      &DoDev<dev::Op::go_to>},
     {{Action::dev_boots, Tab::dev, "Dev boots", "Boots' life: 0 log, 1 <percent> set it (sandboxed saves only), 2 <0/1> a 1 s meter in the log.", false},
      &DoDev<dev::Op::boots>},
+    {{Action::world_dump, Tab::dev, "World dump", "Structures (world sync): the census to the log: counts per category and net type, the nearest n (category c or -1 all, n default 16). Read only.", false},
+     &DoWorld<0>},
+    {{Action::world_sync, Tab::dev, "World sync", "Shared structures: 0 status, 1 snapshot now, 2 binding report, 3 counters (and the online gate's), 4 <id> one structure (and its materials), 5 <0/1> hold sending (tests), 10 <type|-1> <m> count near Sam, 11 <id|0> record round trip, 12 <id | 0> [m] Sam next to a structure (hidden runs), 13 the online gate, 14 <id | 0 nearest ladder / rope | -1 off> watch its flags, 15 <id | 0> [deg] aim the camera at a structure (hidden runs), 16 <id | 0 all within m> [m] zipline links.", false},
+     &DoWorld<1>},
+    {{Action::dev_build, Tab::dev, "Dev build", "A structure in front of Sam: <type> <anim 0/1> [m ahead, default 8] (the game's own queue, offline; sandboxed saves only; the guest asks the host).", false},
+     &DoWorld<2>},
+    {{Action::dev_build_remove, Tab::dev, "Dev build remove", "Remove a structure: <id | 0 the nearest synced one> [1 dismantle (RemoveManually) | 0 the removal bits] (sandboxed saves only).", false},
+     &DoWorld<3>},
+    {{Action::dev_build_decay, Tab::dev, "Dev build decay", "A structure's timefall durability: <id | 0 nearest> <seconds> (host, sandboxed saves only).", false},
+     &DoWorld<4>},
+    {{Action::dev_build_mats, Tab::dev, "Dev build mats", "Contribute to a structure as its terminal does, without the UI or the inventory: <id | 0 nearest> <0 materials | 1 repair> <share 0..1 of what the next level still needs | repair units> (sandboxed saves only; the guest's go to the host).", false},
+     &DoWorld<5>},
+    {{Action::dev_ladder, Tab::dev, "Dev ladder", "A ladder in front of Sam as the player's commit places one: <length m, 0 = 9.65> <mode 0/1> [m ahead, default 3] (offline; sandboxed saves only; the guest asks the host).", false},
+     &DoWorld<6>},
+    {{Action::dev_rope, Tab::dev, "Dev rope", "A climbing anchor with its rope in front of Sam: <length 1..30 m> <level 0..2> [m ahead, default 3] (offline; sandboxed saves only; the guest asks the host).", false},
+     &DoWorld<7>},
 };
 constexpr std::size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);
 static_assert(kRowCount == static_cast<std::size_t>(Action::count), "every Action needs exactly one registry row");

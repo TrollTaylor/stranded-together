@@ -156,7 +156,9 @@ Three tabs (`ui::DebugTab`):
   `"debug"` `"allow_other_characters"`, never written to session.ini: off, a guest plays Fragile (porter suit)
   on Join and in the local test; on, both offer every offered character); **CO-OP SAVE**: **Host holds the save**
   (`"debug"` `"host_save"`, default on: Host and Join write `host_save=1`, see Play above; off = each player on their
-  own save) and **Back up my saves before co-op** (`"backup_host_saves"`, default on, only with the first);
+  own save), **Back up my saves before co-op** (`"backup_host_saves"`, default on, only with the first) and **Share
+  structures, ladders, ropes and ziplines** (`"share_world"`, default on, only with the first: `world_sync=1` / `0` for Host, Join
+  and the Local test, docs/world-sync.md);
   **Dev tools** (`"debug"` `"dev_tools"`, default off, needs the debug menu: writes `dev_tools=1`, the debug menu's Dev
   tools tab; world-changing tools only on a test save, docs/debug-actions.md "Dev tools");
   **Lock the mouse to the focused game window (Local test)** (`"debug"` `"mouse_lock"`, default on: the Local test writes
@@ -184,7 +186,10 @@ Three tabs (`ui::DebugTab`):
   `sandbox\test`, `sandbox_saves=test` + `sandbox_foreign_saves=1`), **Also for Host, Join, Solo
   test**, the result after the game (real save tree compared by SHA-256, or the mod's refusal), and
   the **Local two-player test** (two ds.exe on this PC, started directly with `SteamAppId`,
-  loopback UDP, 30 fps cap, each on its own sandbox; **Pads on the host too**; **Guest appears
+  loopback UDP, each on its own sandbox; **Pads on the host too**; **Frame rate** (v0.23: 30, **60** (the default), 120
+  or Uncapped (240 fps, the game's own maximum), remembered in `"test_save"` `"fps"`: each sandbox's `settings.cfg` gets
+  `"fps"` / `"limit_fps"` at that rate (the game's own limiter; it turns 0 into 15, so the maximum is written as 240) and
+  both `session.ini` `frame_cap=<rate>` (0 for Uncapped); v0.22 ran at 30); **Guest appears
   as**: the guest game's `my_character`, Fragile (porter suit) as a fixed field unless Debug > Allow other
   characters is on, the host game is always Sam; remembered in `"test_save"` `"guest_character"`) with both
   games' link state. Since v0.19 it plays the online session: with **Host holds the save** (the default) both
@@ -370,7 +375,12 @@ local_input=host|host_pad|guest local test: input split, keeps running unfocused
 local_window=left|right         local test: the window takes that half of the monitor
 mouse_lock=1                    local test, Debug "Lock the mouse to the focused game window" (default on; written only when
                                 set, 0/1 only): the cursor stays in the game window in front, F10 switches game
-frame_cap=30                    local test: at most 30 frames per second
+world_sync=1|0                  shared structures, ziplines, ladders and climbing ropes (docs/world-sync.md): Debug "Share
+                                structures, ladders, ropes and ziplines" (`"share_world"`, default on, CO-OP SAVE, only with Host holds the save)
+                                for Host, Join and both Local test files; with host_save=1 the line is always written
+                                (world_sync=0 when off: the mod's own default is on with host_save=1; both games must agree)
+frame_cap=60                    local test: at most that many frames per second (the Frame rate choice: 30 / 60 (default) /
+                                120; not written for Uncapped, where the game's own limit of 240 in settings.cfg holds)
 my_character=<key>              the character the other player sees you as: an offered body_table key; always sam for a host,
                                 fragile_suit for every other role unless Debug > Allow other characters is on
 partner_body=real|holo          how the partner is drawn on this screen (Debug page; default real)

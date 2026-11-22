@@ -1,0 +1,62 @@
+# Fragile's porter suit in Sam's suit colours (docs/real-partner-body.md section 27), solo, hidden: the self view's
+# fragile_suit body (the launcher's guest default) from the front while the colour changes. The 100% save's Sam wears
+# gold (16), so she starts gold by herself; then the debug override (`real_outfit 5 <c>`, purely visual on our own body)
+# walks silver, palette 9 (olive), her own look (0), palette 1, 4, 13, gold again; then our own Sam's colour byte
+# (`real_outfit 4 <c>`, hidden tests only) shows that she follows it live.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario fragile-suit-colours -SeedSaves complete-100
+role solo
+timeout 300
+ini partner_body=real
+ini pose_hook=1
+ini my_character=fragile_suit
+ini self_character=1
+start
+waitlog 40 \[self\] showing 'fragile_suit'
+waitlog 30 \[suit\] Fragile's suit colours available
+pad none 1300 rx=32767
+waitlog 20 \[suit\] body .*: colour 16 on
+wait 1500
+action real_outfit 6
+screenshot 01-gold
+action real_outfit 5 15
+waitnew 10 \[suit\] body .*: colour 15 on
+wait 1200
+screenshot 02-silver
+action real_outfit 5 9
+waitnew 10 \[suit\] body .*: colour 9 on
+wait 1200
+screenshot 03-colour-9
+action real_outfit 5 0
+waitnew 10 \[suit\] body .*: colour 9 taken off
+wait 1200
+screenshot 04-own
+action real_outfit 5 1
+waitnew 10 \[suit\] body .*: colour 1 on
+wait 1200
+screenshot 05-colour-1
+action real_outfit 5 4
+waitnew 10 \[suit\] body .*: colour 4 on
+wait 1200
+screenshot 06-colour-4
+action real_outfit 5 13
+waitnew 10 \[suit\] body .*: colour 13 on
+wait 1200
+screenshot 07-colour-13
+action real_outfit 5 16
+waitnew 10 \[suit\] body .*: colour 16 on
+wait 1200
+screenshot 08-gold-again
+# her colour follows our own Sam's suit colour byte live
+action real_outfit 5 -1
+action real_outfit 4 9
+waitnew 10 \[suit\] body .*: colour 9 on
+wait 1200
+screenshot 09-follows-own-9
+action real_outfit 4 16
+waitnew 10 \[suit\] body .*: colour 16 on
+wait 1200
+screenshot 10-follows-own-16
+action real_outfit 6
+nolog \[suit\] .*FAULTED
+nolog \[suit\] texture .*not used
+quit

@@ -30,7 +30,8 @@ if(GIT_FOUND)
       set(_st_wire_files native/mod/pose_wire.hpp native/mod/pose_wire.cpp native/include/stcoop/link_protocol.hpp
                          native/net/link_protocol.cpp native/mod/save_xfer.hpp native/mod/save_xfer.cpp
                          native/mod/vehicle_wire.hpp native/mod/vehicle_wire.cpp native/mod/ride_wire.hpp native/mod/ride_wire.cpp
-                         native/mod/tackle_rules.hpp native/mod/tackle_rules.cpp)
+                         native/mod/tackle_rules.hpp native/mod/tackle_rules.cpp native/mod/world_wire.hpp native/mod/world_wire.cpp
+                         native/mod/world_rules.hpp)
       set(_st_wire_text "")
       foreach(_f IN LISTS _st_wire_files)
         file(READ "${CMAKE_CURRENT_SOURCE_DIR}/${_f}" _t)
@@ -133,6 +134,7 @@ add_library(st_mod SHARED
   native/mod/body_choice.cpp
   native/mod/real_body.cpp
   native/mod/partner_outfit.cpp
+  native/mod/suit_colour.cpp
   native/mod/nametags.cpp
   native/mod/partner_collision.cpp
   native/mod/partner_gear.cpp
@@ -145,6 +147,9 @@ add_library(st_mod SHARED
   native/mod/vehicle_sync.cpp
   native/mod/vehicle_wire.cpp
   native/mod/vehicle_share.cpp
+  native/mod/world_wire.cpp
+  native/mod/world_share.cpp
+  native/mod/online_gate.cpp
   native/mod/vehicle_drive.cpp
   native/mod/ride_wire.cpp
   native/mod/ride_together.cpp
@@ -276,6 +281,22 @@ target_include_directories(st_gear_extrap_tests PRIVATE native/mod)
 target_compile_options(st_gear_extrap_tests PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_gear_extrap_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_test(NAME st_gear_extrap_tests COMMAND st_gear_extrap_tests)
+
+# ---- Fragile's porter suit in Sam's suit colours, the pure part (native/mod/suit_colour_math.hpp): the colour -> constant
+# textures mapping (her own look at 0, the palette scaled to her navy, the silver / gold metals), the debug override.
+add_executable(st_suit_colour_tests tests/suit_colour_tests.cpp)
+target_include_directories(st_suit_colour_tests PRIVATE native/mod)
+target_compile_options(st_suit_colour_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_suit_colour_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_suit_colour_tests COMMAND st_suit_colour_tests)
+
+# ---- Shared structures (world sync), the pure part (native/mod/world_wire.*, world_rules.hpp): the SWS1 messages' strict codecs,
+# the Record, the join check's bucket hashes, the binding, the guest build check, the removal classes, the online gate's verdict.
+add_executable(st_world_wire_tests tests/world_wire_tests.cpp native/mod/world_wire.cpp)
+target_include_directories(st_world_wire_tests PRIVATE native/mod)
+target_compile_options(st_world_wire_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_world_wire_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_world_wire_tests COMMAND st_world_wire_tests)
 
 # ---- st_fakepeer: console stand-in for the second player (UDP), + self-test
 add_executable(st_fakepeer tools/fakepeer/fakepeer.cpp native/mod/link.cpp native/mod/steam_owner.cpp

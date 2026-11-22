@@ -1,0 +1,87 @@
+# Fragile's porter suit in Sam's suit colours between two games on the launcher's own Local test files (docs/real-partner-
+# body.md section 27), hidden. The guest plays Fragile in her porter suit (the launcher's default); her suit wears the
+# guest's own Sam's suit colour: on the guest's screen (her self view) and on the host's (his partner Fragile), from the
+# STJ1 outfit the guest sends. host_save: the guest's Sam starts as a copy of the host's (the 100% save: gold, 16), so she
+# starts gold on both screens. Then the guest changes its own Sam's suit colour (`real_outfit 4 <c>`, the inventory byte
+# the uniform menu sets; hidden tests only): silver, palette 9, 1, 13, her own look (0), gold again; both screens follow.
+# The host's own Sam stays as he was (gold) throughout: his outfit lines, and the guest's partner Sam.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-fragile-suit -SeedSaves complete-100 -GuestSeed profile-only
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+@guest waitlog 60 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+@both goto mknot-road
+wait 6000
+@guest pad none 2400 ly=32767
+@guest pad none 900 ly=-32767
+wait 2500
+waitlog 30 \[suit\] body .*: colour 16 on
+@guest waitlog 30 \[suit\] body .*: colour 16 on
+action real_outfit 0
+@guest action real_outfit 0
+@both action real_outfit 6
+screenshot 00-host-sees-guest-gold
+@guest screenshot 00-guest-self-gold
+# silver
+@guest action real_outfit 4 15
+@guest waitnew 15 \[suit\] body .*: colour 15 on
+waitlog 15 \[suit\] body .*: colour 15 on
+wait 1000
+screenshot 01-host-sees-guest-silver
+@guest screenshot 01-guest-self-silver
+# palette 9 (olive)
+@guest action real_outfit 4 9
+@guest waitnew 15 \[suit\] body .*: colour 9 on
+waitlog 15 \[suit\] body .*: colour 9 on
+wait 1000
+screenshot 02-host-sees-guest-9
+@guest screenshot 02-guest-self-9
+# palette 1 (orange-brown)
+@guest action real_outfit 4 1
+@guest waitnew 15 \[suit\] body .*: colour 1 on
+waitlog 15 \[suit\] body .*: colour 1 on
+wait 1000
+screenshot 03-host-sees-guest-1
+@guest screenshot 03-guest-self-1
+# palette 13 (blue)
+@guest action real_outfit 4 13
+@guest waitnew 15 \[suit\] body .*: colour 13 on
+waitlog 15 \[suit\] body .*: colour 13 on
+wait 1000
+screenshot 04-host-sees-guest-13
+@guest screenshot 04-guest-self-13
+# 0: her own navy suit (nothing bound)
+@guest action real_outfit 4 0
+@guest waitnew 15 \[suit\] body .*: colour 13 taken off
+waitlog 15 \[suit\] body .*: colour 13 taken off
+wait 1000
+screenshot 05-host-sees-guest-own
+@guest screenshot 05-guest-self-own
+# gold again
+@guest action real_outfit 4 16
+@guest waitlog 15 \[suit\] body .*: colour 16 on \(#([2-9]|[1-9][0-9])
+waitlog 15 \[suit\] body .*: colour 16 on \(#([2-9]|[1-9][0-9])
+wait 1000
+screenshot 06-host-sees-guest-gold-again
+@guest screenshot 06-guest-self-gold-again
+# the host's own Sam: still gold (his outfit line), and the guest's partner Sam too
+action real_outfit 0
+@guest action real_outfit 0
+@guest pad none 1300 rx=32767
+@guest wait 1500
+@guest screenshot 07-guest-sees-host-sam
+pad none 1300 rx=32767
+wait 1500
+screenshot 07-host-own-sam
+@both action real_outfit 6
+nolog \[suit\] .*FAULTED
+@guest nolog \[suit\] .*FAULTED
+nolog \[suit\] .*not undone
+@guest nolog \[suit\] .*not undone
+@both action log_status
+@guest quit
+wait 3000
+quit

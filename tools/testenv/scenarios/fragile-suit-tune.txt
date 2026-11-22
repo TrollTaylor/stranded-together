@@ -1,0 +1,47 @@
+# Fragile's porter suit, the metals' look (docs/real-partner-body.md section 27): gold and silver in the metal variants of
+# suit_colour_math.hpp (`real_outfit 8 <variant> <roughness>`, hidden tests), next to palette 9 (olive) and her own suit.
+# Run 20261121-141927 picked variant 2 (now the product's variant 0) over Sam's measured values (variant 1 there: dull olive).
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario fragile-suit-tune -SeedSaves complete-100
+role solo
+timeout 300
+ini partner_body=real
+ini pose_hook=1
+ini my_character=fragile_suit
+ini self_character=1
+start
+waitlog 40 \[self\] showing 'fragile_suit'
+pad none 1300 rx=32767
+waitlog 20 \[suit\] body .*: colour 16 on
+wait 1500
+screenshot 01-gold-v0
+action real_outfit 8 1 -1
+waitnew 10 \[suit\] body .*: colour 16 on .*metal variant 1
+wait 1200
+screenshot 01b-gold-v1-sam
+action real_outfit 8 2 -1
+waitnew 10 \[suit\] body .*: colour 16 on .*metal variant 2
+wait 1200
+screenshot 02-gold-v2
+action real_outfit 8 2 30
+waitnew 10 \[suit\] body .*: colour 16 on .*roughness 30
+wait 1200
+screenshot 03-gold-v2-r30
+action real_outfit 8 2 100
+waitnew 10 \[suit\] body .*: colour 16 on .*roughness 100
+wait 1200
+screenshot 04-gold-v2-r100
+action real_outfit 8 2 -1
+action real_outfit 5 15
+waitnew 10 \[suit\] body .*: colour 15 on .*metal variant 2
+wait 1200
+screenshot 05-silver-v2
+action real_outfit 5 9
+waitnew 10 \[suit\] body .*: colour 9 on
+wait 1200
+screenshot 06-colour-9
+action real_outfit 5 0
+waitnew 10 \[suit\] body .*: colour 9 taken off
+wait 1200
+screenshot 07-own
+nolog \[suit\] .*FAULTED
+quit

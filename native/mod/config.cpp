@@ -130,15 +130,32 @@ Config LoadConfig(const std::wstring& dir) {
             c.self_headgear = ParseBool(v);
         } else if (k == "self_feet_hide") {
             c.self_feet_hide = ParseBool(v);
+        } else if (k == "fragile_suit_colour") {
+            c.fragile_suit_colour = ParseBool(v);
         } else if (k == "boots_sync") {
             c.boots_sync = ParseBool(v);
         } else if (k == "vehicle_sync") {
             c.vehicle_sync = v == "2" ? 2 : v == "3" ? 3 : v == "4" ? 4 : v == "5" || v == "real" ? 5 : (ParseBool(v) ? 1 : 0);
             c.vehicle_sync_set = true;
+        } else if (k == "world_sync") {
+            c.world_sync = ParseBool(v);
+            c.world_sync_set = true;
+        } else if (k == "world_anim") {
+            c.world_anim = v == "bits" ? 1 : v == "loaded" ? 2 : v == "off" ? 3 : 0;
+        } else if (k == "world_contrib") {
+            c.world_contrib = ParseBool(v);
+        } else if (k == "world_ladders") {
+            c.world_ladders = ParseBool(v);
+        } else if (k == "world_ziplines") {
+            c.world_ziplines = ParseBool(v);
+        } else if (k == "world_test_fail") {
+            c.world_test_fail = v;
         } else if (k == "vehicle_real_native") {
             c.vehicle_real_native = ParseBool(v);
         } else if (k == "ride_together") {
             c.ride_together = ParseBool(v);
+        } else if (k == "ride_hide_pack") {
+            c.ride_hide_pack = ParseBool(v);
         } else if (k == "ride_pose") {
             c.ride_pose = ParseBool(v) ? 1 : 0;
         } else if (k == "ride_camera") {
@@ -251,6 +268,9 @@ Config LoadConfig(const std::wstring& dir) {
     if (c.interp_delay_ms > 1000) c.interp_delay_ms = 100;
     if (!(c.echo_delay_s >= 0.0f && c.echo_delay_s <= 10.0f)) c.echo_delay_s = 2.0f;
     if (!(c.echo_offset_m >= -50.0f && c.echo_offset_m <= 50.0f)) c.echo_offset_m = 0.0f;
+    // Shared structures, ladders and ropes (W3, docs/world-sync.md): on by default in a host-held save session (host_save=1);
+    // world_sync=0 turns it off (the launcher's Co-op option "Share structures, ladders and ropes").
+    if (!c.world_sync_set) c.world_sync = c.host_save;
     Log("[config] role=%s transport=%s peer=%llu udp=%s:%u->%u send_hz=%u interp=%ums debug_menu=%d key=0x%X",
         RoleName(c.role), c.transport == Transport::udp ? "udp" : "steam",
         static_cast<unsigned long long>(c.peer_steam_id), c.udp_peer.c_str(), c.udp_port_local, c.udp_port_peer,
@@ -271,13 +291,17 @@ Config LoadConfig(const std::wstring& dir) {
     Log("[config] name_tags=%d font=%s name=%s", c.name_tags ? 1 : 0, c.name_tag_game_font ? "game" : "default", c.player_name.empty() ? "- (Steam name)" : "set");
     Log("[config] partner_collision=%d layer=%d height=%.2f", c.partner_collision ? 1 : 0, c.partner_collision_layer,
         static_cast<double>(c.partner_collision_height));
-    Log("[config] partner_gear=%d smooth_pose=%d self_headgear=%d self_feet_hide=%d boots_sync=%d", c.partner_gear ? 1 : 0, c.smooth_pose ? 1 : 0,
-        c.self_headgear ? 1 : 0, c.self_feet_hide ? 1 : 0, c.boots_sync ? 1 : 0);
+    Log("[config] partner_gear=%d smooth_pose=%d self_headgear=%d self_feet_hide=%d boots_sync=%d fragile_suit_colour=%d", c.partner_gear ? 1 : 0,
+        c.smooth_pose ? 1 : 0, c.self_headgear ? 1 : 0, c.self_feet_hide ? 1 : 0, c.boots_sync ? 1 : 0, c.fragile_suit_colour ? 1 : 0);
     Log("[config] vehicle_sync=%d%s vehicle_overlap_hide=%d vehicle_look=%d vehicle_packs=%d vehicle_real_native=%d", c.vehicle_sync,
         c.vehicle_sync_set ? "" : " (default: 5 real with host_save=1 when its checks pass, else 1)", c.vehicle_overlap_hide ? 1 : 0,
         c.vehicle_look ? 1 : 0, c.vehicle_packs ? 1 : 0, c.vehicle_real_native ? 1 : 0);
-    Log("[config] ride_together=%d ride_pose=%d ride_camera=%d partner_vehicle_damage=%d", c.ride_together ? 1 : 0, c.ride_pose, c.ride_camera ? 1 : 0,
-        c.partner_vehicle_damage ? 1 : 0);
+    Log("[config] ride_together=%d ride_pose=%d ride_camera=%d ride_hide_pack=%d partner_vehicle_damage=%d", c.ride_together ? 1 : 0, c.ride_pose,
+        c.ride_camera ? 1 : 0, c.ride_hide_pack ? 1 : 0, c.partner_vehicle_damage ? 1 : 0);
+    Log("[config] world_sync=%d%s contrib=%d ladders=%d ziplines=%d anim=%s%s%s", c.world_sync ? 1 : 0, c.world_sync_set ? "" : " (default: on with host_save=1)",
+        c.world_contrib ? 1 : 0, c.world_ladders ? 1 : 0, c.world_ziplines ? 1 : 0,
+        c.world_anim == 1 ? "bits" : c.world_anim == 2 ? "loaded" : c.world_anim == 3 ? "off" : "645", c.world_test_fail.empty() ? "" : " test_fail=",
+        c.world_test_fail.c_str());
     if (c.audio_probe) Log("[config] audio_probe=1 (logging only)");
     Log("[config] self_voice=%s voice_sync=%d voice_subtitles=%d sound_sync=%d sound_steps=%d partner_volume=%d vehicle_sound=%d",
         selfvoice::ModeName(c.self_voice), c.voice_sync ? 1 : 0, c.voice_subtitles ? 1 : 0, c.sound_sync ? 1 : 0, c.sound_steps ? 1 : 0, c.partner_volume,

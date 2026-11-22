@@ -844,7 +844,7 @@ Why it is not replaced yet:
 wore. Now each game sends its own Sam's outfit in every STJ1 frame (8 bytes, section 4), and the receiver
 dresses the Sam body the same way with the game's own functions.
 - It works in both directions, for the host and for a guest who also picked Sam.
-- Any other character is not dressed.
+- Any other character is not dressed (Fragile's porter suit follows the suit colour since v0.23: section 27).
 - Code: `native/mod/partner_outfit.{hpp,cpp}`, called from `real_body.cpp` (`DressPartner`, game
   thread) and `player_sync.cpp` (send and receive).
 
@@ -4948,6 +4948,81 @@ Not done / not proven:
 - The tick's own "no wear" gates (Sam +0x54BC bit 1, areas 500 / 510 / 520, Sam +0x54B8 == 0x45CD02AC) are not used and
   not traced.
 
+### 24.18 The trike driver's back with a pillion passenger (v0.23; `session.ini ride_hide_pack`, default 1)
+
+The user (after v0.22.0): "hide the drivers back cargo on the trike when he has a passenger behind him". The pillion seat
+is where the driver's backpack and its stacked cargo are: in run `20261121-103032` (v0.22) the passenger sat inside the
+driver's backpack and cargo stack on the driver's screen, and the mirrored backpack / cargo props overlapped her on the
+passenger's. The truck and the roadster are unchanged (their passenger sits beside the driver).
+
+**The game's own hide** [V: decompile + bytes]. The cutscene event `DSPlayerHideBaggageEventInstance` (RTTI name at
+`0x144BE0AE0+0x40`; start `0x14293BF60`, end `0x14293CCC0`) applies its resource's HideBackpack / HideSpareShoes /
+HideOnlyBackpackBaggages / ShowShield / ShowHeatUnit / HideRainCover through `0x14293A380`, which writes the inventory
+component (Sam `+0x54C8`) byte `+0x4C7C` bits 0..4 (bit 0 HideBackpack at `0x14293A446: 41 80 A3 7C 4C 00 00 FE`; the
+event's end clears bits 0..4). The inventory's per-frame update `0x1427EEC30` reads it: bit 0 (`0x1427F04AA: 0F B6 96 7C
+4C 00 00 F6 C2 01 74 32`) zeroes its show-backpack and show-cargo values (and the selected item's, unless its type is
+0x20); the backpack's `Entity_SetVisible 0x14235F640` (`0x1427F0F06: F6 86 7E 4C 00 00 04 48 8B 86 B8 4C 00 00`, gated by
+`+0x4C7E` bit 2, set once the backpack's resource is ready) hides it and the entities hanging on it; every frame
+`0x142CB27A0(carrier object, show_cargo, reason 0)` (`0x1427F2A9A`) sets or clears reason 0 of the carrier's hide-reason
+mask (`+0x8C`, `8B 81 8C 00 00 00 4C 8B C9 85 C0`; the game uses reasons 0..4), and the mask emptying re-shows and
+refreshes the carried pieces (`0x142C47B60`). Bit 1 (`0x1427F04E8: F6 C2 02 40 0F B6 C7`) hides the spare boots
+(inventory `+0x4D90`), which hang behind Sam on their own and stayed in the air with bit 0 alone (run `133429`, E3a). Of
+the 25 accesses to `+0x4C7C` only the event writes bits 0 / 1 and only the update reads them: the byte is runtime state.
+
+**What the mod does** (`native/mod/ride_together.cpp`, "the trike driver's back"; game thread, no game call):
+
+- **Driver's game.** While the partner rides our trike's pillion (the ride accepted, kind trike / Kusanagi, its body
+  seated: `rwire::DriverPlacesBody`, the same test the partner body's seat placement uses) our Sam's inventory (checked:
+  DSPlayerEntity, the component's owner, its RTTI type) gets bits 0 and 1 ORed in; bits the game itself already holds
+  (its event) are left to it. They are set again if the game clears them meanwhile (an event's end) and cleared, only
+  the ones we set and only on the same Sam's same inventory, the tick the condition drops: every ride end (getting off,
+  a crash, the roll, the driver's own exit, the partner silent 1 s, a new link session, a save's put-off) and the
+  module's stop (`AfterStop`, "the mod stopped"). A new Sam (a load, a world change) has a new inventory that starts
+  clear: the old one is forgotten, never written. The game itself draws the backpack and the stack away on this screen.
+- **Passenger's game.** The driver's gear frame (partner_gear's sender) now follows the game's own hides: a hidden
+  backpack is not sent, nor what hangs on it (its children), and a carried piece is sent only while the carrier's
+  hide-reason mask is 0 and, for the back slot, its own hidden bit (`+0x75` bit 6, `0x142CB2620`) is clear (v0.22 sent
+  every carried piece as shown; this also mirrors cutscene and photo-mode hides). Meanwhile the passenger's game hides
+  the partner's backpack prop, everything parented to it and its back cargo itself while `ride::PillionNow()` says our
+  Sam rides the partner's trike (the frames before the driver's new layout arrives).
+- Off: `ride_hide_pack=0`, or one of its 7 byte checks (the sites above and the inventory store `0x14271FC22`) failing
+  (`[ride] trike pillion: the driver's backpack stays shown with a passenger: this game build differs (...)`); the
+  sender's cargo rule has its own 3 checks (off: every piece sent as shown, as v0.22).
+- **The save.** The game refuses every save while the driver sits on the trike (`DSCreateSaveGame`'s refusal reasons
+  0x200, the player's state; run `20261121-134923`), so no save of the game is written with the hide held. The worst case
+  was forced on foot in that run (`ride_test 36 1`, a save written with `+0x4C7C 0x03`, the hide given back, that save
+  loaded): the loaded inventory read `0x00` and the carrier's mask 0, the backpack and stack drawn (S2). The hide bits are
+  never in the save.
+
+Evidence (hidden, foreground, one at a time, the launcher's Local test ini at 60 fps, `-SeedSaves complete-100`; every
+run: saves unchanged, restored, no violation, 0 cloud uploads, both games exit 0):
+
+- `two-games-ride-trike-pack` (`20261121-133753`): the host drives the Kusanagi, the guest on the pillion: host `+0x4C7C
+  0x00 -> 0x03`, `9 of 9 pieces hidden`; P01 / P02 / P03 on the host's screen (the backpack, the stack and the spare boots
+  on his back before, gone with Fragile seated behind him, back after) and the guest's P02 (the driver's back free, the
+  guest's own pack behind her) / P03; `shown again (the ride is over)`, `0 of 9`; the swap: the guest drives, the host
+  rides: the same on the guest's game (Q01-Q03; Q02-guest-pillion: Fragile driving without her pack, the host's Sam
+  behind her with his). The first passing run `132616` had bit 0 only.
+- `two-games-ride-trike-pack-exits` (`20261121-133938`): a crash (`ride_test 4`: `(#1, crash, forced)`, shown again in
+  the same tick), the roll (`ride_test 5`; the trike righted itself, the guest got off by choice: shown again), the
+  module's emergency stop with the hide held (`ride_test 36 1`, `ride_test 9`: `shown again (the mod stopped)`),
+  `held 0 (3 hide(s), 3 release(s))`; E3a / E3. The link: `20261121-133024` (the guest's game dropping every datagram
+  for 6 s: `shown again (the passenger's body is not seated)` 1 s after its last passenger bit, the ride then over "link
+  lost", `held 0 (2 hide(s), 2 release(s))`).
+- `two-games-ride-trike-pack-save` (`20261121-134923`): above.
+- Regressions: `two-games-ride-trike` (`20261121-134129`, the `ini` files at 30 fps: the same lines on both swaps),
+  `two-games-launcher-local-test` (`20261121-134423`, 60 fps).
+
+Not done / not proven:
+
+- Items hanging on Sam rather than on the backpack (the shoulder units, the rod on the shoulder rack in E3a) stay drawn:
+  they are not behind him.
+- The passenger's own backpack (behind the passenger) is unchanged.
+- A HideBaggage cutscene event that starts while the driver's hide is held and ends after the ride: our release clears
+  the bits we set (the event's own are left alone); rides already end when the game takes Sam for a scene.
+- A ride after a link blackout did not board again in run `20261121-133024` (the guest's presses at the door were not
+  taken); not looked into (riding, not the hide).
+
 ## 25. Vehicle hits (`session.ini partner_vehicle_damage`, default 1, with `vehicle_sync=5`; design milestone M4)
 
 "When the vehicle collides with players it should damage them and knock them down like an NPC enemy driven vehicle";
@@ -5559,3 +5634,126 @@ Not covered:
   is up would be drawn too (not seen).
 - glasses01 / glasses02 were not put on by `gear 14` (type 0x0E gave glasses00); they share the class's offset and the
   same code path.
+
+## 27. Fragile's porter suit in Sam's suit colours (v0.23; `session.ini fragile_suit_colour`, default 1)
+
+**Status (2026-11-21): works in hidden runs (solo and two games on the launcher's own Local test files).** The guest's
+Fragile in her porter suit (`fragile_suit`, the launcher's default) wears the suit colour of the guest's own Sam: the
+palette colours 1..14, silver (15) and gold (16), and her own navy suit at 0. Both screens show it: the guest's own
+self view and the host's partner Fragile (from the `suit_colour` byte of the STJ1 outfit, section 9). It changes live
+when the colour changes (0.5 s after the byte holds). Nothing is written to files, the save or the game state; no game
+asset is edited, copied or shipped. Code: `native/mod/suit_colour.{hpp,cpp}` (game side) and
+`native/mod/suit_colour_math.hpp` (the colour -> look mapping, ctest `st_suit_colour_tests`), called from
+`real_body.cpp` (`DressFragile`, game thread, after `DressPartner`).
+
+### 27.1 Why textures had to be made [V: game-data decode, shader bytecode, screenshots]
+
+- Sam's colours 0..14 are one float shader variable (hash `0x2967E719`) that his suit shader uses as a row in an 8x16
+  colour LUT (`cm_cvar_b002`); silver and gold are whole texture-set swaps (ArtPartsVariations `apv_sam_exos_def_v3x` /
+  `v6x`: `sam_body_suiti_v02_set` / `v03_set` on node `inSampler_Main_TextureSet`).
+- Fragile's suit (`fgl_body_suiti`, one model part, texture set `fgl_body_suiti_v00_set`) has no variations and no other
+  texture set, and no female gold / silver suit exists in the game. Her shader (`56df4da5...`) is the same template as
+  Sam's minus the LUT: it never reads the LUT coordinates, so no shader variable can recolour her. Research run
+  `20261121-125949`: her suit stays navy at Sam's colours 16, 9, 0, 15.
+- Sam's own gold / silver textures cannot simply be bound on her: their metal is only on Sam's UV islands.
+- So the mod gives her suit constant-colour textures the way the game puts Sam's silver / gold on: the game's own
+  per-channel texture-set override of the model's drawable, with a TextureSet of the mod's own whose channels are 1x1
+  textures made by the game's own texture loader from 4 colour bytes each.
+
+### 27.2 How it works [V: decompiles, byte checks, run logs]
+
+- **The drawable:** `*(*(*(entity+0xB8)+0x40)+0x28)` (SkinnedModel -> SkinnedModelRep -> drawable, the chain
+  `0x1422BBB80` reads; vtables `+0x3D0ADB8`, `+0x3D0AED0`, drawable `+0x3DF0710` on her body). Her suit model has one
+  mesh (a LodMeshResource `96d8545e...`, render effect `b2b8eeab...`); her head and hair are other models and keep their
+  look. `real_outfit 6` logs the drawable and its meshes.
+- **The override:** `0x14237CA20(drawable, String* "inSampler_Main_TextureSet", TextureSet*, Array<u64>* handles, int
+  mesh)`. Per active TextureDesc it builds the binding name node + channel ("...Color"), finds the entry whose packing
+  nibbles name the channel (`0x141D25F60`) and its swizzle (`0x141D25E50`), and binds it with `0x141DF5170` (which stores
+  the Texture* plainly). `0x142378C20(drawable, 1)` after, like the game. **Undo:** `0x14237A960(drawable, &handle)` per
+  handle: the original binding is used again.
+- **Our TextureSet** (only what the core reads): `+0x20/+0x28` entries (0x18 each: 4 packing bytes, Texture* `+0x08`,
+  `+0x10` = 1), `+0x38/+0x40` descs (0x40 each: type, the game's empty String `0x144562CA0`+0x10 as the path, Active).
+  Channels: Color (type 1, packing `01 11 21`, sRGB), Reflectance (4, `04 14 24`), Roughness (6, `86`: one channel
+  broadcast, as her own set keeps it in the Color texture's alpha). Her Normal, AO, Mask and detail layers stay hers
+  (seams, folds, fabric relief).
+- **Our textures:** `0x141D24460(HwTexture** out, reader, u32* dims)`, the loader that Texture's own ReadBinary handler
+  (`0x141D242C0`) uses, reads the game's serialized 1x1 RGBA8 form: the 0x20-byte header (2D, 1x1, 1 mip, format `0x0C`,
+  `+0x0B` colour space, `+0x0D` `0xA9` as the game's 1x1 constants, a GUID of ours: "STSC" + the colour), the data size
+  0x18, 4 embedded bytes, the pixel. The reader is the mod's own. The loader and the 2D texture's data read
+  (`0x14197CAF0`; the factory `*0x144F6D4F8` is of class `0x143B9B8C8`, its 2D texture class `0x143B9B488`) use only its
+  `vtbl[+0x10]` read, `+0x18` skip, `+0x28` tell and the `+0x0C` byte-order word (decompiles of `0x141D24460`,
+  `0x14197CAF0`, `0x141909CC0`, `0x141909DF0`, `0x141980830`); any other slot called is recorded and the texture is not
+  used. The Texture object (vtable `0x143BC7C50`, 0x30 bytes) is the mod's own memory with its reference count held
+  high. Textures are kept for the session in a pool of 48 (at most 17 colours x 3, shared when equal). Log: `[suit]
+  constant texture <rgb> made by the game's loader: Texture ..., hardware texture ... (vtable ds.exe+0x3B9B488)`.
+- **The look** (`suit_colour_math.hpp LookFor`):
+  - 0 (and anything above 16): her own textures, nothing bound.
+  - 1..14: her albedo only, LUT[c] scaled per channel so that row 0 gives exactly her navy (67, 71, 81). Her printed
+    detail (the FRAGILE lettering) goes; relief and fabric stay.
+  - 15 / 16: albedo, reflectance and roughness: silver (96, 96, 100) / (235, 235, 235), gold (100, 80, 44) / (240, 190,
+    100), roughness 60. Sam's own sets measured where they are metal (albedo (79, 71, 72), reflectance (218, 219, 219) /
+    (220, 176, 112); variant 1 of `real_outfit 8`) looked a dull olive on her in run `20261121-141717`, hard to tell from
+    palette 9; the product's values came from run `20261121-141927` (the gold toned down a little after the sunlit
+    two-game run).
+- **Who wears what:** the partner slot's `fragile_suit` body wears the `suit_colour` the other player sent (that player's
+  own Sam's inventory `+0x4BE1`); a debug slot body and the self view's body wear our own Sam's byte (`ReadLocal`). A
+  change waits 0.5 s, then one step per 250 ms: undo the old colour, then bind the new one. A new body or a changed
+  drawable forgets the handles (they went with the old drawable); a removed body is forgotten, never called.
+- **Host-held save:** the guest's Sam starts as a copy of the host's, so the guest's colour byte (and Fragile) starts as
+  the host's Sam's colour (the 100% save: gold). A change the guest makes (private room) shows at once on both screens
+  and (round 5) is remembered: the guest's mod keeps her last pick in `fragile_suit_colour.txt` in her own mod folder
+  (a hidden run: its own output folder) and Fragile wears it after every later load of the host's save, on both screens
+  (the STJ1 outfit carries it), until she picks again (`suit_colour_math.hpp` `GuestPick`; `[suit] the guest picked suit
+  colour n: remembered ...`). Her Sam in the sandboxed copy is not changed. Between worlds (a load) Fragile keeps what she wore.
+  Scenario `two-games-fragile-suit-remember` (pick 9, the host saves and loads, the guest follows: both screens stay 9):
+  run `20261121-224427-two-games-fragile-suit-remember`.
+
+### 27.3 Byte checks (at the first use, one log line; off with the reason on any mismatch)
+
+| Address | What | Bytes |
+|---|---|---|
+| `0x1422BBB80` | the texture-set part of ApplyArtPartsVariation | `40 55 53 56 57 41 54 41 55 41 56 41 57 48 8D AC 24 68 E0 FF FF` |
+| `0x1422BBD8D` / `D9C` / `DA4` | the drawable chain +0xB8 / +0x40 / +0x28 | `49 8B 85 B8 00 00 00` / `48 8B 40 40` / `4C 8B 70 28` |
+| `0x1422BC0BB` | its refresh call (leads to `0x142378C20`) | `48 8B 4F 28 B2 01 E8` |
+| `0x14237CA20` | the override core | `40 55 53 56 57 41 54 41 55 41 56 48 8D 6C 24 E1 48 81 EC C0 00 00 00` |
+| `0x14237A960` | undo | `40 53 41 56 41 57 48 83 EC 40 44 0F BF 4A 02 4C 8D B1 E8 01 00 00` |
+| `0x142378C20` | refresh | `40 53 56 48 83 EC 28 44 8B 81 A8 01 00 00 33 DB 83 89 A4 01 00 00 10` |
+| `0x142374D50` | the mesh override table | `40 53 57 41 56 48 83 EC 30 4C 8D B1 E8 01 00 00` |
+| `0x141DF5170` | texture bind | `44 0F B7 1A 45 33 D2 66 45 85 DB 78 1B 8B 51 10` |
+| `0x141D25F60` | entry lookup | `48 63 41 20 45 33 C9 85 C0 7E 4F 4C 8B 59 28` |
+| `0x141D24460` | texture loader (its u32 read call `0x141D24548` leads to `0x141909CC0`) | `40 55 53 56 57 41 54 41 56 41 57 48 8D 6C 24 D9 48 81 EC E0 00 00 00` |
+| `0x141D242C0` | Texture's read handler | `48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20 57 48 83 EC 20 48 8B 52 08` |
+| `0x141909CC0` | u32 read | `48 89 5C 24 18 57 48 83 EC 30 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 28` |
+| `0x141909DF0` | u64 read | `48 89 5C 24 18 57 48 83 EC 40 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 30` |
+| `0x141980830` | embedded mip read | `44 89 4C 24 20 44 89 44 24 18 48 89 4C 24 08 53 56 41 55 48 83 EC 60 8B 41 38` |
+| `0x14197CAF0` | the 2D texture's data read (its calls `0x14197CC76` -> u64, `0x14197D0B1` -> embedded) | `48 89 5C 24 18 55 56 57 41 54 41 55 41 56 41 57 48 8D 6C 24 D9 48 81 EC E0 00 00 00` |
+| `0x14197BE60` | the factory's 2D create | `48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 48 89 7C 24 20 41 56 48 83 EC 20` |
+| `0x141B36BC0` | Texture's RTTI getter (-> `0x144A50BA0`, named `Texture`) | `48 8D 05 ?? ?? ?? ?? C3` |
+
+Data checks: the Texture vtable `0x143BC7C50` slot 0 is the getter; the 2D texture vtable `0x143B9B488` slot `+0x10` is
+`0x14197CAF0`; the factory vtable `0x143B9B8C8` slot `+0x18` is `0x14197BE60`; the empty String has length 0 and an
+empty text; for each texture made, the live factory's vtable is `0x143B9B8C8`. A fault in any call turns the feature off
+for the session (`[suit] ... FAULTED`).
+
+### 27.4 Proof (hidden runs; all: game exit 0, guest exit 0, saves unchanged, restored, no violation, 0 cloud uploads)
+
+- `20261121-141717-fragile-suit-colours` (solo, scenario `fragile-suit-colours`): gold by herself (the 100% save's
+  Sam), then silver, 9, her own, 1, 4, 13 and gold through `real_outfit 5`, then following our own Sam's byte live
+  (`real_outfit 4 9`, `4 16`). 8 constant textures made, 0 failed, no unexpected reader call.
+- `20261121-141927-fragile-suit-tune` (solo, scenario `fragile-suit-tune`): the metal variants; the product's look was
+  picked here. (Its last step's pattern was wrong; fixed since.)
+- `20261121-142205-two-games-fragile-suit` (scenario `two-games-fragile-suit`, `launcherini local-test`, 60 fps): the
+  guest's colour byte 16 -> 15 -> 9 -> 1 -> 13 -> 0 -> 16. Both games log `colour N on (#1..#6)` and `taken off` in
+  step. Screenshots `automation\0N-host-sees-guest-*.png` and `guest\automation\0N-guest-self-*.png`. The host's own Sam
+  stays gold (`[outfit] local player ... suit colour 16`, `07-host-own-sam`, and the guest's partner Sam in
+  `guest\automation\07-guest-sees-host-sam.png`).
+- Regressions: `20261121-142416-two-games-fragile-attach`, `20261121-142607-two-games-headgear` (both pass; she wears
+  the host-copied gold there).
+
+### 27.5 Not covered
+
+- (round 5: the guest's own pick is remembered across the host's loads, see 27.2; her sandboxed Sam itself shows the
+  host's colour again after a load, only Fragile keeps the pick.)
+- The uniform menu (private room) was not driven in a run; the runs change the inventory byte it sets (`real_outfit 4`).
+- Her suit is one mesh: the neck piece and her own boots (under Sam's, shown with `self_feet_hide=0`) take the colour too.
+- The cargo menu's figure, two PCs, 120 fps / uncapped: not run.

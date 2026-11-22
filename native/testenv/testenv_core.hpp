@@ -76,6 +76,10 @@ std::string RedirectOnlyIniText(const std::wstring& save_root = {});
 // *replaced: the launcher lines that were replaced (for supervisor.log).
 bool HiddenIniFromLauncher(const std::string& launcher_text, const SessionOptions& options, std::string* out,
                            std::vector<std::string>* replaced, std::string* error);
+// v0.23: the game frame rate the launcher's Local test writes into each sandbox's settings.cfg, from its host.ini's
+// frame_cap (the same choice: 30 / 60 / 120; 0 or none = its "Uncapped", the game's maximum 240). launcherini runs give
+// it to "graphics low" unless the scenario names a rate ("graphics low <fps>").
+unsigned LauncherIniGameFps(const std::string& launcher_text);
 
 // ------------------------------------------------------------------ named places (tools/testenv/places.txt)
 // One place a line: "<name> <area> <x> <y> <z> [# note]" (name [a-z0-9-], 1..32 chars; z 0 = the ground under x, y). The
@@ -136,6 +140,7 @@ struct Scenario {
     std::string role = "solo";
     bool low_graphics = false;  // graphics low
     unsigned low_graphics_fps = 30;  // graphics low <fps>: the game's own "fps" / "limit_fps" (30..240)
+    bool low_graphics_fps_set = false;  // ... named in the scenario (else launcherini runs take the launcher's rate)
     unsigned timeout_s = 360;
     std::vector<std::string> ini;        // "ini key=value": extra session.ini lines (partner/pose keys only), every game
     std::vector<std::string> host_ini;   // "@host ini key=value": the first game only, written after `ini`
@@ -228,6 +233,15 @@ std::vector<std::string> CloudLogLines(const std::string& log_text, const std::s
 // Of those, the ones that upload or would upload a file ("Need to upload file", "Upload
 // OK for file", "HTTP upload for file"): with the redirect there must be none.
 std::vector<std::string> CloudUploads(const std::vector<std::string>& app_lines);
+// The mod's online gate (docs/world-sync.md): every "[gate] OTGC WRITE request: <name>" line of a game's log (a request that
+// writes to the game server: a hidden run must have none), and the largest "(total N)" of its "[gate] ... dropped ..." count
+// lines (the online calls the gate dropped).
+std::vector<std::string> GameServerWrites(const std::string& log_text);
+unsigned OnlineBlocked(const std::string& log_text);
+// Round 5: whether the gate went in: "on" for "[gate] online gate ON", "off: <reason>" for "[gate] OFF: <reason>",
+// "inactive: ..." when the mod stopped at start-up (an unsupported ds.exe: no tick, nothing can run), "" when the log has
+// none of these. Without "on" (or "inactive"), GameServerWrites cannot be trusted (no OTGC logger).
+std::string GateState(const std::string& log_text);
 
 // ------------------------------------------------------------------ processes
 std::vector<DWORD> FindProcesses(const wchar_t* exe_name);  // case-insensitive image name

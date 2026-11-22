@@ -1,0 +1,82 @@
+# Shared structures W3 (docs/world-sync.md): calibration probe for ladders and climbing ropes between two games on the
+# launcher's own Local test files (world_sync=1, world_ladders default 1), hidden. Not a pass/fail proof: it shows how the
+# game's ladder / rope records look in both worlds, which flags a pick-up leaves (world_sync 14 watch), the prompts near a
+# ladder (screenshots) and which pad input picks a ladder up.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-world-ladder-probe -Id round5-w3 -SeedSaves complete-100 -GuestSeed profile-only
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+waitlog 10 \[world\] world sync ON \(host\): shared structures \(PCC structures, ladders and climbing ropes
+@guest waitlog 120 \[world\] guest: snapshot #1 complete: bound [0-9]+, created 0, removed 0, replaced 0
+@both goto mknot-road
+wait 4000
+@both action world_dump 10 4
+@both action world_dump 11 4
+# the host places a ladder (mode 0) 4 m ahead and a rope 8 m ahead; the guest a ladder (mode 1) 6 m ahead of her
+action dev_ladder 0 0 4
+waitlog 10 \[world\] host: new structure hid [0-9]+ type 25 \(ladder\) origin host anim 1 printer 0 offline 1 -> ADD
+@guest waitlog 10 \[world\] guest: mirror hid [0-9]+ -> gid [0-9]+ \(exact\) type 25 \(ladder\)
+@both action world_sync 14 0
+@guest pad none 1200 lx=32767
+@guest wait 1500
+@guest action dev_ladder 0 1 6
+@guest waitlog 10 \[world\] guest: local build type 25 \(ladder\) held, request #1 sent
+waitlog 10 \[world\] host: the guest's build #1: created hid [0-9]+ type 25 \(ladder\)
+@guest waitlog 10 \[world\] guest: build #1 confirmed as hid [0-9]+
+wait 4000
+screenshot P1-host
+@guest screenshot P1-guest
+action world_dump 10 4
+@guest action world_dump 10 4
+action world_dump 11 4
+@guest action world_dump 11 4
+action world_sync 4 0
+@guest action world_sync 4 0
+action world_sync 11 0
+action world_sync 10 25 60
+@guest action world_sync 10 25 60
+action world_sync 10 28 60
+@guest action world_sync 10 28 60
+# the host walks up to its ladder: the prompts
+pad none 700 ly=32767
+wait 1500
+screenshot P2-host-at-ladder
+# pick-up attempts (each followed by a screenshot; the watch logs a change)
+pad Y 2500
+wait 2000
+screenshot P3-after-y
+action world_sync 10 25 60
+pad X 2500
+wait 2000
+screenshot P4-after-x
+action world_sync 10 25 60
+pad B 2500
+wait 2000
+screenshot P5-after-b
+action world_sync 10 25 60
+pad A 2500
+wait 2000
+screenshot P6-after-a
+action world_sync 10 25 60
+pad RB 2500
+wait 2000
+screenshot P7-after-rb
+action world_sync 10 25 60
+@guest action world_sync 10 25 60
+# a climbing rope where the 100% save has an online one (an edge the anchor fits)
+@both goto -1153.4 338.0
+wait 3000
+?action dev_rope 10 0 3
+?waitlog 10 \[world\] host: new structure hid [0-9]+ type 28 \(climbing rope\) origin host
+?@guest waitlog 10 \[world\] guest: mirror hid [0-9]+ -> gid [0-9]+ \(exact\) type 28 \(climbing rope\)
+wait 3000
+screenshot P8-host-rope
+@guest screenshot P8-guest-rope
+action world_sync 4 0
+@guest action world_sync 4 0
+@both action world_sync 3
+@guest quit
+wait 3000
+quit

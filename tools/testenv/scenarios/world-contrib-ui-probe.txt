@@ -1,0 +1,54 @@
+# Shared structures W2, calibration only (docs/world-sync.md "Contributions"): the game's own upgrade UI through the hidden
+# env's virtual pad. A watchtower 3 m in front of Sam (level 2 needs 32 crystals + 400 metals; Sam carries crystals in the
+# 100% save). X tap: Sam turns to it; START held: the structure menu, cursor on Upgrade Structure; A: Select Materials,
+# cursor on Chiral Crystals; A: the amount (DPAD left / right); A: set; then the submit key is probed.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario world-contrib-ui-probe -SeedSaves complete-100
+role solo
+timeout 240
+ini dev_tools=1
+start
+wait 3000
+goto mknot-road
+wait 4000
+action dev_build 9 0 3
+waitnew 3 \[world\] dev build: id [0-9]+ type 9 \(watchtower\) anim 0
+wait 3000
+pad X 150
+wait 2000
+pad START 1500
+wait 2500
+pad A 150
+wait 2500
+pad A 150
+wait 1500
+pad DPAD_RIGHT 2500
+wait 1000
+screenshot 01-amount
+pad A 150
+wait 1500
+screenshot 02-amount-set
+action world_sync 4 0
+pad Y 2000
+wait 2500
+screenshot 03-y-hold
+action world_sync 4 0
+pad X 2000
+wait 2500
+screenshot 04-x-hold
+action world_sync 4 0
+pad START 150
+wait 2500
+screenshot 05-start
+action world_sync 4 0
+pad A 150
+wait 2500
+screenshot 06-a
+action world_sync 4 0
+pad B 150
+wait 1000
+pad B 150
+wait 1000
+pad B 150
+wait 1500
+action world_sync 4 0
+quit

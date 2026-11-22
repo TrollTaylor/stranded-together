@@ -68,6 +68,10 @@ struct Config {
     // Self view feet (section 21): her own feet are scaled to nothing under Sam's equipped boots. Default on;
     // self_feet_hide=0 keeps her own boots under his.
     bool self_feet_hide = true;
+    // v0.23: Fragile's porter suit (fragile_suit) in the suit colour of the player she stands for (that player's own Sam's
+    // porter-suit colour: the palette, silver, gold), on both screens (docs/real-partner-body.md section 27). Default on;
+    // 0 = her own navy suit always.
+    bool fragile_suit_colour = true;
     // Partner boots (section 21): the sender's equipped boots as a gear item (STC1 kind 7) and, on the other screen, a
     // cutscene boots prop posed from the partner body's legs with the partner's own feet scaled away. Default on;
     // boots_sync=0: nothing read, sent or spawned (the partner shows its own model's boots).
@@ -88,6 +92,23 @@ struct Config {
     // sounds are the game's own only (the NPC driver controller's engine); default 0 keeps the v0.14 lamp writes and the
     // STA1 vehicle-sound mirror on the real vehicle until a hidden run proves the native ones.
     bool vehicle_real_native = false;
+    // Shared structures (world sync, docs/world-sync.md), with host_save=1: structures either player builds with the PCC
+    // appear in both worlds and stay in the host's save. W3: on by default when host_save=1 (key absent); world_sync=0 turns it off.
+    // Both games must have it on (HELLO). world_anim=645 (default: the game's own new-build path) | loaded | off.
+    // world_test_fail=<byte site name part>: hidden runs only, treat that site as failed (the off path's test).
+    bool world_sync = false;
+    bool world_sync_set = false;
+    int world_anim = 0;                // 0 "645", 1 bits (not in W1: as 645), 2 loaded, 3 off
+    // world_contrib=0/1 (default 1 when world_sync is on): contributions, upgrades, repair and durability (W2). Both games
+    // must have it on (HELLO parts bit1); off on either side = each world keeps its own numbers.
+    bool world_contrib = true;
+    // world_ladders=0/1 (default 1 when world_sync is on): ladders and climbing anchors / ropes either player places or picks
+    // up (W3). Both games must have it on (HELLO parts bit2); off on either side = each world keeps its own.
+    bool world_ladders = true;
+    // world_ziplines=0/1 (default 1 when world_sync is on): ziplines either player builds, upgrades or dismantles (W4). Both
+    // games must have it on (HELLO parts bit3); off on either side = each world keeps its own.
+    bool world_ziplines = true;
+    std::string world_test_fail;
     // Riding together (design M3; docs/real-partner-body.md section 24), with vehicle_sync=5: hold X (pad) / F (keyboard) 0.6 s
     // beside the partner's vehicle to ride as its passenger (the trike: a pillion). Default on; 0 = off on this game (its
     // driver's game denies requests, nothing is offered).
@@ -95,6 +116,9 @@ struct Config {
     // The carried passenger's pose (section 24.14): 1 (default) the seated idle (a held seated base of the vehicle kind, the
     // hands resting on the thighs); 0 = v0.20's copy of the driver's live pose (steering, leaning with the driver).
     int ride_pose = 1;
+    // v0.23: the trike's driver with the partner on the pillion behind him: his backpack and its stacked cargo are hidden
+    // (the game's own HideBackpack, both screens) and shown again when the ride ends. Default on; 0 = shown as in v0.22.
+    bool ride_hide_pack = true;
     // The carried passenger's camera (section 24.15): 1 (default) the game's own ride camera of the vehicle he rides (the
     // driver's camera); 0 = v0.20's on-foot camera on the carried Sam.
     bool ride_camera = true;

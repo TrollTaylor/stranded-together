@@ -1,0 +1,41 @@
+# Shared structures W3 (docs/world-sync.md), solo: the 100% save's own ladders and climbing ropes (where the player placed
+# them: places a ladder fits), and a dev ladder / rope through the game's placement check, each exactly once, offline, its
+# record round trip EQUAL (the ladder's / rope's fields included).
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios world-ladder-census -Id round5-w3 -SeedSaves complete-100
+role solo
+timeout 240
+ini dev_tools=1
+start
+wait 2000
+waitlog 5 \[world\] byte checks: ok .*ladder ok
+action world_dump 10 40 2
+action world_dump 11 40 2
+action world_dump 10 12 3
+action world_dump 11 12 3
+goto mknot-road
+wait 3000
+action world_sync 11 0
+action dev_ladder 0 0 4
+waitnew 5 \[world\] dev ladder: the game's placement check accepts
+wait 4000
+action world_sync 10 25 60
+waitnew 3 \[world\] check: type 25 within 60 m: 1 \(ids [0-9]+\) offline 1
+action world_sync 11 0
+waitnew 3 \[world\] round trip id [0-9]+ type 25 \(ladder\): EQUAL
+action world_sync 4 0
+screenshot 00-dev-ladder
+# a climbing rope needs an edge: where the 100% save has an online one
+goto -1153.4 338.0
+wait 2000
+action dev_rope 10 0 3
+waitnew 5 \[world\] dev rope: the game's placement check accepts
+wait 4000
+action world_sync 10 28 30
+waitnew 3 \[world\] check: type 28 within 30 m: 1 \(ids [0-9]+\) offline 1
+action world_sync 11 0
+waitnew 3 \[world\] round trip id [0-9]+ type 28 \(climbing rope\): EQUAL
+action world_sync 4 0
+screenshot 01-dev-rope
+nolog \[gate\] OTGC WRITE
+action world_sync 3
+quit

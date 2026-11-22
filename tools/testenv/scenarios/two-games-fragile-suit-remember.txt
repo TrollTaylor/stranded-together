@@ -1,0 +1,51 @@
+# Round 5: the guest's own suit colour pick outlives the host's loads (docs/real-partner-body.md section 27.2), hidden, on the
+# launcher's own Local test files. The guest's world is the host's save loaded into a sandbox that is never saved, so her
+# Sam's suit colour byte comes back as the host's (the 100% save: gold, 16) at every load; the mod remembers her last pick
+# (suit_colour_math GuestPick, in the run's own output folder) and Fragile keeps wearing it on both screens.
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-fragile-suit-remember -SeedSaves complete-100 -GuestSeed profile-only
+# Pass: the guest picks palette 9 (`real_outfit 4 9`, the inventory byte the uniform menu sets; hidden tests only), both
+# screens show 9; the host saves (its own autosave into the run's scratch copy) and loads it in the world, the guest follows
+# (loads the host's save: her Sam is gold again) and logs that Fragile keeps the pick; after the load neither game puts gold
+# back on the same Fragile body (`colour 16 on (#2..`), no FAULT.
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+@guest waitlog 60 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+@both goto mknot-road
+wait 6000
+waitlog 30 \[suit\] body .*: colour 16 on
+@guest waitlog 30 \[suit\] body .*: colour 16 on
+# the guest picks palette 9: remembered
+@guest action real_outfit 4 9
+@guest waitnew 15 \[suit\] the guest picked suit colour 9: remembered
+@guest waitlog 15 \[suit\] body .*: colour 9 on
+waitlog 15 \[suit\] body .*: colour 9 on
+wait 1000
+screenshot 01-host-sees-guest-9
+@guest screenshot 01-guest-self-9
+# ---- the host's game saves, then loads that save in the world; the guest loads it too (her Sam gold again)
+until 30 1500 \[save\] #[0-9]+ pending \(forced save F[0-9]+\): auto save => action save_guard 1 4 1
+waitlog 60 \[save\] finished ok: #[0-9]+ \(forced save F[0-9]+\)
+wait 2000
+action save_guard 3
+waitnew 20 \[coop\] host: in-world Load \(type 0x4
+@guest waitnew 120 \[coop\] guest: wrote the host's save #[0-9]+ .*
+@guest waitnew 180 \[coop\] guest: in the world after .* save #[0-9]+
+waitnew 120 \[coop\] host: the partner's RESULT for load #[0-9]+: ok
+@guest waitlog 60 \[suit\] guest: world #[2-9] loaded with Sam's suit colour 16: Fragile keeps the guest's remembered pick 9
+@both goto mknot-road
+wait 8000
+@guest action real_outfit 0
+screenshot 02-host-sees-guest-after-load
+@guest screenshot 02-guest-self-after-load
+nolog \[suit\] body .*: colour 16 on \(#([2-9]|[1-9][0-9])
+@guest nolog \[suit\] body .*: colour 16 on \(#([2-9]|[1-9][0-9])
+nolog \[suit\] .*FAULTED
+@guest nolog \[suit\] .*FAULTED
+@both action log_status
+@guest quit
+wait 3000
+quit

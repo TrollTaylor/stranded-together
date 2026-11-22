@@ -189,6 +189,12 @@ SRWLOCK g_veh_lock = SRWLOCK_INIT;
 RxSave g_veh_q[kVehQueue];
 unsigned g_veh_head = 0, g_veh_count = 0;
 volatile LONG64 g_rx_veh_events = 0, g_tx_veh_events = 0;
+// Received world events (SWS1, channel 1; world_wire.hpp), the same way (under g_world_lock, taken inside g_tx or alone).
+constexpr unsigned kWorldQueue = 64;
+SRWLOCK g_world_lock = SRWLOCK_INIT;
+RxSave g_world_q[kWorldQueue];
+unsigned g_world_head = 0, g_world_count = 0;
+volatile LONG64 g_rx_world_events = 0, g_tx_world_events = 0;
 // Hidden tests (TestBlackout): received datagrams are dropped until this NowMs().
 volatile LONG64 g_blackout_until = 0, g_blackout_dropped = 0;
 
@@ -220,6 +226,21 @@ void DrainVehicleEventsLocked(std::uint64_t now, std::uint32_t generation) noexc
         InterlockedIncrement64(&g_rx_veh_events);
     }
     ReleaseSRWLockExclusive(&g_veh_lock);
+}
+
+// Under g_tx: in-order channel 1 messages into the world event queue while it has room.
+void DrainWorldEventsLocked(std::uint64_t now, std::uint32_t generation) noexcept {
+    AcquireSRWLockExclusive(&g_world_lock);
+    std::size_t got = 0;
+    while (g_world_count < kWorldQueue) {
+        RxSave& slot = g_world_q[(g_world_head + g_world_count) % kWorldQueue];
+        if (!g_rel_rx[kWorldEventChannel].Drain(slot.bytes, sizeof(slot.bytes), got, now)) break;
+        slot.size = static_cast<std::uint16_t>(got);
+        slot.generation = generation;
+        ++g_world_count;
+        InterlockedIncrement64(&g_rx_world_events);
+    }
+    ReleaseSRWLockExclusive(&g_world_lock);
 }
 
 // Outside every lock: hand the queued save messages to the sink, if one is registered.
@@ -452,9 +473,16 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
             ReleaseSRWLockExclusive(&g_veh_lock);
         }
         DrainVehicleEventsLocked(now, g_generation + (new_session ? 1u : 0u));
+        // Channel 1: the world events (SWS1, world_share.cpp), the same way.
+        if (new_session) {
+            AcquireSRWLockExclusive(&g_world_lock);
+            g_world_count = 0;
+            ReleaseSRWLockExclusive(&g_world_lock);
+        }
+        DrainWorldEventsLocked(now, g_generation + (new_session ? 1u : 0u));
         // Other channels are not used by this build: drained and dropped so their windows never fill.
         for (unsigned ch = 1; ch < lk::kReliableChannels; ++ch)
-            if (ch != wire::kSpeechChannel && ch != lk::kSaveChannel && ch != kVehicleEventChannel)
+            if (ch != wire::kSpeechChannel && ch != lk::kSaveChannel && ch != kVehicleEventChannel && ch != kWorldEventChannel)
                 while (g_rel_rx[ch].Drain(buf, sizeof(buf), got, now)) {
                 }
     }
@@ -1185,6 +1213,48 @@ bool PopVehicleEvent(std::uint8_t* out, std::size_t cap, std::size_t& size, std:
 void VehicleEventCounts(std::uint64_t* sent, std::uint64_t* received) noexcept {
     if (sent) *sent = static_cast<std::uint64_t>(g_tx_veh_events);
     if (received) *received = static_cast<std::uint64_t>(g_rx_veh_events);
+}
+
+bool SendWorldEvent(const void* bytes, std::size_t size) noexcept {
+    if (!bytes || size == 0 || size > lk::kMaxReliableMessage) return false;
+    bool queued = false;
+    AcquireSRWLockExclusive(&g_tx);
+    if (g_session.CanSendData())
+        queued = g_rel_tx[kWorldEventChannel].Queue(bytes, size, lk::ReliableMode::append) == lk::ReliableResult::queued;
+    ReleaseSRWLockExclusive(&g_tx);
+    if (queued) {
+        InterlockedIncrement64(&g_tx_world_events);
+        InterlockedAdd64(&g_tx_payload, static_cast<LONG64>(size));
+    }
+    return queued;
+}
+
+unsigned WorldEventsQueued() noexcept {
+    AcquireSRWLockExclusive(&g_tx);
+    const unsigned n = g_rel_tx[kWorldEventChannel].queued();
+    ReleaseSRWLockExclusive(&g_tx);
+    return n;
+}
+
+bool PopWorldEvent(std::uint8_t* out, std::size_t cap, std::size_t& size, std::uint32_t& generation) noexcept {
+    bool ok = false;
+    AcquireSRWLockExclusive(&g_world_lock);
+    if (g_world_count && out && g_world_q[g_world_head].size <= cap) {
+        const RxSave& s = g_world_q[g_world_head];
+        std::memcpy(out, s.bytes, s.size);
+        size = s.size;
+        generation = s.generation;
+        g_world_head = (g_world_head + 1) % kWorldQueue;
+        --g_world_count;
+        ok = true;
+    }
+    ReleaseSRWLockExclusive(&g_world_lock);
+    return ok;
+}
+
+void WorldEventCounts(std::uint64_t* sent, std::uint64_t* received) noexcept {
+    if (sent) *sent = static_cast<std::uint64_t>(g_tx_world_events);
+    if (received) *received = static_cast<std::uint64_t>(g_rx_world_events);
 }
 
 void SetSaveBurst(bool title_or_loading) noexcept { InterlockedExchange(&g_save_burst, title_or_loading ? 1 : 0); }

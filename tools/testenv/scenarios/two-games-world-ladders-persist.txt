@@ -1,0 +1,83 @@
+# Shared structures W3 (docs/world-sync.md): ladders and climbing ropes in the host's save, hidden, on the launcher's own
+# Local test files:
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-world-ladders-persist -Id round5-w3 -SeedSaves complete-100 -GuestSeed profile-only
+# At a cliff edge the host places a climbing rope and a ladder, the guest a ladder (held, GBUILD, created by the host,
+# mirrored back). A save of the host's game is written (save_guard 1 4: the game's own autosave, into the run's scratch copy)
+# and loaded in the world (save_guard 3; the guest follows: she loads the host's new save and joins again). Pass: after the
+# load each world has each one exactly once (no duplicate, nothing lost), offline 1 on the host, the same ids, the rope's
+# and ladders' fields equal; the guest's second join binds them (created 0: they came from the host's save); no FAULT, no
+# OTGC WRITE, both games exit 0.
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+waitlog 10 \[world\] world sync ON \(host\): shared structures \(PCC structures, ladders and climbing ropes
+@guest waitlog 120 \[world\] guest: snapshot #1 complete: bound [0-9]+, created 0, removed 0, replaced 0
+@both goto -1153.4 338.0
+wait 3000
+action dev_rope 10 0 3
+waitnew 5 \[world\] dev rope: the game's placement check accepts
+@guest waitlog 10 \[world\] guest: mirror hid [0-9]+ -> gid [0-9]+ \(exact\) type 28 \(climbing rope\)
+action dev_ladder 0 0 8
+waitnew 5 \[world\] dev ladder: the game's placement check accepts
+@guest waitlog 10 \[world\] guest: mirror hid [0-9]+ -> gid [0-9]+ \(exact\) type 25 \(ladder\) anim 1 printer 0 \(the host's build\)
+@guest action dev_ladder 0 0 12
+@guest waitlog 10 \[world\] guest: local build type 25 \(ladder\) held, request #1 sent
+waitlog 10 \[world\] host: the guest's build #1: created hid [0-9]+ type 25 \(ladder\) offline 1
+@guest waitlog 10 \[world\] guest: build #1 confirmed as hid [0-9]+
+wait 5000
+action world_sync 10 25 40
+waitnew 3 \[world\] check: type 25 within 40 m: 2 \(ids [0-9]+ [0-9]+\) offline 2
+@guest action world_sync 10 25 40
+@guest waitnew 3 \[world\] check: type 25 within 40 m: 2 \(ids [0-9]+ [0-9]+\) offline 2
+action world_sync 10 28 40
+waitnew 3 \[world\] check: type 28 within 40 m: 1 \(ids [0-9]+\) offline 1
+@guest action world_sync 10 28 40
+@guest waitnew 3 \[world\] check: type 28 within 40 m: 1 \(ids [0-9]+\) offline 1
+action world_dump 10 3 2
+@guest action world_dump 10 3 2
+action world_dump 11 2 2
+@guest action world_dump 11 2 2
+screenshot P0-host-before-save
+@guest screenshot P0-guest-before-save
+# ---- the host's game saves (its own autosave, into the run's scratch copy), then loads that save in the world
+until 30 1500 \[save\] #[0-9]+ pending \(forced save F[0-9]+\): auto save => action save_guard 1 4 1
+waitlog 60 \[save\] finished ok: #[0-9]+ \(forced save F[0-9]+\)
+wait 2000
+action save_guard 3
+waitnew 20 \[coop\] host: in-world Load \(type 0x4
+@guest waitnew 120 \[coop\] guest: wrote the host's save #[0-9]+ .*
+@guest waitnew 180 \[coop\] guest: in the world after .* save #[0-9]+
+waitnew 120 \[coop\] host: the partner's RESULT for load #[0-9]+: ok
+@guest waitlog 60 \[world\] guest: snapshot #[2-9] complete: bound [0-9]+, created 0, removed 0, replaced 0
+waitlog 10 \[world\] host: world ready \(world [2-9]\): [0-9]+ shared structures
+wait 4000
+action world_sync 10 25 40
+waitnew 3 \[world\] check: type 25 within 40 m: 2 \(ids [0-9]+ [0-9]+\) offline 2
+@guest action world_sync 10 25 40
+@guest waitnew 3 \[world\] check: type 25 within 40 m: 2 \(ids [0-9]+ [0-9]+\) offline 2
+action world_sync 10 28 40
+waitnew 3 \[world\] check: type 28 within 40 m: 1 \(ids [0-9]+\) offline 1
+@guest action world_sync 10 28 40
+@guest waitnew 3 \[world\] check: type 28 within 40 m: 1 \(ids [0-9]+\) offline 1
+action world_dump 10 3 2
+@guest action world_dump 10 3 2
+action world_dump 11 2 2
+@guest action world_dump 11 2 2
+action world_sync 4 0
+@guest action world_sync 4 0
+screenshot P1-host-after-load
+@guest screenshot P1-guest-after-load
+wait 8000
+@guest nolog \[world\] guest: CHECK differs twice
+@both action world_sync 3
+nolog \[world\].*FAULT
+@guest nolog \[world\].*FAULT
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+nolog \[world\] guest: mirror FAIL
+@guest nolog \[world\] guest: mirror FAIL
+@guest quit
+wait 3000
+quit

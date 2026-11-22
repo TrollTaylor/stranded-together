@@ -1,0 +1,82 @@
+# Shared structures W2 (docs/world-sync.md "Contributions"): the GUEST pays through the game's own upgrade UI (the real
+# terminal commit 0x142CF98E0: her chiral crystals leave her inventory, AddOwn runs in her world), driven with the hidden
+# env's virtual pad, between two games on the launcher's own Local test files, hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-world-contrib-ui -SeedSaves complete-100 -GuestSeed profile-only
+# The guest builds a watchtower 3 m in front of her (held, created by the host, mirrored back; level 2 needs 32 crystals +
+# 400 metals). Her pad: X tap (she turns to it), START held (the structure menu, cursor on Upgrade Structure), A (Select
+# Materials, cursor on Chiral Crystals), A (the amount), DPAD_RIGHT held (up to what is needed: 32), A (set), A held
+# (Confirm). Her AddOwn -> MATS -> the host applies 32 crystals (AddOthers), STATE back; then the host pays the metals (dev)
+# and its terminal step queues the level-up: level 2 in both worlds.
+# Pass: the log lines below, no FAULT, no byte check failure, no OTGC WRITE, both exit 0.
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+waitlog 10 \[world\] world sync ON \(host\).*contributions shared
+@guest waitlog 120 \[world\] guest: snapshot #1 complete: bound [0-9]+, created 0, removed 0, replaced 0
+@both goto mknot-road
+wait 4000
+@guest action dev_build 9 0 3
+@guest waitlog 10 \[world\] guest: local build type 9 \(watchtower\) held, request #[0-9]+ sent
+waitlog 10 \[world\] host: the guest's build #[0-9]+: created hid [0-9]+ type 9 \(watchtower\) offline 1
+@guest waitlog 10 \[world\] guest: build #[0-9]+ confirmed as hid [0-9]+
+wait 4000
+@guest action world_sync 4 0
+@guest waitnew 3 \[world\] materials id [0-9]+ \(hid [0-9]+\) watchtower: level 1 of 3, status 1 \(missing\); invested 0/0/0/0/0/0
+# ---- her pad, the game's own upgrade UI
+@guest pad X 150
+@guest wait 2000
+@guest pad START 1500
+@guest wait 2500
+@guest screenshot U1-guest-structure-menu
+@guest pad A 150
+@guest wait 2500
+@guest screenshot U2-guest-select-materials
+@guest pad A 150
+@guest wait 1500
+@guest pad DPAD_RIGHT 2500
+@guest wait 1000
+@guest screenshot U3-guest-amount
+@guest pad A 150
+@guest wait 1500
+@guest screenshot U4-guest-set
+@guest pad A 3000
+@guest wait 2500
+@guest screenshot U5-guest-confirmed
+@guest waitlog 10 \[world\] guest: our contribution on hid [0-9]+ \(watchtower\) 32/0/0/0/0/0 -> MATS #[0-9]+
+waitlog 10 \[world\] host: the guest's contribution #[0-9]+ on hid [0-9]+ \(watchtower\): applied 32/0/0/0/0/0, excess 0, level 1, status 1
+@guest waitlog 10 \[world\] guest: our contribution #[0-9]+ on hid [0-9]+ answered by the host \(applied\): level 1
+@guest pad B 150
+@guest wait 1000
+@guest pad B 150
+@guest wait 1000
+@guest pad B 150
+@guest wait 1500
+action world_sync 4 0
+waitnew 3 \[world\] materials id [0-9]+ \(hid [0-9]+\) watchtower: level 1 of 3, status 1 \(missing\); invested 32/0/0/0/0/0
+@guest action world_sync 4 0
+@guest waitnew 3 \[world\] materials id [0-9]+ \(hid [0-9]+\) watchtower: level 1 of 3, status 1 \(missing\); invested 32/0/0/0/0/0
+screenshot U6-host-after
+@guest screenshot U6-guest-after
+# ---- the host pays the metals: its terminal step queues the level-up; hers follows
+action dev_build_mats 0 0 1
+waitnew 3 \[world\] dev contribution: id [0-9]+ .*watchtower\) level 1: materials 0/0/400/0/0/0 -> status 0, level-up requested
+@guest waitlog 10 \[world\] guest: hid [0-9]+ \(watchtower\): the host's level 1 \(its level-up (queued|runs)\); ours 1 -> level-up queued
+wait 4000
+screenshot U7-host-levelup
+@guest screenshot U7-guest-levelup
+until 60 3000 \[world\] materials id [0-9]+ \(hid [0-9]+\) watchtower: level 2 of 3, status 1 \(missing\); invested 32/0/400/0/0/0 => action world_sync 4 0
+@guest until 30 3000 \[world\] materials id [0-9]+ \(hid [0-9]+\) watchtower: level 2 of 3, status 1 \(missing\); invested 32/0/400/0/0/0 => action world_sync 4 0
+screenshot U8-host-level2
+@guest screenshot U8-guest-level2
+@both action world_sync 3
+nolog \[world\].*FAULT
+@guest nolog \[world\].*FAULT
+nolog \[world\] byte check FAILED
+@guest nolog \[world\] byte check FAILED
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@guest quit
+wait 3000
+quit

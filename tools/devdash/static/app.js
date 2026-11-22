@@ -460,6 +460,8 @@ function renderRunHead(d) {
     fact('game folder restored', yes(v.restored, true)) +
     fact('violation', yes(v.violation, false)) +
     fact('cloud uploads', yes(v.cloud_uploads, 0)) +
+    (v.game_server_writes !== undefined ? fact('game server writes', yes(v.game_server_writes, 0)) : '') +
+    (v.online_blocked !== undefined ? fact('online calls blocked', esc(String(v.online_blocked))) : '') +
     (v.seed_saves ? fact('seed saves', esc(String(v.seed_saves).split(/[\\/]/).pop())) : '') +
     (v.guest_seed ? fact('guest seed', esc(v.guest_seed)) : '') +
     (v.launcher_ini ? fact('launcher ini', 'yes') : '') +

@@ -130,7 +130,8 @@ std::vector<std::string> ManifestChanges(const std::string& before, const std::s
 
 // The local two-instance test: low-quality windowed graphics for the sandbox's settings.cfg
 // (sandbox.hpp) merged into `current` (the file as the game last wrote it; "" when missing):
-// windowed, 1280x720, low quality. Written before every local test.
-std::string LocalTestSettingsCfg(const std::string& current);
+// windowed, 1280x720, low quality, the game's own frame limit ("fps" / "limit_fps") at `fps` (15..240; v0.23: 60 by
+// default, the launcher's "Frame rate" choice). Written before every local test.
+std::string LocalTestSettingsCfg(const std::string& current, unsigned fps = 60);
 
 }  // namespace st::core

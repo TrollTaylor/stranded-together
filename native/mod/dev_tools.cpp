@@ -265,6 +265,12 @@ devrules::Session SessionNow() {
     return s;
 }
 
+}  // namespace
+
+devrules::Verdict DecideNow(devrules::Tool t) noexcept { return devrules::Decide(t, SessionNow()); }
+
+namespace {
+
 // Every tool runs through this: the dev tools on, the real-save rule, a note for the result.
 bool Gate(Tool t, char* msg, std::size_t cap, devrules::Verdict* out = nullptr) {
     const devrules::Verdict v = devrules::Decide(t, SessionNow());

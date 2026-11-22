@@ -54,8 +54,16 @@ struct LocalTestChoices {
     std::string name;              // the player name ("" = none)
     std::string guest_character;   // the stored pick (GuestCharacter applies the Debug option)
     bool host_pad = false;         // "Pads on the host too"
+    int fps = 60;                  // "Frame rate" (v0.23): 30, 60 (default), 120 or 0 = the game's maximum (LocalTestFps)
     std::string secret;            // "" = a new one
 };
+// The Local test's frame rate choice: 30, 60, 120 or 0 (uncapped: the game's own maximum, 240); anything else -> 60.
+constexpr int kLocalTestFpsDefault = 60;
+int LocalTestFps(int stored);
+// That choice as the game's settings.cfg "fps" / "limit_fps" (0 -> 240: the game turns 0 into 15) and as session.ini
+// frame_cap (the mod's own wait, a safety net under the game's limit; 0 = off for the maximum).
+unsigned LocalTestGameFps(int choice);
+int LocalTestFrameCap(int choice);
 void MakeLocalTestInis(const DebugOptions& options, const LocalTestChoices& choices, SessionIni& host, SessionIni& guest);
 // Developer / testenv: the two files MakeLocalTestInis + MakeSessionIniText give, written as <out_dir>\host.ini and
 // <out_dir>\guest.ini, with the Debug page's options and test-save picks read (read only) from the game folder's

@@ -418,7 +418,11 @@ ini <key>=<value>            an extra session.ini line, for every game of the ru
                              value). @both ini is refused (plain ini already goes to both); ini cannot be
                              optional
 graphics low [fps]           30 fps cap, appdir settings.cfg + profile overrides (see "Two games");
-                             fps (30..240) replaces the preset's "fps" / "limit_fps" 30 (frame-rate tests)
+                             fps (30..240) replaces the preset's "fps" / "limit_fps" 30 (frame-rate tests).
+                             v0.23: with launcherini and no fps named, the launcher's Local test rate (its
+                             host.ini frame_cap: 60 by default; 0 = its Uncapped, 240), the same text the
+                             launcher merges (sandbox.hpp LowGraphicsSettingsCfgAt); supervisor.log says which
+                             ("graphics low: the game's frame limit 60 fps (the launcher's Local test rate)")
 @guest <step>                the step goes to the guest game (role host); @both <mod command> to both
 timeout <s>                  steps limit, 30..360 (default 360). The game's whole lifetime is capped
                              at 360 s: steps get at most 315 s, the last 45 s are kept for the
@@ -618,6 +622,62 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   trike (TA* / TB*) and rides in the host's truck (CA* / CB*). Evidence: the `[headgear] drawn vs her drawn head` lines
   per phase (`self_view 15 1`). Runs `20261121-092819-two-games-headgear` (on foot 1.20 / 15.8 cm -> 0.00 / 0.00),
   `20261121-092558-two-games-headgear-vehicle` (trike 2.07 / 13.3 -> 0.00 / 0.17).
+* `fragile-suit-colours.txt` and `fragile-suit-tune.txt` (role solo, `fragile_suit` self view, `start`): Fragile's porter
+  suit in Sam's suit colours (docs/real-partner-body.md section 27) from the front: gold by herself (the 100% save), then
+  `real_outfit 5 <c>` silver, 9, her own, 1, 4, 13, gold, then following our own Sam's byte (`real_outfit 4`); the tune
+  one compares the metal variants (`real_outfit 8`). Run `20261121-141717-fragile-suit-colours`.
+* `two-games-fragile-suit.txt` (role host, `launcherini local-test`, `start`, `-SeedSaves complete-100 -GuestSeed
+  profile-only`): the guest's Fragile at `mknot-road` facing the host while the guest's own Sam's colour byte goes 16,
+  15, 9, 1, 13, 0, 16 (`real_outfit 4`); both screens follow (`[suit] body ...: colour N on (#k` on each game; host
+  `0N-host-sees-guest-*`, guest `0N-guest-self-*`); the host's own Sam stays gold (`07-*`). Run
+  `20261121-142205-two-games-fragile-suit`.
+* **Shared structures** (W1, docs/world-sync.md; `-SeedSaves complete-100`, two-game ones `-GuestSeed profile-only`):
+  `world-census` (solo: the census, record round trips, the online gate and a minute of the game's own OTGC requests,
+  reads only), `world-build-solo` (solo: `dev_build` with the build-up and printer, screenshots at +0.5 / 2 / 5 / 10 s,
+  a watchtower without animation, a dismantle), `two-games-world-build` (`launcherini local-test`: a host build mirrored
+  on the guest and a guest build held, created by the host and mirrored back, screenshots of both screens `H*` / `G*`,
+  both dismantles `R*`), `two-games-world-persist` (`launcherini local-test`: one build each way, the host's save and
+  an in-world load of it, each structure exactly once in both worlds afterwards), `two-games-world-off` (`ini` lines:
+  the guest's byte site failed by `world_test_fail`, nothing shared), `world-pcc-probe` (solo calibration of the real
+  PCC inputs; not a pass/fail test). Runs `20261121-150217`, `151253`, `152649`, `152057`, `153731`: all pass.
+* **Shared contributions** (W2, docs/world-sync.md "Contributions"; same seeds): `world-contrib-solo` (solo: the game's
+  own contribution machinery on a dev-built postbox: half of what level 2 needs, the rest and the terminal's level-up
+  request, the level-up countdown in `00..03`, level 2, a decay and a repair), `two-games-world-contrib` (`launcherini
+  local-test`: A the host's postbox, the host pays half, the guest the rest (MATS; her own level-up request swallowed),
+  the level-up on both screens `A1..A3`; B the guest's watchtower at `road-holo`, she pays half, the host the rest (its
+  own terminal step), `B1..B3`; C the host's durability drop reaches her (DUR) and her repair reaches the host (MATS
+  repair)), `two-games-world-contrib-persist` (both pay the whole remainder in the same step: one shared total, one
+  level-up per world; the host's save and an in-world load: level 2 and the same materials in both worlds, the guest's
+  join `created 0`; a contribution after the load), `two-games-world-contrib-ui` (the GUEST pays through the game's own
+  upgrade UI with her pad: X tap, START held, A, A, DPAD_RIGHT held, A, A held = 32 chiral crystals out of her
+  inventory through the real terminal commit, screenshots `U1..U8`), `world-contrib-ui-probe` (solo calibration of that
+  UI; not a pass/fail test). See docs/world-sync.md for the runs.
+* **Shared ladders and climbing ropes** (W3, docs/world-sync.md "Ladders and climbing ropes"; same seeds; world sync is
+  now on by default with `host_save=1`, so every two-game host_save scenario runs with it): `world-ladder-census` (solo:
+  the save's own ladders / ropes, `dev_ladder` on the road and `dev_rope` at a cliff edge through the game's placement
+  check, round trips EQUAL), `two-games-world-ladders` (`launcherini local-test`: a ladder each way, the fields equal in
+  both worlds, the guest and then the host collapse theirs with the game's own prompt (`pad START 2600` near it): REMREQ
+  / REM pickup, counts 0 / 0; a host rope mirrored and recovered by the guest at its anchor), `two-games-world-ladder-ui`
+  (the GUEST places a real ladder through the game's UI at a cliff edge: `world_sync 15` aims her camera down the slope,
+  `pad DPAD_RIGHT 1200 keep` + `pad DPAD_RIGHT 900 rx=18795 ry=-26840 keep` picks the ladder in the tools radial, LT held
+  shows the hologram, an RT tap places it: her native commit held -> GBUILD -> created by the host; then the HOST does the
+  same), `two-games-world-ladders-persist` (a rope and two ladders, the host's save and an in-world load: each exactly once
+  in both worlds, the guest's join `created 0`), `two-games-world-ladder-probe` / `world-ladder-ui-probe` (calibration).
+  New helpers: `world_sync 12 <id> [m]` (Sam next to a structure through `dev_goto`, then `waitworld 45 goto`),
+  `world_sync 14` (a flag watch), `world_sync 15` (camera aim). Batch `round5-w3`: 10 / 10 pass.
+* **Shared ziplines** (W4, docs/world-sync.md "Ziplines (W4)"; same seeds, `launcherini local-test`): `world-zipline-solo`
+  (solo: the `zipline` byte checks, `dev_build 22 1 12` at `mknot-road`, its links (`world_sync 16`), round trip EQUAL,
+  an upgrade to level 2 with `dev_build_mats`), `two-games-world-ziplines` (a zipline each way, counts and links equal in
+  both worlds, the guest pays the host's zipline's upgrade (level 2 in both), a host ladder's durability set to 500 s
+  reaches the guest (DUR), dismantles both ways), `two-games-world-ziplines-persist` (a zipline each way, the host's save
+  and an in-world load: each exactly once in both worlds with the same ids and links, the guest's join `created 0`),
+  `two-games-world-zipline-ui` (BOTH players build a zipline through the game's REAL PCC UI with the virtual pad: the
+  PCC from the tools radial `pad DPAD_RIGHT 1200 keep` + `pad DPAD_RIGHT 900 rx=-26200 ry=-19700 keep`, the zipline from
+  the structure radial `pad DPAD_DOWN 1200 keep` + `pad DPAD_DOWN 900 rx=25300 ry=-20800 keep` (10:30 = generator, 7:30
+  = watchtower, up = timefall shelter, down = safe house, left = cargo catapult), LT held = the hologram, an RT tap =
+  Build; at `-1195 320` (a road site, buildable) for the host, `-1260 250` for the guest: a zipline keeps its distance
+  from other structures and the game builds one structure at a time), `world-pcc-ui-probe`..`world-pcc-ui-probe5` (solo
+  calibration; the 100% save's Sam carries one PCC Lv. 2, which the build spends). Batch `round5-w4`: 11 / 11 pass.
 * `two-games-self-vehicle.txt` (role host, `launcherini local-test`, `-SeedSaves complete-100 -GuestSeed profile-only`):
   the guest's self body on foot (run, stop, reverse, diagonal), driving the truck from a stop in v0.19's rule
   (`self_view 13 0`) then v0.20's, side views (S1*/S2*), the host watching (H1*/H2*); getting off (the guest waits on
@@ -906,6 +966,10 @@ command (one hidden run at a time still holds: the supervisor's mutex refuses a 
 game exit code / seconds alive / CPU seconds, violation, windows seen on the private
 desktop, restore notes, `saves_redirected` + `saves_evidence`, `saves_unchanged`,
 `save_changes` (real tree, before restoring), `scratch_changes`, `cloud_uploads`,
+`game_server_writes` (every `[gate] OTGC WRITE request` line of both games' logs: a request that writes to the game
+ server; any fails the run), `online_blocked` (the online gate's dropped total, docs/world-sync.md) and `online_gate` /
+`online_gate_ok` (round 5: each modded game's `[gate] online gate ON`; a game without it fails the run: without the gate
+there is no OTGC logger and `game_server_writes` would mean nothing),
 `exit_trace`, the last lines of the game's stdout, every step with its detail),
 `supervisor.log`, `scenario.txt`, `game-stdout.txt` (ds.exe's own log), `game\`
 (`stranded_together.log`, `saves-redirect.txt`, `exit-trace.txt`, ...),
@@ -934,6 +998,11 @@ saves changed / cloud upload / restore incomplete, 2 refused (preflight), 3 safe
   or Start-TestRun does it, up to 3 times, when `restored.txt` or `saves-restored.txt` is
   missing or says INCOMPLETE). The game-folder restore never touches paths outside the
   game folder; the saves restore only the save root recorded in `saves-restore.txt`.
+* The game server: a hidden run's host plays signed in with the player's account, so the mod's online gate
+  (docs/world-sync.md) is installed in every hidden run and drops the game's structure uploads, deletions, materials
+  uploads, telemetry and likes (the likes manager's sendLike sender, W2) on both games; the supervisor fails a run whose
+  logs show a write request (`game_server_writes`) and (round 5) a run whose modded game never logged `[gate] online gate
+  ON` (`online_gate_ok`); the world-changing world tools refuse in a hidden run without the gate.
 * 6 minutes of game lifetime per run at most (final screenshot, quit and kill included).
   Steam shows you as playing Death Stranding during a run.
 
@@ -1138,6 +1207,17 @@ hidden: `Start-TestRun.ps1 -Scenario two-games -SeedSaves complete-100`.
   seat back after a save") and `[ride] host: our Sam back on the truck's seat after the save`; carried to the end of the
   lap. `two-games-ride-save-host` turns the seat back off (`ride_test 29 0`): it checks where the save put him and loads
   it there.
+* **The trike driver's back** (v0.23, docs/real-partner-body.md section 24.18; all `launcherini local-test`, `start`,
+  `-SeedSaves complete-100`): `two-games-ride-trike-pack`: the host drives the Kusanagi, the guest rides the pillion,
+  then the swap; `[ride] trike pillion: the driver's backpack and cargo hidden (... +0x4C7C 0x00 -> 0x03; #n)` on the
+  driver, `[gear] the partner's backpack props hidden` on the passenger, `[gear] our carried cargo: 9 of 9 pieces hidden`
+  and back to 0 after `shown again (the ride is over)`; P01-P03 / Q01-Q03 on both screens (before, seated, after); both
+  games' `[smooth] fps` about 60 with `cap 60` (the launcher's rate). `two-games-ride-trike-pack-exits`: a crash
+  (`ride_test 4`), the roll (`ride_test 5`) and the module's emergency stop with the hide held (`ride_test 36 1`, then
+  `ride_test 9`: `shown again (the mod stopped)`); `ride_state`'s `trike pillion hide on, held 0 (N hide(s), N release(s))`
+  after each. `two-games-ride-trike-pack-save`: a save asked of the game while the driver's hide is held is refused by
+  the game itself (`refusal reasons 0x00000200`: Sam on a vehicle); on foot with the hide forced on, a save is written,
+  the hide given back and that save loaded: the loaded inventory byte is 0x00 (never in the save).
 * **The save guard scenarios** (`ini host_save=1`, `-GuestSeed profile-only`, docs/real-partner-body.md section 24.12):
   `two-games-ride-save-host` (a save on foot runs at once; a save while the host rides is held, the ride ends, Sam is
   put beside the truck, then the save is written; the host loads it and stands where he was put),
@@ -1182,7 +1262,11 @@ hidden: `Start-TestRun.ps1 -Scenario two-games -SeedSaves complete-100`.
   0 times for 40 s). `graphics low` writes `frame_cap=30` (the mod waits on the game thread once
   per presented frame): the host's CPU time per second alive fell from 8.1 s (run 154851) to 1.9 s (run 161556).
 * **Frame rates.** `graphics low` also writes `"fps" "30"` and `"limit_fps" "30"` into the redirected
-  settings.cfg, and that limit wins over any frame cap: run 20261117-144836 stayed at 30.0 fps with the cap
+  settings.cfg (v0.23: a `launcherini` run without `graphics low <fps>` writes the launcher's Local test rate instead,
+  60 by default: both games 58-61 fps, median 60.0, runs `20261121-133753`, `-133938`, `-134423`; the plain `graphics
+  low` of the `ini`-file scenarios stays at 30, run `20261121-134129`: median 30.0; these are not the same code path:
+  the launcher's choice reaches the hidden env only through its host.ini),
+  and that limit wins over any frame cap: run 20261117-144836 stayed at 30.0 fps with the cap
   off. For other rates in two games write `graphics low 120` (the same preset with `"fps" "120"` and
   `"limit_fps" "120"`; run 20261117-154136: 64-69 fps each uncapped on this PC; earlier the same through
   `-SettingsCfg`, run 20261117-145300: about 80 fps), then `ini frame_cap=<n>` or, at run time,

@@ -105,7 +105,7 @@ void MaskAddress(std::uint32_t address, char (&out)[16]) noexcept;
 void FormatAddress(std::uint32_t address, char (&out)[16]) noexcept;
 
 // --- Messages inside a DATA body: u8 type | u8 flags (0) | u16 len | len bytes.
-// DATAGRAM (5, world sync; docs/world-sync-protocol.md): u8 channel 1..3 | u8 0 |
+// DATAGRAM (5; docs/world-sync.md uses the reliable channel 1 instead): u8 channel 1..3 | u8 0 |
 // u16 0 | payload <= kMaxDatagramPayload, unreliable and unordered. A reader
 // that predates it skips it by its length like any unknown type.
 enum class MsgType : std::uint8_t { frame = 1, reliable = 2, close = 3, relack = 4, datagram = 5 };

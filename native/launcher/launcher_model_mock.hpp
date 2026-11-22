@@ -124,6 +124,7 @@ public:
     }
     LocalTestView local_test() const override;
     void set_local_test_host_pad(bool on) override { host_pad_ = on; }
+    void set_local_test_fps(int fps) override { fps_ = fps; }
     void set_local_test_guest_character(const std::string& key) override;
     bool start_local_test(std::string& error_out) override;
     // screenshot driver: the local test `seconds` after it started (< 0: not running)
@@ -181,6 +182,7 @@ private:
         return v;
     }();
     bool host_pad_ = false;
+    int fps_ = 60;
     std::string guest_character_ = "fragile_suit";   // core::kGuestCharacter
     double local_start_ = -1.0;   // mock clock; < 0 when no local test runs
 };

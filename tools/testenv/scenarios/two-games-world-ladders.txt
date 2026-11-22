@@ -1,0 +1,145 @@
+# Shared structures W3 (docs/world-sync.md): ladders and climbing ropes between two games on the launcher's own Local test
+# files (world_sync=1; world_ladders default 1), hidden:
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-world-ladders -Id round5-w3 -SeedSaves complete-100 -GuestSeed profile-only
+# 1. Join: the 100% save's own ladders and ropes are shared too (bound by id at the join check).
+# 2. The host places a ladder (dev_ladder: the game's placement check snaps it, the game's own queue, offline): the census
+#    sends ADD, the guest mirrors it with the host's id. The guest places one: her record is HELD, GBUILD, the host creates it
+#    (offline 1, its own id), ADD answers her request, she mirrors it. Screenshots from both screens; the records' ladder
+#    fields equal in both worlds (world_sync 4).
+# 3. Pick-ups through the game's own UI (the virtual pad: "Hold START: Collapse Ladder"): the GUEST collapses her ladder (the
+#    item goes back into HER inventory) -> REMREQ pickup -> the host removes its copy with the removal bits (no item for the
+#    host); the HOST collapses his -> REM pickup -> the guest's copy goes. Counts 0 in both worlds.
+# 4. A climbing rope (dev_rope at an edge the 100% save has a rope on): mirrored; the guest recovers it at its anchor ("Hold
+#    START: Recover Rope") -> REMREQ pickup -> gone in both worlds. The host places another; she grabs it ("Grab Rope", X)
+#    and climbs down on it in her world (screenshots only, no check: whether she stands within reach of the anchor depends
+#    on where the placement check put it; the climb on the host's rope is shown in run 20261121-174141, R2 / R3).
+# Pass: the log lines below, counts equal in both worlds, no FAULT, no byte check failure, no OTGC WRITE, both exit 0.
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+waitlog 10 \[world\] world sync ON \(host\): shared structures \(PCC structures, ladders and climbing ropes
+@guest waitlog 90 \[world\] world sync ON \(guest\): shared structures \(PCC structures, ladders and climbing ropes
+@guest waitlog 120 \[world\] guest: snapshot #1 complete: bound [0-9]+, created 0, removed 0, replaced 0
+waitlog 10 \[world\] host: the partner's HELLO: world sync on, parts 15
+@both goto mknot-road
+wait 4000
+# ---- 2. the host's ladder (4 m ahead), then the guest's (5 m to the right, 4 m ahead of her)
+action dev_ladder 0 0 4
+waitnew 5 \[world\] dev build: id [0-9]+ type 25 \(ladder\) anim 1 .* offline 1 \(ladder\)
+waitlog 5 \[world\] host: new structure hid [0-9]+ type 25 \(ladder\) origin host anim 1 printer 0 offline 1 -> ADD
+@guest waitlog 10 \[world\] guest: mirror hid [0-9]+ -> gid [0-9]+ \(exact\) type 25 \(ladder\) anim 1 printer 0 \(the host's build\)
+@guest pad none 1400 lx=32767
+@guest pad none 450 ly=32767
+@guest wait 1500
+@guest action dev_ladder 0 0 4
+@guest waitnew 5 \[world\] dev build: type 25 \(ladder\) .*held for the host
+@guest waitlog 10 \[world\] guest: local build type 25 \(ladder\) held, request #1 sent
+waitlog 10 \[world\] host: the guest's build #1: created hid [0-9]+ type 25 \(ladder\) offline 1 anim 1 printer 0 \(dev\)
+waitlog 10 \[world\] host: new structure hid [0-9]+ type 25 \(ladder\) origin guest anim 1 printer 0 offline 1 -> ADD
+@guest waitlog 10 \[world\] guest: build #1 confirmed as hid [0-9]+
+@guest waitlog 10 \[world\] guest: mirror hid [0-9]+ ok: gid [0-9]+ state 2 level [0-9] offline 1 server id empty
+wait 2000
+screenshot L1-host-two-ladders
+@guest screenshot L1-guest-two-ladders
+action world_sync 10 25 40
+waitnew 3 \[world\] check: type 25 within 40 m: 2 \(ids [0-9]+ [0-9]+\) offline 2
+@guest action world_sync 10 25 40
+@guest waitnew 3 \[world\] check: type 25 within 40 m: 2 \(ids [0-9]+ [0-9]+\) offline 2
+action world_sync 4 0
+@guest action world_sync 4 0
+@guest waitnew 3 \[world\] ladder id [0-9]+ \(hid [0-9]+\): mode [01] lengths 9.65 / 9.65
+action world_sync 11 0
+waitnew 3 \[world\] round trip id [0-9]+ type 25 \(ladder\): EQUAL
+@guest action world_sync 11 0
+@guest waitnew 3 \[world\] round trip id [0-9]+ type 25 \(ladder\): EQUAL
+@both action world_sync 14 0
+# ---- 3a. the guest walks up to HER ladder and collapses it with the game's own prompt (START held)
+@guest pad none 700 ly=32767
+@guest wait 1200
+@guest screenshot C1-guest-at-her-ladder
+@guest pad START 2600
+@guest wait 2500
+@guest screenshot C2-guest-collapsed
+@guest waitlog 10 \[world\] guest: we picked up hid [0-9]+ \(ladder, durability [0-9]+ s left\) -> REMREQ pickup
+waitlog 10 \[world\] host: the guest picked up hid [0-9]+ \(ladder\): removed here too \(removal bits, no item\)
+waitlog 10 \[world\] host: hid [0-9]+ \(ladder\) removed \(pickup\)
+# ---- 3b. the host walks up to HIS ladder and collapses it
+pad none 700 ly=32767
+wait 1200
+screenshot C3-host-at-his-ladder
+pad START 2600
+wait 2500
+screenshot C4-host-collapsed
+waitlog 10 \[world\] host: hid [0-9]+ \(ladder\) removed \(pickup\).* -> REM
+@guest waitlog 10 \[world\] guest: REM hid [0-9]+ \(ladder\) pickup: removed gid [0-9]+ \(removal bits\)
+wait 3000
+action world_sync 10 25 40
+waitnew 3 \[world\] check: type 25 within 40 m: 0
+@guest action world_sync 10 25 40
+@guest waitnew 3 \[world\] check: type 25 within 40 m: 0
+screenshot C5-host-after
+@guest screenshot C5-guest-after
+# ---- 4. a climbing rope by the host; the guest grabs it, then recovers it
+@both goto -1153.4 338.0
+wait 3000
+action dev_rope 10 0 3
+waitnew 5 \[world\] dev rope: the game's placement check accepts
+waitlog 5 \[world\] host: new structure hid [0-9]+ type 28 \(climbing rope\) origin host anim 1 printer 0 offline 1 -> ADD
+@guest waitlog 10 \[world\] guest: mirror hid [0-9]+ -> gid [0-9]+ \(exact\) type 28 \(climbing rope\) anim 1 printer 0 \(the host's build\)
+@guest waitlog 10 \[world\] guest: mirror hid [0-9]+ ok: gid [0-9]+ state 2
+wait 1500
+action world_sync 4 0
+@guest action world_sync 4 0
+@guest waitnew 3 \[world\] rope id [0-9]+ \(hid [0-9]+\): length
+screenshot R1-host-rope
+@guest screenshot R1-guest-at-host-rope
+# 4a. she recovers the host's rope at its anchor ("Hold START: Recover Rope"): REMREQ pickup, gone in both worlds
+@guest action world_sync 12 0 0.8
+@guest waitworld 45 goto
+@guest wait 1500
+@guest screenshot R2-guest-at-the-anchor
+@guest pad START 2600
+@guest wait 2500
+@guest screenshot R3-guest-recovered
+@guest waitlog 10 \[world\] guest: we picked up hid [0-9]+ \(climbing rope, durability [0-9]+ s left\) -> REMREQ pickup
+waitlog 10 \[world\] host: the guest picked up hid [0-9]+ \(climbing rope\): removed here too \(removal bits, no item\)
+wait 3000
+action world_sync 10 28 30
+waitnew 3 \[world\] check: type 28 within 30 m: 0
+@guest action world_sync 10 28 30
+@guest waitnew 3 \[world\] check: type 28 within 30 m: 0
+screenshot R3-host-after-her-pickup
+# 4b. the host places another; she grabs it ("Grab Rope", X) and climbs down on it in her world
+action dev_rope 10 0 3
+waitnew 5 \[world\] dev rope: the game's placement check accepts
+@guest waitlog 10 \[world\] guest: mirror hid [0-9]+ -> gid [0-9]+ \(exact\) type 28 \(climbing rope\) anim 1 printer 0 \(the host's build\)
+@guest waitlog 10 \[world\] guest: mirror hid [0-9]+ ok: gid [0-9]+ state 2
+@guest goto -1153.4 338.0
+@guest wait 1500
+@guest screenshot R4-guest-at-host-rope-2
+@guest pad X 1500
+@guest wait 2500
+@guest screenshot R4-guest-grabs-host-rope
+@guest pad none 1500 ly=-32767
+@guest wait 1500
+@guest screenshot R5-guest-on-host-rope
+screenshot R5-host-sees-her-on-it
+action world_sync 10 28 30
+waitnew 3 \[world\] check: type 28 within 30 m: 1 \(ids [0-9]+\) offline 1
+@guest action world_sync 10 28 30
+@guest waitnew 3 \[world\] check: type 28 within 30 m: 1 \(ids [0-9]+\) offline 1
+@both action world_sync 3
+nolog \[world\].*FAULT
+@guest nolog \[world\].*FAULT
+nolog \[world\] byte check FAILED
+@guest nolog \[world\] byte check FAILED
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+nolog \[world\] guest: mirror FAIL
+@guest nolog \[world\] guest: mirror FAIL
+nolog \[world\] host: LOST
+@guest quit
+wait 3000
+quit

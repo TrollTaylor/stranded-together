@@ -20,6 +20,7 @@ enum class Tool : std::uint8_t {
     world,          // this game's own world or inventory (weather, MULEs, BTs, boots, chiral crystals)
     vehicle_spawn,  // a new vehicle (in a host-held save session it lives in the host's world: the host's game decides)
     vehicle_edit,   // an existing vehicle (remove, repair)
+    structure,      // a structure (dev_build ...; docs/world-sync.md): in a host-held save session it lives in the host's world
 };
 
 struct Session {
@@ -55,7 +56,7 @@ inline Verdict Decide(Tool t, const Session& s) noexcept {
     const bool coop_guest = s.role == 2 && s.host_save;
     if (coop_guest) {
         // the guest's game always runs on its sandbox; its world is a copy of the host's save and is never kept
-        if (t == Tool::vehicle_spawn) return v.route = Route::ask_host, v;
+        if (t == Tool::vehicle_spawn || t == Tool::structure) return v.route = Route::ask_host, v;
         if (t == Tool::vehicle_edit) return v.why = kGuestEditReason, v;
         if (!s.saves_redirected) return v.why = kRealSaveReason, v;  // DllMain refuses this session anyway
         return v.route = Route::local_only, v;

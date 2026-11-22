@@ -1,0 +1,37 @@
+# Shared structures W1a (docs/world-sync.md), solo, read-only: the construction point census, the record round trip and
+# the online gate, hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario world-census -SeedSaves complete-100
+# The byte checks pass and the online gate is ON (every hidden run: nothing the tests build may reach the game server);
+# world_dump lists the 100% save's structures (Player ids 10000+, Net ids 100000+, levels 0..5); a record round trip of the
+# nearest shared structure is EQUAL (ExportInfo twice, the Record back into a record, the live fields); the OTGC requests
+# the game builds while it idles a minute are logged (reads only: zero WRITE).
+# Pass: every step ok, "byte checks: ok", round trips EQUAL, no "[gate] OTGC WRITE", saves unchanged.
+role solo
+timeout 300
+ini dev_tools=1
+start
+wait 3000
+waitlog 5 \[world\] byte checks: ok
+waitlog 5 \[gate\] online gate ON
+action world_dump -1 24
+action world_sync 13
+goto mknot
+wait 3000
+action world_dump -1 24
+action world_sync 11 0
+waitnew 3 \[world\] round trip id [0-9]+ .*: EQUAL
+screenshot 00-mknot
+goto mknot-road
+wait 3000
+action world_dump -1 16
+action world_sync 11 0
+waitnew 3 \[world\] round trip id [0-9]+ .*: EQUAL
+action world_sync 10 -1 300
+screenshot 01-mknot-road
+# a minute of idling: the OTGC requests the game builds on its own
+wait 60000
+action world_sync 3
+nolog \[world\].*FAULT
+nolog \[world\] byte check FAILED
+nolog \[gate\] OTGC WRITE
+quit

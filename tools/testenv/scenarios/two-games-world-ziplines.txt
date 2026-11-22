@@ -1,0 +1,141 @@
+# Shared structures W4 (docs/world-sync.md): ziplines between two games on the launcher's own Local test files, hidden:
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-world-ziplines -Id round5-w4 -SeedSaves complete-100 -GuestSeed profile-only
+# 1. Join: the 100% save's 71 Player ziplines are bound with the rest (same ids, same places).
+# 2. The host builds a zipline (dev_build: the PCC commit's steps through the game's own queue, offline): ADD -> the guest
+#    mirrors it with the host's id, the build-up and the printer on both screens.
+# 3. The guest builds one a few metres away: held -> GBUILD -> the host creates it (offline 1) -> ADD -> confirmed.
+# 4. Counts in both worlds (2 within 60 m, the same ids) and each world's own links (world_sync 16: the game links a new
+#    zipline to every zipline in range when it activates; the logs of both games list the same ids).
+# 5. The guest pays the host's zipline's upgrade (dev_build_mats: her terminal's AddOwn -> MATS; the host applies it and
+#    queues the level-up -> STATE): level 2 in both worlds, the level-up on both screens.
+# 6. Dismantles both ways: the guest dismantles the host's zipline (REMREQ), the host the guest's (REM manual). Counts 0.
+# Pass: the log lines named below, counts equal in both worlds, no FAULT, no byte check failure, no OTGC WRITE, both exit 0.
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+waitlog 10 \[world\] world sync ON \(host\): shared structures \(PCC structures, ladders and climbing ropes, ziplines
+@guest waitlog 90 \[world\] world sync ON \(guest\): shared structures \(PCC structures, ladders and climbing ropes, ziplines
+@guest waitlog 120 \[world\] guest: snapshot #1 complete: bound [0-9]+, created 0, removed 0, replaced 0
+waitlog 10 \[world\] host: the partner's HELLO: world sync on, parts 15
+@both goto mknot-road
+wait 5000
+action world_sync 10 22 60
+waitnew 3 \[world\] check: type 22 within 60 m: 0
+@guest action world_sync 10 22 60
+@guest waitnew 3 \[world\] check: type 22 within 60 m: 0
+# ---- 2. the host builds a zipline 12 m in front of its Sam
+action dev_build 22 1 12
+waitnew 5 \[world\] dev build: id [0-9]+ type 22 \(zipline\) anim 1 .* offline 1
+waitlog 5 \[world\] host: new structure hid [0-9]+ type 22 \(zipline\) origin host anim 1 printer 1 offline 1 -> ADD
+@guest waitlog 10 \[world\] guest: mirror hid [0-9]+ -> gid [0-9]+ \(exact\) type 22 \(zipline\) anim 1 printer 1 \(the host's build\)
+@guest action world_sync 15 10166
+?@guest until 20 150 \[world\] camera aimed #1 => pad none 200 rx=32767
+wait 1500
+screenshot H1-host-builds-2s
+@guest screenshot H1-guest-sees-2s
+wait 4500
+screenshot H2-host-builds-6s
+@guest screenshot H2-guest-sees-6s
+@guest waitlog 10 \[world\] guest: mirror hid [0-9]+ ok: gid [0-9]+ state [0-9] level [0-9] offline 1 server id empty
+# ---- 3. the guest steps to the right, then builds a zipline 16 m in front of her Sam
+@guest pad none 1400 lx=32767
+@guest pad none 450 ly=32767
+@guest wait 2000
+@guest action dev_build 22 1 16
+@guest waitnew 5 \[world\] dev build: type 22 \(zipline\) .*held for the host
+@guest waitlog 10 \[world\] guest: local build type 22 \(zipline\) held, request #1 sent
+waitlog 10 \[world\] host: the guest's build #1: created hid [0-9]+ type 22 \(zipline\) offline 1 anim 1 printer 1 \(dev\)
+waitlog 10 \[world\] host: new structure hid [0-9]+ type 22 \(zipline\) origin guest anim 1 printer 1 offline 1 -> ADD
+@guest waitlog 10 \[world\] guest: build #1 confirmed as hid [0-9]+
+action world_sync 15 10167
+?until 20 150 \[world\] camera aimed #1 => pad none 200 rx=32767
+wait 1500
+screenshot G1-host-sees-2s
+@guest screenshot G1-guest-builds-2s
+wait 4500
+screenshot G2-host-sees-6s
+@guest screenshot G2-guest-builds-6s
+wait 14000
+screenshot G3-host-built
+@guest screenshot G3-guest-built
+# ---- 4. counts and links in both worlds
+action world_sync 10 22 60
+waitnew 3 \[world\] check: type 22 within 60 m: 2 \(ids [0-9]+ [0-9]+\) offline 2 level 1
+@guest action world_sync 10 22 60
+@guest waitnew 3 \[world\] check: type 22 within 60 m: 2 \(ids [0-9]+ [0-9]+\) offline 2 level 1
+action world_sync 16 0 60
+waitnew 3 \[world\] zipline id [0-9]+ \(hid [0-9]+, zipline, net 1, level 1, state 2\) at .*: [0-9]+ link
+@guest action world_sync 16 0 60
+@guest waitnew 3 \[world\] zipline id [0-9]+ \(hid [0-9]+, zipline, net 1, level 1, state 2\) at .*: [0-9]+ link
+@both action world_sync 0
+@guest action world_sync 2
+# ---- 4b. (the W3 gap) a ladder's durability follows the host's: the host places a ladder, sets its durability to 500 s,
+# the host's DUR carries it, the guest's copy follows
+action dev_ladder 0 0 4
+waitnew 5 \[world\] dev ladder: the game's placement check accepts
+@guest waitlog 10 \[world\] guest: mirror hid 10168 -> gid 10168 \(exact\) type 25 \(ladder\)
+wait 3000
+action dev_build_decay 10168 500
+waitnew 3 \[world\] dev decay: id 10168 \(ladder\) durability
+@guest waitlog 12 \[world\] guest: DUR [0-9]+: [0-9]+ applied, [0-9]+ moved more than 2 % \(the most: hid 10168 
+@guest action world_sync 4 10168
+@guest waitnew 3 \[world\] structure id 10168 \(hid 10168\) type 25 \(ladder\) state 2 level [0-9] at .* dur 4[0-9][0-9]\.
+action world_sync 4 10168
+# ---- 5. the guest pays the upgrade of the host's zipline (the nearer one is hers: by id)
+action world_dump 9 3 2
+@guest action world_dump 9 3 2
+@guest action world_sync 4 10166
+action world_sync 15 10166
+?until 20 150 \[world\] camera aimed #2 => pad none 200 rx=32767
+@guest action world_sync 15 10166
+?@guest until 20 150 \[world\] camera aimed #2 => pad none 200 rx=32767
+@guest action dev_build_mats 10166 0 1
+@guest waitnew 3 \[world\] dev contribution: id 10166 \(hid 10166, zipline\) level 1: materials
+waitlog 10 \[world\] host: the guest's contribution #[0-9]+ on hid 10166 \(zipline\): applied .* level-up queued
+@guest waitlog 10 \[world\] guest: our contribution #[0-9]+ on hid 10166 answered by the host
+wait 2000
+screenshot C1-host-levelup
+@guest screenshot C1-guest-levelup
+wait 22000
+action world_sync 4 10166
+@guest action world_sync 4 10166
+action world_sync 10 22 60
+waitnew 3 \[world\] check: type 22 within 60 m: 2 \(ids [0-9]+ [0-9]+\) offline 2
+@guest action world_sync 10 22 60
+@guest waitnew 3 \[world\] check: type 22 within 60 m: 2 \(ids [0-9]+ [0-9]+\) offline 2
+waitlog 3 \[world\] structure id 10166 \(hid 10166\) type 22 \(zipline\) state 2 level 2
+@guest waitlog 3 \[world\] structure id 10166 \(hid 10166\) type 22 \(zipline\) state 2 level 2
+screenshot C2-host-level2
+@guest screenshot C2-guest-level2
+# ---- 6. dismantles: the guest dismantles the host's zipline, the host the guest's
+@guest action dev_build_remove 10166 1
+@guest waitnew 3 \[world\] dev remove: id 10166 \(zipline\) dismantled
+@guest waitlog 5 \[world\] guest: we dismantled hid 10166 \(zipline\) -> REMREQ
+waitlog 10 \[world\] host: the guest dismantled hid 10166 \(zipline\): removed here too
+wait 8000
+action dev_build_remove 10167 1
+waitnew 3 \[world\] dev remove: id 10167 \(zipline\) dismantled
+waitlog 5 \[world\] host: hid 10167 \(zipline\) removed \(manual\).* -> REM
+@guest waitlog 10 \[world\] guest: REM hid 10167 \(zipline\) manual: removed gid 10167
+wait 2000
+screenshot R1-host-dismantles
+@guest screenshot R1-guest-sees
+wait 14000
+action world_sync 10 22 60
+waitnew 3 \[world\] check: type 22 within 60 m: 0
+@guest action world_sync 10 22 60
+@guest waitnew 3 \[world\] check: type 22 within 60 m: 0
+@both action world_sync 3
+nolog \[world\].*FAULT
+@guest nolog \[world\].*FAULT
+nolog \[world\] byte check FAILED
+@guest nolog \[world\] byte check FAILED
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+nolog \[world\] guest: mirror FAIL
+@guest nolog \[world\] guest: mirror FAIL
+@guest quit
+wait 3000
+quit

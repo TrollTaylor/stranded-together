@@ -1,0 +1,38 @@
+# Shared structures W4 (docs/world-sync.md): calibration probe 4 for the PCC's real UI (hidden env's virtual pad), solo: the
+# zipline in the structure radial (D-pad down held, right stick to about 7:30), its hologram (LT held) and RT: Build.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios world-pcc-ui-probe4 -Id round5-w4-dev -SeedSaves complete-100
+role solo
+timeout 300
+ini dev_tools=1
+start
+wait 3000
+goto -1260 250
+wait 4000
+action world_sync 10 22 80
+pad DPAD_RIGHT 1200 keep
+pad DPAD_RIGHT 900 rx=-26200 ry=-19700 keep
+pad none 0
+wait 1500
+pad DPAD_DOWN 1200 keep
+pad DPAD_DOWN 900 rx=-26500 ry=-19300 keep
+screenshot Z0-radial-zipline
+pad none 0
+wait 1500
+pad none 1500 lt=255 keep
+screenshot Z1-lt-zipline
+pad none 300 lt=255 rt=255 keep
+pad none 1500 lt=255 keep
+screenshot Z2-lt-rt
+pad none 0
+wait 3000
+screenshot Z3-after
+action world_sync 10 22 80
+pad none 1500 lt=255 keep
+pad none 2500 lt=255 rt=255 keep
+screenshot Z4-lt-rt-held
+pad none 0
+wait 3000
+screenshot Z5-after
+action world_sync 10 22 80
+action world_sync 3
+quit

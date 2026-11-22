@@ -1,0 +1,49 @@
+# Shared structures W1 (docs/world-sync.md): calibration probe for the game's real PCC path with the hidden env's virtual
+# pad (never SendInput), solo. The 100% save's quickstart has Sam holding the PCC (level 2) with its build preview (a
+# postbox, "LT: Adjust Structure Location"); this probe tries the confirm inputs one by one and logs the census after each
+# (a native commit makes a new Player id and the gate logs "dropped RegisterNew" in a hidden run).
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario world-pcc-probe -SeedSaves complete-100
+role solo
+timeout 240
+ini dev_tools=1
+start
+wait 3000
+goto mknot-road
+wait 4000
+pad DPAD_RIGHT 150
+wait 1500
+screenshot 00-preview
+action world_sync 10 -1 40
+# 1. RT held 2.5 s
+pad none 2500 rt=255 keep
+screenshot 01-rt-held
+pad none 0
+wait 2500
+screenshot 02-after-rt
+action world_sync 10 -1 40
+# 2. RB held 2.5 s
+pad RB 2500 keep
+screenshot 03-rb-held
+pad none 0
+wait 2500
+screenshot 04-after-rb
+action world_sync 10 -1 40
+# 3. A, X held
+pad A 300
+wait 1500
+screenshot 05-after-a
+action world_sync 10 -1 40
+pad X 2000
+wait 1500
+screenshot 06-after-x
+action world_sync 10 -1 40
+# 4. LT + RT
+pad none 2500 lt=255 rt=255 keep
+screenshot 07-lt-rt
+pad none 0
+wait 2500
+screenshot 08-after-lt-rt
+action world_sync 10 -1 40
+action world_dump -1 6
+action world_sync 3
+quit

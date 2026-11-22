@@ -278,6 +278,11 @@ bool VehicleShareCommand(int, const double (&)[3], char* msg, std::size_t cap) n
     Say(msg, cap, "vehicle share (stub)");
     return true;
 }
+bool WorldShareCommand(int, const double (&)[3], char* msg, std::size_t cap) noexcept {
+    Seen();
+    Say(msg, cap, "world share (stub)");
+    return true;
+}
 bool VehicleDriveCommand(int, const double (&)[3], char* msg, std::size_t cap) noexcept {
     Seen();
     Say(msg, cap, "vehicle drive (stub)");

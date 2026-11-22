@@ -1,0 +1,45 @@
+# Shared structures W4 (docs/world-sync.md), solo: the zipline byte checks, the 100% save's own ziplines and their links,
+# a dev zipline through the game's own queue (offline, the build-up and the printer), its links to the ziplines around it,
+# its record round trip EQUAL, then an upgrade (dev_build_mats: the terminal's AddOwn and QueueLevelUp) to level 2.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios world-zipline-solo -Id round5-w4 -SeedSaves complete-100
+role solo
+timeout 240
+ini dev_tools=1
+start
+wait 2000
+waitlog 5 \[world\] byte checks: ok .*zipline ok
+action world_dump 9 40 2
+goto mknot-road
+wait 3000
+action world_sync 16 0 400
+action world_sync 10 22 60
+waitnew 3 \[world\] check: type 22 within 60 m: 0
+action dev_build 22 1 12
+waitnew 5 \[world\] dev build: id [0-9]+ type 22 \(zipline\) anim 1 .* offline 1
+wait 2000
+screenshot 00-dev-zipline-2s
+wait 4000
+screenshot 01-dev-zipline-6s
+action world_sync 16 0 60
+waitnew 3 \[world\] zipline id [0-9]+ \(hid [0-9]+, zipline, net 1, level [0-9], state [0-9]\) at .*: [0-9]+ link
+wait 16000
+action world_sync 10 22 60
+waitnew 3 \[world\] check: type 22 within 60 m: 1 \(ids [0-9]+\) offline 1 level 1
+screenshot 02-dev-zipline-built
+action world_sync 11 0
+waitnew 3 \[world\] round trip id [0-9]+ type 22 \(zipline\): EQUAL
+action world_sync 4 0
+action dev_build_mats 0 0 1
+waitnew 3 \[world\] dev contribution: id [0-9]+ \(hid [0-9]+, zipline\) level 1: materials .* level-up requested
+wait 2000
+screenshot 03-zipline-levelup
+wait 22000
+action world_sync 10 22 60
+waitnew 3 \[world\] check: type 22 within 60 m: 1 \(ids [0-9]+\) offline 1 level 2
+action world_sync 16 0 400
+action world_sync 4 0
+screenshot 04-zipline-level2
+nolog \[gate\] OTGC WRITE
+nolog \[world\] byte check FAILED
+action world_sync 3
+quit

@@ -20,6 +20,7 @@
 #include "core_text.hpp"
 #include "core_update.hpp"
 #include "launcher_join_code.hpp"
+#include "sandbox.hpp"   // native/mod: kLocalTestFps, the game's frame limit range
 
 #ifndef ST_LAUNCHER_VERSION
 #define ST_LAUNCHER_VERSION "0.0.0-dev"
@@ -134,6 +135,7 @@ DebugOptions DebugOptionsFromSettings(const json::Value& settings) {
     o.allow_other_characters = d->Bool("allow_other_characters", o.allow_other_characters);
     o.host_save = d->Bool("host_save", o.host_save);
     o.backup_host_saves = d->Bool("backup_host_saves", o.backup_host_saves);
+    o.share_world = d->Bool("share_world", o.share_world);
     return ClampDebugOptions(o);
 }
 
@@ -161,6 +163,7 @@ void DebugOptionsToSettings(const DebugOptions& o, json::Value& settings) {
     d["allow_other_characters"] = o.allow_other_characters;
     d["host_save"] = o.host_save;
     d["backup_host_saves"] = o.backup_host_saves;
+    d["share_world"] = o.share_world;
     settings["debug"] = d;
 }
 
@@ -170,6 +173,14 @@ std::string GuestPickFromSettings(const json::Value& settings, const std::string
     if (settings.Int("character_defaults", 0) < kCharacterDefaults && (stored.empty() || pick == kHostCharacter)) return kGuestCharacter;
     return pick;
 }
+
+static_assert(kLocalTestFpsDefault == static_cast<int>(st::sandbox::kLocalTestFps), "the launcher's and the testenv's Local test frame rate");
+int LocalTestFps(int stored) { return stored == 30 || stored == 60 || stored == 120 || stored == 0 ? stored : kLocalTestFpsDefault; }
+unsigned LocalTestGameFps(int choice) {
+    const int c = LocalTestFps(choice);
+    return c == 0 ? st::sandbox::kGameMaxFps : static_cast<unsigned>(c);
+}
+int LocalTestFrameCap(int choice) { return LocalTestFps(choice); }
 
 void MakeLocalTestInis(const DebugOptions& options, const LocalTestChoices& choices, SessionIni& host, SessionIni& guest) {
     host = SessionIni{};
@@ -187,7 +198,7 @@ void MakeLocalTestInis(const DebugOptions& options, const LocalTestChoices& choi
     host.sandbox_foreign_saves = true;
     host.appdir_settings = true;
     host.local_input = choices.host_pad ? "host_pad" : "host";
-    host.frame_cap = 30;
+    host.frame_cap = LocalTestFrameCap(LocalTestFps(choices.fps));   // v0.23: 60 by default (was 30)
     host.local_window = "left";   // the two windows side by side
     // The host-held save (the Debug option, default on): the session the online Host / Join play, so the local test
     // shows the waiting screen, the save transfer, the shared vehicles, riding together and vehicle hits. The host
@@ -195,6 +206,8 @@ void MakeLocalTestInis(const DebugOptions& options, const LocalTestChoices& choi
     host.host_save = options.host_save;
     // Two windows side by side: the cursor stays in the one in front (the Debug option, default on; Local test only).
     host.mouse_lock = options.mouse_lock;
+    // Shared structures, ladders and ropes (docs/world-sync.md): the Debug option (default on), as for the online sessions.
+    host.world_sync = options.share_world;
     guest = host;
     guest.role = "guest";
     guest.udp_port_local = kDefaultUdpPort + 1;
@@ -324,6 +337,7 @@ public:
         SessionIni ini = BaseIni("host");
         ini.secret = secret;
         ini.host_save = debug_.host_save;   // the host plays on its own saves either way; the mod then offers them to the guest
+        ini.world_sync = debug_.share_world;   // shared structures, ladders and ropes (written with host_save)
         if (!ApplyTransport(ini, error_out)) return false;
         if (!StartSession(ini, Role::host, error_out)) return false;
         code_ = code;
@@ -352,6 +366,7 @@ public:
         if (!ApplyTransport(ini, error_out)) return false;
         // The host-held save: this game runs only on the private coop-guest folder (never on your own saves).
         if (debug_.host_save && !PrepareCoopGuest(ini, error_out)) return false;
+        ini.world_sync = debug_.share_world;   // shared structures, ladders and ropes: both games must have it (the mod's HELLO)
         return StartSession(ini, Role::join, error_out);
     }
 
@@ -601,12 +616,17 @@ public:
         v.features_off = local_.running ? local_.features_off : std::string();
         v.tone = local_.tone;
         v.host_pad = local_host_pad_;
+        v.fps = local_fps_;
         v.guest_character = GuestCharacter(local_guest_character_, debug_.allow_other_characters);
         return v;
     }
 
     void set_local_test_host_pad(bool on) override {
         local_host_pad_ = on;
+        SaveTestChoices();
+    }
+    void set_local_test_fps(int fps) override {
+        local_fps_ = LocalTestFps(fps);
         SaveTestChoices();
     }
     void set_local_test_guest_character(const std::string& key) override {
@@ -647,7 +667,7 @@ public:
             // Every time: the game rewrites this file on exit (fullscreen again, its own size).
             std::string current;
             if (IsFile(sp.settings)) ReadTextShared(sp.settings, current);
-            if (!WriteAtomic(sp.settings, LocalTestSettingsCfg(current), true, werr)) {
+            if (!WriteAtomic(sp.settings, LocalTestSettingsCfg(current, LocalTestGameFps(local_fps_)), true, werr)) {
                 error_out = "Could not write the test games' graphics settings: " + werr;
                 return false;
             }
@@ -656,6 +676,7 @@ public:
         choices.name = name_;
         choices.guest_character = local_guest_character_;
         choices.host_pad = local_host_pad_;
+        choices.fps = local_fps_;
         SessionIni host, guest;
         MakeLocalTestInis(debug_, choices, host, guest);
         for (const auto& [ini, dir] : {std::pair<const SessionIni*, std::wstring>{&host, LocalDir(L"host")}, {&guest, LocalDir(L"guest")}}) {
@@ -686,7 +707,7 @@ public:
         local_.tone = LinkView::Tone::neutral;
         test_result_.clear();
         LauncherLog(*env_, paths_, "local_test=start host_pid=" + std::to_string(pid) + (local_host_pad_ ? " host_pad=1" : "") +
-                                       " guest_character=" + guest.my_character + " partner_body=" + host.partner_body +
+                                       " fps=" + std::to_string(LocalTestGameFps(local_fps_)) + " guest_character=" + guest.my_character + " partner_body=" + host.partner_body +
                                        " host_save=" + (host.host_save ? "1" : "0") +
                                        (host.host_save ? " guest_wiped_slots=" + std::to_string(guest_report.wiped_slots) : std::string()));
         return true;
@@ -1013,6 +1034,7 @@ private:
             test_folder_ = t->Str("folder");
             test_use_ = t->Bool("use", false);
             local_host_pad_ = t->Bool("host_pad", false);
+            local_fps_ = LocalTestFps(static_cast<int>(t->Int("fps", kLocalTestFpsDefault)));
             local_guest_character_ = GuestPickFromSettings(settings_, t->Str("guest_character"));
         }
         if (settings_.Int("character_defaults", 0) < kCharacterDefaults) {
@@ -1030,6 +1052,7 @@ private:
         t["folder"] = test_folder_;
         t["use"] = test_use_;
         t["host_pad"] = local_host_pad_;
+        t["fps"] = local_fps_;
         t["guest_character"] = local_guest_character_;
         settings_["test_save"] = t;
         SaveChoices();
@@ -1554,6 +1577,7 @@ private:
     std::string test_folder_;
     SeedCheck test_check_;
     bool test_use_ = false, test_seeded_ = false, local_host_pad_ = false;
+    int local_fps_ = kLocalTestFpsDefault;                   // local test: "test_save" / "fps" (LocalTestFps)
     std::string my_character_ = kGuestCharacter;            // Join tab: "my_character" (the stored pick)
     std::string local_guest_character_ = kGuestCharacter;   // local test: "test_save" / "guest_character"
     bool session_sandbox_ = false;   // the session started from here runs on a sandbox
@@ -1621,6 +1645,7 @@ int RunWriteSession(const std::wstring& game_dir, const WriteSessionRequest& req
     }
     std::string code;
     const bool host_save = DebugOptionsFromSettings(settings).host_save;
+    ini.world_sync = DebugOptionsFromSettings(settings).share_world;   // written with host_save (world_sync=0 when off)
     const std::uint64_t self_id = OwnSteamId(*env);
     const std::uint32_t account = self_id > kSteamIdBase ? static_cast<std::uint32_t>(self_id - kSteamIdBase) : 0u;
     if (request.role == "host") {
@@ -1685,6 +1710,7 @@ int RunWriteLocalTestIni(const std::wstring& game_dir, const std::wstring& out_d
     if (const json::Value* t = settings.Find("test_save"); t && t->is_object()) {
         stored_pick = t->Str("guest_character");
         choices.host_pad = t->Bool("host_pad", false);
+        choices.fps = LocalTestFps(static_cast<int>(t->Int("fps", kLocalTestFpsDefault)));
     }
     choices.guest_character = GuestPickFromSettings(settings, stored_pick);
     SessionIni host, guest;
@@ -1695,7 +1721,7 @@ int RunWriteLocalTestIni(const std::wstring& game_dir, const std::wstring& out_d
         if (!MakeSessionIniText(*ini, text, error)) return fail(std::string(file == std::wstring(L"host.ini") ? "host" : "guest") + ": " + error);
         if (!WriteAtomic(JoinPath2(out_dir, file), text, true, werr)) return fail("could not write " + Utf8(JoinPath2(out_dir, file)) + ": " + werr);
     }
-    report += "result=ok\nhost_save=" + std::string(host.host_save ? "1" : "0") + "\nhost_ini=" + Utf8(JoinPath2(out_dir, L"host.ini")) +
+    report += "result=ok\nhost_save=" + std::string(host.host_save ? "1" : "0") + "\ngame_fps=" + std::to_string(LocalTestGameFps(choices.fps)) + "\nhost_ini=" + Utf8(JoinPath2(out_dir, L"host.ini")) +
               "\nguest_ini=" + Utf8(JoinPath2(out_dir, L"guest.ini")) + "\n";
     return 0;
 }

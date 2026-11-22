@@ -1,0 +1,49 @@
+# Shared structures W2 (docs/world-sync.md "Contributions"), solo: the game's own contribution machinery on a structure the
+# mod built, hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario world-contrib-solo -SeedSaves complete-100
+# A postbox (dev_build, no animation: level 1 at once), its numbers (world_sync 4: level of max, Status, what the next level
+# needs, invested), half of what level 2 still needs, then the rest (dev_build_mats: the terminal commit's AddOwn and, at
+# Status 0, its QueueLevelUp), the level-up (screenshots), level 2; then its durability lowered and a repair (AddRepair and
+# the durability step of the repair commit). Pass: the log lines below, no FAULT, no byte check failure, no OTGC WRITE.
+role solo
+timeout 300
+ini dev_tools=1
+start
+wait 3000
+waitlog 5 \[world\] byte checks: ok .*contrib ok
+goto mknot-road
+wait 4000
+action dev_build 6 0 10
+waitnew 3 \[world\] dev build: id [0-9]+ type 6 \(postbox\) anim 0
+wait 3000
+action world_sync 4 0
+waitnew 3 \[world\] materials id [0-9]+ \(hid [0-9]+\) postbox: level 1 of [2-5], status 1
+action dev_build_mats 0 0 0.5
+waitnew 3 \[world\] dev contribution: id [0-9]+ .* level 1: materials .* -> status 1
+action world_sync 4 0
+action dev_build_mats 0 0 1
+waitnew 3 \[world\] dev contribution: id [0-9]+ .* level 1: materials .* -> status 0, level-up requested
+wait 500
+action world_sync 4 0
+screenshot 00-levelup-0s5
+wait 1500
+screenshot 01-levelup-2s
+wait 3000
+screenshot 02-levelup-5s
+action world_sync 4 0
+wait 5000
+screenshot 03-levelup-10s
+until 90 3000 \[world\] materials id [0-9]+ \(hid [0-9]+\) postbox: level 2 of => action world_sync 4 0
+screenshot 04-level2
+# durability down, then a repair
+action dev_build_decay 0 600
+waitnew 3 \[world\] dev decay: id [0-9]+ \(postbox\)
+action world_sync 4 0
+action dev_build_mats 0 1 20
+waitnew 3 \[world\] dev repair: id [0-9]+
+action world_sync 4 0
+action world_sync 3
+nolog \[world\].*FAULT
+nolog \[world\] byte check FAILED
+nolog \[gate\] OTGC WRITE
+quit

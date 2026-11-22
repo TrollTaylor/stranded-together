@@ -28,6 +28,8 @@ const char* HostRefusesGuestDev() noexcept;
 // counts as a real save), else devrules::kRealSaveReason. For the actions outside the dev tools that change world state a save
 // keeps (the Player tab's time of day and day/night cycle): they run with the dev tools off too, but never on a real save.
 const char* RealSaveRefusal() noexcept;
+// Any thread: the dev rules' verdict for a tool class in this session now (world_share.cpp's structure tools).
+devrules::Verdict DecideNow(devrules::Tool t) noexcept;
 
 // Game thread, every tick (debug::OnTick): the byte checks (once), the place list and the view (2 Hz), the vehicle check.
 void Tick(double now_ms) noexcept;

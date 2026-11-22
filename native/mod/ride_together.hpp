@@ -85,6 +85,12 @@ void AfterStop() noexcept;
 std::uint32_t PoseFlags() noexcept;
 // Our Sam is carried as a passenger (or the solo seat test carries him).
 bool Carried() noexcept;
+// v0.23, the trike's pillion: we_drive while the partner rides behind our Sam on our trike (its body seated), we_ride while
+// our Sam rides behind the partner on its trike (game thread; partner_gear hides the partner's backpack props then).
+enum class Pillion : std::uint8_t { none, we_drive, we_ride };
+Pillion PillionNow() noexcept;
+// We hold the game's HideBackpack on our Sam's inventory now (the driver's side of the above; session.ini ride_hide_pack).
+bool PackHidden() noexcept;
 // v0.21 (any thread): `entity` is our Sam while he is carried or within 1.5 s after the ride ended (the landing shield's
 // window): no damage reaches him then (partner_tackle's damage hook zeroes what is not our own vehicle hit, and logs it).
 bool ShieldCovers(std::uintptr_t entity) noexcept;

@@ -1349,16 +1349,15 @@ int RunGame(Args& a) {
                 deployed = false;
             }
         } else {
-            settings_text = st::sandbox::LowGraphicsSettingsCfg();
-            // "graphics low <fps>": the game's own frame limit raised (a frame-rate test)
-            if (r.scenario.low_graphics_fps != 30) {
-                const std::string n = "\"" + std::to_string(r.scenario.low_graphics_fps) + "\"";
-                for (const char* key : {"\"fps\" \"30\"", "\"limit_fps\" \"30\""}) {
-                    const std::string k = key;
-                    const std::size_t at = settings_text.find(k);
-                    if (at != std::string::npos) settings_text.replace(at, k.size(), k.substr(0, k.find(' ') + 1) + n);
-                }
-            }
+            // "graphics low <fps>": the game's own frame limit at that rate (a frame-rate test); plain "graphics low" 30;
+            // launcherini without a rate: the launcher's own Local test rate (v0.23: its host.ini frame_cap, 60 by default),
+            // the same text the launcher merges into each sandbox's settings.cfg (sandbox.hpp LowGraphicsSettingsCfgAt).
+            unsigned fps = r.scenario.low_graphics_fps;
+            const bool from_launcher = !launcher_host_ini.empty() && !r.scenario.low_graphics_fps_set;
+            if (from_launcher) fps = te::LauncherIniGameFps(launcher_host_ini);
+            settings_text = st::sandbox::LowGraphicsSettingsCfgAt(fps);
+            Out("graphics low: the game's frame limit %u fps (%s)", st::sandbox::ClampGameFps(fps),
+                from_launcher ? "the launcher's Local test rate" : r.scenario.low_graphics_fps_set ? "the scenario's" : "the hidden default");
         }
     }
     te::SessionOptions so;
@@ -1751,6 +1750,47 @@ int RunGame(Args& a) {
         if (!cloud_uploads.empty() && rc == 0) rc = 1;
     }
 
+    // ---- the game server (docs/world-sync.md "The online gate"): no write request may be built by either game; what the gate dropped
+    std::vector<std::string> server_writes;
+    std::vector<std::string> gate_states;  // round 5: the gate must be in (else no OTGC logger: the writes check means nothing)
+    bool gate_missing = false;
+    unsigned online_blocked = 0;
+    {
+        // --no-mod / --sandbox-session games run without the automation channel (no hidden-run gate): not required there
+        const bool need_gate = !a.no_mod && !a.sandbox_session;
+        std::string log;
+        const bool host_log = te::ReadFileBytes(got + L"\\stranded_together.log", &log);
+        if (host_log) {
+            for (const std::string& w : te::GameServerWrites(log)) server_writes.push_back("host: " + w);
+            online_blocked += te::OnlineBlocked(log);
+        }
+        if (need_gate) {
+            const std::string gs = host_log ? te::GateState(log) : std::string();
+            gate_states.push_back("host: " + (gs.empty() ? std::string("no gate line") : gs));
+            if (gs != "on" && gs.rfind("inactive", 0) != 0) gate_missing = true;
+        }
+        log.clear();
+        const bool guest_log = r.g.on && te::ReadFileBytes(r.run + L"\\guest\\game\\stranded_together.log", &log);
+        if (guest_log) {
+            for (const std::string& w : te::GameServerWrites(log)) server_writes.push_back("guest: " + w);
+            online_blocked += te::OnlineBlocked(log);
+        }
+        if (need_gate && r.g.on) {
+            const std::string gs = guest_log ? te::GateState(log) : std::string();
+            gate_states.push_back("guest: " + (gs.empty() ? std::string("no gate line") : gs));
+            if (gs != "on" && gs.rfind("inactive", 0) != 0) gate_missing = true;
+        }
+        for (const std::string& g : gate_states) Out("online gate: %s", g.c_str());
+        if (gate_missing) {
+            Out("online gate: NOT IN for a modded game -- FAIL (game_server_writes cannot be trusted without its OTGC logger)");
+            if (rc == 0) rc = 1;
+        }
+        Out("game server: %zu write request(s) built (game_server_writes)%s; online calls dropped by the gate: %u", server_writes.size(),
+            server_writes.empty() ? "" : " -- FAIL", online_blocked);
+        for (const std::string& w : server_writes) Out("  game server write: %s", w.c_str());
+        if (!server_writes.empty() && rc == 0) rc = 1;
+    }
+
     // ---- the real saves, compared by hash (restored from saves-backup if anything differs)
     const te::SavesCheck saves = te::CheckAndRestoreSaves(r.run);
     if (saves.unchanged) Out("saves: UNCHANGED (hash manifest identical to the one before the run)");
@@ -1783,6 +1823,8 @@ int RunGame(Args& a) {
     j += ",\"foreign_saves_evidence\":\"" + te::JsonEscape(foreign_note) + "\"";
     j += ",\"cloud_autocloud_seen\":" + std::string(autocloud_seen ? "true" : "false") + ",\"cloud_lines\":" + std::to_string(cloud_lines.size());
     j += ",\"cloud_uploads\":" + JsonList(cloud_uploads);
+    j += ",\"game_server_writes\":" + JsonList(server_writes) + ",\"online_blocked\":" + std::to_string(online_blocked);
+    j += ",\"online_gate\":" + JsonList(gate_states) + ",\"online_gate_ok\":" + (gate_missing ? "false" : "true");
     j += ",\"exit_trace\":\"" + te::JsonEscape(exit_trace) + "\",\"game_stdout_tail\":\"" + te::JsonEscape(LastLines(game_stdout, 25)) + "\"";
     j += ",\"two_games\":" + std::string(r.g.on ? "true" : "false");
     j += ",\"guest_seed\":\"" + std::string(a.guest_profile_only ? "profile-only" : "full") + "\"";

@@ -84,6 +84,11 @@ struct SessionIni {
     // mouse_lock=1 (the Local test, Debug option "Lock the mouse to the focused game window"): the cursor stays inside the
     // game window that is in front (F10 switches game, Alt+Tab leaves). Written only when set; parsed strictly (0 / 1).
     bool mouse_lock = false;
+    // world_sync (shared structures, ziplines, ladders and ropes, docs/world-sync.md): structures either player builds appear
+    // in both worlds. The Debug option "Share structures, ladders, ropes and ziplines" (default on) for Host, Join and the
+    // Local test; with host_save the line is always written (world_sync=0 when off: the mod's default is on with
+    // host_save=1); parsed strictly (0 / 1).
+    bool world_sync = false;
     // The real partner body (docs/real-partner-body.md). my_character: the character THIS player
     // appears as on the other player's screen, an offered native/mod/body_table.cpp key; the mod
     // sends it as STJ1 body_id. The host is always Sam: the writer puts my_character=sam for a host

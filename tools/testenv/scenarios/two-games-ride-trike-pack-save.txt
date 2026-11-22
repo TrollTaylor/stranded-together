@@ -1,0 +1,75 @@
+# The trike driver's back and the host's save (v0.23; docs/real-partner-body.md section 24.18), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-ride-trike-pack-save -SeedSaves complete-100
+# The launcher's own Local test files. 1. The host drives the Kusanagi trike with the guest on its pillion: the hide is held
+# (inventory +0x4C7C 0x03, the game's HideBackpack + HideSpareShoes) and a save asked of the game then (save_guard 1 4: its
+# own DSCreateSaveGame) is REFUSED by the game itself (the player's state 0x200: Sam on a vehicle), so no save of the game
+# is written while the driver's hide is held. 2. The worst case on foot: the hide forced on (ride_test 36 1), a save
+# written with it (an autosave into the run's scratch copy, its capture at once), the hide given back (ride_test 36 0),
+# and that save loaded in the world (save_guard 3; the guest follows). Pass: the loaded Sam's inventory byte is 0x00 (the
+# hide bits are never in the save), nothing held, the carrier's hide mask 0 (his cargo drawn, S2), no FAULT.
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+waitlog 5 \[ride\] trike pillion: the driver's backpack and cargo are hidden while the partner rides behind him
+waitlog 10 \[save\] save guard ON
+@guest waitlog 30 \[vshare\] guest: binding:
+action vehicle_sync 8 1.8 4
+wait 1500
+until 20 4000 \[vdrive\] host: our Sam drives trike => pad X 150
+@guest waitlog 20 \[vdrive\] follower of trike 0x[0-9A-F]+ attached
+wait 2500
+@guest action ride_test 8
+wait 1500
+@guest until 15 3000 \[ride\] guest: our Sam carried on the trike .*#1\) => pad X 800
+waitlog 10 \[ride\] host: the partner asks to ride our trike .*ACCEPTED
+waitlog 6 \[ride\] trike pillion: the driver's backpack and cargo hidden .*#1\)
+wait 1500
+action ride_state
+waitnew 3 \[ride\] state: trike pillion hide on, held 1 .*inventory \+0x4C7C 0x03
+# ---- 1. a save while the driver's hide is held: the game refuses it (Sam on a vehicle)
+action save_guard 1 4 1
+waitnew 3 \[save\] why the forced save was refused: refusal reasons 0x0000020
+screenshot S0-host-hidden
+@guest screenshot S0-guest-pillion
+wait 1000
+@guest until 12 3000 \[ride\] guest: our Sam off the trike .*got off\) => pad X 150
+waitlog 8 \[ride\] trike pillion: the driver's backpack and cargo shown again \(the ride is over\) .*#1\)
+wait 1500
+pad X 150
+waitlog 20 \[vdrive\] host: our Sam got off trike
+wait 4000
+# ---- 2. on foot, the hide forced on, a save written with it, given back, that save loaded
+action ride_test 36 1
+waitlog 4 \[ride\] trike pillion \(test\): the driver's backpack and cargo hidden
+action ride_state
+waitnew 3 \[ride\] state: trike pillion hide on, held 1 .*test 1, inventory \+0x4C7C 0x03
+until 30 1500 \[save\] #[0-9]+ pending \(forced save F[0-9]+\): auto save => action save_guard 1 4 1
+waitlog 60 \[save\] finished ok: #[0-9]+ \(forced save F[0-9]+\)
+action ride_state
+waitnew 3 \[ride\] state: trike pillion hide on, held 1 .*test 1, inventory \+0x4C7C 0x03
+screenshot S1-host-saved-hidden
+action ride_test 36 0
+waitnew 4 \[ride\] trike pillion: the driver's backpack and cargo shown again \(test\)
+wait 2000
+action save_guard 3
+waitlog 20 \[coop\] host: in-world Load \(type 0x4
+waitlog 60 \[coop\] host: offer #2
+@guest waitlog 90 \[coop\] guest: wrote the host's save #2
+@guest waitlog 180 \[coop\] guest: in the world after .* save #2
+waitlog 120 \[coop\] host: the partner's RESULT for load #2: ok
+wait 6000
+# the loaded Sam: nothing held, the byte clear (the hide bits were never saved), his cargo shown
+action ride_state
+waitnew 3 \[ride\] state: trike pillion hide on, held 0 .*test 0, inventory \+0x4C7C 0x00
+action gear 0
+waitnew 3 \[gear\] carrier .* hidden by the game: hide mask 0x0\)
+action ride_test 36 -1
+screenshot S2-host-loaded
+@guest screenshot S2-guest-after-load
+nolog \[(vshare|vdrive|ride|vhit|gear|save)\].*FAULT
+@guest nolog \[(vshare|vdrive|ride|vhit|gear|save)\].*FAULT
+@guest quit
+wait 3000
+quit

@@ -16,6 +16,7 @@
 #include "partner_outfit.hpp"
 #include "partner_source.hpp"
 #include "real_body.hpp"
+#include "ride_together.hpp"
 #include "vehicle_sync.hpp"
 
 namespace st::gear {
@@ -49,6 +50,11 @@ constexpr std::uintptr_t kStackN = 0x10, kStackItems = 0x18;
 constexpr std::uintptr_t kBagModel = 0x20, kBagListItem = 0x28, kBagWorld = 0x38;
 constexpr std::uintptr_t kListId = 0x30, kListAttribute = 0x3A, kListWeight = 0x50;
 constexpr std::uintptr_t kSlotTotal = 0x0C;
+// v0.23: the game's own cargo hides (CargoHideSites): the carrier object's hide-reason mask (0x142CB27A0: reasons 0..4, the
+// inventory update's 0 = HideBackpack / the Root mask, 1 = a cutscene's HideBaggage), and the back slot's own hidden bit
+// (0x142CB2620: slot +0x75 bit 6, a cutscene's HideOnlyBackpackBaggages).
+constexpr std::uintptr_t kCarHideMask = 0x8C, kSlotHideByte = 0x75;
+constexpr std::uint8_t kSlotHiddenBit = 0x40;
 constexpr std::uintptr_t kEntFlags = 0x88, kEntWorld = 0xC8;
 
 // Sam-skeleton joints (the 77-joint layout, docs/real-partner-body.md section 3).
@@ -589,6 +595,7 @@ struct PropSet {
     unsigned published_n = 0;
     bool published = false;
     double asleep_since = 0;
+    bool pillion_hide = false;     // v0.23: our Sam on the partner's trike pillion: its backpack props hidden (DriveSet)
     unsigned spawned = 0, failed = 0, removed = 0, retried = 0, reshown = 0, kept = 0;
     bool refused[kKeyCount] = {};  // keys whose entity was refused by validation (deterministic: this session)
     double next_stats_ms = 0;
@@ -838,6 +845,7 @@ void NoteHeadItem(std::uintptr_t e, int res_id, double now);  // section 20 (bel
 void ReadHoodHat(std::uintptr_t p, std::uintptr_t inv, const Xf& sam, double now);  // section 26.8 (below)
 bool HeadConst(std::uintptr_t e, float (&p)[3], float (&r)[3][3], const char** name);  // section 26.8 (below)
 void ReadBootsShown(std::uintptr_t inv);                     // section 21 (below)
+bool CargoHideSites();                                       // v0.23 (below)
 // Boots (section 21; session.ini boots_sync): ours sent as STC1 kind 7, the partner's drawn as the boots prop.
 struct BootsRead {
     bool checked = false, ok = false;
@@ -969,7 +977,9 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
             const bool weapon = memo ? memo->cls == 3 : std::strcmp(TypeOf(nd.e), "DSWeaponEntity") == 0;
             const bool vis = (HQ(kEntFlags) & 0x2) != 0;
             // children first pushed (visited after this one: a parent is always added before them)
-            if (nd.depth < 3)
+            // (a hidden backpack hides what hangs on it: the game draws a hidden parent's children hidden, whatever their own flag
+            // says; v0.23, the trike driver's HideBackpack: none of it is sent then)
+            if (nd.depth < 3 && !(nd.e == pack && !vis))
                 for (std::uintptr_t c = HQ(0x78), guard = 0; c && sp < 256 && guard < 64; c = Q(c + 0x80), ++guard) stack[sp++] = {c, nd.e, nd.depth + 1};
             if (!vis || nd.e == pack || !HQ(0xB8)) continue;
             if (nd.e == pod) continue;  // sent as the cinematic BB pod (above)
@@ -1114,7 +1124,12 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
         return true;
     }
     const std::uintptr_t slot_arr = Q(car + kCarSlots);
-    unsigned pieces = 0, refused = 0, walked = 0;
+    unsigned pieces = 0, refused = 0, walked = 0, hidden = 0;
+    // v0.23: the game's own cargo hides mirrored (the trike driver's HideBackpack while the partner rides behind him, a
+    // cutscene's HideBaggage, the Root mask): a hidden piece is not sent. Without the checks every piece counts as shown (v0.22).
+    const bool hide_sites = CargoHideSites();
+    std::uint32_t car_hide = 0;
+    if (hide_sites && !Rd(car + kCarHideMask, car_hide)) car_hide = 0;
     constexpr unsigned kMaxWalk = 256;  // stacks + pieces per read: garbage counts cannot make 64^3 reads
     bool cut = false;
     for (std::int32_t si = 0; si < slots && !cut; ++si) {
@@ -1128,6 +1143,8 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
             Log("[gear]   slot %d type %u: %d stack(s), %d piece(s)%s", si, type, nstack, total, type >= 1 && type <= 7 ? "" : " (not shown)");
         }
         if (type < 1 || type > 7) continue;  // back, arms, waist, hands
+        std::uint8_t sflags = 0;
+        const bool slot_shown = car_hide == 0 && !(hide_sites && type == 1 && Rd(s + kSlotHideByte, sflags) && (sflags & kSlotHiddenBit));
         const std::uintptr_t st_arr = Q(s + kSlotStacks);
         for (std::int32_t ti = 0; ti < nstack && !cut; ++ti) {
             if (++walked > kMaxWalk) {
@@ -1179,7 +1196,8 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
                         placed ? "" : " NOT PLACED");
                 }
                 ++pieces;
-                if (placed && model != wire::kGearNone) add(wire::GearKind::cargo, model, type, bag, true, w);
+                if (!slot_shown) ++hidden;
+                if (placed && model != wire::kGearNone) add(wire::GearKind::cargo, model, type, bag, slot_shown, w);
             }
         }
     }
@@ -1188,7 +1206,16 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
         if (!logged || verbose) Log("[gear] carrier %p: more than %u stacks + pieces: walk cut short", reinterpret_cast<void*>(car), kMaxWalk);
         logged = true;
     }
-    if (verbose) Log("[gear] carrier %p: %d slots, %u pieces read (%u refused)", reinterpret_cast<void*>(car), slots, pieces, refused);
+    if (verbose)
+        Log("[gear] carrier %p: %d slots, %u pieces read (%u refused, %u hidden by the game: hide mask 0x%X)", reinterpret_cast<void*>(car), slots, pieces,
+            refused, hidden, car_hide);
+    {
+        // the hidden count's changes (the trike pillion's hide and its end: n -> 0 -> n shown)
+        static unsigned s_hidden = 0, s_logs = 0;
+        if (hidden != s_hidden && ++s_logs <= 40)
+            Log("[gear] our carried cargo: %u of %u pieces hidden by the game now (carrier hide mask 0x%X)", hidden, pieces, car_hide);
+        s_hidden = hidden;
+    }
     return true;
 }
 
@@ -1236,8 +1263,8 @@ bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_
     const unsigned other_cap = want_cargo >= wire::kMaxGearItems - 8 ? 8 : wire::kMaxGearItems - want_cargo;
     for (unsigned i = 0; i < g_item_count; ++i) {
         const LocalItem& it = g_items[i];
-        // Cargo in a carrier slot counts as carried; everything else as the game shows it.
-        const bool vis = it.kind == wire::GearKind::cargo ? true : it.visible;
+        // Everything as the game shows it (v0.23: cargo too: the carrier's hides, ReadItems; v0.22 sent every piece).
+        const bool vis = it.visible;
         if (!vis) continue;
         if (it.kind == wire::GearKind::cargo) ++cargo;
         if (f.count >= wire::kMaxGearItems || (it.kind != wire::GearKind::cargo && it.kind != wire::GearKind::backpack && f.count >= other_cap)) {
@@ -1979,6 +2006,20 @@ bool HoodSites() {
     g_hood_sites = ok ? 1 : 0;
     if (ok) Log("[headgear] her hat in the rain: the inventory's hat and hood sites verified (%s)", g_own_hoodless ? "our character has no hood: on" : "our character has a hood: not used");
     return ok;
+}
+
+// v0.23: the carrier's hide reasons (read only; the game writes them): byte-checked once; off = every piece counts as shown.
+bool CargoHideSites() {
+    static int ok = -1;
+    if (ok >= 0) return ok == 1;
+    const std::uintptr_t b = mem::Base();
+    const bool m = mem::CodeMatches(b + 0x2CB27A0, "8B 81 8C 00 00 00 4C 8B C9 85 C0") &&                    // the hide-reason mask +0x8C
+                   mem::CodeMatches(b + 0x2CB2620, "80 61 75 BF 80 F2 01 C0 E2 06 08 51 75 C3") &&           // the back slot's +0x75 bit 6
+                   mem::CodeMatches(b + 0x27F2A9A, "0F B6 54 24 31 45 33 C0 4C 8B E0 48 89 45 D0 48 8B 48 50 E8 EE FC 4B 00");  // its reason 0 call
+    ok = m ? 1 : 0;
+    Log("[gear] the game's cargo hides %s", m ? "verified (carrier +0x8C, back slot +0x75): hidden cargo is not sent"
+                                              : "do not match this game build: every carried piece is sent as shown (v0.22)");
+    return m;
 }
 
 // Every read (100 ms, game thread): the worn hat hidden by the hood, if any, noted as a shown head item and added to the
@@ -3045,8 +3086,25 @@ void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_acti
     if (placed > 0) s.last_placed_ms = now;
     // Visibility: with the body; a tick without a placement (a torn read) does not hide them, 300 ms do.
     const bool place_ok = placed > 0 || (s.last_placed_ms > 0 && now - s.last_placed_ms < 300);
+    // v0.23: our Sam on the pillion of the partner's trike: the partner's backpack, what hangs on it and its back cargo stay
+    // hidden (the driver's game hides them itself and stops sending them; this covers the frames before that arrives).
+    const bool pillion = &s == &g_sets[0] && ride::PillionNow() == ride::Pillion::we_ride;
+    if (pillion != s.pillion_hide) {
+        s.pillion_hide = pillion;
+        Log("[%s] the partner's backpack props %s (our Sam %s the partner's trike pillion)", s.tag, pillion ? "hidden" : "follow its frame again",
+            pillion ? "rides on" : "is off");
+    }
     for (unsigned i = 0; i < f.count; ++i) {
         bool on = body_visible && place_ok;
+        if (on && pillion) {
+            for (unsigned k = i, n = 0; k < f.count && n < 8; k = f.items[k].parent, ++n) {
+                if (f.items[k].kind == wire::GearKind::backpack) {
+                    on = false;
+                    break;
+                }
+                if (f.items[k].parent == wire::kGearNoParent) break;
+            }
+        }
         // The boots prop (section 21) only once BootsTick made it the pose target, it is posed and the partner's boots parts
         // are mirrored on it: never in the cutscene's own pose or parts (the spawn pop of 12-14 cm the review measured).
         if (on && f.items[i].kind == wire::GearKind::boots) on = BootsPropReady(reinterpret_cast<std::uintptr_t>(s.props[i].sp.e));

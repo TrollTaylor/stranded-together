@@ -1,0 +1,39 @@
+# Shared structures W1 (docs/world-sync.md): the off path, hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-world-off -SeedSaves complete-100 -GuestSeed profile-only
+# world_sync=1 on both games, but the guest treats its NewId byte site as failed (world_test_fail, hidden runs only):
+# the guest logs a one-line reason and stays off; the host hears no HELLO from a sharing partner, so nothing is shared. A
+# structure the host builds stays the host's alone (the guest has none), and the shared vehicles still bind as always.
+# Pass: "[world] world sync OFF: this game build differs" on the guest, no "[world] host: SNAP_REQ" on the host, the
+# host's dev build exists only in the host's world, vshare binds, no FAULT, no OTGC WRITE.
+role host
+graphics low
+timeout 300
+ini host_save=1
+ini world_sync=1
+@guest ini world_test_fail=NewId
+start control 200
+waitlog 10 \[world\] world sync ON \(host\)
+@guest waitlog 90 \[world\] world_test_fail=NewId: treating 'NewId' as failed
+@guest waitlog 5 \[world\] world sync OFF: this game build differs \(NewId\)
+@guest waitlog 120 \[coop\] guest: in the world after
+@guest waitlog 30 \[vshare\] guest: binding:
+@both goto mknot-road
+wait 4000
+action dev_build 6 0 10
+waitnew 5 \[world\] dev build: id [0-9]+ type 6 \(postbox\) anim 0
+waitnew 5 \[world\] host: new structure hid [0-9]+ type 6 \(postbox\) .* not sent \(the guest is not in this world\)
+wait 3000
+action world_sync 10 6 40
+waitnew 3 \[world\] check: type 6 within 40 m: 1
+@guest action world_sync 10 6 40
+@guest waitnew 3 \[world\] check: type 6 within 40 m: 0
+action world_sync 0
+@guest action world_sync 0
+nolog \[world\] host: SNAP_REQ
+nolog \[world\].*FAULT
+@guest nolog \[world\].*FAULT
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@guest quit
+wait 3000
+quit

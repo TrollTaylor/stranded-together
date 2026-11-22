@@ -1,0 +1,83 @@
+# Shared structures W2 (docs/world-sync.md "Contributions"): both players pay the last materials AT ONCE, the host's save
+# keeps the result, hidden, on the launcher's own Local test files:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-world-contrib-persist -SeedSaves complete-100 -GuestSeed profile-only
+# The host builds a postbox (level 1); both games pay all that level 2 still needs in the same step (@both): one shared
+# total (the host's own 200 + the guest's 200 through AddOthers: the surplus counts toward level 3), exactly one level-up
+# in each world (the host drops a second request while one waits or runs), level 2 in both. Then the host's game saves
+# (its own autosave, into the run's scratch copy) and loads that save in the world; the guest follows (the host-held save).
+# After the load: the postbox exists once in each world (offline 1), level 2, invested 0/0/400 in both, the guest's join
+# binds it (created 0); a contribution after the load still goes through (the new world's epoch).
+# Pass: the log lines below, no FAULT, no byte check failure, no OTGC WRITE, both games exit 0.
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+waitlog 10 \[world\] world sync ON \(host\).*contributions shared
+@guest waitlog 120 \[world\] guest: snapshot #1 complete: bound [0-9]+, created 0, removed 0, replaced 0
+@both goto mknot-road
+wait 4000
+action dev_build 6 0 10
+waitnew 5 \[world\] dev build: id [0-9]+ type 6 \(postbox\) anim 0
+@guest waitlog 10 \[world\] guest: mirror hid [0-9]+ -> gid [0-9]+ \(exact\) type 6 \(postbox\) anim 0
+wait 3000
+@guest action world_sync 4 0
+@guest waitnew 3 \[world\] materials id [0-9]+ \(hid [0-9]+\) postbox: level 1 of 3, status 1 \(missing\); invested 0/0/0/0/0/0
+# ---- both pay the whole remainder in the same step
+@both action dev_build_mats 0 0 1
+waitlog 5 \[world\] dev contribution: id [0-9]+ .*postbox\) level 1: materials 0/0/200/0/0/0 -> status 0
+@guest waitlog 5 \[world\] dev contribution: id [0-9]+ .*postbox\) level 1: materials 0/0/200/0/0/0 -> status 0
+waitlog 10 \[world\] host: the guest's contribution #[0-9]+ on hid [0-9]+ \(postbox\): applied 0/0/200/0/0/0, excess 0, level 1
+@guest waitlog 10 \[world\] guest: our contribution #[0-9]+ on hid [0-9]+ answered by the host \(applied\): level 1
+@guest waitlog 10 \[world\] guest: hid [0-9]+ \(postbox\): the host's level 1 \(its level-up (queued|runs)\); ours 1 -> level-up queued
+wait 1000
+screenshot R1-host-levelup
+@guest screenshot R1-guest-levelup
+until 60 3000 \[world\] materials id [0-9]+ \(hid [0-9]+\) postbox: level 2 of 3, status 1 \(missing\); invested 0/0/400/0/0/0 => action world_sync 4 0
+@guest until 30 3000 \[world\] materials id [0-9]+ \(hid [0-9]+\) postbox: level 2 of 3, status 1 \(missing\); invested 0/0/400/0/0/0 => action world_sync 4 0
+@both action world_sync 3
+waitlog 5 \[world\] counters W2: .*level-ups queued: host [01] guest 0
+@guest waitlog 5 \[world\] counters W2: .*level-ups queued: host 0 guest 1,
+screenshot R2-host-level2
+@guest screenshot R2-guest-level2
+# ---- the host's game saves, then loads that save in the world; the guest follows
+until 30 1500 \[save\] #[0-9]+ pending \(forced save F[0-9]+\): auto save => action save_guard 1 4 1
+waitlog 60 \[save\] finished ok: #[0-9]+ \(forced save F[0-9]+\)
+wait 2000
+action save_guard 3
+waitnew 20 \[coop\] host: in-world Load \(type 0x4
+@guest waitnew 120 \[coop\] guest: wrote the host's save #[0-9]+ .*
+@guest waitnew 180 \[coop\] guest: in the world after .* save #[0-9]+
+waitnew 120 \[coop\] host: the partner's RESULT for load #[0-9]+: ok
+@guest waitlog 60 \[world\] guest: snapshot #[2-9] complete: bound [0-9]+, created 0, removed 0, replaced 0
+wait 4000
+action world_sync 10 6 60
+waitnew 3 \[world\] check: type 6 within 60 m: 1 \(ids [0-9]+\) offline 1 level 2
+@guest action world_sync 10 6 60
+@guest waitnew 3 \[world\] check: type 6 within 60 m: 1 \(ids [0-9]+\) offline 1 level 2
+action world_sync 4 0
+waitnew 3 \[world\] materials id [0-9]+ \(hid [0-9]+\) postbox: level 2 of 3, status 1 \(missing\); invested 0/0/400/0/0/0
+@guest action world_sync 4 0
+@guest waitnew 3 \[world\] materials id [0-9]+ \(hid [0-9]+\) postbox: level 2 of 3, status 1 \(missing\); invested 0/0/400/0/0/0
+screenshot P1-host-after-load
+@guest screenshot P1-guest-after-load
+# ---- a contribution in the new world
+@guest action dev_build_mats 0 0 0.25
+@guest waitlog 5 \[world\] guest: our contribution on hid [0-9]+ \(postbox\) 0/0/100/0/0/0 -> MATS #[0-9]+
+waitlog 10 \[world\] host: the guest's contribution #[0-9]+ on hid [0-9]+ \(postbox\): applied 0/0/100/0/0/0, excess 0, level 2, status 1
+@guest waitlog 10 \[world\] guest: our contribution #[0-9]+ on hid [0-9]+ answered by the host \(applied\): level 2
+action world_sync 4 0
+waitnew 3 \[world\] materials id [0-9]+ \(hid [0-9]+\) postbox: level 2 of 3, status 1 \(missing\); invested 0/0/500/0/0/0
+@guest action world_sync 4 0
+@guest waitnew 3 \[world\] materials id [0-9]+ \(hid [0-9]+\) postbox: level 2 of 3, status 1 \(missing\); invested 0/0/500/0/0/0
+@both action world_sync 3
+nolog \[world\].*FAULT
+@guest nolog \[world\].*FAULT
+nolog \[world\] byte check FAILED
+@guest nolog \[world\] byte check FAILED
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@guest nolog \[world\] guest: .*NOT needed
+@guest quit
+wait 3000
+quit

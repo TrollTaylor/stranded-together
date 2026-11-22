@@ -98,6 +98,9 @@ struct DebugOptions {
     // With host_save, before each hosted session: a read-only copy of your account's save folder in
     // stranded_together\backups (the newest 5 stay).
     bool backup_host_saves = true;
+    // With host_save: structures, ladders and climbing ropes either player builds are shared (docs/world-sync.md; session.ini
+    // world_sync, on by default in the mod with host_save=1). Off writes world_sync=0.
+    bool share_world = true;
 };
 
 // The Advanced / LAN section (transport udp).
@@ -182,6 +185,7 @@ struct LocalTestView {
     std::string headline, detail;
     LinkView::Tone tone = LinkView::Tone::neutral;
     bool host_pad = false;         // the option: XInput pads on the host too (else keyboard + mouse only)
+    int fps = 60;                  // the option "Frame rate": 30, 60, 120 or 0 = the game's maximum (240)
     std::string guest_character = "sam";   // the guest game's my_character (the host game is always Sam)
     // What either game reports off (link-status.json "features_off"): "Host: ...", "Guest: ..." lines; "" = all on.
     std::string features_off;
@@ -269,6 +273,7 @@ public:
     virtual bool reset_test_saves(std::string& error_out) = 0;
     virtual LocalTestView local_test() const = 0;
     virtual void set_local_test_host_pad(bool on) = 0;
+    virtual void set_local_test_fps(int fps) = 0;   // persisted, like host_pad (30 / 60 / 120 / 0 = maximum)
     virtual void set_local_test_guest_character(const std::string& key) = 0;   // persisted, like host_pad
     virtual bool start_local_test(std::string& error_out) = 0;
 

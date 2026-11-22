@@ -287,6 +287,20 @@ std::string UnredirectedGuestIniText(unsigned port_local, unsigned port_peer) {
     return s;
 }
 
+unsigned LauncherIniGameFps(const std::string& launcher_text) {
+    unsigned cap = 0;
+    std::istringstream in(launcher_text);
+    std::string line;
+    while (std::getline(in, line)) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.rfind("frame_cap=", 0) != 0) continue;
+        char* end = nullptr;
+        const unsigned long v = std::strtoul(line.c_str() + 10, &end, 10);
+        cap = end && !*end && v <= 240 ? static_cast<unsigned>(v) : 0;
+    }
+    return cap == 0 ? 240u : cap < 15 ? 15u : cap;
+}
+
 bool HiddenIniFromLauncher(const std::string& launcher_text, const SessionOptions& o, std::string* out, std::vector<std::string>* replaced,
                            std::string* error) {
     out->clear();
@@ -336,7 +350,8 @@ bool ScenarioIniKeyAllowed(const std::string& key) {
                                            "sound_sync", "sound_steps", "partner_volume", "self_headgear", "self_feet_hide",
                                            "boots_sync", "vehicle_sync", "vehicle_overlap_hide", "vehicle_look",
                                            "vehicle_packs", "vehicle_sound", "vehicle_real_native", "host_save", "coop_test_build", "coop_test_title_off",
-                                           "guest_skip_logos", "ride_together", "ride_pose", "ride_camera",
+                                           "guest_skip_logos", "ride_together", "ride_pose", "ride_camera", "ride_hide_pack", "fragile_suit_colour",
+                                           "world_sync", "world_anim", "world_contrib", "world_ladders", "world_ziplines", "world_test_fail",
                                            "partner_vehicle_damage", "dev_tools", "test_net_latency_ms", "test_net_jitter_ms",
                                            "test_net_loss_permille", "test_net_burst"};
 
@@ -503,6 +518,7 @@ bool ParseScenario(const std::string& text, Scenario* out, std::string* error, c
                 const unsigned long fps = std::strtoul(words[2].c_str(), &end, 10);
                 if (!end || *end || fps < 30 || fps > 240) return fail("graphics low [fps 30..240]");
                 out->low_graphics_fps = static_cast<unsigned>(fps);
+                out->low_graphics_fps_set = true;
             }
             out->low_graphics = true;
             continue;
@@ -1162,6 +1178,54 @@ std::vector<std::string> CloudLogLines(const std::string& log_text, const std::s
         if (line.find(tag) != std::string::npos) out.push_back(line);
     }
     return out;
+}
+
+std::vector<std::string> GameServerWrites(const std::string& log_text) {
+    std::vector<std::string> out;
+    const std::string key = "[gate] OTGC WRITE request: ";
+    std::size_t at = 0;
+    while ((at = log_text.find(key, at)) != std::string::npos) {
+        std::size_t end = log_text.find('\n', at);
+        if (end == std::string::npos) end = log_text.size();
+        std::string name = log_text.substr(at + key.size(), end - at - key.size());
+        while (!name.empty() && (name.back() == '\r' || name.back() == ' ')) name.pop_back();
+        out.push_back(name);
+        at = end;
+    }
+    return out;
+}
+
+std::string GateState(const std::string& log_text) {
+    if (log_text.find("[gate] online gate ON") != std::string::npos) return "on";
+    const std::string key = "[gate] OFF: ";
+    const std::size_t at = log_text.find(key);
+    // the mod stopped at start-up (no per-frame tick: no automation step and no world tool can run)
+    if (at == std::string::npos && log_text.find("[mod] this ds.exe build is not supported") != std::string::npos)
+        return "inactive: the mod did not start (unsupported ds.exe build)";
+    if (at == std::string::npos) return "";
+    std::size_t end = log_text.find('\n', at);
+    if (end == std::string::npos) end = log_text.size();
+    std::string why = log_text.substr(at + key.size(), end - at - key.size());
+    while (!why.empty() && (why.back() == '\r' || why.back() == ' ')) why.pop_back();
+    return "off: " + why;
+}
+
+unsigned OnlineBlocked(const std::string& log_text) {
+    unsigned best = 0;
+    const std::string key = "(total ";
+    std::size_t at = 0;
+    while ((at = log_text.find("[gate] ", at)) != std::string::npos) {
+        std::size_t end = log_text.find('\n', at);
+        if (end == std::string::npos) end = log_text.size();
+        const std::string line = log_text.substr(at, end - at);
+        const std::size_t k = line.find(key);
+        if (line.find("dropped") != std::string::npos && k != std::string::npos) {
+            const unsigned long v = std::strtoul(line.c_str() + k + key.size(), nullptr, 10);
+            if (v > best) best = static_cast<unsigned>(v);
+        }
+        at = end;
+    }
+    return best;
 }
 
 std::vector<std::string> CloudUploads(const std::vector<std::string>& app_lines) {

@@ -1,0 +1,111 @@
+# Shared structures W2 (docs/world-sync.md "Contributions"): both players pay into the same structure toward one shared
+# total, the level-up plays in both worlds, a repair, between two games on the launcher's own Local test files, hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-world-contrib -SeedSaves complete-100 -GuestSeed profile-only
+# A. The HOST builds a postbox (no animation: level 1 at once; mirrored in the guest's world). The host pays half of what
+#    level 2 needs (its own AddOwn; the census sends STATE, the guest's numbers follow), the GUEST pays the rest (her AddOwn
+#    runs in her world, MATS to the host, her own level-up request swallowed; the host applies it with AddOthers, Status 0
+#    -> QueueLevelUp, STATE back -> her level-up follows). Screenshots of the level-up on both screens; level 2 in both.
+# B. The GUEST builds a watchtower (held, created by the host, mirrored back). She pays half (MATS), the HOST pays the rest
+#    and its own terminal step queues the level-up (the census: STATE "a level-up queued / runs" -> hers follows).
+# C. The host's durability drops (dev_build_decay: DUR to the guest), the guest repairs it (MATS repair: the host's
+#    durability rises, STATE back).
+# Pass: the log lines below, equal numbers in both worlds, no FAULT, no byte check failure, no OTGC WRITE, both exit 0.
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+waitlog 10 \[world\] world sync ON \(host\).*contributions shared
+@guest waitlog 90 \[world\] world sync ON \(guest\).*contributions go to the host
+@guest waitlog 120 \[world\] guest: snapshot #1 complete: bound [0-9]+, created 0, removed 0, replaced 0
+waitlog 30 \[world\] host: contributions: STATE for [0-9]+ structure
+@both goto mknot-road
+wait 4000
+# ---- A. the host's postbox: the host pays half, the guest the rest
+action dev_build 6 0 10
+waitnew 5 \[world\] dev build: id [0-9]+ type 6 \(postbox\) anim 0
+@guest waitlog 10 \[world\] guest: mirror hid [0-9]+ -> gid [0-9]+ \(exact\) type 6 \(postbox\) anim 0
+wait 3000
+action world_sync 4 0
+waitnew 3 \[world\] materials id [0-9]+ \(hid [0-9]+\) postbox: level 1 of 3, status 1 \(missing\); invested 0/0/0/0/0/0
+@guest action world_sync 4 0
+@guest waitnew 3 \[world\] materials id [0-9]+ \(hid [0-9]+\) postbox: level 1 of 3, status 1 \(missing\); invested 0/0/0/0/0/0
+action dev_build_mats 0 0 0.5
+waitnew 3 \[world\] dev contribution: id [0-9]+ .*postbox\) level 1: materials 0/0/100/0/0/0 -> status 1
+@guest waitlog 10 \[world\] guest: STATE hid [0-9]+ \(postbox\): invested 0/0/0/0/0/0 -> 0/0/100/0/0/0
+@guest action world_sync 4 0
+@guest waitnew 3 \[world\] materials id [0-9]+ \(hid [0-9]+\) postbox: level 1 of 3, status 1 \(missing\); invested 0/0/100/0/0/0
+@guest action dev_build_mats 0 0 1
+@guest waitnew 3 \[world\] dev contribution: id [0-9]+ .*postbox\) level 1: materials 0/0/100/0/0/0 -> status 0, level-up requested
+@guest waitlog 3 \[world\] guest: our level-up request on id [0-9]+ \(postbox\): the host's call \(swallowed
+@guest waitlog 3 \[world\] guest: our contribution on hid [0-9]+ \(postbox\) 0/0/100/0/0/0 -> MATS #[0-9]+
+waitlog 10 \[world\] host: the guest's contribution #[0-9]+ on hid [0-9]+ \(postbox\): applied 0/0/100/0/0/0, excess 0, level 1, status 0: level-up queued
+@guest waitlog 10 \[world\] guest: our contribution #[0-9]+ on hid [0-9]+ answered by the host \(applied\): level 1, a level-up
+@guest waitlog 5 \[world\] guest: hid [0-9]+ \(postbox\): the host's level 1 \(its level-up (queued|runs)\); ours 1 -> level-up queued \(the materials reach 2\)
+wait 1000
+screenshot A1-host-levelup-1s
+@guest screenshot A1-guest-levelup-1s
+wait 4000
+screenshot A2-host-levelup-5s
+@guest screenshot A2-guest-levelup-5s
+until 60 3000 \[world\] materials id [0-9]+ \(hid [0-9]+\) postbox: level 2 of 3, status 1 \(missing\); invested 0/0/200/0/0/0 => action world_sync 4 0
+@guest until 30 3000 \[world\] materials id [0-9]+ \(hid [0-9]+\) postbox: level 2 of 3, status 1 \(missing\); invested 0/0/200/0/0/0 => action world_sync 4 0
+screenshot A3-host-level2
+@guest screenshot A3-guest-level2
+# ---- B. the guest's watchtower at another place: the guest pays half, the host the rest
+@both goto road-holo
+wait 4000
+@guest action dev_build 9 0 10
+@guest waitlog 10 \[world\] guest: local build type 9 \(watchtower\) held, request #[0-9]+ sent
+waitlog 10 \[world\] host: the guest's build #[0-9]+: created hid [0-9]+ type 9 \(watchtower\) offline 1
+@guest waitlog 10 \[world\] guest: build #[0-9]+ confirmed as hid [0-9]+
+wait 3000
+action world_sync 4 0
+waitnew 3 \[world\] materials id [0-9]+ \(hid [0-9]+\) watchtower: level 1 of [2-5], status 1 \(missing\)
+@guest action world_sync 4 0
+@guest waitnew 3 \[world\] materials id [0-9]+ \(hid [0-9]+\) watchtower: level 1 of [2-5], status 1 \(missing\)
+@guest action dev_build_mats 0 0 0.5
+@guest waitlog 3 \[world\] guest: our contribution on hid [0-9]+ \(watchtower\) .* -> MATS #[0-9]+
+waitlog 10 \[world\] host: the guest's contribution #[0-9]+ on hid [0-9]+ \(watchtower\): applied .*, excess 0, level 1, status 1
+@guest waitlog 10 \[world\] guest: our contribution #[0-9]+ on hid [0-9]+ answered by the host \(applied\): level 1
+action dev_build_mats 0 0 1
+waitnew 3 \[world\] dev contribution: id [0-9]+ .*watchtower\) level 1: materials .* -> status 0, level-up requested
+waitlog 5 \[world\] host: hid [0-9]+ \(watchtower\) level 1 \(a level-up (queued|runs)\) -> STATE
+@guest waitlog 10 \[world\] guest: hid [0-9]+ \(watchtower\): the host's level 1 \(its level-up (queued|runs)\); ours 1 -> level-up queued
+wait 1000
+screenshot B1-host-levelup-1s
+@guest screenshot B1-guest-levelup-1s
+wait 4000
+screenshot B2-host-levelup-5s
+@guest screenshot B2-guest-levelup-5s
+until 60 3000 \[world\] materials id [0-9]+ \(hid [0-9]+\) watchtower: level 2 of => action world_sync 4 0
+@guest until 30 3000 \[world\] materials id [0-9]+ \(hid [0-9]+\) watchtower: level 2 of => action world_sync 4 0
+screenshot B3-host-level2
+@guest screenshot B3-guest-level2
+# ---- C. the watchtower's durability drops on the host (DUR to the guest); the guest repairs it
+action dev_build_decay 0 600
+waitnew 3 \[world\] dev decay: id [0-9]+ \(watchtower\)
+@guest waitnew 15 \[world\] guest: DUR [0-9]+: [0-9]+ applied, [0-9]+ moved more than 2 %
+@guest action world_sync 4 0
+@guest waitnew 3 \[world\] materials id [0-9]+ \(hid [0-9]+\) watchtower: level 2 .*dur [5-6][0-9][0-9] of
+@guest action dev_build_mats 0 1 20
+@guest waitnew 3 \[world\] dev repair: id [0-9]+ .*watchtower\) level 2: repair
+@guest waitlog 3 \[world\] guest: our repair on hid [0-9]+ \(watchtower\) .* -> MATS #[0-9]+
+waitlog 10 \[world\] host: the guest's repair #[0-9]+ on hid [0-9]+ \(watchtower\): applied .*, durability \+[0-9]+ s, level 2
+@guest waitlog 10 \[world\] guest: our repair #[0-9]+ on hid [0-9]+ answered by the host \(applied\)
+action world_sync 4 0
+@guest action world_sync 4 0
+@both action world_sync 0
+@both action world_sync 3
+nolog \[world\].*FAULT
+@guest nolog \[world\].*FAULT
+nolog \[world\] byte check FAILED
+@guest nolog \[world\] byte check FAILED
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+nolog \[world\] guest: mirror FAIL
+@guest nolog \[world\] guest: mirror FAIL
+@guest nolog \[world\] guest: .*NOT needed
+@guest quit
+wait 3000
+quit

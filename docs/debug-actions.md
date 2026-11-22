@@ -701,8 +701,18 @@ hook, which is installed at start-up only with `session.ini partner_body=real` o
   * 3: override off; the partner's own outfit applies again.
   * 4: overwrite our own Sam's suit colour byte with `a` (0..16); the game re-dresses Sam itself at once.
     Only in hidden tests on redirected scratch saves; refused otherwise.
+  * 5 `c` (v0.23, docs/real-partner-body.md section 27): Fragile's porter suit on our `fragile_suit` bodies (the slot's
+    and the self view's) in colour `c` (0..16; 0 her own suit); `-1` = follow the suit colour again (purely visual).
+  * 6: Fragile's suit: each `fragile_suit` body's drawable and meshes, and the state (`[suit] suit: slot ...; self ...`).
+  * 7 `m` `ch` (tests): which meshes the binds use (`-1` the product's, `-2` the whole model at once, else a bit mask)
+    and channels (`ch` bits 1 Color, 2 Reflectance, 4 Roughness; 0 the product's); rebinds.
+  * 8 `v` `r` (tests): the metals' look: variant `v` (0 the product's, 1 Sam's measured sets, 2 = 0) and roughness `r`
+    (-1 the variant's); rebinds.
+  Log lines: `[suit] Fragile's suit colours available|unavailable: <reason>`, `[suit] constant texture <rgb> made by the
+  game's loader ...`, `[suit] body <e>: colour N on (#k: <channels>; albedo ..., reflectance ... roughness ...)`,
+  `[suit] body <e>: colour N taken off (<n> override(s) undone, <why>)`, `[suit] ... FAULTED` (the feature off).
 
-Scenarios: `real-body-diag`, `real-body-tour`, `real-body-tour-all` (every table id, solo), `self-view`, `self-view-edges`, `self-view-menu`, `outfit-probe` (solo), `two-games-real-self`, `two-games-outfit` (role host), `echo-real-100`, `echo-real-fragile-100` (role echo),
+Scenarios: `real-body-diag`, `real-body-tour`, `real-body-tour-all` (every table id, solo), `self-view`, `self-view-edges`, `self-view-menu`, `outfit-probe`, `fragile-suit-colours`, `fragile-suit-tune` (solo), `two-games-real-self`, `two-games-outfit`, `two-games-fragile-suit` (role host), `echo-real-100`, `echo-real-fragile-100` (role echo),
 `two-games-real`, `two-games-real-fallback` (role host, two games). `real_spawn` takes any id in the table,
 offered or not (the debug way to prove a new body before it gets `offered`). The partner's character in a
 session comes from the peer's `my_character`; `session.ini partner_character` overrides it for debugging
@@ -810,6 +820,17 @@ The passenger's boots (v0.22, docs/real-partner-body.md 24.17): `34 <0|1>` the b
 layer bare, kind state, item), +/- in 1 s; queued; on-foot flag, move level, speed; status +0x140 +0x144; skipped; events
 j/t/l/s/p ..., dropped ...`) off / every second, `34 2` a mark (`[ride] boots mark #n: life ... (unchanged|dropped|rose
 +/-... since mark #n-1, ... s)`), `35 <0|1>` (hidden tests) the boots guard off (v0.21: a carried Sam's boots wear) / on.
+The trike driver's back (v0.23, docs/real-partner-body.md 24.18; `session.ini ride_hide_pack`, default 1): `36 <1|0|-1>`
+(hidden tests) the hide forced on (our Sam's inventory gets the game's HideBackpack + HideSpareShoes now, ride or not) /
+forced off / back to following the ride (`[ride] test: the trike pillion hide forced ON | forced off | follows the ride`).
+`ride_state` logs a third line: `[ride] state: trike pillion hide on|OFF, held 0|1 (N hide(s), M release(s)), test t,
+inventory +0x4C7C 0xNN` (the byte: bit 0 HideBackpack, bit 1 HideSpareShoes; the game's own HideBaggage event writes bits
+0..4). The driver's game logs `[ride] trike pillion: the driver's backpack and cargo hidden (... 0x00 -> 0x03; #n)` and
+`... shown again (<why>) after s (...; #n)` (why: the ride is over, the passenger's body is not seated, a new Sam, test,
+the mod stopped); the passenger's `[gear] the partner's backpack props hidden (our Sam rides on the partner's trike
+pillion)` / `... follow its frame again`. `gear 0`'s carrier line counts the pieces the game hides (`n hidden by the game:
+hide mask 0xM`), and every change of that count is logged (`[gear] our carried cargo: n of m pieces hidden by the game
+now (carrier hide mask 0xM)`): hidden pieces are not sent (v0.22 sent every carried piece as shown).
 
 ### Save guard (`save_guard`; with riding together, or in a hidden run)
 
@@ -843,6 +864,34 @@ broadside). `vehicle_hit 11` logs the life (`+0x6E8` / `+0x6EC`) and place of ev
 both games). `vehicle_hit 12 <kind> <m>` (hidden tests) puts the nearest free vehicle of that kind m along the nearest free
 truck's forward (negative: behind it), on its heading.
 
+### World sync (`world_dump`, `world_sync`, `dev_build`, `dev_build_remove`, `dev_build_decay`, `dev_build_mats`, `dev_ladder`, `dev_rope`; ziplines W4; on with `host_save=1` unless `world_sync=0`)
+
+Shared structures (docs/world-sync.md). All log `[world] ...` lines. `world_dump` and `world_sync` work in any session
+(read only, except `world_sync 1` / `5`); the `dev_build*` tools are dev tools (`Tool::structure`: sandboxed saves only;
+on a co-op guest they ask the host).
+
+| Action | Args | What |
+|---|---|---|
+| `world_dump` | `[category or -1] [n] [net: 0 all, 1 stage, 2 player, 3 net]` | The census: counts per category x net type (Stage / Player / Net), offline / uploaded / removing, the id counters and the creation queue; the nearest n (default 16) with id, type, state, level, place, durability, materials, offline, server id, UUID. |
+| `world_sync 0` | | Status: on / off and why, world, census, the partner's HELLO, the guest in the host's world / the snapshot, bound / mapped / pending mirrors / held builds, the gate. |
+| `world_sync 1` | | Guest: SNAP_REQ now (a heal); host: CHECK now. |
+| `world_sync 2` | | The guest's binding (host id -> guest id for mapped ones). |
+| `world_sync 3` | | Counters: messages sent / received by type, bad / stale / repeats, mirrors (exact, mapped, FAIL), created for the guest, removals, refusals, held builds; W2: `[world] counters W2:` contributions applied / dropped / retries, level-ups queued (host, guest), the guest's level-up requests swallowed, double requests dropped, our MATS (not shared, pending), STATE applied (pending), durabilities applied, excess; then the online gate's `[gate] counts:` line. |
+| `world_sync 4 <id or 0>` | | One structure (0 = the nearest shared one): state, level, place, durability, own / others' materials, flag bytes, offline, server id, entity; for a contributable one (W2) also `[world] materials id N (hid H) <type>: level L of MAX, status S (enough / missing / max level / no level-up / a level-up runs)[, running][, queued]; invested a/b/c/d/e/f, the next level needs ... in all (... still), repair ..., list n, dur D of MAX; reaches R`. The six materials are chiral crystals, resins, metals, ceramics, chemicals, special alloys. |
+| `world_sync 5 <0/1>` | | Hidden runs: hold the guest's GBUILDs back (retry tests). |
+| `world_sync 10 <type or -1> <m>` | | Count check near our Sam: `[world] check: type T within r m: n (ids ...) offline n level L` (-1 = every shared type). |
+| `world_sync 11 <id or 0>` | | Record round trip: the game's ExportInfo twice, the Record back into a record, the live fields: `EQUAL` / `DIFFERS`. |
+| `world_sync 12 <id or 0> [m]` | | W3, hidden runs: Sam to a structure (0 = the nearest shared one, ladders / ropes too), `m` (default 1) short of it on the line from where he stands, through `dev_goto` (then `waitworld 45 goto`): a ladder's / rope's prompts ("Hold START: Collapse Ladder / Recover Rope") show only within reach. Log `[world] to structure id N (type) at (...): Sam to (...)`. |
+| `world_sync 13` | | The online gate: on / off, its vtable slots, its counts. |
+| `world_sync 14 <id, 0 or -1>` | | W3 probe: watch a structure (0 = the nearest ladder / rope): every census logs a change of its state or flag bytes cp+0xA8..+0xB1, or `GONE from the live list` (how a pick-up looks: run `20261121-174141`). -1 stops. |
+| `world_sync 15 <id or 0> [deg]` | | W3, hidden runs: from now on every tick checks whether the game camera looks at a structure (0 = the nearest ladder / rope of any owner; a rope: 6 m down its direction, the edge it hangs over) within `deg` (default 15) and logs `[world] camera aimed #n` once (a scenario turns the camera with `until 45 300 \[world\] camera aimed #1 => pad none 120 rx=32767`, as `vehicle_sync 18`). |
+| `world_sync 16 <id or 0> [m]` | | W4: a zipline's links, one line each (0 = every zipline within `m`, default 300, of our Sam): `[world] zipline id N (hid H, zipline, net n, level L, state S) at (...): k link(s): <ids>`. The links are the game's own (the zipline's activation links it to every zipline of its area within the config's range, cp+0x528); the same ziplines link the same in both worlds. |
+| `dev_build` | `<type> <anim 0/1> [m ahead, default 8]` | A structure in front of Sam through the game's own queue (InitInfo, NewId, owner, +0x645 and +0x623 with anim, the printer at the structure), always offline. Player types: 3 safe house, 6 postbox, 9 watchtower, 12 catapult, 15 generator, 18 timefall shelter, 31 bridge 30 m, 34 bridge 45 m, 41 chiral bridge, 44 jump ramp, 22 zipline (W4). On the guest: the record goes through the EnqueueInfo detour like her PCC commit (held) and a dev GBUILD asks the host. |
+| `dev_ladder` | `<length m, 0 = 9.65> <mode 0/1> [m ahead, default 3]` | W3. A ladder (type 25) as the player's commit places one: InitInfo, level, the durability from the ladder config (+0xA0[level]), +0x578 mode, +0x57C / +0x580 lengths, +0x623 / +0x645, then **the game's own placement check** 0x142C38200 (the build preview's): it snaps the transform and fills the geometry; the first of Sam's front at a few distances and turns the game accepts is taken (`[world] dev ladder: the game's placement check accepts try N ...`), else the action fails (a spot the check refuses is removed by the ladder's own re-check a moment later). Offline; on the guest a dev GBUILD as `dev_build`. |
+| `dev_rope` | `<length 1..30 m> <level 0..2> [m ahead, default 3]` | W3. A climbing anchor with its rope (type 28): as `dev_ladder`, with +0x578 length, +0x57C direction (0, 1, 0: the rope ExportInfo's default) and +0x588 longest 30 m. Needs an edge (the check refuses flat ground): `goto -1153.4 338.0` (the 100% save has an online rope there) works. |
+| `dev_build_remove` | `<id or 0> [1 dismantle / 0 the removal bits]` | 0 = the nearest shared structure, always a dismantle (RemoveManually, through the detour: the guest sends REMREQ). |
+| `dev_build_decay` | `<id or 0> <seconds>` | Host / solo: the structure's timefall durability (cp+0xD8). W4: a shared ladder's / rope's too; the host's DUR carries it to the guest. |
+| `dev_build_mats` | `<id or 0> <0 materials / 1 repair> <share or units>` | W2. The terminal's commit without the UI or the inventory. Materials: `<share>` (0 < f <= 1, default 1) of what the next level still needs, through AddOwn (our detour: on the guest it goes to the host as MATS), then, at Status 0, the terminal's QueueLevelUp (through the detour: swallowed on the guest, the host's call). Repair: `<units>` (default 10) of the material that repairs this type most (config +0x210), the repair commit's durability step (cp vt+0x140) and AddRepair. Log `[world] dev contribution: id N (hid H, type) level L: materials ... -> status S[, level-up requested ...]` / `[world] dev repair: ... -> durability A -> B s`. |
 ## Dev tools (`dev_*`; `session.ini dev_tools=1`, the launcher's Debug page "Dev tools"; always on in hidden runs)
 
 Spawning, world control and player cheats for play-testing and for hidden scenarios. Code: `native/mod/dev_tools.{hpp,cpp}`

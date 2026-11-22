@@ -146,6 +146,9 @@ def verdict_of(summary):
         return None
     v = {k: summary.get(k) for k in VERDICT_KEYS if k in summary}
     v['cloud_uploads'] = len(summary.get('cloud_uploads') or [])
+    v['game_server_writes'] = len(summary.get('game_server_writes') or [])
+    if 'online_blocked' in summary:
+        v['online_blocked'] = summary.get('online_blocked')
     issues = []
     if summary.get('mode') == 'game' and summary.get('result') not in (None, 'refused'):
         if summary.get('game_exit_code') not in (0, None):
@@ -162,6 +165,8 @@ def verdict_of(summary):
             issues.append('safety violation')
         if v['cloud_uploads']:
             issues.append('%d cloud upload(s)' % v['cloud_uploads'])
+        if v['game_server_writes']:
+            issues.append('%d game server write(s)' % v['game_server_writes'])
         if summary.get('failures'):
             issues.append('%s failed step(s)' % summary.get('failures'))
     v['issues'] = issues

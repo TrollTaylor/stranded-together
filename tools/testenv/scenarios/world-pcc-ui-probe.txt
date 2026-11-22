@@ -1,0 +1,43 @@
+# Shared structures W4 (docs/world-sync.md): calibration probe for the PCC through the game's real UI with the hidden env's
+# virtual pad (never SendInput), solo: the tools radial (D-pad right held) with the PCC picked (right stick to about 7:30),
+# its hints, then LT held (the hologram) and the confirm inputs, a screenshot after each and the census.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios world-pcc-ui-probe -Id round5-w4-dev -SeedSaves complete-100
+role solo
+timeout 240
+ini dev_tools=1
+start
+wait 3000
+goto mknot-road
+wait 4000
+action world_sync 10 -1 40
+pad DPAD_RIGHT 1200 keep
+pad DPAD_RIGHT 900 rx=-26200 ry=-19700 keep
+screenshot P0-radial-pcc
+pad none 0
+wait 1500
+screenshot P1-after-radial
+pad none 1500 lt=255 keep
+screenshot P2-lt-held
+pad none 0
+wait 800
+screenshot P3-lt-released
+pad RB 300
+wait 1200
+screenshot P4-after-rb
+pad none 1500 lt=255 keep
+pad none 300 lt=255 rt=255 keep
+pad none 1500 lt=255 keep
+screenshot P5-lt-rt
+pad none 0
+wait 2500
+screenshot P6-after
+action world_sync 10 -1 40
+pad none 1500 lt=255 keep
+pad none 2500 lt=255 rt=255 keep
+screenshot P7-lt-rt-held
+pad none 0
+wait 2500
+screenshot P8-after
+action world_sync 10 -1 40
+action world_sync 3
+quit

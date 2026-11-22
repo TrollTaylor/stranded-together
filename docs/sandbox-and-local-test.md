@@ -83,8 +83,13 @@ itself: such a pad drives both games.
 
 ### Graphics
 
-Two games share the GPU, so the launcher caps both at 30 fps (`frame_cap=30`: in hidden runs the
-host's CPU time per second fell from 8.1 s to 1.9 s and the second game could finally keep up).
+Two games share the GPU, so the launcher caps both (v0.23: at 60 fps by default, the Local test's **Frame rate** choice
+30 / 60 / 120 / Uncapped; v0.22 and before at 30). The binding limit is the game's own: each sandbox's `settings.cfg`
+`"fps"` / `"limit_fps"` (read at boot, clamped 15..240; `sandbox.hpp` `LowGraphicsSettingsCfgAt`), with `frame_cap=<rate>`
+as a loose safety net (uncapped, a hidden game rendered about 1000 fps and starved the second; with a cap the host's CPU
+time per second fell from 8.1 s to 1.9 s). Measured at 60 on this PC (RTX 5080; hidden runs `20261121-133753`,
+`-133938`, `-134423`, the launcher's own files): both games 58-61 fps (median 60.0) through the whole run, no
+renderer or D3D12 device failure (`D3D12CreateDevice ... hr=0x00000000`).
 It also asks for the windows side by side (`local_window`): the move runs on the game window's
 own thread (a registered message the subclass handles; from the render thread it deadlocked both
 games, hidden run 20261116-160909) and the subclass keeps the size when ds.exe asks for a
@@ -120,11 +125,11 @@ only (its profile / its settings.cfg), never into your own.
   starts while the local test runs.
 * A test save picked inside `stranded_together\sandbox` is refused (it would be emptied first).
 * **Local two-player test**: seeds `local-host` and `local-guest` (from the test save, or a full
-  copy of your saves when none is picked), writes `settings.cfg` into each when missing, writes
+  copy of your saves when none is picked), merges the low graphics settings at the Frame rate into each `settings.cfg` before every test, writes
   `instances\host\session.ini` (role=host, UDP 27555 -> 27556, a fresh secret, `local_input=host`
   or `host_pad`, `local_window=left`) and `instances\guest\session.ini` (role=guest, 27556 ->
   27555, `second_instance=1`, `local_input=guest`, `local_window=right`), both with
-  `appdir_settings=1`, `frame_cap=30`, `debug_menu=1`. It starts `ds.exe` directly with
+  `appdir_settings=1`, `frame_cap=<the Frame rate>` (60 by default; v0.22: 30), `debug_menu=1`. It starts `ds.exe` directly with
   `SteamAppId=1850570` (steam_api64's RestartAppIfNecessary then answers false: no relaunch
   through Steam), `SteamGameId` and `ST_INSTANCE_DIR`, the guest 8 s after the host; shows both
   games' link state; when both have exited it removes unread session.ini files and compares the

@@ -178,6 +178,9 @@ bool CoopSessionCommand(int op, const double (&v)[3], char* msg, std::size_t cap
 // Real shared vehicles debug command (vehicle_share.cpp, vehicle_sync=5 with host_save=1): see docs/debug-actions.md
 // "Vehicle share" (op 1 = dump [tag], op 2 = summon kind [m]).
 bool VehicleShareCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
+// Shared structures (world_share.cpp; docs/world-sync.md, docs/debug-actions.md "World sync"): tool 0 world_dump, 1 world_sync,
+// 2 dev_build, 3 dev_build_remove, 4 dev_build_decay, 5 dev_build_mats, 6 dev_ladder, 7 dev_rope.
+bool WorldShareCommand(int tool, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 // Real shared vehicles, remote driving (vehicle_drive.cpp): see docs/debug-actions.md "Vehicle drive".
 bool VehicleDriveCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 

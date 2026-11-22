@@ -252,6 +252,38 @@ bool CharacterCombo(const char* id, std::string* key, float logical_width, bool 
     return picked;
 }
 
+// The Local test's frame rate (v0.23): 30, 60 (default), 120 or 0 = the game's maximum (240; the game has no unlimited).
+bool FpsCombo(const char* id, int* fps, float logical_width, bool enabled) {
+    static const struct {
+        int fps;
+        const char* label;
+    } kRates[] = {{30, "30 fps"}, {60, "60 fps"}, {120, "120 fps"}, {0, "Uncapped (240 fps)"}};
+    const char* current = "60 fps";
+    for (const auto& r : kRates)
+        if (r.fps == *fps) current = r.label;
+    bool picked = false;
+    const Font f(GetFonts().regular, kSmall + 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, Px(10.0f, 8.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, Px(8.0f, 8.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, Px(10.0f, 8.0f));
+    ImGui::SetNextItemWidth(Px(logical_width));
+    if (!enabled) ImGui::BeginDisabled();
+    if (ImGui::BeginCombo(id, current, ImGuiComboFlags_HeightLargest)) {
+        for (const auto& r : kRates) {
+            const bool selected = r.fps == *fps;
+            if (ImGui::Selectable(r.label, selected) && !selected) {
+                *fps = r.fps;
+                picked = true;
+            }
+            if (selected) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    if (!enabled) ImGui::EndDisabled();
+    ImGui::PopStyleVar(3);
+    return picked;
+}
+
 ImU32 SoftOf(ui::Tone tone) {
     switch (tone) {
     case ui::Tone::good: return col::kGoodSoft;
@@ -1261,7 +1293,7 @@ void LauncherUi::DebugSavesTab(Phase phase) {
     SectionLabel("LOCAL TWO-PLAYER TEST");
     if (!lt.running)
         Text("Two games on this PC, linked over loopback: host window = keyboard + mouse, guest window = gamepad. Each runs on "
-             "its own copy of the test save (or of your saves), at 30 fps.",
+             "its own copy of the test save (or of your saves), at the frame rate picked below (60 fps by default).",
              col::kTextDim, kSmall, nullptr, 0.0f);
     Gap(2.0f);
     if (Button("Local two-player test", ButtonKind::primary, ImVec2(232.0f, 40.0f), can, Icon::cable, true)) {
@@ -1274,6 +1306,20 @@ void LauncherUi::DebugSavesTab(Phase phase) {
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() + Px(9.0f));
     bool pad = lt.host_pad;
     if (Checkbox("Pads on the host too", &pad, !lt.running)) model_.set_local_test_host_pad(pad);
+    Gap(2.0f);
+    {
+        // v0.23: both games' frame rate (the game's own limit in each sandbox's settings.cfg, and the mod's frame_cap).
+        const float row_y = ImGui::GetCursorPosY();
+        ImGui::SetCursorPosY(row_y + Px(8.0f));
+        Text("Frame rate", col::kTextDim, kSmall, nullptr, -1.0f);
+        ImGui::SameLine(0.0f, Px(10.0f));
+        ImGui::SetCursorPosY(row_y);
+        int fps = lt.fps;
+        if (FpsCombo("##localfps", &fps, 200.0f, !lt.running)) model_.set_local_test_fps(fps);
+        ImGui::SameLine(0.0f, Px(12.0f));
+        ImGui::SetCursorPosY(row_y);   // as the guest row below: SameLine already adds the combo's text offset
+        Text("for both games (two games share this PC: lower it if either stutters).", col::kTextFaint, kSmall, nullptr, -1.0f);
+    }
     Gap(2.0f);
     {
         // The guest game's my_character: the quickest way to see a chosen character (in the host window).
@@ -1466,6 +1512,12 @@ void LauncherUi::DebugOptionsTab(Phase phase) {
     Text(o.host_save && o.backup_host_saves ? "Before each game you host, a copy of your save folder goes to stranded_together\\backups "
                                               "(the newest 5 are kept)."
                                             : "No backup is made when you host.",
+         col::kTextFaint, kSmall, nullptr, 0.0f);
+    Gap(2.0f);
+    committed |= Checkbox("Share structures, ladders, ropes and ziplines", &o.share_world, o.host_save);
+    Text(o.host_save && o.share_world ? "Structures, ziplines, ladders and climbing ropes either player builds appear in both worlds and "
+                                        "stay in the host's save; both can pay materials into the same structure."
+                                      : "Each world keeps its own structures, ziplines, ladders and ropes.",
          col::kTextFaint, kSmall, nullptr, 0.0f);
     Gap(4.0f);
     committed |= Checkbox("In-game debug menu", &o.debug_menu, true);

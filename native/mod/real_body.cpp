@@ -25,6 +25,8 @@
 #include "gear_extrap.hpp"
 #include "ride_together.hpp"
 #include "self_predict.hpp"
+#include "suit_colour.hpp"
+#include "suit_colour_math.hpp"
 
 namespace st::realbody {
 namespace {
@@ -2725,12 +2727,17 @@ bool g_have_partner_outfit = false;
 int g_outfit_override = 0;          // debug: 0 none, 1 our own outfit, 2 g_override_outfit
 wire::Outfit g_override_outfit;
 outfit::Dress g_dress;              // what was done to the partner slot's body
+// Fragile's porter suit in Sam's suit colours (suit_colour.hpp, docs section 27): the partner slot's and the self view's
+// fragile_suit bodies; -1 = follow the colour, 0..16 the debug override (real_outfit 5).
+suitcol::Dress g_suit_p, g_suit_me;
+int g_suit_override = -1;
 
 // ---------------------------------------------------------------- body slot (game thread)
 double g_now = 0;                  // the tick's clock (link::NowMsPrecise), for debug-started spawns
 
 void ResetSlot(BodySlot& b) {
     if (&b == &g_slots[0]) outfit::Forget(g_dress);
+    suitcol::Forget(&b == &g_slots[0] ? g_suit_p : g_suit_me);
     b.owner = Owner::none;
     b.phase = Phase::idle;
     b.spawn = holo::Spawn{};
@@ -3908,6 +3915,32 @@ void DressPartner(game::Entity* local, bool local_active, double now_ms) {
     }
     if (!holo::SpawnAlive(g_p.spawn)) return;
     outfit::Apply(g_dress, reinterpret_cast<std::uintptr_t>(g_p.spawn.e), want, reinterpret_cast<std::uintptr_t>(local), now_ms);
+}
+
+bool IsFragileSuit(const bodies::Body* b) { return b && std::strcmp(b->key, "fragile_suit") == 0; }
+
+// Game thread: Fragile's porter suit in the suit colour of the player she stands for (docs section 27): the partner
+// slot's fragile_suit body wears the colour the other player sent (STJ1 outfit: that player's own Sam's suit colour),
+// the self view's wears our own Sam's colour, so both screens show the same. Only while our player is up, 0.5 s after the
+// body became live; suit_colour rate-limits, waits for a change to hold and logs every step.
+void DressFragile(game::Entity* local, bool local_active, double now_ms) {
+    if (!local || !local_active) return;
+    if (g_p.phase == Phase::live && IsFragileSuit(g_p.body) && GetTickCount64() - g_p.live_tick >= 500 && holo::SpawnAlive(g_p.spawn)) {
+        std::uint8_t c = 0xFF;
+        wire::Outfit o;
+        if (g_p.owner == Owner::partner && g_have_partner_outfit) c = g_partner_outfit.suit_colour;
+        else if (g_p.owner == Owner::debug && outfit::ReadLocal(reinterpret_cast<std::uintptr_t>(local), &o)) c = o.suit_colour;
+        if (c != 0xFF || g_suit_override >= 0)
+            suitcol::Apply(g_suit_p, reinterpret_cast<std::uintptr_t>(g_p.spawn.e), suitcol::Wanted(g_suit_override, c), now_ms);
+    }
+    if (g_me.phase == Phase::live && IsFragileSuit(g_me.body) && GetTickCount64() - g_me.live_tick >= 500 && holo::SpawnAlive(g_me.spawn)) {
+        wire::Outfit o;
+        const bool have = outfit::ReadLocal(reinterpret_cast<std::uintptr_t>(local), &o);
+        // round 5: on a host-held save guest, her remembered pick (suit_colour.hpp GuestColour) when she has not picked since this load
+        if (have || g_suit_override >= 0)
+            suitcol::Apply(g_suit_me, reinterpret_cast<std::uintptr_t>(g_me.spawn.e),
+                           suitcol::Wanted(g_suit_override, have ? suitcol::GuestColour(o.suit_colour) : 0), now_ms);
+    }
 }
 
 // ---------------------------------------------------------------- update frequency (smooth bit kSmoothBoost)
@@ -5358,6 +5391,7 @@ void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
     DrivePoseTargets(local_active);
     DriveBootsTarget(local_active);
     DressPartner(local, local_active, now_ms);
+    DressFragile(local, local_active, now_ms);
     if (g_hook) Stats(now_ms);
     Meter(now_ms);
 }
@@ -5395,7 +5429,9 @@ bool PushFrame(const wire::JointFrame& f, double key_ms) noexcept {
 void ResetFrames() noexcept { g_ring_head = g_ring_count = 0; }
 
 bool ReadOutfit(game::Entity* local, wire::Outfit* out) noexcept {
-    return local && outfit::ReadLocal(reinterpret_cast<std::uintptr_t>(local), out);
+    if (!local || !outfit::ReadLocal(reinterpret_cast<std::uintptr_t>(local), out)) return false;
+    out->suit_colour = suitcol::GuestColour(out->suit_colour);  // round 5: a host-held save guest's remembered pick (else unchanged)
+    return true;
 }
 
 void SetPartnerOutfit(const wire::Outfit* o) noexcept {
@@ -5849,6 +5885,37 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
                 const bool ok = have_sam && outfit::TestSetOwnSuitColour(reinterpret_cast<std::uintptr_t>(sam), static_cast<std::uint8_t>(v[1]));
                 Set(msg, cap, "our own suit colour -> %.0f: %s", v[1], ok ? "written" : "not written");
                 return ok;
+            }
+            if (mode == 5) {  // Fragile's porter suit: colour a (0..16) on our fragile_suit bodies, -1 = follow the suit colour again
+                g_suit_override = v[1] >= 0 && v[1] <= suitcol::kGold ? static_cast<int>(v[1]) : -1;
+                Set(msg, cap, g_suit_override >= 0 ? "Fragile's suit: colour %d (debug override)" : "Fragile's suit follows the suit colour",
+                    g_suit_override);
+                return suitcol::Available();
+            }
+            if (mode == 6) {  // Fragile's suit: state and drawables to the log
+                char a[220], b[220];
+                if (game::Entity* e = g_p.phase == Phase::live && IsFragileSuit(g_p.body) ? g_p.spawn.e : nullptr)
+                    suitcol::LogBody(reinterpret_cast<std::uintptr_t>(e), "slot body");
+                if (game::Entity* e = g_me.phase == Phase::live && IsFragileSuit(g_me.body) ? g_me.spawn.e : nullptr)
+                    suitcol::LogBody(reinterpret_cast<std::uintptr_t>(e), "self body");
+                Set(msg, cap, "suit: slot %s; self %s; %s", suitcol::Describe(g_suit_p, a, sizeof(a)), suitcol::Describe(g_suit_me, b, sizeof(b)),
+                    suitcol::Available() ? "available" : suitcol::Why());
+                Log("[suit] %s", msg);
+                return true;
+            }
+            if (mode == 8) {  // Fragile's suit, hidden tests: metal variant a, roughness b (-1 the variant's); rebinds
+                suitcol::SetTestMetal(static_cast<int>(v[1]), static_cast<int>(v[2]));
+                suitcol::Undo(g_suit_p, "test metal");
+                suitcol::Undo(g_suit_me, "test metal");
+                Set(msg, cap, "suit test: metal variant %.0f roughness %.0f", v[1], v[2]);
+                return true;
+            }
+            if (mode == 7) {  // Fragile's suit, hidden tests: meshes a (-1 the product's, -2 the whole model, else a bit mask), channels b
+                suitcol::SetTest(static_cast<long long>(v[1]), v[2] > 0 ? static_cast<unsigned>(v[2]) : 0u);
+                suitcol::Undo(g_suit_p, "test choice");
+                suitcol::Undo(g_suit_me, "test choice");
+                Set(msg, cap, "suit test: meshes %.0f channels %.0f", v[1], v[2]);
+                return true;
             }
             g_outfit_override = 0;
             Set(msg, cap, "outfit override off (the partner's own outfit applies)");

@@ -537,8 +537,8 @@ std::vector<std::string> ManifestChanges(const std::string& before, const std::s
     return out;
 }
 
-std::string LocalTestSettingsCfg(const std::string& current) {
-    return st::sandbox::MergeGameSettings(current, st::sandbox::LowGraphicsSettingsCfg());
+std::string LocalTestSettingsCfg(const std::string& current, unsigned fps) {
+    return st::sandbox::MergeGameSettings(current, st::sandbox::LowGraphicsSettingsCfgAt(fps));
 }
 
 }  // namespace st::core

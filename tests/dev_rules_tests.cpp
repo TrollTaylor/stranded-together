@@ -73,6 +73,15 @@ void TestSandbox() {
     // host_save=0 (two separate worlds, the old Local test): each game's own world
     for (int role : {1, 2})
         for (Tool t : {Tool::world, Tool::vehicle_spawn, Tool::vehicle_edit}) CHECK(Decide(t, S(true, true, role, false)).route == Route::local_only);
+    // structures (dev_build; docs/world-sync.md): sandboxed saves only; the co-op guest asks the host
+    CHECK(Decide(Tool::structure, solo).route == Route::local);
+    CHECK(Decide(Tool::structure, host).route == Route::local);
+    CHECK(Decide(Tool::structure, guest).route == Route::ask_host);
+    for (const Session& s : {S(true, false, 0, false), S(true, false, 1, true)}) {
+        const Verdict v = Decide(Tool::structure, s);
+        CHECK(!v.ok() && std::strcmp(v.why, kRealSaveReason) == 0);
+    }
+    CHECK(!Decide(Tool::structure, S(false, true, 1, true)).ok());
     // the host's answer to a guest's dev request
     CHECK(HostAllowsDevRequest(true));
     CHECK(!HostAllowsDevRequest(false));
