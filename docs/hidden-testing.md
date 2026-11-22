@@ -986,6 +986,15 @@ there is no OTGC logger and `game_server_writes` would mean nothing),
 `steam-cloud.txt`, `backup\` + `restore.txt` + `restored.txt`, `game-new\` (files that
 appeared in stranded_together, e.g. the fake game's log).
 
+Old runs are deleted automatically (`tools/testenv/Prune-TestRuns.ps1`, called by Start-TestRun.ps1 before each run;
+every run keeps its screenshots, about 10 GB a day of testing): runs older than 3 days go, then the oldest while all
+runs together are over 20 GB. Never deleted: the newest 25 runs and anything from the last 24 hours, a run whose restore
+did not finish (`restore.txt` without `restored.txt` "ok", or `saves-restore.txt` without `saves-restored.txt` "ok"),
+a run holding a `keep.txt` (pin a run by creating one), links and folders not named like a run. Nothing is deleted
+while a supervisor runs. Each deletion is listed in `runs\prune.log`. `Prune-TestRuns.ps1 -DryRun` lists what would
+go; `-KeepDays`, `-MaxGB`, `-KeepNewest` change the limits; `Start-TestRun.ps1 -NoPrune` skips it for one run and
+`ST_TESTENV_KEEP_ALL=1` turns it off.
+
 Exit codes: 0 pass, 1 scenario failed / game exited / save redirect not confirmed / real
 saves changed / cloud upload / restore incomplete, 2 refused (preflight), 3 safety violation.
 

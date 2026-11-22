@@ -69,7 +69,9 @@ param(
     # A held session (docs/hidden-testing.md "Held sessions"; Start-TestSession.ps1 sets it): the supervisor runs on after the
     # scenario, taking steps from <run>\inbox (Send-TestStep.ps1) until Stop-TestSession.ps1, its time limit or 60 s without a
     # heartbeat. This script then returns once the session is ready; Stop-TestSession.ps1 checks the restore.
-    [switch]$Hold
+    [switch]$Hold,
+    # Keep every old run this time (Prune-TestRuns.ps1 normally deletes runs older than 3 days / over 20 GB before a run).
+    [switch]$NoPrune
 )
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
@@ -135,6 +137,11 @@ if (-not (Get-Process -Name st_testenv_supervisor -ErrorAction SilentlyContinue)
         Remove-Item -LiteralPath $run -Recurse -Force -ErrorAction SilentlyContinue  # created above, still empty
         throw ("refusing to start: {0} interrupted run(s) never restored. Check, then restore each:`n{1}" -f $unrestored.Count,
             (($unrestored | ForEach-Object { "  tools\testenv\Restore-TestRun.ps1 -RunDir `"$_`"" }) -join "`n"))
+    }
+    # Old runs go (their screenshots fill the disk): never the newest, a run with an unfinished restore or a keep.txt.
+    if (-not $NoPrune) {
+        try { & (Join-Path $PSScriptRoot 'Prune-TestRuns.ps1') -RunsDir (Join-Path $BuildDir 'runs') }
+        catch { Write-Warning "prune skipped: $($_.Exception.Message)" }
     }
 }
 if ($Steps) {

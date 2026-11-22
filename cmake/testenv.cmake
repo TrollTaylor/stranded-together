@@ -63,3 +63,11 @@ add_test(NAME st_testenv_e2e
                  --scenario "${CMAKE_CURRENT_SOURCE_DIR}/tools/testenv/scenarios/fake-smoke.txt" --work "${_st_te_work}")
 set_tests_properties(st_testenv_probe_private st_testenv_e2e PROPERTIES RESOURCE_LOCK st_testenv_desktop TIMEOUT 300)
 set_tests_properties(st_testenv_e2e PROPERTIES SKIP_RETURN_CODE 77)
+
+# Prune-TestRuns.ps1 (old runs deleted before each run) on a fake runs folder in %TEMP%, when PowerShell 7 is found.
+find_program(ST_PWSH pwsh)
+if(ST_PWSH)
+  add_test(NAME st_testenv_prune_tests
+           COMMAND "${ST_PWSH}" -NoProfile -NonInteractive -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/testenv/Test-PruneTestRuns.ps1")
+  set_tests_properties(st_testenv_prune_tests PROPERTIES RESOURCE_LOCK st_testenv_desktop)
+endif()

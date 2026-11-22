@@ -16,6 +16,7 @@ safety rules and current status: [docs/hidden-testing.md](../../docs/hidden-test
 | `places.txt` | the named places of a scenario's `goto <name>` (area 200 of complete-100) |
 | `scenarios\quickstart-solo.txt`, `two-games-quickstart.txt` | `start`: into the world with no menu step (one game; the launcher's Local test) |
 | `scenarios\goto-places.txt`, `spawn-showcase.txt` | `goto` to 7 places with screenshots; vehicles, weather, time, MULEs, cap / glasses, boots' durability |
+| `Prune-TestRuns.ps1 [-DryRun]` | deletes old run folders (older than 3 days, or over 20 GB in all; never the newest 25, the last 24 h, an unfinished restore or a run with `keep.txt`); Start-TestRun runs it before each run (`-NoPrune` skips) |
 | `Restore-TestRun.ps1 -RunDir <run>` | put the game folder back and check/restore the saves after a crash (safe to repeat) |
 | `scenarios\smoke.txt` | title -> Continue (virtual pad) -> Sam in the world -> debug menu -> quit |
 | `scenarios\walk.txt` | Continue, wait out the save's scripted BT hold, walk 6 s (must move >= 5 m), turn the camera |
