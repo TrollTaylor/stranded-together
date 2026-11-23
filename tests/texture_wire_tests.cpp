@@ -246,6 +246,76 @@ void TestWireMessages() {
     CHECK(tw::PeekKind(nullptr, 0) == tw::Kind::none);
 }
 
+// Round 8: RECIPE (kind 7): the guest's ready-made blobs, made again by the host.
+void TestRecipe() {
+    std::uint8_t buf[tw::kMaxMessage];
+    tw::Recipe r;
+    r.epoch = 12;
+    r.generator = 1;
+    r.encoder = 1;
+    std::memset(r.originals, 0x5A, 32);
+    r.n = 2;
+    r.e[0].slot = 0, r.e[0].colour = 16, r.e[0].variant = 0;
+    std::memset(r.e[0].id, 0x11, 32);
+    r.e[1].slot = 1, r.e[1].colour = 16, r.e[1].variant = 2;
+    std::memset(r.e[1].id, 0x22, 32);
+    const std::size_t n = tw::EncodeRecipe(r, buf, sizeof(buf));
+    CHECK(n == 6 + 4 + 1 + 2 + 32 + 1 + 2 * 35);
+    CHECK(tw::PeekKind(buf, n) == tw::Kind::recipe);
+    tw::Recipe d;
+    CHECK(tw::DecodeRecipe(buf, n, d) && d.epoch == 12 && d.generator == 1 && d.encoder == 1 && d.originals[31] == 0x5A && d.n == 2 &&
+          d.e[1].slot == 1 && d.e[1].colour == 16 && d.e[1].variant == 2 && d.e[1].id[0] == 0x22);
+    CHECK(!tw::DecodeRecipe(buf, n - 1, d));   // short
+    {
+        std::vector<std::uint8_t> m(buf, buf + n);
+        m.push_back(0);
+        CHECK(!tw::DecodeRecipe(m.data(), m.size(), d));   // trailing byte
+        tw::Look l;
+        CHECK(!tw::DecodeLook(buf, n, l));                 // not a LOOK
+    }
+    auto refused = [&](const tw::Recipe& bad) {
+        // the encoder refuses it; a message carrying it anyway is refused by the decoder
+        if (tw::EncodeRecipe(bad, buf, sizeof(buf)) != 0) return false;
+        tw::Recipe ok = r;
+        const std::size_t k = tw::EncodeRecipe(ok, buf, sizeof(buf));
+        std::vector<std::uint8_t> m(buf, buf + k);
+        m[10] = bad.generator;
+        m[45] = bad.n;
+        for (unsigned i = 0; i < 2 && i < bad.n; ++i) {
+            m[46 + 35 * i] = bad.e[i].slot;
+            m[47 + 35 * i] = bad.e[i].colour;
+            m[48 + 35 * i] = bad.e[i].variant;
+        }
+        tw::Recipe out;
+        return !tw::DecodeRecipe(m.data(), m.size(), out);
+    };
+    tw::Recipe b = r;
+    b.generator = 0;
+    CHECK(refused(b));
+    b = r, b.e[0].colour = 0;
+    CHECK(refused(b));
+    b = r, b.e[1].colour = 17;
+    CHECK(refused(b));
+    b = r, b.e[1].slot = 0;   // a slot twice
+    CHECK(refused(b));
+    b = r, b.e[0].variant = tw::kMetalVariants;
+    CHECK(refused(b));
+    b = r, b.n = 0;
+    CHECK(tw::EncodeRecipe(b, buf, sizeof(buf)) == 0);
+    b = r, b.n = 9;
+    CHECK(tw::EncodeRecipe(b, buf, sizeof(buf)) == 0);
+    // eight entries fit one message
+    tw::Recipe full = r;
+    full.n = 8;
+    for (unsigned i = 0; i < 8; ++i) full.e[i].slot = static_cast<std::uint8_t>(i), full.e[i].colour = 3, full.e[i].variant = 0;
+    const std::size_t nf = tw::EncodeRecipe(full, buf, sizeof(buf));
+    CHECK(nf == 326 && nf <= tw::kMaxMessage && tw::DecodeRecipe(buf, nf, d) && d.n == 8);
+    // the LOOK is unchanged by the new kind; an unknown kind 8 is still none
+    std::vector<std::uint8_t> k8(buf, buf + nf);
+    k8[5] = 8;
+    CHECK(tw::PeekKind(k8.data(), k8.size()) == tw::Kind::none);
+}
+
 void TestAssembly() {
     tw::Assembly a;
     CHECK(!a.Init(0));
@@ -299,6 +369,7 @@ int main() {
     TestBlobBuildValidate();
     TestBlobSrgbNormal();
     TestWireMessages();
+    TestRecipe();
     TestAssembly();
     TestBucket();
     std::printf("%d checks, %d failed\n", g_checks, g_fail);

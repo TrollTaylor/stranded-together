@@ -5,6 +5,7 @@
 //   telemetry    0x143484AC0 (vt+0xB8: TelemetryDSOnlineObject*: RemoveManually, AppendMaterials, ...)
 //   upload       0x142CB5BC0 (setConstructionMaterials for a structure with a server id)
 //   likes        0x142E14820 (the likes manager's sendLike sender: dropped in hidden runs and on a world-sync guest)
+//   roads        0x1434A13E0 (the road manager's create-road request, urn:otgc_create_road / road_upload: as the likes)
 // and a logger on the OTGC request constructor 0x141B91D30 (every request the game builds; a write request logs
 // "[gate] OTGC WRITE request: <name>", which the hidden-test supervisor counts as game_server_writes and fails on).
 //
@@ -49,6 +50,7 @@ struct Counts {
     std::uint32_t reg_pass = 0, drain_pass = 0, telemetry_pass = 0, upload_pass = 0;
     std::uint32_t otgc = 0, otgc_write = 0;                                // requests the game built
     std::uint32_t likes = 0, likes_pass = 0;                               // the likes manager's sendLike sender (W2)
+    std::uint32_t roads = 0, roads_pass = 0;                               // the road manager's create-road request (W3)
 };
 Counts GetCounts() noexcept;
 std::uint32_t DroppedTotal() noexcept;

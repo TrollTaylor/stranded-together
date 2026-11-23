@@ -299,6 +299,20 @@ Scenarios: `collision`, `collision-off`, `two-games-collision`, `two-games-all`.
   Bridges cap (cap00), 0x24 = 36 the Santa hat (cap01), 0x31 = 49 the headcrab (cap02), 0x32 = 50 the hair ornament
   (cap03), 0x0D / 0x0E glasses; docs/real-partner-body.md section 26.3) sets the first such entry's worn flag: the
   game puts the item on or takes it off itself. The cap colour (`gear 15`) does not pick the head item.
+* `action gear 27 <0|1|2>`, `gear 28 <type>`, `gear 29 <0|1>` (round 7; docs/real-partner-body.md section 32): Sam's skeleton
+  on her. 27: the exo carrier off / on (`session.ini exo_carrier`, default on; off removes both carriers at once); 3 / 4
+  the self carrier's pose source (3 Sam's newest capture, the default; 4 the capture the self body was last written from,
+  one frame behind while moving); any other value only logs the status line `[exo] exo_carrier on, forced type -1, LegOut
+  off, self source Sam's newest; our skeleton speed; partner
+  carrier live shown (exo carrier <p>: n pose writes (n refused, n torn, n wpm), n forced updates); self carrier ...`.
+  28 (hidden tests; both screens follow, it changes what we read and send, not Sam's own model): the skeleton pieces we
+  read replaced by a type's: -1 off (what the game shows), 0 none, 1 speed, 2 all-terrain, 3 power, 4 support; logged
+  `[exo] our Sam's skeleton: power (forced: gear 28) (pieces shown <hex>)`. 29: the sender's LegOut suit piece (worn with a
+  skeleton) also on her (0 off, the default). The carriers log `[exo] carrier: loading ...`, `[exo] carrier <p> live`,
+  `[exo] carrier <p> follows the partner body's pose` (`[exo-self] ... the self body's pose`), `[exo] carrier <p> parts: n
+  set (...); shown now: 1 32 33 34 35 (the sender's skeleton: speed)`, `[exo] carrier <p>: shown (n ms after it became
+  live)` / `: hidden`, `[exo] carrier removed (<why>)` and, with a shown carrier, `[exo] carrier vs body cm mean/max a / b
+  (n joints); ...` (every second in hidden runs, every 10 s otherwise).
 * `action gear 26 <0|1|2|9>` (round 6; docs/real-partner-body.md section 31): what is in a hand on the other screen
   (`held_items`): 0 off (only v0.9's cutscene-prop weapons), 1 the ladder / PCC / climbing anchor, 2 every item in a hand
   (the default); any other value only logs `[gear] held_items 2; held clones on (ok): n resource(s) re-typed, n entities
@@ -708,6 +722,10 @@ hook, which is installed at start-up only with `session.ini partner_body=real` o
   one-line reason when Entity::Update's stamp sites do not match).
   `self_view 16 <0/1>`: Sam's head items onto her drawn head every frame (docs/real-partner-body.md section 26.8): 1
   (the default) v0.22, 0 the plain offset of v0.21 (for before / after runs).
+  `self_view 17 <mask>`: the self view over loads (docs/real-partner-body.md section 33): bit 1 the load rule (not
+  shown through a load or the post-load Setup; the show waits for a fresh game update of Sam), bit 2 the private room's
+  close-up hold (Sam stays in `PrivateRoom|Cutscene` right after a load until the game state changes) and the stall guard
+  (in that state, Sam shown when the game stops moving him); 3 the default, 0 v0.24 (before / after runs).
   `self_view 4`: the
   subspace work object's state and menu kind, and every ArtPart of the menu's figure (asked / effective
   visible, top-level, children) in the log. In hidden tests a `[menu] subspace state ...` line is logged on
@@ -1087,15 +1105,31 @@ teleport answers "not implemented in the test stub" by default, which the harnes
   green checker on her suit (S0), 2 also yellow / black stripes for her boots' colour (B1, the boots rule, T3), 3 the
   boots stripes only; 0 off.
 * `tex 10 <t>` (hidden; round 6 T3): her boots' pictures follow boot type t (0..10; -1 = our Sam's).
+* `tex 11 <v>` (hidden; round 8): the metal variant of the ready-made gold / silver (0 the product: since round 9 the
+  polished metal, Sam's measured colours and Roughness x1.15; 1 "Sam's hue", 2 "Sam measured", 3 the round-7 prototype
+  (satin, Roughness x0.75: generator 1's product, kept for side-by-side comparisons); docs/textures.md "Ready-made
+  colours"); the looks are rebuilt.
+  The variant is in the built cache key and the RECIPE, so the host makes the same one (a host whose build knows fewer
+  variants refuses the RECIPE and asks for the blob).
+* `tex 12 <m>` (hidden; round 8, host): how a guest's ready-made colour (STT1 RECIPE) is made: 0 here (the product),
+  1 never here (always asked from the guest), 2 refused as if this game's Original pictures differed (the fallback test).
 
 Log lines the scenarios match: `[tex] ready: manifest table <hex> ok`, `[tex] look <id8> for colour <c> (<folder>): <k>
-slot(s) edited (<slots>)`, `[tex] built <slot> <id8> in <ms> ms`, `[tex] clone <slot> <id8>: hw ...`, `[tex] body
+slot(s) edited (<slots>)` (colour 0 or `textures_defaults=0`), round 8: `[tex] look <id8> for colour <c> (<folder>):
+ready-made (<slots>)` / `yours: <k> slot(s) (<slots>)[, ready-made <slots>]`, `[tex] ready-made <slot> <id8> for colour
+<c> made in <ms> ms (analysis <a> ms, make + encode <e> ms)` / `... from the cache`, `[tex] ready-made colours off: <why>`,
+`[tex] look #<n> sent: colour <c>, <k> blob(s) (<r> ready-made: recipe sent); ...` (guest), `[tex] partner look #<n>:
+<slot> <id8> is ready-made colour <c> (generator <g>): making it here`, `[tex] partner ready-made <slot> <id8> made here
+in <ms> ms: the same as the guest's (no transfer)[; no longer wanted (kept in the cache)]` / `... not made here (<why>): asking
+the guest for it`, `[tex] partner look #<n>: <k> ready-made blob(s) of an older look no longer made here`, `[tex] host: the
+partner's ready-made colours come over the link (about a minute each) because <why>: press Extract textures ...` (host),
+`[tex] built <slot> <id8> in <ms> ms`, `[tex] clone <slot> <id8>: hw ...`, `[tex] body
 self|partner|debug ...: look <id8> bound (...), rebuild kept <n> / dropped <m> slot(s)`, `[tex] body ...: look ... taken
 off`, `[tex] reload: colour <c>'s pictures changed`, `[tex] boots look <id8> for boots <n>[ worn][ gold|silver]: <folder> (<slots>)` / `... nothing edited (her own boots)`,
 `[tex] her boots: type <t>[, worn] (look key <k>, boots_look=own|prop)`, `[tex] look #<n> sent: colour <c>, <k> blob(s);
 boots <t>[ worn], her own boots|Sam's boots (prop)` (guest), `[tex] partner boots: her own boots (no prop) ...` (host), `[tex]
 partner look #<n>: received <slot> <id8> (<bytes> B in <ms> ms, <rate> KB/s) valid`, `[tex] partner look <id8>: complete
-for colour <c> (<k> blob(s), cache hit <h>)` (host), `[tex] clone <slot> <id8>: hw ... released (unused for 5 s | tex 6; ...)`, `[tex] refused <id8>: <reason>`, `[tex] off: <reason>`, `[tex] ...
+for colour <c> (<k> blob(s), cache hit <h>, made here <m>)` (host), `[tex] clone <slot> <id8>: hw ... released (unused for 5 s | tex 6; ...)`, `[tex] refused <id8>: <reason>`, `[tex] off: <reason>`, `[tex] ...
 FAULTED`.
 
 ## Fragile's textures: the launcher's command-line test actions (round 6, T1)

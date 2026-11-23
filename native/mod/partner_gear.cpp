@@ -10,6 +10,7 @@
 #include "automation.hpp"
 #include "body_choice.hpp"
 #include "boots_look.hpp"
+#include "exo_parts.hpp"
 #include "game_actions.hpp"
 #include "gear_look.hpp"
 #include "gear_wear.hpp"
@@ -496,24 +497,110 @@ void ReadHead(std::uintptr_t sam, std::uintptr_t ctrl, const Apd& a) {
     g_head.why = "read";
 }
 
+// Round 7 (section 32): what the mesh controller asks of each gear part, by the game's own formula (ApplyMeshControl
+// 0x1426D9120, exo_parts.hpp MeshAsked) with our self view's bit 63 of the global mask ignored: his skeleton (and every
+// other gear part) is known while the self view hides him (before: the parts' flags, which read hidden then, and the last
+// reading stood). Byte-checked once: the per-part step of ApplyMeshControl's loop (root +0x338, global mask +0x348, forced
+// show +0x8D8, forced hide +0xE68, compare mode +0x19A0, compare value +0x1998, the mask +0x348 + 8k) and the map read.
+constexpr std::uintptr_t kMeshCtlStep = 0x26D91E2, kMeshCtlMap = 0x26D924E;
+struct MeshCtlCheck {
+    bool done = false, ok = false;
+} g_mcc;
+bool MeshCtlOk() {
+    if (g_mcc.done) return g_mcc.ok;
+    g_mcc.done = true;
+    g_mcc.ok = mem::CodeMatches(mem::Base() + kMeshCtlStep,
+                                "48 83 BB 38 03 00 00 00 40 B6 01 75 46 48 83 BB 48 03 00 00 00 75 3C 48 83 BC FB D8 08 00 00 00 74 02 EB 32 "
+                                "48 83 BC FB 68 0E 00 00 00 75 24 80 BC 1F A0 19 00 00 00 48 8B 84 FB 48 03 00 00 74 0D 48 3B 83 98 19 00 00 "
+                                "40 0F 95 C6 EB 08 48 85 C0 74 03 40 32 F6") &&
+               mem::CodeMatches(mem::Base() + kMeshCtlMap, "44 8B 44 FB 38 41 83 F8 FF");
+    Log("[gear] the mesh controller's part formula (ApplyMeshControl) %s", g_mcc.ok ? "verified: Sam's gear parts are read through the self view"
+                                                                                    : "does not match: the parts' flags are read (the last reading stands under the self view)");
+    return g_mcc.ok;
+}
+bool ReadMeshCtl(std::uintptr_t ctrl, unsigned k, exo::MeshCtl* m) {
+    std::uint8_t mode = 0;
+    if (!Rd(ctrl + 0x338, m->root) || !Rd(ctrl + 0x348, m->mask0) || !Rd(ctrl + 0x8D8 + 8ull * k, m->b) || !Rd(ctrl + 0xE68 + 8ull * k, m->c) ||
+        !Rd(ctrl + 0x348 + 8ull * k, m->mask) || !Rd(ctrl + 0x1998, m->cmpval) || !Rd(ctrl + 0x19A0 + k, mode))
+        return false;
+    m->cmpmode = mode != 0;
+    return true;
+}
+int g_exo_force = -1;     // `gear 28 <type>` (hidden tests): the skeleton pieces read replaced by a type's (-1 off)
+int g_exo_logged = -2;    // the skeleton type last logged
+std::uint64_t g_exo_logged_raw = 0;  // the game's skeleton bits last logged (ReadParts)
+unsigned g_exo_raw_logs = 0;         // logs of a changed reading of no known type
+bool g_exo_porter = false;  // our Sam's map is the porter suit's for every skeleton piece (the exo bits are sent)
+std::uint64_t g_exo_settled[2] = {};  // the skeleton pieces of the last known type read (none before one)
+std::uint32_t g_exo_unsettled = 0;    // reads whose pieces were no known type (held)
+
 // Our Sam's gear parts (which exist, which are shown) and his head parts. False when unreadable.
 bool ReadParts(std::uintptr_t sam) {
     const std::uintptr_t ctrl = sam + 0xA60;
     Apd a;
     if (Q(ctrl) != sam || !ReadApd(sam, &a)) return false;
+    const bool self = realbody::SelfShown();
+    const bool formula = MeshCtlOk();
+    if (self && !formula) return true;  // the flags read hidden under the self view: the last reading stands
     std::uint64_t apply[2] = {}, vis[2] = {};
-    ReadHead(sam, ctrl, a);
+    // the head parts are read by their flags (not by the controller): under the self view the last reading stands
+    if (!self) ReadHead(sam, ctrl, a);
     if (g_head_on && g_head.have)
         for (unsigned w = 0; w < 2; ++w) apply[w] = g_head.apply[w], vis[w] = g_head.vis[w];
+    // the skeleton pieces only with the porter suit's map (the receiver's carrier takes these indices as those parts)
+    std::int32_t exo_idx[exo::kExoMeshCount] = {};
+    for (unsigned i = 0; i < exo::kExoMeshCount; ++i)
+        if (!Rd(ctrl + 0x38 + 8ull * exo::kExoMesh[i], exo_idx[i])) exo_idx[i] = -1;
+    g_exo_porter = a.n == exo::kSuitParts && exo::MapIsPorter(exo_idx);
     // The gear parts (their effective bit) win where both name a part (the balloon, 57).
     for (std::uint8_t k : kGearMeshParts) {
         std::int32_t idx = -1;
         if (!Rd(ctrl + 0x38 + 8ull * k, idx) || idx < 0 || idx >= a.n || idx >= static_cast<std::int32_t>(wire::kMaxGearParts)) continue;
-        std::uint8_t fl = 0;
-        if (!PartFlags(a, static_cast<unsigned>(idx), &fl)) continue;
+        bool is_exo = false;
+        for (std::uint8_t ek : exo::kExoMesh) is_exo |= ek == k;
+        if (is_exo && !g_exo_porter) continue;
+        bool on = false;
+        if (formula) {
+            exo::MeshCtl m;
+            if (!ReadMeshCtl(ctrl, k, &m)) continue;
+            on = exo::MeshAsked(m);
+        } else {
+            std::uint8_t fl = 0;
+            if (!PartFlags(a, static_cast<unsigned>(idx), &fl)) continue;
+            on = (fl & 0x2) != 0;
+        }
         apply[idx >> 6] |= 1ull << (idx & 63);
         vis[idx >> 6] &= ~(1ull << (idx & 63));
-        if (fl & 0x2) vis[idx >> 6] |= 1ull << (idx & 63);
+        if (on) vis[idx >> 6] |= 1ull << (idx & 63);
+    }
+    // The skeleton pieces only as one of the game's types (exo_parts.hpp): for a moment after a world load every piece reads
+    // shown (the masks not set yet: all four skeletons at once); then the last known type stands (none before one was read).
+    int type = -3;
+    std::uint64_t raw = 0;  // the skeleton bits the game asked for (before the hold below), for the log
+    if (g_exo_porter) {
+        exo::OverrideParts(g_exo_force, apply, vis);
+        raw = vis[0] & 0x000C00BF00000000ull;
+        type = exo::TypeOfParts(vis);
+        if (type >= 0) {
+            g_exo_settled[0] = vis[0], g_exo_settled[1] = vis[1];
+        } else {
+            for (unsigned i = 0; i < exo::kExoMeshCount; ++i) exo::SetBit(vis, exo::kExoPart[i], exo::Bit(g_exo_settled, exo::kExoPart[i]));
+            ++g_exo_unsettled;
+        }
+    }
+    // Logged on a type change, and again when the game's raw pieces change while they are of no known type (at most 40 of
+    // those: a long partial reading, a cutscene's forced show, is visible in the log). The bits are the game's own reading,
+    // not the held type's; not the porter suit's map: none (other suits' mesh slots are not skeleton pieces).
+    if (type != g_exo_logged || (type == -1 && raw != g_exo_logged_raw && g_exo_raw_logs < 40)) {
+        if (type == g_exo_logged) ++g_exo_raw_logs;
+        g_exo_logged = type;
+        g_exo_logged_raw = raw;
+        const int sent = g_exo_porter ? exo::TypeOfParts(vis) : -3;
+        char bits[40] = "none read";
+        if (g_exo_porter) std::snprintf(bits, sizeof(bits), "pieces shown %016llX", static_cast<unsigned long long>(raw));
+        Log("[exo] our Sam's skeleton: %s%s (%s)%s%s", type >= 0 ? exo::TypeName(static_cast<exo::Type>(type)) : type == -1 ? "pieces of no known type" : "not read (not the porter suit's parts)",
+            g_exo_force >= 0 ? " (forced: gear 28)" : self ? " (read through the self view)" : "", bits,
+            type == -1 ? ": the last known type stands: " : "", type == -1 ? exo::TypeName(static_cast<exo::Type>(sent < 0 ? 0 : sent)) : "");
     }
     g_parts_apply[0] = apply[0], g_parts_apply[1] = apply[1];
     g_parts_visible[0] = vis[0], g_parts_visible[1] = vis[1];
@@ -642,6 +729,23 @@ struct PropSet {
     unsigned spare_reused = 0, spare_kept = 0;
     double layout_ms = 0;          // when the current layout was taken (the weapon props' show latency)
     unsigned weapon_shows = 0;     // weapon props shown (logged, the first 60)
+    // Round 7 (section 32): the exo carrier of this slot (ExoDrive), outside the item list: published as the list's last entry.
+    struct Exo {
+        Prop p;
+        bool want = false, refused = false, target = false, parts_ok = false;
+        bool tree_checked = false, tree_ok = false, tree_logged = false, body_sam = false;
+        std::uint64_t vis[2] = {}, asked[2] = {}, shown_bits[2] = {~0ull, ~0ull};
+        std::int16_t parent[exo::kMaxParts] = {};
+        int n = 0;
+        double unwanted_ms = 0, next_parts_ms = 0, target_retry_ms = 0, next_meter_ms = 0;
+        char target_why[160] = "";
+        std::uintptr_t body_checked = 0;
+        unsigned parts_set = 0, game_changes = 0, spawned = 0, removed = 0, show_logs = 0;
+        outfit::Dress dress;
+        // the first show waits for the tint (the sender's exos variation on the carrier), at most kExoTintWaitMs
+        std::uint8_t tint_want = 0xFE;  // wire::PorterExos of the outfit it copies (0xFE: no outfit read)
+        bool tint_ok = false;
+    } exo;
 };
 PropSet g_sets[2] = {{"gear", realbody::GearSlot::partner}, {"gear-self", realbody::GearSlot::self}};
 std::uint8_t g_self_src[wire::kMaxGearItems] = {};  // the self set's item i shows item g_self_src[i] of our own frame (g_local)
@@ -1140,8 +1244,9 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
     ReadHoodHat(p, inv, sam, static_cast<double>(GetTickCount64()));
     // What wears out (section 28): the rain cover's durability, logged in steps (read only, every second).
     ReadRainCover(inv, static_cast<double>(GetTickCount64()));
-    // While our self view hides Sam (global part mask) his parts read hidden: the last reading stands.
-    if (!realbody::SelfShown()) ReadParts(p);
+    // Read through the self view too (section 32: the controller's formula without our bit; the head's flags keep the last
+    // reading then).
+    ReadParts(p);
     // The backpack's own ArtParts (its bag, rain cover, pouches: 24 parts in the 100% save).
     g_have_pack_parts = false;
     if (pack) {
@@ -2876,8 +2981,11 @@ void RemoveSpare(PropSet& s, unsigned k, const char* why) {
     sp = PropSet::Spare{};
 }
 
+void RemoveExo(PropSet& s, const char* why);  // section 32 (below)
+
 void RemoveAll(PropSet& s, const char* why) {
     Unpublish(s);
+    RemoveExo(s, why);
     for (unsigned k = 0; k < sizeof(s.spare) / sizeof(s.spare[0]); ++k) RemoveSpare(s, k, why);
     unsigned n = 0;
     for (unsigned i = 0; i < wire::kMaxGearItems; ++i)
@@ -2911,6 +3019,18 @@ void PublishNow(PropSet& s) {
         g.p[0] = it.p[0], g.p[1] = it.p[1], g.p[2] = it.p[2];
         wire::MatrixFromQuat(it.q, g.r);
     }
+    // the exo carrier (section 32): on the body's joint 0, identity pose (its own root is identity: its joints are the body's)
+    if (s.exo.p.live && s.exo.target && n < realbody::kMaxGearProps) {
+        realbody::GearProp& g = list[n++];
+        g = realbody::GearProp{};
+        g.e = reinterpret_cast<std::uintptr_t>(s.exo.p.sp.e);
+        g.e_vt = s.exo.p.vt;
+        g.guid = s.exo.p.guid;
+        g.joint = 0;
+        g.parent = -1;
+        g.r[0][0] = g.r[1][1] = g.r[2][2] = 1.0f;
+    }
+    if (n == 0 && !s.published) return;  // nothing to place, nothing placed: no call (an empty publish waits for the detour)
     // Unpublish first when a prop of the old list may go away (the caller removes only after this).
     realbody::PublishGear(s.slot, list, n);
     s.published = n > 0;
@@ -3174,10 +3294,353 @@ bool HeldBegin(const char* path, const std::uint8_t (&guid)[16], const game::Wor
     return true;
 }
 
+// ---------------------------------------------------------------- the exo carrier (docs/real-partner-body.md section 32)
+// Sam's skeleton on a body that is not Sam (Fragile): a demo_sam_clean body (the same ArtParts as the porter suit, no mesh
+// controller, so parts we set stay set) showing only the skeleton pieces the sender's Sam shows, posed every frame in its own
+// model update from the slot's body (real_body.cpp ExoTarget), placed on the body's joint 0 (the last entry of the slot's
+// published list), tinted with the exos variation (outfit::Apply). Shown only once its parts are set and a pose was written
+// within 250 ms (never a full Sam for a frame). Set 0: the partner body (the sender's parts block); set 1: the self body (our
+// own reading through the self view). A Sam body keeps MirrorParts (its own skeleton pieces).
+constexpr const char* kExoPath = "ds/entities/cinematics/demo_sam_clean";
+constexpr const char* kExoGuid = "514b5705-aaf0-a447-a82e-0bb83b855201";
+bool g_exo_on = true;    // session.ini exo_carrier / `gear 27 <0/1>`
+bool g_exo_leg = false;  // `gear 29 <0/1>`: the sender's LegOut suit piece on her too (comparison)
+
+const char* ExoTag(const PropSet& s) { return s.slot == realbody::GearSlot::self ? "exo-self" : "exo"; }
+
+// The body is a Sam body (its own ArtParts are the porter suit's 107: MirrorParts shows his skeleton on it).
+bool BodyIsSam(PropSet::Exo& x, game::Entity* body) {
+    const auto e = reinterpret_cast<std::uintptr_t>(body);
+    if (x.body_checked != e) {
+        Apd a;
+        x.body_checked = e;
+        x.body_sam = ReadApd(e, &a) && a.n == exo::kSuitParts;
+    }
+    return x.body_sam;
+}
+
+// What the slot's sender shows of the skeleton (false: no carrier wanted).
+bool ExoWant(PropSet& s, game::Entity* body, std::uint64_t (&vis)[2]) {
+    vis[0] = vis[1] = 0;
+    if (!g_exo_on || !body || BodyIsSam(s.exo, body)) return false;
+    if (s.slot == realbody::GearSlot::self) {
+        if (!g_have_parts || !g_exo_porter || !exo::AnyExoShown(g_parts_apply, g_parts_visible) || exo::TypeOfParts(g_parts_visible) < 1) return false;
+        vis[0] = g_parts_visible[0], vis[1] = g_parts_visible[1];
+        return true;
+    }
+    if (!s.have_want || !(s.want.flags & wire::kGearParts) || !exo::SenderNamesExo(s.want.parts_apply) ||
+        !exo::AnyExoShown(s.want.parts_apply, s.want.parts_visible) || exo::TypeOfParts(s.want.parts_visible) < 1)
+        return false;  // (only one of the game's types: never every piece at once)
+    vis[0] = s.want.parts_visible[0] & s.want.parts_apply[0], vis[1] = s.want.parts_visible[1] & s.want.parts_apply[1];
+    return true;
+}
+
+// Takes the carrier out of the slot's published list (waits for the detour), its pose target, its entity.
+void RemoveExo(PropSet& s, const char* why) {
+    PropSet::Exo& x = s.exo;
+    if (!x.p.loading && !x.p.live && !x.p.sp.sp && !x.p.sp.direct) {
+        x.p = Prop{};
+        return;
+    }
+    if (s.published) {
+        realbody::PublishGear(s.slot, nullptr, 0);  // the list without it is published again by DriveSet
+        s.published = false;
+    }
+    realbody::ClearExoCarrier(s.slot);
+    outfit::Forget(x.dress);
+    char step[160] = {};
+    holo::SpawnTeardown(x.p.sp, why, step, sizeof(step));
+    Log("[%s] carrier removed (%s): %s", ExoTag(s), why, step);
+    x.p = Prop{};
+    x.target = false;
+    x.parts_ok = false;
+    x.tint_ok = false;
+    x.tree_checked = false;
+    x.shown_bits[0] = x.shown_bits[1] = ~0ull;
+    ++x.removed;
+}
+
+// Its ArtParts tree (parent index per part), checked against the porter suit's.
+bool ExoTree(PropSet::Exo& x, const Apd& a) {
+    if (x.tree_checked) return x.tree_ok;
+    x.tree_checked = true;
+    x.n = a.n;
+    std::uintptr_t ptr[exo::kMaxParts] = {};
+    bool read = a.n > 0 && a.n <= static_cast<std::int32_t>(exo::kMaxParts);
+    for (int i = 0; read && i < a.n; ++i) read = (ptr[i] = Q(a.arr + 8ull * static_cast<unsigned>(i))) != 0;
+    for (int i = 0; read && i < a.n; ++i) {
+        const std::uintptr_t par = Q(ptr[i] + 0x18);
+        x.parent[i] = -1;
+        for (int j = 0; j < a.n && par; ++j)
+            if (ptr[j] == par) x.parent[i] = static_cast<std::int16_t>(j);
+    }
+    x.tree_ok = read && exo::CarrierTreeOk(a.n, x.parent);
+    return x.tree_ok;
+}
+
+// The carrier's parts as the plan says (only those that differ; every 100 ms). True: all as wanted.
+bool ExoParts(PropSet& s, const std::uint64_t (&vis)[2], double now) {
+    PropSet::Exo& x = s.exo;
+    if (now < x.next_parts_ms) return x.parts_ok;
+    x.next_parts_ms = now + 100;
+    std::uintptr_t sm = 0;
+    Apd a;
+    if (!ApdFnsOk() || !ModelAndApd(reinterpret_cast<std::uintptr_t>(x.p.sp.e), &sm, &a)) return x.parts_ok = false;
+    if (!ExoTree(x, a)) {
+        if (!x.tree_logged) {
+            x.tree_logged = true;
+            Log("[%s] carrier %p: %d ArtParts, not the porter suit's tree: no skeleton shown on it this session", ExoTag(s), static_cast<void*>(x.p.sp.e), a.n);
+        }
+        return x.parts_ok = false;
+    }
+    std::uint64_t touch[2], asked[2];
+    exo::CarrierPlan(a.n, x.parent, vis, g_exo_leg, touch, asked);
+    const bool plan_changed = asked[0] != x.asked[0] || asked[1] != x.asked[1];
+    unsigned set = 0;
+    for (int i = 0; i < a.n; ++i) {
+        const unsigned u = static_cast<unsigned>(i);
+        if (!exo::Bit(touch, u)) continue;
+        std::uint8_t fl = 0;
+        if (!PartFlags(a, u, &fl)) return x.parts_ok = false;
+        const bool want = exo::Bit(asked, u);
+        if (((fl & 1) != 0) == want) continue;
+        if (!CallSetParts(sm, a.apd, i, want)) {
+            Log("[%s] the ArtParts part setter faulted on the carrier: parts off for this session", ExoTag(s));
+            return x.parts_ok = false;
+        }
+        ++set;
+    }
+    if (set && !plan_changed && x.parts_ok) ++x.game_changes;
+    x.asked[0] = asked[0], x.asked[1] = asked[1];
+    x.parts_set += set;
+    // what it shows now (the parts' shown bits), logged when it changes
+    std::uint64_t shown[2] = {};
+    for (int i = 0; i < a.n; ++i) {
+        std::uint8_t fl = 0;
+        if (PartFlags(a, static_cast<unsigned>(i), &fl) && (fl & 2)) exo::SetBit(shown, static_cast<unsigned>(i), true);
+    }
+    if (shown[0] != x.shown_bits[0] || shown[1] != x.shown_bits[1]) {
+        x.shown_bits[0] = shown[0], x.shown_bits[1] = shown[1];
+        char list[200] = "";
+        std::size_t at = 0;
+        for (unsigned i = 0; i < static_cast<unsigned>(a.n) && at + 6 < sizeof(list); ++i)
+            if (exo::Bit(shown, i)) at += static_cast<std::size_t>(std::snprintf(list + at, sizeof(list) - at, "%s%u", at ? " " : "", i));
+        const int type = exo::TypeOfParts(vis);
+        Log("[%s] carrier %p parts: %u set (%u in all, %u changed by the game); shown now: %s (the sender's skeleton: %s%s)", ExoTag(s),
+            static_cast<void*>(x.p.sp.e), set, x.parts_set, x.game_changes, at ? list : "none", type >= 0 ? exo::TypeName(static_cast<exo::Type>(type)) : "pieces of no known type",
+            g_exo_leg ? ", LegOut on" : "");
+    }
+    return x.parts_ok = true;
+}
+
+// Spawns, polls, poses, sets and tints the carrier (game thread, from DriveSet before it publishes). True: the published list
+// must change (the carrier became the pose target, or went).
+bool ExoDrive(PropSet& s, game::Entity* body, double now) {
+    PropSet::Exo& x = s.exo;
+    std::uint64_t vis[2];
+    const bool want = ExoWant(s, body, vis);
+    x.want = want;
+    if (want) {
+        x.vis[0] = vis[0], x.vis[1] = vis[1];
+        x.unwanted_ms = 0;
+    } else if (x.p.loading || x.p.live) {
+        if (x.unwanted_ms == 0) x.unwanted_ms = now;
+        if (!g_exo_on || now - x.unwanted_ms >= 10000) {
+            RemoveExo(s, g_exo_on ? "no skeleton for 10 s" : "exo_carrier off");
+            return true;
+        }
+    }
+    bool changed = false;
+    Prop& p = x.p;
+    if (want && !p.loading && !p.live && !x.refused && !(p.failed && now < p.retry_ms)) {
+        game::WorldTransform at{};
+        char why[200] = {};
+        if (game::TryGetTransform(body, &at)) {
+            at.pos.z -= 20.0;  // out of sight until the first placement
+            if (realbody::BeginByPath(kExoPath, kExoGuid, at, 0x6E400000u + (s.slot == realbody::GearSlot::self ? 1u : 0u), &p.sp, why, sizeof(why))) {
+                p.loading = true;
+                p.failed = false;
+                Log("[%s] carrier: loading %s (the sender's skeleton: %s)", ExoTag(s), kExoPath,
+                    exo::TypeOfParts(vis) >= 0 ? exo::TypeName(static_cast<exo::Type>(exo::TypeOfParts(vis))) : "pieces of no known type");
+            } else {
+                p.failed = true;
+                p.retry_ms = now + wire::GearRetryDelayMs(++p.fails);
+                Log("[%s] carrier not started (try %u): %s", ExoTag(s), p.fails, why);
+            }
+        }
+    }
+    if (p.loading) {
+        char why[200] = {};
+        switch (holo::SpawnPoll(p.sp, why, sizeof(why))) {
+            case holo::SpawnState::loading: break;
+            case holo::SpawnState::cancelled:
+            case holo::SpawnState::failed: {
+                const unsigned fails = p.fails + 1;
+                RemoveExo(s, "load failed");
+                p.failed = true;
+                p.fails = fails;
+                p.retry_ms = now + wire::GearRetryDelayMs(fails);
+                Log("[%s] carrier did not load (try %u): %s", ExoTag(s), fails, why);
+                break;
+            }
+            case holo::SpawnState::realized: {
+                p.loading = false;
+                char bad[160] = "no entity";
+                if (!p.sp.e || !ValidateProp(p.sp.e, false, bad, sizeof(bad)) || !vsync::CopyCollisionOff(p.sp.e, "exo carrier")) {
+                    Log("[%s] carrier refused for this session: %s", ExoTag(s), p.sp.e ? bad : "no entity");
+                    if (p.sp.e) partner::DescribeEntity(p.sp.e, "refused exo carrier");
+                    RemoveExo(s, "refused");
+                    x.refused = true;
+                    break;
+                }
+                partner::SetVisible(p.sp.e, false);
+                partner::WakeIfAsleep(p.sp.e);
+                partner::ReadVtable(p.sp.e, &p.vt);
+                partner::ReadGuid(p.sp.e, &p.guid);
+                p.live = true;
+                p.shown = false;
+                p.fails = 0;
+                p.live_ms = now;
+                p.coll_next_ms = now + 1000;
+                ++x.spawned;
+                static bool described = false;
+                if (!described) {
+                    described = true;
+                    partner::DescribeEntity(p.sp.e, "exo carrier");
+                }
+                Log("[%s] carrier %p live", ExoTag(s), static_cast<void*>(p.sp.e));
+                break;
+            }
+        }
+    }
+    if (p.live && !holo::SpawnAlive(p.sp)) {
+        RemoveExo(s, "destroyed by the game");
+        x.p.failed = true;
+        x.p.retry_ms = now + 5000;
+        return true;
+    }
+    if (!p.live) return changed;
+    if (now >= p.coll_next_ms) {
+        p.coll_next_ms = now + 1000;
+        if (vsync::CopyCollisionKeepOff(p.sp.e, "exo carrier") < 0) {
+            RemoveExo(s, "collision not off");
+            x.refused = true;
+            return true;
+        }
+    }
+    // the pose target (retried every 500 ms while the body is not ready)
+    if (!x.target && now >= x.target_retry_ms) {
+        char why[200] = {};
+        if (realbody::SetExoCarrier(s.slot, &p.sp, why, sizeof(why))) {
+            x.target = true;
+            changed = true;
+            Log("[%s] carrier %p follows the %s body's pose", ExoTag(s), static_cast<void*>(p.sp.e), s.slot == realbody::GearSlot::self ? "self" : "partner");
+        } else {
+            x.target_retry_ms = now + 500;
+            if (std::strcmp(why, x.target_why) != 0) {
+                std::snprintf(x.target_why, sizeof(x.target_why), "%s", why);
+                Log("[%s] carrier %p is not posed yet: %s", ExoTag(s), static_cast<void*>(p.sp.e), why);
+            }
+        }
+    } else if (x.target && realbody::ExoCarrierEntity(s.slot) != reinterpret_cast<std::uintptr_t>(p.sp.e)) {
+        x.target = false;  // cleared by real_body (a fault, the session's stop): out of the list
+        changed = true;
+    }
+    if (want || x.parts_ok) ExoParts(s, want ? vis : x.vis, now);
+    // the exos variation (silver / gold, tints) like the sender's Sam
+    game::Entity* local = nullptr;
+    wire::Outfit o;
+    bool have_o = false;
+    if (game::TryGetLocalPlayer(&local) && local) {
+        if (s.slot == realbody::GearSlot::self || realbody::GetOwner() == realbody::Owner::debug) have_o = outfit::ReadLocal(reinterpret_cast<std::uintptr_t>(local), &o);
+        else have_o = realbody::PartnerOutfit(&o);
+        if (have_o && now - p.live_ms >= 500) outfit::Apply(x.dress, reinterpret_cast<std::uintptr_t>(p.sp.e), o, reinterpret_cast<std::uintptr_t>(local), now);
+    }
+    x.tint_want = have_o ? wire::PorterExos(o) : std::uint8_t{0xFE};
+    return changed;
+}
+
+// Shown with the body only when everything is ready; the meter and the counters.
+constexpr double kExoTintWaitMs = 2000;
+void ExoShow(PropSet& s, game::Entity* body, bool body_on, double now) {
+    PropSet::Exo& x = s.exo;
+    Prop& p = x.p;
+    if (!p.live || !holo::SpawnAlive(p.sp)) {
+        realbody::SetExoPoseWanted(s.slot, false);
+        return;
+    }
+    // Posed by forced model updates (the game does not update it by itself) only while it is meant to be seen: never while
+    // hidden for a load, the self view's unshow or the 10 s grace after unequipping (round 7 review: 293 forced updates in
+    // the 1.3 s reload of run 20261122-193826 while it was hidden).
+    const bool ready = body_on && x.want && x.target && x.parts_ok;
+    realbody::SetExoPoseWanted(s.slot, ready);
+    // The first show waits for the tint (the exos variation like the sender's: silver / gold); else the plain demo_sam_clean
+    // skeleton showed for 0.5-1.2 s first (runs 20261122-193625, -191730). A receiver whose own Sam is not in the porter suit
+    // has no variation to copy: shown as it is after kExoTintWaitMs.
+    if (!x.tint_ok) {
+        const bool tinted = x.dress.e == reinterpret_cast<std::uintptr_t>(p.sp.e) && x.dress.v01_done && x.tint_want != 0xFE &&
+                            x.dress.exos == x.tint_want;
+        if (tinted || now - p.live_ms >= kExoTintWaitMs) {
+            x.tint_ok = true;
+            if (!tinted)
+                Log("[%s] carrier %p: no tint after %.0f ms (exos wanted %u, on it %u): shown as it is", ExoTag(s), static_cast<void*>(p.sp.e),
+                    now - p.live_ms, x.tint_want, x.dress.exos);
+        }
+    }
+    const bool on = ready && x.tint_ok && realbody::ExoPosed(s.slot, 250);
+    std::uint64_t fl = 0;
+    const bool is_on = partner::ReadFlags(p.sp.e, &fl) && (fl & 0x2) != 0;
+    if (on != is_on || on != p.shown) {
+        if (partner::SetVisible(p.sp.e, on)) {
+            if (on != p.shown && x.show_logs < 40) {
+                ++x.show_logs;
+                Log("[%s] carrier %p: %s (%.0f ms after it became live)", ExoTag(s), static_cast<void*>(p.sp.e), on ? "shown" : "hidden", now - p.live_ms);
+            }
+            p.shown = on;
+        }
+    }
+    // The meter (cm): the pose, the carrier's joints in its model space against the body's in the body's joint-0 frame (both
+    // from their current model matrices: what the carrier draws relative to where it is placed), and the placement, both in
+    // world space at this tick (the tick's placement is extrapolated one frame ahead: moving, about one frame's travel).
+    if (p.shown && body && now >= x.next_meter_ms) {
+        x.next_meter_ms = now + (automation::Enabled() ? 1000 : 10000);
+        static const unsigned kMeterJ[] = {1, 62, 63, 67, 68, 9, 38, 31};
+        double sum = 0, mx = 0, wsum = 0, wmx = 0;
+        unsigned n = 0, wn = 0;
+        float r0[4][4];
+        const bool have_r0 = realbody::ReadJointModel(body, 0, r0);
+        for (unsigned j : kMeterJ) {
+            float cm[4][4], bm[4][4];
+            if (have_r0 && realbody::ReadJointModel(p.sp.e, j, cm) && realbody::ReadJointModel(body, j, bm)) {
+                // the body's joint j in its joint-0 frame (rows: axes, translation)
+                double d2 = 0;
+                for (int k = 0; k < 3; ++k) {
+                    double v = 0;
+                    for (int c = 0; c < 3; ++c) v += static_cast<double>(bm[3][c] - r0[3][c]) * r0[k][c];
+                    const double e = v - cm[3][k];
+                    d2 += e * e;
+                }
+                const double d = std::sqrt(d2) * 100.0;
+                sum += d, mx = d > mx ? d : mx, ++n;
+            }
+            double a[3], b[3];
+            if (!realbody::JointWorldN(p.sp.e, j, 77, a) || !realbody::JointWorld(body, j, b)) continue;
+            const double d = std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2])) * 100.0;
+            wsum += d, wmx = d > wmx ? d : wmx, ++wn;
+        }
+        char c[200];
+        realbody::ExoCounters(s.slot, c, sizeof(c));
+        if (n || wn)
+            Log("[%s] carrier vs body cm mean/max: pose %.2f / %.2f (%u joints), placed %.2f / %.2f (%u, the tick's); %s; parts set %u, changed by the game %u", ExoTag(s),
+                n ? sum / n : -1.0, mx, n, wn ? wsum / wn : -1.0, wmx, wn, c, x.parts_set, x.game_changes);
+    }
+}
+
 void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_active, double now) {
     if (!local_active) {
         if (s.asleep_since == 0) s.asleep_since = now > 0 ? now : 1;
         for (unsigned i = 0; i < wire::kMaxGearItems; ++i) SetShown(s, i, false, now);
+        ExoShow(s, nullptr, false, now);
         if (now - s.asleep_since >= 1000 && s.body) RemoveAll(s, "Sam asleep");
         return;
     }
@@ -3426,6 +3889,7 @@ void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_acti
     } else if (g_hood.e) {
         ApplyLooks(s, now);  // the self view's hat in the rain: our own cap's colour (WantLook's self branch; section 26.8)
     }
+    if (ExoDrive(s, body, now)) changed = true;  // section 32
     // Publish when anything changed (new props live, new poses), and again when a placement fault
     // switched the detour's list off (at most 3 times a session: a fault fires the crash reporter).
     static wire::GearFrame last_pub[2];
@@ -3471,6 +3935,7 @@ void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_acti
         if (on && f.items[i].kind == wire::GearKind::boots) on = BootsPropReady(reinterpret_cast<std::uintptr_t>(s.props[i].sp.e));
         SetShown(s, i, on, now);
     }
+    ExoShow(s, body, body_visible && place_ok, now);  // section 32
     if (now >= s.next_stats_ms && s.published_n) {
         s.next_stats_ms = now + 5000;
         unsigned live = 0, shown = 0, waiting = 0, failed_now = 0, refused = 0;
@@ -3691,6 +4156,7 @@ void Init(const Config& config) noexcept {
     g_boots_sync = config.boots_sync;
     g_boots_style = config.boots_look_own ? bootslook::Style::own : bootslook::Style::prop;
     g_boots_own_porter = config.boots_own_porter;
+    g_exo_on = config.exo_carrier;
     g_held_mode = static_cast<heldrules::Mode>(config.held_items < 0 ? 0 : config.held_items > 2 ? 2 : config.held_items);
     Log("[boots] her boots: boots_look=%s (%s), boots_own_porter=%d", bootslook::StyleName(g_boots_style),
         g_boots_style == bootslook::Style::own ? "her own boots, painted with the guest's boot pictures; no boots prop, feet not scaled"
@@ -3860,7 +4326,9 @@ void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
             self_frame.items[self_frame.count++] = g_local.items[i];
         }
     ss.want = self_frame;
-    ss.have_want = g_have_local && self_frame.count > 0;
+    // (an empty frame still drives the set while the exo carrier is wanted on the self body: section 32)
+    std::uint64_t exo_vis[2];
+    ss.have_want = g_have_local && (self_frame.count > 0 || ExoWant(ss, sbody, exo_vis) || ss.exo.p.live || ss.exo.p.loading);
     ss.res = g_res_local;
     DriveSet(ss, sbody, sbody && realbody::SelfShown(), local_active, now_ms);
     // the meters last: the props were just placed from the bodies' current transforms and poses (PlaceGearNow)
@@ -4519,6 +4987,36 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
                 }
             return true;
         }
+        case 27:
+        case 28:
+        case 29: {
+            // Sam's skeleton on her (section 32): 27 the carrier 0 off / 1 on / 2 status; 28 the skeleton pieces we read replaced
+            // by a type's (hidden tests: -1 off, 0 none, 1 speed, 2 all-terrain, 3 power, 4 support); 29 LegOut on her 0 / 1
+            const int a = static_cast<int>(v[1]);
+            if (op == 27 && (a == 0 || a == 1)) g_exo_on = a != 0;
+            if (op == 27 && (a == 3 || a == 4)) realbody::SetExoSelfSource(a == 3 ? 1 : 0);
+            if (op == 28 && a >= -1 && a < exo::kTypeCount) {
+                g_exo_force = a;
+                g_next_read_ms = 0;
+            }
+            if (op == 29 && (a == 0 || a == 1)) {
+                g_exo_leg = a != 0;
+                for (PropSet& s : g_sets) s.exo.next_parts_ms = 0;
+            }
+            char c0[200], c1[200];
+            realbody::ExoCounters(realbody::GearSlot::partner, c0, sizeof(c0));
+            realbody::ExoCounters(realbody::GearSlot::self, c1, sizeof(c1));
+            const int ours = g_exo_porter ? exo::TypeOfParts(g_parts_visible) : -3;
+            std::snprintf(msg, cap,
+                          "exo_carrier %s, forced type %d, LegOut %s, self source %s; our skeleton %s; partner carrier %s%s%s (%s); self carrier %s%s%s (%s)",
+                          g_exo_on ? "on" : "off", g_exo_force, g_exo_leg ? "on" : "off", realbody::ExoSelfSource() == 1 ? "Sam's newest" : "the body's applied",
+                          ours >= 0 ? exo::TypeName(static_cast<exo::Type>(ours)) : ours == -1 ? "pieces of no known type" : "not read",
+                          g_sets[0].exo.p.live ? "live" : g_sets[0].exo.p.loading ? "loading" : "none", g_sets[0].exo.p.shown ? " shown" : "",
+                          g_sets[0].exo.refused ? " refused" : "", c0, g_sets[1].exo.p.live ? "live" : g_sets[1].exo.p.loading ? "loading" : "none",
+                          g_sets[1].exo.p.shown ? " shown" : "", g_sets[1].exo.refused ? " refused" : "", c1);
+            Log("[exo] %s", msg);
+            return true;
+        }
         case 20: {
             // the partner body's feet under the boots prop (section 21): scale percent, 100 = not scaled
             g_pfeet_pct = v[1] < 1 ? 1 : v[1] > 100 ? 100 : static_cast<int>(v[1]);
@@ -4552,7 +5050,7 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             return who != nullptr;
         }
         default:
-            std::snprintf(msg, cap, "unknown op %d (0 log, 1 partner 0/1, 2 self 0/1, 3 test cases n, 4 debug body 0/1, 5 n / 6 test faults, 7 level, 8 pod entity, 9 census 0/1/2, 10 walk cache 0/1, 11 looks 0/1, 12 looks off/on, 13 backpack pose off/on, 14 accessory list, 15 cap colour, 16 head parts off/on, 17 weapons off/on, 18 headgear offsets off/on, 19 headgear meter off/on, 20 partner feet scale percent, 21 boots sync off/on, 22 hat in the rain, 23 glasses colour, 24 rain cover durability percent, 25 boots look 0 prop / 1 own / 2 log)", op);
+            std::snprintf(msg, cap, "unknown op %d (0 log, 1 partner 0/1, 2 self 0/1, 3 test cases n, 4 debug body 0/1, 5 n / 6 test faults, 7 level, 8 pod entity, 9 census 0/1/2, 10 walk cache 0/1, 11 looks 0/1, 12 looks off/on, 13 backpack pose off/on, 14 accessory list, 15 cap colour, 16 head parts off/on, 17 weapons off/on, 18 headgear offsets off/on, 19 headgear meter off/on, 20 partner feet scale percent, 21 boots sync off/on, 22 hat in the rain, 23 glasses colour, 24 rain cover durability percent, 25 boots look 0 prop / 1 own / 2 log, 26 held items, 27 exo carrier 0/1/2, 28 skeleton type -1..4, 29 LegOut 0/1)", op);
             return false;
     }
 }

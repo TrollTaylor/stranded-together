@@ -2,14 +2,18 @@
 // read-only (<game>\data\*.bin through the game's oo2core) and writes a tidy folder of PNGs the user edits:
 //   README.txt
 //   Fragile porter suit\Original\             her maps (read-only, regenerated)
-//   Fragile porter suit\NN <colour>\          one editable set per Sam suit colour (00 Default .. 16 Gold), seeded as
-//                                            byte copies of her Colour, Roughness and Reflectance; Sam's colour.png
+//   Fragile porter suit\NN <colour>\          one editable set per Sam suit colour (00 Default .. 16 Gold): her Colour,
+//                                            Roughness and Reflectance in Stranded Together's ready-made colour (made
+//                                            here from Original\ by suit_defaults.hpp; 00 Default: byte copies of her
+//                                            own); Sam's colour.png
 //   Fragile boots\NN <boot type>\             one editable boots set per boot type (her boots' layout) + Gold\ Silver\ Worn\
 //   Sam porter suit\...                       every Sam suit style (reference, read-only), palette previews
 //   Boots (Sam, reference)\...                every Sam boot type (reference, read-only)
 //   .manifest.txt                            hidden index (tex_manifest.hpp)
-// Re-run safe: an editable file is only ever created (never opened for writing when it exists); deleting one and
-// extracting again resets it. Reference files are replaced one by one through "<name>.partial" files.
+// Re-run safe: an editable file is replaced only while it is still byte for byte what the extractor itself last wrote
+// there (the manifest's seed row) and no picture of its folder was changed (a folder with any painted picture is the
+// user's: never touched again); deleting one and extracting again resets it. Reference files are replaced one by one
+// through "<name>.partial" files.
 // Only for the launcher's child process (--extract-textures) and the tests: never linked into the mod.
 #pragma once
 #include <cstdint>
@@ -27,10 +31,21 @@ inline constexpr char kFragileBootsDir[] = "Fragile boots";
 inline constexpr char kSamSuitDir[] = "Sam porter suit";
 inline constexpr char kSamBootsDir[] = "Boots (Sam, reference)";
 inline constexpr char kReadmeName[] = "README.txt";
+// Held (exclusively, deleted when closed) by a running extraction in the textures folder's top level: a second extraction
+// into the same folder refuses, and the mod waits for its end before it reads the folder (a half-updated folder against
+// the old index would look painted).
+inline constexpr char kExtractLockName[] = ".extract.lock";
 // The extractor's output version (the manifest's "extract" field): bumped whenever the pictures it writes or their names
 // change (a decoder fix, a renamed map), so a re-extraction after a Stranded Together update rewrites the reference
-// pictures instead of reusing them. 1: the first versioned output (round 6).
-inline constexpr int kExtractVersion = 1;
+// pictures instead of reusing them. 1: the first versioned output (round 6). 2: the colour folders 01..16 hold the
+// ready-made colours (round 8; suit_defaults.hpp kGeneratorVersion 1): unedited v1 copies are replaced by them. 3: the
+// polished gold and silver (round 9; kGeneratorVersion 2): unedited 15 Silver / 16 Gold pictures of a v2 extraction are
+// replaced (01..14 are byte for byte the same as v2's).
+inline constexpr int kExtractVersion = 3;
+// The oldest extractor output version whose ready-made pictures of colour folder `colour` (1..16) are still this
+// version's bytes: 2 for 01..14 (unchanged since round 8), 3 for 15 / 16; 0 for anything else (00 Default holds copies).
+// A folder of an older extraction whose pictures are unedited shows an older look (Check my edits' "stale" count).
+int ReadyMadeCurrentSince(int colour);
 
 struct NamedFolder {
     int number;          // the folder's NN prefix: Sam's suit colour (0..16) or EDSPlayerShoesType (0, 2..10)
@@ -76,6 +91,16 @@ struct ExtractStats {
     int outdated_seeds = 0;
     std::uint64_t bytes = 0;
     std::uint64_t ms = 0;
+    // the ready-made colours (01..16): pictures created / replaced (an unedited older copy), folders left alone because
+    // a picture there was painted, and the time spent making them ("defaults <written> <replaced> <yours> <ms>")
+    int defaults_written = 0, defaults_replaced = 0, folders_yours = 0;
+    std::uint64_t defaults_ms = 0;
+    // unedited pictures this extraction could not bring up to date (another program had them open, or a picture could not
+    // be made): the index then names an older extract version (incomplete_extract), so the next extraction, automatic
+    // too, finishes them; "incomplete <n>" line
+    int incomplete = 0;
+    int incomplete_extract = 0;   // the extract version written instead of kExtractVersion (0: complete)
+    int unchanged = 0;            // reference pictures already byte for byte what this extraction writes (not rewritten)
 };
 // Folders and files are created only under o.out_dir. False + a sentence for the player.
 bool RunExtract(const ExtractOptions& o, ExtractStats& stats, std::string& error);
@@ -97,7 +122,9 @@ struct EditScan {
     bool table_ok = false;               // the manifest's table matches this build's slot table
     std::string extracted_utc;           // the manifest's write time "YYYY-MM-DD HH:MM" (local)
     std::vector<EditedFolder> edited;    // folders with at least one edited picture
-    int outdated_seeds = 0;              // unedited seeds of an older game version
+    int outdated_seeds = 0;              // unedited seeds of an older game version (00 Default and the boots folders)
+    int ready_made = 0;                  // colour folders 01..16 with nothing painted: Fragile wears the ready-made colour
+    int stale_ready_made = 0;            // ... of them, still showing an older extraction's pictures (Extract refreshes them)
     std::vector<std::string> problems;   // "16 Gold\Suit - Colour.png is 1024x1024: it will be resized to 2048x2048"...
     int colour_folders = 0, boot_folders = 0;
 };
@@ -105,7 +132,13 @@ struct EditScan {
 // pictures in the editable folders. COM must be initialised on the calling thread when decode is set.
 void ScanEdits(const std::wstring& dir, bool decode, EditScan& out);
 std::string EditSummary(const EditScan& s);   // "Edited: 16 Gold (Colour, Reflectance), 09 Chiral boots (Colour)" or ""
-std::string CheckReport(const EditScan& s);   // several lines for the launcher's Check my edits
+// ready_made: the launcher's READY-MADE COLOURS setting (Off: a folder the player did not paint is her own suit).
+std::string CheckReport(const EditScan& s, bool ready_made = true);   // several lines for the launcher's Check my edits
+// An extraction holds the folder's kExtractLockName right now.
+bool ExtractionRunningIn(const std::wstring& dir);
+// MoveFileEx(REPLACE_EXISTING), then a POSIX-semantics rename (succeeds while a reader that allows delete, like the mod,
+// has the target open), retried for up to `wait_ms` while the target is held. False: the target is unchanged.
+bool ReplaceFileRetrying(const std::wstring& from, const std::wstring& to, unsigned wait_ms = 3000);
 
 // Path helpers (UTF-8 relative paths <-> wide absolute paths).
 std::wstring Widen(const std::string& utf8);

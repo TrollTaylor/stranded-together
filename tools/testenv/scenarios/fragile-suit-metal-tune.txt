@@ -1,0 +1,90 @@
+# Fragile's ready-made gold and silver, the tuning variants side by side (round 8; docs/textures.md "Ready-made
+# colours"; tex 11), solo, hidden. A freshly extracted textures folder, nothing painted; noon, clear, on the knot road; a
+# debug Fragile next to Sam, both facing the camera (the round-8 proof's framing). Gold (our Sam's 16) in variants 0 (the
+# product since round 9: the round-8 proof's polished metal), 1 ("Sam's hue"), 2 ("Sam measured") and 3 (the round-7
+# prototype, satin), then silver (15) the same; a second angle of variants 0 and 3. The prover compares them with Sam's own gold / silver.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios fragile-suit-metal-tune -SeedSaves complete-100
+role solo
+timeout 360
+ini partner_body=real
+ini pose_hook=1
+ini my_character=fragile_suit
+ini self_character=0
+textures extract
+start
+waitplayer 60
+goto mknot-road
+?action set_time_of_day 12
+?action dev_weather 0
+wait 3000
+pad none 2400 ly=32767
+pad none 900 ly=-32767
+wait 1000
+action real_outfit 4 16
+action real_spawn 16 -1.1 0
+waitlog 60 \[real\] 'fragile_suit' is live
+waitlog 30 \[tex\] ready: manifest table
+waitlog 30 \[tex\] look .* for colour 16 .*ready-made \(S0 S1\)
+waitlog 20 \[tex\] body debug .*: look .* bound
+?action set_time_of_day 12
+wait 2000
+screenshot gold-v0
+action tex 11 1
+waitnew 30 \[tex\] ready-made S0 .* for colour 16 (made in .*metal variant|from the cache)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot gold-v1
+action tex 11 2
+waitnew 30 \[tex\] ready-made S0 .* for colour 16 (made in .*metal variant|from the cache)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot gold-v2
+action tex 11 3
+waitnew 30 \[tex\] ready-made S0 .* for colour 16 (made in .*metal variant|from the cache)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot gold-v3
+pad none 150 rx=32767
+wait 1000
+screenshot gold-v3-orbit
+action tex 11 0
+waitnew 30 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot gold-v0-orbit
+pad none 150 rx=-32767
+wait 1000
+action tex 11 0
+action real_outfit 4 15
+waitnew 30 \[tex\] look .* for colour 15 .*ready-made \(S0 S1\)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot silver-v0
+action tex 11 1
+waitnew 30 \[tex\] ready-made S0 .* for colour 15 (made in .*metal variant|from the cache)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot silver-v1
+action tex 11 2
+waitnew 30 \[tex\] ready-made S0 .* for colour 15 (made in .*metal variant|from the cache)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot silver-v2
+action tex 11 3
+waitnew 30 \[tex\] ready-made S0 .* for colour 15 (made in .*metal variant|from the cache)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot silver-v3
+pad none 150 rx=32767
+wait 1000
+screenshot silver-v3-orbit
+action tex 11 0
+waitnew 30 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot silver-v0-orbit
+pad none 150 rx=-32767
+wait 1000
+action tex 0
+nolog \[tex\] .*FAULTED
+nolog \[tex\] ready-made colours off
+nolog \[tex\] refused
+quit

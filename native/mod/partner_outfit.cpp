@@ -301,8 +301,10 @@ void Apply(Dress& d, std::uintptr_t e, const wire::Outfit& want, std::uintptr_t 
     // sender's first frames, or a moment mid-change, can read 0xFF: no flash of the plain suit).
     const std::uint8_t want_exos = wire::PorterExos(want);
     if (want_exos != d.pending_exos) {
+        // the body's first reading of an index (none added yet) needs no wait: there is no tint to flash away from
+        const bool first = d.pending_exos == 0xFE && !d.exos_res && want_exos != 0xFF;
         d.pending_exos = want_exos;
-        d.pending_ms = now_ms;
+        d.pending_ms = first ? now_ms - kExosSettleMs : now_ms;
     }
     if (want_exos != d.exos && now_ms - d.pending_ms >= kExosSettleMs) {
         if (d.exos_res) {

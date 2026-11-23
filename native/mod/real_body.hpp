@@ -187,7 +187,7 @@ struct GearProp {
     float p[3] = {};            // position in the anchor's frame (m)
     float r[3][3] = {};         // rotation rows in the anchor's frame
 };
-inline constexpr unsigned kMaxGearProps = 56;  // wire::kMaxGearItems
+inline constexpr unsigned kMaxGearProps = wire::kMaxGearItems + 1;  // the items, then the exo carrier (section 32)
 enum class GearSlot : std::uint8_t { partner = 0, self = 1 };
 // Game thread. n > 0 publishes the list (it replaces the previous one); n = 0 unpublishes it and
 // waits until no detour uses it (call before removing a published prop).
@@ -258,6 +258,25 @@ bool SetBootsProp(const holo::Spawn* sp, char* why, std::size_t cap) noexcept;
 void ClearBootsProp() noexcept;
 bool BootsPosed(double within_ms) noexcept;  // a pose was written onto it within that time
 void BootsCounters(char* out, std::size_t cap) noexcept;
+// The exo carrier of a slot (docs/real-partner-body.md section 32; partner_gear.cpp owns it): a demo_sam_clean body showing
+// only Sam's skeleton pieces, posed in its own model updates from the slot's body (partner: its pose composed at that moment;
+// self: the capture the self body was last written from), identity root, Sam joint k from the body's joint for it. Checked:
+// Sam's 77-joint layout and names, every Sam joint mapped on the body. sp = nullptr clears it (waits until no detour uses it:
+// call before the carrier is removed). False (why says): not taken. Game thread.
+bool SetExoCarrier(GearSlot slot, const holo::Spawn* sp, char* why, std::size_t cap) noexcept;
+void ClearExoCarrier(GearSlot slot) noexcept;
+bool ExoPosed(GearSlot slot, double within_ms) noexcept;  // a pose was written onto it within that time (and 3 since it was set)
+// partner_gear, every tick: the carrier is meant to be seen (wanted, set up, its body shown). Only then does the game thread force
+// its model update when the game does not update it (a hidden carrier is not posed).
+void SetExoPoseWanted(GearSlot slot, bool on) noexcept;
+// The self carrier's pose source: 1 Sam's newest capture (default: what the self body takes in the same frame), 0 the capture
+// the self body was last written from.
+void SetExoSelfSource(int src) noexcept;
+int ExoSelfSource() noexcept;
+std::uintptr_t ExoCarrierEntity(GearSlot slot) noexcept;  // the carrier now posed (0 none)
+void ExoCounters(GearSlot slot, char* out, std::size_t cap) noexcept;
+// The outfit the partner sent (false: none yet).
+bool PartnerOutfit(wire::Outfit* out) noexcept;
 void ClearGearPose(unsigned k) noexcept;
 void GearPoseCounters(char* out, std::size_t cap) noexcept;
 // How many props of the slot the detour places now (0: unpublished, or a placement fault switched

@@ -11,6 +11,12 @@
 //   4 CHUNK  guest -> host  8-byte blob id prefix, u32 offset, u16 len (1..980), the bytes
 //   5 RESULT host -> guest  32-byte blob id, u8 code (Code)
 //   6 CANCEL either         u32 epoch
+//   7 RECIPE guest -> host  u32 epoch (the LOOK that follows), u8 generator, u16 blob encoder, 32-byte originals H,
+//                           u8 n (1..8), n x {u8 slot, u8 colour (1..16), u8 variant, 32-byte blob id}
+//                           (round 8): these blobs of the LOOK are Stranded Together's ready-made colour, made from her
+//                           Original pictures whose identity is H (suit_defaults.hpp OriginalsId). A host with the same
+//                           pictures makes them itself and checks the SHA-256; otherwise it asks for the blob (WANT).
+//                           Sent just before its LOOK, in the same tick; an older decoder ignores the kind.
 #pragma once
 #include <cstddef>
 #include <cstdint>
@@ -24,7 +30,7 @@ inline constexpr std::size_t kChunkData = 980;
 inline constexpr unsigned kMaxEntries = 8;
 inline constexpr std::uint32_t kMaxBlob = 6u * 1024u * 1024u;
 
-enum class Kind : std::uint8_t { none = 0, look = 1, have = 2, want = 3, chunk = 4, result = 5, cancel = 6 };
+enum class Kind : std::uint8_t { none = 0, look = 1, have = 2, want = 3, chunk = 4, result = 5, cancel = 6, recipe = 7 };
 enum Code : std::uint8_t { kOk = 0, kHashMismatch = 1, kInvalid = 2, kTooLarge = 3, kRefused = 4, kUnknownSlot = 5, kBudget = 6 };
 const char* CodeName(std::uint8_t code);
 
@@ -56,6 +62,19 @@ struct Result {
     std::uint8_t id[32] = {};
     std::uint8_t code = 0;
 };
+inline constexpr unsigned kMetalVariants = 4;   // suit_defaults.hpp kMetalVariants (a RECIPE's variant is below it; static_assert in texture_share.cpp)
+struct RecipeEntry {
+    std::uint8_t slot = 0, colour = 0, variant = 0;
+    std::uint8_t id[32] = {};
+};
+struct Recipe {
+    std::uint32_t epoch = 0;
+    std::uint8_t generator = 0;
+    std::uint16_t encoder = 0;
+    std::uint8_t originals[32] = {};
+    std::uint8_t n = 0;
+    RecipeEntry e[kMaxEntries];
+};
 
 Kind PeekKind(const std::uint8_t* p, std::size_t n);  // none for anything that is not a well-formed STT1 header
 // Encoders return the message size (0 when it does not fit `cap` or a field is out of range).
@@ -64,12 +83,15 @@ std::size_t EncodeIds(Kind kind, const IdList& m, std::uint8_t* out, std::size_t
 std::size_t EncodeChunk(const Chunk& m, std::uint8_t* out, std::size_t cap);
 std::size_t EncodeResult(const Result& m, std::uint8_t* out, std::size_t cap);
 std::size_t EncodeCancel(std::uint32_t epoch, std::uint8_t* out, std::size_t cap);
+std::size_t EncodeRecipe(const Recipe& m, std::uint8_t* out, std::size_t cap);
 // Strict decoders: the exact length, every count and length in range.
 bool DecodeLook(const std::uint8_t* p, std::size_t n, Look& out);
 bool DecodeIds(const std::uint8_t* p, std::size_t n, Kind kind, IdList& out);
 bool DecodeChunk(const std::uint8_t* p, std::size_t n, Chunk& out);
 bool DecodeResult(const std::uint8_t* p, std::size_t n, Result& out);
 bool DecodeCancel(const std::uint8_t* p, std::size_t n, std::uint32_t& epoch);
+// Strict: n 1..8, colour 1..16, variant below kMetalVariants, no slot twice, generator not 0.
+bool DecodeRecipe(const std::uint8_t* p, std::size_t n, Recipe& out);
 
 // A blob being received: fixed 980-byte pieces (the last one shorter), in any order, each once. Out-of-range, misaligned
 // or wrongly sized pieces are refused; duplicates are ignored.

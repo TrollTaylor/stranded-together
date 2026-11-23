@@ -260,16 +260,41 @@ The Tools page's **Fragile's textures** card (docs/textures.md has the player's 
   "Sam's boots on her feet" (Sam's real boots of that type over her feet, v0.22). Written as `boots_look=own|prop` into
   every session.ini (Host, Join, Solo test, Debug tools only, both Local test files); the guest's choice is what both
   screens show (it travels in the textures LOOK).
+* **Automatic extraction** (round 9; docs/textures.md "Get the pictures"): the real window (`ModelStart::
+  auto_extract_textures`, set only by launcher_main.cpp; a model a test makes has it off unless the test turns it on on
+  a temporary folder, as `AutoExtractModel` does) decides at most every 5 s from the folder's `.manifest.txt`
+  (`core::DecideAutoExtract`): never extracted, an older `extract` version or another slot table starts the same child as
+  Extract textures, in the background ("Extracting automatically", Cancel works); never while a game of this folder,
+  Local test or a session runs (it waits), never in a OneDrive folder or one the mod cannot use, never with less than
+  1.4 GB free on its drive, never over an index that does not read (damaged or a newer version's: the player's call; one
+  another program holds for a moment is looked at again), and never in a folder it saw extracted that lost its
+  extraction since (`"textures"."extracted"`; deleted to free space, a missing drive). The card says "by itself" only
+  when it will run. Nothing waits for it: Host / Join / Local test start at any time (a game that starts first shows
+  Fragile's own suit; the mod waits while `.extract.lock` is held, then shows the ready-made colour). A failure is one
+  quiet line on the card and a record in the settings (`"textures"."auto": {"key": "<version>|<extract
+  version>|<ds.exe stamp>|<folder>", "failures", "last_s", "error"}`): the next try 10 minutes later, then 1 hour, then
+  none for that key until the button is pressed (it clears the record; its own failure counts as the first, its error
+  shown once) or Stranded Together / the game / the folder changes. A run that left unpainted pictures behind (another
+  program had them open) counts like a failure. A cancel (either kind) stops it until the launcher starts again (one line
+  says so). Unticking **Extract automatically when needed** (`"auto_extract"`, default on) lets a run in progress finish
+  (the card says so). `launcher.log`: `textures=auto-extract; reason=...`, `textures=auto-done|auto-failed|auto-cancelled
+  exit=.. [incomplete=N] [; failures=N; error=...]` (one line per run); `textures=auto-failed; failures=N; error=...` only
+  when the child could not even start.
+* **READY-MADE COLOURS** (rounds 8 / 9): On (default) / Off, `"textures"."defaults"`; Off writes `textures_defaults=0` into
+  every session.ini (Host, Join, Solo test, Debug tools only, both Local test files): an unpainted colour folder is then
+  her own suit. With Off the card's status, intro, automatic success line and Check my edits say so instead of naming
+  ready-made colours.
 * Settings: `launcher-settings.json` `"textures": {"dir": "" (= <Documents>\Stranded Together\Textures, resolved with
   SHGetKnownFolderPath at use; <LocalAppData>\Stranded Together\Textures when Documents is inside OneDrive or not a local
-  drive folder, so the game pictures are never uploaded; the card says why), "previews": true, "boots": "own" | "prop"}`. Nothing is created in Documents until
-  Extract / Open is pressed.
+  drive folder, so the game pictures are never uploaded; the card says why), "previews": true, "boots": "own" | "prop",
+  "auto_extract": true, "defaults": true, "auto": {...}, "extracted": "<the folder last seen extracted, lower case>"}`. Nothing is created in Documents until an extraction (by hand
+  or automatic) or Open is pressed.
 * Every session.ini (Host, Join, Solo test, Debug tools only, both Local test files) gets `textures_dir=<the folder>`
   when the mod can use it (`TexturesDirForSession`); an unusable one (a network path) is left out and named on the card,
   so it never stops a session from starting. A picked folder inside OneDrive gets a warning on the card.
 * In the game (round 6 T2, T3): the guest's mod reads that folder and puts the edited suit and boots pictures on
   Fragile, on both screens (docs/textures.md "See your pictures in the game", "Her boots"); the host's mod gets them over
-  the link. Besides `boots_look` the launcher writes no other texture key: the mod's defaults are `fragile_textures=1`, `textures_send=1`, `textures_receive=1`,
+  the link. Besides `boots_look` and `textures_defaults=0` (READY-MADE COLOURS Off) the launcher writes no other texture key: the mod's defaults are `fragile_textures=1`, `textures_send=1`, `textures_receive=1`,
   `textures_hot_reload=1` and `fragile_suit_colour=0` (the v0.23 tint, now only a fallback; add the keys by hand to
   change them). The card has no checkboxes for them yet.
 
@@ -417,6 +442,9 @@ world_sync=1|0                  shared structures, ziplines, ladders and climbin
 boots_look=own|prop             her boots (round 6 T3, the Tools card's choice; "textures"."boots"): her own boots painted
                                 (own, the mod's default) or Sam's boots on her feet (prop); every session and both Local test
                                 files; parsed strictly (own / prop)
+textures_defaults=0             Fragile's ready-made colours off (round 9, the Tools card's READY-MADE COLOURS: Off;
+                                "textures"."defaults"): written only when off (the mod's default is on); every session and both
+                                Local test files; parsed strictly (0 / 1)
 textures_dir=<folder>           Fragile's textures (docs/textures.md): the Tools card's folder (default <Documents>\Stranded
                                 Together\Textures, <LocalAppData>\... when OneDrive syncs Documents), every session and both Local test files; parsed strictly (a full drive
                                 path, no control characters). The mod reads it for Fragile's edited suit (round 6 T2) and

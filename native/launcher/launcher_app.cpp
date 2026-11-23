@@ -1206,9 +1206,26 @@ void LauncherUi::TexturesCard(Phase phase) {
     ImGui::SameLine(0.0f, Px(10.0f));
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() + Px(4.0f));
     Text("Fragile's textures", col::kText, kBody + 1.0f, GetFonts().semibold, -1.0f);
-    Text("Fragile's suit and boots pictures from your game, in a folder you can paint: one set per Sam suit colour (Default ... "
-         "Gold) and per boot type, with Sam's suits and boots next to them to copy details from. Only pictures you change are used.",
-         col::kTextDim, kSmall, nullptr, 0.0f);
+    {
+        // the ready-made colours exist only after an extraction (the mod makes them from Original\); your partner's game
+        // makes them itself only when it has extracted too (else each comes over the link, about a minute)
+        const bool have = t.state == TexturesView::State::extracted || t.state == TexturesView::State::outdated;
+        std::string intro =
+            "Fragile's suit and boots pictures from your game, in a folder you can paint: one set per Sam suit colour (Default ... "
+            "Gold) and per boot type, with Sam's suits and boots next to them to copy details from. ";
+        if (!t.ready_made)
+            intro += "Paint a colour folder to give Fragile your own colour for that Sam colour (READY-MADE COLOURS is Off: a folder "
+                     "you did not paint shows her own suit).";
+        else
+            intro += have ? "Colours 01-16 have a ready-made Fragile colour (your partner sees it at once when their textures are extracted "
+                            "too); paint a folder to make it yours."
+                     : t.auto_will
+                         ? "The launcher extracts them by itself in the background (you can play meanwhile): then Fragile has a ready-made "
+                           "colour for every Sam colour 01-16; paint a folder to make it yours."
+                         : "Extract textures (both players) gives her a ready-made colour for every Sam colour 01-16; then paint a folder "
+                           "to make it yours.";
+        Text(intro.c_str(), col::kTextDim, kSmall, nullptr, 0.0f);
+    }
     Gap(2.0f);
     {
         const Font f(GetFonts().mono, kSmall);
@@ -1226,13 +1243,20 @@ void LauncherUi::TexturesCard(Phase phase) {
         Gap(2.0f);
         const float w = ImGui::GetContentRegionAvail().x / Scale();
         ProgressBar(t.progress, w, 6.0f, col::kAccent);
-        Text(("Extracting: " + t.progress_text).c_str(), col::kTextDim, kSmall, nullptr, 0.0f);
+        Text(((t.auto_running ? "Extracting automatically: " : "Extracting: ") + t.progress_text).c_str(), col::kTextDim, kSmall, nullptr, 0.0f);
+        if (t.auto_running)
+            Message(Icon::info, col::kTextFaint,
+                    t.ready_made ? "You can play meanwhile: a game started now shows Fragile's own suit until this ends, then her ready-made "
+                                   "colour a few seconds later. Your painted pictures are never changed."
+                                 : "You can play meanwhile. Your painted pictures are never changed.",
+                    kSmall);
     } else {
         Message(status_icon, status_col, t.status, kSmall);
         if (!t.edited.empty()) Message(Icon::sliders, col::kCool, t.edited, kSmall);
         if (t.state == TexturesView::State::not_extracted || t.state == TexturesView::State::outdated)
             Message(Icon::info, col::kTextFaint, "Needs " + t.estimate + " of disk space. The game's own files are only read.", kSmall);
     }
+    if (!t.auto_note.empty() && !busy) Message(Icon::info, col::kTextFaint, t.auto_note, kSmall);
     Gap(2.0f);
     const float avail = ImGui::GetContentRegionAvail().x / Scale();
     const float w4 = std::floor((avail - 3.0f * 8.0f) / 4.0f);
@@ -1269,6 +1293,24 @@ void LauncherUi::TexturesCard(Phase phase) {
             const bool ok = model_.set_textures_folder(folder, error);
             tex_result_ = Result{ok, ok ? "Textures folder set. Press Extract textures to fill it." : error, ""};
         }
+    }
+    {
+        // Round 9: the automatic extraction (when the folder is empty or from an older version; never over painted pictures)
+        bool automatic = t.auto_extract;
+        if (Checkbox("Extract automatically when needed", &automatic, true)) model_.set_auto_extract(automatic);
+    }
+    // Ready-made colours (docs/textures.md "Ready-made colours"): session.ini textures_defaults=0 when off.
+    Gap(4.0f);
+    SectionLabel("READY-MADE COLOURS");
+    {
+        static const char* const kReady[] = {"On", "Off"};
+        int ready = t.ready_made ? 0 : 1;
+        if (Segmented("##texready", kReady, 2, &ready, std::fmin(ImGui::GetContentRegionAvail().x / Scale(), 240.0f), !in_game))
+            model_.set_ready_made(ready == 0);
+        Text(t.ready_made ? "A colour folder you did not paint shows Stranded Together's ready-made colour for that Sam colour (made on "
+                            "your PC from her own pictures). 00 Default is her own suit."
+                          : "A colour folder you did not paint shows her own navy suit. Your painted folders are worn either way.",
+             col::kTextDim, kSmall, nullptr, 0.0f);
     }
     // Her boots (docs/real-partner-body.md section 30): her own boots painted with the boot pictures, or Sam's boots.
     Gap(4.0f);
@@ -2117,6 +2159,7 @@ void LauncherUi::PrepareScene(int index, MockModel& mock) {
         break;
     case ui::Scene::tools_textures_extracting:
         mock.set_textures_state(TexturesView::State::extracting, 0.42f);
+        mock.set_textures_auto(true, "");   // round 9: the automatic extraction (the usual one now)
         scroll_to_textures_ = true;
         page = Page::tools;
         break;

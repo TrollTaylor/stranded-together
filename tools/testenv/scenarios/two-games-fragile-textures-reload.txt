@@ -8,6 +8,8 @@
 role host
 graphics low
 timeout 360
+# round 8: this scenario proves the v0.24 rule (an unpainted folder is her own suit): ready-made colours off
+ini textures_defaults=0
 launcherini local-test
 textures extract
 textures pattern checker 16 Gold

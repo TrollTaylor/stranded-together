@@ -113,7 +113,16 @@ The game uploads a player's own new structure (`RegisterNew` -> `createObject`),
    built while riding the truck on the highway; with the gate: `[gate] dropped the likes manager's sendLike (hidden run)`,
    0 writes (run `20261121-165053`). Real use, host or solo: vanilla.
 
-Counters: `[gate] counts: dropped register n, drain n, telemetry n, upload n, likes n (total n); passed ...; OTGC
+4b. (W3, round 7) The road online manager's create-road request 0x1434A13E0 (its only caller 0x142E80BC1) returns at once
+   where the likes drop (every hidden run, a world-sync guest). It stores the road and sets the manager's request flag
+   +0x3090; the manager's update 0x1434A2B10 then leaves state 0 for 1, builds `urn:otgc_create_road` (descriptors
+   0x1432AA770 / 0x1432AA640, the OTGC ctor) and in state 2 sends `urn:otgc_road_upload`. Entering the private room from
+   the field calls it: run `20261122-171636-pr-self-off` FAILED on `urn:otgc_create_road`, and the user's world-sync guest
+   built one (round 7). Dropped: `[gate] dropped the road manager's create-road request (...)`; the manager stays in state
+   0. Byte-checked: the request's entry, its flag store at 0x1434A1527, the update's state 0 -> 1 test at 0x1434A2C10 and
+   the caller's call. Real use, host or solo: vanilla.
+
+Counters: `[gate] counts: dropped register n, drain n, telemetry n, upload n, likes n, create-road n (total n); passed ...; OTGC
 requests n (write n)` (action `world_sync 3`).
 
 5. (round 5) The guest's repair of a host structure changes only its durability on the host (vt+0x140), never the host's

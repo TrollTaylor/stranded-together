@@ -34,6 +34,10 @@ struct Settings {
     // where the built textures are cached (<mod dir>\cache\built-textures; a hidden run: <run>\textures-cache). Never
     // inside the textures folder: that one may be synced to the cloud, and the folder watch would see our own writes.
     std::wstring cache;
+    // Round 8: the ready-made colours (session.ini textures_defaults, default on): a colour folder 01..16 with nothing
+    // painted wears Stranded Together's ready-made colour; off: her own suit there (the v0.24 rule)
+    bool defaults = true;
+    int defaults_variant = 0;   // the metal variant (tex 11; 0 the product)
 };
 void Configure(const Settings& s) noexcept;
 bool Enabled() noexcept;            // configured on, available, a folder or the link can supply a look
@@ -102,7 +106,8 @@ void Forget(Dress& d) noexcept;
 const char* Describe(const Dress& d, char* buf, std::size_t cap) noexcept;
 
 // Debug (tex <mode>): 0 status, 1 rescan, 2 probe dump on the next rebuild, 3 force colour, 4 off/on, 5 filter mode,
-// 7 resend, 8 template check, 9 test pattern, 10 force the boot type. `e_self` / `e_slot`: our live fragile_suit bodies (0 = none).
+// 7 resend, 8 template check, 9 test pattern, 10 force the boot type, 11 the metal variant of the ready-made gold / silver,
+// 12 (host) how a guest's ready-made colour is made (0 here, 1 always sent over the link, 2 pretend the originals differ). `e_self` / `e_slot`: our live fragile_suit bodies (0 = none).
 bool DebugCommand(int mode, double a, double b, std::uintptr_t e_self, std::uintptr_t e_slot, char* msg, std::size_t cap) noexcept;
 int ForcedColour() noexcept;      // tex 3 (-1 = follow)
 int ForcedBoots() noexcept;       // tex 10: the boot type her boots pictures follow (-1 = our Sam's)

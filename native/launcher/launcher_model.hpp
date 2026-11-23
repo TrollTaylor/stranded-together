@@ -209,6 +209,14 @@ struct TexturesView {
     enum class Tone { neutral, good, warn, bad } tone = Tone::neutral;
     std::string report;            // Check my edits: several lines
     bool boots_own = true;         // her boots: her own, painted (true) / Sam's boots on her feet (session.ini boots_look)
+    // Round 9.
+    bool ready_made = true;        // READY-MADE COLOURS: On (default) / Off (session.ini textures_defaults=0)
+    bool auto_extract = true;      // "Extract automatically" ("textures"."auto_extract", default on)
+    bool auto_running = false;     // the extraction in progress was started automatically
+    bool auto_will = false;        // the automatic extraction will run (now, or by itself later: after the game, a retry):
+                                   // the card says "by itself" only then
+    std::string auto_note;         // a quiet line about the automatic extraction ("" = nothing to say): waiting for the
+                                   // game to close, trying again later, stopped after 3 failures, not in a OneDrive folder
 };
 
 class LauncherModel {
@@ -311,6 +319,11 @@ public:
     // Her boots: her own boots painted with the boot pictures (true, the default) or Sam's boots on her feet. Persisted
     // ("textures"."boots"); written into session.ini boots_look at the next launch.
     virtual void set_boots_look(bool own) = 0;
+    // READY-MADE COLOURS (round 8/9): On (the default) / Off. Persisted ("textures"."defaults"); session.ini
+    // textures_defaults=0 at the next launch when off.
+    virtual void set_ready_made(bool on) = 0;
+    // Extract automatically (round 9): persisted ("textures"."auto_extract", default on).
+    virtual void set_auto_extract(bool on) = 0;
 
     virtual void tick() = 0;
 };
@@ -321,6 +334,11 @@ struct ModelStart {
     std::uint32_t after_update = 0;   // --after-update <pid>: this exe replaced that launcher
     std::string update_feed;          // --update-feed <url> (developer): this release feed instead of GitHub's
     bool update_now = false;          // --update-now (developer, with --update-feed): install a found update at once
+    // Round 9: fill the textures folder by itself when it was never extracted or by an older version (the setting
+    // "textures"."auto_extract" allows it; core_textures.hpp DecideAutoExtract). The real window only: a model made by a
+    // test never touches a textures folder unless the test asks for it.
+    bool auto_extract_textures = false;
+    std::wstring extract_exe;         // the exe started for --extract-textures ("" = this program; tests: StrandedTogether.exe)
 };
 
 std::unique_ptr<LauncherModel> MakeRealModel(const std::wstring& exe_dir, const ModelStart& start);

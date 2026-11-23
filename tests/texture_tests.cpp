@@ -1,5 +1,5 @@
 // Fragile's textures (docs/textures.md), the parts without the game: BCn codecs, mips, PackingInfo, the slot table, the
-// manifest, PNG through WIC, the Decima archive reader on a synthetic encrypted archive, the Texture / TextureSet
+// manifest, PNG (and any picture by its content) through WIC, the Decima archive reader on a synthetic encrypted archive, the Texture / TextureSet
 // parsers, and the whole extraction (folders, seeds, re-run safety) on a synthetic game folder in %TEMP%.
 // No game data is read or written.
 #ifndef NOMINMAX
@@ -19,6 +19,7 @@
 #include "decima_core.hpp"
 #include "extract_plan.hpp"
 #include "png_wic.hpp"
+#include "suit_defaults.hpp"
 #include "tex_codec.hpp"
 #include "tex_hash.hpp"
 #include "tex_manifest.hpp"
@@ -655,6 +656,88 @@ void Png() {
     CHECK(!DecodePng(junk, sizeof(junk), back) && !PngSize(junk, sizeof(junk), w, h));
 }
 
+bool WriteBytes(const std::wstring& path, const std::vector<std::uint8_t>& b) {
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    DWORD put = 0;
+    const bool ok = WriteFile(f, b.data(), static_cast<DWORD>(b.size()), &put, nullptr) && put == b.size();
+    CloseHandle(f);
+    return ok;
+}
+bool ReadBytes(const std::wstring& path, std::vector<std::uint8_t>& b) {
+    b.clear();
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    b.resize(static_cast<std::size_t>(GetFileSize(f, nullptr)));
+    DWORD got = 0;
+    const bool ok = b.empty() || (ReadFile(f, b.data(), static_cast<DWORD>(b.size()), &got, nullptr) && got == b.size());
+    CloseHandle(f);
+    return ok;
+}
+
+// Any picture by its content (an image tool's JPEG saved under the .png name, round 7): JPEG, BMP, TIFF, GIF; the size
+// from the header; a picture over the cap refused before decoding.
+void AnyPicture() {
+    const Image src = Gradient(64, 48);
+    std::vector<std::uint8_t> jpg, bmp, tif, png;
+    std::string err;
+    CHECK(EncodePicture(src, PictureFormat::jpeg, jpg, &err));
+    CHECK(SniffPicture(jpg.data(), jpg.size()) == PictureFormat::jpeg && std::string(PictureFormatName(PictureFormat::jpeg)) == "JPEG");
+    std::uint32_t w = 0, h = 0;
+    PictureFormat fmt = PictureFormat::unknown;
+    CHECK(PictureSize(jpg.data(), jpg.size(), w, h, &fmt, &err) && w == 64 && h == 48 && fmt == PictureFormat::jpeg);
+    CHECK(!PngSize(jpg.data(), jpg.size(), w, h));   // the old reader's refusal
+    Image back;
+    CHECK(!DecodePng(jpg.data(), jpg.size(), back, &err) && err == "not a PNG (a JPEG picture)");
+    CHECK(DecodePicture(jpg.data(), jpg.size(), back, 0, 0, &fmt, &err) && fmt == PictureFormat::jpeg && back.w == 64 && back.h == 48);
+    CHECK(Psnr(src, back, 0x7) >= 28.0 && back.At(3, 3)[3] == 255);   // lossy, but close; no alpha = opaque
+    // the cap: refused from the header, nothing decoded
+    back = Image{};
+    CHECK(!DecodePicture(jpg.data(), jpg.size(), back, 32, 32, nullptr, &err) && err.find("too big") != std::string::npos && back.w == 0);
+    // from a file named .png (what the user had: Grok's JPEG under "Suit - Colour.png")
+    const std::wstring dir = TempDir(L"anypic");
+    RemoveTree(dir);
+    CreateDirectoryW(TempDir(L"").c_str(), nullptr);
+    CreateDirectoryW(dir.c_str(), nullptr);
+    const std::wstring named = dir + L"\\Suit - Colour.png";
+    CHECK(WriteBytes(named, jpg));
+    fmt = PictureFormat::unknown;
+    CHECK(ReadPictureFile(named, back, &fmt, &err) && fmt == PictureFormat::jpeg && back.w == 64 && Psnr(src, back, 0x7) >= 28.0);
+    CHECK(!ReadPngFile(named, back, &err));
+    // lossless containers: exact
+    CHECK(EncodePicture(src, PictureFormat::bmp, bmp, &err) && SniffPicture(bmp.data(), bmp.size()) == PictureFormat::bmp);
+    CHECK(PictureSize(bmp.data(), bmp.size(), w, h, &fmt) && w == 64 && h == 48 && fmt == PictureFormat::bmp);
+    CHECK(DecodePicture(bmp.data(), bmp.size(), back) && Psnr(src, back, 0x7) >= 99.0);
+    CHECK(EncodePicture(src, PictureFormat::tiff, tif, &err) && SniffPicture(tif.data(), tif.size()) == PictureFormat::tiff);
+    CHECK(PictureSize(tif.data(), tif.size(), w, h, &fmt) && w == 64 && h == 48 && fmt == PictureFormat::tiff);
+    CHECK(DecodePicture(tif.data(), tif.size(), back) && Psnr(src, back, 0x7) >= 99.0);
+    CHECK(EncodePicture(src, PictureFormat::png, png, &err) && PictureSize(png.data(), png.size(), w, h, &fmt) && fmt == PictureFormat::png && w == 64);
+    CHECK(DecodePicture(png.data(), png.size(), back) && Psnr(src, back, 0x7) >= 99.0);
+    // GIF (a 1x1 red pixel, its first frame)
+    static const std::uint8_t kGif[] = {'G', 'I', 'F', '8', '9', 'a', 1, 0, 1, 0, 0x80, 0, 0, 0xFF, 0, 0, 0, 0, 0, 0x2C, 0, 0, 0, 0,
+                                        1, 0, 1, 0, 0, 2, 2, 0x44, 1, 0, 0x3B};
+    CHECK(SniffPicture(kGif, sizeof(kGif)) == PictureFormat::gif);
+    CHECK(DecodePicture(kGif, sizeof(kGif), back, 0, 0, &fmt) && fmt == PictureFormat::gif && back.w == 1 && back.h == 1 && back.rgba[0] == 255 &&
+          back.rgba[1] == 0 && back.rgba[2] == 0);
+    // WebP / GIF are not written; a WebP header is recognised (read when Windows has its codec; this one is cut short)
+    std::vector<std::uint8_t> none;
+    CHECK(!EncodePicture(src, PictureFormat::webp, none) && none.empty());
+    const std::uint8_t webp_head[16] = {'R', 'I', 'F', 'F', 8, 0, 0, 0, 'W', 'E', 'B', 'P', 'V', 'P', '8', 'L'};
+    CHECK(SniffPicture(webp_head, sizeof(webp_head)) == PictureFormat::webp);
+    CHECK(!PictureSize(webp_head, sizeof(webp_head), w, h, &fmt, &err) && fmt == PictureFormat::webp && !err.empty());
+    // junk, damaged and cut pictures: false with a sentence, never a crash
+    const std::uint8_t junk[40] = {'h', 'e', 'l', 'l', 'o'};
+    CHECK(SniffPicture(junk, sizeof(junk)) == PictureFormat::unknown && !PictureSize(junk, sizeof(junk), w, h, &fmt, &err) &&
+          err.find("not a picture") != std::string::npos);
+    CHECK(!DecodePicture(junk, sizeof(junk), back, 0, 0, nullptr, &err));
+    CHECK(!PictureSize(jpg.data(), 20, w, h, &fmt, &err) && fmt == PictureFormat::jpeg);
+    std::vector<std::uint8_t> cut(jpg.begin(), jpg.begin() + static_cast<std::ptrdiff_t>(jpg.size() / 2));
+    Image half;
+    DecodePicture(cut.data(), cut.size(), half);   // WIC may fill the rest or fail: either way no crash
+    CHECK(!DecodePicture(nullptr, 0, back) && SniffPicture(nullptr, 10) == PictureFormat::unknown);
+    RemoveTree(dir);
+}
+
 // ---- The whole extraction on a synthetic game folder -------------------------------------------------------
 void Extraction() {
     const std::wstring root = TempDir(L"extract");
@@ -721,6 +804,12 @@ void Extraction() {
     CHECK(RunExtract(o, st, err));
     if (!err.empty()) std::printf("  extract: %s\n", err.c_str());
     CHECK(st.sets_done == 3 && st.kept == 0 && !lines.empty() && lines.back().rfind("done ", 0) == 0);
+    {   // her synthetic Colour has no navy fabric area (a few scattered pixels the median removes): the ready-made
+        // pictures are her own pixels (round 8)
+        bool defaults_line = false;
+        for (const std::string& l : lines) defaults_line |= l.rfind("defaults 48 0 0 ", 0) == 0;
+        CHECK(defaults_line);
+    }
     const std::wstring orig = out + L"\\Fragile porter suit\\Original\\";
     for (const wchar_t* f : {L"Suit - Colour.png", L"Suit - Roughness.png", L"Suit - Reflectance.png", L"Suit - Ambient occlusion.png",
                              L"Boots - Colour.png", L"Boots - Roughness.png", L"Boots - Reflectance.png", L"Boots - Ambient occlusion.png"})
@@ -760,6 +849,55 @@ void Extraction() {
     ScanEdits(out, false, scan);
     CHECK(EditSummary(scan) == "Edited: 16 Gold (Colour)");
     CHECK(scan.problems.size() == 1);   // notes.png is not used
+    // round 7: a JPEG saved under the .png name (an image tool's output) is read by its content and counts as edited (its
+    // bytes are never the seed's); a "Suit - Roughness.jpg" is named (the mod reads only the .png names)
+    {
+        const std::wstring refl = gold + L"Suit - Reflectance.png";
+        std::vector<std::uint8_t> seed_bytes, jpg;
+        {
+            HANDLE f = CreateFileW(refl.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+            LARGE_INTEGER sz{};
+            GetFileSizeEx(f, &sz);
+            seed_bytes.resize(static_cast<std::size_t>(sz.QuadPart));
+            DWORD got = 0;
+            ReadFile(f, seed_bytes.data(), static_cast<DWORD>(seed_bytes.size()), &got, nullptr);
+            CloseHandle(f);
+        }
+        CHECK(EncodePicture(Gradient(24, 24), PictureFormat::jpeg, jpg, &err));
+        CHECK(WriteBytes(refl, jpg) && WriteBytes(gold + L"Suit - Roughness.jpg", jpg));
+        for (bool full : {false, true}) {
+            ScanEdits(out, full, scan);
+            CHECK(EditSummary(scan) == "Edited: 16 Gold (Colour, Reflectance)");
+            bool named_jpeg = false, resized = false, renamed = false, unreadable = false;
+            for (const std::string& p : scan.problems) {
+                named_jpeg |= p.find("16 Gold\\Suit - Reflectance.png is a JPEG saved with a .png name") == 0;
+                resized |= p.find("16 Gold\\Suit - Reflectance.png is 24x24: it will be resized to 16x16") == 0;
+                renamed |= p.find("16 Gold\\Suit - Roughness.jpg is not used: rename it to Suit - Roughness.png") == 0;
+                unreadable |= p.find("cannot be read") != std::string::npos;
+            }
+            CHECK(named_jpeg && resized && renamed && !unreadable && scan.problems.size() == 4);
+            CHECK(CheckReport(scan).find("is a JPEG saved with a .png name: the mod reads it anyway") != std::string::npos);
+        }
+        CHECK(WriteBytes(refl, seed_bytes) && DeleteFileW((gold + L"Suit - Roughness.jpg").c_str()));
+        ScanEdits(out, false, scan);
+        CHECK(EditSummary(scan) == "Edited: 16 Gold (Colour)" && scan.problems.size() == 1);
+        // Renamed in Explorer with the extensions hidden: "Suit - Roughness.png.jpg" / ".png.png" are named, with the fix
+        CHECK(WriteBytes(gold + L"Suit - Roughness.png.jpg", jpg) && WriteBytes(gold + L"Suit - Normal.png.png", jpg));
+        ScanEdits(out, false, scan);
+        {
+            bool hidden_jpg = false, hidden_png = false;
+            for (const std::string& p : scan.problems) {
+                hidden_jpg |= p.find("16 Gold\\Suit - Roughness.png.jpg is not used: its full name ends in .jpg (Windows hides that ending): "
+                                     "rename it so the name is exactly Suit - Roughness.png") == 0;
+                hidden_png |= p.find("16 Gold\\Suit - Normal.png.png is not used: its full name ends in .png") == 0;
+            }
+            CHECK(hidden_jpg && hidden_png && scan.problems.size() == 3);
+            CHECK(EditSummary(scan) == "Edited: 16 Gold (Colour)");
+        }
+        CHECK(DeleteFileW((gold + L"Suit - Roughness.png.jpg").c_str()) && DeleteFileW((gold + L"Suit - Normal.png.png").c_str()));
+        ScanEdits(out, false, scan);
+        CHECK(scan.problems.size() == 1);
+    }
     lines.clear();
     CHECK(RunExtract(o, st, err));
     CHECK(FileHash(gold + L"Suit - Colour.png") == edited_hash);   // never overwritten
@@ -814,6 +952,406 @@ void Extraction() {
     RemoveTree(root);
 }
 
+// ---- Round 8: the ready-made colours in the colour folders (a synthetic navy suit) --------------------------------
+bool ReadManifestFile(const std::wstring& out, Manifest& m) {
+    std::vector<std::uint8_t> b;
+    HANDLE f = CreateFileW((out + L"\\.manifest.txt").c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER sz{};
+    GetFileSizeEx(f, &sz);
+    b.resize(static_cast<std::size_t>(sz.QuadPart));
+    DWORD got = 0;
+    ReadFile(f, b.data(), static_cast<DWORD>(b.size()), &got, nullptr);
+    CloseHandle(f);
+    std::string err;
+    return ParseManifest(std::string(b.begin(), b.end()), m, err);
+}
+bool WriteManifestFile(const std::wstring& out, const Manifest& m) {
+    const std::string t = WriteManifest(m);
+    SetFileAttributesW((out + L"\\.manifest.txt").c_str(), FILE_ATTRIBUTE_NORMAL);
+    return WriteBytes(out + L"\\.manifest.txt", std::vector<std::uint8_t>(t.begin(), t.end()));
+}
+bool CopyBytes(const std::wstring& from, const std::wstring& to) {
+    SetFileAttributesW(to.c_str(), FILE_ATTRIBUTE_NORMAL);
+    return CopyFileW(from.c_str(), to.c_str(), FALSE) && SetFileAttributesW(to.c_str(), FILE_ATTRIBUTE_NORMAL);
+}
+
+void ReadyMadeExtraction() {
+    const std::wstring root = TempDir(L"readymade");
+    RemoveTree(root);
+    CreateDirectoryW(TempDir(L"").c_str(), nullptr);
+    CreateDirectoryW(root.c_str(), nullptr);
+    const std::wstring game = root + L"\\game", out = root + L"\\out";
+    CreateDirectoryW(game.c_str(), nullptr);
+    CreateDirectoryW((game + L"\\data").c_str(), nullptr);
+    {
+        HANDLE f = CreateFileW((game + L"\\ds.exe").c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, 0, nullptr);
+        DWORD put = 0;
+        WriteFile(f, "MZ", 2, &put, nullptr);
+        CloseHandle(f);
+    }
+    // her suit: a 16x16 Colour (+ Roughness in A) of mostly navy fabric with a few bright "prints", an 8x8
+    // Reflectance (+ AO in A): the generator's 2:1 layout
+    auto chain = [](std::uint32_t w, std::uint32_t h, bool navy, std::uint32_t& mips) {
+        std::vector<std::uint8_t> d;
+        mips = 0;
+        std::uint32_t s = 99;
+        for (;;) {
+            for (std::uint32_t i = 0; i < w * h; ++i) {
+                s = s * 1664525u + 1013904223u;
+                const bool print = (i % 7) == 3;
+                if (navy && !print) {
+                    d.push_back(static_cast<std::uint8_t>(58 + (s >> 24) % 10));
+                    d.push_back(static_cast<std::uint8_t>(68 + (s >> 20) % 10));
+                    d.push_back(static_cast<std::uint8_t>(96 + (s >> 16) % 12));
+                } else {
+                    d.push_back(static_cast<std::uint8_t>(200 + (s >> 24) % 50));
+                    d.push_back(static_cast<std::uint8_t>(navy ? 190 : 40 + (s >> 20) % 30));
+                    d.push_back(static_cast<std::uint8_t>(navy ? 20 : 40 + (s >> 16) % 30));
+                }
+                d.push_back(static_cast<std::uint8_t>(100 + (s >> 8) % 120));   // roughness / AO
+            }
+            ++mips;
+            if (w == 1 && h == 1) break;
+            w = std::max(1u, w / 2);
+            h = std::max(1u, h / 2);
+        }
+        return d;
+    };
+    std::uint32_t mips_c = 0, mips_r = 0;
+    const std::vector<std::uint8_t> chain_c = chain(16, 16, true, mips_c), chain_r = chain(8, 8, false, mips_r);
+    std::vector<std::uint8_t> suit = TextureObject(0x10, kRGBA8, 16, 16, 1, chain_c, mips_c);
+    std::vector<std::uint8_t> t2 = TextureObject(0x30, kRGBA8, 8, 8, 0, chain_r, mips_r);
+    suit.insert(suit.end(), t2.begin(), t2.end());
+    std::vector<std::uint8_t> s = SetObject({{0x10, 0x86211101u}, {0x30, 0x85241404u}});
+    suit.insert(suit.end(), s.begin(), s.end());
+    CHECK(WriteArchive(game + L"\\data\\00.bin", {{kSuitSet, suit}}));
+    static const std::vector<ExtractJob> jobs = {{kOriginalDir, "Suit", kSuitSet, true}};
+    ExtractOptions o;
+    o.game_dir = game;
+    o.out_dir = out;
+    o.previews = false;
+    o.decompressor = FakeDecompress;
+    o.jobs = &jobs;
+    o.min_free_bytes = 1;
+    o.check_slots = false;
+    std::vector<std::string> lines;
+    o.emit = [&](const std::string& l) { lines.push_back(l); };
+    auto has_line = [&](const std::string& l) {
+        for (const std::string& x : lines)
+            if (x == l) return true;
+        return false;
+    };
+    ExtractStats st;
+    std::string err;
+    const std::wstring suitdir = out + L"\\Fragile porter suit\\", orig = suitdir + L"Original\\";
+    const wchar_t* kNames[3] = {L"Suit - Colour.png", L"Suit - Reflectance.png", L"Suit - Roughness.png"};
+    auto folder = [&](int c) { return suitdir + Widen(kColourFolders[c].name) + L"\\"; };
+
+    // (a) the first run: 01..16 ready-made, 00 Default copies, the seed rows are the bytes on disk
+    CHECK(RunExtract(o, st, err));
+    if (!err.empty()) std::printf("  ready-made extract: %s\n", err.c_str());
+    CHECK(st.defaults_written == 48 && st.defaults_replaced == 0 && st.folders_yours == 0);
+    CHECK(has_line("default Fragile porter suit\\16 Gold\\Suit - Reflectance.png") && lines.back().rfind("done ", 0) == 0);
+    for (const wchar_t* n : kNames) CHECK(FileHash(folder(0) + n) == FileHash(orig + n));
+    CHECK(FileHash(folder(13) + L"Suit - Colour.png") != FileHash(orig + L"Suit - Colour.png"));
+    CHECK(FileHash(folder(13) + L"Suit - Roughness.png") == FileHash(orig + L"Suit - Roughness.png"));
+    CHECK(FileHash(folder(13) + L"Suit - Reflectance.png") == FileHash(orig + L"Suit - Reflectance.png"));
+    for (const wchar_t* n : kNames) CHECK(FileHash(folder(16) + n) != FileHash(orig + n));
+    {   // the files are the generator's output on her Original pixels
+        Image oc, of, orr, gc, gf, gr;
+        CHECK(ReadPngFile(orig + L"Suit - Colour.png", oc) && ReadPngFile(orig + L"Suit - Reflectance.png", of) && ReadPngFile(orig + L"Suit - Roughness.png", orr));
+        defaults::Analysis an;
+        CHECK(defaults::Analyse(oc, an, &err));
+        defaults::Output g;
+        CHECK(defaults::Make(16, 0, an, oc, of, orr, g, &err));
+        CHECK(ReadPngFile(folder(16) + L"Suit - Colour.png", gc) && ReadPngFile(folder(16) + L"Suit - Reflectance.png", gf) &&
+              ReadPngFile(folder(16) + L"Suit - Roughness.png", gr));
+        CHECK(gc.rgba == g.colour.rgba && gf.rgba == g.reflectance.rgba && gr.rgba == g.roughness.rgba);
+        CHECK(defaults::Make(9, 0, an, oc, of, orr, g, &err) && ReadPngFile(folder(9) + L"Suit - Colour.png", gc) && gc.rgba == g.colour.rgba);
+    }
+    Manifest m;
+    CHECK(ReadManifestFile(out, m) && m.extract == kExtractVersion);
+    for (int c : {0, 9, 16})
+        for (const wchar_t* n : kNames) {
+            const ManifestRow* r = m.Find(Narrow(folder(c).substr(out.size() + 1) + n));
+            CHECK(r && r->kind == "seed" && r->sha256 == FileHash(folder(c) + n));
+        }
+    EditScan scan;
+    ScanEdits(out, false, scan);
+    CHECK(scan.edited.empty() && scan.ready_made == 16 && scan.stale_ready_made == 0 && scan.outdated_seeds == 0);
+    CHECK(CheckReport(scan).find("No painted pictures: Fragile wears the ready-made colours") != std::string::npos);
+    // (g) things of the user's own in a colour folder: never read or touched
+    CreateDirectoryW((folder(16) + L"Grok versions").c_str(), nullptr);
+    CHECK(WriteBytes(folder(16) + L"Grok versions\\x.png", {1, 2, 3}) && WriteBytes(folder(16) + L"notes.txt", {'h', 'i'}));
+
+    // (b) a re-run keeps everything
+    lines.clear();
+    CHECK(RunExtract(o, st, err));
+    CHECK(st.defaults_written == 0 && st.defaults_replaced == 0 && st.folders_yours == 0 && has_line("defaults 0 0 0 " + std::to_string(st.defaults_ms)));
+    const std::string gold_colour = FileHash(folder(16) + L"Suit - Colour.png");
+
+    // (j) round 9: a round-8 folder (extract 2) still holds generator 1's untouched gold and silver (the satin prototype,
+    // variant 3 today): Check my edits counts only 15 and 16 as older (01..14 are the same bytes), and the next extraction
+    // replaces exactly their six pictures with the polished ones
+    {
+        std::string now[17][3];
+        for (int c = 0; c <= 16; ++c)
+            for (int k = 0; k < 3; ++k) now[c][k] = FileHash(folder(c) + kNames[k]);
+        Image oc, of, orr;
+        CHECK(ReadPngFile(orig + L"Suit - Colour.png", oc) && ReadPngFile(orig + L"Suit - Reflectance.png", of) && ReadPngFile(orig + L"Suit - Roughness.png", orr));
+        defaults::Analysis an;
+        CHECK(defaults::Analyse(oc, an, &err));
+        CHECK(ReadManifestFile(out, m));
+        for (int c : {15, 16}) {
+            defaults::Output g;
+            CHECK(defaults::Make(c, 3, an, oc, of, orr, g, &err));
+            const Image* imgs[3] = {&g.colour, &g.reflectance, &g.roughness};
+            for (int k = 0; k < 3; ++k) {
+                std::vector<std::uint8_t> png;
+                CHECK(EncodePng(*imgs[k], k == 2 ? PngLayout::gray8 : PngLayout::rgb24, png, nullptr));
+                CHECK(WriteBytes(folder(c) + kNames[k], png));
+                const std::string rel = Narrow(folder(c).substr(out.size() + 1) + kNames[k]);
+                for (ManifestRow& r : m.rows)
+                    if (r.kind == "seed" && r.path == rel) r.sha256 = FileHash(folder(c) + kNames[k]), r.bytes = png.size();
+            }
+            CHECK(FileHash(folder(c) + L"Suit - Colour.png") != now[c][0] && FileHash(folder(c) + L"Suit - Roughness.png") != now[c][2]);
+        }
+        m.extract = 2;
+        CHECK(WriteManifestFile(out, m));
+        ScanEdits(out, false, scan);
+        CHECK(scan.edited.empty() && scan.ready_made == 16 && scan.stale_ready_made == 2 && scan.outdated_seeds == 0);
+        CHECK(CheckReport(scan).find("2 colour folders still hold pictures from an older extraction") != std::string::npos);
+        CHECK(ReadyMadeCurrentSince(1) == 2 && ReadyMadeCurrentSince(14) == 2 && ReadyMadeCurrentSince(15) == 3 && ReadyMadeCurrentSince(16) == 3 &&
+              ReadyMadeCurrentSince(0) == 0 && ReadyMadeCurrentSince(17) == 0);
+        lines.clear();
+        CHECK(RunExtract(o, st, err));
+        CHECK(st.defaults_replaced == 6 && st.defaults_written == 0 && st.folders_yours == 0);
+        CHECK(has_line("replaced Fragile porter suit\\15 Silver\\Suit - Reflectance.png") && has_line("replaced Fragile porter suit\\16 Gold\\Suit - Roughness.png"));
+        for (int c = 0; c <= 16; ++c)
+            for (int k = 0; k < 3; ++k) CHECK(FileHash(folder(c) + kNames[k]) == now[c][k]);   // every picture is this version's again
+        CHECK(ReadManifestFile(out, m) && m.extract == kExtractVersion);
+        ScanEdits(out, false, scan);
+        CHECK(scan.edited.empty() && scan.stale_ready_made == 0 && scan.ready_made == 16);
+
+        // (k) round 9 review: the same upgrade while another program holds 16 Gold's Roughness without allowing delete (an
+        // image viewer): that picture stays as it is with its own hash as its seed row (unedited), the index names extract
+        // 2 (15 / 16 are current since 3), so Check my edits still counts 16 as older and the next extraction (the
+        // automatic one too) finishes it; a reader that allows delete (the mod) is never in the way
+        auto make_round8 = [&]() {
+            CHECK(ReadManifestFile(out, m));
+            for (int c : {15, 16}) {
+                defaults::Output g;
+                CHECK(defaults::Make(c, 3, an, oc, of, orr, g, &err));
+                const Image* imgs[3] = {&g.colour, &g.reflectance, &g.roughness};
+                for (int k = 0; k < 3; ++k) {
+                    std::vector<std::uint8_t> png;
+                    CHECK(EncodePng(*imgs[k], k == 2 ? PngLayout::gray8 : PngLayout::rgb24, png, nullptr));
+                    CHECK(WriteBytes(folder(c) + kNames[k], png));
+                    const std::string rel = Narrow(folder(c).substr(out.size() + 1) + kNames[k]);
+                    for (ManifestRow& r : m.rows)
+                        if (r.kind == "seed" && r.path == rel) r.sha256 = FileHash(folder(c) + kNames[k]), r.bytes = png.size();
+                }
+            }
+            m.extract = 2;
+            CHECK(WriteManifestFile(out, m));
+        };
+        make_round8();
+        const std::wstring held = folder(16) + L"Suit - Roughness.png";
+        const std::string held_old = FileHash(held);
+        {
+            const HANDLE viewer = CreateFileW(held.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+            CHECK(viewer != INVALID_HANDLE_VALUE);
+            // and the mod reading 15 Silver's Colour meanwhile (it allows delete): replaced all the same
+            const HANDLE mod = CreateFileW((folder(15) + L"Suit - Colour.png").c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                           nullptr, OPEN_EXISTING, 0, nullptr);
+            CHECK(mod != INVALID_HANDLE_VALUE);
+            lines.clear();
+            CHECK(RunExtract(o, st, err));
+            CloseHandle(mod);
+            CloseHandle(viewer);
+        }
+        CHECK(st.defaults_replaced == 5 && st.incomplete == 1 && st.incomplete_extract == 2);
+        CHECK(has_line("kept Fragile porter suit\\16 Gold\\Suit - Roughness.png (another program has it open: the next extraction replaces it)"));
+        CHECK(has_line("incomplete 1 2") && has_line("replaced Fragile porter suit\\15 Silver\\Suit - Colour.png"));
+        CHECK(FileHash(held) == held_old && FileHash(folder(15) + L"Suit - Colour.png") == now[15][0]);
+        CHECK(ReadManifestFile(out, m) && m.extract == 2 && m.Find("Fragile porter suit\\16 Gold\\Suit - Roughness.png") &&
+              m.Find("Fragile porter suit\\16 Gold\\Suit - Roughness.png")->sha256 == held_old);
+        ScanEdits(out, false, scan);
+        CHECK(scan.edited.empty() && scan.ready_made == 16 && scan.stale_ready_made == 2);
+        lines.clear();
+        CHECK(RunExtract(o, st, err));
+        CHECK(st.defaults_replaced == 1 && st.incomplete == 0 && has_line("replaced Fragile porter suit\\16 Gold\\Suit - Roughness.png"));
+        for (int c = 0; c <= 16; ++c)
+            for (int k = 0; k < 3; ++k) CHECK(FileHash(folder(c) + kNames[k]) == now[c][k]);
+        CHECK(ReadManifestFile(out, m) && m.extract == kExtractVersion);
+        ScanEdits(out, false, scan);
+        CHECK(scan.edited.empty() && scan.stale_ready_made == 0);
+
+        // (l) one extraction per folder: another one holding the folder's lock is refused (nothing written); the mod sees
+        // it running; a leftover lock file nobody holds blocks nothing; a re-run rewrites no reference picture that is
+        // already byte for byte the same
+        {
+            const HANDLE other = CreateFileW((out + L"\\" + Widen(kExtractLockName)).c_str(), GENERIC_WRITE | DELETE, 0, nullptr, CREATE_ALWAYS,
+                                             FILE_ATTRIBUTE_HIDDEN | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+            CHECK(other != INVALID_HANDLE_VALUE && ExtractionRunningIn(out));
+            const std::string man = FileHash(out + L"\\.manifest.txt");
+            CHECK(!RunExtract(o, st, err) && err.find("Another extraction") != std::string::npos && FileHash(out + L"\\.manifest.txt") == man);
+            CloseHandle(other);
+            CHECK(!ExtractionRunningIn(out) && GetFileAttributesW((out + L"\\" + Widen(kExtractLockName)).c_str()) == INVALID_FILE_ATTRIBUTES);
+        }
+        CHECK(WriteBytes(out + L"\\" + Widen(kExtractLockName), {}) && !ExtractionRunningIn(out));
+        CHECK(RunExtract(o, st, err) && st.written == 0 && st.unchanged > 0 && st.incomplete == 0);
+        CHECK(GetFileAttributesW((out + L"\\" + Widen(kExtractLockName)).c_str()) == INVALID_FILE_ATTRIBUTES);
+        CHECK(GetFileAttributesW((orig + L"Suit - Colour.png").c_str()) & FILE_ATTRIBUTE_READONLY);
+    }
+
+    // round 9 review: the replace of a file someone reads. A reader that allows delete (the mod, tex_hash.cpp) never stops
+    // it; one that does not is waited for (up to wait_ms), then the target is left exactly as it was
+    {
+        const std::wstring a = root + L"\\rep-a.bin", b = root + L"\\rep-b.bin";
+        CHECK(WriteBytes(b, {1, 2, 3}) && WriteBytes(a, {9, 9}));
+        HANDLE r = CreateFileW(b.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+        CHECK(r != INVALID_HANDLE_VALUE && ReplaceFileRetrying(a, b, 0));
+        CloseHandle(r);
+        std::vector<std::uint8_t> got;
+        CHECK(ReadBytes(b, got) && got == std::vector<std::uint8_t>({9, 9}) && GetFileAttributesW(a.c_str()) == INVALID_FILE_ATTRIBUTES);
+        CHECK(WriteBytes(a, {7}));
+        r = CreateFileW(b.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+        const auto t0 = GetTickCount64();
+        CHECK(r != INVALID_HANDLE_VALUE && !ReplaceFileRetrying(a, b, 300) && GetTickCount64() - t0 >= 250);
+        CloseHandle(r);
+        CHECK(ReadBytes(b, got) && got == std::vector<std::uint8_t>({9, 9}));
+        CHECK(ReplaceFileRetrying(a, b, 0) && ReadBytes(b, got) && got == std::vector<std::uint8_t>({7}));
+        DeleteFileW(b.c_str());
+    }
+
+    // (c) a v0.24 folder: copies of her Original everywhere, seed rows = her Original, extract 1
+    for (int c = 0; c <= 16; ++c)
+        for (const wchar_t* n : kNames) CHECK(CopyBytes(orig + n, folder(c) + n));
+    CHECK(ReadManifestFile(out, m));
+    m.extract = 1;
+    for (ManifestRow& r : m.rows)
+        if (r.kind == "seed" && r.path.rfind("Fragile porter suit\\", 0) == 0) {
+            const ManifestRow* o2 = m.Find(std::string(kOriginalDir) + r.path.substr(r.path.find_last_of('\\')));
+            if (o2) r.sha256 = o2->sha256, r.bytes = o2->bytes;
+        }
+    CHECK(WriteManifestFile(out, m));
+    ScanEdits(out, false, scan);
+    CHECK(scan.edited.empty() && scan.stale_ready_made == 16 && scan.outdated_seeds == 0);
+    CHECK(CheckReport(scan).find("16 colour folders still hold pictures from an older extraction (her own suit, or an older ready-made colour)") !=
+          std::string::npos);
+    lines.clear();
+    CHECK(RunExtract(o, st, err));
+    CHECK(st.defaults_replaced == 20 && st.folders_yours == 0 && st.defaults_written == 0);   // the Colour of 01..14, all three of 15, 16
+    CHECK(has_line("replaced Fragile porter suit\\16 Gold\\Suit - Roughness.png") && FileHash(folder(16) + L"Suit - Colour.png") == gold_colour);
+    for (const wchar_t* n : kNames) CHECK(FileHash(folder(0) + n) == FileHash(orig + n));
+    ScanEdits(out, false, scan);
+    CHECK(scan.edited.empty() && scan.stale_ready_made == 0 && scan.ready_made == 16);
+
+    // (d) a painted 16 Gold Colour: the whole folder is the user's, byte for byte, and its seed rows keep their hashes
+    {
+        HANDLE f = CreateFileW((folder(16) + L"Suit - Colour.png").c_str(), FILE_APPEND_DATA, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+        DWORD put = 0;
+        WriteFile(f, "x", 1, &put, nullptr);
+        CloseHandle(f);
+    }
+    std::string before[3];
+    for (int k = 0; k < 3; ++k) before[k] = FileHash(folder(16) + kNames[k]);
+    CHECK(ReadManifestFile(out, m));
+    const std::string seed_before = m.Find("Fragile porter suit\\16 Gold\\Suit - Colour.png")->sha256;
+    // (e) an older generator's output in 13 (bytes the test writes, recorded as the seed of an older extraction): replaced
+    CHECK(WriteBytes(folder(13) + L"Suit - Colour.png", {9, 9, 9, 9}));
+    m.extract = 1;
+    for (ManifestRow& r : m.rows)
+        if (r.path == "Fragile porter suit\\13 Sky blue\\Suit - Colour.png") r.sha256 = FileHash(folder(13) + L"Suit - Colour.png"), r.bytes = 4;
+    CHECK(WriteManifestFile(out, m));
+    lines.clear();
+    for (int run = 0; run < 2; ++run) {
+        CHECK(RunExtract(o, st, err));
+        for (int k = 0; k < 3; ++k) CHECK(FileHash(folder(16) + kNames[k]) == before[k]);
+        CHECK(st.folders_yours == 1 && has_line("kept Fragile porter suit\\16 Gold (your pictures)"));
+        CHECK(ReadManifestFile(out, m) && m.Find("Fragile porter suit\\16 Gold\\Suit - Colour.png")->sha256 == seed_before);
+    }
+    CHECK(has_line("replaced Fragile porter suit\\13 Sky blue\\Suit - Colour.png"));
+    CHECK(FileHash(folder(13) + L"Suit - Colour.png") != FileHash(orig + L"Suit - Colour.png") && FileExists(folder(13) + L"Suit - Colour.png"));
+    ScanEdits(out, false, scan);
+    CHECK(EditSummary(scan) == "Edited: 16 Gold (Colour)" && scan.ready_made == 15);
+    // a deliberate copy of her Original in a ready-made folder is the user's choice (her navy suit in that colour)
+    CHECK(CopyBytes(orig + L"Suit - Colour.png", folder(4) + L"Suit - Colour.png"));
+    CHECK(RunExtract(o, st, err) && st.folders_yours == 2 && FileHash(folder(4) + L"Suit - Colour.png") == FileHash(orig + L"Suit - Colour.png"));
+
+    // (f) the manifest lost: only exact copies of her Original are replaced (in folders with nothing else changed)
+    CHECK(CopyBytes(orig + L"Suit - Colour.png", folder(5) + L"Suit - Colour.png"));
+    const std::string c6 = FileHash(folder(6) + L"Suit - Colour.png");   // the ready-made one: equal to this version's bytes
+    SetFileAttributesW((out + L"\\.manifest.txt").c_str(), FILE_ATTRIBUTE_NORMAL);
+    CHECK(DeleteFileW((out + L"\\.manifest.txt").c_str()));
+    lines.clear();
+    CHECK(RunExtract(o, st, err));
+    CHECK(has_line("replaced Fragile porter suit\\05 Light grey\\Suit - Colour.png") && FileHash(folder(6) + L"Suit - Colour.png") == c6);
+    for (int k = 0; k < 3; ++k) CHECK(FileHash(folder(16) + kNames[k]) == before[k]);   // still the user's
+    // without the manifest a copy of her Original cannot be told from a v0.24 copy: it becomes the ready-made picture
+    CHECK(FileHash(folder(4) + L"Suit - Colour.png") != FileHash(orig + L"Suit - Colour.png"));
+    // (g) the user's subfolder and notes: untouched
+    {
+        Sha256 d{};
+        const std::uint8_t b[3] = {1, 2, 3};
+        HashSha256(b, 3, d);
+        CHECK(FileHash(folder(16) + L"Grok versions\\x.png") == Hex(d) && FileExists(folder(16) + L"notes.txt"));
+    }
+
+    // (h) only an Ambient occlusion picture painted (05, whose Colour is an older extraction's copy of her Original): the
+    // folder is the user's (the mod wears exactly it), so nothing in it is replaced; an unedited copy of her Original AO
+    // (07) changes nothing
+    const std::wstring ao_name = L"Suit - Ambient occlusion.png";
+    CHECK(FileExists(orig + ao_name));
+    CHECK(CopyBytes(orig + ao_name, folder(5) + ao_name) && CopyBytes(orig + ao_name, folder(7) + ao_name));
+    {
+        HANDLE f = CreateFileW((folder(5) + ao_name).c_str(), FILE_APPEND_DATA, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+        DWORD put = 0;
+        WriteFile(f, "x", 1, &put, nullptr);
+        CloseHandle(f);
+    }
+    CHECK(CopyBytes(orig + L"Suit - Colour.png", folder(5) + L"Suit - Colour.png"));
+    CHECK(ReadManifestFile(out, m));
+    for (ManifestRow& r : m.rows)
+        if (r.path == "Fragile porter suit\\05 Light grey\\Suit - Colour.png") r.sha256 = FileHash(orig + L"Suit - Colour.png");
+    m.extract = 1;   // an older extraction: without the painted AO, 05's Colour would be replaced
+    CHECK(WriteManifestFile(out, m));
+    const std::string c7 = FileHash(folder(7) + L"Suit - Colour.png");
+    lines.clear();
+    CHECK(RunExtract(o, st, err));
+    CHECK(has_line("kept Fragile porter suit\\05 Light grey (your pictures)") && !has_line("kept Fragile porter suit\\07 Lavender (your pictures)"));
+    CHECK(FileHash(folder(5) + L"Suit - Colour.png") == FileHash(orig + L"Suit - Colour.png") && FileHash(folder(7) + L"Suit - Colour.png") == c7);
+    ScanEdits(out, false, scan);
+    CHECK(EditSummary(scan).find("05 Light grey (Ambient occlusion)") != std::string::npos && EditSummary(scan).find("07 Lavender") == std::string::npos);
+
+    // (i) a renamed folder keeps its history (its seed rows are found by the folder's number): her own navy copied into
+    // "12 Olive navy" is the user's choice and stays; an older extraction's unedited picture in "11 Grey old" is refreshed
+    CHECK(MoveFileW(folder(12).substr(0, folder(12).size() - 1).c_str(), (suitdir + L"12 Olive navy").c_str()));
+    CHECK(MoveFileW(folder(11).substr(0, folder(11).size() - 1).c_str(), (suitdir + L"11 Grey old").c_str()));
+    for (const wchar_t* n : kNames) CHECK(CopyBytes(orig + n, suitdir + L"12 Olive navy\\" + n));
+    CHECK(WriteBytes(suitdir + L"11 Grey old\\Suit - Colour.png", {7, 7, 7, 7}));
+    CHECK(ReadManifestFile(out, m));
+    for (ManifestRow& r : m.rows)
+        if (r.path == "Fragile porter suit\\11 Grey\\Suit - Colour.png") r.sha256 = FileHash(suitdir + L"11 Grey old\\Suit - Colour.png"), r.bytes = 4;
+    m.extract = 1;
+    CHECK(WriteManifestFile(out, m));
+    ScanEdits(out, false, scan);
+    CHECK(EditSummary(scan).find("12 Olive navy (Colour)") != std::string::npos && EditSummary(scan).find("11 Grey old") == std::string::npos);
+    lines.clear();
+    CHECK(RunExtract(o, st, err));
+    CHECK(has_line("kept Fragile porter suit\\12 Olive navy (your pictures)"));
+    for (const wchar_t* n : kNames) CHECK(FileHash(suitdir + L"12 Olive navy\\" + n) == FileHash(orig + n));
+    CHECK(has_line("replaced Fragile porter suit\\11 Grey old\\Suit - Colour.png"));
+    CHECK(FileHash(suitdir + L"11 Grey old\\Suit - Colour.png") != FileHash(orig + L"Suit - Colour.png") &&
+          ReadManifestFile(out, m) && m.Find("Fragile porter suit\\11 Grey old\\Suit - Colour.png") &&
+          m.Find("Fragile porter suit\\11 Grey old\\Suit - Colour.png")->sha256 == FileHash(suitdir + L"11 Grey old\\Suit - Colour.png"));
+    ScanEdits(out, false, scan);
+    CHECK(EditSummary(scan).find("12 Olive navy (Colour)") != std::string::npos && EditSummary(scan).find("11 Grey old") == std::string::npos);
+    RemoveTree(root);
+}
+
 }  // namespace
 
 int main() {
@@ -829,7 +1367,9 @@ int main() {
     ArchiveReader();
     CoreObjects();
     Png();
+    AnyPicture();
     Extraction();
+    ReadyMadeExtraction();
     if (SUCCEEDED(co)) CoUninitialize();
     std::printf("%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;

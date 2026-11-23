@@ -806,8 +806,8 @@ void Configure(const Settings& s) noexcept {
     g.cfg = s;
     g.configured = true;
     looks::Configure(s);
-    Log("[tex] Fragile's textures %s (session.ini fragile_textures=%d), folder %s, hot reload %d, send %d, receive %d", s.on ? "on" : "off", s.on ? 1 : 0,
-        s.dir.empty() ? "- (none)" : "set", s.hot_reload ? 1 : 0, s.send ? 1 : 0, s.receive ? 1 : 0);
+    Log("[tex] Fragile's textures %s (session.ini fragile_textures=%d), folder %s, hot reload %d, send %d, receive %d, ready-made colours %d", s.on ? "on" : "off",
+        s.on ? 1 : 0, s.dir.empty() ? "- (none)" : "set", s.hot_reload ? 1 : 0, s.send ? 1 : 0, s.receive ? 1 : 0, s.defaults ? 1 : 0);
 }
 
 bool Enabled() noexcept { return g.configured && g.cfg.on && !g.user_off && Available(); }
@@ -1129,6 +1129,20 @@ bool DebugCommand(int mode, double a, double b2, std::uintptr_t e_self, std::uin
         if (!hidden) return std::snprintf(msg, cap, "refused: hidden test runs only"), false;
         g.forced_boots = a >= 0 && a <= 10 ? static_cast<int>(a) : -1;
         std::snprintf(msg, cap, "boot type %d for our own Fragile's boots pictures (-1 follow our Sam's)", g.forced_boots);
+        return true;
+    case 11:
+        if (!hidden) return std::snprintf(msg, cap, "refused: hidden test runs only"), false;
+        looks::SetVariant(static_cast<int>(a));
+        std::snprintf(msg, cap, "ready-made gold / silver: metal variant %d (0 the product); the looks are rebuilt", looks::Variant());
+        return true;
+    case 12:
+        if (!hidden) return std::snprintf(msg, cap, "refused: hidden test runs only"), false;
+        looks::SetMakeMode(static_cast<int>(a));
+        std::snprintf(msg, cap, "host: a guest's ready-made colour is %s", looks::MakeMode() == 1   ? "always sent over the link (tex 12 1)"
+                                                                          : looks::MakeMode() == 2 ? "refused as if the originals differed (tex 12 2)"
+                                                                          : looks::MakeMode() == 3 ? "made here, each make 2 s slower (tex 12 3)"
+                                                                          : looks::MakeMode() == 4 ? "made here; the next make fails as out of memory (tex 12 4)"
+                                                                                                   : "made here when the originals match (tex 12 0)");
         return true;
     case 9:
         if (!hidden) return std::snprintf(msg, cap, "refused: hidden test runs only"), false;

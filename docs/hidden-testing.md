@@ -867,6 +867,21 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   probes read the same state after the host's Continue; the guest's load gate refuses, the host's allows; the host loads
   story point manualsave13 and the guest follows through M1; both probes then log the same Episode 2 state (crc equal).
   Final run `20261120-044929-two-games-story` (pass).
+* `private-room-load.txt` / `private-room-load-vanilla.txt` (role solo, `dev_tools=1`, `-SeedSaves story-pack`; round 7,
+  docs/real-partner-body.md section 33): `story_load 12` (Sam in the private room) with the self view on / off; screenshots
+  and `log_status` every ~0.6 s, then `until` a screenshot named `room` is not black (mean 20 or more) within 9 s and the
+  state is `PrivateRoom` with phase 0; the self-view one also waits for Fragile shown again (`waitnew`: the once-a-second
+  `[self] shown=1` line after the room screenshot, not an older show line) and `nolog`s the stall guard.
+  Final runs `20261122-185511` / `20261122-185557` (pass).
+* `private-room-field.txt` / `private-room-field-vanilla.txt` (role solo, `-SeedSaves complete-100`): the user's way in:
+  South Knot City's BRIDGES pad, hold B; ~23 s of screenshots + status, then the room drawn within 8 s more, playable
+  within 30 s, `nolog \[gate\] OTGC WRITE` (the online gate's W3 drops the create-road request). The self-view one then
+  needs `[self] shown=1` after the room screenshot (`waitnew`), the close-up hold's line and no stall guard. Final runs
+  `20261122-185016` / `20261122-185201` (pass). With `action self_view 17 0` (v0.24) both kinds fail on the room check
+  (black): the before runs.
+* `two-games-private-room.txt` (role host, `launcherini local-test`, `-SeedSaves complete-100 -GuestSeed profile-only`):
+  the guest (Fragile, self view) enters the private room from the BRIDGES pad with the same checks on her game, and
+  `nolog \[gate\] OTGC WRITE` on both. Final run `20261122-190033-two-games-private-room` (pass).
 * `boot.txt`: no input, a screenshot every 10-15 s for 80 s (title flow discovery).
 * `alive.txt`: supervisor steps only (works with `-NoMod`): watch the game for 45 s.
 * `fake-smoke.txt`: the ctest's fake game.
@@ -1449,6 +1464,24 @@ mod caches its built textures in `<run>\textures-cache`; the supervisor deletes 
   data) over that colour folder's (or `Fragile boots` folder's, when the name says boots) editable pictures, as a user's
   edit would be. A boots folder's `Worn`, `Gold` or `Silver` subfolder too: `textures pattern metal 09 Chiral boots\Worn`
   (round 6 T3; nothing deeper, no other subfolder).
+- `textures v024` (round 8): `st_textool v024` turns the run's extracted folder back into what v0.24's extractor left
+  (Original's three Suit pictures copied over every colour folder 00..16, their seed rows set to Original's hashes, the
+  manifest's `extract` 1): the upgrade case of the ready-made colours.
+- `textures reset <NN colour folder>` (round 8): `st_textool reset` deletes that colour folder's three Suit pictures (the
+  mod then wears the ready-made colour again; with the game running: the hot reload).
+- `textures gen1` (round 9): `st_textool gen1` puts round 8's untouched gold and silver back into `15 Silver` / `16 Gold`
+  (generator 1's satin metal, metal variant 3 today), their seed rows and the manifest's `extract` 2: a folder of the
+  previous version (the next extraction replaces those 6 pictures; the mod wears the current colour meanwhile).
+- `textures extract` as a step after `start` (round 9): the extraction while the game runs, as when the launcher's
+  automatic extraction finishes after the game started (with no `textures` line before `start` the run's folder is
+  created empty, so the game starts without a manifest).
+- `textures extract-start` / `textures extract-wait` (round 9 review; after `start` only): the same extraction in the
+  background while the next steps run (the launcher's automatic extraction while a game runs), then waited for and
+  reported like `textures extract`; one still running at the run's end is waited for before the folder is deleted.
+- `textures copy <NN folder>\<Suit - X.png | Boots - X.png> from <full path of a picture file>` (round 7):
+  `st_textool copy` copies that file byte for byte (only read; any format, e.g. an image tool's JPEG) under one of the
+  names the mod reads, in the run's textures folder only. The source is a full local path, so such a scenario lives
+  outside the repo (a user's own pictures never go into it).
 - `textures none`: nothing.
 Lines before `start` run before the games start (a failure stops the run: "setup failed: textures ..."); later lines are
 steps (a mid-run save: the mod's hot reload). Output in `<run>\textures-<n>.log`. The pictures (game data) live in the
@@ -1457,7 +1490,7 @@ folder deleted"); nothing is copied anywhere else.
 
 **launcherini and test switches**: a `launcherini` scenario may still add `ini` / `@host ini` / `@guest ini` lines for
 `fragile_suit_colour`, `fragile_textures`, `textures_send`, `textures_receive`, `textures_hot_reload`, `textures_free`,
-`boots_look` and `boots_own_porter` (appended after
+`textures_defaults` (round 8), `boots_look` and `boots_own_porter` (appended after
 the launcher's file under a "# testenv:" comment); any other key is refused as before. The v0.23 tint scenarios
 (`fragile-suit-colours`, `fragile-suit-tune`, `two-games-fragile-suit`, `two-games-fragile-suit-remember`) add
 `ini fragile_suit_colour=1` (the tint is off by default now).
@@ -1472,6 +1505,53 @@ the launcher's file under a "# testenv:" comment); any other key is refused as b
   last one from the host's cache); the host's own Sam stays gold. About 3 min 15 s.
 - `two-games-fragile-textures-reload` (`launcherini`): the guest picks 9, the host saves and loads in the world, the
   guest follows; both re-dress the new bodies from the textures they have.
+- Round 8, the ready-made colours (docs/textures.md "Ready-made colours"). The round-6 scenarios above
+  (`fragile-textures-solo`, `two-games-fragile-textures`, `two-games-fragile-textures-reload`, `two-games-fragile-boots-own`)
+  prove the v0.24 rule and set `ini textures_defaults=0`. `action real_outfit 4 <c>` changes our own Sam's suit colour
+  byte on the redirected scratch save (docs/debug-actions.md), so Fragile follows it as she does in a real session.
+  - `fragile-suit-defaults-quick` (solo, `-SeedSaves complete-100`): a fresh extraction, nothing painted; the self view's
+    Fragile in the ready-made gold (16: `ready-made (S0 S1)`), sky blue (13: `ready-made (S0)`), her own suit (0), gold
+    again. About 50 s of game.
+  - `fragile-suit-defaults` (solo): noon on the knot road, a debug Fragile (`real_spawn 16 -1.1 0`) next to Sam, both
+    facing the camera; every colour 16, 0..15 (`c00`..`c16`, the contact sheet's cells); `09 Mustard` painted (a checker:
+    `yours: 1 slot(s) (S0)`, `c09-painted`), then `textures reset 09 Mustard` mid-run (the hot reload back to the
+    ready-made mustard, `c09`); the polished metal variant (`tex 11 3`, `c15-v3`, `c16-v3`); a second pass from the built
+    cache. The `[tex] ready: manifest table` line comes only once a Fragile body wants textures: wait for it after
+    `real_spawn`, never right after `waitplayer`.
+  - `fragile-suit-defaults-rules` (solo): which pictures a painted folder wears. `textures extract`, `textures v024`,
+    `textures pattern checker 16 Gold`, `textures extract` (the upgrade keeps 16 as the user's), then `textures pattern
+    checker 15 Silver` and `textures pattern ao 05 Light grey` (only a painted Ambient occlusion). 16: `yours: 1 slot(s)
+    (S0)` (S1 her own: the folder's Reflectance is v0.24's copy of her Original, never the ready-made shine); 15: `yours:
+    1 slot(s) (S0), ready-made S1` (the unedited ready-made silver, byte for byte); 05: `yours: 1 slot(s) (S1),
+    ready-made S0`; 13 ready-made.
+  - `fragile-suit-defaults-upgrade` (solo): `textures extract`, `textures v024` (no re-extraction): the v0.24 folder already
+    shows the ready-made gold and light grey.
+  - `two-games-fragile-defaults` (`launcherini`, `-GuestSeed profile-only`): the host's camera on the guest pinned ahead
+    (`collision 3`). The guest's ready-made gold and mustard travel as a RECIPE (`... (2 ready-made: recipe sent)`; the
+    host `made here`, `complete ... made here 2`); a quick run of colour changes 1, 2, 3, 4, 14 on a slow host (`tex 12 3`:
+    each make 2 s slower) drops the older looks' makes (`... no longer made here`) and shows 14 without waiting for them;
+    `tex 12 4` makes the host's next make throw (as out of memory): the request still reports and the sky blue comes over
+    the link (`not made here (out of memory while making it): asking the guest for it`, `received S0 ... valid`); gold
+    again from the host's partner cache (`cache hit 2`).
+  - `fragile-suit-metal-tune` (solo): the contact sheet's framing; gold and silver in the metal variants 0, 1, 2, 3
+    (`tex 11`; round 9: 0 is the polished metal, 3 the round-7 prototype), and a second angle of 0 and 3.
+  - `fragile-suit-defaults-auto` (solo, round 9): the game starts on an empty textures folder (`[tex] no .manifest.txt
+    ...`, her own suit, `g16-own-before`); `textures extract` while it runs: the folder watch picks the manifest up
+    (`[tex] ready: manifest table`, `look ... for colour 16 ...: ready-made (S0 S1)`), no restart; the polished gold and
+    silver (variant 0: `g16-v0`, `s15-v0`, orbits) beside the round-7 prototype (`tex 11 3`: `g16-v3-prototype`,
+    `s15-v3-prototype`); `textures gen1` while it runs: still `ready-made (S0 S1)` with the same look id
+    (`s15-after-gen1`).
+  - `fragile-suit-defaults-late` (solo, round 9 review): the game starts on an empty folder (`late-16-own-before`);
+    `textures extract-start`, then 09 Mustard while it runs: the mod waits for the extraction's lock (`[tex] the launcher
+    is extracting the textures: her looks wait for it to end`, no look of 09 built meanwhile, `late-09-during`), then
+    builds 09 from the new index (`ready-made (S0 S1)`, `late-09-after`) and 16 (`late-16-after`), no restart.
+  - `textures pattern ao <NN colour folder>` (round 8): st_textool writes only that suit folder's
+    `Suit - Ambient occlusion.png` (a grey checker, no game data).
+  - `tools/testenv/Test-TextureExtract.ps1` (no game): also the ready-made pictures of a first extraction
+    (`defaults 48 0 0`) and the upgrade of a v0.24 folder with `16 Gold` painted and a subfolder of the user's in it
+    (`defaults 0 17 1`, 00..15 byte-identical to the first extraction, `16 Gold` untouched).
+  The supervisor also deletes the games' partner caches (`<run>\automation\cache\partner-textures`, the guest's under
+  `<run>\guest\`) at the end: blobs received from or made for the other game are game-derived pictures too.
 Pass also needs no `[tex] ... FAULTED`, no `[tex] refused`, no `NOT valid`.
 
 ## Held items (round 6)

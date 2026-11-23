@@ -17,10 +17,14 @@
   DLL, size + time: they must not change). The extracted pictures (game data) stay in the run folder only and are deleted
   at the end unless -KeepTextures; they are never copied anywhere else.
   Checks (design 3.7): exit 0 and a done line; every planned set extracted or skipped with a reason; her suit and boots
-  maps present; every manifest row's file there with its size; Original read-only; every seed a byte copy of its
-  Original; her Colour's mean about (67, 71, 81); Sam's gold Reflectance's bright pixels about (183, 149, 101); a second
-  run keeps an edited seed byte-identical (and says kept); a deleted seed comes back; a run cancelled in the middle leaves
-  no .partial after the next run; Check my edits names the edit; the game folder is unchanged.
+  maps present; every manifest row's file there with its size; Original read-only; every seed of 00 Default and the boots
+  a byte copy of its Original, 01..16 the ready-made colours (round 8: the Colour of 01..14 and all three of 15 / 16
+  differ from Original, every seed row is the bytes on disk); her Colour's mean about (67, 71, 81); Sam's gold
+  Reflectance's bright pixels about (183, 149, 101); a second run keeps an edited seed byte-identical (and says kept); a
+  deleted seed comes back; round 8: a v0.24 folder (st_textool v024) with 16 Gold painted and a subfolder of the user's
+  is upgraded by the next extraction (replaced 17, yours 1; 01..15 byte-identical to the first extraction; 16 Gold and its
+  subfolder untouched); a run cancelled in the middle leaves no .partial after the next run; Check my edits names the
+  edit; the game folder is unchanged.
 #>
 [CmdletBinding(PositionalBinding = $false)]
 param(
@@ -69,11 +73,12 @@ if (-not $NoBuild) {
         & cmake -S $repo -B $BuildDir -G 'Visual Studio 17 2022' -A x64 | Out-Host
         if ($LASTEXITCODE) { throw 'cmake configure failed' }
     }
-    & cmake --build $BuildDir --config Release --target st_launcher -- '/m' '/verbosity:minimal' | Out-Host
+    & cmake --build $BuildDir --config Release --target st_launcher st_textool -- '/m' '/verbosity:minimal' | Out-Host
     if ($LASTEXITCODE) { throw 'build failed' }
 }
 $exe = Join-Path $BuildDir 'Release\StrandedTogether.exe'
 if (-not (Test-Path $exe)) { throw "no $exe" }
+$textool = Join-Path $BuildDir 'Release\st_textool.exe'
 Log "textures-extract: $exe; game $GameDir (read-only); out $run\textures"
 
 # The game folder's data and Oodle DLL before (size + last write time).
@@ -152,10 +157,19 @@ try {
     $seeds = @($rows | Where-Object Kind -eq 'seed')
     $origSha = @{}
     foreach ($row in $rows) { if ($row.Kind -eq 'original') { $origSha[(Split-Path $row.Path -Leaf)] = $row.Sha } }
+    # round 8: 01..14 hold the ready-made Colour (their Reflectance / Roughness are copies), 15 / 16 all three ready-made
+    function Test-ReadyMade([string]$path) {
+        if ($path -notmatch '^Fragile porter suit\\(\d\d) ') { return $false }
+        $n = [int]$Matches[1]
+        return ($n -ge 1 -and $n -le 14 -and (Split-Path $path -Leaf) -eq 'Suit - Colour.png') -or $n -ge 15
+    }
     $seedBad = @($seeds | Where-Object {
             $wantSha = $origSha[(Split-Path $_.Path -Leaf)]
-            -not $wantSha -or $_.Sha -ne $wantSha -or (Get-FileHash -LiteralPath (Join-Path $out $_.Path) -Algorithm SHA256).Hash.ToLower() -ne $wantSha })
-    Step 'every seed is a byte copy of its Original (17 colours x 3 + 10 boot types x 3)' ($seeds.Count -eq 81 -and $seedBad.Count -eq 0) "$($seeds.Count) seeds, $($seedBad.Count) differ"
+            $fileSha = (Get-FileHash -LiteralPath (Join-Path $out $_.Path) -Algorithm SHA256).Hash.ToLower()
+            -not $wantSha -or $_.Sha -ne $fileSha -or ((Test-ReadyMade $_.Path) -eq ($fileSha -eq $wantSha)) })
+    Step 'every seed row is the bytes on disk: 00 Default and the boots copies of Original, 01..16 the ready-made colours (17 colours x 3 + 10 boot types x 3)' ($seeds.Count -eq 81 -and $seedBad.Count -eq 0) "$($seeds.Count) seeds, $($seedBad.Count) wrong$(if ($seedBad) { ': ' + $seedBad[0].Path })"
+    $defaults = @($r.Lines | Where-Object { $_ -like 'defaults *' })
+    Step 'the ready-made colours written (defaults 48 0 0)' ($defaults.Count -eq 1 -and $defaults[0] -like 'defaults 48 0 0 *') ($defaults -join '')
     $m = Get-MeanRgb (Join-Path $orig 'Suit - Colour.png') 256
     Step "her Colour's mean about (67, 71, 81)" (Test-Near $m @(67, 71, 81) 6) ("({0}, {1}, {2})" -f $m[0], $m[1], $m[2])
     # The metal islands (red above 64; the rest is the dark cloth grey). (220, 176, 112) is suit_colour_math.hpp's measured
@@ -183,6 +197,36 @@ try {
     $r = Start-Process -FilePath $exe -ArgumentList '--check-textures', '--out', ('"' + $out + '"') -NoNewWindow -Wait -PassThru -RedirectStandardOutput (Join-Path $run 'check.log')
     $check = @(Get-Content -LiteralPath (Join-Path $run 'check.log'))
     Step 'Check my edits names the edit' ($r.ExitCode -eq 0 -and (@($check | Where-Object { $_ -like 'check Edited: 16 Gold (Colour)*' }).Count -eq 1)) ($check -join ' | ')
+
+    # 2b. Round 8, the upgrade: a v0.24 folder (copies of Original everywhere, extract 1), 16 Gold painted, a subfolder of
+    # the user's in it; the next extraction refreshes every unpainted folder and leaves 16 Gold alone.
+    $suitDir = Join-Path $out 'Fragile porter suit'
+    function Get-SuitHashes([string]$filter) {
+        $h = @{}
+        Get-ChildItem -LiteralPath $suitDir -Directory | Where-Object { $_.Name -match $filter } | ForEach-Object {
+            Get-ChildItem -LiteralPath $_.FullName -Recurse -File | ForEach-Object { $h[$_.FullName.Substring($suitDir.Length)] = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash } }
+        return $h
+    }
+    $firstHashes = Get-SuitHashes '^(0\d|1[0-5]) '
+    & $textool v024 --dir $out | Set-Content -LiteralPath (Join-Path $run 'textool-v024.log') -Encoding utf8
+    Step 'st_textool v024: a v0.24 folder' ($LASTEXITCODE -eq 0) (Get-Content -LiteralPath (Join-Path $run 'textool-v024.log') -Raw).Trim()
+    [IO.File]::AppendAllText($edited, 'y')
+    $grok = Join-Path $out 'Fragile porter suit\16 Gold\Grok versions'
+    New-Item -ItemType Directory -Force -Path $grok | Out-Null
+    Copy-Item -LiteralPath (Join-Path $out "Fragile porter suit\16 Gold\Sam's colour.png") -Destination (Join-Path $grok 'a.png')
+    $goldHashes = Get-SuitHashes '^16 '
+    $r = Invoke-Extract $out 'upgrade'
+    $defaults = @($r.Lines | Where-Object { $_ -like 'defaults *' })
+    Step 'upgrade: exit 0, replaced 17 (the Colour of 01..14, all three of 15), yours 1 (16 Gold)' ($r.Code -eq 0 -and $defaults.Count -eq 1 -and $defaults[0] -like 'defaults 0 17 1 *') ("exit $($r.Code); " + ($defaults -join ''))
+    $now = Get-SuitHashes '^(0\d|1[0-5]) '
+    $changed = @($firstHashes.Keys | Where-Object { $now[$_] -ne $firstHashes[$_] })
+    Step 'upgrade: 00..15 byte-identical to the first extraction' ($changed.Count -eq 0 -and $now.Count -eq $firstHashes.Count) "$($changed.Count) differ$(if ($changed) { ': ' + $changed[0] })"
+    $now = Get-SuitHashes '^16 '
+    $changed = @($goldHashes.Keys | Where-Object { $now[$_] -ne $goldHashes[$_] })
+    Step '16 Gold (painted) and its Grok versions subfolder untouched' ($changed.Count -eq 0 -and $now.Count -eq $goldHashes.Count -and $now.Count -ge 5) "$($now.Count) files, $($changed.Count) differ"
+    $r = Start-Process -FilePath $exe -ArgumentList '--check-textures', '--out', ('"' + $out + '"') -NoNewWindow -Wait -PassThru -RedirectStandardOutput (Join-Path $run 'check-upgrade.log')
+    $check = @(Get-Content -LiteralPath (Join-Path $run 'check-upgrade.log'))
+    Step 'Check my edits after the upgrade names only 16 Gold' ($r.ExitCode -eq 0 -and (@($check | Where-Object { $_ -like 'check Edited: 16 Gold (Colour)' -or $_ -like 'check Edited: 16 Gold (Colour).' }).Count -eq 1)) ($check -join ' | ')
 
     # 3. Cancel safety: a run that ends in the middle of set 10 (a partial file on disk), then a full run.
     $r = Invoke-Extract $out2 'cancel' @('--cancel-after-sets', '10')

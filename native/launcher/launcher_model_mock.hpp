@@ -135,6 +135,10 @@ public:
     bool textures_folder_for_open(std::string& path_out, std::string& error_out) override;
     bool set_textures_folder(const std::string& folder, std::string& error_out) override;
     void set_boots_look(bool own) override;
+    void set_ready_made(bool on) override;
+    void set_auto_extract(bool on) override;
+    // screenshot driver: the extraction in progress shows as the automatic one, and the card's quiet line
+    void set_textures_auto(bool running, const std::string& note);
     // screenshot driver: the card in a given state (not_extracted, extracting at `progress`, extracted with edits)
     void set_textures_state(TexturesView::State state, float progress = 0.0f);
     // screenshot driver: the local test `seconds` after it started (< 0: not running)
@@ -197,6 +201,8 @@ private:
     double local_start_ = -1.0;   // mock clock; < 0 when no local test runs
     std::string tex_folder_;          // "" = the default placeholder
     bool tex_boots_own_ = true;       // her boots: her own, painted / Sam's boots
+    bool tex_ready_made_ = true, tex_auto_extract_ = true, tex_auto_running_ = false;
+    std::string tex_auto_note_;
     bool tex_extracted_ = false;
     double tex_start_ = -1.0;         // mock clock; < 0 when no extraction runs
     float tex_frozen_ = -1.0f;        // screenshot driver: a fixed progress

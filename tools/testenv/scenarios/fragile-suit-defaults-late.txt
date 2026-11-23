@@ -1,0 +1,56 @@
+# The launcher's extraction running while the game runs (round 9 review; docs/textures.md "Get the pictures"), solo,
+# hidden. The game starts on an EMPTY textures folder (her own suit). The run's folder is then extracted in the
+# background (`textures extract-start`: the launcher's own extractor, the same child its automatic extraction starts)
+# and the guest's Sam changes to 09 Mustard at once: while the extraction holds the folder's .extract.lock the mod waits
+# (no look built from a half-written folder, the current one stays); when it ends, 09 is built from the new index:
+# the ready-made mustard (S0 only: 01..14 differ from her own suit in the Colour only), no restart. Noon, clear, on
+# the knot road; a debug Fragile next to Sam.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios fragile-suit-defaults-late -SeedSaves complete-100
+role solo
+timeout 300
+ini partner_body=real
+ini pose_hook=1
+ini my_character=fragile_suit
+ini self_character=0
+start
+waitplayer 60
+goto mknot-road
+?action set_time_of_day 12
+?action dev_weather 0
+wait 3000
+pad none 2400 ly=32767
+pad none 900 ly=-32767
+wait 1000
+action real_outfit 4 16
+action real_spawn 16 -1.1 0
+waitlog 60 \[real\] 'fragile_suit' is live
+# not extracted yet: her own suit (no manifest)
+waitlog 30 \[tex\] no \.manifest\.txt in the textures folder
+?action set_time_of_day 12
+wait 2000
+screenshot late-16-own-before
+# the extraction in the background; a colour change meanwhile waits for its end
+textures extract-start
+# (the extraction opens the game's archives first, then holds the folder's lock)
+wait 1500
+action real_outfit 4 9
+waitnew 15 \[tex\] the launcher is extracting the textures: her looks wait for it to end
+wait 1000
+screenshot late-09-during
+nolog \[tex\] look .* for colour 9
+textures extract-wait
+waitnew 30 \[tex\] the launcher's extraction ended after
+waitnew 30 \[tex\] look .* for colour 9 .*ready-made \(S0\)
+waitnew 20 \[tex\] body debug .*: look .* bound
+?action set_time_of_day 12
+wait 2000
+screenshot late-09-after
+# and back to 16: the ready-made gold from the new index
+action real_outfit 4 16
+waitnew 30 \[tex\] look .* for colour 16 .*ready-made \(S0 S1\)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot late-16-after
+nolog \[tex\] .*FAULTED
+nolog \[tex\] refused
+quit

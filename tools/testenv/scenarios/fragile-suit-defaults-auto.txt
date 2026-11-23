@@ -1,0 +1,83 @@
+# Fragile's ready-made gold and silver, round 9 (docs/textures.md "Ready-made colours", "Get the pictures"), solo,
+# hidden. The game starts with an EMPTY textures folder (as when the launcher's automatic extraction has not finished
+# yet): her own suit. While the game runs the run's folder is extracted (the launcher's own extractor, the same child
+# the automatic extraction starts): the mod's folder watch picks the manifest up and she wears the ready-made gold with
+# no restart. Then the new default metal (variant 0, the polished one) next to Sam, gold and silver, each beside the
+# round-7 prototype (tex 11 3) for comparison; then `textures gen1` turns 15 / 16 back into round 8's untouched pictures
+# (generator 1, extract 2) while the game runs: the folder is still "ready-made" and she wears the current silver (the
+# same look id as before; checked in the log). Noon, clear, on the knot road; a debug Fragile next to Sam, both facing
+# the camera (the round-8 proof's framing).
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios fragile-suit-defaults-auto -SeedSaves complete-100
+role solo
+timeout 360
+ini partner_body=real
+ini pose_hook=1
+ini my_character=fragile_suit
+ini self_character=0
+start
+waitplayer 60
+goto mknot-road
+?action set_time_of_day 12
+?action dev_weather 0
+wait 3000
+pad none 2400 ly=32767
+pad none 900 ly=-32767
+wait 1000
+action real_outfit 4 16
+action real_spawn 16 -1.1 0
+waitlog 60 \[real\] 'fragile_suit' is live
+# not extracted yet: her own suit (no manifest), the game does not wait for it
+waitlog 30 \[tex\] no \.manifest\.txt in the textures folder
+?action set_time_of_day 12
+wait 2000
+screenshot g16-own-before
+# the extraction finishes while the game runs: the watch, then the ready-made gold (variant 0, polished)
+textures extract
+waitnew 30 \[tex\] ready: manifest table
+waitnew 30 \[tex\] look .* for colour 16 .*ready-made \(S0 S1\)
+waitnew 20 \[tex\] body debug .*: look .* bound
+?action set_time_of_day 12
+wait 2000
+screenshot g16-v0
+pad none 150 rx=32767
+wait 1000
+screenshot g16-v0-orbit
+pad none 150 rx=-32767
+wait 1000
+# the round-7 prototype (satin), for comparison
+action tex 11 3
+waitnew 30 \[tex\] ready-made S0 .* for colour 16 (made in .*metal variant|from the cache)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot g16-v3-prototype
+action tex 11 0
+waitnew 30 \[tex\] body debug .*: look .* bound
+wait 1000
+# silver: the new default, then the prototype
+action real_outfit 4 15
+waitnew 30 \[tex\] look .* for colour 15 .*ready-made \(S0 S1\)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot s15-v0
+pad none 150 rx=32767
+wait 1000
+screenshot s15-v0-orbit
+pad none 150 rx=-32767
+wait 1000
+action tex 11 3
+waitnew 30 \[tex\] ready-made S0 .* for colour 15 (made in .*metal variant|from the cache)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot s15-v3-prototype
+action tex 11 0
+waitnew 30 \[tex\] body debug .*: look .* bound
+wait 1500
+# round 8's untouched silver / gold pictures (generator 1) in the folder: still ready-made, the current silver
+textures gen1
+waitnew 30 \[tex\] look .* for colour 15 .*ready-made \(S0 S1\)
+wait 2500
+screenshot s15-after-gen1
+nolog \[tex\] .*FAULTED
+nolog \[tex\] ready-made colours off
+nolog \[tex\] refused
+quit

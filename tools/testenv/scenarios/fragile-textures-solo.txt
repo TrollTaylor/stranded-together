@@ -8,6 +8,8 @@
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario fragile-textures-solo -SeedSaves complete-100
 role solo
 timeout 330
+# round 8: this scenario proves the v0.24 rule (an unpainted folder is her own suit): ready-made colours off
+ini textures_defaults=0
 ini partner_body=real
 ini pose_hook=1
 ini my_character=fragile_suit

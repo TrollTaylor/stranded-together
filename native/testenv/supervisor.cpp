@@ -866,8 +866,46 @@ void Record(Run& r, const te::Step& s, const char* what, bool ok, const std::str
 // "textures ..." (docs/hidden-testing.md "Fragile's textures"): the run's own textures folder <run>\textures. "extract":
 // the launcher's own extractor (StrandedTogether.exe --extract-textures, next to this supervisor) reads the game's archives
 // read-only into it; "pattern <name> <folder>": st_textool paints a bold generated pattern (no game data) over that folder's
-// editable pictures. Both hidden (no window), their output in <run>\textures-<n>.log. The folder is the run's only.
+// editable pictures; "copy <folder>\<picture> from <file>": st_textool copies a picture file (read only) under that name.
+// All hidden (no window), their output in <run>\textures-<n>.log. The folder is the run's only.
+// "extract-start" leaves the extraction running in the background (the launcher's automatic one while a game runs);
+// "extract-wait" waits for it and reports it like "extract". The run's end waits for one still running before the
+// folder is deleted.
+HANDLE g_tex_bg = nullptr;
+std::wstring g_tex_bg_log;
+
+std::string LastLineOf(const std::wstring& log) {
+    std::string text;
+    te::ReadFileBytes(log, &text);
+    std::string last;
+    for (std::size_t p = 0; p < text.size();) {
+        const std::size_t e = text.find('\n', p);
+        std::string l = text.substr(p, e == std::string::npos ? std::string::npos : e - p);
+        if (!l.empty() && l.back() == '\r') l.pop_back();
+        if (!l.empty()) last = l;
+        if (e == std::string::npos) break;
+        p = e + 1;
+    }
+    return last;
+}
+
+bool WaitBackgroundExtract(DWORD ms, std::string* detail) {
+    if (!g_tex_bg) {
+        if (detail) *detail = "no background extraction";
+        return false;
+    }
+    const DWORD w = WaitForSingleObject(g_tex_bg, ms);
+    DWORD code = 1;
+    if (w == WAIT_OBJECT_0) GetExitCodeProcess(g_tex_bg, &code);
+    else TerminateProcess(g_tex_bg, 1);
+    CloseHandle(g_tex_bg);
+    g_tex_bg = nullptr;
+    if (detail) *detail = "extract-wait: exit " + std::to_string(code) + (w == WAIT_OBJECT_0 ? "" : " (TIMEOUT)") + "; " + LastLineOf(g_tex_bg_log);
+    return w == WAIT_OBJECT_0 && code == 0;
+}
+
 bool TexturesCommand(Run& r, const std::string& cmd, std::string* detail) {
+    if (cmd == "extract-wait") return WaitBackgroundExtract(240000, detail);
     wchar_t self[MAX_PATH] = {};
     GetModuleFileNameW(nullptr, self, MAX_PATH);
     std::wstring dir = self;
@@ -875,7 +913,11 @@ bool TexturesCommand(Run& r, const std::string& cmd, std::string* detail) {
     const std::wstring tex = r.run + L"\\textures";
     const std::wstring runs = r.run.substr(0, r.run.find_last_of(L'\\'));
     std::wstring exe, args;
-    if (cmd == "extract") {
+    if (cmd == "extract" || cmd == "extract-start") {
+        if (g_tex_bg) {
+            *detail = "an extraction already runs in the background";
+            return false;
+        }
         exe = dir + L"\\StrandedTogether.exe";
         args = L"\"" + exe + L"\" --extract-textures --no-previews --out \"" + tex + L"\" --game-dir \"" + r.game + L"\" --allow-out-under \"" + runs + L"\"";
     } else if (cmd.rfind("pattern ", 0) == 0) {
@@ -883,6 +925,29 @@ bool TexturesCommand(Run& r, const std::string& cmd, std::string* detail) {
         const std::size_t sp = rest.find(' ');
         exe = dir + L"\\st_textool.exe";
         args = L"\"" + exe + L"\" pattern --dir \"" + tex + L"\" --name " + te::Widen(rest.substr(0, sp)) + L" --folder \"" + te::Widen(rest.substr(sp + 1)) +
+               L"\"";
+    } else if (cmd == "v024") {
+        // round 8: the folder as v0.24's extractor left it (copies of her Original in every colour folder, extract 1)
+        exe = dir + L"\\st_textool.exe";
+        args = L"\"" + exe + L"\" v024 --dir \"" + tex + L"\"";
+    } else if (cmd == "gen1") {
+        // round 9: 15 Silver / 16 Gold as round 8's extractor left them (generator 1's satin metal, extract 2)
+        exe = dir + L"\\st_textool.exe";
+        args = L"\"" + exe + L"\" gen1 --dir \"" + tex + L"\"";
+    } else if (cmd.rfind("reset ", 0) == 0) {
+        // round 8: a colour folder's three Suit pictures deleted (checked by ParseScenario: a colour folder name)
+        exe = dir + L"\\st_textool.exe";
+        args = L"\"" + exe + L"\" reset --dir \"" + tex + L"\" --folder \"" + te::Widen(cmd.substr(6)) + L"\"";
+    } else if (cmd.rfind("copy ", 0) == 0) {
+        // "copy <NN folder>\<picture>.png from <file>" (checked by ParseScenario): st_textool copies the file's bytes there
+        const std::string rest = cmd.substr(5);
+        const std::size_t at = rest.find(".png from ");
+        if (at == std::string::npos) {
+            *detail = "bad textures copy command";
+            return false;
+        }
+        exe = dir + L"\\st_textool.exe";
+        args = L"\"" + exe + L"\" copy --dir \"" + tex + L"\" --to \"" + te::Widen(rest.substr(0, at + 4)) + L"\" --from \"" + te::Widen(rest.substr(at + 10)) +
                L"\"";
     } else {
         *detail = "unknown textures command";
@@ -904,6 +969,13 @@ bool TexturesCommand(Run& r, const std::string& cmd, std::string* detail) {
     if (!ok) {
         *detail = "could not start " + te::Narrow(exe) + " (error " + std::to_string(GetLastError()) + ")";
         return false;
+    }
+    if (cmd == "extract-start") {
+        CloseHandle(pi.hThread);
+        g_tex_bg = pi.hProcess;
+        g_tex_bg_log = log;
+        *detail = "extract-start: pid " + std::to_string(pi.dwProcessId) + " runs in the background";
+        return true;
     }
     const DWORD w = WaitForSingleObject(pi.hProcess, 240000);
     DWORD code = 1;
@@ -1889,6 +1961,11 @@ int RunGame(Args& a) {
     }
 
     // ---- "textures": the run's extracted pictures (game data) are deleted with the run's end; the logs stay
+    if (g_tex_bg) {   // a background extraction the scenario never waited for: finished (or ended) first
+        std::string d;
+        WaitBackgroundExtract(120000, &d);
+        Out("textures: the background extraction at the run's end: %s", d.c_str());
+    }
     if (r.scenario.textures) {
         std::error_code ec;
         const auto n = std::filesystem::remove_all(std::filesystem::path(r.run + L"\\textures"), ec);
@@ -1896,6 +1973,16 @@ int RunGame(Args& a) {
         std::error_code ec2;  // the mod's built textures of the run (textures_dir + "-cache")
         const auto n2 = std::filesystem::remove_all(std::filesystem::path(r.run + L"\\textures-cache"), ec2);
         if (n2 || ec2) Out("textures: the run's built-textures cache deleted (%llu entries)%s", static_cast<unsigned long long>(n2), ec2 ? " (NOT completely)" : "");
+    }
+    // round 8: the games' partner caches (blobs received from, or made here for, the other game: game-derived pictures)
+    // go with the run too, whatever the scenario's textures lines
+    for (const wchar_t* sub : {L"\\automation\\cache\\partner-textures", L"\\guest\\automation\\cache\\partner-textures"}) {
+        std::error_code ec3;
+        const std::filesystem::path p(r.run + sub);
+        if (!std::filesystem::exists(p, ec3)) continue;
+        const auto n3 = std::filesystem::remove_all(p, ec3);
+        Out("textures: the run's partner-textures cache %s deleted (%llu entries)%s", te::Narrow(sub).c_str(), static_cast<unsigned long long>(n3),
+            ec3 ? " (NOT completely)" : "");
     }
 
     // ---- summary

@@ -33,6 +33,7 @@
 #include "boots_look.hpp"
 #include "partner_gear.hpp"
 #include "suit_colour_math.hpp"
+#include "game_actions.hpp"
 
 namespace st::realbody {
 namespace {
@@ -339,6 +340,9 @@ bool g_fit_ref_ok = false;
 std::atomic<std::uint32_t> g_fit_writes{0}, g_fit_updates_held{0}, g_fit_joints_held{0}, g_fit_updates_fresh{0}, g_fit_restores{0},
     g_fit_wpm{0}, g_fit_faults{0}, g_fit_torn{0}, g_fit_skips{0}, g_fit_qheld{0}, g_fit_sheld{0}, g_fit_sync_used{0}, g_fit_sync_fallback{0},
     g_fit_toward_max{0};
+// GetTickCount64 of the last capture of Sam whose clean joints (the fit's held values restored) differ from the previous
+// capture's: the game moved him (section 33's stall guard; the same signal with the fit on or off)
+std::atomic<ULONGLONG> g_sam_last_change{0};
 // The leak check by bucket (0: the fit off, 1: on): joints nearer the shape than Sam's reference, updates
 // measured, the largest change from the reference (um), and which joints (bits 0-63, 64-76).
 std::atomic<std::uint32_t> g_fit_toward[2] = {}, g_fit_leak_upd[2] = {}, g_fit_dev_max_um[2] = {};
@@ -1011,6 +1015,15 @@ void CaptureSam(std::uintptr_t sm) {
         g_fit_joints_held.fetch_add(held, std::memory_order_relaxed);
         g_fit_qheld.fetch_add(qheld, std::memory_order_relaxed);
         g_fit_sheld.fetch_add(sheld, std::memory_order_relaxed);
+    }
+    // Did the game move Sam? His clean joints against the previous capture's (an update that left every joint as it was, or
+    // only as the fit wrote it, is no progress: the stall guard's signal, section 33).
+    for (unsigned j = 0; j < kJ; ++j) {
+        if (std::memcmp(c.j[j].q, g_fit_clean_q[j], 4 * sizeof(float)) != 0 || std::memcmp(c.j[j].t, g_fit_clean_t[j], 3 * sizeof(float)) != 0 ||
+            std::memcmp(c.j[j].s, g_fit_clean_s[j], 3 * sizeof(float)) != 0) {
+            g_sam_last_change.store(GetTickCount64(), std::memory_order_relaxed);
+            break;
+        }
     }
     if (g_ride_src.load(std::memory_order_relaxed) || g_ride_active) RideOverride(sm, pose, local, Field<std::uintptr_t>(hdr, kHdrModel), c);
     else LatchFromOwn(c);
@@ -2032,6 +2045,25 @@ bool ComposePartner(BodySlot& b, Joint (&cur)[kJ], bool stats) {
     return true;
 }
 
+// The self view's pose from a capture of the local Sam (ApplyBody's live branch; the exo carrier's set 1, section 32):
+// Sam's rotations, the body's latched translations and scales, the pelvis times the ratio.
+void ComposeLive(const BodySlot& b, const Capture& c, Joint (&cur)[kJ]) {
+    for (unsigned j = 0; j < kJ; ++j) {
+        const unsigned sj = b.map[j];
+        Joint& o = cur[j];
+        std::memcpy(o.q, c.j[sj].q, sizeof(o.q));
+        const Joint& src = b.latch_ok ? b.latch[j] : c.j[sj];
+        std::memcpy(o.t, src.t, sizeof(o.t));
+        std::memcpy(o.s, src.s, sizeof(o.s));
+        if (sj == kSamRoot) {
+            o.t[0] = c.j[kSamRoot].t[0], o.t[1] = c.j[kSamRoot].t[1], o.t[2] = c.j[kSamRoot].t[2];
+        } else if (sj == kSamPelvis) {
+            const float r = b.pelvis_ratio;
+            o.t[0] = c.j[kSamPelvis].t[0] * r, o.t[1] = c.j[kSamPelvis].t[1] * r, o.t[2] = c.j[kSamPelvis].t[2] * r;
+        }
+    }
+}
+
 // Overwrites the body's finished pose. `live`: the self view, straight from the newest capture of
 // the local Sam (no wire, no ring, no delay); otherwise the partner's published frame.
 void ApplyBody(BodySlot& b, std::uintptr_t sm, bool live) {
@@ -2079,20 +2111,7 @@ void ApplyBody(BodySlot& b, std::uintptr_t sm, bool live) {
             ct.nocap.fetch_add(1, std::memory_order_relaxed);
             return;
         }
-        for (unsigned j = 0; j < kJ; ++j) {
-            const unsigned sj = b.map[j];
-            Joint& o = cur[j];
-            std::memcpy(o.q, c.j[sj].q, sizeof(o.q));
-            const Joint& src = b.latch_ok ? b.latch[j] : c.j[sj];
-            std::memcpy(o.t, src.t, sizeof(o.t));
-            std::memcpy(o.s, src.s, sizeof(o.s));
-            if (sj == kSamRoot) {
-                o.t[0] = c.j[kSamRoot].t[0], o.t[1] = c.j[kSamRoot].t[1], o.t[2] = c.j[kSamRoot].t[2];
-            } else if (sj == kSamPelvis) {
-                const float r = b.pelvis_ratio;
-                o.t[0] = c.j[kSamPelvis].t[0] * r, o.t[1] = c.j[kSamPelvis].t[1] * r, o.t[2] = c.j[kSamPelvis].t[2] * r;
-            }
-        }
+        ComposeLive(b, c, cur);
         // How old the pose is when it lands on the body (same frame: well under a frame time).
         if (g_qpc_per_ms > 0) {
             const double age_ms = static_cast<double>(Qpc() - c.qpc) / g_qpc_per_ms;
@@ -2357,6 +2376,100 @@ void ApplyBootsPose(std::uintptr_t sm) {
     g_bt.last_apply.store(GetTickCount64(), std::memory_order_relaxed);
 }
 
+// The exo carrier (docs/real-partner-body.md section 32): a demo_sam_clean body that shows only Sam's skeleton pieces, one
+// per slot (0 the partner body, 1 the self body). In its own model update it takes the body's local joints, composed as the
+// body's own update composes them (set 0 ComposePartner; set 1 the capture the self body was last written from), with an
+// identity root: Sam joint k of the carrier gets the body's joint inv[k]. Placed as a gear item on the body's joint 0
+// (identity pose), its model matrices are the body's, as for the boots prop (section 21). No feet scale.
+struct ExoTarget {
+    std::atomic<std::uintptr_t> sm{0};  // published last (release); 0 = off
+    std::atomic<std::uintptr_t> e{0}, e_vt{0}, skel{0};
+    std::uint8_t bj[kJ] = {};  // carrier (Sam) joint -> the body's joint (written while sm is 0)
+    holo::Spawn spawn;
+    std::atomic<std::uint32_t> game_updates{0}, applies{0}, rejects{0}, torn{0}, wpm{0};
+    std::uint32_t applies_at_set = 0;  // `applies` when it became the target (ExoPosed wants a few writes since)
+    std::atomic<ULONGLONG> last_apply{0};
+    ULONGLONG last_game_ms = 0;
+    std::uint32_t forced = 0, forced_skipped = 0;
+    bool forced_off = false;
+    std::atomic<bool> want_pose{false};  // partner_gear: the carrier is meant to be seen (its body shown): forced updates only then
+};
+ExoTarget g_xt[2];
+std::atomic<bool> g_xt_faulted{false};
+// The self carrier's source (`gear 27 3 / 4`): 1 (default) Sam's newest capture, what the self body's own update takes next:
+// the carrier updates before the self body in a frame (run 20261122-181504, running 9 m: pose 0.00 cm with it, 1-3 cm
+// with 0), 0 the capture the self body was last written from (the previous frame's then).
+std::atomic<int> g_xt_self_src{1};
+
+// The self body's pose (the same capture the body shows, or the one it takes next).
+bool ComposeSelf(Joint (&cur)[kJ]) {
+    static thread_local Capture c;
+    const bool newest = g_xt_self_src.load(std::memory_order_relaxed) == 1 && g_self_src.load(std::memory_order_acquire) == 0;
+    if (!(newest ? g_capture : g_self_applied).Read(c) || c.frame == 0) return false;
+    ComposeLive(g_me, c, cur);
+    return true;
+}
+
+void ApplyExoPose(int x, std::uintptr_t sm) {
+    ExoTarget& t = g_xt[x];
+    if (g_xt_faulted.load(std::memory_order_relaxed)) return;
+    const std::uintptr_t te = t.e.load(std::memory_order_acquire), tvt = t.e_vt.load(std::memory_order_relaxed),
+                         tskel = t.skel.load(std::memory_order_relaxed);
+    std::uintptr_t id[2] = {};
+    std::uintptr_t owner = 0, evt = 0;
+    if (!te || !mem::Read(sm, id, sizeof(id)) || id[0] != g_sm_vt || !Rd(sm + kSmEntity, owner) || owner != te || !Rd(owner, evt) || evt != tvt) {
+        t.rejects.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    std::uint8_t hdr[kPoseSize];
+    std::uintptr_t pose = 0;
+    if (!ReadPoseHdr(sm, hdr, &pose) || Field<std::uintptr_t>(hdr, kHdrSkel) != tskel || Field<std::int32_t>(hdr, kHdrState) != kPoseStateModel) {
+        t.rejects.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    const std::uintptr_t lb = Field<std::uintptr_t>(hdr, kHdrLocal), le = Field<std::uintptr_t>(hdr, kHdrLocalEnd);
+    const std::uintptr_t mb = Field<std::uintptr_t>(hdr, kHdrModel), me = Field<std::uintptr_t>(hdr, kHdrModelEnd);
+    if (!lb || le - lb != kJ * sizeof(Joint) || !mb || me - mb != kJ * 0x40ull) {
+        t.rejects.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    BodySlot& b = g_slots[x];
+    if (b.latch_state.load(std::memory_order_acquire) != 1 || !b.apply_on.load(std::memory_order_acquire) || !b.sm.load(std::memory_order_acquire)) {
+        t.rejects.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    static thread_local Joint body[kJ];
+    if (!(x == 0 ? ComposePartner(b, body, false) : ComposeSelf(body))) {
+        t.torn.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    static thread_local Joint cur[kJ];
+    if (!mem::Read(lb, cur, sizeof(cur))) return;
+    cur[0].q[0] = cur[0].q[1] = cur[0].q[2] = 0, cur[0].q[3] = 1;
+    cur[0].t[0] = cur[0].t[1] = cur[0].t[2] = 0;
+    for (unsigned k = 1; k < kJ; ++k) {
+        const Joint& s = body[t.bj[k]];
+        std::memcpy(cur[k].q, s.q, sizeof(cur[k].q));
+        std::memcpy(cur[k].t, s.t, 3 * sizeof(float));
+        std::memcpy(cur[k].s, s.s, 3 * sizeof(float));
+    }
+    SIZE_T wrote = 0;
+    if (!WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(lb), cur, sizeof(cur), &wrote) || wrote != sizeof(cur)) {
+        t.wpm.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    std::int32_t bounds_on = 0;
+    Rd(sm + kSmBoundsOn, bounds_on);
+    if (!CallPoseFns(sm, pose, bounds_on != 0)) {
+        g_xt_faulted.store(true, std::memory_order_seq_cst);  // never again this session
+        g_xt[0].sm.store(0, std::memory_order_seq_cst);
+        g_xt[1].sm.store(0, std::memory_order_seq_cst);
+        return;
+    }
+    t.applies.fetch_add(1, std::memory_order_relaxed);
+    t.last_apply.store(GetTickCount64(), std::memory_order_relaxed);
+}
+
 void Detour(void* sm, float dt) {
     g_orig(sm, dt);
     const auto s = reinterpret_cast<std::uintptr_t>(sm);
@@ -2365,6 +2478,16 @@ void Detour(void* sm, float dt) {
         if (g_bt.sm.load(std::memory_order_seq_cst) == s) {
             if (!t_forcing) g_bt.game_updates.fetch_add(1, std::memory_order_relaxed);
             ApplyBootsPose(s);
+        }
+        g_inflight.fetch_sub(1, std::memory_order_seq_cst);
+        return;
+    }
+    for (int x = 0; x < 2; ++x) {
+        if (!s || s != g_xt[x].sm.load(std::memory_order_relaxed)) continue;
+        g_inflight.fetch_add(1, std::memory_order_seq_cst);
+        if (g_xt[x].sm.load(std::memory_order_seq_cst) == s) {
+            if (!t_forcing) g_xt[x].game_updates.fetch_add(1, std::memory_order_relaxed);
+            ApplyExoPose(x, s);
         }
         g_inflight.fetch_sub(1, std::memory_order_seq_cst);
         return;
@@ -3127,6 +3250,30 @@ std::uint32_t g_self_tick_moves = 0;
 double g_self_dist_sum = 0, g_self_dist_max = 0;
 std::uint32_t g_self_dist_n = 0;
 std::uint32_t g_self_shows = 0, g_self_unshows = 0, g_self_repairs = 0;
+// Section 33 (round 7, the private room's black screen): the load / post-load Setup the self view waits out, the post-load
+// window of the stall guard and its hold.
+const char* g_self_load = nullptr;  // LoadOrSetup's reason last tick (nullptr: none)
+double g_self_load_from_ms = 0, g_self_load_end_ms = -1e18;
+ULONGLONG g_self_shown_at = 0;      // GetTickCount64 of the last show
+double g_self_stall_until_ms = 0;  // the stall guard's hold: not shown again before this ...
+std::uint64_t g_self_stall_state = 0;  // ... while the game state flags are still these
+std::uint32_t g_self_load_unshows = 0, g_self_stalls = 0, g_self_room_holds = 0;
+double g_self_room_hold_for = -2e18;  // the load end (g_self_load_end_ms) the private room's close-up hold was taken for
+const char* g_self_hold_why = "";     // why the hold (g_self_stall_until_ms) keeps the body off
+// `self_view 17 <mask>` (before / after runs): bit 1 the load rule (not shown through a load or Setup, the show waits for
+// a fresh game update of Sam), bit 2 the stall guard; 3 the default, 0 v0.24's behaviour.
+std::atomic<int> g_self_load_rules{3};
+constexpr double kSelfPostLoadMs = 8000;     // the stall guard's window after a load or Setup ends
+constexpr ULONGLONG kSelfStallMs = 1000;     // no game rewrite of Sam for this long, shown, in the window: unshown
+constexpr double kSelfStallHoldMs = 20000;   // then not shown again while the game state stays the same, at most this long
+constexpr ULONGLONG kSelfShowFreshMs = 100;  // the show needs a capture of Sam the game updated this recently
+constexpr const char* kSelfLoadWhy = "the game is loading / in its post-load setup (reason 63 is never held through it)";
+constexpr const char* kSelfStaleWhy = "Sam's model was not updated by the game in the last 100 ms";
+constexpr const char* kSelfStallWhy =
+    "the game stopped updating Sam's pose after a load (stall guard: Sam stays until the game state changes)";
+constexpr const char* kSelfRoomWhy =
+    "the private room's close-up after a load (Sam stays until the game state changes: hidden there, the game never draws the room)";
+constexpr std::uint64_t kSelfRoomCut = game::kGameStatePrivateRoom | game::kGameStateCutscene;
 
 // Our reason bit must never outlive the shown body. SelfUnshow clears it once with a locked AND,
 // but the game's own SetRootVisible (0x1426B4E40) is a plain read-modify-write of the same mask:
@@ -3241,6 +3388,7 @@ bool SelfShow(std::uintptr_t sam) {
     }
     g_self_sam = sam;
     g_self_shown = true;
+    g_self_shown_at = GetTickCount64();
     ++g_self_shows;
     g_self_not_shown = "";
     const char* fit = FitOn();
@@ -3524,6 +3672,47 @@ void SelfTick(game::Entity* local, bool local_active, double now_ms) {
         SelfNotShown("the local player's mesh controller does not check out (vtable / back pointer)");
         return;
     }
+    // Section 33: never hold reason 63 through a load or the post-load Setup. With Sam hidden by it there the game stopped
+    // updating his model and waited on him: the private room's black screen (40+ s loading straight into it, about 9 s
+    // entering it from the field). Sam is shown, the body stays spawned and is shown again once the game has settled.
+    std::uint64_t gstate = 0;
+    std::uint32_t lmask = 0;
+    const int rules = g_self_load_rules.load(std::memory_order_relaxed);
+    const char* load_now = game::LoadOrSetup(&gstate, &lmask);
+    const char* loading = (rules & 1) ? load_now : nullptr;  // `self_view 17`: bit 1 off, the body stays shown (v0.24)
+    if (load_now != g_self_load) {
+        char d[96] = {};
+        game::DescribeGameStateFlags(gstate, d, sizeof(d));
+        if (load_now && !g_self_load) {
+            g_self_load_from_ms = now_ms;
+            Log("[self] the game is loading or settling: %s (state %s, load mask 0x%X)%s", load_now, d, lmask,
+                g_self_shown && loading ? ": Sam shown for it" : "");
+        } else if (!load_now) {
+            g_self_load_end_ms = now_ms;
+            Log("[self] the load / post-load setup is over after %.2f s (state %s)", (now_ms - g_self_load_from_ms) / 1000.0, d);
+        }
+        g_self_load = load_now;
+    }
+    if (loading && g_self_shown) {
+        ++g_self_load_unshows;
+        SelfUnshow(kSelfLoadWhy);
+    }
+    // Section 33 (review): the private room's close-up after a load (PrivateRoom|Cutscene in the 8 s after a load / Setup ends).
+    // With Sam hidden there the game never draws the room after it (the user's black screen from the field), so the body is not
+    // shown at all in it: Sam stays from the start until the game state changes (at most 20 s), instead of Fragile showing for a
+    // second and the stall guard turning her into Sam mid-shot (run 20261122-191916). Once per load.
+    if (now_ms < g_self_stall_until_ms && gstate != g_self_stall_state) g_self_stall_until_ms = 0;  // the state changed: the hold ends
+    if ((rules & 2) && !load_now && (gstate & kSelfRoomCut) == kSelfRoomCut && now_ms - g_self_load_end_ms < kSelfPostLoadMs &&
+        g_self_room_hold_for != g_self_load_end_ms) {
+        g_self_room_hold_for = g_self_load_end_ms;
+        ++g_self_room_holds;
+        g_self_stall_until_ms = now_ms + kSelfStallHoldMs;
+        g_self_stall_state = gstate;
+        g_self_hold_why = kSelfRoomWhy;
+        Log("[self] the private room's close-up %.2f s after a load (state 0x%llX): Sam stays until the game state changes (hold %u)",
+            (now_ms - g_self_load_end_ms) / 1000.0, static_cast<unsigned long long>(gstate), g_self_room_holds);
+        if (g_self_shown) SelfUnshow(kSelfRoomWhy);
+    }
     if (g_me.phase == Phase::idle) {
         if (now_ms < g_self_retry_ms) return;
         if (g_self_body->id < 32 && (g_me.refused & (1u << g_self_body->id))) {
@@ -3571,10 +3760,45 @@ void SelfTick(game::Entity* local, bool local_active, double now_ms) {
         }
     }
     const ULONGLONG last_apply = g_self_last_apply.load(std::memory_order_relaxed);
+    // Section 33: the stall guard (the fallback of the close-up hold above). Shown in the private room's PrivateRoom|Cutscene in
+    // the 8 s after a load: when the game has not moved Sam's joints for 1 s (his clean joints unchanged from update to update,
+    // fit on or off, or no update of his model at all), Sam is shown until the game state changes (at most 20 s). Only that
+    // state: elsewhere a cinematic that leaves a few joints alone is normal (the bed scene before the load, 8 s of it).
+    if ((rules & 2) && g_self_shown && now_ms - g_self_load_end_ms < kSelfPostLoadMs && (gstate & kSelfRoomCut) == kSelfRoomCut &&
+        !(gstate & (game::kGameStatePauseMenu | game::kGameStateSystemPause))) {
+        ULONGLONG progress = g_self_shown_at;
+        Capture cap;
+        const bool have_cap = g_capture.Read(cap) && cap.frame != 0;
+        const bool fit_on = g_fit_want.load(std::memory_order_relaxed) && g_fit_cfg.load(std::memory_order_relaxed) &&
+                            !g_fit_faulted.load(std::memory_order_relaxed);
+        const ULONGLONG moved = g_sam_last_change.load(std::memory_order_relaxed);
+        if (moved > progress) progress = moved;
+        if (have_cap && cap.tick_ms + kSelfStallMs < t && cap.tick_ms < progress) progress = cap.tick_ms;  // no update at all
+        if (t > progress + kSelfStallMs) {
+            ++g_self_stalls;
+            Log("[self] stall guard: the game has not updated Sam's pose for %llu ms in a cutscene %.1f s after a load (state 0x%llX, fit %s): Sam shown "
+                "(stall %u)",
+                static_cast<unsigned long long>(t - progress), (now_ms - g_self_load_end_ms) / 1000.0, static_cast<unsigned long long>(gstate),
+                fit_on ? "on" : "off", g_self_stalls);
+            g_self_stall_until_ms = now_ms + kSelfStallHoldMs;
+            g_self_stall_state = gstate;
+            g_self_hold_why = kSelfStallWhy;
+            SelfNotShown(kSelfStallWhy);
+            return;
+        }
+    }
+    bool cap_fresh = true;
+    if (!g_self_shown && (rules & 1)) {
+        Capture cap;
+        cap_fresh = g_capture.Read(cap) && cap.frame != 0 && t - cap.tick_ms <= kSelfShowFreshMs;
+    }
     const char* hidden_why = nullptr;
     const char* not_ready = g_me.latch_state.load(std::memory_order_acquire) != 1 ? "latching the body's own pose"
                             : !g_me.apply_on.load()                                ? "the pose write was switched off (a fault)"
+                            : loading                                              ? kSelfLoadWhy
+                            : now_ms < g_self_stall_until_ms                       ? g_self_hold_why
                             : !last_apply || t - last_apply > 250                  ? "no fresh pose written onto the body"
+                            : !cap_fresh                                           ? kSelfStaleWhy
                             : (mask & ~kOurReason) != 0                            ? "the game hides Sam itself (photo mode, a scripted scene)"
                             : SamHiddenOtherwise(sam, &hidden_why)                 ? hidden_why
                                                                                    : nullptr;
@@ -3880,6 +4104,36 @@ void DriveBootsTarget(bool local_active) {
         return;
     }
     ++g_bt.forced;
+}
+
+// The exo carriers the game does not update by itself (a cutscene body standing still): the forced model update, as for
+// the boots prop.
+void DriveExoTargets(bool local_active) {
+    for (ExoTarget& t : g_xt) {
+        const std::uintptr_t sm = t.sm.load(std::memory_order_acquire);
+        if (!local_active || !sm || !g_fn_forced || t.forced_off) continue;
+        if (t.game_updates.exchange(0, std::memory_order_relaxed) != 0) t.last_game_ms = GetTickCount64();
+        if (t.last_game_ms && GetTickCount64() - t.last_game_ms < 100) continue;
+        // a hidden carrier (its body hidden for a load or the self view's unshow, the grace after unequipping) is not posed:
+        // nothing draws it, and those windows (a load) must stay as fast as vanilla
+        if (!t.want_pose.load(std::memory_order_relaxed)) {
+            ++t.forced_skipped;
+            continue;
+        }
+        const std::uintptr_t te = t.e.load();
+        if (!holo::SpawnAlive(t.spawn) || reinterpret_cast<std::uintptr_t>(t.spawn.e) != te) continue;
+        std::uintptr_t id[2] = {};
+        if (!mem::Read(sm, id, sizeof(id)) || id[0] != g_sm_vt || Q(sm + kSmEntity) != te || Q(te) != t.e_vt.load()) continue;
+        t_forcing = true;
+        const bool ok = CallForced(sm);
+        t_forcing = false;
+        if (!ok) {
+            t.forced_off = true;
+            Log("[exo] forced model update of the exo carrier FAULTED; not called again this run");
+            continue;
+        }
+        ++t.forced;
+    }
 }
 
 void DrivePoseTargets(bool local_active) {
@@ -4909,6 +5163,85 @@ void BootsCounters(char* out, std::size_t cap) noexcept {
                   g_bt.applies.load(), g_bt.rejects.load(), g_bt.torn.load(), g_bt.wpm.load(), g_bt.forced, g_bt_faulted.load() ? ", FAULTED: off" : "");
 }
 
+void ClearExoCarrier(GearSlot slot) noexcept {
+    ExoTarget& t = g_xt[slot == GearSlot::self ? 1 : 0];
+    if (!t.sm.load(std::memory_order_acquire) && !t.e.load()) return;
+    t.sm.store(0, std::memory_order_seq_cst);
+    const ULONGLONG until = GetTickCount64() + 50;
+    while (g_inflight.load(std::memory_order_seq_cst) != 0 && GetTickCount64() < until) SwitchToThread();
+    t.e.store(0);
+    t.spawn = holo::Spawn{};
+    t.last_apply.store(0);
+    t.want_pose.store(false, std::memory_order_relaxed);
+}
+bool SetExoCarrier(GearSlot slot, const holo::Spawn* sp, char* why, std::size_t cap) noexcept {
+    if (why && cap) why[0] = 0;
+    const int x = slot == GearSlot::self ? 1 : 0;
+    ExoTarget& t = g_xt[x];
+    BodySlot& b = g_slots[x];
+    if (!sp || !sp->e) {
+        ClearExoCarrier(slot);
+        return true;
+    }
+    const auto e = reinterpret_cast<std::uintptr_t>(sp->e);
+    if (t.sm.load(std::memory_order_acquire) && t.e.load() == e) return true;  // the same carrier
+    ClearExoCarrier(slot);
+    if (!g_hook || g_xt_faulted.load()) return Set(why, cap, "%s", g_hook ? "an exo pose write faulted earlier" : "no pose hook"), false;
+    if (!holo::SpawnAlive(*sp)) return Set(why, cap, "the carrier is gone"), false;
+    if (b.phase != Phase::live || b.latch_state.load() != 1 || !b.apply_on.load()) return Set(why, cap, "the body is not live, latched and posed"), false;
+    const std::uintptr_t sm = ModelOf(e);
+    const SkelInfo si = sm ? PoseSkeleton(sm) : SkelInfo{};
+    if (!si.skel || si.count != static_cast<std::int32_t>(kJ) || si.layout != wire::kSamLayoutHash || !si.joints)
+        return Set(why, cap, "its skeleton is not Sam's 77-joint layout (%d joints, layout %08X)", si.count, si.layout), false;
+    // Sam's joint names in order (the carrier is a Sam body: its joint k is Sam's joint k)
+    const std::uintptr_t sam_sm = g_sam_sm.load() ? g_sam_sm.load() : g_menu_sm.load();
+    const SkelInfo ss = PoseSkeleton(sam_sm);
+    if (ss.skel != si.skel) {
+        if (!ss.skel || ss.count != static_cast<std::int32_t>(kJ)) return Set(why, cap, "Sam's skeleton is not available"), false;
+        for (unsigned k = 0; k < kJ; ++k)
+            if (JointName(si, k) != JointName(ss, k)) return Set(why, cap, "its joint %u is not Sam's joint %u", k, k), false;
+    }
+    for (unsigned k = 0; k < kJ; ++k) {
+        const unsigned bj = b.inv[k];
+        if (bj >= kJ || b.map[bj] != k) return Set(why, cap, "the body has no joint for Sam joint %u", k), false;
+        t.bj[k] = static_cast<std::uint8_t>(bj);
+    }
+    std::uintptr_t vt = 0;
+    if (!Rd(e, vt) || !vt) return Set(why, cap, "unreadable entity"), false;
+    t.e.store(e), t.e_vt.store(vt), t.skel.store(si.skel);
+    t.spawn = *sp;
+    t.game_updates.store(0), t.last_game_ms = 0, t.last_apply.store(0);
+    t.applies_at_set = t.applies.load();
+    t.forced_off = false;
+    t.sm.store(sm, std::memory_order_seq_cst);
+    return true;
+}
+void SetExoPoseWanted(GearSlot slot, bool on) noexcept { g_xt[slot == GearSlot::self ? 1 : 0].want_pose.store(on, std::memory_order_relaxed); }
+bool ExoPosed(GearSlot slot, double within_ms) noexcept {
+    const ExoTarget& t = g_xt[slot == GearSlot::self ? 1 : 0];
+    const ULONGLONG at = t.last_apply.load(std::memory_order_relaxed);
+    // three writes since it became the target (the first one came out 13-29 cm off in run 20261122-181043: shown too early)
+    return t.sm.load(std::memory_order_acquire) && at && static_cast<double>(GetTickCount64() - at) < within_ms &&
+           t.applies.load(std::memory_order_relaxed) - t.applies_at_set >= 3;
+}
+void SetExoSelfSource(int src) noexcept { g_xt_self_src.store(src == 1 ? 1 : 0, std::memory_order_relaxed); }
+int ExoSelfSource() noexcept { return g_xt_self_src.load(std::memory_order_relaxed); }
+std::uintptr_t ExoCarrierEntity(GearSlot slot) noexcept {
+    const ExoTarget& t = g_xt[slot == GearSlot::self ? 1 : 0];
+    return t.sm.load(std::memory_order_acquire) ? t.e.load() : 0;
+}
+void ExoCounters(GearSlot slot, char* out, std::size_t cap) noexcept {
+    const ExoTarget& t = g_xt[slot == GearSlot::self ? 1 : 0];
+    std::snprintf(out, cap, "exo carrier %p: %u pose writes (%u refused, %u torn, %u wpm), %u forced updates (%u skipped: hidden)%s",
+                  reinterpret_cast<void*>(t.e.load()), t.applies.load(), t.rejects.load(), t.torn.load(), t.wpm.load(), t.forced, t.forced_skipped,
+                  g_xt_faulted.load() ? ", FAULTED: off" : "");
+}
+bool PartnerOutfit(wire::Outfit* out) noexcept {
+    if (!g_have_partner_outfit || !out) return false;
+    *out = g_partner_outfit;
+    return true;
+}
+
 bool PoseInterpOn() noexcept {
     return g_hook && g_qpc_per_ms > 0 && (g_smooth.load(std::memory_order_relaxed) & kSmoothDetourInterp) != 0;
 }
@@ -5396,6 +5729,8 @@ void EmergencyStop() noexcept {
     g_gear_n[1].store(0, std::memory_order_seq_cst);
     g_pt_live.store(0, std::memory_order_seq_cst);
     g_bt.sm.store(0, std::memory_order_seq_cst);
+    g_xt[0].sm.store(0, std::memory_order_seq_cst);
+    g_xt[1].sm.store(0, std::memory_order_seq_cst);
     g_pfeet_on.store(false, std::memory_order_seq_cst);
     g_hms_n.store(0, std::memory_order_seq_cst);  // Sam's update stops correcting head items (partner_gear puts the movers back)
     Unpublish(g_p);
@@ -5479,6 +5814,7 @@ void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
     DriveGearFreq(local_active, now_ms);
     DrivePoseTargets(local_active);
     DriveBootsTarget(local_active);
+    DriveExoTargets(local_active);
     DressPartner(local, local_active, now_ms);
     DressFragile(local, local_active, now_ms);
     if (g_hook) Stats(now_ms);
@@ -5904,6 +6240,14 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
                 g_gm_on.store(v[1] != 0);
                 Set(msg, cap, "drawn-vs-anchor meter %s", v[1] != 0 ? "on" : "off");
                 Log("[gear] %s", msg);
+                return true;
+            }
+            if (v[0] == 17) {  // self_view 17 <mask>: section 33's load rule (1), the room close-up hold and stall guard (2); 3 default, 0 v0.24
+                const int m = static_cast<int>(v[1]) & 3;
+                g_self_load_rules.store(m);
+                Set(msg, cap, "self view over loads: load rule %s, private room close-up hold and stall guard %s", (m & 1) ? "on" : "off (v0.24)",
+                    (m & 2) ? "on" : "off");
+                Log("[self] %s", msg);
                 return true;
             }
             if (v[0] == 16) {  // self_view 16 <0/1>: Sam's head items onto her drawn head (section 26.8): 1 v0.22 (default), 0 v0.21

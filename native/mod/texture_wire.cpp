@@ -99,7 +99,7 @@ const char* CodeName(std::uint8_t code) {
 
 Kind PeekKind(const std::uint8_t* p, std::size_t n) {
     if (!p || n < 6 || n > kMaxMessage || std::memcmp(p, "STT1", 4) != 0 || p[4] != kVersion) return Kind::none;
-    if (p[5] < 1 || p[5] > 6) return Kind::none;
+    if (p[5] < 1 || p[5] > 7) return Kind::none;
     return static_cast<Kind>(p[5]);
 }
 
@@ -266,6 +266,48 @@ bool Bucket::Take(double now_ms, double rate, double burst, std::size_t bytes) {
     if (tokens_ < static_cast<double>(bytes)) return false;
     tokens_ -= static_cast<double>(bytes);
     return true;
+}
+
+namespace {
+bool RecipeOk(const Recipe& m) {
+    if (m.n < 1 || m.n > kMaxEntries || m.generator == 0) return false;
+    for (unsigned i = 0; i < m.n; ++i) {
+        const RecipeEntry& e = m.e[i];
+        if (e.colour < 1 || e.colour > 16 || e.variant >= kMetalVariants) return false;
+        for (unsigned k = 0; k < i; ++k)
+            if (m.e[k].slot == e.slot) return false;
+    }
+    return true;
+}
+}  // namespace
+
+std::size_t EncodeRecipe(const Recipe& m, std::uint8_t* out, std::size_t cap) {
+    if (!RecipeOk(m)) return 0;
+    W w(out, cap);
+    w.Head(Kind::recipe);
+    w.U32(m.epoch);
+    w.U8(m.generator);
+    w.U16(m.encoder);
+    w.Bytes(m.originals, 32);
+    w.U8(m.n);
+    for (unsigned i = 0; i < m.n; ++i) {
+        w.U8(m.e[i].slot);
+        w.U8(m.e[i].colour);
+        w.U8(m.e[i].variant);
+        w.Bytes(m.e[i].id, 32);
+    }
+    return w.Done();
+}
+
+bool DecodeRecipe(const std::uint8_t* p, std::size_t n, Recipe& m) {
+    m = Recipe{};
+    R r(p, n);
+    if (!Head(r, p, n, Kind::recipe)) return false;
+    if (!r.U32(m.epoch) || !r.U8(m.generator) || !r.U16(m.encoder) || !r.Bytes(m.originals, 32) || !r.U8(m.n)) return false;
+    if (m.n < 1 || m.n > kMaxEntries) return false;
+    for (unsigned i = 0; i < m.n; ++i)
+        if (!r.U8(m.e[i].slot) || !r.U8(m.e[i].colour) || !r.U8(m.e[i].variant) || !r.Bytes(m.e[i].id, 32)) return false;
+    return r.End() && RecipeOk(m);
 }
 
 }  // namespace st::twire

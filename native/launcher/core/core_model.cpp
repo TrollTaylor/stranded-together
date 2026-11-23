@@ -213,6 +213,7 @@ void MakeLocalTestInis(const DebugOptions& options, const LocalTestChoices& choi
     // Fragile's textures (docs/textures.md): both games get the folder; only the guest's Fragile uses it.
     host.textures_dir = choices.textures_dir;
     host.boots_look = choices.boots_look;
+    host.textures_defaults = choices.textures_defaults;   // the card's READY-MADE COLOURS (only =0 is written)
     guest = host;
     guest.role = "guest";
     guest.udp_port_local = kDefaultUdpPort + 1;
@@ -684,6 +685,7 @@ public:
         choices.fps = local_fps_;
         choices.textures_dir = TexturesDirForSession(settings_, paths_.game);
         choices.boots_look = BootsLookFromSettings(settings_);
+        choices.textures_defaults = ReadyMadeFromSettings(settings_);
         SessionIni host, guest;
         MakeLocalTestInis(debug_, choices, host, guest);
         for (const auto& [ini, dir] : {std::pair<const SessionIni*, std::wstring>{&host, LocalDir(L"host")}, {&guest, LocalDir(L"guest")}}) {
@@ -808,12 +810,21 @@ public:
         v.tone = tex_tone_;
         v.checking = tex_checking_;
         v.boots_own = BootsLookFromSettings(settings_) != "prop";
+        v.ready_made = ReadyMadeFromSettings(settings_);
+        v.auto_extract = AutoExtractFromSettings(settings_);
+        v.auto_note = tex_auto_note_;
+        // "by itself" only when it will: not for OneDrive, a cancel, 3 failures, an index that does not read...
+        v.auto_will = start_.auto_extract_textures && v.auto_extract && AutoExtractWillRun(tex_auto_last_);
         if (tex_.extracting()) {
             const ExtractProgress p = tex_.progress();
             v.state = TexturesView::State::extracting;
+            v.auto_running = tex_auto_;
             v.progress = p.total > 0 ? static_cast<float>(p.done) / static_cast<float>(p.total) : 0.0f;
             v.progress_text = p.current;
-            v.status = "Extracting...";
+            // unticking the setting never stops a run half-way (a half-updated folder would wait for the next one)
+            v.status = !tex_auto_ ? "Extracting..."
+                       : v.auto_extract ? "Extracting automatically..."
+                                        : "Extracting automatically: this run finishes, then no more automatic ones (the setting is off).";
             return v;
         }
         const TextureTasks::ScanResult r = tex_.scan();
@@ -825,15 +836,25 @@ public:
         }
         if (!r.extracted) {
             v.state = TexturesView::State::not_extracted;
-            v.status = "Not extracted yet.";
+            v.status = v.auto_will ? "Not extracted yet: the launcher does it by itself in the background." : "Not extracted yet.";
             return v;
         }
         v.edited = r.edited;
         const bool outdated = !r.table_ok || !r.extract_ok || r.game != st::tex::GameStamp(paths_.game);
+        // the automatic extraction covers a Stranded Together update (the extract version, the table); a game update stays
+        // the player's call (the pictures the mod reads are still checked against the manifest)
+        const bool auto_covers = v.auto_will && (!r.table_ok || !r.extract_ok);
         v.state = outdated ? TexturesView::State::outdated : TexturesView::State::extracted;
-        v.status = outdated ? std::string("The game or Stranded Together was updated since the extraction: press Extract textures again.")
+        v.status = outdated ? std::string(auto_covers ? "Stranded Together was updated since the extraction: the launcher extracts again by itself."
+                                                      : "The game or Stranded Together was updated since the extraction: press Extract textures again.")
                             : "Extracted " + r.extracted_at + ": " + std::to_string(r.colour_folders) + " suit colours, " +
                                   std::to_string(r.boot_folders) + " boot types.";
+        if (!outdated && r.colour_folders) {
+            v.status += v.ready_made ? " " + std::to_string(r.ready_made) + " ready-made colour" + (r.ready_made == 1 ? "" : "s")
+                                     : std::string(" Ready-made colours are off (her own suit where nothing is painted)");
+            if (r.painted_colours) v.status += ", " + std::to_string(r.painted_colours) + " folder" + (r.painted_colours == 1 ? "" : "s") + " painted by you";
+            v.status += ".";
+        }
         if (r.outdated_seeds)
             v.status += " " + std::to_string(r.outdated_seeds) + " unedited pictures are from an older game version: delete them to refresh.";
         return v;
@@ -847,9 +868,20 @@ public:
         if (dir.empty()) return error_out = "Windows names no Documents folder: pick a folder with Change folder... first.", false;
         const std::string problem = TexturesFolderProblem(dir, paths_.game);
         if (!problem.empty()) return error_out = problem, false;
-        if (!tex_.StartExtract(SelfExePath(), paths_.game, dir, TexturePreviewsFromSettings(settings_), error_out)) return false;
+        if (!tex_.StartExtract(ExtractExe(), paths_.game, dir, TexturePreviewsFromSettings(settings_), error_out)) return false;
         tex_result_.clear();
         tex_tone_ = TexturesView::Tone::neutral;
+        tex_auto_ = false;
+        // by hand: the automatic extraction starts from zero again (its failures and a cancel are forgotten); if this run
+        // fails too, it counts as the first failure (the automatic one then waits instead of trying the same at once)
+        tex_auto_cancelled_ = false;
+        tex_auto_note_.clear();
+        tex_auto_key_ = AutoExtractKey(dir, st::tex::GameStamp(paths_.game));
+        tex_auto_next_ms_ = 0;
+        if (!AutoExtractRecordFromSettings(settings_).key.empty()) {
+            StoreAutoExtractRecord(settings_, AutoExtractRecord{});
+            SaveChoices();
+        }
         LauncherLog(*env_, paths_, "textures=extract");
         return true;
     }
@@ -860,11 +892,153 @@ public:
         tex_cancelled_ = true;
     }
 
+    void set_ready_made(bool on) override {
+        json::Value t = json::Value::Object();
+        if (const json::Value* old = settings_.Find("textures"); old && old->is_object()) t = *old;
+        t["defaults"] = on;
+        settings_["textures"] = t;
+        SaveChoices();
+        if (!tex_.extracting()) tex_.StartScan(TexturesDir(), tex_.scan().full, on);   // the status and a shown report in the new words
+    }
+
+    void set_auto_extract(bool on) override {
+        json::Value t = json::Value::Object();
+        if (const json::Value* old = settings_.Find("textures"); old && old->is_object()) t = *old;
+        t["auto_extract"] = on;
+        settings_["textures"] = t;
+        SaveChoices();
+        tex_auto_next_ms_ = 0;   // decide again at the next tick
+        if (!on) tex_auto_note_.clear();
+    }
+
+    std::wstring ExtractExe() const { return start_.extract_exe.empty() ? SelfExePath() : start_.extract_exe; }
+
+    // Round 9: the automatic extraction (core_textures.hpp DecideAutoExtract). Decided on the UI thread from the folder's
+    // manifest, at most every few seconds; started with the same child as Extract textures.
+    void TickAutoExtract() {
+        if (!start_.auto_extract_textures || tex_.extracting()) return;
+        if (phase_ != Phase::ready && !SessionPhase()) return;   // not in a game folder, or an install problem
+        const std::int64_t now = env_->NowMs();
+        if (now < tex_auto_next_ms_) return;
+        tex_auto_next_ms_ = now + 5000;
+        const std::wstring dir = TexturesDir();
+        AutoExtractFacts f;
+        f.enabled = AutoExtractFromSettings(settings_);
+        f.manifest = ReadManifestFacts(dir);
+        // a folder seen extracted (by any Stranded Together): if it loses its index later, filling it again is the player's call
+        if (f.manifest.present && f.manifest.readable && RememberExtractedHere(settings_, dir)) SaveChoices();
+        f.was_extracted = WasExtractedHere(settings_, dir);
+        f.folder_usable = !dir.empty() && TexturesFolderProblem(dir, paths_.game).empty();
+        f.onedrive = f.folder_usable && InOneDrive(dir);
+        f.cancelled = tex_auto_cancelled_;
+        const std::string stamp = st::tex::GameStamp(paths_.game);
+        const std::string key = AutoExtractKey(dir, stamp);
+        const AutoExtractRecord rec = AutoExtractRecordFromSettings(settings_);
+        if (rec.key == key) f.failures = rec.failures, f.last_failure_s = rec.last_s;
+        f.now_s = now / 1000;
+        // the processes only when it would start (a cheap manifest read every few seconds otherwise)
+        AutoExtractDecision d = DecideAutoExtract(f);
+        std::uint64_t free_bytes = UINT64_MAX;
+        if (d.what == AutoExtract::start) {
+            f.game_running = SessionPhase() || local_.running || AnyGameRunningIn(*env_, paths_.game);
+            free_bytes = FreeBytesFor(dir);
+            f.low_disk = free_bytes < kAutoExtractMinFreeBytes;
+            d = DecideAutoExtract(f);
+        }
+        tex_auto_last_ = d.what;
+        std::string note;
+        switch (d.what) {
+            case AutoExtract::not_needed:
+            case AutoExtract::off:
+            case AutoExtract::no_folder:   // the card's folder note says why
+            case AutoExtract::busy:
+                tex_auto_next_ms_ = now + 30000;
+                break;
+            case AutoExtract::look_again:   // another program holds the index for a moment: the next tick looks again
+                break;
+            case AutoExtract::unreadable:
+                note = "Not extracted automatically: the folder's index file (.manifest.txt) does not read (damaged, or written by a newer "
+                       "Stranded Together). Press Extract textures to extract again.";
+                tex_auto_next_ms_ = now + 30000;
+                break;
+            case AutoExtract::gone:
+                note = "The extracted textures are no longer in this folder (deleted, or its drive is missing), so they are not extracted again "
+                       "by themselves: press Extract textures to get them back.";
+                tex_auto_next_ms_ = now + 30000;
+                break;
+            case AutoExtract::low_disk:
+                note = "Not extracted automatically: only " + FormatMegabytes(free_bytes) + " free on this drive (it needs " +
+                       FormatMegabytes(kAutoExtractMinFreeBytes) + " free). Free some space, or press Extract textures.";
+                tex_auto_next_ms_ = now + 60000;
+                break;
+            case AutoExtract::onedrive:
+                note = "Not extracted automatically: this folder is synced by OneDrive. Press Extract textures if you want it here anyway.";
+                tex_auto_next_ms_ = now + 30000;
+                break;
+            case AutoExtract::cancelled:   // the cancel's own result line says it (one line, not two)
+                tex_auto_next_ms_ = now + 30000;
+                break;
+            case AutoExtract::gave_up:
+                // the key holds this build's version, the game's stamp and the folder: any of them changing starts from zero
+                note = "Automatic extraction stopped after " + std::to_string(kAutoExtractMaxFailures) + " tries" +
+                       (rec.error.empty() ? std::string() : " (" + rec.error + ")") +
+                       ". It tries again by itself after a Stranded Together or game update; press Extract textures to try now.";
+                tex_auto_next_ms_ = now + 60000;
+                break;
+            case AutoExtract::retry_later: {
+                const std::int64_t mins = std::max<std::int64_t>(1, (d.retry_at_s - f.now_s + 59) / 60);
+                // the error once: a run started by hand already shows it as the card's result
+                const bool show_error = !rec.error.empty() && tex_result_.empty();
+                note = "The extraction did not finish" + (show_error ? " (" + rec.error + ")" : std::string()) + ". It tries again in " +
+                       std::to_string(mins) + " minute" + (mins == 1 ? "" : "s") + " by itself (or press Extract textures).";
+                tex_auto_next_ms_ = std::min(now + 30000, d.retry_at_s * 1000);
+                break;
+            }
+            case AutoExtract::wait_game:
+                note = std::string(f.manifest.present ? "Fragile's textures need extracting again (" + d.user_reason + ")"
+                                                      : std::string("Fragile's textures are not extracted yet")) +
+                       ": the launcher does it by itself once the game is closed and no session is running.";
+                break;
+            case AutoExtract::start: {
+                std::string error;
+                const bool previews = TexturePreviewsFromSettings(settings_);
+                LauncherLog(*env_, paths_, "textures=auto-extract; reason=" + d.reason + "; failures_before=" + std::to_string(f.failures));
+                if (tex_.StartExtract(ExtractExe(), paths_.game, dir, previews, error)) {
+                    tex_auto_ = true;
+                    tex_auto_key_ = key;
+                    tex_result_.clear();
+                    tex_tone_ = TexturesView::Tone::neutral;
+                } else {
+                    AutoFailed(key, error, true);
+                }
+                break;
+            }
+        }
+        if (d.what != AutoExtract::start) tex_auto_note_ = note;
+        else tex_auto_note_.clear();
+    }
+
+    // A failure for the automatic extraction's record (the next try waits). log: its own launcher.log line (a finished
+    // child's failure is already in TickTextures' line). The new failure count.
+    int AutoFailed(const std::string& key, const std::string& error, bool log) {
+        AutoExtractRecord rec = AutoExtractRecordFromSettings(settings_);
+        if (rec.key != key) rec = AutoExtractRecord{};
+        rec.key = key;
+        ++rec.failures;
+        rec.last_s = env_->NowMs() / 1000;
+        rec.error = error;
+        StoreAutoExtractRecord(settings_, rec);
+        SaveChoices();
+        if (log) LauncherLog(*env_, paths_, "textures=auto-failed; failures=" + std::to_string(rec.failures) + "; error=" + error);
+        tex_auto_next_ms_ = 0;
+        return rec.failures;
+    }
+
     bool check_textures(std::string& error_out) override {
         if (tex_.extracting()) return error_out = "Wait for the extraction to finish.", false;
         const std::wstring dir = TexturesDir();
         if (dir.empty()) return error_out = "No textures folder.", false;
-        tex_.StartScan(dir, true);
+        tex_.StartScan(dir, true, ReadyMadeFromSettings(settings_));
         tex_checking_ = true;
         return true;
     }
@@ -899,7 +1073,9 @@ public:
         settings_["textures"] = t;
         SaveChoices();
         tex_result_.clear();
-        tex_.StartScan(TexturesDir(), false);
+        tex_auto_next_ms_ = 0;   // another folder: the automatic extraction decides again
+        tex_auto_note_.clear();
+        tex_.StartScan(TexturesDir(), false, ReadyMadeFromSettings(settings_));
         return true;
     }
 
@@ -907,31 +1083,64 @@ public:
         ExtractProgress p;
         int code = 0;
         if (tex_.TakeFinished(p, code)) {
+            const bool was_auto = tex_auto_;
+            tex_auto_ = false;
+            const bool automatic = start_.auto_extract_textures && AutoExtractFromSettings(settings_);
+            std::string failed;   // the launcher.log tail of a failure the automatic record counts
             if (tex_cancelled_) {
-                tex_result_ = "Extraction cancelled. Your edited pictures are untouched; press Extract textures to finish.";
+                // one line (the automatic note stays quiet about a cancel)
+                tex_result_ = std::string("Extraction cancelled. Your edited pictures are untouched; press Extract textures to finish") +
+                              (automatic ? " (it does not start by itself again until the launcher starts again)." : ".");
                 tex_tone_ = TexturesView::Tone::warn;
+                tex_auto_cancelled_ = true;   // either kind: no automatic one until the launcher starts next time
+                tex_auto_next_ms_ = 0;
             } else if (code == 0 && p.finished) {
-                tex_result_ = "Done: " + std::to_string(p.written) + " pictures (" + FormatMegabytes(p.bytes) + ") in " +
-                              std::to_string((p.ms + 500) / 1000) + " s." + (p.kept ? " Your edited pictures were kept." : "");
+                const bool ready = ReadyMadeFromSettings(settings_) && !p.defaults_not_made;
+                tex_result_ = std::string(was_auto ? "Extracted automatically: " : "Done: ") + std::to_string(p.written) + " pictures written (" +
+                              FormatMegabytes(p.bytes) + ") in " + std::to_string((p.ms + 500) / 1000) + " s." +
+                              (was_auto && ready ? " Fragile's ready-made colours are ready." : "") + (p.kept ? " Your edited pictures were kept." : "");
+                if (!AutoExtractRecordFromSettings(settings_).key.empty()) {
+                    StoreAutoExtractRecord(settings_, AutoExtractRecord{});
+                    SaveChoices();
+                }
+                if (RememberExtractedHere(settings_, TexturesDir())) SaveChoices();
+                if (p.defaults_replaced)
+                    tex_result_ += " " + std::to_string(p.defaults_replaced) + " unpainted picture(s) now show the newest ready-made colours.";
                 if (p.skipped) tex_result_ += " " + std::to_string(p.skipped) + " picture(s) could not be read (see launcher.log).";
                 if (!p.note.empty()) tex_result_ += " " + p.note + ".";
-                tex_tone_ = TexturesView::Tone::good;
+                tex_tone_ = p.incomplete ? TexturesView::Tone::warn : TexturesView::Tone::good;
+                // pictures left for the next extraction (another program had them open): the index says so, and the
+                // automatic one waits like after a failure instead of trying the same at once
+                if (p.incomplete && start_.auto_extract_textures && !tex_auto_key_.empty()) {
+                    const std::string why = std::to_string(p.incomplete) + " unpainted picture(s) were open in another program";
+                    failed = "; failures=" + std::to_string(AutoFailed(tex_auto_key_, why, false)) + "; error=" + why;
+                }
+            } else if (was_auto) {
+                // quietly: a warn line on the card (no dialog); the next try waits (AutoExtractRetryAfterS)
+                const std::string why = p.error.empty() ? "the extraction stopped (exit code " + std::to_string(code) + ")" : p.error;
+                failed = "; failures=" + std::to_string(AutoFailed(tex_auto_key_, why, false)) + "; error=" + why;
+                tex_result_.clear();
+                tex_tone_ = TexturesView::Tone::neutral;
             } else {
                 tex_result_ = p.error.empty() ? "The extraction stopped (exit code " + std::to_string(code) + ")." : p.error;
                 tex_tone_ = TexturesView::Tone::bad;
+                if (start_.auto_extract_textures && !tex_auto_key_.empty())
+                    failed = "; failures=" + std::to_string(AutoFailed(tex_auto_key_, tex_result_, false)) + "; error=" + tex_result_;
             }
-            LauncherLog(*env_, paths_, "textures=" + std::string(tex_cancelled_ ? "cancelled" : code == 0 ? "done" : "failed") + " exit=" +
+            LauncherLog(*env_, paths_, std::string(was_auto ? "textures=auto-" : "textures=") + (tex_cancelled_ ? "cancelled" : code == 0 ? "done" : "failed") + " exit=" +
                                            std::to_string(code) + " sets=" + std::to_string(p.sets) + " skipped=" + std::to_string(p.skipped) +
                                            " written=" + std::to_string(p.written) + " kept=" + std::to_string(p.kept) + " bytes=" +
-                                           std::to_string(p.bytes) + " ms=" + std::to_string(p.ms));
+                                           std::to_string(p.bytes) + " ms=" + std::to_string(p.ms) +
+                                           (p.incomplete ? " incomplete=" + std::to_string(p.incomplete) : std::string()) + failed);
             tex_cancelled_ = false;
-            tex_.StartScan(TexturesDir(), false);
+            tex_.StartScan(TexturesDir(), false, ReadyMadeFromSettings(settings_));
         }
         if (tex_wanted_ && !tex_scanned_ && !tex_.extracting()) {
             tex_scanned_ = true;
-            tex_.StartScan(TexturesDir(), false);
+            tex_.StartScan(TexturesDir(), false, ReadyMadeFromSettings(settings_));
         }
         if (tex_checking_ && !tex_.scanning()) tex_checking_ = false;
+        TickAutoExtract();
     }
 
     void tick() override {
@@ -1586,6 +1795,7 @@ private:
         ApplyDebugOptions(debug_, ini);
         ini.textures_dir = TexturesDirForSession(settings_, paths_.game);   // Fragile's textures (read by the guest's mod; "" when not usable)
         ini.boots_look = BootsLookFromSettings(settings_);             // her boots (the guest's choice is sent to the host)
+        ini.textures_defaults = ReadyMadeFromSettings(settings_);      // ready-made colours (read by the guest's mod)
         return ini;
     }
 
@@ -1744,6 +1954,12 @@ private:
     TextureTasks tex_;
     mutable bool tex_wanted_ = false;   // textures() was asked for (the Tools page): tick() scans the folder once
     bool tex_scanned_ = false, tex_checking_ = false, tex_cancelled_ = false;
+    // Round 9, the automatic extraction (TickAutoExtract): the running one was started automatically; the player
+    // cancelled one since this launcher started; when to decide again; the card's quiet line; the running one's key.
+    bool tex_auto_ = false, tex_auto_cancelled_ = false;
+    std::int64_t tex_auto_next_ms_ = 0;
+    std::string tex_auto_note_, tex_auto_key_;
+    AutoExtract tex_auto_last_ = AutoExtract::not_needed;   // the last decision (the card's "by itself" wording)
     std::string tex_result_;
     TexturesView::Tone tex_tone_ = TexturesView::Tone::neutral;
     Transport session_transport_ = Transport::steam;
@@ -1805,6 +2021,7 @@ int RunWriteSession(const std::wstring& game_dir, const WriteSessionRequest& req
     ini.world_sync = DebugOptionsFromSettings(settings).share_world;   // written with host_save (world_sync=0 when off)
     ini.textures_dir = TexturesDirForSession(settings, paths.game);
     ini.boots_look = BootsLookFromSettings(settings);
+    ini.textures_defaults = ReadyMadeFromSettings(settings);
     const std::uint64_t self_id = OwnSteamId(*env);
     const std::uint32_t account = self_id > kSteamIdBase ? static_cast<std::uint32_t>(self_id - kSteamIdBase) : 0u;
     if (request.role == "host") {
@@ -1874,6 +2091,7 @@ int RunWriteLocalTestIni(const std::wstring& game_dir, const std::wstring& out_d
     choices.guest_character = GuestPickFromSettings(settings, stored_pick);
     choices.textures_dir = TexturesDirForSession(settings, game_dir);   // as the launcher writes it (the testenv swaps it)
     choices.boots_look = BootsLookFromSettings(settings);
+    choices.textures_defaults = ReadyMadeFromSettings(settings);
     SessionIni host, guest;
     MakeLocalTestInis(options, choices, host, guest);
     if (!CreateDirectories(out_dir)) return fail("could not create " + Utf8(out_dir));

@@ -1,0 +1,63 @@
+# Fragile's ready-made colours: which pictures a painted ("yours") colour folder wears (round 8 review fixes;
+# docs/textures.md "Ready-made colours", ready_made_rules.hpp), solo, hidden. The run's folder is extracted, turned into a
+# v0.24 folder (textures v024), "16 Gold" painted there (a checker in its Colour and Roughness: generated, no game data),
+# then extracted again (the upgrade: 16 is the user's and keeps v0.24's copy of her own Reflectance; the rest gets the
+# ready-made pictures). After that "15 Silver" is painted the same way and "05 Light grey" gets only a painted Ambient
+# occlusion picture (textures pattern ao).
+#   16: S0 from the folder, S1 her own (the folder's Reflectance is her Original): NOT the ready-made gold shine.
+#   15: S0 from the folder, S1 the folder's unedited ready-made silver: byte for byte the ready-made slot (a recipe).
+#   05: S1 from the folder (the painted AO), S0 the folder's unedited ready-made grey (the ready-made slot).
+#   13: nothing painted: ready-made.
+# A debug Fragile next to Sam (the round-8 proof's framing), one screenshot each.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios fragile-suit-defaults-rules -SeedSaves complete-100
+role solo
+timeout 300
+ini partner_body=real
+ini pose_hook=1
+ini my_character=fragile_suit
+ini self_character=0
+textures extract
+textures v024
+textures pattern checker 16 Gold
+textures extract
+textures pattern checker 15 Silver
+textures pattern ao 05 Light grey
+start
+waitplayer 60
+goto mknot-road
+?action set_time_of_day 12
+?action dev_weather 0
+wait 3000
+pad none 2400 ly=32767
+pad none 900 ly=-32767
+wait 1000
+action real_outfit 4 16
+action real_spawn 16 -1.1 0
+waitlog 60 \[real\] 'fragile_suit' is live
+waitlog 30 \[tex\] ready: manifest table
+waitlog 30 \[tex\] look .* for colour 16 .*: yours: 1 slot\(s\) \(S0\)
+waitlog 20 \[tex\] body debug .*: look .* bound
+?action set_time_of_day 12
+wait 2000
+screenshot r16-v024-painted
+action real_outfit 4 15
+waitnew 30 \[tex\] look .* for colour 15 .*: yours: 1 slot\(s\) \(S0\), ready-made S1
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot r15-painted-ready-s1
+action real_outfit 4 5
+waitnew 30 \[tex\] look .* for colour 5 .*: yours: 1 slot\(s\) \(S1\), ready-made S0
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot r05-ao-painted
+action real_outfit 4 13
+waitnew 30 \[tex\] look .* for colour 13 .*: ready-made \(S0\)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot r13-ready-made
+action tex 0
+nolog \[tex\] look .* for colour 16 .*ready-made S1
+nolog \[tex\] .*FAULTED
+nolog \[tex\] ready-made colours off
+nolog \[tex\] refused
+quit

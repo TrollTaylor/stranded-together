@@ -1,0 +1,33 @@
+# Fragile's ready-made suit colours from a v0.24 textures folder (round 8; docs/textures.md "Ready-made colours"),
+# solo, hidden. The run's folder is extracted, then turned back into what v0.24's extractor left (st_textool v024:
+# copies of her Original suit pictures in every colour folder, their seed rows = Original, manifest extract 1). No
+# re-extraction: the mod already wears the ready-made colours (unedited copies count as ready-made). Gold (16, S0 S1),
+# then light grey (5, S0).
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario fragile-suit-defaults-upgrade -SeedSaves complete-100
+role solo
+timeout 300
+ini partner_body=real
+ini pose_hook=1
+ini my_character=fragile_suit
+ini self_character=1
+ini self_feet_hide=0
+textures extract
+textures v024
+start
+waitlog 40 \[self\] showing 'fragile_suit'
+waitlog 30 \[tex\] ready: manifest table
+waitlog 60 \[tex\] look .* for colour 16 .*: ready-made \(S0 S1\)
+waitlog 30 \[tex\] body self .*: look .* bound .* kept [1-9]
+pad none 1300 rx=32767
+wait 1500
+screenshot 01-gold-from-v024-folder
+action real_outfit 4 5
+waitnew 30 \[tex\] look .* for colour 5 .*: ready-made \(S0\)
+waitnew 30 \[tex\] body self .*: look .* bound .* kept [1-9]
+wait 2500
+screenshot 02-light-grey-from-v024-folder
+action tex 0
+nolog \[tex\] .*FAULTED
+nolog \[tex\] ready-made colours off
+nolog \[tex\] refused
+quit

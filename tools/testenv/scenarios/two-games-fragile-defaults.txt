@@ -1,0 +1,96 @@
+# Fragile's ready-made suit colours between two games (round 8; docs/textures.md "Ready-made colours", STT1 RECIPE),
+# hidden, on the launcher's own Local test files. The run's own freshly extracted textures folder (both games'
+# session.ini name it), nothing painted. Noon, clear, on the knot road; the host's camera on the guest's Fragile pinned
+# ahead of it (collision 3). The guest (Fragile) wears the ready-made colour of her Sam's suit colour and announces its
+# blobs as a RECIPE; the host makes the same blobs itself from its own copy of her Original pictures (checked by
+# SHA-256): no transfer. host_save: the guest's Sam starts gold (16: S0 and S1). Then mustard (9: S0). Then a quick run of
+# colour changes on a slow host (tex 12 3: each make 2 s slower): the older looks' makes are dropped ("no longer made
+# here") and the last colour (14) shows without waiting for them. Then the fallback: the host's make throws (tex 12 4, as
+# an out-of-memory would): its request still reports, and the guest's sky blue (13) comes over the link (about 60 s).
+# Gold again: the host's partner cache has both blobs.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-fragile-defaults -SeedSaves complete-100 -GuestSeed profile-only
+role host
+graphics low
+timeout 360
+launcherini local-test
+textures extract
+start control 200
+@guest waitlog 60 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+@both goto mknot-road
+wait 6000
+@both ?action set_time_of_day 12
+@both ?action dev_weather 0
+@guest pad none 2400 ly=32767
+@guest pad none 900 ly=-32767
+@guest waitlog 60 \[tex\] look .* for colour 16 .*: ready-made \(S0 S1\)
+@guest waitlog 30 \[tex\] look #[0-9]+ sent: colour 16, 2 blob\(s\) \(2 ready-made: recipe sent\)
+waitlog 30 \[tex\] partner ready-made S0 .* made here in
+waitlog 30 \[tex\] partner ready-made S1 .* made here in
+waitlog 30 \[tex\] partner look .*: complete for colour 16 .*made here 2
+waitlog 30 \[tex\] body partner .*: look .* bound .* kept [1-9]
+action collision 3 1.6
+pad none 220 rx=32767
+wait 1200
+action collision 3 1.3
+pad none 150 rx=-32767
+wait 1800
+@both action tex 0
+screenshot 00-host-sees-guest-gold
+@guest screenshot 00-guest-self-gold
+# mustard: S0 only, made here
+@guest action real_outfit 4 9
+@guest waitnew 30 \[tex\] look #[0-9]+ sent: colour 9, 1 blob\(s\) \(1 ready-made: recipe sent\)
+waitnew 60 \[tex\] partner ready-made S0 .* made here in
+waitnew 30 \[tex\] partner look .*: complete for colour 9 .*made here 1
+waitnew 30 \[tex\] body partner .*: look .* bound .* kept [1-9]
+wait 1500
+screenshot 01-host-sees-guest-mustard
+@guest screenshot 01-guest-self-mustard
+# a quick run of colour changes on a slow host: the newest look waits only for its own blob
+action tex 12 3
+@guest action real_outfit 4 1
+wait 700
+@guest action real_outfit 4 2
+wait 700
+@guest action real_outfit 4 3
+wait 700
+@guest action real_outfit 4 4
+wait 700
+@guest action real_outfit 4 14
+waitnew 30 \[tex\] partner look #[0-9]+: [0-9]+ ready-made blob\(s\) of an older look no longer made here
+waitnew 40 \[tex\] partner look .*: complete for colour 14 .*made here 1
+action tex 12 0
+waitnew 30 \[tex\] body partner .*: look .* bound .* kept [1-9]
+wait 1500
+screenshot 02-host-sees-guest-pink
+@guest screenshot 02-guest-self-pink
+# the fallback: this game's make throws (as out of memory): the request still gets its result and the guest sends the blob
+action tex 12 4
+@guest action real_outfit 4 13
+waitnew 60 \[tex\] partner ready-made S0 .* not made here \(out of memory while making it\): asking the guest for it
+waitnew 180 \[tex\] partner look .*: received S0 .* valid
+waitnew 30 \[tex\] partner look .*: complete for colour 13
+waitnew 30 \[tex\] body partner .*: look .* bound .* kept [1-9]
+wait 1500
+screenshot 03-host-sees-guest-sky-blue
+@guest screenshot 03-guest-self-sky-blue
+# gold again: both blobs are in the host's partner cache
+@guest action real_outfit 4 16
+waitnew 60 \[tex\] partner look .*: complete for colour 16 .*cache hit 2
+waitnew 30 \[tex\] body partner .*: look .* bound .* kept [1-9]
+wait 1500
+screenshot 04-host-sees-guest-gold-again
+action collision 3 0
+@both action log_status
+@both action tex 0
+nolog \[tex\] .*FAULTED
+@guest nolog \[tex\] .*FAULTED
+nolog \[tex\] ready-made colours off
+@guest nolog \[tex\] ready-made colours off
+nolog \[tex\] refused
+@guest nolog \[tex\] host refused
+nolog \[tex\] .*NOT valid
+@guest quit
+wait 3000
+quit

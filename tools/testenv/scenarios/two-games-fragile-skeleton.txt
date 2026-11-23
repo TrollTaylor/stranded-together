@@ -1,0 +1,91 @@
+# Sam's skeletons on Fragile, both screens (round 7; docs/real-partner-body.md section 32), hidden, on the launcher's own
+# Local test files (host Sam, guest Fragile):
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-fragile-skeleton -SeedSaves complete-100 -GuestSeed profile-only -Id round7-skel-2g
+# The guest's Sam starts as a copy of the host's (the 100% save: gold suit, speed skeleton). The guest's own screen shows
+# Fragile with the skeleton (the self slot's exo carrier); the host's screen shows the partner Fragile with it (the partner
+# slot's carrier, from the guest's STC1 parts block). Then each skeleton type in turn on the guest (gear 28: the pieces the
+# guest reads replaced by a type's, so its self view and the wire follow): screenshots of her on both screens, standing and
+# walking. The host is a Sam: the guest's screen keeps his own skeleton on his body (MirrorParts), no carrier for him.
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+@guest waitlog 60 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+@both goto mknot-road
+wait 6000
+@guest pad none 2400 ly=32767
+@guest pad none 900 ly=-32767
+# the real skeleton (speed) on both screens
+@guest waitlog 60 \[exo\] our Sam's skeleton: speed
+@guest waitlog 60 \[exo-self\] carrier [0-9A-Fa-fx]+: shown
+waitlog 60 \[exo\] carrier .* follows the partner body's pose
+waitlog 60 \[exo\] carrier [0-9A-Fa-fx]+: shown
+wait 2000
+@both action gear 27 2
+screenshot 01-host-sees-guest-speed
+@guest screenshot 01-guest-self-speed
+@guest pad none 1200 ly=32767 keep
+screenshot 02-host-sees-guest-speed-walking
+@guest screenshot 02-guest-self-speed-walking
+@guest pad none 0
+wait 1500
+@guest pad none 900 ly=-32767
+wait 1500
+# all-terrain
+@guest action gear 28 2
+waitlog 30 \[exo\] carrier .* parts: .*the sender's skeleton: all-terrain
+@guest waitlog 30 \[exo-self\] carrier .* parts: .*the sender's skeleton: all-terrain
+wait 1500
+screenshot 03-host-sees-guest-all-terrain
+@guest screenshot 03-guest-self-all-terrain
+# power
+@guest action gear 28 3
+waitlog 30 \[exo\] carrier .* parts: .*the sender's skeleton: power
+@guest waitlog 30 \[exo-self\] carrier .* parts: .*the sender's skeleton: power
+wait 1500
+screenshot 04-host-sees-guest-power
+@guest screenshot 04-guest-self-power
+@guest pad none 1200 ly=32767 keep
+screenshot 05-host-sees-guest-power-walking
+@guest screenshot 05-guest-self-power-walking
+@guest pad none 0
+wait 1500
+@guest pad none 900 ly=-32767
+wait 1500
+# support
+@guest action gear 28 4
+waitlog 30 \[exo\] carrier .* parts: .*the sender's skeleton: support
+@guest waitlog 30 \[exo-self\] carrier .* parts: .*the sender's skeleton: support
+wait 1500
+screenshot 06-host-sees-guest-support
+@guest screenshot 06-guest-self-support
+# none: both carriers hidden
+@guest action gear 28 0
+waitnew 30 \[exo\] carrier [0-9A-Fa-fx]+: hidden
+wait 1500
+screenshot 07-host-sees-guest-none
+@guest screenshot 07-guest-self-none
+# back to the real one (speed)
+@guest action gear 28 -1
+waitnew 30 \[exo\] carrier [0-9A-Fa-fx]+: shown
+wait 1500
+screenshot 08-host-sees-guest-speed-again
+@guest screenshot 08-guest-self-speed-again
+@both action gear 27 2
+# the host's Sam on the guest's screen: his own skeleton through MirrorParts, no carrier
+@guest waitlog 10 \[gear\] partner body .*the partner's parts are mirrored on it
+@guest nolog \[exo\] carrier: loading
+nolog \[exo.*FAULTED
+@guest nolog \[exo.*FAULTED
+nolog \[exo.*\] carrier refused
+@guest nolog \[exo.*\] carrier refused
+nolog \[exo.*\] carrier [0-9A-Fa-fx]+: no tint after
+@guest nolog \[exo.*\] carrier [0-9A-Fa-fx]+: no tint after
+nolog \[gear\] the ArtParts part setter faulted
+@guest nolog \[gear\] the ArtParts part setter faulted
+@both action log_status
+@guest quit
+wait 3000
+quit

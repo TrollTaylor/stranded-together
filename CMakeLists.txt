@@ -304,6 +304,14 @@ target_compile_options(st_boots_look_tests PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_boots_look_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_test(NAME st_boots_look_tests COMMAND st_boots_look_tests)
 
+# ---- Sam's skeletons on Fragile, the pure part (native/mod/exo_parts.hpp): the mesh controller's formula without the self
+# view's bit, the skeleton types, the exo carrier's parts plan (docs/real-partner-body.md section 32).
+add_executable(st_exo_parts_tests tests/exo_parts_tests.cpp)
+target_include_directories(st_exo_parts_tests PRIVATE native/mod)
+target_compile_options(st_exo_parts_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_exo_parts_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_exo_parts_tests COMMAND st_exo_parts_tests)
+
 # ---- Held items on the other screen, the pure part (native/mod/held_rules.hpp): which weapon resources become held clones in
 # each held_items mode, which component resources a clone keeps, the prop keys (docs/real-partner-body.md section 31).
 add_executable(st_held_rules_tests tests/held_rules_tests.cpp)
@@ -333,8 +341,10 @@ add_test(NAME st_world_wire_tests COMMAND st_world_wire_tests)
 # the game's Oodle loaded by full path and the extraction plan: only the launcher's --extract-textures child and the
 # tests link it, never the mod.
 add_library(st_textures STATIC native/textures/tex_codec.cpp native/textures/png_wic.cpp native/textures/tex_hash.cpp
-            native/textures/tex_manifest.cpp native/textures/tex_blob.cpp)
+            native/textures/tex_manifest.cpp native/textures/tex_blob.cpp native/textures/suit_defaults.cpp)
 target_include_directories(st_textures PUBLIC native/textures)
+# the ready-made colours' palette (suit_colour_math.hpp, header-only)
+target_include_directories(st_textures PRIVATE native/mod)
 target_compile_options(st_textures PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_textures PRIVATE UNICODE _UNICODE)
 target_link_libraries(st_textures PUBLIC bcrypt windowscodecs ole32)
@@ -353,6 +363,13 @@ target_compile_options(st_texture_tests PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_texture_tests PRIVATE UNICODE _UNICODE)
 target_link_libraries(st_texture_tests PRIVATE st_textures_extract)
 add_test(NAME st_texture_tests COMMAND st_texture_tests)
+# Round 8: Fragile's ready-made suit colours (suit_defaults.hpp): golden hashes from the Python model, the folder rule.
+add_executable(st_suit_defaults_tests tests/suit_defaults_tests.cpp)
+target_include_directories(st_suit_defaults_tests PRIVATE native/mod)
+target_compile_options(st_suit_defaults_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_suit_defaults_tests PRIVATE UNICODE _UNICODE)
+target_link_libraries(st_suit_defaults_tests PRIVATE st_textures_extract)
+add_test(NAME st_suit_defaults_tests COMMAND st_suit_defaults_tests)
 # Round 6 T2: the blob (build / strict validate), the STT1 messages, the receiver's reassembly and the sender's pacing.
 add_executable(st_texture_wire_tests tests/texture_wire_tests.cpp native/mod/texture_wire.cpp)
 target_include_directories(st_texture_wire_tests PRIVATE native/mod)

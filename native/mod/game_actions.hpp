@@ -159,6 +159,11 @@ int PlacementGate(char* why, std::size_t cap, bool asleep_ok = false) noexcept;
 // it is only bit 0x100: the world waits for a scene; the mod places him once it is over), a DSGameState flag of `state_bits` current or requested, Sam+0x678 (the game's warp
 // guard), a pushed player transform, with `sequence` bound to a sequence. nullptr also when it cannot tell (byte checks).
 const char* CarriedSamTaken(std::uint64_t state_bits, bool sequence, bool* ours) noexcept;
+// Game thread. Reads only. The self view (real_body.cpp SelfTick, docs/real-partner-body.md section 33): whether the game is
+// loading or settling after a load right now: the GameModule load mask (+0x44C, any bit), the DSGameState flags Loading
+// (0x400000) or Setup (0x4000000), current or requested, or its post-load phase (+0x5E0 == 2). nullptr when none (and
+// when it cannot tell: a byte check failed). `state` / `mask` (may be null): flags | requested and the load mask as read.
+const char* LoadOrSetup(std::uint64_t* state, std::uint32_t* mask) noexcept;
 // Player collision debug command (partner_collision.cpp): see docs/debug-actions.md "Player collision".
 bool CollisionCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 // Gear debug command (partner_gear.cpp): see docs/debug-actions.md "Gear".
@@ -192,6 +197,11 @@ bool NameTagCommand(int op, const double (&v)[3], char* msg, std::size_t cap) no
 // DSGameState flags use EDSGameStateForScript bit values (RTTI enum 0x144C66648).
 constexpr std::uint64_t kStoppingGameEventMask = 0x184F407FEC7F7Full;  // IsStoppingGameEvent 0x142DD3760
 constexpr std::uint64_t kGameStateSetup = 0x4000000ull;
+constexpr std::uint64_t kGameStateLoading = 0x400000ull;
+constexpr std::uint64_t kGameStatePauseMenu = 0x4ull;
+constexpr std::uint64_t kGameStateCutscene = 0x40ull;
+constexpr std::uint64_t kGameStateSystemPause = 0x10000000ull;
+constexpr std::uint64_t kGameStatePrivateRoom = 0x8ull;
 
 inline const char* GameStateFlagName(int bit) noexcept {
     static const char* const kNames[] = {

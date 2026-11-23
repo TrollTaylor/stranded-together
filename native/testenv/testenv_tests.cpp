@@ -1011,6 +1011,47 @@ void SandboxRules() {
     Check(!te::ParseScenario("textures pattern checker ..\\x\nquit\n", &sc, &err) && !te::ParseScenario("textures pattern plaid 16 Gold\nquit\n", &sc, &err) &&
               !te::ParseScenario("textures pattern checker Gold\nquit\n", &sc, &err) && !te::ParseScenario("textures copy\nquit\n", &sc, &err),
           "scenario: textures refuses other folders, names and commands");
+    // round 8: "ao" paints only a suit colour folder's Ambient occlusion picture
+    Check(te::ParseScenario("textures extract\ntextures pattern ao 05 Light grey\nquit\n", &sc, &err) && sc.textures_pre.size() == 2 &&
+              sc.textures_pre[1] == "pattern ao 05 Light grey" && !te::ParseScenario("textures pattern ao 09 Chiral boots\nquit\n", &sc, &err),
+          "scenario: textures pattern ao (a suit colour folder only)", err);
+    // round 7: a picture file copied under a name the mod reads (a JPEG named .png), before start or as a step
+    Check(te::ParseScenario("textures extract\ntextures copy 16 Gold\\Suit - Colour.png from D:\\pics\\gold (grok).jpg\nstart\n"
+                            "textures copy 09 Chiral boots\\Worn\\Boots - Colour.png from C:\\a b\\c.webp\nquit\n",
+                            &sc, &err) &&
+              sc.textures_pre.size() == 2 && sc.textures_pre[1] == "copy 16 Gold\\Suit - Colour.png from D:\\pics\\gold (grok).jpg" &&
+              std::any_of(sc.steps.begin(), sc.steps.end(),
+                          [](const te::Step& s) { return s.kind == te::StepKind::textures && s.text == "copy 09 Chiral boots\\Worn\\Boots - Colour.png from C:\\a b\\c.webp"; }),
+          "scenario: textures copy <folder>\\<picture> from <file>", err);
+    Check(!te::ParseScenario("textures copy 16 Gold\\Suit - Colour.png from pics\\x.jpg\nquit\n", &sc, &err) &&
+              !te::ParseScenario("textures copy 16 Gold\\..\\x.png from C:\\x.jpg\nquit\n", &sc, &err) &&
+              !te::ParseScenario("textures copy 16 Gold\\notes.png from C:\\x.jpg\nquit\n", &sc, &err) &&
+              !te::ParseScenario("textures copy Gold\\Suit - Colour.png from C:\\x.jpg\nquit\n", &sc, &err) &&
+              !te::ParseScenario("textures copy 16 Gold\\Suit - Colour.jpg from C:\\x.jpg\nquit\n", &sc, &err) &&
+              !te::ParseScenario("textures copy 16 Gold\\Worn\\Suit - Colour.png from C:\\x.jpg\nquit\n", &sc, &err),
+          "scenario: textures copy refuses other names, folders and relative sources");
+    // round 8: the v0.24 folder and a colour folder's Suit pictures deleted (the ready-made colours)
+    Check(te::ParseScenario("textures extract\ntextures v024\nstart\ntextures reset 09 Mustard\nquit\n", &sc, &err) && sc.textures_pre.size() == 2 &&
+              sc.textures_pre[1] == "v024" &&
+              std::any_of(sc.steps.begin(), sc.steps.end(), [](const te::Step& s) { return s.kind == te::StepKind::textures && s.text == "reset 09 Mustard"; }),
+          "scenario: textures v024 / reset <colour folder>", err);
+    Check(!te::ParseScenario("textures reset 09 Chiral boots\nquit\n", &sc, &err) && !te::ParseScenario("textures reset ..\\x\nquit\n", &sc, &err) &&
+              !te::ParseScenario("textures reset 09 Mustard\\Worn\nquit\n", &sc, &err) && !te::ParseScenario("textures v024 now\nquit\n", &sc, &err),
+          "scenario: textures reset refuses boots folders and paths");
+    // round 9: a round-8 folder's gold and silver (generator 1), before the start or while the game runs; an extraction
+    // while the game runs (the launcher's background extraction finishing after the game started)
+    Check(te::ParseScenario("textures extract\ntextures gen1\nstart\ntextures gen1\ntextures extract\nquit\n", &sc, &err) && sc.textures_pre.size() == 2 &&
+              sc.textures_pre[1] == "gen1" && sc.textures &&
+              std::count_if(sc.steps.begin(), sc.steps.end(), [](const te::Step& s) { return s.kind == te::StepKind::textures; }) == 2 &&
+              !te::ParseScenario("textures gen1 now\nquit\n", &sc, &err),
+          "scenario: textures gen1 / extract while the game runs", err);
+    // round 9 review: the extraction in the background (steps run meanwhile), then waited for; never before the start
+    Check(te::ParseScenario("start\ntextures extract-start\nwait 100\ntextures extract-wait\nquit\n", &sc, &err) && sc.textures &&
+              sc.textures_pre.empty() &&
+              std::count_if(sc.steps.begin(), sc.steps.end(), [](const te::Step& s) { return s.kind == te::StepKind::textures; }) == 2 &&
+              !te::ParseScenario("textures extract-start\nstart\nquit\n", &sc, &err) && err.find("after start") != std::string::npos,
+          "scenario: textures extract-start / extract-wait", err);
+    Check(te::ScenarioIniKeyAllowed("textures_defaults") && te::LauncherIniOverrideAllowed("textures_defaults"), "scenario: textures_defaults is a test switch");
     // a boots folder's Worn / Gold / Silver subfolder (round 6 T3), nothing deeper or elsewhere
     Check(te::ParseScenario("textures extract\ntextures pattern stripes 09 Chiral boots\\Worn\nquit\n", &sc, &err) && sc.textures_pre.size() == 2 &&
               sc.textures_pre[1] == "pattern stripes 09 Chiral boots\\Worn",

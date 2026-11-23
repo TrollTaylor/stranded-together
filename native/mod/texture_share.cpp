@@ -12,6 +12,7 @@
 #include "coop_session.hpp"
 #include "link.hpp"
 #include "log.hpp"
+#include "suit_defaults.hpp"
 #include "tex_blob.hpp"
 #include "tex_hash.hpp"
 #include "tex_slots.hpp"
@@ -22,6 +23,8 @@ namespace st::texshare {
 namespace {
 
 namespace tx = st::tex;
+// a RECIPE's variant range on the wire is the generator's (a variant added on one side only would refuse every RECIPE)
+static_assert(twire::kMetalVariants == static_cast<unsigned>(tx::defaults::kMetalVariants), "texture_wire.hpp and suit_defaults.hpp kMetalVariants differ");
 constexpr std::uint64_t kCacheMax = 256ull << 20;
 // The sender's budget: at most 64 MB of blob bytes per 10 minutes (a full suit set is about 13 MB, one edited 2048 map
 // 5.6 MB). Past it the sending pauses (the host keeps the previous look and is told, RESULT kBudget) and resumes with the
@@ -85,6 +88,14 @@ struct Incoming {
 std::map<std::string, Incoming> g_in;  // key: blob id hex
 std::uint64_t g_chunks_rx = 0, g_blobs_rx = 0, g_refused = 0, g_cache_hits = 0;
 bool g_table_logged = false;
+// round 8: the guest's newest RECIPE (its ready-made blobs), the blobs this game is making itself, and counters
+twire::Recipe g_recipe;
+bool g_have_recipe = false;
+std::map<std::string, int> g_making;   // blob id hex -> slot (only the newest LOOK's: an older look's are dropped)
+unsigned g_made_for_pending = 0;       // made here for the pending look
+std::uint64_t g_recipes_rx = 0, g_made_here = 0, g_made_fail = 0;
+std::string g_no_make_logged;
+bool g_extract_told = false;           // the host player was told once to press Extract textures
 
 std::string Hex8(const std::uint8_t* id) { return tx::Hex(id, 4); }
 
@@ -206,6 +217,12 @@ void ResetHost(const char* why) {
     g_have_pending = false;
     g_have_last_look = false;
     g_in.clear();
+    g_have_recipe = false;
+    g_making.clear();
+    {   // their queued makes too (the one being made reports and is ignored)
+        const std::uint8_t none[1][32] = {};
+        ftex::looks::DropQueuedMakes(none, 0);
+    }
     g_rx_window_start_ms = -1;
     g_table_logged = false;
     if (had) Log("[tex] host: the previous guest's look, boots style and half-received textures forgotten (%s)", why);
@@ -223,7 +240,7 @@ void SendResult(const std::uint8_t id[32], std::uint8_t code) {
     }
 }
 
-void Promote(const twire::Look& m, unsigned hits) {
+void Promote(const twire::Look& m, unsigned hits, unsigned made = 0) {
     ftex::Look l;
     l.colour = m.colour;
     for (unsigned i = 0; i < m.n; ++i) {
@@ -236,13 +253,38 @@ void Promote(const twire::Look& m, unsigned hits) {
     ReleaseSRWLockExclusive(&g_lock);
     g_have_pending = false;
     if (l.Empty()) Log("[tex] partner look: her own suit (colour %u) and boots", m.colour);
-    else Log("[tex] partner look %s: complete for colour %u (%u blob(s), cache hit %u)", Hex8(l.id).c_str(), m.colour, m.n, hits);
+    else Log("[tex] partner look %s: complete for colour %u (%u blob(s), cache hit %u, made here %u)", Hex8(l.id).c_str(), m.colour, m.n, hits, made);
 }
 
 bool PendingComplete() {
     for (unsigned i = 0; i < g_pending.n; ++i)
         if (!ftex::HaveBlob(g_pending.e[i].id)) return false;
     return true;
+}
+
+// A blob of the pending look is still being made here (only its own ids count: never an older look's).
+bool PendingMaking() {
+    for (unsigned i = 0; g_have_pending && i < g_pending.n; ++i)
+        if (g_making.count(tx::Hex(g_pending.e[i].id, 32))) return true;
+    return false;
+}
+
+// The host player can fix "made here" failures by extracting the textures (the launcher's Extract textures): told once
+// per session, in the log and on the screen.
+void TellExtract(const char* why) {
+    if (g_extract_told || !why) return;
+    const std::string w = why;
+    const bool not_extracted = w.find("no textures folder here") != std::string::npos || w.find("not extracted here yet") != std::string::npos;
+    if (!not_extracted && w.find("extract the textures again") == std::string::npos && w.find("another game version") == std::string::npos) return;
+    g_extract_told = true;
+    // round 9: the launcher extracts by itself once the game is closed (its button refuses while the game runs); a game
+    // update or changed Original pictures stay the player's call
+    Log("[tex] host: the partner's ready-made colours come over the link (about a minute each) because %s: %s", why,
+        not_extracted ? "the launcher on this PC extracts the textures by itself once the game is closed, then they are made here in about a second"
+                      : "quit the game and press Extract textures in the launcher on this PC, then they are made here in about a second");
+    coop::SetVehicleNotice(not_extracted ? "Fragile's colours arrive slowly until your textures are extracted: the launcher does it when the game is closed"
+                                         : "Fragile's colours arrive slowly: quit and press Extract textures in the launcher to fix it",
+                           false, static_cast<double>(link::NowMs()) + 10000.0);
 }
 
 void OnLook(const twire::Look& m) {
@@ -262,6 +304,20 @@ void OnLook(const twire::Look& m) {
         for (unsigned i = 0; i < m.n && !in_look; ++i) in_look = std::memcmp(it->second.id, m.e[i].id, 32) == 0;
         if (in_look) ++it;
         else it = g_in.erase(it);
+    }
+    // and only its blobs are made here: an older look's queued makes are dropped (the guest left that colour), and the
+    // newest look never waits for them
+    {
+        std::uint8_t keep[twire::kMaxEntries][32];
+        for (unsigned i = 0; i < m.n; ++i) std::memcpy(keep[i], m.e[i].id, 32);
+        for (auto it = g_making.begin(); it != g_making.end();) {
+            bool in_look = false;
+            for (unsigned i = 0; i < m.n && !in_look; ++i) in_look = tx::Hex(m.e[i].id, 32) == it->first;
+            if (in_look) ++it;
+            else it = g_making.erase(it);
+        }
+        const unsigned dropped = ftex::looks::DropQueuedMakes(keep, m.n);
+        if (dropped) Log("[tex] partner look #%u: %u ready-made blob(s) of an older look no longer made here", m.epoch, dropped);
     }
     if (!g_cfg.receive) {
         for (unsigned i = 0; i < m.n; ++i) SendResult(m.e[i].id, twire::kRefused);
@@ -287,7 +343,8 @@ void OnLook(const twire::Look& m) {
     twire::IdList have, want;
     have.epoch = want.epoch = m.epoch;
     const std::uint64_t hits0 = g_cache_hits;
-    unsigned in_ram = 0, refused = 0;
+    unsigned in_ram = 0, refused = 0, making = 0;
+    g_made_for_pending = 0;
     const bool room = RxBudgetRoom(static_cast<double>(link::NowMs()));
     for (unsigned i = 0; i < m.n; ++i) {
         const twire::LookEntry& e = m.e[i];
@@ -297,12 +354,49 @@ void OnLook(const twire::Look& m) {
             std::memcpy(have.id[have.n++], e.id, 32);
             continue;
         }
+        // round 8: a ready-made blob the guest's RECIPE names is made here from this game's own Original pictures (the
+        // worker checks their identity and the SHA-256; a failure asks the guest for the blob after all)
+        const std::string key = tx::Hex(e.id, 32);
+        if (g_making.count(key)) {
+            ++making;
+            continue;
+        }
+        if (g_have_recipe && g_recipe.epoch == m.epoch) {
+            const twire::RecipeEntry* r = nullptr;
+            for (unsigned k = 0; k < g_recipe.n && !r; ++k)
+                if (g_recipe.e[k].slot == e.slot && std::memcmp(g_recipe.e[k].id, e.id, 32) == 0) r = &g_recipe.e[k];
+            if (r) {
+                const char* no = g_recipe.generator != tx::defaults::kGeneratorVersion ? "another generator version here"
+                                 : g_recipe.encoder != tx::kBlobEncoderVersion       ? "another encoder version here"
+                                 : ftex::looks::MakeMode() == 1                       ? "tex 12 1"
+                                 : !ftex::looks::CanMake()                            ? "no textures folder here"
+                                                                                      : nullptr;
+                if (!no) {
+                    ftex::looks::Recipe lr;
+                    lr.slot = r->slot;
+                    lr.colour = r->colour;
+                    lr.variant = r->variant;
+                    std::memcpy(lr.originals, g_recipe.originals, 32);
+                    lr.valid = true;
+                    if (ftex::looks::MakeForPartner(lr, e.id, g_cfg.cache, kCacheMax)) {
+                        g_making[key] = e.slot;
+                        ++making;
+                        Log("[tex] partner look #%u: %s %s is ready-made colour %u (generator %u): making it here", m.epoch, tx::kSlots[e.slot].id,
+                            Hex8(e.id).c_str(), r->colour, g_recipe.generator);
+                        continue;
+                    }
+                    no = "out of memory";
+                }
+                if (g_no_make_logged != no) Log("[tex] partner ready-made %s %s sent over the link: %s", tx::kSlots[e.slot].id, Hex8(e.id).c_str(), no);
+                g_no_make_logged = no;
+                TellExtract(no);
+            }
+        }
         if (!room) {  // the receiver's own limit: the previous look stays
             SendResult(e.id, twire::kBudget);
             ++refused;
             continue;
         }
-        const std::string key = tx::Hex(e.id, 32);
         Incoming& in = g_in[key];
         if (in.a.size() != e.size || in.slot != e.slot) {
             in = Incoming{};
@@ -327,7 +421,74 @@ void OnLook(const twire::Look& m) {
     }
     g_pending = m;
     g_have_pending = true;
-    if (!want.n) Promote(m, static_cast<unsigned>(g_cache_hits - hits0) + in_ram);
+    if (!want.n && !making) Promote(m, static_cast<unsigned>(g_cache_hits - hits0) + in_ram);
+}
+
+// Round 8: the blobs the worker made here (MakeForPartner): stored when they matched; otherwise the guest is asked.
+// After every result the pending look is promoted once it is complete and none of ITS blobs is still being made.
+void DrainMade() {
+    ftex::looks::Made d;
+    bool any = false;
+    while (ftex::looks::TakeMade(&d)) {
+        any = true;
+        const std::string key = tx::Hex(d.id, 32);
+        auto it = g_making.find(key);
+        const int slot = it != g_making.end() ? it->second : -1;
+        if (it != g_making.end()) g_making.erase(it);
+        bool pending = false;
+        int pslot = -1;
+        for (unsigned i = 0; g_have_pending && i < g_pending.n; ++i)
+            if (std::memcmp(g_pending.e[i].id, d.id, 32) == 0) pending = true, pslot = g_pending.e[i].slot;
+        const int s = slot >= 0 ? slot : pslot;
+        const char* sid = s >= 0 && s < static_cast<int>(tx::kSlotCount) ? tx::kSlots[s].id : "?";
+        if (d.ok) {
+            ++g_made_here;
+            Log("[tex] partner ready-made %s %s made here in %u ms: the same as the guest's (no transfer)%s", sid, Hex8(d.id).c_str(), d.ms,
+                pending ? "" : "; no longer wanted (kept in the cache)");
+            if (!pending) continue;
+            ++g_made_for_pending;
+            twire::IdList have;
+            have.epoch = g_pending.epoch;
+            have.n = 1;
+            std::memcpy(have.id[0], d.id, 32);
+            std::uint8_t buf[twire::kMaxMessage];
+            Send(buf, twire::EncodeIds(twire::Kind::have, have, buf, sizeof(buf)));
+            continue;
+        }
+        ++g_made_fail;
+        if (!pending) {
+            Log("[tex] partner ready-made %s %s not made here (%s); no longer wanted", sid, Hex8(d.id).c_str(), d.why);
+            continue;
+        }
+        if (slot < 0) continue;   // a make of an older look's (dropped from g_making) that the newest look names again: its own make reports
+        TellExtract(d.why);
+        if (!RxBudgetRoom(static_cast<double>(link::NowMs()))) {   // the receiver's own limit, as in OnLook: the previous look stays
+            SendResult(d.id, twire::kBudget);
+            Log("[tex] partner ready-made %s %s not made here (%s); this game's texture budget (%llu MB per 10 min) is used up: the previous look "
+                "stays",
+                sid, Hex8(d.id).c_str(), d.why, static_cast<unsigned long long>(kRxBudgetBytes >> 20));
+            g_have_pending = false;
+            continue;
+        }
+        Log("[tex] partner ready-made %s %s not made here (%s): asking the guest for it", sid, Hex8(d.id).c_str(), d.why);
+        for (unsigned i = 0; i < g_pending.n; ++i) {
+            const twire::LookEntry& e = g_pending.e[i];
+            if (std::memcmp(e.id, d.id, 32) != 0) continue;
+            Incoming& in = g_in[key];
+            in = Incoming{};
+            in.a.Init(e.size);
+            in.slot = e.slot;
+            std::memcpy(in.id, e.id, 32);
+            in.start_ms = in.last_ms = static_cast<double>(link::NowMs());
+            twire::IdList want;
+            want.epoch = g_pending.epoch;
+            want.n = 1;
+            std::memcpy(want.id[0], e.id, 32);
+            std::uint8_t buf[twire::kMaxMessage];
+            Send(buf, twire::EncodeIds(twire::Kind::want, want, buf, sizeof(buf)));
+        }
+    }
+    if (any && g_have_pending && !PendingMaking() && PendingComplete()) Promote(g_pending, 0, g_made_for_pending);
 }
 
 void OnChunk(const twire::Chunk& c) {
@@ -384,7 +545,7 @@ void OnChunk(const twire::Chunk& c) {
     SendResult(idc, twire::kOk);
     Log("[tex] partner look #%u: received %s %s (%zu B in %.0f ms, %.0f KB/s) valid", g_have_pending ? g_pending.epoch : 0u, tx::kSlots[slot].id,
         Hex8(idc).c_str(), bytes, ms, ms > 0 ? bytes / ms * 1000.0 / 1024.0 : 0.0);
-    if (g_have_pending && PendingComplete()) Promote(g_pending, 0);
+    if (g_have_pending && !PendingMaking() && PendingComplete()) Promote(g_pending, 0, g_made_for_pending);
 }
 
 void HostTick(double now_ms) {
@@ -410,6 +571,17 @@ void HostTick(double now_ms) {
             if (twire::DecodeChunk(buf, n, c)) OnChunk(c);
             break;
         }
+        case twire::Kind::recipe: {  // round 8: the LOOK that follows names ready-made blobs
+            twire::Recipe r;
+            if (twire::DecodeRecipe(buf, n, r)) {
+                g_recipe = r;
+                g_have_recipe = true;
+                ++g_recipes_rx;
+            } else {
+                Log("[tex] a malformed RECIPE was dropped (%zu B)", n);
+            }
+            break;
+        }
         case twire::Kind::result: {  // the guest paused its sending (its budget): the previous look stays meanwhile
             twire::Result r;
             if (twire::DecodeResult(buf, n, r) && r.code == twire::kBudget) {
@@ -423,6 +595,7 @@ void HostTick(double now_ms) {
             break;
         }
     }
+    DrainMade();
     // incomplete blobs are kept 5 min for a resume, then dropped
     for (auto it = g_in.begin(); it != g_in.end();) {
         if (now_ms - it->second.last_ms > 300000) it = g_in.erase(it);
@@ -464,13 +637,33 @@ bool SendLook() {
         }
     }
     std::uint8_t buf[twire::kMaxMessage];
+    // round 8: the ready-made blobs of the look, as a RECIPE just before it (the host makes them from its own copy of
+    // her Original pictures; the blobs stay here for a WANT)
+    twire::Recipe rc;
+    rc.epoch = m.epoch;
+    rc.generator = static_cast<std::uint8_t>(tx::defaults::kGeneratorVersion);
+    rc.encoder = static_cast<std::uint16_t>(tx::kBlobEncoderVersion);
+    for (unsigned i = 0; i < m.n; ++i) {
+        ftex::looks::Recipe r;
+        if (!ftex::looks::RecipeFor(m.e[i].id, &r) || r.slot != m.e[i].slot) continue;
+        if (rc.n && std::memcmp(rc.originals, r.originals, 32) != 0) continue;
+        std::memcpy(rc.originals, r.originals, 32);
+        twire::RecipeEntry& e = rc.e[rc.n++];
+        e.slot = m.e[i].slot;
+        e.colour = static_cast<std::uint8_t>(r.colour);
+        e.variant = static_cast<std::uint8_t>(r.variant);
+        std::memcpy(e.id, m.e[i].id, 32);
+    }
+    if (rc.n && !Send(buf, twire::EncodeRecipe(rc, buf, sizeof(buf)))) rc.n = 0;
     if (!Send(buf, twire::EncodeLook(m, buf, sizeof(buf)))) {
         --g_epoch;
         return false;
     }
     g_out.clear();
-    Log("[tex] look #%u sent: colour %u, %u blob(s)%s; boots %u%s, %s", m.epoch, m.colour, m.n, g_cfg.send ? "" : " (textures_send=0: her own suit)", m.boots,
-        m.worn ? " worn" : "", m.flags & 1u ? "her own boots" : "Sam's boots (prop)");
+    char ready[48] = "";
+    if (rc.n) std::snprintf(ready, sizeof(ready), " (%u ready-made: recipe sent)", rc.n);
+    Log("[tex] look #%u sent: colour %u, %u blob(s)%s%s; boots %u%s, %s", m.epoch, m.colour, m.n, ready, g_cfg.send ? "" : " (textures_send=0: her own suit)",
+        m.boots, m.worn ? " worn" : "", m.flags & 1u ? "her own boots" : "Sam's boots (prop)");
     g_sent_flags = m.flags, g_sent_boots = m.boots, g_sent_worn = m.worn;
     return true;
 }
@@ -648,11 +841,11 @@ void LogStatus() noexcept {
     std::uint64_t sent = 0, rx = 0;
     link::AssetCounts(&sent, &rx);
     Log("[tex] link: %s; messages sent %llu received %llu; chunks sent %llu (blobs %llu), chunks received %llu (blobs %llu), refused %llu, cache hits %llu, "
-        "incoming %zu, outgoing %zu",
+        "incoming %zu, outgoing %zu; recipes received %llu, made here %llu, made-here failures %llu",
         !g_cfg.on ? "off" : g_cfg.guest ? "guest" : "host", static_cast<unsigned long long>(sent), static_cast<unsigned long long>(rx),
         static_cast<unsigned long long>(g_chunks_sent), static_cast<unsigned long long>(g_blobs_sent), static_cast<unsigned long long>(g_chunks_rx),
         static_cast<unsigned long long>(g_blobs_rx), static_cast<unsigned long long>(g_refused), static_cast<unsigned long long>(g_cache_hits), g_in.size(),
-        g_out.size());
+        g_out.size(), static_cast<unsigned long long>(g_recipes_rx), static_cast<unsigned long long>(g_made_here), static_cast<unsigned long long>(g_made_fail));
 }
 
 }  // namespace st::texshare

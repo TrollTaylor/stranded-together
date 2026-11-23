@@ -1,0 +1,149 @@
+# Fragile's ready-made suit colours (round 8; docs/textures.md "Ready-made colours"), every Sam suit colour, solo,
+# hidden. A freshly extracted textures folder (the extractor writes the ready-made pictures into 01..16); only
+# "09 Mustard" is painted (a bold generated checker, no game data): that folder is "yours". Noon, clear, on the knot
+# road; a debug Fragile (real_spawn 16 -1.1 0) stands next to Sam, both facing the camera (the round-8 proof's framing),
+# and wears the look of our Sam's suit colour: `real_outfit 4 c` (redirected scratch save only) for c in 16, 0..15. 09
+# first shows the painted checker (c09-painted); its pictures are then deleted while the game runs and the ready-made
+# mustard comes back (hot reload, c09). Then the hidden round-7 prototype metal (tex 11 3, satin) for 15 and 16, and a second
+# pass over 16, 13, 1 from the built cache. The prover lays c00..c16 out as a contact sheet (target: each look made in
+# under 1000 ms).
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios fragile-suit-defaults -SeedSaves complete-100
+role solo
+timeout 360
+ini partner_body=real
+ini pose_hook=1
+ini my_character=fragile_suit
+ini self_character=0
+textures extract
+textures pattern checker 09 Mustard
+start
+waitplayer 60
+goto mknot-road
+?action set_time_of_day 12
+?action dev_weather 0
+wait 3000
+pad none 2400 ly=32767
+pad none 900 ly=-32767
+wait 1000
+action real_outfit 4 16
+action real_spawn 16 -1.1 0
+waitlog 60 \[real\] 'fragile_suit' is live
+waitlog 30 \[tex\] ready: manifest table
+waitlog 30 \[tex\] look .* for colour 16 .*ready-made \(S0 S1\)
+waitlog 20 \[tex\] body debug .*: look .* bound
+?action set_time_of_day 12
+wait 2000
+screenshot c16
+action real_outfit 4 0
+waitnew 30 \[tex\] body debug .*: look .* taken off
+wait 2000
+screenshot c00
+action real_outfit 4 1
+waitnew 30 \[tex\] look .* for colour 1 .*ready-made \(S0\)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot c01
+action real_outfit 4 2
+waitnew 30 \[tex\] look .* for colour 2 .*ready-made \(S0\)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot c02
+action real_outfit 4 3
+waitnew 30 \[tex\] look .* for colour 3 .*ready-made \(S0\)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot c03
+action real_outfit 4 4
+waitnew 30 \[tex\] look .* for colour 4 .*ready-made \(S0\)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot c04
+action real_outfit 4 5
+waitnew 30 \[tex\] look .* for colour 5 .*ready-made \(S0\)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot c05
+action real_outfit 4 6
+waitnew 30 \[tex\] look .* for colour 6 .*ready-made \(S0\)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot c06
+action real_outfit 4 7
+waitnew 30 \[tex\] look .* for colour 7 .*ready-made \(S0\)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot c07
+action real_outfit 4 8
+waitnew 30 \[tex\] look .* for colour 8 .*ready-made \(S0\)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot c08
+# 09 Mustard holds the user's painted checker: "yours" (S1 untouched by a palette colour: her own)
+action real_outfit 4 9
+waitnew 30 \[tex\] look .* for colour 9 .*yours: 1 slot\(s\) \(S0\)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot c09-painted
+# the painted folder emptied while the game runs: the ready-made mustard comes back
+textures reset 09 Mustard
+waitnew 30 \[tex\] reload: colour 9
+waitnew 30 \[tex\] look .* for colour 9 .*ready-made \(S0\)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot c09
+action real_outfit 4 10
+waitnew 30 \[tex\] look .* for colour 10 .*ready-made \(S0\)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot c10
+action real_outfit 4 11
+waitnew 30 \[tex\] look .* for colour 11 .*ready-made \(S0\)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot c11
+action real_outfit 4 12
+waitnew 30 \[tex\] look .* for colour 12 .*ready-made \(S0\)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot c12
+action real_outfit 4 13
+waitnew 30 \[tex\] look .* for colour 13 .*ready-made \(S0\)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot c13
+action real_outfit 4 14
+waitnew 30 \[tex\] look .* for colour 14 .*ready-made \(S0\)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot c14
+action real_outfit 4 15
+waitnew 30 \[tex\] look .* for colour 15 .*ready-made \(S0 S1\)
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot c15
+# the hidden round-7 prototype metal (tex 11 3: satin, Roughness x0.75; the product until round 9), silver then gold
+action tex 11 3
+waitnew 30 \[tex\] ready-made S0 .* for colour 15 made in .*metal variant
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot c15-v3
+action real_outfit 4 16
+waitnew 30 \[tex\] ready-made S0 .* for colour 16 made in .*metal variant
+waitnew 20 \[tex\] body debug .*: look .* bound
+wait 1500
+screenshot c16-v3
+action tex 11 0
+waitnew 30 \[tex\] body debug .*: look .* bound
+# a second pass: the built cache
+action real_outfit 4 13
+waitnew 30 \[tex\] body debug .*: look .* bound
+action real_outfit 4 1
+waitnew 30 \[tex\] body debug .*: look .* bound
+action real_outfit 4 16
+waitnew 30 \[tex\] body debug .*: look .* bound
+action tex 0
+nolog \[tex\] .*FAULTED
+nolog \[tex\] ready-made colours off
+nolog \[tex\] refused
+nolog \[tex\] .*NOT valid
+quit

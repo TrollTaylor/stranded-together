@@ -1,0 +1,68 @@
+# docs/real-partner-body.md section 33 (round 7): a load straight into the private room (-SeedSaves story-pack:
+# manualsave12, Sam in the private room), self view ON (Fragile). Screenshots (their mean: black or not) and
+# log_status (game state, load mask) every ~0.6 s for ~5 s; then the room must be drawn (a screenshot mean of 20 or
+# more) within 9 s more and playable (PrivateRoom, phase 0). Vanilla: drawn and playable +6.5 s after the request;
+# v0.24 with the self view: black 40+ s in PrivateRoom|Setup. Sibling: private-room-load-vanilla (self view off).
+role solo
+timeout 300
+ini dev_tools=1
+ini partner_body=real
+ini my_character=fragile_suit
+ini self_character=1
+start
+?waitlog 60 \[self\] showing 'fragile_suit'
+wait 2000
+log PRIVATE ROOM REQUEST
+action story_load 12
+screenshot p01
+action log_status
+wait 500
+screenshot p02
+action log_status
+wait 500
+screenshot p03
+action log_status
+wait 500
+screenshot p04
+action log_status
+wait 500
+screenshot p05
+action log_status
+wait 500
+screenshot p06
+action log_status
+wait 500
+screenshot p07
+action log_status
+wait 500
+screenshot p08
+action log_status
+wait 500
+until 9 700 \[auto\] \d+:1 screenshot room -> ok: .* mean=([2-9][0-9]|[1-9][0-9][0-9])\. => screenshot room
+log PRIVATE ROOM VISIBLE
+until 9 500 status: game state: \S+ \[PrivateRoom(\|bit39)?\] requested \S+ \[PrivateRoom(\|bit39)?\] phase 0 => action log_status
+log PRIVATE ROOM PLAYABLE
+screenshot r01
+waitnew 10 \[self\] shown=1 'fragile_suit'
+wait 1500
+screenshot r02
+nolog \[self\] stall guard
+screenshot q01
+action log_status
+wait 500
+screenshot q02
+action log_status
+wait 500
+screenshot q03
+action log_status
+wait 500
+screenshot q04
+action log_status
+wait 500
+screenshot q05
+action log_status
+wait 500
+screenshot q06
+action log_status
+wait 500
+quit

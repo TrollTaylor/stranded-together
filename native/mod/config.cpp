@@ -144,6 +144,8 @@ Config LoadConfig(const std::wstring& dir) {
             c.textures_hot_reload = ParseBool(v);
         } else if (k == "textures_free") {
             c.textures_free = ParseBool(v);
+        } else if (k == "textures_defaults") {
+            c.textures_defaults = ParseBool(v);
         } else if (k == "boots_sync") {
             c.boots_sync = ParseBool(v);
         } else if (k == "boots_look") {
@@ -152,6 +154,8 @@ Config LoadConfig(const std::wstring& dir) {
             else Log("[config] boots_look=%s is not own / prop: own", v.c_str());
         } else if (k == "boots_own_porter") {
             c.boots_own_porter = ParseBool(v);
+        } else if (k == "exo_carrier") {
+            c.exo_carrier = ParseBool(v);
         } else if (k == "held_items") {
             c.held_items = v == "2" || v == "all" ? 2 : v == "1" || v == "tools" ? 1 : (ParseBool(v) ? 2 : 0);
         } else if (k == "vehicle_sync") {
@@ -313,15 +317,15 @@ Config LoadConfig(const std::wstring& dir) {
     Log("[config] name_tags=%d font=%s name=%s", c.name_tags ? 1 : 0, c.name_tag_game_font ? "game" : "default", c.player_name.empty() ? "- (Steam name)" : "set");
     Log("[config] partner_collision=%d layer=%d height=%.2f", c.partner_collision ? 1 : 0, c.partner_collision_layer,
         static_cast<double>(c.partner_collision_height));
-    Log("[config] partner_gear=%d smooth_pose=%d self_headgear=%d self_feet_hide=%d boots_sync=%d boots_look=%s boots_own_porter=%d fragile_suit_colour=%d",
+    Log("[config] partner_gear=%d smooth_pose=%d self_headgear=%d self_feet_hide=%d boots_sync=%d boots_look=%s boots_own_porter=%d fragile_suit_colour=%d exo_carrier=%d",
         c.partner_gear ? 1 : 0, c.smooth_pose ? 1 : 0, c.self_headgear ? 1 : 0, c.self_feet_hide ? 1 : 0, c.boots_sync ? 1 : 0, c.boots_look_own ? "own" : "prop",
-        c.boots_own_porter ? 1 : 0, c.fragile_suit_colour ? 1 : 0);
+        c.boots_own_porter ? 1 : 0, c.fragile_suit_colour ? 1 : 0, c.exo_carrier ? 1 : 0);
     Log("[config] held_items=%d (%s)", c.held_items,
         c.held_items == 2 ? "every item in a hand drawn on the other screen" : c.held_items == 1 ? "ladder, PCC, climbing anchor" : "off: cutscene-prop weapons only");
     // Fragile's textures: only whether a folder came and its length (the path itself names the Windows user).
     Log("[config] textures_dir=%s", c.textures_dir.empty() ? "- (none)" : ("set (" + std::to_string(c.textures_dir.size()) + " bytes)").c_str());
-    Log("[config] fragile_textures=%d textures_send=%d textures_receive=%d textures_hot_reload=%d textures_free=%d", c.fragile_textures ? 1 : 0,
-        c.textures_send ? 1 : 0, c.textures_receive ? 1 : 0, c.textures_hot_reload ? 1 : 0, c.textures_free ? 1 : 0);
+    Log("[config] fragile_textures=%d textures_send=%d textures_receive=%d textures_hot_reload=%d textures_free=%d textures_defaults=%d", c.fragile_textures ? 1 : 0,
+        c.textures_send ? 1 : 0, c.textures_receive ? 1 : 0, c.textures_hot_reload ? 1 : 0, c.textures_free ? 1 : 0, c.textures_defaults ? 1 : 0);
     Log("[config] vehicle_sync=%d%s vehicle_overlap_hide=%d vehicle_look=%d vehicle_packs=%d vehicle_real_native=%d", c.vehicle_sync,
         c.vehicle_sync_set ? "" : " (default: 5 real with host_save=1 when its checks pass, else 1)", c.vehicle_overlap_hide ? 1 : 0,
         c.vehicle_look ? 1 : 0, c.vehicle_packs ? 1 : 0, c.vehicle_real_native ? 1 : 0);

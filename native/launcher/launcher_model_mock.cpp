@@ -484,21 +484,28 @@ TexturesView MockModel::textures() const {
     v.tone = tex_tone_;
     v.report = tex_report_;
     v.boots_own = tex_boots_own_;
+    v.ready_made = tex_ready_made_;
+    v.auto_extract = tex_auto_extract_;
+    v.auto_note = tex_auto_note_;
+    v.auto_will = tex_auto_extract_ && tex_auto_note_.find("Not extracted automatically") == std::string::npos;
     if (tex_start_ >= 0.0 || tex_frozen_ >= 0.0) {
+        v.auto_running = tex_auto_running_;
         v.state = TexturesView::State::extracting;
         v.progress = tex_frozen_ >= 0.0 ? tex_frozen_ : static_cast<float>(std::fmin(1.0, (now() - tex_start_) / kMockExtractSeconds));
         v.progress_text = v.progress < 0.25f ? "Fragile porter suit\\Original\\Suit" : v.progress < 0.7f ? "Sam porter suit\\16 Gold\\Suit"
                                                                                                  : "Boots (Sam, reference)\\Mk3 boots";
-        v.status = "Extracting...";
+        v.status = tex_auto_running_ ? "Extracting automatically..." : "Extracting...";
         return v;
     }
     if (!tex_extracted_) {
         v.state = TexturesView::State::not_extracted;
-        v.status = "Not extracted yet.";
+        v.status = v.auto_will ? "Not extracted yet: the launcher does it by itself in the background." : "Not extracted yet.";
         return v;
     }
     v.state = TexturesView::State::extracted;
-    v.status = "Extracted 2026-11-22 10:15: 17 suit colours, 10 boot types.";
+    v.status = tex_ready_made_ ? "Extracted 2026-11-22 10:15: 17 suit colours, 10 boot types. 15 ready-made colours, 1 folder painted by you."
+                               : "Extracted 2026-11-22 10:15: 17 suit colours, 10 boot types. Ready-made colours are off (her own suit where nothing "
+                                 "is painted), 1 folder painted by you.";
     v.edited = "Edited: 16 Gold (Colour, Reflectance), 09 Chiral boots (Colour)";
     return v;
 }
@@ -513,6 +520,8 @@ bool MockModel::extract_textures(std::string& error_out) {
         return false;
     }
     tex_start_ = now();
+    tex_auto_running_ = false;
+    tex_auto_note_.clear();
     tex_result_.clear();
     tex_report_.clear();
     return true;
@@ -548,9 +557,17 @@ bool MockModel::set_textures_folder(const std::string& folder, std::string&) {
 }
 
 void MockModel::set_boots_look(bool own) { tex_boots_own_ = own; }
+void MockModel::set_ready_made(bool on) { tex_ready_made_ = on; }
+void MockModel::set_auto_extract(bool on) { tex_auto_extract_ = on; }
+void MockModel::set_textures_auto(bool running, const std::string& note) {
+    tex_auto_running_ = running;
+    tex_auto_note_ = note;
+}
 
 void MockModel::set_textures_state(TexturesView::State state, float progress) {
     tex_start_ = -1.0;
+    tex_auto_running_ = false;
+    tex_auto_note_.clear();
     tex_frozen_ = -1.0f;
     tex_result_.clear();
     tex_report_.clear();

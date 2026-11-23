@@ -946,6 +946,7 @@ void ConfigureTextures(const Config& config, const std::wstring& mod_dir) noexce
     s.receive = config.textures_receive;
     s.guest = config.role == Role::guest || config.role == Role::solo;
     s.dir = dir;
+    s.defaults = config.textures_defaults;
     // the built textures' cache: never inside the textures folder (it may be synced to the cloud, and its watch would see
     // our own writes); a hidden run's next to the run's textures folder (the supervisor deletes both at the run's end)
     if (automation::Enabled()) s.cache = dir.empty() ? std::wstring() : dir + L"-cache";

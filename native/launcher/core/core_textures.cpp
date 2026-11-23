@@ -7,8 +7,10 @@
 #include <objbase.h>
 #include <shlobj.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <cwctype>
 #include <sstream>
 
 #include "core_install.hpp"
@@ -111,6 +113,182 @@ bool TexturePreviewsFromSettings(const json::Value& settings) {
     return true;
 }
 
+bool ReadyMadeFromSettings(const json::Value& settings) {
+    if (const json::Value* t = settings.Find("textures"); t && t->is_object()) return t->Bool("defaults", true);
+    return true;
+}
+
+bool AutoExtractFromSettings(const json::Value& settings) {
+    if (const json::Value* t = settings.Find("textures"); t && t->is_object()) return t->Bool("auto_extract", true);
+    return true;
+}
+
+ManifestFacts ReadManifestFacts(const std::wstring& dir) {
+    ManifestFacts f;
+    if (dir.empty()) return f;
+    const std::wstring path = dir + L"\\" + tex::Widen(tex::kManifestName);
+    const HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        const DWORD e = GetLastError();
+        // a file that exists but cannot be opened right now (the extractor replacing it, an antivirus scan) still counts
+        // as there, and as nothing known yet (DecideAutoExtract looks again: never an extraction on it)
+        f.present = e != ERROR_FILE_NOT_FOUND && e != ERROR_PATH_NOT_FOUND;
+        f.open_failed = f.present;
+        return f;
+    }
+    f.present = true;
+    LARGE_INTEGER size{};
+    std::string text;
+    if (GetFileSizeEx(h, &size) && size.QuadPart > 0 && size.QuadPart < (16ll << 20)) {
+        text.resize(static_cast<std::size_t>(size.QuadPart));
+        DWORD got = 0;
+        if (!ReadFile(h, text.data(), static_cast<DWORD>(text.size()), &got, nullptr)) got = 0;
+        text.resize(got);
+    }
+    CloseHandle(h);
+    tex::Manifest m;
+    std::string err;
+    if (text.empty() || !tex::ParseManifest(text, m, err)) return f;
+    f.readable = true;
+    f.extract = m.extract;
+    f.table_ok = m.table == tex::kTableVersion;
+    return f;
+}
+
+namespace {
+std::string LowerUtf8(const std::wstring& dir) {
+    std::wstring d = dir;
+    while (d.size() > 3 && (d.back() == L'\\' || d.back() == L'/')) d.pop_back();
+    for (wchar_t& c : d) c = static_cast<wchar_t>(towlower(c));
+    return tex::Narrow(d);
+}
+}  // namespace
+
+bool WasExtractedHere(const json::Value& settings, const std::wstring& dir) {
+    const json::Value* t = settings.Find("textures");
+    return !dir.empty() && t && t->is_object() && t->Str("extracted") == LowerUtf8(dir);
+}
+
+bool RememberExtractedHere(json::Value& settings, const std::wstring& dir) {
+    if (dir.empty() || WasExtractedHere(settings, dir)) return false;
+    json::Value t = json::Value::Object();
+    if (const json::Value* old = settings.Find("textures"); old && old->is_object()) t = *old;
+    t["extracted"] = LowerUtf8(dir);
+    settings["textures"] = t;
+    return true;
+}
+
+std::uint64_t FreeBytesFor(const std::wstring& dir) {
+    std::wstring probe = dir;
+    while (probe.size() > 3) {
+        const DWORD a = GetFileAttributesW(probe.c_str());
+        if (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY)) break;
+        const std::size_t slash = probe.find_last_of(L"\\/");
+        if (slash == std::wstring::npos || slash < 2) break;
+        probe.resize(slash < 3 ? 3 : slash);
+    }
+    if (probe.size() == 2) probe += L"\\";
+    ULARGE_INTEGER avail{};
+    if (probe.empty() || !GetDiskFreeSpaceExW(probe.c_str(), &avail, nullptr, nullptr)) return UINT64_MAX;
+    return avail.QuadPart;
+}
+
+std::string AutoExtractKey(const std::wstring& dir, const std::string& game_stamp) {
+    std::wstring d = dir;
+    for (wchar_t& c : d) c = static_cast<wchar_t>(towlower(c));
+    // this build's version too: a Stranded Together update may fix what failed, so it starts from zero
+#ifdef ST_LAUNCHER_VERSION
+    const std::string version = std::string(ST_LAUNCHER_VERSION) + "|";
+#else
+    const std::string version;
+#endif
+    return version + std::to_string(tex::kExtractVersion) + "|" + game_stamp + "|" + tex::Narrow(d);
+}
+
+AutoExtractRecord AutoExtractRecordFromSettings(const json::Value& settings) {
+    AutoExtractRecord r;
+    const json::Value* t = settings.Find("textures");
+    const json::Value* a = t && t->is_object() ? t->Find("auto") : nullptr;
+    if (!a || !a->is_object()) return r;
+    r.key = a->Str("key");
+    r.failures = static_cast<int>(std::max<std::int64_t>(0, std::min<std::int64_t>(a->Int("failures", 0), 1000)));
+    r.last_s = a->Int("last_s", 0);
+    r.error = a->Str("error");
+    return r;
+}
+
+void StoreAutoExtractRecord(json::Value& settings, const AutoExtractRecord& r) {
+    json::Value t = json::Value::Object();
+    if (const json::Value* old = settings.Find("textures"); old && old->is_object()) t = *old;
+    if (r.key.empty()) {
+        if (!t.Remove("auto")) return;
+    } else {
+        json::Value a = json::Value::Object();
+        a["key"] = r.key;
+        a["failures"] = static_cast<std::int64_t>(r.failures);
+        a["last_s"] = r.last_s;
+        a["error"] = r.error.size() > 300 ? r.error.substr(0, 300) : r.error;
+        t["auto"] = a;
+    }
+    settings["textures"] = t;
+}
+
+std::int64_t AutoExtractRetryAfterS(int failures) {
+    if (failures <= 0) return 0;
+    if (failures == 1) return 10 * 60;
+    if (failures == 2) return 60 * 60;
+    return -1;
+}
+
+bool AutoExtractWillRun(AutoExtract what) {
+    return what == AutoExtract::start || what == AutoExtract::busy || what == AutoExtract::wait_game || what == AutoExtract::retry_later ||
+           what == AutoExtract::look_again;
+}
+
+AutoExtractDecision DecideAutoExtract(const AutoExtractFacts& f) {
+    AutoExtractDecision d;
+    const ManifestFacts& m = f.manifest;
+    if (m.present && m.readable && m.table_ok && m.extract >= tex::kExtractVersion) return d;   // this version's (or newer)
+    if (!m.present) {
+        d.reason = f.was_extracted ? "its extraction is gone (no .manifest.txt)" : "never extracted";
+        d.user_reason = f.was_extracted ? "the extracted textures are no longer in the folder" : "not extracted yet";
+    } else if (!m.readable) {
+        d.reason = m.open_failed ? "its index (.manifest.txt) cannot be opened right now" : "its index (.manifest.txt) does not read";
+        d.user_reason = "the folder's index does not read";
+    } else if (!m.table_ok) {
+        d.reason = "extracted by another Stranded Together (another texture table)";
+        d.user_reason = "Stranded Together was updated";
+    } else {
+        d.reason = "extracted by an older Stranded Together (extract " + std::to_string(m.extract) + ", now " + std::to_string(tex::kExtractVersion) + ")";
+        d.user_reason = "Stranded Together was updated";
+    }
+    if (!f.enabled) return d.what = AutoExtract::off, d;
+    if (!f.folder_usable) return d.what = AutoExtract::no_folder, d;
+    // never on what is not known: an index another program holds is looked at again; one that does not read (damaged, or
+    // a newer Stranded Together's) and a folder that lost its extraction are the player's call (an extraction there has
+    // no record of which pictures are unpainted, or fills a drive the player emptied)
+    if (m.present && !m.readable) return d.what = m.open_failed ? AutoExtract::look_again : AutoExtract::unreadable, d;
+    if (!m.present && f.was_extracted) return d.what = AutoExtract::gone, d;
+    if (f.onedrive) return d.what = AutoExtract::onedrive, d;
+    if (f.extracting) return d.what = AutoExtract::busy, d;
+    if (f.cancelled) return d.what = AutoExtract::cancelled, d;
+    if (f.failures >= kAutoExtractMaxFailures) return d.what = AutoExtract::gave_up, d;
+    if (f.failures > 0) {
+        const std::int64_t after = AutoExtractRetryAfterS(f.failures);
+        // a clock that went backwards (last in the future) never blocks it for longer than the wait itself
+        const std::int64_t last = std::min(f.last_failure_s, f.now_s);
+        if (after < 0) return d.what = AutoExtract::gave_up, d;
+        if (f.now_s < last + after) {
+            d.retry_at_s = last + after;
+            return d.what = AutoExtract::retry_later, d;
+        }
+    }
+    if (f.low_disk) return d.what = AutoExtract::low_disk, d;
+    if (f.game_running) return d.what = AutoExtract::wait_game, d;
+    d.what = AutoExtract::start;
+    return d;
+}
+
 std::string TexturesFolderProblem(const std::wstring& folder, const std::wstring& game_dir) {
     if (folder.size() < 4 || folder[1] != L':' || (folder[2] != L'\\' && folder[2] != L'/'))
         return "Pick a folder on a drive (like C:\\...), not a network or relative path.";
@@ -184,7 +362,25 @@ void ApplyExtractLine(const std::string& raw, ExtractProgress& p) {
     } else if (word("kept ")) {
         ++p.kept;
     } else if (word("note ")) {
-        p.note = line.substr(5);
+        // every note counts (an "outdated seeds" note after a "not made" one must not hide it)
+        const std::string n = line.substr(5);
+        p.note += (p.note.empty() ? "" : ". ") + n;
+        if (n.rfind("ready-made colours not made", 0) == 0) p.defaults_not_made = true;
+    } else if (word("incomplete ")) {
+        std::istringstream in(line.substr(11));
+        int n = 0;
+        if (in >> n && n > 0) p.incomplete = n;
+    } else if (word("defaults ")) {
+        std::istringstream in(line.substr(9));
+        int w = 0, r = 0, y = 0;
+        unsigned long long ms = 0;
+        if (in >> w >> r >> y >> ms) {
+            p.defaults_seen = true;
+            p.defaults_written = w;
+            p.defaults_replaced = r;
+            p.folders_yours = y;
+            p.defaults_ms = ms;
+        }
     } else if (word("error ")) {
         p.error = line.substr(6);
     } else if (word("done ")) {
@@ -202,7 +398,8 @@ void ApplyExtractLine(const std::string& raw, ExtractProgress& p) {
     }
 }
 
-std::wstring ExtractCommandLine(const std::wstring& exe, const std::wstring& game_dir, const std::wstring& out_dir, bool previews) {
+std::wstring ExtractCommandLine(const std::wstring& exe, const std::wstring& game_dir, const std::wstring& out_dir, bool previews,
+                                const std::wstring& allow_under) {
     auto quote = [](const std::wstring& s) {
         std::wstring q = L"\"" + s;
         // A trailing backslash would escape the closing quote.
@@ -211,6 +408,7 @@ std::wstring ExtractCommandLine(const std::wstring& exe, const std::wstring& gam
     };
     std::wstring c = quote(exe) + L" --extract-textures --game-dir " + quote(game_dir) + L" --out " + quote(out_dir);
     if (!previews) c += L" --no-previews";
+    if (!allow_under.empty()) c += L" --allow-out-under " + quote(allow_under);
     return c;
 }
 
@@ -279,7 +477,7 @@ TextureTasks::~TextureTasks() {
 }
 
 bool TextureTasks::StartExtract(const std::wstring& exe, const std::wstring& game_dir, const std::wstring& out_dir, bool previews,
-                                std::string& error) {
+                                std::string& error, const std::wstring& allow_under) {
     if (extracting_) return error = "The textures are already being extracted.", false;
     if (reader_.joinable()) reader_.join();
     if (process_) {
@@ -297,7 +495,7 @@ bool TextureTasks::StartExtract(const std::wstring& exe, const std::wstring& gam
     si.hStdError = wr;
     si.hStdInput = nullptr;
     PROCESS_INFORMATION pi{};
-    std::wstring cmd = ExtractCommandLine(exe, game_dir, out_dir, previews);
+    std::wstring cmd = ExtractCommandLine(exe, game_dir, out_dir, previews, allow_under);
     if (!CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS, nullptr, nullptr, &si,
                         &pi)) {
         CloseHandle(rd);
@@ -376,11 +574,11 @@ bool TextureTasks::TakeFinished(ExtractProgress& p, int& exit_code) {
     return true;
 }
 
-void TextureTasks::StartScan(const std::wstring& dir, bool full) {
+void TextureTasks::StartScan(const std::wstring& dir, bool full, bool ready_made) {
     if (scanning_) return;
     if (scanner_.joinable()) scanner_.join();
     scanning_ = true;
-    scanner_ = std::thread([this, dir, full] {
+    scanner_ = std::thread([this, dir, full, ready_made] {
         const HRESULT co = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         ScanResult r;
         r.valid = true;
@@ -391,14 +589,21 @@ void TextureTasks::StartScan(const std::wstring& dir, bool full) {
                 tex::ScanEdits(dir, full, s);
                 r.extracted = s.extracted;
                 r.table_ok = s.table_ok;
-                r.extract_ok = s.manifest.extract == tex::kExtractVersion;
+                r.extract_ok = s.manifest.extract >= tex::kExtractVersion;   // a newer one's too (DecideAutoExtract: not needed)
                 r.extracted_at = s.extracted_utc;
                 r.colour_folders = s.colour_folders;
                 r.boot_folders = s.boot_folders;
                 r.outdated_seeds = s.outdated_seeds;
+                r.ready_made = s.ready_made;
+                r.stale_ready_made = s.stale_ready_made;
+                for (const tex::EditedFolder& ef : s.edited) {
+                    const std::size_t slash = ef.folder.find('\\');
+                    const int n = ef.folder.rfind(tex::kFragileSuitDir, 0) == 0 && slash != std::string::npos ? tex::FolderNumber(ef.folder.substr(slash + 1)) : -1;
+                    if (n >= 1 && n <= 16) ++r.painted_colours;
+                }
                 r.problems = static_cast<int>(s.problems.size());
                 r.edited = tex::EditSummary(s);
-                r.report = tex::CheckReport(s);
+                r.report = tex::CheckReport(s, ready_made);
                 r.game = s.manifest.game;
             } catch (...) {
                 r = ScanResult{};

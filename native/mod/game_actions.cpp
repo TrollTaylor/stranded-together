@@ -1010,6 +1010,26 @@ const char* CarriedSamTaken(std::uint64_t state_bits, bool sequence, bool* ours)
     return nullptr;
 }
 
+const char* LoadOrSetup(std::uint64_t* state, std::uint32_t* mask) noexcept {
+    if (state) *state = 0;
+    if (mask) *mask = 0;
+    EnsureResolved();
+    if (!(g_features & kFeatState) || !(g_features & kFeatModule)) return nullptr;
+    const World w = ReadWorld();
+    std::uint32_t m = 0;
+    std::uint64_t f = 0, r = 0;
+    std::int32_t phase = 0;
+    const bool have_m = w.gm && Rd(w.gm + kGmLoadMask, m);
+    const bool have_s = w.gs && Rd(w.gs + kGsFlags, f) && Rd(w.gs + kGsRequested, r);
+    if (mask) *mask = m;
+    if (state) *state = f | r;
+    if (have_m && m) return "a load (the load mask is set)";
+    if (have_s && ((f | r) & kGameStateLoading)) return "a load (game state Loading)";
+    if (have_s && ((f | r) & kGameStateSetup)) return "the post-load Setup";
+    if (w.gs && Rd(w.gs + kGsPhase, phase) && phase == 2) return "the post-load phase";
+    return nullptr;
+}
+
 void ReadDiagnostics(Diagnostics* d) noexcept {
     *d = Diagnostics{};
     EnsureResolved();

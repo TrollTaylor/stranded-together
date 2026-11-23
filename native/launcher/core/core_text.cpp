@@ -344,6 +344,7 @@ bool MakeSessionIniText(const SessionIni& s, std::string& text, std::string& err
     if (s.mouse_lock) t += "mouse_lock=1\n";
     if (!s.textures_dir.empty()) t += "textures_dir=" + s.textures_dir + "\n";
     if (!s.boots_look.empty()) t += "boots_look=" + s.boots_look + "\n";
+    if (!s.textures_defaults) t += "textures_defaults=0\n";
     if (s.world_sync) t += "world_sync=1\n";
     else if (s.host_save) t += "world_sync=0\n";  // the mod's default is on with host_save=1 (W3): a session says which
     // The host is always Sam (only the guest picks a character). Written for every host, so the
@@ -402,6 +403,7 @@ bool ParseSessionIniText(const std::string& text, SessionIni& out, std::string& 
         else if (k == "mouse_lock") ok = (v == "0" || v == "1") && (out.mouse_lock = v == "1", true);
         else if (k == "textures_dir") ok = TexturesDirValid(v) && (out.textures_dir = v, true);
         else if (k == "boots_look") ok = (v == "own" || v == "prop") && (out.boots_look = v, true);
+        else if (k == "textures_defaults") ok = (v == "0" || v == "1") && (out.textures_defaults = v == "1", true);
         else if (k == "world_sync") ok = (v == "0" || v == "1") && (out.world_sync = v == "1", true);
         else if (k == "my_character") out.my_character = v;
         else if (k == "partner_body") out.partner_body = v;

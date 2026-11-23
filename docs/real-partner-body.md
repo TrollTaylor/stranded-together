@@ -961,7 +961,9 @@ unchanged and 0 uploads.
 - **Boots.** The player's boots are a separate model (gold in the 100% save); the body keeps its own.
 - **Cap and glasses.** They are separate accessory entities; their colours come with section 13's looks
   (the STJ1 bytes are still not used).
-- **Exoskeleton and power-glove meshes.** Only their texture tints come with the exos variation.
+- **Exoskeleton and power-glove meshes.** Only their texture tints come with the exos variation (the skeleton's meshes
+  on a Sam body through section 12's parts; on Fragile through the exo carrier since round 7, section 32; the power glove
+  not).
 - **Backpack and cargo:** section 12 (props, not the player's own backpack variation).
 - **A receiver not in the porter suit.** It cannot take the exos resource, so the remote player's
   silver or gold suit and tints are not shown. The colour still is.
@@ -1667,7 +1669,8 @@ STR1 4 entries a second.
   every frame and the entity is put back on Sam every frame (both tried, run `20261117-132631`).
 - **Sam's gear parts on another body.** The exoskeleton, BB pod pipe, hip gear are parts of Sam's own
   model: mirrored on a Sam body only, not on Fragile, Cliff... (and not on the self view, where they are
-  hidden with Sam).
+  hidden with Sam). Round 7: the skeleton is drawn on her on both screens by the exo carrier (section 32); the BB pod
+  pipe and hip gear are not.
 - **Animated gear stands still.** Copies of skinned gear (the hanging boots, the pouches) are posed by
   nobody: they keep their bind pose.
 - **Positions on another character** are relative to Sam's joints mapped by name; on Fragile the backpack
@@ -5975,6 +5978,31 @@ channel 5), and follows the guest's `fragile_suit_colour` for her own look (LOOK
 `tex 7` on the host lets go of the look's RAM copies and shows the newest LOOK again (from the disk cache). Measured: one 2048 BC3 texture (5,592,488 B) in 57-60 s in the world
 (93-97 KB/s); a look the host has: "complete ... cache hit 1", no transfer.
 
+**Round 8: RECIPE (STT1 kind 7) for the ready-made colours** (docs/textures.md "Ready-made colours"). A colour folder
+the guest did not paint wears Stranded Together's ready-made colour, made by the guest's mod from her Original pictures
+(`suit_defaults.hpp`, integers only: the same game gives the same bytes on every PC). Just before such a LOOK (same tick,
+same epoch) the guest sends RECIPE: u32 epoch, u8 generator, u16 blob encoder, the 32-byte originals identity H
+(SHA-256 over the four Original suit pictures' sizes and pixel hashes), u8 n (1..8), n x {u8 slot, u8 colour 1..16, u8
+metal variant, 32-byte blob id}; at most 326 B, decoded strictly (n, colour, variant, no slot twice, generator not 0).
+The host keeps the newest RECIPE; for each LOOK entry it does not have, one the RECIPE names (same epoch, same generator
+and encoder, a textures folder of its own, `tex 12` not 1) is made on the host's texture worker (never the game thread):
+H checked against its own originals, the blob made, its SHA-256 checked against the id, written to the partner cache and
+stored; the look is promoted once every blob is there and none of ITS blobs is still being made
+(`complete for colour 16 (2 blob(s), cache hit 0, made here 2)`). Each request the worker takes gives exactly one result
+(also when making it throws); a new LOOK drops the queued makes of blobs it no longer names. Any failure (another game
+version's pictures, `tex 12 2`, an out-of-memory, `tex 12 4`) creates the usual incoming blob and sends WANT for it (within
+the host's receive budget; otherwise RESULT kBudget and the previous look stays): the transfer of before. The guest keeps
+its ready-made blobs, so WANT always works. The metal variant's range (4) is the same constant on both sides of the wire
+(`static_assert`); a host whose build knows fewer variants refuses the RECIPE and asks for the blob. Mixed mod builds never get
+here (HELLO `build_mismatch`); `PeekKind` of an older build returns none for kind 7, so it would be dropped anyway.
+Round 9: the generator is 2 (variant 0 = the polished gold / silver; 3 = round 8's prototype), so a RECIPE of a
+round-8 build (generator 1) is asked for as a blob, never made wrongly. Both players' textures folders are now filled by
+the launcher by itself (docs/textures.md "Get the pictures"), so the host can usually make the guest's colours itself;
+until the host's own extraction has finished, the fallback (WANT) applies. While an extraction writes the host's folder
+(`.extract.lock` held), its makes wait for it (at most 2 minutes) instead of failing; the host's one screen note for a
+folder not extracted yet says the launcher extracts by itself once the game is closed (its Extract textures button
+refuses while the game runs); for changed Original pictures or another game version it asks to quit and press Extract textures.
+
 **Byte checks** (`ftex::Available`, once; a mismatch turns the feature off with one line; section 27.3's table must
 pass too):
 
@@ -6261,3 +6289,245 @@ CreateEntity `0x1423806A0` is game_api's.
   R's vtable in that window would see an EntityResource (not seen; the window is one call).
 - The tool's effects (the PCC's and the anchor's build holograms, the spray's mist, sounds) stay on the player's own screen.
 - Cargo carried in a hand: delivery cases are drawn as before (section 13); equipment carried as cargo is not.
+
+## 32. Sam's skeleton on Fragile: the exo carrier (round 7; `session.ini exo_carrier`, default 1)
+
+The user: "skeletons aren't visible on fragile". The exoskeletons Sam can wear (speed, all-terrain, power, support) never
+showed on her, on either screen.
+
+### 32.1 Why [V: Ghidra, the round 7 research probes]
+
+- A skeleton is not an entity: it is ArtParts of Sam's own porter suit (`part_sam_body_suiti`, meshes from
+  `sam_sam/core/sam_exos_def`), shown and hidden by his mesh controller (player `+0xA60`) through its per-part masks. The
+  exos variation (`apv_sam_exos_def_vXY`, section 9) only tints them.
+- **Self view**: Sam is hidden with bit 63 of the controller's global part mask (`+0x348`), and his skeleton with him.
+- **Partner**: the partner Fragile (`demo_fgl_body_suiti`) has 7 ArtParts of her own, no skeleton; `MirrorParts`
+  (section 12) sets parts only on a Sam body ("another model").
+- The mesh controller's formula, ApplyMeshControl `0x1426D9120`, for each EDSPlayerMesh k = 1..88 (the ArtParts index at
+  controller `+0x38 + 8k`):
+  `asked = root(+0x338) == 0 && mask[0](+0x348) == 0 && (b[k](+0x8D8+8k) != 0 || (c[k](+0xE68+8k) == 0 && (cmpmode[k](byte +0x19A0+k) ? mask[k](+0x348+8k) != cmpval(+0x1998) : mask[k] == 0)))`.
+  b / c are reason 29's forced show / hide (SetPartVisible `0x1426B4D80`: reason 29 writes them, every other reason a bit of
+  mask[k]). The research note had b as a hide; the disassembly says a set b shows the part.
+- The skeleton types (the inventory update `FUN_142805CE0`, SetPartVisible reason 5 by the worn skeleton's item kind, kind
+  tests `0x14294EBE0` / `0x14294E730` / `0x14294EB20` / `0x14294ECA0`; 1 = shown):
+
+| Type | ExoMain 32 | BatteryEmission 41 | ExoSub 38 | Speed 39 | Pile 40 | Heavy 42 | EmissionHeavy 43 | Support 86 | EmissionSupport 87 |
+|---|---|---|---|---|---|---|---|---|---|
+| speed (the 100 % save's) | 1 | 1 | 1 | 1 | | | | | |
+| all-terrain | 1 | 1 | 1 | | 1 | | | | |
+| power | 1 | | | | | 1 | 1 | | |
+| support | | | | | | | | 1 | 1 |
+
+  In the porter suit's ArtParts (runtime index = decoded + 1): ExoMain 32 (parent the container 1; children 33-37, 39),
+  BatteryEmission 33, ExoSub 34, Speed 35, Pile 36, Heavy 37 (child heavysub 38, no k), EmissionHeavy 39, Support 50 (parent
+  1; child EmissionSupport 51). The suit's LegIn 40 / LegOut 42 pieces swap with a skeleton (suit pieces, not drawn on her).
+
+### 32.2 What the screens show now
+
+- **Both screens**: an **exo carrier**, a `demo_sam_clean` body (the partner-Sam body: the same 107 ArtParts as the porter
+  suit, no mesh controller, so the parts we set stay set) that shows only the skeleton pieces the guest's Sam wears, posed
+  every frame from her body, tinted like his (the exos variation: gold / silver). The guest's own screen has one on her self
+  view (slot 1), the host's screen one on the partner Fragile (slot 0). A Sam body (the host on the guest's screen) keeps
+  his own pieces through `MirrorParts`; no carrier for him.
+- Her joints have Sam's names in Sam's order (77 of 77, `real_names`), so the carrier's joint k takes the body's joint for
+  Sam joint k (`inv[k]`, checked for all 77): its pieces follow her legs, hips and back as drawn.
+- **Fit**: the pieces are Sam-sized: the thigh plates stand a little off her hips; the shin struts and knee lamps sit on her
+  legs (stills in 32.6).
+
+### 32.3 How (`partner_gear.cpp` ExoDrive / ExoShow, `real_body.cpp` ExoTarget, `exo_parts.hpp`)
+
+**Sender (`ReadParts`)**: Sam's gear parts (`kGearMeshParts`) are read with the controller's formula, our bit 63 ignored
+(`exo::MeshAsked`), so they are known while the self view hides him (before: the parts' flags, which read hidden under the
+self view; the last reading stood). The formula's step and the map read are byte-checked once (`0x1426D91E2`,
+`0x1426D924E`; a mismatch: the flags as before). The skeleton pieces are reported only when our Sam's controller maps
+every skeleton k to the porter suit's index (`exo::MapIsPorter`), and only as one of the four types: for a moment after a
+world load every piece reads shown (run `20261122-180651`: all four skeletons at once on her for 170 ms), so a reading of
+no known type keeps the last known one (none before one). The head parts keep their flags (under the self view the last
+reading stands, as before). No wire change: the STC1 parts block already carries these indices.
+
+**Receiver / self (`ExoWant`)**: slot 0 when the partner's parts block names every skeleton piece and shows a known type
+(not none), on a body that is not a Sam body (its ArtParts count is not 107); slot 1 from our own reading, on the self body.
+
+**The carrier (`ExoDrive`)**: loaded by path + GUID (`ds/entities/cinematics/demo_sam_clean`,
+`514b5705-aaf0-a447-a82e-0bb83b855201`) 20 m under the body, checked as a gear prop (`ValidateProp`), collision off (and
+kept off), invisible. Then:
+- **Parts** (every 100 ms, only those that differ; the part setter `0x1422B2770` inside the model bracket, as `MirrorParts`):
+  its ArtParts tree must be the porter suit's (`exo::CarrierTreeOk`: 107 parts, 0 / 1 / 52 top-level, the skeleton under 1
+  as above, else refused for the session with one line). `exo::CarrierPlan`: the suit body 0 and the head container 52 off,
+  every direct child of the container 1 off but the skeleton pieces the sender shows, the container on; a piece only with
+  its skeleton parent (the part setter does not look at the parent: heavysub, asked under a hidden heavy, read shown in run
+  `20261122-180651`), heavysub with heavy. Logged: `[exo] carrier <p> parts: n set (...); shown now: 1 32 33 34 35 90 ...
+  (the sender's skeleton: speed)` (90-106 are helper nodes without a mesh).
+- **Pose** (`realbody::SetExoCarrier`): its own model updates (the animate detour) write the body's local joints with an
+  identity root (as the boots prop, section 21): slot 0 `ComposePartner` (the partner body's pose at that moment), slot 1
+  Sam's newest capture composed on her latched bone lengths, exactly what the self body's own update takes (the carrier
+  updates before the self body in a frame: running 9 m in run `20261122-181504`, pose 0.00 cm with it; with the capture
+  the self body was last written from, `gear 27 4`, 1-3 cm, one frame behind), then the game's model-matrix and bounds
+  steps. A fault turns carriers off for the session. A carrier the game stops updating gets the forced model
+  update every 100 ms (`DriveExoTargets`), but only while it is meant to be seen (`SetExoPoseWanted`, set by `ExoShow`:
+  wanted, posed target, parts set, its body shown). A hidden carrier is not posed: the round 7 review counted 293 forced
+  updates in a 1.3 s reload of run `20261122-193826` while it was hidden; run `20261122-200542`: 0 forced, 283 skipped
+  (`exo carrier ...: n forced updates (m skipped: hidden)`).
+- **Placement**: the last entry of the slot's published gear list (joint 0, identity pose): the gear placement of
+  section 12 / 26.7 (the body's update, the tick's extrapolated placement) and its 240 Hz update group.
+- **Tint**: `outfit::Apply` with the sender's outfit (slot 0 the partner's STJ1 outfit, slot 1 our own): the exos variation
+  (silver / gold) and the suit colour. It needs this game's own player in the porter suit (section 9.4). A body's first
+  exos index is applied without the 500 ms settle (there is no tint to flash away from; changes still settle), so the tint
+  lands about 750 ms after the carrier is live.
+- **The first show waits for the tint** (`ExoShow`): the exos variation on the carrier equal to the sender's
+  (`wire::PorterExos`), or 2 s after live (`[exo] carrier <p>: no tint after n ms ...: shown as it is`, a receiver whose
+  own Sam is not in the porter suit). Before, the plain demo_sam_clean skeleton showed for 0.5-1.2 s and then turned gold
+  (round 7 review; runs `20261122-193625`, `-191730`). Run `20261122-200542`: exos 31 added and the carrier shown in the
+  same tick, 764 ms after live.
+- **Shown** (`ExoShow`) only with the body, placed, its parts set, a pose written within 250 ms and 3 written since it
+  became the pose target (the first write came out 13-29 cm off in run `20261122-181043`); hidden with no skeleton, a
+  hidden body, Sam asleep. Never a full Sam for a frame: the parts are set in the same tick it becomes live, before it is
+  shown.
+- **Lifetime**: removed 10 s after no skeleton is wanted, and at once with its body (self view off, private room, Sam
+  asleep, a new player: `RemoveAll`), with `exo_carrier=0` / `gear 27 0`. It adds nothing to the load into the private
+  room (it is removed with the self body and comes back after it, asynchronously).
+- **Meter** (every second in hidden runs, every 10 s otherwise): `[exo] carrier vs body cm mean/max: pose a / b (8 joints),
+  placed c / d (8, the tick's); ...`: the pose compares the carrier's joints in its model space with the body's in its
+  joint-0 frame (hips, legs, feet, hands, head); placed compares world positions at tick time (the tick's placement is
+  extrapolated one frame: moving, about one frame's travel).
+
+### 32.4 Settings and debug
+
+- session.ini `exo_carrier=0|1` (default 1). Not a scenario key (the default is on); `gear 27 0` turns it off at run time.
+- `gear 27 <0|1>` off / on; `gear 27 3|4` the self carrier's source (Sam's newest capture, the default / the self body's
+  applied capture); any other value: the status line. `gear 28 <-1..4>` (hidden tests): the skeleton pieces we read
+  replaced by a type's (both screens follow; Sam's own model is not changed). `gear 29 <0|1>`: the sender's LegOut suit
+  piece on her too (comparison; off).
+- Log lines: `[gear] the mesh controller's part formula (ApplyMeshControl) verified: ...`, `[exo] our Sam's skeleton: speed
+  (read through the self view) (pieces shown 0000000F00000000)`, `[exo] carrier: loading ...`, `[exo] carrier <p> live`,
+  `[exo] carrier <p> follows the partner body's pose` (`[exo-self] ... the self body's pose`), `[exo] carrier <p> parts:
+  ...`, `[exo] carrier <p>: shown (n ms after it became live)` / `: hidden`, `[exo] carrier removed (<why>)`, the meter.
+
+### 32.5 Addresses
+
+| Address | What | Bytes |
+|---|---|---|
+| `0x1426D91E2` | ApplyMeshControl's per-part step: root `+0x338`, global mask `+0x348`, forced show `+0x8D8+8k`, forced hide `+0xE68+8k`, compare mode `+0x19A0+k`, the mask `+0x348+8k`, compare value `+0x1998` | `48 83 BB 38 03 00 00 00 40 B6 01 75 46 48 83 BB 48 03 00 00 00 75 3C 48 83 BC FB D8 08 00 00 00 74 02 EB 32 48 83 BC FB 68 0E 00 00 00 75 24 80 BC 1F A0 19 00 00 00 48 8B 84 FB 48 03 00 00 74 0D 48 3B 83 98 19 00 00 40 0F 95 C6 EB 08 48 85 C0 74 03 40 32 F6` |
+| `0x1426D924E` | the controller's map read (`+0x38 + 8k`, -1 none) | `44 8B 44 FB 38 41 83 F8 FF` |
+| `0x1422B2770` / `0x142391620` / `0x1423966A0` | the part setter and the model bracket (section 12, `ApdFnsOk`) | as there |
+| `0x142805CE0` | the inventory update: SetPartVisible reason 5 per skeleton type (32.1) | not called |
+
+### 32.6 Proof (hidden; every run: game exit 0, saves unchanged, restored, no violation, 0 cloud uploads, 0 game-server writes, online gate ok)
+
+- `20261122-182221-skel-fragile` (solo, `-SeedSaves complete-100`, `my_character=fragile_suit`, the self view; the final
+  build) **pass**, "run PASSED": `[exo] our Sam's skeleton: speed (read through the self view)`; the self carrier loads in
+  50 ms and is shown 56 ms after it became live; a mirroring debug Fragile with our gear (`gear 4 1`) gets the partner
+  slot's carrier (shown 54 ms after live); `gear 28 2 / 3 / 4 / 0 / -1` changes both carriers' parts within 0.1 s (shown now
+  `1 32 33 34 36` all-terrain, `1 32 37 38 39` power, `1 50 51` support, hidden for none). Meter: pose 0.00-0.07 cm standing;
+  running with the default self source 0.00 / 0.00 cm on every line, with `gear 27 4` (the body's applied capture) 2-3.8 /
+  7.8 cm (one frame behind: the reason for the default). `parts changed by the game 0`, no fault, no refusal.
+- `20261122-181504-skel-fragile` (the same before the default source changed): **pass**; frames 100 ms apart while the
+  carrier came back after `gear 27 0 / 1` (`02-spawn-0..6`): Fragile with or without the skeleton, never a full Sam
+  (round7 `skel-impl-solo-spawn-strip.png`). The front still (`skel-impl-solo-self-front-speed.png`): gold thigh plates on
+  her hips (standing off a little), knee lamps, shin struts; the five types on her legs from behind
+  (`skel-impl-solo-self-legs-types.png`, run `181043`).
+- `20261122-182033-two-games-fragile-skeleton` (the launcher's Local test files, `-GuestSeed profile-only`; guest Fragile,
+  host Sam) **pass**, "run PASSED", both games exit 0: the host sees the guest's Fragile with the speed skeleton (gold,
+  tinted from the guest's outfit) standing and walking, then all-terrain, power (walking too), support, none and speed
+  again; the guest's own self view the same at each step (`skel-impl-2g-types-host-top-guest-bottom.png`: the host's
+  screen on top, the guest's below). Meter on both games: pose 0.00-0.01 cm. The guest's screen keeps the host's Sam
+  skeleton through `MirrorParts` (`partner body ...: 107 ArtParts (ours 107), 53 of 53 ...: mirrored`), no carrier loaded
+  for him.
+- Earlier runs of the work: `180651` (every piece shown for 170 ms after the load: the known-type rule), `181043` (the
+  first pose write 13-29 cm off: the 3-writes rule; heavysub read shown under a hidden heavy: the parent rule), `181743`
+  (the two-games scenario's `nolog` caught the meter's "0 refused"; its regex was fixed, everything else passed).
+- ctest: 32 of 32 (with the new `st_exo_parts_tests`, 206 checks).
+
+### 32.7 Not covered
+
+- **Equipping a skeleton in a hidden run**: no game function equips one by type (the boots have SetShoesForcibly; nothing
+  like it for skeletons), so the other types are shown through `gear 28` (what we read and send), not by Sam wearing them.
+  The real path was run with the 100 % save's speed skeleton.
+- **Fit**: the pieces are Sam's size on her thinner body (the thigh plates stand off her hips by a few cm).
+- **LegOut**: the suit's leg piece worn with a skeleton is not drawn on her (her own suit's legs); `gear 29 1` shows it.
+- **A receiver not in the porter suit**: the carrier is drawn untinted (no exos variation).
+- **The power glove** (`mesh_glovepower`, k 54) is a suit piece of the same kind; not carried yet.
+- Another non-Sam character on the self view (Cliff, Die-Hardman): the carrier works the same (every Sam joint mapped by
+  name), not run.
+
+## 33. The self view over loads: the private room's black screen (round 7)
+
+The user (guest, playing Fragile with the self view) went into the private room from the field: after the bed cutscene
+the screen stayed black for about 9 s ("it took a long time"). Loading straight into the private room
+(story point manualsave12) stayed black for 40+ s.
+
+### 33.1 Why [V: the round 7 research runs and the runs below]
+
+- While the self body is shown, reason 63 hides Sam (his global part mask). v0.24 kept it through every load and the
+  post-load Setup: the show gate only unshowed for a sleeping or missing Sam, and its freshness check (`no fresh pose
+  written onto the body`, 250 ms) counted the mod's own pose writes, which go on with a stale capture.
+- Loading straight into the room: the body was shown during `Loading|SystemPause` on a Sam pose 2.8 s old; from then on
+  the game never rewrote Sam's joints (`fit on: ... game-rewrote=0`) and never left `PrivateRoom|Setup` (black). Switching
+  the self view off there brought the room 1.3 s later (research run `20261122-173139`).
+- Entering from the field: after the room load the bed close-up holds Sam's pose (the fit's `held` updates, no rewrite),
+  and with Sam hidden through that close-up the game never draws the room after it: black from +19 to +32 s and on, with
+  the state already `PrivateRoom` (run `20261122-185346`, `self_view 17 0`). The load rule alone (below) does not cure
+  it (`20261122-184724`, `self_view 17 1`: black from +22.7 s to the end); Sam visible in that close-up does.
+- Not the cause: the partner body, gear props, boots, textures, held items, link traffic (the stall reproduces solo);
+  fps stays 60.
+
+### 33.2 What the self view does now (`real_body.cpp` SelfTick, `game::LoadOrSetup`)
+
+1. **The load rule.** While the game is loading or settling after a load (`game::LoadOrSetup`: any GameModule load-mask
+   bit (+0x44C), the DSGameState flags Loading 0x400000 or Setup 0x4000000, current or requested, or its post-load phase
+   +0x5E0 == 2) the body is not shown: reason 63 is cleared at once (`[self] Sam shown again (the game is loading / in its
+   post-load setup ...)`), the body stays spawned. One `[self] the game is loading or settling: ...` line when a load
+   starts, one `[self] the load / post-load setup is over after N s (state ...)` when it ends.
+2. **The show needs a fresh game update of Sam**: besides the old checks, a capture of Sam's model the game updated in
+   the last 100 ms (`body not shown: Sam's model was not updated by the game in the last 100 ms`). Only for the show; a
+   shown body is not unshown by it (a pause menu that stops Sam's update keeps her).
+3. **The private room's close-up hold** (round 7 review). When a load or Setup ends in `PrivateRoom|Cutscene` (0x48), or
+   that state comes within 8 s after it, the body is not shown at all: Sam stays until the game state flags change (at
+   most 20 s), once per load (`[self] the private room's close-up n s after a load (state 0x48): Sam stays until the game
+   state changes (hold k)`). Entering from the field that is the bed close-up after the room load: Sam lies on the bed
+   there instead of Fragile; she is back with the next state (`PrivateRoom|Cutscene|bit39`, the room drawn). The bed scene
+   before the room load (also 0x48, but not after a load) still shows Fragile. Before the review the stall guard below did
+   this after the fact: Fragile showed for 0.5-1 s, then turned into Sam mid-shot (run `20261122-191916`).
+4. **The stall guard** (the hold's fallback). Only in `PrivateRoom|Cutscene` in the 8 s after a load, not paused: when the
+   game has not moved Sam for 1 s since the show, Sam is shown (`[self] stall guard: ...`) and the body waits until the
+   game state flags change (at most 20 s). "Moved": a capture whose clean joints (the fit's held values restored) differ
+   from the previous capture's (`g_sam_last_change` in CaptureSam), the same signal with the fit on or off; or no capture
+   at all. Before the review it took the fit's fully rewritten updates (with the fit off, any model update, which the game
+   makes at 60/s in the close-up: the guard could not fire) and any cutscene after any load (a cinematic that leaves 3
+   translations alone is normal: the bed scene before the load had 8 s of it).
+
+`action self_view 17 <mask>` (before / after runs): bit 1 the load rule and the fresh show, bit 2 the close-up hold and the
+stall guard; 3 the default, 0 v0.24.
+
+### 33.3 Proof (hidden, solo; every run: saves unchanged, restored, no violation, 0 cloud uploads, 0 game-server writes, online gate ok)
+
+Black = screenshot mean under 5, sampled about every second after the request.
+
+| Run | What | Black after the request | Result |
+|---|---|---|---|
+| `20261122-185511-private-room-load` | load into the room, self view on (fix) | +0.4..+5.3 s; room drawn by +6.4 s, Fragile shown in it (`show 2`) | pass, run PASSED |
+| `20261122-185557-private-room-load-vanilla` | the same, self view off | +0.3..+5.4 s | pass, run PASSED |
+| `20261122-185650-pr-load-v024` | the same, `self_view 17 0` (v0.24) | +0.4 s to the end (17 s; 40+ s in the research run) | fail (room never drawn): the bug |
+| `20261122-185016-private-room-field` | from the field, self view on (fix) | +12.0..+15.0 (room load), +22.0..+23.9; room drawn +24.8 s, playable +44.8 s; stall guard once (+16.4 s, 1.7 s after the load) | pass, run PASSED |
+| `20261122-185201-private-room-field-vanilla` | the same, self view off | +11.6..+14.8, +21.9..+23.0; room drawn +26.1 s (sampled), playable +44.9 s | pass, run PASSED |
+| `20261122-185346-pr-field-v024` | the same, `self_view 17 0` (v0.24) | +11.7..+14.8, +21.9 s to the end (+32.5) | fail (room never drawn): the user's case |
+| `20261122-184724-pr-field-rule1` | the same, `self_view 17 1` (load rule only) | +11.6..+14.7, +22.7 s to the end | fail: the guard is needed |
+| `20261122-190033-two-games-private-room` | two games on the launcher's Local test files (`host_save=1`, `world_sync=1`): the guest enters from the field | guest +11.5..+15.2, +22.6..+23.5; room drawn +24.4 s, playable +45.4 s; stall guard once (+16.5 s); her gate dropped the create-road request | pass, run PASSED (both gates on) |
+
+Earlier runs of the work: `183716` / `183804` / `183926` / `184054` (the first scenario versions; the timings agree),
+`184354` (pr-field-v024 started by Start-TestRun directly, not through Run-Batch: clean, saves unchanged and restored).
+
+Scenarios: `private-room-load`, `private-room-load-vanilla` (`-SeedSaves story-pack`), `private-room-field`,
+`private-room-field-vanilla` (`-SeedSaves complete-100`; the online gate's W3, docs/world-sync.md, drops the create-road
+request entering the room makes the game send: the research's field run failed on it). Each asserts the room is drawn (a
+screenshot mean of 20 or more) by a deadline close to vanilla's, then playable. `two-games-private-room` (`-SeedSaves complete-100
+-GuestSeed profile-only`): the same field entry by the guest of a Local test.
+
+### 33.4 Not covered
+
+- Other loads behind a cutscene that holds Sam (a story cutscene after a load): the hold and the guard cover only
+  `PrivateRoom|Cutscene`; no other case was seen.
+- Sam instead of Fragile in the post-load bed close-up (about 10 s) is the price of the hold.
+- Leaving the private room back to the field is not in a scenario: two probe runs (`20261122-200542`, `-200917`) tried
+  View (tap, held), A, B (held: Examine Figures), Y, X, RB, LB, D-pad up / down and Start in the room and none left it.
+  The hold and guard apply there only if the state after that load is still `PrivateRoom|Cutscene` (not known).

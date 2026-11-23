@@ -4,6 +4,7 @@
 #include <tlhelp32.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <map>
@@ -348,7 +349,7 @@ bool HiddenIniFromLauncher(const std::string& launcher_text, const SessionOption
 
 bool LauncherIniOverrideAllowed(const std::string& key) {
     static const char* const kAllowed[] = {"fragile_suit_colour", "fragile_textures", "textures_send", "textures_receive", "textures_hot_reload", "textures_free",
-                                           "boots_look", "boots_own_porter", "held_items"};
+                                           "textures_defaults", "boots_look", "boots_own_porter", "held_items"};
     for (const char* k : kAllowed)
         if (key == k) return true;
     return false;
@@ -367,8 +368,8 @@ bool ScenarioIniKeyAllowed(const std::string& key) {
                                            "world_sync", "world_anim", "world_contrib", "world_ladders", "world_ziplines", "world_test_fail",
                                            "partner_vehicle_damage", "dev_tools", "test_net_latency_ms", "test_net_jitter_ms",
                                            "test_net_loss_permille", "test_net_burst", "fragile_textures", "textures_send",
-                                           "textures_receive", "textures_hot_reload", "textures_free", "boots_look", "boots_own_porter",
-                                           "held_items"};
+                                           "textures_receive", "textures_hot_reload", "textures_free", "textures_defaults", "boots_look",
+                                           "boots_own_porter", "held_items"};
 
     for (const char* k : kAllowed)
         if (key == k) return true;
@@ -525,24 +526,59 @@ bool ParseScenario(const std::string& text, Scenario* out, std::string* error, c
             continue;
         }
         if (verb == "textures") {
-            // textures extract | pattern <checker|stripes|metal> <folder, e.g. 16 Gold> | none
+            // textures extract | pattern <checker|stripes|metal|ao> <folder, e.g. 16 Gold> | copy <folder>\<picture> from <file> | none |
+            // v024 (round 8: the folder as v0.24's extractor left it) | reset <colour folder> (its three Suit pictures deleted) |
+            // gen1 (round 9: 15 Silver / 16 Gold as round 8's extractor left them: generator 1's satin metal, extract 2) |
+            // extract-start / extract-wait (round 9 review: the extraction in the background while the next steps run, as
+            // the launcher's automatic one does; after start only)
             if (st.optional) return fail("textures cannot be optional");
-            std::string cmd;
-            if (words.size() == 2 && (words[1] == "extract" || words[1] == "none")) {
-                cmd = words[1];
-            } else if (words.size() >= 4 && words[1] == "pattern" && (words[2] == "checker" || words[2] == "stripes" || words[2] == "metal")) {
-                // a colour or boots folder ("16 Gold", "09 Chiral boots"), or a boots folder's Worn / Gold / Silver subfolder
-                // ("09 Chiral boots\Worn"): nothing else, never a path out of the run's textures folder
-                const std::string folder = automation::detail::Rest(line, 3);
+            // a colour or boots folder ("16 Gold", "09 Chiral boots"), or a boots folder's Worn / Gold / Silver subfolder
+            // ("09 Chiral boots\Worn"): nothing else, never a path out of the run's textures folder
+            auto folder_ok = [](const std::string& folder) {
                 const std::size_t bs = folder.find('\\');
                 const std::string top = folder.substr(0, bs), sub = bs == std::string::npos ? std::string() : folder.substr(bs + 1);
-                if (top.size() < 3 || top[0] < '0' || top[0] > '9' || top[1] < '0' || top[1] > '9' || top[2] != ' ' ||
-                    top.find_first_of("\\/:*?\"<>|") != std::string::npos || top.find("..") != std::string::npos ||
-                    (bs != std::string::npos && (top.find("oots") == std::string::npos || (sub != "Worn" && sub != "Gold" && sub != "Silver"))))
-                    return fail("textures pattern: the folder is a colour or boots folder name like '16 Gold' or '09 Chiral boots\\Worn'");
+                return !(top.size() < 3 || top[0] < '0' || top[0] > '9' || top[1] < '0' || top[1] > '9' || top[2] != ' ' ||
+                         top.find_first_of("\\/:*?\"<>|") != std::string::npos || top.find("..") != std::string::npos ||
+                         (bs != std::string::npos && (top.find("oots") == std::string::npos || (sub != "Worn" && sub != "Gold" && sub != "Silver"))));
+            };
+            std::string cmd;
+            if (words.size() == 2 && (words[1] == "extract" || words[1] == "none" || words[1] == "v024" || words[1] == "gen1")) {
+                cmd = words[1];
+            } else if (words.size() == 2 && (words[1] == "extract-start" || words[1] == "extract-wait")) {
+                if (out->quickstart_line == 0) return fail("textures " + words[1] + " goes after start (the game runs meanwhile)");
+                cmd = words[1];
+            } else if (words.size() >= 3 && words[1] == "reset") {
+                const std::string folder = automation::detail::Rest(line, 2);
+                if (!folder_ok(folder) || folder.find('\\') != std::string::npos || folder.find("oots") != std::string::npos)
+                    return fail("textures reset: the folder is a colour folder name like '09 Mustard'");
+                cmd = "reset " + folder;
+            } else if (words.size() >= 4 && words[1] == "pattern" &&
+                       (words[2] == "checker" || words[2] == "stripes" || words[2] == "metal" || words[2] == "ao")) {
+                const std::string folder = automation::detail::Rest(line, 3);
+                if (!folder_ok(folder)) return fail("textures pattern: the folder is a colour or boots folder name like '16 Gold' or '09 Chiral boots\\Worn'");
+                if (words[2] == "ao" && folder.find("oots") != std::string::npos) return fail("textures pattern ao: a suit colour folder like '05 Light grey'");
                 cmd = "pattern " + words[2] + " " + folder;
+            } else if (words.size() >= 6 && words[1] == "copy") {
+                // "copy 16 Gold\Suit - Colour.png from D:\pictures\gold.jpg" (round 7): a picture file copied byte for byte
+                // under one of the names the mod reads (any format: the mod reads it by its content). The source is only
+                // read; the target is in the run's own textures folder only.
+                const std::string rest = automation::detail::Rest(line, 2);
+                const std::size_t at = rest.find(".png from ");
+                const std::string to = at == std::string::npos ? std::string() : rest.substr(0, at + 4);
+                const std::string from = at == std::string::npos ? std::string() : rest.substr(at + 10);
+                const std::size_t bs = to.find_last_of('\\');
+                const std::string folder = bs == std::string::npos ? std::string() : to.substr(0, bs);
+                const std::string name = bs == std::string::npos ? std::string() : to.substr(bs + 1);
+                if (to.empty() || folder.empty() || !folder_ok(folder) || (name.rfind("Suit - ", 0) != 0 && name.rfind("Boots - ", 0) != 0) ||
+                    name.find_first_of("\\/:*?\"<>|") != std::string::npos || name.find("..") != std::string::npos)
+                    return fail("textures copy <NN folder>\\<Suit - X.png | Boots - X.png> from <full path of a picture file>");
+                if (from.size() < 4 || !std::isalpha(static_cast<unsigned char>(from[0])) || from[1] != ':' || from[2] != '\\' ||
+                    from.find_first_of("*?\"<>|") != std::string::npos)
+                    return fail("textures copy: the source is a full path like D:\\pictures\\gold.jpg");
+                cmd = "copy " + to + " from " + from;
             } else {
-                return fail("textures extract | textures pattern <checker|stripes|metal> <NN folder> | textures none");
+                return fail("textures extract | textures pattern <checker|stripes|metal|ao> <NN folder> | textures copy <NN folder>\\<picture> from <file> | textures v024 | textures gen1 | "
+                            "textures reset <NN colour folder> | textures extract-start | textures extract-wait | textures none");
             }
             out->textures = out->textures || cmd != "none";
             if (cmd == "none") continue;
@@ -720,7 +756,7 @@ bool ParseScenario(const std::string& text, Scenario* out, std::string* error, c
             for (const std::string& kv : *list)
                 if (!LauncherIniOverrideAllowed(kv.substr(0, kv.find('='))))
                     return *error = at + "plays the launcher's file: only test switches may be added (" + kv.substr(0, kv.find('=')) +
-                                    " is not one: fragile_suit_colour, fragile_textures, textures_send, textures_receive, textures_hot_reload, textures_free, boots_look, boots_own_porter, held_items)",
+                                    " is not one: fragile_suit_colour, fragile_textures, textures_send, textures_receive, textures_hot_reload, textures_free, textures_defaults, boots_look, boots_own_porter, held_items)",
                            false;
         if (out->guest_unredirected) return *error = at + "and guest unredirected do not go together", false;
         if (!out->low_graphics) return *error = at + "needs 'graphics low' (the launcher's file has appdir_settings=1)", false;

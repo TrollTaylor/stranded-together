@@ -84,6 +84,9 @@ struct Config {
     bool textures_receive = true;
     bool textures_hot_reload = true;
     bool textures_free = true;  // a texture of ours unused for 5 s is released (0: kept for the session, at most 48)
+    // Round 8 (docs/textures.md "Ready-made colours"): a colour folder 01..16 with nothing painted wears Stranded
+    // Together's ready-made colour (made from her Original pictures); 0: her own suit there (the v0.24 rule).
+    bool textures_defaults = true;
     // Partner boots (section 21): the sender's equipped boots as a gear item (STC1 kind 7) and, on the other screen, a
     // cutscene boots prop posed from the partner body's legs with the partner's own feet scaled away. Default on;
     // boots_sync=0: nothing read, sent or spawned (the partner shows its own model's boots).
@@ -94,6 +97,10 @@ struct Config {
     // boots on her feet (v0.22). boots_own_porter (prop only, default on): sole grass and intact porter boots keep her own.
     bool boots_look_own = true;
     bool boots_own_porter = true;
+    // Round 7 (docs/real-partner-body.md section 32): Sam's skeleton (exoskeleton) on a body that is not Sam (Fragile), on
+    // both screens: an "exo carrier" (a demo_sam_clean body showing only the skeleton pieces) posed from her body. Default
+    // on; exo_carrier=0: no carrier (her body shows no skeleton, as before).
+    bool exo_carrier = true;
     // Round 6 (docs/real-partner-body.md section 31): what is in a player's hand on the other screen. held_items (0 off: only
     // the cutscene-prop weapons of v0.9; 1 the ladder, PCC and climbing anchor; 2, the default, every weapon / tool without a
     // cutscene prop) is drawn as a plain entity made from the item's own resource ("held clone").

@@ -1,0 +1,136 @@
+# Sam's skeletons on Fragile, solo (round 7; docs/real-partner-body.md section 32):
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios skel-fragile -SeedSaves complete-100 -Id round7-skel
+# The 100% save's Sam wears the speed skeleton. The self view shows Fragile with it (the self slot's exo carrier, posed from
+# her body); a mirroring debug Fragile with our own gear (gear 4 1) shows it through the partner slot's carrier. Frames
+# 100 ms apart while the carrier comes back (never a full Sam for a frame), each skeleton type in turn (gear 28: the pieces
+# we read replaced by a type's, so both carriers follow), front / side stills, walking and running frames with the meter on
+# both self sources (gear 27 4 / 3), Sam's own skeleton at the same spot (self view off) to compare.
+role solo
+timeout 360
+ini partner_body=real
+ini my_character=fragile_suit
+ini self_character=1
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+# the self view's carrier with the real (speed) skeleton
+waitlog 60 \[exo\] our Sam's skeleton: speed
+waitlog 60 \[exo-self\] carrier .* follows the self body's pose
+waitlog 30 \[exo-self\] carrier [0-9A-Fa-fx]+: shown
+wait 2000
+screenshot 01-self-back-speed
+action self_view 15 1
+# the carrier going and coming back: never a full Sam for a frame
+action gear 27 0
+waitnew 15 \[exo-self\] carrier removed
+wait 1000
+action gear 27 1
+screenshot 02-spawn-0
+wait 100
+screenshot 02-spawn-1
+wait 100
+screenshot 02-spawn-2
+wait 100
+screenshot 02-spawn-3
+wait 100
+screenshot 02-spawn-4
+wait 100
+screenshot 02-spawn-5
+wait 2500
+screenshot 02-spawn-6
+# the partner slot: a mirroring debug Fragile 2.5 m away wearing our gear
+action real_spawn 16 2.5 1
+waitlog 30 \[real\] ('fragile_suit' is live|.*refused|.*did not load|the game cancelled loading|spawn failed|teardown)
+action gear 4 1
+waitlog 60 \[exo\] carrier .* follows the partner body's pose
+waitlog 30 \[exo\] carrier [0-9A-Fa-fx]+: shown
+wait 2000
+screenshot 03-both-speed
+# each skeleton type (both carriers follow our reading)
+action gear 28 2
+waitlog 20 \[exo-self\] carrier .* parts: .*the sender's skeleton: all-terrain
+waitlog 20 \[exo\] carrier .* parts: .*the sender's skeleton: all-terrain
+wait 1500
+screenshot 04-both-all-terrain
+action gear 28 3
+waitlog 20 \[exo-self\] carrier .* parts: .*the sender's skeleton: power
+waitlog 20 \[exo\] carrier .* parts: .*the sender's skeleton: power
+wait 1500
+screenshot 05-both-power
+action gear 28 4
+waitlog 20 \[exo-self\] carrier .* parts: .*the sender's skeleton: support
+waitlog 20 \[exo\] carrier .* parts: .*the sender's skeleton: support
+wait 1500
+screenshot 06-both-support
+action gear 28 0
+waitnew 20 \[exo-self\] carrier [0-9A-Fa-fx]+: hidden
+wait 1500
+screenshot 07-both-none
+action gear 28 -1
+waitnew 20 \[exo-self\] carrier [0-9A-Fa-fx]+: shown
+wait 1500
+action gear 27 2
+action real_remove
+action gear 4 0
+wait 1500
+# her front and side with the real skeleton
+pad none 1300 rx=32767
+wait 1500
+screenshot 08-self-front-speed
+pad none 650 rx=-32767
+wait 1500
+screenshot 09-self-side-speed
+pad none 650 rx=-32767
+wait 1500
+# walking and running, the self carrier posed from the self body's applied capture (gear 27 4: the previous frame's) ...
+action gear 27 4
+action log_status
+pad none 900 ly=32767 keep
+screenshot 10-walk-a
+wait 200
+screenshot 10-walk-b
+pad none 0
+pad none 3000 ly=32767 rt=255 keep
+screenshot 11-run-a
+wait 200
+screenshot 11-run-b
+pad none 0
+wait 1500
+pad none 1300 rx=32767
+wait 1000
+# ... and from Sam's newest capture (gear 27 3, the default), the same run back
+action gear 27 3
+action log_status
+pad none 3000 ly=32767 rt=255 keep
+screenshot 12-run-newest-a
+wait 200
+screenshot 12-run-newest-b
+pad none 0
+wait 1500
+action gear 27 3
+pad none 1300 rx=32767
+wait 1500
+screenshot 13-self-front-again
+# Sam's own skeleton at the same spot (self view off) for comparison
+action self_view 0
+wait 2500
+screenshot 14-sam-front
+action self_view 1
+waitnew 30 \[self\] showing 'fragile_suit'
+waitnew 30 \[exo-self\] carrier [0-9A-Fa-fx]+: shown
+wait 1500
+screenshot 15-self-front-back-on
+action gear 27 2
+nolog \[exo.*FAULTED
+nolog \[exo.*\] carrier refused
+nolog \[exo-self\] carrier .* not the porter suit's tree
+nolog \[exo.*\] carrier [0-9A-Fa-fx]+: no tint after
+nolog \[gear\] the ArtParts part setter faulted
+action log_status
+quit

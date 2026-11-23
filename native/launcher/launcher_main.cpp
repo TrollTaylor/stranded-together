@@ -612,6 +612,7 @@ int RunWindow(const Options& o) {
     if (!model) {
         st::ModelStart start;
         start.check_on_start = true;   // once, when the setting allows it
+        start.auto_extract_textures = true;   // round 9: Fragile's textures by themselves, when the setting allows it
         start.after_update = o.after_update;
         start.update_feed = Utf8(o.update_feed);
         start.update_now = o.update_now;
