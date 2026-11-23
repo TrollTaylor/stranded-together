@@ -429,9 +429,6 @@ find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
   add_test(NAME st_devdash_tests
            COMMAND ${Python3_EXECUTABLE} -B -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/tools/devdash" -p "test_*.py")
-  # voicecut (tools/voicecut, docs/voicecut.md): decoder, parsers, export and API tests on synthetic data only
-  add_test(NAME st_voicecut_tests
-           COMMAND ${Python3_EXECUTABLE} -B -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/tools/voicecut" -p "test_*.py")
 endif()
 
 # ---- Launcher (StrandedTogether.exe)

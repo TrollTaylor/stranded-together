@@ -16,6 +16,3 @@ testenv-saves/
 
 # devdash launcher (a local copy of tools/devdash/devdash.bat.example)
 /devdash.bat
-
-# voicecut launcher (a local copy of tools/voicecut/voicecut.bat.example)
-/voicecut.bat

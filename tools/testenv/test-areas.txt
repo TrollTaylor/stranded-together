@@ -74,7 +74,6 @@ CMakeLists.txt                         none
 cmake/*                                none
 third_party/*                          boot
 tools/devdash/*                        none
-tools/voicecut/*                       none
 tools/re/*                             none
 tools/fakepeer/*                       none
 tools/launcher/*                       none
