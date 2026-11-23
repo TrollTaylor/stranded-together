@@ -19,6 +19,7 @@
   </div>
   <div class="status" id="status">connecting</div>
   <div class="top-actions">
+    <button class="btn ghost hidden" id="btn-prefetch" title="Every line is decoded in the background so nothing makes you wait; pause it if the PC needs the CPU">Pause decoding</button>
     <button class="btn" id="btn-export" title="Write every clip and voices.txt to the export folder">Export clips</button>
     <button class="btn ghost" id="btn-open-export" title="Open the export folder in Explorer">Open folder</button>
     <button class="btn ghost" id="btn-help" title="Keyboard shortcuts">Keys</button>
@@ -73,6 +74,7 @@
       <h2>Editor</h2>
       <span class="hint" id="ed-title">Pick a line on the left</span>
     </div>
+    <div class="target hidden" id="ed-target"></div>
     <div class="ed-source" id="ed-source"></div>
     <canvas id="overview" class="overview" height="44"></canvas>
     <div class="wave-wrap">
@@ -124,11 +126,13 @@
   <!-- clips, coverage, Sam -->
   <section class="panel side">
     <div class="tabs" role="tablist">
-      <button class="tab active" data-tab="clips">My clips <span class="pill" id="n-clips">0</span></button>
+      <button class="tab active" data-tab="guide" title="Go through Sam's sounds one by one and give each a Fragile clip">Guide <span class="pill" id="n-guide">0</span></button>
+      <button class="tab" data-tab="clips">My clips <span class="pill" id="n-clips">0</span></button>
       <button class="tab" data-tab="coverage">Coverage</button>
       <button class="tab" data-tab="sam">Sam's situations</button>
     </div>
-    <div class="tabpane" id="tab-clips"></div>
+    <div class="tabpane" id="tab-guide"></div>
+    <div class="tabpane hidden" id="tab-clips"></div>
     <div class="tabpane hidden" id="tab-coverage"></div>
     <div class="tabpane hidden" id="tab-sam">
       <div class="filters">
@@ -161,8 +165,9 @@
       <tr><td>Z / F</td><td>zoom to the selection / show everything</td></tr>
       <tr><td>Home / End</td><td>playhead to the start / end</td></tr>
       <tr><td>S or Ctrl+S</td><td>save the clip</td></tr>
+      <tr><td>N / P</td><td>cutscenes: select Fragile's next / previous line</td></tr>
       <tr><td>Mouse</td><td>drag on the waveform to select; drag the edges to trim; click to move the playhead;
-        Shift+wheel or drag the top strip to scroll</td></tr>
+        middle button drag, Shift+wheel or the top strip to scroll; click a line in the bottom strip to select it</td></tr>
     </table>
     <button class="btn" id="help-close">Close</button>
   </div>

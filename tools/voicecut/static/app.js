@@ -73,11 +73,24 @@ async function pollStatus() {
       let t = c.message + ' · ' + st.clips + ' clip' + (st.clips === 1 ? '' : 's');
       if (dec.length) t += ' · decoding ' + Math.round(100 * dec[0][1]) + '%';
       if (st.measuring) t += ' · measuring ' + st.measuring + ' of Sam\'s lines';
+      const pf = st.prefetch || {};
+      if (pf.state === 'running' || pf.state === 'paused') {
+        t += ' · decoding every line ' + pf.done + ' / ' + pf.total + (pf.state === 'paused' ? ' (paused)' : '');
+      } else if (pf.state === 'done' && pf.failed) t += ' · ' + pf.failed + ' lines did not decode (voicecut.log)';
       box.textContent = t;
+      const pb = $('btn-prefetch');
+      pb.classList.toggle('hidden', !(pf.state === 'running' || pf.state === 'paused'));
+      pb.textContent = pf.state === 'paused' ? 'Resume decoding' : 'Pause decoding';
+      pb.dataset.state = pf.state || '';
       if (!S.catalog) await loadCatalog();
       if (st.measuring || S.wasMeasuring) { S.wasMeasuring = !!st.measuring; await loadUser(); }
+      else if ((pf.state === 'running' || S.wasPrefetching) && Date.now() - (S.lightAt || 0) > 8000) {
+        // new lengths and loudness from the background decode: refresh what shows them, not the lists you scroll
+        S.wasPrefetching = pf.state === 'running'; S.lightAt = Date.now();
+        try { S.user.measured = (await getJSON('/api/user')).measured; renderGuide(); updateMeter(); } catch (e) { /* next time */ }
+      }
     }
-    const busy = c.state === 'building' || Object.keys(st.decoding || {}).length || st.measuring;
+    const busy = c.state === 'building' || Object.keys(st.decoding || {}).length || st.measuring || (st.prefetch || {}).state === 'running';
     S.failures = 0;
     setTimeout(pollStatus, busy ? 700 : 4000);
   } catch (e) {
@@ -105,7 +118,7 @@ async function loadCatalog() {
 async function loadUser() {
   S.user = await getJSON('/api/user');
   $('n-clips').textContent = S.user.clips.length;
-  renderLibrary(); renderClips(); renderCoverage(); renderSam(); updateMeter();
+  renderLibrary(); renderClips(); renderCoverage(); renderSam(); renderGuide(); updateMeter();
 }
 
 // ------------------------------------------------------------------ library
@@ -183,6 +196,7 @@ async function fetchBuffer(id) {
   return ab;
 }
 function stopAll() {
+  S.seqToken = null;
   if (S.play) { try { S.play.node.onended = null; S.play.node.stop(); } catch (e) { /* already stopped */ } S.play = null; }
   $('b-play').innerHTML = '&#9654; Play';
 }
@@ -260,13 +274,24 @@ async function openItem(id, then) {
   const it = S.byId.get(id);
   if (!it) return;
   stopAll();
-  S.cur = it; S.buf = null; S.abuf = null; S.sel = null; S.playhead = 0;
+  S.cur = it; S.buf = null; S.abuf = null; S.sel = null; S.playhead = 0; S.subIdx = null;
   if (!then) setEditing(null);
   $('ed-title').textContent = (it.speaker === 'sam' ? 'Sam' : 'Fragile') + ' · ' + (it.kind === 'cutscene' ? 'cutscene ' + it.name : it.group);
   const src = $('ed-source'); src.textContent = '';
+  src.classList.toggle('tall', it.kind === 'cutscene');
   if (it.kind === 'cutscene') {
-    src.appendChild(el('div', null, 'Every voice in this cutscene. Fragile says:'));
-    for (const t of (it.text || '').split(' / ')) src.appendChild(el('div', 'faint', '• ' + t));
+    const subs = fragileSubs(it);
+    if (subs.length) {
+      src.appendChild(el('div', null, 'Every voice in this cutscene. Fragile\'s ' + subs.length + ' lines (click to jump, N / P next / previous; the strip under the waveform shows who speaks when):'));
+      subs.forEach((s, k) => {
+        const b = el('button', 'jump', fmtTime(s.t0) + '  ' + s.text.replace(/\s+/g, ' '));
+        b.title = 'Select and zoom to this line'; b.onclick = () => jumpToSub(k);
+        src.appendChild(b);
+      });
+    } else {
+      src.appendChild(el('div', null, 'Every voice in this cutscene. Fragile says:'));
+      for (const t of (it.text || '').split(' / ')) src.appendChild(el('div', 'faint', '• ' + t));
+    }
   } else {
     src.textContent = itemTitle(it);
     const sits = (it.situations || []).map((h) => (S.sitByHash.get(h) || {}).label).filter(Boolean);
@@ -288,6 +313,32 @@ async function openItem(id, then) {
   } catch (e) {
     if (S.cur === it) $('wave-msg').textContent = 'Could not load this line: ' + e.message;
   }
+}
+// ---- cutscene subtitles: who speaks when (the game's subtitle timeline, 60 frames a second)
+function fmtTime(t) { const m = Math.floor(t / 60); return m + ':' + (t - m * 60).toFixed(1).padStart(4, '0'); }
+function fragileSubs(it) { return (it && it.subs || []).filter((s) => s.who === 'fragile'); }
+function jumpToSub(k) {
+  const subs = fragileSubs(S.cur);
+  if (!subs.length || !S.buf) return;
+  k = (k + subs.length) % subs.length;
+  S.subIdx = k;
+  const s = subs[k];
+  // the subtitle span, a little wider at the end: the voice often runs past it
+  S.sel = { a: Math.max(0, s.t0 - 0.1), b: Math.min(dur(), s.t1 + 0.4) }; S.handle = 'in';
+  S.playhead = S.sel.a;
+  for (const [i, b] of [...document.querySelectorAll('#ed-source .jump')].entries()) b.classList.toggle('on', i === k);
+  const btn = document.querySelectorAll('#ed-source .jump')[k]; if (btn) btn.scrollIntoView({ block: 'nearest' });
+  zoomSel(); selChanged();
+}
+function nextSub(dir) {
+  const subs = fragileSubs(S.cur);
+  if (!subs.length) return;
+  if (S.subIdx == null) {   // from the playhead
+    const t = S.playhead; let k = subs.findIndex((s) => s.t0 > t + 0.01);
+    if (dir < 0) k = (k < 0 ? subs.length : k) - 1; else if (k < 0) k = 0;
+    jumpToSub(k); return;
+  }
+  jumpToSub(S.subIdx + dir);
 }
 function buildMip(x) {
   const n = Math.ceil(x.length / MIP); const mn = new Float32Array(n), mx = new Float32Array(n);
@@ -331,7 +382,8 @@ function drawWave() {
   const c = $('wave'); const [w, h, dpr] = sizeCanvas(c); const g = c.getContext('2d');
   g.clearRect(0, 0, w, h);
   if (!S.buf) return;
-  const mid = h / 2, amp = h / 2 - 14 * dpr;
+  const strip = (S.cur && S.cur.subs && S.cur.subs.length) ? SUB_STRIP * dpr : 0;
+  const mid = (h - strip) / 2, amp = (h - strip) / 2 - 14 * dpr;
   // ruler
   g.fillStyle = '#5f6c7b'; g.font = (10 * dpr) + 'px Consolas, monospace';
   const span = S.view.b - S.view.a; const steps = [0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60];
@@ -381,9 +433,36 @@ function drawWave() {
       g.fillRect(which === 'in' ? x : x - 8 * dpr, h - 16 * dpr, 8 * dpr, 16 * dpr);
     }
   }
+  // who speaks when (cutscenes): a strip along the bottom, Fragile pink, Sam blue, the others grey
+  const subs = (S.cur && S.cur.subs) || [];
+  if (subs.length) {
+    const bh = SUB_STRIP * dpr, by = h - bh;
+    g.fillStyle = 'rgba(10,13,17,.85)'; g.fillRect(0, by, w, bh);
+    g.font = (10.5 * dpr) + 'px "Segoe UI", sans-serif'; g.textBaseline = 'middle';
+    for (const s of subs) {
+      if (s.t1 < S.view.a || s.t0 > S.view.b) continue;
+      const x0 = Math.max(0, tToX(s.t0, w)), x1 = Math.min(w, tToX(s.t1, w));
+      const col = s.who === 'fragile' ? '229,143,176' : (s.who === 'sam' ? '77,163,255' : '138,151,166');
+      if (s.who === 'fragile') { g.fillStyle = 'rgba(229,143,176,.06)'; g.fillRect(x0, 0, x1 - x0, by); }
+      g.fillStyle = 'rgba(' + col + ',.55)'; g.fillRect(x0, by + 2 * dpr, Math.max(1, x1 - x0 - dpr), bh - 4 * dpr);
+      if (x1 - x0 > 40 * dpr) {
+        g.save(); g.beginPath(); g.rect(x0, by, x1 - x0 - 2 * dpr, bh); g.clip();
+        g.fillStyle = '#0c1015'; g.fillText((s.who === 'fragile' ? '' : (s.who === 'sam' ? 'Sam: ' : '')) + s.text.replace(/\s+/g, ' '), x0 + 4 * dpr, by + bh / 2);
+        g.restore();
+      }
+    }
+    g.textBaseline = 'alphabetic';
+  }
   // playhead
   const px = tToX(S.playhead, w);
   g.fillStyle = '#ffffff'; g.fillRect(px, 0, Math.max(1, dpr), h);
+}
+const SUB_STRIP = 18;   // css px
+function subAt(x, y, w, h) {
+  const subs = (S.cur && S.cur.subs) || [];
+  if (!subs.length || y < h - SUB_STRIP) return null;
+  const t = xToT(x, w);
+  return subs.find((s) => t >= s.t0 && t <= s.t1) || null;
 }
 function drawOverview() {
   const c = $('overview'); const [w, h] = sizeCanvas(c); const g = c.getContext('2d');
@@ -452,10 +531,25 @@ function playSelection() {
 (function wireWave() {
   const c = $('wave');
   let drag = null;
-  const pos = (e) => { const r = c.getBoundingClientRect(); return { x: e.clientX - r.left, w: r.width }; };
+  const pos = (e) => { const r = c.getBoundingClientRect(); return { x: e.clientX - r.left, w: r.width, y: e.clientY - r.top, h: r.height }; };
+  c.addEventListener('auxclick', (e) => { if (e.button === 1) e.preventDefault(); });
   c.addEventListener('mousedown', (e) => {
     if (!S.buf) return;
-    const { x, w } = pos(e); const t = xToT(x, w);
+    const { x, w, y, h } = pos(e); const t = xToT(x, w);
+    if (e.button === 1) {   // middle button: drag the view
+      e.preventDefault();
+      drag = { kind: 'pan', x0: x, a0: S.view.a, b0: S.view.b };
+      c.style.cursor = 'grabbing';
+      return;
+    }
+    if (e.button !== 0) return;
+    const sub = subAt(x, y, w, h);
+    if (sub) {   // a click on the speaker strip selects that line
+      S.sel = { a: Math.max(0, sub.t0 - 0.1), b: Math.min(dur(), sub.t1 + 0.4) }; S.handle = 'in'; S.playhead = S.sel.a;
+      const k = fragileSubs(S.cur).indexOf(sub); S.subIdx = k >= 0 ? k : S.subIdx;
+      selChanged();
+      return;
+    }
     if (S.sel) {
       const xa = tToX(S.sel.a, w), xb = tToX(S.sel.b, w);
       if (Math.abs(x - xa) <= 7) { drag = { kind: 'in' }; S.handle = 'in'; draw(); return; }
@@ -465,13 +559,21 @@ function playSelection() {
   });
   window.addEventListener('mousemove', (e) => {
     if (!drag) {
-      if (S.sel && e.target === c) {
-        const { x, w } = pos(e); const near = Math.abs(x - tToX(S.sel.a, w)) <= 7 || Math.abs(x - tToX(S.sel.b, w)) <= 7;
-        c.style.cursor = near ? 'ew-resize' : 'crosshair';
+      if (e.target === c && S.buf) {
+        const { x, w, y, h } = pos(e);
+        const near = S.sel && (Math.abs(x - tToX(S.sel.a, w)) <= 7 || Math.abs(x - tToX(S.sel.b, w)) <= 7);
+        c.style.cursor = subAt(x, y, w, h) ? 'pointer' : (near ? 'ew-resize' : 'crosshair');
+        c.title = (subAt(x, y, w, h) || {}).text || '';
       }
       return;
     }
-    const { x, w } = pos(e); const t = Math.max(0, Math.min(dur(), xToT(x, w)));
+    const { x, w } = pos(e);
+    if (drag.kind === 'pan') {
+      const d = (drag.x0 - x) / w * (drag.b0 - drag.a0);
+      setView(drag.a0 + d, drag.b0 + d);
+      return;
+    }
+    const t = Math.max(0, Math.min(dur(), xToT(x, w)));
     if (drag.kind === 'in') { S.sel.a = t; selChanged(); }
     else if (drag.kind === 'out') { S.sel.b = t; selChanged(); }
     else if (Math.abs(x - drag.x0) > 3 || drag.moved) {
@@ -482,6 +584,7 @@ function playSelection() {
   });
   window.addEventListener('mouseup', (e) => {
     if (!drag) return;
+    if (drag.kind === 'pan') c.style.cursor = 'crosshair';
     if (drag.kind === 'new' && !drag.moved) { S.playhead = Math.max(0, Math.min(dur(), drag.t0)); if (S.play && S.play.mode === 'src') playBuffer(S.abuf, { mode: 'src', offset: S.playhead }); draw(); }
     drag = null;
   });
@@ -499,7 +602,8 @@ function playSelection() {
     const r = ov.getBoundingClientRect(); const t = (e.clientX - r.left) / r.width * dur(); const span = S.view.b - S.view.a;
     setView(t - span / 2, t + span / 2);
   };
-  ov.addEventListener('mousedown', (e) => { if (!S.buf) return; odrag = true; ovMove(e); });
+  ov.addEventListener('mousedown', (e) => { if (!S.buf || e.button > 1) return; e.preventDefault(); odrag = true; ovMove(e); });
+  ov.addEventListener('auxclick', (e) => { if (e.button === 1) e.preventDefault(); });
   window.addEventListener('mousemove', (e) => { if (odrag) ovMove(e); });
   window.addEventListener('mouseup', () => { odrag = false; });
   window.addEventListener('resize', draw);
@@ -528,6 +632,8 @@ document.addEventListener('keydown', (e) => {
   else if (k === '-' || k === '_') zoom(1.5);
   else if (k === 'z' || k === 'Z') zoomSel();
   else if (k === 'f' || k === 'F') setView(0, dur());
+  else if (k === 'n' || k === 'N') nextSub(1);
+  else if (k === 'p' || k === 'P') nextSub(-1);
   else if (k === 'Home') { S.playhead = 0; draw(); }
   else if (k === 'End') { S.playhead = dur(); draw(); }
   else if (k === 's' || k === 'S') saveClip();
@@ -582,6 +688,10 @@ async function saveClip() {
   const f = form();
   const body = { source: S.cur.id, start: S.sel.a, end: S.sel.b, fade_in: f.fade_in, fade_out: f.fade_out,
     gain_db: f.gain_db, normalize: f.normalize, category: f.category, note: f.note };
+  const old = S.editing ? S.user.clips.find((c) => c.id === S.editing) : null;
+  const sits = new Set((old && old.situations) || []);
+  if (S.target) sits.add(S.target.hash);   // made for the guide's current Sam situation
+  body.situations = [...sits];
   if (S.editing) body.id = S.editing;
   try {
     const c = await post('/api/clip', body);
@@ -608,6 +718,174 @@ async function playClip(c) {
 }
 async function playItem(id) {
   try { playBuffer(await fetchBuffer(id), { mode: 'line' }); } catch (e) { alertBox('Could not play: ' + e.message, 'error', 4000); }
+}
+async function playSequence(ids) {   // one after another, a short pause between; any other play stops it
+  const tok = {};
+  S.seqToken = tok;
+  for (const id of ids) {
+    let ab;
+    try { ab = await fetchBuffer(id); } catch (e) { continue; }
+    if (S.seqToken !== tok) return;
+    playBuffer(ab, { mode: 'line' });
+    S.seqToken = tok;
+    await new Promise((r) => setTimeout(r, ab.duration * 1000 + 350));
+    if (S.seqToken !== tok) return;
+  }
+  S.seqToken = null;
+}
+
+// ------------------------------------------------------------------ guide: Sam's situations one by one
+const GUIDE_DONE = { clip: 1, any: 1, silent: 1 };
+function guideSteps() {
+  if (!S.catalog) return [];
+  const order = Object.fromEntries(S.cats.map((c, i) => [c.key, i]));
+  return S.catalog.situations.filter((s) => s.lines > 0).map((s) => ({ s, cat: samSitCat(s.hash) }))
+    .sort((a, b) => (order[a.cat] - order[b.cat]) || (b.s.lines - a.s.lines) || (a.s.hash - b.s.hash));
+}
+function stepState(h, cat) {
+  if (S.user.clips.some((c) => (c.situations || []).includes(h))) return 'clip';
+  const p = (S.user.plan || {})[String(h)];
+  if (p === 'silent') return 'silent';
+  if (p === 'any') return S.user.clips.some((c) => c.category === cat) ? 'any' : 'any-empty';
+  return 'todo';
+}
+const STATE_TEXT = { clip: '✓ has its own clip', any: '✓ any clip of its category', 'any-empty': '! any clip of its category, but there is none yet',
+  silent: '— Fragile stays silent', todo: 'to do' };
+function samLinesFor(h) { return S.items.filter((it) => it.speaker === 'sam' && (it.situations || []).includes(h)); }
+function setTarget(step) {
+  S.target = step ? { hash: step.s.hash, cat: step.cat, label: step.s.label } : null;
+  const b = $('ed-target'); b.textContent = '';
+  b.classList.toggle('hidden', !S.target);
+  if (!S.target) return;
+  if (step.cat !== 'other') $('c-cat').value = step.cat;
+  b.appendChild(el('span', null, 'Making a clip for Sam\'s “' + step.s.label + '” (' + (S.catLabel[step.cat] || step.cat) + '). Saved clips are marked as made for it.'));
+  const x = el('button', 'btn ghost small', 'Stop'); x.onclick = () => setTarget(null); b.appendChild(x);
+  updateMeter();
+}
+function showSources(kind) {
+  $('f-speaker').value = 'fragile'; $('f-kind').value = kind; $('f-cat').value = ''; $('f-voice').value = ''; $('f-search').value = '';
+  S.libShown = 300; renderLibrary();
+}
+function guideGo(i) { S.guideIdx = i; if (S.target) { const st = guideSteps()[i]; if (st) setTarget(st); } renderGuide(); $('tab-guide').scrollTop = 0; }
+function renderGuide() {
+  const pane = $('tab-guide'); pane.textContent = '';
+  if (!S.catalog) return;
+  const steps = guideSteps();
+  const states = steps.map((st) => stepState(st.s.hash, st.cat));
+  const done = states.filter((x) => GUIDE_DONE[x]).length;
+  $('n-guide').textContent = String(steps.length - done);
+  if (S.guideIdx == null) { S.guideIdx = Math.max(0, states.findIndex((x) => !GUIDE_DONE[x])); }
+  const i = Math.min(S.guideIdx, steps.length - 1);
+  const top = el('div', 'guide-top');
+  top.appendChild(el('div', 'cov-summary', 'Each step is one of Sam\'s situations: the sounds he makes for it in the game. Listen to him, then give Fragile a clip for it, say any clip of its category will do, or leave her silent there. ' +
+    done + ' of ' + steps.length + ' done.'));
+  const bar = el('div', 'cov-bar'); const fill = el('i'); fill.style.width = Math.round(100 * done / Math.max(1, steps.length)) + '%'; bar.appendChild(fill); top.appendChild(bar);
+  pane.appendChild(top);
+  if (i < 0) return;
+  const { s, cat } = steps[i];
+  const state = states[i];
+  const card = el('div', 'guide-card');
+  const nav = el('div', 'guide-nav');
+  const prev = el('button', 'btn ghost small', '◀ Back'); prev.disabled = i === 0; prev.onclick = () => guideGo(i - 1);
+  nav.appendChild(prev);
+  nav.appendChild(el('span', 'muted', 'Step ' + (i + 1) + ' of ' + steps.length));
+  const nextTodo = states.findIndex((x, k) => k > i && !GUIDE_DONE[x]);
+  const next = el('button', 'btn small', 'Next to do ▶'); next.disabled = nextTodo < 0; next.onclick = () => guideGo(nextTodo);
+  const skip = el('button', 'btn ghost small', 'Next ▶'); skip.disabled = i >= steps.length - 1; skip.onclick = () => guideGo(i + 1);
+  nav.appendChild(skip); nav.appendChild(next);
+  card.appendChild(nav);
+  const h = el('div', 'guide-title', s.label);
+  card.appendChild(h);
+  const lines = samLinesFor(s.hash);
+  const meta = el('div', 'meta');
+  meta.appendChild(document.createTextNode(lines.length + ' Sam line' + (lines.length === 1 ? '' : 's') + (s.spoken ? ' (' + s.spoken + ' spoken)' : ' (non-verbal)') + (s.known ? '' : ' · the game keeps only its hash') + ' · category '));
+  const sel = el('select');
+  const o0 = el('option', null, 'guess: ' + (S.catLabel[s.guess] || s.guess)); o0.value = ''; sel.appendChild(o0);
+  for (const c of S.cats) { const o = el('option', null, c.label); o.value = c.key; sel.appendChild(o); }
+  sel.value = S.user.situations[String(s.hash)] || '';
+  sel.onchange = async () => { try { await post('/api/situation', { hash: s.hash, category: sel.value || null }); await loadUser(); S.guideIdx = guideSteps().findIndex((x) => x.s.hash === s.hash); renderGuide(); } catch (e) { alertBox(e.message); } };
+  meta.appendChild(sel);
+  card.appendChild(meta);
+  // Sam's side
+  const sam = el('div', 'guide-sam');
+  const hs = el('div', 'guide-h'); hs.appendChild(el('span', null, 'Sam'));
+  const all = el('button', 'icon sam', '▶ play them all'); all.onclick = () => playSequence(lines.map((x) => x.id)); hs.appendChild(all);
+  const loud = lines.map((x) => (S.user.measured[x.id] || {}).loud_db).filter((v) => v != null && v > -119);
+  if (loud.length) hs.appendChild(el('span', 'db', 'median ' + dbText(median(loud)) + ' dBFS'));
+  sam.appendChild(hs);
+  const shown = S.guideAll === s.hash ? lines : lines.slice(0, 8);
+  shown.forEach((it, k) => {
+    const r = el('div', 'cov-line');
+    const p = el('button', 'icon sam', '▶'); p.onclick = () => playItem(it.id); r.appendChild(p);
+    const t = el('span', 't', it.text ? it.text.replace(/\s+/g, ' ') : '(non-verbal) ' + (k + 1));
+    t.title = 'Open in the editor'; t.style.cursor = 'pointer'; t.onclick = () => openItem(it.id); r.appendChild(t);
+    const m = S.user.measured[it.id];
+    r.appendChild(el('span', 'db', fmt(itemLength(it), 2) + ' s' + (m ? ' ' + dbText(m.loud_db) : '')));
+    sam.appendChild(r);
+  });
+  if (lines.length > shown.length) { const b = el('button', 'btn ghost small', 'Show all ' + lines.length); b.onclick = () => { S.guideAll = s.hash; renderGuide(); }; sam.appendChild(b); }
+  card.appendChild(sam);
+  // Fragile's side
+  const frg = el('div', 'guide-frg');
+  const hf = el('div', 'guide-h'); hf.appendChild(el('span', null, 'Fragile')); hf.appendChild(el('span', 'state ' + state, STATE_TEXT[state])); frg.appendChild(hf);
+  const mine = S.user.clips.filter((c) => (c.situations || []).includes(s.hash));
+  for (const c of mine) {
+    const r = clipRow(c);
+    const un = el('button', 'icon', 'unlink'); un.title = 'Not made for this situation any more (the clip stays)';
+    un.onclick = async () => { try { await post('/api/clip/link', { id: c.id, hash: s.hash, on: false }); await loadUser(); } catch (e) { alertBox(e.message); } };
+    r.lastChild.appendChild(un);
+    frg.appendChild(r);
+  }
+  const others = S.user.clips.filter((c) => !(c.situations || []).includes(s.hash))
+    .sort((a, b) => (b.category === cat) - (a.category === cat));
+  if (others.length) {
+    const row = el('div', 'guide-row');
+    const pick = el('select');
+    for (const c of others) { const o = el('option', null, (S.catLabel[c.category] || c.category) + ': ' + clipLabel(c)); o.value = c.id; pick.appendChild(o); }
+    const pl = el('button', 'icon play', '▶'); pl.title = 'Play it'; pl.onclick = () => { const c = others.find((x) => x.id === pick.value); if (c) playClip(c); };
+    const use = el('button', 'btn ghost small', 'Use this one');
+    use.onclick = async () => { try { await post('/api/clip/link', { id: pick.value, hash: s.hash, on: true }); await loadUser(); } catch (e) { alertBox(e.message); } };
+    row.appendChild(pick); row.appendChild(pl); row.appendChild(use);
+    frg.appendChild(row);
+  }
+  const acts = el('div', 'guide-acts');
+  const cut = el('button', 'btn primary small', S.target && S.target.hash === s.hash ? 'Cutting a clip for this…' : 'Cut a new clip for this');
+  cut.title = 'The next clip you save is made for this situation (and gets its category)';
+  cut.onclick = () => { setTarget(steps[i]); renderGuide(); };
+  acts.appendChild(cut);
+  const plan = (S.user.plan || {})[String(s.hash)];
+  const any = el('button', 'btn ghost small' + (plan === 'any' ? ' on' : ''), 'Any ' + (S.catLabel[cat] || cat).toLowerCase() + ' clip will do');
+  any.disabled = cat === 'other';
+  any.onclick = async () => { try { await post('/api/plan', { hash: s.hash, plan: plan === 'any' ? null : 'any' }); await loadUser(); } catch (e) { alertBox(e.message); } };
+  const silent = el('button', 'btn ghost small' + (plan === 'silent' ? ' on' : ''), 'Leave Fragile silent here');
+  silent.onclick = async () => { try { await post('/api/plan', { hash: s.hash, plan: plan === 'silent' ? null : 'silent' }); await loadUser(); } catch (e) { alertBox(e.message); } };
+  acts.appendChild(any); acts.appendChild(silent);
+  frg.appendChild(acts);
+  const where = el('div', 'guide-where');
+  where.appendChild(el('span', 'faint', s.spoken ? 'Sam talks here: look in Fragile\'s lines, or her lines in cutscenes. ' : 'Sam grunts or breathes here: Fragile\'s efforts and breaths are in her cutscenes. '));
+  const bc = el('button', 'btn ghost small', 'Show her cutscenes'); bc.onclick = () => showSources('cutscene');
+  const bl = el('button', 'btn ghost small', 'Show her lines'); bl.onclick = () => showSources('line');
+  where.appendChild(bc); where.appendChild(bl);
+  frg.appendChild(where);
+  card.appendChild(frg);
+  pane.appendChild(card);
+  // every step, to jump around
+  const list = el('div', 'guide-list');
+  const ft = el('label', 'toggle'); const cb = el('input'); cb.type = 'checkbox'; cb.checked = S.guideTodoOnly !== false;
+  cb.onchange = () => { S.guideTodoOnly = cb.checked; renderGuide(); };
+  ft.appendChild(cb); ft.appendChild(document.createTextNode(' Only what is left to do')); list.appendChild(ft);
+  let lastCat = null;
+  steps.forEach((st, k) => {
+    if (S.guideTodoOnly !== false && GUIDE_DONE[states[k]] && k !== i) return;
+    if (st.cat !== lastCat) { list.appendChild(el('div', 'guide-cat', S.catLabel[st.cat] || st.cat)); lastCat = st.cat; }
+    const r = el('div', 'guide-step' + (k === i ? ' active' : ''));
+    r.appendChild(el('span', 'state ' + states[k], GUIDE_DONE[states[k]] ? '✓' : (states[k] === 'any-empty' ? '!' : '•')));
+    r.appendChild(el('span', 'label', st.s.label));
+    r.appendChild(el('span', 'db', st.s.lines + (st.s.spoken ? ' (' + st.s.spoken + ' spoken)' : '')));
+    r.onclick = () => guideGo(k);
+    list.appendChild(r);
+  });
+  pane.appendChild(list);
 }
 
 // ------------------------------------------------------------------ my clips
@@ -774,7 +1052,7 @@ for (const id of ['s-search', 's-filter']) $(id).addEventListener('input', rende
 for (const t of document.querySelectorAll('.tab')) {
   t.onclick = () => {
     for (const x of document.querySelectorAll('.tab')) x.classList.toggle('active', x === t);
-    for (const p of ['clips', 'coverage', 'sam']) $('tab-' + p).classList.toggle('hidden', p !== t.dataset.tab);
+    for (const p of ['guide', 'clips', 'coverage', 'sam']) $('tab-' + p).classList.toggle('hidden', p !== t.dataset.tab);
   };
 }
 $('b-play').onclick = togglePlay;
@@ -803,6 +1081,10 @@ $('c-match').onclick = () => {
   draw(); updateMeter();
 };
 $('btn-help').onclick = () => $('help').classList.remove('hidden');
+$('btn-prefetch').onclick = async () => {
+  const b = $('btn-prefetch');
+  try { await post('/api/prefetch', { action: b.dataset.state === 'paused' ? 'resume' : 'pause' }); } catch (e) { alertBox(e.message); }
+};
 $('help-close').onclick = () => $('help').classList.add('hidden');
 $('btn-open-export').onclick = async () => { try { await post('/api/open', { what: 'export' }); } catch (e) { alertBox(e.message); } };
 $('btn-export').onclick = async () => {

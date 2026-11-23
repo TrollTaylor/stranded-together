@@ -74,14 +74,27 @@ class GameSource:
         import vc_vorbis as V
         data = self.gd.stream(item['stream'])
         w = V.parse_wem(data)
-        w, pcm = V.decode_wem(data, self.library(), want=V.voice_channels(w), progress=progress)
-        return w.rate, V.downmix(w, pcm)
+        w, pcm = V.decode_wem(data, self.library(), mix=V.voice_mix(w), progress=progress)
+        return w.rate, pcm[0]
+
+    # background decoding: worker processes, each with its own archive reader and codebook library
+    def prefetch_pool(self, workers):
+        from concurrent.futures import ProcessPoolExecutor
+        import vc_worker
+        return ProcessPoolExecutor(max_workers=workers, initializer=vc_worker.init,
+                                   initargs=(self.game_dir, self.gd.game.out_dir))
+
+    @staticmethod
+    def prefetch_submit(pool, item, path):
+        import vc_worker
+        return pool.submit(vc_worker.decode_to, {'id': item['id'], 'stream': item['stream']}, path)
 
 
 class App:
     """Everything the API serves; no HTTP in here (the unit tests use it directly)."""
 
-    def __init__(self, ws, source=None, language='english', game_dir=None, now=time.time):
+    def __init__(self, ws, source=None, language='english', game_dir=None, now=time.time, prefetch=False,
+                 workers=None):
         self.ws = ws
         self.source = source
         self.language = language
@@ -95,6 +108,14 @@ class App:
         self._lock = threading.Lock()
         self._measure_thread = None
         self._measure_queue = []
+        self._measure_dirty = 0
+        self._measure_saved = time.time()
+        self.auto_prefetch = prefetch
+        self.workers = workers or max(1, min(6, (os.cpu_count() or 2) - 2))
+        self.prefetch = {'state': 'idle', 'done': 0, 'total': 0, 'failed': 0, 'workers': self.workers}
+        self._prefetch_paused = threading.Event()
+        self._prefetch_thread = None
+        self._prefetch_pool = None
 
     # ---- catalog
     def start_catalog(self, rebuild=False):
@@ -130,6 +151,86 @@ class App:
         self.items = {i['id']: i for i in c['items']}
         self.cat_state = {'state': 'ready', 'message': '%d lines' % len(c['items']), 'done': None, 'total': None,
                           'error': None}
+        if self.auto_prefetch:
+            self.start_prefetch()
+
+    # ---- decode everything in the background (worker processes), Fragile's cutscenes first
+    def prefetch_order(self):
+        rank = {('fragile', 'cutscene'): 0, ('fragile', 'line'): 1, ('sam', 'line'): 2}
+        items = sorted(self.items.values(), key=lambda i: (rank.get((i['speaker'], i['kind']), 3), i['id']))
+        return [i for i in items if not os.path.exists(self.ws.audio_path(i['id']))]
+
+    def start_prefetch(self):
+        if self.source is None or not self.items or not hasattr(self.source, 'prefetch_pool'):
+            return
+        if self._prefetch_thread and self._prefetch_thread.is_alive():
+            self._prefetch_paused.clear()
+            self.prefetch['state'] = 'running'
+            return
+        todo = self.prefetch_order()
+        cached = len(self.items) - len(todo)
+        self.prefetch = {'state': 'running' if todo else 'done', 'done': cached, 'total': len(self.items),
+                         'failed': 0, 'workers': self.workers}
+        if not todo:
+            return
+        self._prefetch_paused.clear()
+
+        def run():
+            from collections import deque
+            from concurrent.futures import FIRST_COMPLETED, wait
+            queue = deque(todo)
+            pending = {}
+            try:
+                pool = self._prefetch_pool = self.source.prefetch_pool(self.workers)
+            except Exception as e:
+                self.prefetch['state'] = 'error'
+                self.log('prefetch could not start: %s\n%s' % (e, traceback.format_exc()))
+                return
+            try:
+                while queue or pending:
+                    while queue and not self._prefetch_paused.is_set() and len(pending) < 2 * self.workers:
+                        it = queue.popleft()
+                        path = self.ws.audio_path(it['id'])
+                        if os.path.exists(path):
+                            self.prefetch['done'] += 1
+                            continue
+                        pending[self.source.prefetch_submit(pool, it, path)] = it['id']
+                    if not pending:
+                        time.sleep(0.3)   # paused with nothing running
+                        if self.prefetch['state'] == 'stopped':
+                            return
+                        continue
+                    finished, _ = wait(list(pending), timeout=0.5, return_when=FIRST_COMPLETED)
+                    for f in finished:
+                        item_id = pending.pop(f)
+                        try:
+                            self._remember(item_id, f.result())
+                            self.prefetch['done'] += 1
+                        except Exception as e:
+                            self.prefetch['failed'] += 1
+                            self.log('decoding %s failed: %s' % (item_id, e))
+                    if self.prefetch['state'] == 'stopped':
+                        return
+                self.prefetch['state'] = 'done'
+            finally:
+                self._flush_measured()
+                try:
+                    pool.shutdown(wait=False, cancel_futures=True)
+                except TypeError:   # Python before 3.9
+                    pool.shutdown(wait=False)
+                self._prefetch_pool = None
+        self._prefetch_thread = threading.Thread(target=run, daemon=True)
+        self._prefetch_thread.start()
+
+    def pause_prefetch(self):
+        if self.prefetch['state'] == 'running':
+            self._prefetch_paused.set()
+            self.prefetch['state'] = 'paused'
+
+    def stop_prefetch(self):
+        if self.prefetch['state'] in ('running', 'paused'):
+            self._prefetch_paused.set()
+            self.prefetch['state'] = 'stopped'
 
     def log(self, text):
         try:
@@ -139,7 +240,9 @@ class App:
             pass
 
     # ---- source audio (decoded once, then cached as a WAV)
-    def source_pcm(self, item_id):
+    def ensure_source(self, item_id):
+        """The cached WAV of a source, decoding it first if needed (in this process: what you open now does not wait
+        for the background queue)."""
         item = self.items.get(item_id)
         if item is None:
             raise KeyError(item_id)
@@ -149,31 +252,46 @@ class App:
         with lock:
             if os.path.exists(path):
                 try:
+                    AU.wav_frames(path)
                     os.utime(path, None)
-                    return AU.read_wav(path)
-                except (OSError, EOFError, ValueError):
-                    pass
+                    return path
+                except (OSError, EOFError, ValueError, Exception):
+                    pass   # unreadable (a killed write): decode again
             self.decoding[item_id] = 0.0
             try:
                 rate, pcm = self.source.decode(item, lambda f: self.decoding.__setitem__(item_id, round(f, 3)))
             finally:
                 self.decoding.pop(item_id, None)
-            tmp = path + '.tmp'
+            tmp = '%s.%d.tmp' % (path, threading.get_ident())
             AU.write_wav(tmp, pcm, rate)
             os.replace(tmp, path)
             self.ws.prune_cache(keep=[path])
             self._remember(item_id, AU.stats(pcm, rate))
-            return rate, AU.read_wav(path)[1]
+            return path
+
+    def source_range(self, item_id, start, end):
+        """(rate, samples of [start, end) seconds, total frames) of a source."""
+        return AU.read_wav_range(self.ensure_source(item_id), start, end)
 
     def source_wav(self, item_id):
-        self.source_pcm(item_id)
-        with open(self.ws.audio_path(item_id), 'rb') as f:
+        with open(self.ensure_source(item_id), 'rb') as f:
             return f.read()
 
     def _remember(self, item_id, st):
+        """Keep a source's loudness; measure.json is written at most every 5 s (thousands come in while decoding)."""
         with self._lock:
             self.ws.measured[item_id] = st
-            self.ws.save_measured()
+            self._measure_dirty += 1
+            if time.time() - self._measure_saved < 5:
+                return
+        self._flush_measured()
+
+    def _flush_measured(self):
+        with self._lock:
+            if self._measure_dirty:
+                self.ws.save_measured()
+                self._measure_dirty = 0
+            self._measure_saved = time.time()
 
     def measure(self, ids):
         """Queue sources to decode and measure in the background (Sam's lines for the comparison)."""
@@ -187,12 +305,16 @@ class App:
                 while True:
                     with self._lock:
                         if not self._measure_queue:
-                            return
-                        i = self._measure_queue.pop(0)
+                            break
+                        i = self._measure_queue[0]
                     try:
-                        self.source_pcm(i)
+                        self.ensure_source(i)
                     except Exception:
                         self.log('measure %s failed\n%s' % (i, traceback.format_exc()))
+                    with self._lock:   # off the queue only when done, so the count includes the line in hand
+                        if self._measure_queue and self._measure_queue[0] == i:
+                            self._measure_queue.pop(0)
+                self._flush_measured()
             self._measure_thread = threading.Thread(target=run, daemon=True)
             self._measure_thread.start()
         return len(self._measure_queue)
@@ -202,43 +324,51 @@ class App:
         clips = self.ws.clips()
         return {'app': APP, 'version': VERSION, 'catalog': self.cat_state, 'game_dir': self.game_dir,
                 'workspace': self.ws.root, 'export_dir': self.ws.export_dir, 'language': self.language,
-                'clips': len(clips), 'decoding': dict(self.decoding), 'measuring': len(self._measure_queue)}
+                'clips': len(clips), 'decoding': dict(self.decoding), 'measuring': len(self._measure_queue),
+                'prefetch': dict(self.prefetch)}
 
     def catalog_view(self):
         if not self.catalog:
             return {'ready': False}
-        keep = ('id', 'kind', 'speaker', 'text', 'length', 'group', 'situations', 'category', 'sure', 'name', 'lines')
+        keep = ('id', 'kind', 'speaker', 'text', 'length', 'group', 'situations', 'category', 'sure', 'name', 'lines',
+                'subs')
         return {'ready': True, 'items': [{k: i[k] for k in keep if k in i} for i in self.catalog['items']],
                 'situations': self.catalog['situations'], 'categories': self.catalog['categories'],
                 'built': self.catalog.get('built'), 'seconds': self.catalog.get('seconds')}
 
     def user_view(self):
+        with self._lock:
+            measured = dict(self.ws.measured)
         return {'clips': self.ws.clips(), 'situations': self.ws.state.get('situations', {}),
-                'measured': self.ws.measured}
+                'plan': self.ws.state.get('plan', {}), 'measured': measured}
 
     def save_clip(self, body):
         c = ST.clean_clip(body, set(self.items) if self.items else None)
-        rate, src = self.source_pcm(c['source'])
-        pcm = AU.render(src, rate, c)
+        rate, seg, frames = self.source_range(c['source'], c['start'], c['end'])
+        if c['end'] > frames / rate + 0.001:
+            raise ST.ClipError('the selection ends after the line')
+        pcm = AU.render(seg, rate, dict(c, start=0.0, end=len(seg) / float(rate)))
         if not pcm:
             raise ST.ClipError('the selection is outside the line')
-        if c['end'] > len(src) / rate + 0.001:
-            raise ST.ClipError('the selection ends after the line')
         return self.ws.upsert_clip(c, set(self.items) if self.items else None, AU.stats(pcm, rate))
 
     def situation_rows(self):
-        """(hash, category, user|known|guess, label) of Sam's situations: the user's sorting, else the guess."""
+        """(hash, category, user|known|guess, label, plan) of Sam's situations: the user's sorting, else the guess;
+        plan is the guide's answer: clip (clips were made for it), any (any clip of the category), silent, or -."""
         rows = []
         user = self.ws.state.get('situations', {})
+        plans = self.ws.state.get('plan', {})
+        targeted = {h for c in self.ws.clips() for h in c.get('situations', [])}
         for s in (self.catalog or {}).get('situations', []):
             u = user.get(str(s['hash']))
             how = 'user' if u else ('known' if s.get('known') else 'guess')
-            rows.append((s['hash'], u or s.get('guess', 'other'), how, s.get('label', '')))
+            plan = 'clip' if s['hash'] in targeted else plans.get(str(s['hash']), '-')
+            rows.append((s['hash'], u or s.get('guess', 'other'), how, s.get('label', ''), plan))
         return rows
 
     def export(self):
         stamp = self.source.stamp() if self.source else ''
-        return self.ws.export(self.source_pcm, stamp, self.language, situations=self.situation_rows())
+        return self.ws.export(self.source_range, stamp, self.language, situations=self.situation_rows())
 
     def open_folder(self, what):
         path = {'export': self.ws.export_dir, 'workspace': self.ws.root}.get(what)
@@ -288,6 +418,21 @@ class App:
                 if path == '/api/rebuild':
                     self.start_catalog(rebuild=True)
                     return 200, {'catalog': self.cat_state}
+                if path == '/api/plan':
+                    self.ws.set_plan(body.get('hash', -1), body.get('plan'))
+                    return 200, {'plan': self.ws.state.get('plan', {})}
+                if path == '/api/clip/link':
+                    c = self.ws.link_clip(str(body.get('id', '')), body.get('hash', -1), bool(body.get('on', True)))
+                    return 200, c
+                if path == '/api/prefetch':
+                    action = body.get('action')
+                    if action == 'pause':
+                        self.pause_prefetch()
+                    elif action == 'resume':
+                        self.start_prefetch()
+                    else:
+                        return 400, {'error': 'action is pause or resume'}
+                    return 200, {'prefetch': dict(self.prefetch)}
             except ST.ClipError as e:
                 return 400, {'error': str(e)}
             except KeyError:
@@ -506,7 +651,7 @@ def serve(args):
         except Exception as e:
             ws_log = 'opening the game failed: %s' % e
             startup_error(root, ws_log, True) if no_console else print(ws_log)
-    app = App(ws, source, args.language, game_dir)
+    app = App(ws, source, args.language, game_dir, prefetch=not args.no_prefetch, workers=args.workers)
     Handler.app = app
     Handler.port = port
     app.start_catalog()
@@ -517,7 +662,8 @@ def serve(args):
     def idle_watch():
         while True:
             time.sleep(10)
-            busy = app.decoding or app.cat_state['state'] == 'building'
+            # the background decode finishes first (it is what the next start would otherwise redo)
+            busy = app.decoding or app.cat_state['state'] == 'building' or app.prefetch['state'] == 'running'
             if args.idle_exit and not busy and time.time() - Handler.last_request[0] > args.idle_exit:
                 server.shutdown()
                 return
@@ -529,6 +675,8 @@ def serve(args):
     except KeyboardInterrupt:
         pass
     finally:
+        app.stop_prefetch()
+        app._flush_measured()
         server.server_close()
     return 0
 
@@ -543,6 +691,8 @@ def main(argv=None):
     ap.add_argument('--dir', help='the workspace (default %%LOCALAPPDATA%%\\Stranded Together\\VoiceCut)')
     ap.add_argument('--export-dir', help='default %%LOCALAPPDATA%%\\Stranded Together\\Voices')
     ap.add_argument('--language', default='english', choices=G.TEXT_LANGUAGES)
+    ap.add_argument('--no-prefetch', action='store_true', help='do not decode every line in the background')
+    ap.add_argument('--workers', type=int, help='background decoding processes (default: CPU threads - 2, 1..6)')
     return serve(ap.parse_args(argv))
 
 

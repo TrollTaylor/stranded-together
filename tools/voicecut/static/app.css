@@ -149,3 +149,33 @@ h2 { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: v
 .keys td { padding: 3px 12px 3px 0; vertical-align: top; }
 .keys td:first-child { font-family: var(--mono); color: var(--accent); white-space: nowrap; }
 .empty { padding: 20px; color: var(--faint); text-align: center; }
+
+/* cutscene lines, guide */
+.ed-source.tall { max-height: 128px; }
+.jump { display: block; width: 100%; text-align: left; background: none; border: 0; border-radius: 4px; padding: 1px 6px; color: var(--muted); cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12.5px; }
+.jump:hover { background: var(--line); color: var(--text); }
+.jump.on { background: rgba(229, 143, 176, .18); color: var(--accent); }
+.target { margin: 0 12px 6px; padding: 5px 10px; border: 1px solid var(--accent); border-radius: 6px; color: var(--accent); font-size: 12.5px; display: flex; gap: 10px; align-items: center; justify-content: space-between; }
+.guide-top { padding: 8px 10px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; }
+.guide-card { padding: 8px 10px 10px; border-bottom: 1px solid var(--line); background: #10151b; display: flex; flex-direction: column; gap: 8px; }
+.guide-nav { display: flex; gap: 6px; align-items: center; }
+.guide-nav .muted { flex: 1; text-align: center; font-size: 12px; }
+.guide-title { font-size: 15px; font-weight: 600; }
+.guide-card .meta { color: var(--faint); font-size: 12px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.guide-card select { background: var(--bg); border: 1px solid var(--line-2); border-radius: 5px; padding: 1px 4px; font-size: 12px; max-width: 100%; }
+.guide-h { display: flex; gap: 8px; align-items: center; font-weight: 600; font-size: 12.5px; margin-bottom: 2px; }
+.guide-sam, .guide-frg { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+.guide-row, .guide-acts, .guide-where { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+.guide-row select { flex: 1; min-width: 0; }
+.guide-where { font-size: 12px; }
+.state { font-size: 12px; font-weight: 400; }
+.state.clip, .state.any, .state.silent { color: var(--pass); }
+.state.any-empty { color: var(--warn); }
+.state.todo { color: var(--faint); }
+.guide-list { padding: 6px 0 10px; }
+.guide-list > .toggle { padding: 2px 10px 6px; color: var(--muted); font-size: 12.5px; }
+.guide-cat { padding: 6px 10px 2px; color: var(--faint); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+.guide-step { display: grid; grid-template-columns: 16px 1fr auto; gap: 6px; padding: 3px 10px; cursor: pointer; font-size: 12.5px; }
+.guide-step:hover { background: var(--panel-2); }
+.guide-step.active { background: #22182a; box-shadow: inset 3px 0 0 var(--accent); }
+.guide-step .label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }

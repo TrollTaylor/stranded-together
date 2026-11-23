@@ -11,11 +11,13 @@ can be put in a category in the UI (user state, not this file).
 """
 import json
 import os
+import re
+import struct
 import time
 
 import vc_game as G
 
-CATALOG_VERSION = 1
+CATALOG_VERSION = 2   # 2: cutscene subtitle timelines
 
 # (key, label, what Sam's versions sound like)
 CATEGORIES = [
@@ -99,9 +101,11 @@ def build_catalog(gd, language='english', progress=None):
     say('Indexing the game archives (first time only)')
     gd.index()
     say('Listing the game files')
-    cores = G.sentence_cores(gd.all_paths())
+    paths = gd.all_paths()
+    cores = G.sentence_cores(paths)
     items = []
     frg_cutscenes = {}
+    cut_voices = {}   # every cutscene sentence: a cutscene's timeline can use sentences kept in another one's file
     for k, path in enumerate(cores):
         if k % 10 == 0:
             say('Reading sentence files', k, len(cores))
@@ -110,9 +114,14 @@ def build_catalog(gd, language='english', progress=None):
         except KeyError:
             continue
         cut = G.cutscene_of(path)
+        if cut:
+            try:
+                cut_voices.update(G.sentence_voices(core, language))
+            except (G.FormatError, struct.error, IndexError):
+                pass
         for ln in G.scan_sentence_core(core, path, language):
             if cut and ln['speaker'] == 'fragile' and ln['text']:
-                frg_cutscenes.setdefault(cut, []).append(ln['text'])
+                frg_cutscenes.setdefault(cut, {'texts': []})['texts'].append(ln['text'])
             if not ln['stream']:
                 continue
             src = path.split('/')[2] if path.count('/') >= 3 else path
@@ -147,7 +156,26 @@ def build_catalog(gd, language='english', progress=None):
         else:
             it['category'] = 'random_line' if it['text'] else 'other'
     say('Finding Fragile\'s cutscenes')
-    for (cs, seq), texts in sorted(frg_cutscenes.items()):
+    # Every cutscene's subtitle timeline: the cutscenes where Fragile speaks, and when (her text may be kept in
+    # another cutscene's sentence file). A sentence file naming her without a timeline of its own is kept too.
+    timelines = {}
+    has_timeline = set()
+    for p in paths:
+        m = re.match(r'ds/cinematics/cutscene/([^/]+)/(sq_[^/]+)/[^/]+speech$', p)
+        if not m:
+            continue
+        try:
+            subs = G.cutscene_subtitles(gd.read(p), cut_voices)
+        except (KeyError, G.FormatError, struct.error, IndexError):
+            continue
+        has_timeline.add((m.group(1), m.group(2)))
+        if any(s['who'] == 'fragile' for s in subs):
+            timelines[(m.group(1), m.group(2))] = subs
+    for key in frg_cutscenes:
+        if key not in has_timeline:   # her lines are spoken in another cutscene when its timeline lacks them
+            timelines.setdefault(key, [])
+    for (cs, seq), subs in sorted(timelines.items()):
+        texts = [s['text'] for s in subs if s['who'] == 'fragile'] or frg_cutscenes.get((cs, seq), {}).get('texts', [])
         sp = G.CINEMATIC_SOUND.format(cs=cs, seq=seq)
         try:
             core = gd.read(sp)
@@ -161,7 +189,8 @@ def build_catalog(gd, language='english', progress=None):
             if stream:
                 items.append({'id': 'c-' + seq, 'kind': 'cutscene', 'speaker': 'fragile', 'group': 'cutscene',
                               'text': ' / '.join(texts), 'lines': len(texts), 'length': 0.0, 'stream': stream,
-                              'core': sp, 'situations': [], 'category': None, 'sure': False, 'name': seq})
+                              'core': sp, 'situations': [], 'category': None, 'sure': False, 'name': seq,
+                              'subs': subs})
             break
     say('Done', 1, 1)
     return {'version': CATALOG_VERSION, 'language': language, 'game': G.game_stamp(gd.game_dir),

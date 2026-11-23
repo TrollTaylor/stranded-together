@@ -290,11 +290,23 @@ class VorbisDecode(unittest.TestCase):
     def test_skipped_channels_and_limits(self):
         wem, lib, _c0, total = make_wem(sine, [256] * 8)
         _w, pcm = V.decode_wem(wem, lib, want=[])
-        self.assertEqual(pcm, [[]])
+        self.assertEqual([len(c) for c in pcm], [0])
         seen = []
         _w, pcm = V.decode_wem(wem, lib, progress=seen.append)
         self.assertEqual(seen[-1], 1.0)
         self.assertEqual(len(pcm[0]), total)
+
+    def test_mixed_decode_matches_the_plain_one(self):
+        wem, lib, _c0, total = make_wem(sine, [64, 256, 256, 64, 256])
+        _w, plain = V.decode_wem(wem, lib)
+        _w, mixed = V.decode_wem(wem, lib, mix=[(0, 0.5), (7, 9.0)])    # a channel the file lacks is ignored
+        self.assertEqual(len(mixed), 1)
+        self.assertEqual(len(mixed[0]), total)
+        self.assertLess(max(abs(a * 0.5 - b) for a, b in zip(plain[0], mixed[0])), 1e-5)
+        w = V.WemInfo()
+        for ch, mix in ((1, [(0, 1.0)]), (2, [(0, 0.5), (1, 0.5)]), (6, [(2, 1.0), (0, 0.5), (1, 0.5)])):
+            w.channels = ch
+            self.assertEqual(V.voice_mix(w), mix)
 
     def test_downmix(self):
         w = V.WemInfo()
@@ -462,7 +474,30 @@ def cutscene_core(seq):
     return obj(G.TYPE_WEM_LOCALIZED, body)
 
 
+CUT_FRG = 'bbbbbbbb-0000-0000-0000-000000000002'
+CUT_SAM = 'bbbbbbbb-0000-0000-0000-000000000003'
+CUT_DIE = 'bbbbbbbb-0000-0000-0000-000000000004'
+CUT_FRG_ELSEWHERE = 'bbbbbbbb-0000-0000-0000-000000000005'
+
+
+def subtitle_event(g, start, end, sentence, enabled=True):
+    body = guid_bytes(g) + struct.pack('<i', start) + bytes([1 if enabled else 0]) + struct.pack('<i', end)
+    body += ref(2, sentence, 'localized/sentences/ds_lines_cutscene/x/sentences') + b'\x00' + struct.pack('<ii', 5, 10)
+    return obj(G.TYPE_SUBTITLE_EVENT, body)
+
+
+def speech_core(events):
+    return b''.join(subtitle_event('cccccccc-1111-0000-0000-%012d' % k, a, b, s) for k, (a, b, s) in enumerate(events))
+
+
+def speech_path(seq):
+    return G.CINEMATIC_SPEECH.format(cs='cs03', seq=seq, flat=seq.replace('_', ''))
+
+
 class FakeGameData:
+    """sq_cs03_s00200: Fragile, Sam and another voice, timed; sq_cs03_s00210: a timeline only, reusing her line kept in
+    s00200's file; sq_cs03_s00300: her text in its sentence file but not in its own timeline (spoken elsewhere)."""
+
     def __init__(self, game_dir):
         self.game_dir = game_dir
         seq = 'sq_cs03_s00200'
@@ -473,9 +508,17 @@ class FakeGameData:
                 [(FRG_A, 'vr0040_frg', 'Sam, it\'s Fragile.', 1.5),
                  ('bbbbbbbb-0000-0000-0000-000000000009', 'vr920_prp', 'Not ours.', 1.0)]),
             'localized/sentences/ds_lines_cutscene/%s/sentences' % seq: sentences_core(
-                [('bbbbbbbb-0000-0000-0000-000000000002', 'vr0040_frg', 'Got a delivery for a porter.', None)]),
+                [(CUT_FRG, 'vr0040_frg', 'Got a delivery for a porter.', None),
+                 (CUT_SAM, 'vr0010_sam', 'Why are you here?', None), (CUT_DIE, 'vr0100_die', 'Sam.', None)]),
+            'localized/sentences/ds_lines_cutscene/sq_cs03_s00300/sentences': sentences_core(
+                [(CUT_FRG_ELSEWHERE, 'vr0040_frg', 'Not in this one.', None)]),
             G.SAM_RESIDENT: resident_core(), G.SAM_PRIORITY: priority_core(),
             G.CINEMATIC_SOUND.format(cs='cs03', seq=seq): cutscene_core(seq),
+            speech_path(seq): speech_core([(300, 360, CUT_DIE), (60, 110, CUT_SAM), (120, 240, CUT_FRG)]),
+            G.CINEMATIC_SOUND.format(cs='cs03', seq='sq_cs03_s00210'): cutscene_core('sq_cs03_s00210'),
+            speech_path('sq_cs03_s00210'): speech_core([(600, 660, CUT_FRG)]),
+            G.CINEMATIC_SOUND.format(cs='cs03', seq='sq_cs03_s00300'): cutscene_core('sq_cs03_s00300'),
+            speech_path('sq_cs03_s00300'): speech_core([(10, 20, CUT_DIE)]),
         }
 
     def index(self):
@@ -491,6 +534,17 @@ class FakeGameData:
 
 
 class GameParsing(unittest.TestCase):
+    def test_subtitle_events(self):
+        start, end, g, on = G.parse_subtitle_event(subtitle_event('cccccccc-0000-0000-0000-000000000001', 12047, 12178,
+                                                                  CUT_FRG)[12:])
+        self.assertEqual((start, end, g, on), (12047, 12178, CUT_FRG, True))
+        core = speech_core([(120, 240, CUT_FRG)]) + subtitle_event('cccccccc-0000-0000-0000-000000000009', 1, 2, CUT_SAM,
+                                                                     enabled=False)
+        subs = G.cutscene_subtitles(core, {CUT_FRG: ('vr0040_frg', 'Hi')})
+        self.assertEqual(subs, [{'t0': 2.0, 't1': 4.0, 'who': 'fragile', 'text': 'Hi'}])   # the disabled one is out
+        voices = G.sentence_voices(FakeGameData('x').files['localized/sentences/ds_lines_cutscene/sq_cs03_s00200/sentences'])
+        self.assertEqual(voices[CUT_SAM], ('vr0010_sam', 'Why are you here?'))
+
     def test_situation_hash(self):
         # docs/audio-research.md 12.1: Jumping 0x2CF2EAD9, OutOfBreath 0x36B74D25
         self.assertEqual(G.situation_hash('Jumping'), 0x2CF2EAD9)
@@ -549,7 +603,15 @@ class Catalog(unittest.TestCase):
     def test_build(self):
         cat = CAT.build_catalog(FakeGameData(self.tmp))
         by = {i['id']: i for i in cat['items']}
-        self.assertEqual(set(by), {'s-' + SAM_A, 's-' + SAM_B, 'f-' + FRG_A, 'c-sq_cs03_s00200'})
+        # s00300 is left out: its own timeline does not have her (her line there is spoken in another cutscene)
+        self.assertEqual(set(by), {'s-' + SAM_A, 's-' + SAM_B, 'f-' + FRG_A, 'c-sq_cs03_s00200', 'c-sq_cs03_s00210'})
+        subs = by['c-sq_cs03_s00200']['subs']
+        self.assertEqual([(s['t0'], s['t1'], s['who']) for s in subs],
+                         [(1.0, round(110 / 60, 3), 'sam'), (2.0, 4.0, 'fragile'), (5.0, 6.0, 'other')])
+        self.assertEqual(subs[1]['text'], 'Got a delivery for a porter.')
+        self.assertEqual([(s['t0'], s['who'], s['text']) for s in by['c-sq_cs03_s00210']['subs']],
+                         [(10.0, 'fragile', 'Got a delivery for a porter.')])
+        self.assertEqual(by['c-sq_cs03_s00210']['lines'], 1)
         self.assertEqual(by['s-' + SAM_A]['category'], 'jump')
         self.assertTrue(by['s-' + SAM_A]['sure'])
         self.assertEqual(by['s-' + SAM_B]['category'], 'random_line')      # unknown name, spoken: a guess
@@ -599,6 +661,21 @@ class Audio(unittest.TestCase):
         self.assertLess(max(abs(a - b) for a, b in zip(x, y)), 1e-4)
 
 
+    def test_read_wav_range(self):
+        tmp = tempfile.mkdtemp(prefix='voicecut-test-')
+        try:
+            p = os.path.join(tmp, 'x.wav')
+            x = [((i % 200) - 100) / 200.0 for i in range(48000)]
+            AU.write_wav(p, x)
+            self.assertEqual(AU.wav_frames(p), (48000, 48000))
+            rate, seg, frames = AU.read_wav_range(p, 0.25, 0.5)
+            self.assertEqual((rate, len(seg), frames), (48000, 12000, 48000))
+            self.assertLess(max(abs(a - b) for a, b in zip(seg, x[12000:24000])), 1e-4)
+            self.assertEqual(len(AU.read_wav_range(p, 0.9, 5.0)[1]), 4800)     # clamped at the end
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 class Store(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix='voicecut-test-')
@@ -635,6 +712,12 @@ class Store(unittest.TestCase):
         with self.assertRaises(ST.ClipError):
             again.delete_clip(c['id'])
 
+    @staticmethod
+    def ranged(src, rate=48000):
+        def load(_item, a, b):
+            return rate, src[int(round(a * rate)):int(round(b * rate))], len(src)
+        return load
+
     def test_export_replaces_only_its_own_files(self):
         src = [0.25 * math.sin(i / 5) for i in range(48000)]
         for cat, a in (('stumble', 0.1), ('stumble', 0.3), ('pain', 0.5)):
@@ -643,7 +726,7 @@ class Store(unittest.TestCase):
         mine = os.path.join(self.ws.export_dir, 'fragile', 'my-notes.txt')
         with open(mine, 'w') as f:
             f.write('keep me')
-        r = self.ws.export(lambda i: (48000, src), game='1-2')
+        r = self.ws.export(self.ranged(src), game='1-2')
         self.assertEqual((r['clips'], r['by_category'], r['errors']), (3, {'stumble': 2, 'pain': 1}, []))
         rows = ST.read_manifest(r['manifest'])
         self.assertEqual([x['file'] for x in rows],
@@ -658,13 +741,43 @@ class Store(unittest.TestCase):
         self.assertTrue(head[1].startswith('game\t1-2\t'))
         # a second export after deleting a clip removes the stale file it wrote, never the user's own
         self.ws.delete_clip(self.ws.clips()[2]['id'])
-        self.ws.export(lambda i: (48000, src))
+        self.ws.export(self.ranged(src))
         self.assertFalse(os.path.exists(os.path.join(self.ws.export_dir, 'fragile', 'pain', 'pain_01.wav')))
         self.assertTrue(os.path.exists(mine))
         # a broken source is skipped with a reason
-        r = self.ws.export(lambda i: (_ for _ in ()).throw(KeyError(i)))
+        r = self.ws.export(lambda i, a, b: (_ for _ in ()).throw(KeyError(i)))
         self.assertEqual(r['clips'], 0)
         self.assertEqual(len(r['errors']), 2)
+
+    def test_plans_links_and_their_manifest_columns(self):
+        with self.assertRaises(ST.ClipError):
+            ST.clean_clip({'source': 'f-a', 'category': 'pain', 'start': 0, 'end': 1, 'situations': [-1]})
+        with self.assertRaises(ST.ClipError):
+            ST.clean_clip({'source': 'f-a', 'category': 'pain', 'start': 0, 'end': 1, 'situations': 'x'})
+        c = self.ws.upsert_clip({'source': 'f-a', 'category': 'pain', 'start': 0, 'end': 0.5, 'situations': [7, 7, 3]})
+        self.assertEqual(c['situations'], [3, 7])
+        self.assertEqual(self.ws.link_clip(c['id'], 9)['situations'], [3, 7, 9])
+        self.assertEqual(self.ws.link_clip(c['id'], 3, on=False)['situations'], [7, 9])
+        with self.assertRaises(ST.ClipError):
+            self.ws.link_clip('clip-00000000', 3)
+        self.ws.set_plan(11, 'silent')
+        self.ws.set_plan(12, 'any')
+        with self.assertRaises(ST.ClipError):
+            self.ws.set_plan(12, 'loud')
+        self.ws.set_plan(12, None)
+        self.assertEqual(ST.Workspace(self.ws.root, self.ws.export_dir).state['plan'], {'11': 'silent'})
+        src = [0.1] * 48000
+        r = self.ws.export(Store.ranged(src), situations=[(9, 'pain', 'guess', 'situation 00000009', 'clip'),
+                                                         (11, 'other', 'guess', 'situation 0000000B', 'silent'),
+                                                         (13, 'other', 'guess', 'situation 0000000D', '-')])
+        with open(r['manifest'], encoding='utf-8') as f:
+            text = f.read()
+        clip_row = [ln for ln in text.split('\n') if ln.startswith('clip\t')][0].split('\t')
+        self.assertEqual(clip_row[-1], '00000007,00000009')
+        self.assertIn('situation\t00000009\tpain\tguess\tsituation 00000009\tclip', text)
+        self.assertIn('situation\t0000000B\tother\tguess\tsituation 0000000B\tsilent', text)   # kept: it has a plan
+        self.assertNotIn('0000000D', text)
+        self.assertEqual(r['situations'], 2)
 
     def test_manifest_refuses_paths_outside(self):
         p = os.path.join(self.tmp, 'voices.txt')
@@ -692,6 +805,15 @@ class FakeSource:
         if progress:
             progress(0.5)
         return 48000, [0.3 * math.sin(i / 9) for i in range(48000)]
+
+    # the background decode, with threads instead of processes
+    def prefetch_pool(self, workers):
+        from concurrent.futures import ThreadPoolExecutor
+        return ThreadPoolExecutor(max_workers=workers)
+
+    def prefetch_submit(self, pool, item, path):
+        import vc_worker
+        return pool.submit(lambda: vc_worker.write_cache(path, *self.decode(item)))
 
 
 def fake_catalog():
@@ -749,6 +871,55 @@ class Api(unittest.TestCase):
         with open(r['manifest'], encoding='utf-8') as f:
             self.assertIn('situation\t00000005\tfall\tuser\tsituation 00000005', f.read())
         self.assertEqual(self.app.route('POST', '/api/open', None, {'what': 'C:\\Windows'})[0], 400)
+
+    def wait(self, cond, n=500):
+        for _ in range(n):
+            if cond():
+                return True
+            threading.Event().wait(0.01)
+        return cond()
+
+    def test_prefetch_decodes_everything_once(self):
+        app = voicecut.App(self.ws, self.src, prefetch=True, workers=2)
+        app.start_catalog()
+        self.assertTrue(self.wait(lambda: app.prefetch['state'] == 'done'))
+        self.assertEqual((app.prefetch['done'], app.prefetch['total'], app.prefetch['failed']), (2, 2, 0))
+        for i in ('f-' + FRG_A, 's-' + SAM_A):
+            self.assertTrue(os.path.exists(self.ws.audio_path(i)))
+            self.assertEqual(self.ws.measured[i]['length'], 1.0)
+        n = self.src.decodes
+        self.app.route('GET', '/api/audio', {'id': ['s-' + SAM_A]})        # served from the cache
+        self.assertEqual(self.src.decodes, n)
+        with open(self.ws.measure_path, encoding='utf-8') as f:            # flushed at the end
+            self.assertEqual(len(json.load(f)), 2)
+        again = voicecut.App(self.ws, self.src, prefetch=True)
+        again.start_catalog()
+        self.assertEqual(again.prefetch['state'], 'done')                  # nothing left to do
+        self.assertEqual(self.app.route('POST', '/api/prefetch', None, {'action': 'go'})[0], 400)
+
+    def test_prefetch_pause(self):
+        app = voicecut.App(self.ws, self.src, prefetch=False, workers=1)
+        app.start_catalog()
+        self.assertTrue(self.wait(lambda: app.cat_state['state'] == 'ready'))
+        app._prefetch_paused.set()
+        app.start_prefetch()                                               # starts, then resumes (clears the pause)
+        self.assertTrue(self.wait(lambda: app.prefetch['state'] == 'done'))
+        app.pause_prefetch()                                               # nothing running: no change
+        self.assertEqual(app.prefetch['state'], 'done')
+
+    def test_guide_routes(self):
+        code, c = self.app.route('POST', '/api/clip', None, {'source': 'f-' + FRG_A, 'category': 'jump',
+                                                             'start': 0.1, 'end': 0.4, 'situations': [5]})
+        self.assertEqual((code, c['situations']), (200, [5]))
+        self.assertEqual(self.app.route('POST', '/api/clip/link', None, {'id': c['id'], 'hash': 6})[1]['situations'],
+                         [5, 6])
+        self.assertEqual(self.app.route('POST', '/api/clip/link', None, {'id': 'clip-00000000', 'hash': 6})[0], 400)
+        self.assertEqual(self.app.route('POST', '/api/plan', None, {'hash': 6, 'plan': 'silent'})[1]['plan'],
+                         {'6': 'silent'})
+        self.assertEqual(self.app.route('POST', '/api/plan', None, {'hash': 6, 'plan': 'x'})[0], 400)
+        self.assertEqual(self.app.route('GET', '/api/user', {})[1]['plan'], {'6': 'silent'})
+        rows = {r[0]: r for r in self.app.situation_rows()}
+        self.assertEqual(rows[5][4], 'clip')
 
     def test_measure(self):
         self.assertEqual(self.app.route('POST', '/api/measure', None, {'ids': 'x'})[0], 400)

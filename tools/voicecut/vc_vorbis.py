@@ -12,6 +12,7 @@ user's own ds.exe (Wwise is linked into the game) at run time.
 
 Nothing here reads files; callers pass bytes.
 """
+import array
 import cmath
 import math
 import struct
@@ -712,10 +713,12 @@ def _residue_partitions(r, books, br, vectors, do_decode, actual, rtype):
 
 # ------------------------------------------------------------------ decode
 
-def decode_wem(data, library, max_seconds=None, want=None, progress=None):
-    """Decode a Wwise Vorbis WEM to float PCM: (WemInfo, [channel][sample]). `want`: the channel indexes to
-    synthesise (the others are still read from the bitstream, as they must be, but skip the floor curve, transform
-    and overlap; they come back empty). `progress(fraction)` is called every few hundred packets."""
+def decode_wem(data, library, max_seconds=None, want=None, progress=None, mix=None):
+    """Decode a Wwise Vorbis WEM to float PCM: (WemInfo, [channel][sample]), each channel an array('f'). `want`: the
+    channel indexes to synthesise (the others are still read from the bitstream, as they must be, but skip the floor
+    curve, transform and overlap; they come back empty). `mix`: [(channel, weight)] gives one mixed channel instead,
+    mixed in the spectrum (the transform is linear), so a 5.1 track costs one transform per block and its memory is
+    one channel's. `progress(fraction)` is called every few hundred packets."""
     w = parse_wem(data)
     setup_pkts = list(iter_packets(data, w, w.setup_offset))
     if not setup_pkts:
@@ -724,7 +727,12 @@ def decode_wem(data, library, max_seconds=None, want=None, progress=None):
     packets = [p for _, p in iter_packets(data, w, w.audio_offset)]
     bs = (1 << w.blocksize0_pow, 1 << w.blocksize1_pow)
     ch = w.channels
-    want = set(range(ch)) if want is None else {c for c in want if 0 <= c < ch}
+    if mix is not None:
+        mix = [(c, float(g)) for c, g in mix if 0 <= c < ch]
+        want = {c for c, _ in mix}
+    else:
+        want = set(range(ch)) if want is None else {c for c in want if 0 <= c < ch}
+    nout = 1 if mix is not None else ch
     # the mode (and so the block size) of every packet first: the window of a long block depends on both neighbours
     modes = []
     for p in packets:
@@ -737,8 +745,8 @@ def decode_wem(data, library, max_seconds=None, want=None, progress=None):
             raise VorbisError('mode %d out of range' % mode)
         modes.append(mode)
     limit = int(max_seconds * w.rate) + bs[1] if max_seconds else None
-    out = [[] for _ in range(ch)]
-    tail = None          # the previous block's windowed right half (overlap), per channel
+    out = [array.array('f') for _ in range(nout)]
+    tail = None          # the previous block's windowed right half (overlap), per output channel
     prev_n = None
     for idx, p in enumerate(packets):
         if progress and idx % 400 == 0:
@@ -800,20 +808,39 @@ def decode_wem(data, library, max_seconds=None, want=None, progress=None):
                         A[i], M[i] = mv, mv - av
         win = block_window(n, pn, nn)
         blocks = []
-        for c in range(ch):
-            f, ys = floors[c]
-            if c not in want or ys is None:
+        if mix is not None:
+            spec = None
+            for c, g in mix:
+                f, ys = floors[c]
+                if ys is None:
+                    continue
+                curve = floor1_curve(f, ys, half)
+                v = vecs[c]
+                if spec is None:
+                    spec = [g * v[i] * curve[i] for i in range(half)]
+                else:
+                    for i in range(half):
+                        spec[i] += g * v[i] * curve[i]
+            if spec is None:
                 blocks.append([0.0] * n)
-                continue
-            curve = floor1_curve(f, ys, half)
-            v = vecs[c]
-            spec = [v[i] * curve[i] for i in range(half)]
-            y = imdct(spec)
-            blocks.append([y[i] * win[i] for i in range(n)])
+            else:
+                y = imdct(spec)
+                blocks.append([y[i] * win[i] for i in range(n)])
+            chans = [0]
+        else:
+            for c in range(ch):
+                f, ys = floors[c]
+                if c not in want or ys is None:
+                    blocks.append([0.0] * n)
+                    continue
+                curve = floor1_curve(f, ys, half)
+                v = vecs[c]
+                spec = [v[i] * curve[i] for i in range(half)]
+                y = imdct(spec)
+                blocks.append([y[i] * win[i] for i in range(n)])
+            chans = [c for c in range(ch) if c in want]
         # overlap-add: this block's centre follows the previous one's by prev_n/4 + n/4
-        for c in range(ch):
-            if c not in want:
-                continue
+        for c in chans:
             y = blocks[c]
             if tail is not None:
                 t = tail[c]
@@ -829,7 +856,7 @@ def decode_wem(data, library, max_seconds=None, want=None, progress=None):
                     seg[i] = a + b
                 o.extend(seg)
         # keep this block's right half, positioned from its centre
-        tail = [blocks[c][half:] for c in range(ch)]
+        tail = [b[half:] for b in blocks]
         prev_n = n
         if limit and max(len(o) for o in out) >= limit:
             break
@@ -856,3 +883,12 @@ def downmix(w, pcm):
 def voice_channels(w):
     """The channels downmix() uses."""
     return [0] if w.channels == 1 else ([0, 1] if w.channels == 2 else [0, 1, 2])
+
+
+def voice_mix(w):
+    """downmix() as decode_wem(mix=...) weights."""
+    if w.channels == 1:
+        return [(0, 1.0)]
+    if w.channels == 2:
+        return [(0, 0.5), (1, 0.5)]
+    return [(2, 1.0), (0, 0.5), (1, 0.5)]

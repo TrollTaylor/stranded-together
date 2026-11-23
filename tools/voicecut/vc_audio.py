@@ -60,6 +60,30 @@ def read_wav(path_or_bytes):
     return rate, [sum(a[i:i + ch]) / (32767.0 * ch) for i in range(0, len(a) - ch + 1, ch)]
 
 
+def wav_frames(path):
+    """(rate, frames) of a WAV file."""
+    with wave.open(path, 'rb') as w:
+        return w.getframerate(), w.getnframes()
+
+
+def read_wav_range(path, start, end):
+    """(rate, mono floats of [start, end) seconds, total frames) of a 16-bit mono WAV, reading only that range (a
+    cutscene's cache is minutes long; a clip needs a second of it)."""
+    with wave.open(path, 'rb') as w:
+        if w.getsampwidth() != 2 or w.getnchannels() != 1:
+            raise ValueError('the cache holds 16-bit mono WAV files')
+        rate, frames = w.getframerate(), w.getnframes()
+        a = max(0, min(frames, int(round(start * rate))))
+        b = max(a, min(frames, int(round(end * rate))))
+        w.setpos(a)
+        raw = w.readframes(b - a)
+    x = array.array('h')
+    x.frombytes(raw[:len(raw) // 2 * 2])
+    if sys.byteorder != 'little':
+        x.byteswap()
+    return rate, [v / 32767.0 for v in x], frames
+
+
 def fade_gain(i, n, fade_in, fade_out):
     """The fade factor of sample i of n (raised-cosine ramps of fade_in / fade_out samples)."""
     g = 1.0

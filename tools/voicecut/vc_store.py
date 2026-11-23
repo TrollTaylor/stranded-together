@@ -22,12 +22,25 @@ from vc_catalog import CATEGORY_KEYS
 
 STATE_VERSION = 1
 MANIFEST_VERSION = 1
-CACHE_LIMIT = 1024 * 1024 * 1024
+CACHE_LIMIT = 3 * 1024 * 1024 * 1024   # every line decoded is about 0.8 GB
 CLIP_ID = re.compile(r'^clip-[0-9a-f]{8}$')
 ITEM_ID = re.compile(r'^[a-z]-[0-9A-Za-z_\-]{1,80}$')
+PLANS = ('any', 'silent')   # the guide's answers besides "clips made for it": any clip of the category / no voice
 MANIFEST_HEADER = ('# clip\t<file>\t<category>\t<samples>\t<peak dBFS>\t<loud dBFS>\t<source id>\t<start s>\t<end s>'
-                   '\t<fade in s>\t<fade out s>\t<gain dB>\t<normalise 0|1>\t<sha256 of the file>\n'
-                   '# situation\t<Sam situation hash, 8 hex>\t<category>\t<user|known|guess>\t<label>')
+                   '\t<fade in s>\t<fade out s>\t<gain dB>\t<normalise 0|1>\t<sha256 of the file>'
+                   '\t<made for: Sam situation hashes, comma-separated, or ->\n'
+                   '# situation\t<Sam situation hash, 8 hex>\t<category>\t<user|known|guess>\t<label>'
+                   '\t<plan: clip|any|silent|->')
+
+
+def clean_hash(h):
+    try:
+        h = int(h)
+    except (TypeError, ValueError):
+        raise ClipError('bad situation hash')
+    if not 0 <= h < 0x80000000:
+        raise ClipError('bad situation hash')
+    return h
 
 
 def default_workspace():
@@ -91,6 +104,10 @@ def clean_clip(clip, known_sources=None):
         raise ClipError('the selection is shorter than 20 ms')
     if out['end'] - out['start'] > 30:
         raise ClipError('a clip is at most 30 s long')
+    sits = clip.get('situations') or []
+    if not isinstance(sits, list) or len(sits) > 64:
+        raise ClipError('situations is a list of at most 64 hashes')
+    out['situations'] = sorted({clean_hash(h) for h in sits})
     cid = clip.get('id')
     if cid:
         if not CLIP_ID.match(str(cid)):
@@ -170,10 +187,38 @@ class Workspace:
         self.save()
 
     # ---- Sam's situation categories (the user's own sorting; None removes it)
+    def set_plan(self, h, plan):
+        """The guide's answer for a Sam situation: 'any' (any clip of its category will do), 'silent' (no voice
+        there), None (not decided). Clips made for it (link_clip) count on their own."""
+        h = clean_hash(h)
+        plans = self.state.setdefault('plan', {})
+        if plan in (None, ''):
+            plans.pop(str(h), None)
+        elif plan in PLANS:
+            plans[str(h)] = plan
+        else:
+            raise ClipError('plan is any, silent or empty')
+        self.save()
+
+    def link_clip(self, cid, h, on=True):
+        """Mark a clip as made for a Sam situation (or not)."""
+        h = clean_hash(h)
+        for c in self.clips():
+            if c.get('id') == cid:
+                sits = set(c.get('situations', []))
+                if on:
+                    if len(sits) >= 64 and h not in sits:
+                        raise ClipError('a clip is made for at most 64 situations')
+                    sits.add(h)
+                else:
+                    sits.discard(h)
+                c['situations'] = sorted(sits)
+                self.save()
+                return c
+        raise ClipError('no such clip')
+
     def set_situation(self, h, category):
-        h = int(h)
-        if not 0 <= h < 0x80000000:
-            raise ClipError('bad situation hash')
+        h = clean_hash(h)
         sits = self.state.setdefault('situations', {})
         if category in (None, ''):
             sits.pop(str(h), None)
@@ -214,9 +259,10 @@ class Workspace:
 
     # ---- export
     def export(self, load_source, game='', language='english', out_dir=None, situations=()):
-        """Render every clip into out_dir (default: the export folder) and write voices.txt. `load_source(id)` returns
-        (rate, mono floats). `situations`: (hash, category, how, label) rows for Sam's situations, so the mod can map
-        the situation Sam would speak in to a clip category. Returns a summary."""
+        """Render every clip into out_dir (default: the export folder) and write voices.txt. `load_source(id, start,
+        end)` returns (rate, mono floats of [start, end) seconds, the source's total frames). `situations`: (hash, category, how, label, plan) rows for Sam's situations, so the mod
+        can map the situation Sam would speak in to a clip category (or to the clips made for it, or to silence).
+        Returns a summary."""
         out = out_dir or self.export_dir
         os.makedirs(out, exist_ok=True)
         manifest = os.path.join(out, 'voices.txt')
@@ -234,11 +280,11 @@ class Workspace:
         errors = []
         for c in order:
             try:
-                rate, src = load_source(c['source'])
+                rate, seg, _frames = load_source(c['source'], c['start'], c['end'])
             except Exception as e:  # a source that no longer decodes: skip that clip, say so
                 errors.append('%s: %s' % (c['id'], e))
                 continue
-            pcm = AU.render(src, rate, c)
+            pcm = AU.render(seg, rate, dict(c, start=0.0, end=len(seg) / float(rate)))
             if not pcm:
                 errors.append('%s: empty after trimming' % c['id'])
                 continue
@@ -251,16 +297,20 @@ class Workspace:
             rows.append([rel, c['category'], str(len(pcm)), '%.2f' % st['peak_db'], '%.2f' % st['loud_db'],
                          c['source'], '%.4f' % c['start'], '%.4f' % c['end'], '%.4f' % c['fade_in'],
                          '%.4f' % c['fade_out'], '%.2f' % c['gain_db'], '1' if c['normalize'] else '0',
-                         hashlib.sha256(data).hexdigest()])
+                         hashlib.sha256(data).hexdigest(),
+                         ','.join('%08X' % h for h in c.get('situations', [])) or '-'])
         lines = ['stv-voices %d' % MANIFEST_VERSION,
                  'game\t%s\ttool\tvoicecut %d\tlanguage\t%s\trate\t%d\tspeaker\tfragile' % (game or '-', STATE_VERSION,
                                                                                          language, AU.RATE),
                  MANIFEST_HEADER]
         lines += ['clip\t' + '\t'.join(r) for r in rows]
         sit_rows = 0
-        for h, cat, how, label in situations:
-            if cat in CATEGORY_KEYS and cat != 'other':
-                lines.append('situation\t%08X\t%s\t%s\t%s' % (int(h), cat, how, re.sub(r'[\t\r\n]', ' ', label)))
+        for row in situations:
+            h, cat, how, label = row[:4]
+            plan = row[4] if len(row) > 4 else '-'
+            if cat in CATEGORY_KEYS and (cat != 'other' or plan != '-'):
+                lines.append('situation\t%08X\t%s\t%s\t%s\t%s' % (int(h), cat, how, re.sub(r'[\t\r\n]', ' ', label),
+                                                                 plan))
                 sit_rows += 1
         tmp = manifest + '.tmp'
         with open(tmp, 'w', encoding='utf-8', newline='\n') as f:

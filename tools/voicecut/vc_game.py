@@ -32,6 +32,8 @@ TYPE_WEM_LOCALIZED = 0x3DE345CD4B0C7E72
 TYPE_SITUATION = 0x50AC2E322EDCCA3B
 TYPE_PLAYER_SENTENCE = 0xDB061C932BA5209D
 TYPE_PRIORITY_INFO = 0x261040389F23D98B
+TYPE_SUBTITLE_EVENT = 0x17F5B6C706FE44CC   # KJPSubtitleEventResource (a cutscene's subtitle timeline)
+SUBTITLE_FPS = 60.0   # cutscene frames: subtitle spans line up with the dialogue track at frame / 60 from frame 0
 
 # LocalizedTextResource language order (ELanguage 1..25); the stream suffixes use the lower-case names.
 TEXT_LANGUAGES = ['english', 'french', 'spanish', 'german', 'italian', 'dutch', 'portuguese', 'chinese_traditional',
@@ -46,6 +48,7 @@ SPEAKERS = {'fragile': 'vr0040_frg', 'sam': 'vr0010_sam'}
 SAM_RESIDENT = 'ds/entities/player/sentence/ds_player_sentence_resident'
 SAM_PRIORITY = 'ds/entities/player/sentence/ds_player_sentence_priority'
 CINEMATIC_SOUND = 'ds/sounds/wwise_cinematics_sound_resource/{cs}/{seq}/{seq}_sound'
+CINEMATIC_SPEECH = 'ds/cinematics/cutscene/{cs}/{seq}/{flat}speech'   # flat: the sequence name without '_'
 PREFETCH = 'prefetch/fullgame.prefetch'
 
 
@@ -207,6 +210,52 @@ def parse_player_sentence(body):
     water, tired, long_ = body[p], body[p + 1], body[p + 2]
     return {'guid': guid_text(body), 'sentence': r[1] if r else None, 'path': r[2] if r else '',
             'water': bool(water), 'tired': bool(tired), 'long': bool(long_)}
+
+
+def parse_subtitle_event(body):
+    """KJPSubtitleEventResource: GUID, StartFrame i32, Enabled bool, PauseFrame i32 (where the subtitle ends),
+    SentenceResource ref, PausingEnabled bool, BlendIn / BlendOut frames. -> (start frame, end frame, sentence guid,
+    enabled)"""
+    start = struct.unpack_from('<i', body, 16)[0]
+    enabled = bool(body[20])
+    end = struct.unpack_from('<i', body, 21)[0]
+    r, _p = read_ref(body, 25)
+    return start, end, (r[1] if r else None), enabled
+
+
+def sentence_voices(core, language='english'):
+    """{sentence guid: (voice name, text)} for every sentence of a core (any speaker)."""
+    objs = read_objects(core)
+    ti = TEXT_LANGUAGES.index(language) if language in TEXT_LANGUAGES else 0
+    texts = {}
+    for tid, body in objs:
+        if tid == TYPE_TEXT:
+            t = parse_text(body)
+            if t['texts']:
+                texts[t['guid']] = t['texts'][ti] if ti < len(t['texts']) and t['texts'][ti] else t['texts'][0]
+    out = {}
+    for tid, body in objs:
+        if tid == TYPE_SENTENCE:
+            s = parse_sentence(body)
+            out[s['guid']] = (s['voice'].rsplit('/', 1)[-1], texts.get(s['text'], ''))
+    return out
+
+
+def cutscene_subtitles(speech_core, voices, speakers=SPEAKERS):
+    """[{t0, t1, who, text}] sorted by time: who is a key of `speakers` or 'other'."""
+    want = {v: k for k, v in speakers.items()}
+    out = []
+    for tid, body in read_objects(speech_core):
+        if tid != TYPE_SUBTITLE_EVENT:
+            continue
+        start, end, g, enabled = parse_subtitle_event(body)
+        if not enabled or g is None or end <= start:
+            continue
+        voice, text = voices.get(g, ('', ''))
+        out.append({'t0': round(start / SUBTITLE_FPS, 3), 't1': round(end / SUBTITLE_FPS, 3),
+                    'who': want.get(voice, 'other'), 'text': text})
+    out.sort(key=lambda s: s['t0'])
+    return out
 
 
 def parse_priority(body):
