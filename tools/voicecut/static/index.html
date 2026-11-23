@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>voicecut</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/app.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <svg class="logo" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12h3l2-6 3 12 3-9 2 5 2-2h5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <div>
+      <div class="brand-name">voicecut</div>
+      <div class="brand-sub">Fragile's voice clips for Stranded Together</div>
+    </div>
+  </div>
+  <div class="status" id="status">connecting</div>
+  <div class="top-actions">
+    <button class="btn" id="btn-export" title="Write every clip and voices.txt to the export folder">Export clips</button>
+    <button class="btn ghost" id="btn-open-export" title="Open the export folder in Explorer">Open folder</button>
+    <button class="btn ghost" id="btn-help" title="Keyboard shortcuts">Keys</button>
+  </div>
+</header>
+
+<div class="alerts" id="alerts"></div>
+
+<main class="layout">
+  <!-- library -->
+  <section class="panel lib">
+    <div class="panel-head"><h2>Voice lines</h2><span class="hint" id="lib-count"></span></div>
+    <div class="filters">
+      <input type="search" id="f-search" placeholder="Search text, name, situation">
+      <div class="row">
+        <select id="f-speaker" title="Speaker">
+          <option value="fragile">Fragile</option>
+          <option value="sam">Sam</option>
+          <option value="">Everyone</option>
+        </select>
+        <select id="f-kind" title="Source">
+          <option value="">Lines and cutscenes</option>
+          <option value="line">Lines</option>
+          <option value="cutscene">Cutscenes</option>
+        </select>
+      </div>
+      <div class="row">
+        <select id="f-cat" title="Guessed category (Sam: by situation)"><option value="">Any category</option></select>
+        <select id="f-voice" title="Spoken or not">
+          <option value="">Spoken and non-verbal</option>
+          <option value="nonverbal">Non-verbal only</option>
+          <option value="spoken">Spoken only</option>
+        </select>
+      </div>
+      <div class="row len">
+        <label>Length <input type="number" id="f-min" min="0" step="0.1" placeholder="min"> to
+          <input type="number" id="f-max" min="0" step="0.1" placeholder="max"> s</label>
+        <select id="f-sort" title="Sort">
+          <option value="default">Group order</option>
+          <option value="length">Shortest first</option>
+          <option value="length-desc">Longest first</option>
+          <option value="text">By text</option>
+        </select>
+      </div>
+    </div>
+    <div class="list" id="lib-list"></div>
+  </section>
+
+  <!-- editor -->
+  <section class="panel editor">
+    <div class="panel-head">
+      <h2>Editor</h2>
+      <span class="hint" id="ed-title">Pick a line on the left</span>
+    </div>
+    <div class="ed-source" id="ed-source"></div>
+    <canvas id="overview" class="overview" height="44"></canvas>
+    <div class="wave-wrap">
+      <canvas id="wave" class="wave" height="230"></canvas>
+      <div class="wave-msg" id="wave-msg"></div>
+    </div>
+    <div class="transport">
+      <button class="btn" id="b-play" title="Play / stop from the playhead (Space)">&#9654; Play</button>
+      <button class="btn" id="b-playsel" title="Play the selection with fades and gain (Enter)">&#9654; Selection</button>
+      <label class="toggle" title="Loop the selection (L)"><input type="checkbox" id="b-loop"> Loop</label>
+      <span class="sep"></span>
+      <button class="btn ghost" id="b-zin" title="Zoom in (+)">+</button>
+      <button class="btn ghost" id="b-zout" title="Zoom out (-)">&minus;</button>
+      <button class="btn ghost" id="b-zsel" title="Zoom to the selection (Z)">Sel</button>
+      <button class="btn ghost" id="b-zfit" title="Show everything (F)">Fit</button>
+      <span class="sep"></span>
+      <span class="times mono" id="times"></span>
+    </div>
+    <div class="nudge">
+      <span class="muted">Handle</span>
+      <button class="btn ghost small" id="h-in" title="Move the in point with the arrows ([)">In</button>
+      <button class="btn ghost small" id="h-out" title="Move the out point with the arrows (])">Out</button>
+      <button class="btn ghost small" data-nudge="-0.1">&laquo; 100 ms</button>
+      <button class="btn ghost small" data-nudge="-0.01">&lsaquo; 10 ms</button>
+      <button class="btn ghost small" data-nudge="0.01">10 ms &rsaquo;</button>
+      <button class="btn ghost small" data-nudge="0.1">100 ms &raquo;</button>
+      <button class="btn ghost small" id="b-setin" title="In point at the playhead (I)">In at playhead</button>
+      <button class="btn ghost small" id="b-setout" title="Out point at the playhead (O)">Out at playhead</button>
+    </div>
+    <div class="clipform">
+      <label>Fade in <input type="number" id="c-fin" min="0" max="2000" step="5" value="10"> ms</label>
+      <label>Fade out <input type="number" id="c-fout" min="0" max="2000" step="5" value="40"> ms</label>
+      <label>Gain <input type="range" id="c-gain" min="-36" max="36" step="0.5" value="0"> <span class="mono" id="c-gain-v">0.0 dB</span></label>
+      <label class="toggle" title="Bring the loudest sample to -3 dBFS before the gain"><input type="checkbox" id="c-norm"> Normalise</label>
+      <label>Category <select id="c-cat"></select></label>
+      <label class="grow">Note <input type="text" id="c-note" maxlength="300" placeholder="optional"></label>
+    </div>
+    <div class="clipbar">
+      <div class="meter" id="c-meter"></div>
+      <div class="clipbar-actions">
+        <span class="muted" id="c-editing"></span>
+        <button class="btn ghost" id="c-match" title="Set the gain so the clip is as loud as Sam's measured lines in this category (Normalise off)">Match Sam</button>
+        <button class="btn ghost" id="c-new" title="Stop editing the saved clip; the next save makes a new one">New clip</button>
+        <button class="btn primary" id="c-save" title="Save the selection as a clip (S)">Save clip</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- clips, coverage, Sam -->
+  <section class="panel side">
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-tab="clips">My clips <span class="pill" id="n-clips">0</span></button>
+      <button class="tab" data-tab="coverage">Coverage</button>
+      <button class="tab" data-tab="sam">Sam's situations</button>
+    </div>
+    <div class="tabpane" id="tab-clips"></div>
+    <div class="tabpane hidden" id="tab-coverage"></div>
+    <div class="tabpane hidden" id="tab-sam">
+      <div class="filters">
+        <input type="search" id="s-search" placeholder="Search situations">
+        <div class="row">
+          <select id="s-filter">
+            <option value="">All situations</option>
+            <option value="unsorted">Not sorted yet (other)</option>
+            <option value="nonverbal">Non-verbal only</option>
+            <option value="known">Known names</option>
+          </select>
+        </div>
+      </div>
+      <div class="list" id="sam-list"></div>
+    </div>
+  </section>
+</main>
+
+<div class="modal hidden" id="help">
+  <div class="modal-box">
+    <h2>Keys</h2>
+    <table class="keys">
+      <tr><td>Space</td><td>play / stop from the playhead</td></tr>
+      <tr><td>Enter</td><td>play the selection (with fades, gain and normalise)</td></tr>
+      <tr><td>L</td><td>loop the selection on / off</td></tr>
+      <tr><td>I / O</td><td>in / out point at the playhead</td></tr>
+      <tr><td>[ / ]</td><td>arrows move the in / the out point</td></tr>
+      <tr><td>&larr; &rarr;</td><td>move that point 10 ms (Shift: 100 ms, Alt: 1 ms)</td></tr>
+      <tr><td>+ / &minus;</td><td>zoom in / out (or the mouse wheel over the waveform)</td></tr>
+      <tr><td>Z / F</td><td>zoom to the selection / show everything</td></tr>
+      <tr><td>Home / End</td><td>playhead to the start / end</td></tr>
+      <tr><td>S or Ctrl+S</td><td>save the clip</td></tr>
+      <tr><td>Mouse</td><td>drag on the waveform to select; drag the edges to trim; click to move the playhead;
+        Shift+wheel or drag the top strip to scroll</td></tr>
+    </table>
+    <button class="btn" id="help-close">Close</button>
+  </div>
+</div>
+</body>
+</html>
