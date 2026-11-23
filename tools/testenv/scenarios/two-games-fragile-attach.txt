@@ -6,6 +6,7 @@
 # looks back; the guest (wearing Sam's cap and glasses) runs towards the host, across the host's view (follow 1 = v0.18,
 # then follow 4 = this build, on the guest's own screen), walks, turns and moves crouched, with screenshots from both
 # screens; then the Santa hat (cap01, the hat the user wore most) on both screens.
+# covers: gear self-view
 role host
 graphics low
 timeout 360

@@ -8,6 +8,7 @@
 # Pass (in the logs): both hits with a health drop (knocked down, not killed), the driver's game logs each report, no
 # fault. Check enlarged: G1a..G1d / G2a..G2d (the victim thrown, lying, the health popup, getting up; the partner body
 # falling on the driver's screen).
+# covers: vehicle-hit
 role host
 graphics low
 timeout 360

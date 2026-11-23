@@ -9,6 +9,7 @@
 # game): a game hide reason (26, photo mode's "hide Sam") makes the body go and our reason 63 clear
 # while the game keeps Sam hidden, and the body comes back when it is cleared; a stray reason 63
 # with no body shown (a lost clear) is repaired in the next tick.
+# covers: self-view
 role solo
 timeout 360
 ini partner_body=real

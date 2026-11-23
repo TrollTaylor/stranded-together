@@ -8,6 +8,7 @@
 # (convention 0|1 ...)", the hands vs their targets under 2 cm, "[ridecam] passenger <kind>: parameter 0x2B / 0x2D / 0x2C
 # ... BaseType 3", no fault. Check enlarged: the Pxx-carried screenshots (hands on the thighs, no steering pose; the
 # chase camera as the driver's); Px6..Px8 close up (the on-foot camera with the ride camera off, `ride_test 20 0`).
+# covers: ride
 role echo
 timeout 360
 ini partner_body=real

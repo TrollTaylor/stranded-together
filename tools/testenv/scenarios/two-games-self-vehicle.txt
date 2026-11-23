@@ -9,6 +9,7 @@
 # 1. On foot: running, stopping, turning, a reversal. 2. The guest drives the truck from a stop: side view, v0.19 (S1*) then
 # v0.20 (S2*), the host watching (H1*, H2*); gets off (the seat snap: the gate). 3. The guest rides in the host's truck
 # (carried, C*). 4. The guest drives the Kusanagi trike (T*). Pass: the meter lines in all three classes, no FAULT.
+# covers: self-view ride
 role host
 graphics low
 timeout 360

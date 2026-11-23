@@ -5,6 +5,7 @@
 # on both. Then each player changes its own suit colour (hidden-test action real_outfit 4: the
 # inventory byte the uniform menu sets; the game re-dresses that Sam itself) and the OTHER game's
 # partner Sam follows: host colour 9 (olive), guest colour 0 (default blue), host 15 (silver suit).
+# covers: outfit
 role host
 graphics low
 timeout 360

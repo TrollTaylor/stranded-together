@@ -7,6 +7,7 @@
 # (gold) and the guest takes the cyphead accessory (metal-line hair and face lines) off and puts her cap
 # on (silver). Census of each game's own Sam (gear 9 0) and partner body (gear 9 1) at the end: the head
 # part flags must agree across the games. Player collision off.
+# covers: partner-body outfit
 role host
 graphics low
 timeout 360

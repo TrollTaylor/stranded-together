@@ -8,6 +8,7 @@
 # 2. The guest runs and jumps: her (muted) Sam efforts go out as kind 1 only; the host receives kind 1 and plays
 #    nothing. `nolog` checks that the guest sent no Sam line (kind 0) up to then.
 # 3. Test only: the guest sends as Sam (`voice_sync 2 1`) and jumps: the host plays her lines on her body's head.
+# covers: voice
 role host
 graphics low
 timeout 360

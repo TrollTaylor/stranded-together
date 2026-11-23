@@ -7,6 +7,7 @@
 # and the glasses on both; the meters: `[headgear] partner head prop ...` (where the prop sits in the partner body's
 # head joint's frame) and `[boots] boots' feet vs the drawn feet` (the prop's feet against the body's).
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario echo-boots-headgear -SeedSaves complete-100
+# covers: gear boots partner-body
 role echo
 timeout 360
 ini partner_body=real

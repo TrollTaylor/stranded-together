@@ -1,0 +1,217 @@
+# Test areas: which hidden-test scenarios a change needs (tools/testenv/Select-Scenarios.ps1; docs/hidden-testing.md "Test economy").
+#
+# Two kinds of lines (a '#' starts a comment line):
+#
+#   area <name> [implicit | implicit-host | no-run] : <what it is>
+#       Declares an area. Every scenario names the areas it checks in its "# covers:" header line.
+#       implicit       every hidden run exercises it (the mod boots, the saves are redirected and compared, the online gate
+#                      and the supervisor run in every run): any selected scenario covers it.
+#       implicit-host  every two-game run (role host) exercises it (the link, the pose frames).
+#       no-run         a change here needs no hidden game run (ctest, docs, research tooling, the launcher window).
+#
+#   <path glob> [~<regex>] <area> [<area> ...]
+#       A changed file (repo-relative, forward slashes, PowerShell -like: '*' also crosses '/') touches these areas.
+#       Without ~regex: the FIRST matching line gives the file's areas, so specific globs come before general ones.
+#       With ~regex (case-insensitive, no spaces: use \s): EVERY matching line adds its areas when a changed line (added or
+#       removed) of that file matches. These narrow the big files: real_body.cpp's private-room code needs a private-room run,
+#       its other code does not. Changed lines over 200 characters (usage lists, log formats naming every feature) are not
+#       matched.
+#   A file no plain line matches is "unmapped": Select-Scenarios.ps1 warns, and its -Check (ctest st_testenv_select_tests)
+#   fails for a tracked file. Add new source files here.
+
+# ---- areas
+area none no-run           : docs, unit tests (ctest), build files, research and release tooling
+area research no-run       : census / catalog / audio probe tooling: only the probes that use it (select: probe)
+area launcher-ui no-run    : the launcher window (no hidden run drives it; launcher_core_tests and the user's look)
+area boot implicit         : the mod loads, hooks, overlay up, title, Continue, into the world (smoke)
+area saves implicit        : the save redirect, foreign-save bypass, saves compared by hash (every run)
+area testenv implicit      : the supervisor, the automation channel, Start-TestRun.ps1 (every run)
+area link implicit-host    : the link v2 session, transports, pose frames between two games
+area overlay               : the F9 menu, ImGui overlay, input, mouse lock, debug actions
+area gate                  : the online gate: nothing the mod creates goes online (drops checked in the log)
+area launcher              : the launcher's core: session.ini it writes (Local test), install, textures extraction start
+area host-save             : the host-held save session: save transfer, guest title / waiting screen, reloads
+area save-guard            : the save guard: saves never capture a carried Sam or a mod-built thing wrongly
+area partner-holo          : the partner as the welcome hologram (partner_body=holo, the fallback)
+area partner-body          : the partner's real body: spawn, pose, animation, character choice (host's screen)
+area self-view             : the guest's own Fragile in place of Sam (self view, fit, follow mode)
+area smooth                : smooth animation above 60 fps, pose interpolation and prediction
+area skeleton              : Sam's exoskeletons on Fragile (exo carrier skeletons)
+area outfit                : the partner Sam's outfit, his head and hair
+area suit-colour           : Fragile's porter suit in Sam's suit colours (palette)
+area textures              : Fragile's textures from the user's folder, hot reload, on her self view
+area texture-share         : her textures over the link (STT1: pictures, ready-made recipes) on the other screen
+area suit-defaults         : the ready-made gold / silver / colour folders, the automatic extraction
+area gear                  : gear on the bodies: backpack, cargo, accessories, headgear, the BB pod
+area gear-wear             : gear that wears out (the rain cover)
+area boots                 : Fragile's boots (own / prop look)
+area held-items            : what a player holds, in their hand on the other screen
+area weapons               : weapons in hand
+area menu-figure           : the cargo menu's Sam figure under the self view
+area private-room          : the private room: entering, loading, the close-up, the black-screen fix
+area collision             : player collision, no Climb on the partner
+area name-tags             : name tags, the game's menu font
+area voice                 : partner voice and the self-voice mute
+area sound                 : partner sounds (footsteps, efforts) and their volume
+area vehicles              : vehicle copies (vehicle_sync: look, state, sounds of the partner's vehicle)
+area vehicle-share         : shared real vehicles: identity, summon, remote driving, handoff, persistence
+area vehicle-hit           : vehicle hits, bumps and tackles
+area ride                  : riding together: boarding, seats, ride camera, forced exits
+area world-sync            : shared structures: builds, contributions, ladders, ropes, ziplines
+area story                 : story tools, story loads
+area dev-tools             : dev tools: spawn, goto, weather, refill, god mode
+area quickstart            : the hidden runs' quickstart (start line)
+
+# ---- no hidden run
+docs/*                                 none
+README.md                              none
+.gitignore                             none
+tests/*                                none
+CMakeLists.txt                         none
+cmake/*                                none
+third_party/*                          boot
+tools/devdash/*                        none
+tools/re/*                             none
+tools/fakepeer/*                       none
+tools/launcher/*                       none
+tools/release.ps1                      none
+tools/package.ps1                      none
+tools/deploy.ps1                       none
+tools/gen_winhttp_proxy.py             boot
+tools/textool/*                        textures
+
+# ---- the hidden test environment (ctest covers these tools; the run scripts and the supervisor run in every hidden run)
+tools/testenv/scenarios/*              none
+tools/testenv/Prune-TestRuns.ps1       none
+tools/testenv/Test-*.ps1               none
+tools/testenv/Select-Scenarios.ps1     none
+tools/testenv/test-areas.txt           none
+tools/testenv/README.md                none
+tools/testenv/Story-Library.ps1        story
+tools/testenv/*                        testenv
+native/testenv/*                       testenv
+
+# ---- the launcher
+native/launcher/core/core_textures.*   launcher suit-defaults
+native/launcher/core/*                 launcher
+native/launcher/*                      launcher-ui
+
+# ---- textures (shared by the launcher's extractor, st_textool and the mod)
+native/textures/suit_defaults.*        suit-defaults
+native/textures/ready_made_rules.hpp   suit-defaults
+native/textures/extract_plan.*         suit-defaults textures
+native/textures/*                      textures
+
+# ---- the link
+native/net/pose_interp.cpp             link smooth
+native/include/stcoop/pose_interp.hpp  link smooth
+native/net/*                           link
+native/include/*                       link
+
+# ---- the mod: core
+native/mod/dllmain.cpp                 boot
+native/mod/winhttp_forwards.inc        boot
+native/mod/log.*                       boot
+native/mod/game_api.*                  boot
+native/mod/steam_owner.*               boot saves
+native/mod/sandbox.*                   saves
+native/mod/automation.*                testenv
+native/mod/quickstart.*                quickstart
+native/mod/config.*                    boot
+native/mod/status.*                    link
+native/mod/link.*                      link
+native/mod/online_gate.*               gate
+native/mod/overlay/overlay_tags.*      name-tags
+native/mod/overlay/*                   overlay
+native/mod/debug_actions.*             overlay
+native/mod/game_actions.*              boot
+native/mod/dev_tools.*                 dev-tools
+native/mod/dev_rules.hpp               dev-tools
+native/mod/story_*                     story
+
+# ---- the mod: research tooling (only the probes use it)
+native/mod/anim_census.*               research
+native/mod/holo_catalog.*              research
+native/mod/audio_probe.*               research
+
+# ---- the mod: the host-held save session
+native/mod/coop_rules.hpp              host-save
+native/mod/coop_session.*              host-save
+native/mod/save_xfer*                  host-save
+native/mod/title_wait.*                host-save
+native/mod/save_guard.*                save-guard
+
+# ---- the mod: bodies
+native/mod/player_sync.*               link partner-body
+native/mod/pose_wire.*                 link partner-body
+native/mod/partner_source.*            partner-body
+native/mod/body_table.*                partner-body
+native/mod/body_choice.*               partner-body self-view
+native/mod/real_body.*                 partner-body self-view
+native/mod/self_predict.hpp            self-view smooth
+native/mod/partner_holo.*              partner-holo
+native/mod/menu_figure.*               menu-figure
+native/mod/exo_parts.hpp               skeleton
+native/mod/partner_outfit.*            outfit
+native/mod/suit_colour*                suit-colour
+native/mod/fragile_textures.*          textures
+native/mod/texture_share.*             textures texture-share
+native/mod/texture_wire.*              textures texture-share
+native/mod/texture_*                   textures
+native/mod/partner_gear.*              gear
+native/mod/gear_wear.hpp               gear-wear
+native/mod/gear_*                      gear
+native/mod/boots_look.hpp              boots
+native/mod/held_*                      held-items
+native/mod/partner_collision.*         collision
+native/mod/nametag*                    name-tags
+native/mod/game_font*                  name-tags
+native/mod/partner_voice.*             voice
+native/mod/self_voice*                 voice
+native/mod/partner_sound.*             sound
+
+# ---- the mod: vehicles, riding, world
+native/mod/vehicle_sync.*              vehicles
+native/mod/vehicle_*                   vehicle-share
+native/mod/partner_tackle.*            vehicle-hit
+native/mod/tackle_rules.*              vehicle-hit
+native/mod/ride_*                      ride
+native/mod/world_*                     world-sync
+
+# ---- narrowing by the changed lines (added to the file's areas above). Keep the regexes specific: a match costs a run.
+# config.*: only a key's parse line ("key") or its field (bool key), not the long [config] Log lines that list every key.
+native/mod/real_body.*      ~private.?room|close.?up|loading|load_screen|kSelfLoad            private-room
+native/mod/real_body.*      ~exo_|exo.?carrier|skeleton                                       skeleton
+native/mod/real_body.*      ~held_item|held.?clone|HeldItem                                   held-items
+native/mod/real_body.*      ~menu.?figure|cargo.?menu                                         menu-figure
+native/mod/real_body.*      ~ride_|seat_|passenger                                            ride
+native/mod/game_actions.*   ~loading|private.?room                                            private-room
+native/mod/game_actions.*   ~carried|ride_|passenger                                          ride
+native/mod/game_actions.*   ~dev_|spawn|weather|refill                                        dev-tools
+native/mod/partner_gear.*   ~exo_|exo.?carrier|skeleton                                       skeleton
+native/mod/partner_gear.*   ~private.?room|loading                                            private-room
+native/mod/partner_gear.*   ~boots_look|boots_own|BootsLook|dev_boots                         boots
+native/mod/partner_gear.*   ~held_item|held.?clone|HeldItem                                   held-items
+native/mod/partner_gear.*   ~\bweapons?\b                                                     weapons
+native/mod/partner_gear.*   ~rain.?cover|durability|gear_wear|GearWear                        gear-wear
+native/mod/partner_outfit.* ~exo_|exo.?carrier|skeleton                                       skeleton
+native/mod/held_*           ~\bweapons?\b                                                     weapons
+native/mod/online_gate.*    ~road|structure|ladder|zipline|\bw[1-4]\b                         world-sync
+native/mod/texture_looks.*  ~ready.?made|textures_defaults|recipe|extract                     suit-defaults
+native/mod/texture_share.*  ~ready.?made|textures_defaults|recipe                             suit-defaults
+native/mod/config.*         ~("|bool\s+|int\s+)textures?_                                     textures
+native/mod/config.*         ~("|bool\s+|int\s+)textures_defaults                              suit-defaults
+native/mod/config.*         ~("|bool\s+|int\s+|std::string\s+)boots_                          boots
+native/mod/config.*         ~("|bool\s+|int\s+)exo_                                          skeleton
+native/mod/config.*         ~("|bool\s+|int\s+|float\s+)self_(view|character|feet|headgear)   self-view
+native/mod/config.*         ~("|bool\s+|int\s+)world_                                        world-sync
+native/mod/config.*         ~("|bool\s+|int\s+)(vehicle_|partner_vehicle|tackle)              vehicle-share
+native/mod/config.*         ~("|bool\s+|int\s+)ride_                                         ride
+native/mod/config.*         ~("|bool\s+|int\s+|std::string\s+)(voice_sync|self_voice)         voice
+native/mod/config.*         ~("|bool\s+|int\s+)(sound_sync|partner_volume|vehicle_sound)      sound
+native/mod/config.*         ~("|bool\s+|int\s+)partner_collision                             collision
+native/mod/config.*         ~("|bool\s+|int\s+)host_save                                     host-save
+native/mod/config.*         ~("|bool\s+|int\s+)dev_tools                                     dev-tools
+native/mod/player_sync.*    ~textures?_                                                       textures
+native/mod/player_sync.*    ~vehicle                                                          vehicle-share
+native/mod/sandbox.*        ~host_save|refuse                                                 host-save

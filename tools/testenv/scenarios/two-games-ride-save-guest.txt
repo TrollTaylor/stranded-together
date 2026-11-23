@@ -10,6 +10,7 @@
 # write; the save is posted on foot and kept pending until the guest boards: `save_guard 6`). `save_guard 7` keeps a save
 # pending without letting anyone board (`ride_test 11`: the boarding check says "the game is saving").
 # Check enlarged: G1-guest-off (standing beside the truck), G1-host (the guest's body beside the truck, the host seated).
+# covers: ride save-guard
 role host
 graphics low
 timeout 360

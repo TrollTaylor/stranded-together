@@ -4,6 +4,8 @@
 # product since round 9: the round-8 proof's polished metal), 1 ("Sam's hue"), 2 ("Sam measured") and 3 (the round-7
 # prototype, satin), then silver (15) the same; a second angle of variants 0 and 3. The prover compares them with Sam's own gold / silver.
 #   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios fragile-suit-metal-tune -SeedSaves complete-100
+# covers: suit-defaults
+# select: probe
 role solo
 timeout 360
 ini partner_body=real

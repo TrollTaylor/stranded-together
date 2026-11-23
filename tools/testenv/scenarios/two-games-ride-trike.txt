@@ -5,6 +5,7 @@
 # drives; the guest holds X at its right side and rides on the pillion; forward, back, forward; the guest gets off with
 # X. 2. The swap: the guest drives, the host rides the pillion and gets off. Pass: as two-games-ride-truck. Check
 # enlarged: K02 / K04 (both screens: the passenger sitting behind the driver), L02 / L04.
+# covers: ride
 role host
 graphics low
 timeout 360

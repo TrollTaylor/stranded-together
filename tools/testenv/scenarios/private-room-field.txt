@@ -4,6 +4,7 @@
 # every ~1 s for ~23 s; then the room must be drawn after the black of the room load (a screenshot mean of 20 or more)
 # within 8 s more (vanilla: +24.9 s; v0.24 with the self view: black from +19 s, 12 s and more) and playable
 # (PrivateRoom, phase 0) after its cutscenes. -SeedSaves complete-100. Sibling: private-room-field-vanilla.
+# covers: private-room self-view gate
 role solo
 timeout 330
 ini partner_body=real

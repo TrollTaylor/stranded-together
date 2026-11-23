@@ -10,6 +10,7 @@
 # Check enlarged: 01-guest-waiting / 02-guest-still-waiting (the game's own title: "Waiting for ... to start the game" and
 # Quit Game only), 02a-guest-menu-restored (the test's restore: every item back), then 04-host-world and 04-guest-world
 # side by side (the same place).
+# covers: host-save
 role host
 graphics low
 timeout 360

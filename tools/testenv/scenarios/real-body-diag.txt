@@ -2,6 +2,8 @@
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario real-body-diag -SeedSaves complete-100
 # real_control loads a streamed-out collectors hologram through the same fake path+GUID
 # reference the real body uses (control: the mechanism), then the real body itself.
+# covers: partner-body
+# select: probe
 role solo
 timeout 300
 ini pose_hook=1

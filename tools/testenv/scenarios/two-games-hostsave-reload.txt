@@ -11,6 +11,7 @@
 # `quit pad`) ends its game cleanly by the game's own menu (guest_exit_code 0).
 # Check enlarged: 03-host-world2 / 03-guest-world2 (the same place, the roadster of the first view gone on both),
 # 05-guest-waiting-again, 07-guest-quit-selected.
+# covers: host-save
 role host
 graphics low
 timeout 360

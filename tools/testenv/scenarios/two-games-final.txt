@@ -6,6 +6,7 @@
 # guest's own front; the self view off and on again; last the leak check (the guest runs with the fit on, then
 # off). For more detail run it with a 1080p settings.cfg:
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-final -SeedSaves complete-100 -SettingsCfg <1080p cfg>
+# covers: self-view partner-body gear
 role host
 graphics low
 timeout 360

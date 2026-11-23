@@ -2,6 +2,8 @@
 # for review finding "the mute stops BB answering" (docs/audio-research.md section 17). The probe logs every voice post.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario bb-answer-selfview -SeedSaves complete-100
 # ReceivedLike is asked through the voice queue until the queue takes it (it refuses it at times), then 15 s for BB.
+# covers: voice
+# select: baseline
 role solo
 timeout 300
 ini audio_probe=1

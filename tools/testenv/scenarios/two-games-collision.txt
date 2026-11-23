@@ -5,6 +5,7 @@
 # log the horizontal distance between their own Sam and the partner body every tick
 # ([coll] trace d=...): the guest is stopped by the host's body on its screen, and on the host's
 # screen the guest's Fragile stops in front of the host's Sam.
+# covers: collision
 role host
 graphics low
 timeout 360

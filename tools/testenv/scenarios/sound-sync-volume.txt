@@ -6,6 +6,7 @@
 # foley and gun sounds back through STA1 encode / decode: posted on our Wwise objects at the echo body's joints, at the
 # pose play time. Every mirrored post is logged on both sides (`sound_sync 1 1`). Then the cuff map is opened right
 # after a run: the items still due are not posted while it is open (and nothing is sent while it is open); the map shows a "new ranked event" notice first: A takes it away, then B closes the map.
+# covers: sound
 role echo
 timeout 360
 ini partner_body=real

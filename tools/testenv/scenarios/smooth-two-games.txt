@@ -6,6 +6,7 @@
 # own "fps" / "limit_fps" to 30 in settings.cfg, and that wins over frame_cap: "graphics low 120" raises
 # both so the caps 30 / 60 / none (= 120) apply.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario smooth-two-games -SeedSaves complete-100
+# covers: smooth
 role host
 graphics low 120
 timeout 360

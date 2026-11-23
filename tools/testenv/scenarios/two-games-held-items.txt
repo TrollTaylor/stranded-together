@@ -4,6 +4,7 @@
 # resource, with the item's own skinned pose), and the assault rifle (the v0.9 cutscene prop: the control). First the guest
 # (her Fragile on the host's screen), then the host (his Sam on the guest's screen).
 #   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-held-items -Id round6-h -SeedSaves complete-100 -GuestSeed profile-only
+# covers: held-items
 role host
 graphics low
 timeout 360

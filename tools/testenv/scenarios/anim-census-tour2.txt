@@ -1,6 +1,8 @@
 # Animated-body census, run 4: the terrorist (Demens) camp and the distribution centre north of
 # Mountain Knot City, plus 4 consecutive animation dumps of a MULE (SkinnedModel pose buffers).
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario anim-census-tour2 -SeedSaves complete-100
+# covers: research
+# select: probe
 role solo
 timeout 360
 waitready 90

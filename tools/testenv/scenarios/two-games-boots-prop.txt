@@ -7,6 +7,7 @@
 # boots' design) and sole grass (3 2): her own boots on both screens (boots_own_porter=1), no prop, her feet not scaled.
 # Porter boots (3 3: the "mule" mesh): the prop is back. The
 # boots prop's 32 parts have one writer (the boots block): no look line ever sets its parts.
+# covers: boots launcher
 role host
 graphics low
 timeout 360

@@ -6,6 +6,7 @@
 # again; the guest, beside it, presses X: its game does not board (the follower holds the seat). 4. Both press X together
 # at a parked truck: the host wins (DENY or GRANT host), the guest's Sam is put off (RideOffVehicleForcibly) if it got on.
 # Pass: one driver at a time (never both "[vdrive] ... our Sam drives" for one id at once past the race), no fault.
+# covers: vehicle-share
 role host
 graphics low
 timeout 360

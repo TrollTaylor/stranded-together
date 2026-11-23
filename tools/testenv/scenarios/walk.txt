@@ -9,6 +9,7 @@
 # which is what the first hidden runs ran into (docs/hidden-testing.md "Pad input in gameplay").
 # So: wait 17 s, then 1 s pushes until one moves Sam >= 1 m. Out on the apron BTs catch Sam
 # within seconds, so the walk goes back into the incinerator building (camera turned round first).
+# covers: boot
 role solo
 timeout 300
 waitready 90

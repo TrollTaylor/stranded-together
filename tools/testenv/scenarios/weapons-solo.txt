@@ -6,6 +6,7 @@
 # put away (right: empty hands); the rifle again (its kept prop is reused). The wheel: D-pad right held,
 # then the stick pushed, then centred, then the D-pad let go (the stick never reaches the camera).
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario weapons-solo -SeedSaves complete-100
+# covers: weapons self-view gear
 role solo
 timeout 360
 ini partner_body=real

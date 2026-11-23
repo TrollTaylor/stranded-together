@@ -4,6 +4,8 @@
 # "[boots] our boots' ArtParts" line names the parts and a screenshot shows the shape. The map decides which bits keep her
 # own boots in the prop style (sole grass, intact porter boots).
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario fragile-boots-types -SeedSaves complete-100
+# covers: boots
+# select: probe
 role solo
 timeout 300
 ini partner_body=real

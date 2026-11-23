@@ -8,6 +8,7 @@
 # same look id as before; checked in the log). Noon, clear, on the knot road; a debug Fragile next to Sam, both facing
 # the camera (the round-8 proof's framing).
 #   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios fragile-suit-defaults-auto -SeedSaves complete-100
+# covers: suit-defaults textures
 role solo
 timeout 360
 ini partner_body=real

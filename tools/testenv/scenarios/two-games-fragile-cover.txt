@@ -11,6 +11,7 @@
 # only make it quicker). The logs say it in one line on both sides; the cover goes from her back and his on both screens.
 # Both stand on the same spot (as two-games-world-ladder-ui): the host's screen shows her back with his own Sam beside it.
 # Pass: the log lines below; no FAULT, no OTGC WRITE, both games exit 0.
+# covers: gear-wear gear
 role host
 graphics low
 timeout 360

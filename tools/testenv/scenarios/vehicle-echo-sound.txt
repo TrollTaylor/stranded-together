@@ -9,6 +9,7 @@
 # back); vehicle_sound off and on at run time (`sound_sync 4`); off the roadster; vehicle sync off (no vehicle reported:
 # the loops stopped). Then the standard trike and the truck outside (`vehicle_sync 8 <side m> <kind>`).
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario vehicle-echo-sound -SeedSaves complete-100
+# covers: vehicles sound
 role echo
 timeout 360
 ini partner_body=real

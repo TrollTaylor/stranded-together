@@ -8,6 +8,7 @@
 # After the load: the postbox exists once in each world (offline 1), level 2, invested 0/0/400 in both, the guest's join
 # binds it (created 0); a contribution after the load still goes through (the new world's epoch).
 # Pass: the log lines below, no FAULT, no byte check failure, no OTGC WRITE, both games exit 0.
+# covers: world-sync save-guard
 role host
 graphics low
 timeout 360

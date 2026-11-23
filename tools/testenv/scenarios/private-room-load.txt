@@ -3,6 +3,7 @@
 # log_status (game state, load mask) every ~0.6 s for ~5 s; then the room must be drawn (a screenshot mean of 20 or
 # more) within 9 s more and playable (PrivateRoom, phase 0). Vanilla: drawn and playable +6.5 s after the request;
 # v0.24 with the self view: black 40+ s in PrivateRoom|Setup. Sibling: private-room-load-vanilla (self view off).
+# covers: private-room self-view story
 role solo
 timeout 300
 ini dev_tools=1

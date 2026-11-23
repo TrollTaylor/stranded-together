@@ -2,6 +2,8 @@
 # structure radial's 10:30 slot (the zipline?), then the hologram (LT held) and RT: Build at a few spots near Mountain Knot
 # City, a screenshot and the census after each.
 #   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios world-pcc-ui-probe5 -Id round5-w4-dev -SeedSaves complete-100
+# covers: world-sync
+# select: probe
 role solo
 timeout 300
 ini dev_tools=1

@@ -8,6 +8,7 @@
 # Pass (in the logs): the guest's "vehicle hits OFF on this game: session.ini partner_vehicle_damage=0", no hit line and its
 # health 1000 after part 1; the host's hit line in part 2; no fault. Check enlarged: O1a..O1c (the guest standing),
 # O2b (the host knocked down).
+# covers: vehicle-hit
 role host
 graphics low
 timeout 360

@@ -7,6 +7,7 @@
 # on the host; the guest drove: its boots unchanged over the roadster lap (marks #2 / #3). Then the host walks 14 s: dropped (the guard ended).
 # The host gets off with F (hookkey: the Local test's host plays on keyboard and mouse, its pad reads are the guest's).
 # Pass: every step ok, no FAULT, summary.json result pass.
+# covers: boots ride
 role host
 graphics low
 timeout 360

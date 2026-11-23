@@ -6,6 +6,7 @@
 # waits 3 s, falls back to the hologram, and stays there because joint frames never come. Checked, not
 # left to the reader: both traffic lines must show 0 joint frames, and the host log must never have
 # "again: back to the real body" (nolog, before and after the traffic checks).
+# covers: partner-body partner-holo
 role host
 graphics low
 timeout 360

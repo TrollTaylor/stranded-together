@@ -12,6 +12,7 @@
 # wears none, vanilla).
 # Pass: every step ok (marks #2 unchanged / #3 dropped / #5 dropped on the guest, the host's mark #3 unchanged, lap B
 # unchanged with skipped ticks), no FAULT, summary.json result pass.
+# covers: boots ride
 role host
 graphics low
 timeout 360

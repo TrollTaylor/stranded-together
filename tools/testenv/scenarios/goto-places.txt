@@ -7,6 +7,7 @@
 # he stands there, playable and still, for 1.5 s ("[dev] goto #n: settled at ... after N s"). A screenshot at each.
 # Then the real-save rule: with the test override (dev_status 1 1) the world tools (dev_goto is one) are refused.
 # Pass: every step ok, six "[dev] goto #n: settled" lines, screenshots 01..07 showing the places, saves unchanged.
+# covers: dev-tools quickstart
 role solo
 timeout 330
 start

@@ -5,6 +5,8 @@
 # thread, ReadProcessMemory only), marking the ones on Sam's skeleton layout. Then re-takes the
 # screenshot of catalog item 79 (its PNG was not written in run 20261116-170308) and shows the
 # three Higgs items once more.
+# covers: research
+# select: probe
 role solo
 timeout 360
 waitready 90

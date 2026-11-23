@@ -15,6 +15,7 @@
 # 8 m/s): the D3-3 hit applies and the health guard lets it through ("health guard: our own vehicle hit (D3-3) let
 # through ... health now" under 1000), not "health kept".
 # two-games-veh-route-v020 is the same drive on v0.20's follower, landing check and crash rule (the "before" numbers).
+# covers: vehicle-share ride
 role host
 graphics low
 timeout 360

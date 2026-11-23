@@ -5,6 +5,7 @@
 # no file is written in the guest's folder (its scratch diff has no manualsave5/6, see summary.json guest_scratch_changes).
 # Check enlarged: 02-guest-refused (the guest's title label "Game versions differ: update both games"; no ImGui banner
 # at the title, both builds are in the guest's log), 03-host-world-refused (the host's banner).
+# covers: host-save
 role host
 graphics low
 timeout 360

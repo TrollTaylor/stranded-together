@@ -5,6 +5,7 @@
 # the thighs, still); lap 2 (Q shots): v0.20's copy of the driver's live pose (ride_test 22 0: steering arms through the
 # driver). "[ride] hands (passenger|driver, trike)" every 10 s on each game: the passenger's hands under 2 cm while the
 # driver's travel over 10 cm (lap 1).
+# covers: ride
 role host
 graphics low
 timeout 360

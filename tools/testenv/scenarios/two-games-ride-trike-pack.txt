@@ -7,6 +7,7 @@
 # the same with the roles turned round. Pass: every step; P02 / Q02 (both screens: no backpack and no cargo stack on the
 # driver's back, the passenger behind him), P01 / P03 and Q01 / Q03 (the backpack and the stack before and after); both
 # games' [smooth] fps about 60 with the cap 60; no FAULT.
+# covers: ride gear
 role host
 graphics low
 timeout 360

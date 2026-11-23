@@ -5,6 +5,7 @@
 # world (save_guard 3; the guest follows: she loads the host's new save and joins again). Pass: after the load each world has
 # each zipline exactly once (no duplicate, nothing lost), offline 1, the same ids, level 1, the same links in both worlds;
 # the guest's second join binds them (created 0: they came from the host's save); no FAULT, no OTGC WRITE, both exit 0.
+# covers: world-sync save-guard
 role host
 graphics low
 timeout 360

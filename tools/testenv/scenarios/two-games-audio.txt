@@ -7,6 +7,7 @@
 #    post stopped right after it is posted, audio-research.md section 18; the subtitle dropped) and go out as kind 1 only; then, test only (`voice_sync 2 1`), her lines go
 #    to the host as Sam's (the other direction of the voice path).
 # 1-3. Sounds both ways and the cuff-map gate, as two-games-sound-own (every mirrored post logged, `sound_sync 1 1`).
+# covers: voice sound
 role host
 graphics low
 timeout 360

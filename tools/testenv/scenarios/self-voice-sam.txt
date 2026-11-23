@@ -4,6 +4,8 @@
 # "nothing hooked"; the audio probe still logs every talk). The same steps as self-voice-fragile without the mute
 # toggles: idle, walk, run, jumps, seven test situations, the gun, the cargo menu with Sam's figure asked to speak,
 # idle, the dump. Its counts are the control for the Fragile run (talks played, footstep and foley posts).
+# covers: voice
+# select: baseline
 role solo
 timeout 360
 ini audio_probe=1

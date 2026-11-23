@@ -7,6 +7,7 @@
 # update, then the copy). Then walking, crouching and turning, follow 1 against 4. The `[self] follow 4:` line says how
 # many body updates got the prediction and how long the step was.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario fragile-attach -SeedSaves complete-100 [-SettingsCfg <1440p cfg>]
+# covers: gear self-view partner-body
 role echo
 timeout 360
 ini partner_body=real

@@ -9,6 +9,7 @@
 # and a cargo change: the 100% save's Sam carries personal equipment and weapons only (not drawn as
 # cases, except the weapon on his waist), so the hidden-test action `gear 3 <n>` stacks n synthetic
 # delivery cases on the backpack (3, then 1, then none).
+# covers: gear self-view
 role solo
 timeout 360
 ini partner_body=real

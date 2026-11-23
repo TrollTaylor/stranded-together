@@ -8,6 +8,7 @@
 # v0.21 (review): 25 s in, the guest's game also drops every received datagram for 1.5 s while the truck moves (a link
 # hiccup over the 1 s that put v0.20's passenger off on the road): the guest stays on the seat ("no pose from the driver
 # ... stays on the seat", "poses are back ... the ride goes on"); its follower holds the last inputs, then catches up.
+# covers: vehicle-share ride link
 role host
 graphics low
 timeout 360

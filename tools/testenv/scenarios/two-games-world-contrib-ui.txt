@@ -8,6 +8,7 @@
 # (Confirm). Her AddOwn -> MATS -> the host applies 32 crystals (AddOthers), STATE back; then the host pays the metals (dev)
 # and its terminal step queues the level-up: level 2 in both worlds.
 # Pass: the log lines below, no FAULT, no byte check failure, no OTGC WRITE, both exit 0.
+# covers: world-sync
 role host
 graphics low
 timeout 360

@@ -6,6 +6,7 @@
 # the ready-made mustard (S0 only: 01..14 differ from her own suit in the Colour only), no restart. Noon, clear, on
 # the knot road; a debug Fragile next to Sam.
 #   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios fragile-suit-defaults-late -SeedSaves complete-100
+# covers: suit-defaults
 role solo
 timeout 300
 ini partner_body=real

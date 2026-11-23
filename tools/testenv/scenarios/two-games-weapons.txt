@@ -8,6 +8,7 @@
 # Setup: the host walks ahead; the guest walks past him on his right, turns her camera round and steps back
 # towards him, so both cameras look at the other player's front.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-weapons -SeedSaves complete-100
+# covers: weapons gear
 role host
 graphics low
 timeout 360

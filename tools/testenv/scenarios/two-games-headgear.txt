@@ -6,6 +6,7 @@
 # (the guest's own screen), `... partner: head props` (the host's view of her), `... self: head props` (her hat in the rain on
 # her own screen). A = v0.21 (`self_view 16 0`), B = v0.22 (`self_view 16 1`), the same moves in each phase.
 # pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-headgear -SeedSaves complete-100 -GuestSeed profile-only
+# covers: gear self-view
 role host
 graphics low
 timeout 360

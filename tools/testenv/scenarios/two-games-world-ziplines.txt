@@ -10,6 +10,7 @@
 #    queues the level-up -> STATE): level 2 in both worlds, the level-up on both screens.
 # 6. Dismantles both ways: the guest dismantles the host's zipline (REMREQ), the host the guest's (REM manual). Counts 0.
 # Pass: the log lines named below, counts equal in both worlds, no FAULT, no byte check failure, no OTGC WRITE, both exit 0.
+# covers: world-sync
 role host
 graphics low
 timeout 360

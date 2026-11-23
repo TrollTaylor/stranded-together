@@ -11,6 +11,8 @@
 # garage bound in both worlds and driven by the host with the guest's follower attached (G1); a summon (the host's truck,
 # the guest's trike) mirrored in the other world within seconds, without anyone getting on (S1 / S2); the guest rides
 # as the host's passenger (R1); no "co-op features OFF" notice and no FAULT.
+# covers: launcher host-save vehicle-share ride vehicle-hit
+# select: release
 role host
 graphics low
 timeout 360

@@ -6,6 +6,7 @@
 # again; synthetic cargo on our vehicle (`vehicle_sync 24 6`: six cases on its bed) and the copy's case props; a short
 # drive. The Kusanagi: its wear and lights are not applied (the trike copy is another model).
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario vehicle-echo-state -SeedSaves complete-100
+# covers: vehicles
 role echo
 timeout 360
 ini partner_body=real

@@ -10,6 +10,7 @@
 # screenshots), one unit per vehicle in each world (vehicle_dump 1 / 2 on both: the same ids, no new unit).
 # Check enlarged: D01..07 pairs (wheels turning, the partner seated in the real vehicle, the vehicle where the driver's
 # screen has it).
+# covers: vehicle-share
 role host
 graphics low
 timeout 360

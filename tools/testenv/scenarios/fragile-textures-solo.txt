@@ -6,6 +6,7 @@
 # default). Gold again; then the folder's picture is replaced by stripes while the game runs (hot reload); the feature off
 # and on (tex 4). A texture nobody wears is released after 5 s (tex 6: at once) and made again when needed.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario fragile-textures-solo -SeedSaves complete-100
+# covers: textures self-view
 role solo
 timeout 330
 # round 8: this scenario proves the v0.24 rule (an unpainted folder is her own suit): ready-made colours off

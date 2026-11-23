@@ -7,6 +7,7 @@
 # load each world has each one exactly once (no duplicate, nothing lost), offline 1 on the host, the same ids, the rope's
 # and ladders' fields equal; the guest's second join binds them (created 0: they came from the host's save); no FAULT, no
 # OTGC WRITE, both games exit 0.
+# covers: world-sync save-guard
 role host
 graphics low
 timeout 360

@@ -3,6 +3,7 @@
 # lengths). Each view twice with the same camera and pose: the fit on, then off (`self_view 5 0`, Sam's
 # proportions: the gear floats as before), then on again.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario self-fit -SeedSaves complete-100
+# covers: self-view gear
 role solo
 timeout 360
 ini partner_body=real

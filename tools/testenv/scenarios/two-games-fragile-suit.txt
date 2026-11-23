@@ -6,6 +6,7 @@
 # the uniform menu sets; hidden tests only): silver, palette 9, 1, 13, her own look (0), gold again; both screens follow.
 # The host's own Sam stays as he was (gold) throughout: his outfit lines, and the guest's partner Sam.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-fragile-suit -SeedSaves complete-100 -GuestSeed profile-only
+# covers: suit-colour
 role host
 graphics low
 timeout 360

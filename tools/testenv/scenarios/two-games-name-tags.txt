@@ -4,6 +4,7 @@
 # Steam account do in the launcher's local test, so each tag carries the other game's role:
 # the host sees "TagPlayer (guest)" above the guest's Fragile, the guest "TagPlayer (host)" above
 # the host's Sam. The names travel as STN1 frames next to the poses.
+# covers: name-tags
 role host
 graphics low
 timeout 360

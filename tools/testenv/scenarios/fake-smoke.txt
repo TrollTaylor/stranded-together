@@ -1,5 +1,7 @@
 # End-to-end check with the fake game (ctest st_testenv_e2e): the real mod and
 # supervisor, a stand-in ds.exe that toggles its clear colour on each A press.
+# covers: testenv
+# select: ctest
 role solo
 timeout 150
 waitready 60

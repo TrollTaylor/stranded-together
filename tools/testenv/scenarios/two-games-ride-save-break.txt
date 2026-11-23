@@ -9,6 +9,7 @@
 # D. a save pending while the guest boards (the guard holds it once he is carried and puts him off), and a save posted while
 #    a boarding request is on its way (the carry is refused while it is pending, or the game / the guard handles it).
 # Finally every request the guest's guard saw was issued and finished ok exactly once (`save_guard 0`'s counters).
+# covers: ride save-guard
 role host
 graphics low
 timeout 360

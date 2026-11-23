@@ -3,6 +3,8 @@
 # or played. The config line shows the defaults (self_voice=sam voice_sync=0 sound_sync=0 partner_volume=100), self_voice
 # logs "nothing hooked", and no [psound] / [pvoice] / [audio] line appears. Walk, run, jumps, the gun, the cuff map, idle.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario audio-keys-off -SeedSaves complete-100
+# covers: voice sound
+# select: baseline
 role solo
 timeout 300
 ini partner_body=real

@@ -5,6 +5,7 @@
 # (save_guard 3; the guest follows: it loads the host's new save and joins again). Pass: after the load each world has each
 # structure exactly once (no duplicate, nothing lost), offline 1 on the host, the same ids; the guest's second join check
 # binds them (created 0: they came from the host's save, not from the mod), no FAULT, no OTGC WRITE, both games exit 0.
+# covers: world-sync save-guard
 role host
 graphics low
 timeout 360

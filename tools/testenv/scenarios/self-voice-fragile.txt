@@ -7,6 +7,7 @@
 # test situations, the gun), the cargo menu with Fragile in the figure's place and the figure asked to speak
 # (`self_voice 2 <list>`: muted too); then the mute switched off for a few situations and the menu again (counted
 # as passed), on again, idle, the dump. The hidden game is silent: the evidence is the [voice] / [audio] lines.
+# covers: voice
 role solo
 timeout 360
 ini audio_probe=1

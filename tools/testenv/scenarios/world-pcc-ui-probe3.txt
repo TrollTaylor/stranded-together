@@ -1,6 +1,8 @@
 # Shared structures W4 (docs/world-sync.md): calibration probe 3 for the PCC's real UI (hidden env's virtual pad), solo: the
 # structure selection ("Switch Structure": the D-pad's down arm), at a spot where the preview is allowed (-1260 250).
 #   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios world-pcc-ui-probe3 -Id round5-w4-dev -SeedSaves complete-100
+# covers: world-sync
+# select: probe
 role solo
 timeout 300
 ini dev_tools=1

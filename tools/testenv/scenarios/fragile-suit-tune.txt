@@ -2,6 +2,8 @@
 # suit_colour_math.hpp (`real_outfit 8 <variant> <roughness>`, hidden tests), next to palette 9 (olive) and her own suit.
 # Run 20261121-141927 picked variant 2 (now the product's variant 0) over Sam's measured values (variant 1 there: dull olive).
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario fragile-suit-tune -SeedSaves complete-100
+# covers: suit-colour
+# select: probe
 role solo
 timeout 300
 # Round 6: the tint is the fallback option now (session.ini fragile_suit_colour, default 0): this scenario turns it on.

@@ -6,6 +6,7 @@
 # 9 B labels). Different gear: the host stacks 1 synthetic delivery case on its backpack, the guest
 # 2 (hidden-test action gear 3 n), so each partner body must carry the other game's cases. Then the
 # guest walks into the host's standing Sam body (collision on, distance traced on both games).
+# covers: partner-body collision gear
 role host
 graphics low
 timeout 360

@@ -13,6 +13,7 @@
 # 2. The truck: the guest drives, the host watches.
 # 3. The standard trike: the host drives, then gets off and turns vehicle sync off (no vehicle reported: stopped).
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-vehicle-sound -SeedSaves complete-100
+# covers: vehicles sound
 role host
 graphics low
 timeout 360

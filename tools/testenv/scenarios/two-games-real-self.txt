@@ -3,6 +3,7 @@
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-real-self -SeedSaves complete-100
 # The host sees the guest as Fragile (as in two-games-real); the guest now sees ITSELF as Fragile too and
 # the host as Sam. The host (always Sam) never gets a self body.
+# covers: self-view partner-body
 role host
 graphics low
 timeout 360

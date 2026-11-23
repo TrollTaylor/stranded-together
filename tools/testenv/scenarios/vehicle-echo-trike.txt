@@ -7,6 +7,7 @@
 # <3 trike | 4 Kusanagi | 2 truck>` places Sam beside the nearest of that kind facing it, X gets him on (Use Vehicle), RT
 # drives. Then the truck is disposed of (hold START beside it), so the sender's "gone" path runs.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario vehicle-echo-trike -SeedSaves complete-100
+# covers: vehicles
 role echo
 timeout 360
 ini partner_body=real

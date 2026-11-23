@@ -5,6 +5,7 @@
 # 100 ms apart while the carrier comes back (never a full Sam for a frame), each skeleton type in turn (gear 28: the pieces
 # we read replaced by a type's, so both carriers follow), front / side stills, walking and running frames with the meter on
 # both self sources (gear 27 4 / 3), Sam's own skeleton at the same spot (self view off) to compare.
+# covers: skeleton self-view gear
 role solo
 timeout 360
 ini partner_body=real

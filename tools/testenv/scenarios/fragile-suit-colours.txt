@@ -4,6 +4,7 @@
 # walks silver, palette 9 (olive), her own look (0), palette 1, 4, 13, gold again; then our own Sam's colour byte
 # (`real_outfit 4 <c>`, hidden tests only) shows that she follows it live.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario fragile-suit-colours -SeedSaves complete-100
+# covers: suit-colour self-view quickstart
 role solo
 timeout 300
 # Round 6: the tint is the fallback option now (session.ini fragile_suit_colour, default 0): this scenario turns it on.

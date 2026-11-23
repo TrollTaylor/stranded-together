@@ -3,6 +3,8 @@
 # The audio-probe steps on a guest-like game: the Fragile porter suit as the self view (role solo,
 # partner_body=real, my_character=fragile_suit, self_character=1), so the mod's own body is in the world
 # too: its game objects (none expected: cutscene actors have no sound components) must not count as the player's.
+# covers: research
+# select: probe
 role solo
 timeout 360
 ini audio_probe=1

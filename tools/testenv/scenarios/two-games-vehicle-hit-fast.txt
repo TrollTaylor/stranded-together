@@ -8,6 +8,7 @@
 # knocks the guest down ("[vhit] crash exit ..." then "hit Sam ... thrown off in a crash").
 # Pass (in the logs): every hit knocks down without killing (health after > 0, the guest stays in the world, no game over),
 # no fault. Check enlarged: F1b / F2b (thrown, lying, the health popup), F3b (the passenger thrown off).
+# covers: vehicle-hit ride
 role host
 graphics low
 timeout 360

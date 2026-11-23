@@ -2,6 +2,8 @@
 # virtual pad (never SendInput), solo: the tools radial (D-pad right held) with the PCC picked (right stick to about 7:30),
 # its hints, then LT held (the hologram) and the confirm inputs, a screenshot after each and the census.
 #   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios world-pcc-ui-probe -Id round5-w4-dev -SeedSaves complete-100
+# covers: world-sync
+# select: probe
 role solo
 timeout 240
 ini dev_tools=1

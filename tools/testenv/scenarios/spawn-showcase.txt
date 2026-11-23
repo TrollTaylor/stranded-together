@@ -6,6 +6,7 @@
 # glasses put on through the inventory's own worn flag (gear 14 <type> 1), then off again; the boots' life read, set to 40 %
 # and back to full (dev_boots, the game's SetShoesLifeByRate). Cargo has no proven spawn call yet (docs/dev-tools.md gaps).
 # Pass: every step ok, the [dev] lines named below, screenshots 01..09, saves unchanged.
+# covers: dev-tools
 role solo
 timeout 330
 start

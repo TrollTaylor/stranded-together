@@ -6,6 +6,7 @@
 # game blocked; the boot logos play (no skip without the native title); the guest's load waits for the time rule (25 s
 # after its first tick); the host Continues and the guest is in its world.
 # Check enlarged: FB1-guest-panel (the panel with the reason line), FB2-guest-world.
+# covers: host-save
 role host
 graphics low
 timeout 330

@@ -5,6 +5,7 @@
 # change). Each host view twice: the guest's fit on, then off (`self_view 5 0`: measured on Sam's
 # proportions, as before).
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-fit -SeedSaves complete-100
+# covers: self-view gear
 role host
 graphics low
 timeout 360

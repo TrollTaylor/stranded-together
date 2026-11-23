@@ -10,6 +10,7 @@
 # (host `gear 9 0`) and of his partner body on the guest (`gear 9 1`); a synthetic stack; the guest walks
 # past him for her back on both screens; then the guest opens Manage Cargo (START, A) and must see Fragile
 # there, and the field again after closing it (B, START). Player collision off.
+# covers: gear menu-figure outfit
 role host
 graphics low
 timeout 360

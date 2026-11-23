@@ -10,6 +10,7 @@
 #   13: nothing painted: ready-made.
 # A debug Fragile next to Sam (the round-8 proof's framing), one screenshot each.
 #   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios fragile-suit-defaults-rules -SeedSaves complete-100
+# covers: suit-defaults
 role solo
 timeout 300
 ini partner_body=real

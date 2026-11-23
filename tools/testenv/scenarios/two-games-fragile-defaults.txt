@@ -9,6 +9,7 @@
 # an out-of-memory would): its request still reports, and the guest's sky blue (13) comes over the link (about 60 s).
 # Gold again: the host's partner cache has both blobs.
 #   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-fragile-defaults -SeedSaves complete-100 -GuestSeed profile-only
+# covers: suit-defaults textures texture-share
 role host
 graphics low
 timeout 360

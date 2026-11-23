@@ -3,6 +3,8 @@
 # baggage carriers and their child entities (action vehicle_sync 19), then the truck and the trike ridden with the echo
 # partner (its copy 4 m beside ours) for screenshots of our vehicle against its copy.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario vehicle-echo-census -SeedSaves complete-100
+# covers: vehicles
+# select: probe
 role echo
 timeout 300
 ini partner_body=real

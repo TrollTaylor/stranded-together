@@ -4,6 +4,8 @@
 # then a memory scan for AnimationManagers/Humanoids outside the list and for named places
 # (delivery points, MULE camp locators) with their world positions. Sam's pose memory: two
 # dumps standing still, a world-space scan, two dumps while walking.
+# covers: research
+# select: probe
 role solo
 timeout 360
 waitready 90

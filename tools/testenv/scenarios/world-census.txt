@@ -6,6 +6,7 @@
 # nearest shared structure is EQUAL (ExportInfo twice, the Record back into a record, the live fields); the OTGC requests
 # the game builds while it idles a minute are logged (reads only: zero WRITE).
 # Pass: every step ok, "byte checks: ok", round trips EQUAL, no "[gate] OTGC WRITE", saves unchanged.
+# covers: world-sync gate
 role solo
 timeout 300
 ini dev_tools=1

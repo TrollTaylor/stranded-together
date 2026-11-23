@@ -2,6 +2,8 @@
 # hidden game: the echo partner pinned ahead; for heights 2.6 (default), 2.0, 3.2 and Sam's own (0, the v0.7
 # capsule) (action collision 5) Sam walks into it twice and presses A while pressed against it. The trace logs the distance and Sam's height every tick.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario collision-height -SeedSaves complete-100
+# covers: collision
+# select: probe
 role echo
 timeout 360
 ini partner_body=real

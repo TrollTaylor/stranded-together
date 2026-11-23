@@ -4,6 +4,7 @@
 # encoders and decoders) stands 1.4 m beside Sam (world +x), so one screenshot shows Sam's real gear
 # and the copies: first with looks and the backpack pose off (the v0.8 view), then on; the cap gold,
 # silver and colour 9; stacks of synthetic cases (drawn on the copy only).
+# covers: gear partner-body
 role echo
 timeout 360
 ini partner_body=real

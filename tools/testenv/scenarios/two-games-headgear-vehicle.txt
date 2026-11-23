@@ -4,6 +4,7 @@
 # `[headgear] drawn vs her drawn head, self: Sam's caps|glasses` on the guest, `... partner: head props` on the host.
 # Two games on the launcher's Local test files (30 fps, host_save=1).
 # pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-headgear-vehicle -SeedSaves complete-100 -GuestSeed profile-only
+# covers: gear ride
 role host
 graphics low
 timeout 360

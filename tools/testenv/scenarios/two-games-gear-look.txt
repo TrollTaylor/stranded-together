@@ -5,6 +5,7 @@
 # inventory's accessory list (gold 24, silver 23, colour 9), the suit colour, his side, stacks of synthetic
 # cases; then the guest walks past him and the host sees her back. Player collision off (the guest walks
 # through the host).
+# covers: gear outfit
 role host
 graphics low
 timeout 360

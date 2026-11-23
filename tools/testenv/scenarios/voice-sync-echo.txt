@@ -5,6 +5,7 @@
 # from the resident group and played with the game's DSTalkComponent::PlaySentence on that entity. The probe logs the
 # PlaySentence return value and the voice posts (with their distance from the talking entity). Test lines too
 # (`voice_sync 1 <n>`), and the queue asked for spoken situations (`audio_probe 2 <n>`: ReceivedLike, Humming).
+# covers: voice
 role echo
 timeout 360
 ini partner_body=real

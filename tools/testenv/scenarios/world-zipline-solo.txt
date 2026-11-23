@@ -2,6 +2,7 @@
 # a dev zipline through the game's own queue (offline, the build-up and the printer), its links to the ziplines around it,
 # its record round trip EQUAL, then an upgrade (dev_build_mats: the terminal's AddOwn and QueueLevelUp) to level 2.
 #   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios world-zipline-solo -Id round5-w4 -SeedSaves complete-100
+# covers: world-sync
 role solo
 timeout 240
 ini dev_tools=1

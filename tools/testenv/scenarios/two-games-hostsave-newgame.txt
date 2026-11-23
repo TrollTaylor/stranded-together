@@ -7,6 +7,8 @@
 # guest's waiting screen "<host> started a new game. You join at their first save." Its slots are then watched read
 # only at 1 Hz; a real first save is out of the run's reach, so an existing slot stands in for it (see the end).
 # Check enlarged: 02-guest-waiting-newgame (the line), 02-host-newgame.
+# covers: host-save
+# select: probe
 role host
 graphics low
 timeout 360

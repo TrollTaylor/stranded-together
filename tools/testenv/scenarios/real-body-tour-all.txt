@@ -13,6 +13,7 @@
 # real_stats adds the hook counters. The supervisor's waitlog searches the whole log, so each body's wait
 # names that body only (an earlier body's lines must not end it); it is optional (?), so a body that never
 # loads does not end the tour.
+# covers: partner-body
 role solo
 timeout 360
 ini pose_hook=1

@@ -9,6 +9,7 @@
 # dev tools' test override acts as a real save: the load's gate, `story 3`, says refused with the reason (a refused
 # story_load would fail its step); the probe still reads).
 # Pass: every step ok, the [story] lines named above, no FAILED / FAULT, saves unchanged.
+# covers: story dev-tools
 role solo
 timeout 360
 ini dev_tools=1

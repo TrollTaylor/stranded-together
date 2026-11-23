@@ -2,6 +2,7 @@
 # them: places a ladder fits), and a dev ladder / rope through the game's placement check, each exactly once, offline, its
 # record round trip EQUAL (the ladder's / rope's fields included).
 #   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios world-ladder-census -Id round5-w3 -SeedSaves complete-100
+# covers: world-sync
 role solo
 timeout 240
 ini dev_tools=1

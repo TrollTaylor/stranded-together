@@ -5,6 +5,7 @@
 # is renamed for it). Both load their own scratch copy of the same save; each shows the other as
 # the partner hologram, driven by the other game's poses over the loopback link. The supervisor
 # samples RAM / CPU / GPU memory of both games (resources.csv, summary.json "resources").
+# covers: link
 role host
 graphics low
 timeout 360

@@ -3,6 +3,8 @@
 # postbox, "LT: Adjust Structure Location"); this probe tries the confirm inputs one by one and logs the census after each
 # (a native commit makes a new Player id and the gate logs "dropped RegisterNew" in a hidden run).
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario world-pcc-probe -SeedSaves complete-100
+# covers: world-sync
+# select: probe
 role solo
 timeout 240
 ini dev_tools=1

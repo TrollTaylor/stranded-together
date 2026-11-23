@@ -7,6 +7,7 @@
 # then three more open / close cycles with it on; then the self view off and the menu once more: the
 # figure must be Sam again with all his parts (nothing left hidden). B leaves the cargo menu for the
 # cuff map, START closes the map. `[menu] subspace state ... (opens N)` counts the menu's openings; `show N` the self view's showings in the field.
+# covers: self-view menu-figure
 role solo
 timeout 360
 ini partner_body=real

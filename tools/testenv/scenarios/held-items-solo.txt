@@ -4,6 +4,7 @@
 # from the weapon wheel: the container repair spray (left) and the assault rifle (upper left, the v0.9 cutscene prop: the
 # control). Each equipped, then LT held (aiming / the hologram); the debug Fragile must hold the same item as our self view.
 #   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios held-items-solo -Id round6-h -SeedSaves complete-100
+# covers: held-items self-view partner-body
 role solo
 timeout 360
 ini partner_body=real

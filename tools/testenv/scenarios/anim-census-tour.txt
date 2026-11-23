@@ -2,6 +2,8 @@
 # screenshots at each stop. Coordinates are the game's own DSDeliveryPointInfoResource positions
 # (logged by anim-census-mule). Snap teleports (PlaceOn mode 2) land on the topmost surface.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario anim-census-tour -SeedSaves complete-100
+# covers: research
+# select: probe
 role solo
 timeout 360
 waitready 90

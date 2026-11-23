@@ -7,6 +7,7 @@
 # and the guest's spawn after the retry measures the -2 versus newest-autosave question (compare the snapshots).
 # Check enlarged: 03-host-after-retry / 03-guest-after-retry (the guest at the newest autosave; the host where it was, see
 # below: no checkpoint exists in a freshly loaded world, so the game ignores the request).
+# covers: host-save
 role host
 graphics low
 timeout 360

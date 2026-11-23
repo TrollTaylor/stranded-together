@@ -12,6 +12,7 @@
 # that run, so it is not a step here.
 # Pass: every step (a "hidden" line for each ride, a "shown again" line after each end, the cargo count back to 0 hidden),
 # E1-E3 screenshots of the host's back after each end (the backpack and the stack back), no FAULT.
+# covers: ride gear
 role host
 graphics low
 timeout 360

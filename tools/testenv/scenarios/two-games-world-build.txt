@@ -12,6 +12,7 @@
 # 5. The host dismantles the postbox (REM manual: the guest's copy plays the dismantle too); the guest dismantles the
 #    generator (REMREQ: the host removes it). Counts 0 in both worlds.
 # Pass: the log lines named below, counts equal in both worlds, no FAULT, no byte check failure, no OTGC WRITE, both exit 0.
+# covers: world-sync gate
 role host
 graphics low
 timeout 360

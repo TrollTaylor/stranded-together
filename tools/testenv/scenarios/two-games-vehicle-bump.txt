@@ -10,6 +10,7 @@
 # lines, no "teleport" correction into a blocked place (the "blocked" counter instead), the life of both vehicles equal on
 # both games 2 s after each contact ("[vhit] life:"), no fault. Check enlarged: B1a / B1b (the ram on both screens),
 # B2a / B2b (head-on).
+# covers: vehicle-hit
 role host
 graphics low
 timeout 360

@@ -4,6 +4,7 @@
 # right + stick up), then mirror level 2 (tests only: weapons, the backpack's cylinder and belt); G2:
 # injected start failures and props hidden behind the mod's back must come back.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario gear-full -SeedSaves complete-100
+# covers: gear self-view partner-body
 role solo
 timeout 360
 ini partner_body=real

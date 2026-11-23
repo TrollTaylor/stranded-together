@@ -11,6 +11,7 @@
 # 17 s after the player appears and then probes with 1 s pushes until one moves Sam >= 1 m.
 # Every pad result line says how far the player moved ("player moved 9.54 m") and what the
 # game's own input manager saw ("slot0(... sticks=0.00,1.00,0.00,0.00)").
+# covers: partner-holo
 role echo
 timeout 360
 waitready 90

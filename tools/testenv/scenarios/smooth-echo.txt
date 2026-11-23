@@ -5,6 +5,7 @@
 # presented fps, pose writes per frame, new vs repeated poses while moving, stutter, jerk, latency, and the
 # echo partner's error against our own Sam's captured pose at the same play time.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario smooth-echo -SeedSaves complete-100
+# covers: smooth partner-body self-view
 role echo
 timeout 360
 ini partner_body=real

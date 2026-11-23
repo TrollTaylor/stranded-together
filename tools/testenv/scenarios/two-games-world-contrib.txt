@@ -10,6 +10,7 @@
 # C. The host's durability drops (dev_build_decay: DUR to the guest), the guest repairs it (MATS repair: the host's
 #    durability rises, STATE back).
 # Pass: the log lines below, equal numbers in both worlds, no FAULT, no byte check failure, no OTGC WRITE, both exit 0.
+# covers: world-sync
 role host
 graphics low
 timeout 360

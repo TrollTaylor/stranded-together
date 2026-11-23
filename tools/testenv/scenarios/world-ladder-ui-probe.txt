@@ -2,6 +2,8 @@
 # env's virtual pad: a dev ladder is collapsed ("Hold START: Collapse Ladder": the item goes into Sam's inventory), then the
 # tools selection (D-pad right: "Select Tools") and the placement inputs, a screenshot after each.
 #   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios world-ladder-ui-probe -Id round5-w3 -SeedSaves complete-100
+# covers: world-sync
+# select: probe
 role solo
 timeout 300
 ini dev_tools=1

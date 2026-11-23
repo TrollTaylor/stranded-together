@@ -14,6 +14,7 @@
 #    ground (S3 screenshots), and walks (S4).
 # Check enlarged: S1-host-off (standing beside the truck), S3-host-loaded (standing on the road, never at the seat,
 # never inside the truck or under the ground).
+# covers: ride save-guard
 role host
 graphics low
 timeout 360

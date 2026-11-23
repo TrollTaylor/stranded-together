@@ -3,6 +3,8 @@
 # At the start: census + memory scan (outside-list bodies, named places), Sam's pose scan and
 # dumps (still, walking). Then teleport behind the nearest friendly MULE (census body 0, about
 # 590 m away), census there, screenshots, and dumps of that MULE's animation memory.
+# covers: research
+# select: probe
 role solo
 timeout 360
 waitready 90

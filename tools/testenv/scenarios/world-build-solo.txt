@@ -6,6 +6,7 @@
 # level >= 1) and its round trip is EQUAL; the game's RegisterNew of it was dropped by the gate (hidden run); the watchtower
 # (no animation) is there at once; the dismantle removes it (count 0 for the postbox after 15 s); no OTGC WRITE; screenshots
 # of the build-up at +0.5 / 2 / 5 / 10 s.
+# covers: world-sync
 role solo
 timeout 300
 ini dev_tools=1

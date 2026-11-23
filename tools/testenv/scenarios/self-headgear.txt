@@ -7,6 +7,7 @@
 # ...` meter lines say where each item sits in her drawn head joint's frame every second (mean, spread, the largest
 # tick-to-tick step), the `[boots] boots' feet vs the drawn feet` lines how far Sam's boots are from her feet.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario self-headgear -SeedSaves complete-100 [-SettingsCfg <4K cfg>]
+# covers: self-view gear
 role solo
 timeout 360
 ini partner_body=real

@@ -5,6 +5,7 @@
 # again in the host's save, Fragile keeps the pick). After the load both games dress the new Fragile bodies again from
 # the textures they already have: no new transfer, no fault.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-fragile-textures-reload -SeedSaves complete-100 -GuestSeed profile-only
+# covers: textures texture-share host-save
 role host
 graphics low
 timeout 360

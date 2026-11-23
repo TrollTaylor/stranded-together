@@ -3,6 +3,8 @@
 # Two Type 4 items and two Type 20 items, to check the framing before the full batches.
 # Same start as echo-holo-100 (Episode 15, distribution centre garage near Mountain Knot City),
 # but role solo: no partner body, so nothing else stands in the shots.
+# covers: research
+# select: probe
 role solo
 timeout 360
 waitready 90

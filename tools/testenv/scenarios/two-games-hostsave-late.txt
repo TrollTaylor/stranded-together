@@ -6,6 +6,7 @@
 # the world), so the host's mod offers its newest save (reason late join, D1-7); the guest loads it at its title and
 # is offered "Teleport to host" once, which it accepts (`@guest action coop_session 3`: the Teleport to partner action).
 # Check enlarged: 01-guest-waiting-alone, 03-guest-teleport-offer (the banner), 04-host-world / 04-guest-after-teleport.
+# covers: host-save
 role host
 graphics low
 timeout 360

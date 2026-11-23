@@ -8,6 +8,7 @@
 # Pass (in the logs): the three hits, each with a health drop and few damage messages per pass, the driver's game logs each
 # report, no fault. Check enlarged: H1a..H1c / J1a..J1c / T1a..T1c (the victim thrown, lying, the health popup, getting
 # up; the partner body falling on the driver's screen).
+# covers: vehicle-hit
 role host
 graphics low
 timeout 360

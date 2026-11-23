@@ -9,6 +9,7 @@
 # the [debug] status lines).
 # Pass: every step ok (the dev steps are optional so that one failure does not hide the rest: results.txt has each), the [dev]
 # lines named above, no FAULTED, saves unchanged.
+# covers: dev-tools overlay quickstart
 role solo
 timeout 360
 ini dev_tools=1

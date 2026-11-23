@@ -6,6 +6,7 @@
 # trike (part throttle), the guest rides pillion through the game's own Use Vehicle (carried: the plain copy, P1*). The
 # `[self] follow 4 meter` lines score every rule on the same frames (carried also against Sam's own update's world).
 # Pass: the meter lines seated and carried, no FAULT.
+# covers: self-view ride
 role host
 graphics low
 timeout 360

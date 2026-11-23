@@ -7,6 +7,7 @@
 # guest's colour goes to 9 (stripes, sent too), 0 (her own suit on both screens) and 16 again (the host has it: no new
 # transfer). The host's own Sam stays gold.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-fragile-textures -SeedSaves complete-100 -GuestSeed profile-only
+# covers: textures texture-share
 role host
 graphics low
 timeout 360

@@ -6,6 +6,7 @@
 # equipment (only the waist weapon is drawn as a case). A cargo change: the host stacks 3 synthetic
 # delivery cases on its backpack (hidden-test action `gear 3 3`), then 1; the guest's view of the
 # host follows. Collision is off so the walking players never meet a capsule.
+# covers: gear
 role host
 graphics low
 timeout 360

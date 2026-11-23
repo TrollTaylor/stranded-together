@@ -6,6 +6,7 @@
 # with story_load: the host's mod offers that load (M1, in-world Load), the guest follows, and both games log the same
 # story state again ("[story] changed: Episode 2 ..."). The guest's story_load is refused (the host holds the world: its
 # load gate, `story 3`, says so; the host's says allowed).
+# covers: story host-save
 role host
 graphics low
 timeout 360

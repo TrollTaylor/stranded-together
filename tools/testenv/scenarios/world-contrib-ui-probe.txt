@@ -3,6 +3,8 @@
 # 100% save). X tap: Sam turns to it; START held: the structure menu, cursor on Upgrade Structure; A: Select Materials,
 # cursor on Chiral Crystals; A: the amount (DPAD left / right); A: set; then the submit key is probed.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario world-contrib-ui-probe -SeedSaves complete-100
+# covers: world-sync
+# select: probe
 role solo
 timeout 240
 ini dev_tools=1

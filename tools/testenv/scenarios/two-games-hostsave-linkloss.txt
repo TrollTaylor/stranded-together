@@ -7,6 +7,7 @@
 # waiting screen; when the link is back the host sees the guest waiting and offers its newest save (late join rule),
 # which the guest loads at its title.
 # Check enlarged: 02-guest-reconnecting (the banner), 04-guest-waiting-after-loss, 05-host-world / 05-guest-world.
+# covers: host-save link
 role host
 graphics low
 timeout 360

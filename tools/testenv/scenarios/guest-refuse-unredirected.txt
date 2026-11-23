@@ -4,6 +4,7 @@
 # no sandbox_saves). Its mod must end ds.exe in DllMain, before ds.exe's own code runs, with exit code 0x53540006 and
 # <guest mod folder>\sandbox-refused.txt naming host_save; the supervisor checks both within 15 s (summary.json
 # "guest_refused_as_expected") and stops the whole run otherwise. The host game runs on as usual (redirected).
+# covers: host-save saves
 role host
 guest unredirected
 timeout 120

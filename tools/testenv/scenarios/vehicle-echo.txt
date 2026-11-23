@@ -4,6 +4,7 @@
 # the echo Sam seated in it. Then off again (the copy stays parked where the roadster is), and the copy override shows
 # the solid cutscene trike and truck at the same place (action vehicle_sync 2 2 / 2 3; no wheel pose on another skeleton).
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario vehicle-echo -SeedSaves complete-100
+# covers: vehicles
 role echo
 timeout 360
 ini partner_body=real

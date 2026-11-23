@@ -5,6 +5,7 @@
 #     ds/entities/cinematics/demo_sam_clean) is loaded by path + GUID and stood 4 m ahead of Sam
 #     with its own pose. P2: mirror on: the body copies Sam's live pose through the animate hook,
 #     screenshots while Sam stands and while he walks (the pad stays held between shots).
+# covers: partner-body
 role solo
 timeout 360
 ini pose_hook=1

@@ -7,6 +7,8 @@
 # the camera turned for a side view; `ride_test 2` puts him off beside it (the trike: `ride_test 9`, the emergency stop).
 # Pass (in the logs): every kind measured, carried with a small seat error, put off with the capsule back on (counter back
 # to its value), no fault. Check enlarged: the Mxx-carried screenshots (Sam sitting in the passenger seat / on the pillion, not outside, not standing on the seat).
+# covers: ride
+# select: probe
 role echo
 timeout 360
 ini partner_body=real

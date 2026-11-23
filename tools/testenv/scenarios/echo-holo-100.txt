@@ -10,6 +10,7 @@
 # (black loading screen) for another ~20 s; the player entity is then created again and Sam
 # stands in the garage with free control (no scripted hold). Left idle for ~1.5 min, Sam sits
 # down to rest ("Massage Shoulders / Sleep / Stand Up"), so the scenario moves him right away.
+# covers: partner-holo
 role echo
 timeout 360
 waitready 90

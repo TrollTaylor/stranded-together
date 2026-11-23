@@ -6,6 +6,7 @@
 # forced save (design section 6, item 11), so the reload half of M2.10 #6 (save, reload, the vehicle still there) needs
 # a save the game makes by itself; the T2 dumps and the entries are the check here. Pass: the truck at the parked spot
 # in both worlds (dumps T2, within 0.5 m), its persisted entry there.
+# covers: vehicle-share host-save
 role host
 graphics low
 timeout 360

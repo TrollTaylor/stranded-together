@@ -5,6 +5,7 @@
 # structure the host builds stays the host's alone (the guest has none), and the shared vehicles still bind as always.
 # Pass: "[world] world sync OFF: this game build differs" on the guest, no "[world] host: SNAP_REQ" on the host, the
 # host's dev build exists only in the host's world, vshare binds, no FAULT, no OTGC WRITE.
+# covers: world-sync gate
 role host
 graphics low
 timeout 300

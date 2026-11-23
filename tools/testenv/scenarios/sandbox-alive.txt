@@ -5,6 +5,7 @@
 # the supervisor confirms <mod>\sandbox-active.txt and "[sandbox] saves=redirected" before this runs.
 # No automation channel (no screenshots, no input, no mute): the game is ended before the title
 # music, ~15 s after it started.
+# covers: saves launcher
 role solo
 timeout 60
 waitlog 30 \[sandbox\] test save: the game reads and writes only the sandbox copy

@@ -12,6 +12,7 @@
 # Pass: every exit with the capsule counter back to 0 and the input back ("[overlay] riding: ... back"), the host on the
 # ground beside the truck (the later boards work), no fault on either game. Check enlarged: E1 / E2a / E2b / E3 / E4
 # (the host standing, or knocked down and getting up, beside the truck; never inside it, under the ground or floating).
+# covers: ride
 role host
 graphics low
 timeout 360

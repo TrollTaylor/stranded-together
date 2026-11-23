@@ -198,6 +198,15 @@ if ($NoUiLimits) { $supArgs += '--no-ui-limits' }
 if ($SteamEnv) { $supArgs += '--steam-env' }
 if ($NoIsolation) { $supArgs += '--no-isolation' }
 if ($NoGameStdout) { $supArgs += '--no-game-stdout' }
+# Run stamp (Select-Scenarios.ps1 -Reuse; docs/hidden-testing.md "Test economy"): the binaries this run tests, so a passing run
+# on an unchanged build is not repeated. Never fails the run.
+try {
+    $stampLines = @(foreach ($f in 'winhttp.dll', 'StrandedTogether.exe', 'st_testenv_supervisor.exe', 'st_textool.exe') {
+        $p = Join-Path $bin $f
+        if (Test-Path -LiteralPath $p) { '{0}={1}' -f $f, (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant() }
+    })
+    Set-Content -LiteralPath (Join-Path $run 'run-stamp.txt') -Value $stampLines -Encoding ascii
+} catch { Write-Warning "run stamp skipped: $($_.Exception.Message)" }
 Write-Host "hidden run: $name -> $run"
 if ($Hold) {
     # A held session: the supervisor runs on in the background (GUI subsystem: no window), this script returns once it takes steps

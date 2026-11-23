@@ -5,6 +5,8 @@
 # half size, remove), so the three batches take ~3 min after the ~40 s start. Between
 # batches Sam takes a short step: left idle for ~1.5 min he sits down to rest and blocks the
 # view. Role solo: no partner body in the shots.
+# covers: research
+# select: probe
 role solo
 timeout 360
 waitready 90

@@ -1037,8 +1037,79 @@ saves changed / cloud upload / restore incomplete, 2 refused (preflight), 3 safe
 * 6 minutes of game lifetime per run at most (final screenshot, quit and kill included).
   Steam shows you as playing Death Stranding during a run.
 
+## Test economy
+
+Hidden runs are slow (a solo run about 2 minutes, two games about 4 to 7) and they share one machine with every other
+agent's runs. Rounds 7 to 9 (v0.24.0 to v0.25.0) made 138 run folders, 108 of them passes, but only 74 distinct
+scenario-and-build pairs: 34 passing runs repeated a scenario that had already passed on the same build (an implementer, a
+prover, a fixer and a 25-run regression each running the same list). The rules:
+
+1. **One run per changed behaviour.** The change's own scenario (new, or with changed steps) proves it once. A scenario is
+   not run again unless the build or its steps changed.
+2. **Before / after only for a fix.** A bug fix gets one run on the old behaviour (the `before` switch, a `-vanilla`
+   baseline or the release build) and one after. A feature gets no before run.
+3. **Reuse a passing run on an unchanged build.** `Select-Scenarios.ps1 -Reuse` finds it (below); an agent passing its
+   work on says which runs passed on which build (`run-stamp.txt`) instead of asking the next agent to repeat them.
+4. **No repeated regression stages.** Areas the change did not touch are not re-run "to be sure"; the selector's list is
+   the regression set. A prover or a fixer runs only what its own change touched since the last pass.
+5. **Release gate** = ctest (all of it) + `Select-Scenarios.ps1 -Base <last release> -Release` run once on the release
+   build + one launcher Local test (`two-games-launcher-local-test`, which `-Release` always includes, last).
+6. Probes (research, calibration) are capped by the round's rules (at most 2 per agent unless told otherwise) and are
+   never part of a regression set.
+
+### The selector (`tools/testenv/Select-Scenarios.ps1`)
+
+```
+pwsh -File tools\testenv\Select-Scenarios.ps1                                   # the working tree (and untracked files) vs HEAD
+pwsh -File tools\testenv\Select-Scenarios.ps1 -Base v0.24.0 -Head v0.25.0 -Release -Explain
+pwsh -File tools\testenv\Select-Scenarios.ps1 -Base HEAD~1 -Reuse                # leave out what already passed on this build
+pwsh -File tools\testenv\Select-Scenarios.ps1 -Base v0.25.0 -Baselines           # a fix: add the touched areas' baselines
+pwsh -File tools\testenv\Select-Scenarios.ps1 -Check                             # what ctest st_testenv_select_tests checks
+```
+
+It prints the scenario names (one per line, for a pipeline), the estimated time and the `Run-Batch.ps1` command lines,
+one per seed set (the `-SeedSaves` / `-GuestSeed` / `-SandboxSession` its header's example command names; no seed named:
+`complete-100`). `-Explain` shows each changed file's areas and the rule that gave them, each changed scenario, each
+touched area's chosen scenario and the next cheapest ones. `-AsObject` returns all of it as one object.
+
+How it chooses:
+
+* **Areas.** `tools/testenv/test-areas.txt` declares the areas (self-view, partner-body, textures, texture-share,
+  suit-defaults, gear, boots, held-items, private-room, world-sync, vehicles, vehicle-share, ride, voice, sound, launcher,
+  host-save, save-guard, gate, ...) and maps paths to them: the first plain rule a path matches, plus every `~regex` rule
+  whose regex matches a changed (added or removed) line of that file (lines over 200 characters, usage lists and log
+  formats, are skipped). `real_body.cpp` always touches self-view and partner-body; its private-room code also
+  private-room, its skeleton code skeleton. `no-run` areas (docs, unit tests, build files, research tooling, the launcher
+  window) need no hidden run: ctest covers them. `implicit` areas (boot, saves, testenv) are covered by any run,
+  `implicit-host` (link) by any two-game run.
+* **Scenarios.** Every scenario's header names what it checks: `# covers: <area> ...` and, when it is not an ordinary
+  proof, `# select: probe` (research, calibration, census, long or optional: never chosen), `# select: baseline` (vanilla
+  or before runs: only with `-Baselines`), `# select: ctest` (`fake-smoke`) or `# select: release` (the Local test). A new
+  scenario names the areas it asserts (waitlog / screenshot checks), not every area it merely passes through.
+* **Cover.** Until every touched area is covered, the scenario with the lowest cost per newly covered area is added (ties:
+  fewer areas, then the name). Cost = 60 s (build, backup, restore) + the median game time of its passing runs under
+  `build-testenv\runs` (none: 60 % of its `timeout`), times 1.5 for two games. A scenario the change added or whose steps
+  it changed costs half (the change's own proof is preferred); `-IncludeChanged` runs all of those.
+* **Reuse.** `Start-TestRun.ps1` writes `<run>\run-stamp.txt`: the SHA-256 of the `winhttp.dll`, `StrandedTogether.exe`,
+  `st_testenv_supervisor.exe` and `st_textool.exe` it ran. With `-Reuse`, a scenario whose newest clean pass (pass, no
+  violation, saves unchanged, restored, online gate ok, no cloud upload, no game-server write) has the same stamp as the
+  binaries in `build-testenv\Release` now, the same steps (its `scenario.txt`, comments ignored) and the same seed costs
+  nothing and is listed as reused. Build before asking, so the binaries match the tree.
+* **Keeping it honest.** `-Check` (ctest `st_testenv_select_tests`) fails when a scenario has no `# covers:` line or names
+  an undeclared area, when an area has no scenario the selector may choose, when there is not exactly one release scenario,
+  or when a tracked file matches no rule: a new source file needs a line in `test-areas.txt`, a new scenario its covers.
+
+Example, the v0.25.0 release (`-Base v0.24.0 -Head v0.25.0 -Release`): 79 changed files, 42 of them no-run (docs, tests,
+build files, the launcher window), 15 touched areas; selected: `fragile-suit-defaults-quick` (suit-defaults, textures,
+self-view), `private-room-field` (private-room, gate), `skel-fragile` (skeleton, gear), `two-games-fragile-boots-own`
+(texture-share), `echo-hair` (partner-body, outfit), `world-ladder-census` (world-sync: the gate's road rule) and the
+Local test: 7 runs, about 25 minutes, instead of the 138.
+
 ## Tests (no game)
 
+* `st_testenv_select_tests`: `Test-SelectScenarios.ps1`, the selector on a fake scenario folder, area map, runs folder and
+  diffs (areas, `~regex` rules, the cover, `-Release`, `-Baselines`, changed scenarios, seeds, costs from history,
+  `-Reuse`, `-Check`), then `-Check` on the repo.
 * `st_testenv_tests`: command parser, scenario language (and every scenario file),
   session.ini text (incl. `automation_save_root`, `automation_foreign_saves`, the `--no-mod` file),
   the foreign-saves gate and byte check (incl. the site table against the installed ds.exe), the save

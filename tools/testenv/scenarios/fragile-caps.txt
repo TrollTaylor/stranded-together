@@ -6,6 +6,7 @@
 # item (no tuning), then "before" at v0.18's 5.0 cm for every cap (`self_view 8 0 50`). Run 20261120-024449 (an earlier
 # version of this file: 5.0 / 4.3 / 3.6 cm on each) chose the values.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario fragile-caps -SeedSaves complete-100 [-SettingsCfg <1440p cfg>]
+# covers: gear self-view
 role solo
 timeout 360
 ini partner_body=real

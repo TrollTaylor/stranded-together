@@ -4,6 +4,7 @@
 # shared vehicles, riding together and vehicle hits are off. Each game logs it and shows the amber overlay notice "Co-op
 # features OFF: host_save=0 ..." at the title (F1) and for the first minute in the world (F2); link-status.json carries
 # "features_off" for the launcher. Pass: both notices logged, the screenshots show the banner, no fault.
+# covers: host-save
 role host
 graphics low
 timeout 300

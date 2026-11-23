@@ -8,6 +8,7 @@
 # 2. The guest does the same: the other direction.
 # 3. The guest opens the cuff map while the host runs: the guest posts nothing while it is open (her game's gate) and
 #    stops what was playing (A dismisses the map's notice, B closes the map); the host then opens his while the guest runs.
+# covers: sound
 role host
 graphics low
 timeout 360

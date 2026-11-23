@@ -5,6 +5,7 @@
 # X again. 2) The rest of self-view's path to the BRIDGES pad, then hold B (Enter Private Room):
 # (on this path B sits Sam down instead), then hold X (Sleep, a nap) to see whether the game sleeps
 # or hides Sam: Sam must be shown again, and the body back afterwards.
+# covers: self-view private-room vehicles
 role solo
 timeout 360
 ini partner_body=real

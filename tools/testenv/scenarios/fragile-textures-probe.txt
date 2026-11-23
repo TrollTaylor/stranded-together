@@ -5,6 +5,8 @@
 # First every slot keeps the pattern (tex 5 2: the v0.23 behaviour, the pattern also lands on her boots, neck and parts),
 # then the product filter (tex 5 0): only the slots that held one of her suit's own textures keep it.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario fragile-textures-probe -SeedSaves complete-100
+# covers: textures
+# select: probe
 role solo
 timeout 330
 ini partner_body=real

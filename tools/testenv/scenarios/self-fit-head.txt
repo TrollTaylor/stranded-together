@@ -5,6 +5,8 @@
 # tick), and with the fit off for the leak check; last, another character through the self view's body
 # switch (what "Allow other characters" picks).
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario self-fit-head -SeedSaves complete-100
+# covers: self-view gear
+# select: probe
 role solo
 timeout 360
 ini partner_body=real

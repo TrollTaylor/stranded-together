@@ -1,6 +1,8 @@
 # Start-up check: does the game stay alive on the hidden desktop? Supervisor steps
 # only, so it also works with -NoMod (vanilla game). The summary reports how long
 # the game lived (game_alive_s) and the windows it showed on the private desktop.
+# covers: boot
+# select: probe
 role solo
 timeout 120
 note watching the game for 45 s

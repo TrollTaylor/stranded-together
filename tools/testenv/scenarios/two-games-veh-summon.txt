@@ -7,6 +7,7 @@
 # error" lines show it corrected). Pass: one new unit per summon in each world (T1 -> T3 dumps), the same id where the
 # exact-id path worked, the mirrors within 0.1 m after the correction.
 # Check enlarged: S1-* (the trike on both screens), S2-* (the truck on both screens).
+# covers: vehicle-share
 role host
 graphics low
 timeout 360

@@ -14,6 +14,7 @@
 #    and climbs down on it in her world (screenshots only, no check: whether she stands within reach of the anchor depends
 #    on where the placement check put it; the climb on the host's rope is shown in run 20261121-174141, R2 / R3).
 # Pass: the log lines below, counts equal in both worlds, no FAULT, no byte check failure, no OTGC WRITE, both exit 0.
+# covers: world-sync
 role host
 graphics low
 timeout 360

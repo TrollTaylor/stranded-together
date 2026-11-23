@@ -11,6 +11,7 @@
 # Stage 2: the host's park frames (STD1 PARK) place the guest's units where the host's stand ("[vdrive] ... parked:
 # placement error" lines; vehicle_drive 1 at the end: frames received, corrections per band).
 # Check: 01-host-world / 01-guest-world (the same vehicles in the same places), 02-*-summon (the trike on both screens).
+# covers: vehicle-share
 role host
 graphics low
 timeout 360

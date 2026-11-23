@@ -5,6 +5,7 @@
 # (vehicle_sync 18): V1 the guest's summoned trike in the HOST's world, nobody on it; V2 the host's summoned truck in
 # the GUEST's world, nobody on it; V3 the host driving it (both screens); V4/V5 the guest riding as the passenger (both
 # screens, standing and moving); V7 the guest off again. Pass: every step, no FAULT.
+# covers: launcher vehicle-share ride
 role host
 graphics low
 timeout 360

@@ -8,6 +8,7 @@
 # Chiral = the checker; worn out (dev_boots 1 5) = Chiral's Worn\ (dark); then the guest's Sam gets new porter boots
 # (dev_boots 3 3, the game's SetShoesForcibly) = the stripes.
 # Screenshots of her feet on both screens standing, walking and on a trike the guest drives.
+# covers: boots textures texture-share
 role host
 graphics low
 timeout 360

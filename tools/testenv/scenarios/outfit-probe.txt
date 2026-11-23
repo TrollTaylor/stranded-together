@@ -2,6 +2,7 @@
 # 3 m ahead of Sam in mirror mode, then dressed like our own Sam (real_outfit 1: its own darker suit
 # variation removed, our exos variation added, our suit colour set), then explicit outfits.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario outfit-probe -SeedSaves complete-100
+# covers: outfit
 role solo
 timeout 360
 ini pose_hook=1

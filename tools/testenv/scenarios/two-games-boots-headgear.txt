@@ -5,6 +5,7 @@
 # sent), then the boots prop on her legs with her feet kept (`gear 20 100`) and scaled away. The guest's view of the
 # host: his Sam body with the boots prop (its own default boots under it scaled away). Run it with a 1080p settings.cfg:
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-boots-headgear -SeedSaves complete-100 -SettingsCfg <1080p cfg>
+# covers: boots gear self-view
 role host
 graphics low
 timeout 360

@@ -10,6 +10,7 @@
 # at the watching point; `vehicle_sync 3` logs the trace both games' logs are compared with (sender transform at tick
 # rate, receiver placement at the play time; the same QPC clock on one PC).
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-vehicle -SeedSaves complete-100 -SettingsCfg <1080p cfg>
+# covers: vehicles
 role host
 graphics low
 timeout 360

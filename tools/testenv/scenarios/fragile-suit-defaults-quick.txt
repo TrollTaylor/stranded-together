@@ -5,6 +5,7 @@
 # gold (the 100% save: 16, S0 and S1), then sky blue (13, S0 only: `real_outfit 4` overwrites our own Sam's suit colour
 # byte on the redirected scratch save), then 00 Default (her own suit), then gold again (from the built cache).
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario fragile-suit-defaults-quick -SeedSaves complete-100
+# covers: suit-defaults textures self-view
 role solo
 timeout 300
 ini partner_body=real

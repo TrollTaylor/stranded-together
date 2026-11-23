@@ -3,6 +3,8 @@
 # game's ladder / rope records look in both worlds, which flags a pick-up leaves (world_sync 14 watch), the prompts near a
 # ladder (screenshots) and which pad input picks a ladder up.
 #   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-world-ladder-probe -Id round5-w3 -SeedSaves complete-100 -GuestSeed profile-only
+# covers: world-sync
+# select: probe
 role host
 graphics low
 timeout 360

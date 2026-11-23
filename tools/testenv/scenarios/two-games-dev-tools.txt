@@ -7,6 +7,7 @@
 # which the host serves (its spawn, then the same ADD / mirror); the guest may not remove a shared vehicle (refused with the
 # reason); the host's removal reaches the guest; with the host's real-save test override the host refuses the guest's dev
 # request ("dev request #N refused"); the guest's world tools run in its own world only; the Dev tools page on the guest.
+# covers: dev-tools host-save vehicle-share
 role host
 graphics low
 timeout 360

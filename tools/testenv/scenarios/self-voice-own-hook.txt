@@ -4,6 +4,7 @@
 # The self-voice-fragile steps without the probe's test situations: idle, walk, run, jumps, the gun, the cargo menu with
 # the figure asked to speak (muted), the mute off for a run and jumps and the menu again (passed), on again, idle.
 # Evidence: the [voice] counts (muted / passed per owner), a clean exit, saves unchanged.
+# covers: voice
 role solo
 timeout 360
 ini self_voice=auto

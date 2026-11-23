@@ -7,6 +7,7 @@
 # sam=(x, y, z ...)). Control: Sam's own 1.65 m capsule (action collision 5 0, the v0.7 capsule), where
 # the game offers Climb. Then the tag near, far (12 m, with the distance; " · " comes from Segoe UI), the
 # self test, and the game's own "Map/Information" header for comparison.
+# covers: collision name-tags partner-body
 role echo
 timeout 360
 ini partner_body=real

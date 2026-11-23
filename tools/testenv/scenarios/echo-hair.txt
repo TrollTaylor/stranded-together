@@ -5,6 +5,7 @@
 # before the body comes: the v0.8 head, the cutscene defaults), then with them; then the Bridges cap put
 # on (the hair under it becomes the cap hair), then the cap and the cyphead accessory (type 0x35: the
 # metal-line hair and face lines) taken off.
+# covers: partner-body outfit
 role echo
 timeout 360
 ini partner_body=real

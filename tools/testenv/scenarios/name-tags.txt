@@ -4,6 +4,7 @@
 # " (echo)" above its head: name=TagEcho, so no Steam name appears in the screenshots or logs.
 # Shows the tag near and far (with the distance), the self test above our own Sam, no tag while
 # the partner is behind the camera, and no tag in the pause menu and on the map.
+# covers: name-tags partner-body
 role echo
 timeout 360
 ini partner_body=real

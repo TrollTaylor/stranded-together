@@ -7,6 +7,7 @@
 # prompt). Then the watcher drives its own roadster into a solid copy pinned ahead of it (vehicle_sync 22: the truck,
 # then the trike): the drive goes on through it (the trace), Sam stays seated, nothing is launched.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario vehicle-echo-solid -SeedSaves complete-100
+# covers: vehicles
 role echo
 timeout 360
 ini partner_body=real

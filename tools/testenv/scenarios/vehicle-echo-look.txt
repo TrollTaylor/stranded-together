@@ -5,6 +5,7 @@
 # with looks and packs on (the default), then off (`vehicle_sync 14 0` / `15 0`: the copy comes back in its own look,
 # no packs), then on again; a short drive with the packs following; the census of the copy (`vehicle_sync 19`).
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario vehicle-echo-look -SeedSaves complete-100
+# covers: vehicles
 role echo
 timeout 330
 ini partner_body=real

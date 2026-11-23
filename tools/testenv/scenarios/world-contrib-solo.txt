@@ -5,6 +5,7 @@
 # needs, invested), half of what level 2 still needs, then the rest (dev_build_mats: the terminal commit's AddOwn and, at
 # Status 0, its QueueLevelUp), the level-up (screenshots), level 2; then its durability lowered and a repair (AddRepair and
 # the durability step of the repair commit). Pass: the log lines below, no FAULT, no byte check failure, no OTGC WRITE.
+# covers: world-sync
 role solo
 timeout 300
 ini dev_tools=1

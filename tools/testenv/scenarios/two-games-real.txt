@@ -4,6 +4,7 @@
 # sends sam for the host whatever it says); the guest picked Fragile. Each game shows the OTHER player's
 # choice from its STJ1 body_id: the guest sees the host as the Sam body, the host sees the guest as
 # Fragile. Both bodies copy the sender's real 77-joint pose over the loopback link (STJ1 next to STP1).
+# covers: partner-body
 role host
 graphics low
 timeout 360

@@ -5,6 +5,7 @@
 # scenario's waitworld (part of "start") waits until Sam is playable and still for 1.5 s.
 # Pass: every step ok; "[quick] title Continue called (#1" and "[quick] in the world after"; the time to the world is the
 # waitworld step's "after N s" plus the waitready before it (supervisor.log), compared with the old menu flow (~40 s).
+# covers: quickstart
 role solo
 timeout 180
 start

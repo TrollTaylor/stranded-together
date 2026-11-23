@@ -7,6 +7,7 @@
 # voice plays), the mute on again (stopped) and idle. Evidence: `[audio] voice after mute` (Wwise's own peak meters of
 # Sam's voice bus chain, split by how the voice was muted at that moment; Decima's later volume and aux-send calls on the
 # stopped voice objects), `[audio] mix-bus node` (which buses mix), `[voice] counts` (talks, posts stopped).
+# covers: voice sound
 role solo
 timeout 360
 ini audio_probe=1

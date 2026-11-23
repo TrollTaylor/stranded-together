@@ -17,6 +17,7 @@
 # so the menu stays shut until then); in the world F9 opens the menu in both games (F1, screenshots), typing reaches it,
 # F9 closes it; the posted F9 path too (F2), Esc closes. (Run 20261120-092454 also opened and closed the menu at the
 # host's title and over the guest's waiting screen.)
+# covers: launcher overlay
 role host
 graphics low
 timeout 360

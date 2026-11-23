@@ -4,6 +4,8 @@
 # queue asked for a few situations (`audio_probe 2 <n>`), the assault rifle aimed and fired, the cargo menu,
 # idle again; then the full dump (events per owner, the player's game objects, animation indices, talk owners).
 # The hidden game is silent: everything is read from the [audio] log lines.
+# covers: research
+# select: probe
 role solo
 timeout 360
 ini audio_probe=1

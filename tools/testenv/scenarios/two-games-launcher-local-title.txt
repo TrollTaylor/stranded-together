@@ -10,6 +10,7 @@
 # Check enlarged: L0-guest-boot-00..07 (the guest from its first frame: black / the game's spinner, never the panel, then
 # the title), L0-guest-title-first (the title page's first frame: black cover or the label, never the game's full menu),
 # L1-guest-waiting / L1-host-title, L2-guest-receiving, L3-guest-loading, L4-host-world / L4-guest-world.
+# covers: launcher host-save
 role host
 graphics low
 timeout 330

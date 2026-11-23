@@ -8,6 +8,7 @@
 # player collision on (4 m capsule), name tags in the game's menu font. Also: the host walks back to face
 # the guest (his BB pod seen from the front), the gear walk's cost with its cache off and on (gear 10),
 # and the guest's cuff menu opened and stepped through (what it shows of the guest's character).
+# covers: gear
 role host
 graphics low
 timeout 360

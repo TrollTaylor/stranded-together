@@ -5,6 +5,7 @@
 # `[gear] drawn vs anchor self|partner` lines (self = the guest's BB pod on her own screen, partner = the host's view of her
 # props), the screenshots of the guest's own screen (the pod on her chest) and of the host's.
 # pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-gear-twitch -SeedSaves complete-100 -GuestSeed profile-only
+# covers: gear self-view
 role host
 graphics low
 timeout 360

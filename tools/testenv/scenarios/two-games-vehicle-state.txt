@@ -7,6 +7,7 @@
 # on the Kusanagi trike: its wear and lights are not applied (the trike copy is another model). Screenshot pairs: the
 # driver's own vehicle, the watcher's view of the copy.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-vehicle-state -SeedSaves complete-100
+# covers: vehicles
 role host
 graphics low
 timeout 360

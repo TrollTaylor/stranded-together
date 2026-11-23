@@ -7,6 +7,7 @@
 # screens show 9; the host saves (its own autosave into the run's scratch copy) and loads it in the world, the guest follows
 # (loads the host's save: her Sam is gold again) and logs that Fragile keeps the pick; after the load neither game puts gold
 # back on the same Fragile body (`colour 16 on (#2..`), no FAULT.
+# covers: suit-colour host-save
 role host
 graphics low
 timeout 360

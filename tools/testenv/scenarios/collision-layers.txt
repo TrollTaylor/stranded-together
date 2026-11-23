@@ -2,6 +2,8 @@
 # hidden game: the echo partner pinned ahead; for layers 9, 25 and 10 (action collision 4) Sam walks into
 # it twice and presses A while pressed against it. The trace logs the distance and Sam's height every tick.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario collision-layers -SeedSaves complete-100
+# covers: collision
+# select: probe
 role echo
 timeout 360
 ini partner_body=real

@@ -70,4 +70,8 @@ if(ST_PWSH)
   add_test(NAME st_testenv_prune_tests
            COMMAND "${ST_PWSH}" -NoProfile -NonInteractive -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/testenv/Test-PruneTestRuns.ps1")
   set_tests_properties(st_testenv_prune_tests PROPERTIES RESOURCE_LOCK st_testenv_desktop)
+  # Select-Scenarios.ps1 (docs/hidden-testing.md "Test economy") on a fake scenario folder and diffs in %TEMP%, then its -Check
+  # on the repo: every scenario has "# covers:", every area a scenario, every tracked file a rule in tools/testenv/test-areas.txt.
+  add_test(NAME st_testenv_select_tests
+           COMMAND "${ST_PWSH}" -NoProfile -NonInteractive -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/testenv/Test-SelectScenarios.ps1")
 endif()

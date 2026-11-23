@@ -10,6 +10,7 @@
 # in the passenger seat on the driver's screen ("the partner rides our truck: body vs the seat"), both exits by choice with
 # the capsule back on (counter back to 0), no fault. Check enlarged: R02 / R03 / R05 (both screens: the passenger sitting
 # in the right-hand seat beside the driver), S02 / S03 (the swap).
+# covers: ride
 role host
 graphics low
 timeout 360

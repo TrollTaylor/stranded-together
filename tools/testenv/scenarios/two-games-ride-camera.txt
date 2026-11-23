@@ -14,6 +14,7 @@
 # Pass: carried both laps, no fault; lap 1's camera lines: the ride parameter, BaseType 3, the distance within 15 % of
 # the driver's, 0 frames inside the truck; the passenger's hands under 2 cm of travel per 10 s while the driver's travel
 # over 10 cm.
+# covers: ride
 role host
 graphics low
 timeout 360

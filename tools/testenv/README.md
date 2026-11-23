@@ -16,6 +16,7 @@ safety rules and current status: [docs/hidden-testing.md](../../docs/hidden-test
 | `places.txt` | the named places of a scenario's `goto <name>` (area 200 of complete-100) |
 | `scenarios\quickstart-solo.txt`, `two-games-quickstart.txt` | `start`: into the world with no menu step (one game; the launcher's Local test) |
 | `scenarios\goto-places.txt`, `spawn-showcase.txt` | `goto` to 7 places with screenshots; vehicles, weather, time, MULEs, cap / glasses, boots' durability |
+| `Select-Scenarios.ps1 [-Base <rev> [-Head <rev>]] [-Release] [-Reuse] [-Explain]` | the fewest scenarios that cover what a change touched (areas: `test-areas.txt`, each scenario's `# covers:` line), with the `Run-Batch.ps1` commands; `-Check` (ctest `st_testenv_select_tests`) keeps the map and the covers lines complete. Policy: docs "Test economy" |
 | `Prune-TestRuns.ps1 [-DryRun]` | deletes old run folders (older than 3 days, or over 20 GB in all; never the newest 25, the last 24 h, an unfinished restore or a run with `keep.txt`); Start-TestRun runs it before each run (`-NoPrune` skips) |
 | `Restore-TestRun.ps1 -RunDir <run>` | put the game folder back and check/restore the saves after a crash (safe to repeat) |
 | `scenarios\smoke.txt` | title -> Continue (virtual pad) -> Sam in the world -> debug menu -> quit |

@@ -8,6 +8,7 @@
 # pass over 16, 13, 1 from the built cache. The prover lays c00..c16 out as a contact sheet (target: each look made in
 # under 1000 ms).
 #   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios fragile-suit-defaults -SeedSaves complete-100
+# covers: suit-defaults textures
 role solo
 timeout 360
 ini partner_body=real

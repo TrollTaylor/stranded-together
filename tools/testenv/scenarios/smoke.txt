@@ -2,6 +2,7 @@
 # boot to the title, press Continue with the virtual pad, wait for Sam, open the debug menu, quit.
 # The save the game loads is the scratch copy (the mod redirects the save folder; the
 # supervisor refuses to run the steps until that is confirmed).
+# covers: boot overlay
 role solo
 timeout 360
 # the mod's automation channel comes up once ds.exe loaded d3d12.dll (the overlay waits for that)

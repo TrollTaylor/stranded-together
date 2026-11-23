@@ -8,6 +8,7 @@
 # Then she collapses it again (REMREQ pickup: gone in both worlds), and the HOST places one through the same UI (his commit
 # is vanilla, offline 0: his own structure; the census sends ADD and she mirrors it).
 # Pass: the log lines below; no FAULT, no byte check failure, no OTGC WRITE, both games exit 0.
+# covers: world-sync
 role host
 graphics low
 timeout 360

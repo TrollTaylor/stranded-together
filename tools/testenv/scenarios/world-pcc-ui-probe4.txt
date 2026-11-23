@@ -1,6 +1,8 @@
 # Shared structures W4 (docs/world-sync.md): calibration probe 4 for the PCC's real UI (hidden env's virtual pad), solo: the
 # zipline in the structure radial (D-pad down held, right stick to about 7:30), its hologram (LT held) and RT: Build.
 #   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios world-pcc-ui-probe4 -Id round5-w4-dev -SeedSaves complete-100
+# covers: world-sync
+# select: probe
 role solo
 timeout 300
 ini dev_tools=1

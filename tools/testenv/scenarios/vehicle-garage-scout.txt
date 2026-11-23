@@ -3,6 +3,8 @@
 # grid over the lift beside the start (the circle marked "do not exceed lift capacity") with a screenshot at each point
 # for the lift's own prompt, and tries the prompt's buttons at the lift's centre with a screenshot after each.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario vehicle-garage-scout -SeedSaves complete-100
+# covers: vehicles
+# select: probe
 role echo
 timeout 360
 ini partner_body=real

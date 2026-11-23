@@ -17,6 +17,7 @@
 # (The emergency-stop path with a carried Sam runs in seat-measure: ride_test 9.)
 # Pass: every exit with the capsule counter back to 0 and the input back ("[overlay] riding: ... back"), the guest on the
 # ground beside the truck (no fall-through: the guest's later boards work), no fault on either game.
+# covers: ride
 role host
 graphics low
 timeout 360

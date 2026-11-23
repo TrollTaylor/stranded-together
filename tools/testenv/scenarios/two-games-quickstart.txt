@@ -7,6 +7,7 @@
 # waiting title. "start" waits until both Sams are playable and still (@both waitworld).
 # Pass: every step ok; the host's "[quick] title Continue called" and "[coop] host: title Continue"; the guest's
 # "[quick] ... host-held save guest" and "[coop] guest: in the world after"; both screenshots in the world.
+# covers: quickstart launcher
 role host
 graphics low
 timeout 300

@@ -5,6 +5,7 @@
 # log_status of the guest about every second for ~23 s, then her room must be drawn (a screenshot mean of 20 or more) within
 # 8 s more (solo vanilla +24.9 s) and playable within 30 s. Her world-sync gate drops the create-road request (W3): no
 # OTGC write on either game.
+# covers: private-room self-view gate
 role host
 graphics low
 timeout 360

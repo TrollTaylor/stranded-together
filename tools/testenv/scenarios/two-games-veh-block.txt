@@ -16,6 +16,7 @@
 # vehicle's side and stays there for the remaining steps (run 20261120-021010: the truck at 1.67 m from its centre
 # line with the host on it, 1.69 m parked); in B2 she is pushed, never passed through (that run: shoved 2.2 m, then
 # carried up onto the creeping truck's front, z +2.5 m); screenshots B0..B3; no fault.
+# covers: vehicle-share collision
 role host
 graphics low
 timeout 360

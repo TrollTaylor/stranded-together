@@ -3,6 +3,7 @@
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario echo-real-100 -SeedSaves complete-100
 # Joint frames go through the STJ1 encode -> decode path (what a peer would receive), into a
 # time-keyed ring sampled on the same timeline as the transform. Same prologue as echo-holo-100.
+# covers: partner-body
 role echo
 timeout 360
 ini partner_body=real

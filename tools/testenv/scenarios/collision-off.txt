@@ -1,6 +1,8 @@
 # Player collision off, for comparison with collision.txt (docs/real-partner-body.md section 11):
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario collision-off -SeedSaves complete-100
 # The same steps with partner_collision=0: Sam walks through the pinned partner.
+# covers: collision
+# select: baseline
 role echo
 timeout 360
 ini partner_body=real

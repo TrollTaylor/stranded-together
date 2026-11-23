@@ -16,6 +16,7 @@
 # 2. The guest drives the truck, the host watches.
 # 3. The host backs the standard trike out of the rocks it is parked against (LT) and drives it, the guest watches.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-vehicle-trike -SeedSaves complete-100
+# covers: vehicles
 role host
 graphics low
 timeout 360

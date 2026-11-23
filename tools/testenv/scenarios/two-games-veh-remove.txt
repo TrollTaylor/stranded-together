@@ -5,6 +5,7 @@
 # own: the host keeps it (23.23). 2. The host drives the truck and its life
 # is set to 0 (vehicle_drive 7 0: the owner's damage, D2-5): the guest's follower gets life 0 and the broken edge, its
 # own ride-state machine breaks it (state 5). Pass: removed in both worlds within 1 s; the guest's truck broken; no fault.
+# covers: vehicle-share
 role host
 graphics low
 timeout 360

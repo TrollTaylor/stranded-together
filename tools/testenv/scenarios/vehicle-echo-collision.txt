@@ -10,6 +10,7 @@
 # at its origin, inside its body: the solid copies proved to have collision, run 175540; the holograms, the default
 # since then, are walked through the same way.)
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario vehicle-echo-collision -SeedSaves complete-100
+# covers: vehicles collision
 role echo
 timeout 360
 ini partner_body=real

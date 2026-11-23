@@ -9,6 +9,7 @@
 # 2. The guest steps aside and builds one: her native commit is HELD by the EnqueueInfo detour -> GBUILD (no dev flag) ->
 #    the host creates it (offline 1) -> ADD -> confirmed.
 # Pass: both in both worlds with the same ids, linked to each other in both worlds; no FAULT, no OTGC WRITE, both exit 0.
+# covers: world-sync
 role host
 graphics low
 timeout 360

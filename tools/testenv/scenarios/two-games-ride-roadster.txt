@@ -4,6 +4,7 @@
 # right-hand seat (the driver's seat mirrored: the game's HLP_Passenger is HLP_Driver mirrored); forward, back, forward;
 # the guest gets off with X. 2. The swap: the guest drives, the host rides and gets off. Pass: as two-games-ride-truck.
 # Check enlarged: P02 / P04 (both screens: the passenger in the right-hand seat), Q02 / Q04.
+# covers: ride
 role host
 graphics low
 timeout 360

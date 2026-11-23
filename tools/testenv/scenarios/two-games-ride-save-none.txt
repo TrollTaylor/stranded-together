@@ -3,6 +3,7 @@
 # Both games in the world, nobody rides: a forced save on each game (`save_guard 1 4`) runs at once (no hold, no delay)
 # and is written ("finished ok"); then the host drives the truck: the guard never holds a driver's save (the game itself
 # refuses an auto / manual save while Sam drives: reason 0x200 from its player state; if it takes one, it runs at once).
+# covers: save-guard
 role host
 graphics low
 timeout 360

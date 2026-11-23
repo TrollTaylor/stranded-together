@@ -4,6 +4,7 @@
 # straight into it, slowly into it again, then around it and on. action collision 2 logs the
 # horizontal Sam-partner distance every tick ([coll] trace d=...). collision-off.txt: the same
 # with partner_collision=0, for comparison.
+# covers: collision partner-body
 role echo
 timeout 360
 ini partner_body=real

@@ -1,6 +1,8 @@
 # Boot film: what the game shows on the hidden desktop without any input (logos,
 # notices, "press any button", title), one screenshot every 10 s. Nothing is pressed,
 # so no save is loaded. Used to discover the title flow for smoke.txt.
+# covers: boot
+# select: probe
 role solo
 timeout 200
 waitready 90

@@ -17,6 +17,7 @@
 # 3. The ImGui fallback (what the native checks failing leaves): ride_test 12 0 on the guest; its hold of X boards.
 # Pass: both boardings say "the game's Use Vehicle", the native prompt lines say "lifted (available)", both exits "pressed",
 # the fallback boards by its hold, no FAULT.
+# covers: ride
 role host
 graphics low
 timeout 360

@@ -2,6 +2,7 @@
 # demo_sam_clean 1.2 m beside us; no self view. His own model's default boots (`gear 21 0`), then the boots prop with
 # the body's feet kept (`gear 20 100`) and scaled away (`gear 20 1`), front and walking.
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario echo-boots-sam -SeedSaves complete-100
+# covers: boots partner-body
 role echo
 timeout 300
 ini partner_body=real

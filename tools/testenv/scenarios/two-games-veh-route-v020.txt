@@ -5,6 +5,8 @@
 # landing check on the carried Sam (ride_test 16 0) and the one-frame crash rule with its exit and hit (ride_test 17 0).
 # Expected (the user's report): the follower drifts toward 2 m and snaps, the passenger may be thrown out on the downhill
 # (the game's landing damage) and by the one odd frame (a crash exit). Nothing here fails on an ejection.
+# covers: vehicle-share
+# select: baseline
 role host
 graphics low
 timeout 360
