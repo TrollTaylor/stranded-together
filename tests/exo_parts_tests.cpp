@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
 
 #include "exo_parts.hpp"
 
@@ -297,70 +298,109 @@ void TestHoodAnim() {
     a = HoodAnim{};
     CHECK(HoodAnimTick(a, 1, HoodPhase::lowering, true, true, 0) == 0 && a.show == HoodShow::none);
 }
-// Round 12 (section 37.6): her folded hood
+// Round 13 review: one tree's step (FoldStepOf / FoldStepDone): which bytes are written, and what stays ours
+void TestFoldStep() {
+    const FoldPlan hide = FoldPlanOf(true, 1, 0), none{}, pin_only = FoldPlanOf(true, 3, 0), unpinned = FoldPlanOf(true, 1, 1);
+    // the hide from the game's values: the mask 07 -> 0, the LOD1 threshold 2 -> 100 (the tree's MaxDistance)
+    FoldStep st = FoldStepOf(FoldTree{}, hide, 7, 7, 2.0f, 2.0f, 100.0f);
+    CHECK(st.mask == 0 && st.pin && st.pin_from == 2.0f && st.pin_to == 100.0f && !st.keep.mask && !st.keep.pin);
+    FoldTree s = FoldStepDone(st, hide, true, true);
+    CHECK(s.mask && s.pin && s.pin_val == 100.0f && s.pin_was == 2.0f);
+    // a write that did not take: nothing ours yet (tried again next tick)
+    const FoldTree s0 = FoldStepDone(st, hide, false, false);
+    CHECK(!s0.mask && !s0.pin);
+    // held: nothing to write
+    st = FoldStepOf(s, hide, 0, 7, 100.0f, 2.0f, 100.0f);
+    CHECK(st.mask < 0 && !st.pin && st.keep.mask && st.keep.pin);
+    // the write-back: the mask as the entry's CURRENT view mask (the game changed it while hidden: 05), the threshold back
+    st = FoldStepOf(s, none, 0, 5, 100.0f, 2.0f, 100.0f);
+    CHECK(st.mask == 5 && st.pin && st.pin_from == 100.0f && st.pin_to == 2.0f);
+    FoldTree back = FoldStepDone(st, none, true, true);
+    CHECK(!back.mask && !back.pin);
+    // a mask write-back that did not take stays ours (tried again); a threshold write-back that did not take is not ours
+    back = FoldStepDone(st, none, false, false);
+    CHECK(back.mask && !back.pin);
+    // the game hides the whole body (show 0, every slot 0): nothing to give back, nothing written
+    st = FoldStepOf(s, none, 0, 0, 100.0f, 2.0f, 100.0f);
+    CHECK(st.mask < 0 && !st.keep.mask && st.pin);
+    // the game wrote the slot itself (07 again): not ours
+    st = FoldStepOf(s, none, 7, 7, 100.0f, 2.0f, 100.0f);
+    CHECK(st.mask < 0 && !st.keep.mask);
+    // a slot already 0 while hiding is taken as ours (a method switch back, or the game's), given back only while shown
+    st = FoldStepOf(FoldTree{}, hide, 0, 7, 2.0f, 2.0f, 100.0f);
+    CHECK(st.mask < 0 && st.keep.mask && st.pin);
+    // the pin re-checked: the threshold no longer ours (a rebuild at the same address, the game's write): pinned again
+    st = FoldStepOf(s, hide, 0, 7, 2.0f, 2.0f, 100.0f);
+    CHECK(!st.keep.pin && st.pin && st.pin_from == 2.0f && st.pin_to == 100.0f && st.keep.mask);
+    // ... and not written back over the game's value
+    st = FoldStepOf(s, none, 0, 7, 3.0f, 2.0f, 100.0f);
+    CHECK(!st.pin && !st.keep.pin && st.mask == 7);
+    // method 1 -> 3 (the pin only): the mask back, the pin kept
+    st = FoldStepOf(s, pin_only, 0, 7, 100.0f, 2.0f, 100.0f);
+    CHECK(st.mask == 7 && !st.pin && st.keep.pin);
+    CHECK(!FoldStepDone(st, pin_only, true, false).mask && FoldStepDone(st, pin_only, true, false).pin);
+    // pin 0 -> 1 (off): the threshold back, the mask kept
+    st = FoldStepOf(s, unpinned, 0, 7, 100.0f, 2.0f, 100.0f);
+    CHECK(st.mask < 0 && st.pin && st.pin_to == 2.0f && FoldStepDone(st, unpinned, false, true).mask && !FoldStepDone(st, unpinned, false, true).pin);
+    // no pin possible (MaxDistance not above LOD1), or the threshold not her resource's: nothing written
+    st = FoldStepOf(FoldTree{}, hide, 7, 7, 2.0f, 2.0f, 2.0f);
+    CHECK(st.mask == 0 && !st.pin);
+    st = FoldStepOf(FoldTree{}, hide, 7, 7, 5.0f, 2.0f, 100.0f);
+    CHECK(!st.pin);
+    // nothing ours, nothing wanted: nothing
+    st = FoldStepOf(FoldTree{}, none, 0, 7, 2.0f, 2.0f, 100.0f);
+    CHECK(st.mask < 0 && !st.pin && !st.keep.mask && !st.keep.pin);
+}
+// Rounds 12-13 (sections 37.6, 37.8): her folded hood
 void TestFold() {
-    CHECK(FoldJointsOk(kFoldJoints, kFoldBindings) && !FoldJointsOk(kFoldJoints, kFoldBindings - 1) && !FoldJointsOk(nullptr, kFoldBindings));
-    std::uint16_t l[kFoldBindings];
-    for (unsigned i = 0; i < kFoldBindings; ++i) l[i] = kFoldJoints[i];
-    l[13] = 140;
-    CHECK(!FoldJointsOk(l, kFoldBindings));
     // the roll: bindings 0-5 (joints 5, 6, 29, 30, 31, 35) and 10-13 (106, 107, 108, 139); the knee flaps keep theirs
-    unsigned ring = 0;
+    unsigned ring = 0, roll = 0;
     for (unsigned b = 0; b < kFoldBindings; ++b) {
+        if (FoldRollJoint(kFoldJoints[b])) ++roll;
         if (!FoldRing(b)) continue;
         ++ring;
         const unsigned j = kFoldJoints[b];
         CHECK(j == 5 || j == 6 || j == 29 || j == 30 || j == 31 || j == 35 || j == 106 || j == 107 || j == 108 || j == 139);
     }
-    CHECK(ring == kFoldRingCount && !FoldRing(6) && !FoldRing(9) && !FoldRing(14) && !FoldRing(21) && !FoldRing(22) && FoldRing(0) && FoldRing(13));
-    // the plan: nothing unless wanted and a method; the pin only with a method
-    CHECK(!FoldPlanOf(false, 1, true).Any() && !FoldPlanOf(true, 0, true).Any() && !FoldPlanOf(true, -1, true).Any() && !FoldPlanOf(true, 2, true).Any());
-    const FoldPlan p1 = FoldPlanOf(true, 1, true), p2 = FoldPlanOf(true, 1, false);
-    CHECK(p1.binds && p1.pin && p2.binds && !p2.pin && FoldPlanOf(true, 1, true) == p1 && !(p1 == p2) && FoldPlan{} == FoldPlanOf(false, 1, false));
+    CHECK(ring == kFoldRingCount && roll == kFoldRingCount && !FoldRing(6) && !FoldRing(9) && !FoldRing(14) && !FoldRing(21) && !FoldRing(22) && FoldRing(0) &&
+          FoldRing(13));
+    CHECK(FoldRollJoint(5) && FoldRollJoint(139) && !FoldRollJoint(61) && !FoldRollJoint(193) && !FoldRollJoint(0) && !FoldRollJoint(4));
+    // the merged list (every skinned mesh of her body: sorted, unique) must hold all 22 of mesh D's
+    {
+        std::uint16_t m[200];
+        unsigned n = 0;
+        for (unsigned j = 0; j < 200; ++j) m[n++] = static_cast<std::uint16_t>(j);
+        CHECK(FoldJointsCover(m, n) && FoldJointsCover(kFoldJoints, kFoldBindings) && !FoldJointsCover(m, 150) && !FoldJointsCover(nullptr, 5));
+        m[139] = 138;  // not sorted / unique
+        CHECK(!FoldJointsCover(m, n));
+    }
+    // the plan: nothing unless wanted and a method 1..5; the pin 0 (the tree's threshold), 1 off, 2 the scale
+    CHECK(!FoldPlanOf(false, 1, 0).Any() && !FoldPlanOf(true, 0, 0).Any() && !FoldPlanOf(true, -1, 0).Any() && !FoldPlanOf(true, 6, 0).Any());
+    CHECK(FoldPlanOf(true, 5, 0).binds && !FoldPlanOf(true, 5, 0).mask);
+    CHECK(FoldPlanOf(true, 4, 0).mask && !FoldPlanOf(true, 4, 0).binds && FoldPlanOf(true, 4, 1).pin == FoldPin::none && !FoldPlanOf(false, 4, 0).Any());
+    const FoldPlan p1 = FoldPlanOf(true, 1, 0), p1off = FoldPlanOf(true, 1, 1), p1s = FoldPlanOf(true, 1, 2), p2 = FoldPlanOf(true, 2, 0), p3 = FoldPlanOf(true, 3, 0);
+    CHECK(p1.mask && !p1.binds && p1.pin == FoldPin::node && p1off.mask && p1off.pin == FoldPin::none && p1s.pin == FoldPin::scale);
+    CHECK(!p2.mask && p2.binds && p2.pin == FoldPin::node && !p3.mask && !p3.binds && p3.pin == FoldPin::node && p3.Any());
+    CHECK(FoldPlanOf(true, 1, 0) == p1 && !(p1 == p1off) && FoldPlan{} == FoldPlanOf(false, 1, 0) && FoldPlanOf(true, 1, 7).pin == FoldPin::node);
+    static_assert(kFoldProductMethod == kFoldMask, "the product: the mask");
+    TestFoldStep();
+    // the pin: MaxDistance, 1e9 for one not finite or huge, none when not above the LOD1 threshold
+    CHECK(FoldPinValue(2.0f, 60.0f) == 60.0f && FoldPinValue(2.0f, 3.4e38f) == 1e9f && FoldPinValue(2.0f, 1.5f) == 0.0f && FoldPinValue(2.0f, 2.0f) == 0.0f);
+    const float nan = std::numeric_limits<float>::quiet_NaN(), inf = std::numeric_limits<float>::infinity();
+    CHECK(FoldPinValue(2.0f, nan) == 1e9f && FoldPinValue(2.0f, inf) == 1e9f && kFoldScalePin > 0.0f && kFoldScalePin < 0.01f);
+    // the tree's nodes
+    CHECK(FoldRootOk(3, 2, 0.0f, 2.0f, 2.0f, 0.0f) && FoldRootOk(3, 2, 0.0f, 60.0f, 2.0f, 60.0f) && !FoldRootOk(3, 2, 0.0f, 60.0f, 2.0f, 0.0f) &&
+          !FoldRootOk(2, 2, 0.0f, 2.0f, 2.0f, 0.0f) && !FoldRootOk(3, 3, 0.0f, 2.0f, 2.0f, 0.0f) && !FoldRootOk(3, 2, 0.5f, 2.0f, 2.0f, 0.0f));
+    CHECK(FoldLod0Ok(2, 4) && !FoldLod0Ok(2, 3) && !FoldLod0Ok(4, 4) && FoldDNodeOk(4, 1) && !FoldDNodeOk(4, 2) && !FoldDNodeOk(1, 1));
+    // the bindings slot: ours first, then the merged one, then mesh D's own
+    const std::uintptr_t M = 0x1000, O = 0x2000, P = 0x3000;
+    CHECK(FoldSlotOf(M, M, O, 0) == FoldSlot::merged && FoldSlotOf(O, M, O, 0) == FoldSlot::own && FoldSlotOf(P, M, O, P) == FoldSlot::ours &&
+          FoldSlotOf(P, M, O, 0) == FoldSlot::other && FoldSlotOf(0, M, O, P) == FoldSlot::none && FoldSlotOf(M, M, M, 0) == FoldSlot::merged);
     // LOD distances: part 0 near 0, increasing, finite
     const float d0[3] = {0.0f, 2.0f, 5.0f}, d1[3] = {0.0f, 5.0f, 2.0f}, d2[2] = {3.0f, 5.0f}, d3[1] = {0.0f};
     CHECK(FoldLodDistancesOk(d0, 3) && !FoldLodDistancesOk(d1, 3) && !FoldLodDistancesOk(d2, 2) && !FoldLodDistancesOk(d3, 1) &&
           !FoldLodDistancesOk(nullptr, 3));
-    // round 12 review: a gap of one or two ticks keeps the target; 3 ticks and 250 ms drop it
-    CHECK(!FoldDrop(1, 1000, 1000) && !FoldDrop(2, 1000, 1400) && !FoldDrop(3, 1000, 1200) && FoldDrop(3, 1000, 1250) && FoldDrop(9, 0, 5000));
-    // the write-back of one matrix: as the game had it, ours (zero) back, anything else left
-    CHECK(FoldBackOf(true, false) == FoldBack::as_game && FoldBackOf(false, true) == FoldBack::restore && FoldBackOf(false, false) == FoldBack::foreign &&
-          FoldBackOf(true, true) == FoldBack::as_game);
     static_assert(kFoldFindTries == 3 && kFoldFindRetryMs > 0, "the find retries");
-    // which resource: A drawn by the partner body, B by the self view
-    const std::uintptr_t A = 0xA000, B = 0xB000;
-    {
-        const std::uintptr_t lb[2] = {A, B};
-        const bool h00[2] = {false, false}, h10[2] = {true, false}, h01[2] = {false, true}, h11[2] = {true, true};
-        FoldPick p = FoldPickOf(0, lb, h10, true);
-        CHECK(!p.drop && p.want && p.find == A);
-        p = FoldPickOf(0, lb, h01, true);
-        CHECK(!p.drop && p.want && p.find == B);
-        p = FoldPickOf(0, lb, h00, true);
-        CHECK(!p.drop && !p.want && p.find == 0);
-        p = FoldPickOf(A, lb, h10, true);  // still wanted: kept, nothing to find
-        CHECK(!p.drop && p.want && p.find == 0);
-        p = FoldPickOf(A, lb, h00, true);  // nobody wants it: kept (shown again), not dropped
-        CHECK(!p.drop && !p.want && p.find == 0);
-        p = FoldPickOf(A, lb, h01, true);  // the review's case: the self view wants B, nobody A: A back and forgotten, B found
-        CHECK(p.drop && p.want && p.find == B);
-        p = FoldPickOf(A, lb, h11, true);  // both want theirs: A kept (one resource at a time)
-        CHECK(!p.drop && p.want && p.find == 0);
-        p = FoldPickOf(A, lb, h11, false);  // the hiding off: nothing wanted
-        CHECK(!p.drop && !p.want && p.find == 0);
-    }
-    {
-        const std::uintptr_t la[2] = {A, A};  // two bodies of one resource (the echo role): one wanting it hides it for both
-        const bool h01[2] = {false, true}, h00[2] = {false, false};
-        FoldPick p = FoldPickOf(A, la, h01, true);
-        CHECK(!p.drop && p.want);
-        p = FoldPickOf(A, la, h00, true);
-        CHECK(!p.drop && !p.want);
-        const std::uintptr_t n[2] = {0, A};
-        const bool h10[2] = {true, false};  // a body with no readable resource wants it: nothing
-        p = FoldPickOf(0, n, h10, true);
-        CHECK(!p.want && p.find == 0);
-    }
 }
 }  // namespace
 

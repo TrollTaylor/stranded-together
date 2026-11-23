@@ -350,38 +350,140 @@ inline void ShownFromAsked(int n, const std::int16_t* parent, const std::uint64_
     }
 }
 
-// ---- her folded hood (round 12, docs/real-partner-body.md section 37.6; hood_fold.cpp): mesh D of her porter suit's LOD0
-// (fgl_body_suiti mesh_body_lx, RegularSkinnedMeshResource 7f533fe6) skins with these 22 joints of her skeleton; the roll on
-// her collar uses only bindings 0-5 and 10-13 (Spine5, the shoulders, neck and head, the collar joints), the knee flaps the
-// others (the two sets share no joint).
+// ---- her folded hood (rounds 12-13, docs/real-partner-body.md sections 37.6-37.8; hood_fold.cpp): mesh D of her porter
+// suit's LOD0 (fgl_body_suiti mesh_body_lx, RegularSkinnedMeshResource 7f533fe6) skins with these 22 joints of her
+// skeleton; the roll on her collar uses only bindings 0-5 and 10-13 (Spine5, the shoulders, neck and head, the collar
+// joints), the knee flaps the others (the two sets share no joint).
 inline constexpr unsigned kFoldBindings = 22;
 inline constexpr std::uint16_t kFoldJoints[kFoldBindings] = {5, 6, 29, 30, 31, 35, 61, 62, 66, 67, 106, 107, 108, 139, 153, 170, 193, 194, 195, 196, 197, 198};
 inline constexpr std::uint32_t kFoldRingMask = 0x3C3Fu;  // bindings 0-5, 10-13
 inline constexpr unsigned kFoldRingCount = 10;
 inline bool FoldRing(unsigned binding) { return binding < kFoldBindings && ((kFoldRingMask >> binding) & 1u) != 0; }
-// The joint list read from the game (u16 entries) is exactly mesh D's.
-inline bool FoldJointsOk(const std::uint16_t* list, unsigned n) {
-    if (!list || n != kFoldBindings) return false;
-    for (unsigned i = 0; i < n; ++i)
-        if (list[i] != kFoldJoints[i]) return false;
+// A skeleton joint the roll is skinned on (one of the 10 above).
+inline bool FoldRollJoint(unsigned joint) {
+    for (unsigned b = 0; b < kFoldBindings; ++b)
+        if (FoldRing(b) && kFoldJoints[b] == joint) return true;
+    return false;
+}
+// A merged joint list (her LodMesh's bindings, every skinned mesh of her body: sorted, unique) holds all 22 of mesh D's.
+inline bool FoldJointsCover(const std::uint16_t* list, unsigned n) {
+    if (!list || n < kFoldBindings || n > 1024) return false;
+    for (unsigned i = 1; i < n; ++i)
+        if (list[i] <= list[i - 1]) return false;
+    for (unsigned b = 0; b < kFoldBindings; ++b) {
+        bool found = false;
+        for (unsigned i = 0; i < n && !found; ++i) found = list[i] == kFoldJoints[b];
+        if (!found) return false;
+    }
     return true;
 }
-// What is changed on her mesh now: `want` any of our bodies wants the roll hidden; `method` 1 the inverse binds (0 or
-// anything else: nothing); `pin` the LOD pin (only with the inverse binds).
+// `gear 34 <method> [pin]` and the product. Methods (round 13, per body: each body's own mesh instance tree):
+//   0 never hidden;
+//   1 the mask: mesh D's primitive slot in the body's instance tree gets view mask 0 (the byte the game's own ArtPart
+//     hide writes; the culler skips the slot in every view): the roll and the two knee flaps go;
+//   2 the private bindings: mesh D's node in the body's tree points at a copy of her merged joint bindings with the
+//     roll joints' inverse binds zeroed (the roll collapses to a point; the knee flaps stay);
+//   3 the LOD pin only (nothing hidden: the control for the stills);
+//   4 / 5 the mask / the private bindings on every fragile_suit body of ours, the raised hood or not (hidden tests: her
+//     bare collar in the stills, no raised hood over it).
+// Pin (the second number): 0 or left out the product (the tree's LOD1 threshold raised), 1 off, 2 the drawable's
+// LodDistanceScale.
+inline constexpr int kFoldNever = 0, kFoldMask = 1, kFoldBinds = 2, kFoldPinOnly = 3, kFoldForce = 4, kFoldForceBinds = 5;
+inline constexpr int kFoldProductMethod = kFoldMask;
+enum class FoldPin : std::uint8_t { none, node, scale };
 struct FoldPlan {
-    bool binds = false, pin = false;
-    bool Any() const { return binds || pin; }
-    bool operator==(const FoldPlan& o) const { return binds == o.binds && pin == o.pin; }
+    bool mask = false, binds = false;
+    FoldPin pin = FoldPin::none;
+    bool Any() const { return mask || binds || pin != FoldPin::none; }
+    bool operator==(const FoldPlan& o) const { return mask == o.mask && binds == o.binds && pin == o.pin; }
 };
-inline FoldPlan FoldPlanOf(bool want, int method, bool pin) {
+inline FoldPlan FoldPlanOf(bool want, int method, int pin_arg) {
     FoldPlan p;
-    if (!want || method != 1) return p;
-    p.binds = true;
-    p.pin = pin;
+    if (!want || method < kFoldMask || method > kFoldForceBinds) return p;
+    p.mask = method == kFoldMask || method == kFoldForce;
+    p.binds = method == kFoldBinds || method == kFoldForceBinds;
+    p.pin = pin_arg == 1 ? FoldPin::none : pin_arg == 2 ? FoldPin::scale : FoldPin::node;
     return p;
 }
-// The LOD pin: a distance of a part above LOD0 raised to this (m), so LOD0 is drawn at any distance a camera sees her.
-inline constexpr float kFoldPinDistance = 100000.0f;
+// The LOD pin on the tree's LodMesh node: its LOD1 threshold raised to its MaxDistance (the last threshold), so LOD0 is
+// drawn wherever the body is drawn at all; a MaxDistance that is not finite or beyond 1e9 m: 1e9. 0: no pin possible
+// (MaxDistance not above the LOD1 threshold).
+inline float FoldPinValue(float lod1, float max_distance) {
+    const float v = !(max_distance == max_distance) || max_distance > 1e9f ? 1e9f : max_distance;
+    return v > lod1 ? v : 0.0f;
+}
+// What is ours in one instance tree (the mask on mesh D's slot, the pin on the LodMesh node's LOD1 threshold), and one
+// tick's step for it from what was just read: the slot's mask byte (`cur`), the entry's view mask (`show`, entry+0x10C:
+// what the game's part visibility writes into every slot; 0 while the game hides the body) and the LOD1 threshold (`t1`;
+// her resource's `lod1`, the tree's MaxDistance `tmax`). Every write is a compare-and-swap from the value read.
+struct FoldTree {
+    bool mask = false, pin = false;
+    float pin_val = 0.0f, pin_was = 0.0f;
+};
+struct FoldStep {
+    FoldTree keep;     // what is still ours before the writes (what the game took back, forgotten)
+    int mask = -1;     // the byte to write to mesh D's slot (-1 none): 0 the hide, the entry's mask the write-back
+    bool pin = false;  // a threshold write, pin_from -> pin_to (the pin, or the write-back of ours)
+    float pin_from = 0.0f, pin_to = 0.0f;
+};
+inline FoldStep FoldStepOf(const FoldTree& s, const FoldPlan& plan, std::uint8_t cur, std::uint8_t show, float t1, float lod1, float tmax) {
+    FoldStep st;
+    FoldTree& k = st.keep;
+    k = s;
+    // the mask: the hide while the slot is not 0 (a 0 found is taken as ours: from before a method switch, or the game's
+    // own whole-body hide, given back only while the entry shows); given back only while the slot still holds 0 and the
+    // entry shows (the game hiding the whole body: every slot 0, nothing to give back; the game wrote the slot: not ours)
+    if (plan.mask) {
+        if (cur != 0) st.mask = 0;
+        else k.mask = true;
+    } else if (k.mask) {
+        if (cur != 0 || show == 0) k.mask = false;
+        else st.mask = show;
+    }
+    // the pin: ours only while the threshold still holds our value (a rebuild at the same address, or the game's write)
+    if (k.pin && t1 != k.pin_val) k.pin = false;
+    if (plan.pin == FoldPin::node) {
+        const float pv = FoldPinValue(lod1, tmax);
+        if (!k.pin && t1 == lod1 && pv > 0.0f) st.pin = true, st.pin_from = t1, st.pin_to = pv;
+    } else if (k.pin) {
+        st.pin = true, st.pin_from = k.pin_val, st.pin_to = k.pin_was;
+    }
+    return st;
+}
+// What is ours after the step's writes (`mask_ok` / `pin_ok`: that compare-and-swap took). A write-back that did not take
+// leaves the mask ours (tried again next tick), the pin not (the threshold no longer held our value).
+inline FoldTree FoldStepDone(const FoldStep& st, const FoldPlan& plan, bool mask_ok, bool pin_ok) {
+    FoldTree s = st.keep;
+    if (st.mask >= 0 && mask_ok) s.mask = st.mask == 0;
+    if (st.pin) {
+        if (plan.pin == FoldPin::node) {
+            if (pin_ok) s.pin = true, s.pin_val = st.pin_to, s.pin_was = st.pin_from;
+        } else {
+            s.pin = false;
+        }
+    }
+    return s;
+}
+// The drawable's LodDistanceScale while pinned that way (the engine's own ModelLodBiasEvent field): distances x 0.001.
+inline constexpr float kFoldScalePin = 0.001f;
+// The instance tree's nodes as read: the LodMesh root (type 3, 2 parts, thresholds 0 and her resource's LOD1 distance,
+// or our pin while it is ours), her LOD0 (type 2, 4 meshes), mesh D's node (type 4, 1 primitive).
+inline bool FoldRootOk(unsigned type, unsigned count, float t0, float t1, float lod1, float pin) {
+    return type == 3 && count == 2 && t0 == 0.0f && (t1 == lod1 || (pin > 0.0f && t1 == pin));
+}
+inline bool FoldLod0Ok(unsigned type, unsigned count) { return type == 2 && count == 4; }
+inline bool FoldDNodeOk(unsigned type, unsigned count) { return type == 4 && count == 1; }
+// Mesh D's node's bindings slot: the merged bindings her LodMesh built, mesh D's own (the node builder's fallback), the
+// private copy while it is ours, or another object (her body's: the model's merged bindings, round 13's runs: 161 joints,
+// her LodMesh's slot empty). Which one it is (none: no pointer).
+enum class FoldSlot : std::uint8_t { none, merged, own, ours, other };
+inline FoldSlot FoldSlotOf(std::uintptr_t slot, std::uintptr_t merged, std::uintptr_t own, std::uintptr_t ours) {
+    if (!slot) return FoldSlot::none;
+    if (ours && slot == ours) return FoldSlot::ours;
+    if (merged && slot == merged) return FoldSlot::merged;
+    if (own && slot == own) return FoldSlot::own;
+    return FoldSlot::other;
+}
 // The LOD distances read (parts 0..n-1) look like a LodMeshResource's: part 0 at 0, the others increasing, all finite.
 inline bool FoldLodDistancesOk(const float* d, unsigned n) {
     if (!d || n < 2 || n > 8 || !(d[0] >= 0.0f && d[0] < 1.0f)) return false;
@@ -389,41 +491,10 @@ inline bool FoldLodDistancesOk(const float* d, unsigned n) {
         if (!(d[i] > d[i - 1] && d[i] < 10000.0f)) return false;
     return true;
 }
-// Round 12 review: a resource no body of ours draws in a tick (a drawable rebuilt by a colour change, a look rebind, a re-show)
-// is forgotten (written back) only after it has been missing for kFoldMissTicks ticks and kFoldMissMs: a one-tick gap no
-// longer flashes the roll. `since_ms` the first missing tick's clock.
-inline constexpr unsigned kFoldMissTicks = 3;
-inline constexpr double kFoldMissMs = 250.0;
-inline bool FoldDrop(unsigned misses, double since_ms, double now_ms) { return misses >= kFoldMissTicks && now_ms - since_ms >= kFoldMissMs; }
-// Mesh D not found or not as checked: tried again kFoldFindRetryMs later, the hiding off for the session after kFoldFindTries
-// failures in a row (nothing is written before a find succeeds).
+// Mesh D not found or not as checked (a structure that does not match, not a tree still being built): tried again
+// kFoldFindRetryMs later, the hiding off for the session after kFoldFindTries failures in a row.
 inline constexpr unsigned kFoldFindTries = 3;
 inline constexpr double kFoldFindRetryMs = 1000.0;
-// Writing back one roll matrix: what the game had (nothing to do), zero (ours: the saved bytes go back), anything else (not
-// ours: left as it is, and the write-back is incomplete). Every matrix is visited, a foreign one does not stop the others.
-enum class FoldBack : std::uint8_t { as_game, restore, foreign };
-inline FoldBack FoldBackOf(bool is_saved, bool is_zero) { return is_saved ? FoldBack::as_game : is_zero ? FoldBack::restore : FoldBack::foreign; }
-// Which resource the hide is on. The two bodies (partner slot, self view) draw lods[0] / lods[1] (0 none) and want her
-// folded hood hidden hide[0] / hide[1]; `cur` the resource changed now (0 none). One resource at a time: when a body wants a
-// resource hidden and nobody wants `cur` any more, `cur` is written back and forgotten (drop) and the wanted one is found
-// next. A resource is hidden only while a body that draws it wants it (two bodies of one resource: one wanting it hides it
-// for both, the bodies share the mesh).
-struct FoldPick {
-    bool drop = false;       // write `cur` back and forget it
-    bool want = false;       // the target (cur, or the one to find) is to be hidden
-    std::uintptr_t find = 0; // the resource to find (no target now)
-};
-inline FoldPick FoldPickOf(std::uintptr_t cur, const std::uintptr_t (&lods)[2], const bool (&hide)[2], bool on) {
-    const auto wants = [&](std::uintptr_t l) { return on && l != 0 && ((hide[0] && lods[0] == l) || (hide[1] && lods[1] == l)); };
-    std::uintptr_t first = 0;
-    for (int i = 0; i < 2 && !first; ++i)
-        if (on && hide[i] && lods[i]) first = lods[i];
-    FoldPick p;
-    if (cur && first && !wants(cur)) p.drop = true, cur = 0;
-    p.want = cur ? wants(cur) : first != 0;
-    if (!cur && p.want) p.find = first;
-    return p;
-}
 
 // ---- the sender's override (hidden tests, `gear 28 <type>`): the skeleton pieces read replaced by a type's
 // -1 off (what the game shows), 0 none, 1..4 a type.

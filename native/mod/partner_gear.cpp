@@ -5114,7 +5114,7 @@ void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
     ss.have_want = g_have_local && (self_frame.count > 0 || ExoWant(ss, sbody, exo_vis) || ss.exo.p.live || ss.exo.p.loading);
     ss.res = g_res_local;
     DriveSet(ss, sbody, sbody && realbody::SelfShown(), local_active, now_ms);
-    // round 12 (section 37.6): her folded hood hidden while a body of hers shows the raised hood
+    // rounds 12-13 (sections 37.6, 37.8): her folded hood hidden on each body of hers that shows the raised hood (per body)
     hoodfold::Tick(reinterpret_cast<std::uintptr_t>(pbody), FoldWanted(ps, pbody, pvis), reinterpret_cast<std::uintptr_t>(sbody),
                    FoldWanted(ss, sbody, sbody && realbody::SelfShown()), now_ms);
     // the meters last: the props were just placed from the bodies' current transforms and poses (PlaceGearNow)
@@ -5890,11 +5890,25 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
         }
         case 34:
         case 35: {
-            // round 12: 34 <method 0 never, 1 the inverse binds | -1 the product> [nopin: 1 the LOD pin off, 0 or left out on]
-            // (her folded hood, section 37.6; any other method only the status); 35 <0/1> the carriers dressed in her suit's
-            // colour (section 37.5)
+            // round 13: 34 <method 0 never, 1 the mask, 2 the private bindings, 3 the LOD pin only, 4 / 5 the mask
+            // / the private bindings without the raised hood | -1 the product> [pin: 0
+            // or left out the tree's threshold, 1 off, 2 the LOD scale] (her folded hood, section 37.8); 34 -2 everything
+            // written back now (the emergency stop's call; the next tick hides again); 34 -3 <0/1> the setting
+            // hood_fold_hide as if session.ini said so; any other number only the status. Methods 2, 4, 5, -2 and -3:
+            // hidden tests only (method 2 leaves a mod-made object in the game's tree; 4 / 5 turn the hiding off on a body
+            // that is not her porter suit). 35 <0/1> the carriers dressed in her suit's colour (section 37.5)
             const int a = static_cast<int>(v[1]);
-            if (op == 34 && a >= -1 && a <= 1) hoodfold::SetTest(a, v[2] != 0);
+            if (op == 34 && (a == 2 || a == 4 || a == 5 || a == -2 || a == -3) && !automation::Enabled())
+                return std::snprintf(msg, cap, "gear 34 %d: hidden tests only", a), false;
+            if (op == 34 && a >= -1 && a <= 5) hoodfold::SetTest(a, static_cast<int>(v[2]));
+            if (op == 34 && a == -2) {
+                Log("[hood] TEST: her folded hood written back now (the emergency stop's call)");
+                hoodfold::RestoreAll("test");
+            }
+            if (op == 34 && a == -3) {
+                Log("[hood] TEST: the setting hood_fold_hide as %d", v[2] != 0 ? 1 : 0);
+                hoodfold::Configure(v[2] != 0);
+            }
             if (op == 35 && (a == 0 || a == 1)) g_hood_colour = a != 0;
             char fold[300];
             std::snprintf(msg, cap, "%s; carriers dressed for her colour %s (partner %d, self %d)", hoodfold::Describe(fold, sizeof(fold)), g_hood_colour ? "on" : "off",

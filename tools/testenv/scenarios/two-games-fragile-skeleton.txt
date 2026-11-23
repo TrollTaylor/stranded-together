@@ -14,14 +14,14 @@
 # guest's ready-made pink (real_outfit 5 14: her bodies only, her Sam stays gold) sent to the host as a recipe; her own
 # carrier is dressed for 14 from her look, the host's for 14 from the sender's row (STC1 hood info) while it draws her in
 # her look, both with his colour 16.
+# Round 13 (section 37.8): her folded hood hidden per body (the mask on mesh D's slot in each body's own instance tree):
+# on the host's partner body and on the guest's self body, each from its own carrier's hood; with the setting's default
+# as the launcher writes the Local test files (no ini line: on since round 13).
 # covers: skeleton gear hood suit-colour texture-share
 role host
 graphics low
 timeout 360
 launcherini local-test
-# her folded hood hiding is off by default since round 12 (the stills showed no change); on here so its lines and
-# write-backs stay checked
-ini hood_fold_hide=1
 textures extract
 start control 200
 @guest waitlog 60 \[self\] showing 'fragile_suit' in place of Sam .*fit on
@@ -98,24 +98,24 @@ waitlog 30 \[exo\] carrier [0-9A-Fa-fx]+ hood: up \(part [0-9]+; the sender's se
 @guest waitlog 30 \[exo-self\] carrier [0-9A-Fa-fx]+ hood: up \(part [0-9]+; the sender's sea otter hood
 waitlog 10 \[exo\] carrier [0-9A-Fa-fx]+ dressed for her colour 14 \(Sam's exos -?[0-9]+ -> -?[0-9]+, his colour 16\): the sender's row
 @guest waitlog 10 \[exo-self\] carrier [0-9A-Fa-fx]+ dressed for her colour 14 \(Sam's exos -?[0-9]+ -> -?[0-9]+, his colour 16\)
-waitlog 10 \[hood\] her folded hood hidden \(mesh D's 10 roll bindings zeroed, LOD0 pinned; partner body wants it hidden
-@guest waitlog 10 \[hood\] her folded hood hidden \(mesh D's 10 roll bindings zeroed, LOD0 pinned; partner body (not|none), self body wants it hidden
+waitlog 10 \[hood\] her folded hood hidden on the partner body \(the mask, LOD0 pinned; method 1\)
+@guest waitlog 10 \[hood\] her folded hood hidden on the self body \(the mask, LOD0 pinned; method 1\)
 wait 1500
 screenshot 09-host-sees-guest-hood
 @guest screenshot 09-guest-self-hood
-# Round 12 prove: her folded hood shown, then hidden again, the cameras still, on both screens; then she walks away from
+# Round 13 prove: her folded hood shown, then hidden again, the cameras still, on both screens; then she walks away from
 # her camera (her back on her own screen, her other side on the host's) and the same pair again
 action gear 34 0 0
-waitnew 10 \[hood\] her folded hood shown again \(everything written back
+waitnew 10 \[hood\] her folded hood shown again on the partner body \(everything written back
 @guest action gear 34 0 0
-@guest waitnew 10 \[hood\] her folded hood shown again \(everything written back
+@guest waitnew 10 \[hood\] her folded hood shown again on the self body \(everything written back
 wait 700
 screenshot 09b-host-fold-shown
 @guest screenshot 09b-guest-fold-shown
 action gear 34 -1 0
-waitnew 10 \[hood\] her folded hood hidden \(mesh D's 10 roll bindings zeroed, LOD0 pinned;
+waitnew 10 \[hood\] her folded hood hidden on the partner body \(the mask, LOD0 pinned;
 @guest action gear 34 -1 0
-@guest waitnew 10 \[hood\] her folded hood hidden \(mesh D's 10 roll bindings zeroed, LOD0 pinned;
+@guest waitnew 10 \[hood\] her folded hood hidden on the self body \(the mask, LOD0 pinned;
 wait 700
 screenshot 09c-host-fold-hidden
 @guest screenshot 09c-guest-fold-hidden
@@ -124,16 +124,16 @@ wait 1500
 screenshot 09d-host-sees-guest-hood-turned
 @guest screenshot 09d-guest-self-hood-back
 action gear 34 0 0
-waitnew 10 \[hood\] her folded hood shown again \(everything written back
+waitnew 10 \[hood\] her folded hood shown again on the partner body \(everything written back
 @guest action gear 34 0 0
-@guest waitnew 10 \[hood\] her folded hood shown again \(everything written back
+@guest waitnew 10 \[hood\] her folded hood shown again on the self body \(everything written back
 wait 700
 screenshot 09e-host-fold-shown-turned
 @guest screenshot 09e-guest-fold-shown-back
 action gear 34 -1 0
-waitnew 10 \[hood\] her folded hood hidden \(mesh D's 10 roll bindings zeroed, LOD0 pinned;
+waitnew 10 \[hood\] her folded hood hidden on the partner body \(the mask, LOD0 pinned;
 @guest action gear 34 -1 0
-@guest waitnew 10 \[hood\] her folded hood hidden \(mesh D's 10 roll bindings zeroed, LOD0 pinned;
+@guest waitnew 10 \[hood\] her folded hood hidden on the self body \(the mask, LOD0 pinned;
 wait 700
 screenshot 09f-host-fold-hidden-turned
 @guest screenshot 09f-guest-fold-hidden-back
@@ -141,8 +141,8 @@ screenshot 09f-host-fold-hidden-turned
 @guest action gear 32 0 2
 waitlog 30 \[exo\] carrier [0-9A-Fa-fx]+ hood: none
 @guest waitlog 30 \[exo-self\] carrier [0-9A-Fa-fx]+ hood: none
-waitlog 10 \[hood\] her folded hood shown again \(everything written back
-@guest waitlog 10 \[hood\] her folded hood shown again \(everything written back
+waitlog 10 \[hood\] her folded hood shown again on the partner body \(everything written back; the raised hood is gone\)
+@guest waitlog 10 \[hood\] her folded hood shown again on the self body \(everything written back; the raised hood is gone\)
 @guest action gear 32 -1
 wait 1500
 screenshot 10-host-sees-guest-no-hood

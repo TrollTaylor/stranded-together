@@ -6848,7 +6848,7 @@ rig never plays a clip and its blink and saccade are off.
   may look a little off on her.
 - In cutscenes the sequences drive the cutscene bodies; the mod's bodies are hidden there anyway.
 
-## 37. Fragile's rain hood (round 11; `session.ini fragile_hood`, default 2, and `hood_hair`, default 1; round 12: `hood_colour`, default 1, `hood_fold_hide`, default 0)
+## 37. Fragile's rain hood (round 11; `session.ini fragile_hood`, default 2, and `hood_hair`, default 1; round 12: `hood_colour`, default 1; round 13: `hood_fold_hide`, default 1)
 
 The user's report (round 10): in timefall Sam raises his hood; Fragile had none, on either screen. Fragile's own models
 have no hood mesh (`fgl_body_suiti`: one body mesh, `fgl_hair_def`, `fgl_head_def`; no hood resource under `fgl_fragile`).
@@ -6994,7 +6994,7 @@ a pink suit, on both screens.
   would need a texture override on the carrier's hood mesh, under the colour table). Row 0 is Sam's grey-blue
   (80, 89, 105), about 20 % lighter than her navy (66, 71, 81).
 
-### 37.6 Her folded hood hidden while the raised hood shows (round 12; `session.ini hood_fold_hide`, default 0: no visible effect, 37.7)
+### 37.6 Her folded hood hidden while the raised hood shows (round 12: no visible effect, 37.7; replaced in round 13, 37.8)
 
 The user's report (v0.26.0): "the hood on her suit is still showing even when the hood is up so it looks like 2 hoods".
 Her porter suit wears its hood rolled down on her collar; Sam's own suit hides that part (HoodOff) from the raise to the
@@ -7007,8 +7007,8 @@ end of the lowering (37.1), hers has no such part.
   joints 5, 6, 29, 30, 31, 35, 61, 62, 66, 67, 106, 107, 108, 139, 153, 170, 193-198); the roll uses only bindings 0-5 and
   10-13 (Spine5, shoulders, neck, head, the collar joints), the knee flaps the others: the two sets share no joint. In
   LOD1 the roll is merged into the suit primitive (not separable). Her black suit (34) has no hood mesh.
-- **What the mod does** (`hood_fold.{hpp,cpp}`, pure rules in `exo_parts.hpp`, ctest `st_exo_parts_tests`): while any of
-  our fragile_suit bodies is shown and its carrier shows a hood part (the switch while it unfolds, or the raised hood;
+- **What the mod did** (round 12, removed in round 13: see 37.8 for what it does now) (`hood_fold.{hpp,cpp}`, pure rules
+  in `exo_parts.hpp`, ctest `st_exo_parts_tests`): while any of our fragile_suit bodies is shown and its carrier shows a hood part (the switch while it unfolds, or the raised hood;
   `partner_gear.cpp FoldWanted`), the inverse bind matrices of mesh D's 10 roll bindings are zeroed (the roll's vertices
   collapse to a point: zero-area triangles), and her LOD1 distance is raised to 100 km so LOD0 is drawn at every distance;
   everything is written back when no body wants it, when the body drawing it goes (only when the objects are still exactly
@@ -7024,7 +7024,8 @@ end of the lowering (37.1), hers has no such part.
 - **Not done:** the primitive's index range (research's H2) is not used: the PrimitiveResource array is not at the
   offsets the RTTI suggests (`+0xA8..+0xB8`), so a dev run found none; the per-matrix write is enough where the game reads
   the matrices when it skins.
-- **Settings and actions:** `session.ini hood_fold_hide=0|1`; `gear 34 <method> <pin>` (0 never, 1 the product; pin 0 / 1;
+- **Settings and actions** (round 12, replaced: round 13's `gear 34` and log lines are in 37.8 and debug-actions.md):
+  `session.ini hood_fold_hide=0|1`; `gear 34 <method> <pin>` (0 never, 1 the product; pin 0 / 1;
   -1 the product again; other values the status) and `gear 35 <0|1>` (37.5) (debug-actions.md). Logged: `[hood] her folded
   hood found: LodMeshResource <p>, mesh D <p> (bindings <p>, 22 joints checked, matrices <p>), LOD distances 0.00 2.00`,
   `[hood] her folded hood hidden (mesh D's 10 roll bindings zeroed, LOD0 pinned; partner body wants it hidden, self body
@@ -7076,6 +7077,105 @@ read these inverse binds again after the load, or what reads as a second hood is
 screen is not worth its risk. `echo-hood` and `two-games-fragile-skeleton` set `ini hood_fold_hide=1` so the find, the
 checks and the write-backs stay covered. Next lead: a per-instance hide (the drawable's own mesh entry or primitive
 state), not the shared resource's binds.
+
+### 37.8 Her folded hood hidden per body (round 13; `session.ini hood_fold_hide`, default 1)
+
+**Why round 12 changed nothing** (static, ds.exe; confirmed by the round 13 probe below). A body's drawable does not read
+the mesh resources' own data once it is built:
+- *The bindings.* Each skinned node of a body's mesh instance tree (below) stores the bindings pointer it skins with
+  (node builder 0x141C98ED0: the parent's merged bindings, the mesh's own at `+0x98` only as a fallback; 0x141C98F4F /
+  0x141C98F5D). Her body's nodes all hold one SkinnedMeshIndexedJointBindings of 161 joints, the model's merged one (her
+  LodMeshResource's own cache at `+0x98` is empty, `+0x72` 0x8000). Mesh D's own inverse binds, the ones round 12
+  zeroed, are never read again.
+- *The LOD distances.* The tree's LodMesh node copies the parts' distances and MaxDistance at build (`node+0x48`,
+  0x141C98942) and the LOD choice reads that copy every frame (0x141C99CB6). Round 12's raised resource distance was
+  never read either.
+
+**The mesh instance tree** (per body; built per drawable mesh entry by 0x142391820, so a cutscene Fragile has her own):
+entity `+0xB8` SkinnedModel `+0x40` SkinnedModelRep `+0x28` drawable `+0x98` a SkinnedModelRep (a ModelRep: `+0x40` entry
+count, `+0x48` entries of 0x1B0; her body: 1 entry). Entry `+0xE0` her LodMeshResource, `+0xF0` the tree holder
+`{tree, capacity}`, `+0x108` -1 while a rebuild is pending, `+0x10C` the view mask the game's part visibility gives every
+slot (0x142395DE0), `+0x110` the skinned instance, whose holder is the drawable's own tree at `drawable+0x44`: a list of
+type-9 nodes, one of them referring to the entry's holder (the probe: `the alternate tree ... type 9 res <p> = the
+entry's own holder (... her LodMesh)`), so the tree the cull and the skinning walk is the entry's. Tree `+0` the bytes
+used, nodes from `+0x20`; every node `+0` resource, `+8` u16 count, `+0xA` type, `+0x10` next sibling and `+0x18` first
+child (i32, relative). Her tree: `+000` LodMesh (type 3, thresholds 0.00 2.00 100.00), `+058` LOD0 (type 2, 4 meshes),
+`+078` mesh A, `+0E8` B, `+158` C (6 primitives), `+268` mesh D (type 4, 1 primitive: slot `+0x48`, view mask `+0x50` =
+07, bindings `+0x58`, skin mode `+0x6C` = 3). Mesh D's node holds the same resource object as the MultiMesh's list (its
+RTTI reads RegularSkinnedMeshResource in this build; the research's `NG` question does not matter: the node is found by
+its resource's GUID).
+
+**What the mod does** (`hood_fold.{hpp,cpp}`, rules in `exo_parts.hpp`, ctest `st_exo_parts_tests`). For each of our
+fragile_suit bodies whose carrier shows a hood part (`partner_gear.cpp FoldWanted`, unchanged), every tick, from its
+entity: the walk above, every node bounds-checked in the tree's buffer (the root her LodMesh with 2 parts and her
+thresholds, its first child her LOD0 by GUID with 4 meshes, mesh D's node by its resource's GUID with 1 primitive), then:
+- **The mask** (the product, `gear 34 1`): view mask 0 on mesh D's slot (a compare-and-swap of the byte just read). It is
+  the byte the game's own ArtPart hide writes into every slot of a part (Sam's HoodOff: 0x1422B9110 -> 0x142395DE0 ->
+  0x141B19B10); the culler skips a slot whose mask is 0 in every view, shadows too (0x141C9B100). The whole of mesh D
+  goes: the roll and the two small cloth flaps at her knees (one primitive). No difference at her knees shows in the
+  stills (front, side, back).
+- **The LOD pin**: the tree's LOD1 threshold (2.00) raised to its MaxDistance (100.00), so LOD0, where mesh D is a mesh
+  of its own, is drawn (in LOD1 the roll is merged into the suit). Needed: at the usual camera distance her body is past
+  2 m, and with the pin off the roll shows again (the stills below). Applied only while the roll is hidden.
+- **Shown again**: the mask byte back as the entry's current `+0x10C` (what the game's part visibility gives every slot
+  now; while it is 0, the game hiding the whole body, nothing is given back, so mesh D is never drawn alone on a body
+  the game hides), the threshold back to 2.00, each only while it is still ours (compare-and-swap of the value just
+  read; the pin is re-checked every tick, so a threshold the game rewrote is pinned again, never written back over).
+  The rule is one pure step (`exo::FoldStepOf` / `FoldStepDone`, unit-tested case by case). It runs when the body no
+  longer wants it (the raised hood gone), when the body goes (realbody's teardown calls `hoodfold::BodyGoing` while the
+  entity is still alive; an entity whose vtable or GUID no longer reads as it did when taken, one the game destroyed, is
+  never walked or written: its trees went with it), when the hiding goes off (a write-back a race stopped is tried again
+  every second), and at the emergency stop (`RestoreAll`; `gear 34 -2` in hidden tests). A tree of ours the walk no
+  longer reaches (a failed walk, the alternate holder dropping it) is written back while its holder, on the same
+  drawable, still holds it and it still reads as her tree (root her LodMesh, mesh D's node by GUID); otherwise it was
+  rebuilt or went with its drawable. A tree the game rebuilt (a colour change, a texture rebind) has the game's values
+  again: nothing to write back, the hide is applied again (`fold <body>: waiting (her instance tree is being rebuilt)`,
+  `tree <p> rebuilt or gone (nothing of ours to write back)`, `her folded hood hidden again on the <body> body's rebuilt
+  tree <p>`; a one-frame flash at most).
+- Each body follows its own carrier: the self view on her own screen, the partner body on the other's. Nothing shared
+  is written (round 12's resource writes are gone), so a cutscene Fragile or another body of hers is never touched.
+- **Checks**: 26 code sites byte-checked before the first write (the slot mask and its cull, the entry fields, the node
+  types and links, the bindings slot, the thresholds' copy and read, the skinning's reads, LodDistanceScale, and the path
+  her entry's part visibility takes because its `+0x110` is set: 0x142395DE0 -> 0x141D914D0 -> the loop at 0x141D915B7
+  that writes the entry's mask into `node+0x50` of every slot of node types 1, 4, 5, 6, 7, 8); a mismatch turns the
+  hiding off for the session. Her LodMeshResource or tree not as checked: tried again 1 s later, off after 3 in a row on
+  the same drawable and resource (`[hood] her folded hood not found yet on the <body> body (<why>) ...`, `... is not
+  hidden this session: <why>`), everything of ours written back first. A body whose drawable is not (yet) a ModelRep or
+  draws no LodMeshResource (a look or body swap under way) only waits. Every write is SEH-guarded.
+- **Test methods outside hidden tests:** `gear 34` methods 2, 4, 5, -2 and -3 are refused unless automation is on.
+
+**Test methods** (`gear 34 <method> [pin]`, debug-actions.md): 2 the private bindings (mesh D's node pointed at a copy
+of the model's merged bindings, made once in mod memory and never freed, with the 10 roll joints' inverse binds zeroed:
+the roll collapses, the knee flaps stay; it works on screen too, but it puts a mod-made object into the game's tree, so
+it is not the product); 3 the pin only (the control); 4 / 5 the mask / the private bindings without the raised hood (her
+bare collar in stills); pin 1 off, 2 the drawable's LodDistanceScale x 0.001 (the engine's ModelLodBiasEvent field;
+scales every distance of the drawable); -2 everything written back now (the emergency stop's call); -3 0/1 the setting
+as if session.ini said so.
+
+**Round 13 review** (no game run yet; Prove runs `echo-hood` and `two-games-fragile-skeleton`). `echo-hood` now also
+takes, the camera still: `01b-collar-masked` / `01c-collar-shown` (her bare collar before the rain, test method 4: the
+roll and the knee flaps, the evidence `fold-dev2` had only in a scratch scenario); `04b2-porter-fold-shown-pinned` (the
+pin alone, method 3), so `04b2` / `04c` differ only by the mask (`04b` / `04c` differ by the mask and the LOD); after the
+gold colour change the rebuild lines and `hidden again on the <body> body's rebuilt tree` on both bodies; `gear 34 -2`
+(shown again `(...; test)`, then both bodies hidden again in the status line) and `gear 34 -3 0` / `1` (shown again
+`(...; the setting is off)`, both bodies `none` in the status while off, hidden again when on). The ini path itself
+(`hood_fold_hide=0` read from session.ini) is not run by a scenario: it is the same `Configure` call.
+
+**Proof** (`-SeedSaves complete-100`; each run: saves unchanged, restored, no violation):
+
+| Run (`build-testenv\runs\`) | What it shows |
+|---|---|
+| `20261123-155834-fold-dev` (**fail**, dev scenario) | The walk refused her drawable's `+0x98`: it is a SkinnedModelRep (a ModelRep subclass); now matched by derivation. |
+| `20261123-160103-fold-dev` (dev) | The probe: her tree as above, mesh D's node `mask 07`, the bindings the model's (161 joints), `+0x110` a skinned instance with a type-9 tree. The mask and the pin written and read back on both bodies, restored at every switch and at the lowering; 0 races. The hood-up stills do not settle it (the raised hood covers most of the roll, the bodies sway between stills). Method 2 not applied yet (it then only took the LodMesh's or mesh D's own bindings). |
+| `20261123-160627-fold-dev2` (dev) | The drawable's type-9 tree refers to the entry's own holder. **No raised hood** (`gear 34 4` / `5`, the camera still 6 s first): `bf-0a`, `bf-0b`, `bf-0c` (never) show the suit-blue roll around her neck on both bodies; `bf-4mask` (the mask) and `bf-5binds` (the private bindings) show her black turtleneck there instead, on both; the roll is back at once (`0b`, `0c`). Side (`bs-*`) the same. Knees (`bf-*`, `bs-*`, `bb-*`): no visible difference. **Raised hood** (`gear 32 6 0`): `hf-3pin` (shown, pinned) against `hf-1mask` / `hf-2binds`: the blue bulk under her chin gone. **The pin:** `far-mask-nopin` (the mask, pin off) shows the roll under her chin (LOD1), `far-mask-pin` does not. |
+| `20261123-161258-echo-hood` (pass) | The scenario on the default (no ini line): both bodies `hidden ... (the mask, LOD0 pinned; method 1)` from the raise, shown and hidden again with `gear 34 0 0` / `-1 0`, the pin off and on at a distance, colour changes rebuilding both trees (re-applied), `shown again ... the raised hood is gone` on both after the lowering. The user's case (her suit pink, the porter hood up, the camera still): `04b` (shown) has the pink roll bunched under her chin inside the raised hood, on both bodies; `04c` (the product) has her dark turtleneck there instead. |
+| `20261123-161533-two-games-fragile-skeleton` (pass, `-GuestSeed profile-only`, the Local test files with no ini line) | Both screens on the default: the guest's self body and the host's partner body each `hidden ... (the mask, LOD0 pinned; method 1)` from their own carrier's hood, shown and hidden again with `gear 34`, `shown again ... the raised hood is gone` after the lowering. The guest's `09b` (shown) has the pink roll around her chin inside the sea otter hood, `09c` (the product) her dark turtleneck; round 12's `20261123-145056` `09b` / `09c` were the same picture twice. The host's pair (`09b` / `09c`, her 6 m away at 1280x720) agrees but is too small to read on its own. |
+
+**Not covered.** The two knee flaps go with the roll while the raised hood shows (one primitive; the private bindings
+would keep them). With the hood up the roll is hidden only while LOD0 is drawn, which the pin keeps up to her
+MaxDistance (100 m), where her whole body stops drawing. Between a check and a write the tree could be rebuilt on a
+render thread; the write is one byte or one float by compare-and-swap of the value just read, so the residual risk is a
+write into memory freed within microseconds (the same window round 12 had).
 
 ## 38. Fragile in the private room: Sam's camera reactions, the drawn root and the far hips (round 12)
 

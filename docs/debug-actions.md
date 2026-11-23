@@ -359,18 +359,35 @@ Scenarios: `collision`, `collision-off`, `two-games-collision`, `two-games-all`.
   (0 ms into the raising)`, `[exo] her body <p>: no hair part found (her hair stays under the hood); parts: ...` (or
   `hair parts under her hood ...` if one were found; `[exo-self]` for her own screen), and the
   carrier meter's `head` figure (her head joint 31 against the carrier's, cm).
-* `action gear 34 <method> [nopin]` (round 12; docs/real-partner-body.md section 37.6): her folded hood (on her collar)
-  while the raised hood shows: method 0 never hidden, 1 the inverse bind matrices of mesh D's 10 roll bindings zeroed (the
-  product); `nopin` 1 her LOD pin off (LOD1 drawn at its own distance again), 0 or left out the pin on (her LOD0 drawn at
-  every distance while hidden, the product); -1 the product again (1, pinned); any other method (2 and up) only logs the
-  status
-  (`[hood] folded hood on: method 1, pin on, mesh D's 10 roll bindings zeroed, LOD0 pinned; 1 hidden, 0 shown again;
-  carriers dressed for her colour on (partner 14, self 14)`). `session.ini hood_fold_hide=0|1` (default 0: the hide showed no change on screen; `gear 34` only acts while it is 1). Logged:
-  `[hood] her folded hood found: LodMeshResource <p>, mesh D <p> (bindings <p>, 22 joints checked, matrices <p>), LOD
-  distances 0.00 2.00`, `[hood] her folded hood hidden (<what>; partner body wants it hidden,
-  self body wants it hidden; #n)`, `[hood] her folded hood shown again (everything written back; ...)`, and on a mismatch
-  `[hood] her folded hood is not hidden this session: <why>` (after everything of ours is written back, a hide that stopped
-  part way included), `[hood] her folded hood not found yet (<why>): trying again in 1 s (n of 3)`.
+* `action gear 34 <method> [pin]` (rounds 12-13; docs/real-partner-body.md sections 37.6-37.8): her folded hood (the roll
+  on her collar, mesh D of her porter suit) while the raised hood shows, on each of our fragile_suit bodies (the partner
+  body, the self view) from its own carrier. Method: 0 never hidden; 1 the mask (the product: view mask 0 on mesh D's slot
+  in that body's own mesh instance tree; the whole of mesh D goes, the roll and its two small knee flaps); 2 the private
+  bindings (mesh D's node pointed at a copy of the model's merged joint bindings with the 10 roll joints' inverse binds
+  zeroed: the roll only); 3 the LOD pin only (nothing hidden: the control for stills); 4 / 5 the mask / the private
+  bindings with no raised hood needed (her bare collar in stills; only in scenarios where every body of ours is her
+  porter suit: another body's checks fail and turn the hiding off); -1 the product again (1, the tree's pin); -2 everything
+  written back now (`hoodfold::RestoreAll`, the emergency stop's call: `shown again ... (everything written back; test)`,
+  hidden again by the next tick); -3 <0|1> the setting `hood_fold_hide` as if session.ini said so (`[hood] TEST: the
+  setting hood_fold_hide as 0`, then the `[hood] her folded hood hidden while her raised hood shows: off` line). Methods 2,
+  4, 5, -2 and -3 are refused outside hidden tests (`gear 34 <n>: hidden tests only`). Pin (the
+  second number): 0 or left out the tree's LOD1 threshold raised to its MaxDistance (the product), 1 off (LOD1, where the
+  roll is merged into her suit, drawn beyond 2 m: at the usual camera distance), 2 the drawable's LodDistanceScale (x
+  0.001). Any other method only logs the status (`[hood] folded hood on: method 1, pin 0; partner the mask, LOD0 pinned,
+  self the mask, LOD0 pinned; 2 hidden, 0 shown again, 4 writes, 0 raced; carriers dressed for her colour on (partner 14,
+  self 14)`). `session.ini hood_fold_hide=0|1` (default 1 since round 13; `gear 34` only acts while it is 1). Logged:
+  `[hood] her folded hood: 26 code sites verified (...)`, the first find's `[hood] fold probe (<body>): ...` lines (the
+  drawable, its entry, the tree's nodes, mesh D's node: mask, bindings, skin mode, LOD thresholds), each write `[hood]
+  fold <self|partner>: tree <p> D node <p>: mask 07 -> 00 (read back 00; entry +0x10C 07)`, `... LOD1 threshold 2.00 ->
+  100.00 (read back 100.00)`, `... bindings <p> -> <p>`, `... LodDistanceScale 1.000 -> 0.001` and their write-backs,
+  `[hood] her folded hood hidden on the <self|partner> body (the mask, LOD0 pinned; method 1)` (method 3: `[hood] her
+  folded hood not hidden on the <body> body (LOD0 pinned; method 3)`), `[hood] her folded hood shown again on the <body>
+  body (everything written back; <why>)` (why: `the raised hood is gone`, `no raised hood` after a test method 4 / 5,
+  `the method hides nothing` for method 0, `the setting is off`, `the body went`, `the hiding went off`, `test`), after
+  a colour change's tree rebuild `[hood] fold <body>: tree <p> rebuilt or gone (nothing of ours to write back)` and
+  `[hood] her folded hood hidden again on the <body> body's rebuilt tree <p>`, `[hood] her folded hood not found
+  yet on the <body> body (<why>): trying again in 1 s (n of 3)` and, after 3 or a code mismatch, `[hood] her folded hood
+  is not hidden this session: <why>` (everything of ours written back first).
 * `action gear 35 <0|1>` (round 12; section 37.5): the exo carriers dressed in the colour her suit wears (1, the default,
   `session.ini hood_colour`) or in the sender's Sam's (0, v0.26). Logged: `[exo-self] carrier <p> dressed for her colour 14
   (Sam's exos 31 -> 1, his colour 16)` (`[exo]` on the partner body; ending `: the sender's row (her look over the link)`

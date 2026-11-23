@@ -37,6 +37,7 @@
 #include "game_actions.hpp"
 #include "room_outfit_rules.hpp"
 #include "face_sync.hpp"
+#include "hood_fold.hpp"
 
 namespace st::realbody {
 namespace {
@@ -3155,6 +3156,8 @@ bool Teardown(BodySlot& b, const char* why) {
     // Player collision: the partner body's capsule leaves the world while the body is still live
     // (a teardown that cannot remove the entity must not leave an invisible wall).
     if (&b == &g_p && b.spawn.e) collision::BodyGoing(b.spawn.e);
+    // her folded hood (section 37.8): our view masks and LOD pin written back while the body is still live
+    if (b.spawn.e) hoodfold::BodyGoing(reinterpret_cast<std::uintptr_t>(b.spawn.e));
     Unpublish(b);
     char step[160] = {};
     holo::SpawnTeardown(b.spawn, why, step, sizeof(step));
