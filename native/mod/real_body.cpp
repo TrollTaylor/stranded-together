@@ -25,6 +25,7 @@
 #include "gear_extrap.hpp"
 #include "ride_together.hpp"
 #include "self_predict.hpp"
+#include "pelvis_scale.hpp"
 #include "suit_colour.hpp"
 #include "coop_session.hpp"
 #include "fragile_textures.hpp"
@@ -248,6 +249,8 @@ struct BodySlot {
     float pelvis_ratio = 1.0f;
     unsigned latch_good = 0, latch_seen = 0;
     float latch_pelvis_len = 0, latch_sam_pelvis_len = 0;
+    float pelvis_off[3] = {};  // the far hips rule's rest offset (FinishLatch; pelvis_scale.hpp)
+    bool pelvis_off_ok = false;
     bool same_skel = false;  // set by Validate before the body is published
     float leg_body = 0, leg_sam = 0, leg_ratio = 0;  // 0 = not measured
     bool leg_used = false;                          // the pelvis ratio came from the legs
@@ -315,7 +318,18 @@ struct FitShape {
     float t[kJ][4] = {};
     float s[kJ][4] = {};
     float pelvis_ratio = 1.0f;
+    float pelvis_off[3] = {};        // the far hips rule's rest offset (pelvis_scale.hpp; section 38.3)
+    std::uint8_t pelvis_off_ok = 0;
 };
+// Round 12 (docs/real-partner-body.md section 38.3), `self_view 22 <0/1>`: the far hips rule (pelvis_scale.hpp), 1 the
+// default, 0 v0.26's plain ratio.
+std::atomic<bool> g_far_hips_rule{true};
+// The body's hips translation from Sam's `t` (pelvis_scale.hpp): the ratio, or with the far hips rule on (and a rest
+// offset) the constant offset far from the root.
+std::atomic<std::uint32_t> g_far_hips_n{0};  // self view pose writes with Sam's hips farther than pelvis::kNearM from his root
+inline void HipsT(const float* t, float ratio, const float* off, bool off_ok, float* o) {
+    pelvis::Scaled(t, ratio, off_ok && g_far_hips_rule.load(std::memory_order_relaxed) ? off : nullptr, o);
+}
 constexpr unsigned kSamNeck2 = 30, kSamHeadJ = 31;  // JNT_C_B_007_Neck, JNT_C_B_008_Head (its subtree: 31-34)
 struct LiftPub {
     float local[4] = {};  // the applied lift in the neck joint's frame (Sam's skeleton), 0 when none
@@ -975,7 +989,18 @@ void RideOverride(std::uintptr_t sm, std::uintptr_t pose, std::uintptr_t local, 
     g_ride_writes.fetch_add(1, std::memory_order_relaxed);
 }
 
+// Round 12 (section 38.2): Sam's root joint of this update, for TrackSam in the same detour call (the drawn meter, the
+// trace): its local translation from the capture (the root has no parent: this is its model point; the
+// self body copies exactly this one) and the translation row of its model matrix as his animate left it (the trace compares
+// the two: a model matrix a frame old shows). CaptureSam clears it first, so a skipped capture leaves none.
+struct SamModelPts {
+    bool ok = false, m_ok = false;
+    float rl[3] = {}, m0[3] = {};
+};
+thread_local SamModelPts t_sam_m;
+
 void CaptureSam(std::uintptr_t sm) {
+    t_sam_m.ok = false;
     std::uint8_t hdr[kPoseSize];
     std::uintptr_t pose = 0, local = 0;
     if (!ReadPoseHdr(sm, hdr, &pose)) return;
@@ -1041,6 +1066,17 @@ void CaptureSam(std::uintptr_t sm) {
             g_fit_pel_n[was_active ? 1 : 0].fetch_add(1, std::memory_order_relaxed);
         }
     }
+    if (g_self_follow.load(std::memory_order_relaxed) == 4) {  // his root joint (section 38.2)
+        SamModelPts& sp = t_sam_m;
+        sp.ok = true;
+        for (int k = 0; k < 3; ++k) sp.ok = sp.ok && std::isfinite(c.j[kSamRoot].t[k]) && std::fabs(c.j[kSamRoot].t[k]) < 50.0f;
+        if (sp.ok) std::memcpy(sp.rl, c.j[kSamRoot].t, sizeof(sp.rl));
+        const std::uintptr_t mb = Field<std::uintptr_t>(hdr, kHdrModel);
+        float m[4][4];
+        sp.m_ok = sp.ok && mb && mem::Read(mb + 0x40ull * kSamRoot, m, sizeof(m)) && std::isfinite(m[3][0]) && std::isfinite(m[3][1]) &&
+                  std::isfinite(m[3][2]);
+        if (sp.m_ok) sp.m0[0] = m[3][0], sp.m0[1] = m[3][1], sp.m0[2] = m[3][2];
+    }
     c.tick_ms = GetTickCount64();
     c.qpc = Qpc();
     c.frame = g_ct.captures.load(std::memory_order_relaxed) + 1;
@@ -1086,7 +1122,7 @@ void CaptureSam(std::uintptr_t sm) {
                     std::memcpy(cur[j].t, src[j].t, sizeof(cur[j].t));
                     std::memcpy(cur[j].s, c.j[j].s, sizeof(cur[j].s));
                 } else if (j == kSamPelvis) {
-                    for (int k = 0; k < 3; ++k) cur[j].t[k] = src[j].t[k] * sh.pelvis_ratio;
+                    HipsT(src[j].t, sh.pelvis_ratio, sh.pelvis_off, sh.pelvis_off_ok != 0, cur[j].t);
                     cur[j].t[3] = c.j[j].t[3];
                     std::memcpy(cur[j].s, c.j[j].s, sizeof(cur[j].s));
                 } else if (sh.on[j]) {
@@ -1456,6 +1492,8 @@ float LegLength(const Joint (&j)[kJ], const unsigned (&idx)[4]) {
 void FinishLatch(BodySlot& b) {
     b.latch_ok = b.latch_good > 0;
     b.pelvis_ratio = 1.0f;
+    b.pelvis_off_ok = false;
+    b.pelvis_off[0] = b.pelvis_off[1] = b.pelvis_off[2] = 0;
     b.latch_sam_pelvis_len = kSamRestPelvisLen;
     b.leg_body = b.leg_sam = b.leg_ratio = 0;
     b.leg_used = false;
@@ -1489,6 +1527,9 @@ void FinishLatch(BodySlot& b) {
         if (r < 0.75f) r = 0.75f;
         if (r > 1.33f) r = 1.33f;
         b.pelvis_ratio = r;
+        // the far hips rule's rest offset (section 38.3): along her own latched hips direction
+        const unsigned bp = b.inv[kSamPelvis];
+        b.pelvis_off_ok = bp < kJ && pelvis::RestOffset(b.latch[bp].t, r, kSamRestPelvisLen, b.pelvis_off);
     }
     b.latch_state.store(1, std::memory_order_release);
 }
@@ -1564,6 +1605,11 @@ struct SamWorldRec {
     std::uint32_t bseq = 0;  // the self body's update counter at this record (g_body_seq)
     double p[3] = {};
     float r[3][3] = {};
+    bool vok = false;   // round 12: his root joint was captured in this update (t_sam_m)
+    float rl[3] = {};   // ... its local translation (= its model point: the root has no parent)
+    double vr[3] = {};  // his drawn root as vanilla Sam's: his world plus rl in his world's axes
+    bool mok = false;   // ... and its model matrix's translation row was read
+    float m0[3] = {};
 };
 struct SamTrack {
     SamWorldRec cur, prev, prev2;  // Sam's world after his last update, and after his last update of the two frames before
@@ -1618,6 +1664,63 @@ struct PredLast {
 PredLast g_pm_last;  // the body's update only (under g_pm_busy)
 std::atomic<bool> g_pm_busy{false}, g_pm_drop{false};
 
+// Round 12, the drawn meter (section 38.2): where she is drawn against where vanilla Sam would be drawn. Her drawn root (each
+// candidate world plus the root translation of the pose she was given) against Sam's drawn root of the same frame (his world
+// after his last update of the frame plus his root joint's translation then), scored at the body's next update. The entity
+// meter above scores worlds only; in the private room Sam's camera reactions move his root joint against his world (the
+// lunge to the camera, then the world snapped back 2 m and the root joint holding him there), so only this one tells what
+// is seen. Per candidate: cm mean / max, and the jitter (the change of that error from one frame to the next: a constant
+// offset is not seen, a change is).
+struct DrawnRec {
+    bool have = false;
+    std::int64_t qpc = 0;
+    std::uint32_t bseq = 0;
+    std::uint8_t why = 0;          // selfpred::Why of the applied rule
+    double root[kPmCand][3] = {};  // her drawn root per candidate world
+    double world[3] = {};          // her applied world
+    float rl[3] = {};              // the root translation of her pose (the capture she was given)
+};
+struct DrawnMeter {
+    std::uint32_t n = 0, jn = 0;  // frames scored, of them with a previous frame (the jitter)
+    double sum[kPmCand] = {}, mx[kPmCand] = {}, jsum[kPmCand] = {}, jmx[kPmCand] = {};
+    double wstep_mx = 0, rstep_mx = 0, stale_mx = 0;  // Sam's world / drawn root steps; his root model row against his local root
+};
+DrawnRec g_dm_last;  // under g_dm_busy
+DrawnMeter g_dm;     // under g_dm_busy
+bool g_dm_prev_ok = false;
+double g_dm_prev_e[kPmCand][3] = {};
+std::atomic<bool> g_dm_busy{false};
+// The trace (`self_view 23 1`): the scored frames around a frame where Sam's world or his root joint moved over 0.5 m (a
+// snap, a re-anchor), 8 before and 8 after, logged by the tick as `[self] trace` lines.
+struct TraceRow {
+    double ms = 0;            // QPC ms of Sam's record
+    double sw[3] = {};        // Sam's world
+    float srl[3] = {};        // his root joint's local translation
+    float sm0[3] = {};        // his root model matrix's translation row (as his animate left it)
+    std::uint8_t smok = 0;
+    double bw[3] = {};        // her applied world
+    float brl[3] = {};        // her pose's root translation
+    std::uint8_t why = 0;
+    double e[kPmCand] = {};   // her drawn root against his, per candidate (cm)
+};
+constexpr int kTrPre = 8, kTrPost = 8, kTrRows = kTrPre + 1 + kTrPost;
+struct TraceBlock {
+    int n = 0;
+    int trig = 0;  // the trigger row's index
+    TraceRow r[kTrRows];
+};
+std::atomic<bool> g_tr_on{false};
+TraceRow g_tr_ring[kTrPre];  // under g_dm_busy
+int g_tr_ring_n = 0, g_tr_ring_i = 0, g_tr_post = -1;
+TraceBlock g_tr_build;        // under g_dm_busy
+SeqLock<TraceBlock> g_tr_ready;
+std::atomic<std::uint32_t> g_tr_seq{0}, g_tr_dropped{0};
+// PredictSelfWorld -> ApplyBody in the same detour call: this update's candidate worlds, the applied one and why.
+thread_local Xf t_pred_cand[kPmCand];
+thread_local bool t_pred_cand_ok = false;
+thread_local int t_pred_pick = 0;
+thread_local std::uint8_t t_pred_why = 0;
+
 // A world transform (+0xC8 position, +0xE0 rotation) read fault-free twice and compared, finite.
 bool ReadWorldTwice(std::uintptr_t e, std::uint8_t (&a)[kWorldBytes + 4]) {
     alignas(8) std::uint8_t b2[kWorldBytes + 4] = {};
@@ -1649,6 +1752,13 @@ void TrackSam(float dt) {
     r.bseq = g_body_seq.load(std::memory_order_acquire);
     std::memcpy(r.p, a, sizeof(r.p));
     std::memcpy(r.r, a + 0x18, sizeof(r.r));
+    if (t_sam_m.ok) {
+        r.vok = true;
+        std::memcpy(r.rl, t_sam_m.rl, sizeof(r.rl));
+        for (int k = 0; k < 3; ++k) r.vr[k] = r.p[k] + r.rl[0] * r.r[0][k] + r.rl[1] * r.r[1][k] + r.rl[2] * r.r[2][k];
+        r.mok = t_sam_m.m_ok;
+        std::memcpy(r.m0, t_sam_m.m0, sizeof(r.m0));
+    }
     const float d = std::isfinite(dt) && dt > 0 && dt < 1 ? dt : 0;
     SamTrack& t = g_sam_track_w;
     if (t.n == 0) {
@@ -1696,6 +1806,112 @@ void PredMeterScore(const PackedWt& now, const SamTrack& t) {
     }
 }
 
+// The drawn meter's score of the last body update's record against vanilla Sam's drawn root of that frame (his newest
+// record, when it belongs to the record's frame: his update after that body update). Body update, under g_dm_busy.
+void DrawnMeterScore(const SamTrack& t) {
+    DrawnRec& d = g_dm_last;
+    if (!d.have) return;
+    d.have = false;
+    if (t.n < 1 || !t.cur.vok || t.cur.bseq != d.bseq || t.cur.qpc <= d.qpc) {  // Sam did not update in that frame
+        g_dm_prev_ok = false;
+        return;
+    }
+    DrawnMeter& m = g_dm;
+    ++m.n;
+    double e[kPmCand][3], el[kPmCand];
+    for (int k = 0; k < kPmCand; ++k) {
+        for (int i = 0; i < 3; ++i) e[k][i] = d.root[k][i] - t.cur.vr[i];
+        el[k] = std::sqrt(e[k][0] * e[k][0] + e[k][1] * e[k][1] + e[k][2] * e[k][2]) * 100.0;
+        m.sum[k] += el[k], m.mx[k] = (std::max)(m.mx[k], el[k]);
+    }
+    if (g_dm_prev_ok) {
+        ++m.jn;
+        for (int k = 0; k < kPmCand; ++k) {
+            double j2 = 0;
+            for (int i = 0; i < 3; ++i) j2 += (e[k][i] - g_dm_prev_e[k][i]) * (e[k][i] - g_dm_prev_e[k][i]);
+            const double j = std::sqrt(j2) * 100.0;
+            m.jsum[k] += j, m.jmx[k] = (std::max)(m.jmx[k], j);
+        }
+    }
+    std::memcpy(g_dm_prev_e, e, sizeof(e));
+    g_dm_prev_ok = true;
+    if (t.cur.mok) {
+        double s2 = 0;
+        for (int i = 0; i < 3; ++i) s2 += (static_cast<double>(t.cur.m0[i]) - t.cur.rl[i]) * (static_cast<double>(t.cur.m0[i]) - t.cur.rl[i]);
+        m.stale_mx = (std::max)(m.stale_mx, std::sqrt(s2) * 100.0);
+    }
+    if (t.n >= 2 && t.prev.vok) {
+        double w2 = 0, v2 = 0;
+        for (int i = 0; i < 3; ++i) {
+            w2 += (t.cur.p[i] - t.prev.p[i]) * (t.cur.p[i] - t.prev.p[i]);
+            v2 += (t.cur.vr[i] - t.prev.vr[i]) * (t.cur.vr[i] - t.prev.vr[i]);
+        }
+        const double w = std::sqrt(w2), v = std::sqrt(v2);
+        m.wstep_mx = (std::max)(m.wstep_mx, w * 100.0), m.rstep_mx = (std::max)(m.rstep_mx, v * 100.0);
+    }
+    if (!g_tr_on.load(std::memory_order_relaxed)) return;
+    // the trace: this frame's row; a trigger when Sam's world or his root joint moved over 0.5 m since the previous row
+    TraceRow row;
+    row.ms = g_qpc_per_ms > 0 ? static_cast<double>(t.cur.qpc) / g_qpc_per_ms : 0;
+    std::memcpy(row.sw, t.cur.p, sizeof(row.sw));
+    std::memcpy(row.srl, t.cur.rl, sizeof(row.srl));
+    std::memcpy(row.sm0, t.cur.m0, sizeof(row.sm0));
+    row.smok = t.cur.mok ? 1 : 0;
+    std::memcpy(row.bw, d.world, sizeof(row.bw));
+    std::memcpy(row.brl, d.rl, sizeof(row.brl));
+    row.why = d.why;
+    for (int k = 0; k < kPmCand; ++k) row.e[k] = el[k];
+    bool trig = false;
+    if (g_tr_ring_n > 0) {
+        const TraceRow& pr = g_tr_ring[(g_tr_ring_i + kTrPre - 1) % kTrPre];
+        double w2 = 0, r2 = 0;
+        for (int i = 0; i < 3; ++i) w2 += (row.sw[i] - pr.sw[i]) * (row.sw[i] - pr.sw[i]), r2 += (row.srl[i] - pr.srl[i]) * (row.srl[i] - pr.srl[i]);
+        trig = w2 > 0.25 || r2 > 0.25;
+    }
+    if (g_tr_post >= 0) {  // collecting the rows after a trigger
+        g_tr_build.r[g_tr_build.n++] = row;
+        if (--g_tr_post == 0 || g_tr_build.n >= kTrRows) {
+            if (g_tr_ready.Write(g_tr_build)) g_tr_seq.fetch_add(1, std::memory_order_release);
+            else g_tr_dropped.fetch_add(1, std::memory_order_relaxed);
+            g_tr_post = -1;
+        }
+    } else if (trig) {
+        g_tr_build = TraceBlock{};
+        const int pre = g_tr_ring_n < kTrPre ? g_tr_ring_n : kTrPre;
+        for (int i = 0; i < pre; ++i) g_tr_build.r[g_tr_build.n++] = g_tr_ring[(g_tr_ring_i + kTrPre - pre + i) % kTrPre];
+        g_tr_build.trig = g_tr_build.n;
+        g_tr_build.r[g_tr_build.n++] = row;
+        g_tr_post = kTrPost;
+    }
+    g_tr_ring[g_tr_ring_i] = row;
+    g_tr_ring_i = (g_tr_ring_i + 1) % kTrPre;
+    if (g_tr_ring_n < kTrPre) ++g_tr_ring_n;
+}
+
+// Her drawn root per candidate world (the self body's live update, right after its pose write). `rl`: the root translation
+// of the pose just written (the capture's: ComposeLive copies it as is).
+void DrawnRecord(const float* rl) {
+    if (!t_pred_cand_ok) return;
+    t_pred_cand_ok = false;
+    for (int k = 0; k < 3; ++k)
+        if (!std::isfinite(rl[k])) return;
+    DrawnRec r;
+    r.have = true;
+    r.qpc = Qpc();
+    r.bseq = g_body_seq.load(std::memory_order_acquire);
+    r.why = t_pred_why;
+    std::memcpy(r.rl, rl, sizeof(r.rl));
+    for (int c = 0; c < kPmCand; ++c) {
+        const Xf& w = t_pred_cand[c];
+        for (int k = 0; k < 3; ++k) r.root[c][k] = w.p[k] + rl[0] * w.r[0][k] + rl[1] * w.r[1][k] + rl[2] * w.r[2][k];
+    }
+    std::memcpy(r.world, t_pred_cand[t_pred_pick].p, sizeof(r.world));
+    if (!g_dm_busy.exchange(true, std::memory_order_acquire)) {
+        g_dm_last = r;
+        g_dm_busy.store(false, std::memory_order_release);
+    }
+}
+
 // The body's own update, before its pose write (follow mode 4): this frame's world for the body. Sam already updated in
 // this frame (his newest record is under half a frame old): his world now is this frame's, copied as is. Otherwise his
 // world now plus his last per-frame step, scaled by this frame's dt against his last frame's (selfpred::Decide: no step
@@ -1703,6 +1919,7 @@ void PredMeterScore(const PackedWt& now, const SamTrack& t) {
 // moved him, while carried, or when his newest step is not consistent with the one before: a seat snap); then the plain
 // copy (mode 2), which mode 1's copy in his update corrects anyway. `dt_body`: the game's dt of this body update.
 void PredictSelfWorld(float dt_body) {
+    t_pred_cand_ok = false;
     const std::uintptr_t self_e = g_me.e.load(std::memory_order_seq_cst);
     const std::uintptr_t self_sm = g_me.sm.load(std::memory_order_seq_cst);
     const std::uintptr_t sam = g_sam_e.load(std::memory_order_acquire);
@@ -1755,8 +1972,9 @@ void PredictSelfWorld(float dt_body) {
     if (o_new.why == selfpred::Why::step) selfpred::Apply(now.p, now.r, in.dp, m, o_new.k, cand[0].p, cand[0].r);
     if (o_old.why == selfpred::Why::step) selfpred::Apply(now.p, now.r, in.dp, m, o_old.k, cand[1].p, cand[1].r);
     const bool rule_new = g_pred_rule.load(std::memory_order_relaxed) != 0;
+    const int pick_i = rule_new ? 0 : 1;
     const selfpred::Out& o = rule_new ? o_new : o_old;
-    const Xf& pick = cand[rule_new ? 0 : 1];
+    const Xf& pick = cand[pick_i];
     PackedWt w = now;
     std::memcpy(w.p, pick.p, sizeof(w.p));
     std::memcpy(w.r, pick.r, sizeof(w.r));
@@ -1805,6 +2023,15 @@ void PredictSelfWorld(float dt_body) {
     } else {
         g_pm_drop.store(true, std::memory_order_relaxed);
     }
+    // the drawn meter (section 38.2): the last record scored, this update's candidates handed to the pose write
+    if (!g_dm_busy.exchange(true, std::memory_order_acquire)) {
+        DrawnMeterScore(t);
+        g_dm_busy.store(false, std::memory_order_release);
+    }
+    for (int k = 0; k < kPmCand; ++k) t_pred_cand[k] = cand[k];
+    t_pred_pick = pick_i;
+    t_pred_why = static_cast<std::uint8_t>(o.why);
+    t_pred_cand_ok = true;
 }
 
 // ---- Sam's head items on her drawn head (docs/real-partner-body.md section 26.8, v0.22). The self view draws Sam's cap
@@ -2018,7 +2245,7 @@ bool ComposePartner(BodySlot& b, Joint (&cur)[kJ], bool stats) {
             if (sj == kSamRoot) {
                 o.t[0] = troot[0], o.t[1] = troot[1], o.t[2] = troot[2];
             } else if (sj == kSamPelvis) {
-                o.t[0] = tpel[0] * b.pelvis_ratio, o.t[1] = tpel[1] * b.pelvis_ratio, o.t[2] = tpel[2] * b.pelvis_ratio;
+                HipsT(tpel, b.pelvis_ratio, b.pelvis_off, b.pelvis_off_ok, o.t);
             }
         }
         if (stats) g_interp_applies.fetch_add(1, std::memory_order_relaxed);
@@ -2040,8 +2267,7 @@ bool ComposePartner(BodySlot& b, Joint (&cur)[kJ], bool stats) {
             if (sj == kSamRoot) {
                 o.t[0] = a.troot[0], o.t[1] = a.troot[1], o.t[2] = a.troot[2];
             } else if (sj == kSamPelvis) {
-                o.t[0] = a.tpelvis[0] * b.pelvis_ratio, o.t[1] = a.tpelvis[1] * b.pelvis_ratio,
-                o.t[2] = a.tpelvis[2] * b.pelvis_ratio;
+                HipsT(a.tpelvis, b.pelvis_ratio, b.pelvis_off, b.pelvis_off_ok, o.t);
             }
         }
     }
@@ -2061,8 +2287,9 @@ void ComposeLive(const BodySlot& b, const Capture& c, Joint (&cur)[kJ]) {
         if (sj == kSamRoot) {
             o.t[0] = c.j[kSamRoot].t[0], o.t[1] = c.j[kSamRoot].t[1], o.t[2] = c.j[kSamRoot].t[2];
         } else if (sj == kSamPelvis) {
-            const float r = b.pelvis_ratio;
-            o.t[0] = c.j[kSamPelvis].t[0] * r, o.t[1] = c.j[kSamPelvis].t[1] * r, o.t[2] = c.j[kSamPelvis].t[2] * r;
+            HipsT(c.j[kSamPelvis].t, b.pelvis_ratio, b.pelvis_off, b.pelvis_off_ok, o.t);
+            const float* h = c.j[kSamPelvis].t;
+            if (h[0] * h[0] + h[1] * h[1] + h[2] * h[2] > pelvis::kNearM * pelvis::kNearM) g_far_hips_n.fetch_add(1, std::memory_order_relaxed);
         }
     }
 }
@@ -2166,6 +2393,7 @@ void ApplyBody(BodySlot& b, std::uintptr_t sm, bool live) {
     // her drawn head for Sam's head items (section 26.8): only the game's own updates (a forced one from the tick is not
     // what this frame draws)
     if (live && !from_menu && !t_forcing && g_hms_n.load(std::memory_order_relaxed)) HeadRecord(b, owner, Field<std::uintptr_t>(hdr, kHdrModel));
+    if (live && !from_menu && !t_forcing) DrawnRecord(c.j[kSamRoot].t);  // the drawn meter (section 38.2)
     const bool meter = g_gm_on.load(std::memory_order_relaxed) && !from_menu;
     // Gear props on the partner (or debug) body: its world transform now, the pose just written.
     if (!live && (g_gear_n[0].load(std::memory_order_acquire) || meter)) {
@@ -2538,6 +2766,7 @@ void Detour(void* sm, float dt) {
             PredictSelfWorld(dt);
         }
         ApplyBody(g_me, s, true);
+        t_pred_cand_ok = false;
     }
     g_inflight.fetch_sub(1, std::memory_order_seq_cst);
 }
@@ -2866,6 +3095,13 @@ int g_suit_override = -1;
 // Round 6 T2: the user's edited textures on the same bodies (fragile_textures.hpp, docs section 29); one owner per body:
 // ftex while a look of edited textures exists, else the v0.23 tint (fragile_suit_colour=1), else her own suit.
 ftex::Dress g_tex_p, g_tex_me;
+// Round 12 (section 37.5): the colour row her raised hood is drawn in, per slot body (suit_colour_math HoodRow; -1 unknown):
+// from what DressFragile binds on it. The partner's own row comes over STC1 (partner_gear); this one is its fallback there
+// (a partner's painted look counts as the colour it was painted for). Kept between dressings (HoodRow checks
+// that the slot's body is still a live fragile_suit; forgotten with the slot's body in ResetSlot, so a new body is not
+// dressed in the previous one's row until DressFragile has run for it).
+int g_hood_row[2] = {-1, -1};       // [0] partner slot, [1] self
+bool g_hood_row_look[2] = {};       // the row is a bound look's (edited / ready-made textures)
 
 // ---------------------------------------------------------------- body slot (game thread)
 double g_now = 0;                  // the tick's clock (link::NowMsPrecise), for debug-started spawns
@@ -2874,6 +3110,8 @@ void ResetSlot(BodySlot& b) {
     if (&b == &g_slots[0]) outfit::Forget(g_dress);
     suitcol::Forget(&b == &g_slots[0] ? g_suit_p : g_suit_me);
     ftex::Forget(&b == &g_slots[0] ? g_tex_p : g_tex_me);
+    g_hood_row[&b == &g_slots[0] ? 0 : 1] = -1;
+    g_hood_row_look[&b == &g_slots[0] ? 0 : 1] = false;
     b.owner = Owner::none;
     b.phase = Phase::idle;
     b.spawn = holo::Spawn{};
@@ -2983,6 +3221,7 @@ const char* Validate(BodySlot& b, std::uintptr_t e) {
     b.latch_good = b.latch_seen = 0;
     b.latch_ok = false;
     b.pelvis_ratio = 1.0f;
+    b.pelvis_off_ok = false;
     b.latch_state.store(0, std::memory_order_release);
     b.skel.store(ps.skel, std::memory_order_release);
     b.e_vt = Q(e);
@@ -3357,6 +3596,8 @@ const char* FitOn() {
         std::memcpy(sh.s[sj], g_me.latch[bj].s, sizeof(sh.s[sj]));
     }
     sh.pelvis_ratio = g_me.pelvis_ratio;
+    std::memcpy(sh.pelvis_off, g_me.pelvis_off, sizeof(sh.pelvis_off));
+    sh.pelvis_off_ok = g_me.pelvis_off_ok ? 1 : 0;
     if (!g_fit_shape.Write(sh)) return "off (the shape could not be published)";
     {
         int row = -1;
@@ -4018,6 +4259,10 @@ void LogLatch(BodySlot& b) {
     Log("[%s] latched the body's own pose: %u plausible of %u frames -> %s; pelvis %.3f m vs Sam's rest %.3f m, ratio %.3f%s", b.tag,
         b.latch_good, b.latch_seen, b.latch_ok ? "using its own bone translations" : "using Sam's bone translations", b.latch_pelvis_len,
         b.latch_sam_pelvis_len, b.pelvis_ratio, b.same_skel ? " (Sam's own skeleton: not scaled)" : "");
+    if (b.pelvis_off_ok)
+        Log("[%s]   far hips rule (section 38.3): beyond %.2f m from the root her hips keep Sam's minus her rest offset (%.1f, %.1f, %.1f) cm "
+            "(%.2f m and nearer: the ratio)",
+            b.tag, pelvis::kFarM, b.pelvis_off[0] * 100.0, b.pelvis_off[1] * 100.0, b.pelvis_off[2] * 100.0, pelvis::kNearM);
     if (b.leg_ratio > 0)
         Log("[%s]   legs (thigh + shin) %.3f m vs Sam %.3f m: ratio %.3f%s", b.tag, b.leg_body, b.leg_sam, b.leg_ratio,
             b.leg_used ? "; the latched pelvis disagrees by more than 8 % (not a standing pose): the pelvis ratio uses the legs"
@@ -4162,12 +4407,13 @@ void SelfStats(double now) {
             const std::uint64_t dpre = pren - ppren;
             Log("[self] follow %d (rule %s): predicted %u (seated %u), after Sam %u, skipped %u (no history %u, stale %u, jump %u, read %u, moved %u, "
                 "ride %u, gate %u), failed %u, aba %u; step cm mean %.1f max %.1f, scale %.2f; Sam's frame span ms %.1f; Sam moved outside his update "
-                "cm %.2f",
+                "cm %.2f; far hips %u (rule %s)",
                 follow, g_pred_rule.load() ? "v0.20" : "v0.19", dn, sen - pse, an - pa,
                 (hn - ph) + (sn - ps) + (jn - pj) + (rn - pr) + (mvn - pmv) + (rdn - prd) + (gn - pg), hn - ph, sn - ps, jn - pj, rn - pr, mvn - pmv,
                 rdn - prd, gn - pg, fn - pf, abn - pab, dn ? static_cast<double>(um - pum) / dn / 1e4 : 0.0,
                 static_cast<double>(g_pred_step_max_um.exchange(0)) / 1e4, dsn ? static_cast<double>(kk - pk) / dsn / 1000.0 : 0.0,
-                dsn ? static_cast<double>(ss - pss) / dsn / 1000.0 : 0.0, dpre ? static_cast<double>(pre - ppre) / dpre / 1e4 : 0.0);
+                dsn ? static_cast<double>(ss - pss) / dsn / 1000.0 : 0.0, dpre ? static_cast<double>(pre - ppre) / dpre / 1e4 : 0.0,
+                g_far_hips_n.exchange(0), g_far_hips_rule.load() ? "on" : "off");
         }
         pp = pn, pa = an, ph = hn, ps = sn, pj = jn, pr = rn, pf = fn, pab = abn, psn = scn, pmv = mvn, prd = rdn, pum = um, ppre = pre,
         ppren = pren, pss = ss, pse = sen, pg = gn, pk = kk;
@@ -4192,6 +4438,46 @@ void SelfStats(double now) {
                                                                 " | vs his own update's world: v0.20 %.1f/%.1f cm; the carry moved him after it %.1f/%.1f cm",
                                                                 q.own_sum[0] / q.n, q.own_mx[0], q.moved_sum / q.n, q.moved_mx));
                 Log("[self] follow 4 meter %s, %u moving frames, body vs Sam after the frame: %s", kCls[c], q.n, txt);
+            }
+        }
+        // The drawn meter (section 38.2): her drawn root per candidate against vanilla Sam's drawn root, in seconds where Sam's
+        // world or his drawn root moved: cm mean / max and the jitter mean / max; his steps; his root model row against the local.
+        if (!g_dm_busy.exchange(true, std::memory_order_acquire)) {
+            const DrawnMeter q = g_dm;
+            g_dm = DrawnMeter{};
+            g_dm_busy.store(false, std::memory_order_release);
+            if (q.n && (q.wstep_mx > 0.5 || q.rstep_mx > 0.5)) {
+                static const char* const kCand[kPmCand] = {"v0.20", "v0.19", "copy"};
+                const int applied = g_pred_rule.load() ? 0 : 1;
+                char txt[600];
+                std::size_t o = 0;
+                for (int k = 0; k < kPmCand && o + 120 < sizeof(txt); ++k) {
+                    o += static_cast<std::size_t>(std::snprintf(txt + o, sizeof(txt) - o, "%s%s%s %.1f/%.1f cm jitter %.1f/%.1f", k ? "; " : "", kCand[k],
+                                                                k == applied ? " (applied)" : "", q.sum[k] / q.n, q.mx[k], q.jn ? q.jsum[k] / q.jn : 0.0,
+                                                                q.jmx[k]));
+                }
+                Log("[self] follow 4 drawn root vs Sam's own (his world + his root joint), %u frames: %s | Sam's step max: world %.1f cm, his drawn "
+                    "root %.1f; his root model row vs local max %.1f cm",
+                    q.n, txt, q.wstep_mx, q.rstep_mx, q.stale_mx);
+            }
+        }
+        // The trace (`self_view 23 1`): the frames around a snap or a re-anchor
+        {
+            static std::uint32_t seen = 0;
+            const std::uint32_t sq = g_tr_seq.load(std::memory_order_acquire);
+            static thread_local TraceBlock tb;
+            if (sq != seen && g_tr_ready.Read(tb)) {
+                seen = sq;
+                Log("[self] trace #%u: %d frames around a move over 0.5 m of Sam's world or root joint (row %d); cm, world m", sq, tb.n, tb.trig);
+                const double t0 = tb.trig < tb.n ? tb.r[tb.trig].ms : 0;
+                for (int i = 0; i < tb.n && i < kTrRows; ++i) {
+                    const TraceRow& r = tb.r[i];
+                    Log("[self] trace %+7.1f ms: Sam world (%.3f, %.3f, %.3f) root (%.1f, %.1f, %.1f) model %s(%.1f, %.1f, %.1f) | her world (%.3f, %.3f, "
+                        "%.3f) root (%.1f, %.1f, %.1f) %s | her drawn root vs his: v0.20 %.1f, copy %.1f",
+                        r.ms - t0, r.sw[0], r.sw[1], r.sw[2], r.srl[0] * 100.0, r.srl[1] * 100.0, r.srl[2] * 100.0, r.smok ? "" : "? ",
+                        r.sm0[0] * 100.0, r.sm0[1] * 100.0, r.sm0[2] * 100.0, r.bw[0], r.bw[1], r.bw[2], r.brl[0] * 100.0, r.brl[1] * 100.0,
+                        r.brl[2] * 100.0, selfpred::WhyName(static_cast<selfpred::Why>(r.why)), r.e[0], r.e[2]);
+                }
             }
         }
     }
@@ -4434,8 +4720,15 @@ void DressFragile(game::Entity* local, bool local_active, double now_ms) {
             g_tex_p.who = "debug";
             have = OwnTextureLook(suitcol::Wanted(g_suit_override, c), &l);
         }
-        if (c != 0xFF || g_suit_override >= 0)
+        if (c != 0xFF || g_suit_override >= 0) {
             DressOne(g_tex_p, g_suit_p, reinterpret_cast<std::uintptr_t>(g_p.spawn.e), have, l, suitcol::Wanted(g_suit_override, c), now_ms, tint);
+            const bool bound = ftex::Enabled() && have && !l.Empty();
+            // (the partner's look: the colour it was made for, which the guest picks apart from her Sam's suit colour c; the
+            // painted row itself comes over STC1)
+            const int prow = l.colour >= 0 && l.colour <= 16 ? l.colour : suitcol::Wanted(g_suit_override, c);
+            g_hood_row[0] = suitcol::HoodRow(bound, g_p.owner == Owner::partner ? prow : l.hood_row, g_suit_p.applied);
+            g_hood_row_look[0] = bound;
+        }
     }
     if (g_me.phase == Phase::live && IsFragileSuit(g_me.body) && GetTickCount64() - g_me.live_tick >= 500 && holo::SpawnAlive(g_me.spawn)) {
         wire::Outfit o;
@@ -4452,6 +4745,8 @@ void DressFragile(game::Entity* local, bool local_active, double now_ms) {
             OwnBootsKey(colour, &btype, &bworn, &bown);
             texshare::SetOwnBoots(btype, bworn, bown);
             DressOne(g_tex_me, g_suit_me, reinterpret_cast<std::uintptr_t>(g_me.spawn.e), have_look, l, colour, now_ms);
+            g_hood_row[1] = have_look || !ftex::Enabled() ? suitcol::HoodRow(ftex::Enabled() && have_look && !l.Empty(), l.hood_row, g_suit_me.applied) : -1;
+            g_hood_row_look[1] = ftex::Enabled() && have_look && !l.Empty();
         }
     }
 }
@@ -5410,6 +5705,19 @@ void ExoCounters(GearSlot slot, char* out, std::size_t cap) noexcept {
 bool PartnerOutfit(wire::Outfit* out) noexcept {
     if (!g_have_partner_outfit || !out) return false;
     *out = g_partner_outfit;
+    return true;
+}
+
+bool SlotIsFragileSuit(GearSlot slot) noexcept {
+    const BodySlot& b = g_slots[slot == GearSlot::self ? 1 : 0];
+    return b.phase == Phase::live && IsFragileSuit(b.body) && holo::SpawnAlive(b.spawn);
+}
+
+bool HoodRow(GearSlot slot, std::uint8_t* row, bool* from_look) noexcept {
+    const int r = g_hood_row[slot == GearSlot::self ? 1 : 0];
+    if (!row || r < 0 || r > 16 || !SlotIsFragileSuit(slot)) return false;
+    *row = static_cast<std::uint8_t>(r);
+    if (from_look) *from_look = g_hood_row_look[slot == GearSlot::self ? 1 : 0];
     return true;
 }
 
@@ -6430,6 +6738,19 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
                 g_pred_rule.store(v[1] != 0 ? 1 : 0);
                 Set(msg, cap, "self view follow 4 rule %s", v[1] != 0 ? "v0.20 (the step also seated, the consistency gate, the dt scale)"
                                                                        : "v0.19 (no step while seated, no gate, no scale)");
+                Log("[self] %s", msg);
+                return true;
+            }
+            if (v[0] == 22) {  // self_view 22 <0/1>: the far hips rule (section 38.3): 1 (default), 0 v0.26's plain ratio
+                g_far_hips_rule.store(v[1] != 0);
+                Set(msg, cap, "self view far hips rule %s", v[1] != 0 ? "on (beyond 1.45 m from the root: Sam's hips minus her rest offset)"
+                                                                      : "off (v0.26: Sam's hips times the ratio everywhere)");
+                Log("[self] %s", msg);
+                return true;
+            }
+            if (v[0] == 23) {  // self_view 23 <0/1>: the follow 4 trace around snaps (section 38.2), off by default
+                g_tr_on.store(v[1] != 0);
+                Set(msg, cap, "self view follow 4 trace %s", v[1] != 0 ? "on" : "off");
                 Log("[self] %s", msg);
                 return true;
             }

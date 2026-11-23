@@ -6848,7 +6848,7 @@ rig never plays a clip and its blink and saccade are off.
   may look a little off on her.
 - In cutscenes the sequences drive the cutscene bodies; the mod's bodies are hidden there anyway.
 
-## 37. Fragile's rain hood (round 11; `session.ini fragile_hood`, default 2, and `hood_hair`, default 1)
+## 37. Fragile's rain hood (round 11; `session.ini fragile_hood`, default 2, and `hood_hair`, default 1; round 12: `hood_colour`, default 1, `hood_fold_hide`, default 0)
 
 The user's report (round 10): in timefall Sam raises his hood; Fragile had none, on either screen. Fragile's own models
 have no hood mesh (`fgl_body_suiti`: one body mesh, `fgl_hair_def`, `fgl_head_def`; no hood resource under `fgl_fragile`).
@@ -6943,3 +6943,275 @@ Not run on this build: `two-games-fragile-skeleton` with its new hood leg (the h
 - The hood lamps' emission curve (`0x1426B8CA0`) is not mirrored: the lamps keep their default intensity.
 - The hood on a partner Sam body (MirrorParts) still jumps after its 0.4 s switch (14.4).
 - A user's real wardrobe change of hood type mid-rain swaps the type at once (no unfold).
+- (Round 12) The sea otter hood keeps its own grey texture set (only its neck piece takes her colour); a painted suit's
+  hood is the nearest of Sam's palette rows (37.5).
+
+### 37.5 Her hood in the colour of her suit (round 12; `session.ini hood_colour`, default 1)
+
+The user's report (v0.26.0): "the hood on fragile doesnt seem to match the color of her suit". The raised hood is Sam's
+own hood mesh on the exo carrier, so it wore Sam's look: the carrier was dressed like the sender's Sam (`outfit::Apply`
+with his outfit: the exos variation, which swaps the silver / gold texture sets, and the palette row). In the user's
+session she wore her remembered pick 14 (pink, ready-made) while her Sam was gold (colour 16, exos 31): a gold hood on
+a pink suit, on both screens.
+
+- **What the hoods are drawn with** (game data): the porter and oxi hoods (`mesh_hoodon_lx`, `mesh_hoodoxion_lx`) use
+  Sam's suit texture set `sam_body_suiti_v00_set`, tinted by the colour table `cm_cvar_b002` (row = the suit colour
+  shader variable `0x2967E719`); the exos variations v3x / v6x swap that set for silver / gold. The sea otter hood has
+  its own set and the same table. So the carrier's suit colour and exos block decide the hood's colour.
+- **Her row** (`suit_colour_math.hpp HoodRow`, ctest `st_suit_colour_tests`), from what DressFragile binds on that body
+  (`realbody::HoodRow`): a bound look (her ready-made or painted textures) gives its suit part's row (`ftex::Look::
+  hood_row`, texture_looks.cpp: no S0 slot = her own fabric, row 0; a ready-made S0 = the folder's colour, whose fabric
+  average is exactly Sam's swatch of that row; an S0 built from the folder's files = the average of the Colour picture
+  it uses over her navy fabric (the ready-made generator's mask), then the nearest row, `NearestRow`, her own navy
+  counting as row 0; a silver / gold folder whose Colour picture is not painted keeps its metal); else the v0.23 tint
+  bound (its colour) or her own navy (row 0). Unknown (a look not built yet, the test pattern): the carrier keeps Sam's
+  look, as before.
+- **The carrier dressed for her** (`partner_gear.cpp DressForHer`, every tick before `outfit::Apply`): the porter suit,
+  `exos = wire::ExosForColour(Sam's exos, row)` (ctest `st_net_tests`: the game's formula of 9.1 with Sam's glove and
+  skeleton kind kept, the block from her row: -1 plain for 0..14, 14 silver for 15, 29 gold for 16) and her row as the
+  suit colour. One variation tints the whole carrier, so her skeleton pieces follow her suit's colour too (as Sam's
+  follow his). The first show still waits for that tint (32). Logged when it changes: `[exo-self] carrier <p> dressed
+  for her colour 14 (Sam's exos 31 -> 1, his colour 16)` (`[exo]` on the partner body). No new game address: the
+  existing outfit calls and their checks.
+- **The other screen.** The self body's row also goes out in STC1 (v5 kept): `hood info` bits 3-7 = row + 1 (0 none;
+  `wire::PackGearHoodInfo`, `GearHoodRow`, `GearHoodOk` refuses a row over 16; the build id changes with the wire files,
+  so mixed builds never meet). The receiver uses it only while it dresses her in the guest's own look (her textures over
+  the link: it knows a painted suit's row); drawing her own navy or the v0.23 tint, it uses its own row (a host with
+  `textures_receive=0` draws her navy: a navy hood, not the guest's pink).
+- **Round 12 review: no flip between two rows.** The sender's row is latched per carrier while the receiver's own row for
+  that look stays the same, so a gear frame without a hood reading (the row bits come with it) no longer switches the
+  carrier back to the receiver's row (a re-dress every 250 ms, an exos remove and apply when the block changes). The
+  receiver's own row for the guest's look is now the colour that look was made for (`ftex::Look::colour`, which the guest
+  picks apart from her Sam's suit colour), not her Sam's suit colour: in the user's case 14, not 16, even before the first
+  reading. The dressed line ends with `: the sender's row (her look over the link)` when the row came over STC1. A slot's
+  row is forgotten with its body (`ResetSlot`), so a new body is not dressed in the previous one's row.
+- **Round 12 review: the pure part of a built look's row** (`suit_colour_math.hpp MeasureHoodRow`, `ReadyMadeLookRow`,
+  `FolderLookRow`, `FabricAverage`; ctest `st_suit_colour_tests` TestLookRow): which S0 is measured, the fallbacks, the
+  mask threshold (128), the 1 % fabric minimum. `fragile-suit-defaults-quick` measures a painted folder (`05 Light grey`, a
+  checker) in a run; `two-games-fragile-skeleton` gives her the ready-made pink while her Sam is gold and checks the host's
+  carrier takes the sender's row.
+- **Not matched exactly:** a painted suit gets the nearest of Sam's 15 palette rows, not its own colour (an exact match
+  would need a texture override on the carrier's hood mesh, under the colour table). Row 0 is Sam's grey-blue
+  (80, 89, 105), about 20 % lighter than her navy (66, 71, 81).
+
+### 37.6 Her folded hood hidden while the raised hood shows (round 12; `session.ini hood_fold_hide`, default 0: no visible effect, 37.7)
+
+The user's report (v0.26.0): "the hood on her suit is still showing even when the hood is up so it looks like 2 hoods".
+Her porter suit wears its hood rolled down on her collar; Sam's own suit hides that part (HoodOff) from the raise to the
+end of the lowering (37.1), hers has no such part.
+
+- **Where it is** (decoded from her mesh, `fgl_body_suiti/model/parts/mesh_body_lx`): not an ArtPart. Her body is one
+  LodMeshResource (`96d8545e`, LOD distances 0 / 2.0, read at run time); LOD0 is a MultiMeshResource of 4 meshes, and mesh
+  D (RegularSkinnedMeshResource `7f533fe6`, 2173 vertices, her suit material) is the roll around the back and sides of
+  her collar plus two cloth knee flaps. Mesh D skins with its own 22 joint bindings (`SkinnedMeshIndexedJointBindings`:
+  joints 5, 6, 29, 30, 31, 35, 61, 62, 66, 67, 106, 107, 108, 139, 153, 170, 193-198); the roll uses only bindings 0-5 and
+  10-13 (Spine5, shoulders, neck, head, the collar joints), the knee flaps the others: the two sets share no joint. In
+  LOD1 the roll is merged into the suit primitive (not separable). Her black suit (34) has no hood mesh.
+- **What the mod does** (`hood_fold.{hpp,cpp}`, pure rules in `exo_parts.hpp`, ctest `st_exo_parts_tests`): while any of
+  our fragile_suit bodies is shown and its carrier shows a hood part (the switch while it unfolds, or the raised hood;
+  `partner_gear.cpp FoldWanted`), the inverse bind matrices of mesh D's 10 roll bindings are zeroed (the roll's vertices
+  collapse to a point: zero-area triangles), and her LOD1 distance is raised to 100 km so LOD0 is drawn at every distance;
+  everything is written back when no body wants it, when the body drawing it goes (only when the objects are still exactly
+  what was written), and at the emergency stop. It is a write into a shared loaded resource (no file, no game state): every
+  fragile_suit body of that game follows it, so nothing is changed unless one of our bodies wants it and is shown.
+- **Checks before any write** (no game function is called, so no code address): entity `+0xB8` SkinnedModel `+0x40`
+  SkinnedModelRep `+0x28` drawable `+0x98` mesh entries (`0x1B0`) `+0xE0` the LodMeshResource (by RTTI); its `+0x88` LOD list
+  (each part's mesh a MeshResourceBase, the distances increasing; stride found at run time); LOD0 a MultiMeshResource
+  (`+0x80` meshes); mesh D by its GUID and RTTI; `+0x98` its SkinnedMeshIndexedJointBindings (RTTI), the joint list
+  (`+0x20`) exactly the 22 joints above, 22 matrices (`+0x30`), the first one's rows equal to the game data's (-1, 0, 0, 0 /
+  0, -0.1045, 0.9945, 0); each matrix again before each write (what the game had, or zero). A mismatch: `[hood] her folded
+  hood is not hidden this session: <why>` and nothing written. Every tick the types and pointers are re-read first.
+- **Not done:** the primitive's index range (research's H2) is not used: the PrimitiveResource array is not at the
+  offsets the RTTI suggests (`+0xA8..+0xB8`), so a dev run found none; the per-matrix write is enough where the game reads
+  the matrices when it skins.
+- **Settings and actions:** `session.ini hood_fold_hide=0|1`; `gear 34 <method> <pin>` (0 never, 1 the product; pin 0 / 1;
+  -1 the product again; other values the status) and `gear 35 <0|1>` (37.5) (debug-actions.md). Logged: `[hood] her folded
+  hood found: LodMeshResource <p>, mesh D <p> (bindings <p>, 22 joints checked, matrices <p>), LOD distances 0.00 2.00`,
+  `[hood] her folded hood hidden (mesh D's 10 roll bindings zeroed, LOD0 pinned; partner body wants it hidden, self body
+  wants it hidden; #n)`, `[hood] her folded hood shown again (everything written back; ...)`.
+- **Round 12 review (no game run yet):**
+  - *Nothing of ours is left behind.* All ten roll matrices are checked before any is written (a failed check writes
+    nothing), then written in their two runs (bindings 0-5, 10-13: two writes, not ten). Whatever stops a hide or a show
+    part way (a failed write, a later check), `RollBack` writes back every roll matrix that is zero and every LOD distance
+    that is the pin, whatever the mod thinks it applied, and goes past a foreign one; only then is the hiding turned off.
+    The same write-back runs when the body goes, at the emergency stop, and (up to 5 tries, 1 s apart) after the hiding
+    went off with something still ours. It writes only while the objects are still the same (types re-read, the matrices'
+    data pointer unchanged). Find refuses a roll matrix that is already zero (it could not be told from ours).
+  - *A one-tick gap is not a change.* The resource must be missing from both bodies for 3 ticks and 250 ms before it is
+    written back and forgotten (a drawable rebuilt by a colour change or a look rebind no longer flashes the roll), and a
+    find that fails is tried again 1 s later, the hiding off only after 3 failures in a row (`[hood] her folded hood not
+    found yet (<why>): trying again in 1 s (n of 3)`).
+  - *One resource at a time, the one wanted.* When the body that wants the roll hidden draws another resource than the
+    one changed, the changed one is written back first and the wanted one found (`exo::FoldPickOf`). Two bodies of one
+    resource (the echo role, the debug owner) share the roll: one wanting it hidden hides it on both, so the delayed echo
+    body in `echo-hood` shows a bare collar for the echo delay. A real session has one fragile_suit body per screen.
+  - `gear 34 <method> [nopin]`: the second number now turns the pin off (1) or leaves it on (0 or left out), so
+    `gear 34 1` is the product; methods other than -1, 0, 1 only log the status.
+
+### 37.7 Round 12 proof
+
+Development runs (`-SeedSaves complete-100`, `Run-Batch.ps1`; each: saves unchanged, restored, no violation, 0 cloud
+uploads, 0 game-server writes, online gate ok):
+
+| Run (`build-testenv\runs\`) | What it shows |
+|---|---|
+| `20261123-132606-echo-hood` (**fail**, a scenario mistake) | The scenario asked for `textures extract` in an echo game; Fragile's textures are only on for a guest, a host or a solo game, so `[tex] ready` never came. Both carriers dressed `for her colour 0 (Sam's exos 31 -> 1, his colour 16)` while her suit was her own navy. The scenario now uses the v0.23 tint; the ready-made rows are checked in `fragile-suit-defaults-quick`. |
+| `20261123-133022-echo-hood` (**fail**: the dev run's test of the primitive method turned the hiding off; that method is gone) | Colour: with the tint, `[exo-self] carrier ... dressed for her colour 14 (Sam's exos 31 -> 1, his colour 16)` and the same on the partner carrier; then 16 (`31 -> 31`) and 0 (`31 -> 1`). `02-hood-up-front` / `04-porter-up-front`: the sea otter hood's neck piece and the porter hood pink on her pink suit, on both bodies (round 11's `20261123-113606` `02` showed the gold neck piece on her navy suit); the sea otter's head stays grey (its own texture set). Fold: `[hood] her folded hood found: ... 22 joints checked ..., LOD distances 0.00 2.00` and `hidden (mesh D's 10 roll bindings zeroed, LOD0 pinned; ...)` from the raise on, `shown again` with `gear 34 0 0`, hidden again with `gear 34 1 0` / `1 1`. **Not settled by the stills:** the back views (`11`-`13`) are covered by the backpack and the camera moved between them; the front stills do not show the collar clearly. The Prove run's `03b` / `03c` and `04b` / `04c` (shown / hidden with the camera still) decide it. |
+
+**What the Prove run must look at (round 12 review).** Every fold check in the scenarios is a log line saying the mod wrote
+the memory; no line can say the game draws the change (whoever reads the inverse bind matrices was not found). So item 2
+is fixed only when the stills show it: the collar in `echo-hood` `03b` against `03c` and `04b` against `04c` (shown /
+hidden, the camera still), and at a distance `11a`..`14a` against `11b`..`14b` (the echo body 5 m aside; a pinned, b the
+pin off: if the roll shows in b but not in a, the pin works and is needed; if it shows in both, the game copied the LOD
+distances when it made her drawable and the pin does nothing).
+
+**Prove result (round 12, runs `20261123-144847-echo-hood`, `20261123-145056-two-games-fragile-skeleton`).** Every fold
+line passed on both screens (found, 22 joints checked, hidden, shown again), but no shown / hidden pair differs where
+the fold is: echo-hood `03b`/`03c` (side, the backpack covers her nape), `04b`/`04c` (front: the same pink roll under
+her chin in both), `11`..`14` a/b, and the two-games pairs added for the Prove stage (`09b`/`09c` front and `09e`/`09f`
+back on the guest's screen, `09b`/`09c`, `09e`/`09f` on the host's). Item 2 is not shown fixed: either the game does not
+read these inverse binds again after the load, or what reads as a second hood is not mesh D's roll.
+
+**Shipped off (v0.27.0).** `hood_fold_hide` defaults to 0: a write into the game's shared resource that changes nothing on
+screen is not worth its risk. `echo-hood` and `two-games-fragile-skeleton` set `ini hood_fold_hide=1` so the find, the
+checks and the write-backs stay covered. Next lead: a per-instance hide (the drawable's own mesh entry or primitive
+state), not the shared resource's binds.
+
+## 38. Fragile in the private room: Sam's camera reactions, the drawn root and the far hips (round 12)
+
+The user's report on v0.26.0 (Local test, the guest as Fragile): "in the private room Fragile seems to do weird animations
+randomly and she gets glitchy, her position is moving a lot, maybe when I zoom in".
+
+### 38.1 What happens [V: dev runs `20261123-135612-private-room-camera`, `20261123-140605-private-room-camera`]
+
+- Sam's camera reactions. While the room camera moves near him, and every 15-20 s once the room has run for a while, the
+  game plays a reaction on Sam: his facial clip changes to a clip in no table (`[face] Sam's face: a clip in no table
+  (override ...)`), his backpack layout flips for a moment (`[gear] a new layout 292F (1 items, was 5813 with 0)`), and
+  about 0.3 s later his entity world jumps 2.04 m toward the camera in one frame, with no turn. It then glides back to the
+  bed in about 0.45 s (about 95 frames at 200 fps), while his root joint stays at 0 and his hips stay seated (78 cm).
+- The trace (38.2) shows this frame by frame in all four jumps of the second dev run. Example, from `trace #2`:
+  - -5.3 ms: Sam's world at x = 1433.948, his root (0, 0, 0).
+  - +0.0 ms: Sam's world at x = 1431.915, root (0, 0, 0).
+  - +4.4 ms: x = 1431.917; she is at 1431.915, 0.2 cm from him.
+  - The glide then continues back toward 1433.948, with her within 0.1-0.7 cm of him.
+- Sam's own model goes with his world. The blue cuff light on her wrist is a part of Sam's model, drawn on his hidden
+  skeleton. In the first run's last screenshot, 0.19 s after a reaction began, her body fills the camera, and there is no
+  cuff light anywhere on the bed. So these jumps are Sam's own camera reaction (he leans into the camera, then is back on
+  the bed), not something the mod adds.
+- The self view follows it exactly, apart from one frame. Follow mode 4 moves her body in its own update, before Sam's
+  update in the frame. On the frame of the jump she is drawn at the old place, one frame behind (5 ms at 200 fps, 22 ms at
+  the user's 45 fps). After that her drawn root is within a centimetre of Sam's.
+- Round 12's research thought Sam's root joint cancelled out the slide (case A). The measurements show it does not: his
+  root joint is 0 and his drawn root moves with his world on every frame of every jump. So the rule written for that case
+  (keep her still while his drawn hips stay still) was taken out again.
+- "Weird animations" are the same reactions. Her body plays Sam's pose and his facial clip, as it does everywhere.
+- The camera nudges (`pad none 200 rx=+-32767`) pan the room camera. The room's Zoom In is the keyboard's T (a hidden
+  game does not receive it) or the pad's right stick press (`pad rs`). [V: Prove runs `20261123-145310`,
+  `20261123-145727`] The press zooms in and starts Sam's reaction 0.5-0.8 s later (`[gear] a new layout 292F`, his world
+  jump, then a second reaction about 7 s later); with no zoom no reaction came in 60 s. Vanilla Sam (the self view off)
+  does the same sequence after the press: flex and arm-up gestures, then he stands, walks up to the camera until his body
+  fills it (the camera between his legs), goes back and gives a thumbs up. So the user's "weird animations, maybe when I
+  zoom in" are the game's own zoom reactions, played on her.
+
+### 38.2 The drawn meter and the trace (`real_body.cpp` DrawnMeterScore / DrawnRecord)
+
+**The drawn meter.** The follow-4 meter of section 26.6 scores worlds only. The drawn meter scores what is drawn:
+
+- Her drawn root: each candidate world (v0.20, v0.19, plain copy) plus the root translation of the pose she was just
+  given.
+- Sam's drawn root: his world after his last update of that frame plus his root joint's local translation from the
+  capture. The root has no parent, so this local translation is also its model point.
+- Each frame is scored at the body's next update.
+- The meter logs once a second, only in seconds where Sam's world or his drawn root moved more than 0.5 cm:
+  `[self] follow 4 drawn root vs Sam's own (his world + his root joint), N frames: v0.20 (applied) mean/max cm jitter
+  mean/max; ... | Sam's step max: world .. cm, his drawn root ..; his root model row vs local max .. cm`.
+- The jitter is how much her error changes from one frame to the next. A constant offset cannot be seen; a change can.
+- The last figure compares two readings of Sam's root:
+  - the translation row of his root model matrix, as his animate left it;
+  - the root's local translation, which is what the self body copies.
+
+  It was 0.0 cm in every second of both dev runs.
+- No new game address is used. The model matrix is read through the pose header already byte-checked for the capture.
+
+**The trace (`self_view 23 1`, off by default).** It logs every scored frame around any frame where Sam's world or his
+root joint moved more than 0.5 m: 8 frames before and 8 after.
+
+- Header line: `[self] trace #N`.
+- One line per frame: `[self] trace +x ms: Sam world (...) root (...) model (...) | her world (...) root (...) <why> | her
+  drawn root vs his: v0.20 .., copy ..`.
+
+The follow line also counts the pose writes where Sam's hips were farther than 1.15 m from his root, and names the rule
+that applied (`far hips N (rule on)`; see 38.3).
+
+### 38.3 The far hips rule (`pelvis_scale.hpp`; `self_view 22 <0/1>`, default 1)
+
+**The old rule.** Since v0.7 her hips translation has been Sam's times the pelvis ratio (0.957 for her room body `fragile`, 0.975 for her porter suit). That is right
+near the root: standing, walking or seated, it lowers her hips to fit her shorter legs.
+
+**The problem in the room.** The room's anchored animations put Sam's hips 1.5-2.5 m from his root. The user's log shows
+captured pelvis lengths of 204-247 cm in the bed close-up after the load, and 148-180 cm when the game hid and re-showed
+Sam. There the ratio pulled her whole body 6-11 cm toward the root, and that offset jumped whenever the room re-anchored
+him.
+
+**The new rule:**
+
+| Distance from the root | Her hips translation |
+|---|---|
+| up to 1.15 m | the ratio, bit-identical to v0.26 |
+| 1.15-1.45 m | smoothstep blend between the two |
+| 1.45 m and more | Sam's translation minus her rest offset (see below) |
+
+- The rest offset is (1 - ratio) times Sam's rest hips length (1.0 m), along her own latched hips direction. Her hips sit
+  as much lower as they do at rest.
+- The rule applies wherever the hips translation is scaled:
+  - the self view (ComposeLive);
+  - the partner body (ComposePartner, both branches);
+  - the fit (Sam's hidden skeleton under the self view).
+- The latch logs the offset: `[self]   far hips rule (section 38.3): beyond 1.45 m from the root her hips keep Sam's minus
+  her rest offset (x, y, z) cm`. In dev run 2 it was (0.0, 0.0, 2.5) cm for her porter suit body (ratio 0.975) and
+  (0.0, 0.1, 4.3) cm for her room body `fragile` (ratio 0.957): vertical, as expected.
+- Unit tests (`st_self_predict_tests`, TestPelvis):
+  - bit-identical to the ratio up to 1.15 m;
+  - within 1 cm of the ideal at 2.47 m, where the old ratio is more than 9 cm off;
+  - no step bigger than 2 mm along a 1 mm-spaced sweep from 1 to 2 m;
+  - no offset without a usable rest direction, so the old ratio is used.
+- `self_view 22 0` gives back v0.26's ratio everywhere.
+
+### 38.4 Proof
+
+Scenario `private-room-camera` (`# covers: private-room self-view smooth story`, `-SeedSaves story-pack`):
+
+1. It loads straight into the room with the self view on and the trace on.
+2. It nudges the camera 8 times, with screenshots after each nudge.
+3. It waits for Sam's next reaction (`waitnew 60` on the backpack layout line) and takes a burst of 6 screenshots.
+4. It requires a drawn-root line from a second with a world jump of 1-9.99 m.
+5. It requires a post-jump trace row where her drawn root is under 1 cm from Sam's.
+6. It `nolog`s any post-jump trace row that is 10 cm or more off.
+7. (Round 12 review) It turns the trace and the self view off (Sam shown, nothing of ours on him), waits for his next
+   reaction (optional, 60 s) and takes a burst (`vreact-0..5`): the game's own Sam seen directly during a reaction.
+
+Development runs:
+
+| Run (`build-testenv\runs\`) | What it shows |
+|---|---|
+| `20261123-135612-private-room-camera` (**fail**: the optional checks of the anchor rule, since removed, found nothing to anchor) | 3 reactions (89.5, 106.5, 127.0 s). Sam's drawn hips (his clean model matrices) moved with his world in every jump: `counter-moving frames 0`. The last screenshot, 0.19 s after a reaction began, shows her body filling the camera. Safety: saves unchanged, restored, no violation, 0 cloud uploads, 0 game-server writes, online gate ok. |
+| `20261123-140605-private-room-camera` (**pass**) | 4 traces: the load, and 3 reactions at 86.8, 103.8 and 124.4 s. Each jump is 2.036 m in one frame, then a glide back. Root joint 0, model row equal to the local translation (0.0 cm). Her drawn root is within 0.1-0.7 cm of Sam's in every frame after the jump, with 203.6 cm only on the frame of the jump. Safety as above, `run PASSED`. |
+
+The final scenario (the reaction burst and the trace assertions) has not been run yet. It goes to the Prove stage.
+
+### 38.5 Not covered
+
+- Vanilla Sam's look during a reaction cannot be seen with the self view on, because Sam is hidden. The case that the
+  game draws him where his world is rests on Sam's own model parts (the cuff) going with her, and on the one screenshot
+  above; the scenario's last part (step 7) shows him directly when he reacts within its wait.
+- Nothing changes what the user sees for the reaction itself: it is the game's own camera reaction (Sam's world 2 m
+  toward the camera and back, his grimace) drawn on her. Explained, not fixed. The trigger the user named is exercised
+  with the pad's right stick press (38.1); the keyboard's T is never sent by a hidden run. Not settled: whether vanilla
+  Sam's drawn model also takes the one-frame 2.04 m world jump (the vanilla bursts of Prove run 20261123-145727 are
+  about 0.5 s apart and show no frame of it; the gestures, the walk to the camera and the camera between his legs match).
+- The one frame behind at each jump stays. Predicting the jump would need the game's reaction timing.
+- The far hips rule has no in-room run. The anchored offsets (the bed close-up after the room's own load, the game's
+  hide) did not happen in the story-pack load. The proof is the unit tests and the latch line. It applies everywhere
+  Sam's hips are more than 1.15 m from his root (seats, rides, other anchored animations), so `pelvis_scale.hpp` maps to
+  the `ride` area too (tools/testenv/test-areas.txt): the selector adds a ride run.
+- Sam's reaction facial clips on her face (section 36) are left as they are: they are his own.

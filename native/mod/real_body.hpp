@@ -282,6 +282,13 @@ std::uintptr_t ExoCarrierEntity(GearSlot slot) noexcept;  // the carrier now pos
 void ExoCounters(GearSlot slot, char* out, std::size_t cap) noexcept;
 // The outfit the partner sent (false: none yet).
 bool PartnerOutfit(wire::Outfit* out) noexcept;
+// Round 12 (docs/real-partner-body.md section 37.5): the slot's live body is Fragile's porter suit (fragile_suit: the body
+// with the folded hood on her collar).
+bool SlotIsFragileSuit(GearSlot slot) noexcept;
+// The colour row her raised hood is drawn in for the slot's fragile_suit body (0..14 palette, 15 silver, 16 gold): what her
+// suit wears now (DressFragile: her ready-made / painted look, the tint, or her own navy = 0). False: unknown, or not her.
+// *from_look: the row is a bound look's (edited / ready-made textures; on the partner body the guest's look over the link).
+bool HoodRow(GearSlot slot, std::uint8_t* row, bool* from_look = nullptr) noexcept;
 void ClearGearPose(unsigned k) noexcept;
 void GearPoseCounters(char* out, std::size_t cap) noexcept;
 // How many props of the slot the detour places now (0: unpublished, or a placement fault switched

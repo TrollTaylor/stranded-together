@@ -112,6 +112,12 @@ struct Config {
     // her hat stays on in the rain). hood_hair=1 (default): her hair hidden while her hood is drawn; 0: shown.
     int fragile_hood = 2;
     bool hood_hair = true;
+    // Round 12 (sections 37.5, 37.6): hood_colour=1 (default): the carrier dressed in the colour her suit wears (her hood
+    // matches her suit); 0: in the sender's Sam's colour (v0.26). hood_fold_hide=1: try to hide her folded hood (on her
+    // collar) by zeroing its inverse binds while the raised hood shows; 0 (default): not tried. Off by default: the round 12
+    // stills showed no change on screen (section 37.7), so the write into the shared resource bought nothing.
+    bool hood_colour = true;
+    bool hood_fold_hide = false;
     // Round 6 (docs/real-partner-body.md section 31): what is in a player's hand on the other screen. held_items (0 off: only
     // the cutscene-prop weapons of v0.9; 1 the ladder, PCC and climbing anchor; 2, the default, every weapon / tool without a
     // cutscene prop) is drawn as a plain entity made from the item's own resource ("held clone").

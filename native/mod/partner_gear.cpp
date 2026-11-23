@@ -17,6 +17,7 @@
 #include "gear_wear.hpp"
 #include "held_items.hpp"
 #include "held_rules.hpp"
+#include "hood_fold.hpp"
 #include "log.hpp"
 #include "partner_holo.hpp"
 #include "partner_outfit.hpp"
@@ -842,6 +843,13 @@ struct PropSet {
         // the first show waits for the tint (the sender's exos variation on the carrier), at most kExoTintWaitMs
         std::uint8_t tint_want = 0xFE;  // wire::PorterExos of the outfit it copies (0xFE: no outfit read)
         bool tint_ok = false;
+        // round 12 (section 37.5): dressed for her suit's colour row (-1: like the sender's Sam), from Sam's exos
+        int dressed_row = -1;
+        std::uint8_t dressed_sam = 0xFE;
+        unsigned dressed_logs = 0;
+        // round 12 review: the sender's row (STC1 hood info) latched while our own row for her look stays the same (a reading
+        // without the row bits keeps it: no flip to the local row and back); -1 none, `sender_key` the local row it was latched at
+        int sender_row = -1, sender_key = -2;
         // her rain hood on it (section 37): what it shows (HoodAnimTick), its hood parts per type {on, off, switch} looked up
         // on this carrier, its animation slots (bit per type, -1 not checked), the slot being unfolded
         exo::HoodAnim hood;
@@ -1728,7 +1736,9 @@ bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_
     // STC1 v5: Sam's rain hood (section 37)
     if (g_hoodr.valid) {
         f.hood = wire::PackGearHood(g_hoodr.state);
-        f.hood_info = wire::PackGearHoodInfo(g_hoodr.type, g_hoodr.alt);
+        // round 12 (section 37.5): the colour row our Fragile wears, so the other screen draws her hood in it
+        std::uint8_t row = 0xFF;
+        f.hood_info = wire::PackGearHoodInfo(g_hoodr.type, g_hoodr.alt, realbody::HoodRow(realbody::GearSlot::self, &row) ? row : -1);
     }
     // Hidden tests only: synthetic delivery cases stacked on the backpack (large, medium, small, ...),
     // in the innermost of the layers the game uses on Sam's backpack (run 20261117-105905: layers 0.13 m
@@ -2435,6 +2445,7 @@ constexpr HatSlot kHats[4] = {{0x0F, 0x4E18}, {0x24, 0x4E20}, {0x31, 0x4E28}, {0
 // Byte-checked once; on a mismatch nothing is read: her hood is not drawn and her hat stays on her in the rain (26.8).
 int g_hood_mode = 2;      // session.ini fragile_hood / `gear 31 <0/1/2>`: 0 off, 1 the timed swap, 2 the unfold where the carrier can play it
 bool g_hood_hair = true;  // session.ini hood_hair / `gear 33 <0/1>`: her hair hidden while her hood is drawn
+bool g_hood_colour = true;  // session.ini hood_colour / `gear 35 <0/1>` (round 12, section 37.5): the carrier dressed in her suit's colour
 int g_hood_force_state = -1, g_hood_force_type = 2;  // `gear 32 <state> [type]` (hidden tests; -1 off): our reading replaced
 int g_hood_read_sites = -1;                           // -1 not checked, 0 mismatch (no reading), 1 ok
 constexpr std::uintptr_t kInvHoodType = 0x4A88, kInvHoodClipOpen = 0x4A8C;
@@ -3669,6 +3680,10 @@ void RemoveExo(PropSet& s, const char* why) {
     x.hood = exo::HoodAnim{};
     x.hood_part = -1;
     x.hood_e = 0;
+    x.dressed_row = -1;
+    x.dressed_sam = 0xFE;
+    x.sender_row = -1;
+    x.sender_key = -2;
     x.anim_ok = -1;
     x.anim_checks = 0;
     x.anim_slot = -1;
@@ -4124,6 +4139,65 @@ bool OwnHoodDrawnUp() {
     return g_hoodr.valid && g_hood_mode != 0 && g_exo_on && !g_sets[1].exo.refused && HoodLookupOk() && exo::HoodHidesHat(exo::HoodPhaseOf(g_hoodr.state));
 }
 
+// Round 12 (section 37.5): the colour row her suit wears on the slot's body (-1 unknown, or not her porter suit: the carrier
+// keeps the sender's Sam's look): how we dress her (realbody::HoodRow). On the partner body dressed in the guest's own look
+// (her textures over the link), the sender's row (STC1 hood info: it knows a painted suit's row); her own navy or the tint
+// as we draw them. The sender's row is latched per carrier while our own row for that look stays the same, so a frame
+// without a hood reading (the row bits come with it) does not flip the carrier to our row and back.
+int CarrierRow(PropSet& s, bool* from_sender = nullptr) {
+    PropSet::Exo& x = s.exo;
+    if (from_sender) *from_sender = false;
+    if (!g_hood_colour || !realbody::SlotIsFragileSuit(s.slot)) {
+        x.sender_row = -1, x.sender_key = -2;
+        return -1;
+    }
+    std::uint8_t row = 0xFF;
+    bool look = false;
+    const bool have = realbody::HoodRow(s.slot, &row, &look);
+    if (look && s.slot == realbody::GearSlot::partner && realbody::GetOwner() != realbody::Owner::debug) {
+        const int local = have ? row : -1;
+        if (local != x.sender_key) x.sender_row = -1, x.sender_key = local;  // her look changed here: the latch goes
+        if (s.have_want && (s.want.hood & wire::kGearHoodRead)) {
+            const int r = wire::GearHoodRow(s.want.hood_info);
+            if (r >= 0) x.sender_row = r;
+        }
+        if (x.sender_row >= 0) {
+            if (from_sender) *from_sender = true;
+            return x.sender_row;
+        }
+    } else {
+        x.sender_row = -1, x.sender_key = -2;
+    }
+    return have ? row : -1;
+}
+// The outfit the carrier copies, dressed for her row: the porter suit, Sam's glove and skeleton kind with her colour's block
+// (wire::ExosForColour), her row as the suit colour. Logged when it changes.
+void DressForHer(PropSet& s, wire::Outfit* o) {
+    PropSet::Exo& x = s.exo;
+    bool sender = false;
+    int row = CarrierRow(s, &sender);
+    // her look rebuilding (a colour change, a painted picture saved): the row she wore until now, not a flash of Sam's
+    if (row < 0 && x.dressed_row >= 0 && g_hood_colour && realbody::SlotIsFragileSuit(s.slot)) row = x.dressed_row;
+    const std::uint8_t sam = wire::PorterExos(*o);
+    if (row >= 0) {
+        const std::uint8_t exos = wire::ExosForColour(sam, static_cast<std::uint8_t>(row));
+        if ((row != x.dressed_row || sam != x.dressed_sam) && x.dressed_logs < 40) {
+            ++x.dressed_logs;
+            Log("[%s] carrier %p dressed for her colour %d (Sam's exos %d -> %d, his colour %u)%s", ExoTag(s), static_cast<void*>(x.p.sp.e), row,
+                sam == 0xFF ? -1 : static_cast<int>(sam), exos == 0xFF ? -1 : static_cast<int>(exos), o->suit_colour,
+                sender ? ": the sender's row (her look over the link)" : "");
+        }
+        o->variant = wire::kPorterVariant;
+        o->exos = exos;
+        o->suit_colour = static_cast<std::uint8_t>(row);
+    } else if (x.dressed_row >= 0 && x.dressed_logs < 40) {
+        ++x.dressed_logs;
+        Log("[%s] carrier %p dressed like the sender's Sam again (her colour not known)", ExoTag(s), static_cast<void*>(x.p.sp.e));
+    }
+    x.dressed_row = row;
+    x.dressed_sam = sam;
+}
+
 // Spawns, polls, poses, sets and tints the carrier (game thread, from DriveSet before it publishes). True: the published list
 // must change (the carrier became the pose target, or went).
 bool ExoDrive(PropSet& s, game::Entity* body, double now) {
@@ -4240,13 +4314,15 @@ bool ExoDrive(PropSet& s, game::Entity* body, double now) {
     const unsigned hood_calls = HoodDrive(s, now);  // section 37: the hood part first (the parts at once when it changes)
     if (want || x.parts_ok) ExoParts(s, want ? vis : x.vis, now);
     HoodCalls(s, hood_calls, now);
-    // the exos variation (silver / gold, tints) like the sender's Sam
+    // the exos variation (silver / gold, tints) like the sender's Sam; round 12 (section 37.5): on her porter suit, the colour
+    // her suit wears (the hood is Sam's, tinted by the palette row or the silver / gold set: it matches her suit)
     game::Entity* local = nullptr;
     wire::Outfit o;
     bool have_o = false;
     if (game::TryGetLocalPlayer(&local) && local) {
         if (s.slot == realbody::GearSlot::self || realbody::GetOwner() == realbody::Owner::debug) have_o = outfit::ReadLocal(reinterpret_cast<std::uintptr_t>(local), &o);
         else have_o = realbody::PartnerOutfit(&o);
+        if (have_o) DressForHer(s, &o);
         if (have_o && now - p.live_ms >= 500) outfit::Apply(x.dress, reinterpret_cast<std::uintptr_t>(p.sp.e), o, reinterpret_cast<std::uintptr_t>(local), now);
     }
     x.tint_want = have_o ? wire::PorterExos(o) : std::uint8_t{0xFE};
@@ -4854,6 +4930,8 @@ void Init(const Config& config) noexcept {
     g_exo_on = config.exo_carrier;
     g_hood_mode = config.fragile_hood < 0 ? 0 : config.fragile_hood > 2 ? 2 : config.fragile_hood;
     g_hood_hair = config.hood_hair;
+    g_hood_colour = config.hood_colour;
+    hoodfold::Configure(config.hood_fold_hide);
     g_held_mode = static_cast<heldrules::Mode>(config.held_items < 0 ? 0 : config.held_items > 2 ? 2 : config.held_items);
     Log("[boots] her boots: boots_look=%s (%s), boots_own_porter=%d", bootslook::StyleName(g_boots_style),
         g_boots_style == bootslook::Style::own ? "her own boots, painted with the guest's boot pictures; no boots prop, feet not scaled"
@@ -4963,6 +5041,14 @@ bool OwnBoots(int* type, std::uint32_t* visible, bool* own_style) noexcept {
     return true;
 }
 
+// Round 12 (section 37.6): the slot's body wants her folded hood hidden: her porter suit, shown, and its carrier shown with a
+// hood part (the switch while it unfolds, or the raised hood), as Sam's suit hides HoodOff from the raise to the end of the
+// lowering.
+bool FoldWanted(const PropSet& s, game::Entity* body, bool body_on) {
+    const PropSet::Exo& x = s.exo;
+    return body && body_on && realbody::SlotIsFragileSuit(s.slot) && x.p.live && x.p.shown && x.hood_part >= 0 && x.parts_ok;
+}
+
 void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
     if (!g_enabled || !realbody::HookInstalled()) return;
     if (local_active && g_chk.ok) WatchWeapon(local, now_ms);
@@ -5028,6 +5114,9 @@ void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
     ss.have_want = g_have_local && (self_frame.count > 0 || ExoWant(ss, sbody, exo_vis) || ss.exo.p.live || ss.exo.p.loading);
     ss.res = g_res_local;
     DriveSet(ss, sbody, sbody && realbody::SelfShown(), local_active, now_ms);
+    // round 12 (section 37.6): her folded hood hidden while a body of hers shows the raised hood
+    hoodfold::Tick(reinterpret_cast<std::uintptr_t>(pbody), FoldWanted(ps, pbody, pvis), reinterpret_cast<std::uintptr_t>(sbody),
+                   FoldWanted(ss, sbody, sbody && realbody::SelfShown()), now_ms);
     // the meters last: the props were just placed from the bodies' current transforms and poses (PlaceGearNow)
     HeadMeter(local, static_cast<double>(GetTickCount64()));
 }
@@ -5248,6 +5337,7 @@ void SetPartnerGear(const wire::GearFrame* f) noexcept {
 }
 
 void EmergencyStop() noexcept {
+    hoodfold::RestoreAll("emergency stop");
     realbody::PublishGear(realbody::GearSlot::partner, nullptr, 0);
     realbody::PublishGear(realbody::GearSlot::self, nullptr, 0);
     // Our head accessories' movers back to the identity and the game's own flag (fault-free checks first: only a mover
@@ -5790,10 +5880,26 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
                           exo::HoodTypeName(g_hoodr.type), exo::HoodPhaseName(exo::HoodPhaseOf(g_hoodr.state)), g_hoodr.state,
                           g_hood_force_state >= 0 ? " (gear 32)" : "",
                           ps.have_want && (ps.want.hood & wire::kGearHoodRead) ? exo::HoodPhaseName(exo::HoodPhaseOf(ps.want.hood & 0x7F)) : "no reading", c0, c1);
-            Log("[hood] %s", line);
+            char fold[300];
+            Log("[hood] %s; carriers dressed for her colour: partner %d, self %d; %s", line, g_sets[0].exo.dressed_row, g_sets[1].exo.dressed_row,
+                hoodfold::Describe(fold, sizeof(fold)));
             std::snprintf(msg, cap, "her hood %s; ours %s (state %d); partner hood %s; self hood %s", g_hood_mode ? "on" : "off",
                           exo::HoodPhaseName(exo::HoodPhaseOf(g_hoodr.state)), g_hoodr.state, exo::HoodShowName(g_sets[0].exo.hood.show),
                           exo::HoodShowName(g_sets[1].exo.hood.show));
+            return true;
+        }
+        case 34:
+        case 35: {
+            // round 12: 34 <method 0 never, 1 the inverse binds | -1 the product> [nopin: 1 the LOD pin off, 0 or left out on]
+            // (her folded hood, section 37.6; any other method only the status); 35 <0/1> the carriers dressed in her suit's
+            // colour (section 37.5)
+            const int a = static_cast<int>(v[1]);
+            if (op == 34 && a >= -1 && a <= 1) hoodfold::SetTest(a, v[2] != 0);
+            if (op == 35 && (a == 0 || a == 1)) g_hood_colour = a != 0;
+            char fold[300];
+            std::snprintf(msg, cap, "%s; carriers dressed for her colour %s (partner %d, self %d)", hoodfold::Describe(fold, sizeof(fold)), g_hood_colour ? "on" : "off",
+                          g_sets[0].exo.dressed_row, g_sets[1].exo.dressed_row);
+            Log("[hood] %s", msg);
             return true;
         }
         case 20: {

@@ -873,6 +873,19 @@ supervisor then takes `screenshot zz-final` and sends `quit`.
   state is `PrivateRoom` with phase 0; the self-view one also waits for Fragile shown again (`waitnew`: the once-a-second
   `[self] shown=1` line after the room screenshot, not an older show line) and `nolog`s the stall guard.
   Final runs `20261122-185511` / `20261122-185557` (pass).
+* `private-room-camera.txt` (role solo, `dev_tools=1`, `-SeedSaves story-pack`; round 12, docs/real-partner-body.md
+  section 38): `story_load 12` with the self view on and the follow 4 trace on (`self_view 23 1`); 8 short full
+  right-stick nudges (`pad none 200 rx=+-32767`: they pan the room camera) with screenshots; the room's Zoom In (the
+  keyboard's T, or the pad's right stick press: `pad rs 300 keep`, held) with `zoom-*` screenshots; then `waitnew 60` for
+  Sam's next camera reaction (`[gear] a new layout 292F (1 items,
+  was <any>`, about 0.3 s before his world jumps 2.04 m toward the camera) and a burst of 6 screenshots; `until` a
+  `[self] trace #N` block is logged. Checks: a `[self] follow 4 drawn root` line from a second with a world jump of
+  1-9.99 m, a post-jump trace row with her drawn root under 1 cm from Sam's, and `nolog` of any post-jump trace row 10 cm
+  or more off. Then (round 12 review) the same reaction drawn by the game itself: the trace and the self view off (Sam
+  shown), `v00-sam`, then the Zoom In again (`pad rs 300 keep`) and timed bursts `vzoom-00..18` (vanilla Sam's reaction,
+  seen directly; no wait on a log line: an optional step that fails fails the run, as the `?waitnew 60` of Prove run
+  `20261123-145310` did, no reaction coming in 60 s without a zoom). Development runs `20261123-135612` (fail: checks of
+  a rule since removed) / `20261123-140605` (pass); Prove `20261123-145727` (pass).
 * `private-room-field.txt` / `private-room-field-vanilla.txt` (role solo, `-SeedSaves complete-100`): the user's way in:
   South Knot City's BRIDGES pad, hold B; ~23 s of screenshots + status, then the room drawn within 8 s more, playable
   within 30 s, `nolog \[gate\] OTGC WRITE` (the online gate's W3 drops the create-road request). The self-view one then
@@ -1561,8 +1574,8 @@ folder deleted"); nothing is copied anywhere else.
 
 **launcherini and test switches**: a `launcherini` scenario may still add `ini` / `@host ini` / `@guest ini` lines for
 `fragile_suit_colour`, `fragile_textures`, `textures_send`, `textures_receive`, `textures_hot_reload`, `textures_free`,
-`textures_defaults` (round 8), `boots_look`, `boots_own_porter`, `held_items` (round 6), `room_outfit`, `fragile_hood`
-and `hood_hair` (round 11) (appended after the launcher's file under a "# testenv:" comment); any other key is refused as before. The v0.23 tint scenarios
+`textures_defaults` (round 8), `boots_look`, `boots_own_porter`, `held_items` (round 6), `room_outfit`, `fragile_hood`,
+`hood_hair` (round 11), `hood_colour` and `hood_fold_hide` (round 12) (appended after the launcher's file under a "# testenv:" comment); any other key is refused as before. The v0.23 tint scenarios
 (`fragile-suit-colours`, `fragile-suit-tune`, `two-games-fragile-suit`, `two-games-fragile-suit-remember`) add
 `ini fragile_suit_colour=1` (the tint is off by default now).
 
@@ -1580,9 +1593,13 @@ and `hood_hair` (round 11) (appended after the launcher's file under a "# testen
   (`fragile-textures-solo`, `two-games-fragile-textures`, `two-games-fragile-textures-reload`, `two-games-fragile-boots-own`)
   prove the v0.24 rule and set `ini textures_defaults=0`. `action real_outfit 4 <c>` changes our own Sam's suit colour
   byte on the redirected scratch save (docs/debug-actions.md), so Fragile follows it as she does in a real session.
-  - `fragile-suit-defaults-quick` (solo, `-SeedSaves complete-100`): a fresh extraction, nothing painted; the self view's
-    Fragile in the ready-made gold (16: `ready-made (S0 S1)`), sky blue (13: `ready-made (S0)`), her own suit (0), gold
-    again. About 50 s of game.
+  - `fragile-suit-defaults-quick` (solo, `-SeedSaves complete-100`): a fresh extraction, nothing painted but `05 Light
+    grey` (a checker); the self view's Fragile in the ready-made gold (16: `ready-made (S0 S1)`), sky blue (13: `ready-made
+    (S0)`), her own suit (0), gold again; round 12: her exo carrier dressed for each of those colours (`dressed for her
+    colour 16 / 13 / 0`, the hood's colour: docs/real-partner-body.md 37.5); round 12 review: her colour apart from Sam's
+    gold (`real_outfit 5`): the ready-made pink (`dressed for her colour 14 (... his colour 16)`, the user's case) and the
+    painted 05 (`[tex] colour 5: her suit's fabric (the folder's Colour) averages (r, g, b): her hood in palette row N`, the
+    carrier in that row; `nolog` of `her hood's colour row not measured`). About 65 s of game.
   - `fragile-suit-defaults` (solo): noon on the knot road, a debug Fragile (`real_spawn 16 -1.1 0`) next to Sam, both
     facing the camera; every colour 16, 0..15 (`c00`..`c16`, the contact sheet's cells); `09 Mustard` painted (a checker:
     `yours: 1 slot(s) (S0)`, `c09-painted`), then `textures reset 09 Mustard` mid-run (the hot reload back to the

@@ -1,0 +1,198 @@
+# docs/real-partner-body.md section 38 (round 12, the user's item 3: "in the private room Fragile does weird animations
+# randomly, she gets glitchy, her position is moving a lot, maybe when I zoom in"). A load straight into the private room
+# (-SeedSaves story-pack: manualsave12), self view ON (Fragile, her black suit), the follow 4 trace on (`self_view 23 1`).
+# Short full right-stick camera nudges with screenshots, then a burst of screenshots right after the next camera reaction
+# of Sam (`[gear] a new layout 292F`, about 0.3 s before it): his reactions put his world 2.04 m toward the camera in one
+# frame and glide it back to the bed in about 0.45 s, his root joint at 0 and his hips seated (round 12 dev runs
+# 20261123-135612 / -140605). The `[self] trace` rows after each such frame must show her drawn root within a centimetre of
+# Sam's (his world plus his root joint: where the game draws his model) and never 10 cm or more off; the `[self] follow 4
+# drawn root` line must have scored the second of the jump. Round 12 review: then the same reaction drawn by the game itself
+# (the self view and the trace off: Sam shown, nothing of ours on him), timed bursts of screenshots after the Zoom In:
+# whether vanilla Sam jumps toward the camera the same way. The room's Zoom In is the keyboard's T (which a hidden game
+# does not take) or the pad's right stick press (`pad rs`): the Prove run 20261123-145310 found the press zooms in and
+# Sam's reaction follows 0.5 s later; it is held through the reaction burst (zoom-*) and again for vanilla Sam (vzoom-*).
+# covers: private-room self-view smooth story
+role solo
+timeout 360
+ini dev_tools=1
+ini partner_body=real
+ini my_character=fragile_suit
+ini self_character=1
+ini room_outfit=black
+start
+?waitlog 60 \[self\] showing 'fragile_suit'
+waitlog 20 \[self\] +far hips rule \(section 38\.3\)
+action self_view 23 1
+wait 2000
+log PRIVATE ROOM REQUEST
+action story_load 12
+wait 3000
+until 12 700 \[auto\] \d+:1 screenshot room -> ok: .* mean=([2-9][0-9]|[1-9][0-9][0-9])\. => screenshot room
+until 12 500 status: game state: \S+ \[PrivateRoom(\|bit39)?\] requested \S+ \[PrivateRoom(\|bit39)?\] phase 0 => action log_status
+log PRIVATE ROOM PLAYABLE
+waitnew 12 \[self\] shown=1 'fragile'
+wait 2000
+screenshot r01-room
+log CAMERA NUDGE 00
+pad none 200 rx=32767
+screenshot c00-0
+wait 150
+screenshot c00-1
+wait 150
+screenshot c00-2
+wait 150
+wait 2000
+log CAMERA NUDGE 01
+pad none 200 rx=-32767
+screenshot c01-0
+wait 150
+screenshot c01-1
+wait 150
+screenshot c01-2
+wait 150
+wait 2000
+log CAMERA NUDGE 02
+pad none 200 rx=32767
+screenshot c02-0
+wait 150
+screenshot c02-1
+wait 150
+screenshot c02-2
+wait 150
+wait 2000
+log CAMERA NUDGE 03
+pad none 200 rx=-32767
+screenshot c03-0
+wait 150
+screenshot c03-1
+wait 150
+screenshot c03-2
+wait 150
+wait 2000
+log CAMERA NUDGE 04
+pad none 200 rx=32767
+screenshot c04-0
+wait 150
+screenshot c04-1
+wait 150
+screenshot c04-2
+wait 150
+wait 2000
+log CAMERA NUDGE 05
+pad none 200 rx=-32767
+screenshot c05-0
+wait 150
+screenshot c05-1
+wait 150
+screenshot c05-2
+wait 150
+wait 2000
+log CAMERA NUDGE 06
+pad none 200 rx=32767
+screenshot c06-0
+wait 150
+screenshot c06-1
+wait 150
+screenshot c06-2
+wait 150
+wait 2000
+log CAMERA NUDGE 07
+pad none 200 rx=-32767
+screenshot c07-0
+wait 150
+screenshot c07-1
+wait 150
+screenshot c07-2
+wait 150
+wait 2000
+# Round 12 prove: the room's Zoom In from the pad (its prompt shows the stick-press glyph, T on the keyboard): the right
+# stick pressed and held (zoomed whether it is a toggle or a hold), screenshots through it and two nudges while zoomed;
+# Sam's next reaction below is then taken with the camera zoomed in (the user's "maybe when I zoom in")
+log ZOOM IN (pad RS held)
+screenshot zoom-0
+pad rs 300 keep
+screenshot zoom-1
+wait 300
+screenshot zoom-2
+wait 1200
+screenshot zoom-3
+pad rs 200 rx=32767 keep
+pad rs 50 keep
+screenshot zoom-4
+wait 300
+screenshot zoom-5
+pad rs 200 rx=-32767 keep
+pad rs 50 keep
+screenshot zoom-6
+wait 1500
+screenshot zoom-7
+log WAITING FOR SAM'S NEXT CAMERA REACTION
+waitnew 60 \[gear\] a new layout 292F \(1 items, was [0-9A-F]{4}
+screenshot react-0
+screenshot react-1
+screenshot react-2
+screenshot react-3
+screenshot react-4
+screenshot react-5
+log REACTION SHOTS DONE
+pad none 0
+wait 1500
+screenshot zoom-8-released
+until 60 3000 \[self\] trace #[1-9][0-9]*: => pad none 200 rx=32767
+wait 1500
+action log_status
+waitlog 3 \[self\] follow 4 drawn root vs Sam's own .*Sam's step max: world [1-9][0-9][0-9]\.
+waitlog 3 \[self\] trace +\+[0-9]*[1-9][0-9]*\.[0-9] ms: Sam world .* her drawn root vs his: v0\.20 0\.[0-9],
+nolog \[self\] trace +\+[0-9]*[1-9][0-9]*\.[0-9] ms: Sam world .* her drawn root vs his: v0\.20 [1-9][0-9]+\.[0-9],
+nolog \[self\] follow 4 \(rule v0\.20\): .*failed [1-9]
+screenshot z01-end
+# the same reaction drawn by the game itself: the self view off (Sam shown), the trace off
+log VANILLA SAM: THE SELF VIEW OFF
+action self_view 23 0
+action self_view 0
+wait 4000
+screenshot v00-sam
+# Round 12 prove: the reaction comes with the Zoom In (the right stick pressed: 0.5 s later in run 20261123-145310, and
+# none in 60 s without it), so vanilla Sam is zoomed in the same way and shot in timed bursts (no waiting on a log line)
+log VANILLA SAM: ZOOM IN (pad RS held)
+pad rs 300 keep
+screenshot vzoom-00
+wait 150
+screenshot vzoom-01
+wait 150
+screenshot vzoom-02
+wait 150
+screenshot vzoom-03
+wait 150
+screenshot vzoom-04
+wait 150
+screenshot vzoom-05
+wait 150
+screenshot vzoom-06
+wait 150
+screenshot vzoom-07
+wait 300
+screenshot vzoom-08
+wait 300
+screenshot vzoom-09
+wait 300
+screenshot vzoom-10
+wait 300
+screenshot vzoom-11
+wait 2500
+screenshot vzoom-12
+wait 1000
+screenshot vzoom-13
+wait 1000
+screenshot vzoom-14
+wait 1000
+screenshot vzoom-15
+pad none 0
+wait 300
+screenshot vzoom-16-released
+wait 300
+screenshot vzoom-17-released
+wait 1000
+screenshot vzoom-18-released
+log VANILLA REACTION SHOTS DONE
+quit

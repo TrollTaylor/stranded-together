@@ -766,9 +766,37 @@ void TestGearV2() {
     // Version 5: the rain hood bytes (the former u16 reserved, docs/real-partner-body.md section 37): no reading (0 0), a
     // state 0..12 with the read bit, a type 0..2 and the porter's second clip set; anything else refused both ways.
     CHECK(wire::GearHoodOk(0, 0) && !wire::GearHoodOk(0, 1) && !wire::GearHoodOk(0x05, 0) && wire::GearHoodOk(0x80, 0) && wire::GearHoodOk(0x8C, 2) &&
-          !wire::GearHoodOk(0x8D, 0) && !wire::GearHoodOk(0x86, 3) && !wire::GearHoodOk(0x86, 0x08) && wire::GearHoodOk(0x86, 0x04));
+          !wire::GearHoodOk(0x8D, 0) && !wire::GearHoodOk(0x86, 3) && wire::GearHoodOk(0x86, 0x04));
     CHECK(wire::PackGearHood(6) == 0x86 && wire::PackGearHood(0) == 0x80 && wire::PackGearHood(13) == 0 && wire::PackGearHood(-1) == 0);
     CHECK(wire::PackGearHoodInfo(1, false) == 1 && wire::PackGearHoodInfo(0, true) == 4 && wire::PackGearHoodInfo(3, false) == 0);
+    // Round 12 (section 37.5): bits 3-7 her hood's colour row + 1 (0 none, rows 0..16); 18..31 refused, and never without a
+    // reading
+    CHECK(wire::GearHoodOk(0x86, 0x08) && wire::GearHoodOk(0x86, 17 << 3) && !wire::GearHoodOk(0x86, 18 << 3) && !wire::GearHoodOk(0x86, 0xF8) &&
+          !wire::GearHoodOk(0, 0x08));
+    CHECK(wire::PackGearHoodInfo(2, true, 14) == (2 | 4 | (15 << 3)) && wire::PackGearHoodInfo(0, false, 0) == 0x08 &&
+          wire::PackGearHoodInfo(0, false, 16) == (17 << 3) && wire::PackGearHoodInfo(1, false, 17) == 1 && wire::PackGearHoodInfo(1, false, -1) == 1 &&
+          wire::PackGearHoodInfo(-1, false, 5) == 0);
+    CHECK(wire::GearHoodRow(0) == -1 && wire::GearHoodRow(0x08) == 0 && wire::GearHoodRow(wire::PackGearHoodInfo(2, true, 14)) == 14 &&
+          wire::GearHoodRow(17 << 3) == 16 && wire::GearHoodRow(18 << 3) == -1 && wire::GearHoodRow(0x07) == -1);
+    for (int t = 0; t <= 2; ++t)
+        for (int row = -1; row <= 16; ++row) {
+            const std::uint8_t info = wire::PackGearHoodInfo(t, t == 0, row);
+            CHECK(wire::GearHoodOk(wire::PackGearHood(6), info) && wire::GearHoodRow(info) == row && (info & 3) == t);
+        }
+    // the exos variation rebuilt for her colour: Sam's glove and skeleton kind kept, the block from her colour (section 9.1:
+    // block -1 / 14 / 29, glove +0 / +5 / +10, kind +0..+4)
+    CHECK(wire::ExosForColour(31, 14) == 1);     // the user's case: gold suit + skeleton kind 2, her pink: plain + kind 2
+    CHECK(wire::ExosForColour(31, 16) == 31 && wire::ExosForColour(31, 15) == 16 && wire::ExosForColour(31, 0) == 1);
+    CHECK(wire::ExosForColour(0xFF, 3) == 0xFF && wire::ExosForColour(0xFF, 15) == 14 && wire::ExosForColour(0xFF, 16) == 29);
+    CHECK(wire::ExosForColour(14, 5) == 0xFF && wire::ExosForColour(29, 7) == 0xFF && wire::ExosForColour(14, 16) == 29);  // plain metal suits
+    CHECK(wire::ExosForColour(43, 1) == 13 && wire::ExosForColour(43, 15) == 28 && wire::ExosForColour(13, 16) == 43);   // gold glove + kind 4
+    CHECK(wire::ExosForColour(9, 15) == 24 && wire::ExosForColour(4, 16) == 34 && wire::ExosForColour(200, 16) == 29);  // (an unknown index: none)
+    for (int e = 0; e < 44; ++e)
+        for (int c = 0; c <= 16; ++c) {
+            const std::uint8_t x = wire::ExosForColour(static_cast<std::uint8_t>(e), static_cast<std::uint8_t>(c));
+            const int rest = (e + 1) % 15, block = c == 15 ? 1 : c == 16 ? 2 : 0;
+            CHECK((x == 0xFF && block == 0 && rest == 0) || (x < 44 && (x + 1) / 15 == block && (x + 1) % 15 == rest));
+        }
     {
         wire::GearFrame h = o;
         h.hood = wire::PackGearHood(6);

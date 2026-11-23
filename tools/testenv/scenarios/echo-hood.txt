@@ -7,8 +7,17 @@
 # played and the hood up on both carriers while Sam's is up, the porter and oxi types on both (gear 32), the hood gone
 # again on both after the sky clears (the closing clip), the carrier meter's head joint, no fault. Frames through the
 # raise and the lowering at ~120 ms, front and side stills of each type.
+# Round 12 (sections 37.5, 37.6): her suit in the v0.23 tint (an echo game has no textures folder; the ready-made colours
+# are fragile-suit-defaults-quick's); the user's case: her suit pink (real_outfit 5 14: her colour, not Sam's) while our Sam
+# is gold (exos 31): both carriers are dressed for her colour 14 (Sam's exos 31 -> 1: plain, his skeleton kind kept), so
+# the hood is pink next to her pink suit; then gold (16, exos 31) and her own navy (0). Her folded hood (mesh D of her
+# suit) hidden while the raised hood shows (the inverse binds of its 10 roll bindings zeroed, her LOD0 pinned) and shown
+# again after the lowering; side and front stills of it shown and hidden with the camera still (03b / 03c, 04b / 04c).
+# Round 12 review: her LOD pin at a distance: the echo body moved 5 m aside (echo_tuning), stills all round (11 .. 14) with
+# the product (LOD0 pinned, a) and the pin off (`gear 34 1 1`, b: LOD1 at its own distance, where the roll is merged into
+# her suit). The two bodies here draw one shared resource (the delayed echo body's roll goes with ours: section 37.6).
 #   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios echo-hood -SeedSaves complete-100
-# covers: hood skeleton self-view partner-body
+# covers: hood skeleton self-view partner-body suit-colour
 role echo
 timeout 360
 ini dev_tools=1
@@ -19,6 +28,10 @@ ini self_character=1
 ini echo_delay_s=0.3
 ini echo_offset_m=-0.9
 ini partner_collision=0
+ini fragile_suit_colour=1
+# her folded hood hiding is off by default since round 12 (the stills showed no change): on here so its lines and
+# write-backs stay checked
+ini hood_fold_hide=1
 start
 wait 3000
 waitlog 30 \[dev\] dev tools: [0-9]+/[0-9]+ byte checks ok
@@ -31,9 +44,12 @@ waitlog 40 \[sync\] partner body: real
 waitlog 40 \[self\] showing 'fragile_suit' in place of Sam
 waitlog 20 \[hood\] Sam's hood state sites verified
 waitlog 20 \[hood\] our Sam's hood: [a-z ]+, down \(state 0\)
+# the user's case: her suit pink (14), our Sam gold (16, exos 31)
+action real_outfit 5 14
+waitnew 30 \[suit\] body [0-9A-Fa-f]+: colour 14 on
 # the camera to the front of both
 pad none 1300 rx=32767
-wait 2000
+wait 2500
 screenshot 01-clear
 action gear 31 3
 # timefall: the real hood raises (the 100% save's own type: sea otter, type 2) (Sam's state 1-2 "ready" loads the carriers, 3-5 unfolds, 6 up)
@@ -44,6 +60,9 @@ waitlog 30 \[exo-self\] carrier [0-9A-Fa-fx]+ hood parts \(on/off/switch\): port
 waitlog 30 \[exo\] carrier [0-9A-Fa-fx]+ hood parts \(on/off/switch\): porter [0-9]+/-?[0-9]+/[0-9]+, oxi [0-9]+/-?[0-9]+/[0-9]+, sea otter [0-9]+/-?[0-9]+/[0-9]+
 waitlog 10 \[exo-self\] carrier [0-9A-Fa-fx]+: hood animation slots \(porter 2, oxi 5, sea otter 4\): ok
 waitlog 10 \[exo\] carrier [0-9A-Fa-fx]+: hood animation slots \(porter 2, oxi 5, sea otter 4\): ok
+# both carriers dressed for her colour, not Sam's gold (section 37.5)
+waitlog 20 \[exo-self\] carrier [0-9A-Fa-fx]+ dressed for her colour 14 \(Sam's exos 31 -> 1, his colour 16\)
+waitlog 20 \[exo\] carrier [0-9A-Fa-fx]+ dressed for her colour [0-9]+ \(Sam's exos 31 ->
 waitlog 60 \[hood\] our Sam's hood: [a-z ]+, raising \(state [345]\)
 screenshot r00
 wait 120
@@ -69,6 +88,9 @@ waitlog 20 \[exo-self\] carrier [0-9A-Fa-fx]+ hood: up \(part [0-9]+; the sender
 waitlog 20 \[exo\] carrier [0-9A-Fa-fx]+ hood: up \(part [0-9]+; the sender's [a-z ]+ hood .*; the unfold\)
 waitlog 5 \[exo-self\] carrier [0-9A-Fa-fx]+ hood: clip [0-9]+ played on slot [245] \([0-9]+ ms into the raising\)
 waitlog 5 \[exo\] carrier [0-9A-Fa-fx]+ hood: clip [0-9]+ played on slot [245] \([0-9]+ ms into the raising\)
+# her folded hood hidden from the unfold on (section 37.6): mesh D found and checked, its roll bindings zeroed
+waitlog 20 \[hood\] her folded hood found: LodMeshResource [0-9A-Fa-fx]+, mesh D [0-9A-Fa-fx]+ \(bindings [0-9A-Fa-fx]+, 22 joints checked
+waitlog 20 \[hood\] her folded hood hidden \(mesh D's 10 roll bindings zeroed
 wait 1500
 screenshot 02-hood-up-front
 action gear 27 2
@@ -77,6 +99,15 @@ waitnew 15 \[exo-self\] carrier vs body cm mean/max: .*head [01]\.[0-9]+.*hood u
 pad none 650 rx=-32767
 wait 1500
 screenshot 03-hood-up-side
+# her folded hood (section 37.6) with the camera still: shown (gear 34 0 0), then hidden again (the product)
+action gear 34 0 0
+waitnew 10 \[hood\] her folded hood shown again \(everything written back
+wait 700
+screenshot 03b-side-fold-shown
+action gear 34 -1 0
+waitnew 10 \[hood\] her folded hood hidden \(mesh D's 10 roll bindings zeroed, LOD0 pinned;
+wait 700
+screenshot 03c-side-fold-hidden
 pad none 650 rx=32767
 wait 1500
 # the other types (our reading replaced: both carriers follow; each type's first lines), then the real type again
@@ -85,15 +116,70 @@ waitlog 15 \[exo-self\] carrier [0-9A-Fa-fx]+ hood: up \(part [0-9]+; the sender
 waitlog 15 \[exo\] carrier [0-9A-Fa-fx]+ hood: up \(part [0-9]+; the sender's porter hood
 wait 1500
 screenshot 04-porter-up-front
+action gear 34 0 0
+waitnew 10 \[hood\] her folded hood shown again \(everything written back
+wait 700
+screenshot 04b-porter-fold-shown
+action gear 34 -1 0
+waitnew 10 \[hood\] her folded hood hidden \(mesh D's 10 roll bindings zeroed, LOD0 pinned;
+wait 700
+screenshot 04c-porter-fold-hidden
+# her colour: gold (exos 31 kept), her own navy (row 0)
+action real_outfit 5 16
+waitnew 30 \[exo-self\] carrier [0-9A-Fa-fx]+ dressed for her colour 16 \(Sam's exos 31 -> 31,
+wait 3000
+screenshot 05-gold-porter-front
+action real_outfit 5 0
+waitnew 30 \[exo-self\] carrier [0-9A-Fa-fx]+ dressed for her colour 0 \(Sam's exos 31 -> 1,
+wait 3500
+screenshot 06-navy-porter-front
+action real_outfit 5 14
+waitnew 30 \[exo-self\] carrier [0-9A-Fa-fx]+ dressed for her colour 14 \(Sam's exos 31 -> 1,
+wait 3000
 action gear 32 6 1
 waitlog 15 \[exo-self\] carrier [0-9A-Fa-fx]+ hood: up \(part [0-9]+; the sender's oxi hood
 waitlog 15 \[exo\] carrier [0-9A-Fa-fx]+ hood: up \(part [0-9]+; the sender's oxi hood
 wait 1500
-screenshot 05-oxi-up-front
+screenshot 07-oxi-up-front
 action gear 32 6 2
 waitnew 15 \[exo(-self)?\] carrier [0-9A-Fa-fx]+ hood: up \(part [0-9]+; the sender's sea otter hood
 wait 1500
-screenshot 06-otter-up-front
+screenshot 08-otter-up-front
+# her LOD pin at a distance (the echo body 5 m aside): each way round, pinned (a) and not (b), the camera still
+action echo_tuning 0.3 -5
+wait 2500
+screenshot 11a-far-pinned
+action gear 34 1 1
+waitnew 10 \[hood\] her folded hood hidden \(mesh D's 10 roll bindings zeroed;
+wait 700
+screenshot 11b-far-unpinned
+action gear 34 -1 0
+waitnew 10 \[hood\] her folded hood hidden \(mesh D's 10 roll bindings zeroed, LOD0 pinned;
+pad none 650 rx=32767
+wait 1500
+screenshot 12a-far-pinned
+action gear 34 1 1
+wait 700
+screenshot 12b-far-unpinned
+action gear 34 -1 0
+pad none 650 rx=32767
+wait 1500
+screenshot 13a-far-pinned
+action gear 34 1 1
+wait 700
+screenshot 13b-far-unpinned
+action gear 34 -1 0
+pad none 650 rx=32767
+wait 1500
+screenshot 14a-far-pinned
+action gear 34 1 1
+wait 700
+screenshot 14b-far-unpinned
+action gear 34 -1 0
+waitnew 10 \[hood\] TEST: her folded hood's method 1 \(the inverse binds\), LOD pin on
+pad none 650 rx=32767
+action echo_tuning 0.3 -0.9
+wait 2000
 action gear 32 -1
 wait 1000
 action log_status
@@ -114,18 +200,29 @@ screenshot l05
 waitlog 20 \[exo-self\] carrier [0-9A-Fa-fx]+ hood: none \(part -1; the sender's [a-z ]+ hood (lowering|down)
 waitlog 5 \[exo-self\] carrier [0-9A-Fa-fx]+ hood: clip [0-9]+ played on slot [245] \([0-9]+ ms into the lowering\)
 waitlog 20 \[exo\] carrier [0-9A-Fa-fx]+ hood: none \(part -1; the sender's [a-z ]+ hood (lowering|down)
+# her folded hood back once neither carrier shows a hood part
+waitlog 10 \[hood\] her folded hood shown again \(everything written back; partner body (not|none), self body (not|none);
 # Sam's hood back to state 0 after the lowering: the status after the unfold's calls (the start's status had 0 calls and
 # the start's "down (state 0)" line is already in the log, so a waitlog would pass at once)
 until 30 1000 \[hood\] her hood .*; ours: [a-z ]+ down \(state 0\);.*; partner carrier [a-z]+, hood none \(part -1, idle, slots -?[0-9]+, [1-9][0-9]* calls => action gear 31 3
 wait 1500
-screenshot 07-clear-again
+screenshot 09-clear-again
+pad none 1300 rx=32767
+wait 2000
+screenshot 10-clear-again-back
 action gear 31 3
+action gear 34 9
 action gear 27 2
+action real_outfit 5 -1
 nolog \[exo.*FAULTED
 nolog \[exo.*\] carrier refused
 nolog \[gear\] the ArtParts part setter faulted
 nolog \[hood\] .*does not match
 nolog \[hood\] .*do not match
 nolog \[exo.*\] the ArtParts part setter faulted on her body
+nolog \[hood\] her folded hood is not hidden this session
+nolog \[hood\] her folded hood: .*NOT written back
+nolog \[hood\] her folded hood: .*not written back
+nolog \[suit\] .*FAULTED
 action log_status
 quit

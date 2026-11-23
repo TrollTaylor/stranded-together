@@ -1,9 +1,11 @@
 // Self view follow mode 4's pure part (native/mod/self_predict.hpp): the step / copy decision and its reasons, the seated
-// step (v0.20) against v0.19's rule, the consistency gate on a seat snap, the dt scale, the rotation power. No game.
+// step (v0.20) against v0.19's rule, the consistency gate on a seat snap, the dt scale, the rotation power; round 12: the far
+// hips rule (native/mod/pelvis_scale.hpp). No game.
 #include <cmath>
 #include <cstdio>
 #include <initializer_list>
 
+#include "pelvis_scale.hpp"
 #include "self_predict.hpp"
 
 using namespace st::selfpred;
@@ -185,6 +187,64 @@ void TestRotation() {
 void TestNames() {
     for (Why w : {Why::step, Why::after, Why::ride, Why::no_history, Why::stale, Why::moved, Why::jump, Why::gate}) CHECK(WhyName(w)[0] != '?');
 }
+
+// The far hips rule (pelvis_scale.hpp): bit-identical to the ratio up to 1.15 m, the constant rest offset from 1.45 m, smooth
+// in between; the private room's anchored offsets of 2.0-2.5 m keep her within a centimetre of Sam's hips less the rest offset.
+void TestPelvis() {
+    using namespace st::pelvis;
+    const float r = 0.957f;
+    const float her_rest[3] = {0.0f, 0.02f, 0.957f};
+    float off[3];
+    CHECK(RestOffset(her_rest, r, 1.0f, off));
+    const double ol = std::sqrt(static_cast<double>(off[0]) * off[0] + static_cast<double>(off[1]) * off[1] + static_cast<double>(off[2]) * off[2]);
+    CHECK(Near(ol, 0.043, 1e-4) && off[2] > 0.0429f && std::fabs(off[0]) < 1e-6f);
+    float bad[3];
+    CHECK(!RestOffset(her_rest, 1.0f, 1.0f, bad) && bad[0] == 0 && bad[2] == 0);
+    const float tiny[3] = {0, 0, 0.1f};
+    CHECK(!RestOffset(tiny, r, 1.0f, bad));
+    CHECK(!RestOffset(nullptr, r, 1.0f, bad));
+    // standing, seated, walking: exactly the ratio
+    const float pts[][3] = {{0, 0, 1.0f}, {0.1f, -0.2f, 0.78f}, {0.3f, 0.4f, 0.9f}, {0, 0, 1.15f}};
+    for (const auto& t : pts) {
+        float a[3], b[3];
+        Scaled(t, r, off, a);
+        Scaled(t, r, nullptr, b);
+        CHECK(a[0] == t[0] * r && a[1] == t[1] * r && a[2] == t[2] * r && a[0] == b[0] && a[1] == b[1] && a[2] == b[2]);
+    }
+    // the room's anchored hips 2.47 m away (mostly level): Sam's minus the rest offset, not 10.6 cm toward the root
+    const float far[3] = {2.3f, -0.6f, 0.7f};
+    float a[3], b[3];
+    Scaled(far, r, off, a);
+    Scaled(far, r, nullptr, b);
+    double ea = 0, eb = 0;
+    for (int k = 0; k < 3; ++k) {
+        const double ideal = far[k] - off[k];
+        ea += (a[k] - ideal) * (a[k] - ideal);
+        eb += (b[k] - ideal) * (b[k] - ideal);
+    }
+    CHECK(std::sqrt(ea) < 0.01 && std::sqrt(eb) > 0.09);
+    // smooth through the blend: along a line from 1.0 to 2.0 m, no step between samples 1 mm apart over 2 mm
+    float last[3];
+    bool have = false;
+    double worst = 0;
+    for (int i = 0; i <= 1000; ++i) {
+        const float d = 1.0f + 0.001f * i;
+        const float t[3] = {d * 0.6f, 0.0f, d * 0.8f};
+        float o[3];
+        Scaled(t, r, off, o);
+        if (have) {
+            const double dd = std::sqrt((o[0] - last[0]) * (o[0] - last[0]) + (o[1] - last[1]) * (o[1] - last[1]) + (o[2] - last[2]) * (o[2] - last[2]));
+            worst = std::fmax(worst, dd);
+        }
+        last[0] = o[0], last[1] = o[1], last[2] = o[2], have = true;
+    }
+    CHECK(worst < 0.002);
+    // not finite in: the ratio's result (no NaN from the blend)
+    const float nan3[3] = {NAN, 0, 1};
+    float o[3];
+    Scaled(nan3, r, off, o);
+    CHECK(std::isnan(o[0]) && o[2] == r);
+}
 }  // namespace
 
 int main() {
@@ -194,6 +254,7 @@ int main() {
     TestScale();
     TestRotation();
     TestNames();
+    TestPelvis();
     std::printf("self_predict_tests: %d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

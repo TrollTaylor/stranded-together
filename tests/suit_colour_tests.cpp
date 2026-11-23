@@ -105,7 +105,60 @@ void ChannelTypes() {
 }
 }  // namespace
 
+// Round 12 (docs/real-partner-body.md section 37.5): her raised hood's colour row
+void TestHoodRow() {
+    // a painted suit's fabric average -> the nearest row; her own navy (and Sam's row 0 swatch) is row 0, not charcoal (3)
+    CHECK(NearestRow(kHerBase) == 0 && NearestRow(kLut[0]) == 0 && NearestRow(Rgb{66, 71, 81}) == 0);
+    for (int i = 1; i < 15; ++i) CHECK(NearestRow(kLut[i]) == i);
+    CHECK(NearestRow(Rgb{71, 71, 71}) == 3 && NearestRow(Rgb{200, 145, 130}) == 14 && NearestRow(Rgb{90, 130, 175}) == 13);
+    CHECK(NearestRow(Rgb{0, 0, 0}) == 3 && NearestRow(Rgb{255, 255, 255}) == 4);
+    // what her suit wears: a look's row (-1 unknown: a test pattern), else the tint bound (0 none: her navy, row 0)
+    CHECK(HoodRow(true, 14, 0) == 14 && HoodRow(true, 0, 5) == 0 && HoodRow(true, -1, 5) == -1 && HoodRow(true, 17, 0) == -1);
+    CHECK(HoodRow(false, 14, 0) == 0 && HoodRow(false, -1, 7) == 7 && HoodRow(false, 3, 16) == 16 && HoodRow(false, 3, 200) == 0);
+}
+
+// Round 12 review: a built look's row (texture_looks PaintedRow / BuildColourReadyMade / BuildColour, the pure part)
+void TestLookRow() {
+    // measured only for an S0 from the folder's files; a silver / gold folder only when its Colour picture is painted
+    CHECK(MeasureHoodRow(14, true, false) && MeasureHoodRow(1, true, true) && !MeasureHoodRow(14, false, true));
+    CHECK(!MeasureHoodRow(15, true, false) && !MeasureHoodRow(16, true, false) && MeasureHoodRow(16, true, true) && MeasureHoodRow(15, true, true));
+    // ready-made colours on: measured row, else the folder's colour with S0, else her fabric (0)
+    CHECK(ReadyMadeLookRow(14, true, -1) == 14 && ReadyMadeLookRow(14, true, 3) == 3 && ReadyMadeLookRow(14, false, -1) == 0);
+    CHECK(ReadyMadeLookRow(16, true, -1) == 16 && ReadyMadeLookRow(9, true, 0) == 0 && ReadyMadeLookRow(9, true, 17) == 9);
+    // ready-made colours off: no S0 her navy (0), S0 measured, a failed measurement unknown (-1)
+    CHECK(FolderLookRow(false, 5) == 0 && FolderLookRow(true, 5) == 5 && FolderLookRow(true, -1) == -1 && FolderLookRow(true, 40) == -1);
+    // the fabric average: only mask >= 128, alpha ignored, at least 1% of the pixels
+    constexpr std::size_t kPx = 400;
+    std::uint8_t rgba[kPx * 4] = {}, mask[kPx] = {};
+    for (std::size_t i = 0; i < kPx; ++i) {
+        const bool fabric = i % 4 == 0;  // 100 fabric pixels, pink; the rest bright green (must not count)
+        rgba[i * 4 + 0] = fabric ? kLut[14].r : 0, rgba[i * 4 + 1] = fabric ? kLut[14].g : 255, rgba[i * 4 + 2] = fabric ? kLut[14].b : 0;
+        rgba[i * 4 + 3] = static_cast<std::uint8_t>(i);
+        mask[i] = fabric ? 200 : 127;
+    }
+    Rgb avg{};
+    std::uint64_t n = 0;
+    CHECK(FabricAverage(rgba, mask, kPx, &avg, &n) && n == 100 && avg.r == kLut[14].r && avg.g == kLut[14].g && avg.b == kLut[14].b);
+    CHECK(NearestRow(avg) == 14);
+    // half navy, half pink fabric: the mean of the two, its nearest row
+    for (std::size_t i = 0; i < kPx; i += 8) rgba[i * 4 + 0] = kHerBase.r, rgba[i * 4 + 1] = kHerBase.g, rgba[i * 4 + 2] = kHerBase.b;
+    CHECK(FabricAverage(rgba, mask, kPx, &avg, &n) && n == 100 && avg.r == (kLut[14].r + kHerBase.r) / 2);
+    // too little fabric (3 of 400 < 1%), none, no picture
+    for (std::size_t i = 0; i < kPx; ++i) mask[i] = i < 3 ? 255 : 0;
+    Rgb keep{1, 2, 3};
+    CHECK(!FabricAverage(rgba, mask, kPx, &keep, &n) && n == 3 && keep.r == 1 && keep.b == 3);
+    for (std::size_t i = 0; i < kPx; ++i) mask[i] = 0;
+    CHECK(!FabricAverage(rgba, mask, kPx, &keep, &n) && n == 0 && !FabricAverage(nullptr, mask, kPx, &keep) && !FabricAverage(rgba, nullptr, kPx, &keep));
+    // her own navy picture measures row 0 (not charcoal), a painted sky blue 13
+    for (std::size_t i = 0; i < kPx; ++i) mask[i] = 255, rgba[i * 4 + 0] = kHerBase.r, rgba[i * 4 + 1] = kHerBase.g, rgba[i * 4 + 2] = kHerBase.b;
+    CHECK(FabricAverage(rgba, mask, kPx, &avg) && NearestRow(avg) == 0);
+    for (std::size_t i = 0; i < kPx; ++i) rgba[i * 4 + 0] = kLut[13].r, rgba[i * 4 + 1] = kLut[13].g, rgba[i * 4 + 2] = kLut[13].b;
+    CHECK(FabricAverage(rgba, mask, kPx, &avg) && NearestRow(avg) == 13);
+}
+
 int main() {
+    TestHoodRow();
+    TestLookRow();
     OwnLook();
     Palette();
     Metals();

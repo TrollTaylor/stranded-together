@@ -102,6 +102,16 @@ inline constexpr std::uint8_t kExosCount = 44;     // the porter suit's ArtParts
 inline constexpr std::uint8_t PorterExos(const Outfit& o) {
     return o.variant == kPorterVariant && o.exos < kExosCount ? o.exos : std::uint8_t{0xFF};
 }
+// Round 12 (docs/real-partner-body.md section 37.5): the exos variation of Sam's `sam_exos` (0xFF none) rebuilt for the suit
+// colour `colour` (0..16). The game's formula (section 9.1): index = block + glove + kind, block -1 plain / 14 silver (colour
+// 15) / 29 gold (colour 16), glove +0 / +5 / +10, kind +0..+4, so index + 1 = block' x 15 + glove' x 5 + kind. Sam's glove
+// and skeleton kind are kept, the block follows `colour`. 0xFF: no variation (plain, no glove, no skeleton).
+inline constexpr std::uint8_t ExosForColour(std::uint8_t sam_exos, std::uint8_t colour) {
+    const int rest = (sam_exos < kExosCount ? sam_exos + 1 : 0) % 15;  // glove x 5 + kind (0..14)
+    const int block = colour == 15 ? 1 : colour == 16 ? 2 : 0;
+    const int v = block * 15 + rest - 1;
+    return v < 0 ? std::uint8_t{0xFF} : static_cast<std::uint8_t>(v);
+}
 
 // The sender's Sam's facial clip (face_rules.hpp): id = its place in the sender's own Sam's facial tables (0..15
 // a state, 16..111 an event clip, 112..143 a photo-mode clip, 0xFE nothing plays, 0xFF a clip in no table: the
@@ -205,25 +215,34 @@ bool DecodeName(const std::uint8_t* data, std::size_t size, NameFrame& out) noex
 // apply are refused. Version 5 (round 11, docs/real-partner-body.md section 37): the former u16
 // reserved carries the sender's Sam's rain hood: `hood` bit 7 "read", bits 0-6 the hood state
 // (inventory +0x4970, 0..12); `hood info` bits 0-1 the hood type (0 porter, 1 oxi, 2 sea otter),
-// bit 2 the porter hood's second clip set. Both 0: no reading. Anything else is refused (a state
-// over 12, type 3, other bits, info without the read bit). Version 4 frames are refused.
+// bit 2 the porter hood's second clip set, bits 3-7 (round 12, section 37.5) the colour row the
+// sender's Fragile wears + 1 (0: none). Both 0: no reading. Anything else is refused (a state over
+// 12, type 3, a row over 16, info without the read bit). Version 4 frames are refused.
 inline constexpr std::uint8_t kGearMagic[4] = {'S', 'T', 'C', '1'};
 inline constexpr std::uint8_t kGearVersion = 5;
 inline constexpr std::uint8_t kGearHoodRead = 0x80;      // GearFrame::hood: a reading follows in bits 0-6
 inline constexpr std::uint8_t kGearHoodStateMax = 12;    // the game's hood states 0..12
 inline constexpr std::uint8_t kGearHoodTypeMax = 2;      // 0 porter, 1 oxi, 2 sea otter
 inline constexpr std::uint8_t kGearHoodAltClips = 0x04;  // GearFrame::hood_info: the porter hood's second clip set
+// Round 12 (section 37.5): `hood info` bits 3-7 = the colour row her raised hood is drawn in + 1 (0 not sent; 1..17 = row 0..14
+// of Sam's palette, 15 silver, 16 gold: the colour the sender's Fragile wears, painted folders their nearest row).
+inline constexpr std::uint8_t kGearHoodRowMax = 16;
 // The hood bytes (both 0, or a reading within range).
 inline constexpr bool GearHoodOk(std::uint8_t hood, std::uint8_t info) {
     if (hood == 0) return info == 0;
-    return (hood & kGearHoodRead) != 0 && (hood & 0x7F) <= kGearHoodStateMax && (info & 0x03) <= kGearHoodTypeMax && (info & ~0x07) == 0;
+    return (hood & kGearHoodRead) != 0 && (hood & 0x7F) <= kGearHoodStateMax && (info & 0x03) <= kGearHoodTypeMax && (info >> 3) <= kGearHoodRowMax + 1;
 }
 inline constexpr std::uint8_t PackGearHood(int state) {
     return state < 0 || state > kGearHoodStateMax ? std::uint8_t{0} : static_cast<std::uint8_t>(kGearHoodRead | state);
 }
-inline constexpr std::uint8_t PackGearHoodInfo(int type, bool alt) {
-    return type < 0 || type > kGearHoodTypeMax ? std::uint8_t{0} : static_cast<std::uint8_t>(type | (alt ? kGearHoodAltClips : 0));
+// `row`: -1 none, 0..16 the colour row (anything else: none).
+inline constexpr std::uint8_t PackGearHoodInfo(int type, bool alt, int row = -1) {
+    return type < 0 || type > kGearHoodTypeMax
+               ? std::uint8_t{0}
+               : static_cast<std::uint8_t>(type | (alt ? kGearHoodAltClips : 0) | (row >= 0 && row <= kGearHoodRowMax ? (row + 1) << 3 : 0));
 }
+// The colour row of a hood info byte GearHoodOk accepted (-1: none sent).
+inline constexpr int GearHoodRow(std::uint8_t info) { return (info >> 3) >= 1 && (info >> 3) <= kGearHoodRowMax + 1 ? (info >> 3) - 1 : -1; }
 inline constexpr std::size_t kGearHeaderSize = 16;
 inline constexpr std::size_t kGearPartsSize = 32;
 inline constexpr std::size_t kGearPackPartsSize = 16;

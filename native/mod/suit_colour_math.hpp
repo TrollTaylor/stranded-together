@@ -16,6 +16,7 @@
 //          gold toned down a little after the sunlit two-game run 20261121-142205 (a flat yellow next to Sam's gold).
 // All values are 8-bit texture bytes as the game stores them (albedo sRGB, reflectance and roughness linear).
 #pragma once
+#include <cstddef>
 #include <cstdint>
 
 namespace st::suitcol {
@@ -93,6 +94,49 @@ constexpr Look LookFor(std::uint8_t colour, int metal = 0) {
 constexpr std::uint8_t Wanted(int override_colour, std::uint8_t colour) {
     if (override_colour >= 0 && override_colour <= kGold) return static_cast<std::uint8_t>(override_colour);
     return colour <= kGold ? colour : std::uint8_t{0};
+}
+
+// Round 12 (docs/real-partner-body.md section 37.5): her raised hood is Sam's hood on the exo carrier, tinted by the palette
+// row (0..14) or the silver / gold set (15, 16). The row nearest a painted suit's average fabric colour (sRGB bytes): her own
+// navy counts as row 0 (kHerBase, the colour row 0 stands for on her), every other row by its LUT colour. Squared distance,
+// the lower row on a tie.
+constexpr int Dist2(const Rgb& a, const Rgb& b) {
+    return (a.r - b.r) * (a.r - b.r) + (a.g - b.g) * (a.g - b.g) + (a.b - b.b) * (a.b - b.b);
+}
+constexpr int NearestRow(const Rgb& avg) {
+    int best = 0, bd = Dist2(avg, kLut[0]) < Dist2(avg, kHerBase) ? Dist2(avg, kLut[0]) : Dist2(avg, kHerBase);
+    for (int i = 1; i < 15; ++i)
+        if (Dist2(avg, kLut[i]) < bd) bd = Dist2(avg, kLut[i]), best = i;
+    return best;
+}
+// The row her hood is drawn in from what her suit wears now: `look` her edited / ready-made textures are bound (a non-empty
+// look, the boots' slots included) with `look_row` the suit part's row (-1 unknown: a test pattern); else `tint` the v0.23
+// tint bound (suit_colour Dress::applied: 1..16, 0 none = her own navy, row 0). -1: unknown (the carrier keeps Sam's look).
+constexpr int HoodRow(bool look, int look_row, std::uint8_t tint) {
+    if (look) return look_row >= 0 && look_row <= kGold ? look_row : -1;
+    return tint <= kGold ? tint : 0;
+}
+// A built look's row (texture_looks): the folder's S0 (her Suit Colour picture) measured when it is built from the folder's
+// own files (painted), except a silver / gold folder (15, 16) whose Colour picture is not painted, which keeps its metal.
+constexpr bool MeasureHoodRow(int colour, bool s0_from_files, bool colour_painted) { return s0_from_files && (colour < 15 || colour_painted); }
+// With ready-made colours on: the measured row (`measured` -1: not measured, or the measurement failed), else the folder's
+// colour when S0 is in the look (the ready-made S0), else her own fabric (no S0) row 0.
+constexpr int ReadyMadeLookRow(int colour, bool s0_in, int measured) { return measured >= 0 && measured <= kGold ? measured : s0_in ? colour : 0; }
+// Ready-made colours off: no S0 her own navy (row 0), else the measured row (-1 unknown).
+constexpr int FolderLookRow(bool s0_in, int measured) { return !s0_in ? 0 : measured >= 0 && measured <= kGold ? measured : -1; }
+// The average sRGB of a picture's pixels (RGBA bytes, `px` pixels) where her fabric mask is 128 or more; false when fewer
+// than 1% of the pixels are fabric (then not measured). *n_out the fabric pixels counted.
+inline bool FabricAverage(const std::uint8_t* rgba, const std::uint8_t* mask, std::size_t px, Rgb* avg, std::uint64_t* n_out = nullptr) {
+    std::uint64_t n = 0, sum[3] = {};
+    for (std::size_t i = 0; rgba && mask && i < px; ++i) {
+        if (mask[i] < 128) continue;
+        ++n;
+        for (std::size_t k = 0; k < 3; ++k) sum[k] += rgba[i * 4 + k];
+    }
+    if (n_out) *n_out = n;
+    if (n == 0 || n < px / 100) return false;
+    *avg = Rgb{static_cast<std::uint8_t>(sum[0] / n), static_cast<std::uint8_t>(sum[1] / n), static_cast<std::uint8_t>(sum[2] / n)};
+    return true;
 }
 
 // Round 5: the guest's own pick, remembered across the host's loads. Her world is the host's save loaded into a sandbox

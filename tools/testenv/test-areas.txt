@@ -157,9 +157,11 @@ native/mod/body_table.*                partner-body
 native/mod/body_choice.*               partner-body self-view
 native/mod/real_body.*                 partner-body self-view
 native/mod/self_predict.hpp            self-view smooth
+native/mod/pelvis_scale.hpp            self-view partner-body ride
 native/mod/partner_holo.*              partner-holo
 native/mod/menu_figure.*               menu-figure
 native/mod/exo_parts.hpp               skeleton
+native/mod/hood_fold.*                 hood self-view partner-body
 native/mod/partner_outfit.*            outfit
 native/mod/face_rules.hpp              face
 native/mod/face_sync.*                 face
@@ -221,7 +223,7 @@ native/mod/config.*         ~("|bool\s+|int\s+)textures_defaults                
 native/mod/config.*         ~("|bool\s+|int\s+|std::string\s+)boots_                          boots
 native/mod/config.*         ~("|bool\s+|int\s+)exo_                                          skeleton
 native/mod/config.*         ~("|bool\s+)room_outfit                                          private-room
-native/mod/config.*         ~("|bool\s+|int\s+)(fragile_hood|hood_hair)                     hood
+native/mod/config.*         ~("|bool\s+|int\s+)(fragile_hood|hood_hair|hood_colour|hood_fold_hide) hood
 native/mod/config.*         ~("|bool\s+|int\s+|float\s+)self_(view|character|feet|headgear)   self-view
 native/mod/config.*         ~("|bool\s+|int\s+)world_                                        world-sync
 native/mod/config.*         ~("|bool\s+|int\s+)(vehicle_|partner_vehicle|tackle)              vehicle-share

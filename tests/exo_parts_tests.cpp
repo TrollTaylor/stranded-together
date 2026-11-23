@@ -297,9 +297,75 @@ void TestHoodAnim() {
     a = HoodAnim{};
     CHECK(HoodAnimTick(a, 1, HoodPhase::lowering, true, true, 0) == 0 && a.show == HoodShow::none);
 }
+// Round 12 (section 37.6): her folded hood
+void TestFold() {
+    CHECK(FoldJointsOk(kFoldJoints, kFoldBindings) && !FoldJointsOk(kFoldJoints, kFoldBindings - 1) && !FoldJointsOk(nullptr, kFoldBindings));
+    std::uint16_t l[kFoldBindings];
+    for (unsigned i = 0; i < kFoldBindings; ++i) l[i] = kFoldJoints[i];
+    l[13] = 140;
+    CHECK(!FoldJointsOk(l, kFoldBindings));
+    // the roll: bindings 0-5 (joints 5, 6, 29, 30, 31, 35) and 10-13 (106, 107, 108, 139); the knee flaps keep theirs
+    unsigned ring = 0;
+    for (unsigned b = 0; b < kFoldBindings; ++b) {
+        if (!FoldRing(b)) continue;
+        ++ring;
+        const unsigned j = kFoldJoints[b];
+        CHECK(j == 5 || j == 6 || j == 29 || j == 30 || j == 31 || j == 35 || j == 106 || j == 107 || j == 108 || j == 139);
+    }
+    CHECK(ring == kFoldRingCount && !FoldRing(6) && !FoldRing(9) && !FoldRing(14) && !FoldRing(21) && !FoldRing(22) && FoldRing(0) && FoldRing(13));
+    // the plan: nothing unless wanted and a method; the pin only with a method
+    CHECK(!FoldPlanOf(false, 1, true).Any() && !FoldPlanOf(true, 0, true).Any() && !FoldPlanOf(true, -1, true).Any() && !FoldPlanOf(true, 2, true).Any());
+    const FoldPlan p1 = FoldPlanOf(true, 1, true), p2 = FoldPlanOf(true, 1, false);
+    CHECK(p1.binds && p1.pin && p2.binds && !p2.pin && FoldPlanOf(true, 1, true) == p1 && !(p1 == p2) && FoldPlan{} == FoldPlanOf(false, 1, false));
+    // LOD distances: part 0 near 0, increasing, finite
+    const float d0[3] = {0.0f, 2.0f, 5.0f}, d1[3] = {0.0f, 5.0f, 2.0f}, d2[2] = {3.0f, 5.0f}, d3[1] = {0.0f};
+    CHECK(FoldLodDistancesOk(d0, 3) && !FoldLodDistancesOk(d1, 3) && !FoldLodDistancesOk(d2, 2) && !FoldLodDistancesOk(d3, 1) &&
+          !FoldLodDistancesOk(nullptr, 3));
+    // round 12 review: a gap of one or two ticks keeps the target; 3 ticks and 250 ms drop it
+    CHECK(!FoldDrop(1, 1000, 1000) && !FoldDrop(2, 1000, 1400) && !FoldDrop(3, 1000, 1200) && FoldDrop(3, 1000, 1250) && FoldDrop(9, 0, 5000));
+    // the write-back of one matrix: as the game had it, ours (zero) back, anything else left
+    CHECK(FoldBackOf(true, false) == FoldBack::as_game && FoldBackOf(false, true) == FoldBack::restore && FoldBackOf(false, false) == FoldBack::foreign &&
+          FoldBackOf(true, true) == FoldBack::as_game);
+    static_assert(kFoldFindTries == 3 && kFoldFindRetryMs > 0, "the find retries");
+    // which resource: A drawn by the partner body, B by the self view
+    const std::uintptr_t A = 0xA000, B = 0xB000;
+    {
+        const std::uintptr_t lb[2] = {A, B};
+        const bool h00[2] = {false, false}, h10[2] = {true, false}, h01[2] = {false, true}, h11[2] = {true, true};
+        FoldPick p = FoldPickOf(0, lb, h10, true);
+        CHECK(!p.drop && p.want && p.find == A);
+        p = FoldPickOf(0, lb, h01, true);
+        CHECK(!p.drop && p.want && p.find == B);
+        p = FoldPickOf(0, lb, h00, true);
+        CHECK(!p.drop && !p.want && p.find == 0);
+        p = FoldPickOf(A, lb, h10, true);  // still wanted: kept, nothing to find
+        CHECK(!p.drop && p.want && p.find == 0);
+        p = FoldPickOf(A, lb, h00, true);  // nobody wants it: kept (shown again), not dropped
+        CHECK(!p.drop && !p.want && p.find == 0);
+        p = FoldPickOf(A, lb, h01, true);  // the review's case: the self view wants B, nobody A: A back and forgotten, B found
+        CHECK(p.drop && p.want && p.find == B);
+        p = FoldPickOf(A, lb, h11, true);  // both want theirs: A kept (one resource at a time)
+        CHECK(!p.drop && p.want && p.find == 0);
+        p = FoldPickOf(A, lb, h11, false);  // the hiding off: nothing wanted
+        CHECK(!p.drop && !p.want && p.find == 0);
+    }
+    {
+        const std::uintptr_t la[2] = {A, A};  // two bodies of one resource (the echo role): one wanting it hides it for both
+        const bool h01[2] = {false, true}, h00[2] = {false, false};
+        FoldPick p = FoldPickOf(A, la, h01, true);
+        CHECK(!p.drop && p.want);
+        p = FoldPickOf(A, la, h00, true);
+        CHECK(!p.drop && !p.want);
+        const std::uintptr_t n[2] = {0, A};
+        const bool h10[2] = {true, false};  // a body with no readable resource wants it: nothing
+        p = FoldPickOf(0, n, h10, true);
+        CHECK(!p.want && p.find == 0);
+    }
+}
 }  // namespace
 
 int main() {
+    TestFold();
     TestFormula();
     TestTypes();
     TestSender();

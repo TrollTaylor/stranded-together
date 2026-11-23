@@ -59,6 +59,9 @@ struct Look {
     std::vector<int> slots;
     std::vector<std::uint8_t> blob_ids;  // 32 bytes per slot, same order
     int colour = -1;
+    // round 12 (section 37.5): the colour row her raised hood is drawn in for this suit look (texture_looks: 0 her own suit,
+    // the folder's colour for a ready-made one, the nearest row of a painted Colour picture; -1 unknown)
+    int hood_row = -1;
     bool Empty() const { return slots.empty(); }
 };
 

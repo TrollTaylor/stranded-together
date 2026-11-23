@@ -1,11 +1,16 @@
 # Fragile's ready-made suit colours (round 8; docs/textures.md "Ready-made colours"), the quick proof, solo, hidden. The
 # run gets its own freshly extracted textures folder (the launcher's extractor reads the game read-only into
-# <run>\textures, which now writes the ready-made pictures into 01..16) and nothing in it is painted. The self view's
+# <run>\textures, which now writes the ready-made pictures into 01..16) and nothing in it is painted but 05 (below). The self view's
 # fragile_suit body wears the ready-made colour of our Sam's suit colour, made by the mod from her Original pictures:
 # gold (the 100% save: 16, S0 and S1), then sky blue (13, S0 only: `real_outfit 4` overwrites our own Sam's suit colour
 # byte on the redirected scratch save), then 00 Default (her own suit), then gold again (from the built cache).
 #   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario fragile-suit-defaults-quick -SeedSaves complete-100
-# covers: suit-defaults textures self-view
+# Round 12 (docs/real-partner-body.md section 37.5): the exo carrier on her (our Sam's skeleton) is dressed for the colour
+# her suit wears, the ready-made look's row (gold 16: Sam's gold exos 31 kept; sky blue 13; her own suit 0), so her hood
+# matches her suit. Round 12 review: her colour apart from Sam's (`real_outfit 5`, her bodies only, Sam stays gold): the
+# ready-made pink (14, the user's case) dresses the carrier in 14, his colour 16; a painted folder (05 Light grey, a checker
+# over its pictures before the start): its Colour picture's fabric average measured, the carrier in the nearest row.
+# covers: suit-defaults textures self-view hood
 role solo
 timeout 300
 ini partner_body=real
@@ -14,6 +19,7 @@ ini my_character=fragile_suit
 ini self_character=1
 ini self_feet_hide=0
 textures extract
+textures pattern checker 05 Light grey
 start
 waitlog 40 \[self\] showing 'fragile_suit'
 waitlog 30 \[tex\] ready: manifest table
@@ -24,6 +30,7 @@ pad none 1300 rx=32767
 wait 1500
 action tex 0
 screenshot 01-gold-ready-made
+waitlog 20 \[exo-self\] carrier [0-9A-Fa-fx]+ dressed for her colour 16 \(Sam's exos 31 -> 31, his colour 16\)
 # sky blue: our Sam's suit colour byte (scratch save), the palette colour (only her Colour map changes)
 action real_outfit 4 13
 waitnew 30 \[tex\] look .* for colour 13 .*: ready-made \(S0\)
@@ -31,16 +38,34 @@ waitnew 30 \[tex\] ready-made S0 .* for colour 13 made in [0-9]+ ms
 waitnew 30 \[tex\] body self .*: look .* bound .* kept [1-9]
 wait 2500
 screenshot 02-sky-blue-ready-made
+waitlog 20 \[exo-self\] carrier [0-9A-Fa-fx]+ dressed for her colour 13 \(Sam's exos [0-9]+ -> [0-9]+, his colour 13\)
 # 00 Default: her own suit
 action real_outfit 4 0
 waitnew 30 \[tex\] body self .*: look .* taken off
 wait 2500
 screenshot 03-default-own
+waitlog 20 \[exo-self\] carrier [0-9A-Fa-fx]+ dressed for her colour 0 \(Sam's exos [0-9]+ -> [0-9]+, his colour 0\)
 # gold again: the ready-made blobs come from the run's built cache (or are still bound)
 action real_outfit 4 16
 waitnew 30 \[tex\] body self .*: look .* bound
 wait 2500
 screenshot 04-gold-again
+# her colour apart from Sam's gold: the ready-made pink (the user's case)
+action real_outfit 5 14
+waitnew 30 \[tex\] look .* for colour 14 .*: ready-made \(S0\)
+waitnew 30 \[tex\] body self .*: look .* bound .* kept [1-9]
+waitlog 20 \[exo-self\] carrier [0-9A-Fa-fx]+ dressed for her colour 14 \(Sam's exos [0-9]+ -> [0-9]+, his colour 16\)
+wait 2500
+screenshot 05-pink-sam-gold
+# a painted folder: its Colour picture measured over her fabric, the nearest palette row
+action real_outfit 5 5
+waitlog 30 \[tex\] colour 5: her suit's fabric \(the folder's Colour\) averages \([0-9]+, [0-9]+, [0-9]+\): her hood in palette row [0-9]+
+waitnew 30 \[tex\] body self .*: look .* bound .* kept [1-9]
+waitlog 20 \[exo-self\] carrier [0-9A-Fa-fx]+ dressed for her colour [0-9]+ \(Sam's exos [0-9]+ -> [0-9]+, his colour 16\)
+wait 2500
+screenshot 06-painted-light-grey
+action real_outfit 5 -1
+nolog \[tex\] colour [0-9]+: her hood's colour row not measured
 action tex 0
 nolog \[tex\] .*FAULTED
 nolog \[tex\] ready-made colours off

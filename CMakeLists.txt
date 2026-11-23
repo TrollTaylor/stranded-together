@@ -145,6 +145,7 @@ add_library(st_mod SHARED
   native/mod/nametags.cpp
   native/mod/partner_collision.cpp
   native/mod/partner_gear.cpp
+  native/mod/hood_fold.cpp
   native/mod/held_items.cpp
   native/mod/gear_look.cpp
   native/mod/menu_figure.cpp

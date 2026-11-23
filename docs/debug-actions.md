@@ -359,6 +359,22 @@ Scenarios: `collision`, `collision-off`, `two-games-collision`, `two-games-all`.
   (0 ms into the raising)`, `[exo] her body <p>: no hair part found (her hair stays under the hood); parts: ...` (or
   `hair parts under her hood ...` if one were found; `[exo-self]` for her own screen), and the
   carrier meter's `head` figure (her head joint 31 against the carrier's, cm).
+* `action gear 34 <method> [nopin]` (round 12; docs/real-partner-body.md section 37.6): her folded hood (on her collar)
+  while the raised hood shows: method 0 never hidden, 1 the inverse bind matrices of mesh D's 10 roll bindings zeroed (the
+  product); `nopin` 1 her LOD pin off (LOD1 drawn at its own distance again), 0 or left out the pin on (her LOD0 drawn at
+  every distance while hidden, the product); -1 the product again (1, pinned); any other method (2 and up) only logs the
+  status
+  (`[hood] folded hood on: method 1, pin on, mesh D's 10 roll bindings zeroed, LOD0 pinned; 1 hidden, 0 shown again;
+  carriers dressed for her colour on (partner 14, self 14)`). `session.ini hood_fold_hide=0|1` (default 0: the hide showed no change on screen; `gear 34` only acts while it is 1). Logged:
+  `[hood] her folded hood found: LodMeshResource <p>, mesh D <p> (bindings <p>, 22 joints checked, matrices <p>), LOD
+  distances 0.00 2.00`, `[hood] her folded hood hidden (<what>; partner body wants it hidden,
+  self body wants it hidden; #n)`, `[hood] her folded hood shown again (everything written back; ...)`, and on a mismatch
+  `[hood] her folded hood is not hidden this session: <why>` (after everything of ours is written back, a hide that stopped
+  part way included), `[hood] her folded hood not found yet (<why>): trying again in 1 s (n of 3)`.
+* `action gear 35 <0|1>` (round 12; section 37.5): the exo carriers dressed in the colour her suit wears (1, the default,
+  `session.ini hood_colour`) or in the sender's Sam's (0, v0.26). Logged: `[exo-self] carrier <p> dressed for her colour 14
+  (Sam's exos 31 -> 1, his colour 16)` (`[exo]` on the partner body; ending `: the sender's row (her look over the link)`
+  when the row came over STC1), `... dressed like the sender's Sam again (her colour not known)`.
 * `action gear 26 <0|1|2|9>` (round 6; docs/real-partner-body.md section 31): what is in a hand on the other screen
   (`held_items`): 0 off (only v0.9's cutscene-prop weapons), 1 the ladder / PCC / climbing anchor, 2 every item in a hand
   (the default); any other value only logs `[gear] held_items 2; held clones on (ok): n resource(s) re-typed, n entities
@@ -787,6 +803,12 @@ hook, which is installed at start-up only with `session.ini partner_body=real` o
   default, 0 off (the faces hold their default pose, the v0.25 look). `self_view 21`: the face sync's status line
   (`[face] face sync mask ...`: the byte checks, Sam's facial tables, the plays, landings and faults on each face, the
   partner's last received id).
+  `self_view 22 <0/1>`: the far hips rule (docs/real-partner-body.md section 38.3): 1 (the default) beyond 1.45 m from the
+  root her hips take Sam's translation minus her rest offset (blended from 1.15 m), 0 v0.26's plain ratio everywhere; on
+  the self view, the partner body and the fit alike. `self_view 23 <0/1>`: the follow 4 trace (section 38.2), off by
+  default: `[self] trace` lines with the scored frames around every frame where Sam's world or his root joint moved over
+  0.5 m (8 before, 8 after: his world and root joint, her world and pose root, the rule's reason, her drawn root against
+  his).
   `self_view 4`: the
   subspace work object's state and menu kind, and every ArtPart of the menu's figure (asked / effective
   visible, top-level, children) in the log. In hidden tests a `[menu] subspace state ...` line is logged on

@@ -18,6 +18,7 @@
 #include "png_wic.hpp"
 #include "ready_made_rules.hpp"
 #include "suit_defaults.hpp"
+#include "suit_colour_math.hpp"
 #include "tex_blob.hpp"
 #include "tex_hash.hpp"
 #include "tex_manifest.hpp"
@@ -813,6 +814,45 @@ void BuildFolder(tx::SlotGroup group, const std::string& folder, const char* see
     }
 }
 
+// Round 12 (docs/real-partner-body.md section 37.5): the palette row her raised hood is drawn in for a suit slot S0 built from
+// files: the Colour picture S0 uses (the folder's when there, else her Original) averaged over her navy fabric (the
+// ready-made generator's mask, from her Original), then the nearest row (suit_colour_math NearestRow: her own navy is row 0).
+// -1 (logged) when it cannot be measured (no analysis, another picture size, too little fabric): the carrier keeps Sam's look.
+int PaintedRow(int colour, const std::string& folder, ReadyCtx& ctx) {
+    std::string why;
+    const std::string key = OriginalsKey(&why);
+    if (key.empty() || !EnsureAnalysis(key, ctx.oi, nullptr, &why)) {
+        Log("[tex] colour %d: her hood's colour row not measured (%s)", colour, why.c_str());
+        return -1;
+    }
+    const char* name = rm::kPictureNames[rm::kColourPic];
+    tx::Image img;
+    const tx::Image* c = nullptr;
+    std::string err;
+    const std::wstring user = folder.empty() ? std::wstring() : Dir() + L"\\" + Wide(folder) + L"\\" + Wide(name);
+    const bool from_folder = !user.empty() && !FileSha(user).empty();
+    if (from_folder) {
+        if (tx::ReadPngFile(user, img, &err)) c = &img;
+    } else {
+        c = OrigImage(ctx.oi, kOrigNames[0], &err);
+    }
+    const std::size_t px = static_cast<std::size_t>(g_an.w) * g_an.h;
+    if (!c || c->w != g_an.w || c->h != g_an.h || g_an.mask.size() != px || c->rgba.size() != px * 4) {
+        Log("[tex] colour %d: her hood's colour row not measured (%s %s)", colour, name, c ? "is not the size of her Original" : err.c_str());
+        return -1;
+    }
+    std::uint64_t n = 0;
+    st::suitcol::Rgb avg{};
+    if (!st::suitcol::FabricAverage(c->rgba.data(), g_an.mask.data(), px, &avg, &n)) {
+        Log("[tex] colour %d: her hood's colour row not measured (too little fabric: %llu pixels)", colour, static_cast<unsigned long long>(n));
+        return -1;
+    }
+    const int row = st::suitcol::NearestRow(avg);
+    Log("[tex] colour %d: her suit's fabric (%s) averages (%u, %u, %u): her hood in palette row %d", colour, from_folder ? "the folder's Colour" : "her Original",
+        avg.r, avg.g, avg.b, row);
+    return row;
+}
+
 // Round 8: a colour folder 01..16 with ready-made colours on (ready_made_rules.hpp): nothing painted, the ready-made
 // colour made from Original\; something painted (any of the six pictures), exactly the folder's pictures. A slot of a
 // painted folder with no edited picture is the ready-made slot only when the two blobs are byte for byte the same.
@@ -843,6 +883,7 @@ bool BuildColourReadyMade(int colour, const std::string& folder, Look& out, std:
     char what[32];
     std::snprintf(what, sizeof(what), "colour %d", colour);
     ReadyCtx ctx;   // her Original pictures decoded once for S0, S1 and their identity
+    bool s0_in = false, s0_files = false;   // round 12: S0 in the look; built from the folder's files (not the ready-made slot)
     for (std::size_t si = 0; si < tx::kSlotCount; ++si) {
         const tx::Slot& s = tx::kSlots[si];
         if (s.group != tx::SlotGroup::suit) continue;
@@ -866,6 +907,7 @@ bool BuildColourReadyMade(int colour, const std::string& folder, Look& out, std:
         }
         out.slots.push_back(k);
         out.blob_ids.insert(out.blob_ids.end(), id, id + 32);
+        if (k == rm::kSlotS0) s0_in = true, s0_files = !ready;
         if (ready) {
             names_ready += (names_ready.empty() ? "" : " ") + std::string(s.id);
             sig += "|rm" + tx::Hex(id, 32);
@@ -876,6 +918,10 @@ bool BuildColourReadyMade(int colour, const std::string& folder, Look& out, std:
     }
     LookId(out);
     sig_out = sig;
+    // round 12 (section 37.5): her hood's colour row: her own fabric (no S0) 0, the ready-made S0 the folder's; a painted S0 its
+    // measured row (a silver / gold folder whose Colour picture is not painted keeps its metal)
+    const bool measure = st::suitcol::MeasureHoodRow(colour, s0_files, st[rm::kColourPic] == rm::PictureState::edited);
+    out.hood_row = st::suitcol::ReadyMadeLookRow(colour, s0_in, measure ? PaintedRow(colour, folder, ctx) : -1);
     std::string how;
     if (fs == rm::FolderState::ready_made) {
         how = names_ready.empty() ? "ready-made colour not available (her own suit)" : "ready-made (" + names_ready + ")";
@@ -896,6 +942,7 @@ bool BuildColour(int colour, Look& out, std::string& sig_out) {
     if (g_cfg.defaults && df::HasDefault(colour)) return BuildColourReadyMade(colour, folder, out, sig_out);
     if (folder.empty()) {
         sig_out = "none";
+        out.hood_row = 0;
         return true;  // no folder: her own look
     }
     std::string sig, names;
@@ -904,6 +951,10 @@ bool BuildColour(int colour, Look& out, std::string& sig_out) {
     BuildFolder(tx::SlotGroup::suit, folder, kSuitDir, colour, what, out, sig, names);
     LookId(out);
     sig_out = sig.empty() ? "none" : sig;
+    // round 12 (section 37.5): her hood's colour row (her navy 0; a painted S0 its measured row)
+    const bool s0_in = std::find(out.slots.begin(), out.slots.end(), rm::kSlotS0) != out.slots.end();
+    ReadyCtx ctx;
+    out.hood_row = st::suitcol::FolderLookRow(s0_in, s0_in ? PaintedRow(colour, folder, ctx) : -1);
     Log("[tex] look %s for colour %d (%s): %zu slot(s) edited%s%s%s", out.Empty() ? "--------" : tx::Hex(out.id, 4).c_str(), colour, folder.c_str(),
         out.slots.size(), names.empty() ? "" : " (", names.c_str(), names.empty() ? "" : ")");
     return true;

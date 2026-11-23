@@ -165,6 +165,10 @@ Config LoadConfig(const std::wstring& dir) {
             c.fragile_hood = v == "2" || v == "unfold" ? 2 : v == "1" || v == "swap" ? 1 : v == "0" || v == "off" ? 0 : (ParseBool(v) ? 2 : 0);
         } else if (k == "hood_hair") {
             c.hood_hair = ParseBool(v);
+        } else if (k == "hood_colour") {
+            c.hood_colour = ParseBool(v);
+        } else if (k == "hood_fold_hide") {
+            c.hood_fold_hide = ParseBool(v);
         } else if (k == "held_items") {
             c.held_items = v == "2" || v == "all" ? 2 : v == "1" || v == "tools" ? 1 : (ParseBool(v) ? 2 : 0);
         } else if (k == "vehicle_sync") {
@@ -331,6 +335,7 @@ Config LoadConfig(const std::wstring& dir) {
         c.partner_gear ? 1 : 0, c.smooth_pose ? 1 : 0, c.self_headgear ? 1 : 0, c.self_feet_hide ? 1 : 0, c.boots_sync ? 1 : 0, c.boots_look_own ? "own" : "prop",
         c.boots_own_porter ? 1 : 0, c.fragile_suit_colour ? 1 : 0, c.exo_carrier ? 1 : 0, c.room_outfit_black ? "black" : "suit",
         c.fragile_hood, c.hood_hair ? 1 : 0);
+    Log("[config] hood_colour=%d hood_fold_hide=%d", c.hood_colour ? 1 : 0, c.hood_fold_hide ? 1 : 0);
     Log("[config] held_items=%d (%s)", c.held_items,
         c.held_items == 2 ? "every item in a hand drawn on the other screen" : c.held_items == 1 ? "ladder, PCC, climbing anchor" : "off: cutscene-prop weapons only");
     // Fragile's textures: only whether a folder came and its length (the path itself names the Windows user).
