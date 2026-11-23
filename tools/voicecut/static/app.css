@@ -179,3 +179,11 @@ h2 { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: v
 .guide-step:hover { background: var(--panel-2); }
 .guide-step.active { background: #22182a; box-shadow: inset 3px 0 0 var(--accent); }
 .guide-step .label { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.guide-auto { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12px; }
+.guide-check { border: 1px dashed var(--warn); border-radius: 6px; padding: 6px 8px; margin: 4px 0 6px; font-size: 12.5px; }
+.state.check { color: var(--warn); }
+.guide-sug { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; min-height: 10px; }
+.guide-sug:empty { display: none; }
+.sug { display: grid; grid-template-columns: auto 1fr auto auto auto; gap: 4px; align-items: center; font-size: 12px; padding: 1px 0; }
+.sug .t { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.clip .auto { color: var(--warn); font-size: 11px; margin-left: 4px; }

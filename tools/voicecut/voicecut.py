@@ -30,6 +30,7 @@ sys.path.insert(0, HERE)
 import vc_audio as AU  # noqa: E402
 import vc_catalog as CAT  # noqa: E402
 import vc_game as G  # noqa: E402
+import vc_match as M  # noqa: E402
 import vc_store as ST  # noqa: E402
 
 APP = 'voicecut'
@@ -89,6 +90,11 @@ class GameSource:
         import vc_worker
         return pool.submit(vc_worker.decode_to, {'id': item['id'], 'stream': item['stream']}, path)
 
+    @staticmethod
+    def analyse_submit(pool, kind, path, subs, item_id):
+        import vc_worker
+        return pool.submit(vc_worker.analyse, kind, path, subs, item_id)
+
 
 class App:
     """Everything the API serves; no HTTP in here (the unit tests use it directly)."""
@@ -116,6 +122,10 @@ class App:
         self._prefetch_paused = threading.Event()
         self._prefetch_thread = None
         self._prefetch_pool = None
+        self.analysis = {'state': 'idle', 'done': 0, 'total': 0, 'failed': 0}
+        self.match = None
+        self._cands = {}
+        self._match_scales = None
 
     # ---- catalog
     def start_catalog(self, rebuild=False):
@@ -151,6 +161,9 @@ class App:
         self.items = {i['id']: i for i in c['items']}
         self.cat_state = {'state': 'ready', 'message': '%d lines' % len(c['items']), 'done': None, 'total': None,
                           'error': None}
+        self.load_match()
+        if self.match:
+            self.analysis = {'state': 'done', 'done': 0, 'total': 0, 'failed': 0}
         if self.auto_prefetch:
             self.start_prefetch()
 
@@ -160,7 +173,15 @@ class App:
         items = sorted(self.items.values(), key=lambda i: (rank.get((i['speaker'], i['kind']), 3), i['id']))
         return [i for i in items if not os.path.exists(self.ws.audio_path(i['id']))]
 
+    def analysis_jobs(self):
+        """What the matcher measures: Fragile's cutscenes (her candidate sounds) and Sam's wordless lines."""
+        cuts = [i for i in self.items.values() if i['kind'] == 'cutscene' and i['speaker'] == 'fragile']
+        sam = [i for i in self.items.values() if i['speaker'] == 'sam' and not i['text'] and i.get('situations')]
+        return sorted(cuts, key=lambda i: i['id']) + sorted(sam, key=lambda i: i['id'])
+
     def start_prefetch(self):
+        """Decode every source into the cache, then (once per game version) measure them for the suggestions; both in
+        the source's worker pool, pausable."""
         if self.source is None or not self.items or not hasattr(self.source, 'prefetch_pool'):
             return
         if self._prefetch_thread and self._prefetch_thread.is_alive():
@@ -169,48 +190,80 @@ class App:
             return
         todo = self.prefetch_order()
         cached = len(self.items) - len(todo)
-        self.prefetch = {'state': 'running' if todo else 'done', 'done': cached, 'total': len(self.items),
-                         'failed': 0, 'workers': self.workers}
-        if not todo:
+        need_match = self.match is None and hasattr(self.source, 'analyse_submit')
+        self.prefetch = {'state': 'running' if (todo or need_match) else 'done', 'done': cached,
+                         'total': len(self.items), 'failed': 0, 'workers': self.workers}
+        if not todo and not need_match:
             return
         self._prefetch_paused.clear()
 
+        def pump(pool, queue, submit, on_result, counter):
+            """Keep up to 2 jobs per worker running from `queue`; False when stopped."""
+            from concurrent.futures import FIRST_COMPLETED, wait
+            pending = {}
+            while queue or pending:
+                while queue and not self._prefetch_paused.is_set() and len(pending) < 2 * self.workers:
+                    it = queue.popleft()
+                    fut = submit(it)
+                    if fut is None:
+                        counter['done'] += 1
+                        continue
+                    pending[fut] = it
+                if not pending:
+                    time.sleep(0.3)   # paused with nothing running
+                    if self.prefetch['state'] == 'stopped':
+                        return False
+                    continue
+                finished, _ = wait(list(pending), timeout=0.5, return_when=FIRST_COMPLETED)
+                for f in finished:
+                    it = pending.pop(f)
+                    try:
+                        on_result(it, f.result())
+                        counter['done'] += 1
+                    except Exception as e:
+                        counter['failed'] += 1
+                        self.log('%s failed: %s' % (it['id'], e))
+                if self.prefetch['state'] == 'stopped':
+                    return False
+            return True
+
         def run():
             from collections import deque
-            from concurrent.futures import FIRST_COMPLETED, wait
-            queue = deque(todo)
-            pending = {}
             try:
                 pool = self._prefetch_pool = self.source.prefetch_pool(self.workers)
             except Exception as e:
                 self.prefetch['state'] = 'error'
-                self.log('prefetch could not start: %s\n%s' % (e, traceback.format_exc()))
+                self.log('background work could not start: %s\n%s' % (e, traceback.format_exc()))
                 return
             try:
-                while queue or pending:
-                    while queue and not self._prefetch_paused.is_set() and len(pending) < 2 * self.workers:
-                        it = queue.popleft()
-                        path = self.ws.audio_path(it['id'])
-                        if os.path.exists(path):
-                            self.prefetch['done'] += 1
-                            continue
-                        pending[self.source.prefetch_submit(pool, it, path)] = it['id']
-                    if not pending:
-                        time.sleep(0.3)   # paused with nothing running
-                        if self.prefetch['state'] == 'stopped':
-                            return
-                        continue
-                    finished, _ = wait(list(pending), timeout=0.5, return_when=FIRST_COMPLETED)
-                    for f in finished:
-                        item_id = pending.pop(f)
-                        try:
-                            self._remember(item_id, f.result())
-                            self.prefetch['done'] += 1
-                        except Exception as e:
-                            self.prefetch['failed'] += 1
-                            self.log('decoding %s failed: %s' % (item_id, e))
-                    if self.prefetch['state'] == 'stopped':
+                def submit_decode(it):
+                    path = self.ws.audio_path(it['id'])
+                    return None if os.path.exists(path) else self.source.prefetch_submit(pool, it, path)
+                if not pump(pool, deque(todo), submit_decode, lambda it, st: self._remember(it['id'], st),
+                            self.prefetch):
+                    return
+                self._flush_measured()
+                if need_match:
+                    jobs = [i for i in self.analysis_jobs() if os.path.exists(self.ws.audio_path(i['id']))]
+                    self.analysis = {'state': 'running', 'done': 0, 'total': len(jobs), 'failed': 0}
+                    found = {'cands': [], 'sam': {}, 'her_f0': {}}
+
+                    def submit_match(it):
+                        kind = 'cutscene' if it['kind'] == 'cutscene' else 'line'
+                        return self.source.analyse_submit(pool, kind, self.ws.audio_path(it['id']), it.get('subs'),
+                                                          it['id'])
+
+                    def got(it, res):
+                        if it['kind'] == 'cutscene':
+                            found['her_f0'][it['id']], cands = res
+                            found['cands'] += cands
+                        else:
+                            found['sam'][it['id']] = res
+                    if not pump(pool, deque(jobs), submit_match, got, self.analysis):
+                        self.analysis['state'] = 'stopped'
                         return
+                    self._set_match(dict(found, version=M.MATCH_VERSION, game=self.catalog.get('game')), save=True)
+                    self.analysis['state'] = 'done'
                 self.prefetch['state'] = 'done'
             finally:
                 self._flush_measured()
@@ -221,6 +274,140 @@ class App:
                 self._prefetch_pool = None
         self._prefetch_thread = threading.Thread(target=run, daemon=True)
         self._prefetch_thread.start()
+
+    # ---- suggestions (vc_match): Fragile's sounds ranked for each of Sam's situations
+    def _set_match(self, m, save=False):
+        if save:
+            ST.atomic_json(self.ws.match_path, m)
+        rows = list(m.get('sam', {}).values()) + [c for c in m.get('cands', []) if c['kind'] != 'line']
+        self._match_scales = M.scales(rows) if rows else None
+        self._cands = {c['id']: c for c in m.get('cands', [])}
+        self.match = m
+
+    def load_match(self):
+        try:
+            with open(self.ws.match_path, encoding='utf-8') as f:
+                m = json.load(f)
+        except (OSError, ValueError):
+            return
+        if m.get('version') == M.MATCH_VERSION and self.catalog and m.get('game') == self.catalog.get('game'):
+            self._set_match(m)
+
+    def situation(self, h):
+        for s in (self.catalog or {}).get('situations', []):
+            if s['hash'] == h:
+                return s
+        return None
+
+    def effective_category(self, s):
+        return self.ws.state.get('situations', {}).get(str(s['hash'])) or s.get('guess', 'other')
+
+    def sam_lines(self, h):
+        return [i for i in self.items.values() if i['speaker'] == 'sam' and h in (i.get('situations') or [])]
+
+    def suggestions(self, h, limit=6):
+        """[(score, candidate, why)] for one of Sam's situations (empty before the analysis)."""
+        s = self.situation(h)
+        if not s or not self.match:
+            return []
+        lines = self.sam_lines(h)
+        spoken = s.get('spoken', 0) * 2 > max(1, len(lines))
+        prof = M.profile([self.match['sam'].get(i['id']) for i in lines if not i['text']])
+        rejected = self.ws.state.get('rejected', {}).get(str(h), [])
+        return M.suggest(prof, [i['text'] for i in lines if i['text']], spoken, self.effective_category(s),
+                         list(self._cands.values()), self._match_scales, rejected, limit)
+
+    def sam_loudness(self, hashes):
+        vals = sorted(self.ws.measured[i['id']]['loud_db'] for h in hashes for i in self.sam_lines(h)
+                      if i['id'] in self.ws.measured and self.ws.measured[i['id']]['loud_db'] > -119)
+        return vals[len(vals) // 2] if vals else None
+
+    def clip_from_candidate(self, cand_id, hashes, user=False):
+        """A clip of one of her candidate sounds (a little room around it, short fades, the gain that brings it to
+        Sam's loudness in those situations), made for `hashes`. An existing clip of the same sound is reused."""
+        c = self._cands.get(cand_id)
+        if not c:
+            raise ST.ClipError('unknown suggestion')
+        for old in self.ws.clips():
+            if old.get('candidate') == cand_id:
+                for h in hashes:
+                    old = self.ws.link_clip(old['id'], h)
+                if user and old.get('auto'):
+                    old['auto'] = False
+                    self.ws.save()
+                return old
+        cats = [self.effective_category(self.situation(h)) for h in hashes if self.situation(h)]
+        cat = max(set(cats), key=cats.count) if cats else 'other'
+        start = max(0.0, c['t0'] - 0.04)
+        rate, seg, frames = self.source_range(c['item'], start, c['t1'] + 0.08)
+        end = min(frames / float(rate), c['t1'] + 0.08)
+        # the gain that makes it as loud as Sam's lines there (both measured by vc_audio.stats' loudness)
+        target = self.sam_loudness(hashes)
+        own = AU.stats(seg, rate)['loud_db'] if seg else -120.0
+        gain = 0.0
+        if target is not None and own > -119:
+            gain = max(-24.0, min(24.0, round((target - own) * 2) / 2.0))
+        body = {'source': c['item'], 'category': cat, 'start': start, 'end': end,
+                'fade_in': 0.01, 'fade_out': 0.05, 'gain_db': gain, 'normalize': False,
+                'note': c.get('text') or ('her %s' % c['kind']), 'situations': list(hashes), 'auto': not user,
+                'candidate': cand_id}
+        return self.save_clip(body)
+
+    def autofill(self):
+        """For every situation without an answer: link its best suggestion (one clip per sound, shared by all the
+        situations it fits); they are marked for a listen in the guide."""
+        if not self.match:
+            raise ST.ClipError('the analysis has not finished yet')
+        done = {h for c in self.ws.clips() for h in c.get('situations', [])}
+        plans = self.ws.state.get('plan', {})
+        picks = {}
+        for s in self.catalog['situations']:
+            h = s['hash']
+            if s.get('lines', 0) <= 0 or h in done or str(h) in plans:
+                continue
+            sug = self.suggestions(h, limit=1)
+            if sug and sug[0][0] >= M.AUTOFILL_MIN:
+                picks.setdefault(sug[0][1]['id'], []).append(h)
+        made = linked = 0
+        for cand_id, hashes in picks.items():
+            existed = any(c.get('candidate') == cand_id for c in self.ws.clips())
+            self.clip_from_candidate(cand_id, hashes)
+            made += 0 if existed else 1
+            linked += len(hashes)
+        return {'clips': made, 'situations': linked}
+
+    def review(self, h, ok):
+        """The guide's keep (ok=True) or 'another one' (ok=False: the suggestion is rejected for this situation, its
+        clip unlinked, deleted if it was an unkept suggestion made for nothing else, and the next one linked)."""
+        h = ST.clean_hash(h)
+        rev = self.ws.state.setdefault('review', {})
+        if ok:
+            rev[str(h)] = 'ok'
+            self.ws.save()
+            return {'kept': h}
+        nxt = None
+        for c in list(self.ws.clips()):
+            if h in c.get('situations', []) and c.get('auto'):
+                rej = self.ws.state.setdefault('rejected', {}).setdefault(str(h), [])
+                if c.get('candidate') and c['candidate'] not in rej:
+                    rej.append(c['candidate'])
+                c = self.ws.link_clip(c['id'], h, on=False)
+                if not c.get('situations'):
+                    self.ws.delete_clip(c['id'])
+        rev.pop(str(h), None)
+        self.ws.save()
+        sug = self.suggestions(h, limit=1)
+        if sug:
+            nxt = self.clip_from_candidate(sug[0][1]['id'], [h])
+        return {'next': nxt['id'] if nxt else None}
+
+    def suggestion_view(self, h):
+        out = []
+        for score, c, why in self.suggestions(h):
+            out.append({'id': c['id'], 'item': c['item'], 't0': c['t0'], 't1': c['t1'], 'kind': c['kind'],
+                        'text': c.get('text', ''), 'dur': c['dur'], 'score': score, 'why': why,
+                        'conf': c.get('conf'), 'loud_db': c.get('loud_db')})
+        return out
 
     def pause_prefetch(self):
         if self.prefetch['state'] == 'running':
@@ -325,7 +512,7 @@ class App:
         return {'app': APP, 'version': VERSION, 'catalog': self.cat_state, 'game_dir': self.game_dir,
                 'workspace': self.ws.root, 'export_dir': self.ws.export_dir, 'language': self.language,
                 'clips': len(clips), 'decoding': dict(self.decoding), 'measuring': len(self._measure_queue),
-                'prefetch': dict(self.prefetch)}
+                'prefetch': dict(self.prefetch), 'analysis': dict(self.analysis)}
 
     def catalog_view(self):
         if not self.catalog:
@@ -340,7 +527,8 @@ class App:
         with self._lock:
             measured = dict(self.ws.measured)
         return {'clips': self.ws.clips(), 'situations': self.ws.state.get('situations', {}),
-                'plan': self.ws.state.get('plan', {}), 'measured': measured}
+                'plan': self.ws.state.get('plan', {}), 'review': self.ws.state.get('review', {}),
+                'rejected': self.ws.state.get('rejected', {}), 'measured': measured, 'analysed': bool(self.match)}
 
     def save_clip(self, body):
         c = ST.clean_clip(body, set(self.items) if self.items else None)
@@ -389,6 +577,12 @@ class App:
                 return 200, self.catalog_view()
             if path == '/api/user':
                 return 200, self.user_view()
+            if path == '/api/suggest':
+                try:
+                    h = ST.clean_hash((query.get('hash') or [''])[0])
+                except ST.ClipError as e:
+                    return 400, {'error': str(e)}
+                return 200, {'ready': bool(self.match), 'suggestions': self.suggestion_view(h)}
             if path == '/api/audio':
                 item_id = (query.get('id') or [''])[0]
                 if item_id not in self.items:
@@ -423,6 +617,15 @@ class App:
                     return 200, {'plan': self.ws.state.get('plan', {})}
                 if path == '/api/clip/link':
                     c = self.ws.link_clip(str(body.get('id', '')), body.get('hash', -1), bool(body.get('on', True)))
+                    return 200, c
+                if path == '/api/autofill':
+                    return 200, self.autofill()
+                if path == '/api/review':
+                    return 200, self.review(body.get('hash', -1), bool(body.get('ok')))
+                if path == '/api/use':
+                    h = ST.clean_hash(body.get('hash', -1))
+                    c = self.clip_from_candidate(str(body.get('candidate', '')), [h], user=True)
+                    self.review(h, True)
                     return 200, c
                 if path == '/api/prefetch':
                     action = body.get('action')

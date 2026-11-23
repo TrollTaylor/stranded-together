@@ -33,6 +33,14 @@ def write_cache(path, rate, pcm):
     return AU.stats(pcm, rate)
 
 
+def analyse(kind, path, subs=None, item_id=''):
+    """vc_match on a cached source: a cutscene's candidate sounds of Fragile, or the features of one of Sam's lines."""
+    import vc_match
+    if kind == 'cutscene':
+        return vc_match.analyse_cutscene(path, subs or [], item_id)
+    return vc_match.analyse_line(path)
+
+
 def decode_to(item, path):
     if os.path.exists(path):
         rate, pcm = AU.read_wav(path)

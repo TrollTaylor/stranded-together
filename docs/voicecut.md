@@ -35,7 +35,7 @@ An already running voicecut keeps the code it started with: after an update, clo
 |---|---|---|
 | The tool | `tools\voicecut\` (code, page, tests, `voicecut.bat.example`) | yes |
 | Your launcher | `voicecut.bat` in the repo root | no (gitignored) |
-| Workspace: your clips and sorting (`state.json`, a `.bak` of the previous save), the line list (`catalog.json`), decoded lines (`audio\*.wav`: every line is about 0.8 GB; the cache is kept under 3 GB), loudness figures (`measure.json`), the archive index (`index\`), `voicecut.log` | `%LOCALAPPDATA%\Stranded Together\VoiceCut` | no |
+| Workspace: your clips, sorting and guide answers (`state.json`, a `.bak` of the previous save), the suggestion analysis (`match.json`), the line list (`catalog.json`), decoded lines (`audio\*.wav`: every line is about 0.8 GB; the cache is kept under 3 GB), loudness figures (`measure.json`), the archive index (`index\`), `voicecut.log` | `%LOCALAPPDATA%\Stranded Together\VoiceCut` | no |
 | Export for the mod: `voices.txt` and `fragile\<category>\*.wav` | `%LOCALAPPDATA%\Stranded Together\Voices` | no |
 
 Nothing is ever written into the game folder (the archive reader refuses a cache there). Game audio only exists in the
@@ -57,6 +57,38 @@ thing in the game: jumping, slipping, holding heavy cargo...), sorted by categor
   - **Leave Fragile silent here**: no voice for this one.
 - **Back / Next / Next to do** move through the steps; the list below jumps to any step ("Only what is left to do"
   hides the finished ones). The tab's number is what is left.
+
+**Suggestions (the quick way).** voicecut cannot listen, but it can measure. After the background decoding it
+measures her sounds and Sam's (about a minute, once per game version; the status line shows it), then:
+
+- **Suggest Fragile sounds for all open steps** links the best-matching sound of hers to every step that has no
+  answer yet (one clip per sound, shared by all the steps it fits, its gain set to Sam's loudness there). Those steps
+  get a **?**: open one (**Listen to the next suggestion**), press **Sam, then Fragile** to hear both, and press
+  **Keep** (it moves on to the next ?) or **Try another** (the next-best sound replaces it; the rejected one is never
+  suggested for that step again). Steps nothing came close for stay open.
+- Every step also lists its **suggested sounds** ranked, each playable, with **Use** (a clip of it for this step, kept)
+  and **Edit** (open it in the editor, selected, to trim it yourself).
+- A suggested clip you edit and save becomes yours (no longer marked "suggested").
+
+How it finds and ranks them (`vc_match.py`):
+
+- **Her sounds.** In each cutscene's dialogue track: the stretches of voice outside every subtitle of hers. A voiced
+  one is hers when its pitch is nearer her voice than Sam's: her subtitled lines measure 167 to 235 Hz (median
+  about 180), Sam's about 90 Hz, and the boundary is their geometric middle. Over someone else's line only a clearly
+  female sound counts, and not at all in a cutscene where another woman speaks. A breath (unvoiced) is hers when the
+  nearest line within 3 s is hers. Her short subtitled lines are candidates too. On the installed game: 54 voiced
+  sounds (efforts, gasps, sighs), 102 breaths and 61 short lines.
+- **Ranking.** Each sound gets a few numbers: duration (log), how much of it is voiced, its pitch against the
+  speaker's own (higher is more strained), pitch slope, where its peak is, how it fades, how noisy it is. A Sam
+  situation's profile is the mean of his lines; her sounds are ranked by a weighted distance to it, with breaths
+  favoured where Sam breathes and voiced sounds where he grunts. Spoken situations are matched by shared words with
+  her lines ("Thanks.", "There!").
+- **Result on the installed game.** 378 of 423 situations get suggestions; the auto-fill links 69 of her sounds to
+  252 situations (the ones scoring at least 0.3); 171 stay open (mostly spoken ones, and long hums and snores she has
+  nothing like). The analysis is kept in `match.json` in the workspace.
+
+These are guesses by measurement. A voiced sound of hers may be a laugh where Sam grunts, or a breath may be someone
+else's: that is what the keep / try another listen is for.
 
 **Voice lines (left).** Every Fragile and Sam line that has its own audio, and one entry per cutscene in which Fragile
 speaks. Filter by speaker, source (lines or cutscenes), category, spoken or non-verbal, and length; search the text,
@@ -228,8 +260,10 @@ the plain one, the codebook table in a synthetic PE image, every parser on cores
 stream name followed by letters and the subtitle events), the catalog on a fake game (cutscenes found from their
 timelines, one that only borrows her line, one whose own timeline lacks her), the render, loudness, WAV and range
 reads, the store's checks, plans and links, the export (its columns, and that it only removes its own files), the
-background decode (each source once, cached, measured), the API, and the HTTP guards (Host check, the X-Voicecut
-header for writes). No game data and no game run.
+background decode (each source once, cached, measured), the matcher on a synthetic cutscene (pitch, her effort, a
+breath near her line, a man's sound left out, her short line, ranking that follows Sam's voiced or breathy profile,
+rejections, word matching), the analysis, auto-fill, keep / try another and Use through the API, the API, and the HTTP
+guards (Host check, the X-Voicecut header for writes). No game data and no game run.
 
 ## Not verified / limits
 

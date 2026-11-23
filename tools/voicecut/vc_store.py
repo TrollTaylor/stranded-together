@@ -25,6 +25,7 @@ MANIFEST_VERSION = 1
 CACHE_LIMIT = 3 * 1024 * 1024 * 1024   # every line decoded is about 0.8 GB
 CLIP_ID = re.compile(r'^clip-[0-9a-f]{8}$')
 ITEM_ID = re.compile(r'^[a-z]-[0-9A-Za-z_\-]{1,80}$')
+CANDIDATE_ID = re.compile(r'^[a-z]-[0-9A-Za-z_\-]{1,80}@[0-9]{1,5}\.[0-9]{2}$')
 PLANS = ('any', 'silent')   # the guide's answers besides "clips made for it": any clip of the category / no voice
 MANIFEST_HEADER = ('# clip\t<file>\t<category>\t<samples>\t<peak dBFS>\t<loud dBFS>\t<source id>\t<start s>\t<end s>'
                    '\t<fade in s>\t<fade out s>\t<gain dB>\t<normalise 0|1>\t<sha256 of the file>'
@@ -108,6 +109,13 @@ def clean_clip(clip, known_sources=None):
     if not isinstance(sits, list) or len(sits) > 64:
         raise ClipError('situations is a list of at most 64 hashes')
     out['situations'] = sorted({clean_hash(h) for h in sits})
+    if clip.get('auto'):
+        out['auto'] = True        # a suggestion voicecut linked, not yet chosen by you
+    cand = clip.get('candidate')
+    if cand:
+        if not CANDIDATE_ID.match(str(cand)):
+            raise ClipError('bad candidate id')
+        out['candidate'] = str(cand)
     cid = clip.get('id')
     if cid:
         if not CLIP_ID.match(str(cid)):
@@ -124,6 +132,7 @@ class Workspace:
         self.state_path = os.path.join(self.root, 'state.json')
         self.catalog_path = os.path.join(self.root, 'catalog.json')
         self.measure_path = os.path.join(self.root, 'measure.json')
+        self.match_path = os.path.join(self.root, 'match.json')
         os.makedirs(self.audio_dir, exist_ok=True)
         self.state = self._load(self.state_path, {'version': STATE_VERSION, 'clips': [], 'situations': {}})
         self.measured = self._load(self.measure_path, {})

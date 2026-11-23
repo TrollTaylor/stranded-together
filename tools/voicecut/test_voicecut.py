@@ -816,6 +816,188 @@ class FakeSource:
         return pool.submit(lambda: vc_worker.write_cache(path, *self.decode(item)))
 
 
+def voice(f0, dur, amp=0.3):
+    """A voiced sound: f0 and three harmonics, a soft envelope (48 kHz)."""
+    n = int(dur * 48000)
+    return [amp * math.sin(math.pi * i / n) ** 0.5 * sum(math.sin(2 * math.pi * f0 * k * i / 48000) / k for k in (1, 2, 3, 4))
+            for i in range(n)]
+
+
+def breath(dur, amp=0.2, seed=1):
+    import random
+    rnd = random.Random(seed)
+    n = int(dur * 48000)
+    return [amp * math.sin(math.pi * i / n) * rnd.uniform(-1, 1) for i in range(n)]
+
+
+def place(track, t, sound):
+    a = int(t * 48000)
+    for i, v in enumerate(sound):
+        track[a + i] += v
+
+
+# A cutscene: Sam talks (0.5-1.5 s), Fragile says "Thanks." (2.0-3.0), then without subtitles: a female sound at 3.6
+# (hers: an effort), a breath at 4.6 (nearest line hers: a breath), a male sound at 6.5 (not hers: left out).
+SYNTH_SUBS = [{'t0': 0.5, 't1': 1.5, 'who': 'sam', 'text': 'Why are you here?'},
+              {'t0': 2.0, 't1': 3.0, 'who': 'fragile', 'text': 'Thanks.'}]
+
+
+def synth_cutscene():
+    x = [0.0] * (8 * 48000)
+    place(x, 0.5, voice(100, 1.0))
+    place(x, 2.0, voice(200, 1.0))
+    place(x, 3.6, voice(215, 0.3))
+    place(x, 4.6, breath(0.4))
+    place(x, 6.5, voice(95, 0.3))
+    return x
+
+
+def synth_line(kind):
+    x = [0.0] * 48000
+    place(x, 0.3, voice(110, 0.3) if kind == 'voiced' else breath(0.5, seed=2))
+    return x
+
+
+class Matching(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix='voicecut-test-')
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def wav(self, name, x):
+        p = os.path.join(self.tmp, name + '.wav')
+        AU.write_wav(p, x)
+        return p
+
+    def test_pitch(self):
+        import vc_match as MT
+        sr, x = MT.load_8k(self.wav('v', voice(150, 0.5)))
+        track = [f for f in MT.pitch_track(x, sr) if f]
+        self.assertGreater(len(track), 10)
+        self.assertAlmostEqual(statistics_median(track), 150, delta=6)
+        sr, x = MT.load_8k(self.wav('b', breath(0.5)))
+        self.assertLess(sum(1 for f in MT.pitch_track(x, sr) if f), 3)
+
+    def test_her_sounds_in_a_cutscene(self):
+        import vc_match as MT
+        f0, cands = MT.analyse_cutscene(self.wav('c', synth_cutscene()), SYNTH_SUBS, 'c-x')
+        self.assertAlmostEqual(f0, 200, delta=10)
+        kinds = sorted((c['kind'], round(c['t0'], 1)) for c in cands)
+        self.assertEqual(kinds, [('breath', 4.6), ('effort', 3.6), ('line', 2.0)])   # the male sound is left out
+        line = [c for c in cands if c['kind'] == 'line'][0]
+        self.assertEqual((line['text'], line['id']), ('Thanks.', 'c-x@2.00'))
+
+    def test_suggestions_follow_sam(self):
+        import vc_match as MT
+        _f0, cands = MT.analyse_cutscene(self.wav('c', synth_cutscene()), SYNTH_SUBS, 'c-x')
+        voiced = MT.analyse_line(self.wav('v', synth_line('voiced')))
+        breathy = MT.analyse_line(self.wav('b', synth_line('breath')))
+        self.assertGreater(voiced['voiced'], 0.5)
+        self.assertLess(breathy['voiced'], 0.25)
+        sc = MT.scales([voiced, breathy] + [c for c in cands if c['kind'] != 'line'])
+        best = MT.suggest(MT.profile([voiced]), [], False, 'effort', cands, sc)
+        self.assertEqual(best[0][1]['kind'], 'effort')
+        best = MT.suggest(MT.profile([breathy]), [], False, 'breathing', cands, sc)
+        self.assertEqual(best[0][1]['kind'], 'breath')
+        effort_id = [c['id'] for c in cands if c['kind'] == 'effort'][0]
+        self.assertEqual(MT.suggest(MT.profile([voiced]), [], False, 'effort', cands, sc,
+                                    rejected=[effort_id])[0][1]['kind'], 'breath')
+        spoken = MT.suggest(None, ['Thanks, Lou.'], True, 'random_line', cands, sc)
+        self.assertEqual(spoken[0][1]['text'], 'Thanks.')
+        self.assertEqual(MT.suggest(None, ['Something else'], True, 'random_line', cands, sc), [])
+        self.assertAlmostEqual(MT.text_score("It's a nuke!", 'a nuke'), 2 / 3.0)
+
+
+def statistics_median(v):
+    s = sorted(v)
+    return s[len(s) // 2]
+
+
+class MatchSource(FakeSource):
+    """A fake game for the suggestion flow: a cutscene with her sounds, and two of Sam's situations (a voiced one and
+    a breathy one)."""
+
+    def decode(self, item, progress=None):
+        self.decodes += 1
+        if item['id'].startswith('c-'):
+            return 48000, synth_cutscene()
+        return 48000, synth_line('breath' if item['id'].endswith('b') else 'voiced')
+
+    def analyse_submit(self, pool, kind, path, subs, item_id):
+        import vc_worker
+        return pool.submit(vc_worker.analyse, kind, path, subs, item_id)
+
+
+def match_catalog():
+    sam = lambda i, h: {'id': 's-' + i, 'kind': 'line', 'speaker': 'sam', 'text': '', 'length': 1.0,  # noqa: E731
+                        'stream': 's', 'group': 'sam', 'situations': [h], 'category': 'other', 'sure': False}
+    return {'version': CAT.CATALOG_VERSION, 'language': 'english', 'game': '1-2', 'items': [
+        {'id': 'c-sq_cs03_s00200', 'kind': 'cutscene', 'speaker': 'fragile', 'text': 'Thanks.', 'lines': 1,
+         'length': 0.0, 'stream': 'c', 'group': 'cutscene', 'situations': [], 'category': None, 'sure': False,
+         'name': 'sq_cs03_s00200', 'subs': SYNTH_SUBS},
+        sam('v1', 7), sam('v2', 7), sam('b1b', 8)],
+        'situations': [{'hash': 7, 'label': 'situation 00000007', 'guess': 'effort', 'lines': 2, 'spoken': 0},
+                       {'hash': 8, 'label': 'situation 00000008', 'guess': 'breathing', 'lines': 1, 'spoken': 0}],
+        'categories': [{'key': k, 'label': l, 'hint': h} for k, l, h in CAT.CATEGORIES]}
+
+
+class Suggestions(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix='voicecut-test-')
+        self.ws = ST.Workspace(os.path.join(self.tmp, 'ws'), os.path.join(self.tmp, 'export'))
+        self.app = voicecut.App(self.ws, MatchSource(match_catalog()), prefetch=True, workers=2)
+        self.app.start_catalog()
+        for _ in range(1500):
+            if self.app.analysis['state'] == 'done':
+                break
+            threading.Event().wait(0.01)
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_analysis_autofill_and_review(self):
+        self.assertEqual(self.app.analysis['state'], 'done')
+        self.assertTrue(os.path.exists(self.ws.match_path))
+        code, r = self.app.route('GET', '/api/suggest', {'hash': ['7']})
+        self.assertEqual((code, r['ready'], r['suggestions'][0]['kind']), (200, True, 'effort'))
+        self.assertEqual(self.app.route('GET', '/api/suggest', {'hash': ['8']})[1]['suggestions'][0]['kind'], 'breath')
+        code, r = self.app.route('POST', '/api/autofill', None, {})
+        self.assertEqual((code, r['situations']), (200, 2))
+        clips = {c['candidate']: c for c in self.ws.clips()}
+        ids = {c['kind']: c['id'] for c in self.app._cands.values()}
+        self.assertEqual(set(clips), {ids['effort'], ids['breath']})
+        effort = clips[ids['effort']]
+        self.assertEqual((effort['situations'], effort['auto'], effort['category']), ([7], True, 'effort'))
+        # its gain brings it to Sam's loudness there
+        sam = self.ws.measured['s-v1']['loud_db']
+        self.assertAlmostEqual(effort['stats']['loud_db'], sam, delta=2.5)
+        # a second auto-fill finds nothing new to do
+        self.assertEqual(self.app.route('POST', '/api/autofill', None, {})[1], {'clips': 0, 'situations': 0})
+        # "try another": rejected, unlinked (and gone: it was only a suggestion for this), the next one linked
+        r = self.app.route('POST', '/api/review', None, {'hash': 7, 'ok': False})[1]
+        cands = {c.get('candidate'): c for c in self.ws.clips()}
+        self.assertNotIn(ids['effort'], cands)
+        self.assertEqual(self.ws.state['rejected']['7'], [ids['effort']])
+        self.assertIn(7, cands[ids['breath']]['situations'])     # the breath is next for 7 too
+        self.assertIsNotNone(r['next'])
+        self.app.route('POST', '/api/review', None, {'hash': 7, 'ok': True})
+        self.assertEqual(self.ws.state['review'], {'7': 'ok'})
+        # "Use" a suggestion by hand: kept, not auto
+        c = self.app.route('POST', '/api/use', None, {'candidate': 'c-sq_cs03_s00200@2.00', 'hash': 8})[1]
+        self.assertFalse(c.get('auto'))
+        self.assertEqual(self.app.route('POST', '/api/use', None, {'candidate': 'nope', 'hash': 8})[0], 400)
+        rows = {r[0]: r for r in self.app.situation_rows()}
+        self.assertEqual((rows[7][4], rows[8][4]), ('clip', 'clip'))
+
+    def test_analysis_is_kept(self):
+        again = voicecut.App(self.ws, MatchSource(match_catalog()), prefetch=True, workers=2)
+        again.start_catalog()
+        self.assertEqual(again.analysis['state'], 'done')       # loaded from match.json, nothing rerun
+        self.assertEqual(again.prefetch['state'], 'done')
+        self.assertTrue(again.suggestions(7))
+
+
 def fake_catalog():
     return {'version': CAT.CATALOG_VERSION, 'language': 'english', 'game': '1-2', 'items': [
         {'id': 'f-' + FRG_A, 'kind': 'line', 'speaker': 'fragile', 'text': 'Hi', 'length': 1.0, 'stream': 's1',

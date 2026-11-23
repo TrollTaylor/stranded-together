@@ -73,6 +73,9 @@ async function pollStatus() {
       let t = c.message + ' · ' + st.clips + ' clip' + (st.clips === 1 ? '' : 's');
       if (dec.length) t += ' · decoding ' + Math.round(100 * dec[0][1]) + '%';
       if (st.measuring) t += ' · measuring ' + st.measuring + ' of Sam\'s lines';
+      const an = st.analysis || {};
+      if (an.state === 'running') t += ' · measuring sounds for suggestions ' + an.done + ' / ' + an.total;
+      if (an.state === 'done' && S.user && !S.user.analysed) { await loadUser(); }
       const pf = st.prefetch || {};
       if (pf.state === 'running' || pf.state === 'paused') {
         t += ' · decoding every line ' + pf.done + ' / ' + pf.total + (pf.state === 'paused' ? ' (paused)' : '');
@@ -692,6 +695,7 @@ async function saveClip() {
   const sits = new Set((old && old.situations) || []);
   if (S.target) sits.add(S.target.hash);   // made for the guide's current Sam situation
   body.situations = [...sits];
+  if (old && old.candidate) body.candidate = old.candidate;   // saved by you: no longer a suggestion (auto is dropped)
   if (S.editing) body.id = S.editing;
   try {
     const c = await post('/api/clip', body);
@@ -743,14 +747,46 @@ function guideSteps() {
     .sort((a, b) => (order[a.cat] - order[b.cat]) || (b.s.lines - a.s.lines) || (a.s.hash - b.s.hash));
 }
 function stepState(h, cat) {
-  if (S.user.clips.some((c) => (c.situations || []).includes(h))) return 'clip';
+  const linked = S.user.clips.filter((c) => (c.situations || []).includes(h));
+  if (linked.length) {
+    // only voicecut's suggestions and not kept yet: a listen is left to do
+    const ok = (S.user.review || {})[String(h)] === 'ok' || linked.some((c) => !c.auto);
+    return ok ? 'clip' : 'check';
+  }
   const p = (S.user.plan || {})[String(h)];
   if (p === 'silent') return 'silent';
   if (p === 'any') return S.user.clips.some((c) => c.category === cat) ? 'any' : 'any-empty';
   return 'todo';
 }
 const STATE_TEXT = { clip: '✓ has its own clip', any: '✓ any clip of its category', 'any-empty': '! any clip of its category, but there is none yet',
-  silent: '— Fragile stays silent', todo: 'to do' };
+  silent: '— Fragile stays silent', todo: 'to do', check: '? suggested: listen, then keep it or try another' };
+async function playCandidate(c) {   // her sound as found (no gain): from its cutscene, with short fades
+  try {
+    const ab = await fetchBuffer(c.item);
+    const x = renderClip(ab.getChannelData(0), ab.sampleRate, Math.max(0, c.t0 - 0.04), c.t1 + 0.08, { fade_in: 0.01, fade_out: 0.05 });
+    playBuffer(bufferOf(x, ab.sampleRate), { mode: 'clip' });
+  } catch (e) { alertBox('Could not play: ' + e.message, 'error', 4000); }
+}
+async function compareStep(lines, clips) {   // Sam's first line, a pause, then her clip
+  if (!lines.length || !clips.length) return;
+  const tok = {}; S.seqToken = tok;
+  try {
+    const ab = await fetchBuffer(lines[0].id);
+    if (S.seqToken !== tok) return;
+    playBuffer(ab, { mode: 'line' }); S.seqToken = tok;
+    await new Promise((r) => setTimeout(r, ab.duration * 1000 + 450));
+    if (S.seqToken !== tok) return;
+    await playClip(clips[0]);
+  } catch (e) { /* stopped */ }
+}
+async function loadSuggestions(h) {
+  if (S.sugFor === h && S.sugList) return S.sugList;
+  try {
+    const r = await getJSON('/api/suggest?hash=' + h);
+    S.sugFor = h; S.sugList = r.ready ? r.suggestions : null;
+  } catch (e) { S.sugList = null; }
+  return S.sugList;
+}
 function samLinesFor(h) { return S.items.filter((it) => it.speaker === 'sam' && (it.situations || []).includes(h)); }
 function setTarget(step) {
   S.target = step ? { hash: step.s.hash, cat: step.cat, label: step.s.label } : null;
@@ -780,6 +816,30 @@ function renderGuide() {
   top.appendChild(el('div', 'cov-summary', 'Each step is one of Sam\'s situations: the sounds he makes for it in the game. Listen to him, then give Fragile a clip for it, say any clip of its category will do, or leave her silent there. ' +
     done + ' of ' + steps.length + ' done.'));
   const bar = el('div', 'cov-bar'); const fill = el('i'); fill.style.width = Math.round(100 * done / Math.max(1, steps.length)) + '%'; bar.appendChild(fill); top.appendChild(bar);
+  const checks = states.filter((x) => x === 'check').length;
+  const an = (S.status && S.status.analysis) || {};
+  const auto = el('div', 'guide-auto');
+  if (S.user.analysed) {
+    const todo = states.filter((x) => x === 'todo').length;
+    const b = el('button', 'btn small' + (todo ? ' primary' : ''), 'Suggest Fragile sounds for all ' + todo + ' open steps');
+    b.disabled = !todo;
+    b.title = 'voicecut measures (it cannot listen): her wordless sounds in the cutscenes are ranked against Sam\'s lines by length, voice, pitch and attack, and her short lines by their words. The best one is linked to each open step for you to keep or reject.';
+    b.onclick = async () => {
+      b.disabled = true; b.textContent = 'Linking suggestions…';
+      try { const r = await post('/api/autofill', {}); await loadUser(); alertBox('Suggested ' + r.clips + ' of her sounds for ' + r.situations + ' steps. Steps marked ? are waiting for a listen.', 'ok', 6000); S.guideIdx = null; renderGuide(); } catch (e) { alertBox(e.message); }
+    };
+    auto.appendChild(b);
+    if (checks) {
+      const n = el('button', 'btn small', 'Listen to the next suggestion (' + checks + ')');
+      n.onclick = () => { const k = states.findIndex((x, kk) => x === 'check' && kk !== S.guideIdx); guideGo(k >= 0 ? k : states.indexOf('check')); };
+      auto.appendChild(n);
+    }
+  } else if (an.state === 'running') {
+    auto.appendChild(el('span', 'faint', 'Measuring her sounds and Sam\'s for suggestions: ' + an.done + ' / ' + an.total + '…'));
+  } else {
+    auto.appendChild(el('span', 'faint', 'Suggestions come after every line is decoded (the status line above shows how far).'));
+  }
+  top.appendChild(auto);
   pane.appendChild(top);
   if (i < 0) return;
   const { s, cat } = steps[i];
@@ -789,7 +849,8 @@ function renderGuide() {
   const prev = el('button', 'btn ghost small', '◀ Back'); prev.disabled = i === 0; prev.onclick = () => guideGo(i - 1);
   nav.appendChild(prev);
   nav.appendChild(el('span', 'muted', 'Step ' + (i + 1) + ' of ' + steps.length));
-  const nextTodo = states.findIndex((x, k) => k > i && !GUIDE_DONE[x]);
+  let nextTodo = states.findIndex((x, k) => k > i && !GUIDE_DONE[x]);
+  if (nextTodo < 0) nextTodo = states.findIndex((x, k) => k !== i && !GUIDE_DONE[x]);
   const next = el('button', 'btn small', 'Next to do ▶'); next.disabled = nextTodo < 0; next.onclick = () => guideGo(nextTodo);
   const skip = el('button', 'btn ghost small', 'Next ▶'); skip.disabled = i >= steps.length - 1; skip.onclick = () => guideGo(i + 1);
   nav.appendChild(skip); nav.appendChild(next);
@@ -829,6 +890,24 @@ function renderGuide() {
   const frg = el('div', 'guide-frg');
   const hf = el('div', 'guide-h'); hf.appendChild(el('span', null, 'Fragile')); hf.appendChild(el('span', 'state ' + state, STATE_TEXT[state])); frg.appendChild(hf);
   const mine = S.user.clips.filter((c) => (c.situations || []).includes(s.hash));
+  if (state === 'check') {   // a suggestion waits for a listen
+    const box = el('div', 'guide-check');
+    box.appendChild(el('div', null, 'voicecut picked this sound of hers by measuring. Listen to Sam, then to her:'));
+    const row = el('div', 'guide-acts');
+    const cmp = el('button', 'btn small', '▶ Sam, then Fragile'); cmp.onclick = () => compareStep(lines, mine);
+    const keep = el('button', 'btn primary small', '✓ Keep');
+    keep.onclick = async () => {
+      try { await post('/api/review', { hash: s.hash, ok: true }); await loadUser(); const st2 = guideSteps().map((x) => stepState(x.s.hash, x.cat)); const k = st2.findIndex((x, kk) => kk > i && x === 'check'); if (k >= 0) guideGo(k); } catch (e) { alertBox(e.message); }
+    };
+    const other = el('button', 'btn small', 'Try another');
+    other.onclick = async () => {
+      other.disabled = true;
+      try { const r = await post('/api/review', { hash: s.hash, ok: false }); S.sugFor = null; await loadUser(); if (!r.next) alertBox('No other suggestion for this one: cut one yourself or leave her silent.', 'error', 5000); else { const m2 = S.user.clips.filter((c) => (c.situations || []).includes(s.hash)); compareStep(lines, m2); } } catch (e) { alertBox(e.message); }
+    };
+    row.appendChild(cmp); row.appendChild(keep); row.appendChild(other);
+    box.appendChild(row);
+    frg.appendChild(box);
+  }
   for (const c of mine) {
     const r = clipRow(c);
     const un = el('button', 'icon', 'unlink'); un.title = 'Not made for this situation any more (the clip stays)';
@@ -868,6 +947,34 @@ function renderGuide() {
   where.appendChild(bc); where.appendChild(bl);
   frg.appendChild(where);
   card.appendChild(frg);
+  // ranked suggestions (measured, not heard)
+  const sugBox = el('div', 'guide-sug');
+  card.appendChild(sugBox);
+  if (S.user.analysed) {
+    loadSuggestions(s.hash).then((list) => {
+      if (S.guideIdx !== i) return;
+      sugBox.textContent = '';
+      const hh = el('div', 'guide-h'); hh.appendChild(el('span', null, 'Suggested sounds of hers')); hh.appendChild(el('span', 'faint', 'ranked by measurement, not by ear'));
+      sugBox.appendChild(hh);
+      if (!list || !list.length) { sugBox.appendChild(el('div', 'faint', 'Nothing close enough: cut one yourself, or leave her silent here.')); return; }
+      for (const c of list) {
+        const r = el('div', 'sug');
+        const p = el('button', 'icon play', '▶'); p.title = 'Play it'; p.onclick = () => playCandidate(c); r.appendChild(p);
+        const it = S.byId.get(c.item);
+        const label = (c.text ? '“' + c.text.replace(/\s+/g, ' ') + '”' : 'her ' + c.kind) + ' · ' + (it ? it.name : c.item) + ' @ ' + fmtTime(c.t0);
+        const t = el('span', 't', label); t.title = c.why + ' (score ' + c.score + ')'; r.appendChild(t);
+        r.appendChild(el('span', 'db', Math.round(c.score * 100) + '%'));
+        const use = el('button', 'btn ghost small', 'Use');
+        use.title = 'Make a clip of it for this step (gain matched to Sam), kept';
+        use.onclick = async () => { use.disabled = true; try { await post('/api/use', { candidate: c.id, hash: s.hash }); S.sugFor = null; await loadUser(); } catch (e) { alertBox(e.message); use.disabled = false; } };
+        const open = el('button', 'btn ghost small', 'Edit');
+        open.title = 'Open it in the editor to trim it yourself';
+        open.onclick = () => { setTarget(steps[i]); openItem(c.item, () => { S.sel = { a: Math.max(0, c.t0 - 0.04), b: c.t1 + 0.08 }; S.handle = 'in'; S.playhead = S.sel.a; zoomSel(); updateMeter(); }); };
+        r.appendChild(use); r.appendChild(open);
+        sugBox.appendChild(r);
+      }
+    });
+  }
   pane.appendChild(card);
   // every step, to jump around
   const list = el('div', 'guide-list');
@@ -879,7 +986,7 @@ function renderGuide() {
     if (S.guideTodoOnly !== false && GUIDE_DONE[states[k]] && k !== i) return;
     if (st.cat !== lastCat) { list.appendChild(el('div', 'guide-cat', S.catLabel[st.cat] || st.cat)); lastCat = st.cat; }
     const r = el('div', 'guide-step' + (k === i ? ' active' : ''));
-    r.appendChild(el('span', 'state ' + states[k], GUIDE_DONE[states[k]] ? '✓' : (states[k] === 'any-empty' ? '!' : '•')));
+    r.appendChild(el('span', 'state ' + states[k], GUIDE_DONE[states[k]] ? '✓' : (states[k] === 'any-empty' ? '!' : (states[k] === 'check' ? '?' : '•'))));
     r.appendChild(el('span', 'label', st.s.label));
     r.appendChild(el('span', 'db', st.s.lines + (st.s.spoken ? ' (' + st.s.spoken + ' spoken)' : '')));
     r.onclick = () => guideGo(k);
@@ -897,7 +1004,9 @@ function clipLabel(c) {
 function clipRow(c, opts = {}) {
   const r = el('div', 'clip' + (S.editing === c.id ? ' editing' : ''));
   const p = el('button', 'icon play', '▶'); p.title = 'Play the clip'; p.onclick = (e) => { e.stopPropagation(); playClip(c); }; r.appendChild(p);
-  const s = el('span', 'src', clipLabel(c)); s.title = clipLabel(c); r.appendChild(s);
+  const s = el('span', 'src', clipLabel(c)); s.title = clipLabel(c);
+  if (c.auto) { const a = el('span', 'auto', 'suggested'); a.title = 'Linked by voicecut; keep it in the guide, or edit and save it to make it yours'; s.appendChild(a); }
+  r.appendChild(s);
   const st = c.stats || {};
   r.appendChild(el('span', 'db', fmt(c.end - c.start, 2) + ' s ' + dbText(st.loud_db) + ' dB'));
   const tools = el('span');
