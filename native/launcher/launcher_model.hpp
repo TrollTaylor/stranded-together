@@ -209,6 +209,7 @@ struct TexturesView {
     enum class Tone { neutral, good, warn, bad } tone = Tone::neutral;
     std::string report;            // Check my edits: several lines
     bool boots_own = true;         // her boots: her own, painted (true) / Sam's boots on her feet (session.ini boots_look)
+    bool room_black = true;        // Fragile in the private room: her black suit (true) / her porter suit (session.ini room_outfit)
     // Round 9.
     bool ready_made = true;        // READY-MADE COLOURS: On (default) / Off (session.ini textures_defaults=0)
     bool auto_extract = true;      // "Extract automatically" ("textures"."auto_extract", default on)
@@ -319,6 +320,9 @@ public:
     // Her boots: her own boots painted with the boot pictures (true, the default) or Sam's boots on her feet. Persisted
     // ("textures"."boots"); written into session.ini boots_look at the next launch.
     virtual void set_boots_look(bool own) = 0;
+    // Fragile in the private room: her black suit (true, the default) or her porter suit. Persisted ("textures"."room");
+    // written into session.ini room_outfit at the next launch.
+    virtual void set_room_outfit(bool black) = 0;
     // READY-MADE COLOURS (round 8/9): On (the default) / Off. Persisted ("textures"."defaults"); session.ini
     // textures_defaults=0 at the next launch when off.
     virtual void set_ready_made(bool on) = 0;

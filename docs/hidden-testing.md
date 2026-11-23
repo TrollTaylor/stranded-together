@@ -1561,8 +1561,8 @@ folder deleted"); nothing is copied anywhere else.
 
 **launcherini and test switches**: a `launcherini` scenario may still add `ini` / `@host ini` / `@guest ini` lines for
 `fragile_suit_colour`, `fragile_textures`, `textures_send`, `textures_receive`, `textures_hot_reload`, `textures_free`,
-`textures_defaults` (round 8), `boots_look` and `boots_own_porter` (appended after
-the launcher's file under a "# testenv:" comment); any other key is refused as before. The v0.23 tint scenarios
+`textures_defaults` (round 8), `boots_look`, `boots_own_porter`, `held_items` (round 6), `room_outfit`, `fragile_hood`
+and `hood_hair` (round 11) (appended after the launcher's file under a "# testenv:" comment); any other key is refused as before. The v0.23 tint scenarios
 (`fragile-suit-colours`, `fragile-suit-tune`, `two-games-fragile-suit`, `two-games-fragile-suit-remember`) add
 `ini fragile_suit_colour=1` (the tint is off by default now).
 

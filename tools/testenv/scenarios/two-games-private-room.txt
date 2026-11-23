@@ -4,8 +4,16 @@
 # The guest goes to South Knot City's BRIDGES pad, walks off and back on, holds B (Enter Private Room). Screenshots and
 # log_status of the guest about every second for ~23 s, then her room must be drawn (a screenshot mean of 20 or more) within
 # 8 s more (solo vanilla +24.9 s) and playable within 30 s. Her world-sync gate drops the create-road request (W3): no
-# OTGC write on either game.
-# covers: private-room self-view gate
+# OTGC write on either game. Round 11 (section 34): the launcher's room_outfit=black: she wears her black suit in the
+# room (a hidden swap), the room's clothes change ends in under 5 s, and the host shows her as 'fragile' too.
+# Round 11 (section 35): after the goto's load her BB pod is back under the self view by the game's rule (before: it latched
+# hidden on both screens from the first load): the guest's frame and her self-view prop have it, the host's copy of her
+# has it, the entering line counts it, and no rule-vs-flag disagreement on either game. Optional (logged for the round's
+# notes, the pod is right either way): the game's rule was read (the slot is our pod) and is the source under the self view.
+# Round 11 (section 36): over the real link, her face plays Sam's facial clip on her own screen (self view) and, from the
+# STJ1 face block, on the host's copy of her; the guest's copy of the host's Sam gets his (optional); no PlayFacial
+# fault anywhere.
+# covers: private-room self-view gate gear face launcher
 role host
 graphics low
 timeout 360
@@ -13,6 +21,10 @@ launcherini local-test
 start control 200
 @guest waitlog 60 \[self\] showing 'fragile_suit' in place of Sam .*fit on
 waitlog 60 \[sync\] partner body: real 'fragile_suit'
+waitlog 30 \[face\] partner: the clip is on the face
+@guest waitlog 30 \[face\] self: the clip is on the face
+@guest waitlog 30 \[face\] rx: the partner's face now id [0-9]+ \((state|event|photo) [0-9]+\)
+?@guest waitlog 20 \[face\] partner: the clip is on the face
 @guest goto south-knot
 @guest action teleport 1387.0 -1286.5 138.6
 wait 1500
@@ -20,6 +32,10 @@ wait 1500
 wait 1200
 @guest pad none 1300 ly=-32767
 wait 2500
+@guest until 15 500 \[gear\] BB pod under the self view: the game's rule \(rule sites ok\); now shown .*; our gear: BB pod 1; .*self view: BB pod 1 wanted, 1 live => action gear 30 2
+until 15 500 \[gear\] BB pod under the self view: .*; the partner's gear: BB pod 1; => action gear 30 2
+?@guest waitlog 1 \[gear\] BB pod: the controller's slot 0: part [0-9]+ \(map -?[0-9]+\), its entity is our pod
+?@guest until 8 500 \[gear\] BB pod under the self view: .*now shown \(the game's rule for Sam's pod\); cross-check [1-9][0-9]* match => action gear 30 2
 @guest screenshot 00-guest-on-pad
 @guest log PRIVATE ROOM REQUEST
 @guest pad B 2500
@@ -94,15 +110,26 @@ wait 500
 @guest until 30 500 status: game state: \S+ \[PrivateRoom(\|bit39)?\] requested \S+ \[PrivateRoom(\|bit39)?\] phase 0 => action log_status
 @guest log PRIVATE ROOM PLAYABLE
 @guest screenshot r01-guest-room
-@guest waitnew 15 \[self\] shown=1 'fragile_suit'
-@guest waitlog 1 \[self\] the private room's close-up [0-9.]+ s after a load
+@guest waitnew 15 \[self\] shown=1 'fragile'
+@guest waitlog 1 \[gear\] entering the private room: [1-9][0-9]* gear item\(s\) Sam wore in plain play before it noted \(BB pod 1\)
+@guest waitlog 1 \[self\] room outfit: 'fragile_suit' -> 'fragile' .*: hidden swap
+@guest waitlog 1 \[clothes\] Sam's clothes changed in [0-4]\.[0-9]+ s \(#[0-9]+, variant [0-9] -> 1, state [^)]*PrivateRoom[^)]*\): .*paint ready \(
+@guest nolog \[clothes\] still changing after .*self body SHOWN
+@guest nolog released by the game's 60 s timeout
+@guest nolog \[self\] the private room's close-up
 @guest nolog \[self\] stall guard
+waitlog 20 \[sync\] partner character now 'fragile' \(was 'fragile_suit'\)
 wait 1500
 @guest screenshot r02-guest-room
 screenshot r02-host
 nolog \[gate\] OTGC WRITE
 @guest nolog \[gate\] OTGC WRITE
+nolog \[gear\] BB pod: controller ask vs its flag disagree
+@guest nolog \[gear\] BB pod: controller ask vs its flag disagree
+@both action gear 30 2
 @both action log_status
 @guest quit
 wait 3000
+nolog \[face\] PlayFacial faulted
+@guest nolog \[face\] PlayFacial faulted
 quit

@@ -31,7 +31,8 @@ if(GIT_FOUND)
                          native/net/link_protocol.cpp native/mod/save_xfer.hpp native/mod/save_xfer.cpp
                          native/mod/vehicle_wire.hpp native/mod/vehicle_wire.cpp native/mod/ride_wire.hpp native/mod/ride_wire.cpp
                          native/mod/tackle_rules.hpp native/mod/tackle_rules.cpp native/mod/world_wire.hpp native/mod/world_wire.cpp
-                         native/mod/world_rules.hpp native/mod/texture_wire.hpp native/mod/texture_wire.cpp)
+                         native/mod/world_rules.hpp native/mod/texture_wire.hpp native/mod/texture_wire.cpp
+                         native/mod/face_rules.hpp)
       set(_st_wire_text "")
       foreach(_f IN LISTS _st_wire_files)
         file(READ "${CMAKE_CURRENT_SOURCE_DIR}/${_f}" _t)
@@ -130,9 +131,11 @@ add_library(st_mod SHARED
   native/mod/partner_holo.cpp
   native/mod/holo_catalog.cpp
   native/mod/anim_census.cpp
+  native/mod/enemy_census.cpp
   native/mod/body_table.cpp
   native/mod/body_choice.cpp
   native/mod/real_body.cpp
+  native/mod/face_sync.cpp
   native/mod/partner_outfit.cpp
   native/mod/suit_colour.cpp
   native/mod/fragile_textures.cpp
@@ -296,6 +299,14 @@ target_compile_options(st_gear_wear_tests PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_gear_wear_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_test(NAME st_gear_wear_tests COMMAND st_gear_wear_tests)
 
+# ---- Gear kept across loads and the private room, the pure part (native/mod/gear_keep.hpp): the BB pod under the self view
+# (the game's rule, its cross-check, the fallback) and what the private room took (docs/real-partner-body.md section 35).
+add_executable(st_gear_keep_tests tests/gear_keep_tests.cpp)
+target_include_directories(st_gear_keep_tests PRIVATE native/mod)
+target_compile_options(st_gear_keep_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_gear_keep_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_gear_keep_tests COMMAND st_gear_keep_tests)
+
 # ---- Fragile's boots, the pure part (native/mod/boots_look.hpp): the style, the boots' ArtParts bits (settled, worn, her own
 # boots), the boot type -> folder, Worn / Gold / Silver and the look keys (docs/real-partner-body.md section 30).
 add_executable(st_boots_look_tests tests/boots_look_tests.cpp)
@@ -303,6 +314,26 @@ target_include_directories(st_boots_look_tests PRIVATE native/mod)
 target_compile_options(st_boots_look_tests PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_boots_look_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_test(NAME st_boots_look_tests COMMAND st_boots_look_tests)
+
+# ---- The self view in the private room, the pure part (native/mod/room_outfit_rules.hpp): room_outfit, Sam's body variant
+# -> her look, when her body may change, the clothes-change window (docs/real-partner-body.md section 34).
+add_executable(st_room_outfit_tests tests/room_outfit_tests.cpp)
+target_include_directories(st_room_outfit_tests PRIVATE native/mod)
+target_compile_options(st_room_outfit_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_room_outfit_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_room_outfit_tests COMMAND st_room_outfit_tests)
+add_executable(st_enemy_census_tests tests/enemy_census_tests.cpp)
+target_include_directories(st_enemy_census_tests PRIVATE native/mod)
+target_compile_options(st_enemy_census_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_enemy_census_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_enemy_census_tests COMMAND st_enemy_census_tests)
+
+# ---- Fragile's face (face_rules.hpp): the wire ids of Sam's facial clips, the manager's choice, when a face gets a clip
+add_executable(st_face_rules_tests tests/face_rules_tests.cpp)
+target_include_directories(st_face_rules_tests PRIVATE native/mod)
+target_compile_options(st_face_rules_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_face_rules_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_face_rules_tests COMMAND st_face_rules_tests)
 
 # ---- Sam's skeletons on Fragile, the pure part (native/mod/exo_parts.hpp): the mesh controller's formula without the self
 # view's bit, the skeleton types, the exo carrier's parts plan (docs/real-partner-body.md section 32).

@@ -74,10 +74,10 @@ wait 5000
 @guest screenshot B0-guest-timefall
 screenshot B0-host-timefall
 @guest waitlog 160 \[gear\] wear: the backpack's rain cover broke: worn out in timefall
-@guest waitlog 10 \[gear\] our gear: the backpack's rain cover is gone
+@guest waitlog 10 \[gear\] our gear: the backpack's rain cover is gone: worn out in timefall
 waitlog 20 \[gear\] the partner's gear: the backpack's rain cover is gone
 waitlog 60 \[gear\] wear: the backpack's rain cover broke: worn out in timefall
-waitlog 10 \[gear\] our gear: the backpack's rain cover is gone
+waitlog 10 \[gear\] our gear: the backpack's rain cover is gone: worn out in timefall
 @guest waitlog 20 \[gear\] the partner's gear: the backpack's rain cover is gone
 wait 2500
 note B1 both covers gone

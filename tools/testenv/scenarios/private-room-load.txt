@@ -1,8 +1,12 @@
-# docs/real-partner-body.md section 33 (round 7): a load straight into the private room (-SeedSaves story-pack:
-# manualsave12, Sam in the private room), self view ON (Fragile). Screenshots (their mean: black or not) and
-# log_status (game state, load mask) every ~0.6 s for ~5 s; then the room must be drawn (a screenshot mean of 20 or
-# more) within 9 s more and playable (PrivateRoom, phase 0). Vanilla: drawn and playable +6.5 s after the request;
-# v0.24 with the self view: black 40+ s in PrivateRoom|Setup. Sibling: private-room-load-vanilla (self view off).
+# docs/real-partner-body.md sections 33 and 34: a load straight into the private room (-SeedSaves story-pack:
+# manualsave12, Sam in the private room), self view ON (Fragile), room_outfit=black. Screenshots (their mean: black or
+# not) and log_status (game state, load mask) every ~0.6 s for ~5 s; then the room must be drawn (a screenshot mean of
+# 20 or more) within 9 s more and playable (PrivateRoom, phase 0), Fragile in her black suit. Vanilla: drawn and playable
+# +6.5 s after the request; v0.24 with the self view: black 40+ s in PrivateRoom|Setup.
+# Round 11 (section 34, the user's item 2: a suit colour change in the wardrobe): the uniform menu's two clothes changes
+# with Fragile shown (`self_view 19 0`: the porter suit for the preview, `self_view 19 8`: back to the room's own choice),
+# each must end in under 5 s with Sam's paint ready (v0.25: 60 s each, the game's paint fallback); her black suit stays
+# through the preview (no swap in the room), she is shown again after each. Sibling: private-room-load-vanilla.
 # covers: private-room self-view story
 role solo
 timeout 300
@@ -10,6 +14,7 @@ ini dev_tools=1
 ini partner_body=real
 ini my_character=fragile_suit
 ini self_character=1
+ini room_outfit=black
 start
 ?waitlog 60 \[self\] showing 'fragile_suit'
 wait 2000
@@ -44,10 +49,25 @@ log PRIVATE ROOM VISIBLE
 until 9 500 status: game state: \S+ \[PrivateRoom(\|bit39)?\] requested \S+ \[PrivateRoom(\|bit39)?\] phase 0 => action log_status
 log PRIVATE ROOM PLAYABLE
 screenshot r01
-waitnew 10 \[self\] shown=1 'fragile_suit'
+waitnew 10 \[self\] shown=1 'fragile'
 wait 1500
-screenshot r02
+screenshot r02-black-suit
 nolog \[self\] stall guard
+log WARDROBE PREVIEW: THE PORTER SUIT
+action self_view 19 0
+waitnew 10 \[clothes\] Sam's clothes changed in [0-4]\.[0-9]+ s \(#[0-9]+, variant 1 -> 0, .*paint ready \(
+waitnew 3 \[self\] showing 'fragile' in place of Sam
+screenshot w01-preview
+log WARDROBE CLOSED: THE ROOM CLOTHES
+action self_view 19 8
+waitnew 10 \[clothes\] Sam's clothes changed in [0-4]\.[0-9]+ s \(#[0-9]+, variant 0 -> 1, .*paint ready \(
+waitnew 3 \[self\] showing 'fragile' in place of Sam
+waitlog 1 \[clothes\] the game is changing Sam's clothes .*variant 1 -> 0 .*self body shown: Sam shown for it
+nolog \[self\] room outfit: 'fragile' -> 'fragile_suit'
+nolog \[clothes\] still changing after .*self body SHOWN
+nolog released by the game's 60 s timeout
+wait 1000
+screenshot w02-after
 screenshot q01
 action log_status
 wait 500

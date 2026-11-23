@@ -260,6 +260,12 @@ The Tools page's **Fragile's textures** card (docs/textures.md has the player's 
   "Sam's boots on her feet" (Sam's real boots of that type over her feet, v0.22). Written as `boots_look=own|prop` into
   every session.ini (Host, Join, Solo test, Debug tools only, both Local test files); the guest's choice is what both
   screens show (it travels in the textures LOOK).
+* **Fragile in the private room** (round 11; docs/real-partner-body.md section 34): "Black suit" (default: her black
+  Fragile Express suit while she is in the private room, on both screens, and her porter suit again when she leaves; she
+  changes during the room's load, and Sam's clothes changes at the wardrobe inside the room do not change hers; the
+  user's suit pictures are not seen on the black suit) or "Porter suit" (her porter suit there too, v0.25). Settings `"textures"."room"` = `black` / `suit`, written as
+  `room_outfit=black|suit` into every session.ini the same way as `boots_look` (`RoomOutfitFromSettings`,
+  launcher_core_tests).
 * **Automatic extraction** (round 9; docs/textures.md "Get the pictures"): the real window (`ModelStart::
   auto_extract_textures`, set only by launcher_main.cpp; a model a test makes has it off unless the test turns it on on
   a temporary folder, as `AutoExtractModel` does) decides at most every 5 s from the folder's `.manifest.txt`

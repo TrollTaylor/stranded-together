@@ -1,5 +1,5 @@
 // Sam's skeletons on a body that is not Sam, the pure part (native/mod/exo_parts.hpp): the mesh controller's formula with the
-// self view's bit ignored, the skeleton types, the exo carrier's parts plan. No game.
+// self view's bit ignored, the skeleton types, the exo carrier's parts plan, the rain hood on the carrier. No game.
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -171,6 +171,132 @@ void TestCarrier() {
     CarrierPlan(kSuitParts, par, vis, false, touch, asked);
     CHECK(Bit(asked, 32) && Bit(asked, 37) && Bit(asked, kHeavySubPart) && Bit(asked, 39) && !Bit(asked, 34));
 }
+// Section 37: the hood on the carrier. A head subtree with nesting: 53 (porter on) with a lamp child 90, 55 (hair) with a
+// child 56, the otter hood 69 under a holder 60, the oxi switch 84 with children 85 / 86.
+void HoodTree(std::int16_t (&par)[kSuitParts]) {
+    SuitTree(par);
+    par[56] = 55;
+    par[60] = 52;
+    par[69] = 60;
+    par[70] = 60;
+    par[85] = par[86] = 84;
+    par[90] = 53;
+}
+
+void TestHoodRules() {
+    CHECK(HoodPhaseOf(0) == HoodPhase::down && HoodPhaseOf(1) == HoodPhase::down && HoodPhaseOf(2) == HoodPhase::down);
+    CHECK(HoodPhaseOf(3) == HoodPhase::raising && HoodPhaseOf(4) == HoodPhase::raising && HoodPhaseOf(5) == HoodPhase::raising);
+    CHECK(HoodPhaseOf(6) == HoodPhase::up && HoodPhaseOf(7) == HoodPhase::up && HoodPhaseOf(8) == HoodPhase::up && HoodPhaseOf(10) == HoodPhase::up);
+    CHECK(HoodPhaseOf(9) == HoodPhase::lowering && HoodPhaseOf(11) == HoodPhase::lowering && HoodPhaseOf(12) == HoodPhase::lowering);
+    CHECK(HoodPhaseOf(13) == HoodPhase::down && HoodPhaseOf(-1) == HoodPhase::down);
+    CHECK(std::strcmp(HoodPhaseName(HoodPhase::lowering), "lowering") == 0 && std::strcmp(HoodTypeName(1), "oxi") == 0 && std::strcmp(HoodTypeName(2), "sea otter") == 0 &&
+          std::strcmp(HoodTypeName(5), "none") == 0);
+    CHECK(HoodAnimSlot(0) == 2 && HoodAnimSlot(1) == 5 && HoodAnimSlot(2) == 4 && HoodAnimSlot(3) == -1);
+    // only the three hood slots reach the game's calls (0x1422C80B0 refuses 9 alone)
+    for (int t = 0; t < kHoodTypes; ++t) CHECK(HoodSlotValid(HoodAnimSlot(t)));
+    CHECK(!HoodSlotValid(-1) && !HoodSlotValid(255) && !HoodSlotValid(0) && !HoodSlotValid(3) && !HoodSlotValid(9));
+    CHECK(HoodClipIndex(0, false, kHoodClipOpen) == 0 && HoodClipIndex(0, false, kHoodClipCloseLoop) == 3 && HoodClipIndex(0, true, kHoodClipOpen) == 4 &&
+          HoodClipIndex(0, true, kHoodClipCloseLoop) == 7 && HoodClipIndex(1, false, kHoodClipOpenLoop) == 9 && HoodClipIndex(1, true, kHoodClipClose) == 10 &&
+          HoodClipIndex(2, false, kHoodClipCloseLoop) == 15 && HoodClipIndex(3, false, 0) == -1 && HoodClipIndex(0, false, 4) == -1);
+    CHECK(kHoodPart[0][0] == 54 && kHoodPart[0][1] == 53 && kHoodPart[1][0] == 71 && kHoodPart[2][0] == 69 && kHoodPart[2][2] == 83 && kHoodPart[1][2] == 84);
+    CHECK(HoodHidesHat(HoodPhase::up) && !HoodHidesHat(HoodPhase::raising) && !HoodHidesHat(HoodPhase::lowering) && !HoodHidesHat(HoodPhase::down));
+    std::int16_t par[kSuitParts];
+    HoodTree(par);
+    CHECK(CarrierTreeOk(kSuitParts, par));
+    CHECK(HoodPartOk(kSuitParts, par, 53) && HoodPartOk(kSuitParts, par, 69) && HoodPartOk(kSuitParts, par, 85));
+    CHECK(!HoodPartOk(kSuitParts, par, 52) && !HoodPartOk(kSuitParts, par, 32) && !HoodPartOk(kSuitParts, par, 0) && !HoodPartOk(kSuitParts, par, -1) &&
+          !HoodPartOk(kSuitParts, par, 200) && !HoodPartOk(kSuitParts, nullptr, 53));
+}
+
+void TestCarrierHood() {
+    std::int16_t par[kSuitParts];
+    HoodTree(par);
+    std::uint64_t vis[2], touch[2], asked[2], shown[2];
+    TypeParts(Type::none, vis);
+    // no hood: the head container off, nothing under it touched
+    CarrierPlan(kSuitParts, par, vis, false, -1, touch, asked);
+    ShownFromAsked(kSuitParts, par, asked, shown);
+    CHECK(Bit(touch, 52) && !Bit(asked, 52) && !Bit(touch, 53) && !Bit(shown, 53) && !Bit(shown, 69));
+    // the porter hood (53, directly under the head): the head on, 53 on, its siblings off, its lamp left alone
+    CarrierPlan(kSuitParts, par, vis, false, 53, touch, asked);
+    ShownFromAsked(kSuitParts, par, asked, shown);
+    CHECK(Bit(asked, 52) && Bit(asked, 53) && Bit(shown, 53) && Bit(shown, 52));
+    CHECK(Bit(touch, 55) && !Bit(asked, 55) && Bit(touch, 54) && !Bit(asked, 54) && Bit(touch, 60) && !Bit(asked, 60) && Bit(touch, 68) && !Bit(asked, 68));
+    CHECK(!Bit(touch, 90) && !Bit(touch, 56) && !Bit(touch, 69));  // the hood's own child; grandchildren behind an off parent
+    CHECK(!Bit(shown, 55) && !Bit(shown, 56) && !Bit(shown, 69) && !Bit(shown, 0));
+    // with a skeleton too: both
+    TypeParts(Type::speed, vis);
+    CarrierPlan(kSuitParts, par, vis, false, 53, touch, asked);
+    ShownFromAsked(kSuitParts, par, asked, shown);
+    CHECK(Bit(shown, 53) && Bit(shown, 32) && Bit(shown, 35) && !Bit(shown, 37));
+    // without the hood, the plan is the old one
+    std::uint64_t t0[2], a0[2];
+    CarrierPlan(kSuitParts, par, vis, false, touch, asked);
+    CarrierPlan(kSuitParts, par, vis, false, -1, t0, a0);
+    CHECK(touch[0] == t0[0] && touch[1] == t0[1] && asked[0] == a0[0] && asked[1] == a0[1]);
+    // the otter hood (69) under a holder (60): the way down asked, the holder's other child (70) off
+    TypeParts(Type::none, vis);
+    CarrierPlan(kSuitParts, par, vis, false, 69, touch, asked);
+    ShownFromAsked(kSuitParts, par, asked, shown);
+    CHECK(Bit(shown, 69) && Bit(asked, 60) && Bit(touch, 70) && !Bit(asked, 70) && Bit(touch, 53) && !Bit(asked, 53) && !Bit(shown, 53));
+    // only the container and the way down to the hood show
+    for (unsigned i = 0; i < static_cast<unsigned>(kSuitParts); ++i)
+        if (Bit(shown, i)) CHECK(i == 1 || i == 52 || i == 60 || i == 69);
+    // the oxi switch (84): its children (85, 86) left as they are
+    CarrierPlan(kSuitParts, par, vis, false, 84, touch, asked);
+    CHECK(Bit(asked, 84) && !Bit(touch, 85) && !Bit(touch, 86) && Bit(touch, 71) && !Bit(asked, 71));
+    // a part that is not under the head: no hood
+    CarrierPlan(kSuitParts, par, vis, false, 32, touch, asked);
+    CHECK(!Bit(asked, 52) && !Bit(asked, 32));
+}
+
+void TestHoodAnim() {
+    // the timed swap (no unfold): the raised hood exactly while the sender's is up
+    HoodAnim a;
+    CHECK(HoodAnimTick(a, -1, HoodPhase::up, false, false, 0) == 0 && a.show == HoodShow::none);
+    CHECK(HoodAnimTick(a, 1, HoodPhase::raising, false, false, 10) == 0 && a.show == HoodShow::none);
+    CHECK(HoodAnimTick(a, 1, HoodPhase::up, false, false, 20) == 0 && a.show == HoodShow::on);
+    CHECK(HoodAnimTick(a, 1, HoodPhase::lowering, false, false, 30) == 0 && a.show == HoodShow::none);
+    CHECK(HoodAnimTick(a, 1, HoodPhase::down, false, false, 40) == 0 && a.show == HoodShow::none);
+    // the unfold: enable + opening, the open loop the next tick, wait for the slot, then the raised hood
+    a = HoodAnim{};
+    CHECK(HoodAnimTick(a, 1, HoodPhase::down, true, true, 0) == 0 && a.show == HoodShow::none);
+    CHECK(HoodAnimTick(a, 1, HoodPhase::raising, true, true, 100) == (kHoodEnable | kHoodPlayOpen) && a.show == HoodShow::sw && a.mode == 1);
+    CHECK(HoodAnimTick(a, 1, HoodPhase::raising, true, true, 116) == kHoodPlayOpenLoop && a.show == HoodShow::sw);
+    CHECK(HoodAnimTick(a, 1, HoodPhase::raising, true, true, 150) == 0 && a.show == HoodShow::sw);  // "done" within 100 ms: not yet
+    CHECK(HoodAnimTick(a, 1, HoodPhase::raising, true, false, 900) == 0 && a.show == HoodShow::sw);
+    CHECK(HoodAnimTick(a, 1, HoodPhase::raising, true, true, 1100) == kHoodDisable && a.show == HoodShow::on && a.mode == 0);
+    CHECK(HoodAnimTick(a, 1, HoodPhase::raising, true, true, 1116) == 0 && a.show == HoodShow::on);  // not again while still raising
+    CHECK(HoodAnimTick(a, 1, HoodPhase::up, true, true, 1200) == 0 && a.show == HoodShow::on);
+    // lowering: enable + closing, the close loop, then nothing shown
+    CHECK(HoodAnimTick(a, 1, HoodPhase::lowering, true, true, 2000) == (kHoodEnable | kHoodPlayClose) && a.show == HoodShow::sw && a.mode == 2);
+    CHECK(HoodAnimTick(a, 1, HoodPhase::lowering, true, false, 2016) == kHoodPlayCloseLoop);
+    CHECK(HoodAnimTick(a, 1, HoodPhase::lowering, true, false, 4000) == 0 && a.show == HoodShow::sw);
+    CHECK(HoodAnimTick(a, 1, HoodPhase::lowering, true, false, 5100) == kHoodDisable && a.show == HoodShow::none);  // 3 s at most
+    CHECK(HoodAnimTick(a, 1, HoodPhase::down, true, false, 5200) == 0 && a.show == HoodShow::none);
+    // the instant path (a load): up without raising shows the hood at once, no clip
+    CHECK(HoodAnimTick(a, 1, HoodPhase::up, true, false, 6000) == 0 && a.show == HoodShow::on);
+    // the game resets the hood (down) while it unfolds: off at once
+    a = HoodAnim{};
+    HoodAnimTick(a, 0, HoodPhase::raising, true, false, 0);
+    HoodAnimTick(a, 0, HoodPhase::raising, true, false, 16);
+    CHECK(HoodAnimTick(a, 0, HoodPhase::down, true, false, 30) == kHoodDisable && a.show == HoodShow::none && a.mode == 0);
+    // the type changes while it unfolds: the slot off, then the new type from scratch
+    HoodAnimTick(a, 0, HoodPhase::raising, true, false, 100);
+    CHECK(a.mode == 1);
+    CHECK(HoodAnimTick(a, 2, HoodPhase::raising, true, false, 120) == (kHoodDisable | kHoodEnable | kHoodPlayOpen) && a.type == 2 && a.mode == 1);
+    // lowering starts while it still unfolds: it finishes (the hood up), then closes
+    a = HoodAnim{};
+    HoodAnimTick(a, 1, HoodPhase::raising, true, false, 0);
+    HoodAnimTick(a, 1, HoodPhase::raising, true, false, 16);
+    CHECK(HoodAnimTick(a, 1, HoodPhase::lowering, true, true, 600) == kHoodDisable && a.show == HoodShow::on);
+    CHECK(HoodAnimTick(a, 1, HoodPhase::lowering, true, true, 616) == (kHoodEnable | kHoodPlayClose) && a.show == HoodShow::sw);
+    // the unfold turned off mid-way: the slot off, the timed swap
+    CHECK(HoodAnimTick(a, 1, HoodPhase::lowering, false, true, 700) == kHoodDisable && a.show == HoodShow::none && a.mode == 0);
+    // lowering without the hood shown: nothing to close
+    a = HoodAnim{};
+    CHECK(HoodAnimTick(a, 1, HoodPhase::lowering, true, true, 0) == 0 && a.show == HoodShow::none);
+}
 }  // namespace
 
 int main() {
@@ -178,6 +304,9 @@ int main() {
     TestTypes();
     TestSender();
     TestCarrier();
+    TestHoodRules();
+    TestCarrierHood();
+    TestHoodAnim();
     std::printf("%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

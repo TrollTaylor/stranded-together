@@ -6,7 +6,9 @@
 # slot's carrier, from the guest's STC1 parts block). Then each skeleton type in turn on the guest (gear 28: the pieces the
 # guest reads replaced by a type's, so its self view and the wire follow): screenshots of her on both screens, standing and
 # walking. The host is a Sam: the guest's screen keeps his own skeleton on his body (MirrorParts), no carrier for him.
-# covers: skeleton gear
+# Round 11 (section 37): her rain hood over the real link (STC1 v5 hood bytes): the guest's hood reading replaced (gear 32: the
+# sea otter hood up, then down): the host's copy of her and her own self view draw it, then not.
+# covers: skeleton gear hood
 role host
 graphics low
 timeout 360
@@ -74,6 +76,24 @@ waitnew 30 \[exo\] carrier [0-9A-Fa-fx]+: shown
 wait 1500
 screenshot 08-host-sees-guest-speed-again
 @guest screenshot 08-guest-self-speed-again
+# her rain hood (section 37): up on both screens, then down
+@guest action gear 32 6 2
+waitlog 30 \[exo\] carrier [0-9A-Fa-fx]+ hood: up \(part [0-9]+; the sender's sea otter hood
+@guest waitlog 30 \[exo-self\] carrier [0-9A-Fa-fx]+ hood: up \(part [0-9]+; the sender's sea otter hood
+wait 1500
+screenshot 09-host-sees-guest-hood
+@guest screenshot 09-guest-self-hood
+@both action gear 31 3
+@guest action gear 32 0 2
+waitlog 30 \[exo\] carrier [0-9A-Fa-fx]+ hood: none
+@guest waitlog 30 \[exo-self\] carrier [0-9A-Fa-fx]+ hood: none
+@guest action gear 32 -1
+wait 1500
+screenshot 10-host-sees-guest-no-hood
+nolog \[hood\] .*do(es)? not match
+@guest nolog \[hood\] .*do(es)? not match
+nolog \[exo.*\] the ArtParts part setter faulted on her body
+@guest nolog \[exo.*\] the ArtParts part setter faulted on her body
 @both action gear 27 2
 # the host's Sam on the guest's screen: his own skeleton through MirrorParts, no carrier
 @guest waitlog 10 \[gear\] partner body .*the partner's parts are mirrored on it

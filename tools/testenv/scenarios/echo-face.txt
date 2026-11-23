@@ -1,0 +1,109 @@
+# Fragile's face (docs/real-partner-body.md section 36), one game: the echo partner replays our own Sam as Fragile in her
+# porter suit 0.9 m beside us (the STJ1 frames, now with the face block, through the encoder and decoder), while our own
+# self view shows Fragile in Sam's place. Phase 1: Sam's facial clip (his DSPlayerFacialComponent's choice) is played on
+# her self view's face with the game's PlayFacial, once per change; phase 2: the same clip by its wire id on the partner
+# body's face. Required: the byte checks, Sam's facial tables, a play that lands in each face's rig, no fault; then the
+# camera round to both faces and 8 s of frames at 4 Hz (her idle face: brows, mouth, blinks). Optional evidence: her blinks
+# on each face and the meter of Sam's own face while reason 63 hides him (does his rig keep following his manager).
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario echo-face -SeedSaves complete-100
+# covers: face self-view partner-body
+role echo
+timeout 300
+ini partner_body=real
+ini partner_character=fragile_suit
+ini my_character=fragile_suit
+ini self_character=1
+ini echo_delay_s=0.3
+ini echo_offset_m=-0.9
+ini partner_collision=0
+start
+until 60 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[sync\] partner body: real
+waitlog 40 \[self\] showing 'fragile_suit' in place of Sam
+waitlog 20 \[face\] sites verified: PlayFacial
+waitlog 20 \[face\] Sam's facial manager [0-9A-Fa-fx]+ \([A-Za-z]+\): 1[0-6] states, [1-9][0-9]* event clips
+waitlog 20 \[face\] self: played state [0-9]+ on 'fragile_suit'
+waitlog 20 \[face\] self: the clip is on the face
+waitlog 20 \[face\] rx: the partner's face now id [0-9]+ \((state|event|photo) [0-9]+\)
+waitlog 20 \[face\] partner: played (state|event|photo) [0-9]+ on 'fragile_suit'
+waitlog 20 \[face\] partner: the clip is on the face
+nolog \[face\] PlayFacial faulted
+nolog \[face\] Fragile's face sync off
+# both faces: the camera round
+pad none 1300 rx=32767
+wait 2000
+screenshot 01-faces
+screenshot f00
+wait 250
+screenshot f01
+wait 250
+screenshot f02
+wait 250
+screenshot f03
+wait 250
+screenshot f04
+wait 250
+screenshot f05
+wait 250
+screenshot f06
+wait 250
+screenshot f07
+wait 250
+screenshot f08
+wait 250
+screenshot f09
+wait 250
+screenshot f10
+wait 250
+screenshot f11
+wait 250
+screenshot f12
+wait 250
+screenshot f13
+wait 250
+screenshot f14
+wait 250
+screenshot f15
+wait 250
+screenshot f16
+wait 250
+screenshot f17
+wait 250
+screenshot f18
+wait 250
+screenshot f19
+wait 250
+screenshot f20
+wait 250
+screenshot f21
+wait 250
+screenshot f22
+wait 250
+screenshot f23
+wait 250
+screenshot f24
+wait 250
+screenshot f25
+wait 250
+screenshot f26
+wait 250
+screenshot f27
+wait 250
+screenshot f28
+wait 250
+screenshot f29
+wait 250
+screenshot f30
+wait 250
+screenshot f31
+wait 250
+action self_view 21
+waitlog 30 \[face\] self: plays [1-9][0-9]*, took [1-9][0-9]*, retries [0-9]+, waits [0-9]+, faults 0
+waitlog 15 \[face\] partner: rx frames [1-9][0-9]* .*took [1-9][0-9]*, retries [0-9]+, faults 0
+?waitlog 15 \[face\] self: .*her blinks [1-9]
+?waitlog 15 \[face\] partner: .*its blinks [1-9]
+?waitlog 15 \[face\] Sam hidden by reason 63
+nolog \[face\] PlayFacial faulted
+nolog \[face\] Fragile's face sync off
+nolog \[gate\] OTGC WRITE
+quit

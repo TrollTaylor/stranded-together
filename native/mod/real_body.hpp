@@ -165,7 +165,12 @@ bool JointFrameWorld(game::Entity* e, unsigned sam_joint, double (&p)[3], float 
 // Joint j of an entity whose skeleton has n joints (any layout: the boots' 10), position in world space (row 3 only).
 bool JointWorldN(game::Entity* e, unsigned j, unsigned n, double (&pos)[3]) noexcept;
 bool SelfConfigured() noexcept;
-const bodies::Body* SelfBody() noexcept;  // the character the self view shows (nullptr: off)
+const bodies::Body* SelfBody() noexcept;  // the body the self view wears now (else the one it will wear; nullptr: off)
+// Section 34 (session.ini room_outfit): black (true) = Fragile in her porter suit wears her black suit in the private room.
+void ConfigureRoomOutfit(bool black) noexcept;
+// STJ1 body_id for this player's character `base` (game thread): the room body when the room-outfit rule wants it (the
+// self view's own choice when it is on, else the same rule from the game state and Sam's variant), else base->id.
+std::uint8_t LookBodyId(const bodies::Body* base, game::Entity* local) noexcept;
 bool SelfShown() noexcept;           // the body is shown and Sam hidden right now
 game::Entity* SelfEntity() noexcept;  // the self body (loading or live), nullptr when none
 // The cargo menu's Sam figure (DSPlayerAKukanEntity) while the self body stands in for it (Manage Cargo open, the

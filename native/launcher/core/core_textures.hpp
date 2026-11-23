@@ -43,6 +43,9 @@ bool TexturePreviewsFromSettings(const json::Value& settings);   // "textures"."
 // Her boots (session.ini boots_look): "textures"."boots" = "own" (default: her own boots, painted with the boot pictures)
 // or "prop" (Sam's boots on her feet). Anything else reads as "own".
 std::string BootsLookFromSettings(const json::Value& settings);
+// Fragile in the private room (session.ini room_outfit, docs/real-partner-body.md section 34): "textures"."room" = "black"
+// (default: her black suit there) or "suit" (her porter suit there too). Anything else reads as "black".
+std::string RoomOutfitFromSettings(const json::Value& settings);
 // A folder the player may pick: absolute, not a drive root, not inside the game folder, not a Windows / Program
 // Files folder. "" when fine, else a sentence.
 std::string TexturesFolderProblem(const std::wstring& folder, const std::wstring& game_dir);

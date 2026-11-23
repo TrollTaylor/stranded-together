@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 
 #include "gear_wear.hpp"
@@ -70,12 +71,37 @@ void TestRainCover() {
     CHECK(!IsRainCover(nullptr, cover));
     CHECK(!IsRainCover("ds/entities/item/backpack/backpack_temp", nullptr));
 }
+
+// Round 11: why the cover's entity went from a layout.
+void TestCoverGone() {
+    // the user's round 10 logs: no cover from the first read; the load's leftover entity went (not timefall)
+    CHECK(WhyCoverGone(0, false, 0.0) == CoverGone::none_in_save);
+    // no wear read yet, or the partner's gear: the general wording
+    CHECK(WhyCoverGone(-1, false, 0.0) == CoverGone::unknown);
+    CHECK(WhyCoverGone(-1, true, 50.0) == CoverGone::unknown);
+    // worn this session: the last worn reading's durability says why (the entity may go before or after the read that sees it off)
+    CHECK(WhyCoverGone(1, true, 0.4) == CoverGone::worn_out);
+    CHECK(WhyCoverGone(0, true, 0.4) == CoverGone::worn_out);
+    CHECK(WhyCoverGone(0, true, 1.0) == CoverGone::worn_out);
+    CHECK(WhyCoverGone(0, true, 63.0) == CoverGone::taken_off);
+    CHECK(WhyCoverGone(1, true, 63.0) == CoverGone::taken_off);
+    // the wordings: the scenarios wait for "rain cover is gone" (timefall, the partner's); a save without one never says it
+    CHECK(std::strncmp(CoverGoneText(CoverGone::worn_out), "is gone", 7) == 0);
+    CHECK(std::strstr(CoverGoneText(CoverGone::worn_out), "worn out in timefall") != nullptr);
+    CHECK(std::strncmp(CoverGoneText(CoverGone::taken_off), "is gone", 7) == 0);
+    CHECK(std::strncmp(CoverGoneText(CoverGone::unknown), "is gone", 7) == 0);
+    CHECK(std::strstr(CoverGoneText(CoverGone::none_in_save), "is gone") == nullptr);
+    CHECK(std::strstr(CoverGoneText(CoverGone::none_in_save), "timefall") != nullptr);  // "not timefall"
+    CHECK(std::strstr(CoverGoneText(CoverGone::none_in_save), "worn out") == nullptr);
+    CHECK(std::strstr(CoverGoneText(CoverGone::none_in_save), "since the last load") != nullptr);  // per load, not per session
+}
 }  // namespace
 
 int main() {
     TestPercent();
     TestBucket();
     TestRainCover();
+    TestCoverGone();
     std::printf("%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

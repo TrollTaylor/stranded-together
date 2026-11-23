@@ -1326,6 +1326,19 @@ void LauncherUi::TexturesCard(Phase phase) {
                            "are hidden under them.",
              col::kTextDim, kSmall, nullptr, 0.0f);
     }
+    // Fragile in the private room (docs/real-partner-body.md section 34): her black suit there, or her porter suit.
+    Gap(4.0f);
+    SectionLabel("FRAGILE IN THE PRIVATE ROOM");
+    {
+        static const char* const kRoom[] = {"Black suit", "Porter suit"};
+        int room = t.room_black ? 0 : 1;
+        if (Segmented("##texroom", kRoom, 2, &room, std::fmin(ImGui::GetContentRegionAvail().x / Scale(), 300.0f), !in_game))
+            model_.set_room_outfit(room == 0);
+        Text(t.room_black ? "Fragile wears her black suit while she is in the private room, on both screens, and her porter suit again "
+                            "when she leaves. Your suit pictures are not seen on the black suit."
+                          : "Fragile keeps her porter suit in the private room too (your pictures show there as well).",
+             col::kTextDim, kSmall, nullptr, 0.0f);
+    }
     if (t.custom_folder && !busy) {
         if (Button("Use the default folder##texdefault", ButtonKind::quiet, ImVec2(0.0f, 28.0f))) {
             std::string error;

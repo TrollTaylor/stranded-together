@@ -55,21 +55,26 @@ Quat Normalize(const Quat& q) noexcept;
 //   u8 n | n x {u8 joint, i16 x, i16 y, i16 z} translations in units of 1e-4 m (+-3.27 m)
 //   [flags & kJointsOutfit] 8 bytes: the sender's Sam outfit (Outfit below, in field order;
 //                          docs/real-partner-body.md section 9)
+//   [flags & kJointsFace]   2 bytes: the sender's Sam's facial clip {u8 id, u8 flags} (Face below;
+//                          docs/real-partner-body.md section 36). Blocks a later build adds go after
+//                          these, each announced by its own flag bit (kJointsKnown below).
 inline constexpr std::uint8_t kJointMagic[4] = {'S', 'T', 'J', '1'};
 inline constexpr unsigned kMaxJoints = 80;  // Sam's layout has 77
 inline constexpr unsigned kMaxJointTranslations = 4;
 inline constexpr std::uint32_t kSamLayoutHash = 0xBE39C83Fu;
 inline constexpr std::size_t kJointHeaderSize = 20;
 inline constexpr std::size_t kOutfitSize = 8;
-inline constexpr std::size_t JointFrameSize(unsigned joints, unsigned translations, bool outfit = false) {
-    return kJointHeaderSize + joints * 6u + 1u + translations * 7u + (outfit ? kOutfitSize : 0u);
+inline constexpr std::size_t kFaceSize = 2;
+inline constexpr std::size_t JointFrameSize(unsigned joints, unsigned translations, bool outfit = false, bool face = false) {
+    return kJointHeaderSize + joints * 6u + 1u + translations * 7u + (outfit ? kOutfitSize : 0u) + (face ? kFaceSize : 0u);
 }
-inline constexpr std::size_t kMaxJointFrameSize = JointFrameSize(kMaxJoints, kMaxJointTranslations, true);
+inline constexpr std::size_t kMaxJointFrameSize = JointFrameSize(kMaxJoints, kMaxJointTranslations, true, true);
 
 enum JointFlags : std::uint8_t {
     kJointsValid = 1u << 0,
     kJointsOutfit = 1u << 1,  // the 8-byte outfit block follows the translations
-    kJointsKnown = kJointsValid | kJointsOutfit,  // a frame with other bits may carry more blocks (ignored)
+    kJointsFace = 1u << 2,    // the 2-byte face block follows (after the outfit block when both are sent)
+    kJointsKnown = kJointsValid | kJointsOutfit | kJointsFace,  // a frame with other bits may carry more blocks (ignored)
 };
 
 // The sender's own Sam outfit as the game keeps it (player inventory component +0x4BDC..+0x4BE1,
@@ -98,6 +103,17 @@ inline constexpr std::uint8_t PorterExos(const Outfit& o) {
     return o.variant == kPorterVariant && o.exos < kExosCount ? o.exos : std::uint8_t{0xFF};
 }
 
+// The sender's Sam's facial clip (face_rules.hpp): id = its place in the sender's own Sam's facial tables (0..15
+// a state, 16..111 an event clip, 112..143 a photo-mode clip, 0xFE nothing plays, 0xFF a clip in no table: the
+// receiver keeps the last one); flags bit 0 blink, bit 1 saccade (other bits 0, cleared by the decoder).
+struct Face {
+    std::uint8_t id = 0xFE;
+    std::uint8_t flags = 0;
+    bool operator==(const Face& o) const { return id == o.id && flags == o.flags; }
+    bool operator!=(const Face& o) const { return !(*this == o); }
+};
+inline constexpr std::uint8_t kFaceFlagsKnown = 3;
+
 struct JointFrame {
     std::uint32_t seq = 0;
     std::uint32_t sender_ms = 0;
@@ -110,6 +126,7 @@ struct JointFrame {
     std::uint8_t t_joint[kMaxJointTranslations] = {};
     float t[kMaxJointTranslations][3] = {};
     Outfit outfit;  // meaningful when flags & kJointsOutfit
+    Face face;      // meaningful when flags & kJointsFace
 };
 
 // Returns the encoded size (0 when the frame cannot be encoded: too many joints, a
@@ -120,7 +137,7 @@ std::size_t EncodeJoints(const JointFrame& f, std::uint8_t* out, std::size_t cap
 bool DecodeJoints(const std::uint8_t* data, std::size_t size, JointFrame& out) noexcept;
 // Per joint nlerp with the hemisphere fix (q and -q are the same rotation), then
 // renormalised; translations lerped when both frames carry the same joints (else b's);
-// header fields and the outfit are b's.
+// header fields, the outfit and the face are b's.
 void BlendJoints(const JointFrame& a, const JointFrame& b, float t, JointFrame& out) noexcept;
 // Angle in degrees between two rotations (0..180).
 float AngleBetween(const Quat& a, const Quat& b) noexcept;
@@ -171,8 +188,8 @@ bool DecodeName(const std::uint8_t* data, std::size_t size, NameFrame& out) noex
 // prop entities there on the partner's body. Sent in its own datagram (FRAME message) when the
 // layout changes and about once a second otherwise; own magic, own sequence filter.
 //
-//   'STC1' | u32 seq | u8 version (4) | u8 count | u8 flags | u8 dropped | u16 layout hash |
-//   u16 reserved                                                              (16 bytes)
+//   'STC1' | u32 seq | u8 version (5) | u8 count | u8 flags | u8 dropped | u16 layout hash |
+//   u8 hood | u8 hood info                                                    (16 bytes)
 //   [flags bit 1, kGearParts: u64 apply[2] | u64 visible[2]                   (32 bytes)]
 //   [flags bit 2, kGearPackParts: u64 apply | u64 visible, the backpack's ArtParts (16 bytes)]
 //   [flags bit 3, kGearBoots: u32 apply | u32 visible, the boots' ArtParts (8 bytes)]
@@ -185,9 +202,28 @@ bool DecodeName(const std::uint8_t* data, std::size_t size, NameFrame& out) noex
 // version 2 frames are refused. Version 4 (after v0.11): the `boots` kind and its parts block
 // (docs/real-partner-body.md section 21); version 3 frames are refused. A frame has the boots block
 // exactly when it has a boots item, at most one, on joint 0 with no parent; visible bits outside
-// apply are refused.
+// apply are refused. Version 5 (round 11, docs/real-partner-body.md section 37): the former u16
+// reserved carries the sender's Sam's rain hood: `hood` bit 7 "read", bits 0-6 the hood state
+// (inventory +0x4970, 0..12); `hood info` bits 0-1 the hood type (0 porter, 1 oxi, 2 sea otter),
+// bit 2 the porter hood's second clip set. Both 0: no reading. Anything else is refused (a state
+// over 12, type 3, other bits, info without the read bit). Version 4 frames are refused.
 inline constexpr std::uint8_t kGearMagic[4] = {'S', 'T', 'C', '1'};
-inline constexpr std::uint8_t kGearVersion = 4;
+inline constexpr std::uint8_t kGearVersion = 5;
+inline constexpr std::uint8_t kGearHoodRead = 0x80;      // GearFrame::hood: a reading follows in bits 0-6
+inline constexpr std::uint8_t kGearHoodStateMax = 12;    // the game's hood states 0..12
+inline constexpr std::uint8_t kGearHoodTypeMax = 2;      // 0 porter, 1 oxi, 2 sea otter
+inline constexpr std::uint8_t kGearHoodAltClips = 0x04;  // GearFrame::hood_info: the porter hood's second clip set
+// The hood bytes (both 0, or a reading within range).
+inline constexpr bool GearHoodOk(std::uint8_t hood, std::uint8_t info) {
+    if (hood == 0) return info == 0;
+    return (hood & kGearHoodRead) != 0 && (hood & 0x7F) <= kGearHoodStateMax && (info & 0x03) <= kGearHoodTypeMax && (info & ~0x07) == 0;
+}
+inline constexpr std::uint8_t PackGearHood(int state) {
+    return state < 0 || state > kGearHoodStateMax ? std::uint8_t{0} : static_cast<std::uint8_t>(kGearHoodRead | state);
+}
+inline constexpr std::uint8_t PackGearHoodInfo(int type, bool alt) {
+    return type < 0 || type > kGearHoodTypeMax ? std::uint8_t{0} : static_cast<std::uint8_t>(type | (alt ? kGearHoodAltClips : 0));
+}
 inline constexpr std::size_t kGearHeaderSize = 16;
 inline constexpr std::size_t kGearPartsSize = 32;
 inline constexpr std::size_t kGearPackPartsSize = 16;
@@ -261,6 +297,10 @@ struct GearFrame {
     // sender reports and shows (visible within apply); the receiver sets them on its boots prop.
     std::uint32_t boots_apply = 0;
     std::uint32_t boots_visible = 0;
+    // Version 5: the sender's Sam's rain hood (GearHoodOk; PackGearHood / PackGearHoodInfo). Not part of the layout
+    // hash; a change sends a frame at once, as a parts change does.
+    std::uint8_t hood = 0;
+    std::uint8_t hood_info = 0;
     GearItem items[kMaxGearItems];
 };
 
@@ -395,11 +435,12 @@ bool GearPoseDiff(const GearPose& a, const GearPose& b, float* max_m, float* max
 // with the same hash need the same props.
 std::uint16_t GearLayoutHash(const GearFrame& f) noexcept;
 // Returns the size, 0 when the frame cannot be encoded (count over the cap, an unknown kind, a
-// joint >= 77, a parent that is not an earlier item, NaN, a position beyond +-32 m).
+// joint >= 77, a parent that is not an earlier item, NaN, a position beyond +-32 m, hood bytes
+// GearHoodOk refuses).
 std::size_t EncodeGear(const GearFrame& f, std::uint8_t* out, std::size_t cap) noexcept;
 // Rejects bad magic, another version, a size other than 16 + 18 * count, count over the cap, an
-// unknown kind, a bad anchor (as EncodeGear) and a layout hash that does not match the items.
-// Unknown flag bits are cleared.
+// unknown kind, a bad anchor (as EncodeGear), a layout hash that does not match the items and
+// hood bytes GearHoodOk refuses. Unknown flag bits are cleared.
 bool DecodeGear(const std::uint8_t* data, std::size_t size, GearFrame& out) noexcept;
 // The largest change between two frames with the same layout: position (m) and rotation (deg).
 // False when the layouts differ.

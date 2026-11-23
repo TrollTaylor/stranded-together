@@ -128,6 +128,9 @@ struct SessionIni {
     // Her boots (docs/textures.md, docs/real-partner-body.md section 30): "own" (her own boots, painted with the boot
     // pictures; the mod's default) or "prop" (Sam's boots on her feet). Written for host and guest; "" = not written.
     std::string boots_look;
+    // Fragile in the private room (docs/real-partner-body.md section 34): "black" (her black suit there; the mod's default)
+    // or "suit" (her porter suit there too). Written for host and guest; "" = not written.
+    std::string room_outfit;
     // Fragile's ready-made colours (docs/textures.md "Ready-made colours"; the card's READY-MADE COLOURS). The mod's
     // default is on: only textures_defaults=0 is written.
     bool textures_defaults = true;

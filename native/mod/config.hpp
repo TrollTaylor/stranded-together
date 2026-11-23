@@ -101,6 +101,17 @@ struct Config {
     // both screens: an "exo carrier" (a demo_sam_clean body showing only the skeleton pieces) posed from her body. Default
     // on; exo_carrier=0: no carrier (her body shows no skeleton, as before).
     bool exo_carrier = true;
+    // Round 11 (docs/real-partner-body.md section 34): what Fragile (fragile_suit) wears in the private room, on both screens.
+    // room_outfit=black (default): her black suit (demo_fgl_new, body 3 "fragile"), changed while the game changes Sam's
+    // clothes (or on the load into the room) and back to the porter suit on leaving; suit: the porter suit there too
+    // (v0.25). The launcher's Tools > Fragile's textures "FRAGILE IN THE PRIVATE ROOM".
+    bool room_outfit_black = true;
+    // Round 11 (docs/real-partner-body.md section 37): her rain hood, on both screens, while Sam's hood is up (timefall): the
+    // exo carrier draws Sam's hood of the same type on her. fragile_hood=2 (default): with the game's own unfold where the
+    // carrier can play it (else as 1); 1: the timed swap (the raised hood appears when Sam's is up); 0: off (v0.25: no hood,
+    // her hat stays on in the rain). hood_hair=1 (default): her hair hidden while her hood is drawn; 0: shown.
+    int fragile_hood = 2;
+    bool hood_hair = true;
     // Round 6 (docs/real-partner-body.md section 31): what is in a player's hand on the other screen. held_items (0 off: only
     // the cutscene-prop weapons of v0.9; 1 the ladder, PCC and climbing anchor; 2, the default, every weapon / tool without a
     // cutscene prop) is drawn as a plain entity made from the item's own resource ("held clone").

@@ -6498,6 +6498,8 @@ the screen stayed black for about 9 s ("it took a long time"). Loading straight 
 
 `action self_view 17 <mask>` (before / after runs): bit 1 the load rule and the fresh show, bit 2 the close-up hold and the
 stall guard; 3 the default, 0 v0.24.
+Round 11 (section 34): the cause was Sam's clothes change waiting for his paint effect; the clothes rule (bit 4) replaces
+rules 3 and 4, which are now off by default (`self_view 17` default 5; 3 is v0.25).
 
 ### 33.3 Proof (hidden, solo; every run: saves unchanged, restored, no violation, 0 cloud uploads, 0 game-server writes, online gate ok)
 
@@ -6531,3 +6533,413 @@ screenshot mean of 20 or more) by a deadline close to vanilla's, then playable. 
 - Leaving the private room back to the field is not in a scenario: two probe runs (`20261122-200542`, `-200917`) tried
   View (tap, held), A, B (held: Examine Figures), Y, X, RB, LB, D-pad up / down and Start in the room and none left it.
   The hold and guard apply there only if the state after that load is still `PrivateRoom|Cutscene` (not known).
+
+## 34. Sam's clothes change and her private room outfit (round 11; `session.ini room_outfit`, default `black`)
+
+The user (guest, Fragile, v0.25) entered the private room from the field: about 60 s of black after the bed scene, and
+again about 61 s when she opened the wardrobe to change her suit colour. Vanilla's clothes change in the room is a fade
+of about 2 s.
+
+### 34.1 Why [V: Ghidra, the user's guest.log / host.log, the round 10 notes]
+
+- Sam's look is one of 8 body variants (`DSPlayerStreamingControlComponentResource.Variants`: 0 suit, 1 private, 2
+  suit_mule, 3 suit_cdt, 4 naked, 5 wear, 6 suit_beach, 7 skeleton_only). His streaming control (player +0x54F8,
+  `DSPlayerStreamingControlComponent`, update 0x1427CAAE0) switches them: +0x70 the state (0 idle, 1 streaming, 2 apply,
+  3 wait), +0x74 the current variant, +0x75 the wanted one (state 0 writes it every tick from the request +0x76, or from
+  a node-graph variable when +0x76 is 8: that is how the room picks variant 1 by itself), +0x76 the request. State 1 sets
+  the named flag `DSPlayerLoadingModel` (0x1422AF7B0), state 2 applies the model and the inventory (0x1427F9F60), state 3
+  waits 1 s, then until his paint effect (player +0x54F0, `DSPlayerPaintEffectComponent`) is ready (0x142707090:
+  +0xAA2C, or +0x38 and +0xAA21 == 3), then clears the flag. Both timers pause while a load runs.
+- The paint effect's init (0x142732900) steps +0xAA21 from 0 to 3, each step waiting for its jobs, which only run while
+  Sam is drawn [I]. With reason 63 hiding him it never finished, and its own fallback (+0xAA28 > 60 s: +0xAA2C = 1)
+  released it: the 60 s. The room's uniform menu (subspace state 3, 0x1426AD430) asks for the porter suit (+0x76 = 0,
+  byte-checked at 0x1426AD9C7) and waits while +0x74 == 1 or +0x70 != 0, and closing it switches back (+0x76 = 8): two
+  switches, each 60 s with Fragile shown.
+- Section 33's close-up hold and stall guard treated the symptom of the entry (and left Sam in the bed close-up); the
+  user, skipping cutscenes, got Fragile shown before the switch and the full 60 s.
+
+### 34.2 The clothes rule (`real_body.cpp` ClothesTick / SelfTick, `partner_outfit.cpp` ReadVariantState)
+
+- Busy = `+0x70 != 0 || +0x75 != +0x74` (`roomoutfit::ClothesBusy`). While busy the body is not shown (`[self] Sam shown
+  again (the game is changing Sam's clothes ...)`), and it is shown again only after 0.5 s without a switch. The game's
+  own fade covers Sam in the room; in the field a switch is rare (the test request below) and Sam is then seen for it.
+- Logged for every switch, with the self view on or off: `[clothes] the game is changing Sam's clothes (#n, state ...):
+  variant c -> w (request r, state s, delay, wait); paint ...; DSPlayerLoadingModel x; self body ...`, each state step,
+  `[clothes] Sam's clothes changed in N s (#n, variant a -> b, state ...): ...; paint ready (stage 3, timer t s, ...)` or
+  `paint released by the game's 60 s timeout`, and `[clothes] still changing after 10 s` (with `self body SHOWN` when it
+  is the old bug).
+- Byte checks (once, `[clothes] Sam's clothes change readable ...`): player init's +0x54F8 and +0x54F0 stores
+  (0x14271FC90, 0x14271FCBC), the state read 0x1427CAB2A, the request read 0x1427CAB78 (`cmp cl,8`), the wanted store
+  0x1427CABB1, the apply 0x1427CAE99, the 30-byte ready test 0x142707090 and the uniform menu's request 0x1426AD9C7. On a
+  mismatch the clothes rule and the room outfit's variant rule are off (the room outfit then follows the PrivateRoom flag
+  only). `DSPlayerLoadingModel` is diagnostics only: the set call at 0x1427CAC45, its string, and the named-flag table's
+  loads (0x1422AF852, 0x1422AF8A7: 32-byte entries keyed `crc32c(name) | 0x80000000`); unread (`?`) when they differ.
+  The component (type name and owner) and the paint effect are checked before every read; all reads are fault-free.
+- The close-up hold and the stall guard (section 33.2 rules 3 and 4) are retired: `self_view 17` bit 2, off by default.
+  Fragile is shown in the bed close-up. The load rule (bit 1) and the fresh-show check stay.
+- `self_view 17 <mask>`: 1 load rule, 2 hold and stall guard, 4 clothes rule; 5 the default, 3 v0.25, 0 v0.24.
+- **The off switch falls back to v0.25, not v0.24** (`roomoutfit::EffectiveRules`): when the clothes rule is asked for but
+  its byte checks fail (another game build), the hold and the stall guard (bit 2) come back on, so the private room keeps
+  v0.25's behaviour instead of the 60 s black screen.
+- **No cap on the clothes window.** While the game's switch is stalled (its own pause counter, the update gated) Sam stays
+  shown for as long as the game takes; only `[clothes] still changing after 10 s` marks it. A cap would hide Sam while his
+  paint still waits, which is the black screen itself.
+
+### 34.3 Her room outfit (`roomoutfit::WantedBodyId`, `real_body.cpp` RoomLook / SelfTick)
+
+- `room_outfit=black` (default; the launcher's Tools > Fragile's textures > FRAGILE IN THE PRIVATE ROOM): Fragile in her
+  porter suit (`fragile_suit`, body 16) wears her black Fragile Express suit (`fragile`, body 3, demo_fgl_new: the same
+  77-joint skeleton, its own headgear row) in the private room. `suit`: her porter suit there too. Only fragile_suit has
+  a room body.
+- The rule: the room body while the DSGameState flag PrivateRoom is set (current or requested; sticky, so the uniform
+  menu's porter-suit preview does not swap her twice), else by Sam's variant on its way (the wanted one until state 3):
+  1 (private) and 5 (wear) the room body, 0 / 2 / 3 / 6 the suit, 4 / 7 / unknown whatever she wears.
+- When: only while the body is not shown (a load, the clothes change, Sam asleep): `[self] room outfit: 'fragile_suit' ->
+  'fragile' (Sam's variant ..., PrivateRoom yes; room_outfit=black): hidden swap (#n)`. Entering from the field the flag
+  comes in the bed scene (a cutscene: it waits) and the swap happens in the room load; loading straight into the room the
+  first spawn is already `fragile`; leaving, the swap back happens in the clothes change to the suit. A wanted change
+  that finds no hidden moment for 3 s, outside cutscenes, menus, the pause menu and the subspace, is done visibly (Sam
+  for about 0.12 s; `self_view 18 2/3` at once).
+- The re-dress gate: after a swap back to her suit the body waits (at most 4 s from the swap, her respawn included,
+  `putting her suit look on after the room outfit`) until her edited / ready-made suit look is bound, so she never shows raw.
+- `SelfBody()` returns the body she wears now (a live or loading one), else the wanted one: a wanted swap that waits (3 s,
+  or a cutscene or menu) does not move her boots rule early (the boots rule: her black suit is "another character" there, and Sam's boots
+  entity is not shown in the room anyway). Suit colour and textures stay fragile_suit-only, so the black suit is never
+  tinted.
+- The host's screen: no wire change. STJ1 `body_id` is `realbody::LookBodyId`: the self view's own choice, or the same
+  rule from the game state and Sam's variant when the self view is off; the host's 30-frame debounce respawns her
+  (`[sync] partner character now 'fragile' (was 'fragile_suit')`).
+- `self_view 18 <mode>`: 0 never, 1 the rule, 2 always the room body, 3 always the base. Hidden tests: `self_view 19
+  <request>` writes Sam's request byte (+0x76) as the uniform menu does, so a scenario proves the wardrobe's switch
+  without pad input (no byte-checked way to open the kind-6 menu was found: 0x142D1BD70 is a one-shot init).
+
+### 34.4 Proof
+
+Unit: `st_room_outfit_tests` (the setting, variant -> look, the sticky rule, the swap decision, the clothes window, the
+CRC-32C), `st_launcher_core_tests` (room_outfit in every session.ini path, parsed strictly). Hidden: `private-room-field`
+(the field leg: `self_view 19 1` / `0` / `8` with Fragile shown; then the room: the room's switch under 5 s with the
+paint ready, no hold, no stall guard, `shown=1 'fragile'`), `private-room-load` (the wardrobe's two switches,
+`self_view 19 0` then `8`, each under 5 s with the paint ready; her black suit through the preview),
+`two-games-private-room` (the launcher's Local test files: `room_outfit=black`; the host shows `fragile`). Runs: see the
+round 11 report.
+
+### 34.5 Not covered
+
+- The real wardrobe (subspace kind 6) is not opened by a scenario: its two switches are reproduced by the request byte.
+  The kind-6 figure stays Sam (the cargo menu's figure, section 15, is kind 0 only).
+- Her suit colour is not seen on her in the room with the black suit (the wardrobe figure is Sam); `room_outfit=suit`
+  keeps it visible.
+- Leaving the room is still not scripted (section 33.4): the swap back is proven by the field leg and the unit tests.
+- A story switch outside a fade would show Sam for its length (about 2 s) instead of stalling for 60 s.
+
+## 35. Her BB pod after a load or the private room, the rain cover a save does not have, what the room took (round 11)
+
+The user's "the players' cargo disappeared again" (v0.25, guest Fragile) was not cargo: no delivery cargo was carried
+all session (`cargo 0` in every gear line on both games). Three things went:
+
+- **Her BB pod** (a mod bug): from the first load (a Dev place teleport) to the end of the session, on both screens.
+- **The backpack's rain cover** (the game's state): the host's save has none, so neither Sam wore one; a log line wrongly
+  blamed timefall.
+- **The cap** (the game's state): taken off with the private room's clothes and not put back when leaving it.
+
+### 35.1 The BB pod [V: Ghidra, the user's logs, run `20261123-005819-two-games-private-room`]
+
+- The game shows the pod entity from Sam's mesh controller (`Sam +0xA60`), in its attachment update 0x1426C7760, right
+  after ApplyMeshControl (0x1426D9120, caller 0x1426C18E9). Slot 0 is at `+0x2100`, 0x320 bytes a slot. Its part index k
+  is the byte at `+0x2108` (1 on the test saves, run `20261123-094135`; not EDSPlayerMesh 30) and its entity reference is
+  at `+0x2118` (the one 0x1426A0620 answers mesh 30, BBPod, from).
+- The rule (0x1426C7B0B..0x1426C7BB9, slot 0 only):
+  `hidden = slot +0x310 bit 0 || !(Sam +0x88 bit 1) || (map +0x38+8k != -1 && the ArtParts part not shown) || +0x1220 || +0x700`.
+  Then `visible = (inventory +0x4C7E bit 4 && inventory +0x4C52) ? !hidden : 1`, set through 0x14235F640 (entity
+  `+0x88` bit 1). `+0x1220` and `+0x700` are two fixed fields the rule reads; what they hold is not known. By
+  ReadMeshCtl's layout (forced hide `+0xE68 + 8k`, mask `+0x348 + 8k`) both are index 119, past the controller's 0x59
+  parts, so they are not mesh 30's (that would be `+0xF58` and `+0x438`). The mod reads the same two offsets as the game,
+  so the rule is the game's either way. The mod reads the slot's own k for the part, as the game does, and logs `[gear] BB pod: the controller's slot
+  0: part k (map n), its entity is our pod` (or `is NOT`: then the rule is not read).
+- The ArtParts part is shown as ApplyMeshControl decides. That decision sees our self view's bit 63 of the global mask
+  (section 8.1), so under the self view the pod's own flag reads hidden.
+- Before round 11, ReadItems kept the pod's state from the last moment the self view was off. That was almost only a
+  load, the post-load setup or the private room, where the game has the pod hidden (BB in the incubator, the pod not yet
+  shown). The state latched hidden. BuildFrame drops hidden items, so the pod went from her self view and from the host's
+  copy of her until the session ended.
+
+### 35.2 What the mod does (`partner_gear.cpp` PodTick / ReadPodRule, `gear_keep.hpp`)
+
+- **Under the self view:** her pod follows the game's own rule for Sam's pod, read with our bit 63 ignored
+  (`gearkeep::PodAsked`; the part through `exo::MeshAsked`, the same formula section 32 uses for the exo pieces).
+- **Cross-check:** while the self view is off, every read compares that rule with the pod's own flag. It logs:
+  - `[gear] BB pod: controller ask vs its flag: N match, M mismatch over K reads with the self view off` (after 50 reads,
+    then at most once a minute);
+  - each mismatch's start with the rule's inputs (40 lines).
+  A mismatch that lasts 2 s in plain play (no load or setup, not the private room, a cutscene, a menu or a terminal) turns
+  the rule off for the session (`... disagree for 2.0 s in plain play ...`). A transition's lag of a tick never does.
+- **The cross-check guards the host, not the guest.** In plain play the guest's self view is always shown, and her off
+  windows are loads, the room (not plain play) or a clothes change (about 1 s, under the 2 s). So on the guest, the only
+  side that uses the rule, a wrong rule is never disproved and stays for the session. The host (self view off) runs the
+  comparison all the time on the same game build and logs it, which is the evidence for the rule: `two-games-private-room`
+  asserts no `disagree` line on either game. On the guest, `gear 30 1` turns the rule off by hand.
+- **Fallback** (the rule's sites do not match, it was disproved, `gear 30 1`, or the slot does not hold our pod): the
+  last plain-play reading while the self view was off. If the self view comes back after an off window without plain
+  play (a load), the pod is taken as worn. In the private room (its flags, current or requested) the fallback is hidden:
+  BB is in the incubator there and the game hides the pod (source `hidden in the private room`).
+- `[gear] BB pod: shown|hidden (<source>)` is logged when the state or its source changes (100 lines).
+- `gear 30 3` the rule (the default), `gear 30 1` the fallback only, `gear 30` (0, 2 or no argument) the status only. The
+  action's own message names the source the last decision used (`the rule`, `its flag`, `the private room`, or which
+  fallback).
+- **Byte checks:**
+  - the rule's 174 bytes at 0x1426C7B0B, through the call to 0x14235F640;
+  - the slot base at 0x1426C78D0 (`imul rax,r15,0x320; lea r14,[rsi+0x2100]`);
+  - the gate at 0x1427AD860 (`+0x4C7E` bit 4);
+  - MeshCtlOk.
+  On a mismatch: one line, and the fallback.
+- **No wire change:** the pod is sent as before (STC1 `bb_pod`), so the host's copy of her has it again too.
+
+### 35.3 The rain cover's log line (`gear_wear.hpp` WhyCoverGone)
+
+- A load's first gear layout can still hold the cover's entity when the save's backpack has none. In the user's logs:
+  `wear: no rain cover on our backpack` from the first read, then the entity went 6 s later.
+- The layout line no longer blames timefall for that. It now says `the backpack's rain cover went: Sam's backpack has
+  no rain cover (none worn since the last load), so this was only the load's leftover cover entity ...`.
+- The memory is per load: a new cover block (a load) clears it, so a cover worn out or taken off before a load never
+  decides the wording of the next load's leftover entity.
+- For our own gear, the last wear read since the load that had the cover worn decides between `is gone: worn out in timefall` (1 % or
+  less) and `is gone: taken off`.
+- The partner's gear keeps the general wording (`is gone (... worn out in timefall, taken off, or the save has none ...)`).
+- What to tell a user: equip a new cover in the game. The mod mirrors what Sam wears.
+
+### 35.4 What the private room took (`partner_gear.cpp` RoomRegainTick, `gearkeep::RegainTick`)
+
+- **On entering:** a line counts our sent gear items per key (the gear resources, the BB pod, the backpack, the Odradek)
+  from the last plain-play read before the room: `[gear] entering the private room: N gear item(s) ... noted (BB pod n)`.
+- **After leaving:** once play has been plain for 5 s, and at least 10 s after leaving, a second line follows. It is
+  either `[gear] left the private room: every gear item Sam wore before it is back (...)`, or `... N gear item(s) Sam wore
+  before it are not back: 1 x resource 10 'cap00' c83ac923 ...`.
+- The second line is diagnostic only: Fragile mirrors Sam. Round 10's cap was taken off with the room's clothes
+  (the switch's inventory step, state 2) and came back only when the user equipped it by hand.
+- Every complete-100 test save loses that cap within 0.6 s of loading, so no scenario sees the cap case itself. The line
+  names whatever is missing.
+
+### 35.5 Proof
+
+- **Unit:** `st_gear_keep_tests` covers the rule's truth table, the load case of round 10, the fallback, the cross-check's
+  disproval timer, and the room's before/after with settling and re-entry. `st_gear_wear_tests` covers WhyCoverGone and
+  its wordings.
+- **Hidden:** `two-games-private-room` (a goto load, then the room). After the load it asserts, through `gear 30 2`, the
+  guest's `our gear: BB pod 1` and `self view: BB pod 1 wanted, 1 live` and the host's `the partner's gear: BB pod 1`;
+  then the entering line with `BB pod 1`, and no `disagree` line on either game. Optional: the slot is our pod and the
+  rule is the source with matches in the cross-check.
+- **Development run** `20261123-094135-two-games-private-room` (failed at that step: its first form
+  required the rule as the source). The first build refused the rule because it expected the slot's k to be 30 (it is 1),
+  so the fallback ran: after the goto's load the guest logged `BB pod: shown (as worn ...)`, her frame and her self-view
+  prop had the pod (`gear-self: 1 items, 1 props live`), the host's `the partner's gear: ... BB pod 1` throughout. The
+  status line read `our gear: BB pod 1; the partner's gear: BB pod 1; self view: BB pod 1 wanted, 1 live`. Before round
+  11 the same goto latched `BB pod 0` (run `20261123-005819`). The rule with the slot's own k is not yet run.
+
+### 35.6 Not covered
+
+- The function that writes the slot flag (`+0x310` bit 0) and the inventory gate's two bytes are not named. If the pod is
+  hidden for a story reason only through them, the rule still reads it: they are inputs. A reason outside the rule would
+  show as a cross-check mismatch.
+- The cross-check runs only while the self view is off. In the private room the self view is on (section 34), so the
+  rule's in-room answer is checked only through the game's own state at the room load.
+
+## 36. Fragile's face moves: Sam's facial clips on her self view and on the partner body (round 11)
+
+Before round 11 her face held one default pose: no blink, no brows, no mouth, on her self view and on the host's copy of
+her. The bodies the mod spawns (`demo_fgl_body_suiti`, `demo_fgl_new`, `demo_sam_clean`) carry a DSFacialRigComponent
+(guest.log: `7 components: DSFacialRigComponent, ...`) but no facial manager. In play Sam's face is driven by his
+DSPlayerFacialComponent; in cutscenes the sequences drive a cutscene body's rig. A spawned demo body gets neither, so its
+rig never plays a clip and its blink and saccade are off.
+
+### 36.1 The game's facial rig [V: Ghidra, decoded game data (round 10 notes)]
+
+- **One rig, two mappings.** Both heads' facial art parts (`gs_facial_fgl_head_def`, `gs_facial_sam_head_def`) point to
+  the same rig skeleton, `face_rig/core/kjp_face_rig/.../skeleton_face_r`. Each has its own default pose, mapping table,
+  subtract data and offset multipliers, which retarget the rig onto that face. Sam's 137 gameplay clips
+  (`an_samface_r_*`) are on that rig skeleton, so they play on her face as they are, through her own mapping. Copying
+  Sam's face joints would carry his proportions onto her: the mod never does that.
+- **The call.** `DSFacialRigComponent::PlayFacial` (0x1422CC710): `(comp, SkeletonAnimationResource* clip, float start,
+  float blend, bool blink, bool saccade)`. It hands the lambda 0x1422D1510 to the component's rep (`comp +0x40`) through
+  0x1422CA440, which runs it at once or queues it for the rep system as the engine decides. The lambda plays the clip
+  (0x1422D1340) and sets the rep's `+0x573` bits 0x10 (blink) and 0x08 (saccade) from the 5th and 6th arguments.
+- **Where the clip lands.** 0x1422D1340 keeps the clip at rep `+0x300` (when the clip's skeleton differs from the rep's
+  `+0x380`) or plays it on the rep's player `[+0x2E8]` (clip at `+0x80`; the game's getter 0x1422CF730 reads `+0x300`,
+  else `+0xF0`). The blink update (0x1422CEAE0) runs only with a clip in `[+0x2E8]+0x80` and bit 0x10; each blink steps
+  `+0x534`, `+0x538` is the time since the last one (intervals 5, 4, 4, 5, 4, 5 s).
+- **Sam's manager** (DSFacialRigManagerComponent, `face_rules.hpp` lists the fields): each frame
+  DSPlayerFacialComponent's update (0x142731430 -> 0x142749650) picks a state index from the player's state; SetState
+  0x1422D2E00 / Apply 0x1422D2D70 play the state's clip (12 states: idle a / b, tired, eat, death, sad, anger, smile...).
+  Morpheme events play an event clip (0x1422D2A50; 83 clips: rest, sleep, boots, dive, emotions...; the manager keeps the
+  clip's CRC-32C key at `+0x60`), the private room's gestures an override clip (0x1422D2F10, `+0x50`), photo mode one of
+  18 clips past the manager (0x1422D2E20). Every path ends in PlayFacial through `[entity +0x180] +0x70`.
+
+### 36.2 What the mod does (`face_sync.cpp`, `face_rules.hpp`)
+
+- **Phase 1, her self view.** Every tick (game thread, `realbody::Tick`) the mod reads which clip Sam's manager wants,
+  the way the game's Apply / Restore decide it: photo mode -> the clip in Sam's rig; the override; the event clip whose key
+  matches; else the state's clip (a negative index is 0, as the game does). While her body is shown in Sam's place it calls
+  PlayFacial on her body's DSFacialRigComponent with that clip and the table entry's start, blend, blink and saccade
+  (override / photo: start 0, blend 0.3, the manager's or the rig's blink and saccade).
+  - **Once per change**, as the game: a new clip, new flags, a new body or a new showing of it (`facerules::Decide`).
+  - **Landing check:** the clip must show up in her rig (`+0x300`, `+0xF0` or `[+0x2E8]+0x80`); if it has not after 1 s,
+    it is given again, at most 3 calls per clip. Calls are at least 50 ms apart.
+  - The manager's tables (the game's resource data) are read once per manager; every clip is checked to be a
+    SkeletonAnimationResource (its RTTI, and `+0x40` non-zero as PlayFacial needs).
+- **Phase 2, the partner body.** The STJ1 joint frame carries a 2-byte face block (`kJointsFace`, flag bit 2, after the
+  outfit block): `{u8 id, u8 flags}`. The id is the clip's place in the sender's Sam's tables (0..15 a state, 16..111 an
+  event clip, 112..143 a photo-mode clip; 0xFE nothing plays; 0xFF a clip in no table, a private-room gesture: the
+  receiver keeps the last one), the flags its blink (bit 0) and saccade (bit 1). The receiver resolves the id in its own
+  local Sam's tables (the same game data) and plays it on the partner body's rig the same way. That works for a Fragile
+  partner and for `demo_sam_clean`. The wire change changes the build id (a development build's wire hash; the HELLO
+  check refuses mixed builds); a later block (WP4's hood) goes after the face block under its own flag.
+- **Sam while reason 63 hides him.** The manager runs in Sam's entity update, which goes on while he is hidden, so the
+  wanted clip is read from the manager, not from his rig. While the self view is shown the mod also meters his rig:
+  `[face] Sam hidden by reason 63 (N ticks): his rig holds the manager's clip in N (P %), his blink timer moved in N, his
+  blinks N`.
+- **Byte checks** (all verified in Ghidra, one log line and the face sync off on any mismatch): PlayFacial's 184 bytes
+  (0x1422CC710), its lambda (0x1422D1510), the rig's clip-slot getter (0x1422CF730), the manager's state apply
+  (0x1422D2D70), event clips (0x1422D2A50), photo-mode clips (0x142740E10) and override (0x1422D2F10). The blink update
+  (0x1422CEAE0) is checked for the blink meter only.
+- **Safety:** a fault in a call (SEH) logs `[face] PlayFacial faulted ...` and switches the face sync off for the session.
+  Every game read is fault-free (ReadProcessMemory). A body is given to the face sync only while its spawn is alive (the
+  check DriveModel makes); a body that is not given drops its rig and what was played on it. Every tick the kept
+  DSFacialRigComponent must still be its entity's (`+0x48`) with the vtable it had when found, else it is found again
+  (`[face] <who> <e>: its DSFacialRigComponent <c> is no longer its own: found again`), so a body torn down and respawned
+  at the same address (the room outfit's swaps) never gets a call on a freed component. The partner body's epoch counts
+  its spawns, so a new body at the same address is given the clip anew.
+- **Log** (`[face]`): the sites, Sam's manager and table sizes, Sam's clip changes (30 lines), each face's rig, its plays
+  and landings (20 lines each), the partner's received ids (30 lines), and every 10 s while a face is driven:
+  `[face] self: plays N, took N, retries N, waits N, faults N; her blinks N in S s shown; Sam's clip changes N` and
+  `[face] partner: rx frames N (id changes N, last id N flags N, unresolved N); plays N, took N, retries N, faults N; its
+  blinks N in S s`.
+- **Off switch:** `self_view 20 <mask>` (bit 1 her self view, bit 2 the partner body and the sent block; 3 the default,
+  0 off); `self_view 21` the status line (docs/debug-actions.md).
+
+### 36.3 Proof
+
+- **Unit:** `st_face_rules_tests` (209 checks): every id of every table and back, the receiver keeping the last id, the
+  flags, the manager's source order, the state clamp, the event key against the CPU's own `crc32` instruction, and when a
+  face gets a clip (once per change, a new body or showing, at most 3 calls a clip 1 s apart, 50 ms between calls).
+  `st_net_tests` TestJointFace: the face block alone and after the outfit block, the flags cleared to 2 bits, a frame
+  without it, a newer build's block after it, the blend.
+- **Development run** `20261123-100237-echo-face` (pass; saves unchanged, restored, no violation, 0 cloud uploads, 0
+  game-server writes, online gate ok). The echo partner (our own frames through the STJ1 encoder and decoder, now with
+  the face block) as Fragile 0.9 m beside our self view's Fragile:
+  - the 11 byte checks verified; Sam's DSPlayerFacialComponent: 12 states, 83 event clips, 18 photo-mode clips;
+  - both rigs' reps had their RTTI checked and held no clip (`clip now 0, flags 0x84`: blink and saccade off) before the
+    mod's call;
+  - `self: played state 0 on 'fragile_suit' (... blend 0.50, blink 1, saccade 1)` and at once `the clip is on the face
+    (... flags 0x9C: blink on, saccade on)`; the same on the partner body from `rx: ... id 0 (state 0), flags 3`;
+  - one call each in 30 s (no retries, no faults); her blinks 2 and 3 per 10 s on the self view, 3 and 2 on the partner
+    body (the game's 4-5 s intervals);
+  - **Sam while reason 63 hides him:** his rig held the manager's clip in every tick (1266 / 1266, 1321 / 1321), his
+    blink timer moved in 1158 and 1196 of them, he blinked 2 and 3 times: his face keeps animating while hidden.
+  - 33 frames at 4 Hz of both faces from the front (`automation\f00..f31`): both faces render normally with Sam's
+    idle clip through her mapping.
+- **Hidden (Prove):** `echo-face` (the above), and `two-games-private-room` on the launcher's Local test files: the host's
+  copy of her gets the clip from the real link, her self view's face too, no PlayFacial fault on either game (the
+  guest's copy of the host's Sam optional).
+
+### 36.4 Not covered
+
+- Lip-sync of gameplay voice lines (MsgDSPlayFacialAnimation fills the rep's overlay slot `+0x320`; sequence events use
+  it) and the head / eye look-at are not carried.
+- Sam's male-acted expressions (anger, pain) play on her face through her own mapping, as the game's design allows; they
+  may look a little off on her.
+- In cutscenes the sequences drive the cutscene bodies; the mod's bodies are hidden there anyway.
+
+## 37. Fragile's rain hood (round 11; `session.ini fragile_hood`, default 2, and `hood_hair`, default 1)
+
+The user's report (round 10): in timefall Sam raises his hood; Fragile had none, on either screen. Fragile's own models
+have no hood mesh (`fgl_body_suiti`: one body mesh, `fgl_hair_def`, `fgl_head_def`; no hood resource under `fgl_fragile`).
+The exo carrier (section 32, `demo_sam_clean`) uses Sam's own `part_sam_body_suiti` ArtParts, so it holds every hood mesh:
+it now draws Sam's hood of the sender's type on her while his hood is up, on both screens.
+
+### 37.1 Sam's hood [V: Ghidra decompile, round 10 probe `20261123-084141-hood-timeline`]
+
+- The inventory update runs the hood state machine `0x1428125A0` every frame (inventory `+0x4970` state 0..12, `+0x4974`
+  its timer). 0 down; 1 "ready" (an effect at `JNT_C_B_008_Head`, 1.5 s); 2 a wait; 3 raising: HoodOff (k5) hidden,
+  HoodSwitch (k6) and its lamp shown, the Apd slot enabled (`0x1422B46D0`) and the opening clip played (`0x1422B4830`); 4
+  the open loop clip; 5 until the slot's clip is done (`0x1422B34E0`), then HoodOn (k4) shown, the switch hidden, the hair
+  swapped for HairHoodOn; 6, 7, 8, 10 up; 9 closing (HoodOn hidden, the switch and its close clip), 11 the close loop, 12
+  until done, then HoodOff again and 0. A load or a teleport takes the instant path (straight to 6, or down).
+- The type `+0x4A88` (0 porter, 1 oxi, 2 sea otter; `0x142791EE0`): the Apd animation slot `+0x4A89` (2, 5, 4) and the
+  clip indices `+0x4A8C..+0x4A98` into the inventory's clip table (`[inv+0x30]+0x398`: porter 0-3, or 4-7 for the second
+  set, oxi 8-11, sea otter 12-15). `0x14268C100` remaps the controller's k4 / k5 / k6 (on / off / switch) to the type's
+  ArtParts by name hash (through the resource's part map, `0x1422B69B0` / `0x1419756A0`): porter 54 / 53 / 68, oxi
+  71 / 76 / 84, sea otter 69 / 70 / 83 (read on the carrier in run `20261123-103656`; 83 is `hoodotterswitch`, 84
+  `hoodoxiswitch`). Round 10's notes had types 1 and 2 (and the porter's on / off) the other way round; the stills of
+  that run settle it (type 1 the black oxygen helmet with its lamp, type 2 the sea otter).
+- Sam's arms never move: the hood mesh unfolds itself (switch sub-models with their own spine skeleton). The 100% save
+  wears the sea otter hood (type 2). The raise takes about 5 s from the first rain, the visible unfold about 1 s.
+- The head parts' flags are not a hood source (the private room read HoodOn shown with no rain): the state is read.
+
+### 37.2 What the mod does (`partner_gear.cpp`, `exo_parts.hpp`)
+
+- **Read** (`ReadHood`, every gear read, 100 ms): the state, the type and the opening clip's index (4: the porter's second
+  set). Byte-checked once (`0x142812C5E`, `0x142813002`, `0x1428132BE`, `0x142791F1A`, `0x1427924B7`, `0x1428134EE`); a
+  mismatch: no reading, no hood, her hat stays on in the rain (26.8). Logged at every state change: `[hood] our Sam's
+  hood: sea otter, raising (state 5)`.
+- **Wire: STC1 version 5.** The header's former `u16 reserved` is `u8 hood` (bit 7 read, bits 0-6 the state) and `u8 hood
+  info` (bits 0-1 the type, bit 2 the porter's second clip set); both 0: no reading; anything else is refused both ways
+  (`wire::GearHoodOk`). Not part of the layout hash; a change sends a frame at once, as a parts change does. Version 4
+  frames are refused (the build id changes with the wire files: mixed builds never meet). STJ1 is unchanged by this (its
+  face block, section 36, is the other wire change of the round).
+- **The carrier** (both slots: the self body from our own reading, the partner body from the bytes) is wanted for the hood
+  while the state is not 0 (states 1 and 2 load it before the unfold) or while it still shows the hood; it goes 10 s after
+  "no skeleton or hood". Its plan (`exo::CarrierPlan` with `hood_part`): the head container 52 and the way down to the hood
+  part asked, every other child on that way off (Sam's hair and face, the other hoods), the hood part's own children (its
+  lamps) left as they are; without a hood the head is off as before. The hood parts are looked up on the carrier's own
+  resource the way the controller does (the type's three name hashes read from the addresses `0x14268C100` loads,
+  byte-checked; the part map read, not called), and must lie under the head container: `[exo] carrier <p> hood parts
+  (on/off/switch): porter 54/53/68, oxi 71/76/84, sea otter 69/70/83`.
+- **The unfold** (`fragile_hood=2`, `exo::HoodAnimTick`): where the carrier's Apd has an animation object with the type's
+  slot (`[apd+0x68]`, its slot map `+0x90`, checked per carrier: `[exo] carrier <p>: hood animation slots ...: ok`), the
+  game's own calls are mirrored on the carrier on the game thread: raising shows the switch mesh, enables the slot and
+  plays the opening clip, the open loop the next tick, then waits for the slot to be done (read as `0x1422C8110` reads it,
+  100 ms at least, 3 s at most) and shows HoodOn; lowering the same with the closing clips, then nothing. The clips come
+  from the receiver's own Sam's clip table (the same game data; all 16 present and of one type, checked). Every call is
+  byte-checked (`0x1422B46D0`, `0x1422B4830`, `0x1422C80B0`, `0x1422C8110`, `0x1422C85C0`, the clip table's use at
+  `0x142812E3C`) and SEH-guarded: a fault turns the unfold off for the session, and after it no call is made again (not
+  even the slot's disable). The calls only ever get one of the three hood slots (2, 4, 5; `exo::HoodSlotValid`):
+  `0x1422C80B0` refuses only slot 9, so any other byte would index past the slot table. An enable that could not be made
+  (the carrier's model not readable that tick) starts the unfold again instead of playing on a slot never turned on. **The timed swap** (`fragile_hood=1`, or no
+  animation slot, or a mismatch): HoodOn shown exactly while the sender's hood is up (6, 7, 8, 10), nothing while it unfolds.
+  The instant path (a load) shows it at once either way.
+- **Her hair** (`hood_hair=1`): her body's ArtParts whose sub-model resource, SkinnedModel or their meshes are named
+  `...hair...` would be hidden while the carrier draws her hood and shown again after (only those the mod hid; a new body,
+  the room outfit swap, starts afresh). **In practice it finds none:** none of `fragile_suit`'s 7 parts carries a name
+  there (`[exo] her body <p>: no hair part found ...; parts: 0 '', 1 '', ...`), so her hair is left as it is. The stills of
+  run `20261123-103656` show it covered by every hood type (a few strands at the forehead under the otter hood's rim), so
+  no other way was taken this round (37.4).
+- **Her hat** (26.8): while her own hood is drawn up (our reading up, the hood and the carrier on), the hat the game hides
+  under Sam's hood is no longer kept on her: it hides under her hood too, on both screens (`[headgear] her hat in the rain:
+  <hat> hides under her own hood now`). It stays on her while the hood unfolds or folds.
+- **Her head and the carrier.** The carrier copies all 77 local joints of her body (section 32), so its head and neck are
+  hers; the meter now names her head joint 31 on its own (`head 0.00` cm).
+- **Cost.** The carrier is live through the whole timefall (its pose write and forced model updates, as with a skeleton:
+  section 32's figures); it goes 10 s after the hood is down.
+- **Settings and actions:** `session.ini fragile_hood=0|1|2` (off / the timed swap / the unfold), `hood_hair=0|1`; `gear
+  31` (mode, status), `gear 32 <state> [type]` (hidden tests: our reading replaced, both screens follow), `gear 33`
+  (hair) (debug-actions.md).
+
+### 37.3 Proof
+
+Hidden runs (`-SeedSaves complete-100`, through `Run-Batch.ps1`; both: ds.exe exit 0, saves unchanged, restored, no
+violation, 0 cloud uploads, 0 game-server writes, online gate ok):
+
+| Run (`build-testenv\runs\`) | What it shows |
+|---|---|
+| `20261123-103002-echo-hood` (first build; **fail**) | The hood never left state 0 in 90 s of timefall: the start spot is under a roof (the scenario now goes to `dev_place 1` first). The part lookup refused itself: the oxi branch's second hash LEA is followed by an `xor ecx,ecx` before its store (signature fixed). |
+| `20261123-103656-echo-hood` (**the final code's behaviour**; marked fail only by optional steps since removed: the hair lines and the hat line) | Every required step passed. Lookup on both carriers: `porter 54/53/68, oxi 71/76/84, sea otter 69/70/83`; animation slots `ok` on both. Timefall: Sam's state 1 at +29.5 s, 5 at 31.9, 6 at 33.2. Both carriers played the opening clip on slot 4 at 31.94 / 31.95 s (0 ms into the raising), the open loop next, and showed the raised hood when the slot was done at 33.17 s (1.23 s of unfold, the same tick Sam's hood reached state 6). Lowering: clips 14 / 15 at 83.84 s, the hood gone at 84.47 s (0.63 s) on both. `r00`-`r09`: the hood unfolding up from her collar over her head (r01), then up; `l00`-`l05`: folding back down behind her head, then her bare head. `02-hood-up-front` / `03-hood-up-side`: the sea otter hood on her own self view and on the echo partner, sitting on her head (her hair covered). `04` porter (part 54, the gold visor hood), `05` oxi (part 71, the black helmet with its lamp), `06` sea otter again (all through `gear 32`, both carriers). The meter: pose 0.00 / placed 0.00 cm, head 0.00 cm while the hood is up. No fault, no part-setter fault, no byte mismatch. |
+
+Not run on this build: `two-games-fragile-skeleton` with its new hood leg (the host's copy of her over the real link) and
+`echo-hood` after the type-name fix and the scenario's last edits: both for the round's Prove.
+
+### 37.4 Not covered
+
+- Her hair under the hood: no part of her body is found by name (37.2); the hoods cover it in the stills.
+- The rolled-down hood when it is not raining (Sam's sea otter and oxi hoods hang on his back): not drawn on her.
+- The hood lamps' emission curve (`0x1426B8CA0`) is not mirrored: the lamps keep their default intensity.
+- The hood on a partner Sam body (MirrorParts) still jumps after its 0.4 s switch (14.4).
+- A user's real wardrobe change of hood type mid-rain swaps the type at once (no unfold).

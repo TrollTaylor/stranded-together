@@ -8,6 +8,7 @@
 #include "body_table.hpp"
 #include "log.hpp"
 #include "partner_source.hpp"
+#include "room_outfit_rules.hpp"
 
 namespace st::outfit {
 namespace {
@@ -385,6 +386,164 @@ bool TestSetOwnSuitColour(std::uintptr_t p, std::uint8_t colour) noexcept {
     Log("[outfit] TEST: our own Sam's suit colour byte (inventory %p +0x4BE1) %u -> %u %s (exos %u now; the game's inventory "
         "update recomputes the exos variation from it)",
         reinterpret_cast<void*>(inv), before, colour, ok ? "written" : "NOT written", exos);
+    return ok;
+}
+
+// ---------------------------------------------------------------- Sam's clothes change (section 34)
+namespace {
+// DSPlayerStreamingControlComponent update 0x1427CAAE0 (RTTI 0x144BCF890).
+constexpr std::uintptr_t kScStateRead = 0x27CAB2A;    // mov ecx,[rbp+0x70]; sub ecx,1: the switch state
+constexpr std::uintptr_t kScRequestRead = 0x27CAB78;  // movzx ecx,[rbp+0x76]; xor r14d,r14d; cmp cl,8: the request (8: the graph)
+constexpr std::uintptr_t kScWantedStore = 0x27CABB1;  // mov [rbp+0x75],al; cmp al,[rbp+0x74]: wanted vs current
+constexpr std::uintptr_t kScApply = 0x27CAE99;        // movzx r15d,[rbp+0x75]; mov [rbp+0x74],r15b: state 2 applies it
+constexpr std::uintptr_t kScLoadingSet = 0x27CAC45;   // lea rcx,"DSPlayerLoadingModel"; call the named-flag setter
+// Player init 0x14271FA60 caches the paint effect (DSPlayerPaintEffectComponent) at +0x54F0.
+constexpr std::uintptr_t kInitPaintStore = 0x271FCBC;  // mov [rbx+0x54F0],rax
+// The paint effect's ready test (state 3 waits on it): +0xAA2C, or +0x38 and +0xAA21 == 3.
+constexpr std::uintptr_t kPaintReady = 0x2707090;
+// The private room's uniform menu (subspace state 3, 0x1426AD430): sc +0x74 == 1 -> sc +0x76 = 0 (the porter suit).
+constexpr std::uintptr_t kWardrobeAsk = 0x26AD9C7;
+// The named-flag setter 0x1422AF7B0: its table (32-byte entries: key = crc | 0x80000000, +8 crc, +0x10 value) and size.
+constexpr std::uintptr_t kFlagSetter = 0x22AF7B0, kFlagTableLoad = 0x22AF852, kFlagCapLoad = 0x22AF8A7;
+constexpr std::uintptr_t kFlagTable = 0x7BA1E98, kFlagCap = 0x7BA1EA4, kLoadingName = 0x3D839B8;
+
+constexpr std::uintptr_t kPPaint = 0x54F0;
+constexpr std::uintptr_t kScState = 0x70, kScWanted = 0x75, kScRequest = 0x76, kScDelay = 0x98, kScWait = 0x9C;
+constexpr std::uintptr_t kPaintStage = 0xAA21, kPaintTimer = 0xAA28, kPaintReleased = 0xAA2C, kPaintFlags = 0xAA2E, kPaintOn = 0x38;
+
+struct Clothes {
+    bool checked = false, ok = false, flag_ok = false;
+    char why[160] = "not checked";
+    std::uint32_t loading_crc = 0;
+} gc;
+
+bool CheckC(const char* name, std::uintptr_t rva, const char* sig) {
+    if (mem::CodeMatches(mem::Base() + rva, sig)) return true;
+    std::snprintf(gc.why, sizeof(gc.why), "%s at ds.exe+0x%llX does not match", name, static_cast<unsigned long long>(rva));
+    return false;
+}
+
+// The streaming control of player p, checked (type and owner); 0 when not.
+std::uintptr_t StreamingControl(std::uintptr_t p) {
+    if (!p || Q(p) != mem::Base() + kPlayerVtable) return 0;
+    const std::uintptr_t sc = Q(p + kPSc);
+    return sc && Q(sc + kCompOwner) == p && IsType(sc, "DSPlayerStreamingControlComponent") ? sc : 0;
+}
+
+int ReadLoadingModel() {
+    if (!gc.flag_ok) return -1;
+    const std::uintptr_t b = mem::Base();
+    const std::uintptr_t table = Q(b + kFlagTable);
+    std::int32_t cap = 0;
+    if (!table || !Rd(b + kFlagCap, cap) || cap <= 0 || cap > 4096 || (cap & (cap - 1)) != 0) return -1;
+    const std::uint32_t key = gc.loading_crc | 0x80000000u;
+    // linear probing from the home slot, as the setter does (a torn read gives -1 or a stale value: diagnostics only)
+    for (std::int32_t i = 0, s = static_cast<std::int32_t>(key & static_cast<std::uint32_t>(cap - 1)); i < cap; ++i, s = (s + 1) & (cap - 1)) {
+        std::uint32_t e[6] = {};
+        if (!mem::Read(table + 32ull * static_cast<unsigned>(s), e, sizeof(e))) return -1;
+        if (e[0] == 0) return -1;
+        if (e[0] == key && e[2] == gc.loading_crc) return static_cast<int>(e[4] & 0xFF);
+    }
+    return -1;
+}
+}  // namespace
+
+bool ClothesAvailable() noexcept {
+    if (gc.checked) return gc.ok;
+    gc.checked = true;
+    const std::uintptr_t b = mem::Base();
+    bool ok = CheckC("player init streaming-control cache (+0x54F8)", kInitScStore, "48 89 83 F8 54 00 00") &&
+              CheckC("player init paint-effect cache (+0x54F0)", kInitPaintStore, "48 89 83 F0 54 00 00") &&
+              CheckC("streaming control state read (+0x70)", kScStateRead, "8B 4D 70 83 E9 01") &&
+              CheckC("streaming control request read (+0x76, 8)", kScRequestRead, "0F B6 4D 76 45 33 F6 80 F9 08") &&
+              CheckC("streaming control wanted store (+0x75 vs +0x74)", kScWantedStore, "88 45 75 3A 45 74") &&
+              CheckC("streaming control apply (+0x74 = +0x75)", kScApply, "44 0F B6 7D 75 44 88 7D 74") &&
+              CheckC("paint effect ready test", kPaintReady,
+                     "80 B9 2C AA 00 00 00 75 12 80 79 38 00 74 09 80 B9 21 AA 00 00 03 74 03 32 C0 C3 B0 01 C3") &&
+              CheckC("uniform menu's porter-suit request", kWardrobeAsk, "80 78 74 01 75 15 ?? ?? ?? ?? ?? ?? ?? ?? 44 88 78 76");
+    if (ok) std::snprintf(gc.why, sizeof(gc.why), "ok");
+    gc.ok = ok;
+    // The DSPlayerLoadingModel flag is diagnostics only: its own checks.
+    char name[24] = {};
+    gc.flag_ok = ok && CheckC("DSPlayerLoadingModel set", kScLoadingSet, "48 8D 0D ?? ?? ?? ?? E8") &&
+                 mem::RipTarget(b + kScLoadingSet, 3, 7) == b + kLoadingName && mem::RipTarget(b + kScLoadingSet + 7, 1, 5) == b + kFlagSetter &&
+                 mem::Read(b + kLoadingName, name, 21) && std::strcmp(name, "DSPlayerLoadingModel") == 0 &&
+                 CheckC("named-flag table load", kFlagTableLoad, "4C 8B 15 ?? ?? ?? ?? 4D 85 D2") &&
+                 mem::RipTarget(b + kFlagTableLoad, 3, 7) == b + kFlagTable &&
+                 CheckC("named-flag size load", kFlagCapLoad, "44 8B 35 ?? ?? ?? ?? 45 8D 5E FF 8B EB 81 CD 00 00 00 80 8B FD 41 23 FB 48 63 D7 44 8B CF 48 C1 E2 05") &&
+                 mem::RipTarget(b + kFlagCapLoad, 3, 7) == b + kFlagCap;
+    if (ok && !gc.flag_ok) std::snprintf(gc.why, sizeof(gc.why), "ok (DSPlayerLoadingModel not read: its sites differ)");
+    gc.loading_crc = roomoutfit::Crc32c("DSPlayerLoadingModel");
+    Log("[clothes] Sam's clothes change %s%s", ok ? "readable (streaming control +0x70/+0x74/+0x75/+0x76, paint effect +0x54F0 ready test verified)"
+                                                   : "unreadable: the clothes rule and the room outfit's variant rule are off: ",
+        ok ? (gc.flag_ok ? "; DSPlayerLoadingModel readable" : "; DSPlayerLoadingModel not readable") : gc.why);
+    return ok;
+}
+
+const char* ClothesWhy() noexcept { return gc.why; }
+
+bool ReadVariantState(std::uintptr_t p, VariantState* out, bool paint) noexcept {
+    if (!out || !ClothesAvailable()) return false;
+    const std::uintptr_t sc = StreamingControl(p);
+    if (!sc) return false;
+    VariantState v;
+    std::uint8_t b[3] = {};
+    if (!Rd(sc + kScState, v.state) || !mem::Read(sc + kScVariantIdx, b, sizeof(b))) return false;
+    static_assert(kScWanted == kScVariantIdx + 1 && kScRequest == kScVariantIdx + 2, "variant bytes");
+    v.cur = b[0], v.wanted = b[1], v.request = b[2];
+    Rd(sc + kScDelay, v.delay);
+    Rd(sc + kScWait, v.wait);
+    if (paint) {
+        const std::uintptr_t pe = Q(p + kPPaint);
+        std::uint8_t on = 0;
+        if (pe && Q(pe + kCompOwner) == p && IsType(pe, "DSPlayerPaintEffectComponent") && Rd(pe + kPaintStage, v.paint_stage) &&
+            Rd(pe + kPaintTimer, v.paint_timer) && Rd(pe + kPaintReleased, v.paint_released) && Rd(pe + kPaintFlags, v.paint_flags) &&
+            Rd(pe + kPaintOn, on)) {
+            v.paint_ok = true;
+            v.paint_ready = v.paint_released != 0 || (on != 0 && v.paint_stage == 3);
+        }
+        v.loading_model = ReadLoadingModel();
+    }
+    *out = v;
+    return true;
+}
+
+const char* DescribeVariantState(const VariantState& v, char* buf, std::size_t cap) noexcept {
+    char paint[128] = "paint unread";
+    if (v.paint_ok)
+        std::snprintf(paint, sizeof(paint), "paint %s (stage %u, timer %.1f s, released %u, flags 0x%02X)",
+                      v.paint_ready ? (v.paint_timer >= 59.9f ? "released by the game's 60 s timeout" : "ready") : "not ready", v.paint_stage,
+                      static_cast<double>(v.paint_timer), v.paint_released, v.paint_flags);
+    char lm[8] = "?";
+    if (v.loading_model >= 0) std::snprintf(lm, sizeof(lm), "%d", v.loading_model);
+    std::snprintf(buf, cap, "variant %u -> %u (request %u, state %d, delay %.1f, wait %.1f s); %s; DSPlayerLoadingModel %s", v.cur, v.wanted, v.request,
+                  v.state, static_cast<double>(v.delay), static_cast<double>(v.wait), paint, lm);
+    return buf;
+}
+
+bool TestRequestVariant(std::uintptr_t p, std::uint8_t request, char* msg, std::size_t cap) noexcept {
+    if (request > roomoutfit::kVariantGraph) {
+        std::snprintf(msg, cap, "request 0..7 (a variant) or 8 (the game's own choice)");
+        return false;
+    }
+    if (!ClothesAvailable()) {
+        std::snprintf(msg, cap, "unavailable: %s", gc.why);
+        return false;
+    }
+    const std::uintptr_t sc = StreamingControl(p);
+    std::uint8_t before = 0xFF;
+    if (!sc || !Rd(sc + kScRequest, before)) {
+        std::snprintf(msg, cap, "our player's streaming control does not check out");
+        return false;
+    }
+    SIZE_T n = 0;
+    const bool ok = WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(sc + kScRequest), &request, 1, &n) && n == 1;
+    VariantState v;
+    char d[200] = "";
+    if (ReadVariantState(p, &v, true)) DescribeVariantState(v, d, sizeof(d));
+    std::snprintf(msg, cap, "TEST: Sam's body variant request (streaming control %p +0x76) %u -> %u %s; %s", reinterpret_cast<void*>(sc), before, request,
+                  ok ? "written" : "NOT written", d);
+    Log("[clothes] %s", msg);
     return ok;
 }
 

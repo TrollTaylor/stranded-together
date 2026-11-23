@@ -484,6 +484,7 @@ TexturesView MockModel::textures() const {
     v.tone = tex_tone_;
     v.report = tex_report_;
     v.boots_own = tex_boots_own_;
+    v.room_black = tex_room_black_;
     v.ready_made = tex_ready_made_;
     v.auto_extract = tex_auto_extract_;
     v.auto_note = tex_auto_note_;
@@ -557,6 +558,7 @@ bool MockModel::set_textures_folder(const std::string& folder, std::string&) {
 }
 
 void MockModel::set_boots_look(bool own) { tex_boots_own_ = own; }
+void MockModel::set_room_outfit(bool black) { tex_room_black_ = black; }
 void MockModel::set_ready_made(bool on) { tex_ready_made_ = on; }
 void MockModel::set_auto_extract(bool on) { tex_auto_extract_ = on; }
 void MockModel::set_textures_auto(bool running, const std::string& note) {

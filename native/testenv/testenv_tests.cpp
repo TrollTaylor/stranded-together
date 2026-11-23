@@ -978,6 +978,13 @@ void SandboxRules() {
     Check(te::ScenarioIniKeyAllowed("test_net_latency_ms") && te::ScenarioIniKeyAllowed("test_net_burst"), "scenario ini: the test_net_* impairment allowed");
     Check(te::ScenarioIniKeyAllowed("held_items") && te::LauncherIniOverrideAllowed("held_items"),
           "scenario ini: held_items allowed (also on top of launcherini)");
+    // round 11: the room outfit and the hood keys, in scenarios and on top of the launcher's ini; exo_carrier only in scenarios
+    for (const char* k : {"room_outfit", "fragile_hood", "hood_hair"})
+        Check(te::ScenarioIniKeyAllowed(k) && te::LauncherIniOverrideAllowed(k), "scenario ini: a round 11 key allowed (also on top of launcherini)", k);
+    Check(te::ScenarioIniKeyAllowed("exo_carrier") && !te::LauncherIniOverrideAllowed("exo_carrier"),
+          "scenario ini: exo_carrier allowed in scenarios, not on top of launcherini");
+    Check(!te::LauncherIniOverrideAllowed("host_save") && !te::LauncherIniOverrideAllowed("my_character") && !te::LauncherIniOverrideAllowed(""),
+          "launcherini: the launcher's own keys are not overridden");
     // launcherini (the launcher's own Local test files): role host, graphics low, no ini lines
     Check(te::ParseScenario("role host\ngraphics low\nlauncherini local-test\nwaitready 5\nquit\n", &sc, &err) && sc.launcher_ini == "local-test",
           "scenario: launcherini local-test", err);

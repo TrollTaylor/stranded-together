@@ -7,6 +7,7 @@
 #include <sstream>
 
 #include "log.hpp"
+#include "room_outfit_rules.hpp"
 
 namespace st {
 namespace {
@@ -154,8 +155,16 @@ Config LoadConfig(const std::wstring& dir) {
             else Log("[config] boots_look=%s is not own / prop: own", v.c_str());
         } else if (k == "boots_own_porter") {
             c.boots_own_porter = ParseBool(v);
+        } else if (k == "room_outfit") {
+            roomoutfit::Choice ch = roomoutfit::Choice::black;
+            if (roomoutfit::ParseChoice(v.c_str(), &ch)) c.room_outfit_black = ch == roomoutfit::Choice::black;
+            else Log("[config] room_outfit=%s is not black / suit: black", v.c_str());
         } else if (k == "exo_carrier") {
             c.exo_carrier = ParseBool(v);
+        } else if (k == "fragile_hood") {
+            c.fragile_hood = v == "2" || v == "unfold" ? 2 : v == "1" || v == "swap" ? 1 : v == "0" || v == "off" ? 0 : (ParseBool(v) ? 2 : 0);
+        } else if (k == "hood_hair") {
+            c.hood_hair = ParseBool(v);
         } else if (k == "held_items") {
             c.held_items = v == "2" || v == "all" ? 2 : v == "1" || v == "tools" ? 1 : (ParseBool(v) ? 2 : 0);
         } else if (k == "vehicle_sync") {
@@ -317,9 +326,11 @@ Config LoadConfig(const std::wstring& dir) {
     Log("[config] name_tags=%d font=%s name=%s", c.name_tags ? 1 : 0, c.name_tag_game_font ? "game" : "default", c.player_name.empty() ? "- (Steam name)" : "set");
     Log("[config] partner_collision=%d layer=%d height=%.2f", c.partner_collision ? 1 : 0, c.partner_collision_layer,
         static_cast<double>(c.partner_collision_height));
-    Log("[config] partner_gear=%d smooth_pose=%d self_headgear=%d self_feet_hide=%d boots_sync=%d boots_look=%s boots_own_porter=%d fragile_suit_colour=%d exo_carrier=%d",
+    Log("[config] partner_gear=%d smooth_pose=%d self_headgear=%d self_feet_hide=%d boots_sync=%d boots_look=%s boots_own_porter=%d fragile_suit_colour=%d exo_carrier=%d "
+        "room_outfit=%s fragile_hood=%d hood_hair=%d",
         c.partner_gear ? 1 : 0, c.smooth_pose ? 1 : 0, c.self_headgear ? 1 : 0, c.self_feet_hide ? 1 : 0, c.boots_sync ? 1 : 0, c.boots_look_own ? "own" : "prop",
-        c.boots_own_porter ? 1 : 0, c.fragile_suit_colour ? 1 : 0, c.exo_carrier ? 1 : 0);
+        c.boots_own_porter ? 1 : 0, c.fragile_suit_colour ? 1 : 0, c.exo_carrier ? 1 : 0, c.room_outfit_black ? "black" : "suit",
+        c.fragile_hood, c.hood_hair ? 1 : 0);
     Log("[config] held_items=%d (%s)", c.held_items,
         c.held_items == 2 ? "every item in a hand drawn on the other screen" : c.held_items == 1 ? "ladder, PCC, climbing anchor" : "off: cutscene-prop weapons only");
     // Fragile's textures: only whether a folder came and its length (the path itself names the Windows user).

@@ -50,6 +50,10 @@ over her feet, as v0.22 did: your boots pictures are then hidden under them. Wit
 All-terrain boots Lv1 (the same design as hers) still show her own boots. session.ini: `boots_look=own` (default) or
 `boots_look=prop`; the guest's choice is what both screens show.
 
+In the private room Fragile wears her black suit by default (launcher: Tools > Fragile's textures > **Fragile in the
+private room**, session.ini `room_outfit=black|suit`; docs/real-partner-body.md section 34). Your suit pictures are for
+her porter suit: with **Black suit** they are not seen in the room; pick **Porter suit** to keep them there.
+
 Which boot type is which folder (the game's EDSPlayerShoesType): `00` no boots, `02` sole grass, `03` porter boots,
 `04`-`06` all-terrain boots Lv1-3, `07` mule boots, `08` terrorist boots, `09` chiral boots, `10` reflect boots.
 

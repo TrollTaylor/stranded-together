@@ -34,6 +34,8 @@
 #include "partner_gear.hpp"
 #include "suit_colour_math.hpp"
 #include "game_actions.hpp"
+#include "room_outfit_rules.hpp"
+#include "face_sync.hpp"
 
 namespace st::realbody {
 namespace {
@@ -261,6 +263,7 @@ struct BodySlot {
     bool mirror = false;  // debug body: copy Sam's live pose (no delay)
     bool start_hidden = false;  // self view: invisible until posed (Show)
     ULONGLONG live_tick = 0;    // GetTickCount64 when the body became live
+    std::uint32_t lives = 0;    // bodies that became live in this slot (the face sync's epoch: a respawn gives the clip anew)
     bool logged_latch = false;
     // DriveModel
     ULONGLONG last_game_ms = 0;
@@ -3180,6 +3183,7 @@ PollResult PollSlot(BodySlot& slot, double now_ms, char* why, std::size_t cap) {
         want_visible ? "visible" : "invisible", shown ? "ok" : "unavailable", awake ? "yes" : "no");
     slot.phase = Phase::live;
     slot.live_tick = GetTickCount64();
+    ++slot.lives;
     slot.logged_latch = false;
     // Without a body the stats ran every 10 s; a body removed within that wait (a debug tour
     // spends about 6 s on each) never got its latch line (run 20261116-194441: 9 of 16 missing).
@@ -3261,8 +3265,9 @@ std::uint32_t g_self_load_unshows = 0, g_self_stalls = 0, g_self_room_holds = 0;
 double g_self_room_hold_for = -2e18;  // the load end (g_self_load_end_ms) the private room's close-up hold was taken for
 const char* g_self_hold_why = "";     // why the hold (g_self_stall_until_ms) keeps the body off
 // `self_view 17 <mask>` (before / after runs): bit 1 the load rule (not shown through a load or Setup, the show waits for
-// a fresh game update of Sam), bit 2 the stall guard; 3 the default, 0 v0.24's behaviour.
-std::atomic<int> g_self_load_rules{3};
+// a fresh game update of Sam), bit 2 the private room's close-up hold and the stall guard (section 33; retired in round 11,
+// off by default), bit 4 the clothes rule (section 34); 5 the default, 3 v0.25, 0 v0.24's behaviour.
+std::atomic<int> g_self_load_rules{roomoutfit::kDefaultRules};
 constexpr double kSelfPostLoadMs = 8000;     // the stall guard's window after a load or Setup ends
 constexpr ULONGLONG kSelfStallMs = 1000;     // no game rewrite of Sam for this long, shown, in the window: unshown
 constexpr double kSelfStallHoldMs = 20000;   // then not shown again while the game state stays the same, at most this long
@@ -3274,6 +3279,25 @@ constexpr const char* kSelfStallWhy =
 constexpr const char* kSelfRoomWhy =
     "the private room's close-up after a load (Sam stays until the game state changes: hidden there, the game never draws the room)";
 constexpr std::uint64_t kSelfRoomCut = game::kGameStatePrivateRoom | game::kGameStateCutscene;
+
+// Section 34 (round 11): Sam's clothes change (his body variant switch waits for his paint effect, which only progresses
+// while he is drawn: hidden by reason 63 it waited for the game's 60 s fallback, the private room's black screens) and
+// her room outfit (her black suit in the private room).
+roomoutfit::ClothesWatch g_clothes;
+std::uint32_t g_clothes_n = 0;       // switches seen this session
+bool g_clothes_long = false;         // the "still changing after 10 s" line was written for this switch
+bool g_clothes_was_shown = false;    // the self body was shown when the switch started
+constexpr double kClothesLongMs = 10000;
+constexpr const char* kSelfClothesWhy = "the game is changing Sam's clothes (his paint effect waits for him drawn)";
+constexpr const char* kSelfRedressWhy = "putting her suit look on after the room outfit (at most 3 s)";
+roomoutfit::Choice g_room_choice = roomoutfit::Choice::black;  // session.ini room_outfit
+std::atomic<int> g_room_force{static_cast<int>(roomoutfit::Force::rule)};  // `self_view 18 <mode>`
+const bodies::Body* g_self_look = nullptr;  // the body the self view wants now (nullptr: g_self_body)
+double g_self_look_since = 0;               // ... since (a change waits for a hidden moment)
+const char* g_self_look_wait = "";          // the last "waiting" reason logged
+std::uint32_t g_self_look_swaps = 0;
+double g_self_redress_until = 0;            // the re-dress gate's end (a swap back to her suit)
+bool g_self_has_look = false;               // DressFragile: her suit has a look of edited / ready-made textures
 
 // Our reason bit must never outlive the shown body. SelfUnshow clears it once with a locked AND,
 // but the game's own SetRootVisible (0x1426B4E40) is a plain read-modify-write of the same mask:
@@ -3408,6 +3432,97 @@ void SelfNotShown(const char* why) {
     }
 }
 
+// ---------------------------------------------------------------- section 34: Sam's clothes change, her room outfit
+bool IsFragileSuit(const bodies::Body* b);
+const bodies::Body* SelfLook() { return g_self_look ? g_self_look : g_self_body; }
+
+// Sam's variant fields (no paint), read once per tick (g_now) for the clothes watch, the room outfit and STJ1.
+bool ReadVariantCached(std::uintptr_t sam, outfit::VariantState* out) {
+    static std::uintptr_t s_sam = 0;
+    static double s_ms = -1;
+    static bool s_ok = false;
+    static outfit::VariantState s_vs;
+    if (sam != s_sam || g_now != s_ms) {
+        s_sam = sam, s_ms = g_now;
+        s_vs = outfit::VariantState{};
+        s_ok = sam && outfit::ReadVariantState(sam, &s_vs, false);
+    }
+    *out = s_vs;
+    return s_ok;
+}
+
+// The body the room-outfit rule (room_outfit_rules.hpp) wants for `base` now. `slot`: a body refused there is not wanted.
+const bodies::Body* RoomLook(const bodies::Body* base, std::uintptr_t sam, std::uint64_t gstate, const bodies::Body* current, const BodySlot* slot,
+                             outfit::VariantState* vs_out) {
+    outfit::VariantState vs;
+    roomoutfit::LookInput in;
+    if (!base) return nullptr;
+    in.base_id = base->id;
+    in.choice = g_room_choice;
+    in.force = static_cast<roomoutfit::Force>(g_room_force.load(std::memory_order_relaxed));
+    in.in_private_room = (gstate & game::kGameStatePrivateRoom) != 0;
+    in.variant_ok = ReadVariantCached(sam, &vs);
+    in.cur = vs.cur, in.wanted = vs.wanted, in.state = vs.state;
+    in.current_id = current ? current->id : 0;
+    if (vs_out) *vs_out = vs;
+    const std::uint8_t id = roomoutfit::WantedBodyId(in);
+    if (id == base->id) return base;
+    const bodies::Body* b = bodies::FindById(id);
+    if (!b || (slot && b->id < 32 && (slot->refused & (1u << b->id)))) return base;
+    return b;
+}
+
+// Every tick with a local player (also with the self view off: the log lines are the before / after evidence). Logs the
+// start, each state step and the end of a switch with its duration, the variants, the paint effect and
+// DSPlayerLoadingModel. True while the clothes rule keeps the body off (`self_view 17` bit 4).
+bool ClothesTick(std::uintptr_t sam, double now_ms, int rules) {
+    const bool on = (rules & roomoutfit::kRuleClothes) != 0;
+    outfit::VariantState vs;
+    const bool ok = ReadVariantCached(sam, &vs);
+    const roomoutfit::ClothesEvent ev = roomoutfit::ClothesStep(g_clothes, ok, vs.state, vs.cur, vs.wanted, now_ms);
+    const bool long_now = ok && g_clothes.busy && !g_clothes_long && now_ms - g_clothes.from_ms >= kClothesLongMs;
+    if (ev != roomoutfit::ClothesEvent::none || long_now) {
+        outfit::VariantState full = vs;
+        char d[240] = "unreadable (no player, or its streaming control does not check out)";
+        if (ok && outfit::ReadVariantState(sam, &full, true)) outfit::DescribeVariantState(full, d, sizeof(d));
+        std::uint64_t gs = 0;
+        game::LoadOrSetup(&gs, nullptr);
+        char gd[96] = {};
+        game::DescribeGameStateFlags(gs, gd, sizeof(gd));
+        if (ev == roomoutfit::ClothesEvent::start) {
+            ++g_clothes_n;
+            g_clothes_long = false;
+            g_clothes_was_shown = g_self_shown;
+            Log("[clothes] the game is changing Sam's clothes (#%u, state %s): %s; self body %s", g_clothes_n, gd, d,
+                !g_self_on      ? "off"
+                : !g_self_shown ? "not shown"
+                : on            ? "shown: Sam shown for it"
+                                : "shown and kept (the clothes rule is off: the game waits up to 60 s)");
+        } else if (ev == roomoutfit::ClothesEvent::step) {
+            Log("[clothes] state %d %.2f s into the change (#%u): %s", vs.state, (now_ms - g_clothes.from_ms) / 1000.0, g_clothes_n, d);
+        } else if (ev == roomoutfit::ClothesEvent::end) {
+            Log("[clothes] Sam's clothes changed in %.2f s (#%u, variant %u -> %u, state %s): %s", g_clothes.last_ms / 1000.0, g_clothes_n,
+                g_clothes.from_variant, ok ? vs.cur : g_clothes.to_variant, gd, d);
+        }
+        if (long_now) {
+            g_clothes_long = true;
+            Log("[clothes] still changing after %.0f s (#%u, state %s): %s; self body %s", kClothesLongMs / 1000.0, g_clothes_n, gd, d,
+                g_self_shown ? "SHOWN" : "not shown");
+        }
+    }
+    return on && roomoutfit::ClothesHold(g_clothes, now_ms);
+}
+
+// The re-dress gate: after a swap back to her porter suit, the body waits (at most 4 s from the swap, her respawn
+// included, so about 3 s once she is live) until her suit look is bound
+// (DressFragile starts 0.5 s after the body is live), so she never shows raw for a moment.
+bool RedressWait(double now_ms) {
+    if (now_ms >= g_self_redress_until || !IsFragileSuit(g_me.body) || !ftex::Enabled()) return false;
+    if (GetTickCount64() - g_me.live_tick < 700) return true;
+    if (!g_self_has_look) return false;
+    return !(g_tex_me.e == reinterpret_cast<std::uintptr_t>(g_me.spawn.e) && g_tex_me.bound);
+}
+
 // ---------------------------------------------------------------- the cargo menu's figure (game thread)
 // docs/real-partner-body.md section 15. While the on-foot cargo menu is open, the subspace work object
 // wakes its own Sam (DSPlayerAKukanEntity) in a room of the world and puts the local Sam to sleep. The
@@ -3531,18 +3646,19 @@ bool MenuTick(std::uintptr_t sam, double now_ms) {
     }
     // The body normally lives on from the field; it is spawned on the figure when it does not.
     if (g_me.phase == Phase::idle) {
-        if (now_ms < g_self_retry_ms || (g_self_body->id < 32 && (g_me.refused & (1u << g_self_body->id)))) return true;
+        const bodies::Body* look = SelfLook();
+        if (now_ms < g_self_retry_ms || (look->id < 32 && (g_me.refused & (1u << look->id)))) return true;
         game::WorldTransform at{};
         if (!game::TryGetTransform(reinterpret_cast<game::Entity*>(v.e), &at)) return true;
         char why[200] = {};
         g_me.start_hidden = true;
-        const BeginResult r = BeginSlot(g_me, *g_self_body, at, Owner::self, now_ms, why, sizeof(why));
+        const BeginResult r = BeginSlot(g_me, *look, at, Owner::self, now_ms, why, sizeof(why));
         if (r == BeginResult::started) {
             g_self_spawn_sam = sam;
-            Log("[menu] spawning '%s' on the menu's figure", g_self_body->key);
+            Log("[menu] spawning '%s' on the menu's figure", look->key);
         } else {
             g_me.start_hidden = false;
-            Log("[menu] could not start '%s': %s", g_self_body->key, why);
+            Log("[menu] could not start '%s': %s", look->key, why);
             g_self_retry_ms = now_ms + 10000;
         }
         return true;
@@ -3644,6 +3760,11 @@ void SelfTick(game::Entity* local, bool local_active, double now_ms) {
     }
     SelfRepair(sam);
     if (sam && g_self_spawn_sam && sam != g_self_spawn_sam && (g_me.phase != Phase::idle || g_me.spawn.sp)) Teardown(g_me, "local player changed");
+    // Section 34.6: the clothes rule unavailable (a byte check failed) brings the hold and the stall guard back.
+    const int rules =
+        roomoutfit::EffectiveRules(g_self_load_rules.load(std::memory_order_relaxed), outfit::ClothesAvailable());
+    // Section 34: while the game changes Sam's clothes he is drawn (the clothes rule), and 0.5 s after.
+    const bool clothes = ClothesTick(sam, now_ms, rules);
     if (!g_self_on || !g_self_body || !g_hook) {
         MenuEnd("self view off");
         if (g_me.phase != Phase::idle || g_me.spawn.sp) Teardown(g_me, "self view off");
@@ -3677,7 +3798,6 @@ void SelfTick(game::Entity* local, bool local_active, double now_ms) {
     // entering it from the field). Sam is shown, the body stays spawned and is shown again once the game has settled.
     std::uint64_t gstate = 0;
     std::uint32_t lmask = 0;
-    const int rules = g_self_load_rules.load(std::memory_order_relaxed);
     const char* load_now = game::LoadOrSetup(&gstate, &lmask);
     const char* loading = (rules & 1) ? load_now : nullptr;  // `self_view 17`: bit 1 off, the body stays shown (v0.24)
     if (load_now != g_self_load) {
@@ -3697,6 +3817,7 @@ void SelfTick(game::Entity* local, bool local_active, double now_ms) {
         ++g_self_load_unshows;
         SelfUnshow(kSelfLoadWhy);
     }
+    if (clothes && g_self_shown) SelfUnshow(kSelfClothesWhy);
     // Section 33 (review): the private room's close-up after a load (PrivateRoom|Cutscene in the 8 s after a load / Setup ends).
     // With Sam hidden there the game never draws the room after it (the user's black screen from the field), so the body is not
     // shown at all in it: Sam stays from the start until the game state changes (at most 20 s), instead of Fragile showing for a
@@ -3713,9 +3834,56 @@ void SelfTick(game::Entity* local, bool local_active, double now_ms) {
             (now_ms - g_self_load_end_ms) / 1000.0, static_cast<unsigned long long>(gstate), g_self_room_holds);
         if (g_self_shown) SelfUnshow(kSelfRoomWhy);
     }
+    // Section 34: her room outfit. The rule (room_outfit_rules.hpp) picks her black suit in the private room; the body is
+    // changed only while it is not shown (a load, the clothes change, Sam asleep), else after 3 s outside cutscenes and
+    // menus with Sam shown for about 0.12 s (`self_view 18 2/3`: at once).
+    {
+        outfit::VariantState vs;
+        const bodies::Body* cur = g_me.phase != Phase::idle && g_me.body ? g_me.body : SelfLook();
+        const bodies::Body* want = RoomLook(g_self_body, sam, gstate, cur, &g_me, &vs);
+        char vd[112] = {};
+        std::snprintf(vd, sizeof(vd), "Sam's variant %u, wanted %u, state %d; PrivateRoom %s; room_outfit=%s", vs.cur, vs.wanted, vs.state,
+                      (gstate & game::kGameStatePrivateRoom) ? "yes" : "no", roomoutfit::ChoiceName(g_room_choice));
+        if (want && want != SelfLook()) {
+            Log("[self] room outfit: '%s' wanted now (was '%s'; %s)", want->key, SelfLook()->key, vd);
+            g_self_look = want == g_self_body ? nullptr : want;
+            g_self_look_since = now_ms;
+            g_self_look_wait = "";
+        }
+        if (want && g_me.phase != Phase::idle && g_me.body && g_me.body != want) {
+            constexpr std::uint64_t kSubspace = 0x100ull;
+            const bool blocked =
+                g_menu_active || (gstate & (game::kGameStateCutscene | kSubspace | game::kGameStatePauseMenu | game::kGameStateSystemPause)) != 0;
+            const int force = g_room_force.load(std::memory_order_relaxed);
+            const roomoutfit::Swap sw = roomoutfit::SwapDecision(g_self_shown, now_ms - g_self_look_since, blocked, force == 2 || force == 3);
+            if (sw == roomoutfit::Swap::wait) {
+                const char* w = blocked ? "waits (a cutscene or a menu: changed when the body is not shown)" : "waits for a moment the body is not shown";
+                if (std::strcmp(g_self_look_wait, w) != 0) {
+                    g_self_look_wait = w;
+                    Log("[self] room outfit: '%s' -> '%s' %s", g_me.body->key, want->key, w);
+                }
+            } else {
+                ++g_self_look_swaps;
+                const bool back = want == g_self_body;
+                Log("[self] room outfit: '%s' -> '%s' (%s): %s swap (#%u)", g_me.body->key, want->key, vd,
+                    sw == roomoutfit::Swap::hidden ? "hidden" : "visible", g_self_look_swaps);
+                if (sw == roomoutfit::Swap::visible) SelfUnshow("room outfit: her clothes change (a visible swap)");
+                Teardown(g_me, "room outfit");
+                g_self_redress_until = back ? now_ms + 4000 : 0;
+                g_self_retry_ms = 0;
+                return;
+            }
+        }
+    }
     if (g_me.phase == Phase::idle) {
         if (now_ms < g_self_retry_ms) return;
-        if (g_self_body->id < 32 && (g_me.refused & (1u << g_self_body->id))) {
+        const bodies::Body* look = SelfLook();
+        if (look->id < 32 && (g_me.refused & (1u << look->id))) {
+            if (look != g_self_body) {
+                Log("[self] room outfit: '%s' was refused: '%s' stays", look->key, g_self_body->key);
+                g_self_look = nullptr;
+                return;
+            }
             Log("[self] self view off: body '%s' was refused", g_self_body->key);
             g_self_on = false;
             return;
@@ -3724,11 +3892,11 @@ void SelfTick(game::Entity* local, bool local_active, double now_ms) {
         if (!game::TryGetTransform(local, &at)) return;
         char why[200] = {};
         g_me.start_hidden = true;
-        const BeginResult r = BeginSlot(g_me, *g_self_body, at, Owner::self, now_ms, why, sizeof(why));
+        const BeginResult r = BeginSlot(g_me, *look, at, Owner::self, now_ms, why, sizeof(why));
         if (r == BeginResult::started) g_self_spawn_sam = sam;
         else {
             g_me.start_hidden = false;
-            Log("[self] could not start '%s': %s", g_self_body->key, why);
+            Log("[self] could not start '%s': %s", look->key, why);
             g_self_retry_ms = now_ms + 10000;
             if (r == BeginResult::unavailable) g_self_on = false;
         }
@@ -3796,7 +3964,9 @@ void SelfTick(game::Entity* local, bool local_active, double now_ms) {
     const char* not_ready = g_me.latch_state.load(std::memory_order_acquire) != 1 ? "latching the body's own pose"
                             : !g_me.apply_on.load()                                ? "the pose write was switched off (a fault)"
                             : loading                                              ? kSelfLoadWhy
+                            : clothes                                              ? kSelfClothesWhy
                             : now_ms < g_self_stall_until_ms                       ? g_self_hold_why
+                            : RedressWait(now_ms)                                  ? kSelfRedressWhy
                             : !last_apply || t - last_apply > 250                  ? "no fresh pose written onto the body"
                             : !cap_fresh                                           ? kSelfStaleWhy
                             : (mask & ~kOurReason) != 0                            ? "the game hides Sam itself (photo mode, a scripted scene)"
@@ -4275,6 +4445,7 @@ void DressFragile(game::Entity* local, bool local_active, double now_ms) {
             const std::uint8_t colour = suitcol::Wanted(g_suit_override, have ? suitcol::GuestColour(o.suit_colour) : 0);
             ftex::Look l;
             const bool have_look = OwnTextureLook(colour, &l);
+            g_self_has_look = have_look && !l.Empty();
             texshare::SetOwnLook(have_look, l, colour);
             int btype = -1;
             bool bworn = false, bown = true;
@@ -5588,13 +5759,40 @@ bool ReadJointModelAny(game::Entity* e, unsigned j, unsigned* count, float (&m)[
 
 void ConfigureSelf(const bodies::Body* body) noexcept {
     g_self_body = body;
+    g_self_look = nullptr;
 
     g_self_on = body != nullptr;
     g_me.tag = "self";
     if (body) Log("[self] self view on: '%s' (%s) is shown in place of the local Sam on this screen", body->key, body->label);
 }
 bool SelfConfigured() noexcept { return g_self_on && g_self_body; }
-const bodies::Body* SelfBody() noexcept { return g_self_on ? g_self_body : nullptr; }
+// The body she is wearing (a live or loading one), else the one she will wear: a wanted room-outfit change may wait
+// (up to 3 s, or through a cutscene or menu) and her boots must follow the worn body, not the wanted one.
+const bodies::Body* SelfBody() noexcept {
+    if (!g_self_on || !g_self_body) return nullptr;
+    return g_me.phase != Phase::idle && g_me.body ? g_me.body : SelfLook();
+}
+void ConfigureRoomOutfit(bool black) noexcept {
+    g_room_choice = black ? roomoutfit::Choice::black : roomoutfit::Choice::suit;
+    Log("[self] room outfit: room_outfit=%s (%s)", roomoutfit::ChoiceName(g_room_choice),
+        black ? "Fragile in her porter suit wears her black suit in the private room, on both screens" : "her porter suit in the private room too");
+}
+std::uint8_t LookBodyId(const bodies::Body* base, game::Entity* local) noexcept {
+    if (!base) return 0;
+    if (g_self_on && g_self_body == base) return SelfLook()->id;  // what her own screen shows (or is about to)
+    // the self view off: the same rule from the game's state and Sam's variant (game thread)
+    static const bodies::Body* last = nullptr;
+    static const bodies::Body* last_base = nullptr;
+    if (last_base != base) last = base, last_base = base;
+    std::uint64_t gs = 0;
+    game::LoadOrSetup(&gs, nullptr);
+    const bodies::Body* b = RoomLook(base, reinterpret_cast<std::uintptr_t>(local), gs, last, nullptr, nullptr);
+    if (b && b != last) {
+        Log("[sync] room outfit (self view off): sending '%s' (was '%s')", b->key, last ? last->key : "?");
+        last = b;
+    }
+    return last ? last->id : base->id;
+}
 void ConfigureSelfFit(bool on) noexcept {
     g_fit_cfg.store(on);
     if (!on) FitOff();
@@ -5806,6 +6004,25 @@ void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
     else if (asleep_since == 0) asleep_since = now_ms > 0 ? now_ms : 1;
     if (g_p.owner == Owner::debug && asleep_since > 0 && now_ms - asleep_since >= 1000) Teardown(g_p, "Sam asleep (debug body)");
     if (g_hook) SelfTick(local, local_active, now_ms);
+    if (g_hook) {
+        // Section 36: Sam's facial clip on her self view's face (shown in his place) and the partner's received one on the
+        // partner body.
+        facesync::TickIn fi;
+        fi.sam = local && local_active ? reinterpret_cast<std::uintptr_t>(local) : 0;
+        // Only a body whose spawn is still alive (the check DriveModel makes before its own game calls): a body the game
+        // destroyed is not given to the face sync, which then drops its rig.
+        if (g_self_on && g_self_shown && g_me.phase == Phase::live && g_me.body && holo::SpawnAlive(g_me.spawn)) {
+            fi.self_body = reinterpret_cast<std::uintptr_t>(g_me.spawn.e);
+            fi.self_epoch = g_self_shows * 0x10000u + (g_me.lives & 0xFFFFu);
+            fi.self_key = g_me.body->key;
+        }
+        if (g_p.phase == Phase::live && g_p.owner == Owner::partner && g_p.body && holo::SpawnAlive(g_p.spawn)) {
+            fi.partner_body = reinterpret_cast<std::uintptr_t>(g_p.spawn.e);
+            fi.partner_epoch = g_p.lives;
+            fi.partner_key = g_p.body->key;
+        }
+        facesync::Tick(fi, now_ms);
+    }
     if (g_hook && (g_self_on || automation::Enabled())) MenuWatch(now_ms);  // hidden tests: also with the self view off
     DriveModel(g_p, local_active);
     DriveModel(g_me, local_active || g_menu_active);
@@ -6242,12 +6459,41 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
                 Log("[gear] %s", msg);
                 return true;
             }
-            if (v[0] == 17) {  // self_view 17 <mask>: section 33's load rule (1), the room close-up hold and stall guard (2); 3 default, 0 v0.24
-                const int m = static_cast<int>(v[1]) & 3;
+            if (v[0] == 17) {  // self_view 17 <mask>: the load rule (1), the room close-up hold and stall guard (2), the clothes rule (4); 5 default, 3 v0.25, 0 v0.24
+                const int m = static_cast<int>(v[1]) & 7;
                 g_self_load_rules.store(m);
-                Set(msg, cap, "self view over loads: load rule %s, private room close-up hold and stall guard %s", (m & 1) ? "on" : "off (v0.24)",
-                    (m & 2) ? "on" : "off");
+                Set(msg, cap, "self view over loads: load rule %s, private room close-up hold and stall guard %s, clothes rule %s", (m & 1) ? "on" : "off (v0.24)",
+                    (m & 2) ? "on (v0.25)" : "off", (m & 4) ? "on" : "off (v0.25)");
                 Log("[self] %s", msg);
+                return true;
+            }
+            if (v[0] == 18) {  // self_view 18 <mode>: her room outfit: 0 never, 1 the rule (default), 2 always the room body, 3 always the base
+                const int m = static_cast<int>(v[1]);
+                if (m < 0 || m > 3) {
+                    Set(msg, cap, "self_view 18 <0 never / 1 the rule / 2 always the room body / 3 always the base>");
+                    return false;
+                }
+                g_room_force.store(m);
+                Set(msg, cap, "room outfit: %s (room_outfit=%s; wanted now '%s', worn '%s')",
+                    m == 0 ? "never" : m == 1 ? "the rule" : m == 2 ? "always the room body (forced)" : "always the base (forced)",
+                    roomoutfit::ChoiceName(g_room_choice), g_self_body ? SelfLook()->key : "-", g_me.body ? g_me.body->key : "-");
+                Log("[self] %s", msg);
+                return true;
+            }
+            if (v[0] == 19) {  // hidden tests only: self_view 19 <request>: Sam's body variant request (0..7, 8 the game's own choice)
+                if (!automation::Enabled() || !automation::SavesRedirected()) {
+                    Set(msg, cap, "refused: only in a hidden test run on scratch saves");
+                    return false;
+                }
+                if (!have_sam || v[1] < 0 || v[1] > 8) {
+                    Set(msg, cap, "self_view 19 <0..7 a variant / 8 the game's own choice> needs a local player");
+                    return false;
+                }
+                return outfit::TestRequestVariant(reinterpret_cast<std::uintptr_t>(sam), static_cast<std::uint8_t>(v[1]), msg, cap);
+            }
+            if (v[0] == 20) return facesync::SetMode(static_cast<int>(v[1]), msg, cap);  // self_view 20 <mask>: her face (1), the partner's (2)
+            if (v[0] == 21) {  // self_view 21: the face sync's status line
+                facesync::Status(msg, cap);
                 return true;
             }
             if (v[0] == 16) {  // self_view 16 <0/1>: Sam's head items onto her drawn head (section 26.8): 1 v0.22 (default), 0 v0.21
@@ -6277,6 +6523,7 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             }
             if (b != g_self_body && (g_me.phase != Phase::idle || g_me.spawn.sp)) Teardown(g_me, "self view: another character");
             g_self_body = b;
+            g_self_look = nullptr;
             g_self_on = true;
             g_self_retry_ms = 0;
             g_me.tag = "self";

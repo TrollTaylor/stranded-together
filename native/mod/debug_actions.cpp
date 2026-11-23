@@ -10,6 +10,7 @@
 #include <cstring>
 
 #include "dev_tools.hpp"
+#include "enemy_census.hpp"
 #include "log.hpp"
 #include "player_sync.hpp"
 #include "partner_tackle.hpp"
@@ -177,6 +178,9 @@ bool DoCollision(const Request& r, char* msg, std::size_t cap) { return game::Co
 bool DoGear(const Request& r, char* msg, std::size_t cap) { return game::GearCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoSmooth(const Request& r, char* msg, std::size_t cap) { return game::RealBodyCommand(10, r.v, msg, cap); }
 bool DoTex(const Request& r, char* msg, std::size_t cap) { return game::RealBodyCommand(11, r.v, msg, cap); }
+bool DoEnemyCensus(const Request& r, char* msg, std::size_t cap) {
+    return enemy::Census(static_cast<int>(r.v[0]), r.v[1], static_cast<int>(r.v[2]), msg, cap);
+}
 bool DoAudioProbe(const Request& r, char* msg, std::size_t cap) { return game::AudioProbeCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoSelfVoice(const Request& r, char* msg, std::size_t cap) { return game::SelfVoiceCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoVoiceSync(const Request& r, char* msg, std::size_t cap) { return game::VoiceSyncCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
@@ -342,6 +346,8 @@ constexpr Row kRows[] = {
      &DoWorld<7>},
     {{Action::tex, Tab::tools, "Tex", "Fragile's edited textures: 0 status, 1 rescan the folder, 7 resend the look; hidden runs: 2 probe dump, 3 c colour (-1 follow), 4 0/1 off/on, 5 filter 0/1/2, 9 n test pattern.", false},
      &DoTex},
+    {{Action::enemy_census, Tab::tools, "Enemy census", "Enemy sync P0, read only: every MULE / Demens / warrior actor with its GUID, state, place and entity to the log: <tag> [radius m, 0 all] [flags: 1 every other actor type, 2 the MULE killed records].", false},
+     &DoEnemyCensus},
 };
 constexpr std::size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);
 static_assert(kRowCount == static_cast<std::size_t>(Action::count), "every Action needs exactly one registry row");

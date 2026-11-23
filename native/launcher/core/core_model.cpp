@@ -213,6 +213,7 @@ void MakeLocalTestInis(const DebugOptions& options, const LocalTestChoices& choi
     // Fragile's textures (docs/textures.md): both games get the folder; only the guest's Fragile uses it.
     host.textures_dir = choices.textures_dir;
     host.boots_look = choices.boots_look;
+    host.room_outfit = choices.room_outfit;
     host.textures_defaults = choices.textures_defaults;   // the card's READY-MADE COLOURS (only =0 is written)
     guest = host;
     guest.role = "guest";
@@ -685,6 +686,7 @@ public:
         choices.fps = local_fps_;
         choices.textures_dir = TexturesDirForSession(settings_, paths_.game);
         choices.boots_look = BootsLookFromSettings(settings_);
+        choices.room_outfit = RoomOutfitFromSettings(settings_);
         choices.textures_defaults = ReadyMadeFromSettings(settings_);
         SessionIni host, guest;
         MakeLocalTestInis(debug_, choices, host, guest);
@@ -810,6 +812,7 @@ public:
         v.tone = tex_tone_;
         v.checking = tex_checking_;
         v.boots_own = BootsLookFromSettings(settings_) != "prop";
+        v.room_black = RoomOutfitFromSettings(settings_) != "suit";
         v.ready_made = ReadyMadeFromSettings(settings_);
         v.auto_extract = AutoExtractFromSettings(settings_);
         v.auto_note = tex_auto_note_;
@@ -1057,6 +1060,14 @@ public:
         json::Value t = json::Value::Object();
         if (const json::Value* old = settings_.Find("textures"); old && old->is_object()) t = *old;
         t["boots"] = std::string(own ? "own" : "prop");
+        settings_["textures"] = t;
+        SaveChoices();
+    }
+
+    void set_room_outfit(bool black) override {
+        json::Value t = json::Value::Object();
+        if (const json::Value* old = settings_.Find("textures"); old && old->is_object()) t = *old;
+        t["room"] = std::string(black ? "black" : "suit");
         settings_["textures"] = t;
         SaveChoices();
     }
@@ -1795,6 +1806,7 @@ private:
         ApplyDebugOptions(debug_, ini);
         ini.textures_dir = TexturesDirForSession(settings_, paths_.game);   // Fragile's textures (read by the guest's mod; "" when not usable)
         ini.boots_look = BootsLookFromSettings(settings_);             // her boots (the guest's choice is sent to the host)
+        ini.room_outfit = RoomOutfitFromSettings(settings_);           // Fragile in the private room (read by the guest's mod)
         ini.textures_defaults = ReadyMadeFromSettings(settings_);      // ready-made colours (read by the guest's mod)
         return ini;
     }
@@ -2021,6 +2033,7 @@ int RunWriteSession(const std::wstring& game_dir, const WriteSessionRequest& req
     ini.world_sync = DebugOptionsFromSettings(settings).share_world;   // written with host_save (world_sync=0 when off)
     ini.textures_dir = TexturesDirForSession(settings, paths.game);
     ini.boots_look = BootsLookFromSettings(settings);
+    ini.room_outfit = RoomOutfitFromSettings(settings);
     ini.textures_defaults = ReadyMadeFromSettings(settings);
     const std::uint64_t self_id = OwnSteamId(*env);
     const std::uint32_t account = self_id > kSteamIdBase ? static_cast<std::uint32_t>(self_id - kSteamIdBase) : 0u;
@@ -2091,6 +2104,7 @@ int RunWriteLocalTestIni(const std::wstring& game_dir, const std::wstring& out_d
     choices.guest_character = GuestPickFromSettings(settings, stored_pick);
     choices.textures_dir = TexturesDirForSession(settings, game_dir);   // as the launcher writes it (the testenv swaps it)
     choices.boots_look = BootsLookFromSettings(settings);
+    choices.room_outfit = RoomOutfitFromSettings(settings);
     choices.textures_defaults = ReadyMadeFromSettings(settings);
     SessionIni host, guest;
     MakeLocalTestInis(options, choices, host, guest);

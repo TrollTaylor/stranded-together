@@ -124,6 +124,8 @@ enum class Action : std::uint8_t {
     dev_rope,             // v[0] = length 1..30 m, v[1] = level 0..2, v[2] = m ahead (W3)
     // Fragile's edited textures (fragile_textures.hpp; docs/debug-actions.md "Fragile's textures")
     tex,                  // v[0] = mode (0 status, 1 rescan, 2 probe, 3 colour, 4 off/on, 5 filter, 6 slot offset, 7 resend, 9 pattern), v[1], v[2]
+    // Enemy sync P0 (enemy_census.hpp; docs/enemy-sync.md): read only
+    enemy_census,         // v[0] = tag, v[1] = radius m (0 = all), v[2] = flags (1 every other actor type, 2 the MULE manager's killed records)
     count
 
 };

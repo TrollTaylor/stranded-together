@@ -16,6 +16,7 @@
 #include "partner_voice.hpp"
 
 #include "debug_actions.hpp"
+#include "face_sync.hpp"
 #include "game_api.hpp"
 #include "link.hpp"
 #include "log.hpp"
@@ -501,6 +502,7 @@ void TakeJointFrame(const wire::JointFrame& f, double key_ms) {
     if (realbody::PushFrame(f, key_ms)) {
         PeerBodyId(f.body_id);
         if (f.flags & wire::kJointsOutfit) realbody::SetPartnerOutfit(&f.outfit);
+        if (f.flags & wire::kJointsFace) facesync::SetPartnerFace(&f.face);
         return;
     }
     static unsigned dropped_logs = 0;
@@ -999,6 +1001,7 @@ void Init(const Config& config, const std::wstring& mod_dir) noexcept {
                                                                            : "not sent (no pose hook: partner_body is not real)");
     // Self view (docs/real-partner-body.md section 8): this player sees themself as their own
     // character too. Only for a character other than Sam (ChooseOwn already made the host Sam).
+    realbody::ConfigureRoomOutfit(config.room_outfit_black);  // section 34: also with the self view off (STJ1 body_id)
     if (config.self_character) {
         const bool sam = !g_own_body || g_own_body->id == bodies::Default().id;
         if (sam)
@@ -1132,11 +1135,14 @@ void Tick() noexcept {
                 // interpolation spaces the poses as they really were, whatever the sender's frame rate.
                 if ((realbody::SmoothMask() & realbody::kSmoothCaptureStamp) && capture_ms > 0 && capture_ms <= now && now - capture_ms < 250)
                     jf.sender_ms = static_cast<std::uint32_t>(static_cast<std::uint64_t>(capture_ms));
-                jf.body_id = g_own_body->id;
+                jf.body_id = realbody::LookBodyId(g_own_body, g_local);  // her black suit in the private room (section 34)
                 // Our own Sam's outfit rides along (8 bytes; docs/real-partner-body.md section 9): a
                 // receiver showing us as Sam dresses its body like our Sam.
                 jf.flags = static_cast<std::uint8_t>(jf.flags & ~wire::kJointsOutfit);
                 if (realbody::ReadOutfit(g_local, &jf.outfit)) jf.flags |= wire::kJointsOutfit;
+                // Our own Sam's facial clip (2 bytes; section 36): the partner body plays it on its face.
+                jf.flags = static_cast<std::uint8_t>(jf.flags & ~wire::kJointsFace);
+                if (facesync::OwnFace(reinterpret_cast<std::uintptr_t>(g_local), &jf.face)) jf.flags |= wire::kJointsFace;
             }
             // Partner sounds (STA1, partner_sound.hpp, sound_sync=1): our sound events since the last send ride in the
             // same datagram (same sender_ms axis as the pose); in echo they go through encode / decode back to us.
@@ -1301,6 +1307,7 @@ void Tick() noexcept {
                 realbody::ResetFrames();
                 g_peer_body.Reset();  // a new session may be another player with another character
                 realbody::SetPartnerOutfit(nullptr);
+                facesync::SetPartnerFace(nullptr);
                 gear::SetPartnerGear(nullptr);
                 g_first_joints_wait_ms = 0;
                 pvoice::NewSession();

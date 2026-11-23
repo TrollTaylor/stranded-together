@@ -212,6 +212,25 @@ Both use only the partner hologram's byte-checked spawner calls and ReadProcessM
 
 Scenarios: `anim-census-discover`, `anim-census-mule`, `anim-census-tour`, `anim-census-tour2`.
 
+### Enemy census (`enemy_census`; enemy sync P0, [enemy-sync.md](enemy-sync.md) section 3)
+
+`native/mod/enemy_census.cpp`. Reads only (ReadProcessMemory) and nothing is written. The walk calls no game function; only
+our own Sam's entity and place come from the mod's usual guarded getters (GetLocalPlayerEntity, EntityGetWorldTransform).
+
+* `action enemy_census <tag> [radius_m] [flags]`: walks the game actor registry `[0x147BBB8C0]` and the NPC manager's GUID
+  maps `[0x147BF29B8]`. One summary block (actor counts by id type and by class, the NPC map by kind, the MULE manager's
+  members and killed records, two fingerprints: `ids` over the sorted type-1 actor ids, `guids` over their sorted GUIDs), then
+  one line per MULE / Demens / warrior actor (id type 1), nearest first: id, class, state (2 = its entity is in the world),
+  GUID, NPC kind, place (`xf` = the actor's own transform at +0x28, `ent` = its entity's), heading, distance, entity (dead
+  flag, how far the entity stands from the actor's transform), low-LOD byte, and for a `DSMuleGameActor` its alert (+0x110)
+  and flag words (+0x120, +0x124, +0xEA4). `radius_m` (default 0 = all) limits the per-enemy lines; flags bit 1 adds one line
+  per actor of every other type, bit 2 the MULE manager's killed records (raw, 0x28 bytes each). Ends with
+  `[enemy] census done tag=<tag>`.
+* Byte checks on first use (18 sites and 4 RIP globals, docs/enemy-sync.md 3.2): a core mismatch (registry, NPC maps) turns
+  the census off with one line; a mismatch elsewhere only drops that field.
+
+Scenario: `two-games-enemy-census` (the T0 run).
+
 ### Name tags (`name_tags`; scenarios only)
 
 `native/mod/nametags.cpp`, docs/real-partner-body.md section 10.
@@ -313,6 +332,33 @@ Scenarios: `collision`, `collision-off`, `two-games-collision`, `two-games-all`.
   set (...); shown now: 1 32 33 34 35 (the sender's skeleton: speed)`, `[exo] carrier <p>: shown (n ms after it became
   live)` / `: hidden`, `[exo] carrier removed (<why>)` and, with a shown carrier, `[exo] carrier vs body cm mean/max a / b
   (n joints); ...` (every second in hidden runs, every 10 s otherwise).
+* `action gear 30 <3|1|2>` (round 11; docs/real-partner-body.md section 35): the BB pod under the self view. 3 the game's
+  own rule for Sam's pod with our hide bit ignored (the default; it turns itself off for the session when it disagrees with
+  the pod's own flag for 2 s of plain play while the self view is off, which only the side with the self view off ever
+  sees: the host). 1 the fallback only: the last plain-play reading, taken as worn after a load, hidden in the private
+  room. Any other value (0, 2, or no argument) only logs `[gear] BB pod under the self view: the game's rule (rule sites ok);
+  now shown (the game's rule for Sam's pod); cross-check n match, n mismatch over n reads with the self view off; fallback
+  shown (read in plain play); our gear: BB pod 1; the partner's gear: BB pod 1; self view: BB pod 1 wanted, 1 live` (the
+  action's own message is the short form, naming the source the last decision used: `the rule`, `its flag`, `the
+  private room`, or which fallback).
+* `action gear 31 <0|1|2|3>`, `gear 32 <state> [type]`, `gear 33 <0|1>` (round 11; docs/real-partner-body.md section 37):
+  her rain hood. 31: 0 off (no hood on her, her hat stays on in the rain as in v0.25), 1 the timed swap (the raised hood
+  appears when Sam's is up), 2 the game's unfold mirrored on the exo carrier where it can play it, else the timed swap (the
+  default; `session.ini fragile_hood=0|1|2`); any other value only logs `[hood] her hood on (the unfold), hair hidden under
+  it where a hair part is found; sites ok / lookup ok / unfold ok; ours: sea otter up (state 6); the partner's: up; partner carrier shown, hood up
+  (part 69, idle, slots 7, n calls, 0 faults), hair no part; self ...` (the action's own message is the short form;
+  `hair no part` is what every run so far printed: see `gear 33` below). 32
+  (hidden tests; both screens follow, it changes what we read and send, not Sam's own hood): our hood reading replaced by
+  `state` (0..12; 6 up, 9 lowering, 0 down) and `type` (0 porter, 1 oxi, 2 sea otter, the default); -1 off (what the game
+  shows). 33: her hair under the hood 0 shown / 1 hidden (`session.ini hood_hair`, default 1). In practice it changes
+  nothing: none of her `fragile_suit` body's parts has a name the mod can find as hair, so no hair part is ever hidden
+  (`hair no part`); every hood type covers her hair anyway (docs/real-partner-body.md section 37.4). Logged: `[hood] our Sam's
+  hood: sea otter, raising (state 5)` at every state change, `[exo] carrier <p> hood parts (on/off/switch): porter
+  54/53/68, ...`, `[exo] carrier <p>: hood animation slots (porter 2, oxi 5, sea otter 4): ok`, `[exo] carrier <p> hood:
+  up (part 69; the sender's sea otter hood up, state 6; the unfold)`, `[exo] carrier <p> hood: clip 12 played on slot 4
+  (0 ms into the raising)`, `[exo] her body <p>: no hair part found (her hair stays under the hood); parts: ...` (or
+  `hair parts under her hood ...` if one were found; `[exo-self]` for her own screen), and the
+  carrier meter's `head` figure (her head joint 31 against the carrier's, cm).
 * `action gear 26 <0|1|2|9>` (round 6; docs/real-partner-body.md section 31): what is in a hand on the other screen
   (`held_items`): 0 off (only v0.9's cutscene-prop weapons), 1 the ladder / PCC / climbing anchor, 2 every item in a hand
   (the default); any other value only logs `[gear] held_items 2; held clones on (ok): n resource(s) re-typed, n entities
@@ -722,10 +768,25 @@ hook, which is installed at start-up only with `session.ini partner_body=real` o
   one-line reason when Entity::Update's stamp sites do not match).
   `self_view 16 <0/1>`: Sam's head items onto her drawn head every frame (docs/real-partner-body.md section 26.8): 1
   (the default) v0.22, 0 the plain offset of v0.21 (for before / after runs).
-  `self_view 17 <mask>`: the self view over loads (docs/real-partner-body.md section 33): bit 1 the load rule (not
-  shown through a load or the post-load Setup; the show waits for a fresh game update of Sam), bit 2 the private room's
-  close-up hold (Sam stays in `PrivateRoom|Cutscene` right after a load until the game state changes) and the stall guard
-  (in that state, Sam shown when the game stops moving him); 3 the default, 0 v0.24 (before / after runs).
+  `self_view 17 <mask>`: the self view over loads (docs/real-partner-body.md sections 33 and 34): bit 1 the load rule
+  (not shown through a load or the post-load Setup; the show waits for a fresh game update of Sam), bit 2 the private
+  room's close-up hold (Sam stays in `PrivateRoom|Cutscene` right after a load until the game state changes) and the
+  stall guard (in that state, Sam shown when the game stops moving him; retired in round 11, off by default), bit 4 the
+  clothes rule (Sam shown while the game changes his clothes, the body back 0.5 s after); 5 the default, 3 v0.25, 0 v0.24
+  (before / after runs).
+  `self_view 18 <mode>`: her room outfit (section 34): 0 never the room body, 1 the rule (the default: her black suit in
+  the private room with `room_outfit=black`), 2 always the room body (even with `room_outfit=suit`), 3 always her base
+  body. 2 and 3 change her body at once (a visible swap when she is shown, never in a cutscene or a menu).
+  Hidden test runs only: `self_view 19 <request>`: Sam's body variant request (his streaming control +0x76, the byte the
+  private room's uniform menu writes): 0..7 a variant (0 the porter suit, 1 the private room's clothes), 8 the game's own
+  choice (the node-graph variable: the room's clothes in the room, the suit in the field). The switch then runs as the
+  wardrobe's does (`[clothes]` lines: start, each state, the end with its duration, the paint effect and
+  DSPlayerLoadingModel). Byte-checked with the clothes rule (`[clothes] Sam's clothes change readable`).
+  `self_view 20 <mask>`: Fragile's face (docs/real-partner-body.md section 36): bit 1 Sam's facial clip on her self view's
+  face, bit 2 the face block sent with our joint frames and the received one played on the partner body's face; 3 the
+  default, 0 off (the faces hold their default pose, the v0.25 look). `self_view 21`: the face sync's status line
+  (`[face] face sync mask ...`: the byte checks, Sam's facial tables, the plays, landings and faults on each face, the
+  partner's last received id).
   `self_view 4`: the
   subspace work object's state and menu kind, and every ArtPart of the menu's figure (asked / effective
   visible, top-level, children) in the log. In hidden tests a `[menu] subspace state ...` line is logged on

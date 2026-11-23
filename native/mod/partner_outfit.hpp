@@ -64,6 +64,34 @@ void Forget(Dress& d) noexcept;  // the body is gone: nothing to call
 // inventory update then re-dresses Sam itself. Logged.
 bool TestSetOwnSuitColour(std::uintptr_t player, std::uint8_t colour) noexcept;
 
+// ---- Sam's clothes change (docs/real-partner-body.md section 34; room_outfit_rules.hpp): his streaming control's switch
+// state and variants, and his paint effect's init (the 60 s wait behind the private room's black screen). Byte-checked on
+// their own (ClothesAvailable, lazy, once, logged): a mismatch turns only the clothes rule and the room outfit's variant
+// rule off.
+bool ClothesAvailable() noexcept;
+const char* ClothesWhy() noexcept;
+struct VariantState {
+    std::int32_t state = -1;                      // sc +0x70: 0 idle, 1 streaming, 2 apply, 3 the paint wait
+    std::uint8_t cur = 0xFF, wanted = 0xFF;       // sc +0x74 / +0x75
+    std::uint8_t request = 0xFF;                  // sc +0x76 (8: the node-graph variable)
+    float delay = 0, wait = 0;                    // sc +0x98 (state 3's 1 s), +0x9C (the 120 s give-up)
+    bool paint_ok = false;                        // the paint effect (player +0x54F0) checked out and was read
+    bool paint_ready = false;                     // as 0x142707090: +0xAA2C, or +0x38 and +0xAA21 == 3
+    std::uint8_t paint_stage = 0xFF;              // +0xAA21 (0..3)
+    std::uint8_t paint_released = 0xFF;           // +0xAA2C (the 60 s fallback sets it)
+    std::uint8_t paint_flags = 0xFF;              // +0xAA2E (bit 0: the fallback fired)
+    float paint_timer = -1;                       // +0xAA28 (s; > 60 releases)
+    int loading_model = -1;                       // the named flag DSPlayerLoadingModel (-1: not read)
+};
+// Fault-free reads of the local player's streaming control (and paint effect when `paint`); false when unavailable or the
+// player / component does not check out (type, owner).
+bool ReadVariantState(std::uintptr_t player, VariantState* out, bool paint) noexcept;
+// "variant 0 -> 1 (request 8, state 3, 1 s delay 0.0, wait 0.4 s); paint ready (stage 3, timer 0.4 s, released 0, flags 0x00); DSPlayerLoadingModel 1"
+const char* DescribeVariantState(const VariantState& v, char* buf, std::size_t cap) noexcept;
+// Hidden tests only (the caller checks automation + scratch saves): writes the request byte sc +0x76 (0..7 a variant, 8
+// the node-graph variable), as the room's uniform menu does. Logged.
+bool TestRequestVariant(std::uintptr_t player, std::uint8_t request, char* msg, std::size_t cap) noexcept;
+
 // Debug: the local player's outfit and the body's art-parts variations, to the log.
 void LogLocal(std::uintptr_t player) noexcept;
 void LogBody(std::uintptr_t e, const char* what) noexcept;

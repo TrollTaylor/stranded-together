@@ -108,6 +108,11 @@ std::string BootsLookFromSettings(const json::Value& settings) {
     return "own";
 }
 
+std::string RoomOutfitFromSettings(const json::Value& settings) {
+    if (const json::Value* t = settings.Find("textures"); t && t->is_object() && t->Str("room") == "suit") return "suit";
+    return "black";
+}
+
 bool TexturePreviewsFromSettings(const json::Value& settings) {
     if (const json::Value* t = settings.Find("textures"); t && t->is_object()) return t->Bool("previews", true);
     return true;

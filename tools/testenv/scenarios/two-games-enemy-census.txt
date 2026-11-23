@@ -1,0 +1,62 @@
+# Enemy sync T0 / P0 (docs/enemy-sync.md section 3): do both worlds have the same enemies, with the same GUIDs, in the same
+# places? Two games on the launcher's own Local test files (host_save: the guest's world is loaded from the host's save):
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-enemy-census -SeedSaves complete-100 -GuestSeed profile-only
+# Both Sams go to the MULE Camp Southwest of Lake Knot City (the guest 4 m beside the host). The read-only enemy_census
+# (registry walk, NPC GUID maps) runs on both games at the same moment: tag 1 at +0 s (with every other actor type), tag 2 at
+# +30 s (with the MULE manager's killed records). Then both resurrect every MULE (dev_enemies 1, each in its own world; god
+# mode 2 first) and census again: tag 3 at +0 s, tag 4 at +30 s, plus one anim_census on the host (the MULE skeleton).
+# The comparison (GUID sets, ids, places, drift) is made from the two logs afterwards (docs/enemy-sync.md 3.4).
+# Pass: every step; the census byte checks ok on both games; every census lists type-1 actors with GUIDs; no byte check
+# failure, no OTGC write.
+# covers: enemies
+role host
+graphics low
+timeout 330
+launcherini local-test
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+goto mule-camp-sw-lkc
+@guest goto 1521.90 992.00 0
+wait 4000
+# ---- the camp as the save left it: +0 s and +30 s
+@both action enemy_census 1 0 1
+waitlog 10 \[enemy\] census byte checks: [0-9]+/[0-9]+ ok; registry and NPC maps ok
+@guest waitlog 10 \[enemy\] census byte checks: [0-9]+/[0-9]+ ok; registry and NPC maps ok
+waitlog 10 \[enemy\] census done tag=1 \(
+@guest waitlog 10 \[enemy\] census done tag=1 \(
+waitlog 1 \[enemy\] census tag=1: enemies \(type 1\) [1-9][0-9]*: .* [1-9][0-9]* with a GUID
+@guest waitlog 1 \[enemy\] census tag=1: enemies \(type 1\) [1-9][0-9]*: .* [1-9][0-9]* with a GUID
+screenshot 01-host-camp
+@guest screenshot 01-guest-camp
+wait 26000
+@both action enemy_census 2 0 2
+waitlog 10 \[enemy\] census done tag=2 \(
+@guest waitlog 10 \[enemy\] census done tag=2 \(
+# ---- every MULE back at its camp, in both worlds (each its own call): +0 s and +30 s
+?@both action dev_god 2
+@both action dev_enemies 1
+waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+@guest waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+wait 6000
+@both action enemy_census 3 0 0
+waitlog 10 \[enemy\] census done tag=3 \(
+@guest waitlog 10 \[enemy\] census done tag=3 \(
+screenshot 03-host-camp
+@guest screenshot 03-guest-camp
+action anim_census 150 5 0
+?waitlog 30 \[census\] done tag=5
+wait 22000
+@both action enemy_census 4 0 0
+waitlog 10 \[enemy\] census done tag=4 \(
+@guest waitlog 10 \[enemy\] census done tag=4 \(
+screenshot 04-host-camp
+@guest screenshot 04-guest-camp
+?@both action dev_god 0
+nolog \[enemy\] byte check FAILED
+@guest nolog \[enemy\] byte check FAILED
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@guest quit
+wait 3000
+quit

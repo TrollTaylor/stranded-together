@@ -37,7 +37,9 @@ area partner-body          : the partner's real body: spawn, pose, animation, ch
 area self-view             : the guest's own Fragile in place of Sam (self view, fit, follow mode)
 area smooth                : smooth animation above 60 fps, pose interpolation and prediction
 area skeleton              : Sam's exoskeletons on Fragile (exo carrier skeletons)
+area hood                  : Fragile's rain hood on the exo carrier (STC1 v5 hood bytes, the unfold, her hair and hat under it)
 area outfit                : the partner Sam's outfit, his head and hair
+area face                  : Fragile's face: Sam's facial clips on her self view and on the partner body (face_sync, STJ1 face block)
 area suit-colour           : Fragile's porter suit in Sam's suit colours (palette)
 area textures              : Fragile's textures from the user's folder, hot reload, on her self view
 area texture-share         : her textures over the link (STT1: pictures, ready-made recipes) on the other screen
@@ -58,6 +60,7 @@ area vehicle-share         : shared real vehicles: identity, summon, remote driv
 area vehicle-hit           : vehicle hits, bumps and tackles
 area ride                  : riding together: boarding, seats, ride camera, forced exits
 area world-sync            : shared structures: builds, contributions, ladders, ropes, ziplines
+area enemies               : enemy sync (docs/enemy-sync.md): P0 the read-only enemy census; later the mirrors, hits, bullets
 area story                 : story tools, story loads
 area dev-tools             : dev tools: spawn, goto, weather, refill, god mode
 area quickstart            : the hidden runs' quickstart (start line)
@@ -92,7 +95,7 @@ tools/testenv/*                        testenv
 native/testenv/*                       testenv
 
 # ---- the launcher
-native/launcher/core/core_textures.*   launcher suit-defaults
+native/launcher/core/core_textures.*   launcher
 native/launcher/core/*                 launcher
 native/launcher/*                      launcher-ui
 
@@ -134,6 +137,10 @@ native/mod/anim_census.*               research
 native/mod/holo_catalog.*              research
 native/mod/audio_probe.*               research
 
+# ---- the mod: enemy sync (docs/enemy-sync.md). P0's census is the gate of the later phases (its byte-checked sites are
+# what P1 builds on), so it stays an area with its own run (two-games-enemy-census), unlike anim_census (research).
+native/mod/enemy_*                     enemies
+
 # ---- the mod: the host-held save session
 native/mod/coop_rules.hpp              host-save
 native/mod/coop_session.*              host-save
@@ -153,6 +160,8 @@ native/mod/partner_holo.*              partner-holo
 native/mod/menu_figure.*               menu-figure
 native/mod/exo_parts.hpp               skeleton
 native/mod/partner_outfit.*            outfit
+native/mod/face_rules.hpp              face
+native/mod/face_sync.*                 face
 native/mod/suit_colour*                suit-colour
 native/mod/fragile_textures.*          textures
 native/mod/texture_share.*             textures texture-share
@@ -160,8 +169,10 @@ native/mod/texture_wire.*              textures texture-share
 native/mod/texture_*                   textures
 native/mod/partner_gear.*              gear
 native/mod/gear_wear.hpp               gear-wear
+native/mod/gear_keep.hpp               gear private-room
 native/mod/gear_*                      gear
 native/mod/boots_look.hpp              boots
+native/mod/room_outfit_rules.hpp       self-view private-room partner-body
 native/mod/held_*                      held-items
 native/mod/partner_collision.*         collision
 native/mod/nametag*                    name-tags
@@ -181,6 +192,7 @@ native/mod/world_*                     world-sync
 # ---- narrowing by the changed lines (added to the file's areas above). Keep the regexes specific: a match costs a run.
 # config.*: only a key's parse line ("key") or its field (bool key), not the long [config] Log lines that list every key.
 native/mod/real_body.*      ~private.?room|close.?up|loading|load_screen|kSelfLoad            private-room
+native/mod/real_body.*      ~room.?outfit|[Cc]lothes|RoomLook|LookBodyId|SelfLook|[Rr]edress  private-room
 native/mod/real_body.*      ~exo_|exo.?carrier|skeleton                                       skeleton
 native/mod/real_body.*      ~held_item|held.?clone|HeldItem                                   held-items
 native/mod/real_body.*      ~menu.?figure|cargo.?menu                                         menu-figure
@@ -188,21 +200,27 @@ native/mod/real_body.*      ~ride_|seat_|passenger                              
 native/mod/game_actions.*   ~loading|private.?room                                            private-room
 native/mod/game_actions.*   ~carried|ride_|passenger                                          ride
 native/mod/game_actions.*   ~dev_|spawn|weather|refill                                        dev-tools
+native/mod/debug_actions.*  ~enemy_|[Ee]nemy                                                  enemies
 native/mod/partner_gear.*   ~exo_|exo.?carrier|skeleton                                       skeleton
+native/mod/partner_gear.*   ~[Hh]ood                                                          hood
 native/mod/partner_gear.*   ~private.?room|loading                                            private-room
 native/mod/partner_gear.*   ~boots_look|boots_own|BootsLook|dev_boots                         boots
 native/mod/partner_gear.*   ~held_item|held.?clone|HeldItem                                   held-items
 native/mod/partner_gear.*   ~\bweapons?\b                                                     weapons
 native/mod/partner_gear.*   ~rain.?cover|durability|gear_wear|GearWear                        gear-wear
 native/mod/partner_outfit.* ~exo_|exo.?carrier|skeleton                                       skeleton
+native/mod/partner_outfit.* ~[Cc]lothes|VariantState|[Pp]aint|LoadingModel|[Ww]ardrobe          private-room
 native/mod/held_*           ~\bweapons?\b                                                     weapons
 native/mod/online_gate.*    ~road|structure|ladder|zipline|\bw[1-4]\b                         world-sync
 native/mod/texture_looks.*  ~ready.?made|textures_defaults|recipe|extract                     suit-defaults
+native/launcher/core/core_textures.* ~[Rr]eady.?[Mm]ade|[Ee]xtract|[Mm]anifest|textures_defaults|[Dd]efaults|gold|silver  suit-defaults
 native/mod/texture_share.*  ~ready.?made|textures_defaults|recipe                             suit-defaults
 native/mod/config.*         ~("|bool\s+|int\s+)textures?_                                     textures
 native/mod/config.*         ~("|bool\s+|int\s+)textures_defaults                              suit-defaults
 native/mod/config.*         ~("|bool\s+|int\s+|std::string\s+)boots_                          boots
 native/mod/config.*         ~("|bool\s+|int\s+)exo_                                          skeleton
+native/mod/config.*         ~("|bool\s+)room_outfit                                          private-room
+native/mod/config.*         ~("|bool\s+|int\s+)(fragile_hood|hood_hair)                     hood
 native/mod/config.*         ~("|bool\s+|int\s+|float\s+)self_(view|character|feet|headgear)   self-view
 native/mod/config.*         ~("|bool\s+|int\s+)world_                                        world-sync
 native/mod/config.*         ~("|bool\s+|int\s+)(vehicle_|partner_vehicle|tackle)              vehicle-share
@@ -213,5 +231,11 @@ native/mod/config.*         ~("|bool\s+|int\s+)partner_collision                
 native/mod/config.*         ~("|bool\s+|int\s+)host_save                                     host-save
 native/mod/config.*         ~("|bool\s+|int\s+)dev_tools                                     dev-tools
 native/mod/player_sync.*    ~textures?_                                                       textures
+native/mod/player_sync.*    ~LookBodyId|RoomOutfit|room_outfit                                private-room
+native/mod/player_sync.*    ~facesync|kJointsFace                                             face
+native/mod/real_body.*      ~facesync                                                         face
+native/mod/pose_wire.*      ~kJointsFace|kFaceSize|kFaceFlags|\bFace\b                        face
+native/mod/pose_wire.*      ~[Hh]ood                                                          hood
+native/mod/exo_parts.hpp    ~[Hh]ood                                                          hood
 native/mod/player_sync.*    ~vehicle                                                          vehicle-share
 native/mod/sandbox.*        ~host_save|refuse                                                 host-save

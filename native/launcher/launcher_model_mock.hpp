@@ -135,6 +135,7 @@ public:
     bool textures_folder_for_open(std::string& path_out, std::string& error_out) override;
     bool set_textures_folder(const std::string& folder, std::string& error_out) override;
     void set_boots_look(bool own) override;
+    void set_room_outfit(bool black) override;
     void set_ready_made(bool on) override;
     void set_auto_extract(bool on) override;
     // screenshot driver: the extraction in progress shows as the automatic one, and the card's quiet line
@@ -201,6 +202,7 @@ private:
     double local_start_ = -1.0;   // mock clock; < 0 when no local test runs
     std::string tex_folder_;          // "" = the default placeholder
     bool tex_boots_own_ = true;       // her boots: her own, painted / Sam's boots
+    bool tex_room_black_ = true;      // Fragile in the private room: her black suit / her porter suit
     bool tex_ready_made_ = true, tex_auto_extract_ = true, tex_auto_running_ = false;
     std::string tex_auto_note_;
     bool tex_extracted_ = false;

@@ -12,6 +12,7 @@
 #include "boots_look.hpp"
 #include "exo_parts.hpp"
 #include "game_actions.hpp"
+#include "gear_keep.hpp"
 #include "gear_look.hpp"
 #include "gear_wear.hpp"
 #include "held_items.hpp"
@@ -259,7 +260,18 @@ bool g_enabled = true;
 // skeleton (real_body.cpp kPlayerGlobalMask); the self view's props are only the BB pod (Tick).
 bool g_partner_on = true, g_self_on = true;
 int g_fault_spawns = 0;  // hidden tests (`gear 5 <n>`): the next n prop starts fail
-bool g_pod_visible_memo = true;  // the BB pod's state while our self view was off
+// Round 11 (section 35): the BB pod under the self view (gearkeep::DecidePod): the game's own rule for Sam's pod with our
+// bit 63 ignored, cross-checked against the pod's own flag while the self view is off; the fallback is the last plain-play
+// reading, taken as worn after a load. `gear 30 <0|1|2>`: 0 the rule (default), 1 the fallback only, 2 the status.
+gearkeep::PodState g_pod;
+bool g_pod_rule_on = true;
+struct PodLog {
+    bool have = false, vis = false;
+    gearkeep::PodSource src = gearkeep::PodSource::flag;
+    unsigned changes = 0, mismatches = 0;
+    double next_summary_ms = 0;
+    std::uint32_t summary_compared = 0;
+} g_podlog;
 const char* TypeOf(std::uintptr_t obj);
 
 // Which of the game's gear entities are mirrored (each side spawns copies of them by resource): the
@@ -526,6 +538,91 @@ bool ReadMeshCtl(std::uintptr_t ctrl, unsigned k, exo::MeshCtl* m) {
     m->cmpmode = mode != 0;
     return true;
 }
+
+// Round 11 (section 35): the game's rule for Sam's BB pod (gear_keep.hpp PodAsked: the mesh controller's attachment slot 0,
+// 0x1426C7760) read with our self view's bit 63 ignored. Byte-checked once: the rule itself (0x1426C7B0B through the call
+// that sets the pod's flag, 0x14235F640), the slot's base (+0x2100, 0x320 a slot), the inventory gate (0x1427AD860:
+// +0x4C7E bit 4) and the controller's part formula (MeshCtlOk). On a mismatch the fallback (the last plain-play reading,
+// taken as worn after a load) stands.
+constexpr std::uintptr_t kPodRule = 0x26C7B0B, kPodSlotBase = 0x26C78D0, kPodGate = 0x27AD860;
+constexpr std::uintptr_t kPodSlotK = 0x2108, kPodSlotRef = 0x2118, kPodSlotFlags = 0x2410;  // slot 0 (+0x2100): +8 k, +0x18 ref, +0x310 flags
+// The rule's two fixed reads (meaning unknown: by ReadMeshCtl's layout index 119 of the forced-hide and mask arrays, past
+// the 0x59 parts, so not mesh 30's +0xF58 / +0x438); read at the same offsets as the game.
+constexpr std::uintptr_t kPodForcedHide = 0x1220, kPodMaskK = 0x700;
+constexpr std::uintptr_t kInvPodReady = 0x4C7E, kInvPodOn = 0x4C52;
+constexpr unsigned kMeshKCount = 0x59;  // ApplyMeshControl's parts (k 0..0x58)
+int g_pod_sites = -1;  // -1 not checked, 0 mismatch (the fallback), 1 ok
+bool PodRuleOk() {
+    if (g_pod_sites < 0) {
+        const std::uintptr_t b = mem::Base();
+        // (CodeMatches compares at most 96 bytes per signature: the 174 bytes in two parts)
+        const bool rule = mem::CodeMatches(b + kPodRule,
+                                           "41 0F B6 9E 10 03 00 00 80 E3 01 75 13 48 8B 06 48 8B 88 88 00 00 00 D0 E9 F6 C1 01 75 3E B3 01 85 FF "
+                                           "0F 85 F2 03 00 00 4D 85 ED 0F 84 81 04 00 00 48 8B 06 48 8B 88 C8 54 00 00 E8 15 5D 0E 00 84 C0 74 5D "
+                                           "48 8B 06 48 8B 88 C8 54 00 00 80 B9 52 4C 00 00 00 74 4A 80") &&
+                          mem::CodeMatches(b + kPodRule + 88,
+                                           "F3 01 EB 47 41 0F B6 46 08 8B 54 C6 38 83 FA FF 74 13 48 8B 4C 24 60 E8 21 BA BE FF 84 C0 0F 94 C3 84 "
+                                           "C0 74 A3 85 FF 0F 85 95 03 00 00 48 83 BE 20 12 00 00 00 74 04 B3 01 EB 95 48 83 BE 00 07 00 00 00 74 "
+                                           "8B B3 01 EB 87 B3 01 0F B6 D3 49 8B CD E8 87 7A C9 FF");
+        const bool slot = mem::CodeMatches(b + kPodSlotBase, "49 69 C7 20 03 00 00 4C 8D B6 00 21 00 00 4C 03 F0 49 8B 46 18");
+        const bool gate = mem::CodeMatches(b + kPodGate, "0F B6 81 7E 4C 00 00 C0 E8 04 24 01 C3");
+        g_pod_sites = rule && slot && gate && MeshCtlOk() ? 1 : 0;
+        Log("[gear] BB pod: the game's rule for Sam's pod (0x1426C7B0B) %s", g_pod_sites == 1
+                ? "verified: under the self view her pod follows what the game asks for his (cross-checked against its own flag while the self view is off)"
+                : "does not match this game build: under the self view her pod keeps its last plain-play state (taken as worn after a load)");
+    }
+    return g_pod_sites == 1;
+}
+// The rule's inputs for the pod entity `pod` (false: not readable now, or the slot is not this pod).
+bool ReadPodRule(std::uintptr_t p, std::uintptr_t inv, std::uintptr_t pod, gearkeep::PodRead* r) {
+    const std::uintptr_t ctrl = p + 0xA60;
+    if (!PodRuleOk() || Q(ctrl) != p) return false;
+    std::uint8_t k = 0, slot_fl = 0, ready = 0, on = 0;
+    std::uint64_t sam_fl = 0, hide = 0, mask = 0, ref = 0;
+    std::int32_t map = -1;
+    // The slot's own part index k (its byte +8) picks the ArtParts part, as the game's rule does (run 20261123-094135: k 1,
+    // not EDSPlayerMesh 30; the forced hide and mask the rule reads are fixed, above).
+    if (!Rd(ctrl + kPodSlotK, k) || k >= kMeshKCount || !Rd(ctrl + kPodSlotRef, ref) || !Rd(ctrl + kPodSlotFlags, slot_fl) ||
+        !Rd(p + kEntFlags, sam_fl) || !Rd(ctrl + 0x38 + 8ull * k, map) || !Rd(ctrl + kPodForcedHide, hide) || !Rd(ctrl + kPodMaskK, mask) ||
+        !Rd(inv + kInvPodReady, ready) || !Rd(inv + kInvPodOn, on))
+        return false;
+    static int s_k_logged = -1;
+    static unsigned s_k_logs = 0;
+    const bool same = ref && ref - 0x20 == pod;
+    if (s_k_logged != k * 2 + same && s_k_logs < 20) {
+        ++s_k_logs;
+        s_k_logged = k * 2 + same;
+        Log("[gear] BB pod: the controller's slot 0: part %u (map %d), its entity %s our pod", k, map, same ? "is" : "is NOT (the rule is not read)");
+    }
+    if (!same) return false;  // the slot holds another pod (or none yet)
+    r->gate_ready = (ready & 0x10) != 0;
+    r->gate_on = on != 0;
+    r->slot_hidden = (slot_fl & 1) != 0;
+    r->sam_visible = (sam_fl & 0x2) != 0;
+    r->part_mapped = map != -1;
+    r->part_asked = true;
+    if (r->part_mapped) {
+        exo::MeshCtl m;
+        if (!ReadMeshCtl(ctrl, k, &m)) return false;
+        r->part_asked = exo::MeshAsked(m);
+    }
+    r->forced_hide = hide != 0;
+    r->mask_k = mask != 0;
+    return true;
+}
+// Plain play for the gear's own rules: no load or post-load setup, and none of a menu, the private room, a cutscene, a
+// terminal, subspace (DSGameState flags, current or requested). *in_room: the PrivateRoom flags.
+constexpr std::uint64_t kGsTerminal = 0x3ull, kGsSubspace = 1ull << 8, kGsGameOver = 1ull << 13, kGsFaint = 1ull << 14, kGsMovie = 1ull << 18,
+                        kGsInGameCutscene = 1ull << 19, kGsDirectRoom = 1ull << 30;
+constexpr std::uint64_t kGsRoom = game::kGameStatePrivateRoom | kGsDirectRoom;
+constexpr std::uint64_t kGsNotPlain = kGsRoom | kGsTerminal | game::kGameStatePauseMenu | game::kGameStateCutscene | game::kGameStateSystemPause |
+                                      kGsSubspace | kGsGameOver | kGsFaint | kGsMovie | kGsInGameCutscene;
+bool PlainPlay(bool* in_room) {
+    std::uint64_t gs = 0;
+    const char* load = game::LoadOrSetup(&gs, nullptr);
+    if (in_room) *in_room = (gs & kGsRoom) != 0;
+    return !load && !(gs & kGsNotPlain);
+}
 int g_exo_force = -1;     // `gear 28 <type>` (hidden tests): the skeleton pieces read replaced by a type's (-1 off)
 int g_exo_logged = -2;    // the skeleton type last logged
 std::uint64_t g_exo_logged_raw = 0;  // the game's skeleton bits last logged (ReadParts)
@@ -745,6 +842,22 @@ struct PropSet {
         // the first show waits for the tint (the sender's exos variation on the carrier), at most kExoTintWaitMs
         std::uint8_t tint_want = 0xFE;  // wire::PorterExos of the outfit it copies (0xFE: no outfit read)
         bool tint_ok = false;
+        // her rain hood on it (section 37): what it shows (HoodAnimTick), its hood parts per type {on, off, switch} looked up
+        // on this carrier, its animation slots (bit per type, -1 not checked), the slot being unfolded
+        exo::HoodAnim hood;
+        int hood_part = -1;
+        std::uintptr_t hood_e = 0;
+        std::int16_t hood_idx[exo::kHoodTypes][3] = {{-1, -1, -1}, {-1, -1, -1}, {-1, -1, -1}};
+        int anim_ok = -1, anim_slot = -1, anim_slot_next = -1, anim_type = -1;
+        bool anim_alt = false;
+        unsigned anim_checks = 0, hood_calls = 0, hood_faults = 0, hood_logs = 0;
+        double anim_check_ms = 0;
+        // her hair under the hood (hood_hair): the body, its hair parts, those we hid
+        std::uintptr_t hair_body = 0;
+        std::int16_t hair_parts[4] = {-1, -1, -1, -1};
+        unsigned hair_n = 0, hair_mask = 0, hair_logs = 0;
+        bool hair_hidden = false, hair_checked = false;
+        double hair_next_ms = 0;
     } exo;
 };
 PropSet g_sets[2] = {{"gear", realbody::GearSlot::partner}, {"gear-self", realbody::GearSlot::self}};
@@ -973,6 +1086,15 @@ std::uint32_t g_read_timed = 0, g_read_window = 0;
 
 void NoteHeadItem(std::uintptr_t e, int res_id, double now);  // section 20 (below)
 void ReadHoodHat(std::uintptr_t p, std::uintptr_t inv, const Xf& sam, double now);  // section 26.8 (below)
+void ReadHood(std::uintptr_t inv);                                                  // section 37 (below)
+// Sam's rain hood as read (section 37, ReadHood): the state 0..12, the type (-1 none), the porter's second clip set.
+struct HoodRead {
+    bool valid = false;
+    int state = 0, type = -1;
+    bool alt = false;
+    int logged_state = -2, logged_type = -2;
+    unsigned logs = 0;
+} g_hoodr;
 bool HeadConst(std::uintptr_t e, float (&p)[3], float (&r)[3][3], const char** name);  // section 26.8 (below)
 void ReadBootsShown(std::uintptr_t inv);                     // section 21 (below)
 bool CargoHideSites();                                       // v0.23 (below)
@@ -995,6 +1117,51 @@ bool g_boots_own_porter = true;
 std::uint32_t g_boots_sent_visible = 0;
 bool g_boots_have_ready = false;
 void SelfBootsTick();  // section 30 (below)
+
+// Section 35: whether the BB pod is shown, its flag or (under the self view) the game's rule / the fallback; logged when that
+// changes (100 lines), on a rule-vs-flag mismatch (40 lines) and in a summary of the cross-check (every 60 s while it runs).
+bool PodTick(std::uintptr_t p, std::uintptr_t inv, std::uintptr_t pod) {
+    const double now = static_cast<double>(GetTickCount64());
+    gearkeep::PodTick t;
+    t.self_shown = realbody::SelfShown();
+    t.flag = Visible(pod);
+    t.plain = PlainPlay(&t.in_room);
+    t.now_ms = now;
+    gearkeep::PodRead r;
+    if (g_pod_rule_on && ReadPodRule(p, inv, pod, &r)) {
+        t.have_ask = true;
+        t.ask = gearkeep::PodAsked(r);
+    }
+    const gearkeep::PodOut o = gearkeep::DecidePod(g_pod, t);
+    auto inputs = [&](char* d, std::size_t cap) {
+        std::snprintf(d, cap, "gate %d/%d, slot hidden %d, Sam visible %d, part %s, forced hide %d, mask %d; %s", r.gate_ready, r.gate_on, r.slot_hidden,
+                      r.sam_visible, !r.part_mapped ? "not mapped" : r.part_asked ? "asked" : "not asked", r.forced_hide, r.mask_k,
+                      t.plain ? "plain play" : "not plain play");
+    };
+    if (o.ev == gearkeep::PodEvent::mismatch_started && ++g_podlog.mismatches <= 40) {
+        char d[200];
+        inputs(d, sizeof(d));
+        Log("[gear] BB pod: controller ask vs its flag: mismatch (ask %s, flag %s; %s)", t.ask ? "shown" : "hidden", t.flag ? "shown" : "hidden", d);
+    } else if (o.ev == gearkeep::PodEvent::mismatch_ended && g_podlog.mismatches <= 40) {
+        Log("[gear] BB pod: controller ask vs its flag: agree again (%s)", t.flag ? "shown" : "hidden");
+    } else if (o.ev == gearkeep::PodEvent::disproved) {
+        char d[200];
+        inputs(d, sizeof(d));
+        Log("[gear] BB pod: controller ask vs its flag disagree for %.1f s in plain play (ask %s, flag %s; %s): the game's rule is off for this "
+            "session, under the self view her pod keeps its last plain-play state",
+            gearkeep::kPodDisproveMs / 1000, t.ask ? "shown" : "hidden", t.flag ? "shown" : "hidden", d);
+    }
+    if (g_pod.compared != g_podlog.summary_compared && (now >= g_podlog.next_summary_ms || g_pod.compared == 50)) {
+        g_podlog.summary_compared = g_pod.compared;
+        g_podlog.next_summary_ms = now + 60000;
+        Log("[gear] BB pod: controller ask vs its flag: %u match, %u mismatch over %u reads with the self view off%s", g_pod.matched, g_pod.mismatched,
+            g_pod.compared, g_pod.disproved ? " (the rule is off for this session)" : "");
+    }
+    if ((!g_podlog.have || o.vis != g_podlog.vis || o.src != g_podlog.src) && ++g_podlog.changes <= 100)
+        Log("[gear] BB pod: %s (%s)", o.vis ? "shown" : "hidden", gearkeep::PodSourceName(o.src));
+    g_podlog.have = true, g_podlog.vis = o.vis, g_podlog.src = o.src;
+    return o.vis;
+}
 
 // Reads every gear item of the local player into g_items. `verbose`: the full walk to the log.
 bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
@@ -1063,16 +1230,14 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
     if (pack && Derives(pack, "DSBackpackEntity")) add_entity(wire::GearKind::backpack, pack);
     // The BB pod (inventory +0x4D48, a reference: entity = value - 0x20; the entity with the
     // DSBBPodComponent, which binds to the player) is drawn as the cinematic pod prop. The game shows it
-    // only while Sam's own BBPod part is shown (0x1426A0620 part 30), so under our self view (all his
-    // parts hidden) its state from before stands.
+    // only while Sam's own BBPod part is shown (0x1426C7760 slot 0, k 30), so under our self view (all his
+    // parts hidden) its own flag reads hidden: PodTick takes the game's rule instead (section 35).
     std::uintptr_t pod = RefEntity(Q(inv + kInvBbPod));
     if (pod && !partner::FindComponentByName(reinterpret_cast<game::Entity*>(pod), "DSBBPodComponent")) pod = 0;
     if (pod) {
         Xf w;
         if (ReadWorld(pod, &w) && Dist(w, sam) < 5.0) {
-            bool vis = Visible(pod);
-            if (realbody::SelfShown()) vis = g_pod_visible_memo;
-            else g_pod_visible_memo = vis;
+            const bool vis = PodTick(p, inv, pod);
             char ppath[wire::kMaxGearResPath + 8] = {};
             std::uint8_t pguid[16] = {};
             const char* prt = nullptr;
@@ -1240,7 +1405,9 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
             k.seen = false;
         }
     }
-    // Her hat in the rain (section 26.8): the worn hat the game hides while Sam's hood is up, as a shown head item.
+    // Sam's rain hood (section 37), then her hat in the rain (section 26.8): the worn hat the game hides while Sam's hood is
+    // up, as a shown head item, unless her own hood is drawn up over it.
+    ReadHood(inv);
     ReadHoodHat(p, inv, sam, static_cast<double>(GetTickCount64()));
     // What wears out (section 28): the rain cover's durability, logged in steps (read only, every second).
     ReadRainCover(inv, static_cast<double>(GetTickCount64()));
@@ -1558,6 +1725,11 @@ bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_
         f.parts_apply[0] = g_parts_apply[0], f.parts_apply[1] = g_parts_apply[1];
         f.parts_visible[0] = g_parts_visible[0], f.parts_visible[1] = g_parts_visible[1];
     }
+    // STC1 v5: Sam's rain hood (section 37)
+    if (g_hoodr.valid) {
+        f.hood = wire::PackGearHood(g_hoodr.state);
+        f.hood_info = wire::PackGearHoodInfo(g_hoodr.type, g_hoodr.alt);
+    }
     // Hidden tests only: synthetic delivery cases stacked on the backpack (large, medium, small, ...),
     // in the innermost of the layers the game uses on Sam's backpack (run 20261117-105905: layers 0.13 m
     // apart outwards along the backpack's y axis, the bottom piece 0.12 m out and 0.16 m below its origin).
@@ -1638,27 +1810,37 @@ void DescribeFrame(const wire::GearFrame& f, const char* what, const ResEntry* r
 
 // Section 28: a layout change names the game entities it lost and gained (the layout lines only count them), and says the
 // rain cover's removal in one line (the game wore it out or took it off; it goes from Fragile on both screens with it).
-// delta[r]: how many more items of resource r the old layout had than the new one.
-void NameResChanges(const int (&delta)[wire::kMaxGearRes], const ResEntry* res, const char* who) {
+// delta[r]: how many more items of resource r the old layout had than the new one. `ours`: our own gear (the cover's wear
+// read says why it went: round 11, a save without a cover is not timefall); the partner's: the general wording.
+gearwear::CoverGone OurCoverGone(double* pc);  // section 28 (below)
+void NameResChanges(const int (&delta)[wire::kMaxGearRes], const ResEntry* res, const char* who, bool ours) {
     static unsigned logs = 0;
     for (unsigned r = 0; r < wire::kMaxGearRes; ++r) {
         if (!delta[r] || ++logs > 200) continue;
         const ResEntry* e = res && res[r].used ? &res[r] : nullptr;
         Log("[gear] %s %s %d item(s) of resource %u '%s' %02x%02x%02x%02x...", who, delta[r] > 0 ? "lost" : "gained", delta[r] > 0 ? delta[r] : -delta[r], r,
             e ? e->path : "?", e ? e->guid[3] : 0, e ? e->guid[2] : 0, e ? e->guid[1] : 0, e ? e->guid[0] : 0);
-        if (e && gearwear::IsRainCover(e->path, e->guid))
-            Log("[gear] %s: the backpack's rain cover %s", who,
-                delta[r] > 0 ? "is gone (the game removed it: worn out in timefall, or taken off; Sam loses it, and Fragile with him on both screens)"
-                             : "is back (a new one worn)");
+        if (e && gearwear::IsRainCover(e->path, e->guid)) {
+            if (delta[r] < 0) {
+                Log("[gear] %s: the backpack's rain cover is back (a new one worn)", who);
+                continue;
+            }
+            double pc = 0;
+            const gearwear::CoverGone why = ours ? OurCoverGone(&pc) : gearwear::CoverGone::unknown;
+            if (why == gearwear::CoverGone::worn_out || why == gearwear::CoverGone::taken_off)
+                Log("[gear] %s: the backpack's rain cover %s (durability %.2f %% at the last read that had it worn)", who, gearwear::CoverGoneText(why), pc);
+            else
+                Log("[gear] %s: the backpack's rain cover %s", who, gearwear::CoverGoneText(why));
+        }
     }
 }
-void NameLayoutChange(const wire::GearFrame& was, const wire::GearFrame& now, const ResEntry* res, const char* who) {
+void NameLayoutChange(const wire::GearFrame& was, const wire::GearFrame& now, const ResEntry* res, const char* who) {  // our gear
     int delta[wire::kMaxGearRes] = {};
     for (unsigned i = 0; i < was.count; ++i)
         if (was.items[i].kind == wire::GearKind::entity && was.items[i].res < wire::kMaxGearRes) ++delta[was.items[i].res];
     for (unsigned i = 0; i < now.count; ++i)
         if (now.items[i].kind == wire::GearKind::entity && now.items[i].res < wire::kMaxGearRes) --delta[now.items[i].res];
-    NameResChanges(delta, res, who);
+    NameResChanges(delta, res, who, true);
 }
 
 // Our gear's looks (every 500 ms; a carried case's variation once per piece): each item of g_local that
@@ -1859,6 +2041,64 @@ void WatchWeapon(game::Entity* local, double now) {
     }
 }
 
+// Section 35: what the private room took (gearkeep::RegainTick over our sent frame, the cap case of round 10): a line on
+// entering it, and one once play is plain again after leaving it, naming what Sam wore before it and does not now.
+constexpr unsigned kKeepKeys = wire::kMaxGearRes + 3;  // the gear resources, then the BB pod, the backpack, the Odradek
+constexpr unsigned kKeyPod = wire::kMaxGearRes, kKeyPack = kKeyPod + 1, kKeyOdra = kKeyPod + 2;
+gearkeep::RoomRegain<kKeepKeys> g_regain;
+void RoomRegainTick() {
+    int counts[kKeepKeys] = {}, missing[kKeepKeys] = {}, n = 0;
+    for (unsigned i = 0; i < g_local.count; ++i) {
+        const wire::GearItem& it = g_local.items[i];
+        if (it.res < wire::kMaxGearRes) ++counts[it.res];  // the items that name a gear resource (the game's entities, the arms)
+        else if (it.kind == wire::GearKind::bb_pod) ++counts[kKeyPod];
+        else if (it.kind == wire::GearKind::backpack) ++counts[kKeyPack];
+        else if (it.kind == wire::GearKind::odradek) ++counts[kKeyOdra];
+    }
+    bool in_room = false;
+    const bool plain = PlainPlay(&in_room);
+    const double now = static_cast<double>(GetTickCount64());
+    const gearkeep::RegainEvent ev = gearkeep::RegainTick(g_regain, in_room, plain, now, counts, missing, &n);
+    int before = 0;
+    for (unsigned k = 0; k < kKeepKeys; ++k) before += g_regain.before[k];
+    static unsigned logs = 0;
+    if (ev == gearkeep::RegainEvent::none || ++logs > 40) return;
+    if (ev == gearkeep::RegainEvent::entered) {
+        if (g_regain.have_before)
+            Log("[gear] entering the private room: %d gear item(s) Sam wore in plain play before it noted (BB pod %d); checked again %.0f s after "
+                "leaving it",
+                before, g_regain.before[kKeyPod], gearkeep::kRegainWaitMs / 1000);
+        else
+            Log("[gear] entering the private room: no plain-play reading of Sam's gear before it (what it takes is not checked this time)");
+        return;
+    }
+    if (!g_regain.have_before) return;
+    if (n == 0) {
+        Log("[gear] left the private room: every gear item Sam wore before it is back (%d before, BB pod %d)", before, counts[kKeyPod]);
+        return;
+    }
+    char list[640] = {};
+    std::size_t len = 0;
+    for (unsigned k = 0; k < kKeepKeys && len + 1 < sizeof(list); ++k) {
+        if (!missing[k]) continue;
+        int w = 0;
+        if (k == kKeyPod || k == kKeyPack || k == kKeyOdra) {
+            w = std::snprintf(list + len, sizeof(list) - len, "%s%d x %s", len ? "; " : "", missing[k],
+                              k == kKeyPod ? "BB pod" : k == kKeyPack ? "backpack" : "Odradek");
+        } else {
+            const ResEntry& e = g_res_local[k];
+            const char* name = e.used ? std::strrchr(e.path, '/') : nullptr;
+            w = std::snprintf(list + len, sizeof(list) - len, "%s%d x resource %u '%s' %02x%02x%02x%02x", len ? "; " : "", missing[k], k,
+                              name ? name + 1 : e.used ? e.path : "?", e.guid[3], e.guid[2], e.guid[1], e.guid[0]);
+        }
+        if (w < 0) break;
+        len += static_cast<std::size_t>(w) < sizeof(list) - len ? static_cast<std::size_t>(w) : sizeof(list) - len - 1;
+    }
+    Log("[gear] left the private room: %d gear item(s) Sam wore before it are not back: %s. Sam does not wear them now (taken off in the room: "
+        "by the game with the room's clothes, or in the wardrobe), so Fragile does not either, on both screens",
+        n, list);
+}
+
 void ReadLocalTick(game::Entity* local, bool local_active, double now) {
     if (now < g_next_read_ms) return;
     g_next_read_ms = now + kReadEveryMs;
@@ -1947,6 +2187,7 @@ void ReadLocalTick(game::Entity* local, bool local_active, double now) {
         g_logged_hash = h;
         DescribeFrame(f, "our gear", g_res_local);
     }
+    RoomRegainTick();
 }
 
 // ---------------------------------------------------------------- self view headgear (docs/real-partner-body.md section 20)
@@ -2188,6 +2429,56 @@ struct HatSlot {
 };
 constexpr HatSlot kHats[4] = {{0x0F, 0x4E18}, {0x24, 0x4E20}, {0x31, 0x4E28}, {0x32, 0x4E30}};
 
+// ---- Round 11 (docs/real-partner-body.md section 37): Sam's rain hood, read for her hood on the exo carrier. The inventory's
+// hood state machine (0x1428125A0, every frame): the state +0x4970 (0..12; exo_parts.hpp HoodPhaseOf), the type +0x4A88 (0
+// porter, 1 oxi, 2 sea otter: 0x142791EE0), the opening clip's index +0x4A8C (4: the porter hood's second clip set).
+// Byte-checked once; on a mismatch nothing is read: her hood is not drawn and her hat stays on her in the rain (26.8).
+int g_hood_mode = 2;      // session.ini fragile_hood / `gear 31 <0/1/2>`: 0 off, 1 the timed swap, 2 the unfold where the carrier can play it
+bool g_hood_hair = true;  // session.ini hood_hair / `gear 33 <0/1>`: her hair hidden while her hood is drawn
+int g_hood_force_state = -1, g_hood_force_type = 2;  // `gear 32 <state> [type]` (hidden tests; -1 off): our reading replaced
+int g_hood_read_sites = -1;                           // -1 not checked, 0 mismatch (no reading), 1 ok
+constexpr std::uintptr_t kInvHoodType = 0x4A88, kInvHoodClipOpen = 0x4A8C;
+bool HoodReadSites() {
+    if (g_hood_read_sites < 0) {
+        const std::uintptr_t b = mem::Base();
+        const bool ok = mem::CodeMatches(b + 0x2812C5E, "8B 86 70 49 00 00") &&                         // the state machine reads +0x4970
+                        mem::CodeMatches(b + 0x2813002, "C7 86 70 49 00 00 06 00 00 00") &&             // ... up: 6
+                        mem::CodeMatches(b + 0x28132BE, "C7 86 70 49 00 00 0C 00 00 00") &&             // ... lowering: 12
+                        mem::CodeMatches(b + 0x2791F1A, "38 91 88 4A 00 00") &&                         // the type +0x4A88
+                        mem::CodeMatches(b + 0x27924B7, "C6 86 89 4A 00 00 02") &&                      // the porter's slot 2
+                        mem::CodeMatches(b + 0x28134EE, "48 63 96 8C 4A 00 00 41 B0 01 48 8B 46 30 48 8B 88 98 03 00");  // the opening clip +0x4A8C
+        g_hood_read_sites = ok ? 1 : 0;
+        Log("[hood] Sam's hood state sites %s", ok ? "verified: his rain hood is read for her hood" : "do not match this game build: her hood is not drawn");
+    }
+    return g_hood_read_sites == 1;
+}
+void ReadHood(std::uintptr_t inv) {
+    HoodRead& h = g_hoodr;
+    std::int32_t st = 0, clip = 0;
+    std::uint8_t ty = 0;
+    h.valid = HoodReadSites() && Rd(inv + kInvHood, st) && Rd(inv + kInvHoodType, ty) && Rd(inv + kInvHoodClipOpen, clip) && st >= 0 &&
+              st <= wire::kGearHoodStateMax && ty <= wire::kGearHoodTypeMax;
+    if (g_hood_force_state >= 0) {
+        h.valid = true;
+        st = g_hood_force_state;
+        ty = static_cast<std::uint8_t>(g_hood_force_type);
+        clip = 0;
+    }
+    h.state = h.valid ? st : 0;
+    h.type = h.valid ? ty : -1;
+    h.alt = h.valid && ty == 0 && clip == 4;
+    if ((h.state != h.logged_state || h.type != h.logged_type) && h.logs < 400) {
+        ++h.logs;
+        if (h.valid)
+            Log("[hood] our Sam's hood: %s, %s (state %d)%s", exo::HoodTypeName(h.type), exo::HoodPhaseName(exo::HoodPhaseOf(h.state)), h.state,
+                g_hood_force_state >= 0 ? " (gear 32)" : "");
+        else
+            Log("[hood] our Sam's hood: not read");
+        h.logged_state = h.state, h.logged_type = h.type;
+    }
+}
+bool OwnHoodDrawnUp();  // (below, with the carrier)
+
 bool HoodSites() {
     if (g_hood_sites >= 0) return g_hood_sites == 1;
     const std::uintptr_t b = mem::Base();
@@ -2254,7 +2545,15 @@ struct CoverWear {
     double next_ms = 0;
     unsigned logs = 0;
     bool insane_logged = false;
+    int last_worn = -1;      // round 11: the last worn byte read (-1 none yet, or none since the last load)
+    bool ever_worn = false;  // ... worn at any read since the last load (another cover block)
+    double worn_pc = 0;      // the durability (percent) at the last read since then that had it worn
 } g_cover;
+
+gearwear::CoverGone OurCoverGone(double* pc) {
+    if (pc) *pc = g_cover.worn_pc;
+    return gearwear::WhyCoverGone(g_cover.last_worn, g_cover.ever_worn, g_cover.worn_pc);
+}
 
 bool CoverSites() {
     if (g_cover.sites < 0) {
@@ -2306,6 +2605,8 @@ void ReadRainCover(std::uintptr_t inv, double now) {
     if (CoverBlock(inv) != g_cover.player) {  // another block (a load): seen afresh
         g_cover.player = CoverBlock(inv);
         g_cover.worn = -1, g_cover.level = -1, g_cover.bucket = -1;
+        // the wording of a cover entity's removal looks at this load only (a cover worn out before it is not this one)
+        g_cover.last_worn = -1, g_cover.ever_worn = false, g_cover.worn_pc = 0;
     }
     const double pc = gearwear::PercentOf(dur, max);
     const int bk = gearwear::Bucket(pc);
@@ -2321,6 +2622,8 @@ void ReadRainCover(std::uintptr_t inv, double now) {
         if (++g_cover.logs <= 200) Log("[gear] wear: no rain cover on our backpack");
     }
     g_cover.worn = worn, g_cover.level = level, g_cover.bucket = bk, g_cover.pc = pc;
+    g_cover.last_worn = worn;
+    if (worn) g_cover.ever_worn = true, g_cover.worn_pc = pc;
 }
 
 // Every read (100 ms, game thread): the worn hat hidden by the hood, if any, noted as a shown head item and added to the
@@ -2331,7 +2634,8 @@ void ReadHoodHat(std::uintptr_t p, std::uintptr_t inv, const Xf& sam, double now
     const char* found_name = "";
     std::int32_t hood = 0;
     const bool sites = g_own_hoodless && HoodSites() && Rd(inv + kInvHood, hood);
-    if (g_hood_on && sites && hood >= 5 && hood <= 12) {
+    const bool own_hood = sites && OwnHoodDrawnUp();  // her own hood is drawn up over it (section 37): the hat hides under it
+    if (g_hood_on && sites && hood >= 5 && hood <= 12 && !own_hood) {
         for (const HatSlot& hs : kHats) {
             bool worn = false;
             for (unsigned i = 0; i < 64 && !worn; ++i) {
@@ -2363,6 +2667,8 @@ void ReadHoodHat(std::uintptr_t p, std::uintptr_t inv, const Xf& sam, double now
         if (found)
             Log("[headgear] Sam's hood is up (state %d): the game hides his worn %s %p; her character has no hood, so it stays on her (a prop on her "
                 "head on both screens)", hood, found_name, reinterpret_cast<void*>(found));
+        else if (g_hood.e && own_hood)
+            Log("[headgear] her hat in the rain: %s hides under her own hood now (hood state %d)", g_hood.name, hood);
         else if (g_hood.e)
             Log("[headgear] her hat in the rain: %s no longer hidden by the hood (hood state %d)", g_hood.name, hood);
     }
@@ -3320,17 +3626,20 @@ bool BodyIsSam(PropSet::Exo& x, game::Entity* body) {
 }
 
 // What the slot's sender shows of the skeleton (false: no carrier wanted).
+bool HoodWanted(const PropSet& s);  // section 37 (below)
+// (round 11: or the sender's rain hood, section 37: then `vis` may name no skeleton piece)
 bool ExoWant(PropSet& s, game::Entity* body, std::uint64_t (&vis)[2]) {
     vis[0] = vis[1] = 0;
     if (!g_exo_on || !body || BodyIsSam(s.exo, body)) return false;
     if (s.slot == realbody::GearSlot::self) {
-        if (!g_have_parts || !g_exo_porter || !exo::AnyExoShown(g_parts_apply, g_parts_visible) || exo::TypeOfParts(g_parts_visible) < 1) return false;
+        if (!g_have_parts || !g_exo_porter || !exo::AnyExoShown(g_parts_apply, g_parts_visible) || exo::TypeOfParts(g_parts_visible) < 1)
+            return HoodWanted(s);
         vis[0] = g_parts_visible[0], vis[1] = g_parts_visible[1];
         return true;
     }
     if (!s.have_want || !(s.want.flags & wire::kGearParts) || !exo::SenderNamesExo(s.want.parts_apply) ||
         !exo::AnyExoShown(s.want.parts_apply, s.want.parts_visible) || exo::TypeOfParts(s.want.parts_visible) < 1)
-        return false;  // (only one of the game's types: never every piece at once)
+        return HoodWanted(s);  // (only one of the game's types: never every piece at once)
     vis[0] = s.want.parts_visible[0] & s.want.parts_apply[0], vis[1] = s.want.parts_visible[1] & s.want.parts_apply[1];
     return true;
 }
@@ -3357,6 +3666,12 @@ void RemoveExo(PropSet& s, const char* why) {
     x.tint_ok = false;
     x.tree_checked = false;
     x.shown_bits[0] = x.shown_bits[1] = ~0ull;
+    x.hood = exo::HoodAnim{};
+    x.hood_part = -1;
+    x.hood_e = 0;
+    x.anim_ok = -1;
+    x.anim_checks = 0;
+    x.anim_slot = -1;
     ++x.removed;
 }
 
@@ -3394,7 +3709,7 @@ bool ExoParts(PropSet& s, const std::uint64_t (&vis)[2], double now) {
         return x.parts_ok = false;
     }
     std::uint64_t touch[2], asked[2];
-    exo::CarrierPlan(a.n, x.parent, vis, g_exo_leg, touch, asked);
+    exo::CarrierPlan(a.n, x.parent, vis, g_exo_leg, x.hood_part, touch, asked);
     const bool plan_changed = asked[0] != x.asked[0] || asked[1] != x.asked[1];
     unsigned set = 0;
     for (int i = 0; i < a.n; ++i) {
@@ -3426,11 +3741,387 @@ bool ExoParts(PropSet& s, const std::uint64_t (&vis)[2], double now) {
         for (unsigned i = 0; i < static_cast<unsigned>(a.n) && at + 6 < sizeof(list); ++i)
             if (exo::Bit(shown, i)) at += static_cast<std::size_t>(std::snprintf(list + at, sizeof(list) - at, "%s%u", at ? " " : "", i));
         const int type = exo::TypeOfParts(vis);
-        Log("[%s] carrier %p parts: %u set (%u in all, %u changed by the game); shown now: %s (the sender's skeleton: %s%s)", ExoTag(s),
+        Log("[%s] carrier %p parts: %u set (%u in all, %u changed by the game); shown now: %s (the sender's skeleton: %s%s; hood part %d)", ExoTag(s),
             static_cast<void*>(x.p.sp.e), set, x.parts_set, x.game_changes, at ? list : "none", type >= 0 ? exo::TypeName(static_cast<exo::Type>(type)) : "pieces of no known type",
-            g_exo_leg ? ", LegOut on" : "");
+            g_exo_leg ? ", LegOut on" : "", x.hood_part);
     }
     return x.parts_ok = true;
+}
+
+// ---- Her rain hood on the exo carrier (round 11, docs/real-partner-body.md section 37). The carrier has every hood mesh of
+// the porter suit: it shows the sender's hood type when the sender's Sam has his hood up (exo_parts.hpp CarrierPlan's
+// `hood_part`), on both screens (the self slot from our own reading, the partner slot from the STC1 v5 hood bytes). Its
+// hood parts are looked up on the carrier's own ArtParts resource the way the game's controller does (0x14268C100: the
+// type's three name hashes through the resource's part map, 0x1422B69B0 / 0x1419756A0), read only. The unfold
+// (fragile_hood=2): the game's own Apd calls mirrored on the carrier (exo_parts.hpp HoodAnimTick: the slot on
+// 0x1422B46D0, the opening / open loop / closing / close loop clips 0x1422B4830 from our own Sam's clip table, the slot's
+// "done" read as 0x1422C8110 reads it), only when the carrier's Apd has an animation object with the type's slot; else
+// (and with fragile_hood=1) the timed swap: the raised hood shown while the sender's is up. Every site byte-checked once;
+// a mismatch turns the hood (or only the unfold) off with one log line; a fault in a call turns the unfold off.
+struct HoodLook {
+    int ok = -1;                                // -1 not checked, 0 mismatch (no hood on the carrier), 1 ok
+    std::uintptr_t hash[exo::kHoodTypes][3] = {};  // the controller's name hashes: {on, off, switch} per type
+    int anim = -1;                              // the unfold's sites: -1 not checked, 0 mismatch (the timed swap), 1 ok
+    bool faulted = false;                       // a call faulted: the timed swap for the session
+    std::uintptr_t clip_tbl = 0;                // our Sam's clip table last checked
+    bool clips_ok = false;
+    unsigned clip_logs = 0;
+} g_hlook;
+
+bool HoodLookupOk() {
+    if (g_hlook.ok >= 0) return g_hlook.ok == 1;
+    const std::uintptr_t b = mem::Base();
+    // The type dispatch (1 the oxi's branch, 2 the sea otter's, else the porter's) and each branch's three name-hash addresses
+    // (on, off, switch), then the three lookups into the controller's k4 / k5 / k6 map entries (+0x58 / +0x60 / +0x68).
+    static const std::uintptr_t kLea[exo::kHoodTypes][3] = {{0x268C15B, 0x268C169, 0x268C177}, {0x268C33E, 0x268C34E, 0x268C35E}, {0x268C266, 0x268C274, 0x268C282}};
+    bool ok = mem::CodeMatches(b + 0x268C12B, "33 F6 44 0F B6 EA 45 8B C5 4C 8B E1 8B FE 41 83 E8 01 0F 84 F5 01 00 00 33 D2 33 C9 41 83 F8 01 44 8D 46 0C 0F 84 0B 01 00 00") &&
+              mem::CodeMatches(b + 0x268C44F, "49 8B 04 24 49 8D 54 24 54 48 8B A8 80 01 00 00 48 8B 05 ?? ?? ?? ?? 8B 08 89 0A 48 8B 4D 30 E8 ?? ?? ?? ?? "
+                                              "41 89 44 24 58") &&
+              mem::CodeMatches(b + 0x268C478, "49 8D 54 24 5C 48 8B 05 ?? ?? ?? ?? 8B 08 89 0A 48 8B 4D 30 E8 ?? ?? ?? ?? 41 89 44 24 60 "
+                                              "49 8D 54 24 64 48 8B 05 ?? ?? ?? ?? 8B 08 89 0A 48 8B 4D 30 E8 ?? ?? ?? ?? 41 89 44 24 68") &&
+              mem::CodeMatches(b + 0x22B69B0, "40 53 48 83 EC 20 8B 02 48 8D 99 E0 00 00 00 48 8B CB 89 44 24 30 48 8D 54 24 30 E8 ?? ?? ?? ?? 83 F8 FF 74 13 48 98 48 8D 0C 40 48 8B 03 8B 44 88 08") &&
+              mem::CodeMatches(b + 0x19756AA, "4C 8B 01 4D 85 C0 0F 84 B6 00 00 00 44 8B 51 0C 33 DB 8B 3A 41 FF CA F2 0F 38 F1 DF 81 CB 00 00 00 80");
+    // (each LEA is followed by its store to the pointer the lookups read; the oxi's second by an xor first)
+    static const char* const kLeaSig[exo::kHoodTypes][3] = {{"48 8D 05 ?? ?? ?? ?? 48 89 05", "48 8D 05 ?? ?? ?? ?? 48 89 05", "48 8D 05 ?? ?? ?? ?? 48 89 05"},
+                                                            {"48 8D 05 ?? ?? ?? ?? 48 89 05", "48 8D 05 ?? ?? ?? ?? 33 C9 48 89 05", "48 8D 05 ?? ?? ?? ?? 48 89 05"},
+                                                            {"48 8D 05 ?? ?? ?? ?? 48 89 05", "48 8D 05 ?? ?? ?? ?? 48 89 05", "48 8D 05 ?? ?? ?? ?? 48 89 05"}};
+    for (int t = 0; ok && t < exo::kHoodTypes; ++t)
+        for (int w = 0; ok && w < 3; ++w) {
+            ok = mem::CodeMatches(b + kLea[t][w], kLeaSig[t][w]);
+            g_hlook.hash[t][w] = ok ? mem::RipTarget(b + kLea[t][w], 3, 7) : 0;
+            std::uint32_t h = 0;
+            ok = ok && g_hlook.hash[t][w] && Rd(g_hlook.hash[t][w], h) && h != 0;
+        }
+    g_hlook.ok = ok ? 1 : 0;
+    Log("[hood] the controller's hood part lookup (0x14268C100) %s", ok ? "verified: her hood is drawn on the exo carrier"
+                                                                        : "does not match this game build: her hood is not drawn");
+    return ok;
+}
+
+bool HoodAnimSitesOk() {
+    if (g_hlook.anim < 0) {
+        const std::uintptr_t b = mem::Base();
+        const bool ok =
+            mem::CodeMatches(b + 0x22B46D0, "48 89 5C 24 08 57 48 83 EC 20 48 8B D9 41 0F B6 F8 48 8B 49 68 48 85 C9 74 38 E8 ?? ?? ?? ?? 3B 05 ?? ?? ?? ?? 74 2B "
+                                            "8B C8 B8 01 00 00 00 D3 E0 48 8B 4B 68 40 84 FF 74 13 F7 D0 21 81 B4 00 00 00") &&
+            mem::CodeMatches(b + 0x22B4830, "48 89 5C 24 08 57 48 83 EC 40 48 8B D9 C5 F8 29 74 24 30 48 8B 49 68 49 8B F8 C5 F8 28 F3 48 85 C9 74 3E "
+                                            "E8 ?? ?? ?? ?? 3B 05 ?? ?? ?? ?? 74 31 C5 FA 10 44 24 70 48 8B 4B 68 4C 8B C7 C5 F8 28 DE 8B D0 C5 FA 11 44 24 20") &&
+            mem::CodeMatches(b + 0x22C80B0, "80 FA 09 74 0B 0F B6 C2 8B 84 81 90 00 00 00 C3 B8 FF FF FF FF C3") &&
+            mem::CodeMatches(b + 0x22C8110, "83 FA FF 74 21 4C 8B 81 88 00 00 00 48 63 C2 48 69 C8 10 01 00 00 42 F7 84 01 88 00 00 00 FD FF FF FF 0F 94 C0 C3") &&
+            mem::CodeMatches(b + 0x22C85C0, "83 FA FF 0F 84 58 01 00 00 4C 8B DC 55 57 48 81 EC B8 00 00 00") &&
+            mem::CodeMatches(b + 0x2812E3C, "48 63 8E 90 4A 00 00 48 8B 46 30 0F B6 96 89 4A 00 00 C5 F8 28 DE C5 FA 11 74 24 20 4C 8B 80 98 03 00 00");
+        g_hlook.anim = ok ? 1 : 0;
+        Log("[hood] the hood's unfold calls (0x1422B46D0 / 0x1422B4830, the clip table) %s", ok ? "verified: the unfold can be mirrored on the carrier"
+                                                                                               : "do not match this game build: the timed swap");
+    }
+    return g_hlook.anim == 1 && !g_hlook.faulted;
+}
+
+// Our own Sam's hood clip table (inventory +0x30 -> +0x398, 16 clips: porter 0-7, oxi 8-11, sea otter 12-15): all present and of
+// one type, checked once per table. The receiver's own game data: the same clips as the sender's.
+std::uintptr_t HoodClipTable() {
+    game::Entity* local = nullptr;
+    if (!game::TryGetLocalPlayer(&local) || !local) return 0;
+    const auto lp = reinterpret_cast<std::uintptr_t>(local);
+    if (Q(lp) != mem::Base() + kPlayerVtable) return 0;
+    const std::uintptr_t inv = Q(lp + kPInv);
+    if (!inv || Q(inv + kCompOwner) != lp) return 0;
+    const std::uintptr_t tbl = Q(Q(inv + 0x30) + 0x398);
+    if (!tbl) return 0;
+    if (tbl != g_hlook.clip_tbl) {
+        g_hlook.clip_tbl = tbl;
+        const std::uintptr_t c0 = Q(tbl), vt0 = c0 ? Q(c0) : 0;
+        bool ok = vt0 != 0;
+        for (unsigned i = 1; ok && i < 16; ++i) {
+            const std::uintptr_t c = Q(tbl + 8ull * i);
+            ok = c && Q(c) == vt0;
+        }
+        const char* tn = ok ? mem::RttiName(mem::RttiOf(c0)) : nullptr;
+        g_hlook.clips_ok = ok && tn;
+        if (g_hlook.clip_logs++ < 10)
+            Log("[hood] our Sam's hood clips %p: %s%s", reinterpret_cast<void*>(tbl), g_hlook.clips_ok ? "16 clips of type " : "not 16 clips of one type: the timed swap",
+                g_hlook.clips_ok ? tn : "");
+    }
+    return g_hlook.clips_ok ? tbl : 0;
+}
+
+using HoodSlotFn = void (*)(std::uintptr_t, unsigned char, char);
+using HoodPlayFn = int (*)(std::uintptr_t, unsigned char, std::uintptr_t, float, float);
+bool CallHoodSlot(std::uintptr_t apd, int slot, bool on) {
+    __try {
+        reinterpret_cast<HoodSlotFn>(mem::Base() + 0x22B46D0)(apd, static_cast<unsigned char>(slot), on ? 1 : 0);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_hlook.faulted = true;
+        return false;
+    }
+}
+bool CallHoodPlay(std::uintptr_t apd, int slot, std::uintptr_t clip) {
+    __try {
+        reinterpret_cast<HoodPlayFn>(mem::Base() + 0x22B4830)(apd, static_cast<unsigned char>(slot), clip, 0.0f, 0.0f);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_hlook.faulted = true;
+        return false;
+    }
+}
+// The slot's layer (as 0x1422C80B0: [anim +0x90 + 4 slot], -1 none) and whether its clip is done (as 0x1422C8110).
+int HoodLayer(std::uintptr_t apd, int slot) {
+    const std::uintptr_t anim = Q(apd + 0x68);
+    std::int32_t layer = -1;
+    if (!anim || slot < 0 || slot >= 9 || !Q(anim + 0x88) || !Rd(anim + 0x90 + 4ull * static_cast<unsigned>(slot), layer)) return -1;
+    return layer >= 0 && layer < 64 ? layer : -1;
+}
+bool HoodSlotDone(std::uintptr_t apd, int slot) {
+    const int layer = HoodLayer(apd, slot);
+    std::uint32_t fl = 0;
+    return layer >= 0 && Rd(Q(Q(apd + 0x68) + 0x88) + 0x110ull * static_cast<unsigned>(layer) + 0x88, fl) && (fl & 0xFFFFFFFDu) == 0;
+}
+
+// The slot's hood reading: the state (0 none) and type (-1 none), our own for the self slot, the sender's bytes for the
+// partner slot. False: no reading (or the hood is off).
+bool SlotHood(const PropSet& s, int* state, int* type, bool* alt) {
+    *state = 0, *type = -1, *alt = false;
+    if (g_hood_mode == 0) return false;
+    if (s.slot == realbody::GearSlot::self) {
+        if (!g_hoodr.valid) return false;
+        *state = g_hoodr.state, *type = g_hoodr.type, *alt = g_hoodr.alt;
+        return true;
+    }
+    if (!s.have_want || !(s.want.hood & wire::kGearHoodRead)) return false;
+    *state = s.want.hood & 0x7F;
+    *type = s.want.hood_info & 0x03;
+    *alt = (s.want.hood_info & wire::kGearHoodAltClips) != 0;
+    return *type < exo::kHoodTypes;
+}
+// The carrier is wanted for the hood: the hood is anything but down (state 1 and 2 count: the carrier loads while the game
+// readies the hood, before it unfolds), or it still shows / unfolds.
+bool HoodWanted(const PropSet& s) {
+    int st = 0, ty = -1;
+    bool alt = false;
+    return HoodLookupOk() && SlotHood(s, &st, &ty, &alt) && (st != 0 || s.exo.hood.show != exo::HoodShow::none || s.exo.hood.mode != 0);
+}
+
+// The carrier's hood parts (its own resource's part map, the controller's hashes) and its animation slots, once per carrier.
+void HoodLookupOn(PropSet& s, const Apd& a, double now) {
+    PropSet::Exo& x = s.exo;
+    const auto e = reinterpret_cast<std::uintptr_t>(x.p.sp.e);
+    if (x.hood_e != e) {
+        x.hood_e = e;
+        x.anim_ok = -1;
+        for (auto& t : x.hood_idx)
+            for (auto& w : t) w = -1;
+        const std::uintptr_t res = Q(a.apd + 0x30), map = res ? Q(res + 0xE0) : 0;
+        std::uint32_t cap = 0;
+        if (map && Rd(res + 0xEC, cap) && cap > 0 && cap <= 4096 && (cap & (cap - 1)) == 0) {
+            for (std::uint32_t i = 0; i < cap; ++i) {
+                std::uint32_t ent[3] = {};
+                if (!mem::Read(map + 12ull * i, ent, sizeof(ent)) || ent[0] == 0) continue;
+                for (int t = 0; t < exo::kHoodTypes; ++t)
+                    for (int w = 0; w < 3; ++w) {
+                        std::uint32_t h = 0;
+                        if (Rd(g_hlook.hash[t][w], h) && ent[1] == h && static_cast<std::int32_t>(ent[2]) >= 0 && static_cast<std::int32_t>(ent[2]) < a.n)
+                            x.hood_idx[t][w] = static_cast<std::int16_t>(ent[2]);
+                    }
+            }
+        }
+        // a part the plan cannot show (not under the head) is no part
+        for (auto& t : x.hood_idx)
+            for (auto& w : t)
+                if (w >= 0 && !(x.tree_ok && exo::HoodPartOk(a.n, x.parent, w))) w = -1;
+        Log("[%s] carrier %p hood parts (on/off/switch): porter %d/%d/%d, oxi %d/%d/%d, sea otter %d/%d/%d (part_sam_body_suiti: 54/53/68, 71/76/84, "
+            "69/70/83)", ExoTag(s), reinterpret_cast<void*>(e), x.hood_idx[0][0], x.hood_idx[0][1], x.hood_idx[0][2], x.hood_idx[1][0], x.hood_idx[1][1],
+            x.hood_idx[1][2], x.hood_idx[2][0], x.hood_idx[2][1], x.hood_idx[2][2]);
+    }
+    if (x.anim_ok <= 0 && now >= x.anim_check_ms && x.anim_checks < 6) {
+        x.anim_check_ms = now + 5000;
+        ++x.anim_checks;
+        int ok = 0;
+        for (int t = 0; t < exo::kHoodTypes; ++t)
+            if (HoodLayer(a.apd, exo::HoodAnimSlot(t)) >= 0) ok |= 1 << t;
+        if (ok != x.anim_ok)
+            Log("[%s] carrier %p: hood animation slots (porter 2, oxi 5, sea otter 4): %s%s", ExoTag(s), reinterpret_cast<void*>(e),
+                ok == 7 ? "ok" : ok ? "some" : "missing", ok == 7 ? "" : ok ? " (the others: the timed swap)" : ": the timed swap");
+        x.anim_ok = ok;
+    }
+}
+
+// Every tick before the parts: what the carrier shows of the hood (HoodAnimTick). Returns the unfold's calls to make after
+// the parts are set (HoodCalls).
+unsigned HoodDrive(PropSet& s, double now) {
+    PropSet::Exo& x = s.exo;
+    int st = 0, type = -1;
+    bool alt = false;
+    const bool have = x.p.live && HoodLookupOk() && SlotHood(s, &st, &type, &alt);
+    std::uintptr_t sm = 0;
+    Apd a;
+    const bool apd = have && x.tree_ok && ModelAndApd(reinterpret_cast<std::uintptr_t>(x.p.sp.e), &sm, &a);
+    if (apd) HoodLookupOn(s, a, now);
+    if (!have || !apd || type < 0 || x.hood_idx[type][0] < 0) type = -1;
+    const exo::HoodPhase ph = exo::HoodPhaseOf(st);
+    const bool anim = g_hood_mode == 2 && type >= 0 && x.target && x.hood_idx[type][2] >= 0 && x.anim_ok > 0 && ((x.anim_ok >> type) & 1) &&
+                      HoodAnimSitesOk() && HoodClipTable() != 0;
+    const bool done = anim && x.hood.mode != 0 && HoodSlotDone(a.apd, x.anim_slot);
+    const exo::HoodShow before = x.hood.show;
+    const unsigned calls = exo::HoodAnimTick(x.hood, type, ph, anim, done, now);
+    if (calls & (exo::kHoodEnable)) x.anim_slot_next = exo::HoodAnimSlot(type);
+    x.anim_type = type, x.anim_alt = alt;
+    const int part = type < 0 ? -1 : x.hood.show == exo::HoodShow::on ? x.hood_idx[type][0] : x.hood.show == exo::HoodShow::sw ? x.hood_idx[type][2] : -1;
+    const int part_before = x.hood_part;
+    if (part != x.hood_part) {
+        x.hood_part = part;
+        x.next_parts_ms = 0;  // the parts at once
+    }
+    if ((x.hood.show != before || part != part_before) && x.hood_logs < 200) {
+        ++x.hood_logs;
+        Log("[%s] carrier %p hood: %s (part %d; the sender's %s hood %s, state %d; %s)", ExoTag(s), static_cast<void*>(x.p.sp.e), exo::HoodShowName(x.hood.show),
+            part, exo::HoodTypeName(type), exo::HoodPhaseName(ph), st, anim ? "the unfold" : g_hood_mode == 2 ? "the timed swap: no unfold on this carrier" : "the timed swap");
+    }
+    return calls;
+}
+
+// The unfold's calls after the parts (the slot off first, then in HoodCall order).
+// No call is made with a slot other than the three hood slots, and none at all after a fault (not even the disable the
+// state machine asks for when the unfold turns off); an enable that could not be made starts the unfold again.
+void HoodCalls(PropSet& s, unsigned calls, double now) {
+    PropSet::Exo& x = s.exo;
+    if (!calls || !x.p.live) return;
+    if (g_hlook.faulted) {
+        x.anim_slot = -1;
+        return;
+    }
+    std::uintptr_t sm = 0;
+    Apd a;
+    if (!ModelAndApd(reinterpret_cast<std::uintptr_t>(x.p.sp.e), &sm, &a)) {
+        if (calls & exo::kHoodEnable) x.hood = exo::HoodAnim{};  // the slot was not turned on: nothing may be played on it
+        return;
+    }
+    bool ok = true;
+    if ((calls & exo::kHoodDisable) && exo::HoodSlotValid(x.anim_slot)) ok = CallHoodSlot(a.apd, x.anim_slot, false);
+    if (calls & exo::kHoodDisable) x.anim_slot = -1;
+    if (ok && (calls & exo::kHoodEnable)) {
+        if (!exo::HoodSlotValid(x.anim_slot_next)) {
+            Log("[%s] carrier %p hood: slot %d is not a hood slot: no unfold call", ExoTag(s), static_cast<void*>(x.p.sp.e), x.anim_slot_next);
+            x.hood = exo::HoodAnim{};
+            return;
+        }
+        x.anim_slot = x.anim_slot_next;
+        ok = CallHoodSlot(a.apd, x.anim_slot, true);
+    }
+    const bool slot_on = exo::HoodSlotValid(x.anim_slot);  // no slot turned on: nothing is played
+    static const struct {
+        unsigned bit;
+        int clip;
+    } kPlays[] = {{exo::kHoodPlayOpen, exo::kHoodClipOpen}, {exo::kHoodPlayOpenLoop, exo::kHoodClipOpenLoop}, {exo::kHoodPlayClose, exo::kHoodClipClose},
+                  {exo::kHoodPlayCloseLoop, exo::kHoodClipCloseLoop}};
+    for (const auto& pl : kPlays) {
+        if (!ok || !slot_on || !(calls & pl.bit)) continue;
+        const std::uintptr_t tbl = HoodClipTable();
+        const int idx = exo::HoodClipIndex(x.anim_type, x.anim_alt, pl.clip);
+        const std::uintptr_t clip = tbl && idx >= 0 ? Q(tbl + 8ull * static_cast<unsigned>(idx)) : 0;
+        if (!clip) continue;  // (the slot's 3 s limit ends it)
+        ok = CallHoodPlay(a.apd, x.anim_slot, clip);
+        if (ok && x.hood_logs < 200) {
+            ++x.hood_logs;
+            Log("[%s] carrier %p hood: clip %d played on slot %d (%.0f ms into the %s)", ExoTag(s), static_cast<void*>(x.p.sp.e), idx, x.anim_slot,
+                now - x.hood.since_ms, x.hood.mode == 2 ? "lowering" : "raising");
+        }
+    }
+    ++x.hood_calls;
+    if (!ok) {
+        ++x.hood_faults;
+        Log("[%s] the hood's unfold call FAULTED on carrier %p: the timed swap for this session", ExoTag(s), static_cast<void*>(x.p.sp.e));
+    }
+}
+
+// Her hair under her hood (hood_hair, default on): her body's hair parts (named "...hair...": fgl_hair_def) hidden while the
+// carrier draws her hood, shown again after. Only the parts we hid are shown again; a new body starts afresh.
+std::string ObjName(std::uintptr_t o);
+// A name containing `want` (lower case) on a part's sub-model resource (+0x20) or SkinnedModel (+0x60), or on the objects
+// they point to (+0x10..+0x100: its mesh resources): the sub-model resources carry no name (census of run
+// 20261122-170859). *name: the match; *first: the first name seen (for the log).
+bool PartNamed(std::uintptr_t part, const char* want, std::string* name, std::string* first = nullptr) {
+    auto has = [want](const std::string& s) {
+        std::string low = s;
+        for (char& c : low) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c);
+        return !s.empty() && low.find(want) != std::string::npos;
+    };
+    for (unsigned off : {0x20u, 0x60u}) {  // its sub-model resource, its SkinnedModel (census: +0x20, +0x60)
+        const std::uintptr_t q = part ? Q(part + off) : 0;
+        if (!q || !mem::RttiOf(q)) continue;
+        std::string nm = ObjName(q);
+        if (first && first->empty() && !nm.empty()) *first = nm;
+        if (has(nm)) return *name = nm, true;
+        for (unsigned o2 = 0x10; o2 < 0x100; o2 += 8) {
+            const std::uintptr_t r = Q(q + o2);
+            if (!r || r == part || !mem::RttiOf(r)) continue;
+            nm = ObjName(r);
+            if (first && first->empty() && !nm.empty()) *first = nm;
+            if (has(nm)) return *name = nm, true;
+        }
+    }
+    return false;
+}
+void HairTick(PropSet& s, game::Entity* body, double now) {
+    PropSet::Exo& x = s.exo;
+    const auto e = reinterpret_cast<std::uintptr_t>(body);
+    if (e != x.hair_body) {
+        x.hair_body = e;
+        x.hair_n = 0;
+        x.hair_mask = 0;
+        x.hair_hidden = false;
+        x.hair_checked = false;
+    }
+    if (!e || !ApdFnsOk()) return;
+    std::uintptr_t sm = 0;
+    Apd a;
+    if (!x.hair_checked) {
+        if (!ModelAndApd(e, &sm, &a)) return;
+        x.hair_checked = true;
+        char names[320] = "";
+        std::size_t at = 0;
+        for (int i = 0; i < a.n && x.hair_n < 4; ++i) {
+            const std::uintptr_t p = Q(a.arr + 8ull * static_cast<unsigned>(i));
+            std::string nm, first;
+            if (!PartNamed(p, "hair", &nm, &first)) {
+                if (at + 40 < sizeof(names))
+                    at += static_cast<std::size_t>(std::snprintf(names + at, sizeof(names) - at, "%s%d '%.24s'", at ? ", " : "", i, first.c_str()));
+                continue;
+            }
+            x.hair_parts[x.hair_n++] = static_cast<std::int16_t>(i);
+            if (at + 40 < sizeof(names)) at += static_cast<std::size_t>(std::snprintf(names + at, sizeof(names) - at, "%s%d '%s'", at ? ", " : "", i, nm.c_str()));
+        }
+        Log("[%s] her body %p: %s%s", ExoTag(s), reinterpret_cast<void*>(e), x.hair_n ? "hair parts under her hood (with the other parts): " : "no hair part found (her hair stays under the hood); parts: ",
+            names);
+    }
+    const bool want = g_hood_hair && x.p.live && x.p.shown && x.hood_part >= 0 && x.parts_ok;
+    if (want == x.hair_hidden || x.hair_n == 0 || now < x.hair_next_ms) return;
+    x.hair_next_ms = now + 100;
+    if (!ModelAndApd(e, &sm, &a)) return;
+    unsigned changed = 0;
+    for (unsigned k = 0; k < x.hair_n; ++k) {
+        std::uint8_t fl = 0;
+        if (!PartFlags(a, static_cast<unsigned>(x.hair_parts[k]), &fl)) return;
+        if (want ? !(fl & 1) : !((x.hair_mask >> k) & 1u)) continue;  // hidden already, or not hidden by us: left as it is
+        if (!CallSetParts(sm, a.apd, x.hair_parts[k], !want)) {
+            Log("[%s] the ArtParts part setter faulted on her body: her hair stays as it is", ExoTag(s));
+            x.hair_n = 0;
+            return;
+        }
+        x.hair_mask = want ? x.hair_mask | (1u << k) : x.hair_mask & ~(1u << k);
+        ++changed;
+    }
+    x.hair_hidden = want;
+    if (x.hair_logs < 100) {
+        ++x.hair_logs;
+        Log("[%s] her hair %s (%u part(s))", ExoTag(s), want ? "hidden under her hood" : "shown again", changed);
+    }
+}
+
+// Her hood is drawn up on her (her hat hides under it, section 26.8): our reading up, the hood and the carrier on, our
+// own carrier not refused.
+bool OwnHoodDrawnUp() {
+    return g_hoodr.valid && g_hood_mode != 0 && g_exo_on && !g_sets[1].exo.refused && HoodLookupOk() && exo::HoodHidesHat(exo::HoodPhaseOf(g_hoodr.state));
 }
 
 // Spawns, polls, poses, sets and tints the carrier (game thread, from DriveSet before it publishes). True: the published list
@@ -3446,7 +4137,7 @@ bool ExoDrive(PropSet& s, game::Entity* body, double now) {
     } else if (x.p.loading || x.p.live) {
         if (x.unwanted_ms == 0) x.unwanted_ms = now;
         if (!g_exo_on || now - x.unwanted_ms >= 10000) {
-            RemoveExo(s, g_exo_on ? "no skeleton for 10 s" : "exo_carrier off");
+            RemoveExo(s, g_exo_on ? "no skeleton or hood for 10 s" : "exo_carrier off");
             return true;
         }
     }
@@ -3546,7 +4237,9 @@ bool ExoDrive(PropSet& s, game::Entity* body, double now) {
         x.target = false;  // cleared by real_body (a fault, the session's stop): out of the list
         changed = true;
     }
+    const unsigned hood_calls = HoodDrive(s, now);  // section 37: the hood part first (the parts at once when it changes)
     if (want || x.parts_ok) ExoParts(s, want ? vis : x.vis, now);
+    HoodCalls(s, hood_calls, now);
     // the exos variation (silver / gold, tints) like the sender's Sam
     game::Entity* local = nullptr;
     wire::Outfit o;
@@ -3605,7 +4298,7 @@ void ExoShow(PropSet& s, game::Entity* body, bool body_on, double now) {
     if (p.shown && body && now >= x.next_meter_ms) {
         x.next_meter_ms = now + (automation::Enabled() ? 1000 : 10000);
         static const unsigned kMeterJ[] = {1, 62, 63, 67, 68, 9, 38, 31};
-        double sum = 0, mx = 0, wsum = 0, wmx = 0;
+        double sum = 0, mx = 0, wsum = 0, wmx = 0, head = -1;  // head: joint 31 (the hood sits on it, section 37)
         unsigned n = 0, wn = 0;
         float r0[4][4];
         const bool have_r0 = realbody::ReadJointModel(body, 0, r0);
@@ -3627,12 +4320,13 @@ void ExoShow(PropSet& s, game::Entity* body, bool body_on, double now) {
             if (!realbody::JointWorldN(p.sp.e, j, 77, a) || !realbody::JointWorld(body, j, b)) continue;
             const double d = std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2])) * 100.0;
             wsum += d, wmx = d > wmx ? d : wmx, ++wn;
+            if (j == 31) head = d;
         }
         char c[200];
         realbody::ExoCounters(s.slot, c, sizeof(c));
         if (n || wn)
-            Log("[%s] carrier vs body cm mean/max: pose %.2f / %.2f (%u joints), placed %.2f / %.2f (%u, the tick's); %s; parts set %u, changed by the game %u", ExoTag(s),
-                n ? sum / n : -1.0, mx, n, wn ? wsum / wn : -1.0, wmx, wn, c, x.parts_set, x.game_changes);
+            Log("[%s] carrier vs body cm mean/max: pose %.2f / %.2f (%u joints), placed %.2f / %.2f (%u, the tick's), head %.2f; %s; parts set %u, changed by the game %u; hood %s",
+                ExoTag(s), n ? sum / n : -1.0, mx, n, wn ? wsum / wn : -1.0, wmx, wn, head, c, x.parts_set, x.game_changes, exo::HoodShowName(x.hood.show));
     }
 }
 
@@ -3737,7 +4431,7 @@ void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_acti
                 if (old_keys[i] >= kKeyEntity && old_keys[i] < kKeyHeld) ++delta[old_keys[i] - kKeyEntity];
                 if (i < f.count && want[i] >= kKeyEntity && want[i] < kKeyHeld) --delta[want[i] - kKeyEntity];
             }
-            NameResChanges(delta, s.res, "the partner's gear");
+            NameResChanges(delta, s.res, "the partner's gear", false);
         }
         s.published_hash = h;
         DescribeFrame(f, s.tag, s.res);
@@ -3936,6 +4630,7 @@ void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_acti
         SetShown(s, i, on, now);
     }
     ExoShow(s, body, body_visible && place_ok, now);  // section 32
+    HairTick(s, body, now);                           // section 37
     if (now >= s.next_stats_ms && s.published_n) {
         s.next_stats_ms = now + 5000;
         unsigned live = 0, shown = 0, waiting = 0, failed_now = 0, refused = 0;
@@ -4157,6 +4852,8 @@ void Init(const Config& config) noexcept {
     g_boots_style = config.boots_look_own ? bootslook::Style::own : bootslook::Style::prop;
     g_boots_own_porter = config.boots_own_porter;
     g_exo_on = config.exo_carrier;
+    g_hood_mode = config.fragile_hood < 0 ? 0 : config.fragile_hood > 2 ? 2 : config.fragile_hood;
+    g_hood_hair = config.hood_hair;
     g_held_mode = static_cast<heldrules::Mode>(config.held_items < 0 ? 0 : config.held_items > 2 ? 2 : config.held_items);
     Log("[boots] her boots: boots_look=%s (%s), boots_own_porter=%d", bootslook::StyleName(g_boots_style),
         g_boots_style == bootslook::Style::own ? "her own boots, painted with the guest's boot pictures; no boots prop, feet not scaled"
@@ -4432,7 +5129,8 @@ bool TakeSend(double now_ms, wire::GearFrame* out) noexcept {
     if (!g_enabled || !g_have_local || !out) return false;
     const bool parts_changed = (g_sent.flags & wire::kGearParts) != (g_local.flags & wire::kGearParts) ||
                                std::memcmp(g_sent.parts_visible, g_local.parts_visible, sizeof(g_sent.parts_visible)) != 0 ||
-                               std::memcmp(g_sent.parts_apply, g_local.parts_apply, sizeof(g_sent.parts_apply)) != 0;
+                               std::memcmp(g_sent.parts_apply, g_local.parts_apply, sizeof(g_sent.parts_apply)) != 0 ||
+                               g_sent.hood != g_local.hood || g_sent.hood_info != g_local.hood_info;  // (section 37)
     const bool layout = !g_have_sent || parts_changed || wire::GearLayoutHash(g_sent) != wire::GearLayoutHash(g_local) || g_sent.count != g_local.count;
     float dm = 0, dd = 0;
     const bool moved = !layout && wire::GearPoseDelta(g_sent, g_local, &dm, &dd) && (dm > 0.02f || dd > 4.0f);
@@ -5017,6 +5715,87 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             Log("[exo] %s", msg);
             return true;
         }
+        case 30: {
+            // the BB pod under the self view (section 35): 3 the game's rule (the default), 1 the fallback only, any other value (0,
+            // 2, no argument): the status only
+            const int a = static_cast<int>(v[1]);
+            if (a == 1 || a == 3) {
+                g_pod_rule_on = a == 3;
+                g_next_read_ms = 0;
+            }
+            // the pod in our sent frame, in the partner's received frame, and the self view's pod props (wanted / live)
+            auto pods = [](const wire::GearFrame& f, unsigned n) {
+                unsigned c = 0;
+                for (unsigned i = 0; i < n && i < f.count; ++i) c += f.items[i].kind == wire::GearKind::bb_pod;
+                return c;
+            };
+            unsigned self_live = 0;
+            for (unsigned i = 0; i < g_sets[1].want.count; ++i)
+                self_live += g_sets[1].want.items[i].kind == wire::GearKind::bb_pod && g_sets[1].props[i].live;
+            char where[160];
+            std::snprintf(where, sizeof(where), "; our gear: BB pod %u; the partner's gear: BB pod %u; self view: BB pod %u wanted, %u live",
+                          g_have_local ? pods(g_local, g_local.count) : 0u, g_sets[0].have_want ? pods(g_sets[0].want, g_sets[0].want.count) : 0u,
+                          g_sets[1].have_want ? pods(g_sets[1].want, g_sets[1].want.count) : 0u, self_live);
+            char line[640];  // the action's own message is 160 bytes: the whole status goes to the log
+            std::snprintf(line, sizeof(line),
+                          "BB pod under the self view: %s (rule sites %s%s); now %s (%s); cross-check %u match, %u mismatch over %u reads with the self "
+                          "view off; fallback %s (%s)%s",
+                          g_pod_rule_on ? "the game's rule" : "the fallback only (gear 30 1; gear 30 3: the rule)", g_pod_sites == 1 ? "ok" : g_pod_sites == 0 ? "off" : "not checked",
+                          g_pod.disproved ? ", disproved this session" : "", g_podlog.have ? (g_podlog.vis ? "shown" : "hidden") : "not read",
+                          gearkeep::PodSourceName(g_podlog.src), g_pod.matched, g_pod.mismatched, g_pod.compared, g_pod.memo ? "shown" : "hidden",
+                          g_pod.memo_plain ? "read in plain play" : "as worn", where);
+            Log("[gear] %s", line);
+            // the source the last decision actually used (the rule may be on but not read: the slot holds no pod of ours)
+            const char* src = !g_podlog.have                                  ? "not read"
+                              : g_podlog.src == gearkeep::PodSource::ask      ? "the rule"
+                              : g_podlog.src == gearkeep::PodSource::flag     ? "its flag"
+                              : g_podlog.src == gearkeep::PodSource::room     ? "the private room"
+                              : !g_pod_rule_on                                ? "the fallback: gear 30 1"
+                              : g_pod_sites != 1 || g_pod.disproved           ? "the fallback: rule off"
+                                                                              : "the fallback: the rule not read";
+            std::snprintf(msg, cap, "BB pod %s (%s)%s", g_podlog.have ? (g_podlog.vis ? "shown" : "hidden") : "not read", src, where);
+            return true;
+        }
+        case 31:
+        case 32:
+        case 33: {
+            // her rain hood (section 37): 31 0 off / 1 the timed swap / 2 the unfold where the carrier can play it, any other value
+            // the status; 32 <state 0..12 | -1> [type 0 porter, 1 oxi, 2 sea otter] our hood reading replaced (hidden tests; both screens follow); 33 her
+            // hair under the hood 0 shown / 1 hidden
+            const int a = static_cast<int>(v[1]);
+            if (op == 31 && a >= 0 && a <= 2) g_hood_mode = a;
+            if (op == 32 && a >= -1 && a <= wire::kGearHoodStateMax) {
+                g_hood_force_state = a;
+                const int t = static_cast<int>(v[2]);
+                if (t >= 0 && t < exo::kHoodTypes) g_hood_force_type = t;
+                g_next_read_ms = 0;
+            }
+            if (op == 33 && (a == 0 || a == 1)) g_hood_hair = a != 0;
+            auto slot = [](const PropSet& s, char* out, std::size_t n) {
+                const PropSet::Exo& x = s.exo;
+                std::snprintf(out, n, "carrier %s, hood %s (part %d, %s, slots %d, %u calls, %u faults), hair %s", x.p.live ? (x.p.shown ? "shown" : "live") : "none",
+                              exo::HoodShowName(x.hood.show), x.hood_part, x.hood.mode == 1 ? "unfolding" : x.hood.mode == 2 ? "folding" : "idle", x.anim_ok,
+                              x.hood_calls, x.hood_faults, x.hair_hidden ? "hidden" : x.hair_n ? "shown" : "no part");
+            };
+            char c0[200], c1[200];
+            slot(g_sets[0], c0, sizeof(c0));
+            slot(g_sets[1], c1, sizeof(c1));
+            const PropSet& ps = g_sets[0];
+            char line[700];
+            std::snprintf(line, sizeof(line),
+                          "her hood %s, hair %s; sites %s / lookup %s / unfold %s%s; ours: %s %s (state %d)%s; the partner's: %s; partner %s; self %s",
+                          g_hood_mode == 0 ? "off" : g_hood_mode == 1 ? "on (the timed swap)" : "on (the unfold)", g_hood_hair ? "hidden under it where a hair part is found" : "shown",
+                          g_hood_read_sites == 1 ? "ok" : g_hood_read_sites == 0 ? "MISMATCH" : "not checked", g_hlook.ok == 1 ? "ok" : g_hlook.ok == 0 ? "MISMATCH" : "not checked",
+                          g_hlook.anim == 1 ? "ok" : g_hlook.anim == 0 ? "MISMATCH" : "not checked", g_hlook.faulted ? " (FAULTED)" : "",
+                          exo::HoodTypeName(g_hoodr.type), exo::HoodPhaseName(exo::HoodPhaseOf(g_hoodr.state)), g_hoodr.state,
+                          g_hood_force_state >= 0 ? " (gear 32)" : "",
+                          ps.have_want && (ps.want.hood & wire::kGearHoodRead) ? exo::HoodPhaseName(exo::HoodPhaseOf(ps.want.hood & 0x7F)) : "no reading", c0, c1);
+            Log("[hood] %s", line);
+            std::snprintf(msg, cap, "her hood %s; ours %s (state %d); partner hood %s; self hood %s", g_hood_mode ? "on" : "off",
+                          exo::HoodPhaseName(exo::HoodPhaseOf(g_hoodr.state)), g_hoodr.state, exo::HoodShowName(g_sets[0].exo.hood.show),
+                          exo::HoodShowName(g_sets[1].exo.hood.show));
+            return true;
+        }
         case 20: {
             // the partner body's feet under the boots prop (section 21): scale percent, 100 = not scaled
             g_pfeet_pct = v[1] < 1 ? 1 : v[1] > 100 ? 100 : static_cast<int>(v[1]);
@@ -5050,7 +5829,7 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             return who != nullptr;
         }
         default:
-            std::snprintf(msg, cap, "unknown op %d (0 log, 1 partner 0/1, 2 self 0/1, 3 test cases n, 4 debug body 0/1, 5 n / 6 test faults, 7 level, 8 pod entity, 9 census 0/1/2, 10 walk cache 0/1, 11 looks 0/1, 12 looks off/on, 13 backpack pose off/on, 14 accessory list, 15 cap colour, 16 head parts off/on, 17 weapons off/on, 18 headgear offsets off/on, 19 headgear meter off/on, 20 partner feet scale percent, 21 boots sync off/on, 22 hat in the rain, 23 glasses colour, 24 rain cover durability percent, 25 boots look 0 prop / 1 own / 2 log, 26 held items, 27 exo carrier 0/1/2, 28 skeleton type -1..4, 29 LegOut 0/1)", op);
+            std::snprintf(msg, cap, "unknown op %d (0 log, 1 partner 0/1, 2 self 0/1, 3 test cases n, 4 debug body 0/1, 5 n / 6 test faults, 7 level, 8 pod entity, 9 census 0/1/2, 10 walk cache 0/1, 11 looks 0/1, 12 looks off/on, 13 backpack pose off/on, 14 accessory list, 15 cap colour, 16 head parts off/on, 17 weapons off/on, 18 headgear offsets off/on, 19 headgear meter off/on, 20 partner feet scale percent, 21 boots sync off/on, 22 hat in the rain, 23 glasses colour, 24 rain cover durability percent, 25 boots look 0 prop / 1 own / 2 log, 26 held items, 27 exo carrier 0/1/2, 28 skeleton type -1..4, 29 LegOut 0/1, 30 BB pod rule 0/1/2, 31 her hood 0/1/2/3, 32 hood state -1..12 [type], 33 hair under the hood 0/1)", op);
             return false;
     }
 }

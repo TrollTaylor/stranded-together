@@ -189,7 +189,8 @@ Quat UnpackQuat(std::uint64_t bits) {
 std::size_t EncodeJoints(const JointFrame& f, std::uint8_t* out, std::size_t cap) noexcept {
     if (!out || f.joint_count == 0 || f.joint_count > kMaxJoints || f.t_count > kMaxJointTranslations) return 0;
     const bool outfit = (f.flags & kJointsOutfit) != 0;
-    const std::size_t size = JointFrameSize(f.joint_count, f.t_count, outfit);
+    const bool face = (f.flags & kJointsFace) != 0;
+    const std::size_t size = JointFrameSize(f.joint_count, f.t_count, outfit, face);
     if (cap < size) return 0;
     std::uint8_t* p = out;
     std::memcpy(p, kJointMagic, 4);
@@ -224,6 +225,10 @@ std::size_t EncodeJoints(const JointFrame& f, std::uint8_t* out, std::size_t cap
                                              o.glasses_a_lens, o.glasses_b_lens, o.glasses_a_frame, o.glasses_b_frame};
         for (std::uint8_t v : b) Put(p, v);
     }
+    if (face) {
+        Put(p, f.face.id);
+        Put(p, static_cast<std::uint8_t>(f.face.flags & kFaceFlagsKnown));
+    }
     return static_cast<std::size_t>(p - out);
 }
 
@@ -247,10 +252,11 @@ bool DecodeJoints(const std::uint8_t* data, std::size_t size, JointFrame& out) n
     }
     f.t_count = Get<std::uint8_t>(p);
     const bool outfit = (f.flags & kJointsOutfit) != 0;
+    const bool face = (f.flags & kJointsFace) != 0;
     // Flag bits this build does not know announce blocks after the known ones (a newer build):
     // the frame may then be longer, and the rest is ignored. Known flags only: the exact size.
     const bool unknown = (f.flags & ~kJointsKnown) != 0;
-    const std::size_t want = JointFrameSize(f.joint_count, f.t_count, outfit);
+    const std::size_t want = JointFrameSize(f.joint_count, f.t_count, outfit, face);
     if (f.t_count > kMaxJointTranslations || (unknown ? size < want : size != want)) return false;
     f.flags = static_cast<std::uint8_t>(f.flags & kJointsKnown);
     for (unsigned i = 0; i < f.t_count; ++i) {
@@ -263,6 +269,10 @@ bool DecodeJoints(const std::uint8_t* data, std::size_t size, JointFrame& out) n
         std::uint8_t* b[kOutfitSize] = {&o.variant,        &o.exos,           &o.suit_colour,     &o.cap_colour,
                                         &o.glasses_a_lens, &o.glasses_b_lens, &o.glasses_a_frame, &o.glasses_b_frame};
         for (std::uint8_t* v : b) *v = Get<std::uint8_t>(p);
+    }
+    if (face) {
+        f.face.id = Get<std::uint8_t>(p);
+        f.face.flags = static_cast<std::uint8_t>(Get<std::uint8_t>(p) & kFaceFlagsKnown);
     }
     out = f;
     return true;
@@ -292,6 +302,7 @@ void BlendJoints(const JointFrame& a, const JointFrame& b, float t, JointFrame& 
     out.body_id = b.body_id;
     out.flags = b.flags;
     out.outfit = b.outfit;
+    out.face = b.face;
     out.joint_count = static_cast<std::uint8_t>(n);
     for (unsigned j = 0; j < n; ++j) out.q[j] = q[j];
     out.t_count = b.t_count;
@@ -459,7 +470,7 @@ std::size_t EncodeGear(const GearFrame& f, std::uint8_t* out, std::size_t cap) n
     if (!out || f.count > kMaxGearItems) return 0;
     const bool parts = (f.flags & kGearParts) != 0, pack = (f.flags & kGearPackParts) != 0, boots = (f.flags & kGearBoots) != 0;
     const std::size_t size = GearFrameSize(f.count, parts, pack, boots);
-    if (cap < size || !GearBootsOk(f)) return 0;
+    if (cap < size || !GearBootsOk(f) || !GearHoodOk(f.hood, f.hood_info)) return 0;
     for (unsigned i = 0; i < f.count; ++i) {
         const GearItem& it = f.items[i];
         if (!GearItemOk(it, i) || !FiniteQ(it.q)) return 0;
@@ -475,7 +486,8 @@ std::size_t EncodeGear(const GearFrame& f, std::uint8_t* out, std::size_t cap) n
     Put(p, static_cast<std::uint8_t>(f.flags & kGearKnown));
     Put(p, f.dropped);
     Put(p, GearLayoutHash(f));
-    Put(p, std::uint16_t{0});
+    Put(p, f.hood);
+    Put(p, f.hood_info);
     if (parts) {
         for (unsigned k = 0; k < 2; ++k) Put(p, f.parts_apply[k]);
         for (unsigned k = 0; k < 2; ++k) Put(p, static_cast<std::uint64_t>(f.parts_visible[k] & f.parts_apply[k]));
@@ -514,7 +526,9 @@ bool DecodeGear(const std::uint8_t* data, std::size_t size, GearFrame& out) noex
     f.flags = static_cast<std::uint8_t>(Get<std::uint8_t>(p) & kGearKnown);
     f.dropped = Get<std::uint8_t>(p);
     const std::uint16_t hash = Get<std::uint16_t>(p);
-    Get<std::uint16_t>(p);
+    f.hood = Get<std::uint8_t>(p);
+    f.hood_info = Get<std::uint8_t>(p);
+    if (!GearHoodOk(f.hood, f.hood_info)) return false;
     const bool parts = (f.flags & kGearParts) != 0, pack = (f.flags & kGearPackParts) != 0, boots = (f.flags & kGearBoots) != 0;
     if (f.count > kMaxGearItems || size != GearFrameSize(f.count, parts, pack, boots)) return false;
     if (parts) {

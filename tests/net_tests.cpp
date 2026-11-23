@@ -745,7 +745,7 @@ void TestGearV2() {
     o.items[2].res = 24;
     o.items[2].joint = 26;
     on = wire::EncodeGear(o, buf, sizeof(buf));
-    CHECK(on == wire::GearFrameSize(4) && buf[8] == wire::kGearVersion && wire::kGearVersion == 4);
+    CHECK(on == wire::GearFrameSize(4) && buf[8] == wire::kGearVersion && wire::kGearVersion == 5);
     CHECK(wire::DecodeGear(buf, on, g) && g.items[2].kind == wire::GearKind::weapon && g.items[2].res == 24 && g.items[2].model == 45 &&
           g.items[2].variation == 4 && g.items[2].joint == 26 && g.items[2].parent == wire::kGearNoParent);
     wire::GearFrame w2 = o;
@@ -760,6 +760,40 @@ void TestGearV2() {
     on = wire::EncodeGear(o, buf, sizeof(buf));
     buf[8] = 2;
     CHECK(!wire::DecodeGear(buf, on, g));
+    buf[8] = 4;  // version 4 (before the hood bytes) is refused too
+    CHECK(!wire::DecodeGear(buf, on, g));
+
+    // Version 5: the rain hood bytes (the former u16 reserved, docs/real-partner-body.md section 37): no reading (0 0), a
+    // state 0..12 with the read bit, a type 0..2 and the porter's second clip set; anything else refused both ways.
+    CHECK(wire::GearHoodOk(0, 0) && !wire::GearHoodOk(0, 1) && !wire::GearHoodOk(0x05, 0) && wire::GearHoodOk(0x80, 0) && wire::GearHoodOk(0x8C, 2) &&
+          !wire::GearHoodOk(0x8D, 0) && !wire::GearHoodOk(0x86, 3) && !wire::GearHoodOk(0x86, 0x08) && wire::GearHoodOk(0x86, 0x04));
+    CHECK(wire::PackGearHood(6) == 0x86 && wire::PackGearHood(0) == 0x80 && wire::PackGearHood(13) == 0 && wire::PackGearHood(-1) == 0);
+    CHECK(wire::PackGearHoodInfo(1, false) == 1 && wire::PackGearHoodInfo(0, true) == 4 && wire::PackGearHoodInfo(3, false) == 0);
+    {
+        wire::GearFrame h = o;
+        h.hood = wire::PackGearHood(6);
+        h.hood_info = wire::PackGearHoodInfo(1, false);
+        const std::size_t hn = wire::EncodeGear(h, buf, sizeof(buf));
+        CHECK(hn == wire::GearFrameSize(4) && buf[14] == 0x86 && buf[15] == 0x01);
+        CHECK(wire::DecodeGear(buf, hn, g) && g.hood == 0x86 && g.hood_info == 1 && g.count == 4);
+        CHECK(wire::GearLayoutHash(h) == wire::GearLayoutHash(o));  // not part of the layout
+        std::uint8_t hb[wire::kMaxGearFrameSize];
+        std::memcpy(hb, buf, hn);
+        hb[14] = 0x8D;  // state 13
+        CHECK(!wire::DecodeGear(hb, hn, g));
+        std::memcpy(hb, buf, hn);
+        hb[15] = 0x03;  // type 3
+        CHECK(!wire::DecodeGear(hb, hn, g));
+        std::memcpy(hb, buf, hn);
+        hb[14] = 0x00;  // info without a reading
+        CHECK(!wire::DecodeGear(hb, hn, g));
+        h.hood = 0x0C;  // a state without the read bit
+        CHECK(wire::EncodeGear(h, buf, sizeof(buf)) == 0);
+        h.hood = 0;
+        h.hood_info = 0;
+        const std::size_t zn = wire::EncodeGear(h, buf, sizeof(buf));
+        CHECK(zn && buf[14] == 0 && buf[15] == 0 && wire::DecodeGear(buf, zn, g) && g.hood == 0 && g.hood_info == 0);
+    }
     // a weapon's look carries its resource id too
     wire::GearLook wl;
     wl.item = 2;
@@ -1090,7 +1124,7 @@ void TestJointOutfit() {
     const std::size_t n2 = wire::EncodeJoints(f, buf, sizeof(buf));
     std::uint8_t longer[wire::kMaxJointFrameSize + 16] = {};
     std::memcpy(longer, buf, n2);
-    longer[18] = static_cast<std::uint8_t>(wire::kJointsValid | wire::kJointsOutfit | 0x04);
+    longer[18] = static_cast<std::uint8_t>(wire::kJointsValid | wire::kJointsOutfit | 0x08);
     CHECK(wire::DecodeJoints(longer, n2 + 12, g) && g.outfit == f.outfit && g.flags == (wire::kJointsValid | wire::kJointsOutfit));
     CHECK(wire::DecodeJoints(longer, n2, g));       // the unknown block may be empty
     CHECK(!wire::DecodeJoints(longer, n2 - 1, g));  // but the known blocks must be complete
@@ -2026,9 +2060,64 @@ void TestVehicleFrames() {
     CHECK(!wire::DecodeGearPose(buf, n, gp));
 }
 
+// The optional face block (flags kJointsFace, docs/real-partner-body.md section 36): 2 bytes after the outfit block.
+void TestJointFace() {
+    wire::JointFrame f;
+    f.joint_count = 77;
+    f.body_id = 16;
+    f.flags = wire::kJointsValid | wire::kJointsFace;
+    f.t_count = 2;
+    f.t_joint[1] = 1;
+    f.face = wire::Face{17, 3};
+    std::uint8_t buf[wire::kMaxJointFrameSize];
+    const std::size_t n = wire::EncodeJoints(f, buf, sizeof(buf));
+    CHECK(n == wire::JointFrameSize(77, 2, false, true) && n == 499);
+    CHECK(buf[n - 2] == 17 && buf[n - 1] == 3);
+    wire::JointFrame g;
+    CHECK(wire::DecodeJoints(buf, n, g));
+    CHECK((g.flags & wire::kJointsFace) && !(g.flags & wire::kJointsOutfit) && g.face == f.face);
+    CHECK(!wire::DecodeJoints(buf, n - 2, g));  // flag set, block missing
+    CHECK(!wire::DecodeJoints(buf, n - 1, g));
+    // both blocks: the outfit first, then the face
+    f.flags = wire::kJointsValid | wire::kJointsOutfit | wire::kJointsFace;
+    f.outfit = wire::Outfit{0, 33, 16, 24, 1, 2, 3, 4};
+    f.face = wire::Face{0xFE, 0};
+    const std::size_t n2 = wire::EncodeJoints(f, buf, sizeof(buf));
+    CHECK(n2 == wire::JointFrameSize(77, 2, true, true) && n2 == 507 && n2 <= wire::kMaxJointFrameSize);
+    CHECK(buf[n2 - 10] == 0 && buf[n2 - 9] == 33 && buf[n2 - 3] == 4 && buf[n2 - 2] == 0xFE && buf[n2 - 1] == 0);
+    CHECK(wire::DecodeJoints(buf, n2, g) && g.outfit == f.outfit && g.face == f.face &&
+          g.flags == (wire::kJointsValid | wire::kJointsOutfit | wire::kJointsFace));
+    // flag bits other than blink / saccade are cleared both ways
+    f.face = wire::Face{5, 0xFF};
+    const std::size_t n3 = wire::EncodeJoints(f, buf, sizeof(buf));
+    CHECK(n3 == n2 && buf[n3 - 1] == 3);
+    buf[n3 - 1] = 0xF6;
+    CHECK(wire::DecodeJoints(buf, n3, g) && g.face.id == 5 && g.face.flags == 2);
+    // a frame without the flag decodes with the default face (nothing known)
+    f.flags = wire::kJointsValid;
+    const std::size_t n4 = wire::EncodeJoints(f, buf, sizeof(buf));
+    CHECK(n4 == 497 && wire::DecodeJoints(buf, n4, g) && g.face == wire::Face{} && g.face.id == 0xFE && !(g.flags & wire::kJointsFace));
+    // a newer build's block after the face: decoded, ignored
+    f.flags = wire::kJointsValid | wire::kJointsFace;
+    f.face = wire::Face{20, 1};
+    const std::size_t n5 = wire::EncodeJoints(f, buf, sizeof(buf));
+    std::uint8_t longer[wire::kMaxJointFrameSize + 16] = {};
+    std::memcpy(longer, buf, n5);
+    longer[18] = static_cast<std::uint8_t>(wire::kJointsValid | wire::kJointsFace | 0x10);
+    CHECK(wire::DecodeJoints(longer, n5 + 6, g) && g.face == f.face && g.flags == (wire::kJointsValid | wire::kJointsFace));
+    CHECK(!wire::DecodeJoints(longer, n5 - 1, g));
+    // the blend carries the newer frame's face
+    wire::JointFrame a = f, b = f, m;
+    a.face = wire::Face{1, 0};
+    b.face = wire::Face{40, 3};
+    wire::BlendJoints(a, b, 0.25f, m);
+    CHECK(m.face == b.face && (m.flags & wire::kJointsFace));
+}
+
 int main() {    TestPoseRoundTrip();
     TestJointFrames();
     TestJointOutfit();
+    TestJointFace();
     TestNameFrames();
     TestNameTagMath();
     TestGearFrames();

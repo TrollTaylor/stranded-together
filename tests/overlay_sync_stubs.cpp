@@ -11,6 +11,7 @@
 
 #include "debug_actions.hpp"
 #include "dev_tools.hpp"
+#include "enemy_census.hpp"
 #include "player_sync.hpp"
 #include "story_state.hpp"
 
@@ -383,3 +384,10 @@ View GetView() noexcept {
     return v;
 }
 }  // namespace st::story
+
+// ------------------------------------------------------------------ enemy census (enemy_census.cpp)
+namespace st::enemy {
+bool Census(int tag, double, int, char* msg, std::size_t cap) noexcept {
+    return std::snprintf(msg, cap, "enemy census tag %d (stub)", tag), true;
+}
+}  // namespace st::enemy
