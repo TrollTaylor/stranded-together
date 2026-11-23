@@ -200,8 +200,9 @@ class TaskStore:
             if not include_old and b['status'] in FINAL_STATES + ('stale',) and self.now() - (b['updated'] or 0) / 1000.0 > 86400:
                 continue
             out.append(b)
-        rank = {'running': 0, 'stale': 1}
-        out.sort(key=lambda b: (rank.get(b['status'], 2), -(b['updated'] or 0)))
+        # running tasks first; a stale task runs nothing more, so it sorts with the finished ones by its last record
+        # instead of sitting above every newer batch for a day
+        out.sort(key=lambda b: (0 if b['status'] == 'running' else 1, -(b['updated'] or 0)))
         return out
 
     def detail(self, tid):

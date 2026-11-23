@@ -172,7 +172,8 @@ python tools\devdash\devdash.py post hg-research --close pass --summary "done"
 | `close` | `status` (`pass`, `fail`, `done`, `cancelled`), `summary`? | ends the task; later records except `log` and `open` are ignored |
 
 - A running task turns **stale** when it wrote nothing for max(3 × `heartbeat_s`, 15 minutes), or
-  when its `pid` is gone. Closed and stale tasks leave the page after a day without a record
+  when its `pid` is gone. Running tasks are listed first; a stale task sorts with the finished ones by
+  its last record, so an abandoned batch sinks below newer ones. Closed and stale tasks leave the page after a day without a record
   (`/api/tasks?all=1` keeps them). Ids are lower case (`Set-DevStatus.ps1` and `Run-Batch.ps1` lower
   an id given in upper case).
 - An item with `run_dir` (an absolute run folder) is linked to that run: the row shows its live step

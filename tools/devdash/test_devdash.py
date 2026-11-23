@@ -427,6 +427,16 @@ class TestTasks(Fixture):
         self.assertNotIn('demo-batch', [t['id'] for t in day_later.list()])
         self.assertIn('demo-batch', [t['id'] for t in day_later.list(include_old=True)])
 
+    def test_stale_sorts_with_finished(self):
+        iso = lambda s: time.strftime('%Y-%m-%dT%H:%M:%S.000Z', time.gmtime(time.time() - s))
+        dd_tasks.post(self.state, 'old-batch', [{'op': 'open', 'kind': 'batch', 'title': 'Old', 't': iso(7200)}])
+        dd_tasks.post(self.state, 'new-batch', [{'op': 'open', 'kind': 'batch', 'title': 'New', 't': iso(600)},
+                                                {'op': 'close', 'status': 'pass', 't': iso(500)}])
+        dd_tasks.post(self.state, 'run-batch', [{'op': 'open', 'kind': 'batch', 'title': 'Run', 't': iso(60)}])
+        got = [(t['id'], t['status']) for t in self.tasks(now=time.time).list() if t['id'].endswith('-batch')]
+        # running first; the abandoned (stale) batch sinks below the newer finished one
+        self.assertEqual(got[:3], [('run-batch', 'running'), ('new-batch', 'pass'), ('old-batch', 'stale')])
+
     def test_post_and_reopen(self):
         dd_tasks.post(self.state, 'mine', [{'op': 'open', 'kind': 'test', 'title': 'Mine', 'total': 2, 'pid': 99999}])
         dd_tasks.post(self.state, 'mine', [{'op': 'progress', 'done': 1}, {'op': 'log', 'msg': 'x' * 20000}])
