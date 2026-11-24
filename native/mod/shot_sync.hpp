@@ -59,12 +59,13 @@ bool Echo(bool on, double offset_m, char* msg, std::size_t cap) noexcept;
 // Enemy sync P1a (enemy_sync.cpp; docs/enemy-sync.md 8). The hooks go in when shots_sync or enemy_sync (and a partner can be in
 // the session: not role none / solo outside hidden runs).
 // Game thread: the beacon's enemy part (the mirror bit and the fingerprints; the enemy fire bit is ours: enemy_shots and this game
-// can replay), the partner's newest beacon (false: none in the last 20 s), the enemy shots' role (0 off, 1 the host captures its
-// shooters' records and sends them, 2 the guest replays them from its mirrors), the host's shooters (its 10 Hz class, entity ->
-// actor id; read lock-free by the Enqueue detour).
+// can replay; P1b: kPartOwn is passed through), the partner's newest beacon (false: none in the last 20 s), the enemy shots' mask
+// (shotw::kEnemyCapture: this game captures its owned shooters' records and sends them, P1a's host = 1; shotw::kEnemyReplay: it
+// replays the other game's from its frozen mirrors, P1a's guest = 2; P1b = 3 on both), the owned shooters (entity -> actor id;
+// read lock-free by the Enqueue detour).
 void SetEnemyBeacon(std::uint8_t parts, std::uint16_t count, std::uint32_t ids_fp, std::uint32_t guids_fp, std::uint8_t freeze) noexcept;
 bool PeerBeacon(shotw::Beacon* out, double* age_ms) noexcept;
-void SetEnemyShots(int role) noexcept;
+void SetEnemyShots(int mask) noexcept;
 void SetEnemyShooters(const std::uint64_t* entities, const std::uint32_t* ids, unsigned n) noexcept;
 unsigned EnemyShooterCount() noexcept;
 std::uint32_t LastEnemyShooter() noexcept;  // the newest replayed (the guest) or sent (the host) enemy shot's shooter (0 none)
@@ -82,6 +83,10 @@ bool EnemyReplayReady() noexcept;
 unsigned MirrorBulletDrops() noexcept;
 unsigned MirrorBulletDropsOurs() noexcept;     // ... of them our Sam's own rounds (her rifle's)
 unsigned MirrorBulletDropsReplays() noexcept;  // ... of them our replays' rounds
+// P2 (enemy_combat.cpp; docs/enemy-sync.md 9), game thread: the beacon's hits part (bit1) on / off (why_off: a static text ending in
+// ')', shown in the `combat parts` line), and her own rounds on a mirror passed to Entity OnHit so far.
+void SetHitsPart(bool on, const char* why_off) noexcept;
+unsigned MirrorBulletPassed() noexcept;
 // A damage message of one of our replays (any thread).
 bool IsReplayHit(const samdmg::View& v) noexcept;
 void EnemyShotStatus(char* out, std::size_t cap) noexcept;

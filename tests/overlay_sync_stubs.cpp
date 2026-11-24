@@ -12,6 +12,7 @@
 #include "debug_actions.hpp"
 #include "dev_tools.hpp"
 #include "enemy_census.hpp"
+#include "enemy_combat.hpp"
 #include "enemy_sync.hpp"
 #include "shot_sync.hpp"
 #include "player_sync.hpp"
@@ -393,7 +394,17 @@ bool Probe(int, const double (&)[3], char* msg, std::size_t cap) noexcept { retu
 bool Command(int, const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy sync (stub)"), true; }
 bool Look(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy look (stub)"), true; }
 bool ShotTest(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy shot test (stub)"), true; }
+bool Own(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy own (stub)"), true; }
 }  // namespace st::esync
+namespace st::ecombat {
+bool Dump(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy dump (stub)"), true; }
+bool AttackInfo(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy attack (stub)"), true; }
+bool CtxTest(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy ctx (stub)"), true; }
+bool HitMode(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy hit mode (stub)"), true; }
+bool HitTest(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy hit (stub)"), true; }
+bool HitSend(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy hit send (stub)"), true; }
+bool HitWatch(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy hit watch (stub)"), true; }
+}  // namespace st::ecombat
 namespace st::shots {
 bool Command(int, const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "shots (stub)"), true; }
 bool Test(double, int, int, char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "shots test (stub)"), true; }

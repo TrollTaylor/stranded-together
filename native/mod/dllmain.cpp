@@ -14,6 +14,7 @@
 #include "coop_session.hpp"
 #include "quickstart.hpp"
 #include "partner_tackle.hpp"
+#include "enemy_combat.hpp"
 #include "enemy_sync.hpp"
 #include "shot_sync.hpp"
 #include "suit_colour.hpp"
@@ -297,6 +298,7 @@ DWORD WINAPI Bootstrap(LPVOID) {
     st::vhit::Install(cfg);    // vehicle hits: the partner's vehicle knocks our Sam down (section 25; its damage-handler detour goes in now)
     st::shots::Install(cfg);   // the players' shots (docs/enemy-sync.md P3a): the bullet Enqueue detour, the replay damage filters
     st::esync::Install(cfg);   // enemy sync P1a (docs/enemy-sync.md 8): byte checks, the mirrors' Sam / NPC damage filters (after the shots')
+    st::ecombat::Install(cfg); // enemy sync P2 (docs/enemy-sync.md 9): her hits on the host's enemies: the OnHit and MULE handler detours
     st::dev::Install(cfg);     // dev tools (dev_tools=1 / hidden runs): no hooks; byte checks on the first tick
     // Real partner body (docs/real-partner-body.md): the pose hook goes in at start-up, never
     // mid-game (enabling a hook suspends every thread while job threads may be inside it).

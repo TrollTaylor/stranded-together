@@ -74,4 +74,10 @@ const char* CapsuleVehicleBlock(const double (&body)[3], bool enabling) noexcept
 // shared vehicle within 300 m.
 bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 
+// Enemy sync P2's method M2 (enemy_combat.cpp, enemy_hit_path=query; docs/enemy-sync.md 9): the game's attack sphere query with
+// the caller's attack context, the game's filter on `filter_entity` (0: none) and the caller's callback (true: delivered). Game
+// thread. 1 called, 0 the direct path's byte checks failed here (whatever the vehicle hits' own settings), -1 faulted.
+using QueryCb = char (*)(std::uintptr_t ctx, std::uintptr_t receiver, std::uintptr_t dinfo, std::uintptr_t user);
+int QueryHit(std::uintptr_t filter_entity, std::uintptr_t ctx, const double* centre, float radius, float amount, QueryCb cb, std::uintptr_t user) noexcept;
+
 }  // namespace st::vhit

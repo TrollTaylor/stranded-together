@@ -351,7 +351,8 @@ bool LauncherIniOverrideAllowed(const std::string& key) {
     static const char* const kAllowed[] = {"fragile_suit_colour", "fragile_textures", "textures_send", "textures_receive", "textures_hot_reload", "textures_free",
                                            "textures_defaults", "boots_look", "boots_own_porter", "held_items", "room_outfit",
                                            "fragile_hood", "hood_hair", "hood_colour", "hood_fold_hide", "shots_sync", "shots_friendly_fire",
-                                           "enemy_sync", "enemy_freeze", "enemy_mirror_radius", "enemy_pose_count", "enemy_place_far", "enemy_shots", "enemy_shots_hurt", "enemy_shots_sound", "enemy_mirror_guard"};
+                                           "enemy_sync", "enemy_freeze", "enemy_mirror_radius", "enemy_pose_count", "enemy_place_far", "enemy_shots", "enemy_shots_hurt", "enemy_shots_sound", "enemy_mirror_guard", "enemy_hits",
+                                           "enemy_hit_owner", "enemy_hit_path", "enemy_hits_lethal", "enemy_hit_rate", "enemy_owner"};
     for (const char* k : kAllowed)
         if (key == k) return true;
     return false;
@@ -373,7 +374,8 @@ bool ScenarioIniKeyAllowed(const std::string& key) {
                                            "textures_receive", "textures_hot_reload", "textures_free", "textures_defaults", "boots_look",
                                            "boots_own_porter", "held_items", "room_outfit", "fragile_hood", "hood_hair", "exo_carrier",
                                            "hood_colour", "hood_fold_hide", "shots_sync", "shots_muzzle", "shots_sound", "shots_friendly_fire",
-                                           "shots_npc_drop", "shots_hit_drop", "shots_bt_drop", "enemy_sync", "enemy_freeze", "enemy_mirror_radius", "enemy_pose_count", "enemy_place_far", "enemy_shots", "enemy_shots_hurt", "enemy_shots_sound", "enemy_mirror_guard"};
+                                           "shots_npc_drop", "shots_hit_drop", "shots_bt_drop", "enemy_sync", "enemy_freeze", "enemy_mirror_radius", "enemy_pose_count", "enemy_place_far", "enemy_shots", "enemy_shots_hurt", "enemy_shots_sound", "enemy_mirror_guard", "enemy_hits",
+                                           "enemy_hit_owner", "enemy_hit_path", "enemy_hits_lethal", "enemy_hit_rate", "enemy_owner"};
 
     for (const char* k : kAllowed)
         if (key == k) return true;

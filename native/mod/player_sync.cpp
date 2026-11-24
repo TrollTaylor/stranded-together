@@ -31,6 +31,7 @@
 #include "status.hpp"
 #include "steam_owner.hpp"
 #include "partner_tackle.hpp"
+#include "enemy_combat.hpp"
 #include "enemy_sync.hpp"
 #include "shot_sync.hpp"
 #include "ride_together.hpp"
@@ -1535,6 +1536,14 @@ void Tick() noexcept {
         ein.net = g_net;
         ein.role = shin.role;
         esync::Tick(ein, now);
+        // enemy sync P2 (enemy_combat.hpp; docs/enemy-sync.md 9): her hits on the host's enemies, their outcomes
+        ecombat::TickIn cin;
+        cin.local = ein.local;
+        cin.local_ok = ein.local_ok;
+        cin.body = ein.body;
+        cin.net = ein.net;
+        cin.role = ein.role;
+        ecombat::Tick(cin, now);
     }
 
     // Player collision (partner_collision.hpp): only the partner slot's real body, never the

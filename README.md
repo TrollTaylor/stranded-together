@@ -95,12 +95,23 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
 - **Experimental:** shared enemies (when the host holds the save): the host's MULEs are the
   real ones. Near the guest, her own MULEs stand where the host's are and move like them, and
   when the host's MULEs fire at the host, the guest sees those shots too (muzzle flash and
-  tracer from her copy of the MULE). It is not the same for both players yet: no MULE sees,
-  chases or attacks the guest herself, only the host; the host's MULE rounds can still hurt
-  the guest if they cross her; the host's melee, thrown spears, tackles, cargo theft and truck
-  rams never reach her; and anything the guest does to a MULE (shooting it, hitting it, tying
-  it up) does nothing yet, because the host's game decides what happens to every enemy. There
-  is no launcher switch yet.
+  tracer from her copy of the MULE). The guest's hits count: when she shoots one of those
+  MULEs with non-lethal rounds, her hit is sent to the host and the host's game applies it to
+  its own MULE with the game's own damage, so the MULE flinches and faints on both screens
+  (tested; falling asleep is coded but not yet tested in co-op) and lies where it fell on both
+  for the 6 MULEs nearest to her (a farther one she downs is placed but not posed: it may stand
+  on her screen). A takedown counts as the host's, in the host's save. Her lethal rounds are
+  refused for now (their kills are not tested). On her screen the MULE's reaction comes from
+  the host's frames a fraction of a second later; its pain voice, her own copy's hit reaction
+  and her HUD's markers for a downed MULE are not shown, and grenades, bolas, melee, tying up
+  and truck rams are untested. It is not the same for both players yet: a MULE she has not
+  hit ignores her and goes only for the host. Once she hits one, it turns on her: on the
+  host's screen it goes for her body, on hers her copy of it follows the host's frames, and
+  its gunfire at her can reach her and hurt her; its melee, thrown spears and tackles cannot.
+  The host's MULE rounds can also hurt the guest if they cross her; the host's melee, thrown
+  spears, tackles, cargo theft and truck rams never reach her. A downed MULE that she walks
+  away from stands up again in her world until she comes back (it then lies with the host's
+  again). There is no launcher switch yet.
 - Not yet: the tools' effects (the PCC's and anchor's build holograms, the spray), the Odradek, the cuff device,
   the weapon crate on the hip, the chiral cylinder, the exoskeleton on non-Sam characters,
   facial animation, the partner's gear sounds (footsteps, movement and

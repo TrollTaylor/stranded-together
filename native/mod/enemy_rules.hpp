@@ -17,6 +17,18 @@
 //   EnemyShotGate  when an enemy shot is replayed against the mirror's render time
 //   SamPolicy      keep / drop for a hit on our Sam: replays by kind, and hits from frozen mirrors
 //   FingerprintGate whether both games mirror this world (both on, equal fingerprints, a fresh peer)
+//
+// P2 (round 17, docs/enemy-sync.md 9): her hits on the host's enemies and their outcomes
+//   AttackOk       the attacks a HIT may carry (1..0x18D, never 0x180 AimTarget)
+//   HitVerdict     a hit on an entity at Entity OnHit: pass (not a mirror), drop, or drop and capture (hers, hits on)
+//   HitDedupe      the guest's 300 ms dedupe of one hit seen twice (the same key, serial and attack; serial 0 never dedupes)
+//   ToLocal/ToWorld a point (or a direction) in an enemy's yaw frame and back
+//   HostSerial     the serial the host stamps for a guest serial (the same guest serial -> the same host serial)
+//   RateLimit      the host's HITs a second per enemy and in all
+//   ApplyGate      whether the host applies a HIT (every refusal named, the HITRES result)
+//   OutcomeOf      an enemy's defeat from the MULE state (+0xEA0) and the down bits (+0xEA4)
+//   MergeOutcome   the guest's table: newer versions win, dead is sticky (only a revive from the host lifts it)
+//   DeadRelease    a mirror given back: alive, or (the host's is dead) hidden and asleep here
 #pragma once
 
 #include <algorithm>
@@ -24,6 +36,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 #include "shot_wire.hpp"
 
@@ -114,7 +127,9 @@ inline constexpr double kPoseFastMs = 100.0, kPoseSlowMs = 200.0;
 struct PoseCand {
     std::uint32_t id = 0;
     double dist = -1;
-    bool realized = false;  // realized on the host (its pose can be captured)
+    bool realized = false;  // realized on the host (its pose can be captured); P2: a dead one too (its corpse keeps being posed)
+    bool slow = false;      // P2: a dead or down one (it lies still) is posed in the 5 Hz half whatever its rank, and is not counted
+                            // in the live ones' fast ranks
 };
 class PoseSlots {
 public:
@@ -155,14 +170,15 @@ public:
                     break;
                 }
         }
-        // periods by the real distance among the chosen: the nearest 3 fast
+        // periods by the real distance among the chosen live ones: the nearest 3 fast (a slow one, dead or down, never fast and
+        // never ranked: it does not push a live attacker into the 5 Hz half)
         for (unsigned j = 0; j < nr; ++j) {
             const int k = SlotOf(c[r[j].i].id);
             if (k < 0) continue;
             unsigned rank = 0;
             for (unsigned m = 0; m < nr; ++m)
-                if (c[r[m].i].dist < c[r[j].i].dist || (c[r[m].i].dist == c[r[j].i].dist && m < j)) ++rank;
-            period_[k] = rank < 3 ? kPoseFastMs : kPoseSlowMs;
+                if (!c[r[m].i].slow && (c[r[m].i].dist < c[r[j].i].dist || (c[r[m].i].dist == c[r[j].i].dist && m < j))) ++rank;
+            period_[k] = rank < 3 && !c[r[j].i].slow ? kPoseFastMs : kPoseSlowMs;
         }
     }
     std::uint32_t Id(unsigned k) const noexcept { return k < kPoseSlots ? id_[k] : 0; }
@@ -496,5 +512,458 @@ inline const char* FpGateText(FpGate g) noexcept {
     }
     return "?";
 }
+
+// ==================================================================================================================== P2
+// ---------------------------------------------------------------- attacks
+inline constexpr std::uint16_t kAttackAim = 0x180, kAttackMax = 0x18D;
+inline constexpr bool AttackOk(std::uint16_t a) noexcept { return a >= 1 && a <= kAttackMax && a != kAttackAim; }
+
+// ---------------------------------------------------------------- a hit at Entity OnHit (any thread)
+// mirror: the receiver's entity (or a parent within 4 levels) is a frozen mirror here; ours: her own (our Sam, his weapon or a
+// part of him, our player id in the context, the vehicle she drives); hits_on: both beacons carry the hits part and mirroring is
+// on. A mirror's hit is always dropped (the host decides: no damage, stats or telemetry in her world); hers is also captured.
+enum class HitV : std::uint8_t { pass, drop, capture };
+inline constexpr HitV HitVerdict(bool mirror, bool ours, bool hits_on) noexcept {
+    return !mirror ? HitV::pass : ours && hits_on ? HitV::capture : HitV::drop;
+}
+// The lethal policy (enemy_hits_lethal=0, the default until a lethal run passes): a round whose attack resource does damage
+// (+0x24 > 0) is refused at the guest (her own setting) and again at the host (the host's setting decides: ApplyGate `lethal`).
+inline constexpr bool LethalRefused(bool lethal, bool lethal_allowed) noexcept { return lethal && !lethal_allowed; }
+
+// ---------------------------------------------------------------- a HIT's values (both sides; review rv-safety 3)
+// The ranges the P2-0 probe and the gate saw, with room: the DamageInfo amount 0 (every round), the multiplier 0.11..1 and a20
+// 0.4..1 (rifle rounds and her Sam's 0x15E), the context's power (P+0x64 as f32) 12.5..13 (her rifle) and 1 (the test HITs),
+// parts 1..10 (0xFFFFFFFF none). Anything outside is refused (`values`): a wrong layout or a bad peer never reaches the game's
+// damage path with an instant faint or kill (a huge multiplier) or a part index the MULE does not have.
+inline constexpr float kHitAmountMax = 500.0f, kHitMultMax = 4.0f, kHitA20Max = 2.0f, kHitPowerMax = 100.0f;
+inline constexpr std::uint32_t kHitPartMax = 32;  // parts below 32 (a MULE's seen 1..10), or 0xFFFFFFFF
+inline bool HitValuesOk(float amount, float mult, float a20, std::uint32_t power_bits, std::uint32_t part) noexcept {
+    float power = 0;
+    static_assert(sizeof(power) == sizeof(power_bits), "f32");
+    std::memcpy(&power, &power_bits, sizeof(power));
+    if (!(amount >= 0.0f && amount <= kHitAmountMax)) return false;
+    if (!(mult >= 0.0f && mult <= kHitMultMax)) return false;
+    if (!(a20 >= 0.0f && a20 <= kHitA20Max)) return false;
+    if (!(power >= 0.0f && power <= kHitPowerMax)) return false;
+    return part == 0xFFFFFFFFu || part < kHitPartMax;
+}
+
+// ---------------------------------------------------------------- the guest's dedupe (game thread)
+// One hit can reach the capture twice (the job path and the MULE handler, a part and its owner): the same key, serial and
+// attack within 300 ms is dropped. A serial of 0 never dedupes (nothing names it).
+class HitDedupe {
+public:
+    static constexpr unsigned kN = 64;
+    static constexpr double kWindowMs = 300.0;
+    void Reset() noexcept { n_ = 0, head_ = 0; }
+    // True: seen within the window (drop it). False: new (remembered).
+    bool Seen(std::uint32_t key, std::uint32_t serial, std::uint16_t attack, double now) noexcept {
+        if (!serial) return false;
+        for (unsigned i = 0; i < n_; ++i) {
+            const E& e = e_[i];
+            if (e.key == key && e.serial == serial && e.attack == attack && now - e.t <= kWindowMs && now >= e.t) return true;
+        }
+        e_[head_] = E{key, serial, attack, now};
+        head_ = (head_ + 1) % kN;
+        if (n_ < kN) ++n_;
+        return false;
+    }
+
+private:
+    struct E {
+        std::uint32_t key, serial;
+        std::uint16_t attack;
+        double t;
+    };
+    E e_[kN] = {};
+    unsigned n_ = 0, head_ = 0;
+};
+
+// ---------------------------------------------------------------- an enemy's yaw frame (the yaw: atan2 of the forward row)
+// local = Rz(-yaw)(p - root); world = root + Rz(yaw) local. A direction the same without the root.
+inline void DirToLocal(double yaw, const double (&d)[3], double (&out)[3]) noexcept {
+    const double c = std::cos(yaw), s = std::sin(yaw);
+    const double x = d[0], y = d[1];
+    out[0] = c * x + s * y, out[1] = -s * x + c * y, out[2] = d[2];
+}
+inline void DirToWorld(double yaw, const double (&d)[3], double (&out)[3]) noexcept {
+    const double c = std::cos(yaw), s = std::sin(yaw);
+    const double x = d[0], y = d[1];
+    out[0] = c * x - s * y, out[1] = s * x + c * y, out[2] = d[2];
+}
+inline void ToLocal(const double (&root)[3], double yaw, const double (&p)[3], double (&out)[3]) noexcept {
+    const double d[3] = {p[0] - root[0], p[1] - root[1], p[2] - root[2]};
+    DirToLocal(yaw, d, out);
+}
+inline void ToWorld(const double (&root)[3], double yaw, const double (&local)[3], double (&out)[3]) noexcept {
+    DirToWorld(yaw, local, out);
+    for (int k = 0; k < 3; ++k) out[k] += root[k];
+}
+inline constexpr double kHitLocalMaxM = 8.0;   // the guest: a point further from the mirror's root is refused (`far`)
+inline constexpr double kApplyMaxM = 3.0;      // the host: the point turned into its world within 3 m of its copy's root
+
+// ---------------------------------------------------------------- the host's serial
+// The MULE's own dedupe ring ignores a serial seen within 4 s: the same guest serial (one bullet hitting twice) maps to the same
+// host serial; a guest serial of 0 maps by the HIT's sequence. Never 0, never a game serial's range (they count up from 1).
+inline constexpr std::uint32_t HostSerial(std::uint32_t guest_serial, std::uint32_t hit_seq) noexcept {
+    return guest_serial ? 0x5C000000u | (guest_serial & 0xFFFFFFu) : 0x5D000000u | (hit_seq & 0xFFFFFFu);
+}
+
+// ---------------------------------------------------------------- the host's rate (game thread)
+class RateLimit {
+public:
+    static constexpr unsigned kN = 256;
+    static constexpr double kWindowMs = 1000.0;
+    void Reset() noexcept { n_ = 0; }
+    // True (and counted): within per_key a second for this key and total a second in all.
+    bool Allow(std::uint32_t key, double now, unsigned per_key, unsigned total) noexcept {
+        unsigned k = 0;
+        for (unsigned i = 0; i < n_; ++i)
+            if (now - e_[i].t < kWindowMs && now >= e_[i].t) e_[k++] = e_[i];
+        n_ = k;
+        unsigned mine = 0;
+        for (unsigned i = 0; i < n_; ++i) mine += e_[i].key == key ? 1u : 0u;
+        if (mine >= per_key || n_ >= total || n_ >= kN) return false;
+        e_[n_++] = E{key, now};
+        return true;
+    }
+
+private:
+    struct E {
+        std::uint32_t key;
+        double t;
+    };
+    E e_[kN] = {};
+    unsigned n_ = 0;
+};
+
+// ---------------------------------------------------------------- the host's gate
+// The HITRES results (the wire's numbers).
+// lethal: a damaging round while the host's enemy_hits_lethal=0; values: a value outside HitValuesOk's ranges.
+enum class HitResult : std::uint8_t {
+    applied = 0, off = 1, dead = 2, unrealized = 3, world = 4, rate = 5, too_far = 6, fault = 7, receiver = 8, attack = 9, hidden = 10, lethal = 11, values = 12
+};
+inline constexpr unsigned kHitResults = 13;
+inline const char* HitResultText(std::uint8_t r) noexcept {
+    static const char* const k[kHitResults] = {"applied", "off", "dead", "unrealized", "world", "rate", "far", "fault", "receiver", "attack", "hidden", "lethal", "values"};
+    return r < kHitResults ? k[r] : "?";
+}
+struct ApplyIn {
+    bool host = true, mirroring = true, hits_on = true;
+    bool fp_equal = true;          // the HIT's guids fingerprint is ours
+    bool attack_ok = true;         // AttackOk
+    bool kind_ok = true;           // not a test HIT (kind 4) outside a hidden run
+    bool values_ok = true;         // HitValuesOk
+    bool lethal = false;           // the host's own registry entry for the attack does damage (+0x24 > 0) or the HIT says lethal
+    bool lethal_allowed = true;    // the host's enemy_hits_lethal
+    bool found = true;             // the key names an in-use MULE actor here (the same actor id)
+    bool realized = true;          // state 2 with an entity
+    std::uint32_t state = 1;       // +0xEA0: 3 / 5 dead
+    bool hidden_or_asleep = false; // a88 & 3
+    bool held = false;             // +0xEA4 bit 14 (a sequence holds it)
+    bool rate_ok = true;           // RateLimit
+    double point_m = 0;            // the point in the host's world from its copy's root
+};
+inline HitResult ApplyGate(const ApplyIn& a) noexcept {
+    if (!a.host || !a.mirroring || !a.hits_on) return HitResult::off;
+    if (!a.fp_equal) return HitResult::world;
+    if (!a.attack_ok || !a.kind_ok) return HitResult::attack;
+    if (!a.values_ok) return HitResult::values;
+    if (LethalRefused(a.lethal, a.lethal_allowed)) return HitResult::lethal;
+    if (!a.found || !a.realized) return HitResult::unrealized;
+    if (a.state == 3 || a.state == 5) return HitResult::dead;
+    if (a.hidden_or_asleep || a.held) return HitResult::hidden;
+    if (!a.rate_ok) return HitResult::rate;
+    if (!(a.point_m <= kApplyMaxM)) return HitResult::too_far;
+    return HitResult::applied;
+}
+
+// ---------------------------------------------------------------- outcomes
+// The wire's defeat (OUTCOME, SEN1 state bits 2-4): 0 none, 1 faint, 2 sleep, 3 restrained, 4 dead, 5 another down kind.
+enum class Defeat : std::uint8_t { none = 0, faint = 1, sleep = 2, restrained = 3, dead = 4, other = 5 };
+inline constexpr unsigned kDefeats = 6;
+inline const char* DefeatText(std::uint8_t d) noexcept {
+    static const char* const k[kDefeats] = {"none", "faint", "sleep", "restrained", "dead", "down"};
+    return d < kDefeats ? k[d] : "?";
+}
+inline constexpr std::uint32_t kDownFaint = 0x80000, kDownSleep = 0x100000, kDownRestrained = 0x200000, kDownOther = 0x1000000;
+// state 3 / 5 dead; state 4 down: by bit 19 / 20 / 21, else another down kind; anything else none. Down is not terminal (a
+// fainted MULE gets up: the host reads it back to none).
+inline constexpr Defeat OutcomeOf(std::uint32_t state, std::uint32_t ea4) noexcept {
+    return state == 3 || state == 5 ? Defeat::dead
+           : state == 4             ? ((ea4 & kDownFaint) ? Defeat::faint : (ea4 & kDownSleep) ? Defeat::sleep : (ea4 & kDownRestrained) ? Defeat::restrained : Defeat::other)
+                                    : Defeat::none;
+}
+inline constexpr std::uint8_t DownBits(std::uint32_t ea4) noexcept { return static_cast<std::uint8_t>((ea4 >> 19) & 0x3Fu); }
+// The OUTCOME causes: 0 the host's world, 1 a guest HIT (applied to it in the last 3 s), 2 a resync, 3 a revive (dead -> alive:
+// the game brought it back, the only way out of dead).
+enum class Cause : std::uint8_t { world = 0, guest = 1, resync = 2, revive = 3 };
+inline const char* CauseText(std::uint8_t c) noexcept {
+    static const char* const k[4] = {"host", "guest", "resync", "revive"};
+    return c < 4 ? k[c] : "?";
+}
+inline constexpr bool VerNewer(std::uint16_t a, std::uint16_t b) noexcept { return static_cast<std::int16_t>(static_cast<std::uint16_t>(a - b)) > 0; }
+struct OutcomeRec {
+    bool have = false;
+    std::uint8_t defeat = 0;
+    std::uint16_t ver = 0;
+};
+// The guest's merge: a newer version wins; dead stays dead unless the host says it was revived. True: the record changed.
+inline bool MergeOutcome(OutcomeRec& cur, std::uint8_t defeat, std::uint16_t ver, std::uint8_t cause) noexcept {
+    if (defeat >= kDefeats) return false;
+    if (cur.have && !VerNewer(ver, cur.ver)) return false;
+    if (cur.have && cur.defeat == static_cast<std::uint8_t>(Defeat::dead) && defeat != cur.defeat && cause != static_cast<std::uint8_t>(Cause::revive)) return false;
+    const bool changed = !cur.have || cur.defeat != defeat;
+    cur.have = true, cur.defeat = defeat, cur.ver = ver;
+    return changed;
+}
+
+// ---------------------------------------------------------------- the dead release (guest)
+// A mirror whose host copy is dead is never given back alive (it would stand up in her world): after Occupied{0} / Required{0}
+// it is hidden and put to sleep (Eligible then refuses it: hidden or asleep). Down or alive: given back as before.
+enum class ReleaseAs : std::uint8_t { alive, hide_sleep };
+inline constexpr ReleaseAs DeadRelease(std::uint8_t defeat) noexcept {
+    return defeat == static_cast<std::uint8_t>(Defeat::dead) ? ReleaseAs::hide_sleep : ReleaseAs::alive;
+}
+
+// ==================================================================================================================== P1b
+// Ownership by proximity (round 17, docs/enemy-sync.md 10). The host decides everything (HostDecide at 2 Hz); the guest only
+// answers its OWN messages (GuestOnOwn) and reports through SEN1. At most one THINKING copy (unfrozen and realized) per enemy
+// across the two worlds: the old owner freezes first, the new one unfreezes after.
+inline constexpr double kTakeM = 40.0, kTakeMarginM = 15.0, kTakeHostMinM = 25.0, kBackFarM = 60.0, kBackHostNearM = 20.0;
+inline constexpr double kHoldMs = 10000.0, kOwnSilenceMs = 3000.0, kAckTimeoutMs = 3000.0, kRefuseHoldMs = 10000.0;
+inline constexpr unsigned kMaxGuestOwned = 16, kMaxChangesPerSec = 4;
+inline constexpr double kOwnRangeSlackM = 20.0;  // forced back beyond enemy_mirror_radius + 20
+inline constexpr std::uint8_t kPhaseUnknown = 0xFF, kPhaseCaution = 3, kPhaseMax = 5;
+// EDSMulePhase (the RTTI enum 0x144C0E818): 0 Normal, 1 Return, 2 PreCaution, 3 Caution, 4 Evasion, 5 Alert.
+inline const char* PhaseText(std::uint8_t p) noexcept {
+    static const char* const k[6] = {"normal", "return", "precaution", "caution", "evasion", "alert"};
+    return p <= kPhaseMax ? k[p] : "unknown";
+}
+enum class Owner : std::uint8_t { host = 1, guest = 2 };
+// The wire's reason byte (SCB1 OWN).
+enum class OwnReason : std::uint8_t {
+    none = 0, proximity = 1, far_off = 2, host_near = 3, silence = 4, refused = 5, ack = 6, forced = 7, unrealized = 8, range = 9, ack_timeout = 10,
+    outcome = 11, reset = 12
+};
+inline constexpr std::uint8_t kOwnReasonMax = 12;
+inline const char* OwnReasonText(OwnReason r) noexcept {
+    static const char* const k[13] = {"none", "proximity", "far", "host near", "silence", "refused", "ack", "forced", "unrealized on the guest", "range",
+                                      "ack timeout", "outcome", "reset"};
+    const unsigned i = static_cast<unsigned>(r);
+    return i <= kOwnReasonMax ? k[i] : "?";
+}
+// The guest's refusal codes (OWNACK).
+enum class OwnRefuse : std::uint8_t { none = 0, not_realized = 1, held = 2, hidden = 3, dead = 4, cutscene = 5, not_mirror = 6, cap = 7, camp_alerted = 8, fault = 9 };
+inline const char* OwnRefuseText(std::uint8_t r) noexcept {
+    static const char* const k[10] = {"none", "not realized here", "held by a sequence here", "hidden or asleep here", "dead here", "cutscene",
+                                      "not a live mirror here", "owned cap", "her camp is alerted", "the freeze or release faulted"};
+    return r < 10 ? k[r] : "?";
+}
+
+// One enemy's inputs at the host's 2 Hz walk.
+struct OwnIn {
+    Owner owner = Owner::host;
+    bool pending = false;          // an OWN sent, its OWNACK not in
+    double d_g = -1, d_h = -1;     // the enemy (its owner's place) to the guest (the partner body) / to the host's Sam; < 0 unknown
+    std::uint8_t phase = 0;        // the owner's copy's phase (+0x110; 0xFF unknown)
+    std::uint8_t cp_phase = kPhaseUnknown;  // the host's camp phase (+0x210) for a host-owned enemy (0xFF unknown: ignored)
+    bool damaged = false;          // a hit on the owner's copy since the last owner change
+    bool terminal = false;         // dead or defeated on the owner (host-owned: no take; guest-owned: no back by proximity)
+    bool guest_ok = true;          // her newest frames: no cutscene there, refusals under the cap
+    bool host_ok = true;           // the host's copy: not sequence-only, not held, not hidden / asleep, not in a vehicle, no host cutscene
+    bool hold_over = true;         // the 10 s hold since the last change (or a refusal) is over
+    unsigned guest_owned = 0;      // how many she owns now (pending takes included)
+    unsigned changes_this_sec = 0; // owner changes started in the last second
+    bool parts_ok = true;          // both beacons carry kPartOwn
+    // the forced rules (guest-owned)
+    double silence_ms = 0;         // since her newest accepted frame for it (or the OWNACK)
+    bool unrealized_guest = false; // her frame: not realized there, or held by a sequence there
+    double range_m = 270.0;        // enemy_mirror_radius + 20
+    double ack_wait_ms = 0;        // since the OWN while pending
+    bool refused = false;          // an OWNACK refused it
+    bool forced = false;           // enemy_own <id> host (hidden runs)
+};
+enum class OwnAct : std::uint8_t { none, take, back, forced_back };
+struct OwnVerdict {
+    OwnAct act = OwnAct::none;
+    OwnReason reason = OwnReason::none;
+};
+// Calm: Normal (0), Return (1, walking back to its post after a search) or PreCaution (2, suspicious: the camp's push never
+// escalates its members with it). Caution and up: alerted (it never changes owner by proximity). Unknown: not calm.
+inline constexpr std::uint8_t kPhaseCalmMax = 2;
+inline constexpr bool Calm(std::uint8_t phase) noexcept { return phase <= kPhaseCalmMax; }
+// A camp (CP +0x210) is alerted from Caution (3) up: the phases its push (0x142B37EB0) escalates its members with. A camp at
+// PreCaution (2) with calm members is common (run 20261124-151238: the camp SW of Lake Knot City at 2, its MULEs at 0) [I].
+inline constexpr bool CampAlerted(std::uint8_t cp_phase) noexcept { return cp_phase != kPhaseUnknown && cp_phase >= kPhaseCaution; }
+// Why a host-owned enemy is not taken now (nullptr: take it). The order is the log's.
+inline const char* TakeBlock(const OwnIn& in) noexcept {
+    if (in.owner != Owner::host) return "not the host's";
+    if (in.pending) return "pending";
+    if (!in.parts_ok) return "parts";
+    if (!(in.d_g >= 0) || in.d_g > kTakeM) return "the guest beyond 40 m";
+    if (!(in.d_h >= 0) || in.d_h < in.d_g + kTakeMarginM) return "the host not 15 m farther";  // the host wins ties
+    if (in.d_h <= kTakeHostMinM) return "the host within 25 m";
+    if (!Calm(in.phase)) return "its phase";
+    if (in.cp_phase != kPhaseUnknown && CampAlerted(in.cp_phase)) return "its camp's phase";
+    if (in.damaged) return "damaged";
+    if (in.terminal) return "dead or down";
+    if (!in.guest_ok) return "the guest (a cutscene, refusals)";
+    if (!in.host_ok) return "the host's copy (held, hidden, sequence-only, a vehicle, a cutscene, a save, the guards)";
+    if (!in.hold_over) return "the hold";
+    if (in.guest_owned >= kMaxGuestOwned) return "her cap";
+    if (in.changes_this_sec >= kMaxChangesPerSec) return "the changes a second";
+    return nullptr;
+}
+inline OwnVerdict HostDecide(const OwnIn& in) noexcept {
+    if (in.owner == Owner::guest) {
+        // forced: ignore phase, damage and the hold
+        if (in.refused) return {OwnAct::forced_back, OwnReason::refused};
+        if (in.forced) return {OwnAct::forced_back, OwnReason::forced};
+        if (in.pending) return in.ack_wait_ms > kAckTimeoutMs ? OwnVerdict{OwnAct::forced_back, OwnReason::ack_timeout} : OwnVerdict{};
+        if (in.silence_ms > kOwnSilenceMs) return {OwnAct::forced_back, OwnReason::silence};
+        if (in.d_g > in.range_m) return {OwnAct::forced_back, OwnReason::range};
+        if (in.unrealized_guest) return {OwnAct::forced_back, OwnReason::unrealized};
+        // dead or down on her side (her SEN1 state: kDead or its defeat bits): hers, never handed back by proximity. Back here the
+        // host's copy would get up alive at her place while hers lies (review rv-safety 6); only the forced rules above end it.
+        if (in.terminal) return {};
+        // by proximity: calm (an alerted one stays hers until a forced rule), after the hold
+        if (!in.hold_over || !Calm(in.phase)) return {};
+        if (in.d_g > kBackFarM) return {OwnAct::back, OwnReason::far_off};
+        if (in.d_h >= 0 && in.d_h <= kBackHostNearM) return {OwnAct::back, OwnReason::host_near};
+        return {};
+    }
+    return TakeBlock(in) ? OwnVerdict{} : OwnVerdict{OwnAct::take, OwnReason::proximity};
+}
+// The place a return gives the host's copy (her OWNACK or her newest frame): only within 10 m of where the host's follower stands
+// and at most 3 m below it (review rv-safety 5: a copy of hers that fell through the ground, a stale or bad frame never moves
+// the host's enemy, a move its save keeps); else it is released where it stands.
+inline constexpr double kBackPlaceMaxM = 10.0, kBackPlaceMaxDropM = 3.0;
+inline constexpr bool BackPlaceOk(double err_m, double dz_m) noexcept { return err_m >= 0 && err_m <= kBackPlaceMaxM && dz_m >= -kBackPlaceMaxDropM; }
+// The phase a forced return gives the host's copy (RisePhase: escalation only): hers capped at Caution (the Alert path takes the
+// LOCAL player as the camp's target); unknown: nothing.
+inline constexpr std::uint8_t ReturnPhase(std::uint8_t guest_phase) noexcept {
+    return guest_phase > kPhaseMax ? kPhaseUnknown : guest_phase > kPhaseCaution ? kPhaseCaution : guest_phase;
+}
+
+// u16 epochs and u32 generations, newer by the serial-number rule (65535 -> 0 is newer).
+inline constexpr bool EpochNewer(std::uint16_t a, std::uint16_t b) noexcept { return static_cast<std::int16_t>(static_cast<std::uint16_t>(a - b)) > 0; }
+inline constexpr bool GenNewer(std::uint32_t a, std::uint32_t b) noexcept { return static_cast<std::int32_t>(a - b) > 0; }
+
+// ---------------------------------------------------------------- the host's table entry (pure state machine)
+struct HostOwn {
+    Owner owner = Owner::host;
+    std::uint16_t epoch = 0;
+    bool pending = false;          // an OWN out, no OWNACK yet
+    bool frozen = false;           // the host's copy is frozen by us (guest-owned, or a back waiting for her OWNACK)
+    double t_sent = -1e18, t_change = -1e18, hold_until = -1e18;
+};
+// Take: the host's copy is frozen FIRST (the caller did it; `frozen_ok` false: nothing changes, hold 10 s).
+inline bool HostTake(HostOwn& e, double now, bool frozen_ok) noexcept {
+    if (e.owner != Owner::host || e.pending) return false;
+    if (!frozen_ok) {
+        e.hold_until = now + kRefuseHoldMs;
+        return false;
+    }
+    e.epoch = static_cast<std::uint16_t>(e.epoch + 1);
+    e.owner = Owner::guest, e.pending = true, e.frozen = true;
+    e.t_sent = e.t_change = now, e.hold_until = now + kHoldMs;
+    return true;
+}
+// Back (by proximity or forced): OWN(host); the host's copy stays frozen until her OWNACK(released) or the ack timeout.
+inline bool HostBack(HostOwn& e, double now) noexcept {
+    if (e.owner != Owner::guest) return false;
+    e.epoch = static_cast<std::uint16_t>(e.epoch + 1);
+    e.owner = Owner::host, e.pending = true;
+    e.t_sent = e.t_change = now, e.hold_until = now + kHoldMs;
+    return true;
+}
+// Her OWNACK. result 0 taken, 1 released, 2 refused. Returns what the host does now.
+enum class AckAct : std::uint8_t { ignore, taken, refused_back, release };
+inline AckAct HostOnAck(HostOwn& e, std::uint16_t epoch, std::uint8_t result, double now) noexcept {
+    if (epoch != e.epoch || !e.pending) return AckAct::ignore;
+    if (e.owner == Owner::guest) {
+        if (result == 0) {
+            e.pending = false;
+            return AckAct::taken;
+        }
+        // refused (or an odd answer): hers never unfroze; the host's again at once, hold 10 s
+        e.epoch = static_cast<std::uint16_t>(e.epoch + 1);
+        e.owner = Owner::host, e.pending = false, e.frozen = false;
+        e.t_change = now, e.hold_until = now + kRefuseHoldMs;
+        return AckAct::refused_back;
+    }
+    // a back: released (or refused: she has nothing; the host's either way)
+    e.pending = false, e.frozen = false;
+    return AckAct::release;
+}
+// A back whose OWNACK did not come within the timeout: the host's copy released anyway (from her newest frame).
+inline bool HostBackTimedOut(HostOwn& e, double now) noexcept {
+    if (e.owner != Owner::host || !e.pending || now - e.t_sent <= kAckTimeoutMs) return false;
+    e.pending = false, e.frozen = false;
+    return true;
+}
+// A reset (gate, link, a world, the switch, a fault, a save): everything the host's at once, nothing pending.
+inline void HostResetEntry(HostOwn& e, double now) noexcept {
+    if (e.owner == Owner::guest || e.pending) e.epoch = static_cast<std::uint16_t>(e.epoch + 1), e.t_change = now;
+    e.owner = Owner::host, e.pending = false, e.frozen = false;
+}
+
+// ---------------------------------------------------------------- the guest's side of one enemy
+struct GuestOwn {
+    bool owned = false;            // her copy runs its own AI here
+    bool known = false;            // an OWN seen for it (this generation)
+    std::uint16_t epoch = 0;
+};
+enum class GuestAct : std::uint8_t { ignore, take, release, ack_taken, ack_released };
+// One OWN for this enemy, this generation (a newer generation resets the whole table first: the caller). take / release: do it
+// and answer; ack_*: a repeat (the same epoch), answer the state again; ignore: an older epoch.
+inline GuestAct GuestOnOwn(GuestOwn& g, std::uint16_t epoch, Owner owner) noexcept {
+    if (g.known && epoch != g.epoch && !EpochNewer(epoch, g.epoch)) return GuestAct::ignore;
+    if (g.known && epoch == g.epoch) return g.owned ? GuestAct::ack_taken : GuestAct::ack_released;
+    g.known = true, g.epoch = epoch;
+    if (owner == Owner::guest) return g.owned ? GuestAct::ack_taken : GuestAct::take;
+    return g.owned ? GuestAct::release : GuestAct::ack_released;
+}
+
+// ---------------------------------------------------------------- the 8 enemy pose slots, shared by capture and apply
+// Apply (mirrors) first: an apply may take a capture's slot when none is free (the caller turns that capture off). Slot 7 is
+// the probe's while it runs.
+class PoseAlloc {
+public:
+    enum Use : std::uint8_t { kFree = 0, kApply = 1, kCapture = 2 };
+    void Reset() noexcept {
+        for (unsigned k = 0; k < kPoseSlots; ++k) use_[k] = kFree;
+    }
+    void SetProbing(bool on) noexcept { probing_ = on; }
+    // A free slot for `u` while fewer than `limit` of that use are taken (-1 none). An apply may take a capture's (`*stolen`).
+    int Take(Use u, unsigned limit, bool* stolen = nullptr) noexcept {
+        if (stolen) *stolen = false;
+        if (u == kFree || Count(u) >= limit) return -1;
+        const unsigned n = probing_ ? kPoseSlots - 1 : kPoseSlots;
+        for (unsigned k = 0; k < n; ++k)
+            if (use_[k] == kFree) return use_[k] = u, static_cast<int>(k);
+        if (u == kApply)
+            for (unsigned k = n; k-- > 0;)
+                if (use_[k] == kCapture) {
+                    if (stolen) *stolen = true;
+                    return use_[k] = kApply, static_cast<int>(k);
+                }
+        return -1;
+    }
+    void Free(int k) noexcept {
+        if (k >= 0 && k < static_cast<int>(kPoseSlots)) use_[k] = kFree;
+    }
+    Use At(int k) const noexcept { return k >= 0 && k < static_cast<int>(kPoseSlots) ? static_cast<Use>(use_[k]) : kFree; }
+    unsigned Count(Use u) const noexcept {
+        unsigned c = 0;
+        for (unsigned k = 0; k < kPoseSlots; ++k) c += use_[k] == u ? 1u : 0u;
+        return c;
+    }
+
+private:
+    std::uint8_t use_[kPoseSlots] = {};
+    bool probing_ = false;
+};
 
 }  // namespace st::erules

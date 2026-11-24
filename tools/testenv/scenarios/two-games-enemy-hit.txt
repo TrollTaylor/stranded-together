@@ -1,0 +1,138 @@
+# Enemy sync P2 (docs/enemy-sync.md 9, round 17): her hits on the enemies the host owns. The guest's copies near her are frozen
+# mirrors; her own rounds on one are dropped in her world at Entity OnHit and sent to the host as SCB1 HITs (channel 6), the host
+# applies each to its own copy with the game's own damage path (an attack context owned by the partner body with the player's
+# attacker id: the credit mode; the DamageInfo handed to the MULE's receiver as a bullet's), answers HITRES and sends the
+# OUTCOME; the mirror stays frozen and lies where the host's lies (the host's frames). Launcher Local test files as the launcher
+# writes them (no ini line: enemy sync and enemy hits on by their defaults, host_save=1).
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-enemy-hit -SeedSaves complete-100 -GuestSeed profile-only -Id r17-enemy-hit
+# Steps: both at the MULE Camp Southwest of Lake Knot City, every MULE resurrected on both, both Sams invulnerable and shielded;
+# the gate on both (equal fingerprints) and the hits on (both beacons' hits part); A the wire: one test HIT (kind 4, 0x47 at the
+# mirror's chest) sent, applied (the stamina falls), answered; the framing (01: the same MULE standing on both screens); B her
+# rifle at that mirror (steered, 2 s bursts, 1.0 m up) until the host's OUTCOME none -> faint (cause guest) and hers (02: her
+# burst, the host's view of the replayed burst); 03 a/b: the same MULE lying fainted on both screens; 04: still down 8 s later;
+# the logs (her bullet HITs, the counters, the outcome table: her own copy's stamina still 1000.0, the host decided alone); the
+# lease (the guest 440 m away: every mirror given back).
+# The gate is PASS only when Run-Batch's PASS and this script's PASS both hold (Run-Batch does not run it):
+#   python -I tools\testenv\enemy-hits.py build-testenv\runs\<run>   (every HIT once on the host, the fainted id = her target,
+#                                                                       her mirror frozen until the lease step)
+# covers: enemy-hits shots
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[enemy\] mirror byte checks: [0-9]+/[0-9]+ ok
+@guest waitlog 5 \[enemy\] mirror byte checks: [0-9]+/[0-9]+ ok
+waitlog 5 \[enemy\] hits: byte checks [0-9]+/[0-9]+ ok
+@guest waitlog 5 \[enemy\] hits: byte checks [0-9]+/[0-9]+ ok
+goto mule-camp-sw-lkc
+@guest goto 1521.90 992.00 0
+wait 4000
+?@both action dev_god 2
+@both action dev_enemies 1
+waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+@guest waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+action enemy_probe 5 1
+@guest action enemy_probe 5 1
+waitlog 40 \[enemy\] sync on \(host\).*\(equal
+@guest waitlog 40 \[enemy\] sync on \(guest\).*\(equal
+@guest waitlog 30 \[enemy\] mirror on id=
+waitlog 30 \[link\] combat parts: .*hits on
+@guest waitlog 30 \[link\] combat parts: .*hits on
+waitlog 30 \[enemy\] hits on \(host\)
+@guest waitlog 30 \[enemy\] hits on \(guest\)
+wait 6000
+# ---- A, the wire (deterministic): one test HIT at the mirror she faces at 8 m
+@guest action enemy_look 0 8 1.2
+wait 1500
+@guest action enemy_hit_send 0x47 1 0
+@guest waitnew 5 \[enemy\] HIT sent #1 id=
+waitnew 5 \[enemy\] HIT applied #1 id=
+waitnew 5 \[enemy\] HIT effect id=[0-9A-F]{5} .*stamina [0-9.]+ -> [0-9.]+
+# (waitlog: the answer reaches her within ~60 ms, before the host's own waits end; run 20261124-142051)
+@guest waitlog 5 \[enemy\] HITRES #1 id=.* applied
+# ---- the framing: the host 12 m from the HIT's MULE, the guest 6 m from it with the rifle drawn, both facing it; both cameras
+# steered at it (run 20261124-142244: the host's MULE stood behind her body on his screen)
+action enemy_look -5 12
+pad dpad_right 600 keep
+pad dpad_right 900 lx=-23170 ly=23170 rx=-23170 ry=23170 keep
+pad dpad_right 400 keep
+pad none 0
+action shots 9 0 0
+action shots 4 4 1
+@guest pad dpad_right 600 keep
+@guest pad dpad_right 900 lx=-23170 ly=23170 rx=-23170 ry=23170 keep
+@guest pad dpad_right 400 keep
+@guest pad none 0
+wait 1000
+@guest action shots 9 0 0
+@guest action enemy_look -5 6 1.0
+wait 1500
+waitlog 15 \[shots\] camera aimed #[0-9]+ at the partner body \(steered
+screenshot 01-host-before
+@guest screenshot 01-guest-before
+# ---- B, her rifle until it faints: the camera steered at the mirror (1.0 m up: an alerted MULE crouches, run 20261124-141352)
+# and following it, RT 2 s (shots 4 2 2); again every 4.5 s until her OUTCOME says faint
+@guest action shots 4 2 2
+@guest waitnew 30 \[shots\] camera aimed #[0-9]+ .*firing 2 s
+wait 500
+@guest screenshot 02-guest-fires
+screenshot 02-host-sees-hits
+wait 2000
+@guest until 60 4500 \[enemy\] OUTCOME id=[0-9A-F]{5} (none|[a-z]+) -> faint => action shots 4 2 2
+waitlog 10 \[enemy\] OUTCOME id=[0-9A-F]{5} none -> faint \(.*cause guest
+# ---- the faint on both screens (the faint animation and SEP1's latency first): each 5 m from it on its own side, the camera
+# steered down at it (0.3 m up: it lies in the grass; run 20261124-142244's 03 stills from 8-10 m with level cameras showed grass)
+wait 2500
+@guest pad none 0
+action enemy_look -5 5 0.3
+@guest action enemy_look -5 5 0.3
+wait 1200
+action shots 4 3 1
+waitnew 20 \[shots\] camera aimed #[0-9]+ at the partner body \(steered
+@guest action shots 4 3 1
+@guest waitnew 20 \[shots\] camera aimed #[0-9]+ at the partner body \(steered
+wait 500
+screenshot 03-host-fainted-a
+@guest screenshot 03-guest-sees-fainted-a
+wait 1000
+screenshot 03-host-fainted-b
+@guest screenshot 03-guest-sees-fainted-b
+wait 8000
+screenshot 04-host-still-down
+@guest screenshot 04-guest-still-down
+# ---- the logs
+@guest waitlog 5 \[enemy\] HIT sent #[0-9]+ id=.* kind bullet
+@guest action enemy_sync 0
+@guest waitnew 5 \[enemy\] hits on mirrors at OnHit [1-9][0-9]* \(ours [1-9][0-9]* -> HIT [1-9]
+action enemy_sync 0
+waitnew 5 \[enemy\] hits: rx [1-9][0-9]* applied [1-9]
+@guest action enemy_sync 4
+# her own copy untouched (review rv-tests 3: her world never applied her rounds; the faint is the host's alone)
+@guest waitnew 5 \[enemy\] outcome id=[0-9A-F]{5} faint ver .*; her copy: health [0-9.]+ stamina 1000\.0
+action enemy_sync 4
+# ---- the lease: the guest 440 m away, every mirror given back (the fainted one alive: it stands up in her world)
+@guest action dev_goto 1226.28 1318.63 183.88
+wait 8000
+@guest action enemy_sync 0
+@guest waitnew 10 \[enemy\] sync: .*mirrors n=0 frozen=0
+@both action enemy_sync 2
+nolog \[enemy\] FAULT
+@guest nolog \[enemy\] FAULT
+nolog \[enemy\] hits FAULT
+@guest nolog \[enemy\] hits FAULT
+nolog byte check FAILED
+@guest nolog byte check FAILED
+nolog \[shots\] FAULT
+@guest nolog \[shots\] FAULT
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+nolog \[enemy\] HIT sent
+@guest nolog \[enemy\] HIT applied
+action enemy_probe 5 0
+?@both action dev_god 0
+@guest quit
+wait 3000
+quit

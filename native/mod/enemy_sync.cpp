@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <vector>
 
@@ -18,11 +19,13 @@
 #include "link.hpp"
 #include "npc_damage.hpp"
 #include "enemy_census.hpp"
+#include "enemy_combat.hpp"
 #include "game_actions.hpp"
 #include "log.hpp"
 #include "partner_source.hpp"
 #include "real_body.hpp"
 #include "sam_damage.hpp"
+#include "save_guard.hpp"
 #include "shot_sync.hpp"
 
 namespace st::esync {
@@ -286,6 +289,8 @@ bool PickNearest(double radius, char* msg, std::size_t cap) {
             if (!e || !mem::Rd(e + 0x88, ef) || (ef & 0x80)) continue;  // dead
             if ((U32(o + kMule124) >> 12) & 1u) continue;                 // sequence-only
             if ((U32(o + kMuleSeq) >> 14) & 1u) continue;                 // a sequence holds it
+            const std::uint32_t ms = U32(o + 0xEA0);                     // P2: the MULE state (3 / 5 dead, 4 down): a calm one only
+            if (ms == 3 || ms == 4 || ms == 5) continue;
             ++realized;
             WorldTransform xf{};
             if (!ReadXf(e, xf)) continue;
@@ -601,10 +606,14 @@ int g_place_variant = 0;      // enemy_sync 6: 0 A, 1 B
 int g_tp_cadence = 0;         // enemy_sync 7: 3 = a teleport every 500 ms between the sets
 std::atomic<bool> g_guard{true};
 erules::KeySet g_mset;        // the frozen mirrors: entity -> actor id (any thread)
+erules::KeySet g_oset;        // P1b, the guest: the enemies she owns (entity -> actor id; the observer)
+std::atomic<unsigned> g_owned_hits_logged{0}, g_owned_hits{0};
 std::atomic<bool> g_any_frozen{false};
 double g_tnow = 0;
 game::Entity* g_body = nullptr;  // the partner body (the tick's)
 std::uint32_t g_look_id = 0;      // the newest enemy_look's enemy (enemy_shot_test 0 takes it while it is a live mirror)
+// P1b (docs/enemy-sync.md 10): the host's combat generation (the host bumps it on every reset; the guest keeps the newest seen)
+std::uint32_t g_own_gen = 1;
 
 // the world and the gate
 std::uint32_t g_world = 0, g_gen = 0xFFFFFFFFu;
@@ -794,6 +803,26 @@ void MirrorHitObserver(std::uintptr_t sam, std::uintptr_t msg) {
                 rn ? rn : "?", static_cast<double>(v.amount));
         return;
     }
+    if (g_oset.Size()) {
+        // P1b: an enemy she owns hit her Sam (its own AI: before the filters, so the shield's drops count too)
+        const samdmg::View v = samdmg::Read(sam, msg);
+        std::uint32_t id = 0;
+        bool owned = v.attacker && g_oset.Find(v.attacker, &id);
+        if (!owned && v.attacker) {
+            const std::uintptr_t holder = mem::Q(v.attacker + 0x300);
+            const std::uintptr_t inst = mem::Q(v.attacker + 0x338);
+            owned = (holder && g_oset.Find(holder, &id)) || (inst && mem::Q(inst + 0x300) && g_oset.Find(mem::Q(inst + 0x300), &id));
+        }
+        if (owned) {
+            g_owned_hits.fetch_add(1, std::memory_order_relaxed);
+            if (g_owned_hits_logged.fetch_add(1, std::memory_order_relaxed) < 8) {
+                const char* rn = mem::RttiName(mem::RttiOf(v.attacker));
+                LogLater("[enemy] an owned enemy hit our Sam: attacker %p %s id %05X, amount %.1f (the shield %s)", reinterpret_cast<void*>(v.attacker), rn ? rn : "?", id,
+                         static_cast<double>(v.amount), g_shield.load(std::memory_order_relaxed) ? "drops it" : "off");
+            }
+            return;
+        }
+    }
     if (!g_any_frozen.load(std::memory_order_relaxed) || g_att_obs_logged.load(std::memory_order_relaxed) >= 16) return;
     const samdmg::View v = samdmg::Read(sam, msg);
     if (g_att_obs_logged.fetch_add(1, std::memory_order_relaxed) >= 16) return;
@@ -831,10 +860,14 @@ struct HostEnemy {
 std::vector<HostEnemy> g_host;
 double g_host_walk_next = 0;
 erules::Schedule g_sched;
-erules::PoseSlots g_pslots;
+erules::PoseSlots g_pslots;      // the captured enemies (logical slots k: SEP1's slot byte)
 std::uintptr_t g_pslot_sm[erules::kPoseSlots] = {};
+int g_pslot_real[erules::kPoseSlots] = {-1, -1, -1, -1, -1, -1, -1, -1};  // k -> the realbody slot (g_palloc)
 double g_pslot_next[erules::kPoseSlots] = {};
 std::uint32_t g_pslot_seq[erules::kPoseSlots] = {};
+// P1b: the 8 enemy pose slots are shared by apply (mirrors, either game) and capture (the enemies this game owns): one allocator,
+// apply first
+erules::PoseAlloc g_palloc;
 std::uint32_t g_sen_seq = 0;
 struct SenderStats {
     unsigned sen = 0, entries = 0, c10 = 0, c2 = 0, c02 = 0, sep = 0, bytes = 0, no_guest = 0;
@@ -843,10 +876,54 @@ double g_ss_next = 0;
 std::uint64_t g_shooter_keys[erules::KeySet::kCap];
 std::uint32_t g_shooter_vals[erules::KeySet::kCap];
 
+void CaptureSlotOff(unsigned k) {
+    if (g_pslot_real[k] >= 0) {
+        if (g_palloc.At(g_pslot_real[k]) == erules::PoseAlloc::kCapture) {
+            realbody::SetEnemySlot(static_cast<unsigned>(g_pslot_real[k]), 0, realbody::EnemySlotMode::off);
+            g_palloc.Free(g_pslot_real[k]);
+        }
+        g_pslot_real[k] = -1;
+    }
+    g_pslot_sm[k] = 0;
+}
 void HostResetPoses() {
-    for (unsigned k = 0; k < erules::kPoseSlots; ++k)
-        if (g_pslot_sm[k]) realbody::SetEnemySlot(k, 0, realbody::EnemySlotMode::off), g_pslot_sm[k] = 0;
+    for (unsigned k = 0; k < erules::kPoseSlots; ++k) CaptureSlotOff(k);
     g_pslots.Reset();
+}
+// The capture slots for the chosen enemies (2 Hz): `sm_of(id)` the realized SkinnedModel of an enemy we own (0 none).
+template <class SmOf>
+void UpdateCaptureSlots(const erules::PoseCand* pc, unsigned n, SmOf sm_of) {
+    g_pslots.Update(pc, n, static_cast<unsigned>(g_ecfg.enemy_pose_count));
+    for (unsigned k = 0; k < erules::kPoseSlots; ++k) {
+        const std::uint32_t id = g_pslots.Id(k);
+        const std::uintptr_t sm = id ? sm_of(id) : 0;
+        if (sm == g_pslot_sm[k] && (sm == 0 || g_pslot_real[k] >= 0)) continue;
+        CaptureSlotOff(k);
+        if (!sm) continue;
+        const int real = g_palloc.Take(erules::PoseAlloc::kCapture, static_cast<unsigned>(g_ecfg.enemy_pose_count));
+        if (real < 0) continue;  // the mirrors have them (apply first)
+        if (realbody::SetEnemySlot(static_cast<unsigned>(real), sm, realbody::EnemySlotMode::capture)) g_pslot_real[k] = real, g_pslot_sm[k] = sm;
+        else g_palloc.Free(real);
+        g_pslot_seq[k] = 0;
+    }
+}
+// SEP1: each capture slot at its period, a new capture only.
+void SendCaptures(double now) {
+    for (unsigned k = 0; k < erules::kPoseSlots; ++k) {
+        if (!g_pslot_sm[k] || g_pslot_real[k] < 0 || now < g_pslot_next[k]) continue;
+        g_pslot_next[k] = now + g_pslots.Period(k);
+        static ewire::EnemyPose p;
+        double cms = 0;
+        if (!realbody::CaptureEnemyFrame(static_cast<unsigned>(g_pslot_real[k]), &p.joints, &cms) || p.joints.seq == g_pslot_seq[k]) continue;
+        g_pslot_seq[k] = p.joints.seq;
+        p.slot = static_cast<std::uint8_t>(k);
+        p.actor_id = g_pslots.Id(k);
+        p.sender_ms = static_cast<std::uint32_t>(static_cast<std::uint64_t>(now) & 0xFFFFFFFFull);
+        p.joints.sender_ms = p.sender_ms;
+        std::uint8_t buf[ewire::kSepMaxSize];
+        const std::size_t size = ewire::EncodeEnemyPose(p, buf, sizeof(buf));
+        if (size && link::SendCombatFrame(buf, size)) ++g_ss.sep, g_ss.bytes += static_cast<unsigned>(size);
+    }
 }
 void HostReset() {
     HostResetPoses();
@@ -875,6 +952,12 @@ void HostWalk(const double (&guest)[3], bool have_guest) {
     }
     g_host.swap(next);
 }
+// P1b (below): the epoch byte SEN1 carries, the phase (+0x110, 0xFF unknown), whether the host skips an enemy (the guest owns
+// it, or a hand-over is pending: its copy is frozen here), the ownership tick.
+std::uint8_t OwnEpochByte(std::uint32_t id);
+std::uint8_t PhaseOf(std::uintptr_t actor);
+bool HostSkips(std::uint32_t id);
+void OwnHostTick(const TickIn& in, double now, const double (&guest)[3], bool have_guest);
 // A fresh read of one enemy for its SEN1 entry (place, state, velocity from the last two samples).
 bool HostEntry(HostEnemy& h, double now, const double (&guest)[3], bool have_guest, ewire::Enemy& e) {
     if (!ReadActor(h.actor, h.id, h.now) || !h.now.have_xf) return false;
@@ -888,10 +971,11 @@ bool HostEntry(HostEnemy& h, double now, const double (&guest)[3], bool have_gue
     std::memcpy(h.last_pos, h.now.pos, sizeof(h.last_pos));
     h.last_t = now;
     e.actor_id = h.id;
-    e.owner_epoch = 1;
-    e.phase = 0xFF;
+    e.owner_epoch = OwnEpochByte(h.id);
+    e.phase = PhaseOf(h.actor);
     e.state = static_cast<std::uint8_t>((h.now.realized ? ewire::kRealized : 0) | (h.now.dead ? ewire::kDead : 0) | (h.now.hidden_or_asleep ? ewire::kHidden : 0) |
-                                        (h.now.held ? ewire::kSeqHeld : 0) | (g_pslots.SlotOf(h.id) >= 0 ? ewire::kPosed : 0));
+                                        (h.now.held ? ewire::kSeqHeld : 0) | (g_pslots.SlotOf(h.id) >= 0 ? ewire::kPosed : 0) |
+                                        ewire::DefeatBits(ecombat::HostDefeat(h.id)));  // P2: the outcome (the OUTCOME's redundancy)
     const double sp = std::sqrt(static_cast<double>(h.vel[0]) * h.vel[0] + static_cast<double>(h.vel[1]) * h.vel[1]);
     e.flags = sp > 0.2 ? ewire::kMoving : 0;
     for (int k = 0; k < 3; ++k) e.pos[k] = h.now.pos[k], e.vel[k] = h.vel[k];
@@ -902,6 +986,7 @@ bool HostEntry(HostEnemy& h, double now, const double (&guest)[3], bool have_gue
 void HostTick(const TickIn& in, double now) {
     double guest[3] = {};
     const bool have_guest = in.body && LocalPlace(in.body, guest);
+    OwnHostTick(in, now, guest, have_guest);  // P1b (the guest-owned ones are followed even with no partner body here)
     if (!have_guest) {
         ++g_ss.no_guest;
         return;  // the guest is in another region (no partner body here): nothing to mirror
@@ -909,31 +994,32 @@ void HostTick(const TickIn& in, double now) {
     if (now >= g_host_walk_next) {
         g_host_walk_next = now + 500;
         HostWalk(guest, have_guest);
-        // the pose slots (2 Hz): the nearest realized within 120 m
+        // the pose slots (2 Hz): the nearest realized within 120 m (P1b: not the guest's: they are her captures)
         std::vector<erules::PoseCand> pc;
-        for (const HostEnemy& h : g_host) pc.push_back(erules::PoseCand{h.id, h.dist, h.now.realized && !h.now.dead});
-        g_pslots.Update(pc.data(), static_cast<unsigned>(pc.size()), static_cast<unsigned>(g_ecfg.enemy_pose_count));
-        for (unsigned k = 0; k < erules::kPoseSlots; ++k) {
-            const std::uint32_t id = g_pslots.Id(k);
-            std::uintptr_t sm = 0;
-            for (const HostEnemy& h : g_host)
-                if (h.id == id && h.now.realized) sm = mem::Q(h.now.entity + 0xB8);
-            if (sm == g_pslot_sm[k]) continue;
-            if (g_pslot_sm[k]) realbody::SetEnemySlot(k, 0, realbody::EnemySlotMode::off);
-            g_pslot_sm[k] = sm && realbody::SetEnemySlot(k, sm, realbody::EnemySlotMode::capture) ? sm : 0;
-            g_pslot_seq[k] = 0;
+        // P2: a dead or down one is still posed (it lies where the host's lies), in the 5 Hz half, never taking a live one's fast rank
+        for (const HostEnemy& h : g_host) {
+            const bool down = h.now.dead || ecombat::HostDefeat(h.id) != 0;
+            pc.push_back(erules::PoseCand{h.id, h.dist, h.now.realized && !HostSkips(h.id), down});
         }
-        // the shooters for the enemy shots: the 10 Hz class (entity -> actor id)
+        UpdateCaptureSlots(pc.data(), static_cast<unsigned>(pc.size()), [](std::uint32_t id) -> std::uintptr_t {
+            for (const HostEnemy& h : g_host)
+                if (h.id == id && h.now.realized) return mem::Q(h.now.entity + 0xB8);
+            return 0;
+        });
+        // the shooters for the enemy shots: the 10 Hz class (entity -> actor id); P1b: not the guest's (frozen here)
         unsigned ns = 0;
         for (const HostEnemy& h : g_host)
-            if (ns < erules::KeySet::kCap && h.now.realized && h.dist >= 0 && h.dist <= g_ecfg.enemy_mirror_radius)
+            if (ns < erules::KeySet::kCap && h.now.realized && h.dist >= 0 && h.dist <= g_ecfg.enemy_mirror_radius && !HostSkips(h.id))
                 g_shooter_keys[ns] = h.now.entity, g_shooter_vals[ns] = h.id, ++ns;
         shots::SetEnemyShooters(g_shooter_keys, g_shooter_vals, ns);
     }
-    // SEN1: the schedule's picks, read fresh, at most 2 frames
+    // SEN1: the schedule's picks, read fresh, at most 2 frames (P1b: the guest's and the pending ones skipped)
     std::vector<erules::Cand> cand;
     cand.reserve(g_host.size());
-    for (const HostEnemy& h : g_host) cand.push_back(erules::Cand{h.id, h.dist});
+    std::vector<unsigned> cidx;
+    cidx.reserve(g_host.size());
+    for (unsigned i = 0; i < g_host.size(); ++i)
+        if (!HostSkips(g_host[i].id)) cand.push_back(erules::Cand{g_host[i].id, g_host[i].dist}), cidx.push_back(i);
     unsigned pick[erules::Schedule::kPerTick];
     const unsigned np = g_sched.Pick(cand.data(), static_cast<unsigned>(cand.size()), now, g_ecfg.enemy_mirror_radius, pick, erules::Schedule::kPerTick);
     static ewire::EnemyFrame f;
@@ -943,9 +1029,10 @@ void HostTick(const TickIn& in, double now) {
         f.flags = 0;
         f.seq = ++g_sen_seq;
         f.sender_ms = static_cast<std::uint32_t>(static_cast<std::uint64_t>(now) & 0xFFFFFFFFull);
-        f.gen_tag = 0;
+        f.gen_tag = g_own_gen;
+        if (InCutscene()) f.flags |= ewire::kSenderCutscene;
         for (; at < np && f.n < ewire::kSenMax; ++at) {
-            HostEnemy& h = g_host[pick[at]];
+            HostEnemy& h = g_host[cidx[pick[at]]];
             ewire::Enemy e;
             if (!HostEntry(h, now, guest, have_guest, e)) continue;
             const erules::Class c = erules::ClassOf(h.dist, g_ecfg.enemy_mirror_radius);
@@ -957,22 +1044,7 @@ void HostTick(const TickIn& in, double now) {
         const std::size_t size = ewire::EncodeEnemies(f, buf, sizeof(buf));
         if (size && link::SendCombatFrame(buf, size)) ++g_ss.sen, g_ss.entries += f.n, g_ss.bytes += static_cast<unsigned>(size);
     }
-    // SEP1: each pose slot at its period, a new capture only
-    for (unsigned k = 0; k < erules::kPoseSlots; ++k) {
-        if (!g_pslot_sm[k] || now < g_pslot_next[k]) continue;
-        g_pslot_next[k] = now + g_pslots.Period(k);
-        static ewire::EnemyPose p;
-        double cms = 0;
-        if (!realbody::CaptureEnemyFrame(k, &p.joints, &cms) || p.joints.seq == g_pslot_seq[k]) continue;
-        g_pslot_seq[k] = p.joints.seq;
-        p.slot = static_cast<std::uint8_t>(k);
-        p.actor_id = g_pslots.Id(k);
-        p.sender_ms = static_cast<std::uint32_t>(static_cast<std::uint64_t>(now) & 0xFFFFFFFFull);
-        p.joints.sender_ms = p.sender_ms;
-        std::uint8_t buf[ewire::kSepMaxSize];
-        const std::size_t size = ewire::EncodeEnemyPose(p, buf, sizeof(buf));
-        if (size && link::SendCombatFrame(buf, size)) ++g_ss.sep, g_ss.bytes += static_cast<unsigned>(size);
-    }
+    SendCaptures(now);  // SEP1
     if (now >= g_ss_next) {
         const double secs = g_ss_next > 0 ? 5.0 : 0;
         g_ss_next = now + 5000;
@@ -1002,6 +1074,7 @@ struct Mirror {
     bool bit13_pre = false;  // +0xEA4 bit 13 already set before our Occupied{1} (the game's: Required{0} never clears it)
     double err = 0;
     bool frozen = false;
+    bool own = false;        // P1b, the host: its copy of an enemy the guest owns (no lease: the ownership rules give it back)
     const char* why = "";    // a release held by a cutscene: its reason
 };
 std::map<std::uint32_t, erules::Track> g_tracks;
@@ -1041,8 +1114,48 @@ struct FarCheck {
 };
 std::vector<FarCheck> g_far_checks;
 std::vector<double> g_drift;
-bool g_slot_used[erules::kPoseSlots] = {};
 
+// The MULE weapon component's flag +0x268 (the weapon update returns at once while it is set): our Occupied{1} sets it (the
+// weapon's Occupied handler 0x142B07FB0 -> 0x142BB60F0). Its value before our freeze, by id; put back after our release when
+// the release left it set (an unfrozen MULE that cannot fire: run 20261124-151942, her owned MULEs alerted 50 s without a round).
+std::map<std::uint32_t, std::uint8_t> g_w268_pre;
+std::atomic<unsigned> g_w268_restored{0};
+std::uintptr_t EntityOfActor(std::uintptr_t actor) {
+    const std::uintptr_t ref = mem::Q(actor + kActEntRef);
+    return ref ? ref - 0x20 : 0;
+}
+void NoteWeaponPre(std::uint32_t id, std::uintptr_t actor) {
+    const std::uintptr_t e = EntityOfActor(actor);
+    if (e) g_w268_pre[id] = WeaponFlag(e);
+}
+bool WriteByte(std::uintptr_t at, std::uint8_t v) noexcept {
+    __try {
+        *reinterpret_cast<volatile std::uint8_t*>(at) = v;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+void RestoreWeapon(std::uint32_t id, std::uintptr_t actor) {
+    const auto it = g_w268_pre.find(id);
+    if (it == g_w268_pre.end()) return;
+    const std::uint8_t pre = it->second;
+    g_w268_pre.erase(it);
+    const std::uintptr_t e = EntityOfActor(actor);
+    const std::uintptr_t c = e ? partner::FindComponentByName(reinterpret_cast<game::Entity*>(e), "DSNpcWeaponComponent") : 0;
+    std::uint8_t now = 0xFF;
+    if (!c || !mem::Rd(c + 0x268, now) || pre != 0 || now != 1) return;
+    // a MULE that is down, dead (+0xEA0 3 / 4 / 5) or hidden / asleep (a88 & 3) now: the game may have set the flag itself
+    // (review rv-safety 13): never re-armed by us
+    const std::uint32_t st = U32(actor + 0xEA0), a88 = U32(actor + kActFlags88);
+    if (st == 3 || st == 4 || st == 5 || (a88 & 3u)) {
+        if (g_w268_restored.fetch_add(1) < 12)
+            Log("[enemy] weapon flag kept id=%05X (+0x268 1: the MULE is down, dead or hidden now: state %u a88 0x%X)", id, st, a88);
+        return;
+    }
+    if (WriteByte(c + 0x268, 0) && g_w268_restored.fetch_add(1) < 12)
+        Log("[enemy] weapon flag restored id=%05X (+0x268 1 -> 0 after our release; it was 0 before our freeze)", id);
+}
 void PublishMirrors() {
     std::uint64_t k[erules::KeySet::kCap];
     std::uint32_t v[erules::KeySet::kCap];
@@ -1054,10 +1167,37 @@ void PublishMirrors() {
     g_mset.Publish(k, v, n);
     g_any_frozen.store(n > 0, std::memory_order_relaxed);
 }
+// P2: the mirrors hidden and put to sleep here because the host's copy is dead (PostRelease). Restored (unhidden
+// and woken, only while it is still the same in-use MULE with those a88 bits) when the host's is alive again (a revive, a new
+// host epoch), and on link loss, the gate off, a reset or a fault (review rv-safety 7: what we write is restored).
+std::map<std::uint32_t, std::uintptr_t> g_dead_hidden;
+void HideDead(std::uint32_t id, std::uintptr_t actor, const char* why) {
+    const bool hid = ActorBool(actor, kVtHidden, 1), slept = ActorBool(actor, kVtSleep, 1);
+    g_dead_hidden[id] = actor;
+    Log("[enemy] mirror id=%05X %s: hidden and asleep here (the host's is dead; a88 0x%X%s)", id, why, U32(actor + kActFlags88), hid && slept ? "" : ", a call FAULTED");
+}
+void UnhideDead(bool all, const char* why) {
+    for (auto it = g_dead_hidden.begin(); it != g_dead_hidden.end();) {
+        if (!all && ecombat::GuestDefeat(it->first) == static_cast<std::uint8_t>(erules::Defeat::dead)) {
+            ++it;
+            continue;
+        }
+        ActorNow a;
+        if (ReadActor(it->second, it->first, a) && (a.a88 & 3u)) {
+            bool ok = true;
+            if (a.a88 & 1u) ok = ActorBool(it->second, kVtHidden, 0) && ok;
+            if (a.a88 & 2u) ok = ActorBool(it->second, kVtSleep, 0) && ok;
+            Log("[enemy] mirror id=%05X shown and woken again (%s; a88 0x%X -> 0x%X%s)", it->first, why, a.a88, U32(it->second + kActFlags88), ok ? "" : ", a call FAULTED");
+        }
+        it = g_dead_hidden.erase(it);
+    }
+}
 void FreeSlot(Mirror& m) {
     if (m.slot >= 0) {
-        realbody::SetEnemySlot(static_cast<unsigned>(m.slot), 0, realbody::EnemySlotMode::off);
-        g_slot_used[m.slot] = false;
+        if (g_palloc.At(m.slot) == erules::PoseAlloc::kApply) {
+            realbody::SetEnemySlot(static_cast<unsigned>(m.slot), 0, realbody::EnemySlotMode::off);
+            g_palloc.Free(m.slot);
+        }
         m.slot = -1;
     }
 }
@@ -1074,6 +1214,15 @@ void PostRelease(const Mirror& m, const char* why) {
     if (ours) {
         Post(m.id, kOccupiedVt, 0);
         if (!m.bit13_pre) Post(m.id, kRequiredVt, 0);
+        RestoreWeapon(m.id, m.actor);
+    }
+    // P2 (docs/enemy-sync.md 9): the host's copy is dead: hers is never given back alive (it would stand up in her world); hidden
+    // and asleep here (Eligible then refuses it). Down: given back alive (it stands up until she returns; it is frozen lying again).
+    const std::uint8_t defeat = same ? ecombat::GuestDefeat(m.id) : 0;
+    if (same && erules::DeadRelease(defeat) == erules::ReleaseAs::hide_sleep) {
+        HideDead(m.id, m.actor, "released dead");
+    } else if (same && defeat) {
+        Log("[enemy] mirror id=%05X released while %s on the host: given back alive here (frozen lying again when she returns)", m.id, erules::DefeatText(defeat));
     }
     ++g_gs.released;
     Log("[enemy] lease released id=%05X: %s (ea4 0x%X->0x%X)%s", m.id, why, before, same ? U32(m.actor + kMuleSeq) : 0,
@@ -1131,6 +1280,7 @@ void RestoreFar(const char* why) {
     g_far_orig.clear();
 }
 void GuestReset() {
+    UnhideDead(true, "reset");
     ReleaseAll("reset");
     RestoreFar("reset");
     g_tracks.clear();
@@ -1141,6 +1291,14 @@ void GuestReset() {
     g_refused_once.clear();
 }
 
+// P1b (below): whether this game takes a peer's SEN1 entry (the host: only the guest's owned ones with their epoch; the guest:
+// never one she owns), and the host's generation a guest frame names (the guest: a newer one resets her table).
+bool AcceptPeerEntry(const ewire::EnemyFrame& f, const ewire::Enemy& e, double now);
+bool AcceptPeerFrame(const ewire::EnemyFrame& f);
+bool AcceptPeerPose(std::uint32_t id);
+bool IsOwnedHere(std::uint32_t id);                 // the guest owns it (her copy runs its AI)
+void OwnGuestTick(const TickIn& in, double now);  // the guest's owned enemies
+// The peer's SEN1 / SEP1 (P1a: the guest; P1b: both, the host for the enemies the guest owns).
 void GuestDrain(double now) {
     std::uint8_t buf[1100];
     std::size_t n = 0;
@@ -1152,11 +1310,13 @@ void GuestDrain(double now) {
             ++g_gs.rx_bad;
             continue;
         }
+        if (!AcceptPeerFrame(f)) continue;
         ++g_gs.rx_sen;
         const double sent = g_clock.Unwrap(f.sender_ms);
         g_clock.Note(sent, now);
         for (unsigned i = 0; i < f.n; ++i) {
             const ewire::Enemy& e = f.e[i];
+            if (!AcceptPeerEntry(f, e, now)) continue;
             erules::Sample s;
             s.t = sent;
             std::memcpy(s.pos, e.pos, sizeof(s.pos));
@@ -1164,6 +1324,7 @@ void GuestDrain(double now) {
             std::memcpy(s.vel, e.vel, sizeof(s.vel));
             s.state = e.state;
             g_tracks[e.actor_id].Push(s, now);
+            if (ewire::DefeatOfState(e.state) && !(f.flags & ewire::kFromGuest)) ecombat::NoteSenDefeat(e.actor_id, ewire::DefeatOfState(e.state));
             ++g_gs.rx_entries;
         }
     }
@@ -1175,6 +1336,7 @@ void GuestDrain(double now) {
             continue;
         }
         ++g_gs.rx_sep;
+        if (!AcceptPeerPose(p.actor_id)) continue;
         PoseRx& r = g_prx[p.actor_id];
         if (p.foreign_layout) {
             ++g_gs.sep_foreign;
@@ -1250,6 +1412,7 @@ void TryEnter(std::uint32_t id, const erules::Track& tr, double now, const doubl
     if (g_ecfg.enemy_shots && !shots::EnemyReplayReady()) return RefuseOnce(id, "the enemy rounds cannot be replayed here (enemy_shots=1)");
     // freeze, then read it back
     const std::uint32_t ea4_pre = U32(actor + kMuleSeq);
+    NoteWeaponPre(id, actor);
     if (!Post(id, kOccupiedVt, 1)) return RefuseOnce(id, "the post faulted");
     const std::uint32_t ea4 = U32(actor + kMuleSeq);
     if (!((ea4 >> 14) & 1u)) return RefuseOnce(id, "freeze did not take");
@@ -1281,17 +1444,14 @@ void GivePose(Mirror& m, const erules::Track& tr, double render, bool posed_on_h
     }
     (void)tr;
     if (m.slot < 0) {
-        unsigned used = 0;
-        for (bool u : g_slot_used) used += u ? 1 : 0;
-        if (used >= static_cast<unsigned>(g_ecfg.enemy_pose_count)) {
-            ++g_gs.no_pose;
-            return;
-        }
-        for (unsigned k = 0; k < erules::kPoseSlots; ++k)
-            if (!g_slot_used[k]) {
-                if (m.sm && realbody::SetEnemySlot(k, m.sm, realbody::EnemySlotMode::apply)) g_slot_used[k] = true, m.slot = static_cast<int>(k);
-                break;
-            }
+        // apply first (P1b: a capture of an enemy this game owns gives its slot up)
+        bool stolen = false;
+        const int k = m.sm ? g_palloc.Take(erules::PoseAlloc::kApply, static_cast<unsigned>(g_ecfg.enemy_pose_count), &stolen) : -1;
+        if (k >= 0 && stolen)
+            for (unsigned c = 0; c < erules::kPoseSlots; ++c)
+                if (g_pslot_real[c] == k) g_pslot_real[c] = -1, g_pslot_sm[c] = 0;  // the slot is the apply's now (its mode set below)
+        if (k >= 0 && realbody::SetEnemySlot(static_cast<unsigned>(k), m.sm, realbody::EnemySlotMode::apply)) m.slot = k;
+        else if (k >= 0) g_palloc.Free(k);
         if (m.slot < 0) {
             ++g_gs.no_pose;
             return;
@@ -1307,6 +1467,45 @@ void GivePose(Mirror& m, const erules::Track& tr, double render, bool posed_on_h
     }
 }
 
+// One frozen mirror driven to its owner's place (either game: P1b's host follows the guest's).
+void DriveMirror(Mirror& m, const ActorNow& a, const double (&pos)[3], float yaw, double now) {
+    const double err = Dist3(pos, a.pos);
+    const double yerr = erules::YawDiffDeg(yaw, YawOfXf(a.xf));
+    if (now >= m.next_err) m.next_err = now + 500, g_err_win.push_back(err), m.err = err;
+    erules::Drive d = erules::Band(err, yerr, now, m.last_tp);
+    if (g_tp_cadence == 3 && now - m.last_tp >= 500) d = erules::Drive::teleport;
+    const WorldTransform xf = XfFromYaw(a.xf, pos, yaw);
+    if (d == erules::Drive::set) {
+        if (ActorXf(m.actor, kVtSet, xf) && EntityXf(m.entity, xf)) ++g_gs.sets, ++g_sets_win;
+        else ++g_gs.set_faults;
+    } else if (d == erules::Drive::teleport) {
+        if (ActorXf(m.actor, kActorTeleport, xf)) ++g_gs.teleports, ++g_tp_win, m.last_tp = now;
+        else ++g_gs.set_faults;
+    }
+}
+// The 5 s mirrors line (either game).
+void MirrorLine(double now) {
+    if (now < g_gs_next) return;
+    g_gs_next = now + 5000;
+    unsigned frozen = 0, posed = 0;
+    for (const Mirror& m : g_mirrors) frozen += m.frozen ? 1 : 0, posed += m.slot >= 0 ? 1 : 0;
+    unsigned applies = 0, nof = 0;
+    for (unsigned k = 0; k < erules::kPoseSlots; ++k) {
+        const realbody::EnemySlotStats s = realbody::GetEnemySlotStats(k, true);
+        if (g_palloc.At(static_cast<int>(k)) == erules::PoseAlloc::kApply) applies += s.applies, nof += s.no_frame;
+    }
+    if (!g_mirrors.empty() || !g_err_win.empty() || g_gs.far_placed) {
+        Log("[enemy] mirrors: n=%zu frozen=%u err p50 %.2f p95 %.2f max %.2f m (%zu samples); set %.0f/s teleports %u; poses n=%u (%.1f applies/s each, no pose %u, "
+            "no frame %u); far placed %u (back-drift p50 %.2f p95 %.2f m, %zu checked); tracks %zu",
+            g_mirrors.size(), frozen, Pct(g_err_win, 0.5), Pct(g_err_win, 0.95), g_err_win.empty() ? 0.0 : *std::max_element(g_err_win.begin(), g_err_win.end()),
+            g_err_win.size(), g_sets_win / 5.0, g_tp_win, posed, posed ? applies / 5.0 / posed : 0.0, g_gs.no_pose, nof, g_gs.far_placed, Pct(g_drift, 0.5),
+            Pct(g_drift, 0.95), g_drift.size(), g_tracks.size());
+    }
+    g_err_win.clear(), g_drift.clear();
+    g_sets_win = g_tp_win = 0;
+    g_gs.no_pose = 0;
+}
+
 void GuestTick(const TickIn& in, double now, bool off, const char* off_why) {
     GuestDrain(now);
     double sam[3] = {};
@@ -1315,6 +1514,7 @@ void GuestTick(const TickIn& in, double now, bool off, const char* off_why) {
     const int cut = g_cut_step;  // stepped by Tick
     if (cut == 2) ReleaseAll("cutscene");
     if (g_holding) return;  // nothing driven, posed or posted
+    if (!g_dead_hidden.empty()) UnhideDead(off, off ? off_why : "the host's is alive again");
     if (off || !have_sam) {
         if (!g_mirrors.empty()) ReleaseAll(off ? off_why : "no local Sam");
         if (off) RestoreFar(off_why);
@@ -1336,7 +1536,8 @@ void GuestTick(const TickIn& in, double now, bool off, const char* off_why) {
         l.frozen_by_us = true;
         l.bit14_now = same && a.held;
         l.realized_here = same && a.realized && a.entity == m.entity;
-        l.frame_age_ms = it != g_tracks.end() ? now - it->second.rx_ms : 1e9;
+        // (P1b: a mirror frozen again on an OWN back has no host frame yet: its silence clock starts at the freeze)
+        l.frame_age_ms = now - (std::max)(it != g_tracks.end() ? it->second.rx_ms : -1e18, m.t_frozen);
         double pos[3] = {};
         float yaw = 0;
         const bool have_target = it != g_tracks.end() && it->second.At(render, pos, &yaw);
@@ -1357,29 +1558,17 @@ void GuestTick(const TickIn& in, double now, bool off, const char* off_why) {
             continue;
         }
         if (!have_target || !a.have_xf) continue;
-        // drive
-        const double err = Dist3(pos, a.pos);
-        const double yerr = erules::YawDiffDeg(yaw, YawOfXf(a.xf));
-        if (now >= m.next_err) m.next_err = now + 500, g_err_win.push_back(err), m.err = err;
-        erules::Drive d = erules::Band(err, yerr, now, m.last_tp);
-        if (g_tp_cadence == 3 && now - m.last_tp >= 500) d = erules::Drive::teleport;
-        const WorldTransform xf = XfFromYaw(a.xf, pos, yaw);
-        if (d == erules::Drive::set) {
-            if (ActorXf(m.actor, kVtSet, xf) && EntityXf(m.entity, xf)) ++g_gs.sets, ++g_sets_win;
-            else ++g_gs.set_faults;
-        } else if (d == erules::Drive::teleport) {
-            if (ActorXf(m.actor, kActorTeleport, xf)) ++g_gs.teleports, ++g_tp_win, m.last_tp = now;
-            else ++g_gs.set_faults;
-        }
+        DriveMirror(m, a, pos, yaw, now);
         GivePose(m, it->second, render, it->second.Newest() && (it->second.Newest()->state & ewire::kPosed));
     }
     if (changed) PublishMirrors();
     g_mirrors.erase(std::remove_if(g_mirrors.begin(), g_mirrors.end(), [](const Mirror& m) { return !m.frozen; }), g_mirrors.end());
+    OwnGuestTick(in, now);  // P1b: the enemies she owns (SEN1, SEP1, shooters, damage)
     // entry (a few a tick)
     unsigned tries = 0;
     for (const auto& kv : g_tracks) {
         if (tries >= 4) break;
-        if (FindMirror(kv.first)) continue;
+        if (FindMirror(kv.first) || IsOwnedHere(kv.first)) continue;
         const erules::Sample* z = kv.second.Newest();
         if (!z || now - kv.second.rx_ms > erules::FreshMs(erules::Class::near10) || Dist3(z->pos, sam) > g_ecfg.enemy_mirror_radius) continue;
         ++tries;
@@ -1392,7 +1581,7 @@ void GuestTick(const TickIn& in, double now, bool off, const char* off_why) {
         for (const auto& kv : g_tracks) {
             if (placed >= 16) break;
             const erules::Sample* z = kv.second.Newest();
-            if (!z || now - kv.second.rx_ms > 1500 || Dist3(z->pos, sam) > kFarRadiusM || FindMirror(kv.first)) continue;
+            if (!z || now - kv.second.rx_ms > 1500 || Dist3(z->pos, sam) > kFarRadiusM || FindMirror(kv.first) || IsOwnedHere(kv.first)) continue;
             const std::uintptr_t actor = LocalActor(kv.first);
             ActorNow a;
             if (!actor || !ReadActor(actor, kv.first, a) || a.state != 0 || a.entity || !a.have_xf || a.held || a.seq_only) continue;
@@ -1427,27 +1616,989 @@ void GuestTick(const TickIn& in, double now, bool off, const char* off_why) {
             if (it != g_tracks.end() && ReadActor(c.actor, c.id, a) && a.have_xf && it->second.At(render, pos, &yaw)) g_drift.push_back(Dist3(pos, a.pos));
         }
     }
-    // the 5 s line
-    if (now >= g_gs_next) {
-        g_gs_next = now + 5000;
-        unsigned frozen = 0, posed = 0;
-        for (const Mirror& m : g_mirrors) frozen += m.frozen ? 1 : 0, posed += m.slot >= 0 ? 1 : 0;
-        unsigned applies = 0, nof = 0;
-        for (unsigned k = 0; k < erules::kPoseSlots; ++k) {
-            const realbody::EnemySlotStats s = realbody::GetEnemySlotStats(k, true);
-            if (g_slot_used[k]) applies += s.applies, nof += s.no_frame;
-        }
-        if (!g_mirrors.empty() || !g_err_win.empty() || g_gs.far_placed) {
-            Log("[enemy] mirrors: n=%zu frozen=%u err p50 %.2f p95 %.2f max %.2f m (%zu samples); set %.0f/s teleports %u; poses n=%u (%.1f applies/s each, no pose %u, "
-                "no frame %u); far placed %u (back-drift p50 %.2f p95 %.2f m, %zu checked); tracks %zu",
-                g_mirrors.size(), frozen, Pct(g_err_win, 0.5), Pct(g_err_win, 0.95), g_err_win.empty() ? 0.0 : *std::max_element(g_err_win.begin(), g_err_win.end()),
-                g_err_win.size(), g_sets_win / 5.0, g_tp_win, posed, posed ? applies / 5.0 / posed : 0.0, g_gs.no_pose, nof, g_gs.far_placed, Pct(g_drift, 0.5),
-                Pct(g_drift, 0.95), g_drift.size(), g_tracks.size());
-        }
-        g_err_win.clear(), g_drift.clear();
-        g_sets_win = g_tp_win = 0;
-        g_gs.no_pose = 0;
+    MirrorLine(now);  // the 5 s line
+}
+
+// ====================================================================================================================================
+// P1b: ownership by proximity (docs/enemy-sync.md 10). The host decides (erules::HostDecide at 2 Hz); a hand-over freezes the old
+// owner's copy first, then the new owner unfreezes its own (SCB1 OWN / OWNACK on the reliable channel 6).
+// ====================================================================================================================================
+constexpr std::uintptr_t kSetPhase = 0x142ACF630;        // SetPhase(actor, phase): +0x110 exact (DsMuleSetPhase1's)
+constexpr std::uintptr_t kRisePhase = 0x142ACE9D0;       // RisePhase(actor, phase): max(old, new) (DsMuleRisePhase1's)
+constexpr std::uintptr_t kGetPhaseRead = 0x142ECFF7D;    // DsMuleGetPhase0's read of +0x110
+constexpr std::uintptr_t kCampLookup = 0x142AF93F0;      // the MULE manager's camp (CP) lookup: +0xD8 count, +0xE0 the CP actor ids
+constexpr std::uintptr_t kCampPhaseSite = 0x142B649DD;   // MuleCP_ForceSetCPPhase: the CP's phase machine at +0x208 (phase +0x210)
+constexpr std::uintptr_t kCampMembersSite = 0x142B37FD2; // the phase push: the members +0x4C0 count / +0x4C8 DSMuleGameActor*[]
+constexpr std::uintptr_t kMuleMgr = 0x147BF09D8;
+constexpr std::uintptr_t kActPhase = 0x110, kCpPhase = 0x210, kCpCount = 0x4C0, kCpMembers = 0x4C8, kMgrCpCount = 0xD8, kMgrCpIds = 0xE0;
+using FnPhase = void (*)(std::uintptr_t actor, std::int32_t phase);
+
+bool g_own_want = false;    // enemy_owner=1
+bool g_own_ok = false;      // its byte checks
+bool g_cp_ok = false;       // the camp group's checks (optional: the camp phase unknown without it)
+bool g_own_switch = true;   // enemy_sync 8 0 / 1
+bool g_own_on = false;      // live: both beacons carry kPartOwn, mirroring on
+struct OwnStats {
+    unsigned takes = 0, backs = 0, forced = 0, refused = 0, no_owner = 0, two_thinking = 0, sen_out = 0, stale = 0, taken_here = 0, given_here = 0,
+             refused_here = 0, resets = 0;
+} g_os;
+std::uint32_t g_own_seq = 0;
+std::vector<std::vector<std::uint8_t>> g_own_in, g_own_out;
+double g_own_walk_next = 0, g_own_log_next = 0, g_hfar_next = 0, g_gsen_next = 0, g_gwalk_next = 0, g_cp_next = 0;
+std::vector<double> g_change_times, g_refuse_times;
+bool g_guest_cut = false;  // her newest frame says she is in a cutscene
+bool g_cp_logged = false;
+std::map<std::uintptr_t, std::uint8_t> g_cp_of;  // an actor -> its camp's phase (2 Hz)
+std::uint32_t g_gsen_seq = 0;
+
+struct HostRec {
+    erules::HostOwn e;
+    std::uintptr_t actor = 0;
+    bool far_follow = false;       // the host's copy is unrealized: placed at her frames (2 Hz)
+    double t_rx = -1e18;           // her newest accepted frame for it (or the OWNACK)
+    std::uint8_t g_phase = erules::kPhaseUnknown, g_state = 0;
+    bool g_damaged = false;
+    bool damaged = false, have_base = false;
+    float base_h = 0, base_s = 0;
+    bool forced = false;           // enemy_own <id> 1, or a game sequence took the host's copy
+    double d_g = -1, d_h = -1;
+    std::uint8_t phase = erules::kPhaseUnknown, cp = erules::kPhaseUnknown;
+};
+std::map<std::uint32_t, HostRec> g_hown;
+std::uint32_t g_nt_id = 0;  // the "no take" line's nearest candidate, its reason
+const char* g_nt_why = nullptr;
+double g_nt_next = 0, g_kept_next = 0;
+struct GuestRec {
+    erules::GuestOwn g;
+    std::uintptr_t actor = 0, entity = 0;
+    double t_taken = 0;
+    bool have_base = false, damaged = false;
+    float base_h = 0, base_s = 0;
+    double last_pos[3] = {}, last_t = -1e18;
+    float vel[3] = {};
+    bool have_pos = false;
+    std::uint8_t last_phase = 0xFF;  // logged on change
+};
+std::map<std::uint32_t, GuestRec> g_gown;
+
+std::uint8_t PhaseOf(std::uintptr_t actor) {
+    if (!g_own_ok || !actor) return erules::kPhaseUnknown;
+    std::int32_t p = -1;
+    return mem::Rd(actor + kActPhase, p) && p >= 0 && p <= erules::kPhaseMax ? static_cast<std::uint8_t>(p) : erules::kPhaseUnknown;
+}
+bool CallPhase(std::uintptr_t fn, std::uintptr_t actor, int phase) noexcept {
+    __try {
+        reinterpret_cast<FnPhase>(A(fn))(actor, phase);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
     }
+}
+std::uint8_t OwnEpochByte(std::uint32_t id) {
+    const auto it = g_hown.find(id);
+    return static_cast<std::uint8_t>(it != g_hown.end() ? it->second.e.epoch & 0xFF : 0);
+}
+bool HostSkips(std::uint32_t id) {
+    if (g_hown.empty()) return false;
+    const auto it = g_hown.find(id);
+    return it != g_hown.end() && (it->second.e.owner == erules::Owner::guest || it->second.e.frozen);
+}
+bool IsOwnedHere(std::uint32_t id) {
+    if (g_gown.empty()) return false;
+    const auto it = g_gown.find(id);
+    return it != g_gown.end() && it->second.g.owned;
+}
+unsigned GuestOwnedCount() {
+    unsigned n = 0;
+    for (const auto& kv : g_hown) n += kv.second.e.owner == erules::Owner::guest ? 1u : 0u;
+    return n;
+}
+unsigned OwnedHereCount() {
+    unsigned n = 0;
+    for (const auto& kv : g_gown) n += kv.second.g.owned ? 1u : 0u;
+    return n;
+}
+void PublishOwned() {
+    std::uint64_t k[erules::KeySet::kCap];
+    std::uint32_t v[erules::KeySet::kCap];
+    unsigned n = 0;
+    for (const auto& kv : g_gown)
+        if (kv.second.g.owned && kv.second.entity && n < erules::KeySet::kCap) k[n] = kv.second.entity, v[n] = kv.first, ++n;
+    g_oset.Publish(k, v, n);
+}
+// Vitals: a drop of health or stamina since the base (the last owner change) latches `damaged`; the base follows a rise.
+void NoteVitals(std::uintptr_t entity, bool& have_base, float& bh, float& bs, bool& damaged) {
+    float h = 0, s = 0;
+    if (damaged || !entity || !ecombat::Vitals(entity, &h, &s)) return;
+    if (!have_base) {
+        have_base = true, bh = h, bs = s;
+        return;
+    }
+    if (h < bh - 0.5f || s < bs - 0.5f) damaged = true;
+    else bh = (std::max)(bh, h), bs = (std::max)(bs, s);
+}
+
+// ---- the camps (2 Hz): the MULE manager's CP ids -> the CP actors -> their members -> the camp phase
+void WalkActorsById(const std::vector<std::uint32_t>& want, std::vector<LocalEnemy>& out) {
+    out.clear();
+    const std::uintptr_t reg = mem::Q(A(kRegGlobal));
+    std::int32_t ngroups = 0;
+    if (want.empty() || !reg || !mem::Rd(reg + 0x440, ngroups) || ngroups <= 0 || ngroups > 512) return;
+    const std::uintptr_t garr = mem::Q(reg + 0x448);
+    for (std::int32_t gi = 0; gi < ngroups; ++gi) {
+        const std::uintptr_t g = mem::Q(garr + 8ull * static_cast<unsigned>(gi));
+        std::int32_t count = 0;
+        if (!g || !mem::Rd(g + 0x40, count) || count <= 0 || count > 8192) continue;
+        const std::uintptr_t arr = mem::Q(g + 0x48);
+        if (!arr) continue;
+        static std::vector<std::uintptr_t> objs;
+        objs.resize(static_cast<std::size_t>(count));
+        if (!mem::Read(arr, objs.data(), objs.size() * 8)) continue;
+        for (const std::uintptr_t o : objs) {
+            if (!o) continue;
+            std::uint8_t head[0x28] = {};
+            if (!mem::Read(o, head, sizeof(head)) || !head[kActInUse]) continue;
+            std::uint32_t id = 0;
+            std::memcpy(&id, head + kActId, 4);
+            if (std::binary_search(want.begin(), want.end(), id)) out.push_back(LocalEnemy{id, o});
+        }
+    }
+}
+void CampWalk(double now) {
+    if (!g_cp_ok || now < g_cp_next) return;
+    g_cp_next = now + 500;
+    g_cp_of.clear();
+    const std::uintptr_t mgr = mem::Q(A(kMuleMgr));
+    std::int32_t n = 0;
+    if (!mgr || !mem::Rd(mgr + kMgrCpCount, n) || n <= 0 || n > 512) return;
+    std::vector<std::uint32_t> want(static_cast<std::size_t>(n));
+    const std::uintptr_t ids = mem::Q(mgr + kMgrCpIds);
+    if (!ids || !mem::Read(ids, want.data(), want.size() * 4)) return;
+    std::sort(want.begin(), want.end());
+    std::vector<LocalEnemy> cps;
+    WalkActorsById(want, cps);
+    unsigned members = 0;
+    const char* cls = nullptr;
+    for (const LocalEnemy& cp : cps) {
+        std::int32_t ph = -1, cnt = 0;
+        if (!mem::Rd(cp.actor + kCpPhase, ph) || ph < 0 || ph > erules::kPhaseMax) continue;
+        if (!mem::Rd(cp.actor + kCpCount, cnt) || cnt <= 0 || cnt > 128) continue;
+        const std::uintptr_t list = mem::Q(cp.actor + kCpMembers);
+        if (!list) continue;
+        for (std::int32_t i = 0; i < cnt; ++i) {
+            const std::uintptr_t m = mem::Q(list + 8ull * static_cast<unsigned>(i));
+            if (m && mem::Q(m) == A(kMuleVt)) g_cp_of[m] = static_cast<std::uint8_t>(ph), ++members;
+        }
+        if (!cls) cls = mem::RttiName(mem::RttiOf(cp.actor));
+    }
+    if (!g_cp_logged) {
+        g_cp_logged = true;
+        Log("[enemy] camps: n=%zu of %d ids (class %s), members n=%u", cps.size(), n, cls ? cls : "?", members);
+    }
+}
+std::uint8_t CampPhaseOf(std::uintptr_t actor) {
+    const auto it = g_cp_of.find(actor);
+    return it != g_cp_of.end() ? it->second : erules::kPhaseUnknown;
+}
+
+// The capture slot of one enemy off at once (it changes owner: its model is about to be a mirror's).
+void CaptureOffFor(std::uint32_t id) {
+    for (unsigned k = 0; k < erules::kPoseSlots; ++k)
+        if (g_pslots.Id(k) == id) CaptureSlotOff(k);
+}
+// ---- freeze / unfreeze a copy here
+bool FreezeCopy(std::uint32_t id, std::uintptr_t actor, bool* bit13_pre, std::uint32_t* ea4_out) {
+    const std::uint32_t pre = U32(actor + kMuleSeq);
+    if (bit13_pre) *bit13_pre = ((pre >> 13) & 1u) != 0;
+    NoteWeaponPre(id, actor);
+    if (!Post(id, kOccupiedVt, 1)) return false;
+    const std::uint32_t ea4 = U32(actor + kMuleSeq);
+    if (ea4_out) *ea4_out = ea4;
+    return ((ea4 >> 14) & 1u) != 0;
+}
+void UnfreezeCopy(std::uint32_t id, std::uintptr_t actor, bool bit13_pre) {
+    if (!((U32(actor + kMuleSeq) >> 14) & 1u)) return;  // not ours any more: nothing posted
+    Post(id, kOccupiedVt, 0);
+    if (!bit13_pre) Post(id, kRequiredVt, 0);  // a bit 13 the game set is never cleared by us
+    RestoreWeapon(id, actor);
+}
+void AddFollower(std::uint32_t id, std::uintptr_t actor, const ActorNow& a, bool bit13_pre, std::uint32_t ea4, double now, bool own) {
+    Mirror m;
+    m.id = id, m.actor = actor, m.entity = a.entity, m.sm = mem::Q(a.entity + 0xB8);
+    m.frozen = true, m.t_frozen = now, m.ea4_entry = ea4, m.bit13_pre = bit13_pre, m.own = own;
+    g_mirrors.push_back(m);
+    PublishMirrors();
+}
+// Takes one mirror out of the list (its apply slot freed, nothing posted). False: none.
+bool TakeMirrorOut(std::uint32_t id, Mirror* out) {
+    for (std::size_t i = 0; i < g_mirrors.size(); ++i) {
+        if (g_mirrors[i].id != id) continue;
+        FreeSlot(g_mirrors[i]);
+        if (out) *out = g_mirrors[i];
+        g_mirrors.erase(g_mirrors.begin() + static_cast<std::ptrdiff_t>(i));
+        PublishMirrors();
+        return true;
+    }
+    return false;
+}
+
+// ---- the messages
+void OwnSend(std::uint8_t type, const ewire::Own& o) {
+    std::uint8_t buf[ewire::kScbHeader + ewire::kOwnSize];
+    ewire::ScbHeader h;
+    h.guids_fp = g_fp_done ? g_guids : 0, h.seq = g_own_seq + 1;
+    const std::size_t n = ewire::EncodeOwns(h, type, &o, 1, buf, sizeof(buf));
+    if (!n) {
+        Log("[enemy] OWN id=%05X: the message did not encode (type %u)", o.id, type);
+        return;
+    }
+    ++g_own_seq;
+    g_own_out.emplace_back(buf, buf + n);
+}
+void OwnSendReset() {
+    std::uint8_t buf[ewire::kScbHeader + ewire::kOwnResetSize];
+    ewire::ScbHeader h;
+    h.guids_fp = g_fp_done ? g_guids : 0, h.seq = ++g_own_seq;
+    const std::size_t n = ewire::EncodeOwnReset(h, g_own_gen, buf, sizeof(buf));
+    if (n) g_own_out.emplace_back(buf, buf + n);
+}
+void OwnFlush() {
+    while (!g_own_out.empty() && link::SendCombat(g_own_out.front().data(), g_own_out.front().size())) g_own_out.erase(g_own_out.begin());
+}
+ewire::Own OwnOf(std::uint32_t id, std::uint16_t epoch, erules::Owner owner, std::uint8_t reason, std::uint8_t phase) {
+    ewire::Own o;
+    o.gen = g_own_gen, o.id = id, o.epoch = epoch, o.owner = static_cast<std::uint8_t>(owner), o.reason = reason, o.phase = phase;
+    o.health = std::numeric_limits<float>::quiet_NaN();
+    return o;
+}
+void PlaceInto(ewire::Own& o, const double (&pos)[3], float yaw, const float* vel) {
+    std::memcpy(o.pos, pos, sizeof(o.pos));
+    o.yaw = yaw;
+    if (vel) std::memcpy(o.vel, vel, sizeof(o.vel));
+    o.flags |= ewire::kOwnHasPlace;
+}
+
+// ---- the host
+// The host's copy given back to its AI (a back's end, a refusal, a reset): placed at her place (her OWNACK / her newest frame),
+// its phase raised to hers (capped at Caution, RisePhase: escalation only), then released (Occupied{0}, Required{0} by bit 13).
+void HostBackDone(std::uint32_t id, HostRec& r, const double* pos, float yaw, std::uint8_t phase, const char* how) {
+    ActorNow a;
+    const bool same = ReadActor(r.actor, id, a);
+    double err = -1;
+    char ph[64] = "phase unknown";
+    const std::uint32_t ea4_before = same ? a.ea4 : 0;
+    if (same) {
+        if (pos && a.have_xf) {
+            const double p[3] = {pos[0], pos[1], pos[2]};
+            err = Dist3(p, a.pos);
+            const WorldTransform xf = XfFromYaw(a.xf, p, yaw);
+            // her place moves the host's copy (it persists in the host's save) only near where the host's follower stands: a copy of
+            // hers that fell through the ground, a stale or a bad frame never relocates the host's enemy (review rv-safety 5)
+            if (!erules::BackPlaceOk(err, p[2] - a.pos[2])) {
+                static unsigned refused = 0;
+                if (refused++ < 20)
+                    Log("[enemy] OWN id=%05X: her place refused (err %.1f m, dz %.1f m; the bounds %.0f m, %.0f m down): released where it stands", id, err,
+                        p[2] - a.pos[2], erules::kBackPlaceMaxM, erules::kBackPlaceMaxDropM);
+            } else if (a.realized) {
+                if (err > erules::kBandStillM) ActorXf(r.actor, kActorTeleport, xf);
+            } else if (err > 1.0) {
+                ActorPlaceFar(r.actor, xf, false);
+            }
+        }
+        const std::uint8_t want = erules::ReturnPhase(phase), before = PhaseOf(r.actor);
+        if (want != erules::kPhaseUnknown && before != erules::kPhaseUnknown && want > before && CallPhase(kRisePhase, r.actor, want))
+            std::snprintf(ph, sizeof(ph), "phase raised %u->%u", before, PhaseOf(r.actor));
+        else if (before != erules::kPhaseUnknown)
+            std::snprintf(ph, sizeof(ph), "phase kept %u", before);
+    }
+    Mirror m;
+    if (TakeMirrorOut(id, &m)) {
+        if (ReleaseHeld() && !saveguard::Busy()) {  // (never held while the host's game saves: the save would capture it frozen)
+            m.why = "an ownership return", m.own = false;
+            g_pending.push_back(m);  // a cutscene: posted when the hold ends (P1a's)
+            PublishMirrors();
+        } else if (same) {
+            UnfreezeCopy(id, r.actor, m.bit13_pre);
+        }
+    }
+    r.far_follow = false;
+    g_tracks.erase(id), g_prx.erase(id);
+    Log("[enemy] OWN id=%05X back here (epoch %u; %s; err %.2f m; %s; health not carried; released ea4 0x%X->0x%X)", id, r.e.epoch, how, err, ph, ea4_before,
+        same ? U32(r.actor + kMuleSeq) : 0);
+}
+void HostTakeOne(const HostEnemy& h, HostRec& r, double now, bool forced) {
+    const ActorNow& a = h.now;
+    if (!a.have_xf) return;
+    bool b13 = false;
+    std::uint32_t ea4 = a.ea4;
+    const bool ok = !a.realized || FreezeCopy(h.id, h.actor, &b13, &ea4);
+    if (!erules::HostTake(r.e, now, ok)) {
+        if (!ok) {
+            if ((ea4 >> 14) & 1u) UnfreezeCopy(h.id, h.actor, b13);
+            Log("[enemy] OWN id=%05X not handed over: the host's copy did not freeze (ea4 0x%X); hold 10 s", h.id, ea4);
+        }
+        return;
+    }
+    CaptureOffFor(h.id);
+    if (a.realized) AddFollower(h.id, h.actor, a, b13, ea4, now, true);
+    else r.far_follow = true;
+    r.damaged = false, r.have_base = false, r.forced = false, r.t_rx = now;
+    r.g_phase = erules::kPhaseUnknown, r.g_state = 0, r.g_damaged = false;
+    g_tracks.erase(h.id), g_prx.erase(h.id);
+    g_change_times.push_back(now);
+    ++g_os.takes;
+    const std::uint8_t phase = PhaseOf(h.actor);
+    ewire::Own o = OwnOf(h.id, r.e.epoch, erules::Owner::guest, static_cast<std::uint8_t>(forced ? erules::OwnReason::forced : erules::OwnReason::proximity), phase);
+    PlaceInto(o, a.pos, YawOfXf(a.xf), h.vel);
+    OwnSend(ewire::kScbOwn, o);
+    Log("[enemy] OWN id=%05X -> guest (%s: guest %.1f m, host %.1f m; epoch %u; phase %u; host copy %s)", h.id, forced ? "forced" : "proximity", r.d_g, r.d_h,
+        r.e.epoch, phase, a.realized ? "frozen" : "far follower");
+}
+void HostBackStart(std::uint32_t id, HostRec& r, erules::OwnReason why, bool forced, double now) {
+    const double silence = now - r.t_rx;
+    if (!erules::HostBack(r.e, now)) return;
+    g_change_times.push_back(now);
+    ++(forced ? g_os.forced : g_os.backs);
+    ewire::Own o = OwnOf(id, r.e.epoch, erules::Owner::host, static_cast<std::uint8_t>(why), r.g_phase);
+    OwnSend(ewire::kScbOwn, o);
+    char d[64];
+    switch (why) {
+        case erules::OwnReason::far_off: std::snprintf(d, sizeof(d), "far %.1f m", r.d_g); break;
+        case erules::OwnReason::host_near: std::snprintf(d, sizeof(d), "host near %.1f m", r.d_h); break;
+        case erules::OwnReason::silence: std::snprintf(d, sizeof(d), "silence %.1f s", silence / 1000.0); break;
+        case erules::OwnReason::range: std::snprintf(d, sizeof(d), "range %.0f m", r.d_g); break;
+        default: std::snprintf(d, sizeof(d), "%s", erules::OwnReasonText(why)); break;
+    }
+    Log("[enemy] OWN id=%05X -> host (%s; epoch %u; guest phase %u)", id, d, r.e.epoch, r.g_phase);
+}
+void HostAck(const ewire::Own& o, double now) {
+    const auto it = g_hown.find(o.id);
+    if (it == g_hown.end()) return;
+    HostRec& r = it->second;
+    const double sent = r.e.t_sent;
+    const bool was_guest = r.e.owner == erules::Owner::guest;
+    const erules::AckAct act = erules::HostOnAck(r.e, o.epoch, o.result, now);
+    if (act == erules::AckAct::ignore) {
+        ++g_os.stale;
+        return;
+    }
+    if (now - sent > 1000.0) ++g_os.no_owner;  // a frozen copy and no thinking one for more than a second
+    if (act == erules::AckAct::taken) {
+        r.t_rx = now;
+        return;
+    }
+    if (act == erules::AckAct::refused_back) {
+        ++g_os.refused;
+        g_refuse_times.push_back(now);
+        Log("[enemy] OWN id=%05X refused by the guest (%s): the host's again (epoch %u), hold 10 s", o.id, erules::OwnRefuseText(o.refusal), r.e.epoch);
+        HostBackDone(o.id, r, nullptr, 0, erules::kPhaseUnknown, "refused: it never left");
+        return;
+    }
+    (void)was_guest;
+    if (o.refusal == static_cast<std::uint8_t>(erules::OwnRefuse::fault)) ++g_os.two_thinking;  // her freeze did not take
+    HostBackDone(o.id, r, (o.flags & ewire::kOwnHasPlace) ? o.pos : nullptr, o.yaw, o.phase, "her OWNACK");
+}
+// The host's followers: frozen copies driven and posed from her frames; far followers (unrealized here) placed at 2 Hz.
+void HostFollow(double now) {
+    const double render = g_clock.Render(now);
+    bool changed = false;
+    for (Mirror& m : g_mirrors) {
+        if (!m.frozen || !m.own) continue;
+        const auto rit = g_hown.find(m.id);
+        ActorNow a;
+        const bool same = ReadActor(m.actor, m.id, a);
+        if (!same || !a.realized || a.entity != m.entity) {
+            FreeSlot(m);
+            m.frozen = false, changed = true;
+            if (same) UnfreezeCopy(m.id, m.actor, m.bit13_pre);
+            if (rit != g_hown.end()) rit->second.far_follow = true;
+            Log("[enemy] OWN id=%05X: the host's copy left its world: a far follower now", m.id);
+            continue;
+        }
+        if (!a.held) {
+            FreeSlot(m);
+            m.frozen = false, changed = true;
+            if (rit != g_hown.end()) rit->second.forced = true;
+            Log("[enemy] OWN id=%05X: a game sequence took the host's copy (bit 14 cleared, ea4 0x%X): given back to the host", m.id, a.ea4);
+            continue;
+        }
+        const auto it = g_tracks.find(m.id);
+        if (it == g_tracks.end()) continue;
+        double pos[3];
+        float yaw = 0;
+        if (!it->second.At(render, pos, &yaw) || !a.have_xf) continue;
+        DriveMirror(m, a, pos, yaw, now);
+        GivePose(m, it->second, render, it->second.Newest() && (it->second.Newest()->state & ewire::kPosed));
+    }
+    if (changed) {
+        g_mirrors.erase(std::remove_if(g_mirrors.begin(), g_mirrors.end(), [](const Mirror& x) { return !x.frozen; }), g_mirrors.end());
+        PublishMirrors();
+    }
+    if (now < g_hfar_next) return;
+    g_hfar_next = now + 500;
+    for (auto& kv : g_hown) {
+        HostRec& r = kv.second;
+        if (!r.far_follow || !r.e.frozen) continue;
+        ActorNow a;
+        if (!ReadActor(r.actor, kv.first, a) || !a.have_xf) continue;
+        if (a.realized) {
+            // back in the host's world: frozen again as a follower (a game sequence's hold: given back)
+            bool b13 = false;
+            std::uint32_t ea4 = 0;
+            if (!a.held && FreezeCopy(kv.first, r.actor, &b13, &ea4)) {
+                AddFollower(kv.first, r.actor, a, b13, ea4, now, true);
+                r.far_follow = false;
+                Log("[enemy] OWN id=%05X: the host's copy is realized here again: frozen (a follower; ea4 0x%X)", kv.first, ea4);
+            } else {
+                r.forced = true;
+            }
+            continue;
+        }
+        const auto it = g_tracks.find(kv.first);
+        double pos[3];
+        float yaw = 0;
+        if (it == g_tracks.end() || !it->second.At(render, pos, &yaw) || Dist3(pos, a.pos) < 1.0) continue;
+        if (ActorPlaceFar(r.actor, XfFromYaw(a.xf, pos, yaw), false)) ++g_gs.far_placed;
+        else ++g_gs.far_faults;
+    }
+}
+// A reset on the host: every enemy the host's at once (its copies placed at her newest frames and released), a new generation.
+void HostOwnReset(const char* why, bool announce, bool world_gone) {
+    unsigned n = 0;
+    for (auto& kv : g_hown) {
+        HostRec& r = kv.second;
+        if (r.e.owner == erules::Owner::guest) ++n;
+        if (r.e.frozen && !world_gone) {
+            const auto it = g_tracks.find(kv.first);
+            const erules::Sample* z = it != g_tracks.end() ? it->second.Newest() : nullptr;
+            r.e.owner = erules::Owner::host;  // (for the line)
+            HostBackDone(kv.first, r, z ? z->pos : nullptr, z ? z->yaw : 0.0f, r.g_phase, why);
+        }
+    }
+    if (world_gone) {
+        // that world's actors are gone: nothing to post for them. But `ready` also drops for a private room or a short WorldReady
+        // dropout, with the same actors (review rv-safety 1): a follower that still reads as the same in-use MULE frozen by us
+        // (bit 14) is unfrozen here, as P1a's ReleaseAll does, else it would stay frozen in the host's world (and its save)
+        unsigned kept = 0;
+        for (Mirror& m : g_mirrors)
+            if (m.own) {
+                FreeSlot(m);
+                ActorNow a;
+                if (m.frozen && ReadActor(m.actor, m.id, a) && a.held) UnfreezeCopy(m.id, m.actor, m.bit13_pre), ++kept;
+                m.frozen = false;
+            }
+        g_mirrors.erase(std::remove_if(g_mirrors.begin(), g_mirrors.end(), [](const Mirror& x) { return x.own; }), g_mirrors.end());
+        PublishMirrors();
+        if (kept) Log("[enemy] own reset (%s): %u host copies still in this world: released here", why, kept);
+    }
+    g_hown.clear();
+    ++g_own_gen;
+    if (announce) OwnSendReset();
+    ++g_os.resets;
+    Log("[enemy] own reset (%s): every enemy is the host's (gen %u; %u were the guest's)", why, g_own_gen, n);
+}
+void OwnHostTick(const TickIn& in, double now, const double (&guest)[3], bool have_guest) {
+    if (!g_own_on) return;
+    double hs[3] = {};
+    const bool have_host = in.local_ok && LocalPlace(in.local, hs);
+    GuestDrain(now);  // her SEN1 / SEP1 (the enemies she owns)
+    HostFollow(now);
+    // a back whose OWNACK did not come: released anyway from her newest frame
+    for (auto& kv : g_hown) {
+        HostRec& r = kv.second;
+        if (!erules::HostBackTimedOut(r.e, now)) continue;
+        ++g_os.no_owner;
+        const auto it = g_tracks.find(kv.first);
+        const erules::Sample* z = it != g_tracks.end() ? it->second.Newest() : nullptr;
+        HostBackDone(kv.first, r, z ? z->pos : nullptr, z ? z->yaw : 0.0f, r.g_phase, "no OWNACK in 3 s: her newest frame");
+    }
+    // a save of the host's world never captures a copy we froze: everything back first. Every frozen copy counts: the table's,
+    // the followers' and the returns a cutscene holds (g_pending: the host freezes no P1a mirror, so all of them are its own;
+    // review rv-safety 4). (Busy is polled once a tick: a capture in the very frame a save is posted is not ruled out.)
+    bool any_frozen = !g_pending.empty();
+    for (const auto& kv : g_hown) any_frozen = any_frozen || kv.second.e.frozen;
+    for (const Mirror& m : g_mirrors) any_frozen = any_frozen || (m.own && m.frozen);
+    if (any_frozen && saveguard::Busy()) {
+        if (!g_pending.empty()) {
+            std::vector<Mirror> p;
+            p.swap(g_pending);
+            PublishMirrors();
+            for (const Mirror& m : p) PostRelease(m, "the host's game saves (a cutscene held it)");
+            Log("[enemy] own: %zu held return(s) posted at once (the host's game saves)", p.size());
+        }
+        HostOwnReset("the host's game saves", true, false);
+        return;
+    }
+    MirrorLine(now);
+    if (now < g_own_walk_next) return;
+    g_own_walk_next = now + 500;
+    CampWalk(now);
+    g_change_times.erase(std::remove_if(g_change_times.begin(), g_change_times.end(), [&](double t) { return now - t >= 1000.0; }), g_change_times.end());
+    g_refuse_times.erase(std::remove_if(g_refuse_times.begin(), g_refuse_times.end(), [&](double t) { return now - t >= 60000.0; }), g_refuse_times.end());
+    unsigned guest_owned = GuestOwnedCount();
+    const bool host_cut = InCutscene() || saveguard::Busy();  // (no take while the host's game saves either)
+    const bool guard_ready = g_sam_filter && shots::MirrorGuardReady();
+    // the host's: take?
+    unsigned takes = 0;
+    std::uint32_t near_id = 0;
+    double near_d = 1e18;
+    const char* near_why = nullptr;
+    erules::OwnIn near_in;
+    for (const HostEnemy& h : g_host) {
+        if (!have_guest || !h.now.have_xf) continue;
+        const double d_g = Dist3(h.now.pos, guest);
+        auto it = g_hown.find(h.id);
+        if (it == g_hown.end() && d_g > erules::kTakeM) continue;
+        HostRec& r = g_hown[h.id];
+        r.actor = h.actor;
+        if (r.e.owner == erules::Owner::guest || r.e.pending) continue;
+        r.d_g = d_g, r.d_h = have_host ? Dist3(h.now.pos, hs) : -1;
+        if (h.now.realized) NoteVitals(h.now.entity, r.have_base, r.base_h, r.base_s, r.damaged);
+        r.phase = PhaseOf(h.actor), r.cp = CampPhaseOf(h.actor);
+        erules::OwnIn oi;
+        oi.owner = erules::Owner::host, oi.pending = r.e.pending;
+        oi.d_g = r.d_g, oi.d_h = r.d_h, oi.phase = r.phase, oi.cp_phase = r.cp;
+        oi.damaged = r.damaged;
+        oi.terminal = h.now.dead || ecombat::HostDefeat(h.id) != 0;
+        oi.guest_ok = !g_guest_cut && g_refuse_times.size() < 3;
+        oi.host_ok = !host_cut && guard_ready && !h.now.seq_only && !h.now.held && !(h.now.realized && (h.now.hidden_or_asleep || InVehicle(h.now.entity)));
+        oi.hold_over = now >= r.e.hold_until;
+        oi.guest_owned = guest_owned, oi.changes_this_sec = static_cast<unsigned>(g_change_times.size());
+        const char* block = erules::TakeBlock(oi);
+        if (!block && takes < 2) {
+            HostTakeOne(h, r, now, false);
+            ++takes, ++guest_owned;
+        } else if (block && d_g <= erules::kTakeM && d_g < near_d) {
+            near_d = d_g, near_id = h.id, near_why = block, near_in = oi;
+        }
+    }
+    // the nearest candidate's reason (changed, or every 10 s while one is within 40 m)
+    if (near_id && (near_id != g_nt_id || near_why != g_nt_why || now >= g_nt_next)) {
+        g_nt_id = near_id, g_nt_why = near_why, g_nt_next = now + 10000;
+        Log("[enemy] own: no take id=%05X (guest %.1f m, host %.1f m, phase %u, camp %u, damaged %d, hold %.1f s): %s", near_id, near_in.d_g, near_in.d_h, near_in.phase,
+            near_in.cp_phase, near_in.damaged ? 1 : 0, (std::max)(0.0, (g_hown[near_id].e.hold_until - now) / 1000.0), near_why);
+    }
+    // the guest's: back?
+    for (auto& kv : g_hown) {
+        HostRec& r = kv.second;
+        if (r.e.owner != erules::Owner::guest) continue;
+        const auto it = g_tracks.find(kv.first);
+        const erules::Sample* z = it != g_tracks.end() ? it->second.Newest() : nullptr;
+        // her place of it (her newest frame), else the host's copy
+        double p[3] = {};
+        bool have_p = false;
+        if (z) std::memcpy(p, z->pos, sizeof(p)), have_p = true;
+        else {
+            ActorNow a;
+            if (ReadActor(r.actor, kv.first, a) && a.have_xf) std::memcpy(p, a.pos, sizeof(p)), have_p = true;
+        }
+        // no partner body here: she is in another region (beyond any range)
+        r.d_g = !have_guest ? 1e9 : have_p ? Dist3(p, guest) : -1;
+        r.d_h = have_host && have_p ? Dist3(p, hs) : -1;
+        erules::OwnIn oi;
+        oi.owner = erules::Owner::guest, oi.pending = r.e.pending;
+        oi.d_g = r.d_g, oi.d_h = r.d_h, oi.phase = r.g_phase;
+        oi.damaged = r.g_damaged;
+        oi.terminal = z && ((z->state & ewire::kDead) || ewire::DefeatOfState(z->state) != 0);  // dead or down on her side: stays hers
+        oi.silence_ms = now - r.t_rx;
+        oi.unrealized_guest = z && now - r.t_rx < 1000.0 && (!(z->state & ewire::kRealized) || (z->state & ewire::kSeqHeld));
+        oi.range_m = g_ecfg.enemy_mirror_radius + erules::kOwnRangeSlackM;
+        oi.ack_wait_ms = now - r.e.t_sent;
+        oi.forced = r.forced;
+        oi.hold_over = now >= r.e.hold_until;
+        const erules::OwnVerdict v = erules::HostDecide(oi);
+        if (v.act == erules::OwnAct::back || v.act == erules::OwnAct::forced_back) {
+            r.forced = false;
+            HostBackStart(kv.first, r, v.reason, v.act == erules::OwnAct::forced_back, now);
+        } else if (!r.e.pending && now >= g_kept_next) {
+            // why hers stays hers (every 10 s): her place, the host's, her phase, the hold
+            g_kept_next = now + 10000;
+            Log("[enemy] own: kept by the guest id=%05X (guest %.1f m, host %.1f m, her phase %u (%s), damaged %d, hold %.1f s, her newest frame %.1f s ago)", kv.first,
+                r.d_g, r.d_h, r.g_phase, erules::PhaseText(r.g_phase), r.g_damaged ? 1 : 0, (std::max)(0.0, (r.e.hold_until - now) / 1000.0), (now - r.t_rx) / 1000.0);
+        }
+    }
+}
+
+// ---- the guest
+void GuestAck(std::uint32_t id, std::uint16_t epoch, erules::Owner owner, std::uint8_t result, std::uint8_t refusal, std::uintptr_t actor) {
+    ewire::Own o = OwnOf(id, epoch, owner, static_cast<std::uint8_t>(erules::OwnReason::ack), PhaseOf(actor));
+    o.result = result, o.refusal = refusal;
+    ActorNow a;
+    if (actor && ReadActor(actor, id, a) && a.have_xf) {
+        const auto it = g_gown.find(id);
+        PlaceInto(o, a.pos, YawOfXf(a.xf), it != g_gown.end() ? it->second.vel : nullptr);
+    }
+    OwnSend(ewire::kScbOwnAck, o);
+}
+void GuestTake(const ewire::Own& o, GuestRec& r, double now) {
+    Mirror* m = FindMirror(o.id);
+    ActorNow a;
+    erules::OwnRefuse code = erules::OwnRefuse::none;
+    if (!m || !m->frozen) code = erules::OwnRefuse::not_mirror;
+    else if (!ReadActor(m->actor, o.id, a) || !a.realized || a.entity != m->entity) code = erules::OwnRefuse::not_realized;
+    else if (a.dead) code = erules::OwnRefuse::dead;
+    else if (!a.held) code = erules::OwnRefuse::held;  // bit 14 not ours any more: a game sequence has it
+    else if (g_holding || InCutscene()) code = erules::OwnRefuse::cutscene;
+    else if (OwnedHereCount() >= erules::kMaxGuestOwned) code = erules::OwnRefuse::cap;
+    // (her camp alerted: taken all the same; its push makes it join her camp's fight here, logged below. Refusing would keep
+    // every MULE of a camp that once saw her the host's until that camp calms: run 20261124-151942)
+    if (code != erules::OwnRefuse::none) {
+        r.g.owned = false;
+        ++g_os.refused_here;
+        GuestAck(o.id, o.epoch, erules::Owner::host, ewire::kOwnRefused, static_cast<std::uint8_t>(code), m ? m->actor : 0);
+        Log("[enemy] OWN id=%05X refused here (epoch %u): %s", o.id, o.epoch, erules::OwnRefuseText(static_cast<std::uint8_t>(code)));
+        return;
+    }
+    const std::uintptr_t actor = m->actor;
+    // the host's place
+    double err = 0;
+    if (o.flags & ewire::kOwnHasPlace) {
+        const double p[3] = {o.pos[0], o.pos[1], o.pos[2]};
+        err = Dist3(p, a.pos);
+        if (err > erules::kBandStillM) ActorXf(actor, kActorTeleport, XfFromYaw(a.xf, p, o.yaw));
+    }
+    // the host's phase (calm there: SetPhase, exact)
+    const std::uint8_t ph_before = PhaseOf(actor);
+    if (o.phase <= erules::kPhaseMax && ph_before != erules::kPhaseUnknown && ph_before != o.phase) CallPhase(kSetPhase, actor, o.phase);
+    // released here: her AI runs it from now (her hits on it are real)
+    const std::uint32_t ea4_before = U32(actor + kMuleSeq);
+    Mirror mm;
+    TakeMirrorOut(o.id, &mm);
+    UnfreezeCopy(o.id, actor, mm.bit13_pre);
+    const std::uint32_t ea4_after = U32(actor + kMuleSeq);
+    r.g.owned = true;
+    r.actor = actor, r.entity = a.entity, r.t_taken = now;
+    r.have_base = false, r.damaged = false, r.last_t = -1e18, r.have_pos = false;
+    r.vel[0] = r.vel[1] = r.vel[2] = 0;
+    g_tracks.erase(o.id), g_prx.erase(o.id);
+    PublishOwned();
+    ++g_os.taken_here;
+    g_gsen_next = 0;  // her SEN1 for it at once
+    GuestAck(o.id, o.epoch, erules::Owner::guest, ewire::kOwnTaken, 0, actor);
+    Log("[enemy] OWN id=%05X taken here (epoch %u; err %.2f m; phase %u->%u; her camp %u; ea4 0x%X->0x%X; weapon268 %d)", o.id, o.epoch, err, ph_before,
+        PhaseOf(actor), CampPhaseOf(actor), ea4_before, ea4_after, a.entity ? static_cast<int>(WeaponFlag(a.entity)) : -1);
+}
+// Her copy frozen again (a P1a mirror from now: the host's frames drive it; its lease's silence clock starts now).
+bool GuestRefreeze(std::uint32_t id, GuestRec& r, double now, std::uint32_t* ea4_out, bool* realized_out, bool* dead_out = nullptr) {
+    ActorNow a;
+    const bool same = ReadActor(r.actor, id, a);
+    bool frozen = false, b13 = false;
+    std::uint32_t ea4 = same ? a.ea4 : 0;
+    CaptureOffFor(id);
+    const std::uint32_t st = same ? U32(r.actor + 0xEA0) : 0;
+    if (same && a.realized && (a.dead || st == 3 || st == 5)) {
+        // dead here (she killed it while it was hers): never frozen and posed from the host's standing frames (a corpse that
+        // walks; review rv-safety 6). Left lying as her world's own corpse (nothing written; Eligible refuses a dead one, so it
+        // is never mirrored again). The host's copy comes back alive: the known gap (her outcomes do not reach the host yet,
+        // docs/enemy-sync.md 10)
+        Log("[enemy] OWN id=%05X dead here: not frozen again (her world's corpse; the host's copy is released alive)", id);
+        if (dead_out) *dead_out = true;
+    } else if (same && a.realized) {
+        frozen = FreezeCopy(id, r.actor, &b13, &ea4);
+        if (frozen) {
+            AddFollower(id, r.actor, a, b13, ea4, now, false);
+            ++g_gs.on;
+            Log("[enemy] mirror on id=%05X (given back to the host: frozen again here, ea4 0x%X; the host's frames from now)", id, ea4);
+        }
+    }
+    r.g.owned = false;
+    g_tracks.erase(id), g_prx.erase(id);
+    if (ea4_out) *ea4_out = ea4;
+    if (realized_out) *realized_out = same && a.realized;
+    return frozen;
+}
+void GuestGiveBack(const ewire::Own& o, GuestRec& r, double now) {
+    std::uint32_t ea4 = 0;
+    bool realized = false, dead = false;
+    const bool frozen = GuestRefreeze(o.id, r, now, &ea4, &realized, &dead);
+    PublishOwned();
+    ++g_os.given_here;
+    std::uint8_t refusal = 0;
+    if (realized && !frozen && !dead) refusal = static_cast<std::uint8_t>(erules::OwnRefuse::fault), ++g_os.two_thinking;
+    GuestAck(o.id, o.epoch, erules::Owner::host, ewire::kOwnReleased, refusal, r.actor);
+    Log("[enemy] OWN id=%05X given back here (epoch %u; %s ea4 0x%X)", o.id, o.epoch,
+        frozen ? "frozen" : dead ? "dead here: left lying, not frozen;" : realized ? "the freeze did NOT take (it runs here until P1a's next entry):" : "not realized here:",
+        ea4);
+}
+// A reset on the guest: `refreeze` (the link and mirroring stay: a new generation) her copies are frozen again as P1a mirrors;
+// else (the link, the gate, a world) she is solo again: they keep running in her world.
+void GuestOwnReset(const char* why, bool refreeze, double now) {
+    unsigned n = 0;
+    for (auto& kv : g_gown) {
+        if (!kv.second.g.owned) continue;
+        ++n;
+        if (refreeze) GuestRefreeze(kv.first, kv.second, now, nullptr, nullptr);
+    }
+    g_gown.clear();
+    PublishOwned();
+    if (n || refreeze) ++g_os.resets, Log("[enemy] own reset (%s): every enemy is the host's (gen %u; %u were the guest's%s)", why, g_own_gen, n,
+                                         n ? refreeze ? ", frozen again here" : ", left running here (solo)" : "");
+}
+void GuestOwnMsg(const ewire::Own& o, double now) {
+    if (erules::GenNewer(o.gen, g_own_gen)) {
+        g_own_gen = o.gen;
+        GuestOwnReset("a newer generation", true, now);
+    } else if (o.gen != g_own_gen) {
+        ++g_os.stale;
+        return;
+    }
+    GuestRec& r = g_gown[o.id];
+    switch (erules::GuestOnOwn(r.g, o.epoch, o.owner == 2 ? erules::Owner::guest : erules::Owner::host)) {
+        case erules::GuestAct::ignore: ++g_os.stale; return;
+        case erules::GuestAct::ack_taken: GuestAck(o.id, o.epoch, erules::Owner::guest, ewire::kOwnTaken, 0, r.actor); return;
+        case erules::GuestAct::ack_released: GuestAck(o.id, o.epoch, erules::Owner::host, ewire::kOwnReleased, 0, r.actor); return;
+        case erules::GuestAct::take: GuestTake(o, r, now); return;
+        case erules::GuestAct::release: GuestGiveBack(o, r, now); return;
+    }
+}
+void OwnGuestTick(const TickIn& in, double now) {
+    if (!g_own_on) return;
+    CampWalk(now);
+    // the owned ones: what they are now
+    if (now >= g_gwalk_next) {
+        g_gwalk_next = now + 500;
+        double body[3] = {};
+        const bool have_body = in.body && LocalPlace(in.body, body);
+        std::vector<erules::PoseCand> pc;
+        unsigned ns = 0;
+        bool entities_changed = false;
+        for (auto& kv : g_gown) {
+            GuestRec& r = kv.second;
+            if (!r.g.owned) continue;
+            ActorNow a;
+            if (!ReadActor(r.actor, kv.first, a)) continue;
+            if (a.realized && a.entity != r.entity) r.entity = a.entity, entities_changed = true;
+            if (a.realized) NoteVitals(a.entity, r.have_base, r.base_h, r.base_s, r.damaged);
+            if (const std::uint8_t ph = PhaseOf(r.actor); ph != r.last_phase) {
+                if (r.last_phase != 0xFF)
+                    Log("[enemy] owned id=%05X phase %u -> %u (%s; its camp %u; weapon268 %d)", kv.first, r.last_phase, ph, erules::PhaseText(ph), CampPhaseOf(r.actor),
+                        a.realized ? static_cast<int>(WeaponFlag(a.entity)) : -1);
+                r.last_phase = ph;
+            }
+            if (a.realized && ns < erules::KeySet::kCap) g_shooter_keys[ns] = a.entity, g_shooter_vals[ns] = kv.first, ++ns;
+            const bool down = a.dead || erules::OutcomeOf(U32(r.actor + 0xEA0), a.ea4) != erules::Defeat::none;
+            pc.push_back(erules::PoseCand{kv.first, have_body && a.have_xf ? Dist3(a.pos, body) : -1, a.realized, down});
+        }
+        if (entities_changed) PublishOwned();
+        shots::SetEnemyShooters(g_shooter_keys, g_shooter_vals, ns);
+        UpdateCaptureSlots(pc.data(), static_cast<unsigned>(pc.size()), [](std::uint32_t id) -> std::uintptr_t {
+            const auto it = g_gown.find(id);
+            ActorNow a;
+            return it != g_gown.end() && it->second.g.owned && ReadActor(it->second.actor, id, a) && a.realized ? mem::Q(a.entity + 0xB8) : 0;
+        });
+    }
+    SendCaptures(now);
+    // SEN1 for every owned one at 10 Hz (her frames: the host's follower and its ownership rules)
+    if (now < g_gsen_next) return;
+    g_gsen_next = now + 100;
+    static ewire::EnemyFrame f;
+    f.n = 0;
+    f.flags = static_cast<std::uint16_t>(ewire::kFromGuest | (InCutscene() ? ewire::kSenderCutscene : 0));
+    f.seq = ++g_gsen_seq;
+    f.sender_ms = static_cast<std::uint32_t>(static_cast<std::uint64_t>(now) & 0xFFFFFFFFull);
+    f.gen_tag = g_own_gen;
+    for (auto& kv : g_gown) {
+        GuestRec& r = kv.second;
+        if (!r.g.owned || f.n >= ewire::kSenMax) continue;
+        ActorNow a;
+        const bool same = ReadActor(r.actor, kv.first, a);
+        if (same && a.have_xf) {
+            if (r.last_t > -1e17 && now - r.last_t > 20 && now - r.last_t < 3000) {
+                const double dt = (now - r.last_t) / 1000.0;
+                for (int k = 0; k < 3; ++k) r.vel[k] = static_cast<float>((a.pos[k] - r.last_pos[k]) / dt);
+            }
+            std::memcpy(r.last_pos, a.pos, sizeof(r.last_pos));
+            r.last_t = now, r.have_pos = true;
+        }
+        if (!r.have_pos) continue;
+        ewire::Enemy& e = f.e[f.n];
+        e = ewire::Enemy{};
+        e.actor_id = kv.first;
+        e.owner_epoch = static_cast<std::uint8_t>(r.g.epoch & 0xFF);
+        e.state = static_cast<std::uint8_t>((same && a.realized ? ewire::kRealized : 0) | (same && a.dead ? ewire::kDead : 0) |
+                                            (same && a.hidden_or_asleep ? ewire::kHidden : 0) | (same && a.held ? ewire::kSeqHeld : 0) |
+                                            (g_pslots.SlotOf(kv.first) >= 0 ? ewire::kPosed : 0) |
+                                            // her copy's outcome (dead or down: the host keeps it hers, never back by proximity)
+                                            (same ? ewire::DefeatBits(static_cast<std::uint8_t>(erules::OutcomeOf(U32(r.actor + 0xEA0), a.ea4))) : 0));
+        e.phase = same ? PhaseOf(r.actor) : erules::kPhaseUnknown;
+        const double sp = std::sqrt(static_cast<double>(r.vel[0]) * r.vel[0] + static_cast<double>(r.vel[1]) * r.vel[1]);
+        e.flags = static_cast<std::uint8_t>(ewire::kOwnerGuest | (sp > 0.2 ? ewire::kMoving : 0) | (r.damaged ? ewire::kDamaged : 0));
+        for (int k = 0; k < 3; ++k) e.pos[k] = r.last_pos[k], e.vel[k] = r.vel[k];
+        e.yaw = same && a.have_xf ? YawOfXf(a.xf) : 0.0f;
+        ++f.n;
+    }
+    if (!f.n) return;
+    std::uint8_t buf[ewire::kSenMaxSize];
+    const std::size_t size = ewire::EncodeEnemies(f, buf, sizeof(buf));
+    if (size && link::SendCombatFrame(buf, size)) ++g_os.sen_out;
+}
+
+// ---- the peer's frames under P1b's rules (GuestDrain)
+bool AcceptPeerFrame(const ewire::EnemyFrame& f) {
+    if (g_role == 1) {
+        // the host takes only her frames (her owned enemies), this generation
+        if (!(f.flags & ewire::kFromGuest) || !g_own_on) return false;
+        g_guest_cut = (f.flags & ewire::kSenderCutscene) != 0;
+        if (f.gen_tag != g_own_gen) {
+            ++g_os.stale;
+            return false;
+        }
+        return true;
+    }
+    if (f.flags & ewire::kFromGuest) return false;
+    // the guest: a newer host generation resets her table (her copies frozen again)
+    if (g_own_on && erules::GenNewer(f.gen_tag, g_own_gen)) {
+        g_own_gen = f.gen_tag;
+        GuestOwnReset("a newer generation (SEN1)", true, g_tnow);
+    } else if (!g_own_on && f.gen_tag) {
+        g_own_gen = f.gen_tag;
+    }
+    return true;
+}
+bool AcceptPeerEntry(const ewire::EnemyFrame& f, const ewire::Enemy& e, double now) {
+    if (g_role == 1) {
+        const auto it = g_hown.find(e.actor_id);
+        if (it == g_hown.end() || it->second.e.owner != erules::Owner::guest || !(e.flags & ewire::kOwnerGuest) ||
+            e.owner_epoch != static_cast<std::uint8_t>(it->second.e.epoch & 0xFF)) {
+            ++g_os.stale;
+            return false;
+        }
+        HostRec& r = it->second;
+        r.t_rx = now, r.g_phase = e.phase, r.g_state = e.state, r.g_damaged = (e.flags & ewire::kDamaged) != 0;
+        return true;
+    }
+    (void)f;
+    if (IsOwnedHere(e.actor_id)) {
+        ++g_os.stale;  // the host's frame of one she owns (in flight across the hand-over)
+        return false;
+    }
+    return true;
+}
+bool AcceptPeerPose(std::uint32_t id) {
+    if (g_role == 1) {
+        const auto it = g_hown.find(id);
+        return it != g_hown.end() && it->second.e.owner == erules::Owner::guest;
+    }
+    return !IsOwnedHere(id);
+}
+
+// ---- the SCB1 ownership messages (game thread)
+void OwnDrain(double now) {
+    if (!ecombat::DrainsCombat()) {
+        // ecombat is not draining the reliable channel: the ownership messages are taken here, the rest dropped
+        std::uint8_t buf[1100];
+        std::size_t n = 0;
+        std::uint32_t gen = 0;
+        while (link::PopCombat(buf, sizeof(buf), n, gen)) {
+            if (gen != link::Generation() || n < 5) continue;
+            if (buf[4] == ewire::kScbOwn || buf[4] == ewire::kScbOwnAck || buf[4] == ewire::kScbOwnReset) g_own_in.emplace_back(buf, buf + n);
+        }
+    }
+    if (g_own_in.empty()) return;
+    std::vector<std::vector<std::uint8_t>> in;
+    in.swap(g_own_in);
+    static ewire::Own os[ewire::kOwnMax];
+    for (const auto& m : in) {
+        ewire::ScbHeader h;
+        if (!ewire::DecodeScbHeader(m.data(), m.size(), h) || (g_fp_done && h.guids_fp != g_guids)) {
+            ++g_os.stale;
+            continue;
+        }
+        if (h.type == ewire::kScbOwnReset) {
+            std::uint32_t gen = 0;
+            if (g_role == 2 && ewire::DecodeOwnReset(m.data(), m.size(), h, &gen) && erules::GenNewer(gen, g_own_gen)) {
+                g_own_gen = gen;
+                GuestOwnReset("the host's reset", true, now);
+            }
+            continue;
+        }
+        if (!g_own_on || !ewire::DecodeOwns(m.data(), m.size(), h, os)) {
+            ++g_os.stale;
+            continue;
+        }
+        for (unsigned i = 0; i < h.n; ++i) {
+            if (h.type == ewire::kScbOwn && g_role == 2) GuestOwnMsg(os[i], now);
+            else if (h.type == ewire::kScbOwnAck && g_role == 1 && os[i].gen == g_own_gen) HostAck(os[i], now);
+            else ++g_os.stale;
+        }
+    }
+}
+
+// A reset of the whole table (a world or the link changed, the gate, the switch, a fault): the host's copies released (placed at
+// her newest frames unless that world is gone), the guest's left running (solo) or frozen again (`refreeze`: mirroring stays);
+// `announce`: OWNRESET to the guest (the link stays).
+void OwnHardReset(const char* why, bool world_gone, bool announce, bool refreeze) {
+    if (!g_hown.empty() || (g_role == 1 && g_own_on)) HostOwnReset(why, announce, world_gone);
+    if (!g_gown.empty() || (g_role == 2 && g_own_on)) GuestOwnReset(why, refreeze && !world_gone, g_tnow);
+    if (g_role == 2) HostResetPoses();  // her captures
+    g_hown.clear(), g_gown.clear();
+    PublishOwned();
+    g_own_in.clear();
+    if (!announce) g_own_out.clear();
+    g_change_times.clear(), g_refuse_times.clear();
+    g_guest_cut = false;
+    g_own_on = false;
+}
+
+void OwnLine(double now, bool force) {
+    if (!force && (!g_own_on || now < g_own_log_next)) return;
+    g_own_log_next = now + 5000;
+    char ids[160] = {};
+    std::size_t at = 0;
+    unsigned here = 0, pending = 0;
+    if (g_role == 2) {
+        for (const auto& kv : g_gown)
+            if (kv.second.g.owned) {
+                ++here;
+                if (at + 8 < sizeof(ids)) at += static_cast<std::size_t>(std::snprintf(ids + at, sizeof(ids) - at, "%s%05X", at ? " " : "", kv.first));
+            }
+    } else {
+        here = static_cast<unsigned>(g_host.size()) - (std::min)(static_cast<unsigned>(g_host.size()), GuestOwnedCount());
+        for (const auto& kv : g_hown)
+            if (kv.second.e.owner == erules::Owner::guest && at + 8 < sizeof(ids))
+                at += static_cast<std::size_t>(std::snprintf(ids + at, sizeof(ids) - at, "%s%05X", at ? " " : "", kv.first));
+    }
+    for (const auto& kv : g_hown) pending += kv.second.e.pending ? 1u : 0u;
+    static unsigned sen_logged = 0;
+    const double sen = (g_os.sen_out - sen_logged) / 5.0;
+    sen_logged = g_os.sen_out;
+    Log("[enemy] owned here: n=%u (ids %s); guest-owned n=%u (%s); pending %u; no-owner>1s %u; two-thinking %u; SEN1 out %.1f/s; changes: take %u back %u forced %u "
+        "refused %u; here: taken %u given back %u refused %u; stale %u; owned hits on our Sam %u",
+        here, g_role == 2 && at ? ids : "-", g_role == 1 ? GuestOwnedCount() : here, g_role == 1 && at ? ids : "-", pending, g_os.no_owner, g_os.two_thinking, sen,
+        g_os.takes, g_os.backs, g_os.forced, g_os.refused, g_os.taken_here, g_os.given_here, g_os.refused_here, g_os.stale, g_owned_hits.load());
+}
+
+bool OwnChecks() {
+    struct S {
+        std::uintptr_t va;
+        const char* sig;
+        const char* name;
+        bool cp;
+    };
+    // clang-format off
+    const S sites[] = {
+        {kSetPhase,        "3B 91 10 01 00 00 74 0A C7 81 18 01 00 00 00 00 80 3F 8D 42 FD 89 91 10 01 00 00 83 F8 02 77 0A", "SetPhase", false},
+        {kRisePhase,       "8B 81 10 01 00 00 3B D0 44 8B C0 44 0F 4F C2 44 3B C0 74 0A C7 81 18 01 00 00 00 00 80 3F", "RisePhase", false},
+        {kGetPhaseRead,    "48 8B 43 30 48 8B 48 58 48 85 C9 74 08 8B 91 10 01 00 00 EB 05 BA FF 00 00 00", "GetPhase's read of +0x110", false},
+        {kCampLookup,      "48 89 5C 24 10 48 89 74 24 18 57 48 83 EC 20 48 8B 99 E0 00 00 00 48 8B FA 48 63 81 D8 00 00 00", "the camp lookup (+0xD8 / +0xE0)", true},
+        {kCampPhaseSite,   "48 8D 98 08 02 00 00 83 FF 05", "the camp phase (+0x210)", true},
+        {kCampMembersSite, "48 63 86 C0 04 00 00 4C 8B B6 C8 04 00 00", "the camp members (+0x4C0 / +0x4C8)", true},
+    };
+    // clang-format on
+    unsigned n = 0, ok = 0;
+    bool main_ok = true, cp_ok = true;
+    for (const S& s : sites) {
+        ++n;
+        if (mem::CodeMatches(A(s.va), s.sig)) {
+            ++ok;
+        } else {
+            Log("[enemy] byte check FAILED: %s at 0x%llX (own)", s.name, static_cast<unsigned long long>(s.va));
+            (s.cp ? cp_ok : main_ok) = false;
+        }
+    }
+    g_cp_ok = main_ok && cp_ok;
+    Log("[enemy] own byte checks: %u/%u ok%s", ok, n, !main_ok ? " (ownership off)" : !cp_ok ? " (the camp phase unknown)" : "");
+    return main_ok;
 }
 
 // ---------------------------------------------------------------- the gate and the tick
@@ -1462,12 +2613,17 @@ void AttackLine(const char* why) {
 
 std::uint8_t OurParts() {
     if (!g_want || !g_p1_ok || !g_switch || g_stopped) return 0;
-    return shotw::kPartMirror;
+    std::uint8_t p = shotw::kPartMirror;
+    // P1b: ownership (enemy_owner, its byte checks, enemy_sync 8; the host also needs the save reads: no save captures a copy it froze)
+    if (g_own_want && g_own_ok && g_own_switch && (g_role != 1 || saveguard::ReadsOk())) p |= shotw::kPartOwn;
+    return p;
 }
 
 void Stop(const char* step) {
     g_stopped = true;
     Log("[enemy] FAULT in %s: enemy sync stopped", step);
+    UnhideDead(true, "a fault");
+    OwnHardReset("a fault", false, false, false);
     ReleaseAll("fault");
     RestoreFar("fault");
     HostReset();
@@ -1489,6 +2645,8 @@ void P1Tick(const TickIn& in, double now) {
         const bool world_changed = counter != g_world || ready != g_ready;
         if (g_mirroring || !g_mirrors.empty()) Log("[enemy] the world or the link changed (world %u -> %u%s, link %u -> %u): every mirror released", g_world, counter,
                                                    ready ? "" : ", not ready", g_gen, gen);
+        if (g_own_on || !g_hown.empty() || !g_gown.empty()) OwnHardReset(world_changed ? "a world changed" : "the link changed", world_changed, false, false);
+        UnhideDead(true, world_changed ? "the world changed" : "the link changed");
         ReleaseAll(world_changed ? "world" : "link");
         if (world_changed) g_far_orig.clear();  // that world's actors: nothing to put back
         else RestoreFar("link");
@@ -1552,12 +2710,28 @@ void P1Tick(const TickIn& in, double now) {
         Log("[enemy] sync waiting: %s", erules::FpGateText(gate));
     }
     g_last_gate = gate;
-    shots::SetEnemyShots(on && g_ecfg.enemy_shots ? g_role.load() : 0);
+    // P1b: ownership while both beacons carry kPartOwn (and mirroring is on)
+    const bool own_on = on && (parts & shotw::kPartOwn) && have_peer && (peer.parts & shotw::kPartOwn);
+    if (own_on != g_own_on) {
+        if (own_on) {
+            g_own_on = true;
+            g_own_walk_next = g_hfar_next = g_gsen_next = g_gwalk_next = g_cp_next = 0;
+            Log("[enemy] own on (parts ours 0x%02X theirs 0x%02X; gen %u)", parts, peer.parts, g_own_gen);
+        } else {
+            const char* why = !on ? "mirroring off" : !(parts & shotw::kPartOwn) ? "off here" : "off on the partner";
+            Log("[enemy] own off: %s (gen %u)", why, g_own_gen);
+            OwnHardReset(why, false, on, on);
+        }
+    }
+    if (in.net) OwnDrain(now);
+    shots::SetEnemyShots(on && g_ecfg.enemy_shots ? (g_own_on ? shotw::kEnemyCapture | shotw::kEnemyReplay : g_role.load()) : 0);
     if (g_role == 1) {
         if (on) HostTick(in, now);
     } else if (g_role == 2) {
         GuestTick(in, now, !on, gate == erules::FpGate::differ ? "world" : "off");
     }
+    if (in.net) OwnFlush();
+    OwnLine(now, false);
     if ((g_any_frozen.load() || g_att_drop.load() || g_tgt_drop.load() || shots::MirrorBulletDrops()) && now >= g_att_next) {
         g_att_next = now + 10000;
         AttackLine("");
@@ -1647,6 +2821,17 @@ void Install(const Config& config) noexcept {
     if (!g_npc_filter) Log("[enemy] the NPC damage filter is not in (%s): hits on mirrors are not dropped", npcdmg::OffReason());
     Log("[enemy] sync installed: radius %.0f m, poses %d, far placement %d, shots %d (hurt %d, sound %d), guard %d", config.enemy_mirror_radius, config.enemy_pose_count,
         config.enemy_place_far ? 1 : 0, config.enemy_shots ? 1 : 0, config.enemy_shots_hurt ? 1 : 0, config.enemy_shots_sound ? 1 : 0, config.enemy_mirror_guard ? 1 : 0);
+    // P1b: ownership by proximity (enemy_owner)
+    g_own_want = config.enemy_owner;
+    if (g_own_want) {
+        g_own_ok = OwnChecks();
+        if (!g_own_ok) Log("[enemy] own OFF: byte checks (P1a stays on)");
+        else Log("[enemy] own installed: take within %.0f m of her (the host %.0f m farther and beyond %.0f m), back beyond %.0f m or the host within %.0f m (calm), "
+                 "forced beyond %.0f m, silence %.0f s; at most %u hers", erules::kTakeM, erules::kTakeMarginM, erules::kTakeHostMinM, erules::kBackFarM,
+                 erules::kBackHostNearM, config.enemy_mirror_radius + erules::kOwnRangeSlackM, erules::kOwnSilenceMs / 1000.0, erules::kMaxGuestOwned);
+    } else {
+        Log("[enemy] own off (enemy_owner=0)");
+    }
 }
 
 void Tick(const TickIn& in, double now) noexcept {
@@ -1661,6 +2846,8 @@ void Tick(const TickIn& in, double now) noexcept {
     if (g_stopped) return;
     if (!g_switch) {
         if (!g_mirrors.empty() || g_mirroring) {
+            OwnHardReset("off (enemy_sync 2)", false, true, false);
+            OwnFlush();
             ReleaseAll("off");
             HostReset();
             g_mirroring = false;
@@ -1681,6 +2868,34 @@ std::uintptr_t MirrorEntity(std::uint32_t actor_id) noexcept {
         if (m.id == actor_id && m.frozen) return m.entity;
     return 0;
 }
+bool MirrorIdOf(std::uintptr_t entity, std::uint32_t* id) noexcept { return g_any_frozen.load(std::memory_order_relaxed) && g_mset.Find(entity, id); }
+GateView Gate() noexcept {
+    GateView g;
+    g.role = g_role.load();
+    g.mirroring = g_mirroring.load();
+    g.guids = g_fp_done ? g_guids : 0;
+    g.world = g_world;
+    g.gen = g_gen;
+    return g;
+}
+unsigned NearEnemies(std::uint32_t* ids, std::uintptr_t* actors, unsigned cap) noexcept {
+    unsigned n = 0;
+    if (g_role != 1 || !g_mirroring) return 0;
+    for (const HostEnemy& h : g_host)
+        if (n < cap && h.now.realized && h.dist >= 0 && h.dist <= g_ecfg.enemy_mirror_radius) ids[n] = h.id, actors[n] = h.actor, ++n;
+    return n;
+}
+bool MirrorOf(std::uint32_t actor_id, std::uintptr_t* actor, std::uintptr_t* entity) noexcept {
+    for (const Mirror& m : g_mirrors)
+        if (m.id == actor_id && m.frozen) {
+            if (actor) *actor = m.actor;
+            if (entity) *entity = m.entity;
+            return true;
+        }
+    return false;
+}
+std::uint32_t PickedId() noexcept { return g_pick.actor && StillOurs() ? g_pick.id : 0; }
+std::uint32_t LookId() noexcept { return g_look_id; }
 bool RenderClock(double* render_ms) noexcept {
     if (!g_clock.have) return false;
     *render_ms = g_clock.Render(g_tnow);
@@ -1706,8 +2921,44 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept 
                 hp && peer.ids_fp == g_ids && peer.guids_fp == g_guids && peer.enemy_count == g_count && g_count ? "equal" : "differ", g_mirrors.size(), frozen, posed,
                 g_ecfg.enemy_pose_count, g_gs.rx_sen, g_gs.rx_bad, g_gs.rx_sep, g_ss.sen, g_ss.sep, es, g_att_drop.load(), g_tgt_drop.load(), dropped);
             AttackLine(" (status)");
+            ecombat::Status();
+            {
+                unsigned pending = 0;
+                for (const auto& kv : g_hown) pending += kv.second.e.pending ? 1u : 0u;
+                Log("[enemy] own: %s (%s), owned here n=%u, guest-owned n=%u, pending n=%u, changes take %u back %u forced %u refused %u, no-owner>1s %u, "
+                    "two-thinking %u, resets %u, gen %u",
+                    g_own_on ? "on" : "off",
+                    !g_own_want ? "enemy_owner=0" : !g_own_ok ? "byte checks" : !g_own_switch ? "enemy_sync 8 0" : g_own_on ? "both beacons" : "waiting for the gate",
+                    g_role == 2 ? OwnedHereCount() : static_cast<unsigned>(g_host.size()) - (std::min)(static_cast<unsigned>(g_host.size()), GuestOwnedCount()),
+                    g_role == 2 ? OwnedHereCount() : GuestOwnedCount(), pending, g_os.takes, g_os.backs, g_os.forced, g_os.refused, g_os.no_owner, g_os.two_thinking,
+                    g_os.resets, g_own_gen);
+            }
             return std::snprintf(msg, cap, "mirrors n=%zu frozen=%u (%s)", g_mirrors.size(), frozen, g_mirroring ? "on" : "off"), true;
         }
+        case 5: {
+            // the ownership table
+            unsigned n = 0;
+            for (const auto& kv : g_hown) {
+                const HostRec& r = kv.second;
+                if (r.e.owner != erules::Owner::guest && !r.e.pending && r.e.epoch == 0) continue;
+                ++n;
+                Log("[enemy] own id=%05X owner %s epoch %u pending %.0f ms phase %u guest phase %u damaged %d d_g %.1f d_h %.1f hold %.1f s follower %s", kv.first,
+                    r.e.owner == erules::Owner::guest ? "guest" : "host", r.e.epoch, r.e.pending ? g_tnow - r.e.t_sent : 0.0, r.phase, r.g_phase,
+                    (r.damaged || r.g_damaged) ? 1 : 0, r.d_g, r.d_h, (std::max)(0.0, (r.e.hold_until - g_tnow) / 1000.0),
+                    !r.e.frozen ? "none" : r.far_follow ? "far" : "mirror");
+            }
+            for (const auto& kv : g_gown) {
+                ++n;
+                Log("[enemy] own id=%05X owner %s epoch %u (here) damaged %d phase %u", kv.first, kv.second.g.owned ? "guest" : "host", kv.second.g.epoch,
+                    kv.second.damaged ? 1 : 0, PhaseOf(kv.second.actor));
+            }
+            OwnLine(g_tnow, true);
+            return std::snprintf(msg, cap, "%u ownership rows", n), true;
+        }
+        case 8:
+            g_own_switch = v[1] != 0;
+            Log("[enemy] ownership %s (enemy_sync 8)", g_own_switch ? "on" : "off: everything back to the host");
+            return std::snprintf(msg, cap, "ownership %s", g_own_switch ? "on" : "off"), true;
         case 1:
             if (!g_want || !g_p1_ok) return std::snprintf(msg, cap, "enemy sync is not installed (enemy_sync=0 or byte checks)"), false;
             if (g_stopped) return std::snprintf(msg, cap, "stopped after a fault"), false;
@@ -1717,6 +2968,8 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept 
         case 2: {
             const std::size_t n = g_mirrors.size();
             g_switch = false;
+            OwnHardReset("off (enemy_sync 2)", false, true, false);
+            OwnFlush();
             ReleaseAll("off");
             RestoreFar("off");
             HostReset();
@@ -1736,6 +2989,9 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept 
             Log("[enemy] mirror table: %zu (tracks %zu)", g_mirrors.size(), g_tracks.size());
             return std::snprintf(msg, cap, "%zu mirrors", g_mirrors.size()), true;
         }
+        case 4:
+            ecombat::OutcomeTable();
+            return std::snprintf(msg, cap, "the outcome table"), true;
         case 6:
             if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden runs only"), false;
             if (v[1] != 0 && !g_varb_ok) return std::snprintf(msg, cap, "variant B's byte check failed"), false;
@@ -1747,7 +3003,7 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept 
             g_tp_cadence = static_cast<int>(v[1]) == 3 ? 3 : 0;
             Log("[enemy] the driver's teleport cadence: %s", g_tp_cadence ? "every 500 ms" : "above 2 m only");
             return std::snprintf(msg, cap, "cadence %d", g_tp_cadence), true;
-        default: return std::snprintf(msg, cap, "unknown op %d (0 status, 1 on, 2 off, 3 table, 6 variant, 7 cadence)", op), false;
+        default: return std::snprintf(msg, cap, "unknown op %d (0 status, 1 on, 2 off, 3 table, 4 outcomes, 5 ownership, 6 variant, 7 cadence, 8 0/1 ownership)", op), false;
     }
 }
 
@@ -1759,8 +3015,37 @@ bool Look(const double (&v)[3], char* msg, std::size_t cap) noexcept {
     const double sp[3] = {sx.pos.x, sx.pos.y, sx.pos.z};
     const bool behind = v[0] == -3;  // behind the newest shooter, looking along its line of fire at the partner
     const bool side = v[0] == -4;    // beside the newest shooter's line of fire, facing it (its muzzle and rounds across the view)
-    const std::uint32_t want = v[0] > 0 ? static_cast<std::uint32_t>(v[0]) : v[0] == -2 || behind || side ? shots::LastEnemyShooter() : 0;
+    const bool newest_hit = v[0] == -5;  // P2: the newest HIT's enemy (down and dead ones allowed)
+    const bool picked = v[0] == -6;      // P2-0: the probe's pick
+    const bool owned = v[0] == -7;       // P1b: the nearest enemy the guest owns (the guest: hers; the host: its copy)
+    std::uint32_t owned_id = 0;
+    if (owned) {
+        double bd = 1e18;
+        std::vector<std::uint32_t> ids;
+        for (const auto& kv : g_gown)
+            if (kv.second.g.owned) ids.push_back(kv.first);
+        for (const auto& kv : g_hown)
+            if (kv.second.e.owner == erules::Owner::guest) ids.push_back(kv.first);
+        std::vector<LocalEnemy> lst;
+        WalkEnemies(lst);
+        for (const LocalEnemy& e : lst) {
+            if (std::find(ids.begin(), ids.end(), e.id) == ids.end()) continue;
+            ActorNow a;
+            if (!ReadActor(e.actor, e.id, a) || !a.realized || !a.have_xf) continue;
+            const double d = Dist3(a.pos, sp);
+            if (d < bd) bd = d, owned_id = e.id;
+        }
+        if (!owned_id) return std::snprintf(msg, cap, "no realized enemy the guest owns"), false;
+    }
+    const std::uint32_t want = v[0] > 0 ? static_cast<std::uint32_t>(v[0])
+                               : v[0] == -2 || behind || side ? shots::LastEnemyShooter()
+                               : newest_hit ? ecombat::LastHitId()
+                               : picked ? PickedId()
+                               : owned  ? owned_id
+                                        : 0;
+    if (picked && !want) return std::snprintf(msg, cap, "no probe pick (enemy_probe 0)"), false;
     if ((v[0] == -2 || behind || side) && !want) return std::snprintf(msg, cap, "no enemy shot replayed yet"), false;
+    if (newest_hit && !want) return std::snprintf(msg, cap, "no HIT yet"), false;
     const bool faced = v[0] == -1;
     std::uint32_t best_id = 0;
     double best = 1e18, bpos[3] = {};
@@ -1783,7 +3068,7 @@ bool Look(const double (&v)[3], char* msg, std::size_t cap) noexcept {
     }
     for (const LocalEnemy& e : all) {
         ActorNow a;
-        if (!ReadActor(e.actor, e.id, a) || !a.realized || a.dead || !a.have_xf) continue;
+        if (!ReadActor(e.actor, e.id, a) || !a.realized || (a.dead && !newest_hit) || !a.have_xf) continue;
         if (want && e.id != want) continue;
         if (!want && g_role == 2 && !g_mset.Find(a.entity)) continue;  // the guest: frozen mirrors only
         double score = Dist3(a.pos, sp);
@@ -1798,7 +3083,7 @@ bool Look(const double (&v)[3], char* msg, std::size_t cap) noexcept {
         }
         if (score < best) best = score, best_id = e.id, bent = a.entity, std::memcpy(bpos, a.pos, sizeof(bpos));
     }
-    how = side ? "beside the newest replayed shooter's line to the partner" : behind ? "behind the newest replayed shooter, toward the partner" : v[0] == -2 ? (g_role == 1 ? "the newest sent shooter" : "the newest replayed shooter") : want ? "by id" : faced ? "the one the partner faces" : g_role == 2 ? "the nearest frozen mirror" : "the nearest realized";
+    how = owned ? (g_role == 1 ? "the nearest the guest owns (its copy here)" : "the nearest she owns") : newest_hit ? (g_role == 1 ? "the newest applied HIT's enemy" : "the newest sent HIT's enemy") : side ? "beside the newest replayed shooter's line to the partner" : behind ? "behind the newest replayed shooter, toward the partner" : v[0] == -2 ? (g_role == 1 ? "the newest sent shooter" : "the newest replayed shooter") : want ? "by id" : faced ? "the one the partner faces" : g_role == 2 ? "the nearest frozen mirror" : "the nearest realized";
     if (!best_id && faced) {
         // none within 25 deg of her heading: the one nearest the partner body
         for (const LocalEnemy& e : all) {
@@ -1861,6 +3146,52 @@ bool Look(const double (&v)[3], char* msg, std::size_t cap) noexcept {
     Log("[enemy] look id=%05X dist %.1f m (%s; it stands at %.2f, %.2f, %.2f): %s", best_id, d, how, bpos[0], bpos[1], bpos[2], why);
     g_look_id = best_id;
     return std::snprintf(msg, cap, "id %05X: %s", best_id, why), ok;
+}
+
+void QueueOwnMessage(const std::uint8_t* bytes, std::size_t size) noexcept {
+    if (!bytes || !size || size > 1100 || g_own_in.size() >= 64) return;
+    g_own_in.emplace_back(bytes, bytes + size);
+}
+
+bool Own(const double (&v)[3], char* msg, std::size_t cap) noexcept {
+    if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden runs only"), false;
+    if (g_role != 1) return std::snprintf(msg, cap, "the host's action"), false;
+    if (!g_own_on) return std::snprintf(msg, cap, "ownership is not on (enemy_owner=1 on both, the gate)"), false;
+    const int to = static_cast<int>(v[1]);
+    if (to != 1 && to != 2) return std::snprintf(msg, cap, "owner 1 host or 2 guest"), false;
+    double body[3] = {};
+    const bool have_body = g_body && LocalPlace(g_body, body);
+    std::uint32_t id = v[0] > 0 ? static_cast<std::uint32_t>(v[0]) : 0;
+    if (!id) {
+        // 0: the nearest the host owns to the partner body; -5 / -7: the nearest the guest owns
+        double bd = 1e18;
+        for (const HostEnemy& h : g_host) {
+            const auto it = g_hown.find(h.id);
+            const bool hers = it != g_hown.end() && it->second.e.owner == erules::Owner::guest;
+            if ((v[0] < 0) != hers || !h.now.have_xf || !have_body || (!hers && (!h.now.realized || h.now.dead))) continue;
+            const double d = Dist3(h.now.pos, body);
+            if (d < bd) bd = d, id = h.id;
+        }
+        if (!id) return std::snprintf(msg, cap, "no candidate"), false;
+    }
+    if (to == 1) {
+        const auto it = g_hown.find(id);
+        if (it == g_hown.end() || it->second.e.owner != erules::Owner::guest) return std::snprintf(msg, cap, "%05X is not the guest's", id), false;
+        it->second.forced = true;
+        Log("[enemy] own: %05X forced back to the host (enemy_own; the next walk)", id);
+        return std::snprintf(msg, cap, "%05X back (forced)", id), true;
+    }
+    for (const HostEnemy& h : g_host) {
+        if (h.id != id) continue;
+        HostRec& r = g_hown[id];
+        r.actor = h.actor;
+        if (r.e.owner == erules::Owner::guest || r.e.pending) return std::snprintf(msg, cap, "%05X: already hers or pending", id), false;
+        r.d_g = have_body && h.now.have_xf ? Dist3(h.now.pos, body) : -1;
+        r.e.hold_until = 0;
+        HostTakeOne(h, r, g_tnow, true);
+        return std::snprintf(msg, cap, "%05X -> guest (forced)", id), r.e.owner == erules::Owner::guest;
+    }
+    return std::snprintf(msg, cap, "%05X is not an enemy here", id), false;
 }
 
 bool ShotTest(const double (&v)[3], char* msg, std::size_t cap) noexcept {

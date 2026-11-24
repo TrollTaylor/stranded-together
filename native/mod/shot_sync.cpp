@@ -20,6 +20,7 @@
 #include "overlay/overlay_input.hpp"
 #include "partner_source.hpp"
 #include "real_body.hpp"
+#include "enemy_combat.hpp"
 #include "enemy_rules.hpp"
 #include "enemy_sync.hpp"
 #include "npc_damage.hpp"
@@ -225,6 +226,12 @@ std::atomic<unsigned> g_hd_mirror{0}, g_kept_reuse{0};
 // ... by whose bullet (round 16b: the guard step wants a drop of her own rifle's rounds, not of the replays'): our Sam's own
 // rounds, a replay's; each kind logged up to 8 times
 std::atomic<unsigned> g_hd_mirror_ours{0}, g_hd_mirror_rep{0}, g_hd_mirror_logged{0}, g_hd_mirror_logged_ours{0};
+// P2 (docs/enemy-sync.md 9): her own rounds on a mirror passed to Entity OnHit (the HIT goes to the host), and those on a part with
+// no entity receiver (dropped, no HIT)
+std::atomic<unsigned> g_hd_mirror_pass{0}, g_hd_mirror_noent{0}, g_hd_mirror_pass_logged{0};
+// the beacon's hits part (enemy_combat: enemy_hits on, OnHit hooked, not stopped) and why it is off
+std::atomic<bool> g_hits_part{false};
+const char* g_hits_why = "not in a world yet)";
 std::atomic<unsigned> g_hd_kept_cls[shotw::kHitClasses] = {};
 thread_local bool t_hit_replay = false;  // the hit processor runs one of our replays' bullets now (the BT reaction's detour reads it)
 std::atomic<unsigned> g_dmg_logged{0};
@@ -250,6 +257,9 @@ unsigned g_er_head = 0;
 enum EnemyHitWhat : unsigned { kEhShooter, kEhMirror, kEhBody, kEhSam, kEhOther, kEhN };
 const char* const kEhName[kEhN] = {"the shooting mirror itself", "another frozen mirror", "the partner body", "our Sam", "something else"};
 std::atomic<unsigned> g_eh[kEhN] = {};
+// P1b (docs/enemy-sync.md 10): the REAL rounds of the enemies this game owns (not replays) by what they hit at the bullet: our
+// Sam, the partner body, something else (does her owned MULE notice the host's body?)
+std::atomic<unsigned> g_oh_sam{0}, g_oh_body{0}, g_oh_other{0};
 std::atomic<unsigned> g_eh_logged{0};
 std::atomic<std::uintptr_t> g_body_ent{0};  // the partner body (the tick)
 double g_enemy_ahead = 0.0;                 // shots 10 (hidden runs): the enemy replays start this far along the shot
@@ -433,8 +443,9 @@ void AimSteerTick(game::Entity* local) {
     if (g_now >= g_aim.next_log) g_aim.next_log = g_now + 1000, Log("[shots] camera aim: yaw %.1f, pitch %.1f deg off (steering, stick %d %d)", ey, ep, rx, ry);
 }
 void AimTick(game::Entity* local) {
-    if (!g_aim.on || !local || !g_have_body_xf) return;
-    if (g_aim.steer) return AimSteerTick(local);
+    if (!g_aim.on || !local) return;
+    if (g_aim.steer && (g_have_body_xf || g_aim_override_until > g_now)) return AimSteerTick(local);
+    if (!g_have_body_xf || g_aim.steer) return;
     WorldTransform s{};
     double cf[2] = {};
     if (!game::TryGetTransform(local, &s) || !nametags::CameraForward(local, cf)) return;
@@ -601,7 +612,7 @@ int H_Enqueue(std::uintptr_t sys, std::uintptr_t rec) {
     // the host's enemy shots: a record owned by one of the shooters enemy_sync published (its 10 Hz class)
     std::uint32_t shooter = shotw::kShooterSam;
     bool take = how && g_on.load(std::memory_order_relaxed);
-    if (!how && owner && g_enemy_role.load(std::memory_order_relaxed) == 1 && g_shooters.Find(owner, &shooter, false)) take = true;
+    if (!how && owner && shotw::EnemyCaptureOn(g_enemy_role.load(std::memory_order_relaxed)) && g_shooters.Find(owner, &shooter, false)) take = true;
     if (take) {
         Cap c;
         if (mem::Read(rec, c.rec, kRecSize)) {
@@ -894,9 +905,30 @@ bool JudgeBullet(std::uintptr_t bullet, std::uintptr_t receiver) {
         replay = ref && ReplayRef(ref, now, &kind);
     }
     if (replay && kind == shotw::kReplayKindEnemy) EnemyFirstHit(ref, receiver, now);
+    if (!replay && owner && g_enemy_role.load(std::memory_order_relaxed) == 3 && g_shooters.Size() && g_shooters.Find(owner, nullptr, false)) {
+        // an owned shooter's own round (P1b): what it hits
+        const std::uintptr_t body = g_body_ent.load(std::memory_order_relaxed), sam = g_sam.load(std::memory_order_relaxed);
+        std::uintptr_t p = ReceiverEntity(receiver);
+        unsigned what = 2;
+        for (int d = 0; p && d < 5 && what == 2; ++d, p = mem::Q(p + kEntityParent))
+            what = sam && p == sam ? 0u : body && p == body ? 1u : 2u;
+        (what == 0 ? g_oh_sam : what == 1 ? g_oh_body : g_oh_other).fetch_add(1, std::memory_order_relaxed);
+    }
     if (esync::GuardOn() && MirrorReceiver(receiver)) {
-        g_hd_mirror.fetch_add(1, std::memory_order_relaxed);
         const bool ours = !replay && OwnedByOurSam(owner, g_sam.load(std::memory_order_relaxed));
+        // P2: her own round goes on to Entity OnHit while the hits are captured (the OnHit detour drops it there and sends the HIT;
+        // the game keeps her impacts and the bullet-hit message to her Sam); on a part with no entity receiver it is dropped here
+        const shotw::MirrorBullet mb = shotw::MirrorBulletRule(replay, ours, ecombat::CaptureOurRounds(), ours && ecombat::IsOnHitReceiver(receiver));
+        if (mb == shotw::MirrorBullet::pass_capture) {
+            g_hd_mirror_pass.fetch_add(1, std::memory_order_relaxed);
+            ecombat::CountBullet(true);
+            if (g_hd_mirror_pass_logged.fetch_add(1, std::memory_order_relaxed) < 8)
+                LogLater("[shots] our Sam's own round on a frozen mirror passed to Entity OnHit (enemy hits: the HIT goes to the host; bullet owner %p)",
+                         reinterpret_cast<void*>(owner));
+            return false;
+        }
+        if (mb == shotw::MirrorBullet::drop_no_entity) g_hd_mirror_noent.fetch_add(1, std::memory_order_relaxed), ecombat::CountBullet(false);
+        g_hd_mirror.fetch_add(1, std::memory_order_relaxed);
         if (ours) g_hd_mirror_ours.fetch_add(1, std::memory_order_relaxed);
         else if (replay) g_hd_mirror_rep.fetch_add(1, std::memory_order_relaxed);
         if ((ours ? g_hd_mirror_logged_ours : g_hd_mirror_logged).fetch_add(1, std::memory_order_relaxed) < 8)
@@ -939,11 +971,15 @@ bool JudgeGuarded(std::uintptr_t bullet, std::uintptr_t receiver) noexcept {
 }
 void H_BulletA(std::uintptr_t bullet, std::uintptr_t receiver, std::uintptr_t hit, float amount, std::uint64_t w) {
     if (JudgeGuarded(bullet, receiver)) return;  // nothing built yet: the DamageInfo and its context are made inside
+    ecombat::MarkBullet(true);                   // P2: what the OnHit detour captures inside is a bullet's
     o_bullet_a(bullet, receiver, hit, amount, w);
+    ecombat::MarkBullet(false);
 }
 void H_BulletB(std::uintptr_t bullet, std::uintptr_t receiver, std::uintptr_t hit, float amount, std::uint64_t w) {
     if (JudgeGuarded(bullet, receiver)) return;
+    ecombat::MarkBullet(true);
     o_bullet_b(bullet, receiver, hit, amount, w);
+    ecombat::MarkBullet(false);
 }
 // The hit processor works on a bullet with a pending hit (+0x16C set, +0x164 == 2); the BT reaction's detour drops its call
 // while that bullet is one of our replays'.
@@ -1306,7 +1342,7 @@ bool BuildEnemyShot(const Cap& c, shotw::Shot* out) {
 }
 
 void EnemyShooterTick(const TickIn& in, const Cap* caps, unsigned nc) {
-    const bool send = in.net && g_enemy_role.load() == 1 && shotw::BothHave(OurPartsFwd(), g_peer_parts, shotw::kPartEnemyFire);
+    const bool send = in.net && shotw::EnemyCaptureOn(g_enemy_role.load()) && shotw::BothHave(OurPartsFwd(), g_peer_parts, shotw::kPartEnemyFire);
     if (!nc) {
         if (g_e_resend.n && send) g_e_frames += SendFrames(g_e_resend, shotw::kEnemyShooters, nullptr, 0);
         else g_e_resend.n = 0;
@@ -1399,8 +1435,9 @@ void ShooterTick(const TickIn& in) {
 // enemy_sync's (SetEnemyBeacon).
 std::uint8_t OurParts() noexcept {
     std::uint8_t p = g_on.load() && CanReplay() ? shotw::kPartFire : 0;
-    p |= g_enemy_parts & shotw::kPartMirror;
+    p |= g_enemy_parts & (shotw::kPartMirror | shotw::kPartOwn);  // P1b: kPartOwn is enemy_sync's
     if (g_enemy_want && (g_enemy_parts & shotw::kPartMirror) && CanReplay()) p |= shotw::kPartEnemyFire;
+    if (g_hits_part.load(std::memory_order_relaxed) && (g_enemy_parts & shotw::kPartMirror)) p |= shotw::kPartHits;  // P2
     return p;
 }
 std::uint8_t OurPartsFwd() noexcept { return OurParts(); }
@@ -1444,12 +1481,18 @@ void BeaconTick(const TickIn& in) {
         const bool changed_ours = ours != g_last_logged_parts;
         g_last_logged_parts = ours, g_last_logged_peer = g_peer_parts;
         const bool fire = shotw::BothHave(ours, g_peer_parts, shotw::kPartFire);
-        Log("[link] combat parts: ours 0x%02X theirs 0x%02X%s: fire %s%s%s", ours, g_peer_parts, g_have_peer ? "" : " (no beacon yet)", fire ? "on" : "off",
+        const bool hits = shotw::BothHave(ours, g_peer_parts, shotw::kPartHits);
+        Log("[link] combat parts: ours 0x%02X theirs 0x%02X%s: fire %s%s%s; hits %s%s%s", ours, g_peer_parts, g_have_peer ? "" : " (no beacon yet)", fire ? "on" : "off",
             fire                                   ? ""
             : !(ours & shotw::kPartFire)           ? (g_on.load() ? " (no replays here)" : " (shots off here)")
             : g_have_peer                          ? " (the partner does not replay shots: shots_sync=0 or its damage drop is not installed)"
                                                    : "",
-            shotw::BothHave(ours, g_peer_parts, shotw::kPartEnemyFire) ? "; enemy fire on" : "");
+            shotw::BothHave(ours, g_peer_parts, shotw::kPartEnemyFire) ? "; enemy fire on" : "", hits ? "on" : "off",
+            hits                         ? ""
+            : !(ours & shotw::kPartHits) ? " (here: "
+            : g_have_peer                ? " (the partner has not: enemy_hits=0 there, its hooks are off or its mirrors are off)"
+                                         : " (no beacon yet)",
+            hits || (ours & shotw::kPartHits) ? "" : !(g_enemy_parts & shotw::kPartMirror) ? "enemy sync off)" : g_hits_why);
         if (changed_ours) g_beacon_next = g_now;
     }
     if (g_now < g_beacon_next) return;
@@ -1479,7 +1522,7 @@ void ReceiveTick(const TickIn& in) {
         }
         if (f.flags & shotw::kEnemyShooters) {
             // the host's enemies (enemy sync P1a): held until the mirror shows the moment it fired (SEN1's clock)
-            if (g_enemy_role.load() != 2) {
+            if (!shotw::EnemyReplayOn(g_enemy_role.load())) {
                 g_e_ref_off += f.n;
                 continue;
             }
@@ -2076,13 +2119,16 @@ void EnemyLogTick() {
     const unsigned sum = g_e_sent + g_e_rx + g_e_replayed + g_e_ref_shooter + g_e_ref_origin + g_kept_enemy.load() + g_drop_enemy.load();
     if (sum == logged) return;
     logged = sum;
-    if (g_enemy_role.load() == 1 || g_e_sent)
+    if (shotw::EnemyCaptureOn(g_enemy_role.load()) || g_e_sent)
         Log("[shots] enemy sent n=%u (shooters %u, pulls %u, frames %u, capped %u, no peer %u)", g_e_sent, g_shooters.Size(), g_e_pulls, g_e_frames, g_e_capped, g_e_no_peer);
-    if (g_enemy_role.load() == 2 || g_e_rx)
+    if (shotw::EnemyReplayOn(g_enemy_role.load()) || g_e_rx)
         Log("[shots] enemy replayed n=%u (muzzle %u, mag %u), late dropped %u, refused: shooter %u origin %u category %u speed %u set full %u; received %u; "
             "replay hits on our Sam: enemy kept %u, dropped %u; first hits: shooter %u, other mirrors %u, partner body %u, our Sam %u, other %u (start %.2f m along)",
             g_e_replayed, g_e_muzzle, g_e_mag, g_e_late, g_e_ref_shooter, g_e_ref_origin, g_ref_category, g_ref_speed, g_ref_set_full, g_e_rx, g_kept_enemy.load(),
             g_drop_enemy.load(), g_eh[kEhShooter].load(), g_eh[kEhMirror].load(), g_eh[kEhBody].load(), g_eh[kEhSam].load(), g_eh[kEhOther].load(), g_enemy_ahead);
+    if (g_oh_sam.load() || g_oh_body.load() || g_oh_other.load())
+        Log("[shots] owned rounds' hits: our Sam %u, the partner body %u, other %u (the real rounds of the enemies this game owns, at the bullet)", g_oh_sam.load(),
+            g_oh_body.load(), g_oh_other.load());
 }
 
 void RegistryLog() {
@@ -2117,9 +2163,11 @@ void TickBody(const TickIn& in, double now) {
     RegistryLog();
     g_have_body_xf = in.body && ReadXf(reinterpret_cast<std::uintptr_t>(in.body), g_body_xf);
     g_body_ent.store(in.body ? reinterpret_cast<std::uintptr_t>(in.body) : 0, std::memory_order_relaxed);
-    if (g_aim.on && g_aim.steer && g_have_body_xf) {
-        const bool chest = realbody::JointWorld(in.body, 4, g_body_chest) && g_body_chest[2] > g_body_xf.pos.z + 0.6 && g_body_chest[2] < g_body_xf.pos.z + 1.8;
-        if (!chest) g_body_chest[0] = g_body_xf.pos.x, g_body_chest[1] = g_body_xf.pos.y, g_body_chest[2] = g_body_xf.pos.z + 1.2;
+    // a steered aim at enemy_look's enemy needs no partner body (P2-0, solo: her rifle at a MULE)
+    if (g_aim.on && g_aim.steer && (g_have_body_xf || g_aim_override_until > g_now)) {
+        const bool chest = g_have_body_xf && realbody::JointWorld(in.body, 4, g_body_chest) && g_body_chest[2] > g_body_xf.pos.z + 0.6 &&
+                           g_body_chest[2] < g_body_xf.pos.z + 1.8;
+        if (!chest && g_have_body_xf) g_body_chest[0] = g_body_xf.pos.x, g_body_chest[1] = g_body_xf.pos.y, g_body_chest[2] = g_body_xf.pos.z + 1.2;
         if (g_aim_override_until > g_now) {
             // enemy_look's enemy (hidden runs): a fixed point, or an entity followed live (a mirror walks while the aim settles:
             // run 20261124-114315's guard burst went over the mirror it had been aimed at 7 s before)
@@ -2360,7 +2408,8 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept 
         }
         case 4:
             if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden runs only"), false;
-            if (!g_have_body_xf) return std::snprintf(msg, cap, "no partner body"), false;
+            if (!g_have_body_xf && !((v[2] == 1 || v[2] == 2) && g_aim_override_until > g_now))
+                return std::snprintf(msg, cap, "no partner body (and no enemy_look target for a steered aim)"), false;
             g_aim.tol = v[1] >= 1 && v[1] <= 45 ? v[1] : 12;
             g_aim.steer = v[2] == 1 || v[2] == 2;
             g_aim.fire = v[2] == 2;  // 2: then fires 2 s while the aim follows (the enemy-mirror guard step)
@@ -2477,13 +2526,16 @@ bool PeerBeacon(shotw::Beacon* out, double* age_ms) noexcept {
     return true;
 }
 
-void SetEnemyShots(int role) noexcept {
-    const int r = g_enemy_want && g_hooked && !g_stopped.load() ? role : 0;
+void SetEnemyShots(int mask) noexcept {
+    const int r = g_enemy_want && g_hooked && !g_stopped.load() ? (mask & 3) : 0;
     const int was = g_enemy_role.exchange(r);
     if (was != r) {
-        Log("[shots] enemy shots %s", r == 1 ? "on (host: the shooters' records captured and sent)" : r == 2 ? "on (guest: replayed from the mirrors)" : "off");
-        if (r != 1) g_shooters.Clear();
-        if (r != 2) g_nehold = 0;
+        Log("[shots] enemy shots %s", r == 3 ? "on (capture + replay: the owned shooters' records captured and sent, the other game's replayed from the mirrors)"
+                                      : r == 1 ? "on (host: the shooters' records captured and sent)"
+                                      : r == 2 ? "on (guest: replayed from the mirrors)"
+                                               : "off");
+        if (!shotw::EnemyCaptureOn(r)) g_shooters.Clear();
+        if (!shotw::EnemyReplayOn(r)) g_nehold = 0;
     }
 }
 
@@ -2509,6 +2561,11 @@ void SetAimEntity(std::uintptr_t entity, double up_m, double for_ms) noexcept {
 bool MirrorGuardReady() noexcept { return g_hooked && g_hit_hooked && !g_stopped.load(); }
 bool EnemyReplayReady() noexcept { return g_hooked && CanReplay() && !g_stopped.load(); }
 unsigned MirrorBulletDrops() noexcept { return g_hd_mirror.load(); }
+void SetHitsPart(bool on, const char* why_off) noexcept {
+    g_hits_why = why_off ? why_off : "";
+    g_hits_part.store(on, std::memory_order_relaxed);
+}
+unsigned MirrorBulletPassed() noexcept { return g_hd_mirror_pass.load(); }
 unsigned MirrorBulletDropsOurs() noexcept { return g_hd_mirror_ours.load(); }
 unsigned MirrorBulletDropsReplays() noexcept { return g_hd_mirror_rep.load(); }
 
@@ -2527,7 +2584,7 @@ void EnemyShotStatus(char* out, std::size_t cap) noexcept {
     std::snprintf(out, cap,
                   "enemy shots %s: sent %u (pulls %u, frames %u, capped %u, no peer %u), received %u, replayed %u (muzzle %u, mag %u, late dropped %u), refused shooter %u "
                   "origin %u off %u; enemy rounds on our Sam kept %u dropped %u; first hits: shooter %u, other mirrors %u, partner body %u, our Sam %u, other %u",
-                  g_enemy_role.load() == 1 ? "host" : g_enemy_role.load() == 2 ? "guest" : "off", g_e_sent, g_e_pulls, g_e_frames, g_e_capped, g_e_no_peer, g_e_rx,
+                  g_enemy_role.load() == 3 ? "capture + replay" : g_enemy_role.load() == 1 ? "host" : g_enemy_role.load() == 2 ? "guest" : "off", g_e_sent, g_e_pulls, g_e_frames, g_e_capped, g_e_no_peer, g_e_rx,
                   g_e_replayed, g_e_muzzle, g_e_mag, g_e_late, g_e_ref_shooter, g_e_ref_origin, g_e_ref_off, g_kept_enemy.load(), g_drop_enemy.load(),
                   g_eh[kEhShooter].load(), g_eh[kEhMirror].load(), g_eh[kEhBody].load(), g_eh[kEhSam].load(), g_eh[kEhOther].load());
 }

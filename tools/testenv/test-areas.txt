@@ -62,7 +62,11 @@ area vehicle-hit           : vehicle hits, bumps and tackles
 area sam-damage            : the shared Sam damage detour (sam_damage.*): the vehicle hits' observer and the shots' filter; a hit made (two-games-vehicle-hit)
 area ride                  : riding together: boarding, seats, ride camera, forced exits
 area world-sync            : shared structures: builds, contributions, ladders, ropes, ziplines
-area enemies               : enemy sync (docs/enemy-sync.md): P0 the read-only enemy census, P1-0 the freeze probe, P1a the mirrors and the enemy shots; later hits
+area enemies               : enemy sync's base (docs/enemy-sync.md): P0 the read-only enemy census and its sites, P1-0 the freeze probe
+area enemy-mirror          : enemy sync P1a (default on): the guest's frozen mirrors (freeze, SEN1 placing, SEP1 pose slots, far placement, lease, guards) and the host MULEs' shots on her screen
+area enemy-hits            : enemy sync P2 (default on): her hits on the host's enemies (OnHit capture, SCB1 HIT / HITRES / OUTCOME, the host's apply, the outcomes on her mirrors)
+area enemy-compat          : enemy sync P2 against a partner without the hits (enemy_hits=0 there, an older build): no HIT, her rounds dropped at the bullet
+area enemy-own no-run      : enemy sync P1b ownership by proximity (off by default; its gate two-games-enemy-own has not passed: select: probe, run it by name)
 area shots                 : the players' shots on the other screen (docs/enemy-sync.md P3a): capture, SFX1, the CreateBullet replay, its damage dropped
 area story                 : story tools, story loads
 area dev-tools             : dev tools: spawn, goto, weather, refill, god mode
@@ -94,6 +98,7 @@ tools/testenv/Select-Scenarios.ps1     none
 tools/testenv/test-areas.txt           none
 tools/testenv/README.md                none
 tools/testenv/enemy-compare.py         none
+tools/testenv/enemy-hits.py            none
 tools/testenv/Story-Library.ps1        story
 tools/testenv/*                        testenv
 native/testenv/*                       testenv
@@ -124,7 +129,7 @@ native/mod/steam_owner.*               boot saves
 native/mod/sandbox.*                   saves
 native/mod/automation.*                testenv
 native/mod/quickstart.*                quickstart
-native/mod/config_values.hpp           shots enemies
+native/mod/config_values.hpp           none
 native/mod/config.*                    boot
 native/mod/status.*                    link
 native/mod/link.*                      link
@@ -144,11 +149,19 @@ native/mod/audio_probe.*               research
 
 # ---- the mod: enemy sync (docs/enemy-sync.md). P0's census is the gate of the later phases (its byte-checked sites are
 # what P1 builds on), so it stays an area with its own run (two-games-enemy-census), unlike anim_census (research).
+# The phases are areas of their own (review rv-tests 1): P1a's mirrors (enemy-mirror: the shared base of enemy_sync, the rules and
+# the wire; its gate two-games-enemy-mirror), P2's hits (enemy-hits: two-games-enemy-hit; enemy-compat: two-games-enemy-hits-off),
+# P1b's ownership (enemy-own: no auto run until its gate passes). The ~regex lines below add the later phases by the changed lines.
+native/mod/enemy_combat.*              enemy-hits
+native/mod/enemy_census.*              enemies
+native/mod/enemy_sync.*                enemy-mirror
+native/mod/enemy_rules.hpp             enemy-mirror
+native/mod/enemy_wire.*                enemy-mirror
 native/mod/enemy_*                     enemies
-native/mod/npc_damage.*                enemies shots
+native/mod/npc_damage.*                enemy-mirror shots
 # ---- the mod: shots (docs/enemy-sync.md P3a) and the shared Sam damage detour (vehicle hits, shots, the enemy rounds)
 native/mod/shot_*                      shots
-native/mod/sam_damage.*                sam-damage vehicle-hit shots enemies
+native/mod/sam_damage.*                sam-damage vehicle-hit shots enemy-mirror
 
 # ---- the mod: the host-held save session
 native/mod/coop_rules.hpp              host-save
@@ -215,11 +228,28 @@ native/mod/real_body.*      ~ride_|seat_|passenger                              
 native/mod/game_actions.*   ~loading|private.?room                                            private-room
 native/mod/game_actions.*   ~carried|ride_|passenger                                          ride
 native/mod/game_actions.*   ~dev_|spawn|weather|refill                                        dev-tools
-native/mod/debug_actions.*  ~enemy_|[Ee]nemy                                                  enemies
+native/mod/debug_actions.*  ~enemy_hit|enemy_ctx|enemy_attack|enemy_dump|HitTest|HitSend|HitMode|HitWatch  enemy-hits
+native/mod/debug_actions.*  ~enemy_own|EnemyOwn                                               enemy-own
+native/mod/debug_actions.*  ~enemy_|[Ee]nemy                                                  enemy-mirror
 native/mod/debug_actions.*  ~shots_|[Ss]hots                                                  shots
-native/mod/real_body.*      ~[Ee]nemy                                                         enemies
-native/mod/player_sync.*    ~shots::|esync::                                                  shots enemies
-native/mod/link.*           ~[Cc]ombat                                                        shots
+native/mod/real_body.*      ~[Ee]nemy                                                         enemy-mirror
+native/mod/partner_tackle.* ~QueryHit                                                         enemy-hits
+native/mod/player_sync.*    ~shots::|esync::                                                  shots enemy-mirror
+native/mod/player_sync.*    ~ecombat::                                                        enemy-hits
+native/mod/link.*           ~[Cc]ombat                                                        shots enemy-hits
+native/mod/enemy_sync.*     ~ecombat::|GuestDefeat|HostDefeat|DeadRelease|HideDead|DefeatBits enemy-hits
+native/mod/enemy_sync.*     ~[Oo]wn[A-Z_]|own_|g_hown|g_gown|OWN|HostBack|HostTake|GuestTake|GuestRefreeze  enemy-own
+native/mod/enemy_rules.hpp  ~Hit|Outcome|Defeat|Lethal|Attack|RateLimit|HostSerial|ApplyGate     enemy-hits
+native/mod/enemy_rules.hpp  ~Own|HostDecide|TakeBlock|Calm|Camp|Phase|Epoch|GenNewer|BackPlace   enemy-own
+native/mod/enemy_wire.*     ~Hit|Outcome|Resync|Scb                                           enemy-hits
+native/mod/enemy_wire.*     ~Own                                                              enemy-own
+native/mod/enemy_combat.*   ~SetHitsPart|kPartHits|CaptureOurRounds|hits\s(on|off|OFF)        enemy-compat
+native/mod/shot_*           ~Mirror[Bb]ullet|HitsPart|kPartHits|CaptureOurRounds|IsOnHitReceiver|ecombat::  enemy-hits enemy-compat
+native/mod/shot_*           ~SetEnemyShots|EnemyCapture|EnemyReplay|[Ee]nemy                  enemy-mirror
+native/mod/config_values.hpp ~ShotsSound                                                      shots
+native/mod/config_values.hpp ~Mirror|Pose|EnemyFreeze|EnemyDefaults|EnemyKeys                 enemy-mirror
+native/mod/config_values.hpp ~Hit|EnemyDefaults|EnemyKeys                                     enemy-hits enemy-compat
+native/mod/config_values.hpp ~[Oo]wner\b|EnemyDefaults                                        enemy-own
 native/mod/partner_gear.*   ~exo_|exo.?carrier|skeleton                                       skeleton
 native/mod/partner_gear.*   ~[Hh]ood                                                          hood
 native/mod/partner_gear.*   ~private.?room|loading                                            private-room
@@ -250,7 +280,9 @@ native/mod/config.*         ~("|bool\s+|int\s+)(sound_sync|partner_volume|vehicl
 native/mod/config.*         ~("|bool\s+|int\s+)partner_collision                             collision
 native/mod/config.*         ~("|bool\s+)waist_cargo                                          hip-cargo
 native/mod/config.*         ~("|bool\s+)shots_                                               shots
-native/mod/config.*         ~("|bool\s+|int\s+|double\s+)enemy_                             enemies
+native/mod/config.*         ~("|bool\s+|int\s+|double\s+)enemy_(?!hit|owner)                enemy-mirror
+native/mod/config.*         ~("|bool\s+|int\s+)enemy_hit                                    enemy-hits enemy-compat
+native/mod/config.*         ~("|bool\s+)enemy_owner                                         enemy-own
 native/mod/config.*         ~("|bool\s+|int\s+)host_save                                     host-save
 native/mod/config.*         ~("|bool\s+|int\s+)dev_tools                                     dev-tools
 native/mod/player_sync.*    ~textures?_                                                       textures

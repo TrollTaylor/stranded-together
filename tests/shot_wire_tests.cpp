@@ -434,6 +434,18 @@ void TestIds() {
 }
 
 // Round 16: the drop at the bullet, the receiver classes, the aimed test's checks.
+// P2 (docs/enemy-sync.md 9): a bullet on a frozen mirror: her own round passes to Entity OnHit only while the hits are captured
+// and the receiver is an entity receiver whose vt+0x10 is OnHit; everything else is dropped as before.
+void TestMirrorBulletRule() {
+    CHECK(MirrorBulletRule(false, true, true, true) == MirrorBullet::pass_capture);    // hers, hits on, an entity receiver
+    CHECK(MirrorBulletRule(false, true, true, false) == MirrorBullet::drop_no_entity); // hers on a part with no entity receiver
+    CHECK(MirrorBulletRule(false, true, false, true) == MirrorBullet::drop);           // hits off: dropped as in P1a
+    CHECK(MirrorBulletRule(true, true, true, true) == MirrorBullet::drop);             // a replay (never hers)
+    CHECK(MirrorBulletRule(true, false, true, true) == MirrorBullet::drop);
+    CHECK(MirrorBulletRule(false, false, true, true) == MirrorBullet::drop);           // this world's round (another shooter)
+    CHECK(MirrorBulletRule(false, false, false, false) == MirrorBullet::drop);
+}
+
 void TestBulletRule() {
     CHECK(BulletRule(true, true, false, false) == BulletVerdict::drop);   // a replay into anything but our Sam
     CHECK(BulletRule(true, true, true, false) == BulletVerdict::pass);    // our Sam: the Sam filter decides
@@ -524,6 +536,7 @@ int main() {
     TestRateCap();
     TestIds();
     TestBulletRule();
+    TestMirrorBulletRule();
     TestReplayHit();
     TestReplaySetClear();
     TestHitClass();

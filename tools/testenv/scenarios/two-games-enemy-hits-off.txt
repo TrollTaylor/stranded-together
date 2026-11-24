@@ -1,0 +1,87 @@
+# Enemy sync P2 against a partner without the hits (docs/enemy-sync.md 9; review rv-behaviour 6): the host has enemy_hits=0 (as
+# an old build or a player who turned it off), the guest the defaults. The mirrors still work; her beacon's hits part meets none
+# on the host's, so her hits stay off: her own rounds on a frozen mirror are dropped AT THE BULLET as in v0.30 (the P1a guard,
+# shotw::MirrorBulletRule with no capture), no HIT is ever sent or applied, and the host's copy is untouched. Launcher Local test
+# files as the launcher writes them, plus `@host ini enemy_hits=0`.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-enemy-hits-off -SeedSaves complete-100 -GuestSeed profile-only -Id r17-hits-off
+# Steps: both at the MULE Camp Southwest of Lake Knot City, every MULE resurrected, both Sams invulnerable and shielded; the host's
+# hits OFF (enemy_hits=0), the guest's hooks in; the gate on both and a mirror on the guest; her combat parts line says hits off
+# (the partner has not); her rifle at the nearest frozen mirror (5 m, steered, 2 s of fire, twice: stills 01); a drop at the
+# bullet of her own rounds required; the counters; no HIT sent, applied or refused anywhere.
+# covers: enemy-compat
+role host
+graphics low
+timeout 300
+launcherini local-test
+@host ini enemy_hits=0
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[enemy\] mirror byte checks: [0-9]+/[0-9]+ ok
+@guest waitlog 5 \[enemy\] mirror byte checks: [0-9]+/[0-9]+ ok
+waitlog 5 \[enemy\] hits OFF: enemy_hits=0
+@guest waitlog 5 \[enemy\] hits: byte checks [0-9]+/[0-9]+ ok
+goto mule-camp-sw-lkc
+@guest goto 1521.90 992.00 0
+wait 4000
+?@both action dev_god 2
+@both action dev_enemies 1
+waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+@guest waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+action enemy_probe 5 1
+@guest action enemy_probe 5 1
+waitlog 40 \[enemy\] sync on \(host\).*\(equal
+@guest waitlog 40 \[enemy\] sync on \(guest\).*\(equal
+@guest waitlog 30 \[enemy\] mirror on id=
+@guest waitlog 30 \[link\] combat parts: .*hits off \(the partner has not
+wait 3000
+# ---- her rifle at the nearest frozen mirror (5 m), as two-games-enemy-mirror's guard step
+@guest pad dpad_right 600 keep
+@guest pad dpad_right 900 lx=-23170 ly=23170 rx=-23170 ry=23170 keep
+@guest pad dpad_right 400 keep
+@guest pad none 0
+wait 1500
+@guest action shots 9 0 0
+@guest action enemy_look 0 5 1.0
+wait 1500
+@guest action shots 4 2 2
+@guest waitnew 30 \[shots\] camera aimed #[0-9]+ at the partner body \(steered.*firing 2 s
+wait 700
+@guest screenshot 01-guest-fires-at-mirror
+wait 1600
+@guest action enemy_look 0 5 1.0
+wait 1500
+@guest action shots 4 2 2
+@guest waitnew 30 \[shots\] camera aimed #[0-9]+ at the partner body \(steered.*firing 2 s
+wait 700
+@guest screenshot 01-guest-fires-at-mirror-b
+wait 1600
+@guest pad none 0
+wait 1000
+# her own rounds dropped at the bullet (never passed to Entity OnHit: no capture with hits off)
+@guest waitlog 5 \[shots\] a bullet hit on a frozen mirror dropped \(enemy sync: the host decides; our Sam's own round
+@guest action enemy_sync 0
+@guest waitnew 5 \[enemy\] mirror attacks \(status\): .*bullet hits on mirrors dropped at the bullet [1-9][0-9]* \(our Sam's own rounds [1-9]
+@guest action enemy_sync 0
+@guest waitnew 5 \[enemy\] hits on mirrors at OnHit .* sent 0 \(hits off
+action enemy_sync 0
+waitnew 5 \[enemy\] hits: not installed \(enemy_hits=0\)
+@both action enemy_sync 2
+nolog \[enemy\] FAULT
+@guest nolog \[enemy\] FAULT
+nolog \[enemy\] hits FAULT
+@guest nolog \[enemy\] hits FAULT
+nolog byte check FAILED
+@guest nolog byte check FAILED
+nolog \[shots\] FAULT
+@guest nolog \[shots\] FAULT
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@guest nolog \[shots\] our Sam's own round on a frozen mirror passed to Entity OnHit
+@guest nolog \[enemy\] HIT sent
+nolog \[enemy\] HIT (applied|refused)
+action enemy_probe 5 0
+?@both action dev_god 0
+@guest quit
+wait 3000
+quit

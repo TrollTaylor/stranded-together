@@ -50,11 +50,14 @@ struct TickIn {
 void Tick(const TickIn& in, double now) noexcept;  // game thread (P1a and the probe)
 
 // Debug actions (docs/debug-actions.md "Enemy sync"); game thread.
-//   enemy_sync 0 status, 1 on, 2 off (every mirror released), 3 the mirror table, 6 <0|1> the far placement's variant (A / B;
-//   hidden runs), 7 <0|3> the driver's teleport cadence (3: a teleport every 500 ms between the sets; hidden runs)
+//   enemy_sync 0 status, 1 on, 2 off (every mirror released), 3 the mirror table, 4 the outcome table, 5 the ownership table
+//   (P1b), 6 <0|1> the far placement's variant (A / B; hidden runs), 7 <0|3> the driver's teleport cadence (3: a teleport every
+//   500 ms between the sets; hidden runs), 8 <0|1> ownership off (a reset: every enemy the host's) / on (P1b)
 bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 // enemy_look <id | 0 nearest | -1 the one the partner faces | -2 the newest replayed (the host: sent) shooter | -3 behind it, facing the partner |
-// -4 beside its line, facing it> <dist_m> [aim height m] (hidden runs): our Sam dist m from that enemy, facing it (-3: dist m behind it on the
+// -4 beside its line, facing it | -5 the newest HIT's enemy (P2; the guest: sent, the host: applied; down and dead ones allowed) | -6 the probe's
+// pick | -7 the nearest enemy the guest owns (P1b)> <dist_m>
+// [aim height m] (hidden runs): our Sam dist m from that enemy, facing it (-3: dist m behind it on the
 // partner's line, facing him). A steered aim (shots 4 <deg> 1) in the next 60 s follows that enemy (the -4 one, 20 s: a point on its line).
 bool Look(const double (&v)[3], char* msg, std::size_t cap) noexcept;
 // enemy_shot_test <id | 0 nearest> [1 nohurt] (hidden runs, guest): 3 enemy replays level at our Sam's chest from 2 m on that
@@ -68,6 +71,38 @@ bool GuardOn() noexcept;
 // Game thread: a live frozen mirror's entity (0 when it is not one), and the time the mirrors show on the host's tick clock.
 std::uintptr_t MirrorEntity(std::uint32_t actor_id) noexcept;
 bool RenderClock(double* render_ms) noexcept;
+
+// P2 (enemy_combat.cpp; docs/enemy-sync.md 9). Any thread: a frozen mirror's actor id (the entity +-0x20).
+bool MirrorIdOf(std::uintptr_t entity, std::uint32_t* id) noexcept;
+// Game thread: the gate as the tick left it (role 1 host / 2 guest / 0, mirroring on, our guids fingerprint, the world's load
+// counter, the link session).
+struct GateView {
+    int role = 0;
+    bool mirroring = false;
+    std::uint32_t guids = 0, world = 0, gen = 0;
+};
+GateView Gate() noexcept;
+// Game thread, the host: its 10 Hz class (the enemies realized within enemy_mirror_radius of the guest), up to cap.
+unsigned NearEnemies(std::uint32_t* ids, std::uintptr_t* actors, unsigned cap) noexcept;
+// Game thread, the guest: a live frozen mirror's actor and entity.
+bool MirrorOf(std::uint32_t actor_id, std::uintptr_t* actor, std::uintptr_t* entity) noexcept;
+std::uint32_t PickedId() noexcept;  // the probe's pick (0 none)
+std::uint32_t LookId() noexcept;    // the newest enemy_look's enemy (0 none)
+
+// P1b (round 17, docs/enemy-sync.md 10; session.ini enemy_owner): ownership by proximity. The host decides at 2 Hz: an enemy
+// within 40 m of the guest, the host 15 m farther and beyond 25 m, calm (its phase and its camp's Normal), undamaged, not held, no
+// cutscene, is handed to her game (SCB1 OWN: the host freezes its copy first and follows her SEN1 / SEP1 frames; she teleports her
+// mirror to the host's place, sets its phase and releases it: her AI runs it, it notices, targets and shoots at her Sam, and her
+// hits on it are real). Back by proximity (calm, after a 10 s hold): she is beyond 60 m or the host within 20 m. Forced back
+// (whatever its phase): her silence 3 s, it unrealized or held there, beyond enemy_mirror_radius + 20 m, no OWNACK in 3 s, a
+// refusal, an outcome, enemy_own. Any reset (a world, the link, the gate, the switch, a fault, a host save) makes every enemy the
+// host's at once (a new generation). The host's copy comes back with her phase raised into it (RisePhase, capped at Caution);
+// health is not carried.
+// Game thread: ecombat hands it the SCB1 types 3 OWN, 9 OWNACK and 10 OWNRESET it drains (handled on the next tick).
+void QueueOwnMessage(const std::uint8_t* bytes, std::size_t size) noexcept;
+// enemy_own <id | 0 the nearest the host owns to the partner | -5 the nearest the guest owns> <1 host | 2 guest> (hidden runs, the
+// host): a forced hand-over (reason 7); the rules apply again afterwards (the 10 s hold).
+bool Own(const double (&v)[3], char* msg, std::size_t cap) noexcept;
 
 bool Probe(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;  // game thread (a debug action)
 // The probe's picked MULE's entity while it is still the same realized actor (else 0): the shots' aimed test (hidden runs).

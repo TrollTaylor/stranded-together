@@ -926,6 +926,26 @@ void Install(const Config& config) noexcept {
         g_hooked ? "hooked" : "not hooked");
 }
 
+int QueryHit(std::uintptr_t filter_entity, std::uintptr_t ctx, const double* centre, float radius, float amount, QueryCb cb, std::uintptr_t user) noexcept {
+    if (!(g_groups & kGDirect) || !ctx || !cb) return 0;
+    alignas(16) std::uint8_t f[0x30] = {};
+    alignas(16) const float zero_a[4] = {0, 0, 0, 0};
+    alignas(16) const float zero_b[4] = {0, 0, 0, 0};
+    __try {
+        *reinterpret_cast<std::uintptr_t*>(f) = A(kFilterVt);
+        *reinterpret_cast<std::uint32_t*>(f + 0x08) = 2;
+        *reinterpret_cast<std::uint64_t*>(f + 0x0C) = 0xFF;
+        reinterpret_cast<FnFilterInit>(A(kFilterInit))(f, filter_entity, 0x36);
+        *reinterpret_cast<std::uint32_t*>(f + 0x0C) = 1;
+        reinterpret_cast<FnHitQuery>(A(kHitQuery))(ctx, centre, radius, amount, f, reinterpret_cast<HitCb>(cb), user, zero_a, zero_b, 0, 1.0f, 0x20, 0, 0);
+        *reinterpret_cast<std::uintptr_t*>(f) = A(kFilterVt);
+        reinterpret_cast<FnVoid1>(A(kFree))(*reinterpret_cast<std::uintptr_t*>(f + 0x20));
+        return 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+
 bool Active() noexcept { return g_on.load(); }
 const char* OffReason() noexcept { return g_on.load() ? "" : g_off; }
 

@@ -284,6 +284,58 @@ SEP1 frames, and replays the host MULEs' rounds from them.
 
 Scenario: `two-games-enemy-mirror`.
 
+P1b, ownership by proximity (`session.ini enemy_owner`, off by default and not settable by players yet: the launcher's
+session.ini is one-shot; `enemy_sync 5` and `8` do nothing without it; [enemy-sync.md](enemy-sync.md) section 10):
+
+* `enemy_sync 0` adds `[enemy] own: on|off (why), owned here n=.., guest-owned n=.., pending n=.., changes take .. back ..
+  forced .. refused .., no-owner>1s .., two-thinking .., resets .., gen ..`.
+* `enemy_sync 5`: the ownership table (`[enemy] own id=XXXXX owner host|guest epoch n pending .. ms phase n guest phase n damaged
+  n d_g .. d_h .. hold .. s follower none|mirror|far`; the guest's rows end `(here)`), then the `owned here` line.
+* `enemy_sync 8 <0|1>`: ownership off (a reset: every enemy the host's, `[enemy] own reset (off here)`) / on.
+* `enemy_own <id | 0 | -5> <1 | 2>` (hidden runs, the host): a forced hand-over (reason 7) of an id, the host-owned enemy nearest
+  the partner body (0) or the guest-owned one nearest it (-5), to the host (1) or the guest (2); the rules apply afterwards.
+* `enemy_look -7 <m> [h]` (hidden runs): the nearest enemy the guest owns (the guest: hers; the host: its frozen copy).
+
+### Enemy hits (`enemy_dump`, `enemy_attack`, `enemy_ctx`, `enemy_hit_mode`, `enemy_hit`, `enemy_hit_send`, `enemy_hit_watch`; `session.ini enemy_hits`, default on with `enemy_sync`; [enemy-sync.md](enemy-sync.md) section 9)
+
+P2: her hits on the host's enemies (enemy_combat.cpp). All hidden runs only except `enemy_sync 4`. A scenario action takes at
+most 3 numbers, so `enemy_hit`'s part / owner / path are set apart (`enemy_hit_mode`).
+
+* `enemy_sync 0` also prints the two P2 lines: `[enemy] hits on mirrors at OnHit n (ours n -> HIT n; others n), at the MULE
+  handler n (ours n), passed from the bullet n, ours on a non-entity part n, deduped n, lethal refused n, far n, ring full n; sent
+  n (..., values out of range n, stale n, capped n); HITRES rx n (applied n, refused n)` and `[enemy] hits: rx n applied n
+  refused {off n, dead n, unrealized n, world n, rate n, far n, fault n, receiver n, attack n, hidden n, lethal n, values n};
+  outcomes n tracked (epoch n); ...`.
+* `enemy_sync 4`: the outcome table (`[enemy] outcome id=XXXXX <none|faint|sleep|restrained|dead|down> ver n (cause ..) state ..
+  bits .. health .. stamina .. last HIT #n; her copy: health .. stamina ..`, her own frozen copy's vitals, which never change;
+  the host's rows end `(host)`).
+* `enemy_look -5 <m> [h]`: the newest HIT's enemy (the guest: sent, the host: applied; down and dead ones allowed); `-6`: the
+  probe's pick.
+* `enemy_dump <id | 0> <tag>`: the MULE's actor (0..0x1000), its DSMuleDamageComponent (0..0x700) and entity +0x80..+0xA0 as
+  `[enemy] dump tag=T id=XXXXX <actor|component|entity> +0x...: <32 bytes>` lines, after one summary line (state, +0xEA0,
+  +0xEA4, +0xEA8, health, stamina, sleep, restraint, the defeat +0x314, the head part +0x528). 0: the probe's pick, else the
+  newest HIT's enemy, else the nearest realized live MULE within 150 m.
+* `enemy_attack <attack>`: the attack registry's entry: damage +0x24, +0x28, stun +0x2C, the per-part values +0x30..+0x50, the
+  ranges +0x68 / +0x6C, the flags +0x90 (bit 6 dedupe forever, 7 falloff, 8 the DamageInfo amount, 10 instant), lethal or not.
+* `enemy_ctx <attack> <owner 1 body | 2 none | 3 sam>`: an attack context made (0x14298AC90) and inspected, nothing delivered:
+  its class and type check, P+0x08 .. +0x68, Q(ctx+0x68), Q(ctx+0xE8) and the registry's player id.
+* `enemy_hit_mode <part> <owner> <path>`: the next `enemy_hit`s' part (-1 none, -2 head: the component's head part, -3 chest,
+  >= 0 an index), owner (0 credit, 1 body, 2 none, 3 sam, -1 the session's) and path (0 direct, 1 query, -1 the session's).
+  Default: chest, the session's, the session's.
+* `enemy_hit <attack | 0> [count] [id | 0]`: hits applied on THIS game with the host's apply code (150 ms apart; attack 0: the
+  newest attack the watch saw, else 0x47; power 1.0, the point at the chest 1.2 m or the head 1.62 m over the root):
+  `[enemy] hit test #n id=.. attack .. part .. owner .. path ..: applied (ctx .., P+0x0C .., serial 0x5D......, attacker id .. ->
+  ..)` (the query adds `query: n in the sphere, n kept, DI part P at (..)` and `part head|chest=P`), then `HIT effect` and, on
+  a change, `OUTCOME` (solo too: the enemies hit in the last 30 s).
+* `enemy_hit_send <attack> [count] [id | 0]` (the guest, hits on): test HITs (kind 4, power 1.0) at the mirror's chest through
+  the capture path (0: the newest look's mirror).
+* `enemy_hit_watch <id | 0> <0 | 1>`: observe only (its hits pass): every DamageInfo given to that enemy, at OnHit and at the
+  MULE handler: `[enemy] onhit watch (at OnHit|at the MULE handler): id .. attack 0x.. kind bullet|job serial .. part ..
+  amount .. attacker .. (our Sam n, his n) P+0x20 .. (our id ..: equal|differ) ... receiver <class> vt10 OnHit depth ..; point
+  (..) valid ..; its health .. stamina ..`.
+
+Scenarios: `enemy-hit-probe` (P2-0, solo), `two-games-enemy-hit` (the gate).
+
 ### Shots (`shots`, `shots_test`, `shots_echo`; `session.ini shots_sync`, default on since round 16; [enemy-sync.md](enemy-sync.md) sections 7.3, 7.5)
 
 `native/mod/shot_sync.cpp`, the pure part `shot_wire.*` (`st_shot_wire_tests`).

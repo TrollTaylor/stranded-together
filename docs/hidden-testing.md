@@ -1770,6 +1770,69 @@ docs/enemy-sync.md section 8: P1a, the host owning every enemy.
   logged (`enemy replay #n's first hit`): the partner body. `two-games-launcher-local-test` (`20261124-125108`) passed with
   enemy sync on by default.
 
+## Enemy hits (round 17)
+
+docs/enemy-sync.md section 9: P2, her hits on the enemies the host owns and their outcomes.
+
+- `enemy-hit-probe` (solo, `ini enemy_hits=1`, `# select: probe`; about 2 min 10 s):
+  `pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios enemy-hit-probe -SeedSaves complete-100 -Id <id>`. At the MULE camp,
+  resurrected, shielded: A the probe's MULE dumped and eight attacks' registry entries; B attack contexts owned by Sam / none /
+  a Fragile body (`real_spawn 3 15 0`); C her rifle at the pick (steered, `shots 4 2 2` twice; optional: her burst can miss)
+  with every DamageInfo on it logged (`enemy_hit_watch`); E the query (M2) at the head and the chest, then direct hits (M1) at
+  the chest and the head; D direct hits until `OUTCOME ... none -> faint`, still `03-fainted`, dump 2; H a burst into the air
+  and dump 5 (P1b-0); G 0x18 until `none -> sleep` and, optional (`?until`), 0x102 until `none -> restrained` (the bola never
+  restrains through the apply: run `20261124-141609` failed only there).
+- `two-games-enemy-hit` (`launcherini local-test`, no `ini` line: enemy sync and enemy hits on by default; about 4 min):
+  `pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-enemy-hit -SeedSaves complete-100 -GuestSeed profile-only -Id <id>`.
+  Both at the camp, resurrected, shielded; the gate, mirrors and `combat parts: ... hits on` on both; A one test HIT (`HIT sent
+  #1`, `HIT applied #1`, `HIT effect ... stamina`, `HITRES #1 ... applied`: a `waitlog`, the answer comes within ~60 ms);
+  both rifles drawn and both cameras steered at the HIT's MULE (stills 01); her rifle at it (`shots 4 2 2`) until her
+  `OUTCOME ... -> faint`, the host's `none -> faint (... cause guest` (stills 02); each 5 m from the lying MULE, the camera
+  steered down at it (0.3 m up) for 03-a/b and 04 8 s later; the counters (`hits on mirrors at OnHit`, `hits: rx .. applied`),
+  her outcome table (`faint`, and her own copy's stamina still `1000.0`: her world never applied her rounds); the lease
+  (`mirrors n=0 frozen=0`). Afterwards `python -I tools\testenv\enemy-hits.py build-testenv\runs\<run>` (every HIT once on
+  the host, none applied twice, no fault / receiver / world refusal, the fainted id her target, her mirror not released before
+  her table showed the faint). **The gate is PASS only when Run-Batch's PASS and the script's PASS both hold**: Run-Batch does
+  not run the script.
+- `two-games-enemy-hits-off` (`launcherini local-test`, `@host ini enemy_hits=0`: a partner without the hits, as an older
+  build): the host's `hits OFF: enemy_hits=0`, her `combat parts: ... hits off (the partner has not`; her rifle at the nearest
+  frozen mirror (as the mirror gate's guard step); her own rounds dropped AT THE BULLET (`a bullet hit on a frozen mirror
+  dropped (... our Sam's own round`, `bullet hits on mirrors dropped at the bullet [1-9] (our Sam's own rounds [1-9]`), `sent 0
+  (hits off`; no HIT sent, applied or refused, no round passed to Entity OnHit. Area `enemy-compat`.
+- Test areas (test-areas.txt, review round 17): `enemies` (the census, the freeze probe), `enemy-mirror` (P1a:
+  `two-games-enemy-mirror`), `enemy-hits` (P2: `two-games-enemy-hit`), `enemy-compat` (`two-games-enemy-hits-off`) and
+  `enemy-own` (P1b: no auto run; `two-games-enemy-own` is `select: probe` until it passes).
+- `two-games-enemy-mirror`'s guard step accepts, since round 17, her own round dropped at the bullet OR passed to Entity OnHit
+  (dropped there and sent as a HIT: `hits on mirrors at OnHit [1-9] (ours [1-9]`); not rerun this round: it must run before
+  the release (the pose slots, the enemy-shots mask and the bullet rule changed under it).
+- Round 17: the probe three times (`141105`: her rifle never fired, LT and RT pressed together; `141352`: her burst went over a
+  crouched MULE from 19.5 m and no test hit ran in solo (the world gate needed a session: fixed); `141609`: every step but the
+  optional restraint), the gate three times (`142051`: the HITRES `waitnew` raced; `142244` PASS with stills from 8-10 m that
+  showed grass; `142649` PASS, the stills on the contact sheet), then `two-games-launcher-local-test` (`142959`) PASS with hits on
+  by default. Every run: saves unchanged, restored, 0 game-server writes, 0 cloud uploads, the online gate on.
+
+
+## Enemy ownership (round 17, P1b)
+
+docs/enemy-sync.md section 10: ownership by proximity (`enemy_owner`, off by default).
+
+- `two-games-enemy-own` (`launcherini local-test`, `ini enemy_owner=1`, `# select: probe`: never chosen by Select-Scenarios
+  until it passes; about 3 min 20 s when it runs through):
+  `pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-enemy-own -SeedSaves complete-100 -GuestSeed profile-only -Id <id>`.
+  At the MULE camp, both shielded; `own on` on both; A the take (the guest 12 m from the nearest frozen mirror, the host at the
+  camp spot: `OWN id=.. -> guest (proximity`, `taken here`), both framing it (stills 01), census tag 1, `owned here: n=[1-9]`;
+  B back while calm (the guest 40 m behind the host's body, before her owned MULE notices her: `-> host (far`, `back here`,
+  `given back here`, a mirror again; stills 02); C taken again at 0202F (the camp's rifleman), her burst into the air, `enemy
+  sent` (guest), `enemy replayed .. (muzzle` (host), the host's followers' error, stills 03 (16 pairs), census tag 3; D the
+  guest to the Craftsman (forced back by range, the phase raised); E the status counters (`waitnew` after `enemy_sync 0`),
+  `enemy_sync 8 0`, `enemy_sync 2`;
+  last, an enemy replay's first hit on the host being the partner body. Afterwards `python -I tools\testenv\enemy-compare.py
+  build-testenv\runs\<run>`.
+- Round 17: 8 runs, none passed: `150947` / `151238` (the camp phase rule), `151458` (the save step: the game refuses a save in
+  the camp), `151701` / `151942` (her owned MULEs alerted before the calm back), `152417` (her owned MULEs carried no gun),
+  `152731` (all of A, B, C but the first-hit line: 0 of the replays' first hits the partner body; the contact sheet),
+  `153216` (the rifleman did not fire within 45 s). D and E never ran.
+
 ## Hip crates (round 14, round 15)
 
 - `two-games-hip-cargo` (`launcherini`, `-GuestSeed profile-only`; about 1 min 50 s): the launcher's own ini

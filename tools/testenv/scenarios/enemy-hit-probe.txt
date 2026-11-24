@@ -1,0 +1,134 @@
+# Enemy sync P2-0 (docs/enemy-sync.md 9.2, round 17): the facts P2's hits stand on, solo, at the MULE Camp Southwest of Lake Knot
+# City (every MULE resurrected, our Sam invulnerable and shielded). Also P1b-0's alerted dump (step H).
+#   A  the probe's MULE dumped (actor, damage component, entity: tag 1); the attacks' registry entries (damage, stun, ranges, flags)
+#   B  attack contexts made and inspected (owner our Sam / none / a Fragile body 15 m ahead): P+0x20 of the Sam-owned context against
+#      the registry's player id decides enemy_hit_owner (credit when equal and the body's context is valid)
+#   C  our own rifle at the picked MULE (not a mirror: the hits pass), every DamageInfo on it logged at Entity OnHit (the fields G2
+#      reads: attack, serial, part, attacker, P+0x20, the receiver's class and vt+0x10, depth) with its health and stamina
+#   E then D: E before D (the parts on the same MULE), then D: M1 (enemy_hit, the host's apply code, credit, direct) on a calm MULE with the rifle's own attack until it faints: the HIT
+#      effect lines (stamina falling), the outcome none -> faint, still 03-fainted, the dump tag 2
+#   E  the parts on a third MULE: the query (M2) at the head and at the chest (`part head=H`, `part chest=C`), then direct hits at the
+#      chest and at the head part (the component's +0x528): the head's stamina drop against the chest's
+#   H  a burst into the air, 4 s, the dump tag 5 (an alerted MULE, for P1b-0's diff against tag 1)
+#   G  sleep (0x18 TranquilizerGun) through the same apply: the down bit 20; restraint (0x102 BolagunStrong) optional: the bola's
+#      restraint is not a damage message (run 20261124-141609: never restrained through this path); its step is optional, but a failed optional step still fails the run
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios enemy-hit-probe -SeedSaves complete-100 -Id r17-hit-probe
+# covers: enemy-hits
+# select: probe
+role solo
+graphics low
+timeout 360
+ini enemy_hits=1
+ini shots_sync=1
+ini pose_hook=1
+start control 200
+waitlog 10 \[enemy\] hits: byte checks [0-9]+/[0-9]+ ok
+waitlog 5 \[enemy\] hits installed
+goto mule-camp-sw-lkc
+?action dev_god 2
+action dev_enemies 1
+waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+wait 5000
+action enemy_probe 0 120
+waitlog 10 \[enemy\] probe byte checks: [0-9]+/[0-9]+ ok
+waitlog 5 \[enemy\] probe pick id=
+action enemy_probe 5 1
+waitlog 5 \[enemy\] probe shield on
+# ---- A
+action enemy_dump 0 1
+waitnew 5 \[enemy\] dump tag=1 id=[0-9A-F]{5} component \+0x1E0
+action enemy_attack 0x47
+action enemy_attack 0x01
+action enemy_attack 0x117
+action enemy_attack 0x10B
+action enemy_attack 0x102
+action enemy_attack 0x18
+action enemy_attack 0x15C
+action enemy_attack 0x0D
+# ---- B
+action enemy_ctx 0x47 3
+waitnew 5 \[enemy\] ctx attack 0x47 owner sam .*the registry's player id
+action enemy_ctx 0x47 2
+action real_spawn 3 15 0
+waitlog 60 \] '[^']+' is live: entity
+wait 1000
+action enemy_ctx 0x47 1
+waitnew 5 \[enemy\] ctx attack 0x47 owner body
+# ---- C: her rifle at the pick (6 m, facing it; the aim 0.9 m up: an alerted MULE crouches), every DamageInfo on it logged
+# (run 20261124-141352: from 19.5 m at 1.2 m up her burst went over a crouched MULE; this step is optional so D and E still run)
+action enemy_hit_watch 0 1
+waitnew 5 \[enemy\] onhit watch on id=
+action enemy_look -6 6 0.9
+wait 1500
+pad dpad_right 600 keep
+pad dpad_right 900 lx=-23170 ly=23170 rx=-23170 ry=23170 keep
+pad dpad_right 400 keep
+pad none 0
+wait 1000
+# the camera steered at it (enemy_look's aim follows it; no partner body needed for a steered aim), then RT 2 s, twice
+action shots 9 0 0
+action shots 4 2 2
+waitnew 30 \[shots\] camera aimed #[0-9]+ .*firing 2 s
+wait 700
+screenshot 01-fired
+wait 2000
+action enemy_look -6 6 0.9
+wait 1200
+action shots 4 2 2
+waitnew 30 \[shots\] camera aimed #[0-9]+ .*firing 2 s
+wait 2500
+pad none 0
+?waitlog 5 \[enemy\] onhit watch \(at OnHit\): .* attack 0x[0-9A-F]+ kind bullet .* part [0-9]+
+action enemy_hit_watch 0 0
+# ---- E: the parts on a calm MULE (the pick refuses dead and down ones): the query (M2) at the head and at the chest, then
+# direct (M1) at the chest and at the head part
+action enemy_probe 0 120
+waitnew 10 \[enemy\] probe pick id=
+action enemy_probe 4 10
+wait 1500
+action enemy_hit_mode -2 0 1
+action enemy_hit 0 1 0
+waitnew 6 \[enemy\] hit test #[0-9]+ .* path query
+wait 1000
+action enemy_hit_mode -3 0 1
+action enemy_hit 0 1 0
+waitnew 6 \[enemy\] hit test #[0-9]+ .* path query
+wait 1000
+action enemy_hit_mode -3 0 0
+action enemy_hit 0 1 0
+waitnew 8 \[enemy\] HIT effect id=
+action enemy_hit_mode -2 0 0
+action enemy_hit 0 1 0
+waitnew 8 \[enemy\] HIT effect id=
+# ---- D: M1 (credit, direct, the chest) on the same MULE with the rifle's own attack (0: the watch's newest, else 0x47) until it
+# faints
+action enemy_hit_mode -3 0 0
+until 40 700 \[enemy\] OUTCOME id=[0-9A-F]{5} none -> faint => action enemy_hit 0 3 0
+wait 2500
+screenshot 03-fainted
+action enemy_dump 0 2
+waitnew 5 \[enemy\] dump tag=2 id=
+# ---- H: a burst into the air, 4 s, the alerted dump (P1b-0)
+pad none 1000 ry=32767 lt=255 rt=255 keep
+pad none 300 ry=-32767 lt=255 keep
+pad none 0
+wait 4000
+screenshot 05-alerted
+action enemy_dump 0 5
+waitnew 5 \[enemy\] dump tag=5 id=
+# ---- G: sleep and restraint through the same apply, on a fourth MULE (each until its outcome)
+action enemy_probe 0 120
+waitnew 10 \[enemy\] probe pick id=
+action enemy_hit_mode -3 0 0
+until 25 600 \[enemy\] OUTCOME id=[0-9A-F]{5} none -> sleep => action enemy_hit 0x18 2 0
+action enemy_probe 0 120
+waitnew 10 \[enemy\] probe pick id=
+?until 25 600 \[enemy\] OUTCOME id=[0-9A-F]{5} none -> restrained => action enemy_hit 0x102 2 0
+nolog \[enemy\] FAULT
+nolog \[enemy\] hits FAULT
+nolog byte check FAILED
+nolog \[gate\] OTGC WRITE
+action enemy_probe 5 0
+action enemy_probe 9
+?action dev_god 0
+quit

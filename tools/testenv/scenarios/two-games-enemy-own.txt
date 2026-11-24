@@ -1,0 +1,215 @@
+# Enemy sync P1b (docs/enemy-sync.md 10, round 17): ownership by proximity. An enemy near the guest and far from the host is
+# handed to her game: the host freezes its copy first (a follower of her SEN1 / SEP1 frames), she teleports her frozen mirror to
+# the host's place and releases it (her AI runs it: it notices, targets and shoots at her Sam, her hits on it are real); her
+# owned MULEs' rounds are replayed on the host's screen from his frozen copy. Back when calm and she is far (or the host near), or
+# forced (beyond enemy_mirror_radius + 20 m, silence, unrealized there) whatever its phase, the phase raised into the host's
+# copy. Launcher Local test files plus `ini enemy_owner=1` (off by default this round).
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-enemy-own -SeedSaves complete-100 -GuestSeed profile-only -Id r17-enemy-own
+# Not passed yet (round 17: none of 8 runs; D and E never ran): `select: probe`, run by name only.
+# Steps: both at the MULE Camp Southwest of Lake Knot City, every MULE resurrected, both Sams invulnerable and shielded; the gate
+# and `own on` on both. A take: the guest 12 m from the nearest frozen mirror while the host stays at the camp spot (its MULEs
+# 66-160 m off): OWN -> guest (proximity), taken here; then quickly (her owned MULEs notice her in some 13 s) the guest 12 m and
+# the host 30 m from the owned MULE (enemy_look -7): stills 01 (4 pairs), census tag 1. No save step (the game refuses a save in
+# a MULE camp). B back while calm: the guest 40 m behind the host's body (about 70 m from it): OWN -> host (far), back here,
+# given back here, a mirror again. C taken again (the host back at the camp spot, the guest 12 m from 0202F, the rifleman), the
+# host's follower error (p95 under 1 m), then it targets her: her rifle fired into the air, her owned MULEs' rounds sent (SFX1) and
+# replayed on the host (muzzle), a replay's first hit on the host the partner body; stills 03 (16 pairs: her owned MULE on her
+# screen, the host's frozen copy aiming at her body), census tag 3 (her owned alerted, the host's copies calm). D forced back
+# while alerted: the guest to the Craftsman (450 m): OWN -> host (range), back here with the phase, her mirrors released.
+# E status on both (no-owner>1s 0, two-thinking 0), enemy_sync 8 0 (own reset), enemy_sync 2, census tag 4.
+# Afterwards:
+#   python -I tools\testenv\enemy-compare.py build-testenv\runs\<run>   (tag 1: her owned MULE's place on the host within 1 m)
+# covers: enemy-own shots
+# select: probe
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini enemy_owner=1
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[enemy\] mirror byte checks: [0-9]+/[0-9]+ ok
+@guest waitlog 5 \[enemy\] mirror byte checks: [0-9]+/[0-9]+ ok
+waitlog 5 \[enemy\] own byte checks: 6/6 ok
+@guest waitlog 5 \[enemy\] own byte checks: 6/6 ok
+goto mule-camp-sw-lkc
+@guest goto 1521.90 992.00 0
+wait 4000
+?@both action dev_god 2
+@both action dev_enemies 1
+waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+@guest waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+action enemy_probe 5 1
+@guest action enemy_probe 5 1
+waitlog 40 \[enemy\] sync on \(host\).*\(equal
+@guest waitlog 40 \[enemy\] sync on \(guest\).*\(equal
+waitlog 30 \[enemy\] own on \(
+@guest waitlog 30 \[enemy\] own on \(
+@guest waitlog 30 \[enemy\] mirror on id=
+wait 5000
+# ---- A, the take: the guest 12 m from the nearest frozen mirror; the host stays at the camp spot (its MULEs 66-160 m off)
+@guest action enemy_look 0 12
+waitlog 15 \[enemy\] OWN id=[0-9A-F]+ -> guest \(proximity
+@guest waitlog 10 \[enemy\] OWN id=[0-9A-F]+ taken here
+waitlog 10 \[enemy\] camps: n=
+# both framing the same owned MULE: the guest 12 m from it, the host 30 m (farther than her + 15 m and beyond 25 m: the take
+# holds); quickly: her owned MULEs notice her within some 13 s at 12 m (run 20261124-151942: Alert 13.6 s after the take)
+@guest action enemy_look -7 12
+action enemy_look -7 30
+wait 1500
+screenshot 01-host-owned-a
+@guest screenshot 01-guest-owned-a
+wait 500
+screenshot 01-host-owned-b
+@guest screenshot 01-guest-owned-b
+wait 500
+screenshot 01-host-owned-c
+@guest screenshot 01-guest-owned-c
+wait 500
+screenshot 01-host-owned-d
+@guest screenshot 01-guest-owned-d
+@both action enemy_census 1 0 1
+waitlog 10 \[enemy\] census done tag=1 \(
+@guest waitlog 10 \[enemy\] census done tag=1 \(
+@guest waitlog 10 \[enemy\] owned here: n=[1-9]
+# (no save test here: the game refuses a save in a MULE camp, reasons 0x2: run 20261124-151458)
+# ---- B, back while calm: the guest 40 m behind the host's body (about 70 m from it, beyond 60 m) before it notices her; the
+# host stays 30 m off; the back comes when the 10 s hold since the take ends
+@guest action shots 3 40 180
+waitnew 25 \[enemy\] OWN id=[0-9A-F]+ -> host \(far
+waitnew 10 \[enemy\] OWN id=[0-9A-F]+ back here
+@guest waitlog 10 \[enemy\] OWN id=[0-9A-F]+ given back here
+@guest waitlog 10 \[enemy\] mirror on id=[0-9A-F]+ \(given back
+@both action enemy_sync 5
+wait 1500
+screenshot 02-host-back
+@guest screenshot 02-guest-back
+# ---- C, taken again, then it targets her: the host back at the camp spot (A's geometry), the guest 12 m from 0202F (the
+# camp's rifleman: every enemy round of run 20261124-124658 but one was its; runs -151942 / -152417: her owned 02029, 0202C
+# and 0202E alerted on her for 50-60 s without a round); her rifle drawn, a burst into the air
+goto mule-camp-sw-lkc
+wait 8000
+@guest action enemy_look 0x202F 12
+waitnew 30 \[enemy\] OWN id=[0-9A-F]+ -> guest \(proximity
+@guest waitnew 10 \[enemy\] OWN id=[0-9A-F]+ taken here
+# the host's followers: their driver error in a 5 s window, p95 under 1 m
+waitnew 12 \[enemy\] mirrors: n=[1-9].* err p50 0\.[0-9]+ p95 0\.[0-9]+
+@guest pad dpad_right 600 keep
+@guest pad dpad_right 900 lx=-23170 ly=23170 rx=-23170 ry=23170 keep
+@guest pad dpad_right 400 keep
+@guest pad none 0
+@guest pad none 1500 ry=32767 lt=255 rt=255 keep
+@guest pad none 0
+wait 1500
+@guest pad none 1000 ry=32767 lt=255 rt=255 keep
+@guest pad none 0
+@guest pad none 700 ry=-32767
+@guest pad none 0
+# her owned MULEs come at her and fire: their rounds sent (SFX1), replayed on the host from his frozen copies
+@guest waitlog 45 \[shots\] enemy sent n=[1-9]
+waitlog 20 \[shots\] enemy replayed n=[1-9][0-9]* \(muzzle [1-9]
+# the same owned MULE framed on both screens: the guest 12 m from it, the host 12 m (her body beyond it in his view; alerted, it
+# stays hers); both cameras steered at it
+@guest action enemy_look 0x202F 12
+action enemy_look 0x202F 12
+wait 1200
+action shots 9 0 0
+@guest action shots 9 12 0
+action shots 4 5 1
+@guest action shots 4 5 1
+waitlog 25 \[shots\] camera aimed #[0-9]+ at the partner body \(steered
+@guest waitlog 25 \[shots\] camera aimed #[0-9]+ at the partner body \(steered
+waitnew 20 \[shots\] enemy replay #
+screenshot 03-host-a
+@guest screenshot 03-guest-a
+wait 40
+screenshot 03-host-b
+@guest screenshot 03-guest-b
+wait 40
+screenshot 03-host-c
+@guest screenshot 03-guest-c
+wait 40
+screenshot 03-host-d
+@guest screenshot 03-guest-d
+wait 40
+screenshot 03-host-e
+@guest screenshot 03-guest-e
+wait 40
+screenshot 03-host-f
+@guest screenshot 03-guest-f
+wait 40
+screenshot 03-host-g
+@guest screenshot 03-guest-g
+wait 40
+screenshot 03-host-h
+@guest screenshot 03-guest-h
+wait 40
+screenshot 03-host-i
+@guest screenshot 03-guest-i
+wait 40
+screenshot 03-host-j
+@guest screenshot 03-guest-j
+wait 40
+screenshot 03-host-k
+@guest screenshot 03-guest-k
+wait 40
+screenshot 03-host-l
+@guest screenshot 03-guest-l
+wait 40
+screenshot 03-host-m
+@guest screenshot 03-guest-m
+wait 40
+screenshot 03-host-n
+@guest screenshot 03-guest-n
+wait 40
+screenshot 03-host-o
+@guest screenshot 03-guest-o
+wait 40
+screenshot 03-host-p
+@guest screenshot 03-guest-p
+@both action enemy_census 3 0 0
+waitlog 10 \[enemy\] census done tag=3 \(
+@guest waitlog 10 \[enemy\] census done tag=3 \(
+@both action enemy_sync 5
+# ---- D, forced back while alerted: the guest to the Craftsman (450 m)
+@guest action dev_goto 1226.28 1318.63 183.88
+@guest waitnew 20 \[enemy\] OWN id=[0-9A-F]+ given back here
+waitlog 10 \[enemy\] OWN id=[0-9A-F]+ -> host \((range|unrealized)
+# (B's calm back logs "phase kept 0": this one carries her alert, raised into the host's copy or kept at Caution or above)
+waitlog 10 \[enemy\] OWN id=[0-9A-F]+ back here .*phase (raised [0-9]->[0-9]|kept [3-5])
+wait 8000
+waitnew 10 \[enemy\] owned here: .*guest-owned n=0
+@guest action enemy_sync 0
+@guest waitnew 10 \[enemy\] sync: .*mirrors n=0 frozen=0
+# ---- E, status on both, the reset, off
+@both action enemy_sync 0
+waitnew 5 \[enemy\] own: on .*no-owner>1s 0, two-thinking 0,
+@guest action enemy_sync 0
+@guest waitnew 5 \[enemy\] own: on .*no-owner>1s 0, two-thinking 0,
+@both action enemy_sync 8 0
+waitlog 5 \[enemy\] own reset \(
+@guest waitlog 5 \[enemy\] own reset \(
+@both action enemy_sync 2
+waitlog 5 \[enemy\] sync off
+@guest waitlog 5 \[enemy\] sync off
+action enemy_census 4 0 0
+waitlog 10 \[enemy\] census done tag=4 \(
+# (required; last, so that every other step is checked first: run 20261124-152731 replayed 44 of her owned rifleman's rounds on
+# the host, their first hits 4 other mirrors and 3 other, none the partner body)
+waitlog 5 \[shots\] enemy replay #[0-9]+'s first hit \(shooter [0-9A-F]+\): the partner body
+nolog \[enemy\] FAULT
+@guest nolog \[enemy\] FAULT
+nolog \[enemy\] hits FAULT
+@guest nolog \[enemy\] hits FAULT
+nolog byte check FAILED
+@guest nolog byte check FAILED
+nolog \[shots\] FAULT
+@guest nolog \[shots\] FAULT
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+action enemy_probe 5 0
+?@both action dev_god 0
+@guest quit
+wait 3000
+quit

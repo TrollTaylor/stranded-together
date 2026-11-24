@@ -410,6 +410,22 @@ enum class BulletVerdict : std::uint8_t { pass, drop };
 inline constexpr BulletVerdict BulletRule(bool replay, bool owner_dummy, bool our_sam, bool keep_test) noexcept {
     return replay && owner_dummy && !our_sam && !keep_test ? BulletVerdict::drop : BulletVerdict::pass;
 }
+// Enemy sync P2 (docs/enemy-sync.md 9): a bullet's hit on a frozen mirror (or a part of one). Every such hit is dropped here,
+// except her own round (`ours`, not a replay) while the hits are captured (`hit_capture`: enemy_hits on, Entity OnHit hooked,
+// both beacons' hits part, mirroring on) and the receiver is an entity receiver whose vt+0x10 is Entity OnHit (`entity_onhit`):
+// that one passes to the game (the DamageInfo is built, her impacts and MsgBulletHit stay) and the OnHit detour drops it and
+// sends the HIT. Her round on a part without an entity receiver is dropped with no HIT (`drop_no_entity`, counted).
+enum class MirrorBullet : std::uint8_t { drop, pass_capture, drop_no_entity };
+inline constexpr MirrorBullet MirrorBulletRule(bool replay, bool ours, bool hit_capture, bool entity_onhit) noexcept {
+    return replay || !ours || !hit_capture ? MirrorBullet::drop : entity_onhit ? MirrorBullet::pass_capture : MirrorBullet::drop_no_entity;
+}
+
+// Enemy sync P1b (docs/enemy-sync.md 10): the enemy shots' mask (shots::SetEnemyShots). bit0: capture the rounds of the enemies
+// this game owns and sends (P1a's host = 1), bit1: replay the other game's enemy rounds from our frozen mirrors (P1a's guest = 2);
+// P1b sets 3 on both.
+inline constexpr int kEnemyCapture = 1, kEnemyReplay = 2;
+inline constexpr bool EnemyCaptureOn(int mask) noexcept { return (mask & kEnemyCapture) != 0; }
+inline constexpr bool EnemyReplayOn(int mask) noexcept { return (mask & kEnemyReplay) != 0; }
 
 // What a dropped hit would have hit, by the receiving entity's class name (the game's own type name), for the counters.
 enum class HitClass : std::uint8_t { vehicle, cargo, structure, bt, npc, player, other };

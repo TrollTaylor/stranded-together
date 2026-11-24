@@ -173,6 +173,7 @@ add_library(st_mod SHARED
   native/mod/shot_wire.cpp
   native/mod/shot_sync.cpp
   native/mod/enemy_sync.cpp
+  native/mod/enemy_combat.cpp
   native/mod/enemy_wire.cpp
   native/mod/npc_damage.cpp
   native/mod/save_xfer.cpp

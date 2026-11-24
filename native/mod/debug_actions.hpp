@@ -136,6 +136,16 @@ enum class Action : std::uint8_t {
     enemy_sync,           // v[0] = op (0 status, 1 on, 2 off, 3 mirror table; hidden runs: 6 variant v[1], 7 cadence v[1])
     enemy_look,           // v[0] = id (0 nearest, -1 the one the partner faces), v[1] = m (hidden runs)
     enemy_shot_test,      // v[0] = id (0 nearest mirror), v[1] = 1 nohurt (hidden runs, the guest)
+    // Enemy sync P2 (enemy_combat.hpp; docs/enemy-sync.md 9): hidden runs only
+    enemy_dump,           // v[0] = id (0 the probe's pick / the newest HIT's / the nearest), v[1] = tag
+    enemy_attack,         // v[0] = attack id: its registry entry
+    enemy_ctx,            // v[0] = attack, v[1] = owner (1 body, 2 none, 3 sam): an attack context made and inspected
+    enemy_hit_mode,       // v[0] = part (-1 none, -2 head, -3 chest, >= 0 an index), v[1] = owner (0..3, -1 the session's), v[2] = path (0 direct, 1 query, -1)
+    enemy_hit,            // v[0] = attack, v[1] = count, v[2] = id (0: as enemy_dump): hits applied on this game (the host's apply)
+    enemy_hit_send,       // v[0] = attack, v[1] = count, v[2] = id (0: the newest look's mirror): the guest's test HIT (kind 4)
+    enemy_hit_watch,      // v[0] = id (0: as enemy_dump), v[1] = 0 off / 1 on: every DamageInfo on it logged (its hits pass)
+    // Enemy sync P1b (enemy_sync.hpp; docs/enemy-sync.md 10): hidden runs only, the host
+    enemy_own,            // v[0] = id (0 the nearest the host owns to the partner, -5 the nearest the guest owns), v[1] = 1 host / 2 guest
     count
 
 };

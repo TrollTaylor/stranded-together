@@ -235,6 +235,20 @@ Config LoadConfig(const std::wstring& dir) {
             c.enemy_shots_sound = ParseBool(v);
         } else if (k == "enemy_mirror_guard") {
             c.enemy_mirror_guard = ParseBool(v);
+        } else if (k == "enemy_hits") {
+            c.enemy_hits = ParseBool(v);
+            c.enemy_hits_set = true;
+        } else if (k == "enemy_hit_owner") {
+            c.enemy_hit_owner = cfgval::HitOwner(v, c.enemy_hit_owner);
+        } else if (k == "enemy_hit_path") {
+            c.enemy_hit_path = cfgval::HitPath(v, c.enemy_hit_path);
+        } else if (k == "enemy_hits_lethal") {
+            c.enemy_hits_lethal = ParseBool(v);
+        } else if (k == "enemy_hit_rate") {
+            c.enemy_hit_rate = cfgval::HitRate(v, c.enemy_hit_rate);
+        } else if (k == "enemy_owner") {
+            c.enemy_owner = ParseBool(v);
+            c.enemy_owner_set = true;
         } else if (k == "vehicle_overlap_hide") {
             c.vehicle_overlap_hide = ParseBool(v);
         } else if (k == "vehicle_look") {
@@ -349,7 +363,14 @@ Config LoadConfig(const std::wstring& dir) {
     // Enemy sync P1a (docs/enemy-sync.md 8): on by default in a host-held save session as well (round 16b: the mirrors, the
     // host MULEs' gunfire on the guest's screen and the guard proven in run 20261124-124658); enemy_sync=0 turns it off. It needs
     // host_save (its install refuses without it), so the default follows it.
-    if (!c.enemy_sync_set) c.enemy_sync = c.host_save;
+    // Enemy sync P2 (round 17, docs/enemy-sync.md 9): her hits on the host's enemies follow enemy sync (both games need it).
+    // Enemy sync P1b (round 17, docs/enemy-sync.md 10): ownership by proximity, off by default this round (enemy_owner=1 turns it
+    // on; both games need it: SEH1 parts bit3). The rule is cfgval::EnemyDefaults (tested in st_enemy_rules_tests).
+    {
+        const cfgval::EnemyKeys k = cfgval::EnemyDefaults(c.host_save, c.enemy_sync_set, c.enemy_sync, c.enemy_hits_set, c.enemy_hits, c.enemy_owner_set,
+                                                          c.enemy_owner);
+        c.enemy_sync = k.sync, c.enemy_hits = k.hits, c.enemy_owner = k.owner;
+    }
     Log("[config] role=%s transport=%s peer=%llu udp=%s:%u->%u send_hz=%u interp=%ums debug_menu=%d key=0x%X",
         RoleName(c.role), c.transport == Transport::udp ? "udp" : "steam",
         static_cast<unsigned long long>(c.peer_steam_id), c.udp_peer.c_str(), c.udp_port_local, c.udp_port_peer,
@@ -384,6 +405,9 @@ Config LoadConfig(const std::wstring& dir) {
     Log("[config] enemy_sync=%d%s freeze=%s radius=%.0f poses=%d place_far=%d shots=%d hurt=%d sound=%d guard=%d", c.enemy_sync ? 1 : 0,
         c.enemy_sync_set ? "" : " (default: on with host_save=1)", c.enemy_freeze == 1 ? "occupied" : "not built (off)", c.enemy_mirror_radius, c.enemy_pose_count,
         c.enemy_place_far ? 1 : 0, c.enemy_shots ? 1 : 0, c.enemy_shots_hurt ? 1 : 0, c.enemy_shots_sound ? 1 : 0, c.enemy_mirror_guard ? 1 : 0);
+    Log("[config] enemy_hits=%d%s owner=%s path=%s lethal=%d rate=%d", c.enemy_hits ? 1 : 0, c.enemy_hits_set ? "" : " (default: on with enemy_sync)",
+        cfgval::HitOwnerName(c.enemy_hit_owner), c.enemy_hit_path == 1 ? "query" : "direct", c.enemy_hits_lethal ? 1 : 0, c.enemy_hit_rate);
+    Log("[config] enemy_owner=%d%s", c.enemy_owner ? 1 : 0, c.enemy_owner_set ? "" : " (default: off)");
     // Fragile's textures: only whether a folder came and its length (the path itself names the Windows user).
     Log("[config] textures_dir=%s", c.textures_dir.empty() ? "- (none)" : ("set (" + std::to_string(c.textures_dir.size()) + " bytes)").c_str());
     Log("[config] fragile_textures=%d textures_send=%d textures_receive=%d textures_hot_reload=%d textures_free=%d textures_defaults=%d", c.fragile_textures ? 1 : 0,

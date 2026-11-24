@@ -11,6 +11,7 @@
 
 #include "dev_tools.hpp"
 #include "enemy_census.hpp"
+#include "enemy_combat.hpp"
 #include "enemy_sync.hpp"
 #include "shot_sync.hpp"
 #include "log.hpp"
@@ -192,6 +193,14 @@ bool DoShotsEcho(const Request& r, char* msg, std::size_t cap) { return shots::E
 bool DoEnemySync(const Request& r, char* msg, std::size_t cap) { return esync::Command(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoEnemyLook(const Request& r, char* msg, std::size_t cap) { return esync::Look(r.v, msg, cap); }
 bool DoEnemyShotTest(const Request& r, char* msg, std::size_t cap) { return esync::ShotTest(r.v, msg, cap); }
+bool DoEnemyDump(const Request& r, char* msg, std::size_t cap) { return ecombat::Dump(r.v, msg, cap); }
+bool DoEnemyAttack(const Request& r, char* msg, std::size_t cap) { return ecombat::AttackInfo(r.v, msg, cap); }
+bool DoEnemyCtx(const Request& r, char* msg, std::size_t cap) { return ecombat::CtxTest(r.v, msg, cap); }
+bool DoEnemyHitMode(const Request& r, char* msg, std::size_t cap) { return ecombat::HitMode(r.v, msg, cap); }
+bool DoEnemyHit(const Request& r, char* msg, std::size_t cap) { return ecombat::HitTest(r.v, msg, cap); }
+bool DoEnemyHitSend(const Request& r, char* msg, std::size_t cap) { return ecombat::HitSend(r.v, msg, cap); }
+bool DoEnemyHitWatch(const Request& r, char* msg, std::size_t cap) { return ecombat::HitWatch(r.v, msg, cap); }
+bool DoEnemyOwn(const Request& r, char* msg, std::size_t cap) { return esync::Own(r.v, msg, cap); }
 bool DoAudioProbe(const Request& r, char* msg, std::size_t cap) { return game::AudioProbeCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoSelfVoice(const Request& r, char* msg, std::size_t cap) { return game::SelfVoiceCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoVoiceSync(const Request& r, char* msg, std::size_t cap) { return game::VoiceSyncCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
@@ -365,12 +374,28 @@ constexpr Row kRows[] = {
     {{Action::shots_test, Tab::tools, "Shots test", "One replayed bullet at our own Sam (the last captured shot's ids): m ahead, flags (1 the filter keeps it, 2 no weapon, 4 no magazine, 16 leak test), count.", false},
      &DoShotsTest},
     {{Action::shots_echo, Tab::tools, "Shots echo", "Solo: our own shots replayed beside us: 0/1, m to the right (default 2.5).", false}, &DoShotsEcho},
-    {{Action::enemy_sync, Tab::tools, "Enemy sync", "Enemy mirrors (enemy_sync): 0 status, 1 on, 2 off (every mirror released), 3 the mirror table; hidden runs: 6 0/1 far placement variant, 7 0/3 the teleport cadence.", false},
+    {{Action::enemy_sync, Tab::tools, "Enemy sync", "Enemy mirrors (enemy_sync): 0 status, 1 on, 2 off (every mirror released), 3 the mirror table, 4 the hits' outcome table; ownership (P1b: only with enemy_owner=1 on both games, off by default and not offered to players yet): 5 its table, 8 0/1 off (everything back to the host) / on; hidden runs: 6 0/1 far placement variant, 7 0/3 the teleport cadence.", false},
      &DoEnemySync},
-    {{Action::enemy_look, Tab::tools, "Enemy look", "Hidden runs: our Sam m from an enemy, facing it: <id | 0 nearest (the guest: a frozen mirror) | -1 the one the partner faces | -2 the newest replayed (the host: sent) shooter | -3 behind it | -4 beside its line> <m> [aim height m, default 1.2]; a steered aim (shots 4 <deg> 1) then follows it.", false},
+    {{Action::enemy_look, Tab::tools, "Enemy look", "Hidden runs: our Sam m from an enemy, facing it: <id | 0 nearest (the guest: a frozen mirror) | -1 the one the partner faces | -2 the newest replayed (the host: sent) shooter | -3 behind it | -4 beside its line | -5 the newest HIT's enemy | -6 the probe's pick | -7 the nearest the guest owns> <m> [aim height m, default 1.2]; a steered aim (shots 4 <deg> 1) then follows it.", false},
      &DoEnemyLook},
     {{Action::enemy_shot_test, Tab::tools, "Enemy shot test", "Hidden runs, the guest: 3 enemy replays level at our Sam's chest from 2 m, from a mirror's side (its hand's line and 50 deg either side): <id | 0 the last looked-at, else nearest> [1 nohurt].", false},
      &DoEnemyShotTest},
+    {{Action::enemy_dump, Tab::tools, "Enemy dump", "Hidden runs (enemy hits): a MULE's actor (0..0x1000), its damage component (0..0x700) and entity +0x80..+0xA0 as hex lines: <id | 0 the probe's pick / the newest HIT's / the nearest> <tag>.", false},
+     &DoEnemyDump},
+    {{Action::enemy_attack, Tab::tools, "Enemy attack", "Hidden runs (enemy hits): an attack's registry entry (damage, stun, ranges, flags): <attack id>.", false},
+     &DoEnemyAttack},
+    {{Action::enemy_ctx, Tab::tools, "Enemy ctx", "Hidden runs (enemy hits): an attack context made and inspected, nothing delivered: <attack> <owner 1 body | 2 none | 3 sam>.", false},
+     &DoEnemyCtx},
+    {{Action::enemy_hit_mode, Tab::tools, "Enemy hit mode", "Hidden runs (enemy hits): the next enemy_hit's part (-1 none, -2 head, -3 chest, >= 0 an index), owner (0 credit, 1 body, 2 none, 3 sam, -1 the session's), path (0 direct, 1 query, -1).", false},
+     &DoEnemyHitMode},
+    {{Action::enemy_hit, Tab::tools, "Enemy hit", "Hidden runs (enemy hits): hits applied on this game with the host's apply code, 150 ms apart, then the effect line: <attack> [count] [id | 0].", false},
+     &DoEnemyHit},
+    {{Action::enemy_hit_send, Tab::tools, "Enemy hit send", "Hidden runs, the guest (enemy hits): test HITs (kind 4) at a mirror's chest to the host: <attack> [count] [id | 0 the newest look's].", false},
+     &DoEnemyHitSend},
+    {{Action::enemy_hit_watch, Tab::tools, "Enemy hit watch", "Hidden runs (enemy hits): every DamageInfo on one enemy logged at OnHit and the MULE handler (its hits pass): <id | 0> <0 off | 1 on>.", false},
+     &DoEnemyHitWatch},
+    {{Action::enemy_own, Tab::tools, "Enemy own", "Hidden runs, the host (enemy_owner): a forced hand-over: <id | 0 the nearest the host owns to the partner | -5 the nearest the guest owns> <1 to the host | 2 to the guest>.", false},
+     &DoEnemyOwn},
 };
 constexpr std::size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);
 static_assert(kRowCount == static_cast<std::size_t>(Action::count), "every Action needs exactly one registry row");

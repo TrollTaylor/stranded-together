@@ -31,4 +31,33 @@ inline int PoseCount(const std::string& v, int keep) {
     return n >= 0 && n <= 8 ? static_cast<int>(n) : keep;
 }
 
+// enemy_hit_owner (P2, docs/enemy-sync.md 9): credit 0 (the partner body, the player's attacker id stamped), body 1, none 2, sam 3.
+// The numbers are the HITRES owner mode.
+inline int HitOwner(const std::string& v, int keep) {
+    return v == "credit" ? 0 : v == "body" ? 1 : v == "none" ? 2 : v == "sam" ? 3 : keep;
+}
+inline const char* HitOwnerName(int o) { return o == 0 ? "credit" : o == 1 ? "body" : o == 2 ? "none" : o == 3 ? "sam" : "?"; }
+// enemy_hit_path: direct 0 (M1: the bullet's path) or query 1 (M2: the attack sphere query).
+inline int HitPath(const std::string& v, int keep) { return v == "direct" ? 0 : v == "query" ? 1 : keep; }
+// enemy_hit_rate: 1..120 HITs a second per enemy.
+inline int HitRate(const std::string& v, int keep) {
+    char* end = nullptr;
+    const long n = std::strtol(v.c_str(), &end, 10);
+    if (v.empty() || !end || *end) return keep;
+    return n >= 1 && n <= 120 ? static_cast<int>(n) : keep;
+}
+
+// The enemy keys' defaults once every line is read (config.cpp): enemy_sync follows host_save, enemy_hits follows enemy_sync
+// (P2), enemy_owner stays off (P1b: its gate has not passed) unless given. A key that was given keeps its value.
+struct EnemyKeys {
+    bool sync = false, hits = false, owner = false;
+};
+inline EnemyKeys EnemyDefaults(bool host_save, bool sync_set, bool sync, bool hits_set, bool hits, bool owner_set, bool owner) {
+    EnemyKeys k;
+    k.sync = sync_set ? sync : host_save;
+    k.hits = hits_set ? hits : k.sync;
+    k.owner = owner_set ? owner : false;
+    return k;
+}
+
 }  // namespace st::cfgval

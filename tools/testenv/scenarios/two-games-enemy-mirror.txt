@@ -16,7 +16,7 @@
 # 20261124-093844; the replays' drops do not count); the lease:
 # the guest to the Craftsman (450 m): every mirror released. Afterwards:
 #   python -I tools\testenv\enemy-compare.py build-testenv\runs\<run>   (the census places within 250 m of her, by GUID)
-# covers: enemies shots
+# covers: enemy-mirror shots
 role host
 graphics low
 timeout 360
@@ -204,9 +204,11 @@ wait 700
 wait 1600
 @guest pad none 0
 wait 1000
-@guest waitlog 5 \[shots\] a bullet hit on a frozen mirror dropped \(enemy sync: the host decides; our Sam's own round
+# (round 17, P2: with enemy_hits on, her own rounds pass the drop at the bullet to Entity OnHit, where they are dropped as well
+# and sent to the host as HITs: either drop proves the guard)
+@guest waitlog 5 \[shots\] (a bullet hit on a frozen mirror dropped \(enemy sync: the host decides; our Sam's own round|our Sam's own round on a frozen mirror passed to Entity OnHit)
 @guest action enemy_sync 0
-@guest waitnew 5 \[enemy\] mirror attacks \(status\): .*bullet hits on mirrors dropped at the bullet [1-9][0-9]* \(our Sam's own rounds [1-9]
+@guest waitnew 5 (\[enemy\] mirror attacks \(status\): .*bullet hits on mirrors dropped at the bullet [1-9][0-9]* \(our Sam's own rounds [1-9]|\[enemy\] hits on mirrors at OnHit [1-9][0-9]* \(ours [1-9])
 @both action enemy_sync 0
 # ---- the lease: the guest 440 m away, every mirror given back
 # (her goto 450 m away: the teleport alone; its settle wait was flaky and an optional step's failure fails the run, run

@@ -1,4 +1,4 @@
-# Enemy sync (P0 done: the census; round 15: R1 foundations, the P1-0 freeze probe, ship A: the players' shots; round 16: the drop at the bullet, P1a mirrors and the enemy shots)
+# Enemy sync (P0 done: the census; round 15: R1 foundations, the P1-0 freeze probe, ship A: the players' shots; round 16: the drop at the bullet, P1a mirrors and the enemy shots; round 17: P2, her hits and the outcomes; P1b, ownership by proximity, off by default)
 
 Co-op in Death Stranding means both players see the same MULEs, Demens, warriors and BTs, and what one player does to them
 the other sees. Today each game runs its own enemies: the guest's world is a copy of the host's save (the host-held save
@@ -13,8 +13,10 @@ own shots** on the other screen (`shots_sync`; off after the round 15 review, **
 hits are dropped at the bullet before anything of the watcher's world takes them, section 7.5). **Round 16** built **P1a**
 (section 8, `enemy_sync`, on by default with `host_save=1` since round 16b, 8.9): the host owns every enemy, the guest's copies near her are frozen, driven and posed
 from the host's frames (within 0.07-0.56 m at p95 in the census), never hurt her or fire themselves, and the host MULEs'
-rounds are replayed on her screen from the mirrors (and may hurt her own Sam). Hits on enemies (P2) and ownership (P1b) are
-next.
+rounds are replayed on her screen from the mirrors (and may hurt her own Sam). **Round 17** built **P2** (section 9,
+`enemy_hits`, on with enemy sync): her hits on a mirror are dropped in her world and sent to the host, which applies them to its
+own MULE with the game's own damage path; the outcome (faint, sleep, restrained, dead) comes back and her mirror lies with the
+host's. **P1b** (section 10, ownership by proximity) is built and off by default (`enemy_owner`): its gate has not passed.
 
 Sources: the round-10 research (Ghidra on ds.exe Director's Cut, PE timestamp 1706443442), the MGSV mod's enemy-sync history
 (`ref-ddt/docs/world-sync-design.md` 4.x and 7.8-7.33), and this mod's own vehicles (section 23 of
@@ -81,8 +83,8 @@ Sources: the round-10 research (Ghidra on ds.exe Director's Cut, PE timestamp 17
   `partner_tackle.cpp` already uses. Attack ids: EDSAttackId 0..0x6F (BolaGun 0x1E, EnemyAssaultRifle 0x56,
   DemensAssaultRifleBullet 0x6A) and the extended list 0x71..0x18C (PlayerComboA_0..2 0x117..0x119, MuleKick 0x16F,
   MuleTackle 0x171, GazerDrag 0x12D, VehicleTackle 0x157).
-- **Outcomes**: EDSNpcDefeatType {0 Dead, 1 Faint, 2 Sleep, 3 Restrained}, EDSMulePhase {0 Normal, 1 Return, 2 PreCaution,
-  3 Caution}, EDSMuleStance {Sneak, Caution, Alert}, EDSMuleType {Normal, Friendly, Demens, Warriors_Particle}.
+- **Outcomes**: EDSNpcDefeatType {0 Dead, 1 Faint, 2 Sleep, 3 Restrained, 4 Dying}, EDSMulePhase {0 Normal, 1 Return, 2 PreCaution,
+  3 Caution, 4 Evasion, 5 Alert} (round 17, 9.0), EDSMuleStance {Sneak, Caution, Alert}, EDSMuleType {Normal, Friendly, Demens, Warriors_Particle}.
 - **Bullets**: one enqueue for every bullet, `0x142916860(DSBulletSystem [0x147BEB108], rec 0xF0)` (at most 16 a frame, 5
   callers including CreateBullet). Sticky bullets, the bola rope and thrown items are entities of their own
   (DSStickyBulletEntity, DSBolagunRopeEntity, DSThrowable).
@@ -217,7 +219,7 @@ after the partner. The non-owner can still damage it (P2).
 | P0 | the census, GUID identity, byte checks (done; section 3) | `two-games-enemy-census` |
 | P1a | the host owns everything; the guest freezes and drives mirrors of the realized enemies within 250 m of her (state 10 Hz; the rest 2 Hz round-robin; poses for the nearest 6 at 10 / 5 Hz; 4.7) | `two-games-enemy-mirror`: placement error p50 < 0.3 m, p95 < 1 m; frozen copies send no attack messages; the lease releases when the guest leaves |
 | P1b | proximity ownership and handover (4.3) | the same run: ownership flips when the guest walks to the far side of the camp |
-| P2 | damage and outcomes: on the non-owner a detour on DSMuleDamageComponent MsgDamage (`0x142B020F0`) or Humanoid MsgDamage (`0x143744380`) drops the mirror's damage and sends HIT {key, attack id, amount, hit point, direction}; the owner applies it with `0x14298AC90(0, id)` and the single-receiver query; OUTCOME is host-final, ordered Normal < Restrained < Sleep = Faint < Dead (the first terminal state wins); phase synced escalation-only (`SetNpcIndividualPhase`) | a debug `enemy_hit <attack id>` on the nearest mirror: HIT, HITRES, OUTCOME on both |
+| P2 | damage and outcomes: on the non-owner a detour on DSMuleDamageComponent MsgDamage (`0x142B020F0`) or Humanoid MsgDamage (`0x143744380`) drops the mirror's damage and sends HIT {key, attack id, amount, hit point, direction}; the owner applies it with `0x14298AC90(0, id)` and the single-receiver query; OUTCOME is host-final, ordered Normal < Restrained < Sleep = Faint < Dead (the first terminal state wins); phase synced escalation-only (`SetNpcIndividualPhase`) | a debug `enemy_hit <attack id>` on the nearest mirror: HIT, HITRES, OUTCOME on both. **Built in round 17 (section 9), changed**: OnHit `0x142349A10`, not the Humanoid handler; the bullet's own path (M1), not the query; down is not terminal, a mirror is never released for a death animation (9.0) |
 | P3 | projectiles: a hook on the bullet enqueue `0x142916860` turns bullets of our Sam and our owned enemies into FIRE events; the other world replays them through `0x14294D340` (same attack id, origin, target point, target actor), so trails and impacts are the game's own; replayed bullets damage only the receiver's own Sam (the victim decides, as vehicle hits) and enemies only in their owner world. P3b: grenades, blood grenades, bola and strand after a census of their spawn paths | a fire-replay run: the impact seen, no damage to the partner from the shooter's replays |
 | P4 | BTs: each world keeps its own BT field; sync the field cleared / respawned, capture events (notice, cosmetic tar), the catcher owned by the caught player's world, a voidout as a shared game over; mirroring a catcher needs a pose codec for other joint counts | |
 | P5 | lethal play: Demens deaths, corpses and necrosis (voidout risk), MULE trucks (they meet `vehicle_share`), reinforcements (`RequestMuleReinforce`), cargo stolen into MULE postboxes | |
@@ -288,7 +290,9 @@ One hidden run per phase (docs/hidden-testing.md "Test economy"), each ending pa
 - **P2**: a run with a debug-synthesised `enemy_hit`.
 - **P3**: a fire-replay run.
 
-The area is `enemies` in `tools/testenv/test-areas.txt` (`native/mod/enemy_*`, and debug-action lines naming the enemies).
+The area is `enemies` in `tools/testenv/test-areas.txt` (`native/mod/enemy_census.*` and the other `enemy_*` files the later
+phases do not name; since the round 17 review P1a, P2 and P1b are the areas `enemy-mirror`, `enemy-hits` / `enemy-compat` and
+`enemy-own`).
 
 ## 7. Round 15: R1, the probes, ship A
 
@@ -763,7 +767,8 @@ until P2; round 16b turned it on with `host_save=1` (8.6, 8.9) and the README sa
 - The host's partner body must be in his world for anything to be sent (another region: nothing mirrored, the guest's copies
   run their own AI).
 - A mirror whose host copy is unrealized keeps its own idle while it slides along the patrol.
-- Hits on mirrors are dropped (P1a): her shots do nothing to the host's enemies yet (P2).
+- Hits on mirrors are dropped (P1a): her shots do nothing to the host's enemies yet (P2). Round 17: P2 sends hers to the host
+  (section 9).
 - Unrealized copies: far placement holds p95 0 m, but one patrol at a turn showed up to 54 m in a census.
 - The host's MULE rounds also land in her world: their first hits are the partner body (8.9; dropped at the bullet), about 1
   in 10 a frozen mirror standing in the line of fire (on the host such a round may pass its own side's MULEs), and their noise
@@ -849,3 +854,321 @@ enemies) and P1b; a launcher option for `enemy_sync`; the other two-game scenari
 - **P1b (ownership)**: the MULEs near the guest owned by the guest's game (their AI perceiving her), the host's copies
   frozen as mirrors: the same SEN1 / SEP1 / lease code with the roles per enemy (the `owner_epoch` and `kOwnerGuest` bits are
   in SEN1 already), a hand-over rule with hysteresis (`erules` gains it), and the enemy shots in both directions.
+
+## 9. P2: her hits on the host's enemies and their outcomes (round 17)
+
+`session.ini enemy_hits` (default on with `enemy_sync`), `enemy_combat.{hpp,cpp}`, the SCB1 codecs in `enemy_wire.*`, the
+pure rules in `enemy_rules.hpp` (`HitVerdict`, `HitDedupe`, `ToLocal` / `ToWorld`, `HostSerial`, `RateLimit`, `ApplyGate`,
+`OutcomeOf`, `MergeOutcome`, `DeadRelease`) and `shotw::MirrorBulletRule` in `shot_wire.hpp`. Both games need it (SEH1 parts
+bit1 "hits": `[link] combat parts: ... hits on`).
+
+### 9.0 Corrections to the plan and to this document (r-p2, verified in Ghidra and in runs)
+
+- **The Humanoid handler is the wrong hook for MULEs.** A MULE is a `DSControlledEntity`: its MsgDamage goes to its components
+  (DSMuleDamageComponent's handler `0x142B020F0`, reached through the thunk `0x142B2D250`), never to the Humanoid handler
+  `0x1437393D0`. That is why `rcx matched` was 0 in every P1a run. `npc_damage` stays as it was; P2 does not use it.
+- **One place sees every hit given to an entity**: Entity OnHit `0x142349A10` (the receiver's vt+0x10 for every entity
+  receiver, receiver = entity + 0x38; it jumps to `[0x147BC4E70]` vt+0x40, QueueDamage). Bullets (BulletDamageA / B) call it
+  directly; the attack sphere query (melee, tackles, vehicle rams) and the BT reaction's single delivery `0x14298BAB0` queue a
+  job that calls it. Area damage `0x1429361D0` and four other direct MsgDamage senders bypass it (the MULE handler sees those).
+- **EDSMulePhase** has six values: 0 Normal, 1 Return, 2 PreCaution, 3 Caution, 4 Evasion, 5 Alert (section 2.3 lists four);
+  **EDSNpcDefeatType** also has 4 Dying. P2 does not sync the phase (its field on a realized MULE is P1b-0's).
+- The plan's 4.4 row for P2 ("first terminal state wins", "released for a death animation") is replaced by 9.4: down is not
+  terminal (a fainted MULE gets up), dead is sticky, and a mirror is never released for a death animation.
+- The local player's actor id is **0** (the registry's vt+0x40 and P+0x20 of a context owned by Sam, run `141609`); a context
+  with no owner, or the partner body's, carries 0x1FFFFF.
+
+### 9.1 The guest: her hit on a mirror becomes a HIT
+
+- **G1** (the drop at the bullet, `shot_sync` JudgeBullet): her own round (not a replay) on a frozen mirror or a part of one
+  passes to the game while the hits are captured and the receiver is an entity receiver whose vt+0x10 is OnHit
+  (`MirrorBulletRule` pass_capture; `[shots] our Sam's own round on a frozen mirror passed to Entity OnHit`): the DamageInfo is
+  built, her impacts and the bullet-hit message to her Sam stay. Every other bullet on a mirror is dropped as in P1a.
+- **G2** (a detour on OnHit, any thread): the receiver's entity and its +0x70 parents (4 levels) against the frozen mirrors.
+  A mirror's hit is **always dropped** (no QueueDamage, ApplyDamage, stats or telemetry in her world). It is hers when the
+  attacker is our Sam, his weapon or a part of him (her rounds name her `DSWeaponEntity`), the vehicle she drives (untested),
+  or P+0x20 is our player id. Hers, with an attack a HIT can carry (1..0x18D, not 0x180: her aim sends AimTarget 0x180 to the
+  MULE she aims at, about 30 a second), goes into a lock-free ring of 64.
+- **G3** (a detour on the MULE damage handler `0x142B020F0`): the direct senders' hits on a mirror, the same way (kind direct).
+  No direct sender reached a mirror in any run.
+- **The game thread**: the 300 ms dedupe (the same key, serial and attack; the job path delivers one hit several times: 21
+  dropped in run `142244`), the lethal policy (`enemy_hits_lethal`, default 0: a round whose attack does damage is refused;
+  9.9), the values' ranges (`HitValuesOk`, 9.9), the point turned into the mirror's yaw frame (refused beyond 8 m), then SCB1
+  HIT messages (up to 12 a message) on channel 6: `[enemy] HIT sent #n id=XXXXX attack 0x.. kind
+  bullet|sphere/job|direct|test part P ...`.
+- **Her own feedback**: her impacts, tracer and the bullet-hit message stay; the flinch and the fall come from the host's pose
+  frames (SEP1). Missing (documented): her copy's own hit reaction, the MULE's pain voice, the damage-dealt message to her Sam,
+  her HUD's markers over a downed mirror. No hit marker was seen in her stills (02 of runs `142244`, `142649`).
+
+### 9.2 The wire: SCB1 on the reliable channel 6
+
+Header 16 B: `'SCB1' | u8 type | u8 version 1 | u8 n | u8 0 | u32 guids_fp | u32 seq`. Types: 4 HIT (n 1..12, 80 B each: key,
+hit_seq, attack, kind, flags, serial, the context's b12E / b180 / v130 / power / v188, part, amount, mult, a20, the point in
+the mirror's frame (f32, |each| <= 8 m), the normal (q15), the impulse (x100), t_ms, her distance in dm), 5 HITRES (n 1..64,
+12 B: key, hit_seq, result 0 applied .. 10 hidden, 11 lethal, 12 values, owner mode, defeat now), 6 OUTCOME (n 1..32, 24 B:
+key, defeat 0 none / 1 faint / 2 sleep / 3 restrained / 4 dead / 5 other down, cause 0 host / 1 guest / 2 resync / 3 revive,
+ver, state +0xEA0, downbits (+0xEA4 >> 19) & 0x3F, phase 0xFF, the host's outcome epoch (9.9), health, stamina, the last applied
+hit_seq), 7 PHASE (reserved, refused), 8 RESYNC
+(n 0). Strict decoders (`st_enemy_wire_tests`). Nothing is sent before both beacons carry the hits part and mirroring is on; a
+fingerprint mismatch is refused `world`. SEN1 state bits 2-4 carry the host's defeat as well. Her rifle at 10 rounds a second is
+about 1 KB/s.
+
+### 9.3 The host: applying a HIT (method M1, `enemy_hit_path=direct`)
+
+`erules::ApplyGate` (host, mirroring, hits on, the same fingerprint, a valid attack, no test HIT outside a hidden run, the
+values within `HitValuesOk`'s ranges, not lethal while the host's `enemy_hits_lethal` is 0, the actor realized, not dead, not
+hidden / asleep / held, at most `enemy_hit_rate` (30) a second per enemy and 60 in all, the point within 3 m of the root), then on the
+game thread under SEH, as BulletDamageA does for a bullet:
+
+1. `recv = entity + 0x38` with its entity byte set and vt+0x10 OnHit (else `receiver`).
+2. `ctx = 0x14298AC90(owner, attack)`, `P = 0x14294DDF0(ctx)` (= ctx + 0x120), P+0x0C and P+0x18 (the resource) checked.
+3. P stamped from the HIT: the serial (`HostSerial`: `0x5C000000 | guest serial`, or `0x5D000000 | hit_seq`), b12E, v130,
+   b180, the power, v188; in the credit mode P+0x20 = the player's attacker id (0).
+4. A 0xB0-byte DamageInfo from `0x142314190(DI, Q(ctx+0xE8), &[0x147BC3B80], amount, &impulse, a20, -1, part)`, the point
+   turned into the host copy's frame at DI+0x80, DI+0x98 = 1, the normal, the multiplier.
+5. `recv->vt[0x10](recv, DI)` (OnHit -> QueueDamage -> ApplyDamage: a bullet's path), then `0x142463390(DI + 0x28)`.
+
+`[enemy] HIT applied #n id=.. attack .. part .. owner credit (ctx .., serial 0x5C......, attacker id 0x1FFFFF -> 0x0) ...
+delivered`, HITRES, and two ticks later `[enemy] HIT effect id=..: health a -> b, stamina a -> b, sleep .., restraint ..,
+state s -> s`. M2 (`enemy_hit_path=query`, partner_tackle's attack sphere query on the point, 0.25 m, only that MULE) is the
+fallback.
+
+**enemy_hit_owner** (P2-0 B): `credit` (default: the partner body owns the context, so the falloff and the AI's attacker are
+her place and her body, and P+0x20 = the player's id credits the host's Sam), `body`, `none` (owner 0: no attacker), `sam`
+(the falloff from the host's place; never the default).
+
+### 9.4 Outcomes
+
+At 10 Hz the host reads +0xEA0 / +0xEA4 (and the component's health / stamina) of its 10 Hz class and of every enemy hit in
+the last 30 s, and every tick those hit in the last 3 s (the damage component cached per entity, checked by its vtable and its
+entity): `OutcomeOf` (3 / 5 dead; 4 faint, sleep or restrained by bits 19 / 20 / 21, else other down; anything else
+none). A change bumps its version and sends an OUTCOME (cause guest when one of her HITs was applied in the last 3 s; revive
+when dead turns back to alive, the only way out of dead): `[enemy] OUTCOME id=XXXXX none -> faint (state 4, bits 0x404C0000;
+cause guest HIT #7) ver 1`. The guest merges it (`MergeOutcome`: newer versions only, dead sticky unless revived):
+`[enemy] OUTCOME id=XXXXX none -> faint ver 1 (cause guest; ...): the mirror lies with the host's frames`. A RESYNC on hits
+on, a new link session and a new world brings every non-none outcome back. Each OUTCOME carries the host's outcome epoch (a
+new one each host world or link session, its versions starting again at 1): a new epoch drops her table first.
+
+- **Down**: the mirror stays frozen and posed from the host's frames: it lies where the host's lies and gets up with it. If the
+  lease gives it back (range, silence), it is given back alive and stands up in her world (`released while faint on the
+  host`); when she returns it is frozen lying again.
+- **Dead**: still posed while the host sends (the host poses a dead enemy too, in the 5 Hz half). When the lease ends it is not
+  given back alive: Occupied{0} / Required{0}, then hidden and put to sleep (`released dead: hidden and asleep here`); Eligible
+  refuses it afterwards. Restored (`shown and woken again`) when the host's is alive again (a revive, a new host epoch), on
+  link loss, the gate off, a reset, a world change (the actor gone: forgotten) or a fault. Untested in a run (no lethal round
+  was fired; lethal rounds are refused by default).
+- **Attribution and the online gate**: in the credit mode the takedown is the host player's (+0xEA8 bit 4, the neutralize
+  message and counter, the victim's stats and telemetry): the host's normal game. Her world never applies a hit on a mirror,
+  so nothing is credited, counted or uploaded there. Every run: 0 game-server writes, 0 cloud uploads on both games.
+
+### 9.5 Byte checks
+
+`[enemy] hits: byte checks 41/41 ok (onhit, muledmg, stamps, apply, outcome, entry)` in every run: OnHit (24 bytes and its
+global), the MULE handler, its thunk and three of its instructions, BulletDamageA's stamps and its two globals, the context,
+its parameters, the DamageInfo init (+0x68, +0x78), the handle set / release, the MULE state setter and store, the down setter,
+the component's fields (+0x1EC, +0x1F0, +0x1E4, +0x1F8, +0x1E0, +0x314, +0x1DC), DsIsMuleDeadOrFainted, the damage entry's
+part / attacker id / serial / attack, DSMuleDamageComponent's vtable entries and the context type. A failure of the MULE
+handler's group leaves G3 out; any other turns the hits off (`[enemy] hits OFF: byte check FAILED`).
+
+### 9.6 P2-0: `enemy-hit-probe` (solo)
+
+Three runs; `20261124-141609` gave everything (it failed only on the optional restraint):
+
+- **Her rifle's hits** (C, the watch at OnHit): attack 0x47 (Non-Lethal Assault Rifle), kind bullet, attacker her
+  `DSWeaponEntity` (a weapon of our Sam's), P+0x20 = 0 (our id), power 12.5, v130 1.0f, b12E 45 (the weapon id), parts 5 / 2,
+  the point valid, the receiver `DSControlledEntity` with OnHit at depth 0. Each round took 153.8 stamina (1000 -> 846.2 ->
+  692.3). Her aim sends 0x180 (AimTarget, amount 0) about every 30 ms. The MULE handler saw the same hits after ApplyDamage.
+- **The attacks** (A): 0x47 damage 0, stun 200 (non-lethal); 0x01 damage 250 (lethal); 0x117 stun 300; 0x10B stun 200; 0x102
+  (bola) nothing; 0x18 (tranquilizer) stun 100; 0x15C stun 100000; 0x0D damage 2000 with the falloff (4.5 / 3.5 m).
+- **The owner** (B): a Sam-owned context's P+0x20 = 0 = the registry's player id; the body's and owner 0's carry 0x1FFFFF; all
+  three of class `AttackEventContextGame` with the type check passing, power 0.0 in a fresh context (the HIT carries the
+  bullet's). The default is `credit`.
+- **M1 works** (E then D, credit, direct): a chest hit -153.8 stamina (as her own round), a hit at the component's head part
+  (+0x528 = 1) -461.5 (the headshot, x3), the faint at the sixth hit (`none -> faint (state 4, bits 0x404C0000)`, +0x314 = 1).
+  M2 (the query) at the chest kept the MULE (DI part 2) and took the same stamina; at the head point (1.62 m) it found nothing.
+- **Sleep** (G): 0x18 fills the sleep gauge by 76.9 a hit; at 1000 `none -> sleep` (state 4, bit 20). **Restraint**: 0x102
+  through the apply never restrains (state 2 only): the bola's restraint is not its damage message (not P2's).
+- The dumps tag 1 (calm), 2 (fainted) and 5 (alerted) are in the run's log for P1b-0.
+
+### 9.7 The gate: `two-games-enemy-hit`
+
+Three runs (hidden-testing.md "Enemy hits"); the last two passed; `20261124-142649` (the final scenario, 108 steps, launcher
+Local test files, no ini line):
+- The wire: test HIT #1 (0x47 at the mirror's chest) sent, applied (`stamina 1000.0 -> 846.2`), HITRES applied.
+- Her rifle: 14 HITs of kind bullet, all applied (`hits: rx 15 applied 15 refused {...0}`), the host's `none -> faint (state 4,
+  bits 0x404C0000; cause guest ...)` and hers `none -> faint ver 1 (cause guest ...)` for the same id 02029;
+  `enemy-hits.py`: PASS (every hit_seq once on the host, none twice, no refusal, her mirror frozen until her outcome table).
+- Run `142244` the same with 11 HITs, two of them attack 0x15E (sphere/job, her Sam's own, at 0.8 m from the MULE: no effect
+  on its stamina), and 21 deduped.
+- The stills (contact sheet: round 17 scratch `p2\sheet.png`): 01 the same MULE crouched by her on both screens; 02 her burst
+  on hers, her replayed tracer on his; 03 a/b the MULE lying in the grass under both crosshairs at (1564.06, 1012.08) on the
+  host and (1564.08, 1012.10) on hers; 04 still down 8 s later. No hit marker in her 02.
+- Every run: saves unchanged, restored, no violation, 0 cloud uploads, 0 game-server writes, the online gate on both.
+- `two-games-launcher-local-test` (`20261124-142959`): PASS with `enemy_hits=1 (default: on with enemy_sync)` and `hits on` on
+  both.
+
+What the host's MULE did: after the test HIT (credit: the partner body is the attacker) it went for the partner body and the
+host (run `142244`: it fainted where the host had stood); on her screen the mirror did the same.
+
+### 9.8 Risks and open points
+
+- Lethal rounds (refused by default: `enemy_hits_lethal=0` on either game), a dead mirror's release (hide and sleep) and its
+  restore, grenades, the bola, melee, strand tie-ups and vehicle rams on a mirror are untested (G2 / G3 capture what reaches
+  them).
+- Only the nearest `enemy_pose_count` (6) mirrors are posed: a MULE she downs farther away is placed (SEN1) but stands frozen
+  on her screen. Down and dead ones are posed at 5 Hz and never take a live one's fast rank.
+- The host's MULE perceives the partner body as its attacker (credit / body): it may go for her body on the host's screen while
+  her own copy stays frozen.
+- A downed mirror released by range stands up in her world until she returns.
+- Her HUD shows no marker for a downed mirror; no pain voice; possibly no hit marker.
+- Demens use DSMuleDamageComponent [not run]; warriors (DSWarriorDamageComponent) are outside P2.
+- The first P2 OUTCOME of an enemy already dead in the host's save carries cause host; a resurrect is a revive.
+
+### 9.9 Review fixes (round 17 review, no run yet)
+
+- **Lethal**: `enemy_hits_lethal` defaults to 0 until a lethal run passes (a kill counts as the host's, in the host's save; an
+  undisposed corpse leads to necrosis there). Both games apply their own setting: the guest does not send a lethal round, and
+  the host refuses one (`HITRES lethal`) when ITS setting is 0, by the HIT's flag or by its own registry entry for the attack
+  (damage +0x24 > 0). Her rifle's 0x47 (the Non-Lethal Assault Rifle) and the tranquilizer 0x18 do no damage: unaffected.
+- **Values** (`erules::HitValuesOk`, both games): the DamageInfo amount 0..500, the multiplier 0..4, a20 0..2, the context's
+  power (P+0x64 as f32) 0..100, the part below 32 or none. The probe and the gate saw amount 0, multiplier 0.11..1, a20 0.4..1,
+  power 12.5..13 (her rifle) and 1 (the test HITs), parts 1..10. Outside: not sent, and refused on the host (`HITRES values`).
+  A direct HIT (kind 3, the MULE handler's layout) is accepted within these ranges: the handler's msg+0x20 DamageInfo was read
+  in the probe's watch (`at the MULE handler`) with the same attack and parts as OnHit's.
+- **Test HITs** (kind 4) are refused on the host outside a hidden run (`HITRES attack`).
+- **Late HITs**: a HIT that waited more than 1 s for the link (a full window, a stall) is dropped before sending, and at most 64
+  wait (the oldest goes): no late burst of hits.
+- **The query path** reports `the query kept nothing` (not applied) when no part of the MULE was in the sphere.
+- **The outcome epoch** (OUTCOME byte 11): see 9.4.
+- **Pose slots**: a down MULE (not only a dead one) is posed at 5 Hz and never counts in the live ones' fast ranks.
+- **The dead release** is restored (9.4).
+- **Her copy's vitals** are in her outcome table (`enemy_sync 4`: `; her copy: health .. stamina ..`); the gate requires her
+  fainted mirror's stamina still 1000.0 (her world never applied her rounds).
+- **The host's outcome read** runs at 10 Hz (every tick only for the enemies she hit in the last 3 s), the damage component
+  cached.
+
+## 10. P1b: ownership by proximity (round 17, `session.ini enemy_owner`, off by default)
+
+An enemy near the guest and far from the host is run by HER game: it notices her, targets and shoots at her Sam, and her hits
+on it are real (her world's own damage). The host's copy becomes the frozen mirror, driven and posed from her frames, and her
+owned MULEs' rounds are replayed on his screen from it. It goes back to the host when she leaves (calm) or by a forced rule
+(whatever its phase). `enemy_owner=1` on both games (SEH1 parts bit3 `kPartOwn`); the launcher writes no key (and players cannot
+set it: the launcher's session.ini is one-shot). None of the 8 gate runs passed and its steps D and E never ran in a game
+(10.6), so the default stays 0 and `two-games-enemy-own` is `select: probe` (run by name only).
+
+### 10.0 Corrections to the plan (plan.md section 8) and to 4.3 (r-p1b, Ghidra and runs)
+
+- The phase is the DSMuleGameActor's `+0x110` (EDSMulePhase 0..5; GetPhase 0x142ECFF7D reads it), set by SetPhase 0x142ACF630
+  (exact) and RisePhase 0x142ACE9D0 (max(old, new): the escalation-only lever). SetNpcIndividualPhase is an AI action, not a
+  phase setter. No dump probe was needed for P1b-0.
+- Camps: the MULE manager `[0x147BF09D8]` +0xD8 / +0xE0 the CP actor ids; a CP (DSMuleCPGameActor) holds its phase at +0x210
+  and its members at +0x4C0 / +0x4C8; its push 0x142B37EB0 escalates members with 3 / 5. Run `20261124-151238`: the camp SW of
+  Lake Knot City sat at PreCaution (2) with its MULEs at Normal, so "alerted" is Caution (3) and up for a camp and for a MULE
+  (`erules::Calm`: phases 0..2; `CampAlerted`: 3..5). The first walk logs `[enemy] camps: n=9 of 9 ids (class
+  DSMuleCPGameActor), members n=116`.
+- "Realized on both" is dropped: the host follows a guest-owned enemy as a frozen mirror when its copy is realized there, else
+  as a far follower (vt+0x40 variant A at 2 Hz); it freezes it as soon as it is realized.
+- Silence is 3 s; the host's lease never releases a guest-owned copy (only the ownership rules do).
+- Take also needs the host beyond 25 m (the take and back rules overlapped).
+- No world id is shared: SCB1's header keeps P2's guids fingerprint; the host's combat generation travels in each OWN entry
+  and in SEN1's gen_tag.
+- The 8 pose slots are shared by capture and apply on both games (`erules::PoseAlloc`, apply first).
+- Her camp alerted is NOT a refusal (spec 3.2 step 3 dropped): run `20261124-151942` showed a camp that saw her once stays
+  alerted for a minute, which would keep every MULE of it the host's. The guest takes it; her camp's push makes it join.
+- Our Occupied{1} also reaches the MULE weapon's handler (0x142B07FB0 -> weapon +0x268 = 1, the weapon update idles while set).
+  Every release puts +0x268 back when it was 0 before our freeze and the release left it set (`[enemy] weapon flag
+  restored`). In the runs it was always 0 after the release (`weapon268 0` in `taken here`), so no write happened.
+- The save: the game refuses a forced save inside the MULE camp (run `151458`: reasons 0x2), so the solo save probe of the spec
+  was not run (and solo has no in-world load: `save_guard 3` needs a host session). Instead the host never lets a save capture a
+  copy it froze: while any copy is frozen and `saveguard::Busy()` (a save pending, queued, captured or written) it resets
+  ownership at once (`[enemy] own reset (the host's game saves)`), and it takes nothing while a save is busy. P1b needs the save
+  reads (the `save_guard` byte checks) on the host. [I] a capture in the same frame as the post is not excluded; not run.
+  Review fixes: every host-frozen copy counts for this reset (the table's, the followers' and the returns a cutscene holds:
+  those are posted at once while a save is busy, and a return is never held by a cutscene while a save is busy).
+
+### 10.1 The rules (`erules::HostDecide`, pure, the host at 2 Hz)
+
+Take (host -> guest) when all: the guest within 40 m; the host at least 15 m farther than she is and beyond 25 m; the host's
+copy calm (phase 0..2) and its camp not alerted (or unknown); not damaged (its damage component's health or stamina fell since
+the last change, `ecombat::Vitals`), not dead or down; no cutscene on her side, fewer than 3 refusals a minute; the host's copy
+not sequence-only, not held, not hidden or asleep, not in a vehicle, no host cutscene, no save busy, the guards in; the 10 s
+hold over; she owns fewer than 16; fewer than 4 changes this second; both beacons carry `kPartOwn`. The nearest candidate's
+reason is logged: `[enemy] own: no take id=.. (guest .. m, host .. m, phase .., camp .., damaged .., hold .. s): <why>`.
+Back by proximity (calm, after the hold): she is beyond 60 m, or the host within 20 m. Forced back (ignores phase, damage and the
+hold): refused, forced (`enemy_own`), no OWNACK within 3 s, silence 3 s, beyond
+`enemy_mirror_radius` + 20 m (no partner body on the host: beyond any range), unrealized or held by a sequence on her side.
+Dead or down on her side (her SEN1 entry's kDead or its defeat bits 2-4, `OutcomeOf` of her copy): it stays hers, never handed
+back by proximity (review: the host's copy would get up alive at her place while hers lies); only the forced rules end it. Her
+outcomes do not reach the host yet: a forced return of one she killed brings the host's copy back alive (her copy is then
+left lying as her world's corpse, never frozen and posed from the host's standing frames; Eligible refuses a dead one). Faint and sleep on her side keep it hers until
+it gets up.
+Resets (everything the host's at once, a new generation, OWNRESET when the link stays): a world or the link changed, the gate,
+`enemy_sync 2`, `enemy_sync 8 0`, a fault, a host save. A reset for a world change also releases the host's followers that
+still read as the same in-use MULE frozen by us (a private room, a short not-ready dropout: the same actors). `[enemy] own: kept
+by the guest id=.. (...)` every 10 s.
+
+### 10.2 The hand-over
+
+Take: the host freezes its copy first (Occupied{1}, bit 14 read back; else no OWN, hold 10 s), drops it from its SEN1
+schedule, shooters and captures, sends OWN (place, yaw, velocity, phase). She checks her copy (a live frozen mirror, realized,
+alive, bit 14 ours, no cutscene, under 16), teleports it to the host's place, sets its phase (SetPhase) when it differs,
+releases it (Occupied{0}, Required{0} when bit 13 was clear) and answers OWNACK(taken); from then she sends its SEN1 (flag
+kOwnerGuest, the epoch byte, its phase, kDamaged) at 10 Hz, its pose (SEP1) and its rounds (SFX1). Back: OWN(host); she freezes
+her copy again at once (a P1a mirror from then: its lease's silence clock starts at the freeze) and answers OWNACK(released)
+with its final place and phase; the host teleports its copy there (only within 10 m of where its follower stands and at most
+3 m below it, `erules::BackPlaceOk`; else `her place refused ...: released where it stands`), raises its phase with
+RisePhase(min(hers, Caution)), then releases it (`back here (...; phase raised a->b | kept a; health not carried; ...)`). Two
+thinking copies only inside a bounded window (the property test, `TestOwnProperty`: messages delayed up to 6 s, her refusals,
+the decisions through `HostDecide`): a reset until she has the OWNRESET, or a back whose OWNACK timed out (3 s) while her
+OWN(host) is still in flight, until she has it; each at most the link's delay. Zero thinking only while a hand-over is in
+flight (at most two ack timeouts and a 2 Hz decision, 6.5 s). The host counts `no-owner>1s` (an OWNACK later than 1 s, a back that
+timed out) and `two-thinking` (her re-freeze did not take).
+
+### 10.3 Wire (enemy_wire.hpp)
+
+SCB1 (channel 6, P2's header): type 3 OWN and 9 OWNACK, n 1..16, 40 B each (`u32 gen | u32 id | u16 epoch | u8 owner | u8 reason
+| u8 phase | u8 flags | u16 result << 8 | refusal | i32 pos[3] mm | u16 yaw | i16 vel[3] cm/s | f32 health (NaN)`), type 10
+OWNRESET (`u32 gen`). ecombat drains channel 6 and hands these three types to `esync::QueueOwnMessage`; while ecombat does not
+drain (not installed, stopped), enemy_sync drains it. SEN1: header flags bit1 from the guest, bit2 a cutscene there; gen_tag the
+host's generation; entry flag bit2 kDamaged, phase `+0x110`. The host takes her entries only for ids she owns with the epoch
+byte; she never takes the host's for one she owns. Shots: `shots::SetEnemyShots` is a mask (bit0 capture the owned shooters'
+records, bit1 replay; P1b 3 on both).
+
+### 10.4 Debug actions, logs
+
+`enemy_sync 5` the ownership table; `enemy_sync 8 0|1` ownership off (a reset) / on; `enemy_sync 0` adds `[enemy] own: on|off
+(..), owned here n=.., guest-owned n=.., pending n=.., changes take .. back .. forced .. refused .., no-owner>1s .., two-thinking
+.., resets .., gen ..`; `enemy_own <id | 0 | -5> <1 | 2>` (hidden runs, the host) a forced hand-over; `enemy_look -7 <m>` the
+nearest enemy the guest owns (`-5` stays P2's newest HIT). Logs: `OWN id=.. -> guest (proximity: guest .. m, host .. m; ...)`,
+`taken here`, `refused here`, `-> host (far .. m | host near .. m | silence .. s | range .. m | ...)`, `given back here`, `mirror
+on id=.. (given back ...)`, `back here`, `own reset (..)`, `owned here: n=.. (ids ..); guest-owned n=..; ...` every 5 s,
+`owned id=.. phase a -> b (..; its camp ..; weapon268 ..)` (guest), `an owned enemy hit our Sam: attacker .. id ..` (guest, the
+first 8), `[shots] owned rounds' hits: our Sam n, the partner body n, other n`.
+
+### 10.5 Byte checks (group own; a mismatch turns P1b off, P1a stays)
+
+SetPhase 0x142ACF630, RisePhase 0x142ACE9D0, GetPhase's read 0x142ECFF7D (needed); the camp lookup 0x142AF93F0, the camp
+phase 0x142B649DD, the camp members 0x142B37FD2 (optional: the camp phase unknown without them). `[enemy] own byte checks:
+6/6 ok` in every run.
+
+### 10.6 The gate `two-games-enemy-own`
+
+Eight runs, all with saves unchanged and restored, no violation, 0 game-server writes, the online gate on, no `[enemy] FAULT`,
+byte check failure, `[shots] FAULT` or OTGC write.
+
+- `150947`, `151238`: no take: the camp's phase 2 (fixed: 10.0). `151458`: takes work (02029 at 12.3 m, the host 64.8 m;
+  0202E); the host's follower err p95 0.06-0.46 m; the forced save refused by the game (step removed). `151701`, `151942`: no
+  calm back: her owned MULEs went to Alert 13.6 s after the take with her 12 m off (diagnostics added; A / B reordered).
+- `152417`: A and B pass (take, `back here` by far, `given back here`, a mirror again); C: three taken again, Alert 3 s after her
+  burst, no round in 60 s (they carried no gun; weapon +0x268 0).
+- **`152731`** (the contact sheet): A, B and C pass up to the first-hit line: her owned rifleman 0202F fired 44 rounds
+  (`enemy sent n=44`), its real rounds hit her Sam in her world (`owned rounds' hits: our Sam 70`), the host replayed them
+  (`enemy replayed n=38 (muzzle 38`); stills 03 (16 pairs); census tag 3: her owned ones `alert 5`, the host's copies `alert 0`
+  with bit 14 set; `enemy-compare.py`: tag 1 p95 0.19 m (the owned 02029 0.25 m), tag 3 p95 0.24 m: PASS. It failed on
+  `enemy replay #..'s first hit ...: the partner body`: of the replays only 7 hit anything on the host (4 other frozen copies
+  crowding her, 3 other), none her body. Not explained [I]: her body may take no bullet hit on the host, or the melee MULEs
+  around her stand in the line.
+- `153216` (the last run): A, B and C's take pass; `an owned enemy hit our Sam` (0202E / 02032 melee, the shield dropped them);
+  the rifleman never fired in 45 s: the run failed at `enemy sent`.
+- Steps D (forced back by range while alerted, the phase raised) and E (the status counters, `enemy_sync 8 0`) were never
+  reached in a run: unverified in game (unit-tested only).

@@ -220,6 +220,27 @@ struct Config {
     bool enemy_shots_hurt = true;
     bool enemy_shots_sound = true;
     bool enemy_mirror_guard = true;
+    // Enemy sync P2 (round 17, docs/enemy-sync.md 9; enemy_combat.hpp): her hits on the enemies the host owns, applied there with the
+    // game's own damage path, and the outcomes (faint, sleep, restrained, dead) back on her mirrors. enemy_hits: default on with
+    // enemy_sync (enemy_hits_set: the key was given; both games need it: SEH1 parts bit1). enemy_hit_owner: whose attack the host
+    // applies (0 credit: the partner body, the player's attacker id stamped so the takedown counts as the host's; 1 body; 2 none;
+    // 3 sam: the falloff from the host's place). enemy_hit_path: 0 direct (M1, the bullet's path), 1 query (M2, the attack sphere
+    // query). enemy_hits_lethal: 1 lets her lethal rounds (the attack resource's damage > 0) through; default 0 until a lethal run
+    // passes (the kill would count as the host's, in the host's save): refused at the guest by hers and at the host by the host's
+    // (HITRES `lethal`). enemy_hit_rate: the host's HITs a second per enemy (60 in all). The launcher writes none of these keys.
+    bool enemy_hits = false;
+    bool enemy_hits_set = false;
+    int enemy_hit_owner = 0;
+    int enemy_hit_path = 0;
+    bool enemy_hits_lethal = false;
+    int enemy_hit_rate = 30;
+    // Enemy sync P1b (round 17, docs/enemy-sync.md 10; enemy_sync.hpp): ownership by proximity. An enemy near the guest and far
+    // from the host is handed to her game (her copy unfrozen: it notices, targets and shoots at her Sam, takes her hits natively;
+    // the host's copy becomes the frozen mirror) and goes back when she leaves, the host comes near, the link, the gate or a
+    // world goes. enemy_owner (enemy_owner_set: the key was given): default off this round; both games need it (SEH1 parts
+    // bit3). The launcher writes none.
+    bool enemy_owner = false;
+    bool enemy_owner_set = false;
     // The partner's vehicle copy hidden while the watcher's own vehicle of the same kind stands in the same place (two of
     // the same vehicle in one spot; docs/real-partner-body.md section 22). Default on; 0: the copy is always shown.
     bool vehicle_overlap_hide = true;
