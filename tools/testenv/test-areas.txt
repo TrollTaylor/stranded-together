@@ -62,7 +62,7 @@ area vehicle-hit           : vehicle hits, bumps and tackles
 area sam-damage            : the shared Sam damage detour (sam_damage.*): the vehicle hits' observer and the shots' filter; a hit made (two-games-vehicle-hit)
 area ride                  : riding together: boarding, seats, ride camera, forced exits
 area world-sync            : shared structures: builds, contributions, ladders, ropes, ziplines
-area enemies               : enemy sync (docs/enemy-sync.md): P0 the read-only enemy census, P1-0 the freeze probe; later the mirrors, hits
+area enemies               : enemy sync (docs/enemy-sync.md): P0 the read-only enemy census, P1-0 the freeze probe, P1a the mirrors and the enemy shots; later hits
 area shots                 : the players' shots on the other screen (docs/enemy-sync.md P3a): capture, SFX1, the CreateBullet replay, its damage dropped
 area story                 : story tools, story loads
 area dev-tools             : dev tools: spawn, goto, weather, refill, god mode
@@ -93,6 +93,7 @@ tools/testenv/Test-*.ps1               none
 tools/testenv/Select-Scenarios.ps1     none
 tools/testenv/test-areas.txt           none
 tools/testenv/README.md                none
+tools/testenv/enemy-compare.py         none
 tools/testenv/Story-Library.ps1        story
 tools/testenv/*                        testenv
 native/testenv/*                       testenv
@@ -123,6 +124,7 @@ native/mod/steam_owner.*               boot saves
 native/mod/sandbox.*                   saves
 native/mod/automation.*                testenv
 native/mod/quickstart.*                quickstart
+native/mod/config_values.hpp           shots enemies
 native/mod/config.*                    boot
 native/mod/status.*                    link
 native/mod/link.*                      link
@@ -143,6 +145,7 @@ native/mod/audio_probe.*               research
 # ---- the mod: enemy sync (docs/enemy-sync.md). P0's census is the gate of the later phases (its byte-checked sites are
 # what P1 builds on), so it stays an area with its own run (two-games-enemy-census), unlike anim_census (research).
 native/mod/enemy_*                     enemies
+native/mod/npc_damage.*                enemies shots
 # ---- the mod: shots (docs/enemy-sync.md P3a) and the shared Sam damage detour (vehicle hits, shots, the enemy rounds)
 native/mod/shot_*                      shots
 native/mod/sam_damage.*                sam-damage vehicle-hit shots enemies
@@ -247,6 +250,7 @@ native/mod/config.*         ~("|bool\s+|int\s+)(sound_sync|partner_volume|vehicl
 native/mod/config.*         ~("|bool\s+|int\s+)partner_collision                             collision
 native/mod/config.*         ~("|bool\s+)waist_cargo                                          hip-cargo
 native/mod/config.*         ~("|bool\s+)shots_                                               shots
+native/mod/config.*         ~("|bool\s+|int\s+|double\s+)enemy_                             enemies
 native/mod/config.*         ~("|bool\s+|int\s+)host_save                                     host-save
 native/mod/config.*         ~("|bool\s+|int\s+)dev_tools                                     dev-tools
 native/mod/player_sync.*    ~textures?_                                                       textures

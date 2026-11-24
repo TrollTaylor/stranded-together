@@ -433,6 +433,80 @@ void TestIds() {
     CHECK(ValidId(0, c) == 0);
 }
 
+// Round 16: the drop at the bullet, the receiver classes, the aimed test's checks.
+void TestBulletRule() {
+    CHECK(BulletRule(true, true, false, false) == BulletVerdict::drop);   // a replay into anything but our Sam
+    CHECK(BulletRule(true, true, true, false) == BulletVerdict::pass);    // our Sam: the Sam filter decides
+    CHECK(BulletRule(true, true, false, true) == BulletVerdict::pass);    // the hidden-run control
+    CHECK(BulletRule(true, false, false, false) == BulletVerdict::pass);  // a reused reference on a bullet of the game's own
+    CHECK(BulletRule(false, true, false, false) == BulletVerdict::pass);  // not a replay (the game's scripted CreateBullet)
+    CHECK(BulletRule(false, false, false, false) == BulletVerdict::pass);
+}
+
+// A hit on our Sam (or an NPC) is a replay's only with a replay-set match AND the bullet system's dummy as its attacker (review
+// rv-behaviour 1): a reused reference on one of the game's own rounds is kept; an unknown dummy (0) matches nothing.
+void TestReplayHit() {
+    const std::uint64_t dummy = 0x6130A65E000ull;
+    CHECK(ReplayHit(true, dummy, dummy));
+    CHECK(ReplayHit(true, dummy + 0x20, dummy));   // the entity / its reference
+    CHECK(ReplayHit(true, dummy - 0x20, dummy));
+    CHECK(!ReplayHit(true, 0x6130A65F000ull, dummy));  // a MULE's round reusing a replay's reference
+    CHECK(!ReplayHit(false, dummy, dummy));            // the dummy alone is never a reason (the game's scripted bullets)
+    CHECK(!ReplayHit(true, dummy, 0));                 // the dummy unknown (after a load)
+    CHECK(!ReplayHit(true, 0, 0));
+    CHECK(!ReplayHit(true, 0, dummy));
+}
+
+// A load clears the set: nothing matches, every slot is free again.
+void TestReplaySetClear() {
+    static ReplaySet s;
+    const std::uint64_t r[2] = {0x1000, 0x2000};
+    for (unsigned i = 0; i < kReplaySetSize; ++i) s.Add(r, 2, 100.0, kReplayKindPartner);
+    CHECK(s.Find(0x1000, 200.0) && !s.HasRoom(200.0));
+    s.Clear();
+    CHECK(!s.Find(0x1000, 200.0) && !s.Find(0x2020, 200.0) && s.HasRoom(200.0) && s.head == 0);
+    std::uint8_t kind = 0;
+    s.Add(r, 1, 300.0, kReplayKindEnemy);
+    CHECK(s.Find(0x1000, 400.0, &kind) && kind == kReplayKindEnemy && !s.Find(0x2000, 400.0));
+}
+
+void TestHitClass() {
+    CHECK(ClassifyHit("VehicleEntity") == HitClass::vehicle);
+    CHECK(ClassifyHit("DSVehicleMotorbike") == HitClass::vehicle);
+    CHECK(ClassifyHit("DSVehicleHitchCarrierMover") == HitClass::vehicle);
+    CHECK(ClassifyHit("DSHoveringCartEntity") == HitClass::vehicle);
+    CHECK(ClassifyHit("DSBaggage2Entity") == HitClass::cargo);
+    CHECK(ClassifyHit("DSPlacableEntity") == HitClass::structure);
+    CHECK(ClassifyHit("DSLadderMover") == HitClass::structure);
+    CHECK(ClassifyHit("Destructibility") == HitClass::structure);
+    CHECK(ClassifyHit("DSGazerGameActor") == HitClass::bt);
+    CHECK(ClassifyHit("DSCatcherEntity") == HitClass::bt);
+    CHECK(ClassifyHit("Humanoid") == HitClass::npc);
+    CHECK(ClassifyHit("DSMuleEntity") == HitClass::npc);
+    CHECK(ClassifyHit("DSControlledEntity") == HitClass::npc);  // a MULE's entity (run 20261124-092442)
+    CHECK(ClassifyHit("Entity") == HitClass::other);            // a part: its parent decides (shot_sync.cpp)
+    CHECK(ClassifyHit("DSPlayerEntity") == HitClass::player);
+    CHECK(ClassifyHit("DSSharedSubstanceBreakableWeak") == HitClass::other);
+    CHECK(ClassifyHit("Property") == HitClass::other);  // "rope" in lower case is not a rope
+    CHECK(ClassifyHit("") == HitClass::other);
+    CHECK(ClassifyHit(nullptr) == HitClass::other);
+    CHECK(std::strcmp(HitClassName(HitClass::structure), "structure") == 0);
+    CHECK(std::strcmp(HitClassName(static_cast<HitClass>(99)), "other") == 0);
+}
+
+void TestAimed() {
+    CHECK(ValueUnchanged(1000.0f, 1000.0f, 0.5f));
+    CHECK(ValueUnchanged(1000.0f, 999.8f, 0.5f));
+    CHECK(!ValueUnchanged(1000.0f, 990.0f, 0.5f));
+    CHECK(!ValueUnchanged(std::nanf(""), 1.0f, 0.5f));
+    const double t[3] = {10, 0, 5}, from[3] = {20, 0, 0};
+    double o[3];
+    AimedOrigin(t, from, 6, 1, o);
+    CHECK(std::fabs(o[0] - 16) < 1e-9 && std::fabs(o[1]) < 1e-9 && std::fabs(o[2] - 6) < 1e-9);
+    AimedOrigin(t, t, 6, 0, o);  // from the target itself: any horizontal side, never a NaN
+    CHECK(std::isfinite(o[0]) && std::isfinite(o[1]) && std::fabs(std::hypot(o[0] - 10, o[1]) - 6) < 1e-9);
+}
+
 }  // namespace
 
 int main() {
@@ -449,6 +523,11 @@ int main() {
     TestPulls();
     TestRateCap();
     TestIds();
+    TestBulletRule();
+    TestReplayHit();
+    TestReplaySetClear();
+    TestHitClass();
+    TestAimed();
     std::printf("%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

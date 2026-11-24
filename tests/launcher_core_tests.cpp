@@ -207,7 +207,8 @@ void SessionIniText() {
     CHECK(MakeSessionIniText(host, text, error));
     CHECK(IsGeneratedIniText(text));
     CHECK(text.find("role=host\n") != std::string::npos);
-    CHECK(text.find("shots_") == std::string::npos);  // shots (docs/enemy-sync.md P3a): the host's file has no shots_* key either
+    CHECK(text.find("shots_") == std::string::npos);  // shots (docs/enemy-sync.md 7.5): on by default, only shots_sync=0 is ever written
+    CHECK(text.find("enemy_") == std::string::npos);  // enemy sync (docs/enemy-sync.md 8): no enemy_* key while the mod's defaults hold
     CHECK(text.find("transport=steam\n") != std::string::npos);
     CHECK(text.find("secret=K7RD3WQ9MP2XVB6TZHN4\n") != std::string::npos);
     CHECK(text.find("send_hz=30\n") != std::string::npos);
@@ -230,8 +231,9 @@ void SessionIniText() {
     guest.peer_steamid = "76561197960370457";
     guest.name = "Sam Porter";
     CHECK(MakeSessionIniText(guest, text, error));
-    // shots (docs/enemy-sync.md P3a): neither the host's nor the guest's file carries a shots_* key (the mod's defaults hold)
+    // shots (docs/enemy-sync.md 7.5): with the Debug page's gunfire ticked (the default) no shots_* key (the mod's defaults hold)
     CHECK(text.find("shots_") == std::string::npos);
+    CHECK(text.find("enemy_") == std::string::npos);  // enemy sync (docs/enemy-sync.md 8): no enemy_* key while the mod's defaults hold
     SessionIni back;
     CHECK(ParseSessionIniText(text, back, error));
     CHECK(back.role == "guest" && back.peer_steamid == guest.peer_steamid && back.secret == guest.secret && back.name == "Sam Porter");
@@ -433,6 +435,15 @@ void Characters() {
     CHECK(ParseSessionIniText(text, back, error) && !back.partner_vehicle_damage);
     CHECK(ParseSessionIniText(text + "partner_vehicle_damage=1\n", back, error) && back.partner_vehicle_damage);
     host.partner_vehicle_damage = true;
+    // Gunfire: the same pattern (default on, only shots_sync=0 written; no other shots_* key ever).
+    CHECK(MakeSessionIniText(host, text, error) && text.find("shots_") == std::string::npos);
+    CHECK(ParseSessionIniText(text, back, error) && back.shots_sync);
+    host.shots_sync = false;
+    CHECK(MakeSessionIniText(host, text, error) && text.find("shots_sync=0\n") != std::string::npos);
+    CHECK(text.find("shots_muzzle") == std::string::npos && text.find("shots_sound") == std::string::npos);
+    CHECK(ParseSessionIniText(text, back, error) && !back.shots_sync);
+    CHECK(ParseSessionIniText(text + "shots_sync=1\n", back, error) && back.shots_sync);
+    host.shots_sync = true;
     // Dev tools (the Debug page's checkbox): off by default and then not written; dev_tools=1 when set, parsed back; the
     // Debug options reach every session through ApplyDebugOptions (the Local test's two games too).
     CHECK(text.find("dev_tools") == std::string::npos && !back.dev_tools);
@@ -801,6 +812,18 @@ void DebugOptionsPersist() {
     ApplyDebugOptions(vd, ini);
     CHECK(!ini.partner_vehicle_damage);
     d.partner_vehicle_damage = true;
+    // Gunfire: on by default (older settings files too), saved, copied into the session.ini as shots_sync.
+    CHECK(DebugOptions{}.partner_gunfire && DebugOptionsFromSettings(json::Value::Object()).partner_gunfire && ini.shots_sync);
+    d.partner_gunfire = false;
+    DebugOptionsToSettings(d, settings);
+    CHECK(json::Parse(json::Dump(settings), back));
+    const DebugOptions gf = DebugOptionsFromSettings(back);
+    CHECK(!gf.partner_gunfire);
+    ApplyDebugOptions(gf, ini);
+    CHECK(!ini.shots_sync);
+    d.partner_gunfire = true;
+    ApplyDebugOptions(vd, ini);  // the state the next checks start from
+    CHECK(ini.shots_sync);
     // Self voice: muting on by default (older settings files too: self_voice=auto), saved as auto / sam, copied in.
     CHECK(DebugOptions{}.mute_sam_voice && DebugOptionsFromSettings(json::Value::Object()).mute_sam_voice && ini.self_voice == "auto");
     d.mute_sam_voice = false;

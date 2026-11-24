@@ -69,5 +69,8 @@ enum class Tool : int {
     rope = 7,         // dev_rope <length 1..30> <level 0..2> [m ahead]: a climbing anchor with its rope (W3)
 };
 bool Command(Tool tool, const double (&v)[3], char* msg, std::size_t cap) noexcept;
+// The shots' aimed test (hidden runs): the structure (of want_type; 0 any) nearest our Sam within max_m (0 = 30): its id, type,
+// place and durability (cp +0xD8, seconds). Game thread (a fresh census); false when there is none.
+bool NearestStructure(double max_m, int want_type, std::uint32_t* id, int* type, double (&pos)[3], float* durability) noexcept;
 
 }  // namespace st::wshare

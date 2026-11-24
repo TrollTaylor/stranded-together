@@ -1665,6 +1665,13 @@ void LauncherUi::DebugOptionsTab(Phase phase) {
                                         "decides for them."
                                       : "Your partner's vehicles never hurt or knock you down.",
              col::kTextFaint, kSmall, nullptr, 0.0f);
+        // session.ini shots_sync: the partner's gunfire on this screen (docs/enemy-sync.md 7.5).
+        Gap(2.0f);
+        committed |= Checkbox("Show my partner's gunfire", &o.partner_gunfire, true);
+        Text(o.partner_gunfire ? "Your partner's shots appear on your screen with the muzzle flash, tracer and impacts. They are visual only: "
+                                 "they never hurt you, your vehicles, cargo, structures or enemies, though the noise can still alert enemies."
+                               : "Your partner's shots are not shown on your screen.",
+             col::kTextFaint, kSmall, nullptr, 0.0f);
         // Launcher-only: which characters Join and the local test offer the guest.
         Gap(2.0f);
         committed |= Checkbox("Allow other characters", &o.allow_other_characters, true);

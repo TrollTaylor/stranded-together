@@ -152,7 +152,9 @@ Three tabs (`ui::DebugTab`):
   until 1.5 s after you are off (the ride's health guard, docs/real-partner-body.md section 24.13); each player's own
   setting decides for their own Sam;
   docs/real-partner-body.md section 25; unticked writes `partner_vehicle_damage=0`; saved as
-  `"partner_vehicle_damage": true|false`); **Allow other characters** (launcher-only, default off,
+  `"partner_vehicle_damage": true|false`); **Show my partner's gunfire** (`shots_sync`, default on: your partner's shots on
+  your screen with the game's muzzle flash, tracer and impacts, visual only; each player decides for their own screen;
+  docs/enemy-sync.md 7.5; unticked writes `shots_sync=0`; saved as `"partner_gunfire": true|false`); **Allow other characters** (launcher-only, default off,
   `"debug"` `"allow_other_characters"`, never written to session.ini: off, a guest plays Fragile (porter suit)
   on Join and in the local test; on, both offer every offered character); **CO-OP SAVE**: **Host holds the save**
   (`"debug"` `"host_save"`, default on: Host and Join write `host_save=1`, see Play above; off = each player on their
@@ -481,7 +483,13 @@ partner_collision=0             you can walk through your partner (Debug page; w
 partner_vehicle_damage=0        your partner's vehicles never hurt or knock down YOUR Sam (Debug page "Partner's vehicles can
                                 knock me down"; written only when unticked, the mod's default is on; with vehicle_sync=5;
                                 docs/real-partner-body.md section 25)
+shots_sync=0                    your partner's gunfire is not shown on YOUR screen (Debug page "Show my partner's gunfire";
+                                written only when unticked, the mod's default is on; docs/enemy-sync.md 7.5). The mod also
+                                reads shots_muzzle, shots_sound, shots_friendly_fire, shots_npc_drop, shots_hit_drop and
+                                shots_bt_drop (not written)
 ride_together=0                 no riding together on this game (mod key only; default on; section 24)
+enemy_sync=0                    no shared enemies (mod key only, not written by the launcher; default on with host_save=1
+                                since round 16b, which the Local test and "Host holds the save" write; docs/enemy-sync.md 8)
 partner_gear=0                  no backpack or cargo on the bodies, none sent (mod key only, not written by the launcher; default on)
 smooth_pose=0                   the bodies keep the game's 60 Hz updates (v0.7; mod key only, not written by the launcher; default on)
 partner_collision_height=0      the partner's capsule at Sam's own 1.65 m, climbable as in v0.7 (mod key only; default 4.0 m: no climbing)

@@ -83,10 +83,28 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
   game's own hit area. Vehicles bump into each other on both screens. Turn it off for
   yourself on the launcher's Debug page: **Partner's vehicles can knock me down** (each
   player decides for their own Sam).
+- **Experimental:** your partner's gunfire: every bullet their gun fires appears on your
+  screen from their body's gun, with the game's own muzzle flash, tracer and impacts. It is
+  visual only: their bullets do nothing in your world (you, your vehicles, cargo, structures
+  and enemies take no damage from them). Your enemies do not react to being hit, but the
+  noise of the impacts can still alert them: when your partner shoots up a camp, your own
+  copy of that camp may wake up and come at you. Grenades, bolas and launchers are not shown
+  yet. The gunshot sound plays at the replay; with **Hear your partner's footsteps and
+  sounds** on, the game may also play your partner's own gunshot. Turn it off for your own
+  screen on the launcher's Debug page: **Show my partner's gunfire**.
+- **Experimental:** shared enemies (when the host holds the save): the host's MULEs are the
+  real ones. Near the guest, her own MULEs stand where the host's are and move like them, and
+  when the host's MULEs fire at the host, the guest sees those shots too (muzzle flash and
+  tracer from her copy of the MULE). It is not the same for both players yet: no MULE sees,
+  chases or attacks the guest herself, only the host; the host's MULE rounds can still hurt
+  the guest if they cross her; the host's melee, thrown spears, tackles, cargo theft and truck
+  rams never reach her; and anything the guest does to a MULE (shooting it, hitting it, tying
+  it up) does nothing yet, because the host's game decides what happens to every enemy. There
+  is no launcher switch yet.
 - Not yet: the tools' effects (the PCC's and anchor's build holograms, the spray), the Odradek, the cuff device,
   the weapon crate on the hip, the chiral cylinder, the exoskeleton on non-Sam characters,
-  facial animation, the partner's gear sounds and gunshots (footsteps, movement and
-  rifle handling are heard, experimental), the game's own passenger animation, a vehicle
+  facial animation, the partner's gear sounds (footsteps, movement and
+  rifle handling are heard, experimental), thrown grenades, bolas and launcher rounds, the game's own passenger animation, a vehicle
   camera for the passenger, shared cargo on vehicles, carts (and for the copies without Host holds the
   save: a roadster, the Kusanagi's own look, mud / snow, the light the lamps throw, damage),
   world/BT/mission sync.

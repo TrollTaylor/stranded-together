@@ -26,13 +26,13 @@ using FnDamage = void (*)(std::uintptr_t, std::uintptr_t);
 FnDamage o_damage = nullptr;
 bool g_tried = false, g_in = false;
 char g_off[160] = "not installed";
-Observer g_obs[4] = {};
+Observer g_obs[kMax] = {};
 std::atomic<unsigned> g_nobs{0};
-Filter g_flt[4] = {};
-const char* g_flt_name[4] = {};
+Filter g_flt[kMax] = {};
+const char* g_flt_name[kMax] = {};
 std::atomic<unsigned> g_nflt{0};
 std::atomic<unsigned> g_seen{0}, g_faults{0};
-std::atomic<unsigned> g_dropped[4] = {};
+std::atomic<unsigned> g_dropped[kMax] = {};
 
 bool RunObserver(Observer o, std::uintptr_t sam, std::uintptr_t msg) noexcept {
     __try {
@@ -54,12 +54,12 @@ bool RunFilter(Filter f, const View& v, Verdict* out) noexcept {
 void H_Damage(std::uintptr_t sam, std::uintptr_t msg) {
     g_seen.fetch_add(1, std::memory_order_relaxed);
     const unsigned no = g_nobs.load(std::memory_order_acquire);
-    for (unsigned i = 0; i < no && i < 4; ++i)
+    for (unsigned i = 0; i < no && i < kMax; ++i)
         if (!RunObserver(g_obs[i], sam, msg)) g_faults.fetch_add(1, std::memory_order_relaxed);
     const unsigned nf = g_nflt.load(std::memory_order_acquire);
     if (nf) {
         const View v = Read(sam, msg);
-        for (unsigned i = 0; i < nf && i < 4; ++i) {
+        for (unsigned i = 0; i < nf && i < kMax; ++i) {
             Verdict d = Verdict::keep;
             if (!RunFilter(g_flt[i], v, &d)) {
                 g_faults.fetch_add(1, std::memory_order_relaxed);
@@ -123,7 +123,7 @@ const char* OffReason() noexcept { return g_in ? "" : g_off; }
 bool Observe(Observer o) noexcept {
     if (!g_in || !o) return false;
     const unsigned n = g_nobs.load();
-    if (n >= 4) return false;
+    if (n >= kMax) return false;
     g_obs[n] = o;
     g_nobs.store(n + 1, std::memory_order_release);
     return true;
@@ -132,7 +132,7 @@ bool Observe(Observer o) noexcept {
 bool Register(Filter f, const char* name) noexcept {
     if (!g_in || !f) return false;
     const unsigned n = g_nflt.load();
-    if (n >= 4) return false;
+    if (n >= kMax) return false;
     g_flt[n] = f;
     g_flt_name[n] = name;
     g_nflt.store(n + 1, std::memory_order_release);
@@ -140,9 +140,9 @@ bool Register(Filter f, const char* name) noexcept {
     return true;
 }
 
-void Counts(unsigned* seen, unsigned (&dropped)[4], unsigned* faults) noexcept {
+void Counts(unsigned* seen, unsigned (&dropped)[kMax], unsigned* faults) noexcept {
     if (seen) *seen = g_seen.load();
-    for (int i = 0; i < 4; ++i) dropped[i] = g_dropped[i].load();
+    for (unsigned i = 0; i < kMax; ++i) dropped[i] = g_dropped[i].load();
     if (faults) *faults = g_faults.load();
 }
 

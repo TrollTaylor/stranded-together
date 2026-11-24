@@ -6,6 +6,7 @@
 #include <fstream>
 #include <sstream>
 
+#include "config_values.hpp"
 #include "log.hpp"
 #include "room_outfit_rules.hpp"
 
@@ -206,11 +207,34 @@ Config LoadConfig(const std::wstring& dir) {
         } else if (k == "shots_muzzle") {
             c.shots_muzzle = ParseBool(v);
         } else if (k == "shots_sound") {
-            c.shots_sound = ParseBool(v);
+            c.shots_sound = cfgval::ShotsSound(v);
         } else if (k == "shots_friendly_fire") {
             c.shots_friendly_fire = ParseBool(v);
         } else if (k == "shots_npc_drop") {
             c.shots_npc_drop = ParseBool(v);
+        } else if (k == "shots_hit_drop") {
+            c.shots_hit_drop = ParseBool(v);
+        } else if (k == "shots_bt_drop") {
+            c.shots_bt_drop = ParseBool(v);
+        } else if (k == "enemy_sync") {
+            c.enemy_sync = ParseBool(v);
+            c.enemy_sync_set = true;
+        } else if (k == "enemy_freeze") {
+            c.enemy_freeze = cfgval::EnemyFreeze(v);
+        } else if (k == "enemy_mirror_radius") {
+            c.enemy_mirror_radius = cfgval::MirrorRadius(v, c.enemy_mirror_radius);
+        } else if (k == "enemy_pose_count") {
+            c.enemy_pose_count = cfgval::PoseCount(v, c.enemy_pose_count);
+        } else if (k == "enemy_place_far") {
+            c.enemy_place_far = ParseBool(v);
+        } else if (k == "enemy_shots") {
+            c.enemy_shots = ParseBool(v);
+        } else if (k == "enemy_shots_hurt") {
+            c.enemy_shots_hurt = ParseBool(v);
+        } else if (k == "enemy_shots_sound") {
+            c.enemy_shots_sound = ParseBool(v);
+        } else if (k == "enemy_mirror_guard") {
+            c.enemy_mirror_guard = ParseBool(v);
         } else if (k == "vehicle_overlap_hide") {
             c.vehicle_overlap_hide = ParseBool(v);
         } else if (k == "vehicle_look") {
@@ -322,6 +346,10 @@ Config LoadConfig(const std::wstring& dir) {
     // Shared structures, ladders and ropes (W3, docs/world-sync.md): on by default in a host-held save session (host_save=1);
     // world_sync=0 turns it off (the launcher's Co-op option "Share structures, ladders and ropes").
     if (!c.world_sync_set) c.world_sync = c.host_save;
+    // Enemy sync P1a (docs/enemy-sync.md 8): on by default in a host-held save session as well (round 16b: the mirrors, the
+    // host MULEs' gunfire on the guest's screen and the guard proven in run 20261124-124658); enemy_sync=0 turns it off. It needs
+    // host_save (its install refuses without it), so the default follows it.
+    if (!c.enemy_sync_set) c.enemy_sync = c.host_save;
     Log("[config] role=%s transport=%s peer=%llu udp=%s:%u->%u send_hz=%u interp=%ums debug_menu=%d key=0x%X",
         RoleName(c.role), c.transport == Transport::udp ? "udp" : "steam",
         static_cast<unsigned long long>(c.peer_steam_id), c.udp_peer.c_str(), c.udp_port_local, c.udp_port_peer,
@@ -351,8 +379,11 @@ Config LoadConfig(const std::wstring& dir) {
     Log("[config] held_items=%d (%s)", c.held_items,
         c.held_items == 2 ? "every item in a hand drawn on the other screen" : c.held_items == 1 ? "ladder, PCC, climbing anchor" : "off: cutscene-prop weapons only");
     Log("[config] waist_cargo=%d", c.waist_cargo ? 1 : 0);
-    Log("[config] shots_sync=%d shots_muzzle=%d shots_sound=%d shots_friendly_fire=%d shots_npc_drop=%d", c.shots_sync ? 1 : 0, c.shots_muzzle ? 1 : 0,
-        c.shots_sound ? 1 : 0, c.shots_friendly_fire ? 1 : 0, c.shots_npc_drop ? 1 : 0);
+    Log("[config] shots_sync=%d shots_muzzle=%d shots_sound=%d shots_friendly_fire=%d shots_npc_drop=%d shots_hit_drop=%d shots_bt_drop=%d", c.shots_sync ? 1 : 0,
+        c.shots_muzzle ? 1 : 0, c.shots_sound, c.shots_friendly_fire ? 1 : 0, c.shots_npc_drop ? 1 : 0, c.shots_hit_drop ? 1 : 0, c.shots_bt_drop ? 1 : 0);
+    Log("[config] enemy_sync=%d%s freeze=%s radius=%.0f poses=%d place_far=%d shots=%d hurt=%d sound=%d guard=%d", c.enemy_sync ? 1 : 0,
+        c.enemy_sync_set ? "" : " (default: on with host_save=1)", c.enemy_freeze == 1 ? "occupied" : "not built (off)", c.enemy_mirror_radius, c.enemy_pose_count,
+        c.enemy_place_far ? 1 : 0, c.enemy_shots ? 1 : 0, c.enemy_shots_hurt ? 1 : 0, c.enemy_shots_sound ? 1 : 0, c.enemy_mirror_guard ? 1 : 0);
     // Fragile's textures: only whether a folder came and its length (the path itself names the Windows user).
     Log("[config] textures_dir=%s", c.textures_dir.empty() ? "- (none)" : ("set (" + std::to_string(c.textures_dir.size()) + " bytes)").c_str());
     Log("[config] fragile_textures=%d textures_send=%d textures_receive=%d textures_hot_reload=%d textures_free=%d textures_defaults=%d", c.fragile_textures ? 1 : 0,

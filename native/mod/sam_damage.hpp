@@ -24,6 +24,7 @@ struct View {
     double hit[3] = {};           // di + 0x80
 };
 enum class Verdict : std::uint8_t { keep, drop };
+inline constexpr unsigned kMax = 6;  // observers, filters
 // Observers run first, in registration order, on the handler's thread (worker threads: atomics and fault-free reads only);
 // they may change the message (the vehicle hits cap its amount). Filters then run in registration order; the first drop
 // wins. Both run inside the detour's SEH guard.
@@ -35,11 +36,11 @@ using Filter = Verdict (*)(const View& v);
 bool Ensure(const char* who) noexcept;
 bool Installed() noexcept;
 const char* OffReason() noexcept;  // "" when installed
-// At most 4 of each; false when full or the detour is not in.
+// At most 6 of each (round 16: shots, the enemy mirrors, the probe's shield, ...); false when full or the detour is not in.
 bool Observe(Observer o) noexcept;
 bool Register(Filter f, const char* name) noexcept;
 // Counters: messages seen, dropped per filter (registration order), faults in a client.
-void Counts(unsigned* seen, unsigned (&dropped)[4], unsigned* faults) noexcept;
+void Counts(unsigned* seen, unsigned (&dropped)[kMax], unsigned* faults) noexcept;
 // The readers the clients share (fault-free).
 View Read(std::uintptr_t sam, std::uintptr_t msg) noexcept;
 

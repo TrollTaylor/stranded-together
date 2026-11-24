@@ -390,6 +390,9 @@ View GetView() noexcept {
 // ------------------------------------------------------------------ enemy census (enemy_census.cpp)
 namespace st::esync {
 bool Probe(int, const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy probe (stub)"), true; }
+bool Command(int, const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy sync (stub)"), true; }
+bool Look(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy look (stub)"), true; }
+bool ShotTest(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy shot test (stub)"), true; }
 }  // namespace st::esync
 namespace st::shots {
 bool Command(int, const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "shots (stub)"), true; }

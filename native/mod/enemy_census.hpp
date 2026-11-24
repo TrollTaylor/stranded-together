@@ -181,5 +181,9 @@ inline Comparison Compare(const std::vector<Seen>& a, const std::vector<Seen>& b
 // ---------------------------------------------------------------- the game side (enemy_census.cpp)
 // Game thread (a debug action). False with a reason in msg when the census is off (a byte check failed) or no world.
 bool Census(int tag, double radius_m, int flags, char* msg, std::size_t cap) noexcept;
+// Enemy sync P1a (docs/enemy-sync.md 8): the census's two fingerprints and the enemy count alone (one walk of the registry and the
+// NPC maps, the same byte-checked sites, no lines but the byte checks' once). Game thread, once per world: it takes milliseconds.
+// False when the census is off or there is no world.
+bool Fingerprint(std::uint32_t* ids_fp, std::uint32_t* guids_fp, std::uint16_t* count) noexcept;
 
 }  // namespace st::enemy

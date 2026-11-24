@@ -92,6 +92,50 @@ std::uint64_t LogNewestSeq() {
     return g_ring_seq;
 }
 
+// ---------------------------------------------------------------- LogLater (worker threads)
+namespace {
+struct LaterLine {
+    double t;
+    unsigned long tid;
+    char text[512];
+};
+constexpr unsigned kLaterLines = 64;
+SRWLOCK g_later_lock = SRWLOCK_INIT;
+LaterLine g_later[kLaterLines];
+unsigned g_later_head = 0, g_later_n = 0, g_later_dropped = 0;
+}  // namespace
+
+void LogLater(const char* fmt, ...) {
+    LaterLine l;
+    l.t = (GetTickCount64() - g_t0) / 1000.0;
+    l.tid = GetCurrentThreadId();
+    va_list ap;
+    va_start(ap, fmt);
+    std::vsnprintf(l.text, sizeof(l.text), fmt, ap);
+    va_end(ap);
+    AcquireSRWLockExclusive(&g_later_lock);
+    if (g_later_n < kLaterLines) g_later[(g_later_head + g_later_n++) % kLaterLines] = l;
+    else ++g_later_dropped;
+    ReleaseSRWLockExclusive(&g_later_lock);
+}
+
+void LogFlushLater() {
+    for (int guard = 0; guard < 2 * static_cast<int>(kLaterLines); ++guard) {
+        LaterLine l{};
+        unsigned dropped = 0;
+        AcquireSRWLockExclusive(&g_later_lock);
+        const bool have = g_later_n > 0;
+        if (have) l = g_later[g_later_head], g_later_head = (g_later_head + 1) % kLaterLines, --g_later_n;
+        else dropped = g_later_dropped, g_later_dropped = 0;
+        ReleaseSRWLockExclusive(&g_later_lock);
+        if (!have) {
+            if (dropped) Log("(%u worker-thread log lines dropped: the ring was full)", dropped);
+            return;
+        }
+        Log("%s (at %.3f, thread %lu)", l.text, l.t, l.tid);
+    }
+}
+
 void LogToStdout(bool on) {
     if (!g_t0) g_t0 = GetTickCount64();
     g_stdout = on;

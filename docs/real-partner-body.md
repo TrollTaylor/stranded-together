@@ -2273,11 +2273,15 @@ So about 70-150 ms at 30 fps; the hand's motion afterwards is the pose stream's 
 - **Colours**: the rifle prop keeps its own dark variation; the player's rifle (gold Lv4, non-lethal blue) is
   not matched (the look sync of section 13 does not resolve weapon variations yet). Handgun and shotgun props
   are other models of the same kind.
-- **Shots can be mirrored since round 15** ([enemy-sync.md](enemy-sync.md) section 7, "ship A", `session.ini shots_sync=1`;
-  default off since the round 15 review): every bullet a player's gun fires is replayed on the other screen through the
-  game's own CreateBullet from the partner body's gun (the game's muzzle flash, tracer, impacts and, with `shots_sound=1`, the
-  magazine's effect); the replays never hurt the players or MULEs / Demens there (vehicles, cargo, structures and BTs still
-  can: enemy-sync.md 7.3), and the drop on the watcher between two games is not proven yet (the gate run failed its step C).
+- **Shots are mirrored** ([enemy-sync.md](enemy-sync.md) sections 7.3 and 7.5, "ship A", `session.ini shots_sync`, on by
+  default since round 16): every bullet a player's gun fires is replayed on the other screen through the game's own
+  CreateBullet from the partner body's gun (the game's muzzle flash, tracer, impacts and the magazine's effect:
+  `shots_sound=1`). A replay is visual only: its hits are dropped at the bullet (BulletDamageA / B) before the watcher's
+  world takes them, and on the watcher's Sam by the Sam filter (two-game runs `20261124-093441` / `-093844`: step C passed).
+  Shown in runs: vehicles (a truck) and structures (a postbox) under replays, a MULE (counters), the guest's shots on the
+  host's screen (stills). **Not yet run**: cargo (no replay hit a piece), BTs (the BT reaction's drop is off by default), and
+  a still of the host's shots on the guest's screen (a rock hid him in both runs; `two-games-shots` A now stands on the flat
+  road). The launcher's Debug page **Show my partner's gunfire** turns it off for one's own screen.
   Still not mirrored: thrown grenades and launcher / sticky / bola projectiles (world entities, P3b), and the aim laser.
 - Stowed guns on the backpack hanger (the rifle on `HLP_WeaponAsr2`) are drawn as their prop on the backpack;
   the PCC there has no prop.

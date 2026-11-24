@@ -3462,6 +3462,28 @@ bool Command(Tool tool, const double (&v)[3], char* msg, std::size_t cap) noexce
     return ok;
 }
 
+// The shots' aimed test (shot_sync.cpp, hidden runs): the structure nearest our Sam, its place and durability (cp +0xD8).
+bool NearestStructure(double max_m, int want_type, std::uint32_t* id, int* type, double (&pos)[3], float* durability) noexcept {
+    Census c;
+    WorldTransform sam{};
+    if (!RunCensus(c) || !LocalSam(&sam)) return false;
+    const CEnt* e = nullptr;
+    double bd = max_m > 0 ? max_m : 30.0;
+    for (const CEnt& x : c.all) {
+        if ((want_type && x.type != want_type) || x.removing()) continue;
+        const double d = std::hypot(x.pos[0] - sam.pos.x, x.pos[1] - sam.pos.y);
+        if (d < bd) bd = d, e = &x;
+    }
+    if (!e) return false;
+    float d = 0;
+    if (!mem::Rd(e->cp + kCpDur, d) || !std::isfinite(d)) return false;
+    *id = e->id;
+    *type = e->type;
+    pos[0] = e->pos[0], pos[1] = e->pos[1], pos[2] = e->pos[2];
+    *durability = d;
+    return true;
+}
+
 }  // namespace st::wshare
 
 namespace st::game {

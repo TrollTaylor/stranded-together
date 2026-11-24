@@ -88,6 +88,9 @@ struct DebugOptions {
     // Vehicle hits: your partner's vehicles knock you down and hurt you like an NPC truck (never an instant kill; session.ini
     // partner_vehicle_damage; the mod's default is on, so only partner_vehicle_damage=0 is written). Applies to your own Sam.
     bool partner_vehicle_damage = true;
+    // Gunfire: your partner's shots shown on your screen with the game's own muzzle flash, tracer and impacts, visual only
+    // (session.ini shots_sync; the mod's default is on, so only shots_sync=0 is written; docs/enemy-sync.md 7.5).
+    bool partner_gunfire = true;
     // Guests play Fragile (porter suit) only; on, Join and the local test offer every character
     // (core::GuestCharacter). Launcher-only: session.ini just gets the resulting my_character.
     bool allow_other_characters = false;

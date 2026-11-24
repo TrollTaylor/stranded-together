@@ -512,6 +512,97 @@ static bool CensusImpl(int tag, double radius_m, int flags, char* msg, std::size
     return true;
 }
 
+static bool FingerprintImpl(std::uint32_t* ids_fp, std::uint32_t* guids_fp, std::uint16_t* count) {
+    const unsigned groups = Check();
+    if (!(groups & kCore)) return false;
+    const std::uintptr_t reg = Q(A(kRegGlobal));
+    const std::uintptr_t npc = Q(A(kNpcGlobal));
+    if (!reg || !npc) return false;
+    // the NPC maps: GUID -> record -> actor id (as the census)
+    std::map<Guid16, NpcInfo> npcs;
+    std::uint32_t main_cap = 0;
+    R32(npc + kNpcMainCap, main_cap);
+    bool kinds[kKinds] = {};
+    if (!MapCapacityOk(main_cap) || !ForSlots(Q(npc + kNpcMain), main_cap, kKindSlot, [&](const std::uint8_t* s) {
+            Guid16 g;
+            std::uint32_t k = 0;
+            if (!DecodeKindSlot(s, &g, &k)) return;
+            NpcInfo& n = npcs[g];
+            n.guid = g;
+            n.kind = k;
+            if (k < kKinds) kinds[k] = true;
+        }))
+        return false;
+    for (std::uint32_t k = 0; k < kKinds; ++k) {
+        if (!kinds[k]) continue;
+        std::uintptr_t map = 0;
+        if (k == 6) map = npc + kNpcKind6;
+        else {
+            const std::uintptr_t sub = Q(npc + kNpcSub + 8u * k);
+            if (!sub) continue;
+            map = sub + kSubMap;
+        }
+        std::uint32_t c = 0;
+        R32(map + 0xC, c);
+        if (!MapCapacityOk(c)) continue;
+        ForSlots(Q(map), c, kValueSlot, [&](const std::uint8_t* s) {
+            Guid16 g;
+            std::uint64_t v = 0;
+            if (!DecodeValueSlot(s, &g, &v)) return;
+            auto it = npcs.find(g);
+            if (it != npcs.end()) it->second.rec = static_cast<std::uintptr_t>(v);
+        });
+    }
+    std::map<std::uint32_t, Guid16> by_actor;
+    for (auto& kv : npcs) {
+        std::uint32_t id = kActorNone;
+        if (kv.second.rec && R32(kv.second.rec + kRecActor, id) && id != kActorNone) by_actor[id] = kv.second.guid;
+    }
+    // the registry: every enemy actor in use
+    std::int32_t ngroups = 0;
+    RI32(reg + kRegGroupCount, ngroups);
+    if (ngroups <= 0 || ngroups > 512) return false;
+    const std::uintptr_t garr = Q(reg + kRegGroups);
+    std::vector<std::uint32_t> ids;
+    std::vector<Guid16> guids;
+    for (std::int32_t gi = 0; gi < ngroups; ++gi) {
+        const std::uintptr_t g = Q(garr + 8u * static_cast<std::uintptr_t>(gi));
+        std::int32_t cnt = 0;
+        if (!g || !RI32(g + kGrpCount, cnt) || cnt <= 0 || cnt > 8192) continue;
+        const std::uintptr_t arr = Q(g + kGrpActors);
+        if (!arr) continue;
+        std::vector<std::uintptr_t> objs(static_cast<std::size_t>(cnt));
+        if (!mem::Read(arr, objs.data(), objs.size() * 8)) continue;
+        for (const std::uintptr_t o : objs) {
+            if (!o) continue;
+            std::uint8_t head[0x28] = {};
+            if (!mem::Read(o, head, sizeof(head)) || !head[kActInUse]) continue;
+            std::uint32_t id = kActorNone;
+            std::memcpy(&id, head + kActId, 4);
+            if (!IsHumanEnemyId(id)) continue;
+            ids.push_back(id);
+            const auto it = by_actor.find(id);
+            if (it != by_actor.end()) guids.push_back(it->second);
+        }
+    }
+    if (ids.empty() || ids.size() > 0xFFFF) return false;
+    std::sort(ids.begin(), ids.end());
+    std::uint32_t idprint = kFnvSeed;
+    for (std::uint32_t id : ids) idprint = Fnv1a(idprint, &id, 4);
+    *ids_fp = idprint;
+    *guids_fp = GuidSetPrint(guids);
+    *count = static_cast<std::uint16_t>(ids.size());
+    return true;
+}
+
+bool Fingerprint(std::uint32_t* ids_fp, std::uint32_t* guids_fp, std::uint16_t* count) noexcept {
+    try {
+        return FingerprintImpl(ids_fp, guids_fp, count);
+    } catch (...) {
+        return false;
+    }
+}
+
 bool Census(int tag, double radius_m, int flags, char* msg, std::size_t cap) noexcept {
     try {
         return CensusImpl(tag, radius_m, flags, msg, cap);

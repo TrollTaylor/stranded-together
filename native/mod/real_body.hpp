@@ -164,12 +164,31 @@ void FeetCounters(std::uint32_t* self_writes, std::uint32_t* partner_writes) noe
 // 77-joint layout BE39C83F): mode 1 counts its animate calls, mode 3 also writes our Sam's live local pose onto it after each of
 // its own animates and measures the largest joint rotation difference to Sam's model pose; 0 (or sm 0) off. Needs the pose
 // hook (pose_hook=1 or the real partner body). Game thread.
+// (The probe's slot is slot 7 of the enemy pose slots below.)
 bool SetEnemyPoseSlot(std::uintptr_t sm, int mode) noexcept;
 struct EnemySlotStats {
     std::uint32_t calls = 0, writes = 0, rejects = 0, faults = 0;
+    std::uint32_t captures = 0, applies = 0, no_frame = 0;
     float max_err_deg = 0;
 };
 EnemySlotStats GetEnemySlotStats(bool reset) noexcept;
+// Enemy sync P1a (docs/enemy-sync.md 8): eight enemy pose slots in the animate hook (pose_hook=1 or the real partner body).
+//   count      its animate calls counted
+//   capture    its finished local joints copied after each of its own animates (the host: CaptureEnemyFrame -> SEP1)
+//   apply      the newest pushed frame written onto it after each of its own animates (the guest's mirrors: local rotations
+//              1..76 from the frame, its own root, the pelvis translation from the frame)
+//   probe_sam  our Sam's live pose written onto it (the P1-0 pose test, the probe's slot 7)
+// SetEnemySlot (game thread) checks the model as the probe did (our SkinnedModel vtable, its skeleton 77 joints, layout
+// BE39C83F; false otherwise) and waits out a detour inside before the change; sm 0 or off frees it. A fault in the pose
+// functions turns every slot off for the session (EnemyPoseFaulted).
+enum class EnemySlotMode : int { off = 0, count = 1, capture = 2, apply = 3, probe_sam = 4 };
+inline constexpr unsigned kEnemyPoseSlots = 8;
+bool SetEnemySlot(unsigned k, std::uintptr_t sm, EnemySlotMode m) noexcept;
+std::uintptr_t EnemySlotModel(unsigned k) noexcept;
+bool CaptureEnemyFrame(unsigned k, wire::JointFrame* out, double* captured_ms) noexcept;  // game thread: the newest capture
+bool PushEnemyFrame(unsigned k, const wire::JointFrame& f) noexcept;                     // game thread: the frame to apply
+EnemySlotStats GetEnemySlotStats(unsigned k, bool reset) noexcept;
+bool EnemyPoseFaulted() noexcept;
 // Joint `sam_joint` (as JointWorld) as a world frame: position and rotation rows (right, forward, up; normalised).
 bool JointFrameWorld(game::Entity* e, unsigned sam_joint, double (&p)[3], float (&r)[3][3]) noexcept;
 // Joint j of an entity whose skeleton has n joints (any layout: the boots' 10), position in world space (row 3 only).

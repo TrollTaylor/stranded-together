@@ -2703,29 +2703,123 @@ void ApplyExoPose(int x, std::uintptr_t sm) {
     t.last_apply.store(GetTickCount64(), std::memory_order_relaxed);
 }
 
-// ---------------------------------------------------------------- the enemy probe's slot (docs/enemy-sync.md P1-0)
-// One watched SkinnedModel (an enemy's): mode 1 counts its animate calls, mode 3 also writes our Sam's live local pose onto it
-// after each of its own animates (the same skeleton object as Sam's, 77 joints, layout BE39C83F: checked on every call),
-// then measures how far its model-space joints are from Sam's (the largest joint rotation difference).
-std::atomic<std::uintptr_t> g_et_sm{0};
-std::atomic<int> g_et_mode{0};
-std::atomic<std::uint32_t> g_et_calls{0}, g_et_writes{0}, g_et_rejects{0}, g_et_faults{0};
-std::atomic<std::uint32_t> g_et_err_mdeg{0};  // the largest rotation error since the last reset (millidegrees)
+// ---------------------------------------------------------------- the enemy pose slots (docs/enemy-sync.md 8; P1-0's probe on slot 7)
+// Eight watched SkinnedModels (enemies': the same skeleton object as Sam's, 77 joints, layout BE39C83F, checked when set and on
+// every call). Per slot: count counts its animate calls; capture copies its finished local joints after each of its own animates
+// (the host: the SEP1 frames); apply writes the newest pushed frame onto it after each of its own animates (the guest's mirrors:
+// local rotations 1..76 from the frame, its own root, the pelvis translation from the frame); probe_sam writes our Sam's live
+// local pose (the P1-0 pose test) and measures the largest joint rotation difference to Sam's model pose. A fault in the pose
+// functions turns every slot off for the session.
+constexpr unsigned kEnemySlots = 8;
+struct EnemyCap {
+    double ms = 0;        // QPC ms when captured
+    std::uint32_t n = 0;  // captures so far (0: none)
+    Joint j[kJ];
+};
+struct EnemyPush {
+    std::uint32_t seq = 0;  // 0: no frame
+    wire::Quat q[kJ];
+    float tpelvis[3] = {};
+    bool have_pelvis = false;
+};
+struct EnemySlot {
+    std::atomic<std::uintptr_t> sm{0};
+    std::atomic<int> mode{0};
+    std::atomic<std::uint32_t> calls{0}, writes{0}, rejects{0}, faults{0}, captures{0}, applies{0}, no_frame{0};
+    std::atomic<std::uint32_t> err_mdeg{0};  // probe_sam: the largest rotation error since the last reset (millidegrees)
+    std::atomic<int> busy{0};                // the detour inside this slot now (SetEnemySlot waits on it alone)
+    SeqLock<EnemyCap> cap;
+    SeqLock<EnemyPush> push;
+};
+EnemySlot g_es[kEnemySlots];
+std::atomic<unsigned> g_et_any{0};  // slots with a model
 std::atomic<bool> g_et_faulted{false};
 
-void ApplyEnemyPose(std::uintptr_t sm) {
+// The enemy model's pose header, checked: our SkinnedModel vtable, the local and model arrays of 77; `model_state` also asks for
+// the finished model pose (the writers).
+bool EnemyHdr(std::uintptr_t sm, std::uintptr_t* pose, std::uintptr_t* lb, std::uintptr_t* mb, bool model_state) {
+    std::uintptr_t vt = 0;
+    if (!Rd(sm, vt) || vt != g_sm_vt) return false;
+    std::uint8_t hdr[kPoseSize];
+    if (!ReadPoseHdr(sm, hdr, pose)) return false;
+    if (model_state && Field<std::int32_t>(hdr, kHdrState) != kPoseStateModel) return false;
+    const std::uintptr_t l = Field<std::uintptr_t>(hdr, kHdrLocal), le = Field<std::uintptr_t>(hdr, kHdrLocalEnd);
+    const std::uintptr_t m = Field<std::uintptr_t>(hdr, kHdrModel), me = Field<std::uintptr_t>(hdr, kHdrModelEnd);
+    if (!l || le - l != kJ * sizeof(Joint) || !m || me - m != kJ * 0x40ull) return false;
+    *lb = l, *mb = m;
+    return true;
+}
+
+void EnemyFault(EnemySlot& s) {
+    g_et_faulted.store(true, std::memory_order_seq_cst);
+    s.faults.fetch_add(1, std::memory_order_relaxed);
+    for (EnemySlot& x : g_es)
+        if (x.sm.exchange(0, std::memory_order_seq_cst)) g_et_any.fetch_sub(1, std::memory_order_seq_cst);
+}
+
+void CaptureEnemyPose(EnemySlot& s, std::uintptr_t sm) {
+    std::uintptr_t pose = 0, lb = 0, mb = 0;
+    if (!EnemyHdr(sm, &pose, &lb, &mb, false)) {
+        s.rejects.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    static thread_local EnemyCap c;
+    if (!mem::Read(lb, c.j, sizeof(c.j))) {
+        s.rejects.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    c.ms = QpcMs();
+    c.n = s.captures.load(std::memory_order_relaxed) + 1;
+    if (s.cap.Write(c)) s.captures.fetch_add(1, std::memory_order_relaxed);
+}
+
+void ApplyEnemyFrame(EnemySlot& s, std::uintptr_t sm) {
+    if (g_et_faulted.load(std::memory_order_relaxed)) return;
+    static thread_local EnemyPush p;
+    if (!s.push.Read(p) || !p.seq) {
+        s.no_frame.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    std::uintptr_t pose = 0, lb = 0, mb = 0;
+    if (!EnemyHdr(sm, &pose, &lb, &mb, true)) {
+        s.rejects.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    static thread_local Joint cur[kJ];
+    if (!mem::Read(lb, cur, sizeof(cur))) return;
+    for (unsigned k = 1; k < kJ; ++k) {  // joint 0 (the root) stays its own: its place is the entity's
+        const wire::Quat& q = p.q[k];
+        cur[k].q[0] = q.x, cur[k].q[1] = q.y, cur[k].q[2] = q.z, cur[k].q[3] = q.w;
+    }
+    if (p.have_pelvis) std::memcpy(cur[kSamPelvis].t, p.tpelvis, sizeof(p.tpelvis));
+    SIZE_T wrote = 0;
+    if (!WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(lb), cur, sizeof(cur), &wrote) || wrote != sizeof(cur)) {
+        s.rejects.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    std::int32_t bounds_on = 0;
+    Rd(sm + kSmBoundsOn, bounds_on);
+    if (!CallPoseFns(sm, pose, bounds_on != 0)) {
+        EnemyFault(s);
+        return;
+    }
+    s.applies.fetch_add(1, std::memory_order_relaxed);
+}
+
+// probe_sam (the P1-0 pose test): our Sam's live local pose onto the enemy, then the largest model-space rotation difference.
+void ApplyEnemyPose(EnemySlot& es, std::uintptr_t sm) {
     if (g_et_faulted.load(std::memory_order_relaxed)) return;
     const std::uintptr_t ssm = g_sam_sm.load(std::memory_order_acquire), sskel = g_sam_skel.load(std::memory_order_acquire);
     std::uintptr_t vt = 0;
     if (!ssm || !sskel || !Rd(sm, vt) || vt != g_sm_vt) {
-        g_et_rejects.fetch_add(1, std::memory_order_relaxed);
+        es.rejects.fetch_add(1, std::memory_order_relaxed);
         return;
     }
     std::uint8_t hdr[kPoseSize], shdr[kPoseSize];
     std::uintptr_t pose = 0, spose = 0;
     if (!ReadPoseHdr(sm, hdr, &pose) || !ReadPoseHdr(ssm, shdr, &spose) || Field<std::uintptr_t>(hdr, kHdrSkel) != sskel ||
         Field<std::uintptr_t>(shdr, kHdrSkel) != sskel || Field<std::int32_t>(hdr, kHdrState) != kPoseStateModel) {
-        g_et_rejects.fetch_add(1, std::memory_order_relaxed);
+        es.rejects.fetch_add(1, std::memory_order_relaxed);
         return;
     }
     const std::uintptr_t lb = Field<std::uintptr_t>(hdr, kHdrLocal), le = Field<std::uintptr_t>(hdr, kHdrLocalEnd);
@@ -2734,7 +2828,7 @@ void ApplyEnemyPose(std::uintptr_t sm) {
     const std::uintptr_t smb = Field<std::uintptr_t>(shdr, kHdrModel), sme = Field<std::uintptr_t>(shdr, kHdrModelEnd);
     if (!lb || le - lb != kJ * sizeof(Joint) || !mb || me - mb != kJ * 0x40ull || !slb || sle - slb != kJ * sizeof(Joint) || !smb ||
         sme - smb != kJ * 0x40ull) {
-        g_et_rejects.fetch_add(1, std::memory_order_relaxed);
+        es.rejects.fetch_add(1, std::memory_order_relaxed);
         return;
     }
     static thread_local Joint cur[kJ];
@@ -2744,18 +2838,16 @@ void ApplyEnemyPose(std::uintptr_t sm) {
     cur[0] = root;  // its own root: the place stays the enemy's
     SIZE_T wrote = 0;
     if (!WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(lb), cur, sizeof(cur), &wrote) || wrote != sizeof(cur)) {
-        g_et_rejects.fetch_add(1, std::memory_order_relaxed);
+        es.rejects.fetch_add(1, std::memory_order_relaxed);
         return;
     }
     std::int32_t bounds_on = 0;
     Rd(sm + kSmBoundsOn, bounds_on);
     if (!CallPoseFns(sm, pose, bounds_on != 0)) {
-        g_et_faulted.store(true, std::memory_order_seq_cst);
-        g_et_faults.fetch_add(1, std::memory_order_relaxed);
-        g_et_sm.store(0, std::memory_order_seq_cst);
+        EnemyFault(es);
         return;
     }
-    g_et_writes.fetch_add(1, std::memory_order_relaxed);
+    es.writes.fetch_add(1, std::memory_order_relaxed);
     // the model-space rotations against Sam's (the same local pose: the same model pose expected)
     static thread_local float m[kJ][16], sm2[kJ][16];
     if (!mem::Read(mb, m, sizeof(m)) || !mem::Read(smb, sm2, sizeof(sm2))) return;
@@ -2779,23 +2871,39 @@ void ApplyEnemyPose(std::uintptr_t sm) {
         if (deg > worst) worst = deg;
     }
     const std::uint32_t mdeg = static_cast<std::uint32_t>(worst * 1000.0);
-    std::uint32_t prev = g_et_err_mdeg.load(std::memory_order_relaxed);
-    while (mdeg > prev && !g_et_err_mdeg.compare_exchange_weak(prev, mdeg, std::memory_order_relaxed)) {
+    std::uint32_t prev = es.err_mdeg.load(std::memory_order_relaxed);
+    while (mdeg > prev && !es.err_mdeg.compare_exchange_weak(prev, mdeg, std::memory_order_relaxed)) {
     }
+}
+
+// The detour's enemy part (after g_orig): true when `s` is an enemy slot's model (handled).
+bool EnemyDetour(std::uintptr_t s) {
+    if (!s || !g_et_any.load(std::memory_order_relaxed)) return false;
+    for (unsigned k = 0; k < kEnemySlots; ++k) {
+        EnemySlot& e = g_es[k];
+        if (e.sm.load(std::memory_order_relaxed) != s) continue;
+        g_inflight.fetch_add(1, std::memory_order_seq_cst);
+        e.busy.fetch_add(1, std::memory_order_seq_cst);
+        if (e.sm.load(std::memory_order_seq_cst) == s) {
+            e.calls.fetch_add(1, std::memory_order_relaxed);
+            switch (static_cast<EnemySlotMode>(e.mode.load(std::memory_order_relaxed))) {
+                case EnemySlotMode::capture: CaptureEnemyPose(e, s); break;
+                case EnemySlotMode::apply: ApplyEnemyFrame(e, s); break;
+                case EnemySlotMode::probe_sam: ApplyEnemyPose(e, s); break;
+                default: break;
+            }
+        }
+        e.busy.fetch_sub(1, std::memory_order_seq_cst);
+        g_inflight.fetch_sub(1, std::memory_order_seq_cst);
+        return true;
+    }
+    return false;
 }
 
 void Detour(void* sm, float dt) {
     g_orig(sm, dt);
     const auto s = reinterpret_cast<std::uintptr_t>(sm);
-    if (s && s == g_et_sm.load(std::memory_order_relaxed)) {
-        g_inflight.fetch_add(1, std::memory_order_seq_cst);
-        if (g_et_sm.load(std::memory_order_seq_cst) == s) {
-            g_et_calls.fetch_add(1, std::memory_order_relaxed);
-            if (g_et_mode.load(std::memory_order_relaxed) == 3) ApplyEnemyPose(s);
-        }
-        g_inflight.fetch_sub(1, std::memory_order_seq_cst);
-        return;
-    }
+    if (EnemyDetour(s)) return;
     if (s && s == g_bt.sm.load(std::memory_order_relaxed)) {
         g_inflight.fetch_add(1, std::memory_order_seq_cst);
         if (g_bt.sm.load(std::memory_order_seq_cst) == s) {
@@ -6427,29 +6535,83 @@ game::Entity* SelfEntity() noexcept {
     return g_me.spawn.e;
 }
 
-bool SetEnemyPoseSlot(std::uintptr_t sm, int mode) noexcept {
-    if (!g_hook) return false;
-    g_et_sm.store(0, std::memory_order_seq_cst);
-    for (int i = 0; i < 200 && g_inflight.load(std::memory_order_seq_cst) != 0; ++i) Sleep(0);  // a detour inside finishes
-    g_et_mode.store(mode, std::memory_order_relaxed);
-    if (!sm || mode == 0) return true;
+bool SetEnemySlot(unsigned k, std::uintptr_t sm, EnemySlotMode m) noexcept {
+    if (!g_hook || k >= kEnemySlots) return false;
+    EnemySlot& e = g_es[k];
+    if (e.sm.exchange(0, std::memory_order_seq_cst)) g_et_any.fetch_sub(1, std::memory_order_seq_cst);
+    // a detour inside THIS slot finishes (its own counter: the partner body's and the other slots' work never stall the game
+    // thread here; review rv-safety 12)
+    for (int i = 0; i < 200 && e.busy.load(std::memory_order_seq_cst) != 0; ++i) Sleep(0);
+    e.mode.store(static_cast<int>(m), std::memory_order_relaxed);
+    // a new model starts with nothing captured and no frame (never another enemy's pose)
+    static const EnemyCap kNoCap{};
+    static const EnemyPush kNoPush{};
+    e.cap.Write(kNoCap);
+    e.push.Write(kNoPush);
+    if (!sm || m == EnemySlotMode::off || g_et_faulted.load()) return !sm || m == EnemySlotMode::off;
     std::uintptr_t vt = 0;
     if (!Rd(sm, vt) || vt != g_sm_vt) return false;
-    const SkelInfo k = PoseSkeleton(sm);
-    if (!k.skel || k.count != static_cast<std::int32_t>(kJ) || k.layout != wire::kSamLayoutHash) return false;
-    g_et_sm.store(sm, std::memory_order_seq_cst);
+    const SkelInfo s = PoseSkeleton(sm);
+    if (!s.skel || s.count != static_cast<std::int32_t>(kJ) || s.layout != wire::kSamLayoutHash) return false;
+    e.sm.store(sm, std::memory_order_seq_cst);
+    g_et_any.fetch_add(1, std::memory_order_seq_cst);
     return true;
 }
 
-EnemySlotStats GetEnemySlotStats(bool reset) noexcept {
+std::uintptr_t EnemySlotModel(unsigned k) noexcept { return k < kEnemySlots ? g_es[k].sm.load() : 0; }
+
+bool CaptureEnemyFrame(unsigned k, wire::JointFrame* out, double* captured_ms) noexcept {
+    if (k >= kEnemySlots || !out) return false;
+    static EnemyCap c;  // game thread
+    if (!g_es[k].cap.Read(c) || !c.n) return false;
+    out->seq = c.n;
+    out->joint_count = kJ;
+    out->layout_hash = wire::kSamLayoutHash;
+    out->body_id = 0;
+    out->flags = wire::kJointsValid;
+    for (unsigned j = 0; j < kJ; ++j) out->q[j] = wire::Normalize(wire::Quat{c.j[j].q[0], c.j[j].q[1], c.j[j].q[2], c.j[j].q[3]});
+    out->t_count = 2;
+    out->t_joint[0] = kSamRoot;
+    out->t_joint[1] = kSamPelvis;
+    std::memcpy(out->t[0], c.j[kSamRoot].t, sizeof(out->t[0]));
+    std::memcpy(out->t[1], c.j[kSamPelvis].t, sizeof(out->t[1]));
+    if (captured_ms) *captured_ms = c.ms;
+    return true;
+}
+
+bool PushEnemyFrame(unsigned k, const wire::JointFrame& f) noexcept {
+    if (k >= kEnemySlots || f.joint_count != kJ || f.layout_hash != wire::kSamLayoutHash) return false;
+    static EnemyPush p;  // game thread
+    static std::uint32_t seq = 0;
+    p.seq = ++seq ? seq : ++seq;
+    for (unsigned j = 0; j < kJ; ++j) p.q[j] = f.q[j];
+    p.have_pelvis = false;
+    for (unsigned i = 0; i < f.t_count && i < wire::kMaxJointTranslations; ++i)
+        if (f.t_joint[i] == kSamPelvis) std::memcpy(p.tpelvis, f.t[i], sizeof(p.tpelvis)), p.have_pelvis = true;
+    return g_es[k].push.Write(p);
+}
+
+EnemySlotStats GetEnemySlotStats(unsigned k, bool reset) noexcept {
     EnemySlotStats s;
-    s.calls = g_et_calls.load(), s.writes = g_et_writes.load(), s.rejects = g_et_rejects.load(), s.faults = g_et_faults.load();
-    s.max_err_deg = static_cast<float>(g_et_err_mdeg.load()) / 1000.0f;
+    if (k >= kEnemySlots) return s;
+    EnemySlot& e = g_es[k];
+    s.calls = e.calls.load(), s.writes = e.writes.load(), s.rejects = e.rejects.load(), s.faults = e.faults.load();
+    s.captures = e.captures.load(), s.applies = e.applies.load(), s.no_frame = e.no_frame.load();
+    s.max_err_deg = static_cast<float>(e.err_mdeg.load()) / 1000.0f;
     if (reset) {
-        g_et_calls.store(0), g_et_writes.store(0), g_et_rejects.store(0), g_et_err_mdeg.store(0);
+        e.calls.store(0), e.writes.store(0), e.rejects.store(0), e.err_mdeg.store(0), e.applies.store(0), e.no_frame.store(0);
     }
     return s;
 }
+
+bool EnemyPoseFaulted() noexcept { return g_et_faulted.load(); }
+
+// The P1-0 probe's single slot (slot 7): mode 1 count, 3 our Sam's pose (probe_sam), 0 off.
+bool SetEnemyPoseSlot(std::uintptr_t sm, int mode) noexcept {
+    return SetEnemySlot(kEnemySlots - 1, sm, mode == 1 ? EnemySlotMode::count : mode == 3 ? EnemySlotMode::probe_sam : EnemySlotMode::off);
+}
+
+EnemySlotStats GetEnemySlotStats(bool reset) noexcept { return GetEnemySlotStats(kEnemySlots - 1, reset); }
 
 void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
     g_now = now_ms;

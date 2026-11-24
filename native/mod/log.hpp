@@ -10,6 +10,11 @@ void LogInit(const std::wstring& dir);
 // printf-style, thread-safe, flushed per line, timestamped with ms since start.
 void Log(const char* fmt, ...);
 void LogShutdown();
+// For hooks on game worker threads (damage and bullet detours): the line is only formatted into a small ring (no file I/O,
+// no flush on the game's worker thread); LogFlushLater, called from a game-thread tick, writes the waiting lines with the
+// time and thread they were made on. A full ring drops the line (counted, reported by the next flush).
+void LogLater(const char* fmt, ...);
+void LogFlushLater();
 // Also print every line to stdout (console tools).
 void LogToStdout(bool on);
 

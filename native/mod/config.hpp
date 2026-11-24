@@ -177,20 +177,49 @@ struct Config {
     // passenger thrown off in a crash takes the same hit. Default on; 0 = the partner's vehicles never hurt THIS player's Sam
     // (each game decides for its own Sam; the launcher's Debug page "Partner's vehicles can knock me down").
     bool partner_vehicle_damage = true;
-    // Shots (docs/enemy-sync.md P3a, "ship A"; shot_sync.hpp): a player's gunfire shown on the other screen through the game's
-    // own CreateBullet (muzzle flash, trail, impacts). shots_sync: capture, send and replay. Default OFF (round 15 review): the
-    // two-game gate run failed its friendly-fire step (the drop on the watcher between two games is unproven) and the replays
-    // still hit the watcher's vehicles, cargo, structures and BTs (docs/enemy-sync.md 7.3); the launcher writes none of these
-    // keys, so the mod's defaults hold. shots_muzzle: pass the weapon id (the muzzle flash; 0 = trails and impacts only).
-    // shots_sound: pass the magazine id (the magazine's effect at the muzzle; default off until measured against sound_sync's
-    // own weapon sounds). shots_friendly_fire: 1 = the partner's replayed bullets can hurt our Sam (default 0: dropped).
-    // shots_npc_drop: the partner's replayed bullets never hurt this world's MULEs (a detour on the Humanoid damage handler;
-    // default on; while it is on but not installed, nothing is replayed).
-    bool shots_sync = false;
+    // Shots (docs/enemy-sync.md P3a, "ship A", 7.5; shot_sync.hpp): a player's gunfire shown on the other screen through the
+    // game's own CreateBullet (muzzle flash, trail, impacts). shots_sync: capture, send and replay. Default ON since round 16:
+    // a replay is visual only, its hits are dropped at the bullet (shots_hit_drop) before any vehicle, cargo, structure or NPC
+    // of the watcher's world takes them; the launcher writes only shots_sync=0 (its Debug page "Show my partner's gunfire"
+    // unticked), so the mod's defaults hold otherwise.
+    // shots_muzzle: pass the weapon id (the muzzle flash; 0 = trails and impacts only). shots_sound: pass the magazine id
+    // (the magazine's effect at the muzzle: a gunshot-like event sharing the weapon sound's RTPC, run 20261124-092442).
+    // Default 1: sound_sync plays the partner's own gunshot only once this game posted that event itself (partner_sound's
+    // learned allow-list), so without it the partner's gunfire would often be silent; "auto" (only while sound_sync=0) is
+    // the opt-in for the two-game sound check; docs/enemy-sync.md 7.5. shots_friendly_fire: 1 = the
+    // partner's replayed bullets can hurt our Sam (default 0: dropped). shots_npc_drop: the backstop on the Humanoid damage
+    // handler (MULEs; default on; while it is on but not installed, nothing is replayed). shots_hit_drop: the drop at the
+    // bullet (BulletDamageA / B; default on; while it is on but not installed, nothing is replayed; 0 = round 15's behaviour:
+    // only our Sam and Humanoids filtered; it also carries enemy sync's guard on frozen mirrors).
+    bool shots_sync = true;
     bool shots_muzzle = true;
-    bool shots_sound = false;
+    int shots_sound = 1;  // -1 auto (on while sound_sync=0), 0 off, 1 on
     bool shots_friendly_fire = false;
     bool shots_npc_drop = true;
+    bool shots_hit_drop = true;
+    // shots_bt_drop: the BT reaction's drop (a detour on the hit processor and the BT reaction; default 0 until a run against a BT
+    // proves it: without it a replay that hits a BT may make it react; review 16).
+    bool shots_bt_drop = false;
+    // Enemy sync P1a (docs/enemy-sync.md 8; enemy_sync.hpp): the host owns every enemy; the guest freezes its own copies near her
+    // (MsgGameActorSequenceOccupied), drives them to the host's places (SEN1) and poses the nearest from the host's joints (SEP1),
+    // and the host MULEs' gunfire is replayed on her screen from the mirrors' guns (enemy_shots). Both games need it, with equal
+    // enemy fingerprints. enemy_sync: default on with host_save=1 (round 16b; enemy_sync_set: the key was given). enemy_freeze: occupied (the
+    // only lever built). enemy_mirror_radius: the 10 Hz class and the mirrors (m). enemy_pose_count: 0..8 posed mirrors (0 no
+    // SEP1). enemy_place_far: the guest's copies out of the world placed at the host's places (variant A). enemy_shots: the enemy
+    // shots (installs the shots' hooks even with shots_sync=0). enemy_shots_hurt: an enemy round replayed on the guest may hurt
+    // her own Sam (the victim decides). enemy_shots_sound: pass the magazine id on an enemy muzzle shot. enemy_mirror_guard: the
+    // frozen mirrors' hits on our Sam, hits on them and their own fire dropped (0 = counted only, diagnosis). The launcher writes
+    // none of these keys.
+    bool enemy_sync = false;
+    bool enemy_sync_set = false;
+    int enemy_freeze = 1;  // 1 occupied
+    double enemy_mirror_radius = 250.0;
+    int enemy_pose_count = 6;
+    bool enemy_place_far = true;
+    bool enemy_shots = true;
+    bool enemy_shots_hurt = true;
+    bool enemy_shots_sound = true;
+    bool enemy_mirror_guard = true;
     // The partner's vehicle copy hidden while the watcher's own vehicle of the same kind stands in the same place (two of
     // the same vehicle in one spot; docs/real-partner-body.md section 22). Default on; 0: the copy is always shown.
     bool vehicle_overlap_hide = true;

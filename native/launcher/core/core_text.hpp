@@ -122,6 +122,9 @@ struct SessionIni {
     // Vehicle hits (docs/real-partner-body.md section 25): the partner's vehicles damage and knock down THIS player's Sam
     // (each game decides for its own Sam). The mod's default is on: only partner_vehicle_damage=0 is written.
     bool partner_vehicle_damage = true;
+    // Shots (docs/enemy-sync.md 7.5): the partner's gunfire replayed on THIS player's screen (visual only). The mod's default is
+    // on: only shots_sync=0 is written.
+    bool shots_sync = true;
     // Fragile's textures (docs/textures.md): the folder of the player's edited PNGs (UTF-8, absolute; "" = not written).
     // The launcher writes it for every session; the guest's mod reads its .manifest.txt (the host ignores it).
     std::string textures_dir;

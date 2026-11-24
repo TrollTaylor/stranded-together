@@ -1,0 +1,116 @@
+# Shots, round 16 (docs/enemy-sync.md 7.5): the drop at the bullet. A replayed shot is visual only: its hits are dropped in
+# BulletDamageA / B before any receiver of this world sees them (our own Sam excepted: the Sam filter keeps its policy).
+# Solo on the 100% save, its assault rifle. The aimed test (shots 5 <target> <n>) replays n shots of our own last captured
+# shot (kind 4, a partner replay for every filter) from 6 m in front of a target, straight at it, and reads its value before
+# and 2.5 s after; a negative n is the control (their damage let through at the bullet). Targets: a dev truck (its life), a
+# dev postbox (its durability), and at the MULE camp the enemy probe's MULE (counters only: at the bullet "npc"; the control's
+# hits never reach the Humanoid backstop, run 20261124-093844). The class counters are the evidence: the non-lethal rifle
+# wears neither the truck nor the postbox even in the control (run 20261124-092442), so "unchanged" alone proves nothing. The
+# BT reaction's drop is off by default (shots_bt_drop=0).
+# No cargo step (dropped in round 16): shots 6 has no piece a replay can hit. Near the camp it picks the nearest DSBaggage2
+# with an entity, 46-47 m off (runs 20261124-093844, -115147), and the 4 aimed replays hit no receiver either time (cargo +0,
+# every class +0): its stored place (+0x38) is likely not where the realized piece is (the camp's MULEs carry their own cargo,
+# a "Ceramics (80)" tag in the still). At mknot-road there is no such piece and the carried piece it puts down keeps no entity
+# (run 20261124-092442). The step was optional, and a failed optional step fails the run, so the probe never passed. Every
+# bullet hit still goes through BulletDamageA / B, so a piece's hit would be dropped like the truck's; it stays unproven
+# (docs/enemy-sync.md 7.5) until a target a replay really hits exists (a spawned piece at a known place).
+# The sound question (shots_sound): the audio probe's dumps of our own burst and of the echo replays (shots_echo, 2.5 m to
+# our right) with the muzzle only, with the magazine effect, and with neither (shots 8 <muzzle> <magazine>).
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios shots-hit-drop -SeedSaves complete-100
+# covers: shots
+# select: probe
+role solo
+graphics low
+timeout 360
+ini audio_probe=1
+ini dev_tools=1
+start
+goto mknot-road
+?action dev_god 2
+?action dev_weather 0
+waitlog 10 \[shots\] byte checks: [0-9]+/[0-9]+ ok
+waitlog 5 \[shots\] ON: Enqueue hooked, Sam filter on, NPC drop on, drop at the bullet on \(BT reaction off\)
+waitlog 20 \[shots\] registry: [1-9][0-9]* weapons
+# the rifle from the wheel: D-pad right held, the stick to the upper left, centred, let go
+pad dpad_right 600 keep
+pad dpad_right 900 lx=-23170 ly=23170 rx=-23170 ry=23170 keep
+pad dpad_right 400 keep
+pad none 0
+wait 2500
+# ---- the sound: our own burst alone, then the echo replays (muzzle only / muzzle and magazine effect / neither)
+action audio_probe 4
+pad none 1200 lt=255 keep
+pad none 250 lt=255 ry=-14000 keep
+pad none 500 lt=255 rt=255 keep
+pad none 0
+waitlog 8 \[shots\] sent n=[1-9]
+wait 1500
+action audio_probe 1
+action audio_probe 4
+action shots_echo 1 2.5
+action shots 8 1 0
+pad none 1200 lt=255 keep
+pad none 500 lt=255 rt=255 keep
+screenshot 01-echo-muzzle
+pad none 0
+wait 1500
+action audio_probe 1
+action audio_probe 4
+action shots 8 1 1
+pad none 1200 lt=255 keep
+pad none 500 lt=255 rt=255 keep
+screenshot 02-echo-muzzle-magazine
+pad none 0
+wait 1500
+action audio_probe 1
+action audio_probe 4
+action shots 8 0 0
+pad none 1200 lt=255 keep
+pad none 500 lt=255 rt=255 keep
+pad none 0
+wait 1500
+action audio_probe 1
+action shots_echo 0
+action shots 8 1 0
+# ---- a truck 10 m ahead: 6 aimed replays (its life unchanged), then the control (8 let through)
+action dev_vehicle 2 0 10
+wait 4000
+action shots 5 1 6
+screenshot 03-truck-replays
+waitnew 6 \[shots\] aimed test #[0-9]+: vehicle .* x 6: enqueued [1-9].* dropped \+[1-9][0-9]* \(vehicle [1-9].*: unchanged
+action shots 5 1 -8
+waitnew 6 \[shots\] aimed test #[0-9]+: vehicle .* x 8 \(control\)
+?action dev_vehicle_remove 0 1
+wait 1500
+# ---- a postbox 10 m ahead
+action dev_build 6 0 10
+waitnew 5 \[world\] dev build: id [0-9]+ type 6 \(postbox\) anim 0
+wait 3000
+# (106: the nearest structure of type 6; run 20261124-092442 took the road rebuilder next to it, type 36)
+action shots 5 106 6
+screenshot 04-postbox-replays
+waitnew 6 \[shots\] aimed test #[0-9]+: structure \(id [0-9]+ type 6, .* x 6: .*dropped \+[1-9][0-9]* \(.*structure [1-9].*: unchanged
+action shots 5 106 -8
+waitnew 6 \[shots\] aimed test #[0-9]+: structure .* x 8 \(control\)
+# ---- the MULE camp: the probe's MULE (the shield keeps the camp off our Sam)
+goto mule-camp-sw-lkc
+action dev_enemies 1
+waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+wait 5000
+action enemy_probe 0 150
+waitlog 10 \[enemy\] probe pick id=
+action enemy_probe 5 1
+action enemy_probe 4 12
+wait 2000
+action shots 5 4 6
+screenshot 07-mule-replays
+waitnew 6 \[shots\] aimed test #[0-9]+: MULE .* x 6: .*dropped \+[1-9][0-9]* \(.*npc [1-9]
+action shots 5 4 -6
+waitnew 6 \[shots\] aimed test #[0-9]+: MULE .* x 6 \(control\)
+# (no cargo step: see the top)
+action shots 0
+waitnew 3 \[shots\] status: .*at the bullet \(on, BT off\)
+nolog \[shots\] FAULT
+nolog \[shots\] byte check FAILED
+nolog \[gate\] OTGC WRITE
+quit

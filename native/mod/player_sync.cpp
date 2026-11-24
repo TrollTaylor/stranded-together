@@ -1527,7 +1527,14 @@ void Tick() noexcept {
         shin.net = g_net;
         shin.role = static_cast<std::uint8_t>(g_cfg.role == Role::host ? 1 : g_cfg.role == Role::guest ? 2 : 0);
         shots::Tick(shin, now);
-        esync::Tick(g_local, g_local_valid, now);  // the enemy freeze probe (hidden runs; idle otherwise)
+        // enemy sync (enemy_sync.hpp; docs/enemy-sync.md 8): the host's sender, the guest's mirrors; and the P1-0 probe
+        esync::TickIn ein;
+        ein.local = g_local;
+        ein.local_ok = g_local_valid && g_local_active;
+        ein.body = shin.body;
+        ein.net = g_net;
+        ein.role = shin.role;
+        esync::Tick(ein, now);
     }
 
     // Player collision (partner_collision.hpp): only the partner slot's real body, never the

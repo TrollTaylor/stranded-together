@@ -256,7 +256,35 @@ Needs `pose_hook=1` for the pose step and the shared Sam damage detour (`shots_s
 
 Scenario: `enemy-freeze-probe`.
 
-### Shots (`shots`, `shots_test`, `shots_echo`; `session.ini shots_sync`, default off since the round 15 review; [enemy-sync.md](enemy-sync.md) section 7.3)
+### Enemy sync (`enemy_sync`, `enemy_look`, `enemy_shot_test`; `session.ini enemy_sync`, default on with `host_save=1` since round 16b; [enemy-sync.md](enemy-sync.md) section 8)
+
+The P1a mirrors: the host owns every enemy, the guest freezes, drives and poses her copies near her from the host's SEN1 /
+SEP1 frames, and replays the host MULEs' rounds from them.
+
+* `enemy_sync 0`: status, one line: `[enemy] sync: role host|guest, on|waiting|off (...)|STOPPED, parts ours 0x.. theirs 0x..,
+  fp ids .. guids .. count .. (equal|differ), mirrors n=.. frozen=.. posed=../.., SEN1 rx .. (bad ..) SEP1 rx .., sent: SEN1 ..
+  SEP1 ..; enemy shots ... (late dropped ..) ...; guards: attacker drops .., target drops .., shot drops ..`, and the `mirror
+  attacks` line (it ends with `bullet hits on mirrors dropped at the bullet n (our Sam's own rounds n, replays n)`). Since
+  round 16b the enemy shots part ends with `first hits: shooter n, other mirrors n, partner body n, our Sam n, other n` (each
+  enemy replay's first hit at the bullet; the first 80 in hidden runs also as `[shots] enemy replay #n's first hit ...`).
+* `enemy_sync 1` / `2`: on / off (2 releases every mirror at once: `[enemy] sync off (debug action): n mirrors released`).
+* `enemy_sync 3`: the mirror table (`[enemy] mirror id=.. frozen .. err .. m lease age .. ms slot .. pose age .. ms a88 .. ea4 ..`).
+* `enemy_sync 6 <0|1>` (hidden runs): the far placement's variant A (save, place, restore) / B (also +0x1089 and the re-path).
+* `enemy_sync 7 <0|3>` (hidden runs): the driver's teleport cadence: 3 a teleport every 500 ms between the sets.
+* `enemy_look <id | 0 | -1 | -2 | -3 | -4> <m> [aim height m]` (hidden runs): our Sam m from an enemy, facing it (the topmost
+  ground). 0 the nearest (the guest: a frozen mirror; the host: a realized enemy), -1 the one the partner body faces (within 25
+  deg and 60 m; else the one nearest the partner), -2 the newest replayed shooter (the host: the newest sent one, round 16b),
+  -3 m behind it on its line to the partner, facing him, -4 m to the side of that line, facing the shooter. The look points the
+  next steered aim (`shots 4 <deg> 1|2`) at it, following the enemy for 60 s at the aim height over its root (default 1.2 m;
+  -4: a fixed point on its line for 20 s). `[enemy] look id=XXXXX dist .. m (<how>; it stands at ..): <teleport>`.
+* `enemy_shot_test <id | 0> [1]` (hidden runs, the guest): 3 enemy replays (kind 2) level at our Sam's chest from 2 m, on the
+  mirror's side (its hand's line and 50 deg either side; round 16b: from 3 m along a sloped line they could start in a wall) (0: the mirror of the last `enemy_look`, else the nearest), with the last received fast
+  enemy round's ids (else attack 0x56 at 300 m/s); 1 = nohurt (the Sam filter drops it once). 2 s later `[enemy] shot test:
+  ref match=1 kept (enemy_shots_hurt) | dropped (nohurt) amount A health H0 -> H1`.
+
+Scenario: `two-games-enemy-mirror`.
+
+### Shots (`shots`, `shots_test`, `shots_echo`; `session.ini shots_sync`, default on since round 16; [enemy-sync.md](enemy-sync.md) sections 7.3, 7.5)
 
 `native/mod/shot_sync.cpp`, the pure part `shot_wire.*` (`st_shot_wire_tests`).
 
@@ -270,7 +298,9 @@ Scenario: `enemy-freeze-probe`.
   (the aim stance) and drives the virtual right stick itself until the camera's ray points at the body's chest (spine joint 4)
   in yaw and pitch within deg and is still there 250 ms after the stick is released (`camera aimed #n at the partner body
   (steered: yaw .., pitch .. deg off ...)`; LT stays held for the scenario's fire step; gives up after 30 s). Round 15 prove,
-  run `20261123-221121`: the pulsed yaw left the pitch where the teleport put it and her shots went into the ground.
+  run `20261123-221121`: the pulsed yaw left the pitch where the teleport put it and her shots went into the ground. `shots 4
+  <deg> 2` (round 16b): steered, then RT held 2 s while the stick keeps the aim on its point (`...; firing 2 s while it
+  follows`, then `[shots] camera aim: fired while following (yaw .., pitch .. deg off at the end)`; LT stays held).
 * `shots_test <m> <flags> [count]` (hidden runs only since the review; also refused while this game cannot replay): one CreateBullet from m ahead of our Sam toward his chest through the replay path, with the
   last captured shot's attack / weapon / magazine ids (fire once first). flags 1: the filter keeps it (the proof under
   `dev_god 0`), 2 no weapon id, 4 no magazine id, 16 the leak test: count (<= 400) replays into the ground 10 m ahead, 4 a tick,
@@ -280,10 +310,29 @@ Scenario: `enemy-freeze-probe`.
   then: a later leak test keeps the filters).
 * `shots_echo <0|1> [m]` (hidden runs only since the review): solo: our own captured shots also replayed here from m (default
   2.5) to our right.
+* Round 16 (hidden runs only; enemy-sync.md 7.5): `shots 5 <target> <n>`: the aimed test: n (1..8) replays of the partner's
+  last received shot (else our own last captured one) from 6 m in front of a target, straight at it; a negative n is the
+  control (their damage let through at the bullet). Targets: 1 the nearest vehicle (life), 2 the nearest structure (`100 +
+  type`: of that type, `106` a postbox; durability), 3 the cargo piece of `shots 6` (+0x34), 4 the enemy probe's MULE
+  (`enemy_probe 0` first; counters only). 2.5 s later `[shots] aimed test #k: ... at the bullet dropped +n (vehicle n cargo n
+  structure n bt n npc n player n other n), let through +n (...), our Sam passed +n, BT +n; Sam filter +n, NPC backstop +n;
+  value before x after y: unchanged | CHANGED | n/a`. `shots 6`: the cargo target: a piece on the ground within 80 m (a
+  DSBaggage2 with an entity), else one piece our Sam carries put down through the game's own exports (unproven: it stayed
+  on him in run 092442). `shots 8 <muzzle 0/1> <magazine 0/1>`: the next replays' ids, live (the sound check). `shots 9
+  <yaw deg> [pitch deg]`: the steered aim (`shots 4 <deg> 1`) holds the camera that far left of (below) the body, so it shows
+  right of the centre. `shots 10 <m>` (round 16b): the enemy replays start m (0..3, default 0) along the shot from the
+  host's muzzle place (a test; their first hits are the partner body, not the shooter: enemy-sync.md 8.9).
+* `shots 0` now ends with `at the bullet (on, BT off): dropped vehicle n cargo n structure n bt n npc n player n other n;
+  seen n, our Sam passed n (parts of him hit n), test let through n, BT reactions dropped n, faults n; hits on frozen mirrors
+  dropped n; reused references kept on our Sam n; refused (dummy unknown) n` (review fixes: the owner is read first, so a
+  bullet of the game's own is never counted; `BT on` only with `session.ini shots_bt_drop=1`). A hit on our Sam is a replay's
+  only when its attacker is the bullet system's dummy too (`reused references kept` counts the others).
+* `[link] combat parts: ... fire off (the partner does not replay shots: shots_sync=0 or its damage drop is not installed)`:
+  the partner's beacon lacks the fire bit.
 * Other lines (review): `[shots] OFF for replays: the NPC drop is not installed (...)` (`shots_npc_drop=1` but the Humanoid
   hook is missing: nothing is replayed here, ours are still sent); `[link] combat parts: ... fire off (no replays here)`.
 
-Scenarios: `shots-probe` (solo, a probe), `two-games-shots` (the gate; `ini shots_sync=1`).
+Scenarios: `shots-probe` and `shots-hit-drop` (solo, probes), `two-games-shots` (the gate; no switch since round 16).
 
 ### Name tags (`name_tags`; scenarios only)
 

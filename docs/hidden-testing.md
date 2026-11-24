@@ -1675,17 +1675,42 @@ docs/enemy-sync.md section 7: the players' shots on the other screen (ship A) an
   Since the review (not run): `# select: probe`; Sam walked 3 s into the camp before the control; `?action dev_refill` before
   every lever; each lever waits for its own `done:` line (`waitnew`); lever 1 / mode 1 must log `hold=PASS ... release=PASS`;
   `nolog \[enemy\] probe lever=1 .*ABANDONED`.
-- `two-games-shots` (`launcherini local-test` + `ini shots_sync=1` (off by default since the review), `-GuestSeed
-  profile-only`; about 2 min 30 s): A: the guest 8 m behind the host's right shoulder (`shots 3 8 135`), her camera turned
-  to him (`shots 4 15` and right-stick pulses until `camera aimed`), the host fires a burst. B: the reverse (the host 7 m at
+- `two-games-shots` (`launcherini local-test`, no switch since round 16 (`shots_sync` on by default), `-GuestSeed
+  profile-only`; about 2 min 30 s): A: the guest 7 m at the host's right side (`shots 3 7 90`; round 15: 8 m behind his right
+  shoulder), her camera steered at him 15 deg off centre (`shots 9 15 0`, `shots 4 4 1`), the host fires a burst. B: the reverse (the host 7 m at
   her right), then an exact on / off pair from the host's camera (`action shots 2`: his beacon drops the fire bit and she
   stops sending, `02-pair-off`; `action shots 1`, `02-pair-on`). C (required): the guest 4 m in front of the host
   (`shots 3 4 0`), aimed within 2 deg (`shots 4 2`), fires at him (`dev_god 0` on the host); the host's status line (`action
   shots 0`, `waitnew`) must count `replay hits dropped: our Sam [1-9]...` with `kept 0`. `waitlog` on `combat parts: ours
   0x04 theirs 0x04: fire on` on both, the shooter's `sent n=` and the watcher's `replayed n=.. (muzzle [1-9]`. Run
   `20261123-205837-two-games-shots` (**FAIL**: the optional C line did not come, and a failed optional step fails the run:
-  her camera stopped 7.4 deg off at 6 m, so no replay hit the host; before the review's changes). The changed file is not
-  run.
+  her camera stopped 7.4 deg off at 6 m, so no replay hit the host; before the review's changes). Round 16 adds D (the host's
+  dev truck and postbox under her replays, `shots 5 1 6` / `shots 5 106 6`: dropped at the bullet, values unchanged) and E
+  (the host alone at the MULE camp: the probe's MULE `shots 5 4 6` dropped as npc, the control `shots 5 4 -6`, and a cargo
+  piece on the ground, `shots 6` / `shots 5 3 4`). Runs `20261124-093441` (FAIL only on an optional vehicle removal with no
+  vehicle: removed; C passed: 6 dropped on his Sam, kept 0) and `20261124-093844` (FAIL at E's cargo line: the 4 replays hit
+  nothing; everything before passed: C 4 dropped, kept 0; D truck and postbox dropped 6 each, unchanged; E MULE dropped 12).
+  A's still still shows a rock between her and the host (he stands on an outcrop there); B's stills show her replayed burst.
+  The guest-side visual (the host's shots on her screen) was unproven then (shown since run 112720; the pass below). Review fixes:
+  A to D now on the flat road (`@both goto mknot-road`; the probe built its truck and postbox there); E's cargo piece is out
+  of the gate (no replay hit it, and a failed optional step fails the run too); the start line is checked to its end
+  (`(BT reaction off); muzzle 1, magazine effect 1`) and `nolog \[shots\] byte check FAILED` on both games; the status
+  lines want `BT off` (`shots_bt_drop=0` by default). D's "unchanged" proves nothing alone: the non-lethal rifle wears neither
+  target even in a control; the class counters are the evidence. Runs `20261124-112720` / `-114027` (FAIL at B: at
+  `mknot-road`, beside the road rebuilder, her LT + RT fired nothing, HUD 30/222, no `sent` line; cause not known), so B to D
+  now run on the outcrop (after A: `@guest pad none 0`, `@both goto -1153.4 338.0`, the guest 8 m behind his right shoulder,
+  `shots 3 8 135`, her camera steered at him again, `camera aimed #2`; C waits for `#3`), where 093441 / 093844 passed them.
+  Run `20261124-120631-two-games-shots` **passed** (A to E; stills: her view of his flash cloud, his view of her muzzle flash,
+  the pair off / on; C our Sam 4 dropped, kept 0; D truck and postbox 6 each; E MULE 12).
+- `shots-hit-drop` (solo, `-SeedSaves complete-100`, `audio_probe=1`, `dev_tools=1`; round 16, a probe): the sound windows
+  (our own burst, then `shots_echo` replays with the muzzle only / with the magazine effect / with neither, `shots 8`, the
+  audio probe's dump after each), then the aimed test (`shots 5`) on a dev truck, a dev postbox (`106`), at the MULE camp the
+  probe's MULE and a cargo piece, each with its control. Runs `20261124-092442` (FAIL at the MULE line: classed "other",
+  fixed) and `20261124-093019` (FAIL at the postbox line: classed "other", fixed); not run since the fixes (the two-game run
+  093844 ran the same targets). Its optional cargo steps are gone (round 16): no replay ever hit the piece `shots 6` picks
+  (46-47 m off at the camp, runs 093844 / 115147: its stored place is likely not the realized piece's), and a failed optional
+  step fails the run (docs/enemy-sync.md 7.5). Run `20261124-121151-shots-hit-drop` **passed** (truck, postbox and MULE with
+  their controls). A probe, never selected.
 
 ### Round 15 prove (2026-11-24)
 
@@ -1712,6 +1737,38 @@ the waist weapon case had not been drawn since section 13 and these scenarios ha
 (C: her camera aimed in yaw only, by 120 ms pulses that went on after "aimed"; the shots went past his left foot into the
 ground: `shots 4 <deg> 1` now steers yaw and pitch at his chest), `221339-two-games-vehicle-hit` (the offline-mode notice held
 the host's load in Setup|SystemPause; `world ready` and `waitplayer` pass behind it), `215644-enemy-freeze-probe` (Faint).
+
+## Enemy mirrors and the enemy shots (round 16)
+
+docs/enemy-sync.md section 8: P1a, the host owning every enemy.
+
+- `two-games-enemy-mirror` (`launcherini local-test`, no `ini` line since round 16b: enemy sync on by its `host_save=1`
+  default; about 5 min):
+  `pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-enemy-mirror -SeedSaves complete-100 -GuestSeed profile-only -Id <id>`.
+  Both at the MULE Camp Southwest of Lake Knot City, every MULE resurrected, both Sams invulnerable and shielded; the gate on
+  both (`sync on (host|guest): ... (equal`), mirrors on the guest; census tags 1-4; the same MULE framed on both screens (01,
+  02); the host fires into the air and the camp comes at him; round 16b: at a MULE's 10th replayed round the host faces his
+  newest sent shooter (`enemy_look -2`, 12 m), the guest 3 m to his right then 10 m from the mirror he faces (`enemy_look -1`),
+  both cameras steered at it and following it (hers `shots 9 12 0`: the MULE right of her body), then 16 pairs of stills
+  `03-host-alert-x` / `03-guest-sees-alert-x` in turn; the damage policy (`enemy_shot_test` nohurt, then kept with a health
+  drop: `health 1000.0 -> [0-9]{1,3}.` and `dev_god 0` required; its rounds level from 2 m since 16b); the guard (round 16b:
+  the guest's own rifle at the nearest mirror, `enemy_look 0 5 1.0` and `shots 4 2 2` twice, stills `04-guest-fires-at-mirror`
+  and `-b`; required: the log line `a bullet hit on a frozen mirror dropped (... our Sam's own round` and `mirror attacks
+  (status): ... dropped at the bullet n (our Sam's own rounds [1-9]`: the replays' drops no longer count); the lease (the guest
+  teleported to the Craftsman, 8 s, no settle wait since 16b: `mirrors n=0 frozen=0`). Also required since
+  the review: a driver error window with p95 under 1 m, a posed mirror (`sync: ... posed=[1-9]`), and the enemy shots' `enemy
+  sent n=[1-9]` (host) and `enemy replayed n=.. (muzzle [1-9]` (guest).
+- After a run: `python -I tools\testenv\enemy-compare.py build-testenv\runs\<run>`: per census tag, the enemies realized on
+  the guest within 250 m of her against the host's places (by GUID; the gate wants p95 within 1 m) and the unrealized ones
+  within 1000 m (the far placement). It FAILS (exit 1) when the logs share no census tag or a tag has no mirrored enemy.
+- Round 16: eight runs; `20261124-102741`, `-103118` and `-104304` (the final code) passed; the others failed on the scenario's
+  own steps (fixed). Every run: saves unchanged, restored, 0 game-server writes, 0 cloud uploads, the online gate on. The
+  muzzle of a replayed MULE round was never caught in a still (enemy-sync.md 8.3).
+- Round 16b (enemy-sync.md 8.9): four runs; `20261124-124658` passed on the final code and the launcher's own files (pair a:
+  the same MULE firing at the host on both screens, its tracer leaving its rifle on his, its round in flight on hers); the
+  others failed on a shot test, two optional steps and a missed guard burst (each fixed). Each enemy replay's first hit is
+  logged (`enemy replay #n's first hit`): the partner body. `two-games-launcher-local-test` (`20261124-125108`) passed with
+  enemy sync on by default.
 
 ## Hip crates (round 14, round 15)
 

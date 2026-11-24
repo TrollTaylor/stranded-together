@@ -129,9 +129,13 @@ enum class Action : std::uint8_t {
     // Enemy sync P1-0 (enemy_sync.hpp): the freeze probe, hidden runs only
     enemy_probe,          // v[0] = op (0 check + pick [v[1] radius], 1 lever v[1] mode v[2], 2 pose v[1] s, 3 secs v[1] path v[2], 9 release)
     // Shots (shot_sync.hpp; docs/enemy-sync.md P3a)
-    shots,                // v[0] = 0 status, 1 on, 2 off
+    shots,                // v[0] = 0 status, 1 on, 2 off; hidden runs: 3 / 4 / 9 placement and aim, 5 aimed test, 6 cargo target, 8 ids
     shots_test,           // v[0] = metres ahead, v[1] = flags (1 the filter keeps it, 2 no weapon, 4 no magazine, 16 leak test), v[2] = count
     shots_echo,           // v[0] = 0/1, v[1] = metres to the right (default 2.5)
+    // Enemy sync P1a (enemy_sync.hpp; docs/enemy-sync.md 8)
+    enemy_sync,           // v[0] = op (0 status, 1 on, 2 off, 3 mirror table; hidden runs: 6 variant v[1], 7 cadence v[1])
+    enemy_look,           // v[0] = id (0 nearest, -1 the one the partner faces), v[1] = m (hidden runs)
+    enemy_shot_test,      // v[0] = id (0 nearest mirror), v[1] = 1 nohurt (hidden runs, the guest)
     count
 
 };

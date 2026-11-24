@@ -1,31 +1,44 @@
-# Shots, ship A (docs/enemy-sync.md P3a): a player's gunfire on the other screen, with the game's own muzzle flash, tracer and
-# impacts (the shooter's bullet records sent as SFX1 and replayed through CreateBullet from the partner body's gun), and the
-# replays never hurt the watcher's Sam (the replay set's references dropped by the shared Sam damage detour; the watcher's
-# vehicles, cargo and structures still can be hit: docs/enemy-sync.md 7.3). Two games on the launcher's own Local test files
-# (host plays Sam, the guest Fragile with the self view), the 100% save's assault rifle. shots_sync is off by default (round 15
-# review): the test switch shots_sync=1 on both.
-#   A: the host fires a burst; the guest watches from 8 m at 135 deg (behind his right shoulder, his muzzle facing past her),
-#      her camera turned to him (shots 3 8 135, shots 4: right-stick pulses until "camera aimed").
+# Shots, ship A (docs/enemy-sync.md P3a, 7.5): a player's gunfire on the other screen, with the game's own muzzle flash, tracer
+# and impacts (the shooter's bullet records sent as SFX1 and replayed through CreateBullet from the partner body's gun). A
+# replay is visual only: its hits are dropped at the bullet (BulletDamageA / B, round 16) before any vehicle, cargo, structure
+# or NPC of the watcher's world takes them, and on the watcher's Sam by the shared Sam damage detour. Two games on the
+# launcher's own Local test files (host plays Sam, the guest Fragile with the self view), the 100% save's assault rifle.
+# shots_sync is on by default since round 16: no switch. A on the flat road beside Mountain Knot City (mknot-road: runs
+# 20261124-093441 / -093844 stood him on an outcrop at -1153.4, 338.0 and a rock hid him from her in every still). B to D on
+# that outcrop: at mknot-road (runs 20261124-112720 / -114027) she stood 7 m from him on the road beside the road rebuilder
+# and her LT + RT fired nothing (HUD 30/222 in every still, no "sent" line; releasing her LT first changed nothing), while on
+# the outcrop B to D passed in both runs 093441 and 093844. Why the game would not fire there is not known.
+#   A: the host fires a burst; the guest watches from 7 m at his right side (his tracers cross her view), her camera steered
+#      at him 15 deg off centre (shots 9 15 0, shots 4 4 1: her own body does not hide him; run 15 from 135 deg: it did).
 #   B: the guest fires; the host watches from 7 m at her right side. Then an on/off pair from the same camera: the host's
 #      replays off (shots 2: his beacon drops the fire bit, the guest stops sending), a burst (02-pair-off: no flash, no
 #      tracer at her rifle); on again (shots 1), a burst (02-pair-on: flash and tracer).
 #   C (required): the guest, 4 m in front of the host and facing him, aimed at his chest within 2 deg in yaw and pitch (shots
 #      4 2 1: the mod steers her camera in the aim stance), fires at him (dev_god 0 on the host): the host's status counts
 #      dropped replay hits on his Sam and none kept.
+#   D: the host's own truck and postbox under the guest's replays (shots 5: her last received shot replayed from 6 m in front
+#      of each, straight at it): the drop at the bullet counts them (vehicle / structure class). The class counters are the
+#      evidence: the truck's life and the postbox's durability read the same before and after, but the non-lethal rifle does
+#      not wear either even in a control (run 20261124-092442: life 15000 after 8 let-through hits).
+#   E: the host alone at the MULE camp south-west of Lake Knot City: the enemy probe's MULE (at the bullet "npc"; the control
+#      lets them through, and the Humanoid backstop never sees a bullet hit: run 20261124-093844 counted +0 there). The cargo
+#      piece is no longer part of the gate (its stored place +0x38 is not where the piece is: no replay hit it in run 093844);
+#      the probe shots-hit-drop keeps it, optional.
 #   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-shots -SeedSaves complete-100 -GuestSeed profile-only
 # covers: shots
 role host
 graphics low
 timeout 360
 launcherini local-test
-ini shots_sync=1
 start control 200
 waitlog 10 \[world\] world sync ON \(host\)
+waitlog 5 \[shots\] ON: Enqueue hooked, Sam filter on, NPC drop on, drop at the bullet on \(BT reaction off\); muzzle 1, magazine effect 1
+@guest waitlog 5 \[shots\] ON: Enqueue hooked, Sam filter on, NPC drop on, drop at the bullet on \(BT reaction off\); muzzle 1, magazine effect 1
 @guest waitlog 120 \[world\] guest: snapshot #1 complete
-@both goto -1153.4 338.0
+@both goto mknot-road
 wait 4000
-waitlog 30 \[link\] combat parts: ours 0x04 theirs 0x04: fire on
-@guest waitlog 30 \[link\] combat parts: ours 0x04 theirs 0x04: fire on
+waitlog 30 \[link\] combat parts: ours 0x[0-9A-F]{2} theirs 0x[0-9A-F]{2}: fire on
+@guest waitlog 30 \[link\] combat parts: ours 0x[0-9A-F]{2} theirs 0x[0-9A-F]{2}: fire on
 waitlog 30 \[sync\] partner body: real
 @guest waitlog 30 \[sync\] partner body: real
 # both draw the rifle (the wheel's upper left)
@@ -34,11 +47,12 @@ waitlog 30 \[sync\] partner body: real
 @both pad dpad_right 400 keep
 @both pad none 0
 wait 2000
-# ---- A: the host fires, the guest watches from behind his right shoulder
-@guest action shots 3 8 135
+# ---- A: the host fires, the guest watches from his right side (run 20261124-093441: from 135 deg a rock hid him)
+@guest action shots 3 7 90
 wait 2500
-@guest action shots 4 15
-@guest until 45 300 \[shots\] camera aimed #1 => pad none 120 rx=32767
+@guest action shots 9 15 0
+@guest action shots 4 4 1
+@guest waitnew 45 \[shots\] camera aimed #1 at the partner body \(steered
 pad none 1000 lt=255 keep
 pad none 300 lt=255 rt=255 keep
 @guest screenshot 01-guest-sees-host-a
@@ -53,6 +67,15 @@ screenshot 01-host-fires-d
 pad none 0
 waitlog 8 \[shots\] sent n=[1-9]
 @guest waitlog 8 \[shots\] replayed n=[1-9][0-9]* \(muzzle [1-9]
+# ---- to the outcrop for B to D (see the top): both there, the guest 8 m behind his right shoulder, her camera steered at him
+# again (her LT let go first: the steered aim holds it again), as runs 093441 / 093844 stood before B
+@guest pad none 0
+@both goto -1153.4 338.0
+wait 4000
+@guest action shots 3 8 135
+wait 2500
+@guest action shots 4 4 1
+@guest waitnew 45 \[shots\] camera aimed #2 at the partner body \(steered
 # ---- B: the guest fires, the host watches from her right side
 action shots 3 7 90
 wait 2500
@@ -74,14 +97,14 @@ screenshot 02-host-sees-guest-d
 waitlog 8 \[shots\] replayed n=[1-9][0-9]* \(muzzle [1-9]
 # ---- B pair: the same camera, the host's replays off, then on
 action shots 2
-@guest waitnew 10 \[link\] combat parts: ours 0x04 theirs 0x00
+@guest waitnew 10 \[link\] combat parts: ours 0x[0-9A-F]{2} theirs 0x[0-9A-F]{2}: fire off \(the partner does not replay shots
 @guest pad none 1000 lt=255 keep
 @guest pad none 300 lt=255 rt=255 keep
 screenshot 02-pair-off
 @guest pad none 0
 wait 1000
 action shots 1
-@guest waitnew 10 \[link\] combat parts: ours 0x04 theirs 0x04: fire on
+@guest waitnew 10 \[link\] combat parts: ours 0x[0-9A-F]{2} theirs 0x[0-9A-F]{2}: fire on
 @guest pad none 1000 lt=255 keep
 @guest pad none 300 lt=255 rt=255 keep
 screenshot 02-pair-on
@@ -93,8 +116,9 @@ action shots 0
 wait 2500
 # steered (shots 4 2 1): run 20261123-221121 pulsed the yaw only, the camera kept the teleport's pitch and the 120 ms pulse
 # turned it on after "aimed": her 7 shots went past his left foot into the ground (03-host-under-fire), none hit him
+@guest action shots 9 0 0
 @guest action shots 4 2 1
-@guest waitnew 45 \[shots\] camera aimed #2 at the partner body \(steered
+@guest waitnew 45 \[shots\] camera aimed #3 at the partner body \(steered
 @guest pad none 900 lt=255 rt=255 keep
 screenshot 03-host-under-fire
 @guest screenshot 03-guest-fires-at-host
@@ -103,8 +127,45 @@ wait 2500
 @guest action shots 0
 action shots 0
 waitnew 3 \[shots\] status: .*replay hits dropped: our Sam [1-9][0-9]* \(dummy-owner hits seen in tests [0-9]+\), NPCs [0-9]+, kept 0;
+# ---- D: the host's own truck and postbox under the guest's replays (aimed at each from 6 m; their values read before and after)
+action dev_vehicle 2 0 10
+wait 4000
+action shots 5 1 6
+screenshot 04-host-truck-replays
+waitnew 6 \[shots\] aimed test #[0-9]+: vehicle .* x 6: enqueued [1-9].* dropped \+[1-9][0-9]* \(vehicle [1-9].*: unchanged
+waitlog 1 \[shots\] aimed test #[0-9]+: 6 replay\(s\) of the partner's last shot at the vehicle
+?action dev_vehicle_remove 0 1
+action dev_build 6 0 10
+waitnew 5 \[world\] dev build: id [0-9]+ type 6 \(postbox\) anim 0
+wait 3000
+action shots 5 106 6
+screenshot 05-host-postbox-replays
+waitnew 6 \[shots\] aimed test #[0-9]+: structure \(id [0-9]+ type 6, .* x 6: enqueued [1-9].* dropped \+[1-9][0-9]* .*: unchanged
+action shots 0
+waitnew 3 \[shots\] status: .*at the bullet \(on, BT off\): dropped vehicle [1-9]
+# ---- E: the host at the MULE camp (the guest stays): the probe's MULE and a cargo piece on the ground, under her replays
+goto mule-camp-sw-lkc
+action dev_enemies 1
+waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+wait 4000
+action enemy_probe 0 150
+waitlog 10 \[enemy\] probe pick id=
+action enemy_probe 5 1
+action enemy_probe 4 12
+wait 2000
+action shots 5 4 6
+screenshot 06-host-mule-replays
+waitnew 6 \[shots\] aimed test #[0-9]+: MULE .* x 6: enqueued [1-9].* dropped \+[1-9][0-9]* \(.*npc [1-9].*NPC backstop \+0;
+action shots 5 4 -6
+waitnew 6 \[shots\] aimed test #[0-9]+: MULE .* x 6 \(control\)
+# (no cargo step here: no replay has hit the piece yet, run 20261124-093844, and a failed optional step fails the run too;
+# the probe shots-hit-drop keeps it, optional, until a target a replay really hits exists)
+action shots 0
+waitnew 3 \[shots\] status: .*at the bullet \(on, BT off\): dropped vehicle [1-9].* npc [1-9]
 nolog \[shots\] FAULT
 @guest nolog \[shots\] FAULT
+nolog \[shots\] byte check FAILED
+@guest nolog \[shots\] byte check FAILED
 nolog \[gate\] OTGC WRITE
 @guest nolog \[gate\] OTGC WRITE
 @guest quit

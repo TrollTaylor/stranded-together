@@ -133,6 +133,7 @@ inline constexpr std::uint8_t kD0NotSettable = 0x1A;
 // 0x20 an entity reference and its object differ by. A replay that would push out a live entry is refused (HasRoom): a
 // bullet whose references are gone could hurt the watcher. 2048 entries hold 512 replays a second at 4 s, above the
 // sender's cap (320 a second).
+inline constexpr std::uint8_t kReplayKindPartner = 1, kReplayKindEnemy = 2, kReplayKindTest = 3, kReplayKindAimed = 4;
 inline constexpr unsigned kReplaySetSize = 2048;
 inline constexpr double kReplayTtlMs = 4000;     // the least
 inline constexpr double kReplayTtlMaxMs = 10000;  // the most
@@ -149,13 +150,18 @@ struct ReplaySet {
         std::uint64_t ref[kReplayRefs] = {};
         double t = -1e18;
         double ttl = kReplayTtlMs;
-        std::uint8_t kind = 0;  // 1 the partner's shot, 2 an enemy's (P3), 3 a test
+        std::uint8_t kind = 0;  // 1 the partner's shot, 2 an enemy's (kReplayKindEnemy), 3 a test, 4 the aimed test
         bool Live(double now) const noexcept { return !(now - t > ttl || now < t - 1000); }
     };
     Entry e[kReplaySetSize];
     unsigned head = 0;
     // False: the next Add would push out an entry that is still live.
     bool HasRoom(double now) const noexcept { return !e[head].Live(now); }
+    // Every entry gone (a load: the old world's references can come back on the new world's bullets).
+    void Clear() noexcept {
+        for (Entry& x : e) x = Entry{};
+        head = 0;
+    }
     void Add(const std::uint64_t* refs, unsigned n, double t, std::uint8_t kind, double ttl_ms = kReplayTtlMs) noexcept {
         Entry& x = e[head];
         head = (head + 1) % kReplaySetSize;
@@ -317,20 +323,63 @@ struct PullGroup {
     }
 };
 
-// ---------------------------------------------------------------- the rate cap (32 shots per 100 ms window)
-inline constexpr unsigned kCapShots = 32;
+// Per shooter (enemy shots, round 16: the pellets of one MULE's pull share the muzzle, another MULE's shot starts its own pull):
+// a small LRU of PullGroups keyed by the shooter id.
+struct PullGroups {
+    static constexpr unsigned kN = 16;
+    struct E {
+        std::uint32_t shooter = 0;
+        PullGroup g;
+        double used = -1e18;
+        bool on = false;
+    };
+    E e[kN];
+    bool Next(std::uint32_t shooter, double now_ms, std::uint8_t weapon) noexcept {
+        unsigned at = kN;
+        for (unsigned i = 0; i < kN && at == kN; ++i)
+            if (e[i].on && e[i].shooter == shooter) at = i;
+        if (at == kN) {
+            at = 0;  // a free entry, else the least recently used
+            for (unsigned i = 0; i < kN; ++i) {
+                if (!e[i].on) {
+                    at = i;
+                    break;
+                }
+                if (e[i].used < e[at].used) at = i;
+            }
+            e[at] = E{};
+            e[at].on = true;
+            e[at].shooter = shooter;
+        }
+        e[at].used = now_ms;
+        return e[at].g.Next(now_ms, weapon);
+    }
+};
+
+// ---------------------------------------------------------------- the rate cap (N shots per 100 ms window)
+inline constexpr unsigned kCapShots = 32;       // the players' shots
+inline constexpr unsigned kEnemyCapShots = 24;  // the enemy shots (round 16; their own cap, beside the players')
 inline constexpr double kCapWindowMs = 100;
-struct RateCap {
-    double t[kCapShots] = {};
+template <unsigned N>
+struct RateCapN {
+    double t[N] = {};
     unsigned head = 0, count = 0;
     bool Take(double now) noexcept {
-        while (count && now - t[head] >= kCapWindowMs) head = (head + 1) % kCapShots, --count;
-        if (count >= kCapShots) return false;
-        t[(head + count) % kCapShots] = now;
+        while (count && now - t[head] >= kCapWindowMs) head = (head + 1) % N, --count;
+        if (count >= N) return false;
+        t[(head + count) % N] = now;
         ++count;
         return true;
     }
 };
+using RateCap = RateCapN<kCapShots>;
+using EnemyRateCap = RateCapN<kEnemyCapShots>;
+
+// The shooter a frame may carry: an enemy frame (flags kEnemyShooters) only enemy actor ids (type 1: id & 0x1FE000 == 0x2000), any
+// other frame only the sender's Sam. A frame that mixes them is refused (round 16).
+inline constexpr bool ShooterOk(std::uint16_t frame_flags, std::uint32_t shooter) noexcept {
+    return (frame_flags & kEnemyShooters) ? (shooter != kNoActor && (shooter & 0x1FE000u) == 0x2000u) : shooter == kShooterSam;
+}
 
 // ---------------------------------------------------------------- the ids a replay passes (the registry, snapshot)
 // The weapon / magazine registry ([0x147BEB0F8]) as the replay found it: CreateBullet dereferences a missing weapon's +0x80
@@ -341,6 +390,80 @@ struct IdCheck {
     bool child_ok = true;  // weapons: +0x80 non-null, its +0x90 count in 0..64
 };
 inline std::uint8_t ValidId(std::uint8_t id, const IdCheck& c) noexcept { return id && c.listed && c.child_ok ? id : 0; }
+
+// ---------------------------------------------------------------- the drop at the bullet (round 16)
+// Every bullet hands its damage to what it hit through one of two functions (BulletDamageA 0x142912120 / B 0x142912380:
+// `receiver->vt[+0x10](receiver, DamageInfo)`), whatever the receiver is: vehicles, cargo, structures, BTs, NPCs, props. A
+// replay is visual only (the shooter's own game decides the real damage), so a replay's hit is dropped there, before any
+// receiver sees it, except on our own Sam: his hits go on to the shared Sam damage detour, whose "shots" filter keeps its
+// policy (shots_friendly_fire). `replay`: the bullet's attack reference is in the replay set; `owner_dummy`: the bullet's
+// owner is the bullet system's dummy (every CreateBullet bullet's: a reused reference on one of the game's own bullets is
+// never dropped); `our_sam`: the receiver is our Sam's (entity + 0x38); `keep_test`: a hidden-run control (the replay's
+// damage let through on purpose).
+// A damage message (on our Sam, on an NPC) is one of our replays only when its reference is in the replay set AND its attacker
+// is the bullet system's dummy, known (non-zero), give or take the 0x20 an entity and its reference differ by: every replay's
+// attacker is (runs 20261124-093441 / -104304); a game round whose reference reuses a replay's is never one (review 16).
+inline constexpr bool ReplayHit(bool ref_match, std::uint64_t attacker, std::uint64_t dummy) noexcept {
+    return ref_match && dummy != 0 && attacker != 0 && (attacker == dummy || attacker == dummy + 0x20 || attacker + 0x20 == dummy);
+}
+enum class BulletVerdict : std::uint8_t { pass, drop };
+inline constexpr BulletVerdict BulletRule(bool replay, bool owner_dummy, bool our_sam, bool keep_test) noexcept {
+    return replay && owner_dummy && !our_sam && !keep_test ? BulletVerdict::drop : BulletVerdict::pass;
+}
+
+// What a dropped hit would have hit, by the receiving entity's class name (the game's own type name), for the counters.
+enum class HitClass : std::uint8_t { vehicle, cargo, structure, bt, npc, player, other };
+inline constexpr unsigned kHitClasses = 7;
+inline const char* HitClassName(HitClass c) noexcept {
+    static const char* const kNames[kHitClasses] = {"vehicle", "cargo", "structure", "bt", "npc", "player", "other"};
+    const unsigned i = static_cast<unsigned>(c);
+    return i < kHitClasses ? kNames[i] : "other";
+}
+namespace detail {
+inline bool Has(const char* s, const char* sub) noexcept {
+    if (!s || !sub || !*sub) return false;
+    for (; *s; ++s) {
+        const char* a = s;
+        const char* b = sub;
+        while (*a && *b && *a == *b) ++a, ++b;
+        if (!*b) return true;
+    }
+    return false;
+}
+}  // namespace detail
+inline HitClass ClassifyHit(const char* name) noexcept {
+    using detail::Has;
+    if (!name || !*name) return HitClass::other;
+    // the order matters: "DSVehicleHitchCarrierMover" is a vehicle, "DSBaggage2Entity" cargo, a BT before an NPC
+    if (Has(name, "Baggage") || Has(name, "Cargo")) return HitClass::cargo;
+    if (Has(name, "Vehicle") || Has(name, "Motorbike") || Has(name, "Speedcar") || Has(name, "Truck") || Has(name, "Trike") || Has(name, "HoveringCart"))
+        return HitClass::vehicle;
+    if (Has(name, "Gazer") || Has(name, "Catcher") || Has(name, "Hunter") || Has(name, "Whale") || Has(name, "SupportBt") || Has(name, "BT"))
+        return HitClass::bt;
+    if (Has(name, "Player")) return HitClass::player;
+    if (Has(name, "Humanoid") || Has(name, "Mule") || Has(name, "Npc") || Has(name, "Warrior") || Has(name, "Higgs") || Has(name, "Demens") ||
+        Has(name, "DeliveryBot") || Has(name, "Animal") || Has(name, "ControlledEntity"))  // a MULE's entity: DSControlledEntity
+        return HitClass::npc;
+    if (Has(name, "Placable") || Has(name, "Construction") || Has(name, "Ladder") || Has(name, "Rope") || Has(name, "Signboard") || Has(name, "Destructib") ||
+        Has(name, "ArmorPlate") || Has(name, "FixedGun") || Has(name, "Zipline") || Has(name, "Bridge") || Has(name, "Shelter") || Has(name, "Postbox") ||
+        Has(name, "Generator") || Has(name, "Tower"))
+        return HitClass::structure;
+    return HitClass::other;
+}
+
+// The aimed test (hidden runs, `shots 5`): a value read before and after the replays (a vehicle's life, a structure's
+// durability, a cargo's): unchanged within eps (a structure decays in timefall between the reads: eps absorbs it).
+inline bool ValueUnchanged(float before, float after, float eps) noexcept {
+    return std::isfinite(before) && std::isfinite(after) && std::fabs(after - before) <= eps;
+}
+// The aimed replay's origin: `m` from the target point toward `from` (our Sam), at the target's height + up (straight at it).
+inline void AimedOrigin(const double (&target)[3], const double (&from)[3], double m, double up, double (&out)[3]) noexcept {
+    double dx = from[0] - target[0], dy = from[1] - target[1];
+    const double l = std::sqrt(dx * dx + dy * dy);
+    if (l < 1e-3) dx = 1, dy = 0;
+    else dx /= l, dy /= l;
+    out[0] = target[0] + dx * m, out[1] = target[1] + dy * m, out[2] = target[2] + up;
+}
 
 // ---------------------------------------------------------------- quantisation helpers (shared by the codec and the tests)
 inline std::int16_t Q15(float v) noexcept {

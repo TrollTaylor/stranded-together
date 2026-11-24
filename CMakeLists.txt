@@ -32,7 +32,8 @@ if(GIT_FOUND)
                          native/mod/vehicle_wire.hpp native/mod/vehicle_wire.cpp native/mod/ride_wire.hpp native/mod/ride_wire.cpp
                          native/mod/tackle_rules.hpp native/mod/tackle_rules.cpp native/mod/world_wire.hpp native/mod/world_wire.cpp
                          native/mod/world_rules.hpp native/mod/texture_wire.hpp native/mod/texture_wire.cpp
-                         native/mod/face_rules.hpp native/mod/shot_wire.hpp native/mod/shot_wire.cpp)
+                         native/mod/face_rules.hpp native/mod/shot_wire.hpp native/mod/shot_wire.cpp
+                         native/mod/enemy_wire.hpp native/mod/enemy_wire.cpp)
       set(_st_wire_text "")
       foreach(_f IN LISTS _st_wire_files)
         file(READ "${CMAKE_CURRENT_SOURCE_DIR}/${_f}" _t)
@@ -172,6 +173,8 @@ add_library(st_mod SHARED
   native/mod/shot_wire.cpp
   native/mod/shot_sync.cpp
   native/mod/enemy_sync.cpp
+  native/mod/enemy_wire.cpp
+  native/mod/npc_damage.cpp
   native/mod/save_xfer.cpp
   native/mod/save_xfer_io.cpp
   native/mod/coop_session.cpp
@@ -342,6 +345,19 @@ target_include_directories(st_shot_wire_tests PRIVATE native/mod)
 target_compile_options(st_shot_wire_tests PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_shot_wire_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_test(NAME st_shot_wire_tests COMMAND st_shot_wire_tests)
+
+# ---- Enemy sync P1a, the pure part (native/mod/enemy_wire.*, enemy_rules.hpp; docs/enemy-sync.md 8): the SEN1 / SEP1 codecs and
+# the enemy SFX1 frame; the schedule, pose slots, interpolation, band, entry, lease, the entity set, the damage policy.
+add_executable(st_enemy_wire_tests tests/enemy_wire_tests.cpp native/mod/enemy_wire.cpp native/mod/pose_wire.cpp native/mod/shot_wire.cpp)
+target_include_directories(st_enemy_wire_tests PRIVATE native/mod)
+target_compile_options(st_enemy_wire_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_enemy_wire_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_enemy_wire_tests COMMAND st_enemy_wire_tests)
+add_executable(st_enemy_rules_tests tests/enemy_rules_tests.cpp)
+target_include_directories(st_enemy_rules_tests PRIVATE native/mod)
+target_compile_options(st_enemy_rules_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_enemy_rules_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_enemy_rules_tests COMMAND st_enemy_rules_tests)
 
 # ---- Fragile's face (face_rules.hpp): the wire ids of Sam's facial clips, the manager's choice, when a face gets a clip
 add_executable(st_face_rules_tests tests/face_rules_tests.cpp)

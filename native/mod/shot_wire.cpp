@@ -46,7 +46,7 @@ std::size_t EncodeShots(const Frame& f, std::uint8_t* out, std::size_t cap) noex
     const std::size_t size = kHeaderSize + kShotSize * f.n;
     if (cap < size) return 0;
     for (unsigned i = 0; i < f.n; ++i)
-        if (!ShotOk(f.shots[i])) return 0;
+        if (!ShotOk(f.shots[i]) || !ShooterOk(f.flags, f.shots[i].shooter)) return 0;
     std::memset(out, 0, size);
     out[0] = 'S', out[1] = 'F', out[2] = 'X', out[3] = '1';
     out[4] = kVersion;
@@ -114,7 +114,7 @@ bool DecodeShots(const std::uint8_t* d, std::size_t n, Frame& out) noexcept {
         if (!std::isfinite(s.rec94)) return false;
         for (int k = 0; k < 3; ++k) s.hand_rel[k] = static_cast<float>(static_cast<std::int16_t>(Get16(p + 60 + 2 * k))) / 1000.0f;
         s.yaw = static_cast<float>(Get16(p + 66) / 65536.0 * 2.0 * 3.14159265358979323846);
-        if (!ShotOk(s)) return false;
+        if (!ShotOk(s) || !ShooterOk(f.flags, s.shooter)) return false;
         // normalise the direction back to unit (the q15 rounding)
         const double l = std::sqrt(static_cast<double>(s.dir[0]) * s.dir[0] + static_cast<double>(s.dir[1]) * s.dir[1] + static_cast<double>(s.dir[2]) * s.dir[2]);
         for (int k = 0; k < 3; ++k) s.dir[k] = static_cast<float>(s.dir[k] / l);

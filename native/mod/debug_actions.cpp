@@ -189,6 +189,9 @@ bool DoShotsTest(const Request& r, char* msg, std::size_t cap) {
     return shots::Test(r.v[0], static_cast<int>(r.v[1]), static_cast<int>(r.v[2]), msg, cap);
 }
 bool DoShotsEcho(const Request& r, char* msg, std::size_t cap) { return shots::Echo(r.v[0] != 0, r.v[1], msg, cap); }
+bool DoEnemySync(const Request& r, char* msg, std::size_t cap) { return esync::Command(static_cast<int>(r.v[0]), r.v, msg, cap); }
+bool DoEnemyLook(const Request& r, char* msg, std::size_t cap) { return esync::Look(r.v, msg, cap); }
+bool DoEnemyShotTest(const Request& r, char* msg, std::size_t cap) { return esync::ShotTest(r.v, msg, cap); }
 bool DoAudioProbe(const Request& r, char* msg, std::size_t cap) { return game::AudioProbeCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoSelfVoice(const Request& r, char* msg, std::size_t cap) { return game::SelfVoiceCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoVoiceSync(const Request& r, char* msg, std::size_t cap) { return game::VoiceSyncCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
@@ -358,10 +361,16 @@ constexpr Row kRows[] = {
      &DoEnemyCensus},
     {{Action::enemy_probe, Tab::tools, "Enemy probe", "Enemy sync P1-0, hidden runs only: 0 [m] check and pick the nearest realized MULE, 3 s path the next tests' length and path, 1 lever mode freeze / drive / release / watch, 2 s our Sam's pose onto it, 9 release.", false},
      &DoEnemyProbe},
-    {{Action::shots, Tab::tools, "Shots", "The players' shots on the other screen (shots_sync): 0 status, 1 on, 2 off, 3 m deg our Sam beside the partner body facing it, 4 [deg] aim the camera at it (hidden runs).", false}, &DoShots},
+    {{Action::shots, Tab::tools, "Shots", "The players' shots on the other screen (shots_sync): 0 status, 1 on, 2 off, 3 m deg our Sam beside the partner body facing it, 4 [deg] [1 steered, 2 steered then 2 s of fire] aim the camera at it, 5 target n aimed test, 6 cargo target, 8 muzzle magazine, 9 yaw pitch aim offset, 10 m the enemy replays' start along the shot (hidden runs).", false}, &DoShots},
     {{Action::shots_test, Tab::tools, "Shots test", "One replayed bullet at our own Sam (the last captured shot's ids): m ahead, flags (1 the filter keeps it, 2 no weapon, 4 no magazine, 16 leak test), count.", false},
      &DoShotsTest},
     {{Action::shots_echo, Tab::tools, "Shots echo", "Solo: our own shots replayed beside us: 0/1, m to the right (default 2.5).", false}, &DoShotsEcho},
+    {{Action::enemy_sync, Tab::tools, "Enemy sync", "Enemy mirrors (enemy_sync): 0 status, 1 on, 2 off (every mirror released), 3 the mirror table; hidden runs: 6 0/1 far placement variant, 7 0/3 the teleport cadence.", false},
+     &DoEnemySync},
+    {{Action::enemy_look, Tab::tools, "Enemy look", "Hidden runs: our Sam m from an enemy, facing it: <id | 0 nearest (the guest: a frozen mirror) | -1 the one the partner faces | -2 the newest replayed (the host: sent) shooter | -3 behind it | -4 beside its line> <m> [aim height m, default 1.2]; a steered aim (shots 4 <deg> 1) then follows it.", false},
+     &DoEnemyLook},
+    {{Action::enemy_shot_test, Tab::tools, "Enemy shot test", "Hidden runs, the guest: 3 enemy replays level at our Sam's chest from 2 m, from a mirror's side (its hand's line and 50 deg either side): <id | 0 the last looked-at, else nearest> [1 nohurt].", false},
+     &DoEnemyShotTest},
 };
 constexpr std::size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);
 static_assert(kRowCount == static_cast<std::size_t>(Action::count), "every Action needs exactly one registry row");

@@ -2841,6 +2841,24 @@ bool DevRepair(double max_m, char* msg, std::size_t cap) noexcept {
            bat_ok;
 }
 
+// The shots' aimed test (shot_sync.cpp, hidden runs): the nearest vehicle with an entity, its place and life (+0x6E8).
+bool NearestVehicleLife(double max_m, std::uintptr_t* entity, double (&pos)[3], float* life) noexcept {
+    char why[96];
+    if (!DevReady(kCore, why, sizeof(why))) return false;
+    WorldTransform sam{};
+    if (!LocalSam(&sam)) return false;
+    std::vector<PUnit> units;
+    if (!Poll(units)) return false;
+    const PUnit* best = Nearest(units, sam, max_m > 0 ? max_m : 30.0, true, false, nullptr);
+    if (!best) return false;
+    float l = 0;
+    if (!mem::Rd(best->entity + kELife, l) || !std::isfinite(l)) return false;
+    *entity = best->entity;
+    pos[0] = best->xf.pos.x, pos[1] = best->xf.pos.y, pos[2] = best->xf.pos.z;
+    *life = l;
+    return true;
+}
+
 }  // namespace st::vshare
 
 namespace st::game {

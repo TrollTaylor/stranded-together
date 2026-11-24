@@ -173,6 +173,9 @@ bool DevRemove(double max_m, bool last, char* msg, std::size_t cap) noexcept;
 // Repair and recharge the vehicle nearest to our Sam within `max_m` (0 or less = 10 m; ridden or not): the game's own sequence
 // of its race reset (0x142D6ED80): vehicle vt+0x118 (Repair), battery [+0x898]+8 = +0xC, 0x142F5A260, +0x34 = 0.
 bool DevRepair(double max_m, char* msg, std::size_t cap) noexcept;
+// The shots' aimed test (hidden runs): the nearest vehicle with an entity within max_m (0 = 30) of our Sam: its entity, place
+// and life (entity +0x6E8). Game thread; false when the vehicle dev checks are off or none is near.
+bool NearestVehicleLife(double max_m, std::uintptr_t* entity, double (&pos)[3], float* life) noexcept;
 // Game thread, every tick (dev_tools.cpp): logs what a DevSpawn made 2 s later (unit, variant, entity +0x4C8).
 void DevTick(double now_ms) noexcept;
 // Game thread: the vehicle tools' byte checks (the pool / spawn sites when the shared vehicles did not check them, the
