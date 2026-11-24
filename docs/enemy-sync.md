@@ -1,4 +1,4 @@
-# Enemy sync (design; milestone P0 done: the read-only census)
+# Enemy sync (P0 done: the census; round 15: R1 foundations, the P1-0 freeze probe, ship A: the players' shots)
 
 Co-op in Death Stranding means both players see the same MULEs, Demens, warriors and BTs, and what one player does to them
 the other sees. Today each game runs its own enemies: the guest's world is a copy of the host's save (the host-held save
@@ -6,8 +6,11 @@ session, [coop-session.md](coop-session.md)), so the same camps exist in both, b
 deaths are separate. This document is the plan for changing that, phase by phase, and the record of what each phase proved.
 
 Status: **P0** (the census) is implemented and run (section 3): both worlds have the same 150 MULEs with the same GUIDs and
-actor ids, placed identically, but their patrols run out of step and their AIs drift apart. P1 onward is design only (section
-4.7 is the recommended next step): no wire change, no gameplay change has been made.
+actor ids, placed identically, but their patrols run out of step and their AIs drift apart. **Round 15** (section 7) built the
+foundations of the plan's R1 (the shared Sam damage detour, the bullet Enqueue detour, link channel 6 "combat" with the pack
+order, the SEH1 beacon and the combat frame queues), ran the two probes (P3-0 shots, P1-0 freeze) and built **A: the players'
+own shots** on the other screen (`shots_sync`; default **off** since the round 15 review: its two-game gate run failed its
+friendly-fire step, section 7.3). Enemies themselves are not mirrored yet (P1a is next).
 
 Sources: the round-10 research (Ghidra on ds.exe Director's Cut, PE timestamp 1706443442), the MGSV mod's enemy-sync history
 (`ref-ddt/docs/world-sync-design.md` 4.x and 7.8-7.33), and this mod's own vehicles (section 23 of
@@ -282,3 +285,155 @@ One hidden run per phase (docs/hidden-testing.md "Test economy"), each ending pa
 - **P3**: a fire-replay run.
 
 The area is `enemies` in `tools/testenv/test-areas.txt` (`native/mod/enemy_*`, and debug-action lines naming the enemies).
+
+## 7. Round 15: R1, the probes, ship A
+
+The plan is round 14's `enemy-design/plan.md` (R1, R1a, R1b, R2). Everything below was built in round 15 and run hidden.
+
+### 7.1 R1: foundations (no gameplay change of their own)
+
+- **`sam_damage.{hpp,cpp}`**: the one MinHook on our Sam's MsgDamage handler `0x14271BC00` (byte-checked: its 23-byte
+  prologue; `[samdmg] off: ...` on a mismatch), created at start-up by the first client that asks (`Ensure`). The handler is
+  `void(entity, msg)`: when its damage component refuses a DamageInfo it sets msg + 8 = 1 and returns; a dropped message does
+  the same and the original is not called. Clients: observers (run first, may change the message) and filters (the first drop
+  wins). The vehicle hits (`partner_tackle.cpp`) are its first observer, with their code and log lines unchanged (they hooked
+  the same handler themselves before); the shots register the filter "shots". `View` carries the DamageInfo's attack
+  reference (+0x28), context (+0x40), attacker (`Q(ctx + 0x68) - 0x20`), amount and hit point.
+- **The bullet Enqueue detour** (`shot_sync.cpp`, `0x142916860`): byte checks 18/18 (the prologue, the slot layout and serial,
+  CreateBullet's thunk and body, the two RIP globals `[0x147BEB0F8]` / `[0x147BEB108]`, the weapon / magazine lookups, the
+  current-weapon getter, the Humanoid damage handler, and the five call sites still calling Enqueue).
+- **Link**: `kReliableChannels` 6 -> 7, `kCombatChannel = 6`, `kPackOrder = {1, 2, 3, 4, 6, 5}` (PackBody and ReliableDue offer
+  the channels in that order: the assets stay last; `TestCombatChannel` in `st_net_tests`); `SendCombat` / `PopCombat` (a
+  queue of 64, cleared by a new session); the combat frames `SendCombatFrame` / `PopCombatFrame` for SEH1 (2), SEN1 (8), SEP1
+  (16), SFX1 (32), raw bytes decoded on the game thread. Nothing is queued on channel 6 yet.
+- **SEH1** (`shot_wire.hpp`, 24 B): parts bit2 "fire" is set by this build; 1 Hz for 10 s after a new link session, then every
+  5 s and on every change. `[link] combat parts: ours 0x04 theirs 0x04: fire on`. Since the review the bit means "send me
+  your shots": a game sets it only while it can replay them (the Sam filter registered, the NPC drop installed unless
+  `shots_npc_drop=0`); otherwise `fire off (no replays here)`. The beacon's and SFX1's `world` fields stay 0: no identifier
+  is shared between the two games (each game's load counter is its own), so a replay is bounded by the partner body instead
+  (section 7.3, the review's item 4).
+
+### 7.2 The probes
+
+**P3-0, shots** (`shots-probe`, run `20261123-204732-shots-probe`, pass; two earlier runs found the corrections below):
+
+- Sam's bullets do go through Enqueue (called from the fire path `ds.exe+0x2918FC9`, on job threads) and their record +0x20 is
+  our Sam (`DSPlayerEntity`), as the plan said.
+- **Correction**: Sam's records carry **attack 0** and a category at +0x5A (the non-lethal rifle: category 71); Enqueue itself
+  replaces the attack from the category table (registry +0x30 / +0x38, key +0x20, attack u16 +0x38, or +0x3A with +0xD1 bit 0).
+  CreateBullet refuses attack 0, so the sender resolves it the same way (the rifle: attack 0x47, 150 m/s).
+- The replay (CreateBullet with weapon 45 and magazine 71, both found in the registry: 67 weapons, 133 magazines) is enqueued
+  every time and its record is the original's field for field (+05, +5A, +D0, +D1 patched in; checked from the slot after
+  the call). The echo stills show the replays' tracers and impacts 2.5 m to the right of our own (contact sheet: the round
+  15 scratch folder `shots\sheet.png`, panels 8-9);
+  the replays' own muzzle was off screen (2.5 m right of a camera at Sam's shoulder).
+- **The damage identity holds**: the bullet system's slot +0x48 handle read after the enqueue equals the hit's DamageInfo +0x28
+  exactly (`ref match=1 (how 0, word 0)`), and the attacker is the system's dummy owner. With the filter left out the hit
+  reached our Sam (`kept (nofilter)`); with it, `dropped by the filter (ref match)`. So the replay set is the filter; the
+  plan's fallback (building records ourselves) is not needed. The dummy owner was a second, weaker rule (a dummy-owned hit
+  within 3 s of a replay), unused in the runs; the review removed it (every CreateBullet bullet, the game's own scripted ones
+  too, belongs to the dummy): it is now only noted for the test line (`dummy owner seen=1`), never a reason to drop.
+- Review note: the two test steps of the probe as run (`waitlog ... ref match=[01]`) accepted either outcome and the second
+  matched the first test's line; the scenario now waits for `ref match=1 ... kept (nofilter)` and then `ref match=1 ...
+  dropped by the filter (ref match)` with `waitnew`. The run's log has both lines (38.8 s and 41.2 s), so the result above
+  stands; the scenario is a probe (`# select: probe`).
+- Leak check: 200 replays (one attack context each): working set 4878.2 MB -> 4870.3 MB. No leak.
+- The magazine effect (+0x140 at the muzzle) was passed in the runs (`shots_sound=1`); whether it is the shot's sound, and
+  whether it doubles `sound_sync`'s own weapon sound, was not measured: `shots_sound` defaults to 0 since the review.
+
+**P1-0, freeze** (`enemy-freeze-probe`, run `20261123-204901-enemy-freeze-probe`; picked MULE `02029` 64 m away, then our Sam
+12 m from it; byte checks 23/23):
+
+| lever / mode | err p50 / p95 / max | animate | release | note |
+|---|---|---|---|---|
+| 0 none (control) | self-moved 7.9 m | 30.0/s | moved 14.6 m, turned 43 deg | its AI walks; it fired no shot and hit nothing (a silent control) |
+| 1 Occupied{1}, 1 per-tick set | 0.00 / 0.00 / 0.00 m | 15.1/s | ea4 0x2046000 -> 0x2040000, moved 22.4 m, turned 177 deg | **hold PASS, release PASS**; weapon +0x268 = 1 while frozen |
+| 1 Occupied{1}, 2 per-tick teleport | 0.00 m | 12.2/s | "moved 52 m", a88 0x2 | the MULE left the world during or right after it |
+| 2 Occupied + Required, 3 | (invalid) | 0/s | 0 m | no longer realized: the probe kept reading a stale entity (fixed: a test now ends `ABANDONED`) |
+| 4 Occupied + Sleep, 3 | (invalid) | 0/s | 0 m | as above |
+
+The run ended early: our Sam had fainted (the camp's non-lethal fire; god mode 2 does not stop a faint), so the pose step was
+not reached. The probe was a FAIL as a run (line 47: `teleport refused: game state: Faint`). Since the review the scenario
+(`# select: probe`) refills Sam before every lever, walks him 3 s into the camp before the control, waits for each test's own
+`done:` line (`waitnew`), requires `hold=PASS ... release=PASS` for lever 1 / mode 1 and fails on any lever-1 `ABANDONED`; a
+MULE that unloads now also ends its test `done: ABANDONED` with the pose slot cleared (it was left armed).
+
+**The decision for P1a** (the plan's rule, 4.3): **lever 1, Occupied{1}, with mode 1** (actor vt+0x10 and
+Entity_ExportedSetWorldTransform every tick; no teleports) is the first row that held (0.00 m) and gave the AI back (Occupied{0}
+plus Required{0}: bits 13 and 14 cleared, it walked and turned). Its weapon flag +0x268 was set while frozen (the NPC weapon
+update returns at once: it cannot shoot). Open, for the next round's first run: **G2** (the control was silent, so "silent" is
+INCONCLUSIVE: rerun with our Sam walked into the camp and kept from fainting), **G3** (the animate rate fell from 30/s to 15/s
+under Occupied, below the plan's 20/s, and the written pose was not measured), and levers 2 / 4 (invalid here). The fixed probe
+(the realized-state check, the topmost-ground teleport) is in the tree; `enemy_freeze` defaults to `occupied` when P1a lands.
+The puppet path is not needed on this evidence.
+
+### 7.3 Ship A: the players' own shots (`session.ini shots_sync`, default off)
+
+- **Sender** (the Enqueue detour, any thread): a record whose owner is our Sam is copied into a ring of 64; the game-thread
+  tick turns it into a shot: origin, direction and speed from +0x60 / +0x70, the attack (resolved from the category), the
+  record bytes +04 +05 +06 +58 +5A +D0 +D1 +84 +94, the weapon and magazine ids of the inventory's current weapon (instance
+  +0x12, the magazine parameter's +0x20), the origin relative to our right hand (joint 26) in our yaw frame, the muzzle flag on
+  the first record of a pull (16 ms, the same weapon). The target actor is never sent in ship A (an absolute point 150 m along
+  the shot). SFX1 frames (20 B + 68 B a shot, up to 14), every shot in two consecutive frames; a cap of 32 shots per 100 ms.
+  Sent only while both beacons carry "fire".
+- **Receiver** (game thread): dedupe by shot id (256-id window), hold until the partner body's pose play time reaches the
+  shot (late after 500 ms), the origin re-anchored on the partner body's right hand (within 1.5 m of the sent origin),
+  refused when it starts more than 30 m from the body or when no partner body is drawn here (another region, not spawned:
+  `refused ... origin`), then CreateBullet with the weapon id (the game's own muzzle flash, `shots_muzzle`) and magazine id
+  (`shots_sound`) only on the pull's first shot, both checked against the registry first (a missing id becomes 0), 8 replays
+  a tick at most. In the Enqueue detour the replay's record gets the original's bytes and its attack handles go into the
+  replay set for as long as the bullet can fly (150 m / speed + 1 s, 4..10 s; 2048 entries).
+- **Checked before the game sees it** (round 15 review): the Enqueue reads the category (+0x5A) from the registry while it
+  holds the bullet system's lock and reads `list[-1]` for a missing one; a fault there would leave the lock held and hang the
+  game (SEH cannot recover it, so SEH is only a last resort). So a replay is refused (counted: `refused ... category`) when its
+  category is not listed; +0xD1 is masked to bit 0 (Sam's records carry 0x00; bit 1 adds a context path, 0x14298AEC0, that
+  looks the category up again); attack ids 0x5F / 0x60 (CreateBullet's projectile-entity path, 0x14294C870) are never encoded,
+  decoded or replayed; a speed under 20 m/s is refused; a replay that would push a live entry out of the replay set is refused
+  (`set full`). Replays need the Sam filter AND, unless `shots_npc_drop=0`, the NPC drop installed (`[shots] OFF for replays:
+  the NPC drop is not installed`); the test actions (`shots_test`, `shots_echo`) are hidden-run only. The filters keep
+  matching after a fault-stop, so replays in flight stay dropped.
+- **Damage**: a hit whose DamageInfo reference is in the replay set is dropped on our Sam (`shots_friendly_fire=0`) and on
+  every Humanoid (MULEs, Demens: a detour on `0x1437393D0`, `shots_npc_drop=1`). The Humanoid drop is **not run**: every
+  status line of the round's runs says `NPCs 0` / `enemies 0` (no replay hit a MULE). Vehicles, cargo, structures and BTs (not
+  Humanoids; hematic rounds) the replays hit are not filtered, and the replays' impacts and noise can still alert this world's
+  MULEs (known gaps, below).
+- **The gate** (`two-games-shots`, run `20261123-205837-two-games-shots`, the launcher's own files, no switch), **FAIL**: its
+  `summary.json` says `"result":"fail"` (1 failure): the optional step C (`?waitlog ... replay hits dropped: our Sam [1-9]`)
+  failed, and an optional step that fails fails the run. The rest: fire on on both;
+  the host sent 15 and the guest replayed 15 (muzzle 15, magazine effect 15, late 0, refused 0); the guest sent 13 and the
+  host replayed 13 (muzzle 13). No fault, saves unchanged, 0 game-server writes. Stills (contact sheet panels 1-6): on the
+  host's screen the guest's body with its rifle, a muzzle flash at its muzzle 120 ms into her burst and the tracers going on
+  (crops 5 and 6); her own screen (panel 7) shows her shots' impacts on the slope. Direction A (the guest watching the host)
+  is in the logs only: her own body and backpack hid the host in her stills. Step C (her burst at the host with his god mode
+  off) put 8 more replays on the host but none hit him: her camera stopped at "camera aimed #2 ... (-7.4 deg off)", about
+  0.8 m beside him at 6 m, so the two-game drop is unproven; the solo probe proved the identity and the drop. (Contact sheet:
+  the round 15 scratch folder `shots\sheet.png`, panels 1-6.)
+- **Since the review** (`two-games-shots` changed, not run): `ini shots_sync=1` (the default is off); A from 8 m at 135 deg
+  (behind his right shoulder); an on/off pair from the host's camera in B (`02-pair-off`: the host's replays off, `shots 2`,
+  her burst; `02-pair-on`: on again); C required: the guest 4 m in front of the host, aimed within 2 deg, and the host's
+  status must count dropped hits on his Sam with `kept 0`.
+- **Default off** (review): the gate failed, the two-game drop on the watcher is unproven, the Humanoid drop is not run and the
+  replays still hit vehicles, cargo, structures and BTs. `shots_sync=1` turns it on (the scenarios' test switch); the launcher
+  writes no `shots_*` key.
+- Logs: `[shots] sent n=.. (pulls .., pellets .., frames ..; attack 0x.. speed ..) weapon ids {..} mag ids {..}`, `[shots]
+  replayed n=.. (muzzle .., mag effect ..), late .., ... refused: weapon .. mag .. attack .. origin .. target .. filter ..
+  category .. speed .. set full ..`, `[shots] replay hits dropped: our Sam .. (replay set ..), enemies ..`,
+  `[shots] FAULT in <step>: shots stopped for this session`.
+
+**Known gaps of ship A**: thrown grenades, launchers, the sticky gun and the bola are entities of their own, not replayed
+(P3b); a replay can still damage the receiver's vehicles, cargo and structures it hits (only our Sam and Humanoids are
+filtered; BTs too), and its impacts can alert this world's MULEs; the target actor (a lock-on) is not carried; the magazine
+effect's audibility and a double sound with `sound_sync` were not checked (`shots_sound` off by default); shotgun pellets were
+not run (the 100% save's rifle only); the Humanoid drop was not run.
+
+### 7.4 The next round
+
+1. One `enemy-freeze-probe` rerun (the fixed probe; our Sam walked into the camp so the control attacks; the pose step) for
+   G2 / G3 under lever 1, mode 1.
+2. One vehicle-hit run (`two-games-vehicle-hit`): the vehicle hits now observe through the shared detour (built and installed
+   in the gate run, `[samdmg] ... asked first by vhit`, but no vehicle hit was run this round). `sam_damage.*` now touches the
+   area `sam-damage`, which only that scenario covers, so the selector picks it.
+2a. One `two-games-shots` run (the changed gate: step C required, the on/off pair) and a step that puts replays into a MULE
+   (`replay hits dropped: .* enemies [1-9]`) before `shots_sync` can default on again.
+3. Then R3 (P1a mirrors with lever 1 / mode 1, SEN1 / SEP1, enemy shots through the same SFX1 path) and its gate
+   `two-games-enemy-mirror`.

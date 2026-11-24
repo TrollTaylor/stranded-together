@@ -3,8 +3,6 @@
 
 #include <windows.h>
 
-#include "MinHook.h"
-
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -19,6 +17,7 @@
 #include "partner_source.hpp"
 #include "ride_camera.hpp"
 #include "ride_together.hpp"
+#include "sam_damage.hpp"
 #include "tackle_rules.hpp"
 #include "vehicle_drive.hpp"
 #include "vehicle_share.hpp"
@@ -119,7 +118,6 @@ using HitCb = char (*)(std::uintptr_t ctx, std::uintptr_t receiver, std::uintptr
 using FnHitQuery = std::uint64_t (*)(std::uintptr_t ctx, const double* centre, float radius, float amount, void* filter, HitCb cb, std::uintptr_t user,
                                      const float* zero16, const float* impulse16, std::int32_t directional, float impulse_scale, std::uint32_t flags,
                                      std::uintptr_t out_hits, std::int32_t out_cap);
-using FnDamage = std::uint64_t (*)(std::uintptr_t, std::uintptr_t);
 
 // ---------------------------------------------------------------- state
 unsigned g_groups = 0;                 // the groups whose checks passed
@@ -137,7 +135,6 @@ double g_now = 0;
 TickIn g_in;
 
 // the damage hook's view (worker threads): which attack reference we just used, and what it saw
-FnDamage o_damage = nullptr;
 std::atomic<std::uintptr_t> g_sam{0};             // our Sam (the tick)
 std::atomic<std::uintptr_t> g_want_ref{0};        // the attack reference ([ctx+0xE8]) of our newest call
 std::atomic<std::uintptr_t> g_prelim_ref{0};      // the preliminary tackle's (+0xA20; the bracket's second query, 0 damage)
@@ -269,7 +266,8 @@ float Health() noexcept {
 
 // ---------------------------------------------------------------- the damage hook (worker threads: atomics and reads only)
 std::atomic<unsigned> g_ride_blocked{0};
-std::uint64_t H_Damage(std::uintptr_t sam, std::uintptr_t msg) {
+// An observer of the shared detour (sam_damage.hpp): it runs before the original handler, as the own detour did before R1.
+void H_Damage(std::uintptr_t sam, std::uintptr_t msg) {
     g_msgs_all.fetch_add(1, std::memory_order_relaxed);
     const std::uintptr_t want = g_want_ref.load(std::memory_order_acquire);
     if (ride::ShieldCovers(sam)) {
@@ -353,7 +351,6 @@ std::uint64_t H_Damage(std::uintptr_t sam, std::uintptr_t msg) {
             }
         }
     }
-    return o_damage(sam, msg);
 }
 
 // ---------------------------------------------------------------- the calls (game thread, SEH, POD locals only)
@@ -912,12 +909,11 @@ void Install(const Config& config) noexcept {
     }
     // Sam's damage handler: counts, caps the messages of our attack (start-up only: enabling a hook suspends every thread)
     if (groups & kGHook) {
-        void* t = reinterpret_cast<void*>(A(kSamDamage));
-        MH_STATUS s = MH_CreateHook(t, reinterpret_cast<void*>(&H_Damage), reinterpret_cast<void**>(&o_damage));
-        if (s == MH_OK) s = MH_EnableHook(t);
-        g_hooked = s == MH_OK;
+        // R1 (docs/enemy-sync.md): the one shared detour (sam_damage.cpp) with this module as its first observer
+        g_hooked = samdmg::Ensure("vhit") && samdmg::Observe(&H_Damage);
         if (!g_hooked) {
-            Log("[vhit] Sam's damage handler not hooked (%s): hits are seen by the health drop only; the bracket's speed hold still caps", MH_StatusToString(s));
+            Log("[vhit] Sam's damage handler not hooked (%s): hits are seen by the health drop only; the bracket's speed hold still caps",
+                samdmg::Installed() ? "observer table full" : samdmg::OffReason());
             g_groups &= ~kGHook;
         }
     }

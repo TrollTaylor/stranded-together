@@ -32,7 +32,7 @@ if(GIT_FOUND)
                          native/mod/vehicle_wire.hpp native/mod/vehicle_wire.cpp native/mod/ride_wire.hpp native/mod/ride_wire.cpp
                          native/mod/tackle_rules.hpp native/mod/tackle_rules.cpp native/mod/world_wire.hpp native/mod/world_wire.cpp
                          native/mod/world_rules.hpp native/mod/texture_wire.hpp native/mod/texture_wire.cpp
-                         native/mod/face_rules.hpp)
+                         native/mod/face_rules.hpp native/mod/shot_wire.hpp native/mod/shot_wire.cpp)
       set(_st_wire_text "")
       foreach(_f IN LISTS _st_wire_files)
         file(READ "${CMAKE_CURRENT_SOURCE_DIR}/${_f}" _t)
@@ -147,8 +147,10 @@ add_library(st_mod SHARED
   native/mod/partner_gear.cpp
   native/mod/hood_fold.cpp
   native/mod/held_items.cpp
+  native/mod/bag_model.cpp
   native/mod/gear_look.cpp
   native/mod/menu_figure.cpp
+  native/mod/wardrobe.cpp
   native/mod/audio_probe.cpp
   native/mod/self_voice.cpp
   native/mod/partner_voice.cpp
@@ -166,6 +168,10 @@ add_library(st_mod SHARED
   native/mod/save_guard.cpp
   native/mod/tackle_rules.cpp
   native/mod/partner_tackle.cpp
+  native/mod/sam_damage.cpp
+  native/mod/shot_wire.cpp
+  native/mod/shot_sync.cpp
+  native/mod/enemy_sync.cpp
   native/mod/save_xfer.cpp
   native/mod/save_xfer_io.cpp
   native/mod/coop_session.cpp
@@ -329,6 +335,14 @@ target_compile_options(st_enemy_census_tests PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_enemy_census_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_test(NAME st_enemy_census_tests COMMAND st_enemy_census_tests)
 
+# ---- Shots, the pure part (native/mod/shot_wire.*): the SFX1 / SEH1 codecs, the record flag byte, the replay set, the dedupe,
+# the hand anchor, the play gate, pulls, the rate cap (docs/enemy-sync.md P3a).
+add_executable(st_shot_wire_tests tests/shot_wire_tests.cpp native/mod/shot_wire.cpp)
+target_include_directories(st_shot_wire_tests PRIVATE native/mod)
+target_compile_options(st_shot_wire_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_shot_wire_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_shot_wire_tests COMMAND st_shot_wire_tests)
+
 # ---- Fragile's face (face_rules.hpp): the wire ids of Sam's facial clips, the manager's choice, when a face gets a clip
 add_executable(st_face_rules_tests tests/face_rules_tests.cpp)
 target_include_directories(st_face_rules_tests PRIVATE native/mod)
@@ -351,6 +365,15 @@ target_include_directories(st_held_rules_tests PRIVATE native/mod)
 target_compile_options(st_held_rules_tests PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_held_rules_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_test(NAME st_held_rules_tests COMMAND st_held_rules_tests)
+
+# ---- The carried cargo on the other screen, the pure part (native/mod/cargo_rules.hpp): which carried pieces are sent with
+# which model byte (the hip crates as the baggage config's exact model), what the receiver draws (docs/real-partner-body.md
+# section 39).
+add_executable(st_cargo_rules_tests tests/cargo_rules_tests.cpp)
+target_include_directories(st_cargo_rules_tests PRIVATE native/mod)
+target_compile_options(st_cargo_rules_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_cargo_rules_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_cargo_rules_tests COMMAND st_cargo_rules_tests)
 
 # ---- Fragile's porter suit in Sam's suit colours, the pure part (native/mod/suit_colour_math.hpp): the colour -> constant
 # textures mapping (her own look at 0, the palette scaled to her navy, the silver / gold metals), the debug override.

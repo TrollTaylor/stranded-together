@@ -1,0 +1,112 @@
+# Shots, ship A (docs/enemy-sync.md P3a): a player's gunfire on the other screen, with the game's own muzzle flash, tracer and
+# impacts (the shooter's bullet records sent as SFX1 and replayed through CreateBullet from the partner body's gun), and the
+# replays never hurt the watcher's Sam (the replay set's references dropped by the shared Sam damage detour; the watcher's
+# vehicles, cargo and structures still can be hit: docs/enemy-sync.md 7.3). Two games on the launcher's own Local test files
+# (host plays Sam, the guest Fragile with the self view), the 100% save's assault rifle. shots_sync is off by default (round 15
+# review): the test switch shots_sync=1 on both.
+#   A: the host fires a burst; the guest watches from 8 m at 135 deg (behind his right shoulder, his muzzle facing past her),
+#      her camera turned to him (shots 3 8 135, shots 4: right-stick pulses until "camera aimed").
+#   B: the guest fires; the host watches from 7 m at her right side. Then an on/off pair from the same camera: the host's
+#      replays off (shots 2: his beacon drops the fire bit, the guest stops sending), a burst (02-pair-off: no flash, no
+#      tracer at her rifle); on again (shots 1), a burst (02-pair-on: flash and tracer).
+#   C (required): the guest, 4 m in front of the host and facing him, aimed at his chest within 2 deg in yaw and pitch (shots
+#      4 2 1: the mod steers her camera in the aim stance), fires at him (dev_god 0 on the host): the host's status counts
+#      dropped replay hits on his Sam and none kept.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-shots -SeedSaves complete-100 -GuestSeed profile-only
+# covers: shots
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini shots_sync=1
+start control 200
+waitlog 10 \[world\] world sync ON \(host\)
+@guest waitlog 120 \[world\] guest: snapshot #1 complete
+@both goto -1153.4 338.0
+wait 4000
+waitlog 30 \[link\] combat parts: ours 0x04 theirs 0x04: fire on
+@guest waitlog 30 \[link\] combat parts: ours 0x04 theirs 0x04: fire on
+waitlog 30 \[sync\] partner body: real
+@guest waitlog 30 \[sync\] partner body: real
+# both draw the rifle (the wheel's upper left)
+@both pad dpad_right 600 keep
+@both pad dpad_right 900 lx=-23170 ly=23170 rx=-23170 ry=23170 keep
+@both pad dpad_right 400 keep
+@both pad none 0
+wait 2000
+# ---- A: the host fires, the guest watches from behind his right shoulder
+@guest action shots 3 8 135
+wait 2500
+@guest action shots 4 15
+@guest until 45 300 \[shots\] camera aimed #1 => pad none 120 rx=32767
+pad none 1000 lt=255 keep
+pad none 300 lt=255 rt=255 keep
+@guest screenshot 01-guest-sees-host-a
+screenshot 01-host-fires-a
+pad none 120 lt=255 rt=255 keep
+@guest screenshot 01-guest-sees-host-b
+pad none 120 lt=255 rt=255 keep
+@guest screenshot 01-guest-sees-host-c
+pad none 120 lt=255 rt=255 keep
+@guest screenshot 01-guest-sees-host-d
+screenshot 01-host-fires-d
+pad none 0
+waitlog 8 \[shots\] sent n=[1-9]
+@guest waitlog 8 \[shots\] replayed n=[1-9][0-9]* \(muzzle [1-9]
+# ---- B: the guest fires, the host watches from her right side
+action shots 3 7 90
+wait 2500
+action shots 4 15
+until 45 300 \[shots\] camera aimed #1 => pad none 120 rx=32767
+@guest pad none 1000 lt=255 keep
+@guest pad none 300 lt=255 rt=255 keep
+screenshot 02-host-sees-guest-a
+@guest screenshot 02-guest-fires-a
+@guest pad none 120 lt=255 rt=255 keep
+screenshot 02-host-sees-guest-b
+@guest pad none 120 lt=255 rt=255 keep
+screenshot 02-host-sees-guest-c
+@guest pad none 120 lt=255 rt=255 keep
+screenshot 02-host-sees-guest-d
+@guest screenshot 02-guest-fires-d
+@guest pad none 0
+@guest waitlog 8 \[shots\] sent n=[1-9]
+waitlog 8 \[shots\] replayed n=[1-9][0-9]* \(muzzle [1-9]
+# ---- B pair: the same camera, the host's replays off, then on
+action shots 2
+@guest waitnew 10 \[link\] combat parts: ours 0x04 theirs 0x00
+@guest pad none 1000 lt=255 keep
+@guest pad none 300 lt=255 rt=255 keep
+screenshot 02-pair-off
+@guest pad none 0
+wait 1000
+action shots 1
+@guest waitnew 10 \[link\] combat parts: ours 0x04 theirs 0x04: fire on
+@guest pad none 1000 lt=255 keep
+@guest pad none 300 lt=255 rt=255 keep
+screenshot 02-pair-on
+@guest pad none 0
+# ---- C: the guest fires at the host (the host not invulnerable): the replays' hits are dropped on the host
+?action dev_god 0
+action shots 0
+@guest action shots 3 4 0
+wait 2500
+# steered (shots 4 2 1): run 20261123-221121 pulsed the yaw only, the camera kept the teleport's pitch and the 120 ms pulse
+# turned it on after "aimed": her 7 shots went past his left foot into the ground (03-host-under-fire), none hit him
+@guest action shots 4 2 1
+@guest waitnew 45 \[shots\] camera aimed #2 at the partner body \(steered
+@guest pad none 900 lt=255 rt=255 keep
+screenshot 03-host-under-fire
+@guest screenshot 03-guest-fires-at-host
+@guest pad none 0
+wait 2500
+@guest action shots 0
+action shots 0
+waitnew 3 \[shots\] status: .*replay hits dropped: our Sam [1-9][0-9]* \(dummy-owner hits seen in tests [0-9]+\), NPCs [0-9]+, kept 0;
+nolog \[shots\] FAULT
+@guest nolog \[shots\] FAULT
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@guest quit
+wait 3000
+quit

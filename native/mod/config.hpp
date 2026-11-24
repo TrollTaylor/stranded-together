@@ -122,6 +122,10 @@ struct Config {
     // the cutscene-prop weapons of v0.9; 1 the ladder, PCC and climbing anchor; 2, the default, every weapon / tool without a
     // cutscene prop) is drawn as a plain entity made from the item's own resource ("held clone").
     int held_items = 2;
+    // Round 14 (docs/real-partner-body.md section 39): the hip crates (the weapon case and the folding ladder Sam carries on his
+    // waist slots) sent and drawn on the partner as the game's own baggage model. On by default since round 15 (39.6: the model's
+    // representation is given its message handlers, so the crates are drawn); 0: v0.28 (not sent or drawn).
+    bool waist_cargo = true;
     // Vehicles (docs/real-partner-body.md section 22): the vehicle the player rides is sent (STM1) and shown under the
     // partner's body on the other screen as a visual copy. Section 22.11 (after v0.13): 1 = on, SOLID trike and truck
     // copies (default; each copy's collision turned off on its own entity), the roadster as its construction hologram (no
@@ -173,6 +177,20 @@ struct Config {
     // passenger thrown off in a crash takes the same hit. Default on; 0 = the partner's vehicles never hurt THIS player's Sam
     // (each game decides for its own Sam; the launcher's Debug page "Partner's vehicles can knock me down").
     bool partner_vehicle_damage = true;
+    // Shots (docs/enemy-sync.md P3a, "ship A"; shot_sync.hpp): a player's gunfire shown on the other screen through the game's
+    // own CreateBullet (muzzle flash, trail, impacts). shots_sync: capture, send and replay. Default OFF (round 15 review): the
+    // two-game gate run failed its friendly-fire step (the drop on the watcher between two games is unproven) and the replays
+    // still hit the watcher's vehicles, cargo, structures and BTs (docs/enemy-sync.md 7.3); the launcher writes none of these
+    // keys, so the mod's defaults hold. shots_muzzle: pass the weapon id (the muzzle flash; 0 = trails and impacts only).
+    // shots_sound: pass the magazine id (the magazine's effect at the muzzle; default off until measured against sound_sync's
+    // own weapon sounds). shots_friendly_fire: 1 = the partner's replayed bullets can hurt our Sam (default 0: dropped).
+    // shots_npc_drop: the partner's replayed bullets never hurt this world's MULEs (a detour on the Humanoid damage handler;
+    // default on; while it is on but not installed, nothing is replayed).
+    bool shots_sync = false;
+    bool shots_muzzle = true;
+    bool shots_sound = false;
+    bool shots_friendly_fire = false;
+    bool shots_npc_drop = true;
     // The partner's vehicle copy hidden while the watcher's own vehicle of the same kind stands in the same place (two of
     // the same vehicle in one spot; docs/real-partner-body.md section 22). Default on; 0: the copy is always shown.
     bool vehicle_overlap_hide = true;

@@ -14,6 +14,7 @@
 #include "nametag_math.hpp"
 #include "pose_wire.hpp"
 #include "self_voice_setting.hpp"
+#include "shot_wire.hpp"
 #include "stcoop/link_crypto.hpp"
 #include "stcoop/link_protocol.hpp"
 #include "stcoop/link_session.hpp"
@@ -2142,6 +2143,84 @@ void TestJointFace() {
     CHECK(m.face == b.face && (m.flags & wire::kJointsFace));
 }
 
+// R1 (docs/enemy-sync.md): channel 6 "combat" and the fixed pack order 1, 2, 3, 4, 6, 5: with 5 and 6 both queued, 6's
+// message is packed first and the assets get only what is left; a channel-6 message decodes as before; 0..5 are unchanged.
+// SFX1's largest frame is one FRAME message of one DATA body (shot_wire.hpp kMaxShots).
+static_assert(st::shotw::kMaxFrameSize + stcoop::link::kMsgHeaderSize <= stcoop::link::kLinkMaxBody, "an SFX1 frame fits one datagram");
+
+void TestCombatChannel() {
+    namespace lk = stcoop::link;
+    static_assert(lk::kReliableChannels == 7 && lk::kCombatChannel == 6 && lk::kAssetChannel == 5 && lk::kSaveChannel == 4, "the channels");
+    static lk::ReliableSender tx[lk::kReliableChannels];
+    for (auto& t : tx) t.Reset();
+    std::uint8_t big[1000];
+    std::memset(big, 0xA5, sizeof(big));
+    std::uint8_t small[40];
+    std::memset(small, 0x5A, sizeof(small));
+    CHECK(tx[lk::kAssetChannel].Queue(big, sizeof(big), lk::ReliableMode::append) == lk::ReliableResult::queued);
+    CHECK(tx[lk::kCombatChannel].Queue(small, sizeof(small), lk::ReliableMode::append) == lk::ReliableResult::queued);
+    std::uint8_t body[lk::kLinkMaxBody];
+    lk::BodyWriter w(body, sizeof(body));
+    std::size_t budget = lk::kRetransmitBudgetBytes;
+    CHECK(lk::ReliableDue(tx, 1000, 100, budget));
+    CHECK(lk::PackBody(w, nullptr, 0, nullptr, tx, 1000, 100, budget));
+    unsigned msgs = 0;
+    CHECK(lk::ValidateBody(body, w.size(), msgs));
+    lk::MessageReader r(body, w.size());
+    lk::Message m{};
+    std::vector<unsigned> order;
+    while (r.Next(m)) {
+        lk::ReliableMsg rm{};
+        if (m.type == static_cast<std::uint8_t>(lk::MsgType::reliable) && lk::DecodeReliable(m, rm)) order.push_back(rm.channel);
+    }
+    CHECK(order.size() == 2 && order[0] == lk::kCombatChannel && order[1] == lk::kAssetChannel);
+    // the save channel still comes before both, and a full datagram leaves the assets out
+    for (auto& t : tx) t.Reset();
+    CHECK(tx[lk::kSaveChannel].Queue(big, sizeof(big), lk::ReliableMode::append) == lk::ReliableResult::queued);
+    CHECK(tx[lk::kAssetChannel].Queue(big, sizeof(big), lk::ReliableMode::append) == lk::ReliableResult::queued);
+    CHECK(tx[lk::kCombatChannel].Queue(small, sizeof(small), lk::ReliableMode::append) == lk::ReliableResult::queued);
+    lk::BodyWriter w2(body, sizeof(body));
+    budget = lk::kRetransmitBudgetBytes;
+    CHECK(lk::PackBody(w2, nullptr, 0, nullptr, tx, 1000, 100, budget));
+    lk::MessageReader r2(body, w2.size());
+    order.clear();
+    while (r2.Next(m)) {
+        lk::ReliableMsg rm{};
+        if (m.type == static_cast<std::uint8_t>(lk::MsgType::reliable) && lk::DecodeReliable(m, rm)) order.push_back(rm.channel);
+    }
+    CHECK(order.size() == 2 && order[0] == lk::kSaveChannel && order[1] == lk::kCombatChannel);
+    CHECK(tx[lk::kAssetChannel].queued() == 1);
+    // a channel-6 message from a peer decodes (the receiver accepts channels 1..6), and its RELACK too
+    static lk::ReliableReceiver rx;
+    rx.Reset();
+    lk::MessageReader r3(body, w2.size());
+    bool got6 = false;
+    while (r3.Next(m)) {
+        lk::ReliableMsg rm{};
+        if (m.type == static_cast<std::uint8_t>(lk::MsgType::reliable) && lk::DecodeReliable(m, rm) && rm.channel == lk::kCombatChannel &&
+            rm.channel < lk::kReliableChannels) {
+            rx.Accept(rm.id, rm.payload, rm.size, 1000);
+            got6 = true;
+        }
+    }
+    std::uint8_t out[lk::kMaxReliableMessage];
+    std::size_t outn = 0;
+    CHECK(got6 && rx.Drain(out, sizeof(out), outn, 1000) && outn == sizeof(small) && out[0] == 0x5A);
+    // channels 1..4 keep their order among themselves
+    for (auto& t : tx) t.Reset();
+    for (unsigned ch = 4; ch >= 1; --ch) CHECK(tx[ch].Queue(small, sizeof(small), lk::ReliableMode::append) == lk::ReliableResult::queued);
+    lk::BodyWriter w4(body, sizeof(body));
+    budget = lk::kRetransmitBudgetBytes;
+    CHECK(lk::PackBody(w4, nullptr, 0, nullptr, tx, 1000, 100, budget));
+    lk::MessageReader r4(body, w4.size());
+    order.clear();
+    while (r4.Next(m)) {
+        lk::ReliableMsg rm{};
+        if (m.type == static_cast<std::uint8_t>(lk::MsgType::reliable) && lk::DecodeReliable(m, rm)) order.push_back(rm.channel);
+    }
+    CHECK(order.size() == 4 && order[0] == 1 && order[1] == 2 && order[2] == 3 && order[3] == 4);
+}
+
 int main() {    TestPoseRoundTrip();
     TestJointFrames();
     TestJointOutfit();
@@ -2161,6 +2240,7 @@ int main() {    TestPoseRoundTrip();
     TestSpeechFrames();
     TestSoundFrames();
     TestVehicleFrames();
+    TestCombatChannel();
     if (g_fail) {
         std::printf("%d check(s) failed\n", g_fail);
         return 1;

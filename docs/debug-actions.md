@@ -231,6 +231,60 @@ our own Sam's entity and place come from the mod's usual guarded getters (GetLoc
 
 Scenario: `two-games-enemy-census` (the T0 run).
 
+### Enemy probe (`enemy_probe`; enemy sync P1-0, [enemy-sync.md](enemy-sync.md) section 7.2; hidden runs only)
+
+`native/mod/enemy_sync.cpp`: freezes one realized MULE with one lever, drives its place, gives it back and watches it.
+Needs `pose_hook=1` for the pose step and the shared Sam damage detour (`shots_sync=1`) for the hit counter.
+
+* `enemy_probe 0 [radius_m=120]`: byte checks (23: PostToActor, the Occupied constructor and vtable, the Required vtable and
+  its MULE handler, the Occupied handler, DSMuleGameActor's vt+0x10 / 0x40 / 0x48 / 0x50 / 0x58 / 0x60, the actor teleport
+  `0x1422F8D90`, Entity_ExportedSetWorldTransform, the NPC weapon update, the MULE weapon's Occupied), then the nearest realized,
+  live MULE not held by a sequence: `[enemy] probe pick id=XXXXX dist=.. ea4=.. a88=.. e88=.. weapon268=.. sm=..`.
+* `enemy_probe 3 <secs> <path>`: the next tests' length (default 8 s) and path (0 hold its place, 1 a 1 m/s line).
+* `enemy_probe 1 <lever> <mode>`: lever 0 none (control), 1 Occupied{1}, 2 Occupied{1} + Required{1}, 3 Sleep (vt+0x50),
+  4 Occupied{1} + Sleep; mode 0 no placement, 1 per tick vt+0x10 + Entity_ExportedSetWorldTransform, 2 per tick the actor
+  teleport, 3 a teleport every 500 ms with mode 1 between. Then the release (Occupied{0}, Required{0}, wake / show) and a 15 s
+  watch; one line `[enemy] probe lever=L mode=M path=P done: err p50 .. p95 .. max .. m; self-moved ..; shots .. hits ..
+  (control: ..); animate ../s; ...; release: ea4 ..->.., moved .. m / turned .. deg in 15 s => hold=.. silent=.. release=..`.
+  A MULE that leaves the world mid-test (state not 2, another entity) ends it: `done: ABANDONED`.
+* `enemy_probe 2 <secs>`: during a test, our Sam's live local pose written onto the MULE's SkinnedModel after each of its own
+  animates (real_body's enemy slot; the same 77-joint skeleton checked): `[enemy] probe pose: animate ../s, max joint error .. deg`.
+* `enemy_probe 4 [m]`: our Sam m (default 10) from the picked MULE, facing it (the topmost ground). `enemy_probe 9`: release now.
+* `enemy_probe 5 <1|0>`: the shield on / off: a Sam damage filter (after the shots' own; the hit counter observes first) drops
+  every damage message on our Sam while on (`[enemy] probe shield on|off: ... (n dropped so far)`). dev_god 2 did not keep the
+  camp from knocking him out (`Faint`) in three probe runs, the last `20261124-081850`.
+
+Scenario: `enemy-freeze-probe`.
+
+### Shots (`shots`, `shots_test`, `shots_echo`; `session.ini shots_sync`, default off since the round 15 review; [enemy-sync.md](enemy-sync.md) section 7.3)
+
+`native/mod/shot_sync.cpp`, the pure part `shot_wire.*` (`st_shot_wire_tests`).
+
+* `shots 0`: status: hooks, captured / sent / received / replayed counts, refusals (`refused weapon n mag n origin n filter
+  n category n speed n set full n`), the replay hits dropped (`replay hits dropped: our Sam n (dummy-owner hits seen in tests
+  n), NPCs n, kept n;`: our Sam by the replay set only; the dummy owner is never a reason to drop), the partner's combat parts,
+  our weapon / magazine ids and health. `shots 1` / `shots 2`: on / off live (the hooks stay; off also drops our beacon's
+  fire bit, so the partner stops sending). Hidden runs: `shots 3 <m> <deg>` our Sam m from the partner body at deg around its heading
+  (0 in front, 90 its right), facing it; `shots 4 [deg]` the game camera checked every tick until it looks at the partner
+  body (`[shots] camera aimed #n`; a scenario pulses the right stick until then); `shots 4 <deg> 1` steered: the mod holds LT
+  (the aim stance) and drives the virtual right stick itself until the camera's ray points at the body's chest (spine joint 4)
+  in yaw and pitch within deg and is still there 250 ms after the stick is released (`camera aimed #n at the partner body
+  (steered: yaw .., pitch .. deg off ...)`; LT stays held for the scenario's fire step; gives up after 30 s). Round 15 prove,
+  run `20261123-221121`: the pulsed yaw left the pitch where the teleport put it and her shots went into the ground.
+* `shots_test <m> <flags> [count]` (hidden runs only since the review; also refused while this game cannot replay): one CreateBullet from m ahead of our Sam toward his chest through the replay path, with the
+  last captured shot's attack / weapon / magazine ids (fire once first). flags 1: the filter keeps it (the proof under
+  `dev_god 0`), 2 no weapon id, 4 no magazine id, 16 the leak test: count (<= 400) replays into the ground 10 m ahead, 4 a tick,
+  the working set logged before and after. Logs the registry finds, the attack references (R) and the slot's record after the
+  patch, then 2 s later `[shots] test: ref match=0|1 (how .., word ..), dummy owner seen=0|1; dropped by the filter (ref match)
+  | kept (nofilter) | a dummy-owner hit only (never dropped) | no damage message of the replay within 2 s` (flag 1 is cleared
+  then: a later leak test keeps the filters).
+* `shots_echo <0|1> [m]` (hidden runs only since the review): solo: our own captured shots also replayed here from m (default
+  2.5) to our right.
+* Other lines (review): `[shots] OFF for replays: the NPC drop is not installed (...)` (`shots_npc_drop=1` but the Humanoid
+  hook is missing: nothing is replayed here, ours are still sent); `[link] combat parts: ... fire off (no replays here)`.
+
+Scenarios: `shots-probe` (solo, a probe), `two-games-shots` (the gate; `ini shots_sync=1`).
+
 ### Name tags (`name_tags`; scenarios only)
 
 `native/mod/nametags.cpp`, docs/real-partner-body.md section 10.
@@ -392,6 +446,31 @@ Scenarios: `collision`, `collision-off`, `two-games-collision`, `two-games-all`.
   `session.ini hood_colour`) or in the sender's Sam's (0, v0.26). Logged: `[exo-self] carrier <p> dressed for her colour 14
   (Sam's exos 31 -> 1, his colour 16)` (`[exo]` on the partner body; ending `: the sender's row (her look over the link)`
   when the row came over STC1), `... dressed like the sender's Sam again (her colour not known)`.
+* `action gear 36 <0|1|2>` (round 14; docs/real-partner-body.md section 39): the hip crates (the weapon case and the
+  folding ladder on Sam's waist slots) sent and drawn on the partner as the game's own baggage model (`session.ini
+  waist_cargo`, default 1 since round 15, section 39.6): 0 off (v0.28: not sent, not drawn), 1 on; both sides (sender and
+  receiver) follow it; `gear 36 5 <0|1>` (round 15, tests): whether the next baggage models made get their representation's
+  message handlers (default 1; 0 is round 14's form, made but not drawn); `gear 36 3` also sets every ArtParts part of each hip prop shown, `gear 36
+  4 <0..7>` picks the extra components of the next ones made (bit 0 the item's own DSSimpleAnimation, bit 1 the weapons'
+  ExternalAnimation, bit 2 a StencilBufferComponentResource from our weapon resources; default 7; tests); any other value
+  only logs `[gear] waist_cargo 1; hip pieces: ours sent n, the partner's n; baggage model props n live, n shown; n made
+  here, n not made`, then `[gear]   baggage models on (ok): n created (weapon case S n, M n, L n, ladder n), n refused, n
+  faults`, and per partner hip prop `[gear]   partner hip prop <i> '<model>': live, shown; joint 1 at (x, y, z) m; world
+  (...)` with `[gear]     entity flags 0x..., animation simple external, stencil yes (extras mask 7); ArtParts n part(s):
+  ...` and `[gear]     model rep: 20 handler(s) bound, 2 mesh entries` (round 15: the handlers on the entity rep's
+  dispatcher bound to the model's SkinnedModelRep, and its mesh entry count; `0 ..., 0 mesh entries` = not drawn). "live,
+  shown" is our own prop state; the model rep line is the game side.
+  Other lines: `[gear] our carried cargo: n hip piece(s) sent as the game's own baggage model (waist_cargo on)` (when the
+  count changes), `[gear] baggage models: baggage config / entity resource / builder addresses verified (baggage models
+  on)` (or the first mismatch), `[gear] baggage models: config <p> checks out (31 models; host EntityResource <p> ...)`,
+  `[gear] baggage model <p> (Entity, representation EntityRep, model SkinnedModel) of the config's model 15 ('weapon case
+  S (wsm0)')`, before it (round 15) `[gear] baggage model <p> reps: DSSimpleAnimationComponent no rep;
+  StencilBufferComponent rep handlers 0 -> 3 (cached set); ExternalAnimationComponent no rep; SkinnedModel rep handlers 0
+  -> 20 (cached set)` (with `gear 36 5 0`: `SkinnedModel 0 handler(s) (binding off)`); the status line ends `; reps bound
+  n, n skipped (binding on); n undrawn (handlers, no meshes: removed)`; a fault or an unexpected entity: `[gear] ...
+  baggage models off for this session`. Review: `[gear] prop i '<model>' refused for this session: its model rep has n
+  handler(s) bound but 0 mesh entries 1.5 s after it was made (not drawn)`; the `our carried cargo: ... (waist_cargo on|off)`
+  line is also logged on every switch.
 * `action gear 26 <0|1|2|9>` (round 6; docs/real-partner-body.md section 31): what is in a hand on the other screen
   (`held_items`): 0 off (only v0.9's cutscene-prop weapons), 1 the ladder / PCC / climbing anchor, 2 every item in a hand
   (the default); any other value only logs `[gear] held_items 2; held clones on (ok): n resource(s) re-typed, n entities
@@ -839,10 +918,25 @@ hook, which is installed at start-up only with `session.ini partner_body=real` o
   * 2: dress it with exos `a` (0..43) and suit colour `b` (0..16); anything else = none.
   * 3: override off; the partner's own outfit applies again.
   * 4: overwrite our own Sam's suit colour byte with `a` (0..16); the game re-dresses Sam itself at once.
-    Only in hidden tests on redirected scratch saves; refused otherwise.
+    Only in hidden tests on redirected scratch saves; refused otherwise. Round 15 (docs/real-partner-body.md section
+    40): on a host-held save guest this is a pick, as the colour menu's close is (`[suit] guest: picked suit colour a
+    (test action ...)`); `real_outfit 4 a 1` writes the byte only (as a load or a script's ApplyInventorySetting): not a
+    pick, and the mod puts her pick back.
   * 5 `c` (v0.23, docs/real-partner-body.md section 27): Fragile's porter suit on our `fragile_suit` bodies (the slot's
     and the self view's) in colour `c` (0..16; 0 her own suit); `-1` = follow the suit colour again (purely visual).
   * 6: Fragile's suit: each `fragile_suit` body's drawable and meshes, and the state (`[suit] suit: slot ...; self ...`).
+  * 9 `mask` (round 15, section 40; the game starts with 1 since the review; no value: 3): bit 1 a host-held save guest's
+    own Sam's suit colour byte follows her pick (so the game's colour menu opens on what Fragile wears; off: the world's own
+    byte put back when it still holds ours; the emergency stop puts it back too), bit 2 Fragile on the private room colour
+    menu's figure (kind 6), in the colour being previewed (off by default until stills show it).
+  * 10: the colour menu and the guest's pick to the log (`[suit] wardrobe read: open o category c previewed v staging s;
+    guest pick on|off: saved p, menu rule r, align a (...), picks n; menu active ...`).
+  * 11 (hidden tests only, in the private room, redirected scratch saves): opens the game's colour menu with the call the
+    room's own state makes (0x142D1BD70; byte-checked, SEH-guarded): `[wardrobe] TEST: the uniform menu's opener
+    0x142D1BD70 called (flag now 1)`.
+  * 12 (review; hidden tests only, redirected scratch saves): the open colour menu counts as if a suit colour had been
+    previewed (a save with no suit colours unlocked shows none): `[suit] guest: a suit colour preview noted in the open
+    wardrobe (test action)`.
   * 7 `m` `ch` (tests): which meshes the binds use (`-1` the product's, `-2` the whole model at once, else a bit mask)
     and channels (`ch` bits 1 Color, 2 Reflectance, 4 Roughness; 0 the product's); rebinds.
   * 8 `v` `r` (tests): the metals' look: variant `v` (0 the product's, 1 Sam's measured sets, 2 = 0) and roughness `r`
@@ -850,6 +944,11 @@ hook, which is installed at start-up only with `session.ini partner_body=real` o
   Log lines: `[suit] Fragile's suit colours available|unavailable: <reason>`, `[suit] constant texture <rgb> made by the
   game's loader ...`, `[suit] body <e>: colour N on (#k: <channels>; albedo ..., reflectance ... roughness ...)`,
   `[suit] body <e>: colour N taken off (<n> override(s) undone, <why>)`, `[suit] ... FAULTED` (the feature off).
+  Round 15: `[wardrobe] menu OPEN|closed, category c, previewed v, staging s; Sam's suit colour byte b; subspace kind k/n
+  state t` (every change), `[suit] guest: the wardrobe closed with her Sam's suit colour N: her new pick | her pick (the
+  colour she wore) | not a pick (it opened on s, not her pick p; no suit colour previewed or confirmed)`, `[suit] guest: her
+  Sam's suit colour byte a -> b (her pick) written`, `[suit] wardrobe: her self body
+  shows colour N (...)`, `[menu] the wardrobe (the private room's uniform menu) is open`.
 
 Scenarios: `real-body-diag`, `real-body-tour`, `real-body-tour-all` (every table id, solo), `self-view`, `self-view-edges`, `self-view-menu`, `outfit-probe`, `fragile-suit-colours`, `fragile-suit-tune` (solo), `two-games-real-self`, `two-games-outfit`, `two-games-fragile-suit` (role host), `echo-real-100`, `echo-real-fragile-100` (role echo),
 `two-games-real`, `two-games-real-fallback` (role host, two games). `real_spawn` takes any id in the table,

@@ -7,8 +7,9 @@
 # from the front, walking and running, then the self view off (Sam with his real gear, the same
 # camera), a debug Fragile body in front of Sam wearing our gear (the partner's placement path),
 # and a cargo change: the 100% save's Sam carries personal equipment and weapons only (not drawn as
-# cases, except the weapon on his waist), so the hidden-test action `gear 3 <n>` stacks n synthetic
-# delivery cases on the backpack (3, then 1, then none).
+# cases; the weapon case on his waist was drawn as a white case until section 13 and is the hip crates'
+# since round 15, off here), so the hidden-test action `gear 3 <n>` stacks n synthetic
+# delivery cases on the backpack (3, then 1, then none): cargo 3, the cases only.
 # covers: gear self-view
 role solo
 timeout 360
@@ -26,6 +27,9 @@ until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pa
 waitlog 40 \[self\] showing 'fragile'
 waitlog 30 \[gear-self\] .*items, [1-9][0-9]* props live
 wait 2000
+# the hip crates (waist_cargo, default 1 since round 15) are two-games-hip-cargo's: off here so the delivery counts below stay exact
+action gear 36 0
+waitlog 10 \[gear\] our carried cargo: 0 hip piece\(s\) sent as the game's own baggage model \(waist_cargo off\)
 action gear 0
 screenshot 01-self-back
 # turn the camera round: the character faces the camera
@@ -71,15 +75,20 @@ pad none 1300 rx=-32767
 wait 1500
 # a cargo change: 3 synthetic delivery cases on the backpack, then 1, then none
 action gear 3 3
-waitlog 10 \[gear\] gear: .*cargo 4
+# cargo 3: the three synthetic cases only. The old `cargo 4` counted the waist weapon case, drawn as a white delivery case before
+# section 13 (2026-11-17) and never sent since; the scenario had not run since then (round 15 prove, run 20261123-215932: the
+# carrier dump lists cases 4 / 2 / 12 only, equipment, weapon cases and the ladder: no delivery)
+waitlog 10 \[gear\] gear: .*cargo 3: [0-9]+ approximate, 0 the game's own model
 wait 3000
 screenshot 09-three-cases
 action gear 3 1
-waitlog 10 \[gear\] layout .* prop\(s\) removed
+# (the layout line reads "n prop(s) kept (m moved to another item), k removed" since abf5863, 2026-11-17: the old regex
+# "prop\(s\) removed" was never met again; waitnew: the second change must not pass on the first one's line)
+waitnew 10 \[gear\] layout [0-9A-F]+ -> [0-9A-F]+: [0-9]+ prop\(s\) kept \([0-9]+ moved to another item\), [1-9][0-9]* removed
 wait 2000
 screenshot 10-one-case
 action gear 3 0
-waitlog 10 \[gear\] layout .* prop\(s\) removed
+waitnew 10 \[gear\] layout [0-9A-F]+ -> [0-9A-F]+: [0-9]+ prop\(s\) kept \([0-9]+ moved to another item\), [1-9][0-9]* removed
 wait 2000
 screenshot 10b-no-cases
 action gear 3 3

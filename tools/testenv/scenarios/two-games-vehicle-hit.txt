@@ -8,7 +8,7 @@
 # Pass (in the logs): the three hits, each with a health drop and few damage messages per pass, the driver's game logs each
 # report, no fault. Check enlarged: H1a..H1c / J1a..J1c / T1a..T1c (the victim thrown, lying, the health popup, getting
 # up; the partner body falling on the driver's screen).
-# covers: vehicle-hit
+# covers: vehicle-hit sam-damage
 role host
 graphics low
 timeout 360
@@ -41,6 +41,12 @@ waitlog 60 \[vshare\] host: world ready
 @guest waitlog 30 \[vshare\] guest: binding:
 wait 8000
 # ---- 1. the host drives the truck into the guest
+# the offline-mode notice can hold the host's load in its setup phase (round 15 prove, run 20261123-221339: up from 44 s, Setup|
+# SystemPause, "teleport refused: game state: Setup|SystemPause" at 64 s, the notice on zz-final; "world ready" and waitplayer
+# pass behind it): A dismisses it (nothing in the world here), then the world must be playable before the placement
+?pad A 120
+wait 1500
+waitworld 40
 action vehicle_sync 8 1.8 2
 @guest action vehicle_sync 8 8 2
 wait 1500

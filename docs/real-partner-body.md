@@ -1850,7 +1850,8 @@ values (unit-tested). Mixed builds never meet (the HELLO build check).
 
 - **Not drawn on the partner:** the folded ladder at the right hip (a baggage model, no entity), the weapon
   crate (`sam_weapon_case_*`, a physics entity: in the final two-game runs the brown "Bridges" crate on the
-  owner's right hip, seen from behind, is the most visible difference left on the back), the chiral cylinder
+  owner's right hip, seen from behind, is the most visible difference left on the back; round 14: that brown "crate"
+  is the folding ladder, the dark caged one on the left hip the weapon case, section 39), the chiral cylinder
   (the yellow canister low on the left; its copy carries `DSChiralCylinderComponent`, level 2 only), the PCC
   (`DSWeaponEntity`).
 - **Sources across different saves:** both games ran the same 100% save. A partner who wears gear the
@@ -2272,8 +2273,12 @@ So about 70-150 ms at 30 fps; the hand's motion afterwards is the pose stream's 
 - **Colours**: the rifle prop keeps its own dark variation; the player's rifle (gold Lv4, non-lethal blue) is
   not matched (the look sync of section 13 does not resolve weapon variations yet). Handgun and shotgun props
   are other models of the same kind.
-- Thrown grenades and fired projectiles are world entities, not drawn on the other screen; muzzle flashes,
-  tracers, the aim laser and sounds are not mirrored.
+- **Shots can be mirrored since round 15** ([enemy-sync.md](enemy-sync.md) section 7, "ship A", `session.ini shots_sync=1`;
+  default off since the round 15 review): every bullet a player's gun fires is replayed on the other screen through the
+  game's own CreateBullet from the partner body's gun (the game's muzzle flash, tracer, impacts and, with `shots_sound=1`, the
+  magazine's effect); the replays never hurt the players or MULEs / Demens there (vehicles, cargo, structures and BTs still
+  can: enemy-sync.md 7.3), and the drop on the watcher between two games is not proven yet (the gate run failed its step C).
+  Still not mirrored: thrown grenades and launcher / sticky / bola projectiles (world entities, P3b), and the aim laser.
 - Stowed guns on the backpack hanger (the rifle on `HLP_WeaponAsr2`) are drawn as their prop on the backpack;
   the PCC there has no prop.
 - Tested with the 100% save's rifle and grenades only, standing; not while running, in vehicles or with the
@@ -7315,3 +7320,398 @@ The final scenario (the reaction burst and the trace assertions) has not been ru
   Sam's hips are more than 1.15 m from his root (seats, rides, other anchored animations), so `pelvis_scale.hpp` maps to
   the `ride` area too (tools/testenv/test-areas.txt): the selector adds a ride run.
 - Sam's reaction facial clips on her face (section 36) are left as they are: they are his own.
+
+## 39. The hip crates on the other screen (round 14; `session.ini waist_cargo`, default 1 since round 15)
+
+The user (v0.28.0, Local test): "fragile still cargo is invisible on host screen. its visible on her own screen."
+
+### 39.1 What is missing [V: the user's logs, research probe `20261123-173951-r-cargo-back`]
+
+- The "cargo" seen on her own screen and not on the host's is the two **hip crates**: the carrier's waist slots (slot types
+  4 and 5). In complete-100: slot type 4 (left hip) a weapon case, list item case type 2, volume 0 (the game's wsm0 small
+  weapon case, a dark caged crate); slot type 5 (right hip) case type 12 (the folding ladder flad, brown, folded).
+- The sender read both and dropped them on purpose (`Drawn`: delivery case types only; "not drawn: equipment / weapon /
+  tool" in a verbose read). The gear line's `cargo 0` never counted them, so the user's logs give no hint. It is symmetric:
+  the guest never saw the host's hip crates either. "Still": never mirrored since v0.8 (13.7).
+- Ruled out: the game's cargo hides (hide mask 0x0, no `our carried cargo: N of M pieces hidden` line in the user's log),
+  the reader's walk (every slot is read), a Fragile- or self-view-specific filter (the same with the self view off).
+
+### 39.2 How the game draws a carried piece [V: Ghidra, the baggage config core]
+
+- A carried DSBaggage2 has no entity (+0xD8 = -1). The carrier component's representation (`DSBaggage2CarrierComponentRep`)
+  draws it with one of the 31 `SkinnedModelResource`s of the baggage config (`DSBaggage2Config.ModelResources`, dsdc_types
+  +0x198 count / +0x1A0 data, EDSBaggage2Model order): 14 = `part_flad_main_def` (folding ladder), 15 / 16 / 17 =
+  `part_wsm0 / wmd0 / wla0_main_def` (weapon case S / M / L). No cutscene prop exists for any of them
+  (`ds/entities/cinematics/` has `demo_wla1` only).
+- Sam's skeleton names the attach points: `HLP_Waist_l_slot` on `JNT_L_B_100_Leg_1_PRO` (130), `HLP_Waist_r_slot` on
+  `JNT_R_B_100_Leg_1_PRO` (124). The `ds/entities/weapons/sam_weapon_case_*` pool entities (one per size,
+  `DSAttachOrPhysicsEntity`, attached to `JNT_C_B_001_Hips`, vis 0 at the world origin) are the opening / dropping case with
+  its four cage parts, not what is drawn at the hip.
+
+### 39.3 Sender (`cargo_rules.hpp`, `partner_gear.cpp` ReadItems)
+
+`cargorules::SendModel`: deliveries as before (their cutscene case model, anywhere); a weapon case (2) or the ladder (12) on
+a waist slot (4 / 5) with `waist_cargo` on as `kExact | m` (0x80 | EDSBaggage2Model: 0x8E the ladder, 0x8F..0x91 the
+weapon cases), anchored on the hips joint from the piece's own world transform (as any non-back slot); equipment (case 4)
+and pieces on the back or arms: not sent (unchanged). A receiver older than round 14 maps any model of 31 or more but 0xFF
+to no prop: it draws nothing for them. The game's cargo hides are kept (a hidden slot's pieces are not sent): the carrier's
+mask for every piece, and the slot's own hidden bit (`+0x75` bit 6) for the back slot's pieces (v0.23) and, on any slot,
+for a hip crate (the review: the game's setter `0x142CB2620` works on any slot object, and the hip crates are on the waist
+slots nearly always; deliveries off the back follow the mask only, as in v0.28). Logs: `[gear] our carried cargo: n hip
+piece(s) sent as the game's own baggage model (waist_cargo on)` (n counts only pieces actually sent shown); the gear line
+counts them (`cargo 2: 0 approximate, 2 the game's own model, 0 not drawn`). Unit tests: `tests/cargo_rules_tests.cpp`
+(the sender's `SendModel` and the receiver's `ReceiverDraw`, which PropForKind uses: an exact model drawn only with
+`waist_cargo` on).
+
+### 39.4 Receiver (`bag_model.cpp`: the "baggage model")
+
+PropForKind maps `kExact | m` to the prop key `kKeyBag + m`. The prop is a plain `Entity` made at once on the game thread:
+the config's own `CargoStrandEntityResource` (+0x300, a plain `EntityResource`; 3 components at run time) is given, for
+the one `CreateEntity` call, a component list of the model (and the extras below) and is restored at once (the held
+clone's method, section 31, without re-typing). `Entity::Init` (`0x14234F3E0`) builds the SkinnedModel and the ArtPartsData
+its model names (`0x1423760C0`); a component the resource's message tables do not know registers through the runtime path
+(`0x142348220` -> `0x1423714B0`). Checks: the code addresses once (the baggage manager site `0x1426510E0`, the
+EntityResource ctor / vtables / builder as in 31.5, the model finder and `Entity::Init` prologues); the config in full once
+per config pointer (its type, 31 entries all `SkinnedModelResource`, the config's own `DSBaggage2EntityResource` listing
+model 1, the host's exact vtables and readable lists); before every call that the config still names the same host and
+model, the host's vtables and component count, the model's type (a mismatch is refused and the full check runs again);
+after every call the host restored (if not: the new entity is removed and baggage models go off for the session); the
+result a plain `Entity` with a model, no sound and a plain representation (anything else: removed, off with one line).
+Then the usual prop path: ValidateProp (`MirrorableAt`), collision off on the copy, placement on the body's hips joint, the
+item's look. Extras (`gear 36 4 <mask>`, default 7): bit 0 the item's own `DSSimpleAnimationComponentResource` (from our
+own Sam's `sam_weapon_case_*` / `ladder` entity), bit 1 the weapons' generic `ExternalAnimationComponentResource` and bit
+2 a `StencilBufferComponentResource` (both from any of our weapon resources; the stencil since the review, not run yet).
+
+Limits of the method (the review): once restored, the entity's resource is the strand again, whose own 3 components do not
+include the model, so anything the game looks up through the entity's resource after `Entity::Init` (unlike a held clone,
+whose restored resource still lists its own model) does not see it. A private resource is not a way out: one with its own
+identity resolves to nothing (31.1, run `20261122-125554`). The swap window is the held clones' (a strand entity the game
+built during our one call would get our list); our lists are never freed, so a strand resource left pointing at one stays
+valid.
+
+Round 15 (39.6): right after `CreateEntity` and the restore, the reps of the components built from our list get their
+class's message handlers (`Entity::Init` binds them only from the strand resource's own table, which does not know the
+model): `[gear] baggage model <p> reps: ... SkinnedModel rep handlers 0 -> 20 (cached set)`. A fault there, or a layout
+that does not check out, removes the entity and turns baggage models off for the session.
+
+### 39.5 Result (round 14): made and placed, not seen [V: the runs below] (solved in 39.6)
+
+Every log check of `two-games-hip-cargo` passes both ways (sent 2, received 2, two baggage models made per side, `live,
+shown`, ArtParts flags `F F`, placed 0.25 m below the body's hips joint and 0.3 m to each side, as the sender's pieces sit
+on Sam; the off switch removes them and on brings them back), and nothing faulted in 4 runs (8 game processes). **But the
+host's screenshots of her show no crate at her hips**, with the model alone (run 2), with the item's animation (run 3), with
+every part forced shown (run 3) and with the item's animation plus the generic external animation (run 4). The placement
+is v0.7's (a cutscene case at the waist was seen there), so the entity itself is not drawn. Not known yet: whether the
+SkinnedModel's bounds / LOD state on these entities differ from a drawn prop's, or whether these models can be drawn
+outside the carrier's representation at all. Because nothing is seen, **`waist_cargo` defaults to 0** (v0.28 behaviour:
+not sent, nothing made); `two-games-hip-cargo` switches it on with `gear 36 1` (that switch-on line was added after run 4;
+the scenario has not run in this exact form). Next steps: compare the SkinnedModel's AABB and pose of a baggage model with a
+held clone's; try a held-clone resource (the ladder's `DSWeaponEntityResource`, re-typed as in section 31) as the host
+instead of the cargo strand; read how `DSBaggage2CarrierComponentRep` builds its drawables.
+
+The review (round 14, no runs) added the next lead and made the scenario say what it proves:
+- Every plain-`Entity` gear prop that is seen carries a `StencilBufferComponent` (the held clone `weapons/builder`,
+  `backpack_temp`, `weapon_collection`: run 4's host log); the baggage models had none. Extras now default to 7 (bit 2 the
+  stencil); `gear 36 2` logs `stencil yes / no (extras mask n)` per prop and the scenario waits for `stencil yes`. If the
+  crates are seen, `gear 36 4 3` against `4 7` separates the stencil from the rest.
+- The log checks prove sent, received, made and placed only: "live, shown" is our prop state. The verdict is the shots;
+  B1 (off) and B2 (on again) share the camera, so the run review compares her hip region crop against crop.
+- Not done: a game-side "drawn" signal (the SkinnedModel's drawable / LOD state or world bounds) needs its offsets found
+  first.
+- When `waist_cargo` defaults to 1, complete-100's partner cargo counts gain the 2 hip pieces: `two-games-all` (`cargo 3` /
+  `2`), `two-games-gear`, `two-games-full-gear` (`cargo 4` / `3`) and `gear-self` match exact counts and must be updated
+  then (they are right while it is off). Round 15: they start with `gear 36 0` instead (39.6).
+
+| Run (`build-testenv\runs\`) | Result |
+|---|---|
+| `20261123-180304-two-games-hip-cargo` | fail at the status step (the status line was cut at the log's line length; since split); everything before it passed: 2 sent, 2 received, both models made on both sides |
+| `20261123-180438-two-games-hip-cargo` | pass; model only; A1..A4 (the host's view of her, her own view), B1 / B2 (off, on again): no crate on her on the host's screen |
+| `20261123-180905-r14-hip-diag` (scratch scenario) | pass; with the item's animation, then parts forced shown, then without: not seen in D1..D6 |
+| `20261123-181534-two-games-hip-cargo` | pass; the item's animation + the generic external animation: not seen (A1..A4, B1, B2, C1..C3) |
+
+Every run: game exit 0 and guest exit 0, saves unchanged, restored, no violation, 0 cloud uploads, 0 game-server writes,
+online gate ok.
+
+### 39.6 Round 15: the model's representation had no message handlers; registered, the crates are drawn [V: Ghidra, runs below]
+
+**Cause** (round 15 research, read-only Ghidra). `Entity::Init` (`0x14234F3E0`) binds the representation of each component of
+the resource's list through `0x1423491D0(component, 1)` (site `0x14234F833`), which builds the rep in place
+(component +0x40; rep +0x20 the component, +0x28 the EntityRep) and calls `0x142370C40(entityRep, compRep, 1)`. With flag 1
+that function binds the rep's handlers ONLY by looking up the component's resource (component +0x30) in the resolved
+entity resource's prebuilt representation table (+0xD0, `0x142374CB0`); not found: nothing. The strand
+(`CargoStrandEntityResource`) table is keyed by its own 3 components (its SkinnedModel is the rope's, not config model 14 /
+15), so our SkinnedModelRep and StencilBufferComponentRep got no handler on the EntityRep's dispatcher (+0x208): no
+MsgEntityInit, so the ModelRep never built its mesh entries; nothing drawn while the entity side (SkinnedModel,
+ArtPartsData, flags, placement) was perfect. A held clone draws because its resource's table is keyed by its own
+components. The entity side registers at run time (`0x142348220`, round 14's note); the rep side has no such fallback.
+
+**Fix** (`bag_model.cpp` `BindReps`). For each component whose resource is one of our list's, with a rep and no handler
+bound to it yet: the game's own flag-0 branch (`0x142370D50`, what every runtime AddComponent does) is run for that rep:
+the handler set of the rep's class (`0x142380E50` on its RTTI, then `0x142371430`) or, not cached, the class's message
+table (`0x1419F3550` with `0x144596930`) entry by entry through `0x142371080`, the array freed with `0x1419D5870`; on our
+entity's dispatcher (EntityRep +0x208) under the entity's lock (+0x288, unless the global `0x147BC4E7C` says the game is not
+locking), with the game's own arguments (dedupe 0, as the game calls it, since none is bound). `0x142370C40` itself is not
+called again (it would append the rep to the EntityRep's list a second time). Our tick is outside the game's
+rep-processing context, so the EntityRep's MsgEntityInit is still queued when the handlers land, and the rep builds its
+meshes. Byte checks (once, with the others): the cause site and the binder's prologues, the whole flag-0 branch with its
+RIP global and its five call targets, and their prologues. SEH-guarded; a fault or a rep that does not point back to its
+component / the entity's rep removes the entity and turns baggage models off for the session. Off switch for tests:
+`gear 36 5 0` (the next ones made without, round 14's form); and `waist_cargo=0`.
+
+**The game side of "drawn"** (`gear 36 2`, per partner hip prop): `model rep: n handler(s) bound, n mesh entries`: the
+handlers on the EntityRep's dispatcher (+0x10 count, +0x18 entries of 16 bytes, +0 (listener + offset) | 1) whose
+listener lies in the model's rep, and the ModelRep's entry count (+0x40). Every run below: `20 handler(s) bound, 2 mesh
+entries` for both models on both sides; with `gear 36 5 0`: `0 handler(s) bound, 0 mesh entries`. The StencilBufferComponent
+rep gets 3 handlers; the two animation components have no rep.
+
+**Seen** (contact sheet: the round 15 scratch folder `cargo\sheet.png`; she is the guest's Fragile on the host's screen):
+the dark caged weapon case at her left thigh and the brown folded ladder at her right, where her own screen shows them, in
+B2 (on again) and not in B1 (off) from the same camera; not in D1 (the host's props remade with `gear 36 5 0`) and back in
+D2 (`gear 36 5 1`), the same camera: the binding is the difference. The reverse: the guest's screen of the host's Sam, C1
+(on) with the folded ladder at his hip, C1b (the host's `gear 36 0`) without, the same camera. They follow her pose (placed
+on the body's hips joint from the sender's transform every frame, as in round 14; the crate swings with her walk between B2
+and D2). Compared with her own screen the ladder hangs a little further out from the thigh (the hips-joint anchor, not the
+game's `HLP_Waist_r_slot` on the thigh joint: a later refinement).
+
+**Default.** `waist_cargo` defaults to 1 (both the sender and the receiver). The scenarios that count complete-100's cargo
+exactly (`two-games-all`, `two-games-gear`, `two-games-full-gear`, `gear-self`) start with `gear 36 0` so their delivery
+counts stay as they were; `two-games-hip-cargo` runs on the launcher's own ini (`waist_cargo=1`) without a switch. Not run
+in this round: the game's hides with the hip crates sent (a ride's pillion, a cutscene); the code is round 14's (39.3).
+
+| Run (`build-testenv\runs\`) | Result |
+|---|---|
+| `20261123-190724-two-games-hip-cargo` | fail at the first baggage model step: the new byte check of the cause site was 3 bytes early (`0x14234F830`; the `mov rcx,[rbx]` is at `0x14234F833`), so baggage models stayed off; nothing made; fixed |
+| `20261123-190929-two-games-hip-cargo` | pass; reps `0 -> 20` / `0 -> 3` on both sides, `2 mesh entries`; both crates seen on her on the host's screen (A1, B2; not in B1) and on the host's Sam on the guest's screen (C2) |
+| `20261123-191626-two-games-hip-cargo` | pass; `waist_cargo=1` by default; B1 / B2 and D1 (unbound: `0 handler(s) bound, 0 mesh entries`, not seen) / D2 (seen) |
+| `20261123-191921-two-games-hip-cargo` | pass; the guest's C shots framed the host's Sam behind her own body (no usable reverse pair) |
+| `20261123-192159-two-games-hip-cargo` | pass; the final form: B1 / B2, D1 / D2 and the reverse pair C1 / C1b (the contact sheet) |
+
+Every run: game exit 0 and guest exit 0, saves unchanged, restored, no violation, 0 cloud uploads, 0 game-server writes,
+online gate ok.
+
+**Review changes (round 15, not run).**
+- "Already bound" is now judged per rep: a listener on the entity rep's dispatcher counts for a component rep only when it
+  lies in [rep, rep + 0x370) and no other rep of the same entity (the entity rep, any component's rep) starts between that rep
+  and the listener. Before, a neighbouring rep's handlers within 0x370 bytes could make `before > 0` and skip the binding.
+- 1.5 s after a baggage model prop is made, `partner_gear` reads its RepState once: handlers bound but 0 mesh entries (the
+  rep's MsgEntityInit gone out before the binding: report risk 3) means nothing is drawn, so the prop is removed and refused
+  for the session (`[gear] prop i '...' refused for this session: its model rep has n handler(s) bound but 0 mesh entries
+  ...`; `gear 36` counts it as `undrawn`).
+- The exact-count scenarios wait for `gear 36 0` to take effect and anchor their counts on `0 the game's own model` (the
+  `our carried cargo: ... (waist_cargo off)` line is logged on every switch now); `two-games-hip-cargo`'s B1 uses `waitnew`.
+- Still to run before a release with `waist_cargo=1` by default: one `two-games-ride-trike-pack` (no crate floating while
+  she is pillion) and one of the edited count scenarios.
+
+## 40. Her suit colour stuck, and Fragile in the colour menu (round 15)
+
+The user (guest, Fragile, v0.28.0, Local test): "i cant change fragiles color i changed it to pink a few runs ago and now
+its stuck and on the menu it says its gold but its not. also showing fragile other than sam in that menu where you change
+colors would be nice". Their guest.log: `Fragile wears the remembered pick 14 until the guest picks again`, then
+`world #1 loaded with Sam's suit colour 16: Fragile keeps the guest's remembered pick 14`.
+
+### 40.1 Why it was stuck [V: Ghidra, the round 15 research notes, run `20261123-195909-tg`]
+
+- Her colour is the remembered pick (section 27.2, `GuestPick`). It is kept apart from her Sam's suit colour byte
+  (inventory +0x4BE1), which holds the host's value after every load (16, gold, in the user's save).
+- The game's colour menu is the private room's "Change Color Scheme" (subspace kind 6). The room's selection 3 calls its
+  opener 0x142D1BD70.
+  - When the menu opens, 0x14284CB30 copies inventory +0x4BDC..+0x4BE1 into a staging copy (the suit colour becomes a
+    float at 0x144C46988) and puts the suit colour cursor on that value. **So the menu showed her Sam's byte (gold), not
+    what she wore.**
+  - When it closes, 0x142D1BCE0 runs 0x14283E5B0, which writes the whole staging copy back with no comparison
+    (`mov [rax+4BE1],cl` at 0x14283E62D). Then it clears the open flag 0x144C46990.
+- Round 5's rule counted a pick only when the byte changed. Picking gold, the colour the menu showed, wrote 16 over 16.
+  The byte did not change, so no pick was counted and she stayed pink. Any other colour worked.
+- Also found: scripts can copy the game state's outfit back into the inventory at any time. `ApplyInventorySetting` calls
+  0x14278E7B0, which sets inventory +0x4C79 bit 0, and the inventory update's restore 0x1427E70C0 then runs.
+
+### 40.2 What the mod does now (`suit_colour_math.hpp` GuestPick / WardrobeWatch / RewriteCap, `suit_colour.cpp` GuestTick, `wardrobe.cpp`)
+
+**A pick is the menu's close.**
+- `WardrobeWatch` sees a close when the open flag goes from 1 to 0 after the subspace showed kind 6 while the menu was
+  open. When the kind cannot be read, any close counts.
+- That close is her pick (round 15 review, `WardrobeWatch::ClosePicks`) when the menu opened on her pick (the staging
+  colour first seen equals her remembered pick: the close keeps it), or a suit colour was previewed while it was open
+  (category 3), or one was confirmed (the staging copy moved). A close after only a glasses or cap change on a menu that
+  opened on another colour (the host's, before the alignment, after the rewrite cap, or with bit 1 off) is not a pick: it
+  would have overwritten her pick with his (`... closed with her Sam's suit colour N: not a pick (it opened on s, not her
+  pick p; no suit colour previewed or confirmed)`). The user's stuck case (the suit colours browsed, the same colour picked)
+  counts.
+- Her Sam's byte, read after a close that picks, is her pick (`GuestPick::Pick`). This holds even when it equals what she
+  already wore. The mod logs `[suit] guest: the wardrobe closed with her Sam's suit colour N: her new pick | her pick (the
+  colour she wore) (pick #k; was M)` and remembers the pick in `fragile_suit_colour.txt` when it changed.
+- `real_outfit 12` (hidden runs, scratch saves): the open menu counts as if a suit colour had been previewed (the story
+  pack's room save lists none).
+- A change of the byte on its own (a load, a script) is never a pick.
+- The test action `real_outfit 4 c` is also a pick (`[suit] guest: picked suit colour c (test action ...)`).
+  `real_outfit 4 c 1` writes the byte without counting it as a pick.
+
+**Her Sam's byte follows her pick** (`real_outfit 9` bit 1, on by default).
+- When:
+  - 1.5 s after the world is ready;
+  - while the menu is closed;
+  - when her pick (0..16) differs from her Sam's byte.
+- What it writes: her pick into the byte, using the same plain one-byte write the menu's close makes. Logged:
+  `[suit] guest: her Sam's suit colour byte 16 -> 14 (her pick) written (world #n, write k; the world gave g ...)`.
+- Result: the menu opens on what she wears, and her own (hidden) Sam takes the matching exos tints through the game's own
+  inventory update.
+- Limit: at most 5 writes in 10 s, then none for the rest of that world (`... not written again in this world (the game
+  keeps setting it)`), so the mod never fights a script.
+- Where it runs: only on a host-held save guest (GuestPick on: role guest, host_save, and fragile_suit_colour or
+  fragile_textures), and only on redirected saves (`automation::SavesRedirected`; a host-held save guest always has them).
+- The host's save is never touched. Her world is a sandboxed copy that is never kept, and the host still receives only
+  STJ1's suit colour (her pick).
+
+**The off switch** is `real_outfit 9 <mask>` (the game starts with 1 since the review: bit 2 waits for stills).
+- Bit 1: the byte follows her pick. Bit 2: Fragile in the menu (off by default; `real_outfit 9 3` turns it on).
+- Turning bit 1 off puts the world's own byte back when it still holds what the mod wrote (`the world's colour put
+  back`). The emergency stop does the same (`suitcol::PutBack` from dllmain's GuardedEmergencyStop: `[suit] guest: the
+  emergency stop: the world's colour put back`), but only while the same world is ready and the byte was seen in the last
+  2 s (the address belongs to that world's Sam). At a world's end nothing is written: the next load gives the save's own
+  byte, and her sandboxed world is never kept.
+- The alignment's own state (`written`, the write count) is updated under the pick lock (review).
+- When the menu's byte checks fail, round 5's rule stays (`the wardrobe is not readable: a pick is a change of her Sam's
+  suit colour byte`) and nothing is written.
+
+**Logs.**
+- `[wardrobe] menu OPEN|closed, category c, previewed v, staging s; Sam's suit colour byte b; subspace kind k/n state t`
+  on every change, in all games (the hidden-test evidence).
+- `real_outfit 10` logs the menu and the pick state.
+
+### 40.3 Fragile in the colour menu (`menu_figure.cpp` KindAllowed, `real_body.cpp` MenuTick / DressFragile)
+
+**The figure.**
+- The menu's figure is the same one as the cargo menu's (section 15): the subspace's DSPlayerAKukanEntity. Its update
+  colours it with the previewed value at 0x14272EAAF.
+- `menufig::KindAllowed(v, wardrobe)` now also accepts kind 6/6 (`real_outfit 9` bit 2). The figure's top-level parts are
+  hidden and the self body stands on it, as in the cargo menu (`[menu] the wardrobe (the private room's uniform menu) is
+  open (kind 6/6, ...)`).
+
+**Her body.**
+- In this menu she wears her base body (her porter suit), also where the room outfit has her in her black suit. The game
+  switches Sam to the porter suit for this menu too.
+- The swap happens while the menu opens (state 3, before its fade): `[menu] wardrobe: 'fragile' -> 'fragile_suit' (her
+  porter suit for the preview; state 3)`.
+- After the close, the room outfit's own rule swaps her back during Sam's clothes change.
+
+**Its colour** (`suitcol::WardrobeShown`).
+- The previewed value, while the previewed category ([0x144C46991]) is 3 (the suit colour).
+- Otherwise the staging copy (what the close will write).
+- Otherwise what she wears.
+- Logged: `[suit] wardrobe: her self body shows colour N (previewed | what she wears | the menu's choice; she wears M)`.
+- This applies to her self body only. STJ1, the shared look (`texshare::SetOwnLook` stays on the worn colour's look), her
+  boots and her hood row stay on what she wears, so the host never sees the preview.
+
+**Byte checks** (`wardrobe::SitesOk`, once, logged `[wardrobe] the uniform menu readable ...`). Reads only, fault-free.
+
+| Address | Bytes | Leads to |
+|---|---|---|
+| 0x142D1BD83 | `80 3D ?? ?? ?? ?? 00 75 3B` | 0x144C46990 |
+| 0x142D1BD8C | `C6 05 ?? ?? ?? ?? 01` | 0x144C46990 |
+| 0x142D1BD93 | `E8` | 0x14284CB30 |
+| 0x14284CB7A | `44 0F B6 90 E1 4B 00 00` | |
+| 0x14284CBC3 | `C5 FA 11 0D` | 0x144C46988 |
+| 0x142D1BCE0 | `48 83 EC 28 E8 ?? ?? ?? ?? C6 05 ?? ?? ?? ?? 00 48 83 C4 28 C3` | call to 0x14283E5B0, flag 0x144C46990 |
+| 0x14283E603 | `C5 FA 2C 0D` | 0x144C46988 |
+| 0x14283E62D | `88 88 E1 4B 00 00` | |
+| 0x14272EAAF | `48 8B 05 ?? ?? ?? ?? 3C 03 75 21 0F B6 1D ?? ?? ?? ?? 48 8B 4C 24 68 0F B6 D3 E8` | 0x144C46991, 0x144C46994 |
+| 0x14272A16E | `83 F9 06 75 39 0F B6 05 ?? ?? ?? ?? 3C 08` | 0x144C46991 |
+
+Our own Sam's byte is read through `outfit::OwnSuitColour`, which checks the player and its inventory component as
+everywhere else in partner_outfit.
+
+**Opening the menu in hidden tests.**
+- `real_outfit 11` calls the opener 0x142D1BD70 on the game thread, SEH-guarded.
+- Checked first: the opener's prologue, its UI object load at 0x142D1BD98 (`48 8B 0D` -> 0x147C0D6C0) and its event call.
+- Allowed only in the private room, on redirected scratch saves, with the menu closed and the UI object present.
+- No pad path to the room's menu point was found in a hidden run. START, BACK, the sticks, and A, X, Y do not reach it.
+  The room's state machine 0x142763820 opens the menu from a type-7 point in its camera spot 4.
+
+### 40.4 Proof [V: run `20261123-195909-tg`; contact sheet: the round 15 scratch folder `colour\sheet.png`]
+
+**Setup.**
+- A held session with two games on the launcher's Local test files, plus `fragile_suit_colour=1` (hidden runs have no
+  textures folder).
+- `-SeedSaves story-pack -GuestSeed profile-only`, `start story 12` (the private room; both games followed).
+- The steps are also written as one scenario, `two-games-wardrobe-colour.txt`. That file was written after the run and
+  was not itself run in this round.
+
+**Her Sam's byte follows her pick.**
+- 28.45 s: `picked suit colour 14 (test action; pick #1; was 255)`.
+- 31.94 s, after `real_outfit 4 16 1`: `[wardrobe] ... Sam's suit colour byte 16`, then `her Sam's suit colour byte
+  16 -> 14 (her pick) written (world #1, write 1; the world gave 0 ...)`.
+- One write in the whole run.
+
+**The menu opens on her pick, and her body is swapped onto the figure.**
+- 34.97 s, `real_outfit 11`: `the uniform menu's opener 0x142D1BD70 called (flag now 1)`.
+- `[wardrobe] menu OPEN, category 8, previewed 0, staging 14`, subspace kind 6/6. The menu opened on her pick, not on the
+  16 the byte had been set to.
+- Then: `[menu] the wardrobe ... is open`, `wardrobe: 'fragile' -> 'fragile_suit'`, `spawning 'fragile_suit' on the
+  menu's figure`, `[suit] wardrobe: her self body shows colour 14 (what she wears; she wears 14)`, `[suit] body ...:
+  colour 14 on`.
+- 37.66 s: `showing 'fragile_suit' in place of the menu's Sam figure: 20 top-level part(s) of 107 hidden`.
+
+**Fragile in the menu is not seen in any still** (so `real_outfit 9` bit 2 is off by default since the review).
+- The menu was the game's "Change Color Scheme" with one entry, the "Ludens Mask" sunglasses (category 1). DPAD_RIGHT
+  previewed the frame colours 3, 13 and 14.
+- This early save has no suit colours unlocked, so the suit colour category (3) never appeared, and the menu's camera
+  frames the glasses, not the figure.
+- The swap, the show and her colour on the body are proven by the log only (sheet panels 3 and 4).
+
+**The close of an unchanged colour counts as a pick.**
+- 214.08 s, closed by B: `[wardrobe] menu closed ... byte 14` and `the wardrobe closed with her Sam's suit colour 14: her
+  pick (the colour she wore) (pick #2; was 14)`. Round 5 saw nothing in this case.
+- Most B presses did not close the menu, because several sub-pages closed first. So step C of the held run (the byte set
+  to 16 with the byte rule off) happened while the menu was still open. The close then wrote the staging copy (14) back,
+  which is the game's own behaviour.
+
+**Both screens after the close** (`self_view 18 3` forces her porter suit in the room: a forced test state, not normal
+play; her own Sam's legs and arm show under her in panel 5).
+- Her own screen: she wears pink (14) (panel 5).
+- The host's screen: she wears pink (14) (panel 6). Host log: `[outfit] the partner's outfit: ... suit colour 14` and
+  `[suit] body ...: colour 14 on`.
+
+**The off switch.** `real_outfit 9 2`: `the world's colour put back` (0). `real_outfit 9 3`: back on.
+
+**What this run does not tell apart (review).** The close was on 14 while her saved pick was already 14: round 5's rule
+gives the same result (pink on both screens, no write). The step that tells them apart (the alignment off, the byte 16, the
+menu closed on 16 after a suit colour preview: her new pick 16, gold on both screens; and without a preview: not a pick) is
+in `two-games-wardrobe-colour.txt` (step 4), not run.
+
+**Sheet panel 2** was labelled "his own room, Sam (the partner body is not drawn over him yet)". The image shows Fragile's
+head over a sleeveless body with Sam's arms and cuff link: the host log has the partner body `'fragile'` live at 25.45 s,
+0.00 m from his Sam (`[coll] ... partner 0.00 m away`), so at 33 s both bodies sit on the same spot and her head shows over
+his. The relabelled copy is `colour\sheet-relabelled.png` in the same folder. This is read from one still; whether it is
+only the overlap or a mixed model is checked in the next room run.
+
+**Run health.** Game exit 0 on both games, saves unchanged, restored, no violation, 0 cloud uploads, 0 game-server writes,
+online gate ok.
+
+**Other runs this round.**
+- `20261123-193845-explore` (solo, story-pack manualsave12, no wardrobe found): START, BACK, D-pad, A and B. The room has
+  no pad menu; B changes the room's camera spots.
+- `20261123-194527-explore` (same setup): the left stick turns her, the right stick is the free camera, and A, X, Y at
+  the default spot open nothing.
+- `20261123-195153-tg` failed at the start: the quickstart's waitworld does not accept the private room as playable.
+  Fixed with `control 10` in the held session.
+
+**Unit tests** (`st_suit_colour_tests`):
+- round 5's stuck case reproduced;
+- the menu rule: a byte change is not a pick, the close is;
+- the equal-value pick, and the user's exact case;
+- the alignment decisions;
+- the close watch with kinds 6, 7 and unreadable;
+- the rewrite cap;
+- the colour shown in the menu.
+
+### 40.5 Not covered
+
+- Fragile seen in the menu, and a suit colour previewed on her or picked through the menu. This needs a save with suit
+  colours unlocked that is in the private room (complete-100 is not in the room, and the story pack's room save has
+  none), and the pad path to the room's menu point.
+- A cancel re-picks what she wears, which is harmless with the byte rule on. A close after changing only her glasses or
+  cap on a menu that opened on another colour is no longer a pick (review); the rule is unit-tested and in step 4 of the
+  scenario, not run.
+- Opening the menu within about 1.5 s of a load (before the byte is set) shows the old colour.
+- A guest who plays Sam also has the pick on, so her own Sam now wears her pick (the host already showed it).
+- The cap and glasses preview entities hang on the figure's hidden skeleton, as in the cargo menu.

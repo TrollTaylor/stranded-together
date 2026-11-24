@@ -48,6 +48,7 @@ area gear                  : gear on the bodies: backpack, cargo, accessories, h
 area gear-wear             : gear that wears out (the rain cover)
 area boots                 : Fragile's boots (own / prop look)
 area held-items            : what a player holds, in their hand on the other screen
+area hip-cargo             : the hip crates (weapon case, folding ladder) as the game's own baggage model on the partner
 area weapons               : weapons in hand
 area menu-figure           : the cargo menu's Sam figure under the self view
 area private-room          : the private room: entering, loading, the close-up, the black-screen fix
@@ -58,9 +59,11 @@ area sound                 : partner sounds (footsteps, efforts) and their volum
 area vehicles              : vehicle copies (vehicle_sync: look, state, sounds of the partner's vehicle)
 area vehicle-share         : shared real vehicles: identity, summon, remote driving, handoff, persistence
 area vehicle-hit           : vehicle hits, bumps and tackles
+area sam-damage            : the shared Sam damage detour (sam_damage.*): the vehicle hits' observer and the shots' filter; a hit made (two-games-vehicle-hit)
 area ride                  : riding together: boarding, seats, ride camera, forced exits
 area world-sync            : shared structures: builds, contributions, ladders, ropes, ziplines
-area enemies               : enemy sync (docs/enemy-sync.md): P0 the read-only enemy census; later the mirrors, hits, bullets
+area enemies               : enemy sync (docs/enemy-sync.md): P0 the read-only enemy census, P1-0 the freeze probe; later the mirrors, hits
+area shots                 : the players' shots on the other screen (docs/enemy-sync.md P3a): capture, SFX1, the CreateBullet replay, its damage dropped
 area story                 : story tools, story loads
 area dev-tools             : dev tools: spawn, goto, weather, refill, god mode
 area quickstart            : the hidden runs' quickstart (start line)
@@ -140,6 +143,9 @@ native/mod/audio_probe.*               research
 # ---- the mod: enemy sync (docs/enemy-sync.md). P0's census is the gate of the later phases (its byte-checked sites are
 # what P1 builds on), so it stays an area with its own run (two-games-enemy-census), unlike anim_census (research).
 native/mod/enemy_*                     enemies
+# ---- the mod: shots (docs/enemy-sync.md P3a) and the shared Sam damage detour (vehicle hits, shots, the enemy rounds)
+native/mod/shot_*                      shots
+native/mod/sam_damage.*                sam-damage vehicle-hit shots enemies
 
 # ---- the mod: the host-held save session
 native/mod/coop_rules.hpp              host-save
@@ -165,6 +171,7 @@ native/mod/partner_outfit.*            outfit
 native/mod/face_rules.hpp              face
 native/mod/face_sync.*                 face
 native/mod/suit_colour*                suit-colour
+native/mod/wardrobe.*                  suit-colour private-room menu-figure
 native/mod/fragile_textures.*          textures
 native/mod/texture_share.*             textures texture-share
 native/mod/texture_wire.*              textures texture-share
@@ -176,6 +183,8 @@ native/mod/gear_*                      gear
 native/mod/boots_look.hpp              boots
 native/mod/room_outfit_rules.hpp       self-view private-room partner-body
 native/mod/held_*                      held-items
+native/mod/bag_model.*                 hip-cargo
+native/mod/cargo_rules.hpp             hip-cargo gear
 native/mod/partner_collision.*         collision
 native/mod/nametag*                    name-tags
 native/mod/game_font*                  name-tags
@@ -198,16 +207,22 @@ native/mod/real_body.*      ~room.?outfit|[Cc]lothes|RoomLook|LookBodyId|SelfLoo
 native/mod/real_body.*      ~exo_|exo.?carrier|skeleton                                       skeleton
 native/mod/real_body.*      ~held_item|held.?clone|HeldItem                                   held-items
 native/mod/real_body.*      ~menu.?figure|cargo.?menu                                         menu-figure
+native/mod/real_body.*      ~[Ww]ardrobe|WardrobeShown|g_wd                                suit-colour private-room menu-figure
 native/mod/real_body.*      ~ride_|seat_|passenger                                            ride
 native/mod/game_actions.*   ~loading|private.?room                                            private-room
 native/mod/game_actions.*   ~carried|ride_|passenger                                          ride
 native/mod/game_actions.*   ~dev_|spawn|weather|refill                                        dev-tools
 native/mod/debug_actions.*  ~enemy_|[Ee]nemy                                                  enemies
+native/mod/debug_actions.*  ~shots_|[Ss]hots                                                  shots
+native/mod/real_body.*      ~[Ee]nemy                                                         enemies
+native/mod/player_sync.*    ~shots::|esync::                                                  shots enemies
+native/mod/link.*           ~[Cc]ombat                                                        shots
 native/mod/partner_gear.*   ~exo_|exo.?carrier|skeleton                                       skeleton
 native/mod/partner_gear.*   ~[Hh]ood                                                          hood
 native/mod/partner_gear.*   ~private.?room|loading                                            private-room
 native/mod/partner_gear.*   ~boots_look|boots_own|BootsLook|dev_boots                         boots
 native/mod/partner_gear.*   ~held_item|held.?clone|HeldItem                                   held-items
+native/mod/partner_gear.*   ~waist|hip.?(piece|crate|prop)|[Bb]ag[Mm]odel|bagmodel|cargorules|kKeyBag   hip-cargo
 native/mod/partner_gear.*   ~\bweapons?\b                                                     weapons
 native/mod/partner_gear.*   ~rain.?cover|durability|gear_wear|GearWear                        gear-wear
 native/mod/partner_outfit.* ~exo_|exo.?carrier|skeleton                                       skeleton
@@ -230,6 +245,8 @@ native/mod/config.*         ~("|bool\s+|int\s+)ride_                            
 native/mod/config.*         ~("|bool\s+|int\s+|std::string\s+)(voice_sync|self_voice)         voice
 native/mod/config.*         ~("|bool\s+|int\s+)(sound_sync|partner_volume|vehicle_sound)      sound
 native/mod/config.*         ~("|bool\s+|int\s+)partner_collision                             collision
+native/mod/config.*         ~("|bool\s+)waist_cargo                                          hip-cargo
+native/mod/config.*         ~("|bool\s+)shots_                                               shots
 native/mod/config.*         ~("|bool\s+|int\s+)host_save                                     host-save
 native/mod/config.*         ~("|bool\s+|int\s+)dev_tools                                     dev-tools
 native/mod/player_sync.*    ~textures?_                                                       textures

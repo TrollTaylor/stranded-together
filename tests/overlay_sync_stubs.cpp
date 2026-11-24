@@ -12,6 +12,8 @@
 #include "debug_actions.hpp"
 #include "dev_tools.hpp"
 #include "enemy_census.hpp"
+#include "enemy_sync.hpp"
+#include "shot_sync.hpp"
 #include "player_sync.hpp"
 #include "story_state.hpp"
 
@@ -386,6 +388,14 @@ View GetView() noexcept {
 }  // namespace st::story
 
 // ------------------------------------------------------------------ enemy census (enemy_census.cpp)
+namespace st::esync {
+bool Probe(int, const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy probe (stub)"), true; }
+}  // namespace st::esync
+namespace st::shots {
+bool Command(int, const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "shots (stub)"), true; }
+bool Test(double, int, int, char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "shots test (stub)"), true; }
+bool Echo(bool, double, char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "shots echo (stub)"), true; }
+}  // namespace st::shots
 namespace st::enemy {
 bool Census(int tag, double, int, char* msg, std::size_t cap) noexcept {
     return std::snprintf(msg, cap, "enemy census tag %d (stub)", tag), true;

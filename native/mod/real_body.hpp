@@ -160,6 +160,16 @@ void SetSamBootsShown(bool shown) noexcept;
 // The partner body's feet (boots_sync): scaled to pct percent while `on` (the boots prop on it is live, shown and posed).
 void SetPartnerFeetHidden(bool on, int pct) noexcept;
 void FeetCounters(std::uint32_t* self_writes, std::uint32_t* partner_writes) noexcept;
+// The enemy probe (enemy_sync.cpp; docs/enemy-sync.md P1-0): one watched SkinnedModel `sm` (an enemy's; its skeleton must be the
+// 77-joint layout BE39C83F): mode 1 counts its animate calls, mode 3 also writes our Sam's live local pose onto it after each of
+// its own animates and measures the largest joint rotation difference to Sam's model pose; 0 (or sm 0) off. Needs the pose
+// hook (pose_hook=1 or the real partner body). Game thread.
+bool SetEnemyPoseSlot(std::uintptr_t sm, int mode) noexcept;
+struct EnemySlotStats {
+    std::uint32_t calls = 0, writes = 0, rejects = 0, faults = 0;
+    float max_err_deg = 0;
+};
+EnemySlotStats GetEnemySlotStats(bool reset) noexcept;
 // Joint `sam_joint` (as JointWorld) as a world frame: position and rotation rows (right, forward, up; normalised).
 bool JointFrameWorld(game::Entity* e, unsigned sam_joint, double (&p)[3], float (&r)[3][3]) noexcept;
 // Joint j of an entity whose skeleton has n joints (any layout: the boots' 10), position in world space (row 3 only).

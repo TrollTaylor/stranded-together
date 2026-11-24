@@ -201,9 +201,10 @@ bool Open(const View& v) noexcept {
     return v.w && (v.state == 3 || ((v.state == 4 || v.state == 5) && v.awake)) && v.e && v.sm && v.skel && v.apd && v.arr;
 }
 
-// Only Manage Cargo (kind 0), the one kind run in hidden tests; every other kind (terminal cargo
-// screens 2 / 5 / 8, the private room's previews 6 / 7, ...) keeps Sam.
-bool KindAllowed(const View& v) noexcept { return v.kind == 0 && v.kind_next == 0; }
+// Manage Cargo (kind 0), and with `wardrobe` the private room's uniform menu (kind 6, round 15 section 40); every other
+// kind (terminal cargo screens 2 / 5 / 8, the private room's kind 7, ...) keeps Sam.
+bool KindAllowed(const View& v, bool wardrobe) noexcept { return (v.kind == 0 && v.kind_next == 0) || (wardrobe && IsWardrobe(v)); }
+bool IsWardrobe(const View& v) noexcept { return v.kind == 6 && v.kind_next == 6; }
 
 bool Hide(const View& v, Hidden* h, char* why, std::size_t cap) noexcept {
     *h = Hidden{};

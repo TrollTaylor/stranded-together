@@ -169,6 +169,8 @@ Config LoadConfig(const std::wstring& dir) {
             c.hood_colour = ParseBool(v);
         } else if (k == "hood_fold_hide") {
             c.hood_fold_hide = ParseBool(v);
+        } else if (k == "waist_cargo") {
+            c.waist_cargo = ParseBool(v);
         } else if (k == "held_items") {
             c.held_items = v == "2" || v == "all" ? 2 : v == "1" || v == "tools" ? 1 : (ParseBool(v) ? 2 : 0);
         } else if (k == "vehicle_sync") {
@@ -199,6 +201,16 @@ Config LoadConfig(const std::wstring& dir) {
             c.ride_camera = ParseBool(v);
         } else if (k == "partner_vehicle_damage") {
             c.partner_vehicle_damage = ParseBool(v);
+        } else if (k == "shots_sync") {
+            c.shots_sync = ParseBool(v);
+        } else if (k == "shots_muzzle") {
+            c.shots_muzzle = ParseBool(v);
+        } else if (k == "shots_sound") {
+            c.shots_sound = ParseBool(v);
+        } else if (k == "shots_friendly_fire") {
+            c.shots_friendly_fire = ParseBool(v);
+        } else if (k == "shots_npc_drop") {
+            c.shots_npc_drop = ParseBool(v);
         } else if (k == "vehicle_overlap_hide") {
             c.vehicle_overlap_hide = ParseBool(v);
         } else if (k == "vehicle_look") {
@@ -338,6 +350,9 @@ Config LoadConfig(const std::wstring& dir) {
     Log("[config] hood_colour=%d hood_fold_hide=%d", c.hood_colour ? 1 : 0, c.hood_fold_hide ? 1 : 0);
     Log("[config] held_items=%d (%s)", c.held_items,
         c.held_items == 2 ? "every item in a hand drawn on the other screen" : c.held_items == 1 ? "ladder, PCC, climbing anchor" : "off: cutscene-prop weapons only");
+    Log("[config] waist_cargo=%d", c.waist_cargo ? 1 : 0);
+    Log("[config] shots_sync=%d shots_muzzle=%d shots_sound=%d shots_friendly_fire=%d shots_npc_drop=%d", c.shots_sync ? 1 : 0, c.shots_muzzle ? 1 : 0,
+        c.shots_sound ? 1 : 0, c.shots_friendly_fire ? 1 : 0, c.shots_npc_drop ? 1 : 0);
     // Fragile's textures: only whether a folder came and its length (the path itself names the Windows user).
     Log("[config] textures_dir=%s", c.textures_dir.empty() ? "- (none)" : ("set (" + std::to_string(c.textures_dir.size()) + " bytes)").c_str());
     Log("[config] fragile_textures=%d textures_send=%d textures_receive=%d textures_hot_reload=%d textures_free=%d textures_defaults=%d", c.fragile_textures ? 1 : 0,

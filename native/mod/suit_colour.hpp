@@ -26,6 +26,23 @@ bool Enabled() noexcept;         // configured on and available
 // session with fragile_suit_colour on. GuestColour(her Sam's colour) -> the colour Fragile wears (game thread).
 void ConfigureGuestPick(bool on, const std::wstring& dir) noexcept;
 std::uint8_t GuestColour(std::uint8_t cur) noexcept;
+// Round 15 (docs/real-partner-body.md section 40), game thread, every tick with the local player (`player` 0 when none):
+// her Sam's suit colour byte (inventory +0x4BE1) at `byte_addr`, read now as `byte_now` (-1 unreadable); `kind6` the
+// subspace kind this tick (1 kind 6, 0 other, -1 unreadable). The wardrobe's close is her pick (the colour shown counts
+// too); with `real_outfit 9` bit 1 her Sam's byte is set to her pick 1.5 s into a ready world while the wardrobe is
+// closed (at most 5 writes in 10 s, logged), on a sandboxed (redirected) save only.
+void GuestTick(std::uintptr_t player, std::uintptr_t byte_addr, int byte_now, int kind6, double now_ms) noexcept;
+void NotePick(std::uint8_t c) noexcept;     // the test action `real_outfit 4 c`: a pick
+// The test action `real_outfit 12` (hidden runs): the open wardrobe counts as if a suit colour had been previewed (a save
+// without suit colours unlocked shows none). False when the wardrobe is not open.
+bool MarkPreview() noexcept;
+void SetAlign(bool on) noexcept;            // off: the world's own byte put back when it still holds ours
+// The world's own byte put back when it still holds what the alignment wrote (the emergency stop; dllmain). Only while the
+// same world is ready and the byte was seen in the last 2 s (the address belongs to that world's Sam). Game thread or the
+// fault path; never throws.
+void PutBack() noexcept;
+bool AlignOn() noexcept;
+const char* DescribeGuest(char* buf, std::size_t cap) noexcept;
 
 // What has been done to one body. Reset (Forget) when the body goes.
 struct Dress {

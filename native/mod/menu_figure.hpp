@@ -45,10 +45,12 @@ bool Read(View* v) noexcept;
 // True while the menu is opening (state 3: the figure is teleported and woken) or the figure is shown in
 // it (state 4 fade-in or 5 open, awake), its model and parts checked.
 bool Open(const View& v) noexcept;
-// Only kind 0 (Manage Cargo, opened from the map: the one kind run in hidden tests, kind in force and
-// kind asked both 0). Every other kind keeps Sam: the terminal cargo screens (2, 5, 8), the private
-// room's uniform and cap previews (6, 7: the figure shows what the player is choosing) ...
-bool KindAllowed(const View& v) noexcept;
+// Kind 0 (Manage Cargo, opened from the map: kind in force and kind asked both 0). Every other kind keeps
+// Sam: the terminal cargo screens (2, 5, 8), the private room's kind 7 ...
+// Round 15 (section 40): `wardrobe` also the private room's uniform menu (kind 6 in force and asked), whose figure previews
+// the suit colour.
+bool KindAllowed(const View& v, bool wardrobe) noexcept;
+bool IsWardrobe(const View& v) noexcept;
 
 // The figure's top-level ArtParts hidden by us (what to put back).
 struct Hidden {

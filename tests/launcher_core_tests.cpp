@@ -207,6 +207,7 @@ void SessionIniText() {
     CHECK(MakeSessionIniText(host, text, error));
     CHECK(IsGeneratedIniText(text));
     CHECK(text.find("role=host\n") != std::string::npos);
+    CHECK(text.find("shots_") == std::string::npos);  // shots (docs/enemy-sync.md P3a): the host's file has no shots_* key either
     CHECK(text.find("transport=steam\n") != std::string::npos);
     CHECK(text.find("secret=K7RD3WQ9MP2XVB6TZHN4\n") != std::string::npos);
     CHECK(text.find("send_hz=30\n") != std::string::npos);
@@ -229,6 +230,8 @@ void SessionIniText() {
     guest.peer_steamid = "76561197960370457";
     guest.name = "Sam Porter";
     CHECK(MakeSessionIniText(guest, text, error));
+    // shots (docs/enemy-sync.md P3a): neither the host's nor the guest's file carries a shots_* key (the mod's defaults hold)
+    CHECK(text.find("shots_") == std::string::npos);
     SessionIni back;
     CHECK(ParseSessionIniText(text, back, error));
     CHECK(back.role == "guest" && back.peer_steamid == guest.peer_steamid && back.secret == guest.secret && back.name == "Sam Porter");

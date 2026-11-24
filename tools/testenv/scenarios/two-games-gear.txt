@@ -43,6 +43,10 @@ wait 2000
 screenshot 02-host-own-gear
 @guest screenshot 02-guest-sees-host
 @guest screenshot 02-guest-self
+# the hip crates (waist_cargo, default 1 since round 15) are two-games-hip-cargo's: off here so the delivery counts below stay exact
+@both action gear 36 0
+waitlog 10 \[gear\] our carried cargo: 0 hip piece\(s\) sent as the game's own baggage model \(waist_cargo off\)
+@guest waitlog 10 \[gear\] our carried cargo: 0 hip piece\(s\) sent as the game's own baggage model \(waist_cargo off\)
 action gear 0
 @guest action gear 0
 # the host looks back at the guest's Fragile, a few metres behind it (front); the guest then walks
@@ -57,23 +61,27 @@ screenshot 03b-host-sees-guest-back
 pad none 1300 rx=-32767
 wait 1500
 # a cargo change on the host while it stands ahead of the guest, its back to the guest's camera:
-# 3 synthetic delivery cases, then 1, then none
+# 3 synthetic delivery cases, then 1, then none (cargo 3: the old `cargo 4` counted the waist weapon case, drawn as a white
+# delivery case before section 13 and never sent since; round 15 prove, run 20261123-220511: the guest logs cargo 3)
 action gear 3 3
-@guest waitlog 10 \[gear\] the partner's gear: .*cargo 4
+@guest waitlog 10 \[gear\] the partner's gear: .*cargo 3: [0-9]+ approximate, 0 the game's own model
 @guest waitlog 10 \[gear\] [0-9]+ items, [0-9]+ props live \(0 loading
 wait 2500
 screenshot 03-host-own-three-cases
 @guest screenshot 03-guest-sees-host-three-cases
 action gear 3 1
-@guest waitlog 10 \[gear\] layout .* prop\(s\) removed
+# (the layout line reads "n prop(s) kept (m moved to another item), k removed" since abf5863, 2026-11-17: the old regex
+# "prop\(s\) removed" was never met again; waitnew: the second change must not pass on the first one's line)
+@guest waitnew 10 \[gear\] layout [0-9A-F]+ -> [0-9A-F]+: [0-9]+ prop\(s\) kept \([0-9]+ moved to another item\), [1-9][0-9]* removed
 wait 2500
 @guest screenshot 04-guest-sees-host-one-case
 action gear 3 0
-@guest waitlog 10 \[gear\] layout .* prop\(s\) removed
+@guest waitnew 10 \[gear\] layout [0-9A-F]+ -> [0-9A-F]+: [0-9]+ prop\(s\) kept \([0-9]+ moved to another item\), [1-9][0-9]* removed
 wait 2500
 @guest screenshot 04b-guest-sees-host-no-cases
 action gear 3 3
-@guest waitlog 10 \[gear\] the partner's gear: .*cargo 4
+# the stack back: the guest's new frame (waitnew: the first cargo 3 line would match a waitlog)
+@guest waitnew 10 \[gear\] the partner's gear: .*cargo 3: [0-9]+ approximate, 0 the game's own model
 wait 2500
 # the host walks away: on the guest's screen the Sam body walks off with its gear
 pad none 1200 ly=32767 keep

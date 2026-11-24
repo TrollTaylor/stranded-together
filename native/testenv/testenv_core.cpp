@@ -350,7 +350,7 @@ bool HiddenIniFromLauncher(const std::string& launcher_text, const SessionOption
 bool LauncherIniOverrideAllowed(const std::string& key) {
     static const char* const kAllowed[] = {"fragile_suit_colour", "fragile_textures", "textures_send", "textures_receive", "textures_hot_reload", "textures_free",
                                            "textures_defaults", "boots_look", "boots_own_porter", "held_items", "room_outfit",
-                                           "fragile_hood", "hood_hair", "hood_colour", "hood_fold_hide"};
+                                           "fragile_hood", "hood_hair", "hood_colour", "hood_fold_hide", "shots_sync", "shots_friendly_fire"};
     for (const char* k : kAllowed)
         if (key == k) return true;
     return false;
@@ -371,7 +371,8 @@ bool ScenarioIniKeyAllowed(const std::string& key) {
                                            "test_net_loss_permille", "test_net_burst", "fragile_textures", "textures_send",
                                            "textures_receive", "textures_hot_reload", "textures_free", "textures_defaults", "boots_look",
                                            "boots_own_porter", "held_items", "room_outfit", "fragile_hood", "hood_hair", "exo_carrier",
-                                           "hood_colour", "hood_fold_hide"};
+                                           "hood_colour", "hood_fold_hide", "shots_sync", "shots_muzzle", "shots_sound", "shots_friendly_fire",
+                                           "shots_npc_drop"};
 
     for (const char* k : kAllowed)
         if (key == k) return true;
@@ -758,7 +759,7 @@ bool ParseScenario(const std::string& text, Scenario* out, std::string* error, c
             for (const std::string& kv : *list)
                 if (!LauncherIniOverrideAllowed(kv.substr(0, kv.find('='))))
                     return *error = at + "plays the launcher's file: only test switches may be added (" + kv.substr(0, kv.find('=')) +
-                                    " is not one: fragile_suit_colour, fragile_textures, textures_send, textures_receive, textures_hot_reload, textures_free, textures_defaults, boots_look, boots_own_porter, held_items, room_outfit, fragile_hood, hood_hair, hood_colour, hood_fold_hide)",
+                                    " is not one: fragile_suit_colour, fragile_textures, textures_send, textures_receive, textures_hot_reload, textures_free, textures_defaults, boots_look, boots_own_porter, held_items, room_outfit, fragile_hood, hood_hair, hood_colour, hood_fold_hide, shots_sync, shots_friendly_fire)",
                            false;
         if (out->guest_unredirected) return *error = at + "and guest unredirected do not go together", false;
         if (!out->low_graphics) return *error = at + "needs 'graphics low' (the launcher's file has appdir_settings=1)", false;

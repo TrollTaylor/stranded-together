@@ -41,6 +41,10 @@ waitlog 30 \[gear\] the partner's gear: .*game entities [1-9]
 waitlog 40 \[gear\] [0-9]+ items, [1-9][0-9]* props live
 @guest waitlog 40 \[gear\] [0-9]+ items, [1-9][0-9]* props live
 wait 4000
+# the hip crates (waist_cargo, default 1 since round 15) are two-games-hip-cargo's: off here so the delivery counts below stay exact
+@both action gear 36 0
+waitlog 10 \[gear\] our carried cargo: 0 hip piece\(s\) sent as the game's own baggage model \(waist_cargo off\)
+@guest waitlog 10 \[gear\] our carried cargo: 0 hip piece\(s\) sent as the game's own baggage model \(waist_cargo off\)
 action gear 0
 @guest action gear 0
 screenshot 02-host-own-gear
@@ -91,8 +95,11 @@ wait 1500
 @guest action gear 6
 action gear 3 2
 @guest action gear 3 3
-waitlog 30 \[gear\] the partner's gear: .*cargo 4:
-@guest waitlog 30 \[gear\] the partner's gear: .*cargo 3:
+# the host 2 cases, the guest 3: each sees the other's, nothing else (the old 4 / 3 counted the waist weapon case, a white
+# delivery case before section 13; round 15 prove, run 20261123-220107 passed them on older lines: the guest's 4 and the host's
+# 3 of G2, while the final lines were 3 and 2. Neither count appears earlier with 0 own models, so these wait for the new frames)
+waitlog 30 \[gear\] the partner's gear: .*cargo 3: [0-9]+ approximate, 0 the game's own model
+@guest waitlog 30 \[gear\] the partner's gear: .*cargo 2: [0-9]+ approximate, 0 the game's own model
 @guest waitlog 60 \[gear\] [0-9]+ items, [1-9][0-9]* props live \(0 loading, [1-9][0-9]* shown, 0 failing now, .*failures, [1-9][0-9]* retries
 wait 3000
 @guest screenshot 05-guest-sees-host-after-changes

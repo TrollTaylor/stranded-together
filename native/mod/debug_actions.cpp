@@ -11,6 +11,8 @@
 
 #include "dev_tools.hpp"
 #include "enemy_census.hpp"
+#include "enemy_sync.hpp"
+#include "shot_sync.hpp"
 #include "log.hpp"
 #include "player_sync.hpp"
 #include "partner_tackle.hpp"
@@ -181,6 +183,12 @@ bool DoTex(const Request& r, char* msg, std::size_t cap) { return game::RealBody
 bool DoEnemyCensus(const Request& r, char* msg, std::size_t cap) {
     return enemy::Census(static_cast<int>(r.v[0]), r.v[1], static_cast<int>(r.v[2]), msg, cap);
 }
+bool DoEnemyProbe(const Request& r, char* msg, std::size_t cap) { return esync::Probe(static_cast<int>(r.v[0]), r.v, msg, cap); }
+bool DoShots(const Request& r, char* msg, std::size_t cap) { return shots::Command(static_cast<int>(r.v[0]), r.v, msg, cap); }
+bool DoShotsTest(const Request& r, char* msg, std::size_t cap) {
+    return shots::Test(r.v[0], static_cast<int>(r.v[1]), static_cast<int>(r.v[2]), msg, cap);
+}
+bool DoShotsEcho(const Request& r, char* msg, std::size_t cap) { return shots::Echo(r.v[0] != 0, r.v[1], msg, cap); }
 bool DoAudioProbe(const Request& r, char* msg, std::size_t cap) { return game::AudioProbeCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoSelfVoice(const Request& r, char* msg, std::size_t cap) { return game::SelfVoiceCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoVoiceSync(const Request& r, char* msg, std::size_t cap) { return game::VoiceSyncCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
@@ -279,7 +287,7 @@ constexpr Row kRows[] = {
     {{Action::real_mirror, Tab::tools, "Real mirror", "The debug real body copies Sam's live pose (1) or keeps its own (0).", false}, &DoRealMirror},
     {{Action::real_control, Tab::tools, "Real control", "Load the n-th streamed-out collectors hologram through the real body's path+GUID route.", false}, &DoRealControl},
     {{Action::self_view, Tab::tools, "Self view", "Show yourself as a character in place of Sam on this screen (1/0, body id, follow mode).", false}, &DoSelfView},
-    {{Action::real_outfit, Tab::tools, "Real outfit", "Partner Sam's outfit: 0 log, 1 like your Sam, 2 exos + suit colour, 3 override off. Fragile's porter suit: 5 c colour (-1 follow), 6 log.", false}, &DoRealOutfit},
+    {{Action::real_outfit, Tab::tools, "Real outfit", "Partner Sam's outfit: 0 log, 1 like your Sam, 2 exos + suit colour, 3 override off. Fragile's porter suit: 5 c colour (-1 follow), 6 log. Colour menu: 9 mask (1 byte follows her pick, default on; 2 Fragile in it, default off), 10 log, 11 open it (hidden runs), 12 note a suit colour preview (hidden runs).", false}, &DoRealOutfit},
     {{Action::name_tags, Tab::tools, "Name tags", "Name tags: 0 normal, 1 self test above your own Sam, 2 log the camera, 3 0/1 off/on.", false}, &DoNameTags},
     {{Action::collision, Tab::tools, "Collision", "Player collision: 0 log, 1 0/1 off/on, 2 ms trace, 3 m pin the partner ahead, 4 layer type.", false}, &DoCollision},
     {{Action::gear, Tab::tools, "Gear", "Gear on the bodies: 0 log, 1 0/1 partner props, 2 0/1 self-view props, 4 0/1 own gear on the debug body, 7 0..2 mirror level, 9 0/1/2 census.", false}, &DoGear},
@@ -348,6 +356,12 @@ constexpr Row kRows[] = {
      &DoTex},
     {{Action::enemy_census, Tab::tools, "Enemy census", "Enemy sync P0, read only: every MULE / Demens / warrior actor with its GUID, state, place and entity to the log: <tag> [radius m, 0 all] [flags: 1 every other actor type, 2 the MULE killed records].", false},
      &DoEnemyCensus},
+    {{Action::enemy_probe, Tab::tools, "Enemy probe", "Enemy sync P1-0, hidden runs only: 0 [m] check and pick the nearest realized MULE, 3 s path the next tests' length and path, 1 lever mode freeze / drive / release / watch, 2 s our Sam's pose onto it, 9 release.", false},
+     &DoEnemyProbe},
+    {{Action::shots, Tab::tools, "Shots", "The players' shots on the other screen (shots_sync): 0 status, 1 on, 2 off, 3 m deg our Sam beside the partner body facing it, 4 [deg] aim the camera at it (hidden runs).", false}, &DoShots},
+    {{Action::shots_test, Tab::tools, "Shots test", "One replayed bullet at our own Sam (the last captured shot's ids): m ahead, flags (1 the filter keeps it, 2 no weapon, 4 no magazine, 16 leak test), count.", false},
+     &DoShotsTest},
+    {{Action::shots_echo, Tab::tools, "Shots echo", "Solo: our own shots replayed beside us: 0/1, m to the right (default 2.5).", false}, &DoShotsEcho},
 };
 constexpr std::size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);
 static_assert(kRowCount == static_cast<std::size_t>(Action::count), "every Action needs exactly one registry row");

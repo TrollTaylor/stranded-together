@@ -63,6 +63,9 @@ void Forget(Dress& d) noexcept;  // the body is gone: nothing to call
 // colour byte (inventory +0x4BE1, 0..16) is overwritten, as the uniform menu would; the game's
 // inventory update then re-dresses Sam itself. Logged.
 bool TestSetOwnSuitColour(std::uintptr_t player, std::uint8_t colour) noexcept;
+// Round 15: where our own Sam's suit colour byte is (inventory +0x4BE1; the player and its inventory checked) and what it
+// holds. False (addr 0) when it does not check out.
+bool OwnSuitColour(std::uintptr_t player, std::uintptr_t* addr, std::uint8_t* value) noexcept;
 
 // ---- Sam's clothes change (docs/real-partner-body.md section 34; room_outfit_rules.hpp): his streaming control's switch
 // state and variants, and his paint effect's init (the 60 s wait behind the private room's black screen). Byte-checked on

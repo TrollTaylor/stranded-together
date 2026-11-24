@@ -375,6 +375,14 @@ void Apply(Dress& d, std::uintptr_t e, const wire::Outfit& want, std::uintptr_t 
     }
 }
 
+bool OwnSuitColour(std::uintptr_t p, std::uintptr_t* addr, std::uint8_t* value) noexcept {
+    std::uintptr_t inv = 0, sc = 0;
+    *addr = 0;
+    if (!Available() || !PlayerParts(p, &inv, &sc) || !Rd(inv + kInvOutfit + 5, *value)) return false;
+    *addr = inv + kInvOutfit + 5;
+    return true;
+}
+
 bool TestSetOwnSuitColour(std::uintptr_t p, std::uint8_t colour) noexcept {
     std::uintptr_t inv = 0, sc = 0;
     if (!Available() || colour > 16 || !PlayerParts(p, &inv, &sc)) return false;

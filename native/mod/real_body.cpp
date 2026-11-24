@@ -38,6 +38,7 @@
 #include "room_outfit_rules.hpp"
 #include "face_sync.hpp"
 #include "hood_fold.hpp"
+#include "wardrobe.hpp"
 
 namespace st::realbody {
 namespace {
@@ -2702,9 +2703,99 @@ void ApplyExoPose(int x, std::uintptr_t sm) {
     t.last_apply.store(GetTickCount64(), std::memory_order_relaxed);
 }
 
+// ---------------------------------------------------------------- the enemy probe's slot (docs/enemy-sync.md P1-0)
+// One watched SkinnedModel (an enemy's): mode 1 counts its animate calls, mode 3 also writes our Sam's live local pose onto it
+// after each of its own animates (the same skeleton object as Sam's, 77 joints, layout BE39C83F: checked on every call),
+// then measures how far its model-space joints are from Sam's (the largest joint rotation difference).
+std::atomic<std::uintptr_t> g_et_sm{0};
+std::atomic<int> g_et_mode{0};
+std::atomic<std::uint32_t> g_et_calls{0}, g_et_writes{0}, g_et_rejects{0}, g_et_faults{0};
+std::atomic<std::uint32_t> g_et_err_mdeg{0};  // the largest rotation error since the last reset (millidegrees)
+std::atomic<bool> g_et_faulted{false};
+
+void ApplyEnemyPose(std::uintptr_t sm) {
+    if (g_et_faulted.load(std::memory_order_relaxed)) return;
+    const std::uintptr_t ssm = g_sam_sm.load(std::memory_order_acquire), sskel = g_sam_skel.load(std::memory_order_acquire);
+    std::uintptr_t vt = 0;
+    if (!ssm || !sskel || !Rd(sm, vt) || vt != g_sm_vt) {
+        g_et_rejects.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    std::uint8_t hdr[kPoseSize], shdr[kPoseSize];
+    std::uintptr_t pose = 0, spose = 0;
+    if (!ReadPoseHdr(sm, hdr, &pose) || !ReadPoseHdr(ssm, shdr, &spose) || Field<std::uintptr_t>(hdr, kHdrSkel) != sskel ||
+        Field<std::uintptr_t>(shdr, kHdrSkel) != sskel || Field<std::int32_t>(hdr, kHdrState) != kPoseStateModel) {
+        g_et_rejects.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    const std::uintptr_t lb = Field<std::uintptr_t>(hdr, kHdrLocal), le = Field<std::uintptr_t>(hdr, kHdrLocalEnd);
+    const std::uintptr_t mb = Field<std::uintptr_t>(hdr, kHdrModel), me = Field<std::uintptr_t>(hdr, kHdrModelEnd);
+    const std::uintptr_t slb = Field<std::uintptr_t>(shdr, kHdrLocal), sle = Field<std::uintptr_t>(shdr, kHdrLocalEnd);
+    const std::uintptr_t smb = Field<std::uintptr_t>(shdr, kHdrModel), sme = Field<std::uintptr_t>(shdr, kHdrModelEnd);
+    if (!lb || le - lb != kJ * sizeof(Joint) || !mb || me - mb != kJ * 0x40ull || !slb || sle - slb != kJ * sizeof(Joint) || !smb ||
+        sme - smb != kJ * 0x40ull) {
+        g_et_rejects.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    static thread_local Joint cur[kJ];
+    if (!mem::Read(slb, cur, sizeof(cur))) return;
+    Joint root{};
+    if (!mem::Read(lb, &root, sizeof(root))) return;
+    cur[0] = root;  // its own root: the place stays the enemy's
+    SIZE_T wrote = 0;
+    if (!WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(lb), cur, sizeof(cur), &wrote) || wrote != sizeof(cur)) {
+        g_et_rejects.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    std::int32_t bounds_on = 0;
+    Rd(sm + kSmBoundsOn, bounds_on);
+    if (!CallPoseFns(sm, pose, bounds_on != 0)) {
+        g_et_faulted.store(true, std::memory_order_seq_cst);
+        g_et_faults.fetch_add(1, std::memory_order_relaxed);
+        g_et_sm.store(0, std::memory_order_seq_cst);
+        return;
+    }
+    g_et_writes.fetch_add(1, std::memory_order_relaxed);
+    // the model-space rotations against Sam's (the same local pose: the same model pose expected)
+    static thread_local float m[kJ][16], sm2[kJ][16];
+    if (!mem::Read(mb, m, sizeof(m)) || !mem::Read(smb, sm2, sizeof(sm2))) return;
+    double worst = 0;
+    for (unsigned j = 1; j < kJ; ++j) {
+        // trace of A * B^T over the 3x3 rotation rows (normalised rows: the model matrices may carry scale)
+        double tr = 0;
+        for (int r = 0; r < 3; ++r) {
+            double la = 0, lbn = 0, d = 0;
+            for (int c = 0; c < 3; ++c) {
+                la += static_cast<double>(m[j][r * 4 + c]) * m[j][r * 4 + c];
+                lbn += static_cast<double>(sm2[j][r * 4 + c]) * sm2[j][r * 4 + c];
+                d += static_cast<double>(m[j][r * 4 + c]) * sm2[j][r * 4 + c];
+            }
+            if (la <= 1e-12 || lbn <= 1e-12) continue;
+            tr += d / std::sqrt(la * lbn);
+        }
+        double c = (tr - 1.0) / 2.0;
+        c = c > 1 ? 1 : c < -1 ? -1 : c;
+        const double deg = std::acos(c) * 180.0 / 3.14159265358979323846;
+        if (deg > worst) worst = deg;
+    }
+    const std::uint32_t mdeg = static_cast<std::uint32_t>(worst * 1000.0);
+    std::uint32_t prev = g_et_err_mdeg.load(std::memory_order_relaxed);
+    while (mdeg > prev && !g_et_err_mdeg.compare_exchange_weak(prev, mdeg, std::memory_order_relaxed)) {
+    }
+}
+
 void Detour(void* sm, float dt) {
     g_orig(sm, dt);
     const auto s = reinterpret_cast<std::uintptr_t>(sm);
+    if (s && s == g_et_sm.load(std::memory_order_relaxed)) {
+        g_inflight.fetch_add(1, std::memory_order_seq_cst);
+        if (g_et_sm.load(std::memory_order_seq_cst) == s) {
+            g_et_calls.fetch_add(1, std::memory_order_relaxed);
+            if (g_et_mode.load(std::memory_order_relaxed) == 3) ApplyEnemyPose(s);
+        }
+        g_inflight.fetch_sub(1, std::memory_order_seq_cst);
+        return;
+    }
     if (s && s == g_bt.sm.load(std::memory_order_relaxed)) {
         g_inflight.fetch_add(1, std::memory_order_seq_cst);
         if (g_bt.sm.load(std::memory_order_seq_cst) == s) {
@@ -3773,10 +3864,16 @@ bool RedressWait(double now_ms) {
 // self body then stays (it is not removed as on other sleeps), stands on the figure and plays its pose
 // (the figure's model is captured by the detour, its transform copied in the figure's own update), and
 // the figure's ArtParts are hidden (menu_figure.cpp: the top-level parts; the subspace gear and the
-// cargo are entities of their own on its skeleton and stay). The private room's uniform and cap
-// previews (kinds 6, 7) keep Sam. When the menu closes (or anything does not check out) the figure's
+// cargo are entities of their own on its skeleton and stay). Round 15 (section 40): the private room's colour menu
+// (kind 6) too, with her porter suit in the colour being previewed; kind 7 keeps Sam. When the menu closes (or anything does not check out) the figure's
 // parts are put back first, then the body hidden; the field self view takes over when Sam wakes.
 bool g_menu_on = true;      // `self_view 3 <0/1>` (on with the self view)
+// Round 15 (section 40): the private room's uniform menu (kind 6) too: her porter suit on its figure, in the colour being
+// previewed (`real_outfit 9` bit 2).
+bool g_wardrobe_on = false;  // round 15 review: off until stills show her on the wardrobe's figure (`real_outfit 9 3` turns it on)
+bool g_menu_wardrobe = false;  // the active menu is the wardrobe
+wardrobe::State g_wd;          // the wardrobe's state this tick (WardrobeTick)
+std::uint8_t g_wd_shown = 0xFF;  // the colour her self body was last given in the wardrobe (0xFF: none)
 bool g_menu_active = false;  // the figure's model is published, the self body follows it
 bool g_menu_shown = false;   // our body shown, the figure's top-level parts hidden by us
 menufig::Hidden g_menu_hidden;
@@ -3814,6 +3911,7 @@ void MenuEnd(const char* why) {
     const ULONGLONG until = GetTickCount64() + 50;
     while (g_inflight.load(std::memory_order_seq_cst) != 0 && GetTickCount64() < until) SwitchToThread();
     g_menu_active = false;
+    g_menu_wardrobe = false;
     g_menu_not_shown = "";
     Log("[menu] the self body follows the local Sam again (%s)", why);
 }
@@ -3868,7 +3966,7 @@ bool MenuTick(std::uintptr_t sam, double now_ms) {
     const char* out = !g_menu_on               ? "the menu figure is switched off"
                       : !read                  ? "the subspace work object is not readable"
                       : !menufig::Open(v)      ? "the cargo menu closed"
-                      : !menufig::KindAllowed(v) ? "a menu other than Manage Cargo (the figure stays Sam)"
+                      : !menufig::KindAllowed(v, g_wardrobe_on) ? "a menu other than Manage Cargo or the wardrobe (the figure stays Sam)"
                       : v.player != sam        ? "the menu serves another player entity"
                                                : nullptr;
     if (out) {
@@ -3883,14 +3981,25 @@ bool MenuTick(std::uintptr_t sam, double now_ms) {
         g_menu_sm.store(v.sm, std::memory_order_seq_cst);
         g_self_src.store(1, std::memory_order_seq_cst);
         g_menu_active = true;
+        g_menu_wardrobe = menufig::IsWardrobe(v);
         g_menu_not_shown = "";
-        Log("[menu] the cargo menu is open (kind %d/%d, state %d): the self body follows its Sam figure %p (model %p, skeleton %p%s)", v.kind,
-            v.kind_next, v.state, reinterpret_cast<void*>(v.e), reinterpret_cast<void*>(v.sm), reinterpret_cast<void*>(v.skel),
-            v.skel == g_sam_skel.load() ? ", Sam's own" : ", not Sam's object");
+        Log("[menu] the %s is open (kind %d/%d, state %d): the self body follows its Sam figure %p (model %p, skeleton %p%s)",
+            g_menu_wardrobe ? "wardrobe (the private room's uniform menu)" : "cargo menu", v.kind, v.kind_next, v.state, reinterpret_cast<void*>(v.e),
+            reinterpret_cast<void*>(v.sm), reinterpret_cast<void*>(v.skel), v.skel == g_sam_skel.load() ? ", Sam's own" : ", not Sam's object");
+    }
+    // Round 15 (section 40): the wardrobe previews Sam in his porter suit (the game switches him to it), so she wears her
+    // base body there (her porter suit), also where the room outfit has her black suit: swapped while the menu opens.
+    const bodies::Body* menu_look = g_menu_wardrobe ? g_self_body : SelfLook();
+    if (g_menu_wardrobe && menu_look && g_me.phase != Phase::idle && g_me.body && g_me.body != menu_look) {
+        Log("[menu] wardrobe: '%s' -> '%s' (her porter suit for the preview; state %d)", g_me.body->key, menu_look->key, v.state);
+        MenuUnshow("wardrobe: her porter suit");
+        Teardown(g_me, "wardrobe: her porter suit for the preview");
+        g_self_retry_ms = 0;
+        return true;
     }
     // The body normally lives on from the field; it is spawned on the figure when it does not.
     if (g_me.phase == Phase::idle) {
-        const bodies::Body* look = SelfLook();
+        const bodies::Body* look = menu_look;
         if (now_ms < g_self_retry_ms || (look->id < 32 && (g_me.refused & (1u << look->id)))) return true;
         game::WorldTransform at{};
         if (!game::TryGetTransform(reinterpret_cast<game::Entity*>(v.e), &at)) return true;
@@ -4738,20 +4847,66 @@ void DressFragile(game::Entity* local, bool local_active, double now_ms) {
         const bool have = outfit::ReadLocal(reinterpret_cast<std::uintptr_t>(local), &o);
         // round 5: on a host-held save guest, her remembered pick (suit_colour.hpp GuestColour) when she has not picked since this load
         if (have || g_suit_override >= 0) {
-            const std::uint8_t colour = suitcol::Wanted(g_suit_override, have ? suitcol::GuestColour(o.suit_colour) : 0);
+            const std::uint8_t worn = suitcol::Wanted(g_suit_override, have ? suitcol::GuestColour(o.suit_colour) : 0);
+            // Round 15 (section 40): in the wardrobe her self body shows the colour being previewed (only here: the host,
+            // the shared look, her boots and her hood row stay on what she wears)
+            const bool in_wardrobe = g_suit_override < 0 && g_menu_active && g_menu_wardrobe && g_wd.open == 1;
+            const std::uint8_t colour = suitcol::WardrobeShown(in_wardrobe, wardrobe::PreviewColour(g_wd), g_wd.staging, worn);
+            const std::uint8_t shown_now = in_wardrobe ? colour : std::uint8_t{0xFF};
+            if (shown_now != g_wd_shown) {
+                if (shown_now != 0xFF)
+                    Log("[suit] wardrobe: her self body shows colour %u (%s; she wears %u)", colour,
+                        wardrobe::PreviewColour(g_wd) >= 0 ? "previewed" : colour == worn ? "what she wears" : "the menu's choice", worn);
+                else if (g_wd_shown != 0xFF) Log("[suit] wardrobe: her self body back on what she wears (%u)", worn);
+                g_wd_shown = shown_now;
+            }
             ftex::Look l;
             const bool have_look = OwnTextureLook(colour, &l);
             g_self_has_look = have_look && !l.Empty();
-            texshare::SetOwnLook(have_look, l, colour);
+            if (colour == worn) {
+                texshare::SetOwnLook(have_look, l, colour);
+            } else if (ftex::Enabled() && !ftex::PatternOn()) {
+                int wt = -1;
+                bool ww = false, wo = true;
+                ftex::Look wl;
+                if (ftex::looks::OwnLook(worn, OwnBootsKey(worn, &wt, &ww, &wo), &wl)) texshare::SetOwnLook(true, wl, worn);
+            }
             int btype = -1;
             bool bworn = false, bown = true;
-            OwnBootsKey(colour, &btype, &bworn, &bown);
+            OwnBootsKey(worn, &btype, &bworn, &bown);
             texshare::SetOwnBoots(btype, bworn, bown);
             DressOne(g_tex_me, g_suit_me, reinterpret_cast<std::uintptr_t>(g_me.spawn.e), have_look, l, colour, now_ms);
-            g_hood_row[1] = have_look || !ftex::Enabled() ? suitcol::HoodRow(ftex::Enabled() && have_look && !l.Empty(), l.hood_row, g_suit_me.applied) : -1;
-            g_hood_row_look[1] = ftex::Enabled() && have_look && !l.Empty();
+            if (colour == worn) {
+                g_hood_row[1] = have_look || !ftex::Enabled() ? suitcol::HoodRow(ftex::Enabled() && have_look && !l.Empty(), l.hood_row, g_suit_me.applied) : -1;
+                g_hood_row_look[1] = ftex::Enabled() && have_look && !l.Empty();
+            }
         }
     }
+}
+
+// ---------------------------------------------------------------- round 15 (section 40): the wardrobe
+// Every tick: the uniform menu's state (wardrobe.hpp; logged on every change, hidden-test evidence), then the guest's pick
+// rule and her Sam's byte (suit_colour.hpp GuestTick).
+void WardrobeTick(game::Entity* local, bool local_active, double now_ms) {
+    const bool wr = wardrobe::Read(&g_wd);
+    menufig::View v;
+    const bool vr = menufig::Read(&v) || v.w;
+    const int kind6 = !vr ? -1 : (v.kind == 6 || v.kind_next == 6) ? 1 : 0;
+    std::uintptr_t addr = 0;
+    std::uint8_t b = 0xFF;
+    const bool have_b = local && outfit::OwnSuitColour(reinterpret_cast<std::uintptr_t>(local), &addr, &b);
+    const int byte_now = have_b ? b : -1;
+    static wardrobe::State last;
+    static int last_b = -2, last_kind = -2, last_next = -2;
+    if (wr && (g_wd.open != last.open || g_wd.category != last.category || g_wd.value != last.value || g_wd.staging != last.staging ||
+               byte_now != last_b || (g_wd.open == 1 && (v.kind != last_kind || v.kind_next != last_next)))) {
+        // (her Sam's byte alone changing outside the menu is logged too: a load, a script, our alignment)
+        Log("[wardrobe] menu %s, category %d, previewed %d, staging %d; Sam's suit colour byte %d; subspace kind %d/%d state %d",
+            g_wd.open == 1 ? "OPEN" : "closed", g_wd.category, g_wd.value, g_wd.staging, byte_now, v.kind, v.kind_next, v.state);
+        last = g_wd;
+        last_b = byte_now, last_kind = v.kind, last_next = v.kind_next;
+    }
+    suitcol::GuestTick(local && local_active ? reinterpret_cast<std::uintptr_t>(local) : 0, addr, byte_now, kind6, now_ms);
 }
 
 // ---------------------------------------------------------------- update frequency (smooth bit kSmoothBoost)
@@ -6272,6 +6427,30 @@ game::Entity* SelfEntity() noexcept {
     return g_me.spawn.e;
 }
 
+bool SetEnemyPoseSlot(std::uintptr_t sm, int mode) noexcept {
+    if (!g_hook) return false;
+    g_et_sm.store(0, std::memory_order_seq_cst);
+    for (int i = 0; i < 200 && g_inflight.load(std::memory_order_seq_cst) != 0; ++i) Sleep(0);  // a detour inside finishes
+    g_et_mode.store(mode, std::memory_order_relaxed);
+    if (!sm || mode == 0) return true;
+    std::uintptr_t vt = 0;
+    if (!Rd(sm, vt) || vt != g_sm_vt) return false;
+    const SkelInfo k = PoseSkeleton(sm);
+    if (!k.skel || k.count != static_cast<std::int32_t>(kJ) || k.layout != wire::kSamLayoutHash) return false;
+    g_et_sm.store(sm, std::memory_order_seq_cst);
+    return true;
+}
+
+EnemySlotStats GetEnemySlotStats(bool reset) noexcept {
+    EnemySlotStats s;
+    s.calls = g_et_calls.load(), s.writes = g_et_writes.load(), s.rejects = g_et_rejects.load(), s.faults = g_et_faults.load();
+    s.max_err_deg = static_cast<float>(g_et_err_mdeg.load()) / 1000.0f;
+    if (reset) {
+        g_et_calls.store(0), g_et_writes.store(0), g_et_rejects.store(0), g_et_err_mdeg.store(0);
+    }
+    return s;
+}
+
 void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
     g_now = now_ms;
     HeadMeterSam();  // hidden tests: before this tick moves Sam (section 26.8)
@@ -6344,6 +6523,7 @@ void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
     DriveBootsTarget(local_active);
     DriveExoTargets(local_active);
     DressPartner(local, local_active, now_ms);
+    WardrobeTick(local, local_active, now_ms);
     DressFragile(local, local_active, now_ms);
     if (g_hook) Stats(now_ms);
     Meter(now_ms);
@@ -6887,8 +7067,47 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
                     return false;
                 }
                 const bool ok = have_sam && outfit::TestSetOwnSuitColour(reinterpret_cast<std::uintptr_t>(sam), static_cast<std::uint8_t>(v[1]));
-                Set(msg, cap, "our own suit colour -> %.0f: %s", v[1], ok ? "written" : "not written");
+                // round 15: a pick, as the wardrobe's close (b = 1: only the byte, as a load or a script's ApplyInventorySetting
+                // would write it: not a pick)
+                if (ok && v[2] == 0) suitcol::NotePick(static_cast<std::uint8_t>(v[1]));
+                Set(msg, cap, "our own suit colour -> %.0f: %s%s", v[1], ok ? "written" : "not written", v[2] != 0 ? " (not a pick)" : "");
                 return ok;
+            }
+            if (mode == 9) {  // round 15 (section 40): bit 1 her Sam's byte follows her pick, bit 2 Fragile in the wardrobe
+                const int m = v[1] >= 0 && v[1] <= 3 ? static_cast<int>(v[1]) : 3;
+                if (((m & 1) != 0) != suitcol::AlignOn()) suitcol::SetAlign((m & 1) != 0);
+                g_wardrobe_on = (m & 2) != 0;
+                if (!g_wardrobe_on && g_menu_wardrobe) MenuEnd("the wardrobe figure switched off (debug)");
+                Set(msg, cap, "wardrobe: her Sam's byte follows her pick %d, Fragile in the wardrobe %d", (m & 1) ? 1 : 0, (m & 2) ? 1 : 0);
+                Log("[suit] %s", msg);
+                return true;
+            }
+            if (mode == 11) {  // round 15, hidden tests only: open the wardrobe with the call the room makes (private room)
+                std::uint64_t gs = 0;
+                game::LoadOrSetup(&gs, nullptr);
+                if (!automation::Enabled() || !automation::SavesRedirected() || !(gs & game::kGameStatePrivateRoom)) {
+                    Set(msg, cap, "refused: only in a hidden test run on scratch saves, in the private room");
+                    return false;
+                }
+                return wardrobe::TestOpen(msg, cap);
+            }
+            if (mode == 12) {  // round 15 review, hidden tests only: the open wardrobe counts as if a suit colour were previewed
+                if (!automation::Enabled() || !automation::SavesRedirected()) {
+                    Set(msg, cap, "refused: only in a hidden test run on scratch saves");
+                    return false;
+                }
+                const bool ok = suitcol::MarkPreview();
+                Set(msg, cap, ok ? "a suit colour preview noted in the open wardrobe" : "the wardrobe is not open");
+                return ok;
+            }
+            if (mode == 10) {  // round 15: the wardrobe and the guest's pick to the log
+                char gd[200];
+                wardrobe::State ws;
+                const bool wr = wardrobe::Read(&ws);
+                Set(msg, cap, "wardrobe %s: open %d category %d previewed %d staging %d; %s; menu active %d wardrobe %d shown %d", wr ? "read" : wardrobe::Why(), ws.open,
+                    ws.category, ws.value, ws.staging, suitcol::DescribeGuest(gd, sizeof(gd)), g_menu_active ? 1 : 0, g_menu_wardrobe ? 1 : 0, g_menu_shown ? 1 : 0);
+                Log("[suit] %s", msg);
+                return wr;
             }
             if (mode == 5) {  // Fragile's porter suit: colour a (0..16) on our fragile_suit bodies, -1 = follow the suit colour again
                 g_suit_override = v[1] >= 0 && v[1] <= suitcol::kGold ? static_cast<int>(v[1]) : -1;

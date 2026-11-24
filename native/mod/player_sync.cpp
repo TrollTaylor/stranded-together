@@ -31,6 +31,8 @@
 #include "status.hpp"
 #include "steam_owner.hpp"
 #include "partner_tackle.hpp"
+#include "enemy_sync.hpp"
+#include "shot_sync.hpp"
 #include "ride_together.hpp"
 #include "save_guard.hpp"
 #include "vehicle_drive.hpp"
@@ -786,7 +788,8 @@ void FeaturesOff(char* out, std::size_t cap) {
     }
     std::size_t n = 0;
     if (real(ride::OffReason())) n += std::snprintf(out + n, cap - n, "riding together (%s)", ride::OffReason());
-    if (n < cap && real(vhit::OffReason())) std::snprintf(out + n, cap - n, "%svehicle hits (%s)", n ? "; " : "", vhit::OffReason());
+    if (n < cap && real(vhit::OffReason())) n += std::snprintf(out + n, cap - n, "%svehicle hits (%s)", n ? "; " : "", vhit::OffReason());
+    if (n < cap && real(shots::OffReason())) std::snprintf(out + n, cap - n, "%sshots (%s)", n ? "; " : "", shots::OffReason());
 }
 
 void PublishStatus(double now) {
@@ -1513,6 +1516,18 @@ void Tick() noexcept {
         hin.local_ok = g_local_valid;
         hin.local_active = g_local_active;
         vhit::Tick(hin, now);
+        // the players' shots (shot_sync.hpp; docs/enemy-sync.md P3a): ours captured and sent, the partner's replayed at the
+        // body's play time from its gun
+        shots::TickIn shin;
+        shin.local = g_local;
+        shin.local_ok = g_local_valid && g_local_active;
+        shin.body = BodyEntity();
+        shin.have_play = vin.have_play;
+        shin.play_ms = vin.play_ms;
+        shin.net = g_net;
+        shin.role = static_cast<std::uint8_t>(g_cfg.role == Role::host ? 1 : g_cfg.role == Role::guest ? 2 : 0);
+        shots::Tick(shin, now);
+        esync::Tick(g_local, g_local_valid, now);  // the enemy freeze probe (hidden runs; idle otherwise)
     }
 
     // Player collision (partner_collision.hpp): only the partner slot's real body, never the

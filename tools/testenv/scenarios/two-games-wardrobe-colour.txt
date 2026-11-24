@@ -1,0 +1,101 @@
+# Round 15 (docs/real-partner-body.md section 40): the user's "I can't change Fragile's colour ... the menu says gold but it's
+# not", and Fragile in the colour menu, hidden, two games on the launcher's own Local test files, the guest Fragile in the
+# private room (the story pack's manualsave12, loaded by the host with story_load and followed by the guest):
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-wardrobe-colour -SeedSaves story-pack -GuestSeed profile-only
+# 1. Her remembered pick differs from her Sam's colour: the guest picks 14 (`real_outfit 4 14`, the test pick), then her Sam's
+#    byte is set back to 16 without a pick (`real_outfit 4 16 1`, what a load of the host's gold save or a script's
+#    ApplyInventorySetting does): the mod writes her pick back (`byte 16 -> 14 (her pick) written`), so the menu opens on 14.
+# 2. The game's colour-scheme menu (subspace kind 6) opened with the call the room makes (`real_outfit 11`, 0x142D1BD70;
+#    no pad path to the room's point was found in a hidden run): staging 14, her black room suit swapped for her porter suit
+#    on the menu's figure (`showing 'fragile_suit' in place of the menu's Sam figure`, colour 14 on it).
+# 3. Closed with B (pressed until the close's own line: `[wardrobe] menu closed` is logged on the first tick and on every
+#    byte change, so it cannot end the loop): the menu opened on her pick, so the close keeps it (`closed with her Sam's
+#    suit colour 14: her pick`). Then her porter suit is forced in the room (`self_view 18 3`) for the stills: she wears 14
+#    on both screens (the host's `[suit] body ...: colour 14 on`).
+# 4. What tells the fix from round 5 (round 15 review): the alignment off (`real_outfit 9 2`), her Sam's byte the host's
+#    16 again without a pick. a) The menu opens on 16 and closes with no suit colour previewed: not a pick (a glasses or cap
+#    change never overwrites her pick). b) It opens on 16 again, a suit colour preview is noted (`real_outfit 12`: this
+#    save lists no suit colour) and it closes on 16 unchanged: her new pick 16, remembered (round 5: no byte change, pink 14
+#    kept). Stills d1: Fragile in gold 16 on both screens (round 5's rule: pink 14).
+# Fragile on the menu's figure is off by default since the review (`real_outfit 9` bit 2): this scenario turns it on.
+# The held session that proved it (round 15, run 20261123-195909-tg) ran these steps through Send-TestStep.ps1 after
+# `start story 12 control 10` (its waitworld fails in the room: PrivateRoom counts as a scripted scene); this file is
+# the same steps as one scenario, with the host's in-world story_load instead.
+# Not covered: the suit colour entry of the menu (manualsave12 lists only the sunglasses: no suit colours unlocked), so
+# the preview of a suit colour on her in the menu and a pick of another colour through the menu are not shown here.
+# (dev_tools=1 and host_save=1 come from the launcher's Local test files.)
+# covers: suit-colour private-room menu-figure host-save self-view
+role host
+graphics low
+timeout 360
+ini fragile_suit_colour=1
+launcherini local-test
+start control 200
+?@guest waitlog 60 \[self\] showing 'fragile_suit' in place of Sam
+action story_load 12
+@guest waitnew 150 \[coop\] guest: in the world after
+@guest until 40 500 status: game state: \S+ \[PrivateRoom(\|bit39)?\] requested \S+ \[PrivateRoom(\|bit39)?\] phase 0 => action log_status
+?@guest waitlog 20 \[self\] shown=1 'fragile'
+wait 2000
+@guest waitlog 1 \[suit\] guest: a pick is the wardrobe's close
+@guest action real_outfit 9 3
+# 1. the remembered pick 14, her Sam's byte back to 16: written back
+@guest action real_outfit 4 14
+@guest waitnew 5 \[suit\] guest: picked suit colour 14 \(test action
+wait 2500
+@guest action real_outfit 4 16 1
+@guest waitnew 6 \[suit\] guest: her Sam's suit colour byte 16 -> 14 \(her pick\) written
+wait 1500
+@guest screenshot a1-room-pick14-guest
+screenshot a1-room-pick14-host
+# 2. the colour-scheme menu opens on 14, Fragile in her porter suit on its figure
+@guest action real_outfit 11
+@guest waitnew 8 \[menu\] the wardrobe \(the private room's uniform menu\) is open
+@guest waitlog 8 \[wardrobe\] menu OPEN, category [0-9]+, previewed [0-9]+, staging 14;
+@guest waitlog 8 \[menu\] showing 'fragile_suit' in place of the menu's Sam figure
+@guest waitlog 8 \[suit\] wardrobe: her self body shows colour 14
+wait 1500
+@guest screenshot b1-open
+@guest action real_outfit 10
+# 3. closed: it opened on her pick, the close keeps it
+@guest until 40 2500 \[suit\] guest: the wardrobe closed with => pad B 150
+@guest waitlog 3 \[suit\] guest: the wardrobe closed with her Sam's suit colour 14: her pick
+@guest action self_view 18 3
+wait 5000
+@guest screenshot c2-after-pick-guest
+screenshot c2-after-pick-host
+waitlog 10 \[suit\] body .*: colour 14 on
+@guest action real_outfit 10
+# 4. no alignment, her Sam's byte 16 (not her pick 14)
+@guest action real_outfit 9 2
+@guest waitnew 3 \[suit\] guest: her Sam's suit colour byte no longer follows her pick
+@guest action real_outfit 4 16 1
+wait 2500
+# 4a. opened on 16, closed with no suit colour previewed: not a pick
+@guest action real_outfit 11
+@guest waitnew 8 \[wardrobe\] menu OPEN, category [-0-9]+, previewed [-0-9]+, staging 16;
+wait 1500
+@guest until 40 2500 \[suit\] guest: the wardrobe closed with her Sam's suit colour 16: not a pick => pad B 150
+# 4b. opened on 16, a suit colour preview noted, closed on 16: her new pick
+wait 1500
+@guest action real_outfit 11
+@guest waitnew 8 \[wardrobe\] menu OPEN, category [-0-9]+, previewed [-0-9]+, staging 16;
+@guest action real_outfit 12
+@guest waitnew 3 \[suit\] guest: a suit colour preview noted in the open wardrobe
+wait 1500
+@guest until 40 2500 \[suit\] guest: the wardrobe closed with her Sam's suit colour 16: her new pick => pad B 150
+waitnew 10 \[suit\] body .*: colour 16 on
+@guest waitlog 3 \[suit\] the guest picked suit colour 16: remembered
+wait 4000
+@guest screenshot d1-after-pick16-guest
+screenshot d1-after-pick16-host
+@guest action real_outfit 10
+@guest action real_outfit 9 1
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+nolog \[suit\] .*FAULTED
+@guest nolog \[suit\] .*FAULTED
+@both action log_status
+@guest quit
+wait 3000
+quit

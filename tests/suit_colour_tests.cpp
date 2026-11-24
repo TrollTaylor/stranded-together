@@ -97,6 +97,104 @@ void GuestPickRemembered() {
     CHECK(!none.See(7, 0xFF) && none.saved == 0xFF);  // an unreadable byte is never saved
 }
 
+// Round 15 (docs/real-partner-body.md section 40): the user's stuck colour. Her remembered pick 14 (pink), her Sam's byte the
+// host's 16 (gold) after a load; the menu opened on gold and picking gold wrote 16 over 16: round 5's rule saw nothing.
+void GuestPickStuckBefore() {
+    GuestPick g;
+    g.saved = 14;
+    CHECK(!g.See(1, 16) && g.Effective(16) == 14);  // the load: she keeps pink
+    CHECK(!g.See(1, 16) && g.Effective(16) == 14);  // she "picks" gold, the menu writes 16 over 16: no change seen: STUCK
+    CHECK(g.Align(16) == 0xFF);                      // round 5 never touched her Sam's byte
+}
+
+void GuestPickMenuRule() {
+    GuestPick g;
+    g.saved = 14;
+    g.menu_rule = true;
+    CHECK(!g.See(1, 16) && g.Effective(16) == 14);  // a load with the host's gold: she wears her pick
+    CHECK(g.Align(16) == 14);                        // her Sam's byte is given her pick: the menu opens on pink
+    CHECK(g.Align(14) == 0xFF);                      // already
+    CHECK(!g.See(1, 14) && g.saved == 14);          // our own write is not a pick
+    // (a) the wardrobe closes on the colour it shows (14): a pick, nothing changes
+    CHECK(!g.Pick(14) && g.saved == 14 && g.Effective(14) == 14);
+    // (b) she picks gold in the wardrobe: the close leaves 16 in the byte
+    CHECK(!g.See(1, 16));                            // the byte change alone is not the pick ...
+    CHECK(g.Pick(16) && g.saved == 16 && g.Effective(16) == 16);  // ... the close is
+    CHECK(g.Align(16) == 0xFF);
+    // a script's ApplyInventorySetting (or a load) puts 4 there: not a pick; her pick goes back
+    CHECK(!g.See(1, 4) && g.saved == 16 && g.Effective(4) == 16 && g.Align(4) == 16);
+    CHECK(!g.See(2, 4) && g.Effective(4) == 16 && g.Align(4) == 16);  // the next world too
+    // the user's exact case: remembered pink, the byte gold, she picks gold (the menu now shows pink: she moves to gold)
+    GuestPick u;
+    u.saved = 14, u.menu_rule = true;
+    CHECK(!u.See(1, 16));
+    CHECK(u.Pick(16) && u.saved == 16 && u.Effective(16) == 16);  // gold is hers now, also when the byte did not change
+    // nothing remembered: she wears her Sam's colour, nothing is aligned
+    GuestPick n;
+    n.menu_rule = true;
+    CHECK(!n.See(1, 16) && n.Effective(16) == 16 && n.Align(16) == 0xFF);
+    CHECK(!n.Pick(0xFF) && n.saved == 0xFF);  // an unreadable byte is never a pick
+    CHECK(n.Align(0xFF) == 0xFF);             // nor aligned
+}
+
+void WardrobeClose() {
+    WardrobeWatch w;
+    CHECK(!w.Step(0, 0));
+    CHECK(!w.Step(1, 0) && !w.Step(1, 1) && !w.Step(1, 1));  // opened (the subspace reaches kind 6)
+    CHECK(w.Step(0, 1));                                      // closed: a pick
+    CHECK(!w.Step(0, 1));                                     // once
+    CHECK(!w.Step(1, 0) && !w.Step(1, 0) && !w.Step(0, 0));   // kind 7 (the same flag): not a pick
+    CHECK(!w.Step(1, -1) && w.Step(0, -1));                   // kind unreadable: counts
+    CHECK(!w.Step(1, 1) && !w.Step(-1, 1) && w.Step(0, 1));   // an unreadable flag changes nothing
+}
+
+// Round 15 review: which close is her pick. Her pick 14; a close counts when the menu opened on 14, or a suit colour was
+// previewed (category 3) or confirmed (the staging copy moved) while it was open.
+void WardrobeClosePicks() {
+    WardrobeWatch w;
+    // opened on her pick (the alignment): the close keeps it
+    CHECK(!w.Step(1, 1, 14, 8) && w.Step(0, 1) && w.ClosePicks(14));
+    // opened on the host's 16 (no alignment yet), only the glasses changed (category 8 previewed): not a pick
+    CHECK(!w.Step(1, 1, 16, 8) && !w.Step(1, 1, 16, 8) && w.Step(0, 1) && !w.ClosePicks(14));
+    // opened on 16, a suit colour browsed (category 3), closed on 16 again: her pick (the user's stuck case)
+    CHECK(!w.Step(1, 1, 16, 8) && !w.Step(1, 1, 16, 3) && !w.Step(1, 1, 16, 8) && w.Step(0, 1) && w.ClosePicks(14));
+    // opened on 16, 4 confirmed (the staging copy moved): her pick
+    CHECK(!w.Step(1, 1, 16, -1) && !w.Step(1, 1, 4, -1) && w.Step(0, 1) && w.ClosePicks(14));
+    // the next open starts afresh
+    CHECK(!w.Step(1, 1, 16, 8) && w.Step(0, 1) && !w.ClosePicks(14));
+    // the test mark stands for a preview, only while open
+    w.MarkPreview();
+    CHECK(!w.Step(1, 1, 16, 8) && w.Step(0, 1) && !w.ClosePicks(14));
+    CHECK(!w.Step(1, 1, 16, 8));
+    w.MarkPreview();
+    CHECK(w.Step(0, 1) && w.ClosePicks(14));
+    // nothing remembered (0xFF): only a preview or a confirm picks
+    CHECK(!w.Step(1, 1, 16, 8) && w.Step(0, 1) && !w.ClosePicks(0xFF));
+    // the staging copy unreadable: only a preview picks
+    CHECK(!w.Step(1, 1, -1, 3) && w.Step(0, 1) && w.ClosePicks(14));
+    CHECK(!w.Step(1, 1, -1, 8) && w.Step(0, 1) && !w.ClosePicks(14));
+}
+
+void Cap() {
+    RewriteCap c;
+    for (int i = 0; i < RewriteCap::kMax; ++i) CHECK(c.Allow(1000.0 + i));
+    CHECK(!c.Allow(1500) && c.tripped);
+    CHECK(!c.Allow(60000));  // stays off for the world
+    c.Reset();
+    CHECK(c.Allow(70000));
+    RewriteCap d;
+    for (int i = 0; i < 20; ++i) CHECK(d.Allow(i * 3000.0));  // one every 3 s: 4 per window, never more than 5
+}
+
+void Shown() {
+    CHECK(WardrobeShown(false, 3, 5, 14) == 14);   // not her figure: what she wears
+    CHECK(WardrobeShown(true, 3, 14, 14) == 3);    // previewing 3
+    CHECK(WardrobeShown(true, 16, 14, 14) == 16);  // gold previewed
+    CHECK(WardrobeShown(true, -1, 9, 14) == 9);    // confirmed 9 inside the menu (the staging copy)
+    CHECK(WardrobeShown(true, -1, -1, 14) == 14);
+    CHECK(WardrobeShown(true, 200, -1, 14) == 14);  // not a colour
+}
+
 void ChannelTypes() {
     // ETextureSetType values her own set's packing uses (fgl_body_suiti_v00_set: Color 1, Reflectance 4, Roughness 6 in the
     // Color texture's alpha).
@@ -165,6 +263,12 @@ int main() {
     Override();
     ChannelTypes();
     GuestPickRemembered();
+    GuestPickStuckBefore();
+    GuestPickMenuRule();
+    WardrobeClosePicks();
+    WardrobeClose();
+    Cap();
+    Shown();
     std::printf("%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

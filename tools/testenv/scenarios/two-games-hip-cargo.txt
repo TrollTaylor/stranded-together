@@ -1,0 +1,157 @@
+# Round 14/15 the hip crates between two games (docs/real-partner-body.md section 39), hidden, on the launcher's own Local test
+# files: the user's "fragile still cargo is invisible on host screen. its visible on her own screen". The weapon case (left
+# hip, case type 2) and the folding ladder (right hip, case type 12) Sam carries on his waist slots are sent as the game's own
+# baggage model and drawn on the partner body (the guest's Fragile on the host's screen, the host's Sam on the guest's).
+# The guest plays Fragile with the self view on (the user's case); complete-100 carries both hip pieces. Round 14: made and
+# placed but never drawn (the model's representation had no message handlers, section 39.6); round 15 registers them
+# (`reps: ... rep handlers 0 -> n`) and `gear 36 2` logs the model rep's mesh entries (> 0: the rep built its meshes). The
+# verdict is still the screenshots: A1 (behind-left, her left hip: the weapon case), A2 (behind-right, her right hip: the
+# ladder), A3 (her right side), each the host's view of her and her own view at the same turn; B1 (off) and B2 (on again)
+# from A1's camera, compared crop against crop at her thighs; C1..C3 the guest's view of the host's Sam, the same turns.
+# Pinned 2.6 m ahead and seen from the side of the host's own Sam, so his own crates do not hide hers. D1 / D2: the host's
+# props remade with the rep handlers left unbound (`gear 36 5 0`, round 14's form: not drawn) and bound again (drawn).
+# C1..C4 / C1b..C4b: the reverse on / off pairs, one per turn.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-hip-cargo -Id round15-hip -SeedSaves complete-100 -GuestSeed profile-only
+# covers: hip-cargo
+role host
+graphics low
+timeout 330
+launcherini local-test
+start control 200
+waitlog 10 \[world\] world sync ON \(host\)
+@guest waitlog 120 \[world\] guest: snapshot #1 complete
+@guest waitlog 60 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+# waist_cargo is on by default since round 15 (section 39.6): the launcher's own ini, no switch
+waitlog 5 \[config\] waist_cargo=1
+@guest waitlog 5 \[config\] waist_cargo=1
+@both goto -1153.4 338.0
+wait 4000
+# the guest sends both hip pieces; the host draws both (and the reverse)
+@guest waitlog 30 \[gear\] our carried cargo: 2 hip piece\(s\) sent as the game's own baggage model \(waist_cargo on\)
+@guest waitlog 30 \[gear\] our gear: .*cargo 2: 0 approximate, 2 the game's own model
+waitlog 30 \[gear\] the partner's gear: .*cargo 2: 0 approximate, 2 the game's own model
+waitlog 30 \[gear\] baggage model .* of the config's model 15 \('weapon case S \(wsm0\)'\)
+waitlog 30 \[gear\] baggage model .* of the config's model 14 \('folding ladder \(flad\)'\)
+@guest waitlog 30 \[gear\] baggage model .* of the config's model 15
+@guest waitlog 30 \[gear\] baggage model .* of the config's model 14
+waitlog 5 \[gear\] baggage models: baggage config / entity resource / builder addresses verified
+@guest waitlog 5 \[gear\] baggage models: baggage config / entity resource / builder addresses verified
+waitlog 5 \[gear\] baggage model .* reps: .*SkinnedModel rep handlers 0 -> [1-9]
+@guest waitlog 5 \[gear\] baggage model .* reps: .*SkinnedModel rep handlers 0 -> [1-9]
+wait 3000
+action gear 36 2
+waitnew 5 \[gear\] waist_cargo 1; hip pieces: ours sent 2, the partner's 2; baggage model props 2 live, 2 shown
+waitlog 5 \[gear\] +entity flags .*stencil yes \(extras mask 7\)
+@guest action gear 36 2
+@guest waitnew 5 \[gear\] waist_cargo 1; hip pieces: ours sent 2, the partner's 2; baggage model props 2 live, 2 shown
+# ---- A: the host's screen of her (pinned 2.6 m ahead, her back to him) from behind-left, behind-right and her right side
+# (the host's own Sam to one side of the frame); her own screen the same turns
+@guest action collision 3 6
+action collision 6 2.6
+wait 2000
+@guest pad none 400 rx=-32767
+pad none 400 rx=-32767
+wait 400
+@guest screenshot A1-guest-own-rear-left
+screenshot A1-host-sees-guest-rear-left
+@guest pad none 800 rx=32767
+pad none 800 rx=32767
+wait 400
+@guest screenshot A2-guest-own-rear-right
+screenshot A2-host-sees-guest-rear-right
+@guest pad none 1000 rx=-32767
+pad none 1000 rx=-32767
+wait 400
+@guest screenshot A3-guest-own-left-side
+screenshot A3-host-sees-guest-left-side
+# back to A1's camera for B
+pad none 200 rx=32767
+wait 400
+action gear 36 2
+# ---- B: the off switch (both sides): the guest stops sending, the host's props of her go
+@guest action gear 36 0
+@guest waitlog 10 \[gear\] our carried cargo: 0 hip piece\(s\) sent as the game's own baggage model \(waist_cargo off\)
+waitnew 10 \[gear\] the partner's gear: .*cargo 0: 0 approximate, 0 the game's own model
+wait 1500
+screenshot B1-host-sees-guest-off
+@guest action gear 36 1
+@guest waitlog 10 \[gear\] our carried cargo: 2 hip piece\(s\) sent as the game's own baggage model \(waist_cargo on\)
+wait 3000
+action gear 36 2
+waitnew 5 \[gear\] waist_cargo 1; hip pieces: ours sent 2, the partner's 2; baggage model props 2 live, 2 shown
+screenshot B2-host-sees-guest-on-again
+# ---- D: the cause (section 39.6): the host's new props made without the rep handlers (round 14's form), then with them
+action gear 36 5 0
+@guest action gear 36 0
+waitnew 10 \[gear\] the partner's gear: .*cargo 0: 0 approximate, 0 the game's own model
+@guest action gear 36 1
+waitnew 10 \[gear\] baggage model .* reps: .*SkinnedModel 0 handler\(s\) \(binding off\)
+wait 3000
+screenshot D1-host-sees-guest-reps-unbound
+action gear 36 5 1
+@guest action gear 36 0
+waitnew 10 \[gear\] the partner's gear: .*cargo 0: 0 approximate, 0 the game's own model
+@guest action gear 36 1
+waitnew 10 \[gear\] baggage model .* reps: .*SkinnedModel rep handlers 0 -> [1-9]
+wait 3000
+screenshot D2-host-sees-guest-reps-bound
+# ---- C: the reverse: the guest's screen of the host's Sam (pinned 2.6 m ahead, his back to her). Her camera's framing of him
+# varies from run to run, so each of four turns has its own exact pair: on, then the host stops sending (off), then on again
+action collision 3 6
+@guest action collision 6 2.6
+wait 1600
+@guest pad none 200 rx=-32767
+wait 400
+@guest screenshot C1-guest-sees-host-on-rear-left-far
+action gear 36 0
+@guest waitnew 10 \[gear\] the partner's gear: .*cargo 0: 0 approximate, 0 the game's own model
+wait 1500
+@guest screenshot C1b-guest-sees-host-off-rear-left-far
+action gear 36 1
+@guest waitnew 10 \[gear\] baggage model .* reps: .*SkinnedModel rep handlers 0 -> [1-9]
+wait 3000
+@guest pad none 400 rx=32767
+wait 400
+@guest screenshot C2-guest-sees-host-on-rear-left
+action gear 36 0
+@guest waitnew 10 \[gear\] the partner's gear: .*cargo 0: 0 approximate, 0 the game's own model
+wait 1500
+@guest screenshot C2b-guest-sees-host-off-rear-left
+action gear 36 1
+@guest waitnew 10 \[gear\] baggage model .* reps: .*SkinnedModel rep handlers 0 -> [1-9]
+wait 3000
+@guest pad none 800 rx=32767
+wait 400
+@guest screenshot C3-guest-sees-host-on-rear-right
+action gear 36 0
+@guest waitnew 10 \[gear\] the partner's gear: .*cargo 0: 0 approximate, 0 the game's own model
+wait 1500
+@guest screenshot C3b-guest-sees-host-off-rear-right
+action gear 36 1
+@guest waitnew 10 \[gear\] baggage model .* reps: .*SkinnedModel rep handlers 0 -> [1-9]
+wait 3000
+@guest pad none 400 rx=32767
+wait 400
+@guest screenshot C4-guest-sees-host-on-right-side
+action gear 36 0
+@guest waitnew 10 \[gear\] the partner's gear: .*cargo 0: 0 approximate, 0 the game's own model
+wait 1500
+@guest screenshot C4b-guest-sees-host-off-right-side
+action gear 36 1
+@guest waitnew 10 \[gear\] baggage model .* reps: .*SkinnedModel rep handlers 0 -> [1-9]
+wait 3000
+@guest action gear 36 2
+# the game side of "drawn": the model reps were given handlers and built their mesh entries (both sides)
+waitlog 5 \[gear\]     model rep: [1-9][0-9]* handler\(s\) bound, [1-9][0-9]* mesh entr
+@guest waitlog 5 \[gear\]     model rep: [1-9][0-9]* handler\(s\) bound, [1-9][0-9]* mesh entr
+@guest action gear 0
+action gear 0
+@guest action log_status
+action log_status
+nolog \[gear\] (baggage models off|creating a baggage model .*FAULTED|a baggage model is a)
+@guest nolog \[gear\] (baggage models off|creating a baggage model .*FAULTED|a baggage model is a)
+nolog prop [0-9]+ '(weapon case|folding ladder).*refused
+@guest nolog prop [0-9]+ '(weapon case|folding ladder).*refused
+@guest quit
+wait 3000
+quit

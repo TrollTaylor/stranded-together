@@ -679,7 +679,8 @@ bool PackBodyWith(BodyWriter& writer, MsgType first_type, const std::uint8_t* fi
         const RelAckState& a = acks[ch];
         if (a.due) writer.AddRelAck(static_cast<std::uint8_t>(ch), a.free_slots, a.next_expected, a.bits);
     }
-    for (unsigned ch = 1; senders && ch < kReliableChannels; ++ch) {
+    for (unsigned k = 0; senders && k < sizeof(kPackOrder); ++k) {
+        const unsigned ch = kPackOrder[k];
         ReliableSender& tx = senders[ch];
         for (unsigned guard = 0; guard < kReliableWindow; ++guard) {
             const std::size_t overhead = kMsgHeaderSize + kReliableHeaderSize;
@@ -697,7 +698,8 @@ bool PackBodyWith(BodyWriter& writer, MsgType first_type, const std::uint8_t* fi
 }
 
 bool ReliableDue(const ReliableSender* senders, std::uint64_t now_ms, std::uint32_t rto_ms, std::size_t retransmit_budget) noexcept {
-    for (unsigned ch = 1; senders && ch < kReliableChannels; ++ch) {
+    for (unsigned k = 0; senders && k < sizeof(kPackOrder); ++k) {
+        const unsigned ch = kPackOrder[k];
         ReliableSender::Pick pick{};
         if (senders[ch].NextDue(now_ms, rto_ms, retransmit_budget, pick)) return true;
     }

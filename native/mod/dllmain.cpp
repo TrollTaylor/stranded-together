@@ -14,6 +14,8 @@
 #include "coop_session.hpp"
 #include "quickstart.hpp"
 #include "partner_tackle.hpp"
+#include "shot_sync.hpp"
+#include "suit_colour.hpp"
 #include "ride_together.hpp"
 #include "save_guard.hpp"
 #include "vehicle_drive.hpp"
@@ -104,8 +106,9 @@ bool GuardedEmergencyStop() noexcept {
     const bool ride = GuardedStop(&st::ride::EmergencyStop);      // the carried passenger's input block and pose override go
     const bool hit = GuardedStop(&st::vhit::EmergencyStop);       // no more vehicle-hit calls
     const bool world = GuardedStop(&st::wshare::EmergencyStop);   // shared structures: the detours pass everything through
+    const bool suit = GuardedStop(&st::suitcol::PutBack);        // her Sam's suit colour byte: the world's own back (section 40)
     const bool coop = GuardedStop(&CoopStopAfterFault);
-    return save && coll && body && gear && veh && share && drive && ride && hit && world && coop;
+    return save && coll && body && gear && veh && share && drive && ride && hit && world && suit && coop;
 }
 
 // frame_cap=<fps> (session.ini; the launcher's local two-instance test and hidden two-game
@@ -291,6 +294,7 @@ DWORD WINAPI Bootstrap(LPVOID) {
     // the save guard: no save captures a carried passenger (section 24.12; the save processor's detour goes in now)
     if (st::ride::Active() || st::automation::Enabled()) st::saveguard::Install(cfg);
     st::vhit::Install(cfg);    // vehicle hits: the partner's vehicle knocks our Sam down (section 25; its damage-handler detour goes in now)
+    st::shots::Install(cfg);   // the players' shots (docs/enemy-sync.md P3a): the bullet Enqueue detour, the replay damage filters
     st::dev::Install(cfg);     // dev tools (dev_tools=1 / hidden runs): no hooks; byte checks on the first tick
     // Real partner body (docs/real-partner-body.md): the pose hook goes in at start-up, never
     // mid-game (enabling a hook suspends every thread while job threads may be inside it).

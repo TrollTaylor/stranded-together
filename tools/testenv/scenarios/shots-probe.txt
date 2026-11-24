@@ -1,0 +1,63 @@
+# Shots P3-0 (docs/enemy-sync.md P3a, plan R1a): does a CreateBullet replay draw the game's own muzzle flash, trail and impacts,
+# and can its damage be told apart (the replay set, or the bullet system's dummy owner)? Solo on the 100% save, its assault
+# rifle (the wheel's upper left), on the road by Mountain Knot City. Our own shots are echoed 2.5 m to our right through the
+# whole replay path (shots_echo), so one game shows the original and the replay side by side; then one replay at our own Sam
+# without the filter (dev_god 0: its damage proves the identity) and one with it; then 200 replays (the attack-context leak
+# check: the working set before and after).
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios shots-probe -SeedSaves complete-100
+# A probe (research: the echo, the test replays and the leak check); the shots proof is two-games-shots.
+# covers: shots
+# select: probe
+role solo
+graphics low
+timeout 330
+ini shots_sync=1
+start
+goto mknot-road
+?action dev_god 2
+waitlog 10 \[shots\] byte checks: [0-9]+/[0-9]+ ok
+waitlog 5 \[shots\] ON: Enqueue hooked, Sam filter on, NPC drop on
+waitlog 20 \[shots\] registry: [1-9][0-9]* weapons, [1-9][0-9]* magazines
+# the rifle from the wheel: D-pad right held, the stick to the upper left, centred, let go
+pad dpad_right 600 keep
+pad dpad_right 900 lx=-23170 ly=23170 rx=-23170 ry=23170 keep
+pad dpad_right 400 keep
+pad none 0
+wait 2500
+action shots_echo 1 2.5
+# aim, the camera a little down the road, a burst
+pad none 1200 lt=255 keep
+pad none 250 lt=255 ry=-14000 keep
+pad none 500 lt=255 rt=255 keep
+screenshot 01-burst-echo-a
+pad none 120 lt=255 rt=255 keep
+screenshot 01-burst-echo-b
+pad none 120 lt=255 rt=255 keep
+screenshot 01-burst-echo-c
+pad none 120 lt=255 rt=255 keep
+screenshot 01-burst-echo-d
+pad none 200 lt=255 keep
+screenshot 02-impacts
+pad none 0
+waitlog 8 \[shots\] sent n=[1-9]
+waitlog 8 \[shots\] replayed n=[1-9][0-9]* \(muzzle [1-9]
+action shots_echo 0
+action shots 0
+# the damage identity: a replay at our own Sam, the filter left out (its damage lands), then with it
+?action dev_god 0
+action shots_test 6 1
+waitnew 6 \[shots\] test: ref match=1 .*kept \(nofilter\)
+?action dev_refill
+action shots_test 6 0
+waitnew 6 \[shots\] test: ref match=1 .*dropped by the filter \(ref match\)
+?action dev_refill
+?action dev_god 2
+# 200 replays into the road ahead: the working set
+action shots_test 0 16 200
+waitlog 40 \[shots\] leak test: [0-9]+ replays; working set
+screenshot 03-after-leak-test
+action shots 0
+nolog \[shots\] FAULT
+nolog \[shots\] byte check FAILED
+nolog \[gate\] OTGC WRITE
+quit

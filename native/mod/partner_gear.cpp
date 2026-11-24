@@ -8,8 +8,10 @@
 #include <string>
 
 #include "automation.hpp"
+#include "bag_model.hpp"
 #include "body_choice.hpp"
 #include "boots_look.hpp"
+#include "cargo_rules.hpp"
 #include "exo_parts.hpp"
 #include "game_actions.hpp"
 #include "gear_keep.hpp"
@@ -111,6 +113,12 @@ bool IsWeaponProp(int key) { return key >= kPropWAsr && key < kPropCount; }
 constexpr int kKeyHeld = kPropCount + static_cast<int>(wire::kMaxGearRes);
 bool IsHeldKey(int key) { return key >= kKeyHeld && key < kKeyHeld + static_cast<int>(wire::kMaxGearRes); }
 bool IsHandProp(int key) { return IsWeaponProp(key) || IsHeldKey(key); }
+// Round 14 (section 39): a carried piece the game draws with its baggage config's own model and no cutscene prop has (the weapon
+// case and the folding ladder at the hips) is drawn as a "baggage model" (bag_model.cpp): the prop keys kKeyBag + EDSBaggage2Model,
+// after the held clones' keys. session.ini waist_cargo / `gear 36`.
+constexpr int kKeyBag = kKeyHeld + static_cast<int>(wire::kMaxGearRes);
+bool IsBagKey(int key) { return key >= kKeyBag && key < kKeyBag + static_cast<int>(cargorules::kModels); }
+bool g_waist_cargo = true;  // session.ini waist_cargo (default 1 since round 15, section 39.6) / `gear 36 <0/1>`: the hip crates sent and drawn
 heldrules::Mode g_held_mode = heldrules::Mode::all;
 
 // The sender's weapon resource (its core, the path STR1 names) -> the prop drawn for it. Exact: the
@@ -175,7 +183,15 @@ int PropForKind(const wire::GearItem& it) {
         case wire::GearKind::odradek: return kPropOdradek;
         case wire::GearKind::bb_pod: return kPropBbPod;
         case wire::GearKind::boots: return g_boots_sync ? kPropBoots : kPropNone;
-        case wire::GearKind::cargo: return it.model < 31 ? kModelMap[it.model].prop : (it.model == wire::kGearNone ? kPropM : kPropNone);
+        case wire::GearKind::cargo: {
+            switch (cargorules::ReceiverDraw(it.model, g_waist_cargo)) {
+                case cargorules::Draw::exact: return kKeyBag + cargorules::ExactModel(it.model);  // section 39: the hip crates
+                case cargorules::Draw::cutscene: return kModelMap[it.model].prop;
+                case cargorules::Draw::unknown: return kPropM;
+                case cargorules::Draw::none: return kPropNone;
+            }
+            return kPropNone;
+        }
         case wire::GearKind::entity: return it.res < wire::kMaxGearRes ? kPropCount + it.res : kPropNone;
         case wire::GearKind::weapon: return kPropNone;
     }
@@ -362,6 +378,7 @@ int PropFor(const wire::GearItem& it, const ResEntry* res) {
 // A key's name for the log: the cutscene prop's, or the resource's path (entity items, held clones).
 const char* KeyLabel(int key, const ResEntry* res) {
     if (key >= 0 && key < kPropCount) return kProps[key].key;
+    if (IsBagKey(key)) return cargorules::ModelName(static_cast<unsigned>(key - kKeyBag));
     const int r = IsHeldKey(key) ? key - kKeyHeld : key - kPropCount;
     if (key >= kPropCount && r >= 0 && r < static_cast<int>(wire::kMaxGearRes)) return res && res[r].used ? res[r].path : "an unnamed resource";
     return "none";
@@ -774,7 +791,7 @@ bool g_have_partner = false;
 // A prop's key: what it shows. kProps index (0..kPropCount-1), or kPropCount + resource id (an
 // entity item). Props are matched to items by key on a layout change (wire::GearAssignProps).
 constexpr int kKeyEntity = kPropCount;
-constexpr int kKeyCount = kKeyHeld + static_cast<int>(wire::kMaxGearRes);  // entity keys, then the held clones' keys
+constexpr int kKeyCount = kKeyBag + static_cast<int>(cargorules::kModels);  // entity keys, the held clones', the baggage models'
 
 struct Prop {
     int def = kPropNone;   // key (see above); kPropNone = no prop for this item
@@ -793,6 +810,7 @@ struct Prop {
     double look_check_ms = 0;     // next check that it still shows it
     double coll_next_ms = 0;      // its collision (off since it was realized) checked again every second
     unsigned coll_again = 0;      // times it was found on again
+    bool rep_checked = false;     // a baggage model: its model rep's mesh entries checked once (1.5 s after it was made)
 };
 struct PropSet {
     const char* tag;
@@ -917,38 +935,19 @@ std::uintptr_t RefEntity(std::uintptr_t v) {
 }
 
 // The baggage list item (DSGameBaggageListItem: +0x3A attribute, +0x3B case type, +0x3E volume;
-// dsdc_types) -> EDSBaggage2Model, for a piece whose own model byte is not usable.
+// dsdc_types) -> EDSBaggage2Model, for a piece whose own model byte is not usable (cargorules::ModelFromCase).
 std::uint8_t ModelFromListItem(std::uintptr_t li) {
     std::uint8_t f[5] = {};
     if (!li || !mem::Read(li + kListAttribute, f, sizeof(f))) return wire::kGearNone;
-    const std::uint8_t attr = f[0], kase = f[1], vol = f[4];
-    const std::uint8_t size = vol > 2 ? 2 : vol;  // S, M, L (LL: L)
-    switch (kase) {
-        case 0: return static_cast<std::uint8_t>((attr == 1 ? 4 : 1) + size);  // Normal (Personal: 4..6)
-        case 1: return 13;                                                       // LiquidOnly: barrel
-        case 2: return static_cast<std::uint8_t>(15 + size);                     // Weapon cases (drawn as S/M/L cases)
-        case 9: return static_cast<std::uint8_t>(vol >= 3 ? 21 : 18 + size);     // Material
-        case 10: return 11;                                                      // Cart
-        case 12: return 14;                                                      // Ladder
-        case 17: return 27;                                                      // SmallDelicate
-        case 18: return 30;                                                      // ToxicGas
-        default: return wire::kGearNone;
-    }
+    return cargorules::ModelFromCase(f[0], f[1], f[4]);
 }
 
-// Which carried pieces are drawn as a case: deliveries (case type Normal, LiquidOnly, Material,
-// Delicate, SmallDelicate, ToxicGas) anywhere. Equipment, weapons (also the weapon case at the waist: the
-// game draws a dark netted weapon crate, sam_weapon_case_*, a physics entity we do not copy; v0.8 drew a
-// white delivery case there, which the player never wears: docs/real-partner-body.md section 13), tools
-// (the folded ladder at the waist, carts, builders), BB pod, bodies: not drawn (in game they sit in the
-// backpack's pouches or are models we have no prop for).
-bool Drawn(std::uint8_t kase, std::uint8_t slot_type) {
-    (void)slot_type;
-    switch (kase) {
-        case 0: case 1: case 9: case 13: case 17: case 18: return true;
-        default: return false;
-    }
-}
+// Which carried pieces are drawn as a cutscene case prop: deliveries (case type Normal, LiquidOnly, Material, Delicate,
+// SmallDelicate, ToxicGas) anywhere (cargorules::DeliveryCase). The hip crates (the weapon case, case type 2, and the folding
+// ladder, case 12, on the waist slots) are sent as the game's own baggage model since round 14 (cargorules::SendModel,
+// section 39; v0.8 had drawn a white delivery case there, which the player never wears). Equipment, weapons elsewhere, tools,
+// BB pod, bodies: not drawn (in game they sit in the backpack's pouches or are models we have no prop for).
+bool Drawn(std::uint8_t kase) { return cargorules::DeliveryCase(kase); }
 
 // A DSBaggage2's world transform (+0x38 position, 3 doubles; +0x50 rotation rows, 9 floats: the
 // entity world-transform layout), read twice; refused unless finite and a rotation.
@@ -1452,7 +1451,7 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
         return true;
     }
     const std::uintptr_t slot_arr = Q(car + kCarSlots);
-    unsigned pieces = 0, refused = 0, walked = 0, hidden = 0;
+    unsigned pieces = 0, refused = 0, walked = 0, hidden = 0, exact_pieces = 0;
     // v0.23: the game's own cargo hides mirrored (the trike driver's HideBackpack while the partner rides behind him, a
     // cutscene's HideBaggage, the Root mask): a hidden piece is not sent. Without the checks every piece counts as shown (v0.22).
     const bool hide_sites = CargoHideSites();
@@ -1472,7 +1471,13 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
         }
         if (type < 1 || type > 7) continue;  // back, arms, waist, hands
         std::uint8_t sflags = 0;
-        const bool slot_shown = car_hide == 0 && !(hide_sites && type == 1 && Rd(s + kSlotHideByte, sflags) && (sflags & kSlotHiddenBit));
+        // the slot's own hidden bit is read on every slot (round 14 review): the game's setter 0x142CB2620 sets it on slot
+        // objects looked up by id (0x142C52010: 0x4B / 0x4C), the same slot class whatever its type. It hides the back
+        // slot's pieces (v0.23) and, on any slot, the hip crates (section 39: they are on the waist slots nearly always, so a
+        // cutscene or ride that hides those slots by their own bit must not leave them drawn on the partner); deliveries
+        // elsewhere follow the carrier's mask only, as in v0.28
+        const bool slot_bit = hide_sites && Rd(s + kSlotHideByte, sflags) && (sflags & kSlotHiddenBit);
+        const bool slot_shown = car_hide == 0 && !(type == 1 && slot_bit);
         const std::uintptr_t st_arr = Q(s + kSlotStacks);
         for (std::int32_t ti = 0; ti < nstack && !cut; ++ti) {
             if (++walked > kMaxWalk) {
@@ -1500,7 +1505,11 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
                 std::uint8_t lf[5] = {};
                 if (li_ok) mem::Read(li + kListAttribute, lf, sizeof(lf));
                 const std::uint8_t from_li = li_ok ? ModelFromListItem(li) : wire::kGearNone;
-                const std::uint8_t model = Drawn(lf[1], type) ? from_li : wire::kGearNone;
+                // section 39: deliveries as their cutscene case model (Drawn), the hip crates (weapon case, folding ladder) as the
+                // baggage config's own model (cargorules::kExact | m); equipment, tools elsewhere: not sent
+                const std::uint8_t model = li_ok ? cargorules::SendModel(type, lf[0], lf[1], lf[4], g_waist_cargo) : wire::kGearNone;
+                const bool exact = cargorules::ExactModel(model) >= 0;
+                const bool shown = slot_shown && !(exact && slot_bit);
                 Xf w;
                 const bool placed = BaggageWorld(bag, &w) && Dist(w, sam) < 6.0;
                 if (verbose && pieces < 48) {
@@ -1520,12 +1529,19 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
                         "weight %.1f [+0x30: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X] -> model %u (%s); at %.3f %.3f %.3f (%.2f m from Sam)%s",
                         type, ti, bi, reinterpret_cast<void*>(bag), eidx, mb[0], mb[1], id, f[0], f[1], f[4], weight, lx[0], lx[1], lx[2], lx[3], lx[4], lx[5],
                         lx[6], lx[7], lx[8], lx[9], lx[10], lx[11], lx[12], lx[13], lx[14], lx[15], from_li,
-                        model != wire::kGearNone ? "drawn" : "not drawn: equipment / weapon / tool", w.p[0], w.p[1], w.p[2], Dist(w, sam),
+                        cargorules::ExactModel(model) >= 0 ? "drawn: the game's own model at the hip"
+                        : model != wire::kGearNone       ? "drawn"
+                                                         : "not drawn: equipment / weapon / tool",
+                        w.p[0], w.p[1], w.p[2], Dist(w, sam),
                         placed ? "" : " NOT PLACED");
                 }
                 ++pieces;
-                if (!slot_shown) ++hidden;
-                if (placed && model != wire::kGearNone) add(wire::GearKind::cargo, model, type, bag, slot_shown, w);
+                if (!shown) ++hidden;
+                if (placed && model != wire::kGearNone) {
+                    const auto before = g_item_count;
+                    add(wire::GearKind::cargo, model, type, bag, shown, w);
+                    if (exact && shown && g_item_count > before) ++exact_pieces;  // counted only when sent, shown (round 14 review)
+                }
             }
         }
     }
@@ -1543,6 +1559,13 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
         if (hidden != s_hidden && ++s_logs <= 40)
             Log("[gear] our carried cargo: %u of %u pieces hidden by the game now (carrier hide mask 0x%X)", hidden, pieces, car_hide);
         s_hidden = hidden;
+        // section 39: the hip crates sent as the game's own model (logged when their count or waist_cargo changes: a scenario
+        // waits for `gear 36 0` to take effect on the first "(waist_cargo off)" line)
+        static unsigned s_exact = 0, s_exact_logs = 0;
+        static bool s_exact_known = false, s_exact_wc = false;
+        if ((!s_exact_known || exact_pieces != s_exact || g_waist_cargo != s_exact_wc) && ++s_exact_logs <= 40)
+            Log("[gear] our carried cargo: %u hip piece(s) sent as the game's own baggage model (waist_cargo %s)", exact_pieces, g_waist_cargo ? "on" : "off");
+        s_exact = exact_pieces, s_exact_known = true, s_exact_wc = g_waist_cargo;
     }
     return true;
 }
@@ -1779,7 +1802,7 @@ bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_
 }
 
 void DescribeFrame(const wire::GearFrame& f, const char* what, const ResEntry* res) {
-    unsigned per[kPropCount] = {}, none = 0, approx = 0, pack = 0, odra = 0, pod = 0, cargo = 0, ents = 0, weapons = 0, weapons_drawn = 0;
+    unsigned per[kPropCount] = {}, none = 0, approx = 0, pack = 0, odra = 0, pod = 0, cargo = 0, ents = 0, weapons = 0, weapons_drawn = 0, bag = 0;
     for (unsigned i = 0; i < f.count; ++i) {
         const wire::GearItem& it = f.items[i];
         const int p = PropFor(it, res);
@@ -1799,7 +1822,8 @@ void DescribeFrame(const wire::GearFrame& f, const char* what, const ResEntry* r
         ents += it.kind == wire::GearKind::entity;
         if (it.kind == wire::GearKind::cargo) {
             ++cargo;
-            if (it.model >= 31 || !kModelMap[it.model].exact) ++approx;
+            if (cargorules::ExactModel(it.model) >= 0) ++bag;  // section 39: the game's own model (the hip crates)
+            else if (it.model >= 31 || !kModelMap[it.model].exact) ++approx;
         }
         pack += it.kind == wire::GearKind::backpack;
         odra += it.kind == wire::GearKind::odradek;
@@ -1812,9 +1836,9 @@ void DescribeFrame(const wire::GearFrame& f, const char* what, const ResEntry* r
                 parts += (f.parts_apply[k] >> b) & 1;
                 parts_vis += (f.parts_visible[k] >> b) & 1;
             }
-    Log("[gear] %s: %u items (backpack %u, Odradek %u, BB pod %u, cargo %u: %u approximate, %u not drawn; game entities %u; dropped over the cap %u), "
-        "layout %04X; props S %u M %u L %u XL %u cube %u; weapons %u (%u drawn); Sam's gear parts %u of %u shown",
-        what, f.count, pack, odra, pod, cargo, approx, none, ents, f.dropped, wire::GearLayoutHash(f), per[kPropS], per[kPropM], per[kPropL], per[kPropXL],
+    Log("[gear] %s: %u items (backpack %u, Odradek %u, BB pod %u, cargo %u: %u approximate, %u the game's own model, %u not drawn; game entities %u; "
+        "dropped over the cap %u), layout %04X; props S %u M %u L %u XL %u cube %u; weapons %u (%u drawn); Sam's gear parts %u of %u shown",
+        what, f.count, pack, odra, pod, cargo, approx, bag, none, ents, f.dropped, wire::GearLayoutHash(f), per[kPropS], per[kPropM], per[kPropL], per[kPropXL],
         per[kPropCube], weapons, weapons_drawn, parts_vis, parts);
 }
 
@@ -3406,6 +3430,12 @@ bool KeySource(const PropSet& s, int key, const char** path, const std::uint8_t*
         *path = kProps[key].path, *guid = parsed[key], *label = kProps[key].key;
         return true;
     }
+    if (IsBagKey(key)) {
+        // section 39: the baggage config's own model (bag_model.cpp; no path + GUID of its own is loaded)
+        static const std::uint8_t kNoGuid[16] = {};
+        *path = "ds/entities/item/baggage/baggage_config", *guid = kNoGuid, *label = cargorules::ModelName(static_cast<unsigned>(key - kKeyBag));
+        return true;
+    }
     const int r = IsHeldKey(key) ? key - kKeyHeld : key - kKeyEntity;
     if (r < 0 || r >= static_cast<int>(wire::kMaxGearRes) || !s.res || !s.res[r].used) return false;
     *path = s.res[r].path, *guid = s.res[r].guid, *label = s.res[r].path;
@@ -3608,6 +3638,108 @@ bool HeldBegin(const char* path, const std::uint8_t (&guid)[16], const game::Wor
     partner::ReadGuid(e, &sp->guid);
     ++g_held_made;
     if (g_held_made <= 60) Log("[gear] %s", why);
+    return true;
+}
+
+// A baggage model (section 39): a plain Entity showing the baggage config's own model m (the hip crates), made at once
+// (bag_model.cpp); `sp` describes it as a realized, spawner-less entity (holo::SpawnTeardown removes it).
+std::uint32_t g_bag_made = 0, g_bag_failed = 0;
+// The extra components of a new baggage model (`gear 36 4 <mask>`, tests): bit 0 the item's own DSSimpleAnimation, bit 1 the
+// weapons' generic ExternalAnimationComponentResource (what every held clone and cutscene prop has: run r14-hip3 drew neither
+// the model alone nor the model with the item's animation), bit 2 a StencilBufferComponentResource (round 14 review: every
+// plain-Entity gear prop that is seen carries a StencilBufferComponent, the held clone `weapons/builder`, backpack_temp,
+// weapon_collection; runs 1..4 made the baggage models without one). Default 7: all three (drawn since round 15, section 39.6).
+int g_bag_extras = 7;
+// A component resource of type `type` (ExternalAnimationComponentResource: the weapons' generic one from
+// ds/entities/weapons/weapon_template; StencilBufferComponentResource), from one of our own Sam's weapon entities' resources
+// (cached per type; its type checked here and again by bag_model on every use).
+std::uintptr_t BagWeaponComp(const char* type, std::uintptr_t& s_found) {
+    if (s_found && std::strcmp(TypeOf(s_found), type) == 0) return s_found;
+    s_found = 0;
+    game::Entity* local = nullptr;
+    if (!game::TryGetLocalPlayer(&local) || !local) return 0;
+    struct Node {
+        std::uintptr_t e;
+        int depth;
+    };
+    Node stack[256];
+    int sp = 0;
+    unsigned visited = 0;
+    const auto p = reinterpret_cast<std::uintptr_t>(local);
+    for (std::uintptr_t c = Q(p + 0x78), guard = 0; c && sp < 256 && guard < 128; c = Q(c + 0x80), ++guard) stack[sp++] = {c, 1};
+    while (sp > 0 && visited < 400 && !s_found) {
+        const Node nd = stack[--sp];
+        ++visited;
+        if (nd.depth < 3)
+            for (std::uintptr_t c = Q(nd.e + 0x78), guard = 0; c && sp < 256 && guard < 64; c = Q(c + 0x80), ++guard) stack[sp++] = {c, nd.depth + 1};
+        if (std::strcmp(TypeOf(nd.e), "DSWeaponEntity") != 0) continue;
+        game::EntityResource* r = nullptr;
+        std::int32_t n = 0;
+        const auto ra = game::TryGetResource(reinterpret_cast<game::Entity*>(nd.e), &r) ? reinterpret_cast<std::uintptr_t>(r) : 0;
+        if (!ra || !Rd(ra + 0x90, n) || n <= 0 || n > 64) continue;
+        std::uintptr_t comps[64] = {};
+        if (!mem::Read(Q(ra + 0x98), comps, 8ull * static_cast<unsigned>(n))) continue;
+        for (std::int32_t i = 0; i < n && !s_found; ++i)
+            if (comps[i] && std::strcmp(TypeOf(comps[i]), type) == 0) s_found = comps[i];
+    }
+    return s_found;
+}
+std::uintptr_t BagExternalAnim() {
+    static std::uintptr_t s_found = 0;
+    return BagWeaponComp("ExternalAnimationComponentResource", s_found);
+}
+std::uintptr_t BagStencil() {
+    static std::uintptr_t s_found = 0;
+    return BagWeaponComp("StencilBufferComponentResource", s_found);
+}
+// The item's own animation for baggage model m (the weapon case's / the folding ladder's DSSimpleAnimationComponentResource, on
+// the model's own skeleton), from our own Sam's entity of that item (the weapon cases' pool entities, the ladder tool), by its
+// resource path; 0: none found (the model alone).
+std::uintptr_t BagAnimFor(unsigned m) {
+    const char* want = m == 15 ? "ds/entities/weapons/sam_weapon_case_small" : m == 16 ? "ds/entities/weapons/sam_weapon_case_middle"
+                       : m == 17 ? "ds/entities/weapons/sam_weapon_case_big" : m == 14 ? "ds/entities/weapons/ladder" : nullptr;
+    game::Entity* local = nullptr;
+    if (!want || !game::TryGetLocalPlayer(&local) || !local) return 0;
+    struct Node {
+        std::uintptr_t e;
+        int depth;
+    };
+    Node stack[256];
+    int sp = 0;
+    unsigned visited = 0;
+    const auto p = reinterpret_cast<std::uintptr_t>(local);
+    for (std::uintptr_t c = Q(p + 0x78), guard = 0; c && sp < 256 && guard < 128; c = Q(c + 0x80), ++guard) stack[sp++] = {c, 1};
+    while (sp > 0 && visited < 400) {
+        const Node nd = stack[--sp];
+        ++visited;
+        if (nd.depth < 3)
+            for (std::uintptr_t c = Q(nd.e + 0x78), guard = 0; c && sp < 256 && guard < 64; c = Q(c + 0x80), ++guard) stack[sp++] = {c, nd.depth + 1};
+        if (!Derives(nd.e, "Entity")) continue;
+        char path[128] = {};
+        std::uint8_t g[16] = {};
+        if (!realbody::ResourceIdentity(reinterpret_cast<game::Entity*>(nd.e), path, sizeof(path), g, nullptr) || std::strcmp(path, want) != 0) continue;
+        const std::uintptr_t c = partner::FindComponentByName(reinterpret_cast<game::Entity*>(nd.e), "DSSimpleAnimationComponent");
+        const std::uintptr_t r = c && Q(c + 0x48) == nd.e ? Q(c + 0x30) : 0;
+        if (r && std::strcmp(TypeOf(r), "DSSimpleAnimationComponentResource") == 0) return r;
+    }
+    return 0;
+}
+bool BagBegin(unsigned m, const game::WorldTransform& at, holo::Spawn* sp, char* why, std::size_t cap) {
+    game::Entity* e = nullptr;
+    const std::uintptr_t extra[3] = {(g_bag_extras & 1) ? BagAnimFor(m) : 0, (g_bag_extras & 2) ? BagExternalAnim() : 0,
+                                     (g_bag_extras & 4) ? BagStencil() : 0};
+    if (!bagmodel::Create(m, extra, 3, at, &e, why, cap)) {
+        ++g_bag_failed;
+        return false;
+    }
+    *sp = holo::Spawn{};
+    sp->direct = true;
+    sp->realized = true;
+    sp->e = e;
+    partner::ReadVtable(e, &sp->vt);
+    partner::ReadGuid(e, &sp->guid);
+    ++g_bag_made;
+    if (g_bag_made <= 60) Log("[gear] %s ('%s')", why, cargorules::ModelName(m));
     return true;
 }
 
@@ -4543,6 +4675,9 @@ void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_acti
             if (!injected && IsHeldKey(want)) {
                 // a held clone (section 31): made at once from our own game's copy of the item's resource (no spawner)
                 started = HeldBegin(path, g16, at, &p.sp, why, sizeof(why));
+            } else if (!injected && IsBagKey(want)) {
+                // a baggage model (section 39): the game's own model of the carried piece, made at once (no spawner)
+                started = BagBegin(static_cast<unsigned>(want - kKeyBag), at, &p.sp, why, sizeof(why));
             } else if (!injected) {
                 started = realbody::BeginByPathGuid(path, g16, at, 0x6E000000u + i, &p.sp, why, sizeof(why));
             }
@@ -4645,6 +4780,25 @@ void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_acti
                 Log("[%s] prop %u '%s' refused for this session: its collision %s", s.tag, i, label, k < 0 ? "could not be kept off" : "kept coming back");
                 Unpublish(s);
                 RemoveProp(s, i, "collision not off");
+                s.props[i].def = want;
+                s.props[i].failed = true;
+                s.refused[want] = true;
+                ++s.failed;
+                changed = true;
+            }
+        }
+        // a baggage model whose rep got its handlers but built no mesh entry (MsgEntityInit gone out before the binding: section
+        // 39.6, report risk 3) draws nothing: counted as not made, removed and refused for the session (round 15 review)
+        if (p.live && IsBagKey(p.def) && !p.rep_checked && now - p.live_ms >= 1500) {
+            p.rep_checked = true;
+            int bound = -1, entries = -1;
+            if (bagmodel::RepState(p.sp.e, &bound, &entries) && bound > 0 && entries == 0) {
+                Log("[%s] prop %u '%s' refused for this session: its model rep has %d handler(s) bound but 0 mesh entries 1.5 s after it was made "
+                    "(not drawn)",
+                    s.tag, i, label, bound);
+                bagmodel::NoteUndrawn();
+                Unpublish(s);
+                RemoveProp(s, i, "model rep without meshes");
                 s.props[i].def = want;
                 s.props[i].failed = true;
                 s.refused[want] = true;
@@ -4933,6 +5087,10 @@ void Init(const Config& config) noexcept {
     g_hood_colour = config.hood_colour;
     hoodfold::Configure(config.hood_fold_hide);
     g_held_mode = static_cast<heldrules::Mode>(config.held_items < 0 ? 0 : config.held_items > 2 ? 2 : config.held_items);
+    g_waist_cargo = config.waist_cargo;
+    Log("[gear] waist_cargo=%d: the hip crates (weapon case, folding ladder) %s", g_waist_cargo ? 1 : 0,
+        g_waist_cargo ? "sent; the partner's made as the game's own baggage model (section 39)"
+                      : "not sent or drawn (v0.28)");
     Log("[boots] her boots: boots_look=%s (%s), boots_own_porter=%d", bootslook::StyleName(g_boots_style),
         g_boots_style == bootslook::Style::own ? "her own boots, painted with the guest's boot pictures; no boots prop, feet not scaled"
                                                : "Sam's boots on her feet; sole grass / intact porter boots keep her own",
@@ -5353,7 +5511,7 @@ std::uint8_t CargoModelOf(std::uintptr_t bag) noexcept {
     if (!li || std::strcmp(TypeOf(li), "DSGameBaggageListItem") != 0) return wire::kGearNone;
     std::uint8_t lf[5] = {};
     if (!mem::Read(li + kListAttribute, lf, sizeof(lf))) return wire::kGearNone;
-    return Drawn(lf[1], 0) ? ModelFromListItem(li) : wire::kGearNone;
+    return Drawn(lf[1]) ? ModelFromListItem(li) : wire::kGearNone;
 }
 
 bool CargoProp(std::uint8_t model, const char** key, const char** path, const char** guid) noexcept {
@@ -5916,6 +6074,66 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             Log("[hood] %s", msg);
             return true;
         }
+        case 36: {
+            // the hip crates (section 39): 0 / 1 waist_cargo off / on (both sides: sender and receiver); any other value: status
+            if (v[1] == 0 || v[1] == 1) {
+                g_waist_cargo = v[1] != 0;
+                g_next_read_ms = 0;
+            }
+            if (v[1] == 4 && v[2] >= 0 && v[2] <= 7) g_bag_extras = static_cast<int>(v[2]);  // tests: the extra components of new ones
+            if (v[1] == 5 && (v[2] == 0 || v[2] == 1)) bagmodel::SetBind(v[2] != 0);  // tests: the reps' handlers of new ones (section 39.6)
+            char info[300];
+            bagmodel::Info(info, sizeof(info));
+            unsigned live = 0, shown = 0;
+            for (const PropSet& s : g_sets)
+                for (const Prop& p : s.props)
+                    if (IsBagKey(p.def)) live += p.live, shown += p.shown;
+            unsigned ours = 0, theirs = 0;
+            for (unsigned i = 0; i < g_local.count; ++i) ours += g_local.items[i].kind == wire::GearKind::cargo && cargorules::ExactModel(g_local.items[i].model) >= 0;
+            for (unsigned i = 0; i < g_sets[0].want.count; ++i)
+                theirs += g_sets[0].want.items[i].kind == wire::GearKind::cargo && cargorules::ExactModel(g_sets[0].want.items[i].model) >= 0;
+            std::snprintf(msg, cap, "waist_cargo %d; hip pieces: ours sent %u, the partner's %u; baggage model props %u live, %u shown; %u made here, %u not made",
+                          g_waist_cargo ? 1 : 0, ours, theirs, live, shown, g_bag_made, g_bag_failed);
+            Log("[gear] %s", msg);
+            Log("[gear]   %s", info);
+            // each partner hip prop: where it is against the body's hips joint (the sender's pose relative to it)
+            const PropSet& ps = g_sets[0];
+            for (unsigned i = 0; i < ps.want.count; ++i) {
+                const Prop& p = ps.props[i];
+                if (!IsBagKey(p.def)) continue;
+                const wire::GearItem& it = ps.want.items[i];
+                game::WorldTransform w{};
+                const bool have = p.live && holo::SpawnAlive(p.sp) && game::TryGetTransform(p.sp.e, &w);
+                Log("[gear]   partner hip prop %u '%s': %s, %s; joint %u at (%.3f, %.3f, %.3f) m; world (%.2f, %.2f, %.2f)", i, KeyLabel(p.def, ps.res),
+                    p.live ? "live" : p.loading ? "loading" : p.failed ? "failed" : "not started", p.shown ? "shown" : "hidden", it.joint,
+                    static_cast<double>(it.p[0]), static_cast<double>(it.p[1]), static_cast<double>(it.p[2]), have ? w.pos.x : 0.0, have ? w.pos.y : 0.0,
+                    have ? w.pos.z : 0.0);
+                if (!have) continue;
+                // its entity flags, components and ArtParts flags (bit 0 asked, bit 1 shown); `gear 36 3`: every part shown (tests)
+                const auto e = reinterpret_cast<std::uintptr_t>(p.sp.e);
+                std::uint64_t fl = 0;
+                partner::ReadFlags(p.sp.e, &fl);
+                std::uintptr_t sm = 0;
+                Apd a;
+                char parts[200] = {};
+                const bool apd = ModelAndApd(e, &sm, &a);
+                for (int k = 0; apd && k < a.n && k < 48; ++k) {
+                    std::uint8_t f = 0xFF;
+                    PartFlags(a, static_cast<unsigned>(k), &f);
+                    std::snprintf(parts + std::strlen(parts), sizeof(parts) - std::strlen(parts), "%s%X", k ? " " : "", f);
+                }
+                if (v[1] == 3 && apd && ApdFnsOk()) CallSetParts(sm, a.apd, -1, true);
+                Log("[gear]     entity flags 0x%llX, animation %s%s, stencil %s (extras mask %d); ArtParts %d part(s): %s%s", static_cast<unsigned long long>(fl),
+                    partner::FindComponentByName(p.sp.e, "DSSimpleAnimationComponent") ? "simple " : "",
+                    partner::FindComponentByName(p.sp.e, "ExternalAnimationComponent") ? "external" : "",
+                    partner::FindComponentByName(p.sp.e, "StencilBufferComponent") ? "yes" : "no", g_bag_extras, apd ? a.n : -1, parts,
+                    v[1] == 3 ? " (TEST: every part set shown)" : "");
+                int bound = -1, entries = -1;
+                bagmodel::RepState(p.sp.e, &bound, &entries);
+                Log("[gear]     model rep: %d handler(s) bound, %d mesh entr%s", bound, entries, entries == 1 ? "y" : "ies");
+            }
+            return true;
+        }
         case 20: {
             // the partner body's feet under the boots prop (section 21): scale percent, 100 = not scaled
             g_pfeet_pct = v[1] < 1 ? 1 : v[1] > 100 ? 100 : static_cast<int>(v[1]);
@@ -5949,7 +6167,7 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             return who != nullptr;
         }
         default:
-            std::snprintf(msg, cap, "unknown op %d (0 log, 1 partner 0/1, 2 self 0/1, 3 test cases n, 4 debug body 0/1, 5 n / 6 test faults, 7 level, 8 pod entity, 9 census 0/1/2, 10 walk cache 0/1, 11 looks 0/1, 12 looks off/on, 13 backpack pose off/on, 14 accessory list, 15 cap colour, 16 head parts off/on, 17 weapons off/on, 18 headgear offsets off/on, 19 headgear meter off/on, 20 partner feet scale percent, 21 boots sync off/on, 22 hat in the rain, 23 glasses colour, 24 rain cover durability percent, 25 boots look 0 prop / 1 own / 2 log, 26 held items, 27 exo carrier 0/1/2, 28 skeleton type -1..4, 29 LegOut 0/1, 30 BB pod rule 0/1/2, 31 her hood 0/1/2/3, 32 hood state -1..12 [type], 33 hair under the hood 0/1)", op);
+            std::snprintf(msg, cap, "unknown op %d (0 log, 1 partner 0/1, 2 self 0/1, 3 test cases n, 4 debug body 0/1, 5 n / 6 test faults, 7 level, 8 pod entity, 9 census 0/1/2, 10 walk cache 0/1, 11 looks 0/1, 12 looks off/on, 13 backpack pose off/on, 14 accessory list, 15 cap colour, 16 head parts off/on, 17 weapons off/on, 18 headgear offsets off/on, 19 headgear meter off/on, 20 partner feet scale percent, 21 boots sync off/on, 22 hat in the rain, 23 glasses colour, 24 rain cover durability percent, 25 boots look 0 prop / 1 own / 2 log, 26 held items, 27 exo carrier 0/1/2, 28 skeleton type -1..4, 29 LegOut 0/1, 30 BB pod rule 0/1/2, 31 her hood 0/1/2/3, 32 hood state -1..12 [type], 33 hair under the hood 0/1, 34 hood fold test, 35 hood colour 0/1, 36 hip crates 0/1 / status)", op);
             return false;
     }
 }

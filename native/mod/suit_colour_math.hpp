@@ -143,10 +143,18 @@ inline bool FabricAverage(const std::uint8_t* rgba, const std::uint8_t* mask, st
 // that is never saved, so a colour she picks for Sam's porter suit in the private room is gone at the next load: the mod
 // keeps her last pick (her own folder) and Fragile wears it until she picks again. See(world, her Sam's colour) every frame
 // the colour is read: a new world counter takes the loaded colour as the base; a different colour after that is her pick.
+//
+// Round 15 (section 40): `menu_rule` (the wardrobe's sites verified). The user's "stuck" colour: her Sam's byte is the
+// host's after every load, the menu opened on it, and picking that very colour wrote the same byte back (the menu's close
+// writes its staging copy unconditionally), so no change was seen and she kept her old pick. With the menu rule a pick is
+// the close of the wardrobe (Pick, whatever the byte holds, the same value included) or the test action; a byte change on
+// its own (a load, a script's ApplyInventorySetting) is never a pick, and Align says what her Sam's byte should hold so the
+// menu opens on what she wears.
 struct GuestPick {
     std::uint8_t saved = 0xFF;      // her last pick (0..16), 0xFF none
     std::uint8_t last = 0xFF;       // her Sam's colour last seen in this world
     bool picked = false;            // she picked in this world
+    bool menu_rule = false;         // round 15: picks come from the wardrobe's close (Pick), not from byte changes
     std::uint32_t world = 0xFFFFFFFFu;
     // true when `saved` changed (to be written)
     bool See(std::uint32_t world_counter, std::uint8_t cur) {
@@ -158,12 +166,94 @@ struct GuestPick {
         }
         if (cur == last) return false;
         last = cur;
+        if (menu_rule) return false;  // a load or a script put a byte there: not her pick
         picked = true;
         if (cur > kGold || cur == saved) return false;
         saved = cur;
         return true;
     }
-    std::uint8_t Effective(std::uint8_t cur) const { return picked || saved > kGold ? cur : saved; }
+    // A pick (the wardrobe closed with `cur` in her Sam's byte, or the test action). Counts also when it is the colour she
+    // wears already. True when `saved` changed.
+    bool Pick(std::uint8_t cur) {
+        if (cur > kGold) return false;
+        picked = true;
+        last = cur;
+        const bool changed = saved != cur;
+        saved = cur;
+        return changed;
+    }
+    std::uint8_t Effective(std::uint8_t cur) const {
+        if (menu_rule) return saved <= kGold ? saved : cur;
+        return picked || saved > kGold ? cur : saved;
+    }
+    // The value her Sam's byte should be given (her pick), 0xFF: leave it.
+    std::uint8_t Align(std::uint8_t cur) const { return menu_rule && saved <= kGold && cur <= kGold && cur != saved ? saved : std::uint8_t{0xFF}; }
 };
+
+// Round 15: the wardrobe's close, from the open flag polled every tick. `kind6` the subspace kind read this tick (1 kind 6,
+// 0 another kind, -1 not readable: then any close counts; a kind-7 close only writes back what is there). True once per close
+// of a menu that was kind 6 while open. `staging` (the colour the close will write, -1 not a colour) and `category` (the
+// previewed category, 3 the suit colour) are what the menu showed while open: ClosePicks says whether that close is her pick.
+struct WardrobeWatch {
+    bool open = false, kind6 = false, kind_known = false;
+    int staging_open = -1;         // the staging colour first seen in this open (-1 none)
+    bool staging_changed = false;  // a colour confirmed inside the menu (the staging copy moved)
+    bool previewed3 = false;       // a suit colour was previewed (category 3) in this open
+    bool marked = false;           // the test action's stand-in for a suit colour preview (a save without suit colours)
+    bool Step(int flag, int kind6_now, int staging = -1, int category = -1) {
+        if (flag < 0) return false;
+        if (flag) {
+            if (!open) open = true, kind6 = false, kind_known = false, staging_open = -1, staging_changed = false, previewed3 = false, marked = false;
+            if (kind6_now >= 0) kind_known = true;
+            if (kind6_now > 0) kind6 = true;
+            if (staging >= 0 && staging <= kGold) {
+                if (staging_open < 0) staging_open = staging;
+                else if (staging != staging_open) staging_changed = true;
+            }
+            if (category == 3) previewed3 = true;
+            return false;
+        }
+        const bool closed = open && (kind6 || !kind_known);
+        open = false;
+        return closed;
+    }
+    void MarkPreview() {
+        if (open) marked = true;
+    }
+    // The close just reported is her pick (round 15 review): the menu opened on her pick `saved` (what she wears, so the close
+    // keeps it), or a suit colour was previewed, or one was confirmed. A close after only a glasses or cap change on a menu that
+    // opened on another colour (the host's, before the alignment) never picks: it would overwrite her pick with his.
+    bool ClosePicks(std::uint8_t saved) const { return previewed3 || staging_changed || marked || (staging_open >= 0 && staging_open == saved); }
+};
+
+// Round 15: at most `kMax` rewrites of her Sam's byte in `kWindowMs`; beyond that the mod stops for the world (it never
+// fights the game).
+struct RewriteCap {
+    static constexpr int kMax = 5;
+    static constexpr double kWindowMs = 10000;
+    double from_ms = -1e18;
+    int n = 0;
+    bool tripped = false;
+    bool Allow(double now_ms) {
+        if (tripped) return false;
+        if (now_ms - from_ms > kWindowMs) from_ms = now_ms, n = 0;
+        if (n >= kMax) {
+            tripped = true;
+            return false;
+        }
+        ++n;
+        return true;
+    }
+    void Reset() { *this = RewriteCap{}; }
+};
+
+// Round 15: what the self body shows in the wardrobe: the previewed colour (category 3), else the colour the close would
+// write (the staging copy, after a confirm inside the menu), else what she wears. Only while the wardrobe's figure is hers.
+constexpr std::uint8_t WardrobeShown(bool hers, int preview, int staging, std::uint8_t worn) {
+    if (!hers) return worn;
+    if (preview >= 0 && preview <= kGold) return static_cast<std::uint8_t>(preview);
+    if (staging >= 0 && staging <= kGold) return static_cast<std::uint8_t>(staging);
+    return worn;
+}
 
 }  // namespace st::suitcol

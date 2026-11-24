@@ -201,6 +201,34 @@ SRWLOCK g_asset_lock = SRWLOCK_INIT;
 RxSave g_asset_q[kAssetQueue];
 unsigned g_asset_head = 0, g_asset_count = 0;
 volatile LONG64 g_rx_assets = 0, g_tx_assets = 0;
+// Received combat messages (SCB1, channel 6; docs/enemy-sync.md), the same way (under g_combat_lock, taken inside g_tx or alone).
+constexpr unsigned kCombatQueue = 64;
+SRWLOCK g_combat_lock = SRWLOCK_INIT;
+RxSave g_combat_q[kCombatQueue];
+unsigned g_combat_head = 0, g_combat_count = 0;
+volatile LONG64 g_rx_combat = 0, g_tx_combat = 0;
+// The combat frames (SEH1 the beacon, SEN1 enemy states, SEP1 enemy poses, SFX1 shots; docs/enemy-sync.md): raw bytes per kind
+// (the magic and the size bound checked here, the strict decoders run on the game thread), oldest first; when full the oldest
+// goes (counted). Queues of 2 / 8 / 16 / 32. Under g_rx.
+constexpr std::size_t kCombatFrameMax = 1024;
+struct RxC {
+    std::uint8_t bytes[kCombatFrameMax];
+    std::uint16_t size;
+    std::uint32_t generation;
+};
+constexpr unsigned kCKinds = 4, kCQueueMax = 32;
+constexpr unsigned kCQueueCap[kCKinds] = {2, 8, 16, 32};
+RxC g_cqueue[kCKinds][kCQueueMax];
+unsigned g_cq_head[kCKinds] = {}, g_cq_count[kCKinds] = {};
+volatile LONG64 g_rx_cframes[kCKinds] = {}, g_tx_cframes[kCKinds] = {}, g_rx_cdropped[kCKinds] = {};
+int CombatKindOf(const std::uint8_t* d, std::size_t n) noexcept {
+    if (!d || n < 8 || n > kCombatFrameMax || d[0] != 'S') return -1;
+    if (d[1] == 'E' && d[2] == 'H' && d[3] == '1') return n == 24 ? 0 : -1;
+    if (d[1] == 'E' && d[2] == 'N' && d[3] == '1') return 1;
+    if (d[1] == 'E' && d[2] == 'P' && d[3] == '1') return 2;
+    if (d[1] == 'F' && d[2] == 'X' && d[3] == '1') return 3;
+    return -1;
+}
 // Hidden tests (TestBlackout): received datagrams are dropped until this NowMs().
 volatile LONG64 g_blackout_until = 0, g_blackout_dropped = 0;
 
@@ -262,6 +290,21 @@ void DrainAssetsLocked(std::uint64_t now, std::uint32_t generation) noexcept {
         InterlockedIncrement64(&g_rx_assets);
     }
     ReleaseSRWLockExclusive(&g_asset_lock);
+}
+
+// Under g_tx: in-order channel 6 messages into the combat queue while it has room.
+void DrainCombatLocked(std::uint64_t now, std::uint32_t generation) noexcept {
+    AcquireSRWLockExclusive(&g_combat_lock);
+    std::size_t got = 0;
+    while (g_combat_count < kCombatQueue) {
+        RxSave& slot = g_combat_q[(g_combat_head + g_combat_count) % kCombatQueue];
+        if (!g_rel_rx[lk::kCombatChannel].Drain(slot.bytes, sizeof(slot.bytes), got, now)) break;
+        slot.size = static_cast<std::uint16_t>(got);
+        slot.generation = generation;
+        ++g_combat_count;
+        InterlockedIncrement64(&g_rx_combat);
+    }
+    ReleaseSRWLockExclusive(&g_combat_lock);
 }
 
 // Outside every lock: hand the queued save messages to the sink, if one is registered.
@@ -410,6 +453,10 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
     constexpr unsigned kMaxDrive = 16;
     static thread_local RxD drive[kMaxDrive];  // transport thread only
     unsigned drive_count = 0;
+    constexpr unsigned kMaxCombat = 8;
+    static thread_local RxC combat[kMaxCombat];  // transport thread only
+    static thread_local int combat_kind[kMaxCombat];
+    unsigned combat_count = 0;
 
     AcquireSRWLockExclusive(&g_tx);
     const lk::Delivery d = g_session.OnDatagram(data, size, from, now);
@@ -453,6 +500,15 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
                         ++drive_count;
                     } else {
                         InterlockedIncrement64(&g_rx_drive_dropped);
+                    }
+                } else if (const int ck = CombatKindOf(m.data, m.size); ck >= 0) {
+                    if (combat_count < kMaxCombat) {
+                        std::memcpy(combat[combat_count].bytes, m.data, m.size);
+                        combat[combat_count].size = static_cast<std::uint16_t>(m.size);
+                        combat_kind[combat_count] = ck;
+                        ++combat_count;
+                    } else {
+                        InterlockedIncrement64(&g_rx_cdropped[ck]);
                     }
                 }
             } else if (m.type == static_cast<std::uint8_t>(lk::MsgType::reliable)) {
@@ -508,9 +564,17 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
             ReleaseSRWLockExclusive(&g_asset_lock);
         }
         DrainAssetsLocked(now, g_generation + (new_session ? 1u : 0u));
+        // Channel 6: the combat messages (SCB1, the enemy rounds), the same way.
+        if (new_session) {
+            AcquireSRWLockExclusive(&g_combat_lock);
+            g_combat_count = 0;
+            ReleaseSRWLockExclusive(&g_combat_lock);
+        }
+        DrainCombatLocked(now, g_generation + (new_session ? 1u : 0u));
         // Other channels are not used by this build: drained and dropped so their windows never fill.
         for (unsigned ch = 1; ch < lk::kReliableChannels; ++ch)
-            if (ch != wire::kSpeechChannel && ch != lk::kSaveChannel && ch != kVehicleEventChannel && ch != kWorldEventChannel && ch != lk::kAssetChannel)
+            if (ch != wire::kSpeechChannel && ch != lk::kSaveChannel && ch != kVehicleEventChannel && ch != kWorldEventChannel && ch != lk::kAssetChannel &&
+                ch != lk::kCombatChannel)
                 while (g_rel_rx[ch].Drain(buf, sizeof(buf), got, now)) {
                 }
     }
@@ -523,9 +587,10 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
     if (g_use_steam && new_session && g_host && committed.address) g_steam.set_peer(lab::SteamIdOf(committed));
 
     if (pose_count || joint_count || have_name || have_gear || res_count || look_count || have_gpose || speech_count || sound_count || have_vehicle ||
-        drive_count || new_session) {
+        drive_count || combat_count || new_session) {
         AcquireSRWLockExclusive(&g_rx);
         if (new_session) {
+            for (unsigned k = 0; k < kCKinds; ++k) g_cq_count[k] = 0;
             g_dq_count = 0;
             g_mq_count = 0;
             g_have_rx_mseq = false;
@@ -594,6 +659,16 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
             if (g_mq_count < kMQueue) ++g_mq_count;
             else g_mq_head = (g_mq_head + 1) % kMQueue;
             InterlockedIncrement64(&g_rx_vehicle);
+        }
+        for (unsigned i = 0; i < combat_count; ++i) {
+            const unsigned k = static_cast<unsigned>(combat_kind[i]), cap = kCQueueCap[k];
+            RxC& slot = g_cqueue[k][(g_cq_head[k] + g_cq_count[k]) % cap];
+            std::memcpy(slot.bytes, combat[i].bytes, combat[i].size);
+            slot.size = combat[i].size;
+            slot.generation = g_generation;
+            if (g_cq_count[k] < cap) ++g_cq_count[k];
+            else g_cq_head[k] = (g_cq_head[k] + 1) % cap, InterlockedIncrement64(&g_rx_cdropped[k]);
+            InterlockedIncrement64(&g_rx_cframes[k]);
         }
         for (unsigned i = 0; i < drive_count; ++i) {
             RxD& slot = g_dqueue[(g_dq_head + g_dq_count) % kDQueue];
@@ -701,6 +776,7 @@ void OnIdle(void*) noexcept {
     // Save messages left in the channel while the queue was full: taken as soon as it has room again.
     DrainSaveLocked(now, g_generation);
     DrainAssetsLocked(now, g_generation);
+    DrainCombatLocked(now, g_generation);
     lk::Event e{};
     while (event_count < kMaxEvents && g_session.PopEvent(e)) events[event_count++] = e;
     InterlockedExchange(&g_state, static_cast<long>(g_session.state()));
@@ -1284,6 +1360,82 @@ bool PopWorldEvent(std::uint8_t* out, std::size_t cap, std::size_t& size, std::u
 void WorldEventCounts(std::uint64_t* sent, std::uint64_t* received) noexcept {
     if (sent) *sent = static_cast<std::uint64_t>(g_tx_world_events);
     if (received) *received = static_cast<std::uint64_t>(g_rx_world_events);
+}
+
+bool SendCombat(const void* bytes, std::size_t size) noexcept {
+    if (!bytes || size == 0 || size > lk::kMaxReliableMessage) return false;
+    bool queued = false;
+    AcquireSRWLockExclusive(&g_tx);
+    if (g_session.CanSendData())
+        queued = g_rel_tx[lk::kCombatChannel].Queue(bytes, size, lk::ReliableMode::append) == lk::ReliableResult::queued;
+    ReleaseSRWLockExclusive(&g_tx);
+    if (queued) {
+        InterlockedIncrement64(&g_tx_combat);
+        InterlockedAdd64(&g_tx_payload, static_cast<LONG64>(size));
+    }
+    return queued;
+}
+
+unsigned CombatQueued() noexcept {
+    AcquireSRWLockExclusive(&g_tx);
+    const unsigned n = g_rel_tx[lk::kCombatChannel].queued();
+    ReleaseSRWLockExclusive(&g_tx);
+    return n;
+}
+
+bool PopCombat(std::uint8_t* out, std::size_t cap, std::size_t& size, std::uint32_t& generation) noexcept {
+    bool ok = false;
+    AcquireSRWLockExclusive(&g_combat_lock);
+    if (g_combat_count && out && g_combat_q[g_combat_head].size <= cap) {
+        const RxSave& s = g_combat_q[g_combat_head];
+        std::memcpy(out, s.bytes, s.size);
+        size = s.size;
+        generation = s.generation;
+        g_combat_head = (g_combat_head + 1) % kCombatQueue;
+        --g_combat_count;
+        ok = true;
+    }
+    ReleaseSRWLockExclusive(&g_combat_lock);
+    return ok;
+}
+
+void CombatChannelCounts(std::uint64_t* sent, std::uint64_t* received) noexcept {
+    if (sent) *sent = static_cast<std::uint64_t>(InterlockedCompareExchange64(&g_tx_combat, 0, 0));
+    if (received) *received = static_cast<std::uint64_t>(InterlockedCompareExchange64(&g_rx_combat, 0, 0));
+}
+
+bool SendCombatFrame(const std::uint8_t* bytes, std::size_t size) noexcept {
+    const int k = CombatKindOf(bytes, size);
+    if (k < 0) return false;
+    const bool sent = SendFrameBytes(bytes, size);
+    if (sent) InterlockedIncrement64(&g_tx_cframes[k]);
+    return sent;
+}
+
+bool PopCombatFrame(CombatFrame kind, std::uint8_t* out, std::size_t cap, std::size_t& size, std::uint32_t& generation) noexcept {
+    const unsigned k = static_cast<unsigned>(kind);
+    if (k >= kCKinds) return false;
+    bool ok = false;
+    AcquireSRWLockExclusive(&g_rx);
+    if (g_cq_count[k] && out && g_cqueue[k][g_cq_head[k]].size <= cap) {
+        const RxC& c = g_cqueue[k][g_cq_head[k]];
+        std::memcpy(out, c.bytes, c.size);
+        size = c.size;
+        generation = c.generation;
+        g_cq_head[k] = (g_cq_head[k] + 1) % kCQueueCap[k];
+        --g_cq_count[k];
+        ok = true;
+    }
+    ReleaseSRWLockExclusive(&g_rx);
+    return ok;
+}
+
+void CombatCounts(CombatFrame kind, std::uint64_t* sent, std::uint64_t* received, std::uint64_t* dropped) noexcept {
+    const unsigned k = static_cast<unsigned>(kind);
+    if (k >= kCKinds) return;
+    if (sent) *sent = static_cast<std::uint64_t>(InterlockedCompareExchange64(&g_tx_cframes[k], 0, 0));
+    if (received) *received = static_cast<std::uint64_t>(InterlockedCompareExchange64(&g_rx_cframes[k], 0, 0));
+    if (dropped) *dropped = static_cast<std::uint64_t>(InterlockedCompareExchange64(&g_rx_cdropped[k], 0, 0));
 }
 
 void SetSaveBurst(bool title_or_loading) noexcept { InterlockedExchange(&g_save_burst, title_or_loading ? 1 : 0); }

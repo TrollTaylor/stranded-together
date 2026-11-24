@@ -11,6 +11,7 @@
 #include "log.hpp"
 #include "partner_source.hpp"
 #include "suit_colour_math.hpp"
+#include "wardrobe.hpp"
 
 namespace st::suitcol {
 namespace {
@@ -464,6 +465,187 @@ std::uint8_t GuestColour(std::uint8_t cur) noexcept {
     if (new_world && saved <= kGold && saved != cur)
         Log("[suit] guest: world #%u loaded with Sam's suit colour %u: Fragile keeps the guest's remembered pick %u", world, cur, saved);
     return out;
+}
+
+// ---------------------------------------------------------------- round 15 (section 40): the wardrobe's close is the pick,
+// her Sam's byte follows her pick
+namespace {
+WardrobeWatch g_ww;
+RewriteCap g_cap;
+bool g_align_on = true;  // `real_outfit 9` bit 1
+bool g_rule_logged = false;
+struct Align {
+    std::uint32_t world = 0xFFFFFFFFu;
+    double ready_ms = 0;          // the world became ready (the byte is aligned 1.5 s after)
+    std::uint8_t orig = 0xFF;     // her Sam's byte as the world gave it (put back by the off switch)
+    std::uint8_t written = 0xFF;  // what we wrote last (0xFF none in this world)
+    std::uintptr_t addr = 0;      // where
+    unsigned writes = 0;
+    bool cap_logged = false;
+    unsigned long long seen_tick = 0;  // GetTickCount64 when GuestTick last read the byte at addr
+} g_al;
+unsigned g_picks = 0;
+
+bool WriteByte(std::uintptr_t addr, std::uint8_t v) {
+    SIZE_T n = 0;
+    return addr && WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(addr), &v, 1, &n) && n == 1;
+}
+}  // namespace
+
+void GuestTick(std::uintptr_t player, std::uintptr_t byte_addr, int byte_now, int kind6, double now_ms) noexcept {
+    if (!g_pick_on) return;
+    wardrobe::State ws;
+    const bool wr = wardrobe::Read(&ws);
+    std::uint32_t world = 0;
+    const bool ready = coop::WorldReady(&world);
+    AcquireSRWLockExclusive(&g_pick_lock);
+    g_pick.menu_rule = wardrobe::SitesOk();  // checked once (cached); ConfigureGuestPick resets the struct
+    const bool rule = g_pick.menu_rule;
+    if (!g_rule_logged) {
+        g_rule_logged = true;
+        Log("[suit] guest: %s", g_pick.menu_rule ? "a pick is the wardrobe's close (the colour shown counts too); her Sam's suit colour byte follows her pick"
+                                                 : "the wardrobe is not readable: a pick is a change of her Sam's suit colour byte (round 5's rule)");
+    }
+    const bool closed = g_ww.Step(wr ? ws.open : -1, kind6, wr ? ws.staging : -1, wr ? ws.category : -1);
+    bool save = false;
+    const std::uint8_t was = g_pick.saved;
+    const bool picks = closed && g_pick.menu_rule && byte_now >= 0 && g_ww.ClosePicks(was);
+    const int opened_on = g_ww.staging_open;
+    if (picks) {
+        save = g_pick.Pick(static_cast<std::uint8_t>(byte_now));
+        ++g_picks;
+    }
+    const std::uint8_t saved = g_pick.saved;
+    // alignment (bit 1): a ready world, the menu closed, her Sam's byte readable, 1.5 s into the world
+    std::uint8_t write = 0xFF;
+    const bool sandbox = automation::SavesRedirected();
+    if (ready && world != g_al.world) {
+        g_al = Align{};
+        g_al.world = world;
+        g_al.ready_ms = now_ms;
+        g_cap.Reset();
+    }
+    if (ready && player && byte_addr && byte_now >= 0 && byte_now <= kGold && g_al.addr != byte_addr) {
+        if (!g_al.addr) g_al.orig = static_cast<std::uint8_t>(byte_now);
+        g_al.addr = byte_addr;
+    }
+    if (ready && byte_addr && byte_addr == g_al.addr && byte_now >= 0) g_al.seen_tick = GetTickCount64();
+    bool cap_now = false;
+    if (g_align_on && g_pick.menu_rule && sandbox && ready && ws.open == 0 && byte_addr == g_al.addr && byte_now >= 0 && now_ms - g_al.ready_ms >= 1500) {
+        const std::uint8_t a = g_pick.Align(static_cast<std::uint8_t>(byte_now));
+        if (a != 0xFF) {
+            if (g_cap.Allow(now_ms)) write = a;
+            else if (!g_al.cap_logged) cap_now = g_al.cap_logged = true;
+        }
+    }
+    ReleaseSRWLockExclusive(&g_pick_lock);
+    if (closed && byte_now >= 0) {
+        if (!rule) Log("[suit] guest: the wardrobe closed with her Sam's suit colour %d: not read as a pick (the wardrobe is not readable)", byte_now);
+        else if (picks)
+            Log("[suit] guest: the wardrobe closed with her Sam's suit colour %d: %s (pick #%u; was %u)", byte_now, save ? "her new pick" : "her pick (the colour she wore)",
+                g_picks, was);
+        else
+            Log("[suit] guest: the wardrobe closed with her Sam's suit colour %d: not a pick (it opened on %d, not her pick %u; no suit colour previewed or "
+                "confirmed)",
+                byte_now, opened_on, was);
+    }
+    if (save) SavePick(saved);
+    if (write != 0xFF) {
+        const bool ok = WriteByte(byte_addr, write);
+        unsigned writes = 0;
+        std::uint8_t orig = 0xFF;
+        AcquireSRWLockExclusive(&g_pick_lock);
+        if (ok && g_al.world == world && g_al.addr == byte_addr) g_al.written = write, ++g_al.writes;
+        writes = g_al.writes, orig = g_al.orig;
+        ReleaseSRWLockExclusive(&g_pick_lock);
+        Log("[suit] guest: her Sam's suit colour byte %d -> %u (her pick) %s (world #%u, write %u; the world gave %u; the menu opens on it)", byte_now,
+            write, ok ? "written" : "NOT written", world, writes, orig);
+    }
+    if (cap_now)
+        Log("[suit] guest: her Sam's suit colour byte was put back to %d more than %d times in %.0f s: not written again in this world (the game "
+            "keeps setting it)",
+            byte_now, RewriteCap::kMax, RewriteCap::kWindowMs / 1000.0);
+    (void)player;
+}
+
+void NotePick(std::uint8_t c) noexcept {
+    AcquireSRWLockExclusive(&g_pick_lock);
+    const bool on = g_pick_on;
+    const std::uint8_t was = g_pick.saved;
+    const bool save = on && g_pick.Pick(c);
+    if (on) ++g_picks;
+    const std::uint8_t saved = g_pick.saved;
+    ReleaseSRWLockExclusive(&g_pick_lock);
+    if (!on) return;
+    Log("[suit] guest: picked suit colour %u (test action; pick #%u; was %u)", c, g_picks, was);
+    if (save) SavePick(saved);
+}
+
+bool MarkPreview() noexcept {
+    AcquireSRWLockExclusive(&g_pick_lock);
+    const bool open = g_ww.open;
+    g_ww.MarkPreview();
+    ReleaseSRWLockExclusive(&g_pick_lock);
+    if (open) Log("[suit] guest: a suit colour preview noted in the open wardrobe (test action)");
+    return open;
+}
+
+namespace {
+// The world's own byte back when it still holds what we wrote (the off switch, the emergency stop). `why` for the log.
+// Only for the same ready world with the byte seen in the last 2 s: the address is that world's Sam's inventory.
+void RestoreOurs(const char* why) noexcept {
+    std::uint32_t world = 0;
+    const bool ready = coop::WorldReady(&world);
+    AcquireSRWLockExclusive(&g_pick_lock);
+    const std::uintptr_t addr = g_al.addr;
+    const std::uint8_t orig = g_al.orig, written = g_al.written;
+    const bool live = ready && world == g_al.world && g_al.seen_tick && GetTickCount64() - g_al.seen_tick < 2000;
+    ReleaseSRWLockExclusive(&g_pick_lock);
+    std::uint8_t cur = 0xFF;
+    const bool ours = live && addr && written <= kGold && Rd(addr, cur) && cur == written && orig <= kGold;
+    const bool ok = ours && WriteByte(addr, orig);
+    if (written <= kGold || ok)
+        Log("[suit] guest: %s: %s", why, ours ? (ok ? "the world's colour put back" : "NOT put back") : live ? "nothing of ours to put back" : "the world is gone (nothing written)");
+    if (ok) {
+        AcquireSRWLockExclusive(&g_pick_lock);
+        if (g_al.addr == addr) g_al.written = 0xFF;
+        ReleaseSRWLockExclusive(&g_pick_lock);
+    }
+}
+}  // namespace
+
+void SetAlign(bool on) noexcept {
+    AcquireSRWLockExclusive(&g_pick_lock);
+    g_align_on = on;
+    const std::uint8_t written = g_al.written;
+    ReleaseSRWLockExclusive(&g_pick_lock);
+    if (on) {
+        Log("[suit] guest: her Sam's suit colour byte follows her pick (real_outfit 9 bit 1 on)");
+        return;
+    }
+    if (written > kGold) {
+        Log("[suit] guest: her Sam's suit colour byte no longer follows her pick (real_outfit 9 bit 1 off): nothing of ours to put back");
+        return;
+    }
+    RestoreOurs("her Sam's suit colour byte no longer follows her pick (real_outfit 9 bit 1 off)");
+}
+
+void PutBack() noexcept {
+    AcquireSRWLockExclusive(&g_pick_lock);
+    g_align_on = false;  // nothing written after the stop
+    ReleaseSRWLockExclusive(&g_pick_lock);
+    RestoreOurs("the emergency stop");
+}
+
+bool AlignOn() noexcept { return g_align_on; }
+
+const char* DescribeGuest(char* buf, std::size_t cap) noexcept {
+    AcquireSRWLockShared(&g_pick_lock);
+    std::snprintf(buf, cap, "guest pick %s: saved %u, menu rule %d, align %d (world #%u gave %u, wrote %u, %u write(s)%s), picks %u", g_pick_on ? "on" : "off",
+                  g_pick.saved, g_pick.menu_rule ? 1 : 0, g_align_on ? 1 : 0, g_al.world, g_al.orig, g_al.written, g_al.writes,
+                  g_cap.tripped ? ", CAPPED" : "", g_picks);
+    ReleaseSRWLockShared(&g_pick_lock);
+    return buf;
 }
 
 void SetTest(long long mesh_mask, unsigned channels) noexcept {

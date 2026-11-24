@@ -126,6 +126,12 @@ enum class Action : std::uint8_t {
     tex,                  // v[0] = mode (0 status, 1 rescan, 2 probe, 3 colour, 4 off/on, 5 filter, 6 slot offset, 7 resend, 9 pattern), v[1], v[2]
     // Enemy sync P0 (enemy_census.hpp; docs/enemy-sync.md): read only
     enemy_census,         // v[0] = tag, v[1] = radius m (0 = all), v[2] = flags (1 every other actor type, 2 the MULE manager's killed records)
+    // Enemy sync P1-0 (enemy_sync.hpp): the freeze probe, hidden runs only
+    enemy_probe,          // v[0] = op (0 check + pick [v[1] radius], 1 lever v[1] mode v[2], 2 pose v[1] s, 3 secs v[1] path v[2], 9 release)
+    // Shots (shot_sync.hpp; docs/enemy-sync.md P3a)
+    shots,                // v[0] = 0 status, 1 on, 2 off
+    shots_test,           // v[0] = metres ahead, v[1] = flags (1 the filter keeps it, 2 no weapon, 4 no magazine, 16 leak test), v[2] = count
+    shots_echo,           // v[0] = 0/1, v[1] = metres to the right (default 2.5)
     count
 
 };

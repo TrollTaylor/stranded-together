@@ -1657,6 +1657,105 @@ own resource, with its own skinned pose.
   guest turns her camera round and the host does the ladder and the PCC (`1N-guest-sees-host-*`). `waitlog` on the
   receiver's `held clone <i> '<path>' shown` per item.
 
+## Shots and the enemy freeze probe (round 15)
+
+docs/enemy-sync.md section 7: the players' shots on the other screen (ship A) and the P1-0 freeze probe.
+- `shots-probe` (solo, `-SeedSaves complete-100`; about 1 min): on the road by Mountain Knot City, the rifle from the wheel,
+  our own shots echoed 2.5 m to the right through the whole replay path (`shots_echo 1 2.5`; stills `01-burst-echo-a..d`,
+  `02-impacts`), then `shots_test 6 1` (a replay at our own Sam, the filter keeps it, `dev_god 0`) and `shots_test 6 0` (the
+  filter drops it), then the leak test (`shots_test 0 16 200`). `waitlog` on the byte checks, the registry, `sent n=`,
+  `replayed n=.. (muzzle [1-9]`, the leak line; `waitnew` on each test's own outcome (`ref match=1 .*kept \(nofilter\)`,
+  then `ref match=1 .*dropped by the filter \(ref match\)`; as run, both steps were `waitlog ... ref match=[01]`, which
+  the first test's line met twice); `nolog` of a shots FAULT or byte check failure. A probe (`# select: probe`): the shots
+  proof is `two-games-shots`. Run `20261123-204732-shots-probe` (pass; its log has both outcome lines).
+- `enemy-freeze-probe` (solo, `pose_hook=1`, `shots_sync=1`; about 3 min): at the MULE Camp Southwest of Lake Knot City, every
+  MULE resurrected, our Sam 12 m from the nearest realized MULE (`enemy_probe 4 12`), a burst into the air, then each lever 8 s
+  with the release and a 15 s watch (`enemy_probe 1 <lever> <mode>`), the 1 m/s driving test with the pose step. Run
+  `20261123-204901-enemy-freeze-probe` (FAIL at its last teleport: our Sam had fainted; the results are in enemy-sync.md 7.2).
+  Since the review (not run): `# select: probe`; Sam walked 3 s into the camp before the control; `?action dev_refill` before
+  every lever; each lever waits for its own `done:` line (`waitnew`); lever 1 / mode 1 must log `hold=PASS ... release=PASS`;
+  `nolog \[enemy\] probe lever=1 .*ABANDONED`.
+- `two-games-shots` (`launcherini local-test` + `ini shots_sync=1` (off by default since the review), `-GuestSeed
+  profile-only`; about 2 min 30 s): A: the guest 8 m behind the host's right shoulder (`shots 3 8 135`), her camera turned
+  to him (`shots 4 15` and right-stick pulses until `camera aimed`), the host fires a burst. B: the reverse (the host 7 m at
+  her right), then an exact on / off pair from the host's camera (`action shots 2`: his beacon drops the fire bit and she
+  stops sending, `02-pair-off`; `action shots 1`, `02-pair-on`). C (required): the guest 4 m in front of the host
+  (`shots 3 4 0`), aimed within 2 deg (`shots 4 2`), fires at him (`dev_god 0` on the host); the host's status line (`action
+  shots 0`, `waitnew`) must count `replay hits dropped: our Sam [1-9]...` with `kept 0`. `waitlog` on `combat parts: ours
+  0x04 theirs 0x04: fire on` on both, the shooter's `sent n=` and the watcher's `replayed n=.. (muzzle [1-9]`. Run
+  `20261123-205837-two-games-shots` (**FAIL**: the optional C line did not come, and a failed optional step fails the run:
+  her camera stopped 7.4 deg off at 6 m, so no replay hit the host; before the review's changes). The changed file is not
+  run.
+
+### Round 15 prove (2026-11-24)
+
+Every run: game exit 0 (and guest exit 0), saves unchanged, restored, no violation, 0 cloud uploads, 0 game-server writes,
+online gate ok.
+
+| Run (`build-testenv\runs\`) | Result and cause |
+|---|---|
+| `20261124-080210-gear-self` | FAIL: `layout .* prop\(s\) removed`: the layout line reads `n prop(s) kept (m moved to another item), k removed` since abf5863 (2026-11-17); now `waitnew` on that form |
+| `20261124-080431-gear-self` | pass (`cargo 3`: the three synthetic cases; the old `cargo 4` counted the waist weapon case, a white case before section 13) |
+| `20261124-080635-two-games-all` | pass (`cargo 2` / `1`: the old `3` / `2` counted "the waist case each") |
+| `20261124-080816-two-games-gear` | pass (`cargo 3`; the second check `waitnew`) |
+| `20261124-081004-two-games-shots` | FAIL at C: the new steered aim stalled at 11 deg yaw / 6 deg pitch (stick 13000-15000 / 9000 in the aim stance) |
+| `20261124-081347-two-games-shots` | pass: C aimed (`yaw -1.8, pitch 0.2 deg off`), `replay hits dropped: our Sam 7 ... kept 0`, health 1000 |
+| `20261124-081606-two-games-vehicle-hit` | pass (the `waitworld 40` after A; three hits through the shared Sam damage detour) |
+| `20261124-081850-enemy-freeze-probe` | FAIL: our Sam fainted after the decision lever (`snap refused: game state: Faint`) |
+| `20261124-082211-enemy-freeze-probe` | pass with the shield (`enemy_probe 5 1`, 417 messages dropped); lever 1 / mode 1 `hold=PASS silent=FAIL release=PASS` (the held MULE hit him twice) |
+| `20261124-082534-two-games-wardrobe-colour` | pass (14 written back, closed on 14 her pick, 16 not a pick, then 16 her new pick, remembered; the host's `colour 14 on` / `colour 16 on`) |
+| `20261124-082721-two-games-ride-trike-pack` | pass with `waist_cargo=1` (the pillion hides all 9 pieces, hip pieces sent 0 meanwhile) |
+| `20261124-082923-two-games-full-gear` | pass (final counts `cargo 3` / `2`: run 220107 had passed `4` / `3` on older lines of G2) |
+
+The failed runs of 2026-11-23 (all safe): `215932-gear-self`, `220341-two-games-all`, `220511-two-games-gear` (stale counts:
+the waist weapon case had not been drawn since section 13 and these scenarios had not run since), `221121-two-games-shots`
+(C: her camera aimed in yaw only, by 120 ms pulses that went on after "aimed"; the shots went past his left foot into the
+ground: `shots 4 <deg> 1` now steers yaw and pitch at his chest), `221339-two-games-vehicle-hit` (the offline-mode notice held
+the host's load in Setup|SystemPause; `world ready` and `waitplayer` pass behind it), `215644-enemy-freeze-probe` (Faint).
+
+## Hip crates (round 14, round 15)
+
+- `two-games-hip-cargo` (`launcherini`, `-GuestSeed profile-only`; about 1 min 50 s): the launcher's own ini
+  (`waist_cargo=1`, the default since round 15), both games at the same spot; `waitlog` on `our carried cargo: 2 hip
+  piece(s) sent`, the gear lines (`cargo 2: 0 approximate, 2 the game's own model`) on both sides, `baggage model ... of
+  the config's model 15 / 14`, the byte checks, `reps: ... SkinnedModel rep handlers 0 -> n` (round 15) on both sides;
+  `gear 36 2` status lines (`waitnew`: `ours sent 2, the partner's 2; baggage model props 2 live, 2 shown`, `stencil yes
+  (extras mask 7)`). Shots (she is pinned 2.6 m ahead, `collision 6 2.6`; the host's camera turns about his own Sam, so
+  she is framed at behind-left, `pad none 400 rx=-32767`): A1..A3 the host's view of her (behind-left, behind-right, her
+  left side) and her own screen at the same turns; B1 / B2 the guest's `gear 36 0` / `1` from A1's camera (the host's
+  props go and come back); D1 / D2 the host's props remade with `gear 36 5 0` (the rep handlers left unbound, round 14's
+  form) and `gear 36 5 1`, the same camera; C1..C4 / C1b..C4b the guest's view of the host's Sam at four turns, each an
+  exact on / off pair (the host's `gear 36 0`, then `1`): her camera frames him differently from run to run. At the end
+  `waitlog` of `model rep: n handler(s) bound, n mesh entr...` (n > 0) on both sides (the game side of "drawn"), `nolog`
+  of a baggage model fault or refusal. Verdict: B1 against B2 and D1 against D2 cropped to her hips (nothing, then the dark
+  caged weapon case at her left thigh and the brown folded ladder at her right), and one C pair showing his.
+- The scenarios that count complete-100's cargo exactly (`two-games-all`, `two-games-gear`, `two-games-full-gear`,
+  `gear-self`) start with `gear 36 0` since round 15, so the 2 hip pieces do not change their delivery counts. Since the
+  review each waits for the switch on every game that sends (`our carried cargo: 0 hip piece(s) sent as the game's own
+  baggage model (waist_cargo off)`: logged when the count or the switch changes) and each count regex ends in `cargo N: [0-9]+
+  approximate, 0 the game's own model`, so a frame logged before the switch (2 own models) cannot meet it. Not run.
+- `two-games-hip-cargo`'s B1 waits for the host's new `cargo 0: ...` line (`waitnew`): the first partner frame of a run
+  already logs that text.
+
+## Her suit colour and the colour menu (round 15)
+
+- `two-games-wardrobe-colour` (`launcherini`, `-SeedSaves story-pack -GuestSeed profile-only`; docs/real-partner-body.md
+  section 40): the host loads the story pack's private room (manualsave12) with `story_load 12` and the guest follows. The
+  guest's pick 14 (`real_outfit 4 14`), her Sam's byte set back to 16 without a pick (`real_outfit 4 16 1`): `waitnew` of
+  `byte 16 -> 14 (her pick) written`. The game's colour menu opened with the room's own call (`real_outfit 11`; no pad path
+  to the room's menu point was found): `staging 14`, `wardrobe: 'fragile' -> 'fragile_suit'`, `showing 'fragile_suit' in
+  place of the menu's Sam figure`, `her self body shows colour 14` (`real_outfit 9 3` first: Fragile on the menu's figure
+  is off by default since the review); closed with B, pressed `until` the close's own `[suit] guest: the wardrobe closed
+  with` line (the review: `[wardrobe] menu closed` is logged on the first tick and on every byte change, so it met the loop
+  at once and B was never pressed): `closed with her Sam's suit colour 14: her pick`; her porter suit forced (`self_view 18
+  3`) for the stills of both screens; the host's `colour 14 on`. Then the step that tells the fix from round 5: the
+  alignment off (`real_outfit 9 2`), her Sam's byte 16 again; the menu opened on 16 and closed with no suit colour
+  previewed: `16: not a pick`; opened again, a preview noted (`real_outfit 12`: this save lists no suit colour), closed on
+  16: `16: her new pick`, `remembered`, the host's `colour 16 on` (`waitnew`), stills `d1-after-pick16-*` (gold on both
+  screens; round 5's rule keeps pink 14). Proved in part as a held session (run `20261123-195909-tg`, steps 1-3 after
+  `start story 12 control 10`); this file is not run. Note: `start story 12` cannot be a scenario's start into the private
+  room: its waitworld never accepts the room (PrivateRoom counts as a scripted scene).
+
 ## Her boots (round 6 T3)
 
 docs/real-partner-body.md section 30. `dev_boots 3 <type>` equips a boot type (the game's SetShoesForcibly; sandboxed

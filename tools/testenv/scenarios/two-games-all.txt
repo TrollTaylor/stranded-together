@@ -46,11 +46,16 @@ waitlog 30 \[tags\] anchor: over the head joint
 # the host walks on ahead and stands, its back to the guest
 pad none 1500 ly=32767
 wait 1500
-# different gear on each game: the host 1 case, the guest 2 (plus the waist case each)
+# different gear on each game: the host 1 case, the guest 2, and nothing else (the old 3 / 2 counted "the waist case each", drawn
+# as a white delivery case before section 13 and never sent since; round 15 prove, run 20261123-220341: 2 / 1 with the hip crates off)
+# the hip crates (waist_cargo, default 1 since round 15) are two-games-hip-cargo's: off here so the delivery counts below stay exact
+@both action gear 36 0
+waitlog 10 \[gear\] our carried cargo: 0 hip piece\(s\) sent as the game's own baggage model \(waist_cargo off\)
+@guest waitlog 10 \[gear\] our carried cargo: 0 hip piece\(s\) sent as the game's own baggage model \(waist_cargo off\)
 action gear 3 1
 @guest action gear 3 2
-waitlog 15 \[gear\] the partner's gear: .*cargo 3
-@guest waitlog 15 \[gear\] the partner's gear: .*cargo 2
+waitlog 15 \[gear\] the partner's gear: .*cargo 2: [0-9]+ approximate, 0 the game's own model
+@guest waitlog 15 \[gear\] the partner's gear: .*cargo 1: [0-9]+ approximate, 0 the game's own model
 ?waitlog 15 \[gear\] [0-9]+ items, [1-9][0-9]* props live \(0 loading
 wait 3000
 screenshot 02-host-own

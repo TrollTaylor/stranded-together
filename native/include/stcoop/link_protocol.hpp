@@ -284,7 +284,7 @@ private:
 };
 
 // --- Reliable ordered channel (docs/link-protocol.md "Reliable channel").
-inline constexpr unsigned kReliableChannels = 6;  // 0 link, 1 world, 2..3 game, 4 save handoff, 5 assets
+inline constexpr unsigned kReliableChannels = 7;  // 0 link, 1 world, 2..3 game, 4 save handoff, 5 assets, 6 combat
 inline constexpr std::size_t kMaxReliableMessage = 1024;
 inline constexpr unsigned kReliableWindow = 32;
 inline constexpr std::size_t kRetransmitBudgetBytes = 2400;  // retransmitted payload per 20 ms tick
@@ -296,6 +296,13 @@ inline constexpr unsigned kSaveChannel = 4;
 // Channel 5 ("assets": Fragile's edited textures, STT1, docs/textures.md): the last channel, so PackBody fills it only
 // with what channels 1..4 leave; its sender paces itself (texture_share.cpp) and waits while the save channel has data.
 inline constexpr unsigned kAssetChannel = 5;
+// Channel 6 ("combat": the enemy rounds' SCB1 messages, docs/enemy-sync.md): packed before the assets, so channel 5 still fills
+// only what every other channel leaves. A peer of an older build (lab mode only: play mode refuses another build) drops
+// channel 6 unacknowledged, so nothing is queued on it before the partner's SEH1 beacon says it has the parts.
+inline constexpr unsigned kCombatChannel = 6;
+// The order PackBody / ReliableDue offer the channels in (the RELACKs' order does not matter): the assets last.
+inline constexpr std::uint8_t kPackOrder[] = {1, 2, 3, 4, 6, 5};
+static_assert(sizeof(kPackOrder) == kReliableChannels - 1, "every reliable channel 1..N-1 once in the pack order");
 inline constexpr unsigned kReliablePacketsPerTick = 4;
 inline constexpr unsigned kSaveBurstPacketsPerTick = 16;
 inline constexpr unsigned ReliablePacketsPerTick(bool save_queued, bool save_burst_phase) noexcept {
