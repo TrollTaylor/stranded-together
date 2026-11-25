@@ -20,6 +20,9 @@ role host
 graphics low
 timeout 360
 launcherini local-test
+# the host-owned mirrors this scenario tests need P1c's camp ownership off (on by default since round 21: the guest near
+# the camp would take it); two-games-enemy-camp covers ownership on
+ini enemy_owner=0
 start control 200
 waitlog 60 \[vshare\] host: world ready
 @guest waitlog 60 \[vshare\] guest: world ready
@@ -49,8 +52,8 @@ wait 6000
 wait 1500
 @guest action enemy_hit_send 0x47 1 0
 @guest waitnew 5 \[enemy\] HIT sent #1 id=
-waitnew 5 \[enemy\] HIT applied #1 id=
-waitnew 5 \[enemy\] HIT effect id=[0-9A-F]{5} .*stamina [0-9.]+ -> [0-9.]+
+waitlog 15 \[enemy\] HIT applied #1 id=
+waitlog 15 \[enemy\] HIT effect id=[0-9A-F]{5} .*stamina [0-9.]+ -> [0-9.]+
 # (waitlog: the answer reaches her within ~60 ms, before the host's own waits end; run 20261124-142051)
 @guest waitlog 5 \[enemy\] HITRES #1 id=.* applied
 # ---- the framing: the host 12 m from the HIT's MULE, the guest 6 m from it with the rifle drawn, both facing it; both cameras

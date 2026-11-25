@@ -27,7 +27,7 @@ float GetF(const std::uint8_t* p) noexcept {
 constexpr double kMaxCoordM = 2.0e6;  // +-2000 km
 
 bool ShotOk(const Shot& s) noexcept {
-    if (!(s.speed > 0.0f) || !std::isfinite(s.speed) || !AttackReplayable(s.attack_id)) return false;
+    if (!(s.speed > 0.0f) || !std::isfinite(s.speed) || !AttackReplayable(s.attack_id, true)) return false;
     double l2 = 0;
     for (int i = 0; i < 3; ++i) {
         if (!std::isfinite(s.dir[i]) || !std::isfinite(s.origin[i]) || std::fabs(s.origin[i]) > kMaxCoordM) return false;

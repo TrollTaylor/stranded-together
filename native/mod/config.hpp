@@ -269,6 +269,14 @@ struct Config {
     // bit3). The launcher writes none.
     bool enemy_owner = false;
     bool enemy_owner_set = false;
+    // P1c (round 21, docs/enemy-sync.md 13): enemy_owner hands over whole camps. enemy_owner_outcomes: her downs carried onto the
+    // host's copy at a return (the outcome setter; 0: a camp with a member down on her side stays hers). enemy_follow_guard: the
+    // host hides a frozen copy of hers that is unloaded or held there (no statues). enemy_attack_registry: MULE rounds with attack ids
+    // above 0x18C (weapon 92's 0x191) replayed when this game's attack registry lists them (0: the old 0x18C cap).
+    bool enemy_owner_outcomes = true;
+    bool enemy_follow_guard = true;
+    bool enemy_attack_registry = true;
+    bool enemy_owner_hits = true;  // P1c: the host's hits on a frozen copy of one she owns relayed to her game (applied to hers)
     // The partner's vehicle copy hidden while the watcher's own vehicle of the same kind stands in the same place (two of
     // the same vehicle in one spot; docs/real-partner-body.md section 22). Default on; 0: the copy is always shown.
     bool vehicle_overlap_hide = true;

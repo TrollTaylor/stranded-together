@@ -85,6 +85,15 @@ Config LoadConfig(const std::wstring& dir) {
             c.enemy_host_hide = ParseBool(v);
             continue;
         }
+        // Round 21 keys (P1c), outside the chain too (cfgval::SetOwnerKey: unit-tested).
+        {
+            cfgval::OwnerKeys ok{c.enemy_owner_outcomes, c.enemy_follow_guard, c.enemy_attack_registry, c.enemy_owner_hits};
+            if (cfgval::SetOwnerKey(ok, k, ParseBool(v))) {
+                c.enemy_owner_outcomes = ok.outcomes, c.enemy_follow_guard = ok.follow_guard, c.enemy_attack_registry = ok.attack_registry,
+                c.enemy_owner_hits = ok.hits;
+                continue;
+            }
+        }
         if (k == "role") {
             c.role = v == "host"    ? Role::host
                      : v == "guest" ? Role::guest
@@ -431,7 +440,9 @@ Config LoadConfig(const std::wstring& dir) {
         c.enemy_host_far, c.enemy_host_hide ? 1 : 0);
     Log("[config] enemy_hits=%d%s owner=%s path=%s lethal=%d rate=%d", c.enemy_hits ? 1 : 0, c.enemy_hits_set ? "" : " (default: on with enemy_sync)",
         cfgval::HitOwnerName(c.enemy_hit_owner), c.enemy_hit_path == 1 ? "query" : "direct", c.enemy_hits_lethal ? 1 : 0, c.enemy_hit_rate);
-    Log("[config] enemy_owner=%d%s", c.enemy_owner ? 1 : 0, c.enemy_owner_set ? "" : " (default: off)");
+    Log("[config] enemy_owner=%d%s outcomes=%d hits=%d follow_guard=%d attack_registry=%d", c.enemy_owner ? 1 : 0,
+        c.enemy_owner_set ? "" : cfgval::kOwnerDefaultOn ? " (default: on with enemy_hits)" : " (default: off)", c.enemy_owner_outcomes ? 1 : 0,
+        c.enemy_owner_hits ? 1 : 0, c.enemy_follow_guard ? 1 : 0, c.enemy_attack_registry ? 1 : 0);
     // Fragile's textures: only whether a folder came and its length (the path itself names the Windows user).
     Log("[config] textures_dir=%s", c.textures_dir.empty() ? "- (none)" : ("set (" + std::to_string(c.textures_dir.size()) + " bytes)").c_str());
     Log("[config] fragile_textures=%d textures_send=%d textures_receive=%d textures_hot_reload=%d textures_free=%d textures_defaults=%d", c.fragile_textures ? 1 : 0,

@@ -15,6 +15,9 @@ role host
 graphics low
 timeout 300
 launcherini local-test
+# the host-owned mirrors this scenario tests need P1c's camp ownership off (on by default since round 21: the guest near
+# the camp would take it); two-games-enemy-camp covers ownership on
+ini enemy_owner=0
 start control 200
 waitlog 60 \[vshare\] host: world ready
 @guest waitlog 60 \[vshare\] guest: world ready

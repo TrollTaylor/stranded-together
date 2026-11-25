@@ -67,7 +67,7 @@ area enemies               : enemy sync's base (docs/enemy-sync.md): P0 the read
 area enemy-mirror          : enemy sync P1a (default on): the guest's frozen mirrors (freeze, SEN1 placing, SEP1 pose slots, far placement, lease, guards) and the host MULEs' shots on her screen
 area enemy-hits            : enemy sync P2 (default on): her hits on the host's enemies (OnHit capture, SCB1 HIT / HITRES / OUTCOME, the host's apply, the outcomes on her mirrors)
 area enemy-compat          : enemy sync P2 against a partner without the hits (enemy_hits=0 there, an older build): no HIT, her rounds dropped at the bullet
-area enemy-own no-run      : enemy sync P1b ownership by proximity (off by default; its gate two-games-enemy-own has not passed: select: probe, run it by name)
+area enemy-own             : enemy sync P1b/P1c ownership per camp (default on with enemy_hits since round 21; gate two-games-enemy-camp; the older P1b probe two-games-enemy-own stays select: probe)
 area shots                 : the players' shots on the other screen (docs/enemy-sync.md P3a): capture, SFX1, the CreateBullet replay, its damage dropped
 area story                 : story tools, story loads
 area dev-tools             : dev tools: spawn, goto, weather, refill, god mode
@@ -153,7 +153,7 @@ native/mod/audio_probe.*               research
 # what P1 builds on), so it stays an area with its own run (two-games-enemy-census), unlike anim_census (research).
 # The phases are areas of their own (review rv-tests 1): P1a's mirrors (enemy-mirror: the shared base of enemy_sync, the rules and
 # the wire; its gate two-games-enemy-mirror), P2's hits (enemy-hits: two-games-enemy-hit; enemy-compat: two-games-enemy-hits-off),
-# P1b's ownership (enemy-own: no auto run until its gate passes). The ~regex lines below add the later phases by the changed lines.
+# P1b/P1c's ownership (enemy-own: auto run since round 21, its gate two-games-enemy-camp passed). The ~regex lines below add the later phases by the changed lines.
 native/mod/enemy_combat.*              enemy-hits
 native/mod/enemy_census.*              enemies
 native/mod/enemy_sync.*                enemy-mirror
@@ -231,7 +231,7 @@ native/mod/game_actions.*   ~loading|private.?room                              
 native/mod/game_actions.*   ~carried|ride_|passenger                                          ride
 native/mod/game_actions.*   ~dev_|spawn|weather|refill                                        dev-tools
 native/mod/debug_actions.*  ~enemy_hit|enemy_ctx|enemy_attack|enemy_dump|HitTest|HitSend|HitMode|HitWatch  enemy-hits
-native/mod/debug_actions.*  ~enemy_own|EnemyOwn                                               enemy-own
+native/mod/debug_actions.*  ~enemy_own|EnemyOwn|enemy_camp|EnemyCamp                          enemy-own
 native/mod/debug_actions.*  ~enemy_|[Ee]nemy                                                  enemy-mirror
 native/mod/debug_actions.*  ~shots_|[Ss]hots                                                  shots
 native/mod/real_body.*      ~[Ee]nemy                                                         enemy-mirror

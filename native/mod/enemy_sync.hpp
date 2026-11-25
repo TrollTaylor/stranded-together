@@ -100,6 +100,10 @@ std::uint32_t LookId() noexcept;    // the newest enemy_look's enemy (0 none)
 // health is not carried.
 // Game thread: ecombat hands it the SCB1 types 3 OWN, 9 OWNACK and 10 OWNRESET it drains (handled on the next tick).
 void QueueOwnMessage(const std::uint8_t* bytes, std::size_t size) noexcept;
+// P1c (round 21): the host relays its hits on a frozen copy of hers (enemy_owner_hits); the guest applies them to the one she owns
+bool OwnRelay() noexcept;                    // ownership on and enemy_owner_hits (the host's capture of its followers' hits)
+bool OwnedHere(std::uint32_t id) noexcept;   // the guest owns it now
+bool Camp(const double (&v)[3], char* msg, std::size_t cap) noexcept;  // enemy_camp <op> <id> <k> (hidden runs)
 // enemy_own <id | 0 the nearest the host owns to the partner | -5 the nearest the guest owns> <1 host | 2 guest> (hidden runs, the
 // host): a forced hand-over (reason 7); the rules apply again afterwards (the 10 s hold).
 bool Own(const double (&v)[3], char* msg, std::size_t cap) noexcept;

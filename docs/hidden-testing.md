@@ -1801,7 +1801,8 @@ docs/enemy-sync.md section 9: P2, her hits on the enemies the host owns and thei
   (hits off`; no HIT sent, applied or refused, no round passed to Entity OnHit. Area `enemy-compat`.
 - Test areas (test-areas.txt, review round 17): `enemies` (the census, the freeze probe), `enemy-mirror` (P1a:
   `two-games-enemy-mirror`), `enemy-hits` (P2: `two-games-enemy-hit`), `enemy-compat` (`two-games-enemy-hits-off`) and
-  `enemy-own` (P1b: no auto run; `two-games-enemy-own` is `select: probe` until it passes).
+  `enemy-own` (P1b / P1c: an auto run area since round 21, its gate `two-games-enemy-camp`; the old P1b probe
+  `two-games-enemy-own` stays `select: probe`).
 - `two-games-enemy-mirror`'s guard step accepts, since round 17, her own round dropped at the bullet OR passed to Entity OnHit
   (dropped there and sent as a HIT: `hits on mirrors at OnHit [1-9] (ours [1-9]`); not rerun this round: it must run before
   the release (the pose slots, the enemy-shots mask and the bullet rule changed under it).
@@ -1832,6 +1833,35 @@ docs/enemy-sync.md section 10: ownership by proximity (`enemy_owner`, off by def
   the camp), `151701` / `151942` (her owned MULEs alerted before the calm back), `152417` (her owned MULEs carried no gun),
   `152731` (all of A, B, C but the first-hit line: 0 of the replays' first hits the partner body; the contact sheet),
   `153216` (the rifleman did not fire within 45 s). D and E never ran.
+
+
+## Enemy ownership per camp (round 21, P1c)
+
+docs/enemy-sync.md section 13: a MULE camp changes owner as a whole (`enemy_owner`, on by default with `enemy_hits` since this
+gate passed).
+
+- `two-games-enemy-camp` (`launcherini local-test`, `ini enemy_owner=1`; about 3 min; area `enemy-own`, also covers
+  `enemy-hits` and `shots`):
+  `pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-enemy-camp -SeedSaves complete-100 -GuestSeed profile-only -Id <id>`.
+  At the MULE Camp Southwest of Lake Knot City (cp 04004: 10 MULEs, spread 120 m, so its margin is 40 m), every MULE resurrected,
+  both Sams invulnerable, her body shielded. A the proximity take (the guest 15 m from her nearest mirror, the host at the camp
+  spot: `camp cp 04004 -> guest (proximity: n=10`; stills 01, census tag 1); B the calm back (the guest west at 1350 1050:
+  `-> host (the host nearer`; stills 02); C an outcome carried (a forced take, `enemy_camp 3 0 0` faints her nearest owned MULE,
+  a forced back: `outcome carried: her faint -> faint here (k 0)`; stills 04 both framing the fainted MULE); D a fight (a
+  forced take, her rifle burst, her owned MULEs' phase 0 -> 3..5, `kept by the guest .. alerted on her side` with the host 6 m
+  from one, the host's test HIT relayed `relayed HIT #.. attack 0x47 from the host: applied to hers`, `enemy sent` /
+  `enemy replayed`, stills 03 (8 pairs), census tag 3, then the guest to the Craftsman: a forced back by range); E the counters
+  (`no-owner>1s 0`, `two-thinking 0`, `camp rows .. carried [1-9]`); U the unloaded take (the host at Mama's Lab, the guest at
+  the camp: `-> guest (not loaded on the host`, `no mirror here: it ran here already`; still 05). Afterwards
+  `python -I tools\testenv\enemy-compare.py build-testenv\runs\<run>` (tag 1 is the check; tag 3 is mid-chase, recorded).
+- The P1a / M0 / P2 regressions that stand the guest near a camp (`two-games-enemy-hit`, `two-games-enemy-mirror`,
+  `two-games-enemy-statues`) pin `ini enemy_owner=0`: they test the host-owned mirrors they were written for; the camp gate
+  covers ownership on. `two-games-enemy-hits-off` keeps the defaults (the host's `enemy_hits=0` turns ownership off there).
+- Round 21: 6 gate runs (`081930` the geometry: the camp's 120 m spread made the host only 34 m farther; `082221` a regex
+  (`camp \S+` cannot match `cp 04004`); `082412` / `082644` `waitnew` raced lines logged before the step: `waitlog`; `082959`
+  U: the unloaded camp's stale caution phase blocked the take (rule fixed: the phases count only on a loaded camp);
+  **`083424` PASS** (204 steps, 173 s)). Regressions on the final code: `two-games-enemy-hit` `084302` PASS (and
+  `enemy-hits.py` PASS), `two-games-enemy-statues` `084534` PASS, `two-games-enemy-hits-off` `084753` PASS.
 
 ## Hip crates (round 14, round 15)
 

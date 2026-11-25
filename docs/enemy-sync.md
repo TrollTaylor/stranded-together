@@ -892,7 +892,8 @@ sender stops sending a MULE's frames about 0.6 s after his teleport, while his w
   the round 20 review stayed hidden while the switch was off or after a fault.
 - P1b asymmetry (to settle before `enemy_owner` ships): M0 guards only the guest's mirrors of host-owned MULEs. With
   `enemy_owner=1` the host's frozen copies of guest-owned MULEs get no host-far / unrealized / hidden guard (the guest's own
-  faint or teleport would leave them standing on the host's screen).
+  faint or teleport would leave them standing on the host's screen). Round 21 (13.5): the host's follower guard
+  (`enemy_follow_guard`) hides such a copy while her frames say unrealized or held there for 1 s, or none came for 3 s.
 - The host's Sam is the partner body on her screen (`in.body`), known at once after his teleport, so `host far` is the quick
   path; the SEN1 bits are the slower one for a copy he unloads or hides near himself.
 
@@ -1108,14 +1109,23 @@ host (run `142244`: it fainted where the host had stood); on her screen the mirr
 - **The host's outcome read** runs at 10 Hz (every tick only for the enemies she hit in the last 3 s), the damage component
   cached.
 
-## 10. P1b: ownership by proximity (round 17, `session.ini enemy_owner`, off by default)
+## 10. P1b: ownership by proximity (round 17, `session.ini enemy_owner`; per camp and on by default since round 21: section 13)
 
 An enemy near the guest and far from the host is run by HER game: it notices her, targets and shoots at her Sam, and her hits
 on it are real (her world's own damage). The host's copy becomes the frozen mirror, driven and posed from her frames, and her
 owned MULEs' rounds are replayed on his screen from it. It goes back to the host when she leaves (calm) or by a forced rule
 (whatever its phase). `enemy_owner=1` on both games (SEH1 parts bit3 `kPartOwn`); the launcher writes no key (and players cannot
 set it: the launcher's session.ini is one-shot). None of the 8 gate runs passed and its steps D and E never ran in a game
-(10.6), so the default stays 0 and `two-games-enemy-own` is `select: probe` (run by name only).
+(10.6), so the default stayed 0 and `two-games-enemy-own` is `select: probe` (run by name only).
+
+Round 21 corrections (section 13): the unit of ownership is the camp, not the enemy: the host decides per camp
+(`erules::CampDecide`) and the per-enemy `HostDecide` of 10.1 no longer runs; a MULE in no camp list is a camp of its own (a
+"loose" camp, r 10 m), for which 13.2's distances are P1b's (40 / 15 / 60 m) but the hold is 15 s (not 10), her cap 32 (not 16),
+the host-nearer back is new and the damaged rule is gone (`HostDecide` stays in enemy_rules.hpp for `TestOwnProperty` only).
+The beacon part is `kPartCamp` (32), not `kPartOwn` (8): this build never sends 8, so it never runs 10.1's per-enemy rules
+with a v0.33 partner (13.1). The hand-over (10.2), the wire (10.3) and the byte checks (10.5) are unchanged, except that an
+unloaded camp's OWN carries no place and no phase (13.2). 10.1's "her outcomes do not reach the host yet" is fixed (13.4: carried at the return). `enemy_owner` defaults to
+on with `enemy_hits` (`cfgval::kOwnerDefaultOn`) since the P1c gate passed (13.7).
 
 ### 10.0 Corrections to the plan (plan.md section 8) and to 4.3 (r-p1b, Ghidra and runs)
 
@@ -1338,3 +1348,271 @@ The round-19 design's fallback is P1b (section 10).
   from the mod's game-thread tick without the AI manager's lock: if the sensors ran on worker jobs at that moment it could race.
   A probe-only hazard (hidden runs); any later use must take the pool's lock (not found yet) or run where the sensors do.
   Op 9 also needs the target probe's agent-offset check (`entity+0x170`, `kTAgent`).
+
+## 13. P1c: ownership per camp (round 21; `session.ini enemy_owner`, on by default with `enemy_hits`)
+
+Fights near Fragile run in her own game. A MULE camp near the guest and farther from the host is handed to HER game as a whole:
+its MULEs see her real Sam, chase her, shoot her, take her cargo, and her hits on them are her world's own damage. The host's
+copies become followers (frozen, driven and posed from her frames; her owned MULEs' rounds replayed on his screen, P1b's
+machinery). When the fight is over and she leaves, or the host comes nearer, the camp goes back to the host, with the downs
+she caused carried onto his copies. The host's hits on his copies of hers are relayed to her game. Section 10 (P1b) is the
+protocol underneath; this section is what round 21 changed.
+
+### 13.1 Design (and what the spec planned that was not built)
+
+- The host alone decides, per camp, at 2 Hz (`erules::CampDecide`, pure, unit-tested), and hands every member over with P1b's
+  OWN / OWNACK / OWNRESET (SCB1 types 3 / 9 / 10; the protocol `TestOwnProperty` proves). The guest needs no camp knowledge: she
+  takes and gives back per member as in P1b. There is no new wire type (the spec's CAMP / COWN / CSTAT, types 11-16, were not
+  built): fewer messages, no camp id shared between the games, so the critique's B5 (camp ids not proven equal, namespaces
+  colliding) does not arise.
+- A camp is a DSMuleCPGameActor's member list on the HOST (the MULE manager `[0x147BF09D8]` +0xD8 / +0xE0 the CP ids; a CP's
+  +0x4C0 count and +0x4C8 member pointers, 10.0); a MULE in no CP list is a "loose" camp of one. Membership is read from the
+  host's lists at each walk (no first-read cache, no union with her lists: the critique's B4 fix is not needed when only one
+  side's lists count). The camp key is logged as `cp XXXXX` (the CP's id) or `loose XXXXX` (the MULE's id). A member keeps
+  its last CP key for 5 s when a walk misses it (`kCampKeyKeepMs`), and a failed walk keeps every key it had (review fix R2 /
+  G12: a camp no longer falls apart into loose camps of one for a tick).
+- Both beacons must carry `kPartCamp` (32). This build never sends `kPartOwn` (8) (review fix R1: a v0.33 host reads 8 as
+  "run P1b's per-enemy rules", so a new guest would have been handed single MULEs by the old rules). A v0.33 partner (8 alone)
+  gets no ownership: `own on` never logs (the link's `combat parts: ours 0x.. theirs 0x..` line shows its parts), and a partner
+  that drops 32 while ownership is on turns it off with a reset: `[enemy] own off: parts: the partner's build has no camp
+  ownership`.
+- The camp walk, the takes and backs, the outcome carry and the follower guard run on the host's game thread (the mod's tick),
+  inside the existing SEH-guarded enemy tick.
+
+### 13.2 Geometry and rules (`erules`, enemy_rules.hpp)
+
+- r: the members' spread (the farthest member from their centre), clamped 10..120 m. E (engage) = clamp(r + 30, 40, 150) m.
+  H (margin) = clamp(0.3 r + 10, 15, 40) m. Left = E + 20 m. A loose camp (r 10) gets 40 / 15 / 60 m, P1b's distances.
+- Distances are to the nearest STANDING member (all members when none stands): d_g to her body, d_h to the host's Sam.
+- Take (host -> guest), every condition: not pending; both parts; at most 30 members; something takeable (standing, readable,
+  not held, not hidden or in a vehicle on the host); d_g <= E; when the camp is loaded on the host (a member realized there):
+  d_h >= d_g + H (the host wins ties), d_h > 25 m, every member calm (phase 0..2) and the CP not alerted (3..5); no cutscene on
+  either side, her refusals under 3 a minute, no host save busy, the guards in; the camp's 15 s hold over (since its last change
+  or refusal); her owned members + this camp's at most 32; 1 s since the last camp take and no other camp pending.
+- A camp NOT loaded on the host (no member realized there): her distance alone decides (reason 13 `not loaded on the host`),
+  and the host's member and CP phases are not checked: they are stale there (the AI does not run on the host), run
+  `20261125-082959` held caution 3 for 40 s at 2 km after a range back while her game already ran the camp (M0 had released her
+  mirrors). Her copies were never mirrors then, so she takes them as they stand (`no mirror here: it ran here already`).
+- Back (guest -> host), forced first (ignore phase, hold and downs): a hard refusal; forced (`enemy_own`, a game sequence on a
+  host follower); no OWNACK within 3 s; silence 3 s (her frames); beyond `enemy_mirror_radius` + 20 m (from the nearest
+  standing member, so one far member never sends a camp back: review fix R3); EVERY settled member of hers unrealized or held
+  by a sequence on her side for 2 s (only when the camp is loaded on the host; one member alone never does, the follower guard
+  hides that one's host copy: review fix G3). The 1 s gap and the one-pending rule hold takes only: forced backs go at once for
+  every camp.
+- A member down on her side when its outcome cannot be carried (`enemy_owner_outcomes=0` or its checks failed): the camp stays
+  hers (P1b's rule).
+- Back by proximity: only calm (phase 0..2 on her side) and after the hold: she left (d_g > Left, `far`), the host within 20 m
+  (`host near`), or the host nearer by H while within E (`the host nearer`, reason 14). A camp fighting her stays hers when the
+  host walks in (`kept by the guest ..: alerted on her side`, logged every 10 s).
+- Back by proximity counts the host's distances only when the camp is loaded on the host (review fix R9: an unloaded take with
+  the host 30 m off came straight back); unloaded, only `far` and the forced rules give it back.
+- Her refusal for one member that is not her mirror, not realized, dead, held or hidden there splits it out (that member stays
+  the host's, the camp hers) and keeps it out of the camp's takes: 15 s, or for the rest of the host's world when it is dead
+  there (`erules::CampNoTakeMs`; review fixes B2 / G1: one kill made the camp go back and forth every 15 s). Every other
+  refusal sends the whole camp back and holds it 15 s (per camp). Only those hard refusals count toward her "3 a minute", once
+  per camp (review fix B3: the split refusals of a big camp at her load edge blocked every take for a minute). A member she
+  killed is put on the same world-long list when its outcome is carried.
+- A straggler (a member that was down, held or in a vehicle on the host at the take and stands free now) joins her camp on its
+  own when the camp is settled and calm, one a tick, under her cap and the 1 s gap (`erules::CampStragglerOk`, review fix G5:
+  `[enemy] camp cp XXXXX: straggler id=XXXXX -> guest`).
+- Her place: when the host loses her body (a vehicle, a respawn) her last place is held for 3 s before her distance is unknown
+  (review fix G14; unknown with a camp of hers is a range back).
+- A member she owns that is in no camp of the host's view (unloaded or unread there) is decided as a loose camp of one from her
+  frames (silence, range, far): `[enemy] OWN id=XXXXX not in the host's view: -> host (...)` (review fix G11; it stayed hers
+  forever before).
+- The take of an unloaded camp sends no place and no phase (her copy is the truth there), and her side, taking a copy it was
+  never frozen as, neither moves it nor sets its phase (review fix B1: the gate's unloaded take moved alerted MULEs up to 29 m).
+- Hysteresis: no position takes and gives back at once (unit-tested sweep).
+
+### 13.3 Byte checks
+
+No new hook. The outcome setter 0x142AA8000 (k 0 faint, 1 sleep, 2 restrained) is byte-checked with P2's hits group
+(`[enemy] hits: outcome carry checks ok (P1c)`); a mismatch turns only the carry off (`enemy_owner_outcomes` then acts as 0: a
+down member keeps its camp hers). The carry group also checks the damage component's entry 0x142AF8FC0 (`48 89 5C 24 08 48 89
+74 24 10 57 48 83 EC 20 49 8B D8 8B F2 48 8B F9 E8`) and the store of its pointer at 0x142AC09B9 (`48 89 87 90 0E 00 00 48 85
+C0`, +0xE90), the spec's two sites (review fix R10). The wide attack ids need the game's attack registry (`[shots] attack
+registry n=247, max id=0x194, 0x191 listed yes`); an implausible registry (0x57 missing, e.g. before it is filled) keeps the
+0x18C cap. The registry is read again after every load (the tries reset with the bullet dummy), and it filters only the ids
+above 0x18C: every id v0.33 replayed still travels without it (review fix R8). A HIT with the placeholder 0x18D is refused
+(`kAttackMax` 0x18C, review fix N5).
+
+### 13.4 Outcomes, hits and the follower guard
+
+- Outcome carry (`enemy_owner_outcomes`, default 1): at every completed back (and at a reset) the host reads the state byte of
+  her newest frame for that member and, when it is down, calls the outcome setter on his copy after the release: faint ->
+  faint, sleep -> sleep, restrained -> restrained, dead or an unknown down -> faint (a kill on the host is not carried this
+  round). A hit still queued on the copy defers it (up to 3 s). Her frame table for the member is cleared at the back, so an
+  old frame never carries twice. `[enemy] OWN id=.. outcome carried: her faint -> faint here (k 0)`.
+  Review fixes (R4 / R5 / R10 / G9): the setter never runs while the host's game saves or while a cutscene still holds the
+  copy's return (`carry deferred (the host's game saves | a cutscene holds its return | a hit queued on the copy)`, given up
+  after 15 s: `NOT carried: its return was held past 15 s`); it checks the actor is still that MULE and that its outcome is
+  still none (`not carried: down here already (faint)`: never twice, never over a down the host caused); and a second after a
+  carry the host reads the copy's outcome back: `[enemy] OWN id=.. outcome readback: k 0 -> now faint` (`: NOT TAKEN (a
+  fallback)` or `: a mismatch (a fallback)` count as carry failures). A member she killed (dead there) is carried as a faint
+  and stays out of every take for the rest of the host's world: on the host it gets up later, in her world it is a corpse
+  (review G10: a known difference, said in the README).
+- Host hit relay (`enemy_owner_hits`, default 1): while ownership is on, the host captures his own hits on his followers of
+  her members (P2's capture path, the same kinds and lethal policy: lethal refused with `enemy_hits_lethal=0`) and sends them
+  as type 4 HITs; she applies them with P2's apply (`HostHit(relay)`), no HITRES or OUTCOME back: `[enemy] relayed HIT #..
+  id=.. attack 0x47 from the host (kind test): applied to hers` (or `refused: <why>`; the kind is bullet, sphere/job, direct
+  or test). Relayed hits have their own counters (`relayed`, `applied`) and no longer count in her P2 hit counters (review
+  fix N3). The credit stays the hitter's player in her world (owner 0). His real rifle at a follower is a gate step (13.7,
+  review G6), proven in run `20261125-101853` (`HIT sent #2 id=02029 attack 0x47 kind bullet`, 13.9 m from her; hers `relayed
+  HIT #2 .. (kind bullet): applied to hers`); his melee goes through the same capture (`direct`) but no run has hit a MULE with it.
+- The follower guard (`enemy_follow_guard`, default 1; M0 the other way, the 8.10 asymmetry): a host follower of hers is hidden
+  while her newest frame says not realized or held by a sequence there for 1 s, or no frame came for 3 s; shown again when her
+  frames say realized and free, and at every return. It reads her `kRealized` / `kSeqHeld` bits and, since the review (N6),
+  `kHidden` too unless the member is down or dead there (a down MULE is never hidden here). Since the camp back needs EVERY
+  member bad for 2 s (13.2), the guard is what handles one member (review G3 / G4); `enemy_camp 4` on the guest hides her owned
+  copy to prove it in the gate. Far followers that realize on the host are checked every tick (not at 2 Hz) and frozen at once
+  (review fix R6), except while the host's game saves.
+- The wide attack ids (`enemy_attack_registry`, default 1; beacon part `kPartAttackWide` 64, advertised by this build whatever
+  its ownership): shots with attack ids above 0x18C up to 0x194 travel when the game's registry lists them and the partner's
+  beacon carries 64; for an older partner only that shot is dropped, never the frame. Ids up to 0x18C never need the registry. The MULE fixed gun's 0x191 was replayed
+  in the gate (`enemy replay #4: shooter 0202F, weapon 92 mag 144 attack 0x191`).
+
+### 13.5 Debug actions and logs
+
+`enemy_camp 0` the camp table (`[enemy] camp row cp|loose XXXXX: owner .., n=.. hers .., guest .. m, host .. m, r .. m, engage
+.. m, margin .. m, loaded .., phase .., camp ..`, then `camp rows n=.. (of .. known; owned here n=..; carried .., carry failed
+.., down already .., followers hidden .. now .., stragglers .., no-take ..)`); `enemy_camp 3 <id | 0> <k>` the outcome setter
+on our copy (hidden runs; `down here already` when it is down); `enemy_camp 4 <id | 0> <1 hide | 0 show>` (the guest: her
+owned copy hidden or shown in her game, the nearest or by id; a show with 0 shows the one hidden last: `[enemy] camp test: her
+owned copy XXXXX hidden | shown here`, for the follower guard's gate step); `enemy_own` hands
+over a whole camp; `enemy_look -9` the newest outcome set or carried here; `enemy_hit_send` on the host while it relays
+(docs/debug-actions.md). Logs: `[enemy] own installed (per camp, P1c): ...`, `[enemy] camp cp XXXXX -> guest (proximity |
+not loaded on the host | forced: n=.. of .., guest .. m, host .. m, r .. m, engage .. m, margin .. m, loaded .., phase ..,
+camp ..; ids ..)`, `[enemy] camp cp XXXXX -> host (far | host near | the host nearer | forced | range, forced | silence,
+forced | ...: n=.., guest .. m, host .. m, r .. m, her phase .., a member down there .., silence .. s)`, `[enemy] camp ..
+kept by the guest (...): the hold | alerted on her side | she is nearer | a member down on her side (no outcome carry)`,
+`[enemy] hits relay (P1c): the host relays | in; relayed in n=.. applied .., not owned ..; carry ready | off`, `[enemy] camp
+.. : straggler id=.. -> guest (...)`, `[enemy] OWN id=.. not in the host's view: -> host (...)`, `[enemy] OWN id=.. outcome
+readback: k .. -> now ..`, `[enemy] OWN id=..: the host's follower hidden (her copy is not realized there | is held by a
+sequence there | is hidden there | sent no frame for 3 s)` / `shown again (her frames say realized and free again)`.
+
+### 13.6 Keys
+
+`enemy_owner` (default: on when `enemy_hits` is on, `cfgval::kOwnerDefaultOn`; a given value wins; players cannot set it, the
+launcher writes no key), `enemy_owner_outcomes`, `enemy_owner_hits`, `enemy_follow_guard`, `enemy_attack_registry` (each
+default 1). `[config] enemy_owner=1 (default: on with enemy_hits) outcomes=1 hits=1 follow_guard=1 attack_registry=1`.
+
+### 13.7 The gate `two-games-enemy-camp` and the runs
+
+The MULE Camp Southwest of Lake Knot City is cp 04004: 10 MULEs (02029..02032), one of them (0202A) about 200 m out, so r 120
+m, E 150 m, H 40 m. Steps (docs/hidden-testing.md): A the proximity take, B the calm back, C an outcome carried, D a fight
+(her burst, her MULEs alerted, kept with the host near, the host's relayed HIT, rounds replayed, a forced back by range), E the
+counters, U the unloaded take.
+
+| run | result | why |
+|---|---|---|
+| `20261125-081930` | FAIL A | the geometry: with r 120 the margin is 40 m and the host at the camp spot was only ~34 m farther than her (fixed: the guest 15 m from her nearest mirror; B from 1350 1050) |
+| `20261125-082221` | FAIL A | the take worked (n=10 of 10); the regex `camp \S+` cannot match `cp 04004` |
+| `20261125-082412` | FAIL C | her `taken here` came before the `waitnew` window (now `waitlog` with the epoch) |
+| `20261125-082644` | FAIL D | the phase rise came before the `waitnew` (now `waitlog`) |
+| `20261125-082959` | FAIL U | `a member's phase`: the unloaded camp's stale caution (the rule fixed, 13.2, unit-tested) |
+| **`20261125-083424`** | **PASS** | 204 steps, 0 failed, 173 s |
+
+The passing run: A `camp cp 04004 -> guest (proximity: n=10 of 10, guest 15.3 m, host 64.8 m, r 120 m, engage 150 m, margin
+40 m, loaded 1, phase 0, camp 2)`; B `-> host (the host nearer: n=10, guest 125.3 m, host 56.6 m ...)`, back errors <= 0.17 m;
+C a forced take of 10, `camp test: outcome k 0 on 0202A here: set`, the forced back with `a member down there 1`, and on the
+host `outcome carried: her faint -> faint here (k 0)`; D 9 taken (the fainted one stays out), her owned MULEs phase 0 -> 5
+(27 phase lines), `kept by the guest (n=9 of 10, guest 2.7 m, host 5.8 m, ... her phase 5 (alert)): alerted on her side`,
+`relayed HIT #1 id=02029 attack 0x47 from the host: applied to hers`, `enemy sent n=48` / `enemy replayed n=48 (muzzle 48`,
+`owned rounds' hits: our Sam 8`, then `-> host (range, forced: n=9, guest 431.6 m ... her phase 3`; E `no-owner>1s 0`,
+`two-thinking 0`, `camp rows .. carried 1, carry failed 0, followers hidden 0`; U the host at Mama's Lab (2 km), the guest at
+the camp: `OWN id=.. -> guest (not loaded on the host: guest 40.5 m, host 2065.2 m; ...)` and `taken here (epoch 7; ...; no
+mirror here: it ran here already)`. `enemy-compare.py`: tag 1 (calm, owned) p95 0.28 m: pass; tag 3 (mid-chase) p95 1.34 m,
+max 1.87 m (0202F): recorded, not a check (the tool's overall line says FAIL because of tag 3).
+
+Stills (looked at): 01 the host in the grass with the hangars behind and her body far right; on hers a calm yellow MULE at the
+camp's edge. 02 (the back) the host facing the camp, a small calm MULE by a hangar; her Sam on rocks to the west. 03 on hers red
+MULE tracers streaking at her Sam from the left as she aims; on the host's (03-h) a MULE by a pylon and a replayed tracer
+toward her body. 04 both screens show the same fainted yellow MULE lying in the grass (Ceramics (80) marker) beside the other
+player's body. 05 (U) her Sam aiming with red tracers from the left and "Cargo stolen: Ceramics (80)": her game runs the camp
+with the host 2 km away.
+
+Regressions on the final code (each pins `ini enemy_owner=0` where the guest stands near a camp, so it keeps testing the
+host-owned mirrors it was written for): `two-games-enemy-hit` `20261125-084302` PASS (`enemy-hits.py`: 13 HITs once each,
+the fainted 02029 her target); `two-games-enemy-statues` `20261125-084534` PASS; `two-games-enemy-hits-off`
+`20261125-084753` PASS with the defaults (the host `enemy_owner=0 (default: on with enemy_hits)` because its hits are off, the
+guest 1: ownership off, the parts say why).
+
+After the review (13.9) the gate changed (it passed end to end in run `20261125-101853`, 219 steps; `enemy-compare.py` tag 1
+p95 0.35 m): no `ini enemy_owner=1` (the launcher's Local test files alone, so
+the default-on path is the one proven, review R7; the `[config]` lines must show `(default: on with enemy_hits)`), C reads
+the carried faint back, D's alert is unforced (she walks to 8 m of her owned MULEs with the rifle drawn and fires nothing,
+review G8), D adds the host's real rifle at his follower (`HIT sent .. kind bullet`, her `relayed HIT .. (kind bullet):
+applied to hers`, review G6), an optional check of her owned MULEs' hits on her Sam, and the follower guard (`enemy_camp 4`:
+hidden there, his follower hidden, shown again, review G4). `nolog outcome readback.*NOT TAKEN`. The hit, mirror and statues
+regressions keep `ini enemy_owner=0`: they test the host-owned mirrors (P1a, M0, P2) where the guest stands near a camp, which
+ownership would otherwise take; the default-on path is the gate's and `two-games-launcher-local-test`'s.
+
+### 13.8 Gaps and declines
+
+- No CAMP / CSTAT wire and no union of both sides' lists (13.1): membership is the host's. A MULE that registers late joins at
+  the next walk.
+- The save: the host still resets ownership before a save (10.0; `own reset (the host's game saves)`), but since the review only
+  when a copy of hers is really frozen on the host (a pending return or a realized frozen follower; a far, unloaded follower no
+  longer counts: review G2), and the carry waits for the save to end (R4). The player sees it: her fight there freezes into
+  the host's copies, which go back to their posts on alert, and her game takes the camp again after the 15 s hold if she is
+  still nearer (the README says so, spec 7.3). The spec's "kept across a save" mode was not built. No gate step saves: the game
+  refuses the forced auto save near a MULE camp (run `20261124-151458`: `Save guard: forced auto save: refused` on every try),
+  so the save path with ownership has not run in a game.
+- The old-build compat step (spec 14.3) was not run: an old-build partner cannot be simulated in the hidden runs. A partner
+  without part 32 from the start simply never turns ownership on (no line says why beyond the link's parts line). `two-games-enemy-hits-off` ran the default-follow path instead.
+- The 3 s silence is unit-tested only. Her pause or map menu for more than 3 s would hand a fight back (critique R7, not
+  built). The follower guard has a gate step (13.7), passed in run `20261125-101853`.
+- The relayed hit's credit is owner 0 (his kill on her MULE is not credited to his Sam). Melee goes through the same capture
+  but no run has hit with it; his real rifle's hits (kind bullet) were relayed in run `20261125-101853`. The gate draws his rifle
+  after the look's teleport and waits for `our gear .. on joint 26`: run `20261125-095552` switched to it 0.1 s before the
+  teleport and he never drew it (RT fired nothing).
+- A host hit on a member whose return is in flight (one OWN / OWNACK round trip, well under a second) is lost: dropped on his
+  frozen copy, refused on her side (`not owned here (now)`). Not fixed (review G7 / N7): it needs a host apply path queued
+  across the return that no run could prove; the window is one round trip.
+- Kills: her kills carry as faint (a lasting difference: a corpse in her world, a fainted MULE on the host). Cargo her MULEs
+  steal is her world's only.
+- One camp, one run: two camps at once, a link loss mid-fight, the private room and vehicles were not run (critique R18).
+- A widely spread camp (r 120) needs her within E of a member and the host 40 m farther: at cp 04004 the take needs her close.
+- Tag 3 (mid-chase) follower error p95 1.34 m.
+- The "two-thinking 0" counter counts fault refusals only (review N10, kept): the "never two thinking copies" invariant holds
+  by the message order (she thinks only after her OWNACK, the host only after hers to his OWNRESET or the back) and is checked
+  on the model by `TestCampOwnProperty`; a cross-log count of overlapping unfrozen copies was not built.
+
+### 13.9 Review fixes (round 21 reviews rv-correctness and rv-gameplay; built and unit-tested, no game run yet)
+
+| finding | fix |
+|---|---|
+| B1 the unloaded take moved her live MULEs and set a stale phase | no place and an unknown phase in an unloaded take's OWN; her side never moves or re-phases a copy it was not frozen as |
+| B2 / G1 a member she killed or hid made the camp flap | dead, held and hidden refusals split; the member is kept out of takes 15 s, a dead one for the world |
+| B3 split refusals filled the refusal window | only hard refusals count, once per camp |
+| R1 the build sent `kPartOwn` | it sends and needs `kPartCamp` alone |
+| R2 / G12 a failed walk made every member loose | a failed walk keeps the keys; a missed member keeps its key 5 s |
+| R3 / G3 one member's sequence sent the camp back | every settled member bad for 2 s; one member is the follower guard's |
+| R4 / G2 the save reset and the carry under a save | the reset only with a really frozen copy; the carry waits for the save; README text |
+| R5 the carry on a copy a cutscene still held | it waits for the return (15 s at most) |
+| R6 far followers frozen at 2 Hz | every tick |
+| R7 the default not proven | the gate runs the launcher files alone and checks `(default: on with enemy_hits)` |
+| R8 the registry read once and filtering old ids | re-read after each load; ids up to 0x18C never filtered |
+| R9 proximity backs on an unloaded camp | the host's distances count only loaded; the hysteresis sweep covers both |
+| R10 / G9 the setter's checks and no readback | same-MULE and outcome-none checks, the two byte sites, the readback line (a gate step) |
+| R11 / G15 no camp property test | `CampAggregate` (the member-to-camp glue, pure) and `TestCampAggregate`, `TestCampOwnProperty` (3000 random walks: never two thinking, no lasting none, no back sooner than the hold, no split back, no offer of a dead member) |
+| G4 the follower guard never ran | `enemy_camp 4` and a gate step |
+| G5 a split camp stayed split | stragglers taken one a tick |
+| G6 his real hits unproven | a gate step with his rifle; README softened |
+| G8 the alert was forced | the gate's D: an unforced alert by her approach |
+| G10 a kill becomes a faint | README; the dead member is kept out of takes |
+| G11 orphans never decided | decided as loose camps from her frames |
+| G13 / N2 the rate limit and `force_back` | the dead `force_back` removed; the 1 s gap is the spec's rate limit |
+| G14 losing her body forced a range back | her place held 3 s |
+| N1 the world reset left the carry lists | cleared at a world change |
+| N3 relayed hits in her P2 counters | own counters |
+| N4 P1b's `HostDecide` dead in production | marked test-only (it still proves the protocol) |
+| N5 0x18D passed `AttackOk` | `kAttackMax` 0x18C |
+| N6 the guard never read `kHidden` | it does, unless down there |
+| N8 the README claimed more than proven | reworded |
+| N9 no tests for the four keys | `cfgval::OwnerKeys` / `SetOwnerKey`, unit-tested |
+
+Declined, with the reason: the gate save step (the game refuses the forced save there, 13.8); a per-world cache of the member
+lists (R2: the lists change legitimately, a CP adds a MULE; the 5 s key keep covers a partial walk); the back-window host hit
+(G7 / N7, 13.8); the cross-log two-thinking count (N10, above); the spec's keep-across-a-save mode (not built: the reset now
+fires only with a really frozen copy).

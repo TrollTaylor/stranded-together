@@ -202,6 +202,7 @@ bool DoEnemyHitSend(const Request& r, char* msg, std::size_t cap) { return ecomb
 bool DoEnemyHitWatch(const Request& r, char* msg, std::size_t cap) { return ecombat::HitWatch(r.v, msg, cap); }
 bool DoEnemyTarget(const Request& r, char* msg, std::size_t cap) { return ecombat::TargetProbe(r.v, msg, cap); }
 bool DoEnemyOwn(const Request& r, char* msg, std::size_t cap) { return esync::Own(r.v, msg, cap); }
+bool DoEnemyCamp(const Request& r, char* msg, std::size_t cap) { return esync::Camp(r.v, msg, cap); }
 bool DoAudioProbe(const Request& r, char* msg, std::size_t cap) { return game::AudioProbeCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoSelfVoice(const Request& r, char* msg, std::size_t cap) { return game::SelfVoiceCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoVoiceSync(const Request& r, char* msg, std::size_t cap) { return game::VoiceSyncCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
@@ -381,7 +382,7 @@ constexpr Row kRows[] = {
     {{Action::shots_echo, Tab::tools, "Shots echo", "Solo: our own shots replayed beside us: 0/1, m to the right (default 2.5).", false}, &DoShotsEcho},
     {{Action::enemy_sync, Tab::tools, "Enemy sync", "Enemy mirrors (enemy_sync): 0 status, 1 on, 2 off (every mirror released), 3 the mirror table, 4 the hits' outcome table; ownership (P1b: only with enemy_owner=1 on both games, off by default and not offered to players yet): 5 its table, 8 0/1 off (everything back to the host) / on; hidden runs: 6 0/1 far placement variant, 7 0/3 the teleport cadence.", false},
      &DoEnemySync},
-    {{Action::enemy_look, Tab::tools, "Enemy look", "Hidden runs: our Sam m from an enemy, facing it: <id | 0 nearest (the guest: a frozen mirror) | -1 the one the partner faces | -2 the newest replayed (the host: sent) shooter | -3 behind it | -4 beside its line | -5 the newest HIT's enemy | -6 the probe's pick | -7 the nearest the guest owns | -8 in front of the newest one, along its facing> <m> [aim height m, default 1.2]; a steered aim (shots 4 <deg> 1) then follows it.", false},
+    {{Action::enemy_look, Tab::tools, "Enemy look", "Hidden runs: our Sam m from an enemy, facing it: <id | 0 nearest (the guest: a frozen mirror) | -1 the one the partner faces | -2 the newest replayed (the host: sent) shooter | -3 behind it | -4 beside its line | -5 the newest HIT's enemy | -6 the probe's pick | -7 the nearest the guest owns | -8 in front of the newest one, along its facing | -9 the newest outcome set (enemy_camp 3) or carried here (P1c)> <m> [aim height m, default 1.2]; a steered aim (shots 4 <deg> 1) then follows it.", false},
      &DoEnemyLook},
     {{Action::enemy_shot_test, Tab::tools, "Enemy shot test", "Hidden runs, the guest: 3 enemy replays level at our Sam's chest from 2 m, from a mirror's side (its hand's line and 50 deg either side): <id | 0 the last looked-at, else nearest> [1 nohurt].", false},
      &DoEnemyShotTest},
@@ -395,14 +396,16 @@ constexpr Row kRows[] = {
      &DoEnemyHitMode},
     {{Action::enemy_hit, Tab::tools, "Enemy hit", "Hidden runs (enemy hits): hits applied on this game with the host's apply code, 150 ms apart, then the effect line: <attack> [count] [id | 0].", false},
      &DoEnemyHit},
-    {{Action::enemy_hit_send, Tab::tools, "Enemy hit send", "Hidden runs, the guest (enemy hits): test HITs (kind 4) at a mirror's chest to the host: <attack> [count] [id | 0 the newest look's].", false},
+    {{Action::enemy_hit_send, Tab::tools, "Enemy hit send", "Hidden runs, the guest (enemy hits): test HITs (kind 4) at a mirror's chest to the host: <attack> [count] [id | 0 the newest look's]. P1c: the host too while it relays (at its follower of one she owns, to her).", false},
      &DoEnemyHitSend},
     {{Action::enemy_hit_watch, Tab::tools, "Enemy hit watch", "Hidden runs (enemy hits): every DamageInfo on one enemy logged at OnHit and the MULE handler (its hits pass): <id | 0> <0 off | 1 on>.", false},
      &DoEnemyHitWatch},
     {{Action::enemy_target, Tab::tools, "Enemy target", "Hidden runs, the host (round 20 M1 probe): <op> [id | 0] [arg]: 0 read her body / our Sam / the MULE (AI agent, faction, hostility), 1 / 2 L1 alert (perfect / plain) -> 0 her body | 1 our Sam, 3 L3 phase 1..5, 4 0/1 her body's hit watch, 7 s follow (the MULE's facing), 8 the visual stimuli read, 9 <0 remove | 1 her agent | 2 + Sam's message | 3 the decoy> her body's visual stimulus (round 20 M2).", false},
      &DoEnemyTarget},
-    {{Action::enemy_own, Tab::tools, "Enemy own", "Hidden runs, the host (enemy_owner): a forced hand-over: <id | 0 the nearest the host owns to the partner | -5 the nearest the guest owns> <1 to the host | 2 to the guest>.", false},
+    {{Action::enemy_own, Tab::tools, "Enemy own", "Hidden runs, the host (enemy_owner): a forced hand-over of the enemy's whole camp: <id | 0 the nearest the host owns to the partner | -5 the nearest the guest owns> <1 to the host | 2 to the guest>.", false},
      &DoEnemyOwn},
+    {{Action::enemy_camp, Tab::tools, "Enemy camp", "Hidden runs (enemy_owner, P1c): 0 the camp table (the host); 3 <id | 0 the look's> <k 0 faint | 1 sleep | 2 restrained> that outcome on this game's copy (the outcome setter).", false},
+     &DoEnemyCamp},
     {{Action::dev_marker, Tab::dev, "Dev marker", "Map markers: 0 log them, 1 <m east> <m north> add one there through the game's own add (hidden runs only).", false},
      &DoDev<dev::Op::marker_test>},
 };

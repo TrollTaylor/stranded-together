@@ -47,6 +47,13 @@ void Tick(const TickIn& in, double now) noexcept;  // game thread, after esync::
 // ---- shot_sync (any thread)
 // Her own rounds on a mirror may pass the drop at the bullet to OnHit (the hits are on and captured here).
 bool CaptureOurRounds() noexcept;
+// P1c (round 21)
+int AttackRegistry(std::uint8_t (&bits)[64], std::uint16_t* max_id) noexcept;  // the attack registry's ids (bits), their count; -1 unknown
+bool CarryReady() noexcept;                         // the outcome setter's checks passed
+// k 0 faint, 1 sleep, 2 restrained, on the in-use MULE `id` at `actor`: 1 done, 0 deferred (a queued hit), -1 not possible, -2 it is
+// down or dead here already (never set twice)
+int SetOutcome(std::uintptr_t actor, std::uint32_t id, int k) noexcept;
+int OutcomeNow(std::uintptr_t actor, std::uint32_t id) noexcept;  // erules::Defeat of the in-use MULE `id` at `actor`; -1 not it
 // An entity receiver (byte +8 set) whose vt+0x10 is Entity OnHit (fault-free reads).
 bool IsOnHitReceiver(std::uintptr_t receiver) noexcept;
 // BulletDamageA / B's original runs (the OnHit detour marks what it captures there as kind bullet).

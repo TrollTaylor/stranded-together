@@ -347,16 +347,40 @@ when the game reused its stimulus or the world changed (no remove).
 
 Scenarios: `two-games-enemy-mirror`, `two-games-enemy-statues` (M0).
 
-P1b, ownership by proximity (`session.ini enemy_owner`, off by default and not settable by players yet: the launcher's
-session.ini is one-shot; `enemy_sync 5` and `8` do nothing without it; [enemy-sync.md](enemy-sync.md) section 10):
+P1b / P1c, ownership per camp (`session.ini enemy_owner`; round 21: on by default with `enemy_hits`, the P1c gate
+`two-games-enemy-camp` passed; not settable by players: the launcher's session.ini is one-shot; `enemy_sync 5` and `8` do nothing
+without it; [enemy-sync.md](enemy-sync.md) sections 10 and 13). Its sub-keys (each default 1): `enemy_owner_outcomes` (her downs
+carried onto the host's copies at the return, the outcome setter 0x142AA8000), `enemy_owner_hits` (the host's hits on his
+copies of hers relayed to her game), `enemy_follow_guard` (the host hides a copy of hers she reports unrealized, held or
+hidden (not down) for a second, or silent 3 s), `enemy_attack_registry` (shots with attack ids up to 0x194 travel when the game lists them; partner part bit 64).
+`[config] enemy_owner=1 (default: on with enemy_hits) outcomes=1 hits=1 follow_guard=1 attack_registry=1` at start.
 
 * `enemy_sync 0` adds `[enemy] own: on|off (why), owned here n=.., guest-owned n=.., pending n=.., changes take .. back ..
   forced .. refused .., no-owner>1s .., two-thinking .., resets .., gen ..`.
 * `enemy_sync 5`: the ownership table (`[enemy] own id=XXXXX owner host|guest epoch n pending .. ms phase n guest phase n damaged
   n d_g .. d_h .. hold .. s follower none|mirror|far`; the guest's rows end `(here)`), then the `owned here` line.
 * `enemy_sync 8 <0|1>`: ownership off (a reset: every enemy the host's, `[enemy] own reset (off here)`) / on.
-* `enemy_own <id | 0 | -5> <1 | 2>` (hidden runs, the host): a forced hand-over (reason 7) of an id, the host-owned enemy nearest
-  the partner body (0) or the guest-owned one nearest it (-5), to the host (1) or the guest (2); the rules apply afterwards.
+* `enemy_own <id | 0 | -5> <1 | 2>` (hidden runs, the host): a forced hand-over (reason 7) of the enemy's whole camp (P1c; the
+  id's, the host-owned enemy nearest the partner body (0) or the guest-owned one nearest it (-5)) to the host (1) or the guest
+  (2): `[enemy] camp cp XXXXX -> guest (forced: n=..` / `-> host (forced: n=..`; the rules apply afterwards.
+* `enemy_camp 0` (hidden runs, the host, round 21): the camp table, one row per camp near her or hers (`[enemy] camp row cp|loose
+  XXXXX: owner host|guest, n=.. hers .., guest .. m, host .. m, r .. m, engage .. m, margin .. m, loaded .., phase .., camp ..`),
+  then `[enemy] camp rows n=.. (of .. known; owned here n=..; carried .., carry failed .., down already .., followers hidden ..
+  now .., stragglers .., no-take ..)` (down already: carries skipped because the host's copy was down; no-take: members kept
+  out of takes after her split refusals or her kill).
+* `enemy_camp 3 <id | 0> <k 0..2>` (hidden runs, either game): the outcome setter on our copy (0: the last `enemy_look`'s): k 0
+  faint, 1 sleep, 2 restrained (`[enemy] camp test: outcome k 0 on XXXXX here: set | down here already | FAILED (state ..,
+  ea4 0x..)`; the guest: one she owns; it is never set on a copy that is down already). On the guest's owned MULE it is then
+  carried to the host at the return (`[enemy] OWN id=.. outcome carried: her faint -> faint here (k 0)`) and read back a
+  second later (`[enemy] OWN id=.. outcome readback: k 0 -> now faint`; `: NOT TAKEN (a fallback)` or `: a mismatch (a
+  fallback)` when the copy did not take it). A copy the host downed already: `her outcome faint not carried: down here
+  already (sleep)`.
+* `enemy_camp 4 <id | 0> <1 | 0>` (hidden runs, the guest, review fix round 21): her owned copy hidden (1) or shown (0) in her
+  game, by id or the nearest one she owns (a show with 0: the one hidden last): `[enemy] camp test: her owned copy XXXXX hidden
+  here` / `shown here`. Her frames then say hidden, and the host's follower guard hides his copy after a second (`[enemy] OWN
+  id=..: the host's follower hidden (her copy is hidden there)`) and shows it again (`the host's follower shown again (her frames
+  say realized and free again)`).
+* `enemy_look -9 <m> [h]` (hidden runs, round 21): the newest outcome set here (`enemy_camp 3`) or carried here.
 * `enemy_look -7 <m> [h]` (hidden runs): the nearest enemy the guest owns (the guest: hers; the host: its frozen copy).
 * `enemy_look -8 <m>` (hidden runs, round 20): our Sam m in front of the enemy of the last `enemy_look`, along its facing, facing
   it (a "seen in the open" test: [enemy-sync.md](enemy-sync.md) section 12).
@@ -392,8 +416,10 @@ most 3 numbers, so `enemy_hit`'s part / owner / path are set apart (`enemy_hit_m
   `[enemy] hit test #n id=.. attack .. part .. owner .. path ..: applied (ctx .., P+0x0C .., serial 0x5D......, attacker id .. ->
   ..)` (the query adds `query: n in the sphere, n kept, DI part P at (..)` and `part head|chest=P`), then `HIT effect` and, on
   a change, `OUTCOME` (solo too: the enemies hit in the last 30 s).
-* `enemy_hit_send <attack> [count] [id | 0]` (the guest, hits on): test HITs (kind 4, power 1.0) at the mirror's chest through
-  the capture path (0: the newest look's mirror).
+* `enemy_hit_send <attack> [count] [id | 0]` (the guest, hits on; P1c: the host too while it relays, at its follower of one she
+  owns): test HITs (kind 4, power 1.0) at the mirror's chest through the capture path (0: the newest look's mirror). The relay
+  logs on the guest `[enemy] relayed HIT #.. id=.. attack 0x.. from the host (kind test): applied to hers (relayed n, applied
+  n)` (`refused: <why>` when her apply refuses it; the host's real rounds log `(kind bullet)`, `(kind direct)` for a melee).
 * `enemy_hit_watch <id | 0> <0 | 1>`: observe only (its hits pass): every DamageInfo given to that enemy, at OnHit and at the
   MULE handler: `[enemy] onhit watch (at OnHit|at the MULE handler): id .. attack 0x.. kind bullet|job serial .. part ..
   amount .. attacker .. (our Sam n, his n) P+0x20 .. (our id ..: equal|differ) ... receiver <class> vt10 OnHit depth ..; point

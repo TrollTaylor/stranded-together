@@ -116,7 +116,21 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
   refused for now (their kills are not tested). On her screen the MULE's reaction comes from
   the host's frames a fraction of a second later; its pain voice, her own copy's hit reaction
   and her HUD's markers for a downed MULE are not shown, and grenades, bolas, melee, tying up
-  and truck rams are untested. It is not the same for both players yet: a MULE she has not
+  and truck rams are untested. Fights near the guest run in her own game (new in round 21):
+  when she is nearer to a MULE camp than the host, the whole camp is handed to her game, so
+  its MULEs see her, chase her, shoot at her and steal from her exactly as they do to the host,
+  and her hits on them are her own game's. On the host's screen those MULEs follow her game's
+  moves and their rounds are replayed. When the fight is over and she walks away (or the host
+  comes nearer), the camp goes back to the host. A MULE she knocked out, put to sleep or tied
+  up is then down the same way on his screen (tested with a knock-out). A MULE she killed is
+  only knocked out on his screen, so it gets up again there later while it stays dead in her
+  world. His hits on her MULEs are passed on to her game, so the MULE turns on him there
+  (tested with his rifle); his melee is untested. When the
+  host's game saves while one of her fights is loaded near him, every fight Fragile runs in
+  her game is handed back to the host's game:
+  her enemies there freeze and copy the host's, which return to their posts on alert, and her
+  game takes the camp back after 15 seconds if she is still nearer. Away from the camps her game
+  runs, it is not the same for both players yet: a MULE she has not
   hit ignores her and goes only for the host. Once she hits one, it turns on her: on the
   host's screen it goes for her body, on hers her copy of it follows the host's frames, and
   its gunfire at her can reach her and hurt her; its melee, thrown spears and tackles cannot.

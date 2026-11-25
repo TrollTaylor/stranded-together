@@ -293,7 +293,8 @@ void TestScbHits() {
     CHECK(HitRefused([](ewire::Hit& h) { h.point[1] = 8.01f; }));
     CHECK(HitRefused([](ewire::Hit& h) { h.kind = 0; }));
     CHECK(HitRefused([](ewire::Hit& h) { h.kind = 5; }));
-    CHECK(!HitRefused([](ewire::Hit& h) { h.attack = 0x18D; }));
+    CHECK(HitRefused([](ewire::Hit& h) { h.attack = 0x18D; }));   // the enum's placeholder (review rv-correctness N5)
+    CHECK(!HitRefused([](ewire::Hit& h) { h.attack = 0x18C; }));
     // decoder refusals on the wire bytes
     const std::size_t ok = ewire::EncodeHits(hd, one, 1, buf, sizeof(buf));
     CHECK(ok == ewire::kScbHeader + ewire::kHitSize && ewire::DecodeHits(buf, ok, g, out));
@@ -452,7 +453,8 @@ void TestScbOwn() {
     CHECK(enc_bad(ewire::kScbOwn, [](ewire::Own& x) { x.owner = 3; }));
     CHECK(enc_bad(ewire::kScbOwn, [](ewire::Own& x) { x.owner = 0; }));
     CHECK(enc_bad(ewire::kScbOwn, [](ewire::Own& x) { x.reason = 0; }));
-    CHECK(enc_bad(ewire::kScbOwn, [](ewire::Own& x) { x.reason = 13; }));
+    CHECK(enc_bad(ewire::kScbOwn, [](ewire::Own& x) { x.reason = 15; }));  // (13, 14: P1c's unloaded / the host nearer)
+    CHECK(!enc_bad(ewire::kScbOwn, [](ewire::Own& x) { x.reason = 14; }));
     CHECK(enc_bad(ewire::kScbOwn, [](ewire::Own& x) { x.reason = 6; }));            // the ack's reason on an OWN
     CHECK(enc_bad(ewire::kScbOwn, [](ewire::Own& x) { x.result = 1; }));            // a result on an OWN
     CHECK(enc_bad(ewire::kScbOwn, [](ewire::Own& x) { x.phase = 6; }));

@@ -73,7 +73,9 @@ inline int HitRate(const std::string& v, int keep) {
 }
 
 // The enemy keys' defaults once every line is read (config.cpp): enemy_sync follows host_save, enemy_hits follows enemy_sync
-// (P2), enemy_owner stays off (P1b: its gate has not passed) unless given. A key that was given keeps its value.
+// (P2), enemy_owner follows enemy_hits when kOwnerDefaultOn (P1c: on only once its gate passed in a game), else off unless given.
+// A key that was given keeps its value.
+inline constexpr bool kOwnerDefaultOn = true;  // round 21: the P1c gate two-games-enemy-camp passed (run 20261125-083424)
 struct EnemyKeys {
     bool sync = false, hits = false, owner = false;
 };
@@ -81,8 +83,22 @@ inline EnemyKeys EnemyDefaults(bool host_save, bool sync_set, bool sync, bool hi
     EnemyKeys k;
     k.sync = sync_set ? sync : host_save;
     k.hits = hits_set ? hits : k.sync;
-    k.owner = owner_set ? owner : false;
+    k.owner = owner_set ? owner : kOwnerDefaultOn && k.hits;
     return k;
+}
+// The P1c keys (round 21), each on unless given 0: enemy_owner_outcomes, enemy_follow_guard, enemy_attack_registry, enemy_owner_hits.
+// SetOwnerKey: true when `key` is one of them (its value parsed into `k`); review rv-correctness N9.
+struct OwnerKeys {
+    bool outcomes = true, follow_guard = true, attack_registry = true, hits = true;
+};
+inline bool SetOwnerKey(OwnerKeys& k, const std::string& key, bool v) {
+    bool* const p = key == "enemy_owner_outcomes"    ? &k.outcomes
+                    : key == "enemy_follow_guard"    ? &k.follow_guard
+                    : key == "enemy_attack_registry" ? &k.attack_registry
+                    : key == "enemy_owner_hits"      ? &k.hits
+                                                     : nullptr;
+    if (p) *p = v;
+    return p != nullptr;
 }
 
 }  // namespace st::cfgval

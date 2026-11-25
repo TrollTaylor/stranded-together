@@ -19,7 +19,7 @@
 //   FingerprintGate whether both games mirror this world (both on, equal fingerprints, a fresh peer)
 //
 // P2 (round 17, docs/enemy-sync.md 9): her hits on the host's enemies and their outcomes
-//   AttackOk       the attacks a HIT may carry (1..0x18D, never 0x180 AimTarget)
+//   AttackOk       the attacks a HIT may carry (1..0x18C, never 0x180 AimTarget)
 //   HitVerdict     a hit on an entity at Entity OnHit: pass (not a mirror), drop, or drop and capture (hers, hits on)
 //   HitDedupe      the guest's 300 ms dedupe of one hit seen twice (the same key, serial and attack; serial 0 never dedupes)
 //   ToLocal/ToWorld a point (or a direction) in an enemy's yaw frame and back
@@ -568,7 +568,8 @@ inline const char* FpGateText(FpGate g) noexcept {
 
 // ==================================================================================================================== P2
 // ---------------------------------------------------------------- attacks
-inline constexpr std::uint16_t kAttackAim = 0x180, kAttackMax = 0x18D;
+// (0x18D is the narrow table's placeholder row, never a real attack: review rv-correctness N5)
+inline constexpr std::uint16_t kAttackAim = 0x180, kAttackMax = 0x18C;
 inline constexpr bool AttackOk(std::uint16_t a) noexcept { return a >= 1 && a <= kAttackMax && a != kAttackAim; }
 
 // ---------------------------------------------------------------- a hit at Entity OnHit (any thread)
@@ -797,12 +798,12 @@ enum class Owner : std::uint8_t { host = 1, guest = 2 };
 // The wire's reason byte (SCB1 OWN).
 enum class OwnReason : std::uint8_t {
     none = 0, proximity = 1, far_off = 2, host_near = 3, silence = 4, refused = 5, ack = 6, forced = 7, unrealized = 8, range = 9, ack_timeout = 10,
-    outcome = 11, reset = 12
+    outcome = 11, reset = 12, unloaded = 13, host_nearer = 14  // (13, 14: P1c, round 21)
 };
-inline constexpr std::uint8_t kOwnReasonMax = 12;
+inline constexpr std::uint8_t kOwnReasonMax = 14;
 inline const char* OwnReasonText(OwnReason r) noexcept {
-    static const char* const k[13] = {"none", "proximity", "far", "host near", "silence", "refused", "ack", "forced", "unrealized on the guest", "range",
-                                      "ack timeout", "outcome", "reset"};
+    static const char* const k[15] = {"none", "proximity", "far", "host near", "silence", "refused", "ack", "forced", "unrealized on the guest", "range",
+                                      "ack timeout", "outcome", "reset", "not loaded on the host", "the host nearer"};
     const unsigned i = static_cast<unsigned>(r);
     return i <= kOwnReasonMax ? k[i] : "?";
 }
@@ -814,7 +815,8 @@ inline const char* OwnRefuseText(std::uint8_t r) noexcept {
     return r < 10 ? k[r] : "?";
 }
 
-// One enemy's inputs at the host's 2 Hz walk.
+// One enemy's inputs at the host's 2 Hz walk. P1b's per-enemy decision (OwnIn, TakeBlock, HostDecide): since round 21 the host
+// decides per camp (CampDecide); these stay as the model TestOwnProperty proves the OWN / OWNACK protocol on (test-only).
 struct OwnIn {
     Owner owner = Owner::host;
     bool pending = false;          // an OWN sent, its OWNACK not in
@@ -911,29 +913,30 @@ struct HostOwn {
     bool frozen = false;           // the host's copy is frozen by us (guest-owned, or a back waiting for her OWNACK)
     double t_sent = -1e18, t_change = -1e18, hold_until = -1e18;
 };
-// Take: the host's copy is frozen FIRST (the caller did it; `frozen_ok` false: nothing changes, hold 10 s).
-inline bool HostTake(HostOwn& e, double now, bool frozen_ok) noexcept {
+// Take: the host's copy is frozen FIRST (the caller did it; `frozen_ok` false: nothing changes, hold 10 s). (P1c passes its
+// camp holds, 15 s.)
+inline bool HostTake(HostOwn& e, double now, bool frozen_ok, double hold_ms = kHoldMs, double refuse_hold_ms = kRefuseHoldMs) noexcept {
     if (e.owner != Owner::host || e.pending) return false;
     if (!frozen_ok) {
-        e.hold_until = now + kRefuseHoldMs;
+        e.hold_until = now + refuse_hold_ms;
         return false;
     }
     e.epoch = static_cast<std::uint16_t>(e.epoch + 1);
     e.owner = Owner::guest, e.pending = true, e.frozen = true;
-    e.t_sent = e.t_change = now, e.hold_until = now + kHoldMs;
+    e.t_sent = e.t_change = now, e.hold_until = now + hold_ms;
     return true;
 }
 // Back (by proximity or forced): OWN(host); the host's copy stays frozen until her OWNACK(released) or the ack timeout.
-inline bool HostBack(HostOwn& e, double now) noexcept {
+inline bool HostBack(HostOwn& e, double now, double hold_ms = kHoldMs) noexcept {
     if (e.owner != Owner::guest) return false;
     e.epoch = static_cast<std::uint16_t>(e.epoch + 1);
     e.owner = Owner::host, e.pending = true;
-    e.t_sent = e.t_change = now, e.hold_until = now + kHoldMs;
+    e.t_sent = e.t_change = now, e.hold_until = now + hold_ms;
     return true;
 }
 // Her OWNACK. result 0 taken, 1 released, 2 refused. Returns what the host does now.
 enum class AckAct : std::uint8_t { ignore, taken, refused_back, release };
-inline AckAct HostOnAck(HostOwn& e, std::uint16_t epoch, std::uint8_t result, double now) noexcept {
+inline AckAct HostOnAck(HostOwn& e, std::uint16_t epoch, std::uint8_t result, double now, double refuse_hold_ms = kRefuseHoldMs) noexcept {
     if (epoch != e.epoch || !e.pending) return AckAct::ignore;
     if (e.owner == Owner::guest) {
         if (result == 0) {
@@ -943,7 +946,7 @@ inline AckAct HostOnAck(HostOwn& e, std::uint16_t epoch, std::uint8_t result, do
         // refused (or an odd answer): hers never unfroze; the host's again at once, hold 10 s
         e.epoch = static_cast<std::uint16_t>(e.epoch + 1);
         e.owner = Owner::host, e.pending = false, e.frozen = false;
-        e.t_change = now, e.hold_until = now + kRefuseHoldMs;
+        e.t_change = now, e.hold_until = now + refuse_hold_ms;
         return AckAct::refused_back;
     }
     // a back: released (or refused: she has nothing; the host's either way)
@@ -977,6 +980,246 @@ inline GuestAct GuestOnOwn(GuestOwn& g, std::uint16_t epoch, Owner owner) noexce
     g.known = true, g.epoch = epoch;
     if (owner == Owner::guest) return g.owned ? GuestAct::ack_taken : GuestAct::take;
     return g.owned ? GuestAct::release : GuestAct::ack_released;
+}
+
+// ==================================================================================================================== P1c
+// Ownership per camp (round 21, docs/enemy-sync.md 13). A camp (a DSMuleCPGameActor's members; a MULE in no camp list is a camp of
+// one) changes owner as a whole: the host decides per camp at 2 Hz (CampDecide) and hands each member over with P1b's OWN / OWNACK
+// (the protocol TestOwnProperty proves). The guest needs no camp knowledge. A loose camp (r 10 m) gets P1b's distances exactly.
+inline constexpr double kCampRMinM = 10.0, kCampRMaxM = 120.0;
+inline constexpr double kCampEngageMinM = 40.0, kCampEngageAddM = 30.0, kCampEngageMaxM = 150.0;
+inline constexpr double kCampMarginMinM = 15.0, kCampMarginK = 0.3, kCampMarginAddM = 10.0, kCampMarginMaxM = 40.0;
+inline constexpr double kCampLeftAddM = 20.0;
+inline constexpr double kCampHoldMs = 15000.0, kCampRefuseHoldMs = 15000.0, kCampChangeGapMs = 1000.0;
+inline constexpr unsigned kCampMaxMembers = 30, kMaxGuestOwnedMembers = 32;
+inline constexpr double kMemberGuardMs = 1000.0, kNoEntryHideMs = 3000.0;
+inline constexpr double Clamp(double v, double lo, double hi) noexcept { return v < lo ? lo : v > hi ? hi : v; }
+// r: the members' spread around their centre (the farthest member), 10..120 m.
+inline constexpr double CampR(double spread_m) noexcept { return Clamp(spread_m, kCampRMinM, kCampRMaxM); }
+// E: she engages (takes) within this of the nearest standing member: 40..150 m (r + 30).
+inline constexpr double CampEngage(double r) noexcept { return Clamp(r + kCampEngageAddM, kCampEngageMinM, kCampEngageMaxM); }
+// H: the hysteresis margin (take: the host H farther than she is; back: she H farther than the host): 15..40 m.
+inline constexpr double CampMargin(double r) noexcept { return Clamp(kCampMarginK * r + kCampMarginAddM, kCampMarginMinM, kCampMarginMaxM); }
+// She left it: beyond E + 20.
+inline constexpr double CampLeft(double r) noexcept { return CampEngage(r) + kCampLeftAddM; }
+
+// One camp's inputs at the host's 2 Hz walk.
+struct CampIn {
+    Owner owner = Owner::host;      // guest: a member is hers (or its take is in flight)
+    bool pending = false;           // a member's OWN is out, its OWNACK not in
+    double r = kCampRMinM;
+    double d_g = -1, d_h = -1;      // the nearest standing member (its owner's place) to her body / to the host's Sam; < 0 unknown
+    std::uint8_t phase = 0;         // the highest member phase on the owner's side (kPhaseUnknown: one unknown)
+    std::uint8_t cp_phase = kPhaseUnknown;  // the host's CP phase (+0x210); unknown for a loose camp
+    bool host_loaded = true;        // a member realized on the host
+    unsigned members = 1;           // the camp's members on the host
+    unsigned takeable = 1;          // members a take would hand over (standing, readable, not held on the host)
+    bool guest_ok = true;           // her frames: no cutscene there, refusals under the cap
+    bool host_ok = true;            // the host: no cutscene, no save busy, the guards in, no vehicle
+    bool hold_over = true;          // the camp's 15 s hold (since its last change or a refusal) is over
+    bool parts_ok = true;           // both beacons carry kPartCamp
+    unsigned guest_owned = 0;       // members she owns now (every camp)
+    double since_change_ms = 1e9;   // since the newest camp take
+    bool other_pending = false;     // another camp's hand-over in flight
+    // guest-owned
+    double silence_ms = 0;          // since her newest frame for its quietest member (or the OWNACK)
+    bool unrealized_guest = false;  // a member not realized there or held by a sequence there (her newest frame)
+    double range_m = 270.0;         // enemy_mirror_radius + 20
+    double ack_wait_ms = 0;         // since the oldest pending OWN
+    bool refused = false;           // a member's OWNACK refused it (a hard refusal: CampRefuseSplits false)
+    bool forced = false;            // enemy_own / enemy_camp forced it back, or a game sequence took a host follower
+    bool down_guest = false;        // a member down or dead on her side
+    bool outcomes_ok = true;        // the outcome setter can carry her outcomes (enemy_owner_outcomes and its checks)
+};
+// Why a host-owned camp is not taken now (nullptr: take it). The order is the log's.
+inline const char* CampTakeBlock(const CampIn& in) noexcept {
+    if (in.owner != Owner::host) return "not the host's";
+    if (in.pending) return "pending";
+    if (!in.parts_ok) return "parts";
+    if (in.members > kCampMaxMembers) return "too big";
+    if (in.takeable == 0) return "nothing to take (down, held or unread on the host)";
+    const double e = CampEngage(in.r), h = CampMargin(in.r);
+    if (!(in.d_g >= 0) || in.d_g > e) return "the guest beyond its engage distance";
+    if (in.host_loaded) {
+        if (!(in.d_h >= 0) || in.d_h < in.d_g + h) return "the host not its margin farther";  // the host wins ties
+        if (in.d_h <= kTakeHostMinM) return "the host within 25 m";
+        // the phases count only on a loaded camp: an unloaded one's AI does not run on the host (its phase is stale, run
+        // 20261125-082959: caution kept 40 s at 2 km after a range back) while her game runs it already (M0 released her mirrors)
+        if (!Calm(in.phase)) return "a member's phase";
+        if (CampAlerted(in.cp_phase)) return "the camp's phase";
+    }
+    if (!in.guest_ok) return "the guest (a cutscene, refusals)";
+    if (!in.host_ok) return "the host (a cutscene, a save, the guards)";
+    if (!in.hold_over) return "the hold";
+    if (in.guest_owned + in.takeable > kMaxGuestOwnedMembers) return "her cap";
+    if (in.since_change_ms < kCampChangeGapMs || in.other_pending) return "one change at a time";
+    return nullptr;
+}
+inline OwnVerdict CampDecide(const CampIn& in) noexcept {
+    if (in.owner == Owner::guest) {
+        // forced: ignore phase, the hold and her downs (each member's outcome is carried or left as P1b left it)
+        if (in.refused) return {OwnAct::forced_back, OwnReason::refused};
+        if (in.forced) return {OwnAct::forced_back, OwnReason::forced};
+        if (in.pending) return in.ack_wait_ms > kAckTimeoutMs ? OwnVerdict{OwnAct::forced_back, OwnReason::ack_timeout} : OwnVerdict{};
+        if (in.silence_ms > kOwnSilenceMs) return {OwnAct::forced_back, OwnReason::silence};
+        if (in.d_g > in.range_m) return {OwnAct::forced_back, OwnReason::range};
+        if (in.unrealized_guest && in.host_loaded) return {OwnAct::forced_back, OwnReason::unrealized};
+        // a member down on her side and no way to carry it: hers (the host's copy would get up at her place)
+        if (in.down_guest && !in.outcomes_ok) return {};
+        // by proximity: calm (a camp fighting her stays hers: the host walking in does not take it), after the hold
+        if (!in.hold_over || !Calm(in.phase)) return {};
+        const double h = CampMargin(in.r);
+        if (in.d_g > CampLeft(in.r)) return {OwnAct::back, OwnReason::far_off};
+        // the host's distances count only on a camp loaded on the host (as the take's: the unloaded take's hysteresis; review
+        // rv-correctness R9: an unloaded camp taken with the host 30 m away would come back at once)
+        if (in.host_loaded && in.d_h >= 0 && in.d_h <= kBackHostNearM) return {OwnAct::back, OwnReason::host_near};
+        if (in.host_loaded && in.d_h >= 0 && in.d_h <= CampEngage(in.r) && in.d_h + h <= in.d_g) return {OwnAct::back, OwnReason::host_nearer};
+        return {};
+    }
+    if (CampTakeBlock(in)) return {};
+    return {OwnAct::take, in.host_loaded ? OwnReason::proximity : OwnReason::unloaded};
+}
+// Why a guest-owned camp stays hers now (the 10 s log line).
+inline const char* CampStaysWhy(const CampIn& in) noexcept {
+    if (in.pending) return "pending";
+    if (in.down_guest && !in.outcomes_ok) return "a member down on her side (no outcome carry)";
+    if (!in.hold_over) return "the hold";
+    if (!Calm(in.phase)) return "alerted on her side";
+    return "she is nearer";
+}
+// Her OWNACK refusal for one member splits (that member stays the host's, the camp hers): not mirrored, not realized, dead, held
+// or hidden there (one member's state; the host leaves it out of the camp's takes: CampNoTakeMs). A cutscene, her cap, an alerted
+// camp or a fault send the whole camp back. (Review rv-gameplay 1: a member she killed came back standing on the host, her
+// refusal `dead` sent the camp back every 15 s.)
+inline constexpr bool CampRefuseSplits(std::uint8_t refusal) noexcept {
+    return refusal == static_cast<std::uint8_t>(OwnRefuse::not_mirror) || refusal == static_cast<std::uint8_t>(OwnRefuse::not_realized) ||
+           refusal == static_cast<std::uint8_t>(OwnRefuse::dead) || refusal == static_cast<std::uint8_t>(OwnRefuse::held) ||
+           refusal == static_cast<std::uint8_t>(OwnRefuse::hidden);
+}
+// How long a split member stays out of its camp's takes (ms): dead there, the rest of this world (< 0); any other split 15 s.
+inline constexpr double kCampNoTakeWorld = -1.0;
+inline constexpr double CampNoTakeMs(std::uint8_t refusal) noexcept {
+    return refusal == static_cast<std::uint8_t>(OwnRefuse::dead) ? kCampNoTakeWorld : kCampRefuseHoldMs;
+}
+// A refusal that counts toward the "refusals under the cap" of CampIn::guest_ok (3 a minute): the hard ones only.
+inline constexpr bool CampRefuseCounts(std::uint8_t refusal) noexcept { return !CampRefuseSplits(refusal); }
+
+// The whole camp she owns unrealized (or held by a sequence) there for this long sends it back (spec 8.2). One member alone
+// never does: the follower guard hides that one's host copy (review rv-gameplay 3).
+inline constexpr double kCampUnrealizedMs = 2000.0;
+// Her body missing from the host's view (a vehicle, a respawn, a hiccup): her last place held this long (review rv-gameplay 14).
+inline constexpr double kGuestPlaceHoldMs = 3000.0;
+// A camp key kept for a member that a camp walk did not list (a partial walk while loading): this long (review rv-gameplay 12).
+inline constexpr double kCampKeyKeepMs = 5000.0;
+
+// One member of one camp at the host's 2 Hz walk, as CampAggregate reads it.
+struct CampMember {
+    bool hers = false;              // its owner is the guest (its take acked or in flight)
+    bool pending = false;           // its OWN is out
+    bool forced = false;            // enemy_own forced it, or a game sequence took the host's copy
+    bool standing = true;           // hers: her newest frame shows no defeat; the host's: not dead or down here
+    bool takeable = false;          // the host's: a take would hand it over (standing, read, free here, not on the no-take list)
+    bool realized_host = false;     // realized in the host's world
+    bool bad_guest = false;         // hers: her fresh frame says not realized there or held by a sequence there
+    double bad_for_ms = 0;          // since bad_guest
+    double silence_ms = 0;          // hers, not pending: since her newest frame (or the OWNACK)
+    double ack_wait_ms = 0;         // pending: since its OWN
+    std::uint8_t phase = kPhaseUnknown;  // its owner's side
+    double pos[3] = {};             // its owner's place
+};
+struct CampAgg {
+    unsigned hers = 0, pend = 0;
+};
+inline double Dist3m(const double* a, const double* b) noexcept {
+    const double x = a[0] - b[0], y = a[1] - b[1], z = a[2] - b[2];
+    return std::sqrt(x * x + y * y + z * z);
+}
+// The per-camp part of CampIn from its members (review rv-gameplay 15): owner, pending, r, the distances (the nearest standing
+// member; none standing: every member), the phase (her standing members' if she owns one, else the host's standing ones'), loaded,
+// takeable, silence, ack wait, unrealized (every settled member of hers bad for kCampUnrealizedMs), down there, forced. `guest` /
+// `host` nullptr: unknown (her camp with her place unknown: d_g 1e9, a range back). The rest of CampIn is the caller's.
+inline CampAgg CampAggregate(const CampMember* m, std::size_t n, const double* guest, const double* host, CampIn& in) noexcept {
+    CampAgg g;
+    in.members = static_cast<unsigned>(n);
+    in.takeable = 0, in.host_loaded = false, in.silence_ms = 0, in.ack_wait_ms = 0, in.down_guest = false;
+    bool forced = false, ph_g_unknown = false, ph_h_unknown = false;
+    std::uint8_t ph_g = 0, ph_h = 0;
+    unsigned settled = 0, bad = 0;
+    double dg = 1e18, dh = 1e18, dg_all = 1e18, dh_all = 1e18, c[3] = {0, 0, 0};
+    for (std::size_t i = 0; i < n; ++i) {
+        const CampMember& e = m[i];
+        in.host_loaded = in.host_loaded || e.realized_host;
+        if (e.pending) ++g.pend, in.ack_wait_ms = (std::max)(in.ack_wait_ms, e.ack_wait_ms);
+        if (e.hers) {
+            ++g.hers;
+            in.down_guest = in.down_guest || !e.standing;
+            forced = forced || e.forced;
+            if (!e.pending) {
+                ++settled;
+                in.silence_ms = (std::max)(in.silence_ms, e.silence_ms);
+                if (e.bad_guest && e.bad_for_ms >= kCampUnrealizedMs) ++bad;
+            }
+            if (e.standing) {
+                if (e.phase == kPhaseUnknown) ph_g_unknown = true;
+                else ph_g = (std::max)(ph_g, e.phase);
+            }
+        } else {
+            if (e.takeable) ++in.takeable;
+            if (e.standing) {
+                if (e.phase == kPhaseUnknown) ph_h_unknown = true;
+                else ph_h = (std::max)(ph_h, e.phase);
+            }
+        }
+        const double a_g = guest ? Dist3m(e.pos, guest) : 1e9, a_h = host ? Dist3m(e.pos, host) : 1e18;
+        dg_all = (std::min)(dg_all, a_g), dh_all = (std::min)(dh_all, a_h);
+        if (e.standing) dg = (std::min)(dg, a_g), dh = (std::min)(dh, a_h);
+        c[0] += e.pos[0], c[1] += e.pos[1], c[2] += e.pos[2];
+    }
+    if (dg > 1e17) dg = dg_all, dh = dh_all;  // none standing: every member counts
+    double spread = 0;
+    if (n) {
+        const double k = 1.0 / static_cast<double>(n);
+        c[0] *= k, c[1] *= k, c[2] *= k;
+        for (std::size_t i = 0; i < n; ++i) spread = (std::max)(spread, Dist3m(m[i].pos, c));
+    }
+    in.r = CampR(spread);
+    in.owner = g.hers ? Owner::guest : Owner::host;
+    in.pending = g.pend > 0;
+    in.d_g = !guest ? (g.hers ? 1e9 : -1) : dg;
+    in.d_h = host ? dh : -1;
+    in.phase = g.hers ? (ph_g_unknown ? kPhaseUnknown : ph_g) : (ph_h_unknown ? kPhaseUnknown : ph_h);
+    in.unrealized_guest = settled > 0 && bad == settled;
+    in.forced = in.forced || forced;
+    return g;
+}
+// A straggler of a camp she owns (a member that was down, held or in a vehicle on the host at the take): taken on its own when the
+// camp is settled and calm, one a tick, under her cap and the change gap (review rv-gameplay 5).
+inline bool CampStragglerOk(const CampIn& in) noexcept {
+    return in.owner == Owner::guest && !in.pending && in.takeable > 0 && Calm(in.phase) && in.parts_ok && in.guest_ok && in.host_ok &&
+           in.guest_owned + 1 <= kMaxGuestOwnedMembers && in.since_change_ms >= kCampChangeGapMs && !in.other_pending;
+}
+// A carry that waits (a queued hit, the host's game saving, a cutscene holding the copy's return) gives up after this.
+inline constexpr double kCarryWaitMs = 15000.0;
+// Her outcome carried onto the host's copy at its return: the outcome setter's k (0 faint, 1 sleep, 2 restrained), -1 none.
+// Dead is carried as faint this round (a kill on the host is not the setter's k 3 path: untested); an unknown down as faint.
+inline constexpr int CarryOutcome(Defeat d, bool setter_ok) noexcept {
+    if (!setter_ok) return -1;
+    switch (d) {
+        case Defeat::none: return -1;
+        case Defeat::faint: return 0;
+        case Defeat::sleep: return 1;
+        case Defeat::restrained: return 2;
+        case Defeat::dead: return 0;
+        case Defeat::other: return 0;
+    }
+    return -1;
+}
+// The host's follower guard (M0 the other way): a frozen host copy of a member of hers is hidden while her newest frame says it is
+// not realized there or held by a sequence there for a second, or while no frame of hers came for 3 s; shown again when her frames
+// say realized and free.
+enum class Guard : std::uint8_t { show, hide };
+inline constexpr Guard FollowerGuard(double frame_age_ms, double bad_for_ms) noexcept {
+    return frame_age_ms > kNoEntryHideMs || bad_for_ms >= kMemberGuardMs ? Guard::hide : Guard::show;
 }
 
 // ---------------------------------------------------------------- the 8 enemy pose slots, shared by capture and apply

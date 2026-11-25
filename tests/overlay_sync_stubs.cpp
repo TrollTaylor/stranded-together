@@ -416,6 +416,7 @@ bool Command(int, const double (&)[3], char* msg, std::size_t cap) noexcept { re
 bool Look(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy look (stub)"), true; }
 bool ShotTest(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy shot test (stub)"), true; }
 bool Own(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy own (stub)"), true; }
+bool Camp(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy camp (stub)"), true; }
 }  // namespace st::esync
 namespace st::ecombat {
 bool Dump(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy dump (stub)"), true; }

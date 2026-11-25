@@ -60,7 +60,8 @@ constexpr std::uintptr_t kActId = 0x08, kActInUse = 0x20, kActState = 0x24, kAct
 constexpr std::uintptr_t kCompHealth = 0x1EC, kCompStamina = 0x1F0, kCompSleep = 0x1F4, kCompRestraint = 0x1F8, kCompDefeat = 0x314, kCompHead = 0x528;
 constexpr std::uintptr_t kEParent = 0x70, kEComponents = 0x90, kReceiverOfEntity = 0x38;
 
-enum Group : unsigned { kGOnHit = 1, kGMule = 2, kGStamps = 4, kGApply = 8, kGOutcome = 16, kGEntry = 32 };
+enum Group : unsigned { kGOnHit = 1, kGMule = 2, kGStamps = 4, kGApply = 8, kGOutcome = 16, kGEntry = 32, kGCarry = 64 };
+constexpr std::uintptr_t kOutcomeSet = 0x142AA8000;   // P1c: the MULE outcome setter (DSMuleGameActor*, k 0 faint, 1 sleep, 2 restrained, 3 dead)
 struct Site {
     std::uintptr_t va;
     const char* sig;
@@ -90,6 +91,15 @@ constexpr Site kSites[] = {
     {kRelease,      "40 53 48 83 EC 20 48 8B D9 48 8B 49 18 48 85 C9 74 05 E8", "the handle release", kGApply},
     {kHandleSet,    "40 53 48 83 EC 20 48 8B D9 E8 22 00 00 00 48 8B 0B 33 D2 48 85 C9 48 8D 41 E0 48 0F 44 C2", "the handle set", kGApply},
     {0x142ACEDB0,   "48 89 5C 24 10 57 48 83 EC 40 48 8B 05 6F 22 49 02 48 33 C4 48 89 44 24", "the MULE state setter", kGOutcome},
+    // P1c (round 21): the outcome setter, its realized path's damage component (+0xE90) and two calls; a mismatch turns only the
+    // outcome carry off (her downs then keep a camp hers)
+    {kOutcomeSet,   "48 89 5C 24 10 57 48 83 EC 70 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 60 83 79 24 02 48 8B D9", "the MULE outcome setter", kGCarry},
+    {0x142AA8022,   "48 8B 89 90 0E 00 00 48 85 C9 74 4A", "the outcome setter's damage component (+0xE90)", kGCarry},
+    {0x142AF6930,   "4C 8B DC 53 48 81 EC F0 00 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 84 24 D0 00 00 00", "the damage component's outcome", kGCarry},
+    {0x142AF97D0,   "40 53 48 83 EC 20 83 79 50 00 48 8B D9 7E 0F", "the damage component's queue drain (+0x50)", kGCarry},
+    // (spec 6.1; review rv-correctness R10: read with tools/re/dsre.py)
+    {0x142AF8FC0,   "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 49 8B D8 8B F2 48 8B F9 E8", "the damage component's entry", kGCarry},
+    {0x142AC09B9,   "48 89 87 90 0E 00 00 48 85 C0", "the damage component's store (+0xE90)", kGCarry},
     {0x142ACEE3B,   "89 BB A0 0E 00 00", "the MULE state (+0xEA0)", kGOutcome},
     {0x142B1E190,   "48 89 5C 24 08 57 48 83 EC 20 48 8B 81 78 06 00 00 48 8B D9 8B FA 48 8B", "the MULE down setter", kGOutcome},
     {0x142B26348,   "C5 7A 10 81 EC 01 00 00", "health (+0x1EC)", kGOutcome},
@@ -500,6 +510,8 @@ std::vector<ewire::HitRes> g_res_out;
 std::vector<ewire::Outcome> g_oc_out;
 std::uint8_t g_oc_epoch = 0;   // the host's outcome epoch (1..255, a new one each ResetWorld: its versions start again)
 double g_oc_full_next = 0;     // the host's full outcome read (10 Hz; every tick only the enemies she hit in the last 3 s)
+bool g_relay_on = false;
+unsigned g_relay_in = 0, g_relay_applied = 0, g_relay_not_owned = 0;
 unsigned g_rx = 0, g_applied = 0, g_refused_by[erules::kHitResults] = {}, g_wrong_role = 0, g_bad_msg = 0;
 struct HostRec {
     bool have = false;
@@ -911,13 +923,15 @@ ewire::Outcome OutcomeMsg(std::uint32_t id, const HostRec& r, std::uint8_t cause
     o.epoch = g_oc_epoch;
     return o;
 }
-void HostHit(const ewire::Hit& h, std::uint32_t msg_guids, const esync::GateView& gv) {
-    ++g_rx;
+// relay (P1c, on the guest): the host's hit on one she owns. Its own counters and log (review rv-correctness N3: the host-side
+// g_rx / g_applied / g_refused_by count her HITs on the host's enemies only); no HITRES.
+erules::HitResult HostHit(const ewire::Hit& h, std::uint32_t msg_guids, const esync::GateView& gv, bool relay = false) {
+    if (!relay) ++g_rx;
     const std::uintptr_t actor = ActorOf(h.key);
     MuleNow m;
     const bool found = actor && ReadMule(actor, h.key, m);
     erules::ApplyIn in;
-    in.host = g_role == 1;
+    in.host = g_role == 1 || relay;  // (relay: the guest applies the host's hit on one she owns, P1c)
     in.mirroring = gv.mirroring;
     in.hits_on = g_hits_on && !g_stop.load();
     in.fp_equal = msg_guids == gv.guids && gv.guids != 0;
@@ -947,6 +961,7 @@ void HostHit(const ewire::Hit& h, std::uint32_t msg_guids, const esync::GateView
         ApplyOne(h.key, h, local, nl, il, g_cfg.enemy_hit_owner, g_cfg.enemy_hit_path, hs, ar);
         r = ar.r;
     }
+    if (relay) return r;
     if (r == erules::HitResult::applied) {
         ++g_applied;
         if (LogNth(g_applied))
@@ -968,6 +983,7 @@ void HostHit(const ewire::Hit& h, std::uint32_t msg_guids, const esync::GateView
     hr.key = h.key, hr.hit_seq = h.hit_seq, hr.result = static_cast<std::uint8_t>(r), hr.owner = static_cast<std::uint8_t>(g_cfg.enemy_hit_owner);
     hr.defeat = static_cast<std::uint8_t>(found ? erules::OutcomeOf(m.ea0, m.ea4) : erules::Defeat::none);
     g_res_out.push_back(hr);
+    return r;
 }
 // The outcome reader: the 10 Hz class and every enemy hit in the last 30 s.
 // The full read at 10 Hz; between, only the enemies she hit in the last 3 s (their outcome is the one she waits for).
@@ -1147,12 +1163,34 @@ void DrainCombat(const esync::GateView& gv) {
             continue;
         }
         if (h.type == ewire::kScbHit) {
-            if (g_role != 1) {
+            if (g_role != 1 && g_role != 2) {
                 ++g_wrong_role;
                 continue;
             }
             if (!ewire::DecodeHits(buf, n, h, hits)) {
                 ++g_bad_msg;
+                continue;
+            }
+            if (g_role == 2) {
+                // P1c: the host's hits on its frozen copies of the ones she owns, applied here to hers (no HITRES, no OUTCOME back: her
+                // copy's outcome reaches the host through her SEN1 and the return's outcome carry)
+                for (unsigned i = 0; i < h.n; ++i) {
+                    if (!esync::OwnedHere(hits[i].key)) {
+                        ++g_relay_not_owned;
+                        if (LogNth(g_relay_not_owned)) Log("[enemy] relayed HIT #%u id=%05X refused: not owned here (now)", hits[i].hit_seq, hits[i].key);
+                        continue;
+                    }
+                    ++g_relay_in;
+                    const erules::HitResult rr = HostHit(hits[i], h.guids_fp, gv, true);
+                    const bool applied = rr == erules::HitResult::applied;
+                    if (applied) ++g_relay_applied;
+                    static const char* const kRelayKind[5] = {"?", "bullet", "sphere/job", "direct", "test"};
+                    if (LogNth(g_relay_in))
+                        Log("[enemy] relayed HIT #%u id=%05X attack 0x%X from the host (kind %s): %s%s (relayed %u, applied %u)", hits[i].hit_seq, hits[i].key,
+                            hits[i].attack, kRelayKind[hits[i].kind < 5 ? hits[i].kind : 0], applied ? "applied to hers" : "refused: ",
+                            applied ? "" : erules::HitResultText(static_cast<std::uint8_t>(rr)), g_relay_in, g_relay_applied);
+                }
+                g_res_out.clear(), g_oc_out.clear();
                 continue;
             }
             for (unsigned i = 0; i < h.n; ++i) HostHit(hits[i], h.guids_fp, gv);
@@ -1309,13 +1347,16 @@ void TickBody(const TickIn& in, double now) {
         if (on && g_role == 2) g_resync_due = true;
         g_hits_on = on;
     }
-    g_capture.store(on && g_role == 2, std::memory_order_relaxed);
-    // the captures (the guest; a solo run drains and forgets them)
+    // P1c: the host captures its hits on its frozen copies of hers (its followers: the host freezes no other copy) and relays them
+    const bool relay = on && g_role == 1 && esync::OwnRelay();
+    if (relay != g_relay_on) g_relay_on = relay, Log("[enemy] hits: the host's hits on her owned ones %s", relay ? "relayed to her (enemy_owner_hits)" : "not relayed");
+    g_capture.store(on && (g_role == 2 || relay), std::memory_order_relaxed);
+    // the captures (the guest; the host's relay; a solo run drains and forgets them)
     Cap c;
     unsigned took = 0;
     while (took < 64 && RingPop(c)) {
         ++took;
-        if (g_role == 2) GuestCapture(c, on);
+        if (g_role == 2 || relay) GuestCapture(c, on);
     }
     TestTick();
     TargetTick();
@@ -1328,7 +1369,9 @@ void TickBody(const TickIn& in, double now) {
             if (ewire::EncodeResync(h, buf, sizeof(buf)) && link::SendCombat(buf, sizeof(buf))) ++g_scb_seq, g_resync_due = false, Log("[enemy] hits: RESYNC sent");
         }
         FlushHits(gv.guids);
-    } else if (g_role == 2 && !g_out.empty()) {
+    } else if (relay) {
+        FlushHits(gv.guids);
+    } else if (!g_out.empty()) {
         g_off_dropped += static_cast<unsigned>(g_out.size());
         g_out.clear();
     }
@@ -1373,12 +1416,14 @@ bool Checks() {
         else bad |= d.group, first = first ? first : d.name, Log("[enemy] hits: byte check FAILED: %s", d.name);
     }
     g_checks_n = n, g_checks_ok = ok;
-    g_groups = (kGOnHit | kGMule | kGStamps | kGApply | kGOutcome | kGEntry) & ~bad;
+    g_groups = (kGOnHit | kGMule | kGStamps | kGApply | kGOutcome | kGEntry | kGCarry) & ~bad;
     Log("[enemy] hits: byte checks %u/%u ok (onhit %s, muledmg %s, stamps %s, apply %s, outcome %s, entry %s)", ok, n, (bad & kGOnHit) ? "FAILED" : "ok",
         (bad & kGMule) ? "FAILED" : "ok", (bad & kGStamps) ? "FAILED" : "ok", (bad & kGApply) ? "FAILED" : "ok", (bad & kGOutcome) ? "FAILED" : "ok",
         (bad & kGEntry) ? "FAILED" : "ok");
-    // the MULE handler (G3) is a backstop: its own failure leaves it out; every other group is needed
-    return !(bad & ~static_cast<unsigned>(kGMule));
+    Log("[enemy] hits: outcome carry checks %s (P1c)", (bad & kGCarry) ? "FAILED: her downs keep a camp hers" : "ok");
+    // the MULE handler (G3) is a backstop: its own failure leaves it out; the carry (P1c) only turns itself off; every other group
+    // is needed
+    return !(bad & ~static_cast<unsigned>(kGMule | kGCarry));
 }
 
 }  // namespace
@@ -1435,6 +1480,62 @@ void Tick(const TickIn& in, double now) noexcept {
     if (!TickGuarded(in, now)) HitsFault("the tick");
 }
 
+// P1c: the attack registry's ids as a bit set (512 bits; ids above 0x1FF are not counted). -1: unknown (the stamps group's check).
+int AttackRegistry(std::uint8_t (&bits)[64], std::uint16_t* max_id) noexcept {
+    std::memset(bits, 0, sizeof(bits));
+    if (max_id) *max_id = 0;
+    if (!(g_groups & kGStamps)) return -1;
+    const std::uintptr_t reg = mem::Q(A(kAttackReg));
+    std::int32_t n = 0;
+    if (!reg || !mem::Rd(reg + 0x60, n) || n <= 0 || n > 4096) return -1;
+    const std::uintptr_t list = mem::Q(reg + 0x68);
+    int count = 0;
+    for (std::int32_t i = 0; list && i < n; ++i) {
+        const std::uintptr_t e = mem::Q(list + 8ull * static_cast<unsigned>(i));
+        if (!e) continue;
+        const std::uint16_t a = U16(e + 0x20);
+        if (a >= 0x200) continue;
+        bits[a >> 3] = static_cast<std::uint8_t>(bits[a >> 3] | (1u << (a & 7)));
+        ++count;
+        if (max_id && a > *max_id) *max_id = a;
+    }
+    return count;
+}
+// P1c: her outcome on a MULE here (the outcome setter; k 0 faint, 1 sleep, 2 restrained). 1 done, 0 deferred (its damage queue is
+// not empty: the next tick), -1 not possible (the checks, not a MULE, a fault).
+namespace {
+using FnOutcome = void (*)(std::uintptr_t actor, std::int32_t k);
+bool CallOutcome(std::uintptr_t actor, std::int32_t k) noexcept {
+    __try {
+        reinterpret_cast<FnOutcome>(A(kOutcomeSet))(actor, k);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+}  // namespace
+bool CarryReady() noexcept { return g_installed && (g_groups & kGCarry) && (g_groups & kGOutcome) && !g_stop.load(std::memory_order_relaxed); }
+int SetOutcome(std::uintptr_t actor, std::uint32_t id, int k) noexcept {
+    if (!CarryReady() || !actor || k < 0 || k > 2 || !SameMule(actor, id)) return -1;
+    // never twice, never over the host's own outcome (spec 6.2; review rv-correctness R10, rv-gameplay 9)
+    if (erules::OutcomeOf(U32(actor + kActMule), U32(actor + kActDown)) != erules::Defeat::none) return -2;
+    std::int32_t st = 0;
+    if (!mem::Rd(actor + kActState, st)) return -1;
+    if (st == 2) {
+        const std::uintptr_t dmg = mem::Q(actor + 0xE90);
+        if (dmg) {
+            std::int32_t q = 0;
+            if (mem::Q(dmg) != A(kMuleDmgVt) || !mem::Rd(dmg + 0x50, q)) return -1;
+            if (q != 0) return 0;  // a hit of this frame still queued: the setter's drain would run it now
+        }
+    }
+    return CallOutcome(actor, k) ? 1 : -1;
+}
+int OutcomeNow(std::uintptr_t actor, std::uint32_t id) noexcept {
+    if (!actor || !SameMule(actor, id)) return -1;
+    return static_cast<int>(erules::OutcomeOf(U32(actor + kActMule), U32(actor + kActDown)));
+}
+
 bool CaptureOurRounds() noexcept { return g_capture.load(std::memory_order_relaxed) && g_g2.load(std::memory_order_relaxed) && !g_stop.load(std::memory_order_relaxed); }
 bool IsOnHitReceiver(std::uintptr_t receiver) noexcept {
     std::uint8_t ent = 0;
@@ -1487,6 +1588,8 @@ void Status() noexcept {
         g_rx, g_applied, g_refused_by[1], g_refused_by[2], g_refused_by[3], g_refused_by[4], g_refused_by[5], g_refused_by[6], g_refused_by[7], g_refused_by[8],
         g_refused_by[9], g_refused_by[10], g_refused_by[11], g_refused_by[12], g_role == 1 ? g_hout.size() : g_gout.size(), g_role == 1 ? g_oc_epoch : g_seen_epoch,
         g_bad_msg, g_wrong_role, g_stop.load() ? "; STOPPED" : "");
+    if (g_relay_on || g_relay_in) Log("[enemy] hits relay (P1c): %s; relayed in n=%u applied %u, not owned %u; carry %s", g_relay_on ? "the host relays" : "in", g_relay_in,
+                                      g_relay_applied, g_relay_not_owned, CarryReady() ? "ready" : "off");
 }
 void OutcomeTable() noexcept {
     unsigned n = 0;
@@ -1645,7 +1748,8 @@ bool HitTest(const double (&v)[3], char* msg, std::size_t cap) noexcept {
 
 bool HitSend(const double (&v)[3], char* msg, std::size_t cap) noexcept {
     if (!Hidden(msg, cap) || !Ready(msg, cap)) return false;
-    if (g_role != 2) return std::snprintf(msg, cap, "the guest's"), false;
+    // the guest's (at a mirror); P1c: also the host's while it relays (at its follower of one she owns: the relay's test)
+    if (g_role != 2 && !(g_role == 1 && g_relay_on)) return std::snprintf(msg, cap, "the guest's (the host's only while it relays: enemy_owner)"), false;
     if (!g_hits_on) return std::snprintf(msg, cap, "hits are off"), false;
     std::uint32_t id = v[2] > 0 ? static_cast<std::uint32_t>(v[2]) : esync::LookId();
     if (!id || !esync::MirrorOf(id, nullptr, nullptr)) id = g_last_hit_id;

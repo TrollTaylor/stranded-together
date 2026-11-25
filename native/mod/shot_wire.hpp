@@ -20,7 +20,8 @@
 //
 // SEH1 (unreliable, both ways; 1 Hz for the first 10 s, then every 5 s and on every change), 24 B:
 //   'SEH1' | u8 version 1 | u8 parts | u16 enemy_count | u32 ids_fp | u32 guids_fp | u32 world | u8 freeze_mode | u8 role | u16 0
-//   parts: bit0 mirror (enemy_sync), bit1 hits (enemy_hits), bit2 fire (shots_sync), bit3 own (enemy_owner), bit4 enemy fire
+//   parts: bit0 mirror (enemy_sync), bit1 hits (enemy_hits), bit2 fire (shots_sync), bit3 own (P1b, v0.33.0), bit4 enemy fire,
+//          bit5 camp (enemy_owner, round 21), bit6 wide attack ids (round 21)
 #pragma once
 
 #include <cmath>
@@ -37,11 +38,29 @@ inline constexpr unsigned kMaxShots = 14;  // 20 + 14 * 68 = 972 B: within one F
 inline constexpr std::size_t kMaxFrameSize = kHeaderSize + kMaxShots * kShotSize;
 inline constexpr std::uint32_t kShooterSam = 0xFFFFFFFEu;
 inline constexpr std::uint32_t kNoActor = 0x1FFFFFu;
+// The attack ids (EDSAttackId, the RTTI enum 0x144BD7D58: 264 entries up to 0x194). kMaxAttackId: the narrow range every build
+// decodes (up to v0.33.0); kAttackIdWireMax: the wide one (round 21: 0x18E..0x194, the DC's fixed guns; 0x191 EnemyRubberFixedGun
+// is weapon 92, the MULE fixed gun), sent only to a partner whose beacon carries kPartAttackWide. 0x18D is the enum's placeholder
+// "_#2": never. The runtime authority is the game's own attack registry (AttackAllowed: the game's lookup reads list[-1] for an
+// id it does not hold).
 inline constexpr std::uint16_t kMaxAttackId = 0x18C;
+inline constexpr std::uint16_t kAttackIdWireMax = 0x194;
+inline constexpr std::uint16_t kAttackPlaceholder = 0x18D;
 // CreateBullet (0x14294D340) sends these two attack ids to a projectile-entity path (0x14294C870, magazine 0x71 / 0x72), not to
 // the Enqueue: never encoded, decoded or replayed (round 15 review).
 inline constexpr std::uint16_t kAttackEntityA = 0x5F, kAttackEntityB = 0x60;
-inline constexpr bool AttackReplayable(std::uint16_t a) noexcept { return a != 0 && a <= kMaxAttackId && a != kAttackEntityA && a != kAttackEntityB; }
+// The wire's bound: `wide` the partner (or this decoder) knows 0x18E..0x194.
+inline constexpr bool AttackReplayable(std::uint16_t a, bool wide = false) noexcept {
+    return a != 0 && a <= (wide ? kAttackIdWireMax : kMaxAttackId) && a != kAttackPlaceholder && a != kAttackEntityA && a != kAttackEntityB;
+}
+// The replay's rule: the narrow range as before (every build replays it; review rv-correctness R8: a registry read must never
+// narrow it), and an id above 0x18C only within the wire bound and when the game's registry lists it (`listed`: a 0x200-bit set
+// of the ids the registry holds, read once a world; nullptr: not read, then only the narrow range, the old behaviour).
+inline constexpr bool AttackAllowed(std::uint16_t a, bool wide, const std::uint8_t* listed) noexcept {
+    if (AttackReplayable(a, false)) return true;
+    if (!listed) return false;
+    return AttackReplayable(a, wide) && a < 0x200 && ((listed[a >> 3] >> (a & 7)) & 1u) != 0;
+}
 
 enum ShotFlag : std::uint8_t { kMuzzle = 1, kHandRel = 2, kResent = 4, kLethal = 8 };
 enum FrameFlag : std::uint16_t { kEnemyShooters = 1 };
@@ -76,7 +95,8 @@ struct Frame {
 // origin beyond +-2000 km, an attack id out of range).
 std::size_t EncodeShots(const Frame& f, std::uint8_t* out, std::size_t cap) noexcept;
 // Strict: the magic, the version, n in 1..kMaxShots, the exact size, every shot's direction (finite, |q15 vector| 0.9..1.1),
-// speed > 0 and attack id in 1..0x18C but 0x5F / 0x60 (AttackReplayable).
+// speed > 0 and attack id in 1..0x194 but 0x5F / 0x60 / 0x18D (AttackReplayable wide; an old build decodes only up to 0x18C and
+// rejects the whole frame, so the sender drops a wide shot for a partner without kPartAttackWide, never the frame).
 bool DecodeShots(const std::uint8_t* d, std::size_t n, Frame& out) noexcept;
 inline bool LooksLikeShotFrame(const std::uint8_t* d, std::size_t n) noexcept {
     return d && n >= kHeaderSize + kShotSize && n <= kMaxFrameSize && d[0] == 'S' && d[1] == 'F' && d[2] == 'X' && d[3] == '1';
@@ -84,7 +104,11 @@ inline bool LooksLikeShotFrame(const std::uint8_t* d, std::size_t n) noexcept {
 
 // ---------------------------------------------------------------- SEH1
 inline constexpr std::size_t kBeaconSize = 24;
-enum Part : std::uint8_t { kPartMirror = 1, kPartHits = 2, kPartFire = 4, kPartOwn = 8, kPartEnemyFire = 16 };
+// kPartOwn (8): the ownership protocol (P1b's OWN / OWNACK / OWNRESET, v0.33.0). kPartCamp (32): P1c, the host hands over per
+// camp with that protocol (round 21; no new SCB1 type): ownership runs only when both beacons carry 32. This build never sends
+// 8 (a v0.33 host would run P1b's per-enemy rules against it: review rv-correctness R1), so 8 is read only to name an old partner. kPartAttackWide
+// (64): this build decodes the wide attack ids (up to 0x194), whatever its ownership.
+enum Part : std::uint8_t { kPartMirror = 1, kPartHits = 2, kPartFire = 4, kPartOwn = 8, kPartEnemyFire = 16, kPartCamp = 32, kPartAttackWide = 64 };
 struct Beacon {
     std::uint8_t parts = 0;
     std::uint16_t enemy_count = 0;

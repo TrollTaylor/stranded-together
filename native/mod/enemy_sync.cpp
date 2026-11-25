@@ -4,12 +4,14 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <limits>
 #include <map>
+#include <set>
 #include <vector>
 
 #include "automation.hpp"
@@ -614,6 +616,7 @@ std::atomic<bool> g_any_frozen{false};
 double g_tnow = 0;
 game::Entity* g_body = nullptr;  // the partner body (the tick's)
 std::uint32_t g_look_id = 0;      // the newest enemy_look's enemy (enemy_shot_test 0 takes it while it is a live mirror)
+std::uint32_t g_outcome_id = 0;   // P1c: the newest outcome set here (enemy_camp 3, the guest) or carried here (the host): enemy_look -9
 // P1b (docs/enemy-sync.md 10): the host's combat generation (the host bumps it on every reset; the guest keeps the newest seen)
 std::uint32_t g_own_gen = 1;
 
@@ -1729,7 +1732,7 @@ bool g_own_want = false;    // enemy_owner=1
 bool g_own_ok = false;      // its byte checks
 bool g_cp_ok = false;       // the camp group's checks (optional: the camp phase unknown without it)
 bool g_own_switch = true;   // enemy_sync 8 0 / 1
-bool g_own_on = false;      // live: both beacons carry kPartOwn, mirroring on
+bool g_own_on = false;      // live: both beacons carry kPartCamp, mirroring on
 struct OwnStats {
     unsigned takes = 0, backs = 0, forced = 0, refused = 0, no_owner = 0, two_thinking = 0, sen_out = 0, stale = 0, taken_here = 0, given_here = 0,
              refused_here = 0, resets = 0;
@@ -1740,7 +1743,73 @@ double g_own_walk_next = 0, g_own_log_next = 0, g_hfar_next = 0, g_gsen_next = 0
 std::vector<double> g_change_times, g_refuse_times;
 bool g_guest_cut = false;  // her newest frame says she is in a cutscene
 bool g_cp_logged = false;
-std::map<std::uintptr_t, std::uint8_t> g_cp_of;  // an actor -> its camp's phase (2 Hz)
+// P1c (round 21, docs/enemy-sync.md 13): camps change owner as a whole. A camp's key: kCampCp | the CP actor id, or kCampLoose | the
+// MULE's id (a MULE in no camp list: a camp of one, P1b's distances).
+constexpr std::uint64_t kCampCp = 1ull << 32, kCampLoose = 2ull << 32;
+// A member actor -> its CP camp and that camp's phase (CampWalk, 2 Hz). Kept kCampKeyKeepMs after the last walk that listed it: a
+// partial or failed walk (a CP list emptied while loading) never turns a camp into loose ones (review rv-gameplay 12)
+struct CampSeen {
+    std::uint64_t key = 0;
+    std::uint8_t phase = erules::kPhaseUnknown;
+    double t = 0;
+};
+std::map<std::uintptr_t, CampSeen> g_camp_of;
+unsigned g_camp_conflicts = 0;
+struct CampRec {
+    double hold_until = -1e18, kept_next = 0, t_change = -1e18;
+    bool refused = false, force_take = false;
+    erules::CampIn last;
+    erules::OwnVerdict v;
+    unsigned n = 0, hers = 0;
+};
+std::map<std::uint64_t, CampRec> g_camps;
+double g_camp_last_take = -1e18;
+std::uint64_t g_cnt_key = 0;  // the "no take" line's nearest camp, its reason
+const char* g_cnt_why = nullptr;
+double g_cnt_next = 0;
+bool g_camp_carry = true;     // enemy_owner_outcomes
+bool g_follow_guard = true;   // enemy_follow_guard
+bool g_relay_want = true;     // enemy_owner_hits
+struct CarryWait {
+    std::uint32_t id = 0;
+    std::uintptr_t actor = 0;
+    int k = 0;
+    double until = 0;
+    std::uint8_t d = 0;  // her defeat (erules::Defeat)
+};
+// outcomes deferred (a hit still queued on the copy; the host's game saving; a cutscene holding the copy's return: review
+// rv-correctness R4 / R5) and the carried ones read back a second later (spec 6.2; review rv-correctness R10)
+std::vector<CarryWait> g_carry, g_readback;
+unsigned g_carried = 0, g_carry_failed = 0, g_carry_down = 0, g_guard_hidden = 0;
+struct FollowHid {
+    std::uintptr_t actor = 0;
+    bool pre = false;  // hidden before us
+};
+std::map<std::uint32_t, FollowHid> g_fhid;      // the host's followers the guard hid
+std::map<std::uint32_t, double> g_fbad_since;   // her frames say unrealized / held since
+// Members out of their camp's takes (her split refusals): id -> until (erules::kCampNoTakeWorld: this world; review rv-gameplay 1)
+std::map<std::uint32_t, double> g_no_take;
+unsigned g_stragglers = 0;
+// her body's last place (held erules::kGuestPlaceHoldMs when it is missing: review rv-gameplay 14)
+double g_guest_last[3] = {}, g_guest_last_t = -1e18;
+bool NoTake(std::uint32_t id, double now) {
+    const auto it = g_no_take.find(id);
+    if (it == g_no_take.end()) return false;
+    if (it->second < 0 || now < it->second) return true;
+    g_no_take.erase(it);
+    return false;
+}
+std::uint64_t CampKeyOf(std::uint32_t id, std::uintptr_t actor) {
+    const auto it = g_camp_of.find(actor);
+    return it != g_camp_of.end() ? it->second.key : kCampLoose | id;
+}
+const char* CampName(std::uint64_t key) {
+    static char b[4][24];
+    static unsigned i = 0;
+    char* s = b[i++ & 3];
+    std::snprintf(s, 24, "%s %05X", (key >> 32) == 1 ? "cp" : "loose", static_cast<unsigned>(key & 0xFFFFFFFFu));
+    return s;
+}
 std::uint32_t g_gsen_seq = 0;
 
 struct HostRec {
@@ -1755,11 +1824,9 @@ struct HostRec {
     bool forced = false;           // enemy_own <id> 1, or a game sequence took the host's copy
     double d_g = -1, d_h = -1;
     std::uint8_t phase = erules::kPhaseUnknown, cp = erules::kPhaseUnknown;
+    double bad_since = -1;         // her fresh frames say unrealized or held there since (< 0: not)
 };
 std::map<std::uint32_t, HostRec> g_hown;
-std::uint32_t g_nt_id = 0;  // the "no take" line's nearest candidate, its reason
-const char* g_nt_why = nullptr;
-double g_nt_next = 0, g_kept_next = 0;
 struct GuestRec {
     erules::GuestOwn g;
     std::uintptr_t actor = 0, entity = 0;
@@ -1856,16 +1923,20 @@ void WalkActorsById(const std::vector<std::uint32_t>& want, std::vector<LocalEne
         }
     }
 }
+void CampAge(double now) {
+    for (auto it = g_camp_of.begin(); it != g_camp_of.end();) it = now - it->second.t > erules::kCampKeyKeepMs ? g_camp_of.erase(it) : std::next(it);
+}
 void CampWalk(double now) {
     if (!g_cp_ok || now < g_cp_next) return;
     g_cp_next = now + 500;
-    g_cp_of.clear();
+    // (a failed walk keeps the last good keys until they age out)
     const std::uintptr_t mgr = mem::Q(A(kMuleMgr));
     std::int32_t n = 0;
-    if (!mgr || !mem::Rd(mgr + kMgrCpCount, n) || n <= 0 || n > 512) return;
+    if (!mgr || !mem::Rd(mgr + kMgrCpCount, n) || n <= 0 || n > 512) return CampAge(now);
     std::vector<std::uint32_t> want(static_cast<std::size_t>(n));
     const std::uintptr_t ids = mem::Q(mgr + kMgrCpIds);
-    if (!ids || !mem::Read(ids, want.data(), want.size() * 4)) return;
+    if (!ids || !mem::Read(ids, want.data(), want.size() * 4)) return CampAge(now);
+    std::map<std::uintptr_t, std::uint64_t> seen;  // this walk's (the first camp listing a MULE keeps it)
     std::sort(want.begin(), want.end());
     std::vector<LocalEnemy> cps;
     WalkActorsById(want, cps);
@@ -1879,18 +1950,28 @@ void CampWalk(double now) {
         if (!list) continue;
         for (std::int32_t i = 0; i < cnt; ++i) {
             const std::uintptr_t m = mem::Q(list + 8ull * static_cast<unsigned>(i));
-            if (m && mem::Q(m) == A(kMuleVt)) g_cp_of[m] = static_cast<std::uint8_t>(ph), ++members;
+            if (!m || mem::Q(m) != A(kMuleVt)) continue;
+            ++members;
+            // a MULE in two camp lists: the first camp keeps it (logged, the first 8)
+            const auto ins = seen.emplace(m, kCampCp | cp.id);
+            if (!ins.second) {
+                if (ins.first->second != (kCampCp | cp.id) && g_camp_conflicts++ < 8)
+                    Log("[enemy] camp conflict: a member of %s is also listed by %s (kept in the first)", CampName(ins.first->second), CampName(kCampCp | cp.id));
+                continue;
+            }
+            g_camp_of[m] = CampSeen{kCampCp | cp.id, static_cast<std::uint8_t>(ph), now};
         }
         if (!cls) cls = mem::RttiName(mem::RttiOf(cp.actor));
     }
+    CampAge(now);
     if (!g_cp_logged) {
         g_cp_logged = true;
         Log("[enemy] camps: n=%zu of %d ids (class %s), members n=%u", cps.size(), n, cls ? cls : "?", members);
     }
 }
 std::uint8_t CampPhaseOf(std::uintptr_t actor) {
-    const auto it = g_cp_of.find(actor);
-    return it != g_cp_of.end() ? it->second : erules::kPhaseUnknown;
+    const auto it = g_camp_of.find(actor);
+    return it != g_camp_of.end() ? it->second.phase : erules::kPhaseUnknown;
 }
 
 // The capture slot of one enemy off at once (it changes owner: its model is about to be a mirror's).
@@ -1973,7 +2054,10 @@ void PlaceInto(ewire::Own& o, const double (&pos)[3], float yaw, const float* ve
 // ---- the host
 // The host's copy given back to its AI (a back's end, a refusal, a reset): placed at her place (her OWNACK / her newest frame),
 // its phase raised to hers (capped at Caution, RisePhase: escalation only), then released (Occupied{0}, Required{0} by bit 13).
-void HostBackDone(std::uint32_t id, HostRec& r, const double* pos, float yaw, std::uint8_t phase, const char* how) {
+void FollowerShow(std::uint32_t id, const char* why);
+void CarryOutcomeTo(std::uint32_t id, std::uintptr_t actor, std::uint8_t her_state, double now);
+void HostBackDone(std::uint32_t id, HostRec& r, const double* pos, float yaw, std::uint8_t phase, const char* how, std::uint8_t her_state = 0) {
+    FollowerShow(id, "back here");
     ActorNow a;
     const bool same = ReadActor(r.actor, id, a);
     double err = -1;
@@ -2017,17 +2101,142 @@ void HostBackDone(std::uint32_t id, HostRec& r, const double* pos, float yaw, st
     g_tracks.erase(id), g_prx.erase(id);
     Log("[enemy] OWN id=%05X back here (epoch %u; %s; err %.2f m; %s; health not carried; released ea4 0x%X->0x%X)", id, r.e.epoch, how, err, ph, ea4_before,
         same ? U32(r.actor + kMuleSeq) : 0);
+    // P1c: her outcome on it (down or dead on her side) carried onto the host's copy: never back standing
+    if (same && her_state) CarryOutcomeTo(id, r.actor, her_state, g_tnow);
 }
-void HostTakeOne(const HostEnemy& h, HostRec& r, double now, bool forced) {
+// The state byte of her newest frame for it (0: none)
+std::uint8_t HerState(std::uint32_t id) {
+    const auto it = g_tracks.find(id);
+    const erules::Sample* z = it != g_tracks.end() ? it->second.Newest() : nullptr;
+    return z ? z->state : 0;
+}
+bool PendingHas(std::uint32_t id) {
+    for (const Mirror& m : g_pending)
+        if (m.id == id) return true;
+    return false;
+}
+// One try of the setter: true when it is settled (done, failed or down here already), false: try again (deferred).
+bool CarryTry(const CarryWait& w, double now, bool last) {
+    static const char* const kK[3] = {"faint", "sleep", "restrained"};
+    const char* her = erules::DefeatText(w.d);
+    // (the host's game saving or a cutscene holding the copy's return: the copy is still ours, frozen; never set under a save)
+    if (saveguard::Busy() || PendingHas(w.id)) {
+        if (!last) return false;
+        ++g_carry_failed;
+        Log("[enemy] OWN id=%05X her outcome %s NOT carried: its return was held past %.0f s (a save or a cutscene)", w.id, her, erules::kCarryWaitMs / 1000.0);
+        return true;
+    }
+    const int res = ecombat::SetOutcome(w.actor, w.id, w.k);
+    if (res == 0 && !last) return false;
+    if (res == -2) {
+        ++g_carry_down;
+        Log("[enemy] OWN id=%05X her outcome %s not carried: down here already (%s)", w.id, her, erules::DefeatText(static_cast<std::uint8_t>(ecombat::OutcomeNow(w.actor, w.id))));
+        return true;
+    }
+    ++(res > 0 ? g_carried : g_carry_failed);
+    if (res > 0) {
+        g_outcome_id = w.id;
+        CarryWait rb = w;
+        rb.until = now + 1000.0;
+        g_readback.push_back(rb);
+    }
+    Log("[enemy] OWN id=%05X outcome carried: her %s -> %s here (k %d)%s", w.id, her, kK[w.k], w.k,
+        res > 0 ? "" : res == 0 ? ": still a hit queued (back standing)" : ": the setter FAILED or it left this world (back standing)");
+    return true;
+}
+void CarryOutcomeTo(std::uint32_t id, std::uintptr_t actor, std::uint8_t her_state, double now) {
+    const std::uint8_t dv = ewire::DefeatOfState(her_state);
+    const erules::Defeat d = (her_state & ewire::kDead) ? erules::Defeat::dead : dv > 5 ? erules::Defeat::other : static_cast<erules::Defeat>(dv);
+    if (d == erules::Defeat::none) return;
+    if (d == erules::Defeat::dead) g_no_take[id] = erules::kCampNoTakeWorld;  // her corpse: never taken again this world (rv-gameplay 1 / 10)
+    const int k = erules::CarryOutcome(d, g_camp_carry && ecombat::CarryReady());
+    if (k < 0) {
+        ++g_carry_failed;
+        Log("[enemy] OWN id=%05X her outcome %s NOT carried (enemy_owner_outcomes=0 or its checks): back standing", id, erules::DefeatText(static_cast<std::uint8_t>(d)));
+        return;
+    }
+    CarryWait w{id, actor, k, now + erules::kCarryWaitMs, static_cast<std::uint8_t>(d)};
+    if (CarryTry(w, now, false)) return;
+    g_carry.push_back(w);
+    Log("[enemy] OWN id=%05X her outcome %s: carry deferred (%s)", id, erules::DefeatText(w.d),
+        saveguard::Busy() ? "the host's game saves" : PendingHas(id) ? "a cutscene holds its return" : "a hit queued on the copy");
+}
+void CarryTick(double now) {
+    for (std::size_t i = 0; i < g_carry.size();) {
+        if (!CarryTry(g_carry[i], now, now >= g_carry[i].until)) {
+            ++i;
+            continue;
+        }
+        g_carry.erase(g_carry.begin() + static_cast<std::ptrdiff_t>(i));
+    }
+    for (std::size_t i = 0; i < g_readback.size();) {
+        const CarryWait& w = g_readback[i];
+        if (now < w.until) {
+            ++i;
+            continue;
+        }
+        const int got = ecombat::OutcomeNow(w.actor, w.id);
+        const int want = w.k + 1;  // k 0 faint, 1 sleep, 2 restrained -> erules::Defeat 1, 2, 3
+        if (got != want) ++g_carry_failed;  // (a mismatch counts as a fallback: spec 6.2)
+        Log("[enemy] OWN id=%05X outcome readback: k %d -> now %s%s", w.id, w.k, got < 0 ? "unread (it left this world)" : erules::DefeatText(static_cast<std::uint8_t>(got)),
+            got == want ? "" : got == 0 ? ": NOT TAKEN (a fallback)" : ": a mismatch (a fallback)");
+        g_readback.erase(g_readback.begin() + static_cast<std::ptrdiff_t>(i));
+    }
+}
+// P1c: the host's follower guard (M0 the other way): a frozen copy of hers hidden while her frames say unrealized or held there
+// (a second), or none came for 3 s (erules::FollowerGuard); shown again when they say realized and free, and at every return.
+void FollowerShow(std::uint32_t id, const char* why) {
+    g_fbad_since.erase(id);
+    const auto it = g_fhid.find(id);
+    if (it == g_fhid.end()) return;
+    ActorNow a;
+    bool ok = true;
+    if (ReadActor(it->second.actor, id, a) && (a.a88 & 1u) && !it->second.pre) ok = ActorBool(it->second.actor, kVtHidden, 0);
+    Log("[enemy] OWN id=%05X: the host's follower shown again (%s%s)", id, why, ok ? "" : ", the call FAULTED");
+    g_fhid.erase(it);
+}
+void FollowerGuardTick(std::uint32_t id, std::uintptr_t actor, const ActorNow& a, double t_rx, double now) {
+    if (!g_follow_guard) return;
+    const auto t = g_tracks.find(id);
+    const erules::Sample* z = t != g_tracks.end() ? t->second.Newest() : nullptr;
+    // hidden there counts too, unless it is down or dead there (a down MULE is never hidden here: spec 8.1 / 8.3; review
+    // rv-correctness N6)
+    const bool down = z && ((z->state & ewire::kDead) || ewire::DefeatOfState(z->state) != 0);
+    const bool bad = z && (!(z->state & ewire::kRealized) || (z->state & ewire::kSeqHeld) || ((z->state & ewire::kHidden) && !down));
+    double since = 0;
+    if (bad) {
+        auto ins = g_fbad_since.emplace(id, now);
+        since = ins.first->second;
+    } else {
+        g_fbad_since.erase(id);
+    }
+    const bool hide = erules::FollowerGuard(now - t_rx, bad ? now - since : 0) == erules::Guard::hide;
+    const bool hidden = g_fhid.count(id) != 0;
+    if (hide && !hidden) {
+        FollowHid h;
+        h.actor = actor, h.pre = (a.a88 & 1u) != 0;
+        const bool ok = h.pre || ActorBool(actor, kVtHidden, 1);
+        g_fhid[id] = h;
+        ++g_guard_hidden;
+        Log("[enemy] OWN id=%05X: the host's follower hidden (her copy %s%s)", id,
+            !z || now - t_rx > erules::kNoEntryHideMs ? "sent no frame for 3 s" : !(z->state & ewire::kRealized) ? "is not realized there"
+            : (z->state & ewire::kSeqHeld) ? "is held by a sequence there" : "is hidden there",
+            ok ? "" : ", the call FAULTED");
+    } else if (!hide && hidden) {
+        FollowerShow(id, "her frames say realized and free again");
+    }
+}
+void HostTakeOne(const HostEnemy& h, HostRec& r, double now, erules::OwnReason why) {
+    const bool forced = why == erules::OwnReason::forced;
     const ActorNow& a = h.now;
     if (!a.have_xf) return;
     bool b13 = false;
     std::uint32_t ea4 = a.ea4;
     const bool ok = !a.realized || FreezeCopy(h.id, h.actor, &b13, &ea4);
-    if (!erules::HostTake(r.e, now, ok)) {
+    if (!erules::HostTake(r.e, now, ok, erules::kCampHoldMs, erules::kCampRefuseHoldMs)) {
         if (!ok) {
             if ((ea4 >> 14) & 1u) UnfreezeCopy(h.id, h.actor, b13);
-            Log("[enemy] OWN id=%05X not handed over: the host's copy did not freeze (ea4 0x%X); hold 10 s", h.id, ea4);
+            Log("[enemy] OWN id=%05X not handed over: the host's copy did not freeze (ea4 0x%X); hold 15 s", h.id, ea4);
         }
         return;
     }
@@ -2039,16 +2248,18 @@ void HostTakeOne(const HostEnemy& h, HostRec& r, double now, bool forced) {
     g_tracks.erase(h.id), g_prx.erase(h.id);
     g_change_times.push_back(now);
     ++g_os.takes;
-    const std::uint8_t phase = PhaseOf(h.actor);
-    ewire::Own o = OwnOf(h.id, r.e.epoch, erules::Owner::guest, static_cast<std::uint8_t>(forced ? erules::OwnReason::forced : erules::OwnReason::proximity), phase);
-    PlaceInto(o, a.pos, YawOfXf(a.xf), h.vel);
+    // an unrealized copy's place and phase are stale here (its AI does not run on the host): neither is sent, her copy stays where
+    // her game has it (review rv-correctness B1: a take of an unloaded camp teleported her running MULEs to the host's stale posts)
+    const std::uint8_t phase = a.realized ? PhaseOf(h.actor) : erules::kPhaseUnknown;
+    ewire::Own o = OwnOf(h.id, r.e.epoch, erules::Owner::guest, static_cast<std::uint8_t>(why), phase);
+    if (a.realized) PlaceInto(o, a.pos, YawOfXf(a.xf), h.vel);
     OwnSend(ewire::kScbOwn, o);
-    Log("[enemy] OWN id=%05X -> guest (%s: guest %.1f m, host %.1f m; epoch %u; phase %u; host copy %s)", h.id, forced ? "forced" : "proximity", r.d_g, r.d_h,
+    Log("[enemy] OWN id=%05X -> guest (%s: guest %.1f m, host %.1f m; epoch %u; phase %u; host copy %s)", h.id, forced ? "forced" : erules::OwnReasonText(why), r.d_g, r.d_h,
         r.e.epoch, phase, a.realized ? "frozen" : "far follower");
 }
 void HostBackStart(std::uint32_t id, HostRec& r, erules::OwnReason why, bool forced, double now) {
     const double silence = now - r.t_rx;
-    if (!erules::HostBack(r.e, now)) return;
+    if (!erules::HostBack(r.e, now, erules::kCampHoldMs)) return;
     g_change_times.push_back(now);
     ++(forced ? g_os.forced : g_os.backs);
     ewire::Own o = OwnOf(id, r.e.epoch, erules::Owner::host, static_cast<std::uint8_t>(why), r.g_phase);
@@ -2069,7 +2280,7 @@ void HostAck(const ewire::Own& o, double now) {
     HostRec& r = it->second;
     const double sent = r.e.t_sent;
     const bool was_guest = r.e.owner == erules::Owner::guest;
-    const erules::AckAct act = erules::HostOnAck(r.e, o.epoch, o.result, now);
+    const erules::AckAct act = erules::HostOnAck(r.e, o.epoch, o.result, now, erules::kCampRefuseHoldMs);
     if (act == erules::AckAct::ignore) {
         ++g_os.stale;
         return;
@@ -2081,14 +2292,27 @@ void HostAck(const ewire::Own& o, double now) {
     }
     if (act == erules::AckAct::refused_back) {
         ++g_os.refused;
-        g_refuse_times.push_back(now);
-        Log("[enemy] OWN id=%05X refused by the guest (%s): the host's again (epoch %u), hold 10 s", o.id, erules::OwnRefuseText(o.refusal), r.e.epoch);
+        // P1c: one member's state there (not mirrored, not realized, dead, held, hidden) splits: this one stays the host's and out of
+        // its camp's takes (dead: this world; else 15 s); a cutscene, her cap, an alerted camp or a fault send the camp back. Only
+        // those count toward the refusal cap, once a camp take (review rv-correctness B2 / B3, rv-gameplay 1)
+        const bool split = erules::CampRefuseSplits(o.refusal);
+        if (split) {
+            const double ms = erules::CampNoTakeMs(o.refusal);
+            g_no_take[o.id] = ms < 0 ? erules::kCampNoTakeWorld : now + ms;
+        } else {
+            CampRec& cr = g_camps[CampKeyOf(o.id, r.actor)];
+            if (!cr.refused) g_refuse_times.push_back(now);
+            cr.refused = true;
+        }
+        Log("[enemy] OWN id=%05X refused by the guest (%s): the host's again (epoch %u), hold 15 s%s", o.id, erules::OwnRefuseText(o.refusal), r.e.epoch,
+            split ? (erules::CampNoTakeMs(o.refusal) < 0 ? "; its camp stays hers, it out of the camp's takes this world" : "; its camp stays hers, it out of the camp's takes 15 s")
+                  : "; its camp goes back");
         HostBackDone(o.id, r, nullptr, 0, erules::kPhaseUnknown, "refused: it never left");
         return;
     }
     (void)was_guest;
     if (o.refusal == static_cast<std::uint8_t>(erules::OwnRefuse::fault)) ++g_os.two_thinking;  // her freeze did not take
-    HostBackDone(o.id, r, (o.flags & ewire::kOwnHasPlace) ? o.pos : nullptr, o.yaw, o.phase, "her OWNACK");
+    HostBackDone(o.id, r, (o.flags & ewire::kOwnHasPlace) ? o.pos : nullptr, o.yaw, o.phase, "her OWNACK", HerState(o.id));
 }
 // The host's followers: frozen copies driven and posed from her frames; far followers (unrealized here) placed at 2 Hz.
 void HostFollow(double now) {
@@ -2102,18 +2326,21 @@ void HostFollow(double now) {
         if (!same || !a.realized || a.entity != m.entity) {
             FreeSlot(m);
             m.frozen = false, changed = true;
+            FollowerShow(m.id, "it left the host's world");
             if (same) UnfreezeCopy(m.id, m.actor, m.bit13_pre);
             if (rit != g_hown.end()) rit->second.far_follow = true;
             Log("[enemy] OWN id=%05X: the host's copy left its world: a far follower now", m.id);
             continue;
         }
         if (!a.held) {
+            FollowerShow(m.id, "a game sequence took it");
             FreeSlot(m);
             m.frozen = false, changed = true;
             if (rit != g_hown.end()) rit->second.forced = true;
             Log("[enemy] OWN id=%05X: a game sequence took the host's copy (bit 14 cleared, ea4 0x%X): given back to the host", m.id, a.ea4);
             continue;
         }
+        if (rit != g_hown.end()) FollowerGuardTick(m.id, m.actor, a, rit->second.t_rx, now);
         const auto it = g_tracks.find(m.id);
         if (it == g_tracks.end()) continue;
         double pos[3];
@@ -2126,14 +2353,18 @@ void HostFollow(double now) {
         g_mirrors.erase(std::remove_if(g_mirrors.begin(), g_mirrors.end(), [](const Mirror& x) { return !x.frozen; }), g_mirrors.end());
         PublishMirrors();
     }
-    if (now < g_hfar_next) return;
-    g_hfar_next = now + 500;
+    // a far follower realized here is frozen at once (every tick: its AI must not run a tick on the host; review rv-correctness
+    // R6); its placement at her frames stays 2 Hz
+    const bool place = now >= g_hfar_next;
+    if (place) g_hfar_next = now + 500;
+    const bool busy = saveguard::Busy();
     for (auto& kv : g_hown) {
         HostRec& r = kv.second;
         if (!r.far_follow || !r.e.frozen) continue;
         ActorNow a;
         if (!ReadActor(r.actor, kv.first, a) || !a.have_xf) continue;
         if (a.realized) {
+            if (busy) continue;  // (never frozen while the host's game saves: OwnHostTick's reset hands it back first)
             // back in the host's world: frozen again as a follower (a game sequence's hold: given back)
             bool b13 = false;
             std::uint32_t ea4 = 0;
@@ -2146,6 +2377,7 @@ void HostFollow(double now) {
             }
             continue;
         }
+        if (!place) continue;
         const auto it = g_tracks.find(kv.first);
         double pos[3];
         float yaw = 0;
@@ -2164,7 +2396,7 @@ void HostOwnReset(const char* why, bool announce, bool world_gone) {
             const auto it = g_tracks.find(kv.first);
             const erules::Sample* z = it != g_tracks.end() ? it->second.Newest() : nullptr;
             r.e.owner = erules::Owner::host;  // (for the line)
-            HostBackDone(kv.first, r, z ? z->pos : nullptr, z ? z->yaw : 0.0f, r.g_phase, why);
+            HostBackDone(kv.first, r, z ? z->pos : nullptr, z ? z->yaw : 0.0f, r.g_phase, why, z ? z->state : 0);
         }
     }
     if (world_gone) {
@@ -2184,10 +2416,228 @@ void HostOwnReset(const char* why, bool announce, bool world_gone) {
         if (kept) Log("[enemy] own reset (%s): %u host copies still in this world: released here", why, kept);
     }
     g_hown.clear();
+    for (auto& kv : g_camps) kv.second.refused = kv.second.force_take = false;
+    if (world_gone) {
+        // that world's camps, keys and split members go with it (review rv-correctness N1)
+        g_fhid.clear(), g_fbad_since.clear(), g_carry.clear(), g_readback.clear();
+        g_camps.clear(), g_camp_of.clear(), g_no_take.clear();
+        g_guest_last_t = -1e18;
+    }
     ++g_own_gen;
     if (announce) OwnSendReset();
     ++g_os.resets;
     Log("[enemy] own reset (%s): every enemy is the host's (gen %u; %u were the guest's)", why, g_own_gen, n);
+}
+// P1c: the camps at the host's 2 Hz walk (erules::CampDecide). Every enemy of the host's world is in one camp (its CP's, else one
+// of its own). A take hands every takeable member over (P1b's OWN each), a back every member she owns. One take a tick.
+// A host-owned member a take would hand over: standing, free and shown here, not on the no-take list (her split refusals).
+bool HostTakeable(const HostEnemy& h, double now) {
+    const bool down = h.now.dead || ecombat::HostDefeat(h.id) != 0;
+    if (down || h.now.seq_only || h.now.held || (h.now.realized && (h.now.hidden_or_asleep || InVehicle(h.now.entity)))) return false;
+    return !NoTake(h.id, now);
+}
+void CampTake(std::uint64_t key, CampRec& cr, const std::vector<const HostEnemy*>& ms, const erules::CampIn& ci, erules::OwnReason why, double now,
+              const double (&guest)[3], bool have_guest, const double (&hs)[3], bool have_host) {
+    unsigned n = 0, failed = 0;
+    char ids[200] = "";
+    std::size_t len = 0;
+    for (const HostEnemy* h : ms) {
+        HostRec& r = g_hown[h->id];
+        r.actor = h->actor;
+        if (r.e.owner == erules::Owner::guest || r.e.pending) continue;
+        if (!HostTakeable(*h, now)) continue;
+        r.d_g = have_guest ? Dist3(h->now.pos, guest) : -1, r.d_h = have_host ? Dist3(h->now.pos, hs) : -1;
+        HostTakeOne(*h, r, now, why);
+        if (r.e.owner == erules::Owner::guest) {
+            ++n;
+            if (len + 8 < sizeof(ids)) len += static_cast<std::size_t>(std::snprintf(ids + len, sizeof(ids) - len, "%s%05X", n > 1 ? " " : "", h->id));
+        } else {
+            ++failed;
+        }
+    }
+    if (failed && n) {
+        // a member's copy did not freeze: the camp back at once (never a camp split by a fault)
+        for (const HostEnemy* h : ms) {
+            const auto it = g_hown.find(h->id);
+            if (it != g_hown.end() && it->second.e.owner == erules::Owner::guest) HostBackStart(h->id, it->second, erules::OwnReason::refused, true, now);
+        }
+    }
+    cr.hold_until = now + (failed ? erules::kCampRefuseHoldMs : erules::kCampHoldMs);
+    cr.t_change = now, cr.refused = cr.force_take = false;
+    g_camp_last_take = now;
+    Log("[enemy] camp %s -> guest (%s: n=%u of %u, guest %.1f m, host %.1f m, r %.0f m, engage %.0f m, margin %.0f m, loaded %d, phase %u, camp %u; ids %s)%s",
+        CampName(key), erules::OwnReasonText(why), n, ci.members, ci.d_g, ci.d_h, ci.r, erules::CampEngage(ci.r), erules::CampMargin(ci.r), ci.host_loaded ? 1 : 0, ci.phase,
+        ci.cp_phase, ids, failed ? (n ? "; a copy did not freeze: back at once" : "; no copy froze") : "");
+}
+void CampBack(std::uint64_t key, CampRec& cr, const std::vector<const HostEnemy*>& ms, const erules::CampIn& ci, const erules::OwnVerdict& v, double now) {
+    unsigned n = 0;
+    for (const HostEnemy* h : ms) {
+        const auto it = g_hown.find(h->id);
+        if (it == g_hown.end() || it->second.e.owner != erules::Owner::guest) continue;
+        it->second.forced = false;
+        it->second.d_g = ci.d_g, it->second.d_h = ci.d_h;
+        HostBackStart(h->id, it->second, v.reason, v.act == erules::OwnAct::forced_back, now);
+        ++n;
+    }
+    cr.hold_until = now + erules::kCampHoldMs;
+    cr.t_change = now, cr.refused = cr.force_take = false;
+    g_camp_last_take = now;  // a back is a change too: one change at a time (review rv-gameplay 13)
+    Log("[enemy] camp %s -> host (%s%s: n=%u, guest %.1f m, host %.1f m, r %.0f m, her phase %u, a member down there %d, silence %.1f s)", CampName(key),
+        erules::OwnReasonText(v.reason), v.act == erules::OwnAct::forced_back && v.reason != erules::OwnReason::forced ? ", forced" : "", n, ci.d_g, ci.d_h, ci.r, ci.phase, ci.down_guest ? 1 : 0,
+        ci.silence_ms / 1000.0);
+}
+// One camp member as erules::CampAggregate reads it (her newest frame for hers; the host's read for the host's).
+erules::CampMember MemberOf(const HostEnemy& h, double now) {
+    erules::CampMember e;
+    const auto it = g_hown.find(h.id);
+    HostRec* r = it != g_hown.end() ? &it->second : nullptr;
+    e.hers = r && r->e.owner == erules::Owner::guest;
+    e.pending = r && r->e.pending;
+    if (e.pending) e.ack_wait_ms = now - r->e.t_sent;
+    e.realized_host = h.now.realized;
+    std::memcpy(e.pos, h.now.pos, sizeof(e.pos));
+    if (e.hers) {
+        const auto t = g_tracks.find(h.id);
+        const erules::Sample* z = t != g_tracks.end() ? t->second.Newest() : nullptr;
+        if (z) std::memcpy(e.pos, z->pos, sizeof(e.pos));
+        e.standing = !(z && ((z->state & ewire::kDead) || ewire::DefeatOfState(z->state) != 0));
+        e.silence_ms = now - r->t_rx;
+        // (a fresh frame only: a stale one is the silence's)
+        const bool bad = z && now - r->t_rx < 1000.0 && (!(z->state & ewire::kRealized) || (z->state & ewire::kSeqHeld));
+        if (bad) {
+            if (r->bad_since < 0) r->bad_since = now;
+            e.bad_guest = true, e.bad_for_ms = now - r->bad_since;
+        } else {
+            r->bad_since = -1;
+        }
+        e.forced = r->forced;
+        e.phase = r->g_phase;
+    } else {
+        e.standing = !(h.now.dead || ecombat::HostDefeat(h.id) != 0);
+        e.takeable = HostTakeable(h, now);
+        e.phase = e.standing ? PhaseOf(h.actor) : erules::kPhaseUnknown;
+    }
+    return e;
+}
+// A straggler of a camp she owns (down, held or in a vehicle on the host at the take, standing and free now): taken on its own
+// (review rv-gameplay 5). True: one taken.
+bool CampStraggler(std::uint64_t key, const std::vector<const HostEnemy*>& ms, double now, const double (&guest)[3], bool have_guest, const double (&hs)[3],
+                   bool have_host) {
+    for (const HostEnemy* h : ms) {
+        const auto it = g_hown.find(h->id);
+        if (it != g_hown.end() && (it->second.e.owner == erules::Owner::guest || it->second.e.pending)) continue;
+        if (!HostTakeable(*h, now)) continue;
+        HostRec& r = g_hown[h->id];
+        r.actor = h->actor;
+        r.d_g = have_guest ? Dist3(h->now.pos, guest) : -1, r.d_h = have_host ? Dist3(h->now.pos, hs) : -1;
+        HostTakeOne(*h, r, now, erules::OwnReason::proximity);
+        g_camp_last_take = now;
+        if (r.e.owner != erules::Owner::guest) return false;
+        ++g_stragglers;
+        Log("[enemy] camp %s: straggler id=%05X -> guest (it stands and is free on the host now; the camp is hers)", CampName(key), h->id);
+        return true;
+    }
+    return false;
+}
+void CampHostTick(double now, const double (&guest_in)[3], bool have_guest_in, const double (&hs)[3], bool have_host, bool host_cut, bool guard_ready) {
+    // her place: held kGuestPlaceHoldMs when her body is missing (a vehicle, a respawn, a hiccup: review rv-gameplay 14)
+    double guest[3] = {guest_in[0], guest_in[1], guest_in[2]};
+    bool have_guest = have_guest_in;
+    if (have_guest) std::memcpy(g_guest_last, guest, sizeof(guest)), g_guest_last_t = now;
+    else if (now - g_guest_last_t <= erules::kGuestPlaceHoldMs) std::memcpy(guest, g_guest_last, sizeof(guest)), have_guest = true;
+    std::map<std::uint64_t, std::vector<const HostEnemy*>> views;
+    std::set<std::uint32_t> seen;
+    for (const HostEnemy& h : g_host)
+        if (h.now.have_xf) views[CampKeyOf(h.id, h.actor)].push_back(&h), seen.insert(h.id);
+    const unsigned guest_owned = GuestOwnedCount();
+    bool any_pending = false;
+    for (const auto& kv : g_hown) any_pending = any_pending || kv.second.e.pending;
+    const bool carry_ok = g_camp_carry && ecombat::CarryReady();
+    const double range = g_ecfg.enemy_mirror_radius + erules::kOwnRangeSlackM;
+    bool took = false;
+    std::uint64_t near_key = 0;
+    double near_d = 1e18;
+    const char* near_why = nullptr;
+    erules::CampIn near_in;
+    std::vector<erules::CampMember> mm;
+    for (auto& cv : views) {
+        const std::uint64_t key = cv.first;
+        const std::vector<const HostEnemy*>& ms = cv.second;
+        mm.clear();
+        for (const HostEnemy* h : ms) mm.push_back(MemberOf(*h, now));
+        erules::CampIn ci;
+        const erules::CampAgg ag = erules::CampAggregate(mm.data(), mm.size(), have_guest ? guest : nullptr, have_host ? hs : nullptr, ci);
+        // a host-owned camp nowhere near her: nothing to decide (and no record)
+        if (ag.hers == 0 && ag.pend == 0 && (!have_guest || ci.d_g > erules::kCampEngageMaxM + 20.0) && !g_camps.count(key)) continue;
+        CampRec& cr = g_camps[key];
+        ci.cp_phase = (key >> 32) == 1 ? CampPhaseOf(ms.front()->actor) : erules::kPhaseUnknown;
+        ci.guest_ok = !g_guest_cut && g_refuse_times.size() < 3;
+        ci.host_ok = !host_cut && guard_ready;
+        ci.hold_over = now >= cr.hold_until;
+        ci.guest_owned = guest_owned;
+        ci.since_change_ms = now - g_camp_last_take;
+        ci.other_pending = (any_pending && ag.pend == 0) || took;
+        ci.range_m = range;
+        ci.refused = cr.refused;
+        ci.outcomes_ok = carry_ok;
+        erules::OwnVerdict v = erules::CampDecide(ci);
+        if (cr.force_take && ci.owner == erules::Owner::host && !ci.pending && !took) v = {erules::OwnAct::take, erules::OwnReason::forced};
+        cr.last = ci, cr.v = v, cr.n = ci.members, cr.hers = ag.hers;
+        if (v.act == erules::OwnAct::take) {
+            CampTake(key, cr, ms, ci, v.reason, now, guest, have_guest, hs, have_host);
+            took = true;
+            any_pending = true;
+        } else if (v.act == erules::OwnAct::back || v.act == erules::OwnAct::forced_back) {
+            CampBack(key, cr, ms, ci, v, now);
+        } else if (ag.hers && !took && erules::CampStragglerOk(ci) && CampStraggler(key, ms, now, guest, have_guest, hs, have_host)) {
+            took = true;
+            any_pending = true;
+        } else if (ag.hers && !ci.pending && now >= cr.kept_next) {
+            cr.kept_next = now + 10000;
+            Log("[enemy] camp %s kept by the guest (n=%u of %u, guest %.1f m, host %.1f m, r %.0f m, her phase %u (%s), hold %.1f s): %s", CampName(key), ag.hers, ci.members,
+                ci.d_g, ci.d_h, ci.r, ci.phase, erules::PhaseText(ci.phase), (std::max)(0.0, (cr.hold_until - now) / 1000.0), erules::CampStaysWhy(ci));
+        } else if (!ag.hers && ci.d_g >= 0 && ci.d_g <= erules::CampEngage(ci.r) && ci.d_g < near_d) {
+            near_d = ci.d_g, near_key = key, near_why = erules::CampTakeBlock(ci), near_in = ci;
+        }
+    }
+    // the ones she owns that are in no camp of the host's view (unloaded or unread on the host): each decided as a loose camp of one
+    // from her frames (silence, range, far; the host's distances do not count unloaded: review rv-gameplay 11)
+    for (auto& kv : g_hown) {
+        HostRec& r = kv.second;
+        if (r.e.owner != erules::Owner::guest || seen.count(kv.first)) continue;
+        HostEnemy h;
+        h.id = kv.first, h.actor = r.actor;
+        const auto t = g_tracks.find(kv.first);
+        const erules::Sample* z = t != g_tracks.end() ? t->second.Newest() : nullptr;
+        if (z) std::memcpy(h.now.pos, z->pos, sizeof(h.now.pos));
+        else h.now.pos[0] = h.now.pos[1] = h.now.pos[2] = 1e7;  // (no frame: the silence or the range decides it)
+        erules::CampMember e = MemberOf(h, now);
+        e.realized_host = false;
+        erules::CampIn ci;
+        erules::CampAggregate(&e, 1, have_guest ? guest : nullptr, have_host ? hs : nullptr, ci);
+        CampRec& cr = g_camps[kCampLoose | kv.first];
+        ci.hold_over = now >= cr.hold_until;
+        ci.range_m = range;
+        ci.outcomes_ok = carry_ok;
+        const erules::OwnVerdict v = erules::CampDecide(ci);
+        if (v.act != erules::OwnAct::back && v.act != erules::OwnAct::forced_back) continue;
+        r.forced = false, r.d_g = ci.d_g, r.d_h = ci.d_h;
+        HostBackStart(kv.first, r, v.reason, v.act == erules::OwnAct::forced_back, now);
+        cr.hold_until = now + erules::kCampHoldMs, cr.t_change = now;
+        g_camp_last_take = now;
+        Log("[enemy] OWN id=%05X not in the host's view: -> host (%s, guest %.1f m, silence %.1f s)", kv.first, erules::OwnReasonText(v.reason), ci.d_g,
+            ci.silence_ms / 1000.0);
+    }
+    // the nearest blocked camp's reason (changed, or every 10 s while one is within its engage distance)
+    if (near_key && near_why && (near_key != g_cnt_key || near_why != g_cnt_why || now >= g_cnt_next)) {
+        g_cnt_key = near_key, g_cnt_why = near_why, g_cnt_next = now + 10000;
+        Log("[enemy] camp: no take %s (n=%u, guest %.1f m, host %.1f m, r %.0f m, engage %.0f m, margin %.0f m, loaded %d, phase %u, camp %u, hold %.1f s): %s",
+            CampName(near_key), near_in.members, near_in.d_g, near_in.d_h, near_in.r, erules::CampEngage(near_in.r), erules::CampMargin(near_in.r),
+            near_in.host_loaded ? 1 : 0, near_in.phase, near_in.cp_phase, (std::max)(0.0, (g_camps[near_key].hold_until - now) / 1000.0), near_why);
+    }
+    if (g_camps.size() > 512) {
+        for (auto it = g_camps.begin(); it != g_camps.end();) it = it->second.hers || now < it->second.hold_until ? std::next(it) : g_camps.erase(it);
+    }
 }
 void OwnHostTick(const TickIn& in, double now, const double (&guest)[3], bool have_guest) {
     if (!g_own_on) return;
@@ -2202,13 +2652,14 @@ void OwnHostTick(const TickIn& in, double now, const double (&guest)[3], bool ha
         ++g_os.no_owner;
         const auto it = g_tracks.find(kv.first);
         const erules::Sample* z = it != g_tracks.end() ? it->second.Newest() : nullptr;
-        HostBackDone(kv.first, r, z ? z->pos : nullptr, z ? z->yaw : 0.0f, r.g_phase, "no OWNACK in 3 s: her newest frame");
+        HostBackDone(kv.first, r, z ? z->pos : nullptr, z ? z->yaw : 0.0f, r.g_phase, "no OWNACK in 3 s: her newest frame", z ? z->state : 0);
     }
-    // a save of the host's world never captures a copy we froze: everything back first. Every frozen copy counts: the table's,
+    // a save of the host's world never captures a copy we froze: everything back first. Every frozen copy counts:
     // the followers' and the returns a cutscene holds (g_pending: the host freezes no P1a mirror, so all of them are its own;
     // review rv-safety 4). (Busy is polled once a tick: a capture in the very frame a save is posted is not ruled out.)
+    // (a far follower is not frozen: unrealized on the host, its AI not running, nothing of ours in its state. A save with only far
+    // followers keeps her camps hers: review rv-gameplay 2, rv-correctness R4)
     bool any_frozen = !g_pending.empty();
-    for (const auto& kv : g_hown) any_frozen = any_frozen || kv.second.e.frozen;
     for (const Mirror& m : g_mirrors) any_frozen = any_frozen || (m.own && m.frozen);
     if (any_frozen && saveguard::Busy()) {
         if (!g_pending.empty()) {
@@ -2222,93 +2673,16 @@ void OwnHostTick(const TickIn& in, double now, const double (&guest)[3], bool ha
         return;
     }
     MirrorLine(now);
+    CarryTick(now);
     if (now < g_own_walk_next) return;
     g_own_walk_next = now + 500;
     CampWalk(now);
     g_change_times.erase(std::remove_if(g_change_times.begin(), g_change_times.end(), [&](double t) { return now - t >= 1000.0; }), g_change_times.end());
     g_refuse_times.erase(std::remove_if(g_refuse_times.begin(), g_refuse_times.end(), [&](double t) { return now - t >= 60000.0; }), g_refuse_times.end());
-    unsigned guest_owned = GuestOwnedCount();
     const bool host_cut = InCutscene() || saveguard::Busy();  // (no take while the host's game saves either)
     const bool guard_ready = g_sam_filter && shots::MirrorGuardReady();
-    // the host's: take?
-    unsigned takes = 0;
-    std::uint32_t near_id = 0;
-    double near_d = 1e18;
-    const char* near_why = nullptr;
-    erules::OwnIn near_in;
-    for (const HostEnemy& h : g_host) {
-        if (!have_guest || !h.now.have_xf) continue;
-        const double d_g = Dist3(h.now.pos, guest);
-        auto it = g_hown.find(h.id);
-        if (it == g_hown.end() && d_g > erules::kTakeM) continue;
-        HostRec& r = g_hown[h.id];
-        r.actor = h.actor;
-        if (r.e.owner == erules::Owner::guest || r.e.pending) continue;
-        r.d_g = d_g, r.d_h = have_host ? Dist3(h.now.pos, hs) : -1;
-        if (h.now.realized) NoteVitals(h.now.entity, r.have_base, r.base_h, r.base_s, r.damaged);
-        r.phase = PhaseOf(h.actor), r.cp = CampPhaseOf(h.actor);
-        erules::OwnIn oi;
-        oi.owner = erules::Owner::host, oi.pending = r.e.pending;
-        oi.d_g = r.d_g, oi.d_h = r.d_h, oi.phase = r.phase, oi.cp_phase = r.cp;
-        oi.damaged = r.damaged;
-        oi.terminal = h.now.dead || ecombat::HostDefeat(h.id) != 0;
-        oi.guest_ok = !g_guest_cut && g_refuse_times.size() < 3;
-        oi.host_ok = !host_cut && guard_ready && !h.now.seq_only && !h.now.held && !(h.now.realized && (h.now.hidden_or_asleep || InVehicle(h.now.entity)));
-        oi.hold_over = now >= r.e.hold_until;
-        oi.guest_owned = guest_owned, oi.changes_this_sec = static_cast<unsigned>(g_change_times.size());
-        const char* block = erules::TakeBlock(oi);
-        if (!block && takes < 2) {
-            HostTakeOne(h, r, now, false);
-            ++takes, ++guest_owned;
-        } else if (block && d_g <= erules::kTakeM && d_g < near_d) {
-            near_d = d_g, near_id = h.id, near_why = block, near_in = oi;
-        }
-    }
-    // the nearest candidate's reason (changed, or every 10 s while one is within 40 m)
-    if (near_id && (near_id != g_nt_id || near_why != g_nt_why || now >= g_nt_next)) {
-        g_nt_id = near_id, g_nt_why = near_why, g_nt_next = now + 10000;
-        Log("[enemy] own: no take id=%05X (guest %.1f m, host %.1f m, phase %u, camp %u, damaged %d, hold %.1f s): %s", near_id, near_in.d_g, near_in.d_h, near_in.phase,
-            near_in.cp_phase, near_in.damaged ? 1 : 0, (std::max)(0.0, (g_hown[near_id].e.hold_until - now) / 1000.0), near_why);
-    }
-    // the guest's: back?
-    for (auto& kv : g_hown) {
-        HostRec& r = kv.second;
-        if (r.e.owner != erules::Owner::guest) continue;
-        const auto it = g_tracks.find(kv.first);
-        const erules::Sample* z = it != g_tracks.end() ? it->second.Newest() : nullptr;
-        // her place of it (her newest frame), else the host's copy
-        double p[3] = {};
-        bool have_p = false;
-        if (z) std::memcpy(p, z->pos, sizeof(p)), have_p = true;
-        else {
-            ActorNow a;
-            if (ReadActor(r.actor, kv.first, a) && a.have_xf) std::memcpy(p, a.pos, sizeof(p)), have_p = true;
-        }
-        // no partner body here: she is in another region (beyond any range)
-        r.d_g = !have_guest ? 1e9 : have_p ? Dist3(p, guest) : -1;
-        r.d_h = have_host && have_p ? Dist3(p, hs) : -1;
-        erules::OwnIn oi;
-        oi.owner = erules::Owner::guest, oi.pending = r.e.pending;
-        oi.d_g = r.d_g, oi.d_h = r.d_h, oi.phase = r.g_phase;
-        oi.damaged = r.g_damaged;
-        oi.terminal = z && ((z->state & ewire::kDead) || ewire::DefeatOfState(z->state) != 0);  // dead or down on her side: stays hers
-        oi.silence_ms = now - r.t_rx;
-        oi.unrealized_guest = z && now - r.t_rx < 1000.0 && (!(z->state & ewire::kRealized) || (z->state & ewire::kSeqHeld));
-        oi.range_m = g_ecfg.enemy_mirror_radius + erules::kOwnRangeSlackM;
-        oi.ack_wait_ms = now - r.e.t_sent;
-        oi.forced = r.forced;
-        oi.hold_over = now >= r.e.hold_until;
-        const erules::OwnVerdict v = erules::HostDecide(oi);
-        if (v.act == erules::OwnAct::back || v.act == erules::OwnAct::forced_back) {
-            r.forced = false;
-            HostBackStart(kv.first, r, v.reason, v.act == erules::OwnAct::forced_back, now);
-        } else if (!r.e.pending && now >= g_kept_next) {
-            // why hers stays hers (every 10 s): her place, the host's, her phase, the hold
-            g_kept_next = now + 10000;
-            Log("[enemy] own: kept by the guest id=%05X (guest %.1f m, host %.1f m, her phase %u (%s), damaged %d, hold %.1f s, her newest frame %.1f s ago)", kv.first,
-                r.d_g, r.d_h, r.g_phase, erules::PhaseText(r.g_phase), r.g_damaged ? 1 : 0, (std::max)(0.0, (r.e.hold_until - now) / 1000.0), (now - r.t_rx) / 1000.0);
-        }
-    }
+    double hsp[3] = {hs[0], hs[1], hs[2]};
+    CampHostTick(now, guest, have_guest, hsp, have_host, host_cut, guard_ready);
 }
 
 // ---- the guest
@@ -2326,12 +2700,22 @@ void GuestTake(const ewire::Own& o, GuestRec& r, double now) {
     Mirror* m = FindMirror(o.id);
     ActorNow a;
     erules::OwnRefuse code = erules::OwnRefuse::none;
-    if (!m || !m->frozen) code = erules::OwnRefuse::not_mirror;
+    // P1c: a member of a camp the host takes that is no mirror here (P1a never entered it: not realized on the host, the host's Sam
+    // far) already runs in her world: taken as it stands (nothing unfrozen) when it is realized, alive, free and shown here
+    const std::uintptr_t loose = (!m || !m->frozen) ? LocalActor(o.id) : 0;
+    if (loose) {
+        if (!ReadActor(loose, o.id, a) || !a.realized) code = erules::OwnRefuse::not_realized;
+        else if (a.dead) code = erules::OwnRefuse::dead;
+        else if (a.held) code = erules::OwnRefuse::held;  // a game sequence holds it here
+        else if (a.hidden_or_asleep) code = erules::OwnRefuse::hidden;
+        else if (g_holding || InCutscene()) code = erules::OwnRefuse::cutscene;
+        else if (OwnedHereCount() >= erules::kMaxGuestOwnedMembers) code = erules::OwnRefuse::cap;
+    } else if (!m || !m->frozen) code = erules::OwnRefuse::not_mirror;
     else if (!ReadActor(m->actor, o.id, a) || !a.realized || a.entity != m->entity) code = erules::OwnRefuse::not_realized;
     else if (a.dead) code = erules::OwnRefuse::dead;
     else if (!a.held) code = erules::OwnRefuse::held;  // bit 14 not ours any more: a game sequence has it
     else if (g_holding || InCutscene()) code = erules::OwnRefuse::cutscene;
-    else if (OwnedHereCount() >= erules::kMaxGuestOwned) code = erules::OwnRefuse::cap;
+    else if (OwnedHereCount() >= erules::kMaxGuestOwnedMembers) code = erules::OwnRefuse::cap;
     // (her camp alerted: taken all the same; its push makes it join her camp's fight here, logged below. Refusing would keep
     // every MULE of a camp that once saw her the host's until that camp calms: run 20261124-151942)
     if (code != erules::OwnRefuse::none) {
@@ -2341,22 +2725,25 @@ void GuestTake(const ewire::Own& o, GuestRec& r, double now) {
         Log("[enemy] OWN id=%05X refused here (epoch %u): %s", o.id, o.epoch, erules::OwnRefuseText(static_cast<std::uint8_t>(code)));
         return;
     }
-    const std::uintptr_t actor = m->actor;
-    // the host's place
+    const std::uintptr_t actor = loose ? loose : m->actor;
+    // the host's place and phase: a mirror only (it stood frozen at the host's frames). A loose one already runs in her world: as it
+    // stands, its phase hers (review rv-correctness B1)
     double err = 0;
-    if (o.flags & ewire::kOwnHasPlace) {
+    if (!loose && (o.flags & ewire::kOwnHasPlace)) {
         const double p[3] = {o.pos[0], o.pos[1], o.pos[2]};
         err = Dist3(p, a.pos);
         if (err > erules::kBandStillM) ActorXf(actor, kActorTeleport, XfFromYaw(a.xf, p, o.yaw));
     }
-    // the host's phase (calm there: SetPhase, exact)
+    // (calm there: SetPhase, exact)
     const std::uint8_t ph_before = PhaseOf(actor);
-    if (o.phase <= erules::kPhaseMax && ph_before != erules::kPhaseUnknown && ph_before != o.phase) CallPhase(kSetPhase, actor, o.phase);
+    if (!loose && o.phase <= erules::kPhaseMax && ph_before != erules::kPhaseUnknown && ph_before != o.phase) CallPhase(kSetPhase, actor, o.phase);
     // released here: her AI runs it from now (her hits on it are real)
     const std::uint32_t ea4_before = U32(actor + kMuleSeq);
     Mirror mm;
-    TakeMirrorOut(o.id, &mm);
-    UnfreezeCopy(o.id, actor, mm.bit13_pre);
+    if (!loose) {
+        TakeMirrorOut(o.id, &mm);
+        UnfreezeCopy(o.id, actor, mm.bit13_pre);
+    }
     const std::uint32_t ea4_after = U32(actor + kMuleSeq);
     r.g.owned = true;
     r.actor = actor, r.entity = a.entity, r.t_taken = now;
@@ -2367,8 +2754,8 @@ void GuestTake(const ewire::Own& o, GuestRec& r, double now) {
     ++g_os.taken_here;
     g_gsen_next = 0;  // her SEN1 for it at once
     GuestAck(o.id, o.epoch, erules::Owner::guest, ewire::kOwnTaken, 0, actor);
-    Log("[enemy] OWN id=%05X taken here (epoch %u; err %.2f m; phase %u->%u; her camp %u; ea4 0x%X->0x%X; weapon268 %d)", o.id, o.epoch, err, ph_before,
-        PhaseOf(actor), CampPhaseOf(actor), ea4_before, ea4_after, a.entity ? static_cast<int>(WeaponFlag(a.entity)) : -1);
+    Log("[enemy] OWN id=%05X taken here (epoch %u; err %.2f m; phase %u->%u; her camp %u; ea4 0x%X->0x%X; weapon268 %d%s)", o.id, o.epoch, err, ph_before,
+        PhaseOf(actor), CampPhaseOf(actor), ea4_before, ea4_after, a.entity ? static_cast<int>(WeaponFlag(a.entity)) : -1, loose ? "; no mirror here: it ran here already" : "");
 }
 // Her copy frozen again (a P1a mirror from now: the host's frames drive it; its lease's silence clock starts now).
 bool GuestRefreeze(std::uint32_t id, GuestRec& r, double now, std::uint32_t* ea4_out, bool* realized_out, bool* dead_out = nullptr) {
@@ -2707,7 +3094,7 @@ std::uint8_t OurParts() {
     if (!g_want || !g_p1_ok || !g_switch || g_stopped) return 0;
     std::uint8_t p = shotw::kPartMirror;
     // P1b: ownership (enemy_owner, its byte checks, enemy_sync 8; the host also needs the save reads: no save captures a copy it froze)
-    if (g_own_want && g_own_ok && g_own_switch && (g_role != 1 || saveguard::ReadsOk())) p |= shotw::kPartOwn;
+    if (g_own_want && g_own_ok && g_own_switch && (g_role != 1 || saveguard::ReadsOk())) p |= shotw::kPartCamp;  // (P1c: per camp. Never kPartOwn: a v0.33 host would run P1b against us; review rv-correctness R1)
     return p;
 }
 
@@ -2813,15 +3200,20 @@ void P1Tick(const TickIn& in, double now) {
         Log("[enemy] sync waiting: %s", erules::FpGateText(gate));
     }
     g_last_gate = gate;
-    // P1b: ownership while both beacons carry kPartOwn (and mirroring is on)
-    const bool own_on = on && (parts & shotw::kPartOwn) && have_peer && (peer.parts & shotw::kPartOwn);
+    // P1c: ownership while both beacons carry kPartCamp (and mirroring is on). This build advertises kPartCamp alone: a v0.33 partner
+    // (kPartOwn alone, per-enemy P1b) sees no ownership part and runs none with us
+    constexpr std::uint8_t kOwnParts = shotw::kPartCamp;
+    const bool own_on = on && (parts & kOwnParts) == kOwnParts && have_peer && (peer.parts & kOwnParts) == kOwnParts;
     if (own_on != g_own_on) {
         if (own_on) {
             g_own_on = true;
             g_own_walk_next = g_hfar_next = g_gsen_next = g_gwalk_next = g_cp_next = 0;
             Log("[enemy] own on (parts ours 0x%02X theirs 0x%02X; gen %u)", parts, peer.parts, g_own_gen);
         } else {
-            const char* why = !on ? "mirroring off" : !(parts & shotw::kPartOwn) ? "off here" : "off on the partner";
+            const char* why = !on                                   ? "mirroring off"
+                              : (parts & kOwnParts) != kOwnParts       ? "off here"
+                              : have_peer && (peer.parts & shotw::kPartOwn) ? "parts: the partner's build has no camp ownership"
+                                                                        : "off on the partner";
             Log("[enemy] own off: %s (gen %u)", why, g_own_gen);
             OwnHardReset(why, false, on, on);
         }
@@ -2926,12 +3318,17 @@ void Install(const Config& config) noexcept {
         config.enemy_place_far ? 1 : 0, config.enemy_shots ? 1 : 0, config.enemy_shots_hurt ? 1 : 0, config.enemy_shots_sound ? 1 : 0, config.enemy_mirror_guard ? 1 : 0);
     // P1b: ownership by proximity (enemy_owner)
     g_own_want = config.enemy_owner;
+    g_camp_carry = config.enemy_owner_outcomes, g_follow_guard = config.enemy_follow_guard, g_relay_want = config.enemy_owner_hits;
     if (g_own_want) {
         g_own_ok = OwnChecks();
         if (!g_own_ok) Log("[enemy] own OFF: byte checks (P1a stays on)");
-        else Log("[enemy] own installed: take within %.0f m of her (the host %.0f m farther and beyond %.0f m), back beyond %.0f m or the host within %.0f m (calm), "
-                 "forced beyond %.0f m, silence %.0f s; at most %u hers", erules::kTakeM, erules::kTakeMarginM, erules::kTakeHostMinM, erules::kBackFarM,
-                 erules::kBackHostNearM, config.enemy_mirror_radius + erules::kOwnRangeSlackM, erules::kOwnSilenceMs / 1000.0, erules::kMaxGuestOwned);
+        else Log("[enemy] own installed (per camp, P1c): take within %.0f..%.0f m of her (the host %.0f..%.0f m farther and beyond %.0f m; a camp the host has not "
+                 "loaded: her distance only), back beyond engage + %.0f m, the host within %.0f m or %.0f..%.0f m nearer (calm), forced beyond %.0f m, silence %.0f s; "
+                 "at most %u hers; hold %.0f s; outcomes %d, follower guard %d, host hits relayed %d",
+                 erules::kCampEngageMinM, erules::kCampEngageMaxM, erules::kCampMarginMinM, erules::kCampMarginMaxM, erules::kTakeHostMinM, erules::kCampLeftAddM,
+                 erules::kBackHostNearM, erules::kCampMarginMinM, erules::kCampMarginMaxM, config.enemy_mirror_radius + erules::kOwnRangeSlackM,
+                 erules::kOwnSilenceMs / 1000.0, erules::kMaxGuestOwnedMembers, erules::kCampHoldMs / 1000.0, g_camp_carry ? 1 : 0, g_follow_guard ? 1 : 0,
+                 g_relay_want ? 1 : 0);
     } else {
         Log("[enemy] own off (enemy_owner=0)");
     }
@@ -3129,6 +3526,7 @@ bool Look(const double (&v)[3], char* msg, std::size_t cap) noexcept {
     const bool picked = v[0] == -6;      // P2-0: the probe's pick
     const bool owned = v[0] == -7;       // P1b: the nearest enemy the guest owns (the guest: hers; the host: its copy)
     const bool front = v[0] == -8;       // round 20 M2: in front of the newest enemy_look's enemy, along its facing, facing it
+    const bool outcome = v[0] == -9;     // P1c: the newest outcome set (enemy_camp 3) or carried here
     std::uint32_t owned_id = 0;
     if (owned) {
         double bd = 1e18;
@@ -3154,11 +3552,13 @@ bool Look(const double (&v)[3], char* msg, std::size_t cap) noexcept {
                                : picked ? PickedId()
                                : owned  ? owned_id
                                : front  ? g_look_id
+                               : outcome ? g_outcome_id
                                         : 0;
     if (picked && !want) return std::snprintf(msg, cap, "no probe pick (enemy_probe 0)"), false;
     if ((v[0] == -2 || behind || side) && !want) return std::snprintf(msg, cap, "no enemy shot replayed yet"), false;
     if (newest_hit && !want) return std::snprintf(msg, cap, "no HIT yet"), false;
     if (front && !want) return std::snprintf(msg, cap, "no enemy_look yet"), false;
+    if (outcome && !want) return std::snprintf(msg, cap, "no outcome set or carried here yet"), false;
     WorldTransform fxf{};
     bool have_fxf = false;
     const bool faced = v[0] == -1;
@@ -3272,6 +3672,79 @@ void QueueOwnMessage(const std::uint8_t* bytes, std::size_t size) noexcept {
     g_own_in.emplace_back(bytes, bytes + size);
 }
 
+bool OwnRelay() noexcept { return g_own_on && g_relay_want && g_role == 1; }
+bool OwnedHere(std::uint32_t id) noexcept { return g_role == 2 && IsOwnedHere(id); }
+
+// enemy_camp <op> <id | 0> <k> (hidden runs): 0 the camp table (`[enemy] camp row ...`); 3 her outcome k (0 faint, 1 sleep, 2 restrained)
+// on this game's copy of <id> (0: enemy_look's), the outcome setter (a test of the carry: the guest downs one she owns); 4 (the guest)
+// her owned copy of <id> (0: the nearest she owns) hidden (k 1) or shown (k 0) here: a test of the host's follower guard.
+bool Camp(const double (&v)[3], char* msg, std::size_t cap) noexcept {
+    if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden runs only"), false;
+    const int op = static_cast<int>(v[0]);
+    if (op == 0) {
+        unsigned rows = 0;
+        for (const auto& kv : g_camps) {
+            const erules::CampIn& c = kv.second.last;
+            if (!kv.second.hers && !(c.d_g >= 0 && c.d_g <= erules::CampEngage(c.r) + 60.0)) continue;
+            ++rows;
+            Log("[enemy] camp row %s: owner %s, n=%u hers %u, guest %.1f m, host %.1f m, r %.0f m, engage %.0f m, margin %.0f m, loaded %d, phase %u, camp %u, "
+                "pending %d, hold %.1f s, last %s",
+                CampName(kv.first), kv.second.hers ? "guest" : "host", kv.second.n, kv.second.hers, c.d_g, c.d_h, c.r, erules::CampEngage(c.r), erules::CampMargin(c.r),
+                c.host_loaded ? 1 : 0, c.phase, c.cp_phase, c.pending ? 1 : 0, (std::max)(0.0, (kv.second.hold_until - g_tnow) / 1000.0),
+                erules::OwnReasonText(kv.second.v.reason));
+        }
+        Log("[enemy] camp rows n=%u (of %zu known; owned here n=%u; carried %u, carry failed %u, down already %u, followers hidden %u now %zu, stragglers %u, "
+            "no-take %zu)",
+            rows, g_camps.size(), OwnedHereCount(), g_carried, g_carry_failed, g_carry_down, g_guard_hidden, g_fhid.size(), g_stragglers, g_no_take.size());
+        return std::snprintf(msg, cap, "camp rows n=%u", rows), true;
+    }
+    if (op == 3) {
+        const int k = static_cast<int>(v[2]);
+        std::uint32_t id = v[1] > 0 ? static_cast<std::uint32_t>(v[1]) : LookId();
+        if (!id || k < 0 || k > 2) return std::snprintf(msg, cap, "enemy_camp 3 <id | 0> <k 0..2>"), false;
+        std::uintptr_t actor = 0;
+        if (g_role == 2) {
+            const auto it = g_gown.find(id);
+            if (it != g_gown.end() && it->second.g.owned) actor = it->second.actor;
+        } else {
+            for (const HostEnemy& h : g_host)
+                if (h.id == id) actor = h.actor;
+        }
+        if (!actor) return std::snprintf(msg, cap, "%05X: not %s here", id, g_role == 2 ? "owned" : "an enemy"), false;
+        const int res = ecombat::SetOutcome(actor, id, k);
+        if (res > 0) g_outcome_id = id;
+        ActorNow a;
+        const bool same = ReadActor(actor, id, a);
+        Log("[enemy] camp test: outcome k %d on %05X here: %s (state %u, ea4 0x%X)", k, id,
+            res > 0 ? "set" : res == 0 ? "deferred (a hit queued)" : res == -2 ? "down here already" : "FAILED", same ? U32(actor + 0xEA0) : 0, same ? a.ea4 : 0);
+        return std::snprintf(msg, cap, "%05X outcome k %d: %s", id, k, res > 0 ? "set" : "not set"), res > 0;
+    }
+    if (op == 4) {
+        if (g_role != 2) return std::snprintf(msg, cap, "the guest's test"), false;
+        const bool hide = v[2] != 0;
+        static std::uint32_t last_hidden = 0;  // (show 0: the one hidden last)
+        const std::uint32_t want = v[1] > 0 ? static_cast<std::uint32_t>(v[1]) : hide ? 0 : last_hidden;
+        std::uint32_t id = 0;
+        std::uintptr_t actor = 0;
+        double sp[3] = {};
+        const bool have_sp = LocalPlace(reinterpret_cast<game::Entity*>(g_our_sam.load()), sp);
+        double bd = 1e18;
+        for (const auto& kv : g_gown) {
+            if (!kv.second.g.owned || (want && kv.first != want)) continue;
+            ActorNow a;
+            if (!ReadActor(kv.second.actor, kv.first, a) || !a.realized || a.dead) continue;
+            const double d = have_sp && a.have_xf ? Dist3(a.pos, sp) : 1e17;
+            if (d < bd) bd = d, actor = kv.second.actor, id = kv.first;
+        }
+        if (!actor) return std::snprintf(msg, cap, "no owned copy here%s", want ? " for that id" : ""), false;
+        const bool ok = ActorBool(actor, kVtHidden, hide ? 1 : 0);
+        if (hide) last_hidden = id;
+        Log("[enemy] camp test: her owned copy %05X %s here%s", id, hide ? "hidden" : "shown", ok ? "" : " (the call FAULTED)");
+        return std::snprintf(msg, cap, "%05X %s", id, hide ? "hidden" : "shown"), ok;
+    }
+    return std::snprintf(msg, cap, "enemy_camp 0 (the table) | 3 <id> <k> | 4 <id> <1 hide | 0 show>"), false;
+}
+
 bool Own(const double (&v)[3], char* msg, std::size_t cap) noexcept {
     if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden runs only"), false;
     if (g_role != 1) return std::snprintf(msg, cap, "the host's action"), false;
@@ -3302,13 +3775,15 @@ bool Own(const double (&v)[3], char* msg, std::size_t cap) noexcept {
     }
     for (const HostEnemy& h : g_host) {
         if (h.id != id) continue;
-        HostRec& r = g_hown[id];
-        r.actor = h.actor;
-        if (r.e.owner == erules::Owner::guest || r.e.pending) return std::snprintf(msg, cap, "%05X: already hers or pending", id), false;
-        r.d_g = have_body && h.now.have_xf ? Dist3(h.now.pos, body) : -1;
-        r.e.hold_until = 0;
-        HostTakeOne(h, r, g_tnow, true);
-        return std::snprintf(msg, cap, "%05X -> guest (forced)", id), r.e.owner == erules::Owner::guest;
+        const auto it = g_hown.find(id);
+        if (it != g_hown.end() && (it->second.e.owner == erules::Owner::guest || it->second.e.pending))
+            return std::snprintf(msg, cap, "%05X: already hers or pending", id), false;
+        // P1c: its whole camp, at the next walk
+        const std::uint64_t key = CampKeyOf(id, h.actor);
+        g_camps[key].force_take = true, g_camps[key].hold_until = 0;
+        g_own_walk_next = 0;
+        Log("[enemy] own: the camp %s of %05X forced to the guest (enemy_own; the next walk)", CampName(key), id);
+        return std::snprintf(msg, cap, "camp %s of %05X -> guest (forced, next walk)", CampName(key), id), true;
     }
     return std::snprintf(msg, cap, "%05X is not an enemy here", id), false;
 }

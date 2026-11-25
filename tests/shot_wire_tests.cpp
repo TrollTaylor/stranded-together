@@ -139,6 +139,10 @@ void TestRejects() {
     CHECK(!DecodeShots(c, size, g));
     c[kHeaderSize + 8] = 0x8D, c[kHeaderSize + 9] = 0x01;
     CHECK(!DecodeShots(c, size, g));
+    c[kHeaderSize + 8] = 0x95, c[kHeaderSize + 9] = 0x01;  // 0x195: beyond the wide range
+    CHECK(!DecodeShots(c, size, g));
+    c[kHeaderSize + 8] = 0x91, c[kHeaderSize + 9] = 0x01;  // 0x191 (weapon 92, the MULE fixed gun): decoded since round 21
+    CHECK(DecodeShots(c, size, g));
     // a NaN rec94
     std::memcpy(c, buf, size);
     c[kHeaderSize + 56] = 0xFF, c[kHeaderSize + 57] = 0xFF, c[kHeaderSize + 58] = 0xC0, c[kHeaderSize + 59] = 0x7F;
@@ -422,6 +426,33 @@ void TestRateCap() {
     CHECK(c.Take(1250));
 }
 
+// Round 21 (P1c 3b): the wide attack range, gated per partner and by the game's own registry.
+void TestAttackWide() {
+    CHECK(AttackReplayable(0x57) && AttackReplayable(0x18C));
+    CHECK(!AttackReplayable(0x191));          // narrow: an old partner
+    CHECK(AttackReplayable(0x191, true));     // wide
+    CHECK(AttackReplayable(0x194, true) && !AttackReplayable(0x195, true));
+    for (bool wide : {false, true}) {
+        CHECK(!AttackReplayable(0, wide));
+        CHECK(!AttackReplayable(kAttackPlaceholder, wide));
+        CHECK(!AttackReplayable(kAttackEntityA, wide) && !AttackReplayable(kAttackEntityB, wide));
+    }
+    std::uint8_t listed[64] = {};
+    auto set = [&](std::uint16_t a) { listed[a >> 3] |= static_cast<std::uint8_t>(1u << (a & 7)); };
+    // no registry read: the narrow range alone (the old behaviour)
+    CHECK(AttackAllowed(0x57, true, nullptr) && !AttackAllowed(0x191, true, nullptr));
+    // read: the narrow range as before whatever it lists (review rv-correctness R8); above 0x18C only what it lists, within the
+    // wire bound
+    CHECK(AttackAllowed(0x57, true, listed) && AttackAllowed(0x58, true, listed) && AttackAllowed(0x18C, true, listed));
+    CHECK(!AttackAllowed(0x191, true, listed));
+    set(0x57), set(0x191), set(0x18D), set(0x195), set(0x5F);
+    CHECK(AttackAllowed(0x57, true, listed) && AttackAllowed(0x191, true, listed));
+    CHECK(!AttackAllowed(0x191, false, listed));  // listed, but the partner is narrow
+    CHECK(!AttackAllowed(0x18D, true, listed) && !AttackAllowed(0x195, true, listed) && !AttackAllowed(0x5F, true, listed));
+    CHECK(AttackAllowed(0x58, true, listed) && !AttackAllowed(0x192, true, listed));
+    CHECK(!AttackAllowed(0, true, listed) && !AttackAllowed(0x60, true, nullptr));
+}
+
 void TestIds() {
     IdCheck c;
     CHECK(ValidId(45, c) == 0);  // not listed
@@ -535,6 +566,7 @@ int main() {
     TestPulls();
     TestRateCap();
     TestIds();
+    TestAttackWide();
     TestBulletRule();
     TestMirrorBulletRule();
     TestReplayHit();

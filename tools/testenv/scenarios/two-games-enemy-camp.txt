@@ -1,0 +1,277 @@
+# Enemy sync P1c (docs/enemy-sync.md 13, round 21): ownership per camp. A MULE camp (a DSMuleCPGameActor's members; a MULE in no
+# camp list is a camp of its own) changes owner as a whole: the host decides per camp at 2 Hz (erules::CampDecide) and hands every
+# member over with P1b's OWN / OWNACK. Taken when she is within its engage distance (r + 30 m, 40..150 m) and the host is its
+# margin (0.3 r + 10 m, 15..40 m) farther (or the host has not loaded it: her distance alone); given back when calm after the 15 s
+# hold (she left, the host within 20 m, or the host nearer by the margin), or forced. Her downs are carried onto the host's copies
+# at the return (the outcome setter 0x142AA8000); the host's hits on its copies of hers are relayed to her game.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-enemy-camp -SeedSaves complete-100 -GuestSeed profile-only -Id round21-implement
+# Launcher Local test files only: enemy_owner is on by its default (on with enemy_hits since round 21; review rv-correctness R7: the
+# gate proves the default path, the `[config]` line shows `(default: on with enemy_hits)`).
+# Steps: both at the MULE Camp Southwest of Lake Knot City, every MULE resurrected, both Sams invulnerable, her body shielded.
+# A the proximity take of a loaded calm camp: the host at the camp spot, the guest 15 m from her nearest frozen mirror (cp
+#   04004 spreads 120 m: its margin is 40 m) -> `camp .. -> guest (proximity`, every member taken here; stills 01 (4 pairs: the
+#   guest 25 m and the host 45 m from her owned
+#   MULE), census tag 1. B the calm back: the guest west at 1350 1050 (the host stays) -> `-> host (far | host near | the host nearer`,
+#   back here, given back here, mirrors again. C an outcome carried: a forced take (enemy_own 0 2: her nearest camp), the guest
+#   faints her nearest owned MULE (enemy_camp 3: the outcome setter on her copy), a forced back (enemy_own -5 1): the host's
+#   `outcome carried: her faint -> faint here`, read back a second later (`outcome readback: k 0 -> now faint`); stills 04
+#   (both 5 m from it: lying on both screens). D a forced take again (the hold since C binds a proximity take), she walks up to
+#   8 m with her rifle drawn and fires nothing: her MULEs notice her on their own (`owned id=.. phase 0..2 -> 3..5`), the host
+#   walks in to 6 m: `kept by the guest .. alerted on her side`; the host's test HIT at his follower relayed to her (`relayed
+#   HIT .. (kind test): applied to hers`), then his real rifle at his follower (`HIT sent .. kind bullet`, her `relayed HIT ..
+#   (kind bullet): applied to hers`); her owned MULEs' rounds replayed on the host; stills 03 (8 pairs); the follower guard
+#   (enemy_camp 4: her copy hidden there, his follower hidden, shown again); the guest to the Craftsman (450 m): `-> host
+#   (range`, back here with the phase. E the counters,
+#   the camp table (`carried [1-9]`). U the unloaded take: the host at Mama's Lab (2 km), the guest back at the camp (no mirrors
+#   there: M0 released them) -> `-> guest (not loaded on the host`, `taken here .. no mirror here`. Then the reset and off.
+# Afterwards:
+#   python -I tools\testenv\enemy-compare.py build-testenv\runs\<run>   (tag 1: her owned MULEs' places on the host within 1 m)
+# covers: enemy-own enemy-hits shots
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[config\] enemy_owner=1 \(default: on with enemy_hits\) outcomes=1 hits=1 follow_guard=1 attack_registry=1
+@guest waitlog 5 \[config\] enemy_owner=1 \(default: on with enemy_hits\) outcomes=1 hits=1 follow_guard=1 attack_registry=1
+waitlog 5 \[enemy\] mirror byte checks: [0-9]+/[0-9]+ ok
+@guest waitlog 5 \[enemy\] mirror byte checks: [0-9]+/[0-9]+ ok
+waitlog 5 \[enemy\] own byte checks: 6/6 ok
+@guest waitlog 5 \[enemy\] own byte checks: 6/6 ok
+waitlog 30 \[enemy\] hits: outcome carry checks ok
+@guest waitlog 30 \[enemy\] hits: outcome carry checks ok
+goto mule-camp-sw-lkc
+@guest goto 1521.90 992.00 0
+wait 4000
+?@both action dev_god 2
+@both action dev_enemies 1
+waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+@guest waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+action enemy_probe 5 1
+@guest action enemy_probe 5 1
+waitlog 40 \[enemy\] sync on \(host\).*\(equal
+@guest waitlog 40 \[enemy\] sync on \(guest\).*\(equal
+waitlog 30 \[enemy\] hits on \(host\)
+@guest waitlog 30 \[enemy\] hits on \(guest\)
+waitlog 30 \[enemy\] own on \(
+@guest waitlog 30 \[enemy\] own on \(
+waitlog 10 \[enemy\] hits: the host's hits on her owned ones relayed to her
+@guest waitlog 30 \[enemy\] mirror on id=
+waitlog 10 \[enemy\] camps: n=[1-9]
+waitlog 60 \[shots\] attack registry n=[0-9]+, max id=0x
+@guest waitlog 60 \[shots\] attack registry n=[0-9]+, max id=0x
+wait 5000
+# ---- A, the proximity take of a loaded calm camp: the host at the camp spot (its MULEs 63-160 m off: realized there), the guest
+# 15 m from her nearest frozen mirror (0x2029 of cp 04004: 0x2029..0x2032 and 0x202A, r 120 m: margin 40 m, the host 63-77 m
+# from it: run 20261125-081930), then 25 m for the stills (her MULEs noticed her at 12 m after 13.6 s: run 20261124-151942)
+@guest action enemy_look 0 15
+waitlog 20 \[enemy\] camp (cp|loose) [0-9A-F]+ -> guest \(proximity: n=[1-9]
+@guest waitlog 10 \[enemy\] OWN id=[0-9A-F]+ taken here
+# both framing her nearest owned MULE: the guest 25 m from it, the host 45 m (a back waits for the 15 s hold)
+@guest action enemy_look -7 25
+action enemy_look -7 45
+wait 1500
+screenshot 01-host-owned-a
+@guest screenshot 01-guest-owned-a
+wait 500
+screenshot 01-host-owned-b
+@guest screenshot 01-guest-owned-b
+wait 500
+screenshot 01-host-owned-c
+@guest screenshot 01-guest-owned-c
+wait 500
+screenshot 01-host-owned-d
+@guest screenshot 01-guest-owned-d
+@both action enemy_census 1 0 1
+waitlog 10 \[enemy\] census done tag=1 \(
+@guest waitlog 10 \[enemy\] census done tag=1 \(
+@guest waitlog 10 \[enemy\] owned here: n=[1-9]
+# ---- B, the calm back: the guest west of the camp at 1350 1050 (123 m from 0x202A, 230 m from the rest: within the 270 m
+# range); the host stays 45 m from a member, so "the host nearer" (or "far", "host near") after the 15 s hold since the take
+@guest goto 1350 1050 0
+waitlog 40 \[enemy\] camp (cp|loose) [0-9A-F]+ -> host \((far|host near|the host nearer): n=[1-9]
+waitlog 10 \[enemy\] OWN id=[0-9A-F]+ back here
+@guest waitlog 10 \[enemy\] OWN id=[0-9A-F]+ given back here
+@guest waitlog 10 \[enemy\] mirror on id=[0-9A-F]+ \(given back
+@both action enemy_sync 5
+wait 1500
+screenshot 02-host-back
+@guest screenshot 02-guest-back
+# ---- C, an outcome carried: a forced take of the camp nearest her (the hold since B's back does not bind a forced take), the
+# guest 30 m from her nearest owned MULE, its faint set on her copy (the outcome setter), her frames carry it; a forced back:
+# the host's copy faints (never back standing)
+@guest action enemy_look 0 30
+wait 1500
+action enemy_own 0 2
+waitlog 10 \[enemy\] camp (cp|loose) [0-9A-F]+ -> guest \(forced: n=[1-9]
+# (waitlog with the epoch: her line can come before this step starts; A took at epoch 1, B gave back at 2)
+@guest waitlog 10 \[enemy\] OWN id=[0-9A-F]+ taken here \(epoch 3;
+wait 1500
+@guest action enemy_look -7 30
+wait 1000
+@guest action enemy_camp 3 0 0
+@guest waitnew 5 \[enemy\] camp test: outcome k 0 on [0-9A-F]+ here: set
+wait 2500
+action enemy_own -5 1
+waitlog 10 \[enemy\] camp (cp|loose) [0-9A-F]+ -> host \(forced: n=[1-9]
+waitlog 10 \[enemy\] OWN id=[0-9A-F]+ outcome carried: her faint -> faint here \(k 0\)
+waitlog 10 \[enemy\] OWN id=[0-9A-F]+ outcome readback: k 0 -> now faint
+@guest waitlog 10 \[enemy\] OWN id=[0-9A-F]+ given back here
+# the fainted MULE on both screens: each 5 m from it, the camera steered down at it (0.3 m up: it lies in the grass)
+wait 2500
+action enemy_look -9 5 0.3
+@guest action enemy_look -9 5 0.3
+wait 1200
+action shots 4 3 1
+waitnew 20 \[shots\] camera aimed #[0-9]+ at the partner body \(steered
+@guest action shots 4 3 1
+@guest waitnew 20 \[shots\] camera aimed #[0-9]+ at the partner body \(steered
+wait 500
+screenshot 04-host-fainted-a
+@guest screenshot 04-guest-fainted-a
+wait 1000
+screenshot 04-host-fainted-b
+@guest screenshot 04-guest-fainted-b
+# ---- D, alerted on her side by her own game: a forced take again (the nearest camp to her: the hold since C's back binds a
+# proximity take, and the host stands 5 m from the fainted MULE), the guest 8 m from her nearest owned MULE with her rifle drawn,
+# firing nothing: her MULEs notice her on their own (review rv-gameplay 8: no gunfire, no force on the alert)
+action enemy_own 0 2
+waitnew 10 \[enemy\] camp (cp|loose) [0-9A-F]+ -> guest \(forced: n=[1-9]
+@guest waitlog 10 \[enemy\] OWN id=[0-9A-F]+ taken here \(epoch ([5-9]|[1-9][0-9]);
+@guest pad dpad_right 600 keep
+@guest pad dpad_right 900 lx=-23170 ly=23170 rx=-23170 ry=23170 keep
+@guest pad dpad_right 400 keep
+@guest pad none 0
+@guest action enemy_look -7 8
+@guest waitlog 60 \[enemy\] owned id=[0-9A-F]+ phase [0-2] -> [3-5]
+# the host walks into her alerted camp (6 m from his follower of her nearest owned member): it stays hers
+action enemy_look -7 6
+waitnew 25 \[enemy\] camp (cp|loose) [0-9A-F]+ kept by the guest .*: alerted on her side
+# the host's test HIT at his follower of her nearest owned MULE: relayed to her, applied to hers
+action enemy_look -7 8
+wait 800
+action enemy_hit_send 0x47 1 0
+waitnew 5 \[enemy\] HIT sent #[0-9]+ id=
+@guest waitlog 10 \[enemy\] relayed HIT #[0-9]+ id=[0-9A-F]+ attack 0x47 from the host \(kind test\): applied to hers
+# the host's real rifle at his follower of her nearest owned MULE (review rv-gameplay 6): his rounds captured on his frozen copy
+# (kind bullet), relayed to her, applied to hers. The look (a teleport) first, then the rifle, drawn before he fires: run
+# 20261125-095552 switched to it 0.1 s before the look's teleport and his Sam never drew it (`our gear .. on item 1`, never
+# `on joint 26`; no enqueue of his all run: RT fired nothing). Fired again every 4.5 s until a HIT goes out
+action enemy_look -7 8 1.0
+wait 1500
+pad dpad_right 600 keep
+pad dpad_right 900 lx=-23170 ly=23170 rx=-23170 ry=23170 keep
+pad dpad_right 400 keep
+pad none 0
+waitlog 10 \[gear\] our gear: weapon item [0-9]+ 'ds/entities/weapons/assault_rifle' .*on joint 26
+action shots 9 0 0
+action shots 4 2 2
+until 30 4500 \[enemy\] HIT sent #[0-9]+ id=[0-9A-F]+ attack 0x[0-9A-F]+ kind bullet => action shots 4 2 2
+@guest waitlog 15 \[enemy\] relayed HIT #[0-9]+ id=[0-9A-F]+ attack 0x[0-9A-F]+ from the host \(kind bullet\): applied to hers
+pad none 0
+# her owned MULEs come at her and fire: their rounds sent (SFX1), replayed on the host from his followers
+@guest waitlog 45 \[shots\] enemy sent n=[1-9]
+waitlog 20 \[shots\] enemy replayed n=[1-9][0-9]* \(muzzle [1-9]
+# the same owned MULE framed on both screens (the host 12 m from the one she faces); both cameras steered at it
+@guest action enemy_look -7 12
+action enemy_look -1 12
+wait 1200
+action shots 9 0 0
+@guest action shots 9 12 0
+action shots 4 5 1
+@guest action shots 4 5 1
+waitlog 25 \[shots\] camera aimed #[0-9]+ at the partner body \(steered
+@guest waitlog 25 \[shots\] camera aimed #[0-9]+ at the partner body \(steered
+screenshot 03-host-a
+@guest screenshot 03-guest-a
+wait 40
+screenshot 03-host-b
+@guest screenshot 03-guest-b
+wait 40
+screenshot 03-host-c
+@guest screenshot 03-guest-c
+wait 40
+screenshot 03-host-d
+@guest screenshot 03-guest-d
+wait 40
+screenshot 03-host-e
+@guest screenshot 03-guest-e
+wait 40
+screenshot 03-host-f
+@guest screenshot 03-guest-f
+wait 40
+screenshot 03-host-g
+@guest screenshot 03-guest-g
+wait 40
+screenshot 03-host-h
+@guest screenshot 03-guest-h
+# her owned MULEs' hits on her body (optional: their aim may miss in the time)
+@guest action enemy_sync 5
+?@guest waitnew 10 \[enemy\] owned here: n=[1-9].*owned hits on our Sam [1-9]
+# the follower guard (review rv-gameplay 4): her nearest owned copy hidden in her game; the host hides his frozen follower of it
+# after a second, and shows it again once her frames say shown
+@guest action enemy_camp 4 0 1
+@guest waitnew 5 \[enemy\] camp test: her owned copy [0-9A-F]+ hidden here
+waitlog 10 \[enemy\] OWN id=[0-9A-F]+: the host's follower hidden \(her copy is hidden there
+@guest action enemy_camp 4 0 0
+@guest waitnew 5 \[enemy\] camp test: her owned copy [0-9A-F]+ shown here
+waitlog 10 \[enemy\] OWN id=[0-9A-F]+: the host's follower shown again \(her frames say realized and free again
+@both action enemy_census 3 0 0
+waitlog 10 \[enemy\] census done tag=3 \(
+@guest waitlog 10 \[enemy\] census done tag=3 \(
+@both action enemy_sync 5
+# forced back while alerted: the guest to the Craftsman (450 m)
+@guest action dev_goto 1226.28 1318.63 183.88
+waitlog 20 \[enemy\] camp (cp|loose) [0-9A-F]+ -> host \((range|unrealized on the guest|silence), forced: n=[1-9]
+waitlog 10 \[enemy\] OWN id=[0-9A-F]+ back here .*phase (raised [0-9]->[0-9]|kept [3-5])
+@guest waitlog 20 \[enemy\] OWN id=[0-9A-F]+ given back here .*
+wait 8000
+waitnew 10 \[enemy\] owned here: .*guest-owned n=0
+@guest action enemy_sync 0
+@guest waitnew 10 \[enemy\] sync: .*mirrors n=0 frozen=0
+# ---- E, the counters and the camp table
+action enemy_sync 0
+waitnew 5 \[enemy\] own: on .*no-owner>1s 0, two-thinking 0,
+@guest action enemy_sync 0
+@guest waitnew 5 \[enemy\] own: on .*no-owner>1s 0, two-thinking 0,
+action enemy_camp 0
+waitnew 5 \[enemy\] camp rows n=[0-9]+ .*carried [1-9]
+# ---- U, the unloaded take: the host at Mama's Lab (2 km: the camp unloaded there, her mirrors released by M0), the guest back
+# at the camp 30 m from the rifleman 0202F (no mirror here: her game runs it): her distance alone decides
+action dev_goto 1024.51 -982.48 162.18
+wait 6000
+@guest goto 1521.90 992.00 0
+wait 5000
+@guest action enemy_look 0x202F 30
+waitlog 40 \[enemy\] camp (cp|loose) [0-9A-F]+ -> guest \(not loaded on the host: n=[1-9]
+@guest waitlog 10 \[enemy\] OWN id=[0-9A-F]+ taken here \(epoch ([7-9]|[1-9][0-9]);.*no mirror here: it ran here already
+wait 3000
+@guest screenshot 05-guest-unloaded-owned
+# ---- the reset, off
+@both action enemy_sync 8 0
+waitlog 5 \[enemy\] own reset \(
+@guest waitlog 5 \[enemy\] own reset \(
+@both action enemy_sync 2
+waitlog 5 \[enemy\] sync off
+@guest waitlog 5 \[enemy\] sync off
+action enemy_census 4 0 0
+waitlog 10 \[enemy\] census done tag=4 \(
+nolog \[enemy\] FAULT
+@guest nolog \[enemy\] FAULT
+nolog \[enemy\] hits FAULT
+@guest nolog \[enemy\] hits FAULT
+nolog byte check FAILED
+@guest nolog byte check FAILED
+nolog \[shots\] FAULT
+@guest nolog \[shots\] FAULT
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+nolog outcome carried.*FAILED
+nolog outcome readback.*NOT TAKEN
+action enemy_probe 5 0
+?@both action dev_god 0
+@guest quit
+wait 3000
+quit

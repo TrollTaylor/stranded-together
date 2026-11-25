@@ -1,5 +1,6 @@
 // Enemy sync P1a (native/mod/enemy_rules.hpp): the schedule, the pose slots, the interpolation, the band, entry, the lease (and
 // the cutscene hold), the lock-free entity set, the enemy shots' gate, the damage policy and the fingerprint gate. No game.
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -280,12 +281,26 @@ void TestConfigValues() {
                         const bool sync = ss ? sv != 0 : hs != 0;
                         CHECK(k.sync == sync);
                         CHECK(k.hits == (hset ? hv != 0 : sync));
-                        CHECK(!k.owner);  // unset: off whatever the field held
+                        CHECK(k.owner == (cfgval::kOwnerDefaultOn && k.hits));  // unset: the default (whatever the field held)
                     }
     CHECK(cfgval::EnemyDefaults(true, false, false, false, false, true, true).owner && !cfgval::EnemyDefaults(true, false, false, false, false, true, false).owner);
     CHECK(cfgval::EnemyDefaults(true, false, false, false, false, false, false).hits);   // host_save alone: sync and hits on
     CHECK(!cfgval::EnemyDefaults(true, true, false, false, true, false, false).hits);    // enemy_sync=0: hits follow it off
     CHECK(cfgval::EnemyDefaults(false, false, false, true, true, false, false).hits);    // enemy_hits=1 given: kept
+    // the P1c keys: each on by default, each set alone, an unknown key untouched (review rv-correctness N9)
+    {
+        const cfgval::OwnerKeys d;
+        CHECK(d.outcomes && d.follow_guard && d.attack_registry && d.hits);
+        const char* const keys[4] = {"enemy_owner_outcomes", "enemy_follow_guard", "enemy_attack_registry", "enemy_owner_hits"};
+        for (int i = 0; i < 4; ++i) {
+            cfgval::OwnerKeys k;
+            CHECK(cfgval::SetOwnerKey(k, keys[i], false));
+            CHECK(k.outcomes == (i != 0) && k.follow_guard == (i != 1) && k.attack_registry == (i != 2) && k.hits == (i != 3));
+            CHECK(cfgval::SetOwnerKey(k, keys[i], true) && k.outcomes && k.follow_guard && k.attack_registry && k.hits);
+        }
+        cfgval::OwnerKeys u;
+        CHECK(!cfgval::SetOwnerKey(u, "enemy_owner", false) && !cfgval::SetOwnerKey(u, "enemy_owner_outcome", false) && u.outcomes && u.hits);
+    }
 }
 
 void TestLease() {
@@ -487,7 +502,7 @@ void TestPulls() {
 
 // ---------------------------------------------------------------- P2 (round 17): hits and outcomes
 void TestHitVerdict() {
-    CHECK(AttackOk(1) && AttackOk(0x47) && AttackOk(0x18D) && !AttackOk(0) && !AttackOk(0x180) && !AttackOk(0x18E));
+    CHECK(AttackOk(1) && AttackOk(0x47) && AttackOk(0x18C) && !AttackOk(0x18D) && !AttackOk(0) && !AttackOk(0x180) && !AttackOk(0x18E));
     CHECK(HitVerdict(false, true, true) == HitV::pass);    // not a mirror: the game's
     CHECK(HitVerdict(false, false, false) == HitV::pass);
     CHECK(HitVerdict(true, true, true) == HitV::capture);  // hers on a mirror, hits on: dropped and sent
@@ -1002,7 +1017,531 @@ void TestPoseAlloc() {
 }
 }  // namespace
 
+// ---------------------------------------------------------------- P1c (round 21): ownership per camp
+void TestCampGeometry() {
+    // a loose MULE (a camp of one, r 10 m) gets P1b's distances exactly
+    CHECK(CampR(0) == kCampRMinM && CampR(500) == kCampRMaxM && CampR(55) == 55);
+    CHECK(CampEngage(CampR(0)) == kTakeM);
+    CHECK(CampMargin(CampR(0)) == kTakeMarginM);
+    CHECK(CampLeft(CampR(0)) == kBackFarM);
+    // a big camp: wider, capped
+    CHECK(CampEngage(60) == 90 && CampMargin(60) == 28 && CampLeft(60) == 110);
+    CHECK(CampEngage(120) == kCampEngageMaxM && CampMargin(120) == kCampMarginMaxM);
+    // monotonic in r
+    for (double r = 10; r < 120; r += 5) {
+        CHECK(CampEngage(r) <= CampEngage(r + 5));
+        CHECK(CampMargin(r) <= CampMargin(r + 5));
+        CHECK(CampLeft(r) > CampEngage(r));  // hysteresis: she leaves farther out than she engages
+    }
+}
+
+CampIn CalmCamp() {
+    CampIn c;
+    c.owner = Owner::host, c.r = 10, c.d_g = 20, c.d_h = 80, c.phase = 0, c.cp_phase = 0, c.members = 4, c.takeable = 4;
+    return c;
+}
+
+bool TakeBlocked(const CampIn& in, const char* want) {
+    const char* b = CampTakeBlock(in);
+    return b && std::strcmp(b, want) == 0 && CampDecide(in).act == OwnAct::none;
+}
+
+void TestCampTake() {
+    const CampIn c = CalmCamp();
+    CHECK(CampTakeBlock(c) == nullptr);
+    CHECK(CampDecide(c).act == OwnAct::take && CampDecide(c).reason == OwnReason::proximity);
+    // the log order: each block shows while every earlier one is clear
+    { CampIn x = c; x.owner = Owner::guest; CHECK(CampTakeBlock(x) && std::strcmp(CampTakeBlock(x), "not the host's") == 0); }
+    { CampIn x = c; x.pending = true; CHECK(TakeBlocked(x, "pending")); }
+    { CampIn x = c; x.parts_ok = false; CHECK(TakeBlocked(x, "parts")); }
+    { CampIn x = c; x.members = kCampMaxMembers + 1; CHECK(TakeBlocked(x, "too big")); }
+    { CampIn x = c; x.takeable = 0; CHECK(TakeBlocked(x, "nothing to take (down, held or unread on the host)")); }
+    { CampIn x = c; x.d_g = 41; CHECK(TakeBlocked(x, "the guest beyond its engage distance")); }
+    { CampIn x = c; x.d_g = -1; CHECK(TakeBlocked(x, "the guest beyond its engage distance")); }
+    { CampIn x = c; x.d_h = 34.9; CHECK(TakeBlocked(x, "the host not its margin farther")); }
+    { CampIn x = c; x.d_h = 35; CHECK(CampTakeBlock(x) == nullptr); }  // exactly the margin: taken
+    { CampIn x = c; x.d_g = 5, x.d_h = 24; CHECK(TakeBlocked(x, "the host within 25 m")); }
+    { CampIn x = c; x.phase = kPhaseCaution; CHECK(TakeBlocked(x, "a member's phase")); }
+    { CampIn x = c; x.phase = kPhaseUnknown; CHECK(TakeBlocked(x, "a member's phase")); }
+    { CampIn x = c; x.cp_phase = kPhaseCaution; CHECK(TakeBlocked(x, "the camp's phase")); }
+    { CampIn x = c; x.cp_phase = kPhaseUnknown; CHECK(CampTakeBlock(x) == nullptr); }  // a loose camp: no CP phase
+    { CampIn x = c; x.guest_ok = false; CHECK(TakeBlocked(x, "the guest (a cutscene, refusals)")); }
+    { CampIn x = c; x.host_ok = false; CHECK(TakeBlocked(x, "the host (a cutscene, a save, the guards)")); }
+    { CampIn x = c; x.hold_over = false; CHECK(TakeBlocked(x, "the hold")); }
+    { CampIn x = c; x.guest_owned = kMaxGuestOwnedMembers - 3; CHECK(TakeBlocked(x, "her cap")); }
+    { CampIn x = c; x.guest_owned = kMaxGuestOwnedMembers - 4; CHECK(CampTakeBlock(x) == nullptr); }
+    { CampIn x = c; x.since_change_ms = 500; CHECK(TakeBlocked(x, "one change at a time")); }
+    { CampIn x = c; x.other_pending = true; CHECK(TakeBlocked(x, "one change at a time")); }
+    // a big camp: her 80 m out is within its engage distance (r 60: 90 m), the host 28 m farther
+    {
+        CampIn x = c;
+        x.r = 60, x.d_g = 80, x.d_h = 108;
+        CHECK(CampTakeBlock(x) == nullptr);
+        x.d_h = 107;
+        CHECK(CampTakeBlock(x) != nullptr);
+    }
+    // a camp the host has not loaded: her distance alone, reason "unloaded"
+    {
+        CampIn x = c;
+        x.host_loaded = false, x.d_h = -1;
+        CHECK(CampDecide(x).act == OwnAct::take && CampDecide(x).reason == OwnReason::unloaded);
+        x.d_h = 10;
+        CHECK(CampDecide(x).act == OwnAct::take);
+        // its phases are stale on the host (the AI does not run there): not a block
+        x.d_g = 20, x.phase = 4, x.cp_phase = 4;
+        CHECK(CampDecide(x).act == OwnAct::take && CampDecide(x).reason == OwnReason::unloaded);
+        x.host_loaded = true, x.d_h = 80;  // loaded again: the phases count
+        CHECK(TakeBlocked(x, "a member's phase"));
+        x.host_loaded = false;
+        x.d_g = 41;
+        CHECK(CampDecide(x).act == OwnAct::none);
+    }
+}
+
+CampIn HerCamp() {
+    CampIn c = CalmCamp();
+    c.owner = Owner::guest;
+    return c;
+}
+
+bool Says(const char* got, const char* want) { return got && std::strcmp(got, want) == 0; }
+
+void TestCampBack() {
+    const CampIn c = HerCamp();
+    CHECK(CampDecide(c).act == OwnAct::none);
+    CHECK(Says(CampStaysWhy(c), "she is nearer"));
+    // forced, in this order, whatever the phase and the hold
+    {
+        CampIn x = c;
+        x.refused = true, x.forced = true, x.phase = 4, x.hold_over = false;
+        CHECK(CampDecide(x).act == OwnAct::forced_back && CampDecide(x).reason == OwnReason::refused);
+    }
+    { CampIn x = c; x.forced = true, x.phase = 4; CHECK(CampDecide(x).act == OwnAct::forced_back && CampDecide(x).reason == OwnReason::forced); }
+    { CampIn x = c; x.pending = true, x.ack_wait_ms = kAckTimeoutMs + 1; CHECK(CampDecide(x).reason == OwnReason::ack_timeout); }
+    { CampIn x = c; x.pending = true, x.ack_wait_ms = 100, x.d_g = 500; CHECK(CampDecide(x).act == OwnAct::none); }  // pending: wait
+    { CampIn x = c; x.silence_ms = kOwnSilenceMs + 1, x.phase = 4; CHECK(CampDecide(x).reason == OwnReason::silence); }
+    { CampIn x = c; x.d_g = 271, x.phase = 4; CHECK(CampDecide(x).reason == OwnReason::range); }
+    { CampIn x = c; x.unrealized_guest = true, x.phase = 4; CHECK(CampDecide(x).reason == OwnReason::unrealized); }
+    { CampIn x = c; x.unrealized_guest = true, x.host_loaded = false; CHECK(CampDecide(x).act == OwnAct::none); }  // nowhere better to run
+    // a member down on her side and no carry: hers
+    {
+        CampIn x = c;
+        x.down_guest = true, x.outcomes_ok = false, x.d_g = 200;
+        CHECK(CampDecide(x).act == OwnAct::none);
+        CHECK(Says(CampStaysWhy(x), "a member down on her side (no outcome carry)"));
+    }
+    { CampIn x = c; x.down_guest = true, x.outcomes_ok = true, x.d_g = 61; CHECK(CampDecide(x).act == OwnAct::back); }
+    // by proximity only calm and after the hold: the host walking into her fight does not take it
+    {
+        CampIn x = c;
+        x.phase = kPhaseCaution, x.d_h = 5;
+        CHECK(CampDecide(x).act == OwnAct::none);
+        CHECK(Says(CampStaysWhy(x), "alerted on her side"));
+    }
+    {
+        CampIn x = c;
+        x.hold_over = false, x.d_g = 100;
+        CHECK(CampDecide(x).act == OwnAct::none);
+        CHECK(Says(CampStaysWhy(x), "the hold"));
+    }
+    { CampIn x = c; x.d_g = 60; CHECK(CampDecide(x).act == OwnAct::none); x.d_g = 60.1; CHECK(CampDecide(x).reason == OwnReason::far_off); }
+    { CampIn x = c; x.d_h = 20; CHECK(CampDecide(x).reason == OwnReason::host_near); }
+    // the host nearer by the margin, within engage
+    { CampIn x = c; x.d_g = 38, x.d_h = 23; CHECK(CampDecide(x).act == OwnAct::back && CampDecide(x).reason == OwnReason::host_nearer); }
+    { CampIn x = c; x.d_g = 38, x.d_h = 24; CHECK(CampDecide(x).act == OwnAct::none); }
+    {
+        CampIn x = c;
+        x.r = 60, x.d_g = 100, x.d_h = 72;
+        CHECK(CampDecide(x).reason == OwnReason::host_nearer);
+        x.d_h = 73;
+        CHECK(CampDecide(x).act == OwnAct::none);
+    }
+    // an unloaded camp: the host's distances do not count for a back either (review rv-correctness R9)
+    { CampIn x = c; x.host_loaded = false, x.d_h = 20; CHECK(CampDecide(x).act == OwnAct::none); }
+    { CampIn x = c; x.host_loaded = false, x.d_g = 38, x.d_h = 23; CHECK(CampDecide(x).act == OwnAct::none); }
+    { CampIn x = c; x.host_loaded = false, x.d_g = 60.1; CHECK(CampDecide(x).reason == OwnReason::far_off); }
+    // hysteresis: no place is both a take and a back by proximity, loaded or not
+    int both = 0;
+    for (bool loaded : {true, false})
+        for (double r : {10.0, 40.0, 120.0})
+            for (double dg = 0; dg <= 200; dg += 2.5)
+                for (double dh = 0; dh <= 200; dh += 2.5) {
+                    CampIn t = CalmCamp();
+                    t.r = r, t.d_g = dg, t.d_h = dh, t.host_loaded = loaded;
+                    CampIn b = HerCamp();
+                    b.r = r, b.d_g = dg, b.d_h = dh, b.host_loaded = loaded;
+                    if (CampDecide(t).act == OwnAct::take && CampDecide(b).act == OwnAct::back) {
+                        if (both++ < 3) std::printf("  take and back at once: loaded %d r %.0f d_g %.1f d_h %.1f\n", loaded ? 1 : 0, r, dg, dh);
+                    }
+                }
+    CHECK(both == 0);
+}
+
+void TestCampSplits() {
+    // one member's state there splits (review rv-correctness B2, rv-gameplay 1); a cutscene, her cap, an alerted camp, a fault do not
+    for (OwnRefuse r : {OwnRefuse::not_mirror, OwnRefuse::not_realized, OwnRefuse::dead, OwnRefuse::held, OwnRefuse::hidden}) {
+        CHECK(CampRefuseSplits(static_cast<std::uint8_t>(r)));
+        CHECK(!CampRefuseCounts(static_cast<std::uint8_t>(r)));
+    }
+    for (OwnRefuse r : {OwnRefuse::cutscene, OwnRefuse::cap, OwnRefuse::camp_alerted, OwnRefuse::fault}) {
+        CHECK(!CampRefuseSplits(static_cast<std::uint8_t>(r)));
+        CHECK(CampRefuseCounts(static_cast<std::uint8_t>(r)));
+    }
+    // a member dead there stays out of its camp's takes for the world; the other splits 15 s
+    CHECK(CampNoTakeMs(static_cast<std::uint8_t>(OwnRefuse::dead)) < 0);
+    CHECK(CampNoTakeMs(static_cast<std::uint8_t>(OwnRefuse::held)) == kCampRefuseHoldMs);
+    CHECK(CampNoTakeMs(static_cast<std::uint8_t>(OwnRefuse::not_realized)) == kCampRefuseHoldMs);
+    CHECK(Says(OwnReasonText(OwnReason::unloaded), "not loaded on the host"));
+    CHECK(Says(OwnReasonText(OwnReason::host_nearer), "the host nearer"));
+    CHECK(Says(OwnReasonText(static_cast<OwnReason>(15)), "?"));
+}
+
+// CampAggregate (review rv-gameplay 15): the per-camp glue, from member states.
+CampMember Mem(bool hers, double x, double y = 0) {
+    CampMember m;
+    m.hers = hers, m.realized_host = true, m.phase = 0, m.takeable = !hers;
+    m.pos[0] = x, m.pos[1] = y, m.pos[2] = 0;
+    return m;
+}
+void TestCampAggregate() {
+    const double guest[3] = {0, 0, 0}, host[3] = {200, 0, 0};
+    {
+        // four of the host's, standing: the nearest member's distances, r from the spread, everything takeable
+        CampMember m[4] = {Mem(false, 30), Mem(false, 35), Mem(false, 38), Mem(false, 35, 3)};
+        CampIn c;
+        const CampAgg g = CampAggregate(m, 4, guest, host, c);
+        CHECK(g.hers == 0 && g.pend == 0 && c.owner == Owner::host && !c.pending);
+        CHECK(c.members == 4 && c.takeable == 4 && c.host_loaded);
+        CHECK(std::fabs(c.d_g - 30) < 1e-9 && std::fabs(c.d_h - 162) < 1e-9);
+        CHECK(c.r == kCampRMinM && c.phase == 0);
+        // unknown places: d_g -1 for a host camp, d_h -1
+        CampIn u;
+        CampAggregate(m, 4, nullptr, nullptr, u);
+        CHECK(u.d_g == -1 && u.d_h == -1);
+    }
+    {
+        // a member she killed (rv-gameplay 1): down there, not standing; the camp's distances from the standing ones; her phase
+        // from the standing ones; nothing forced
+        CampMember m[3] = {Mem(true, 30), Mem(true, 80), Mem(true, 90)};
+        m[0].standing = false, m[0].phase = 4;
+        m[1].phase = 1, m[2].phase = 0;
+        CampIn c;
+        const CampAgg g = CampAggregate(m, 3, guest, host, c);
+        CHECK(g.hers == 3 && c.owner == Owner::guest && c.down_guest && !c.forced);
+        CHECK(std::fabs(c.d_g - 80) < 1e-9 && c.phase == 1);
+        CHECK(!c.unrealized_guest);
+        // her place unknown: a range back's 1e9
+        CampIn u;
+        CampAggregate(m, 3, nullptr, host, u);
+        CHECK(u.d_g == 1e9 && CampDecide(u).reason == OwnReason::range);
+        // every member down: every member counts for the distances
+        for (CampMember& x : m) x.standing = false;
+        CampIn d;
+        CampAggregate(m, 3, guest, host, d);
+        CHECK(std::fabs(d.d_g - 30) < 1e-9 && d.phase == 0);
+    }
+    {
+        // one member seq-held there (a cargo theft, a truck: rv-gameplay 3): never the whole camp back; every settled member for
+        // 2 s: back
+        CampMember m[3] = {Mem(true, 20), Mem(true, 25), Mem(true, 30)};
+        m[0].bad_guest = true, m[0].bad_for_ms = 60000;
+        CampIn c;
+        CampAggregate(m, 3, guest, host, c);
+        CHECK(!c.unrealized_guest && CampDecide(c).act == OwnAct::none);
+        for (CampMember& x : m) x.bad_guest = true, x.bad_for_ms = kCampUnrealizedMs - 1;
+        CampAggregate(m, 3, guest, host, c);
+        CHECK(!c.unrealized_guest);
+        for (CampMember& x : m) x.bad_for_ms = kCampUnrealizedMs;
+        CampAggregate(m, 3, guest, host, c);
+        CHECK(c.unrealized_guest && CampDecide(c).reason == OwnReason::unrealized);
+        // a pending member does not count (it sent no frame yet); a camp with none settled is never "unrealized"
+        m[0].bad_guest = false, m[0].pending = true;
+        CampAggregate(m, 3, guest, host, c);
+        CHECK(c.unrealized_guest && c.pending);
+        for (CampMember& x : m) x.pending = true;
+        CampAggregate(m, 3, guest, host, c);
+        CHECK(!c.unrealized_guest);
+    }
+    {
+        // a split camp (rv-gameplay 5): hers plus a straggler of the host's that stands again: taken alone when calm and settled
+        CampMember m[3] = {Mem(true, 20), Mem(true, 25), Mem(false, 30)};
+        CampIn c;
+        CampAggregate(m, 3, guest, host, c);
+        CHECK(c.owner == Owner::guest && c.takeable == 1);
+        CHECK(CampStragglerOk(c));
+        { CampIn x = c; x.pending = true; CHECK(!CampStragglerOk(x)); }
+        { CampIn x = c; x.phase = kPhaseCaution; CHECK(!CampStragglerOk(x)); }
+        { CampIn x = c; x.since_change_ms = 500; CHECK(!CampStragglerOk(x)); }
+        { CampIn x = c; x.guest_owned = kMaxGuestOwnedMembers; CHECK(!CampStragglerOk(x)); }
+        { CampIn x = c; x.host_ok = false; CHECK(!CampStragglerOk(x)); }
+        m[2].takeable = false;  // down, held or on the no-take list
+        CampAggregate(m, 3, guest, host, c);
+        CHECK(c.takeable == 0 && !CampStragglerOk(c));
+        CampIn h = CalmCamp();
+        CHECK(!CampStragglerOk(h));  // the host's camp: a take, not a straggler
+    }
+    {
+        // an orphan (rv-gameplay 11): one of hers in no camp of the host's view, unloaded there: a loose camp of one, her frames
+        CampMember o = Mem(true, 300);
+        o.realized_host = false;
+        CampIn c;
+        c.range_m = 270;
+        CampAggregate(&o, 1, guest, host, c);
+        CHECK(!c.host_loaded && c.members == 1 && c.r == kCampRMinM);
+        CHECK(CampDecide(c).reason == OwnReason::range);
+        o.pos[0] = 100;
+        CampAggregate(&o, 1, guest, host, c);
+        CHECK(CampDecide(c).reason == OwnReason::far_off);
+        o.pos[0] = 30, o.silence_ms = kOwnSilenceMs + 1;
+        CampAggregate(&o, 1, guest, host, c);
+        CHECK(CampDecide(c).reason == OwnReason::silence);
+        // the host's distance does not count unloaded (rv-correctness R9)
+        const double near_host[3] = {35, 0, 0};
+        o.silence_ms = 0;
+        CampAggregate(&o, 1, guest, near_host, c);
+        CHECK(c.d_h < kBackHostNearM && CampDecide(c).act == OwnAct::none);
+    }
+    {
+        // a forced member forces the camp
+        CampMember m[2] = {Mem(true, 20), Mem(true, 25)};
+        m[1].forced = true;
+        CampIn c;
+        CampAggregate(m, 2, guest, host, c);
+        CHECK(c.forced && CampDecide(c).reason == OwnReason::forced);
+    }
+}
+
+// The camp machine end to end (review rv-correctness R11; the model of TestOwnProperty): a camp of 1..6 members, each with
+// P1b's HostOwn / GuestOwn, delayed in-order messages (one channel each way), her split and hard refusals, a member that dies on
+// her side, random places and load, the host's 2 Hz decision through CampAggregate / CampDecide / CampStragglerOk as
+// CampHostTick runs them. Invariants: no two thinking copies outside the protocol's windows; zero thinking bounded; no
+// proximity take / back sooner than the hold after the camp's last change; a split refusal never sends the camp back; a member
+// dead on her side never offered again.
+void TestCampOwnProperty() {
+    std::uint32_t rng = 777;
+    auto rnd = [&](unsigned n) {
+        rng = rng * 1664525u + 1013904223u;
+        return (rng >> 8) % n;
+    };
+    constexpr double kLongMin = 2500, kLongMax = 6000;
+    auto delay = [&]() { return rnd(25) == 0 ? kLongMin + rnd(static_cast<unsigned>(kLongMax - kLongMin) + 1) : static_cast<double>(rnd(401)); };
+    struct Msg {
+        int m;  // the member
+        bool own;  // OWN (else OWNACK)
+        std::uint16_t epoch;
+        Owner owner;
+        std::uint8_t result, refusal;
+        double at;
+    };
+    unsigned two = 0, timeout_two = 0, bad_end = 0, takes = 0, backs = 0, splits = 0, hards = 0, stragglers = 0, split_backs = 0, quick = 0,
+             dead_offers = 0, unreal_backs = 0, prox_backs = 0, timeouts = 0;
+    double worst_zero = 0;
+    for (int run = 0; run < 3000; ++run) {
+        const int n = 1 + static_cast<int>(rnd(6));
+        std::vector<HostOwn> e(n);
+        std::vector<GuestOwn> g(n);
+        std::vector<double> no_take(n, -1e18), zero_since(n, -1), timeout_since(n, -1), bad_since(n, -1);
+        std::vector<std::uint16_t> timeout_epoch(n, 0);
+        std::vector<bool> dead_there(n, false), dead_known(n, false), down_host(n, false);
+        std::vector<std::array<double, 3>> pos(n);
+        const double spread = 5 + rnd(60);
+        for (int i = 0; i < n; ++i) pos[i] = {static_cast<double>(rnd(static_cast<unsigned>(spread))), static_cast<double>(rnd(static_cast<unsigned>(spread))), 0};
+        double gp[3] = {static_cast<double>(rnd(200)), 0, 0}, hp[3] = {static_cast<double>(rnd(300)), 50, 0};
+        double hold_until = -1e18, last_change = -1e18, last_take = -1e18, last_back = -1e18;
+        bool refused = false, hard_seen = false, loaded = rnd(4) != 0;
+        double unreal_from = -1;
+        std::vector<Msg> to_g, to_h;
+        double now = 0;
+        const int steps = 400 + static_cast<int>(rnd(600));
+        const int dies = rnd(3) == 0 ? static_cast<int>(rnd(static_cast<unsigned>(n))) : -1;
+        auto send = [&](int i, Owner o) { to_g.push_back(Msg{i, true, e[i].epoch, o, 0, 0, now + delay()}); };
+        auto ack = [&](int i, std::uint16_t ep, Owner o, std::uint8_t res, std::uint8_t refusal) { to_h.push_back(Msg{i, false, ep, o, res, refusal, now + delay()}); };
+        for (int st = 0; st <= steps + 400; ++st, now += 50) {
+            const bool live = st < steps;
+            for (auto* q : {&to_g, &to_h})
+                for (std::size_t k = 1; k < q->size(); ++k) (*q)[k].at = (std::max)((*q)[k].at, (*q)[k - 1].at);
+            // the world moves: her walk, the host's walk, the load, a death on her side, a whole-camp unrealized spell there
+            if (live) {
+                gp[0] = (std::max)(0.0, (std::min)(300.0, gp[0] + static_cast<double>(rnd(9)) - 4.0));
+                hp[0] = (std::max)(0.0, (std::min)(300.0, hp[0] + static_cast<double>(rnd(9)) - 4.0));
+                if (rnd(400) == 0) loaded = !loaded;
+                if (dies >= 0 && g[dies].owned && rnd(100) == 0) dead_there[dies] = true;
+                if (unreal_from < 0 && rnd(1500) == 0) unreal_from = now;
+                else if (unreal_from >= 0 && rnd(80) == 0) unreal_from = -1;
+                for (int i = 0; i < n; ++i)
+                    if (rnd(3000) == 0) down_host[i] = !down_host[i];
+            }
+            while (!to_g.empty() && to_g.front().at <= now) {
+                const Msg m = to_g.front();
+                to_g.erase(to_g.begin());
+                const int i = m.m;
+                switch (GuestOnOwn(g[i], m.epoch, m.owner)) {
+                    case GuestAct::take: {
+                        if (dead_there[i] && dead_known[i]) ++dead_offers;
+                        std::uint8_t refusal = 0;
+                        if (dead_there[i]) refusal = static_cast<std::uint8_t>(OwnRefuse::dead);
+                        else if (rnd(12) == 0) refusal = static_cast<std::uint8_t>(OwnRefuse::not_realized);
+                        else if (rnd(30) == 0) refusal = static_cast<std::uint8_t>(OwnRefuse::held);
+                        else if (rnd(60) == 0) refusal = static_cast<std::uint8_t>(OwnRefuse::cutscene);
+                        if (refusal) ack(i, m.epoch, Owner::host, 2, refusal);
+                        else g[i].owned = true, ack(i, m.epoch, Owner::guest, 0, 0);
+                        break;
+                    }
+                    case GuestAct::release: g[i].owned = false, ack(i, m.epoch, Owner::host, 1, 0); break;
+                    case GuestAct::ack_taken: ack(i, m.epoch, Owner::guest, 0, 0); break;
+                    case GuestAct::ack_released: ack(i, m.epoch, Owner::host, 1, 0); break;
+                    case GuestAct::ignore: break;
+                }
+                if (timeout_since[i] >= 0 && (m.epoch == timeout_epoch[i] || EpochNewer(m.epoch, timeout_epoch[i]))) timeout_since[i] = -1;
+            }
+            while (!to_h.empty() && to_h.front().at <= now) {
+                const Msg m = to_h.front();
+                to_h.erase(to_h.begin());
+                const int i = m.m;
+                const bool was_back = e[i].owner == Owner::host && e[i].pending;
+                const AckAct a = HostOnAck(e[i], m.epoch, m.result, now, kCampRefuseHoldMs);
+                if (a == AckAct::refused_back) {
+                    if (CampRefuseSplits(m.refusal)) {
+                        ++splits;
+                        const double ms = CampNoTakeMs(m.refusal);
+                        no_take[i] = ms < 0 ? 1e18 : now + ms;
+                        if (m.refusal == static_cast<std::uint8_t>(OwnRefuse::dead)) dead_known[i] = true;
+                    } else {
+                        ++hards, hard_seen = true, refused = true;
+                    }
+                } else if (a == AckAct::release && was_back && dead_there[i]) {
+                    // a back of one dead there: her outcome carried, never taken again this world (CarryOutcomeTo)
+                    no_take[i] = 1e18, dead_known[i] = true, down_host[i] = true;
+                }
+            }
+            // the host's decision (2 Hz)
+            if (live && st % 10 == 0) {
+                std::vector<CampMember> mm(n);
+                for (int i = 0; i < n; ++i) {
+                    CampMember& c = mm[i];
+                    c.hers = e[i].owner == Owner::guest;
+                    c.pending = e[i].pending;
+                    c.ack_wait_ms = now - e[i].t_sent;
+                    c.realized_host = loaded;
+                    c.pos[0] = pos[i][0], c.pos[1] = pos[i][1], c.pos[2] = 0;
+                    c.phase = 0;
+                    if (c.hers) {
+                        c.standing = !dead_there[i];
+                        c.silence_ms = rnd(200) == 0 ? kOwnSilenceMs + 500 : 100;
+                        const bool bad = unreal_from >= 0;
+                        if (bad && bad_since[i] < 0) bad_since[i] = now;
+                        if (!bad) bad_since[i] = -1;
+                        c.bad_guest = bad, c.bad_for_ms = bad ? now - bad_since[i] : 0;
+                        c.phase = rnd(10) == 0 ? kPhaseCaution : 0;
+                    } else {
+                        c.standing = !down_host[i];
+                        c.takeable = c.standing && now >= no_take[i];
+                    }
+                }
+                CampIn ci;
+                const CampAgg ag = CampAggregate(mm.data(), mm.size(), gp, hp, ci);
+                ci.guest_ok = rnd(30) != 0, ci.host_ok = rnd(30) != 0;
+                ci.hold_over = now >= hold_until;
+                ci.since_change_ms = now - last_change;
+                ci.range_m = 270;
+                ci.refused = refused;
+                ci.outcomes_ok = true;
+                ci.cp_phase = 0;
+                const OwnVerdict v = CampDecide(ci);
+                if (v.act == OwnAct::take) {
+                    if (now - last_back < kCampHoldMs) ++quick;
+                    unsigned took = 0, failed = 0;
+                    for (int i = 0; i < n; ++i) {
+                        if (e[i].owner != Owner::host || e[i].pending || !mm[i].takeable) continue;
+                        if (HostTake(e[i], now, rnd(40) != 0, kCampHoldMs, kCampRefuseHoldMs)) ++took, ++takes, send(i, Owner::guest);
+                        else ++failed;
+                    }
+                    if (failed && took)
+                        for (int i = 0; i < n; ++i)
+                            if (e[i].owner == Owner::guest && HostBack(e[i], now, kCampHoldMs)) ++backs, send(i, Owner::host);
+                    hold_until = now + kCampHoldMs, last_change = last_take = now, refused = false, hard_seen = false;
+                } else if (v.act == OwnAct::back || v.act == OwnAct::forced_back) {
+                    if (v.reason == OwnReason::refused && !hard_seen) ++split_backs;
+                    if (v.reason == OwnReason::unrealized) ++unreal_backs;
+                    if (v.reason == OwnReason::far_off || v.reason == OwnReason::host_near || v.reason == OwnReason::host_nearer) {
+                        ++prox_backs;
+                        if (now - last_take < kCampHoldMs) ++quick;
+                    }
+                    for (int i = 0; i < n; ++i)
+                        if (e[i].owner == Owner::guest && HostBack(e[i], now, kCampHoldMs)) ++backs, send(i, Owner::host);
+                    hold_until = now + kCampHoldMs, last_change = last_back = now, refused = false, hard_seen = false;
+                } else if (ag.hers && CampStragglerOk(ci)) {
+                    for (int i = 0; i < n; ++i) {
+                        if (e[i].owner != Owner::host || e[i].pending || !mm[i].takeable) continue;
+                        if (HostTake(e[i], now, true, kCampHoldMs, kCampRefuseHoldMs)) ++stragglers, ++takes, send(i, Owner::guest);
+                        last_change = now;
+                        break;
+                    }
+                }
+            }
+            for (int i = 0; i < n; ++i) {
+                if (HostBackTimedOut(e[i], now)) ++timeouts, timeout_since[i] = now, timeout_epoch[i] = e[i].epoch;
+                const bool host_thinks = !e[i].frozen, guest_thinks = g[i].owned;
+                if (host_thinks && guest_thinks) {
+                    if (timeout_since[i] >= 0) ++timeout_two;
+                    else ++two;
+                }
+                if (!host_thinks && !guest_thinks) {
+                    if (zero_since[i] < 0) zero_since[i] = now;
+                    worst_zero = (std::max)(worst_zero, now - zero_since[i]);
+                } else {
+                    zero_since[i] = -1;
+                }
+            }
+        }
+        if (!to_g.empty() || !to_h.empty()) ++bad_end;
+        for (int i = 0; i < n; ++i)
+            if (e[i].pending || ((e[i].owner == Owner::guest) != g[i].owned)) ++bad_end;
+    }
+    CHECK(two == 0);
+    CHECK(bad_end == 0);
+    CHECK(worst_zero <= 2 * kAckTimeoutMs + 500 + 100);
+    CHECK(quick == 0);         // no proximity take / back within the hold of the camp's last change
+    CHECK(split_backs == 0);   // a split refusal never sends the camp back
+    CHECK(dead_offers == 0);   // a member known dead on her side is never offered again
+    CHECK(takes > 1000 && backs > 300 && splits > 100 && hards > 20 && stragglers > 20 && unreal_backs > 5 && prox_backs > 100 && timeouts > 5);
+    std::printf("camp own property: two-thinking %u (in a timeout window %u ticks), bad end %u, worst zero %.0f ms, quick cycles %u, split backs %u, dead offers %u "
+                "(takes %u backs %u splits %u hard %u stragglers %u unrealized backs %u proximity backs %u timeouts %u)\n",
+                two, timeout_two, bad_end, worst_zero, quick, split_backs, dead_offers, takes, backs, splits, hards, stragglers, unreal_backs, prox_backs, timeouts);
+}
+
+void TestCarryOutcome() {
+    CHECK(CarryOutcome(Defeat::none, true) == -1);
+    CHECK(CarryOutcome(Defeat::faint, true) == 0);
+    CHECK(CarryOutcome(Defeat::sleep, true) == 1);
+    CHECK(CarryOutcome(Defeat::restrained, true) == 2);
+    CHECK(CarryOutcome(Defeat::dead, true) == 0);  // never a standing MULE back: a kill carried as a faint
+    CHECK(CarryOutcome(Defeat::other, true) == 0);
+    for (std::uint8_t d = 0; d < kDefeats; ++d) {
+        const Defeat dd = static_cast<Defeat>(d);
+        CHECK(CarryOutcome(dd, false) == -1);
+        CHECK(CarryOutcome(dd, true) <= 2);                  // never k 3 (dead) this round
+        CHECK((CarryOutcome(dd, true) >= 0) == (d != 0));  // every down is carried
+    }
+}
+
+void TestFollowerGuard() {
+    CHECK(FollowerGuard(0, 0) == Guard::show);
+    CHECK(FollowerGuard(kNoEntryHideMs, 0) == Guard::show);
+    CHECK(FollowerGuard(kNoEntryHideMs + 1, 0) == Guard::hide);
+    CHECK(FollowerGuard(100, kMemberGuardMs - 1) == Guard::show);
+    CHECK(FollowerGuard(100, kMemberGuardMs) == Guard::hide);
+}
+
 int main() {
+    TestCampGeometry();
+    TestCampTake();
+    TestCampBack();
+    TestCampSplits();
+    TestCampAggregate();
+    TestCampOwnProperty();
+    TestCarryOutcome();
+    TestFollowerGuard();
     TestHostDecideTake();
     TestHostDecideBack();
     TestHostOwnMachine();

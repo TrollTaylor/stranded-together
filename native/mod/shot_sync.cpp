@@ -143,6 +143,14 @@ std::atomic<int> g_enemy_role{0};
 erules::KeySet g_shooters;
 std::atomic<unsigned> g_mirror_seen{0}, g_mirror_dropped{0};
 std::uint8_t g_enemy_parts = 0, g_enemy_freeze = 0;
+// P1c (round 21): the attack ids above 0x18C (weapon 92's 0x191). This game's attack registry as a bit set, read once it is
+// plausible (50+ entries, 0x57 listed); a replay or a capture takes an id above 0x18C only when it is listed here, and a send
+// drops such a shot for a partner whose beacon has no kPartAttackWide (an old build's decoder refuses the whole frame).
+bool g_attack_want = true;   // enemy_attack_registry
+std::uint8_t g_attack_bits[64] = {};
+bool g_attack_ok = false;
+double g_attack_next = 0;
+unsigned g_attack_tries = 0, g_attack_narrowed = 0, g_attack_refused_logged = 0;
 std::uint16_t g_enemy_count = 0;
 std::uint32_t g_enemy_ids = 0, g_enemy_guids = 0;
 shotw::Beacon g_peer_beacon;
@@ -1066,6 +1074,36 @@ const char* CannotReplayWhy() noexcept {
                                                       : "";
 }
 
+// P1c: this game's attack registry (the listed ids), or nullptr (the 0x18C cap): enemy_attack_registry=0, not read yet, implausible.
+const std::uint8_t* AttackListed() noexcept { return g_attack_want && g_attack_ok ? g_attack_bits : nullptr; }
+void AttackRegistryTick() noexcept {
+    if (!g_attack_want || g_attack_ok || g_now < g_attack_next || g_attack_tries >= 60) return;
+    g_attack_next = g_now + 5000, ++g_attack_tries;
+    std::uint16_t max_id = 0;
+    const int n = ecombat::AttackRegistry(g_attack_bits, &max_id);
+    const bool has57 = (g_attack_bits[0x57 >> 3] >> (0x57 & 7)) & 1u, has191 = (g_attack_bits[0x191 >> 3] >> (0x191 & 7)) & 1u;
+    if (n < 50 || !has57) {
+        if (g_attack_tries == 1 || g_attack_tries == 60) Log("[shots] attack registry n=%d not plausible yet (0x57 %s): the 0x18C cap%s", n, has57 ? "listed" : "missing",
+                                                              g_attack_tries == 60 ? " (given up)" : "");
+        return;
+    }
+    g_attack_ok = true;
+    Log("[shots] attack registry n=%d, max id=0x%X, 0x191 listed %s: ids above 0x18C replayed when listed", n, max_id, has191 ? "yes" : "no");
+}
+// The shots a partner without kPartAttackWide can decode (its decoder refuses a frame with an id above 0x18C): the others dropped.
+unsigned NarrowFor(shotw::Shot* s, unsigned n) noexcept {
+    if (g_peer_parts & shotw::kPartAttackWide) return n;
+    unsigned k = 0;
+    for (unsigned i = 0; i < n; ++i) {
+        if (s[i].attack_id > shotw::kMaxAttackId) {
+            if (g_attack_narrowed++ < 8) Log("[shots] attack 0x%X not sent: the partner's build has the 0x18C cap", s[i].attack_id);
+            continue;
+        }
+        s[k++] = s[i];
+    }
+    return k;
+}
+
 // One replay of `s` from `origin`. Returns true when the game enqueued it. Every value the game reads under the bullet system's
 // lock is checked first: a fault there cannot be recovered (the SEH below is a last resort; the lock would stay held).
 bool ReplayShot(const shotw::Shot& s, const double (&origin)[3], std::uint8_t kind, bool muzzle_wanted, bool enemy = false) {
@@ -1079,8 +1117,10 @@ bool ReplayShot(const shotw::Shot& s, const double (&origin)[3], std::uint8_t ki
         ++g_ref_dummy;
         return false;
     }
-    if (!shotw::AttackReplayable(s.attack_id)) {
+    if (!shotw::AttackAllowed(s.attack_id, true, AttackListed())) {
         ++g_ref_attack;
+        if (s.attack_id > shotw::kMaxAttackId && g_attack_refused_logged < 8)
+            ++g_attack_refused_logged, Log("[shots] attack 0x%X refused (%s)", s.attack_id, AttackListed() ? "not listed in this game's attack registry" : "the registry not read: the 0x18C cap");
         return false;
     }
     if (!(s.speed >= shotw::kMinReplaySpeed)) {
@@ -1229,7 +1269,7 @@ bool BuildShot(const Cap& c, std::uintptr_t sam, shotw::Shot* out) {
             s.flags |= shotw::kHandRel;
         }
     }
-    if (!shotw::AttackReplayable(s.attack_id) || !(s.speed >= shotw::kMinReplaySpeed)) return false;
+    if (!shotw::AttackAllowed(s.attack_id, true, AttackListed()) || !(s.speed >= shotw::kMinReplaySpeed)) return false;
     s.shot_id = ++g_next_shot_id;
     *out = s;
     return true;
@@ -1335,7 +1375,7 @@ bool BuildEnemyShot(const Cap& c, shotw::Shot* out) {
             s.flags |= shotw::kHandRel;
         }
     }
-    if (!shotw::AttackReplayable(s.attack_id) || !(s.speed >= shotw::kMinReplaySpeed)) return false;
+    if (!shotw::AttackAllowed(s.attack_id, true, AttackListed()) || !(s.speed >= shotw::kMinReplaySpeed)) return false;
     s.shot_id = ++g_next_shot_id;
     *out = s;
     return true;
@@ -1363,6 +1403,7 @@ void EnemyShooterTick(const TickIn& in, const Cap* caps, unsigned nc) {
         fresh[nf++] = s;
     }
     if (send) {
+        nf = NarrowFor(fresh, nf);
         g_e_frames += SendFrames(g_e_resend, shotw::kEnemyShooters, fresh, nf);
     } else {
         g_e_no_peer += nf;
@@ -1388,6 +1429,7 @@ void ShooterTick(const TickIn& in) {
         if (all[i].shooter == shotw::kShooterSam) caps[nc++] = all[i];
         else ecaps[ne++] = all[i];
     }
+    AttackRegistryTick();
     EnemyShooterTick(in, ecaps, ne);
     if (!g_on.load()) return;
     if (!nc) {
@@ -1424,7 +1466,7 @@ void ShooterTick(const TickIn& in) {
         }
     }
     if (in.net) {
-        if (shotw::BothHave(shotw::kPartFire, g_peer_parts, shotw::kPartFire)) g_sent_frames += SendFrames(g_resend, 0, fresh, nf);
+        if (shotw::BothHave(shotw::kPartFire, g_peer_parts, shotw::kPartFire)) nf = NarrowFor(fresh, nf), g_sent_frames += SendFrames(g_resend, 0, fresh, nf);
         else g_no_peer += nf;
     }
 }
@@ -1435,7 +1477,8 @@ void ShooterTick(const TickIn& in) {
 // enemy_sync's (SetEnemyBeacon).
 std::uint8_t OurParts() noexcept {
     std::uint8_t p = g_on.load() && CanReplay() ? shotw::kPartFire : 0;
-    p |= g_enemy_parts & (shotw::kPartMirror | shotw::kPartOwn);  // P1b: kPartOwn is enemy_sync's
+    p |= g_enemy_parts & (shotw::kPartMirror | shotw::kPartOwn | shotw::kPartCamp);  // P1b / P1c: kPartOwn, kPartCamp are enemy_sync's
+    if (AttackListed()) p |= shotw::kPartAttackWide;  // P1c: this build replays the listed attack ids above 0x18C
     if (g_enemy_want && (g_enemy_parts & shotw::kPartMirror) && CanReplay()) p |= shotw::kPartEnemyFire;
     if (g_hits_part.load(std::memory_order_relaxed) && (g_enemy_parts & shotw::kPartMirror)) p |= shotw::kPartHits;  // P2
     return p;
@@ -2158,6 +2201,12 @@ void TickBody(const TickIn& in, double now) {
             g_rs.Clear();
             ReleaseSRWLockExclusive(&g_rs_lock);
             g_last_replay_ms.store(-1e18, std::memory_order_relaxed);
+            // P1c: the attack registry read again for this world (a read that gave up before a load is tried anew; review
+            // rv-correctness R8)
+            if (g_attack_ok || g_attack_tries) {
+                std::memset(g_attack_bits, 0, sizeof(g_attack_bits));
+                g_attack_ok = false, g_attack_tries = 0, g_attack_next = 0;
+            }
         }
     }
     RegistryLog();
@@ -2217,6 +2266,7 @@ void Install(const Config& config) noexcept {
     // rv-behaviour 2)
     if (g_cfg.shots_sound < 0) g_cfg.shots_sound = config.sound_sync ? 0 : 1;
     g_enemy_want = config.enemy_sync && config.enemy_shots;
+    g_attack_want = config.enemy_attack_registry;
     // enemy sync needs the hooks even without its shots: the frozen mirrors' own fire dropped in the Enqueue and their bullet hits
     // dropped at the bullet (the guard); it runs only with enemy_freeze=occupied and host_save=1 (enemy_sync.cpp Install)
     const bool esync_wanted = config.enemy_sync && config.enemy_freeze == 1 && config.host_save;

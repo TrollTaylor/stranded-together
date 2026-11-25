@@ -109,7 +109,7 @@ std::size_t EncodeEnemyPose(const EnemyPose& p, std::uint8_t* out, std::size_t c
 // ---------------------------------------------------------------- SCB1
 namespace {
 constexpr std::uint8_t kScbVersion = 1;
-bool AttackOk(std::uint16_t a) noexcept { return a >= 1 && a <= 0x18D && a != 0x180; }
+bool AttackOk(std::uint16_t a) noexcept { return a >= 1 && a <= 0x18C && a != 0x180; }  // (0x18D: the enum's placeholder)
 void PutF(std::uint8_t* p, float f) noexcept {
     std::uint32_t u = 0;
     std::memcpy(&u, &f, 4);
@@ -313,7 +313,7 @@ bool DecodeOutcomes(const std::uint8_t* d, std::size_t n, ScbHeader& h, Outcome 
 namespace {
 bool OwnOk(std::uint8_t type, const Own& o) noexcept {
     if (!enemy::IsHumanEnemyId(o.id) || (o.owner != 1 && o.owner != 2) || (o.phase > 5 && o.phase != 0xFF) || (o.flags & ~7u)) return false;
-    if (type == kScbOwn ? (o.reason < 1 || o.reason > 12 || o.reason == 6 || o.result || o.refusal) : (o.reason != 6 || o.result > 2 || o.refusal > 9)) return false;
+    if (type == kScbOwn ? (o.reason < 1 || o.reason > 14 || o.reason == 6 || o.result || o.refusal) : (o.reason != 6 || o.result > 2 || o.refusal > 9)) return false;
     for (int k = 0; k < 3; ++k)
         if (!std::isfinite(o.pos[k]) || std::fabs(o.pos[k]) >= kMaxCoordM || !std::isfinite(o.vel[k])) return false;
     return std::isfinite(o.yaw);  // health may be NaN (not carried)
