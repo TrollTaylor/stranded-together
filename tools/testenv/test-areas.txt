@@ -142,6 +142,7 @@ native/mod/debug_actions.*             overlay
 native/mod/game_actions.*              boot
 native/mod/dev_tools.*                 dev-tools
 native/mod/dev_rules.hpp               dev-tools
+native/mod/give_rules.hpp              dev-tools
 native/mod/story_*                     story
 
 # ---- the mod: research tooling (only the probes use it)
@@ -292,7 +293,7 @@ native/mod/config.*         ~("|bool\s+|int\s+|double\s+)enemy_(?!hit|owner)    
 native/mod/config.*         ~("|bool\s+|int\s+)enemy_hit                                    enemy-hits enemy-compat
 native/mod/config.*         ~("|bool\s+)enemy_owner                                         enemy-own
 native/mod/config.*         ~("|bool\s+|int\s+)host_save                                     host-save
-native/mod/config.*         ~("|bool\s+|int\s+)dev_tools                                     dev-tools
+native/mod/config.*         ~("|bool\s+|int\s+|double\s+)dev_(tools|give)                  dev-tools
 native/mod/player_sync.*    ~textures?_                                                       textures
 native/mod/player_sync.*    ~LookBodyId|RoomOutfit|room_outfit                                private-room
 native/mod/player_sync.*    ~facesync|kJointsFace                                             face

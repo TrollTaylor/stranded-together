@@ -270,6 +270,14 @@ target_compile_options(st_dev_rules_tests PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_dev_rules_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_test(NAME st_dev_rules_tests COMMAND st_dev_rules_tests)
 
+# ---- Dev give's pure part (native/mod/give_rules.hpp): the baggage the dev tools may give, the groups, the refusals, the
+# weight budget, the session.ini values.
+add_executable(st_give_rules_tests tests/give_rules_tests.cpp)
+target_include_directories(st_give_rules_tests PRIVATE native/mod)
+target_compile_options(st_give_rules_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_give_rules_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_give_rules_tests COMMAND st_give_rules_tests)
+
 # ---- Story tools' pure part (native/mod/story_rules.hpp): the episodes, the episode hash (CRC-32C as the game's crc32
 # instruction), the mission states, the summary line, the story-point load rule, the [Slot] text of a save.
 add_executable(st_story_rules_tests tests/story_rules_tests.cpp)

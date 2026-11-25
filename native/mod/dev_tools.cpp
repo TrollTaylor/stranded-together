@@ -14,6 +14,7 @@
 #include "config.hpp"
 #include "game_actions.hpp"
 #include "game_api.hpp"
+#include "give_rules.hpp"
 #include "log.hpp"
 #include "overlay/overlay_menu.hpp"
 #include "partner_source.hpp"
@@ -76,11 +77,26 @@ constexpr std::uintptr_t kShoesByRate = 0x142741860;
 constexpr std::uintptr_t kShoes = 0x320, kShoesLife = 0x33C, kShoesMax = 0x334, kShoesSpare = 0x330, kShoesOver = 0x32C, kShoesFlags = 0x3B0,
                          kShoesItem = 0x368, kShoesType = 0x3B8, kShoesWornType = 0x328;
 constexpr std::uintptr_t kSetShoesForcibly = 0x1426E7430;
+// Give (round 22, dev_give; scratchpad round22 re-items + this stage's byte reads). The DSBaggage2Manager script export
+// CreateAndAddBaggageToPlayer(u32 nameCode, u8 slot) is the thunk 0x142CD1440 (jmp 0x142CD6A60). Its body builds a 0x90-byte
+// request on the stack (+0 u8 type 3, +4 the code, +8 u64 0x1FFFFF so +0xC 0 = the player holder [inferred], +0x10 the u8) and
+// pushes it with 0x142C2A9C0 onto the manager's request array ([0x147BF4968] +0x46D9F0 count, +0x46D9F8 data; no lock: the game
+// thread only). The manager's update 0x142C95530 reads that array (0x142C95564) and creates the baggage on its next update.
+// The body reads the manager global without a null check: we check it first. The catalogue check is the script export
+// GetBaggageListItemByName(u32) 0x1433C8CE0 (mov rcx,[0x147C0DD98]; jmp 0x143439DF0: a read-only crc32 hash map at map+0x158,
+// capacity +0x164, entries 0x18 bytes): it returns the DSGameBaggageListItem or null. The manager's baggage array (shot_sync.cpp:
+// [mgr] +0x20 + i * 0x240, +0x21 non-zero in use, +0x28 the list item, +0x38 position) counts what arrived.
+constexpr std::uintptr_t kGiveThunk = 0x142CD1440, kGiveBody = 0x142CD6A60, kGivePush = 0x142C2A9C0, kGiveConsume = 0x142C95564;
+constexpr std::uintptr_t kBagLookup = 0x1433C8CE0, kBagLookupBody = 0x143439DF0;
+constexpr std::uintptr_t kBagMgrGlobal = 0x147BF4968, kBagListGlobal = 0x147C0DD98;
+constexpr std::uintptr_t kBagArray = 0x20, kBagStride = 0x240, kBagUse = 0x21, kBagItem = 0x28, kBagPos = 0x38, kBagHolder = 0x90;
+constexpr unsigned kBagMax = 8000;  // the array ends before the temporary list (+0x46DDA8; shot_sync.cpp)
 
 enum Feature : unsigned {
     kFRefill = 1u, kFGod = 2u, kFWeather = 4u, kFMules = 8u, kFBts = 16u, kFPlaces = 32u, kFBoots = 64u, kFChiral = 128u, kFBootsLife = 256u, kFStand = 512u,
+    kFGive = 1024u,
 };
-constexpr unsigned kFLast = kFStand;
+constexpr unsigned kFLast = kFGive;
 const char* FeatureName(unsigned f) {
     switch (f) {
         case kFRefill: return "refill";
@@ -93,6 +109,7 @@ const char* FeatureName(unsigned f) {
         case kFChiral: return "chiral crystals";
         case kFBootsLife: return "boots' life";
         case kFStand: return "place stand point";
+        case kFGive: return "give";
         default: return "?";
     }
 }
@@ -168,6 +185,16 @@ constexpr Site kSites[] = {
     {0x142CCECA9, "48 8B 85 60 A2 56 00 40 B7 01 49 8B 1C 06 80 7B 34 18", "construction point type (live list, cp+0x34)", kFStand},
     {0x142CD9377, "48 8B 83 90 00 00 00 80 8B AB 00 00 00 10 80 8B AF 00 00 00 02 80 8B AA 00 00 00 84 C5 F8 10 48 50 C5 F8 11 4C 24 40 C5 F8 10 40 60",
      "construction point config's collision box (config+0x50 / +0x60)", kFStand},
+    // Give: CreateAndAddBaggageToPlayer's thunk and body (the request: code at +4 (rsp+0x44), the u8 at +0x10, type 3, the push
+    // onto [0x147BF4968] +0x46D9F0), the push, the manager update's read of that array, the catalogue lookup and its body
+    {kGiveThunk, "E9 1B 56 00 00", "CreateAndAddBaggageToPlayer export thunk", kFGive},
+    {kGiveBody, "4C 8B DC 48 81 EC E8 00 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4", "CreateAndAddBaggageToPlayer body", kFGive},
+    {0x142CD6ACF, "89 4C 24 44 48 8B 0D ?? ?? ?? ?? 88 54 24 50 48 81 C1 F0 D9 46 00 C6 44 24 40 03 48 8D 54 24 40 C5 F8 77 E8 C9 3E F5 FF",
+     "CreateAndAddBaggageToPlayer: the request pushed to the manager +0x46D9F0", kFGive},
+    {kGivePush, "48 89 5C 24 20 56 48 83 EC 20 4C 8B 41 08 48 8B F2", "baggage request array push", kFGive},
+    {kGiveConsume, "4D 8B BE F8 D9 46 00 48 8B F8 49 63 96 F0 D9 46 00", "baggage manager update reads the requests (+0x46D9F8 / +0x46D9F0)", kFGive},
+    {kBagLookup, "8B D1 48 8B 0D ?? ?? ?? ?? E9 02 11 07 00", "GetBaggageListItemByName", kFGive},
+    {kBagLookupBody, "40 53 4C 8B 81 58 01 00 00 48 8B D9 48 89 74 24 10 8B F2", "baggage list lookup (map +0x158)", kFGive},
 };
 // clang-format on
 
@@ -210,7 +237,7 @@ bool RttiNamed(std::uintptr_t rtti, const char* name) {
 void Check() {
     if (g_checked) return;
     g_checked = true;
-    unsigned features = kFRefill | kFGod | kFWeather | kFMules | kFBts | kFPlaces | kFBoots | kFChiral | kFBootsLife | kFStand;
+    unsigned features = kFRefill | kFGod | kFWeather | kFMules | kFBts | kFPlaces | kFBoots | kFChiral | kFBootsLife | kFStand | kFGive;
     int ok = 0, total = 0;
     auto fail = [&](unsigned f, const char* why) {
         if (!g_off[0]) {
@@ -248,6 +275,8 @@ void Check() {
     rip(kAddChiral + 10, kPlayerSystemGlobal, kFChiral, "the DSPlayerSystem global");
     rip(0x142CD8100, kCpMgrGlobal, kFStand, "the construction point manager global (front access)");
     rip(0x142CD8A28, kCpMgrGlobal, kFStand, "the construction point manager global (live list)");
+    rip(0x142CD6AD3, kBagMgrGlobal, kFGive, "the baggage manager global (CreateAndAddBaggageToPlayer)");
+    rip(0x1433C8CE2, kBagListGlobal, kFGive, "the baggage list map global (GetBaggageListItemByName)");
     ++total;
     if (RttiNamed(A(kDebugSettingsRtti), "DebugSettings")) ++ok;
     else fail(kFGod, "DebugSettings RTTI");
@@ -543,6 +572,251 @@ bool Items(int op, double n, char* msg, std::size_t cap) {
         return Put(msg, cap, "chiral crystals %d -> %d (max %d)", before, after, max), true;
     }
     return Put(msg, cap, "items 1 boots, 2 [n] chiral crystals"), false;
+}
+
+// ---------------------------------------------------------------- dev_give: weapons, tools and equipment to Sam (round 22)
+// A press (Give, the game thread) checks the gates, builds the plan (give_rules.hpp: the allow list, the weight budget),
+// checks every code through the game's own catalogue lookup (a DSGameBaggageListItem or skipped) and notes which baggages of
+// those list items exist. GiveTick then sends dev_give_per_frame requests a tick through CreateAndAddBaggageToPlayer(code,
+// dev_give_slot) (the u8 is the destination kind: give_rules.hpp Slot), logs "[dev] give <name>: n added, n skipped (why)" and 3 s later
+// counts the new baggages of those list items: "[dev] give <name>: k/n arrived".
+bool g_give_cfg = true;
+double g_give_max_kg = giverules::kDefaultMaxKg;
+int g_give_per_frame = giverules::kDefaultPerFrame;
+int g_give_slot = giverules::kDefaultSlot;  // session.ini dev_give_slot: the request's u8 (give_rules.hpp Slot)
+char g_give_line[160] = {};
+struct GiveRun {
+    bool active = false;
+    int phase = 0;  // 1 sending, 2 waiting for the check
+    giverules::Plan plan;
+    std::uintptr_t li[giverules::kMaxPlan] = {};
+    int next = 0, added = 0, skipped = 0;
+    char why[400] = {};
+    double check_at = 0, give_up_at = 0;
+    std::vector<std::uint32_t> before;  // the baggage array's indices of those list items before the press
+};
+GiveRun g_give;
+
+bool CallBagLookup(std::uint32_t code, std::uintptr_t* out) noexcept {
+    __try {
+        *out = reinterpret_cast<std::uintptr_t (*)(std::uint32_t)>(A(kBagLookup))(code);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+bool CallGive(std::uint32_t code, std::uint8_t slot) noexcept {
+    __try {
+        reinterpret_cast<void (*)(std::uint32_t, std::uint8_t)>(A(kGiveBody))(code, slot);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+void AddWhy(char* why, std::size_t cap, const char* fmt, ...) {
+    const std::size_t len = std::strlen(why);
+    if (len + 4 >= cap) return;
+    if (len) std::snprintf(why + len, cap - len, "; ");
+    const std::size_t at = std::strlen(why);
+    va_list ap;
+    va_start(ap, fmt);
+    std::vsnprintf(why + at, cap - at, fmt, ap);
+    va_end(ap);
+}
+
+// The baggage array's in-use entries whose list item is one of `lis` (indices).
+void ScanBags(std::uintptr_t mgr, const std::uintptr_t* lis, int n, std::vector<std::uint32_t>* out) {
+    out->clear();
+    constexpr unsigned kChunk = 64;
+    static std::uint8_t buf[kChunk * kBagStride];
+    for (unsigned base = 0; base < kBagMax; base += kChunk) {
+        const unsigned cnt = kBagMax - base < kChunk ? kBagMax - base : kChunk;
+        if (!mem::Read(mgr + kBagArray + kBagStride * base, buf, kBagStride * cnt)) continue;
+        for (unsigned j = 0; j < cnt; ++j) {
+            const std::uint8_t* b = buf + kBagStride * j;
+            if (!b[kBagUse]) continue;
+            std::uint64_t li = 0;
+            std::memcpy(&li, b + kBagItem, 8);
+            for (int k = 0; k < n; ++k)
+                if (li && li == lis[k]) {
+                    out->push_back(base + j);
+                    break;
+                }
+        }
+    }
+}
+
+bool Give(int group, double code, double count, char* msg, std::size_t cap) {
+    devrules::Verdict v;
+    if (!Gate(Tool::world, msg, cap, &v)) return false;
+    if (!g_give_cfg) {
+        Log("[dev] give refused: session.ini dev_give=0");
+        return Put(msg, cap, "give is off (session.ini dev_give=0)"), false;
+    }
+    if (!Has(kFGive, msg, cap)) return false;
+    if (g_give.active) return Put(msg, cap, "give refused: the last press (%s) is still running", g_give.plan.name), false;
+    Sam s;
+    if (const char* why = Playing(&s)) return Put(msg, cap, "give refused: %s", why), false;
+    giverules::Plan plan;
+    if (const char* why = giverules::BuildPlan(group, code, count, g_give_max_kg, &plan)) {
+        Log("[dev] give refused: %s", why);
+        return Put(msg, cap, "give refused: %s", why), false;
+    }
+    const std::uintptr_t mgr = mem::Q(A(kBagMgrGlobal)), map = mem::Q(A(kBagListGlobal));
+    if (!mgr || !map) return Put(msg, cap, "give refused: no baggage manager or baggage list (no world?)"), false;
+    GiveRun r;
+    r.plan = giverules::Plan{};
+    r.plan.name = plan.name;
+    r.skipped = plan.skipped;
+    if (plan.skipped) AddWhy(r.why, sizeof(r.why), "over the %.0f kg budget: %s", g_give_max_kg, plan.skipped_names);
+    char missing[200] = {};
+    int lookup_skipped = 0;
+    for (int i = 0; i < plan.n; ++i) {
+        const std::uint32_t c = plan.codes[i];
+        const giverules::Entry* e = giverules::Find(c);
+        std::uintptr_t li = 0;
+        bool seen = false;
+        for (int k = 0; k < r.plan.n; ++k)
+            if (r.plan.codes[k] == c) li = r.li[k], seen = true;
+        if (!seen) {
+            if (!CallBagLookup(c, &li)) {
+                g_features &= ~kFGive;
+                Log("[dev] give: GetBaggageListItemByName(%u) faulted; give off for this run", c);
+                return Put(msg, cap, "the game's baggage lookup faulted; give off for this run"), false;
+            }
+            const char* type = li ? mem::RttiName(mem::RttiOf(li)) : nullptr;
+            if (!type || std::strcmp(type, "DSGameBaggageListItem") != 0) {
+                Log("[dev] give: %s (code %u) is not in the game's baggage list (%p %s): skipped", e ? e->name : "?", c, reinterpret_cast<void*>(li),
+                    type ? type : "-");
+                li = 0;
+            } else {
+                // evidence for the list item's fields (re-items 2g: the NameCode at +0x34 [inferred]; partner_gear: +0x30 an id)
+                std::uint32_t f30 = 0, f34 = 0;
+                mem::Rd(li + 0x30, f30);
+                mem::Rd(li + 0x34, f34);
+                Log("[dev] give: %s (code %u): list item %p, +0x30 %u, +0x34 %u", e ? e->name : "?", c, reinterpret_cast<void*>(li), f30, f34);
+            }
+        }
+        if (!li) {
+            ++lookup_skipped;
+            const std::size_t len = std::strlen(missing);
+            if (len + 2 < sizeof(missing)) std::snprintf(missing + len, sizeof(missing) - len, "%s%s", len ? ", " : "", e ? e->name : "?");
+            continue;
+        }
+        r.plan.codes[r.plan.n] = c;
+        r.li[r.plan.n] = li;
+        ++r.plan.n;
+        r.plan.kg += e ? e->kg : 0;
+    }
+    if (lookup_skipped) {
+        r.skipped += lookup_skipped;
+        AddWhy(r.why, sizeof(r.why), "not in the game's baggage list: %s", missing);
+    }
+    if (r.plan.n == 0) {
+        Log("[dev] give %s: 0 added, %d skipped (%s)", plan.name, r.skipped, r.why[0] ? r.why : "nothing to give");
+        Put(g_give_line, sizeof(g_give_line), "%s: nothing given (%s)", plan.name, r.why[0] ? r.why : "nothing to give");
+        return Put(msg, cap, "give %s: nothing given (%s)", plan.name, r.why[0] ? r.why : "nothing to give"), false;
+    }
+    ScanBags(mgr, r.li, r.plan.n, &r.before);
+    r.active = true;
+    r.phase = 1;
+    g_give = r;
+    Put(g_give_line, sizeof(g_give_line), "%s: giving %d (%.1f kg)...", plan.name, r.plan.n, r.plan.kg);
+    Log("[dev] give %s: %d requests (%.1f kg, budget %.0f kg, %d a tick), %d skipped; %zu of those baggages before%s", plan.name, r.plan.n, r.plan.kg,
+        g_give_max_kg, g_give_per_frame, r.skipped, r.before.size(), v.route == devrules::Route::local_only ? "; this world only" : "");
+    return Put(msg, cap, "giving %s: %d (%.1f kg)%s%s%s", plan.name, r.plan.n, r.plan.kg, r.skipped ? ", skipped: " : "", r.skipped ? r.why : "",
+               v.route == devrules::Route::local_only ? "; your world only" : ""),
+           true;
+}
+
+void GiveTick(double now_ms) {
+    GiveRun& r = g_give;
+    if (!r.active) return;
+    if (r.phase == 1) {
+        Sam s;
+        const char* stop = Playing(&s);
+        for (int k = 0; !stop && k < g_give_per_frame && r.next < r.plan.n; ++k) {
+            if (!mem::Q(A(kBagMgrGlobal))) {
+                stop = "the baggage manager went away";
+                break;
+            }
+            if (!CallGive(r.plan.codes[r.next], static_cast<std::uint8_t>(g_give_slot))) {
+                g_features &= ~kFGive;
+                Log("[dev] give: CreateAndAddBaggageToPlayer(%u) faulted; give off for this run", r.plan.codes[r.next]);
+                stop = "the game call faulted (give off for this run)";
+                break;
+            }
+            ++r.next, ++r.added;
+        }
+        if (stop && r.next < r.plan.n) {
+            r.skipped += r.plan.n - r.next;
+            AddWhy(r.why, sizeof(r.why), "%d not sent: %s", r.plan.n - r.next, stop);
+            r.plan.n = r.next;  // only what was sent is checked
+        }
+        if (r.next < r.plan.n) return;
+        Log("[dev] give %s: %d added, %d skipped%s%s%s", r.plan.name, r.added, r.skipped, r.why[0] ? " (" : "", r.why, r.why[0] ? ")" : "");
+        if (r.added == 0) {
+            Put(g_give_line, sizeof(g_give_line), "%s: nothing given (%s)", r.plan.name, r.why);
+            r.active = false;
+            return;
+        }
+        r.phase = 2;
+        r.check_at = now_ms + 3000;
+        r.give_up_at = now_ms + 20000;
+        return;
+    }
+    if (now_ms < r.check_at) return;
+    Sam s;
+    const std::uintptr_t mgr = mem::Q(A(kBagMgrGlobal));
+    if (Playing(&s) || !mgr) {
+        if (now_ms < r.give_up_at) {
+            r.check_at = now_ms + 1000;
+            return;
+        }
+        Log("[dev] give %s: %d added; not checked (the world was not played for 20 s)", r.plan.name, r.added);
+        Put(g_give_line, sizeof(g_give_line), "%s: %d added (not checked)", r.plan.name, r.added);
+        r.active = false;
+        return;
+    }
+    std::vector<std::uint32_t> after;
+    ScanBags(mgr, r.li, r.plan.n, &after);
+    int arrived = 0;
+    bool done[giverules::kMaxPlan] = {};
+    for (int i = 0; i < r.plan.n; ++i) {
+        if (done[i]) continue;
+        int want = 0;
+        for (int k = i; k < r.plan.n; ++k)
+            if (r.li[k] == r.li[i]) want++, done[k] = true;
+        int got = 0;
+        std::uint32_t first = 0xFFFFFFFFu;
+        for (std::uint32_t idx : after) {
+            if (std::find(r.before.begin(), r.before.end(), idx) != r.before.end()) continue;
+            std::uint64_t li = 0;
+            if (!mem::Rd(mgr + kBagArray + kBagStride * idx + kBagItem, li) || li != r.li[i]) continue;
+            if (first == 0xFFFFFFFFu) first = idx;
+            ++got;
+        }
+        const giverules::Entry* e = giverules::Find(r.plan.codes[i]);
+        char where[120] = "-";
+        if (first != 0xFFFFFFFFu) {
+            const std::uintptr_t b = mgr + kBagArray + kBagStride * first;
+            std::uint8_t use = 0;
+            double p[3] = {};
+            std::uint64_t holder = 0;
+            mem::Rd(b + kBagUse, use);
+            mem::Read(b + kBagPos, p, sizeof(p));
+            mem::Rd(b + kBagHolder, holder);
+            const double dx = p[0] - s.xf.pos.x, dy = p[1] - s.xf.pos.y, dz = p[2] - s.xf.pos.z;
+            Put(where, sizeof(where), "baggage #%u: +0x21 %u, %.1f m from Sam, holder %p", first, use, std::sqrt(dx * dx + dy * dy + dz * dz),
+                reinterpret_cast<void*>(holder));
+        }
+        Log("[dev] give %s:   %s: %d/%d new (%s)", r.plan.name, e ? e->name : "?", (std::min)(got, want), want, where);
+        arrived += (std::min)(got, want);
+    }
+    Log("[dev] give %s: %d/%d arrived (new baggages of those list items after 3 s)", r.plan.name, arrived, r.added);
+    Put(g_give_line, sizeof(g_give_line), "%s: %d added, %d/%d arrived%s", r.plan.name, r.added, arrived, r.added, r.skipped ? " (some skipped: see the log)" : "");
+    r.active = false;
 }
 
 // ---------------------------------------------------------------- dev_goto: a place anywhere in this area, then the ground
@@ -1513,6 +1787,9 @@ void FillView(double now_ms) {
         }
     }
     v.area = g_places_area;
+    v.give_on = g_give_cfg && (g_features & kFGive) != 0;
+    v.give_busy = g_give.active;
+    Put(v.give_line, sizeof(v.give_line), "%s", !g_give_cfg ? "off (session.ini dev_give=0)" : g_give_line);
     v.place_count = (std::min)(g_place_count, View::kMaxPlaces);
     for (int i = 0; i < v.place_count; ++i) v.places[i] = g_places[i].p;
     (void)now_ms;
@@ -1528,6 +1805,13 @@ void Install(const Config& config) noexcept {
     g_role = config.role == Role::host ? 1 : config.role == Role::guest ? 2 : 0;
     g_host_save = config.host_save && (g_role == 1 || g_role == 2);
     g_enabled = config.dev_tools || automation::Enabled();
+    g_give_cfg = config.dev_give;
+    g_give_max_kg = config.dev_give_max_kg;
+    g_give_per_frame = config.dev_give_per_frame;
+    g_give_slot = config.dev_give_slot;
+    if (g_enabled)
+        Log("[dev] give: dev_give=%d, up to %.0f kg a press, %d requests a tick, slot %d", g_give_cfg ? 1 : 0, g_give_max_kg,
+            g_give_per_frame, g_give_slot);
     Log("[dev] dev tools %s (%s); world tools: %s", g_enabled ? "ON" : "off",
         config.dev_tools ? "dev_tools=1" : automation::Enabled() ? "hidden run" : "dev_tools=0",
         !g_enabled ? "-" : automation::SavesRedirected() ? "this game runs on a sandboxed save" : "refused (this game plays on its real save)");
@@ -1553,6 +1837,7 @@ void Tick(double now_ms) noexcept {
     GotoTick(now_ms);    // a goto runs only once one was asked (Teleport to map marker needs no dev tools)
     MarkerTick(now_ms);  // the map markers (any session): the view at 2 Hz while the menu shows it, else the area tags every 5 s
     if (g_enabled) BootsTick(now_ms);
+    if (g_enabled) GiveTick(now_ms);  // dev_give: the requests a few a tick, then the arrival check
     if (!g_enabled || now_ms < g_next_view) return;
     g_next_view = now_ms + 1000;
     Check();
@@ -1627,6 +1912,7 @@ bool Command(Op op, const double (&v)[3], char* msg, std::size_t cap) noexcept {
         case Op::boots: return BootsCmd(static_cast<int>(v[0]), v[1], msg, cap);
         case Op::marker_go: return MarkerGo(devrules::MarkerWant(v[0]), g_now_ms, msg, cap);
         case Op::marker_test: return MarkerTest(static_cast<int>(v[0]), v[1], v[2], msg, cap);
+        case Op::give: return Give(static_cast<int>(v[0]), v[1], v[2], msg, cap);
     }
     return Put(msg, cap, "unknown dev op"), false;
 }

@@ -209,7 +209,8 @@ to your partner, to your newest map marker (or one you pick) or to any delivery 
 distribution center of the current region (you land beside it, facing it, not inside it; if no spot beside it works you
 are put back where you started; post boxes use the same code as MULE posts and zip-lines but are not run yet); time of day;
 timefall on (light or heavy) or clear skies; bring back every MULE and terrorist, remove them, or reset the BTs; new boots
-and chiral crystals.
+and chiral crystals; **Give** weapons, throwables, tools, equipment and supplies (one group a press, up to 30 kg; weapons
+and gear only, never vehicles, upgrades or story items).
 
 Anything that changes what a save keeps (vehicles, weather, enemies, items) works only on a test save, such as the Local
 test: a game on your real save refuses it and says why. In a co-op session a vehicle you spawn is the host's, shared with

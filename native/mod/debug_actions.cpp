@@ -408,6 +408,10 @@ constexpr Row kRows[] = {
      &DoEnemyCamp},
     {{Action::dev_marker, Tab::dev, "Dev marker", "Map markers: 0 log them, 1 <m east> <m north> add one there through the game's own add (hidden runs only).", false},
      &DoDev<dev::Op::marker_test>},
+    {{Action::dev_give, Tab::dev, "Dev give",
+      "Give Sam gear (sandboxed saves only; up to dev_give_max_kg a press): 1 weapons, 2 throwables, 3 tools, 4 equipment, 5 supplies, 6 late, 7 custom, 0 <baggage code> [count].",
+      false},
+     &DoDev<dev::Op::give>},
 };
 constexpr std::size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);
 static_assert(kRowCount == static_cast<std::size_t>(Action::count), "every Action needs exactly one registry row");

@@ -47,9 +47,11 @@ marker or the one picked; `marker-teleport.txt` adds markers through the game's 
 | Cap colour | `gear 15 <0..24>` |
 | Boots' durability | `dev_boots 0` read, `dev_boots 1 <percent>` set (SetShoesLifeByRate), `dev_boots 2 1` a 1 s meter, `dev_items 1` new boots |
 | God mode / ammo / refill | `dev_god 2`, `dev_ammo 1`, `dev_refill` |
+| Weapons and gear (round 22; `20261125-130606-dev-give-solo`) | `dev_give 1` weapons, `2` throwables, `3` tools, `4` equipment, `5` supplies, `6` late, `7` custom; `dev_give 0 <code> [count]` one listed code (the page's **Give ...** buttons; sandboxed saves only; up to `dev_give_max_kg` 30 kg a press; `dev-give-solo.txt`) |
 | A story point | `start story <n>` with `-SeedSaves story-pack`, or `story_load <n>` in the world |
 
-Not done: cargo (`CreateAndAddBaggageToPlayer` resolves to `0x142CD6A60(u32 id, u8)`, its ids are not decoded), an enemy
+Not done: cargo (weapons and gear are given with `dev_give` through `CreateAndAddBaggageToPlayer` `0x142CD6A60`; cargo and
+the catalogue's special entries are refused), an enemy
 "here" (`MultiSpawnpoint_ExportedSpawn` / `AIBehaviorGroup_ExportedSpawn` are leads), a vehicle moved to a place (spawn one
 there instead).
 

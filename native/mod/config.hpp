@@ -296,7 +296,16 @@ struct Config {
     // dev_tools=1: the debug menu's Dev tools page and the dev_* debug actions (dev_tools.hpp; the launcher's Debug page
     // "Dev tools"). Tools that change what a save keeps run only on a sandboxed save (dev_rules.hpp). Hidden runs have them on.
     bool dev_tools = false;
-    bool one_shot = false;            // consumed on load (renamed to session.last.ini)
+    // dev_give=0|1 (default 1; round 22): the Dev tools page's Give buttons and dev_give (dev_tools.cpp, give_rules.hpp): the game's
+    // own CreateAndAddBaggageToPlayer gives Sam weapons, tools and equipment (sandboxed saves only, like dev_items).
+    // dev_give_max_kg (1..200, default 30): the weight one press may add; dev_give_per_frame (1..16, default 4): requests a tick.
+    bool dev_give = true;
+    double dev_give_max_kg = 30.0;
+    int dev_give_per_frame = 4;
+    // dev_give_slot (0..31, default 1: Sam's own inventory): the u8 passed to CreateAndAddBaggageToPlayer (give_rules.hpp Slot:
+    // the destination kind; 0 leaves the baggages unheld at the world origin).
+    int dev_give_slot = 1;
+    bool one_shot = false;           // consumed on load (renamed to session.last.ini)
     // name=<text>: the name shown above this player's head on the partner's screen (name tags);
     // "" = the Steam persona name. Sent over the link (STN1), never logged in full.
     std::string player_name;

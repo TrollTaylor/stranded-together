@@ -59,6 +59,9 @@ enum class Op : std::uint8_t {
     marker_go,       // v0 = the map marker's id + 1 (0 = the newest on this map; ids start at 0): Teleport to map marker (the Player
                      // tab's teleport class: any session, no dev tools needed; through the goto tracker: "waitworld <s> goto")
     marker_test,     // v0 = 0 log the map's user markers; 1 add one v1 m east / v2 m north of Sam through the game's own add (hidden runs)
+    give,            // v0 = group (1 weapons, 2 throwables, 3 tools, 4 equipment, 5 supplies, 6 late, 7 custom; give_rules.hpp) or
+                     // 0: v1 = one baggage NameCode, v2 = count (1..5): the game's CreateAndAddBaggageToPlayer, a few a tick, within
+                     // dev_give_max_kg (sandboxed saves only); "[dev] give <name>: n added, n skipped (why)", then "... k/n arrived"
 };
 bool Command(Op op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 
@@ -84,6 +87,9 @@ struct View {
     int god = -1;                   // -1 unknown
     int ammo = -1;
     int area = -1;
+    bool give_on = true;            // session.ini dev_give (and its byte checks)
+    bool give_busy = false;         // a press is still being sent or checked
+    char give_line[160] = {};       // the newest give's result ("weapons: 8 added, 8/8 arrived")
     int place_count = 0;
     static constexpr int kMaxPlaces = 64;
     Place places[kMaxPlaces];

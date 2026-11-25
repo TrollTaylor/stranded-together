@@ -7,6 +7,7 @@
 #include <sstream>
 
 #include "config_values.hpp"
+#include "give_rules.hpp"
 #include "log.hpp"
 #include "room_outfit_rules.hpp"
 
@@ -83,6 +84,23 @@ Config LoadConfig(const std::wstring& dir) {
         }
         if (k == "enemy_host_hide") {
             c.enemy_host_hide = ParseBool(v);
+            continue;
+        }
+        // Round 22 keys (dev give), outside the chain too (giverules: unit-tested).
+        if (k == "dev_give") {
+            c.dev_give = ParseBool(v);
+            continue;
+        }
+        if (k == "dev_give_max_kg") {
+            c.dev_give_max_kg = giverules::MaxKg(v, c.dev_give_max_kg);
+            continue;
+        }
+        if (k == "dev_give_per_frame") {
+            c.dev_give_per_frame = giverules::PerFrame(v, c.dev_give_per_frame);
+            continue;
+        }
+        if (k == "dev_give_slot") {
+            c.dev_give_slot = giverules::Slot(v, c.dev_give_slot);
             continue;
         }
         // Round 21 keys (P1c), outside the chain too (cfgval::SetOwnerKey: unit-tested).

@@ -152,6 +152,7 @@ enum class Action : std::uint8_t {
     // Map markers (dev_tools.cpp; docs/debug-actions.md "Teleport to map marker")
     teleport_to_marker,   // v[0] = the marker's id + 1 (0 = the newest on this map): Sam on the ground there (Player tab; any session, no dev tools needed)
     dev_marker,           // v[0] = 0 log the map's user markers, 1 add one v[1] m east / v[2] m north of Sam (hidden runs only)
+    dev_give,             // v[0] = group 1..7 (give_rules.hpp) or 0: v[1] = baggage code, v[2] = count: gear to Sam (sandboxed saves only)
     count
 
 };

@@ -1405,11 +1405,68 @@ refused: refused by the host: its game plays on its real save` (or `... its dev 
 | `dev_marker` | `0` / `1 e n` | Map markers: 0 logs them (`[dev] marker C0: id 7 at (...), 175 m, on the ground` / `the terrain height, the game's raycast pending` / `ground snap pending`, `area 200 (newest)`); 1 (hidden runs on a sandboxed save only) adds one e m east and n m north of Sam through the game's own add ("Teleport to map marker" above). |
 | `dev_items` | `1` / `2 n` | 1: `RecoverOrSupplyShoes` body `0x142744B40(status, 0, 1)` (new or repaired boots). 2: `AddChiralCrystalCount(n)` (`0x1426E6530`, default 100; 18753 -> 19253 in `035314`). |
 | `dev_goto` | `x y [z]` | Sam anywhere in this area (sandboxed saves only: world class), then the ground (docs/dev-tools.md "Go anywhere"). z 0 / left out: the topmost ground (PlaceOn mode 2 at the ray centre 500); else PlaceOn mode 1 at z + 0.5. Refused while the placement gate is shut (on a vehicle, a load, a menu). Every tick `devrules::GotoAdvance`: within 25 m of x, y (a place's point inside a terminal: the game pushes Sam out, 3.5-8.3 m seen) and 5 m of z, playable and still for 1.5 s: `[dev] goto #n: settled at (...) after N s (k placement(s))`; more than 5 m below z: placed again (at most 4, 1 s apart); 25 s: `NOT settled`. The scenario's `goto` and `waitworld <s> goto` wait for it. 7 places up to 4 km apart in `20261121-084610-goto-places`. |
+| `dev_give` | `g` / `0 code [count]` | Round 22 (world class: sandboxed saves only; `session.ini dev_give=1` default, `dev_give_max_kg` 30 (1..200), `dev_give_per_frame` 4 (1..16), `dev_give_slot` 1 (0..31)). Gives Sam gear through the game's own `CreateAndAddBaggageToPlayer(code, 1)` ("Dev give" below): `1` weapons, `2` throwables, `3` tools, `4` equipment, `5` supplies, `6` late (hematic grenade handgun, sticky gun, maser gun, gravity gloves, quadruple rocket launcher), `7` custom (the hematic long guns); `0 <code> [count]` one listed code 1..5 times. The page's **Give ...** buttons (Items section). Logs `[dev] give <g>: n requests (... kg, budget 30 kg, 4 a tick), n skipped`, then `[dev] give <g>: n added, n skipped (why)` and 3 s later `[dev] give <g>: k/n arrived` (new baggages of those list items in the baggage manager). Proven in `20261125-130606-dev-give-solo`: weapons 8/8, supplies 6/6, Blood Bag 2/2 on Sam, his carried slots 9 -> 17 -> 25. |
 | `dev_boots` | `0` / `1 p` / `2 0/1` / `3 t` | 3 (round 6 T3; sandboxed saves only): equip boot type t (EDSPlayerShoesType 0..10: 0 barefoot, 2 sole grass, 3 porter, 4-6 all-terrain Lv1-3, 7 mule, 8 terrorist, 9 chiral, 10 reflect) with the game's `SetShoesForcibly` `0x1426E7430` (the request byte status `+0x3B8`; the status tick `0x14273251B` equips it): `[dev] boots: SetShoesForcibly(t) requested (worn type now n; ...)`, then `[boots] our boots' ArtParts: 32, shown <hex>` (the shape: docs/real-partner-body.md section 30.2). 0: the boots' durability to the log. 1: set it to p % (sandboxed saves only): `SetShoesLifeByRate`'s body `0x142741860(status, p/100, 0)` with Sam's status `[Sam+0x54E0]` read and checked first. 2: a `[dev] boots meter: ...; +x in 1 s` line every second (hidden tests: the passenger's boots). The durability is two parts (the setter `0x142741720(status+0x320, v)`): the first `+0x334` (200) points at `+0x33C`, the rest at `+0x32C` up to `+0x330` (3400); 40 % = 1440 of 3600 (`20261121-084433-spawn-showcase`: 200 + 926.6 before, 200 + 1240 after). Refused without worn boots (`+0x368` empty: the game's setter would do nothing). |
 
 Time of day and teleport to the partner are the existing actions (`set_time_of_day`, `teleport_to_partner`); the page has
 buttons for them (Dawn / Noon / Dusk / Night). The time buttons sit under the world tools' gate with the weather (greyed on a
 real save), and the action itself refuses on a real save from every tab ("Time of day" above).
+
+### Dev give (`dev_give`; round 22; `session.ini dev_give`, `dev_give_max_kg`, `dev_give_per_frame`, `dev_give_slot`)
+
+Code: `native/mod/give_rules.hpp` (`st::giverules`: the allow list, the groups, the plan; unit-tested by
+`st_give_rules_tests`), `native/mod/dev_tools.cpp` (`Give`, `GiveTick`). Every weapon and piece of gear is a DSBaggage2 named
+by a u32 baggage name code. Only the 79 codes of the allow list are ever given: weapons, throwables, tools, equipment and
+items, with their weights. Refused: any other code (`not on the verified list ...`), the 70 catalogue special entries
+(vehicles, upgrades, unlocks: `a catalogue special entry ...: never given`) and the Revolver (a story item). A press is planned
+against a weight budget (`dev_give_max_kg`, default 30 kg; each group fits): what would go over it is skipped and named in the
+log (`over the 30 kg budget: <item> (<kg>)`). At most 16 requests a press, one press at a time. A code this game's catalogue
+lacks is skipped (`not in the game's baggage list: <item>`). Same gate as the other world tools (sandboxed saves only;
+`dev_give=0` turns it off).
+
+| Group | Items |
+|---|---|
+| 1 weapons | Handgun Lv2, Anti-BT Handgun Lv2, Assault Rifle Lv3, Non-lethal Assault Rifle Lv3, Shotgun Lv2, Riot Gun Lv2, Bola Gun Lv2, Grenade Launcher (29.7 kg) |
+| 2 throwables | grenades (9.5 kg) |
+| 3 tools | Ladder, Climbing Anchor Lv2, PCC Lv2, Repair Spray x2 (19.2 kg) |
+| 4 equipment | Power Skeleton Lv3, Armor Plate Lv4, Power Gloves (8.6 kg) |
+| 5 supplies | Blood Bag x2, Bridges Boots Lv3, Spare Magazine x3 (3.3 kg) |
+| 6 late | Hematic Grenade Handgun, Sticky Gun, Maser Gun, Gravity Gloves, Quadruple Rocket Launcher (28.6 kg) |
+| 7 custom | the hematic long guns (24.0 kg) |
+
+How (O observed in the binary, I inferred, U unknown):
+
+* [O] The `CreateAndAddBaggageToPlayer` thunk `0x142CD1440` (`E9 1B 56 00 00`) jumps to the body `0x142CD6A60(u32 code, u8)`.
+  The body builds a 0x90-byte request (`+0` type 3, `+4` the code, `+8` 0x1FFFFF, `+0x10` the u8) and pushes it with
+  `0x142C2A9C0` onto the baggage manager's request list (`[0x147BF4968] +0x46D9F0`: count, capacity, data `+8`). No lock and
+  no null check of the manager: the mod calls it on the game thread only, after reading the manager.
+* [O] The list is consumed by `0x142C95530` (reads `+0x46D9F8` / `+0x46D9F0` at `0x142C95564`); the spawn path takes the
+  manager's critical section (`+0x46DB80` / `+0x46DB08`). [I] The baggage appears on Sam (or beside him when he is full) a
+  few frames later.
+* [O] Each code is looked up first with `GetBaggageListItemByName` `0x1433C8CE0` (`mov rcx,[0x147C0DD98]`, jump to
+  `0x143439DF0`, a read-only crc32 hash map: entries `+0x158`, 0x18 bytes, key `+8`, value `+0x10`); the list item's RTTI
+  name must be `DSGameBaggageListItem`. [O] Its name code is at `+0x34` (`+0x30` 0) for all 11 items given in
+  `20261125-125658`.
+* The u8 (`dev_give_slot`, default 1): [O] the consumer compares it with a holder's kind byte (holder `+1`) and turns 12 into 1.
+  [O] 0 made the baggages at the world origin (1187 m from Sam), unheld, `+0x21` 1 (`20261125-125658-dev-give-solo`); Sam's
+  carried slots did not change. [O] 1 put them on Sam: `+0x21` 2 (his carried items' value), a holder, 1.3-2.6 m from him,
+  his carried slots 9 -> 17 -> 25, the ladder and guns on his pack in the screenshot (`20261125-130213`, `130606`). [U] The
+  other kinds. [U] What happens at Sam's weight limit (the budget keeps a press under 30 kg).
+* The check, independent of the call: the baggage manager's array (`[mgr] +0x20 + i*0x240`, i < 8000; `+0x21` in use [I],
+  `+0x28` list item, `+0x38` position, `+0x90` holder) is scanned before the press and 3 s after it (retried each second up
+  to 20 s): `[dev] give <g>: k/n arrived (new baggages of those list items after 3 s)`, each with its `+0x21` byte, its
+  distance from Sam and its holder.
+* Scenarios: `dev-give-solo` (the scenario parser takes numbers up to 1e9, so codes above that are given from the page or
+  a group only; a refused action fails its step, so the refusals are unit-tested and the scenario reads the gate with
+  `dev_status`). The RB hold in it did not open a weapon wheel (the screenshot shows Sam's pack); the menu screenshot shows
+  the Dev tools page's top.
+* Pacing: `dev_give_per_frame` calls a tick (default 4). A fault in either call turns give off for the run
+  (`[dev] give: CreateAndAddBaggageToPlayer(<code>) faulted; give off for this run`).
+
+Byte checks (feature `give`): the thunk `0x142CD1440`, the body's prologue `0x142CD6A60`, the request build and push call
+`0x142CD6ACF` (manager global RIP target `0x147BF4968`, checked at `0x142CD6AD3`), the push `0x142C2A9C0`, the consumer's read
+`0x142C95564`, the lookup thunk `0x1433C8CE0` (RIP target `0x147C0DD98`, checked at `0x1433C8CE2`) and its body
+`0x143439DF0`. A mismatch turns give off (`Off (game build differs): give: <site>`) and greys the buttons.
 
 ### Story tools (`story`, `story_load`; docs/dev-tools.md "Story tools")
 
@@ -1431,8 +1488,8 @@ awake, nothing loading, no stopping game event): `GetCurrentArea`'s slow path, c
 
 ### Byte checks (`dev_tools.cpp kSites` + `vehicle_share.cpp kDevSites`)
 
-On the dev tools' first tick (`dev::Check`, which also runs `vshare::DevCheckResult`): `[dev] dev tools: 51/51 byte checks ok;
-on: refill, god mode / ammo, weather, MULEs, BTs, places, boots, chiral crystals, boots' life, place stand point` and `[dev] vehicles: pools ok, spawn ok,
+On the dev tools' first tick (`dev::Check`, which also runs `vshare::DevCheckResult`): `[dev] dev tools: 60/60 byte checks ok;
+on: refill, god mode / ammo, weather, MULEs, BTs, places, boots, chiral crystals, boots' life, place stand point, give` and `[dev] vehicles: pools ok, spawn ok,
 repair ok, variant read-back ok`. A mismatch turns that tool off with `[dev] byte check FAILED: <site>` and the page shows
 `Off (game build differs): <tool>: <site>` (the vehicle tools' as `vehicle tools / spawning / repair: <site>`; their buttons
 are greyed: no pools greys spawn, remove and repair, no spawn path greys spawn, no Repair greys "Repair nearest"). A Repair
@@ -1448,6 +1505,7 @@ or battery notify that faults at run time turns repair off for the run with the 
 | GetDeliveryPointInfoResources (DSMissionSystem global `+0x78820`); RTTI `DSDeliveryPointInfoResource` `0x144DD5E50`; enum `EDSConstructionPointType` `0x144C33550` (names only) | `0x1433CA80A` | places |
 | GetConstructionPointFrontAccessTransform body (the manager global's RIP target `0x147BF4960`), its export thunk, its reads `cp+0x4A0`, `+0x468`, `+0x478`, `+0x480`, `+0x90` config, config `+0x2D0`; GetNearestConstructionPointId's live-list read (`+0x56A260`, `+0x56A258`; RIP target checked at `0x142CD8A28`) and its id read (`cp+0x30`); a live-list walk's type test (`cp+0x34`); a live-list walk's collision box read (`cp+0x90` config `+0x50` / `+0x60`) | `0x142CD80E0`, `0x142CD19A0`, `0x142CD8115`, `0x142CD8168`, `0x142CD8179`, `0x142CD818A`, `0x142CD8192`, `0x142CD81AD`, `0x142CD8A5C`, `0x142CD8B3C`, `0x142CCECA9`, `0x142CD9377` | place stand point (off: no construction point is looked up; Sam lands on the ring around the place, 1.5 m / 4 m + 1.2 m, with no box check) |
 | the map markers (`kMkSites`, "Teleport to map marker" above; their own line) | `0x142F40090`, `0x142F22D00`, `0x142F22DBE`, `0x142F22E02`, `0x142F36783`, `0x142F22C90`, `0x142F29320`, `0x142F29430` | map markers |
+| CreateAndAddBaggageToPlayer thunk / body / request push call (manager global RIP target `0x147BF4968`), the push, the consumer's read, GetBaggageListItemByName thunk (RIP target `0x147C0DD98`) / body ("Dev give" above) | `0x142CD1440`, `0x142CD6A60`, `0x142CD6ACF`, `0x142C2A9C0`, `0x142C95564`, `0x1433C8CE0`, `0x143439DF0` | give |
 | RecoverOrSupplyShoes export; AddChiralCrystalCount (DSPlayerSystem global) | `0x1426E6F80`, `0x1426E6530` | boots, chiral crystals |
 | SetShoesLifeByRate export (status `+0x54E0`, r8 0, jump to the body), its body (`+0x368`, the r8 test), its `(+0x334 + +0x330) x rate` and setter call, the setter (`+0x1C` / `+0xC` / `+0x8C`, flags `+0x90`), SetShoesForcibly (type `+0x3B8`) | `0x1426E7460`, `0x142741860`, `0x1427418EB`, `0x142741720`, `0x142741757`, `0x1426E7430` | boots' life (`dev_boots`) |
 | the race reset's repair + battery sequence, the three Repair functions, the battery notify, each vehicle vtable `+0x118` = its Repair | `0x142D6EE21`, `0x142F7B090`, `0x142F7B140`, `0x142F7B320`, `0x142F5A260` | vehicle repair |
@@ -1459,8 +1517,8 @@ or battery notify that faults at run time turns repair off for the run with the 
 * No cross-area travel (the script exports `DSMissionLogicCommand_sFastTravel` -> `0x1433C9A10` and `sChangeArea` -> `0x1433CB320`
   are leads, not decompiled: Ghidra was down in round 4); `dev_goto` stays within the save's area.
 * No free camera (photo mode's pan range and `SetObserverPositionOverride` are the leads, docs research only), no "MULE
-  here" (moving a live MULE to Sam through its actor's `vt+0x40`: unproven), no cargo or weapon giving (the baggage export's
-  name codes are not decoded), no mission start / skip (story points are saves of the story library loaded with
+  here" (moving a live MULE to Sam through its actor's `vt+0x40`: unproven), no cargo giving (weapons and gear: `dev_give`
+  above; cargo and the catalogue's special entries are refused), no mission start / skip (story points are saves of the story library loaded with
   `story_load`: docs/dev-tools.md "Story tools" says why).
 * God mode does not survive a fatal fall (above).
 * The vehicle variants' names are not known: the page shows "truck, variant 6". From the screenshots: truck 0 grey, truck 6

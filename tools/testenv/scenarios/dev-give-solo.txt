@@ -1,0 +1,59 @@
+# Dev give, solo (round 22; docs/debug-actions.md "Dev give"), hidden:
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenario dev-give-solo -SeedSaves complete-100 -Id round22-give
+# A hidden run has the dev tools on and runs on a sandboxed save. Steps: the byte checks name "give"; gear 0 (Sam's carried
+# items) before; dev_give 1 (the weapons group: the game's own CreateAndAddBaggageToPlayer, 4 a tick) and the log's
+# "[dev] give weapons: n added, n skipped" and "k/n arrived" (new DSBaggage2 of those list items 3 s later, each with its
+# +0x21 byte, its distance from Sam and its holder: on Sam, +0x21 2, a holder, within 4 m); gear 0 again (Sam's carried slots
+# grow by the gifts); a screenshot of the world and of the equipment wheel (RB
+# held); dev_give 5 (supplies: counts) and a single code (dev_give 0 <Blood Bag> 2); the world tools' gate under the real-save
+# test override (the refusals themselves are unit-tested: a refused action fails the run).
+# Pass: every non-optional step ok, the [dev] give lines named above, no FAULT, no failed byte check, saves unchanged.
+# covers: dev-tools
+role solo
+timeout 300
+ini dev_tools=1
+start
+wait 3000
+waitlog 30 \[dev\] dev tools: [0-9]+/[0-9]+ byte checks ok
+waitlog 5 \[dev\] dev tools: .*on: .*give
+waitlog 5 \[dev\] give: dev_give=1, up to 30 kg a press, 4 requests a tick, slot 1
+action dev_status 0
+action gear 0
+screenshot 00-before
+# ---- the weapons group
+action dev_give 1
+waitlog 10 \[dev\] give weapons: [0-9]+ added, [0-9]+ skipped
+waitlog 15 \[dev\] give weapons: [0-9]+/[0-9]+ arrived
+waitlog 2 \[dev\] give weapons:   Handgun \(Lv\. 2\): 1/1 new \(baggage #[0-9]+: \+0x21 2, [0-3]\.[0-9] m from Sam, holder 0*[1-9A-F]
+action gear 0
+wait 1000
+screenshot 01-weapons-world
+# the equipment wheel (RB held) with the new guns, then released
+?pad RB 900 keep
+wait 700
+screenshot 02-weapon-wheel
+?pad none 0
+wait 1500
+# ---- supplies (counts expand) and one code twice (Blood Bag)
+action dev_give 5
+waitlog 15 \[dev\] give supplies: [0-9]+/[0-9]+ arrived
+action dev_give 0 336212924 2
+waitlog 15 \[dev\] give Blood Bag: [0-9]+/[0-9]+ arrived
+action gear 0
+# ---- the refusals: a refused action fails its step (and an optional one the run), so the codes are refused in
+# st_give_rules_tests (special entries, unlisted codes, bad groups, the budget) and the gate is read here
+action dev_status 1 1
+action dev_status 0
+waitlog 5 \[dev\] status: world tools: refused: this game plays on its real save
+action dev_status 1 0
+action dev_status 0
+waitlog 5 \[dev\] status: world tools: allowed
+# ---- the Dev tools page with the Give buttons
+menu open
+action dev_status 2
+wait 1200
+screenshot 03-dev-tools-page
+menu close
+nolog \[dev\].*FAULT
+nolog \[dev\] byte check FAILED
+nolog \[dev\] give: .* faulted

@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "dev_tools.hpp"
+#include "give_rules.hpp"
 #include "imgui.h"
 #include "log.hpp"
 #include "overlay_keys.hpp"
@@ -812,6 +813,32 @@ void DevTab(const Context& c) {
     ImGui::SameLine();
     if (ImGui::Button("Add chiral crystals")) DevSend(debug::Action::dev_items, 2, g_dev_chiral);
     Chip(debug::Action::dev_items);
+    // Give (round 22, give_rules.hpp): the game's own CreateAndAddBaggageToPlayer, a group a press within dev_give_max_kg
+    Text(&kDim, "Give Sam gear (each press up to the weight budget; sandboxed saves only)");
+    ImGui::BeginDisabled(!v.give_on || v.give_busy);
+    for (int i = 0; i < giverules::kGroupCount; ++i) {
+        const giverules::Group& g = giverules::kGroups[i];
+        if (i % 4) ImGui::SameLine();
+        char label[32];
+        std::snprintf(label, sizeof(label), "Give %s", g.name);
+        if (ImGui::Button(label)) DevSend(debug::Action::dev_give, g.id);
+        char tip[640];
+        std::size_t k = static_cast<std::size_t>(std::snprintf(tip, sizeof(tip), "Gives Sam:"));
+        for (std::size_t j = 0; j < g.n && k < sizeof(tip); ++j) {
+            const giverules::Entry* e = giverules::Find(g.items[j].code);
+            const int w = g.items[j].count > 1 ? std::snprintf(tip + k, sizeof(tip) - k, "%s %s x%d", j ? "," : "", e ? e->name : "?", g.items[j].count)
+                                               : std::snprintf(tip + k, sizeof(tip) - k, "%s %s", j ? "," : "", e ? e->name : "?");
+            if (w > 0) k += static_cast<std::size_t>(w);
+        }
+        Tooltip(tip);
+    }
+    ImGui::EndDisabled();
+    Chip(debug::Action::dev_give);
+    if (v.give_line[0]) {
+        ImGui::PushTextWrapPos(0.0f);
+        Text(v.give_on ? &kDim : &kAmber, "%s", v.give_line);
+        ImGui::PopTextWrapPos();
+    }
     ImGui::EndDisabled();
 }
 
