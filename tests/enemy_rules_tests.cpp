@@ -211,6 +211,38 @@ void TestEligible() {
     CHECK(std::strcmp(RefusalText(Refusal::in_vehicle), "in a vehicle") == 0);
     x.cutscene = true;
     CHECK(Eligible(x) == Refusal::cutscene);
+    // M0 "no statues" (round 20): the host's copy unloaded or hidden there, or its place far from ours at entry
+    x = e, x.host_realized = false;
+    CHECK(Eligible(x) == Refusal::host_unrealized);
+    CHECK(std::strstr(RefusalText(Refusal::host_unrealized), "host") != nullptr);
+    x = e, x.host_hidden = true;
+    CHECK(Eligible(x) == Refusal::host_hidden);
+    x = e, x.entry_err_max_m = 30, x.entry_err_m = 30.0;
+    CHECK(Eligible(x) == Refusal::ok);
+    x.entry_err_m = 30.1;
+    CHECK(Eligible(x) == Refusal::entry_far);
+    x.entry_err_m = 198.58;  // the user's 02039 at 140.67
+    CHECK(Eligible(x) == Refusal::entry_far);
+    x.entry_err_max_m = 0;  // off
+    CHECK(Eligible(x) == Refusal::ok);
+    x = e, x.entry_err_max_m = 30, x.entry_err_m = -1;  // unknown: not refused
+    CHECK(Eligible(x) == Refusal::ok);
+    // the local refusals keep their order before the host's
+    x = e, x.host_realized = false, x.hidden_or_asleep = true;
+    CHECK(Eligible(x) == Refusal::hidden_or_asleep);
+    x = e, x.host_realized = false, x.host_hidden = true;
+    CHECK(Eligible(x) == Refusal::host_unrealized);
+    // M0's quick path (enemy_host_far): the host's Sam beyond the distance (2035 m after the statues gate's teleport)
+    x = e, x.host_far_m = 1500, x.host_dist_m = 2035;
+    CHECK(Eligible(x) == Refusal::host_far);
+    CHECK(std::strstr(RefusalText(Refusal::host_far), "enemy_host_far") != nullptr);
+    x.host_dist_m = 1500;
+    CHECK(Eligible(x) == Refusal::ok);
+    x.host_dist_m = -1;  // unknown (no partner body here): not refused
+    CHECK(Eligible(x) == Refusal::ok);
+    x = e, x.host_far_m = 0, x.host_dist_m = 5000;  // off
+    CHECK(Eligible(x) == Refusal::ok);
+    CHECK(HostFar(1500.1, 1500) && !HostFar(1500, 1500) && !HostFar(-1, 1500) && !HostFar(9999, 0));
 }
 
 // The session.ini values with ranges (config_values.hpp; review rv-tests 13).
@@ -222,6 +254,13 @@ void TestConfigValues() {
     CHECK(cfgval::MirrorRadius("300", 250.0) == 300.0 && cfgval::MirrorRadius("20", 250.0) == 20.0 && cfgval::MirrorRadius("1000", 250.0) == 1000.0);
     CHECK(cfgval::MirrorRadius("19.9", 250.0) == 250.0 && cfgval::MirrorRadius("1001", 250.0) == 250.0 && cfgval::MirrorRadius("", 250.0) == 250.0 &&
           cfgval::MirrorRadius("300m", 250.0) == 250.0 && cfgval::MirrorRadius("abc", 250.0) == 250.0);
+    CHECK(cfgval::EntryErrMax("30", 30.0) == 30.0 && cfgval::EntryErrMax("0", 30.0) == 0.0 && cfgval::EntryErrMax("5", 30.0) == 5.0 &&
+          cfgval::EntryErrMax("1000", 30.0) == 1000.0);
+    CHECK(cfgval::EntryErrMax("4", 30.0) == 30.0 && cfgval::EntryErrMax("1001", 30.0) == 30.0 && cfgval::EntryErrMax("", 30.0) == 30.0 &&
+          cfgval::EntryErrMax("30m", 30.0) == 30.0 && cfgval::EntryErrMax("-5", 30.0) == 30.0);
+    CHECK(cfgval::HostFar("1500", 1500.0) == 1500.0 && cfgval::HostFar("0", 1500.0) == 0.0 && cfgval::HostFar("300", 1500.0) == 300.0 &&
+          cfgval::HostFar("10000", 1500.0) == 10000.0 && cfgval::HostFar("299", 1500.0) == 1500.0 && cfgval::HostFar("10001", 1500.0) == 1500.0 &&
+          cfgval::HostFar("", 1500.0) == 1500.0 && cfgval::HostFar("1km", 1500.0) == 1500.0);
     CHECK(cfgval::PoseCount("0", 6) == 0 && cfgval::PoseCount("8", 6) == 8 && cfgval::PoseCount("9", 6) == 6 && cfgval::PoseCount("-1", 6) == 6 &&
           cfgval::PoseCount("", 6) == 6 && cfgval::PoseCount("4x", 6) == 6);
     // P2
@@ -290,6 +329,49 @@ void TestLease() {
     CHECK(Releases(Lease(x)));
     x.frozen_by_us = false;
     CHECK(Lease(x) == LeaseVerdict::none);
+    // M0 "no statues": the host unloaded or hid its copy (the newest frame, within the silence window)
+    x = l, x.host_realized = false;
+    CHECK(Lease(x) == LeaseVerdict::keep);  // the guard off: the bits are not read
+    x.host_guard = true;
+    CHECK(Lease(x) == LeaseVerdict::release_host_unrealized);
+    CHECK(Releases(Lease(x)) && !HideOnRelease(Lease(x), true, true));  // given back alive: her own game runs it
+    CHECK(std::strcmp(LeaseText(Lease(x)), "host unrealized") == 0);
+    x = l, x.host_guard = true, x.host_hidden = true;
+    CHECK(Lease(x) == LeaseVerdict::release_host_hidden);
+    CHECK(Releases(Lease(x)) && HideOnRelease(Lease(x), true, true));  // hidden here while hidden there (enemy_host_hide 1)
+    CHECK(!HideOnRelease(Lease(x), false, true));  // enemy_host_hide 0 (the default): given back alive
+    CHECK(!HideOnRelease(Lease(x), true, false));  // held by a cutscene (still frozen): never hidden (review r20 enemy 3)
+    x = l, x.host_guard = true, x.host_realized = false, x.host_hidden = true;
+    CHECK(Lease(x) == LeaseVerdict::release_host_unrealized);
+    x = l, x.host_guard = true, x.host_realized = false, x.frame_age_ms = 1600;
+    CHECK(Lease(x) == LeaseVerdict::release_silence);  // silence first (the same give-back)
+    x = l, x.host_guard = true, x.host_realized = false, x.bit14_now = false;
+    CHECK(Lease(x) == LeaseVerdict::forget_taken);
+    x = l, x.host_guard = true, x.host_hidden = true, x.hold = true;
+    CHECK(Lease(x) == LeaseVerdict::hold);
+    x = l, x.host_guard = true;
+    CHECK(Lease(x) == LeaseVerdict::keep);
+    // M0's quick path: the host's Sam far (his frames stopped while his world loads; the silence window would take 3 s)
+    x = l, x.host_guard = true, x.host_far_m = 1500, x.host_dist_m = 2064.6;
+    CHECK(Lease(x) == LeaseVerdict::release_host_far);
+    CHECK(Releases(Lease(x)) && !HideOnRelease(Lease(x), true, true));  // given back alive
+    CHECK(std::strcmp(LeaseText(Lease(x)), "host far") == 0);
+    x.host_guard = false;  // the guard off: not read
+    CHECK(Lease(x) == LeaseVerdict::keep);
+    x = l, x.host_guard = true, x.host_far_m = 1500, x.host_dist_m = 900;
+    CHECK(Lease(x) == LeaseVerdict::keep);
+    x = l, x.host_guard = true, x.host_far_m = 0, x.host_dist_m = 5000;  // enemy_host_far=0
+    CHECK(Lease(x) == LeaseVerdict::keep);
+    x = l, x.host_guard = true, x.host_far_m = 1500, x.host_dist_m = 2064.6, x.host_realized = false;
+    CHECK(Lease(x) == LeaseVerdict::release_host_unrealized);  // the host's own bits first
+    CHECK(!HideOnRelease(LeaseVerdict::release_silence, true, true) && !HideOnRelease(LeaseVerdict::release_range, true, true));
+    // a copy hidden for the host: kept hidden only while the host's fresh frame says realized and hidden
+    CHECK(KeepHostHidden(true, 100, true, true));
+    CHECK(!KeepHostHidden(true, 100, true, false));   // shown there again
+    CHECK(!KeepHostHidden(true, 100, false, true));   // unloaded there: hers is given back
+    CHECK(!KeepHostHidden(true, 3001, true, true));   // the frames stopped
+    CHECK(KeepHostHidden(true, 3000, true, true));
+    CHECK(!KeepHostHidden(false, 0, true, true));     // no track
 }
 
 void TestKeySet() {

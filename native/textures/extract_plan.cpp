@@ -50,7 +50,7 @@ int ReadyMadeCurrentSince(int colour) {
     if (colour == 15 || colour == 16) return 3;   // the metals: the polished finish since round 9 (generator 2)
     return 0;
 }
-static_assert(kExtractVersion == 3, "a new kExtractVersion: say in ReadyMadeCurrentSince which ready-made pictures it changes");
+static_assert(kExtractVersion == 4, "a new kExtractVersion: say in ReadyMadeCurrentSince which ready-made pictures it changes");
 
 namespace {
 constexpr char kF[] = "ds/models/characters/fgl_fragile/core/fgl_textures/textures/";
@@ -72,7 +72,9 @@ const std::vector<ExtractJob>& ExtractJobs() {
         // Sam's boots
         Cat(kS, "sam_body_boot_v00_set"), Cat(kS, "sam_body_boot_v01_set"), Cat(kS, "sam_boot_mk2_v00_set"), Cat(kS, "sam_boot_mk3_v00_set"),
         Cat(kS, "sam_boot_mk3_v01_set"), Cat(kS, "sam_boot_mk3_v02_set"), Cat(kS, "sam_boots_suitmule_v00_set"),
-        "ds/models/characters/mut_muleterrorist/core/mut_textures/textures/mut_boot_def_v00_set", Cat(kS, "sam_boot_bandage_v00_set")};
+        "ds/models/characters/mut_muleterrorist/core/mut_textures/textures/mut_boot_def_v00_set", Cat(kS, "sam_boot_bandage_v00_set"),
+        // the logo references (round 20)
+        Cat(kF, "fgl_body_decal_v00_set"), Cat(kS, "sam_part_cap00_set"), Cat(kS, "sam_part_cap00_v01_set"), Cat(kS, "sam_part_cap00_v02_set")};
     static const std::vector<ExtractJob> jobs = [] {
         const char* o = kOriginalDir;
         const char* pal = "Sam porter suit\\Palette colours (00-14)";
@@ -95,8 +97,15 @@ const std::vector<ExtractJob>& ExtractJobs() {
             {gold, "Suit", paths[17].c_str(), false},    {gold, "Hood (sea otter)", paths[18].c_str(), false}, {gold, "Power glove", paths[19].c_str(), false},
             {dark, "Suit", paths[20].c_str(), false},    {dark, "Suit parts", paths[21].c_str(), false},
         };
+        // the boots and the logo references by their place in `paths` (each list's first index named, its size checked: a path
+        // added ahead of them can never shift the logo inputs to the wrong files; review r20 visual 12)
+        constexpr std::size_t kBootFirst = 22, kLogoCount = 4;
+        const std::size_t kLogoFirst = kBootFirst + bootDirs.size();
+        if (j.size() != kBootFirst || paths.size() != kLogoFirst + kLogoCount) return std::vector<ExtractJob>{};  // (a test fails on it)
         for (std::size_t i = 0; i < bootDirs.size(); ++i)
-            j.push_back({bootDirs[i].c_str(), i + 1 == bootDirs.size() ? "Feet" : "Boots", paths[22 + i].c_str(), false});
+            j.push_back({bootDirs[i].c_str(), i + 1 == bootDirs.size() ? "Feet" : "Boots", paths[kBootFirst + i].c_str(), false});
+        static const char* const kLogoParts[kLogoCount] = {"Fragile decal", "Cap", "Cap v01", "Cap v02"};
+        for (std::size_t i = 0; i < kLogoCount; ++i) j.push_back({kLogoRefDir, kLogoParts[i], paths[kLogoFirst + i].c_str(), false});
         return j;
     }();
     return jobs;
@@ -254,7 +263,7 @@ std::vector<std::wstring> ListAll(const std::wstring& dir) {
 }
 // The names the extraction itself puts at the top of the textures folder (a cancelled first run leaves only these).
 bool IsOurTopName(const std::wstring& n) {
-    for (const char* ours : {kFragileSuitDir, kFragileBootsDir, kSamSuitDir, kSamBootsDir, kReadmeName, kManifestName, ".cache", kExtractLockName})
+    for (const char* ours : {kFragileSuitDir, kFragileBootsDir, kSamSuitDir, kSamBootsDir, kLogoRefDir, kReadmeName, kManifestName, ".cache", kExtractLockName})
         if (_wcsicmp(n.c_str(), Widen(ours).c_str()) == 0 || _wcsicmp(n.c_str(), (Widen(ours) + L".partial").c_str()) == 0) return true;
     return false;
 }
@@ -265,7 +274,7 @@ void DeleteOurPartials(const std::wstring& out_dir) {
         SetFileAttributesW(p.c_str(), FILE_ATTRIBUTE_NORMAL);
         DeleteFileW(p.c_str());
     }
-    for (const char* d : {kFragileSuitDir, kFragileBootsDir, kSamSuitDir, kSamBootsDir}) {
+    for (const char* d : {kFragileSuitDir, kFragileBootsDir, kSamSuitDir, kSamBootsDir, kLogoRefDir}) {
         const std::wstring p = out_dir + L"\\" + Widen(d);
         const DWORD a = GetFileAttributesW(p.c_str());
         if (a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY) && !(a & FILE_ATTRIBUTE_REPARSE_POINT)) DeletePartials(p, 0);
@@ -484,6 +493,8 @@ std::string ReadmeText() {
         "                                     the game tints; Previews\\ shows each colour, roughly), 15 Silver, 16 Gold and\r\n"
         "                                     Dark (cutscene only). Colour swatches.png shows the 15 palette colours.\r\n"
         "  Boots (Sam, reference)\\           every Sam boot type.\r\n"
+        "  Logo (reference)\\                 Fragile's FRAGILE express decal and the Bridges cap: the mod makes its Fragile\r\n"
+        "                                     Express logo on her hood and cap from these (editing them changes nothing).\r\n"
         "  Sam's suit and boots are laid out differently from Fragile's: copy colours and small details, not whole\r\n"
         "  pictures. Fragile's boots always keep the shape of her porter boots: only their look changes.\r\n"
         "  The sea otter hood's normal maps are in a format the extractor does not decode, so they are missing.\r\n"

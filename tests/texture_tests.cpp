@@ -361,16 +361,36 @@ void Names() {
     CHECK(IsUsableBootName("Boots - Reflectance.png") && !IsUsableBootName("Suit - Colour.png"));
     // Every job's folder is one of the planned trees; Fragile's originals come first.
     const std::vector<ExtractJob>& jobs = ExtractJobs();
-    CHECK(jobs.size() == 31);
+    CHECK(jobs.size() == 35);
     CHECK(jobs[0].original && std::string(jobs[0].core_path) == kSuitSet);
     int originals = 0;
     for (const ExtractJob& j : jobs) {
         originals += j.original ? 1 : 0;
         const std::string f = j.folder;
-        CHECK(f.rfind(kOriginalDir, 0) == 0 || f.rfind(kSamSuitDir, 0) == 0 || f.rfind(kSamBootsDir, 0) == 0);
+        CHECK(f.rfind(kOriginalDir, 0) == 0 || f.rfind(kSamSuitDir, 0) == 0 || f.rfind(kSamBootsDir, 0) == 0 || f == kLogoRefDir);
         CHECK(std::string(j.core_path).rfind("ds/models/characters/", 0) == 0);
     }
     CHECK(originals == 7);
+    // the logo references (round 20): their parts name the right core files (review r20 visual 12: no index shift)
+    const struct {
+        const char* part;
+        const char* tail;
+    } logo[] = {{"Fragile decal", "fgl_body_decal_v00_set"}, {"Cap", "sam_part_cap00_set"}, {"Cap v01", "sam_part_cap00_v01_set"}, {"Cap v02", "sam_part_cap00_v02_set"}};
+    int logo_found = 0;
+    for (const ExtractJob& j : jobs) {
+        if (std::string(j.folder) != kLogoRefDir) continue;
+        ++logo_found;
+        bool named = false;
+        for (const auto& l : logo) {
+            const std::string p = j.core_path, t = l.tail;
+            if (std::string(j.part) == l.part) named = p.size() >= t.size() && p.compare(p.size() - t.size(), t.size(), t) == 0;
+        }
+        CHECK(named);
+    }
+    CHECK(logo_found == 4);
+    // the boots: Sam's porter boots first, the bandaged feet last
+    CHECK(std::string(jobs[22].core_path).find("sam_body_boot_v00_set") != std::string::npos && std::string(jobs[22].part) == "Boots");
+    CHECK(std::string(jobs[30].core_path).find("sam_boot_bandage_v00_set") != std::string::npos && std::string(jobs[30].part) == "Feet");
     const std::string readme = ReadmeText();
     CHECK(readme.find("do not share") != std::string::npos && readme.find("16 Gold") != std::string::npos && readme.find("\r\n") != std::string::npos);
 }

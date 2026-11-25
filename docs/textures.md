@@ -279,6 +279,63 @@ you want from `Original\` (her own), or delete every picture you painted there t
 `Original\`, `Sam porter suit\` and `Boots (Sam, reference)\` are rebuilt by every
 extraction (their files are read-only, so a paint program warns before saving over them).
 
+## The Fragile Express logo
+
+Round 20 (`session.ini fragile_logo`, default 1; docs/real-partner-body.md section 42). When Fragile wears Sam's porter
+hood raised, its brow band says **FRAGILE express** instead of BRIDGES, and the Bridges cap she can wear says it too. Both
+screens show it: the guest's choice rides her LOOK (flag bit 2), and each PC makes its own copies of the game's textures
+from its own extraction. No texture goes over the link, and nothing of the game's goes into the repository or a release:
+only the rectangles and the recipe below are code.
+
+- **What is read.** The extraction (plan v4) also writes `Logo (reference)\`: `Fragile decal - *.png` (Fragile's
+  `fgl_body_decal_v00_set`, whose R channel holds her wordmark) and `Cap - *.png` (Sam's `sam_part_cap00_set`). The hood
+  copies come from `Sam porter suit\Palette colours (00-14)\`, `15 Silver\` and `16 Gold\`. Every picture is checked
+  against the manifest's SHA-256 first; one that is missing or edited stops the logo (logged: `[logo] the logo copies
+  were not made: ...`; her hood and cap keep BRIDGES).
+- **The hood** (2048 maps): the band's BRIDGES (x 1531..1705, y 343..380) is erased with the band's own cloth copied from
+  38 px below, in every map that carries it, then the wordmark (the decal's rectangle 328,37 .. 937,107) is laid 170 x 20
+  px wide on the old word's centre, in the old print's own colour, roughness and (metal sets) reflectance. The word lies
+  upright in the map: the game's own BRIDGES is turned 180 degrees there and reads upside down on the raised hood (round
+  20's stills: a turned FRAGILE read upside down and reversed, one flipped top to bottom read upside down), so the logo
+  reads the right way round from the front where BRIDGES did not. Slots: L0 colour / L1 mask alpha + roughness (the
+  palette set), L2 / L3 (silver and gold share them), L4 the normal map (shared by every set), L9 / L10 the silver and gold
+  reflectance (1024, reflectance RGB + ambient occlusion A; half the scale: without them a dark BRIDGES print stayed
+  after "express" on a metal hood).
+- **The cap** (1024): its palette set only (colours 0..22: L5 colour + mask alpha, BC7 re-encoded as BC3, and L8 its normal
+  map). The word is 284 px wide, split between "FRAGI" and "LE" across the seam of the two front panels. Silver (23) and
+  gold (24) caps keep BRIDGES: they use v00's mask alpha and normal maps with their own colour and reflectance, so the
+  logo there mixed with BRIDGES (`st::tex::CapLogoFits`; the cap colour comes from the wearer's outfit).
+- **Binding:** the per-drawable override with the rule `exact` (a copy is kept only where the original is exactly its
+  texture), only on Fragile's exo carriers (`logo-carrier`, the host's copy of her; `logo-carrier-self`, her own screen)
+  and on her cap (`logo-cap-ours`, `logo-cap-partner`). A mesh probe first finds the carrier meshes that hold Sam's hood
+  maps (16 of 63); the hood binds 176 overrides there. Sam's own model is never touched: the host's Sam keeps BRIDGES,
+  and Sam's own cap (which her own screen draws on her head) is bound only while the self view shows her
+  (`realbody::SelfShown`); when it is unshown (a cutscene, a vehicle) the logo comes off it at once.
+- **Binding safety (review r20 visual 1, 3, 4, 5):**
+  - Nothing is probed or bound while the carrier or the cap is not drawn (a load, the self view's unshow, a vehicle, the
+    10 s grace): what is bound stays (`ftex::Keep`). The engine rebuilds an override table only for what it draws.
+  - A probe that saw no rebuild at all (nothing drawn) is not counted: it is undone and tried again 1 s later (logged at
+    most twice). Only a probe that saw a rebuild and found no logo texture counts toward the 3 tries.
+  - A bound look whose table is not rebuilt within 1 s is undone and bound again after a back-off (2, 4, 8, 16, 32 s); the
+    log line is printed at most 4 times per drawable.
+  - Before the core is asked, the registry's free room (`kRegMax` 512) is checked against `tx::OverrideEstimate`; short:
+    the bind is refused (logged once). Each slot is then checked by the count the core actually made (`tx::SlotFits`): a
+    slot that does not fit is undone whole and the look keeps its leading slots. An entry that cannot be registered (the
+    table check fails, more than 32 of ours in one table, no free registry slot) is undone at once and logged; it never
+    stays unkept (that drew black).
+  - The rebuild detour keeps at most 32 of our entries per table (`kMine`; a table holds at most 11 of ours); more are
+    counted and logged, up to 4 times.
+- **Cost:** about 1.4 to 1.6 s to make the copies once, then the built-texture cache (`.sttx`, keyed by the recipe version,
+  5, and the input pictures' hashes): 0.2 s on the next start. Each source picture is freed as soon as its packed copy
+  exists: the peak is about six decoded 2048 x 2048 pictures, about 100 MB. A new manifest (a re-extract from the
+  launcher) makes the copies again in the same session; until then the old ones stay.
+- **Co-op asymmetry:** the guest's choice rides its LOOK, and a guest with `fragile_textures` off or without a Textures
+  folder sends no LOOK. The host then uses its own `fragile_logo` for her, so it can show the logo on her even when the
+  guest set `fragile_logo=0`. The other way round, when only the host has the extraction, the host shows the logo on her
+  and the guest's own screen shows BRIDGES. (A flags-only LOOK would fix the first case; it changes the protocol, so it is
+  left for later.)
+- **Debug:** `action gear 39 <0|1|2>` (docs/debug-actions.md). Scenarios: `fragile-logo-solo`, `two-games-fragile-logo`.
+
 ## Sharing
 
 These pictures come from your copy of the game. Keep them for yourself: do not upload or distribute them. In a co-op
@@ -287,6 +344,11 @@ ready-made colour is only named (a "recipe"): your partner's game makes it from 
 
 ## For developers
 
+- Round 20 cap probe (`gear 37`, docs/debug-actions.md; run `20261124-220555-two-games-enemy-target-probe`): the
+  per-drawable override reaches a worn cap's entity on both screens. Her own cap (`our cap00`, an `Entity` with a SkinnedModel
+  at +0xB8): drawable found, 2 meshes, 2 override tables; the core made 2 entries (1 per mesh), tables 2 -> 3 -> 2, all undone.
+  The partner's head prop on the host (joint 31): the same, 1 of 1 reached. So a cap texture (a logo) can be bound through the
+  same core as her suit (`ftex::ProbeDrawable` follows that path); the logo ("The Fragile Express logo" above) binds there.
 - Code: `native/textures/` (`st_textures`: BCn codecs, PNG through WIC (`png_wic.hpp`: `SniffPicture` / `PictureSize` /
   `DecodePicture` read PNG, JPEG, BMP, TIFF, GIF and WebP by their first bytes, each with its own container's WIC decoder,
   the size from the header before any pixel is decoded), the slot table `tex_slots.hpp`, the manifest;

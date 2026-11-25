@@ -23,6 +23,31 @@ inline double MirrorRadius(const std::string& v, double keep) {
     return r >= 20.0 && r <= 1000.0 ? r : keep;
 }
 
+// enemy_entry_err_max (M0): 0 (off) or 5..1000 m.
+inline double EntryErrMax(const std::string& v, double keep) {
+    char* end = nullptr;
+    const double r = std::strtod(v.c_str(), &end);
+    if (v.empty() || !end || *end) return keep;
+    return r == 0.0 || (r >= 5.0 && r <= 1000.0) ? r : keep;
+}
+
+// enemy_host_far (M0's quick path): 0 (off) or 300..10000 m.
+inline double HostFar(const std::string& v, double keep) {
+    char* end = nullptr;
+    const double r = std::strtod(v.c_str(), &end);
+    if (v.empty() || !end || *end) return keep;
+    return r == 0.0 || (r >= 300.0 && r <= 10000.0) ? r : keep;
+}
+
+// exo_rig_extra (round 20, docs/real-partner-body.md section 41): the suit rig's optional parts, a mask 0..15 (1 legbelt, 2 cantmount,
+// 4 subpouch, 8 bodyparts).
+inline int RigExtra(const std::string& v, int keep) {
+    char* end = nullptr;
+    const long n = std::strtol(v.c_str(), &end, 10);
+    if (v.empty() || !end || *end) return keep;
+    return n >= 0 && n <= 15 ? static_cast<int>(n) : keep;
+}
+
 // enemy_pose_count: 0..8 posed mirrors.
 inline int PoseCount(const std::string& v, int keep) {
     char* end = nullptr;

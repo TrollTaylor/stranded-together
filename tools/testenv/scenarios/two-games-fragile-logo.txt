@@ -1,0 +1,84 @@
+# The Fragile Express logo on the host's screen (round 20; docs/textures.md "The Fragile Express logo", docs/real-partner-
+# body.md section 42), hidden, on the launcher's own Local test files (host Sam, guest Fragile). Both games' session.ini name
+# the run's own extracted textures folder; each game makes its own logo copies from it (nothing but the LOOK's flag bit 2
+# goes over the link). The guest's raised porter hood (gear 32 6 0) on both screens: the host's partner carrier binds the
+# logo only where the guest's LOOK says fragile_logo=1; the host's own Sam keeps BRIDGES (no carrier, no override on him).
+# Then the guest's logo off (gear 39 0: a new LOOK, BRIDGES on the host's copy of her) and on again; the hood down and her
+# Bridges cap (cap00: the host's head prop of her) in palette colour 9 (the v00 set, the only cap set the logo is made
+# for) with the logo, then gold (BRIDGES kept: the logo taken off) and colour 9 again (the logo back). The partner is pinned
+# 2.5 m ahead of the host, facing him (collision 3), for front stills.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-fragile-logo -SeedSaves complete-100 -GuestSeed profile-only -Id <id>
+# covers: logo texture-share hood partner-body
+role host
+graphics low
+timeout 360
+launcherini local-test
+textures extract
+start control 200
+@guest waitlog 60 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+@both goto mknot-road
+wait 6000
+@guest pad none 2400 ly=32767
+@guest pad none 900 ly=-32767
+waitlog 60 \[tex\] partner logo \(fragile_logo on the guest\): the Fragile Express logo
+waitlog 90 \[logo\] the Fragile Express logo copies (made|from the cache) in [0-9]+ ms: hood palette [A-Za-z0-9]+, hood metal
+@guest waitlog 90 \[logo\] the Fragile Express logo copies (made|from the cache) in [0-9]+ ms: hood palette [A-Za-z0-9]+, hood metal
+# her raised porter hood on both screens
+@guest action gear 32 6 0
+waitlog 30 \[exo\] carrier [0-9A-Fa-fx]+ hood: up \(part [0-9]+; the sender's porter hood
+waitlog 30 \[tex\] body logo-carrier [0-9A-Fa-fx]+: mesh probe done: [1-9][0-9]* of [0-9]+ mesh
+waitlog 30 \[tex\] body logo-carrier [0-9A-Fa-fx]+: look .* bound .* kept [1-9]
+waitlog 10 \[logo\] exo carrier [0-9A-Fa-fx]+: the Fragile Express logo on its hood
+@guest waitlog 30 \[logo\] exo-self carrier [0-9A-Fa-fx]+: the Fragile Express logo on its hood
+# her front, 2.5 m ahead of the host, facing him
+action collision 3 2.5
+wait 2500
+action gear 39 2
+screenshot 01-host-sees-guest-hood-logo
+@guest screenshot 01-guest-self-hood
+# the guest's logo off: a new LOOK (bit 2 clear), BRIDGES on the host's copy of her too
+@guest action gear 39 0
+waitnew 30 \[tex\] partner logo \(fragile_logo on the guest\): BRIDGES
+waitnew 15 \[logo\] exo carrier [0-9A-Fa-fx]+: BRIDGES on its hood again
+wait 1500
+screenshot 02-host-sees-guest-hood-bridges
+@guest action gear 39 1
+waitnew 30 \[tex\] partner logo \(fragile_logo on the guest\): the Fragile Express logo
+waitnew 15 \[logo\] exo carrier [0-9A-Fa-fx]+: the Fragile Express logo on its hood
+wait 1500
+screenshot 03-host-sees-guest-hood-logo-again
+# the hood down, her Bridges cap on (the host's head prop of her)
+@guest action gear 32 0 0
+waitnew 30 \[exo\] carrier [0-9A-Fa-fx]+ hood: none
+@guest action gear 15 9
+@guest action gear 14 15 1
+waitlog 30 \[logo\] logo-cap-partner [0-9A-Fa-fx]+: the Fragile Express logo on it
+@guest waitlog 30 \[logo\] logo-cap-ours [0-9A-Fa-fx]+: the Fragile Express logo on it
+wait 2000
+action gear 39 2
+screenshot 04-host-sees-guest-cap-logo
+@guest screenshot 04-guest-self-cap
+# gold (24: the cap's v02 set; it shares v00's mask alpha and normal maps, so the logo there would mix with BRIDGES): the
+# logo taken off on both screens (st::tex::CapLogoFits: the cap colour from her outfit), BRIDGES; the entries' status
+# dumped on both; then palette colour 9 again: the logo back on both
+@guest action gear 15 24
+@guest waitnew 15 \[logo\] logo-cap-ours [0-9A-Fa-fx]+: BRIDGES on it again
+waitlog 15 \[logo\] logo-cap-partner [0-9A-Fa-fx]+: BRIDGES on it again
+wait 2000
+action gear 39 2
+screenshot 05-host-sees-guest-gold-cap
+@guest screenshot 05-guest-self-gold-cap
+@both action tex 0
+@guest action gear 15 9
+waitnew 15 \[logo\] logo-cap-partner [0-9A-Fa-fx]+: the Fragile Express logo on it
+@guest waitlog 15 \[logo\] logo-cap-ours [0-9A-Fa-fx]+: the Fragile Express logo on it
+action collision 3 0
+@guest action gear 14 15 0
+@guest action gear 32 -1
+wait 1000
+@both action tex 0
+nolog \[tex\] .*FAULTED
+nolog \[tex\] refused
+nolog \[logo\] the logo copies were not made
+quit

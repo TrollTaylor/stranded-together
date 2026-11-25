@@ -32,6 +32,7 @@
 //   k 44 -> 40 legin (+41 lamp, k 46)   k 45 -> 42 legout (+43 lamp, k 47): suit pieces, LegOut worn with a skeleton
 #pragma once
 #include <cstdint>
+#include <initializer_list>
 
 namespace st::exo {
 
@@ -277,6 +278,87 @@ inline unsigned HoodAnimTick(HoodAnim& a, int type, HoodPhase phase, bool anim, 
     return calls;
 }
 
+// ---- the suit rig (round 20 stage 3, docs/real-partner-body.md section 41): the porter suit's hardware that joins Sam's gear
+// to his body, drawn on her through the same carrier while she wears that gear. Her suits have none of it, so the frame and
+// the BB pod, placed on her joints with Sam's offsets (0.0 cm), hung there with nothing between them and her jacket.
+// The porter suit's ArtParts (runtime index; all direct children of the container 1 but 26-28, children of 25):
+//   2 mesh_bbp_lx (k 31 BBPodPipe)   46 mesh_bbpmount_lx (no k: the chest mount the pod clips onto)
+//   25 the backpack belt's container (k 63; the game hides it while the backpack is worn: the backpack's own belt entity,
+//      backpack_temp's DSPlayerBackpackBeltComponent, is drawn instead [round 20 census]), 26 beltl, 27 beltr, 28 belthip
+//   44 mesh_hip_lx (k 72 Hip)   45 mesh_hipgun_lx (k 73)
+//   optional (exo_rig_extra, only after a look): 31 legbelt (no k), 47 cantmount (no k), 29 subpouch (k 51), 49 bodyparts (no k)
+//   never: 48 mesh_star_lx, the suit body 0.
+inline constexpr std::uint8_t kRigPodPipe = 2, kRigBelt = 25, kRigBeltL = 26, kRigBeltR = 27, kRigBeltHip = 28, kRigSubpouch = 29;
+inline constexpr std::uint8_t kRigLegBelt = 31, kRigHip = 44, kRigHipGun = 45, kRigPodMount = 46, kRigCantMount = 47, kRigStar = 48,
+                              kRigBodyParts = 49;
+enum RigExtra : unsigned { kRigExtraLegBelt = 1, kRigExtraCantMount = 2, kRigExtraSubpouch = 4, kRigExtraBodyParts = 8, kRigExtraAll = 15 };
+// What the slot's sender wears that the rig joins to her (from its STC1 items: shown items only).
+struct RigGear {
+    bool pod = false;    // the BB pod on the chest (a bb_pod item on a joint)
+    bool pack = false;   // the backpack frame
+    bool waist = false;  // a piece on the hips (cargo on the hips joint: the hip crates, the ladder)
+    bool Any() const { return pod || pack || waist; }
+};
+// STC1 item values the rule reads (wire::GearKind backpack / bb_pod / cargo, kGearNoParent, Sam's joint 1 the hips; partner_gear.cpp
+// checks them against pose_wire.hpp).
+inline constexpr std::uint8_t kRigKindBackpack = 1, kRigKindPod = 3, kRigKindCargo = 4, kRigNoParent = 0xFF, kRigHipsJoint = 1;
+template <class Item>
+inline RigGear RigGearOf(const Item* items, unsigned n) {
+    RigGear g;
+    for (unsigned i = 0; items && i < n; ++i) {
+        const auto k = static_cast<std::uint8_t>(items[i].kind);
+        if (k == kRigKindBackpack) g.pack = true;
+        else if (k == kRigKindPod && items[i].parent == kRigNoParent) g.pod = true;
+        else if (k == kRigKindCargo && items[i].parent == kRigNoParent && items[i].joint == kRigHipsJoint) g.waist = true;
+    }
+    return g;
+}
+// The carrier's tree has the rig parts where the porter suit has them.
+inline bool RigTreeOk(int n, const std::int16_t* parent) {
+    if (n != kSuitParts || !parent) return false;
+    for (std::uint8_t p : {kRigPodPipe, kRigBelt, kRigSubpouch, kRigLegBelt, kRigHip, kRigHipGun, kRigPodMount, kRigCantMount, kRigBodyParts})
+        if (parent[p] != kContainerPart) return false;
+    return parent[kRigBeltL] == kRigBelt && parent[kRigBeltR] == kRigBelt && parent[kRigBeltHip] == kRigBelt;
+}
+// The sender's parts block names the rig's k-mapped parts at the porter suit's indices (k 31 -> 2, 63 -> 25, 72 -> 44, 73 -> 45).
+inline bool SenderNamesRig(const std::uint64_t* apply) {
+    return apply && Bit(apply, kRigPodPipe) && Bit(apply, kRigBelt) && Bit(apply, kRigHip) && Bit(apply, kRigHipGun);
+}
+// The rig parts the carrier asks for (bits). A k-mapped part follows the game's reading of the sender's Sam (vis) where the
+// block names it; the parts with no k come with their gear. `self`: her own screen, where the game itself draws the backpack's
+// belt entity on Sam's fitted skeleton: the suit's belt only when the game shows it in place of the entity (never both).
+// The partner's screen gets the suit belt as the stand-in for that entity (refused for the partner: section 12).
+inline void RigPlan(const RigGear& g, const std::uint64_t* apply, const std::uint64_t* vis, bool self, unsigned extra, std::uint64_t (&out)[2]) {
+    out[0] = out[1] = 0;
+    auto follows = [&](unsigned p) { return !apply || !vis || !Bit(apply, p) || Bit(vis, p); };
+    if (g.pod) {
+        SetBit(out, kRigPodMount, true);
+        SetBit(out, kRigPodPipe, follows(kRigPodPipe));
+    }
+    if (g.pack) {
+        const bool belt = self ? (apply && vis && Bit(apply, kRigBelt) && Bit(vis, kRigBelt)) : true;
+        for (std::uint8_t p : {kRigBelt, kRigBeltL, kRigBeltR, kRigBeltHip}) SetBit(out, p, belt);
+    }
+    if (g.waist) {
+        SetBit(out, kRigHip, follows(kRigHip));
+        SetBit(out, kRigHipGun, apply && vis && Bit(apply, kRigHipGun) && Bit(vis, kRigHipGun));
+    }
+    if (g.Any()) {
+        SetBit(out, kRigLegBelt, (extra & kRigExtraLegBelt) != 0);
+        SetBit(out, kRigCantMount, (extra & kRigExtraCantMount) != 0);
+        SetBit(out, kRigSubpouch, (extra & kRigExtraSubpouch) != 0 && follows(kRigSubpouch));
+        SetBit(out, kRigBodyParts, (extra & kRigExtraBodyParts) != 0);
+    }
+}
+inline bool RigAny(const std::uint64_t* rig) { return rig && (rig[0] | rig[1]) != 0; }
+// The parts a rig plan may ever name.
+inline void RigMask(std::uint64_t (&out)[2]) {
+    out[0] = out[1] = 0;
+    for (std::uint8_t p : {kRigPodPipe, kRigBelt, kRigBeltL, kRigBeltR, kRigBeltHip, kRigSubpouch, kRigLegBelt, kRigHip, kRigHipGun, kRigPodMount, kRigCantMount,
+                           kRigBodyParts})
+        SetBit(out, p, true);
+}
+
 // ---- the carrier (a demo_sam_clean: the same ArtParts as the porter suit, no mesh controller)
 // Its tree checked against the porter suit's (parent index per part, -1 top-level). False: not the parts we know.
 inline bool CarrierTreeOk(int n, const std::int16_t* parent) {
@@ -294,8 +376,10 @@ inline bool CarrierTreeOk(int n, const std::int16_t* parent) {
 // the skeleton subtrees as the sender shows them (heavysub with heavy), the container on. `leg`: the sender's LegOut
 // suit piece too (debug, `gear 29`). Only for a tree CarrierTreeOk accepted.
 // `hood_part` (-1 none, section 37): a hood mesh shown under the head container (HoodPartOk), else the head is off.
+// `rig` (round 20, null none): the RigPlan bits asked (only on a tree RigTreeOk accepts; never the star or the suit body);
+// the belt's straps (26-28) with its container only, like heavysub with heavy.
 inline void CarrierPlan(int n, const std::int16_t* parent, const std::uint64_t* vis, bool leg, int hood_part, std::uint64_t (&touch)[2],
-                        std::uint64_t (&asked)[2]) {
+                        std::uint64_t (&asked)[2], const std::uint64_t* rig = nullptr) {
     touch[0] = touch[1] = asked[0] = asked[1] = 0;
     SetBit(touch, kSuitBodyPart, true);
     SetBit(touch, kHeadPart, true);
@@ -317,6 +401,17 @@ inline void CarrierPlan(int n, const std::int16_t* parent, const std::uint64_t* 
     SetBit(touch, kLegOutLampPart, true);
     SetBit(asked, kLegOutPart, leg && Bit(vis, kLegOutPart));
     SetBit(asked, kLegOutLampPart, leg && Bit(vis, kLegOutLampPart));
+    // the rig (its parts under the container are touched above: off unless asked here)
+    if (rig && RigTreeOk(n, parent)) {
+        std::uint64_t m[2];
+        RigMask(m);
+        for (unsigned u = 0; u < kMaxParts; ++u)
+            if (Bit(m, u) && parent[u] == kContainerPart) SetBit(asked, u, Bit(rig, u));
+        for (std::uint8_t p : {kRigBeltL, kRigBeltR, kRigBeltHip}) {
+            SetBit(touch, p, true);
+            SetBit(asked, p, Bit(rig, p) && Bit(asked, kRigBelt));
+        }
+    }
     // the hood (section 37): the head container and the way down to the hood part asked, every other child on that way off
     // (Sam's hair, face, the other hoods), the hood part's own children (its lamps) left as they are
     if (hood_part >= 0 && HoodPartOk(n, parent, hood_part)) {

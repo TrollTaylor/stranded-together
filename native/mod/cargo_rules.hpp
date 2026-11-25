@@ -58,10 +58,14 @@ inline std::uint8_t WaistModel(std::uint8_t kase, std::uint8_t vol) {
 }
 
 // The model byte the sender puts in the STC1 cargo item for a carried piece (kNone: not sent). `waist_on`: session.ini
-// waist_cargo (default on since round 15, section 39.6).
-inline std::uint8_t SendModel(std::uint8_t slot_type, std::uint8_t attr, std::uint8_t kase, std::uint8_t vol, bool waist_on) {
+// waist_cargo (default on since round 15, section 39.6), the switch of every exact model. `any_slot`: session.ini
+// cargo_cases_any_slot (round 20, F2; default on): a weapon case or folding ladder stacked on the back (slot type 1) is sent as
+// well (the game draws it stacked there; before, only the hip pieces were sent and a piece the game re-stacked onto the back
+// vanished on the partner). The arms (2 / 3) and hands (6 / 7) stay unsent until a run has seen them drawn (round 20 review:
+// a ladder in a hand would also be drawn as the held_items ladder clone). Equipment (case 4) and the rest stay unsent.
+inline std::uint8_t SendModel(std::uint8_t slot_type, std::uint8_t attr, std::uint8_t kase, std::uint8_t vol, bool waist_on, bool any_slot = false) {
     if (DeliveryCase(kase)) return ModelFromCase(attr, kase, vol);
-    if (!waist_on || !IsWaist(slot_type)) return kNone;
+    if (!waist_on || !(IsWaist(slot_type) || (any_slot && slot_type == 1))) return kNone;
     const std::uint8_t m = WaistModel(kase, vol);
     return m == kNone ? kNone : static_cast<std::uint8_t>(kExact | m);
 }

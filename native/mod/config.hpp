@@ -101,6 +101,13 @@ struct Config {
     // both screens: an "exo carrier" (a demo_sam_clean body showing only the skeleton pieces) posed from her body. Default
     // on; exo_carrier=0: no carrier (her body shows no skeleton, as before).
     bool exo_carrier = true;
+    // Round 20 (docs/real-partner-body.md section 41): the suit rig on that carrier, on both screens: the porter suit's hardware
+    // that joins her gear to her body (the BB pod's chest mount and pipe, the backpack's straps and hip belt on the partner's
+    // screen, the hip rig) while the sender, in the porter suit, wears the pod, the backpack or a piece on the hips. Default
+    // on; exo_rig=0: as round 19 (the pod and the frame with nothing between them and her). exo_rig_extra (default 0): the
+    // optional parts, a mask (1 legbelt, 2 cantmount, 4 subpouch, 8 bodyparts), for looks only.
+    bool exo_rig = true;
+    int exo_rig_extra = 0;
     // Round 11 (docs/real-partner-body.md section 34): what Fragile (fragile_suit) wears in the private room, on both screens.
     // room_outfit=black (default): her black suit (demo_fgl_new, body 3 "fragile"), changed while the game changes Sam's
     // clothes (or on the load into the room) and back to the porter suit on leaving; suit: the porter suit there too
@@ -118,6 +125,11 @@ struct Config {
     // view mask of its slot in that body's own mesh instance tree (her LOD0 pinned meanwhile); 0: not hidden (v0.27).
     bool hood_colour = true;
     bool hood_fold_hide = true;
+    // Round 20 (docs/textures.md "The Fragile Express logo", real-partner-body.md section 42): fragile_logo=1 (default): the
+    // BRIDGES print on her raised hood (the exo carrier's Sam hood) and on the Bridges cap she wears replaced by the FRAGILE
+    // express wordmark, through copies each game makes from its own extracted pictures (Logo (reference)); the guest's
+    // choice rides its LOOK (flags bit 2) so the host draws the same. 0: BRIDGES (v0.32). Sam's own hood and cap never change.
+    bool fragile_logo = true;
     // Round 6 (docs/real-partner-body.md section 31): what is in a player's hand on the other screen. held_items (0 off: only
     // the cutscene-prop weapons of v0.9; 1 the ladder, PCC and climbing anchor; 2, the default, every weapon / tool without a
     // cutscene prop) is drawn as a plain entity made from the item's own resource ("held clone").
@@ -126,6 +138,9 @@ struct Config {
     // waist slots) sent and drawn on the partner as the game's own baggage model. On by default since round 15 (39.6: the model's
     // representation is given its message handlers, so the crates are drawn); 0: v0.28 (not sent or drawn).
     bool waist_cargo = true;
+    // Round 20 (F2, section 39.8): the weapon cases and the folding ladder stacked on the back sent as well, still under
+    // waist_cargo (the arms and hands not: never seen drawn). 0: the hips only (v0.32).
+    bool cargo_cases_any_slot = true;
     // Vehicles (docs/real-partner-body.md section 22): the vehicle the player rides is sent (STM1) and shown under the
     // partner's body on the other screen as a visual copy. Section 22.11 (after v0.13): 1 = on, SOLID trike and truck
     // copies (default; each copy's collision turned off on its own entity), the roadster as its construction hologram (no
@@ -220,6 +235,19 @@ struct Config {
     bool enemy_shots_hurt = true;
     bool enemy_shots_sound = true;
     bool enemy_mirror_guard = true;
+    // M0 "no statues" (round 20, docs/enemy-sync.md 8.10): enemy_host_guard: a copy the host has unloaded or hidden is never
+    // mirrored (entry refused, a mirror released alive). enemy_host_hide: a mirror released because the host hid its copy is hidden
+    // and put to sleep here too while hidden there (default 0: never run yet; review r20 enemy 3). enemy_entry_err_max: no mirror
+    // when the host's place is more than this far from ours at entry (m; 0 off, the default: M0's own releases let her MULEs
+    // drift from the host's, and the refusal would then never let them follow his again; review r20 enemy 2). The launcher writes
+    // none of them.
+    bool enemy_host_guard = true;
+    bool enemy_host_hide = false;
+    double enemy_entry_err_max = 0.0;
+    // enemy_host_far (M0's quick path): with the guard on, a mirror is given back (and none made) while the host's own Sam is more
+    // than this far from it (m; 0 off): after his teleport his frames for it stop while his world loads, the silence window
+    // would take 3 s.
+    double enemy_host_far = 1500.0;
     // Enemy sync P2 (round 17, docs/enemy-sync.md 9; enemy_combat.hpp): her hits on the enemies the host owns, applied there with the
     // game's own damage path, and the outcomes (faint, sleep, restrained, dead) back on her mirrors. enemy_hits: default on with
     // enemy_sync (enemy_hits_set: the key was given; both games need it: SEH1 parts bit1). enemy_hit_owner: whose attack the host

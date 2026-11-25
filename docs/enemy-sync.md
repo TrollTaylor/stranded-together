@@ -742,6 +742,10 @@ Final run `20261124-104304-two-games-enemy-mirror` (166 s of steps):
 | `enemy_shots_hurt` | 1 | an enemy round replayed on her may hurt her own Sam |
 | `enemy_shots_sound` | 1 | the magazine id on an enemy muzzle shot |
 | `enemy_mirror_guard` | 1 | the guards drop (0: counted only) |
+| `enemy_host_guard` | 1 | round 20 M0 (8.10): no mirror of a copy the host has unloaded or hidden, or far from his Sam |
+| `enemy_entry_err_max` | 0 | M0: no mirror when the host's place is this far from ours at entry (m; 0 off; 5..1000) |
+| `enemy_host_hide` | 0 | M0: a mirror released because the host hid its copy is hidden and asleep here too (untested: off) |
+| `enemy_host_far` | 1500 | M0: a mirror given back while the host's Sam is this far from it (m; 0 or 300..10000) |
 
 ### 8.6 The default
 
@@ -854,6 +858,63 @@ enemies) and P1b; a launcher option for `enemy_sync`; the other two-game scenari
 - **P1b (ownership)**: the MULEs near the guest owned by the guest's game (their AI perceiving her), the host's copies
   frozen as mirrors: the same SEN1 / SEP1 / lease code with the roles per enemy (the `owner_epoch` and `kOwnerGuest` bits are
   in SEN1 already), a hand-over rule with hysteresis (`erules` gains it), and the enemy shots in both directions.
+
+### 8.10 M0 "no statues" (round 20; `session.ini enemy_host_guard`, `enemy_entry_err_max`, `enemy_host_far`, `enemy_host_hide`)
+
+**The user's report.** The host fainted and the game moved him about 2 km away. His MULEs at the camp were unloaded on his PC,
+and her copies of them stayed frozen in mid-air with no pose (`poses n=0`), refusing her shots (`unrealized`).
+
+**Why.** A mirror was released only by silence (`kSilenceFarMs`, 3 s with no SEN1 frame for it) or by range. The host's SEN1
+sender stops sending a MULE's frames about 0.6 s after his teleport, while his world loads, so the guest released them about
+3.7 s later (run `221023`), and a copy the host still sent while unrealized or hidden there kept its lease.
+
+**The rules** (`erules`, pure, unit-tested in `st_enemy_rules_tests`):
+- `Eligible` (entry) refuses `host_unrealized` and `host_hidden` (the newest SEN1 sample's bits), `entry_far` (the host's place
+  more than `enemy_entry_err_max` m from ours at entry; default 0, off) and `host_far` (the host's own Sam more than
+  `enemy_host_far` m from it, default 1500 m; 0 off).
+- `entry_far` is off by default since the round 20 review: M0's own releases give her MULEs back alive, they chase her and drift
+  from the host's copies, and a 30 m wall then refused every re-entry after the host came back (the two worlds disagreed for
+  the rest of the fight; a downed MULE that stood up after a range release was never laid down with the host's again). The
+  198 m / 114 m entries that motivated it were the host's unrealized copies, which `host_unrealized` already refuses. The gate
+  now also brings the host back and requires the mirrors again.
+- `Lease` releases `release_host_unrealized`, `release_host_hidden` and `release_host_far` (in that order, after the
+  existing checks), all only with `enemy_host_guard` on (default 1). The log: `[enemy] lease released id=XXXXX: host
+  unrealized | host hidden | host far (...)`. A released mirror is given back to her own game (it is alive there). With
+  `enemy_host_hide=1` (default 0), after `host hidden` her copy is also hidden and put to sleep here until the host's frames
+  say shown again or stop (`KeepHostHidden`, 3 s), and only when the release really posted (`HideOnRelease(v, on, posted)`):
+  a release a cutscene holds stays frozen in `g_pending`, and hidden while still frozen its weapon flag (+0x268) could never be
+  restored, so it would walk but never fire again (the run `20261124-151942` bug). Off by default because no run has hidden a
+  mirrored MULE on the host yet (the gate releases by `host far`; `enemy-mirror` released none). To prove it: a host-side
+  hide of a mirrored MULE, then `released hidden`, `shown and woken again` and a round fired by it.
+- What we hide is shown again on every way out: the host's frames, the switch off (`enemy_sync 2`), a fault-stop (`Stop`), a
+  link change and a reset; on a new world (the world counter changed) the old world's hidden copies are forgotten without a
+  touch (an address and id can repeat after a reload). The same holds for the P2 dead copies (`g_dead_hidden`), which before
+  the round 20 review stayed hidden while the switch was off or after a fault.
+- P1b asymmetry (to settle before `enemy_owner` ships): M0 guards only the guest's mirrors of host-owned MULEs. With
+  `enemy_owner=1` the host's frozen copies of guest-owned MULEs get no host-far / unrealized / hidden guard (the guest's own
+  faint or teleport would leave them standing on the host's screen).
+- The host's Sam is the partner body on her screen (`in.body`), known at once after his teleport, so `host far` is the quick
+  path; the SEN1 bits are the slower one for a copy he unloads or hides near himself.
+
+**Status:** `enemy_sync 0` adds `[enemy] host guard (M0): on|off, entries refused n (host unrealized / hidden / far), mirrors
+released n (host unrealized / hidden / far), hidden here for the host now n; entry err max 0 m, host far 1500 m`. `[config]
+enemy_host_guard=1 enemy_entry_err_max=0 enemy_host_far=1500 enemy_host_hide=0` at start. The launcher writes none of the keys.
+
+**The gate `two-games-enemy-statues`** (both at the MULE camp south-west of Lake Knot City, every MULE resurrected, mirrors up;
+the host teleports to Mama's Lab, 2.03 km): every lease released by the guard (`host far`, `host unrealized` or `host hidden`,
+not silence) within 3 s of the command; 2 s after the first release no frozen mirror; 15 s later still none; no HITRES refused
+as unrealized. Since the round 20 review the host then comes back to the camp: `mirror on id=` again within 20 s, mirrors
+`n>=1`, no `entry_far` refusal (still 04). Not run yet with that step.
+
+| Run | Result |
+|---|---|
+| `20261124-220850` | fail: the status-line regex did not match (scenario fixed) |
+| `20261124-221023` | pass, but by silence: released 3.66 s after the teleport (388 re-entries refused; `n=0` then and 15 s later) |
+| **`20261124-221751`** | pass with `enemy_host_far`: the goto at 66.344 s, all 10 leases `host far` at 66.687 s (0.34 s); `n=0` at +2 s and +17 s; 572 (later 5052) entries refused, 10 released |
+
+Stills 02 / 03 of `221751`: her own game's MULEs live and attacking her (one grappling her with the electric effect, another
+running at her with red eyes). No statue. `two-games-enemy-mirror` (`20261124-221952`, pass, 189 steps) with the guard on:
+0 refused, 0 released; `enemy-compare.py` tags 1-4 p95 0.16 / 0.29 / 0.13 / 0.08 m: PASS.
 
 ## 9. P2: her hits on the host's enemies and their outcomes (round 17)
 
@@ -1172,3 +1233,108 @@ byte check failure, `[shots] FAULT` or OTGC write.
   the rifleman never fired in 45 s: the run failed at `enemy sent`.
 - Steps D (forced back by range while alerted, the phase raised) and E (the status counters, `enemy_sync 8 0`) were never
   reached in a run: unverified in game (unit-tested only).
+
+## 11. M1 probe: can a MULE on the host be made to go for her body? (round 20; `enemy_target`, hidden runs)
+
+The question for "MULEs attack Fragile": on the host, her partner body (a `DSControlledEntity`) is never noticed by a calm MULE;
+only a hit from her (P2) turns one on her. The probe tries three levers on MULE 02029 at the camp south-west of Lake Knot City.
+Code: `enemy_combat.cpp` TargetProbe / TargetTick (12 byte-checked sites; a mismatch turns the probe off), the debug action
+`enemy_target <op> [id] [arg]` (docs/debug-actions.md "Enemy hits").
+
+**Addresses [V: Ghidra, byte-checked]:** `AlertForEntityWithPerfectThreatInfo` `0x1434EF1D0` (export thunk, jmp `0x1434D5A80`;
+the owner's +0x88 bit 7 refuses, a null target +0x170 is a no-op), `AlertForEntity` `0x1434EF1E0` (jmp `0x1434D59D0`),
+`IsHostileTowards` `0x142562F10` and `Entity::GetFaction` `0x142362980` (+0x178; both script exports with no direct callers),
+RisePhase `0x142ACE9D0` (the phase object is `DSMuleComponent`+0x58, +0x110 = max(+0x110, phase)).
+
+### 11.1 Runs
+
+- `20261124-215710-two-games-enemy-target-probe`: reported FAIL with 0 failed required steps: 3 optional steps failed (`gear 37`
+  on both, no cap worn; the camera-aim step never logged), so the host's stills show a postbox wall. Logs used.
+- `20261124-220555-two-games-enemy-target-probe`: PASS, 74 steps, 132 s (the scenario as in the repo).
+
+### 11.2 Results
+
+- **Reads (op 0).** Her body: `DSControlledEntity`, +0x170 AI agent non-null, +0x178 an AIFaction, index 1. Our Sam
+  (`DSPlayerEntity`) and the MULE: the same faction pointer, index 1. `IsHostileTowards` answers "not hostile" for every pair,
+  MULE -> Sam included: the +0x178 faction is not what makes a MULE hostile. The MULE has a `DSAIIndividualComponent` (owner
+  +0x48 the MULE, individual +0x50 a `DSAIIndividual`); her body and our Sam have none. Its phase object starts at 0.
+- **L1 (ops 1 / 2), the alerts at her body** (29-41 m, run 1; 8-14 m, four perfect calls 2 s apart, run 2): MULE state 1 and
+  phase 0 unchanged; the bits 0x2040000 gained a transient 0x200 about 3 s after the plain call. No turn toward her. The
+  control at our Sam 80 m away: no change.
+- **L2, hits owned by her body** (`enemy_hit_mode -3 1 0`, `enemy_hit 0x180 3`, then `enemy_hit 0x47 1`): applied (stamina
+  1000 -> 846 on 0x47); it moved a little, no alert, no turn toward her.
+- **L3, RisePhase (op 3)**: phase 0 -> 2, then 2 -> 3 (+0x114 = 100, decaying 83.8, 67.2); state and bits unchanged.
+- **Natural notice (run 2, A)**: her body 8.3 -> 18.5 m from it, but behind it (+144..+167 deg off its facing): nothing. Still
+  01: the MULE has its back to her and walks away.
+- **Control (run 2, C)**: our Sam 12 m in front of it: it turned to face him within 2 s (-34 -> -1 deg), at 3 s the bits went
+  to 0x42440000 and phase 5 (Alert), then it ran (12 -> 46 m) and the bits went back to 0x2040000. Still 03-host: our Sam
+  crouched in the grass, the MULE running in the hangar, red alert edge markers. Still 03-guest: the mirror by the truck.
+- **Her body's hit watch (op 4)**: on, 0 hits in the run (nothing struck her body).
+
+**Conclusion [V: the runs above].** The game's perception takes our `DSPlayerEntity` Sam naturally; her `DSControlledEntity`
+body is not perceived, and none of L1, L2 or L3 makes the MULE target it.
+
+### 11.3 Next
+
+- Either reverse how Sam's AI agent (+0x170) is registered as a perceivable target and compare it with her body's agent, or
+- rely on P1b (section 10, `enemy_owner`, off by default): the MULEs near her owned by her own game, where her real Sam is
+  perceived by the game itself. The practical path.
+
+## 12. M2 probe: a visual stimulus for her body (round 20 stage 2; `enemy_target 8 / 9`, hidden runs; nothing on by default)
+
+The design (round 19, option A, milestone M2 "she is seen"): the host's game runs the fight and her partner body is a real
+target there. Section 11 showed that no alert, owned hit or phase raise does it. This probe tried the AI's own perception: the
+stimulus a sensor sees. **It did not make a MULE see her. Nothing ships; no `session.ini` key was added; the README is unchanged.**
+
+**How Decima's AI perceives [V: Ghidra, byte-checked; the runs below].** The AI manager (global `[0x147BE0D38]`) keeps stimulus
+pools: visual at +0x80 (live list head +0x88, next +0xC8, at most 0x200; create `0x1425249A0` (pool, resource, pos f64[3],
+vel f32[4], agent), persistent remove `0x14254CE00`), aural at +0x1A050 (list +0x1A0D8, next +0xA0). A stimulus: +8 resource
+(`AIVisualStimulusResource`; +0x2C lifetime, -1 = persistent; +0x40 the visibility), +0x10 the source AI agent, +0x18 the
+place (f64[3]), +0x80 life, +0x84 the off byte, +0xA4 a visibility multiplier. An `AIVisualStimulusComponent` makes one at its
+activation (`0x14242CDF0`: component +0x30 -> resource +0x20, the entity's agent +0x170, the agent's place `0x14252D970` vt+0xF8),
+kept at component +0x50. 10 byte-checked sites (`[enemy] stimulus: byte checks (10 sites): ok`; a mismatch turns ops 9 off).
+
+### 12.1 Runs
+
+- `20261124-224340-two-games-enemy-stim-probe`: FAIL (a step waited for a component read). It showed that our Sam
+  (`DSPlayerEntity`) has no `AIVisualStimulusComponent`, nor has her body.
+- `20261124-224836-...`: FAIL at a `waitnew` that came in the same tick as the previous line (now `waitlog`); logs used.
+- `20261124-225003-two-games-enemy-stim-probe`: PASS, 75 steps, 114 s (the scenario as in the repo).
+- `20261124-225504-two-games-enemy-hit`: PASS, 108 steps (the P2 gate, unchanged; a regression run for this code).
+
+### 12.2 Results
+
+- **Our Sam's stimuli (op 8, the walk).** 42 live visual stimuli at the camp; one by our Sam's agent: a persistent
+  `AIVisualStimulus` (resource `AIVisualStimulusResource`, lifetime -1, +0x40 1.0, +0xA4 1.0) at his place (0.1 m off; the game
+  moves it with him). 3 aural ones, one his (`AIAuralStimulusResource`, +0x40 60). Her body's agent has none. So her body is
+  not seen because nothing stands for it in the pools; it is made somewhere other than a component (a player-only path).
+- **A, the control** (her body 14 m straight ahead of MULE 02029, no stimulus): it walked on toward her (13.6 -> 4.9 m, its
+  heading within 26 deg), state 1, phase 0: no notice.
+- **B, her stimulus** (op 9 1: her agent, Sam's resource, the same multiplier): made (`hers made (mode 1: her agent)`), the game
+  kept it on her place (0.00 m apart for 18 s, persistent, never off). The MULE walked to 5 m of her, turned away (+0 -> -122
+  deg), state 1, phase 0, bits unchanged: **no notice.** Guest still 02 (9 s): Fragile by the hangar wall, no MULE in view.
+- **C, the decoy** (op 9 3: a second stimulus with our Sam's agent, its place written to her body each tick): within 1 s the
+  MULE turned from her (+1 deg) to face **our real Sam 67 m away** (+160 -> +19 deg off), held it 7 s, its bits gained 0x200
+  (as with section 11's alerts), then turned back and away; state 1, phase 0. The sensor took the stimulus, but what it knows
+  is the agent, and the agent's place is Sam's. Host still 03: our Sam in the grass outside the camp ("Guest 84 m" marker);
+  guest still 03: Fragile on a rooftop, a calm MULE in the distance.
+
+**Conclusion [V: the runs above].** A visual stimulus alone does not make a MULE notice an agent that is not the player's: with
+her agent it is ignored; with Sam's agent the MULE turns to Sam. The filter is past the stimulus (the sensor or the knowledge
+taking only the player, as the `GetPlayer(0)` calls in the MULE code suggest). The perception lever was not found, so the
+perception test, the 4 s target hold and the M3 reverse HIT relay (it needs the MULEs to go for her body first) are not built.
+The round-19 design's fallback is P1b (section 10).
+
+### 12.3 Next
+
+- Reverse the visual sensor's pass over the list (`DSAIVisualSensor`, RTTI `0x144c85f80`; `AIVisualSensor` vtable
+  `0x143d4a9f0`, several of its entries have no Ghidra function yet) to find the check on the source agent, or
+- P1b: the MULEs near her thinking in her game, where her real Sam is seen and hit by the game itself.
+- A safety note for any later use: a stimulus made for her agent must be removed before her body is freed (the probe drops it
+  when the body or its agent changes, a frame late at worst; hidden runs only).
+- The probe's own safety (round 20 review): a stimulus the game has reused for another source (its agent or resource changed),
+  or one from the old world after a world change, is forgotten without the remove (`hers forgotten`): putting it back into the
+  pool would free what the game now owns, with no fault to catch it. The probe walks the lists and creates / removes entries
+  from the mod's game-thread tick without the AI manager's lock: if the sensors ran on worker jobs at that moment it could race.
+  A probe-only hazard (hidden runs); any later use must take the pool's lock (not found yet) or run where the sensors do.
+  Op 9 also needs the target probe's agent-offset check (`entity+0x170`, `kTAgent`).

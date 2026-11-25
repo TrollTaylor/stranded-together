@@ -11,6 +11,8 @@
 # Pinned 2.6 m ahead and seen from the side of the host's own Sam, so his own crates do not hide hers. D1 / D2: the host's
 # props remade with the rep handlers left unbound (`gear 36 5 0`, round 14's form: not drawn) and bound again (drawn).
 # C1..C4 / C1b..C4b: the reverse on / off pairs, one per turn.
+# Round 20 (F2, section 39.8): complete-100 also carries two weapon cases S and one M stacked on the BACK (slot type 1); with
+# cargo_cases_any_slot (default 1) they are sent and drawn too, on the backpack (A1 / A2 / C* from behind show them).
 #   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-hip-cargo -Id round15-hip -SeedSaves complete-100 -GuestSeed profile-only
 # covers: hip-cargo
 role host
@@ -28,8 +30,10 @@ waitlog 5 \[config\] waist_cargo=1
 wait 4000
 # the guest sends both hip pieces; the host draws both (and the reverse)
 @guest waitlog 30 \[gear\] our carried cargo: 2 hip piece\(s\) sent as the game's own baggage model \(waist_cargo on\)
-@guest waitlog 30 \[gear\] our gear: .*cargo 2: 0 approximate, 2 the game's own model
-waitlog 30 \[gear\] the partner's gear: .*cargo 2: 0 approximate, 2 the game's own model
+@guest waitlog 30 \[gear\] our carried cargo: [1-9] case / ladder piece\(s\) off the hips sent as the game's own baggage model \(cargo_cases_any_slot on\)
+@guest waitlog 30 \[gear\] our gear: .*cargo ([3-9]): 0 approximate, \1 the game's own model
+waitlog 30 \[gear\] the partner's gear: .*cargo ([3-9]): 0 approximate, \1 the game's own model
+waitlog 30 \[gear\] baggage model .* of the config's model 16 \('weapon case M \(wmd0\)'\)
 waitlog 30 \[gear\] baggage model .* of the config's model 15 \('weapon case S \(wsm0\)'\)
 waitlog 30 \[gear\] baggage model .* of the config's model 14 \('folding ladder \(flad\)'\)
 @guest waitlog 30 \[gear\] baggage model .* of the config's model 15
@@ -40,10 +44,10 @@ waitlog 5 \[gear\] baggage model .* reps: .*SkinnedModel rep handlers 0 -> [1-9]
 @guest waitlog 5 \[gear\] baggage model .* reps: .*SkinnedModel rep handlers 0 -> [1-9]
 wait 3000
 action gear 36 2
-waitnew 5 \[gear\] waist_cargo 1; hip pieces: ours sent 2, the partner's 2; baggage model props 2 live, 2 shown
+waitnew 5 \[gear\] waist_cargo 1; hip pieces: ours sent 2, the partner's 2; on the backpack \(cargo_cases_any_slot 1\): ours [1-9], the partner's [1-9]; baggage model props ([3-9]) live, \1 shown
 waitlog 5 \[gear\] +entity flags .*stencil yes \(extras mask 7\)
 @guest action gear 36 2
-@guest waitnew 5 \[gear\] waist_cargo 1; hip pieces: ours sent 2, the partner's 2; baggage model props 2 live, 2 shown
+@guest waitnew 5 \[gear\] waist_cargo 1; hip pieces: ours sent 2, the partner's 2; on the backpack \(cargo_cases_any_slot 1\): ours [1-9], the partner's [1-9]; baggage model props ([3-9]) live, \1 shown
 # ---- A: the host's screen of her (pinned 2.6 m ahead, her back to him) from behind-left, behind-right and her right side
 # (the host's own Sam to one side of the frame); her own screen the same turns
 @guest action collision 3 6
@@ -78,7 +82,7 @@ screenshot B1-host-sees-guest-off
 @guest waitlog 10 \[gear\] our carried cargo: 2 hip piece\(s\) sent as the game's own baggage model \(waist_cargo on\)
 wait 3000
 action gear 36 2
-waitnew 5 \[gear\] waist_cargo 1; hip pieces: ours sent 2, the partner's 2; baggage model props 2 live, 2 shown
+waitnew 5 \[gear\] waist_cargo 1; hip pieces: ours sent 2, the partner's 2; on the backpack \(cargo_cases_any_slot 1\): ours [1-9], the partner's [1-9]; baggage model props ([3-9]) live, \1 shown
 screenshot B2-host-sees-guest-on-again
 # ---- D: the cause (section 39.6): the host's new props made without the rep handlers (round 14's form), then with them
 action gear 36 5 0

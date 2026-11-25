@@ -1,0 +1,198 @@
+# The suit rig on Fragile, solo (round 20 stage 3; docs/real-partner-body.md section 41):
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios rig-fragile -SeedSaves complete-100 -Id round20-stage3
+# The 100% save's Sam wears the backpack, the BB pod, the speed skeleton and the hip crates (ladder, weapon case). The exo
+# carrier (section 32) now also shows the porter suit's hardware that joins that gear to her body (exo_rig=1): the pod's
+# chest mount (46) and pipe (2), the hip rig (44), and on the partner's screen the backpack's straps and hip belt (25-28, the
+# stand-in for the belt entity the partner never gets). Her own screen keeps the game's belt entity (no 25-28 there).
+# Self view first, each view with the rig off then on (`gear 38 0/1`): back, front 3/4 both sides, both exact sides, rear
+# 3/4, then 5 synthetic cases stacked (four turns), walking and running; the frame time with the rig on, off and the carrier off;
+# then a mirroring debug Fragile (the partner slot) in front of Sam: the rig's parts there and the switch, by the log only
+# (the stills of the partner slot: two-games-rig-fragile, the host looking at her).
+# covers: skeleton gear self-view
+role solo
+timeout 360
+ini partner_body=real
+ini my_character=fragile_suit
+ini self_character=1
+waitready 90
+waitlog 120 \[overlay\] input attached
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+waitlog 40 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+waitlog 30 \[config\] exo_rig=1 exo_rig_extra=0
+waitlog 60 \[exo\] our Sam's skeleton: speed
+waitlog 60 \[exo-self\] carrier .* follows the self body's pose
+waitlog 30 \[exo-self\] carrier [0-9A-Fa-fx]+: shown
+# her own screen: the pod's mount and pipe and the hip rig, never the suit's belt (the game's belt entity is drawn there)
+waitlog 30 \[exo-self\] rig \(section 41\): parts 2 44( 45)? 46( |$)
+waitlog 30 \[exo-self\] carrier .* parts: .*shown now: [0-9 ]*\b46\b.*rig on\)
+action gear 38 2
+wait 2000
+# ---- V1: back (the camera behind her). The camera turns in pulses of 650 ms (325 once); the stick accelerates, so the
+# stills are named by what run 20261124-232041 showed
+action gear 38 0
+waitnew 10 \[exo-self\] carrier .* parts: .*rig off\)
+wait 1200
+screenshot V1-back-off
+action gear 38 1
+waitnew 10 \[exo-self\] carrier .* parts: .*rig on\)
+wait 1200
+screenshot V1-back-on
+# ---- V2
+pad none 650 rx=32767
+wait 1500
+action gear 38 0
+waitnew 10 \[exo-self\] carrier .* parts: .*rig off\)
+wait 1200
+screenshot V2-back-off
+action gear 38 1
+waitnew 10 \[exo-self\] carrier .* parts: .*rig on\)
+wait 1200
+screenshot V2-back-on
+# ---- V3
+pad none 650 rx=32767
+wait 1500
+action gear 38 0
+waitnew 10 \[exo-self\] carrier .* parts: .*rig off\)
+wait 1200
+screenshot V3-front3q-off
+action gear 38 1
+waitnew 10 \[exo-self\] carrier .* parts: .*rig on\)
+wait 1200
+screenshot V3-front3q-on
+# ---- V4
+pad none 650 rx=32767
+wait 1500
+action gear 38 0
+waitnew 10 \[exo-self\] carrier .* parts: .*rig off\)
+wait 1200
+screenshot V4-rear3q-right-off
+action gear 38 1
+waitnew 10 \[exo-self\] carrier .* parts: .*rig on\)
+wait 1200
+screenshot V4-rear3q-right-on
+# ---- V5: her exact right profile (the side gap check)
+pad none 325 rx=32767
+wait 1500
+action gear 38 0
+waitnew 10 \[exo-self\] carrier .* parts: .*rig off\)
+wait 1200
+screenshot V5-right-side-off
+action gear 38 1
+waitnew 10 \[exo-self\] carrier .* parts: .*rig on\)
+wait 1200
+screenshot V5-right-side-on
+# ---- V6
+pad none 650 rx=32767
+wait 1500
+action gear 38 0
+waitnew 10 \[exo-self\] carrier .* parts: .*rig off\)
+wait 1200
+screenshot V6-back3q-left-off
+action gear 38 1
+waitnew 10 \[exo-self\] carrier .* parts: .*rig on\)
+wait 1200
+screenshot V6-back3q-left-on
+# ---- V7: her left profile
+pad none 650 rx=32767
+wait 1500
+action gear 38 0
+waitnew 10 \[exo-self\] carrier .* parts: .*rig off\)
+wait 1200
+screenshot V7-left-side-off
+action gear 38 1
+waitnew 10 \[exo-self\] carrier .* parts: .*rig on\)
+wait 1200
+screenshot V7-left-side-on
+# ---- V8
+pad none 650 rx=32767
+wait 1500
+action gear 38 0
+waitnew 10 \[exo-self\] carrier .* parts: .*rig off\)
+wait 1200
+screenshot V8-front3q-off
+action gear 38 1
+waitnew 10 \[exo-self\] carrier .* parts: .*rig on\)
+wait 1200
+screenshot V8-front3q-on
+# ---- 5 synthetic cases stacked on the backpack (rig on), four views round her. The synthetic cases are sent, not drawn on
+# her own screen (as for Sam, two-games-hip-cargo): these stills are the rig with the save's own load on the game's backpack
+action gear 3 5
+waitnew 10 \[gear\] our gear: [0-9]+ items .*cargo [0-9]+:
+wait 2500
+screenshot R5-loaded-1
+pad none 650 rx=32767
+wait 1500
+screenshot R5-loaded-2
+pad none 650 rx=32767
+wait 1500
+screenshot R5-loaded-3
+pad none 650 rx=32767
+wait 1500
+screenshot R5-loaded-4
+action gear 3 0
+wait 1500
+# ---- the frame time (standing still, the same view): rig on, rig off, the carrier off, on again (about 8 s each)
+action log_status
+wait 8000
+action gear 38 0
+wait 8000
+action gear 27 0
+waitnew 15 \[exo-self\] carrier removed
+wait 8000
+action gear 27 1
+waitnew 30 \[exo-self\] carrier [0-9A-Fa-fx]+: shown
+action gear 38 1
+wait 8000
+# ---- walking and running (rig on): nothing lags
+pad none 900 ly=32767 keep
+screenshot R6-walk-a
+wait 200
+screenshot R6-walk-b
+pad none 0
+pad none 3000 ly=32767 rt=255 keep
+screenshot R6-run-a
+wait 200
+screenshot R6-run-b
+pad none 0
+wait 1500
+# ---- the partner slot: a mirroring debug Fragile 1.6 m ahead of Sam, her back to the camera, wearing our gear
+action self_view 0
+wait 2000
+pad none 700 ly=-32767
+wait 1500
+action gear 4 1
+action real_spawn 16 1.6 1
+waitlog 30 \[real\] ('fragile_suit' is live|.*refused|.*did not load|the game cancelled loading|spawn failed|teardown)
+waitlog 60 \[exo\] carrier .* follows the partner body's pose
+waitlog 30 \[exo\] carrier [0-9A-Fa-fx]+: shown
+# the partner's screen: the suit's belt and straps too (the stand-in for the belt entity)
+waitlog 30 \[exo\] rig \(section 41\): parts 2 25 26 27 28 44( 45)? 46( |$)
+wait 2500
+action gear 38 0
+waitnew 10 \[exo\] carrier .* parts: .*rig off\)
+wait 1200
+action gear 38 1
+waitnew 10 \[exo\] carrier .* parts: .*rig on\)
+wait 1200
+action gear 38 0
+waitnew 10 \[exo\] carrier .* parts: .*rig off\)
+wait 1200
+action gear 38 1
+waitnew 10 \[exo\] carrier .* parts: .*rig on\)
+wait 1200
+action gear 38 2
+action gear 27 2
+action real_remove
+action gear 4 0
+nolog \[exo.*FAULTED
+nolog \[exo.*\] carrier refused
+nolog \[exo.*\] carrier .* not the porter suit's tree
+nolog \[exo.*\] carrier .* rig not on this tree
+nolog \[gear\] the ArtParts part setter faulted
+action log_status
+quit

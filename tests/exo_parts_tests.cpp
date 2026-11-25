@@ -6,6 +6,7 @@
 #include <initializer_list>
 #include <limits>
 
+#include "config_values.hpp"
 #include "exo_parts.hpp"
 
 using namespace st::exo;
@@ -404,8 +405,170 @@ void TestFold() {
 }
 }  // namespace
 
+// Round 20 (section 41): the suit rig on the carrier.
+struct TItem {
+    std::uint8_t kind = 0, parent = 0xFF, joint = 0;
+};
+void TestRig() {
+    // the gear from the STC1 items: the pod on a joint, the backpack, cargo on the hips joint (not on the backpack, not on an arm)
+    TItem items[6];
+    CHECK(!RigGearOf(items, 0).Any() && !RigGearOf<TItem>(nullptr, 3).Any());
+    items[0].kind = kRigKindPod, items[0].joint = 5;
+    RigGear g = RigGearOf(items, 1);
+    CHECK(g.pod && !g.pack && !g.waist);
+    items[0].parent = 2;  // a pod item hung on another item: not the chest pod
+    CHECK(!RigGearOf(items, 1).pod);
+    items[1].kind = kRigKindBackpack;
+    items[2].kind = kRigKindCargo, items[2].parent = 1;  // a case on the backpack
+    items[3].kind = kRigKindCargo, items[3].joint = 7;   // a case on the right arm
+    g = RigGearOf(items, 4);
+    CHECK(!g.pod && g.pack && !g.waist);
+    items[4].kind = kRigKindCargo, items[4].joint = kRigHipsJoint;  // the hip crate
+    g = RigGearOf(items, 5);
+    CHECK(g.pack && g.waist && g.Any());
+    items[5].kind = 5, items[5].joint = kRigHipsJoint;  // an entity on the hips: not waist cargo
+    CHECK(!RigGearOf(items + 5, 1).Any());
+
+    // the tree
+    std::int16_t par[kSuitParts];
+    SuitTree(par);
+    CHECK(RigTreeOk(kSuitParts, par) && !RigTreeOk(106, par) && !RigTreeOk(kSuitParts, nullptr));
+    std::int16_t bad[kSuitParts];
+    std::memcpy(bad, par, sizeof(bad));
+    bad[27] = 1;
+    CHECK(!RigTreeOk(kSuitParts, bad) && CarrierTreeOk(kSuitParts, bad));
+    std::memcpy(bad, par, sizeof(bad));
+    bad[46] = 3;
+    CHECK(!RigTreeOk(kSuitParts, bad));
+
+    // the porter suit's parts block as the round 20 census read it on Sam with the backpack, pod and hip gear: k 31 -> 2 shown,
+    // k 63 -> 25 hidden (the belt entity is drawn), k 72 -> 44 shown, k 73 -> 45 hidden, k 51 -> 29 shown
+    std::uint64_t apply[2] = {}, vis[2] = {};
+    for (unsigned p : {2u, 25u, 29u, 30u, 44u, 45u}) SetBit(apply, p, true);
+    for (unsigned p : {2u, 29u, 30u, 44u}) SetBit(vis, p, true);
+    CHECK(SenderNamesRig(apply));
+    std::uint64_t partial[2] = {apply[0], apply[1]};
+    SetBit(partial, 44, false);
+    CHECK(!SenderNamesRig(partial) && !SenderNamesRig(nullptr));
+    RigGear all;
+    all.pod = all.pack = all.waist = true;
+    std::uint64_t rig[2];
+    // the partner's screen: mount + pipe, the suit belt as the stand-in for the belt entity, the hip rig as the game shows it
+    RigPlan(all, apply, vis, false, 0, rig);
+    std::uint64_t want[2] = {};
+    for (unsigned p : {2u, 25u, 26u, 27u, 28u, 44u, 46u}) SetBit(want, p, true);
+    CHECK(rig[0] == want[0] && rig[1] == want[1]);
+    // her own screen: the game's belt entity is drawn there: no suit belt (never two sets of straps)
+    RigPlan(all, apply, vis, true, 0, rig);
+    CHECK(!Bit(rig, 25) && !Bit(rig, 26) && !Bit(rig, 27) && !Bit(rig, 28) && Bit(rig, 46) && Bit(rig, 2) && Bit(rig, 44));
+    // ... unless the game shows the suit's belt in place of the entity
+    SetBit(vis, 25, true);
+    RigPlan(all, apply, vis, true, 0, rig);
+    CHECK(Bit(rig, 25) && Bit(rig, 26) && Bit(rig, 28));
+    SetBit(vis, 25, false);
+    // each gear alone
+    RigGear pod;
+    pod.pod = true;
+    RigPlan(pod, apply, vis, false, 0, rig);
+    CHECK(Bit(rig, 46) && Bit(rig, 2) && !Bit(rig, 25) && !Bit(rig, 44));
+    SetBit(vis, 2, false);  // the game hides the pipe: the mount stays with the pod
+    RigPlan(pod, apply, vis, false, 0, rig);
+    CHECK(Bit(rig, 46) && !Bit(rig, 2));
+    SetBit(vis, 2, true);
+    RigGear pack;
+    pack.pack = true;
+    RigPlan(pack, apply, vis, false, 0, rig);
+    CHECK(Bit(rig, 25) && Bit(rig, 27) && !Bit(rig, 46) && !Bit(rig, 2) && !Bit(rig, 44));
+    RigGear waist;
+    waist.waist = true;
+    RigPlan(waist, apply, vis, false, 0, rig);
+    CHECK(Bit(rig, 44) && !Bit(rig, 45) && !Bit(rig, 46));
+    SetBit(vis, 45, true);
+    RigPlan(waist, apply, vis, false, 0, rig);
+    CHECK(Bit(rig, 44) && Bit(rig, 45));
+    SetBit(vis, 45, false);
+    SetBit(vis, 44, false);
+    RigPlan(waist, apply, vis, false, 0, rig);
+    CHECK(!RigAny(rig));
+    SetBit(vis, 44, true);
+    // nothing worn: nothing (the extras too)
+    RigPlan(RigGear{}, apply, vis, false, kRigExtraAll, rig);
+    CHECK(!RigAny(rig));
+    // the extras only on request, only with gear; never the star (48) or the suit body (0)
+    RigPlan(pod, apply, vis, false, kRigExtraAll, rig);
+    CHECK(Bit(rig, 31) && Bit(rig, 47) && Bit(rig, 29) && Bit(rig, 49) && !Bit(rig, kRigStar) && !Bit(rig, 0));
+    RigPlan(pod, apply, vis, false, kRigExtraCantMount, rig);
+    CHECK(!Bit(rig, 31) && Bit(rig, 47) && !Bit(rig, 29) && !Bit(rig, 49));
+    std::uint64_t mask[2];
+    RigMask(mask);
+    CHECK(!Bit(mask, kRigStar) && !Bit(mask, 0) && !Bit(mask, 1) && !Bit(mask, 30));
+    for (unsigned extra = 0; extra <= kRigExtraAll; ++extra)
+        for (int side = 0; side < 2; ++side) {
+            RigPlan(all, apply, vis, side != 0, extra, rig);
+            CHECK((rig[0] & ~mask[0]) == 0 && (rig[1] & ~mask[1]) == 0);
+        }
+
+    // on the carrier: the rig's parts shown exactly as planned, with or without a skeleton; the straps only with their container
+    for (int t = 0; t < kTypeCount; ++t) {
+        std::uint64_t sv[2];
+        TypeParts(static_cast<Type>(t), sv);
+        sv[0] |= vis[0], sv[1] |= vis[1];
+        RigPlan(all, apply, vis, false, 0, rig);
+        std::uint64_t touch[2], asked[2], shown[2];
+        CarrierPlan(kSuitParts, par, sv, false, -1, touch, asked, rig);
+        ShownFromAsked(kSuitParts, par, asked, shown);
+        std::uint64_t expect[2];
+        TypeParts(static_cast<Type>(t), expect);
+        SetBit(expect, 1, true);
+        SetBit(expect, kHeavySubPart, t == 3);
+        expect[0] |= rig[0], expect[1] |= rig[1];
+        CHECK(shown[0] == expect[0] && shown[1] == expect[1]);
+        CHECK(!Bit(shown, 0) && !Bit(shown, kRigStar) && !Bit(shown, 52) && !Bit(shown, 30) && !Bit(shown, 31) && !Bit(shown, 47) && !Bit(shown, 49));
+        CHECK(Bit(touch, 26) && Bit(touch, 27) && Bit(touch, 28));
+    }
+    // no rig (null, or the rig off): exactly the round 7 plan
+    {
+        std::uint64_t sv[2], t0[2], a0[2], t1[2], a1[2];
+        TypeParts(Type::speed, sv);
+        sv[0] |= vis[0], sv[1] |= vis[1];
+        CarrierPlan(kSuitParts, par, sv, false, t0, a0);
+        CarrierPlan(kSuitParts, par, sv, false, -1, t1, a1, nullptr);
+        CHECK(t0[0] == t1[0] && t0[1] == t1[1] && a0[0] == a1[0] && a0[1] == a1[1]);
+        CHECK(!Bit(a0, 2) && !Bit(a0, 25) && !Bit(a0, 44) && !Bit(a0, 46) && !Bit(t0, 26));
+        std::uint64_t none[2] = {};
+        CarrierPlan(kSuitParts, par, sv, false, -1, t1, a1, none);
+        CHECK(a0[0] == a1[0] && a0[1] == a1[1]);
+        // a straps bit without its container: not asked
+        std::uint64_t straps[2] = {};
+        SetBit(straps, 26, true);
+        CarrierPlan(kSuitParts, par, sv, false, -1, t1, a1, straps);
+        CHECK(!Bit(a1, 26) && Bit(t1, 26));
+        // a tree whose rig parts moved: the rig is not applied (the skeleton still is)
+        std::memcpy(bad, par, sizeof(bad));
+        bad[27] = 1;
+        RigPlan(all, apply, vis, false, 0, rig);
+        CarrierPlan(kSuitParts, bad, sv, false, -1, t1, a1, rig);
+        CHECK(!Bit(a1, 46) && !Bit(a1, 25) && Bit(a1, 32));
+    }
+    // the hood and the rig together
+    {
+        std::int16_t hp[kSuitParts];
+        HoodTree(hp);
+        std::uint64_t sv[2] = {}, touch[2], asked[2], shown[2];
+        RigPlan(pod, apply, vis, false, 0, rig);
+        CarrierPlan(kSuitParts, hp, sv, false, 53, touch, asked, rig);
+        ShownFromAsked(kSuitParts, hp, asked, shown);
+        CHECK(Bit(shown, 53) && Bit(shown, 46) && Bit(shown, 2) && !Bit(shown, 32));
+    }
+    // exo_rig_extra
+    CHECK(st::cfgval::RigExtra("0", 3) == 0 && st::cfgval::RigExtra("15", 0) == 15 && st::cfgval::RigExtra("2", 0) == 2);
+    CHECK(st::cfgval::RigExtra("16", 0) == 0 && st::cfgval::RigExtra("-1", 4) == 4 && st::cfgval::RigExtra("x", 4) == 4 && st::cfgval::RigExtra("", 4) == 4 &&
+          st::cfgval::RigExtra("3x", 1) == 1);
+}
+
 int main() {
     TestFold();
+    TestRig();
     TestFormula();
     TestTypes();
     TestSender();

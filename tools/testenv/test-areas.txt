@@ -42,6 +42,7 @@ area outfit                : the partner Sam's outfit, his head and hair
 area face                  : Fragile's face: Sam's facial clips on her self view and on the partner body (face_sync, STJ1 face block)
 area suit-colour           : Fragile's porter suit in Sam's suit colours (palette)
 area textures              : Fragile's textures from the user's folder, hot reload, on her self view
+area logo                  : the Fragile Express logo on her raised hood and her cap (logo copies, the carrier's mesh probe, LOOK bit 2)
 area texture-share         : her textures over the link (STT1: pictures, ready-made recipes) on the other screen
 area suit-defaults         : the ready-made gold / silver / colour folders, the automatic extraction
 area gear                  : gear on the bodies: backpack, cargo, accessories, headgear, the BB pod
@@ -112,6 +113,7 @@ native/launcher/*                      launcher-ui
 native/textures/suit_defaults.*        suit-defaults
 native/textures/ready_made_rules.hpp   suit-defaults
 native/textures/extract_plan.*         suit-defaults textures
+native/textures/logo_*                 logo textures
 native/textures/*                      textures
 
 # ---- the link
@@ -263,6 +265,12 @@ native/mod/partner_outfit.* ~[Cc]lothes|VariantState|[Pp]aint|LoadingModel|[Ww]a
 native/mod/held_*           ~\bweapons?\b                                                     weapons
 native/mod/online_gate.*    ~road|structure|ladder|zipline|\bw[1-4]\b                         world-sync
 native/mod/texture_looks.*  ~ready.?made|textures_defaults|recipe|extract                     suit-defaults
+native/mod/texture_looks.*  ~[Ll]ogo                                                          logo
+native/mod/texture_share.*  ~[Ll]ogo                                                          logo texture-share
+native/mod/texture_wire.*   ~[Ll]ogo|~7u                                                      logo texture-share
+native/mod/partner_gear.*   ~[Ll]ogo                                                          logo
+native/mod/fragile_textures.* ~[Ll]ogo|mesh.?probe|mesh_filter|mesh_mask|probed?_|AnySlot|SlotId  logo
+native/mod/config.*         ~fragile_logo                                                     logo
 native/launcher/core/core_textures.* ~[Rr]eady.?[Mm]ade|[Ee]xtract|[Mm]anifest|textures_defaults|[Dd]efaults|gold|silver  suit-defaults
 native/mod/texture_share.*  ~ready.?made|textures_defaults|recipe                             suit-defaults
 native/mod/config.*         ~("|bool\s+|int\s+)textures?_                                     textures

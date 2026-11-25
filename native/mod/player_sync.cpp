@@ -964,6 +964,7 @@ void ConfigureTextures(const Config& config, const std::wstring& mod_dir) noexce
     t.send = config.textures_send;
     t.receive = config.textures_receive;
     t.tint = config.fragile_suit_colour;
+    t.logo = config.fragile_logo;
     t.cache = (automation::Enabled() ? automation::OutDir() : mod_dir) + L"\\cache\\partner-textures";
     texshare::Configure(t);
 }

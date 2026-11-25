@@ -597,6 +597,8 @@ using FnActor = void (*)(std::uintptr_t actor);
 
 Config g_ecfg;
 bool g_want = false;          // enemy_sync=1
+double g_hostp[3] = {};       // the guest: the host's Sam (the partner body here) this tick (M0's quick path)
+bool g_have_hostp = false;
 bool g_p1_ok = false;         // byte checks passed
 bool g_varb_ok = false;       // variant B's re-path checked
 bool g_sam_filter = false, g_npc_filter = false, g_observer = false;
@@ -1101,6 +1103,7 @@ std::map<std::uint32_t, FarOrig> g_far_orig;
 struct GuestStats {
     unsigned rx_sen = 0, rx_bad = 0, rx_entries = 0, rx_sep = 0, sep_bad = 0, sep_refused = 0, sep_foreign = 0;
     unsigned on = 0, released = 0, refused = 0, taken = 0, sets = 0, teleports = 0, no_pose = 0, far_placed = 0, far_faults = 0, set_faults = 0;
+    unsigned host_refused = 0, host_released = 0, host_hidden_now = 0;  // M0
 } g_gs;
 std::vector<double> g_err_win;
 unsigned g_sets_win = 0, g_tp_win = 0;
@@ -1192,6 +1195,49 @@ void UnhideDead(bool all, const char* why) {
         it = g_dead_hidden.erase(it);
     }
 }
+// M0 (enemy_host_guard): the mirrors given back hidden and asleep here because the host's copy is hidden there (never a live MULE
+// beside her that the host's world put away). Shown and woken again (only the a88 bits we set, only while it is still the same
+// in-use MULE) once the host's newest frame says realized and not hidden, the frames stop, or on off / reset.
+struct HostHid {
+    std::uintptr_t actor = 0;
+    std::uint32_t a88_pre = 0;
+};
+std::map<std::uint32_t, HostHid> g_host_hid;
+void HideHostHidden(std::uint32_t id, std::uintptr_t actor) {
+    ActorNow a;
+    if (!ReadActor(actor, id, a)) return;
+    HostHid h;
+    h.actor = actor, h.a88_pre = a.a88 & 3u;
+    bool ok = true;
+    if (!(h.a88_pre & 1u)) ok = ActorBool(actor, kVtHidden, 1) && ok;
+    if (!(h.a88_pre & 2u)) ok = ActorBool(actor, kVtSleep, 1) && ok;
+    g_host_hid[id] = h;
+    g_gs.host_hidden_now = static_cast<unsigned>(g_host_hid.size());
+    Log("[enemy] mirror id=%05X released hidden: hidden and asleep here while the host's is hidden (a88 0x%X -> 0x%X%s)", id, a.a88, U32(actor + kActFlags88),
+        ok ? "" : ", a call FAULTED");
+}
+void UnhideHostHidden(bool all, const char* why, double now) {
+    for (auto it = g_host_hid.begin(); it != g_host_hid.end();) {
+        if (!all) {
+            const auto t = g_tracks.find(it->first);
+            const erules::Sample* z = t != g_tracks.end() ? t->second.Newest() : nullptr;
+            if (erules::KeepHostHidden(z != nullptr, z ? now - t->second.rx_ms : 1e18, z && (z->state & ewire::kRealized), z && (z->state & ewire::kHidden))) {
+                ++it;
+                continue;
+            }
+        }
+        ActorNow a;
+        if (ReadActor(it->second.actor, it->first, a)) {
+            bool ok = true;
+            if ((a.a88 & 1u) && !(it->second.a88_pre & 1u)) ok = ActorBool(it->second.actor, kVtHidden, 0) && ok;
+            if ((a.a88 & 2u) && !(it->second.a88_pre & 2u)) ok = ActorBool(it->second.actor, kVtSleep, 0) && ok;
+            Log("[enemy] mirror id=%05X shown and woken again (%s; a88 0x%X -> 0x%X%s)", it->first, all ? why : "the host's is shown again or silent", a.a88,
+                U32(it->second.actor + kActFlags88), ok ? "" : ", a call FAULTED");
+        }
+        it = g_host_hid.erase(it);
+    }
+    g_gs.host_hidden_now = static_cast<unsigned>(g_host_hid.size());
+}
 void FreeSlot(Mirror& m) {
     if (m.slot >= 0) {
         if (g_palloc.At(m.slot) == erules::PoseAlloc::kApply) {
@@ -1204,8 +1250,9 @@ void FreeSlot(Mirror& m) {
 bool ReleaseHeld() { return g_holding || InCutscene(); }
 // The posts that give one mirror back: only while it is still the same in-use MULE actor AND still frozen by us (+0xEA4 bit 14:
 // cleared means a game sequence took it: forgotten, nothing posted, as the lease's "taken"); Required{0} only when bit 13 was
-// clear before our freeze (Occupied{0} keeps bit 13; a bit the game set is never cleared by us).
-void PostRelease(const Mirror& m, const char* why) {
+// clear before our freeze (Occupied{0} keeps bit 13; a bit the game set is never cleared by us). True: the posts were made (and
+// the weapon flag restored) now.
+bool PostRelease(const Mirror& m, const char* why) {
     std::uint8_t in_use = 0;
     std::uint32_t id = 0;
     const bool same = mem::Q(m.actor) == A(kMuleVt) && mem::Rd(m.actor + kActInUse, in_use) && in_use && mem::Rd(m.actor + kActId, id) && id == m.id;
@@ -1227,10 +1274,12 @@ void PostRelease(const Mirror& m, const char* why) {
     ++g_gs.released;
     Log("[enemy] lease released id=%05X: %s (ea4 0x%X->0x%X)%s", m.id, why, before, same ? U32(m.actor + kMuleSeq) : 0,
         !same ? " (the actor is gone: forgotten)" : !ours ? " (bit 14 already clear: a game sequence took it; forgotten, nothing posted)" : "");
+    return ours;
 }
 // Give one mirror back (only one we froze). During a cutscene hold: kept frozen in g_pending, released when the hold ends.
-void ReleaseMirror(Mirror& m, const char* why) {
-    if (!m.frozen) return;
+// True: posted now (not held, still ours).
+bool ReleaseMirror(Mirror& m, const char* why) {
+    if (!m.frozen) return false;
     m.frozen = false;
     FreeSlot(m);
     if (ReleaseHeld()) {
@@ -1239,10 +1288,10 @@ void ReleaseMirror(Mirror& m, const char* why) {
         g_pending.push_back(p);
         PublishMirrors();  // still matched by the guards (it is still frozen)
         Log("[enemy] lease release id=%05X held: %s during a cutscene (posted when the hold ends)", m.id, why);
-        return;
+        return false;
     }
     PublishMirrors();  // the guards stop matching it at once
-    PostRelease(m, why);
+    return PostRelease(m, why);
 }
 void ReleaseAll(const char* why) {
     bool any = false;
@@ -1281,6 +1330,7 @@ void RestoreFar(const char* why) {
 }
 void GuestReset() {
     UnhideDead(true, "reset");
+    UnhideHostHidden(true, "reset", 0);
     ReleaseAll("reset");
     RestoreFar("reset");
     g_tracks.clear();
@@ -1399,8 +1449,32 @@ void TryEnter(std::uint32_t id, const erules::Track& tr, double now, const doubl
     e.held_on_host = (z->state & ewire::kSeqHeld) != 0;
     e.cutscene = cutscene;
     e.in_vehicle = a.realized && InVehicle(a.entity);
+    // M0 (enemy_host_guard): the host's copy unloaded or hidden there, or its place far from ours: never a statue
+    double pos0[3] = {};
+    float yaw0 = 0;
+    const bool have_pos0 = tr.At(g_clock.Render(now), pos0, &yaw0);
+    if (g_ecfg.enemy_host_guard) {
+        e.host_realized = (z->state & ewire::kRealized) != 0;
+        e.host_hidden = (z->state & ewire::kHidden) != 0;
+        e.entry_err_m = have_pos0 && a.have_xf ? Dist3(pos0, a.pos) : -1;
+        e.entry_err_max_m = g_ecfg.enemy_entry_err_max;
+        e.host_dist_m = g_have_hostp ? Dist3(z->pos, g_hostp) : -1;
+        e.host_far_m = g_ecfg.enemy_host_far;
+    }
     const erules::Refusal r = erules::Eligible(e);
     if (r != erules::Refusal::ok) {
+        if (r == erules::Refusal::host_unrealized || r == erules::Refusal::host_hidden || r == erules::Refusal::entry_far || r == erules::Refusal::host_far) {
+            ++g_gs.host_refused;
+            if (r == erules::Refusal::entry_far) {  // logged once, with the distance (not again by RefuseOnce)
+                ++g_gs.refused;
+                int& once = g_refused_once[id];
+                if (!once && g_logged_refusals < 40) {
+                    once = 1, ++g_logged_refusals;
+                    Log("[enemy] mirror refused id=%05X: the host's place is %.1f m from ours (enemy_entry_err_max %.0f)", id, e.entry_err_m, e.entry_err_max_m);
+                }
+                return;
+            }
+        }
         if (r != erules::Refusal::not_realized && r != erules::Refusal::stale && r != erules::Refusal::dead) RefuseOnce(id, erules::RefusalText(r));
         return;
     }
@@ -1510,11 +1584,13 @@ void GuestTick(const TickIn& in, double now, bool off, const char* off_why) {
     GuestDrain(now);
     double sam[3] = {};
     const bool have_sam = in.local_ok && LocalPlace(in.local, sam);
+    g_have_hostp = in.body && LocalPlace(in.body, g_hostp);  // M0's quick path: the host's Sam
     const bool cutscene = InCutscene();
     const int cut = g_cut_step;  // stepped by Tick
     if (cut == 2) ReleaseAll("cutscene");
     if (g_holding) return;  // nothing driven, posed or posted
     if (!g_dead_hidden.empty()) UnhideDead(off, off ? off_why : "the host's is alive again");
+    if (!g_host_hid.empty()) UnhideHostHidden(off, off ? off_why : "", now);
     if (off || !have_sam) {
         if (!g_mirrors.empty()) ReleaseAll(off ? off_why : "no local Sam");
         if (off) RestoreFar(off_why);
@@ -1536,6 +1612,15 @@ void GuestTick(const TickIn& in, double now, bool off, const char* off_why) {
         l.frozen_by_us = true;
         l.bit14_now = same && a.held;
         l.realized_here = same && a.realized && a.entity == m.entity;
+        // M0 (enemy_host_guard): the newest SEN1 sample's host bits (P1b: an own back with no host frame yet keeps the defaults)
+        if (g_ecfg.enemy_host_guard && it != g_tracks.end() && it->second.Newest() && !IsOwnedHere(m.id)) {
+            const std::uint8_t st = it->second.Newest()->state;
+            l.host_guard = true;
+            l.host_realized = (st & ewire::kRealized) != 0;
+            l.host_hidden = (st & ewire::kHidden) != 0;
+            l.host_far_m = g_ecfg.enemy_host_far;
+            if (g_have_hostp && it->second.Newest()) l.host_dist_m = Dist3(it->second.Newest()->pos, g_hostp);
+        }
         // (P1b: a mirror frozen again on an OWN back has no host frame yet: its silence clock starts at the freeze)
         l.frame_age_ms = now - (std::max)(it != g_tracks.end() ? it->second.rx_ms : -1e18, m.t_frozen);
         double pos[3] = {};
@@ -1554,7 +1639,14 @@ void GuestTick(const TickIn& in, double now, bool off, const char* off_why) {
             continue;
         }
         if (erules::Releases(v)) {
-            ReleaseMirror(m, erules::LeaseText(v));
+            if (v == erules::LeaseVerdict::release_host_unrealized || v == erules::LeaseVerdict::release_host_hidden || v == erules::LeaseVerdict::release_host_far)
+                ++g_gs.host_released;
+            const std::uintptr_t actor = m.actor;
+            const std::uint32_t id = m.id;
+            // M0's hide (enemy_host_hide): only once the release really posted (its weapon flag restored first); a release a
+            // cutscene holds is given back alive later (review r20 enemy 3: hidden while still frozen, it could never fire again)
+            const bool posted = ReleaseMirror(m, erules::LeaseText(v));
+            if (erules::HideOnRelease(v, g_ecfg.enemy_host_hide, posted) && same) HideHostHidden(id, actor);
             continue;
         }
         if (!have_target || !a.have_xf) continue;
@@ -2623,6 +2715,7 @@ void Stop(const char* step) {
     g_stopped = true;
     Log("[enemy] FAULT in %s: enemy sync stopped", step);
     UnhideDead(true, "a fault");
+    UnhideHostHidden(true, "a fault", 0);  // (review r20 enemy 1: Tick never reaches GuestTick again)
     OwnHardReset("a fault", false, false, false);
     ReleaseAll("fault");
     RestoreFar("fault");
@@ -2646,7 +2739,17 @@ void P1Tick(const TickIn& in, double now) {
         if (g_mirroring || !g_mirrors.empty()) Log("[enemy] the world or the link changed (world %u -> %u%s, link %u -> %u): every mirror released", g_world, counter,
                                                    ready ? "" : ", not ready", g_gen, gen);
         if (g_own_on || !g_hown.empty() || !g_gown.empty()) OwnHardReset(world_changed ? "a world changed" : "the link changed", world_changed, false, false);
-        UnhideDead(true, world_changed ? "the world changed" : "the link changed");
+        if (counter != g_world) {
+            // a new world: the old one's actors are gone (an address and id can repeat after a reload): forgotten, never touched
+            // (review r20 enemy 1)
+            if (!g_dead_hidden.empty() || !g_host_hid.empty())
+                Log("[enemy] the world changed: %zu + %zu hidden mirror(s) of the old world forgotten", g_dead_hidden.size(), g_host_hid.size());
+            g_dead_hidden.clear(), g_host_hid.clear();
+            g_gs.host_hidden_now = 0;
+        } else {
+            UnhideDead(true, world_changed ? "the world changed" : "the link changed");
+            UnhideHostHidden(true, world_changed ? "the world changed" : "the link changed", now);
+        }
         ReleaseAll(world_changed ? "world" : "link");
         if (world_changed) g_far_orig.clear();  // that world's actors: nothing to put back
         else RestoreFar("link");
@@ -2845,6 +2948,9 @@ void Tick(const TickIn& in, double now) noexcept {
     }
     if (g_stopped) return;
     if (!g_switch) {
+        // the mirrors hidden here are shown again while the switch is off (review r20 enemy 1)
+        if (!g_dead_hidden.empty()) UnhideDead(true, "off");
+        if (!g_host_hid.empty()) UnhideHostHidden(true, "off", now);
         if (!g_mirrors.empty() || g_mirroring) {
             OwnHardReset("off (enemy_sync 2)", false, true, false);
             OwnFlush();
@@ -2920,6 +3026,10 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept 
                 OurParts(), hp ? peer.parts : 0, hp ? "" : " (no beacon)", g_ids, g_guids, g_count,
                 hp && peer.ids_fp == g_ids && peer.guids_fp == g_guids && peer.enemy_count == g_count && g_count ? "equal" : "differ", g_mirrors.size(), frozen, posed,
                 g_ecfg.enemy_pose_count, g_gs.rx_sen, g_gs.rx_bad, g_gs.rx_sep, g_ss.sen, g_ss.sep, es, g_att_drop.load(), g_tgt_drop.load(), dropped);
+            Log("[enemy] host guard (M0): %s, entries refused %u (host unrealized / hidden / far), mirrors released %u (host unrealized / hidden / far), "
+                "hidden here for the host now %u; entry err max %.0f m, host far %.0f m",
+                g_ecfg.enemy_host_guard ? "on" : "off (enemy_host_guard=0)", g_gs.host_refused, g_gs.host_released, g_gs.host_hidden_now, g_ecfg.enemy_entry_err_max,
+                g_ecfg.enemy_host_far);
             AttackLine(" (status)");
             ecombat::Status();
             {
@@ -3018,6 +3128,7 @@ bool Look(const double (&v)[3], char* msg, std::size_t cap) noexcept {
     const bool newest_hit = v[0] == -5;  // P2: the newest HIT's enemy (down and dead ones allowed)
     const bool picked = v[0] == -6;      // P2-0: the probe's pick
     const bool owned = v[0] == -7;       // P1b: the nearest enemy the guest owns (the guest: hers; the host: its copy)
+    const bool front = v[0] == -8;       // round 20 M2: in front of the newest enemy_look's enemy, along its facing, facing it
     std::uint32_t owned_id = 0;
     if (owned) {
         double bd = 1e18;
@@ -3042,10 +3153,14 @@ bool Look(const double (&v)[3], char* msg, std::size_t cap) noexcept {
                                : newest_hit ? ecombat::LastHitId()
                                : picked ? PickedId()
                                : owned  ? owned_id
+                               : front  ? g_look_id
                                         : 0;
     if (picked && !want) return std::snprintf(msg, cap, "no probe pick (enemy_probe 0)"), false;
     if ((v[0] == -2 || behind || side) && !want) return std::snprintf(msg, cap, "no enemy shot replayed yet"), false;
     if (newest_hit && !want) return std::snprintf(msg, cap, "no HIT yet"), false;
+    if (front && !want) return std::snprintf(msg, cap, "no enemy_look yet"), false;
+    WorldTransform fxf{};
+    bool have_fxf = false;
     const bool faced = v[0] == -1;
     std::uint32_t best_id = 0;
     double best = 1e18, bpos[3] = {};
@@ -3081,9 +3196,9 @@ bool Look(const double (&v)[3], char* msg, std::size_t cap) noexcept {
             if (ang > 25) continue;
             score = ang * 4 + d * 0.05;
         }
-        if (score < best) best = score, best_id = e.id, bent = a.entity, std::memcpy(bpos, a.pos, sizeof(bpos));
+        if (score < best) best = score, best_id = e.id, bent = a.entity, std::memcpy(bpos, a.pos, sizeof(bpos)), fxf = a.xf, have_fxf = true;
     }
-    how = owned ? (g_role == 1 ? "the nearest the guest owns (its copy here)" : "the nearest she owns") : newest_hit ? (g_role == 1 ? "the newest applied HIT's enemy" : "the newest sent HIT's enemy") : side ? "beside the newest replayed shooter's line to the partner" : behind ? "behind the newest replayed shooter, toward the partner" : v[0] == -2 ? (g_role == 1 ? "the newest sent shooter" : "the newest replayed shooter") : want ? "by id" : faced ? "the one the partner faces" : g_role == 2 ? "the nearest frozen mirror" : "the nearest realized";
+    how = front ? "in front of it, along its facing" : owned ? (g_role == 1 ? "the nearest the guest owns (its copy here)" : "the nearest she owns") : newest_hit ? (g_role == 1 ? "the newest applied HIT's enemy" : "the newest sent HIT's enemy") : side ? "beside the newest replayed shooter's line to the partner" : behind ? "behind the newest replayed shooter, toward the partner" : v[0] == -2 ? (g_role == 1 ? "the newest sent shooter" : "the newest replayed shooter") : want ? "by id" : faced ? "the one the partner faces" : g_role == 2 ? "the nearest frozen mirror" : "the nearest realized";
     if (!best_id && faced) {
         // none within 25 deg of her heading: the one nearest the partner body
         for (const LocalEnemy& e : all) {
@@ -3100,6 +3215,10 @@ bool Look(const double (&v)[3], char* msg, std::size_t cap) noexcept {
     const double l = std::sqrt(dx * dx + dy * dy);
     if (l < 0.5) dx = 1, dy = 0;
     else dx /= l, dy /= l;
+    if (front && have_fxf) {
+        const double fl = std::sqrt(static_cast<double>(fxf.rot.m[1][0]) * fxf.rot.m[1][0] + static_cast<double>(fxf.rot.m[1][1]) * fxf.rot.m[1][1]);
+        if (fl > 1e-6) dx = fxf.rot.m[1][0] / fl, dy = fxf.rot.m[1][1] / fl;
+    }
     const double d = v[1] > 0 ? v[1] : 12.0;
     char why[160] = {};
     WorldTransform bx{};

@@ -13,7 +13,8 @@
 
 namespace st::tex {
 
-enum class SlotGroup : std::uint8_t { suit, boots };
+// logo: the Fragile logo rows (logo_slots.hpp, round 20), never in kSlots (their own table, outside kTableVersion)
+enum class SlotGroup : std::uint8_t { suit, boots, logo };
 
 struct Slot {
     const char* id;              // "S0".."S3", "B0".."B2"

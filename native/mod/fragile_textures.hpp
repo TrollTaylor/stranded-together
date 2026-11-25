@@ -47,7 +47,8 @@ void NoteGameThread() noexcept;     // game thread: remember its id (the detour 
 void FreeTick(double now_ms, bool world_ready) noexcept;
 
 // ---------------------------------------------------------------- looks
-// One built texture: the slot of tex_slots it replaces, the blob (tex_codec layout) and its SHA-256.
+// One built texture: the slot it replaces (tex_slots, or a logo row of logo_slots.hpp: tx::AnySlot numbering), the blob
+// (tex_codec layout) and its SHA-256.
 struct Blob {
     int slot = -1;
     std::uint8_t id[32] = {};
@@ -78,6 +79,11 @@ unsigned DropRam(const std::vector<const std::uint8_t*>& ids) noexcept;
 std::size_t StoreRamBytes() noexcept;
 
 // ---------------------------------------------------------------- binding (game thread)
+// The overrides one body may hold: one per map per mesh it binds (her suit and boots: up to 11 per mesh; the logo on the
+// exo carrier: its masked meshes' maps, 11 per mesh with both metal reflectance maps (16 meshes: 176), and the mesh
+// probe's one per mesh). A look that would need more binds only its first slots that fit (logged): the core's entries
+// are never made past this (one it made and we could not keep would bind nothing: a black map).
+inline constexpr unsigned kDressHandles = 256;
 struct Dress {
     std::uintptr_t e = 0;
     std::uintptr_t drawable = 0;
@@ -86,10 +92,23 @@ struct Dress {
     std::uint8_t pending[32] = {};
     bool pending_set = false;
     double pending_ms = 0, next_ms = 0;
-    std::uint64_t handles[32] = {};
+    std::uint64_t handles[kDressHandles] = {};
     unsigned nh = 0;
-    int reg[24] = {};                // registry indices of our filtered entries (suit and boots: up to 11 per mesh)
+    int reg[kDressHandles] = {};     // registry indices of our filtered entries
     unsigned nreg = 0;
+    // Round 20 (the logo on the exo carrier, a whole Sam model of ~90 meshes): with mesh_filter (kept by Forget) the look is
+    // bound only on the meshes that hold one of its textures. A mesh probe finds them first: one entry per mesh for the
+    // look's first map that keeps nothing and counts the logo textures it meets, undone after the first rebuild.
+    bool mesh_filter = false;
+    bool probing = false;
+    double probe_ms = 0;
+    std::uintptr_t mask_drawable = 0;   // the drawable mesh_mask was probed on (0 = not probed)
+    std::uint64_t mesh_mask[4] = {};
+    unsigned mesh_count = 0;
+    std::uintptr_t probed_drawable = 0;
+    unsigned probes = 0;   // probes made on probed_drawable (an empty mask is probed again after 5 s, at most 3 in all)
+    unsigned idle_probes = 0;   // probes on probed_drawable that saw no rebuild at all (not drawn): not counted, at most 10
+    unsigned norebuilds = 0, norebuild_logs = 0;   // bound looks taken off in a row for no rebuild (the pause grows), logged
     unsigned applies = 0, undos = 0;
     const char* who = "body";
     double bound_ms = 0;
@@ -98,13 +117,17 @@ struct Dress {
     void* bound_clones[8] = {};  // our textures this body's bound look uses (kept alive while bound)
     unsigned nbound = 0;
 };
-// Brings `e` (a live fragile_suit body of ours) towards `look` (empty = her own look): makes the look's textures (one per
-// call), then binds them through the filtered override. Returns true while ftex owns the body's overrides (bound or
+// Brings `e` (a live fragile_suit body of ours, or a carrier / cap wearing the logo look) towards `look` (empty = her own
+// look): makes the look's textures (one per call), then binds them through the filtered override (suit rows: her suit's
+// slots; boots rows: her boots'; logo rows: exactly the slots that hold that row's game texture). Returns true while ftex owns the body's overrides (bound or
 // binding); false when the look is empty and nothing of ours is bound (the caller may use the v0.23 tint instead).
 bool Apply(Dress& d, std::uintptr_t e, const Look& look, double now_ms) noexcept;
 // While the wanted look is not known yet (the worker rebuilds it): whatever is bound on `e` stays, its textures marked used.
 void Keep(Dress& d, std::uintptr_t e, double now_ms) noexcept;
 void Undo(Dress& d, const char* why) noexcept;
+// The cap probe (round 20, hidden runs; `gear 37`): logs whether the per-drawable override reaches `e` (its drawable, meshes,
+// and the core's entries for one empty colour entry, undone at once). True: the core made entries on it.
+bool ProbeDrawable(std::uintptr_t e, const char* who) noexcept;
 void Forget(Dress& d) noexcept;
 const char* Describe(const Dress& d, char* buf, std::size_t cap) noexcept;
 

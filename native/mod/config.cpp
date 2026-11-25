@@ -76,6 +76,15 @@ Config LoadConfig(const std::wstring& dir) {
         if (eq == std::string::npos) continue;
         const std::string k = Trim(line.substr(0, eq));
         const std::string v = Trim(line.substr(eq + 1));
+        // Round 20 keys, outside the else-if chain below (MSVC's limit on nested blocks: C1061).
+        if (k == "fragile_logo") {
+            c.fragile_logo = ParseBool(v);
+            continue;
+        }
+        if (k == "enemy_host_hide") {
+            c.enemy_host_hide = ParseBool(v);
+            continue;
+        }
         if (k == "role") {
             c.role = v == "host"    ? Role::host
                      : v == "guest" ? Role::guest
@@ -162,6 +171,10 @@ Config LoadConfig(const std::wstring& dir) {
             else Log("[config] room_outfit=%s is not black / suit: black", v.c_str());
         } else if (k == "exo_carrier") {
             c.exo_carrier = ParseBool(v);
+        } else if (k == "exo_rig") {
+            c.exo_rig = ParseBool(v);
+        } else if (k == "exo_rig_extra") {
+            c.exo_rig_extra = cfgval::RigExtra(v, c.exo_rig_extra);
         } else if (k == "fragile_hood") {
             c.fragile_hood = v == "2" || v == "unfold" ? 2 : v == "1" || v == "swap" ? 1 : v == "0" || v == "off" ? 0 : (ParseBool(v) ? 2 : 0);
         } else if (k == "hood_hair") {
@@ -172,6 +185,8 @@ Config LoadConfig(const std::wstring& dir) {
             c.hood_fold_hide = ParseBool(v);
         } else if (k == "waist_cargo") {
             c.waist_cargo = ParseBool(v);
+        } else if (k == "cargo_cases_any_slot") {
+            c.cargo_cases_any_slot = ParseBool(v);
         } else if (k == "held_items") {
             c.held_items = v == "2" || v == "all" ? 2 : v == "1" || v == "tools" ? 1 : (ParseBool(v) ? 2 : 0);
         } else if (k == "vehicle_sync") {
@@ -235,6 +250,12 @@ Config LoadConfig(const std::wstring& dir) {
             c.enemy_shots_sound = ParseBool(v);
         } else if (k == "enemy_mirror_guard") {
             c.enemy_mirror_guard = ParseBool(v);
+        } else if (k == "enemy_host_guard") {
+            c.enemy_host_guard = ParseBool(v);
+        } else if (k == "enemy_entry_err_max") {
+            c.enemy_entry_err_max = cfgval::EntryErrMax(v, c.enemy_entry_err_max);
+        } else if (k == "enemy_host_far") {
+            c.enemy_host_far = cfgval::HostFar(v, c.enemy_host_far);
         } else if (k == "enemy_hits") {
             c.enemy_hits = ParseBool(v);
             c.enemy_hits_set = true;
@@ -396,15 +417,18 @@ Config LoadConfig(const std::wstring& dir) {
         c.partner_gear ? 1 : 0, c.smooth_pose ? 1 : 0, c.self_headgear ? 1 : 0, c.self_feet_hide ? 1 : 0, c.boots_sync ? 1 : 0, c.boots_look_own ? "own" : "prop",
         c.boots_own_porter ? 1 : 0, c.fragile_suit_colour ? 1 : 0, c.exo_carrier ? 1 : 0, c.room_outfit_black ? "black" : "suit",
         c.fragile_hood, c.hood_hair ? 1 : 0);
-    Log("[config] hood_colour=%d hood_fold_hide=%d", c.hood_colour ? 1 : 0, c.hood_fold_hide ? 1 : 0);
+    Log("[config] hood_colour=%d hood_fold_hide=%d fragile_logo=%d", c.hood_colour ? 1 : 0, c.hood_fold_hide ? 1 : 0, c.fragile_logo ? 1 : 0);
     Log("[config] held_items=%d (%s)", c.held_items,
         c.held_items == 2 ? "every item in a hand drawn on the other screen" : c.held_items == 1 ? "ladder, PCC, climbing anchor" : "off: cutscene-prop weapons only");
-    Log("[config] waist_cargo=%d", c.waist_cargo ? 1 : 0);
+    Log("[config] waist_cargo=%d cargo_cases_any_slot=%d", c.waist_cargo ? 1 : 0, c.cargo_cases_any_slot ? 1 : 0);
+    Log("[config] exo_rig=%d exo_rig_extra=%d", c.exo_rig ? 1 : 0, c.exo_rig_extra);
     Log("[config] shots_sync=%d shots_muzzle=%d shots_sound=%d shots_friendly_fire=%d shots_npc_drop=%d shots_hit_drop=%d shots_bt_drop=%d", c.shots_sync ? 1 : 0,
         c.shots_muzzle ? 1 : 0, c.shots_sound, c.shots_friendly_fire ? 1 : 0, c.shots_npc_drop ? 1 : 0, c.shots_hit_drop ? 1 : 0, c.shots_bt_drop ? 1 : 0);
     Log("[config] enemy_sync=%d%s freeze=%s radius=%.0f poses=%d place_far=%d shots=%d hurt=%d sound=%d guard=%d", c.enemy_sync ? 1 : 0,
         c.enemy_sync_set ? "" : " (default: on with host_save=1)", c.enemy_freeze == 1 ? "occupied" : "not built (off)", c.enemy_mirror_radius, c.enemy_pose_count,
         c.enemy_place_far ? 1 : 0, c.enemy_shots ? 1 : 0, c.enemy_shots_hurt ? 1 : 0, c.enemy_shots_sound ? 1 : 0, c.enemy_mirror_guard ? 1 : 0);
+    Log("[config] enemy_host_guard=%d enemy_entry_err_max=%.0f enemy_host_far=%.0f enemy_host_hide=%d", c.enemy_host_guard ? 1 : 0, c.enemy_entry_err_max,
+        c.enemy_host_far, c.enemy_host_hide ? 1 : 0);
     Log("[config] enemy_hits=%d%s owner=%s path=%s lethal=%d rate=%d", c.enemy_hits ? 1 : 0, c.enemy_hits_set ? "" : " (default: on with enemy_sync)",
         cfgval::HitOwnerName(c.enemy_hit_owner), c.enemy_hit_path == 1 ? "query" : "direct", c.enemy_hits_lethal ? 1 : 0, c.enemy_hit_rate);
     Log("[config] enemy_owner=%d%s", c.enemy_owner ? 1 : 0, c.enemy_owner_set ? "" : " (default: off)");

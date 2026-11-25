@@ -193,6 +193,10 @@ void TestWireMessages() {
         m = std::vector<std::uint8_t>(buf, buf + n);
         m[6 + 4 + 4] = 0x80;  // unknown flag
         CHECK(!tw::DecodeLook(m.data(), m.size(), d));
+        m[6 + 4 + 4] = 8;     // the first unused bit (bits 0..2: boots own, tint, logo)
+        CHECK(!tw::DecodeLook(m.data(), m.size(), d));
+        m[6 + 4 + 4] = 7;     // round 20: bit 2, the guest's fragile_logo
+        CHECK(tw::DecodeLook(m.data(), m.size(), d) && d.flags == 7);
     }
     tw::Look dup = l;
     dup.e[1].slot = 0;  // one blob per slot

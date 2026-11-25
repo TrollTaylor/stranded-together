@@ -13,6 +13,7 @@
 #include "boots_look.hpp"
 #include "cargo_rules.hpp"
 #include "exo_parts.hpp"
+#include "fragile_textures.hpp"
 #include "game_actions.hpp"
 #include "gear_keep.hpp"
 #include "gear_look.hpp"
@@ -21,11 +22,13 @@
 #include "held_rules.hpp"
 #include "hood_fold.hpp"
 #include "log.hpp"
+#include "logo_slots.hpp"
 #include "partner_holo.hpp"
 #include "partner_outfit.hpp"
 #include "partner_source.hpp"
 #include "real_body.hpp"
 #include "ride_together.hpp"
+#include "texture_looks.hpp"
 #include "texture_share.hpp"
 #include "vehicle_sync.hpp"
 
@@ -119,6 +122,7 @@ bool IsHandProp(int key) { return IsWeaponProp(key) || IsHeldKey(key); }
 constexpr int kKeyBag = kKeyHeld + static_cast<int>(wire::kMaxGearRes);
 bool IsBagKey(int key) { return key >= kKeyBag && key < kKeyBag + static_cast<int>(cargorules::kModels); }
 bool g_waist_cargo = true;  // session.ini waist_cargo (default 1 since round 15, section 39.6) / `gear 36 <0/1>`: the hip crates sent and drawn
+bool g_cases_any_slot = true;  // session.ini cargo_cases_any_slot (round 20 F2, section 39.8) / `gear 36 6 <0/1>`: the cases on any slot
 heldrules::Mode g_held_mode = heldrules::Mode::all;
 
 // The sender's weapon resource (its core, the path STR1 names) -> the prop drawn for it. Exact: the
@@ -851,6 +855,9 @@ struct PropSet {
         bool want = false, refused = false, target = false, parts_ok = false;
         bool tree_checked = false, tree_ok = false, tree_logged = false, body_sam = false;
         std::uint64_t vis[2] = {}, asked[2] = {}, shown_bits[2] = {~0ull, ~0ull};
+        // round 20 (section 41): the suit rig's parts asked (exo_parts.hpp RigPlan) and the last one logged
+        std::uint64_t rig[2] = {}, rig_logged[2] = {~0ull, ~0ull};
+        unsigned rig_logs = 0;
         std::int16_t parent[exo::kMaxParts] = {};
         int n = 0;
         double unwanted_ms = 0, next_parts_ms = 0, target_retry_ms = 0, next_meter_ms = 0;
@@ -858,6 +865,10 @@ struct PropSet {
         std::uintptr_t body_checked = 0;
         unsigned parts_set = 0, game_changes = 0, spawned = 0, removed = 0, show_logs = 0;
         outfit::Dress dress;
+        // round 20 (section 42): the Fragile Express logo on Sam's hood maps it draws (ftex, mesh-filtered: bound only on the
+        // meshes that hold one of those maps, found by a mesh probe once per drawable)
+        ftex::Dress logo;
+        unsigned logo_logs = 0;
         // the first show waits for the tint (the sender's exos variation on the carrier), at most kExoTintWaitMs
         std::uint8_t tint_want = 0xFE;  // wire::PorterExos of the outfit it copies (0xFE: no outfit read)
         bool tint_ok = false;
@@ -1451,7 +1462,7 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
         return true;
     }
     const std::uintptr_t slot_arr = Q(car + kCarSlots);
-    unsigned pieces = 0, refused = 0, walked = 0, hidden = 0, exact_pieces = 0;
+    unsigned pieces = 0, refused = 0, walked = 0, hidden = 0, exact_pieces = 0, other_pieces = 0;
     // v0.23: the game's own cargo hides mirrored (the trike driver's HideBackpack while the partner rides behind him, a
     // cutscene's HideBaggage, the Root mask): a hidden piece is not sent. Without the checks every piece counts as shown (v0.22).
     const bool hide_sites = CargoHideSites();
@@ -1507,7 +1518,7 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
                 const std::uint8_t from_li = li_ok ? ModelFromListItem(li) : wire::kGearNone;
                 // section 39: deliveries as their cutscene case model (Drawn), the hip crates (weapon case, folding ladder) as the
                 // baggage config's own model (cargorules::kExact | m); equipment, tools elsewhere: not sent
-                const std::uint8_t model = li_ok ? cargorules::SendModel(type, lf[0], lf[1], lf[4], g_waist_cargo) : wire::kGearNone;
+                const std::uint8_t model = li_ok ? cargorules::SendModel(type, lf[0], lf[1], lf[4], g_waist_cargo, g_cases_any_slot) : wire::kGearNone;
                 const bool exact = cargorules::ExactModel(model) >= 0;
                 const bool shown = slot_shown && !(exact && slot_bit);
                 Xf w;
@@ -1529,7 +1540,8 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
                         "weight %.1f [+0x30: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X] -> model %u (%s); at %.3f %.3f %.3f (%.2f m from Sam)%s",
                         type, ti, bi, reinterpret_cast<void*>(bag), eidx, mb[0], mb[1], id, f[0], f[1], f[4], weight, lx[0], lx[1], lx[2], lx[3], lx[4], lx[5],
                         lx[6], lx[7], lx[8], lx[9], lx[10], lx[11], lx[12], lx[13], lx[14], lx[15], from_li,
-                        cargorules::ExactModel(model) >= 0 ? "drawn: the game's own model at the hip"
+                        cargorules::ExactModel(model) >= 0 ? (cargorules::IsWaist(type) ? "drawn: the game's own model at the hip"
+                                                                                        : "drawn: the game's own model off the hips (cargo_cases_any_slot)")
                         : model != wire::kGearNone       ? "drawn"
                                                          : "not drawn: equipment / weapon / tool",
                         w.p[0], w.p[1], w.p[2], Dist(w, sam),
@@ -1540,7 +1552,7 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
                 if (placed && model != wire::kGearNone) {
                     const auto before = g_item_count;
                     add(wire::GearKind::cargo, model, type, bag, shown, w);
-                    if (exact && shown && g_item_count > before) ++exact_pieces;  // counted only when sent, shown (round 14 review)
+                    if (exact && shown && g_item_count > before) ++(cargorules::IsWaist(type) ? exact_pieces : other_pieces);  // counted only when sent, shown (round 14 review)
                 }
             }
         }
@@ -1566,6 +1578,14 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
         if ((!s_exact_known || exact_pieces != s_exact || g_waist_cargo != s_exact_wc) && ++s_exact_logs <= 40)
             Log("[gear] our carried cargo: %u hip piece(s) sent as the game's own baggage model (waist_cargo %s)", exact_pieces, g_waist_cargo ? "on" : "off");
         s_exact = exact_pieces, s_exact_known = true, s_exact_wc = g_waist_cargo;
+        // round 20 F2: the weapon cases and ladders stacked on the back (cargo_cases_any_slot)
+        static unsigned s_other = 0, s_other_logs = 0;
+        static bool s_other_known = false, s_other_on = false;
+        const bool other_on = g_waist_cargo && g_cases_any_slot;
+        if ((!s_other_known || other_pieces != s_other || other_on != s_other_on) && ++s_other_logs <= 40)
+            Log("[gear] our carried cargo: %u case / ladder piece(s) off the hips sent as the game's own baggage model (cargo_cases_any_slot %s)", other_pieces,
+                other_on ? "on" : g_waist_cargo ? "off" : "off: waist_cargo off");
+        s_other = other_pieces, s_other_known = true, s_other_on = other_on;
     }
     return true;
 }
@@ -2469,6 +2489,7 @@ constexpr HatSlot kHats[4] = {{0x0F, 0x4E18}, {0x24, 0x4E20}, {0x31, 0x4E28}, {0
 // Byte-checked once; on a mismatch nothing is read: her hood is not drawn and her hat stays on her in the rain (26.8).
 int g_hood_mode = 2;      // session.ini fragile_hood / `gear 31 <0/1/2>`: 0 off, 1 the timed swap, 2 the unfold where the carrier can play it
 bool g_hood_hair = true;  // session.ini hood_hair / `gear 33 <0/1>`: her hair hidden while her hood is drawn
+bool g_logo = true;  // session.ini fragile_logo / `gear 39 <0/1>` (round 20, section 42): the Fragile Express logo on her hood and cap
 bool g_hood_colour = true;  // session.ini hood_colour / `gear 35 <0/1>` (round 12, section 37.5): the carrier dressed in her suit's colour
 int g_hood_force_state = -1, g_hood_force_type = 2;  // `gear 32 <state> [type]` (hidden tests; -1 off): our reading replaced
 int g_hood_read_sites = -1;                           // -1 not checked, 0 mismatch (no reading), 1 ok
@@ -3754,6 +3775,12 @@ constexpr const char* kExoPath = "ds/entities/cinematics/demo_sam_clean";
 constexpr const char* kExoGuid = "514b5705-aaf0-a447-a82e-0bb83b855201";
 bool g_exo_on = true;    // session.ini exo_carrier / `gear 27 <0/1>`
 bool g_exo_leg = false;  // `gear 29 <0/1>`: the sender's LegOut suit piece on her too (comparison)
+// Round 20 (section 41): the suit rig on the carrier (the porter suit's hardware that joins her gear to her body).
+bool g_exo_rig = true;     // session.ini exo_rig / `gear 38 <0/1>`
+unsigned g_rig_extra = 0;  // session.ini exo_rig_extra / `gear 38 <0/1> <mask>`: the optional parts (exo::RigExtra bits)
+static_assert(exo::kRigKindBackpack == static_cast<std::uint8_t>(wire::GearKind::backpack) && exo::kRigKindPod == static_cast<std::uint8_t>(wire::GearKind::bb_pod) &&
+                  exo::kRigKindCargo == static_cast<std::uint8_t>(wire::GearKind::cargo) && exo::kRigNoParent == wire::kGearNoParent && exo::kRigHipsJoint == kJHips,
+              "the rig rule's STC1 values");
 
 const char* ExoTag(const PropSet& s) { return s.slot == realbody::GearSlot::self ? "exo-self" : "exo"; }
 
@@ -3771,19 +3798,34 @@ bool BodyIsSam(PropSet::Exo& x, game::Entity* body) {
 // What the slot's sender shows of the skeleton (false: no carrier wanted).
 bool HoodWanted(const PropSet& s);  // section 37 (below)
 // (round 11: or the sender's rain hood, section 37: then `vis` may name no skeleton piece)
-bool ExoWant(PropSet& s, game::Entity* body, std::uint64_t (&vis)[2]) {
+// Round 20 (section 41): or the suit rig (`rig`, exo_parts.hpp RigPlan) while the sender, in the porter suit, wears the BB pod,
+// the backpack or a piece on the hips: then `vis` names no skeleton piece unless one of the game's types is shown.
+bool ExoWant(PropSet& s, game::Entity* body, std::uint64_t (&vis)[2], std::uint64_t (&rig)[2]) {
     vis[0] = vis[1] = 0;
+    rig[0] = rig[1] = 0;
     if (!g_exo_on || !body || BodyIsSam(s.exo, body)) return false;
-    if (s.slot == realbody::GearSlot::self) {
-        if (!g_have_parts || !g_exo_porter || !exo::AnyExoShown(g_parts_apply, g_parts_visible) || exo::TypeOfParts(g_parts_visible) < 1)
-            return HoodWanted(s);
-        vis[0] = g_parts_visible[0], vis[1] = g_parts_visible[1];
-        return true;
+    const bool self = s.slot == realbody::GearSlot::self;
+    std::uint64_t apply[2], sv[2];
+    if (self) {
+        if (!g_have_parts || !g_exo_porter) return HoodWanted(s);
+        apply[0] = g_parts_apply[0], apply[1] = g_parts_apply[1];
+        sv[0] = g_parts_visible[0], sv[1] = g_parts_visible[1];
+    } else {
+        if (!s.have_want || !(s.want.flags & wire::kGearParts) || !exo::SenderNamesExo(s.want.parts_apply)) return HoodWanted(s);
+        apply[0] = s.want.parts_apply[0], apply[1] = s.want.parts_apply[1];
+        sv[0] = s.want.parts_visible[0] & apply[0], sv[1] = s.want.parts_visible[1] & apply[1];
     }
-    if (!s.have_want || !(s.want.flags & wire::kGearParts) || !exo::SenderNamesExo(s.want.parts_apply) ||
-        !exo::AnyExoShown(s.want.parts_apply, s.want.parts_visible) || exo::TypeOfParts(s.want.parts_visible) < 1)
-        return HoodWanted(s);  // (only one of the game's types: never every piece at once)
-    vis[0] = s.want.parts_visible[0] & s.want.parts_apply[0], vis[1] = s.want.parts_visible[1] & s.want.parts_apply[1];
+    // (only one of the game's types: never every piece at once)
+    const bool skel = exo::AnyExoShown(apply, sv) && exo::TypeOfParts(sv) >= 1;
+    if (g_exo_rig && exo::SenderNamesRig(apply)) {
+        const exo::RigGear g = self ? exo::RigGearOf(g_local.items, g_have_local ? static_cast<unsigned>(g_local.count) : 0u)
+                                    : exo::RigGearOf(s.want.items, static_cast<unsigned>(s.want.count));
+        exo::RigPlan(g, apply, sv, self, g_rig_extra, rig);
+    }
+    if (!skel && !exo::RigAny(rig)) return HoodWanted(s);
+    vis[0] = sv[0], vis[1] = sv[1];
+    if (!skel)
+        for (unsigned i = 0; i < exo::kExoMeshCount; ++i) exo::SetBit(vis, exo::kExoPart[i], false);
     return true;
 }
 
@@ -3800,6 +3842,7 @@ void RemoveExo(PropSet& s, const char* why) {
     }
     realbody::ClearExoCarrier(s.slot);
     outfit::Forget(x.dress);
+    ftex::Forget(x.logo);   // its overrides go with the carrier
     char step[160] = {};
     holo::SpawnTeardown(x.p.sp, why, step, sizeof(step));
     Log("[%s] carrier removed (%s): %s", ExoTag(s), why, step);
@@ -3809,6 +3852,8 @@ void RemoveExo(PropSet& s, const char* why) {
     x.tint_ok = false;
     x.tree_checked = false;
     x.shown_bits[0] = x.shown_bits[1] = ~0ull;
+    x.rig[0] = x.rig[1] = 0;
+    x.rig_logged[0] = x.rig_logged[1] = ~0ull;
     x.hood = exo::HoodAnim{};
     x.hood_part = -1;
     x.hood_e = 0;
@@ -3856,7 +3901,7 @@ bool ExoParts(PropSet& s, const std::uint64_t (&vis)[2], double now) {
         return x.parts_ok = false;
     }
     std::uint64_t touch[2], asked[2];
-    exo::CarrierPlan(a.n, x.parent, vis, g_exo_leg, x.hood_part, touch, asked);
+    exo::CarrierPlan(a.n, x.parent, vis, g_exo_leg, x.hood_part, touch, asked, x.rig);
     const bool plan_changed = asked[0] != x.asked[0] || asked[1] != x.asked[1];
     unsigned set = 0;
     for (int i = 0; i < a.n; ++i) {
@@ -3888,9 +3933,9 @@ bool ExoParts(PropSet& s, const std::uint64_t (&vis)[2], double now) {
         for (unsigned i = 0; i < static_cast<unsigned>(a.n) && at + 6 < sizeof(list); ++i)
             if (exo::Bit(shown, i)) at += static_cast<std::size_t>(std::snprintf(list + at, sizeof(list) - at, "%s%u", at ? " " : "", i));
         const int type = exo::TypeOfParts(vis);
-        Log("[%s] carrier %p parts: %u set (%u in all, %u changed by the game); shown now: %s (the sender's skeleton: %s%s; hood part %d)", ExoTag(s),
+        Log("[%s] carrier %p parts: %u set (%u in all, %u changed by the game); shown now: %s (the sender's skeleton: %s%s; hood part %d; rig %s)", ExoTag(s),
             static_cast<void*>(x.p.sp.e), set, x.parts_set, x.game_changes, at ? list : "none", type >= 0 ? exo::TypeName(static_cast<exo::Type>(type)) : "pieces of no known type",
-            g_exo_leg ? ", LegOut on" : "", x.hood_part);
+            g_exo_leg ? ", LegOut on" : "", x.hood_part, !g_exo_rig ? "off" : !exo::RigTreeOk(a.n, x.parent) ? "not on this tree" : exo::RigAny(x.rig) ? "on" : "none");
     }
     return x.parts_ok = true;
 }
@@ -4334,16 +4379,27 @@ void DressForHer(PropSet& s, wire::Outfit* o) {
 // must change (the carrier became the pose target, or went).
 bool ExoDrive(PropSet& s, game::Entity* body, double now) {
     PropSet::Exo& x = s.exo;
-    std::uint64_t vis[2];
-    const bool want = ExoWant(s, body, vis);
+    std::uint64_t vis[2], rig[2];
+    const bool want = ExoWant(s, body, vis, rig);
     x.want = want;
     if (want) {
         x.vis[0] = vis[0], x.vis[1] = vis[1];
+        x.rig[0] = rig[0], x.rig[1] = rig[1];
         x.unwanted_ms = 0;
+        if ((rig[0] != x.rig_logged[0] || rig[1] != x.rig_logged[1]) && x.rig_logs < 40) {
+            x.rig_logged[0] = rig[0], x.rig_logged[1] = rig[1];
+            ++x.rig_logs;
+            char list[120] = "";
+            std::size_t at = 0;
+            for (unsigned i = 0; i < exo::kMaxParts && at + 6 < sizeof(list); ++i)
+                if (exo::Bit(rig, i)) at += static_cast<std::size_t>(std::snprintf(list + at, sizeof(list) - at, "%s%u", at ? " " : "", i));
+            Log("[%s] rig (section 41): parts %s%s", ExoTag(s), at ? list : "none", g_rig_extra ? " (exo_rig_extra on)" : "");
+        }
     } else if (x.p.loading || x.p.live) {
+        x.rig[0] = x.rig[1] = 0;   // the rig parts stop at once (review r20 visual 8), not after the 10 s grace
         if (x.unwanted_ms == 0) x.unwanted_ms = now;
         if (!g_exo_on || now - x.unwanted_ms >= 10000) {
-            RemoveExo(s, g_exo_on ? "no skeleton or hood for 10 s" : "exo_carrier off");
+            RemoveExo(s, g_exo_on ? "no skeleton, rig or hood for 10 s" : "exo_carrier off");
             return true;
         }
     }
@@ -4461,6 +4517,105 @@ bool ExoDrive(PropSet& s, game::Entity* body, double now) {
     return changed;
 }
 
+// ---------------------------------------------------------------- the Fragile Express logo (round 20, section 42)
+// Her raised hood (the exo carrier draws Sam's hood) and the Bridges cap (cap00) she wears print BRIDGES; with fragile_logo
+// they print FRAGILE express: the per-drawable override binds copies of the game's own maps (texture_looks.cpp, made by
+// each game from its own extracted pictures) on those entities only, never on a Sam. The guest's choice rides its LOOK.
+bool LogoWanted(realbody::GearSlot slot) {
+    if (slot == realbody::GearSlot::self || realbody::GetOwner() == realbody::Owner::debug) return g_logo;
+    const int p = texshare::PartnerLogo();
+    return p < 0 ? g_logo : p != 0;   // -1: no LOOK yet (her look over the link not known): this game's own choice
+}
+// The carrier's hood: every logo hood map (the palette set's and the metal sets'; the override keeps exactly the slots that
+// hold each one, so the carrier's colour row picks itself).
+void ExoLogo(PropSet& s, double now) {
+    PropSet::Exo& x = s.exo;
+    const std::uintptr_t e = reinterpret_cast<std::uintptr_t>(x.p.sp.e);
+    if (!x.p.live || !e || !holo::SpawnAlive(x.p.sp)) return;
+    // not drawn now (a load, the self view's unshow, a vehicle, the grace): what is bound stays, nothing is probed or bound (the
+    // engine rebuilds an override table only for what it draws; review r20 visual 1)
+    if (!x.p.shown) return ftex::Keep(x.logo, e, now);
+    ftex::Look look;
+    const bool want = x.tint_ok && realbody::SlotIsFragileSuit(s.slot) && LogoWanted(s.slot) &&
+                      ftex::looks::LogoLook(ftex::looks::LogoPart::hood_any, &look);
+    const bool was = x.logo.bound;
+    if (want) ftex::Apply(x.logo, e, look, now);
+    else if (x.logo.e && (x.logo.nh || x.logo.bound || x.logo.probing)) ftex::Apply(x.logo, e, ftex::Look{}, now);
+    if (x.logo.bound != was && x.logo_logs < 20) {
+        ++x.logo_logs;
+        Log("[logo] %s carrier %p: %s", ExoTag(s), reinterpret_cast<void*>(e), x.logo.bound ? "the Fragile Express logo on its hood" : "BRIDGES on its hood again");
+    }
+}
+// Her cap: [0] our Sam's cap00 drawn on her head (the self view, her own screen), [1] the partner's cap00 head prop (the
+// host's screen). The entity's vtable is kept: a cap freed and another made at its address is not undone through.
+struct CapLogo {
+    ftex::Dress d;
+    std::uintptr_t vt = 0;
+    unsigned logs = 0;
+};
+CapLogo g_cap_logo[2];
+// `shown`: the cap is drawn now (else what is bound stays, nothing is bound: review r20 visual 1). `off_why`: why it is not
+// wanted; the logo is then taken off at once, without Apply's 500 ms debounce (Sam's own cap when the self view is unshown,
+// a gold or silver cap: review r20 visual 2 / 11).
+void CapLogoOne(CapLogo& c, std::uintptr_t e, bool want, bool shown, const char* off_why, double now) {
+    if (c.d.e && (c.d.e != e || Q(c.d.e) != c.vt)) {
+        if (Q(c.d.e) == c.vt && (c.d.nh || c.d.bound)) ftex::Undo(c.d, e ? "another cap" : "the cap is off");
+        ftex::Forget(c.d);
+        c.vt = 0;
+    }
+    if (!e) return;
+    ftex::Look look;
+    const bool was = c.d.bound;
+    if (want && !shown) {
+        ftex::Keep(c.d, e, now);
+    } else if (want && ftex::looks::LogoLook(ftex::looks::LogoPart::cap, &look)) {
+        if (!c.d.e) c.vt = Q(e);
+        ftex::Apply(c.d, e, look, now);
+    } else if (c.d.e && (c.d.nh || c.d.bound)) {
+        ftex::Undo(c.d, want ? "the logo copies are not made" : off_why);
+    }
+    if (c.d.bound != was && c.logs < 20) {
+        ++c.logs;
+        Log("[logo] %s %p: %s", c.d.who, reinterpret_cast<void*>(e), c.d.bound ? "the Fragile Express logo on it" : "BRIDGES on it again");
+    }
+}
+// Every gear tick (game thread): what the worker makes (only while a Fragile body here wants the logo) and both caps.
+void LogoTick(double now) {
+    const bool self_frag = realbody::SlotIsFragileSuit(realbody::GearSlot::self);
+    const bool partner_frag = realbody::SlotIsFragileSuit(realbody::GearSlot::partner);
+    const bool self_want = self_frag && LogoWanted(realbody::GearSlot::self);
+    const bool partner_want = partner_frag && LogoWanted(realbody::GearSlot::partner);
+    ftex::looks::SetLogoWanted(self_want || partner_want);
+    const double tc = static_cast<double>(GetTickCount64());   // the head items' clock
+    std::uintptr_t mine = 0;
+    for (const HeadItem& h : g_hi)
+        if (self_frag && h.e && h.item == realbody::kHeadItemFirstCap && tc - h.seen_ms < 600 && Q(h.e) == h.e_vt) mine = h.e;
+    // the cap's palette colours only (silver / gold caps keep BRIDGES: st::tex::CapLogoFits)
+    game::Entity* local = nullptr;
+    wire::Outfit own{}, their{};
+    const bool own_fits = mine && game::TryGetLocalPlayer(&local) && local && outfit::ReadLocal(reinterpret_cast<std::uintptr_t>(local), &own) &&
+                          st::tex::CapLogoFits(own.cap_colour);
+    // her own screen's cap is our Sam's own cap00 entity: only while the self view shows her (else the game draws it on Sam, who
+    // keeps BRIDGES: review r20 visual 2)
+    const bool self_shown = realbody::SelfShown();
+    CapLogoOne(g_cap_logo[0], mine, self_want && own_fits && self_shown, true,
+               !self_want ? "the logo is off" : !own_fits ? "a silver or gold cap" : "the self view is not shown (Sam's own cap)", now);
+    std::uintptr_t theirs = 0;
+    bool theirs_shown = false;
+    const PropSet& ps = g_sets[0];
+    for (unsigned i = 0; partner_frag && ps.have_want && ps.res && i < ps.want.count && i < wire::kMaxGearItems; ++i) {
+        const wire::GearItem& it = ps.want.items[i];
+        if (it.kind != wire::GearKind::entity || it.parent != wire::kGearNoParent || it.joint < 31 || it.joint > 34 || it.res >= wire::kMaxGearRes ||
+            !ps.res[it.res].used || !ps.props[i].live || !holo::SpawnAlive(ps.props[i].sp))
+            continue;
+        char g[37];
+        wire::GearGuidText(ps.res[it.res].guid, g);
+        if (std::strcmp(g, kHeadItemRes[realbody::kHeadItemFirstCap].guid) == 0) theirs = reinterpret_cast<std::uintptr_t>(ps.props[i].sp.e), theirs_shown = ps.props[i].shown;
+    }
+    const bool their_fits = theirs && realbody::PartnerOutfit(&their) && st::tex::CapLogoFits(their.cap_colour);
+    CapLogoOne(g_cap_logo[1], theirs, partner_want && their_fits, theirs_shown, !partner_want ? "the logo is off" : "a silver or gold cap", now);
+}
+
 // Shown with the body only when everything is ready; the meter and the counters.
 constexpr double kExoTintWaitMs = 2000;
 void ExoShow(PropSet& s, game::Entity* body, bool body_on, double now) {
@@ -4500,6 +4655,7 @@ void ExoShow(PropSet& s, game::Entity* body, bool body_on, double now) {
             p.shown = on;
         }
     }
+    ExoLogo(s, now);   // round 20 (section 42)
     // The meter (cm): the pose, the carrier's joints in its model space against the body's in the body's joint-0 frame (both
     // from their current model matrices: what the carrier draws relative to where it is placed), and the placement, both in
     // world space at this tick (the tick's placement is extrapolated one frame ahead: moving, about one frame's travel).
@@ -5082,12 +5238,24 @@ void Init(const Config& config) noexcept {
     g_boots_style = config.boots_look_own ? bootslook::Style::own : bootslook::Style::prop;
     g_boots_own_porter = config.boots_own_porter;
     g_exo_on = config.exo_carrier;
+    g_exo_rig = config.exo_rig;
+    g_rig_extra = static_cast<unsigned>(config.exo_rig_extra) & exo::kRigExtraAll;
     g_hood_mode = config.fragile_hood < 0 ? 0 : config.fragile_hood > 2 ? 2 : config.fragile_hood;
     g_hood_hair = config.hood_hair;
+    g_logo = config.fragile_logo;
+    g_sets[0].exo.logo.who = "logo-carrier";
+    g_sets[1].exo.logo.who = "logo-carrier-self";
+    g_sets[0].exo.logo.mesh_filter = g_sets[1].exo.logo.mesh_filter = true;
+    g_cap_logo[0].d.who = "logo-cap-ours";
+    g_cap_logo[1].d.who = "logo-cap-partner";
+    Log("[gear] fragile_logo=%d: %s", g_logo ? 1 : 0, g_logo ? "the Fragile Express logo on her hood and cap (round 20)" : "BRIDGES on her hood and cap (v0.32)");
     g_hood_colour = config.hood_colour;
     hoodfold::Configure(config.hood_fold_hide);
     g_held_mode = static_cast<heldrules::Mode>(config.held_items < 0 ? 0 : config.held_items > 2 ? 2 : config.held_items);
     g_waist_cargo = config.waist_cargo;
+    g_cases_any_slot = config.cargo_cases_any_slot;
+    Log("[gear] cargo_cases_any_slot=%d: the weapon cases and folding ladders %s", g_cases_any_slot ? 1 : 0,
+        g_cases_any_slot ? "stacked on the backpack sent too (round 20 F2; arms and hands not)" : "at the hips only (v0.32)");
     Log("[gear] waist_cargo=%d: the hip crates (weapon case, folding ladder) %s", g_waist_cargo ? 1 : 0,
         g_waist_cargo ? "sent; the partner's made as the game's own baggage model (section 39)"
                       : "not sent or drawn (v0.28)");
@@ -5212,6 +5380,7 @@ void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
     if (local_active && g_chk.ok) WatchWeapon(local, now_ms);
     ReadLocalTick(local, local_active, now_ms);
     HeadgearTick(static_cast<double>(GetTickCount64()), false);
+    LogoTick(now_ms);   // round 20 (section 42)
     realbody::GearMeterTick(now_ms);  // hidden tests: before this tick's placements (section 26.7)
     // The partner slot: the partner's real body (or, debug, a mirroring debug body with our gear).
     PropSet& ps = g_sets[0];
@@ -5268,8 +5437,8 @@ void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
         }
     ss.want = self_frame;
     // (an empty frame still drives the set while the exo carrier is wanted on the self body: section 32)
-    std::uint64_t exo_vis[2];
-    ss.have_want = g_have_local && (self_frame.count > 0 || ExoWant(ss, sbody, exo_vis) || ss.exo.p.live || ss.exo.p.loading);
+    std::uint64_t exo_vis[2], exo_rig[2];
+    ss.have_want = g_have_local && (self_frame.count > 0 || ExoWant(ss, sbody, exo_vis, exo_rig) || ss.exo.p.live || ss.exo.p.loading);
     ss.res = g_res_local;
     DriveSet(ss, sbody, sbody && realbody::SelfShown(), local_active, now_ms);
     // rounds 12-13 (sections 37.6, 37.8): her folded hood hidden on each body of hers that shows the raised hood (per body)
@@ -6004,6 +6173,30 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             std::snprintf(msg, cap, "BB pod %s (%s)%s", g_podlog.have ? (g_podlog.vis ? "shown" : "hidden") : "not read", src, where);
             return true;
         }
+        case 38: {
+            // round 20 (section 41): the suit rig on the carrier: 38 0 off / 1 on [extra mask 0..15: 1 legbelt 31, 2 cantmount 47,
+            // 4 subpouch 29, 8 bodyparts 49]; 38 2 (or no argument) the status
+            const int a = static_cast<int>(v[1]);
+            if (a == 0 || a == 1) {
+                g_exo_rig = a != 0;
+                if (v[2] >= 0 && v[2] <= exo::kRigExtraAll) g_rig_extra = static_cast<unsigned>(v[2]);  // (left out: 0)
+                for (PropSet& s : g_sets) s.exo.next_parts_ms = 0;
+            }
+            auto rig_text = [](const PropSet& s, char* out, std::size_t cap) {
+                std::size_t at = 0;
+                out[0] = 0;
+                for (unsigned i = 0; i < exo::kMaxParts && at + 6 < cap; ++i)
+                    if (exo::Bit(s.exo.rig, i)) at += static_cast<std::size_t>(std::snprintf(out + at, cap - at, "%s%u", at ? " " : "", i));
+                if (!at) std::snprintf(out, cap, "none");
+            };
+            char r0[80], r1[80];
+            rig_text(g_sets[0], r0, sizeof(r0));
+            rig_text(g_sets[1], r1, sizeof(r1));
+            std::snprintf(msg, cap, "exo_rig %s, extra %u; partner carrier %s rig %s; self carrier %s rig %s", g_exo_rig ? "on" : "off", g_rig_extra,
+                          g_sets[0].exo.p.live ? "live" : "none", r0, g_sets[1].exo.p.live ? "live" : "none", r1);
+            Log("[exo] %s", msg);
+            return true;
+        }
         case 31:
         case 32:
         case 33: {
@@ -6075,11 +6268,13 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             return true;
         }
         case 36: {
-            // the hip crates (section 39): 0 / 1 waist_cargo off / on (both sides: sender and receiver); any other value: status
+            // the hip crates (section 39): 0 / 1 waist_cargo off / on (both sides: sender and receiver); 6 <0/1> cargo_cases_any_slot
+            // (round 20 F2, the sender); any other value: status
             if (v[1] == 0 || v[1] == 1) {
                 g_waist_cargo = v[1] != 0;
                 g_next_read_ms = 0;
             }
+            if (v[1] == 6 && (v[2] == 0 || v[2] == 1)) g_cases_any_slot = v[2] != 0, g_next_read_ms = 0;
             if (v[1] == 4 && v[2] >= 0 && v[2] <= 7) g_bag_extras = static_cast<int>(v[2]);  // tests: the extra components of new ones
             if (v[1] == 5 && (v[2] == 0 || v[2] == 1)) bagmodel::SetBind(v[2] != 0);  // tests: the reps' handlers of new ones (section 39.6)
             char info[300];
@@ -6088,12 +6283,18 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             for (const PropSet& s : g_sets)
                 for (const Prop& p : s.props)
                     if (IsBagKey(p.def)) live += p.live, shown += p.shown;
-            unsigned ours = 0, theirs = 0;
-            for (unsigned i = 0; i < g_local.count; ++i) ours += g_local.items[i].kind == wire::GearKind::cargo && cargorules::ExactModel(g_local.items[i].model) >= 0;
+            // the exact models by anchor: a joint (the hips; an arm or a hand) or stacked on the backpack (round 20 F2)
+            unsigned ours = 0, theirs = 0, ours_back = 0, theirs_back = 0;
+            for (unsigned i = 0; i < g_local.count; ++i)
+                if (g_local.items[i].kind == wire::GearKind::cargo && cargorules::ExactModel(g_local.items[i].model) >= 0)
+                    ++(g_local.items[i].parent == wire::kGearNoParent ? ours : ours_back);
             for (unsigned i = 0; i < g_sets[0].want.count; ++i)
-                theirs += g_sets[0].want.items[i].kind == wire::GearKind::cargo && cargorules::ExactModel(g_sets[0].want.items[i].model) >= 0;
-            std::snprintf(msg, cap, "waist_cargo %d; hip pieces: ours sent %u, the partner's %u; baggage model props %u live, %u shown; %u made here, %u not made",
-                          g_waist_cargo ? 1 : 0, ours, theirs, live, shown, g_bag_made, g_bag_failed);
+                if (g_sets[0].want.items[i].kind == wire::GearKind::cargo && cargorules::ExactModel(g_sets[0].want.items[i].model) >= 0)
+                    ++(g_sets[0].want.items[i].parent == wire::kGearNoParent ? theirs : theirs_back);
+            std::snprintf(msg, cap,
+                          "waist_cargo %d; hip pieces: ours sent %u, the partner's %u; on the backpack (cargo_cases_any_slot %d): ours %u, the partner's %u; "
+                          "baggage model props %u live, %u shown; %u made here, %u not made",
+                          g_waist_cargo ? 1 : 0, ours, theirs, g_cases_any_slot ? 1 : 0, ours_back, theirs_back, live, shown, g_bag_made, g_bag_failed);
             Log("[gear] %s", msg);
             Log("[gear]   %s", info);
             // each partner hip prop: where it is against the body's hips joint (the sender's pose relative to it)
@@ -6155,6 +6356,60 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             std::snprintf(msg, cap, "backpack pose sync %s", g_poses_on ? "on" : "off");
             Log("[gear] %s", msg);
             return true;
+        case 39: {
+            // the Fragile Express logo (round 20, section 42): 0 BRIDGES / 1 the logo (this game's fragile_logo; the guest
+            // sends it in its LOOK), 2 status
+            const int a = static_cast<int>(v[1]);
+            if (a == 0 || a == 1) {
+                g_logo = a != 0;
+                texshare::SetOwnLogo(g_logo);
+            }
+            ftex::Look l;
+            const bool made = ftex::looks::LogoLook(ftex::looks::LogoPart::hood_any, &l);
+            char d[4][200];
+            ftex::Describe(g_sets[0].exo.logo, d[0], sizeof(d[0]));
+            ftex::Describe(g_sets[1].exo.logo, d[1], sizeof(d[1]));
+            ftex::Describe(g_cap_logo[0].d, d[2], sizeof(d[2]));
+            ftex::Describe(g_cap_logo[1].d, d[3], sizeof(d[3]));
+            std::snprintf(msg, cap, "logo %s (the partner's choice %d), copies %s; %s; %s; %s; %s", g_logo ? "on" : "off", texshare::PartnerLogo(),
+                          made ? "made" : "not made", d[0], d[1], d[2], d[3]);
+            for (int k = 0; k < 2; ++k)
+                if (g_sets[k].exo.logo.mask_drawable) {
+                    const PropSet::Exo& x = g_sets[k].exo;
+                    Log("[logo] %s carrier mesh mask (%u meshes): %016llX %016llX", ExoTag(g_sets[k]), x.logo.mesh_count,
+                        static_cast<unsigned long long>(x.logo.mesh_mask[0]), static_cast<unsigned long long>(x.logo.mesh_mask[1]));
+                }
+            Log("[logo] %s", msg);
+            return a >= 0 && a <= 2;
+        }
+        case 37: {
+            // the cap probe (round 20, hidden runs): does the textures' per-drawable override reach a worn cap? 0 our head
+            // accessories (Sam's own entities on her head under the self view), 1 the partner's head props (joints 31..34)
+            if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden runs only"), false;
+            unsigned n = 0, ok = 0;
+            if (v[1] == 0) {
+                for (const HeadItem& h : g_hi) {
+                    if (!h.e) continue;
+                    ++n;
+                    char who[48];
+                    std::snprintf(who, sizeof(who), "our %s", h.name);
+                    if (ftex::ProbeDrawable(h.e, who)) ++ok;
+                }
+            } else {
+                PropSet& ps = g_sets[0];
+                for (unsigned i = 0; ps.have_want && i < ps.want.count; ++i) {
+                    const wire::GearItem& it = ps.want.items[i];
+                    if (it.parent != wire::kGearNoParent || it.joint < 31 || it.joint > 34 || !ps.props[i].live || !holo::SpawnAlive(ps.props[i].sp)) continue;
+                    ++n;
+                    char who[48];
+                    std::snprintf(who, sizeof(who), "partner head prop %u (joint %u)", i, static_cast<unsigned>(it.joint));
+                    if (ftex::ProbeDrawable(reinterpret_cast<std::uintptr_t>(ps.props[i].sp.e), who)) ++ok;
+                }
+            }
+            std::snprintf(msg, cap, "cap probe: %u entit%s, the override reaches %u", n, n == 1 ? "y" : "ies", ok);
+            Log("[tex] cap probe: %s", msg);
+            return n > 0;
+        }
         case 9: {
             // census: 0 the local player, 1 the partner / debug body, 2 the self body
             game::Entity* who = nullptr;
@@ -6167,7 +6422,7 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             return who != nullptr;
         }
         default:
-            std::snprintf(msg, cap, "unknown op %d (0 log, 1 partner 0/1, 2 self 0/1, 3 test cases n, 4 debug body 0/1, 5 n / 6 test faults, 7 level, 8 pod entity, 9 census 0/1/2, 10 walk cache 0/1, 11 looks 0/1, 12 looks off/on, 13 backpack pose off/on, 14 accessory list, 15 cap colour, 16 head parts off/on, 17 weapons off/on, 18 headgear offsets off/on, 19 headgear meter off/on, 20 partner feet scale percent, 21 boots sync off/on, 22 hat in the rain, 23 glasses colour, 24 rain cover durability percent, 25 boots look 0 prop / 1 own / 2 log, 26 held items, 27 exo carrier 0/1/2, 28 skeleton type -1..4, 29 LegOut 0/1, 30 BB pod rule 0/1/2, 31 her hood 0/1/2/3, 32 hood state -1..12 [type], 33 hair under the hood 0/1, 34 hood fold test, 35 hood colour 0/1, 36 hip crates 0/1 / status)", op);
+            std::snprintf(msg, cap, "unknown op %d (0 log, 1 partner 0/1, 2 self 0/1, 3 test cases n, 4 debug body 0/1, 5 n / 6 test faults, 7 level, 8 pod entity, 9 census 0/1/2, 10 walk cache 0/1, 11 looks 0/1, 12 looks off/on, 13 backpack pose off/on, 14 accessory list, 15 cap colour, 16 head parts off/on, 17 weapons off/on, 18 headgear offsets off/on, 19 headgear meter off/on, 20 partner feet scale percent, 21 boots sync off/on, 22 hat in the rain, 23 glasses colour, 24 rain cover durability percent, 25 boots look 0 prop / 1 own / 2 log, 26 held items, 27 exo carrier 0/1/2, 28 skeleton type -1..4, 29 LegOut 0/1, 30 BB pod rule 0/1/2, 31 her hood 0/1/2/3, 32 hood state -1..12 [type], 33 hair under the hood 0/1, 34 hood fold test, 35 hood colour 0/1, 36 hip crates 0/1 / status, 37 cap probe 0 ours / 1 the partner's, 38 suit rig 0/1 [extra] / 2 status, 39 logo 0/1 / 2 status)", op);
             return false;
     }
 }

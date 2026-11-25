@@ -1,0 +1,90 @@
+# Round 20 M2 probe (docs/enemy-sync.md 12): does a calm MULE on the host see her partner body once the body carries a visual
+# stimulus like our Sam's? enemy_target 8 reads the AI manager's live visual and aural stimuli (which one, if any, is our Sam's:
+# the first probe found he has no AIVisualStimulusComponent). Her body (a DSControlledEntity) has an AI agent but no stimulus.
+# enemy_target 9 makes one for her body's agent with Sam's resource (1), or the decoy (3: Sam's agent placed at her body);
+# without a resource of his it logs 'hers not made' and the run goes on. Launcher Local test files.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-enemy-stim-probe -SeedSaves complete-100 -GuestSeed profile-only -Id round20-stage2-probe
+# A: her body 14 m in front of MULE 02029 (along its facing), no stimulus (the control: stage 1 found no notice from behind).
+# B: the same with her stimulus (mode 1). C: removed, then the decoy (mode 3). Read the logs ([enemy] target follow, [enemy]
+# stimulus) and the stills; nothing is asserted beyond no fault.
+# covers: enemy-hits
+# select: probe
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[enemy\] hits: byte checks [0-9]+/[0-9]+ ok
+goto mule-camp-sw-lkc
+@guest goto 1521.90 992.00 0
+wait 4000
+?@both action dev_god 2
+@both action dev_enemies 1
+waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+@guest waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+action enemy_probe 5 1
+@guest action enemy_probe 5 1
+waitlog 40 \[enemy\] sync on \(host\).*\(equal
+@guest waitlog 40 \[enemy\] sync on \(guest\).*\(equal
+@guest waitlog 30 \[enemy\] mirror on id=02029
+wait 3000
+action enemy_target 8
+waitnew 5 \[enemy\] stimulus: byte checks
+nolog \[enemy\] stimulus: byte check FAILED
+waitlog 5 \[enemy\] stimulus walk aural
+# ---- A: the control, her body 14 m in front of 02029, no stimulus
+@guest action enemy_look 0x2029 20
+wait 500
+@guest action enemy_look -8 14
+action enemy_target 7 0x2029 10
+wait 5000
+@guest screenshot 01-guest-front-nostim
+wait 5500
+# ---- B: her stimulus (her agent, Sam's resource)
+@guest action enemy_look 0x2029 20
+wait 500
+@guest action enemy_look -8 14
+action enemy_target 9 1
+waitnew 5 \[enemy\] stimulus: hers (not )?made
+action enemy_target 8
+action enemy_target 7 0x2029 16
+wait 4000
+@guest screenshot 02-guest-stim-4s
+wait 4000
+action enemy_look 0x2029 60
+wait 1500
+screenshot 02-host-stim-9s
+@guest screenshot 02-guest-stim-9s
+wait 7000
+action enemy_target 0 0x2029
+action enemy_target 9 0
+wait 500
+# ---- C: the decoy (Sam's agent placed at her body)
+@guest action enemy_look 0x2029 20
+wait 500
+@guest action enemy_look -8 14
+action enemy_target 9 3
+waitnew 5 \[enemy\] stimulus: hers (not )?made
+action enemy_target 7 0x2029 14
+wait 6000
+screenshot 03-host-decoy-6s
+@guest screenshot 03-guest-decoy-6s
+wait 8000
+action enemy_target 9 0
+action enemy_target 0 0x2029
+action enemy_sync 0
+nolog \[enemy\] FAULT
+@guest nolog \[enemy\] FAULT
+nolog \[enemy\] (hits: |target probe: |stimulus: )?byte check FAILED
+nolog \[enemy\] stimulus.*FAULT
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@both action enemy_sync 2
+action enemy_probe 5 0
+@guest action enemy_probe 5 0
+?@both action dev_god 0
+@guest quit
+wait 3000
+quit

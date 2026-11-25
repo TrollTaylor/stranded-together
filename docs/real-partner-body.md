@@ -7506,6 +7506,43 @@ online gate ok.
 - Still to run before a release with `waist_cargo=1` by default: one `two-games-ride-trike-pack` (no crate floating while
   she is pillion) and one of the edited count scenarios.
 
+### 39.7 Round 20 census: the belt and the BB pod [V: `gear 9 0`, run `20261124-215710-two-games-enemy-target-probe`, guest log]
+
+- **The belt is a separate entity.** The `DSBackpackEntity` has a child `backpack_temp` entity with a
+  `DSPlayerBackpackBeltComponent` and its own SkinnedModel, shown, at Sam-local (-0.061, -0.084, 1.137) m near joint 4. Sam's
+  suit parts 25-28 (the belt pieces of his own ArtParts) are hidden by the game while the backpack is worn: the mesh
+  controller's part 63 maps to ArtParts index 25 (its kids 26-28) with the mask 0x100000 in compare mode 0, and a part is
+  shown only with mask 0 (`ApplyMeshControl`). So on her own screen the live belt entity is what she sees; on the partner
+  body (where the belt entity is not sent) suit parts 25-28 are the stand-in to draw.
+- **The BB pod "hidden (its own flag)".** At the teleport (guest 31.110 s) the census logged `controller ask vs its flag:
+  mismatch (ask shown, flag hidden; ... not plain play)` and `hidden (its own flag (the self view is off))`; 1.3 s later
+  (32.42 s) `shown (the game's rule for Sam's pod)`. 12 mismatches in 81 reads, all outside plain play: the game itself hides
+  Sam's pod during a teleport or load, and the self view falls back to its own flag there. Not a mod fault.
+
+### 39.8 Round 20 (F2): the weapon cases and ladders on the back (`session.ini cargo_cases_any_slot`, default 1)
+
+The user's report: a weapon case the game re-stacked from the hips onto the back vanished on the partner. Before, only the
+waist slots were sent (`SendModel`). Now, with `cargo_cases_any_slot` on and `waist_cargo` on, a weapon case (S, M, L) or a
+folding ladder stacked on the back (slot type 1) is sent as the game's own baggage model too and drawn
+at its slot on the partner (`cargo_rules.hpp` `SendModel(..., any_slot)`, unit-tested in `st_cargo_rules_tests`); equipment
+(case 4) and other cargo stay as before. 0: the hips only (v0.32). `gear 36 6 <0|1>` switches it at run time. The arms (slot
+types 2 / 3) and hands (6 / 7) are left out (round 20 review): no run has seen a case or ladder drawn there, and a folding
+ladder in a hand is already drawn as the `held_items` ladder clone, so it would be drawn twice. To add them later: a run with a
+case moved to an arm and a ladder held, the stills read, then widen `SendModel`'s slot check (its test lists them as unsent).
+
+Logs: `[gear] cargo_cases_any_slot=1: the weapon cases and folding ladders stacked on the backpack sent too (round 20 F2; arms
+and hands not)`,
+`[gear] our carried cargo: n case / ladder piece(s) off the hips sent as the game's own baggage model (cargo_cases_any_slot on)`;
+the `gear 36 2` status line adds `on the backpack (cargo_cases_any_slot 1): ours n, the partner's n`.
+
+**Proof** (`two-games-hip-cargo`, run `20261124-222318`, pass, 132 steps, 126 s; complete-100 carries two weapon cases S and
+one M stacked on the back): `our carried cargo: 3 case / ladder piece(s) off the hips sent`; `gear 36 2` on both: `hip
+pieces: ours sent 2, the partner's 2; on the backpack (cargo_cases_any_slot 1): ours 3, the partner's 3; baggage model props 5
+live`; the model 16 (`weapon case M (wmd0)`) made on the host. Stills: A1 / A3 (the host's screen of her from behind-left and
+her side): her backpack with the cases and the wooden crate at her hip, as on her own screen (guest A1); B1 (her `gear 36 0`):
+no crate or case on her, B2 back; D1 (the reps unbound) no crate on her, D2 (bound) the crate back; C1 / C2 (her screen of the
+host's Sam): his backpack and hip pieces drawn, C1b without. C4 / C4b frame his back too closely to tell a difference.
+
 ## 40. Her suit colour stuck, and Fragile in the colour menu (round 15)
 
 The user (guest, Fragile, v0.28.0, Local test): "i cant change fragiles color i changed it to pink a few runs ago and now
@@ -7719,3 +7756,124 @@ online gate ok.
 - Opening the menu within about 1.5 s of a load (before the byte is set) shows the old colour.
 - A guest who plays Sam also has the pick on, so her own Sam now wears her pick (the host already showed it).
 - The cap and glasses preview entities hang on the figure's hidden skeleton, as in the cargo menu.
+
+## 41. The suit rig: what joins Sam's gear to Fragile (round 20 stage 3; `session.ini exo_rig`, default 1)
+
+The user: the BB pod and the backpack frame on Fragile hang next to her, with nothing between them and her body. On Sam the
+porter suit itself carries that hardware: ArtParts of `part_sam_body_suiti` (the same tree the exo carrier of section 32
+draws), never entities of their own. Fragile's body has none of them.
+
+### 41.1 The parts [V: the round 20 census (39.7), the round 19 research (cargo-attach)]
+
+| Part (runtime index) | What | Drawn while the sender wears | Her own screen | The partner's screen |
+|---|---|---|---|---|
+| 46 BBPodMount | the pod's chest mount | the BB pod (STC1 kind 3, no parent) | yes | yes |
+| 2 BBPodPipe | the pod's pipe | the BB pod, if the game shows it on Sam (k 31) | yes | yes |
+| 25 Belt (26 L, 27 R, 28 hip: its kids) | the backpack's shoulder straps and hip belt | the backpack (kind 1) | no (see below) | yes |
+| 44 Hip | the hip rig | a waist piece (kind 4, joint 1, no parent), if the game shows it (k 72) | yes | yes |
+| 45 HipGun | the hip gun rig | as 44, only if the game shows it (k 73) | rarely | rarely |
+| 31, 47, 29, 49 | legbelt, cantmount, subpouch, bodyparts | only with `exo_rig_extra` and some rig gear | opt-in | opt-in |
+| 48, 0 | the star, the suit body | never | - | - |
+
+- **No double straps.** While the backpack is worn the game hides Sam's suit belt (k 63 -> 25 with the mask 0x100000) and
+  draws the belt entity `backpack_temp` (`DSPlayerBackpackBeltComponent`) instead (39.7). The partner body never gets that
+  entity, so on the partner's screen 25-28 are its stand-in; on her own screen the live belt entity is there and 25-28 are
+  drawn only if the game itself shows the suit's belt (the census never saw that).
+- **Follows the game.** A part the sender's mesh controller names (the STC1 parts block, `kGearMeshParts`) is drawn only
+  while the game shows it on Sam (so the pipe goes when the game hides it); a part it does not name follows the gear alone.
+
+### 41.2 Code
+
+- `exo_parts.hpp`: `RigGearOf` (the gear from the STC1 items), `RigTreeOk` (2, 25, 29, 31, 44-47, 49 under the container 1;
+  26-28 under 25: else nothing is drawn, `rig not on this tree`), `SenderNamesRig`, `RigPlan` (the table above), `RigMask`;
+  `CarrierPlan(..., rig)` asks exactly the planned parts under the container (26-28 only with 25). No rig, or a null one:
+  round 19's plan bit for bit. Unit-tested in `st_exo_parts_tests` (`TestRig`).
+- `partner_gear.cpp` `ExoWant`: the carrier now also lives for the rig alone (no skeleton: the skeleton's bits cleared), for
+  the self slot from our own gear items, for the partner from the sender's; the porter suit only (`SenderNamesRig`: the
+  sender's block names 2, 25, 44 and 45). Removed after 10 s with no skeleton, rig or hood.
+- `config`: `exo_rig` (bool, default 1), `exo_rig_extra` (0..15, default 0; `cfgval::RigExtra`). `gear 38` (debug-actions.md).
+- No new game address: the carrier's part setter and tree (section 32) do the work.
+
+### 41.3 Proof
+
+- **Solo, her own screen** (`rig-fragile`, run `20261124-232041`, pass, 172 steps, 172 s; complete-100: backpack, BB pod,
+  speed skeleton, the ladder and weapon case on the hips): `[exo-self] rig (section 41): parts 2 44 46`, shown `1 2 32 33
+  34 35 44 46 90..106 (speed; rig on)`; the debug partner (`real_spawn 16`, our gear) `[exo] rig: parts 2 25 26 27 28 44
+  46`; carrier pose error 0.0-0.5 cm; the switch both ways on both slots. Eight camera turns, each rig off / on:
+  - V5 (her exact right profile, the gap check): off, background shows between the pod and her chest (about 3 cm); on, a
+    grey mount arm joins the pod's top to her chest and the pipe hangs under it. The backpack's frame touches her back in
+    both (no gap: Stage B, the fit offsets, was not needed).
+  - V3 / V8 (front 3/4): on, the pipe and a yellow strap behind the pod; the pod sits on the mount. V7 (left profile), V1 /
+    V2 / V6 (back): the backpack covers the rig; off and on look the same. No second set of straps anywhere.
+  - Walking and running (R6): the pod stays on its mount.
+  - The synthetic cases (`gear 3 5`) are not drawn on her own screen (as for Sam): R5 shows the save's own load only.
+- **Two games** (`two-games-rig-fragile`, run `20261124-232951`, pass, 70 steps, 90 s; the launcher's Local test files, no
+  `exo_rig` line: on by default on both): the host's copy of her `[exo] rig: parts 2 25 26 27 28 44 46`, the guest's own
+  `parts 2 44 46`. Host stills: H2 (her front, 2.2 m): off, the pod floats in front of her waist; on, the yellow shoulder
+  straps reach her chest, a hip belt runs behind the pod, the pod sits on it with its pipe. H1 (her back): the backpack
+  hides the belt, off = on. Her own screen G1 (front): on, the pipe loops from the pod to her side and the mount strap sits
+  behind it; no suit belt over the game's belt entity.
+- **The extras** (`gear 38 1 15`, H2-front-extra): a tan pouch beside the pod (the subpouch) and small pieces at the hip; attached, but bulky
+  next to the pod: left off by default.
+- **Frame time** (the solo run, standing, 8 s each, uncapped): rig on 118.6 fps (8.43 ms), rig off 119.4 (8.38 ms), the
+  carrier off 121.6 (8.22 ms), on again 120.4 (8.31 ms): the rig's cost is within the noise; the carrier itself about 0.1
+  to 0.2 ms. One 43 ms frame right after switching the partner carrier's rig off (the parts set at once); the solo self
+  switches showed none. The rig changes only when the gear does.
+
+### 41.4 Limits
+
+- The game hides Sam's pod for about 1.3 s around a teleport or a load (39.7); the rig's pod parts go with it. No hold.
+- The status line printed by `gear 38 0/1` is the last tick's rig (the carrier recomputes on the next tick).
+- A sender in another suit than the porter suit (`SenderNamesRig` false): no rig, as before.
+- When the rig is no longer wanted (`gear 38 0`, the gear taken off), the carrier stops drawing the rig parts on that tick
+  (`x.rig` cleared: review r20 visual 8), not after the 10 s grace.
+- The section number in the log (`rig (section 41)`) was renumbered after the two runs above (they logged `section 40`, the
+  number first picked before section 40 was found taken); the scenarios match the new text.
+
+## 42. The Fragile Express logo on her hood and cap (round 20 stage 4; `session.ini fragile_logo`, default 1)
+
+The recipe (what is erased, where the wordmark goes, which slots) is in docs/textures.md "The Fragile Express logo". This
+section is the body side.
+
+### 42.1 Where it binds
+
+- **Her hood** is Sam's porter-suit hood on the exo carrier (section 37). `ExoLogo` binds the logo look on the carrier's
+  drawable when the slot is her porter suit, its tint is ready and the logo is wanted: on the guest's own screen her own
+  `fragile_logo`, on the host the partner's LOOK flag bit 2 (`texshare::PartnerLogo`). The whole Sam model is ~63 meshes:
+  the carrier is **mesh filtered**: a probe (one entry per mesh that keeps nothing and counts the logo textures it meets,
+  undone after the first rebuild; probed again after 5 s, at most 3 times, when it found nothing) finds the meshes that
+  hold the hood maps (16, mask `00002109C6B01225`); the look then binds there only. The palette and the metal looks are
+  merged (`LogoPart::hood_any`): L0..L4, L9, L10, each with the rule `exact`, so whichever set the carrier wears keeps
+  only its own copies.
+- **Her cap** (Sam's `cap00`): on her own screen our Sam's cap entity drawn on her head (the self view), on the host the
+  partner's head prop (joints 31..34, resource cap00). The look: L5 + L8, only while the cap colour is 0..22 (the wearer's
+  outfit byte; `CapLogoFits`). A silver / gold cap takes the logo off at once (`ftex::Undo`, no 500 ms debounce: review r20
+  visual 11) and a palette colour puts it back. Her own screen binds our Sam's cap only while the self view shows her
+  (`realbody::SelfShown`): when it is unshown the game draws that cap on Sam, and Sam keeps BRIDGES (review r20 visual 2).
+- **Not drawn, not bound:** `ExoLogo` and the partner's cap bind only while shown (`x.p.shown`, the prop's `shown`); else
+  what is bound stays (`ftex::Keep`). The probe and rebind safety is in docs/textures.md "Binding safety".
+- **Capacity:** one override per map per bound mesh. The hood look needs 11 per mesh (L1, L3, L9 and L10 carry two maps
+  each), 176 on 16 meshes; `kDressHandles` is 256 and the registry (`kRegMax`) 512. A look that would need more binds only
+  its first slots that fit and logs `needs more than 256 overrides` (before this, entries past 160 were made by the core
+  and not kept: that map was bound to nothing and drew black, the gold hood's first reflectance run).
+
+### 42.2 Runs
+
+- `20261125-011159-fragile-logo-solo` (her own screen, 2560 x 1440): `01-hood-gold-logo`: the gold hood reads "FRAGILE
+  EXPRESS" the right way round across the band (the F half behind the band's curve at this angle), gold sheen intact, no
+  dark print after "express". `01b-hood-gold-bridges` (logo off): the game's BRIDGES upside down and reversed.
+  `02-hood-pink-logo` / `04`: "FRAGILE express" on the pink band, legible; `03` the BRIDGES control. `05-hood-down`: her
+  collar, no band (the band shows only on the raised hood; from behind the backpack hides it). `06-cap-logo`: a green cap
+  (colour 9), "FRAGILE express" in white across the front, centred, no visible gap at the panel seam. Logs: copies made in
+  1.6 s (recipe 5); `binding L0 L1 L2 L3 L4 L9 L10: 176 override(s)`; the gold dump: L10 kept 3 per hood mesh on both its
+  bindings, L9 (silver) 0.
+- `20261125-012046-two-games-fragile-logo` (host 1280 x 720): the host's copy of her: `01` gold hood "...AGILE EXPRESS"
+  right way round, gold, no dark remnant; `02` BRIDGES after the guest's `gear 39 0`; `03` the logo again; `04` her green
+  cap "FRAGILE express"; `05` her gold cap: BRIDGES, clean (the logo taken off on both screens: `logo-cap-ours` and
+  `logo-cap-partner` `BRIDGES on it again`), then colour 9: the logo back on both. No FAULT on either game.
+
+### 42.3 Limits
+
+- The band shows only on the raised hood. From some angles the strap's curve hides part of the F.
+- At 1280 x 720 and a few metres the small "express" is soft; "FRAGILE" stays legible.
+- Silver and gold caps keep BRIDGES (no copy is made for their sets).

@@ -1,0 +1,90 @@
+# Round 20 M1 probe (docs/enemy-sync.md 11), second run: can a calm MULE on the host be made to go for her partner body?
+# Plus the cap probe (does the textures' per-drawable override reach a worn cap's entity: gear 37), with the cap put on
+# first (gear 14 15 1: the first run found no worn cap). Launcher Local test files.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-enemy-target-probe -SeedSaves complete-100 -GuestSeed profile-only -Id r20-target-probe
+# The first run (20261124-215710: the reads, L1 perfect / plain, L2 0x180 and 0x47 owned by her body, L3 phase 2 / 3 and
+# the L1 control at our Sam 80 m off) moved nothing. This one asks the open questions: does the MULE notice her body 8 m in
+# front of it by itself; does L1 repeated (4 calls 2 s apart) at that range; and the control: does it notice our Sam 12 m
+# off by itself. The guest's stills show the host's MULE (her copy is a mirror posed from the host), the host's last still
+# looks at it from Sam. Read the logs ([enemy] target ...) and the stills; nothing is asserted beyond no fault.
+# covers: enemy-hits
+# select: probe
+role host
+graphics low
+timeout 330
+launcherini local-test
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[enemy\] hits: byte checks [0-9]+/[0-9]+ ok
+goto mule-camp-sw-lkc
+@guest goto 1521.90 992.00 0
+wait 4000
+?@both action dev_god 2
+@both action dev_enemies 1
+waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+@guest waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+action enemy_probe 5 1
+@guest action enemy_probe 5 1
+waitlog 40 \[enemy\] sync on \(host\).*\(equal
+@guest waitlog 40 \[enemy\] sync on \(guest\).*\(equal
+@guest waitlog 30 \[enemy\] mirror on id=02029
+wait 3000
+# ---- e: the cap probe on both: the Bridges cap on her Sam first
+@guest action gear 14 15 1
+wait 3000
+@guest action gear 37 0
+@guest waitnew 10 \[tex\] cap probe:
+wait 2000
+?action gear 37 1
+?waitnew 10 \[tex\] cap probe:
+@guest action gear 14 15 0
+# ---- A: her body 8 m in front of MULE 02029 (her mirror; on the host her body), our Sam about 80 m off: natural notice?
+@guest action enemy_look 0x2029 8
+action enemy_target 0 0x2029
+waitnew 5 \[enemy\] target read: IsHostileTowards
+action enemy_target 7 0x2029 12
+wait 5000
+@guest screenshot 01-guest-body-8m
+wait 7500
+# ---- B: L1 (perfect threat info) at her body 4 times 2 s apart
+@guest action enemy_look 0x2029 8
+action enemy_target 1 0x2029 0
+wait 2000
+action enemy_target 1 0x2029 0
+wait 2000
+action enemy_target 1 0x2029 0
+wait 2000
+action enemy_target 1 0x2029 0
+waitnew 5 \[enemy\] target L1 AlertForEntityWithPerfectThreatInfo
+wait 4000
+@guest screenshot 02-guest-L1x4-body
+wait 8500
+action enemy_target 0 0x2029
+# ---- C, the control: our Sam 12 m in front of the MULE: natural notice?
+action enemy_look 0x2029 12
+action enemy_target 7 0x2029 12
+wait 5000
+screenshot 03-host-sam-12m
+@guest screenshot 03-guest-sam-12m
+wait 7500
+action enemy_target 0 0x2029
+action enemy_target 7 0x2029 6
+wait 6500
+screenshot 04-host-after
+action enemy_sync 0
+nolog \[enemy\] FAULT
+@guest nolog \[enemy\] FAULT
+nolog \[enemy\] (hits: |target probe: )?byte check FAILED
+@guest nolog \[enemy\] (hits: )?byte check FAILED
+nolog \[tex\] .*FAULTED
+@guest nolog \[tex\] .*FAULTED
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@both action enemy_sync 2
+action enemy_probe 5 0
+@guest action enemy_probe 5 0
+?@both action dev_god 0
+@guest quit
+wait 3000
+quit

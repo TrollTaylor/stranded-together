@@ -425,6 +425,7 @@ bool HitMode(const double (&)[3], char* msg, std::size_t cap) noexcept { return 
 bool HitTest(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy hit (stub)"), true; }
 bool HitSend(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy hit send (stub)"), true; }
 bool HitWatch(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy hit watch (stub)"), true; }
+bool TargetProbe(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy target (stub)"), true; }
 }  // namespace st::ecombat
 namespace st::shots {
 bool Command(int, const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "shots (stub)"), true; }

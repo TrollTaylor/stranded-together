@@ -75,5 +75,12 @@ bool HitMode(const double (&v)[3], char* msg, std::size_t cap) noexcept;      //
 bool HitTest(const double (&v)[3], char* msg, std::size_t cap) noexcept;      // enemy_hit <attack> [count] [id | 0]
 bool HitSend(const double (&v)[3], char* msg, std::size_t cap) noexcept;      // enemy_hit_send <attack> [count] [id | 0]
 bool HitWatch(const double (&v)[3], char* msg, std::size_t cap) noexcept;     // enemy_hit_watch <id | 0> <0 | 1>
+// enemy_target <op> [id | 0] [arg] (round 20 M1, the host): 0 read her body / our Sam / the MULE (AI agent +0x170, faction +0x178,
+// IsHostileTowards), 1 / 2 L1 AlertForEntity(WithPerfectThreatInfo) -> 0 her body | 1 our Sam, 3 L3 RisePhase <1..5>, 4 <0 | 1>
+// the partner body's hit watch, 7 follow <s>: the MULE's facing against her body and our Sam once a second.
+// Round 20 M2 (the stimulus probe, docs/enemy-sync.md 12): 8 read the visual stimulus components and walk the AI manager's visual
+// and aural lists; 9 <0 remove | 1 her agent with Sam's resource | 2 the same + Sam's component message | 3 the decoy (Sam's agent
+// at her body)>. Hidden runs only.
+bool TargetProbe(const double (&v)[3], char* msg, std::size_t cap) noexcept;
 
 }  // namespace st::ecombat

@@ -46,6 +46,18 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
   ladder (folded, and unfolded over the shoulder while aiming it), the PCC, the climbing anchor, the container repair
   spray and any other tool or weapon, drawn from the item's own model (docs/real-partner-body.md section 31;
   session.ini `held_items`, default 2).
+- **Experimental:** the weapon cases and folding ladders a player carries show on the other screen, on the hips and,
+  since round 20, stacked on the backpack too (session.ini `waist_cargo` and `cargo_cases_any_slot`, both default on);
+  not yet on the arms or in the hands.
+- **Experimental (round 20):** when Fragile wears Sam's BB pod, backpack or hip gear, the porter suit's own straps and
+  mounts now hold them to her body on both screens: the pod sits on its chest mount with its pipe, and her backpack has
+  its shoulder straps and hip belt on the other player's screen (on her own screen the game draws its own belt). Before,
+  the pod and the frame hung next to her with nothing joining them (session.ini `exo_rig`, default on).
+- **Experimental (round 20):** Fragile's raised porter hood and her Bridges cap say **FRAGILE express** instead of
+  BRIDGES, on both screens. Each PC makes the picture from its own copy of the game (nothing is downloaded or sent); the
+  host's Sam keeps BRIDGES, and silver or gold caps keep it too (session.ini `fragile_logo`, default on). Each PC needs its
+  own extracted textures for this: if only one of you has them, only that screen shows the logo, and a guest without them
+  cannot turn it off on the host's screen.
 - **Experimental:** structures either player builds with the PCC (postboxes, watchtowers, generators, shelters,
   bridges, ...) appear in both worlds with the build-up on both screens, a dismantle removes them from both, and they
   stay in the host's save (docs/world-sync.md; on with **Host holds the save**, Debug option **Share structures,
@@ -111,9 +123,11 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
   The host's MULE rounds can also hurt the guest if they cross her; the host's melee, thrown
   spears, tackles, cargo theft and truck rams never reach her. A downed MULE that she walks
   away from stands up again in her world until she comes back (it then lies with the host's
-  again). There is no launcher switch yet.
+  again). If the host goes far away (a teleport, or the game moving him after he faints), her
+  copies of his MULEs are handed back to her own game within a few seconds instead of hanging
+  frozen in the air; when he comes back they follow his again. There is no launcher switch yet.
 - Not yet: the tools' effects (the PCC's and anchor's build holograms, the spray), the Odradek, the cuff device,
-  the weapon crate on the hip, the chiral cylinder, the exoskeleton on non-Sam characters,
+  the chiral cylinder, the exoskeleton on non-Sam characters,
   facial animation, the partner's gear sounds (footsteps, movement and
   rifle handling are heard, experimental), thrown grenades, bolas and launcher rounds, the game's own passenger animation, a vehicle
   camera for the passenger, shared cargo on vehicles, carts (and for the copies without Host holds the

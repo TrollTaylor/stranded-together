@@ -308,8 +308,23 @@ struct EligibleIn {
     bool held_on_host = false;     // SEN1 state bit 7
     bool cutscene = false;
     bool in_vehicle = false;       // its entity's parent chain (+0x70) names a vehicle: seated in a truck (untested: refused)
+    // M0 "no statues" (round 20, docs/enemy-sync.md 8.10; enemy_host_guard): the newest SEN1 sample's host bits. A copy the host has
+    // unloaded (2 km away after a faint) or hidden is never mirrored: it would stand frozen, unposed, at a stale place.
+    bool host_realized = true;     // SEN1 state kRealized
+    bool host_hidden = false;      // SEN1 state kHidden (hidden or asleep there)
+    double entry_err_m = -1;       // the host's place vs ours at entry (-1 unknown)
+    double entry_err_max_m = 0;    // enemy_entry_err_max (0 off)
+    // M0's quick path (enemy_host_far): the host's own Sam this far from it (his player sync, seen here at once; the host's frames
+    // for it stop while his world loads, so the bits above come only after the silence window)
+    double host_dist_m = -1;       // the partner body (the host's Sam) from it here (-1 unknown)
+    double host_far_m = 0;         // enemy_host_far (0 off)
 };
-enum class Refusal : std::uint8_t { ok, stale, not_realized, dead, hidden_or_asleep, sequence_only, held_here, held_on_host, cutscene, in_vehicle };
+enum class Refusal : std::uint8_t {
+    ok, stale, not_realized, dead, hidden_or_asleep, sequence_only, held_here, held_on_host, cutscene, in_vehicle, host_unrealized, host_hidden, entry_far,
+    host_far
+};
+// M0: the host's Sam beyond enemy_host_far from it (the distance known, the switch on)
+inline constexpr bool HostFar(double host_dist_m, double host_far_m) noexcept { return host_far_m > 0 && host_dist_m > host_far_m; }
 inline Refusal Eligible(const EligibleIn& e) noexcept {
     if (e.cutscene) return Refusal::cutscene;
     if (!e.fresh) return Refusal::stale;
@@ -320,6 +335,10 @@ inline Refusal Eligible(const EligibleIn& e) noexcept {
     if (e.held_here) return Refusal::held_here;
     if (e.held_on_host) return Refusal::held_on_host;
     if (e.in_vehicle) return Refusal::in_vehicle;
+    if (!e.host_realized) return Refusal::host_unrealized;
+    if (e.host_hidden) return Refusal::host_hidden;
+    if (e.entry_err_max_m > 0 && e.entry_err_m > e.entry_err_max_m) return Refusal::entry_far;
+    if (HostFar(e.host_dist_m, e.host_far_m)) return Refusal::host_far;
     return Refusal::ok;
 }
 inline const char* RefusalText(Refusal r) noexcept {
@@ -334,6 +353,10 @@ inline const char* RefusalText(Refusal r) noexcept {
         case Refusal::held_on_host: return "a real sequence holds it on the host";
         case Refusal::cutscene: return "cutscene";
         case Refusal::in_vehicle: return "in a vehicle";
+        case Refusal::host_unrealized: return "not realized on the host (unloaded there)";
+        case Refusal::host_hidden: return "hidden or asleep on the host";
+        case Refusal::entry_far: return "the host's place is too far from ours (enemy_entry_err_max)";
+        case Refusal::host_far: return "the host's Sam is too far from it (enemy_host_far)";
     }
     return "?";
 }
@@ -346,12 +369,20 @@ struct LeaseIn {
     bool off = false;           // the world, the link or the switch: give everything back
     bool bit14_now = true;      // +0xEA4 bit 14 still set (cleared: the game took it)
     bool realized_here = true;
+    bool host_guard = false;    // enemy_host_guard: the two host bits below are read (M0)
+    bool host_realized = true;  // the newest SEN1 sample: kRealized
+    bool host_hidden = false;   // the newest SEN1 sample: kHidden
+    double host_dist_m = -1;    // M0 quick path: the host's Sam from it here (-1 unknown)
+    double host_far_m = 0;      // enemy_host_far (0 off)
     double frame_age_ms = 0;
     Class cls = Class::near10;  // its class by the last frame's distance
     double dist_m = 0;          // from our Sam
     double radius_m = 250.0;
 };
-enum class LeaseVerdict : std::uint8_t { none, keep, hold, release_off, release_unrealized, release_silence, release_range, forget_taken };
+enum class LeaseVerdict : std::uint8_t {
+    none, keep, hold, release_off, release_unrealized, release_silence, release_range, forget_taken, release_host_unrealized, release_host_hidden,
+    release_host_far
+};
 inline LeaseVerdict Lease(const LeaseIn& l) noexcept {
     if (!l.frozen_by_us) return LeaseVerdict::none;  // never touch what we did not freeze
     if (l.hold) return LeaseVerdict::hold;
@@ -359,11 +390,30 @@ inline LeaseVerdict Lease(const LeaseIn& l) noexcept {
     if (l.off) return LeaseVerdict::release_off;
     if (!l.realized_here) return LeaseVerdict::release_unrealized;
     if (l.frame_age_ms > (l.cls == Class::near10 ? kSilenceNearMs : kSilenceFarMs)) return LeaseVerdict::release_silence;
+    // M0: the host unloaded or hid its copy (the newest frame says so, within the silence window): never a statue
+    if (l.host_guard && !l.host_realized) return LeaseVerdict::release_host_unrealized;
+    if (l.host_guard && l.host_hidden) return LeaseVerdict::release_host_hidden;
+    // M0's quick path: the host's Sam went far (a teleport, a faint's relocation): his copy unloads there, his frames stop
+    if (l.host_guard && HostFar(l.host_dist_m, l.host_far_m)) return LeaseVerdict::release_host_far;
     if (l.dist_m > l.radius_m + kRangeSlackM) return LeaseVerdict::release_range;
     return LeaseVerdict::keep;
 }
 inline bool Releases(LeaseVerdict v) noexcept {
-    return v == LeaseVerdict::release_off || v == LeaseVerdict::release_unrealized || v == LeaseVerdict::release_silence || v == LeaseVerdict::release_range;
+    return v == LeaseVerdict::release_off || v == LeaseVerdict::release_unrealized || v == LeaseVerdict::release_silence || v == LeaseVerdict::release_range ||
+           v == LeaseVerdict::release_host_unrealized || v == LeaseVerdict::release_host_hidden || v == LeaseVerdict::release_host_far;
+}
+// M0: how a mirror is given back. The host hid its copy: with enemy_host_hide on (default off: no run has hidden a mirrored MULE on
+// the host yet), hers is hidden here too (never a live MULE beside her that the host's world has put away), and only when the
+// release really posted now (`posted`: not held by a cutscene, its weapon flag restored first; review r20 enemy 3). Every other
+// release: given back alive (her own game runs it).
+inline constexpr bool HideOnRelease(LeaseVerdict v, bool hide_on, bool posted) noexcept {
+    return v == LeaseVerdict::release_host_hidden && hide_on && posted;
+}
+// M0: a copy hidden here because the host's is hidden is shown again once the host's newest frame is fresh (3 s) and says realized
+// and not hidden, or once the frames stop (the host no longer sends it: her own game takes it), or on off / reset.
+inline constexpr double kHostHiddenStaleMs = 3000.0;
+inline constexpr bool KeepHostHidden(bool have_frame, double frame_age_ms, bool host_realized, bool host_hidden) noexcept {
+    return have_frame && frame_age_ms <= kHostHiddenStaleMs && host_realized && host_hidden;
 }
 inline const char* LeaseText(LeaseVerdict v) noexcept {
     switch (v) {
@@ -371,6 +421,9 @@ inline const char* LeaseText(LeaseVerdict v) noexcept {
         case LeaseVerdict::release_unrealized: return "unrealized";
         case LeaseVerdict::release_silence: return "silence";
         case LeaseVerdict::release_range: return "range";
+        case LeaseVerdict::release_host_unrealized: return "host unrealized";
+        case LeaseVerdict::release_host_hidden: return "host hidden";
+        case LeaseVerdict::release_host_far: return "host far";
         case LeaseVerdict::forget_taken: return "taken";
         case LeaseVerdict::hold: return "hold";
         case LeaseVerdict::keep: return "keep";

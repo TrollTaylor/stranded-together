@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -71,6 +72,8 @@ SRWLOCK g_lock = SRWLOCK_INIT;  // g_partner (read by real_body on the same thre
 ftex::Look g_partner;
 int g_partner_boots_style = -1;  // the newest LOOK's flags bit 0 (-1 none yet)
 int g_partner_tint = -1;         // the newest LOOK's flags bit 1 (-1 none yet)
+std::atomic<int> g_partner_logo{-1};   // the newest LOOK's flags bit 2 (-1 none yet; round 20): the link writes, the game reads
+volatile long g_own_logo = 1;    // guest: fragile_logo now (Configure, `gear 39`)
 twire::Look g_pending;
 bool g_have_pending = false;
 twire::Look g_last_look;         // the newest LOOK (tex 7 shows it again)
@@ -214,6 +217,7 @@ void ResetHost(const char* why) {
     ReleaseSRWLockExclusive(&g_lock);
     g_partner_boots_style = -1;
     g_partner_tint = -1;
+    g_partner_logo.store(-1, std::memory_order_relaxed);
     g_have_pending = false;
     g_have_last_look = false;
     g_in.clear();
@@ -296,6 +300,9 @@ void OnLook(const twire::Look& m) {
     const int tint = (m.flags & 2u) ? 1 : 0;  // bit 1: the guest's v0.23 tint (for her own look: both screens the same)
     if (tint != g_partner_tint) Log("[tex] partner tint (fragile_suit_colour on the guest): %s", tint ? "on" : "off");
     g_partner_tint = tint;
+    const int logo = (m.flags & 4u) ? 1 : 0;  // bit 2: the guest's fragile_logo (round 20; an older guest sends 0: BRIDGES)
+    if (logo != g_partner_logo.load(std::memory_order_relaxed)) Log("[tex] partner logo (fragile_logo on the guest): %s", logo ? "the Fragile Express logo" : "BRIDGES");
+    g_partner_logo.store(logo, std::memory_order_relaxed);
     g_last_look = m;
     g_have_last_look = true;
     // only the newest LOOK's blobs are received: half-received ones of an older look are dropped
@@ -622,7 +629,8 @@ bool SendLook() {
     twire::Look m;
     m.epoch = ++g_epoch;
     m.table = tx::kTableVersion;
-    m.flags = static_cast<std::uint8_t>((g_own.own_boots ? 1u : 0u) | (g_cfg.tint ? 2u : 0u));  // bit 1: our v0.23 tint choice
+    m.flags = static_cast<std::uint8_t>((g_own.own_boots ? 1u : 0u) | (g_cfg.tint ? 2u : 0u) |  // bit 1: our v0.23 tint choice
+                                        (InterlockedCompareExchange(&g_own_logo, 0, 0) ? 4u : 0u));  // bit 2: our fragile_logo
     m.colour = static_cast<std::uint8_t>(g_own.colour < 0 ? 0 : g_own.colour);
     m.boots = static_cast<std::uint8_t>(g_own.boots < 0 || g_own.boots > 10 ? 0xFF : g_own.boots);
     m.worn = g_own.worn ? 1u : 0u;
@@ -662,8 +670,8 @@ bool SendLook() {
     g_out.clear();
     char ready[48] = "";
     if (rc.n) std::snprintf(ready, sizeof(ready), " (%u ready-made: recipe sent)", rc.n);
-    Log("[tex] look #%u sent: colour %u, %u blob(s)%s%s; boots %u%s, %s", m.epoch, m.colour, m.n, ready, g_cfg.send ? "" : " (textures_send=0: her own suit)",
-        m.boots, m.worn ? " worn" : "", m.flags & 1u ? "her own boots" : "Sam's boots (prop)");
+    Log("[tex] look #%u sent: colour %u, %u blob(s)%s%s; boots %u%s, %s; %s", m.epoch, m.colour, m.n, ready, g_cfg.send ? "" : " (textures_send=0: her own suit)",
+        m.boots, m.worn ? " worn" : "", m.flags & 1u ? "her own boots" : "Sam's boots (prop)", m.flags & 4u ? "the Fragile Express logo" : "BRIDGES");
     g_sent_flags = m.flags, g_sent_boots = m.boots, g_sent_worn = m.worn;
     return true;
 }
@@ -726,7 +734,8 @@ void GuestTick(double now_ms, bool in_world) {
     const std::uint32_t generation = link::Generation();
     const bool resend = ftex::looks::TakeResend();
     const bool boots_changed = (g_sent_flags & 1u) != (g_own.own_boots ? 1u : 0u) || g_sent_worn != (g_own.worn ? 1u : 0u) ||
-                               g_sent_boots != static_cast<std::uint8_t>(g_own.boots < 0 || g_own.boots > 10 ? 0xFF : g_own.boots);
+                               g_sent_boots != static_cast<std::uint8_t>(g_own.boots < 0 || g_own.boots > 10 ? 0xFF : g_own.boots) ||
+                               ((g_sent_flags & 4u) != 0) != (InterlockedCompareExchange(&g_own_logo, 0, 0) != 0);
     if (g_own.have && link::GetInfo().connected &&
         (resend || generation != g_sent_gen || !g_sent || boots_changed || std::memcmp(g_sent_id, g_own.look.id, 32) != 0) &&
         now_ms - g_last_look_try > 500) {
@@ -798,6 +807,7 @@ void GuestTick(double now_ms, bool in_world) {
 
 void Configure(const Settings& s) noexcept {
     g_cfg = s;
+    InterlockedExchange(&g_own_logo, s.logo ? 1 : 0);
     if (s.on) Log("[tex] texture sharing: %s (%s)", s.guest ? "guest: sends its look" : "host: shows the guest's look", s.guest ? (s.send ? "send on" : "textures_send=0")
                                                                                                                                 : (s.receive ? "receive on" : "textures_receive=0"));
 }
@@ -823,6 +833,8 @@ void SetOwnBoots(int type, bool worn, bool own_style) noexcept {
 
 int PartnerBootsStyle() noexcept { return g_partner_boots_style; }
 int PartnerTint() noexcept { return g_partner_tint; }
+void SetOwnLogo(bool on) noexcept { InterlockedExchange(&g_own_logo, on ? 1 : 0); }
+int PartnerLogo() noexcept { return g_partner_logo.load(std::memory_order_relaxed); }
 
 void NewSession(std::uint32_t generation) noexcept {
     if (!g_cfg.on || g_cfg.guest || generation <= g_host_gen) return;

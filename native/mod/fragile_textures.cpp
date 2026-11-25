@@ -12,6 +12,7 @@
 #include "automation.hpp"
 #include "coop_session.hpp"
 #include "log.hpp"
+#include "logo_slots.hpp"
 #include "partner_source.hpp"
 #include "suit_colour.hpp"
 #include "tex_blob.hpp"
@@ -100,13 +101,18 @@ void Fault(const char* what) {
 }
 
 // ---------------------------------------------------------------- the rule GUIDs (content GUIDs of the slots)
-std::uint8_t g_guid[tx::kSlotCount][16];
+// (tx::AnySlot numbering: her suit and boots rows, then the logo rows of logo_slots.hpp)
+std::uint8_t g_guid[tx::kAnySlotCount][16];
 bool g_guid_ok = false;
 void InitGuids() {
     if (g_guid_ok) return;
     bool ok = true;
-    for (std::size_t i = 0; i < tx::kSlotCount; ++i) ok = tx::GuidBytes(tx::kSlots[i].content_guid, g_guid[i]) && ok;
+    for (int i = 0; i < tx::kAnySlotCount; ++i) ok = tx::GuidBytes(tx::AnySlot(i)->content_guid, g_guid[i]) && ok;
     g_guid_ok = ok;
+}
+const char* SlotId(int s) {
+    const tx::Slot* row = tx::AnySlot(s);
+    return row ? row->id : "?";
 }
 // -1 none, else the slot index whose original texture this hardware texture is (its GUID at +0x78).
 int SlotOfHw(std::uintptr_t hw) {
@@ -115,8 +121,8 @@ int SlotOfHw(std::uintptr_t hw) {
     if (!Rd(hw, vt) || vt != mem::Base() + kHwTexVtbl) return -1;
     std::uint8_t gd[16];
     if (!mem::Read(hw + kHwGuid, gd, 16)) return -1;
-    for (std::size_t i = 0; i < tx::kSlotCount; ++i)
-        if (std::memcmp(gd, g_guid[i], 16) == 0) return static_cast<int>(i);
+    for (int i = 0; i < tx::kAnySlotCount; ++i)
+        if (std::memcmp(gd, g_guid[i], 16) == 0) return i;
     return -1;
 }
 bool IsOurHw(std::uintptr_t hw) {
@@ -132,11 +138,20 @@ struct Reg {
     int index = -1;
     std::uint32_t hash = 0;
     std::uint16_t swz = 0;
-    int rule = 0;            // 0 suit, 1 boots
+    int rule = 0;            // kRuleSuit, kRuleBoots, kRuleExact (only `slot`'s texture), kRuleProbe (keeps none, counts logo slots)
+    int slot = -1;           // the row it binds (tx::AnySlot numbering)
+    int mesh = -1;
     unsigned seen = 0;       // rebuilds of it done by the detour
-    unsigned kept = 0, dropped = 0;
+    unsigned kept = 0, dropped = 0, hits = 0;   // this entry's, at its last rebuild
 };
-constexpr int kRegMax = 64;
+enum : int { kRuleSuit = 0, kRuleBoots = 1, kRuleExact = 2, kRuleProbe = 3 };
+const char* RuleName(int r) { return r == kRuleSuit ? "suit" : r == kRuleBoots ? "boots" : r == kRuleExact ? "exact" : "probe"; }
+constexpr int kRegMax = 512;   // every body's filtered entries (the logo carrier alone up to 176)
+// our entries of one table the detour rebuilds (a table is one mesh's: the hood look puts at most 11 in one). Kept small: the
+// detour's scratch lives on the engine's render / job threads' stacks (review r20 visual 4: 128 took ~12 KB). The bind never
+// registers more than this in one table (an entry over it would not be rebuilt by us: black); g_mine_over counts any seen.
+constexpr int kMine = 32;
+std::atomic<unsigned> g_mine_over{0};
 Reg g_reg[kRegMax];
 SRWLOCK g_reg_lock = SRWLOCK_INIT;
 std::atomic<int> g_any{0};
@@ -217,7 +232,7 @@ std::uintptr_t SlotHw(std::uintptr_t slot, std::uint64_t binding) {
 const char* HwName(std::uintptr_t hw, char* buf, std::size_t cap) {
     if (!hw) return "none";
     const int s = SlotOfHw(hw);
-    if (s >= 0) return tx::kSlots[s].id;
+    if (s >= 0) return SlotId(s);
     if (IsOurHw(hw)) return "OURS";
     std::uint8_t gd[4] = {};
     std::uintptr_t vt = 0;
@@ -247,16 +262,28 @@ void DumpEntry(const char* tag, std::uintptr_t entry, unsigned max_pairs) {
     Log("%s", line);
 }
 
-bool Keeps(int rule, std::uintptr_t slot, std::uint64_t binding) {
+// Whether our entry's rule keeps this slot. The probe keeps none: *hit tells whether the slot holds a logo row's texture.
+bool Keeps(const Reg& m, std::uintptr_t slot, std::uint64_t binding, bool* hit) {
     const int mode = g_filter.load(std::memory_order_relaxed);
+    const int s = (mode == 0 || m.rule == kRuleProbe) ? SlotOfHw(SlotHw(slot, binding)) : -1;
+    const tx::Slot* row = tx::AnySlot(s);
+    if (m.rule == kRuleProbe) {
+        *hit = row && row->group == tx::SlotGroup::logo;
+        return false;
+    }
     if (mode != 0) return true;
-    const int s = SlotOfHw(SlotHw(slot, binding));
-    if (s < 0) return false;
-    return rule == (tx::kSlots[s].group == tx::SlotGroup::suit ? 0 : 1);
+    if (!row) return false;
+    switch (m.rule) {
+    case kRuleSuit: return row->group == tx::SlotGroup::suit;
+    case kRuleBoots: return row->group == tx::SlotGroup::boots;
+    case kRuleExact: return s == m.slot;
+    default: return false;
+    }
 }
 
 // After the original: our entry gets its slots again, only those its rule keeps, and our texture in them. No C++ objects.
-bool RebuildOurs(const Reg& m, std::uintptr_t nodes, bool probe, unsigned* kept, unsigned* dropped) {
+// The counters are this entry's (the caller zeroes them).
+bool RebuildOurs(const Reg& m, std::uintptr_t nodes, bool probe, unsigned* kept, unsigned* dropped, unsigned* hits) {
     const std::uintptr_t entry = Q(m.table + 0x18) + static_cast<std::uintptr_t>(m.index) * 0x40;
     *reinterpret_cast<volatile std::uint32_t*>(entry) = m.hash;
     *reinterpret_cast<volatile std::int32_t*>(entry + 8) = 0;
@@ -267,7 +294,10 @@ bool RebuildOurs(const Reg& m, std::uintptr_t nodes, bool probe, unsigned* kept,
     std::uint64_t* pairs = reinterpret_cast<std::uint64_t*>(Q(entry + 0x10));
     int w = 0;
     for (int i = 0; i < n && pairs; ++i) {
-        if (Keeps(m.rule, static_cast<std::uintptr_t>(pairs[2 * i]), pairs[2 * i + 1])) {
+        bool hit = false;
+        const bool keep = Keeps(m, static_cast<std::uintptr_t>(pairs[2 * i]), pairs[2 * i + 1], &hit);
+        if (hit) ++*hits;
+        if (keep) {
             if (w != i) {
                 pairs[2 * w] = pairs[2 * i];
                 pairs[2 * w + 1] = pairs[2 * i + 1];
@@ -290,16 +320,22 @@ bool RebuildOurs(const Reg& m, std::uintptr_t nodes, bool probe, unsigned* kept,
 void DetourRebuild(std::uintptr_t table, std::uintptr_t nodes) {
     if (!g_any.load(std::memory_order_acquire) || g_detour_off.load(std::memory_order_relaxed)) return g_orig_rebuild(table, nodes);
     const unsigned call = g_detour_calls.fetch_add(1, std::memory_order_relaxed);
-    Reg mine[24];
-    int idx[24];
-    int nm = 0;
+    Reg mine[kMine];
+    int idx[kMine];
+    int nm = 0, over = 0;
     AcquireSRWLockShared(&g_reg_lock);
-    for (int i = 0; i < kRegMax && nm < 24; ++i)
+    for (int i = 0; i < kRegMax; ++i)
         if (g_reg[i].used && g_reg[i].table == table) {
+            if (nm >= kMine) {
+                ++over;
+                continue;
+            }
             mine[nm] = g_reg[i];
             idx[nm++] = i;
         }
     ReleaseSRWLockShared(&g_reg_lock);
+    if (over && g_mine_over.fetch_add(1, std::memory_order_relaxed) < 4)
+        Log("[tex] detour: table %p holds %d entries of ours, over %d: %d not rebuilt by us (they draw black)", reinterpret_cast<void*>(table), nm + over, kMine, over);
     if (!nm) return g_orig_rebuild(table, nodes);
     const DWORD tid = GetCurrentThreadId();
     if (g_detour_logged.load(std::memory_order_relaxed) < 8) {
@@ -311,7 +347,7 @@ void DetourRebuild(std::uintptr_t table, std::uintptr_t nodes) {
     std::int32_t count = 0;
     Rd(table + 0x10, count);
     const std::uintptr_t entries = Q(table + 0x18);
-    bool valid[24] = {};
+    bool valid[kMine] = {};
     for (int j = 0; j < nm; ++j) {
         const Reg& m = mine[j];
         if (m.index < 0 || m.index >= count || !entries) continue;
@@ -327,9 +363,13 @@ void DetourRebuild(std::uintptr_t table, std::uintptr_t nodes) {
     g_orig_rebuild(table, nodes);
     const bool probe = g_probe.load(std::memory_order_relaxed) > 0;
     unsigned kept = 0, dropped = 0;
+    unsigned ek[kMine] = {}, ed[kMine] = {}, eh[kMine] = {};
     for (int j = 0; j < nm; ++j) {
         if (!valid[j]) continue;
-        if (!RebuildOurs(mine[j], nodes, probe, &kept, &dropped)) {
+        const bool ok = RebuildOurs(mine[j], nodes, probe, &ek[j], &ed[j], &eh[j]);
+        kept += ek[j];
+        dropped += ed[j];
+        if (!ok) {
             g_detour_off.store(true);
             g_faults.fetch_add(1);
             Log("[tex] detour: the rebuild of our entry FAULTED: pass-through from now on, Fragile's textures off");
@@ -346,8 +386,9 @@ void DetourRebuild(std::uintptr_t table, std::uintptr_t nodes) {
         Reg& r = g_reg[idx[j]];
         if (r.used && r.table == table && valid[j]) {
             ++r.seen;
-            r.kept = kept;
-            r.dropped = dropped;
+            r.kept = ek[j];
+            r.dropped = ed[j];
+            r.hits = eh[j];
         }
     }
     ReleaseSRWLockExclusive(&g_reg_lock);
@@ -459,7 +500,8 @@ std::uint64_t Footprint(const tx::Slot& s) {
 
 // Game thread: one texture from a blob through the game's loader. Logged.
 Clone* Make(const std::uint8_t id[32], int slot, const std::vector<std::uint8_t>& blob, double now_ms) {
-    const tx::Slot& s = tx::kSlots[slot];
+    if (!tx::AnySlot(slot)) return nullptr;
+    const tx::Slot& s = *tx::AnySlot(slot);
     const std::uintptr_t b = mem::Base();
     const std::uintptr_t r = Q(b + kRenderer);
     if (!r) return nullptr;  // no renderer yet
@@ -564,7 +606,7 @@ bool Uploaded(Clone& c, double now_ms) {
     Rd(c.hw + kHwBusy, busy);
     if (busy != 1 || now_ms - c.made_ms > 3000) {
         c.up_ms = now_ms;
-        Log("[tex] clone %s %s: hw %p uploaded in %.0f ms%s", tx::kSlots[c.slot].id, tx::Hex(c.id, 4).c_str(), reinterpret_cast<void*>(c.hw),
+        Log("[tex] clone %s %s: hw %p uploaded in %.0f ms%s", SlotId(c.slot), tx::Hex(c.id, 4).c_str(), reinterpret_cast<void*>(c.hw),
             now_ms - c.made_ms, busy == 1 ? " (TIMEOUT: still marked busy, bound anyway)" : "");
         return true;
     }
@@ -690,6 +732,28 @@ bool LookIdZero(const std::uint8_t id[32]) {
     return true;
 }
 
+bool MeshMasked(const Dress& d, int mesh) { return tx::MaskHas(d.mesh_mask, mesh); }
+
+// One override entry of a FakeSet for map `type` of the packing (a null Texture: the core binds nothing).
+struct OneEntry {
+    SetEntry en{};
+    SetDesc ds{};
+    FakeSet set{};
+    OneEntry(std::uint32_t packing, std::uint32_t type) {
+        for (int k = 0; k < 4; ++k) en.pack[k] = static_cast<std::uint8_t>(packing >> (8 * k));
+        en.tex = 0;
+        en.flags = 1;
+        ds.type = type;
+        ds.path = mem::Base() + kEmptyString + 0x10;
+        ds.active = 1;
+        ds.gamma = type == tx::kTypeColor ? 1 : 0;
+        set.entries_n = set.entries_cap = 1;
+        set.entries = &en;
+        set.descs_n = set.descs_cap = 1;
+        set.descs = &ds;
+    }
+};
+
 }  // namespace
 
 // ================================================================ public
@@ -780,7 +844,7 @@ void Release(Clone& c, const char* why) {
     const std::uintptr_t hw = c.hw;
     if (!SehRelease(r, hw)) return Fault("the texture release");
     ++g_freed;
-    Log("[tex] clone %s %s: hw %p released (%s; %u released this session)", c.slot >= 0 ? tx::kSlots[c.slot].id : "?", tx::Hex(c.id, 4).c_str(),
+    Log("[tex] clone %s %s: hw %p released (%s; %u released this session)", SlotId(c.slot), tx::Hex(c.id, 4).c_str(),
         reinterpret_cast<void*>(hw), why, g_freed);
     std::uintptr_t zero = 0;
     std::memcpy(c.obj.b + 0x20, &zero, 8);
@@ -831,13 +895,16 @@ Stats GetStats() noexcept {
 void Forget(Dress& d) noexcept {
     Unregister(d);
     const char* who = d.who;
+    const bool filter = d.mesh_filter;
     d = Dress{};
     d.who = who;
+    d.mesh_filter = filter;
 }
 
 void Undo(Dress& d, const char* why) noexcept {
     Unregister(d);
     d.nbound = 0;
+    d.probing = false;
     if (!d.nh) {
         d.bound = false;
         return;
@@ -867,6 +934,80 @@ void Keep(Dress& d, std::uintptr_t e, double now_ms) noexcept {
         if (d.bound_clones[i]) static_cast<Clone*>(d.bound_clones[i])->used_ms = now_ms;
 }
 
+// The cap probe (round 20, hidden runs): does the per-drawable override reach `e` (a worn cap's entity)? Its drawable and
+// meshes, then the core's answer per mesh for one empty colour entry of her suit's packing (nothing is bound: every handle
+// it makes is undone at once and the drawable refreshed).
+bool ProbeDrawable(std::uintptr_t e, const char* who) noexcept {
+    if (!e) return false;
+    const std::uintptr_t a = Q(e + 0xB8);
+    const char* en = mem::RttiName(mem::RttiOf(e));
+    const char* an = a ? mem::RttiName(mem::RttiOf(a)) : nullptr;
+    if (!Available()) {
+        Log("[tex] cap probe %s %p: the override is not available (%s)", who, reinterpret_cast<void*>(e), Why());
+        return false;
+    }
+    int meshes = 0;
+    const std::uintptr_t dr = Drawable(e, &meshes);
+    std::int32_t ov_before = 0;
+    if (dr) Rd(dr + kDrOverrides, ov_before);
+    Log("[tex] cap probe %s %p %s: +0xB8 %p %s, drawable %p, %d mesh(es), %d override table(s)", who, reinterpret_cast<void*>(e), en ? en : "?",
+        reinterpret_cast<void*>(a), an ? an : "-", reinterpret_cast<void*>(dr), meshes, static_cast<int>(ov_before));
+    if (!dr) return false;
+    const tx::Slot& s = tx::kSlots[0];
+    std::uint32_t type = 0;
+    for (const tx::PackedMap& m : tx::MapsOf(s.packing))
+        if (m.type == tx::kTypeColor) type = m.type;
+    SetEntry en1{};
+    for (int k = 0; k < 4; ++k) en1.pack[k] = static_cast<std::uint8_t>(s.packing >> (8 * k));
+    en1.tex = 0;
+    en1.flags = 1;
+    SetDesc ds{};
+    ds.type = type;
+    ds.path = mem::Base() + kEmptyString + 0x10;
+    ds.active = 1;
+    ds.gamma = 1;
+    FakeSet set{};
+    set.entries_n = set.entries_cap = 1;
+    set.entries = &en1;
+    set.descs_n = set.descs_cap = 1;
+    set.descs = &ds;
+    std::uint64_t hs[64] = {};
+    unsigned nh = 0;
+    char per[200] = "";
+    int k = 0;
+    for (int mesh = 0; mesh < meshes && mesh < 32; ++mesh) {
+        g_arr.n = 0;
+        if (!SehCore(dr, &set, mesh)) {
+            Fault("the texture-set override core (cap probe)");
+            return false;
+        }
+        const int got = g_arr.data ? g_arr.n : 0;
+        for (int i = 0; i < got && nh < 64; ++i) hs[nh++] = g_arr.data[i];
+        g_arr.n = 0;
+        if (k < static_cast<int>(sizeof(per)) - 12) k += std::snprintf(per + k, sizeof(per) - k, "%s%d", mesh ? " " : "", got);
+    }
+    std::int32_t ov_mid = 0;
+    Rd(dr + kDrOverrides, ov_mid);
+    unsigned undone = 0;
+    for (unsigned i = 0; i < nh; ++i) {
+        if (!SehUndo(dr, &hs[i])) {
+            Fault("the override undo (cap probe)");
+            return false;
+        }
+        ++undone;
+    }
+    if (nh && !SehRefresh(dr)) {
+        Fault("the override refresh (cap probe)");
+        return false;
+    }
+    std::int32_t ov_after = 0;
+    Rd(dr + kDrOverrides, ov_after);
+    Log("[tex] cap probe %s %p: the override core made %u entr%s for a colour map (per mesh: %s); override tables %d -> %d -> %d; %u undone: %s", who,
+        reinterpret_cast<void*>(e), nh, nh == 1 ? "y" : "ies", per, static_cast<int>(ov_before), static_cast<int>(ov_mid), static_cast<int>(ov_after), undone,
+        nh ? "the override reaches this entity's drawable" : "no texture set of this drawable takes a colour map through the core");
+    return nh > 0;
+}
+
 bool Apply(Dress& d, std::uintptr_t e, const Look& look, double now_ms) noexcept {
     if (!e) return false;
     if (d.e != e) {
@@ -890,7 +1031,55 @@ bool Apply(Dress& d, std::uintptr_t e, const Look& look, double now_ms) noexcept
         Unregister(d);
         d.nh = 0;
         d.bound = false;
+        d.probing = false;
         std::memset(d.applied, 0, 32);
+    }
+    // round 20: the mesh probe's first rebuild (1 s): the meshes whose entry met a logo texture, then the probe undone
+    if (d.probing) {
+        unsigned seen = 0, hit_meshes = 0;
+        std::uint64_t mask[4] = {};
+        AcquireSRWLockShared(&g_reg_lock);
+        for (unsigned i = 0; i < d.nreg; ++i) {
+            const Reg& r = g_reg[d.reg[i]];
+            if (!r.used || !r.seen) continue;
+            ++seen;
+            if (r.hits && tx::MaskAdd(mask, r.mesh)) ++hit_meshes;
+        }
+        ReleaseSRWLockShared(&g_reg_lock);
+        const bool done = seen == d.nreg && d.nreg;
+        if (!done && now_ms - d.probe_ms <= 1000) return true;
+        // no rebuild at all: the engine did not draw it meanwhile (a load, a vehicle, a hide): not counted as a probe, tried
+        // again 1 s later (at most 10 such per drawable; review r20 visual 1: three of them turned the logo off for good)
+        if (!done && seen == 0 && d.idle_probes < 10) {
+            ++d.idle_probes;
+            if (d.idle_probes <= 2)
+                Log("[tex] body %s %p: mesh probe: no rebuild within 1 s (not drawn?): not counted, tried again (%u)", d.who, reinterpret_cast<void*>(e), d.idle_probes);
+            Unregister(d);
+            for (unsigned i = 0; i < d.nh; ++i)
+                if (!SehUndo(d.drawable, &d.handles[i])) return Fault("the override undo (mesh probe)"), false;
+            if (d.nh && !SehRefresh(d.drawable)) return Fault("the override refresh (mesh probe)"), false;
+            d.nh = 0;
+            d.probing = false;
+            if (d.probes) --d.probes;
+            d.next_ms = now_ms + 1000;
+            return true;
+        }
+        char list[200] = "";
+        int k = 0;
+        for (int m = 0; m < 256 && k < static_cast<int>(sizeof(list)) - 6; ++m)
+            if (tx::MaskHas(mask, m)) k += std::snprintf(list + k, sizeof(list) - k, "%s%d", k ? " " : "", m);
+        Log("[tex] body %s %p: mesh probe %s: %u of %u mesh(es) hold a logo texture (%s); %u of %u entries rebuilt in %.0f ms", d.who, reinterpret_cast<void*>(e),
+            done ? "done" : "TIMED OUT (no rebuild within 1 s)", hit_meshes, d.mesh_count, k ? list : "none", seen, d.nreg, now_ms - d.probe_ms);
+        Unregister(d);
+        for (unsigned i = 0; i < d.nh; ++i)
+            if (!SehUndo(d.drawable, &d.handles[i])) return Fault("the override undo (mesh probe)"), false;
+        if (d.nh && !SehRefresh(d.drawable)) return Fault("the override refresh (mesh probe)"), false;
+        d.nh = 0;
+        d.probing = false;
+        d.mask_drawable = d.drawable;
+        std::memcpy(d.mesh_mask, mask, sizeof(mask));
+        d.next_ms = now_ms;   // bound at once (no 250 ms wait)
+        return true;
     }
     // a bound look waits for its first rebuild (1 s): no rebuild means no textures of ours, so take it off again
     if (d.bound && d.waiting_rebuild) {
@@ -907,12 +1096,19 @@ bool Apply(Dress& d, std::uintptr_t e, const Look& look, double now_ms) noexcept
         ReleaseSRWLockShared(&g_reg_lock);
         if (seen == d.nreg && d.nreg) {
             d.waiting_rebuild = false;
+            d.norebuilds = 0;
             Log("[tex] body %s %p: look %s bound (%u entr%s), rebuild kept %u / dropped %u slot(s) in %.0f ms", d.who, reinterpret_cast<void*>(e),
                 tx::Hex(d.applied, 4).c_str(), d.nreg, d.nreg == 1 ? "y" : "ies", kept, dropped, now_ms - d.bound_ms);
         } else if (now_ms - d.bound_ms > 1000) {
-            Log("[tex] body %s %p: no rebuild of its override table within 1 s (%u of %u entries): look taken off", d.who, reinterpret_cast<void*>(e), seen,
-                d.nreg);
+            // (logged a few times per body; bound again after a growing pause, 2..32 s: review r20 visual 1)
+            if (d.norebuild_logs < 4) {
+                ++d.norebuild_logs;
+                Log("[tex] body %s %p: no rebuild of its override table within 1 s (%u of %u entries): look taken off", d.who, reinterpret_cast<void*>(e), seen,
+                    d.nreg);
+            }
             Undo(d, "no rebuild");
+            d.next_ms = now_ms + 2000.0 * static_cast<double>(1u << (d.norebuilds < 4 ? d.norebuilds : 4u));
+            ++d.norebuilds;
             return false;
         }
     }
@@ -938,6 +1134,11 @@ bool Apply(Dress& d, std::uintptr_t e, const Look& look, double now_ms) noexcept
     // every texture of the look made and uploaded first (the old look stays meanwhile); one made per call
     Clone* cl[8] = {};
     const std::size_t n = look.slots.size() < 8 ? look.slots.size() : 8;
+    for (std::size_t i = 0; i < n; ++i)
+        if (!tx::AnySlot(look.slots[i])) {
+            if (d.refused_logged++ == 0) Log("[tex] body %s %p: look %s has an unknown slot %d: not bound", d.who, reinterpret_cast<void*>(e), tx::Hex(want, 4).c_str(), look.slots[i]);
+            return d.nh != 0;
+        }
     for (std::size_t i = 0; i < n; ++i) {
         const std::uint8_t* id = look.blob_ids.data() + 32 * i;
         Clone* c = FindClone(id);
@@ -957,62 +1158,111 @@ bool Apply(Dress& d, std::uintptr_t e, const Look& look, double now_ms) noexcept
         Undo(d, "look change");
         return true;
     }
+    // round 20: a mesh-filtered body (the exo carrier) is probed once per drawable; nothing to bind when no mesh holds one
+    // of the look's textures
+    const bool probe = d.mesh_filter && d.mask_drawable != dr;
+    if (d.mesh_filter && !probe && tx::MaskEmpty(d.mesh_mask)) {
+        if (d.refused_logged++ == 0) Log("[tex] body %s %p: no mesh of its drawable holds a texture of look %s: not bound", d.who, reinterpret_cast<void*>(e), tx::Hex(want, 4).c_str());
+        // probed again after 5 s (at most 3 probes per drawable): a probe whose rebuild did not come finds nothing
+        if (d.probes < 3 && now_ms - d.probe_ms > 5000) d.mask_drawable = 0, d.refused_logged = 0;
+        return false;
+    }
     // bind: per slot, per map of its packing, per mesh: an entry with a null Texture (the core binds nothing), then ours
     // registered for the detour; the refresh makes the drawable rebuild, the detour pushes ours into the kept slots.
-    const std::uintptr_t empty_path = mem::Base() + kEmptyString + 0x10;
+    // The probe: the first map of the look's first slot on every mesh, a rule that keeps nothing.
     struct Pending {
         std::uint64_t h;
         int slot;
         std::uint32_t type;
         Clone* c;
-    } pend[32];
+        int mesh;
+    } pend[kDressHandles];
     unsigned np = 0;
     d.drawable = dr;
-    for (std::size_t i = 0; i < n; ++i) {
-        const tx::Slot& s = tx::kSlots[look.slots[i]];
-        for (const tx::PackedMap& m : tx::MapsOf(s.packing)) {
-            SetEntry en{};
-            for (int k = 0; k < 4; ++k) en.pack[k] = static_cast<std::uint8_t>(s.packing >> (8 * k));
-            en.tex = 0;
-            en.flags = 1;
-            SetDesc ds{};
-            ds.type = m.type;
-            ds.path = empty_path;
-            ds.active = 1;
-            ds.gamma = m.type == tx::kTypeColor ? 1 : 0;
-            FakeSet set{};
-            set.entries_n = set.entries_cap = 1;
-            set.entries = &en;
-            set.descs_n = set.descs_cap = 1;
-            set.descs = &ds;
+    d.mesh_count = static_cast<unsigned>(meshes);
+    std::size_t nbind = probe ? 1 : n;
+    // the registry's room first (review r20 visual 3): an entry the core makes that no rule keeps draws black, so never more
+    // than can be registered. The estimate: one entry per map per bound mesh (the core's own count is checked below).
+    {
+        unsigned bound_meshes = 0, maps_per[8] = {};
+        for (int mesh = 0; mesh < meshes; ++mesh) bound_meshes += probe || !d.mesh_filter || MeshMasked(d, mesh) ? 1u : 0u;
+        for (std::size_t i = 0; i < nbind && i < 8; ++i)
+            maps_per[i] = probe ? 1u : static_cast<unsigned>(tx::MapsOf(tx::AnySlot(look.slots[i])->packing).size());
+        const unsigned need = tx::OverrideEstimate(maps_per, nbind < 8 ? nbind : 8, bound_meshes, kDressHandles);
+        unsigned free_regs = 0;
+        AcquireSRWLockShared(&g_reg_lock);
+        for (const Reg& r : g_reg) free_regs += r.used ? 0u : 1u;
+        ReleaseSRWLockShared(&g_reg_lock);
+        if (free_regs < need) {
+            if (d.refused_logged++ == 0)
+                Log("[tex] body %s %p: look %s needs about %u overrides, the registry has %u of %d free: not bound", d.who, reinterpret_cast<void*>(e),
+                    tx::Hex(want, 4).c_str(), need, free_regs, kRegMax);
+            return false;
+        }
+    }
+    // the slots whose entries fit kDressHandles, by the core's actual count (review r20 visual 5: a mesh may hold a map twice or
+    // not at all): a slot that overflows is undone whole (its entries and the surplus); it and the rest stay unbound
+    for (std::size_t i = 0; i < nbind; ++i) {
+        const tx::Slot& s = *tx::AnySlot(look.slots[i]);
+        const std::vector<tx::PackedMap> maps = tx::MapsOf(s.packing);
+        const unsigned slot_first = np;
+        unsigned surplus = 0;
+        for (std::size_t mi = 0; mi < (probe && !maps.empty() ? 1 : maps.size()); ++mi) {
+            const tx::PackedMap& m = maps[mi];
+            OneEntry one(s.packing, m.type);
             for (int mesh = 0; mesh < meshes; ++mesh) {
+                if (d.mesh_filter && !probe && !MeshMasked(d, mesh)) continue;
                 g_arr.n = 0;
-                if (!SehCore(dr, &set, mesh)) {
+                if (!SehCore(dr, &one.set, mesh)) {
                     Fault("the texture-set override core");
                     return false;
                 }
                 for (int k = 0; k < g_arr.n && g_arr.data; ++k) {
-                    if (np < 32 && d.nh < 32) {
-                        pend[np++] = Pending{g_arr.data[k], look.slots[i], m.type, cl[i]};
+                    if (tx::SlotFits(slot_first, np - slot_first + 1, kDressHandles) && d.nh < kDressHandles) {
+                        pend[np++] = Pending{g_arr.data[k], look.slots[i], m.type, cl[i], mesh};
                         d.handles[d.nh++] = g_arr.data[k];
+                    } else {
+                        std::uint64_t h = g_arr.data[k];
+                        ++surplus;
+                        if (!SehUndo(dr, &h)) return Fault("the override undo (over capacity)"), false;
                     }
                 }
                 g_arr.n = 0;
             }
         }
+        if (surplus) {
+            for (unsigned k = slot_first; k < np; ++k)
+                if (!SehUndo(dr, &d.handles[k])) return Fault("the override undo (over capacity)"), false;
+            Log("[tex] body %s %p: look %s needs more than %u overrides (slot %s made %u, %u over): only its first %zu slot(s) bound", d.who,
+                reinterpret_cast<void*>(e), tx::Hex(want, 4).c_str(), kDressHandles, SlotId(look.slots[i]), surplus + (np - slot_first), surplus, i);
+            np = d.nh = slot_first;
+            nbind = i;
+            break;
+        }
     }
+    bool failed[kDressHandles] = {};
+    unsigned nfailed = 0, nfull = 0;
     AcquireSRWLockExclusive(&g_reg_lock);
     unsigned nreg = 0;
-    for (unsigned i = 0; i < np && nreg < 24; ++i) {  // every registered entry is tracked by the body (Unregister)
+    for (unsigned i = 0; i < np && nreg < kDressHandles; ++i) {  // every registered entry is tracked by the body (Unregister)
         const std::uintptr_t table = TableOf(dr, pend[i].h);
         const int index = static_cast<std::int16_t>(pend[i].h & 0xFFFF);
         std::int32_t count = 0;
-        if (!table || !Rd(table + 0x10, count) || index < 0 || index >= count) continue;
+        if (!table || !Rd(table + 0x10, count) || index < 0 || index >= count) {
+            failed[i] = true, ++nfailed;
+            continue;
+        }
+        int in_table = 0;   // ours already in this table: never more than the detour rebuilds (kMine)
+        for (const Reg& r : g_reg) in_table += r.used && r.table == table ? 1 : 0;
+        if (in_table >= kMine) {
+            failed[i] = true, ++nfailed, ++nfull;
+            continue;
+        }
         const std::uintptr_t entry = Q(table + 0x18) + static_cast<std::uintptr_t>(index) * 0x40;
         std::uint32_t hash = 0;
         Rd(entry, hash);
         SetEntry real{};
-        const tx::Slot& s = tx::kSlots[pend[i].slot];
+        const tx::Slot& s = *tx::AnySlot(pend[i].slot);
         for (int k = 0; k < 4; ++k) real.pack[k] = static_cast<std::uint8_t>(s.packing >> (8 * k));
         real.tex = reinterpret_cast<std::uintptr_t>(&pend[i].c->obj);
         real.flags = 1;
@@ -1033,9 +1283,13 @@ bool Apply(Dress& d, std::uintptr_t e, const Look& look, double now_ms) noexcept
                 x.index = index;
                 x.hash = hash;
                 x.swz = swz;
-                x.rule = s.group == tx::SlotGroup::suit ? 0 : 1;
-                if (nreg < 24) d.reg[nreg++] = r;
+                x.rule = probe ? kRuleProbe : s.group == tx::SlotGroup::suit ? kRuleSuit : s.group == tx::SlotGroup::boots ? kRuleBoots : kRuleExact;
+                x.slot = pend[i].slot;
+                x.mesh = pend[i].mesh;
+                d.reg[nreg++] = r;
                 break;
+            } else if (r + 1 == kRegMax) {
+                failed[i] = true, ++nfailed;   // no free registry slot (the room was checked first: another body took it)
             }
     }
     d.nreg = nreg;
@@ -1043,20 +1297,43 @@ bool Apply(Dress& d, std::uintptr_t e, const Look& look, double now_ms) noexcept
     for (const Reg& r : g_reg) any += r.used ? 1 : 0;
     g_any.store(any, std::memory_order_release);
     ReleaseSRWLockExclusive(&g_reg_lock);
+    // an entry that could not be registered is undone at once (no rule would keep it: it would draw black; review r20 visual 3)
+    if (nfailed) {
+        unsigned w = 0;
+        for (unsigned i = 0; i < np; ++i) {
+            if (failed[i]) {
+                if (!SehUndo(dr, &d.handles[i])) return Fault("the override undo (not registered)"), false;
+                continue;
+            }
+            d.handles[w++] = d.handles[i];
+        }
+        d.nh = w;
+        Log("[tex] body %s %p: look %s: %u of %u override(s) could not be registered (%u over %d in one table): undone at once", d.who,
+            reinterpret_cast<void*>(e), tx::Hex(want, 4).c_str(), nfailed, np, nfull, kMine);
+    }
     if (!SehRefresh(dr)) {
         Fault("the override refresh");
         return false;
     }
+    if (probe) {
+        d.probing = true;
+        d.probe_ms = now_ms;
+        if (d.probed_drawable != dr) d.probed_drawable = dr, d.probes = 0, d.idle_probes = 0;
+        ++d.probes;
+        Log("[tex] body %s %p: mesh probe for look %s: %u entr%s on %d mesh%s (drawable %p)", d.who, reinterpret_cast<void*>(e), tx::Hex(want, 4).c_str(), nreg,
+            nreg == 1 ? "y" : "ies", meshes, meshes == 1 ? "" : "es", reinterpret_cast<void*>(dr));
+        return true;
+    }
     ++d.applies;
     d.nbound = 0;
-    for (std::size_t i = 0; i < n && i < 8; ++i) d.bound_clones[d.nbound++] = cl[i];
+    for (std::size_t i = 0; i < nbind && i < 8; ++i) d.bound_clones[d.nbound++] = cl[i];
     d.bound = true;
     d.waiting_rebuild = true;
     d.bound_ms = now_ms;
     std::memcpy(d.applied, want, 32);
     char names[64] = {};
     int k = 0;
-    for (std::size_t i = 0; i < n; ++i) k += std::snprintf(names + k, sizeof(names) - k, "%s%s", i ? " " : "", tx::kSlots[look.slots[i]].id);
+    for (std::size_t i = 0; i < nbind && k < static_cast<int>(sizeof(names)) - 4; ++i) k += std::snprintf(names + k, sizeof(names) - k, "%s%s", i ? " " : "", SlotId(look.slots[i]));
     Log("[tex] body %s %p: look %s (colour %d) binding %s: %u override(s), %u filtered entr%s, drawable %p (%d mesh%s)", d.who, reinterpret_cast<void*>(e),
         tx::Hex(want, 4).c_str(), look.colour, names, d.nh, nreg, nreg == 1 ? "y" : "ies", reinterpret_cast<void*>(dr), meshes, meshes == 1 ? "" : "es");
     return true;
@@ -1083,13 +1360,13 @@ bool DebugCommand(int mode, double a, double b2, std::uintptr_t e_self, std::uin
         Log("[tex] status: %s", msg);
         for (const Clone& c : g_clones)
             if (c.used)
-                Log("[tex]   clone %s %s hw %p uploaded %s", c.slot >= 0 ? tx::kSlots[c.slot].id : "?", tx::Hex(c.id, 4).c_str(), reinterpret_cast<void*>(c.hw),
+                Log("[tex]   clone %s %s hw %p uploaded %s", SlotId(c.slot), tx::Hex(c.id, 4).c_str(), reinterpret_cast<void*>(c.hw),
                     c.up_ms >= 0 ? "yes" : "no");
         AcquireSRWLockShared(&g_reg_lock);
         for (const Reg& r : g_reg)
             if (r.used)
-                Log("[tex]   entry table %p #%d hash %08X rule %s swizzle %04X: %u rebuild(s), kept %u dropped %u", reinterpret_cast<void*>(r.table), r.index, r.hash,
-                    r.rule ? "boots" : "suit", r.swz, r.seen, r.kept, r.dropped);
+                Log("[tex]   entry table %p #%d hash %08X rule %s %s mesh %d swizzle %04X: %u rebuild(s), kept %u dropped %u", reinterpret_cast<void*>(r.table), r.index,
+                    r.hash, RuleName(r.rule), SlotId(r.slot), r.mesh, r.swz, r.seen, r.kept, r.dropped);
         ReleaseSRWLockShared(&g_reg_lock);
         return true;
     }
@@ -1231,13 +1508,13 @@ bool BlobBytes(const std::uint8_t id[32], std::vector<std::uint8_t>* out) noexce
         }
         locked = false;
         ReleaseSRWLockExclusive(&g_store_lock);
-        if (path.empty() || slot < 0 || slot >= static_cast<int>(tx::kSlotCount)) return false;
+        if (path.empty() || !tx::AnySlot(slot)) return false;
         // let go of earlier: read again from its file (outside the lock), validated against its id
         std::vector<std::uint8_t> b;
         tx::Sha256 want{};
         std::memcpy(want.data(), id, 32);
         std::string why;
-        const bool ok = ReadBlobFile(path, b) && tx::ValidateBlob(tx::kSlots[slot], b.data(), b.size(), &want, &why);
+        const bool ok = ReadBlobFile(path, b) && tx::ValidateBlob(*tx::AnySlot(slot), b.data(), b.size(), &want, &why);
         if (!ok) {
             Log("[tex] blob %s: its file is gone or changed (%s): it is built or received again", tx::Hex(id, 4).c_str(), why.empty() ? "not readable" : why.c_str());
             AcquireSRWLockExclusive(&g_store_lock);

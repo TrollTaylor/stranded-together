@@ -15,6 +15,8 @@
 #include "boots_look.hpp"
 #include "extract_plan.hpp"
 #include "log.hpp"
+#include "logo_recipe.hpp"
+#include "logo_slots.hpp"
 #include "png_wic.hpp"
 #include "ready_made_rules.hpp"
 #include "suit_defaults.hpp"
@@ -1080,6 +1082,222 @@ void BuildPattern(int pattern) {
     Log("[tex] pattern %d built: look %s (%zu slot(s))", pattern, lid.c_str(), lslots);
 }
 
+// ---------------------------------------------------------------- the Fragile Express logo (round 20)
+// The copies of Sam's hood maps and the Bridges cap's maps with BRIDGES replaced by FRAGILE express (logo_recipe.hpp),
+// made from the extracted reference pictures (each must be the extractor's own bytes: the manifest's SHA-256) and cached
+// in the built cache like any built slot. Made once per manifest (a new one, a re-extract, makes them again: review r20 visual
+// 7); a failure is logged once and waits for a new manifest.
+std::atomic<bool> g_logo_wanted{false};
+Look g_logo_looks[3];            // g_lock: hood palette, hood metal, cap (empty: not made)
+bool g_logo_made = false;        // g_lock
+FileStamp g_logo_made_stamp{};   // worker: the manifest the made copies come from
+FileStamp g_logo_tried_stamp{};  // worker: the manifest the last attempt read
+bool g_logo_tried = false;
+
+constexpr char kLogoDecal[] = "Logo (reference)\\Fragile decal - Alpha.png";
+constexpr char kHoodPal[] = "Sam porter suit\\Palette colours (00-14)\\Suit - ";
+constexpr char kHoodMetal[] = "Sam porter suit\\15 Silver\\Suit - ";
+constexpr char kHoodGold[] = "Sam porter suit\\16 Gold\\Suit - ";
+constexpr char kCapDir[] = "Logo (reference)\\";
+
+// One reference picture: its manifest row (the extractor wrote it), its bytes unchanged since, decoded at the row's size.
+bool LogoPicture(const std::string& rel, tx::Image& out, std::string& sig, std::string* why) {
+    const tx::ManifestRow* row = nullptr;
+    for (const tx::ManifestRow& r : g_manifest.rows)
+        if (r.path.size() == rel.size() && StartsWithI(r.path, rel)) row = &r;
+    if (!row) return *why = "no " + rel + " in the extraction (press Extract textures)", false;
+    const std::wstring path = Dir() + L"\\" + Wide(rel);
+    const std::string sha = FileSha(path);
+    if (sha.empty()) return *why = rel + " is missing", false;
+    if (sha != row->sha256) return *why = rel + " is not the extractor's picture (edited?)", false;
+    std::vector<std::uint8_t> b;
+    std::string err;
+    if (!ReadAll(path, b) || !tx::DecodePicture(b.data(), b.size(), out, 2048, 2048, nullptr, &err) || out.w != row->w || out.h != row->h)
+        return *why = rel + " does not read (" + err + ")", false;
+    sig += sha;
+    return true;
+}
+
+// A blank packed picture (alpha 255) with `map`'s first channels in `channels`.
+tx::Image Packed(const tx::Image& map, const std::vector<int>& channels) {
+    tx::Image p;
+    p.Resize(map.w, map.h);
+    for (std::size_t i = 3; i < p.rgba.size(); i += 4) p.rgba[i] = 255;
+    tx::InsertChannels(p, map, channels);
+    return p;
+}
+
+// One logo slot's blob from the cache or `packed` (null: the cache only); stored, its id appended to the look.
+bool LogoBlob(int li, const tx::Image* packed, const std::string& sig, Look& look) {
+    const int slot = tx::kLogoBase + li;
+    const tx::Slot& s = tx::kLogoSlots[li];
+    char kt[128];
+    std::snprintf(kt, sizeof(kt), "stx-logo|%d|%u|%s|", tx::logo::kRecipeVersion, tx::kBlobEncoderVersion, s.id);
+    const std::string key = std::string(kt) + sig;
+    tx::Sha256 kh{};
+    tx::HashSha256(key.data(), key.size(), kh);
+    const std::wstring cache_dir = CacheDir();
+    const std::wstring cache_file = cache_dir.empty() ? std::wstring() : cache_dir + L"\\" + Wide(tx::Hex(kh)) + L".sttx";
+    std::vector<std::uint8_t> blob;
+    std::string why;
+    bool cached = !cache_file.empty() && ReadAll(cache_file, blob) && tx::ValidateBlob(s, blob.data(), blob.size(), nullptr, &why);
+    if (!cached) {
+        if (!packed) return false;
+        blob.clear();
+        if (!tx::BuildBlob(s, *packed, blob, &why)) {
+            Log("[logo] %s: the blob was not built (%s)", s.id, why.c_str());
+            return false;
+        }
+        if (!cache_file.empty()) {
+            CreateDirs(cache_dir);
+            if (WriteAtomic(cache_file, blob)) {
+                cached = true;
+                PruneBuiltCache();
+            }
+        }
+        g_built.fetch_add(1);
+    }
+    tx::Sha256 h{};
+    tx::HashSha256(blob.data(), blob.size(), h);
+    look.slots.push_back(slot);
+    look.blob_ids.insert(look.blob_ids.end(), h.begin(), h.end());
+    StoreBlob(h.data(), slot, std::move(blob), cached ? cache_file : std::wstring());
+    return true;
+}
+
+// The three logo looks: from the cache when every blob is there, else made from the pictures. Each source picture is freed as
+// soon as its packed copy exists (review r20 visual 6): at the peak about six decoded 2048 x 2048 RGBA pictures (16 MB each:
+// the decal, the palette mask kept for the metal set, the three packed hood maps and one source), about 100 MB.
+bool BuildLogo(std::string* why) {
+    const ULONGLONG t0 = GetTickCount64();
+    // the inputs' identity first (hashes only): a full cache needs no decoding
+    std::string sig;
+    for (const std::string& rel : {std::string(kLogoDecal), std::string(kHoodPal) + "Colour.png", std::string(kHoodPal) + "Mask alpha.png",
+                                   std::string(kHoodPal) + "Roughness.png", std::string(kHoodPal) + "Normal.png", std::string(kHoodMetal) + "Colour.png",
+                                   std::string(kHoodMetal) + "Mask alpha.png", std::string(kHoodMetal) + "Roughness.png", std::string(kHoodMetal) + "Reflectance.png",
+                                   std::string(kHoodMetal) + "Ambient occlusion.png", std::string(kHoodGold) + "Reflectance.png",
+                                   std::string(kHoodGold) + "Ambient occlusion.png", std::string(kCapDir) + "Cap - Colour.png",
+                                   std::string(kCapDir) + "Cap - Mask alpha.png", std::string(kCapDir) + "Cap - Normal.png"}) {
+        const tx::ManifestRow* row = nullptr;
+        for (const tx::ManifestRow& r : g_manifest.rows)
+            if (r.path.size() == rel.size() && StartsWithI(r.path, rel)) row = &r;
+        if (!row) return *why = "no " + rel + " in the extraction (an older extraction: press Extract textures)", false;
+        sig += row->sha256;
+    }
+    tx::Sha256 sh{};
+    tx::HashSha256(sig.data(), sig.size(), sh);
+    const std::string isig = tx::Hex(sh);
+    Look looks[3];
+    // the normal map's content is the same in every suit set: both hood looks bind L4. The cap: its palette set (v00, the
+    // colours 0..22) only; the silver / gold sets keep BRIDGES (their own normal and reflectance / roughness maps carry it
+    // too: a colour copy alone left a dark BRIDGES and hid the new word, round 20's solo stills).
+    const int parts[3][5] = {{tx::kHoodColour, tx::kHoodMask, tx::kHoodNormal, -1, -1},
+                             {tx::kMetalColour, tx::kMetalMask, tx::kHoodNormal, tx::kSilverRefl, tx::kGoldRefl},
+                             {tx::kCapColour, tx::kCapNormal, -1, -1, -1}};
+    bool all_cached = true;
+    for (int p = 0; p < 3 && all_cached; ++p)
+        for (int k = 0; k < 5 && parts[p][k] >= 0 && all_cached; ++k) all_cached = LogoBlob(parts[p][k], nullptr, isig, looks[p]);
+    if (!all_cached) {
+        for (Look& l : looks) l = Look{};
+        std::string s2;   // the pictures checked against the manifest as they are read
+        tx::Image decal, pal_mask;
+        if (!LogoPicture(kLogoDecal, decal, s2, why)) return false;
+        {   // the palette hood (with the normal map, shared by every set); each source freed once packed
+            tx::Image mask, nrm, col;
+            {
+                tx::Image ma, rough;
+                if (!LogoPicture(std::string(kHoodPal) + "Mask alpha.png", ma, s2, why) || !LogoPicture(std::string(kHoodPal) + "Roughness.png", rough, s2, why))
+                    return false;
+                mask = Packed(ma, {0});
+                tx::InsertChannels(mask, rough, {1});
+            }
+            pal_mask = mask;
+            {
+                tx::Image normal;
+                if (!LogoPicture(std::string(kHoodPal) + "Normal.png", normal, s2, why)) return false;
+                nrm = Packed(normal, {0, 1});
+            }
+            {
+                tx::Image colour;
+                if (!LogoPicture(std::string(kHoodPal) + "Colour.png", colour, s2, why)) return false;
+                col = Packed(colour, {0, 1, 2});
+            }
+            if (!tx::logo::StampHood(&col, &mask, &nrm, pal_mask, decal, why)) return *why = "the palette hood: " + *why, false;
+            if (!LogoBlob(tx::kHoodColour, &col, isig, looks[0]) || !LogoBlob(tx::kHoodMask, &mask, isig, looks[0]) || !LogoBlob(tx::kHoodNormal, &nrm, isig, looks[0]))
+                return *why = "a palette hood blob was not built", false;
+        }
+        {   // the metal hood (silver and gold share these two textures); each source freed once packed
+            tx::Image mask, col;
+            {
+                tx::Image ma, rough;
+                if (!LogoPicture(std::string(kHoodMetal) + "Mask alpha.png", ma, s2, why) || !LogoPicture(std::string(kHoodMetal) + "Roughness.png", rough, s2, why))
+                    return false;
+                mask = Packed(ma, {0});
+                tx::InsertChannels(mask, rough, {1});
+            }
+            {
+                tx::Image colour;
+                if (!LogoPicture(std::string(kHoodMetal) + "Colour.png", colour, s2, why)) return false;
+                col = Packed(colour, {0, 1, 2});
+            }
+            if (!tx::logo::StampHood(&col, &mask, nullptr, pal_mask, decal, why)) return *why = "the metal hood: " + *why, false;
+            if (!LogoBlob(tx::kMetalColour, &col, isig, looks[1]) || !LogoBlob(tx::kMetalMask, &mask, isig, looks[1])) return *why = "a metal hood blob was not built", false;
+            // L4 (the last of the palette look) as made above
+            looks[1].slots.push_back(looks[0].slots.back());
+            looks[1].blob_ids.insert(looks[1].blob_ids.end(), looks[0].blob_ids.end() - 32, looks[0].blob_ids.end());
+        }
+        for (const char* set : {kHoodMetal, kHoodGold}) {   // the metal hoods' reflectance (silver, gold: their own)
+            tx::Image refl, ao;
+            if (!LogoPicture(std::string(set) + "Reflectance.png", refl, s2, why) || !LogoPicture(std::string(set) + "Ambient occlusion.png", ao, s2, why))
+                return false;
+            tx::Image p = Packed(refl, {0, 1, 2});
+            tx::InsertChannels(p, ao, {3});
+            if (!tx::logo::StampHoodReflectance(&p, pal_mask, decal, why)) return *why = "the metal hood's reflectance: " + *why, false;
+            if (!LogoBlob(set == kHoodGold ? tx::kGoldRefl : tx::kSilverRefl, &p, isig, looks[1])) return *why = "a metal hood reflectance blob was not built", false;
+        }
+        std::vector<std::uint8_t>().swap(pal_mask.rgba);
+        {   // the cap: its palette set (v00: colour + mask alpha, and its normal map)
+            tx::Image c0, a0, n0;
+            if (!LogoPicture(std::string(kCapDir) + "Cap - Colour.png", c0, s2, why) || !LogoPicture(std::string(kCapDir) + "Cap - Mask alpha.png", a0, s2, why) ||
+                !LogoPicture(std::string(kCapDir) + "Cap - Normal.png", n0, s2, why))
+                return false;
+            tx::Image p0 = Packed(c0, {0, 1, 2});
+            tx::InsertChannels(p0, a0, {3});
+            tx::Image nrm = Packed(n0, {0, 1});
+            if (!tx::logo::StampCap(&p0, true, &nrm, a0, decal, why)) return *why = "the cap: " + *why, false;
+            if (!LogoBlob(tx::kCapColour, &p0, isig, looks[2]) || !LogoBlob(tx::kCapNormal, &nrm, isig, looks[2])) return *why = "a cap blob was not built", false;
+        }
+    }
+    for (Look& l : looks) LookId(l);
+    char ids[3][12];
+    for (int p = 0; p < 3; ++p) std::snprintf(ids[p], sizeof(ids[p]), "%s", tx::Hex(looks[p].id, 4).c_str());
+    AcquireSRWLockExclusive(&g_lock);
+    for (int p = 0; p < 3; ++p) g_logo_looks[p] = std::move(looks[p]);
+    g_logo_made = true;
+    ReleaseSRWLockExclusive(&g_lock);
+    Log("[logo] the Fragile Express logo copies %s in %llu ms: hood palette %s, hood metal %s, cap %s (recipe %d)", all_cached ? "from the cache" : "made",
+        static_cast<unsigned long long>(GetTickCount64() - t0), ids[0], ids[1], ids[2], tx::logo::kRecipeVersion);
+    return true;
+}
+
+void LogoTick() {
+    if (!g_logo_wanted.load() || g_cfg.dir.empty()) return;
+    AcquireSRWLockShared(&g_lock);
+    const bool made = g_logo_made;
+    ReleaseSRWLockShared(&g_lock);
+    if (ExtractionRunning() || !LoadManifest()) return;
+    // made from this manifest: done (a new manifest, a re-extract, makes them again; the old copies stay until then)
+    if (made && g_logo_made_stamp.size == g_manifest_stamp.size && g_logo_made_stamp.mtime == g_manifest_stamp.mtime) return;
+    if (g_logo_tried && g_logo_tried_stamp.size == g_manifest_stamp.size && g_logo_tried_stamp.mtime == g_manifest_stamp.mtime) return;
+    g_logo_tried = true;
+    g_logo_tried_stamp = g_manifest_stamp;
+    SetState("logo");
+    std::string why;
+    if (BuildLogo(&why)) g_logo_made_stamp = g_manifest_stamp;
+    else Log("[logo] the logo copies were not made: %s (her hood and cap %s)", why.c_str(), made ? "keep the copies made before" : "keep BRIDGES");
+    SetState("idle");
+}
+
 // ---------------------------------------------------------------- the worker
 void Worker() {
     const HRESULT co = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
@@ -1093,6 +1311,7 @@ void Worker() {
             const int pat = g_pattern.load();
             if (pat && pat != g_pattern_built) BuildPattern(pat);
             DrainMakeQueue();   // host: the guest's ready-made blobs, made here (round 8)
+            LogoTick();         // round 20: host and guest, once wanted
             if (!g_cfg.dir.empty() && g_cfg.guest) {
                 if (watch == INVALID_HANDLE_VALUE && g_cfg.hot_reload)
                     watch = FindFirstChangeNotificationW(g_cfg.dir.c_str(), TRUE,
@@ -1258,6 +1477,44 @@ bool RecipeFor(const std::uint8_t id[32], Recipe* out) noexcept {
     }
     ReleaseSRWLockShared(&g_lock);
     return ok;
+}
+
+void SetLogoWanted(bool on) noexcept {
+    if (g_logo_wanted.exchange(on) != on && on) Wake();
+}
+
+bool LogoLook(LogoPart part, Look* out) noexcept {
+    Look a, b;
+    bool made = false;
+    try {
+        AcquireSRWLockShared(&g_lock);
+        made = g_logo_made;
+        if (made) {
+            a = g_logo_looks[part == LogoPart::hood_metal ? 1 : part == LogoPart::cap ? 2 : 0];
+            if (part == LogoPart::hood_any) b = g_logo_looks[1];
+        }
+        ReleaseSRWLockShared(&g_lock);   // nothing below throws while it is held
+    } catch (...) {
+        ReleaseSRWLockShared(&g_lock);
+        return false;
+    }
+    if (!made || a.Empty()) return false;
+    if (!b.slots.empty()) {   // hood_any: L0 L1 L4 and L2 L3 L9 L10 (L4 once), sorted by slot (the look id's order; tx::MergeLookRows)
+        try {
+            Look l;
+            for (const auto& r : tx::MergeLookRows(a.slots, b.slots)) {
+                const std::uint8_t* id = r.second < a.slots.size() ? a.blob_ids.data() + 32 * r.second : b.blob_ids.data() + 32 * (r.second - a.slots.size());
+                l.slots.push_back(r.first);
+                l.blob_ids.insert(l.blob_ids.end(), id, id + 32);
+            }
+            LookId(l);
+            a = std::move(l);
+        } catch (...) {
+            return false;
+        }
+    }
+    *out = std::move(a);
+    return true;
 }
 
 bool CanMake() noexcept { return g_cfg.on && !g_cfg.dir.empty() && g_started && g_make_mode.load() != 1; }

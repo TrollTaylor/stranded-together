@@ -30,6 +30,9 @@ inline constexpr char kOriginalDir[] = "Fragile porter suit\\Original";
 inline constexpr char kFragileBootsDir[] = "Fragile boots";
 inline constexpr char kSamSuitDir[] = "Sam porter suit";
 inline constexpr char kSamBootsDir[] = "Boots (Sam, reference)";
+// Round 20: Fragile's decal (the FRAGILE express wordmark) and the Bridges cap's three sets, read by the mod to make its
+// Fragile Express logo copies of her hood and cap (texture_looks.cpp LogoTick).
+inline constexpr char kLogoRefDir[] = "Logo (reference)";
 inline constexpr char kReadmeName[] = "README.txt";
 // Held (exclusively, deleted when closed) by a running extraction in the textures folder's top level: a second extraction
 // into the same folder refuses, and the mod waits for its end before it reads the folder (a half-updated folder against
@@ -40,8 +43,9 @@ inline constexpr char kExtractLockName[] = ".extract.lock";
 // pictures instead of reusing them. 1: the first versioned output (round 6). 2: the colour folders 01..16 hold the
 // ready-made colours (round 8; suit_defaults.hpp kGeneratorVersion 1): unedited v1 copies are replaced by them. 3: the
 // polished gold and silver (round 9; kGeneratorVersion 2): unedited 15 Silver / 16 Gold pictures of a v2 extraction are
-// replaced (01..14 are byte for byte the same as v2's).
-inline constexpr int kExtractVersion = 3;
+// replaced (01..14 are byte for byte the same as v2's). 4: the Logo (reference) folder (round 20: Fragile's decal and the
+// Bridges cap, for the Fragile Express logo); the ready-made pictures are v3's.
+inline constexpr int kExtractVersion = 4;
 // The oldest extractor output version whose ready-made pictures of colour folder `colour` (1..16) are still this
 // version's bytes: 2 for 01..14 (unchanged since round 8), 3 for 15 / 16; 0 for anything else (00 Default holds copies).
 // A folder of an older extraction whose pictures are unedited shows an older look (Check my edits' "stale" count).

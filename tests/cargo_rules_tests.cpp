@@ -52,6 +52,24 @@ void TestSend() {
     CHECK(SendModel(1, 1, 4, 0, true) == kNone);
     // equipment at the hip: no model known, not sent
     CHECK(SendModel(4, 1, 4, 0, true) == kNone);
+    // round 20 F2 (cargo_cases_any_slot): the weapon cases and the ladder on the back (slot type 1); the arms (2 / 3) and the
+    // hands (6 / 7) stay unsent (round 20 review: never seen drawn; a held ladder is also the held_items clone)
+    CHECK(SendModel(1, 1, 2, 0, true, true) == (kExact | 15));   // complete-100's back: weapon case S
+    CHECK(SendModel(1, 1, 2, 1, true, true) == (kExact | 16));   // and M
+    CHECK(SendModel(1, 1, 12, 0, true, true) == (kExact | 14));  // a ladder on the back
+    CHECK(SendModel(2, 1, 12, 0, true, true) == kNone);          // a ladder on an arm: not sent
+    CHECK(SendModel(3, 1, 2, 1, true, true) == kNone);
+    CHECK(SendModel(6, 1, 12, 0, true, true) == kNone);          // a ladder in a hand: not sent (the held_items clone draws it)
+    CHECK(SendModel(7, 1, 2, 3, true, true) == kNone);
+    CHECK(SendModel(4, 1, 2, 0, true, true) == (kExact | 15));   // the hips unchanged
+    CHECK(SendModel(1, 1, 2, 0, false, true) == kNone);           // waist_cargo stays the switch of every exact model
+    CHECK(SendModel(1, 1, 4, 0, true, true) == kNone);            // equipment: no model known
+    CHECK(SendModel(3, 1, 11, 0, true, true) == kNone);
+    CHECK(SendModel(1, 1, 10, 0, true, true) == kNone);           // the cart: not this item
+    CHECK(SendModel(0, 1, 2, 0, true, true) == kNone);            // other slot types: not sent
+    CHECK(SendModel(8, 1, 2, 0, true, true) == kNone);
+    CHECK(SendModel(1, 0, 0, 1, true, true) == 2);                // deliveries unchanged
+    CHECK(ReceiverDraw(SendModel(1, 1, 2, 1, true, true), true) == Draw::exact && ExactModel(SendModel(1, 1, 2, 1, true, true)) == 16);
     // deliveries: their cutscene prop model, anywhere, with the setting on or off
     CHECK(SendModel(1, 0, 0, 1, true) == 2);
     CHECK(SendModel(4, 0, 0, 1, true) == 2);

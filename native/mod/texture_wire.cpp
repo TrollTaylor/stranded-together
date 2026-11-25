@@ -128,7 +128,7 @@ bool DecodeLook(const std::uint8_t* p, std::size_t n, Look& out) {
     out = Look{};
     if (!Head(r, p, n, Kind::look)) return false;
     if (!r.U32(out.epoch) || !r.U32(out.table) || !r.U8(out.flags) || !r.U8(out.colour) || !r.U8(out.boots) || !r.U8(out.worn) || !r.U8(out.n)) return false;
-    if (out.n > kMaxEntries || (out.flags & ~3u)) return false;
+    if (out.n > kMaxEntries || (out.flags & ~7u)) return false;
     for (unsigned i = 0; i < out.n; ++i) {
         if (!r.U8(out.e[i].slot) || !r.Bytes(out.e[i].id, 32) || !r.U32(out.e[i].size)) return false;
         if (out.e[i].size == 0 || out.e[i].size > kMaxBlob) return false;

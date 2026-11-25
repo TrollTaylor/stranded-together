@@ -1,0 +1,89 @@
+# The suit rig on Fragile between two games (round 20 stage 3; docs/real-partner-body.md section 41), hidden, on the
+# launcher's own Local test files (host Sam, guest Fragile with the self view):
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-rig-fragile -SeedSaves complete-100 -GuestSeed profile-only -Id round20-stage3
+# The guest's Sam (a copy of the host's 100% save) wears the backpack, the BB pod, the speed skeleton and the hip crates in
+# the porter suit; the host's copy of her (the partner slot's exo carrier) shows the suit's hardware that joins that gear to
+# her: the pod's chest mount (46) and pipe (2), the backpack's straps and hip belt (25-28, the stand-in for the belt entity
+# the partner body never gets) and the hip rig (44). Her own screen: 2, 44, 46 (the game draws its belt entity there).
+# The host pins her 2.2 m ahead, her back to him (collision 6), then facing him (collision 3), each view with the rig off then
+# on (the host's `gear 38 0/1`); then the optional parts (`gear 38 1 15`) for the look check, and back to the default; then
+# her own screen (her front), rig off and on.
+# covers: skeleton gear
+role host
+graphics low
+timeout 300
+launcherini local-test
+start control 200
+@guest waitlog 60 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+# the launcher's ini has no exo_rig line: on by default
+waitlog 5 \[config\] exo_rig=1 exo_rig_extra=0
+@guest waitlog 5 \[config\] exo_rig=1 exo_rig_extra=0
+@both goto mknot-road
+wait 6000
+@guest pad none 2400 ly=32767
+@guest pad none 900 ly=-32767
+@guest waitlog 60 \[exo-self\] carrier [0-9A-Fa-fx]+: shown
+@guest waitlog 30 \[exo-self\] rig \(section 41\): parts 2 44( 45)? 46( |$)
+waitlog 60 \[exo\] carrier .* follows the partner body's pose
+waitlog 60 \[exo\] carrier [0-9A-Fa-fx]+: shown
+# the host's copy of her: the suit's belt and straps too
+waitlog 30 \[exo\] rig \(section 41\): parts 2 25 26 27 28 44( 45)? 46( |$)
+waitlog 30 \[exo\] carrier .* parts: .*shown now: [0-9 ]*\b25\b[0-9 ]*\b46\b.*rig on\)
+# ---- her back (the host's own Sam to one side of the frame)
+action collision 6 2.2
+wait 2000
+pad none 400 rx=-32767
+wait 1500
+action gear 38 0
+waitnew 10 \[exo\] carrier .* parts: .*rig off\)
+wait 1200
+screenshot H1-back-off
+action gear 38 1
+waitnew 10 \[exo\] carrier .* parts: .*rig on\)
+wait 1200
+screenshot H1-back-on
+# ---- her front: pinned at the same spot, facing him (the camera turned back for the pin, then as for her back)
+pad none 400 rx=32767
+wait 1500
+action collision 3 2.2
+wait 1500
+pad none 400 rx=-32767
+wait 2000
+action gear 38 0
+waitnew 10 \[exo\] carrier .* parts: .*rig off\)
+wait 1200
+screenshot H2-front-off
+action gear 38 1
+waitnew 10 \[exo\] carrier .* parts: .*rig on\)
+wait 1200
+screenshot H2-front-on
+# ---- the optional parts (legbelt 31, cantmount 47, subpouch 29, bodyparts 49), the look check only; then the default again
+action gear 38 1 15
+waitnew 10 \[exo\] rig \(section 41\): parts [0-9 ]*\b31\b[0-9 ]*\b47\b
+wait 1200
+screenshot H2-front-extra
+action gear 38 1 0
+waitnew 10 \[exo\] rig \(section 41\): parts 2 25 26 27 28 44( 45)? 46( |$)
+# ---- her own screen (her front): rig off, on
+@guest action gear 38 0
+@guest waitnew 10 \[exo-self\] carrier .* parts: .*rig off\)
+wait 1200
+@guest screenshot G1-guest-self-off
+@guest action gear 38 1
+@guest waitnew 10 \[exo-self\] carrier .* parts: .*rig on\)
+wait 1200
+@guest screenshot G1-guest-self-on
+action gear 38 2
+@guest action gear 38 2
+action collision 3 0
+nolog \[exo.*FAULTED
+nolog \[exo.*\] carrier refused
+nolog \[exo.*\] carrier .* rig not on this tree
+nolog \[gear\] the ArtParts part setter faulted
+@guest nolog \[exo.*FAULTED
+@guest nolog \[gear\] the ArtParts part setter faulted
+@both action log_status
+@guest quit
+wait 3000
+quit

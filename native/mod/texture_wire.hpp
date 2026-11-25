@@ -3,7 +3,7 @@
 // most 1024 bytes (the reliable channel's limit).
 //
 //   "STT1" u8 version (1) u8 kind, then the body:
-//   1 LOOK   guest -> host  u32 epoch, u32 table (tex_slots kTableVersion), u8 flags (bit0 boots own, bit1 tint fallback),
+//   1 LOOK   guest -> host  u32 epoch, u32 table (tex_slots kTableVersion), u8 flags (bit0 boots own, bit1 tint fallback, bit2 logo),
 //                           u8 suit colour, u8 boot type, u8 worn, u8 n (0..8), n x {u8 slot, 32-byte blob id, u32 size}.
 //                           n = 0: her own look.
 //   2 HAVE   host -> guest  u32 epoch, u8 n (0..8), n x 32-byte blob id (cached and valid on the host)

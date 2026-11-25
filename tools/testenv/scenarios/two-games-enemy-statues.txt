@@ -1,0 +1,84 @@
+# Enemy sync M0 "no statues" (round 20, docs/enemy-sync.md 8.10): the guest never keeps a frozen mirror of a MULE the host has
+# unloaded or hidden. The user's session: the host fainted, the game moved him about 2 km away, his MULEs at the camp were
+# unloaded on his PC, and her copies stayed frozen in mid-air with no pose ("poses n=0"), refusing her shots ("unrealized").
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-enemy-statues -SeedSaves complete-100 -GuestSeed profile-only -Id r20-statues
+# Steps: both at the MULE Camp Southwest of Lake Knot City (as two-games-enemy-mirror), every MULE resurrected in both worlds, both
+# Sams invulnerable and shielded; mirrors up on the guest (the host guard on, nothing refused yet); still 01. The host teleports
+# to Mama's Lab (2.03 km): within 3 s of the command every mirror is released by the guard (host far: his Sam over
+# enemy_host_far; or host unrealized / hidden), not by the 3 s silence (his frames stop while his world loads, run
+# 20261124-221023); 2 s after the first release the guest has no frozen mirror; 15 s later still none (the guard refuses re-entry while the host's copies are
+# unloaded there) and her own game runs her MULEs: stills 02 / 03 three seconds apart. No HITRES refused as unrealized.
+# Then the host comes back to the camp (review r20 enemy 2): her MULEs (which chased her meanwhile) are mirrored again within
+# 20 s of his arrival (enemy_entry_err_max is 0 by default: no entry_far wall), still 04.
+# covers: enemy-mirror
+role host
+graphics low
+timeout 300
+launcherini local-test
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[enemy\] mirror byte checks: [0-9]+/[0-9]+ ok
+@guest waitlog 5 \[enemy\] mirror byte checks: [0-9]+/[0-9]+ ok
+@guest waitlog 5 \[config\] enemy_host_guard=1 enemy_entry_err_max=0 enemy_host_far=1500 enemy_host_hide=0
+goto mule-camp-sw-lkc
+@guest goto 1521.90 992.00 0
+wait 4000
+?@both action dev_god 2
+@both action dev_enemies 1
+waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+@guest waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+action enemy_probe 5 1
+@guest action enemy_probe 5 1
+waitlog 40 \[enemy\] sync on \(host\).*\(equal
+@guest waitlog 40 \[enemy\] sync on \(guest\).*\(equal
+@guest waitlog 30 \[enemy\] mirror on id=
+@guest waitlog 30 \[enemy\] mirrors: n=[1-9]
+wait 6000
+@guest action enemy_sync 0
+@guest waitnew 5 \[enemy\] sync: .*mirrors n=[1-9][0-9]* frozen=[1-9]
+@guest waitlog 5 \[enemy\] host guard \(M0\): on, entries refused [0-9]+ .*mirrors released 0
+@guest action enemy_look 0 12
+wait 2500
+@guest screenshot 01-guest-mirrors
+# ---- the host 2 km away (the faint relocation's distance): every mirror given back
+action dev_goto 1024.51 -982.48 162.18
+@guest waitnew 3 \[enemy\] lease released id=[0-9A-F]+: (host unrealized|host hidden|host far)
+wait 2000
+@guest action enemy_sync 0
+@guest waitnew 5 \[enemy\] sync: .*mirrors n=0 frozen=0
+waitworld 45 goto
+# ---- 15 s later: still no statue (the host's copies stay unloaded there; hers are her own game's)
+wait 15000
+@guest action enemy_sync 0
+@guest waitnew 5 \[enemy\] sync: .*mirrors n=0 frozen=0
+@guest waitlog 5 \[enemy\] host guard \(M0\): on, entries refused [0-9]+ .*mirrors released [0-9]+
+@guest pad none 0
+wait 500
+@guest screenshot 02-guest-own-mules
+wait 3000
+@guest screenshot 03-guest-own-mules-later
+# ---- the host comes back: the mirrors follow his MULEs again
+goto mule-camp-sw-lkc
+@guest waitnew 20 \[enemy\] mirror on id=
+wait 4000
+@guest action enemy_sync 0
+@guest waitnew 5 \[enemy\] sync: .*mirrors n=[1-9][0-9]* frozen=[1-9]
+@guest nolog \[enemy\] mirror refused id=[0-9A-F]+: the host's place is
+@guest action enemy_look 0 12
+wait 2500
+@guest screenshot 04-guest-mirrors-again
+@guest nolog \[enemy\] HITRES #[0-9]+ id=[0-9A-F]+ refused: .*unrealized
+nolog \[enemy\] FAULT
+@guest nolog \[enemy\] FAULT
+nolog \[enemy\] byte check FAILED
+@guest nolog \[enemy\] byte check FAILED
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@both action enemy_sync 2
+action enemy_probe 5 0
+@guest action enemy_probe 5 0
+?@both action dev_god 0
+@guest quit
+wait 3000
+quit

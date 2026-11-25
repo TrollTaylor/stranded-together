@@ -16,6 +16,7 @@ struct Settings {
     bool guest = false;
     bool send = true, receive = true;
     bool tint = false;        // guest: this game's fragile_suit_colour (LOOK flags bit 1, so the host draws the same)
+    bool logo = true;         // guest: this game's fragile_logo (LOOK flags bit 2, so the host draws the same; round 20)
     std::wstring cache;       // the host's partner cache folder (<mod dir>\cache\partner-textures, a hidden run's OutDir)
 };
 void Configure(const Settings& s) noexcept;
@@ -32,6 +33,10 @@ void SetOwnBoots(int type, bool worn, bool own_style) noexcept;
 int PartnerBootsStyle() noexcept;
 // Host: the guest's v0.23 tint choice from its newest LOOK (flags bit 1): -1 none received yet, 0 off, 1 on.
 int PartnerTint() noexcept;
+// Guest: its fragile_logo now (`gear 39 0/1` changes it): a change sends the LOOK again. Host: the guest's choice from its
+// newest LOOK (flags bit 2): -1 none received yet, 0 BRIDGES, 1 the Fragile Express logo (round 20).
+void SetOwnLogo(bool on) noexcept;
+int PartnerLogo() noexcept;
 // Host: the guest's newest complete look (always true; empty = her own look or nothing received).
 bool PartnerLook(ftex::Look* out) noexcept;
 void LogStatus() noexcept;

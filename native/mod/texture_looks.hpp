@@ -70,4 +70,13 @@ struct Made {
 };
 bool TakeMade(Made* out) noexcept;     // game thread: one finished request (none is ever dropped)
 
+// ---- Round 20: the Fragile Express logo (logo_recipe.hpp, docs/textures.md "The Fragile Express logo")
+// Game thread: whether this screen shows the logo (a carrier or cap of hers wants it). The worker then makes the copies
+// once, from this game's own extracted pictures (host and guest alike: no logo texture goes over the link).
+void SetLogoWanted(bool on) noexcept;
+enum class LogoPart : int { hood_palette, hood_metal, hood_any, cap };
+// The logo look for `part` (hood_any: both hood sets, for a carrier whose colour row is not known) once made. False: not
+// made yet, or it cannot be (no textures folder, an extraction without the logo's pictures: logged once).
+bool LogoLook(LogoPart part, Look* out) noexcept;
+
 }  // namespace st::ftex::looks

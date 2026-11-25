@@ -337,7 +337,15 @@ SEP1 frames, and replays the host MULEs' rounds from them.
   enemy round's ids (else attack 0x56 at 300 m/s); 1 = nohurt (the Sam filter drops it once). 2 s later `[enemy] shot test:
   ref match=1 kept (enemy_shots_hurt) | dropped (nohurt) amount A health H0 -> H1`.
 
-Scenario: `two-games-enemy-mirror`.
+M0 "no statues" (round 20; `session.ini enemy_host_guard` 1, `enemy_entry_err_max` 0 (off), `enemy_host_far` 1500, `enemy_host_hide` 0;
+[enemy-sync.md](enemy-sync.md) 8.10): `enemy_sync 0` adds `[enemy] host guard (M0): on, entries refused n (host unrealized /
+hidden / far), mirrors released n (...), hidden here for the host now n; entry err max 0 m, host far 1500 m`; a release logs
+`[enemy] lease released id=XXXXX: host unrealized | host hidden | host far (...)`. A new world forgets the copies hidden here
+(`[enemy] the world changed: n + n hidden mirror(s) of the old world forgotten`); the switch off, a fault and a link change
+show them again (`shown and woken again (off | a fault | the link changed ...)`). The stimulus probe logs `hers forgotten`
+when the game reused its stimulus or the world changed (no remove).
+
+Scenarios: `two-games-enemy-mirror`, `two-games-enemy-statues` (M0).
 
 P1b, ownership by proximity (`session.ini enemy_owner`, off by default and not settable by players yet: the launcher's
 session.ini is one-shot; `enemy_sync 5` and `8` do nothing without it; [enemy-sync.md](enemy-sync.md) section 10):
@@ -350,6 +358,8 @@ session.ini is one-shot; `enemy_sync 5` and `8` do nothing without it; [enemy-sy
 * `enemy_own <id | 0 | -5> <1 | 2>` (hidden runs, the host): a forced hand-over (reason 7) of an id, the host-owned enemy nearest
   the partner body (0) or the guest-owned one nearest it (-5), to the host (1) or the guest (2); the rules apply afterwards.
 * `enemy_look -7 <m> [h]` (hidden runs): the nearest enemy the guest owns (the guest: hers; the host: its frozen copy).
+* `enemy_look -8 <m>` (hidden runs, round 20): our Sam m in front of the enemy of the last `enemy_look`, along its facing, facing
+  it (a "seen in the open" test: [enemy-sync.md](enemy-sync.md) section 12).
 
 ### Enemy hits (`enemy_dump`, `enemy_attack`, `enemy_ctx`, `enemy_hit_mode`, `enemy_hit`, `enemy_hit_send`, `enemy_hit_watch`; `session.ini enemy_hits`, default on with `enemy_sync`; [enemy-sync.md](enemy-sync.md) section 9)
 
@@ -389,7 +399,25 @@ most 3 numbers, so `enemy_hit`'s part / owner / path are set apart (`enemy_hit_m
   amount .. attacker .. (our Sam n, his n) P+0x20 .. (our id ..: equal|differ) ... receiver <class> vt10 OnHit depth ..; point
   (..) valid ..; its health .. stamina ..`.
 
-Scenarios: `enemy-hit-probe` (P2-0, solo), `two-games-enemy-hit` (the gate).
+* `enemy_target <op> [id | 0] [arg]` (round 20 M1 probe, hidden runs, the host; [enemy-sync.md](enemy-sync.md) section 11):
+  0 read her body, our Sam and the MULE (`[enemy] target read <who>: entity .. ; +0x170 (AI agent) .. ; +0x178 (faction) ..
+  index n`, `[enemy] target read: IsHostileTowards MULE->body .., MULE->Sam .., ...`, the MULE's AIIndividualComponent and
+  phase object); 1 / 2 L1 `AlertForEntityWithPerfectThreatInfo` / `AlertForEntity` -> arg 0 her body | 1 our Sam (`[enemy]
+  target L1 ...`); 3 L3 RisePhase to arg 1..5 (`[enemy] target L3 RisePhase id=..: phase object .. a -> b`); 4 arg 0 / 1 her
+  body's hit watch (hits logged as `onhit watch ... id 00000`); 7 follow for arg s (`[enemy] target follow id=.. t=n s: ...
+  facing .. deg; <her body: dist, deg off>; <our Sam: ...>; MULE state .. bits .. phase ..`). 12 byte-checked sites
+  (`[enemy] target probe: byte checks (12 sites): ...`; a mismatch turns that lever off).
+  Round 20 M2 ([enemy-sync.md](enemy-sync.md) section 12): 8 reads the visual stimuli: our Sam's and her body's
+  `AIVisualStimulusComponent` (`[enemy] stimulus <who>: ...`), ours, and a walk of the AI manager's live visual and aural
+  lists (`[enemy] stimulus visual #n (Sam's agent, .. m from our Sam): ...`, `[enemy] stimulus walk visual: n live (...); by
+  source: ...`); 9 arg 0 removes ours, 1 makes one for her body's agent with our Sam's visual resource (his component's, else
+  his stimulus's in the list), 2 the same plus his component's message, 3 the decoy (our Sam's agent, its place written to her
+  body each tick) (`[enemy] stimulus: hers made (mode n: ...)` / `hers not made (...)` / `hers removed (...)`; while one is
+  made, the follow (7) also logs `[enemy] stimulus hers: at ..`). 10 byte-checked sites (`[enemy] stimulus: byte checks`).
+  Probes only: none of it changes play outside hidden runs.
+
+Scenarios: `enemy-hit-probe` (P2-0, solo), `two-games-enemy-hit` (the gate), `two-games-enemy-target-probe` (the M1 probe),
+`two-games-enemy-stim-probe` (the M2 stimulus probe).
 
 ### Shots (`shots`, `shots_test`, `shots_echo`; `session.ini shots_sync`, default on since round 16; [enemy-sync.md](enemy-sync.md) sections 7.3, 7.5)
 
@@ -627,6 +655,29 @@ Scenarios: `collision`, `collision-off`, `two-games-collision`, `two-games-all`.
   baggage models off for this session`. Review: `[gear] prop i '<model>' refused for this session: its model rep has n
   handler(s) bound but 0 mesh entries 1.5 s after it was made (not drawn)`; the `our carried cargo: ... (waist_cargo on|off)`
   line is also logged on every switch.
+* `action gear 36 6 <0|1>` (round 20 F2; docs/real-partner-body.md 39.8): `session.ini cargo_cases_any_slot` at run time: the
+  weapon cases and folding ladders stacked on the back sent too (1, the default; not the arms or hands) or the hips only (0).
+* `action gear 38 <0|1> [extra]` / `gear 38 2` (round 20 stage 3; docs/real-partner-body.md section 41): the suit rig on
+  the exo carriers (`session.ini exo_rig`, default 1): 0 off (round 19's look: the pod and the frame with nothing joining
+  them to her), 1 on; `extra` (0..15, `session.ini exo_rig_extra`, default 0) the optional parts, a mask: 1 legbelt 31,
+  2 cantmount 47, 4 subpouch 29, 8 bodyparts 49 (looks only; left out = 0). 2 only logs the status line: `[exo] exo_rig on,
+  extra 0; partner carrier live rig 2 25 26 27 28 44 46; self carrier live rig 2 44 46` (the rig each carrier asks now;
+  right after a switch it shows the last tick's). Each carrier logs its rig on a change: `[exo] rig (section 41): parts 2 25
+  26 27 28 44 46` (`[exo-self]` for her own screen; ` (exo_rig_extra on)` with extras), and its parts line ends `; rig on`,
+  `rig off`, `rig none` (nothing worn) or `rig not on this tree`. Scenarios: `rig-fragile`, `two-games-rig-fragile`.
+* `action gear 39 <0|1|2>` (round 20; docs/textures.md "The Fragile Express logo", docs/real-partner-body.md section 42):
+  the logo on Fragile's hood and cap. 0 BRIDGES, 1 the logo (this game's `fragile_logo`; on the guest it goes out in the
+  LOOK, flag bit 2, so the host follows), 2 only logs. Logged: `[logo] logo on (the partner's choice -1), copies made;
+  logo-carrier <p> look ...; logo-carrier-self ...; logo-cap-ours ...; logo-cap-partner ...` and each carrier's mesh mask;
+  on a change `[logo] exo-self carrier <p>: the Fragile Express logo on its hood` / `BRIDGES on its hood again` and
+  `[logo] logo-cap-ours <p>: the Fragile Express logo on it` / `BRIDGES on it again` (a silver or gold cap: BRIDGES).
+* `action gear 37 <0|1>` (round 20 cap probe, hidden runs; docs/textures.md "For developers"): does the per-drawable texture
+  override reach a worn cap's entity? 0 our head accessories (Sam's own entities on her head under the self view), 1 the
+  partner's head props (joints 31..34). Per entity: `[tex] cap probe <who> <p> <class>: +0xB8 <p> <class>, drawable <p>, n
+  mesh(es), n override table(s)` and `[tex] cap probe <who> <p>: the override core made n entries for a colour map (per mesh:
+  ..); override tables a -> b -> c; n undone: the override reaches this entity's drawable` (nothing is bound: every entry is
+  undone at once); then `[tex] cap probe: cap probe: n entities, the override reaches n`. Fails with 0 entities (no cap worn:
+  `gear 14 15 1` puts the Bridges cap on).
 * `action gear 26 <0|1|2|9>` (round 6; docs/real-partner-body.md section 31): what is in a hand on the other screen
   (`held_items`): 0 off (only v0.9's cutscene-prop weapons), 1 the ladder / PCC / climbing anchor, 2 every item in a hand
   (the default); any other value only logs `[gear] held_items 2; held clones on (ok): n resource(s) re-typed, n entities

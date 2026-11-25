@@ -202,6 +202,11 @@ std::uint16_t U16(std::uintptr_t a) noexcept {
     mem::Rd(a, v);
     return v;
 }
+std::uint8_t U8(std::uintptr_t a) noexcept {
+    std::uint8_t v = 0;
+    mem::Rd(a, v);
+    return v;
+}
 float F32(std::uintptr_t a) noexcept {
     float v = 0;
     mem::Rd(a, v);
@@ -1210,6 +1215,9 @@ void ResetWorld() {
     }
 }
 
+void TargetTick();  // the target probe (below)
+void StimTick() noexcept;  // her body's visual stimulus (below): dropped when her body or its agent changes
+void StimForget(const char* why) noexcept;  // forgotten without the remove (no longer ours: reused, or the old world's)
 void TestTick() {
     if (g_test.left <= 0 || g_now < g_test.next) return;
     --g_test.left;
@@ -1275,9 +1283,12 @@ void TickBody(const TickIn& in, double now) {
     const bool ready = coop::WorldReady(&counter) || (coop::SessionRole() == 0 && g_role == 0 && in.local_ok);
     const std::uint32_t gen = link::Generation();
     if (ready != g_world_ready || counter != g_world || gen != g_gen) {
+        // the probe's stimulus belongs to the old world's pool: forgotten, never removed there (review r20 enemy 5)
+        if (!ready || counter != g_world) StimForget("the world changed");
         g_world_ready = ready, g_world = counter, g_gen = gen;
         ResetWorld();
     }
+    StimTick();  // (after the world check: never a remove on the old world's pool)
     if (!ready) return;
     if (!g_ids_done && in.local_ok) CreditIds();
     const esync::GateView gv = esync::Gate();
@@ -1307,6 +1318,7 @@ void TickBody(const TickIn& in, double now) {
         if (g_role == 2) GuestCapture(c, on);
     }
     TestTick();
+    TargetTick();
     if (in.net) DrainCombat(gv);
     if (g_role == 2 && on) {
         if (g_resync_due) {
@@ -1663,6 +1675,534 @@ bool HitWatch(const double (&v)[3], char* msg, std::size_t cap) noexcept {
     Log("[enemy] onhit watch on id=%05X (entity %p, component %p: health %.1f stamina %.1f; our player id 0x%X)", id, reinterpret_cast<void*>(m.entity),
         reinterpret_cast<void*>(m.comp), m.vals[0], m.vals[1], g_player_id.load());
     return std::snprintf(msg, cap, "watching %05X", id), true;
+}
+
+// ---------------------------------------------------------------- the target probe (round 20 M1; hidden runs only, the host)
+// Can a calm MULE be made to go for her partner body? enemy_target reads the AI fields of her body, our Sam and a MULE, and
+// pulls one lever at a time (L1 the alert export, L3 the MULE's phase; L2 is enemy_hit 0x180 with the body as owner); after
+// each lever the MULE's facing against her body and our Sam is logged once a second (docs/enemy-sync.md 11).
+namespace {
+constexpr std::uintptr_t kAlertPerfect = 0x1434EF1D0;      // AlertForEntityWithPerfectThreatInfo's export thunk (jmp 0x1434D5A80)
+constexpr std::uintptr_t kAlertPerfectBody = 0x1434D5A80;  // (AIIndividualComponent, entity): owner +0x88 bit 7 refuses; a null target +0x170 is a no-op
+constexpr std::uintptr_t kAlertPlain = 0x1434EF1E0;        // AlertForEntity's export thunk (jmp 0x1434D59D0)
+constexpr std::uintptr_t kAlertPlainBody = 0x1434D59D0;
+constexpr std::uintptr_t kIsHostile = 0x142562F10;         // AIFaction IsHostileTowards (a, b): byte a+0x6C+[b+0x28]
+constexpr std::uintptr_t kGetFaction = 0x142362980;        // Entity GetFaction: entity+0x178 (checked only)
+constexpr std::uintptr_t kRisePhase = 0x142ACE9D0;         // a MULE phase object's raise: +0x110 = max(+0x110, phase)
+constexpr std::uintptr_t kEAgent = 0x170, kEFaction = 0x178, kPhaseObj = 0x58, kPhaseNow = 0x110;
+enum TGroup : unsigned { kTPerfect = 1, kTPlain = 2, kTAgent = 4, kTHostile = 8, kTPhase = 16 };
+// clang-format off
+constexpr Site kTargetSites[] = {
+    {kAlertPerfect,     "E9 AB 68 FE FF", "AlertForEntityWithPerfectThreatInfo's thunk", kTPerfect},
+    {kAlertPerfectBody, "48 83 EC 38 48 85 C9 0F 84 92 00 00 00 48 8B 41 48 4C 8B 80 88 00 00 00 41 C0 E8 07 41 F6 C0 01", "the alert (perfect)", kTPerfect},
+    {0x1434D5AAC,       "48 8B 71 50", "the alert's AI individual (+0x50)", kTPerfect},
+    {0x1434D5AEF,       "41 B1 01", "the alert's perfect flag", kTPerfect},
+    {kAlertPlain,       "E9 EB 67 FE FF", "AlertForEntity's thunk", kTPlain},
+    {kAlertPlainBody,   "48 83 EC 38 48 85 C9 0F 84 92 00 00 00 48 8B 41 48 4C 8B 80 88 00 00 00 41 C0 E8 07 41 F6 C0 01", "the alert (plain)", kTPlain},
+    {0x142A919EA,       "48 8B BF 70 01 00 00", "the alert's target agent (entity+0x170)", kTAgent},
+    {kIsHostile,        "48 85 C9 74 0F 48 85 D2 74 0A 48 63 42 28 0F B6 44 08 6C C3", "AIFaction IsHostileTowards", kTHostile},
+    {kGetFaction,       "48 85 C9 74 08 48 8B 81 78 01 00 00 C3", "Entity GetFaction (+0x178)", kTHostile},
+    {kRisePhase,        "8B 81 10 01 00 00 3B D0 44 8B C0 44 0F 4F C2 44 3B C0 74 0A C7 81 18 01 00 00 00 00 80 3F", "RisePhase", kTPhase},
+    {0x142B67C70,       "48 8B 4F 40 48 8B 79 58", "the phase object (DSMuleComponent+0x58)", kTPhase},
+    {0x142B3EA90,       "48 89 47 40", "the MULE AI's DSMuleComponent (+0x40)", kTPhase},
+};
+// clang-format on
+bool g_tchecked = false;
+unsigned g_tgroups = 0;
+void TargetChecks() {
+    if (g_tchecked) return;
+    g_tchecked = true;
+    unsigned bad = 0, n = 0;
+    for (const Site& s : kTargetSites) {
+        ++n;
+        if (!mem::CodeMatches(A(s.va), s.sig)) bad |= s.group, Log("[enemy] target probe: byte check FAILED: %s at 0x%llX", s.name, static_cast<unsigned long long>(s.va));
+    }
+    if (mem::RipTarget(A(kAlertPerfect), 1, 5) != A(kAlertPerfectBody)) bad |= kTPerfect, Log("[enemy] target probe: byte check FAILED: the perfect thunk's target");
+    if (mem::RipTarget(A(kAlertPlain), 1, 5) != A(kAlertPlainBody)) bad |= kTPlain, Log("[enemy] target probe: byte check FAILED: the plain thunk's target");
+    g_tgroups = (kTPerfect | kTPlain | kTAgent | kTHostile | kTPhase) & ~bad;
+    Log("[enemy] target probe: byte checks (%u sites): alert perfect %s, alert %s, agent %s, hostility %s, phase %s", n, (bad & kTPerfect) ? "FAILED" : "ok",
+        (bad & kTPlain) ? "FAILED" : "ok", (bad & kTAgent) ? "FAILED" : "ok", (bad & kTHostile) ? "FAILED" : "ok", (bad & kTPhase) ? "FAILED" : "ok");
+}
+const char* NameOf(std::uintptr_t o) noexcept {
+    const char* n = o ? mem::RttiName(mem::RttiOf(o)) : nullptr;
+    return n ? n : (o ? "?" : "-");
+}
+struct AiView {
+    std::uintptr_t e = 0, agent = 0, faction = 0;
+    std::int32_t findex = -1;
+    bool faction_ok = false;
+};
+AiView ReadAi(std::uintptr_t e) noexcept {
+    AiView v;
+    v.e = e;
+    if (!e) return v;
+    v.agent = mem::Q(e + kEAgent);
+    v.faction = mem::Q(e + kEFaction);
+    if (v.faction) {
+        v.faction_ok = mem::DerivesFrom(mem::RttiOf(v.faction), "AIFaction");
+        mem::Rd(v.faction + 0x28, v.findex);
+    }
+    return v;
+}
+void LogAi(const char* who, const AiView& v) noexcept {
+    Log("[enemy] target read %s: entity %p %s; +0x170 (AI agent) %p %s; +0x178 (faction) %p %s%s index %d", who, reinterpret_cast<void*>(v.e), NameOf(v.e),
+        reinterpret_cast<void*>(v.agent), NameOf(v.agent), reinterpret_cast<void*>(v.faction), NameOf(v.faction), v.faction && !v.faction_ok ? " (NOT an AIFaction)" : "",
+        static_cast<int>(v.findex));
+}
+// IsHostileTowards(a's faction, b's): 1 / 0, -1 unknown (no faction, checks failed), -2 a fault
+int Hostile(const AiView& a, const AiView& b) noexcept {
+    if (!(g_tgroups & kTHostile) || !a.faction_ok || !b.faction_ok) return -1;
+    __try {
+        return reinterpret_cast<bool (*)(std::uintptr_t, std::uintptr_t)>(A(kIsHostile))(a.faction, b.faction) ? 1 : 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -2;
+    }
+}
+const char* HostileText(int h) noexcept { return h == 1 ? "hostile" : h == 0 ? "not hostile" : h == -2 ? "FAULT" : "unknown"; }
+std::uintptr_t BodyEntity() noexcept {
+    game::Entity* b = g_body ? g_body : realbody::LiveEntity();
+    return reinterpret_cast<std::uintptr_t>(b);
+}
+std::uintptr_t CompOf(std::uintptr_t e, const char* name) noexcept { return e ? partner::FindComponentByName(reinterpret_cast<game::Entity*>(e), name) : 0; }
+std::uintptr_t PhaseObj(std::uintptr_t mule_entity) noexcept {
+    const std::uintptr_t mc = CompOf(mule_entity, "DSMuleComponent");
+    return mc ? mem::Q(mc + kPhaseObj) : 0;
+}
+int SehAlert(bool perfect, std::uintptr_t comp, std::uintptr_t target) noexcept {
+    __try {
+        reinterpret_cast<void (*)(std::uintptr_t, std::uintptr_t)>(A(perfect ? kAlertPerfect : kAlertPlain))(comp, target);
+        return 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+int SehRise(std::uintptr_t obj, int phase) noexcept {
+    __try {
+        reinterpret_cast<void (*)(std::uintptr_t, int)>(A(kRisePhase))(obj, phase);
+        return 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+// ---- round 20 M2: a visual stimulus for her body (the AI's own perception). Our Sam is seen through his
+// AIVisualStimulusComponent: at activation (0x14242CDF0) it creates a persistent AIVisualStimulus in the AI manager's visual
+// pool ([0x147BE0D38] + 0x80) with its resource (component+0x30 -> +0x20), its entity's AI agent (+0x170) as the source and the
+// agent's place (0x14252D970), and keeps it at component+0x50. Her body (a DSControlledEntity) has an agent but no such
+// stimulus, so the sensors never see her. The probe makes one for her agent with Sam's resource (docs/enemy-sync.md 12).
+constexpr std::uintptr_t kStimMgr = 0x147BE0D38;     // the AI manager (stimuli): +0x80 the visual pool
+constexpr std::uintptr_t kVisCreate = 0x1425249A0;   // (pool, resource, const pos[3] f64*, const vel[4] f32*, agent) -> stimulus
+constexpr std::uintptr_t kStimRemove = 0x14254CE00;  // (pool, stimulus): a persistent one back to its pool (by its type)
+constexpr std::uintptr_t kAgentPos = 0x14252D970;    // (agent, out[3] f64) -> out: agent vt+0xF8
+constexpr std::uintptr_t kVisActivate = 0x14242CDF0; // AIVisualStimulusComponent's activation (checked only)
+constexpr std::uintptr_t kCVisRes = 0x30, kCVisStim = 0x50, kCVisMsg = 0x60, kRVis = 0x20;
+constexpr std::uintptr_t kSRes = 0x08, kSAgent = 0x10, kSPos = 0x18, kSLife = 0x80, kSOff = 0x84, kSVel = 0x90, kSMul = 0xA4;
+enum SGroup : unsigned { kSCreate = 1 };
+// clang-format off
+constexpr Site kStimSites[] = {
+    {kVisCreate,          "48 89 5C 24 10 48 89 6C 24 18 48 89 74 24 20 57 48 83 EC 40 81 B9 10 A0 01 00 00 02 00 00", "the visual stimulus create", kSCreate},
+    {kStimRemove,         "48 89 74 24 20 57 48 83 EC 30 80 BA 84 00 00 00 00 48 8B FA 48 8B F1", "the persistent stimulus remove", kSCreate},
+    {kAgentPos,           "40 53 48 83 EC 60 48 8B 01 48 8B DA 48 8D 54 24 20 FF 90 F8 00 00 00", "the agent's place", kSCreate},
+    {kVisActivate + 0x0E, "48 8B 69 30", "the component's resource (+0x30)", kSCreate},
+    {0x14242CEE4,         "4C 8B 35 4D 3E 7B 05", "the AI manager global", kSCreate},
+    {0x14242CF31,         "48 8B 5D 20", "the visual resource (+0x20)", kSCreate},
+    {0x14242CF69,         "49 8D 8E 80 00 00 00 E8 2B 7A 0F 00", "the visual pool (+0x80) and the create", kSCreate},
+    {0x14242CF7D,         "48 89 47 50", "the component's stimulus (+0x50)", kSCreate},
+    {0x142516680,         "48 89 5C 24 08 57 48 83 EC 20 48 8D 59 68 48 8B FA", "the stimulus message add", kSCreate},
+};
+// clang-format on
+bool g_schecked = false;
+unsigned g_sgroups = 0;
+void StimChecks() {
+    if (g_schecked) return;
+    g_schecked = true;
+    unsigned bad = 0, n = 0;
+    for (const Site& s : kStimSites) {
+        ++n;
+        if (!mem::CodeMatches(A(s.va), s.sig)) bad |= s.group, Log("[enemy] stimulus: byte check FAILED: %s at 0x%llX", s.name, static_cast<unsigned long long>(s.va));
+    }
+    if (mem::RipTarget(A(0x14242CEE4), 3, 7) != A(kStimMgr)) bad |= kSCreate, Log("[enemy] stimulus: byte check FAILED: the AI manager global's target");
+    g_sgroups = kSCreate & ~bad;
+    Log("[enemy] stimulus: byte checks (%u sites): %s", n + 1, (bad & kSCreate) ? "FAILED" : "ok");
+}
+struct HerStim {
+    std::uintptr_t stim = 0, body = 0, agent = 0, res = 0;
+    int mode = 0;          // 1 her agent, 2 her agent + Sam's component message, 3 the decoy (Sam's agent at her place)
+    bool write_pos = false;  // our tick writes her place into it (when the game does not move it)
+    double t0 = 0;
+} g_hs;
+std::uintptr_t VisComp(std::uintptr_t e) noexcept { return CompOf(e, "AIVisualStimulusComponent"); }
+void LogStim(const char* who, std::uintptr_t s) noexcept {
+    if (!s) return Log("[enemy] stimulus %s: none", who);
+    double p[3] = {};
+    mem::Rd(s + kSPos, p);
+    const std::uintptr_t res = mem::Q(s + kSRes), ag = mem::Q(s + kSAgent);
+    float life = -2.f, vis = 0.f, mul = 0.f;
+    mem::Rd(s + kSLife, life);
+    mem::Rd(res + 0x40, vis);
+    mem::Rd(s + kSMul, mul);
+    Log("[enemy] stimulus %s: %p %s; resource %p %s (lifetime %.2f, +0x40 %.3f); agent %p %s; at (%.2f, %.2f, %.2f); life %.2f off %u; +0xA4 %.3f; "
+        "messages %d",
+        who, reinterpret_cast<void*>(s), NameOf(s), reinterpret_cast<void*>(res), NameOf(res), res ? static_cast<double>(F32(res + 0x2C)) : -9.0,
+        static_cast<double>(vis), reinterpret_cast<void*>(ag), NameOf(ag), p[0], p[1], p[2], static_cast<double>(life), static_cast<unsigned>(U8(s + kSOff)),
+        static_cast<double>(mul), static_cast<int>(U32(s + 0x68)));
+}
+void LogVisComp(const char* who, std::uintptr_t e) noexcept {
+    const std::uintptr_t c = VisComp(e);
+    if (!c) return Log("[enemy] stimulus %s: no AIVisualStimulusComponent (entity %p %s)", who, reinterpret_cast<void*>(e), NameOf(e));
+    const std::uintptr_t cres = mem::Q(c + kCVisRes), msg = mem::Q(c + kCVisMsg);
+    Log("[enemy] stimulus %s: AIVisualStimulusComponent %p (entity +0x48 %p, resource %p %s -> visual %p, aural %p; +0x3C %u; message +0x60 %p %s)", who,
+        reinterpret_cast<void*>(c), reinterpret_cast<void*>(mem::Q(c + 0x48)), reinterpret_cast<void*>(cres), NameOf(cres),
+        reinterpret_cast<void*>(cres ? mem::Q(cres + kRVis) : 0), reinterpret_cast<void*>(cres ? mem::Q(cres + 0x28) : 0),
+        cres ? static_cast<unsigned>(U8(cres + 0x3C)) : 0u, reinterpret_cast<void*>(msg), NameOf(msg));
+    LogStim(who, mem::Q(c + kCVisStim));
+}
+int SehAgentPos(std::uintptr_t agent, double (&out)[3]) noexcept {
+    __try {
+        reinterpret_cast<void* (*)(std::uintptr_t, double*)>(A(kAgentPos))(agent, out);
+        return 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+std::uintptr_t SehVisCreate(std::uintptr_t res, const double (&pos)[3], const float (&vel)[4], std::uintptr_t agent) noexcept {
+    __try {
+        const std::uintptr_t mgr = mem::Q(A(kStimMgr));
+        if (!mgr) return 0;
+        // the game holds a reference on the resource around the call (lock xadd +0x18) and drops it after: the stimulus keeps none
+        return reinterpret_cast<std::uintptr_t (*)(std::uintptr_t, std::uintptr_t, const double*, const float*, std::uintptr_t)>(A(kVisCreate))(mgr + 0x80, res, pos,
+                                                                                                                                         vel, agent);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+int SehStimRemove(std::uintptr_t s) noexcept {
+    __try {
+        const std::uintptr_t mgr = mem::Q(A(kStimMgr));
+        if (!mgr) return 0;
+        reinterpret_cast<void (*)(std::uintptr_t, std::uintptr_t)>(A(kStimRemove))(mgr + 0x80, s);
+        return 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+int SehWrite(std::uintptr_t dst, const void* src, std::size_t n) noexcept {
+    __try {
+        std::memcpy(reinterpret_cast<void*>(dst), src, n);
+        return 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+int SehMsgAdd(std::uintptr_t stim, std::uintptr_t m) noexcept {
+    __try {
+        reinterpret_cast<void (*)(std::uintptr_t, const std::uintptr_t*)>(A(0x142516680))(stim, &m);
+        return 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+// (hidden runs only: the probe walks the AI manager's stimulus lists and creates / removes pool entries from the mod's game-thread
+// tick without the AI's own lock: if the sensors ran on worker jobs at that moment this could race; a probe-only hazard, review
+// r20 enemy 6, docs/enemy-sync.md 12)
+void StimRemove(const char* why) noexcept {
+    if (!g_hs.stim) return;
+    const int r = SehStimRemove(g_hs.stim);
+    Log("[enemy] stimulus: hers removed (%s; mode %d, %.1f s)%s", why, g_hs.mode, (g_now - g_hs.t0) / 1000.0, r < 0 ? " FAULT" : "");
+    g_hs = HerStim{};
+}
+// no longer ours (the game reused it for another source, or it is the old world's): forgotten, never put back into the pool
+// (a remove would free what the game now owns, silently: review r20 enemy 5)
+void StimForget(const char* why) noexcept {
+    if (!g_hs.stim) return;
+    Log("[enemy] stimulus: hers forgotten (%s; mode %d, %.1f s; not removed)", why, g_hs.mode, (g_now - g_hs.t0) / 1000.0);
+    g_hs = HerStim{};
+}
+// our Sam's live visual stimulus by its source agent (the visual list), or 0
+std::uintptr_t FindVisStimOf(std::uintptr_t agent) noexcept {
+    const std::uintptr_t mgr = agent ? mem::Q(A(kStimMgr)) : 0;
+    if (!mgr) return 0;
+    int n = 0;
+    for (std::uintptr_t s = mem::Q(mgr + 0x88); s && n < 600; s = mem::Q(s + 0xC8), ++n)
+        if (mem::Q(s + kSAgent) == agent) return s;
+    return 0;
+}
+// mode 1 / 2 her agent, 3 the decoy (Sam's agent placed at her body)
+bool StimCreate2(int mode, char* msg, std::size_t cap) noexcept;
+bool StimCreate(int mode, char* msg, std::size_t cap) noexcept {
+    const bool ok = StimCreate2(mode, msg, cap);
+    if (!ok) Log("[enemy] stimulus: hers not made (mode %d): %s", mode, msg);
+    return ok;
+}
+bool StimCreate2(int mode, char* msg, std::size_t cap) noexcept {
+    if (!(g_sgroups & kSCreate)) return std::snprintf(msg, cap, "the stimulus checks failed"), false;
+    // the agent offset (entity+0x170, kEAgent) this reads is the one the target probe's kTAgent site checks (review r20 enemy 9)
+    if (!(g_tgroups & kTAgent)) return std::snprintf(msg, cap, "the agent offset's check failed"), false;
+    StimRemove("replaced");
+    const std::uintptr_t body = BodyEntity(), sam = g_sam.load();
+    const std::uintptr_t sc = VisComp(sam);
+    const std::uintptr_t cres = sc ? mem::Q(sc + kCVisRes) : 0;
+    std::uintptr_t res = cres ? mem::Q(cres + kRVis) : 0;
+    std::uintptr_t sstim = sc ? mem::Q(sc + kCVisStim) : 0;
+    if (!res && sam) {
+        // no component on our Sam (a DSPlayerEntity): his stimulus in the visual list, by his agent
+        sstim = FindVisStimOf(mem::Q(sam + kEAgent));
+        res = sstim ? mem::Q(sstim + kSRes) : 0;
+    }
+    if (!body || !res) return std::snprintf(msg, cap, "no body or no Sam's visual resource (no component, no stimulus by his agent)"), false;
+    const std::uintptr_t her_agent = mem::Q(body + kEAgent), sam_agent = mem::Q(sam + kEAgent);
+    const std::uintptr_t agent = mode == 3 ? sam_agent : her_agent;
+    if (!her_agent || !agent) return std::snprintf(msg, cap, "no agent"), false;
+    double pos[3] = {};
+    if (SehAgentPos(her_agent, pos) < 0) return std::snprintf(msg, cap, "FAULT (agent place)"), false;
+    float vel[4] = {};
+    const std::uintptr_t s = SehVisCreate(res, pos, vel, agent);
+    if (!s) return std::snprintf(msg, cap, "the create gave nothing (pool full or FAULT)"), false;
+    float mul = 1.f;
+    if (sstim) mem::Rd(sstim + kSMul, mul);
+    if (!(mul > 0.f && mul <= 4.f)) mul = 1.f;
+    SehWrite(s + kSMul, &mul, sizeof(mul));
+    g_hs.stim = s, g_hs.body = body, g_hs.agent = agent, g_hs.res = res, g_hs.mode = mode, g_hs.t0 = g_now;
+    g_hs.write_pos = mode == 3;
+    if (mode == 2 && sc) {
+        // Sam's component also gives his stimulus one message object (+0x60); the probe shares it (its reference taken by the add)
+        const std::uintptr_t m = mem::Q(sc + kCVisMsg);
+        if (m && SehMsgAdd(s, m) < 0) Log("[enemy] stimulus: the message add FAULT");
+    }
+    Log("[enemy] stimulus: hers made (mode %d: %s): %p, resource %p (Sam's), agent %p (%s), at (%.2f, %.2f, %.2f), +0xA4 %.3f", mode,
+        mode == 3 ? "the decoy: Sam's agent at her place" : mode == 2 ? "her agent + Sam's message" : "her agent", reinterpret_cast<void*>(s),
+        reinterpret_cast<void*>(res), reinterpret_cast<void*>(agent), NameOf(agent), pos[0], pos[1], pos[2], static_cast<double>(mul));
+    LogStim("hers", s);
+    return std::snprintf(msg, cap, "stimulus mode %d made %p", mode, reinterpret_cast<void*>(s)), true;
+}
+// every tick: drop it when her body or its agent changed; the decoy (and write_pos) follows her body's place
+void StimTick() noexcept {
+    if (!g_hs.stim) return;
+    // reused first: a stimulus the game now owns is forgotten, not removed (review r20 enemy 5)
+    if (mem::Q(g_hs.stim + kSAgent) != g_hs.agent || mem::Q(g_hs.stim + kSRes) != g_hs.res) return StimForget("the stimulus was reused by the game");
+    const std::uintptr_t body = BodyEntity();
+    if (body != g_hs.body || !body || mem::Q(body + kEAgent) == 0 || (g_hs.mode != 3 && mem::Q(body + kEAgent) != g_hs.agent)) return StimRemove("her body changed");
+    if (g_hs.write_pos) {
+        WorldTransform bx{};
+        if (ReadXf(body, bx)) {
+            const double p[3] = {bx.pos.x, bx.pos.y, bx.pos.z + 1.0};
+            SehWrite(g_hs.stim + kSPos, p, sizeof(p));
+        }
+    }
+}
+// the probe's walk of the AI manager's live stimuli (visual list mgr+0x88, next +0xC8; aural list mgr+0x1A0D8, next +0xA0):
+// which stimulus (if any) stands for our Sam, his agent's or within 3 m of him, and how many there are by source class
+void StimWalk(const char* list, std::uintptr_t head_at, std::uintptr_t next_off) noexcept {
+    const std::uintptr_t sam = g_sam.load(), body = BodyEntity();
+    const std::uintptr_t sag = sam ? mem::Q(sam + kEAgent) : 0, bag = body ? mem::Q(body + kEAgent) : 0;
+    WorldTransform sx{};
+    const bool hs = ReadXf(sam, sx);
+    struct Cls { const char* name; int n; } cls[10] = {};
+    int ncls = 0, total = 0, shown = 0;
+    std::uintptr_t s = mem::Q(head_at);
+    for (; s && total < 600; s = mem::Q(s + next_off), ++total) {
+        const std::uintptr_t ag = mem::Q(s + kSAgent);
+        const char* nm = ag ? NameOf(ag) : "(no agent)";
+        int k = 0;
+        while (k < ncls && std::strcmp(cls[k].name, nm) != 0) ++k;
+        if (k < ncls) ++cls[k].n;
+        else if (ncls < 10) cls[ncls++] = {nm, 1};
+        double p[3] = {};
+        mem::Rd(s + kSPos, p);
+        const double d = hs ? std::sqrt((p[0] - sx.pos.x) * (p[0] - sx.pos.x) + (p[1] - sx.pos.y) * (p[1] - sx.pos.y)) : 1e9;
+        const bool mine = ag && (ag == sag || ag == bag || ag == sam || ag == body);
+        if ((mine || d < 3.0) && shown < 8) {
+            char who[64];
+            std::snprintf(who, sizeof(who), "%s #%d (%s%s, %.1f m from our Sam)", list, total,
+                          ag == sag ? "Sam's agent" : ag == bag ? "her agent" : ag == sam ? "Sam's entity" : ag == body ? "her entity" : "other", "", d);
+            LogStim(who, s);
+            ++shown;
+        }
+    }
+    char buf[512] = {};
+    std::size_t at = 0;
+    for (int k = 0; k < ncls && at + 64 < sizeof(buf); ++k) at += std::snprintf(buf + at, sizeof(buf) - at, "%s%s x%d", k ? ", " : "", cls[k].name, cls[k].n);
+    Log("[enemy] stimulus walk %s: %d live (Sam's agent %p, her agent %p); %d near or ours; by source: %s", list, total, reinterpret_cast<void*>(sag),
+        reinterpret_cast<void*>(bag), shown, buf);
+}
+void StimFollowLog() noexcept {
+    if (!g_hs.stim) return;
+    double p[3] = {};
+    mem::Rd(g_hs.stim + kSPos, p);
+    WorldTransform bx{};
+    const bool hb = ReadXf(g_hs.body, bx);
+    Log("[enemy] stimulus hers: at (%.2f, %.2f, %.2f); her body at (%.2f, %.2f, %.2f) (%.2f m apart); +0xA4 %.3f; life %.2f off %u", p[0], p[1], p[2],
+        hb ? bx.pos.x : 0.0, hb ? bx.pos.y : 0.0, hb ? bx.pos.z : 0.0,
+        hb ? std::sqrt((p[0] - bx.pos.x) * (p[0] - bx.pos.x) + (p[1] - bx.pos.y) * (p[1] - bx.pos.y)) : -1.0, static_cast<double>(F32(g_hs.stim + kSMul)),
+        static_cast<double>(F32(g_hs.stim + kSLife)), static_cast<unsigned>(U8(g_hs.stim + kSOff)));
+    const std::uintptr_t sc = VisComp(g_sam.load());
+    const std::uintptr_t ss = sc ? mem::Q(sc + kCVisStim) : 0;
+    WorldTransform sx{};
+    if (ss && ReadXf(g_sam.load(), sx)) {
+        mem::Rd(ss + kSPos, p);
+        Log("[enemy] stimulus Sam's: at (%.2f, %.2f, %.2f); our Sam at (%.2f, %.2f, %.2f); +0xA4 %.3f", p[0], p[1], p[2], sx.pos.x, sx.pos.y, sx.pos.z,
+            static_cast<double>(F32(ss + kSMul)));
+    }
+}
+
+// the follow: the MULE's facing against her body and our Sam, once a second
+struct Follow {
+    std::uint32_t id = 0;
+    double t0 = 0, until = 0, next = 0;
+    char why[48] = {};
+} g_follow;
+void StartFollow(std::uint32_t id, double secs, const char* why) noexcept {
+    g_follow.id = id;
+    g_follow.t0 = g_now;
+    g_follow.next = g_now;
+    g_follow.until = g_now + secs * 1000.0;
+    std::snprintf(g_follow.why, sizeof(g_follow.why), "%s", why);
+}
+double Wrap(double d) noexcept {
+    while (d > 180) d -= 360;
+    while (d < -180) d += 360;
+    return d;
+}
+void TargetTick() {
+    if (!g_follow.id || g_now < g_follow.next) return;
+    g_follow.next += 1000;
+    const std::uint32_t id = g_follow.id;
+    if (g_now > g_follow.until) {
+        g_follow.id = 0;
+        Log("[enemy] target follow id=%05X done (%s)", id, g_follow.why);
+        return;
+    }
+    const std::uintptr_t actor = ActorOf(id);
+    MuleNow m;
+    if (!actor || !ReadMule(actor, id, m) || !m.realized || !m.have_xf) {
+        Log("[enemy] target follow id=%05X t=%.0f s: not realized here", id, (g_now - g_follow.t0) / 1000.0);
+        return;
+    }
+    constexpr double kDeg = 57.29577951308232;
+    const double yaw = YawOf(m.xf) * kDeg;
+    char body[96] = "her body: none", sam[96] = "our Sam: none";
+    WorldTransform bx{}, sx{};
+    if (ReadXf(BodyEntity(), bx)) {
+        const double dx = bx.pos.x - m.xf.pos.x, dy = bx.pos.y - m.xf.pos.y;
+        std::snprintf(body, sizeof(body), "her body %+.0f deg off its facing at %.1f m", Wrap(std::atan2(dy, dx) * kDeg - yaw), std::sqrt(dx * dx + dy * dy));
+    }
+    if (ReadXf(g_sam.load(), sx)) {
+        const double dx = sx.pos.x - m.xf.pos.x, dy = sx.pos.y - m.xf.pos.y;
+        std::snprintf(sam, sizeof(sam), "our Sam %+.0f deg off at %.1f m", Wrap(std::atan2(dy, dx) * kDeg - yaw), std::sqrt(dx * dx + dy * dy));
+    }
+    const std::uintptr_t po = (g_tgroups & kTPhase) ? PhaseObj(m.entity) : 0;
+    Log("[enemy] target follow id=%05X t=%.0f s (%s): at (%.2f, %.2f, %.2f) facing %.0f deg; %s; %s; MULE state %u bits 0x%X a88 0x%X; phase %d; stamina %.1f",
+        id, (g_now - g_follow.t0) / 1000.0, g_follow.why, m.xf.pos.x, m.xf.pos.y, m.xf.pos.z, yaw, body, sam, m.ea0, m.ea4, m.a88,
+        po ? static_cast<int>(U32(po + kPhaseNow)) : -1, static_cast<double>(m.vals[1]));
+    StimFollowLog();
+}
+}  // namespace
+
+bool TargetProbe(const double (&v)[3], char* msg, std::size_t cap) noexcept {
+    if (!Hidden(msg, cap) || !Ready(msg, cap)) return false;
+    TargetChecks();
+    const int op = static_cast<int>(v[0]);
+    if (op == 4) {
+        // the hits on her partner body (as a victim), logged at OnHit; they pass
+        if (v[1] == 0) {
+            g_watch.store(0), g_watch_id.store(0);
+            Log("[enemy] target: the partner body's hit watch off");
+            return std::snprintf(msg, cap, "body watch off"), true;
+        }
+        const std::uintptr_t b = BodyEntity();
+        if (!b) return std::snprintf(msg, cap, "no partner body"), false;
+        g_watch_logged.store(0);
+        g_watch_id.store(0);
+        g_watch.store(b);
+        Log("[enemy] target: the partner body's hit watch on (entity %p %s; every DamageInfo on it logged as 'onhit watch ... id 00000')", reinterpret_cast<void*>(b),
+            NameOf(b));
+        return std::snprintf(msg, cap, "body watch on"), true;
+    }
+    if (op == 8 || op == 9) {
+        // round 20 M2: the visual stimuli (8 read; 9 <0 remove | 1 her agent | 2 + Sam's message | 3 the decoy> her body's)
+        StimChecks();
+        if (op == 8) {
+            LogVisComp("our Sam", g_sam.load());
+            LogVisComp("her body", BodyEntity());
+            LogStim("hers (ours)", g_hs.stim);
+            if (const std::uintptr_t mgr = mem::Q(A(kStimMgr))) {
+                StimWalk("visual", mgr + 0x88, 0xC8);
+                StimWalk("aural", mgr + 0x1A0D8, 0xA0);
+            } else {
+                Log("[enemy] stimulus walk: no AI manager");
+            }
+            return std::snprintf(msg, cap, "stimuli read"), true;
+        }
+        const int mode = static_cast<int>(v[1]);
+        if (mode == 0) {
+            if (!g_hs.stim) return std::snprintf(msg, cap, "none"), true;
+            StimRemove("enemy_target 9 0");
+            return std::snprintf(msg, cap, "removed"), true;
+        }
+        if (mode < 1 || mode > 3) return std::snprintf(msg, cap, "9 <0 | 1 | 2 | 3>"), false;
+        return StimCreate(mode, msg, cap);
+    }
+    const std::uint32_t id = Target(v[1]);
+    const std::uintptr_t actor = id ? ActorOf(id) : 0;
+    MuleNow m;
+    if (!actor || !ReadMule(actor, id, m) || !m.realized) return std::snprintf(msg, cap, "no realized MULE"), false;
+    const std::uintptr_t body = BodyEntity(), sam = g_sam.load();
+    const std::uintptr_t comp = CompOf(m.entity, "AIIndividualComponent");
+    const std::uintptr_t po = (g_tgroups & kTPhase) ? PhaseObj(m.entity) : 0;
+    switch (op) {
+        case 0: {
+            const AiView vb = ReadAi(body), vs = ReadAi(sam), vm = ReadAi(m.entity);
+            LogAi("her body", vb);
+            LogAi("our Sam", vs);
+            LogAi("the MULE", vm);
+            Log("[enemy] target read: IsHostileTowards MULE->body %s, MULE->Sam %s, body->MULE %s, Sam->MULE %s, Sam->body %s", HostileText(Hostile(vm, vb)),
+                HostileText(Hostile(vm, vs)), HostileText(Hostile(vb, vm)), HostileText(Hostile(vs, vm)), HostileText(Hostile(vs, vb)));
+            const std::uintptr_t owner = comp ? mem::Q(comp + 0x48) : 0, ind = comp ? mem::Q(comp + 0x50) : 0;
+            Log("[enemy] target read id=%05X: AIIndividualComponent %p %s (owner +0x48 %p: %s, individual +0x50 %p %s); her body's %p, our Sam's %p; DSMuleComponent "
+                "phase object %p (phase %d, +0x114 %.1f, +0x118 %.2f); MULE state %u bits 0x%X",
+                id, reinterpret_cast<void*>(comp), NameOf(comp), reinterpret_cast<void*>(owner), comp && owner == m.entity ? "the MULE" : "NOT the MULE",
+                reinterpret_cast<void*>(ind), NameOf(ind), reinterpret_cast<void*>(CompOf(body, "AIIndividualComponent")),
+                reinterpret_cast<void*>(CompOf(sam, "AIIndividualComponent")), reinterpret_cast<void*>(po), po ? static_cast<int>(U32(po + kPhaseNow)) : -1,
+                po ? static_cast<double>(F32(po + 0x114)) : -1.0, po ? static_cast<double>(F32(po + 0x118)) : -1.0, m.ea0, m.ea4);
+            return std::snprintf(msg, cap, "read %05X: body agent %p faction %p", id, reinterpret_cast<void*>(vb.agent), reinterpret_cast<void*>(vb.faction)), true;
+        }
+        case 1:
+        case 2: {
+            // L1: the alert export, the target her body (v[2] 0) or our Sam (1, the control)
+            const bool perfect = op == 1;
+            if (!(g_tgroups & (perfect ? kTPerfect : kTPlain))) return std::snprintf(msg, cap, "the alert's checks failed"), false;
+            if (!comp || mem::Q(comp + 0x48) != m.entity) return std::snprintf(msg, cap, "no AIIndividualComponent on %05X", id), false;
+            const bool to_sam = v[2] == 1;
+            const std::uintptr_t t = to_sam ? sam : body;
+            if (!t) return std::snprintf(msg, cap, "no %s", to_sam ? "Sam" : "partner body"), false;
+            const AiView vt = ReadAi(t);
+            const int r = SehAlert(perfect, comp, t);
+            Log("[enemy] target L1 %s id=%05X -> %s %p (%s): its agent (+0x170) %p %s: %s; MULE state %u bits 0x%X phase %d",
+                perfect ? "AlertForEntityWithPerfectThreatInfo" : "AlertForEntity", id, to_sam ? "our Sam" : "her body", reinterpret_cast<void*>(t), NameOf(t),
+                reinterpret_cast<void*>(vt.agent), NameOf(vt.agent),
+                r < 0 ? "FAULT" : vt.agent ? "called (a message to the MULE's AI)" : "called (a no-op: the target has no agent)", m.ea0, m.ea4,
+                po ? static_cast<int>(U32(po + kPhaseNow)) : -1);
+            if (r < 0) return std::snprintf(msg, cap, "FAULT"), false;
+            StartFollow(id, 12, to_sam ? "L1 our Sam" : "L1 her body");
+            return std::snprintf(msg, cap, "L1 %s -> %s (agent %p)", perfect ? "perfect" : "plain", to_sam ? "sam" : "body", reinterpret_cast<void*>(vt.agent)), true;
+        }
+        case 3: {
+            // L3: the MULE's phase raised (v[2] 1..5)
+            if (!po) return std::snprintf(msg, cap, "no phase object (checks or DSMuleComponent)"), false;
+            const int phase = static_cast<int>(v[2]);
+            if (phase < 1 || phase > 5) return std::snprintf(msg, cap, "phase 1..5"), false;
+            const int before = static_cast<int>(U32(po + kPhaseNow));
+            const int r = SehRise(po, phase);
+            Log("[enemy] target L3 RisePhase id=%05X: phase object %p %d -> %d (asked %d), +0x114 %.1f, +0x118 %.2f%s", id, reinterpret_cast<void*>(po), before,
+                static_cast<int>(U32(po + kPhaseNow)), phase, static_cast<double>(F32(po + 0x114)), static_cast<double>(F32(po + 0x118)), r < 0 ? " FAULT" : "");
+            if (r < 0) return std::snprintf(msg, cap, "FAULT"), false;
+            StartFollow(id, 12, "L3 phase");
+            return std::snprintf(msg, cap, "L3 phase %d -> %d", before, static_cast<int>(U32(po + kPhaseNow))), true;
+        }
+        case 7:
+            StartFollow(id, v[2] > 0 ? v[2] : 10, "follow");
+            return std::snprintf(msg, cap, "following %05X", id), true;
+        default: return std::snprintf(msg, cap, "unknown op %d (0 read, 1 / 2 L1 perfect / plain -> 0 body | 1 sam, 3 L3 phase, 4 body watch 0/1, 7 follow s, 8 stimuli read, 9 <0..3> her stimulus)", op), false;
+    }
 }
 
 }  // namespace st::ecombat
