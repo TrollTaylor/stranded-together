@@ -237,6 +237,10 @@ inline bool PlaceFilterMatches(int filter, int type) noexcept {
 }
 // The small structures whose collision traps Sam at their origin.
 inline bool SmallPost(int type) noexcept { return PlaceGroup(type) == 5 || type == 20; }
+// Delivery bases, prepper shelters and safe houses (types 0..4): dev_place lands on the place's own point (the terminal; the
+// game pushes Sam out of it, 3.5-8.3 m seen), the landing before round 18. The ring at the structure's height went into the
+// terrain the knot cities are dug into, and Sam fell through the ground (the user's report, v0.32.0).
+inline bool LandsOnOwnPoint(int type) noexcept { return type >= 0 && type <= 4; }
 inline bool Finite(double v) noexcept { return v == v && v - v == 0; }
 // out = p + o.x * row0 + o.y * row1 + o.z * row2 (r: 9 floats, rows right, forward, up) - the game's math (0x142CD80E0).
 inline void FrontAccess(const double (&p)[3], const float (&r)[9], const float (&o)[3], double (&out)[3]) noexcept {

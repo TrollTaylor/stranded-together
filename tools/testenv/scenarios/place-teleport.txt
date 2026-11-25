@@ -54,9 +54,25 @@ pad none 2500 lx=32765
 pad none 2500 ly=-32765
 waitlog 5 pad none 2500 (lx=32765|ly=-32765) -> ok: .*player moved ([2-9]|[1-9][0-9]+)\.
 # ---- a big terminal: the nearest delivery base (Mountain Knot City)
-?action dev_place 0 -1
-?waitworld 45 goto
-?screenshot 06-delivery-base
+# (v0.32.0 dropped Sam through the ground here: the ring at the structure's height went into the terrain; bases land on their
+# terminal again, devrules::LandsOnOwnPoint)
+action dev_place 0 -1
+waitworld 45 goto
+waitlog 2 \[dev\] place [0-9]+ \(.*type 0\): a base / shelter, the place's own point
+wait 1000
+screenshot 06-delivery-base
+# the game's own arrival at a terminal ("Restoring blood levels", the power grid) holds Sam a few seconds
+wait 4000
+pad none 2500 ly=-32760
+pad none 2500 lx=32760
+screenshot 06b-delivery-base-walked
+waitlog 5 pad none 2500 (ly=-32760|lx=32760) -> ok: .*player moved ([2-9]|[1-9][0-9]+)\.
+# the next nearest delivery base (far: the goto streams it in)
+action dev_place 1 -1
+waitworld 45 goto
+waitlog 2 \[dev\] place [0-9]+ \(.*type 0\): a base / shelter, the place's own point
+wait 1000
+screenshot 07-delivery-base-2
 nolog \[dev\].*FAULT
 nolog \[dev\].*INSIDE
 nolog \[dev\] byte check FAILED

@@ -194,6 +194,7 @@ void TestLanding() {
     CHECK(PlaceFilterMatches(5, 5) && PlaceFilterMatches(5, 7) && !PlaceFilterMatches(5, 20) && PlaceFilterMatches(20, 20));
     CHECK(PlaceFilterMatches(3, 2) && PlaceFilterMatches(2, 4) && !PlaceFilterMatches(2, 5));
     CHECK(SmallPost(5) && SmallPost(6) && SmallPost(7) && SmallPost(20) && !SmallPost(0) && !SmallPost(36));
+    CHECK(LandsOnOwnPoint(0) && LandsOnOwnPoint(1) && LandsOnOwnPoint(4) && !LandsOnOwnPoint(5) && !LandsOnOwnPoint(20) && !LandsOnOwnPoint(-1));
     // the game's front access math: p + o.x * right + o.y * forward + o.z * up (a structure turned 90 degrees: forward = -x)
     const double p[3] = {100, 200, 50};
     const float rot[9] = {0, 1, 0, -1, 0, 0, 0, 0, 1};  // right (0, 1, 0), forward (-1, 0, 0), up

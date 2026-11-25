@@ -1072,7 +1072,7 @@ bool GoPlace(int index, int filter, int mode, double now_ms, char* msg, std::siz
     if (mode != 0 && (!automation::Enabled() || RealSaveRefusal()))
         return Put(msg, cap, "place mode %d: hidden runs on a sandboxed save only", mode), RefuseGoto(msg);
     if (mode < 0 || mode > 2) return Put(msg, cap, "place <n> [kind] [mode 0 beside it, 1 its own point, 2 test the retry]"), RefuseGoto(msg);
-    const bool raw = mode == 1;
+    bool raw = mode == 1;
     Sam s;
     if (const char* why = Playing(&s)) return Put(msg, cap, "teleport refused: %s", why), RefuseGoto(msg);
     ReadPlaces(&s);
@@ -1085,6 +1085,8 @@ bool GoPlace(int index, int filter, int mode, double now_ms, char* msg, std::siz
         return RefuseGoto(msg);
     }
     const PlaceFull& f = g_places[pick];
+    const bool own_point = mode == 0 && devrules::LandsOnOwnPoint(f.type);  // bases, shelters, safe houses: the terminal itself
+    raw = raw || own_point;
     PlaceCheck pc;
     pc.on = !raw;
     pc.index = pick, pc.type = f.type, pc.locator = f.locator;
@@ -1097,9 +1099,9 @@ bool GoPlace(int index, int filter, int mode, double now_ms, char* msg, std::siz
     if (raw) {
         const double face[2] = {f.rot[3], f.rot[4]};
         const bool ok = StartGoto(f.p.pos[0], f.p.pos[1], f.p.pos[2], face, tag, nullptr, now_ms, line, sizeof(line));
-        Log("[dev] place %d (%s, %s, type %d): raw, the place's own point (%.2f, %.2f, %.2f): %s", pick, f.p.label, devrules::PlaceKind(f.type), f.type,
-            f.p.pos[0], f.p.pos[1], f.p.pos[2], line);
-        return Put(msg, cap, "to %s (its own point, raw): %s", f.p.label, line), ok;
+        Log("[dev] place %d (%s, %s, type %d): %s, the place's own point (%.2f, %.2f, %.2f): %s", pick, f.p.label, devrules::PlaceKind(f.type), f.type,
+            own_point ? "a base / shelter" : "raw", f.p.pos[0], f.p.pos[1], f.p.pos[2], line);
+        return Put(msg, cap, own_point ? "to %s (its terminal): %s" : "to %s (its own point, raw): %s", f.p.label, line), ok;
     }
     BuildPlan(pc);
     pc.next = 1;
