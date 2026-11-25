@@ -362,6 +362,27 @@ View GetView() noexcept {
     v.places[1].dist_m = 820;
     return v;
 }
+MarkerView GetMarkerView() noexcept {
+    MarkerView v;
+    v.serial = 1;
+    v.checked = v.ok = true;
+    v.area = 200;
+    v.count = 2;
+    std::snprintf(v.items[0].name, sizeof(v.items[0].name), "A0");
+    v.items[0].id = 0, v.items[0].dist_m = 1240, v.items[0].snapped = true, v.items[0].area = 200;  // ids start at 0
+    std::snprintf(v.items[1].name, sizeof(v.items[1].name), "C0");
+    v.items[1].id = 9, v.items[1].dist_m = 230, v.items[1].snapped = true, v.items[1].area = 200;
+    v.newest = 1;
+    return v;
+}
+GotoState GetGotoState() noexcept {
+    GotoState g;
+    g.phase = GotoState::settled;
+    g.serial = 3;
+    std::snprintf(g.text, sizeof(g.text), "goto #3: settled at (1.00, 2.00, 3.00) after 1.5 s");
+    return g;
+}
+std::uint32_t GotoSerial() noexcept { return 3; }
 }  // namespace st::dev
 
 // Story tools (story_state.cpp): the debug rows' handler and the Dev tools page's Story section.

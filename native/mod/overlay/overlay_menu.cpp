@@ -342,6 +342,86 @@ void PartnerTab(const Context& c) {
     else Text(&kDim, "Live: %.2f s, %.2f m", s.echo_delay_s, s.echo_offset_m);
 }
 
+// Teleport to map marker (Player tab and Dev tools page): the newest map marker, or one picked from the list. Disabled with
+// the reason in its tooltip when there is none, it is in another area, or the game build differs.
+// The newest goto's outcome (dev::GetGotoState) under the button that started it: `after` is the goto serial seen when it was
+// clicked (0: never clicked); only a newer goto is shown (dim while moving or settled, amber when it failed).
+void GotoLine(std::uint32_t after) {
+    if (!after) return;
+    const dev::GotoState g = dev::GetGotoState();
+    if (g.serial < after || !g.text[0]) return;
+    ImGui::PushTextWrapPos(0.0f);
+    Text(g.phase == dev::GotoState::failed ? &kAmber : &kDim, "%s", g.text);
+    ImGui::PopTextWrapPos();
+}
+std::uint32_t g_marker_goto = 0, g_place_goto = 0;  // dev::GotoSerial() + 1 when the button was clicked (0: not yet)
+
+std::int64_t g_marker_id = -1;  // the picked marker's id (ids start at 0); -1: the newest on this map
+void MarkerTeleport(const debug::Snapshot& s) {
+    const dev::MarkerView mv = dev::GetMarkerView();
+    int sel = -1;
+    for (int i = 0; i < mv.count; ++i)
+        if (g_marker_id >= 0 && mv.items[i].id == static_cast<std::uint64_t>(g_marker_id)) sel = i;
+    const bool readable = mv.checked && mv.ok && !mv.block[0];
+    if (sel < 0) {
+        if (readable) g_marker_id = -1;  // really gone (a loading screen or a menu shows no list: the pick stays)
+        sel = mv.newest;
+    }
+    char why[200] = {};
+    if (!mv.checked) std::snprintf(why, sizeof(why), "Not yet: %s", mv.block[0] ? mv.block : "waiting for the world");
+    else if (!mv.ok) std::snprintf(why, sizeof(why), "Off: this game build differs (%s).", mv.off[0] ? mv.off : "a byte check");
+    else if (mv.block[0]) std::snprintf(why, sizeof(why), "Not now: %s.", mv.block);
+    else if (!s.diag.teleport_ready && s.diag.resolved)
+        std::snprintf(why, sizeof(why), "Not now: %s.", s.diag.teleport_block[0] ? s.diag.teleport_block : "Sam can't be teleported (on a vehicle?)");
+    else if (sel < 0) std::snprintf(why, sizeof(why), "No map marker: place one on the map screen first (a route point).");
+    else if (!mv.items[sel].here) {
+        char there[64], here[64];
+        const int ma = mv.items[sel].area;
+        devrules::AreaText(ma, ma >= 0 ? game::AreaName(static_cast<std::uint16_t>(ma)) : nullptr, there, sizeof(there));
+        devrules::AreaText(mv.area, mv.area >= 0 ? game::AreaName(static_cast<std::uint16_t>(mv.area)) : nullptr, here, sizeof(here));
+        std::snprintf(why, sizeof(why), "Marker %s is on another map (%s); you are in %s.", mv.items[sel].name, there, here);
+    }
+    ImGui::BeginDisabled(why[0] != 0);
+    if (ImGui::Button("Teleport to map marker") && !why[0]) {
+        debug::Request r;
+        r.action = debug::Action::teleport_to_marker;
+        r.v[0] = g_marker_id >= 0 ? static_cast<double>(g_marker_id) + 1.0 : 0.0;  // the action's v0: the id + 1, 0 the newest
+        Send(r);
+        g_marker_goto = dev::GotoSerial() + 1;
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled | ImGuiHoveredFlags_DelayShort)) {
+        if (why[0]) ImGui::SetTooltip("%s", why);
+        else
+            ImGui::SetTooltip("Sam on the ground at %s map marker %s (%.0f m away), facing the way he went; far away, he waits for the ground\n"
+                              "to stream in (if he falls through it, he is put back where he was). The game removes a one-marker route\n"
+                              "once you reach it.",
+                              g_marker_id >= 0 ? "the picked" : "your newest", mv.items[sel].name, static_cast<double>(mv.items[sel].dist_m));
+    }
+    if (mv.ok && mv.count > 1) {
+        ImGui::SameLine();
+        char preview[48];
+        if (g_marker_id >= 0 && sel >= 0) std::snprintf(preview, sizeof(preview), "%s  %.0f m", mv.items[sel].name, static_cast<double>(mv.items[sel].dist_m));
+        else std::snprintf(preview, sizeof(preview), "newest (%s)", mv.newest >= 0 ? mv.items[mv.newest].name : "-");
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 9);
+        if (ImGui::BeginCombo("##marker", preview)) {
+            if (ImGui::Selectable("newest", g_marker_id < 0)) g_marker_id = -1;
+            for (int i = 0; i < mv.count; ++i) {
+                char label[64];
+                std::snprintf(label, sizeof(label), "%s  %.0f m%s%s##mk%d", mv.items[i].name, static_cast<double>(mv.items[i].dist_m), i == mv.newest ? " (newest)" : "",
+                              mv.items[i].here ? "" : " (other map)", i);
+                if (ImGui::Selectable(label, g_marker_id >= 0 && static_cast<std::uint64_t>(g_marker_id) == mv.items[i].id))
+                    g_marker_id = static_cast<std::int64_t>(mv.items[i].id);
+            }
+            ImGui::EndCombo();
+        }
+        Tooltip("Which map marker: the newest placed on this map, or one of the list (route letter and number, as the map shows them; distance\n"
+                "from Sam).");
+    }
+    Chip(debug::Action::teleport_to_marker);
+    GotoLine(g_marker_goto);
+}
+
 void PlayerTab(const Context& c) {
     const debug::Snapshot& s = *c.snap;
     ImGui::SeparatorText("Position");
@@ -387,6 +467,7 @@ void PlayerTab(const Context& c) {
     }
     Chip(debug::Action::teleport);
     Chip(debug::Action::teleport_to_partner);
+    MarkerTeleport(s);
     if (!s.diag.teleport_ready && s.diag.resolved) Text(&kAmber, "Teleport blocked now: %s", s.diag.teleport_block);
     if (s.diag.last_teleport[0]) Text(&kDim, "Last: %s", s.diag.last_teleport);
 
@@ -609,6 +690,7 @@ void DevTab(const Context& c) {
     ImGui::EndDisabled();
 
     ImGui::SeparatorText("Teleport");
+    MarkerTeleport(s);  // needs no dev tools (the Player tab's class): its own reasons, not the player tools' gate
     ImGui::BeginDisabled(!player);
     if (const debug::ActionInfo* a = debug::Find(debug::Action::teleport_to_partner)) {
         ImGui::BeginDisabled(!s.partner_pos_valid && !s.remote_fresh);
@@ -624,15 +706,22 @@ void DevTab(const Context& c) {
             std::snprintf(label, sizeof(label), "%s   %.0f m##p%d", v.places[i].label, static_cast<double>(v.places[i].dist_m), i);
             if (ImGui::Selectable(label, g_dev_place == i, ImGuiSelectableFlags_AllowDoubleClick)) {
                 g_dev_place = i;
-                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) DevSend(debug::Action::dev_place, i);
+                if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                    DevSend(debug::Action::dev_place, i);
+                    g_place_goto = dev::GotoSerial() + 1;
+                }
             }
         }
         ImGui::EndListBox();
     }
     ImGui::BeginDisabled(g_dev_place < 0 || g_dev_place >= v.place_count);
-    if (ImGui::Button("Teleport to place")) DevSend(debug::Action::dev_place, g_dev_place);
+    if (ImGui::Button("Teleport to place")) {
+        DevSend(debug::Action::dev_place, g_dev_place);
+        g_place_goto = dev::GotoSerial() + 1;
+    }
     ImGui::EndDisabled();
     Chip(debug::Action::dev_place);
+    GotoLine(g_place_goto);
     ImGui::EndDisabled();
 
     ImGui::SeparatorText("Time and weather");

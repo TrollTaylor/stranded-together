@@ -177,7 +177,9 @@ The launcher's **Debug** page:
 Tick **Dev tools** on the Debug page and the in-game debug menu (F9) gets a **Dev tools** tab (mouse or pad, on the host and
 the guest): spawn any of the game's 14 vehicles (roadster, truck, trike and their variants) in front of you, remove the last
 one or the nearest, repair and recharge a vehicle; refill health, stamina and battery; god mode and infinite ammo; teleport
-to your partner or to any delivery point, city, prepper, camp or distribution center of the current region; time of day;
+to your partner, to your newest map marker (or one you pick) or to any delivery point, city, prepper, camp, post box or
+distribution center of the current region (you land beside it, facing it, not inside it; if no spot beside it works you
+are put back where you started; post boxes use the same code as MULE posts and zip-lines but are not run yet); time of day;
 timefall on (light or heavy) or clear skies; bring back every MULE and terrorist, remove them, or reset the BTs; new boots
 and chiral crystals.
 

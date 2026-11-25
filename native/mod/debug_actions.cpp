@@ -276,6 +276,10 @@ constexpr Row kRows[] = {
     {{Action::voice_ping, Tab::partner, "Voice ping", "Play one echo voice line from the partner (DSEchoComponent::Play).", true}, &DoVoicePing},
     {{Action::teleport, Tab::player, "Teleport", "Teleport Sam to coordinates (PlayerGame::PlaceOn).", false}, &DoTeleport},
     {{Action::teleport_to_partner, Tab::player, "Teleport to partner", "Teleport Sam to the partner's position.", false}, &DoTeleportToPartner},
+    {{Action::teleport_to_marker, Tab::player, "Teleport to map marker",
+      "Sam on the ground at your newest map marker on this map (or the one picked: v0 = its id + 1), then waits for the ground to stream in; "
+      "if he falls through it, he is put back where he started. Any session.", false},
+     &DoDev<dev::Op::marker_go>},
     {{Action::unstuck, Tab::player, "Unstuck", "Teleport Sam to the last safe ground position the game recorded.", true}, &DoUnstuck},
     {{Action::heal, Tab::player, "Heal", "Heal Sam to max health (Entity_ExportedHeal).", true}, &DoHeal},
     {{Action::log_positions, Tab::player, "Log positions", "Sam and partner positions and rotation to the log (same as F6).", true}, &DoLogPositions},
@@ -338,7 +342,7 @@ constexpr Row kRows[] = {
     {{Action::dev_enemies, Tab::dev, "Dev enemies", "1 resurrect every MULE / terrorist, 2 remove them, 3 reset the BTs (sandboxed saves only).", false},
      &DoDev<dev::Op::enemies>},
     {{Action::dev_places, Tab::dev, "Dev places", "The current area's places (delivery points) to the log.", false}, &DoDev<dev::Op::places>},
-    {{Action::dev_place, Tab::dev, "Dev place", "Teleport to place n of the current area's list (nearest first).", false}, &DoDev<dev::Op::place>},
+    {{Action::dev_place, Tab::dev, "Dev place", "Sam beside place n (nearest first) of kind k (0 any, -1 delivery base, 5 post box, 20 MULE post), outside its structure, facing it; 3rd number (hidden runs): 1 its own point, 2 test the retry (its own point first).", false}, &DoDev<dev::Op::place>},
     {{Action::dev_items, Tab::dev, "Dev items", "1 new boots, 2 n chiral crystals (sandboxed saves only).", false}, &DoDev<dev::Op::items>},
     {{Action::story, Tab::dev, "Story", "Story state: 0 the episode and orders to the log, 1 every main / sub mission's state, 2 the manual slots (story points), 3 the load's gate here.", false},
      &DoStory},
@@ -396,6 +400,8 @@ constexpr Row kRows[] = {
      &DoEnemyHitWatch},
     {{Action::enemy_own, Tab::tools, "Enemy own", "Hidden runs, the host (enemy_owner): a forced hand-over: <id | 0 the nearest the host owns to the partner | -5 the nearest the guest owns> <1 to the host | 2 to the guest>.", false},
      &DoEnemyOwn},
+    {{Action::dev_marker, Tab::dev, "Dev marker", "Map markers: 0 log them, 1 <m east> <m north> add one there through the game's own add (hidden runs only).", false},
+     &DoDev<dev::Op::marker_test>},
 };
 constexpr std::size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);
 static_assert(kRowCount == static_cast<std::size_t>(Action::count), "every Action needs exactly one registry row");

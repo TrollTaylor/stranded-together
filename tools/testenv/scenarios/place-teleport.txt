@@ -1,0 +1,64 @@
+# Place teleport (Dev tools page "Places in this area", action dev_place; docs/debug-actions.md "Dev tools", round 18), hidden:
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios place-teleport -SeedSaves complete-100
+# The bug: a teleport to a post box or MULE post put Sam on the structure's own origin, inside its collision, and he could
+# not walk out. Now dev_place lands him at the structure's stand point (its config's TerminalFrontAccessOffset) or on a ring
+# around it, facing it, through the goto tracker (far places stream in), and checks his place against the structure's box.
+# Steps (complete-100: Mountain Knot City, area 200; it has no post box place (types 5-7), so the zip-line stands in: a
+# post box is the same code path): the MULEs removed (nothing knocks Sam over at the camp); the place list;
+# the old landing at the nearest MULE post as a control (optional: inside, the pads should not move him); then the nearest
+# MULE post, and the nearest zip-line: each landed (the rule logged), settled outside the box, and two perpendicular
+# camera-relative pushes of which one must move him more than 2 m; the retry: the MULE post's own point first (inside its
+# box), so the check must move him to the next candidate; last the nearest delivery base (optional, a big terminal).
+# Pass: every required step ok, no INSIDE / FAULT / byte check FAILED lines, screenshots 02, 03, 04 and 05 show Sam beside the structure.
+# covers: dev-tools
+role solo
+timeout 360
+ini dev_tools=1
+start
+wait 3000
+waitlog 30 \[dev\] dev tools: [0-9]+/[0-9]+ byte checks ok
+?action dev_enemies 2
+action dev_places
+# ---- control: the old landing (the MULE post's own point)
+?action dev_place 0 20 1
+?waitworld 45 goto
+?screenshot 01-mule-raw
+?pad none 1500 lx=32751
+?pad none 1500 ly=-32751
+# ---- the nearest MULE post
+action dev_place 0 20
+waitworld 45 goto
+waitnew 5 \[dev\] place [0-9]+ settled: .*(outside its box|no collision box)
+waitlog 2 \[dev\] place [0-9]+ \(.*MULE post, type 20.*\): (front access|fallback)
+wait 1000
+screenshot 02-mule-landed
+pad none 2500 lx=32761
+pad none 2500 ly=-32761
+waitlog 5 pad none 2500 (lx=32761|ly=-32761) -> ok: .*player moved ([2-9]|[1-9][0-9]+)\.
+screenshot 03-mule-walked
+# ---- the retry path (dev_place mode 2, hidden runs): the MULE post's own point first (inside its box), so the box check
+# must move Sam to the next candidate and settle him outside
+action dev_place 0 20 2
+waitworld 45 goto
+waitnew 5 \[dev\] place [0-9]+ settled: .*outside its box
+waitlog 2 \[dev\] place [0-9]+: Sam in .*after test: the structure's own point
+screenshot 04-mule-retried
+# ---- another small structure: the nearest zip-line (type 21, about 2 km away: the goto streams it in)
+action dev_place 0 21
+waitworld 45 goto
+waitnew 5 \[dev\] place [0-9]+ settled: .*(outside its box|no collision box)
+waitlog 2 \[dev\] place [0-9]+ \(.*type 21.*\): (front access|fallback)
+wait 1000
+screenshot 05-zipline-landed
+pad none 2500 lx=32765
+pad none 2500 ly=-32765
+waitlog 5 pad none 2500 (lx=32765|ly=-32765) -> ok: .*player moved ([2-9]|[1-9][0-9]+)\.
+# ---- a big terminal: the nearest delivery base (Mountain Knot City)
+?action dev_place 0 -1
+?waitworld 45 goto
+?screenshot 06-delivery-base
+nolog \[dev\].*FAULT
+nolog \[dev\].*INSIDE
+nolog \[dev\] byte check FAILED
+nolog \[dev\] goto #[0-9]+: NOT settled
+quit

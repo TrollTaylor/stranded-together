@@ -104,7 +104,8 @@ enum class Action : std::uint8_t {
     dev_weather,          // v[0] = 0 clear, 1 timefall, 2 heavy timefall, 3 the game's mix
     dev_enemies,          // v[0] = 1 resurrect every MULE / terrorist, 2 remove them, 3 reset the BTs
     dev_places,           // the current area's places (delivery points) to the log
-    dev_place,            // v[0] = index in the place list: teleport there
+    dev_place,            // v[0] = index (nearest first) among places of kind v[1] (0 any, -1 delivery base, 5 post box, 20 MULE post); v[2] = 1 raw,
+                          // 2 test the retry (hidden runs on a sandboxed save)
     dev_items,            // v[0] = 1 boots, 2 chiral crystals +v[1] (0 = 100)
     // Story tools (story_state.hpp; docs/dev-tools.md "Story tools"): read only, except the load (sandboxed saves only)
     story,                // v[0] = 0 the story state to the log, 1 every main / sub mission's state, 2 the manual slots (story points),
@@ -146,6 +147,9 @@ enum class Action : std::uint8_t {
     enemy_hit_watch,      // v[0] = id (0: as enemy_dump), v[1] = 0 off / 1 on: every DamageInfo on it logged (its hits pass)
     // Enemy sync P1b (enemy_sync.hpp; docs/enemy-sync.md 10): hidden runs only, the host
     enemy_own,            // v[0] = id (0 the nearest the host owns to the partner, -5 the nearest the guest owns), v[1] = 1 host / 2 guest
+    // Map markers (dev_tools.cpp; docs/debug-actions.md "Teleport to map marker")
+    teleport_to_marker,   // v[0] = the marker's id + 1 (0 = the newest on this map): Sam on the ground there (Player tab; any session, no dev tools needed)
+    dev_marker,           // v[0] = 0 log the map's user markers, 1 add one v[1] m east / v[2] m north of Sam (hidden runs only)
     count
 
 };

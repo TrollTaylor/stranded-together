@@ -8,6 +8,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 #include "automation.hpp"
 #include "config.hpp"
@@ -54,7 +55,17 @@ constexpr std::uintptr_t kGazerGlobal = 0x147BEBEC0;
 constexpr std::uintptr_t kMissionSystemGlobal = 0x147C0AFF8;
 constexpr std::uintptr_t kDpArray = 0x78820;
 constexpr std::uintptr_t kDpRtti = 0x144DD5E50;
-constexpr std::uintptr_t kDpText = 0x20, kDpArea = 0x68, kDpType = 0x6A, kDpOrder = 0x78, kDpXf = 0x80;
+constexpr std::uintptr_t kDpText = 0x20, kDpArea = 0x68, kDpType = 0x6A, kDpLocatorId = 0x70, kDpOrder = 0x78, kDpXf = 0x80;
+// A place's stand point (round 18, dev_place): its construction point in DSConstructionPointManager's live list (+0x56A258 i32
+// count, +0x56A260 data; GetNearestConstructionPointId 0x142CD8A20 reads both), cp+0x30 id, +0x34 type, +0x40 position,
+// +0x468 transform (position, then the rotation's rows), +0x90 its DSConstructionPointConfig: +0x50 / +0x60 the collision box
+// (UnrealizeCollisionBoundingBox, local min / max), +0x2D0 TerminalFrontAccessOffset. GetConstructionPointFrontAccessTransform
+// (body 0x142CD80E0, export thunk 0x142CD19A0) = the transform moved by that offset along its rows: we read the same fields
+// (byte-checked at that function's own reads) and do its math (devrules::FrontAccess).
+constexpr std::uintptr_t kCpMgrGlobal = 0x147BF4960;
+constexpr std::uintptr_t kCpLiveCount = 0x56A258, kCpLiveData = 0x56A260;
+constexpr std::uintptr_t kCpIdOff = 0x30, kCpTypeOff = 0x34, kCpPos40 = 0x40, kCpXf = 0x468, kCpCfgOff = 0x90;
+constexpr std::uintptr_t kCfgBoxMin = 0x50, kCfgBoxMax = 0x60, kCfgFront = 0x2D0;
 constexpr std::uintptr_t kPointTypeEnum = 0x144C33550;  // EDSConstructionPointType: +8 u16 count, +0x10 name, +0x18 values (0x28 each)
 // Boots' life (dev_boots; capstone over ds.exe, round 4): the export DSPlayerSystem_sExportedSetShoesLifeByRate 0x1426E7460(float)
 // takes [player +0x54E0] (Sam's status) and jumps to 0x142741860(status, rate, 0): when [status +0x368] is set (worn boots) it
@@ -67,9 +78,9 @@ constexpr std::uintptr_t kShoes = 0x320, kShoesLife = 0x33C, kShoesMax = 0x334, 
 constexpr std::uintptr_t kSetShoesForcibly = 0x1426E7430;
 
 enum Feature : unsigned {
-    kFRefill = 1u, kFGod = 2u, kFWeather = 4u, kFMules = 8u, kFBts = 16u, kFPlaces = 32u, kFBoots = 64u, kFChiral = 128u, kFBootsLife = 256u,
+    kFRefill = 1u, kFGod = 2u, kFWeather = 4u, kFMules = 8u, kFBts = 16u, kFPlaces = 32u, kFBoots = 64u, kFChiral = 128u, kFBootsLife = 256u, kFStand = 512u,
 };
-constexpr unsigned kFLast = kFBootsLife;
+constexpr unsigned kFLast = kFStand;
 const char* FeatureName(unsigned f) {
     switch (f) {
         case kFRefill: return "refill";
@@ -81,6 +92,7 @@ const char* FeatureName(unsigned f) {
         case kFBoots: return "boots";
         case kFChiral: return "chiral crystals";
         case kFBootsLife: return "boots' life";
+        case kFStand: return "place stand point";
         default: return "?";
     }
 }
@@ -137,6 +149,25 @@ constexpr Site kSites[] = {
     {0x142741757, "C5 FA 11 49 1C C5 E8 57 D2 EB 16 C5 FA 11 41 1C C5 F2 5C C0 C5 FA 5D 51 10", "shoes life setter: life +0x1C, spare +0xC", kFBootsLife},
     {0x1426E7430, "40 53 48 83 EC 20 0F B6 D9 E8 F2 77 15 00 48 85 C0 74 0D 48 8B 80 E0 54 00 00 88 98 B8 03 00 00", "SetShoesForcibly (type +0x3B8)",
      kFBootsLife},
+    // A place's stand point: GetConstructionPointFrontAccessTransform's reads (cp+0x4A0 / +0x468 / +0x478 / +0x480, cp+0x90 the
+    // config, config+0x2D0 the offset), its export thunk, GetNearestConstructionPointId's live list (+0x56A260 / +0x56A258)
+    {0x142CD80E0, "40 53 48 81 EC 50 01 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 84 24 A0 00 00 00 48 8B DA 8B D1 48 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ??",
+     "GetConstructionPointFrontAccessTransform", kFStand},
+    {0x142CD8115, "8B 88 A0 04 00 00", "front access: cp+0x4A0", kFStand},
+    {0x142CD8168, "C5 78 10 A8 68 04 00 00", "front access: cp+0x468", kFStand},
+    {0x142CD8179, "C5 7B 10 B0 78 04 00 00", "front access: cp+0x478", kFStand},
+    {0x142CD818A, "C5 7C 10 B8 80 04 00 00", "front access: cp+0x480", kFStand},
+    {0x142CD8192, "48 8B 80 90 00 00 00", "front access: cp+0x90 config", kFStand},
+    {0x142CD81AD, "C5 F8 10 B0 D0 02 00 00", "front access: config+0x2D0", kFStand},
+    {0x142CD19A0, "E9 3B 67 00 00", "GetConstructionPointFrontAccessTransform export thunk", kFStand},
+    {0x142CD8A5C, "48 8B B0 60 A2 56 00 48 63 80 58 A2 56 00", "construction point live list (+0x56A260 / +0x56A258)", kFStand},
+    // the fields the landing reads besides the front access: GetNearestConstructionPointId hands out the nearest's id (cp+0x30);
+    // a live-list walk compares the type byte (cp+0x34 == 0x18); another takes cp+0x90's collision box (config+0x50 min /
+    // +0x60 max, checked min <= max) to place it at cp+0x40
+    {0x142CD8B3C, "4D 85 FF 74 0E 4D 85 F6 74 15 41 8B 47 30 41 89 06", "nearest construction point's id (cp+0x30)", kFStand},
+    {0x142CCECA9, "48 8B 85 60 A2 56 00 40 B7 01 49 8B 1C 06 80 7B 34 18", "construction point type (live list, cp+0x34)", kFStand},
+    {0x142CD9377, "48 8B 83 90 00 00 00 80 8B AB 00 00 00 10 80 8B AF 00 00 00 02 80 8B AA 00 00 00 84 C5 F8 10 48 50 C5 F8 11 4C 24 40 C5 F8 10 40 60",
+     "construction point config's collision box (config+0x50 / +0x60)", kFStand},
 };
 // clang-format on
 
@@ -179,7 +210,7 @@ bool RttiNamed(std::uintptr_t rtti, const char* name) {
 void Check() {
     if (g_checked) return;
     g_checked = true;
-    unsigned features = kFRefill | kFGod | kFWeather | kFMules | kFBts | kFPlaces | kFBoots | kFChiral | kFBootsLife;
+    unsigned features = kFRefill | kFGod | kFWeather | kFMules | kFBts | kFPlaces | kFBoots | kFChiral | kFBootsLife | kFStand;
     int ok = 0, total = 0;
     auto fail = [&](unsigned f, const char* why) {
         if (!g_off[0]) {
@@ -215,6 +246,8 @@ void Check() {
     rip(kGazerReset, kGazerGlobal, kFBts, "the gazer manager global");
     rip(0x1433CA80A, kMissionSystemGlobal, kFPlaces, "the DSMissionSystem global");
     rip(kAddChiral + 10, kPlayerSystemGlobal, kFChiral, "the DSPlayerSystem global");
+    rip(0x142CD8100, kCpMgrGlobal, kFStand, "the construction point manager global (front access)");
+    rip(0x142CD8A28, kCpMgrGlobal, kFStand, "the construction point manager global (live list)");
     ++total;
     if (RttiNamed(A(kDebugSettingsRtti), "DebugSettings")) ++ok;
     else fail(kFGod, "DebugSettings RTTI");
@@ -512,11 +545,227 @@ bool Items(int op, double n, char* msg, std::size_t cap) {
     return Put(msg, cap, "items 1 boots, 2 [n] chiral crystals"), false;
 }
 
+// ---------------------------------------------------------------- dev_goto: a place anywhere in this area, then the ground
+// The teleport is the debug menu's own (game::TeleportLocalPlayer: PlaceOn mode 1 at a known z, mode 2 "the topmost ground" for
+// z 0). Far places stream in after the teleport: every tick (game thread) devrules::GotoAdvance decides whether Sam stands there
+// yet, fell through ground that was not loaded (placed again) or never got there (failed after 25 s). dev_goto, dev_place and
+// Teleport to map marker all start here (StartGoto); each keeps its own gate.
+
+// dev_place's landing (round 18): the candidates, and the structure's box checked once the goto settled.
+struct PlaceCheck {
+    bool on = false;
+    int index = -1, type = 0;
+    std::int32_t locator = -1;  // the place's DeliveryPointLocatorId (the construction point's id, runs 183622: 590, 2103, 232)
+    bool test_inside = false;   // hidden-run test: the first candidate is the structure's own point (the retry path)
+    char label[48] = {};
+    double place[3] = {};
+    float place_rot[9] = {};
+    devrules::LandPlan plan;
+    int next = 0;      // the candidate placed now is plan.c[next - 1]
+    bool cp = false;   // the construction point was found: its transform below
+    std::uintptr_t cp_ptr = 0;
+    double cp_pos[3] = {};
+    float cp_rot[9] = {};
+    double centre[3] = {};  // the ring's centre: cp_pos when found, else the place
+    bool box = false;  // its config's collision box is usable
+    float mn[3] = {}, mx[3] = {};
+};
+struct GotoRun {
+    bool on = false;
+    devrules::GotoTrack t;
+    bool facing = false;
+    double fx = 0, fy = 0;
+    char tag[24] = {};
+    PlaceCheck pc;
+    double start[3] = {};    // where Sam stood when the goto started (the way back)
+    bool returning = false;  // Sam is being put back at start; fail[] says why
+    char fail[160] = {};
+};
+GotoRun g_goto;
+SRWLOCK g_goto_lock = SRWLOCK_INIT;
+GotoState g_goto_state;  // published (g_goto_lock)
+std::uint32_t g_goto_serial = 0;
+
+void PublishGoto(GotoState::Phase phase, const char* fmt, ...) {
+    GotoState st;
+    st.phase = phase;
+    st.serial = g_goto_serial;
+    va_list ap;
+    va_start(ap, fmt);
+    std::vsnprintf(st.text, sizeof(st.text), fmt, ap);
+    va_end(ap);
+    AcquireSRWLockExclusive(&g_goto_lock);
+    g_goto_state = st;
+    ReleaseSRWLockExclusive(&g_goto_lock);
+}
+
+bool PlaceSam(const GotoRun& g, char* why, std::size_t cap) {
+    const devrules::GotoTrack& t = g.t;
+    const bool snap = t.z == 0 || t.snap;
+    const game::TeleportMode mode = snap ? game::TeleportMode::snap_to_ground : game::TeleportMode::place;
+    const double z = t.z == 0 ? game::kSnapRayCentreZ : t.snap ? t.z + 10.0 : t.z + 0.5;  // mode 2: the ray's centre (+-2000 m)
+    if (g.facing && game::TeleportLocalPlayerFacing(t.x, t.y, z, g.fx, g.fy, mode, why, cap)) return true;
+    return game::TeleportLocalPlayer(t.x, t.y, z, mode, why, cap);
+}
+
+// A goto refused before it placed Sam still takes a serial and publishes 'failed' (any older goto still running is
+// dropped): a 'waitworld <s> goto' after it then fails at once instead of reading the older goto's 'settled' (an
+// optional '?goto' step whose action was refused would otherwise pass without Sam having moved).
+bool RefuseGoto(const char* msg) {
+    if (g_goto.on) {
+        g_goto.on = false;
+        PublishGoto(GotoState::failed, "goto #%u: replaced by a newer goto", g_goto_serial);
+    }
+    ++g_goto_serial;
+    PublishGoto(GotoState::failed, "goto #%u: %s", g_goto_serial, msg);
+    Log("[dev] goto #%u: %s", g_goto_serial, msg);
+    return false;
+}
+
+// The one start of every goto: Sam playable, the placement gate, the first placement, the tracker. `face` (may be null): the
+// flat direction Sam faces. `tag` names the caller in the log ("goto", "place 3", "marker C0"). `line` gets "goto #n: ...".
+bool StartGoto(double x, double y, double z, const double* face, const char* tag, const PlaceCheck* pc, double now_ms, char* line, std::size_t cap) {
+    if (!devrules::GotoTargetOk(x, y, z)) return Put(line, cap, "%s: the target (%.2f, %.2f, %.2f) is off the map", tag, x, y, z), RefuseGoto(line);
+    Sam s;
+    if (const char* why = Playing(&s)) return Put(line, cap, "%s refused: %s", tag, why), RefuseGoto(line);
+    char why[160] = {};
+    const int gate = game::PlacementGate(why, sizeof(why));
+    if (gate != 0) return Put(line, cap, "%s refused (on a vehicle? get off first): %s", tag, why), RefuseGoto(line);
+    if (g_goto.on) PublishGoto(GotoState::failed, "goto #%u: replaced by a newer goto", g_goto_serial);
+    g_goto = GotoRun{};
+    g_goto.t.x = x, g_goto.t.y = y, g_goto.t.z = z;
+    g_goto.t.t0 = g_goto.t.last_place = now_ms;
+    if (face && (face[0] * face[0] + face[1] * face[1]) > 1e-6) g_goto.facing = true, g_goto.fx = face[0], g_goto.fy = face[1];
+    Put(g_goto.tag, sizeof(g_goto.tag), "%s", tag);
+    if (pc) g_goto.pc = *pc;
+    g_goto.start[0] = s.xf.pos.x, g_goto.start[1] = s.xf.pos.y, g_goto.start[2] = s.xf.pos.z;
+    ++g_goto_serial;
+    const double dx = x - s.xf.pos.x, dy = y - s.xf.pos.y;
+    const double dist = std::sqrt(dx * dx + dy * dy);
+    char zs[32];
+    if (z == 0) Put(zs, sizeof(zs), "the ground");
+    else Put(zs, sizeof(zs), "%.2f", z);
+    if (!PlaceSam(g_goto, why, sizeof(why))) {
+        PublishGoto(GotoState::failed, "goto #%u: the teleport was refused: %s", g_goto_serial, why);
+        Log("[dev] goto #%u (%s): to (%.2f, %.2f, %s) refused: %s", g_goto_serial, tag, x, y, zs, why);
+        return Put(line, cap, "goto #%u refused: %s", g_goto_serial, why), false;
+    }
+    g_goto.on = true;
+    Log("[dev] goto #%u (%s): from (%.2f, %.2f, %.2f) to (%.2f, %.2f, %s), %.0f m: %s", g_goto_serial, tag, s.xf.pos.x, s.xf.pos.y, s.xf.pos.z, x, y, zs, dist,
+        why);
+    PublishGoto(GotoState::moving, "goto #%u: placed, waiting for the ground", g_goto_serial);
+    return Put(line, cap, "goto #%u: %.0f m to (%.0f, %.0f, %s); waiting for the ground", g_goto_serial, dist, x, y, zs), true;
+}
+
+bool Goto(double x, double y, double z, double now_ms, char* msg, std::size_t cap) {
+    if (!Gate(Tool::world, msg, cap)) return RefuseGoto(msg);
+    if (!devrules::GotoTargetOk(x, y, z)) return Put(msg, cap, "goto: x y [z] in the map's range (z 0 = the ground under x, y)"), RefuseGoto(msg);
+    return StartGoto(x, y, z, nullptr, "goto", nullptr, now_ms, msg, cap);
+}
+
+devrules::LandStep PlaceAfterSettle(const double (&pos)[3], double now_ms);  // places, below
+bool PlaceNext(double now_ms, char* why, std::size_t cap);
+void LogPlaceNext(const char* what, const double (&pos)[3], bool ok, const char* why);
+
+// The goto failed in a way that leaves Sam stuck (fell through or into the ground, inside a structure): put him back where he
+// started, through the same tracker (that ground may need to stream in again). `fail`: the failure, kept for the final line.
+bool BeginReturn(double now_ms, const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    std::vsnprintf(g_goto.fail, sizeof(g_goto.fail), fmt, ap);
+    va_end(ap);
+    g_goto.pc.on = false;
+    g_goto.returning = true;
+    g_goto.facing = false;
+    g_goto.t = devrules::GotoTrack{};
+    g_goto.t.x = g_goto.start[0], g_goto.t.y = g_goto.start[1], g_goto.t.z = g_goto.start[2];
+    g_goto.t.t0 = g_goto.t.last_place = now_ms;
+    char why[160] = {};
+    const bool ok = devrules::GotoTargetOk(g_goto.start[0], g_goto.start[1], g_goto.start[2]) && g_goto.start[2] != 0 && PlaceSam(g_goto, why, sizeof(why));
+    Log("[dev] goto #%u: %s: returning Sam to where he started (%.2f, %.2f, %.2f): %s", g_goto_serial, g_goto.fail, g_goto.start[0], g_goto.start[1],
+        g_goto.start[2], ok ? why : why[0] ? why : "refused");
+    if (!ok) {
+        g_goto.on = false;
+        PublishGoto(GotoState::failed, "goto #%u: %s; could NOT return Sam to his start", g_goto_serial, g_goto.fail);
+        return false;
+    }
+    PublishGoto(GotoState::moving, "goto #%u: %s; returning Sam to his start", g_goto_serial, g_goto.fail);
+    return true;
+}
+
+void GotoTick(double now_ms) {
+    if (!g_goto.on) return;
+    Sam s;
+    const char* block = Playing(&s);
+    double pos[3] = {s.xf.pos.x, s.xf.pos.y, s.xf.pos.z};
+    char why[160] = {};
+    const bool playable = !block && game::PlacementGate(why, sizeof(why)) == 0;
+    if (!s.e) pos[0] = pos[1] = pos[2] = 1e9;  // no player (a load): never "at" the target
+    const devrules::GotoStep step = devrules::GotoAdvance(g_goto.t, playable, pos, now_ms);
+    const double secs = (now_ms - g_goto.t.t0) / 1000.0;
+    const char* reason = block ? block : why;
+    PlaceCheck& pc = g_goto.pc;
+    if (step == devrules::GotoStep::place_again) {
+        // dev_place: a second fall at the same candidate (inside a hill, over a drop) moves on to the next one
+        if (pc.on && devrules::LandAfterFall(g_goto.t.placements, false, pc.next, pc.plan.n) == devrules::LandStep::next) {
+            char what[96];
+            Put(what, sizeof(what), "fell again (z %.2f, %.1f m below it)", pos[2], g_goto.t.z - pos[2]);
+            const bool ok = PlaceNext(now_ms, why, sizeof(why));
+            LogPlaceNext(what, pos, ok, why);
+            return;
+        }
+        const bool ok = PlaceSam(g_goto, why, sizeof(why));
+        Log("[dev] goto #%u: Sam at z %.2f, %.1f m below the target after %.1f s (the ground was not in yet): placed again (#%d): %s", g_goto_serial, pos[2],
+            g_goto.t.z - pos[2], secs, g_goto.t.placements, ok ? why : "refused");
+    } else if (step == devrules::GotoStep::settled) {
+        Log("[dev] goto #%u: settled at (%.2f, %.2f, %.2f) after %.1f s (%d placement(s))%s", g_goto_serial, pos[0], pos[1], pos[2], secs, g_goto.t.placements,
+            g_goto.returning ? ", back where he started" : "");
+        if (g_goto.returning) {
+            g_goto.on = false;
+            PublishGoto(GotoState::failed, "goto #%u: %s; Sam is back where he started", g_goto_serial, g_goto.fail);
+            return;
+        }
+        if (pc.on) {
+            const devrules::LandStep ls = PlaceAfterSettle(pos, now_ms);
+            if (ls == devrules::LandStep::next) return;  // placed at the next candidate: the goto goes on
+            if (ls == devrules::LandStep::give_up) {
+                BeginReturn(now_ms, "Sam is inside a structure's box beside %s and no landing is left", pc.label);
+                return;
+            }
+        }
+        g_goto.on = false;
+        PublishGoto(GotoState::settled, "goto #%u: settled at (%.2f, %.2f, %.2f) after %.1f s", g_goto_serial, pos[0], pos[1], pos[2], secs);
+    } else if (step == devrules::GotoStep::timeout) {
+        const bool fell = s.e && devrules::GotoFell(g_goto.t, pos);
+        Log("[dev] goto #%u: NOT settled after %.1f s: Sam at (%.2f, %.2f, %.2f)%s%s%s", g_goto_serial, secs, pos[0], pos[1], pos[2], fell ? ", below the target" : "",
+            reason[0] ? "; " : "", reason);
+        if (g_goto.returning) {
+            g_goto.on = false;
+            PublishGoto(GotoState::failed, "goto #%u: %s; returning Sam to his start did NOT settle either", g_goto_serial, g_goto.fail);
+            return;
+        }
+        if (fell && pc.on && devrules::LandAfterFall(g_goto.t.placements, true, pc.next, pc.plan.n) == devrules::LandStep::next) {
+            const bool ok = PlaceNext(now_ms, why, sizeof(why));
+            LogPlaceNext("NOT settled, below the target", pos, ok, why);
+            return;
+        }
+        // Fell through or into the ground: he would stay there. Walking off or a vehicle (not still) are left alone.
+        if (fell && playable) {
+            BeginReturn(now_ms, "NOT settled after %.0f s, Sam %.0f m below the target", secs, g_goto.t.z - pos[2]);
+            return;
+        }
+        g_goto.on = false;
+        PublishGoto(GotoState::failed, "goto #%u: NOT settled after %.0f s (Sam at %.0f, %.0f, %.0f%s%s)", g_goto_serial, secs, pos[0], pos[1], pos[2],
+                    reason[0] ? "; " : "", reason);
+    }
+}
+
 // ---------------------------------------------------------------- places
 struct PlaceFull {
     Place p;
     int area = 0, type = 0;
     std::uint32_t order = 0;
+    std::int32_t locator = -1;  // DeliveryPointLocatorId (+0x70)
     float rot[9] = {};
 };
 constexpr int kAllPlaces = 512;  // every place of one area (area 200 of the 100% save: more than 64); the view shows the nearest 64
@@ -533,6 +782,10 @@ bool ReadText(std::uintptr_t lt, char* out, std::size_t cap) {
         const std::uintptr_t p = mem::Q(lt + off);
         char s[64] = {};
         if (!p || !mem::Read(p, s, sizeof(s) - 1)) continue;
+        // The qword after the pointer is the text's length (0xE after the pointer to "Lake Knot City", 14 letters): the text
+        // is not always zero-terminated, a 46-letter name read "...Mountain Knot CityL" (run 20261124-183005-place-teleport).
+        const std::uint64_t len = off + 8 < 0x38 ? mem::Q(lt + off + 8) : 0;
+        if (len > 0 && len < sizeof(s)) s[len] = 0;
         if (devrules::PrintableName(s, sizeof(s))) {
             Put(out, cap, "%s", s);
             return true;
@@ -557,14 +810,16 @@ void ReadPlaces(const Sam* sam) {
         std::uint16_t a = 0;
         std::uint8_t type = 0;
         std::uint32_t order = 0;
+        std::int32_t locator = -1;
         double pos[3] = {};
         float rot[9] = {};
         if (!mem::Rd(r + kDpArea, a) || !mem::Rd(r + kDpType, type) || !mem::Rd(r + kDpOrder, order) || !mem::Read(r + kDpXf, pos, sizeof(pos)) ||
             !mem::Read(r + kDpXf + 0x18, rot, sizeof(rot)))
             continue;
         if (a != area || !std::isfinite(pos[0]) || !std::isfinite(pos[1]) || !std::isfinite(pos[2]) || (pos[0] == 0 && pos[1] == 0)) continue;
+        mem::Rd(r + kDpLocatorId, locator);
         PlaceFull& f = g_places[g_place_count++];
-        f.area = a, f.type = type, f.order = order;
+        f.area = a, f.type = type, f.order = order, f.locator = locator;
         std::memcpy(f.p.pos, pos, sizeof(pos));
         std::memcpy(f.rot, rot, sizeof(rot));
         char name[64] = {};
@@ -598,128 +853,525 @@ bool Places(char* msg, std::size_t cap) {
     ReadPlaces(&s);
     for (int i = 0; i < g_place_count; ++i) {
         const PlaceFull& f = g_places[i];
-        Log("[dev] place %d: %s (type %d, order %u, area %d) at (%.2f, %.2f, %.2f), %.0f m", i, f.p.label, f.type, f.order, f.area, f.p.pos[0], f.p.pos[1],
-            f.p.pos[2], f.p.dist_m);
+        Log("[dev] place %d: %s (%s, type %d, order %u, area %d, locator id %d) at (%.2f, %.2f, %.2f), %.0f m", i, f.p.label, devrules::PlaceKind(f.type), f.type,
+            f.order, f.area, f.locator, f.p.pos[0], f.p.pos[1], f.p.pos[2], f.p.dist_m);
     }
     Put(msg, cap, "%d places in area %d (logged)", g_place_count, g_places_area);
     return g_place_count > 0;
 }
 
-bool GoPlace(int index, char* msg, std::size_t cap) {
-    if (!Gate(Tool::player, msg, cap) || !Has(kFPlaces, msg, cap)) return false;
-    Sam s;
-    if (const char* why = Playing(&s)) return Put(msg, cap, "teleport refused: %s", why), false;
-    ReadPlaces(&s);
-    if (index < 0 || index >= g_place_count) return Put(msg, cap, "no place #%d (%d in this area)", index, g_place_count), false;
-    const PlaceFull& f = g_places[index];
-    // facing the place's own forward row; mode 1 (a short ground probe at its height: inside a building it stays on the floor)
-    char why[160] = {};
-    const bool ok = game::TeleportLocalPlayerFacing(f.p.pos[0], f.p.pos[1], f.p.pos[2] + 0.3, f.rot[3], f.rot[4], game::TeleportMode::place, why, sizeof(why)) ||
-                    game::TeleportLocalPlayer(f.p.pos[0], f.p.pos[1], f.p.pos[2] + 0.3, game::TeleportMode::place, why, sizeof(why));
-    Log("[dev] place %d (%s): %s", index, f.p.label, why);
-    Put(msg, cap, ok ? "to %s: %s" : "teleport to %s failed: %s", f.p.label, why);
-    return ok;
-}
-
-// ---------------------------------------------------------------- dev_goto: a place anywhere in this area, then the ground
-// The teleport is the debug menu's own (game::TeleportLocalPlayer: PlaceOn mode 1 at a known z, mode 2 "the topmost ground" for
-// z 0). Far places stream in after the teleport: every tick (game thread) devrules::GotoAdvance decides whether Sam stands there
-// yet, fell through ground that was not loaded (placed again) or never got there (failed after 25 s).
-struct GotoRun {
-    bool on = false;
-    devrules::GotoTrack t;
+// The place's construction point (DSConstructionPointManager's live list, read on the game thread like world_share.cpp does):
+// the one whose id is the place's DeliveryPointLocatorId (the same kind of structure, within kCpIdMatchM: runs 183622 showed
+// locator id == construction point id for 590, 2103 and 232), else the nearest of the same kind within kCpMatchM (flat). Its
+// transform (cp+0x468, what the game's GetConstructionPointFrontAccessTransform uses), its config's TerminalFrontAccessOffset
+// and collision box.
+constexpr double kCpMatchM = 3.0, kCpIdMatchM = 10.0;
+struct CpInfo {
+    std::uintptr_t cp = 0;
+    std::int32_t id = -1;
+    bool by_id = false;  // matched by the locator id
+    double pos40[3] = {}, pos[3] = {};
+    float rot[9] = {};
+    bool cfg = false;  // a ...ConstructionPointConfig (RTTI name)
+    char cfg_name[48] = {};
+    float front[3] = {};
+    float mn[3] = {}, mx[3] = {};
 };
-GotoRun g_goto;
-SRWLOCK g_goto_lock = SRWLOCK_INIT;
-GotoState g_goto_state;  // published (g_goto_lock)
-std::uint32_t g_goto_serial = 0;
-
-void PublishGoto(GotoState::Phase phase, const char* fmt, ...) {
-    GotoState st;
-    st.phase = phase;
-    st.serial = g_goto_serial;
-    va_list ap;
-    va_start(ap, fmt);
-    std::vsnprintf(st.text, sizeof(st.text), fmt, ap);
-    va_end(ap);
-    AcquireSRWLockExclusive(&g_goto_lock);
-    g_goto_state = st;
-    ReleaseSRWLockExclusive(&g_goto_lock);
+// The live list's pointers (a copy: none kept past the caller).
+bool CpLive(std::vector<std::uintptr_t>* out) {
+    if (!(g_features & kFStand)) return false;
+    const std::uintptr_t mgr = mem::Q(A(kCpMgrGlobal));
+    std::int32_t n = 0;
+    std::uintptr_t data = 0;
+    if (!mgr || !mem::Rd(mgr + kCpLiveCount, n) || !mem::Rd(mgr + kCpLiveData, data) || n <= 0 || n > 8192 || !data) return false;
+    out->resize(static_cast<std::size_t>(n));
+    return mem::Read(data, out->data(), out->size() * 8);
 }
-
-bool PlaceSam(const devrules::GotoTrack& t, char* why, std::size_t cap) {
-    if (t.z == 0) return game::TeleportLocalPlayer(t.x, t.y, game::kSnapRayCentreZ, game::TeleportMode::snap_to_ground, why, cap);
-    return game::TeleportLocalPlayer(t.x, t.y, t.z + 0.5, game::TeleportMode::place, why, cap);
+// cp's transform and its config (front access offset, collision box). False when the transform is unreadable.
+bool ReadCp(std::uintptr_t cp, CpInfo* c) {
+    c->cp = cp;
+    mem::Rd(cp + kCpIdOff, c->id);
+    mem::Read(cp + kCpPos40, c->pos40, sizeof(c->pos40));
+    if (!mem::Read(cp + kCpXf, c->pos, sizeof(c->pos)) || !mem::Read(cp + kCpXf + 0x18, c->rot, sizeof(c->rot))) return false;
+    const std::uintptr_t cfg = mem::Q(cp + kCpCfgOff);
+    const std::uintptr_t rtti = cfg ? mem::RttiOf(cfg) : 0;
+    const std::uintptr_t np = rtti ? mem::Q(rtti + 0x40) : 0;
+    if (np && mem::Read(np, c->cfg_name, sizeof(c->cfg_name) - 1) && std::strstr(c->cfg_name, "ConstructionPointConfig"))
+        c->cfg = mem::Read(cfg + kCfgFront, c->front, sizeof(c->front)) && mem::Read(cfg + kCfgBoxMin, c->mn, sizeof(c->mn)) &&
+                 mem::Read(cfg + kCfgBoxMax, c->mx, sizeof(c->mx));
+    return true;
 }
-
-// A goto refused before it placed Sam still takes a serial and publishes 'failed' (any older goto still running is
-// dropped): a 'waitworld <s> goto' after it then fails at once instead of reading the older goto's 'settled' (an
-// optional '?goto' step whose action was refused would otherwise pass without Sam having moved).
-bool RefuseGoto(const char* msg) {
-    if (g_goto.on) {
-        g_goto.on = false;
-        PublishGoto(GotoState::failed, "goto #%u: replaced by a newer goto", g_goto_serial);
+bool FindCp(int type, std::int32_t locator, const double (&place)[3], CpInfo* out) {
+    std::vector<std::uintptr_t> ptrs;
+    if (!CpLive(&ptrs)) return false;
+    double best = kCpMatchM * kCpMatchM;
+    std::uintptr_t found = 0, by_id = 0;
+    for (std::uintptr_t cp : ptrs) {
+        std::uint8_t t = 0;
+        double p[3] = {};
+        if (!cp || !mem::Rd(cp + kCpTypeOff, t) || devrules::PlaceGroup(t) != devrules::PlaceGroup(type) || !mem::Read(cp + kCpXf, p, sizeof(p))) continue;
+        const double dx = p[0] - place[0], dy = p[1] - place[1], d = dx * dx + dy * dy;
+        std::int32_t id = -1;
+        if (locator >= 0 && d <= kCpIdMatchM * kCpIdMatchM && mem::Rd(cp + kCpIdOff, id) && id == locator) {
+            by_id = cp;
+            break;
+        }
+        if (d < best) best = d, found = cp;
     }
-    ++g_goto_serial;
-    PublishGoto(GotoState::failed, "goto #%u: %s", g_goto_serial, msg);
-    Log("[dev] goto #%u: %s", g_goto_serial, msg);
+    if (by_id) found = by_id;
+    if (!found) return false;
+    out->by_id = by_id != 0;
+    return ReadCp(found, out);
+}
+
+// Whether Sam (feet at pos) is inside the collision box of a small structure near him other than `own` (post boxes, MULE posts
+// and the place's own kind, within kNeighbourM flat): a ring point beside one structure may sit in the next one (a second post
+// box, a player-built one by a terminal). Bigger structures (shelters, bridges, terminals) are not checked: Sam may stand
+// inside their boxes. `what` names the one he is in.
+constexpr double kNeighbourM = 10.0;
+bool InsideNeighbour(const double (&pos)[3], std::uintptr_t own, int type, char* what, std::size_t cap) {
+    std::vector<std::uintptr_t> ptrs;
+    if (!CpLive(&ptrs)) return false;
+    for (std::uintptr_t cp : ptrs) {
+        std::uint8_t t = 0;
+        double p[3] = {};
+        if (!cp || cp == own || !mem::Rd(cp + kCpTypeOff, t)) continue;
+        if (!devrules::SmallPost(t) && devrules::PlaceGroup(t) != devrules::PlaceGroup(type)) continue;
+        if (!mem::Read(cp + kCpXf, p, sizeof(p))) continue;
+        const double dx = p[0] - pos[0], dy = p[1] - pos[1];
+        if (dx * dx + dy * dy > kNeighbourM * kNeighbourM) continue;
+        CpInfo c;
+        if (!ReadCp(cp, &c) || !c.cfg || !devrules::BoxUsable(c.mn, c.mx)) continue;
+        double local[3] = {};
+        if (!devrules::InsideBox(pos, c.pos, c.rot, c.mn, c.mx, local)) continue;
+        Put(what, cap, "%s id %d (type %u, local %.2f, %.2f, %.2f)", c.cfg_name, c.id, t, local[0], local[1], local[2]);
+        return true;
+    }
     return false;
 }
 
-bool Goto(double x, double y, double z, double now_ms, char* msg, std::size_t cap) {
-    if (!Gate(Tool::world, msg, cap)) return RefuseGoto(msg);
-    if (!devrules::GotoTargetOk(x, y, z)) return Put(msg, cap, "goto: x y [z] in the map's range (z 0 = the ground under x, y)"), RefuseGoto(msg);
-    Sam s;
-    if (const char* why = Playing(&s)) return Put(msg, cap, "goto refused: %s", why), RefuseGoto(msg);
-    char why[160] = {};
-    const int gate = game::PlacementGate(why, sizeof(why));
-    if (gate != 0) return Put(msg, cap, "goto refused (on a vehicle? get off first): %s", why), RefuseGoto(msg);
-    if (g_goto.on) PublishGoto(GotoState::failed, "goto #%u: replaced by a newer goto", g_goto_serial);
-    g_goto = GotoRun{};
-    g_goto.t.x = x, g_goto.t.y = y, g_goto.t.z = z;
-    g_goto.t.t0 = g_goto.t.last_place = now_ms;
-    ++g_goto_serial;
-    const double dx = x - s.xf.pos.x, dy = y - s.xf.pos.y;
-    const double dist = std::sqrt(dx * dx + dy * dy);
-    char zs[32];
-    if (z == 0) Put(zs, sizeof(zs), "the ground");
-    else Put(zs, sizeof(zs), "%.2f", z);
-    if (!PlaceSam(g_goto.t, why, sizeof(why))) {
-        PublishGoto(GotoState::failed, "goto #%u: the teleport was refused: %s", g_goto_serial, why);
-        Log("[dev] goto #%u: to (%.2f, %.2f, %s) refused: %s", g_goto_serial, x, y, zs, why);
-        return Put(msg, cap, "goto #%u refused: %s", g_goto_serial, why), false;
+// The landing plan of pc (pc.place / place_rot / type / locator set): the structure found now, the stand point, the ring
+// around the structure's own position. Logged.
+void BuildPlan(PlaceCheck& pc) {
+    CpInfo ci;
+    pc.cp = FindCp(pc.type, pc.locator, pc.place, &ci);
+    double stand[3] = {};
+    bool stand_ok = false;
+    pc.box = false;
+    std::memcpy(pc.centre, pc.place, sizeof(pc.centre));
+    if (pc.cp) {
+        pc.cp_ptr = ci.cp;
+        std::memcpy(pc.cp_pos, ci.pos, sizeof(pc.cp_pos));
+        std::memcpy(pc.cp_rot, ci.rot, sizeof(pc.cp_rot));
+        std::memcpy(pc.centre, ci.pos, sizeof(pc.centre));
+        pc.box = ci.cfg && devrules::BoxUsable(ci.mn, ci.mx);
+        if (pc.box) std::memcpy(pc.mn, ci.mn, sizeof(pc.mn)), std::memcpy(pc.mx, ci.mx, sizeof(pc.mx));
+        if (ci.cfg) {
+            devrules::FrontAccess(ci.pos, ci.rot, ci.front, stand);
+            stand_ok = devrules::StandPointOk(pc.centre, stand);
+        }
     }
-    g_goto.on = true;
-    Log("[dev] goto #%u: from (%.2f, %.2f, %.2f) to (%.2f, %.2f, %s), %.0f m: %s", g_goto_serial, s.xf.pos.x, s.xf.pos.y, s.xf.pos.z, x, y, zs, dist, why);
-    PublishGoto(GotoState::moving, "goto #%u: placed, waiting for the ground", g_goto_serial);
-    return Put(msg, cap, "goto #%u: %.0f m to (%.0f, %.0f, %s); waiting for the ground", g_goto_serial, dist, x, y, zs), true;
+    const double radius = devrules::FallbackRadius(pc.type, pc.box, pc.mn, pc.mx);
+    pc.plan = devrules::PlanLanding(pc.centre, pc.cp ? pc.cp_rot : pc.place_rot, stand_ok, stand, radius);
+    if (pc.test_inside) {  // hidden-run test: the structure's own point first (inside its box: the retry path)
+        devrules::LandPlan& p = pc.plan;
+        for (int k = (std::min)(p.n, devrules::kMaxLandings - 1); k > 0; --k) p.c[k] = p.c[k - 1];
+        p.c[0] = devrules::Landing{};
+        std::memcpy(p.c[0].pos, pc.centre, sizeof(p.c[0].pos));
+        p.c[0].rule = "test: the structure's own point";
+        p.n = (std::min)(p.n + 1, devrules::kMaxLandings);
+    }
+    pc.next = 0;
+    if (!pc.cp) {
+        Log("[dev] place %d (%s): no %s construction point (locator id %d, or within %.0f m)%s; the ring at %.2f m around the place", pc.index, pc.label,
+            devrules::PlaceKind(pc.type), pc.locator, kCpMatchM, (g_features & kFStand) ? "" : " (the stand point's byte checks failed)", radius);
+        return;
+    }
+    const double ax = ci.pos40[0] - ci.pos[0], ay = ci.pos40[1] - ci.pos[1], az = ci.pos40[2] - ci.pos[2];
+    const double px = ci.pos[0] - pc.place[0], py = ci.pos[1] - pc.place[1];
+    const double sx = stand[0] - pc.centre[0], sy = stand[1] - pc.centre[1];
+    Log("[dev] place %d (%s): construction point id %d (%s) at +0x468 (%.2f, %.2f, %.2f), %.2f m from the place (+0x40 %.2f m apart), forward (%.2f, %.2f); "
+        "config %s: TerminalFrontAccessOffset (%.2f, %.2f, %.2f), box (%.2f, %.2f, %.2f)..(%.2f, %.2f, %.2f) %s; stand point (%.2f, %.2f, %.2f) %.2f m: %s; "
+        "ring %.2f m",
+        pc.index, pc.label, ci.id, ci.by_id ? "the locator id" : "the nearest", ci.pos[0], ci.pos[1], ci.pos[2], std::sqrt(px * px + py * py),
+        std::sqrt(ax * ax + ay * ay + az * az), ci.rot[3], ci.rot[4], ci.cfg ? ci.cfg_name : "(not a ConstructionPointConfig)", ci.front[0], ci.front[1],
+        ci.front[2], ci.mn[0], ci.mn[1], ci.mn[2], ci.mx[0], ci.mx[1], ci.mx[2], pc.box ? "usable" : "not used", stand[0], stand[1], stand[2],
+        std::sqrt(sx * sx + sy * sy), stand_ok ? "used" : "not used", radius);
 }
 
-void GotoTick(double now_ms) {
-    if (!g_goto.on) return;
+// Sam at plan candidate pc.next (facing the structure); the tracker restarts there with the same goto serial.
+bool PlaceNext(double now_ms, char* why, std::size_t cap) {
+    PlaceCheck& pc = g_goto.pc;
+    const devrules::Landing& c = pc.plan.c[pc.next++];
+    g_goto.t = devrules::GotoTrack{};
+    g_goto.t.x = c.pos[0], g_goto.t.y = c.pos[1], g_goto.t.z = c.pos[2];
+    g_goto.t.snap = c.snap;
+    g_goto.t.t0 = g_goto.t.last_place = now_ms;
+    g_goto.fx = pc.centre[0] - c.pos[0], g_goto.fy = pc.centre[1] - c.pos[1];
+    g_goto.facing = g_goto.fx * g_goto.fx + g_goto.fy * g_goto.fy > 1e-6;
+    return PlaceSam(g_goto, why, cap);
+}
+// The line after PlaceNext: `what` happened at the previous candidate, the new one.
+void LogPlaceNext(const char* what, const double (&pos)[3], bool ok, const char* why) {
+    const PlaceCheck& pc = g_goto.pc;
+    const devrules::Landing& now = pc.plan.c[pc.next - 1];
+    const devrules::Landing& before = pc.plan.c[pc.next >= 2 ? pc.next - 2 : 0];
+    Log("[dev] place %d: Sam %s after %s at (%.2f, %.2f, %.2f): trying %s at (%.2f, %.2f, %.2f): %s", pc.index, what, before.rule, pos[0], pos[1], pos[2],
+        now.rule, now.pos[0], now.pos[1], now.pos[2], ok ? why : why[0] ? why : "refused");
+}
+
+// dev_place after its goto settled: Sam outside the structure's box and every small neighbour's -> stay (done); inside one ->
+// the next candidate, placed now (next: the goto goes on); none left -> give_up (GotoTick puts Sam back where he started). A
+// structure that streamed in after the teleport is looked up again (its plan then starts over).
+devrules::LandStep PlaceAfterSettle(const double (&pos)[3], double now_ms) {
+    PlaceCheck& pc = g_goto.pc;
+    if (!pc.cp) {
+        BuildPlan(pc);  // next = 0: the new plan's first candidate is the one to try if he is inside
+        if (pc.cp) Log("[dev] place %d: the construction point streamed in after the teleport", pc.index);
+        else pc.next = 1;
+    }
+    const devrules::Landing& used = pc.plan.c[pc.next > 0 ? pc.next - 1 : 0];
+    const double dx = pos[0] - pc.centre[0], dy = pos[1] - pc.centre[1];
+    const double d = std::sqrt(dx * dx + dy * dy);
+    double local[3] = {};
+    char in[120] = {};
+    bool inside = false;
+    if (pc.cp && pc.box && devrules::InsideBox(pos, pc.cp_pos, pc.cp_rot, pc.mn, pc.mx, local)) {
+        inside = true;
+        Put(in, sizeof(in), "%s's box (local %.2f, %.2f, %.2f)", pc.label, local[0], local[1], local[2]);
+    } else if (InsideNeighbour(pos, pc.cp_ptr, pc.type, in, sizeof(in))) {
+        inside = true;
+    }
+    const devrules::LandStep step = devrules::LandAfterSettle(inside, pc.next, pc.plan.n);
+    if (step == devrules::LandStep::stay) {
+        if (!pc.cp || !pc.box)
+            Log("[dev] place %d settled: Sam %.1f m from %s (%s; no collision box of its own to check, none of a small neighbour's)", pc.index, d, pc.label,
+                used.rule);
+        else
+            Log("[dev] place %d settled: Sam %.1f m from %s, outside its box (local %.2f, %.2f, %.2f; %s) and any small neighbour's", pc.index, d, pc.label,
+                local[0], local[1], local[2], used.rule);
+        return step;
+    }
+    if (step == devrules::LandStep::give_up) {
+        Log("[dev] place %d: Sam is INSIDE %s after %s and no candidate is left", pc.index, in, used.rule);
+        return step;
+    }
+    char why[160] = {}, what[160];
+    Put(what, sizeof(what), "in %s", in);
+    const bool ok = PlaceNext(now_ms, why, sizeof(why));
+    LogPlaceNext(what, pos, ok, why);
+    return step;
+}
+
+// dev_place <n> [kind] [mode]: Sam beside the n-th nearest place (of that kind: 0 any, -1 delivery base, 5 post box, 20 MULE
+// post ...), at the structure's stand point or the ring around it, facing it; through the goto tracker (far places stream in).
+// Hidden runs on their sandboxed save only: mode 1 the place's own point, the old landing (inside a post box: the test's
+// control); mode 2 the structure's own point as the first candidate (the box check then moves him to the next: the retry path).
+bool GoPlace(int index, int filter, int mode, double now_ms, char* msg, std::size_t cap) {
+    if (!Gate(Tool::player, msg, cap) || !Has(kFPlaces, msg, cap)) return RefuseGoto(msg);
+    if (mode != 0 && (!automation::Enabled() || RealSaveRefusal()))
+        return Put(msg, cap, "place mode %d: hidden runs on a sandboxed save only", mode), RefuseGoto(msg);
+    if (mode < 0 || mode > 2) return Put(msg, cap, "place <n> [kind] [mode 0 beside it, 1 its own point, 2 test the retry]"), RefuseGoto(msg);
+    const bool raw = mode == 1;
+    Sam s;
+    if (const char* why = Playing(&s)) return Put(msg, cap, "teleport refused: %s", why), RefuseGoto(msg);
+    ReadPlaces(&s);
+    int pick = -1, k = 0;
+    for (int i = 0; i < g_place_count && pick < 0; ++i)
+        if (devrules::PlaceFilterMatches(filter, g_places[i].type) && k++ == index) pick = i;
+    if (pick < 0) {
+        if (filter) Put(msg, cap, "no place #%d of kind %d (%d of that kind, %d in this area)", index, filter, k, g_place_count);
+        else Put(msg, cap, "no place #%d (%d in this area)", index, g_place_count);
+        return RefuseGoto(msg);
+    }
+    const PlaceFull& f = g_places[pick];
+    PlaceCheck pc;
+    pc.on = !raw;
+    pc.index = pick, pc.type = f.type, pc.locator = f.locator;
+    pc.test_inside = mode == 2;
+    Put(pc.label, sizeof(pc.label), "%s", f.p.label);
+    std::memcpy(pc.place, f.p.pos, sizeof(pc.place));
+    std::memcpy(pc.place_rot, f.rot, sizeof(pc.place_rot));
+    char tag[24], line[200] = {};
+    Put(tag, sizeof(tag), "place %d", pick);
+    if (raw) {
+        const double face[2] = {f.rot[3], f.rot[4]};
+        const bool ok = StartGoto(f.p.pos[0], f.p.pos[1], f.p.pos[2], face, tag, nullptr, now_ms, line, sizeof(line));
+        Log("[dev] place %d (%s, %s, type %d): raw, the place's own point (%.2f, %.2f, %.2f): %s", pick, f.p.label, devrules::PlaceKind(f.type), f.type,
+            f.p.pos[0], f.p.pos[1], f.p.pos[2], line);
+        return Put(msg, cap, "to %s (its own point, raw): %s", f.p.label, line), ok;
+    }
+    BuildPlan(pc);
+    pc.next = 1;
+    const devrules::Landing& c = pc.plan.c[0];  // never a snap candidate (the ring's far one is last)
+    const double face[2] = {pc.centre[0] - c.pos[0], pc.centre[1] - c.pos[1]};
+    const double d = std::sqrt(face[0] * face[0] + face[1] * face[1]);
+    const bool ok = StartGoto(c.pos[0], c.pos[1], c.pos[2], face, tag, &pc, now_ms, line, sizeof(line));
+    Log("[dev] place %d (%s, %s, type %d, locator id %d): %s at (%.2f, %.2f, %.2f), %.1f m from the structure: %s", pick, f.p.label,
+        devrules::PlaceKind(f.type), f.type, f.locator, c.rule, c.pos[0], c.pos[1], c.pos[2], d, line);
+    return Put(msg, cap, ok ? "to %s (%s, %.1f m from it): %s" : "teleport to %s (%s, %.1f m from it) failed: %s", f.p.label, c.rule, d, line), ok;
+}
+
+// ---------------------------------------------------------------- map markers (Teleport to map marker; dev_marker)
+// The player's own map markers (the map screen's route points, research round 18, docs/debug-actions.md "Teleport to map marker").
+// Marker manager global (0x64B0 bytes): +0x5EF8 the user-marker pool (50 x 0x50, slot = letter * 10 + number), +0x5F00 the
+// next id. Entry: +0x10 float x, y, z, w (Sam's frame, z up); +0x20 u64 id (placement order); +0x2C bit 0 active; +0x2D type
+// (6 = UserMarker); +0x41 / +0x42 ground snap pending (raycast / heightmap); +0x43 reached; +0x4C letter (route A..E); +0x4D number (0..9). +0x08 is
+// uninitialised (never read). The area (+0x2E) is 0xFFFF in memory: the mod tags each id with the area it first saw it in.
+constexpr std::uintptr_t kMkGlobal = 0x147BFD940;
+constexpr std::uintptr_t kMkPool = 0x5EF8;
+constexpr int kMkSlots = 50;
+constexpr std::uintptr_t kMkEntry = 0x50;
+constexpr std::uintptr_t kMkAdd = 0x142F22C90;       // (mgr, const float pos[4], letter, number, u8 snap, u8 reached)
+constexpr std::uintptr_t kMkNewRoute = 0x142F29320;  // (mgr) -> the letter for a new route (evicts the oldest one-marker route)
+constexpr std::uintptr_t kMkNextNum = 0x142F29430;   // (mgr, letter) -> the next number in that route (-1 full / bad letter)
+enum MkFeature : unsigned { kMkRead = 1u, kMkWrite = 2u };
+constexpr Site kMkSites[] = {
+    {0x142F40090, "48 81 EC E8 00 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 84 24 D0 00 00 00 48 8B 05 ?? ?? ?? ?? 48 85 C0 75 1B", "marker manager accessor",
+     kMkRead | kMkWrite},
+    {0x142F22D00, "48 89 5C 24 08 48 89 74 24 10 57 41 56 41 57 48 83 EC 20 43 8D 04 80 48 8B F1 48 8B 89 F8 5E 00 00 41 8D 04 41 48 98",
+     "user marker add body (+0x5EF8, letter*10+number)", kMkRead | kMkWrite},
+    {0x142F22DBE, "48 8B 86 00 5F 00 00 80 4B 2C 01 48 89 43 20 48 FF 86 00 5F 00 00", "user marker id (+0x20 from +0x5F00, +0x2C active)", kMkRead | kMkWrite},
+    {0x142F22E02, "C5 F9 7F 43 10 88 43 43 88 4B 41 88 4B 42 44 88 73 4C 44 88 7B 4D", "user marker fields (+0x10 +0x41 +0x42 +0x43 +0x4C +0x4D)", kMkRead | kMkWrite},
+    {0x142F36783, "44 0F B6 43 2C 41 80 E0 01 74 0F 80 7B 2D 06 75 09 48 8B 07 48 39 43 20", "user marker type (+0x2C active, +0x2D == 6, +0x20 id)", kMkRead},
+    {kCurArea, "48 83 EC 28 48 8B 05 ?? ?? ?? ?? 48 85 C0 74 12 80 B8 A8 00 00 00 00 74 09 0F B7 40 48", "current area", kMkRead | kMkWrite},
+    {kMkAdd, "48 89 5C 24 08 48 89 6C 24 10 48 89 74 24 18 57 48 83 EC 40 48 8B E9 41 8B D9 48 8B 0D ?? ?? ?? ?? 41 8B F8 48 8B F2 E8 ?? ?? ?? ?? 66 89 44 24 30 44 8B CB 0F B6 44 24 78 44 8B C7 88 44 24 28 48 8B D6 0F B6 44 24 70 48 8B CD 88 44 24 20 E8 1C 00 00 00",
+     "user marker add (area, then the body)", kMkWrite},
+    {kMkNewRoute, "40 55 57 41 56 48 83 EC 20 45 33 F6 4C 89 7C 24 50 4C 8B B9 F8 5E 00 00", "user marker new route", kMkWrite},
+    {kMkNextNum, "44 8B CA 83 FA 04 77 7C 4C 8B 99 F8 5E 00 00 45 33 C0 49 8D 4B 4C F6 41 E0 01", "user marker next number", kMkWrite},
+};
+unsigned g_mk_features = 0;
+bool g_mk_checked = false;
+char g_mk_off[96] = {};
+struct MkTag {
+    bool set = false;
+    std::uint64_t id = 0;
+    double x = 0, y = 0;
+    int area = -1;
+};
+MkTag g_mk_tags[kMkSlots];  // per slot: the marker the mod saw there (id, place) and the area it was in then
+SRWLOCK g_mk_lock = SRWLOCK_INIT;
+MarkerView g_mk_view;  // published (g_mk_lock)
+double g_mk_next = 0;
+// The overlay wants the view (GetMarkerView, any thread) until this GetTickCount64() time: the 2 Hz view runs only while the menu
+// shows the button; without it a light pass every kMkTagMs keeps the area tags of new markers.
+volatile LONG64 g_mk_wanted_until = 0;
+bool g_mk_view_live = false;
+constexpr double kMkViewMs = 500, kMkTagMs = 5000;
+
+void MkCheck() {
+    if (g_mk_checked) return;
+    g_mk_checked = true;
+    unsigned f = kMkRead | kMkWrite;
+    int ok = 0, total = 0;
+    auto fail = [&](unsigned bits, const char* what) {
+        Log("[dev] map markers: byte check FAILED: %s", what);
+        if (!g_mk_off[0]) Put(g_mk_off, sizeof(g_mk_off), "%s", what);
+        f &= ~bits;
+    };
+    for (const Site& s : kMkSites) {
+        ++total;
+        if (mem::CodeMatches(A(s.va), s.sig)) ++ok;
+        else fail(s.features, s.name);
+    }
+    ++total;
+    if (mem::RipTarget(A(0x142F400A9), 3, 7) == A(kMkGlobal)) ++ok;
+    else fail(kMkRead | kMkWrite, "the marker manager global");
+    ++total;
+    if (mem::RipTarget(A(0x142F22CB7), 1, 5) == A(kCurArea)) ++ok;
+    else fail(kMkWrite, "the add's current-area call");
+    g_mk_features = f;
+    Log("[dev] map markers: %d/%d byte checks ok; teleport %s, test add %s", ok, total, (f & kMkRead) ? "on" : "OFF", (f & kMkWrite) ? "on" : "OFF");
+}
+
+bool CallMkAdd(std::uintptr_t mgr, const float* pos, int letter, int number, std::uint8_t snap, std::uint8_t reached) noexcept {
+    __try {
+        reinterpret_cast<void (*)(std::uintptr_t, const float*, int, int, std::uint8_t, std::uint8_t)>(A(kMkAdd))(mgr, pos, letter, number, snap, reached);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+int CallMkNewRoute(std::uintptr_t mgr) noexcept {
+    __try {
+        return reinterpret_cast<int (*)(std::uintptr_t)>(A(kMkNewRoute))(mgr);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -2;
+    }
+}
+int CallMkNextNum(std::uintptr_t mgr, int letter) noexcept {
+    __try {
+        return reinterpret_cast<int (*)(std::uintptr_t, int)>(A(kMkNextNum))(mgr, letter);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -2;
+    }
+}
+
+// The active user markers (reads only; game thread). `area` >= 0: new ids are tagged with it (the area they were first seen in).
+int MkRead(devrules::Marker* out, int area) {
+    const std::uintptr_t mgr = mem::Q(A(kMkGlobal));
+    const std::uintptr_t pool = mgr ? mem::Q(mgr + kMkPool) : 0;
+    static std::uint8_t buf[kMkSlots * kMkEntry];
+    if (!pool || !mem::Read(pool, buf, sizeof(buf))) return -1;
+    int n = 0;
+    for (int i = 0; i < kMkSlots; ++i) {
+        const std::uint8_t* b = buf + kMkEntry * static_cast<unsigned>(i);
+        if (!(b[0x2C] & 1) || b[0x2D] != 6 || !devrules::MarkerSlotOk(b[0x4C], b[0x4D])) continue;
+        float p[3] = {};
+        std::uint64_t id = 0;
+        std::memcpy(p, b + 0x10, sizeof(p));
+        std::memcpy(&id, b + 0x20, sizeof(id));
+        if (!std::isfinite(p[0]) || !std::isfinite(p[1]) || !std::isfinite(p[2])) continue;
+        devrules::Marker& m = out[n++];
+        m.slot = i, m.letter = b[0x4C], m.number = b[0x4D], m.id = id;
+        m.pos[0] = p[0], m.pos[1] = p[1], m.pos[2] = p[2];
+        m.pending = (b[0x41] ? 1 : 0) | (b[0x42] ? 2 : 0);
+        m.snapped = m.pending == 0;
+        MkTag& t = g_mk_tags[i];
+        if (!t.set || !devrules::SameMarker(t.id, t.x, t.y, id, p[0], p[1])) t.set = true, t.id = id, t.x = p[0], t.y = p[1], t.area = area;
+        else if (t.area < 0) t.area = area;
+        m.area = t.area;
+    }
+    return n;
+}
+
+void PublishMarkers(const MarkerView& in) {
+    MarkerView v = in;
+    AcquireSRWLockExclusive(&g_mk_lock);
+    v.serial = g_mk_view.serial + 1;
+    g_mk_view = v;
+    ReleaseSRWLockExclusive(&g_mk_lock);
+}
+
+void MarkerTick(double now_ms) {
+    const bool wanted = static_cast<LONG64>(GetTickCount64()) < InterlockedCompareExchange64(&g_mk_wanted_until, 0, 0);
+    if (!wanted && g_mk_view_live) {  // the menu closed: the view goes stale; the next open shows "reading" until the first pass
+        g_mk_view_live = false;
+        MarkerView v;
+        v.checked = g_mk_checked;
+        v.ok = (g_mk_features & kMkRead) != 0;
+        Put(v.off, sizeof(v.off), "%s", g_mk_off);
+        Put(v.block, sizeof(v.block), "reading the map markers");
+        PublishMarkers(v);
+    }
+    if (wanted && !g_mk_view_live) g_mk_next = 0;
+    if (now_ms < g_mk_next) return;
+    g_mk_next = now_ms + (wanted ? kMkViewMs : kMkTagMs);
+    MarkerView v;
     Sam s;
     const char* block = Playing(&s);
-    double pos[3] = {s.xf.pos.x, s.xf.pos.y, s.xf.pos.z};
-    char why[160] = {};
-    const bool playable = !block && game::PlacementGate(why, sizeof(why)) == 0;
-    if (!s.e) pos[0] = pos[1] = pos[2] = 1e9;  // no player (a load): never "at" the target
-    const devrules::GotoStep step = devrules::GotoAdvance(g_goto.t, playable, pos, now_ms);
-    const double secs = (now_ms - g_goto.t.t0) / 1000.0;
-    const char* reason = block ? block : why;
-    if (step == devrules::GotoStep::place_again) {
-        const bool ok = PlaceSam(g_goto.t, why, sizeof(why));
-        Log("[dev] goto #%u: Sam at z %.2f, %.1f m below the target after %.1f s (the ground was not in yet): placed again (#%d): %s", g_goto_serial, pos[2],
-            g_goto.t.z - pos[2], secs, g_goto.t.placements, ok ? why : "refused");
-    } else if (step == devrules::GotoStep::settled) {
-        g_goto.on = false;
-        Log("[dev] goto #%u: settled at (%.2f, %.2f, %.2f) after %.1f s (%d placement(s))", g_goto_serial, pos[0], pos[1], pos[2], secs, g_goto.t.placements);
-        PublishGoto(GotoState::settled, "goto #%u: settled at (%.2f, %.2f, %.2f) after %.1f s", g_goto_serial, pos[0], pos[1], pos[2], secs);
-    } else if (step == devrules::GotoStep::timeout) {
-        g_goto.on = false;
-        Log("[dev] goto #%u: NOT settled after %.1f s: Sam at (%.2f, %.2f, %.2f)%s%s", g_goto_serial, secs, pos[0], pos[1], pos[2], reason[0] ? "; " : "", reason);
-        PublishGoto(GotoState::failed, "goto #%u: NOT settled after %.0f s (Sam at %.0f, %.0f, %.0f%s%s)", g_goto_serial, secs, pos[0], pos[1], pos[2],
-                    reason[0] ? "; " : "", reason);
+    if (!block) MkCheck();
+    v.checked = g_mk_checked;
+    v.ok = (g_mk_features & kMkRead) != 0;
+    Put(v.off, sizeof(v.off), "%s", g_mk_off);
+    if (block) Put(v.block, sizeof(v.block), "%s", block);
+    if (!block && v.ok) {
+        devrules::Marker m[kMkSlots];
+        int n = MkRead(m, -1);
+        bool untagged = false;
+        for (int i = 0; i < n; ++i) untagged |= m[i].area < 0;
+        // GetCurrentArea only while the world is played (the load-hang rule in Tick), and without the menu only for a new marker
+        if (n > 0 && (wanted || untagged)) v.area = devrules::KnownArea(CallArea());
+        if (untagged && v.area >= 0) n = MkRead(m, v.area);
+        if (!wanted) return;  // the light pass: the tags only
+        v.newest = devrules::PickMarker(m, n > 0 ? n : 0, -1, v.area);
+        for (int i = 0; i < n && v.count < MarkerView::kMax; ++i) {
+            MarkerView::Item& it = v.items[v.count++];
+            devrules::MarkerName(m[i].letter, m[i].number, it.name);
+            it.id = m[i].id;
+            std::memcpy(it.pos, m[i].pos, sizeof(it.pos));
+            it.snapped = m[i].snapped;
+            it.area = m[i].area;
+            it.here = devrules::MarkerAreaOk(m[i].area, v.area);
+            const double dx = m[i].pos[0] - s.xf.pos.x, dy = m[i].pos[1] - s.xf.pos.y;
+            it.dist_m = static_cast<float>(std::sqrt(dx * dx + dy * dy));
+        }
     }
+    if (!wanted) return;
+    g_mk_view_live = true;
+    PublishMarkers(v);
+}
+
+// Teleport to map marker (the Player tab's teleport class: any session, no dev tools needed; the local Sam only). want < 0: the
+// newest marker on this map (devrules::MarkerWant: the action's v0 is the id + 1). The position is copied first: the game
+// removes a one-marker route once Sam reaches it.
+bool MarkerGo(std::int64_t want, double now_ms, char* msg, std::size_t cap) {
+    Sam s;
+    if (const char* why = Playing(&s)) return Put(msg, cap, "teleport to map marker refused: %s", why), RefuseGoto(msg);
+    MkCheck();
+    if (!(g_mk_features & kMkRead))
+        return Put(msg, cap, "teleport to map marker is off: this game build differs (%s)", g_mk_off[0] ? g_mk_off : "a byte check"), RefuseGoto(msg);
+    devrules::Marker m[kMkSlots];
+    const int area = devrules::KnownArea(CallArea());
+    const int n = MkRead(m, area);
+    if (n < 0) return Put(msg, cap, "no map markers (the marker manager is not there)"), RefuseGoto(msg);
+    const int i = devrules::PickMarker(m, n, want, area);
+    if (i < 0) {
+        if (want >= 0) Put(msg, cap, "that map marker is gone (%d left)", n);
+        else Put(msg, cap, "no map marker: place one on the map screen first");
+        return RefuseGoto(msg);
+    }
+    const devrules::Marker mk = m[i];  // a copy: the game may remove it once Sam is there
+    char name[4];
+    devrules::MarkerName(mk.letter, mk.number, name);
+    if (!devrules::MarkerAreaOk(mk.area, area)) {
+        char there[64], here[64];
+        devrules::AreaText(mk.area, mk.area >= 0 ? game::AreaName(static_cast<std::uint16_t>(mk.area)) : nullptr, there, sizeof(there));
+        devrules::AreaText(area, area >= 0 ? game::AreaName(static_cast<std::uint16_t>(area)) : nullptr, here, sizeof(here));
+        return Put(msg, cap, "map marker %s is on another map (%s); you are in %s", name, there, here), RefuseGoto(msg);
+    }
+    const double z = devrules::MarkerTargetZ(mk);
+    const double face[2] = {mk.pos[0] - s.xf.pos.x, mk.pos[1] - s.xf.pos.y};
+    char tag[24], line[200] = {};
+    Put(tag, sizeof(tag), "marker %s", name);
+    const bool ok = StartGoto(mk.pos[0], mk.pos[1], z, face, tag, nullptr, now_ms, line, sizeof(line));
+    Log("[dev] marker %s (id %llu, %s of %d, area %d): at (%.2f, %.2f, %.2f), %s: %s", name, static_cast<unsigned long long>(mk.id),
+        want >= 0 ? "picked" : "the newest", n, mk.area, mk.pos[0], mk.pos[1], mk.pos[2],
+        z == 0 ? "the terrain height not in yet: the topmost ground" : "its terrain height (placed again if Sam falls)", line);
+    return Put(msg, cap, ok ? "to map marker %s: %s" : "teleport to map marker %s failed: %s", name, line), ok;
+}
+
+// dev_marker: 0 log the map's user markers; 1 <m east> <m north>: add one there through the game's own add, as the map screen
+// does (hidden runs only: it changes the seeded save's markers).
+bool MarkerTest(int op, double east, double north, char* msg, std::size_t cap) {
+    if (!Gate(Tool::player, msg, cap)) return false;
+    Sam s;
+    if (const char* why = Playing(&s)) return Put(msg, cap, "dev marker refused: %s", why), false;
+    MkCheck();
+    if (!(g_mk_features & kMkRead)) return Put(msg, cap, "map markers are off: this game build differs (%s)", g_mk_off), false;
+    const std::uintptr_t mgr = mem::Q(A(kMkGlobal));
+    if (!mgr) return Put(msg, cap, "no marker manager"), false;
+    const int area = devrules::KnownArea(CallArea());
+    if (op == 1) {
+        if (!automation::Enabled() || RealSaveRefusal()) return Put(msg, cap, "dev marker add: hidden runs on a sandboxed save only"), false;
+        if (!(g_mk_features & kMkWrite)) return Put(msg, cap, "dev marker add is off: this game build differs (%s)", g_mk_off), false;
+        const int letter = CallMkNewRoute(mgr);
+        const int number = letter >= 0 ? CallMkNextNum(mgr, letter) : -1;
+        const float pos[4] = {static_cast<float>(s.xf.pos.x + east), static_cast<float>(s.xf.pos.y + north), static_cast<float>(s.xf.pos.z), 0.f};
+        const bool ok = devrules::MarkerSlotOk(letter, number) && CallMkAdd(mgr, pos, letter, number, 1, 0);
+        char name[4];
+        devrules::MarkerName(letter, number, name);
+        Log("[dev] marker add %s (letter %d number %d) at (%.2f, %.2f, %.2f), %.0f m east %.0f m north of Sam: %s", name, letter, number, pos[0], pos[1], pos[2],
+            east, north, ok ? "added (the game snaps it to the ground)" : "NOT added");
+        return Put(msg, cap, ok ? "map marker %s added at (%.0f, %.0f)" : "map marker add failed (%s)", name, pos[0], pos[1]), ok;
+    }
+    if (op != 0) return Put(msg, cap, "dev marker 0 log, 1 <m east> <m north> add one (hidden runs)"), false;
+    devrules::Marker m[kMkSlots];
+    const int n = MkRead(m, area);
+    std::uint64_t next_id = 0;
+    std::uint32_t flags = 0;
+    mem::Rd(mgr + 0x5F00, next_id), mem::Rd(mgr + 0x5F08, flags);
+    const int newest = devrules::PickMarker(m, n > 0 ? n : 0, -1, area);
+    Log("[dev] markers: %d active in the pool, next id %llu, flags 0x%X, area %d", n, static_cast<unsigned long long>(next_id), flags, area);
+    for (int i = 0; i < n; ++i) {
+        char name[4];
+        devrules::MarkerName(m[i].letter, m[i].number, name);
+        const double dx = m[i].pos[0] - s.xf.pos.x, dy = m[i].pos[1] - s.xf.pos.y;
+        Log("[dev] marker %s: id %llu at (%.2f, %.2f, %.2f), %.0f m, %s, area %d%s", name, static_cast<unsigned long long>(m[i].id), m[i].pos[0], m[i].pos[1],
+            m[i].pos[2], std::sqrt(dx * dx + dy * dy), m[i].snapped ? "on the ground"
+            : m[i].pending == 1 ? "the terrain height, the game's raycast pending" : "ground snap pending", m[i].area, i == newest ? " (newest)" : "");
+    }
+    return Put(msg, cap, "%d map markers (logged)", n < 0 ? 0 : n), n >= 0;
 }
 
 // ---------------------------------------------------------------- boots' life (dev_boots)
@@ -896,10 +1548,9 @@ void Tick(double now_ms) noexcept {
     quickstart::Tick(now_ms);  // hidden runs' "start" (quickstart.cpp): the title's Continue / Load, no menu steps
     vshare::DevTick(now_ms);
     story::Tick(now_ms, g_enabled, SessionNow());  // the story tools (story_state.cpp): the probe, the slots, a pending load
-    if (g_enabled) {
-        GotoTick(now_ms);
-        BootsTick(now_ms);
-    }
+    GotoTick(now_ms);    // a goto runs only once one was asked (Teleport to map marker needs no dev tools)
+    MarkerTick(now_ms);  // the map markers (any session): the view at 2 Hz while the menu shows it, else the area tags every 5 s
+    if (g_enabled) BootsTick(now_ms);
     if (!g_enabled || now_ms < g_next_view) return;
     g_next_view = now_ms + 1000;
     Check();
@@ -968,10 +1619,12 @@ bool Command(Op op, const double (&v)[3], char* msg, std::size_t cap) noexcept {
         case Op::weather: return Weather(static_cast<int>(v[0]), msg, cap);
         case Op::enemies: return Enemies(static_cast<int>(v[0]), msg, cap);
         case Op::places: return Places(msg, cap);
-        case Op::place: return GoPlace(static_cast<int>(v[0]), msg, cap);
+        case Op::place: return GoPlace(static_cast<int>(v[0]), static_cast<int>(v[1]), static_cast<int>(v[2]), g_now_ms, msg, cap);
         case Op::items: return Items(static_cast<int>(v[0]), v[1], msg, cap);
         case Op::go_to: return Goto(v[0], v[1], v[2], g_now_ms, msg, cap);
         case Op::boots: return BootsCmd(static_cast<int>(v[0]), v[1], msg, cap);
+        case Op::marker_go: return MarkerGo(devrules::MarkerWant(v[0]), g_now_ms, msg, cap);
+        case Op::marker_test: return MarkerTest(static_cast<int>(v[0]), v[1], v[2], msg, cap);
     }
     return Put(msg, cap, "unknown dev op"), false;
 }
@@ -980,6 +1633,14 @@ View GetView() noexcept {
     AcquireSRWLockShared(&g_view_lock);
     View v = g_view;
     ReleaseSRWLockShared(&g_view_lock);
+    return v;
+}
+
+MarkerView GetMarkerView() noexcept {
+    InterlockedExchange64(&g_mk_wanted_until, static_cast<LONG64>(GetTickCount64()) + 1500);  // the overlay shows the button
+    AcquireSRWLockShared(&g_mk_lock);
+    MarkerView v = g_mk_view;
+    ReleaseSRWLockShared(&g_mk_lock);
     return v;
 }
 

@@ -1,0 +1,54 @@
+# Teleport to map marker (Player tab / Dev tools page, action teleport_to_map_marker; docs/debug-actions.md "Teleport to map
+# marker", round 18), hidden:
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios marker-teleport -SeedSaves complete-100
+# A hidden test cannot use the map screen (a "new ranked event" popup blocks it), so markers are added through the game's own
+# add, as the map screen does (action dev_marker 1, hidden runs only; the seeded save's copy, never a real save). Steps
+# (complete-100: Mountain Knot City, area 200, the save already has map markers): the markers logged; one added 150 m away,
+# its z moved to the ground by the game (the terrain height; its own raycast may stay pending: the teleport then takes the
+# topmost ground); the menu's Dev tools page with the button (screenshot); Teleport to map marker (the newest): settled
+# at it; a far one (about 1 km away, a snowy mountain top at z ~690): settled there after the ground streamed in.
+# The game removes a reached one-marker route (Marker C removed), as when Sam walks there.
+# Pass: every step ok, the goto lines settled within 25 m of each marker, no FAULT / byte check FAILED lines, screenshots 02
+# and 04 show Sam standing on the ground.
+# covers: dev-tools overlay
+role solo
+timeout 300
+ini dev_tools=1
+start
+wait 3000
+waitlog 30 \[dev\] dev tools: [0-9]+/[0-9]+ byte checks ok
+waitlog 10 \[dev\] map markers: [0-9]+/[0-9]+ byte checks ok; teleport on, test add on
+action dev_marker 0
+# ---- a near marker (150 m east, 90 m north), snapped to the ground by the game
+action dev_marker 1 150 90
+wait 1500
+action dev_marker 0
+waitnew 3 \[dev\] marker [A-E][0-9]: id [0-9]+ at .*(on the ground|the terrain height).*\(newest\)
+menu open
+action dev_status 2
+wait 1200
+screenshot 01-dev-page
+menu close
+action teleport_to_map_marker
+waitworld 45 goto
+waitnew 3 \[dev\] goto #[0-9]+: settled
+wait 1000
+screenshot 02-at-marker
+action log_positions
+action dev_marker 0
+# ---- a far marker (about 1 km east-south-east, a mountain top), the ground streams in after the teleport
+action dev_marker 1 980 -430
+wait 2000
+action dev_marker 0
+screenshot 03-before-far
+action teleport_to_map_marker
+waitworld 60 goto
+waitnew 3 \[dev\] goto #[0-9]+: settled
+wait 1500
+screenshot 04-at-far-marker
+action log_positions
+action dev_marker 0
+nolog \[dev\].*FAULT
+nolog \[dev\] map markers: byte check FAILED
+nolog \[dev\] goto #[0-9]+: NOT settled
+quit

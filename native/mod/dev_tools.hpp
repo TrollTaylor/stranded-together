@@ -1,7 +1,7 @@
 // Dev tools: spawning, world control and player cheats for play-testing and hidden test runs (docs/debug-actions.md
 // "Dev tools"). The rules are dev_rules.hpp (which tool runs in which session); the vehicles are vehicle_share.cpp's
 // DevSpawn / DevRemove / DevRepair; this file is the rest (refill, god mode, infinite ammo, weather, MULEs, BTs, boots,
-// chiral crystals, the place list) and the one entry the debug actions call.
+// chiral crystals, the place list, the goto tracker, the map markers) and the one entry the debug actions call.
 //
 // Threads: Command and Tick on the game thread (st::debug::OnTick); GetView on any thread (the overlay's Dev tools page).
 // Every game address is byte-checked on the first tick; a mismatch turns that tool off with one log line and the reason on
@@ -47,12 +47,18 @@ enum class Op : std::uint8_t {
     weather,         // v0 = 0 clear, 1 timefall, 2 heavy timefall, 3 the game's mix
     enemies,         // v0 = 1 resurrect every MULE / terrorist, 2 remove them from the world, 3 reset the BTs
     places,          // log the current area's places
-    place,           // v0 = index in the place list: teleport there
+    place,           // v0 = index among the places of kind v1 (0 any, -1 delivery base, 5 post box, 20 MULE post: dev_rules.hpp
+                     // PlaceFilterMatches): Sam beside it (its stand point or the ring around it), through the goto tracker; outside
+                     // every small structure's box or the next candidate, none left: back where he started. Hidden runs on a
+                     // sandboxed save: v2 = 1 the place's own point (the old landing), 2 its own point first (tests the retry)
     items,           // v0 = 1 new boots, 2 chiral crystals +v1 (0 = 100)
     go_to,           // v0 x, v1 y, v2 z (0 = the topmost ground under x, y): Sam there, then waits for the ground (sandboxed saves
                      // only: a place anywhere in the world); "[dev] goto #n: settled ..." / "NOT settled" (GetGotoState)
     boots,           // v0 = 0 log the boots' life; 1 v1 = percent: set it (the game's SetShoesLifeByRate; sandboxed saves only);
                      // 2 v1 = 0/1: a 1 s "[dev] boots meter" line (hidden tests: the passenger's boots)
+    marker_go,       // v0 = the map marker's id + 1 (0 = the newest on this map; ids start at 0): Teleport to map marker (the Player
+                     // tab's teleport class: any session, no dev tools needed; through the goto tracker: "waitworld <s> goto")
+    marker_test,     // v0 = 0 log the map's user markers; 1 add one v1 m east / v2 m north of Sam through the game's own add (hidden runs)
 };
 bool Command(Op op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 
@@ -84,7 +90,32 @@ struct View {
 };
 View GetView() noexcept;
 
-// The newest dev_goto (Op::go_to), any thread (the automation thread's "waitworld <s> goto").
+// The map's user markers (Op::marker_go), any thread (the Player tab's Teleport to map marker). Calling it asks for the view:
+// Tick publishes it at 2 Hz while it was asked for in the last 1.5 s (the menu shows the button), not otherwise.
+struct MarkerView {
+    std::uint64_t serial = 0;
+    bool checked = false;  // the byte checks ran (on the first played tick)
+    bool ok = false;       // reading the markers is on
+    char off[96] = {};     // the failed byte check
+    char block[96] = {};   // why nothing can be read now (title screen, loading, a menu)
+    int area = -1;         // the current area (-1 unknown)
+    int newest = -1;       // index in items
+    static constexpr int kMax = 50;
+    struct Item {
+        char name[4] = {};  // "C0"
+        std::uint64_t id = 0;
+        double pos[3] = {};
+        float dist_m = 0;   // flat, from Sam
+        bool snapped = false;
+        int area = -1;      // the area the mod first saw it in
+        bool here = true;   // not seen in another area
+    };
+    int count = 0;
+    Item items[kMax];
+};
+MarkerView GetMarkerView() noexcept;
+
+// The newest goto (Op::go_to, place, marker_go), any thread (the automation thread's "waitworld <s> goto", the menu's line).
 struct GotoState {
     enum Phase : std::uint8_t { none, moving, settled, failed };
     Phase phase = none;

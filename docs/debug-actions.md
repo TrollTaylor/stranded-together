@@ -131,6 +131,55 @@ Known risks: collision not streamed in at a far target (Sam may fall; mode 2 rep
 snap while loading), carts left behind, leaving a mission area may fail the mission, an
 autosave may follow, the partner sees a jump (the sync snaps beyond 25 m).
 
+### Teleport to map marker (`teleport_to_map_marker`, Player tab and Dev tools page)
+
+Sam on the ground at the player's newest map marker (the map screen's route pins, routes A..E, numbers 0..9), or at the one
+picked in the menu's list (the action's v0 = its id + 1, 0 the newest: ids start at 0, run 183504 logged "marker A0: id 0").
+"Newest" is the newest on the current map (the largest id among the markers not tagged with another area). Player-tab class: no dev tools needed, any session (host, guest, solo),
+the local Sam only, as Teleport to coordinates (it moves only this game's Sam; the partner sees him where he lands).
+Code: `dev_tools.cpp` `MarkerGo` / `MarkerTick`, the pure rules in `dev_rules.hpp` (`PickMarker`, `MarkerTargetZ`,
+`MarkerAreaOk`, `MarkerWant`, `KnownArea`, `SameMarker`; `st_dev_rules_tests`).
+
+* **Where the markers live** (research round 18, Ghidra): the marker manager global `0x147BFD940` (its accessor
+  `0x142F40090` loads it at `0x142F400A9`); `+0x5EF8` the user-marker pool, 50 entries of `0x50` (slot = letter x 10 +
+  number), `+0x5F00` the next id. Entry: `+0x10` float x, y, z (Sam's frame), `+0x20` u64 id (placement order: the newest is
+  the largest), `+0x2C` bit 0 active, `+0x2D` type (6 = UserMarker), `+0x41` / `+0x42` the game's ground snap pending
+  (raycast / heightmap), `+0x43` reached, `+0x4C` letter, `+0x4D` number. Reads only.
+* **The ground**: once the game's heightmap query is done (`+0x42` back to 0) the marker's z is the terrain height: Sam is
+  placed there (PlaceOn mode 1 at z + 0.5), and placed again if he falls through ground that was not streamed in yet (the
+  tracker's fall rule needs a known z). Only while `+0x42` is pending: the topmost ground under x, y (mode 2: the same
+  topmost-hit rule as the game's marker raycast). Run `20261124-183504-marker-teleport`: a new marker 175 m away got the
+  terrain height (448.92) within 2 s but kept its raycast byte (`+0x41`) set (as did 5 of the save's 7 markers, 1-1.8 km
+  away); the topmost ground (then used for it) put Sam at 448.13, within 0.8 m of that z; 1 km away: marker 690.32, Sam
+  689.52. Round 18's fix stage switched such markers to their terrain z (mode 1); not run yet.
+* **Far markers** go through the `dev_goto` tracker (the same settle / re-place / 25 s rule, `waitworld <s> goto`), so the
+  ground streams in before the action reports `settled`. If it times out with Sam more than 5 m below the target (he fell
+  through), he is put back where he started (`[dev] goto #n: NOT settled ...: returning Sam to where he started`, then
+  `Sam is back where he started`; the goto still reports failed). The menu shows the goto's outcome under the button.
+* **Refusals** (the result line; the button is greyed with the reason as its tooltip): `no map marker: place one on the map
+  screen first`; `map marker C0 is on another map (the Eastern Region (Area01)); you are in the Central Region (Area02)` (the
+  in-memory area is always 0xFFFF: the mod tags each pool slot's marker, its id and place, with the area it first saw it in,
+  and tags it again when another marker sits in that slot (ids restart per save); a marker loaded from a save made in another
+  area is not known as foreign: the fall-back above is the safety net); GetCurrentArea's 0xFFFF counts as unknown (allowed);
+  the marker feature off when a byte check failed; the teleport's own refusals (on a vehicle, loading, a menu open: the
+  placement gate; the Player tab's button greys with it).
+* **Cost**: the 2 Hz marker list (a 4 KB pool read, GetCurrentArea, Sam's position) runs only while the menu shows the button
+  (the overlay's GetMarkerView asks for it, 1.5 s); otherwise a light pass every 5 s reads the pool and calls GetCurrentArea
+  only for a marker it has not tagged yet, so a marker placed while the menu is closed still gets its area.
+* **The game's side effect**: reaching a one-marker route removes it ("Marker C removed", as when Sam walks there); a marker
+  of a longer route is marked reached and stays. The mod copies the position before the teleport.
+* **Byte checks** (`dev_tools.cpp kMkSites`, `[dev] map markers: 11/11 byte checks ok; teleport on, test add on`): the
+  accessor and its RIP target `0x147BFD940`, the add body (`+0x5EF8`, letter x 10 + number) `0x142F22D00`, its id write
+  (`+0x20` from `+0x5F00`, `+0x2C`) `0x142F22DBE` and field writes (`+0x10 +0x41 +0x42 +0x43 +0x4C +0x4D`) `0x142F22E02`, a
+  pool walk's type test (`+0x2C` bit 0, `+0x2D` == 6, `+0x20` id) `0x142F36783` (teleport),
+  GetCurrentArea `0x14262A860` (teleport and test add); the add wrapper `0x142F22C90` with its call to GetCurrentArea at
+  `0x142F22CB7`, the new-route letter `0x142F29320`, the next number `0x142F29430` (test add only). A mismatch turns off
+  only the marker feature (`[dev] map markers: byte check FAILED: <site>`).
+* **Hidden tests** cannot use the map screen (a "new ranked event" popup blocks it): `dev_marker 1 <m east> <m north>` adds a
+  marker through the game's own add exactly as the map screen does (new route letter, next number, add with snap = 1,
+  reached = 0; hidden runs on a sandboxed save only, it changes the seeded save's copy). The guest side (a two-games run)
+  is not run: the code moves only the local Sam, as in solo. Scenario `tools/testenv/scenarios/marker-teleport.txt`.
+
 ### Unstuck (`unstuck`)
 
 Teleports (mode 1, same preconditions) to the safe ground transform the game itself keeps in
@@ -139,6 +188,12 @@ Teleports (mode 1, same preconditions) to the safe ground transform the game its
 `+0x8230` (rotation `+0x8248`) valid when `& 0x40`. The choice mirrors the game's picker
 `0x1427A4A40` (B, unless A is valid and nearer to Sam), which its "return to safe
 position" warp `0x1426EA4B0` uses. Reads only; the picker is not called.
+
+Not a "last safe ground" trail (research round 18, static only, not run): the only writer of A and B, `0x1428097C0` (per
+update), clears both bits every update and sets them only while Sam is inside a game zone found by `0x142E35220` (zone kind
+0x0F for A, 0x16 for B): B is the nearest designer locator of that zone, A Sam's current transform (or a near locator).
+Outside those zones Unstuck says the game has no safe position; inside one it can return Sam's own spot. So it does not get
+Sam out of a structure; the place teleport now lands beside it instead (`dev_place`, Dev tools below).
 
 ### Heal (`heal`, Player tab)
 
@@ -1268,8 +1323,9 @@ refused: refused by the host: its game plays on its real save` (or `... its dev 
 | `dev_ammo` | `0 / 1` | `DebugSettings +0x28` infinite ammo (read by the weapon code at `0x1435BD545`). |
 | `dev_weather` | `0` clear, `1` timefall, `2` heavy, `3` the game's mix | `SetForecastTypeOfRegionDirectEx 0x142E1FE20(area, region, type)` for the 64 regions of the current area (types 6 SunnyOnly, 3 RainyOnly, 5 HeavyRainOnly, 2 Average), then `ResetForecastTime 0x142E1FC80(1)`: the sky follows within seconds (rain and Sam's hood in `041615` 04, clear in 05). Without the reset nothing visible changed in 9 s (`035801`). |
 | `dev_enemies` | `1` / `2` / `3` | 1: `ResetAndResurrectAllMulesByMissionChange` (`0x142B64420`): every killed MULE and terrorist (one manager, 150 members in the 100% save) comes back at its camp. 2: `RemoveAllMulesFromWorld(0)` (`0x142B645F0`). 3: `ResetAllGazers` (`0x1429A7220`): the BT fields start again. There is no "spawn an enemy here" in the game: go to a camp or a BT area with the place list. |
-| `dev_places` | | The current area's delivery points (`DSMissionSystem [0x147C0AFF8] +0x78820`: `Array<Ref<DSDeliveryPointInfoResource>>`, u32 count, u32 capacity, data at `+8`; entry RTTI checked; `+0x68` area, `+0x6A` type, `+0x78` order, `+0x80` transform), nearest first, to the log. The name is the entry's own localized text (`DescriptionText +0x20`, the text pointer inside the LocalizedTextResource), read at runtime (nothing shipped); without one, the type's name from the game's `EDSConstructionPointType` RTTI. Area 200 of the 100% save: Mountain Knot City, the preppers, MULE camps, terrorist camps, Distribution Center North of Mountain Knot City, Lake Knot City ... (more than 64; the page lists the nearest 64). |
-| `dev_place` | `n` | Teleport (PlaceOn mode 1, facing the place's forward) to entry n of that list. Only within the current area: the game has no cross-area teleport (story points: test saves, docs/sandbox-and-local-test.md). |
+| `dev_places` | | The current area's delivery points (`DSMissionSystem [0x147C0AFF8] +0x78820`: `Array<Ref<DSDeliveryPointInfoResource>>`, u32 count, u32 capacity, data at `+8`; entry RTTI checked; `+0x68` area, `+0x6A` type, `+0x70` DeliveryPointLocatorId, `+0x78` order, `+0x80` transform), nearest first, to the log with their kind (delivery base, prepper shelter, safe house, post box, MULE post, place) and locator id. The name is the entry's own localized text (`DescriptionText +0x20`, the text pointer inside the LocalizedTextResource, cut at the length stored after it: the text is not always zero-terminated), read at runtime (nothing shipped); without one, the type's name from the game's `EDSConstructionPointType` RTTI. Area 200 of the 100% save: Mountain Knot City, the preppers, MULE camps, terrorist camps, Distribution Center North of Mountain Knot City, Lake Knot City ... (more than 64; the page lists the nearest 64). |
+| `dev_place` | `n [kind] [mode]` | Sam beside the n-th nearest place (of `kind`: 0 any, 5 post box 5-7, 20 MULE post, -1 delivery base, else that type), facing it, through the `dev_goto` tracker (`waitworld <s> goto`). Until round 18 he was put on the place's own point, the structure's origin: inside a post box or MULE post he could not walk out (the control in `20261124-183622-place-teleport`: the pads moved him 0.49 m / 0 m). Now (`devrules::PlanLanding`): the place's construction point (DSConstructionPointManager `0x147BF4960` live list `+0x56A258` / `+0x56A260`: the one whose id (`cp+0x30`) is the place's locator id (`+0x70`) within 10 m, else the nearest of the same type group within 3 m; `cp+0x468` transform, `cp+0x90` config, its RTTI name checked) gives the stand point, the game's own `GetConstructionPointFrontAccessTransform` math (cp pos + offset x its rows, config `+0x2D0` TerminalFrontAccessOffset), used when 0.8-12 m from the construction point and within 4 m of its z; else a ring around the construction point (the place when none was found) at the config's box half-extent (`+0x50` / `+0x60`, when 0.05-50 m; else 1.5 m for post boxes / MULE posts, 4 m for others) + 1.2 m: +forward, -forward, +right, -right at its height (PlaceOn mode 1), last +forward at twice that on the topmost ground (mode 2). **In practice the ring is the landing**: all three configs measured report TerminalFrontAccessOffset (0, -0.70, 0) (MULE post, zip-line, terminal), 0.7 m, under the 0.8 m minimum (and behind the origin, inside a post's box). A candidate where Sam falls (more than 5 m below its height: a slope steeper than the probe's 2.5 m, or a drop) is placed again once (far places: the ground streams in), then the next candidate (`[dev] place N: Sam fell again ... trying <next>`). Once settled Sam is checked against the box (shrunk 0.1 m, his body 0.9 m up) and against the boxes of the post boxes, MULE posts and structures of the place's own kind within 10 m (a neighbour: a second post box, a player-built one; bigger structures such as shelters or bridges are not checked: Sam may stand inside their boxes): inside one, the next candidate (`[dev] place N: Sam in <box> after <rule> ... trying <next>`); none left: `INSIDE`, and Sam is put back where he started (the goto fails: `... Sam is back where he started`). The menu shows the goto's outcome under the Teleport to place button. Measured (`20261124-183622-place-teleport`): the MULE post's `DSMulePostConstructionPointConfig` offset (0, -0.70, 0) (0.7 m: too close, so the ring), box +-0.70 x +-0.70 x -1.00..2.50, Sam 1.3 m away by the post box ("Unlock Postbox" shown), pads 8.15 m / 6.02 m; a zip-line (`DSZiplineConstructionPointConfig`, box +-2 m) 2.6 m away, pads 5.98 m / 7.06 m (run `183005` needed the second candidate: the game pushed Sam into the box); South Knot City (`DSTerminalWithSHConstructionPointConfig`, box FLT_MAX: unusable) the ring at 5.2 m, no box check. The place's locator id equals the construction point id (590, 2103, 232). `mode` (hidden runs on a sandboxed save only): 1 the old landing on the place's own point (the control); 2 the structure's own point as the first candidate, so the box check must move Sam to the next one (the retry path, `place-teleport`). Area 200 of the 100% save has no post box place (types 5-7): the post box path is the same code, not run. Only within the current area: the game has no cross-area teleport (story points: test saves, docs/sandbox-and-local-test.md). |
+| `dev_marker` | `0` / `1 e n` | Map markers: 0 logs them (`[dev] marker C0: id 7 at (...), 175 m, on the ground` / `the terrain height, the game's raycast pending` / `ground snap pending`, `area 200 (newest)`); 1 (hidden runs on a sandboxed save only) adds one e m east and n m north of Sam through the game's own add ("Teleport to map marker" above). |
 | `dev_items` | `1` / `2 n` | 1: `RecoverOrSupplyShoes` body `0x142744B40(status, 0, 1)` (new or repaired boots). 2: `AddChiralCrystalCount(n)` (`0x1426E6530`, default 100; 18753 -> 19253 in `035314`). |
 | `dev_goto` | `x y [z]` | Sam anywhere in this area (sandboxed saves only: world class), then the ground (docs/dev-tools.md "Go anywhere"). z 0 / left out: the topmost ground (PlaceOn mode 2 at the ray centre 500); else PlaceOn mode 1 at z + 0.5. Refused while the placement gate is shut (on a vehicle, a load, a menu). Every tick `devrules::GotoAdvance`: within 25 m of x, y (a place's point inside a terminal: the game pushes Sam out, 3.5-8.3 m seen) and 5 m of z, playable and still for 1.5 s: `[dev] goto #n: settled at (...) after N s (k placement(s))`; more than 5 m below z: placed again (at most 4, 1 s apart); 25 s: `NOT settled`. The scenario's `goto` and `waitworld <s> goto` wait for it. 7 places up to 4 km apart in `20261121-084610-goto-places`. |
 | `dev_boots` | `0` / `1 p` / `2 0/1` / `3 t` | 3 (round 6 T3; sandboxed saves only): equip boot type t (EDSPlayerShoesType 0..10: 0 barefoot, 2 sole grass, 3 porter, 4-6 all-terrain Lv1-3, 7 mule, 8 terrorist, 9 chiral, 10 reflect) with the game's `SetShoesForcibly` `0x1426E7430` (the request byte status `+0x3B8`; the status tick `0x14273251B` equips it): `[dev] boots: SetShoesForcibly(t) requested (worn type now n; ...)`, then `[boots] our boots' ArtParts: 32, shown <hex>` (the shape: docs/real-partner-body.md section 30.2). 0: the boots' durability to the log. 1: set it to p % (sandboxed saves only): `SetShoesLifeByRate`'s body `0x142741860(status, p/100, 0)` with Sam's status `[Sam+0x54E0]` read and checked first. 2: a `[dev] boots meter: ...; +x in 1 s` line every second (hidden tests: the passenger's boots). The durability is two parts (the setter `0x142741720(status+0x320, v)`): the first `+0x334` (200) points at `+0x33C`, the rest at `+0x32C` up to `+0x330` (3400); 40 % = 1440 of 3600 (`20261121-084433-spawn-showcase`: 200 + 926.6 before, 200 + 1240 after). Refused without worn boots (`+0x368` empty: the game's setter would do nothing). |
@@ -1298,8 +1354,8 @@ awake, nothing loading, no stopping game event): `GetCurrentArea`'s slow path, c
 
 ### Byte checks (`dev_tools.cpp kSites` + `vehicle_share.cpp kDevSites`)
 
-On the dev tools' first tick (`dev::Check`, which also runs `vshare::DevCheckResult`): `[dev] dev tools: 31/31 byte checks ok;
-on: refill, god mode / ammo, weather, MULEs, BTs, places, boots, chiral crystals` and `[dev] vehicles: pools ok, spawn ok,
+On the dev tools' first tick (`dev::Check`, which also runs `vshare::DevCheckResult`): `[dev] dev tools: 51/51 byte checks ok;
+on: refill, god mode / ammo, weather, MULEs, BTs, places, boots, chiral crystals, boots' life, place stand point` and `[dev] vehicles: pools ok, spawn ok,
 repair ok, variant read-back ok`. A mismatch turns that tool off with `[dev] byte check FAILED: <site>` and the page shows
 `Off (game build differs): <tool>: <site>` (the vehicle tools' as `vehicle tools / spawning / repair: <site>`; their buttons
 are greyed: no pools greys spawn, remove and repair, no spawn path greys spawn, no Repair greys "Repair nearest"). A Repair
@@ -1313,6 +1369,8 @@ or battery notify that faults at run time turns repair off for the run with the 
 | MULE resurrect thunk / body / its player-object call, remove-all thunk / body; the MULE manager global | `0x142B64420`, `0x142B168F0`, `0x142B169BA`, `0x142B645F0`, `0x142B140C0` | MULEs |
 | ResetAllGazers thunk / body, the gazer global | `0x1429A7220`, `0x1429A17A0` | BTs |
 | GetDeliveryPointInfoResources (DSMissionSystem global `+0x78820`); RTTI `DSDeliveryPointInfoResource` `0x144DD5E50`; enum `EDSConstructionPointType` `0x144C33550` (names only) | `0x1433CA80A` | places |
+| GetConstructionPointFrontAccessTransform body (the manager global's RIP target `0x147BF4960`), its export thunk, its reads `cp+0x4A0`, `+0x468`, `+0x478`, `+0x480`, `+0x90` config, config `+0x2D0`; GetNearestConstructionPointId's live-list read (`+0x56A260`, `+0x56A258`; RIP target checked at `0x142CD8A28`) and its id read (`cp+0x30`); a live-list walk's type test (`cp+0x34`); a live-list walk's collision box read (`cp+0x90` config `+0x50` / `+0x60`) | `0x142CD80E0`, `0x142CD19A0`, `0x142CD8115`, `0x142CD8168`, `0x142CD8179`, `0x142CD818A`, `0x142CD8192`, `0x142CD81AD`, `0x142CD8A5C`, `0x142CD8B3C`, `0x142CCECA9`, `0x142CD9377` | place stand point (off: no construction point is looked up; Sam lands on the ring around the place, 1.5 m / 4 m + 1.2 m, with no box check) |
+| the map markers (`kMkSites`, "Teleport to map marker" above; their own line) | `0x142F40090`, `0x142F22D00`, `0x142F22DBE`, `0x142F22E02`, `0x142F36783`, `0x142F22C90`, `0x142F29320`, `0x142F29430` | map markers |
 | RecoverOrSupplyShoes export; AddChiralCrystalCount (DSPlayerSystem global) | `0x1426E6F80`, `0x1426E6530` | boots, chiral crystals |
 | SetShoesLifeByRate export (status `+0x54E0`, r8 0, jump to the body), its body (`+0x368`, the r8 test), its `(+0x334 + +0x330) x rate` and setter call, the setter (`+0x1C` / `+0xC` / `+0x8C`, flags `+0x90`), SetShoesForcibly (type `+0x3B8`) | `0x1426E7460`, `0x142741860`, `0x1427418EB`, `0x142741720`, `0x142741757`, `0x1426E7430` | boots' life (`dev_boots`) |
 | the race reset's repair + battery sequence, the three Repair functions, the battery notify, each vehicle vtable `+0x118` = its Repair | `0x142D6EE21`, `0x142F7B090`, `0x142F7B140`, `0x142F7B320`, `0x142F5A260` | vehicle repair |

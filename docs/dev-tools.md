@@ -19,12 +19,20 @@ save; `dev_status 1 1` acts as a real save to prove the refusal.
 | The partner (the other game's Sam) | `@guest goto <place>`; both: `@both goto <place>` |
 | A vehicle at a place | `goto <place>`, then `action dev_vehicle <kind> <variant> <m>` (spawned m metres ahead of Sam) |
 | A new place | stand there, `action log_positions` (or `dev_places`: the area's delivery points), add a line to places.txt |
+| Beside a structure | `action dev_place <n> <kind>` (the n-th nearest; kind 20 MULE post, 5 post box, -1 delivery base), then `waitworld 45 goto` |
+| A map marker | `action dev_marker 1 <m east> <m north>` (hidden runs: the game's own add), then `action teleport_to_map_marker`, `waitworld 45 goto` |
 
 Within the area the save is in (complete-100: area 200 in every slot). Far jumps stream in after the teleport: the mod places
 Sam again when he falls more than 5 m below the target (ground not loaded yet) and the step waits until he stands there; 3.3 to
 8 s for 0.1 to 4 km (`20261121-084610-goto-places`). Gaps: no cross-area travel yet (leads in debug-actions.md "Not done");
 places of area 100 (Capital / Port Knot City) need a save there (`dev_places` on the story pack's early slots); "Fragile's
 safehouse" is not a delivery point of area 200: which spot is meant is open.
+
+Places and markers (round 18, docs/debug-actions.md "Dev tools" `dev_place` and "Teleport to map marker"): a place teleport
+lands Sam beside the structure, at its stand point or on a ring around its collision box, facing it, and checks he is
+outside the box once settled (a post box or MULE post used to swallow him: `place-teleport.txt` keeps the old landing as a
+control). The menu's **Teleport to map marker** (Player tab, also on this page) puts him on the ground at the newest map
+marker or the one picked; `marker-teleport.txt` adds markers through the game's own add and teleports to a near and a far one.
 
 ### Spawn and set (all proven in `20261121-084433-spawn-showcase`)
 
