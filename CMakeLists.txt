@@ -413,7 +413,8 @@ add_test(NAME st_world_wire_tests COMMAND st_world_wire_tests)
 # the game's Oodle loaded by full path and the extraction plan: only the launcher's --extract-textures child and the
 # tests link it, never the mod.
 add_library(st_textures STATIC native/textures/tex_codec.cpp native/textures/png_wic.cpp native/textures/tex_hash.cpp
-            native/textures/tex_manifest.cpp native/textures/tex_blob.cpp native/textures/suit_defaults.cpp)
+            native/textures/tex_manifest.cpp native/textures/tex_blob.cpp native/textures/suit_defaults.cpp
+            native/textures/logo_recipe.cpp)
 target_include_directories(st_textures PUBLIC native/textures)
 # the ready-made colours' palette (suit_colour_math.hpp, header-only)
 target_include_directories(st_textures PRIVATE native/mod)
@@ -442,6 +443,13 @@ target_compile_options(st_suit_defaults_tests PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_suit_defaults_tests PRIVATE UNICODE _UNICODE)
 target_link_libraries(st_suit_defaults_tests PRIVATE st_textures_extract)
 add_test(NAME st_suit_defaults_tests COMMAND st_suit_defaults_tests)
+# Round 20: the Fragile Express logo (logo_recipe.hpp, logo_slots.hpp): the resampler, the wordmark's turn, the stamps.
+add_executable(st_logo_tests tests/logo_tests.cpp)
+target_include_directories(st_logo_tests PRIVATE native/mod)
+target_compile_options(st_logo_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_logo_tests PRIVATE UNICODE _UNICODE)
+target_link_libraries(st_logo_tests PRIVATE st_textures)
+add_test(NAME st_logo_tests COMMAND st_logo_tests)
 # Round 6 T2: the blob (build / strict validate), the STT1 messages, the receiver's reassembly and the sender's pacing.
 add_executable(st_texture_wire_tests tests/texture_wire_tests.cpp native/mod/texture_wire.cpp)
 target_include_directories(st_texture_wire_tests PRIVATE native/mod)
