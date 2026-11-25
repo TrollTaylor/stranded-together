@@ -14,6 +14,7 @@
 #include "game_api.hpp"
 #include "log.hpp"
 #include "partner_source.hpp"
+#include "vehicle_share.hpp"
 
 namespace st::enemy {
 namespace {
@@ -504,6 +505,11 @@ static bool CensusImpl(int tag, double radius_m, int flags, char* msg, std::size
             for (std::size_t i = 0; i < kKilledSlot; ++i) std::snprintf(hex + 2 * i, 3, "%02X", s[i]);
             Log("[enemy] tag=%d killed k%02d %s", tag, n++, hex);
         });
+    }
+    // round 23 D (vehicle_mule_log): the trucks of the vehicle pools with their drivers' ids, seats and camps ("[vshare] trucks tag=...")
+    if (vshare::MuleLog()) {
+        char tm[256];
+        vshare::TruckCensus(tag, radius_m, tm, sizeof(tm));
     }
     const double ms = static_cast<double>(GetTickCount64()) - t0;
     Log("[enemy] census done tag=%d (%d listed, %d other, %.0f ms)", tag, listed, static_cast<int>(others.size()), ms);

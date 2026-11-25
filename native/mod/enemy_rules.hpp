@@ -227,6 +227,7 @@ struct Sample {
     float yaw = 0;
     float vel[3] = {};
     std::uint8_t state = 0;
+    std::uint8_t phase = 0xFF, flags = 0;  // round 23 B: the entry's phase and flags (the mirror diagnostics, kInVehicle)
 };
 inline float WrapPi(float a) noexcept {
     double x = std::fmod(static_cast<double>(a) + kPi, 2.0 * kPi);
@@ -318,15 +319,21 @@ struct EligibleIn {
     // for it stop while his world loads, so the bits above come only after the silence window)
     double host_dist_m = -1;       // the partner body (the host's Sam) from it here (-1 unknown)
     double host_far_m = 0;         // enemy_host_far (0 off)
+    // round 23 B (enemy_mirror_vehicle): the owner's SEN1 entry says its copy sits in a vehicle (EntryFlag kInVehicle)
+    bool host_in_vehicle = false;
+    // round 23 C (enemy_down_hold): the owner's player is down (death / KnotSpace): no new freeze until it is back (critique R7d: the
+    // owner's game may have hidden its copy for the Seam)
+    bool owner_down = false;
 };
 enum class Refusal : std::uint8_t {
     ok, stale, not_realized, dead, hidden_or_asleep, sequence_only, held_here, held_on_host, cutscene, in_vehicle, host_unrealized, host_hidden, entry_far,
-    host_far
+    host_far, host_in_vehicle, owner_down
 };
 // M0: the host's Sam beyond enemy_host_far from it (the distance known, the switch on)
 inline constexpr bool HostFar(double host_dist_m, double host_far_m) noexcept { return host_far_m > 0 && host_dist_m > host_far_m; }
 inline Refusal Eligible(const EligibleIn& e) noexcept {
     if (e.cutscene) return Refusal::cutscene;
+    if (e.owner_down) return Refusal::owner_down;
     if (!e.fresh) return Refusal::stale;
     if (!e.realized) return Refusal::not_realized;
     if (e.dead) return Refusal::dead;
@@ -335,6 +342,7 @@ inline Refusal Eligible(const EligibleIn& e) noexcept {
     if (e.held_here) return Refusal::held_here;
     if (e.held_on_host) return Refusal::held_on_host;
     if (e.in_vehicle) return Refusal::in_vehicle;
+    if (e.host_in_vehicle) return Refusal::host_in_vehicle;
     if (!e.host_realized) return Refusal::host_unrealized;
     if (e.host_hidden) return Refusal::host_hidden;
     if (e.entry_err_max_m > 0 && e.entry_err_m > e.entry_err_max_m) return Refusal::entry_far;
@@ -357,6 +365,8 @@ inline const char* RefusalText(Refusal r) noexcept {
         case Refusal::host_hidden: return "hidden or asleep on the host";
         case Refusal::entry_far: return "the host's place is too far from ours (enemy_entry_err_max)";
         case Refusal::host_far: return "the host's Sam is too far from it (enemy_host_far)";
+        case Refusal::host_in_vehicle: return "in a vehicle on the host (its own game runs it until vehicles are synced)";
+        case Refusal::owner_down: return "the owner's player is down (death or KnotSpace): no new mirror until it is back";
     }
     return "?";
 }
@@ -378,10 +388,13 @@ struct LeaseIn {
     Class cls = Class::near10;  // its class by the last frame's distance
     double dist_m = 0;          // from our Sam
     double radius_m = 250.0;
+    // round 23 B (enemy_mirror_vehicle, checked every 1 s): our copy or the owner's copy sits in a vehicle
+    bool vehicle_check = false;
+    bool in_vehicle_here = false, in_vehicle_host = false;
 };
 enum class LeaseVerdict : std::uint8_t {
     none, keep, hold, release_off, release_unrealized, release_silence, release_range, forget_taken, release_host_unrealized, release_host_hidden,
-    release_host_far
+    release_host_far, release_vehicle
 };
 inline LeaseVerdict Lease(const LeaseIn& l) noexcept {
     if (!l.frozen_by_us) return LeaseVerdict::none;  // never touch what we did not freeze
@@ -390,6 +403,9 @@ inline LeaseVerdict Lease(const LeaseIn& l) noexcept {
     if (l.off) return LeaseVerdict::release_off;
     if (!l.realized_here) return LeaseVerdict::release_unrealized;
     if (l.frame_age_ms > (l.cls == Class::near10 ? kSilenceNearMs : kSilenceFarMs)) return LeaseVerdict::release_silence;
+    // round 23 B: seated in a vehicle (here or on the owner's side): given back to its own game (M0's release, not hidden) until
+    // vehicles are synced (design 8, V3)
+    if (l.vehicle_check && (l.in_vehicle_here || l.in_vehicle_host)) return LeaseVerdict::release_vehicle;
     // M0: the host unloaded or hid its copy (the newest frame says so, within the silence window): never a statue
     if (l.host_guard && !l.host_realized) return LeaseVerdict::release_host_unrealized;
     if (l.host_guard && l.host_hidden) return LeaseVerdict::release_host_hidden;
@@ -400,7 +416,8 @@ inline LeaseVerdict Lease(const LeaseIn& l) noexcept {
 }
 inline bool Releases(LeaseVerdict v) noexcept {
     return v == LeaseVerdict::release_off || v == LeaseVerdict::release_unrealized || v == LeaseVerdict::release_silence || v == LeaseVerdict::release_range ||
-           v == LeaseVerdict::release_host_unrealized || v == LeaseVerdict::release_host_hidden || v == LeaseVerdict::release_host_far;
+           v == LeaseVerdict::release_host_unrealized || v == LeaseVerdict::release_host_hidden || v == LeaseVerdict::release_host_far ||
+           v == LeaseVerdict::release_vehicle;
 }
 // M0: how a mirror is given back. The host hid its copy: with enemy_host_hide on (default off: no run has hidden a mirrored MULE on
 // the host yet), hers is hidden here too (never a live MULE beside her that the host's world has put away), and only when the
@@ -424,6 +441,7 @@ inline const char* LeaseText(LeaseVerdict v) noexcept {
         case LeaseVerdict::release_host_unrealized: return "host unrealized";
         case LeaseVerdict::release_host_hidden: return "host hidden";
         case LeaseVerdict::release_host_far: return "host far";
+        case LeaseVerdict::release_vehicle: return "in a vehicle";
         case LeaseVerdict::forget_taken: return "taken";
         case LeaseVerdict::hold: return "hold";
         case LeaseVerdict::keep: return "keep";
@@ -695,11 +713,13 @@ private:
 // The HITRES results (the wire's numbers).
 // lethal: a damaging round while the host's enemy_hits_lethal=0; values: a value outside HitValuesOk's ranges.
 enum class HitResult : std::uint8_t {
-    applied = 0, off = 1, dead = 2, unrealized = 3, world = 4, rate = 5, too_far = 6, fault = 7, receiver = 8, attack = 9, hidden = 10, lethal = 11, values = 12
+    applied = 0, off = 1, dead = 2, unrealized = 3, world = 4, rate = 5, too_far = 6, fault = 7, receiver = 8, attack = 9, hidden = 10, lethal = 11, values = 12,
+    down = 13  // round 23: a restrain (HIT kind 5) refused: the owner's copy is down already (only ever sent to a partner with kPartRestrain)
 };
-inline constexpr unsigned kHitResults = 13;
+inline constexpr unsigned kHitResults = 14;
 inline const char* HitResultText(std::uint8_t r) noexcept {
-    static const char* const k[kHitResults] = {"applied", "off", "dead", "unrealized", "world", "rate", "far", "fault", "receiver", "attack", "hidden", "lethal", "values"};
+    static const char* const k[kHitResults] = {"applied", "off", "dead", "unrealized", "world", "rate", "far", "fault", "receiver", "attack", "hidden", "lethal", "values",
+                                               "down already"};
     return r < kHitResults ? k[r] : "?";
 }
 struct ApplyIn {
@@ -1261,5 +1281,244 @@ private:
     std::uint8_t use_[kPoseSlots] = {};
     bool probing_ = false;
 };
+
+// ==================================================================================================================== round 23
+// The tie-up relay (docs/enemy-sync.md 14). The ACTING game (its Sam strands or bolas its frozen copy of an enemy the OTHER game
+// owns) reads its own copy: when the game tied it up (+0xEA4 bit 21) or knocked it out (bit 19) it sends a HIT of kind 5 (k 2 / k 0,
+// no damage) and holds the copy's own animation; the OWNER applies the outcome setter (0x142AA8000) on its real copy instead of the
+// old stun. The fallback (no native read within 1.5 s): the strand's weapon 41 with attack 0x15C at contact.
+inline constexpr std::uint16_t kAttackStrand = 0x15C, kAttackBola = 0x102;
+inline constexpr std::uint8_t kWeaponStrand = 41;
+inline constexpr double kRestrainWatchMs = 1500.0, kRestrainHoldMs = 3000.0, kRestrainBlendMs = 250.0, kRestrainContactM = 2.5;
+inline constexpr std::uint8_t kRestrainK = 2, kFaintK = 0;  // the outcome setter's k (HIT b180)
+// What one of our captured HITs on a copy starts: strand / bola (held back while the copy is watched) or none (sent as before).
+enum class RestrainTrig : std::uint8_t { none = 0, strand = 1, bola = 2 };
+inline constexpr RestrainTrig RestrainTrigger(std::uint16_t attack, std::uint8_t weapon) noexcept {
+    return attack == kAttackStrand || weapon == kWeaponStrand ? RestrainTrig::strand : attack == kAttackBola ? RestrainTrig::bola : RestrainTrig::none;
+}
+inline const char* RestrainTrigText(RestrainTrig t) noexcept { return t == RestrainTrig::strand ? "strand" : t == RestrainTrig::bola ? "bola" : "hit"; }
+// The fallback's evidence: the strand's attack AND its weapon, the hit at contact (the acting Sam within 2.5 m). A hidden-run test
+// (the debug action's synthetic strand) waives the weapon and the distance; it is logged as a test, never as native.
+inline constexpr bool RestrainFallback(std::uint16_t attack, std::uint8_t weapon, double her_dist_m, bool test) noexcept {
+    return attack == kAttackStrand && (test || (weapon == kWeaponStrand && her_dist_m >= 0.0 && her_dist_m <= kRestrainContactM));
+}
+inline constexpr bool DownDefeat(std::uint8_t d) noexcept { return d != static_cast<std::uint8_t>(Defeat::none) && d < kDefeats; }
+// One watch (the acting side, each tick while open).
+struct WatchIn {
+    double age_ms = 0;          // since the watch opened
+    bool frozen = true;         // still a frozen copy here (the other game owns it)
+    std::uint8_t copy = 0;      // Defeat of our copy now (OutcomeOf +0xEA0 / +0xEA4)
+    std::uint8_t copy_was = 0;  // ... when the watch opened (only an edge counts)
+    std::uint8_t owner = 0;     // the owner's outcome as known here (the guest: its OUTCOME table; the host: her SEN1 defeat bits)
+    bool held_hit = false;      // a strand / bola HIT held back
+    bool fallback = false;      // RestrainFallback for that HIT
+};
+enum class WatchDo : std::uint8_t { wait = 0, send_restrain = 1, send_faint = 2, fallback = 3, release = 4, drop = 5 };
+inline const char* WatchDoText(WatchDo d) noexcept {
+    static const char* const k[6] = {"wait", "restrained (native)", "knocked out (native)", "restrained (fallback)", "no tie-up: the held HIT sent", "closed"};
+    return k[static_cast<unsigned>(d) < 6 ? static_cast<unsigned>(d) : 0];
+}
+inline WatchDo RestrainWatch(const WatchIn& w) noexcept {
+    if (!w.frozen) return WatchDo::drop;            // no longer a copy (ours now, or released): nothing for the other game
+    if (DownDefeat(w.owner)) return WatchDo::drop;  // down there already: nothing to send (the held stun is dropped too)
+    const std::uint8_t r = static_cast<std::uint8_t>(Defeat::restrained), f = static_cast<std::uint8_t>(Defeat::faint);
+    if (w.copy == r && w.copy_was != r) return WatchDo::send_restrain;
+    if (w.copy == f && w.copy_was != f) return WatchDo::send_faint;
+    if (w.age_ms < kRestrainWatchMs) return WatchDo::wait;
+    if (w.fallback) return WatchDo::fallback;
+    return w.held_hit ? WatchDo::release : WatchDo::drop;
+}
+// The owner's gate for one HIT of kind 5 (the host for her restrains; the guest for the host's, relayed P1c).
+struct RestrainIn {
+    bool on = true;               // enemy_restrain_relay here, hits on
+    bool peer_part = true;        // the sender's beacon carries kPartRestrain (else it never may send kind 5)
+    bool k_ok = true;             // b180 0 / 2
+    bool fp_equal = true;         // the HIT's guids fingerprint is ours
+    bool owned = true;            // this game owns it (the host: not hers; the guest: hers now)
+    bool found = true;            // the key names an in-use MULE actor here (the same actor id)
+    bool realized = true;
+    std::uint32_t state = 1;      // +0xEA0
+    bool hidden_or_asleep = false;
+    std::uint8_t defeat_now = 0;  // OutcomeOf now
+};
+inline HitResult RestrainGate(const RestrainIn& r) noexcept {
+    if (!r.on) return HitResult::off;
+    if (!r.peer_part || !r.k_ok) return HitResult::attack;
+    if (!r.fp_equal) return HitResult::world;
+    if (!r.owned) return HitResult::receiver;
+    if (!r.found || !r.realized) return HitResult::unrealized;
+    if (r.state == 3 || r.state == 5) return HitResult::dead;
+    if (r.hidden_or_asleep) return HitResult::hidden;
+    if (DownDefeat(r.defeat_now)) return HitResult::down;
+    return HitResult::applied;
+}
+// ecombat::SetOutcome's answer as a HITRES: 1 done / 0 deferred (read back later) applied, -2 down already, else a fault.
+inline constexpr HitResult RestrainSetResult(int rc) noexcept { return rc == 1 || rc == 0 ? HitResult::applied : rc == -2 ? HitResult::down : HitResult::fault; }
+// The acting side's pose hold on its copy: ends on the owner's down outcome, a refusal, or after 3 s (then the owner's frames are
+// blended back in over 250 ms).
+enum class HoldEnd : std::uint8_t { none = 0, outcome = 1, refused = 2, timeout = 3 };
+inline constexpr HoldEnd HoldStep(double held_ms, bool owner_down, bool refused) noexcept {
+    return refused ? HoldEnd::refused : owner_down ? HoldEnd::outcome : held_ms >= kRestrainHoldMs ? HoldEnd::timeout : HoldEnd::none;
+}
+inline constexpr float BlendBack(double since_ms) noexcept {
+    return since_ms <= 0 ? 0.0f : since_ms >= kRestrainBlendMs ? 1.0f : static_cast<float>(since_ms / kRestrainBlendMs);
+}
+// The replay flush: a shooter's queued shot replays are dropped when its outcome turns down (faint, sleep, restrained, dead, other).
+inline constexpr bool FlushOnDefeat(std::uint8_t was, std::uint8_t now) noexcept { return DownDefeat(now) && !DownDefeat(was); }
+
+// ---------------------------------------------------------------- round 23 B: the mirrors (design 7.2; docs/enemy-sync.md 14.8)
+// Diagnostics (log only): the 5 s "mirror worst" line while the window's error p95 is above 5 m, one full line the first time an id's
+// error is above 20 m, and the 30 s "mirror error" summary.
+inline constexpr double kMirrorWorstP95M = 5.0, kMirrorFirstFullM = 20.0, kMirrorSummaryMs = 30000.0;
+inline constexpr bool MirrorWorstDue(double p95_m) noexcept { return p95_m > kMirrorWorstP95M; }
+inline constexpr bool MirrorFirstFull(double err_m, bool logged_before) noexcept { return !logged_before && err_m > kMirrorFirstFullM; }
+// The not-holding rule (enemy_mirror_hold_check): a mirror whose error is still above 10 m after 3 teleports within 2 s does not
+// hold its owner's place. It is given back and hidden here (M0's hide: never a statue), retried every 5 s; its shots are still
+// replayed from the owner's place.
+inline constexpr double kNotHoldErrM = 10.0, kNotHoldWindowMs = 2000.0, kNotHoldRetryMs = 5000.0;
+inline constexpr unsigned kNotHoldTeleports = 3;
+// One mirror's newest teleports (a ring of 3, the driver's own; the entry's teleport is not counted).
+struct TeleportRing {
+    double t[kNotHoldTeleports] = {-1e18, -1e18, -1e18};
+    unsigned head = 0;
+    void Note(double now) noexcept {
+        t[head] = now;
+        head = (head + 1) % kNotHoldTeleports;
+    }
+    // teleports at or before `now` and at most `window_ms` old
+    unsigned Within(double now, double window_ms) const noexcept {
+        unsigned n = 0;
+        for (const double x : t)
+            if (x > -1e17 && x <= now && now - x <= window_ms) ++n;
+        return n;
+    }
+    void Reset() noexcept {
+        for (double& x : t) x = -1e18;
+        head = 0;
+    }
+};
+// `err_m`: the error measured this tick before the drive writes (so it is the place after the earlier teleports).
+inline constexpr bool NotHolding(bool on, double err_m, unsigned teleports_2s) noexcept {
+    return on && err_m > kNotHoldErrM && teleports_2s >= kNotHoldTeleports;
+}
+// A copy hidden as not holding is shown again (and may be mirrored again) once it has been hidden this long.
+inline constexpr bool NotHoldRetry(double hidden_ms) noexcept { return hidden_ms >= kNotHoldRetryMs; }
+// The in-vehicle test (enemy_mirror_vehicle), every 1 s on both sides for every lease (not only at entry). Two tests, the first
+// that fires is logged: the entity's parent chain (+0x70, up to 4 levels, a vehicle class), else the MULE actor's ride fields:
+// +0xE20 the vehicle actor id and +0x3C0 the seat, written by the ride action FUN_142B51E70 (0x142B52075 / 0x142B51F69) and set to
+// none by the actor's constructor (0x1FFFFF from 0x144AF1150 / -1). [U] whether getting out clears them (probe P6).
+inline constexpr double kVehicleCheckMs = 1000.0;
+inline constexpr std::uint32_t kVehicleIdNone = 0x1FFFFF;
+// Round 23 D (docs/enemy-sync.md 14.10): a third test, `driver`: the shared vehicles' truck rules (vehicle_truck_rules.hpp) name the
+// MULE as a vehicle's driver (unit +0x158, entity +0x8B0) in this game (vehicle_mule_hold).
+enum class VehTest : std::uint8_t { none = 0, parent = 1, ride = 2, driver = 3 };
+inline const char* VehTestText(VehTest t) noexcept {
+    return t == VehTest::parent ? "the parent chain +0x70" : t == VehTest::ride ? "the actor's +0xE20 / +0x3C0" : t == VehTest::driver ? "a truck's driver seat (unit +0x158)" : "none";
+}
+inline constexpr bool SeatedByRide(std::uint32_t e20, std::int32_t seat) noexcept {
+    return (e20 & kVehicleIdNone) != kVehicleIdNone && (e20 & kVehicleIdNone) != 0 && seat >= 0 && seat < 16;
+}
+inline constexpr VehTest VehicleTest(bool parent_chain, bool ride_ok, std::uint32_t e20, std::int32_t seat, bool truck_driver = false) noexcept {
+    return parent_chain ? VehTest::parent : ride_ok && SeatedByRide(e20, seat) ? VehTest::ride : truck_driver ? VehTest::driver : VehTest::none;
+}
+// Which side's copy is in a vehicle (the release line).
+inline const char* VehicleSideText(bool here, bool owner) noexcept {
+    return here && owner ? "both copies" : here ? "our copy" : owner ? "the owner's copy" : "neither";
+}
+
+// ---------------------------------------------------------------- round 23 C: the other player down (design 7.3 with critique R7,
+// B2, B3; docs/enemy-sync.md 14.9; session.ini enemy_down_hold, enemy_down_hold_radius)
+// "Down" is death or the Seam only: the game state's GameOver (bit 13) or KnotSpace (bit 9: death, repatriation, limbo). Never a
+// faint (bit 14) or a stagger: MULEs knock Sam down to steal his cargo, and that must not change anything. Each game sends its own
+// player's code in its SEH1 beacon (byte 22; only to a partner whose parts carry kPartRestrain, a round-23 build: an older decoder
+// refuses a non-zero byte 22 and the whole beacon with it). 3 / 4 are the hidden-run fakes (enemy_sync 9).
+enum class PlayerDown : std::uint8_t { none = 0, dead = 1, knot = 2, test_down = 3, test_limbo = 4 };
+inline constexpr std::uint8_t kPlayerDownMax = 4;
+inline constexpr std::uint64_t kGsKnotSpace = 1ull << 9, kGsGameOver = 1ull << 13, kGsFaint = 1ull << 14;
+inline constexpr std::uint8_t DownOfState(std::uint64_t flags) noexcept {
+    return (flags & kGsGameOver) ? static_cast<std::uint8_t>(PlayerDown::dead) : (flags & kGsKnotSpace) ? static_cast<std::uint8_t>(PlayerDown::knot) : std::uint8_t{0};
+}
+inline const char* PlayerDownText(std::uint8_t d) noexcept {
+    switch (d) {
+        case 0: return "up";
+        case 1: return "death: game over";
+        case 2: return "KnotSpace: death, repatriation or limbo";
+        case 3: return "test: down";
+        case 4: return "test: limbo";
+    }
+    return "?";
+}
+// The sender's latch: down at once (a change of reason too); back only after 1 s of not down (the Seam's own cutscene and load steps
+// may flicker the flags).
+inline constexpr double kDownClearMs = 1000.0;
+struct DownLatch {
+    std::uint8_t code = 0;
+    double clear_since = -1;
+    std::uint8_t Step(std::uint8_t raw, double now) noexcept {
+        if (raw) {
+            code = raw, clear_since = -1;
+        } else if (code) {
+            if (clear_since < 0) clear_since = now;
+            if (now - clear_since >= kDownClearMs) code = 0, clear_since = -1;
+        }
+        return code;
+    }
+    void Reset() noexcept { code = 0, clear_since = -1; }
+};
+// The receiver's change of the partner's code: 0 none, 1 went down, 2 back up, 3 still down, another reason.
+enum class DownChange : std::uint8_t { none = 0, down = 1, back = 2, reason = 3 };
+inline constexpr DownChange DownStep(std::uint8_t was, std::uint8_t now) noexcept {
+    return was == now ? DownChange::none : !was ? DownChange::down : !now ? DownChange::back : DownChange::reason;
+}
+// The partner's code this tick (round 23 review): the enemy_sync 9 fake when set (-1 none); else its beacon's byte; with no beacon
+// (none yet, or none for 20 s) the code in force is kept: a missing beacon is "unknown", never "back" (the hold ends on a world or
+// link change, the role, the switch or a fault instead).
+inline constexpr std::uint8_t PeerDownNow(int fake, bool have_peer, std::uint8_t beacon_down, std::uint8_t was) noexcept {
+    return fake >= 0 ? static_cast<std::uint8_t>(fake) : have_peer ? beacon_down : was;
+}
+// The guest's mirrors when sync is off or her Sam is not there while the host's Sam is down (round 23 review): every frozen copy is
+// kept frozen as it is (held, or hidden by the hold), never given back alive, instead of the usual "every mirror released". The
+// usual release runs once he is back (the hold resumed first), or at a world / link change, the switch or a fault.
+inline constexpr bool DownKeepsOff(bool hold_on, std::uint8_t peer_down, bool guest) noexcept { return hold_on && peer_down != 0 && guest; }
+// The guest's "not holding" copies (14.8: given back hidden and asleep) are shown and woken again by the 5 s retry, or by sync off,
+// only while the host's Sam is not down (review): shown while he is down, the entry would refuse it (owner_down) and leave a live,
+// unmirrored MULE beside her. The final unhides (the switch off, a fault, a link change, no guest role) always run.
+inline constexpr bool NotHoldUnhideNow(bool final_unhide, bool down_on) noexcept { return final_unhide || !down_on; }
+// While either player is down, no ownership changes between the two games (no take, no back, no forced back): the copies of the
+// down player's fights stay frozen, held or hidden by DownHold (critique R7c: no OWN hand-over for this case, the reload after a
+// death throws it away). Off (enemy_down_hold=0): the old rules.
+inline constexpr bool DownFreezesOwnership(bool on, bool ours_down, bool partner_down) noexcept { return on && (ours_down || partner_down); }
+// One frozen copy (a guest's mirror of a host-owned enemy, or the host's follower of a guest-owned one) while the player whose game
+// owns it is down:
+//   near our player (within enemy_down_hold_radius; an unknown distance counts as near):
+//     shown with the owner's pose before (posed), or hidden by our own game already (the Seam hid it here: never touched) -> hold:
+//       frozen in its last pose, nothing written (no place, no pose, no hide), until that player is back;
+//     never posed -> hide (kept frozen, hidden here; shown again when that player is back);
+//   far: down (faint, sleep, restrained, dead) -> hide (never given back alive: it would stand up); standing -> usual (M0's
+//     release, as before: far from us).
+struct DownIn {
+    bool posed = false;          // it has had the owner's pose here (a slot now, or one before)
+    bool hidden_here = false;    // our own game hides or sleeps it (actor +0x88 & 3, not by us)
+    std::uint8_t defeat = 0;     // its last known outcome (erules::Defeat)
+    double dist_m = -1;          // our copy's place to our player (-1 unknown)
+    double radius_m = 120.0;     // enemy_down_hold_radius
+};
+enum class DownAct : std::uint8_t { usual = 0, hold = 1, hide = 2 };
+inline constexpr DownAct DownHold(const DownIn& d) noexcept {
+    const bool is_near = d.dist_m < 0 || d.dist_m <= d.radius_m;  // (not `near`: a Windows macro)
+    if (is_near) return d.posed || d.hidden_here ? DownAct::hold : DownAct::hide;
+    return DownDefeat(d.defeat) ? DownAct::hide : DownAct::usual;
+}
+// The lease verdicts the hold overrides (the guest's mirrors): keeping and every release the owner's side or the distance causes. Not
+// overridden: our own copy taken by a game sequence or unloaded here, the switch / the link / the world (a reset), a vehicle, our
+// own cutscene's hold.
+inline constexpr bool DownOverrides(LeaseVerdict v) noexcept {
+    return v == LeaseVerdict::keep || v == LeaseVerdict::release_silence || v == LeaseVerdict::release_host_unrealized ||
+           v == LeaseVerdict::release_host_hidden || v == LeaseVerdict::release_host_far || v == LeaseVerdict::release_range;
+}
+inline constexpr DownAct DownLease(bool on, bool partner_down, LeaseVerdict v, const DownIn& d) noexcept {
+    return on && partner_down && DownOverrides(v) ? DownHold(d) : DownAct::usual;
+}
+inline const char* DownActText(DownAct a) noexcept { return a == DownAct::hold ? "held" : a == DownAct::hide ? "hidden" : "usual"; }
 
 }  // namespace st::erules

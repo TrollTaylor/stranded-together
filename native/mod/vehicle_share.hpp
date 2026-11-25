@@ -35,6 +35,7 @@
 
 #include "config.hpp"
 #include "game_api.hpp"
+#include "vehicle_truck_rules.hpp"
 #include "vehicle_wire.hpp"
 
 namespace st::vshare {
@@ -63,7 +64,9 @@ void EmergencyStop() noexcept;
 // Debug actions (debug_actions.cpp; game thread):
 //   "Vehicle share" op: 0 status, 1 dump [tag], 2 summon <kind> [m], 3 snapshot now, 4 binding report, 5 <0..3> mirror
 //   path for tests (0 auto, 1 exact-id only, 2 fallback only, 3 re-place only), 6 <kind> [m] hidden tests: remove the
-//   nearest vehicle of that kind (0x2000), 7 eviction / gate counters.
+//   nearest vehicle of that kind (0x2000), 7 eviction / gate counters,
+//   9 [tag] [m] truck census (round 23 D: every truck of the pools, or within m of our Sam, with its class, driver, seat, camp,
+//   place and hold; works without the shared vehicles when the pool and truck bytes match).
 //   "Vehicle dump" [tag]: every in-use unit of the three pools, with its binding.
 //   "Vehicle summon" <kind 1 roadster | 2 truck | 3 trike> [m ahead, default 8]: through the game's own request path (a
 //   garage slot of that kind, else 0x142F830A0 with a record copied from a unit of that kind), so the guest's gate is
@@ -187,5 +190,40 @@ struct DevChecks {
     char off[160] = {};  // "" or the first reason, e.g. "vehicle repair: truck Repair"
 };
 DevChecks DevCheckResult() noexcept;
+
+// ---------------------------------------------------------------- round 23 D: MULE trucks (vehicle_truck_rules.hpp; docs/enemy-sync.md 14.10)
+// session.ini vehicle_mule_log / vehicle_mule_hold, with the shared vehicles on and the truck byte checks passed (SetDriver
+// 0x142F7C537 writes the entity's seat +0x63C / +0x8B0 and calls FUN_142f7f810 0x142F7F810, which writes the unit's rider +0x158
+// and its +0x19D bits; 0x142F7C578 the player branch). Each 10 Hz poll classifies every truck (and any vehicle a non-player
+// drives); both games send what their trucks say (STK1, SVM1 type 50) so a truck the other game's MULE drives is held here too.
+// One truck as both games see it (game thread).
+struct TruckInfo {
+    std::uint32_t host_id = 0;                     // the host's id (0: a guest unit that is not bound)
+    std::uint32_t local_id = 0;                    // this game's unit id (0: only the other game has it)
+    std::uint8_t kind = 0;
+    trucks::Class cls = trucks::Class::player;     // this game's class (here only)
+    trucks::Model model = trucks::Model::unknown;
+    bool here = false;
+    std::uint32_t driver = trucks::kNoActor;       // this game's driver id
+    std::int32_t seat = -1;
+    char camp[24] = {};
+    bool there = false;                            // the other game's facts are fresh
+    trucks::Model there_model = trucks::Model::unknown;
+    std::uint32_t there_driver = trucks::kNoActor;
+    std::int32_t there_seat = -1;
+    trucks::HoldWhy hold = trucks::HoldWhy::none;  // in effect (with the 5 s release latch)
+};
+// Every truck either game names now, at most cap. Game thread.
+std::size_t Trucks(TruckInfo* out, std::size_t cap) noexcept;
+// vehicle_drive: the truck with this host id is left to each game now (no PARK, no parked / final / far teleport, no push
+// claim). `why` (optional): HoldWhyName.
+bool TruckHeld(std::uint32_t host_id, const char** why) noexcept;
+// enemy_sync: this game's truck rules name the actor a vehicle's driver now (vehicle_mule_hold; the newest poll).
+bool TruckDriverOf(std::uint32_t actor_id) noexcept;
+// The truck census lines ("[vshare] trucks tag=..."); `radius_m` <= 0: all. enemy::Census calls it before its "census done" line.
+// Works with the shared vehicles off when the pool and truck bytes match (checked on first use). Game thread.
+bool TruckCensus(int tag, double radius_m, char* msg, std::size_t cap) noexcept;
+// session.ini vehicle_mule_log (read at Install, whether or not the shared vehicles are on).
+bool MuleLog() noexcept;
 
 }  // namespace st::vshare

@@ -614,7 +614,7 @@ void TestApplyGate() {
     CHECK(ApplyGate(b) == HitResult::too_far);
     b = a, b.point_m = std::nan("");
     CHECK(ApplyGate(b) == HitResult::too_far);
-    CHECK(std::strcmp(HitResultText(0), "applied") == 0 && std::strcmp(HitResultText(10), "hidden") == 0 && std::strcmp(HitResultText(13), "?") == 0);
+    CHECK(std::strcmp(HitResultText(0), "applied") == 0 && std::strcmp(HitResultText(10), "hidden") == 0 && std::strcmp(HitResultText(14), "?") == 0);
 }
 void TestOutcomes() {
     for (std::uint32_t st : {1u, 2u}) CHECK(OutcomeOf(st, kDownFaint | kDownSleep) == Defeat::none);
@@ -668,6 +668,98 @@ void TestPoseDead() {
     for (std::uint32_t id : {0x3003u, 0x3004u, 0x3005u}) CHECK(t.Period(static_cast<unsigned>(t.SlotOf(id))) == kPoseFastMs);
     for (std::uint32_t id : {0x3001u, 0x3002u}) CHECK(t.Period(static_cast<unsigned>(t.SlotOf(id))) == kPoseSlowMs);
 }
+// Round 23: the tie-up relay's decisions (docs/enemy-sync.md 14).
+void TestRestrain() {
+    // what a captured HIT starts
+    CHECK(RestrainTrigger(0x15C, 3) == RestrainTrig::strand);
+    CHECK(RestrainTrigger(0x47, 41) == RestrainTrig::strand);  // the strand's weapon, whatever its attack
+    CHECK(RestrainTrigger(0x102, 45) == RestrainTrig::bola);
+    CHECK(RestrainTrigger(0x47, 45) == RestrainTrig::none);
+    // the fallback's evidence: attack 0x15C AND weapon 41 at contact; a test waives weapon and distance
+    CHECK(RestrainFallback(0x15C, 41, 0.0, false));
+    CHECK(RestrainFallback(0x15C, 41, 2.5, false));
+    CHECK(!RestrainFallback(0x15C, 41, 2.6, false));
+    CHECK(!RestrainFallback(0x15C, 45, 0.0, false));
+    CHECK(!RestrainFallback(0x102, 41, 0.0, false));
+    CHECK(!RestrainFallback(0x15C, 41, -1.0, false));
+    CHECK(RestrainFallback(0x15C, 0, 50.0, true));
+    CHECK(!RestrainFallback(0x102, 0, 0.0, true));
+    // when to send
+    const std::uint8_t none = 0, faint = 1, sleep = 2, restrained = 3, dead = 4;
+    WatchIn w;
+    w.held_hit = true;
+    w.age_ms = 100;
+    CHECK(RestrainWatch(w) == WatchDo::wait);
+    w.copy = restrained;
+    CHECK(RestrainWatch(w) == WatchDo::send_restrain);  // the native read: bit 21
+    w.copy_was = restrained;
+    CHECK(RestrainWatch(w) == WatchDo::wait);  // no edge: it was restrained before
+    w.copy_was = none, w.copy = faint;
+    CHECK(RestrainWatch(w) == WatchDo::send_faint);
+    w.copy = sleep;
+    CHECK(RestrainWatch(w) == WatchDo::wait);  // sleep is not ours to send
+    w.copy = restrained, w.owner = faint;
+    CHECK(RestrainWatch(w) == WatchDo::drop);  // the owner has it down already
+    w.owner = none, w.frozen = false;
+    CHECK(RestrainWatch(w) == WatchDo::drop);  // no longer a copy here
+    w.frozen = true, w.copy = none, w.age_ms = 1499;
+    CHECK(RestrainWatch(w) == WatchDo::wait);
+    w.age_ms = 1500;
+    CHECK(RestrainWatch(w) == WatchDo::release);  // nothing seen, no fallback: the held HIT goes as before
+    w.fallback = true;
+    CHECK(RestrainWatch(w) == WatchDo::fallback);
+    w.held_hit = false, w.fallback = false;
+    CHECK(RestrainWatch(w) == WatchDo::drop);  // a scan's watch with nothing seen
+    w.copy = dead;
+    CHECK(RestrainWatch(w) == WatchDo::drop);  // dead is never sent as a restrain
+    // the owner's gate (the validator: kind 5 only from a peer with the part)
+    RestrainIn r;
+    CHECK(RestrainGate(r) == HitResult::applied);
+    r.peer_part = false;
+    CHECK(RestrainGate(r) == HitResult::attack);
+    r = RestrainIn{}, r.on = false;
+    CHECK(RestrainGate(r) == HitResult::off);
+    r = RestrainIn{}, r.k_ok = false;
+    CHECK(RestrainGate(r) == HitResult::attack);
+    r = RestrainIn{}, r.fp_equal = false;
+    CHECK(RestrainGate(r) == HitResult::world);
+    r = RestrainIn{}, r.owned = false;
+    CHECK(RestrainGate(r) == HitResult::receiver);  // not that game's (the other owns it)
+    r = RestrainIn{}, r.found = false;
+    CHECK(RestrainGate(r) == HitResult::unrealized);  // not that MULE
+    r = RestrainIn{}, r.realized = false;
+    CHECK(RestrainGate(r) == HitResult::unrealized);
+    r = RestrainIn{}, r.state = 3;
+    CHECK(RestrainGate(r) == HitResult::dead);
+    r = RestrainIn{}, r.state = 5;
+    CHECK(RestrainGate(r) == HitResult::dead);
+    r = RestrainIn{}, r.hidden_or_asleep = true;
+    CHECK(RestrainGate(r) == HitResult::hidden);
+    r = RestrainIn{}, r.defeat_now = faint;
+    CHECK(RestrainGate(r) == HitResult::down);  // already down
+    r.defeat_now = restrained;
+    CHECK(RestrainGate(r) == HitResult::down);
+    CHECK(RestrainSetResult(1) == HitResult::applied && RestrainSetResult(0) == HitResult::applied && RestrainSetResult(-2) == HitResult::down &&
+          RestrainSetResult(-1) == HitResult::fault);
+    CHECK(kHitResults == 14 && std::strcmp(HitResultText(13), "down already") == 0 && std::strcmp(HitResultText(14), "?") == 0);
+    // the hold
+    CHECK(HoldStep(100, false, false) == HoldEnd::none);
+    CHECK(HoldStep(100, true, false) == HoldEnd::outcome);
+    CHECK(HoldStep(100, true, true) == HoldEnd::refused);
+    CHECK(HoldStep(2999, false, false) == HoldEnd::none);
+    CHECK(HoldStep(3000, false, false) == HoldEnd::timeout);
+    CHECK(BlendBack(-5) == 0.0f && BlendBack(125) == 0.5f && BlendBack(250) == 1.0f && BlendBack(1000) == 1.0f);
+    // the replay flush: only on the edge into a down outcome
+    CHECK(FlushOnDefeat(none, faint) && FlushOnDefeat(none, sleep) && FlushOnDefeat(none, restrained) && FlushOnDefeat(none, dead) && FlushOnDefeat(none, 5));
+    CHECK(!FlushOnDefeat(none, none) && !FlushOnDefeat(restrained, dead) && !FlushOnDefeat(faint, none) && !FlushOnDefeat(none, 6));
+    // the ini keys
+    cfgval::RestrainKeys k;
+    CHECK(k.relay && k.flush);
+    CHECK(cfgval::SetRestrainKey(k, "enemy_restrain_relay", false) && !k.relay && k.flush);
+    CHECK(cfgval::SetRestrainKey(k, "enemy_replay_flush", false) && !k.flush);
+    CHECK(!cfgval::SetRestrainKey(k, "enemy_restrain", true));
+}
+
 void TestHitValues() {
     const std::uint32_t p1 = 0x3F800000u, p125 = 0x41480000u;  // 1.0, 12.5
     CHECK(HitValuesOk(0, 1, 1, p125, 5) && HitValuesOk(0, 0.11f, 0.4f, p125, 0xFFFFFFFFu) && HitValuesOk(0, 1, 1, p1, 1));
@@ -1015,6 +1107,89 @@ void TestPoseAlloc() {
     CHECK(b.Take(PoseAlloc::kApply, 8) == 7);
     CHECK(b.Take(PoseAlloc::kFree, 8) == -1);
 }
+// Round 23 B (design 7.2): the mirror diagnostics' gates, the not-holding rule, the in-vehicle test and the keys.
+void TestMirrorsB() {
+    // diagnostics: the worst line while p95 is above 5 m; one full line per id the first time it is above 20 m
+    CHECK(!MirrorWorstDue(5.0) && MirrorWorstDue(5.01) && !MirrorWorstDue(0));
+    CHECK(MirrorFirstFull(20.5, false) && !MirrorFirstFull(20.5, true) && !MirrorFirstFull(20.0, false));
+    // the teleport ring: the newest 3 within the window
+    TeleportRing r;
+    CHECK(r.Within(0, 2000) == 0);
+    r.Note(1000);
+    r.Note(1500);
+    CHECK(r.Within(1500, 2000) == 2);
+    CHECK(!NotHolding(true, 50.0, r.Within(1500, 2000)));  // 2 teleports: not yet
+    r.Note(2000);
+    CHECK(r.Within(2000, 2000) == 3);
+    CHECK(NotHolding(true, 10.5, r.Within(2000, 2000)));
+    CHECK(!NotHolding(true, 10.0, r.Within(2000, 2000)));  // 10 m: holding (above 10 only)
+    CHECK(!NotHolding(false, 200.0, r.Within(2000, 2000)));  // enemy_mirror_hold_check=0
+    CHECK(r.Within(3000, 2000) == 3);                         // 1000 is exactly 2 s old: in
+    CHECK(r.Within(3001, 2000) == 2);                         // ... and out a millisecond later
+    CHECK(!NotHolding(true, 100.0, r.Within(3001, 2000)));
+    r.Note(3001);  // the ring keeps the newest 3: 1500 2000 3001
+    CHECK(r.Within(3001, 2000) == 3 && r.Within(3600, 2000) == 2);
+    // the 500 ms teleport gap allows at most 5 in 2 s; 3 is reached after 1 s of not holding
+    TeleportRing g;
+    for (int i = 0; i < 5; ++i) g.Note(10000 + 500.0 * i);
+    CHECK(g.Within(12000, 2000) == 3);
+    CHECK(g.Within(9000, 2000) == 0);  // none at or before 9000
+    g.Reset();
+    CHECK(g.Within(12000, 2000) == 0 && g.head == 0);
+    // retried every 5 s
+    CHECK(!NotHoldRetry(4999) && NotHoldRetry(5000) && NotHoldRetry(60000));
+    // the in-vehicle test: the parent chain first, else the ride fields (the byte checks passed)
+    CHECK(!SeatedByRide(kVehicleIdNone, 0));        // the constructor's none
+    CHECK(!SeatedByRide(0xFFFFFFFFu, 0));           // none in the low 21 bits
+    CHECK(!SeatedByRide(0, 0));                     // zero (never a vehicle id seen)
+    CHECK(!SeatedByRide(0x1234, -1));               // no seat
+    CHECK(!SeatedByRide(0x1234, 16));               // out of range
+    CHECK(SeatedByRide(0x1234, 0) && SeatedByRide(0xFFE01234u, 15));
+    CHECK(VehicleTest(true, false, kVehicleIdNone, -1) == VehTest::parent);
+    CHECK(VehicleTest(true, true, 0x1234, 0) == VehTest::parent);  // the parent wins
+    CHECK(VehicleTest(false, true, 0x1234, 1) == VehTest::ride);
+    CHECK(VehicleTest(false, false, 0x1234, 1) == VehTest::none);  // ride fields off (a byte check failed, or a read fault)
+    CHECK(VehicleTest(false, true, kVehicleIdNone, -1) == VehTest::none);
+    // round 23 D: the truck rules name it a driver (last: the parent chain and the ride fields first)
+    CHECK(VehicleTest(false, false, kVehicleIdNone, -1, true) == VehTest::driver);
+    CHECK(VehicleTest(false, true, 0x1234, 1, true) == VehTest::ride);
+    CHECK(VehicleTest(true, true, 0x1234, 1, true) == VehTest::parent);
+    CHECK(VehicleTest(false, true, kVehicleIdNone, -1, false) == VehTest::none);
+    CHECK(std::strcmp(VehTestText(VehTest::driver), "a truck's driver seat (unit +0x158)") == 0);
+    CHECK(std::strcmp(VehTestText(VehTest::ride), "the actor's +0xE20 / +0x3C0") == 0 && std::strcmp(VehTestText(VehTest::none), "none") == 0);
+    CHECK(std::strcmp(VehicleSideText(true, true), "both copies") == 0 && std::strcmp(VehicleSideText(false, true), "the owner's copy") == 0 &&
+          std::strcmp(VehicleSideText(true, false), "our copy") == 0 && std::strcmp(VehicleSideText(false, false), "neither") == 0);
+    // the lease: released to its own game when either copy is in a vehicle (only with the check on)
+    LeaseIn l;
+    l.frozen_by_us = true;
+    l.in_vehicle_host = true;
+    CHECK(Lease(l) == LeaseVerdict::keep);  // vehicle_check off: the old behaviour
+    l.vehicle_check = true;
+    CHECK(Lease(l) == LeaseVerdict::release_vehicle && Releases(LeaseVerdict::release_vehicle));
+    l.in_vehicle_host = false, l.in_vehicle_here = true;
+    CHECK(Lease(l) == LeaseVerdict::release_vehicle);
+    l.in_vehicle_here = false;
+    CHECK(Lease(l) == LeaseVerdict::keep);
+    l.in_vehicle_here = true, l.frame_age_ms = 1600;
+    CHECK(Lease(l) == LeaseVerdict::release_silence);  // silence first
+    l.frame_age_ms = 0, l.off = true;
+    CHECK(Lease(l) == LeaseVerdict::release_off);
+    CHECK(std::strcmp(LeaseText(LeaseVerdict::release_vehicle), "in a vehicle") == 0);
+    // entry: refused while the owner's entry says in a vehicle
+    EligibleIn e;
+    e.host_in_vehicle = true;
+    CHECK(Eligible(e) == Refusal::host_in_vehicle);
+    CHECK(std::strstr(RefusalText(Refusal::host_in_vehicle), "in a vehicle on the host") != nullptr);
+    e.in_vehicle = true;
+    CHECK(Eligible(e) == Refusal::in_vehicle);
+    // the keys
+    cfgval::MirrorKeys k;
+    CHECK(k.hold_check && k.vehicle);
+    CHECK(cfgval::SetMirrorKey(k, "enemy_mirror_hold_check", false) && !k.hold_check && k.vehicle);
+    CHECK(cfgval::SetMirrorKey(k, "enemy_mirror_vehicle", false) && !k.vehicle);
+    CHECK(!cfgval::SetMirrorKey(k, "enemy_mirror", true) && !k.hold_check);
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------- P1c (round 21): ownership per camp
@@ -1533,6 +1708,122 @@ void TestFollowerGuard() {
     CHECK(FollowerGuard(100, kMemberGuardMs) == Guard::hide);
 }
 
+// Round 23 C (docs/enemy-sync.md 14.9): a player down (death or KnotSpace): hold, hide or the usual rules.
+void TestSamDown() {
+    // down from the game state: GameOver (death) or KnotSpace; a faint, a stagger or nothing never
+    CHECK(DownOfState(0) == 0);
+    CHECK(DownOfState(kGsFaint) == 0);
+    CHECK(DownOfState(kGsKnotSpace) == static_cast<std::uint8_t>(PlayerDown::knot));
+    CHECK(DownOfState(kGsGameOver) == static_cast<std::uint8_t>(PlayerDown::dead));
+    CHECK(DownOfState(kGsGameOver | kGsKnotSpace | kGsFaint) == static_cast<std::uint8_t>(PlayerDown::dead));
+    CHECK(DownOfState(kGsKnotSpace | kGsFaint) == static_cast<std::uint8_t>(PlayerDown::knot));
+    CHECK(DownOfState(1ull << 8) == 0);  // Subspace alone: not down
+    for (std::uint8_t c = 0; c <= kPlayerDownMax; ++c) CHECK(std::strcmp(PlayerDownText(c), "?") != 0);
+    CHECK(std::strcmp(PlayerDownText(kPlayerDownMax + 1), "?") == 0);
+    // the sender's latch: down at once, back after 1 s of not down; a flicker under 1 s keeps it down
+    DownLatch l;
+    CHECK(l.Step(0, 0) == 0);
+    CHECK(l.Step(2, 100) == 2);
+    CHECK(l.Step(0, 200) == 2);
+    CHECK(l.Step(0, 1100) == 2);
+    CHECK(l.Step(2, 1150) == 2);  // flicker: the clock starts again
+    CHECK(l.Step(0, 1200) == 2);
+    CHECK(l.Step(0, 2199) == 2);
+    CHECK(l.Step(0, 2200) == 0);
+    CHECK(l.Step(1, 3000) == 1);
+    CHECK(l.Step(2, 3010) == 2);  // a new reason at once
+    l.Reset();
+    CHECK(l.code == 0 && l.clear_since < 0);
+    // the receiver's changes
+    CHECK(DownStep(0, 0) == DownChange::none && DownStep(2, 2) == DownChange::none);
+    CHECK(DownStep(0, 2) == DownChange::down && DownStep(2, 0) == DownChange::back && DownStep(2, 1) == DownChange::reason);
+    // review: no beacon keeps the code in force ("unknown", never "back"); the fake wins; a beacon's 0 is "back"
+    CHECK(PeerDownNow(-1, false, 0, 1) == 1 && PeerDownNow(-1, false, 0, 0) == 0 && PeerDownNow(-1, false, 3, 2) == 2);
+    CHECK(DownStep(1, PeerDownNow(-1, false, 0, 1)) == DownChange::none);
+    CHECK(PeerDownNow(-1, true, 0, 1) == 0 && DownStep(1, PeerDownNow(-1, true, 0, 1)) == DownChange::back);
+    CHECK(PeerDownNow(-1, true, 2, 0) == 2 && PeerDownNow(3, true, 0, 0) == 3 && PeerDownNow(0, false, 0, 4) == 0);
+    // review: sync off / no local Sam while the host's Sam is down keeps the guest's mirrors (never the host, never with the key off)
+    CHECK(DownKeepsOff(true, 1, true) && DownKeepsOff(true, 2, true) && DownKeepsOff(true, 3, true));
+    CHECK(!DownKeepsOff(true, 0, true) && !DownKeepsOff(false, 1, true) && !DownKeepsOff(true, 1, false));
+    // review: the not-holding retry waits while he is down; the final unhides never wait
+    CHECK(NotHoldUnhideNow(false, false) && !NotHoldUnhideNow(false, true) && NotHoldUnhideNow(true, true) && NotHoldUnhideNow(true, false));
+    // ownership: frozen while either player is down, only with the key on
+    CHECK(!DownFreezesOwnership(true, false, false));
+    CHECK(DownFreezesOwnership(true, true, false) && DownFreezesOwnership(true, false, true) && DownFreezesOwnership(true, true, true));
+    CHECK(!DownFreezesOwnership(false, true, true));
+    // the decision for one frozen copy
+    DownIn d;
+    d.radius_m = 120.0;
+    // near, posed: held in its last pose
+    d.dist_m = 30.0, d.posed = true;
+    CHECK(DownHold(d) == DownAct::hold);
+    // near, never posed: hidden (kept frozen)
+    d.posed = false;
+    CHECK(DownHold(d) == DownAct::hide);
+    // near, never posed but our own game hides it already: held (never touched)
+    d.hidden_here = true;
+    CHECK(DownHold(d) == DownAct::hold);
+    d.hidden_here = false;
+    // an unknown distance counts as near
+    d.dist_m = -1;
+    CHECK(DownHold(d) == DownAct::hide);
+    d.posed = true;
+    CHECK(DownHold(d) == DownAct::hold);
+    // the radius edge: within, inclusive
+    d.dist_m = 120.0;
+    CHECK(DownHold(d) == DownAct::hold);
+    // far and standing: the usual rules (M0's release, as before)
+    d.dist_m = 120.5;
+    CHECK(DownHold(d) == DownAct::usual);
+    d.posed = false;
+    CHECK(DownHold(d) == DownAct::usual);
+    // far and down (faint, sleep, restrained, dead): hidden, never given back alive (it would stand up)
+    for (std::uint8_t df : {static_cast<std::uint8_t>(Defeat::faint), static_cast<std::uint8_t>(Defeat::sleep), static_cast<std::uint8_t>(Defeat::restrained),
+                            static_cast<std::uint8_t>(Defeat::dead)}) {
+        d.defeat = df;
+        CHECK(DownHold(d) == DownAct::hide);
+        d.dist_m = 10.0, d.posed = true;
+        CHECK(DownHold(d) == DownAct::hold);  // near and down: held lying (it stays down)
+        d.dist_m = 120.5, d.posed = false;
+    }
+    d.defeat = static_cast<std::uint8_t>(Defeat::none);
+    // the lease verdicts the hold overrides
+    for (LeaseVerdict v : {LeaseVerdict::keep, LeaseVerdict::release_silence, LeaseVerdict::release_host_unrealized, LeaseVerdict::release_host_hidden,
+                           LeaseVerdict::release_host_far, LeaseVerdict::release_range})
+        CHECK(DownOverrides(v));
+    for (LeaseVerdict v : {LeaseVerdict::none, LeaseVerdict::hold, LeaseVerdict::release_off, LeaseVerdict::release_unrealized, LeaseVerdict::forget_taken,
+                           LeaseVerdict::release_vehicle})
+        CHECK(!DownOverrides(v));
+    DownIn n;
+    n.dist_m = 5.0, n.posed = true;
+    CHECK(DownLease(true, true, LeaseVerdict::release_host_hidden, n) == DownAct::hold);   // the KnotSpace hide: held, not released alive
+    CHECK(DownLease(true, true, LeaseVerdict::release_silence, n) == DownAct::hold);       // his frames stopped: held
+    CHECK(DownLease(true, true, LeaseVerdict::keep, n) == DownAct::hold);                  // frames still come: held all the same
+    CHECK(DownLease(true, false, LeaseVerdict::release_host_hidden, n) == DownAct::usual); // he is up: the old rules
+    CHECK(DownLease(false, true, LeaseVerdict::release_host_hidden, n) == DownAct::usual); // enemy_down_hold=0: the old rules
+    CHECK(DownLease(true, true, LeaseVerdict::forget_taken, n) == DownAct::usual);         // a game sequence took ours: forgotten as before
+    CHECK(DownLease(true, true, LeaseVerdict::release_vehicle, n) == DownAct::usual);
+    CHECK(DownLease(true, true, LeaseVerdict::release_unrealized, n) == DownAct::usual);
+    n.posed = false;
+    CHECK(DownLease(true, true, LeaseVerdict::release_host_hidden, n) == DownAct::hide);
+    CHECK(std::strcmp(DownActText(DownAct::hold), "held") == 0 && std::strcmp(DownActText(DownAct::hide), "hidden") == 0 &&
+          std::strcmp(DownActText(DownAct::usual), "usual") == 0);
+    // no new mirror while the owner's player is down (after the cutscene refusal)
+    EligibleIn e;
+    e.owner_down = true;
+    CHECK(Eligible(e) == Refusal::owner_down);
+    CHECK(std::strcmp(RefusalText(Refusal::owner_down), "?") != 0);
+    e.cutscene = true;
+    CHECK(Eligible(e) == Refusal::cutscene);
+    // the keys
+    bool hold = true;
+    CHECK(cfgval::SetDownKey(hold, "enemy_down_hold", false) && !hold);
+    CHECK(cfgval::SetDownKey(hold, "enemy_down_hold", true) && hold);
+    CHECK(!cfgval::SetDownKey(hold, "enemy_down", false) && hold);
+    static_assert(cfgval::kDownHoldRadiusDefault == 120.0, "the default radius");
+    CHECK(cfgval::DownRadius("200", 120.0) == 200.0 && cfgval::DownRadius("19", 120.0) == 120.0 && cfgval::DownRadius("x", 120.0) == 120.0);
+}
+
 int main() {
     TestCampGeometry();
     TestCampTake();
@@ -1572,6 +1863,9 @@ int main() {
     TestDeadRelease();
     TestPoseDead();
     TestHitValues();
+    TestRestrain();
+    TestMirrorsB();
+    TestSamDown();
     std::printf("%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

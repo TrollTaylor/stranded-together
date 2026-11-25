@@ -1,0 +1,77 @@
+# Round 23 M1 gate, the trucks (docs/enemy-sync.md 14.12; round 23 D: the MULE trucks left to each game): at the MULE Camp
+# Southwest of Lake Knot City (its MULE trucks 0x020010 and 0x02000F), on the launcher's own Local test files.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-truck-hold -SeedSaves complete-100 -GuestSeed profile-only -Id round23-f-trucks
+# Afterwards (the gate is PASS only when Run-Batch's PASS and this script's PASS both hold; Run-Batch does not run it):
+#   python -I tools\testenv\truck-hold.py build-testenv\runs\<run>   (each MULE truck within 0.5 m between census tags 1 and 2
+#   on each game; the host's vshare poll count equals the guest's bound count)
+# Steps:
+#   A calm, 60 s: the truck census (V1, tag 1) on both games lists a MULE truck; the guest's vshare table fully bound (`table n,
+#     bound n`); 60 s with both Sams at the camp; the census again (tag 2); the trucks' round 23 D counters on both games: PARK
+#     frames skipped on the host (the trucks are never sent), and 0 parked corrections / push claims / final or far placements
+#     on both (no parked teleport of a MULE truck); the guest's table still fully bound.
+# No dev_enemies here: its ResetAndResurrectAllMules on the guest made her vshare remove 7 far trucks ("another vehicle under
+# the host's id") and fail to mirror 3 of them again (runs 163148 / 163342: table 22, bound 19; also in the enemy gates since
+# run 100452): a test-tool side effect, not the trucks' hold.
+# covers: vehicle-mule
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[config\] vehicle_mule_log=1 vehicle_mule_hold=1
+@guest waitlog 5 \[config\] vehicle_mule_log=1 vehicle_mule_hold=1
+waitlog 5 \[vshare\] MULE trucks \(round 23 D\): vehicle_mule_log=1 vehicle_mule_hold=1
+@guest waitlog 5 \[vshare\] MULE trucks \(round 23 D\): vehicle_mule_log=1 vehicle_mule_hold=1
+goto mule-camp-sw-lkc
+@guest goto 1521.90 992.00 0
+wait 4000
+wait 4000
+waitlog 30 \[vshare\] the partner's game sends its truck facts
+@guest waitlog 30 \[vshare\] the partner's game sends its truck facts
+?waitlog 30 \[vshare\] MULE truck 0x02001[0F] left to each game
+?@guest waitlog 30 \[vshare\] MULE truck 0x02001[0F] left to each game
+# ---- A, calm: the census (tag 1), the table bound, 60 s, the census again (tag 2), the counters
+@both action vehicle_share 9 1 400
+waitlog 10 \[vshare\] trucks tag=1 done
+@guest waitlog 10 \[vshare\] trucks tag=1 done
+waitlog 5 \[vshare\] trucks tag=1 t[0-9]+ truck 0x[0-9A-F]{6}: MULE truck
+@guest waitlog 5 \[vshare\] trucks tag=1 t[0-9]+ truck 0x[0-9A-F]{6}: MULE truck
+action vehicle_share 0
+waitnew 5 \[vshare\] status: host ON; world ready #[0-9]+; poll ok \([0-9]+ in use\)
+# her table settles some seconds after the world is ready (run 163148: table 22, bound 19, 3 in flight at 47 s)
+@guest until 60 3000 \[vshare\] guest: table ([0-9]+), bound \1, mirrors in flight 0; => action vehicle_share 0
+screenshot 01-host-trucks-calm
+@guest screenshot 01-guest-trucks-calm
+wait 30000
+screenshot 02-host-trucks-30s
+@guest screenshot 02-guest-trucks-30s
+wait 30000
+@both action vehicle_share 9 2 400
+waitlog 10 \[vshare\] trucks tag=2 done
+@guest waitlog 10 \[vshare\] trucks tag=2 done
+action vehicle_drive 0
+waitnew 5 \[vdrive\] MULE trucks left to each game \(round 23 D\): PARK frames skipped [1-9][0-9]*, parked corrections 0, push claims 0, final placements 0, far placements 0
+@guest action vehicle_drive 0
+@guest waitnew 5 \[vdrive\] MULE trucks left to each game \(round 23 D\): PARK frames skipped [0-9]+, parked corrections 0, push claims 0, final placements 0, far placements 0
+action vehicle_share 0
+waitnew 5 \[vshare\] status: host ON; world ready #[0-9]+; poll ok \([0-9]+ in use\)
+@guest action vehicle_share 0
+@guest waitnew 5 \[vshare\] guest: table ([0-9]+), bound \1, mirrors in flight 0;
+screenshot 03-host-trucks-60s
+@guest screenshot 03-guest-trucks-60s
+# ---- off
+nolog \[vshare\] FAULT
+@guest nolog \[vshare\] FAULT
+nolog \[vdrive\] FAULT
+@guest nolog \[vdrive\] FAULT
+nolog \[vshare\] the partner's truck facts .* did not validate
+@guest nolog \[vshare\] the partner's truck facts .* did not validate
+nolog byte check FAILED
+@guest nolog byte check FAILED
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@guest quit
+wait 3000
+quit

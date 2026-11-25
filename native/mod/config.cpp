@@ -112,6 +112,30 @@ Config LoadConfig(const std::wstring& dir) {
                 continue;
             }
         }
+        // Round 23 keys (cfgval::SetRestrainKey: unit-tested).
+        {
+            cfgval::RestrainKeys rk{c.enemy_restrain_relay, c.enemy_replay_flush};
+            if (cfgval::SetRestrainKey(rk, k, ParseBool(v))) {
+                c.enemy_restrain_relay = rk.relay, c.enemy_replay_flush = rk.flush;
+                continue;
+            }
+            cfgval::MirrorKeys mk{c.enemy_mirror_hold_check, c.enemy_mirror_vehicle};
+            if (cfgval::SetMirrorKey(mk, k, ParseBool(v))) {
+                c.enemy_mirror_hold_check = mk.hold_check, c.enemy_mirror_vehicle = mk.vehicle;
+                continue;
+            }
+            cfgval::TruckKeys tk{c.vehicle_mule_log, c.vehicle_mule_hold};
+            if (cfgval::SetTruckKey(tk, k, ParseBool(v))) {
+                c.vehicle_mule_log = tk.log, c.vehicle_mule_hold = tk.hold;
+                continue;
+            }
+            if (cfgval::SetDownKey(c.enemy_down_hold, k, ParseBool(v))) continue;
+            if (cfgval::SetProbeKey(c.enemy_m2_probes, k, ParseBool(v))) continue;
+            if (k == "enemy_down_hold_radius") {
+                c.enemy_down_hold_radius = cfgval::DownRadius(v, c.enemy_down_hold_radius);
+                continue;
+            }
+        }
         if (k == "role") {
             c.role = v == "host"    ? Role::host
                      : v == "guest" ? Role::guest
@@ -461,6 +485,11 @@ Config LoadConfig(const std::wstring& dir) {
     Log("[config] enemy_owner=%d%s outcomes=%d hits=%d follow_guard=%d attack_registry=%d", c.enemy_owner ? 1 : 0,
         c.enemy_owner_set ? "" : cfgval::kOwnerDefaultOn ? " (default: on with enemy_hits)" : " (default: off)", c.enemy_owner_outcomes ? 1 : 0,
         c.enemy_owner_hits ? 1 : 0, c.enemy_follow_guard ? 1 : 0, c.enemy_attack_registry ? 1 : 0);
+    Log("[config] enemy_restrain_relay=%d enemy_replay_flush=%d", c.enemy_restrain_relay ? 1 : 0, c.enemy_replay_flush ? 1 : 0);
+    Log("[config] enemy_mirror_hold_check=%d enemy_mirror_vehicle=%d", c.enemy_mirror_hold_check ? 1 : 0, c.enemy_mirror_vehicle ? 1 : 0);
+    Log("[config] vehicle_mule_log=%d vehicle_mule_hold=%d", c.vehicle_mule_log ? 1 : 0, c.vehicle_mule_hold ? 1 : 0);
+    Log("[config] enemy_down_hold=%d enemy_down_hold_radius=%.0f", c.enemy_down_hold ? 1 : 0, c.enemy_down_hold_radius);
+    Log("[config] enemy_m2_probes=%d", c.enemy_m2_probes ? 1 : 0);
     // Fragile's textures: only whether a folder came and its length (the path itself names the Windows user).
     Log("[config] textures_dir=%s", c.textures_dir.empty() ? "- (none)" : ("set (" + std::to_string(c.textures_dir.size()) + " bytes)").c_str());
     Log("[config] fragile_textures=%d textures_send=%d textures_receive=%d textures_hot_reload=%d textures_free=%d textures_defaults=%d", c.fragile_textures ? 1 : 0,

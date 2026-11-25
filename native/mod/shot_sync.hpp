@@ -86,6 +86,19 @@ unsigned MirrorBulletDropsReplays() noexcept;  // ... of them our replays' round
 // P2 (enemy_combat.cpp; docs/enemy-sync.md 9), game thread: the beacon's hits part (bit1) on / off (why_off: a static text ending in
 // ')', shown in the `combat parts` line), and her own rounds on a mirror passed to Entity OnHit so far.
 void SetHitsPart(bool on, const char* why_off) noexcept;
+// Round 23 (docs/enemy-sync.md 14), game thread: the beacon's restrain part (shotw::kPartRestrain: this build sends and takes HIT kind
+// 5) on / off; the partner's beacon carries it (false: no beacon or an older build).
+void SetRestrainPart(bool on) noexcept;
+bool PeerRestrain() noexcept;
+// Round 23 C (docs/enemy-sync.md 14.9), game thread: our own player's down code (erules::PlayerDown, 0..4) for the beacon's byte 22.
+// Sent only once the partner's beacon has carried kPartRestrain on this link generation (a round-23 build; an older decoder refuses
+// the byte). That is latched: a partner whose restrain part drops later (a fault there) still decodes the byte, and a 0 sent for that
+// reason would read as "back" (review). At once on a change and then every 1 s for 5 s. Returns the code the beacon carries now (0
+// while the partner cannot take it).
+std::uint8_t SetPlayerDown(std::uint8_t code) noexcept;
+// Round 23, game thread: the replay flush. A down outcome (faint, sleep, restrained, dead) for `shooter` reached this game: its
+// queued enemy shot replays are dropped now, one line "[shots] flushed n replays of id=.. (down)". Returns n.
+unsigned FlushEnemyReplays(std::uint32_t shooter, const char* why, bool quiet_if_none = false) noexcept;
 unsigned MirrorBulletPassed() noexcept;
 // A damage message of one of our replays (any thread).
 bool IsReplayHit(const samdmg::View& v) noexcept;

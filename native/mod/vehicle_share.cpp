@@ -18,10 +18,13 @@
 #include "coop_session.hpp"
 #include "dev_rules.hpp"
 #include "dev_tools.hpp"
+#include "enemy_sync.hpp"
 #include "game_actions.hpp"
 #include "link.hpp"
 #include "log.hpp"
 #include "partner_source.hpp"
+#include "pose_wire.hpp"
+#include "real_body.hpp"
 #include "vehicle_drive.hpp"
 #include "vehicle_sync.hpp"
 
@@ -74,6 +77,7 @@ enum Group : unsigned {
     kTeleportG = 16u,
     kExact = 32u,    // the exact-id mirror (pool vfunc +0x30, the loader's desc) and the entry writer (optional)
     kGarage = 64u,   // the garage slot spawn (optional: guest requests go as plain spawns without it)
+    kTrucks = 128u,  // round 23 D: the driver seat writes the MULE truck rules read (optional: vehicle_mule_log / _hold off without them)
 };
 constexpr unsigned kRequired = kCore | kGate | kSpawnG | kEvict | kTeleportG;
 struct Site {
@@ -118,6 +122,13 @@ constexpr Site kSites[] = {
     {kWriteEntry, "40 55 53 57 48 8D 6C 24 B9 48 81 EC B0 00 00 00 48 8B DA 48 8B F9 E8", "persisted entry writer", kExact},
     {kGarageSpawn, "40 53 56 57 48 81 EC 80 01 00 00 48 8B 05 FE 44", "garage slot spawn", kGarage},
     {0x142D6ECEA, "48 8B 1D ?? ?? ?? ??", "parking manager global", kGarage},
+    // round 23 D [O]: FUN_142f7f810 writes the unit's rider +0x158 (also 0x1FFFFF), returns on none, +0x170, then +0x19D bit0 for a
+    // player (type 0) and bit1 for anyone else; SetDriver writes the entity's seat +0x63C = 1, +0x8B0 = the id, then calls it; and
+    // tests a player id (type 0) for its own branch
+    {0x142F7F810, "8B 02 89 81 58 01 00 00 8B 02 3B 05 ?? ?? ?? ?? 74 2E 89 81 70 01 00 00 F7 02 00 E0 1F 00 0F B6 81 9D 01 00 00 75 0F 24 FD 0C 01 88 81 9D 01 00 00",
+     "truck rules: unit rider +0x158 and +0x19D bits (FUN_142f7f810)", kTrucks},
+    {0x142F7C537, "41 BF 01 00 00 00 44 89 BF 3C 06 00 00 41 8B 06 89 87 B0 08 00 00 E8 BE 32 00 00", "truck rules: SetDriver seat +0x63C / +0x8B0", kTrucks},
+    {0x142F7C578, "3D FF FF 1F 00 0F 84 C7 01 00 00 A9 00 E0 1F 00 0F 85 BC 01 00 00", "truck rules: SetDriver player-id branch", kTrucks},
 };
 // clang-format on
 
@@ -221,6 +232,12 @@ struct PollState {
     std::vector<PUnit> units;  // every unit of the three pools (in use or not)
     unsigned in_use = 0;
 } g_poll;
+
+// round 23 D: the MULE trucks' holds (the block before TickBody)
+trucks::HoldWhy HoldOfHost(std::uint32_t host_id);
+trucks::HoldWhy HoldOfPair(std::uint32_t host_id, std::uint32_t local_id);
+bool HeldNote(std::uint32_t id, trucks::HoldWhy w, const char* what, double now);
+void LogTrucks(const char* who);
 
 bool ReadXfAt(std::uintptr_t a, WorldTransform& out) noexcept {
     std::uint8_t b1[0x3C], b2[0x3C];
@@ -667,6 +684,7 @@ void SendSnapshot(std::uint32_t req_id, const char* why) {
         if (Queue(c.data(), c.size())) ++queued;
     ++g_snaps;
     Log("[vshare] host: snapshot #%u (%s): %zu vehicles in %u chunk(s), world #%u, area %d", g_snap_id, why, entries.size(), queued, g_counter, area);
+    LogTrucks("host: snapshot");  // round 23 D (vehicle_mule_log)
 }
 
 // The partner's place and vehicle against our units: the shared-active set the victim detour refuses.
@@ -916,6 +934,8 @@ void HostGuestRemoval(const vwire::Rem& r) {
     ++g_guest_rems;
     const PUnit* p = PolledById(r.key.id);
     if (!p || !p->alive()) return;  // gone here too
+    // round 23 D: a truck left to each game: the guest's removal is ignored (neither applied nor announced again)
+    if (HeldNote(r.key.id, HoldOfHost(r.key.id), "host: the guest's removal ignored", g_now_ms)) return;
     // Review fixes: the host applies a guest removal only to a vehicle the guest owns, that is destroyed here too (a garage
     // store or any other removal in the guest's world never reaches the host's persisted world: the garage relay does not
     // exist), with the guest's last place of it within 5 m of ours (a removal without a place is refused) and the partner
@@ -1092,6 +1112,12 @@ void SendNeed(const vwire::VKey& k, std::uint8_t reason, double now) {
 
 bool RemoveLocal(const PUnit& u, const char* why, double now) {
     if (u.ridden() || !u.alive()) return false;
+    {
+        // round 23 D: a truck left to each game is never removed here (whatever the binding says)
+        char what[120];
+        std::snprintf(what, sizeof(what), "guest: not removed (%s)", why);
+        if (HeldNote(u.id, HoldOfPair(0, u.id), what, now)) return false;
+    }
     if (!Cool(0x80000000u | u.id, now, 10000)) return false;
     if (!StillSame(u)) return false;
     if (!OrRemoveBit(u.unit)) {
@@ -1391,7 +1417,7 @@ void Reconcile(double now, bool log_always) {
                 break;
             case vwire::BindKind::replace:
                 bind[h.key.id] = u->id;
-                if (!followed && u->entity) {
+                if (!followed && u->entity && !HeldNote(h.key.id, HoldOfPair(h.key.id, u->id), "guest: not re-placed onto the host's spot", now)) {
                     const WorldTransform to = XfOf(h);
                     // only where it fits (M2.6): the host's spot may hold our Sam or another vehicle here; tried again next round
                     if (!PlaceClear(u->unit, h.key.kind, to)) {
@@ -1411,7 +1437,7 @@ void Reconcile(double now, bool log_always) {
                     bind[h.key.id] = u->id;
                 } else if (u->alive()) {
                     if (RemoveLocal(*u, "another vehicle under the host's id", now)) ++g_removed_wrong;
-                } else if (bp.mirrors_allowed && !MirrorPending(h.key.id)) {
+                } else if (bp.mirrors_allowed && !MirrorPending(h.key.id) && !HeldNote(h.key.id, HoldOfHost(h.key.id), "guest: not mirrored", now)) {
                     if (rec.has_add) StartMirror(rec, now);
                     else SendNeed(h.key, 0, now);
                 }
@@ -1420,7 +1446,7 @@ void Reconcile(double now, bool log_always) {
                 if (RemoveLocal(*u, "the host removed it", now)) ++g_removed_host;
                 break;
             case vwire::BindKind::mirror:
-                if (!MirrorPending(h.key.id)) {
+                if (!MirrorPending(h.key.id) && !HeldNote(h.key.id, HoldOfHost(h.key.id), "guest: not mirrored", now)) {
                     if (rec.has_add) StartMirror(rec, now);
                     else SendNeed(h.key, 0, now);
                 }
@@ -1474,6 +1500,8 @@ void GuestOwnRemovals(double now) {
         if (r != g_removing.end() && now - r->second < 15000) continue;
         auto t = g_table.find(prev.second.host_id);
         if (t == g_table.end() || t->second.e.Has(vwire::kEntRemoved)) continue;
+        // round 23 D: a truck left to each game went in our world only (a MULE's truck destroyed or despawned here): not the host's business
+        if (HeldNote(prev.second.host_id, HoldOfPair(prev.second.host_id, prev.first), "guest: its going is not told to the host", now)) continue;
         // its last place (the poll before it went): the host refuses a removal without one
         SendRem(t->second.e.key, vwire::RemReason::gone, 1, prev.second.has_xf, prev.second.xf);
         g_rem_told[prev.second.host_id] = now;
@@ -1634,6 +1662,7 @@ void OnMessage(const std::uint8_t* b, std::size_t n, std::uint32_t gen, double n
                 Log("[vshare] guest: the host's snapshot #%u is complete: %zu vehicles (host world #%u, area %u)", g_asm.SnapId(), g_table.size(),
                     g_asm.LoadCounter(), g_asm.Area());
                 g_asm.Reset();
+                LogTrucks("guest: the host's snapshot");  // round 23 D (vehicle_mule_log)
             }
             return;
         }
@@ -1749,6 +1778,433 @@ void NewLinkSession() {
     Log("[vshare] a new link session: the vehicle tables start over");
 }
 
+// ---------------------------------------------------------------- round 23 D: MULE trucks (vehicle_truck_rules.hpp)
+// Each poll: every truck of this world (and any vehicle a non-player drives) classified from its unit (+0x158 rider, +0x19D
+// bits) and its entity (+0x63C seated, +0x8B0 driver id; the model from its resource); both games send what their trucks say
+// (STK1, SVM1 type 50, the host's ids); the hold (trucks::Hold with its 5 s latch) per host id. The binding, the removals and
+// vehicle_drive ask the hold. Its own SEH guard: a fault turns the truck rules off for the run (the shared vehicles go on).
+constexpr std::uintptr_t kEHasDriver = 0x63C, kEDriver = 0x8B0;
+constexpr std::uint32_t kUnboundKey = 0x80000000u;  // guest: a unit that is not bound, by its own id
+constexpr unsigned kHoldLines = 24;                 // hold on / off lines per world (then counted)
+bool g_mule_log = true, g_mule_hold = true;         // session.ini
+bool g_trucks_ok = false;                           // the kTrucks byte checks (with the shared vehicles on)
+bool g_trucks_fault = false;                        // the truck tick faulted: off for the run
+struct TruckSt {
+    std::uint32_t local_id = 0, host_id = 0;
+    std::uintptr_t unit = 0, entity = 0;
+    trucks::UnitFacts u;
+    trucks::Facts f;
+    std::int32_t seat = -1;
+    char camp[24] = "-";
+    bool has_xf = false;
+    WorldTransform xf{};
+    std::uint32_t uflags = 0;  // unit +0x198 (the census line: its variant bits >> 22)
+    std::uint16_t rec2 = 0;
+};
+std::map<std::uint32_t, TruckSt> g_trucks;  // this world's, by local id (rebuilt every poll)
+struct ModelSeen {
+    std::uint8_t guid[16] = {};
+    trucks::Model m = trucks::Model::unknown;
+};
+std::map<std::uint32_t, ModelSeen> g_models;  // local id -> its model once read (the entity's resource)
+struct ThereFact {
+    trucks::Fact f;
+    double ms = 0;
+};
+std::map<std::uint32_t, ThereFact> g_there;  // host id -> the other game's newest facts
+struct HoldSt {
+    trucks::HoldLatch latch;
+    double seen_ms = 0;
+    bool player_last = false;  // round 23 review: trucks::PlayerLast (a player drove it last, no non-player since)
+    bool player_in = false;    // a player drove it on the previous poll
+};
+std::map<std::uint32_t, HoldSt> g_holds;  // host id (guest: kUnboundKey | an unbound unit's id) -> its hold
+std::vector<trucks::Fact> g_facts_sent;
+double g_facts_sent_ms = -1e18;
+unsigned g_facts_tx = 0, g_facts_rx = 0, g_facts_bad = 0, g_facts_stale = 0;
+bool g_facts_rx_logged = false;
+unsigned g_hold_lines = 0, g_hold_lines_dropped = 0;
+unsigned g_held_skips = 0;                     // decision points that left a truck alone
+std::map<std::uint64_t, double> g_held_note;   // (id, what) -> its last line
+
+bool TrucksOn() { return g_trucks_ok && !g_trucks_fault && g_on.load(); }
+bool HoldOn() { return g_mule_hold && TrucksOn(); }
+
+std::uint32_t LocalToHost(std::uint32_t local_id) {
+    if (g_role == 1) return local_id;
+    for (const auto& b : g_bind)
+        if (b.second == local_id) return b.first;
+    return 0;
+}
+std::uint32_t HoldKeyOf(const TruckSt& t) { return t.host_id ? t.host_id : kUnboundKey | t.local_id; }
+
+trucks::HoldWhy HoldOfKey(std::uint32_t key) {
+    if (!HoldOn()) return trucks::HoldWhy::none;
+    const auto it = g_holds.find(key);
+    return it == g_holds.end() ? trucks::HoldWhy::none : it->second.latch.Current();
+}
+trucks::HoldWhy HoldOfHost(std::uint32_t host_id) { return host_id ? HoldOfKey(host_id) : trucks::HoldWhy::none; }
+// A host id and this world's unit (either 0): the host id's hold, else the unit's own (a guest unit whose binding is new).
+trucks::HoldWhy HoldOfPair(std::uint32_t host_id, std::uint32_t local_id) {
+    const trucks::HoldWhy w = HoldOfHost(host_id);
+    if (w != trucks::HoldWhy::none || !local_id) return w;
+    const std::uint32_t h = LocalToHost(local_id);
+    return HoldOfKey(h ? h : kUnboundKey | local_id);
+}
+// A decision point leaves the truck alone: counted, one line per truck and decision every 30 s.
+bool HeldNote(std::uint32_t id, trucks::HoldWhy w, const char* what, double now) {
+    if (w == trucks::HoldWhy::none) return false;
+    ++g_held_skips;
+    std::uint64_t k = static_cast<std::uint64_t>(id) << 32;
+    for (const char* c = what; *c; ++c) k = k * 131u + static_cast<unsigned char>(*c);
+    double& last = g_held_note[k];
+    if (last == 0 || now - last >= 30000) {
+        last = now;
+        Log("[vshare] MULE truck 0x%06X left to each game (%s): %s", id, trucks::HoldWhyName(w), what);
+    }
+    return true;
+}
+
+// The model of a truck unit: its entity's resource ("truck_npc" pe_ds_vehicle_celd: a MULE truck); kept per unit (id, GUID).
+trucks::Model ModelOfUnit(const PUnit& p) {
+    if (p.pool_kind != trucks::kKindTruck) return trucks::Model::player;
+    const auto it = g_models.find(p.id);
+    if (it != g_models.end() && std::memcmp(it->second.guid, p.guid, 16) == 0) return it->second.m;
+    if (!p.entity) return trucks::Model::unknown;
+    char path[160] = {};
+    std::uint8_t g[16] = {};
+    if (!realbody::ResourceIdentity(reinterpret_cast<game::Entity*>(p.entity), path, sizeof(path), g, nullptr)) return trucks::Model::unknown;
+    const wire::VehicleResource* r = wire::FindVehicleResource(g);
+    trucks::Model m = trucks::Model::unknown;
+    if (r) m = trucks::ModelOfKey(r->key, trucks::kKindTruck);
+    else if (std::strstr(path, "pe_ds_vehicle_celd")) m = trucks::Model::celd;
+    else if (std::strstr(path, "pe_ds_vehicle_ca02")) m = trucks::Model::player;
+    if (m != trucks::Model::unknown) {
+        ModelSeen s;
+        std::memcpy(s.guid, p.guid, 16);
+        s.m = m;
+        g_models[p.id] = s;
+    }
+    return m;
+}
+
+// One vehicle's facts (fault-free reads of the entity's seat).
+trucks::UnitFacts FactsOfUnit(const PUnit& p, trucks::Model m) {
+    trucks::UnitFacts u;
+    u.kind = static_cast<std::uint8_t>(p.pool_kind);
+    u.model = m;
+    u.rider = p.rider;
+    u.b19d = p.fb[1];
+    if (p.entity) {
+        std::uint32_t has = 0, drv = trucks::kNoActor;
+        if (mem::Rd(p.entity + kEHasDriver, has) && mem::Rd(p.entity + kEDriver, drv)) u.ent = true, u.ent_has = has, u.ent_driver = drv;
+    }
+    return u;
+}
+
+// A unit the truck rules look at: a truck, or any vehicle a non-player rides.
+bool TruckCandidate(const PUnit& p) { return p.alive() && (p.pool_kind == trucks::kKindTruck || trucks::NonPlayer(trucks::DriverOf(p.rider))); }
+
+TruckSt ReadTruck(const PUnit& p) {
+    TruckSt t;
+    t.local_id = p.id;
+    t.unit = p.unit, t.entity = p.entity;
+    t.u = FactsOfUnit(p, ModelOfUnit(p));
+    t.f = trucks::Classify(t.u);
+    t.has_xf = p.has_xf, t.xf = p.xf;
+    t.uflags = p.flags, t.rec2 = p.rec2;
+    if (trucks::NonPlayer(t.f.driver)) esync::MuleRideInfo(t.f.driver_id, t.camp, sizeof(t.camp), &t.seat);
+    return t;
+}
+
+void HoldLine(std::uint32_t key, bool on, const char* text) {
+    if (g_hold_lines >= kHoldLines) {
+        ++g_hold_lines_dropped;
+        return;
+    }
+    ++g_hold_lines;
+    if (key & kUnboundKey) Log("[vshare] MULE truck (our unbound 0x%06X) %s (%s)", key & ~kUnboundKey, on ? "left to each game" : "shared again", text);
+    else Log("[vshare] MULE truck 0x%06X %s (%s)", key, on ? "left to each game" : "shared again", text);
+}
+// Round 23 review (trucks::PlayerLast): the "a player drove it last" changes (the same line budget).
+void PlayerLastLine(std::uint32_t key, const char* text) {
+    if (g_hold_lines >= kHoldLines) {
+        ++g_hold_lines_dropped;
+        return;
+    }
+    ++g_hold_lines;
+    if (key & kUnboundKey) Log("[vshare] MULE truck (our unbound 0x%06X): %s", key & ~kUnboundKey, text);
+    else Log("[vshare] MULE truck 0x%06X: %s", key, text);
+}
+
+void SendTruckFacts(double now) {
+    if (!g_connected || !g_ready || !PeerInOurWorld()) return;
+    std::vector<trucks::Fact> cur;
+    for (const auto& kv : g_trucks) {
+        const TruckSt& t = kv.second;
+        if (!t.host_id || t.host_id >= trucks::kNoActor) continue;
+        const std::uint8_t seat = t.seat >= 0 && t.seat < 255 ? static_cast<std::uint8_t>(t.seat) : trucks::kNoSeat;
+        cur.push_back(trucks::FactOf(t.host_id, t.u.model, t.f, seat));
+    }
+    // the MULE ones first when there are more than one message holds
+    std::stable_sort(cur.begin(), cur.end(), [](const trucks::Fact& a, const trucks::Fact& b) {
+        const bool ma = a.model == trucks::Model::celd || trucks::NonPlayer(a.driver), mb = b.model == trucks::Model::celd || trucks::NonPlayer(b.driver);
+        return ma != mb ? ma : a.host_id < b.host_id;
+    });
+    if (cur.size() > trucks::kMaxFacts) cur.resize(trucks::kMaxFacts);
+    bool changed = cur.size() != g_facts_sent.size();
+    for (std::size_t i = 0; !changed && i < cur.size(); ++i)
+        changed = cur[i].host_id != g_facts_sent[i].host_id || trucks::FactChanged(cur[i], g_facts_sent[i]);
+    const double since = now - g_facts_sent_ms;
+    if (!((changed && since >= trucks::kFactsMinGapMs) || since >= trucks::kFactsAllMs)) return;
+    static trucks::FactsMsg m;
+    m.from = static_cast<std::uint8_t>(g_role);
+    m.world = static_cast<std::uint16_t>((g_role == 1 ? g_counter : g_peer_world) & 0xFFFFu);
+    m.n = static_cast<std::uint8_t>(cur.size());
+    for (std::size_t i = 0; i < cur.size(); ++i) m.e[i] = cur[i];
+    std::uint8_t buf[vwire::kMaxMessage];
+    const std::size_t hs = vwire::WriteHeader(trucks::kFactsType, buf, sizeof(buf));
+    const std::size_t bs = hs ? trucks::EncodeFacts(m, buf + hs, sizeof(buf) - hs) : 0;
+    if (!bs) return;
+    g_facts_sent_ms = now;  // (a full outbox: tried again in 1 / 10 s)
+    if (!Queue(buf, hs + bs)) return;
+    g_facts_sent.swap(cur);
+    ++g_facts_tx;
+}
+
+void OnTruckFacts(std::uint8_t, const std::uint8_t* msg, std::size_t size, std::uint32_t gen, double now) {
+    if (gen != g_gen || !TrucksOn()) return;
+    static trucks::FactsMsg m;
+    if (size < vwire::kHeaderSize || !trucks::DecodeFacts(msg + vwire::kHeaderSize, size - vwire::kHeaderSize, m) || m.from != (g_role == 1 ? 2 : 1)) {
+        if (g_facts_bad++ < 3) Log("[vshare] the partner's truck facts (STK1, %zu bytes) did not validate: dropped", size);
+        return;
+    }
+    const std::uint16_t ours = static_cast<std::uint16_t>((g_role == 1 ? g_counter : g_peer_world) & 0xFFFFu);
+    if (m.world != ours) {
+        ++g_facts_stale;  // another world's (a reload on either side)
+        return;
+    }
+    g_there.clear();  // every message is the sender's whole list
+    unsigned npc = 0, celd = 0;
+    for (std::size_t i = 0; i < m.n; ++i) {
+        g_there[m.e[i].host_id] = ThereFact{m.e[i], now};
+        if (trucks::NonPlayer(m.e[i].driver)) ++npc;
+        if (m.e[i].model == trucks::Model::celd) ++celd;
+    }
+    ++g_facts_rx;
+    if (!g_facts_rx_logged) {
+        g_facts_rx_logged = true;
+        Log("[vshare] the partner's game sends its truck facts: %u trucks (%u MULE trucks, %u driven by a non-player)", m.n, celd, npc);
+    }
+}
+
+void TrucksTickBody(double now) {
+    std::map<std::uint32_t, TruckSt> next;
+    for (const PUnit& p : g_poll.units) {
+        if (!TruckCandidate(p)) continue;
+        TruckSt t = ReadTruck(p);
+        t.host_id = LocalToHost(p.id);
+        next[p.id] = t;
+    }
+    g_trucks.swap(next);
+    for (auto it = g_there.begin(); it != g_there.end();) it = now - it->second.ms > trucks::kFactsExpireMs ? g_there.erase(it) : std::next(it);
+    // the holds: every truck either game names
+    std::map<std::uint32_t, const TruckSt*> here;
+    for (const auto& kv : g_trucks) here[HoldKeyOf(kv.second)] = &kv.second;
+    std::vector<std::uint32_t> keys;
+    for (const auto& kv : here) keys.push_back(kv.first);
+    for (const auto& kv : g_there)
+        if (!here.count(kv.first)) keys.push_back(kv.first);
+    const bool on = g_mule_hold;
+    for (std::uint32_t key : keys) {
+        trucks::HoldIn in;
+        in.on = on;
+        in.followed = !(key & kUnboundKey) && g_followed && g_followed(key);
+        const auto h = here.find(key);
+        if (h != here.end()) in.have_here = true, in.here_driver = h->second->f.driver, in.here_model = h->second->u.model;
+        const auto t = g_there.find(key);
+        if (t != g_there.end()) in.have_there = true, in.there_driver = t->second.f.driver, in.there_model = t->second.f.model;
+        HoldSt& st = g_holds[key];
+        // round 23 review: a truck a player drove last stays shared (its final placement and PARK frames go out)
+        in.player_last = trucks::PlayerLast(st.player_last, in);
+        if (in.on && st.player_last && !in.player_last)
+            PlayerLastLine(key, "a non-player drives it: a player's last drive no longer keeps it shared");
+        else if (in.on && in.player_last && st.player_in && !trucks::PlayerDrives(in) &&
+                 ((in.have_here && in.here_model == trucks::Model::celd) || (in.have_there && in.there_model == trucks::Model::celd)))
+            PlayerLastLine(key, "the player got out: kept shared (a player drove it last) until a non-player drives it");
+        st.player_in = trucks::PlayerDrives(in);
+        st.player_last = in.player_last;
+        const trucks::HoldWhy raw = trucks::Hold(in);
+        st.seen_ms = now;
+        const bool was = st.latch.Held();
+        bool changed = false;
+        const trucks::HoldWhy w = st.latch.Step(raw, trucks::PlayerDrives(in) || !in.on || in.followed, now, &changed);
+        if (!changed) continue;
+        if (!was) {
+            char text[160];
+            if (h != here.end())
+                std::snprintf(text, sizeof(text), "%s; %s, driver 0x%06X%s%s", trucks::HoldWhyName(w), trucks::ClassName(h->second->f.cls), h->second->f.driver_id,
+                              h->second->f.agree ? "" : ", its fields disagree", in.have_there ? "" : ", no facts from the other game");
+            else
+                std::snprintf(text, sizeof(text), "%s; the other game's %s truck, driver 0x%06X", trucks::HoldWhyName(w), trucks::ModelName(t->second.f.model),
+                              t->second.f.driver_id);
+            HoldLine(key, true, text);
+        } else {
+            HoldLine(key, false, trucks::PlayerDrives(in) ? "a player drives it" : in.followed ? "the partner drives it" : !in.on ? "vehicle_mule_hold is off"
+                                                                                                                         : "no MULE reason for 5 s");
+        }
+    }
+    // gone from both games: the latch runs out (a truck that went keeps its hold for 5 s: its removal is not told to the host)
+    for (auto it = g_holds.begin(); it != g_holds.end();) {
+        if (it->second.seen_ms == now) {
+            ++it;
+            continue;
+        }
+        const bool was = it->second.latch.Held();
+        it->second.latch.Step(trucks::HoldWhy::none, false, now);
+        if (it->second.latch.Held()) {
+            ++it;
+            continue;
+        }
+        if (was) HoldLine(it->first, false, "gone from both games");
+        it = g_holds.erase(it);
+    }
+    for (auto it = g_held_note.begin(); it != g_held_note.end();) it = now - it->second > 120000 ? g_held_note.erase(it) : std::next(it);
+    SendTruckFacts(now);
+}
+
+bool TrucksTickGuarded(double now) noexcept {
+    __try {
+        TrucksTickBody(now);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+void TrucksReset() {
+    g_trucks.clear();
+    g_models.clear();
+    g_there.clear();
+    g_holds.clear();
+    g_facts_sent.clear();
+    g_facts_sent_ms = -1e18;
+    g_hold_lines = 0;
+    g_held_note.clear();
+}
+
+void TrucksLinkReset() {
+    g_there.clear();
+    g_facts_sent.clear();
+    g_facts_sent_ms = -1e18;
+    g_facts_rx_logged = false;
+}
+
+void TrucksTick(double now) {
+    if (!TrucksOn() || (!g_mule_log && !g_mule_hold) || !g_poll.ok) return;
+    if (TrucksTickGuarded(now)) return;
+    g_trucks_fault = true;
+    TrucksReset();
+    Log("[vshare] FAULT in the MULE truck rules: off for the run (the shared vehicles go on without them: trucks are shared as before)");
+}
+
+// The snapshot's truck lines (host: what it sends; guest: what it got): the MULE ones, at most 12, and a summary.
+void LogTrucks(const char* who) {
+    if (!g_mule_log || !TrucksOn()) return;
+    unsigned n = 0, mule = 0, driven = 0, held = 0, lines = 0;
+    for (const auto& kv : g_trucks) {
+        const TruckSt& t = kv.second;
+        ++n;
+        const bool m = t.u.model == trucks::Model::celd || trucks::NonPlayer(t.f.driver);
+        if (t.u.model == trucks::Model::celd) ++mule;
+        if (trucks::NonPlayer(t.f.driver)) ++driven;
+        const trucks::HoldWhy w = HoldOfKey(HoldKeyOf(t));
+        if (w != trucks::HoldWhy::none) ++held;
+        if (!m || lines >= 12) continue;
+        ++lines;
+        const auto th = g_there.find(t.host_id);
+        char there[96] = "no facts";
+        if (t.host_id && th != g_there.end())
+            std::snprintf(there, sizeof(there), "%s, driver 0x%06X seat %d", trucks::ModelName(th->second.f.model), th->second.f.driver_id,
+                          th->second.f.seat == trucks::kNoSeat ? -1 : th->second.f.seat);
+        Log("[vshare] %s: truck 0x%06X (host 0x%06X): %s, driver 0x%06X seat %d camp %s%s at (%.1f, %.1f, %.1f); the other game: %s; %s", who, t.local_id,
+            t.host_id, trucks::ClassName(t.f.cls), t.f.driver_id, t.seat, t.camp, t.f.agree ? "" : " (its fields disagree)", t.xf.pos.x, t.xf.pos.y,
+            t.xf.pos.z, there, w == trucks::HoldWhy::none ? "shared" : trucks::HoldWhyName(w));
+    }
+    Log("[vshare] %s: trucks: %u here (%u MULE trucks, %u driven by a non-player), %u left to each game; the other game's facts %zu; facts tx %u rx %u "
+        "(bad %u, stale %u); decisions left alone %u",
+        who, n, mule, driven, held, g_there.size(), g_facts_tx, g_facts_rx, g_facts_bad, g_facts_stale, g_held_skips);
+}
+
+// The census (op 9 and enemy::Census): from `units` (a fresh poll).
+bool TruckCensusOf(const std::vector<PUnit>& units, int tag, double radius_m, char* msg, std::size_t cap) {
+    WorldTransform sam{};
+    const bool have_sam = LocalSam(&sam);
+    const double sp[3] = {sam.pos.x, sam.pos.y, sam.pos.z};
+    unsigned n = 0, listed = 0, cls[6] = {}, npc = 0;
+    double best = -1;
+    std::uint32_t best_id = 0;
+    WorldTransform best_xf{};
+    for (const PUnit& p : units) {
+        if (!TruckCandidate(p)) continue;
+        const TruckSt t = ReadTruck(p);
+        ++n;
+        ++cls[static_cast<int>(t.f.cls) % 6];
+        if (trucks::NonPlayer(t.f.driver)) ++npc;
+        const double d = have_sam && t.has_xf ? DistXf(t.xf, sp) : -1;
+        if (t.u.model == trucks::Model::celd && d >= 0 && (best < 0 || d < best)) best = d, best_id = t.local_id, best_xf = t.xf;
+        if (radius_m > 0 && !(d >= 0 && d <= radius_m)) continue;
+        if (listed >= 64) continue;
+        const std::uint32_t host = g_on.load() ? LocalToHost(t.local_id) : 0;
+        const trucks::HoldWhy w = g_on.load() ? HoldOfPair(host, t.local_id) : trucks::HoldWhy::none;
+        Log("[vshare] trucks tag=%d t%02u %s 0x%06X%s: %s (model %s); driver 0x%06X (%s) seat %d camp %s; +0x158 0x%06X +0x19D %02X seat +0x63C %d +0x8B0 "
+            "0x%06X%s%s%s; unit +0x198 %08X (variant %u) rec2 %04X; at (%.2f, %.2f, %.2f) %.1f m; %s",
+            tag, listed, vwire::KindName(t.u.kind), t.local_id, host && host != t.local_id ? " (host's id differs)" : "", trucks::ClassName(t.f.cls),
+            trucks::ModelName(t.u.model), t.f.driver_id, trucks::DriverName(t.f.driver), t.seat, t.camp, t.u.rider, t.u.b19d, t.u.ent ? static_cast<int>(t.u.ent_has) : -1,
+            t.u.ent_driver, t.f.follower ? ", the NPC controller (a follower)" : "", t.f.last_npc ? ", a non-player drove it last" : "",
+            t.f.agree ? "" : ", its fields DISAGREE", t.uflags, (t.uflags >> 22) & 0x3Fu, t.rec2, t.xf.pos.x, t.xf.pos.y, t.xf.pos.z, d, w == trucks::HoldWhy::none ? "shared" : trucks::HoldWhyName(w));
+        ++listed;
+    }
+    char nearest[96] = "none with a place";
+    if (best >= 0) std::snprintf(nearest, sizeof(nearest), "0x%06X %.0f m at (%.0f, %.0f, %.0f)", best_id, best, best_xf.pos.x, best_xf.pos.y, best_xf.pos.z);
+    Log("[vshare] trucks tag=%d done: %u (player %u, player NPC-driven %u, MULE empty %u, MULE-driven %u, MULE player-driven %u, model unknown %u), %u driven by "
+        "a non-player, %u listed; nearest MULE truck %s",
+        tag, n, cls[0], cls[1], cls[2], cls[3], cls[4], cls[5], npc, listed, nearest);
+    std::snprintf(msg, cap, "trucks tag %d: %u (MULE empty %u, MULE-driven %u, taken %u; player %u), %u non-player drivers; nearest MULE truck %s", tag, n, cls[2], cls[3],
+                  cls[4], cls[0] + cls[1], npc, nearest);
+    return true;
+}
+
+int TruckCensusBody(int tag, double radius_m, char* msg, std::size_t cap) {
+    std::vector<PUnit> units;
+    if (!Poll(units)) return std::snprintf(msg, cap, "truck census: the pools are not readable now"), 0;
+    return TruckCensusOf(units, tag, radius_m, msg, cap) ? 1 : 0;
+}
+int TruckCensusGuarded(int tag, double radius_m, char* msg, std::size_t cap) noexcept {
+    __try {
+        return TruckCensusBody(tag, radius_m, msg, cap);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+
+// Without the shared vehicles: the pool layout and the truck bytes, checked once.
+int g_census_bytes = -1;
+bool CensusBytesOk() {
+    if (g_on.load()) return (g_groups_ok & (kCore | kTrucks)) == (kCore | kTrucks);
+    if (g_census_bytes < 0) {
+        bool ok = true;
+        for (const Site& s : kSites)
+            if ((s.group & (kCore | kTrucks)) && !mem::CodeMatches(A(s.va), s.sig)) {
+                ok = false;
+                Log("[vshare] truck census: byte check FAILED: %s at 0x%llX", s.name, static_cast<unsigned long long>(s.va));
+            }
+        if (mem::RipTarget(A(0x142F7509C), 3, 7) != A(kRegGlobal)) ok = false;
+        g_census_bytes = ok ? 1 : 0;
+    }
+    return g_census_bytes == 1;
+}
+
 void TickBody(const TickIn& in, double now) {
     if (g_first_tick == 0) g_first_tick = now;
     g_now_ms = now;
@@ -1759,6 +2215,7 @@ void TickBody(const TickIn& in, double now) {
     if (gen != g_gen) {
         g_gen = gen;
         NewLinkSession();
+        TrucksLinkReset();
     }
     std::uint32_t counter = 0;
     const bool ready = coop::WorldReady(&counter);
@@ -1773,6 +2230,7 @@ void TickBody(const TickIn& in, double now) {
         g_poll.units.clear();
         g_poll.t = -1e18;
         g_place_override.clear();
+        TrucksReset();
         if (g_role == 2) {
             g_bind.clear();
             g_mirrors.clear();
@@ -1812,6 +2270,7 @@ void TickBody(const TickIn& in, double now) {
         for (const PUnit& p : g_poll.units)
             if (p.in_use) ++g_poll.in_use;
         if (!g_poll.ok) g_poll.units.clear();
+        TrucksTick(now);  // round 23 D: before the binding and the host's diff (their removals ask the holds; the facts go first)
         if (g_role == 1 && g_poll.ok) HostTick(now);
         if (g_role == 2) GuestTick(now);
     } else if (g_role == 2 && g_reconcile_now) {
@@ -2000,6 +2459,8 @@ void Dump(const char* tag) {
 // ---------------------------------------------------------------- public
 void Install(const Config& config) noexcept {
     g_role = config.role == Role::host ? 1 : config.role == Role::guest ? 2 : 0;
+    g_mule_log = config.vehicle_mule_log;
+    g_mule_hold = config.vehicle_mule_hold;
     if (!config.host_save) {
         std::snprintf(g_off, sizeof(g_off), "host_save=0 (no shared save, so no shared vehicle identity)");
     } else if (g_role == 0) {
@@ -2049,7 +2510,7 @@ void Install(const Config& config) noexcept {
                    what, kCore);
     }
     for (std::uintptr_t vt : kUnitVt) structural(mem::Q(A(vt) + 0x18) == A(kUnitXf), "a unit vtable's transform getter (+0x18)", kCore);
-    g_groups_ok = ~bad_groups & 127u;
+    g_groups_ok = ~bad_groups & 255u;
     g_exact_ok = (g_groups_ok & kExact) != 0;
     g_garage_ok = (g_groups_ok & kGarage) != 0;
     if (bad_groups & kRequired) {
@@ -2078,6 +2539,12 @@ void Install(const Config& config) noexcept {
     }
     g_off[0] = 0;
     g_on.store(true, std::memory_order_release);
+    // round 23 D: the MULE truck rules (optional group)
+    g_trucks_ok = (g_groups_ok & kTrucks) != 0;
+    if (g_trucks_ok) RegisterHandler(trucks::kFactsType, &OnTruckFacts);
+    Log("[vshare] MULE trucks (round 23 D): vehicle_mule_log=%d vehicle_mule_hold=%d; %s", g_mule_log ? 1 : 0, g_mule_hold ? 1 : 0,
+        !g_trucks_ok ? "OFF: a truck byte check failed (trucks are shared as before)"
+        : g_mule_log || g_mule_hold ? "every truck classified each poll, the facts exchanged (STK1, type 50)" : "both off (trucks are shared as before)");
     Log("[vshare] shared real vehicles ON (%s): %u byte checks passed; exact-id mirror path %s; garage relay %s; the guest %s",
         g_role == 1 ? "host" : "guest", checked, g_exact_ok ? "available" : "OFF (byte check)", g_garage_ok ? "on" : "off",
         g_role == 2 ? "never originates a vehicle, never evicts" : "asks the host for every vehicle");
@@ -2165,6 +2632,68 @@ bool FindByEntity(std::uintptr_t e, Unit* out) noexcept {
 }
 
 bool Bound() noexcept { return g_on.load() && (g_role == 1 ? g_ready : g_bound_once); }
+
+// ---------------------------------------------------------------- round 23 D: MULE trucks
+std::size_t Trucks(TruckInfo* out, std::size_t cap) noexcept {
+    if (!out || !TrucksOn()) return 0;
+    std::size_t n = 0;
+    for (const auto& kv : g_trucks) {
+        if (n >= cap) return n;
+        const TruckSt& t = kv.second;
+        TruckInfo& i = out[n++];
+        i = TruckInfo{};
+        i.host_id = t.host_id, i.local_id = t.local_id, i.kind = t.u.kind, i.cls = t.f.cls, i.model = t.u.model, i.here = true;
+        i.driver = t.f.driver_id, i.seat = t.seat;
+        std::snprintf(i.camp, sizeof(i.camp), "%s", t.camp);
+        const auto th = t.host_id ? g_there.find(t.host_id) : g_there.end();
+        if (th != g_there.end())
+            i.there = true, i.there_model = th->second.f.model, i.there_driver = th->second.f.driver_id,
+            i.there_seat = th->second.f.seat == trucks::kNoSeat ? -1 : th->second.f.seat;
+        i.hold = HoldOfKey(HoldKeyOf(t));
+    }
+    for (const auto& kv : g_there) {
+        if (n >= cap) return n;
+        bool seen = false;
+        for (const auto& t : g_trucks)
+            if (t.second.host_id == kv.first) seen = true;
+        if (seen) continue;
+        TruckInfo& i = out[n++];
+        i = TruckInfo{};
+        i.host_id = kv.first, i.kind = trucks::kKindTruck, i.there = true, i.there_model = kv.second.f.model, i.there_driver = kv.second.f.driver_id;
+        i.there_seat = kv.second.f.seat == trucks::kNoSeat ? -1 : kv.second.f.seat;
+        std::snprintf(i.camp, sizeof(i.camp), "-");
+        i.hold = HoldOfKey(kv.first);
+    }
+    return n;
+}
+
+bool MuleLog() noexcept { return g_mule_log; }
+
+bool TruckHeld(std::uint32_t host_id, const char** why) noexcept {
+    const trucks::HoldWhy w = HoldOfHost(host_id);
+    if (why) *why = trucks::HoldWhyName(w);
+    return w != trucks::HoldWhy::none;
+}
+
+bool TruckDriverOf(std::uint32_t actor_id) noexcept {
+    if (!HoldOn() || actor_id >= trucks::kNoActor) return false;
+    for (const auto& kv : g_trucks)
+        if (kv.second.f.driver_id == actor_id && trucks::NonPlayer(kv.second.f.driver)) return true;
+    return false;
+}
+
+bool TruckCensus(int tag, double radius_m, char* msg, std::size_t cap) noexcept {
+    if (!CensusBytesOk()) return std::snprintf(msg, cap, "truck census: the pool layout or truck bytes differ (see the log)"), false;
+    if (g_trucks_fault) return std::snprintf(msg, cap, "truck census: the truck rules faulted this run"), false;
+    const int r = TruckCensusGuarded(tag, radius_m, msg, cap);
+    if (r < 0) {
+        g_trucks_fault = true;
+        TrucksReset();
+        Log("[vshare] FAULT in the truck census: the MULE truck rules are off for the run");
+        std::snprintf(msg, cap, "truck census: FAULT (the truck rules are off for the run)");
+    }
+    return r == 1;
+}
 
 bool RegisterHandler(std::uint8_t type, Handler handler) noexcept {
     if (!vwire::IsExternalType(type) || !handler || g_handlers[type]) return false;
@@ -2329,6 +2858,8 @@ void ClearPlaceOverride(std::uint32_t id) noexcept { g_place_override.erase(id);
 bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept {
     const double now = link::NowMsPrecise();
     switch (op) {
+        case 9:  // round 23 D: the truck census (works without the shared vehicles)
+            return TruckCensus(static_cast<int>(v[1]), v[2], msg, cap);  // v[0] is the op
         case 0: {
             std::snprintf(msg, cap,
                           "%s %s%s; world %s #%u; poll %s (%u in use); %s; sent %llu (fail %llu) rx %llu (bad %llu); gate pass %u mod %u load %u online %u "
@@ -2449,7 +2980,7 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept 
                                  g_n_victim_refused.load(), g_last_refused_id.load()),
                    true;
     }
-    return std::snprintf(msg, cap, "vehicle_share: 0 status, 1 dump, 2 summon kind [m], 3 snapshot now, 4 binding report, 5 mirror path, 6 test removal, 7 counters, 8 [kind] [m] persisted entries (host)"),
+    return std::snprintf(msg, cap, "vehicle_share: 0 status, 1 dump, 2 summon kind [m], 3 snapshot now, 4 binding report, 5 mirror path, 6 test removal, 7 counters, 8 [kind] [m] persisted entries (host), 9 [tag] [m] truck census"),
            false;
 }
 

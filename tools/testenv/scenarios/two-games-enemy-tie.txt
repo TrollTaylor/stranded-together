@@ -1,0 +1,154 @@
+# Round 23 M1 gate (docs/enemy-sync.md 14.12; design section 10 M1 as rewritten by critique B2-B4 and R15): her tie-up of a
+# MULE the host owns, then the host's Sam down. Camp ownership pinned OFF (ini enemy_owner=0, critique B2 option a), so every
+# MULE of the camp is a host-owned frozen mirror on her side and the host decides its outcome. At the MULE Camp Southwest of
+# Lake Knot City (cp 04004, MULEs 02029..02032), every MULE resurrected, both Sams invulnerable, her body shielded.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-enemy-tie -SeedSaves complete-100 -GuestSeed profile-only -Id round23-f-tie
+# Afterwards (the gate is PASS only when Run-Batch's PASS and this script's PASS both hold; Run-Batch does not run it):
+#   python -I tools\testenv\enemy-tie.py build-testenv\runs\<run>   (no replay of the tied MULE later than 0.5 s after her OUTCOME)
+# Steps:
+#   A the host alerts the camp: his Sam 12 m from 02029 in the open, 02029 raised to combat (enemy_target 3); the camp's rounds at
+#     him replayed on her side.
+#   B the tie-up (critique R15 (a)): a scripted strand tie-up is not reliable with the virtual pad (no hidden run has ever landed
+#     a melee contact), so her game runs the relay's own send path with round 23 A's test action on the newest replayed shooter
+#     (its rounds in flight: the flush has something to stop): her Sam 1.5 m from her mirror of it (enemy_look -2), then
+#     `enemy_restrain 0 1` (a synthetic strand HIT, attack 0x15C weapon 41, through the capture path: held, the copy watched
+#     1.5 s, sent as HIT kind 5 k 2 depth 3). Asserted: her watch and pose hold, the kind 5 sent; the host's outcome setter k 2
+#     and its read back `OUTCOME id=XXXXX none -> restrained (cause guest HIT #n, strand (test))`; her OUTCOME line, the hold
+#     released by it and the replay flush (`[shots] flushed n replays of id=XXXXX`); stills on both screens about +1, +4 and
+#     +8 s after her OUTCOME (05: tied up, not standing, not gone). The 0.5 s replay rule is enemy-tie.py's (it reads the id
+#     from her watch line).
+#   C the host's Sam down (critique B3: the stage-C test trigger, no real death): `enemy_sync 9 1 1` on the host (his own fake,
+#     sent in his beacon: the wire path). Her `host Sam down (test: down; its beacon): holding n mirrors`, 10 s held (still 06),
+#     her outcome table still `restrained`, no "given back alive" (and enemy-tie.py: no lease release of the tied MULE from her
+#     OUTCOME until the clear); then the clear: `host Sam back: resuming`.
+#   D round 23 B's mirror diagnostics: the 30 s summary line exists, and one has p95 under 5 m or a "mirror worst" line names
+#     the worst mirror and why.
+# The reverse direction (the host ties up one of hers, ownership on) is two-games-enemy-tie-host.
+# covers: enemy-restrain enemy-down
+role host
+graphics low
+timeout 360
+launcherini local-test
+# host-owned mirrors only: P1c's camp ownership off (on by default since round 21; two-games-enemy-tie-host covers it on)
+ini enemy_owner=0
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[config\] enemy_restrain_relay=1 enemy_replay_flush=1
+@guest waitlog 5 \[config\] enemy_restrain_relay=1 enemy_replay_flush=1
+waitlog 5 \[config\] enemy_mirror_hold_check=1 enemy_mirror_vehicle=1
+@guest waitlog 5 \[config\] enemy_mirror_hold_check=1 enemy_mirror_vehicle=1
+waitlog 5 \[config\] enemy_down_hold=1 enemy_down_hold_radius=120
+@guest waitlog 5 \[config\] enemy_down_hold=1 enemy_down_hold_radius=120
+waitlog 5 \[enemy\] mirror byte checks: [0-9]+/[0-9]+ ok
+@guest waitlog 5 \[enemy\] mirror byte checks: [0-9]+/[0-9]+ ok
+waitlog 30 \[enemy\] hits: outcome carry checks ok
+@guest waitlog 30 \[enemy\] hits: outcome carry checks ok
+@guest waitlog 30 \[enemy\] mirror checks \(round 23 B\):
+goto mule-camp-sw-lkc
+@guest goto 1521.90 992.00 0
+wait 4000
+?@both action dev_god 2
+@both action dev_enemies 1
+waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+@guest waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+action enemy_probe 5 1
+@guest action enemy_probe 5 1
+waitlog 40 \[enemy\] sync on \(host\).*\(equal
+@guest waitlog 40 \[enemy\] sync on \(guest\).*\(equal
+@guest waitlog 30 \[enemy\] mirror on id=
+waitlog 30 \[enemy\] hits on \(host\)
+@guest waitlog 30 \[enemy\] hits on \(guest\)
+# the relay needs both beacons' restrain part (the host sends only while it relays: off here, ownership is off)
+@guest waitlog 30 \[enemy\] restrain relay on:
+waitlog 60 \[shots\] attack registry n=[0-9]+, max id=0x
+@guest waitlog 60 \[shots\] attack registry n=[0-9]+, max id=0x
+wait 4000
+# ---- A, the host alerts the camp: his Sam 12 m from 02029, facing it, 02029 raised to combat (P5: it noticed Sam at 11 m in
+# 0.73 s on its own); his camera steered at it (it follows the look's enemy for 60 s, 0.8 m up: low enough for a tied MULE)
+action enemy_look 0x2029 12 0.8
+wait 800
+action enemy_target 3 0x2029 5
+waitnew 5 \[enemy\] target L3 RisePhase id=02029
+action shots 4 3 1
+?waitnew 20 \[shots\] camera aimed #[0-9]+ at the partner body \(steered
+# its camp fires at the host: rounds replayed on her side (the tie-up below takes the newest replayed shooter: its rounds are
+# in flight, so the flush and the 0.5 s rule have something to stop; 02029 itself ran in to strike him in run 161850)
+@guest waitlog 30 \[shots\] enemy replay #[0-9]+: shooter [0-9A-F]{5}
+# ---- B, the tie-up: her Sam 1.5 m from her mirror of the newest replayed shooter (enemy_look -2), facing it; the relay's own
+# send path (a synthetic strand HIT on the last look's enemy: enemy_restrain 0 1)
+@guest action enemy_look -2 1.5 0.5
+wait 800
+@guest action enemy_restrain 0 1
+@guest waitnew 5 \[enemy\] restrain watch id=[0-9A-F]{5} opened: strand HIT #[0-9]+ \(attack 0x15C weapon 41.*\[enemy_restrain test\]
+@guest waitlog 5 \[enemy\] restrain hold id=[0-9A-F]{5}: the copy's own animation kept
+@guest waitlog 10 \[enemy\] restrain HIT sent #[0-9]+ id=[0-9A-F]{5} k 2 \(strand \(test\); test \(enemy_restrain\)\): to the host
+waitlog 10 \[enemy\] restrain HIT #[0-9]+ id=[0-9A-F]{5} from the guest \(strand \(test\); test \(enemy_restrain\)\): outcome setter k 2 (called|deferred)
+@guest waitlog 15 \[enemy\] OUTCOME id=[0-9A-F]{5} none -> restrained ver [0-9]+ \(cause guest;
+# the stills: about +1, +4 and +8 s after her OUTCOME line (her camera behind her Sam 1.5 m from it; his still steered at 02029:
+# the tied MULE in his view when it is a neighbour; enemy_look -5 cannot pick it: a restrain HIT is no applied HIT)
+wait 700
+screenshot 05-host-tied-1s
+@guest screenshot 05-guest-tied-1s
+wait 2800
+screenshot 05-host-tied-4s
+@guest screenshot 05-guest-tied-4s
+wait 3800
+screenshot 05-host-tied-8s
+@guest screenshot 05-guest-tied-8s
+# the owner's read back (1 s after the setter) and the outcome loop's own line
+waitlog 5 \[enemy\] OUTCOME id=[0-9A-F]{5} none -> restrained \(cause guest HIT #[0-9]+, strand \(test\)\): read back 1 s after the setter k 2
+waitlog 5 \[enemy\] OUTCOME id=[0-9A-F]{5} none -> restrained \(state [0-9]+, bits 0x[0-9A-F]+; cause guest HIT #[0-9]+, strand \(test\)\)
+# her side (the HITRES's "applied by the host" is not waited: her OUTCOME can come first and close the send): the hold released
+# by the OUTCOME, the flush
+@guest waitlog 5 \[enemy\] restrain hold id=[0-9A-F]{5} released: the host's OUTCOME
+@guest waitlog 5 \[shots\] flushed [0-9]+ replays of id=[0-9A-F]{5} \(down: the host's OUTCOME
+@guest action enemy_sync 4
+@guest waitnew 5 \[enemy\] outcome id=[0-9A-F]{5} restrained ver
+pad none 0
+# ---- C, the host's Sam down (his own fake: sent in his beacon), 10 s, then back
+action enemy_sync 9 1 1
+waitnew 5 \[enemy\] enemy_sync 9: host Sam test: down \(ours: also sent in our beacon
+waitlog 5 \[enemy\] our Sam down \(test: down; enemy_sync 9 fake\): told the partner in our beacon
+@guest waitlog 10 \[enemy\] host Sam down \(test: down; its beacon\): holding [1-9][0-9]* mirrors, hiding [0-9]+
+wait 5000
+@guest screenshot 06-guest-host-down
+wait 5000
+@guest action enemy_sync 0
+@guest waitnew 5 \[enemy\] down hold: on radius 120 m, .*held [1-9]
+@guest action enemy_sync 4
+@guest waitnew 5 \[enemy\] outcome id=[0-9A-F]{5} restrained ver
+@guest nolog \[enemy\] mirror id=[0-9A-F]{5} released while restrained on the host: given back alive
+@guest nolog \[enemy\] restrain hold id=[0-9A-F]{5} ended: timeout
+action enemy_sync 9 1 0
+waitlog 5 \[enemy\] our Sam back \(enemy_sync 9 fake cleared\): told the partner
+@guest waitlog 10 \[enemy\] host Sam back: resuming [0-9]+ \(held [0-9]+, shown again [0-9]+; down [0-9.]+ s; its beacon\)
+wait 2000
+@guest screenshot 07-guest-host-back
+# ---- D, round 23 B's mirror diagnostics (her side): the 30 s summary, and p95 under 5 m in one or a "worst" line naming why
+@guest waitlog 35 \[enemy\] mirror error p50 [0-9.]+ p95 [0-9.]+ max [0-9.]+ m \(n [0-9]+ samples in 30 s
+@guest waitlog 5 \[enemy\] mirror (error p50 [0-9.]+ p95 [0-4]\.[0-9]+ max|worst id=[0-9A-F]{5})
+@guest action enemy_sync 0
+# ---- off
+@both action enemy_sync 2
+waitlog 5 \[enemy\] sync off \(debug action\)
+@guest waitlog 5 \[enemy\] sync off \(debug action\)
+nolog \[enemy\] FAULT
+@guest nolog \[enemy\] FAULT
+nolog \[enemy\] hits FAULT
+@guest nolog \[enemy\] hits FAULT
+nolog byte check FAILED
+@guest nolog byte check FAILED
+nolog \[shots\] FAULT
+@guest nolog \[shots\] FAULT
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+nolog restrain HIT #[0-9]+ id=[0-9A-F]{5} from the guest refused
+@guest nolog restrain HIT #[0-9]+ id=[0-9A-F]{5} refused by the host
+nolog \[enemy\] restrain readback id=
+nolog \[enemy\] camp (cp|loose) [0-9A-F]+ -> (guest|host)
+action enemy_probe 5 0
+?@both action dev_god 0
+@guest quit
+wait 3000
+quit

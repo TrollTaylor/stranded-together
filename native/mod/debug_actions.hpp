@@ -149,6 +149,8 @@ enum class Action : std::uint8_t {
     // Enemy sync P1b (enemy_sync.hpp; docs/enemy-sync.md 10): hidden runs only, the host
     enemy_own,            // v[0] = id (0 the nearest the host owns to the partner, -5 the nearest the guest owns), v[1] = 1 host / 2 guest (P1c: its camp)
     enemy_camp,           // P1c (docs/enemy-sync.md 13), hidden runs: v[0] = 0 the camp table, 3 an outcome (v[1] = id | 0 the look's, v[2] = k 0..2) here
+    enemy_restrain,       // round 23 (docs/enemy-sync.md 14), hidden runs: v[0] = id (0 the look's, else the nearest frozen copy), v[1] = 0 native | 1 fallback | 2 knockout
+    enemy_m2,             // round 23 E (docs/enemy-sync.md 14.11), hidden runs + enemy_m2_probes=1: v[0] = probe 0..6, v[1] / v[2] its arguments (read-only but P2)
     // Map markers (dev_tools.cpp; docs/debug-actions.md "Teleport to map marker")
     teleport_to_marker,   // v[0] = the marker's id + 1 (0 = the newest on this map): Sam on the ground there (Player tab; any session, no dev tools needed)
     dev_marker,           // v[0] = 0 log the map's user markers, 1 add one v[1] m east / v[2] m north of Sam (hidden runs only)

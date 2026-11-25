@@ -292,7 +292,8 @@ void TestScbHits() {
     CHECK(HitRefused([](ewire::Hit& h) { h.amount = std::nanf(""); }));
     CHECK(HitRefused([](ewire::Hit& h) { h.point[1] = 8.01f; }));
     CHECK(HitRefused([](ewire::Hit& h) { h.kind = 0; }));
-    CHECK(HitRefused([](ewire::Hit& h) { h.kind = 5; }));
+    CHECK(HitRefused([](ewire::Hit& h) { h.kind = 6; }));
+    CHECK(HitRefused([](ewire::Hit& h) { h.kind = 5; }));  // kind 5 with a stun's fields (b180 1, amount 25.5): refused
     CHECK(HitRefused([](ewire::Hit& h) { h.attack = 0x18D; }));   // the enum's placeholder (review rv-correctness N5)
     CHECK(!HitRefused([](ewire::Hit& h) { h.attack = 0x18C; }));
     // decoder refusals on the wire bytes
@@ -516,13 +517,95 @@ void TestScbOwn() {
     ewire::EnemyFrame fg;
     CHECK(size && ewire::DecodeEnemies(sb, size, fg) && fg.flags == (ewire::kFromGuest | ewire::kSenderCutscene) && fg.gen_tag == 12 && fg.e[0].owner_epoch == 0xFF &&
           fg.e[0].phase == 5 && fg.e[0].flags == (ewire::kOwnerGuest | ewire::kDamaged | ewire::kMoving));
+    // round 23 B: the entry flag kInVehicle (bit 3, the SEN1 sizes unchanged); bits 4-7 refused both ways
+    f.e[0].flags = static_cast<std::uint8_t>(ewire::kInVehicle | ewire::kMoving);
+    size = ewire::EncodeEnemies(f, sb, sizeof(sb));
+    CHECK(size == ewire::kSenHeader + ewire::kSenEntry && ewire::DecodeEnemies(sb, size, fg) && fg.e[0].flags == (ewire::kInVehicle | ewire::kMoving));
+    static_assert(ewire::kInVehicle == 8 && ewire::kEntryFlagsKnown == 0x0F, "SEN1 entry flags");
+    sb[ewire::kSenHeader + 7] = 0x10;
+    CHECK(!ewire::DecodeEnemies(sb, size, fg));
+    sb[ewire::kSenHeader + 7] = 0x80;
+    CHECK(!ewire::DecodeEnemies(sb, size, fg));
+    sb[ewire::kSenHeader + 7] = 0x0F;
+    CHECK(ewire::DecodeEnemies(sb, size, fg) && fg.e[0].flags == 0x0F);
+    f.e[0].flags = 0x20;
+    CHECK(ewire::EncodeEnemies(f, sb, sizeof(sb)) == 0);
     // the enemy shots' mask (shot_wire)
     CHECK(shotw::EnemyCaptureOn(1) && !shotw::EnemyReplayOn(1) && !shotw::EnemyCaptureOn(2) && shotw::EnemyReplayOn(2) && shotw::EnemyCaptureOn(3) &&
           shotw::EnemyReplayOn(3) && !shotw::EnemyCaptureOn(0) && !shotw::EnemyReplayOn(0));
 }
+// Round 23: HIT kind 5 (the tie-up relay): k 0 / 2, a known signal (depth 1..3), no damage; byte 19 still the zero pad; the
+// HITRES `down` (13) result; the beacon's restrain part (bit 7).
+void TestScbRestrain() {
+    auto restrain = [](std::uint8_t k, std::uint8_t src) {
+        ewire::Hit h = MakeHit(2);
+        h.kind = ewire::kKindRestrain, h.attack = 0x15C, h.b12E = 41, h.b180 = k, h.depth = src, h.amount = 0, h.part = 0xFFFFFFFFu, h.flags = ewire::kHitAttackerSam;
+        return h;
+    };
+    ewire::ScbHeader hd;
+    hd.guids_fp = 0x11223344u, hd.seq = 5;
+    std::uint8_t buf[ewire::kScbMaxSize];
+    ewire::ScbHeader g;
+    ewire::Hit out[ewire::kHitMax];
+    ewire::Hit in[3] = {restrain(2, ewire::kRestrainNative), restrain(0, ewire::kRestrainFallback), restrain(2, ewire::kRestrainTest)};
+    const std::size_t size = ewire::EncodeHits(hd, in, 3, buf, sizeof(buf));
+    CHECK(size == ewire::kScbHeader + 3 * ewire::kHitSize);  // the entry size is unchanged
+    CHECK(ewire::DecodeHits(buf, size, g, out) && g.n == 3);
+    CHECK(out[0].kind == ewire::kKindRestrain && out[0].b180 == 2 && out[0].depth == 1 && out[0].attack == 0x15C && out[0].b12E == 41 && out[0].amount == 0.0f);
+    CHECK(out[1].b180 == 0 && out[1].depth == 2 && out[2].depth == 3);
+    CHECK(buf[ewire::kScbHeader + 19] == 0);  // the pad stays zero
+    // a mixed message (a kind-5 entry beside a bullet HIT) encodes and decodes whole
+    ewire::Hit mixed[2] = {MakeHit(0), restrain(2, ewire::kRestrainNative)};
+    const std::size_t ms = ewire::EncodeHits(hd, mixed, 2, buf, sizeof(buf));
+    CHECK(ms && ewire::DecodeHits(buf, ms, g, out) && out[0].kind == ewire::kKindBullet && out[1].kind == ewire::kKindRestrain);
+    // the encoder's kind-5 rules
+    auto refused = [&](ewire::Hit h) { return ewire::EncodeHits(hd, &h, 1, buf, sizeof(buf)) == 0; };
+    ewire::Hit b = restrain(1, 1);
+    CHECK(refused(b));  // k 1 (sleep) is not a restrain
+    b = restrain(3, 1);
+    CHECK(refused(b));
+    b = restrain(2, 0);
+    CHECK(refused(b));  // no signal
+    b = restrain(2, 4);
+    CHECK(refused(b));
+    b = restrain(2, 1), b.amount = 1.0f;
+    CHECK(refused(b));  // a restrain carries no damage
+    b = restrain(2, 1), b.attack = 0x180;
+    CHECK(refused(b));  // the attack rules still hold
+    b = restrain(2, 1), b.key = 0x4000u | 3u;
+    CHECK(refused(b));
+    // the decoder: the wire bytes
+    std::size_t one = ewire::EncodeHits(hd, in, 1, buf, sizeof(buf));
+    CHECK(one && ewire::DecodeHits(buf, one, g, out));
+    buf[ewire::kScbHeader + 17] = 1;  // k 1 on the wire
+    CHECK(!ewire::DecodeHits(buf, one, g, out));
+    one = ewire::EncodeHits(hd, in, 1, buf, sizeof(buf));
+    buf[ewire::kScbHeader + 18] = 9;  // an unknown signal
+    CHECK(!ewire::DecodeHits(buf, one, g, out));
+    one = ewire::EncodeHits(hd, in, 1, buf, sizeof(buf));
+    buf[ewire::kScbHeader + 19] = 2;  // the pad (not the carrier: kind 5 is)
+    CHECK(!ewire::DecodeHits(buf, one, g, out));
+    one = ewire::EncodeHits(hd, in, 1, buf, sizeof(buf));
+    buf[ewire::kScbHeader + 10] = 6;  // kind 6
+    CHECK(!ewire::DecodeHits(buf, one, g, out));
+    // HITRES down (13) round trip; 14 refused
+    ewire::HitRes r{kMule, 77, 13, 0, 3};
+    std::uint8_t rb[256];
+    const std::size_t rs = ewire::EncodeHitRes(hd, &r, 1, rb, sizeof(rb));
+    ewire::HitRes ro[ewire::kHitResMax];
+    CHECK(rs && ewire::DecodeHitRes(rb, rs, g, ro) && ro[0].result == 13 && ro[0].defeat == 3);
+    r.result = 14;
+    CHECK(ewire::EncodeHitRes(hd, &r, 1, rb, sizeof(rb)) == 0);
+    // the beacon part: the last free bit, both must carry it
+    static_assert(shotw::kPartRestrain == 128, "the last free beacon bit");
+    CHECK(shotw::BothHave(shotw::kPartHits | shotw::kPartRestrain, 0xFF, shotw::kPartRestrain));
+    CHECK(!shotw::BothHave(shotw::kPartHits | shotw::kPartRestrain, 0x7F, shotw::kPartRestrain));
+    CHECK(ewire::SenDefeat(ewire::kDead) == 4 && ewire::SenDefeat(ewire::DefeatBits(3)) == 3 && ewire::SenDefeat(ewire::kRealized) == 0);
+}
 }  // namespace
 
 int main() {
+    TestScbRestrain();
     TestScbOwn();
     TestSenRoundTrip();
     TestSenRejects();

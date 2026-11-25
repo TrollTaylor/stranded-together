@@ -1,0 +1,64 @@
+# Round 23 E (docs/enemy-sync.md 14.11), solo, hidden: the M2 probe P6 (design section 10): for every MULE near Sam, whether it
+# sits in a vehicle, by the parent chain (entity +0x70, up to 6 levels, a vehicle among them) and by the ride fields (actor
+# +0xE20 the vehicle id, +0x3C0 the seat). The MULE Camp Southwest of Lake Knot City (its trucks 0x020010 and 0x02000F), every
+# MULE resurrected, P6 at the start, then the camp alerted (02029 raised to combat, Sam 25 m from it) so its MULEs board their
+# trucks, P6 after 20 s and after 40 s. Read the "[probe] P6 id=.. SEATED | not seated" lines and the truck census beside them.
+# Also P1 and P5 on the live 02029 with Sam 12 m in front of it (the knowledge search: a pointer to it or held inside a block).
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios trucks-m2-probe-solo -SeedSaves complete-100 -Id round23-e-p6
+# covers: enemy-hits vehicle-share
+# select: probe
+role solo
+graphics low
+timeout 300
+ini dev_tools=1
+ini enemy_hits=1
+ini enemy_m2_probes=1
+start control 200
+wait 3000
+waitlog 30 \[dev\] dev tools: [0-9]+/[0-9]+ byte checks ok
+waitlog 10 \[config\] enemy_m2_probes=1
+waitlog 10 \[enemy\] hits: byte checks [0-9]+/[0-9]+ ok
+waitlog 5 \[enemy\] hits installed
+goto mule-camp-sw-lkc
+wait 6000
+?action dev_god 2
+action dev_enemies 1
+waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+wait 6000
+action enemy_m2 0
+waitnew 5 \[probe\] P0 result
+action enemy_m2 6 0 400
+waitnew 10 \[probe\] P6 result
+# P1 / P5 on the live 02029: Sam 12 m in front of it
+action enemy_look 0x2029 12
+wait 700
+action enemy_look -8 12
+wait 1000
+action enemy_m2 1 0x2029 3
+waitnew 6 \[probe\] P1 result id=02029
+action enemy_m2 5 0x2029 4
+waitnew 8 \[probe\] P5 result #
+action vehicle_share 9 3 400
+waitlog 10 \[vshare\] trucks tag=3 done
+# the camp alerted: Sam 25 m from 02029, 02029 raised to combat
+wait 700
+action enemy_look 0x2029 25
+action enemy_target 3 0x2029 5
+wait 20000
+action enemy_m2 6 0 400
+waitnew 10 \[probe\] P6 result
+action vehicle_share 9 4 400
+waitlog 10 \[vshare\] trucks tag=4 done
+screenshot 01-camp-alerted
+wait 20000
+action enemy_m2 6 0 400
+waitnew 10 \[probe\] P6 result
+action vehicle_share 9 5 400
+waitlog 10 \[vshare\] trucks tag=5 done
+screenshot 02-camp-later
+nolog \[probe\] FAULT
+nolog \[enemy\] FAULT
+nolog \[enemy\] hits FAULT
+nolog \[vshare\] FAULT
+?action dev_god 0
+quit

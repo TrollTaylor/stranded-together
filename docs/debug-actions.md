@@ -326,6 +326,15 @@ SEP1 frames, and replays the host MULEs' rounds from them.
 * `enemy_sync 3`: the mirror table (`[enemy] mirror id=.. frozen .. err .. m lease age .. ms slot .. pose age .. ms a88 .. ea4 ..`).
 * `enemy_sync 6 <0|1>` (hidden runs): the far placement's variant A (save, place, restore) / B (also +0x1089 and the re-path).
 * `enemy_sync 7 <0|3>` (hidden runs): the driver's teleport cadence: 3 a teleport every 500 ms between the sets.
+* `enemy_sync 9 <1|2> <0|1|2>` (hidden runs; round 23 C, [enemy-sync.md](enemy-sync.md) 14.9): fakes a player down. 1 is the host's
+  Sam and 2 the guest's Fragile. 0 clears the fake, 1 is "down" and 2 is "limbo". Faking the partner's player feeds the same state
+  his beacon would, on this game only. Faking our own player also sends the code in our beacon, so the partner holds as for a
+  real one. A link change clears both fakes. Log: `[enemy] enemy_sync 9: host Sam test: down (ours: also sent in our beacon |
+  the partner's: here only; applied at the next tick)`. The next tick logs `[enemy] host Sam down (test: down; enemy_sync 9
+  fake): holding n mirrors, hiding m (...)`, and a clear logs `[enemy] host Sam back: resuming n (...)`;
+  the faking game logs `[enemy] our Sam back (enemy_sync 9 fake cleared): told the partner` (round 23 F; a real recovery
+  says `1 s not down`). With
+  `enemy_down_hold=0` the down line says the old rules apply. `enemy_sync 0` adds the `[enemy] down hold: ...` line.
 * `enemy_look <id | 0 | -1 | -2 | -3 | -4> <m> [aim height m]` (hidden runs): our Sam m from an enemy, facing it (the topmost
   ground). 0 the nearest (the guest: a frozen mirror; the host: a realized enemy), -1 the one the partner body faces (within 25
   deg and 60 m; else the one nearest the partner), -2 the newest replayed shooter (the host: the newest sent one, round 16b),
@@ -376,7 +385,8 @@ hidden (not down) for a second, or silent 3 s), `enemy_attack_registry` (shots w
   fallback)` when the copy did not take it). A copy the host downed already: `her outcome faint not carried: down here
   already (sleep)`.
 * `enemy_camp 4 <id | 0> <1 | 0>` (hidden runs, the guest, review fix round 21): her owned copy hidden (1) or shown (0) in her
-  game, by id or the nearest one she owns (a show with 0: the one hidden last): `[enemy] camp test: her owned copy XXXXX hidden
+  game, by id or the nearest standing one she owns (with 0 a fainted, asleep or tied-up one is skipped: the guard never hides
+  a down one, round 23; a show with 0: the one hidden last): `[enemy] camp test: her owned copy XXXXX hidden
   here` / `shown here`. Her frames then say hidden, and the host's follower guard hides his copy after a second (`[enemy] OWN
   id=..: the host's follower hidden (her copy is hidden there)`) and shows it again (`the host's follower shown again (her frames
   say realized and free again)`).
@@ -384,6 +394,8 @@ hidden (not down) for a second, or silent 3 s), `enemy_attack_registry` (shots w
 * `enemy_look -7 <m> [h]` (hidden runs): the nearest enemy the guest owns (the guest: hers; the host: its frozen copy).
 * `enemy_look -8 <m>` (hidden runs, round 20): our Sam m in front of the enemy of the last `enemy_look`, along its facing, facing
   it (a "seen in the open" test: [enemy-sync.md](enemy-sync.md) section 12).
+  Round 23 E: a negative m places our Sam that far behind it, along its facing, facing its back (`enemy_look -8 -10`; the
+  log line says `behind it, along its facing`), for the M2 probe P1's "behind" step.
 
 ### Enemy hits (`enemy_dump`, `enemy_attack`, `enemy_ctx`, `enemy_hit_mode`, `enemy_hit`, `enemy_hit_send`, `enemy_hit_watch`; `session.ini enemy_hits`, default on with `enemy_sync`; [enemy-sync.md](enemy-sync.md) section 9)
 
@@ -442,8 +454,53 @@ most 3 numbers, so `enemy_hit`'s part / owner / path are set apart (`enemy_hit_m
   made, the follow (7) also logs `[enemy] stimulus hers: at ..`). 10 byte-checked sites (`[enemy] stimulus: byte checks`).
   Probes only: none of it changes play outside hidden runs.
 
+* `enemy_m2 <probe> [id | 0] [arg]` (round 23 E, the M2 probes; hidden runs and `session.ini enemy_m2_probes=1`, default 0;
+  [enemy-sync.md](enemy-sync.md) section 14.11). Probes: they only read the game (every read fault-free or behind an SEH guard),
+  except P2's forced hand-over and its levers. Each logs `[probe] P<n> ...` lines and exactly one `[probe] P<n> result ...` line,
+  also when it is skipped (`... skipped (<why>)`). Id 0: the last `enemy_look`'s enemy, else the first frozen copy here, else the
+  nearest realized MULE. Off: `enemy_m2_probes=0 (the M2 probes are off)`.
+  * 0: the byte checks (`[probe] P0 byte checks (...)`, `[probe] P0 result: knowledge ok|OFF, raycast .., perception ..,
+    stimulus +0xA4 ..; ...; role n`). A mismatch logs `[probe] byte check FAILED: <site>` and turns that probe off.
+  * 1 `<id> <s>`: a copy's knowledge (DSAINoticeAndKnowledge) every 0.5 s for s seconds: where it was found (`[probe] P1
+    knowledge id=.. at <path>`), its entries' types, and whether a PlayerVisual entry for our Sam is being written (fresh: its
+    bytes changed within 1.5 s), was written once and left (stale) or is missing (none): `[probe] P1 result id=XXXXX copy
+    frozen|live: knowledge <path | not found>; ... PlayerVisual of our Sam: fresh|stale|none (fresh n, stale n, none n)`.
+  * 2 `<id> <lever 0..3>` (the guest): armed; when the enemy is handed to her game (`[probe] P2 owned id=..`), the lever is
+    applied (a nothing, b a test hit owned by her Sam, c AlertForEntityWithPerfectThreatInfo -> her Sam, d' her Sam's own visual
+    stimulus +0xA4 three times for 1 s), and the copy is sampled every 0.1 s for 15 s: `[probe] P2 result id=XXXXX lever <a..d'>:
+    turned N ms|never, shot N ms|never (...)`, or `not handed over here (no hand-over in 90 s)`.
+  * 3: the perception reads: the partner body's and our Sam's entity +0x314, and the stimulus +0x88 of our agents' visual
+    stimuli in the AI manager's thread-safe list (`[probe] P3 result: ...`).
+  * 4 `<id> <s>`: the game's raycast (0x141C20CE0, the visual sense's own filter) from a copy's eye (+1.6 m) to our Sam's chest
+    (+1.0) and head (+1.5), one call a tick, alternating: `[probe] P4 start ..`, state changes, `[probe] P4 result id=XXXXX copy
+    frozen|live: n calls; chest clear n blocked n, head clear n blocked n; Sam .. m`, or `[probe] P4 skipped (<why>)`.
+  * 5 `<id> <s>` (the host's own MULE): phase, state, facing and knowledge every 0.25 s (a line a second or on a change):
+    `[probe] P5 start #n ..`, `[probe] P5 #n t=..`, `[probe] P5 result #n id=XXXXX: Sam .. m at the start; phase start a end b
+    max c, .. first raise ..; ... PlayerVisual of our Sam ..`.
+  * 6 `[id | 0] [m]` (default 200 m): every realized MULE within m of our Sam (or the id): its parent chain (entity +0x70, up to 6
+    levels) and its ride fields (actor +0xE20 the vehicle id, +0x3C0 the seat): `[probe] P6 id=XXXXX SEATED|not seated at .. m:
+    parent chain (+0x70) ..; ride fields ..`, then `[probe] P6 result: n MULEs within .. m, seated n (by the parent chain n, by
+    the ride fields n)`.
+
 Scenarios: `enemy-hit-probe` (P2-0, solo), `two-games-enemy-hit` (the gate), `two-games-enemy-target-probe` (the M1 probe),
-`two-games-enemy-stim-probe` (the M2 stimulus probe).
+`two-games-enemy-stim-probe` (the M2 stimulus probe), `two-games-enemy-probe` (round 23 E: P0-P5), `trucks-m2-probe-solo`
+(round 23 E: P6).
+
+* `enemy_restrain <id | 0> <mode>` (hidden runs, round 23; the guest, or the host while it relays its hits: `enemy_owner`; the
+  restrain relay must be on: `[enemy] restrain relay on`): the tie-up relay's own send path on our frozen copy of an enemy the
+  other game owns (id 0: the last `enemy_look`'s, else the frozen copy nearest our Sam). Mode 0 native: the outcome setter k 2 on
+  OUR copy (`[enemy] enemy_restrain id=XXXXX: the outcome setter k 2 on our copy (called): the watch reads it next`), then the
+  watch reads the copy's +0xEA4 bit 21 exactly as after a real strand and sends HIT kind 5 (`[enemy] restrain HIT sent #n
+  id=XXXXX k 2 (strand; native: the copy's +0xEA4): to the host; no HIT of ours was held [enemy_restrain test]`). Mode 2: the
+  same with k 0 (a knockout, bit 19). Mode 1 fallback: a synthetic strand HIT (attack 0x15C, weapon 41) through the capture
+  path: it is held, the copy watched 1.5 s, and with nothing seen it goes as a test restrain (depth 3: `k 2 (strand (test);
+  test (enemy_restrain))`). The owner then logs `[enemy] restrain HIT #n id=XXXXX from the guest (...): outcome setter k 2
+  called` and a second later `[enemy] OUTCOME id=XXXXX none -> restrained (cause guest HIT #n, strand): read back 1 s after the
+  setter k 2` (the guest as owner: `cause host HIT #n`). Refusals: `restrain HIT #n id=.. from the guest refused: down already |
+  dead | unrealized | receiver | hidden | off | attack | world` on the owner, `restrain HIT #n id=.. refused by the host: ..:
+  the copy re-posed with the owner's frames` on the sender. [enemy-sync.md](enemy-sync.md) section 14. The round 23 gates use
+  mode 1 in both directions (`two-games-enemy-tie`, `two-games-enemy-tie-host`: both PASS, 14.15); modes 0 and 2 and a real
+  strand have not run in a game.
 
 ### Shots (`shots`, `shots_test`, `shots_echo`; `session.ini shots_sync`, default on since round 16; [enemy-sync.md](enemy-sync.md) sections 7.3, 7.5)
 
@@ -1226,6 +1283,15 @@ to the host (the whole summon path of M2.3).
 `action vehicle_share 8 [kind] [m]` (host) logs the game's own persisted entry of every live vehicle of that kind (0 any)
 within m (default 400) of Sam: what the host's next save writes for it (`[vshare] persisted entry of ...: place ..., x m
 from where it stands now`).
+
+`action vehicle_share 9 [tag] [m]` (round 23 D, both games; docs/enemy-sync.md 14.10) logs every truck of the truck pool
+within m of Sam (0 = every truck), one line each (`[vshare] trucks tag=<tag> tNN ...`): its class (player vehicle, MULE
+truck empty, MULE truck MULE-driven, MULE truck player-driven, or model unknown when the truck is not spawned), the driver's
+id, kind, seat and camp, the raw driver fields (unit +0x158 and +0x19D, the seat's +0x63C and +0x8B0), unit +0x198 and
+rec2, its place and distance, and whether it is shared or left to each game and why. A summary line follows
+(`[vshare] trucks tag=<tag> done: N (player .., MULE empty .., MULE-driven .., ...), nearest MULE truck ...`). It is read
+only, works when the shared vehicles are off too (its byte checks then run on their own), and also runs at the end of
+every `enemy_census` while `vehicle_mule_log=1`.
 
 ### Vehicle drive (`vehicle_drive`; `session.ini vehicle_sync=5` with `host_save=1`)
 

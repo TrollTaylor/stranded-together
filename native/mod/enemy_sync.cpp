@@ -29,6 +29,7 @@
 #include "sam_damage.hpp"
 #include "save_guard.hpp"
 #include "shot_sync.hpp"
+#include "vehicle_share.hpp"
 
 namespace st::esync {
 namespace {
@@ -58,6 +59,14 @@ constexpr std::uintptr_t kActorTeleport = 0x1422F8D90;  // vt+0x10, then (realiz
 constexpr std::uintptr_t kEntitySetXf = 0x142361EA0;    // Entity_ExportedSetWorldTransform
 constexpr std::uintptr_t kNpcWeaponUpdate = 0x142BB5C70;  // returns at once while weapon +0x268 is set
 constexpr std::uintptr_t kMuleWeaponOcc = 0x142B07FB0;  // the MULE weapon component's Occupied
+// round 23 B (enemy_mirror_vehicle's second test; re-vehicles 1.3): the MULE ride action FUN_142B51E70 sets rbx = actor + 0x3C0 (the
+// seat) behind the +0xEA0 == 1 gate, then [rbx + 0xA60] = actor +0xE20 = the vehicle actor id (& 0x1FFFFF); the actor's
+// constructor sets +0xE20 from 0x144AF1150 (0x1FFFFF: none) and +0x3C0 = -1.
+constexpr std::uintptr_t kRideSeatSite = 0x142B51F62;
+constexpr std::uintptr_t kRideIdSite = 0x142B52067;
+constexpr std::uintptr_t kActorVehNoneSite = 0x142A9824C;
+constexpr std::uintptr_t kVehIdNoneGlobal = 0x144AF1150;
+constexpr std::uintptr_t kActVehId = 0xE20, kActSeat = 0x3C0;
 
 struct Site {
     std::uintptr_t va;
@@ -603,6 +612,7 @@ double g_hostp[3] = {};       // the guest: the host's Sam (the partner body her
 bool g_have_hostp = false;
 bool g_p1_ok = false;         // byte checks passed
 bool g_varb_ok = false;       // variant B's re-path checked
+bool g_ride_ok = false;       // round 23 B: the ride fields' byte checks (+0xE20 / +0x3C0: enemy_mirror_vehicle's second test)
 bool g_sam_filter = false, g_npc_filter = false, g_observer = false;
 bool g_switch = true;         // enemy_sync 1 / 2
 bool g_stopped = false;       // a fault: off for the session
@@ -861,6 +871,8 @@ struct HostEnemy {
     double last_pos[3] = {};
     double last_t = -1e18;
     float vel[3] = {};
+    erules::VehTest veh = erules::VehTest::none;  // round 23 B: in a vehicle (every 1 s; SEN1 kInVehicle)
+    double veh_next = 0;
 };
 std::vector<HostEnemy> g_host;
 double g_host_walk_next = 0;
@@ -938,7 +950,11 @@ void HostReset() {
     shots::SetEnemyShooters(nullptr, nullptr, 0);
 }
 
-void HostWalk(const double (&guest)[3], bool have_guest) {
+// round 23 B (below): the in-vehicle test of one MULE (erules::VehicleTest; the ride fields only with their byte checks) and its
+// change line (the first 24).
+erules::VehTest VehicleOf(std::uint32_t id, std::uintptr_t actor, std::uintptr_t entity, std::uint32_t* e20, std::int32_t* seat);
+void NoteVehicle(std::uint32_t id, const char* who, erules::VehTest was, erules::VehTest now_t, std::uint32_t e20, std::int32_t seat);
+void HostWalk(const double (&guest)[3], bool have_guest, double now) {
     std::vector<LocalEnemy> all;
     WalkEnemies(all);
     std::vector<HostEnemy> next;
@@ -953,6 +969,15 @@ void HostWalk(const double (&guest)[3], bool have_guest) {
         h.id = le.id, h.actor = le.actor;
         if (!ReadActor(le.actor, le.id, h.now)) continue;
         h.dist = have_guest && h.now.have_xf ? Dist3(h.now.pos, guest) : -1;
+        if (g_ecfg.enemy_mirror_vehicle && now >= h.veh_next) {
+            // round 23 B: every 1 s for each enemy the host sends (not only at a mirror's entry)
+            h.veh_next = now + erules::kVehicleCheckMs;
+            std::uint32_t e20 = erules::kVehicleIdNone;
+            std::int32_t seat = -1;
+            const erules::VehTest was = h.veh;
+            h.veh = h.now.realized ? VehicleOf(h.id, h.actor, h.now.entity, &e20, &seat) : erules::VehTest::none;
+            if (h.veh != was) NoteVehicle(h.id, "the host's", was, h.veh, e20, seat);
+        }
         next.push_back(h);
     }
     g_host.swap(next);
@@ -982,7 +1007,7 @@ bool HostEntry(HostEnemy& h, double now, const double (&guest)[3], bool have_gue
                                         (h.now.held ? ewire::kSeqHeld : 0) | (g_pslots.SlotOf(h.id) >= 0 ? ewire::kPosed : 0) |
                                         ewire::DefeatBits(ecombat::HostDefeat(h.id)));  // P2: the outcome (the OUTCOME's redundancy)
     const double sp = std::sqrt(static_cast<double>(h.vel[0]) * h.vel[0] + static_cast<double>(h.vel[1]) * h.vel[1]);
-    e.flags = sp > 0.2 ? ewire::kMoving : 0;
+    e.flags = static_cast<std::uint8_t>((sp > 0.2 ? ewire::kMoving : 0) | (h.veh != erules::VehTest::none ? ewire::kInVehicle : 0));
     for (int k = 0; k < 3; ++k) e.pos[k] = h.now.pos[k], e.vel[k] = h.vel[k];
     e.yaw = YawOfXf(h.now.xf);
     return true;
@@ -998,7 +1023,7 @@ void HostTick(const TickIn& in, double now) {
     }
     if (now >= g_host_walk_next) {
         g_host_walk_next = now + 500;
-        HostWalk(guest, have_guest);
+        HostWalk(guest, have_guest, now);
         // the pose slots (2 Hz): the nearest realized within 120 m (P1b: not the guest's: they are her captures)
         std::vector<erules::PoseCand> pc;
         // P2: a dead or down one is still posed (it lies where the host's lies), in the 5 Hz half, never taking a live one's fast rank
@@ -1081,6 +1106,16 @@ struct Mirror {
     bool frozen = false;
     bool own = false;        // P1b, the host: its copy of an enemy the guest owns (no lease: the ownership rules give it back)
     const char* why = "";    // a release held by a cutscene: its reason
+    // round 23 B (docs/enemy-sync.md 14.8): the diagnostics, the not-holding rule, the in-vehicle test
+    erules::TeleportRing tp;  // the driver's newest teleports
+    unsigned tp5 = 0;         // teleports in the 5 s window
+    double err_max5 = 0;      // its largest error in the 5 s window
+    double veh_next = 0;      // the next in-vehicle test (1 s)
+    erules::VehTest veh = erules::VehTest::none;
+    std::uint32_t veh_e20 = erules::kVehicleIdNone;
+    std::int32_t veh_seat = -1;
+    bool nothold_logged = false;  // a follower (the host) not holding: logged once
+    bool posed_once = false;      // round 23 C: it has had the owner's pose here (a frame pushed) since its freeze
 };
 std::map<std::uint32_t, erules::Track> g_tracks;
 std::map<std::uint32_t, PoseRx> g_prx;
@@ -1120,6 +1155,13 @@ struct FarCheck {
 };
 std::vector<FarCheck> g_far_checks;
 std::vector<double> g_drift;
+// round 23 B: the 30 s error summary's samples, the ids logged once over 20 m, the counts for the summary
+std::vector<double> g_err_30;
+double g_sum_next = 0;
+std::set<std::uint32_t> g_over20;
+struct MirrorB {
+    unsigned worst = 0, over20 = 0, nothold = 0, vehicle = 0, retries = 0;
+} g_mb;
 
 // The MULE weapon component's flag +0x268 (the weapon update returns at once while it is set): our Occupied{1} sets it (the
 // weapon's Occupied handler 0x142B07FB0 -> 0x142BB60F0). Its value before our freeze, by id; put back after our release when
@@ -1241,6 +1283,122 @@ void UnhideHostHidden(bool all, const char* why, double now) {
     }
     g_gs.host_hidden_now = static_cast<unsigned>(g_host_hid.size());
 }
+// Round 23 B (enemy_mirror_hold_check; docs/enemy-sync.md 14.8): the mirrors given back hidden and asleep here because they did not
+// hold the owner's place (erules::NotHolding). M0's hide (only the a88 bits we set, only while it is the same in-use MULE); shown
+// and woken again after 5 s (then the entry may mirror it again), or on off / reset. Its shots are still replayed from the owner's
+// place meanwhile (NotHoldingShooter).
+struct NotHold {
+    std::uintptr_t actor = 0;
+    std::uint32_t a88_pre = 0;
+    double t = 0;
+};
+std::map<std::uint32_t, NotHold> g_nothold;
+std::map<std::uint32_t, unsigned> g_nothold_n;  // id -> times hidden (the first is logged with its reason; then the first 3 and every 10th)
+void HideNotHolding(std::uint32_t id, std::uintptr_t actor, double now) {
+    ActorNow a;
+    if (!ReadActor(actor, id, a)) return;
+    NotHold h;
+    h.actor = actor, h.a88_pre = a.a88 & 3u, h.t = now;
+    bool ok = true;
+    if (!(h.a88_pre & 1u)) ok = ActorBool(actor, kVtHidden, 1) && ok;
+    if (!(h.a88_pre & 2u)) ok = ActorBool(actor, kVtSleep, 1) && ok;
+    g_nothold[id] = h;
+    const unsigned n = ++g_nothold_n[id];
+    if (n <= 3 || n % 10 == 0)
+        Log("[enemy] mirror id=%05X not holding (#%u): hidden and asleep here for %.0f s, then tried again (a88 0x%X -> 0x%X%s); its shots are still replayed "
+            "from the owner's place", id, n, erules::kNotHoldRetryMs / 1000.0, a.a88, U32(actor + kActFlags88), ok ? "" : ", a call FAULTED");
+}
+void UnhideNotHolding(bool all, const char* why, double now) {
+    for (auto it = g_nothold.begin(); it != g_nothold.end();) {
+        if (!all && !erules::NotHoldRetry(now - it->second.t)) {
+            ++it;
+            continue;
+        }
+        ActorNow a;
+        if (ReadActor(it->second.actor, it->first, a)) {
+            bool ok = true;
+            if ((a.a88 & 1u) && !(it->second.a88_pre & 1u)) ok = ActorBool(it->second.actor, kVtHidden, 0) && ok;
+            if ((a.a88 & 2u) && !(it->second.a88_pre & 2u)) ok = ActorBool(it->second.actor, kVtSleep, 0) && ok;
+            const unsigned n = g_nothold_n[it->first];
+            if (all || n <= 3 || n % 10 == 0)
+                Log("[enemy] mirror id=%05X shown and woken again (%s; a88 0x%X -> 0x%X%s)", it->first, all ? why : "not holding: the 5 s retry", a.a88,
+                    U32(it->second.actor + kActFlags88), ok ? "" : ", a call FAULTED");
+        }
+        if (!all) ++g_mb.retries;
+        it = g_nothold.erase(it);
+    }
+}
+// Round 23 C (enemy_down_hold; docs/enemy-sync.md 14.9): the other player is down (death or KnotSpace, from its SEH1 beacon or the
+// enemy_sync 9 fake). The partner's code in force here and ours; the guest's mirrors hidden while the host's Sam is down (kept
+// frozen; only the hidden bit we set, only while it is the same in-use MULE), shown again when he is back, on every release of that
+// mirror, and on off / reset (a new world forgets them untouched). The host's hidden followers go through the follower guard's own
+// table (g_fhid). g_down_held: the ids held frozen in their last pose now (both roles).
+static_assert(erules::kPlayerDownMax == shotw::kBeaconDownMax, "the beacon's down byte carries erules::PlayerDown");
+std::uint8_t g_peer_down = 0;   // the partner's player: erules::PlayerDown in force here (0 up)
+std::uint8_t g_our_down = 0;    // ours, as the beacon is told (latched, or the fake)
+int g_peer_fake = -1, g_our_fake = -1;  // enemy_sync 9 (hidden runs): -1 none
+erules::DownLatch g_our_latch;
+double g_down_t0 = 0, g_down_own_next = 0;
+struct DownHid {
+    std::uintptr_t actor = 0;
+    bool pre = false;  // already hidden before ours
+};
+std::map<std::uint32_t, DownHid> g_down_hid;   // the guest's
+std::set<std::uint32_t> g_down_held;           // both roles: held now
+std::set<std::uint32_t> g_down_fhid;           // the host: followers hidden by the down rule (in g_fhid)
+struct DownStats {
+    unsigned holds = 0, hides = 0, refused = 0, no_change = 0, resumed = 0, downs = 0;
+} g_ds;
+bool DownOn() { return g_ecfg.enemy_down_hold && g_peer_down != 0; }
+unsigned DownResume(const char* why);  // (below: shows every copy the hold hid)
+bool DownFreeze() { return erules::DownFreezesOwnership(g_ecfg.enemy_down_hold, g_our_down != 0, g_peer_down != 0); }
+void DownHideMirror(std::uint32_t id, std::uintptr_t actor, const char* why) {
+    if (g_down_hid.count(id)) return;
+    ActorNow a;
+    if (!ReadActor(actor, id, a)) return;
+    DownHid h;
+    h.actor = actor, h.pre = (a.a88 & 1u) != 0;
+    const bool ok = h.pre || ActorBool(actor, kVtHidden, 1);
+    g_down_hid[id] = h;
+    ++g_ds.hides;
+    Log("[enemy] down hold id=%05X: hidden here, kept frozen (%s; a88 0x%X -> 0x%X%s)", id, why, a.a88, U32(actor + kActFlags88), ok ? "" : ", the call FAULTED");
+}
+// One down-hidden mirror shown again (before any release posts: a copy released while hidden here could never fire again).
+bool DownUnhideMirror(std::uint32_t id, const char* why) {
+    const auto it = g_down_hid.find(id);
+    if (it == g_down_hid.end()) return false;
+    ActorNow a;
+    if (!it->second.pre && ReadActor(it->second.actor, id, a)) {
+        const bool ok = !(a.a88 & 1u) || ActorBool(it->second.actor, kVtHidden, 0);
+        Log("[enemy] down hold id=%05X: shown again (%s; a88 0x%X -> 0x%X%s)", id, why, a.a88, U32(it->second.actor + kActFlags88), ok ? "" : ", the call FAULTED");
+    }
+    g_down_hid.erase(it);
+    return true;
+}
+void DownUnhideAll(const char* why) {
+    while (!g_down_hid.empty()) DownUnhideMirror(g_down_hid.begin()->first, why);
+    g_down_held.clear();
+}
+// Round 23 review (erules::DownKeepsOff): the guest's sync turned off, or her Sam is not there, while the host's Sam is down (his
+// reload after a death resets his fingerprint, so her gate goes to "waiting"; or his beacons stop meanwhile). Every frozen copy is
+// kept frozen as it is: the hidden ones stay hidden, the others are held (nothing written: no place, no pose, no posts). Never
+// given back alive. When he is back, DownResume shows and resumes them and the usual off release follows on the next tick; a world
+// change forgets them, a link change, the switch off or a fault releases them as before. One line per spell.
+bool g_down_kept = false;          // the keep is in force (logged once)
+bool g_down_nothold_logged = false;  // the deferred not-holding retry was logged for this spell
+bool g_down_nobeacon_logged = false; // DownTick: the partner down and its beacon gone (logged once per spell)
+void DownKeep(const char* why) {
+    unsigned held = 0;
+    for (const Mirror& m : g_mirrors) {
+        if (!m.frozen || g_down_hid.count(m.id)) continue;
+        if (g_down_held.insert(m.id).second) ++g_ds.holds;
+        ++held;
+    }
+    if (g_down_kept) return;
+    g_down_kept = true;
+    Log("[enemy] down hold: sync off (%s) while the host's Sam is down: %u mirrors kept frozen (held %u, hidden %zu), none given back alive; "
+        "released when he is back or the world changes", why, held + static_cast<unsigned>(g_down_hid.size()), held, g_down_hid.size());
+}
 void FreeSlot(Mirror& m) {
     if (m.slot >= 0) {
         if (g_palloc.At(m.slot) == erules::PoseAlloc::kApply) {
@@ -1283,6 +1441,8 @@ bool PostRelease(const Mirror& m, const char* why) {
 // True: posted now (not held, still ours).
 bool ReleaseMirror(Mirror& m, const char* why) {
     if (!m.frozen) return false;
+    DownUnhideMirror(m.id, "released");  // round 23 C: shown first (never released hidden)
+    g_down_held.erase(m.id);
     m.frozen = false;
     FreeSlot(m);
     if (ReleaseHeld()) {
@@ -1334,6 +1494,9 @@ void RestoreFar(const char* why) {
 void GuestReset() {
     UnhideDead(true, "reset");
     UnhideHostHidden(true, "reset", 0);
+    UnhideNotHolding(true, "reset", 0);
+    g_nothold_n.clear();
+    g_over20.clear();
     ReleaseAll("reset");
     RestoreFar("reset");
     g_tracks.clear();
@@ -1376,7 +1539,12 @@ void GuestDrain(double now) {
             s.yaw = e.yaw;
             std::memcpy(s.vel, e.vel, sizeof(s.vel));
             s.state = e.state;
-            g_tracks[e.actor_id].Push(s, now);
+            s.phase = e.phase, s.flags = e.flags;  // round 23 B
+            erules::Track& tr = g_tracks[e.actor_id];
+            const std::uint8_t was = tr.Newest() ? ewire::SenDefeat(tr.Newest()->state) : 0;
+            tr.Push(s, now);
+            // round 23: the replay flush (its down outcome reached this game by the partner's SEN1)
+            if (g_ecfg.enemy_replay_flush && erules::FlushOnDefeat(was, ewire::SenDefeat(e.state))) shots::FlushEnemyReplays(e.actor_id, "the partner's SEN1", true);
             if (ewire::DefeatOfState(e.state) && !(f.flags & ewire::kFromGuest)) ecombat::NoteSenDefeat(e.actor_id, ewire::DefeatOfState(e.state));
             ++g_gs.rx_entries;
         }
@@ -1433,6 +1601,37 @@ bool InVehicle(std::uintptr_t entity) {
     }
     return false;
 }
+// Round 23 B: the parent chain first; if it does not reach a vehicle, the actor's ride fields (+0xE20 the vehicle actor id, +0x3C0 the
+// seat), only with their byte checks. The fault-free reader; a read that fails on a live actor turns that test off for the run.
+// Round 23 D: then the shared vehicles' truck rules (a vehicle of this game whose driver seat names this id; vehicle_mule_hold).
+erules::VehTest VehicleOf(std::uint32_t id, std::uintptr_t actor, std::uintptr_t entity, std::uint32_t* e20, std::int32_t* seat) {
+    std::uint32_t v = erules::kVehicleIdNone;
+    std::int32_t s = -1;
+    const bool chain = entity && InVehicle(entity);
+    bool ride = false;
+    if (!chain && actor && g_ride_ok && g_ecfg.enemy_mirror_vehicle) {
+        if (mem::Rd(actor + kActVehId, v) && mem::Rd(actor + kActSeat, s)) {
+            ride = true;
+        } else {
+            g_ride_ok = false;
+            Log("[enemy] vehicle test: the read of actor %p +0xE20 / +0x3C0 FAILED: the ride-field test is off for the run (the parent chain stays)",
+                reinterpret_cast<void*>(actor));
+        }
+    }
+    if (e20) *e20 = v;
+    if (seat) *seat = s;
+    const bool driver = !chain && !(ride && erules::SeatedByRide(v, s)) && id && vshare::TruckDriverOf(id);
+    return erules::VehicleTest(chain, ride, v, s, driver);
+}
+unsigned g_veh_lines = 0;
+void NoteVehicle(std::uint32_t id, const char* who, erules::VehTest was, erules::VehTest now_t, std::uint32_t e20, std::int32_t seat) {
+    if (g_veh_lines >= 24) return;
+    ++g_veh_lines;
+    if (now_t != erules::VehTest::none)
+        Log("[enemy] vehicle id=%05X: %s copy is in a vehicle (test: %s; +0xE20 0x%X seat %d)", id, who, erules::VehTestText(now_t), e20, seat);
+    else
+        Log("[enemy] vehicle id=%05X: %s copy is out of its vehicle (was: %s)", id, who, erules::VehTestText(was));
+}
 
 void TryEnter(std::uint32_t id, const erules::Track& tr, double now, const double (&sam)[3], bool cutscene) {
     const erules::Sample* z = tr.Newest();
@@ -1451,7 +1650,10 @@ void TryEnter(std::uint32_t id, const erules::Track& tr, double now, const doubl
     e.held_here = a.held;
     e.held_on_host = (z->state & ewire::kSeqHeld) != 0;
     e.cutscene = cutscene;
-    e.in_vehicle = a.realized && InVehicle(a.entity);
+    // round 23 B (enemy_mirror_vehicle): both tests here, and the owner's SEN1 bit (off: the parent chain only, as before)
+    e.in_vehicle = a.realized && (g_ecfg.enemy_mirror_vehicle ? VehicleOf(id, actor, a.entity, nullptr, nullptr) != erules::VehTest::none : InVehicle(a.entity));
+    e.host_in_vehicle = g_ecfg.enemy_mirror_vehicle && (z->flags & ewire::kInVehicle) != 0;
+    e.owner_down = DownOn();  // round 23 C: no new mirror while the host's Sam is down (counted, not logged per id)
     // M0 (enemy_host_guard): the host's copy unloaded or hidden there, or its place far from ours: never a statue
     double pos0[3] = {};
     float yaw0 = 0;
@@ -1465,6 +1667,7 @@ void TryEnter(std::uint32_t id, const erules::Track& tr, double now, const doubl
         e.host_far_m = g_ecfg.enemy_host_far;
     }
     const erules::Refusal r = erules::Eligible(e);
+    if (r == erules::Refusal::owner_down) return void(++g_ds.refused);
     if (r != erules::Refusal::ok) {
         if (r == erules::Refusal::host_unrealized || r == erules::Refusal::host_hidden || r == erules::Refusal::entry_far || r == erules::Refusal::host_far) {
             ++g_gs.host_refused;
@@ -1511,6 +1714,57 @@ void TryEnter(std::uint32_t id, const erules::Track& tr, double now, const doubl
     Log("[enemy] mirror on id=%05X (dist %.1f m, err at entry %.2f m, ea4 0x%X)", id, Dist3(z->pos, sam), err, ea4);
 }
 
+// ---------------------------------------------------------------- round 23: the tie-up relay's pose hold (docs/enemy-sync.md 14)
+struct HoldRec {
+    bool on = false;
+    double t0 = 0, until = 0, end = -1e18;
+    int slot = -1;              // the slot switched to capture while held (-1 none)
+    std::uintptr_t sm = 0;
+    bool have_native = false;   // the copy's own pose captured while held (the blend's start)
+    wire::JointFrame native;
+};
+std::map<std::uint32_t, HoldRec> g_hold;
+// The copy's slot back to apply (its mode was capture while held): only while the mirror still has that slot for that model
+// (a slot freed meanwhile, or given to another mirror, is never touched).
+void HoldSlotBack(HoldRec& h, const Mirror& m) {
+    if (h.slot >= 0) {
+        if (m.slot == h.slot && m.sm == h.sm && h.sm && g_palloc.At(h.slot) == erules::PoseAlloc::kApply)
+            realbody::SetEnemySlot(static_cast<unsigned>(h.slot), h.sm, realbody::EnemySlotMode::apply);
+        h.slot = -1;
+    }
+}
+// True: the copy is held now (no transform write, no pose push this tick).
+bool HoldTick(Mirror& m, double now) {
+    const auto it = g_hold.find(m.id);
+    if (it == g_hold.end()) return false;
+    HoldRec& h = it->second;
+    if (h.on && now >= h.until) {
+        h.on = false, h.end = now;
+        HoldSlotBack(h, m);
+        Log("[enemy] restrain hold id=%05X ended: timeout (%.1f s, no owner outcome): the copy re-posed with the owner's frames", m.id, (now - h.t0) / 1000.0);
+    }
+    if (!h.on) {
+        HoldSlotBack(h, m);
+        if (now - h.end >= erules::kRestrainBlendMs) g_hold.erase(it);
+        return false;
+    }
+    // the copy's own animation plays: its slot captures it (the blend's start) instead of applying the owner's frames
+    if (m.slot >= 0 && h.slot < 0 && g_palloc.At(m.slot) == erules::PoseAlloc::kApply &&
+        realbody::SetEnemySlot(static_cast<unsigned>(m.slot), m.sm, realbody::EnemySlotMode::capture))
+        h.slot = m.slot, h.sm = m.sm;
+    double ms = 0;
+    if (h.slot >= 0 && realbody::CaptureEnemyFrame(static_cast<unsigned>(h.slot), &h.native, &ms)) h.have_native = true;
+    return true;
+}
+// The blend back: the owner's frame f mixed from the held native pose (250 ms), else f itself.
+const wire::JointFrame& HoldBlend(std::uint32_t id, const wire::JointFrame& f) {
+    const auto it = g_hold.find(id);
+    if (it == g_hold.end() || it->second.on || !it->second.have_native) return f;
+    static wire::JointFrame out;
+    wire::BlendJoints(it->second.native, f, erules::BlendBack(g_tnow - it->second.end), out);
+    return out;
+}
+
 void GivePose(Mirror& m, const erules::Track& tr, double render, bool posed_on_host) {
     auto it = g_prx.find(m.id);
     const bool have = it != g_prx.end() && it->second.tb > -1e17 && posed_on_host;
@@ -1536,19 +1790,58 @@ void GivePose(Mirror& m, const erules::Track& tr, double render, bool posed_on_h
     }
     const PoseRx& r = it->second;
     static wire::JointFrame out;
+    m.posed_once = true;  // round 23 C (DownIn.posed)
     if (r.ta > -1e17 && render > r.ta && render < r.tb) {
         wire::BlendJoints(r.a, r.b, static_cast<float>((render - r.ta) / (r.tb - r.ta)), out);
-        realbody::PushEnemyFrame(static_cast<unsigned>(m.slot), out);
+        realbody::PushEnemyFrame(static_cast<unsigned>(m.slot), HoldBlend(m.id, out));
     } else {
-        realbody::PushEnemyFrame(static_cast<unsigned>(m.slot), render <= r.ta && r.ta > -1e17 ? r.a : r.b);
+        realbody::PushEnemyFrame(static_cast<unsigned>(m.slot), HoldBlend(m.id, render <= r.ta && r.ta > -1e17 ? r.a : r.b));
     }
 }
 
-// One frozen mirror driven to its owner's place (either game: P1b's host follows the guest's).
-void DriveMirror(Mirror& m, const ActorNow& a, const double (&pos)[3], float yaw, double now) {
+// Round 23 B (docs/enemy-sync.md 14.8): one mirror's full diagnostics line (log only): `head` "worst", "first over 20 m" or "not
+// holding". The owner's side from its newest SEN1 sample (state, phase, entry flags, in vehicle, a sequence hold there, the frame's
+// age), ours read now (realized, bit 14, the in-vehicle test, the entity's parent, the pose).
+void MirrorDiag(const char* head, const Mirror& m, double err, double now) {
+    const char* owner = g_role == 1 ? "guest" : "host";
+    const auto t = g_tracks.find(m.id);
+    const erules::Sample* z = t != g_tracks.end() ? t->second.Newest() : nullptr;
+    const std::uint8_t st = z ? z->state : 0, ph = z ? z->phase : erules::kPhaseUnknown, fl = z ? z->flags : 0;
+    ActorNow a;
+    const bool same = ReadActor(m.actor, m.id, a);
+    const std::uintptr_t parent = same && a.entity ? mem::Q(a.entity + 0x70) : 0;
+    const char* pn = parent ? mem::RttiName(mem::RttiOf(parent)) : nullptr;
+    char anim[96];
+    const auto pr = g_prx.find(m.id);
+    const double pose_age = pr != g_prx.end() && pr->second.rx > -1e17 ? now - pr->second.rx : -1;
+    if (g_hold.count(m.id) && g_hold[m.id].on) std::snprintf(anim, sizeof(anim), "its own (a restrain hold)");
+    else if (m.slot >= 0) std::snprintf(anim, sizeof(anim), "the %s's pose in slot %d (newest %.0f ms ago)", owner, m.slot, pose_age);
+    else std::snprintf(anim, sizeof(anim), "its own idle (no pose slot; the %s poses it: %d)", owner, (st & ewire::kPosed) ? 1 : 0);
+    Log("[enemy] mirror %s id=%05X err %.1f m (teleports %u in 5 s, held %.1f s): %s state 0x%02X (realized %d hidden %d dead %d defeat %u), phase %u (%s), bits "
+        "0x%02X, %s in vehicle %d, %s seq %d (frame age %.0f ms); here realized %d, held %d, in vehicle %d (%s), parent %s, anim %s; ea4 0x%X a88 0x%X",
+        head, m.id, err, m.tp5, (now - m.t_frozen) / 1000.0, owner, st, (st & ewire::kRealized) ? 1 : 0, (st & ewire::kHidden) ? 1 : 0, (st & ewire::kDead) ? 1 : 0,
+        ewire::DefeatOfState(st), ph, erules::PhaseText(ph), fl, owner, (fl & ewire::kInVehicle) ? 1 : 0, owner, (st & ewire::kSeqHeld) ? 1 : 0,
+        z ? now - t->second.rx_ms : -1.0, same && a.realized ? 1 : 0, same && a.held ? 1 : 0, m.veh != erules::VehTest::none ? 1 : 0, erules::VehTestText(m.veh),
+        parent ? (pn ? pn : "?") : "none", anim, same ? a.ea4 : 0, same ? a.a88 : 0);
+}
+// One frozen mirror driven to its owner's place (either game: P1b's host follows the guest's). True: it does not hold that place
+// (erules::NotHolding, enemy_mirror_hold_check; the error measured before this tick's writes): nothing written this tick.
+bool DriveMirror(Mirror& m, const ActorNow& a, const double (&pos)[3], float yaw, double now) {
     const double err = Dist3(pos, a.pos);
     const double yerr = erules::YawDiffDeg(yaw, YawOfXf(a.xf));
     if (now >= m.next_err) m.next_err = now + 500, g_err_win.push_back(err), m.err = err;
+    if (err > m.err_max5) m.err_max5 = err;
+    // round 23 B: the first error over 20 m of each id (one full line), then the not-holding rule
+    if (erules::MirrorFirstFull(err, g_over20.count(m.id) != 0)) {
+        g_over20.insert(m.id);
+        ++g_mb.over20;
+        MirrorDiag("first over 20 m", m, err, now);
+    }
+    if (erules::NotHolding(g_ecfg.enemy_mirror_hold_check, err, m.tp.Within(now, erules::kNotHoldWindowMs))) {
+        if (!m.own || !m.nothold_logged) MirrorDiag("not holding", m, err, now);
+        if (m.own) m.nothold_logged = true;  // the host's follower: logged only (never given back here: its owner is her game)
+        else return true;
+    }
     erules::Drive d = erules::Band(err, yerr, now, m.last_tp);
     if (g_tp_cadence == 3 && now - m.last_tp >= 500) d = erules::Drive::teleport;
     const WorldTransform xf = XfFromYaw(a.xf, pos, yaw);
@@ -1556,9 +1849,10 @@ void DriveMirror(Mirror& m, const ActorNow& a, const double (&pos)[3], float yaw
         if (ActorXf(m.actor, kVtSet, xf) && EntityXf(m.entity, xf)) ++g_gs.sets, ++g_sets_win;
         else ++g_gs.set_faults;
     } else if (d == erules::Drive::teleport) {
-        if (ActorXf(m.actor, kActorTeleport, xf)) ++g_gs.teleports, ++g_tp_win, m.last_tp = now;
+        if (ActorXf(m.actor, kActorTeleport, xf)) ++g_gs.teleports, ++g_tp_win, m.last_tp = now, m.tp.Note(now), ++m.tp5;
         else ++g_gs.set_faults;
     }
+    return false;
 }
 // The 5 s mirrors line (either game).
 void MirrorLine(double now) {
@@ -1578,6 +1872,25 @@ void MirrorLine(double now) {
             g_err_win.size(), g_sets_win / 5.0, g_tp_win, posed, posed ? applies / 5.0 / posed : 0.0, g_gs.no_pose, nof, g_gs.far_placed, Pct(g_drift, 0.5),
             Pct(g_drift, 0.95), g_drift.size(), g_tracks.size());
     }
+    // round 23 B: the worst mirror while the window's p95 is above 5 m (log only)
+    if (!g_err_win.empty() && erules::MirrorWorstDue(Pct(g_err_win, 0.95))) {
+        const Mirror* w = nullptr;
+        for (const Mirror& m : g_mirrors)
+            if (m.frozen && (!w || m.err_max5 > w->err_max5)) w = &m;
+        if (w) ++g_mb.worst, MirrorDiag("worst", *w, w->err_max5, now);
+    }
+    for (Mirror& m : g_mirrors) m.err_max5 = 0, m.tp5 = 0;
+    g_err_30.insert(g_err_30.end(), g_err_win.begin(), g_err_win.end());
+    if (now >= g_sum_next) {
+        const bool first = g_sum_next == 0;
+        g_sum_next = now + erules::kMirrorSummaryMs;
+        if (!first && (!g_err_30.empty() || !g_nothold.empty() || g_mb.nothold || g_mb.vehicle))
+            Log("[enemy] mirror error p50 %.2f p95 %.2f max %.2f m (n %zu samples in 30 s, %zu mirrors now; worst lines %u, first over 20 m %u; not holding: %zu hidden "
+                "now, %u in all, %u retries; vehicle releases %u)",
+                Pct(g_err_30, 0.5), Pct(g_err_30, 0.95), g_err_30.empty() ? 0.0 : *std::max_element(g_err_30.begin(), g_err_30.end()), g_err_30.size(),
+                g_mirrors.size(), g_mb.worst, g_mb.over20, g_nothold.size(), g_mb.nothold, g_mb.retries, g_mb.vehicle);
+        g_err_30.clear();
+    }
     g_err_win.clear(), g_drift.clear();
     g_sets_win = g_tp_win = 0;
     g_gs.no_pose = 0;
@@ -1594,11 +1907,30 @@ void GuestTick(const TickIn& in, double now, bool off, const char* off_why) {
     if (g_holding) return;  // nothing driven, posed or posted
     if (!g_dead_hidden.empty()) UnhideDead(off, off ? off_why : "the host's is alive again");
     if (!g_host_hid.empty()) UnhideHostHidden(off, off ? off_why : "", now);
+    // round 23 B: the 5 s retry (and the off unhide); round 23 review: not while the host's Sam is down (shown then, the entry would
+    // refuse it and leave a live MULE beside her)
+    if (!g_nothold.empty()) {
+        if (erules::NotHoldUnhideNow(false, DownOn())) {
+            g_down_nothold_logged = false;
+            UnhideNotHolding(off, off ? off_why : "", now);
+        } else if (!g_down_nothold_logged) {
+            g_down_nothold_logged = true;
+            Log("[enemy] down hold: %zu not-holding copies stay hidden and asleep here until the host's Sam is back (no 5 s retry meanwhile)", g_nothold.size());
+        }
+    }
     if (off || !have_sam) {
+        // round 23 review: sync off (the host's reload after his death turns the gate off) or no local Sam while the host's Sam is
+        // down: every frozen copy kept frozen as it is (held, or hidden by the hold), never given back alive
+        if (erules::DownKeepsOff(g_ecfg.enemy_down_hold, g_peer_down, true)) {
+            DownKeep(off ? off_why : "no local Sam");
+            return;
+        }
+        g_down_kept = false;
         if (!g_mirrors.empty()) ReleaseAll(off ? off_why : "no local Sam");
         if (off) RestoreFar(off_why);
         return;
     }
+    g_down_kept = false;
     if (now >= g_local_next) {
         g_local_next = now + 500;
         WalkEnemies(g_local);
@@ -1632,6 +1964,16 @@ void GuestTick(const TickIn& in, double now, bool off, const char* off_why) {
         l.dist_m = have_target ? Dist3(pos, sam) : 0;
         l.cls = erules::ClassOf(l.dist_m, g_ecfg.enemy_mirror_radius);
         l.radius_m = g_ecfg.enemy_mirror_radius;
+        // round 23 B (enemy_mirror_vehicle): our copy tested every 1 s, the owner's by its newest SEN1 entry
+        if (g_ecfg.enemy_mirror_vehicle) {
+            if (same && now >= m.veh_next) {
+                m.veh_next = now + erules::kVehicleCheckMs;
+                m.veh = a.realized ? VehicleOf(m.id, m.actor, a.entity, &m.veh_e20, &m.veh_seat) : erules::VehTest::none;
+            }
+            l.vehicle_check = true;
+            l.in_vehicle_here = m.veh != erules::VehTest::none;
+            l.in_vehicle_host = it != g_tracks.end() && it->second.Newest() && (it->second.Newest()->flags & ewire::kInVehicle);
+        }
         const erules::LeaseVerdict v = erules::Lease(l);
         if (v == erules::LeaseVerdict::forget_taken) {
             ++g_gs.taken;
@@ -1641,9 +1983,36 @@ void GuestTick(const TickIn& in, double now, bool off, const char* off_why) {
             Log("[enemy] lease released id=%05X: taken (a game sequence cleared bit 14: forgotten, nothing posted; ea4 0x%X)", m.id, a.ea4);
             continue;
         }
+        // round 23 C (enemy_down_hold; docs/enemy-sync.md 14.9): the host's Sam is down: near ones held frozen in their last pose (no
+        // place, no pose, no posts), never posed ones and far down ones hidden here (kept frozen), never given back alive
+        if (g_peer_down && !IsOwnedHere(m.id)) {
+            erules::DownIn d;
+            d.posed = m.slot >= 0 || m.posed_once;
+            d.hidden_here = same && (a.a88 & 3u) && !g_down_hid.count(m.id);
+            d.defeat = ecombat::GuestDefeat(m.id);
+            d.dist_m = same && a.have_xf ? Dist3(a.pos, sam) : -1;
+            d.radius_m = g_ecfg.enemy_down_hold_radius;
+            const erules::DownAct act = erules::DownLease(g_ecfg.enemy_down_hold, true, v, d);
+            if (act == erules::DownAct::hold) {
+                if (g_down_held.insert(m.id).second) ++g_ds.holds;
+                continue;
+            }
+            if (act == erules::DownAct::hide) {
+                g_down_held.erase(m.id);
+                if (same) DownHideMirror(m.id, m.actor, d.dist_m >= 0 && d.dist_m > d.radius_m ? "far and down on the host while the host's Sam is down" : "never posed while the host's Sam is down");
+                continue;
+            }
+        }
+        g_down_held.erase(m.id);
+        DownUnhideMirror(m.id, "the usual rules again");  // (only one we hid: a far standing one, or the hold turned off)
         if (erules::Releases(v)) {
             if (v == erules::LeaseVerdict::release_host_unrealized || v == erules::LeaseVerdict::release_host_hidden || v == erules::LeaseVerdict::release_host_far)
                 ++g_gs.host_released;
+            if (v == erules::LeaseVerdict::release_vehicle) {
+                ++g_mb.vehicle;
+                Log("[enemy] mirror id=%05X in a vehicle (%s; our test: %s, +0xE20 0x%X seat %d): released to its own game until vehicles are synced", m.id,
+                    erules::VehicleSideText(l.in_vehicle_here, l.in_vehicle_host), erules::VehTestText(m.veh), m.veh_e20, m.veh_seat);
+            }
             const std::uintptr_t actor = m.actor;
             const std::uint32_t id = m.id;
             // M0's hide (enemy_host_hide): only once the release really posted (its weapon flag restored first); a release a
@@ -1653,7 +2022,16 @@ void GuestTick(const TickIn& in, double now, bool off, const char* off_why) {
             continue;
         }
         if (!have_target || !a.have_xf) continue;
-        DriveMirror(m, a, pos, yaw, now);
+        if (HoldTick(m, now)) continue;  // round 23: a tie-up shown by the copy's own animation (no writes while held)
+        if (DriveMirror(m, a, pos, yaw, now)) {
+            // round 23 B: not holding the host's place: given back, then hidden and asleep (M0's hide, never a statue), retried in 5 s
+            ++g_mb.nothold;
+            const std::uintptr_t actor = m.actor;
+            const std::uint32_t id = m.id;
+            const bool posted = ReleaseMirror(m, "not holding (the host's place, after 3 teleports in 2 s)");
+            if (posted && same) HideNotHolding(id, actor, now);
+            continue;
+        }
         GivePose(m, it->second, render, it->second.Newest() && (it->second.Newest()->state & ewire::kPosed));
     }
     if (changed) PublishMirrors();
@@ -1663,7 +2041,7 @@ void GuestTick(const TickIn& in, double now, bool off, const char* off_why) {
     unsigned tries = 0;
     for (const auto& kv : g_tracks) {
         if (tries >= 4) break;
-        if (FindMirror(kv.first) || IsOwnedHere(kv.first)) continue;
+        if (FindMirror(kv.first) || IsOwnedHere(kv.first) || g_nothold.count(kv.first)) continue;  // (round 23 B: hidden as not holding)
         const erules::Sample* z = kv.second.Newest();
         if (!z || now - kv.second.rx_ms > erules::FreshMs(erules::Class::near10) || Dist3(z->pos, sam) > g_ecfg.enemy_mirror_radius) continue;
         ++tries;
@@ -1837,6 +2215,8 @@ struct GuestRec {
     float vel[3] = {};
     bool have_pos = false;
     std::uint8_t last_phase = 0xFF;  // logged on change
+    erules::VehTest veh = erules::VehTest::none;  // round 23 B: in a vehicle (every 1 s; her SEN1 kInVehicle)
+    double veh_next = 0;
 };
 std::map<std::uint32_t, GuestRec> g_gown;
 
@@ -2315,7 +2695,7 @@ void HostAck(const ewire::Own& o, double now) {
     HostBackDone(o.id, r, (o.flags & ewire::kOwnHasPlace) ? o.pos : nullptr, o.yaw, o.phase, "her OWNACK", HerState(o.id));
 }
 // The host's followers: frozen copies driven and posed from her frames; far followers (unrealized here) placed at 2 Hz.
-void HostFollow(double now) {
+void HostFollow(double now, const double* hs) {
     const double render = g_clock.Render(now);
     bool changed = false;
     for (Mirror& m : g_mirrors) {
@@ -2340,13 +2720,67 @@ void HostFollow(double now) {
             Log("[enemy] OWN id=%05X: a game sequence took the host's copy (bit 14 cleared, ea4 0x%X): given back to the host", m.id, a.ea4);
             continue;
         }
+        // round 23 C (enemy_down_hold; docs/enemy-sync.md 14.9): her Fragile is down: near ones held frozen in their last pose (no
+        // guard, no place, no pose), never posed ones and far down ones hidden here by the follower guard's table (shown again when
+        // she is back, or at any return); never handed back alive meanwhile (DownFreezesOwnership)
+        if (DownOn()) {
+            const auto t0 = g_tracks.find(m.id);
+            const erules::Sample* z0 = t0 != g_tracks.end() ? t0->second.Newest() : nullptr;
+            erules::DownIn d;
+            d.posed = m.slot >= 0 || m.posed_once;
+            d.hidden_here = (a.a88 & 3u) && !g_fhid.count(m.id);
+            d.defeat = z0 ? ewire::SenDefeat(z0->state) : 0;
+            const double hp[3] = {hs ? hs[0] : 0.0, hs ? hs[1] : 0.0, hs ? hs[2] : 0.0};
+            d.dist_m = hs && a.have_xf ? Dist3(a.pos, hp) : -1;
+            d.radius_m = g_ecfg.enemy_down_hold_radius;
+            const erules::DownAct act = erules::DownHold(d);
+            if (act == erules::DownAct::hold) {
+                if (g_down_held.insert(m.id).second) ++g_ds.holds;
+                continue;
+            }
+            if (act == erules::DownAct::hide) {
+                g_down_held.erase(m.id);
+                if (!g_fhid.count(m.id)) {
+                    FollowHid h;
+                    h.actor = m.actor, h.pre = (a.a88 & 1u) != 0;
+                    const bool ok = h.pre || ActorBool(m.actor, kVtHidden, 1);
+                    g_fhid[m.id] = h;
+                    g_down_fhid.insert(m.id);
+                    ++g_ds.hides;
+                    Log("[enemy] down hold id=%05X: the host's follower hidden here, kept frozen (%s while her Fragile is down; a88 0x%X%s)", m.id,
+                        d.dist_m > d.radius_m ? "far and down there" : "never posed", a.a88, ok ? "" : ", the call FAULTED");
+                }
+                continue;
+            }
+        }
+        g_down_held.erase(m.id);
+        if (g_down_fhid.erase(m.id)) FollowerShow(m.id, "the usual rules again (far and standing)");
         if (rit != g_hown.end()) FollowerGuardTick(m.id, m.actor, a, rit->second.t_rx, now);
         const auto it = g_tracks.find(m.id);
+        // round 23 B (enemy_mirror_vehicle): the host's follower or her copy in a vehicle: given back to the host's game (that member
+        // only; out of its camp's takes for 15 s, tested again then) until vehicles are synced
+        if (g_ecfg.enemy_mirror_vehicle && rit != g_hown.end() && now >= m.veh_next) {
+            m.veh_next = now + erules::kVehicleCheckMs;
+            const erules::VehTest was = m.veh;
+            m.veh = VehicleOf(m.id, m.actor, a.entity, &m.veh_e20, &m.veh_seat);
+            if (m.veh != was) NoteVehicle(m.id, "the host's follower", was, m.veh, m.veh_e20, m.veh_seat);
+            const bool hers = it != g_tracks.end() && it->second.Newest() && (it->second.Newest()->flags & ewire::kInVehicle);
+            const bool here = m.veh != erules::VehTest::none;
+            if ((here || hers) && rit->second.e.owner == erules::Owner::guest && !rit->second.e.pending && !DownFreeze()) {  // (round 23 C)
+                ++g_mb.vehicle;
+                g_no_take[m.id] = now + erules::kCampHoldMs;
+                Log("[enemy] follower id=%05X in a vehicle (%s; our test: %s, +0xE20 0x%X seat %d): given back to the host's game until vehicles are synced "
+                    "(out of its camp's takes %.0f s)", m.id, erules::VehicleSideText(here, hers), erules::VehTestText(m.veh), m.veh_e20, m.veh_seat,
+                    erules::kCampHoldMs / 1000.0);
+                HostBackStart(m.id, rit->second, erules::OwnReason::forced, true, now);
+            }
+        }
         if (it == g_tracks.end()) continue;
         double pos[3];
         float yaw = 0;
         if (!it->second.At(render, pos, &yaw) || !a.have_xf) continue;
-        DriveMirror(m, a, pos, yaw, now);
+        if (HoldTick(m, now)) continue;  // round 23 (the host's tie-up of her owned one)
+        DriveMirror(m, a, pos, yaw, now);  // (not holding: logged only here; her game owns it)
         GivePose(m, it->second, render, it->second.Newest() && (it->second.Newest()->state & ewire::kPosed));
     }
     if (changed) {
@@ -2433,7 +2867,8 @@ void HostOwnReset(const char* why, bool announce, bool world_gone) {
 // A host-owned member a take would hand over: standing, free and shown here, not on the no-take list (her split refusals).
 bool HostTakeable(const HostEnemy& h, double now) {
     const bool down = h.now.dead || ecombat::HostDefeat(h.id) != 0;
-    if (down || h.now.seq_only || h.now.held || (h.now.realized && (h.now.hidden_or_asleep || InVehicle(h.now.entity)))) return false;
+    // (round 23 B: the walk's 1 s in-vehicle test too: the ride fields)
+    if (down || h.now.seq_only || h.now.held || (h.now.realized && (h.now.hidden_or_asleep || InVehicle(h.now.entity) || h.veh != erules::VehTest::none))) return false;
     return !NoTake(h.id, now);
 }
 void CampTake(std::uint64_t key, CampRec& cr, const std::vector<const HostEnemy*>& ms, const erules::CampIn& ci, erules::OwnReason why, double now,
@@ -2554,6 +2989,9 @@ void CampHostTick(double now, const double (&guest_in)[3], bool have_guest_in, c
     for (const auto& kv : g_hown) any_pending = any_pending || kv.second.e.pending;
     const bool carry_ok = g_camp_carry && ecombat::CarryReady();
     const double range = g_ecfg.enemy_mirror_radius + erules::kOwnRangeSlackM;
+    // round 23 C (docs/enemy-sync.md 14.9): either player down: no take, no back, no forced back (critique R7c: no OWN hand-over)
+    const bool down_freeze = DownFreeze();
+    unsigned down_kept = 0;
     bool took = false;
     std::uint64_t near_key = 0;
     double near_d = 1e18;
@@ -2571,7 +3009,7 @@ void CampHostTick(double now, const double (&guest_in)[3], bool have_guest_in, c
         if (ag.hers == 0 && ag.pend == 0 && (!have_guest || ci.d_g > erules::kCampEngageMaxM + 20.0) && !g_camps.count(key)) continue;
         CampRec& cr = g_camps[key];
         ci.cp_phase = (key >> 32) == 1 ? CampPhaseOf(ms.front()->actor) : erules::kPhaseUnknown;
-        ci.guest_ok = !g_guest_cut && g_refuse_times.size() < 3;
+        ci.guest_ok = !g_guest_cut && g_refuse_times.size() < 3 && !down_freeze;
         ci.host_ok = !host_cut && guard_ready;
         ci.hold_over = now >= cr.hold_until;
         ci.guest_owned = guest_owned;
@@ -2582,6 +3020,7 @@ void CampHostTick(double now, const double (&guest_in)[3], bool have_guest_in, c
         ci.outcomes_ok = carry_ok;
         erules::OwnVerdict v = erules::CampDecide(ci);
         if (cr.force_take && ci.owner == erules::Owner::host && !ci.pending && !took) v = {erules::OwnAct::take, erules::OwnReason::forced};
+        if (down_freeze && v.act != erules::OwnAct::none) v = {erules::OwnAct::none, v.reason}, ++down_kept;
         cr.last = ci, cr.v = v, cr.n = ci.members, cr.hers = ag.hers;
         if (v.act == erules::OwnAct::take) {
             CampTake(key, cr, ms, ci, v.reason, now, guest, have_guest, hs, have_host);
@@ -2589,7 +3028,7 @@ void CampHostTick(double now, const double (&guest_in)[3], bool have_guest_in, c
             any_pending = true;
         } else if (v.act == erules::OwnAct::back || v.act == erules::OwnAct::forced_back) {
             CampBack(key, cr, ms, ci, v, now);
-        } else if (ag.hers && !took && erules::CampStragglerOk(ci) && CampStraggler(key, ms, now, guest, have_guest, hs, have_host)) {
+        } else if (ag.hers && !took && !down_freeze && erules::CampStragglerOk(ci) && CampStraggler(key, ms, now, guest, have_guest, hs, have_host)) {
             took = true;
             any_pending = true;
         } else if (ag.hers && !ci.pending && now >= cr.kept_next) {
@@ -2621,6 +3060,10 @@ void CampHostTick(double now, const double (&guest_in)[3], bool have_guest_in, c
         ci.outcomes_ok = carry_ok;
         const erules::OwnVerdict v = erules::CampDecide(ci);
         if (v.act != erules::OwnAct::back && v.act != erules::OwnAct::forced_back) continue;
+        if (down_freeze) {
+            ++down_kept;
+            continue;
+        }
         r.forced = false, r.d_g = ci.d_g, r.d_h = ci.d_h;
         HostBackStart(kv.first, r, v.reason, v.act == erules::OwnAct::forced_back, now);
         cr.hold_until = now + erules::kCampHoldMs, cr.t_change = now;
@@ -2628,12 +3071,24 @@ void CampHostTick(double now, const double (&guest_in)[3], bool have_guest_in, c
         Log("[enemy] OWN id=%05X not in the host's view: -> host (%s, guest %.1f m, silence %.1f s)", kv.first, erules::OwnReasonText(v.reason), ci.d_g,
             ci.silence_ms / 1000.0);
     }
+    if (down_kept && now >= g_down_own_next) {
+        g_down_own_next = now + 10000;
+        g_ds.no_change += down_kept;
+        Log("[enemy] down hold: %u ownership change(s) not made (%s down: no hand-over until both are back; every 10 s)", down_kept,
+            g_our_down && g_peer_down ? "both players" : g_our_down ? "our Sam" : "her Fragile");
+    }
     // the nearest blocked camp's reason (changed, or every 10 s while one is within its engage distance)
     if (near_key && near_why && (near_key != g_cnt_key || near_why != g_cnt_why || now >= g_cnt_next)) {
         g_cnt_key = near_key, g_cnt_why = near_why, g_cnt_next = now + 10000;
-        Log("[enemy] camp: no take %s (n=%u, guest %.1f m, host %.1f m, r %.0f m, engage %.0f m, margin %.0f m, loaded %d, phase %u, camp %u, hold %.1f s): %s",
-            CampName(near_key), near_in.members, near_in.d_g, near_in.d_h, near_in.r, erules::CampEngage(near_in.r), erules::CampMargin(near_in.r),
-            near_in.host_loaded ? 1 : 0, near_in.phase, near_in.cp_phase, (std::max)(0.0, (g_camps[near_key].hold_until - now) / 1000.0), near_why);
+        // round 23 B (design 7.4): the margin reason names this camp's own H and how much farther the host is
+        char md[160] = "";
+        const double h = erules::CampMargin(near_in.r);
+        if (std::strcmp(near_why, "the host not its margin farther") == 0)
+            std::snprintf(md, sizeof(md), " (the host %.1f m farther than her; this camp's margin H = clamp(0.3 x %.0f + 10, 15, 40) = %.0f m)",
+                          near_in.d_h >= 0 ? near_in.d_h - near_in.d_g : -1.0, near_in.r, h);
+        Log("[enemy] camp: no take %s (n=%u, guest %.1f m, host %.1f m, r %.0f m, engage %.0f m, margin %.0f m, loaded %d, phase %u, camp %u, hold %.1f s): %s%s",
+            CampName(near_key), near_in.members, near_in.d_g, near_in.d_h, near_in.r, erules::CampEngage(near_in.r), h,
+            near_in.host_loaded ? 1 : 0, near_in.phase, near_in.cp_phase, (std::max)(0.0, (g_camps[near_key].hold_until - now) / 1000.0), near_why, md);
     }
     if (g_camps.size() > 512) {
         for (auto it = g_camps.begin(); it != g_camps.end();) it = it->second.hers || now < it->second.hold_until ? std::next(it) : g_camps.erase(it);
@@ -2644,7 +3099,7 @@ void OwnHostTick(const TickIn& in, double now, const double (&guest)[3], bool ha
     double hs[3] = {};
     const bool have_host = in.local_ok && LocalPlace(in.local, hs);
     GuestDrain(now);  // her SEN1 / SEP1 (the enemies she owns)
-    HostFollow(now);
+    HostFollow(now, have_host ? hs : nullptr);
     // a back whose OWNACK did not come: released anyway from her newest frame
     for (auto& kv : g_hown) {
         HostRec& r = kv.second;
@@ -2848,6 +3303,15 @@ void OwnGuestTick(const TickIn& in, double now) {
             if (!ReadActor(r.actor, kv.first, a)) continue;
             if (a.realized && a.entity != r.entity) r.entity = a.entity, entities_changed = true;
             if (a.realized) NoteVitals(a.entity, r.have_base, r.base_h, r.base_s, r.damaged);
+            if (g_ecfg.enemy_mirror_vehicle && now >= r.veh_next) {
+                // round 23 B: every 1 s (her SEN1's kInVehicle: the host gives the member back while it is seated)
+                r.veh_next = now + erules::kVehicleCheckMs;
+                std::uint32_t e20 = erules::kVehicleIdNone;
+                std::int32_t seat = -1;
+                const erules::VehTest was = r.veh;
+                r.veh = a.realized ? VehicleOf(kv.first, r.actor, a.entity, &e20, &seat) : erules::VehTest::none;
+                if (r.veh != was) NoteVehicle(kv.first, "her owned", was, r.veh, e20, seat);
+            }
             if (const std::uint8_t ph = PhaseOf(r.actor); ph != r.last_phase) {
                 if (r.last_phase != 0xFF)
                     Log("[enemy] owned id=%05X phase %u -> %u (%s; its camp %u; weapon268 %d)", kv.first, r.last_phase, ph, erules::PhaseText(ph), CampPhaseOf(r.actor),
@@ -2901,7 +3365,8 @@ void OwnGuestTick(const TickIn& in, double now) {
                                             (same ? ewire::DefeatBits(static_cast<std::uint8_t>(erules::OutcomeOf(U32(r.actor + 0xEA0), a.ea4))) : 0));
         e.phase = same ? PhaseOf(r.actor) : erules::kPhaseUnknown;
         const double sp = std::sqrt(static_cast<double>(r.vel[0]) * r.vel[0] + static_cast<double>(r.vel[1]) * r.vel[1]);
-        e.flags = static_cast<std::uint8_t>(ewire::kOwnerGuest | (sp > 0.2 ? ewire::kMoving : 0) | (r.damaged ? ewire::kDamaged : 0));
+        e.flags = static_cast<std::uint8_t>(ewire::kOwnerGuest | (sp > 0.2 ? ewire::kMoving : 0) | (r.damaged ? ewire::kDamaged : 0) |
+                                            (r.veh != erules::VehTest::none ? ewire::kInVehicle : 0));
         for (int k = 0; k < 3; ++k) e.pos[k] = r.last_pos[k], e.vel[k] = r.vel[k];
         e.yaw = same && a.have_xf ? YawOfXf(a.xf) : 0.0f;
         ++f.n;
@@ -3103,6 +3568,11 @@ void Stop(const char* step) {
     Log("[enemy] FAULT in %s: enemy sync stopped", step);
     UnhideDead(true, "a fault");
     UnhideHostHidden(true, "a fault", 0);  // (review r20 enemy 1: Tick never reaches GuestTick again)
+    UnhideNotHolding(true, "a fault", 0);  // round 23 review: the not-holding copies too (GuestTick's retry never runs again)
+    g_nothold_n.clear();
+    DownResume("a fault");  // round 23 C
+    g_peer_down = g_our_down = 0;
+    shots::SetPlayerDown(0);
     OwnHardReset("a fault", false, false, false);
     ReleaseAll("fault");
     RestoreFar("fault");
@@ -3110,6 +3580,136 @@ void Stop(const char* step) {
     g_mirroring = false;
     shots::SetEnemyShots(0);
     shots::SetEnemyBeacon(0, 0, 0, 0, 0);
+}
+
+// ---- round 23 C (enemy_down_hold; docs/enemy-sync.md 14.9): a player down (death or KnotSpace). Ours read from the game state
+// (GameOver or KnotSpace; a faint never counts), latched (back after 1 s of not down), told to the partner in our SEH1 beacon
+// (byte 22: only to a partner that advertises kPartRestrain). The partner's from its beacon, or the enemy_sync 9 fake (hidden runs).
+const char* DownWho(bool ours) {
+    const int role = g_role.load();
+    return (role == 1) == ours ? "host Sam" : "guest Fragile";
+}
+const char* DownNoun() { return g_role.load() == 1 ? "followers" : "mirrors"; }
+unsigned DownHiddenNow() {
+    unsigned n = static_cast<unsigned>(g_down_hid.size());
+    for (const std::uint32_t id : g_down_fhid) n += g_fhid.count(id) ? 1u : 0u;
+    return n;
+}
+// The partner back (or the hold ended): every copy we hid shown again, the held ones driven again from the next tick.
+unsigned DownResume(const char* why) {
+    unsigned shown = 0;
+    while (!g_down_hid.empty()) shown += DownUnhideMirror(g_down_hid.begin()->first, why) ? 1u : 0u;
+    for (const std::uint32_t id : g_down_fhid) {
+        if (!g_fhid.count(id)) continue;
+        FollowerShow(id, why);
+        ++shown;
+    }
+    g_down_fhid.clear();
+    g_down_held.clear();
+    g_down_kept = false;
+    return shown;
+}
+// A world change: that world's actors are gone (an address and id can repeat after a reload): forgotten, never touched. The hold ends
+// (a partner still down is seen again from its beacon next tick: no new mirror meanwhile).
+void DownForget(const char* why) {
+    if (g_peer_down || !g_down_hid.empty() || !g_down_held.empty())
+        Log("[enemy] down hold ended: %s (%zu held, %zu hidden forgotten)", why, g_down_held.size(), g_down_hid.size());
+    g_down_hid.clear(), g_down_held.clear(), g_down_fhid.clear();
+    g_peer_down = 0;
+    g_down_kept = false;
+}
+// The announce line once the first pass under the hold has run (GuestTick / HostFollow this tick).
+bool g_down_announce = false;
+const char* g_down_src = "";
+void DownAnnounce() {
+    g_down_announce = false;
+    unsigned usual = 0;
+    const bool host = g_role.load() == 1;
+    for (const Mirror& m : g_mirrors)
+        if (m.frozen && m.own == host && !g_down_held.count(m.id) && !g_down_hid.count(m.id) && !g_down_fhid.count(m.id)) ++usual;
+    Log("[enemy] %s down (%s; %s): holding %zu %s, hiding %u (%u far and standing under the usual rules; radius %.0f m; no new %s, no ownership change "
+        "until back)", DownWho(false), erules::PlayerDownText(g_peer_down), g_down_src, g_down_held.size(), DownNoun(), DownHiddenNow(), usual,
+        g_ecfg.enemy_down_hold_radius, host ? "take" : "mirror");
+}
+void DownTick(double now, bool have_peer, const shotw::Beacon& peer) {
+    const int role = g_role.load();
+    if (role != 1 && role != 2) {
+        if (g_peer_down || g_our_down) {
+            const unsigned shown = DownResume("no partner role");
+            Log("[enemy] down hold ended: no co-op role (shown again %u)", shown);
+        }
+        g_peer_down = g_our_down = 0;
+        g_our_latch.Reset();
+        shots::SetPlayerDown(0);
+        return;
+    }
+    // ours
+    std::uint64_t flags = 0;
+    std::uint32_t mask = 0;
+    const std::uint8_t raw = game::ReadStopGates(&flags, &mask) ? erules::DownOfState(flags) : std::uint8_t{0};
+    const std::uint8_t latched = g_our_latch.Step(raw, now);
+    const std::uint8_t ours = g_our_fake >= 0 ? static_cast<std::uint8_t>(g_our_fake) : latched;
+    const std::uint8_t carried = shots::SetPlayerDown(ours);
+    if (ours != g_our_down) {
+        if (ours)
+            Log("[enemy] our %s down (%s%s): told the partner in our beacon%s", role == 1 ? "Sam" : "Fragile", erules::PlayerDownText(ours),
+                g_our_fake >= 0 ? "; enemy_sync 9 fake" : "", carried == ours ? "" : " (not sent: the partner's build or settings cannot take it)");
+        else
+            // round 23 F: a cleared fake (its codes are the test ones) is no "1 s not down"
+            Log("[enemy] our %s back (%s): told the partner", role == 1 ? "Sam" : "Fragile",
+                g_our_down == static_cast<std::uint8_t>(erules::PlayerDown::test_down) || g_our_down == static_cast<std::uint8_t>(erules::PlayerDown::test_limbo)
+                    ? "enemy_sync 9 fake cleared"
+                    : "1 s not down");
+        g_our_down = ours;
+    }
+    // a frozen copy we hid that is no frozen mirror any more (taken by a game sequence, handed over): shown again
+    for (auto it = g_down_hid.begin(); it != g_down_hid.end();) {
+        const Mirror* m = FindMirror(it->first);
+        if (m && m->frozen) {
+            ++it;
+            continue;
+        }
+        const std::uint32_t id = it->first;
+        ++it;
+        DownUnhideMirror(id, "no longer a frozen mirror here");
+    }
+    // the partner's
+    // (review: no beacon, none yet or none for 20 s, keeps the code in force: "unknown", never "back")
+    const std::uint8_t pd = erules::PeerDownNow(g_peer_fake, have_peer, peer.player_down, g_peer_down);
+    if (!have_peer && g_peer_fake < 0 && g_peer_down && !g_down_nobeacon_logged) {
+        g_down_nobeacon_logged = true;
+        Log("[enemy] %s down, and no beacon from the partner now: the hold kept (no beacon is no \"back\")", DownWho(false));
+    } else if (have_peer) {
+        g_down_nobeacon_logged = false;
+    }
+    const erules::DownChange ch = erules::DownStep(g_peer_down, pd);
+    if (ch == erules::DownChange::none) return;
+    g_down_src = g_peer_fake >= 0 ? "enemy_sync 9 fake" : have_peer ? "its beacon" : "no beacon";
+    if (ch == erules::DownChange::back) {
+        const unsigned held = static_cast<unsigned>(g_down_held.size());
+        const unsigned shown = DownResume(role == 1 ? "her Fragile is back" : "the host's Sam is back");
+        g_peer_down = 0;
+        g_down_announce = false;
+        ++g_ds.resumed;
+        if (g_ecfg.enemy_down_hold)
+            Log("[enemy] %s back: resuming %u (held %u, shown again %u; down %.1f s; %s)", DownWho(false), held + shown, held, shown, (now - g_down_t0) / 1000.0,
+                g_down_src);
+        else
+            Log("[enemy] %s back (%s; enemy_down_hold=0)", DownWho(false), g_down_src);
+        return;
+    }
+    if (ch == erules::DownChange::down) g_down_t0 = now, ++g_ds.downs;
+    g_peer_down = pd;
+    if (!g_ecfg.enemy_down_hold) {
+        Log("[enemy] %s down (%s; %s): enemy_down_hold=0, the old rules (its copies given back to their own game)", DownWho(false), erules::PlayerDownText(pd),
+            g_down_src);
+        return;
+    }
+    if (ch == erules::DownChange::reason) {
+        Log("[enemy] %s still down, now %s (%s)", DownWho(false), erules::PlayerDownText(pd), g_down_src);
+        return;
+    }
+    g_down_announce = true;  // logged after this tick's pass (DownAnnounce)
 }
 
 void P1Tick(const TickIn& in, double now) {
@@ -3127,15 +3727,26 @@ void P1Tick(const TickIn& in, double now) {
                                                    ready ? "" : ", not ready", g_gen, gen);
         if (g_own_on || !g_hown.empty() || !g_gown.empty()) OwnHardReset(world_changed ? "a world changed" : "the link changed", world_changed, false, false);
         if (counter != g_world) {
+            DownForget("the world changed");  // round 23 C
             // a new world: the old one's actors are gone (an address and id can repeat after a reload): forgotten, never touched
             // (review r20 enemy 1)
-            if (!g_dead_hidden.empty() || !g_host_hid.empty())
-                Log("[enemy] the world changed: %zu + %zu hidden mirror(s) of the old world forgotten", g_dead_hidden.size(), g_host_hid.size());
+            if (!g_dead_hidden.empty() || !g_host_hid.empty() || !g_nothold.empty())
+                Log("[enemy] the world changed: %zu + %zu + %zu hidden mirror(s) of the old world forgotten", g_dead_hidden.size(), g_host_hid.size(),
+                    g_nothold.size());
             g_dead_hidden.clear(), g_host_hid.clear();
+            g_nothold.clear(), g_nothold_n.clear();  // round 23 review: the not-holding ones too (never touched in the new world)
             g_gs.host_hidden_now = 0;
         } else {
             UnhideDead(true, world_changed ? "the world changed" : "the link changed");
             UnhideHostHidden(true, world_changed ? "the world changed" : "the link changed", now);
+            UnhideNotHolding(true, world_changed ? "the world changed" : "the link changed", now);  // round 23 review
+            const unsigned shown = DownResume(world_changed ? "the world changed" : "the link changed");  // round 23 C
+            if (g_peer_down) Log("[enemy] down hold ended: %s (shown again %u)", world_changed ? "the world changed" : "the link changed", shown);
+            g_peer_down = 0;
+        }
+        if (gen != g_gen) {
+            if (g_peer_fake >= 0 || g_our_fake >= 0) Log("[enemy] enemy_sync 9: the fakes cleared (the link changed)");
+            g_peer_fake = g_our_fake = -1;
         }
         ReleaseAll(world_changed ? "world" : "link");
         if (world_changed) g_far_orig.clear();  // that world's actors: nothing to put back
@@ -3147,6 +3758,8 @@ void P1Tick(const TickIn& in, double now) {
         g_ready_ms = now;
         g_mirroring = false;
     }
+    // round 23 review: the not-holding copies shown and woken again once this game is no guest (link lost: GuestTick no longer runs)
+    if (g_role != 2 && !g_nothold.empty()) UnhideNotHolding(true, "no guest role", now);
     // the fingerprint, once per world (5 s after it is ready)
     if (g_ready && !g_fp_done && now - g_ready_ms >= 5000 && now >= g_next_fp_try) {
         g_next_fp_try = now + 5000;
@@ -3166,6 +3779,7 @@ void P1Tick(const TickIn& in, double now) {
     const erules::Print ours{parts, g_fp_done ? g_count : std::uint16_t{0}, g_fp_done ? g_ids : 0, g_fp_done ? g_guids : 0};
     const erules::Print theirs{peer.parts, peer.enemy_count, peer.ids_fp, peer.guids_fp};
     const erules::FpGate gate = in.net && g_ready && (g_role == 1 || g_role == 2) ? erules::FingerprintGate(ours, theirs, have_peer, age) : erules::FpGate::not_ours;
+    DownTick(now, have_peer, peer);  // round 23 C: ours told, the partner's read (before this tick's pass)
     const bool on = gate == erules::FpGate::on;
     if (gate == erules::FpGate::differ && !g_differ_logged) {
         g_differ_logged = true;
@@ -3193,7 +3807,9 @@ void P1Tick(const TickIn& in, double now) {
         else
             Log("[enemy] sync off: %s", erules::FpGateText(gate));
         if (!on) {
-            ReleaseAll("off");
+            // round 23 review: not while the host's Sam is down on the guest (GuestTick keeps them frozen: DownKeep)
+            if (erules::DownKeepsOff(g_ecfg.enemy_down_hold, g_peer_down, g_role == 2)) DownKeep(erules::FpGateText(gate));
+            else ReleaseAll("off");
             HostReset();
         }
     } else if (!on && gate != g_last_gate && g_ready && in.net) {
@@ -3225,6 +3841,7 @@ void P1Tick(const TickIn& in, double now) {
     } else if (g_role == 2) {
         GuestTick(in, now, !on, gate == erules::FpGate::differ ? "world" : "off");
     }
+    if (g_down_announce) DownAnnounce();  // round 23 C (after this tick's pass)
     if (in.net) OwnFlush();
     OwnLine(now, false);
     if ((g_any_frozen.load() || g_att_drop.load() || g_tgt_drop.load() || shots::MirrorBulletDrops()) && now >= g_att_next) {
@@ -3285,6 +3902,27 @@ bool MirrorChecks() {
     Log("[enemy] mirror byte checks: %u/%u ok%s", ok, n, all ? "" : " (enemy sync off)");
     return all;
 }
+// Round 23 B: the ride fields (+0xE20 the vehicle actor id, +0x3C0 the seat) for enemy_mirror_vehicle's second test. A mismatch turns
+// only that test off (the parent chain stays).
+bool RideChecks() {
+    const Site sites[] = {
+        {kRideSeatSite, "49 8B 45 58 48 85 C0 48 8D 98 C0 03 00 00 49 0F 44 DF 74 18 83 B8 A0 0E 00 00 01", "the ride action's seat (+0x3C0, the +0xEA0 gate)"},
+        {kRideIdSite, "49 8B 46 68 4C 8D B3 68 0A 00 00 48 85 C0 44 89 A3 60 0A 00 00", "the ride action's vehicle id (+0x3C0 + 0xA60 = +0xE20)"},
+        {kActorVehNoneSite, "8B 05 FE 8E 05 02 48 8D 8B 28 0E 00 00 89 83 20 0E 00 00", "the MULE constructor's +0xE20 = none"},
+    };
+    unsigned n = 0, ok = 0;
+    for (const Site& s : sites) {
+        ++n;
+        if (mem::CodeMatches(A(s.va), s.sig)) ++ok;
+        else Log("[enemy] byte check FAILED: %s at 0x%llX (vehicle test)", s.name, static_cast<unsigned long long>(s.va));
+    }
+    ++n;
+    std::uint32_t none = 0;
+    if (mem::Rd(A(kVehIdNoneGlobal), none) && none == erules::kVehicleIdNone) ++ok;
+    else Log("[enemy] byte check FAILED: the none id at 0x%llX is 0x%X, not 0x1FFFFF (vehicle test)", static_cast<unsigned long long>(kVehIdNoneGlobal), none);
+    Log("[enemy] vehicle test byte checks: %u/%u ok%s", ok, n, ok == n ? "" : " (the ride-field test off; the parent chain stays)");
+    return ok == n;
+}
 
 }  // namespace
 
@@ -3316,17 +3954,28 @@ void Install(const Config& config) noexcept {
     if (!g_npc_filter) Log("[enemy] the NPC damage filter is not in (%s): hits on mirrors are not dropped", npcdmg::OffReason());
     Log("[enemy] sync installed: radius %.0f m, poses %d, far placement %d, shots %d (hurt %d, sound %d), guard %d", config.enemy_mirror_radius, config.enemy_pose_count,
         config.enemy_place_far ? 1 : 0, config.enemy_shots ? 1 : 0, config.enemy_shots_hurt ? 1 : 0, config.enemy_shots_sound ? 1 : 0, config.enemy_mirror_guard ? 1 : 0);
+    // round 23 B: the mirror diagnostics (always), the not-holding rule, the in-vehicle test (docs/enemy-sync.md 14.8)
+    g_ride_ok = config.enemy_mirror_vehicle && RideChecks();
+    Log("[enemy] mirror checks (round 23 B): hold check %d (error above %.0f m after %u teleports within %.0f s: given back hidden, retried every %.0f s), vehicle "
+        "test %d (every %.0f s: the parent chain%s; SEN1 kInVehicle; a seated copy on either side given back to its own game); diagnostics: the worst mirror every "
+        "5 s while p95 > %.0f m, one line per id over %.0f m, the error summary every %.0f s",
+        config.enemy_mirror_hold_check ? 1 : 0, erules::kNotHoldErrM, erules::kNotHoldTeleports, erules::kNotHoldWindowMs / 1000.0, erules::kNotHoldRetryMs / 1000.0,
+        config.enemy_mirror_vehicle ? 1 : 0, erules::kVehicleCheckMs / 1000.0, g_ride_ok ? ", then the actor's +0xE20 / +0x3C0" : " only",
+        erules::kMirrorWorstP95M, erules::kMirrorFirstFullM, erules::kMirrorSummaryMs / 1000.0);
     // P1b: ownership by proximity (enemy_owner)
     g_own_want = config.enemy_owner;
     g_camp_carry = config.enemy_owner_outcomes, g_follow_guard = config.enemy_follow_guard, g_relay_want = config.enemy_owner_hits;
     if (g_own_want) {
         g_own_ok = OwnChecks();
         if (!g_own_ok) Log("[enemy] own OFF: byte checks (P1a stays on)");
-        else Log("[enemy] own installed (per camp, P1c): take within %.0f..%.0f m of her (the host %.0f..%.0f m farther and beyond %.0f m; a camp the host has not "
-                 "loaded: her distance only), back beyond engage + %.0f m, the host within %.0f m or %.0f..%.0f m nearer (calm), forced beyond %.0f m, silence %.0f s; "
+        // round 23 B (design 7.4): each camp has its own engage E and margin H (by its spread r); the text names the formulas, and each
+        // camp's line ("camp ... margin H .. m", "no take ... the host .. m farther, its margin H .. m") prints the camp's own numbers
+        else Log("[enemy] own installed (per camp, P1c): take within the camp's engage E = clamp(r + %.0f, %.0f, %.0f) m of her (the host the camp's margin "
+                 "H = clamp(%.1f r + %.0f, %.0f, %.0f) m farther, printed per camp, and beyond %.0f m; a camp the host has not loaded: her distance only), back beyond "
+                 "E + %.0f m, the host within %.0f m or H nearer (calm), forced beyond %.0f m, silence %.0f s; "
                  "at most %u hers; hold %.0f s; outcomes %d, follower guard %d, host hits relayed %d",
-                 erules::kCampEngageMinM, erules::kCampEngageMaxM, erules::kCampMarginMinM, erules::kCampMarginMaxM, erules::kTakeHostMinM, erules::kCampLeftAddM,
-                 erules::kBackHostNearM, erules::kCampMarginMinM, erules::kCampMarginMaxM, config.enemy_mirror_radius + erules::kOwnRangeSlackM,
+                 erules::kCampEngageAddM, erules::kCampEngageMinM, erules::kCampEngageMaxM, erules::kCampMarginK, erules::kCampMarginAddM, erules::kCampMarginMinM,
+                 erules::kCampMarginMaxM, erules::kTakeHostMinM, erules::kCampLeftAddM, erules::kBackHostNearM, config.enemy_mirror_radius + erules::kOwnRangeSlackM,
                  erules::kOwnSilenceMs / 1000.0, erules::kMaxGuestOwnedMembers, erules::kCampHoldMs / 1000.0, g_camp_carry ? 1 : 0, g_follow_guard ? 1 : 0,
                  g_relay_want ? 1 : 0);
     } else {
@@ -3348,6 +3997,8 @@ void Tick(const TickIn& in, double now) noexcept {
         // the mirrors hidden here are shown again while the switch is off (review r20 enemy 1)
         if (!g_dead_hidden.empty()) UnhideDead(true, "off");
         if (!g_host_hid.empty()) UnhideHostHidden(true, "off", now);
+        if (!g_nothold.empty()) UnhideNotHolding(true, "off", now);
+        if (!g_down_hid.empty() || !g_down_fhid.empty()) DownResume("off");  // round 23 C
         if (!g_mirrors.empty() || g_mirroring) {
             OwnHardReset("off (enemy_sync 2)", false, true, false);
             OwnFlush();
@@ -3365,6 +4016,41 @@ void Tick(const TickIn& in, double now) noexcept {
 
 bool IsFrozenMirror(std::uintptr_t entity) noexcept { return g_any_frozen.load(std::memory_order_relaxed) && g_mset.Find(entity); }
 bool AnyFrozen() noexcept { return g_any_frozen.load(std::memory_order_relaxed); }
+bool HoldCopy(std::uint32_t id, double ms, const char* why) noexcept {
+    for (const Mirror& m : g_mirrors)
+        if (m.id == id && m.frozen) {
+            HoldRec& h = g_hold[id];
+            const bool fresh = !h.on;
+            if (fresh) h.t0 = g_tnow, h.have_native = false;
+            h.on = true;
+            h.until = (std::max)(h.until, g_tnow + ms);
+            if (fresh) Log("[enemy] restrain hold id=%05X: the copy's own animation kept (%s; up to %.1f s): no transform writes, no pose apply", id, why ? why : "?", ms / 1000.0);
+            return true;
+        }
+    return false;
+}
+void ReleaseHold(std::uint32_t id, const char* why) noexcept {
+    const auto it = g_hold.find(id);
+    if (it == g_hold.end() || !it->second.on) return;
+    it->second.on = false, it->second.end = g_tnow;
+    Log("[enemy] restrain hold id=%05X released: %s (held %.1f s): the owner's frames blended back in over %.0f ms", id, why ? why : "?", (g_tnow - it->second.t0) / 1000.0,
+        erules::kRestrainBlendMs);
+}
+bool Holding(std::uint32_t id) noexcept {
+    const auto it = g_hold.find(id);
+    return it != g_hold.end() && it->second.on;
+}
+std::uint8_t PeerDefeat(std::uint32_t id) noexcept {
+    const auto it = g_tracks.find(id);
+    const erules::Sample* z = it != g_tracks.end() ? it->second.Newest() : nullptr;
+    return z ? ewire::SenDefeat(z->state) : 0;
+}
+unsigned FrozenCopies(std::uint32_t* ids, std::uintptr_t* actors, std::uintptr_t* entities, unsigned cap) noexcept {
+    unsigned n = 0;
+    for (const Mirror& m : g_mirrors)
+        if (m.frozen && n < cap) ids[n] = m.id, actors[n] = m.actor, entities[n] = m.entity, ++n;
+    return n;
+}
 bool GuardOn() noexcept { return g_guard.load(std::memory_order_relaxed); }
 std::uintptr_t MirrorEntity(std::uint32_t actor_id) noexcept {
     for (const Mirror& m : g_mirrors)
@@ -3372,6 +4058,18 @@ std::uintptr_t MirrorEntity(std::uint32_t actor_id) noexcept {
     return 0;
 }
 bool MirrorIdOf(std::uintptr_t entity, std::uint32_t* id) noexcept { return g_any_frozen.load(std::memory_order_relaxed) && g_mset.Find(entity, id); }
+bool NotHoldingShooter(std::uint32_t actor_id, double (&place)[3], std::uintptr_t* entity) noexcept {
+    const auto h = g_nothold.find(actor_id);
+    if (h == g_nothold.end() || !g_clock.have) return false;
+    const auto t = g_tracks.find(actor_id);
+    float yaw = 0;
+    if (t == g_tracks.end() || !t->second.At(g_clock.Render(g_tnow), place, &yaw)) return false;
+    if (entity) {
+        ActorNow a;
+        *entity = ReadActor(h->second.actor, actor_id, a) && a.realized ? a.entity : 0;
+    }
+    return true;
+}
 GateView Gate() noexcept {
     GateView g;
     g.role = g_role.load();
@@ -3427,6 +4125,11 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept 
                 "hidden here for the host now %u; entry err max %.0f m, host far %.0f m",
                 g_ecfg.enemy_host_guard ? "on" : "off (enemy_host_guard=0)", g_gs.host_refused, g_gs.host_released, g_gs.host_hidden_now, g_ecfg.enemy_entry_err_max,
                 g_ecfg.enemy_host_far);
+            Log("[enemy] down hold: %s radius %.0f m, ours %s (%s), partner %s (%s), held %zu, hidden %u, ownership %s; downs %u, resumed %u, holds %u, hides %u, "
+                "entries refused %u, ownership changes not made %u",
+                g_ecfg.enemy_down_hold ? "on" : "off (enemy_down_hold=0)", g_ecfg.enemy_down_hold_radius, erules::PlayerDownText(g_our_down),
+                g_our_fake >= 0 ? "fake" : "game state", erules::PlayerDownText(g_peer_down), g_peer_fake >= 0 ? "fake" : "beacon", g_down_held.size(),
+                DownHiddenNow(), DownFreeze() ? "frozen" : "free", g_ds.downs, g_ds.resumed, g_ds.holds, g_ds.hides, g_ds.refused, g_ds.no_change);
             AttackLine(" (status)");
             ecombat::Status();
             {
@@ -3461,6 +4164,21 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept 
             }
             OwnLine(g_tnow, true);
             return std::snprintf(msg, cap, "%u ownership rows", n), true;
+        }
+        case 9: {
+            // round 23 C (hidden runs): a player down faked, fed where the beacon's code goes. 9 <1 host | 2 guest> <0 clear | 1 down | 2 limbo>:
+            // our own player's fake also goes out in our beacon (the partner holds as for a real one); the partner's acts here only
+            if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden runs only"), false;
+            const int who = static_cast<int>(v[1]), what = static_cast<int>(v[2]);
+            const int role = g_role.load();
+            if ((who != 1 && who != 2) || what < 0 || what > 2) return std::snprintf(msg, cap, "enemy_sync 9 <1 host|2 guest> <0 clear|1 down|2 limbo>"), false;
+            if (role != 1 && role != 2) return std::snprintf(msg, cap, "no co-op role"), false;
+            const int code = what == 0 ? -1 : what == 1 ? static_cast<int>(erules::PlayerDown::test_down) : static_cast<int>(erules::PlayerDown::test_limbo);
+            const bool ours = who == role;
+            (ours ? g_our_fake : g_peer_fake) = code;
+            Log("[enemy] enemy_sync 9: %s %s (%s; applied at the next tick)", who == 1 ? "host Sam" : "guest Fragile",
+                code < 0 ? "fake cleared" : erules::PlayerDownText(static_cast<std::uint8_t>(code)), ours ? "ours: also sent in our beacon" : "the partner's: here only");
+            return std::snprintf(msg, cap, "%s %s", who == 1 ? "host" : "guest", code < 0 ? "clear" : what == 1 ? "down" : "limbo"), true;
         }
         case 8:
             g_own_switch = v[1] != 0;
@@ -3510,7 +4228,7 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept 
             g_tp_cadence = static_cast<int>(v[1]) == 3 ? 3 : 0;
             Log("[enemy] the driver's teleport cadence: %s", g_tp_cadence ? "every 500 ms" : "above 2 m only");
             return std::snprintf(msg, cap, "cadence %d", g_tp_cadence), true;
-        default: return std::snprintf(msg, cap, "unknown op %d (0 status, 1 on, 2 off, 3 table, 4 outcomes, 5 ownership, 6 variant, 7 cadence, 8 0/1 ownership)", op), false;
+        default: return std::snprintf(msg, cap, "unknown op %d (0 status, 1 on, 2 off, 3 table, 4 outcomes, 5 ownership, 6 variant, 7 cadence, 8 0/1 ownership, 9 1|2 0|1|2 a player down faked)", op), false;
     }
 }
 
@@ -3598,7 +4316,7 @@ bool Look(const double (&v)[3], char* msg, std::size_t cap) noexcept {
         }
         if (score < best) best = score, best_id = e.id, bent = a.entity, std::memcpy(bpos, a.pos, sizeof(bpos)), fxf = a.xf, have_fxf = true;
     }
-    how = front ? "in front of it, along its facing" : owned ? (g_role == 1 ? "the nearest the guest owns (its copy here)" : "the nearest she owns") : newest_hit ? (g_role == 1 ? "the newest applied HIT's enemy" : "the newest sent HIT's enemy") : side ? "beside the newest replayed shooter's line to the partner" : behind ? "behind the newest replayed shooter, toward the partner" : v[0] == -2 ? (g_role == 1 ? "the newest sent shooter" : "the newest replayed shooter") : want ? "by id" : faced ? "the one the partner faces" : g_role == 2 ? "the nearest frozen mirror" : "the nearest realized";
+    how = front ? (v[1] < 0 ? "behind it, along its facing" : "in front of it, along its facing") : owned ? (g_role == 1 ? "the nearest the guest owns (its copy here)" : "the nearest she owns") : newest_hit ? (g_role == 1 ? "the newest applied HIT's enemy" : "the newest sent HIT's enemy") : side ? "beside the newest replayed shooter's line to the partner" : behind ? "behind the newest replayed shooter, toward the partner" : v[0] == -2 ? (g_role == 1 ? "the newest sent shooter" : "the newest replayed shooter") : want ? "by id" : faced ? "the one the partner faces" : g_role == 2 ? "the nearest frozen mirror" : "the nearest realized";
     if (!best_id && faced) {
         // none within 25 deg of her heading: the one nearest the partner body
         for (const LocalEnemy& e : all) {
@@ -3619,7 +4337,9 @@ bool Look(const double (&v)[3], char* msg, std::size_t cap) noexcept {
         const double fl = std::sqrt(static_cast<double>(fxf.rot.m[1][0]) * fxf.rot.m[1][0] + static_cast<double>(fxf.rot.m[1][1]) * fxf.rot.m[1][1]);
         if (fl > 1e-6) dx = fxf.rot.m[1][0] / fl, dy = fxf.rot.m[1][1] / fl;
     }
-    const double d = v[1] > 0 ? v[1] : 12.0;
+    // round 23 E: in front mode a negative distance places our Sam that far behind it (along its facing), facing its back
+    const double d = v[1] > 0 ? v[1] : front && v[1] < 0 ? v[1] : 12.0;
+    const double face = d < 0 ? 1.0 : -1.0;
     char why[160] = {};
     WorldTransform bx{};
     if (side && g_body && ReadXf(reinterpret_cast<std::uintptr_t>(g_body), bx)) {
@@ -3655,7 +4375,8 @@ bool Look(const double (&v)[3], char* msg, std::size_t cap) noexcept {
             return std::snprintf(msg, cap, "id %05X: %s", best_id, why), ok;
         }
     }
-    const bool ok = game::TeleportLocalPlayerFacing(bpos[0] + dx * d, bpos[1] + dy * d, game::kSnapRayCentreZ, -dx, -dy, game::TeleportMode::snap_to_ground, why, sizeof(why));
+    const bool ok = game::TeleportLocalPlayerFacing(bpos[0] + dx * d, bpos[1] + dy * d, game::kSnapRayCentreZ, face * dx, face * dy, game::TeleportMode::snap_to_ground,
+                                                    why, sizeof(why));
     const double up = v[2] > 0.2 && v[2] < 2.0 ? v[2] : 1.2;  // the aim point's height over its root (1.2 m: a standing chest)
     const double chest[3] = {bpos[0], bpos[1], bpos[2] + up};
     // a steered aim (shots 4 <deg> 1) in the next 20 s points at it, followed live (run 20261124-114315: the mirror walked 7 s
@@ -3733,16 +4454,43 @@ bool Camp(const double (&v)[3], char* msg, std::size_t cap) noexcept {
             if (!kv.second.g.owned || (want && kv.first != want)) continue;
             ActorNow a;
             if (!ReadActor(kv.second.actor, kv.first, a) || !a.realized || a.dead) continue;
+            // picked by distance: a standing one only (the host's follower guard never hides a down one, spec 8.1 / 8.3, so a
+            // down pick would test nothing; gate fix round 23); a given id is taken as it is
+            if (!want && erules::OutcomeOf(U32(kv.second.actor + 0xEA0), a.ea4) != erules::Defeat::none) continue;
             const double d = have_sp && a.have_xf ? Dist3(a.pos, sp) : 1e17;
             if (d < bd) bd = d, actor = kv.second.actor, id = kv.first;
         }
-        if (!actor) return std::snprintf(msg, cap, "no owned copy here%s", want ? " for that id" : ""), false;
+        if (!actor) return std::snprintf(msg, cap, "no %sowned copy here%s", want ? "" : "standing ", want ? " for that id" : ""), false;
         const bool ok = ActorBool(actor, kVtHidden, hide ? 1 : 0);
         if (hide) last_hidden = id;
         Log("[enemy] camp test: her owned copy %05X %s here%s", id, hide ? "hidden" : "shown", ok ? "" : " (the call FAULTED)");
         return std::snprintf(msg, cap, "%05X %s", id, hide ? "hidden" : "shown"), ok;
     }
     return std::snprintf(msg, cap, "enemy_camp 0 (the table) | 3 <id> <k> | 4 <id> <1 hide | 0 show>"), false;
+}
+
+bool MuleRideInfo(std::uint32_t actor_id, char* camp, std::size_t cap, std::int32_t* seat) noexcept {
+    if (camp && cap) std::snprintf(camp, cap, "-");
+    if (seat) *seat = -1;
+    if (!g_want || !g_p1_ok || !actor_id) return false;
+    const std::uintptr_t actor = LocalActor(actor_id);
+    if (!actor) return false;
+    const auto it = g_camp_of.find(actor);
+    if (camp && cap && it != g_camp_of.end()) std::snprintf(camp, cap, "%s", CampName(it->second.key));
+    std::int32_t s = -1;
+    if (seat && g_ride_ok && mem::Rd(actor + kActSeat, s)) *seat = s;
+    return true;
+}
+bool RideFields(std::uintptr_t actor, std::uint32_t* e20, std::int32_t* seat) noexcept {
+    static int checked = -1;  // the probe's own run of the ride checks (-1 not yet)
+    if (!g_ride_ok && checked < 0) checked = RideChecks() ? 1 : 0;
+    if (!actor || !(g_ride_ok || checked == 1)) return false;
+    std::uint32_t v = 0;
+    std::int32_t s = -1;
+    if (!mem::Rd(actor + kActVehId, v) || !mem::Rd(actor + kActSeat, s)) return false;
+    if (e20) *e20 = v;
+    if (seat) *seat = s;
+    return true;
 }
 
 bool Own(const double (&v)[3], char* msg, std::size_t cap) noexcept {

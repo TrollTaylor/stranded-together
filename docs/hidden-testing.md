@@ -1863,6 +1863,36 @@ gate passed).
   **`083424` PASS** (204 steps, 173 s)). Regressions on the final code: `two-games-enemy-hit` `084302` PASS (and
   `enemy-hits.py` PASS), `two-games-enemy-statues` `084534` PASS, `two-games-enemy-hits-off` `084753` PASS.
 
+## The round 23 M1 gates (tie-up, player down, MULE trucks)
+
+docs/enemy-sync.md section 14.12. Each gate is PASS only when Run-Batch and its checker both say PASS (Run-Batch does not run
+the checker). All three use `launcherini local-test`, `-SeedSaves complete-100 -GuestSeed profile-only`, about 2-3 min each.
+
+- `two-games-enemy-tie` (`ini enemy_owner=0`; areas `enemy-restrain`, `enemy-down`): the host alerts the camp, the guest ties
+  up the newest replayed shooter (`enemy_look -2`, `enemy_restrain 0 1`), then the host's Sam test-down (`enemy_sync 9 1 1`)
+  and back; round 23 B's mirror summary. Afterwards `python -I tools\testenv\enemy-tie.py build-testenv\runs\<run>`.
+- `two-games-enemy-tie-host` (ownership on, the default; same areas): her proximity take of the camp, the host ties up his
+  follower of 02029 (`enemy_restrain 0x2029 1`), her Fragile test-down (`enemy_sync 9 2 1`) and back. Afterwards
+  `enemy-tie.py <run> --reverse`.
+- `two-games-truck-hold` (area `vehicle-mule`): the truck census twice 60 s apart, the round 23 D counters, the guest's table
+  fully bound. Afterwards `python -I tools\testenv\truck-hold.py build-testenv\runs\<run>`. It does not use `dev_enemies`:
+  that made her vehicle share drop and fail to rebind 3 trucks (runs `163148`, `163342`).
+- Round 23 F runs: tie `161556`, `161850`, `162358` (the required steps and the checker passed; only an optional step, since
+  removed, failed); tie-host `162718`, **`162918` PASS**; trucks `163148`, `163342`, **`163849` PASS**.
+- Optional steps (`?`) still count as failures in Run-Batch's result when they fail; the gates keep only the ones that cannot
+  fail on a normal run (`dev_god`, the camera-aimed wait).
+- The final batch on the final code (docs/enemy-sync.md 14.15), all PASS: tie **`170739`** (`enemy-tie.py` PASS), tie-host
+  **`170948`** (`--reverse` PASS), trucks **`171219`** (`truck-hold.py` PASS), and the regressions `two-games-enemy-camp`
+  **`172205`**, `two-games-enemy-hit` **`172553`**, `dev-give-solo` **`172815`**, `two-games-launcher-local-test`
+  **`172923`**. The camp gate first failed (`171500`): `enemy_camp 4 0 1` picked a copy Sam's rifle had knocked down. The test
+  action now picks the nearest standing owned copy.
+- The other round 23 scenarios: `trucks-census-solo` (solo, the truck census before and at the camp; `150038` PASS) and
+  `two-games-mule-trucks` (two games at the camp, both hold the MULE trucks; `150449` PASS) for round 23 D;
+  `two-games-enemy-probe` (P0-P5; `154710` PASS, after `154534` failed on two `enemy_look` teleports within 0.5 s, so a `wait
+  700` now sits between them) and `trucks-m2-probe-solo` (P0, P1, P5, P6; `155517` PASS) for the M2 probes, with
+  `ini enemy_m2_probes=1`. Since that run, `two-games-enemy-probe` puts her Sam behind the copy for P2 (`enemy_look -8 -10`);
+  that version has not run.
+
 ## Hip crates (round 14, round 15)
 
 - `two-games-hip-cargo` (`launcherini`, `-GuestSeed profile-only`; about 1 min 50 s): the launcher's own ini

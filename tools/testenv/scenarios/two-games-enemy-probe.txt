@@ -1,0 +1,238 @@
+# Round 23 E (docs/enemy-sync.md 14.11): the M2 probes P0-P5 (design section 10, critique R2 / R3) at the MULE Camp Southwest of
+# Lake Knot City (cp 04004, MULEs 02029..02032), on the launcher's own Local test files plus enemy_m2_probes=1 on both games.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-enemy-probe -SeedSaves complete-100 -GuestSeed profile-only -Id round23-e-probes
+# Every probe logs "[probe] P<n> ..." lines and one "[probe] P<n> result ..." line (also when it is skipped); nothing is asserted
+# beyond the result lines and no fault. Read the [probe] lines afterwards (P6, the seated MULEs: trucks-m2-probe-solo).
+#   P0 the probes' byte checks (both). P3 the perception reads: entity +0x314, stimulus +0x88 (both).
+#   Ownership off (enemy_sync 8 0): the guest's copies of the camp are frozen mirrors, the host runs its own.
+#   P1 (the guest) her frozen copy of 02029's knowledge every 0.5 s for 5 s: her Sam 10 m in front of it standing, then 10 m behind it
+#      crouched (pad B toggles the crouch): a PlayerVisual entry for her Sam fresh / stale / none (R2: expected none or stale).
+#   P4 (the guest) the raycast from her frozen copy's eye to her Sam 15 m in front (chest and head), 5 s.
+#   P5 (the host) his own 02029's phase, state, facing and knowledge every 0.25 s for 6 s, Sam in front of it at 35 / 25 / 12 /
+#      5 m, crouched then standing (far first; the MULEs resurrected between distances; each result has its start phase: a step
+#      that starts alerted is contaminated by the one before).
+#   P2 (the guest, ownership on again) per lever a / b / c / d': the host's 02029 raised to combat (enemy_target 3, the host 22 m
+#      from it, the guest 60 m before her look: no proximity take), her Sam 10 m behind her copy (facing its back: the turn is measured), the probe armed, a forced
+#      hand-over (enemy_own 0x2029 2): the time to within 30 deg of her Sam and to its first shot; then forced back.
+# covers: enemy-hits
+# select: probe
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini enemy_m2_probes=1
+@guest ini enemy_m2_probes=1
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[config\] enemy_m2_probes=1
+@guest waitlog 5 \[config\] enemy_m2_probes=1
+waitlog 5 \[enemy\] mirror byte checks: [0-9]+/[0-9]+ ok
+@guest waitlog 5 \[enemy\] mirror byte checks: [0-9]+/[0-9]+ ok
+waitlog 30 \[enemy\] hits: outcome carry checks ok
+@guest waitlog 30 \[enemy\] hits: outcome carry checks ok
+goto mule-camp-sw-lkc
+@guest goto 1521.90 992.00 0
+wait 4000
+?@both action dev_god 2
+@both action dev_enemies 1
+waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+@guest waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+action enemy_probe 5 1
+@guest action enemy_probe 5 1
+waitlog 40 \[enemy\] sync on \(host\).*\(equal
+@guest waitlog 40 \[enemy\] sync on \(guest\).*\(equal
+waitlog 30 \[enemy\] hits on \(host\)
+@guest waitlog 30 \[enemy\] hits on \(guest\)
+waitlog 30 \[enemy\] own on \(
+@guest waitlog 30 \[enemy\] own on \(
+# ---- ownership off: the guest's copies are frozen mirrors
+@both action enemy_sync 8 0
+waitlog 10 \[enemy\] ownership off
+@guest waitlog 10 \[enemy\] ownership off
+@guest waitlog 30 \[enemy\] mirror on id=
+wait 3000
+# ---- P0, P3 (both)
+action enemy_m2 0
+waitnew 5 \[probe\] P0 result
+@guest action enemy_m2 0
+@guest waitnew 5 \[probe\] P0 result
+action enemy_m2 3
+waitnew 5 \[probe\] P3 result
+@guest action enemy_m2 3
+@guest waitnew 5 \[probe\] P3 result
+# ---- P1 (the guest): her frozen copy of 02029, her Sam 10 m in front standing, then 10 m behind crouched
+@guest action enemy_look 0x2029 10
+wait 700
+@guest action enemy_look -8 10
+wait 2000
+@guest action enemy_m2 1 0x2029 5
+@guest waitnew 10 \[probe\] P1 result id=02029
+@guest screenshot 01-guest-p1-front
+@guest action enemy_look -8 -10
+wait 1000
+@guest log P1 behind crouched
+@guest pad B 150
+wait 1500
+@guest action enemy_m2 1 0x2029 5
+@guest waitnew 10 \[probe\] P1 result id=02029
+@guest screenshot 02-guest-p1-behind-crouched
+@guest pad B 150
+wait 1000
+# ---- P4 (the guest): the raycast from her copy's eye to her Sam 15 m in front
+@guest action enemy_look -8 15
+wait 1500
+@guest action enemy_m2 4 0x2029 5
+@guest waitnew 10 \[probe\] P4 result id=02029
+# ---- P5 (the host): his own 02029, Sam in front at 35 / 25 / 12 / 5 m, crouched then standing; the MULEs resurrected between
+action enemy_look 0x2029 35
+wait 700
+action enemy_look -8 35
+log P5 35 m crouched
+pad B 150
+wait 1500
+action enemy_m2 5 0x2029 6
+waitnew 10 \[probe\] P5 result #
+log P5 35 m standing
+pad B 150
+wait 1000
+action enemy_m2 5 0x2029 6
+waitnew 10 \[probe\] P5 result #
+action enemy_look -8 70
+action dev_enemies 1
+waitnew 10 \[dev\] enemies: every MULE / terrorist resurrected
+wait 2000
+action enemy_look -8 25
+log P5 25 m crouched
+pad B 150
+wait 1500
+action enemy_m2 5 0x2029 6
+waitnew 10 \[probe\] P5 result #
+log P5 25 m standing
+pad B 150
+wait 1000
+action enemy_m2 5 0x2029 6
+waitnew 10 \[probe\] P5 result #
+action enemy_look -8 70
+action dev_enemies 1
+waitnew 10 \[dev\] enemies: every MULE / terrorist resurrected
+wait 2000
+action enemy_look -8 12
+log P5 12 m crouched
+pad B 150
+wait 1500
+action enemy_m2 5 0x2029 6
+waitnew 10 \[probe\] P5 result #
+log P5 12 m standing
+pad B 150
+wait 1000
+action enemy_m2 5 0x2029 6
+waitnew 10 \[probe\] P5 result #
+action enemy_look -8 70
+action dev_enemies 1
+waitnew 10 \[dev\] enemies: every MULE / terrorist resurrected
+wait 2000
+action enemy_look -8 5
+log P5 5 m crouched
+pad B 150
+wait 1500
+action enemy_m2 5 0x2029 6
+waitnew 10 \[probe\] P5 result #
+screenshot 03-host-p5-5m-crouched
+log P5 5 m standing
+pad B 150
+wait 1000
+action enemy_m2 5 0x2029 6
+waitnew 10 \[probe\] P5 result #
+action enemy_look -8 70
+action dev_enemies 1
+waitnew 10 \[dev\] enemies: every MULE / terrorist resurrected
+wait 3000
+# ---- P2 (the guest): ownership on again (the host 22 m from 02029, the guest 60 m: no proximity take); per lever an alerted
+# 02029 handed to her with her Sam 10 m behind it (it has to turn to her), then forced back
+action enemy_look 0x2029 22
+@guest action enemy_look 0x2029 60
+wait 1000
+@both action enemy_sync 8 1
+waitlog 10 \[enemy\] ownership on
+@guest waitlog 10 \[enemy\] ownership on
+wait 3000
+# lever a (baseline)
+action enemy_look 0x2029 22
+action enemy_target 3 0x2029 5
+@guest action enemy_look 0x2029 10
+wait 700
+@guest action enemy_look -8 -10
+@guest action enemy_m2 2 0x2029 0
+@guest waitnew 5 \[probe\] P2 armed id=02029
+action enemy_own 0x2029 2
+waitnew 10 \[enemy\] camp .* -> guest \(forced
+@guest waitlog 40 \[probe\] P2 result id=02029 lever a
+@guest screenshot 04-guest-p2-a
+action enemy_own -5 1
+waitnew 10 \[enemy\] camp .* -> host \(forced
+wait 2500
+# lever b (a test hit, owner her Sam)
+action enemy_look 0x2029 22
+action enemy_target 3 0x2029 5
+@guest action enemy_look 0x2029 10
+wait 700
+@guest action enemy_look -8 -10
+@guest action enemy_m2 2 0x2029 1
+@guest waitnew 5 \[probe\] P2 armed id=02029
+action enemy_own 0x2029 2
+waitnew 10 \[enemy\] camp .* -> guest \(forced
+@guest waitlog 40 \[probe\] P2 result id=02029 lever b
+action enemy_own -5 1
+waitnew 10 \[enemy\] camp .* -> host \(forced
+wait 2500
+# lever c (the perfect-threat alert to her Sam)
+action enemy_look 0x2029 22
+action enemy_target 3 0x2029 5
+@guest action enemy_look 0x2029 10
+wait 700
+@guest action enemy_look -8 -10
+@guest action enemy_m2 2 0x2029 2
+@guest waitnew 5 \[probe\] P2 armed id=02029
+action enemy_own 0x2029 2
+waitnew 10 \[enemy\] camp .* -> guest \(forced
+@guest waitlog 40 \[probe\] P2 result id=02029 lever c
+action enemy_own -5 1
+waitnew 10 \[enemy\] camp .* -> host \(forced
+wait 2500
+# lever d' (her Sam's own visual stimulus +0xA4 x3 for 1 s)
+action enemy_look 0x2029 22
+action enemy_target 3 0x2029 5
+@guest action enemy_look 0x2029 10
+wait 700
+@guest action enemy_look -8 -10
+@guest action enemy_m2 2 0x2029 3
+@guest waitnew 5 \[probe\] P2 armed id=02029
+action enemy_own 0x2029 2
+waitnew 10 \[enemy\] camp .* -> guest \(forced
+@guest waitlog 40 \[probe\] P2 result id=02029 lever d
+action enemy_own -5 1
+waitnew 10 \[enemy\] camp .* -> host \(forced
+wait 3000
+# ---- the reset, off
+@both action enemy_sync 8 0
+@both action enemy_sync 2
+waitlog 5 \[enemy\] sync off \(debug action\)
+@guest waitlog 5 \[enemy\] sync off \(debug action\)
+nolog \[probe\] FAULT
+@guest nolog \[probe\] FAULT
+nolog \[enemy\] FAULT
+@guest nolog \[enemy\] FAULT
+nolog \[enemy\] hits FAULT
+@guest nolog \[enemy\] hits FAULT
+nolog byte check FAILED
+@guest nolog byte check FAILED
+nolog \[shots\] FAULT
+@guest nolog \[shots\] FAULT
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+action enemy_probe 5 0
+?@both action dev_god 0
+@guest quit
+wait 3000
+quit

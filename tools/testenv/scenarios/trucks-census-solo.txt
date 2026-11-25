@@ -1,0 +1,32 @@
+# Round 23 D discovery (docs/enemy-sync.md 14.10), solo, hidden: the trucks of the vehicle pools at a MULE camp (which are MULE
+# trucks, which a MULE drives, their drivers' ids and seats) for the two-game gate.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios trucks-census-solo -SeedSaves complete-100 -Id round23-trucks
+# Steps: the census at the start (tag 1, every truck), the MULE Camp Southwest of Lake Knot City with every MULE resurrected,
+# the enemy census (tag 2, 400 m: its "[vshare] trucks tag=2" lines before "census done"), a wait while the camp notices Sam,
+# the truck census again (tags 3 / 4, 400 m). Read the "[vshare] trucks tag=.. t.." lines: class, driver, model, place.
+# covers: vehicle-share
+role solo
+timeout 300
+ini dev_tools=1
+start
+wait 3000
+waitlog 30 \[dev\] dev tools: [0-9]+/[0-9]+ byte checks ok
+waitlog 5 \[config\] vehicle_mule_log=1 vehicle_mule_hold=1
+action vehicle_share 9 1 0
+waitlog 10 \[vshare\] trucks tag=1 done
+goto mule-camp-sw-lkc
+wait 6000
+action dev_enemies 1
+waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+wait 6000
+action enemy_census 2 400 0
+waitlog 20 \[enemy\] census done tag=2
+action vehicle_share 9 3 400
+waitlog 10 \[vshare\] trucks tag=3 done
+screenshot 01-camp
+wait 20000
+action vehicle_share 9 4 400
+waitlog 10 \[vshare\] trucks tag=4 done
+screenshot 02-camp-later
+nolog \[vshare\] FAULT
+nolog \[vshare\] truck census: byte check FAILED

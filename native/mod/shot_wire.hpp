@@ -19,7 +19,9 @@
 //    66 u16 yaw (the shooter's heading, 2^16 a turn, atan2 of its forward axis)
 //
 // SEH1 (unreliable, both ways; 1 Hz for the first 10 s, then every 5 s and on every change), 24 B:
-//   'SEH1' | u8 version 1 | u8 parts | u16 enemy_count | u32 ids_fp | u32 guids_fp | u32 world | u8 freeze_mode | u8 role | u16 0
+//   'SEH1' | u8 version 1 | u8 parts | u16 enemy_count | u32 ids_fp | u32 guids_fp | u32 world | u8 freeze_mode | u8 role | u8 player_down | u8 0
+//   (player_down, round 23 C: the sender's own player is down, erules::PlayerDown 0..4; a non-zero byte only to a partner whose parts
+//   carry kPartRestrain: an older decoder refuses it and the whole beacon)
 //   parts: bit0 mirror (enemy_sync), bit1 hits (enemy_hits), bit2 fire (shots_sync), bit3 own (P1b, v0.33.0), bit4 enemy fire,
 //          bit5 camp (enemy_owner, round 21), bit6 wide attack ids (round 21)
 #pragma once
@@ -107,15 +109,25 @@ inline constexpr std::size_t kBeaconSize = 24;
 // kPartOwn (8): the ownership protocol (P1b's OWN / OWNACK / OWNRESET, v0.33.0). kPartCamp (32): P1c, the host hands over per
 // camp with that protocol (round 21; no new SCB1 type): ownership runs only when both beacons carry 32. This build never sends
 // 8 (a v0.33 host would run P1b's per-enemy rules against it: review rv-correctness R1), so 8 is read only to name an old partner. kPartAttackWide
-// (64): this build decodes the wide attack ids (up to 0x194), whatever its ownership.
-enum Part : std::uint8_t { kPartMirror = 1, kPartHits = 2, kPartFire = 4, kPartOwn = 8, kPartEnemyFire = 16, kPartCamp = 32, kPartAttackWide = 64 };
+// (64): this build decodes the wide attack ids (up to 0x194), whatever its ownership. kPartRestrain (128, round 23, the last free
+// bit): this build sends and takes HIT kind 5 (the tie-up relay, docs/enemy-sync.md 14) and its HITRES `down`; set only with
+// kPartHits. A kind-5 HIT goes only to a partner whose beacon carries it (an older DecodeHits refuses the whole message).
+enum Part : std::uint8_t {
+    kPartMirror = 1, kPartHits = 2, kPartFire = 4, kPartOwn = 8, kPartEnemyFire = 16, kPartCamp = 32, kPartAttackWide = 64, kPartRestrain = 128
+};
 struct Beacon {
     std::uint8_t parts = 0;
     std::uint16_t enemy_count = 0;
     std::uint32_t ids_fp = 0, guids_fp = 0, world = 0;
     std::uint8_t freeze_mode = 0;  // 0 none, 1 occupied, 2 occupied+required, 3 sleep, 4 puppet
     std::uint8_t role = 0;         // 1 host, 2 guest, 0 solo
+    std::uint8_t player_down = 0;  // round 23 C: the sender's player is down (erules::PlayerDown: 0 up, 1 dead, 2 KnotSpace, 3 / 4 test)
 };
+inline constexpr std::uint8_t kBeaconDownMax = 4;  // the decoder refuses byte 22 above it (and byte 23 non-zero)
+// Round 23 review: whether the partner's build takes a non-zero byte 22, latched per link generation from its beacons. Any beacon
+// with kPartRestrain proves a round-23 decoder; a later beacon without it (a fault there, its hits off) does not withdraw it, so a
+// "down" we send is never replaced by a 0 the partner would read as "back". `was` false on a new link generation.
+inline constexpr bool PeerTakesDown(bool was, std::uint8_t peer_parts) noexcept { return was || (peer_parts & kPartRestrain) != 0; }
 std::size_t EncodeBeacon(const Beacon& b, std::uint8_t* out, std::size_t cap) noexcept;
 bool DecodeBeacon(const std::uint8_t* d, std::size_t n, Beacon& out) noexcept;
 inline bool LooksLikeBeacon(const std::uint8_t* d, std::size_t n) noexcept {

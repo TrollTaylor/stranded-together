@@ -195,6 +195,30 @@ void TestBeacon() {
     d[23] = 1;
     CHECK(!DecodeBeacon(d, sizeof(d), c));
     CHECK(!EncodeBeacon(b, buf, kBeaconSize - 1));
+    // round 23 C: byte 22 the player down code (0 up .. kBeaconDownMax); byte 23 still 0
+    CHECK(buf[22] == 0 && c.player_down == 0);
+    for (std::uint8_t pd = 1; pd <= kBeaconDownMax; ++pd) {
+        Beacon e = b;
+        e.player_down = pd;
+        CHECK(EncodeBeacon(e, buf, sizeof(buf)) == kBeaconSize);
+        CHECK(buf[22] == pd && buf[23] == 0);
+        Beacon f;
+        CHECK(DecodeBeacon(buf, sizeof(buf), f) && f.player_down == pd && f.parts == b.parts && f.role == 2);
+    }
+    Beacon bad = b;
+    bad.player_down = kBeaconDownMax + 1;
+    CHECK(EncodeBeacon(bad, buf, sizeof(buf)) == 0);
+    b.player_down = 0;
+    CHECK(EncodeBeacon(b, buf, sizeof(buf)) == kBeaconSize);
+    std::memcpy(d, buf, sizeof(d));
+    d[22] = kBeaconDownMax + 1;
+    CHECK(!DecodeBeacon(d, sizeof(d), c));
+    d[22] = 0xFF;
+    CHECK(!DecodeBeacon(d, sizeof(d), c));
+    // review: the partner takes byte 22 once any of its beacons carried kPartRestrain; a later beacon without it keeps that
+    CHECK(!PeerTakesDown(false, 0) && !PeerTakesDown(false, kPartHits | kPartMirror | kPartAttackWide));
+    CHECK(PeerTakesDown(false, kPartRestrain | kPartHits) && PeerTakesDown(false, kPartRestrain));
+    CHECK(PeerTakesDown(true, 0) && PeerTakesDown(true, kPartMirror));
     CHECK(BothHave(kPartFire, kPartFire | kPartMirror, kPartFire));
     CHECK(!BothHave(kPartFire, kPartMirror, kPartFire));
     CHECK(!BothHave(0, kPartFire, kPartFire));

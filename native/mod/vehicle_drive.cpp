@@ -646,6 +646,72 @@ const vshare::Unit* UnitFor(std::uint32_t host_id) noexcept {
 std::uint64_t g_tx_drive = 0, g_tx_park = 0, g_rx_drive = 0, g_rx_park = 0, g_rx_refused = 0, g_attaches = 0, g_detaches = 0, g_attach_fail = 0;
 std::uint64_t g_own_tx = 0, g_own_rx = 0, g_force_offs = 0, g_claims = 0, g_grants = 0, g_denies = 0;
 
+// ---------------------------------------------------------------- round 23 D: MULE trucks (vshare::TruckHeld; docs/enemy-sync.md 14.10)
+// A truck vshare leaves to each game (a non-player drives it in either game, or a MULE truck no player drives) gets no PARK
+// frame, no parked / final / far teleport and no push claim from here. Counted per place; one line per truck and place every 30 s.
+enum HeldAt : int { kHeldPark = 0, kHeldParked, kHeldPush, kHeldFinal, kHeldFar, kHeldCount };
+const char* const kHeldAtText[kHeldCount] = {"no PARK frames", "no parked correction", "no push claim", "no final placement", "no far placement"};
+std::uint64_t g_held_at[kHeldCount] = {};
+std::map<std::uint64_t, double> g_held_line;
+bool MuleHeld(std::uint32_t host_id, HeldAt at) noexcept {
+    const char* why = nullptr;
+    if (!vshare::TruckHeld(host_id, &why)) return false;
+    ++g_held_at[at];
+    double& last = g_held_line[(static_cast<std::uint64_t>(host_id) << 8) | static_cast<std::uint64_t>(at)];
+    if (last == 0 || g_now - last >= 30000) {
+        last = g_now;
+        Log("[vdrive] MULE truck 0x%06X left to each game (%s): %s", host_id, why ? why : "?", kHeldAtText[at]);
+    }
+    return true;
+}
+// The drivers of the trucks in both games: a line when one changes ("[vdrive] MULE truck 0x..: driver 0x.. owner host / guest").
+struct MuleSeen {
+    std::uint32_t here = vwire::kNoRider, there = vwire::kNoRider;
+};
+std::map<std::uint32_t, MuleSeen> g_mule_seen;
+double g_mule_next = 0;
+unsigned g_mule_lines = 0;
+void MuleTruckLog() {
+    if (g_now < g_mule_next || !vshare::MuleLog()) return;
+    g_mule_next = g_now + 250;
+    static vshare::TruckInfo t[128];
+    const std::size_t n = vshare::Trucks(t, 128);
+    const char* us = g_role == 1 ? "host" : "guest";
+    const char* them = g_role == 1 ? "guest" : "host";
+    std::map<std::uint32_t, MuleSeen> next;
+    for (std::size_t i = 0; i < n; ++i) {
+        const vshare::TruckInfo& x = t[i];
+        const std::uint32_t key = x.host_id ? x.host_id : 0x80000000u | x.local_id;
+        MuleSeen now;
+        now.here = x.here && trucks::DriverOf(x.driver) != trucks::Driver::none ? x.driver : vwire::kNoRider;
+        now.there = x.there && trucks::DriverOf(x.there_driver) != trucks::Driver::none ? x.there_driver : vwire::kNoRider;
+        const auto old = g_mule_seen.find(key);
+        const MuleSeen was = old != g_mule_seen.end() ? old->second : MuleSeen{};
+        next[key] = now;
+        const bool mule = x.model == trucks::Model::celd || x.there_model == trucks::Model::celd || trucks::NonPlayer(trucks::DriverOf(now.here)) ||
+                          trucks::NonPlayer(trucks::DriverOf(now.there)) || trucks::NonPlayer(trucks::DriverOf(was.here)) ||
+                          trucks::NonPlayer(trucks::DriverOf(was.there));
+        if (!mule || g_mule_lines >= 200) continue;
+        if (now.here != was.here) {
+            ++g_mule_lines;
+            if (now.here != vwire::kNoRider)
+                Log("[vdrive] MULE truck 0x%06X: driver 0x%06X owner %s (%s, seat %d, camp %s; %s)", key, now.here, us, trucks::DriverName(trucks::DriverOf(now.here)),
+                    x.seat, x.camp, trucks::HoldWhyName(x.hold));
+            else
+                Log("[vdrive] MULE truck 0x%06X: driver none owner %s (0x%06X got out; %s)", key, us, was.here, trucks::HoldWhyName(x.hold));
+        }
+        if (now.there != was.there) {
+            ++g_mule_lines;
+            if (now.there != vwire::kNoRider)
+                Log("[vdrive] MULE truck 0x%06X: driver 0x%06X owner %s (%s, seat %d; %s)", key, now.there, them, trucks::DriverName(trucks::DriverOf(now.there)),
+                    x.there_seat, trucks::HoldWhyName(x.hold));
+            else
+                Log("[vdrive] MULE truck 0x%06X: driver none owner %s (0x%06X got out; %s)", key, them, was.there, trucks::HoldWhyName(x.hold));
+        }
+    }
+    g_mule_seen.swap(next);
+}
+
 // ---------------------------------------------------------------- channel 3 (VOWN)
 void SendOwn(vwire::OwnType type, const vwire::VKey& key, std::uint8_t owner, std::uint8_t reason, std::uint32_t epoch, const WorldTransform* xf,
              const float* vel) {
@@ -1868,6 +1934,7 @@ bool FillFrame(Veh& v, std::uintptr_t e, const WorldTransform& xf, vwire::DriveT
 
 // ---------------------------------------------------------------- the tick parts
 void ResetAll(const char* why) {
+    g_mule_seen.clear();
     DetachAll(why);
     for (auto& kv : g_veh) ClearFarPlace(kv.second);
     g_veh.clear();
@@ -2014,6 +2081,7 @@ void PushTick(const TickIn& in) {
         if (!v.track.empty() && v.track.back().key > v.park.key) continue;  // the partner drives it
         // our own contact only: not a follower still coasting after it let go, nor the partner's driving that just ended
         if (g_now - v.last_detach_ms < 2000 || g_now - v.track_rx_ms < 2500) continue;
+        if (MuleHeld(v.key.id, kHeldPush)) continue;  // round 23 D
         const vshare::Unit* u = UnitFor(v.key.id);
         WorldTransform xf{};
         if (!u || !EntityLive(u->unit, u->entity, v.key.kind) || !ReadXf(u->entity, xf)) continue;
@@ -2180,7 +2248,7 @@ void FinalPlaceTick() {
     for (auto& kv : g_veh) {
         Veh& v = kv.second;
         if (v.final_place_until <= 0) continue;
-        if (g_now > v.final_place_until || !WeOwn(v) || (g_drive.on && g_drive.key.id == v.key.id)) {
+        if (g_now > v.final_place_until || !WeOwn(v) || (g_drive.on && g_drive.key.id == v.key.id) || MuleHeld(v.key.id, kHeldFinal)) {
             v.final_place_until = 0;
             continue;
         }
@@ -2209,6 +2277,7 @@ void ParkedTick() {
         if (!v.track.empty() && v.track.back().key > v.park.key) continue;  // the partner drives it (its frames play)
         if (g_now < v.next_corr_ms) continue;
         v.next_corr_ms = g_now + 100;
+        if (MuleHeld(v.key.id, kHeldParked)) continue;  // round 23 D
         const vshare::Unit* u = UnitFor(v.key.id);
         if (!u || !u->entity || u->rider != vwire::kNoRider) continue;  // not spawned here, or somebody rides it here
         // the unit list is the 10 Hz poll's: the entity checked again now, before the correction and the state writes
@@ -2226,7 +2295,7 @@ void FarPlaceTick() {
     for (auto& kv : g_veh) {
         Veh& v = kv.second;
         if (!v.far_place) continue;
-        if ((g_drive.on && g_drive.key.id == v.key.id) || v.block) {
+        if ((g_drive.on && g_drive.key.id == v.key.id) || v.block || MuleHeld(v.key.id, kHeldFar)) {
             ClearFarPlace(v);
             continue;
         }
@@ -2550,6 +2619,7 @@ void TickBody(const TickIn& in, double now) {
     FinalPlaceTick();
     FarPlaceTick();
     AfterGoneTick();
+    MuleTruckLog();
 }
 
 bool TickGuarded(const TickIn& in, double now) noexcept {
@@ -2683,6 +2753,7 @@ unsigned TakeSend(game::Entity* local, std::uint32_t sender_ms, double now, std:
                 Veh* v = FindV(u.key.id);
                 if (!v || !WeOwn(*v) || !u.entity || v->block || (g_drive.on && g_drive.key.id == u.key.id)) continue;
                 if (!v->meas_have || now - v->meas_ms > 1000) continue;  // not measured: not near either player
+                if (MuleHeld(u.key.id, kHeldPark)) continue;              // round 23 D
                 const WorldTransform& xf = v->meas_last;
                 const bool changed = !v->park_sent_have || Dist3(xf, v->park_sent) > 0.05 ||
                                      vwire::AngleBetweenRows(Rows(xf), Rows(v->park_sent)) > 2.0 || (v->speed_mps > 0.05 && !v->rest.AtRest());
@@ -3063,6 +3134,10 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept 
                           static_cast<unsigned long long>(g_denies), static_cast<unsigned long long>(g_force_offs), static_cast<long>(g_in_calls_total),
                           g_battery_ok ? "copied" : "not copied");
             Log("[vdrive] status: %s", msg);
+            Log("[vdrive] MULE trucks left to each game (round 23 D): PARK frames skipped %llu, parked corrections %llu, push claims %llu, final placements %llu, far "
+                "placements %llu", static_cast<unsigned long long>(g_held_at[kHeldPark]), static_cast<unsigned long long>(g_held_at[kHeldParked]),
+                static_cast<unsigned long long>(g_held_at[kHeldPush]), static_cast<unsigned long long>(g_held_at[kHeldFinal]),
+                static_cast<unsigned long long>(g_held_at[kHeldFar]));
             return true;
         }
         case 1: {

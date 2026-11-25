@@ -56,7 +56,8 @@ void Tick(const TickIn& in, double now) noexcept;  // game thread (P1a and the p
 bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 // enemy_look <id | 0 nearest | -1 the one the partner faces | -2 the newest replayed (the host: sent) shooter | -3 behind it, facing the partner |
 // -4 beside its line, facing it | -5 the newest HIT's enemy (P2; the guest: sent, the host: applied; down and dead ones allowed) | -6 the probe's
-// pick | -7 the nearest enemy the guest owns (P1b)> <dist_m>
+// pick | -7 the nearest enemy the guest owns (P1b) | -8 in front of the last enemy_look's enemy, along its facing (round 20 M2; round 23 E: a
+// negative dist_m places our Sam that far behind it, facing its back) | -9 the newest outcome set or carried here> <dist_m>
 // [aim height m] (hidden runs): our Sam dist m from that enemy, facing it (-3: dist m behind it on the
 // partner's line, facing him). A steered aim (shots 4 <deg> 1) in the next 60 s follows that enemy (the -4 one, 20 s: a point on its line).
 bool Look(const double (&v)[3], char* msg, std::size_t cap) noexcept;
@@ -71,6 +72,9 @@ bool GuardOn() noexcept;
 // Game thread: a live frozen mirror's entity (0 when it is not one), and the time the mirrors show on the host's tick clock.
 std::uintptr_t MirrorEntity(std::uint32_t actor_id) noexcept;
 bool RenderClock(double* render_ms) noexcept;
+// Round 23 B (game thread): a copy hidden here as "not holding" (enemy_mirror_hold_check): its shots are still replayed, from the
+// owner's place. True with that place now (the SEN1 render time) and our copy's entity (0 unrealized).
+bool NotHoldingShooter(std::uint32_t actor_id, double (&place)[3], std::uintptr_t* entity) noexcept;
 
 // P2 (enemy_combat.cpp; docs/enemy-sync.md 9). Any thread: a frozen mirror's actor id (the entity +-0x20).
 bool MirrorIdOf(std::uintptr_t entity, std::uint32_t* id) noexcept;
@@ -104,9 +108,27 @@ void QueueOwnMessage(const std::uint8_t* bytes, std::size_t size) noexcept;
 bool OwnRelay() noexcept;                    // ownership on and enemy_owner_hits (the host's capture of its followers' hits)
 bool OwnedHere(std::uint32_t id) noexcept;   // the guest owns it now
 bool Camp(const double (&v)[3], char* msg, std::size_t cap) noexcept;  // enemy_camp <op> <id> <k> (hidden runs)
+// Round 23 (docs/enemy-sync.md 14), game thread: the tie-up relay's pose hold on our frozen copy of <id> (either game: the guest's
+// mirror of a host enemy, the host's follower of one she owns). While held, the copy's transform writes and its SEP1 pose apply
+// pause (its pose slot captures the copy's own animation instead); it ends after ms (the timeout: "re-posed") or at ReleaseHold,
+// and the owner's frames are blended back in over 250 ms. HoldCopy: false when <id> is no frozen copy here.
+bool HoldCopy(std::uint32_t id, double ms, const char* why) noexcept;
+void ReleaseHold(std::uint32_t id, const char* why) noexcept;
+bool Holding(std::uint32_t id) noexcept;
+// The partner's newest SEN1 sample for <id> as an erules::Defeat (its defeat bits; dead from kDead; 0 none or no sample).
+std::uint8_t PeerDefeat(std::uint32_t id) noexcept;
+// Our frozen copies now (either game): ids, actors and entities, at most cap.
+unsigned FrozenCopies(std::uint32_t* ids, std::uintptr_t* actors, std::uintptr_t* entities, unsigned cap) noexcept;
 // enemy_own <id | 0 the nearest the host owns to the partner | -5 the nearest the guest owns> <1 host | 2 guest> (hidden runs, the
 // host): a forced hand-over (reason 7); the rules apply again afterwards (the 10 s hold).
 bool Own(const double (&v)[3], char* msg, std::size_t cap) noexcept;
+// Round 23 D (docs/enemy-sync.md 14.10), game thread: one of this game's enemies by its actor id, for the truck lines of the shared
+// vehicles: its camp ("cp 04004", "loose 21A3F"; "-" when the camp walk has not listed it) and its seat (+0x3C0 with the ride-field
+// byte checks, else -1). False when the sync is off or the id is not one of our enemies (camp "-", seat -1).
+bool MuleRideInfo(std::uint32_t actor_id, char* camp, std::size_t cap, std::int32_t* seat) noexcept;
+// Round 23 E (the M2 probe P6, docs/enemy-sync.md 14.11), game thread: a MULE actor's ride fields (+0xE20 the vehicle actor id, +0x3C0
+// the seat) with their byte checks (run here once when enemy_mirror_vehicle=0 left them unchecked). False: not read.
+bool RideFields(std::uintptr_t actor, std::uint32_t* e20, std::int32_t* seat) noexcept;
 
 bool Probe(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;  // game thread (a debug action)
 // The probe's picked MULE's entity while it is still the same realized actor (else 0): the shots' aimed test (hidden runs).

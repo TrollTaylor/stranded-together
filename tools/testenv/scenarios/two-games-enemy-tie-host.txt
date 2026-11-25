@@ -1,0 +1,144 @@
+# Round 23 M1 gate, the reverse direction (docs/enemy-sync.md 14.12): the host ties up one of HER followers, then her Fragile
+# down. Camp ownership on (the launcher's default, enemy_owner=1: P1c), so after her proximity take of cp 04004 (the MULE Camp
+# Southwest of Lake Knot City, MULEs 02029..02032) 02029 is hers: realized in her game, a frozen copy (a follower) in his. Every
+# MULE resurrected, both Sams invulnerable, her body shielded.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-enemy-tie-host -SeedSaves complete-100 -GuestSeed profile-only -Id round23-f-tie-host
+# Afterwards (the gate is PASS only when Run-Batch's PASS and this script's PASS both hold; Run-Batch does not run it):
+#   python -I tools\testenv\enemy-tie.py build-testenv\runs\<run> --reverse   (no replay of 02029 on the host later than 0.5 s
+#   after her outcome reached him)
+# Steps:
+#   A her proximity take: the host at the camp spot, the guest 15 m from her frozen mirror of 02029 -> `camp .. -> guest
+#     (proximity`, 02029 taken here.
+#   B the tie-up (critique R15 (a): a scripted strand is not reliable with the virtual pad): his game runs the relay's own send
+#     path, `enemy_restrain 0x2029 1` on his follower (25 m: no calm back pressure), a synthetic strand HIT through the capture
+#     path (the host captures while it relays its hits): his watch and hold, HIT kind 5 k 2 sent to the guest; her outcome setter
+#     k 2 and her read back `OUTCOME id=02029 none -> restrained (cause host HIT #n, strand (test))`; his `her copy is restrained
+#     now (SEN1)`, the hold released by it, the replay flush (`[shots] flushed n replays of id=02029 (down: her SEN1 after our
+#     restrain`); stills on both screens about +1, +4 and +8 s after his SEN1 line.
+#   C her Fragile down (critique B3: the stage-C test trigger): `enemy_sync 9 2 1` on her game (sent in her beacon). His `guest
+#     Fragile down (test: down; its beacon): holding n followers`; the back pressured (the host 8 m from 02029, the guest gone
+#     west to 1350 1050): no `camp .. -> host` while she is down (her outcome table lists only the host's outcomes: not read);
+#     then the clear: `guest Fragile back: resuming`; a camp back may come only after it (read from the log, not waited).
+# The host-owned direction (her tie-up of a mirror, ownership off) is two-games-enemy-tie.
+# covers: enemy-restrain enemy-down
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[config\] enemy_owner=1 \(default: on with enemy_hits\)
+@guest waitlog 5 \[config\] enemy_owner=1 \(default: on with enemy_hits\)
+waitlog 5 \[config\] enemy_restrain_relay=1 enemy_replay_flush=1
+@guest waitlog 5 \[config\] enemy_restrain_relay=1 enemy_replay_flush=1
+waitlog 5 \[config\] enemy_down_hold=1 enemy_down_hold_radius=120
+@guest waitlog 5 \[config\] enemy_down_hold=1 enemy_down_hold_radius=120
+waitlog 5 \[enemy\] mirror byte checks: [0-9]+/[0-9]+ ok
+@guest waitlog 5 \[enemy\] mirror byte checks: [0-9]+/[0-9]+ ok
+waitlog 5 \[enemy\] own byte checks: 6/6 ok
+@guest waitlog 5 \[enemy\] own byte checks: 6/6 ok
+waitlog 30 \[enemy\] hits: outcome carry checks ok
+@guest waitlog 30 \[enemy\] hits: outcome carry checks ok
+goto mule-camp-sw-lkc
+@guest goto 1521.90 992.00 0
+wait 4000
+?@both action dev_god 2
+@both action dev_enemies 1
+waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+@guest waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+action enemy_probe 5 1
+@guest action enemy_probe 5 1
+waitlog 40 \[enemy\] sync on \(host\).*\(equal
+@guest waitlog 40 \[enemy\] sync on \(guest\).*\(equal
+waitlog 30 \[enemy\] hits on \(host\)
+@guest waitlog 30 \[enemy\] hits on \(guest\)
+waitlog 30 \[enemy\] own on \(
+@guest waitlog 30 \[enemy\] own on \(
+waitlog 10 \[enemy\] hits: the host's hits on her owned ones relayed to her
+@guest waitlog 30 \[enemy\] mirror on id=
+waitlog 10 \[enemy\] camps: n=[1-9]
+# both beacons carry the restrain part (the host sends while it relays: ownership on)
+waitlog 30 \[enemy\] restrain relay on:
+@guest waitlog 30 \[enemy\] restrain relay on:
+waitlog 60 \[shots\] attack registry n=[0-9]+, max id=0x
+@guest waitlog 60 \[shots\] attack registry n=[0-9]+, max id=0x
+wait 5000
+# ---- A, her proximity take of cp 04004 (the host at the camp spot, 63-77 m from 02029: its margin is 40 m)
+@guest action enemy_look 0x2029 15
+waitlog 20 \[enemy\] camp (cp|loose) [0-9A-F]+ -> guest \(proximity: n=[1-9]
+@guest waitlog 10 \[enemy\] OWN id=02029 taken here
+wait 2000
+# ---- B, the tie-up: his Sam 25 m from his follower of 02029 (not within 20 m, not nearer than her by the margin: no back), his
+# camera steered at it (0.8 m up: low enough for a tied MULE); the relay's own send path (a synthetic strand HIT)
+action enemy_look 0x2029 25 0.8
+wait 800
+action shots 4 3 1
+wait 1500
+action enemy_restrain 0x2029 1
+waitnew 5 \[enemy\] restrain watch id=02029 opened: strand HIT #[0-9]+ \(attack 0x15C weapon 41.*\[enemy_restrain test\]
+waitlog 5 \[enemy\] restrain hold id=02029: the copy's own animation kept
+waitlog 10 \[enemy\] restrain HIT sent #[0-9]+ id=02029 k 2 \(strand \(test\); test \(enemy_restrain\)\): to the guest
+@guest waitlog 10 \[enemy\] restrain HIT #[0-9]+ id=02029 from the host \(strand \(test\); test \(enemy_restrain\)\): outcome setter k 2 (called|deferred)
+waitlog 15 \[enemy\] restrain HIT #[0-9]+ id=02029: her copy is restrained now \(SEN1\)
+# the stills: about +1, +4 and +8 s after his SEN1 line (her camera on her 02029 from 6 m)
+@guest action enemy_look 0x2029 6 0.8
+wait 700
+screenshot 05-host-tied-1s
+@guest screenshot 05-guest-tied-1s
+@guest action shots 4 3 1
+wait 2800
+screenshot 05-host-tied-4s
+@guest screenshot 05-guest-tied-4s
+wait 3800
+screenshot 05-host-tied-8s
+@guest screenshot 05-guest-tied-8s
+pad none 0
+@guest pad none 0
+@guest waitlog 5 \[enemy\] OUTCOME id=02029 none -> restrained \(cause host HIT #[0-9]+, strand \(test\)\): read back 1 s after the setter k 2
+waitlog 5 \[enemy\] restrain hold id=02029 released: her outcome \(SEN1\)
+waitlog 5 \[shots\] flushed [0-9]+ replays of id=02029 \(down: her SEN1 after our restrain
+# ---- C, her Fragile down (her own fake: sent in her beacon); the back pressured while she is down, then her clear
+@guest action enemy_sync 9 2 1
+@guest waitnew 5 \[enemy\] enemy_sync 9: guest Fragile test: down \(ours: also sent in our beacon
+@guest waitlog 5 \[enemy\] our Fragile down \(test: down; enemy_sync 9 fake\): told the partner in our beacon
+waitlog 10 \[enemy\] guest Fragile down \(test: down; its beacon\): holding [1-9][0-9]* followers, hiding [0-9]+
+action enemy_look 0x2029 8 0.8
+@guest goto 1350 1050 0
+wait 6000
+screenshot 06-host-guest-down
+wait 14000
+action enemy_sync 0
+waitnew 5 \[enemy\] down hold: on radius 120 m, .*partner test: down \(beacon\), held [1-9]
+nolog \[enemy\] camp (cp|loose) [0-9A-F]+ -> host
+nolog \[enemy\] restrain hold id=02029 ended: timeout
+@guest action enemy_sync 9 2 0
+@guest waitlog 5 \[enemy\] our Fragile back \(enemy_sync 9 fake cleared\): told the partner
+waitlog 10 \[enemy\] guest Fragile back: resuming [0-9]+ \(held [0-9]+, shown again [0-9]+; down [0-9.]+ s; its beacon\)
+# the back may come now (calm after the hold; she is far and the host 8 m away; not waited: a tied-up camp need not be calm):
+# read "camp .. -> host" and "OWN id=02029 outcome carried" in the log
+wait 10000
+screenshot 07-host-guest-back
+# ---- off
+@both action enemy_sync 2
+waitlog 5 \[enemy\] sync off \(debug action\)
+@guest waitlog 5 \[enemy\] sync off \(debug action\)
+nolog \[enemy\] FAULT
+@guest nolog \[enemy\] FAULT
+nolog \[enemy\] hits FAULT
+@guest nolog \[enemy\] hits FAULT
+nolog byte check FAILED
+@guest nolog byte check FAILED
+nolog \[shots\] FAULT
+@guest nolog \[shots\] FAULT
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+nolog restrain HIT #[0-9]+ id=[0-9A-F]{5} refused by the guest
+@guest nolog restrain HIT #[0-9]+ id=[0-9A-F]{5} from the host refused
+@guest nolog \[enemy\] restrain readback id=
+nolog outcome carried.*FAILED
+action enemy_probe 5 0
+?@both action dev_god 0
+@guest quit
+wait 3000
+quit

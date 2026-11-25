@@ -1616,3 +1616,729 @@ Declined, with the reason: the gate save step (the game refuses the forced save 
 lists (R2: the lists change legitimately, a CP adds a MULE; the 5 s key keep covers a partial walk); the back-window host hit
 (G7 / N7, 13.8); the cross-log two-thinking count (N10, above); the spec's keep-across-a-save mode (not built: the reset now
 fires only with a really frozen copy).
+
+## 14. Round 23: M1 "steady ground" and the M2 probes
+
+### 14.0 In short
+
+Round 23 built milestone M1 of the round-22 design: fixes for what the user saw in the round-22 session. It also ran the M2
+probes, which measure what the next milestone (one owner per enemy instead of per camp) needs. Nothing in this round changes
+who owns an enemy: camp ownership (section 13) works as before.
+
+**What M1 built.** Every part is on by default and sits behind its own session.ini key.
+
+| What the user saw (round 22) | What changed | Keys | Section | Tested in a game |
+|---|---|---|---|---|
+| Her strand on a host MULE made it faint, not tied up | A tie-up is sent as a tie-up (HIT kind 5); the owner's game ties its own MULE up. Both directions | `enemy_restrain_relay` | 14.1-14.4 | Yes, both directions, with the test action `enemy_restrain .. 1`; a real strand not yet |
+| A MULE kept shooting on the other screen after it went down | Its queued shot replays are dropped when it goes down | `enemy_replay_flush` | 14.5 | Yes: no replay later than 0.5 s after the down (`enemy-tie.py`) |
+| Mirrors jumping around (p95 error up to 218 m) | Lines that name the worst copy; a copy that cannot hold its place is hidden for 5 s and tried again; a copy in a vehicle is given back to its own game | `enemy_mirror_hold_check`, `enemy_mirror_vehicle` | 14.8 | The lines and the vehicle give-back: yes. The 5 s hide never fired (p95 0.09-0.12 m in every gate) |
+| Every MULE stood up and walked off when the host's Sam died | Copies near the other player are held frozen (or hidden) until the player is back; ownership does not change meanwhile | `enemy_down_hold`, `enemy_down_hold_radius` | 14.9, 14.13 | Yes, both directions, with the test trigger `enemy_sync 9`; a real death not yet |
+| An empty MULE truck was dragged across the other screen | MULE trucks are left to each game: no PARK frames, no re-placing, no mirroring | `vehicle_mule_log`, `vehicle_mule_hold` | 14.10 | Yes: MULEs drove a truck off in both games, 0 teleports |
+| The install line's "15..40 m farther" | Prints each camp's margin | none | 14.8 (7.4) | Log text only |
+
+Round 22's `dev_give` (give weapons and gear, Dev tools page) is part of M1 too; its gate passed again in the final batch.
+
+**How it was tested.** 46 unit test programs pass. The final batch ran 7 hidden scenarios on the final code, and all 7 passed
+(14.15): the three round 23 gates with their log checkers, and four older regressions. Every behaviour that only a real strand,
+a real death or a real long play session can show is still open (14.16).
+
+**What the M2 probes answered (14.14).** Seeing the other player has to be our own test (tier 2), built from the game's pieces:
+we cannot read a MULE's own knowledge of the players, because the probes never found where it is kept. The game's raycast can be
+called safely from the mod. No push lever was found: a copy handed to the guest faced her and never fired within 15 s, with
+any lever. The notice-timing constants could not be fitted from these runs.
+
+**The tie-up relay (14.1-14.7; `session.ini enemy_restrain_relay`, `enemy_replay_flush`, both on by default).** Run in both
+directions by the gates with the test action (14.12, 14.15); a real strand has not run yet. The problem it answers ([O],
+round 22 logs): her strand on a mirror reached the host as a plain HIT (attack 0x15C, the stun, kind sphere/job, part none,
+amount 0, her distance 0.0 m), and the host applied it as damage: the MULE fainted instead of being tied up. A bola (0x102)
+did nothing through the damage path. And shots a MULE fired just before it went down were still replayed afterwards.
+
+### 14.1 The wire: HIT kind 5 (not the pad byte)
+
+"Restrained by me" is a new HIT kind, `ewire::kKindRestrain = 5`; the 80-byte entry is unchanged and byte 19 stays the zero
+pad. For kind 5: b180 = the outcome setter's k (0 faint, 2 restrained; anything else refused), depth = the signal (1 native:
+the acting game's copy showed it, 2 fallback: weapon 41 + attack 0x15C at contact, 3 a hidden-run test; anything else
+refused), amount 0 (a restrain carries no damage), attack the contact's (0x15C strand, 0x102 bola; the usual attack rules),
+b12E the weapon id. Why the kind and not the pad: the kind is what every reader already switches on (the owner must not run the
+damage path for it at all), the validator can check its own fields in one place (`HitOk`), and byte 19 stays reserved and
+zero-checked. An older decoder refuses kind 5 and the pad alike (the whole message), so either way the sender must know the
+partner can take it: the beacon's last free part bit, `shotw::kPartRestrain` (128), set only with the hits part and only when
+this game's outcome setter passed its byte checks. Kind 5 goes only to a partner whose beacon carries it, and the owner's gate
+refuses kind 5 from a partner without it (`attack`). The HITRES gains result 13 `down` ("down already"); it is only ever an
+answer to kind 5, so only a partner with the part ever sees it.
+
+### 14.2 The acting side (whoever strands the copy)
+
+Both directions run the same code (`enemy_combat.cpp`): the guest on her mirror of a host enemy (P1a), the host on its
+follower of one she owns (P1c, while it relays its hits: `enemy_owner_hits`).
+
+* A captured HIT of ours on a copy with attack 0x15C or weapon 41 (strand) or attack 0x102 (bola) is held back, not sent
+  (`erules::RestrainTrigger`), and a watch opens on the copy (`[enemy] restrain watch id=XXXXX opened: strand HIT #n (attack
+  0x15C weapon .., our Sam .. m) held up to 1.5 s; the copy's +0xEA4 read each tick (now none)`). The copy's pose is held from
+  that moment (14.3).
+* Each tick the watch reads our copy (`erules::OutcomeOf` of +0xEA0 / +0xEA4, the reads the outcome table already makes;
+  no new address) and decides (`erules::RestrainWatch`): restrained (bit 21) newly set: send kind 5 k 2 (native); faint (bit
+  19) newly set: kind 5 k 0 (a knockout); after 1.5 s with nothing: the fallback when the held HIT was the strand's attack
+  0x15C AND weapon 41 with our Sam within 2.5 m (kind 5 k 2, depth 2, logged as the fallback), else the held HIT goes out as
+  before (`no tie-up: the held HIT sent`). The watch closes without sending when the copy is no longer frozen here, or the
+  owner has it down already (the guest: its OUTCOME table; the host: her SEN1 defeat bits).
+* The scan (10 Hz): any frozen copy within 30 m of our Sam that goes from none to restrained or faint here with no HIT of ours
+  seen opens a watch too (a tie-up or knockout by a path that never reaches OnHit) and is sent the same way.
+* Sent: `[enemy] restrain HIT sent #n id=XXXXX k 2 (strand; native: the copy's +0xEA4): to the host; the held stun HIT not sent`
+  (fallback: `(strand (fallback); fallback: weapon 41 + attack 0x15C at contact)`). The old stun HIT of that contact is never
+  sent; further strand / bola HITs on it while a restrain waits are swallowed (`not sent: a restrain of ours on it waits for
+  the owner`).
+* The owner's answer: `[enemy] restrain HIT #n id=.. applied by the host (its outcome now restrained): the copy held until the
+  owner's outcome`, or `refused by the host: <reason>: the copy re-posed with the owner's frames` (the hold ends at once).
+
+### 14.3 The pose hold
+
+While a watch or a sent restrain is open the copy shows its own animation: `esync::HoldCopy` pauses its transform writes
+(DriveMirror) and its SEP1 pose apply (GivePose) in both loops (the guest's mirrors, the host's followers), and its pose slot
+switches from apply to capture so the copy's own pose is recorded (`[enemy] restrain hold id=XXXXX: the copy's own animation
+kept (...; up to 3.0 s)`). It ends on the owner's down OUTCOME (the guest), her SEN1 down bits (the host), a refusal, or after
+3 s (`[enemy] restrain hold id=.. ended: timeout (3.0 s, no owner outcome): the copy re-posed with the owner's frames`); then the
+owner's frames are blended back in from the last captured own pose over 250 ms (`released: the host's OUTCOME (held .. s): the
+owner's frames blended back in over 250 ms`). A slot freed or given to another mirror meanwhile is never touched.
+
+### 14.4 The owner side
+
+`OwnerRestrain` (the host for her kind 5; the guest for the host's, in the relay branch): `erules::RestrainGate` (the relay on
+here and the outcome setter ready, the sender's part, k 0 / 2, the world fingerprint, this game owns it, the same in-use MULE
+realized, not dead, not hidden or asleep, outcome none) and then the outcome setter (0x142AA8000, byte-checked since round 21;
+`ecombat::SetOutcome`, SEH-guarded) with k 2 (or k 0) instead of the stun: `[enemy] restrain HIT #n id=XXXXX from the guest
+(strand; native: the copy's +0xEA4): outcome setter k 2 called (same MULE, outcome none before)`. A deferred call (a hit of
+this frame still queued) is tried again for up to 1 s. One second after the setter the copy is read back: `[enemy] OUTCOME
+id=XXXXX none -> restrained (cause guest HIT #n, strand): read back 1 s after the setter k 2` (or `restrain readback id=..: k 2
+-> now .. (not restrained)`). On the host the outcome table logs it too, its cause naming the restrain (`cause guest HIT #n,
+strand`) and the OUTCOME goes to her as before. Every kind 5 is answered with a HITRES (the guest's answers to the host are
+new: the host takes a HITRES only for its own open restrains). k 2 through the setter had never run in a game before this
+round ([U]).
+
+### 14.5 The replay flush
+
+When a down outcome (faint, sleep, restrained, dead, other) for an enemy reaches a game, that shooter's queued enemy shot
+replays are dropped at once (`shots::FlushEnemyReplays`): on the guest by the host's OUTCOME (`[shots] flushed n replays of
+id=XXXXX (down: the host's OUTCOME; .. in all)`, logged also when n is 0), on either game by the partner's SEN1 defeat bits
+(logged only when something was dropped), and on the host after its own restrain by her SEN1 (logged always). Only the edge
+into a down outcome flushes (`erules::FlushOnDefeat`).
+
+### 14.6 Keys, logs, tests
+
+* `enemy_restrain_relay=1` (default; 0: kind 5 is neither sent nor taken, the beacon has no restrain part, strand contacts go as
+  the old stun HIT) and `enemy_replay_flush=1` (default). `[config] enemy_restrain_relay=1 enemy_replay_flush=1`. Both are
+  scenario keys (testenv).
+* `[enemy] restrain relay on: ...` / `off (<why>)`; the status (`enemy_sync 0`) adds `[enemy] restrain relay (round 23): ...`
+  with the counts.
+* `enemy_restrain <id | 0> <0 native | 1 fallback | 2 knockout>` (hidden runs; [debug-actions.md](debug-actions.md)): the same
+  send path as a real tie-up, from our copy.
+* Unit tests: `TestRestrain` (enemy_rules_tests: the trigger, the fallback's evidence, when to send, the owner's gate and its
+  refusals, the setter's answer, the hold, the flush edge, the keys) and `TestScbRestrain` (enemy_wire_tests: kind 5's round
+  trip beside a bullet HIT, its field rules on both sides, the pad, HITRES 13, the part bit).
+
+### 14.7 Open ([U] until a run)
+
+* Whether a frozen copy is ever natively restrained at all: her strand's damage message on a mirror is dropped at OnHit (the
+  host decides), so if the tie-up runs through that message the copy never shows bit 21 and only the fallback fires. The
+  fallback needs the HIT's b12E to be 41 for the strand ([U]: the round-22 logs show the attack, not the weapon byte).
+* Whether a held (Occupied) copy plays a native restrained animation while its slot captures, and whether the outcome setter
+  takes on the owner's copy mid-fight (k 2 never ran in a game).
+* A refusal leaves the copy re-posed but sends no stun in its place (the owner said no: down already, dead, not that MULE).
+* Since the gates (14.12, 14.15): the setter's k 2 does take on the owner's MULE ([O], both directions, read back restrained
+  1 s later), and the hold ends on the owner's outcome 1.6 s after the watch opened. The first two points above are still
+  open, because the gates use the test action (mode 1), not a real strand.
+
+### 14.8 Round 23 B: the mirrors (diagnostics, not holding, in a vehicle; `enemy_mirror_hold_check`, `enemy_mirror_vehicle`)
+
+Design 7.2 and 7.4. The round-22 logs showed the mirror error p95 climbing to 218 m with about 50 teleports per 5 s: some
+copies never hold the owner's place, and the only line was the 5 s `[enemy] mirrors: n=..` count. This stage adds the lines
+that name the copy that fails, gives up on a copy that does not hold, and gives back a copy that sits in a vehicle.
+
+**Diagnostics (log only, both sides; the owner label is "guest" on the host's followers):**
+
+* Every 5 s, while the window's error p95 is above 5 m: `[enemy] mirror worst id=.. err .. m (teleports .. in 5 s, held .. s):
+  host state 0x.. (realized hidden dead defeat), phase .. (..), bits 0x.., host in vehicle .., host seq .. (frame age .. ms);
+  here realized .., held .., in vehicle .. (<test>), parent .., anim ..; ea4 .. a88 ..` for the frozen copy with the largest
+  error in those 5 s.
+* Once per id, the first time its error is above 20 m: the same full line as `[enemy] mirror first over 20 m id=..`.
+* Every 30 s: `[enemy] mirror error p50 .. p95 .. max .. m (n .. samples in 30 s, .. mirrors now; worst lines .., first over
+  20 m ..; not holding: .. hidden now, .. in all, .. retries; vehicle releases ..)`.
+
+**Not holding (`enemy_mirror_hold_check=1`, default).** The driver keeps each mirror's 3 newest teleports
+(`erules::TeleportRing`). A mirror whose error, measured before the drive writes, is still above 10 m after 3 teleports within
+2 s does not hold its owner's place (`erules::NotHolding`). It logs `[enemy] mirror not holding id=..` (the full line), is
+released (`ReleaseMirror(.., "not holding (the host's place, after 3 teleports in 2 s)")`), and, when that release really
+posted, is hidden and put to sleep with M0's hide (only the bits we set are restored; never a statue):
+`[enemy] mirror id=.. not holding (#n): hidden and asleep here for 5 s, then tried again (..); its shots are still replayed
+from the owner's place` (the first 3 per id, then every 10th). After 5 s (`erules::NotHoldRetry`) it is shown and woken
+(`shown and woken again (not holding: the 5 s retry ..)`), and the entry may mirror it again. Off, a reset or the key off
+shows every hidden copy at once. While it is hidden, the entry loop skips it, and its enemy shots are still taken and replayed
+from the owner's place: `esync::NotHoldingShooter` gives the SEN1 track's place at the render time in place of the mirror's
+transform (the 30 m origin check runs against it). The `[shots] enemy replayed` line counts them as `from a not-holding copy's
+owner place ..`. The host's own followers (P1b, guest-owned) get the diagnostic line once and keep being driven: the guest's
+game owns them.
+
+**In a vehicle (`enemy_mirror_vehicle=1`, default).** Every 1 s, on both sides and for every lease (not only at the entry), the
+copy is tested: first the entity's parent chain (`+0x70`, the old `InVehicle`), then, when the byte checks passed, the MULE
+actor's ride fields:
+
+* `+0xE20`: the vehicle's actor id (low 21 bits; `0x1FFFFF` none). The ride action FUN_142B51E70 writes it at `0x142B52075`.
+* `+0x3C0`: the seat (0..15; -1 none). The same ride action sets it at `0x142B51F69`, behind `cmp [rax+0xEA0],1`. The actor's
+  constructor (`0x142A9824C`) sets both to none (`[0x144AF1150]` is `0x1FFFFF`). [O static]
+* `[enemy] vehicle test byte checks: n/4 ok`. With fewer than 4 the ride fields are off for the run. A read fault turns them off
+  too (logged). [U] whether getting out clears them (probe P6): a copy that stays "in a vehicle" after getting out would be
+  given back for good. The `[enemy] vehicle id=..: <side> copy is in a vehicle (test: <which>; +0xE20 0x.. seat ..)` /
+  `.. out of its vehicle` lines (24 at most) show it.
+
+What happens on each side:
+
+* SEN1 carries the owner's answer as the entry flag `kInVehicle` (8; the entry and frame sizes are unchanged). The decoders now
+  refuse bits 4-7 (no sender ever set them).
+* On the guest, a copy seated here or on the host is not taken (`Refusal::host_in_vehicle`, "in a vehicle on the host ..").
+  A lease is given back alive to her own game (M0 release, not hidden; `LeaseVerdict::release_vehicle`): `[enemy] mirror
+  id=.. in a vehicle (<side>; our test: .., +0xE20 0x.. seat ..): released to its own game until vehicles are synced`.
+* On the host, a guest-owned follower seated on either side is given back to the host's game (a forced back) and its camp
+  takes nothing for 15 s: `[enemy] follower id=.. in a vehicle (..): given back to the host's game until vehicles are synced
+  (out of its camp's takes 15 s)`. A host enemy in a vehicle is not takeable.
+
+**7.4 (the install text).** The own-installed line now prints the camp's margin as `H = clamp(0.3 r + 10, 15, 40)`, per camp,
+instead of "the host 15..40 m farther". When a camp's take is refused for the margin, the `camp: no take` line adds `(the
+host .. m farther than her; this camp's margin H = clamp(0.3 x r + 10, 15, 40) = .. m)`.
+
+**Keys, logs, tests.**
+
+* `enemy_mirror_hold_check=1` and `enemy_mirror_vehicle=1` (defaults). The config line is `[config] enemy_mirror_hold_check=1
+  enemy_mirror_vehicle=1`. Both are scenario keys (testenv).
+* At install: `[enemy] mirror checks (round 23 B): hold check .. (..), vehicle test .. (every 1 s: ..); diagnostics: ..`.
+* `TestMirrorsB` (enemy_rules_tests) covers the gates, the teleport ring and its 2 s window, the not-holding boundaries
+  (10 m, 3 teleports, off), the 5 s retry, the ride fields (none, 0, seat -1/16, the parent first), the lease's vehicle
+  release (both sides, the check off keeps, silence and off first), the entry refusal, and the keys. enemy_wire_tests covers
+  kInVehicle's round trip and the refusal of bits 4-7 both ways.
+
+Open ([U] until a run):
+
+* P6, whether getting out clears `+0xE20` / `+0x3C0`. Partly answered (14.14, P6): the fields read none again within about
+  1 s of boarding, while the parent chain then says "in a vehicle"; no MULE got out in any run.
+* Whether a MULE driving a truck has a parent chain at all. The ride fields are the fallback.
+* Whether 10 m after 3 teleports flags copies that only lag on a steep slope or a ladder. Every hide is logged with its line,
+  and the retry is 5 s.
+
+### 14.9 Round 23 C: no mass release when a player is down (`enemy_down_hold`, `enemy_down_hold_radius`)
+
+Before this change, when the host's Sam died or went to KnotSpace, his game hid or unloaded his MULEs. The guest then saw "host
+hidden" for every mirror, and M0 gave them all back to her game, alive. An enemy that had just fainted or been tied up near her
+stood up and walked off. The hand-over was also thrown away by the reload that follows a death.
+
+**What "down" means.** Death (the game state's GameOver bit) or KnotSpace (its KnotSpace bit: death, repatriation or limbo).
+A faint or a stagger is never down. Each game reads its own player's state every tick. Down counts at once. Back counts only
+after 1 s of not down, because the flags can flicker during the game's own cutscene and load steps.
+
+**How the partner learns it.** Through the SEH1 beacon, byte 22 (until now a 0 pad byte; the 24-byte size is unchanged). It
+holds 0 (up), 1 (death), 2 (KnotSpace), 3 or 4 (the test fake below). Byte 23 must still be 0. A change is sent at once and then
+1 Hz for 5 s. The code is sent only to a partner that advertises the tie-up part (`kPartRestrain`), because an older build
+refuses a beacon whose pad byte is not 0. If the partner's build is older, or the partner has `enemy_restrain_relay=0` or
+`enemy_hits=0`, nothing is sent and the old rules apply. The log says so: `(not sent: the partner's build or settings cannot
+take it)`.
+
+**What happens while the host's Sam is down (on the guest).** Each mirror is decided on its own (`erules::DownHold`):
+
+* Within `enemy_down_hold_radius` (120 m by default) of her Fragile, and it had the host's pose here before: **held**. It stays
+  frozen in its last pose. Nothing is written to it: no place, no pose, no posts. A copy whose last outcome was faint, sleep or
+  tied up therefore stays lying down.
+* Within the radius but never posed: **hidden** here, still frozen. Hiding uses only the hidden bit, and only while it is the
+  same in-use MULE.
+* Within the radius and her own game already hides or sleeps it: held and never touched.
+* Farther than the radius and down (faint, sleep, tied up, dead): **hidden**, never given back alive.
+* Farther than the radius and standing: the usual rules, so M0 gives it back as before. Far from her, that does no harm.
+
+The hold replaces the lease verdicts that the host's side or the distance cause: keep, silence, host unrealized, host hidden,
+host far and out of range. It does not replace a game sequence taking our copy, our own copy unloading, a vehicle, our own
+cutscene hold, the switch, the link or the world.
+
+No new mirror is made while he is down (`Refusal::owner_down`). These refusals are counted in the status line, not logged per
+enemy. There is no hand-over to her game for this case (critique R7c).
+
+**When it ends.** When his Sam is back: every copy we hid is shown again, and the held ones are driven and posed again from the
+next tick. It also ends on a world reload (that world's actors are forgotten, never touched), a link change (shown again), the
+switch off, or a fault. A copy is always shown again before any release posts, because a copy given back while hidden here could
+never fire again.
+
+**The other way (on the host).** While the guest's Fragile is down, the host's followers (his frozen copies of the enemies she
+owns) follow the same decision. Held ones skip the follower guard, the vehicle test, the drive and the pose. Hidden ones go
+through the follower guard's own table, so every existing return shows them again. On the host, ownership freezes while
+**either** player is down: no take, no back, no forced back, no straggler and no "loose" back. The host logs this every 10 s
+while it holds a change back.
+
+**Keys.**
+
+* `enemy_down_hold=1` (default). 0 restores the old rules (the mass release).
+* `enemy_down_hold_radius=120` (metres, 20..1000).
+* Both are scenario keys and launcher overrides in testenv.
+* Config line: `[config] enemy_down_hold=1 enemy_down_hold_radius=120`.
+
+**Logs a scenario can wait for.**
+
+* `[enemy] our Sam|Fragile down (<why>): told the partner in our beacon` and `[enemy] our Sam|Fragile back (...)`.
+* `[enemy] host Sam down (<why>; its beacon|enemy_sync 9 fake): holding n mirrors, hiding m (k far and standing under the usual
+  rules; radius 120 m; no new mirror, no ownership change until back)`. On the host the line reads `guest Fragile down (...):
+  holding n followers, hiding m (...)`. With the key off, the line ends `enemy_down_hold=0, the old rules (...)`.
+* `[enemy] host Sam back: resuming n (held x, shown again y; down z s; ...)`, or `guest Fragile back: ...`.
+* `[enemy] host Sam still down, now <why>` when the reason changes.
+* Per copy: `[enemy] down hold id=XXXXX: hidden here, kept frozen (...)` and `... shown again (...)`. On the host:
+  `[enemy] down hold id=XXXXX: the host's follower hidden here, kept frozen (...)`.
+* Ownership on the host: `[enemy] down hold: n ownership change(s) not made (her Fragile|our Sam|both players down: ...)`.
+* `[enemy] down hold ended: the world changed|the link changed|no co-op role (...)`.
+* `enemy_sync 0` adds `[enemy] down hold: on radius 120 m, ours up (game state), partner up (beacon), held n, hidden n,
+  ownership free|frozen; downs n, resumed n, holds n, hides n, entries refused n, ownership changes not made n`.
+
+**The test trigger (hidden runs only).** `enemy_sync 9 <1 host|2 guest> <0 clear|1 down|2 limbo>` fakes a player down. Faking
+the partner's player feeds the same state the beacon would, on this game only. Faking our own player also sends the code in our
+beacon, so the partner holds as it would for a real one. A link change clears the fakes. The log line is `[enemy] enemy_sync 9:
+host Sam test: down (...)`.
+
+**Tests.** `TestSamDown` (enemy_rules_tests) covers:
+
+* the game-state bits (faint and Subspace are never down);
+* the latch (flicker, a new reason at once, back after 1 s) and the receiver's changes;
+* the ownership freeze (either player);
+* every hold, hide and usual case, including the radius edge, an unknown distance and every defeat, both near and far;
+* which lease verdicts the hold overrides and which it does not;
+* the `owner_down` refusal and its order after the cutscene check;
+* the keys.
+
+shot_wire_tests' `TestBeacon` covers byte 22's round trip for each code, the refusal of codes above 4 both ways, and byte 23
+still having to be 0.
+
+Open ([U] until a run):
+
+* Whether the host's KnotSpace drops his `coop::WorldReady`. If it does, his fingerprint resets and his beacon's print goes to
+  0, and the guest's gate goes to "waiting" and turns sync off. Since the review fixes (14.13) the hold covers that path: her
+  mirrors are kept frozen, not released. The first run with a real death will show it (`[enemy] down hold: sync off (...)`
+  right after `host Sam down`).
+* Whether the host's SEN1 "hidden" can reach the guest before his beacon's down code. Both travel on the same link, and the
+  beacon goes out on the tick the latch sees KnotSpace. If the MULEs are hidden on that same frame, one lease pass could release
+  first.
+* Whether a held copy's pose slot keeps showing the last frame with no new one pushed [I]. If it does not, a held copy falls back
+  to its own idle pose, still frozen in place.
+* Whether bit 42, seen with KnotSpace in the user's death log, or Subspace (bit 8) should also count as down.
+
+### 14.10 Round 23 D: the MULE trucks (`vehicle_mule_log`, `vehicle_mule_hold`, both on by default)
+
+Design section 8, V1 and V2 (V3, a MULE truck shared with its driver, is not built). Before this stage the shared vehicles
+(vehicle_sync=5) treated a MULE's truck like any other truck: the guest removed its own copy and mirrored the host's, and
+vehicle_drive sent PARK frames for it and teleported the parked copy to the host's spot. When a MULE got in and drove off in
+one game, the other game's copy was dragged after it with nobody inside, or a MULE driving in the guest's game was pulled
+back to the host's parked spot. Now a MULE truck is left to each game: each game's own MULEs drive their own copy.
+
+**What a truck is (V1, `vehicle_mule_log=1`).** Each poll (about 4 times a second), every unit of the truck pool is put
+into one class (`trucks::Classify`, `native/mod/vehicle_truck_rules.hpp`):
+
+* the model, from the spawned entity's resource: key `truck_npc` is a MULE truck (celd), `truck` is the players' truck
+  (ca02). A truck that is not spawned near either Sam has no entity, so its model is "unknown" [O];
+* the driver: unit +0x158, the rider id the game writes in FUN_142f7f810 (0x1FFFFF = none) [O]; its type is
+  `(id & 0x1FE000) >> 13`: 0 a player, 1 a MULE or another NPC [O]. The game also sets +0x19D bit0 (a player drove it) or
+  bit1 (a non-player drove it); those bits stay after the driver gets out [O]. The entity's seat (SetDriver 0x142F7C4C0:
+  +0x63C = 1 and +0x8B0 = the driver's id) is read too; when the rider is none, the seat's id stands in;
+* the mod's own follower (vehicle_drive's NPC controller) seats with driver none, so a truck the partner drives is never
+  taken for a MULE truck.
+
+The classes: player vehicle, player vehicle NPC-driven, MULE truck empty, MULE truck MULE-driven, MULE truck player-driven,
+truck model unknown. For a MULE driver the enemy sync adds its camp and seat (`esync::MuleRideInfo`). Every 10 s, and at
+most once a second when something changes, each game sends the other its trucks' facts: message type 50 ("STK1", 12 bytes
+per truck, keyed by the host's id; strict validation, duplicates refused). Facts older than 25 s are forgotten.
+
+**Left to each game (V2, `vehicle_mule_hold=1`).** `trucks::Hold` decides per truck, in this order:
+
+1. off, or the partner drives it through vehicle_drive: shared;
+2. a player drives it in either game: shared (released at once);
+3. a non-player drives it here, or in the other game: left to each game;
+4. it is a MULE truck here, or in the other game, and no player drives it: left to each game.
+
+A hold starts at once and ends 5 s after its last reason (`trucks::HoldLatch`), or at once when a player gets in. While a
+truck is held:
+
+* vehicle_share does not remove the guest's copy, does not re-place it onto the host's spot, does not mirror it, does not
+  tell the host when the guest's copy goes, and the host ignores the guest's removal of it;
+* vehicle_drive sends no PARK frames for it and does no parked correction, push claim, final placement or far placement;
+* a MULE seated in a truck's driver seat counts as "in a vehicle" for the enemy mirrors (14.8: `VehicleTest` reason
+  "a truck's driver seat (unit +0x158)"), so its mirror is given back and each game's MULE drives its own truck.
+
+A player who gets into a MULE truck makes it shared again (the rules above), the same as any truck.
+
+**Byte checks.** Three sites (optional group `kTrucks` in vehicle_share's `kSites`): FUN_142f7f810 (the +0x158 / +0x19D
+writes), SetDriver at 0x142F7C537 (the seat writes) and 0x142F7C578 (its player-id branch). If one does not match, the truck
+rules are off and trucks are shared as before (`[vshare] MULE trucks (round 23 D): ... OFF: a truck byte check failed`).
+Every read sits behind an SEH guard; a fault turns the truck rules off for the run (`[vshare] FAULT in the MULE truck rules:
+off for the run`).
+
+**Logs.**
+
+* `[config] vehicle_mule_log=1 vehicle_mule_hold=1`; `[vshare] MULE trucks (round 23 D): ...` at start.
+* `[vshare] MULE truck 0x...... left to each game (<why>; <class>, driver 0x......, <the other game's facts>)`, and
+  `... shared again (...)` (at most 24 lines per world).
+* `[vshare] MULE truck 0x...... left to each game (<why>): guest: not mirrored` (or not removed, not re-placed, its going is
+  not told, the guest's removal ignored): once per truck per 30 s.
+* `[vdrive] MULE truck 0x...... left to each game (<why>): no PARK frames` (or no parked correction, ...): once per 30 s.
+* `[vdrive] MULE truck 0x......: driver 0x...... owner host|guest (<kind>, seat .., camp ..; <why>)` when a non-player gets in,
+  and `driver none owner .. (0x...... got out; ..)` when it gets out (at most 200 lines).
+* `[vshare] the partner's game sends its truck facts: N trucks (.. MULE trucks, .. driven by a non-player)` once.
+* After each snapshot: `[vshare] host: snapshot: truck ...` / `guest: the host's snapshot: truck ...` and a `trucks:` summary.
+* `action vehicle_share 9 [tag] [m]`: the truck census (docs/debug-actions.md); it also runs at the end of every
+  `enemy_census` while `vehicle_mule_log=1`. `action vehicle_drive 0` adds
+  `[vdrive] MULE trucks left to each game (round 23 D): PARK frames skipped .., parked corrections .., ...`.
+
+**Where to find one.** The MULE Camp Southwest of Lake Knot City (`goto mule-camp-sw-lkc`, area 200, 1517.9 992.0 172.1)
+has two MULE trucks: 0x020010 at (1584.7, 1059.0, 175.2), about 95 m north-east of the goto spot, and 0x02000F at
+(1666.8, 990.4, 174.9), about 150 m east (its +0x19D bit1 is set: a MULE drove it before) [O, complete-100 save]. Trucks
+0x020012 and 0x020013 near the MULE Camp Southwest of Central Knot City (around 29 -1275 and 97 -1250) and 0x020014 (1218
+-27) also carry bit1 only, so they are likely MULE trucks too [I]; their model shows only when Sam is near.
+
+**Runs.** `trucks-census-solo` (solo: the census before and at the camp) and `two-games-mule-trucks` (two games at the
+camp: both load the rules, both send their facts, both hold 0x020010 and 0x02000F, the host skipped about 2000 PARK frames
+for them in 17 s, no FAULT) both passed. **Tests:** `tests/vehicle_truck_rules_tests.cpp` (actor types, the classifier, the
+hold order, the latch, the STK1 codec round trip and its refusals, the ini keys) and `VehicleTest`'s truck-driver reason in
+`tests/enemy_rules_tests.cpp`.
+
+Open ([U] until a run):
+
+* No MULE was seen driving a truck in these runs (the camp stayed calm). Since then, in the gate `two-games-truck-hold`
+  (`20261125-171219`), five of the host's MULEs boarded truck 0x02000F, the guest gave her five mirrors of them back to her
+  game, and her own MULEs drove her copy. The `[vdrive] MULE truck 0x02000F: driver 0x00202E owner host` lines (both games), the
+  "MULE-driven" class and the in-vehicle releases all showed [O] (14.15).
+* An unspawned truck's model is unknown. Spawned MULE trucks showed unit +0x198 = 00011907 and rec2 = 0003, the one
+  unspawned truck listed A0800900 / 005E; whether these tell a MULE truck before it spawns is [U].
+* A MULE truck spawned new in the host's world (an ADD) can reach the guest before the host's facts for it; until they
+  come the guest uses its own facts only.
+
+### 14.11 Round 23 E: the M2 probes (`enemy_m2_probes`, off by default; hidden runs only)
+
+Design section 10 ("M2 Probes", critique R2 / R3). The next step for the fights near Fragile (ownership per enemy instead of
+per camp) depends on what the game's own AI does with a copy we hand over: does a frozen copy still keep its knowledge of our
+Sam up to date (R2), and how fast does a copy handed to the guest turn to her Sam and fire (R3). These probes measure that.
+They are debug actions only (`enemy_m2 <probe> [id] [arg]`, docs/debug-actions.md), in hidden runs with
+`session.ini enemy_m2_probes=1` (default 0; `[config] enemy_m2_probes=0|1` at start). They only read the game, except P2's
+forced hand-over and its levers. Every read is fault-free (ReadProcessMemory) or behind an SEH guard; a fault logs
+`[probe] FAULT in <where>: probes off for the run`. Each probe logs `[probe] P<n> ...` lines and exactly one
+`[probe] P<n> result ...` line, also when it is skipped.
+
+**Byte checks (P0).** 27 sites and data checks in four groups: knowledge (the DSAINoticeAndKnowledge vtable 0x143E13028, its
+ctor 0x142E936F0 and RTTI factory), raycast (the visual sense's call 0x141C20CE0, its world 0x14578C140, the filter vtable
+0x143BA8938, the array free 0x1419D5870, the result init 0x14240B7E0), perception (the visual sense's read of entity +0x314
+at 0x142E4F314) and the stimulus multiplier (+0xA4) [O]. A mismatch logs `[probe] byte check FAILED: <site>` and turns that
+probe off. Both games: `[probe] P0 result: knowledge ok, raycast ok, perception ok, stimulus +0xA4 ok; ... role n` [O].
+
+**The probes.**
+
+* **P1** (a frozen copy, every 0.5 s): find the copy's DSAINoticeAndKnowledge (a search from the entity, its AI agent +0x170,
+  its AIIndividualComponent and that component's +0x50, depth 2, pointers to it or held inside a block, at most 60000 reads),
+  list its entries (type, actor, place) and say whether a PlayerVisual (type 1) entry for our Sam is being written (fresh: its
+  bytes changed within 1.5 s), was written once and left (stale) or is missing (none). Pure part: `eprobe::FreshTrack`.
+* **P2** (the guest): armed before a forced hand-over (`enemy_own <id> 2` on the host); from the moment the copy is hers, one
+  lever is applied (a nothing, b a test hit owned by her Sam, c AlertForEntityWithPerfectThreatInfo -> her Sam, d' her Sam's
+  own visual stimulus +0xA4 three times for 1 s, restored after) and the copy sampled every 0.1 s for 15 s: the time to
+  within 30 deg of her Sam and to its first shot (`eprobe::Push`).
+* **P3**: entity +0x314 of our Sam and the partner body, and +0x88 of our agents' visual stimuli in the AI manager's
+  thread-safe visual list (0x147BE0D38 + 0x3C398) [O].
+* **P4**: the game's own raycast (0x141C20CE0 with the visual sense's filter) from a copy's eye (+1.6 m) to our Sam's chest
+  (+1.0 m) and head (+1.5 m), one call per tick, alternating, 0.6 m cut off each end (`eprobe::Shorten`). Clear when it
+  reports no hit [O: the visual sense tests the same count with `cmovg`].
+* **P5** (the host's own MULE, every 0.25 s): phase (and +0x114 / +0x118), state, bits, its angle to our Sam, and the
+  knowledge as in P1 (`eprobe::PhaseTrack`).
+* **P6**: for every MULE near Sam, is it seated in a vehicle: its parent chain (entity +0x70, up to 6 levels, a vehicle
+  among them) and its ride fields (actor +0xE20 the vehicle's id, +0x3C0 the seat; `esync::RideFields`, the 14.8 checks).
+
+`enemy_look -8 <m>` now also takes a negative m: our Sam that far behind the enemy, facing its back (P1's "behind" step, P2).
+
+**Results** (runs 20261125-154710 `two-games-enemy-probe` and 20261125-155517 `trucks-m2-probe-solo`, both PASS, no FAULT;
+the lines are in the round's `probe-lines.txt`):
+
+* P0: every group ok on both games and solo [O].
+* P1 / P5: **the knowledge object was not found** from any root, on a frozen copy (the guest) or a live MULE (the host and
+  solo), not even one belonging to another agent (0 seen in 4700-7200 reads). So R2 is still open: P1 reported `none`
+  because there was nothing to read, not because the entry is missing. The object exists (ctor 0x142E936F0 builds 0x498+
+  bytes and writes the vtable [O]); it is most likely owned by something other than the MULE itself, such as its camp
+  (DSMuleCPGameActor) or the AI manager [U].
+* P5 (no knowledge needed): the host's own 02029 with Sam standing 11 m in front of it went from phase 0 to 5 in 0.73 s, turned
+  from 135 to 10 deg off Sam in 2.8 s and walked in to 3 m (solo) [O]. In the two-game run it stayed at phase 0 at 25-35 m,
+  crouched or standing, and was at phase 5 already at 12 m (it noticed during the 1.5 s before the probe started) [O].
+* P4: from the guest's frozen copy to her Sam 8-13 m in front: 300 calls in 5 s, chest and head clear on every call [O]. The
+  raycast is safe to call from the game thread once a tick.
+* P3: our Sam's entity +0x314 reads 0 and the partner body's 0x1FFFFF (none); our Sam's visual stimulus +0x88 is 0 on the
+  guest (her Sam's actor id is 0 there) [O].
+* P2 (run 20261125-154710, her Sam placed 10 m in front of the copy, so it already faced her): with every lever the copy was
+  hers 0.2-0.3 s after the forced take, faced her (0-3 deg) and **never fired in 15 s**, even after c (the perfect-threat
+  alert, called) or d' [O]. The scenario now places her Sam 10 m behind the copy so the turn is measured too; that version
+  has not run yet [U].
+* P6: 10 MULEs within 400 m; after the camp was alerted, MULE 0202E sat in truck 0x02000F: the parent chain reached a
+  DSVehicleTruck and the ride fields read +0xE20 0x2000F, seat 0. Both tests agree, and the truck census showed the same
+  (`driver 0x00202E (MULE)`) [O].
+
+**Tests.** `tests/enemy_probe_rules_tests.cpp` (`st_enemy_probe_rules_tests`): the type names, fresh / stale / none and the
+verdict, angles and the cone, the push timing and its text, the phase tracker, the ray cut, the entry signature, plausible
+pointers, actor ids, the ini key.
+
+Open:
+
+* Where the DSAINoticeAndKnowledge of a MULE is kept (its camp, the AI manager or a group object) [U]; P1 / P5 log
+  `knowledge not found` until a search root reaches it.
+* Why a copy handed to the guest faces her Sam but does not shoot within 15 s, even with the perfect-threat alert [U].
+* The meaning of a knowledge entry's floats from +0x38, and whether the raycast's first hit is at result +0 [I].
+
+### 14.12 Round 23 F: the M1 gates (three hidden scenarios, two log checkers)
+
+Round 23 is checked by three two-game scenarios at the MULE Camp Southwest of Lake Knot City (cp 04004). A gate passes only
+when Run-Batch says PASS **and** its checker script says PASS. Run-Batch does not run the checker; run it on the run folder
+afterwards. No new session.ini key; the scenarios rely on the round 23 keys being on by default.
+
+* **`two-games-enemy-tie`** (`ini enemy_owner=0`: every MULE belongs to the host). The host walks up to MULE 02029 and raises it
+  to combat, so the camp shoots at him and the guest's game replays the shots. The guest then stands 1.5 m from the MULE whose
+  shots she replayed last and ties it up with the test action (`enemy_restrain 0 1`: the same send path a real strand uses).
+  The scenario waits for her hold, the HIT sent, the host's outcome setter and read back, her `OUTCOME ... none -> restrained`,
+  the hold released and the replay flush, with stills on both screens about 1, 4 and 8 s after her OUTCOME. Then the host's
+  Sam goes down with the test trigger (`enemy_sync 9 1 1`): her mirrors are held, the tied MULE stays `restrained` and is not
+  "given back alive"; the clear brings `host Sam back: resuming`. Last, round 23 B's 30 s mirror summary must show p95 under
+  5 m, or a `mirror worst` line must name the worst one.
+  Checker: `python -I tools\testenv\enemy-tie.py build-testenv\runs\<run>`. It reads the tied MULE's id from her watch line and
+  fails when a replay of it is logged later than 0.5 s after her OUTCOME, when there is no flush, or when her mirror of it lost
+  its lease between her OUTCOME and the host's Sam back.
+* **`two-games-enemy-tie-host`** (the launcher's default, camp ownership on). The reverse: she takes the camp by proximity, so
+  02029 is hers and a frozen follower on the host; the host ties his follower up (`enemy_restrain 0x2029 1`), her game applies
+  it, his game sees her copy restrained (`her copy is restrained now (SEN1)`), releases the hold and flushes. Then her Fragile
+  goes down with the test trigger (`enemy_sync 9 2 1`): he holds her followers and no camp change happens until she is back.
+  Checker: `enemy-tie.py <run> --reverse`.
+* **`two-games-truck-hold`** (the launcher's own Local test files). The truck census on both games lists the camp's MULE trucks,
+  the guest's vehicle table must be fully bound (`table n, bound n`), then 60 s pass with both Sams at the camp, the census runs
+  again and the round 23 D counters must show 0 parked corrections, push claims, final and far placements on both games (no
+  parked teleport). Checker: `python -I tools\testenv\truck-hold.py build-testenv\runs\<run>`: every MULE truck within 0.5 m
+  between the two censuses, and the host's vehicles in use equal to her bound count. A truck that a camp MULE got into and drove
+  off between the two censuses is skipped: that is the game's own drive, not a teleport.
+
+**One product change.** Clearing the `enemy_sync 9` fake used to log `our Sam back (1 s not down)`, so a scenario could not tell
+a fake clear from a real recovery. A cleared fake now logs `[enemy] our Sam|Fragile back (enemy_sync 9 fake cleared): told the
+partner`; a real one still says `1 s not down`.
+
+**Results (2026-11-25).**
+
+* `two-games-enemy-tie`: final run `20261125-162358`. Every required step passed and `enemy-tie.py` passed: she tied up 0202F
+  (sent at 59.906 s; the host's OUTCOME, her hold release and the flush all at 59.922 s), 12 replays of it before, none after;
+  8 mirrors held for 10.8 s while the host's Sam was down; mirror p95 0.12 m [O]. Run-Batch counted the run as FAIL only
+  because of an optional step (`enemy_look -5`: a restrain HIT is not an "applied HIT", so it had nothing to pick), which has
+  since been removed. The edited scenario then passed in the final batch (`20261125-170739`, 14.15).
+* `two-games-enemy-tie-host`: **`20261125-162918` PASS**, `enemy-tie.py --reverse` PASS: HIT sent at 62.046 s, her copy
+  restrained at 62.171 s; 6 followers held for 24.7 s while she was down [O]. 02029 never fired before the tie-up, so the 0.5 s
+  rule held with no replays to stop [O].
+* `two-games-truck-hold`: **`20261125-163849` PASS**, `truck-hold.py` PASS: 22 bound of 22 on the guest, 22 in use on the host,
+  9832 PARK frames skipped on the host and 0 corrections on both [O]. Truck 0x02000F was driven 94 m by a camp MULE in the host's
+  game, while in hers a MULE sat in it without moving: each game runs its own MULE trucks, as round 23 D intends [O].
+
+**Open.**
+
+* The first two truck runs used `dev_enemies 1` and failed: right after it, her vehicle share removed 7 far trucks ("another
+  vehicle under the host's id") and could not mirror 3 of them again (table 22, bound 19). The same happens in earlier enemy
+  scenarios since round 22, so it is not new. The truck gate no longer resurrects the MULEs; the cause in the vehicle share's
+  binding is not fixed [I].
+* In the host's game the tied 0202F went `restrained -> none` about 22 s later (the game's own untie, by a comrade or a
+  timeout) [U].
+* The reverse gate never had a down hold that wanted a camp change, so "no camp change while she is down" passed with nothing
+  to stop [U].
+
+### 14.13 Review fixes (round 23 review; the final gates ran on this code)
+
+Six findings from the round 23 code review, all fixed in the working tree. No new session.ini key: each fix sits under the key
+that already controls its feature.
+
+**1. The down code no longer flips to "back" when the partner's tie-up part drops.** The host sent byte 22 only while the
+guest's current beacon carried the tie-up part (`kPartRestrain`). That part drops when her enemy hits fault partway through a
+run, so the host then sent 0, and her game read that 0 as "the host's Sam is back" while he was still dead. Byte 22 is a
+property of her build, not of her settings, so the host now remembers that her build takes it: once any of her beacons has
+carried the part on this link, the down code keeps going to her until the link changes (`shotw::PeerTakesDown`). The log says
+so once per link: `[enemy] the partner's build takes our player's down code (beacon byte 22; kept for this link even if its
+restrain part drops)`. A partner with `enemy_restrain_relay=0` or `enemy_hits=0` from the start, or an older build, still gets
+no down code, as before.
+
+**2. A missing beacon is no longer "back", and sync turning off no longer releases the held mirrors.** Two paths gave the
+guest's held or hidden mirrors back to her game alive while the host's Sam was still down:
+
+* No beacon from the host for 20 s made the down code read 0. Now no beacon keeps the code in force: it counts as
+  "unknown", not "back" (`erules::PeerDownNow`). The hold still ends on a world change, a link change, a lost co-op role, the
+  switch or a fault. Log: `[enemy] host Sam down, and no beacon from the partner now: the hold kept (no beacon is no "back")`.
+* The host's reload after a death resets his fingerprint, so her gate goes to "waiting" and sync turns off. The off path
+  released every mirror. Now, while the host's Sam is down (and `enemy_down_hold=1`), the guest keeps every frozen copy as it
+  is: the hidden ones stay hidden and the rest are held, with nothing written to them (`erules::DownKeepsOff`). The same applies
+  when her own Sam is briefly missing. When he is back, the copies are shown and resumed, and the usual off release follows.
+  A world change on her side forgets them untouched. Log, once per spell: `[enemy] down hold: sync off (<why>) while the
+  host's Sam is down: n mirrors kept frozen (held x, hidden y), none given back alive; released when he is back or the world
+  changes`.
+
+This covers the guest only. The host's followers while her Fragile is down still go through the usual off path (ownership
+reset) when his gate turns off [U, open].
+
+**3. A MULE truck that a player drove last stays shared.** When a player got out of a MULE truck, the truck was held on the very
+next poll, so its last PARK frames and its final placement never went out. The two games could then disagree for good about
+where the player left it. Now a truck stays shared after a player drove it, until a non-player gets into it in either game
+(`trucks::PlayerLast`, then `trucks::Hold`). Both games see the player, one through its own poll and the other through the
+truck facts, so they agree. The flag is forgotten when the truck leaves both games or on a world or link change; the truck is
+then a MULE truck again. Logs: `[vshare] MULE truck 0x......: the player got out: kept shared (a player drove it last) until a
+non-player drives it` and `[vshare] MULE truck 0x......: a non-player drives it: a player's last drive no longer keeps it
+shared`. The +0x19D bits are not used for this: they stay set from earlier drives and the other game may not have them.
+
+**4. The "not holding" retry waits while the host's Sam is down.** A copy given back hidden and asleep as "not holding" (14.8)
+used to be shown and woken after 5 s even while the host's Sam was down. The entry then refused it (`owner_down`), so a live,
+unmirrored MULE stood beside her until he was back. Now the retry, and the off path's unhide, wait until he is back
+(`erules::NotHoldUnhideNow`). Log, once per spell: `[enemy] down hold: n not-holding copies stay hidden and asleep here until
+the host's Sam is back (no 5 s retry meanwhile)`.
+
+**5. The "not holding" copies are shown again on a fault, a link change and a lost role, and forgotten on a world change.** A
+fault (`[enemy] FAULT in ...`), a link change or the loss of the guest role left them hidden and asleep for the rest of the
+session. They are now shown and woken there, as the other hidden sets are (`shown and woken again (a fault | the link changed |
+no guest role ...)`). A world change forgets them without touching them, so an actor of the new world at the same address is
+never touched. The line now counts them: `[enemy] the world changed: a + b + c hidden mirror(s) of the old world forgotten`.
+
+**6. M2 probe P2 lever d' always restores our Sam's stimulus.** A probe fault inside the 1 s window left our Sam's visual
+stimulus at 3 times its value. The fault path now restores it first (behind its own SEH guard): `[probe] P2 lever d': our
+Sam's stimulus +0xA4 back to ... (a probe fault)`. Hidden runs only.
+
+**Tests.** `TestSamDown` (enemy_rules_tests) covers `PeerDownNow`, `DownKeepsOff` and `NotHoldUnhideNow`. `TestBeacon`
+(shot_wire_tests) covers `PeerTakesDown`. `TestPlayerLast` (vehicle_truck_rules_tests) covers a player getting out here and in
+the other game, a MULE getting in afterwards in either game, a truck never driven by a player, and the release latch.
+
+Open: the final gates (14.15) ran on this code and passed. Fix 1's line was logged by both games in both tie gates [O]. The
+other paths did not come up in any gate (no real death, no lost beacon, no player in a MULE truck, no not-holding copy, no probe
+fault), so they are still [U]. The guest's `GuestReset` is still never called (it was dead code before these fixes).
+
+### 14.14 The M2 answers: what the probes decide
+
+Design section 10 asked M2 for three outputs: the perception tier (1 or 2), the push lever, and the notice-timing constants of
+design 5.3. Runs `20261125-154710` (`two-games-enemy-probe`, P0-P5) and `20261125-155517` (`trucks-m2-probe-solo`, P0, P1, P5,
+P6), plus what the final truck gate showed for P6. The probe lines are in 14.11.
+
+**P1: does a frozen copy keep its knowledge of our Sam?**
+
+* Measured: the guest's frozen copy of 02029 with her Sam 10 m in front, then crouched behind it. Every 0.5 s the probe looked
+  for the copy's DSAINoticeAndKnowledge and listed its entries. The same search ran on live MULEs (the host, solo).
+* Result: the knowledge object was **not found** from any search root (the entity, its agent +0x170, its
+  AIIndividualComponent and that component's +0x50, two levels deep), on a frozen copy or a live MULE. Not one object with
+  that vtable was seen in 4700-7200 reads [O]. The object exists (its ctor writes the vtable [O]); it is most likely held by
+  the camp or the AI manager [U].
+* Decides: **perception tier 2.** We cannot read the copy's own perception, so "does this enemy see her" must be our own test
+  built from the game's pieces (design 5.3), as critique R2 advised. Tier 1 comes back only if RE finds where the knowledge
+  lives and shows that a frozen copy still updates it. R2 expects it does not, because the freeze switches the AI update off.
+  The honest promise for the user stays "close to the game's stealth, not identical".
+
+**P2: what makes a copy handed to the guest go for her Sam (the push)?**
+
+* Measured: the host's 02029 raised to combat, then handed to her game by force (`enemy_own 0x2029 2`) with her Sam 10 m in
+  front of it. One lever per try: a nothing, b a test hit owned by her Sam, c AlertForEntityWithPerfectThreatInfo -> her Sam,
+  d' her Sam's own visual stimulus x3 for 1 s. The copy was sampled every 0.1 s for 15 s.
+* Result: with every lever the copy was hers 0.2-0.3 s after the take and faced her (0-3 deg off, because it already faced
+  her), and it **never fired in 15 s** [O]. Lever b's hit applied and lever c's call returned, with no effect.
+* Decides: **no push lever.** None of a, b, c or d' makes a handed-over copy fight. Critique R3's other option (start the
+  switch early and let the new owner's own perception finish the notice) is not supported either: the native brain did not
+  finish it within 15 s. Before M3 can hand single enemies to her game, the next round must find out why this copy does not
+  attack. In round 21 a whole camp handed over by proximity did chase and shoot her [O, 13.7], so a forced single take may
+  differ from a camp take in a way we do not know yet [U]. The scenario now puts her Sam 10 m behind the copy, so the turn
+  time can be measured too; that version has not run [U].
+
+**P3: the ids the visual sense reads.**
+
+* Measured: entity +0x314 of our Sam and of the partner body, and +0x88 of our Sam's visual stimuli in the AI manager's
+  thread-safe visual list.
+* Result: our Sam +0x314 = 0; the partner body +0x314 = 0x1FFFFF (none); our Sam's stimulus +0x88 = 0 (his actor id) on both
+  games; the list held 42 (host) / 46 (guest) live entries, 1 of our agents [O].
+* Decides: closes the round-20 correction. The partner body carries no actor id for the visual sense, so the game's AI cannot
+  perceive her body directly; tier 2 runs in her own game against her own Sam (design 5.1). Tier 2 can find the local Sam's
+  stimulus in that list. Since his id is 0, matching on +0x88 alone is weak: match on the agent too [I].
+
+**P4: can the mod call the game's raycast?**
+
+* Measured: from the guest's frozen copy's eye (+1.6 m) to her Sam's chest and head, 8-13 m away in the open, one call a tick
+  for 5 s.
+* Result: 300 calls, all clear, no fault [O].
+* Decides: tier 2 can use the game's own line of sight, called once a tick on the game thread. A blocked case (a wall in
+  between) was not measured, so whether it reports "blocked" correctly is [U].
+
+**P5: how fast does a calm MULE notice the host's Sam (the 5.3 constants)?**
+
+* Measured: the host's own 02029, the probe started with Sam placed at 35, 25, 12 and 5 m, standing and crouched (`pad B`),
+  phase every 0.25 s for 6 s; and solo at about 11 m.
+* Result [O]:
+  * The 35 m steps: the MULE walked towards Sam, so he was 33 to 21 m away and 6-44 deg off its facing. No phase rise in 6 s,
+    crouched or standing, although in the standing step he was inside the cone at 22-26 m for several seconds.
+  * The 25 m steps: 26-35 m, 114-145 deg off (beside or behind it). No rise in 6 s.
+  * 12 m: the MULE was at phase 5 (alert) when the probe began. It had noticed him in the 1.5 s between the placement and the
+    probe, so there is no time to read.
+  * 5 m: no rise in 6 s. The MULE walked away, so Sam was 5-16 m away and 111-168 deg off its facing (behind it).
+  * Solo, about 11 m: phase 0 to 5 in 0.73 s; it turned from 135 to 10 deg off him in 2.8 s and walked in to 3 m. At the
+    start Sam was 135 deg off its facing, outside a 60 deg cone, so this rise was probably not sight (perhaps the noise of the
+    teleport) [I].
+* Decides: **the constants are not fitted.** The starting values of design 5.3 stay as they are [I]. These runs agree with
+  the cone: nothing was noticed from behind, even at 5 m. They hint that the meter is too fast at 20-26 m (it would fill in
+  about 4 s in the cone; the game did not notice in 6 s) and too slow at about 12 m (the game noticed in under 1.5 s; the meter
+  needs about 2.4 s; the round-22 control run turned within 2 s). Each point is one sample. Fitting needs a
+  run that keeps Sam in front of a standing MULE (the placement did not hold because the MULE kept walking), a crouch that is
+  checked (`pad B` was not verified), and grass. Not run.
+
+**P6: where a seated MULE says it is in a vehicle.**
+
+* Measured: every MULE within 400 m of Sam: its parent chain (entity +0x70) and its ride fields (actor +0xE20 the vehicle id,
+  +0x3C0 the seat).
+* Result: solo, after the camp alert, MULE 0202E sat in truck 0x02000F. Its parent chain reached a DSVehicleTruck, and the ride
+  fields read 0x2000F seat 0: both tests agree [O]. In the truck gate (`20261125-171219`) five of the host's MULEs boarded
+  0x02000F. Four showed the ride fields first (seats 0, 1, 2 and 4), and about 1 s later the parent chain, while their ride
+  fields read none again. The fifth showed only the parent chain [O]. No MULE got out in any run.
+* Decides: the in-vehicle test needs both checks, the ride fields while boarding and the parent chain once seated. 14.8 does
+  both. The worry that stale ride fields keep a copy "in a vehicle" after it gets out is smaller than feared, because the
+  fields clear while the MULE is still seated [I]. Getting out is [U]. For V3, a truck's MULE driver is read from the truck's
+  unit +0x158 (0x00202E seen) [O].
+
+**What this means for M3 / M4.** M4 (stealth) is planned on tier 2 with the game's raycast (P4) and the 5.3 meter, with
+constants still to fit. M3 (one owner per enemy) is blocked on P2: a copy handed to her must fight her. The next probe should
+compare a forced single take with round 21's camp take, and run P2 with her Sam behind the copy.
+
+### 14.15 The final gate batch (2026-11-25, final code)
+
+Run one at a time with Run-Batch (`-SeedSaves complete-100`; two-game runs with `-GuestSeed profile-only` and the launcher's
+Local test files). Every run: result pass, no violation, saves restored, 0 `FAULT` / byte-check failure lines in any game's log.
+
+| Scenario | Run | Result | What it showed |
+|---|---|---|---|
+| `two-games-enemy-tie` | `20261125-170739` | PASS, `enemy-tie.py` PASS | She tied up 0202F (test action, mode 1). The host's setter k 2 ran, read back restrained 1 s later; her OUTCOME 0.06 s after the HIT; her hold released after 1.6 s. Replays of 0202F: 7 before, 2 within 0.5 s, 0 later. The host's Sam test-down: 8 mirrors held and 1 hidden for 10.9 s, then all resumed, no lease release of 0202F meanwhile. Mirror p95 0.12 m. |
+| `two-games-enemy-tie-host` | `20261125-170948` | PASS, `enemy-tie.py --reverse` PASS | The host tied up his follower of 02029. Her setter took it, read back restrained; his hold released on her SEN1 after 1.6 s. Her Fragile test-down: 7 followers held and 2 hidden for 24.6 s, ownership frozen, 0 changes held back. |
+| `two-games-truck-hold` | `20261125-171219` | PASS, `truck-hold.py` PASS | 22 of 22 bound on the guest, 22 in use on the host. 0x020010 did not move (0.00 m). On the host five MULEs boarded 0x02000F and drove it 97 m. The guest gave her 5 mirrors of them back to her own game, and her own MULEs drove her copy 44 m: each game's MULEs drove their own copy, as V2 intends. 0 parked corrections on both. Mirror p95 0.09 m. |
+| `two-games-enemy-camp` | `20261125-172205` | PASS | The round 21 camp gate. It needed a test-action fix (below). |
+| `two-games-enemy-hit` | `20261125-172553` | PASS | Her bullet hits still reach the host (round 17). |
+| `dev-give-solo` | `20261125-172815` | PASS | Round 22's `dev_give`. |
+| `two-games-launcher-local-test` | `20261125-172923` | PASS | The launcher's Local test files. |
+
+**The test-action fix for `two-games-enemy-camp`.** Its first attempt (`20261125-171500`) failed: no "the host's follower
+hidden" line. In that run Sam's rifle knocked her copy of 02029 down, and `enemy_camp 4 0 1` (hide "the nearest owned copy")
+then picked the downed copy. The follower guard rightly never hides a follower whose copy is down (13.4). The product was
+right and the test was wrong: `enemy_camp 4` with id 0 now picks the nearest **standing** owned copy (`no standing owned copy
+here` when there is none). A given id is taken as it is. The scenario's checks are unchanged.
+
+**Seen in these runs, not yet explained [O].**
+
+* The tied MULE got up in the host's game about 22 s after the tie-up (`restrained -> none (cause host)`), and her copy stood up
+  with it. This happened in both tie runs (`162358`, `170739`). It may be the game's own untie (a comrade, or a timer) [U].
+* After a long down hold, the held copies jump. In `170948` her MULEs kept fighting in her game during the 24.6 s, so on
+  resume the host's followers were up to 97 m from her MULEs (7 `first over 20 m` lines, one worst line) and were then
+  teleported back. After a real death both games reload anyway, so this matters mostly for the test trigger and for a long
+  KnotSpace [I].
+
+### 14.16 What stays unknown after round 23
+
+* **A real strand or bola** on a copy. Only the test action ran. Does a frozen copy ever show bit 21 by itself? Is the strand
+  HIT's weapon byte 41 (which the fallback needs)? Does a bola reach the relay at all? (14.7)
+* **A real death or KnotSpace** of either player. Only the `enemy_sync 9` fake ran. Open: whether the host's reload turns her
+  sync off (covered since 14.13, not run), whether his SEN1 "hidden" can arrive before his beacon's down code, and the host's
+  followers when his gate turns off while her Fragile is down (still the usual off path). (14.9, 14.13)
+* **The user's mirror jumps.** No gate reproduced them: p95 was 0.09-0.12 m and the 5 s "not holding" hide never fired. Its
+  rule (10 m after 3 teleports in 2 s) has not run against a real case, and the cause of the 218 m error is still unknown. The
+  new `mirror worst` / `first over 20 m` lines are there to name it in the user's next session. (14.8)
+* **MULE trucks.** Each game now drives its own copy, so a truck a MULE drives can be in different places on the two screens
+  until V3 (shared with its driver) is built. Not built: a MULE getting out, a player in a MULE truck (14.13 fix 3), and the
+  vehicle share's failed rebind after `dev_enemies 1` (table 22, bound 19; seen since round 22, not fixed). (14.10, 14.12)
+* **The M2 questions.** Where a MULE's knowledge lives (P1). Why a handed-over copy does not fire (P2). The turn time with her
+  behind it (P2, not run). A blocked raycast (P4). The notice constants (P5). Getting out of a vehicle (P6). (14.14)
+* **The untie after about 22 s** in the host's game, seen twice (14.15).
+* The probe scenario's own `pad B` crouch was never checked on a screenshot.

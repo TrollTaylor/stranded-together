@@ -203,6 +203,8 @@ bool DoEnemyHitWatch(const Request& r, char* msg, std::size_t cap) { return ecom
 bool DoEnemyTarget(const Request& r, char* msg, std::size_t cap) { return ecombat::TargetProbe(r.v, msg, cap); }
 bool DoEnemyOwn(const Request& r, char* msg, std::size_t cap) { return esync::Own(r.v, msg, cap); }
 bool DoEnemyCamp(const Request& r, char* msg, std::size_t cap) { return esync::Camp(r.v, msg, cap); }
+bool DoEnemyRestrain(const Request& r, char* msg, std::size_t cap) { return ecombat::Restrain(r.v, msg, cap); }
+bool DoEnemyM2(const Request& r, char* msg, std::size_t cap) { return ecombat::M2Probe(r.v, msg, cap); }
 bool DoAudioProbe(const Request& r, char* msg, std::size_t cap) { return game::AudioProbeCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoSelfVoice(const Request& r, char* msg, std::size_t cap) { return game::SelfVoiceCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoVoiceSync(const Request& r, char* msg, std::size_t cap) { return game::VoiceSyncCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
@@ -316,7 +318,7 @@ constexpr Row kRows[] = {
     {{Action::sound_sync, Tab::tools, "Sound sync", "Partner sounds (sound_sync=1): 0 log, 1 0/1 log every mirrored post, 2 stop the partner's sounds.", false}, &DoSoundSync},
     {{Action::vehicle_sync, Tab::tools, "Vehicle sync", "Vehicles (vehicle_sync): 0 log, 1 mode 0 off/1, 2 solid/3 holograms/4 roadster, 2 copy override 0..5, 3 trace ms, 4 offset right/forward cm, 5 describe, 6 offset up cm, 7 list, 11 overlap hiding 0/1, 13 meters.", false}, &DoVehicleSync},
     {{Action::coop_session, Tab::tools, "Coop session", "Host-held save session (host_save=1): 0 log, 1 ms test link blackout, 2 offer the newest save (host), 3 accept the teleport offer (guest), 4 log the slots (host), 5 t i test load (host), 6 test quit, 7 [1|2] test retry [query|forced] (host), 8 0/1/2 test: hide the waiting panel [and lift the input block] (guest), 9 t i test: a slot stands in for a New Game's first save (host); 1 and 5-9 in hidden runs only.", false}, &DoCoopSession},
-    {{Action::vehicle_share, Tab::tools, "Vehicle share", "Real shared vehicles (vehicle_sync=5, host_save=1): 0 status, 1 dump, 2 kind [m] summon, 3 snapshot now, 4 binding report, 5 0..3 mirror path (tests), 6 kind [m] test removal, 7 counters, 8 [kind] [m] persisted entries (host).", false}, &DoVehicleShare},
+    {{Action::vehicle_share, Tab::tools, "Vehicle share", "Real shared vehicles (vehicle_sync=5, host_save=1): 0 status, 1 dump, 2 kind [m] summon, 3 snapshot now, 4 binding report, 5 0..3 mirror path (tests), 6 kind [m] test removal, 7 counters, 8 [kind] [m] persisted entries (host), 9 [tag] [m] truck census (MULE trucks).", false}, &DoVehicleShare},
     {{Action::vehicle_dump, Tab::tools, "Vehicle dump", "Every vehicle unit in use (roadster, truck, trike pools) with its id, flags, GUID, place and binding, to the log. v0 = tag.", false}, &DoVehicleDump},
     {{Action::vehicle_summon, Tab::tools, "Vehicle summon", "Summon a vehicle through the game's own request path: v0 kind (1 roadster, 2 truck, 3 trike), v1 metres ahead (default 8). On the guest the request goes to the host.", false}, &DoVehicleSummon},
     {{Action::vehicle_drive, Tab::tools, "Vehicle drive", "Real shared vehicles, remote driving (vehicle_sync=5): 0 status, 1 vehicles (owner, follower, errors), 2 0/1 native correction, 3 parked m / driven m ignore bands, 4 0/1 corrections (tests), 5 0/1 native lamps / sounds, 6 kind [m] test push (tests), 7 life test (tests), 8 battery probe, 9 [m] our Sam beside the partner's vehicle (tests); v0.21: 10 dv one odd drive frame (tests), 11 fwd right step response (tests), 12 m/s laps owner autopilot on play test 3's road (tests), 13 0/1 v0.20's follower, 14 place (tests), 15 ms input lead, 16 kp ki, 17 kyaw tau, 18 max dv / correction, 19 s controller trace, 20 sign max pursuit.", false}, &DoVehicleDrive},
@@ -380,7 +382,7 @@ constexpr Row kRows[] = {
     {{Action::shots_test, Tab::tools, "Shots test", "One replayed bullet at our own Sam (the last captured shot's ids): m ahead, flags (1 the filter keeps it, 2 no weapon, 4 no magazine, 16 leak test), count.", false},
      &DoShotsTest},
     {{Action::shots_echo, Tab::tools, "Shots echo", "Solo: our own shots replayed beside us: 0/1, m to the right (default 2.5).", false}, &DoShotsEcho},
-    {{Action::enemy_sync, Tab::tools, "Enemy sync", "Enemy mirrors (enemy_sync): 0 status, 1 on, 2 off (every mirror released), 3 the mirror table, 4 the hits' outcome table; ownership (P1b: only with enemy_owner=1 on both games, off by default and not offered to players yet): 5 its table, 8 0/1 off (everything back to the host) / on; hidden runs: 6 0/1 far placement variant, 7 0/3 the teleport cadence.", false},
+    {{Action::enemy_sync, Tab::tools, "Enemy sync", "Enemy mirrors (enemy_sync): 0 status, 1 on, 2 off (every mirror released), 3 the mirror table, 4 the hits' outcome table; ownership (P1b: only with enemy_owner=1 on both games, off by default and not offered to players yet): 5 its table, 8 0/1 off (everything back to the host) / on; hidden runs: 6 0/1 far placement variant, 7 0/3 the teleport cadence, 9 <1 host|2 guest> <0 clear|1 down|2 limbo> a player down faked (round 23 C).", false},
      &DoEnemySync},
     {{Action::enemy_look, Tab::tools, "Enemy look", "Hidden runs: our Sam m from an enemy, facing it: <id | 0 nearest (the guest: a frozen mirror) | -1 the one the partner faces | -2 the newest replayed (the host: sent) shooter | -3 behind it | -4 beside its line | -5 the newest HIT's enemy | -6 the probe's pick | -7 the nearest the guest owns | -8 in front of the newest one, along its facing | -9 the newest outcome set (enemy_camp 3) or carried here (P1c)> <m> [aim height m, default 1.2]; a steered aim (shots 4 <deg> 1) then follows it.", false},
      &DoEnemyLook},
@@ -406,6 +408,10 @@ constexpr Row kRows[] = {
      &DoEnemyOwn},
     {{Action::enemy_camp, Tab::tools, "Enemy camp", "Hidden runs (enemy_owner, P1c): 0 the camp table (the host); 3 <id | 0 the look's> <k 0 faint | 1 sleep | 2 restrained> that outcome on this game's copy (the outcome setter).", false},
      &DoEnemyCamp},
+    {{Action::enemy_restrain, Tab::tools, "Enemy restrain", "Hidden runs (round 23, the tie-up relay; the guest, or the host while it relays): <id | 0 the look's, else the nearest frozen copy> <0 native: k 2 on our copy, then the watch | 1 fallback: a synthetic strand HIT | 2 knockout: k 0 on our copy>; the same send path as a real tie-up.", false},
+     &DoEnemyRestrain},
+    {{Action::enemy_m2, Tab::tools, "Enemy m2", "Hidden runs with enemy_m2_probes=1 (round 23 E, the M2 probes; '[probe] P<n> ...' lines): 0 checks; 1 <id | 0> <s> a copy's knowledge (PlayerVisual of our Sam: fresh / stale / none); 2 <id | 0> <lever 0 a | 1 b | 2 c | 3 d'> the guest's push timing after a hand-over; 3 the perception reads; 4 <id | 0> <s> the raycast from a copy's eye to our Sam; 5 <id | 0> <s> the host's notice timing; 6 [id | 0] [m] a seated MULE's parent chain and ride fields.", false},
+     &DoEnemyM2},
     {{Action::dev_marker, Tab::dev, "Dev marker", "Map markers: 0 log them, 1 <m east> <m north> add one there through the game's own add (hidden runs only).", false},
      &DoDev<dev::Op::marker_test>},
     {{Action::dev_give, Tab::dev, "Dev give",

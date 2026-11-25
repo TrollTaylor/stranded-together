@@ -17,6 +17,7 @@
 #include "config_values.hpp"
 #include "coop_session.hpp"
 #include "enemy_census.hpp"
+#include "enemy_probe_rules.hpp"
 #include "enemy_rules.hpp"
 #include "enemy_sync.hpp"
 #include "enemy_wire.hpp"
@@ -521,8 +522,49 @@ struct HostRec {
     float health = 0, stamina = 0;
     double last_hit_ms = -1e18;
     std::uintptr_t actor = 0;
+    std::uint32_t r_seq = 0;      // round 23: the newest restrain HIT (kind 5) applied to it (its cause text when last_seq is it)
+    std::uint16_t r_attack = 0;
+    std::uint8_t r_k = 0, r_src = 0;
 };
 std::map<std::uint32_t, HostRec> g_hout;
+const char* RestrainWhat(std::uint16_t attack, std::uint8_t k, std::uint8_t src) noexcept;  // round 23 (below)
+// ---- round 23: the tie-up relay (docs/enemy-sync.md 14; erules::RestrainWatch / RestrainGate)
+// the acting side: a watch per copy (opened by a strand / bola HIT of ours, which is held back, or by the scan seeing the copy go
+// down); our sent restrains waiting for the owner; the owner: its setter calls and readbacks; the guest's HITRES for the host's.
+struct RWatch {
+    double t0 = 0;
+    std::uint8_t copy_was = 0;
+    bool have_held = false, fallback = false, test = false;
+    erules::RestrainTrig trig = erules::RestrainTrig::none;
+    ewire::Hit held;
+    unsigned extra = 0;  // further strand / bola HITs on it while open (held back too)
+};
+std::map<std::uint32_t, RWatch> g_rwatch;
+struct RSent {
+    std::uint32_t id = 0, seq = 0;
+    double t = 0;
+    std::uint8_t k = 0, src = 0;
+    bool answered = false, test = false;
+};
+std::vector<RSent> g_rsent;
+struct RBack {
+    std::uint32_t id = 0, seq = 0;
+    std::uintptr_t actor = 0;
+    double t = 0;
+    std::uint8_t k = 0, src = 0, was = 0;
+    std::uint16_t attack = 0;
+    bool set = false, relay = false;
+};
+std::vector<RBack> g_rback;
+std::vector<ewire::HitRes> g_rres_out;              // the guest: HITRES for the host's relayed restrains
+std::map<std::uint32_t, std::uint8_t> g_scan_was;   // the acting side's scan: each frozen copy's defeat at the last read
+double g_scan_next = 0;
+bool g_restrain_send = false;                       // ours on, both beacons carry kPartRestrain (the guest; the host while it relays)
+bool g_restrain_logged = false;
+bool g_restrain_test_next = false;                  // enemy_restrain 1: the next capture's watch is a test (the fallback's evidence waived)
+unsigned g_r_watches = 0, g_r_sent = 0, g_r_native = 0, g_r_fallback = 0, g_r_released = 0, g_r_closed = 0, g_r_swallowed = 0, g_r_rx = 0,
+         g_r_applied = 0, g_r_refused = 0, g_r_answers = 0, g_r_answer_refused = 0, g_r_noanswer = 0;
+constexpr double kRestrainScanM = 30.0;  // the scan's reach around our Sam (a bola flies)
 struct Effect {
     std::uint32_t id = 0, seq = 0;
     std::uintptr_t actor = 0, comp = 0;
@@ -885,21 +927,26 @@ void EffectsTick() {
 }
 
 // ---------------------------------------------------------------- the host: HITs in, HITRES and OUTCOMEs out
-void SendOut(std::uint32_t guids) {
+// HITRES out (the host's for her HITs; round 23: the guest's for the host's relayed restrains)
+void SendRes(std::vector<ewire::HitRes>& out, std::uint32_t guids) {
     std::uint8_t buf[1024];
-    while (!g_res_out.empty()) {
-        const unsigned n = static_cast<unsigned>(g_res_out.size() < ewire::kHitResMax ? g_res_out.size() : ewire::kHitResMax);
+    while (!out.empty()) {
+        const unsigned n = static_cast<unsigned>(out.size() < ewire::kHitResMax ? out.size() : ewire::kHitResMax);
         ewire::ScbHeader h;
         h.guids_fp = guids, h.seq = g_scb_seq + 1;
-        const std::size_t size = ewire::EncodeHitRes(h, g_res_out.data(), n, buf, sizeof(buf));
+        const std::size_t size = ewire::EncodeHitRes(h, out.data(), n, buf, sizeof(buf));
         if (!size) {
-            g_res_out.erase(g_res_out.begin(), g_res_out.begin() + n);
+            out.erase(out.begin(), out.begin() + n);
             continue;
         }
         if (!link::SendCombat(buf, size)) break;  // the window is full: the next tick
         ++g_scb_seq;
-        g_res_out.erase(g_res_out.begin(), g_res_out.begin() + n);
+        out.erase(out.begin(), out.begin() + n);
     }
+}
+void SendOut(std::uint32_t guids) {
+    std::uint8_t buf[1024];
+    SendRes(g_res_out, guids);
     while (!g_oc_out.empty()) {
         const unsigned n = static_cast<unsigned>(g_oc_out.size() < ewire::kOutcomeMax ? g_oc_out.size() : ewire::kOutcomeMax);
         ewire::ScbHeader h;
@@ -1016,14 +1063,279 @@ void HostOutcomes(bool send) {
         r.defeat = d;
         ++r.ver;
         const bool guest = g_now - r.last_hit_ms <= 3000;
+        // round 23: her newest HIT a restrain (kind 5): its kind in the cause
+        const char* rwhat = guest && r.r_seq && r.r_seq == r.last_seq ? RestrainWhat(r.r_attack, r.r_k, r.r_src) : nullptr;
         const std::uint8_t cause = static_cast<std::uint8_t>(!first && was == static_cast<std::uint8_t>(erules::Defeat::dead) ? erules::Cause::revive
                                                              : guest                                                            ? erules::Cause::guest
                                                                                                                                 : erules::Cause::world);
         static unsigned logged = 0;
         if (LogNth(++logged) || guest)
             Log("[enemy] OUTCOME id=%05X %s -> %s (state %u, bits 0x%X; cause %s%s) ver %u; health %.1f stamina %.1f", ids[i], first ? "none" : erules::DefeatText(was),
-                erules::DefeatText(d), m.ea0, m.ea4, erules::CauseText(cause), guest ? (" HIT #" + std::to_string(r.last_seq)).c_str() : "", r.ver, r.health, r.stamina);
+                erules::DefeatText(d), m.ea0, m.ea4, erules::CauseText(cause),
+                guest ? (" HIT #" + std::to_string(r.last_seq) + (rwhat ? std::string(", ") + rwhat : std::string())).c_str() : "", r.ver, r.health, r.stamina);
         if (send) g_oc_out.push_back(OutcomeMsg(ids[i], r, cause));
+    }
+}
+
+// ---------------------------------------------------------------- round 23: the tie-up relay (docs/enemy-sync.md 14)
+const char* RestrainSrcText(std::uint8_t src) noexcept {
+    return src == ewire::kRestrainNative ? "native: the copy's +0xEA4" : src == ewire::kRestrainFallback ? "fallback: weapon 41 + attack 0x15C at contact"
+           : src == ewire::kRestrainTest                                ? "test (enemy_restrain)"
+                                                                        : "?";
+}
+const char* RestrainWhat(std::uint16_t attack, std::uint8_t k, std::uint8_t src) noexcept {
+    if (k == erules::kFaintK) return src == ewire::kRestrainTest ? "knockout (test)" : "knockout";
+    if (attack == erules::kAttackBola) return src == ewire::kRestrainTest ? "bola (test)" : "bola";
+    return src == ewire::kRestrainFallback ? "strand (fallback)" : src == ewire::kRestrainTest ? "strand (test)" : "strand";
+}
+// Our copy's outcome now (erules::Defeat; 0 when unreadable or not the same MULE).
+std::uint8_t CopyDefeat(std::uintptr_t actor, std::uint32_t id) {
+    MuleNow m;
+    return actor && ReadMule(actor, id, m) ? static_cast<std::uint8_t>(erules::OutcomeOf(m.ea0, m.ea4)) : 0;
+}
+// The owner's outcome as known here: the guest by the host's OUTCOMEs, the host by her SEN1 defeat bits.
+std::uint8_t OwnerDefeat(std::uint32_t id) { return g_role == 2 ? GuestDefeat(id) : esync::PeerDefeat(id); }
+bool RestrainPending(std::uint32_t id) {
+    for (const RSent& s : g_rsent)
+        if (s.id == id) return true;
+    return false;
+}
+// A strand / bola HIT of ours on a copy: held back while the copy is watched. True: held (not sent now).
+bool RestrainOpen(const ewire::Hit& h, erules::RestrainTrig trig, bool test) {
+    std::uintptr_t actor = 0;
+    if (!esync::MirrorOf(h.key, &actor, nullptr)) return false;
+    if (RestrainPending(h.key)) {
+        // a restrain of ours on it waits for the owner: the stun of this contact is not sent either
+        if (LogNth(++g_r_swallowed)) Log("[enemy] restrain: HIT #%u id=%05X (%s, attack 0x%X) not sent: a restrain of ours on it waits for the owner", h.hit_seq, h.key,
+                                         erules::RestrainTrigText(trig), h.attack);
+        return true;
+    }
+    auto it = g_rwatch.find(h.key);
+    if (it != g_rwatch.end()) {
+        ++it->second.extra;
+        if (!it->second.have_held) it->second.held = h, it->second.have_held = true, it->second.trig = trig;
+        it->second.fallback = it->second.fallback || erules::RestrainFallback(h.attack, h.b12E, h.her_dist_m, test);
+        return true;
+    }
+    RWatch w;
+    w.t0 = g_now;
+    w.copy_was = CopyDefeat(actor, h.key);
+    w.have_held = true, w.held = h, w.trig = trig, w.test = test;
+    w.fallback = erules::RestrainFallback(h.attack, h.b12E, h.her_dist_m, test);
+    g_rwatch[h.key] = w;
+    ++g_r_watches;
+    esync::HoldCopy(h.key, erules::kRestrainHoldMs, "a strand / bola contact");
+    Log("[enemy] restrain watch id=%05X opened: %s HIT #%u (attack 0x%X weapon %u, our Sam %.1f m%s) held up to %.1f s; the copy's +0xEA4 read each tick (now %s)%s",
+        h.key, erules::RestrainTrigText(trig), h.hit_seq, h.attack, h.b12E, static_cast<double>(h.her_dist_m), w.fallback ? "; the fallback's evidence" : "",
+        erules::kRestrainWatchMs / 1000.0, erules::DefeatText(w.copy_was), test ? " [enemy_restrain test]" : "");
+    return true;
+}
+// One HIT of kind 5 out (the same FlushHits as every HIT).
+void SendRestrain(std::uint32_t id, const RWatch& w, std::uint8_t k, std::uint8_t src) {
+    ewire::Hit h;
+    h.key = id, h.hit_seq = ++g_hit_seq, h.kind = ewire::kKindRestrain, h.flags = ewire::kHitAttackerSam;
+    h.attack = w.have_held && erules::AttackOk(w.held.attack) ? w.held.attack : erules::kAttackStrand;
+    h.serial = w.have_held ? w.held.serial : 0;
+    h.b12E = w.have_held ? w.held.b12E : 0, h.b180 = k, h.depth = src;
+    h.v184 = 0x3F800000u, h.part = 0xFFFFFFFFu, h.amount = 0, h.mult = 1, h.a20 = 1;
+    h.t_ms = static_cast<std::uint32_t>(static_cast<std::uint64_t>(g_now) & 0xFFFFFFFFull);
+    h.her_dist_m = w.have_held ? w.held.her_dist_m : 0;
+    if (g_out.size() >= kOutCap) g_out.erase(g_out.begin()), ++g_out_capped;
+    g_out.push_back(h);
+    ++g_r_sent;
+    (src == ewire::kRestrainFallback ? g_r_fallback : g_r_native) += src == ewire::kRestrainTest ? 0 : 1;
+    RSent s;
+    s.id = id, s.seq = h.hit_seq, s.t = g_now, s.k = k, s.src = src, s.test = w.test;
+    g_rsent.push_back(s);
+    esync::HoldCopy(id, erules::kRestrainHoldMs, "a restrain sent");
+    g_last_hit_id = id;
+    Log("[enemy] restrain HIT sent #%u id=%05X k %u (%s; %s): to the %s; %s%s", h.hit_seq, id, k, RestrainWhat(h.attack, k, src), RestrainSrcText(src),
+        g_role == 2 ? "host" : "guest", w.have_held ? "the held stun HIT not sent" : "no HIT of ours was held", w.test ? " [enemy_restrain test]" : "");
+}
+// The acting side, each tick: the watches, the scan, our sent restrains' expiry.
+void RestrainActTick() {
+    for (auto it = g_rwatch.begin(); it != g_rwatch.end();) {
+        const std::uint32_t id = it->first;
+        RWatch& w = it->second;
+        std::uintptr_t actor = 0;
+        const bool frozen = esync::MirrorOf(id, &actor, nullptr);
+        erules::WatchIn in;
+        in.age_ms = g_now - w.t0;
+        in.frozen = frozen && g_restrain_send;
+        in.copy = frozen ? CopyDefeat(actor, id) : 0;
+        in.copy_was = w.copy_was;
+        in.owner = OwnerDefeat(id);
+        in.held_hit = w.have_held;
+        in.fallback = w.fallback;
+        const erules::WatchDo d = erules::RestrainWatch(in);
+        if (d == erules::WatchDo::wait) {
+            ++it;
+            continue;
+        }
+        if (d == erules::WatchDo::send_restrain || d == erules::WatchDo::send_faint) {
+            SendRestrain(id, w, d == erules::WatchDo::send_restrain ? erules::kRestrainK : erules::kFaintK, ewire::kRestrainNative);
+        } else if (d == erules::WatchDo::fallback) {
+            SendRestrain(id, w, erules::kRestrainK, w.test ? ewire::kRestrainTest : ewire::kRestrainFallback);
+        } else if (d == erules::WatchDo::release) {
+            // no tie-up seen and no fallback: the held HIT goes as before (its age from now: FlushHits' 1 s)
+            ewire::Hit h = w.held;
+            h.t_ms = static_cast<std::uint32_t>(static_cast<std::uint64_t>(g_now) & 0xFFFFFFFFull);
+            if (g_out.size() >= kOutCap) g_out.erase(g_out.begin()), ++g_out_capped;
+            g_out.push_back(h);
+            ++g_r_released;
+            esync::ReleaseHold(id, "no tie-up seen");
+            Log("[enemy] restrain watch id=%05X closed after %.1f s: %s (#%u attack 0x%X; the copy %s, the owner %s)", id, in.age_ms / 1000.0, erules::WatchDoText(d),
+                h.hit_seq, h.attack, erules::DefeatText(in.copy), erules::DefeatText(in.owner));
+        } else {
+            ++g_r_closed;
+            esync::ReleaseHold(id, !in.frozen ? "no longer a copy here" : "the owner has it down already");
+            Log("[enemy] restrain watch id=%05X closed after %.1f s: %s (%s; the copy %s, the owner %s)%s", id, in.age_ms / 1000.0, erules::WatchDoText(d),
+                !in.frozen ? "no longer a frozen copy here (or the relay is off)" : erules::DownDefeat(in.owner) ? "down there already" : "no tie-up seen",
+                erules::DefeatText(in.copy), erules::DefeatText(in.owner), w.have_held ? "; the held HIT not sent" : "");
+        }
+        it = g_rwatch.erase(it);
+    }
+    // our sent restrains: answered by the owner's outcome (the guest: its OUTCOME, GuestOutcome; the host: her SEN1), else 3 s
+    for (auto it = g_rsent.begin(); it != g_rsent.end();) {
+        const std::uint8_t od = OwnerDefeat(it->id);
+        if (g_role == 1 && erules::DownDefeat(od)) {
+            esync::ReleaseHold(it->id, "her outcome (SEN1)");
+            Log("[enemy] restrain HIT #%u id=%05X: her copy is %s now (SEN1)", it->seq, it->id, erules::DefeatText(od));
+            if (g_cfg.enemy_replay_flush) shots::FlushEnemyReplays(it->id, "her SEN1 after our restrain");
+            it = g_rsent.erase(it);
+            continue;
+        }
+        if (g_now - it->t > erules::kRestrainHoldMs) {
+            if (LogNth(++g_r_noanswer)) Log("[enemy] restrain HIT #%u id=%05X: no owner outcome in %.0f s (the hold ends itself)", it->seq, it->id, erules::kRestrainHoldMs / 1000.0);
+            it = g_rsent.erase(it);
+            continue;
+        }
+        ++it;
+    }
+    // the scan: a frozen copy near our Sam that goes down here with no HIT of ours seen (a knockout, a tie-up by another path)
+    if (g_now < g_scan_next) return;
+    g_scan_next = g_now + 100;
+    WorldTransform sx{};
+    const bool have_sam = ReadXf(g_sam.load(), sx);
+    std::uint32_t ids[64];
+    std::uintptr_t actors[64], ents[64];
+    const unsigned n = esync::FrozenCopies(ids, actors, ents, 64);
+    std::map<std::uint32_t, std::uint8_t> next;
+    for (unsigned i = 0; i < n; ++i) {
+        MuleNow m;
+        if (!ReadMule(actors[i], ids[i], m) || !m.have_xf) continue;
+        const std::uint8_t d = static_cast<std::uint8_t>(erules::OutcomeOf(m.ea0, m.ea4));
+        next[ids[i]] = d;
+        if (!have_sam || !g_restrain_send) continue;
+        const double dx = m.xf.pos.x - sx.pos.x, dy = m.xf.pos.y - sx.pos.y, dz = m.xf.pos.z - sx.pos.z;
+        if (std::sqrt(dx * dx + dy * dy + dz * dz) > kRestrainScanM) continue;
+        const auto p = g_scan_was.find(ids[i]);
+        if (p == g_scan_was.end() || !erules::FlushOnDefeat(p->second, d)) continue;
+        if (d != static_cast<std::uint8_t>(erules::Defeat::restrained) && d != static_cast<std::uint8_t>(erules::Defeat::faint)) continue;
+        if (g_rwatch.count(ids[i]) || RestrainPending(ids[i])) continue;
+        RWatch w;
+        w.t0 = g_now, w.copy_was = p->second;
+        g_rwatch[ids[i]] = w;
+        ++g_r_watches;
+        esync::HoldCopy(ids[i], erules::kRestrainHoldMs, "the copy went down here");
+        Log("[enemy] restrain watch id=%05X opened: the copy went %s here (+0xEA4 0x%X; no strand / bola HIT of ours seen)", ids[i], erules::DefeatText(d), m.ea4);
+    }
+    g_scan_was.swap(next);
+}
+// The acting side: the owner's HITRES for one of our restrains (true: it was one).
+bool RestrainAnswer(const ewire::HitRes& r) {
+    for (auto it = g_rsent.begin(); it != g_rsent.end(); ++it) {
+        if (it->id != r.key || it->seq != r.hit_seq) continue;
+        ++g_r_answers;
+        if (r.result == static_cast<std::uint8_t>(erules::HitResult::applied)) {
+            it->answered = true;
+            Log("[enemy] restrain HIT #%u id=%05X applied by the %s (its outcome now %s): the copy held until the owner's outcome", r.hit_seq, r.key,
+                g_role == 2 ? "host" : "guest", erules::DefeatText(r.defeat));
+        } else {
+            ++g_r_answer_refused;
+            esync::ReleaseHold(r.key, "refused by the owner");
+            Log("[enemy] restrain HIT #%u id=%05X refused by the %s: %s (its outcome %s): the copy re-posed with the owner's frames", r.hit_seq, r.key,
+                g_role == 2 ? "host" : "guest", erules::HitResultText(r.result), erules::DefeatText(r.defeat));
+            g_rsent.erase(it);
+        }
+        return true;
+    }
+    return false;
+}
+// The owner: one HIT of kind 5 (the host: hers; the guest: the host's on one she owns, relayed). Answers with a HITRES.
+void OwnerRestrain(const ewire::Hit& h, std::uint32_t msg_guids, const esync::GateView& gv, bool relay) {
+    ++g_r_rx;
+    const std::uintptr_t actor = ActorOf(h.key);
+    MuleNow m;
+    const bool found = actor && ReadMule(actor, h.key, m);
+    erules::RestrainIn in;
+    in.on = g_cfg.enemy_restrain_relay && g_hits_on && !g_stop.load() && CarryReady();
+    in.peer_part = shots::PeerRestrain();
+    in.k_ok = h.b180 == erules::kRestrainK || h.b180 == erules::kFaintK;
+    in.fp_equal = msg_guids == gv.guids && gv.guids != 0;
+    in.owned = relay ? esync::OwnedHere(h.key) : !esync::MirrorOf(h.key, nullptr, nullptr);  // the host freezes only her owned ones
+    in.found = found;
+    in.realized = found && m.realized && m.have_xf;
+    in.state = found ? m.ea0 : 0;
+    in.hidden_or_asleep = found && (m.a88 & 3u) != 0;
+    const std::uint8_t was = found ? static_cast<std::uint8_t>(erules::OutcomeOf(m.ea0, m.ea4)) : 0;
+    in.defeat_now = was;
+    erules::HitResult r = erules::RestrainGate(in);
+    int rc = 2;
+    if (r == erules::HitResult::applied) {
+        rc = SetOutcome(actor, h.key, h.b180);
+        r = erules::RestrainSetResult(rc);
+    }
+    const char* from = relay ? "host" : "guest";
+    if (r == erules::HitResult::applied) {
+        ++g_r_applied;
+        RBack b;
+        b.id = h.key, b.seq = h.hit_seq, b.actor = actor, b.t = g_now, b.k = h.b180, b.src = h.depth, b.was = was, b.attack = h.attack, b.set = rc == 1, b.relay = relay;
+        g_rback.push_back(b);
+        if (!relay) {
+            HostRec& rec = g_hout[h.key];
+            rec.last_hit_ms = g_now, rec.last_seq = h.hit_seq, rec.actor = actor;
+            rec.r_seq = h.hit_seq, rec.r_attack = h.attack, rec.r_k = h.b180, rec.r_src = h.depth;
+        }
+        Log("[enemy] restrain HIT #%u id=%05X from the %s (%s; %s): outcome setter k %u %s (same MULE, outcome none before)", h.hit_seq, h.key, from,
+            RestrainWhat(h.attack, h.b180, h.depth), RestrainSrcText(h.depth), h.b180, rc == 1 ? "called" : "deferred (a hit of this frame queued: next tick)");
+    } else {
+        ++g_r_refused;
+        Log("[enemy] restrain HIT #%u id=%05X from the %s refused: %s (k %u; state %u, realized %d, a88 0x%X, outcome %s; relay %d, peer part %d, carry %s)", h.hit_seq,
+            h.key, from, erules::HitResultText(static_cast<std::uint8_t>(r)), h.b180, in.state, in.realized ? 1 : 0, found ? m.a88 : 0, erules::DefeatText(was),
+            g_cfg.enemy_restrain_relay ? 1 : 0, in.peer_part ? 1 : 0, CarryReady() ? "ready" : "off");
+    }
+    ewire::HitRes hr;
+    hr.key = h.key, hr.hit_seq = h.hit_seq, hr.result = static_cast<std::uint8_t>(r), hr.owner = static_cast<std::uint8_t>(g_cfg.enemy_hit_owner);
+    hr.defeat = found ? static_cast<std::uint8_t>(OutcomeNow(actor, h.key) >= 0 ? OutcomeNow(actor, h.key) : 0) : 0;
+    (relay ? g_rres_out : g_res_out).push_back(hr);
+}
+// The owner: a deferred setter tried again (up to 1 s), the readback 1 s after it.
+void RestrainOwnerTick() {
+    for (auto it = g_rback.begin(); it != g_rback.end();) {
+        RBack& b = *it;
+        if (!b.set) {
+            const int rc = SetOutcome(b.actor, b.id, b.k);
+            if (rc == 1) b.set = true, b.t = g_now;
+            else if (rc != 0 || g_now - b.t > 1000) {
+                Log("[enemy] restrain HIT #%u id=%05X: the deferred setter %s", b.seq, b.id, rc == -2 ? "found it down already" : rc == 0 ? "stayed deferred for 1 s: dropped" : "could not run");
+                it = g_rback.erase(it);
+                continue;
+            }
+        }
+        if (!b.set || g_now - b.t < 1000) {
+            ++it;
+            continue;
+        }
+        const int now_d = OutcomeNow(b.actor, b.id);
+        const std::uint8_t want = b.k == erules::kRestrainK ? static_cast<std::uint8_t>(erules::Defeat::restrained) : static_cast<std::uint8_t>(erules::Defeat::faint);
+        if (now_d == static_cast<int>(want))
+            Log("[enemy] OUTCOME id=%05X %s -> %s (cause %s HIT #%u, %s): read back 1 s after the setter k %u", b.id, erules::DefeatText(b.was), erules::DefeatText(want),
+                b.relay ? "host" : "guest", b.seq, RestrainWhat(b.attack, b.k, b.src), b.k);
+        else
+            Log("[enemy] restrain readback id=%05X (HIT #%u): k %u -> now %s (not %s)", b.id, b.seq, b.k, now_d < 0 ? "not the same MULE" : erules::DefeatText(static_cast<std::uint8_t>(now_d)),
+                erules::DefeatText(want));
+        it = g_rback.erase(it);
     }
 }
 
@@ -1088,6 +1400,13 @@ void GuestCapture(const Cap& c, bool hits_on) {
     if (ReadXf(g_sam.load(), sx)) sp[0] = sx.pos.x, sp[1] = sx.pos.y, sp[2] = sx.pos.z;
     const double dist = std::sqrt((pw[0] - sp[0]) * (pw[0] - sp[0]) + (pw[1] - sp[1]) * (pw[1] - sp[1]) + (pw[2] - sp[2]) * (pw[2] - sp[2]));
     h.her_dist_m = static_cast<float>(dist < 6553.0 ? dist : 6553.0);
+    // round 23: a strand / bola contact on a copy is held back while the copy is watched (the tie-up relay)
+    if (g_restrain_send) {
+        const erules::RestrainTrig trig = erules::RestrainTrigger(h.attack, h.b12E);
+        const bool test = g_restrain_test_next;
+        g_restrain_test_next = false;
+        if (trig != erules::RestrainTrig::none && RestrainOpen(h, trig, test)) return;
+    }
     if (g_out.size() >= kOutCap) g_out.erase(g_out.begin()), ++g_out_capped;  // the link is stalled: the oldest goes
     g_out.push_back(h);
     ++g_sent;
@@ -1146,6 +1465,12 @@ void GuestOutcome(const ewire::Outcome& o) {
     Log("[enemy] OUTCOME id=%05X %s -> %s ver %u (cause %s; state %u bits 0x%X, health %.1f stamina %.1f, last HIT #%u): %s", o.key, erules::DefeatText(was),
         erules::DefeatText(o.defeat), o.ver, erules::CauseText(o.cause), o.state, o.downbits, static_cast<double>(o.health), static_cast<double>(o.stamina), o.last_seq,
         what);
+    // round 23: the owner's down outcome ends a tie-up hold on the copy, and the shooter's queued replays go
+    if (erules::DownDefeat(o.defeat)) {
+        if (esync::Holding(o.key)) esync::ReleaseHold(o.key, "the host's OUTCOME");
+        g_rsent.erase(std::remove_if(g_rsent.begin(), g_rsent.end(), [&](const RSent& s) { return s.id == o.key; }), g_rsent.end());
+        if (g_cfg.enemy_replay_flush && erules::FlushOnDefeat(was, o.defeat)) shots::FlushEnemyReplays(o.key, "the host's OUTCOME");
+    }
 }
 
 void DrainCombat(const esync::GateView& gv) {
@@ -1173,8 +1498,13 @@ void DrainCombat(const esync::GateView& gv) {
             }
             if (g_role == 2) {
                 // P1c: the host's hits on its frozen copies of the ones she owns, applied here to hers (no HITRES, no OUTCOME back: her
-                // copy's outcome reaches the host through her SEN1 and the return's outcome carry)
+                // copy's outcome reaches the host through her SEN1 and the return's outcome carry). Round 23: a restrain (kind 5)
+                // is answered with a HITRES (g_rres_out).
                 for (unsigned i = 0; i < h.n; ++i) {
+                    if (hits[i].kind == ewire::kKindRestrain) {
+                        OwnerRestrain(hits[i], h.guids_fp, gv, true);
+                        continue;
+                    }
                     if (!esync::OwnedHere(hits[i].key)) {
                         ++g_relay_not_owned;
                         if (LogNth(g_relay_not_owned)) Log("[enemy] relayed HIT #%u id=%05X refused: not owned here (now)", hits[i].hit_seq, hits[i].key);
@@ -1193,7 +1523,10 @@ void DrainCombat(const esync::GateView& gv) {
                 g_res_out.clear(), g_oc_out.clear();
                 continue;
             }
-            for (unsigned i = 0; i < h.n; ++i) HostHit(hits[i], h.guids_fp, gv);
+            for (unsigned i = 0; i < h.n; ++i) {
+                if (hits[i].kind == ewire::kKindRestrain) OwnerRestrain(hits[i], h.guids_fp, gv, false);  // round 23
+                else HostHit(hits[i], h.guids_fp, gv);
+            }
         } else if (h.type == ewire::kScbResync) {
             if (g_role != 1) {
                 ++g_wrong_role;
@@ -1204,11 +1537,19 @@ void DrainCombat(const esync::GateView& gv) {
                 if (kv.second.have && kv.second.defeat) g_oc_out.push_back(OutcomeMsg(kv.first, kv.second, static_cast<std::uint8_t>(erules::Cause::resync))), ++k;
             Log("[enemy] hits: RESYNC from the guest: %u outcome(s) sent", k);
         } else if (h.type == ewire::kScbHitRes) {
-            if (g_role != 2 || !ewire::DecodeHitRes(buf, n, h, res)) {
-                ++(g_role != 2 ? g_wrong_role : g_bad_msg);
+            // round 23: the host takes HITRES only for its relayed restrains (her answers)
+            const bool host_restrain = g_role == 1 && (g_relay_on || !g_rsent.empty());
+            if ((g_role != 2 && !host_restrain) || !ewire::DecodeHitRes(buf, n, h, res)) {
+                ++(g_role != 2 && !host_restrain ? g_wrong_role : g_bad_msg);
+                continue;
+            }
+            if (g_role == 1) {
+                for (unsigned i = 0; i < h.n; ++i)
+                    if (!RestrainAnswer(res[i])) ++g_wrong_role;
                 continue;
             }
             for (unsigned i = 0; i < h.n; ++i) {
+                if (RestrainAnswer(res[i])) continue;
                 ++g_res_rx;
                 ++g_res_by[res[i].result < erules::kHitResults ? res[i].result : 7];
                 if (LogNth(g_res_rx)) {
@@ -1244,6 +1585,7 @@ void ResetWorld() {
     g_effects.clear();
     g_dedupe.Reset();
     g_rate.Reset();
+    g_rwatch.clear(), g_rsent.clear(), g_rback.clear(), g_rres_out.clear(), g_scan_was.clear();
     g_actors.clear();
     g_actors_at = -1e18;
     g_ids_done = false;
@@ -1254,6 +1596,7 @@ void ResetWorld() {
 }
 
 void TargetTick();  // the target probe (below)
+void ProbeTickGuarded() noexcept;  // round 23 E: the M2 probes (below)
 void StimTick() noexcept;  // her body's visual stimulus (below): dropped when her body or its agent changes
 void StimForget(const char* why) noexcept;  // forgotten without the remove (no longer ours: reused, or the old world's)
 void TestTick() {
@@ -1351,6 +1694,21 @@ void TickBody(const TickIn& in, double now) {
     const bool relay = on && g_role == 1 && esync::OwnRelay();
     if (relay != g_relay_on) g_relay_on = relay, Log("[enemy] hits: the host's hits on her owned ones %s", relay ? "relayed to her (enemy_owner_hits)" : "not relayed");
     g_capture.store(on && (g_role == 2 || relay), std::memory_order_relaxed);
+    // round 23: the tie-up relay (the beacon part: this game takes kind 5 and can run the outcome setter)
+    const bool r_part = ours && g_cfg.enemy_restrain_relay && CarryReady();
+    shots::SetRestrainPart(r_part);
+    const bool r_send = on && r_part && shots::PeerRestrain() && (g_role == 2 || relay);
+    if (r_send != g_restrain_send || !g_restrain_logged) {
+        if (r_send || g_restrain_logged)
+            Log("[enemy] restrain relay %s", r_send ? "on: a strand / bola contact or a knockout of a copy goes to its owner as HIT kind 5 (both beacons carry the restrain part)"
+                                             : !g_cfg.enemy_restrain_relay                    ? "off (enemy_restrain_relay=0)"
+                                             : !CarryReady()                                  ? "off (the outcome setter's checks did not pass)"
+                                             : !on                                            ? "off (hits off)"
+                                             : g_role == 1 && !relay                          ? "off here (the host sends only while it relays: enemy_owner)"
+                                                                                              : "off (the partner's beacon has no restrain part: an older build)");
+        g_restrain_logged = g_restrain_logged || r_send;
+        g_restrain_send = r_send;
+    }
     // the captures (the guest; the host's relay; a solo run drains and forgets them)
     Cap c;
     unsigned took = 0;
@@ -1360,7 +1718,11 @@ void TickBody(const TickIn& in, double now) {
     }
     TestTick();
     TargetTick();
+    ProbeTickGuarded();
+    if (g_restrain_send || !g_rwatch.empty() || !g_rsent.empty()) RestrainActTick();
     if (in.net) DrainCombat(gv);
+    if (!g_rback.empty()) RestrainOwnerTick();
+    if (g_role == 2 && !g_rres_out.empty()) SendRes(g_rres_out, gv.guids);  // round 23: her answers to the host's restrains
     if (g_role == 2 && on) {
         if (g_resync_due) {
             std::uint8_t buf[ewire::kScbHeader];
@@ -1590,6 +1952,10 @@ void Status() noexcept {
         g_bad_msg, g_wrong_role, g_stop.load() ? "; STOPPED" : "");
     if (g_relay_on || g_relay_in) Log("[enemy] hits relay (P1c): %s; relayed in n=%u applied %u, not owned %u; carry %s", g_relay_on ? "the host relays" : "in", g_relay_in,
                                       g_relay_applied, g_relay_not_owned, CarryReady() ? "ready" : "off");
+    Log("[enemy] restrain relay (round 23): %s (enemy_restrain_relay=%d, peer part %d, carry %s); watches %u (open %zu), sent %u (native %u, fallback %u), held HITs "
+        "released %u, closed %u, swallowed %u; answers %u (refused %u); as owner: rx %u applied %u refused %u; holds pending %zu",
+        g_restrain_send ? "on" : "off", g_cfg.enemy_restrain_relay ? 1 : 0, shots::PeerRestrain() ? 1 : 0, CarryReady() ? "ready" : "off", g_r_watches, g_rwatch.size(),
+        g_r_sent, g_r_native, g_r_fallback, g_r_released, g_r_closed, g_r_swallowed, g_r_answers, g_r_answer_refused, g_r_rx, g_r_applied, g_r_refused, g_rsent.size());
 }
 void OutcomeTable() noexcept {
     unsigned n = 0;
@@ -1760,6 +2126,67 @@ bool HitSend(const double (&v)[3], char* msg, std::size_t cap) noexcept {
     g_test.id = id;
     g_test.send = true;
     return std::snprintf(msg, cap, "%d test HIT(s) of 0x%X on %05X", g_test.left, g_test.attack, id), true;
+}
+
+// enemy_restrain <id | 0> <mode> (round 23, hidden runs; the guest, or the host while it relays): the tie-up relay's own send path
+// on our frozen copy. 0 native: the outcome setter k 2 on OUR copy, then the watch reads it like a real tie-up (bit 21) and sends
+// kind 5; 2 the same with k 0 (a knockout, bit 19); 1 fallback: a synthetic strand HIT (attack 0x15C, weapon 41) through the
+// capture path: held, watched 1.5 s, then sent as a test (depth 3) when the copy shows nothing.
+bool Restrain(const double (&v)[3], char* msg, std::size_t cap) noexcept {
+    if (!Hidden(msg, cap) || !Ready(msg, cap)) return false;
+    if (g_role != 2 && !(g_role == 1 && g_relay_on)) return std::snprintf(msg, cap, "the guest's (the host's only while it relays: enemy_owner)"), false;
+    if (!g_restrain_send) return std::snprintf(msg, cap, "the restrain relay is off (enemy_restrain_relay, hits, the partner's restrain part)"), false;
+    const int mode = static_cast<int>(v[1]);
+    if (mode < 0 || mode > 2) return std::snprintf(msg, cap, "mode 0 native | 1 fallback | 2 knockout"), false;
+    std::uint32_t id = v[0] > 0 ? static_cast<std::uint32_t>(v[0]) : esync::LookId();
+    std::uintptr_t actor = 0, entity = 0;
+    if (!id || !esync::MirrorOf(id, &actor, &entity)) {
+        // the nearest frozen copy to our Sam
+        id = 0;
+        WorldTransform sx{};
+        if (ReadXf(g_sam.load(), sx)) {
+            std::uint32_t ids[64];
+            std::uintptr_t actors[64], ents[64];
+            const unsigned n = esync::FrozenCopies(ids, actors, ents, 64);
+            double bd = 1e18;
+            for (unsigned i = 0; i < n; ++i) {
+                WorldTransform x{};
+                if (!ReadXf(ents[i], x)) continue;
+                const double dx = x.pos.x - sx.pos.x, dy = x.pos.y - sx.pos.y, dz = x.pos.z - sx.pos.z;
+                const double d = dx * dx + dy * dy + dz * dz;
+                if (d < bd) bd = d, id = ids[i], actor = actors[i], entity = ents[i];
+            }
+        }
+    }
+    if (!id) return std::snprintf(msg, cap, "no frozen copy here"), false;
+    if (g_rwatch.count(id) || RestrainPending(id)) return std::snprintf(msg, cap, "%05X: a restrain on it is open already", id), false;
+    if (mode == 1) {
+        MuleNow m;
+        if (!ReadMule(actor, id, m) || !m.have_xf) return std::snprintf(msg, cap, "%05X unreadable", id), false;
+        Cap c;
+        static std::uint32_t serial = 0x7E000000u;
+        c.key = id, c.kind = ewire::kKindJob, c.attack = erules::kAttackStrand, c.b12E = erules::kWeaponStrand, c.v184 = 0x3F800000u, c.part = 0xFFFFFFFFu;
+        c.serial = ++serial, c.entity = entity, c.flags = ewire::kHitAttackerSam;
+        const double root[3] = {m.xf.pos.x, m.xf.pos.y, m.xf.pos.z}, local[3] = {0, 0, 1.2};
+        c.have_point = true;
+        erules::ToWorld(root, YawOf(m.xf), local, c.point);
+        g_restrain_test_next = true;
+        GuestCapture(c, g_hits_on);
+        g_restrain_test_next = false;
+        Log("[enemy] enemy_restrain id=%05X: a synthetic strand HIT (attack 0x15C, weapon 41) through the capture path (fallback test)", id);
+        return std::snprintf(msg, cap, "%05X: synthetic strand HIT (fallback test)", id), g_rwatch.count(id) > 0;
+    }
+    const std::uint8_t k = mode == 2 ? erules::kFaintK : erules::kRestrainK;
+    RWatch w;
+    w.t0 = g_now, w.copy_was = CopyDefeat(actor, id), w.test = true;
+    if (erules::DownDefeat(w.copy_was)) return std::snprintf(msg, cap, "%05X: our copy is %s already", id, erules::DefeatText(w.copy_was)), false;
+    const int rc = SetOutcome(actor, id, k);
+    if (rc < 0) return std::snprintf(msg, cap, "%05X: the outcome setter on our copy: %s", id, rc == -2 ? "down already" : "not possible"), false;
+    g_rwatch[id] = w;
+    ++g_r_watches;
+    esync::HoldCopy(id, erules::kRestrainHoldMs, "enemy_restrain");
+    Log("[enemy] enemy_restrain id=%05X: the outcome setter k %u on our copy (%s): the watch reads it next [enemy_restrain test]", id, k, rc == 1 ? "called" : "deferred");
+    return std::snprintf(msg, cap, "%05X: k %u on our copy, watched", id, k), true;
 }
 
 bool HitWatch(const double (&v)[3], char* msg, std::size_t cap) noexcept {
@@ -2307,6 +2734,866 @@ bool TargetProbe(const double (&v)[3], char* msg, std::size_t cap) noexcept {
             return std::snprintf(msg, cap, "following %05X", id), true;
         default: return std::snprintf(msg, cap, "unknown op %d (0 read, 1 / 2 L1 perfect / plain -> 0 body | 1 sam, 3 L3 phase, 4 body watch 0/1, 7 follow s, 8 stimuli read, 9 <0..3> her stimulus)", op), false;
     }
+}
+
+// ---------------------------------------------------------------- round 23 E: the M2 probes (enemy_m2; docs/enemy-sync.md 14.11)
+// Design section 10 "M2 Probes" (critique R2 / R3). Hidden runs with enemy_m2_probes=1 only. Read-only (fault-free reads; game
+// calls under SEH), except P2's lever (b a test hit, c the perfect-threat alert, d' Sam's own stimulus +0xA4 for 1 s; the hand-over
+// itself is the scenario's enemy_own). Every line starts "[probe] P<n>"; every probe ends with one "[probe] P<n> result ..." line.
+// A fault in a probe turns the probes off for the run (never the hits).
+namespace {
+namespace ep = eprobe;
+constexpr std::uintptr_t kKnowVt = 0x143E13028;      // DSAINoticeAndKnowledge's vtable ([O] vt+0x50 = the update 0x142E8E850)
+constexpr std::uintptr_t kKnowUpdate = 0x142E8E850;  // the update (reads K+0x28 -> +0x118, the buckets, ORs entry +0x78 with 2)
+constexpr std::uintptr_t kKnowFactory = 0x142E8D1A0; // the RTTI factory: the ctor 0x142E936F0, the owner at +0x20
+constexpr std::uintptr_t kKnowCtor = 0x142E936F0;
+constexpr std::uintptr_t kKX = 0x28, kXAgent = 0x118, kKBucketN = 0x590, kKBuckets = 0x598;
+constexpr std::uintptr_t kKeKey = 0x10, kKeType = 0x18, kKeSub = 0x1C, kKePos = 0x20, kKeActor = 0x68, kKeFlags = 0x78, kKeSize = 0x80;
+constexpr std::uintptr_t kRay = 0x141C20CE0;         // (world, const double ray[6], result[0x40 each], max, filter, flag) -> hits
+constexpr std::uintptr_t kRayWorld = 0x14578C140;    // the physics world global both senses pass
+constexpr std::uintptr_t kRayFilterVt = 0x143BA8938; // the aural sense's filter vtable (+8 0x34, +0xC 0xFF, +0x20 an array)
+constexpr std::uintptr_t kRayFree = 0x1419D5870;     // the filter's array free (null-safe)
+constexpr std::uintptr_t kRayResInit = 0x14240B7E0;  // a result entry's init
+constexpr std::uintptr_t kEPerceive = 0x314, kSClass = 0x88, kMgrTsVis = 0x3C398;
+enum PGroup : unsigned { kPKnow = 1, kPRay = 2, kPSense = 4, kPStimMul = 8 };
+// clang-format off
+constexpr Site kProbeSites[] = {
+    {kKnowFactory, "48 89 5C 24 08 57 48 83 EC 20 48 8B F9 48 8D 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 48 8B D8 48 85 C0 74 1A 48 8B C8 E8 ?? ?? ?? ?? 48 8B C3 48 89 7B 20", "the knowledge factory", kPKnow},
+    {kKnowUpdate,  "48 8B C4 48 89 58 10 48 89 68 18 48 89 70 20 57 41 54 41 55 41 56 41 57 48 81 EC 00 09 00 00", "the knowledge update", kPKnow},
+    {0x142E8E990,  "49 8B 46 28 48 8D 54 24 60 48 8B 88 18 01 00 00", "the update's agent (+0x28 -> +0x118)", kPKnow},
+    {0x142E8EDA0,  "49 8B B6 98 05 00 00 49 63 AE 90 05 00 00", "the buckets (+0x598, +0x590)", kPKnow},
+    {0x142E8EE19,  "49 8B 96 98 05 00 00 4D 63 86 90 05 00 00", "the buckets (second read)", kPKnow},
+    {0x142E8EE53,  "80 48 78 02 48 83 E8 80 48 3B C1 75 F3", "the entries (0x80 each, flags +0x78)", kPKnow},
+    {kRay,         "40 55 56 57 41 54 41 55 41 56 41 57 48 81 EC B0 00 00 00 48 8D 6C 24 30 48 89 9D C0 00 00 00", "the raycast", kPRay},
+    {0x141C20D0D,  "4C 8B A5 E0 00 00 00", "the raycast's filter (arg 5)", kPRay},
+    {0x141C20DAD,  "0F B6 85 E8 00 00 00", "the raycast's flag (arg 6)", kPRay},
+    {0x141C20DB4,  "4D 8D 45 18", "the raycast's end (ray+0x18)", kPRay},
+    {0x142E4F6F3,  "48 8B 0D ?? ?? ?? ?? 48 8D 45 50 C6 44 24 28 01 4C 8D 85 80 00 00 00 41 B9 01 00 00 00 48 89 44 24 20 48 8D 55 E8 E8 ?? ?? ?? ??", "the visual sense's raycast", kPRay},
+    {0x142E81692,  "48 8B 0D ?? ?? ?? ?? 48 8D 45 A0 33 DB C7 45 A8 34 00 00 00 49 8D 56 10 88 5C 24 28 48 8D 3D ?? ?? ?? ?? 48 C7 45 AC FF 00 00 00 "
+                   "48 03 D6 48 89 7D A0 44 8D 4B 20 48 89 5D B4 4C 8D 45 40 89 5D BC 48 89 5D C0 48 89 44 24 20 E8 ?? ?? ?? ??", "the aural sense's raycast (its filter)", kPRay},
+    {0x142E8171F,  "48 8B 4D C0 48 89 7D A0 E8", "the aural sense's filter free (+0x20)", kPRay},
+    {kRayFree,     "48 83 EC 28 4C 8B C1 48 85 C9 0F 84", "the filter array free", kPRay},
+    {kRayResInit,  "C5 F8 10 05 38 3C 78 01 33 C0 48 89 01 48 89 41 08 48 89 41 10 48 89 41 18 C5 FA 7F 41 20 89 41 30 48 89 41 38 48 8B C1 C3", "the result init", kPRay},
+    {0x142E4F314,  "8B BB 14 03 00 00", "the visual sense's +0x314", kPSense},
+    {0x142E4F2F7,  "48 8D B3 18 03 00 00", "the visual sense's lock (+0x318)", kPSense},
+    {0x142E4F340,  "48 8B 1D ?? ?? ?? ?? 48 8B 9B 98 C3 03 00", "the thread-safe visual list (AI manager +0x3C398)", kPSense},
+    {0x142E5FA60,  "8B 9A 88 00 00 00", "the classifier's stimulus +0x88", kPSense},
+    {0x142E5FA70,  "81 E3 FF FF 1F 00", "its id mask (0x1FFFFF)", kPSense},
+    {0x14251D376,  "C5 FA 10 8F A4 00 00 00", "a stimulus +0xA4 read", kPStimMul},
+};
+// clang-format on
+bool g_pchecked = false, g_probe_off = false;
+unsigned g_pgroups = 0;
+void ProbeChecks() {
+    if (g_pchecked) return;
+    g_pchecked = true;
+    unsigned bad = 0, n = 0;
+    for (const Site& s : kProbeSites) {
+        ++n;
+        if (!mem::CodeMatches(A(s.va), s.sig)) bad |= s.group, Log("[probe] byte check FAILED: %s at 0x%llX", s.name, static_cast<unsigned long long>(s.va));
+    }
+    const struct {
+        bool okv;
+        unsigned group;
+        const char* name;
+    } data[] = {
+        {mem::Q(A(kKnowVt) + 0x50) == A(kKnowUpdate), kPKnow, "the knowledge vtable's update (vt+0x50)"},
+        {mem::RipTarget(A(0x142E8D1C4), 1, 5) == A(kKnowCtor), kPKnow, "the factory's ctor"},
+        {mem::RipTarget(A(0x142E4F719), 1, 5) == A(kRay) && mem::RipTarget(A(0x142E816DC), 1, 5) == A(kRay), kPRay, "both senses call the raycast"},
+        {mem::RipTarget(A(0x142E4F6F3), 3, 7) == A(kRayWorld) && mem::RipTarget(A(0x142E81692), 3, 7) == A(kRayWorld), kPRay, "both pass the world global"},
+        {mem::RipTarget(A(0x142E816AE), 3, 7) == A(kRayFilterVt) && mem::RipTarget(A(0x142E81727), 1, 5) == A(kRayFree), kPRay, "the filter vtable and its free"},
+        {mem::RipTarget(A(0x142E4F340), 3, 7) == A(kStimMgr), kPSense, "the thread-safe list's AI manager"},
+    };
+    for (const auto& d : data) {
+        ++n;
+        if (!d.okv) bad |= d.group, Log("[probe] byte check FAILED: %s", d.name);
+    }
+    g_pgroups = (kPKnow | kPRay | kPSense | kPStimMul) & ~bad;
+    Log("[probe] P0 byte checks (%u): knowledge %s, raycast %s, perception %s, stimulus +0xA4 %s", n, (bad & kPKnow) ? "FAILED" : "ok",
+        (bad & kPRay) ? "FAILED" : "ok", (bad & kPSense) ? "FAILED" : "ok", (bad & kPStimMul) ? "FAILED" : "ok");
+}
+void PushRestoreGuarded(const char* why) noexcept;  // (below: P2 lever d''s stimulus write undone)
+void ProbeFault(const char* where) noexcept {
+    g_probe_off = true;
+    Log("[probe] FAULT in %s: probes off for the run", where);
+    PushRestoreGuarded("a probe fault");  // round 23 review: never leave our Sam's stimulus x3 behind (PushTick never runs again)
+}
+const char* Ok(unsigned b) noexcept { return b ? "ok" : "FAILED"; }
+std::uint32_t OurSamId() noexcept {
+    std::uint32_t id = 0;
+    if (RegistryPlayerId(&id) && id) return id;
+    return g_player_id.load();
+}
+bool Pos3(std::uintptr_t e, double (&p)[3]) noexcept {
+    WorldTransform x{};
+    if (!ReadXf(e, x)) return false;
+    p[0] = x.pos.x, p[1] = x.pos.y, p[2] = x.pos.z;
+    return true;
+}
+double Dist(const double (&a)[3], const double (&b)[3]) noexcept {
+    return std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) + (a[2] - b[2]) * (a[2] - b[2]));
+}
+
+// ---- the knowledge object (P1, P5): a bounded search from the MULE's entity, agent, AIIndividualComponent and its individual
+// (+0x50) for a DSAINoticeAndKnowledge whose +0x28 -> +0x118 is this MULE's agent, pointed to or held inside a block (the type is
+// built in place by its RTTI factory 0x142E90C00 -> ctor 0x142E936F0, so it can be a member: run 20261125-154710 found no pointer
+// to one within depth 2); depth 2, at most 60000 reads. When none verifies, the first one seen with another agent is returned,
+// marked "unverified".
+unsigned ReadBlock(std::uintptr_t p, std::uint64_t* buf, std::size_t bytes) noexcept {
+    for (std::size_t n = bytes; n >= 0x40; n /= 2)
+        if (mem::Read(p, buf, n)) return static_cast<unsigned>(n / 8);
+    return 0;
+}
+bool Plausible(std::uint64_t v) noexcept { return ep::PlausiblePtr(v, 0, 0) && !mem::InImage(static_cast<std::uintptr_t>(v)); }
+bool KnowOf(std::uintptr_t p, std::uintptr_t agent) noexcept {
+    if (mem::Q(p) != A(kKnowVt)) return false;
+    const std::uintptr_t x = mem::Q(p + kKX);
+    return x && mem::Q(x + kXAgent) == agent;
+}
+std::uintptr_t KnowSearch(std::uintptr_t e, char* path, std::size_t cap, unsigned* reads_out, unsigned* vt_only) {
+    *reads_out = 0, *vt_only = 0;
+    std::snprintf(path, cap, "-");
+    const std::uintptr_t agent = e ? mem::Q(e + kEAgent) : 0;
+    if (!agent) return std::snprintf(path, cap, "no agent"), 0;
+    const std::uintptr_t comp = CompOf(e, "AIIndividualComponent");
+    const std::uintptr_t ind = comp ? mem::Q(comp + 0x50) : 0;
+    const struct {
+        const char* name;
+        std::uintptr_t p;
+        std::size_t n;
+    } roots[] = {{"individual(comp+0x50)", ind, 0x800}, {"AIIndividualComponent", comp, 0x400}, {"agent(+0x170)", agent, 0x800}, {"entity", e, 0x800}};
+    const std::uintptr_t vt = A(kKnowVt);
+    static std::uint64_t blk[0x100], blk2[0x100];
+    std::uintptr_t unver = 0;
+    char unver_path[96] = {};
+    struct Child {
+        int root;
+        unsigned off;
+        std::uintptr_t p;
+    };
+    std::vector<Child> kids;
+    std::vector<std::uintptr_t> seen;
+    unsigned reads = 0;
+    for (int r = 0; r < 4; ++r) {
+        if (!roots[r].p) continue;
+        const unsigned n = ReadBlock(roots[r].p, blk, roots[r].n);
+        ++reads;
+        for (unsigned i = 0; i < n; ++i) {
+            const std::uint64_t v = blk[i];
+            if (v == vt) {  // held inside the root
+                const std::uintptr_t q = roots[r].p + i * 8;
+                ++reads;
+                if (KnowOf(q, agent)) {
+                    *reads_out = reads;
+                    std::snprintf(path, cap, "%s+0x%X (inside)", roots[r].name, i * 8);
+                    return q;
+                }
+                if (!unver) unver = q, std::snprintf(unver_path, sizeof(unver_path), "%s+0x%X (inside)", roots[r].name, i * 8);
+                ++*vt_only;
+                continue;
+            }
+            if (!Plausible(v)) continue;
+            const std::uintptr_t p = static_cast<std::uintptr_t>(v);
+            ++reads;
+            if (mem::Q(p) == vt) {
+                if (KnowOf(p, agent)) {
+                    *reads_out = reads;
+                    std::snprintf(path, cap, "%s+0x%X", roots[r].name, i * 8);
+                    return p;
+                }
+                if (!unver) unver = p, std::snprintf(unver_path, sizeof(unver_path), "%s+0x%X", roots[r].name, i * 8);
+                ++*vt_only;
+                continue;
+            }
+            if (kids.size() < 1200) kids.push_back({r, i * 8, p});
+        }
+    }
+    for (const Child& c : kids) {
+        if (reads > 60000) break;
+        if (std::find(seen.begin(), seen.end(), c.p) != seen.end()) continue;
+        seen.push_back(c.p);
+        const unsigned n = ReadBlock(c.p, blk2, 0x800);
+        ++reads;
+        for (unsigned j = 0; j < n && reads <= 60000; ++j) {
+            const std::uint64_t v = blk2[j];
+            if (v == vt) {  // held inside a child
+                const std::uintptr_t q = c.p + j * 8;
+                ++reads;
+                if (KnowOf(q, agent)) {
+                    *reads_out = reads;
+                    std::snprintf(path, cap, "%s+0x%X -> +0x%X (inside)", roots[c.root].name, c.off, j * 8);
+                    return q;
+                }
+                if (!unver) unver = q, std::snprintf(unver_path, sizeof(unver_path), "%s+0x%X -> +0x%X (inside)", roots[c.root].name, c.off, j * 8);
+                ++*vt_only;
+                continue;
+            }
+            if (!Plausible(v)) continue;
+            const std::uintptr_t p = static_cast<std::uintptr_t>(v);
+            ++reads;
+            if (mem::Q(p) != vt) continue;
+            if (KnowOf(p, agent)) {
+                *reads_out = reads;
+                std::snprintf(path, cap, "%s+0x%X -> +0x%X", roots[c.root].name, c.off, j * 8);
+                return p;
+            }
+            if (!unver) unver = p, std::snprintf(unver_path, sizeof(unver_path), "%s+0x%X -> +0x%X", roots[c.root].name, c.off, j * 8);
+            ++*vt_only;
+        }
+    }
+    *reads_out = reads;
+    if (unver) return std::snprintf(path, cap, "%s unverified (its +0x28 -> +0x118 is not this agent)", unver_path), unver;
+    std::snprintf(path, cap, "not found (%u reads%s)", reads, reads > 60000 ? ", the budget" : "");
+    return 0;
+}
+struct KCache {
+    std::uintptr_t entity = 0, k = 0;
+    char path[96] = {};
+};
+KCache g_kcache[8];
+unsigned g_kcache_next = 0;
+// the knowledge object of a MULE entity (cached per entity while its K still verifies), logged when searched
+std::uintptr_t KnowOfEntity(int probe, std::uint32_t id, std::uintptr_t e, char* path, std::size_t cap) {
+    const std::uintptr_t agent = mem::Q(e + kEAgent);
+    for (KCache& c : g_kcache)
+        if (c.entity == e && c.k && KnowOf(c.k, agent)) return std::snprintf(path, cap, "%s (cached)", c.path), c.k;
+    unsigned reads = 0, vt_only = 0;
+    char p[96];
+    const std::uintptr_t k = KnowSearch(e, p, sizeof(p), &reads, &vt_only);
+    Log("[probe] P%d knowledge id=%05X entity %p: %s%p at %s (%u reads; %u other DSAINoticeAndKnowledge seen)", probe, id, reinterpret_cast<void*>(e),
+        k ? "DSAINoticeAndKnowledge " : "none ", reinterpret_cast<void*>(k), p, reads, vt_only);
+    if (k) {
+        KCache& c = g_kcache[g_kcache_next++ % 8];
+        c.entity = e, c.k = k;
+        std::snprintf(c.path, sizeof(c.path), "%s", p);
+    }
+    std::snprintf(path, cap, "%s", p);
+    return k;
+}
+struct KEntry {
+    unsigned bucket = 0, index = 0;
+    std::uint64_t key = 0;
+    int type = 0, sub = 0;
+    double pos[3] = {};
+    std::uint32_t actor = 0;
+    std::uint8_t flags = 0;
+    std::uint8_t raw[kKeSize] = {};
+};
+constexpr unsigned kKMax = 48;
+unsigned KnowEntries(std::uintptr_t k, KEntry* out, unsigned cap, unsigned* buckets) {
+    *buckets = 0;
+    std::int32_t nb = 0;
+    const std::uintptr_t arr = mem::Q(k + kKBuckets);
+    if (!mem::Rd(k + kKBucketN, nb) || nb <= 0 || nb > 256 || !arr) return 0;
+    *buckets = static_cast<unsigned>(nb);
+    unsigned n = 0;
+    for (std::int32_t b = 0; b < nb && n < cap; ++b) {
+        std::int32_t c = 0;
+        const std::uintptr_t ents = mem::Q(arr + 16ull * static_cast<unsigned>(b) + 8);
+        if (!mem::Rd(arr + 16ull * static_cast<unsigned>(b), c) || c <= 0 || c > 256 || !ents) continue;
+        for (std::int32_t i = 0; i < c && n < cap; ++i) {
+            KEntry& e = out[n];
+            if (!mem::Read(ents + kKeSize * static_cast<unsigned>(i), e.raw, kKeSize)) continue;
+            e.bucket = static_cast<unsigned>(b), e.index = static_cast<unsigned>(i);
+            std::memcpy(&e.key, e.raw + kKeKey, 8);
+            std::memcpy(&e.type, e.raw + kKeType, 4);
+            std::memcpy(&e.sub, e.raw + kKeSub, 4);
+            std::memcpy(e.pos, e.raw + kKePos, 24);
+            std::memcpy(&e.actor, e.raw + kKeActor, 4);
+            e.flags = e.raw[kKeFlags];
+            ++n;
+        }
+    }
+    return n;
+}
+// our Sam's PlayerVisual entry: by his actor id, else the nearest PlayerVisual within 3 m of him; -1 none. how: 1 id, 2 id bits, 3 place
+int SamVisual(const KEntry* es, unsigned n, std::uint32_t sam_id, const double (&sam)[3], bool have_sam, int* how) {
+    int best = -1;
+    double bd = 3.0;
+    *how = 0;
+    for (unsigned i = 0; i < n; ++i) {
+        if (es[i].type != ep::kPlayerVisual) continue;
+        const int s = ep::SameActor(es[i].actor, sam_id);
+        if (s) return *how = s, static_cast<int>(i);
+        if (have_sam) {
+            const double d = Dist(es[i].pos, sam);
+            if (d < bd) bd = d, best = static_cast<int>(i), *how = 3;
+        }
+    }
+    return best;
+}
+void TypesText(const KEntry* es, unsigned n, char* out, std::size_t cap) {
+    int types[16] = {}, counts[16] = {}, nt = 0;
+    for (unsigned i = 0; i < n; ++i) {
+        int k = 0;
+        while (k < nt && types[k] != es[i].type) ++k;
+        if (k < nt) ++counts[k];
+        else if (nt < 16) types[nt] = es[i].type, counts[nt++] = 1;
+    }
+    std::size_t at = 0;
+    out[0] = 0;
+    for (int k = 0; k < nt && at + 40 < cap; ++k)
+        at += static_cast<std::size_t>(std::snprintf(out + at, cap - at, "%s%d %s x%d", k ? ", " : "", types[k], ep::KnowledgeTypeName(types[k]), counts[k]));
+    if (!nt) std::snprintf(out, cap, "no entries");
+}
+void LogSlot(int probe, std::uint32_t id, const KEntry& e) {
+    float f[12] = {};
+    std::memcpy(f, e.raw + 0x38, sizeof(f));
+    Log("[probe] P%d slot id=%05X b%u.%u type %d %s sub %d key 0x%llX actor 0x%X at (%.2f, %.2f, %.2f) flags 0x%X; +0x38.. %.3g %.3g %.3g %.3g %.3g %.3g %.3g "
+        "%.3g %.3g %.3g %.3g %.3g",
+        probe, id, e.bucket, e.index, e.type, ep::KnowledgeTypeName(e.type), e.sub, static_cast<unsigned long long>(e.key), e.actor, e.pos[0], e.pos[1], e.pos[2],
+        static_cast<unsigned>(e.flags), static_cast<double>(f[0]), static_cast<double>(f[1]), static_cast<double>(f[2]), static_cast<double>(f[3]),
+        static_cast<double>(f[4]), static_cast<double>(f[5]), static_cast<double>(f[6]), static_cast<double>(f[7]), static_cast<double>(f[8]),
+        static_cast<double>(f[9]), static_cast<double>(f[10]), static_cast<double>(f[11]));
+}
+
+// the copy (P1, P4: our frozen copy; P5: our own live MULE): entity and whether frozen
+std::uintptr_t CopyEntity(std::uint32_t id, bool* frozen) noexcept {
+    std::uintptr_t a = 0, e = 0;
+    if (esync::MirrorOf(id, &a, &e) && e) return *frozen = true, e;
+    *frozen = false;
+    const std::uintptr_t actor = ActorOf(id);
+    MuleNow m;
+    return actor && ReadMule(actor, id, m) && m.realized ? m.entity : 0;
+}
+std::uint32_t ProbeId(double v, bool frozen_first) noexcept {
+    if (v > 0) return static_cast<std::uint32_t>(v);
+    if (const std::uint32_t l = esync::LookId()) return l;
+    if (frozen_first) {
+        std::uint32_t ids[4];
+        std::uintptr_t as[4], es[4];
+        if (esync::FrozenCopies(ids, as, es, 4)) return ids[0];
+    }
+    return Target(0);
+}
+
+// ---- P1 / P5: the knowledge runs (P5 also the phase, state and facing)
+struct KRun {
+    int probe = 0;
+    std::uint32_t id = 0, world = 0, seq = 0;
+    double t0 = 0, until = 0, next = 0, next_line = 0;
+    bool frozen = false;
+    std::uintptr_t entity = 0, k = 0;
+    char path[96] = {};
+    ep::FreshTrack ft;
+    ep::PhaseTrack ph;
+    unsigned samples = 0, slot_lines = 0, max_entries = 0;
+    std::uint64_t set_sig = 0;
+    double pv_first_ms = -1, d0 = -1;
+    std::uint32_t ea0 = 0xFFFFFFFFu, ea4 = 0xFFFFFFFFu, a88 = 0xFFFFFFFFu;
+};
+KRun g_p1, g_p5;
+unsigned g_p5_seq = 0;
+const char* MsText(double ms, char* b, std::size_t cap) {
+    if (ms < 0) return "never";
+    std::snprintf(b, cap, "%.0f ms", ms);
+    return b;
+}
+void KRunEnd(KRun& r, const char* why) {
+    if (!r.id) return;
+    char a[24], b[24];
+    if (r.probe == 1)
+        Log("[probe] P1 result id=%05X copy %s: knowledge %s; %u samples, at most %u entries; PlayerVisual of our Sam: %s (fresh %u, stale %u, none %u)%s%s",
+            r.id, r.frozen ? "frozen" : "live", r.k ? r.path : "not found", r.samples, r.max_entries, ep::FreshText(r.ft.Verdict()), r.ft.n_fresh, r.ft.n_stale,
+            r.ft.n_none, why ? "; ended: " : "", why ? why : "");
+    else
+        Log("[probe] P5 result #%u id=%05X: Sam %.1f m at the start; phase start %d end %d max %d, %u changes, first raise %s; state 0x%X bits 0x%X a88 0x%X; "
+            "knowledge %s; PlayerVisual of our Sam %s (first at %s)%s%s",
+            r.seq, r.id, r.d0, r.ph.start == -999 ? -1 : r.ph.start, r.ph.last == -999 ? -1 : r.ph.last, r.ph.max == -999 ? -1 : r.ph.max, r.ph.changes,
+            MsText(r.ph.first_raise_ms, a, sizeof(a)), r.ea0, r.ea4, r.a88, r.k ? "found" : "not found", ep::FreshText(r.ft.Verdict()),
+            MsText(r.pv_first_ms, b, sizeof(b)), why ? "; ended: " : "", why ? why : "");
+    r = KRun{};
+}
+void KRunSample(KRun& r) {
+    if (!r.id || g_now < r.next) return;
+    r.next += r.probe == 1 ? 500.0 : 250.0;
+    if (g_world != r.world) return KRunEnd(r, "the world changed");
+    bool frozen = false;
+    const std::uintptr_t e = CopyEntity(r.id, &frozen);
+    if (!e || e != r.entity) return KRunEnd(r, "the copy is gone or was re-made");
+    if (r.k && mem::Q(r.k) != A(kKnowVt)) r.k = 0;  // gone (an unverified one is kept while it is one)
+    const double t = g_now - r.t0;
+    double sam[3] = {}, me[3] = {};
+    const bool hs = Pos3(g_sam.load(), sam), hm = Pos3(e, me);
+    static KEntry es[kKMax];
+    unsigned nb = 0, n = 0;
+    if (r.k) n = KnowEntries(r.k, es, kKMax, &nb);
+    if (n > r.max_entries) r.max_entries = n;
+    int how = 0;
+    const int pv = r.k ? SamVisual(es, n, OurSamId(), sam, hs, &how) : -1;
+    const ep::Fresh f = r.ft.Feed(pv >= 0, pv >= 0 ? ep::EntrySig(es[pv].raw, kKeSize) : 0, g_now);
+    if (pv >= 0 && r.pv_first_ms < 0) r.pv_first_ms = t;
+    ++r.samples;
+    // the entry set's identity (types and keys): its slots logged again when it changes (at most 40 slot lines a probe)
+    std::uint64_t ss = 1469598103934665603ull;
+    for (unsigned i = 0; i < n; ++i) ss = (ss ^ static_cast<std::uint64_t>(es[i].type) ^ (es[i].key << 8)) * 1099511628211ull;
+    const bool set_changed = ss != r.set_sig;
+    r.set_sig = ss;
+    char types[200];
+    TypesText(es, n, types, sizeof(types));
+    char pvtxt[160] = "none";
+    if (pv >= 0)
+        std::snprintf(pvtxt, sizeof(pvtxt), "%s (by %s; at %.1f m from him; flags 0x%X)", ep::FreshText(f), how == 1 ? "id" : how == 2 ? "id bits" : "place",
+                      hs ? Dist(es[pv].pos, sam) : -1.0, static_cast<unsigned>(es[pv].flags));
+    if (r.probe == 1) {
+        Log("[probe] P1 t=%.1f s id=%05X (%s): %u buckets, %u entries: %s; PlayerVisual of our Sam: %s; Sam %.1f m", t / 1000.0, r.id, frozen ? "frozen" : "live",
+            nb, n, types, pvtxt, hs && hm ? Dist(sam, me) : -1.0);
+    } else {
+        // P5: our own MULE's phase, state, facing and knowledge
+        const std::uintptr_t actor = ActorOf(r.id);
+        MuleNow m;
+        const bool hmule = actor && ReadMule(actor, r.id, m) && m.realized;
+        const std::uintptr_t po = hmule && (g_tgroups & kTPhase) ? PhaseObj(m.entity) : 0;
+        const int phase = po ? static_cast<int>(U32(po + kPhaseNow)) : -1;
+        const bool ph_changed = r.ph.Feed(g_now, phase);
+        const bool st_changed = hmule && (m.ea0 != r.ea0 || m.ea4 != r.ea4 || m.a88 != r.a88);
+        if (hmule) r.ea0 = m.ea0, r.ea4 = m.ea4, r.a88 = m.a88;
+        const double off = hmule && m.have_xf && hs ? ep::OffDeg(YawOf(m.xf), m.xf.pos.x, m.xf.pos.y, sam[0], sam[1]) : -1.0;
+        if (r.d0 < 0 && hs && hm) r.d0 = Dist(sam, me);
+        if (ph_changed || st_changed || set_changed || g_now >= r.next_line) {
+            r.next_line = g_now + 1000.0;
+            Log("[probe] P5 #%u t=%.2f s id=%05X: phase %d (+0x114 %.2f, +0x118 %.2f) state 0x%X bits 0x%X a88 0x%X; Sam %.1f m, %.0f deg off its facing; %s; "
+                "PlayerVisual of our Sam: %s%s",
+                r.seq, t / 1000.0, r.id, phase, po ? static_cast<double>(F32(po + 0x114)) : -1.0, po ? static_cast<double>(F32(po + 0x118)) : -1.0, m.ea0, m.ea4,
+                m.a88, hs && hm ? Dist(sam, me) : -1.0, off, types, pvtxt, ph_changed ? " (phase changed)" : st_changed ? " (state changed)" : "");
+        }
+    }
+    if (set_changed && r.slot_lines < 40)
+        for (unsigned i = 0; i < n && r.slot_lines < 40; ++i, ++r.slot_lines) LogSlot(r.probe, r.id, es[i]);
+    if (g_now >= r.until) KRunEnd(r, nullptr);
+}
+bool KRunStart(KRun& r, int probe, std::uint32_t id, double secs, char* msg, std::size_t cap) {
+    if (r.id) KRunEnd(r, "replaced");
+    const char* skip = !(g_tgroups & kTAgent) ? "the agent offset's check failed" : !(g_pgroups & kPKnow) ? "the knowledge checks failed" : nullptr;
+    bool frozen = false;
+    const std::uintptr_t e = id ? CopyEntity(id, &frozen) : 0;
+    if (!skip && !e) skip = "no realized copy of it here";
+    if (skip && probe == 1) {
+        Log("[probe] P1 result id=%05X: skipped (%s)", id, skip);
+        return std::snprintf(msg, cap, "P1 skipped: %s", skip), true;
+    }
+    if (!e) {
+        Log("[probe] P5 result #%u id=%05X: skipped (%s)", ++g_p5_seq, id, skip);
+        return std::snprintf(msg, cap, "P5 skipped: %s", skip), true;
+    }
+    r.probe = probe, r.id = id, r.world = g_world, r.t0 = r.next = g_now, r.until = g_now + (secs > 0 ? secs : (probe == 1 ? 6.0 : 8.0)) * 1000.0;
+    r.entity = e, r.frozen = frozen;
+    if (probe == 5) r.seq = ++g_p5_seq;
+    r.k = skip ? 0 : KnowOfEntity(probe, id, e, r.path, sizeof(r.path));
+    if (probe == 1 && !r.k) {
+        KRunEnd(r, "no knowledge object");
+        return std::snprintf(msg, cap, "P1 %05X: no knowledge object", id), true;
+    }
+    char seq[16] = "";
+    if (probe == 5) std::snprintf(seq, sizeof(seq), " #%u", r.seq);
+    Log("[probe] P%d start%s id=%05X copy %s for %.1f s: knowledge %s", probe, seq, id, frozen ? "frozen" : "live", (r.until - r.t0) / 1000.0,
+        r.k ? r.path : skip ? skip : "not found");
+    return std::snprintf(msg, cap, "P%d %05X started", probe, id), true;
+}
+
+// ---- P2: the push after a hand-over (the guest)
+struct PushRun {
+    std::uint32_t id = 0, world = 0;
+    int lever = 0;
+    double armed = 0, timeout_ms = 15000, next = 0;
+    ep::Push p;
+    std::uintptr_t entity = 0, d_stim = 0, d_agent = 0;
+    unsigned shots0 = 0;
+    float d_mul = 0;
+    double d_until = 0, dist = -1;
+    char applied[160] = {};
+};
+PushRun g_push;
+std::uintptr_t SamVisStim() noexcept {
+    const std::uintptr_t sam = g_sam.load();
+    const std::uintptr_t sc = VisComp(sam);
+    const std::uintptr_t s = sc ? mem::Q(sc + kCVisStim) : 0;
+    return s ? s : FindVisStimOf(sam ? mem::Q(sam + kEAgent) : 0);
+}
+void PushRestore(const char* why) {
+    if (!g_push.d_stim) return;
+    if (mem::Q(g_push.d_stim + kSAgent) == g_push.d_agent) {
+        const int r = SehWrite(g_push.d_stim + kSMul, &g_push.d_mul, sizeof(g_push.d_mul));
+        Log("[probe] P2 lever d': our Sam's stimulus +0xA4 back to %.3f (%s)%s", static_cast<double>(g_push.d_mul), why, r < 0 ? " FAULT" : "");
+    } else {
+        Log("[probe] P2 lever d': our Sam's stimulus was reused (not restored: %s)", why);
+    }
+    g_push.d_stim = 0;
+}
+// The fault path's restore (ProbeFault): PushRestore behind an SEH guard (its read is fault-free, its write SehWrite); a fault
+// here forgets the stimulus (logged).
+void PushRestoreGuarded(const char* why) noexcept {
+    if (!g_push.d_stim) return;
+    __try {
+        PushRestore(why);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_push.d_stim = 0;
+        Log("[probe] P2 lever d': our Sam's stimulus restore FAULTED (%s): forgotten", why);
+    }
+}
+void PushEnd(const char* why) {
+    if (!g_push.id) return;
+    PushRestore("the end");
+    char t[64];
+    g_push.p.Text(t, sizeof(t));
+    if (g_push.p.t0 < 0)
+        Log("[probe] P2 result id=%05X lever %s: not handed over here (%s)", g_push.id, ep::LeverName(g_push.lever), why ? why : "no hand-over");
+    else
+        Log("[probe] P2 result id=%05X lever %s: %s (Sam %.1f m, %.0f deg off its facing at the hand-over, at least %.0f deg; %u samples; %s)%s%s", g_push.id,
+            ep::LeverName(g_push.lever), t, g_push.dist, g_push.p.start_off, g_push.p.min_off > 360 ? -1.0 : g_push.p.min_off, g_push.p.samples, g_push.applied,
+            why ? "; ended: " : "", why ? why : "");
+    g_push = PushRun{};
+}
+void PushApply(const MuleNow& m) {
+    const std::uintptr_t sam = g_sam.load();
+    switch (g_push.lever) {
+        case 0: std::snprintf(g_push.applied, sizeof(g_push.applied), "nothing applied"); break;
+        case 1: {
+            if (!(g_groups & kGApply)) {
+                std::snprintf(g_push.applied, sizeof(g_push.applied), "lever b skipped: the apply checks failed");
+                break;
+            }
+            ewire::Hit h;
+            h.key = g_push.id, h.hit_seq = ++g_hit_seq, h.attack = 0x47, h.kind = ewire::kKindTest, h.v184 = 0x3F800000u, h.part = 0xFFFFFFFFu;
+            h.flags |= ewire::kHitNormalValid;
+            const double local[3] = {0, 0, 1.2}, nl[3] = {1, 0, 0}, il[3] = {0, 0, 0};
+            CreditIds();
+            ApplyResult ar;
+            ApplyOne(g_push.id, h, local, nl, il, 3, 0, erules::HostSerial(0, h.hit_seq), ar);
+            std::snprintf(g_push.applied, sizeof(g_push.applied), "lever b: test hit 0x47 owner our Sam: %s", erules::HitResultText(static_cast<std::uint8_t>(ar.r)));
+            break;
+        }
+        case 2: {
+            const std::uintptr_t comp = CompOf(m.entity, "AIIndividualComponent");
+            if (!(g_tgroups & kTPerfect) || !comp || mem::Q(comp + 0x48) != m.entity || !sam) {
+                std::snprintf(g_push.applied, sizeof(g_push.applied), "lever c skipped: %s", !(g_tgroups & kTPerfect) ? "the alert's checks failed" : "no component or Sam");
+                break;
+            }
+            const int r = SehAlert(true, comp, sam);
+            std::snprintf(g_push.applied, sizeof(g_push.applied), "lever c: AlertForEntityWithPerfectThreatInfo -> our Sam: %s", r < 0 ? "FAULT" : "called");
+            if (r < 0) ProbeFault("P2 lever c");
+            break;
+        }
+        case 3: {
+            if (!(g_pgroups & kPStimMul) || !(g_sgroups & kSCreate) || !(g_tgroups & kTAgent)) {
+                std::snprintf(g_push.applied, sizeof(g_push.applied), "lever d' skipped: the stimulus checks failed");
+                break;
+            }
+            const std::uintptr_t s = SamVisStim();
+            float mul = 0;
+            if (!s || !mem::Rd(s + kSMul, mul) || !(mul > 0.f && mul <= 8.f)) {
+                std::snprintf(g_push.applied, sizeof(g_push.applied), "lever d' skipped: no visual stimulus of our Sam (or +0xA4 %.3f)", static_cast<double>(mul));
+                break;
+            }
+            const float up = mul * 3.f;
+            const int r = SehWrite(s + kSMul, &up, sizeof(up));
+            if (r < 0) {
+                std::snprintf(g_push.applied, sizeof(g_push.applied), "lever d': FAULT");
+                ProbeFault("P2 lever d'");
+                break;
+            }
+            g_push.d_stim = s, g_push.d_agent = mem::Q(s + kSAgent), g_push.d_mul = mul, g_push.d_until = g_now + 1000.0;
+            std::snprintf(g_push.applied, sizeof(g_push.applied), "lever d': our Sam's stimulus %p +0xA4 %.3f -> %.3f for 1 s (a variant, not a new stimulus)",
+                          reinterpret_cast<void*>(s), static_cast<double>(mul), static_cast<double>(up));
+            break;
+        }
+        default: break;
+    }
+}
+void PushTick() {
+    if (!g_push.id) return;
+    if (g_world != g_push.world) return PushEnd("the world changed");
+    if (g_push.d_stim && g_now >= g_push.d_until) PushRestore("1 s");
+    if (g_now < g_push.next) return;
+    g_push.next = g_now + 100.0;
+    const bool owned = esync::OwnedHere(g_push.id);
+    if (g_push.p.t0 < 0) {
+        if (!owned) {
+            if (g_now - g_push.armed > 90000.0) PushEnd("no hand-over in 90 s");
+            return;
+        }
+        const std::uintptr_t actor = ActorOf(g_push.id);
+        MuleNow m;
+        double sam[3] = {};
+        if (!actor || !ReadMule(actor, g_push.id, m) || !m.realized || !m.have_xf || !Pos3(g_sam.load(), sam)) return;  // the next sample
+        const double off = ep::OffDeg(YawOf(m.xf), m.xf.pos.x, m.xf.pos.y, sam[0], sam[1]);
+        const double me[3] = {m.xf.pos.x, m.xf.pos.y, m.xf.pos.z};
+        g_push.dist = Dist(me, sam);
+        g_push.entity = m.entity;
+        g_push.shots0 = shots::ShotsBy(m.entity);
+        g_push.p.Owned(g_now, off);
+        PushApply(m);
+        Log("[probe] P2 owned id=%05X here (%.1f s after the arm): Sam %.1f m, %.0f deg off its facing; MULE state %u bits 0x%X; %s", g_push.id,
+            (g_now - g_push.armed) / 1000.0, g_push.dist, off, m.ea0, m.ea4, g_push.applied);
+        if (g_push.p.Done(g_now, g_push.timeout_ms)) PushEnd(nullptr);
+        return;
+    }
+    if (!owned) return PushEnd("given back before the end");
+    const std::uintptr_t actor = ActorOf(g_push.id);
+    MuleNow m;
+    double sam[3] = {};
+    if (!actor || !ReadMule(actor, g_push.id, m) || !m.realized || !m.have_xf || m.entity != g_push.entity || !Pos3(g_sam.load(), sam))
+        return PushEnd("the copy is gone");
+    const double off = ep::OffDeg(YawOf(m.xf), m.xf.pos.x, m.xf.pos.y, sam[0], sam[1]);
+    const unsigned shots = shots::ShotsBy(m.entity) - g_push.shots0;
+    const double turn0 = g_push.p.turn_ms, shot0 = g_push.p.shot_ms;
+    g_push.p.Sample(g_now, off, shots);
+    if (turn0 < 0 && g_push.p.turn_ms >= 0) Log("[probe] P2 id=%05X within %.0f deg of our Sam after %.0f ms (%.0f deg)", g_push.id, ep::kConeDeg, g_push.p.turn_ms, off);
+    if (shot0 < 0 && g_push.p.shot_ms >= 0) Log("[probe] P2 id=%05X first shot after %.0f ms (%u)", g_push.id, g_push.p.shot_ms, shots);
+    if (g_push.p.Done(g_now, g_push.timeout_ms)) PushEnd(nullptr);
+}
+
+// ---- P4: the raycast from a copy's eye to our Sam (one call a tick, head and chest in turn)
+struct RayRun {
+    std::uint32_t id = 0, world = 0;
+    std::uintptr_t entity = 0;
+    double t0 = 0, until = 0, next_sum = 0, dist = -1;
+    unsigned n[2][2] = {};   // [chest, head][clear, blocked]
+    int last[2] = {-1, -1};  // 0 clear, 1 blocked
+    unsigned calls = 0, odd = 0, turn = 0;
+    bool frozen = false;
+};
+RayRun g_ray;
+int SehRay(const double (&ray)[6], double (&hit)[3]) noexcept {
+    alignas(16) std::uint8_t res[0x80] = {};
+    alignas(16) std::uint8_t filt[0x40] = {};
+    __try {
+        const std::uintptr_t world = mem::Q(A(kRayWorld));
+        if (!world) return -2000;
+        reinterpret_cast<void* (*)(void*)>(A(kRayResInit))(res);
+        reinterpret_cast<void* (*)(void*)>(A(kRayResInit))(res + 0x40);
+        const std::uintptr_t vt = A(kRayFilterVt);
+        const std::uint32_t mask = 0x34, ff = 0xFF;
+        std::memcpy(filt, &vt, 8);
+        std::memcpy(filt + 8, &mask, 4);
+        std::memcpy(filt + 0xC, &ff, 4);
+        const int r = reinterpret_cast<int (*)(std::uintptr_t, const double*, void*, int, void*, std::uint8_t)>(A(kRay))(world, ray, res, 1, filt, 1);
+        std::uintptr_t arr = 0;
+        std::memcpy(&arr, filt + 0x20, 8);
+        if (arr) reinterpret_cast<void (*)(std::uintptr_t)>(A(kRayFree))(arr);
+        std::memcpy(hit, res, sizeof(hit));
+        return r;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1000;
+    }
+}
+void RayEnd(const char* why) {
+    if (!g_ray.id) return;
+    Log("[probe] P4 result id=%05X copy %s: %u calls; chest clear %u blocked %u, head clear %u blocked %u; Sam %.1f m%s%s%s", g_ray.id, g_ray.frozen ? "frozen" : "live",
+        g_ray.calls, g_ray.n[0][0], g_ray.n[0][1], g_ray.n[1][0], g_ray.n[1][1], g_ray.dist, g_ray.odd ? " (odd returns seen)" : "", why ? "; ended: " : "",
+        why ? why : "");
+    g_ray = RayRun{};
+}
+void RayTick() {
+    if (!g_ray.id) return;
+    if (g_world != g_ray.world) return RayEnd("the world changed");
+    bool frozen = false;
+    const std::uintptr_t e = CopyEntity(g_ray.id, &frozen);
+    double me[3] = {}, sam[3] = {};
+    if (!e || e != g_ray.entity || !Pos3(e, me) || !Pos3(g_sam.load(), sam)) return RayEnd("the copy or our Sam is gone");
+    g_ray.dist = Dist(me, sam);
+    const int which = static_cast<int>(g_ray.turn++ & 1u);  // 0 chest, 1 head
+    const double from[3] = {me[0], me[1], me[2] + 1.6}, to[3] = {sam[0], sam[1], sam[2] + (which ? 1.5 : 1.0)};
+    double ray[6] = {}, len = 0, hit[3] = {};
+    if (!ep::Shorten(from, to, ep::kRayTrimM, ray, &len)) return;
+    const int r = SehRay(ray, hit);
+    if (r == -1000) {
+        ProbeFault("P4 the raycast");
+        return RayEnd("FAULT");
+    }
+    if (r == -2000) return RayEnd("no physics world");
+    ++g_ray.calls;
+    if (r < 0 || r > 1) ++g_ray.odd;
+    const int now_b = r >= 1 ? 1 : 0;
+    ++g_ray.n[which][now_b];
+    if (g_ray.last[which] != now_b) {
+        Log("[probe] P4 t=%.2f s id=%05X %s %s (hits %d; ray %.1f m; first hit +0 at (%.2f, %.2f, %.2f))", (g_now - g_ray.t0) / 1000.0, g_ray.id,
+            which ? "head" : "chest", now_b ? "blocked" : "clear", r, len, hit[0], hit[1], hit[2]);
+        g_ray.last[which] = now_b;
+    }
+    if (g_now >= g_ray.next_sum) {
+        g_ray.next_sum = g_now + 500.0;
+        Log("[probe] P4 t=%.1f s id=%05X: chest %s, head %s; Sam %.1f m (%u calls)", (g_now - g_ray.t0) / 1000.0, g_ray.id,
+            g_ray.last[0] < 0 ? "-" : g_ray.last[0] ? "blocked" : "clear", g_ray.last[1] < 0 ? "-" : g_ray.last[1] ? "blocked" : "clear", g_ray.dist, g_ray.calls);
+    }
+    if (g_now >= g_ray.until) RayEnd(nullptr);
+}
+
+void ProbeTick() {
+    KRunSample(g_p1);
+    KRunSample(g_p5);
+    PushTick();
+    RayTick();
+}
+int ProbeTickSeh() noexcept {
+    __try {
+        ProbeTick();
+        return 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+
+// ---- P3: the perception reads (entity +0x314; the stimulus +0x88 the classifier masks to 0x1FFFFF)
+void LogStim88(const char* who, std::uintptr_t s, std::uint32_t sam_id) {
+    if (!s) return Log("[probe] P3 %s stimulus: none", who);
+    const std::uint32_t c = U32(s + kSClass);
+    Log("[probe] P3 %s stimulus %p: +0x88 0x%X (id bits 0x%05X: %s our Sam's 0x%X), +0xA4 %.3f, agent %p %s", who, reinterpret_cast<void*>(s), c, c & 0x1FFFFFu,
+        (c & 0x1FFFFFu) == (sam_id & 0x1FFFFFu) ? "the same as" : "not", sam_id, static_cast<double>(F32(s + kSMul)), reinterpret_cast<void*>(mem::Q(s + kSAgent)),
+        NameOf(mem::Q(s + kSAgent)));
+}
+bool P3(char* msg, std::size_t cap) {
+    if (!(g_pgroups & kPSense) || !(g_sgroups & kSCreate) || !(g_tgroups & kTAgent)) {
+        Log("[probe] P3 result: skipped (the perception, stimulus or agent checks failed)");
+        return std::snprintf(msg, cap, "P3 skipped"), true;
+    }
+    const std::uintptr_t sam = g_sam.load(), body = BodyEntity();
+    const std::uint32_t sam_id = OurSamId();
+    const std::uint32_t s314 = sam ? U32(sam + kEPerceive) : 0, b314 = body ? U32(body + kEPerceive) : 0;
+    Log("[probe] P3 our Sam %p %s: +0x314 0x%X; the partner body %p %s: +0x314 0x%X; our Sam's actor id 0x%X", reinterpret_cast<void*>(sam), NameOf(sam), s314,
+        reinterpret_cast<void*>(body), NameOf(body), b314, sam_id);
+    const std::uintptr_t ss = SamVisStim();
+    LogStim88("our Sam's visual", ss, sam_id);
+    if (g_hs.stim) LogStim88("the partner body's (enemy_target 9)", g_hs.stim, sam_id);
+    // the thread-safe visual list ([O] AI manager +0x3C398; [I] next +0xC8 as the plain list): the stimuli of our two agents
+    const std::uintptr_t mgr = mem::Q(A(kStimMgr));
+    const std::uintptr_t sag = sam ? mem::Q(sam + kEAgent) : 0, bag = body ? mem::Q(body + kEAgent) : 0;
+    unsigned total = 0, ours = 0;
+    for (std::uintptr_t s = mgr ? mem::Q(mgr + kMgrTsVis) : 0; s && total < 600; s = mem::Q(s + 0xC8), ++total) {
+        const std::uintptr_t ag = mem::Q(s + kSAgent);
+        if (!ag || (ag != sag && ag != bag)) continue;
+        if (++ours <= 4) LogStim88(ag == sag ? "thread-safe list: our Sam's" : "thread-safe list: the partner body's", s, sam_id);
+    }
+    const std::uint32_t c = ss ? U32(ss + kSClass) : 0;
+    Log("[probe] P3 result: our Sam +0x314 0x%X, the partner body +0x314 0x%X; our Sam's stimulus +0x88 %s; the thread-safe visual list %u live, %u of our "
+        "agents",
+        s314, b314, !ss ? "none" : (c & 0x1FFFFFu) == (sam_id & 0x1FFFFFu) ? "carries his id" : "does not carry his id", total, ours);
+    return std::snprintf(msg, cap, "P3 read"), true;
+}
+
+// ---- P6: a seated MULE's parent chain (+0x70) and ride fields (+0xE20 the vehicle id, +0x3C0 the seat)
+bool P6(double id_v, double m_v, char* msg, std::size_t cap) {
+    const double radius = m_v > 0 ? m_v : 200.0;
+    double sam[3] = {};
+    const bool hs = Pos3(g_sam.load(), sam);
+    WalkActors();
+    unsigned n = 0, seated = 0, by_chain = 0, by_ride = 0, lines = 0;
+    for (const auto& a : g_actors) {
+        if (id_v > 0 && a.first != static_cast<std::uint32_t>(id_v)) continue;
+        MuleNow m;
+        if (!ReadMule(a.second, a.first, m) || !m.realized || !m.have_xf) continue;
+        const double me[3] = {m.xf.pos.x, m.xf.pos.y, m.xf.pos.z};
+        const double d = hs ? Dist(me, sam) : -1.0;
+        if (id_v <= 0 && (!hs || d > radius)) continue;
+        ++n;
+        char chain[320] = {};
+        std::size_t at = 0;
+        bool veh = false;
+        std::uintptr_t p = m.entity;
+        for (int k = 0; k < 6 && at + 60 < sizeof(chain); ++k) {
+            p = mem::Q(p + kEParent);
+            if (!p) break;
+            const char* nm = mem::RttiName(mem::RttiOf(p));
+            if (nm && shotw::ClassifyHit(nm) == shotw::HitClass::vehicle) veh = true;
+            at += static_cast<std::size_t>(std::snprintf(chain + at, sizeof(chain) - at, "%s%p %s", k ? " > " : "", reinterpret_cast<void*>(p), nm ? nm : "?"));
+        }
+        if (!at) std::snprintf(chain, sizeof(chain), "none");
+        std::uint32_t e20 = erules::kVehicleIdNone;
+        std::int32_t seat = -1;
+        const bool ride = esync::RideFields(m.actor, &e20, &seat);
+        const bool rseat = ride && erules::SeatedByRide(e20, seat);
+        if (veh) ++by_chain;
+        if (rseat) ++by_ride;
+        if (veh || rseat) ++seated;
+        if ((veh || rseat || id_v > 0) && lines < 24) {
+            ++lines;
+            Log("[probe] P6 id=%05X %s at %.1f m: parent chain (+0x70) %s; ride fields %s +0xE20 0x%X seat %d; MULE state %u bits 0x%X", a.first,
+                veh || rseat ? "SEATED" : "not seated", d, chain, ride ? "read:" : "not read (checks):", e20, seat, m.ea0, m.ea4);
+        }
+    }
+    Log("[probe] P6 result: %u MULEs within %.0f m%s, seated %u (by the parent chain %u, by the ride fields %u)", n, radius, id_v > 0 ? " (by id)" : "", seated,
+        by_chain, by_ride);
+    return std::snprintf(msg, cap, "P6 %u MULEs, %u seated", n, seated), true;
+}
+
+bool M2Body(const double (&v)[3], char* msg, std::size_t cap) {
+    const int probe = static_cast<int>(v[0]);
+    switch (probe) {
+        case 0: {
+            Log("[probe] P0 result: knowledge %s, raycast %s, perception %s, stimulus +0xA4 %s; agent %s, phase %s, alert %s, apply %s, stimulus %s; role %d",
+                Ok(g_pgroups & kPKnow), Ok(g_pgroups & kPRay), Ok(g_pgroups & kPSense), Ok(g_pgroups & kPStimMul), Ok(g_tgroups & kTAgent), Ok(g_tgroups & kTPhase),
+                Ok(g_tgroups & kTPerfect), Ok(g_groups & kGApply), Ok(g_sgroups & kSCreate), g_role);
+            return std::snprintf(msg, cap, "P0 checks logged"), true;
+        }
+        case 1: return KRunStart(g_p1, 1, ProbeId(v[1], true), v[2], msg, cap);
+        case 5: return KRunStart(g_p5, 5, ProbeId(v[1], false), v[2], msg, cap);
+        case 2: {
+            if (g_push.id) PushEnd("replaced");
+            const std::uint32_t id = ProbeId(v[1], true);
+            const int lever = static_cast<int>(v[2]);
+            if (g_role != 2 || !id || lever < 0 || lever > 3) {
+                Log("[probe] P2 result id=%05X lever %s: skipped (%s)", id, ep::LeverName(lever), g_role != 2 ? "the guest's probe" : !id ? "no id" : "lever 0..3");
+                return std::snprintf(msg, cap, "P2 skipped"), true;
+            }
+            g_push.id = id, g_push.lever = lever, g_push.world = g_world, g_push.armed = g_push.next = g_now, g_push.timeout_ms = 15000.0;
+            shots::ArmOwnerCounts(true);
+            Log("[probe] P2 armed id=%05X lever %s: waiting for the hand-over (%s now; 15 s after it)", id, ep::LeverName(lever),
+                esync::OwnedHere(id) ? "owned here already" : "not owned here");
+            return std::snprintf(msg, cap, "P2 armed %05X lever %d", id, lever), true;
+        }
+        case 3: return P3(msg, cap);
+        case 4: {
+            if (g_ray.id) RayEnd("replaced");
+            const std::uint32_t id = ProbeId(v[1], true);
+            bool frozen = false;
+            const std::uintptr_t e = id ? CopyEntity(id, &frozen) : 0;
+            const char* why = !(g_pgroups & kPRay) ? "the raycast's byte checks or signature failed" : !e ? "no realized copy of it here" : !g_sam.load() ? "no Sam" : nullptr;
+            if (why) {
+                Log("[probe] P4 skipped (%s)", why);
+                Log("[probe] P4 result id=%05X: skipped (%s)", id, why);
+                return std::snprintf(msg, cap, "P4 skipped: %s", why), true;
+            }
+            g_ray.id = id, g_ray.entity = e, g_ray.frozen = frozen, g_ray.world = g_world, g_ray.t0 = g_ray.next_sum = g_now;
+            g_ray.until = g_now + (v[2] > 0 ? v[2] : 5.0) * 1000.0;
+            Log("[probe] P4 start id=%05X copy %s for %.1f s: eye +1.6 m to our Sam's chest +1.0 / head +1.5, %.1f m off each end, flag 1, max 1", id,
+                frozen ? "frozen" : "live", (g_ray.until - g_now) / 1000.0, ep::kRayTrimM);
+            return std::snprintf(msg, cap, "P4 %05X started", id), true;
+        }
+        case 6: return P6(v[1], v[2], msg, cap);
+        default: return std::snprintf(msg, cap, "probe 0..6"), false;
+    }
+}
+int M2Seh(const double (&v)[3], char* msg, std::size_t cap) noexcept {
+    __try {
+        return M2Body(v, msg, cap) ? 1 : 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+// game thread, from the combat tick (after the target probe)
+void ProbeTickGuarded() noexcept {
+    if (g_probe_off || (!g_p1.id && !g_p5.id && !g_push.id && !g_ray.id)) return;
+    if (ProbeTickSeh() < 0) {
+        ProbeFault("the probe tick");  // (restores P2 lever d''s stimulus write first: PushRestoreGuarded)
+        g_p1 = KRun{}, g_p5 = KRun{}, g_push = PushRun{}, g_ray = RayRun{};
+    }
+}
+}  // namespace
+
+bool M2Probe(const double (&v)[3], char* msg, std::size_t cap) noexcept {
+    if (!Hidden(msg, cap)) return false;
+    if (!g_cfg.enemy_m2_probes) return std::snprintf(msg, cap, "enemy_m2_probes=0 (the M2 probes are off)"), false;
+    if (!Ready(msg, cap)) return false;
+    if (g_probe_off) return std::snprintf(msg, cap, "the probes are off after a fault"), false;
+    TargetChecks();
+    StimChecks();
+    ProbeChecks();
+    const int r = M2Seh(v, msg, cap);
+    if (r < 0) {
+        ProbeFault("the action");
+        return std::snprintf(msg, cap, "FAULT"), false;
+    }
+    return r == 1;
 }
 
 }  // namespace st::ecombat

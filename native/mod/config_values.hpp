@@ -100,5 +100,56 @@ inline bool SetOwnerKey(OwnerKeys& k, const std::string& key, bool v) {
     if (p) *p = v;
     return p != nullptr;
 }
+// The round-23 keys (docs/enemy-sync.md 14), each on unless given 0: enemy_restrain_relay (the tie-up relay: HIT kind 5 both ways,
+// the copy's pose held), enemy_replay_flush (a shooter's queued shot replays dropped when it goes down). SetRestrainKey: true when
+// `key` is one of them.
+struct RestrainKeys {
+    bool relay = true, flush = true;
+};
+inline bool SetRestrainKey(RestrainKeys& k, const std::string& key, bool v) {
+    bool* const p = key == "enemy_restrain_relay" ? &k.relay : key == "enemy_replay_flush" ? &k.flush : nullptr;
+    if (p) *p = v;
+    return p != nullptr;
+}
+// The round-23 B keys (docs/enemy-sync.md 14.8), each on unless given 0: enemy_mirror_hold_check (a mirror that does not hold its
+// owner's place after 3 teleports in 2 s is given back and hidden, retried every 5 s), enemy_mirror_vehicle (the in-vehicle test
+// every 1 s on both sides, the SEN1 kInVehicle bit, a seated copy released to its own game). SetMirrorKey: true when `key` is one.
+struct MirrorKeys {
+    bool hold_check = true, vehicle = true;
+};
+inline bool SetMirrorKey(MirrorKeys& k, const std::string& key, bool v) {
+    bool* const p = key == "enemy_mirror_hold_check" ? &k.hold_check : key == "enemy_mirror_vehicle" ? &k.vehicle : nullptr;
+    if (p) *p = v;
+    return p != nullptr;
+}
+// The round-23 D keys (docs/enemy-sync.md 14.10), each on unless given 0: vehicle_mule_log (classify the trucks, log their MULE
+// drivers), vehicle_mule_hold (a truck a non-player drives, or a MULE truck no player drives, is left to each game).
+// SetTruckKey: true when `key` is one.
+struct TruckKeys {
+    bool log = true, hold = true;
+};
+inline bool SetTruckKey(TruckKeys& k, const std::string& key, bool v) {
+    bool* const p = key == "vehicle_mule_log" ? &k.log : key == "vehicle_mule_hold" ? &k.hold : nullptr;
+    if (p) *p = v;
+    return p != nullptr;
+}
+// The round-23 E key (docs/enemy-sync.md 14.11): enemy_m2_probes (off unless given 1: the debug action enemy_m2, the M2 probes P1-P6,
+// in hidden runs only). SetProbeKey: true when `key` is it.
+inline bool SetProbeKey(bool& on, const std::string& key, bool v) {
+    if (key != "enemy_m2_probes") return false;
+    on = v;
+    return true;
+}
+// The round-23 C keys (docs/enemy-sync.md 14.9): enemy_down_hold (on unless given 0: while the other player is down - death or
+// KnotSpace, never a faint - the copies of that game's fights are held frozen in their last pose or hidden here, never given back
+// alive, and no ownership changes), enemy_down_hold_radius (m from our player: nearer copies are held or hidden, farther standing
+// ones follow the old rules; 20..1000, else the default). SetDownKey: true when `key` is enemy_down_hold.
+inline constexpr double kDownHoldRadiusDefault = 120.0;
+inline bool SetDownKey(bool& hold, const std::string& key, bool v) {
+    if (key != "enemy_down_hold") return false;
+    hold = v;
+    return true;
+}
+inline double DownRadius(const std::string& v, double keep) { return MirrorRadius(v, keep); }
 
 }  // namespace st::cfgval

@@ -210,7 +210,8 @@ screenshot 03-host-h
 # her owned MULEs' hits on her body (optional: their aim may miss in the time)
 @guest action enemy_sync 5
 ?@guest waitnew 10 \[enemy\] owned here: n=[1-9].*owned hits on our Sam [1-9]
-# the follower guard (review rv-gameplay 4): her nearest owned copy hidden in her game; the host hides his frozen follower of it
+# the follower guard (review rv-gameplay 4): her nearest standing owned copy hidden in her game (his rifle may have fainted the
+# nearest one; a down one is never hidden by the guard); the host hides his frozen follower of it
 # after a second, and shows it again once her frames say shown
 @guest action enemy_camp 4 0 1
 @guest waitnew 5 \[enemy\] camp test: her owned copy [0-9A-F]+ hidden here

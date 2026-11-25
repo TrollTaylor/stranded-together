@@ -82,6 +82,10 @@ bool HitMode(const double (&v)[3], char* msg, std::size_t cap) noexcept;      //
 bool HitTest(const double (&v)[3], char* msg, std::size_t cap) noexcept;      // enemy_hit <attack> [count] [id | 0]
 bool HitSend(const double (&v)[3], char* msg, std::size_t cap) noexcept;      // enemy_hit_send <attack> [count] [id | 0]
 bool HitWatch(const double (&v)[3], char* msg, std::size_t cap) noexcept;     // enemy_hit_watch <id | 0> <0 | 1>
+// enemy_restrain <id | 0> <mode> (round 23, docs/enemy-sync.md 14; the guest, or the host while it relays): the tie-up relay's own
+// send path on our frozen copy (0: the look's, else the nearest): 0 native (the outcome setter k 2 on our copy, then the watch),
+// 1 fallback (a synthetic strand HIT through the capture path), 2 knockout (k 0 on our copy, then the watch).
+bool Restrain(const double (&v)[3], char* msg, std::size_t cap) noexcept;
 // enemy_target <op> [id | 0] [arg] (round 20 M1, the host): 0 read her body / our Sam / the MULE (AI agent +0x170, faction +0x178,
 // IsHostileTowards), 1 / 2 L1 AlertForEntity(WithPerfectThreatInfo) -> 0 her body | 1 our Sam, 3 L3 RisePhase <1..5>, 4 <0 | 1>
 // the partner body's hit watch, 7 follow <s>: the MULE's facing against her body and our Sam once a second.
@@ -89,5 +93,13 @@ bool HitWatch(const double (&v)[3], char* msg, std::size_t cap) noexcept;     //
 // and aural lists; 9 <0 remove | 1 her agent with Sam's resource | 2 the same + Sam's component message | 3 the decoy (Sam's agent
 // at her body)>. Hidden runs only.
 bool TargetProbe(const double (&v)[3], char* msg, std::size_t cap) noexcept;
+// enemy_m2 <probe> [a] [b] (round 23 E, docs/enemy-sync.md 14.11; hidden runs and enemy_m2_probes=1): the M2 probes, each logging
+// "[probe] P<n> ..." lines and one "[probe] P<n> result ..." line. 0 the byte checks; 1 <id | 0> <s> a copy's DSAINoticeAndKnowledge
+// slots every 0.5 s (a PlayerVisual entry for our Sam: fresh / stale / none); 2 <id | 0> <lever 0..3> (the guest) armed (15 s after the hand-over):
+// when the enemy is handed to her game, the lever (a nothing, b a test hit, c the perfect-threat alert, d' Sam's own stimulus +0xA4
+// x3 for 1 s) and the time to within 30 deg of our Sam and to its first shot; 3 the perception reads (entity +0x314, stimulus +0x88);
+// 4 <id | 0> <s> the raycast from a copy's eye to our Sam (one call a tick); 5 <id | 0> <s> the host's own MULE: phase, state,
+// facing and knowledge every 0.25 s; 6 [id | 0] [m] the parent chain (+0x70) and ride fields of the MULEs within m (a seated one).
+bool M2Probe(const double (&v)[3], char* msg, std::size_t cap) noexcept;
 
 }  // namespace st::ecombat

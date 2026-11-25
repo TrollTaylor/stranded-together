@@ -1,0 +1,44 @@
+# Round 23 D (docs/enemy-sync.md 14.10): the MULE trucks are left to each game. Two games on the launcher's own Local test
+# files at the MULE Camp Southwest of Lake Knot City (its two MULE trucks 0x020010 and 0x02000F stand there):
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-mule-trucks -SeedSaves complete-100 -GuestSeed profile-only
+# Pass: both games load the truck rules; each game sends the other its truck facts (STK1); the camp's MULE truck is left to
+# each game on both sides (no remove, no re-mirror, no PARK frames); the truck census and vdrive status run; no FAULT.
+# covers: vehicle-share
+role host
+graphics low
+timeout 300
+launcherini local-test
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[vshare\] MULE trucks \(round 23 D\): vehicle_mule_log=1 vehicle_mule_hold=1
+@guest waitlog 5 \[vshare\] MULE trucks \(round 23 D\): vehicle_mule_log=1 vehicle_mule_hold=1
+goto mule-camp-sw-lkc
+@guest goto 1521.90 992.00 0
+wait 8000
+waitlog 30 \[vshare\] the partner's game sends its truck facts
+@guest waitlog 30 \[vshare\] the partner's game sends its truck facts
+?waitlog 30 \[vshare\] MULE truck 0x02001[0F] left to each game
+?@guest waitlog 30 \[vshare\] MULE truck .*left to each game
+@both action vehicle_share 9 5 400
+waitlog 10 \[vshare\] trucks tag=5 done
+@guest waitlog 10 \[vshare\] trucks tag=5 done
+@both action vehicle_drive 0
+?waitlog 5 \[vdrive\] MULE trucks left to each game
+?@guest waitlog 5 \[vdrive\] MULE trucks left to each game
+screenshot 01-host-camp
+@guest screenshot 01-guest-camp
+wait 15000
+@both action vehicle_share 9 6 400
+waitlog 10 \[vshare\] trucks tag=6 done
+@guest waitlog 10 \[vshare\] trucks tag=6 done
+@both action vehicle_share 0
+nolog \[vshare\] FAULT
+@guest nolog \[vshare\] FAULT
+nolog \[vshare\] the partner's truck facts .* did not validate
+@guest nolog \[vshare\] the partner's truck facts .* did not validate
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@guest quit
+wait 3000
+quit

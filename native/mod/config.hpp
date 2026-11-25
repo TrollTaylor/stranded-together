@@ -277,6 +277,38 @@ struct Config {
     bool enemy_follow_guard = true;
     bool enemy_attack_registry = true;
     bool enemy_owner_hits = true;  // P1c: the host's hits on a frozen copy of one she owns relayed to her game (applied to hers)
+    // Round 23 (docs/enemy-sync.md 14; cfgval::SetRestrainKey). enemy_restrain_relay: a tie-up (strand, bola) or knockout of a copy
+    // of an enemy the other game owns is sent as HIT kind 5 and applied there with the outcome setter (k 2 restrained / k 0 faint)
+    // instead of the old stun; both directions; both games need it (SEH1 parts bit 7). enemy_replay_flush: a shooter's queued shot
+    // replays are dropped when its down outcome reaches this game. Both default on; the launcher writes neither.
+    bool enemy_restrain_relay = true;
+    bool enemy_replay_flush = true;
+    // Round 23 B (docs/enemy-sync.md 14.8; cfgval::SetMirrorKey). enemy_mirror_hold_check: a mirror whose placement error is still
+    // above 10 m after 3 teleports within 2 s is "not holding": given back, hidden and asleep here (never a statue), retried every
+    // 5 s; its shots are still replayed from the owner's place. enemy_mirror_vehicle: the in-vehicle test (parent chain, else the
+    // actor's ride fields +0xE20 / +0x3C0) every 1 s for every mirror and owned enemy, SEN1's kInVehicle bit, and a mirror whose
+    // copy sits in a vehicle on either side given back to its own game. Both default on; the launcher writes neither.
+    bool enemy_mirror_hold_check = true;
+    bool enemy_mirror_vehicle = true;
+    // Round 23 D (docs/enemy-sync.md 14.10; cfgval::SetTruckKey; vehicle_truck_rules.hpp), shared real vehicles only.
+    // vehicle_mule_log: each truck in the vehicle pools is classified (a player truck; a MULE truck, empty or driven by a MULE
+    // or a player) from its unit's rider (+0x158), its +0x19D bits and its entity's driver seat (+0x63C / +0x8B0); the driver,
+    // seat and camp go to the snapshot / census logs and a change to "[vdrive] MULE truck ..." lines. vehicle_mule_hold: a
+    // truck a non-player drives in either game, or any MULE truck no player drives, is left to each game: no PARK frames, no
+    // parked teleport, no removal and no re-mirror by the shared vehicles. Both default on; the launcher writes neither.
+    bool vehicle_mule_log = true;
+    bool vehicle_mule_hold = true;
+    // Round 23 E (docs/enemy-sync.md 14.11; cfgval::SetProbeKey). enemy_m2_probes: the debug action enemy_m2 (the M2 probes P1-P6:
+    // the knowledge dump, the push levers, the perception reads, the raycast, the notice timing, the seated MULE's chain) is
+    // allowed; hidden runs only, and it refuses otherwise. Off by default; the launcher never writes it.
+    bool enemy_m2_probes = false;
+    // Round 23 C (docs/enemy-sync.md 14.9; cfgval::SetDownKey, DownRadius). enemy_down_hold: while the other player is down (death or
+    // KnotSpace, from its SEH1 beacon; never a faint), the copies of that game's fights here are held frozen in their last pose (or
+    // hidden if never posed; a down one far away hidden), never given back alive, no new mirror, no ownership change, until that
+    // player is back or the world / link resets. enemy_down_hold_radius: m from our player for "near". Default on, 120 m; the
+    // launcher writes neither.
+    bool enemy_down_hold = true;
+    double enemy_down_hold_radius = 120.0;
     // The partner's vehicle copy hidden while the watcher's own vehicle of the same kind stands in the same place (two of
     // the same vehicle in one spot; docs/real-partner-body.md section 22). Default on; 0: the copy is always shown.
     bool vehicle_overlap_hide = true;

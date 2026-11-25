@@ -19,6 +19,7 @@ std::uint32_t Get32(const std::uint8_t* p) noexcept {
 }
 bool EntryOk(const Enemy& e) noexcept {
     if (!enemy::IsHumanEnemyId(e.actor_id)) return false;
+    if (e.flags & ~kEntryFlagsKnown) return false;  // round 23 B: bits 0-3 only (kInVehicle the newest)
     for (int k = 0; k < 3; ++k) {
         if (!std::isfinite(e.pos[k]) || std::fabs(e.pos[k]) >= kMaxCoordM) return false;
         if (!std::isfinite(e.vel[k])) return false;
@@ -150,7 +151,9 @@ std::size_t Header(const ScbHeader& h, std::uint8_t type, unsigned n, std::uint8
     return size;
 }
 bool HitOk(const Hit& x) noexcept {
-    if (!enemy::IsHumanEnemyId(x.key) || !AttackOk(x.attack) || x.kind < kKindBullet || x.kind > kKindTest) return false;
+    if (!enemy::IsHumanEnemyId(x.key) || !AttackOk(x.attack) || x.kind < kKindBullet || x.kind > kKindRestrain) return false;
+    // round 23: a restrain carries no damage: k 0 / 2, a known signal, amount 0
+    if (x.kind == kKindRestrain && ((x.b180 != 0 && x.b180 != 2) || x.depth < kRestrainNative || x.depth > kRestrainTest || x.amount != 0.0f)) return false;
     if (!std::isfinite(x.amount) || !std::isfinite(x.mult) || !std::isfinite(x.a20) || !std::isfinite(x.her_dist_m)) return false;
     for (int k = 0; k < 3; ++k) {
         if (!std::isfinite(x.point[k]) || std::fabs(x.point[k]) > kHitPointMaxM) return false;

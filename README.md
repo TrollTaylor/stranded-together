@@ -115,8 +115,12 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
   on her screen). A takedown counts as the host's, in the host's save. Her lethal rounds are
   refused for now (their kills are not tested). On her screen the MULE's reaction comes from
   the host's frames a fraction of a second later; its pain voice, her own copy's hit reaction
-  and her HUD's markers for a downed MULE are not shown, and grenades, bolas, melee, tying up
-  and truck rams are untested. Fights near the guest run in her own game (new in round 21):
+  and her HUD's markers for a downed MULE are not shown, and grenades, bolas, melee and truck
+  rams are untested. Tying a MULE up with the strand is now passed on as a tie-up, not a
+  knock-out, in both directions: the game that runs the MULE ties it up, and it lies tied up on
+  both screens (new in round 23; tested with a test action, not yet with a real strand; the
+  host's game may let it get up again after about 20 seconds). A MULE that goes down stops
+  shooting on the other screen at once. Fights near the guest run in her own game (new in round 21):
   when she is nearer to a MULE camp than the host, the whole camp is handed to her game, so
   its MULEs see her, chase her, shoot at her and steal from her exactly as they do to the host,
   and her hits on them are her own game's. On the host's screen those MULEs follow her game's
@@ -139,7 +143,13 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
   away from stands up again in her world until she comes back (it then lies with the host's
   again). If the host goes far away (a teleport, or the game moving him after he faints), her
   copies of his MULEs are handed back to her own game within a few seconds instead of hanging
-  frozen in the air; when he comes back they follow his again. There is no launcher switch yet.
+  frozen in the air; when he comes back they follow his again. When one player's Sam dies or
+  goes to the Seam, the MULEs near the other player now stay where they are, frozen (a downed
+  or tied-up one stays down), until that Sam is back, instead of all getting up and walking off
+  (new in round 23; tested with a test trigger, not yet with a real death). MULE trucks are no
+  longer dragged across the other screen: each game's MULEs drive their own truck, so a truck a
+  MULE drives off can be in a different place on each screen. A MULE that gets into a vehicle is
+  left to each game the same way. There is no launcher switch yet.
 - Not yet: the tools' effects (the PCC's and anchor's build holograms, the spray), the Odradek, the cuff device,
   the chiral cylinder, the exoskeleton on non-Sam characters,
   facial animation, the partner's gear sounds (footsteps, movement and

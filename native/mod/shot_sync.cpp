@@ -156,6 +156,7 @@ std::uint32_t g_enemy_ids = 0, g_enemy_guids = 0;
 shotw::Beacon g_peer_beacon;
 // the enemy shots' counters (game thread) and the kept enemy rounds on our Sam (worker threads)
 unsigned g_e_sent = 0, g_e_pulls = 0, g_e_frames = 0, g_e_capped = 0, g_e_no_peer = 0, g_e_rx = 0, g_e_replayed = 0, g_e_muzzle = 0, g_e_mag = 0, g_e_late = 0;
+unsigned g_e_nothold = 0;  // round 23 B: replays from a not-holding (hidden) copy's owner place
 unsigned g_e_ref_shooter = 0, g_e_ref_origin = 0, g_e_ref_off = 0, g_e_hold_full = 0, g_e_logged = 0;
 std::atomic<unsigned> g_kept_enemy{0}, g_drop_enemy{0}, g_kept_enemy_logged{0};
 shotw::PullGroups g_e_pulls_by;
@@ -239,6 +240,14 @@ std::atomic<unsigned> g_hd_mirror_ours{0}, g_hd_mirror_rep{0}, g_hd_mirror_logge
 std::atomic<unsigned> g_hd_mirror_pass{0}, g_hd_mirror_noent{0}, g_hd_mirror_pass_logged{0};
 // the beacon's hits part (enemy_combat: enemy_hits on, OnHit hooked, not stopped) and why it is off
 std::atomic<bool> g_hits_part{false};
+std::atomic<bool> g_restrain_part{false};  // round 23: HIT kind 5 (enemy_combat's SetRestrainPart)
+std::uint8_t g_player_down = 0;            // round 23 C: our player's down code (enemy_sync's SetPlayerDown), game thread
+std::uint8_t g_down_sent = 0;              // ... the code the beacon last carried
+// round 23 review: the partner's beacon carried kPartRestrain at least once on this link generation. Byte 22 is a decoder
+// capability of its build (any round-23 build decodes it), so it is never withdrawn when the partner's restrain part drops later
+// (a fault, its hits switch, its CarryReady): a 0 sent for that reason would read as "back" there. Reset on a new link generation.
+bool g_peer_down_cap = false;
+unsigned g_flushed = 0;                     // round 23: enemy replays dropped because their shooter went down
 const char* g_hits_why = "not in a world yet)";
 std::atomic<unsigned> g_hd_kept_cls[shotw::kHitClasses] = {};
 thread_local bool t_hit_replay = false;  // the hit processor runs one of our replays' bullets now (the BT reaction's detour reads it)
@@ -1481,6 +1490,8 @@ std::uint8_t OurParts() noexcept {
     if (AttackListed()) p |= shotw::kPartAttackWide;  // P1c: this build replays the listed attack ids above 0x18C
     if (g_enemy_want && (g_enemy_parts & shotw::kPartMirror) && CanReplay()) p |= shotw::kPartEnemyFire;
     if (g_hits_part.load(std::memory_order_relaxed) && (g_enemy_parts & shotw::kPartMirror)) p |= shotw::kPartHits;  // P2
+    // round 23: the tie-up relay (HIT kind 5), only with the hits part
+    if ((p & shotw::kPartHits) && g_restrain_part.load(std::memory_order_relaxed)) p |= shotw::kPartRestrain;
     return p;
 }
 std::uint8_t OurPartsFwd() noexcept { return OurParts(); }
@@ -1493,6 +1504,7 @@ void BeaconTick(const TickIn& in) {
         g_have_peer = false;
         g_peer_parts = 0;
         g_peer_beacon = shotw::Beacon{};
+        g_peer_down_cap = false;
         g_beacon_fast_until = g_now + 10000;
         g_beacon_next = g_now;
         g_dedupe.Reset();
@@ -1510,6 +1522,10 @@ void BeaconTick(const TickIn& in) {
         g_peer_ms = g_now;
         g_peer_parts = b.parts;
         g_peer_beacon = b;
+        if (shotw::PeerTakesDown(g_peer_down_cap, b.parts) != g_peer_down_cap) {
+            g_peer_down_cap = true;
+            Log("[enemy] the partner's build takes our player's down code (beacon byte 22; kept for this link even if its restrain part drops)");
+        }
     }
     if (g_have_peer && g_now - g_peer_ms > 20000) {
         g_have_peer = false;
@@ -1538,9 +1554,19 @@ void BeaconTick(const TickIn& in) {
             hits || (ours & shotw::kPartHits) ? "" : !(g_enemy_parts & shotw::kPartMirror) ? "enemy sync off)" : g_hits_why);
         if (changed_ours) g_beacon_next = g_now;
     }
+    // round 23 C: our player's down code, only to a round-23 partner (kPartRestrain seen on this link: its decoder, not its current
+    // parts, so a fault there never turns our "down" into a 0 it would read as "back"; review); a change goes out at once, then every
+    // 1 s for 5 s (the beacon is unreliable)
+    const std::uint8_t down = g_peer_down_cap ? g_player_down : std::uint8_t{0};
+    if (down != g_down_sent) {
+        g_down_sent = down;
+        g_beacon_next = g_now;
+        if (g_beacon_fast_until < g_now + 5000) g_beacon_fast_until = g_now + 5000;
+    }
     if (g_now < g_beacon_next) return;
     g_beacon_next = g_now + (g_now < g_beacon_fast_until ? 1000 : 5000);
     shotw::Beacon b;
+    b.player_down = down;
     b.parts = ours;
     b.role = in.role;
     b.enemy_count = g_enemy_count;
@@ -1580,7 +1606,8 @@ void ReceiveTick(const TickIn& in) {
                 ++g_e_rx;
                 g_last_enemy_rx = s;
                 g_have_enemy_rx = true;
-                if (!esync::MirrorEntity(s.shooter)) {
+                double nh[3] = {};
+                if (!esync::MirrorEntity(s.shooter) && !esync::NotHoldingShooter(s.shooter, nh, nullptr)) {  // (round 23 B: hidden as not holding)
                     ++g_e_ref_shooter;
                     continue;
                 }
@@ -1713,11 +1740,17 @@ void EnemyReplayTick(unsigned done) {
             g_ehold[keep++] = h;
             continue;
         }
-        const std::uintptr_t e = esync::MirrorEntity(h.s.shooter);
+        std::uintptr_t e = esync::MirrorEntity(h.s.shooter);
         WorldTransform xf{};
         if (!e || !ReadXf(e, xf)) {
-            ++g_e_ref_shooter;
-            continue;
+            // round 23 B: a copy hidden here as not holding still fires, from the owner's place (its SEN1 track now)
+            double nh[3] = {};
+            if (e || !esync::NotHoldingShooter(h.s.shooter, nh, &e)) {
+                ++g_e_ref_shooter;
+                continue;
+            }
+            xf.pos.x = nh[0], xf.pos.y = nh[1], xf.pos.z = nh[2];
+            ++g_e_nothold;
         }
         // the host's own muzzle place: the mirror stands where the host's MULE stood when it fired (within centimetres at the
         // play gate, run 20261124-102043's census), and an origin moved onto a mirror's drawn hand (an unposed mirror plays
@@ -2165,9 +2198,9 @@ void EnemyLogTick() {
     if (shotw::EnemyCaptureOn(g_enemy_role.load()) || g_e_sent)
         Log("[shots] enemy sent n=%u (shooters %u, pulls %u, frames %u, capped %u, no peer %u)", g_e_sent, g_shooters.Size(), g_e_pulls, g_e_frames, g_e_capped, g_e_no_peer);
     if (shotw::EnemyReplayOn(g_enemy_role.load()) || g_e_rx)
-        Log("[shots] enemy replayed n=%u (muzzle %u, mag %u), late dropped %u, refused: shooter %u origin %u category %u speed %u set full %u; received %u; "
+        Log("[shots] enemy replayed n=%u (muzzle %u, mag %u, from a not-holding copy's owner place %u), late dropped %u, refused: shooter %u origin %u category %u speed %u set full %u; received %u; "
             "replay hits on our Sam: enemy kept %u, dropped %u; first hits: shooter %u, other mirrors %u, partner body %u, our Sam %u, other %u (start %.2f m along)",
-            g_e_replayed, g_e_muzzle, g_e_mag, g_e_late, g_e_ref_shooter, g_e_ref_origin, g_ref_category, g_ref_speed, g_ref_set_full, g_e_rx, g_kept_enemy.load(),
+            g_e_replayed, g_e_muzzle, g_e_mag, g_e_nothold, g_e_late, g_e_ref_shooter, g_e_ref_origin, g_ref_category, g_ref_speed, g_ref_set_full, g_e_rx, g_kept_enemy.load(),
             g_drop_enemy.load(), g_eh[kEhShooter].load(), g_eh[kEhMirror].load(), g_eh[kEhBody].load(), g_eh[kEhSam].load(), g_eh[kEhOther].load(), g_enemy_ahead);
     if (g_oh_sam.load() || g_oh_body.load() || g_oh_other.load())
         Log("[shots] owned rounds' hits: our Sam %u, the partner body %u, other %u (the real rounds of the enemies this game owns, at the bullet)", g_oh_sam.load(),
@@ -2614,6 +2647,29 @@ unsigned MirrorBulletDrops() noexcept { return g_hd_mirror.load(); }
 void SetHitsPart(bool on, const char* why_off) noexcept {
     g_hits_why = why_off ? why_off : "";
     g_hits_part.store(on, std::memory_order_relaxed);
+}
+void SetRestrainPart(bool on) noexcept { g_restrain_part.store(on, std::memory_order_relaxed); }
+bool PeerRestrain() noexcept { return g_have_peer && (g_peer_parts & shotw::kPartRestrain) != 0; }
+std::uint8_t SetPlayerDown(std::uint8_t code) noexcept {
+    g_player_down = code <= shotw::kBeaconDownMax ? code : std::uint8_t{0};
+    return g_peer_down_cap ? g_player_down : std::uint8_t{0};
+}
+unsigned FlushEnemyReplays(std::uint32_t shooter, const char* why, bool quiet_if_none) noexcept {
+    if (!shooter) return 0;
+    unsigned keep = 0, n = 0;
+    for (unsigned i = 0; i < g_nehold; ++i) {
+        if (g_ehold[i].s.shooter == shooter) {
+            ++n;
+            continue;
+        }
+        if (keep != i) g_ehold[keep] = g_ehold[i];
+        ++keep;
+    }
+    g_nehold = keep;
+    g_flushed += n;
+    if (!n && quiet_if_none) return 0;
+    Log("[shots] flushed %u replays of id=%05X (down: %s; %u in all)", n, shooter, why ? why : "?", g_flushed);
+    return n;
 }
 unsigned MirrorBulletPassed() noexcept { return g_hd_mirror_pass.load(); }
 unsigned MirrorBulletDropsOurs() noexcept { return g_hd_mirror_ours.load(); }

@@ -124,7 +124,7 @@ bool DecodeShots(const std::uint8_t* d, std::size_t n, Frame& out) noexcept {
 }
 
 std::size_t EncodeBeacon(const Beacon& b, std::uint8_t* out, std::size_t cap) noexcept {
-    if (!out || cap < kBeaconSize) return 0;
+    if (!out || cap < kBeaconSize || b.player_down > kBeaconDownMax) return 0;
     std::memset(out, 0, kBeaconSize);
     out[0] = 'S', out[1] = 'E', out[2] = 'H', out[3] = '1';
     out[4] = kVersion;
@@ -135,11 +135,12 @@ std::size_t EncodeBeacon(const Beacon& b, std::uint8_t* out, std::size_t cap) no
     Put32(out + 16, b.world);
     out[20] = b.freeze_mode;
     out[21] = b.role;
+    out[22] = b.player_down;
     return kBeaconSize;
 }
 
 bool DecodeBeacon(const std::uint8_t* d, std::size_t n, Beacon& out) noexcept {
-    if (!LooksLikeBeacon(d, n) || d[4] != kVersion || d[20] > 4 || d[21] > 2 || d[22] || d[23]) return false;
+    if (!LooksLikeBeacon(d, n) || d[4] != kVersion || d[20] > 4 || d[21] > 2 || d[22] > kBeaconDownMax || d[23]) return false;
     Beacon b;
     b.parts = d[5];
     b.enemy_count = Get16(d + 6);
@@ -148,6 +149,7 @@ bool DecodeBeacon(const std::uint8_t* d, std::size_t n, Beacon& out) noexcept {
     b.world = Get32(d + 16);
     b.freeze_mode = d[20];
     b.role = d[21];
+    b.player_down = d[22];
     out = b;
     return true;
 }

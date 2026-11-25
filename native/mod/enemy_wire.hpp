@@ -10,7 +10,8 @@
 //      5 u8  state: bit0 realized on the sender, bit1 dead, bits2-4 the defeat (P2: erules::Defeat, the OUTCOME's; 0 none), bit5 the sender sends a pose (SEP1),
 //                   bit6 hidden on the sender, bit7 a real sequence holds it on the sender
 //      6 u8  phase (0xFF in P1a)
-//      7 u8  flags: bit0 moving (|v| > 0.2 m/s), bit1 owner is the guest (0 in P1a)
+//      7 u8  flags: bit0 moving (|v| > 0.2 m/s), bit1 owner is the guest (0 in P1a), bit2 damaged, bit3 in a vehicle (round 23 B; bits
+//                   4-7 refused)
 //      8 i32 pos[3] mm (the entity's place when realized, else the actor's +0x28)
 //     20 u16 yaw (2^16 a turn, atan2 of the forward row, as shotw::YawOf)
 //     22 i16 vel[3] cm/s (clamped to +-327 m/s)
@@ -41,7 +42,12 @@ inline constexpr unsigned kDefeatShift = 2;
 inline constexpr std::uint8_t kDefeatMask = 0x1C;  // bits 2-4
 inline constexpr std::uint8_t DefeatBits(std::uint8_t defeat) noexcept { return static_cast<std::uint8_t>((defeat & 7u) << kDefeatShift); }
 inline constexpr std::uint8_t DefeatOfState(std::uint8_t state) noexcept { return static_cast<std::uint8_t>((state & kDefeatMask) >> kDefeatShift); }
-enum EntryFlag : std::uint8_t { kMoving = 1, kOwnerGuest = 2, kDamaged = 4 };
+// A SEN1 state byte as an erules::Defeat: dead (4) by kDead, else its defeat bits (round 23: the replay flush, the tie-up watch).
+inline constexpr std::uint8_t SenDefeat(std::uint8_t state) noexcept { return (state & kDead) ? std::uint8_t{4} : DefeatOfState(state); }
+enum EntryFlag : std::uint8_t { kMoving = 1, kOwnerGuest = 2, kDamaged = 4, kInVehicle = 8 };
+// Round 23 B: kInVehicle, the sender's copy sits in a vehicle (the parent chain or the ride fields; erules::VehicleTest), sent by
+// both games for their own enemies. An older decoder ignores it. The decoder refuses any flag bit above it (0xF0).
+inline constexpr std::uint8_t kEntryFlagsKnown = 0x0F;
 // P1b (docs/enemy-sync.md 10): the header flags. bit1 the sender is the guest (her owned enemies), bit2 the sender is in a
 // cutscene. gen_tag: the host's combat generation (the guest echoes the newest she saw). The entry's owner_epoch is the low byte
 // of the owner epoch, its phase the owner's +0x110 (0..5, 0xFF unknown), flags kOwnerGuest on her entries, kDamaged a hit since
@@ -94,7 +100,7 @@ std::size_t EncodeEnemyPose(const EnemyPose& p, std::uint8_t* out, std::size_t c
 //                both games share; a mismatch is refused `world`) | u32 seq (the sender's message count)
 //   type 4 HIT (guest -> host), n 1..12, 80 B each:
 //      0 u32 key (an enemy actor id)   4 u32 hit_seq   8 u16 attack (1..0x18D, never 0x180)   10 u8 kind (1 bullet, 2 sphere / job,
-//      3 direct, 4 test)   11 u8 flags (kHit*)   12 u32 serial (P+0x08)   16 u8 b12E (P+0x0E)   17 u8 b180 (P+0x60)   18 u8 depth
+//      3 direct, 4 test, 5 restrain: round 23, below)   11 u8 flags (kHit*)   12 u32 serial (P+0x08)   16 u8 b12E (P+0x0E)   17 u8 b180 (P+0x60)   18 u8 depth
 //      (in the +0x70 chain)   19 u8 0   20 u32 v130 (P+0x10)   24 u32 v184 (P+0x64, the power's f32 bits)   28 u32 v188 (P+0x68)
 //      32 u32 part (DI+0x68; 0xFFFFFFFF none)   36 f32 amount (DI+0x78)   40 f32 mult (DI+0x48)   44 f32 a20 (DI+0x20)
 //      48 f32 point_local[3] m (each |..| <= 8: the mirror's yaw frame)   60 i16 normal_local[3] q15   66 i16 impulse_local[3]
@@ -120,12 +126,17 @@ inline constexpr std::size_t kScbHeader = 16, kHitSize = 80, kHitResSize = 12, k
 inline constexpr unsigned kHitMax = 12, kHitResMax = 64, kOutcomeMax = 32, kOwnMax = 16;
 inline constexpr std::size_t kScbMaxSize = kScbHeader + kHitMax * kHitSize;  // 976 B
 enum ScbType : std::uint8_t { kScbOwn = 3, kScbHit = 4, kScbHitRes = 5, kScbOutcome = 6, kScbPhase = 7, kScbResync = 8, kScbOwnAck = 9, kScbOwnReset = 10 };
-enum HitKind : std::uint8_t { kKindBullet = 1, kKindJob = 2, kKindDirect = 3, kKindTest = 4 };
+// kKindRestrain (5, round 23, docs/enemy-sync.md 14): "the acting game's copy was tied up (or knocked out) by its own Sam": no damage
+// carried; b180 = the outcome setter's k (0 faint, 2 restrained), depth = the signal (1 the copy's own +0xEA4 read, 2 the fallback:
+// strand weapon 41 + attack 0x15C at contact, 3 a hidden-run test), amount 0; byte 19 stays the zero pad. Sent only to a partner
+// whose beacon carries shotw::kPartRestrain (an older decoder refuses kind 5 and the whole message with it).
+enum HitKind : std::uint8_t { kKindBullet = 1, kKindJob = 2, kKindDirect = 3, kKindTest = 4, kKindRestrain = 5 };
+enum RestrainSrc : std::uint8_t { kRestrainNative = 1, kRestrainFallback = 2, kRestrainTest = 3 };
 enum HitFlag : std::uint8_t {
     kHitAttackerSam = 1, kHitOurWeapon = 2, kHitOurVehicle = 4, kHitOnPart = 8, kHitLethal = 16, kHitPartValid = 32, kHitNormalValid = 64, kHitImpulseValid = 128
 };
 inline constexpr double kHitPointMaxM = 8.0, kImpulseMax = 327.0;
-inline constexpr std::uint8_t kHitResultMax = 12;  // erules::HitResult's last (values; enemy_combat.cpp static_asserts it)
+inline constexpr std::uint8_t kHitResultMax = 13;  // erules::HitResult's last (down, round 23: only ever an answer to kind 5; enemy_combat.cpp static_asserts it)
 struct ScbHeader {
     std::uint8_t type = 0;
     std::uint8_t n = 0;
