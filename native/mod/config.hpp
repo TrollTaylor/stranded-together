@@ -320,6 +320,20 @@ struct Config {
     // turned in place to face her Sam at the take). Both write game state; on by default since round 26 (real games too).
     bool enemy_take_role = true;
     bool enemy_take_face = true;
+    // Round 27 M2 / M3 (docs/enemy-sync.md 16; cfgval::SetTargetKey), all inert at their defaults and never written by the
+    // launcher; flipped together only after the gates pass (critique C2). enemy_partner_stim: the partner body carries a visual
+    // stimulus made with our Sam's own resource (enemy_target.cpp; the host only, hidden runs only), its visibility from the
+    // partner's SPV1 (enemy_partner_vis), only while a realized human enemy is within enemy_partner_stim_radius m.
+    // enemy_target_pick (bits: 1 reorder, 2 MULE-only perceivers, 4 classifier flag fix, 8 her hits force a visual),
+    // enemy_target_redirect (bits: 1 CanShoot's point, 2 turn / range check, 4 approach, 16 vehicle chase, 32 shoot actor; 8
+    // deferred),
+    // enemy_target_fresh_ms (500..3000).
+    int enemy_partner_stim = 0;
+    bool enemy_partner_vis = true;
+    double enemy_partner_stim_radius = 300.0;
+    int enemy_target_pick = 0;
+    int enemy_target_redirect = 0;
+    int enemy_target_fresh_ms = 1500;
     // Round 23 C (docs/enemy-sync.md 14.9; cfgval::SetDownKey, DownRadius). enemy_down_hold: while the other player is down (death or
     // KnotSpace, from its SEH1 beacon; never a faint), the copies of that game's fights here are held frozen in their last pose (or
     // hidden if never posed; a down one far away hidden), never given back alive, no new mirror, no ownership change, until that

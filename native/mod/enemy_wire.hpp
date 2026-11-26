@@ -206,4 +206,30 @@ bool DecodeOwnReset(const std::uint8_t* d, std::size_t n, ScbHeader& h, std::uin
 // A frame with another layout hash is decoded with foreign_layout set.
 bool DecodeEnemyPose(const std::uint8_t* d, std::size_t n, EnemyPose& out) noexcept;
 
+// SPV1, the sender's own visibility (round 27 M2, docs/enemy-sync.md 16; 10 Hz, both roles, one frame per datagram, 32 B):
+//    0 'SPV1' | 4 u8 version 1 | 5 u8 flags (kSpv*) | 6 u16 seq | 8 u32 sender_ms | 12 u16 vis (its own Sam stimulus +0xA4 x 1000,
+//    0..4000) | 14 u8 weapon type (player +0x3F9) | 15 u8 health rate (0xFF unknown) | 16 f32 a0 (stimulus +0xA0) | 20 f32 b0
+//    (stimulus +0xB0) | 24 u32 the player object's +0x2B0 flags (the classifier's bits 11 / 31; H2) | 28 u16 aim_cm (the height
+//    of the player object's aim point, info +0x198, above the body's root in cm; 0 unknown) | 30 u16 ride id (0)
+// The design's 24 B frame grew to 32 B to carry a0 / b0 as f32 and the whole +0x2B0 word. An older peer drops it (link's
+// CombatKindOf does not know it), so the receiver simply sees no SPV1 (stale: vis 1.0, flags 0).
+inline constexpr std::size_t kSpvSize = 32;
+inline constexpr std::uint8_t kSpvCrouch = 1, kSpvCamo = 2, kSpvAiming = 4, kSpvStagger = 8, kSpvReload = 16, kSpvVehicle = 32, kSpvDown = 64,
+                              kSpvCutscene = 128;
+struct Visibility {
+    std::uint8_t flags = 0;
+    std::uint16_t seq = 0;
+    std::uint32_t sender_ms = 0;
+    float vis = 1.f;  // 0..4
+    std::uint8_t weapon = 0, health = 0xFF;
+    float a0 = 0, b0 = 0;
+    std::uint32_t pinfo_flags = 0;
+    std::uint16_t aim_cm = 0;  // 0 unknown
+    std::uint16_t ride = 0;
+};
+// false when cap < 32 or a0 / b0 / vis is not finite (vis is clamped to 0..4).
+bool EncodeVisibility(const Visibility& v, std::uint8_t* out, std::size_t cap) noexcept;
+// Strict: the size, magic, version and vis <= 4000; a0 / b0 finite.
+bool DecodeVisibility(const std::uint8_t* d, std::size_t n, Visibility& out) noexcept;
+
 }  // namespace st::ewire

@@ -145,6 +145,15 @@ Config LoadConfig(const std::wstring& dir) {
                 c.enemy_down_hold_radius = cfgval::DownRadius(v, c.enemy_down_hold_radius);
                 continue;
             }
+            {
+                cfgval::TargetKeys tg{c.enemy_partner_stim, c.enemy_partner_vis, c.enemy_partner_stim_radius, c.enemy_target_pick,
+                                      c.enemy_target_redirect, c.enemy_target_fresh_ms};
+                if (cfgval::SetTargetKey(tg, k, v)) {
+                    c.enemy_partner_stim = tg.stim, c.enemy_partner_vis = tg.vis, c.enemy_partner_stim_radius = tg.radius;
+                    c.enemy_target_pick = tg.pick, c.enemy_target_redirect = tg.redirect, c.enemy_target_fresh_ms = tg.fresh_ms;
+                    continue;
+                }
+            }
         }
         if (k == "role") {
             c.role = v == "host"    ? Role::host
@@ -504,6 +513,10 @@ Config LoadConfig(const std::wstring& dir) {
         "enemy_single_rule=%d enemy_take_role=%d enemy_take_face=%d",
         c.enemy_take_know, c.enemy_take_know_secs, c.enemy_take_camp, c.enemy_ticket_return ? 1 : 0, c.enemy_single_hold_vehicle ? 1 : 0,
         c.enemy_single_rule ? 1 : 0, c.enemy_take_role ? 1 : 0, c.enemy_take_face ? 1 : 0);
+    Log("[config] enemy_partner_stim=%d enemy_partner_vis=%d enemy_partner_stim_radius=%.0f enemy_target_pick=%d enemy_target_redirect=%d "
+        "enemy_target_fresh_ms=%d",
+        c.enemy_partner_stim, c.enemy_partner_vis ? 1 : 0, c.enemy_partner_stim_radius, c.enemy_target_pick, c.enemy_target_redirect,
+        c.enemy_target_fresh_ms);
     // Fragile's textures: only whether a folder came and its length (the path itself names the Windows user).
     Log("[config] textures_dir=%s", c.textures_dir.empty() ? "- (none)" : ("set (" + std::to_string(c.textures_dir.size()) + " bytes)").c_str());
     Log("[config] fragile_textures=%d textures_send=%d textures_receive=%d textures_hot_reload=%d textures_free=%d textures_defaults=%d", c.fragile_textures ? 1 : 0,

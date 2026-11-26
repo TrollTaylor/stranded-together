@@ -61,6 +61,11 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 // [aim height m] (hidden runs): our Sam dist m from that enemy, facing it (-3: dist m behind it on the
 // partner's line, facing him). A steered aim (shots 4 <deg> 1) in the next 60 s follows that enemy (the -4 one, 20 s: a point on its line).
 bool Look(const double (&v)[3], char* msg, std::size_t cap) noexcept;
+// Round 27 run 3 (hidden runs; game thread): our Sam `dist` m from the realized enemy `id`, facing it, ground-snapped next frame:
+// mode 0 `deg` off its line to the partner body, on the side nearer its current facing (enemy_look -11 <dist> [deg]; enemy_tgt 11
+// for TF0 / TF1); mode 1 along its current facing (deg unused; enemy_tgt 11 for CS). False with the reason in `why` (the teleport's
+// text when placed).
+bool PlaceLocalOffLine(std::uint32_t id, double dist, double deg, int mode, char* why, std::size_t cap) noexcept;
 // enemy_shot_test <id | 0 nearest> [1 nohurt] (hidden runs, guest): 3 enemy replays level at our Sam's chest from 2 m on that
 // mirror's side (the line to its hand and 50 deg either side).
 bool ShotTest(const double (&v)[3], char* msg, std::size_t cap) noexcept;
@@ -92,6 +97,11 @@ unsigned NearEnemies(std::uint32_t* ids, std::uintptr_t* actors, unsigned cap) n
 bool MirrorOf(std::uint32_t actor_id, std::uintptr_t* actor, std::uintptr_t* entity) noexcept;
 std::uint32_t PickedId() noexcept;  // the probe's pick (0 none)
 std::uint32_t LookId() noexcept;    // the newest enemy_look's enemy (0 none)
+// Round 27 M2 (enemy_target.cpp; game thread): the partner's player down here (its SEH1 beacon's erules::PlayerDown, or the
+// enemy_sync 9 fake), ours down (latched, as the beacon tells it), a cutscene in this game.
+bool PeerDownNow() noexcept;
+bool OurDownNow() noexcept;
+bool CutsceneNow() noexcept;
 
 // P1b (round 17, docs/enemy-sync.md 10; session.ini enemy_owner): ownership by proximity. The host decides at 2 Hz: an enemy
 // within 40 m of the guest, the host 15 m farther and beyond 25 m, calm (its phase and its camp's Normal), undamaged, not held, no
@@ -138,6 +148,9 @@ struct CampOf {
     CampMember m[kCampOfMax];
 };
 bool CampOfId(std::uint32_t id, CampOf* out) noexcept;
+// Round 27 run 2 (game thread; the L1 probe's re-calm): the camp walk now, also with ownership off (enemy_owner=0: nothing else walks
+// the camps; its byte checks run at enemy init either way). False: the camp checks failed (no walk).
+bool CampWalkNow() noexcept;
 // round 25 e F1 (guest, game thread, her take before the unfreeze): <id>'s copy turned in place to `yaw` (radians). 1 done, 0 not
 // done (no realized copy), -1 the teleport faulted
 int TurnInPlace(std::uint32_t id, std::uintptr_t actor, float yaw) noexcept;

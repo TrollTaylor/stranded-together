@@ -15,6 +15,8 @@
 #include "quickstart.hpp"
 #include "partner_tackle.hpp"
 #include "enemy_combat.hpp"
+#include "enemy_l1_probe.hpp"
+#include "enemy_target.hpp"
 #include "enemy_sync.hpp"
 #include "shot_sync.hpp"
 #include "suit_colour.hpp"
@@ -40,6 +42,7 @@
 #include "overlay/overlay_input.hpp"
 #include "player_sync.hpp"
 #include "sandbox.hpp"
+#include "seh_guard.hpp"
 #include "steam_owner.hpp"
 #include "vehicle_sync.hpp"
 #include "winhttp_forwards.inc"
@@ -98,6 +101,8 @@ bool GuardedStop(void (*stop)() noexcept) noexcept {
 void CoopStopAfterFault() noexcept { st::coop::EmergencyStop("the mod's per-frame tick faulted (see the log); restart both games to play co-op"); }
 bool GuardedEmergencyStop() noexcept {
     // the save guard first: no tick will refresh the ride's state it holds captures on (its detours pass everything through)
+    const bool l1 = GuardedStop(&st::l1probe::EmergencyStop);  // round 27 M1: her probe stimulus loses its agent; the counting detours pass through
+    const bool tgt = GuardedStop(&st::etarget::EmergencyStop);  // round 27 M2 / M3: the partner stimulus loses its agent; pick and redirects pass through
     const bool save = GuardedStop(&st::saveguard::EmergencyStop);
     const bool coll = GuardedStop(&st::collision::EmergencyStop);
     const bool body = GuardedStop(&st::realbody::EmergencyStop);
@@ -110,7 +115,7 @@ bool GuardedEmergencyStop() noexcept {
     const bool world = GuardedStop(&st::wshare::EmergencyStop);   // shared structures: the detours pass everything through
     const bool suit = GuardedStop(&st::suitcol::PutBack);        // her Sam's suit colour byte: the world's own back (section 40)
     const bool coop = GuardedStop(&CoopStopAfterFault);
-    return save && coll && body && gear && veh && share && drive && ride && hit && world && suit && coop;
+    return l1 && tgt && save && coll && body && gear && veh && share && drive && ride && hit && world && suit && coop;
 }
 
 // frame_cap=<fps> (session.ini; the launcher's local two-instance test and hidden two-game
@@ -162,11 +167,14 @@ namespace {
 void HookedRunCallbacks() {
     g_original();
     FrameCap();
+    st::sehguard::LogIfChanged();
     if (!g_sync_enabled.load(std::memory_order_acquire)) {
         // after a whole-mod stop: the real vehicles' followers let go on the game thread, once (guarded; no-op otherwise)
         if (g_faulted.load()) {
             st::vdrive::AfterStop();
             st::ride::AfterStop();  // a carried passenger: capsule back on, put beside the vehicle (once)
+            GuardedStop(&st::l1probe::AfterStop);  // round 27 M1: her parked probe stimulus removed
+            GuardedStop(&st::etarget::AfterStop);  // round 27 M2: the parked partner stimulus removed
         }
         return;
     }
@@ -207,6 +215,9 @@ DWORD WINAPI Bootstrap(LPVOID) {
         return 0;
     }
     st::debug::SetRoleLabel(st::RoleName(cfg.role));
+    // The game's first vectored handler reports every access violation, even one a mod __try/__except would catch:
+    // faults inside the mod's own guards go to those guards (seh_guard.hpp). First, before any other hook.
+    st::sehguard::Install();
     // The host-held save session (host_save=1, docs/coop-session.md): its byte checks and hooks go in now, before the
     // overlay waits for the game's d3d12 below, so the guest's title menu is gated before it can ever be shown.
     st::coop::Install(cfg);
@@ -299,6 +310,7 @@ DWORD WINAPI Bootstrap(LPVOID) {
     st::shots::Install(cfg);   // the players' shots (docs/enemy-sync.md P3a): the bullet Enqueue detour, the replay damage filters
     st::esync::Install(cfg);   // enemy sync P1a (docs/enemy-sync.md 8): byte checks, the mirrors' Sam / NPC damage filters (after the shots')
     st::ecombat::Install(cfg); // enemy sync P2 (docs/enemy-sync.md 9): her hits on the host's enemies: the OnHit and MULE handler detours
+    st::etarget::Install(cfg); // round 27 M2 / M3 (docs/enemy-sync.md 16): the partner stimulus / target pick keys (all off by default)
     st::dev::Install(cfg);     // dev tools (dev_tools=1 / hidden runs): no hooks; byte checks on the first tick
     // Real partner body (docs/real-partner-body.md): the pose hook goes in at start-up, never
     // mid-game (enabling a hook suspends every thread while job threads may be inside it).

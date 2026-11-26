@@ -161,11 +161,12 @@ bool SendCombat(const void* bytes, std::size_t size) noexcept;
 unsigned CombatQueued() noexcept;
 bool PopCombat(std::uint8_t* out, std::size_t cap, std::size_t& size, std::uint32_t& generation) noexcept;
 void CombatChannelCounts(std::uint64_t* sent, std::uint64_t* received) noexcept;
-// The combat frames, unreliable: SEH1 (the beacon, 24 B), SEN1 (enemy states), SEP1 (enemy poses), SFX1 (shots), each one FRAME
+// The combat frames, unreliable: SEH1 (the beacon, 24 B), SEN1 (enemy states), SEP1 (enemy poses), SFX1 (shots), SPV1 (the
+// player's own visibility, 32 B; round 27 M2), each one FRAME
 // message in a datagram of its own; received ones as raw bytes per kind (the magic and the size checked here; the strict
-// decoders run on the game thread), oldest first, in queues of 2 / 8 / 16 / 32 (the oldest dropped when full, counted), with
+// decoders run on the game thread), oldest first, in queues of 2 / 8 / 16 / 32 / 4 (the oldest dropped when full, counted), with
 // the generation counter. A new link session clears them.
-enum class CombatFrame : std::uint8_t { beacon = 0, enemies = 1, poses = 2, shots = 3 };
+enum class CombatFrame : std::uint8_t { beacon = 0, enemies = 1, poses = 2, shots = 3, visibility = 4 };
 bool SendCombatFrame(const std::uint8_t* bytes, std::size_t size) noexcept;
 bool PopCombatFrame(CombatFrame kind, std::uint8_t* out, std::size_t cap, std::size_t& size, std::uint32_t& generation) noexcept;
 void CombatCounts(CombatFrame kind, std::uint64_t* sent, std::uint64_t* received, std::uint64_t* dropped) noexcept;

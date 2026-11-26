@@ -197,4 +197,52 @@ inline bool SetTakeKey(TakeKeys& k, const std::string& key, const std::string& v
     return p != nullptr;
 }
 
+// The round-27 M2 / M3 keys (docs/enemy-sync.md 16), all inert at their defaults; never written by the launcher. They are flipped
+// together only after the gates pass (critique C2):
+//   enemy_partner_stim 0|1          M2: the host gives the partner body a visual stimulus made with its own Sam's resource (L1;
+//                                   hidden runs only until the body-destroy gap is closed); both games send SPV1
+//   enemy_partner_vis 0|1           its +0xA4 follows the partner's own (SPV1); 0: always 1.0 (default 1)
+//   enemy_partner_stim_radius       m: a realized human enemy this near the partner body, else no stimulus (20..2000, default 300)
+//   enemy_target_pick 0..15         M3 bits: 1 the PlayerVisual reorder / suppress, 2 the MULE-only perceivers (H5), 4 the
+//                                   classifier flag fix (H2), 8 her hits force a visual (H3)
+//   enemy_target_redirect 0..255    M3 bits: 1 CanShoot's point, 2 turn / range check, 4 approach, 16 the vehicle chase, 32 the
+//                                   shoot actor (8: the PlayerInfo shadow, not built: ignored)
+//   enemy_target_fresh_ms 500..3000 how long a target missing from the bucket stays "visible" (default 1500)
+// SetTargetKey: true when `key` is one of them (a bad value keeps the old one).
+struct TargetKeys {
+    int stim = 0;
+    bool vis = true;
+    double radius = 300.0;
+    int pick = 0;
+    int redirect = 0;
+    int fresh_ms = 1500;
+};
+inline bool SetTargetKey(TargetKeys& k, const std::string& key, const std::string& v) {
+    char* end = nullptr;
+    const double d = std::strtod(v.c_str(), &end);
+    const bool num = !v.empty() && end && !*end && d == d;
+    if (key == "enemy_partner_stim") {
+        if (num && (d == 0.0 || d == 1.0)) k.stim = static_cast<int>(d);
+        return true;
+    }
+    if (key == "enemy_partner_vis") {
+        k.vis = TakeBool(v);
+        return true;
+    }
+    if (key == "enemy_partner_stim_radius") {
+        if (num && d >= 20.0 && d <= 2000.0) k.radius = d;
+        return true;
+    }
+    if (key == "enemy_target_pick" || key == "enemy_target_redirect") {
+        const double top = key == "enemy_target_pick" ? 15.0 : 255.0;
+        if (num && d >= 0.0 && d <= top && d == static_cast<double>(static_cast<int>(d))) (key == "enemy_target_pick" ? k.pick : k.redirect) = static_cast<int>(d);
+        return true;
+    }
+    if (key == "enemy_target_fresh_ms") {
+        if (num) k.fresh_ms = d < 500.0 ? 500 : d > 3000.0 ? 3000 : static_cast<int>(d);
+        return true;
+    }
+    return false;
+}
+
 }  // namespace st::cfgval

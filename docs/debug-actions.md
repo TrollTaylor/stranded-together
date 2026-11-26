@@ -416,6 +416,12 @@ hidden (not down) for a second, or silent 3 s), `enemy_attack_registry` (shots w
   it (a "seen in the open" test: [enemy-sync.md](enemy-sync.md) section 12).
   Round 23 E: a negative m places our Sam that far behind it, along its facing, facing its back (`enemy_look -8 -10`; the
   log line says `behind it, along its facing`), for the M2 probe P1's "behind" step.
+* `enemy_look -10 <m>` (hidden runs, round 27 M1): as `-8`, but 40 deg off the enemy's facing (the log line says `in front of it, 40
+  deg off its facing`): the L1 probe's arm D puts our Sam there, in the enemy's view beside her.
+* `enemy_look -11 <m> [deg]` (hidden runs, round 27 run 3; m default 15, deg default 25, below 90): our Sam m from the enemy of
+  the last `enemy_look`, deg off its line to the partner body, on the side its facing is on, facing it (snapped to the ground):
+  `[enemy] look id=XXXXX dist d m (g deg off its line to her, on its facing's side; it stands at x, y, z): <teleport text>`.
+  `enemy_tgt 11` uses the same placement (esync::PlaceLocalOffLine) for TF0 / TF1 (170 m, 40 deg) and, along its facing, CS.
 
 ### Enemy hits (`enemy_dump`, `enemy_attack`, `enemy_ctx`, `enemy_hit_mode`, `enemy_hit`, `enemy_hit_send`, `enemy_hit_watch`; `session.ini enemy_hits`, default on with `enemy_sync`; [enemy-sync.md](enemy-sync.md) section 9)
 
@@ -537,6 +543,109 @@ Scenarios: `enemy-hit-probe` (P2-0, solo), `two-games-enemy-hit` (the gate), `tw
 camp), `two-games-enemy-single-walk` and its -know, -camp, -tickets, -hold, -role, -face, -roleface arms
 (round 25: the WALK-AWAY and BEHIND cases; enemy-sync.md 14.18; round 26 pins the other keys to 0 in each),
 `two-games-enemy-single-defaults` (round 26: the new defaults from the launcher's own files, one single take, R1's camp take).
+
+* `enemy_l1 <op> [a] [b]` (round 27 M1, the L1 probe; hidden runs only, no `session.ini` key; [enemy-sync.md](enemy-sync.md)
+  section 15). Does a host MULE go for her partner body once the body carries a visual stimulus made with our Sam's own resource
+  and the local player's id (lever L1)? Every op logs `[probe] L1 ...` lines; the first op byte-checks 31 sites (`[probe] L1 byte
+  checks (n): stimulus ok, classifier ok, ...`; a mismatch logs `[probe] L1 byte check FAILED: <site>` and turns that part off) and
+  puts in three read-only counting detours (the classifier, the result append, the sensor results: `[probe] L1 detours ...`).
+  * 0: the reads: `[probe] L1 reads: singleton ..; her agent .. points ..` and `[probe] L1 reads: Sam stim .. off (..) a0 .. a4 ..
+    b0 ..; resource ..; getter resource .. (the same as | not Sam's)`, then a counts line.
+  * 1 `<0 | 1>`: her stimulus off / on (L1): `[probe] L1 hers made #n (...)` / `hers not made (<why>)` / `hers removed (...)` /
+    `hers forgotten (...)`. While it lives the tick writes its place (her body + the offset our Sam's own has), velocity,
+    multiplier (1.0 or op 2's), +0xA0 / +0xB0 (our Sam's) and the player id.
+  * 2 `<vis x100>`: her multiplier forced (0: she hides). In arm D it also marks the switch phases (0 -> 1 she hides, 1 -> 2 back).
+  * 3 `<id> <s>`: the watch, 4 Hz: `[probe] L1 watch id=XXXXX t=..: phase .. ea4 ..; faces her .. deg / Sam .. deg; ...; PV n at
+    <her | Sam | none> ..; LK n at ..; goal .. id 0x.. mode .. +68 0x.. +6C 0x.. place -> her|Sam|none|- .. m; shoot pt -> ..; aim
+    -> ..; daemon .. centre -> ..; cp alert -> ..; rounds n` (run 2: the shoot goal's +0x68 / +0x6C and its +0x48 place; `shoot
+    pt`, the host only: the body shoot job's last aim point from `enemy_tgt`'s bit 32 record, `<her|Sam|none> mode m a s (calls n
+    redir n)`, `none (...)` before one, `-` when the MULE is not registered), and `[probe] L1 round id=XXXXX #n: closest her .. m,
+    Sam .. m (n new; ...); angles her/Sam/facing h/s/f ... deg; yaw ..` per sample with new rounds (each round's angle off the
+    line to her chest, to Sam's chest and off the MULE's facing; -1 unknown). On the guest her own Sam is "her" and the partner body "Sam": the watch of
+    her frozen copy ends with `[probe] L1 result arm U21 id=XXXXX: ...`.
+  * 4 `<arm> <id>`: an arm starts (1 A, 2 B, 3 C, 4 D, 7 G): `[probe] L1 arm X id=XXXXX: start (...)`, the watch until op 8.
+  * 5 `<0 | 1>` (the guest, arm F): her own stimulus standing / crouched: `[probe] L1 vis (standing|crouched): a4 .. a0 .. b0 ..`;
+    op 5 1 logs `[probe] L1 result arm F: standing=.. a4_stand=.. a4_crouch=.. lower=0|1 ...`.
+  * 6 `<id> [s]` (default 10 s): re-calm: SetPhase 0 on it and every member of its camp, its CP forced to phase 0 (run 2: with
+    `enemy_owner=0` the camp is walked on demand, `esync::CampWalkNow`), again every 500 ms while it, a member or the CP reads
+    alerted (about 20 per 12 s at most). Run 3: the CP is forced only when it reads alerted (3..5); it rests at PreCaution (2).
+    The start line: `[probe] L1 calm #n id=XXXXX: phase 0 on n members, the CP <at c (resting, not forced) | forced 0 (was c, now
+    c) | at c (not 3..5, not forced) | unread (not forced) | not found | skipped (byte checks) | FAULT>` (FAULT only for a real
+    fault). Every 500 ms: `[probe] L1 calm #n id=XXXXX t=..: phase p, members at 3-5 n/m, members at 1-2 n (first XXXXX), cp c,
+    PV n age a at her|Sam|none d m, LK n; quiet q s[; re-applied]` (cp -1 no CP known, -2 unread). Ready: it and every member at
+    phase <= 2, the CP at 0..2 (or none), every PlayerVisual entry >= 3 s old and > 3 m from both players, held 1.5 s:
+    `[probe] L1 calm #n id=XXXXX: ready|timeout (t s; phase p; PV n LK n; n applies); members at 3-5 n/m, cp c; CP forces n, PV
+    age a[; blocked by <phase p | members at 3-5 n | cp c | knowledge unread | PV fresh (age a, d m) | quiet only q s>]` (the
+    blocker only on a timeout: the first rule that failed).
+  * 7 `<id> [attack]` (default 0x157): the partner-tackle sphere query (layer 0x36, 1 m) at her chest with that MULE's attack
+    context; nothing is delivered: `[probe] L1 melee query id=XXXXX attack 0x..: r .. ; seen n, her body n, Sam n`.
+  * 8: the arm ends: one `[probe] L1 result arm X id=XXXXX: key=value ...` line (noticed, turned_her / turned_sam, approached_*,
+    aim_*, fired, at_her / at_sam, pv_*, lk_*, daemon_*, cp_alert, switch_*, melee_*, the classifier / append / sensor counts;
+    run 2: `fired_p=`, `at_her_p=`, `at_sam_p=` per switch phase 0/1/2, `pv_age0=` the youngest PV entry's age and `stim_age0=`
+    her stimulus' age at the first sample, s, -1 none). `noticed` is the first sample with a PlayerVisual entry at her younger than
+    0.5 s; `pv_start=1` only when that first sample's PV at her is older than her stimulus.
+  * 9: stop: hers removed, the watch ended, `[probe] L1 decision: P-full | P-aim | P-nofire | P-notice | FAIL (...)` when B, C or
+    D ran, `[probe] L1 stop`.
+  Safety: every path that removes her partner body first clears the stimulus' agent (`[probe] L1 release (<why>): ...`); it is
+  removed a tick later only while still in the AI manager's live list (else `hers forgotten`). Scenario
+  `two-games-enemy-l1-probe`; checker `tools/testenv/enemy-target.py <run folder>`.
+
+* `enemy_tgt <op> [a] [b]` (round 27 M2 / M3; op 0 in any session, the rest hidden runs only; [enemy-sync.md](enemy-sync.md)
+  section 16). The partner stimulus (`enemy_partner_stim`), SPV1, the target pick (`enemy_target_pick`) and the redirects
+  (`enemy_target_redirect`); nothing here acts unless one of those keys is on (op 9 needs `enemy_partner_stim`). The stimulus is
+  made by the host only (the guest logs `[enemy] pstim not made (the guest (host only))`). The first tick with a key on
+  byte-checks every site (`[enemy] tgt byte checks (n): stimulus ok, ..., MULE members ok, player objects ok, redirect 1 ok, 2a ok,
+  2b ok, 4 ok, 16 (vehicle chase) ok, 32 (shoot actor) ok; redirect 8 deferred (not built)`; a mismatch logs `[enemy] tgt byte check FAILED: <site>`
+  and turns that part off; run 3: bit 32 also checks the MULE carrier's wrappers, DSMuleWeaponComponent's vtable 0x143DBA800,
+  and its GetTargetPosition wrapper gets its own detour). After a stop or a fault ops 1..11 refuse (`tgt stopped (<why>)`); op 0
+  still logs the status, with `; shoot32 vt_other n noslot n` on its summary (the job's calls on a carrier that is neither the
+  MULE's nor the plain NPC's, and on a MULE carrier not registered). Once per run: `[enemy] tgt shoot 32: the job's carrier has
+  vtable 0x.. (not the MULE's / the NPC's); not counted`, `[enemy] tgt shoot 32: carrier 0x.. entity 0x.. is not a registered
+  MULE`, `[enemy] tgt onhit_bad first: receiver XXXXX aref 0x.. att 0x.. vt 0x.. node 0x..`. Once per MULE per arm: `[enemy] tgt
+  mismatch id=XXXXX: pick her|Sam|none, place says her|Sam|none (entry type 1|85 age a s)`. A pick change logs the rule that made
+  that change (run 3), not the rule of the tick after it.
+  * 0: status: `[enemy] tgt status: stim key .. (made | none), pick key .. live .., redirect key .. live sites 0x.., fresh .. ms,
+    registered .., SPV1 fresh | stale`, the `[enemy] pstim: ...` and `[enemy] spv1 sent n recv n stale n bad n; aim ours .. m,
+    hers .. m (SPV1 | default); our down 0|1` lines and a `[enemy] tgt status: engaging her n, Sam n; ...` summary.
+  * 1 `<0 | 1>`: the partner stimulus forced off (removed at once: `[enemy] pstim removed (forced off (op 1 0); ..)`) / back to
+    the key (made again by the next tick: `[enemy] pstim made #n (...)`). The gate scenario turns it off while a camp re-calms.
+  * 2 `<vis x100>`: her +0xA4 forced (0: she hides; it also marks the target arm's switch phases, 0 -> 1 she hides, 1 -> 2 back);
+    `-1` back to her SPV1 visibility.
+  * 3 `<id> [s]` (default 20 s): the probe's 4 Hz watch of that MULE (`[probe] L1 watch ...`), labelled W, after a geometry line.
+  * 4 `<arm> <id>`: a labelled arm on the probe's watch (1 TA, 2 TB, 3 TF0, 4 TF1, 5 TE, 6 TX, 7 CH, 8 CS, 9 CL; TF0 / TF1 run 2's repro with bit 32 off / on):
+    `[enemy] tgt geometry id=XXXXX (<label>): her dz .. m horiz .. m pitch .. bearing .. valid 0|1; Sam dz .. m horiz .. m
+    bearing .. pitch ..; rule gun|melee (her|Sam); sep s` (run 3: `sep`, the angle at the MULE between her and our Sam, degrees;
+    -1 when either is unread or on the MULE) (run 2, valid per arm: melee arms 7..9 |dz| <= 1.0, 2..8 m, bearing <= 45;
+    the gun arms 10..30 m, bearing <= 30, the pitch from its eye (1.6 m) to her aim point <= 15; CS judges our Sam; bearing:
+    degrees off its facing), `[enemy] tgt arm X
+    id=XXXXX: start (stim on|off, vis .., aim .. m SPV1|default, pick live .., redirect sites 0x..)` and `[probe] L1 arm X
+    id=XXXXX: start`. It resets that MULE's pick, its her -> Sam flip count, its bucket gap and its shoot counts.
+  * 5 `<id> <0 | 1 | 2>`: that registered MULE's pick forced to none / her / Sam (`[enemy] tgt id=XXXXX forced her`).
+  * 6 `<bits | -1>`: the redirect bits for this run (`[enemy] tgt redirect bits for this run: n (live sites 0x..)`); -1 back
+    to the key (32: the shoot actor). Hooks go in on first use and stay in; a bit off only stops its detour acting.
+  * 7 `<id> [arm code]`: the geometry line (`(op 7)`; the gate uses it as a marker; valid by that arm's rule, else the running
+    arm's when it is this MULE's, else the gun rule) and `[enemy] tgt id=XXXXX pick her|Sam|none; flips
+    her->Sam n; her bucket gap max n ms`, then its shoot line: `[enemy] tgt id=XXXXX shoot: calls n redirected n points n (at
+    her n Sam n none n); last her|Sam|none|- mode m age a s, her d m, Sam d m; modes actor n place n other n`
+    ([enemy-sync.md](enemy-sync.md) 16.4; run 3: the points by the carrier's mode after them).
+  * 8: the arm ends: the probe's `[probe] L1 result arm X id=XXXXX: key=value ...` line and `[enemy] tgt arm X id=XXXXX end: pick
+    ..; flips her->Sam n; her bucket gap max n ms`, then that MULE's shoot line.
+  * 9 `<n>` (default 50, at most 500): n create / remove cycles of the partner stimulus while her body lives (U15), radius
+    ignored, then made again at once by the same op (the usual rules): `[enemy] pstim cycles n: made n removed n faults n[;
+    stopped: <why>]; made again #n` (or `; not made again (<why>)`). Refused while a release is pending.
+  * 10: the crash-reporter guard test (a guarded fault).
+  * 11 `<id> <arm>` (round 27 run 3, hidden runs): the arm at geometry. Returns `tgt arm-at-geometry armed` at once; the tick polls
+    every 50 ms until her geometry is valid for the arm and her horizontal distance is within nominal -4 .. +2 m (TA 25, TF0 / TF1
+    22, TE / TX 16, CH 5, CL 6; TB the geometry alone), else 2.5 s, then: TF0 / TF1 place our Sam 170 m
+    away, 40 deg off the MULE's line to her (enemy_look -11's placement); CS places it 5 m along the MULE's facing (her not
+    judged); the other arms leave it. Op 4's lines follow 150 ms after a placement (else at once), after one of
+    `[enemy] tgt arm-at-geometry X id=XXXXX: her valid after n ms (horiz h m, bearing b); Sam <s>`,
+    `... her not valid in 2500 ms (horiz h m, bearing b); started anyway; Sam <s>`,
+    `... her not judged (a Sam arm; horiz h m, bearing b); Sam <s>` (CS), where s is `placed 170 m 40 deg off her line`,
+    `placed 5 m along its facing`, `not moved` or `not placed (<why>)`. A new op 11, op 4 or op 8 cancels a pending one:
+    `[enemy] tgt arm-at-geometry X id=XXXXX: cancelled (<why>)`.
+  Scenario `two-games-enemy-target`; checker `python -I tools/testenv/enemy-target-gate.py <run folder>` (PASS / FAIL / INVALID /
+  INCONCLUSIVE per gate item).
 
 * `enemy_restrain <id | 0> <mode>` (hidden runs, round 23; the guest, or the host while it relays its hits: `enemy_owner`; the
   restrain relay must be on: `[enemy] restrain relay on`): the tie-up relay's own send path on our frozen copy of an enemy the

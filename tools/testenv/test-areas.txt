@@ -104,6 +104,8 @@ tools/testenv/README.md                none
 tools/testenv/enemy-compare.py         none
 tools/testenv/enemy-hits.py            none
 tools/testenv/enemy-tie.py             none
+tools/testenv/enemy-target.py          none
+tools/testenv/enemy-target-gate.py     none
 tools/testenv/truck-hold.py            none
 tools/testenv/Story-Library.ps1        story
 tools/testenv/*                        testenv
@@ -160,6 +162,7 @@ native/mod/audio_probe.*               research
 # The phases are areas of their own (review rv-tests 1): P1a's mirrors (enemy-mirror: the shared base of enemy_sync, the rules and
 # the wire; its gate two-games-enemy-mirror), P2's hits (enemy-hits: two-games-enemy-hit; enemy-compat: two-games-enemy-hits-off),
 # P1b/P1c's ownership (enemy-own: auto run since round 21, its gate two-games-enemy-camp passed). The ~regex lines below add the later phases by the changed lines.
+native/mod/enemy_l1_*                  research
 native/mod/enemy_combat.*              enemy-hits
 native/mod/enemy_census.*              enemies
 native/mod/enemy_sync.*                enemy-mirror

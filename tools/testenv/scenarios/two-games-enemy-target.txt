@@ -1,0 +1,288 @@
+# Round 27 run 3 gate (docs/enemy-sync.md 16): the partner stimulus (enemy_partner_stim 1; the host only, hidden runs only), SPV1,
+# the target pick (enemy_target_pick 7: the sensor-result reorder, MULE-only perceivers, the classifier flag fix) and the redirects
+# (enemy_target_redirect 39: 1 CanShoot's point, 2 turn / range check, 4 approach, 32 the shoot actor, now on the MULE's own weapon
+# carrier too; 16, the vehicle chase, is not in this run). MULE Camp Southwest of Lake Knot City (cp 04004). Launcher Local test
+# files; the host owns every enemy (enemy_owner=0), every round-25/26 key and the M2 probes pinned off.
+# Run 3 order (docs/enemy-sync.md 16.6): the notice arms on MULEs that have seen no one since dev_enemies 1 (TA 0202B, CL 02029,
+# TE 0202C), then the engaged block on 0202B (TF0 after a calm, TF1 and TB straight after it, her stimulus live throughout), then
+# CH and CS on 02029 and the control TX on 0202C. A calmed arm: the partner stimulus forced off (enemy_tgt 1 0), our Sam and her
+# 150 m away, the camp re-calmed (enemy_l1 6 <id> 8: ready when the MULE, its members and the CP (0..2 is at rest) are quiet and
+# every PlayerVisual entry is stale), our Sam 150 m behind, her placed along its facing, the status, then op 11 (enemy_tgt 11 <id>
+# <code>: the arm starts from the tick once her geometry is valid for the arm and her distance is in its window, or after 2.5 s;
+# for TF0 / TF1 it places our Sam 170 m away 40 deg off its line to her, for CS 5 m along its facing) and only after the start the
+# stimulus (enemy_tgt 1 1), then the result (enemy_tgt 8) and the status again.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-enemy-target -SeedSaves complete-100 -GuestSeed profile-only -Id round27-m3
+#   python -I tools\testenv\enemy-target-gate.py build-testenv\runs\<run folder>   (the arm table, PASS / FAIL / INVALID per gate item)
+# The host: the stimulus made, byte checks, the crash-reporter guard test (two absorbed faults), 50 create / remove cycles then
+# made again (U15), SPV1 both ways; the guest: byte checks, the guard test, the stimulus refused (the guest), SPV1.
+# TA (calm #1): her 25 m in front of gun MULE 0202B: notice, turn, no round at Sam (rounds, if any, >= 60 % at her). CL (#2): her
+# on level ground 6 m in front of melee MULE 02029 (a missed notice in the cone FAILs). TE (#3): her crouched 16 m in front of
+# gun MULE 0202C (her SPV1 visibility <= 0.7).
+# TF0 (#4, 0202B, bit 32 off): her 22 m in front, Sam 170 m away 40 deg off its line to her (beyond sight; a round at him passes
+# ~14 m beside her); the actor branch, when the job takes it, resolves to Sam (else "place branch only", not gated). TF1 (no calm,
+# the key: bit 32 on): the same placement made again: >= 3 rounds, >= 2/3 at her, none and no shoot point at Sam.
+# TB (no calm; engaged on her since TF1): it stays on her (a "-> her" first); our Sam steps out 15 m away 25 deg off its line to
+# her (enemy_look -11 15 25): both seen, sticky her, no round and no shoot point at Sam in phase 0 (bit 32 redirected); she hides
+# (enemy_tgt 2 0): to Sam (only visible) <= 3 s; she is back with Sam still in view (phase 2): stays Sam.
+# CH (#5): her level 5 m in front of 02029. CS (#6, the control): no stimulus, her away, Sam 5 m along 02029's facing (op 11).
+# TX (#7, the control): the redirects off (enemy_tgt 6 0), her 16 m in front of 0202C.
+# covers: enemy-hits
+# select: probe
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini enemy_owner=0
+ini enemy_m2_probes=0
+ini enemy_take_know=0
+ini enemy_take_camp=0
+ini enemy_ticket_return=0
+ini enemy_single_hold_vehicle=0
+ini enemy_single_rule=0
+ini enemy_take_role=0
+ini enemy_take_face=0
+ini enemy_partner_stim=1
+ini enemy_target_pick=7
+ini enemy_target_redirect=39
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[enemy\] hits: byte checks [0-9]+/[0-9]+ ok
+goto mule-camp-sw-lkc
+@guest goto 1521.90 992.00 0
+wait 4000
+@both action dev_god 2
+@both action dev_enemies 1
+waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+@guest waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+action enemy_probe 5 1
+@guest action enemy_probe 5 1
+waitlog 40 \[enemy\] sync on \(host\).*\(equal
+@guest waitlog 40 \[enemy\] sync on \(guest\).*\(equal
+@guest waitlog 30 \[enemy\] mirror on id=0202B
+waitlog 30 \[enemy\] hits on \(host\)
+@guest waitlog 30 \[enemy\] hits on \(guest\)
+# ---- both games: the byte checks; the host makes the stimulus, the guest refuses it (host only); the redirects in, the status
+waitlog 10 \[enemy\] tgt byte checks \([0-9]+\)
+@guest waitlog 10 \[enemy\] tgt byte checks \([0-9]+\)
+waitlog 20 \[enemy\] pstim made #
+@guest waitlog 20 \[enemy\] pstim not made \(the guest
+waitlog 10 \[enemy\] tgt redirect 4 \(approach\):
+waitlog 10 \[enemy\] tgt redirect 32 \(shoot actor\):
+@both action enemy_tgt 0
+waitlog 5 \[enemy\] tgt status:
+# the crash-reporter guard (seh_guard.hpp): a guarded fault on the game thread is caught by the mod, not reported by the game. Op 10
+# faults twice (a noexcept guard and one that is not; "faulted and was caught" needs both absorbed), so the gate allows 2 a game
+waitlog 5 \[seh\] the game's crash reporter
+@guest waitlog 5 \[seh\] the game's crash reporter
+@both action enemy_tgt 10
+waitlog 5 \[seh\] test: a guarded read of a reserved page faulted and was caught
+@guest waitlog 5 \[seh\] test: a guarded read of a reserved page faulted and was caught
+@guest waitlog 5 \[enemy\] tgt status:
+# ---- U15: 50 create / remove cycles (the host), then made again by the same op
+action enemy_tgt 9 50
+waitlog 10 \[enemy\] pstim cycles 50: .*made again #
+# ---- TA (notice, 0202B fresh; calm #1): her 25 m in front of 0202B, Sam 150 m behind it
+action enemy_tgt 1 0
+action enemy_look 0x202B 150
+@guest action enemy_look 0x202B 150
+action enemy_l1 6 0x202B 8
+waitlog 12 \[probe\] L1 calm #1 id=0202B: (ready|timeout)
+action enemy_look -8 -150
+@guest action enemy_look 0x202B 30
+wait 700
+@guest action enemy_look -8 25
+action enemy_tgt 0
+action enemy_tgt 11 0x202B 1
+waitlog 5 \[probe\] L1 arm TA id=0202B: start
+action enemy_tgt 1 1
+waitnew 5 \[enemy\] pstim made #
+wait 8000
+screenshot 01-host-ta-8s
+@guest screenshot 01-guest-ta-8s
+wait 8000
+action enemy_tgt 8
+waitlog 5 \[probe\] L1 result arm TA id=0202B
+action enemy_tgt 0
+# ---- CL (notice, 02029 fresh; calm #2): her on level ground 6 m in front of 02029, along its facing (bearing ~0: a missed
+# notice is a FAIL, not the cone); Sam 150 m behind
+action enemy_tgt 1 0
+action enemy_look 0x2029 150
+@guest action enemy_look 0x2029 150
+action enemy_l1 6 0x2029 8
+waitlog 12 \[probe\] L1 calm #2 id=02029: (ready|timeout)
+action enemy_look -8 -150
+@guest action enemy_look 0x2029 20
+wait 700
+@guest action enemy_look -8 6
+action enemy_tgt 0
+action enemy_tgt 11 0x2029 9
+waitlog 5 \[probe\] L1 arm CL id=02029: start
+action enemy_tgt 1 1
+waitnew 5 \[enemy\] pstim made #
+wait 6000
+@guest screenshot 05-guest-cl
+action enemy_tgt 8
+waitlog 5 \[probe\] L1 result arm CL id=02029
+action enemy_tgt 0
+# ---- TE (notice, 0202C fresh; calm #3): her crouched 16 m in front of gun MULE 0202C (her SPV1 visibility), Sam 150 m behind
+action enemy_tgt 1 0
+action enemy_look 0x202C 150
+@guest action enemy_look 0x202C 150
+action enemy_l1 6 0x202C 8
+waitlog 12 \[probe\] L1 calm #3 id=0202C: (ready|timeout)
+action enemy_look -8 -150
+@guest action enemy_look 0x202C 30
+wait 700
+@guest action enemy_look -8 16
+@guest pad B 150
+wait 700
+@guest screenshot 02-guest-te-crouched
+action enemy_tgt 0
+action enemy_tgt 11 0x202C 5
+waitlog 5 \[probe\] L1 arm TE id=0202C: start
+action enemy_tgt 1 1
+waitnew 5 \[enemy\] pstim made #
+wait 16000
+action enemy_tgt 8
+waitlog 5 \[probe\] L1 result arm TE id=0202C
+action enemy_tgt 0
+@guest pad B 150
+# ---- TF0 (0202B alerted since TA; calm #4; bit 32 off, the rest of the key on): her 22 m in front along its facing, op 11 places
+# our Sam 170 m away 40 deg off its line to her (beyond its sight; a round at Sam passes ~14 m beside her)
+action enemy_tgt 1 0
+action enemy_tgt 6 7
+waitnew 5 \[enemy\] tgt redirect bits for this run: 7 \(live
+action enemy_look 0x202B 150
+@guest action enemy_look 0x202B 150
+action enemy_l1 6 0x202B 8
+waitlog 12 \[probe\] L1 calm #4 id=0202B: (ready|timeout)
+@guest action enemy_look 0x202B 30
+wait 700
+@guest action enemy_look -8 22
+action enemy_tgt 0
+action enemy_tgt 11 0x202B 3
+waitlog 5 \[probe\] L1 arm TF0 id=0202B: start
+action enemy_tgt 1 1
+waitnew 5 \[enemy\] pstim made #
+?waitnew 15 \[enemy\] tgt id=0202B -> her
+wait 10000
+screenshot 06-host-tf0
+action enemy_tgt 8
+waitlog 5 \[probe\] L1 result arm TF0 id=0202B
+action enemy_tgt 0
+# ---- TF1 (no calm; her stimulus still live, so the pick is kept): her placed again 22 m along its facing, the key (bit 32 on),
+# op 11 places our Sam again 170 m 40 deg off its line to her
+@guest action enemy_look -8 22
+action enemy_tgt 6 -1
+waitnew 5 \[enemy\] tgt redirect bits for this run: 39 \(the key\)
+action enemy_tgt 11 0x202B 4
+waitlog 5 \[probe\] L1 arm TF1 id=0202B: start
+?waitnew 5 \[enemy\] tgt id=0202B -> her
+wait 10000
+action enemy_tgt 8
+waitlog 5 \[probe\] L1 result arm TF1 id=0202B
+action enemy_tgt 0
+# ---- TB (no calm; 0202B engaged on her since TF1, firing, her stimulus live, the key on): it stays on her (a "-> her" first);
+# our Sam steps out 15 m away 25 deg off its line to her (both seen) 7 s: sticky her, no flip, no round at Sam (op 7 marks the end,
+# logs the flips and its shoot line); she hides 6 s (phase 1: to Sam); she is back with Sam still in view 6 s (phase 2: stays Sam)
+action enemy_tgt 0
+action enemy_tgt 11 0x202B 2
+waitlog 5 \[probe\] L1 arm TB id=0202B: start
+?waitnew 3 \[enemy\] tgt id=0202B -> her
+?waitnew 8 \[probe\] L1 round id=0202B #
+action enemy_look -11 15 25
+wait 7000
+action enemy_tgt 7 0x202B
+action enemy_tgt 2 0
+wait 6000
+action enemy_tgt 2 100
+wait 6000
+action enemy_tgt 8
+waitlog 5 \[probe\] L1 result arm TB id=0202B
+action enemy_tgt 2 -1
+action enemy_tgt 0
+# ---- CH (02029 alerted since CL; calm #5): her on level ground 5 m in front of 02029, Sam 150 m behind
+action enemy_tgt 1 0
+action enemy_look 0x2029 150
+@guest action enemy_look 0x2029 150
+action enemy_l1 6 0x2029 8
+waitlog 12 \[probe\] L1 calm #5 id=02029: (ready|timeout)
+action enemy_look -8 -150
+@guest action enemy_look 0x2029 20
+wait 700
+@guest action enemy_look -8 5
+action enemy_tgt 0
+action enemy_tgt 11 0x2029 7
+waitlog 5 \[probe\] L1 arm CH id=02029: start
+action enemy_tgt 1 1
+waitnew 5 \[enemy\] pstim made #
+wait 6000
+@guest screenshot 03-guest-ch
+action enemy_tgt 8
+waitlog 5 \[probe\] L1 result arm CH id=02029
+action enemy_tgt 0
+# ---- CS (calm #6; the control): no partner stimulus, her 150 m away, op 11 places our Sam 5 m along 02029's facing
+action enemy_tgt 1 0
+action enemy_look 0x2029 150
+@guest action enemy_look 0x2029 150
+action enemy_l1 6 0x2029 8
+waitlog 12 \[probe\] L1 calm #6 id=02029: (ready|timeout)
+@guest action enemy_look -8 -150
+action enemy_tgt 0
+action enemy_tgt 11 0x2029 8
+waitlog 5 \[probe\] L1 arm CS id=02029: start
+wait 6000
+screenshot 04-host-cs
+action enemy_tgt 8
+waitlog 5 \[probe\] L1 result arm CS id=02029
+action enemy_tgt 0
+# ---- TX (calm #7; the control): the redirects off for this run, her 16 m in front of 0202C (alerted since TE), Sam 150 m behind
+action enemy_tgt 1 0
+action enemy_tgt 6 0
+waitnew 5 \[enemy\] tgt redirect bits for this run: 0 \(live
+action enemy_look 0x202C 150
+@guest action enemy_look 0x202C 150
+action enemy_l1 6 0x202C 8
+waitlog 12 \[probe\] L1 calm #7 id=0202C: (ready|timeout)
+action enemy_look -8 -150
+@guest action enemy_look 0x202C 30
+wait 700
+@guest action enemy_look -8 16
+action enemy_tgt 0
+action enemy_tgt 11 0x202C 6
+waitlog 5 \[probe\] L1 arm TX id=0202C: start
+action enemy_tgt 1 1
+waitnew 5 \[enemy\] pstim made #
+wait 14000
+action enemy_tgt 8
+waitlog 5 \[probe\] L1 result arm TX id=0202C
+action enemy_tgt 0
+action enemy_tgt 6 -1
+waitnew 5 \[enemy\] tgt redirect bits for this run: 39 \(the key\)
+# ---- the end: SPV1 both ways (lines logged after these steps), the status, then the usual checks
+action enemy_tgt 0
+waitnew 5 \[enemy\] spv1 sent [1-9][0-9]* recv [1-9]
+@guest action enemy_tgt 0
+@guest waitnew 5 \[enemy\] spv1 sent [1-9][0-9]* recv [1-9]
+@both action enemy_l1 9
+waitlog 5 \[probe\] L1 stop
+@guest waitlog 5 \[probe\] L1 stop
+action enemy_sync 0
+nolog \[enemy\] FAULT
+@guest nolog \[enemy\] FAULT
+nolog \[enemy\] (tgt|pstim) .*FAULT
+@guest nolog \[enemy\] (tgt|pstim) .*FAULT
+nolog \[enemy\] tgt byte check FAILED
+@guest nolog \[enemy\] tgt byte check FAILED
+nolog \[probe\] L1 .*FAULT
+@guest nolog \[probe\] L1 .*FAULT
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@both action enemy_sync 2
+action enemy_probe 5 0
+@guest action enemy_probe 5 0
+@both action dev_god 0
+@guest quit
+wait 3000
+quit

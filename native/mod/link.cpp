@@ -209,15 +209,15 @@ unsigned g_combat_head = 0, g_combat_count = 0;
 volatile LONG64 g_rx_combat = 0, g_tx_combat = 0;
 // The combat frames (SEH1 the beacon, SEN1 enemy states, SEP1 enemy poses, SFX1 shots; docs/enemy-sync.md): raw bytes per kind
 // (the magic and the size bound checked here, the strict decoders run on the game thread), oldest first; when full the oldest
-// goes (counted). Queues of 2 / 8 / 16 / 32. Under g_rx.
+// goes (counted). Queues of 2 / 8 / 16 / 32 / 4 (SEH1, SEN1, SEP1, SFX1, SPV1). Under g_rx.
 constexpr std::size_t kCombatFrameMax = 1024;
 struct RxC {
     std::uint8_t bytes[kCombatFrameMax];
     std::uint16_t size;
     std::uint32_t generation;
 };
-constexpr unsigned kCKinds = 4, kCQueueMax = 32;
-constexpr unsigned kCQueueCap[kCKinds] = {2, 8, 16, 32};
+constexpr unsigned kCKinds = 5, kCQueueMax = 32;
+constexpr unsigned kCQueueCap[kCKinds] = {2, 8, 16, 32, 4};
 RxC g_cqueue[kCKinds][kCQueueMax];
 unsigned g_cq_head[kCKinds] = {}, g_cq_count[kCKinds] = {};
 volatile LONG64 g_rx_cframes[kCKinds] = {}, g_tx_cframes[kCKinds] = {}, g_rx_cdropped[kCKinds] = {};
@@ -227,6 +227,7 @@ int CombatKindOf(const std::uint8_t* d, std::size_t n) noexcept {
     if (d[1] == 'E' && d[2] == 'N' && d[3] == '1') return 1;
     if (d[1] == 'E' && d[2] == 'P' && d[3] == '1') return 2;
     if (d[1] == 'F' && d[2] == 'X' && d[3] == '1') return 3;
+    if (d[1] == 'P' && d[2] == 'V' && d[3] == '1') return n == 32 ? 4 : -1;
     return -1;
 }
 // Hidden tests (TestBlackout): received datagrams are dropped until this NowMs().

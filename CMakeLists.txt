@@ -174,6 +174,10 @@ add_library(st_mod SHARED
   native/mod/shot_sync.cpp
   native/mod/enemy_sync.cpp
   native/mod/enemy_combat.cpp
+  native/mod/enemy_l1_probe.cpp
+  native/mod/enemy_sense_hooks.cpp
+  native/mod/enemy_target.cpp
+  native/mod/seh_guard.cpp
   native/mod/enemy_wire.cpp
   native/mod/npc_damage.cpp
   native/mod/save_xfer.cpp
@@ -196,6 +200,8 @@ target_link_libraries(st_mod PRIVATE st_net st_minhook user32 st_mod_imgui st_te
 # Graphics DLLs load only when the debug menu is used (the game delay-loads them too).
 target_link_options(st_mod PRIVATE /DELAYLOAD:dxgi.dll /DELAYLOAD:d3dcompiler_47.dll /DELAYLOAD:windowscodecs.dll /DELAYLOAD:ole32.dll
                     /DELAYLOAD:bcrypt.dll)
+# A map file (winhttp.map next to the DLL) so a '[seh] ... from' caller rva resolves to a function (round 27 run 2).
+target_link_options(st_mod PRIVATE /MAP)
 
 # ---- Debug menu checks (no game, no GPU): action queue/registry, log ring,
 # saved-position parsing, key names. tests/overlay_sync_stubs.cpp stands in for
@@ -378,6 +384,18 @@ target_compile_options(st_enemy_probe_rules_tests PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_enemy_probe_rules_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_test(NAME st_enemy_probe_rules_tests COMMAND st_enemy_probe_rules_tests)
 
+# ---- Round 27 M1 (enemy_l1_rules.hpp): the L1 probe's attribution, trackers and decision
+add_executable(st_enemy_l1_rules_tests tests/enemy_l1_rules_tests.cpp)
+target_include_directories(st_enemy_l1_rules_tests PRIVATE native/mod)
+target_compile_options(st_enemy_l1_rules_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_enemy_l1_rules_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_enemy_l1_rules_tests COMMAND st_enemy_l1_rules_tests)
+add_executable(st_enemy_target_rules_tests tests/enemy_target_rules_tests.cpp)
+target_include_directories(st_enemy_target_rules_tests PRIVATE native/mod)
+target_compile_options(st_enemy_target_rules_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_enemy_target_rules_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_enemy_target_rules_tests COMMAND st_enemy_target_rules_tests)
+
 # ---- Fragile's face (face_rules.hpp): the wire ids of Sam's facial clips, the manager's choice, when a face gets a clip
 add_executable(st_face_rules_tests tests/face_rules_tests.cpp)
 target_include_directories(st_face_rules_tests PRIVATE native/mod)
@@ -495,6 +513,9 @@ find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
   add_test(NAME st_devdash_tests
            COMMAND ${Python3_EXECUTABLE} -B -m unittest discover -s "${CMAKE_CURRENT_SOURCE_DIR}/tools/devdash" -p "test_*.py")
+  # the round 27 enemy-target gate's verdict rules on a synthetic run-3 fixture (tests/fixtures/enemy-target-gate)
+  add_test(NAME st_enemy_target_gate_tests
+           COMMAND ${Python3_EXECUTABLE} -I -B "${CMAKE_CURRENT_SOURCE_DIR}/tests/enemy_target_gate_test.py")
 endif()
 
 # ---- Launcher (StrandedTogether.exe)

@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
 
 #include "enemy_wire.hpp"
 #include "shot_wire.hpp"
@@ -602,9 +603,61 @@ void TestScbRestrain() {
     CHECK(!shotw::BothHave(shotw::kPartHits | shotw::kPartRestrain, 0x7F, shotw::kPartRestrain));
     CHECK(ewire::SenDefeat(ewire::kDead) == 4 && ewire::SenDefeat(ewire::DefeatBits(3)) == 3 && ewire::SenDefeat(ewire::kRealized) == 0);
 }
+// SPV1 (round 27 M2): the round trip, the vis clamp and quantum, and every rejection
+void TestSpv() {
+    ewire::Visibility v;
+    v.flags = ewire::kSpvCrouch | ewire::kSpvDown;
+    v.seq = 0xBEEF;
+    v.sender_ms = 0x12345678u;
+    v.vis = 0.6f;
+    v.weapon = 7;
+    v.health = 200;
+    v.a0 = 1.25f;
+    v.b0 = -3.5f;
+    v.pinfo_flags = 0x800000F0u;
+    v.aim_cm = 0x0091u;  // 145 cm
+    v.ride = 0x2041u;
+    std::uint8_t b[ewire::kSpvSize + 4] = {};
+    CHECK(!ewire::EncodeVisibility(v, b, ewire::kSpvSize - 1));
+    CHECK(ewire::EncodeVisibility(v, b, sizeof(b)));
+    CHECK(std::memcmp(b, "SPV1", 4) == 0 && b[4] == 1 && b[12] == 0x58 && b[13] == 0x02);  // 600
+    ewire::Visibility o;
+    CHECK(ewire::DecodeVisibility(b, ewire::kSpvSize, o));
+    CHECK(o.flags == v.flags && o.seq == v.seq && o.sender_ms == v.sender_ms && std::fabs(o.vis - 0.6f) < 1e-6f && o.weapon == 7 && o.health == 200);
+    CHECK(o.a0 == 1.25f && o.b0 == -3.5f && o.pinfo_flags == 0x800000F0u && o.aim_cm == 145u && o.ride == 0x2041u);
+    CHECK(b[28] == 0x91 && b[29] == 0x00 && b[30] == 0x41 && b[31] == 0x20);  // u16 aim_cm at 28, u16 ride at 30
+    CHECK(!ewire::DecodeVisibility(b, ewire::kSpvSize + 1, o));
+    CHECK(!ewire::DecodeVisibility(b, ewire::kSpvSize - 1, o));
+    CHECK(!ewire::DecodeVisibility(nullptr, ewire::kSpvSize, o));
+    std::uint8_t c[ewire::kSpvSize];
+    std::memcpy(c, b, sizeof(c));
+    c[3] = '2';
+    CHECK(!ewire::DecodeVisibility(c, sizeof(c), o));
+    std::memcpy(c, b, sizeof(c));
+    c[4] = 2;
+    CHECK(!ewire::DecodeVisibility(c, sizeof(c), o));
+    std::memcpy(c, b, sizeof(c));
+    c[12] = 0xA1, c[13] = 0x0F;  // 4001
+    CHECK(!ewire::DecodeVisibility(c, sizeof(c), o));
+    std::memcpy(c, b, sizeof(c));
+    const float nan = std::nanf("");
+    std::memcpy(c + 16, &nan, 4);
+    CHECK(!ewire::DecodeVisibility(c, sizeof(c), o));
+    // the clamp: over 4 -> 4000, under 0 -> 0; NaN refused by the encoder
+    v.vis = 9.f;
+    CHECK(ewire::EncodeVisibility(v, b, sizeof(b)) && ewire::DecodeVisibility(b, ewire::kSpvSize, o) && o.vis == 4.f);
+    v.vis = -1.f;
+    CHECK(ewire::EncodeVisibility(v, b, sizeof(b)) && ewire::DecodeVisibility(b, ewire::kSpvSize, o) && o.vis == 0.f);
+    v.vis = nan;
+    CHECK(!ewire::EncodeVisibility(v, b, sizeof(b)));
+    v.vis = 1.f;
+    v.b0 = std::numeric_limits<float>::infinity();
+    CHECK(!ewire::EncodeVisibility(v, b, sizeof(b)));
+}
 }  // namespace
 
 int main() {
+    TestSpv();
     TestScbRestrain();
     TestScbOwn();
     TestSenRoundTrip();

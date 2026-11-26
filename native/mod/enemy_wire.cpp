@@ -395,4 +395,56 @@ bool DecodeEnemyPose(const std::uint8_t* d, std::size_t n, EnemyPose& out) noexc
     return true;
 }
 
+namespace {
+void PutU32(std::uint8_t* p, std::uint32_t v) noexcept {
+    for (int i = 0; i < 4; ++i) p[i] = static_cast<std::uint8_t>(v >> (8 * i));
+}
+std::uint32_t GetU32(const std::uint8_t* p) noexcept {
+    return static_cast<std::uint32_t>(p[0]) | static_cast<std::uint32_t>(p[1]) << 8 | static_cast<std::uint32_t>(p[2]) << 16 |
+           static_cast<std::uint32_t>(p[3]) << 24;
+}
+}  // namespace
+
+bool EncodeVisibility(const Visibility& v, std::uint8_t* out, std::size_t cap) noexcept {
+    if (!out || cap < kSpvSize || !std::isfinite(v.vis) || !std::isfinite(v.a0) || !std::isfinite(v.b0)) return false;
+    std::memset(out, 0, kSpvSize);
+    std::memcpy(out, "SPV1", 4);
+    out[4] = 1;
+    out[5] = v.flags;
+    out[6] = static_cast<std::uint8_t>(v.seq), out[7] = static_cast<std::uint8_t>(v.seq >> 8);
+    PutU32(out + 8, v.sender_ms);
+    const float c = v.vis < 0.f ? 0.f : v.vis > 4.f ? 4.f : v.vis;
+    const auto q = static_cast<std::uint16_t>(c * 1000.f + 0.5f);
+    out[12] = static_cast<std::uint8_t>(q), out[13] = static_cast<std::uint8_t>(q >> 8);
+    out[14] = v.weapon;
+    out[15] = v.health;
+    std::memcpy(out + 16, &v.a0, 4);
+    std::memcpy(out + 20, &v.b0, 4);
+    PutU32(out + 24, v.pinfo_flags);
+    out[28] = static_cast<std::uint8_t>(v.aim_cm), out[29] = static_cast<std::uint8_t>(v.aim_cm >> 8);
+    out[30] = static_cast<std::uint8_t>(v.ride), out[31] = static_cast<std::uint8_t>(v.ride >> 8);
+    return true;
+}
+
+bool DecodeVisibility(const std::uint8_t* d, std::size_t n, Visibility& out) noexcept {
+    if (!d || n != kSpvSize || std::memcmp(d, "SPV1", 4) != 0 || d[4] != 1) return false;
+    const std::uint16_t q = static_cast<std::uint16_t>(d[12] | d[13] << 8);
+    if (q > 4000) return false;
+    Visibility v;
+    v.flags = d[5];
+    v.seq = static_cast<std::uint16_t>(d[6] | d[7] << 8);
+    v.sender_ms = GetU32(d + 8);
+    v.vis = static_cast<float>(q) / 1000.f;
+    v.weapon = d[14];
+    v.health = d[15];
+    std::memcpy(&v.a0, d + 16, 4);
+    std::memcpy(&v.b0, d + 20, 4);
+    if (!std::isfinite(v.a0) || !std::isfinite(v.b0)) return false;
+    v.pinfo_flags = GetU32(d + 24);
+    v.aim_cm = static_cast<std::uint16_t>(d[28] | d[29] << 8);
+    v.ride = static_cast<std::uint16_t>(d[30] | d[31] << 8);
+    out = v;
+    return true;
+}
+
 }  // namespace st::ewire

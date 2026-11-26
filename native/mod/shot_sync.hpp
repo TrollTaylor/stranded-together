@@ -110,6 +110,9 @@ bool EnemyShotTest(std::uintptr_t mirror_entity, std::uint32_t id, bool nohurt, 
 // The enemy probe (enemy_sync.cpp): bullets enqueued by an owner entity while armed (a table of 16).
 void ArmOwnerCounts(bool on) noexcept;
 unsigned ShotsBy(std::uintptr_t entity) noexcept;
+// The L1 probe (round 27 M1): round n (1-based, as ShotsBy counts) of that owner while still among its newest 16: the record's
+// origin (+0x60) and unit direction (its velocity +0x70). False: not kept (or no velocity).
+bool RoundOf(std::uintptr_t entity, unsigned n, double (&origin)[3], double (&dir)[3]) noexcept;
 bool EnqueueHooked() noexcept;
 
 }  // namespace st::shots

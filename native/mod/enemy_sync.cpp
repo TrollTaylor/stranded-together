@@ -30,6 +30,8 @@
 #include "sam_damage.hpp"
 #include "save_guard.hpp"
 #include "shot_sync.hpp"
+#include "enemy_l1_probe.hpp"
+#include "enemy_target.hpp"
 #include "vehicle_share.hpp"
 
 namespace st::esync {
@@ -3767,7 +3769,9 @@ void OwnLine(double now, bool force) {
         g_os.takes, g_os.backs, g_os.forced, g_os.refused, g_os.taken_here, g_os.given_here, g_os.refused_here, g_os.stale, g_owned_hits.load());
 }
 
-bool OwnChecks() {
+// The ownership byte checks. own false (round 27 run 2, enemy_owner=0): the same sites only for the camp walk the L1 probe's re-calm
+// runs on demand (CampWalkNow): g_cp_ok, ownership stays off.
+bool OwnChecks(bool own = true) {
     struct S {
         std::uintptr_t va;
         const char* sig;
@@ -3796,7 +3800,8 @@ bool OwnChecks() {
         }
     }
     g_cp_ok = main_ok && cp_ok;
-    Log("[enemy] own byte checks: %u/%u ok%s", ok, n, !main_ok ? " (ownership off)" : !cp_ok ? " (the camp phase unknown)" : "");
+    if (own) Log("[enemy] own byte checks: %u/%u ok%s", ok, n, !main_ok ? " (ownership off)" : !cp_ok ? " (the camp phase unknown)" : "");
+    else Log("[enemy] camp byte checks (enemy_owner=0: the camp walk on demand only): %u/%u ok%s", ok, n, g_cp_ok ? "" : " (no camp walk)");
     return main_ok;
 }
 
@@ -3819,6 +3824,8 @@ std::uint8_t OurParts() {
 }
 
 void Stop(const char* step) {
+    l1probe::ReleaseBeforeFree("enemy sync stopped");  // round 27 M1 (C1)
+    etarget::Stop("enemy sync stopped");             // round 27 M2 / M3: the partner stimulus released, the pick and redirects off
     g_stopped = true;
     Log("[enemy] FAULT in %s: enemy sync stopped", step);
     UnhideDead(true, "a fault");
@@ -4235,6 +4242,7 @@ void Install(const Config& config) noexcept {
                  g_relay_want ? 1 : 0);
     } else {
         Log("[enemy] own off (enemy_owner=0)");
+        OwnChecks(false);  // round 27 run 2: the CP reads for the L1 probe's re-calm (CampWalkNow); g_own_ok stays false
     }
 }
 
@@ -4487,8 +4495,74 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept 
     }
 }
 
+namespace {
+// Run 3: the realized enemy `id` (its entity's vtable in the image before any read) and its transform; false when not here.
+bool RealizedXf(std::uint32_t id, WorldTransform& xf, double (&pos)[3]) noexcept {
+    std::vector<LocalEnemy> all;
+    WalkEnemies(all);
+    for (const LocalEnemy& e : all) {
+        if (e.id != id) continue;
+        ActorNow a;
+        if (!ReadActor(e.actor, e.id, a) || !a.realized || a.dead || !a.entity || !mem::InImage(mem::Q(a.entity))) continue;
+        if (!ReadXf(a.entity, xf)) continue;
+        pos[0] = xf.pos.x, pos[1] = xf.pos.y, pos[2] = xf.pos.z;
+        return true;
+    }
+    return false;
+}
+}  // namespace
+
+bool PlaceLocalOffLine(std::uint32_t id, double dist, double deg, int mode, char* why, std::size_t cap) noexcept {
+    if (why && cap) why[0] = 0;
+    if (!automation::Enabled()) return std::snprintf(why, cap, "hidden runs only"), false;
+    if (!id || !(dist > 0.5) || dist > 1000.0) return std::snprintf(why, cap, "bad id or distance"), false;
+    WorldTransform mx{};
+    double mp[3] = {};
+    if (!RealizedXf(id, mx, mp)) return std::snprintf(why, cap, "id %05X not realized here", id), false;
+    double fx = mx.rot.m[1][0], fy = mx.rot.m[1][1];
+    const double fl = std::sqrt(fx * fx + fy * fy);
+    if (!(fl > 1e-6)) return std::snprintf(why, cap, "id %05X has no facing", id), false;
+    fx /= fl, fy /= fl;
+    double dx = fx, dy = fy;
+    if (mode == 0) {
+        // its line to the partner body (validated: the body's vtable in the image), turned `deg` toward its facing
+        WorldTransform bx{};
+        const std::uintptr_t body = reinterpret_cast<std::uintptr_t>(g_body);
+        if (!body || !mem::InImage(mem::Q(body)) || !ReadXf(body, bx)) return std::snprintf(why, cap, "no partner body"), false;
+        double ux = bx.pos.x - mp[0], uy = bx.pos.y - mp[1];
+        const double ul = std::sqrt(ux * ux + uy * uy);
+        if (ul < 0.5) return std::snprintf(why, cap, "the partner stands on it"), false;
+        ux /= ul, uy /= ul;
+        const double r = deg * 3.14159265358979323846 / 180.0, c = std::cos(r), s = std::sin(r);
+        const double ax = ux * c - uy * s, ay = ux * s + uy * c;  // +deg
+        const double bx2 = ux * c + uy * s, by2 = -ux * s + uy * c;  // -deg
+        if (ax * fx + ay * fy >= bx2 * fx + by2 * fy) dx = ax, dy = ay;
+        else dx = bx2, dy = by2;
+    }
+    char tp[160] = {};
+    const bool ok = game::TeleportLocalPlayerFacing(mp[0] + dx * dist, mp[1] + dy * dist, game::kSnapRayCentreZ, -dx, -dy, game::TeleportMode::snap_to_ground, tp,
+                                                    sizeof(tp));
+    std::snprintf(why, cap, "%s", tp);
+    return ok;
+}
+
 bool Look(const double (&v)[3], char* msg, std::size_t cap) noexcept {
     if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden runs only"), false;
+    if (v[0] == -11) {
+        // run 3 (round 27, TB): our Sam v[1] m from the last enemy_look's enemy, v[2] deg (default 25) off its line to her, on its
+        // facing's side, facing it (both players in its view, apart)
+        const std::uint32_t id = g_look_id;
+        if (!id) return std::snprintf(msg, cap, "no enemy_look yet"), false;
+        const double d = v[1] > 0 ? v[1] : 15.0, deg = v[2] > 0 && v[2] < 90 ? v[2] : 25.0;
+        char why[160] = {};
+        WorldTransform mx{};
+        double mp[3] = {};
+        const bool have = RealizedXf(id, mx, mp);
+        const bool ok = PlaceLocalOffLine(id, d, deg, 0, why, sizeof(why));
+        Log("[enemy] look id=%05X dist %.1f m (%.0f deg off its line to her, on its facing's side; it stands at %.2f, %.2f, %.2f): %s", id, d, deg,
+            have ? mp[0] : 0.0, have ? mp[1] : 0.0, have ? mp[2] : 0.0, why);
+        return std::snprintf(msg, cap, "id %05X: %s", id, why), ok;
+    }
     game::Entity* le = nullptr;
     WorldTransform sx{};
     if (!game::TryGetLocalPlayer(&le) || !le || !game::TryGetTransform(le, &sx)) return std::snprintf(msg, cap, "no local Sam"), false;
@@ -4498,7 +4572,8 @@ bool Look(const double (&v)[3], char* msg, std::size_t cap) noexcept {
     const bool newest_hit = v[0] == -5;  // P2: the newest HIT's enemy (down and dead ones allowed)
     const bool picked = v[0] == -6;      // P2-0: the probe's pick
     const bool owned = v[0] == -7;       // P1b: the nearest enemy the guest owns (the guest: hers; the host: its copy)
-    const bool front = v[0] == -8;       // round 20 M2: in front of the newest enemy_look's enemy, along its facing, facing it
+    const bool front40 = v[0] == -10;    // round 27 M1 (arm D): as -8, but 40 deg off its facing (her and our Sam both in view)
+    const bool front = v[0] == -8 || front40;  // round 20 M2: in front of the newest enemy_look's enemy, along its facing, facing it
     const bool outcome = v[0] == -9;     // P1c: the newest outcome set (enemy_camp 3) or carried here
     std::uint32_t owned_id = 0;
     if (owned) {
@@ -4571,7 +4646,7 @@ bool Look(const double (&v)[3], char* msg, std::size_t cap) noexcept {
         }
         if (score < best) best = score, best_id = e.id, bent = a.entity, std::memcpy(bpos, a.pos, sizeof(bpos)), fxf = a.xf, have_fxf = true;
     }
-    how = front ? (v[1] < 0 ? "behind it, along its facing" : "in front of it, along its facing") : owned ? (g_role == 1 ? "the nearest the guest owns (its copy here)" : "the nearest she owns") : newest_hit ? (g_role == 1 ? "the newest applied HIT's enemy" : "the newest sent HIT's enemy") : side ? "beside the newest replayed shooter's line to the partner" : behind ? "behind the newest replayed shooter, toward the partner" : v[0] == -2 ? (g_role == 1 ? "the newest sent shooter" : "the newest replayed shooter") : want ? "by id" : faced ? "the one the partner faces" : g_role == 2 ? "the nearest frozen mirror" : "the nearest realized";
+    how = front40 ? "in front of it, 40 deg off its facing" : front ? (v[1] < 0 ? "behind it, along its facing" : "in front of it, along its facing") : owned ? (g_role == 1 ? "the nearest the guest owns (its copy here)" : "the nearest she owns") : newest_hit ? (g_role == 1 ? "the newest applied HIT's enemy" : "the newest sent HIT's enemy") : side ? "beside the newest replayed shooter's line to the partner" : behind ? "behind the newest replayed shooter, toward the partner" : v[0] == -2 ? (g_role == 1 ? "the newest sent shooter" : "the newest replayed shooter") : want ? "by id" : faced ? "the one the partner faces" : g_role == 2 ? "the nearest frozen mirror" : "the nearest realized";
     if (!best_id && faced) {
         // none within 25 deg of her heading: the one nearest the partner body
         for (const LocalEnemy& e : all) {
@@ -4591,6 +4666,11 @@ bool Look(const double (&v)[3], char* msg, std::size_t cap) noexcept {
     if (front && have_fxf) {
         const double fl = std::sqrt(static_cast<double>(fxf.rot.m[1][0]) * fxf.rot.m[1][0] + static_cast<double>(fxf.rot.m[1][1]) * fxf.rot.m[1][1]);
         if (fl > 1e-6) dx = fxf.rot.m[1][0] / fl, dy = fxf.rot.m[1][1] / fl;
+        if (front40) {
+            const double c = std::cos(40.0 * 3.14159265358979323846 / 180.0), s = std::sin(40.0 * 3.14159265358979323846 / 180.0);
+            const double rx = dx * c - dy * s, ry = dx * s + dy * c;
+            dx = rx, dy = ry;
+        }
     }
     // round 23 E: in front mode a negative distance places our Sam that far behind it (along its facing), facing its back
     const double d = v[1] > 0 ? v[1] : front && v[1] < 0 ? v[1] : 12.0;
@@ -4672,6 +4752,12 @@ bool CampOwnedHere(std::uintptr_t actor) {
     return false;
 }
 }  // namespace
+bool CampWalkNow() noexcept {
+    if (!g_cp_ok) return false;
+    g_cp_next = 0;  // (its own 500 ms limit is for the 2 Hz walk)
+    CampWalk(g_tnow);
+    return true;
+}
 // round 25: the camp of <id> here, its CP actor and its other members (ecombat's D3-D5 and levers)
 bool CampOfId(std::uint32_t id, CampOf* out) noexcept {
     if (!out) return false;
@@ -4918,5 +5004,9 @@ bool ShotTest(const double (&v)[3], char* msg, std::size_t cap) noexcept {
     if (!best) return std::snprintf(msg, cap, "no live mirror"), false;
     return shots::EnemyShotTest(best->entity, best->id, v[1] != 0, msg, cap);
 }
+
+bool PeerDownNow() noexcept { return g_peer_down != 0; }
+bool OurDownNow() noexcept { return g_our_down != 0; }
+bool CutsceneNow() noexcept { return InCutscene(); }
 
 }  // namespace st::esync

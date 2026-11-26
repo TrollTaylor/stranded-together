@@ -11,7 +11,7 @@
 #   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios fragile-logo-solo -SeedSaves complete-100 -Id <id>
 # covers: logo textures hood self-view
 role solo
-timeout 330
+timeout 360
 ini partner_body=real
 ini pose_hook=1
 ini my_character=fragile_suit
@@ -34,6 +34,15 @@ wait 2500
 action gear 39 2
 action tex 0
 screenshot 01-hood-gold-logo
+# round 27: the side of the raised hood (the second shield, now the hex badge), then the back; then the front again
+pad none 650 rx=32767
+wait 1500
+screenshot 01s-hood-gold-side
+pad none 650 rx=32767
+wait 1500
+screenshot 01r-hood-gold-back
+pad none 1300 rx=-32767
+wait 1500
 # the gold control: the logo off (BRIDGES, the game's own gold maps), then on again
 action gear 39 0
 waitnew 10 \[logo\] exo-self carrier [0-9A-Fa-fx]+: BRIDGES on its hood again
@@ -57,6 +66,11 @@ action gear 39 1
 waitnew 15 \[logo\] exo-self carrier [0-9A-Fa-fx]+: the Fragile Express logo on its hood
 wait 1500
 screenshot 04-hood-pink-logo-again
+pad none 650 rx=32767
+wait 1500
+screenshot 04s-hood-pink-side
+pad none 650 rx=-32767
+wait 1000
 # the hood down
 action gear 32 0 0
 waitnew 30 \[exo-self\] carrier [0-9A-Fa-fx]+ hood: none

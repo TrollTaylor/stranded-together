@@ -430,6 +430,12 @@ bool Restrain(const double (&)[3], char* msg, std::size_t cap) noexcept { return
 bool M2Probe(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy m2 (stub)"), true; }
 bool TargetProbe(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy target (stub)"), true; }
 }  // namespace st::ecombat
+namespace st::l1probe {
+bool Command(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy l1 (stub)"), true; }
+}  // namespace st::l1probe
+namespace st::etarget {
+bool Command(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy tgt (stub)"), true; }
+}  // namespace st::etarget
 namespace st::shots {
 bool Command(int, const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "shots (stub)"), true; }
 bool Test(double, int, int, char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "shots test (stub)"), true; }

@@ -38,6 +38,8 @@
 #include "room_outfit_rules.hpp"
 #include "face_sync.hpp"
 #include "hood_fold.hpp"
+#include "enemy_l1_probe.hpp"
+#include "enemy_target.hpp"
 #include "wardrobe.hpp"
 
 namespace st::realbody {
@@ -3551,6 +3553,10 @@ PollResult PollSlot(BodySlot& slot, double now_ms, char* why, std::size_t cap) {
         if (holo::SpawnAlive(slot.spawn)) return PollResult::live;
         Set(why, cap, "the real body entity %p was destroyed by the game", slot.spawn.e);
         Log("[%s] %s", slot.tag, why);
+        // round 27 M1: only the partner slot's body can carry her probe stimulus (review S9: never the self view's). The entity
+        // is already gone here: the release is after the free (enemy_l1_probe.hpp's residual)
+        if (&slot == &g_p) l1probe::ReleaseBeforeFree("a real body destroyed by the game");
+        if (&slot == &g_p) etarget::ReleaseBeforeFree("a real body destroyed by the game");  // round 27 M2
         Unpublish(slot);
         slot.spawn.e = nullptr;
         Teardown(slot, "entity gone");

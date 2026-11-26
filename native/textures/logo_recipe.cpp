@@ -48,6 +48,28 @@ void CopyRect(Image* img, const Rect& r, int dy) {
     }
 }
 
+// Copies the rectangle r from (dx, dy) away (all four channels) and cross-fades a ring of `fade` pixels around it from the
+// copy (next to r) to the picture (at the ring's outer edge), so stains in the cloth run on instead of ending at a straight
+// edge. The source (with its ring) is read whole before anything is written: it may overlap the ring. The constants keep
+// both inside the picture.
+void CopyRectFaded(Image* img, const Rect& r, int dx, int dy, std::uint32_t fade) {
+    if (!img) return;
+    const std::uint32_t x0 = r.x0 - fade, y0 = r.y0 - fade, w = r.x1 - r.x0 + 2 * fade, h = r.y1 - r.y0 + 2 * fade;
+    const std::uint32_t sx = static_cast<std::uint32_t>(static_cast<int>(x0) + dx), sy = static_cast<std::uint32_t>(static_cast<int>(y0) + dy);
+    std::vector<std::uint8_t> src(static_cast<std::size_t>(w) * h * 4u);
+    for (std::uint32_t j = 0; j < h; ++j) std::memcpy(&src[static_cast<std::size_t>(j) * w * 4u], img->At(sx, sy + j), w * 4u);
+    for (std::uint32_t j = 0; j < h; ++j)
+        for (std::uint32_t i = 0; i < w; ++i) {
+            std::uint32_t d = i < w - 1 - i ? i : w - 1 - i;   // the distance from the ring's outer edge
+            d = j < d ? j : d;
+            d = h - 1 - j < d ? h - 1 - j : d;
+            const std::uint32_t a = d >= fade ? 256u : (d + 1) * 256u / (fade + 1);   // the copy's weight, of 256
+            const std::uint8_t* s = &src[(static_cast<std::size_t>(j) * w + i) * 4u];
+            std::uint8_t* p = img->At(x0 + i, y0 + j);
+            for (int c = 0; c < 4; ++c) p[c] = static_cast<std::uint8_t>((s[c] * a + p[c] * (256u - a) + 128u) >> 8);
+        }
+}
+
 // The mean of each channel of `img` over the pixels of `box` where `letters` R < 40 (the old print's core). False: none.
 bool MeanUnder(const Image& img, const Image& letters, const Rect& box, std::uint32_t mean[4]) {
     std::uint64_t sum[4] = {}, n = 0;
@@ -80,6 +102,38 @@ bool Square(const Image* img, std::uint32_t side) {
     return !img || (img->w == side && img->h == side && img->rgba.size() == static_cast<std::size_t>(side) * side * 4u);
 }
 
+// The height of the decal's rectangle `r` at width w (its aspect, rounded).
+std::uint32_t HeightAt(const Rect& r, std::uint32_t w) {
+    const std::uint32_t rw = r.x1 - r.x0, rh = r.y1 - r.y0;
+    return (w * rh + rw / 2) / rw;
+}
+
+// The decal's rectangle `r` (R channel) at w x h, upright. False: the decal is not 1024 or has nothing there (`missing`).
+bool FromDecal(const Image& decal, const Rect& r, std::uint32_t w, std::uint32_t h, Coverage* out, std::string* why, const char* missing) {
+    if (!Square(&decal, kDecalSide)) return Fail(why, "the decal picture is not 1024 x 1024");
+    Coverage src;
+    src.w = r.x1 - r.x0;
+    src.h = r.y1 - r.y0;
+    src.a.resize(static_cast<std::size_t>(src.w) * src.h);
+    for (std::uint32_t y = 0; y < src.h; ++y)
+        for (std::uint32_t x = 0; x < src.w; ++x) src.a[static_cast<std::size_t>(y) * src.w + x] = decal.At(r.x0 + x, r.y0 + y)[0];
+    *out = AreaResize(src, w, h);
+    std::uint32_t peak = 0;
+    for (std::uint8_t v : out->a) peak = v > peak ? v : peak;
+    if (peak < 128) return Fail(why, missing);
+    return true;
+}
+
+// The palette mask halved (R: 2 x 2 means) into `letters` (1024) over `box`, a box of the 1024 map.
+void HalveInto(Image* letters, const Image& palette_mask, const Rect& box) {
+    for (std::uint32_t y = box.y0; y < box.y1; ++y)
+        for (std::uint32_t x = box.x0; x < box.x1; ++x) {
+            const std::uint32_t s = palette_mask.At(2 * x, 2 * y)[0] + palette_mask.At(2 * x + 1, 2 * y)[0] + palette_mask.At(2 * x, 2 * y + 1)[0] +
+                                    palette_mask.At(2 * x + 1, 2 * y + 1)[0];
+            letters->At(x, y)[0] = static_cast<std::uint8_t>((s + 2) / 4);
+        }
+}
+
 }  // namespace
 
 Coverage AreaResize(const Coverage& src, std::uint32_t w, std::uint32_t h) {
@@ -107,10 +161,9 @@ Coverage AreaResize(const Coverage& src, std::uint32_t w, std::uint32_t h) {
     return out;
 }
 
-std::uint32_t WordHeight(std::uint32_t w) {
-    const std::uint32_t ww = kWord.x1 - kWord.x0, wh = kWord.y1 - kWord.y0;
-    return (w * wh + ww / 2) / ww;
-}
+std::uint32_t WordHeight(std::uint32_t w) { return HeightAt(kWord, w); }
+
+std::uint32_t BadgeHeight(std::uint32_t w) { return HeightAt(kBadge, w); }
 
 std::uint32_t CapSplit() {
     const std::uint32_t ww = kWord.x1 - kWord.x0;
@@ -118,30 +171,26 @@ std::uint32_t CapSplit() {
 }
 
 bool Wordmark(const Image& decal, std::uint32_t w, std::uint32_t h, Coverage* out, std::string* why) {
-    if (!Square(&decal, kDecalSide)) return Fail(why, "the decal picture is not 1024 x 1024");
-    Coverage src;
-    src.w = kWord.x1 - kWord.x0;
-    src.h = kWord.y1 - kWord.y0;
-    src.a.resize(static_cast<std::size_t>(src.w) * src.h);
-    for (std::uint32_t y = 0; y < src.h; ++y)
-        for (std::uint32_t x = 0; x < src.w; ++x) src.a[static_cast<std::size_t>(y) * src.w + x] = decal.At(kWord.x0 + x, kWord.y0 + y)[0];
-    *out = AreaResize(src, w, h);
-    std::uint32_t peak = 0;
-    for (std::uint8_t v : out->a) peak = v > peak ? v : peak;
-    if (peak < 128) return Fail(why, "the decal picture has no wordmark where Fragile's decal has it");
-    return true;
+    return FromDecal(decal, kWord, w, h, out, why, "the decal picture has no wordmark where Fragile's decal has it");
+}
+
+bool Badge(const Image& decal, std::uint32_t w, std::uint32_t h, Coverage* out, std::string* why) {
+    return FromDecal(decal, kBadge, w, h, out, why, "the decal picture has no badge where Fragile's decal has it");
 }
 
 bool StampHood(Image* colour, Image* mask, Image* normal, const Image& palette_mask, const Image& decal, std::string* why) {
     if (!colour || !mask || !Square(colour, kHoodSide) || !Square(mask, kHoodSide) || !Square(normal, kHoodSide) ||
         !Square(&palette_mask, kHoodSide))
         return Fail(why, "a hood picture is not 2048 x 2048");
-    std::uint32_t ink[4] = {}, ink_mask[4] = {};
+    std::uint32_t ink[4] = {}, ink_mask[4] = {}, shield[4] = {}, shield_mask[4] = {};
     if (!MeanUnder(*colour, palette_mask, kHoodLetters, ink) || !MeanUnder(*mask, palette_mask, kHoodLetters, ink_mask))
         return Fail(why, "no BRIDGES print where the hood has it (its mask alpha is not 0 there)");
-    const std::uint32_t h = WordHeight(kHoodWordW);
-    Coverage cov;
-    if (!Wordmark(decal, kHoodWordW, h, &cov, why)) return false;
+    if (!MeanUnder(*colour, palette_mask, kShieldPrint, shield) || !MeanUnder(*mask, palette_mask, kShieldPrint, shield_mask))
+        return Fail(why, "no BRIDGES shield where the hood has it (its mask alpha is not 0 there)");
+    const std::uint32_t h = WordHeight(kHoodWordW), bh = BadgeHeight(kShieldBadgeW);
+    Coverage cov, badge;
+    if (!Wordmark(decal, kHoodWordW, h, &cov, why) || !Badge(decal, kShieldBadgeW, bh, &badge, why)) return false;
+    // the band
     CopyRect(colour, kHoodErase, kHoodFromDy);
     CopyRect(mask, kHoodErase, kHoodFromDy);
     CopyRect(normal, kHoodErase, kHoodFromDy);
@@ -151,28 +200,34 @@ bool StampHood(Image* colour, Image* mask, Image* normal, const Image& palette_m
     const std::uint32_t m[4] = {0, ink_mask[1], 0, 0};   // mask alpha 0 (untinted, like the old print), the old print's roughness
     const bool rg[4] = {true, true, false, false};
     Lay(mask, cov, 0, cov.w, x, y, m, rg);
+    // the side shield (the normal map left alone)
+    CopyRectFaded(colour, kShieldErase, kShieldFromDx, kShieldFromDy, kShieldFade);
+    CopyRectFaded(mask, kShieldErase, kShieldFromDx, kShieldFromDy, kShieldFade);
+    const std::uint32_t bx = kShieldBadgeCx - kShieldBadgeW / 2, by = kShieldBadgeCy - bh / 2;
+    Lay(colour, badge, 0, badge.w, bx, by, shield, rgb);
+    const std::uint32_t sm[4] = {0, shield_mask[1], 0, 0};
+    Lay(mask, badge, 0, badge.w, bx, by, sm, rg);
     return true;
 }
 
 bool StampHoodReflectance(Image* refl, const Image& palette_mask, const Image& decal, std::string* why) {
     if (!refl || !Square(refl, kReflSide) || !Square(&palette_mask, kHoodSide)) return Fail(why, "a hood reflectance picture is not 1024 x 1024 (its mask 2048)");
-    Image letters;   // the palette mask halved (R: 2 x 2 means) over the letters' box; 255 elsewhere
+    Image letters;   // the palette mask halved (R: 2 x 2 means) over the letters' and the shield's boxes; 255 elsewhere
     letters.Resize(kReflSide, kReflSide);
     std::memset(letters.rgba.data(), 255, letters.rgba.size());
-    for (std::uint32_t y = kReflLetters.y0; y < kReflLetters.y1; ++y)
-        for (std::uint32_t x = kReflLetters.x0; x < kReflLetters.x1; ++x) {
-            const std::uint32_t s = palette_mask.At(2 * x, 2 * y)[0] + palette_mask.At(2 * x + 1, 2 * y)[0] + palette_mask.At(2 * x, 2 * y + 1)[0] +
-                                    palette_mask.At(2 * x + 1, 2 * y + 1)[0];
-            letters.At(x, y)[0] = static_cast<std::uint8_t>((s + 2) / 4);
-        }
-    std::uint32_t ink[4] = {};
+    HalveInto(&letters, palette_mask, kReflLetters);
+    HalveInto(&letters, palette_mask, kReflShieldPrint);
+    std::uint32_t ink[4] = {}, shield[4] = {};
     if (!MeanUnder(*refl, letters, kReflLetters, ink)) return Fail(why, "no BRIDGES print where the hood has it (its mask alpha is not 0 there)");
-    const std::uint32_t h = WordHeight(kReflWordW);
-    Coverage cov;
-    if (!Wordmark(decal, kReflWordW, h, &cov, why)) return false;
+    if (!MeanUnder(*refl, letters, kReflShieldPrint, shield)) return Fail(why, "no BRIDGES shield where the hood has it (its mask alpha is not 0 there)");
+    const std::uint32_t h = WordHeight(kReflWordW), bh = BadgeHeight(kReflShieldBadgeW);
+    Coverage cov, badge;
+    if (!Wordmark(decal, kReflWordW, h, &cov, why) || !Badge(decal, kReflShieldBadgeW, bh, &badge, why)) return false;
     CopyRect(refl, kReflErase, kReflFromDy);
     const bool rgb[4] = {true, true, true, false};
     Lay(refl, cov, 0, cov.w, kReflWordCx - kReflWordW / 2, kReflWordCy - h / 2, ink, rgb);
+    CopyRectFaded(refl, kReflShieldErase, kReflShieldFromDx, kReflShieldFromDy, kReflShieldFade);
+    Lay(refl, badge, 0, badge.w, kReflShieldBadgeCx - kReflShieldBadgeW / 2, kReflShieldBadgeCy - bh / 2, shield, rgb);
     return true;
 }
 

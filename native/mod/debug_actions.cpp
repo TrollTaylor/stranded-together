@@ -12,6 +12,8 @@
 #include "dev_tools.hpp"
 #include "enemy_census.hpp"
 #include "enemy_combat.hpp"
+#include "enemy_l1_probe.hpp"
+#include "enemy_target.hpp"
 #include "enemy_sync.hpp"
 #include "shot_sync.hpp"
 #include "log.hpp"
@@ -205,6 +207,8 @@ bool DoEnemyOwn(const Request& r, char* msg, std::size_t cap) { return esync::Ow
 bool DoEnemyCamp(const Request& r, char* msg, std::size_t cap) { return esync::Camp(r.v, msg, cap); }
 bool DoEnemyRestrain(const Request& r, char* msg, std::size_t cap) { return ecombat::Restrain(r.v, msg, cap); }
 bool DoEnemyM2(const Request& r, char* msg, std::size_t cap) { return ecombat::M2Probe(r.v, msg, cap); }
+bool DoEnemyL1(const Request& r, char* msg, std::size_t cap) { return l1probe::Command(r.v, msg, cap); }
+bool DoEnemyTgt(const Request& r, char* msg, std::size_t cap) { return etarget::Command(r.v, msg, cap); }
 bool DoAudioProbe(const Request& r, char* msg, std::size_t cap) { return game::AudioProbeCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoSelfVoice(const Request& r, char* msg, std::size_t cap) { return game::SelfVoiceCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoVoiceSync(const Request& r, char* msg, std::size_t cap) { return game::VoiceSyncCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
@@ -384,7 +388,7 @@ constexpr Row kRows[] = {
     {{Action::shots_echo, Tab::tools, "Shots echo", "Solo: our own shots replayed beside us: 0/1, m to the right (default 2.5).", false}, &DoShotsEcho},
     {{Action::enemy_sync, Tab::tools, "Enemy sync", "Enemy mirrors (enemy_sync): 0 status, 1 on, 2 off (every mirror released), 3 the mirror table, 4 the hits' outcome table; ownership (P1b: only with enemy_owner=1 on both games, off by default and not offered to players yet): 5 its table, 8 0/1 off (everything back to the host) / on; hidden runs: 6 0/1 far placement variant, 7 0/3 the teleport cadence, 9 <1 host|2 guest> <0 clear|1 down|2 limbo> a player down faked (round 23 C).", false},
      &DoEnemySync},
-    {{Action::enemy_look, Tab::tools, "Enemy look", "Hidden runs: our Sam m from an enemy, facing it: <id | 0 nearest (the guest: a frozen mirror) | -1 the one the partner faces | -2 the newest replayed (the host: sent) shooter | -3 behind it | -4 beside its line | -5 the newest HIT's enemy | -6 the probe's pick | -7 the nearest the guest owns | -8 in front of the newest one, along its facing | -9 the newest outcome set (enemy_camp 3) or carried here (P1c)> <m> [aim height m, default 1.2]; a steered aim (shots 4 <deg> 1) then follows it.", false},
+    {{Action::enemy_look, Tab::tools, "Enemy look", "Hidden runs: our Sam m from an enemy, facing it: <id | 0 nearest (the guest: a frozen mirror) | -1 the one the partner faces | -2 the newest replayed (the host: sent) shooter | -3 behind it | -4 beside its line | -5 the newest HIT's enemy | -6 the probe's pick | -7 the nearest the guest owns | -8 in front of the newest one, along its facing | -10 the same, 40 deg off its facing | -11 m off its line to the partner body: <-11> <m, default 15> [deg, default 25] (run 3) | -9 the newest outcome set (enemy_camp 3) or carried here (P1c)> <m> [aim height m, default 1.2]; a steered aim (shots 4 <deg> 1) then follows it.", false},
      &DoEnemyLook},
     {{Action::enemy_shot_test, Tab::tools, "Enemy shot test", "Hidden runs, the guest: 3 enemy replays level at our Sam's chest from 2 m, from a mirror's side (its hand's line and 50 deg either side): <id | 0 the last looked-at, else nearest> [1 nohurt].", false},
      &DoEnemyShotTest},
@@ -412,6 +416,10 @@ constexpr Row kRows[] = {
      &DoEnemyRestrain},
     {{Action::enemy_m2, Tab::tools, "Enemy m2", "Hidden runs with enemy_m2_probes=1 (round 23 E, the M2 probes; '[probe] P<n> ...' lines; in a real game her single takes get P2 lever a by itself, round 26): 0 checks; 1 <id | 0> <s> a copy's knowledge (PlayerVisual of our Sam: fresh / stale / none); 2 <id | 0> <lever 0 a | 1 b | 2 c | 3 d'> the guest's push timing after a hand-over; 3 the perception reads; 4 <id | 0> <s> the raycast from a copy's eye to our Sam; 5 <id | 0> <s> the host's notice timing; 6 [id | 0] [m] a seated MULE's parent chain and ride fields.", false},
      &DoEnemyM2},
+    {{Action::enemy_l1, Tab::tools, "Enemy l1", "Hidden runs only (round 27 M1, the L1 probe; '[probe] L1 ...' lines): 0 checks + reads; 1 <0 | 1> her stimulus off / L1; 2 <vis x100> her +0xA4 forced; 3 <id> <s> the watch; 4 <arm 1 A | 2 B | 3 C | 4 D | 7 G> <id> an arm starts; 5 <0 standing | 1 crouched> her own stimulus (the guest); 6 <id> [s] re-calm its camp; 7 <id> [attack] the melee query at her chest; 8 the arm ends; 9 stop.", false},
+     &DoEnemyL1},
+    {{Action::enemy_tgt, Tab::tools, "Enemy tgt", "Round 27 M2/M3 ('[enemy] pstim / tgt ...' lines; 0 any session, the rest hidden runs only): 0 status; 1 <0 | 1> the partner stimulus off / back to the key; 2 <vis x100> her +0xA4 forced (-1 back to SPV1); 3 <id> [s] the watch; 4 <arm 1..9> <id> a labelled arm; 5 <id> <0 | 1 her | 2 Sam> a forced pick; 6 <bits | -1> the redirect bits for this run (32 the shoot actor); 7 <id> [arm code] the geometry and shoot lines (its validity by that arm's rule); 8 the arm ends; 9 <n> create / remove cycles; 10 the crash-reporter guard test (a guarded fault); 11 <id> <arm 1..9> the arm at geometry: op 4 once her geometry is valid for the arm (or 2.5 s), our Sam placed first for TF0 / TF1 (170 m, 40 deg off her line) and CS (5 m along its facing).", false},
+     &DoEnemyTgt},
     {{Action::dev_marker, Tab::dev, "Dev marker", "Map markers: 0 log them, 1 <m east> <m north> add one there through the game's own add (hidden runs only).", false},
      &DoDev<dev::Op::marker_test>},
     {{Action::dev_give, Tab::dev, "Dev give",

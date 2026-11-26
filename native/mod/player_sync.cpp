@@ -32,6 +32,8 @@
 #include "steam_owner.hpp"
 #include "partner_tackle.hpp"
 #include "enemy_combat.hpp"
+#include "enemy_l1_probe.hpp"
+#include "enemy_target.hpp"
 #include "enemy_sync.hpp"
 #include "shot_sync.hpp"
 #include "ride_together.hpp"
@@ -366,6 +368,8 @@ bool OurEntity(Entity* e) {
 }
 
 void RemoveBody(const char* why) {
+    l1probe::ReleaseBeforeFree(why);  // round 27 M1 (C1): before anything of her body can be freed
+    etarget::ReleaseBeforeFree(why);  // round 27 M2: the partner stimulus too
     const bool had = BodyPresent() || g_voice.e;
     holo::Remove(why);
     if (RealOurs()) realbody::Remove(why);
@@ -899,6 +903,8 @@ void TeardownTriggers(double now) {
             g_next_spawn_ms = now + 2000;
         }
         if (s->e && !SlotAlive(*s)) {
+            if (s == &g_slot) l1probe::ReleaseBeforeFree("partner entity no longer valid");  // round 27 M1 (C1)
+            if (s == &g_slot) etarget::ReleaseBeforeFree("partner entity no longer valid");  // round 27 M2
             SlotForget(*s, "entity no longer valid (destroyed by the game?)");
             if (s == &g_slot) g_remote_state = "none";
             g_next_spawn_ms = now + 2000;
@@ -1545,6 +1551,8 @@ void Tick() noexcept {
         cin.net = ein.net;
         cin.role = ein.role;
         ecombat::Tick(cin, now);
+        l1probe::Tick(cin, now);  // round 27 M1 (enemy_l1_probe.hpp): the L1 probe, hidden runs; its release's second step
+        etarget::Tick(cin, now);  // round 27 M2 / M3 (enemy_target.hpp): the partner stimulus, SPV1, the target pick (keys default off)
     }
 
     // Player collision (partner_collision.hpp): only the partner slot's real body, never the

@@ -190,9 +190,14 @@ std::atomic<unsigned> g_captured{0}, g_cap_full{0}, g_others{0}, g_det_faults{0}
 std::atomic<unsigned> g_diag_enq{0}, g_diag_ours{0};
 // the probe's owner table
 std::atomic<bool> g_own_armed{false};
+constexpr unsigned kOwnRing = 16;
+struct OwnRound {
+    float o[3], v[3];  // the record's origin (+0x60) and velocity (+0x70)
+};
 struct OwnCount {
     std::uintptr_t e;
     unsigned n;
+    OwnRound ring[kOwnRing];  // round n (1-based) at ring[(n - 1) % kOwnRing] (the L1 probe's real round lines)
 };
 OwnCount g_own[16];
 
@@ -548,19 +553,21 @@ void ReadCurrentWeapon(std::uintptr_t p, std::uint8_t* weapon, std::uint8_t* mag
 }
 
 // ---------------------------------------------------------------- the Enqueue detour (any thread)
-void CountOwner(std::uintptr_t owner) noexcept {
+void CountOwner(std::uintptr_t owner, std::uintptr_t rec) noexcept {
+    OwnRound r{};
+    std::uint8_t raw[0x20] = {};
+    if (mem::Read(rec + 0x60, raw, sizeof(raw))) std::memcpy(r.o, raw, 12), std::memcpy(r.v, raw + 0x10, 12);
     AcquireSRWLockExclusive(&g_cap_lock);
-    int free_i = -1;
-    bool done = false;
+    int at = -1, free_i = -1;
     for (int i = 0; i < 16; ++i) {
         if (g_own[i].e == owner) {
-            ++g_own[i].n;
-            done = true;
+            at = i;
             break;
         }
         if (!g_own[i].e && free_i < 0) free_i = i;
     }
-    if (!done && free_i >= 0) g_own[free_i] = OwnCount{owner, 1};
+    if (at < 0 && free_i >= 0) at = free_i, g_own[at].e = owner, g_own[at].n = 0;
+    if (at >= 0) g_own[at].ring[g_own[at].n++ % kOwnRing] = r;
     ReleaseSRWLockExclusive(&g_cap_lock);
 }
 
@@ -609,7 +616,7 @@ int H_Enqueue(std::uintptr_t sys, std::uintptr_t rec) {
         }
     }
     const std::uintptr_t sam = g_sam.load(std::memory_order_relaxed);
-    if (g_own_armed.load(std::memory_order_relaxed) && owner) CountOwner(owner);
+    if (g_own_armed.load(std::memory_order_relaxed) && owner) CountOwner(owner, rec);
     // ours: the record's owner is our Sam (the fire path writes [weapon instance + 0x300] + 0x20), or an object whose +0x300 is
     // our Sam (a weapon instance), or a weapon entity whose instance's (+0x338) +0x300 is
     int how = 0;
@@ -2749,7 +2756,7 @@ bool EnemyShotTest(std::uintptr_t mirror, std::uint32_t id, bool nohurt, char* m
 
 void ArmOwnerCounts(bool on) noexcept {
     AcquireSRWLockExclusive(&g_cap_lock);
-    for (auto& o : g_own) o = OwnCount{0, 0};
+    for (auto& o : g_own) o = OwnCount{};
     ReleaseSRWLockExclusive(&g_cap_lock);
     g_own_armed.store(on);
 }
@@ -2761,6 +2768,20 @@ unsigned ShotsBy(std::uintptr_t entity) noexcept {
         if (o.e == entity) n = o.n;
     ReleaseSRWLockExclusive(&g_cap_lock);
     return n;
+}
+
+bool RoundOf(std::uintptr_t entity, unsigned n, double (&origin)[3], double (&dir)[3]) noexcept {
+    bool ok = false;
+    OwnRound r{};
+    AcquireSRWLockExclusive(&g_cap_lock);
+    for (const auto& o : g_own)
+        if (o.e == entity && n >= 1 && n <= o.n && o.n - n < kOwnRing) r = o.ring[(n - 1) % kOwnRing], ok = true;
+    ReleaseSRWLockExclusive(&g_cap_lock);
+    if (!ok) return false;
+    const double sp = std::sqrt(static_cast<double>(r.v[0]) * r.v[0] + static_cast<double>(r.v[1]) * r.v[1] + static_cast<double>(r.v[2]) * r.v[2]);
+    if (!(sp > 0.1) || !std::isfinite(sp)) return false;
+    for (int k = 0; k < 3; ++k) origin[k] = r.o[k], dir[k] = r.v[k] / sp;
+    return std::isfinite(origin[0]) && std::isfinite(origin[1]) && std::isfinite(origin[2]);
 }
 
 }  // namespace st::shots

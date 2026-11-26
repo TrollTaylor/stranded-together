@@ -1,0 +1,296 @@
+// Round 27 M3 (native/mod/enemy_target_rules.hpp): the target pick, the bucket plan, the forced pick, the range-check redirect's
+// compare and the key clamp. No game.
+#include <cstdio>
+#include <cstdint>
+#include <string_view>
+
+#include "config_values.hpp"
+#include "enemy_target_rules.hpp"
+
+using namespace st;
+using namespace st::erules;
+
+namespace {
+int g_checks = 0, g_fail = 0;
+#define CHECK(c)                                                     \
+    do {                                                             \
+        ++g_checks;                                                  \
+        if (!(c)) {                                                  \
+            std::printf("FAIL %s:%d: %s\n", __FILE__, __LINE__, #c); \
+            ++g_fail;                                                \
+        }                                                            \
+    } while (0)
+
+constexpr std::uint64_t t0 = 10000;
+const PickCfg kCfg{};
+
+PickIn In(std::uint64_t now, bool p, bool l, float dp = 10.f, float dl = 10.f) {
+    PickIn x;
+    x.now = now, x.in_p = p, x.in_l = l, x.dp = dp, x.dl = dl;
+    return x;
+}
+PickState Cur(Who w, std::uint64_t since, std::uint64_t seen_p, std::uint64_t seen_l) {
+    PickState s;
+    s.cur = w, s.rule = rOnly, s.since = since, s.seen_p = seen_p, s.seen_l = seen_l;
+    return s;
+}
+
+void TestPick() {
+    // T1 only her
+    PickOut o = TargetPick(PickState{}, In(t0, true, false), kCfg);
+    CHECK(o.st.cur == kPartner && o.st.rule == rOnly && o.act == aFrontPartner && o.changed && o.st.since == t0);
+    // T2 sticky: her since t0, both present at t0+100
+    o = TargetPick(Cur(kPartner, t0, t0, 0), In(t0 + 100, true, true), kCfg);
+    CHECK(o.st.cur == kPartner && o.st.rule == rSticky && o.act == aFrontPartner && !o.changed);
+    const std::uint8_t lp[2] = {kLocal, kPartner};
+    Plan p = PlanBucket(lp, 2, o.act);
+    CHECK(p.swap == 1 && !p.count0);
+    // T3 fresh but absent: only Sam in the bucket at t0+500 -> kept, suppress
+    o = TargetPick(Cur(kPartner, t0, t0, 0), In(t0 + 500, false, true), kCfg);
+    CHECK(o.st.cur == kPartner && o.st.rule == rSticky && o.act == aSuppress && !o.changed);
+    const std::uint8_t l1[1] = {kLocal};
+    p = PlanBucket(l1, 1, o.act);
+    CHECK(p.count0 && p.swap == -1);
+    // T4 the switch after 1.5 s of absence
+    o = TargetPick(Cur(kPartner, t0, t0, 0), In(t0 + 1600, false, true), kCfg);
+    CHECK(o.st.cur == kLocal && o.st.rule == rOnly && o.act == aFrontLocal && o.changed && o.st.since == t0 + 1600);
+    // T5 flicker: her every 1000 ms, Sam every tick, 10 s at 25 ms -> stays her, never changed
+    {
+        PickState s = Cur(kPartner, t0, t0, t0);
+        bool ok = true;
+        for (std::uint64_t t = t0 + 25; t <= t0 + 10000; t += 25) {
+            const PickOut q = TargetPick(s, In(t, (t - t0) % 1000 == 0, true), kCfg);
+            if (q.st.cur != kPartner || q.changed) ok = false;
+            s = q.st;
+        }
+        CHECK(ok);
+    }
+    // T6 both on the first tick: nearer; a recent hit wins
+    o = TargetPick(PickState{}, In(t0, true, true, 5.f, 12.f), kCfg);
+    CHECK(o.st.cur == kPartner && o.st.rule == rNearer && o.act == aFrontPartner);
+    o = TargetPick(PickState{}, In(t0, true, true, 12.f, 5.f), kCfg);
+    CHECK(o.st.cur == kLocal && o.st.rule == rNearer && o.act == aFrontLocal);
+    {
+        PickIn x = In(t0, true, true, 5.f, 12.f);
+        x.hit_l = t0 - 100;
+        o = TargetPick(PickState{}, x, kCfg);
+        CHECK(o.st.cur == kLocal && o.st.rule == rHitBy);
+    }
+    // T7 the hit switch's minimum hold: Sam since t0, both fresh, her hit at t0+500 -> held; at t0+1000 (hit t0+900) -> her
+    {
+        PickIn x = In(t0 + 500, true, true);
+        x.hit_p = t0 + 500;
+        o = TargetPick(Cur(kLocal, t0, t0, t0), x, kCfg);
+        CHECK(o.st.cur == kLocal && o.st.rule == rSticky);
+        x = In(t0 + 1000, true, true);
+        x.hit_p = t0 + 900;
+        o = TargetPick(Cur(kLocal, t0, t0, t0), x, kCfg);
+        CHECK(o.st.cur == kPartner && o.st.rule == rHitBy && o.changed && o.act == aFrontPartner);
+    }
+    // T8 neither fresh, a recent hit by her -> her (hit by), nothing to do on an empty bucket
+    {
+        PickIn x = In(t0 + 5000, false, false);
+        x.hit_p = t0 + 4800;
+        o = TargetPick(Cur(kLocal, t0, t0, t0), x, kCfg);
+        CHECK(o.st.cur == kPartner && o.st.rule == rHitBy && o.act == aNone);
+    }
+    // T9 her gone: Sam present -> Sam (only); nobody -> none (gone)
+    {
+        PickIn x = In(t0 + 100, true, true);
+        x.partner_ok = false;
+        o = TargetPick(Cur(kPartner, t0, t0, t0), x, kCfg);
+        CHECK(o.st.cur == kLocal && o.st.rule == rOnly && o.act == aFrontLocal);
+        x = In(t0 + 100, true, false);
+        x.partner_ok = false;
+        o = TargetPick(Cur(kPartner, t0, t0, 0), x, kCfg);
+        CHECK(o.st.cur == kNone && o.st.rule == rGone && o.act == aNone && o.changed);
+    }
+    // T10 never seen
+    o = TargetPick(PickState{}, In(t0, false, false), kCfg);
+    CHECK(o.st.cur == kNone && o.act == aNone && !o.changed);
+    // T11 a tie: Sam (default)
+    o = TargetPick(PickState{}, In(t0, true, true, 8.f, 8.f), kCfg);
+    CHECK(o.st.cur == kLocal && o.st.rule == rDefault);
+    // T12 0 means never, also early in the clock
+    {
+        PickState s;
+        s.cur = kPartner, s.since = 1, s.seen_p = 0;
+        o = TargetPick(s, In(500, false, true), kCfg);
+        CHECK(o.st.cur == kLocal && o.st.rule == rOnly);
+    }
+    // T13 a hit older than the target's since does not switch
+    {
+        PickIn x = In(t0 + 2000, true, true);
+        x.hit_p = t0 - 100;
+        o = TargetPick(Cur(kLocal, t0, t0 + 1900, t0 + 1900), x, kCfg);
+        CHECK(o.st.cur == kLocal && o.st.rule == rSticky);
+    }
+    // T14 a hit outside the window
+    {
+        PickIn x = In(t0 + 5000, true, true);
+        x.hit_p = t0 + 5000 - 3001;
+        o = TargetPick(Cur(kLocal, t0, t0 + 4900, t0 + 4900), x, kCfg);
+        CHECK(o.st.cur == kLocal && o.st.rule == rSticky);
+        x = In(t0 + 9000, false, false);
+        x.hit_p = t0 + 9000 - 3001;
+        o = TargetPick(Cur(kLocal, t0, 0, t0), x, kCfg);
+        CHECK(o.st.cur == kLocal && o.st.rule == rKept);
+    }
+    // the fresh window follows the config
+    {
+        PickCfg c;
+        c.fresh_ms = FreshMs(3000);
+        o = TargetPick(Cur(kPartner, t0, t0, 0), In(t0 + 2500, false, true), c);
+        CHECK(o.st.cur == kPartner && o.act == aSuppress);
+    }
+}
+
+void TestPlan() {
+    const std::uint8_t lp[2] = {kLocal, kPartner}, pl[2] = {kPartner, kLocal}, l1[1] = {kLocal}, llp[3] = {kLocal, kLocal, kPartner};
+    Plan p = PlanBucket(lp, 2, aFrontPartner);
+    CHECK(p.swap == 1 && !p.count0);
+    p = PlanBucket(pl, 2, aFrontPartner);
+    CHECK(p.swap == -1 && !p.count0);
+    p = PlanBucket(l1, 1, aSuppress);
+    CHECK(p.count0 && p.swap == -1);
+    p = PlanBucket(llp, 3, aFrontPartner);
+    CHECK(p.swap == 2);
+    p = PlanBucket(pl, 2, aFrontLocal);
+    CHECK(p.swap == 1);
+    p = PlanBucket(lp, 0, aSuppress);
+    CHECK(!p.count0 && p.swap == -1);
+    p = PlanBucket(nullptr, 0, aFrontPartner);
+    CHECK(p.swap == -1);
+    // arm D reproduced (the pick off: no action): record[0] stays Sam's
+    p = PlanBucket(lp, 2, aNone);
+    CHECK(p.swap == -1 && !p.count0);
+    // her record missing: nothing to bring forward
+    p = PlanBucket(l1, 1, aFrontPartner);
+    CHECK(p.swap == -1 && !p.count0);
+}
+
+void TestForcedAndHelpers() {
+    CHECK(ForcedAct(kPartner, true, true) == aFrontPartner);
+    CHECK(ForcedAct(kPartner, false, true) == aSuppress);
+    CHECK(ForcedAct(kPartner, false, false) == aNone);
+    CHECK(ForcedAct(kLocal, true, true) == aFrontLocal);
+    CHECK(ForcedAct(kLocal, true, false) == aSuppress);
+    CHECK(ForcedAct(kNone, true, true) == aNone);
+    // the hash stays in 0..511 and spreads neighbouring K
+    bool in = true;
+    unsigned same = 0;
+    for (std::uint64_t k = 0x1F0000000ull; k < 0x1F0000000ull + 0x4000ull * 64; k += 0x4000ull) {
+        if (TgtHash(k) >= 512) in = false;
+        if (TgtHash(k) == TgtHash(k + 0x4000ull)) ++same;
+    }
+    CHECK(in && same < 4);
+    // the range check, as 0x142f06270 does it
+    const double her[3] = {10, 0, 0}, own[3] = {0, 0, 0};
+    CHECK(RangeCheck(0, her, own, 20.f) == 2 && RangeCheck(0, her, own, 5.f) == 1);
+    CHECK(RangeCheck(1, her, own, 20.f) == 1 && RangeCheck(1, her, own, 5.f) == 2);
+    CHECK(RangeCheck(0, her, own, 10.f) == 2 && RangeCheck(1, her, own, 10.f) == 2);  // equal: both "ae"
+    // the key clamp
+    CHECK(FreshMs(0) == 1500 && FreshMs(-5) == 1500 && FreshMs(100) == 500 && FreshMs(1500) == 1500 && FreshMs(9000) == 3000);
+    // H2's flag test
+    CHECK(!FlagsReject(0xF0) && FlagsReject(0x8F0) && !FlagsReject(0x800008F0u) && !FlagsReject(0x80000000u));
+    CHECK(std::string_view(RuleText(rSticky)) == "sticky" && std::string_view(WhoText(kPartner)) == "her");
+}
+
+// the round-27 keys (cfgval::SetTargetKey): defaults inert, ranges, bad values kept
+void TestKeys() {
+    cfgval::TargetKeys k;
+    CHECK(k.stim == 0 && k.vis && k.radius == 300.0 && k.pick == 0 && k.redirect == 0 && k.fresh_ms == 1500);
+    CHECK(cfgval::SetTargetKey(k, "enemy_partner_stim", "1") && k.stim == 1);
+    CHECK(cfgval::SetTargetKey(k, "enemy_partner_stim", "2") && k.stim == 1);
+    CHECK(cfgval::SetTargetKey(k, "enemy_partner_stim", "0") && k.stim == 0);
+    CHECK(cfgval::SetTargetKey(k, "enemy_partner_vis", "0") && !k.vis);
+    CHECK(cfgval::SetTargetKey(k, "enemy_partner_stim_radius", "500") && k.radius == 500.0);
+    CHECK(cfgval::SetTargetKey(k, "enemy_partner_stim_radius", "5") && k.radius == 500.0);
+    CHECK(cfgval::SetTargetKey(k, "enemy_partner_stim_radius", "x") && k.radius == 500.0);
+    CHECK(cfgval::SetTargetKey(k, "enemy_target_pick", "7") && k.pick == 7);
+    CHECK(cfgval::SetTargetKey(k, "enemy_target_pick", "16") && k.pick == 7);
+    CHECK(cfgval::SetTargetKey(k, "enemy_target_pick", "1.5") && k.pick == 7);
+    CHECK(cfgval::SetTargetKey(k, "enemy_target_redirect", "39") && k.redirect == 39);  // 1 2 4 and 32 (the shoot actor)
+    CHECK(cfgval::SetTargetKey(k, "enemy_target_redirect", "7") && k.redirect == 7);
+    CHECK(cfgval::SetTargetKey(k, "enemy_target_redirect", "256") && k.redirect == 7);
+    CHECK(cfgval::SetTargetKey(k, "enemy_target_redirect", "-1") && k.redirect == 7);
+    CHECK(cfgval::SetTargetKey(k, "enemy_target_fresh_ms", "100") && k.fresh_ms == 500);
+    CHECK(cfgval::SetTargetKey(k, "enemy_target_fresh_ms", "9000") && k.fresh_ms == 3000);
+    CHECK(cfgval::SetTargetKey(k, "enemy_target_fresh_ms", "2000") && k.fresh_ms == 2000);
+    CHECK(!cfgval::SetTargetKey(k, "enemy_partner_aural", "1"));
+    CHECK(!cfgval::SetTargetKey(k, "enemy_owner", "1"));
+}
+// redirect bit 32 (the shoot actor), the OnHit attacker verdict and the fresh goal check
+void TestShootAndGuards() {
+    // the job's call, the carrier, id 0, registered: seen; with bit 32 and her picked and fresh: redirect
+    CHECK(ShootPlan(true, true, 0, true, false, false) == ShootAct::seen);
+    CHECK(ShootPlan(true, true, 0, true, true, false) == ShootAct::seen);
+    CHECK(ShootPlan(true, true, 0, true, false, true) == ShootAct::seen);
+    CHECK(ShootPlan(true, true, 0, true, true, true) == ShootAct::redirect);
+    CHECK(ShootPlan(true, true, 0xFFE00000u, true, true, true) == ShootAct::redirect);  // the id's top bits are not the actor
+    // any other caller, carrier, actor or an unregistered MULE: the original, nothing counted
+    CHECK(ShootPlan(false, true, 0, true, true, true) == ShootAct::pass);
+    CHECK(ShootPlan(true, false, 0, true, true, true) == ShootAct::pass);
+    CHECK(ShootPlan(true, true, 0x2029, true, true, true) == ShootAct::pass);
+    CHECK(ShootPlan(true, true, 0x1FFFFF, true, true, true) == ShootAct::pass);
+    CHECK(ShootPlan(true, true, 0, false, true, true) == ShootAct::pass);
+    // the attacker chain
+    AttackerView a;
+    CHECK(AttackerVerdict(a) == HitBy::bad);  // nothing readable: not one of the game's
+    a.is_sam = true;
+    CHECK(AttackerVerdict(a) == HitBy::sam);
+    a = AttackerView{};
+    a.vt_ok = true;
+    CHECK(AttackerVerdict(a) == HitBy::other);
+    a.owner_sam = true;
+    CHECK(AttackerVerdict(a) == HitBy::sam);
+    a.owner_sam = false, a.has_inst = true;
+    CHECK(AttackerVerdict(a) == HitBy::bad);  // an instance whose vtable is not the game's: never read
+    a.inst_vt_ok = true;
+    CHECK(AttackerVerdict(a) == HitBy::other);
+    a.inst_owner_sam = true;
+    CHECK(AttackerVerdict(a) == HitBy::sam);
+    a.vt_ok = false;
+    CHECK(AttackerVerdict(a) == HitBy::bad);  // the attacker itself first
+    // the goal check
+    CHECK(CheckGoal(0, false, 0, 0x1000) == GoalCheck::none);
+    CHECK(CheckGoal(0x5000, true, 0x1000, 0x1000) == GoalCheck::ok);
+    CHECK(CheckGoal(0x5000, true, 0x1008, 0x1000) == GoalCheck::bad);
+    CHECK(CheckGoal(0x5000, false, 0x1000, 0x1000) == GoalCheck::bad);
+    CHECK(CheckGoal(0x5000, true, 0x1000, 0) == GoalCheck::bad);  // no known vtable (its byte checks failed)
+    // run 3: the carrier classes bit 32 counts (the MULE's DSMuleWeaponComponent + 0x50 and the plain NPC's)
+    constexpr std::uintptr_t mule = 0x143DBA800, npc = 0x143DC7B78;
+    CHECK(CarrierVtOk(mule, mule, npc));
+    CHECK(CarrierVtOk(npc, mule, npc));
+    CHECK(!CarrierVtOk(0x143E2BD80, mule, npc));  // Higgs' (not analysed)
+    CHECK(!CarrierVtOk(0, mule, npc));
+    CHECK(!CarrierVtOk(0, 0, 0));
+}
+
+// run 3: a switch by rule 3 (only visible) reads as "sticky" one tick later: the transition's rule must be captured at the change
+// (enemy_target.cpp's chg_rule), not read from the state at 4 Hz
+void TestTransitionRule() {
+    // on her, seen at t0; Sam seen too; she drops out of the bucket
+    PickState s = Cur(kPartner, t0, t0, t0);
+    s.rule = rSticky;
+    // t0 + 2000: her last sighting 2 s old (> fresh 1500), Sam in the bucket: rule 3 to Sam
+    PickOut o = TargetPick(s, In(t0 + 2000, false, true), kCfg);
+    CHECK(o.changed && o.st.cur == kLocal && o.st.rule == rOnly);
+    const Rule at_change = o.st.rule;
+    // the next tick: Sam still in the bucket: the current target fresh, the rule now sticky (what a 4 Hz reader would see)
+    PickOut o2 = TargetPick(o.st, In(t0 + 2050, false, true), kCfg);
+    CHECK(!o2.changed && o2.st.cur == kLocal && o2.st.rule == rSticky);
+    CHECK(at_change == rOnly && o2.st.rule != at_change);
+}
+}  // namespace
+
+int main() {
+    TestKeys();
+    TestPick();
+    TestPlan();
+    TestForcedAndHelpers();
+    TestShootAndGuards();
+    TestTransitionRule();
+    std::printf("%d checks, %d failed\n", g_checks, g_fail);
+    return g_fail ? 1 : 0;
+}

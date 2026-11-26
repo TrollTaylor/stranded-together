@@ -2618,3 +2618,494 @@ id=..`: what it did, or `skipped (<why>)` / `not forced (..)` / `kept`), and the
   runs the new defaults. New: `two-games-enemy-single-defaults` (the launcher's files, no lever key given: the `[config]` lines
   show the defaults in both games, one single take of 0202B in front of her with every lever's line, then 0202F behind her,
   where R1's RULE-W turns the request into a whole-camp take).
+
+## 15. Round 27: rebuild - M1 probe (`enemy_l1`, hidden runs only)
+
+**Why.** Round 27 rebuilds enemy sync from the ground up. Its plan rests on one question: can the host's own MULEs be made to
+see her partner body as a player, so that they notice her, turn to her, walk to her, aim at her and shoot at her with the game's
+own AI? If they can, the rest of the design only routes things (who owns which enemy, whose hits count); if not, it needs the
+fallbacks. M1 is a probe that answers this, with no gameplay change and no new `session.ini` key.
+
+**The lever (L1).** Our Sam is seen by the AI through a visual stimulus: a small record in the AI manager's visual pool that
+points at his AI agent and carries his place, his visibility multiplier (+0xA4) and his player id (+0x88). Her partner body has
+an agent but no such record, so the sensors never look at her. L1 makes one for her body's agent with our Sam's own resource
+(read from the game's own getter, `0x141DDE990(Sam + 0x58) + 0x3B0`, checked to be an `AIVisualStimulusResource`), writes the
+local player's id into it and, every tick, her place (her body plus the offset our Sam's own record has from him), her velocity,
+the multiplier (1.0, or op 2's) and our Sam's +0xA0 / +0xB0.
+
+**Safety.** The record points at her body's agent, which goes away with her body. It is made only for the live real body the
+partner owns (never the hologram, a debug or self-view body) whose agent has a class name. Every path of the mod's that removes
+her body calls the probe first (player sync's remove and its forget of a dead entity, enemy sync's stop, the mod's emergency
+stop): the record's multiplier is set to 0, its player id to "no actor" (0x1FFFFF: the classifier rejects it before the cone ever
+reads the agent) and its off byte to 1, and then its agent is cleared by a compare-exchange. Its thread-safe copies (rebuilt every
+frame) get only the multiplier and the "no actor" id: their agent is never written, since a sensor reads it twice (0x14251D40D,
+0x14251D45A) and a null or foreign agent crashes it (0x142380C70). Two ticks later the record is removed under the visual pool's
+lock (pool + 0x1A020), only while it is still in the same manager's live list parked as ours (no agent, Sam's resource, "no
+actor"); else it is left to the game, and a remove that does nothing leaves it parked. Every tick re-checks it in the live list as
+ours, under that lock, before writing. The tick releases by itself when her body changes or stops being the partner's live real
+body, our Sam sleeps, a load or setup starts or the manager changes; the frames after an emergency stop remove the parked record.
+A create or remove that faults stops every later create and remove. Residual: a destroy by the game itself is seen (the real
+body's poll) only after the entity is gone, so that release comes after the free.
+
+**The probe ops** (`action enemy_l1 <op>`, docs/debug-actions.md): 0 byte checks and reads; 1 her record off / on; 2 force her
+multiplier; 3 a 4 Hz watch of one MULE; 4 an arm starts; 5 her own record standing / crouched (the guest); 6 re-calm a camp; 7 a
+melee sphere query at her chest; 8 the arm's result line; 9 stop and the decision. Three read-only detours count, per arm, what
+the AI did with her record against our Sam's: the classifier's verdict, the sensor results it appended and whether the watched
+MULE's type-1 (player visual) results start with hers. They only count (atomics; no allocation, no log, no game call), each is
+byte-checked and stays off on a mismatch.
+
+**The run** (`two-games-enemy-l1-probe`, cp 04004 near Lake Knot; the host owns every enemy; every arm starts calm, our Sam 150 m
+behind the MULE unless the arm needs him): F her crouch (does crouching lower her own multiplier?), A control (no record; her 25 m
+in front of gun MULE 0202B), B L1 on 0202B (her 25 m in front; the guest watches her frozen copy too: U21), C L1 on melee MULE
+02029 (her 6 m in front; two attack sphere queries made from its entity with attack 0x157, not its own melee), D the switch on
+0202B (her alone 6 s, so she is its target first; our Sam 15 m in front 40 deg off its facing, `enemy_look -10`; she hides; he
+goes back 150 m and she shows again; a switch whose phase did not start on the other target is n/a, -2), G her hit on calm MULE 0202C with no record (does it turn to her, where does its last-known entry and its CP's
+alert place go).
+
+**Reading the results.** `py -3 tools\testenv\enemy-target.py <run folder>` prints one row per arm and the decision:
+
+| Decision | Meaning | Next |
+|---|---|---|
+| P-full | C noticed her within 4 s, turned to her within 4 s more and walked to her; B aimed at her (>= 70 %), fired and >= 60 % of its rounds passed within 1.5 m of her chest; D switched to our Sam and back within 3 s each; nothing pulled toward our Sam | M2 with no redirects |
+| P-aim | noticed and aimed at her, but something still pulled toward our Sam (turned or walked to him, the PlayerInfo daemon at him) or the rounds missed | M3 redirects |
+| P-nofire | as P-aim, but B never fired | M3 with the shoot redirect |
+| P-notice | noticed (a PlayerVisual entry at her place) but did not aim at her | the full M3 set |
+| FAIL | no PlayerVisual entry at her place in B and in C | run 2 (L2 / FV) |
+| undecided | B or C invalid, B without the goal reads, or only C noticed her | re-run M1 |
+
+Also: melee (C's queries reached her body: hit path A, else B), crouch (F: lower multiplier crouched), G (whom the MULE turned to),
+U21 (her frozen copy holds a PlayerVisual entry at her). A round is attributed on its own line (the shot record's origin and
+velocity, the newest 16 per shooter: `rays=`), else by the line from the MULE's chest toward the aim goal's point (or along its
+facing). An arm is invalid (`valid=0`) when its re-calm timed out, it saw her at its first sample or her record went away during
+it (run 2: "saw her" means a PlayerVisual entry at her older than her stimulus; one the arm's own fresh stimulus made is a notice,
+and the notice is the first entry at her younger than 0.5 s, so a stale entry never counts); an invalid B or C, B without the goal reads or B never noticing her make the decision "undecided". Not run in M1: H2 (the
+host unseeable), H7 (our Sam 400 m away) and real cover. L2 and FV (run 2 after a FAIL) are not built
+yet; L1b is dropped.
+
+**M1 results (round 27, run `20261126-120152-two-games-enemy-l1-probe`; decision P-aim).** All 36 byte checks passed in both
+games. Perception works with L1: B (gun MULE 0202B, her 24 m in front, our Sam 150 m behind) noticed her after 9.1 s, held a
+PlayerVisual entry at her in 23 of 23 samples and its aim goal pointed at her in 23 of 23; but it fired only 3 rounds (closest
+11.0, 15.5 and 3.1 m from her chest), then stopped, and walked toward our Sam 150 m away. So firing, turning and approach still
+resolve "actor id 0" (the local player) to our Sam's real body: M3 needs the redirects (CanShoot's point, the turn / range /
+weapon-point tasks, the approach) and the target pick. D (invalid: its re-calm timed out) showed that with both seen the MULE
+turns to our Sam (at 3.1 s) and keeps shooting him: the older stimulus wins, as section 16's pick expects. F: her own +0xA4 reads
+1.000 standing and 0.600 crouched, so SPV1 carries +0xA4. U21: the guest's frozen copies never perceive anyone (as expected).
+
+Two corrections came out of the run. The agent gate: her agent's vtable differs from our Sam's and neither has a class name, so
+"the agent has a class name" was wrong; the gate is now "the agent's vt+0x10 (called under SEH) returns her body", which is what
+the sensor (0x142E4F657) walks without a null check. The re-calm: LastKnown entries outlive the alert, so "ready" means phase 0
+and no PlayerVisual entry (LK stays 1); the camp's CP was not found for cp 04004.
+
+The melee non-notice (C: 02029 never noticed her at 3 m; the classifier saw her record 943 times, no cone pass): `enemy_look -8 6`
+had put her on top of a 3.4 m structure, so her point was about 40 deg above its eye; the cone's pitch test (DirectPitchAngle)
+rejects that, and the structure was in the ray anyway. Nothing points at the melee MULE or at L1; the M3 gate's CH / CS / CL arms
+check it on level ground (section 16.6).
+
+## 16. Round 27: rebuild - partner stimulus, target pick and redirects (M2/M3)
+
+**What it is.** M2 and M3 of the round-27 design, built as production code in `enemy_target.cpp` (plus the shared stimulus
+primitives in `enemy_stim_core.hpp`, the shared sense detours in `enemy_sense_hooks.cpp` and the pure rules in
+`enemy_target_rules.hpp`, tested by `st_enemy_target_rules_tests`). Every key defaults off; they are flipped together only after
+the gates pass (critique C2). "Her" is the partner body, "Sam" our own Sam. The partner stimulus is made by the host only (the
+host owns the enemies; review S1) and, for now, in hidden runs only (16.2); SPV1 is sent by both games.
+
+### 16.1 Keys
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enemy_partner_stim` | 0 | 1: the partner body carries a visual stimulus (lever L1, 16.2; the host, hidden runs) |
+| `enemy_partner_vis` | 1 | its +0xA4 from the partner's SPV1 (0: always 1.0) |
+| `enemy_partner_stim_radius` | 300 | only while a realized human enemy is within this many m of the partner body |
+| `enemy_target_pick` | 0 | bits: 1 the sensor-result reorder (16.3), 2 MULE-only perceivers (H5), 4 the classifier flag fix (H2), 8 her hits force a visual (H3) |
+| `enemy_target_redirect` | 0 | bits: 1 CanShoot's point, 2 turn / range check, 4 approach, 16 the vehicle chase, 32 the shoot actor (16.4); 8 (the PlayerInfo shadow) is deferred |
+| `enemy_target_fresh_ms` | 1500 | how long a sighting counts (500..3000) |
+
+### 16.2 The partner stimulus (M2)
+
+The M1 probe's proven code, shared through `enemy_stim_core.hpp`: the create (0x1425249A0) with our Sam's own
+`AIVisualStimulusResource` and the local player's id (the registry's vt+0x40), the C1 two-step release, the pool lock, the
+ownership signatures and the emergency stop. It is made only while: the key is on (and not forced off by `enemy_tgt 1 0`); this
+game is the host; a hidden run (automation) is on; a link is up; the partner body is the live real body the partner owns (never
+the hologram); its agent's vt+0x10 returns that body; our Sam is awake and his resource reads; no load or setup; the partner is not
+down (enemy sync's peer-down, or her SPV1 down flag); a fresh SPV1 frame from her (under 1 s); no cutscene in either game; and a
+realized human enemy is within the radius (checked every 0.5 s). Every tick, under the pool lock and only while it is still in
+the live list as ours, it writes the place (the body plus the offset our Sam's own record has from him), the velocity (a finite
+difference, zeroed after a jump over 2 m, at most 12 m/s), +0xA4 (her SPV1 visibility, 1.0 when stale, or `enemy_tgt 2`'s),
++0xA0 / +0xB0 (hers from SPV1, else our Sam's) and the player id at +0x88.
+
+**Hidden runs only (review S1).** The real body can be destroyed by the game before `etarget::ReleaseBeforeFree` runs (real_body
+calls it after the game freed the body on one path): a stimulus whose agent is freed would be walked by the sensor. Until that gap
+is closed (a release on the game's own destroy), `HardReason` refuses outside automation: `pstim not made (hidden runs only (the
+game's body-destroy gap))`. The guest refuses with `pstim not made (the guest (host only))`.
+
+It is released at once when the body changes or goes, its agent or the AI manager changes, a load starts, the partner is down,
+the key goes off, the link goes or our Sam sleeps; after 2 s when no enemy is within the radius, no fresh SPV1 arrives or a
+cutscene runs. A failed create is retried after 5 s. Every body removal path calls `etarget::ReleaseBeforeFree` (as it does the
+probe's); a fault in a create or remove stops every later one. Logs: `[enemy] pstim made #n (id 0x.., stim .., agent ..,
+resource ..; nearest enemy .. m, radius ..)`, `[enemy] pstim release #n (<why>): ...`, `[enemy] pstim removed (..)`,
+`[enemy] pstim forgotten (<why>; not removed)`, `[enemy] pstim not made (<why>)` (once per reason, again after 30 s), and every
+10 s `[enemy] pstim: on, vis .. (SPV1 age .. ms), made n removed n forgotten n faults n` with `[enemy] spv1 sent n recv n stale n
+bad n; aim ours .. m, hers .. m (SPV1|default); our down 0|1`.
+
+**SPV1** (32 bytes, link combat frame kind 4, `enemy_wire.hpp`): 10 Hz in both roles while `enemy_partner_stim` is on. It
+carries the sender's own Sam record's +0xA4 / +0xA0 / +0xB0, the weapon byte (+0x3F9 of the entity; informational), health 0xFF
+(unknown), its **player object's** +0x2B0 flags word and aim height, a u16 ride id (0), and flags (down, cutscene; crouch is not
+read and is sent 0: +0xA4 already drops to 0.6 crouched). The down flag is the sender's own latch of the game's stop gates
+(`erules::DownLatch` over `DownOfState`, as enemy sync latches it) or enemy sync's own code (review S3), so it is right whether
+enemy sync runs or not. A frame is fresh for 1 s; older than that the partner stimulus uses 1.0. Out-of-order frames count as
+stale, undecodable ones as bad; after 1 s without a fresh one any frame is taken (a restarted partner's seq starts again).
+
+**The player object (review).** The classifier's flags word and CanShoot's point for actor id 0 are not the entity's: they belong
+to the player object, found through [0x147BC7568] (+0x40 the players, +0x38 their count; `0x1423C60B0` picks one by +0x88; a
+player's +0x70 is its entity, as `GetLocalDSPlayerEntity` 0x142757A30 reads it). Its +0x2B0 is the info block (0x14283EC70 adds
+0x2B0), whose first word is the flags the classifier tests (bits 11 / 31) and whose +0x198 is the point CanShoot returns for id 0
+(0x142EC6C77). The M2 build read the entity's +0x2B0 (a constant 0xF0 in M1's logs). `PlayerOf(entity)` walks the players for the
+one whose +0x70 is our Sam (byte-checked: the global's rip, the list and count offsets, +0x70, the 0x2B0 add, the +0x198 read).
+SPV1's `aim_cm` is that point's height above our root (0.20..2.50 m, within 1 m across; 0 unknown).
+
+### 16.3 The target pick (M3)
+
+**The table.** 512 slots keyed by the MULE's knowledge object K (individual + 0x3AD8), with a second index keyed by the
+individual and a third keyed by the entity (bit 32's carrier lookup). The game thread registers the MULE manager's members
+(0x147BF09D8, byte-checked by a reader's rip at 0x1428B35F0) once a second (realized human enemies whose K belongs to their
+agent). No goal is cached (run 2): the goal-backed redirects look theirs up in each call (16.4). Workers only read it, and a slot not listed by a pass within 1.5 s is refused by the redirects (review S2). A load or
+setup, another AI manager or another MULE manager clears the whole table with every live bit off first (`[enemy] tgt table
+cleared (<why>)`); the bits come back only after a registration pass outside a load. No allocation in the tick: the actor walk and
+the member list use fixed arrays (review S11).
+
+**The reorder** (pick bit 1): ProcessSensorResults (K vt+0x38, 0x142E8DAF0) is detoured. Before the original runs, the type-1
+(player visual) bucket's records are attributed: a record whose stimulus agent is the partner stimulus' agent is hers; any other
+is ours (only the local player and his vehicle classify as type 1; review L8). `erules::TargetPick` then decides per MULE, in
+this order: a hit by one of them (fresh) -> that one; the current one still seen -> kept (sticky); only one seen -> that one;
+both seen and no current one -> the hit, else the nearer, else our Sam (the default); neither seen -> the current one is kept
+until it goes stale (`fresh_ms`). `PlanBucket` then swaps her (or our Sam's) record to the front, or sets the bucket's count to 0
+when neither may be picked. The pick is kept per slot. Changes are logged at 4 Hz (`[enemy] tgt id=XXXXX -> her|Sam (only
+visible | sticky | hit by | nearer | kept | forced | place)`): a change back within one 250 ms sample and a change to none are not
+logged, so the workers also count every her -> Sam change per slot (`flips`, logged by `enemy_tgt 7` and at an arm's end, review
+L4) and the longest gap between two of her records in the bucket (`gap max`, review L5). `enemy_tgt 4` resets both and the pick.
+Run 3: the logged rule is the rule that made the change (`chg_rule`, stored by the worker with the change itself, the pick then
+published with release order), not the slot's rule at the 250 ms sample: run 2's TB `-> Sam (sticky)` was the rule of the tick
+after the change (`sticky` keeps a pick, it cannot make one). `erules` test: a change by `only visible` then a sticky tick logs
+`only visible`.
+
+**H5** (pick bit 2): the classifier (0x142E5FA40) refuses her stimulus for every perceiver that is not a MULE member (the BT
+gazers, the dogs, the terrorists and Demens too, by design: critique H5): the original is not called and the result is 0. Applied
+only after a MULE walk in which at least one member id resolved to a MULE actor (a member is not an actor: its id sits at +0x20).
+**H2** (pick bit 4): her SPV1 flags word rejected by the classifier's own test refuses her stimulus; and when the classifier
+rejected it only because of our Sam's flags (the player object's +0x2B0 bits 11 / 31) and hers pass, the result is fixed to
+"player visual" (type 1), but only when the classifier's result set (its third argument: +0 the bucket count, +8 the buckets)
+has a type-1 bucket (review A2; else counted as `no type-1 bucket`). **H3** (pick bit 8): hits (ours from the OnHit detour, hers
+from the HIT relay) are queued to the game thread (a 64-entry atomic ring); they feed the "hit by" rule, and with bit 8 her hit
+writes her chest to K+0x6A0 and then 1 to K+0x736 (after checking K is still that MULE's: its vtable, its agent, its individual's
++0x3AD8), so the next ProcessSensorResults builds a player visual there (the game's own forced-visual path, byte-checked at
+0x142E8E005 / 0x142E8E06B).
+
+**By place.** Every 0.25 s the newest PlayerVisual entry (else the freshest LastKnown, within 3 m) of each registered MULE is
+attributed to the nearer player body. With the reorder hook in this only counts disagreements (`mismatch`); with the reorder off
+but a redirect on, it is the pick itself (rule `place`). Run 3: the first disagreement per MULE per arm is logged once:
+`[enemy] tgt mismatch id=XXXXX: pick her|Sam|none, place says her|Sam|none (entry type 1|85 age a s)` (1 PlayerVisual, 85
+PlayerLastKnown; the entry the place went by).
+
+### 16.4 The redirects (M3)
+
+Each is a MinHook detour, byte-checked (prologue, vtable slot, the RTTI or symbol it reads); a mismatch turns that bit off and
+logs `[enemy] tgt redirect <bit> (<name>): off (byte checks)`. They act only when our partner stimulus is live, the individual is
+registered (within 1.5 s) and still holds the same K, its pick is her, and her record (a seqlock, written once per tick after the
+stimulus tick, valid only while the stimulus is live; review S6) is under 500 ms old. "Her feet" is her body's root; "her chest"
+is the root plus her own aim height from SPV1 (her player object's info +0x198 above her root, used when fresh and 0.30..2.20 m;
+review A3), else 1.30 m.
+
+* **1, CanShoot's point** (0x142EC6C30; daemon, actor id, out point): for actor id 0 (the local player) it writes her chest to
+  the out point and returns 1 without calling the original, so the line-of-fire test and the burst aim at her.
+* **2a, the turn task** (vtable 0x143E1B228: Start 0x142F088A0, Update 0x142F0E540): after the original, for mode 2 (an actor)
+  and actor id 0, her chest goes to the task's resolved place (+0x20) and to the aim goal's target (+0x28; its +0x5C
+  cleared). A Start that returned 1 (already facing our Sam) returns 0 so the Update keeps turning. The Update adds the task's
+  +0x50 offset (rotated) to the place when it is not zero; those calls are counted (`2a (offset n)`, review L10), not changed.
+* **2b, the range check** (vtable 0x143E1B168, Start 0x142F06270): for actor id 0 and the symbols at [0x147BFB918] /
+  [0x147BFB920] it returns the game's own compare with her feet and the MULE's own place (its entity root, refreshed at 10 Hz;
+  the game uses its component's vt+0x28), without calling the original. The verified disassembly differs from the research
+  text: [0x147BFB918] returns 2 (fail) when range^2 >= d^2 and [0x147BFB920] returns 2 when d^2 >= range^2 (`erules::RangeCheck`).
+  The Exists symbol and every other id go to the original.
+* **4, the approach** (the move task's Update 0x142F0F290; its goal type byte-checked by the rip at 0x142F0F577): a post-fixup is
+  unsafe (steering and arrival already used our Sam in that call), so it uses the game's own place override: before the call,
+  for actor id 0 with the actor flag and the override bit (request block + 0x4B8, bit 0x40) not set by the game, it saves the
+  override place (+0x2F8, 24 bytes), writes her feet there and sets the bit with a locked OR; if the bit turned out set already
+  (the game set it in between) it is not ours (`not ours`) and is left alone. After the call it clears only that bit (a locked
+  AND) and restores the place only while it still holds hers (review S7).
+* **16, the vehicle chase** (vtable 0x143E1B4C0: Start 0x142F09340, Update 0x142F0E770). The M3 build called this "2c, the
+  weapon-point task"; the vtable's RTTI is `DSAIHTNPrimitiveTaskVehicleMove` and its goal (0x144C916E0) `AIBodyGoalDSVehicleMove`
+  (review A1): a drive destination. It is its own bit now: after the original, when the vehicle-move goal has the actor
+  flag (+0x68 bit 2) and actor id 0, her FEET go to its target (+0x38). No on-foot weapon-point task is known. Not in the gate.
+* **32, the shoot actor** (round 27 run 2: the rounds at Sam came from here, not from CanShoot). The body shoot job (0x142EFF4B0)
+  hands the shoot goal's actor id to its weapon carrier (vtable 0x143DC7B78; [carrier-8] is the entity) through SetTargetActor
+  (vt+0xC0, 0x142BC0880, called at 0x142EFFA2B), then reads the muzzle's aim back with GetTargetPosition (vt+0xD0, 0x142BAECA0,
+  at 0x142EFFA9F); for id 0 that is our Sam's live body. An entry detour on SetTargetActor acts only for the job's call (its
+  return address 0x142EFFA41), the carrier's vtable, id 0 and a carrier whose entity is a registered MULE (`erules::ShootPlan`):
+  it counts the call, and when bit 32 is live, the pick is her and her record is fresh it calls the carrier's own SetTargetPos
+  (vt+0xB8, 0x142BC0760) with her chest instead of the original. A post-hook on GetTargetPosition (the job's call only, return
+  0x142EFFAB0) records that point and the carrier's mode (+0xA0: 0 actor, 1 place, 2 none) per MULE in a seqlock; the game
+  thread attributes each new point at 4 Hz to the nearer player body (1.5 m, else none). The hooks go in with bit 32 on, or in
+  a hidden run (automation) while the pick or a redirect is wanted, so there the record and counts exist with bit 32 off too
+  (TF0; `etarget::ShootStats`); never for players with bit 32 off (run 3 review). The install line names the reason: `tgt
+  redirect 32 (shoot actor): on (bit 32 on)` or `on (bit 32 off: record only, a hidden run)`. Every site (both
+  prologues, SetTargetPos's, the job's two call sites, the vtable slots) is byte-checked as group 32. Not built: a post-fix of
+  the registry branch at 0x142F0DE70 (it only feeds the turn goal, which 2a already overwrites, and telling it apart needs a
+  knowledge read).
+* **32 on the MULE (run 3).** Run 2 counted 0 calls for every MULE: the MULE's carrier is not the plain NPC carrier. Static RE
+  (dsre, [O]):
+  * **DSMuleWeaponComponent.** Its constructor 0x142AEE400 calls the base constructor 0x142BA4EA0 and then stores the carrier
+    vtable 0x143DBA800 at +0x50 (`lea rax` at 0x142AEE446, byte-checked by its rip): the carrier the job sees is the component
+    + 0x50, and its slots are wrappers. Slot 0, 0x142AFB3F0, is an adjustor thunk (`sub rcx,0x50; jmp`). +0xB8 (SetTargetPos)
+    0x142B1FE60 calls the base 0x142BC0760 unless the component's type (0x142BAE000, called with rcx - 0x50) is 0x36, when it
+    does nothing (a place cannot be given to that kind). +0xC0 (SetTargetActor) 0x142B1FEA0: `add rcx,-0x50; call 0x142BAE000;
+    cmp al,0x36; je` (the 0x36 branch, another weapon kind, not followed), then rcx back to the carrier and a tail `jmp` at
+    0x142B1FED5 to the base 0x142BC0880: the return address is the job's (0x142EFFA41), so the entry detour on the base sees
+    the call; only its carrier-vtable filter dropped it. +0xD0 (GetTargetPosition) 0x142AFB790 CALLS the base 0x142BAECA0 (at
+    0x142AFB7B3, returning to 0x142AFB7B8), so the base's post-hook saw the wrapper's return address, not the job's. MULE
+    slots +0x140 / +0x158 are 0x142AFE650 / 0x142AFCFE0.
+  * **The plain NPC carrier** (0x143DC7B78): its +0x140 and +0x158 are both 0x141920DC0, `xor al,al; ret`. Those are the job's
+    gates before the hooked calls, so on a plain NPC the hooked sites are dead code: the MULE is the only carrier that reaches
+    them.
+  * **GetTargetPosition, mode 0** (an actor): a fresh entry gives the actor's live place; an older one gives the place stored
+    with it. The job's choice of an actor or a place goes through 0x142EA1CF0 [U]: not a plain line-of-sight test; it looks a
+    component up through 0x1422B2A60 and filters a list by `[entry+0x20] == id`. The per-mode point counts settle what it means
+    in practice from one run.
+  * **The fix.** SetTargetActor's filter takes either carrier vtable (`erules::CarrierVtOk`); the MULE's GetTargetPosition
+    wrapper gets its own detour (0x142AFB790, its return address the job's 0x142EFFAB0) recording the point as the base's
+    post-hook does. The three hooks (base SetTargetActor, base GetTargetPosition, the MULE wrapper) go in all or none. Group 32's
+    byte checks add: the MULE vtable's +0xB8 / +0xC0 / +0xD0 slots, its slot-0 thunk, the wrapper's type test and tail jump
+    (0x142B1FEB4, 0x142B1FED5 -> 0x142BC0880), the GetTargetPosition wrapper's prologue, type test and base call (0x142AFB7A9,
+    0x142AFB7B3 -> 0x142BAECA0, return 0x142AFB7B8) and the constructor's store.
+  * **New counts.** A job call on a carrier with neither vtable is counted as `vt_other`, one on a MULE carrier whose entity has
+    no slot as `noslot` (totals on the 5 s line: `; shoot32 vt_other n noslot n`); the first of each is logged once per run from
+    the tick: `[enemy] tgt shoot 32: the job's carrier has vtable 0x.. (not the MULE's / the NPC's); not counted` and `[enemy] tgt
+    shoot 32: carrier 0x.. entity 0x.. is not a registered MULE`. The recorded points are counted by the carrier's mode after
+    them (`pt_actor`, `pt_place`, `pt_other`), reset with the arm.
+  * **The type-0x36 branch (run 3 review).** On a component of type 0x36 the +0xC0 wrapper never reaches the base SetTargetActor
+    (it writes +0x564 / +0x5C0 / +0x560 and returns) and the +0xD0 wrapper returns [carrier+0x5A0..] without the base call, so
+    `calls`, `vt_other` and `noslot` all stay 0 while the wrapper's detour still records points (their mode, +0xA0, is stale
+    there). The base GetTargetPosition detour sets a thread-local flag when its return address is the wrapper's (0x142AFB7B8);
+    the wrapper's detour clears it before the call and, for the job's call, counts `t36` when it is still clear afterwards (per
+    MULE, reset with the arm, and a run total).
+* **The goals (2a, 4, 16)** are looked up fresh in each detour call with the game's own lookup (0x1425BD930, which the hooked
+  task makes itself; SEH-guarded) and written only when the goal's vtable (read fault-free) is its type's byte-checked constant:
+  AIBodyGoalDSTurn 0x143E19B00, AIBodyGoalDSVehicleMove 0x143E19728, AIBodyGoalDSWalk 0x143E196B0 (each vtable's slot 0 is its
+  type getter, which returns the RTTI; `erules::CheckGoal`). A goal with another vtable is left alone and counted as
+  `turn_goal_bad`.
+* **8, the PlayerInfo shadow: deferred (not built).** The design's last resort for code that reads the local player's info
+  directly; M1 showed no such reader that 1, 2 and 4 leave out, and a shadow is the riskiest of them. `enemy_target_redirect`
+  bit 8 is ignored with one log line.
+
+Every 5 s: `[enemy] tgt: engaging her n, Sam n; reorders n; suppress n; redirects 1:n 2a:n (offset n) 2b:n 4:n (not ours n)
+veh:n; h5 n h2 n/n (no type-1 bucket n) forced n; registered n; faults n; mismatch n; table clears n; shoot 32: calls n
+redirected n points n (at her n Sam n none n); soft onhit_bad n psr_rec_bad n turn_goal_bad n` (deltas since the last such
+line; registered, faults, mismatch, table clears and the three soft counters are totals). Per MULE (`enemy_tgt 7` and an arm's
+end): `[enemy] tgt id=XXXXX shoot: calls n redirected n points n (at her n Sam n none n); last her|Sam|none|- mode m age a s,
+her d m, Sam d m; modes actor n place n other n; t36 n` (counts since its registration or its arm's start; `-`, mode -1 and age -1.0
+when no point was recorded; run 3: `modes`, the points by the carrier's mode). The 5 s line ends `; shoot32 vt_other n noslot n;
+t36 n` (run 3; totals).
+
+**The arm tools (run 3).**
+
+* **The geometry line** (`enemy_tgt 4 / 7 / 11`) ends `; sep s`: the angle at the MULE between her and our Sam (degrees,
+  horizontal; -1 when either place is unread or within 1 mm of the MULE; `l1rules::SepDeg`). A TF arm with sep near 0 has her
+  and our Sam on one line, which cannot tell a redirect from a miss.
+* **`enemy_look -11 <m> [deg]`** (default 15 m, 25 deg, below 90): our Sam m from the last looked-at enemy, deg off its line to
+  the partner body, on the side its facing is on, facing it, ground-snapped (`esync::PlaceLocalOffLine` mode 0; mode 1 is
+  along its facing): `[enemy] look id=XXXXX dist d m (g deg off its line to her, on its facing's side; it stands at x, y, z):
+  <teleport text>`.
+* **`enemy_tgt 11 <id> <arm>`, the arm at geometry.** Run 2's arms started on a fixed wait, often before her body had walked to
+  its place (geometry invalid). Op 11 returns at once (`tgt arm-at-geometry armed`); the tick polls every 50 ms: her geometry
+  valid by the arm's rule and her horizontal distance within nominal -4 .. +2 m (TA 25, TF0 / TF1 22, TE / TX 16, CH 5, CL 6;
+  TB the geometry alone; `l1rules::ArmHerOk`), else 2.5 s (`ArmStep`). Then TF0 / TF1 place our Sam 170 m away, 40 deg off the
+  MULE's line to her (out of its view, apart from her), CS places it 5 m along the MULE's facing (CS judges our Sam, so her
+  geometry is not waited for), the other arms leave it; op 4's start (`StartArm`: the geometry line, the resets, the start
+  lines, the probe's watch) follows 150 ms after a placement (the ground snap), else at once. One line before it:
+  `[enemy] tgt arm-at-geometry X id=XXXXX: her valid after n ms (horiz h m, bearing b); Sam <s>`, `... her not valid in 2500 ms
+  (horiz h m, bearing b); started anyway; Sam <s>` or (CS) `... her not judged (a Sam arm; horiz h m, bearing b); Sam <s>`, s
+  one of `placed 170 m 40 deg off her line`, `placed 5 m along its facing`, `not moved`, `not placed (<why>)`. One pending at a
+  time: a new op 11, op 4 or op 8 cancels it (`[enemy] tgt arm-at-geometry X id=XXXXX: cancelled (<why>)`).
+* **The re-calm's CP rule** (`enemy_l1 6`). Run 2's calms all timed out on the CP: it rests at PreCaution (2) with nothing
+  alerted and was back at 2 half a second into each calm. `l1rules::kCpBaseMax` = 2: the CP at 0..2 is quiet; the calm forces
+  it only when it reads 3..5 (`CalmCpForce`), reads it back after a force and counts the forces. Start line: `the CP <at c
+  (resting, not forced) | forced 0 (was c, now c) | at c (not 3..5, not forced) | unread (not forced) | not found | skipped (byte
+  checks) | FAULT>`; the 500 ms line adds `members at 1-2 n (first XXXXX)` after `members at 3-5 n/m`; the end line reads `...;
+  members at 3-5 n/m, cp c; CP forces n, PV age a` and on a timeout `; blocked by <phase p | members above 2 or unread n (at 3-5
+  h, unread u) | cp c | knowledge unread | PV fresh (age a, d m) | quiet only q s>` (the first rule that was not quiet at the end;
+  the members count is `members_up`, which also holds unread members and any above 5).
+* **The probe's byte checks** (`[probe] L1 byte checks (n): ...`): a site whose bytes are a jump (E9, then MinHook's relay
+  `FF 25`, at most three) into the mod's own image is the shared sense detour (enemy_target installs it first), not a changed
+  game: its group prints `ok (shared)` and stays on. Any other mismatch still logs `[probe] L1 byte check FAILED: ...`.
+* **`onhit_bad`'s first case** is logged once per run: `[enemy] tgt onhit_bad first: receiver XXXXX aref 0x.. att 0x.. vt 0x..
+  node 0x..` (the attacker chain's ref, its object, its vtable (0 for our Sam's own), the DamageInfo's +0x40 node).
+
+### 16.5 Threads and faults
+
+The detours run on AI worker threads: no allocation, no logging, no game call but the original; SEH-guarded reads and writes
+(the override byte by locked OR / AND), atomics and two seqlocks (her record; each MULE's own place). A worker fault is counted;
+the next tick sees the count and stops the whole layer: `[enemy] tgt FAULT (<why>): the partner stimulus released, the table
+cleared, the pick and every redirect off for this run`. The tick itself runs under SEH (the pool lock it held is left in the
+handler, as many times as it was entered; review S8), and an exception there takes the same path. Enemy sync's own fault stop and
+the mod's emergency stop also reach it (`etarget::Stop`, `EmergencyStop`, `AfterStop`). After a stop `enemy_tgt` ops 1..11 refuse
+(review S10). The hooks stay in once installed; the effective bits drop to 0, so each detour only calls the original (bit 32's
+aim-point record too: the stop paths and the table gate clear it with the pick and the redirect bits, and its two detours also
+pass straight through once the module is off). The sense hooks are tried once per run (review S5).
+
+**Soft counters** (run 2; counted, nothing stops): `onhit_bad`, an OnHit attacker chain with an object whose vtable is not in the
+image (the hit is ignored; OnHit now returns at once unless the receiver, read fault-free with its vtable checked at each of up to
+four parent levels, is a human enemy and, once the MULE walk ran, a MULE: `erules::AttackerVerdict`); `psr_rec_bad`, a sensor
+record whose stimulus agent did not read (treated as ours); `turn_goal_bad`, a goal-backed redirect that found a goal of another
+vtable. The mod links with `/MAP` (`winhttp.map` beside the dll) so a fault address can be placed.
+
+### 16.6 The gate (`two-games-enemy-target`)
+
+Host-owned enemies (`enemy_owner=0`), `enemy_partner_stim=1`, `enemy_target_pick=7`, `enemy_target_redirect=39` (1, 2, 4 and
+32; not 16), at cp 04004. Run 3's layout (round 27, after run 20261126-154530): the notice arms first, each on a MULE that has seen
+no one since `dev_enemies 1` (TA on gun MULE 0202B, CL on melee MULE 02029, TE on gun MULE 0202C); then the engaged block on
+0202B (TF0 after a calm, then TF1 and TB straight after it with her stimulus live throughout, so the MULE is already engaged and
+firing); then CH and CS on 02029 and the control TX on 0202C. Calm numbering: TA #1, CL #2, TE #3, TF0 #4, CH #5, CS #6, TX #7
+(TF1 and TB have none).
+
+A calmed arm, in this order: the partner stimulus forced off (`enemy_tgt 1 0`), our Sam and her sent 150 m away (a PlayerVisual
+entry where she stood would otherwise stay within 3 m of her, and the calm's ready rule could never hold), the camp re-calmed
+(`enemy_l1 6 <id> 8`, an 8 s window, `waitlog 12`), our Sam 150 m behind it (`enemy_look -8 -150`), her placed along its facing
+(`@guest enemy_look <id> <pre>`, 300 ms, `-8 <d>`), the status (`enemy_tgt 0`: the next summary covers the arm only), then **op
+11** (`enemy_tgt 11 <id> <code>`, below), which starts the arm from the tick, and only after the probe's `L1 arm X ... start` the
+stimulus (`enemy_tgt 1 1`), so a PlayerVisual entry at her in the watch's first sample is contamination and never the arm's own
+notice; then the watch (`wait`), `enemy_tgt 8` (the result line) and the status again. Arm codes: 1 TA, 2 TB, 3 TF0, 4 TF1, 5 TE,
+6 TX, 7 CH, 8 CS, 9 CL.
+
+**Op 11, the arm at geometry (run 3; hidden runs only, default-off like every `enemy_tgt` op).** Run 2 placed the players, waited
+1.2 s and logged a pre-arm op 7; the MULE turned in between (TE: her bearing 41 at op 7, 46 at the start; TF0: Sam 61 then 68),
+so the arm's own geometry line said `valid 0`. Op 11 returns at once (`tgt arm-at-geometry armed`); the tick polls every 50 ms
+and starts the arm (op 4's body, `StartArm`: the labelled geometry line, the resets, `tgt arm X id=...: start (...)`, the probe's
+watch) when her geometry is valid for the arm's rule and her distance is in its window (`l1rules::ArmNominal`: TA 25, TF 22, TE /
+TX 16, CH 5, CL 6 m, window -4..+2 m; TB and CS have none), or after 2.5 s anyway. For TF0 / TF1 it first places our Sam 170 m
+away 40 deg off the MULE's line to her, on its facing's side (`esync::PlaceLocalOffLine` mode 0); for CS 5 m along its facing
+(mode 1, her not judged); the start follows 150 ms later (the ground snap). One line comes before the start lines: `[enemy] tgt
+arm-at-geometry X id=...: her valid after N ms (horiz h m, bearing b); Sam <placed 170 m 40 deg off her line | placed 5 m along
+its facing | not moved>`, or `her not valid in 2500 ms (...); started anyway; Sam ...`, or for CS `her not judged (a Sam arm;
+...)`. A new op 11 or op 8 cancels a pending one (`... cancelled (why)`). TB's Sam step uses the same helper by hand:
+`enemy_look -11 15 25` (our Sam 15 m from the MULE, 25 deg off its line to her, facing it).
+
+* **TA** (notice, calm #1): her 25 m in front of 0202B, our Sam 150 m behind: noticed and turned to her, no round at Sam; when
+  it fired, >= 60 % of the rounds within 1.5 m of her chest (`TA notice+turn (fire if any)`). A MULE out of a calm usually moves
+  first (phase 5): TA fired 3, 0 and 0 rounds in runs 135429, 140736 and 154530, so the firing goal is gated in TF1 and TB.
+* **CL** (notice, calm #2): her on level ground 6 m in front of 02029, along its facing: PASS when noticed <= 2 s after her
+  stimulus was made (the watch's notice time less the time from the arm's start to the first `pstim made` line after it) with
+  |dz| <= 1.0; INCONCLUSIVE when the stimulus came over 1 s late, the notice came before it, or (not noticed) her bearing is over
+  45 deg (outside the melee cone); a missed or late notice in the cone FAILs.
+* **TE** (notice, calm #3): her crouched (`@guest pad B 150`, 700 ms, the screenshot) 16 m in front of 0202C before op 11: her
+  SPV1 visibility at the arm's start <= 0.7 and lower than TA's, and the classifier saw her; the notice timing is printed only.
+* **TF0** (0202B alerted since TA, calm #4, bit 32 off: `enemy_tgt 6 7`): her 22 m in front along its facing, op 11 places our
+  Sam 170 m away 40 deg off its line to her (beyond its sight; a round at him passes about 14 m beside her, so the rays tell them
+  apart). Since run 3 bit 32 counts the job's actor-branch points even with the bit off (the shoot line's `modes actor n place
+  m other k`), so TF0 is a conditional check: no actor-branch point (`actor 0`) prints `TF0: place branch only (actor 0 place
+  N): nothing to prove` and is no gate item; the actor branch taken and nothing redirected PASSes when the points or the rounds
+  reached Sam (`Sam n` > 0 or `at_sam` > 0), else FAILs ("actor branch did not resolve to Sam"); anything redirected FAILs (bit
+  32 was not off).
+* **TF1** (no calm, her stimulus still live, so op 4's body keeps the pick): her placed again 22 m along its facing, the key
+  (`enemy_tgt 6 -1`, bit 32 on), op 11 places Sam again. A round at Sam or the shoot point at Sam (`Sam n` > 0 or `last Sam`)
+  FAILs; fewer than 3 rounds is INCONCLUSIVE; no actor-branch call (`calls` 0) is INCONCLUSIVE ("bit 32 not exercised", or "the
+  type-0x36 branch" with `t36` > 0): TF0 with bit 32 off fired at her too, so rounds at her alone prove nothing (run 3 review);
+  calls with nothing redirected FAIL; PASS needs `calls` > 0, `redirected` > 0, the point at her and >= 2/3 of the rounds at her.
+* **TB** (no calm; 0202B engaged on her since TF1, firing, the key on; the user's "one hides, the other visible"): op 11 with
+  code 2 (Sam not moved, no distance window); a `tgt id=0202B -> her` must come before the Sam step (`?waitnew 3`), then the
+  first round (`?waitnew 8 [probe] L1 round id=0202B #`); our Sam steps out (`enemy_look -11 15 25`) for 7 s, op 7 marks the end
+  of phase 0 (its geometry line, the pick and flips, and the arm MULE's shoot line: phase 0's bit-32 numbers, since the start
+  reset them); she hides (`enemy_tgt 2 0`, phase 1) 6 s; she is back with our Sam still in view (`enemy_tgt 2 100`, phase 2) 6 s.
+  Items:
+  - *sticky her*: `-> her` before the Sam step, no logged `-> Sam` between the start and op 7, 0 flips on op 7's line. With her
+    current, `TargetPick` switches to Sam only by `hit by` (our Sam never fires here) or `only visible` (her record out of its
+    PlayerVisual bucket for `fresh_ms`), so every real switch reads `only visible`, and the MULE turning off her while both are in
+    view is exactly the failure TB is for (run 3 review; run 154530's MULE turned 46, 56, 59, 82, 100, 111 deg off her with its
+    pick still her and 2a live). Any logged `-> Sam` there FAILs, whatever its rule; the last `L1 watch` line before it explains
+    it: faces her > 60 deg is "it turned off her: the turn redirect did not hold" (with her PV age at the first watch past 60
+    deg), else "her dropped from its view while it faces her N deg" (her record left its bucket). TB is INVALID only for causes
+    the scenario made: the Sam step's `[auto]` line without `placed`, her not 10-30 m from it at the last watch before the switch
+    (she moved), and, with no switch and no flip, Sam not in its cone on op 7's geometry line (horiz 10-20 m, bearing <= 30, `sep`
+    15-35) or her not 10-30 m there (sticky would prove nothing).
+  - *phase 0: no round at Sam* (`at_sam_p` [0] = 0; INCONCLUSIVE with no round).
+  - *phase 0: bit 32* (the decisive bit-32 item, Sam 15 m away and visible): the shoot line right after op 7. No actor-branch
+    call: INCONCLUSIVE (named "the type-0x36 branch" when its `t36` > 0); else PASS when `redirected` > 0, its points never at Sam and no round at Sam in phase 0.
+  - *switch to Sam <= 3 s* after she hides (`switch_sam` 0..3000); `switch_sam -2` (phase 0 already ended on Sam) is
+    INCONCLUSIVE ("no switch to measure"); anything else FAILs.
+  - *phase 2: stays Sam*: no logged `-> her` after `tgt vis forced 1.00` and `at_her_p` [2] = 0. INCONCLUSIVE when phase 1
+    never switched (`switch_sam -1`), or when phase 0 ended on Sam (-2) and phase 1 did not fire at Sam only.
+* **CH** (02029 alerted, calm #5): her level 5 m in front. **CS** (calm #6, the control): no stimulus, her 150 m away, op 11
+  places our Sam 5 m along 02029's facing (melee rule on Sam: 2-8 m, <= 45 deg). **TX** (calm #7, the control): the redirects
+  off (`enemy_tgt 6 0`), her 16 m in front of 0202C. These three are printed, not gated.
+
+Validity (INVALID, not FAIL: the run says nothing about the item): the arm's own geometry line says `valid 0`
+(`l1rules::GeomValid` by its code); for TB, TF0 and TF1 (they start on an alerted MULE, so the calm and `pv_start` do not count)
+no `tgt id=<id> -> her` after the arm's start (TB: before the Sam step) or her stimulus lost during it, and for TF0 / TF1 our Sam
+not 140-210 m away or not 30-50 deg off its line to her (the geometry line's `sep`, the angle at the MULE between her and Sam;
+older lines: his bearing off its facing); for TA, CL and TE (`CALM_NEEDED`: a notice needs a calm MULE) a re-calm that timed
+out or a watch that was not valid; for CH and TX only her stimulus lost (their calm need not be ready); CS has no stimulus. Both
+games also: the byte checks, SPV1, no FAULT line, the crash-reporter guard test (`[seh] test: ... faulted and was caught`: op 10
+faults twice, through a noexcept guard and one that is not) and at most 2 absorbed faults over the run (the last `[seh] absorbed
+N`; more FAILs and prints the first line over 2: its time, the fault's rva and its two callers, which `winhttp.map` places). The
+host: the stimulus made, 50 create / remove cycles then made again (U15); the guest the refusal (`the guest (host only)`); `bit
+32 filter` (the summaries' `shoot32 vt_other n noslot m` totals and the calls: `vt_other` > 0 FAILs, a carrier class the hook did
+not anticipate; `noslot` > 0 with no call counted, or over max(3, calls / 10), FAILs: a MULE whose calls are never redirected;
+no call at all is INCONCLUSIVE, since the counters exist only inside the job's id-0 call branch; a few `noslot` calls are
+INCONCLUSIVE, the once-line printed); `bit 32 live` (run 3 review: the TF1 and TB summaries' `calls` > 0 and `redirected` > 0;
+calls 0 with the run's `t36` > 0 is INCONCLUSIVE, the type-0x36 branch; calls 0 otherwise FAILs). Hygiene items (INCONCLUSIVE, not FAIL, when they do not hold):
+the soft counters (`onhit_bad`, `psr_rec_bad`, `turn_goal_bad`) 0 per game, with the host's `tgt onhit_bad first` once-line
+printed when any occurred, and for TA, TB, TF0 and TF1 (their verdicts count rounds) every round attributed by its ray (`rays ==
+fired`). Printed: op 11's line per arm, the calm apply and end lines (`the CP at 2 (resting, not forced)` / `forced 0 (was N, now
+M)`; `ready` / `timeout ...; blocked by X`) with the count ready, the probe's byte-check line (`classifier ok (shared)`), the
+once-lines (shoot 32 vtable / noslot, onhit_bad first, the first mismatch), the rounds per switch phase (`fired_p`, `at_her_p`,
+`at_sam_p`), `rays` against `fired`, the r1 / r2a / r2b / r4 / veh and bit-32 sums of the summaries inside the arm (every MULE),
+the arm MULE's own shoot line with its per-mode counts, Sam's place and `sep` on its geometry line. Checker: `python -I
+tools\testenv\enemy-target-gate.py <run folder>` (PASS / FAIL / INVALID / INCONCLUSIVE per gate item; exit 0 PASS, 1 FAIL or an arm
+missing, 3 incomplete; logs of older builds parse, their new items INVALID or INCONCLUSIVE). Its verdict rules have a ctest,
+`st_enemy_target_gate_tests` (`tests/enemy_target_gate_test.py`: a synthetic run-3 fixture in `tests/fixtures/enemy-target-gate`,
+every item PASS, and mutations of it: the TB switch FAIL and its INVALID causes, TF1 calls 0, the filter's no-call / noslot /
+vt_other cases, the type-0x36 branch, CS's `her not judged` line, older lines without `t36`).
+
+Time budget: the scenario's lifetime stays 360 s (the supervisor refuses more). Run 154530 took 314 s with 8 calms at 10-12 s,
+all timing out. Run 3 has 7 calms at 8 s and no pre-arm waits: estimated from that run's measured step times, about 220 s when
+the calms go ready in about 3.5 s, and about 300 s with every calm timing out, op 11 taking its full 2.5 s and TB's optional
+waits running out (the fixed setup 38 s and the supervisor's overhead 17 s included). Keep it under about 330 s: any new arm
+drops or shortens a print-only arm (CH, CS, TX) first.
+
+What run 3 must show to PASS: every step passes under 330 s; `seh absorbed` <= 2 in both games; no FAULT / `tgt byte check
+FAILED`; `32 (shoot actor) ok` with the MULE carrier's rips and signatures counted; the probe's byte-check line shows `classifier
+ok (shared)` and `sensor results ok (shared)`; at least 5 of 7 calms `ready` in 2-5 s, TA / CL / TE not INVALID for a calm
+timeout; every arm but TB with an `arm-at-geometry ... her valid after N ms` line (CS: `her not judged`, Sam placed), the
+labelled geometry lines `valid 1` (TE: bearing <= 30, crouched, arm-start vis <= 0.7; CS: Sam 2-8 m, <= 45 deg), TF0 / TF1 `sep`
+30-50 and Sam 140-210 m; bit 32 live (`shoot 32: calls` > 0 and `points` > 0 in TB and TF, `shoot32 vt_other 0`, `noslot` 0 or
+its once-line, 0202B's shoot lines with `modes actor / place`); TB: `-> her` before the Sam step, no `-> Sam` and 0 flips
+before op 7, phase 0 fired > 0 with 0 at Sam, `TB phase 0: bit 32` PASS, `-> Sam (only visible)` within 3 s of `vis forced
+0.00` with phase 1's rounds at Sam, no `-> her` and 0 rounds at her after `vis forced 1.00`; TF1 >= 3 fired, >= 2/3 at her, 0 at
+Sam, no point at Sam, calls > 0 and redirected > 0; TF0 `place branch only` or the actor branch at Sam; TA notice + turn and 0 at
+Sam; CL notice <= 2 s after the stimulus; TE lower vis and seen. The MULE wrapper's type-0x36 branch is its own count (`t36`;
+`bit 32 live` INCONCLUSIVE on it), no longer inferred from points with `calls` 0 (the mode there is stale). Read from the run,
+not gated: `members at 1-2` naming the member that holds the CP at
+2, the first mismatch line.
+
+Not in this gate yet: the guest-owned arm (legacy forced take), the partner-down and 900 m radius removals (M2's own list), the
+vehicle chase (bit 16), the CP alert place (U14) and run 2's P5 discriminator (an arm with pick 6, no reorder, while OnHit stays
+live).
+
+**Run 2 changes to the probe side (round 27).**
+- *The re-calm* (`enemy_l1 6`). Run 2's calms all timed out after a MULE's first alert: with `enemy_owner=0` nothing walked the
+  camps, so the CP was never found or forced, and the old ready rule needed no PlayerVisual entry, which never expires. Now the camp
+  byte checks run at enemy init with ownership off too (`[enemy] camp byte checks (enemy_owner=0: the camp walk on demand only):
+  6/6 ok`; ownership stays off) and the calm walks the camps on demand (`esync::CampWalkNow`) when its MULE's camp is unknown. It
+  re-applies every 500 ms while the MULE, a member or the CP reads alerted (about 20 per 12 s at most) and logs one line per 500 ms
+  (phase, members at 3-5, CP phase, PV n / age / at whom against the real her and Sam, LK). Ready (`l1rules::CalmQuiet`,
+  `CalmStep`): the MULE and every member at phase <= 2, the CP at 0 (or no CP known), every PlayerVisual entry >= 3 s old and > 3 m
+  from both players, held 1.5 s.
+- *Contamination and notice* (`l1rules::Add`). `pv_start` only when the first sample's PV at her is older than her stimulus (the
+  stimulus made 0.24-0.27 s before the first sample made TA and CH invalid); the notice is the first PV at her younger than 0.5 s.
+  The result line adds the rounds per switch phase (`fired_p`, `at_her_p`, `at_sam_p`) and the ages at the first sample
+  (`pv_age0`, `stim_age0`).
+- *The geometry* (`l1rules::GeomValid`, per arm code): melee arms (CH, CS, CL) |dz| <= 1, 2-8 m, bearing <= 45 deg; gun arms
+  10-30 m, bearing <= 30 deg, the pitch from the eye (1.6 m) to her aim point (SPV1's height, else 1.3 m) <= 15 deg; CS judges our
+  Sam. The line adds Sam's pitch and `rule gun|melee (her|Sam)`; `enemy_tgt 7 <id> [code]` takes the rule from the code, else the
+  running arm's.
+- *The shoot path in the watch.* Each watch line adds the shoot goal's +0x68 / +0x6C, its +0x48 place (at her / Sam / none) and the
+  body shoot job's last aim point (bit 32's record, `etarget::ShootStats`: at whom, the carrier's mode, its age, the calls and
+  redirects); each new round's line adds its angle off the line to her chest, to Sam's chest and off the MULE's facing.

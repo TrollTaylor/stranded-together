@@ -1,0 +1,172 @@
+# Round 27 M1 (docs/enemy-sync.md 15): the L1 probe. Does a host MULE notice, turn to, approach, aim at and fire at her partner
+# body once the body carries a visual stimulus made with our Sam's own resource and the local player's id (lever L1)? MULE Camp
+# Southwest of Lake Knot City (cp 04004). Hidden runs only; no gameplay change. Launcher Local test files; the host owns every
+# enemy (enemy_owner=0), every round-25/26 key and the M2 probes pinned off. Each arm starts calm (enemy_l1 6: phase 0 on the
+# camp, waited until the MULE holds no PlayerVisual / LastKnown entry), Sam 150 m behind it unless the arm needs him.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-enemy-l1-probe -SeedSaves complete-100 -GuestSeed profile-only -Id round27-m1
+#   py -3 tools\testenv\enemy-target.py build-testenv\runs\<run folder>   (the arm table and the decision)
+# op 0 both games: byte checks and reads. F (guest): her own stimulus standing vs crouched. A: control, no stimulus, her 25 m in
+# front of gun MULE 0202B. B: L1 on 0202B, her 25 m in front (the guest watches her frozen copy too: U21). C: L1 on melee MULE
+# 02029, her 6 m in front, two attack sphere queries at her chest. D: the switch on 0202B (her alone 6 s, so she is its target
+# first; Sam 15 m in front 40 deg off its facing, both seen; she hides; Sam far and she is back). G: no stimulus, her hit on calm
+# MULE 0202C (its facing, its LastKnown, the CP alert place). One result line per arm; an arm whose re-calm timed out, that saw her
+# at its first sample or lost her stimulus is invalid (valid=0) and the decision then says "undecided".
+# covers: enemy-hits
+# select: probe
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini enemy_owner=0
+ini enemy_m2_probes=0
+ini enemy_take_know=0
+ini enemy_take_camp=0
+ini enemy_ticket_return=0
+ini enemy_single_hold_vehicle=0
+ini enemy_single_rule=0
+ini enemy_take_role=0
+ini enemy_take_face=0
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[enemy\] hits: byte checks [0-9]+/[0-9]+ ok
+goto mule-camp-sw-lkc
+@guest goto 1521.90 992.00 0
+wait 4000
+@both action dev_god 2
+@both action dev_enemies 1
+waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+@guest waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+action enemy_probe 5 1
+@guest action enemy_probe 5 1
+waitlog 40 \[enemy\] sync on \(host\).*\(equal
+@guest waitlog 40 \[enemy\] sync on \(guest\).*\(equal
+@guest waitlog 30 \[enemy\] mirror on id=0202B
+waitlog 30 \[enemy\] hits on \(host\)
+@guest waitlog 30 \[enemy\] hits on \(guest\)
+# ---- op 0: the byte checks and the reads (both games)
+@both action enemy_l1 0
+waitlog 5 \[probe\] L1 byte checks \([0-9]+\)
+@guest waitlog 5 \[probe\] L1 byte checks \([0-9]+\)
+waitlog 5 \[probe\] L1 reads: Sam stim
+# ---- F (the guest): her own stimulus standing, then crouched (pad B), then up again
+@guest action enemy_l1 5 0
+@guest pad B 150
+wait 1000
+@guest screenshot 01-guest-crouched
+@guest action enemy_l1 5 1
+@guest waitlog 5 \[probe\] L1 result arm F
+@guest pad B 150
+# ---- A: control (no stimulus), her 25 m in front of 0202B, Sam 150 m behind it
+action enemy_look 0x202B 150
+wait 300
+action enemy_look -8 -150
+@guest action enemy_look 0x202B 30
+wait 300
+@guest action enemy_look -8 25
+action enemy_l1 6 0x202B 6
+waitlog 10 \[probe\] L1 calm #1 id=0202B: (ready|timeout)
+action enemy_l1 4 1 0x202B
+waitlog 5 \[probe\] L1 arm A id=0202B: start
+wait 8000
+action enemy_l1 8
+waitlog 5 \[probe\] L1 result arm A id=0202B
+# ---- B: L1 on 0202B, her 25 m in front, Sam 150 m behind; the guest watches her frozen copy (U21)
+action enemy_l1 6 0x202B 6
+waitlog 10 \[probe\] L1 calm #2 id=0202B: (ready|timeout)
+action enemy_l1 1 1
+waitnew 5 \[probe\] L1 hers (made #[0-9]+|not made)
+action enemy_l1 4 2 0x202B
+waitlog 5 \[probe\] L1 arm B id=0202B: start
+@guest action enemy_l1 3 0x202B 15
+wait 7000
+screenshot 02-host-b-7s
+@guest screenshot 02-guest-b-7s
+wait 7000
+action enemy_l1 8
+waitlog 5 \[probe\] L1 result arm B id=0202B
+@guest waitlog 5 \[probe\] L1 result arm U21 id=0202B
+action enemy_l1 1 0
+# ---- C: L1 on melee MULE 02029, her 6 m in front, Sam 150 m behind; two melee queries at her chest
+action enemy_look 0x2029 150
+wait 300
+action enemy_look -8 -150
+@guest action enemy_look 0x2029 20
+wait 300
+@guest action enemy_look -8 6
+action enemy_l1 6 0x2029 6
+waitlog 10 \[probe\] L1 calm #3 id=02029: (ready|timeout)
+action enemy_l1 1 1
+waitnew 5 \[probe\] L1 hers (made #[0-9]+|not made)
+action enemy_l1 4 3 0x2029
+waitlog 5 \[probe\] L1 arm C id=02029: start
+wait 3000
+action enemy_l1 7 0x2029
+wait 4000
+@guest screenshot 03-guest-c-7s
+action enemy_l1 7 0x2029
+wait 3000
+action enemy_l1 8
+waitlog 5 \[probe\] L1 result arm C id=02029
+action enemy_l1 1 0
+# ---- D: the switch on 0202B: her alone 6 s (Sam 150 m behind); Sam 15 m in front, 40 deg off its facing (both seen) 8 s; she
+# hides 8 s (phase 1: to Sam); Sam 150 m behind and she is back 8 s (phase 2: to her)
+action enemy_look 0x202B 150
+wait 300
+action enemy_look -8 -150
+@guest action enemy_look 0x202B 30
+wait 300
+@guest action enemy_look -8 25
+action enemy_l1 6 0x202B 6
+waitlog 10 \[probe\] L1 calm #4 id=0202B: (ready|timeout)
+action enemy_l1 1 1
+waitnew 5 \[probe\] L1 hers (made #[0-9]+|not made)
+action enemy_l1 4 4 0x202B
+waitlog 5 \[probe\] L1 arm D id=0202B: start
+wait 6000
+action enemy_look -10 15
+wait 8000
+action enemy_l1 2 0
+wait 8000
+action enemy_look -8 -150
+action enemy_l1 2 100
+wait 8000
+action enemy_l1 8
+waitlog 5 \[probe\] L1 result arm D id=0202B
+action enemy_l1 1 0
+# ---- G: no stimulus; her hit on calm MULE 0202C while Sam is 150 m behind it (its facing, its LastKnown, the CP alert place)
+action enemy_look 0x202C 150
+wait 300
+action enemy_look -8 -150
+@guest action enemy_look 0x202C 15
+action enemy_l1 6 0x202C 6
+waitlog 10 \[probe\] L1 calm #5 id=0202C: (ready|timeout)
+action enemy_l1 4 7 0x202C
+waitlog 5 \[probe\] L1 arm G id=0202C: start
+wait 1500
+@guest action enemy_hit_send 0x47 1 0x202C
+waitlog 10 \[enemy\] HIT applied #[0-9]+ id=0202C
+wait 7000
+action enemy_l1 8
+waitlog 5 \[probe\] L1 result arm G id=0202C
+# ---- the end: the decision, then the usual checks
+@both action enemy_l1 9
+waitlog 5 \[probe\] L1 decision:
+waitlog 5 \[probe\] L1 stop
+@guest waitlog 5 \[probe\] L1 stop
+action enemy_sync 0
+nolog \[enemy\] FAULT
+@guest nolog \[enemy\] FAULT
+nolog \[probe\] L1 .*FAULT
+@guest nolog \[probe\] L1 .*FAULT
+nolog \[probe\] L1 byte check FAILED
+@guest nolog \[probe\] L1 byte check FAILED
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@both action enemy_sync 2
+action enemy_probe 5 0
+@guest action enemy_probe 5 0
+@both action dev_god 0
+@guest quit
+wait 3000
+quit

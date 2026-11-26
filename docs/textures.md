@@ -301,6 +301,17 @@ only the rectangles and the recipe below are code.
   palette set), L2 / L3 (silver and gold share them), L4 the normal map (shared by every set), L9 / L10 the silver and gold
   reflectance (1024, reflectance RGB + ambient occlusion A; half the scale: without them a dark BRIDGES print stayed
   after "express" on a metal hood).
+- **The hood's side shield** (round 27; same maps and slots, recipe 6): the raised hood also carries the round BRIDGES
+  shield (the word over a map of the US, a "D" with a flat top) on its side / back panel, at x 1338..1423, y 412..479 of
+  the 2048 maps (about x 669..711, y 206..239 of the 1024 reflectance). Before round 27 it stayed on her hood: grey and
+  untinted on a palette colour, a dark matte "D" on silver and gold. The rectangle x 1335..1423, y 410..480 is now
+  erased with the same panel's cloth from 36 px left and 78 px below (even offsets keep the weave's 2-px pattern in
+  step), and an 8-px ring around it is cross-faded from the copy into the picture, so the cloth's stains run on instead
+  of ending at a straight edge. This is done in the colour and the mask (the patch gets mask alpha 255, so it takes her
+  tint) and, halved, in the reflectance; the normal map is left alone (no relief of the shield there). Fragile's
+  hexagon "FRAGILE EXPRESS" badge (the decal's rectangle 749,880 .. 932,1002) then goes in its place, 80 x 53 px
+  centred on the old shield (40 x 27 in the reflectance), upright like the old shield, in the old print's colour,
+  roughness and reflectance, untinted.
 - **The cap** (1024): its palette set only (colours 0..22: L5 colour + mask alpha, BC7 re-encoded as BC3, and L8 its normal
   map). The word is 284 px wide, split between "FRAGI" and "LE" across the seam of the two front panels. Silver (23) and
   gold (24) caps keep BRIDGES: they use v00's mask alpha and normal maps with their own colour and reflectance, so the

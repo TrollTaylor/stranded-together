@@ -357,7 +357,9 @@ bool LauncherIniOverrideAllowed(const std::string& key) {
                                            "enemy_down_hold", "enemy_down_hold_radius", "vehicle_mule_log", "vehicle_mule_hold",
                                            "enemy_m2_probes", "enemy_take_know", "enemy_take_know_secs", "enemy_take_camp",
                                            "enemy_ticket_return", "enemy_single_hold_vehicle", "enemy_single_rule",
-                                           "enemy_take_role", "enemy_take_face"};
+                                           "enemy_take_role", "enemy_take_face", "enemy_partner_stim",
+                                           "enemy_partner_vis", "enemy_partner_stim_radius", "enemy_target_pick",
+                                           "enemy_target_redirect", "enemy_target_fresh_ms"};
     for (const char* k : kAllowed)
         if (key == k) return true;
     return false;
@@ -386,7 +388,9 @@ bool ScenarioIniKeyAllowed(const std::string& key) {
                                            "enemy_down_hold", "enemy_down_hold_radius", "vehicle_mule_log", "vehicle_mule_hold",
                                            "enemy_m2_probes", "enemy_take_know", "enemy_take_know_secs", "enemy_take_camp",
                                            "enemy_ticket_return", "enemy_single_hold_vehicle", "enemy_single_rule",
-                                           "enemy_take_role", "enemy_take_face"};
+                                           "enemy_take_role", "enemy_take_face", "enemy_partner_stim",
+                                           "enemy_partner_vis", "enemy_partner_stim_radius", "enemy_target_pick",
+                                           "enemy_target_redirect", "enemy_target_fresh_ms"};
 
     for (const char* k : kAllowed)
         if (key == k) return true;

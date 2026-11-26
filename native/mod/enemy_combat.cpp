@@ -18,6 +18,7 @@
 #include "config_values.hpp"
 #include "coop_session.hpp"
 #include "enemy_census.hpp"
+#include "enemy_target.hpp"
 #include "enemy_probe_rules.hpp"
 #include "enemy_rules.hpp"
 #include "enemy_sync.hpp"
@@ -454,6 +455,7 @@ void DetourFault(const char* where) noexcept {
     }
 }
 void H_OnHit(std::uintptr_t receiver, std::uintptr_t di) {
+    if (!t_applying) etarget::NoteOnHit(receiver, di);  // round 27 M3 (H3): our Sam's hits on a MULE (atomics only; off unless the pick is on)
     if (!t_applying && !g_stop.load(std::memory_order_relaxed) && (esync::AnyFrozen() || g_watch.load(std::memory_order_relaxed))) {
         const int r = HitGuarded(receiver, di, 0, 0);
         if (r > 0) return;  // a mirror's: dropped (captured when hers)
@@ -1008,6 +1010,7 @@ erules::HitResult HostHit(const ewire::Hit& h, std::uint32_t msg_guids, const es
         const double nl[3] = {h.normal[0], h.normal[1], h.normal[2]}, il[3] = {h.impulse[0], h.impulse[1], h.impulse[2]};
         ApplyOne(h.key, h, local, nl, il, g_cfg.enemy_hit_owner, g_cfg.enemy_hit_path, hs, ar);
         r = ar.r;
+        if (r == erules::HitResult::applied) etarget::NoteHit(h.key, true);  // round 27 M3 (H3): her hit on this MULE, for its target pick
     }
     if (relay) return r;
     if (r == erules::HitResult::applied) {

@@ -11,6 +11,10 @@
 // FRAGILE read upside down and reversed the same way, one flipped top to bottom read upside down, so the map shows the
 // band unturned and an upright word reads right way round. The cap's word crosses the seam between the cap's two front
 // panels: it is split in the gap between "FRAGI" and "LE", so a seam that is a pixel or two off changes only that gap.
+// The raised hood also carries a round BRIDGES shield on its side / back panel (round 27), in the same hood maps beside the
+// band. It is erased with the same panel's cloth from just beside it, faded in over a narrow ring so the cloth's stains
+// run on instead of ending at a straight edge (colour, mask, reflectance; the normal map has no relief of it), and Fragile's
+// hexagon "FRAGILE EXPRESS" badge from her decal map goes in its place, upright like the old shield, in its colours.
 #pragma once
 #include <cstdint>
 #include <string>
@@ -21,7 +25,7 @@
 namespace st::tex::logo {
 
 // Bump when any output pixel can change (the built copies' cache keys).
-inline constexpr int kRecipeVersion = 5;   // 5: + the metal hoods' reflectance; 4: the hood's word upright, the cap's v00 only
+inline constexpr int kRecipeVersion = 6;   // 6: + the hood's side shield; 5: + the metal hoods' reflectance; 4: the hood's word upright, the cap's v00 only
 
 struct Rect {
     std::uint32_t x0, y0, x1, y1;   // [x0, x1) x [y0, y1)
@@ -32,6 +36,9 @@ struct Rect {
 inline constexpr std::uint32_t kDecalSide = 1024;
 inline constexpr Rect kWord = {328, 37, 937, 107};
 inline constexpr std::uint32_t kWordSplitX = 606;
+// The decal's small hexagon badge (FRAGILE over EXPRESS in a hexagon with a lightning bolt, bottom right of the decal; the
+// ruler at its right edge left out): the hood's side shield is replaced with it.
+inline constexpr Rect kBadge = {749, 880, 932, 1002};
 
 // The hood band (Sam's porter suit maps, 2048): BRIDGES (x 1537..1698, y 347..375), the rectangle erased and where it is
 // copied from (the band below it), where the old letters' colour is measured (the palette mask is 0 under them) and
@@ -49,6 +56,25 @@ inline constexpr Rect kReflErase = {765, 171, 853, 190};
 inline constexpr int kReflFromDy = 19;
 inline constexpr Rect kReflLetters = {765, 170, 853, 191};
 inline constexpr std::uint32_t kReflWordW = kHoodWordW / 2, kReflWordCx = kHoodWordCx / 2, kReflWordCy = kHoodWordCy / 2;
+
+// The hood's side shield (the same 2048 maps): the round BRIDGES emblem on the raised hood's side / back panel (x 1338..1423,
+// y 412..479 where its mask alpha is below 255; a "D": flat top, round bottom). The rectangle erased, and where the cloth
+// comes from: 36 px left and 78 px below on the same panel (both even: the weave repeats every 2 px; that cloth's mask
+// alpha is 255, so the patch takes the suit's tint). The copy is cross-faded into the picture over a ring of 8 px around
+// the rectangle (also cloth, mask alpha 255), so the stains do not end at a straight edge. Where the old print's colour
+// is measured (the palette mask is 0 under it) and where the badge goes (80 px wide, centred on the old shield). The
+// normal map is left alone (no relief of the shield there; a copy would cut through the cloth's folds).
+inline constexpr Rect kShieldErase = {1335, 410, 1424, 481};
+inline constexpr int kShieldFromDx = -36, kShieldFromDy = 78;
+inline constexpr std::uint32_t kShieldFade = 8;
+inline constexpr Rect kShieldPrint = {1333, 408, 1426, 483};
+inline constexpr std::uint32_t kShieldBadgeW = 80, kShieldBadgeCx = 1379, kShieldBadgeCy = 445;
+// The same in the metal hoods' reflectance (1024, half the scale): the shield is a dark print that does not shine there.
+inline constexpr Rect kReflShieldErase = {667, 205, 712, 241};
+inline constexpr int kReflShieldFromDx = kShieldFromDx / 2, kReflShieldFromDy = kShieldFromDy / 2;
+inline constexpr std::uint32_t kReflShieldFade = kShieldFade / 2;
+inline constexpr Rect kReflShieldPrint = {666, 204, 713, 242};
+inline constexpr std::uint32_t kReflShieldBadgeW = kShieldBadgeW / 2, kReflShieldBadgeCx = kShieldBadgeCx / 2, kReflShieldBadgeCy = kShieldBadgeCy / 2;
 
 // The cap (cap00 maps, 1024): BRIDGES (x 631..949, y 292..342) over the two front panels; panel A's last column 777,
 // panel B's first 809 (778..808: the gutter between them). The fabric is a 4-px twill: copied from 60 px above.
@@ -72,14 +98,19 @@ std::uint32_t WordHeight(std::uint32_t w);
 // The wordmark (kWord of the decal's R channel) at w x h, upright (as in the decal). False: the decal is not 1024 or has
 // no wordmark there.
 bool Wordmark(const Image& decal, std::uint32_t w, std::uint32_t h, Coverage* out, std::string* why = nullptr);
+// The height the badge gets at width w (its aspect, rounded).
+std::uint32_t BadgeHeight(std::uint32_t w);
+// The badge (kBadge of the decal's R channel) at w x h, upright. False: the decal is not 1024 or has no badge there.
+bool Badge(const Image& decal, std::uint32_t w, std::uint32_t h, Coverage* out, std::string* why = nullptr);
 // The column of the cap's word where it is split (the gap between "FRAGI" and "LE").
 std::uint32_t CapSplit();
 
 // The hood: `colour` (RGB) and `mask` (R mask alpha, G roughness) of one suit set (palette or metal), `normal` (RG; null:
-// left alone); `palette_mask` the palette set's Mask alpha picture (R; 0 under the old letters). Edited in place.
+// left alone; the band only); `palette_mask` the palette set's Mask alpha picture (R; 0 under the old letters and the old
+// shield). Both the band's word and the side shield. Edited in place; refused (nothing changed) when either print is missing.
 bool StampHood(Image* colour, Image* mask, Image* normal, const Image& palette_mask, const Image& decal, std::string* why = nullptr);
 // A metal hood's reflectance: `refl` (RGB; A, the ambient occlusion, left alone) at 1024; `palette_mask` as for StampHood
-// (2048: halved here, 2 x 2 means). Edited in place.
+// (2048: halved here, 2 x 2 means). The band's word and the side shield. Edited in place.
 bool StampHoodReflectance(Image* refl, const Image& palette_mask, const Image& decal, std::string* why = nullptr);
 // The cap: `colour` (RGB, and A when `alpha` is true: the mask alpha or the reflectance its set packs there), `normal` (RG;
 // null: left alone); `letters` the palette cap's Mask alpha picture (R; 0 under the old letters). Edited in place.
