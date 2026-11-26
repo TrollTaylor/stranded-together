@@ -489,6 +489,25 @@ most 3 numbers, so `enemy_hit`'s part / owner / path are set apart (`enemy_hit_m
     `[probe] P2 result id=XXXXX lever <a..d'>: turned N ms|never, shot N ms|never; first attack after N ms (shot|melee) | never,
     hits on our Sam n (shot n, melee n; attacks n; shots n); all owned hits on our Sam n (...)`, or `not handed over here (no
     hand-over in 90 s)`.
+    Round 25 ([enemy-sync.md](enemy-sync.md) 14.18): the third number packs the lever and the window, `v = lever + 100 x secs`
+    (`3000`: lever a for 30 s; `4`: lever e for 20 s; 0 secs = 20, at most 40), levers 0..6: e (K1: the game's forced player
+    visual), f (C1: her camp forced to 5 at the take), g (T1: tickets of frozen copies returned); e / f / g act inside her take
+    itself (the lever keys' own code). In the window the guest also logs, on a 0.25 s schedule for the first 3 s and then every
+    1 s: D1 `[probe] P2 pos id=XXXXX t=..: (x,y,z) facing .. deg, .. m/s; Sam .. m, .. deg off`, D2 `[probe] P2 know id=XXXXX
+    t=..: K .., n entries (types); force flag n at (..); focus .. [I]` plus one `... entry: <Type>(0xNN) at (..) age .. mem ..
+    actor .. flags .. key ..` per PlayerVisual / CPOrder / PlayerLastKnown / InCombat / Damaged entry (or `entry: none`); once a
+    second D3 `[probe] P2 camp cp XXXXX t=..: phase .. req .. prev .. counter ..; alert (..); entry1 valid ..; entry2 valid ..;
+    rr ..; member ..` (also `before the take` / `after the take`), D4 `[probe] P2 mate id=XXXXX t=..: (..) .. m from ..; vehicle
+    e20 .. seat ..; phase ..[; parent <class> at (..)]` (the camp's members running in her world) and D5 `[probe] P2 tickets
+    id=XXXXX t=..: group .. (class) level n: n entries (+0x428 .., table ..; parent ..); key .. avail .. holders .. <ids, * a
+    frozen copy>` or `unknown link (...)`; at the end `[probe] P2 path id=XXXXX: max distance .. m at t .., first 10 s .. m,
+    walked .. m, end (x,y) (..), stopped at t ..|moving at the end, facing her at t ..|never facing her`.
+    Round 25 e: D8 `[probe] P2 posts id=XXXXX: cp list n (on n), MULE at (x,y); nearest #k .. m; #i (x,y,z) .. m; ...` (the
+    camp's post spots, read only, with D3's `before the take` line). Two more take keys act inside her take, not as P2
+    levers: R2 `enemy_take_role=1` (`[enemy] take role id=XXXXX: role 1 -> 0 while hers (cp ..)` | `role n kept` | `skipped
+    (..)`, and at the end of the take `... given back: role restored to 1` | `not restored (..)`) and F1 `enemy_take_face=1`
+    (`[enemy] take face id=XXXXX: turned from N to M deg off (Sam .. m)` | `not turned (Sam .. m, .. deg off)` | `skipped
+    (..)`; a fault turns F1 off). Neither helped; every round-25 key stays 0 ([enemy-sync.md](enemy-sync.md) 14.18).
   * 3: the perception reads: the partner body's and our Sam's entity +0x314, and the stimulus +0x88 of our agents' visual
     stimuli in the AI manager's thread-safe list (`[probe] P3 result: ...`).
   * 4 `<id> <s>`: the game's raycast (0x141C20CE0, the visual sense's own filter) from a copy's eye (+1.6 m) to our Sam's chest
@@ -505,7 +524,8 @@ most 3 numbers, so `enemy_hit`'s part / owner / path are set apart (`enemy_hit_m
 Scenarios: `enemy-hit-probe` (P2-0, solo), `two-games-enemy-hit` (the gate), `two-games-enemy-target-probe` (the M1 probe),
 `two-games-enemy-stim-probe` (the M2 stimulus probe), `two-games-enemy-probe` (round 23 E: P0-P5), `trucks-m2-probe-solo`
 (round 23 E: P6), `two-games-enemy-single` (round 24: P2 on one MULE handed over alone, `enemy_own <id> 3`, against a whole
-camp).
+camp), 	wo-games-enemy-single-walk and its -know, -camp, -tickets, -hold, -role, -face, -roleface arms
+(round 25: the WALK-AWAY and BEHIND cases; enemy-sync.md 14.18).
 
 * `enemy_restrain <id | 0> <mode>` (hidden runs, round 23; the guest, or the host while it relays its hits: `enemy_owner`; the
   restrain relay must be on: `[enemy] restrain relay on`): the tie-up relay's own send path on our frozen copy of an enemy the

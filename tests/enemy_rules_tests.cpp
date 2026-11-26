@@ -1824,6 +1824,41 @@ void TestSamDown() {
     CHECK(cfgval::DownRadius("200", 120.0) == 200.0 && cfgval::DownRadius("19", 120.0) == 120.0 && cfgval::DownRadius("x", 120.0) == 120.0);
 }
 
+void TestSingleRule() {
+    erules::SingleIn s;
+    CHECK(erules::SingleRule(s) == erules::SingleVerdict::single);  // off
+    s.rule_on = true;
+    s.cp_phase = 2, s.off_deg = 20, s.dist_m = 10, s.alerted = true;
+    CHECK(erules::SingleRule(s) == erules::SingleVerdict::single);
+    s.cp_phase = 5;
+    CHECK(erules::SingleRule(s) == erules::SingleVerdict::hold_walk);
+    s.camp_allowed = true;
+    CHECK(erules::SingleRule(s) == erules::SingleVerdict::camp);
+    s.cp_phase = -1, s.earlier_hers = 1;
+    CHECK(erules::SingleRule(s) == erules::SingleVerdict::camp);
+    s.earlier_hers = 0;
+    CHECK(erules::SingleRule(s) == erules::SingleVerdict::single);
+    s.off_deg = 61;
+    CHECK(erules::SingleRule(s) == erules::SingleVerdict::hold_behind);
+    s.off_deg = 60, s.dist_m = 26;
+    CHECK(erules::SingleRule(s) == erules::SingleVerdict::hold_behind);
+    s.dist_m = 25, s.alerted = false;
+    CHECK(erules::SingleRule(s) == erules::SingleVerdict::hold_behind);
+    s.alerted = true;
+    CHECK(erules::SingleRule(s) == erules::SingleVerdict::single);
+    s.off_deg = -1;
+    CHECK(erules::SingleRule(s) == erules::SingleVerdict::hold_behind);
+    CHECK(std::strcmp(erules::SingleVerdictText(erules::SingleVerdict::hold_walk), "RULE-W") == 0);
+    // V1: the lease's vehicle release waits while a single of its camp is ours
+    erules::LeaseIn l;
+    l.frozen_by_us = true, l.vehicle_check = true, l.in_vehicle_host = true;
+    CHECK(erules::Lease(l) == erules::LeaseVerdict::release_vehicle);
+    l.hold_vehicle_single = true;
+    CHECK(erules::Lease(l) == erules::LeaseVerdict::keep);
+    l.frame_age_ms = 5000;
+    CHECK(erules::Lease(l) == erules::LeaseVerdict::release_silence);
+}
+
 int main() {
     TestCampGeometry();
     TestCampTake();
@@ -1866,6 +1901,7 @@ int main() {
     TestRestrain();
     TestMirrorsB();
     TestSamDown();
+    TestSingleRule();
     std::printf("%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

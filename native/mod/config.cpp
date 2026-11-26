@@ -131,6 +131,16 @@ Config LoadConfig(const std::wstring& dir) {
             }
             if (cfgval::SetDownKey(c.enemy_down_hold, k, ParseBool(v))) continue;
             if (cfgval::SetProbeKey(c.enemy_m2_probes, k, ParseBool(v))) continue;
+            {
+                cfgval::TakeKeys tk2{c.enemy_take_know, c.enemy_take_know_secs, c.enemy_take_camp, c.enemy_ticket_return,
+                                     c.enemy_single_hold_vehicle, c.enemy_single_rule, c.enemy_take_role, c.enemy_take_face};
+                if (cfgval::SetTakeKey(tk2, k, v)) {
+                    c.enemy_take_know = tk2.know, c.enemy_take_know_secs = tk2.know_secs, c.enemy_take_camp = tk2.camp;
+                    c.enemy_ticket_return = tk2.tickets, c.enemy_single_hold_vehicle = tk2.hold_vehicle, c.enemy_single_rule = tk2.rule;
+                    c.enemy_take_role = tk2.role, c.enemy_take_face = tk2.face;
+                    continue;
+                }
+            }
             if (k == "enemy_down_hold_radius") {
                 c.enemy_down_hold_radius = cfgval::DownRadius(v, c.enemy_down_hold_radius);
                 continue;
@@ -490,6 +500,10 @@ Config LoadConfig(const std::wstring& dir) {
     Log("[config] vehicle_mule_log=%d vehicle_mule_hold=%d", c.vehicle_mule_log ? 1 : 0, c.vehicle_mule_hold ? 1 : 0);
     Log("[config] enemy_down_hold=%d enemy_down_hold_radius=%.0f", c.enemy_down_hold ? 1 : 0, c.enemy_down_hold_radius);
     Log("[config] enemy_m2_probes=%d", c.enemy_m2_probes ? 1 : 0);
+    Log("[config] enemy_take_know=%d enemy_take_know_secs=%.0f enemy_take_camp=%d enemy_ticket_return=%d enemy_single_hold_vehicle=%d "
+        "enemy_single_rule=%d enemy_take_role=%d enemy_take_face=%d",
+        c.enemy_take_know, c.enemy_take_know_secs, c.enemy_take_camp, c.enemy_ticket_return ? 1 : 0, c.enemy_single_hold_vehicle ? 1 : 0,
+        c.enemy_single_rule ? 1 : 0, c.enemy_take_role ? 1 : 0, c.enemy_take_face ? 1 : 0);
     // Fragile's textures: only whether a folder came and its length (the path itself names the Windows user).
     Log("[config] textures_dir=%s", c.textures_dir.empty() ? "- (none)" : ("set (" + std::to_string(c.textures_dir.size()) + " bytes)").c_str());
     Log("[config] fragile_textures=%d textures_send=%d textures_receive=%d textures_hot_reload=%d textures_free=%d textures_defaults=%d", c.fragile_textures ? 1 : 0,

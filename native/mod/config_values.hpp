@@ -152,4 +152,47 @@ inline bool SetDownKey(bool& hold, const std::string& key, bool v) {
 }
 inline double DownRadius(const std::string& v, double keep) { return MirrorRadius(v, keep); }
 
+// The round-25 keys (docs/enemy-sync.md 14.18), all off by default; the levers that write game state act in hidden runs only.
+//   enemy_take_know 0|1|2       K1: her game forces a player visual (her Sam) into a MULE she takes alone (1 once, 2 then 2 Hz)
+//   enemy_take_know_secs 1..10  K1's window for mode 2 (default 3 s)
+//   enemy_take_camp 0|1|2       C1: her camp forced to phase 5 before the take (1 only when it was >= 4, 2 always)
+//   enemy_ticket_return 0|1     T1: attack tickets held by her frozen copies returned to their camp's group
+//   enemy_single_hold_vehicle   V1: while a single of a camp is hers, that camp's in-vehicle mirror release waits (no game writes)
+//   enemy_single_rule 0|1       R1: the host's single takes follow RULE-W / RULE-B (a camp take or a hold), no game writes
+//   enemy_take_role 0|1         R2: her taken MULE's camp role 1 reads 0 while it is hers (round 25 e)
+//   enemy_take_face 0|1         F1: her taken MULE turned in place to face her Sam at the take when she is > 60 deg off (round 25 e)
+// SetTakeKey: true when `key` is one of them (a bad value keeps the old one).
+struct TakeKeys {
+    int know = 0;
+    double know_secs = 3.0;
+    int camp = 0;
+    bool tickets = false;
+    bool hold_vehicle = false;
+    bool rule = false;
+    bool role = false;
+    bool face = false;
+};
+inline bool TakeBool(const std::string& v) { return v == "1" || v == "true" || v == "yes" || v == "on"; }
+inline bool SetTakeKey(TakeKeys& k, const std::string& key, const std::string& v) {
+    char* end = nullptr;
+    const double d = std::strtod(v.c_str(), &end);
+    const bool num = !v.empty() && end && !*end;
+    if (key == "enemy_take_know" || key == "enemy_take_camp") {
+        int& f = key == "enemy_take_know" ? k.know : k.camp;
+        if (num && (d == 0.0 || d == 1.0 || d == 2.0)) f = static_cast<int>(d);
+        return true;
+    }
+    if (key == "enemy_take_know_secs") {
+        if (num && d >= 1.0 && d <= 10.0) k.know_secs = d;
+        return true;
+    }
+    bool* const p = key == "enemy_ticket_return" ? &k.tickets : key == "enemy_single_hold_vehicle" ? &k.hold_vehicle
+                                                              : key == "enemy_single_rule"         ? &k.rule
+                                                              : key == "enemy_take_role"           ? &k.role
+                                                              : key == "enemy_take_face"           ? &k.face
+                                                                                                   : nullptr;
+    if (p) *p = TakeBool(v);
+    return p != nullptr;
+}
+
 }  // namespace st::cfgval

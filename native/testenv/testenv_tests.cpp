@@ -975,6 +975,13 @@ void SandboxRules() {
           "scenario ini: host_save and coop_test_build allowed, sandbox_saves not");
     Check(te::ScenarioIniKeyAllowed("coop_test_title_off") && te::ScenarioIniKeyAllowed("guest_skip_logos"),
           "scenario ini: coop_test_title_off and guest_skip_logos allowed");
+    Check(te::ScenarioIniKeyAllowed("enemy_take_know") && te::ScenarioIniKeyAllowed("enemy_take_know_secs") && te::ScenarioIniKeyAllowed("enemy_take_camp") &&
+              te::ScenarioIniKeyAllowed("enemy_ticket_return") && te::ScenarioIniKeyAllowed("enemy_single_hold_vehicle") &&
+              te::ScenarioIniKeyAllowed("enemy_single_rule") && te::LauncherIniOverrideAllowed("enemy_take_know") && !te::ScenarioIniKeyAllowed("enemy_take"),
+          "scenario ini: the round-25 single-take lever keys allowed");
+    Check(te::ScenarioIniKeyAllowed("enemy_take_role") && te::ScenarioIniKeyAllowed("enemy_take_face") &&
+              te::LauncherIniOverrideAllowed("enemy_take_role") && te::LauncherIniOverrideAllowed("enemy_take_face"),
+          "scenario ini: the round-25 e lever keys (R2 role, F1 face) allowed");
     Check(te::ScenarioIniKeyAllowed("test_net_latency_ms") && te::ScenarioIniKeyAllowed("test_net_burst"), "scenario ini: the test_net_* impairment allowed");
     Check(te::ScenarioIniKeyAllowed("held_items") && te::LauncherIniOverrideAllowed("held_items"),
           "scenario ini: held_items allowed (also on top of launcherini)");

@@ -302,6 +302,22 @@ struct Config {
     // the knowledge dump, the push levers, the perception reads, the raycast, the notice timing, the seated MULE's chain) is
     // allowed; hidden runs only, and it refuses otherwise. Off by default; the launcher never writes it.
     bool enemy_m2_probes = false;
+    // Round 25 (docs/enemy-sync.md 14.18; cfgval::SetTakeKey). The single-take levers, all off by default, never written by the
+    // launcher: enemy_take_know (K1: her game forces a player visual of her Sam into a MULE she takes alone; 1 once, 2 then 2 Hz for
+    // enemy_take_know_secs), enemy_take_camp (C1: her camp forced to 5 before the take; 1 when it was >= 4, 2 always),
+    // enemy_ticket_return (T1: attack tickets held by her frozen copies returned), enemy_single_hold_vehicle (V1: the camp's
+    // in-vehicle mirror release waits while a single of it is hers), enemy_single_rule (R1: the host's single takes follow RULE-W /
+    // RULE-B). K1 / C1 / T1 write game state and act in hidden runs only.
+    int enemy_take_know = 0;
+    double enemy_take_know_secs = 3.0;
+    int enemy_take_camp = 0;
+    bool enemy_ticket_return = false;
+    bool enemy_single_hold_vehicle = false;
+    bool enemy_single_rule = false;
+    // Round 25 e: enemy_take_role (R2: her taken MULE's camp role 1 reads 0 while it is hers), enemy_take_face (F1: her taken MULE
+    // turned in place to face her Sam at the take). Both write game state and act in hidden runs only; off by default.
+    bool enemy_take_role = false;
+    bool enemy_take_face = false;
     // Round 23 C (docs/enemy-sync.md 14.9; cfgval::SetDownKey, DownRadius). enemy_down_hold: while the other player is down (death or
     // KnotSpace, from its SEH1 beacon; never a faint), the copies of that game's fights here are held frozen in their last pose (or
     // hidden if never posed; a down one far away hidden), never given back alive, no new mirror, no ownership change, until that

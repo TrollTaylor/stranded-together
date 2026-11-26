@@ -122,6 +122,25 @@ struct CampView {
     unsigned members = 0, frozen = 0, owned = 0, running = 0;
 };
 bool CampViewOf(std::uint32_t id, CampView* out) noexcept;
+// Round 25 (docs/enemy-sync.md 14.18), game thread: the camp of <id> in this game: its CP actor (0 when unknown or not a CP camp)
+// and its other members as the camp walk lists them (state 0 running here, 1 a frozen copy, 2 owned here; phase as PhaseOf).
+// False: <id> is no enemy here.
+struct CampMember {
+    std::uint32_t id = 0;
+    std::uintptr_t actor = 0, entity = 0;
+    std::uint8_t state = 0, phase = 0xFF;
+};
+inline constexpr unsigned kCampOfMax = 24;
+struct CampOf {
+    std::uint32_t cp_id = 0;
+    std::uintptr_t cp = 0;
+    unsigned n = 0;
+    CampMember m[kCampOfMax];
+};
+bool CampOfId(std::uint32_t id, CampOf* out) noexcept;
+// round 25 e F1 (guest, game thread, her take before the unfreeze): <id>'s copy turned in place to `yaw` (radians). 1 done, 0 not
+// done (no realized copy), -1 the teleport faulted
+int TurnInPlace(std::uint32_t id, std::uintptr_t actor, float yaw) noexcept;
 bool Camp(const double (&v)[3], char* msg, std::size_t cap) noexcept;  // enemy_camp <op> <id> <k> (hidden runs)
 // Round 23 (docs/enemy-sync.md 14), game thread: the tie-up relay's pose hold on our frozen copy of <id> (either game: the guest's
 // mirror of a host enemy, the host's follower of one she owns). While held, the copy's transform writes and its SEP1 pose apply

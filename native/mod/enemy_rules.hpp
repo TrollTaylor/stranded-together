@@ -391,6 +391,9 @@ struct LeaseIn {
     // round 23 B (enemy_mirror_vehicle, checked every 1 s): our copy or the owner's copy sits in a vehicle
     bool vehicle_check = false;
     bool in_vehicle_here = false, in_vehicle_host = false;
+    // round 25 V1 (enemy_single_hold_vehicle): a MULE of its camp is owned here as a single, so the in-vehicle release waits (the
+    // mirror stays frozen at the host's frames, as before round 23) until the single ends
+    bool hold_vehicle_single = false;
 };
 enum class LeaseVerdict : std::uint8_t {
     none, keep, hold, release_off, release_unrealized, release_silence, release_range, forget_taken, release_host_unrealized, release_host_hidden,
@@ -405,7 +408,7 @@ inline LeaseVerdict Lease(const LeaseIn& l) noexcept {
     if (l.frame_age_ms > (l.cls == Class::near10 ? kSilenceNearMs : kSilenceFarMs)) return LeaseVerdict::release_silence;
     // round 23 B: seated in a vehicle (here or on the owner's side): given back to its own game (M0's release, not hidden) until
     // vehicles are synced (design 8, V3)
-    if (l.vehicle_check && (l.in_vehicle_here || l.in_vehicle_host)) return LeaseVerdict::release_vehicle;
+    if (l.vehicle_check && (l.in_vehicle_here || l.in_vehicle_host) && !l.hold_vehicle_single) return LeaseVerdict::release_vehicle;
     // M0: the host unloaded or hid its copy (the newest frame says so, within the silence window): never a statue
     if (l.host_guard && !l.host_realized) return LeaseVerdict::release_host_unrealized;
     if (l.host_guard && l.host_hidden) return LeaseVerdict::release_host_hidden;
@@ -1520,5 +1523,39 @@ inline constexpr DownAct DownLease(bool on, bool partner_down, LeaseVerdict v, c
     return on && partner_down && DownOverrides(v) ? DownHold(d) : DownAct::usual;
 }
 inline const char* DownActText(DownAct a) noexcept { return a == DownAct::hold ? "held" : a == DownAct::hide ? "hidden" : "usual"; }
+
+// ---------------------------------------------------------------- round 25 R1: the single-take rule (enemy_single_rule, host)
+// docs/enemy-sync.md 14.18 (design section 5). Asked when the host would hand ONE MULE to the guest:
+//   RULE-W (walk): a single is allowed only when her CP phase is <= 3 (unknown: not counted) AND no other member of that camp was
+//     hers earlier in this world (a frozen copy now); otherwise the WHOLE camp switches, or nothing when a camp take is not allowed.
+//   RULE-B (behind): it switches only while it already faces her in the old game: her Sam within 60 deg of its facing, <= 25 m, and
+//     the host copy alerted; else it stays with its owner (re-checked at the 2 Hz walk).
+// Off (rule_on false): always single (the round-24 behaviour).
+enum class SingleVerdict : std::uint8_t { single, camp, hold_walk, hold_behind };
+inline constexpr double kSingleFaceDeg = 60.0, kSingleFaceM = 25.0;
+struct SingleIn {
+    bool rule_on = false;
+    int cp_phase = -1;          // her CP's phase (-1 unknown)
+    int earlier_hers = 0;       // other members of the camp that were hers earlier in this world
+    bool camp_allowed = false;  // a whole-camp take is possible now
+    double off_deg = -1;        // her Sam off the host copy's facing (-1 unknown)
+    double dist_m = -1;         // her Sam from the host copy (-1 unknown)
+    bool alerted = false;       // the host copy's phase >= 4
+};
+inline SingleVerdict SingleRule(const SingleIn& s) noexcept {
+    if (!s.rule_on) return SingleVerdict::single;
+    if (s.cp_phase > 3 || s.earlier_hers > 0) return s.camp_allowed ? SingleVerdict::camp : SingleVerdict::hold_walk;
+    if (s.off_deg < 0 || s.off_deg > kSingleFaceDeg || s.dist_m < 0 || s.dist_m > kSingleFaceM || !s.alerted) return SingleVerdict::hold_behind;
+    return SingleVerdict::single;
+}
+inline const char* SingleVerdictText(SingleVerdict v) noexcept {
+    switch (v) {
+        case SingleVerdict::single: return "single";
+        case SingleVerdict::camp: return "camp";
+        case SingleVerdict::hold_walk: return "RULE-W";
+        case SingleVerdict::hold_behind: return "RULE-B";
+    }
+    return "?";
+}
 
 }  // namespace st::erules

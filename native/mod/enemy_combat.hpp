@@ -102,4 +102,15 @@ bool TargetProbe(const double (&v)[3], char* msg, std::size_t cap) noexcept;
 // facing and knowledge every 0.25 s; 6 [id | 0] [m] the parent chain (+0x70) and ride fields of the MULEs within m (a seated one).
 bool M2Probe(const double (&v)[3], char* msg, std::size_t cap) noexcept;
 
+// Round 25 (docs/enemy-sync.md 14.18), her game, game thread (enemy_sync.cpp): her take of an enemy (TakeBefore before the member's
+// SetPhase, TakeAfter after the unfreeze; alone: no other member of its camp is hers) and its refreeze when given back. They log the
+// P2 diagnostics D3 / D5 (enemy_m2_probes, P2 armed for it) and run the levers: C1 (enemy_take_camp or P2 lever f: her camp forced to
+// 5 first), K1 (enemy_take_know or lever e: the game's forced player visual, then 2 Hz in the combat tick), T1 (enemy_ticket_return
+// or lever g: tickets held by frozen copies returned). The levers act in hidden runs only, on takes alone.
+void TakeBefore(std::uint32_t id, std::uintptr_t actor, bool alone) noexcept;
+void TakeAfter(std::uint32_t id, std::uintptr_t actor, std::uintptr_t entity, bool alone) noexcept;
+void Refreeze(std::uint32_t id, std::uintptr_t entity) noexcept;
+// Her MULE no longer hers by any path (given back, frozen or not, or her own reset): R2's role written at its take restored.
+void TakeEnded(std::uint32_t id, bool given_back) noexcept;
+
 }  // namespace st::ecombat

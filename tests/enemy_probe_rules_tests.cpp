@@ -197,7 +197,99 @@ void TestKey() {
     CHECK(cfgval::SetProbeKey(on, "enemy_m2_probes", false) && !on);
     CHECK(!cfgval::SetProbeKey(on, "enemy_m2_probe", true) && !on);
 }
+void TestRound25() {
+    CHECK(std::strcmp(KnowledgeTypeName(0x54), "CPOrder") == 0 && std::strcmp(KnowledgeTypeName(0x5D), "InCombat") == 0);
+    CHECK(std::strcmp(KnowledgeTypeName(0x52), "DamagedAtPosition") == 0 && std::strcmp(KnowledgeTypeName(-1), "none") == 0);
+    CHECK(LeverName(4)[0] == 'e' && LeverName(5)[0] == 'f' && LeverName(6)[0] == 'g' && std::strcmp(LeverName(7), "?") == 0);
+    int l = -1, s = -1;
+    CHECK(P2Window(0, &l, &s) && l == 0 && s == 20);
+    CHECK(P2Window(3000, &l, &s) && l == 0 && s == 30);
+    CHECK(P2Window(2004, &l, &s) && l == 4 && s == 20);
+    CHECK(P2Window(9906, &l, &s) && l == 6 && s == 40);
+    CHECK(P2Window(3, &l, &s) && l == 3 && s == 20);
+    CHECK(!P2Window(7, &l, &s) && !P2Window(-1, &l, &s) && !P2Window(2.5, &l, &s) && !P2Window(3099, &l, &s));
+    CHECK(P2StepMs(0) == 250.0 && P2StepMs(2999) == 250.0 && P2StepMs(3000) == 1000.0);
+    CHECK(P2Due(0, -1) && !P2Due(100, 0) && P2Due(250, 0) && !P2Due(3500, 3000) && P2Due(4000, 3000));
+    PathTrack p;
+    char buf[256];
+    p.Text(buf, sizeof buf);
+    CHECK(std::strcmp(buf, "no samples") == 0 && p.StoppedAt() < 0);
+    p.Add(0.0, 0, 0, 4, 90);
+    p.Add(1.0, 2, 0, 6, 80);
+    p.Add(2.0, 4, 0, 8, 40);
+    p.Add(12.0, 24, 0, 28, 20);
+    p.Add(13.0, 24.2, 0, 28, 20);
+    p.Add(14.0, 24.2, 0, 27, 10);
+    CHECK(Near(p.max_d, 28) && Near(p.max_t, 12) && Near(p.max_d10, 8) && Near(p.max_walk, 24.2));
+    CHECK(Near(p.StoppedAt(), 12) && Near(p.face_t, 12) && Near(p.ex, 24.2));
+    p.Text(buf, sizeof buf);
+    CHECK(std::strstr(buf, "stopped at t 12.0") && std::strstr(buf, "facing her at t 12.0"));
+    PathTrack q;
+    q.Add(0, 0, 0, 5, 50);
+    q.Add(1, 3, 0, 5, 50);
+    CHECK(q.StoppedAt() < 0 && q.face_t < 0);
+    q.Text(buf, sizeof buf);
+    CHECK(std::strstr(buf, "moving at the end") && std::strstr(buf, "never facing her"));
+    const double pos[3] = {1, 2, 3};
+    KnowEntryText(buf, sizeof buf, -1, pos, 0, 0, 0, 0, 0);
+    CHECK(std::strcmp(buf, "none") == 0);
+    KnowEntryText(buf, sizeof buf, 0x54, pos, 0.5f, -1.0f, 0x2029, 3, 0xAB);
+    CHECK(std::strncmp(buf, "CPOrder(0x54) at (1.0,2.0,3.0)", 30) == 0 && std::strstr(buf, "actor 002029"));
+    CHECK(KnowListed(1) && KnowListed(0x54) && KnowListed(0x55) && KnowListed(0x5D) && KnowListed(0x51) && KnowListed(0x52) &&
+          !KnowListed(0x33));
+    // K1
+    CHECK(KnowPush(0, 0, false, -1, -1, false, 0, 3) == KnowStep::done);
+    CHECK(KnowPush(0, 0, false, -1, -1, false, 1, 3) == KnowStep::write);
+    CHECK(KnowPush(10, 0, true, -1, -1, false, 1, 3) == KnowStep::wait);
+    CHECK(KnowPush(600, 0, false, 0, -1, false, 1, 3) == KnowStep::done);
+    CHECK(KnowPush(300, 0, false, 0, -1, false, 2, 3) == KnowStep::wait);
+    CHECK(KnowPush(600, 0, false, 0, -1, false, 2, 3) == KnowStep::write);
+    CHECK(KnowPush(600, 0, true, 0, -1, false, 2, 3) == KnowStep::wait);
+    CHECK(KnowPush(600, 0, false, 0, -1, true, 2, 3) == KnowStep::done);
+    CHECK(KnowPush(1600, 0, false, 0, 500, false, 2, 3) == KnowStep::done);
+    CHECK(KnowPush(1400, 0, false, 0, 500, false, 2, 3) == KnowStep::write);
+    CHECK(KnowPush(3100, 0, false, 2500, -1, false, 2, 3) == KnowStep::done);
+    CHECK(KnowPush(3000, 0, false, 2400, -1, false, 2, 3) == KnowStep::write);
+    CHECK(std::strcmp(KnowStepText(KnowStep::wait), "wait") == 0);
+    // C1
+    CHECK(!CampRefreshWanted(0, 5) && !CampRefreshWanted(1, 3) && CampRefreshWanted(1, 4) && CampRefreshWanted(1, 5));
+    CHECK(!CampRefreshWanted(1, -1) && CampRefreshWanted(2, 0) && CampRefreshWanted(2, -1));
+    // T1
+    const std::uint64_t h[3] = {0x10, 0x20, 0x30};
+    CHECK(TicketsToReturn(h, 3, 0x20) == 1 && TicketsToReturn(h, 3, 0x40) == 0 && TicketsToReturn(h, 1, 0x20) == 0);
+    CHECK(TicketsToReturn(h, 0, 0x10) == 0 && TicketsToReturn(h, 65, 0x10) == 0 && TicketsToReturn(nullptr, 3, 0x10) == 0);
+    CHECK(TicketsToReturn(h, 3, 0) == 0);
+    // keys
+    cfgval::TakeKeys k;
+    CHECK(k.know == 0 && k.know_secs == 3.0 && k.camp == 0 && !k.tickets && !k.hold_vehicle && !k.rule);
+    CHECK(cfgval::SetTakeKey(k, "enemy_take_know", "2") && k.know == 2);
+    CHECK(cfgval::SetTakeKey(k, "enemy_take_know", "7") && k.know == 2);
+    CHECK(cfgval::SetTakeKey(k, "enemy_take_know_secs", "5") && k.know_secs == 5.0);
+    CHECK(cfgval::SetTakeKey(k, "enemy_take_know_secs", "99") && k.know_secs == 5.0);
+    CHECK(cfgval::SetTakeKey(k, "enemy_take_camp", "1") && k.camp == 1);
+    CHECK(cfgval::SetTakeKey(k, "enemy_ticket_return", "1") && k.tickets);
+    CHECK(cfgval::SetTakeKey(k, "enemy_single_hold_vehicle", "true") && k.hold_vehicle);
+    CHECK(cfgval::SetTakeKey(k, "enemy_single_rule", "1") && k.rule);
+    CHECK(cfgval::SetTakeKey(k, "enemy_single_rule", "0") && !k.rule);
+    CHECK(!cfgval::SetTakeKey(k, "enemy_take", "1"));
+}
 }  // namespace
+
+void TestRound25e() {
+    CHECK(RoleWhileHers(1, 1) == 0 && RoleWhileHers(1, 0) == -1 && RoleWhileHers(1, 2) == -1);
+    CHECK(RoleWhileHers(0, 1) == -1 && RoleWhileHers(2, 1) == -1 && RoleWhileHers(1, -1) == -1 && RoleWhileHers(1, 8) == -1);
+    double y = 99;
+    // facing +x (yaw 0), Sam 10 m behind (-x): turned to pi
+    CHECK(FaceYaw(1, 0.0, 0, 0, -10, 0, &y) && std::fabs(std::fabs(y) - 3.14159265) < 1e-6);
+    // Sam 10 m to the left (+y), 90 deg off: turned to pi/2
+    CHECK(FaceYaw(1, 0.0, 0, 0, 0, 10, &y) && std::fabs(y - 1.5707963) < 1e-6);
+    y = 99;
+    CHECK(!FaceYaw(1, 0.0, 0, 0, 10, 5, &y) && y == 99);   // 27 deg off: no turn
+    CHECK(!FaceYaw(1, 0.0, 0, 0, -31, 0, &y));             // over 30 m
+    CHECK(!FaceYaw(1, 0.0, 0, 0, -0.3, 0, &y));            // under 0.5 m
+    CHECK(!FaceYaw(0, 0.0, 0, 0, -10, 0, &y) && !FaceYaw(2, 0.0, 0, 0, -10, 0, &y) && !FaceYaw(1, 0.0, 0, 0, -10, 0, nullptr));
+    CHECK(!FaceYaw(1, std::nan(""), 0, 0, -10, 0, &y));
+}
 
 int main() {
     TestNames();
@@ -209,6 +301,8 @@ int main() {
     TestShorten();
     TestSigPtr();
     TestKey();
+    TestRound25();
+    TestRound25e();
     std::printf("%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

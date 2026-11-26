@@ -355,7 +355,9 @@ bool LauncherIniOverrideAllowed(const std::string& key) {
                                            "enemy_hit_owner", "enemy_hit_path", "enemy_hits_lethal", "enemy_hit_rate", "enemy_owner",
                                            "enemy_restrain_relay", "enemy_replay_flush", "enemy_mirror_hold_check", "enemy_mirror_vehicle",
                                            "enemy_down_hold", "enemy_down_hold_radius", "vehicle_mule_log", "vehicle_mule_hold",
-                                           "enemy_m2_probes"};
+                                           "enemy_m2_probes", "enemy_take_know", "enemy_take_know_secs", "enemy_take_camp",
+                                           "enemy_ticket_return", "enemy_single_hold_vehicle", "enemy_single_rule",
+                                           "enemy_take_role", "enemy_take_face"};
     for (const char* k : kAllowed)
         if (key == k) return true;
     return false;
@@ -382,7 +384,9 @@ bool ScenarioIniKeyAllowed(const std::string& key) {
                                            "enemy_hit_owner", "enemy_hit_path", "enemy_hits_lethal", "enemy_hit_rate", "enemy_owner",
                                            "enemy_restrain_relay", "enemy_replay_flush", "enemy_mirror_hold_check", "enemy_mirror_vehicle",
                                            "enemy_down_hold", "enemy_down_hold_radius", "vehicle_mule_log", "vehicle_mule_hold",
-                                           "enemy_m2_probes"};
+                                           "enemy_m2_probes", "enemy_take_know", "enemy_take_know_secs", "enemy_take_camp",
+                                           "enemy_ticket_return", "enemy_single_hold_vehicle", "enemy_single_rule",
+                                           "enemy_take_role", "enemy_take_face"};
 
     for (const char* k : kAllowed)
         if (key == k) return true;

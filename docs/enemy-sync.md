@@ -2386,3 +2386,165 @@ What this decides for M3: the per-enemy design is workable. A switch from behind
 M3 still needs (a) the walk-away retested under its own conditions, lever a and lever c paired, 3 or more runs each, with P1 on
 her copy, (b) B (behind) with lever c, and (c) the push found by then, or a switch only when the enemy faces the new player (S2's
 "seen" already implies it).
+
+### 14.18 Round 25: the WALK-AWAY and BEHIND conditions (hidden runs only; 11 runs and 2 regressions, 2026-11-25)
+
+**The short answer.** Neither problem is fixed. Seven levers and probes were built, all off by default, and the ones that
+write game state are refused outside hidden runs. None of them changed either behaviour measurably. The round narrowed both
+causes but did not find them. Nothing is adopted: every round-25 key stays 0.
+
+* WALK-AWAY: melee 02029 hits her once, walks 40-60 m to one fixed spot, about (1650.2, 1092.2), and shoots from there.
+  Knowledge, tickets, its camp role and its camp's post spots are not the cause. What the spot is, and why only some starts go
+  there, is open.
+* BEHIND: a gun MULE with her Sam 10 m behind it starts to turn to her, turns back to its old heading, stands for about 2-3 s,
+  and only then steps toward her and fires (turn 3.9-4.6 s, shot 4.3-7.2 s). Sometimes it never notices her at all.
+  Knowledge is not the gate.
+
+**What was built** (guest unless marked; all session.ini keys default 0; every site byte-checked at install and SEH-guarded,
+and a fault turns that lever off for the session: `[enemy] take byte checks (17): K1 know ok, C1 camp ok, T1 tickets ok, R2
+role ok, F1 face ok`):
+
+* Diagnostics (with `enemy_m2_probes=1`): D1 position / facing / speed, D2 the copy's knowledge entries, D3 its CP actor (phase,
+  alert position, entries, round-robin), D4 the camp-mates running in her world, D5 its group's ticket table, the P2 path summary
+  (max distance, walked, stopped, first facing her), D7 the host following its copy 30 s, and D8 the camp's post spots (`[probe]
+  P2 posts id=..`, read only: CP +0xF8[0..CP +0xF0], each locator at +0x40/+0x48/+0x50 as doubles [O]), written with D3's
+  "before the take" line. Lines: debug-actions.md `enemy_m2`.
+* K1 `enemy_take_know=1|2` (`enemy_take_know_secs` 1..10, default 3): at her take, the game's own forced player visual on the
+  copy's knowledge object (DSAINoticeAndKnowledge, vtable 0x143E13028 [O]; force flag K+0x736, position K+0x6A0/+0x6A8/+0x6B0
+  [O], consumed by ProcessSensorResults 0x142E8DAF0 -> upsert 0x142EA0370 [O]), 2 Hz while it does not face her or attack.
+  `[enemy] take know id=..`.
+* C1 `enemy_take_camp=1|2`: before the take's SetPhase, MuleCP_ForceSetCPPhase 0x142B649A0(guid [cp+0x18]+8, 5) [O] when its
+  camp's CP is below 5. `[enemy] take camp cp ..`. A CPOrder appears 0.5 s after a real force [O].
+* T1 `enemy_ticket_return=1`: at the take (and at a give-back), the tickets the frozen copies hold are returned through
+  FUN_142e60b70(group, key, indiv) [O]; group from DSAIIndividual (AIIndividualComponent+0x50) via the FUN_14252b1a0 walk
+  ([indiv+0x140] array, [indiv+0x138] count) [O]; table group+0x428 count, +0x430 entries of 0x20 [O].
+* R2 `enemy_take_role=1`: the taken MULE's camp role (DSMuleGameActor +0x368; its only reader is FUN_142AFABC0, behind the HTN
+  term DsMuleGetMuleRole0 [O]) reads 0 instead of 1 while it is hers, compare-then-write, restored at the end of the take.
+  Byte checks: the getter 0x142AFABC0 and its call site 0x142ECB40D. `[enemy] take role id=..: role 1 -> 0 while hers (cp ..)`,
+  `... given back: role restored to 1`.
+* F1 `enemy_take_face=1`: at the take, while the copy is still frozen, it is turned in place to face her Sam when she is more
+  than 60 deg off its facing and 0.5-30 m away, through kActorTeleport 0x1422F8D90. `[enemy] take face id=..: turned from N to
+  M deg off (Sam .. m)` | `not turned (..)`.
+* V1 `enemy_single_hold_vehicle=1`: a mirror's in-vehicle release waits while a member of its camp is hers (no game writes).
+* R1 `enemy_single_rule=1` (host): RULE-W (a camp with a member hers earlier: the whole camp is taken, or the single is held)
+  and RULE-B (only while it faces her, within 60 deg and 25 m, and alerted; held up to 20 s). `[enemy] single OWN id=.. held`.
+* Scenarios: `two-games-enemy-single-walk` (BASE) and `-know`, `-camp`, `-tickets`, `-hold`, `-role`, `-face`, `-roleface`, the
+  same cases in the same order: A (0202B gun, her Sam 10 m in front, the control), B (0202F gun, 10 m behind), C (02029 melee,
+  4 m in front, 30 s: WALK), B2 (02030 gun, 10 m behind), C2 (02031, 4 m in front, 30 s).
+* Review fixes (no behaviour change with the keys off): R2's restore record is a map per id with a world stamp, and the role is
+  restored by a new hook `ecombat::TakeEnded(id, given_back)` on every end of a take (a failed refreeze and her reset with the
+  link lost included; before, a second take or a failed refreeze could leave a live MULE at role 0). F1's turn returns 1 / 0 /
+  -1 (fault), and a fault now turns F1 off. A give-back request (`enemy_own <id> 4`) drops a RULE-B held take of that id (`its
+  RULE-B hold dropped`), so a held take can no longer go through after its give-back.
+
+**Runs** (`build-testenv\runs\20261125-*`): build stage `195150` (BASE), `195801` (T1), `200441` (K1; failed at C2 only),
+`200818` (C1); experiment `202127` and `204651` (BASE), `203831` and `205104` (R2), `204233` and `205856` (F1), `203330` (R2 + F1).
+`203330`, `204233` and `200441` failed at C2 because the host refused 02031 (`single OWN id=02031 not handed over: not takeable`;
+not a lever: R2 / F1 are guest-only); everything before that step is used. All 11 runs' guest and host logs were re-read in
+the round-25 review, and every number below matches them.
+
+**WALK: what the logs show** (02029; pass = first attack by 5 s and never more than 15 m from her Sam in the first 10 s)
+
+* [O] Every walk ends at the same spot: (1650.1-1650.2, 1092.1-1092.7), stopped at 16.7-21 s, after the first melee hit at
+  0.64-1.30 s. From there it shoots her at 42-61 m. After the give-back the host's copy is left at the spot (D7, `205856`:
+  `target follow id=02029 t=21 s (L3 phase): at (1650.00, 1091.68, 177.10)`). The regression run `211807` did it again: 48.6 m,
+  end (1650.2,1092.3), first melee 1316 ms, shot 18884 ms.
+* [O] The split is clean: all 8 starts 40.5-58.6 m from the spot walked; all 3 starts 63.1 / 74.4 / 76.0 m away (`204233`,
+  `203831`, `203330`) stayed within 3.5-4.3 m and fought.
+* [I] But the start position is not controlled: it is wherever the host's copy happened to stand when her Sam was put 4 m in
+  front of it. The same split is just as clean against the camp's post #0 (1620.3,1065.8): walks started 4.7-35.5 m from it,
+  fights 45.5-55 m. And the fights are the runs where the host's copy had already moved west, toward the alert spot
+  (1577.8,1118.6). "A leash on a fixed spot", "a leash on its post" and "the host's copy already pulled away" cannot be told
+  apart with these samples. "Per MULE" is not shown either: 02031 also ended near the spot in `202127` ((1649.3,1088.6), still
+  fighting).
+* Not the cause:
+  * knowledge: her PlayerVisual entry is there from 0.3 s [O] (K1 on 02029 was not a real test: one write, not consumed, it had
+    already attacked);
+  * tickets: every group holds 0 (the leaf DSAIGroup has +0x428 0 and a null table, its parent is an AIGroup) [O], so T1 had
+    nothing to return;
+  * the camp role: R2 wrote role 1 -> 0 (logged) and 02029 still walked 42.7 m (`205104`) [O];
+  * the post spots: D8 lists 3 (#0 (1620.3,1065.8), #1 (1676.6,961.1), #2 (1517.9,992.0)); the spot is about 40 m from #0 and is
+    none of them [O]. DsGetMuleNearestPostPosition0 0x142ECCFC0 -> FUN_142B3D600 takes the plain nearest of that list, and
+    DsGetMuleMainPostPosition0 0x142ECA2D0 takes #0 [O], so both post terms point at #0.
+* Round 24's three suspects, settled as far as these runs go:
+  * the camp phase: 4-5 before every take, the 3 fights included, so phase 4-5 is not enough. C1 never changed it (every force
+    reads `forced 5 (was 5/5/5; now 5/5/5)`, a no-op), and no take happened at phase 3 or lower, so "phase 4-5 is needed" is
+    untested. The camp phase is not ruled out;
+  * a camp-mate running in her world: "running 1" in every run, fights and walks alike (0202E, 94-103 m away in truck 2000F,
+    seat 4). It does not separate them;
+  * two earlier single takes in the camp: A and B always came before C. Also constant, so it does not separate them either.
+* [U] What (1650.2,1092.2) is: a cover or tactical point, a route point, a combat-area anchor, or a move target the host's plan
+  had set before the take.
+
+**BEHIND: what the logs show** (0202F and 02030; pass = turned to within 30 deg by 3 s and attacked by 5 s)
+
+* [O] From the 0.25 s D1 lines (`202127`, `205856`, `204233`): at 0.3-0.65 s it starts to turn toward her (83 deg off at
+  0.65 s); then it turns BACK to its pre-take heading (0202F to 154-156 deg, it was 150; 02030 to 126 deg, it was about 132) and
+  stands at 0.04-0.12 m/s for about 2-3 s; at about 4 s it steps 2.7 m while turning to her, and fires. BASE-like turn times
+  3.86-4.58 s, shots 4.27-7.24 s, 10 of 10 late or never. This corrects the experiment's first reading ("it carries on a move it
+  already had going"): the 2.7 m end point is "fixed" only because each MULE starts at the same place each run (F1 `204233`
+  started elsewhere and ended elsewhere).
+* [I] The likely cause is a stored desired heading or standing order in the copy (from the host's take yaw or from her own
+  pre-freeze state) that a transform write does not touch.
+* [O] A second mode: 0202F never notices her. ea4 stays 0x2040000 (no 0x40000000), no PlayerVisual, it moves 0.6 m or less:
+  `195150`, `205104`, and the regression `211807` (3 of 7 BASE-like 0202F samples). In those runs the camp was back at phase 4 at
+  the take.
+* [O] Knowledge is not the gate: K1 wrote 6 forced visuals, each consumed in 15-186 ms (`200441`), and the turn times stayed
+  3.91-4.08 s.
+* [O] F1 turns it at once, and then it does the same thing: back to the old heading at 1.3-2.3 s (5 of 6), the same step, shots
+  4.0-7.0 s, inside BASE's range.
+
+**A third mode** (02031, the C2 control): in `203831` it was already running at 5.9 m/s when handed over and had NO knowledge
+object (`P2 know id=02031 t=0.00: no knowledge object`; bits 0x42440000). It ran 62.7 m to (1669.2,991.4) and never attacked.
+In `205104` it stayed within 6.5 m but lost PlayerVisual at 1.61 s and never attacked in 30 s. It fought in the other samples.
+
+**Per-arm results** (arms are run-level, not paired within a run)
+
+| Arm (key) | WALK 02029 | BEHIND 0202F / 02030 | Verdict |
+|---|---|---|---|
+| BASE / BASE-like | walked 7 of 8; the fight is the 63 m start | 10 of 10 late or never (2 never); turn 3.86-4.58 s, shot 4.27-7.24 s | the reference |
+| K1 `enemy_take_know` | walked (58.6 m start; not a real test) | turn 4.08 / 3.91 s, shot 4.30 / 4.33 s | no effect; breaks stealth |
+| C1 `enemy_take_camp` | walked; the force was a no-op (5/5/5) | turn 3.86 / 4.15 s | no effect; not a test of the phase; breaks stealth |
+| T1 `enemy_ticket_return` | walked; "holds none" | no change | nothing to return |
+| R2 `enemy_take_role` | walked 1 of 3; the 2 fights were 74-76 m starts, the 42.5 m start walked with role 0 written | 02030 turn 3.88 / 4.06 s; 0202F is role 0 (untouched) | no effect shown; confounded by the start |
+| F1 `enemy_take_face` | 02029 never turned (it already faced her) | forced to 0 deg, turned back in 5 of 6; shots 4.0-7.0 s | no effect ("4 of 6 passes" are the forced 0 ms); breaks stealth |
+| V1 `enemy_single_hold_vehicle` | not run | not run | no game writes |
+| R1 `enemy_single_rule` | not run (no scenario arm) | not run | the only stealth-neutral candidate; untested |
+
+* Control A (0202B, 10 m in front, no lever) shot at 0.76-1.09 s in every run (regression `211807`: 776 ms, and 536 ms in the
+  whole-camp control D).
+* 0 FAULT lines in both games of all runs; the byte checks were all ok in every run.
+* Stealth: K1 injects her true position whether or not the MULE could perceive her; F1 turns an unaware MULE to face her; C1
+  raises her whole camp to combat phase. Any of them would make a MULE attack a player it should not know about. R2 changes camp
+  tactics. None may become a default.
+
+**Regressions of the round's code** (keys at 0): `20261125-211807-two-games-enemy-single` PASS (121 steps; the round-24 picture
+unchanged: A shot 776 ms, B 0202F never noticed, C 02029 walked to the spot, D 536 ms) and
+`20261125-212126-two-games-launcher-local-test` PASS (100 steps; the launcher-written ini; 0 FAULT lines). Build OK, ctest 46/46.
+
+**What stays open**
+
+* WALK: what the spot is [U], and which of the three readings is right. Next: vary the start on purpose (the same MULE taken near
+  post #0 vs 50 m or more away, with the host's copy idle vs already pursuing); a take with her camp at phase 3 or lower.
+* BEHIND: the copy's desired heading / standing order at the take [I]; read it (locomotion or orientation target) at the take.
+  The never-noticed mode's cause [U].
+* 02031: the "running and unaware" mode, and the host's `not takeable` refusals (3 runs).
+* R1 has 0 runs. Its RULE-W trigger ("a member was hers earlier") was true in all 11 runs, fights included, so it would not have
+  told them apart. RULE-B's "alerted" is the host copy's own phase, which may come from an alert about the host's Sam, not hers.
+* V1 is not limited to hidden runs (it writes nothing and is off by default, but the key changes the in-vehicle release in a
+  normal session). Each take resets the take record, so K1's 2 Hz writes for an earlier single stop at the next take (fine while
+  singles are one at a time). That R2's +0x368 (read at the actor) and the getter's [comp+0x58]+0x368 are the same object is
+  supported by the values (0202B 2, 0202F 0, 02029 / 02030 1) but not shown directly [I]. D6 (the HTN task name) and a
+  split-camp variant were not built.
+
+**The design-rule consequence for M3** (the per-enemy switch)
+
+* Hand a single enemy to the other game only while it already faces that player and is engaging them. That is the case that
+  works every time (control A: 0.5-1.1 s in every run). A MULE facing away re-asserts its old heading and holds 2-3 s, or never
+  notices her: keep it with its current owner until it has turned to her in the owner's game.
+* The rule must not create awareness. No write of knowledge, facing or camp phase into her copy: they break stealth and did not
+  help. The choice of WHEN to switch is the only safe lever, and it must use the owner's own view of who the enemy is engaging
+  (RULE-B's "alerted" must mean alerted to HER, not just the host copy's phase).
+* A switch of a lone MULE near its camp can send it to the WALK spot. Until the cause is found, prefer the whole-camp hand-over
+  when the camp is alerted (round 24's whole-camp controls fought 4 of 4), with a better trigger than RULE-W's.
+* Before any of this becomes a default: an R1 scenario arm, run 3 or more times, and the WALK start varied on purpose.

@@ -1597,6 +1597,8 @@ void ResetWorld() {
 
 void TargetTick();  // the target probe (below)
 void ProbeTickGuarded() noexcept;  // round 23 E: the M2 probes (below)
+void TakeTickGuarded() noexcept;   // round 25: K1's 2 Hz writes and C1's follow-up after her take (below)
+void TakeChecks() noexcept;        // round 25: the take levers' byte checks (below)
 void StimTick() noexcept;  // her body's visual stimulus (below): dropped when her body or its agent changes
 void StimForget(const char* why) noexcept;  // forgotten without the remove (no longer ours: reused, or the old world's)
 void TestTick() {
@@ -1719,6 +1721,7 @@ void TickBody(const TickIn& in, double now) {
     TestTick();
     TargetTick();
     ProbeTickGuarded();
+    TakeTickGuarded();
     if (g_restrain_send || !g_rwatch.empty() || !g_rsent.empty()) RestrainActTick();
     if (in.net) DrainCombat(gv);
     if (!g_rback.empty()) RestrainOwnerTick();
@@ -1793,6 +1796,10 @@ bool Checks() {
 // ---------------------------------------------------------------- public
 void Install(const Config& config) noexcept {
     g_cfg = config;
+    // round 25: the take levers' sites, checked at start-up when a lever key or the probes are on (a mismatch turns that lever off)
+    if (config.enemy_take_know || config.enemy_take_camp || config.enemy_ticket_return || config.enemy_m2_probes || config.enemy_take_role ||
+        config.enemy_take_face)
+        TakeChecks();
     RingInit();
     if (!config.enemy_hits) {
         shots::SetHitsPart(false, "enemy_hits=0)");
@@ -2726,7 +2733,7 @@ bool TargetProbe(const double (&v)[3], char* msg, std::size_t cap) noexcept {
             Log("[enemy] target L3 RisePhase id=%05X: phase object %p %d -> %d (asked %d), +0x114 %.1f, +0x118 %.2f%s", id, reinterpret_cast<void*>(po), before,
                 static_cast<int>(U32(po + kPhaseNow)), phase, static_cast<double>(F32(po + 0x114)), static_cast<double>(F32(po + 0x118)), r < 0 ? " FAULT" : "");
             if (r < 0) return std::snprintf(msg, cap, "FAULT"), false;
-            StartFollow(id, 12, "L3 phase");
+            StartFollow(id, g_cfg.enemy_m2_probes ? 30 : 12, "L3 phase");  // round 25 D7: the whole P2 window with the probes on
             return std::snprintf(msg, cap, "L3 phase %d -> %d", before, static_cast<int>(U32(po + kPhaseNow))), true;
         }
         case 7:
@@ -3202,8 +3209,671 @@ struct PushRun {
     float d_mul = 0;
     double d_until = 0, dist = -1;
     char applied[160] = {};
+    // round 25: the D1-D5 diagnostics' schedule and the path summary
+    double last_diag = -1, next_camp = 0;
+    double last_pos[3] = {}, last_pos_t = -1;
+    ep::PathTrack path;
 };
 PushRun g_push;
+
+// ---- Round 25 (docs/enemy-sync.md 14.18): her single takes. The diagnostics D1-D5 (the P2 window, the guest, reads only) and the
+// take levers K1 / C1 / T1 (enemy_sync.cpp GuestTake / GuestRefreeze call TakeBefore / TakeAfter / Refreeze; hidden runs only, each
+// behind its key or P2 lever e / f / g). Every site byte-checked (TakeChecks), every read fault-free, every write and call SEH-guarded:
+// a fault turns that lever off for the session.
+constexpr std::uintptr_t kKForceFlag = 0x736, kKForcePos = 0x6A0, kKFocus = 0x5A8, kKeAge = 0x40, kKeMem = 0x44;
+constexpr std::uintptr_t kKProcess = 0x142E8DAF0;  // K's ProcessSensorResults (vt+0x38): the forced player visual's reader
+constexpr std::uintptr_t kKUpsert = 0x142EA0370;   // the knowledge upsert it calls
+constexpr std::uintptr_t kCpForce = 0x142B649A0;   // MuleCP_ForceSetCPPhase(const u64 guid[2]*, int phase)
+constexpr std::uintptr_t kTicketReturn = 0x142E60B70, kTicketTake = 0x142E6CE70;  // DSAIGroup's ticket return / receive
+constexpr std::uintptr_t kCpPh = 0x210, kCpReq = 0x214, kCpPrev = 0x218, kCpCounter = 0x220, kCpAlert = 0x230, kCpK1Valid = 0x2E8,
+                         kCpK1Pos = 0x290, kCpK1Age = 0x2B0, kCpK2Valid = 0x368, kCpK2Pos = 0x310, kCpRR = 0x150, kCpGuidRef = 0x18;
+constexpr std::uintptr_t kMPhase = 0x110, kMCounter = 0x114, kMRole = 0x368, kMCpId = 0x374;
+constexpr std::uintptr_t kCompIndiv = 0x50, kIndivLinkN = 0x138, kIndivLinks = 0x140, kGroupParent = 0x140, kGroupTicketN = 0x428,
+                         kGroupTickets = 0x430;
+enum LGroup : unsigned { kLKnow = 1, kLCamp = 2, kLTicket = 4, kLRole = 8, kLFace = 16 };
+constexpr std::uintptr_t kRoleGetter = 0x142AFABC0;  // FUN_142afabc0: [comp+0x58]+0x368, DsMuleGetMuleRole0's only read [O]
+// clang-format off
+constexpr Site kTakeSites[] = {
+    {0x142E8E005, "80 BF 36 07 00 00 00", "K1: the reader's flag test (cmp byte [rdi+0x736],0)", kLKnow},
+    {0x142E8E022, "C5 FB 10 8F B0 06 00 00", "K1: the reader's z (+0x6B0)", kLKnow},
+    {0x142E8E06B, "C5 F8 10 87 A0 06 00 00", "K1: the reader's x, y (+0x6A0)", kLKnow},
+    {0x142E8E13C, "E8 ?? ?? ?? ?? C6 87 36 07 00 00 00", "K1: the upsert, then the flag cleared", kLKnow},
+    {0x142F02529, "C6 81 36 07 00 00 01", "K1: the game's setter (the flag)", kLKnow},
+    {0x142F02535, "C5 F8 11 81 A0 06 00 00", "K1: the game's setter (x, y)", kLKnow},
+    {0x142F02542, "C5 FB 11 89 B0 06 00 00", "K1: the game's setter (z)", kLKnow},
+    {kCpForce,    "40 57 48 81 EC A0 00 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 84 24 88 00 00 00 8B FA 48 8B D1", "C1: ForceSetCPPhase", kLCamp},
+    {0x142B649DD, "48 8D 98 08 02 00 00 83 FF 05", "C1: its phase struct (+0x208)", kLCamp},
+    {0x142B64A90, "C7 43 08 05 00 00 00 33 FF 48 8B 0D", "C1: its case 5", kLCamp},
+    {0x142B64B29, "8D 57 01 48 89 7C 24 28 48 8D 8B 70 02 00 00", "C1: case 5's CP knowledge (+0x270)", kLCamp},
+    {kTicketReturn, "48 89 5C 24 20 55 56 57 48 83 EC 20 49 8B E8 48 8B F2 48 8B F9", "T1: the ticket return", kLTicket},
+    {kTicketTake,   "48 89 5C 24 20 55 56 57 48 83 EC 20 49 8B E8 48 8B F2 48 8B F9", "T1: the ticket receive", kLTicket},
+    {kRoleGetter,   "48 8B 41 58 48 85 C0 74 07 8B 80 68 03 00 00 C3", "R2: the role getter (mov eax,[rax+0x368])", kLRole},
+    {0x142ECB40D,   "48 8B 4B 30 E8", "R2: DsMuleGetMuleRole0 calls it (mov rcx,[rbx+0x30])", kLRole},
+    {0x1422F8D90,   "40 53 48 83 EC 20 48 8B 01 48 8B D9 FF 50 10", "F1: the actor teleport (the take's own)", kLFace},
+};
+// clang-format on
+bool g_lchecked = false;
+unsigned g_lgroups = 0, g_loff = 0;  // the groups whose checks passed; the groups turned off after a fault
+void TakeChecks() noexcept {
+    if (g_lchecked) return;
+    g_lchecked = true;
+    ProbeChecks();  // K1 finds K with the probes' knowledge search
+    unsigned bad = 0, n = 0;
+    for (const Site& s : kTakeSites) {
+        ++n;
+        if (!mem::CodeMatches(A(s.va), s.sig)) bad |= s.group, Log("[enemy] take byte check FAILED: %s at 0x%llX", s.name, static_cast<unsigned long long>(s.va));
+    }
+    ++n;
+    if (mem::Q(A(kKnowVt) + 0x38) != A(kKProcess) || mem::RipTarget(A(0x142E8E13C), 1, 5) != A(kKUpsert))
+        bad |= kLKnow, Log("[enemy] take byte check FAILED: K1: the knowledge vtable's ProcessSensorResults (vt+0x38) and its upsert");
+    if (!(g_pgroups & kPKnow)) bad |= kLKnow;
+    g_lgroups = (kLKnow | kLCamp | kLTicket | kLRole | kLFace) & ~bad;
+    Log("[enemy] take byte checks (%u): K1 know %s, C1 camp %s, T1 tickets %s, R2 role %s, F1 face %s", n, Ok(g_lgroups & kLKnow), Ok(g_lgroups & kLCamp),
+        Ok(g_lgroups & kLTicket), Ok(g_lgroups & kLRole), Ok(g_lgroups & kLFace));
+}
+void LeverFault(unsigned group, const char* where) noexcept {
+    g_loff |= group;
+    Log("[enemy] take lever FAULT in %s: that lever is off for the session", where);
+}
+// why a lever cannot act now (nullptr: it can)
+const char* LeverWhy(unsigned group) noexcept {
+    if (!automation::Enabled()) return "hidden runs only";
+    if (!(g_lgroups & group)) return "its byte checks failed";
+    if (g_loff & group) return "off after a fault";
+    return nullptr;
+}
+int SehCpForce(const std::uint64_t* guid, int phase) noexcept {
+    __try {
+        reinterpret_cast<void(__fastcall*)(const std::uint64_t*, int)>(A(kCpForce))(guid, phase);
+        return 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+int SehTicketReturn(std::uintptr_t group, std::uint64_t key, std::uintptr_t indiv) noexcept {
+    __try {
+        reinterpret_cast<void(__fastcall*)(std::uintptr_t, std::uint64_t, std::uintptr_t)>(A(kTicketReturn))(group, key, indiv);
+        return 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+// K1's write: only while the game's flag is 0 (its reader clears it): the position first, a fence, then the flag. 1 written, 0 the
+// flag was set, -1 a fault.
+int SehKnowWrite(std::uintptr_t k, const double (&p)[3]) noexcept {
+    __try {
+        volatile std::uint8_t* const f = reinterpret_cast<volatile std::uint8_t*>(k + kKForceFlag);
+        if (*f != 0) return 0;
+        volatile double* const d = reinterpret_cast<volatile double*>(k + kKForcePos);
+        d[0] = p[0], d[1] = p[1], d[2] = p[2];
+        std::atomic_thread_fence(std::memory_order_seq_cst);
+        *f = 1;
+        return 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+// the MSVC RTTI class name (mem::RttiName gives it plain: "DSAIGroup"): `kind` "Group" or "Individual" in a DSAI class
+// (DSAIGroup / DSAIIndividual or a subclass of that name)
+bool RttiIs(std::uintptr_t p, const char* kind) noexcept {
+    const char* n = p ? mem::RttiName(mem::RttiOf(p)) : nullptr;
+    return n && std::strncmp(n, "DSAI", 4) == 0 && std::strstr(n, kind) != nullptr;
+}
+const char* RttiText(std::uintptr_t p) noexcept {
+    const char* n = p ? mem::RttiName(mem::RttiOf(p)) : nullptr;
+    return n ? n : "?";
+}
+// a MULE entity's DSAIIndividual (AIIndividualComponent +0x50, its RTTI checked), 0 none
+std::uintptr_t IndivOf(std::uintptr_t entity) noexcept {
+    const std::uintptr_t comp = CompOf(entity, "AIIndividualComponent");
+    const std::uintptr_t ind = comp ? mem::Q(comp + kCompIndiv) : 0;
+    return ind && RttiIs(ind, "Individual") ? ind : 0;
+}
+// its innermost DSAIGroup ([O] FUN_14252b1a0's walk: indiv +0x140 / +0x138 -> obj; obj +0x20 n, +0x18 base (or inline at +0x2B
+// aligned) -> base + n x 0x20 - 0x18; the parents via +0x140), 0 none
+std::uintptr_t GroupOf(std::uintptr_t ind) noexcept {
+    std::int32_t n = 0;
+    const std::uintptr_t arr = mem::Q(ind + kIndivLinks);
+    if (!ind || !arr || !mem::Rd(ind + kIndivLinkN, n) || n <= 0 || n > 16) return 0;
+    for (std::int32_t i = 0; i < n; ++i) {
+        const std::uintptr_t obj = mem::Q(arr + 8ull * static_cast<unsigned>(i));
+        std::int32_t k = 0;
+        if (!obj || !mem::Rd(obj + 0x20, k) || k <= 0 || k > 64) continue;
+        std::uintptr_t base = mem::Q(obj + 0x18);
+        if (!base) base = (obj + 0x2B) & ~static_cast<std::uintptr_t>(7);
+        const std::uintptr_t g = mem::Q(base + 0x20ull * static_cast<unsigned>(k) - 0x18);
+        if (g && RttiIs(g, "Group")) return g;
+    }
+    return 0;
+}
+struct Ticket {
+    std::uint64_t key = 0;
+    std::int32_t avail = 0, holders = 0;
+    std::uint64_t h[8] = {};  // the first 8 holders
+};
+unsigned TicketsOf(std::uintptr_t g, Ticket* out, unsigned cap) noexcept {
+    std::int32_t n = 0;
+    const std::uintptr_t tab = mem::Q(g + kGroupTickets);
+    if (!g || !tab || !mem::Rd(g + kGroupTicketN, n) || n <= 0 || n > 64) return 0;
+    unsigned c = 0;
+    for (std::int32_t i = 0; i < n && c < cap; ++i) {
+        Ticket& t = out[c];
+        const std::uintptr_t e = tab + 0x20ull * static_cast<unsigned>(i);
+        if (!mem::Rd(e, t.key) || !mem::Rd(e + 8, t.avail) || !mem::Rd(e + 0x10, t.holders)) continue;
+        const std::uintptr_t ha = mem::Q(e + 0x18);
+        const int k = t.holders > 0 && t.holders <= ep::kMaxHolders ? (t.holders < 8 ? t.holders : 8) : 0;
+        if (k && ha) mem::Read(ha, t.h, 8ull * static_cast<unsigned>(k));
+        ++c;
+    }
+    return c;
+}
+// her newest take (singles are one at a time)
+struct TakeRec {
+    std::uint32_t id = 0, world = 0, cp_id = 0;
+    std::uintptr_t actor = 0, entity = 0, k = 0, cp = 0;
+    double t = 0;
+    int cp_before = -1, lever = -1;
+    bool diag = false, tickets = false;
+    // K1
+    int know_mode = 0;
+    double know_secs = 3, last_write = -1, wrote_at = -1, faced_since = -1;
+    int writes = 0;
+    bool pending = false;
+    double w_pos[3] = {}, w_dist = 0, w_off = 0;
+    unsigned shots0 = 0, hits0 = 0;
+    // C1
+    bool c1 = false, c1_checked = false;
+    double k_next = 0;  // the knowledge search's next try (2 Hz: it is a few thousand reads)
+    int k_tries = 0;
+    char text[200] = {};  // what the levers did (P2's lever e / f / g line)
+};
+TakeRec g_take;
+// R2: the roles written on her taken MULEs (by id), each restored when it stops being hers (given back, or her own reset)
+struct RoleRec {
+    std::uint32_t id = 0, cp_id = 0, world = 0;
+    std::uintptr_t actor = 0;
+    int was = -1, now = -1;
+};
+std::map<std::uint32_t, RoleRec> g_roles;
+int ArmedLever(std::uint32_t id) noexcept { return g_push.id == id ? g_push.lever : -1; }
+// D3: her CP actor and the taken member's camp fields
+void CampLine(const char* when, std::uint32_t id, std::uintptr_t actor, std::uint32_t cp_id, std::uintptr_t cp) {
+    if (!cp) return void(Log("[probe] P2 camp cp %05X %s: no CP actor here", cp_id, when));
+    double al[3] = {}, k1[3] = {}, k2[3] = {};
+    mem::Read(cp + kCpAlert, al, sizeof(al));
+    mem::Read(cp + kCpK1Pos, k1, sizeof(k1));
+    mem::Read(cp + kCpK2Pos, k2, sizeof(k2));
+    Log("[probe] P2 camp cp %05X %s: phase %d req %d prev %d counter %.2f; alert (%.1f,%.1f,%.1f); entry1 valid %u (%.1f,%.1f,%.1f) age %.2f; "
+        "entry2 valid %u (%.1f,%.1f,%.1f); rr %d; member %05X +0x110 %d +0x114 %.2f role %u cp %X",
+        cp_id, when, static_cast<int>(U32(cp + kCpPh)), static_cast<int>(U32(cp + kCpReq)), static_cast<int>(U32(cp + kCpPrev)),
+        static_cast<double>(F32(cp + kCpCounter)), al[0], al[1], al[2], U32(cp + kCpK1Valid) & 1u, k1[0], k1[1], k1[2], static_cast<double>(F32(cp + kCpK1Age)),
+        U32(cp + kCpK2Valid) & 1u, k2[0], k2[1], k2[2], static_cast<int>(U32(cp + kCpRR)), id, actor ? static_cast<int>(U32(actor + kMPhase)) : -1,
+        actor ? static_cast<double>(F32(actor + kMCounter)) : 0.0, actor ? U32(actor + kMRole) : 0, actor ? U32(actor + kMCpId) : 0);
+}
+// D5: the attack tickets of the taken MULE's group chain (its holders as MULE ids; * a frozen copy here)
+void TicketsLine(const char* when, std::uint32_t id, std::uintptr_t entity) {
+    esync::CampOf co;
+    esync::CampOfId(id, &co);
+    std::uintptr_t ind[25] = {};
+    std::uint32_t ids[25] = {};
+    std::uint8_t st[25] = {};
+    unsigned ni = 0;
+    ind[ni] = IndivOf(entity), ids[ni] = id, st[ni] = 2, ++ni;
+    for (unsigned i = 0; i < co.n && ni < 25; ++i)
+        if (co.m[i].entity) ind[ni] = IndivOf(co.m[i].entity), ids[ni] = co.m[i].id, st[ni] = co.m[i].state, ++ni;
+    std::uintptr_t g = ind[0] ? GroupOf(ind[0]) : 0;
+    if (!g) {
+        const std::uintptr_t comp = CompOf(entity, "AIIndividualComponent");
+        const std::uintptr_t raw = comp ? mem::Q(comp + kCompIndiv) : 0;
+        Log("[probe] P2 tickets id=%05X %s: unknown link (%s; component %p, +0x50 %p class %s)", id, when, ind[0] ? "no DSAIGroup on its links" : "no DSAIIndividual",
+            reinterpret_cast<void*>(comp), reinterpret_cast<void*>(raw), RttiText(raw));
+        return;
+    }
+    for (int level = 0; g && level < 4; ++level, g = mem::Q(g + kGroupParent)) {
+        if (!RttiIs(g, "Group")) break;
+        Ticket t[12];
+        const unsigned n = TicketsOf(g, t, 12);
+        char buf[640];
+        std::int32_t raw_n = -1;
+        mem::Rd(g + kGroupTicketN, raw_n);
+        const std::uintptr_t parent = mem::Q(g + kGroupParent);
+        int at = std::snprintf(buf, sizeof(buf), "group %p (%s) level %d: %u entries (+0x428 %d, table %p; parent %p %s)", reinterpret_cast<void*>(g),
+                               RttiText(g), level, n, raw_n, reinterpret_cast<void*>(mem::Q(g + kGroupTickets)), reinterpret_cast<void*>(parent),
+                               parent ? RttiText(parent) : "-");
+        for (unsigned i = 0; i < n && at > 0 && at < static_cast<int>(sizeof(buf)) - 80; ++i) {
+            at += std::snprintf(buf + at, sizeof(buf) - at, "; key %llX avail %d holders %d", static_cast<unsigned long long>(t[i].key), t[i].avail, t[i].holders);
+            for (int h = 0; h < 8 && h < t[i].holders && at < static_cast<int>(sizeof(buf)) - 16; ++h) {
+                int who = -1;
+                for (unsigned j = 0; j < ni; ++j)
+                    if (ind[j] && ind[j] == t[i].h[h]) who = static_cast<int>(j);
+                if (who < 0) at += std::snprintf(buf + at, sizeof(buf) - at, " ?");
+                else at += std::snprintf(buf + at, sizeof(buf) - at, " %05X%s", ids[who], st[who] == 1 ? "*" : "");
+            }
+        }
+        Log("[probe] P2 tickets id=%05X %s: %s", id, when, buf);
+    }
+}
+// D4: the other members of its camp running in her world
+void MateLines(const char* when, std::uint32_t id, const double (&me)[3]) {
+    esync::CampOf co;
+    if (!esync::CampOfId(id, &co)) return;
+    unsigned shown = 0;
+    for (unsigned i = 0; i < co.n && shown < 4; ++i) {
+        const esync::CampMember& c = co.m[i];
+        if (c.state != 0 || !c.entity) continue;
+        ++shown;
+        double p[3] = {};
+        if (!Pos3(c.entity, p)) continue;
+        std::uint32_t e20 = 0;
+        std::int32_t seat = -1;
+        esync::RideFields(c.actor, &e20, &seat);
+        char ride[120] = "";
+        const std::uintptr_t parent = mem::Q(c.entity + 0x70);
+        double vp[3] = {};
+        if (parent && Pos3(parent, vp)) {
+            const char* n = mem::RttiName(mem::RttiOf(parent));
+            std::snprintf(ride, sizeof(ride), "; parent %s at (%.1f,%.1f,%.1f)", n ? n : "?", vp[0], vp[1], vp[2]);
+        }
+        Log("[probe] P2 mate id=%05X %s: (%.1f,%.1f,%.1f) %.1f m from %05X; vehicle e20 %X seat %d; phase %u%s", c.id, when, p[0], p[1], p[2], Dist(p, me), id,
+            e20, seat, c.phase, ride);
+    }
+    if (!shown) Log("[probe] P2 mate %s: no other member of cp %05X running here (%u listed)", when, co.cp_id, co.n);
+}
+// D2: K of the taken MULE
+void KnowLine(const char* when, std::uint32_t id, std::uintptr_t entity) {
+    if (!(g_pgroups & kPKnow)) return;
+    static std::uintptr_t s_miss = 0;  // an entity whose search failed: searched again once a second only
+    static double s_miss_next = 0;
+    if (entity == s_miss && g_now < s_miss_next) return;
+    char path[128];
+    const std::uintptr_t k = KnowOfEntity(2, id, entity, path, sizeof(path));
+    if (!k) {
+        s_miss = entity, s_miss_next = g_now + 1000.0;
+        return void(Log("[probe] P2 know id=%05X %s: no knowledge object", id, when));
+    }
+    static KEntry es[kKMax];
+    unsigned buckets = 0;
+    const unsigned n = KnowEntries(k, es, kKMax, &buckets);
+    char types[200];
+    TypesText(es, n, types, sizeof(types));
+    double fp[3] = {};
+    mem::Read(k + kKForcePos, fp, sizeof(fp));
+    std::uint8_t flag = 0;
+    mem::Rd(k + kKForceFlag, flag);
+    const std::uintptr_t focus = mem::Q(k + kKFocus);
+    std::int32_t ft = -1;
+    double fpos[3] = {};
+    if (focus && mem::Rd(focus + kKeType, ft)) mem::Read(focus + kKePos, fpos, sizeof(fpos));
+    Log("[probe] P2 know id=%05X %s: K %p, %u entries in %u buckets (%s); force flag %u at (%.1f,%.1f,%.1f); focus %p type %d at (%.1f,%.1f,%.1f) [I]", id, when,
+        reinterpret_cast<void*>(k), n, buckets, types, flag, fp[0], fp[1], fp[2], reinterpret_cast<void*>(focus), focus ? ft : -1, fpos[0], fpos[1], fpos[2]);
+    unsigned listed = 0;
+    for (unsigned i = 0; i < n && listed < 8; ++i) {
+        if (!ep::KnowListed(es[i].type)) continue;
+        ++listed;
+        float age = 0, memv = 0;
+        std::memcpy(&age, es[i].raw + kKeAge, 4);
+        std::memcpy(&memv, es[i].raw + kKeMem, 4);
+        char e[200];
+        ep::KnowEntryText(e, sizeof(e), es[i].type, es[i].pos, age, memv, es[i].actor, es[i].flags, es[i].key);
+        Log("[probe] P2 know id=%05X %s entry: %s", id, when, e);
+    }
+    if (!listed) Log("[probe] P2 know id=%05X %s entry: none", id, when);
+}
+bool HasType(std::uintptr_t k, int type) {
+    static KEntry es[kKMax];
+    unsigned buckets = 0;
+    const unsigned n = KnowEntries(k, es, kKMax, &buckets);
+    for (unsigned i = 0; i < n; ++i)
+        if (es[i].type == type) return true;
+    return false;
+}
+// R2 (enemy_take_role=1): role 1 -> 0 while she owns it (the copy still frozen; its AI plans with it from the unfreeze on)
+int SehU32Write(std::uintptr_t p, std::uint32_t want, std::uint32_t v) noexcept {
+    __try {
+        volatile std::uint32_t* const q = reinterpret_cast<volatile std::uint32_t*>(p);
+        if (*q != want) return 0;
+        *q = v;
+        return 1;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+void TakeRole(std::uint32_t id, std::uintptr_t actor, bool alone) {
+    if (!g_cfg.enemy_take_role) return;
+    std::int32_t role = -1, cpid = 0;
+    if (!actor || !mem::Rd(actor + kMRole, role) || !mem::Rd(actor + kMCpId, cpid)) return void(Log("[enemy] take role id=%05X: skipped (no camp fields)", id));
+    const int to = ep::RoleWhileHers(1, role);
+    if (to < 0) return void(Log("[enemy] take role id=%05X: role %d kept (cp %X)", id, role, static_cast<unsigned>(cpid)));
+    const char* why = !alone ? "not taken alone" : LeverWhy(kLRole);
+    if (why) return void(Log("[enemy] take role id=%05X: skipped (%s; role %d)", id, why, role));
+    const int r = SehU32Write(actor + kMRole, static_cast<std::uint32_t>(role), static_cast<std::uint32_t>(to));
+    if (r < 0) return LeverFault(kLRole, "R2 role write");
+    if (r == 0) return void(Log("[enemy] take role id=%05X: not written (it changed under us)", id));
+    g_roles[id] = RoleRec{id, static_cast<std::uint32_t>(cpid), g_world, actor, role, to};
+    Log("[enemy] take role id=%05X: role %d -> %d while hers (cp %X)", id, role, to, static_cast<unsigned>(cpid));
+    const std::size_t at = std::strlen(g_take.text);
+    std::snprintf(g_take.text + at, sizeof(g_take.text) - at, "%sR2 role %d->%d", at ? "; " : "", role, to);
+}
+void RoleRestore(std::uint32_t id, const char* when) {
+    const auto it = g_roles.find(id);
+    if (it == g_roles.end()) return;
+    const RoleRec r = it->second;
+    g_roles.erase(it);
+    if (!r.actor) return;
+    if (r.world != g_world) return void(Log("[enemy] take role id=%05X %s: not restored (the world changed)", id, when));
+    std::int32_t cpid = 0, aid = 0;
+    // the same actor still (its id at +0x08 is the enemy sync's kActId [O]; its camp id unchanged)
+    if (!mem::Rd(r.actor + 0x08, aid) || static_cast<std::uint32_t>(aid) != id || !mem::Rd(r.actor + kMCpId, cpid) || static_cast<std::uint32_t>(cpid) != r.cp_id)
+        return void(Log("[enemy] take role id=%05X %s: not restored (the actor changed)", id, when));
+    const int w = SehU32Write(r.actor + kMRole, static_cast<std::uint32_t>(r.now), static_cast<std::uint32_t>(r.was));
+    if (w < 0) return LeverFault(kLRole, "R2 role restore");
+    Log("[enemy] take role id=%05X %s: role %s %d", id, when, w ? "restored to" : "not restored (it changed; now not", w ? r.was : r.now);
+}
+// D8 (round 25 e, read only): her CP actor's post locators, the list DsGetMuleNearestPostPosition0 (0x142ECCFC0) searches through
+// FUN_142B3D600 [O]: CP +0xF0 count, +0xF8 array of locators, each at +0x40/+0x48/+0x50 (doubles); used only when
+// [CP +0x9B0] +0x148 != 0 [O]. DsGetMuleMainPostPosition0 (0x142ECA2D0) takes the first one [O]. ReadProcessMemory reads only.
+void PostsLine(std::uint32_t id, std::uintptr_t actor, std::uintptr_t cp) {
+    if (!cp) return;
+    std::int32_t n = 0;
+    std::uintptr_t arr = 0, sub = 0;
+    std::int32_t on = -1;
+    if (!mem::Rd(cp + 0xF0, n) || !mem::Rd(cp + 0xF8, arr)) return void(Log("[probe] P2 posts id=%05X: unreadable", id));
+    if (mem::Rd(cp + 0x9B0, sub) && sub) mem::Rd(sub + 0x148, on);
+    MuleNow m;
+    const bool have = actor && ReadMule(actor, id, m) && m.have_xf;
+    char buf[900] = {};
+    int len = 0, best = -1;
+    double bestd = 1e30;
+    const int cnt = n < 0 ? 0 : (n > 12 ? 12 : n);
+    for (int i = 0; i < cnt && len < 820; ++i) {
+        std::uintptr_t e = 0;
+        double p[3] = {};
+        if (!mem::Rd(arr + 8u * static_cast<unsigned>(i), e) || !e || !mem::Read(e + 0x40, p, sizeof(p))) {
+            len += std::snprintf(buf + len, sizeof(buf) - len, " #%d ?", i);
+            continue;
+        }
+        const double d = have ? std::sqrt((p[0] - m.xf.pos.x) * (p[0] - m.xf.pos.x) + (p[1] - m.xf.pos.y) * (p[1] - m.xf.pos.y)) : -1.0;
+        if (have && d < bestd) bestd = d, best = i;
+        len += std::snprintf(buf + len, sizeof(buf) - len, " #%d (%.1f,%.1f,%.1f) %.1f m;", i, p[0], p[1], p[2], d);
+    }
+    Log("[probe] P2 posts id=%05X: cp list %d (on %d), MULE at (%.1f,%.1f); nearest #%d %.1f m;%s", id, n, on, have ? m.xf.pos.x : 0.0,
+        have ? m.xf.pos.y : 0.0, best, best >= 0 ? bestd : -1.0, buf);
+}
+// F1 (enemy_take_face=1): turned in place to face her Sam when she is > 60 deg off its facing, 0.5..30 m (the copy still frozen)
+void TakeFace(std::uint32_t id, std::uintptr_t actor, bool alone) {
+    if (!g_cfg.enemy_take_face) return;
+    MuleNow m;
+    double sam[3] = {};
+    if (!actor || !ReadMule(actor, id, m) || !m.realized || !m.have_xf || !Pos3(g_sam.load(), sam))
+        return void(Log("[enemy] take face id=%05X: skipped (no MULE or Sam read)", id));
+    const double yaw0 = YawOf(m.xf), off = ep::OffDeg(yaw0, m.xf.pos.x, m.xf.pos.y, sam[0], sam[1]);
+    const double dx = sam[0] - m.xf.pos.x, dy = sam[1] - m.xf.pos.y, d = std::sqrt(dx * dx + dy * dy);
+    double yaw = 0;
+    if (!ep::FaceYaw(1, yaw0, m.xf.pos.x, m.xf.pos.y, sam[0], sam[1], &yaw))
+        return void(Log("[enemy] take face id=%05X: not turned (Sam %.1f m, %.0f deg off)", id, d, off));
+    const char* why = !alone ? "not taken alone" : LeverWhy(kLFace);
+    if (why) return void(Log("[enemy] take face id=%05X: skipped (%s; Sam %.1f m, %.0f deg off)", id, why, d, off));
+    const int turned = esync::TurnInPlace(id, actor, static_cast<float>(yaw));
+    if (turned < 0) return LeverFault(kLFace, "F1 turn");
+    if (turned == 0) return void(Log("[enemy] take face id=%05X: the turn failed (Sam %.1f m, %.0f deg off)", id, d, off));
+    MuleNow m2;
+    const double off2 = ReadMule(actor, id, m2) && m2.have_xf ? ep::OffDeg(YawOf(m2.xf), m2.xf.pos.x, m2.xf.pos.y, sam[0], sam[1]) : -1.0;
+    Log("[enemy] take face id=%05X: turned from %.0f to %.0f deg off (Sam %.1f m)", id, off, off2, d);
+    const std::size_t at = std::strlen(g_take.text);
+    std::snprintf(g_take.text + at, sizeof(g_take.text) - at, "%sF1 turned %.0f->%.0f deg", at ? "; " : "", off, off2);
+}
+// her take, before the member's SetPhase (game thread; enemy_sync.cpp GuestTake): D3 "before", C1
+void TakeBeforeBody(std::uint32_t id, std::uintptr_t actor, bool alone) {
+    const int lever = ArmedLever(id);
+    g_take = TakeRec{};
+    g_take.id = id, g_take.actor = actor, g_take.world = g_world, g_take.t = g_now, g_take.lever = lever;
+    g_take.diag = g_cfg.enemy_m2_probes && lever >= 0 && !g_probe_off;
+    esync::CampOf co;
+    if (esync::CampOfId(id, &co)) g_take.cp = co.cp, g_take.cp_id = co.cp_id;
+    std::int32_t ph = -1;
+    if (g_take.cp && mem::Rd(g_take.cp + kCpPh, ph) && ph >= 0 && ph <= 7) g_take.cp_before = ph;
+    if (g_take.diag) CampLine("before the take", id, actor, g_take.cp_id, g_take.cp), PostsLine(id, actor, g_take.cp);
+    TakeRole(id, actor, alone);
+    TakeFace(id, actor, alone);
+    const int key = lever == 5 ? 2 : g_cfg.enemy_take_camp;
+    if (!ep::CampRefreshWanted(key, g_take.cp_before)) {
+        if (key) Log("[enemy] take camp cp %05X id=%05X: not forced (her CP at %d; enemy_take_camp=%d forces at >= 4)", g_take.cp_id, id, g_take.cp_before, key);
+        return;
+    }
+    const char* why = !alone ? "not taken alone" : LeverWhy(kLCamp);
+    if (!why && !g_take.cp) why = "no CP actor here";
+    std::uint64_t guid[2] = {};
+    const std::uintptr_t gref = why ? 0 : mem::Q(g_take.cp + kCpGuidRef);
+    if (!why && (!gref || !mem::Read(gref + 8, guid, sizeof(guid)) || (!guid[0] && !guid[1]))) why = "no CP guid";
+    double sam[3] = {};
+    if (!why && !Pos3(g_sam.load(), sam)) why = "no Sam";
+    if (why) {
+        Log("[enemy] take camp cp %05X id=%05X: skipped (%s)", g_take.cp_id, id, why);
+        std::snprintf(g_take.text, sizeof(g_take.text), "C1 skipped: %s", why);
+        return;
+    }
+    const int was[3] = {static_cast<int>(U32(g_take.cp + kCpPh)), static_cast<int>(U32(g_take.cp + kCpReq)), static_cast<int>(U32(g_take.cp + kCpPrev))};
+    unsigned below = 0;
+    for (unsigned i = 0; i < co.n; ++i) below += co.m[i].phase < 5 ? 1u : 0u;
+    const int r = SehCpForce(guid, 5);
+    if (r < 0) {
+        LeverFault(kLCamp, "C1 ForceSetCPPhase");
+        std::snprintf(g_take.text, sizeof(g_take.text), "C1 FAULT");
+        return;
+    }
+    g_take.c1 = true;
+    Log("[enemy] take camp cp %05X: forced 5 (was %d/%d/%d; now %d/%d/%d), her Sam at (%.1f,%.1f,%.1f), members < 5: %u (of %u others); for id=%05X",
+        g_take.cp_id, was[0], was[1], was[2], static_cast<int>(U32(g_take.cp + kCpPh)), static_cast<int>(U32(g_take.cp + kCpReq)),
+        static_cast<int>(U32(g_take.cp + kCpPrev)), sam[0], sam[1], sam[2], below, co.n, id);
+    std::snprintf(g_take.text, sizeof(g_take.text), "C1 forced cp %05X to 5 (was %d)", g_take.cp_id, was[0]);
+}
+// T1: the tickets the frozen copy `copy` (its entity) holds in its innermost group chain, returned once per entry where it really
+// is a holder. Returns the count returned.
+unsigned ReturnTickets(std::uint32_t copy, std::uintptr_t entity, const char* when) {
+    const std::uintptr_t ind = IndivOf(entity);
+    std::uintptr_t g = ind ? GroupOf(ind) : 0;
+    if (!g) {
+        Log("[enemy] take tickets id=%05X %s: unknown link (%s)", copy, when, ind ? "no DSAIGroup" : "no DSAIIndividual");
+        return 0;
+    }
+    unsigned returned = 0, entries = 0;
+    for (int level = 0; g && level < 4 && !returned; ++level, g = mem::Q(g + kGroupParent)) {
+        if (!RttiIs(g, "Group")) break;
+        Ticket t[16];
+        const unsigned n = TicketsOf(g, t, 16);
+        entries += n;
+        for (unsigned i = 0; i < n; ++i) {
+            const int k = t[i].holders < 8 ? t[i].holders : 8;
+            if (!ep::TicketsToReturn(t[i].h, k, ind)) continue;
+            const int r = SehTicketReturn(g, t[i].key, ind);
+            if (r < 0) {
+                LeverFault(kLTicket, "T1 ticket return");
+                return returned;
+            }
+            ++returned;
+            Log("[enemy] take tickets id=%05X %s: returned key %llX at group %p level %d (available %d -> %d, holders %d -> %d)", copy, when,
+                static_cast<unsigned long long>(t[i].key), reinterpret_cast<void*>(g), level, t[i].avail,
+                static_cast<int>(U32(mem::Q(g + kGroupTickets) + 0x20ull * i + 8)), t[i].holders, static_cast<int>(U32(mem::Q(g + kGroupTickets) + 0x20ull * i + 0x10)));
+        }
+    }
+    if (!returned) Log("[enemy] take tickets id=%05X %s: holds none (%u entries read)", copy, when, entries);
+    return returned;
+}
+// her take, after the unfreeze: D3 "after", D5, K1 armed, T1 for the camp's frozen copies
+void TakeAfterBody(std::uint32_t id, std::uintptr_t actor, std::uintptr_t entity, bool alone) {
+    if (g_take.id != id) return;
+    g_take.entity = entity;
+    if (g_take.diag) {
+        CampLine("after the take", id, actor, g_take.cp_id, g_take.cp);
+        TicketsLine("at the take", id, entity);
+    }
+    const int lever = g_take.lever;
+    const int mode = lever == 4 ? 2 : g_cfg.enemy_take_know;
+    if (mode) {
+        const char* why = !alone ? "not taken alone" : LeverWhy(kLKnow);
+        if (why) {
+            Log("[enemy] take know id=%05X: skipped (%s)", id, why);
+        } else {
+            g_take.know_mode = mode, g_take.know_secs = g_cfg.enemy_take_know_secs;
+            shots::ArmOwnerCounts(true);
+            g_take.shots0 = shots::ShotsBy(entity), g_take.hits0 = esync::OwnedHitsOn(id);
+            const std::size_t at = std::strlen(g_take.text);
+            std::snprintf(g_take.text + at, sizeof(g_take.text) - at, "%sK1 armed (mode %d, %.0f s)", at ? "; " : "", mode, g_take.know_secs);
+        }
+    }
+    g_take.tickets = lever == 6 || g_cfg.enemy_ticket_return;
+    if (g_take.tickets) {
+        const char* why = !alone ? "not taken alone" : LeverWhy(kLTicket);
+        if (why) {
+            Log("[enemy] take tickets id=%05X: skipped (%s)", id, why);
+            g_take.tickets = false;
+            return;
+        }
+        esync::CampOf co;
+        unsigned frozen = 0, returned = 0;
+        if (esync::CampOfId(id, &co))
+            for (unsigned i = 0; i < co.n; ++i)
+                if (co.m[i].state == 1 && co.m[i].entity) ++frozen, returned += ReturnTickets(co.m[i].id, co.m[i].entity, "at the take (a frozen copy)");
+        Log("[enemy] take tickets id=%05X at the take: %u frozen copies of cp %05X, %u ticket(s) returned", id, frozen, co.cp_id, returned);
+        const std::size_t at = std::strlen(g_take.text);
+        std::snprintf(g_take.text + at, sizeof(g_take.text) - at, "%sT1 %u returned (%u frozen)", at ? "; " : "", returned, frozen);
+    }
+}
+// K1's 2 Hz writes and C1's follow-up (game thread, the combat tick)
+void TakeTick() {
+    if (!g_take.id || (!g_take.know_mode && !(g_take.c1 && !g_take.c1_checked) && !g_take.pending)) return;
+    if (g_world != g_take.world || !esync::OwnedHere(g_take.id)) {
+        if (g_take.know_mode || g_take.pending) Log("[enemy] take know id=%05X: ended (%s) after %d write(s)", g_take.id, g_world != g_take.world ? "the world changed" : "given back", g_take.writes);
+        g_take.know_mode = 0, g_take.pending = false, g_take.c1_checked = true;
+        return;
+    }
+    const std::uintptr_t actor = ActorOf(g_take.id);
+    MuleNow m;
+    double sam[3] = {};
+    if (!actor || !ReadMule(actor, g_take.id, m) || !m.realized || !m.have_xf || m.entity != g_take.entity || !Pos3(g_sam.load(), sam)) return;
+    const std::uintptr_t agent = mem::Q(m.entity + kEAgent);
+    if (!g_take.k || !KnowOf(g_take.k, agent)) {
+        g_take.k = 0;
+        if (g_now < g_take.k_next) return;
+        g_take.k_next = g_now + 500.0, ++g_take.k_tries;
+        char path[128];
+        g_take.k = KnowOfEntity(2, g_take.id, m.entity, path, sizeof(path));
+        if (!g_take.k) {
+            if (g_take.c1 && !g_take.c1_checked && g_now - g_take.t >= 500.0) {
+                g_take.c1_checked = true;
+                Log("[enemy] take camp id=%05X: no knowledge object to check for a CPOrder (K1 not given)", g_take.id);
+            }
+            if (g_take.know_mode && g_now - g_take.t > g_take.know_secs * 1000.0) {
+                Log("[enemy] take know id=%05X: not applied (no knowledge object found in %d tries, %.1f s)", g_take.id, g_take.k_tries, (g_now - g_take.t) / 1000.0);
+                g_take.know_mode = 0;
+            }
+            return;
+        }
+    }
+    const std::uintptr_t k = g_take.k;
+    std::uint8_t flag = 0;
+    if (!mem::Rd(k + kKForceFlag, flag)) return;
+    if (g_take.pending && flag == 0) {
+        g_take.pending = false;
+        Log("[enemy] take know id=%05X #%d: player visual at (%.1f,%.1f,%.1f) (Sam %.1f m, %.0f deg off); flag consumed in %.0f ms", g_take.id, g_take.writes,
+            g_take.w_pos[0], g_take.w_pos[1], g_take.w_pos[2], g_take.w_dist, g_take.w_off, g_now - g_take.wrote_at);
+        if (g_take.diag) KnowLine("after K1", g_take.id, m.entity);
+    } else if (g_take.pending && g_now - g_take.wrote_at > 1000.0) {
+        g_take.pending = false;
+        Log("[enemy] take know id=%05X #%d: player visual at (%.1f,%.1f,%.1f) (Sam %.1f m, %.0f deg off); flag NOT consumed in 1 s", g_take.id, g_take.writes,
+            g_take.w_pos[0], g_take.w_pos[1], g_take.w_pos[2], g_take.w_dist, g_take.w_off);
+    }
+    // C1's follow-up: no CPOrder 0.5 s after the force -> K1 once as well (the arm stays C1 for the record)
+    if (g_take.c1 && !g_take.c1_checked && g_now - g_take.t >= 500.0) {
+        g_take.c1_checked = true;
+        if (!HasType(k, ep::kCPOrder)) {
+            Log("[enemy] take camp id=%05X: no CPOrder 0.5 s after the force%s", g_take.id,
+                g_take.know_mode ? " (K1 already armed)" : LeverWhy(kLKnow) ? ": K1 not possible" : ": K1 given once");
+            if (!g_take.know_mode && !LeverWhy(kLKnow)) {
+                g_take.know_mode = 1, g_take.know_secs = 1.5;
+                shots::ArmOwnerCounts(true);
+                g_take.shots0 = shots::ShotsBy(m.entity), g_take.hits0 = esync::OwnedHitsOn(g_take.id);
+                g_take.t = g_now;
+            }
+        } else {
+            Log("[enemy] take camp id=%05X: a CPOrder 0.5 s after the force", g_take.id);
+        }
+    }
+    if (!g_take.know_mode) return;
+    const double off = ep::OffDeg(YawOf(m.xf), m.xf.pos.x, m.xf.pos.y, sam[0], sam[1]);
+    if (ep::WithinCone(off)) {
+        if (g_take.faced_since < 0) g_take.faced_since = g_now;
+    } else {
+        g_take.faced_since = -1;
+    }
+    const bool attacked = shots::ShotsBy(m.entity) != g_take.shots0 || esync::OwnedHitsOn(g_take.id) != g_take.hits0;
+    const ep::KnowStep s = ep::KnowPush(g_now, g_take.t, flag != 0 || g_take.pending, g_take.last_write, g_take.faced_since, attacked, g_take.know_mode, g_take.know_secs);
+    if (s == ep::KnowStep::done) {
+        Log("[enemy] take know id=%05X: done after %d write(s) (%s; %.1f s after the take)", g_take.id, g_take.writes,
+            attacked ? "it attacked" : g_take.faced_since >= 0 && g_now - g_take.faced_since >= ep::kKnowFacedMs ? "facing her 1 s" : "the window ended",
+            (g_now - g_take.t) / 1000.0);
+        g_take.know_mode = 0;
+        return;
+    }
+    if (s != ep::KnowStep::write) return;
+    const int r = SehKnowWrite(k, sam);
+    if (r < 0) {
+        g_take.know_mode = 0;
+        LeverFault(kLKnow, "K1 write");
+        return;
+    }
+    if (r == 0) return;
+    ++g_take.writes;
+    g_take.pending = true, g_take.last_write = g_take.wrote_at = g_now;
+    g_take.w_pos[0] = sam[0], g_take.w_pos[1] = sam[1], g_take.w_pos[2] = sam[2];
+    const double me[3] = {m.xf.pos.x, m.xf.pos.y, m.xf.pos.z};
+    g_take.w_dist = Dist(me, sam), g_take.w_off = off;
+}
+int TakeTickSeh() noexcept {
+    __try {
+        TakeTick();
+        return 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+void TakeTickGuarded() noexcept {
+    if (!g_take.id) return;
+    if (TakeTickSeh() < 0) {
+        LeverFault(kLKnow | kLCamp, "the take tick");
+        g_take = TakeRec{};
+    }
+}
+// D1 / D2 on the 0.25 s / 1 s schedule, D3 / D4 / D5 once a second (PushTick, after the hand-over)
+void P2Diag(const MuleNow& m, const double (&sam)[3], double off) {
+    const double t_ms = g_now - g_push.p.t0;
+    const double me[3] = {m.xf.pos.x, m.xf.pos.y, m.xf.pos.z};
+    const double d = Dist(me, sam);
+    if (ep::P2Due(t_ms, g_push.last_diag)) {
+        g_push.last_diag = t_ms;
+        double v = 0;
+        if (g_push.last_pos_t >= 0 && t_ms - g_push.last_pos_t > 1.0) {
+            const double dx = me[0] - g_push.last_pos[0], dy = me[1] - g_push.last_pos[1];
+            v = std::sqrt(dx * dx + dy * dy) / ((t_ms - g_push.last_pos_t) / 1000.0);
+        }
+        g_push.last_pos[0] = me[0], g_push.last_pos[1] = me[1], g_push.last_pos[2] = me[2], g_push.last_pos_t = t_ms;
+        g_push.path.Add(t_ms / 1000.0, me[0], me[1], d, off);
+        char when[32];
+        std::snprintf(when, sizeof(when), "t=%.2f", t_ms / 1000.0);
+        Log("[probe] P2 pos id=%05X %s: (%.1f,%.1f,%.1f) facing %.0f deg, %.2f m/s; Sam %.1f m, %.0f deg off", g_push.id, when, me[0], me[1], me[2],
+            YawOf(m.xf) * 57.29577951308232, v, d, off);
+        KnowLine(when, g_push.id, m.entity);
+    }
+    if (g_now >= g_push.next_camp) {
+        g_push.next_camp = g_now + 1000.0;
+        char when[32];
+        std::snprintf(when, sizeof(when), "t=%.1f", t_ms / 1000.0);
+        esync::CampOf co;
+        if (esync::CampOfId(g_push.id, &co)) CampLine(when, g_push.id, m.actor, co.cp_id, co.cp);
+        MateLines(when, g_push.id, me);
+        TicketsLine(when, g_push.id, m.entity);
+    }
+}
 std::uintptr_t SamVisStim() noexcept {
     const std::uintptr_t sam = g_sam.load();
     const std::uintptr_t sc = VisComp(sam);
@@ -3254,6 +3924,11 @@ void PushEnd(const char* why) {
     char t[64], at[160];
     g_push.p.Text(t, sizeof(t));
     g_push.p.AttackLine(at, sizeof(at));
+    if (g_push.p.t0 >= 0) {
+        char path[256];
+        g_push.path.Text(path, sizeof(path));
+        Log("[probe] P2 path id=%05X: %s", g_push.id, path);
+    }
     if (g_push.p.t0 < 0)
         Log("[probe] P2 result id=%05X lever %s: not handed over here (%s)", g_push.id, ep::LeverName(g_push.lever), why ? why : "no hand-over");
     else
@@ -3316,6 +3991,13 @@ void PushApply(const MuleNow& m) {
                           reinterpret_cast<void*>(s), static_cast<double>(mul), static_cast<double>(up));
             break;
         }
+        case 4:
+        case 5:
+        case 6:
+            // round 25: K1 / C1 / T1 act in her take itself (TakeBefore / TakeAfter); their own lines are the record
+            std::snprintf(g_push.applied, sizeof(g_push.applied), "lever %s at the take: %s", g_push.lever == 4 ? "e" : g_push.lever == 5 ? "f" : "g",
+                          g_take.id == g_push.id && g_take.text[0] ? g_take.text : "nothing applied");
+            break;
         default: break;
     }
 }
@@ -3347,6 +4029,7 @@ void PushTick() {
             (g_now - g_push.armed) / 1000.0, g_push.dist, off, m.ea0, m.ea4, g_push.applied);
         PushState("at the hand-over", m, off, g_push.dist);
         g_push.next_state = g_now + 1000.0;
+        P2Diag(m, sam, off);
         if (g_push.p.Done(g_now, g_push.timeout_ms, true)) PushEnd(nullptr);
         return;
     }
@@ -3376,6 +4059,7 @@ void PushTick() {
         std::snprintf(when, sizeof(when), "t=%.1f s", (g_now - g_push.p.t0) / 1000.0);
         PushState(when, m, off, dist);
     }
+    P2Diag(m, sam, off);
     if (g_push.p.Done(g_now, g_push.timeout_ms, true)) PushEnd(nullptr);
 }
 
@@ -3566,15 +4250,17 @@ bool M2Body(const double (&v)[3], char* msg, std::size_t cap) {
         case 2: {
             if (g_push.id) PushEnd("replaced");
             const std::uint32_t id = ProbeId(v[1], true);
-            const int lever = static_cast<int>(v[2]);
-            if (g_role != 2 || !id || lever < 0 || lever > 3) {
-                Log("[probe] P2 result id=%05X lever %s: skipped (%s)", id, ep::LeverName(lever), g_role != 2 ? "the guest's probe" : !id ? "no id" : "lever 0..3");
+            // round 25: v[2] = lever + 100 x secs (the window: 0 = 20 s, at most 40); levers 0..6
+            int lever = -1, secs = ep::kP2DefaultSecs;
+            const bool ok = ep::P2Window(v[2], &lever, &secs);
+            if (g_role != 2 || !id || !ok) {
+                Log("[probe] P2 result id=%05X lever %s: skipped (%s)", id, ep::LeverName(ok ? lever : -1), g_role != 2 ? "the guest's probe" : !id ? "no id" : "lever 0..6 (+ 100 x secs)");
                 return std::snprintf(msg, cap, "P2 skipped"), true;
             }
-            g_push.id = id, g_push.lever = lever, g_push.world = g_world, g_push.armed = g_push.next = g_now, g_push.timeout_ms = 20000.0;
+            g_push.id = id, g_push.lever = lever, g_push.world = g_world, g_push.armed = g_push.next = g_now, g_push.timeout_ms = secs * 1000.0;
             shots::ArmOwnerCounts(true);
-            Log("[probe] P2 armed id=%05X lever %s: waiting for the hand-over (%s now; 20 s after it, the whole window)", id, ep::LeverName(lever),
-                esync::OwnedHere(id) ? "owned here already" : "not owned here");
+            Log("[probe] P2 armed id=%05X lever %s: waiting for the hand-over (%s now; %d s after it, the whole window)", id, ep::LeverName(lever),
+                esync::OwnedHere(id) ? "owned here already" : "not owned here", secs);
             return std::snprintf(msg, cap, "P2 armed %05X lever %d", id, lever), true;
         }
         case 3: return P3(msg, cap);
@@ -3615,6 +4301,42 @@ void ProbeTickGuarded() noexcept {
     }
 }
 }  // namespace
+
+namespace {
+void RefreezeBody(std::uint32_t id, std::uintptr_t entity) {
+    if (!((g_take.id == id && g_take.tickets) || g_cfg.enemy_ticket_return)) return;
+    if (const char* why = LeverWhy(kLTicket)) return void(Log("[enemy] take tickets id=%05X given back: skipped (%s)", id, why));
+    ReturnTickets(id, entity, "given back (frozen again)");
+}
+int HookSeh(int which, std::uint32_t id, std::uintptr_t actor, std::uintptr_t entity, bool alone) noexcept {
+    __try {
+        if (which == 0) TakeBeforeBody(id, actor, alone);
+        else if (which == 1) TakeAfterBody(id, actor, entity, alone);
+        else if (which == 2) RefreezeBody(id, entity);
+        else RoleRestore(id, alone ? "given back" : "own reset");
+        return 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+bool HookWanted() noexcept {
+    return g_role == 2 && (g_cfg.enemy_m2_probes || g_cfg.enemy_take_know || g_cfg.enemy_take_camp || g_cfg.enemy_ticket_return ||
+                           g_cfg.enemy_take_role || g_cfg.enemy_take_face);
+}
+void Hook(int which, std::uint32_t id, std::uintptr_t actor, std::uintptr_t entity, bool alone) noexcept {
+    if (!HookWanted()) return;
+    TakeChecks();
+    if (HookSeh(which, id, actor, entity, alone) < 0) {
+        LeverFault(kLKnow | kLCamp | kLTicket | kLRole | kLFace, which == 0 ? "the take (before)" : which == 1 ? "the take (after)" : which == 2 ? "the refreeze" : "the end of hers");
+        g_take = TakeRec{};
+    }
+}
+}  // namespace
+
+void TakeBefore(std::uint32_t id, std::uintptr_t actor, bool alone) noexcept { Hook(0, id, actor, 0, alone); }
+void TakeAfter(std::uint32_t id, std::uintptr_t actor, std::uintptr_t entity, bool alone) noexcept { Hook(1, id, actor, entity, alone); }
+void Refreeze(std::uint32_t id, std::uintptr_t entity) noexcept { Hook(2, id, 0, entity, true); }
+void TakeEnded(std::uint32_t id, bool given_back) noexcept { Hook(3, id, 0, 0, given_back); }
 
 bool M2Probe(const double (&v)[3], char* msg, std::size_t cap) noexcept {
     if (!Hidden(msg, cap)) return false;
