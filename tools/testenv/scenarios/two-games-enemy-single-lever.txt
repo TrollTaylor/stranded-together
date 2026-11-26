@@ -1,0 +1,92 @@
+# Round 24 b (docs/enemy-sync.md 14.17): the knowledge lever for the single take. Runs 180910 / 182106 (two-games-enemy-single
+# C): a FRESH 02029 (never live in her world) handed to her game alone 1.5 s after the host's alert turned and walked away from
+# her Sam at 4 m. Run 182930 (two-games-enemy-single-know) read her fresh frozen copy's DSAINoticeAndKnowledge: PlayerLastKnown
+# at (0, 0, 0) (never written) and no entry for her Sam; there the host's MULE had already walked up to her body, so the copy saw
+# her at 1 m and fought. Hypothesis: with phase 5 forced and nothing known, the fresh copy goes towards the empty last-known
+# place unless it sees her first. Lever c (P2: AIIndividualComponent AlertForEntityWithPerfectThreatInfo -> her Sam, at the
+# hand-over) gives it her place. Same timing as two-games-enemy-single C (no extra wait), P1 on her copy.
+#   L  02029 alone (fresh), alerted by the host, her Sam 4 m in front; P2 lever c, P1 on her copy
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-enemy-single-lever -SeedSaves complete-100 -GuestSeed profile-only -Id round24-lever
+# covers: enemy-own enemy-hits
+# select: probe
+role host
+graphics low
+timeout 300
+launcherini local-test
+ini enemy_m2_probes=1
+@guest ini enemy_m2_probes=1
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[config\] enemy_m2_probes=1
+@guest waitlog 5 \[config\] enemy_m2_probes=1
+waitlog 5 \[enemy\] mirror byte checks: [0-9]+/[0-9]+ ok
+@guest waitlog 5 \[enemy\] mirror byte checks: [0-9]+/[0-9]+ ok
+waitlog 30 \[enemy\] hits: outcome carry checks ok
+@guest waitlog 30 \[enemy\] hits: outcome carry checks ok
+goto mule-camp-sw-lkc
+@guest goto 1521.90 992.00 0
+wait 4000
+?@both action dev_god 2
+@both action dev_enemies 1
+waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+@guest waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+action enemy_probe 5 1
+@guest action enemy_probe 5 1
+waitlog 40 \[enemy\] sync on \(host\).*\(equal
+@guest waitlog 40 \[enemy\] sync on \(guest\).*\(equal
+waitlog 30 \[enemy\] hits on \(host\)
+@guest waitlog 30 \[enemy\] hits on \(guest\)
+waitlog 30 \[enemy\] own on \(
+@guest waitlog 30 \[enemy\] own on \(
+# ---- ownership off while both are placed (no proximity take), then on: the camp is the host's
+@both action enemy_sync 8 0
+waitlog 10 \[enemy\] ownership off
+@guest waitlog 10 \[enemy\] ownership off
+action enemy_look 0x202B 22
+@guest action enemy_look 0x202B 60
+wait 1000
+@both action enemy_sync 8 1
+waitlog 10 \[enemy\] ownership on
+@guest waitlog 10 \[enemy\] ownership on
+@guest waitlog 30 \[enemy\] mirror on id=
+wait 3000
+# ---- L: 02029 alone, fresh, alerted by the host, her Sam 4 m in front; lever c; her copy's knowledge read
+action enemy_look 0x2029 22
+action enemy_target 3 0x2029 5
+@guest action enemy_look 0x2029 10
+wait 700
+@guest action enemy_look -8 4
+@guest action enemy_m2 1 0x2029 25
+@guest action enemy_m2 2 0x2029 2
+@guest waitnew 5 \[probe\] P2 armed id=02029
+action enemy_own 0x2029 3
+waitnew 10 \[enemy\] single OWN id=02029 -> guest \(forced; camp members left: [0-9]+
+@guest waitnew 30 \[probe\] P2 result id=02029 lever
+@guest screenshot 01-guest-l-02029-lever-c
+@guest waitlog 10 \[probe\] P1 result id=02029
+action enemy_own 0x2029 4
+waitnew 10 \[enemy\] single OWN id=02029 -> host \(forced give-back
+wait 3000
+# ---- the reset, off
+@both action enemy_sync 8 0
+@both action enemy_sync 2
+waitlog 5 \[enemy\] sync off \(debug action\)
+@guest waitlog 5 \[enemy\] sync off \(debug action\)
+nolog \[probe\] FAULT
+@guest nolog \[probe\] FAULT
+nolog \[enemy\] FAULT
+@guest nolog \[enemy\] FAULT
+nolog \[enemy\] hits FAULT
+@guest nolog \[enemy\] hits FAULT
+nolog byte check FAILED
+@guest nolog byte check FAILED
+nolog \[shots\] FAULT
+@guest nolog \[shots\] FAULT
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+action enemy_probe 5 0
+?@both action dev_god 0
+@guest quit
+wait 3000
+quit

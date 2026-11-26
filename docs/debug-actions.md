@@ -369,9 +369,21 @@ hidden (not down) for a second, or silent 3 s), `enemy_attack_registry` (shots w
 * `enemy_sync 5`: the ownership table (`[enemy] own id=XXXXX owner host|guest epoch n pending .. ms phase n guest phase n damaged
   n d_g .. d_h .. hold .. s follower none|mirror|far`; the guest's rows end `(here)`), then the `owned here` line.
 * `enemy_sync 8 <0|1>`: ownership off (a reset: every enemy the host's, `[enemy] own reset (off here)`) / on.
-* `enemy_own <id | 0 | -5> <1 | 2>` (hidden runs, the host): a forced hand-over (reason 7) of the enemy's whole camp (P1c; the
+* `enemy_own <id | 0 | -5> <1 | 2 | 3 | 4>` (hidden runs, the host): a forced hand-over (reason 7) of the enemy's whole camp (P1c; the
   id's, the host-owned enemy nearest the partner body (0) or the guest-owned one nearest it (-5)) to the host (1) or the guest
   (2): `[enemy] camp cp XXXXX -> guest (forced: n=..` / `-> host (forced: n=..`; the rules apply afterwards.
+  Round 24, a single enemy (`enemy_own <id> 3` / `4`): mode 3 hands ONLY that enemy to the guest with the usual OWN sequence
+  (`[enemy] own: XXXXX alone forced to the guest (enemy_own 3; the next walk)`, then `[enemy] single OWN id=XXXXX -> guest
+  (forced; camp members left: n; <camp>, n other member(s) hers already; guest .. m, host .. m; epoch ..; its camp is not decided
+  until it is back)`, or `[enemy] single OWN id=XXXXX not handed over: <why>`). The other members stay with their owner (on the
+  guest: frozen copies of the host's); while it is hers the camp is held out of the camp rules (no CampDecide, no take / back /
+  straggler; `[enemy] camp <camp> held: a single member is hers (...)` every 5 s; a whole-camp `enemy_own .. 2` is refused) and
+  the loose-member loop leaves it alone. Mode 4 (or 1 on a single id) gives it back: `[enemy] single OWN id=XXXXX -> host (forced
+  give-back; epoch ..)`, then the usual `[enemy] OWN id=XXXXX back here (...)` and `[enemy] single OWN id=XXXXX back here (<how>;
+  hers .. s): its camp <camp> is decided again after the 15 s hold`. An ownership reset clears the singles. Its own forced backs
+  still apply while the camp is held (a lost OWNACK, her silence, the range, unrealized there, a game sequence on the host's copy;
+  not the proximity backs): `[enemy] single OWN id=XXXXX -> host (<reason>; guest .. m, silence .. s): its camp is decided again
+  once it is back` (round 24 review).
 * `enemy_camp 0` (hidden runs, the host, round 21): the camp table, one row per camp near her or hers (`[enemy] camp row cp|loose
   XXXXX: owner host|guest, n=.. hers .., guest .. m, host .. m, r .. m, engage .. m, margin .. m, loaded .., phase .., camp ..`),
   then `[enemy] camp rows n=.. (of .. known; owned here n=..; carried .., carry failed .., down already .., followers hidden ..
@@ -467,8 +479,16 @@ most 3 numbers, so `enemy_hit`'s part / owner / path are set apart (`enemy_hit_m
     frozen|live: knowledge <path | not found>; ... PlayerVisual of our Sam: fresh|stale|none (fresh n, stale n, none n)`.
   * 2 `<id> <lever 0..3>` (the guest): armed; when the enemy is handed to her game (`[probe] P2 owned id=..`), the lever is
     applied (a nothing, b a test hit owned by her Sam, c AlertForEntityWithPerfectThreatInfo -> her Sam, d' her Sam's own visual
-    stimulus +0xA4 three times for 1 s), and the copy is sampled every 0.1 s for 15 s: `[probe] P2 result id=XXXXX lever <a..d'>:
-    turned N ms|never, shot N ms|never (...)`, or `not handed over here (no hand-over in 90 s)`.
+    stimulus +0xA4 three times for 1 s), and the copy is sampled every 0.1 s for the whole 20 s window (round 24; was 15 s and
+    ended at the first shot). Round 24 counts its hits on our Sam (the hit observer's "an owned enemy hit our Sam" attribution,
+    per enemy): a hit is a shot's when its shot count rose within 2 s before it, else melee; hit messages under 300 ms apart are
+    one attack (a melee swing sends a burst). Lines: `[probe] P2 state id=XXXXX at the hand-over|t=N s: state .. bits .. a88 ..;
+    phase .., AI phase ..; camp cp XXXXX phase .. (live|the walk's); other members here n: frozen n, owned here n, running n;
+    Sam .. m, .. deg off its facing; shots n, hits on our Sam n` (at the hand-over and every 1 s; state is the actor's ea0,
+    bits its ea4), `[probe] P2 id=.. first melee hit on our Sam after N ms` / `first hit on our Sam by its rounds after N ms`, then
+    `[probe] P2 result id=XXXXX lever <a..d'>: turned N ms|never, shot N ms|never; first attack after N ms (shot|melee) | never,
+    hits on our Sam n (shot n, melee n; attacks n; shots n); all owned hits on our Sam n (...)`, or `not handed over here (no
+    hand-over in 90 s)`.
   * 3: the perception reads: the partner body's and our Sam's entity +0x314, and the stimulus +0x88 of our agents' visual
     stimuli in the AI manager's thread-safe list (`[probe] P3 result: ...`).
   * 4 `<id> <s>`: the game's raycast (0x141C20CE0, the visual sense's own filter) from a copy's eye (+1.6 m) to our Sam's chest
@@ -484,7 +504,8 @@ most 3 numbers, so `enemy_hit`'s part / owner / path are set apart (`enemy_hit_m
 
 Scenarios: `enemy-hit-probe` (P2-0, solo), `two-games-enemy-hit` (the gate), `two-games-enemy-target-probe` (the M1 probe),
 `two-games-enemy-stim-probe` (the M2 stimulus probe), `two-games-enemy-probe` (round 23 E: P0-P5), `trucks-m2-probe-solo`
-(round 23 E: P6).
+(round 23 E: P6), `two-games-enemy-single` (round 24: P2 on one MULE handed over alone, `enemy_own <id> 3`, against a whole
+camp).
 
 * `enemy_restrain <id | 0> <mode>` (hidden runs, round 23; the guest, or the host while it relays its hits: `enemy_owner`; the
   restrain relay must be on: `[enemy] restrain relay on`): the tie-up relay's own send path on our frozen copy of an enemy the

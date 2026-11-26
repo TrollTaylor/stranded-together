@@ -1,0 +1,145 @@
+# Round 24 (docs/enemy-sync.md 14.17): does ONE alerted MULE handed to her game, the rest of its camp left with the host's game
+# (frozen copies in her world), fight her natively, and how fast? MULE Camp Southwest of Lake Knot City (cp 04004: the MULEs
+# 02029, 0202B and 0202F among its members), the launcher's own Local test files plus enemy_m2_probes=1 on both games.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-enemy-single -SeedSaves complete-100 -GuestSeed profile-only -Id round24-single
+# The host owns the camp (ownership on, the host 22 m from the case's MULE, the guest 10 m or less: the margin rule keeps it his).
+# Each case: the host alerts the case's MULE (enemy_target 3, as the P2 probe does), her Sam placed, P2 armed on the guest (lever
+# a, nothing pushed), the hand-over, P2's whole 20 s window ("[probe] P2 state" at the hand-over and every 1 s, then "[probe] P2
+# result ... first attack after .. ms (shot|melee), hits on our Sam n"), the give-back, a settle.
+#   A  gun MULE 0202B, her Sam 10 m in front of it, a single take (enemy_own 0x202B 3; back with enemy_own 0x202B 4)
+#   B  gun MULE 0202F (weapon 63), her Sam 10 m BEHIND it, a single take
+#   C  melee MULE 02029, her Sam 4 m in front of it, a single take
+#   D  control: the whole camp forced to her (enemy_own 0x202B 2), 0202B measured, her Sam 10 m in front; back with enemy_own -5 1
+# Nothing is asserted beyond the hand-overs, the result lines and no fault: read the [probe] P2 lines afterwards.
+# covers: enemy-own enemy-hits
+# select: probe
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini enemy_m2_probes=1
+@guest ini enemy_m2_probes=1
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[config\] enemy_m2_probes=1
+@guest waitlog 5 \[config\] enemy_m2_probes=1
+waitlog 5 \[enemy\] mirror byte checks: [0-9]+/[0-9]+ ok
+@guest waitlog 5 \[enemy\] mirror byte checks: [0-9]+/[0-9]+ ok
+waitlog 30 \[enemy\] hits: outcome carry checks ok
+@guest waitlog 30 \[enemy\] hits: outcome carry checks ok
+goto mule-camp-sw-lkc
+@guest goto 1521.90 992.00 0
+wait 4000
+?@both action dev_god 2
+@both action dev_enemies 1
+waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+@guest waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+action enemy_probe 5 1
+@guest action enemy_probe 5 1
+waitlog 40 \[enemy\] sync on \(host\).*\(equal
+@guest waitlog 40 \[enemy\] sync on \(guest\).*\(equal
+waitlog 30 \[enemy\] hits on \(host\)
+@guest waitlog 30 \[enemy\] hits on \(guest\)
+waitlog 30 \[enemy\] own on \(
+@guest waitlog 30 \[enemy\] own on \(
+# ---- ownership off while both are placed (no proximity take), then on: the camp is the host's
+@both action enemy_sync 8 0
+waitlog 10 \[enemy\] ownership off
+@guest waitlog 10 \[enemy\] ownership off
+action enemy_look 0x202B 22
+@guest action enemy_look 0x202B 60
+wait 1000
+@both action enemy_sync 8 1
+waitlog 10 \[enemy\] ownership on
+@guest waitlog 10 \[enemy\] ownership on
+@guest waitlog 30 \[enemy\] mirror on id=
+wait 3000
+# ---- A: gun MULE 0202B alone to her, her Sam 10 m in front
+action enemy_look 0x202B 22
+action enemy_target 3 0x202B 5
+@guest action enemy_look 0x202B 10
+wait 700
+@guest action enemy_look -8 10
+@guest action enemy_m2 2 0x202B 0
+@guest waitnew 5 \[probe\] P2 armed id=0202B
+action enemy_own 0x202B 3
+waitnew 10 \[enemy\] single OWN id=0202B -> guest \(forced; camp members left: [0-9]+
+@guest waitnew 30 \[probe\] P2 result id=0202B lever a
+@guest screenshot 01-guest-a-0202B-front
+action enemy_own 0x202B 4
+waitnew 10 \[enemy\] single OWN id=0202B -> host \(forced give-back
+?@guest waitlog 10 \[enemy\] OWN id=0202B given back here \(epoch 2
+?waitlog 10 \[enemy\] single OWN id=0202B back here
+wait 3000
+# ---- B: gun MULE 0202F (weapon 63) alone to her, her Sam 10 m behind it
+action enemy_look 0x202F 22
+action enemy_target 3 0x202F 5
+@guest action enemy_look 0x202F 10
+wait 700
+@guest action enemy_look -8 -10
+@guest action enemy_m2 2 0x202F 0
+@guest waitnew 5 \[probe\] P2 armed id=0202F
+action enemy_own 0x202F 3
+waitnew 10 \[enemy\] single OWN id=0202F -> guest \(forced; camp members left: [0-9]+
+@guest waitnew 30 \[probe\] P2 result id=0202F lever a
+@guest screenshot 02-guest-b-0202F-behind
+action enemy_own 0x202F 4
+waitnew 10 \[enemy\] single OWN id=0202F -> host \(forced give-back
+?@guest waitlog 10 \[enemy\] OWN id=0202F given back here \(epoch 2
+?waitlog 10 \[enemy\] single OWN id=0202F back here
+wait 3000
+# ---- C: melee MULE 02029 alone to her, her Sam 4 m in front
+action enemy_look 0x2029 22
+action enemy_target 3 0x2029 5
+@guest action enemy_look 0x2029 10
+wait 700
+@guest action enemy_look -8 4
+@guest action enemy_m2 2 0x2029 0
+@guest waitnew 5 \[probe\] P2 armed id=02029
+action enemy_own 0x2029 3
+waitnew 10 \[enemy\] single OWN id=02029 -> guest \(forced; camp members left: [0-9]+
+@guest waitnew 30 \[probe\] P2 result id=02029 lever a
+@guest screenshot 03-guest-c-02029-melee
+action enemy_own 0x2029 4
+waitnew 10 \[enemy\] single OWN id=02029 -> host \(forced give-back
+?@guest waitlog 10 \[enemy\] OWN id=02029 given back here \(epoch 2
+?waitlog 10 \[enemy\] single OWN id=02029 back here
+wait 3000
+# ---- D (control): the whole camp forced to her, 0202B measured, her Sam 10 m in front
+action enemy_look 0x202B 22
+action enemy_target 3 0x202B 5
+@guest action enemy_look 0x202B 10
+wait 700
+@guest action enemy_look -8 10
+@guest action enemy_m2 2 0x202B 0
+@guest waitnew 5 \[probe\] P2 armed id=0202B
+action enemy_own 0x202B 2
+waitnew 10 \[enemy\] camp .* -> guest \(forced
+@guest waitnew 30 \[probe\] P2 result id=0202B lever a
+@guest screenshot 04-guest-d-camp-0202B
+action enemy_own -5 1
+waitnew 10 \[enemy\] camp .* -> host \(forced
+wait 3000
+# ---- the reset, off
+@both action enemy_sync 8 0
+@both action enemy_sync 2
+waitlog 5 \[enemy\] sync off \(debug action\)
+@guest waitlog 5 \[enemy\] sync off \(debug action\)
+nolog \[probe\] FAULT
+@guest nolog \[probe\] FAULT
+nolog \[enemy\] FAULT
+@guest nolog \[enemy\] FAULT
+nolog \[enemy\] hits FAULT
+@guest nolog \[enemy\] hits FAULT
+nolog byte check FAILED
+@guest nolog byte check FAILED
+nolog \[shots\] FAULT
+@guest nolog \[shots\] FAULT
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+action enemy_probe 5 0
+?@both action dev_god 0
+@guest quit
+wait 3000
+quit

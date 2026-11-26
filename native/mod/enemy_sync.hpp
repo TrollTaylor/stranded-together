@@ -107,6 +107,21 @@ void QueueOwnMessage(const std::uint8_t* bytes, std::size_t size) noexcept;
 // P1c (round 21): the host relays its hits on a frozen copy of hers (enemy_owner_hits); the guest applies them to the one she owns
 bool OwnRelay() noexcept;                    // ownership on and enemy_owner_hits (the host's capture of its followers' hits)
 bool OwnedHere(std::uint32_t id) noexcept;   // the guest owns it now
+// Round 24 (the M2 probe P2), any thread: the hits on our Sam by an enemy we own (the guest's "an owned enemy hit our Sam"
+// attribution: the attacker, its weapon's holder or its weapon instance's holder), per attacker id since the start (id 0: all of
+// them; at most 16 ids are told apart).
+unsigned OwnedHitsOn(std::uint32_t id) noexcept;
+// Round 24, game thread: an enemy's camp in OUR world: its phase (+0x110), its CP's id and phase (+0x210, read live when the CP
+// actor is known, else the 2 Hz walk's), and the other members of that CP here: frozen copies (mirrors or the host's followers),
+// owned here (the guest) or running here. False when the enemy is not ours to read; cp_id 0: in no camp list (or not walked yet).
+struct CampView {
+    std::uint8_t phase = 0xFF, cp_phase = 0xFF;
+    bool cp_live = false;  // cp_phase read now (else the walk's)
+    bool single = false;   // the host: handed over alone (enemy_own <id> 3)
+    std::uint32_t cp_id = 0;
+    unsigned members = 0, frozen = 0, owned = 0, running = 0;
+};
+bool CampViewOf(std::uint32_t id, CampView* out) noexcept;
 bool Camp(const double (&v)[3], char* msg, std::size_t cap) noexcept;  // enemy_camp <op> <id> <k> (hidden runs)
 // Round 23 (docs/enemy-sync.md 14), game thread: the tie-up relay's pose hold on our frozen copy of <id> (either game: the guest's
 // mirror of a host enemy, the host's follower of one she owns). While held, the copy's transform writes and its SEP1 pose apply
@@ -119,8 +134,10 @@ bool Holding(std::uint32_t id) noexcept;
 std::uint8_t PeerDefeat(std::uint32_t id) noexcept;
 // Our frozen copies now (either game): ids, actors and entities, at most cap.
 unsigned FrozenCopies(std::uint32_t* ids, std::uintptr_t* actors, std::uintptr_t* entities, unsigned cap) noexcept;
-// enemy_own <id | 0 the nearest the host owns to the partner | -5 the nearest the guest owns> <1 host | 2 guest> (hidden runs, the
-// host): a forced hand-over (reason 7); the rules apply again afterwards (the 10 s hold).
+// enemy_own <id | 0 the nearest the host owns to the partner | -5 the nearest the guest owns> <1 host | 2 guest | 3 guest alone |
+// 4 host (a single back)> (hidden runs, the host): a forced hand-over (reason 7) of its camp (1 / 2; the rules apply again
+// afterwards: the 15 s hold), or (round 24) of that one enemy alone (3), its camp held out of the camp decisions until it is
+// given back (4, or 1 on a single take).
 bool Own(const double (&v)[3], char* msg, std::size_t cap) noexcept;
 // Round 23 D (docs/enemy-sync.md 14.10), game thread: one of this game's enemies by its actor id, for the truck lines of the shared
 // vehicles: its camp ("cp 04004", "loose 21A3F"; "-" when the camp walk has not listed it) and its seat (+0x3C0 with the ride-field

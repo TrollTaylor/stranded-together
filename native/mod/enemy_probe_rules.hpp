@@ -7,7 +7,8 @@
 //   Fresh / FreshTrack  P1: whether a PlayerVisual entry for our Sam is being written (its bytes changed within a window), was
 //                       written once and left (stale), or is not there (none); the verdict over the whole probe
 //   Wrap180 / OffDeg    angles: a MULE's facing against a point, within a cone
-//   Push                P2: the time from the hand-over to "within 30 deg of our Sam" and to its first shot
+//   Push                P2: the time from the hand-over to "within 30 deg of our Sam", to its first shot and (round 24) to its
+//                       first attack (a shot or a melee hit on our Sam), and its hits on our Sam by kind
 //   PhaseTrack          P5: the phase's changes over a probe (start, end, changes, the first raise)
 //   Shorten             P4: a ray shortened at both ends (its own and the target's bodies left out)
 //   EntrySig            P1 / P5: a 64-bit FNV-1a of an entry's bytes (its change test)
@@ -91,25 +92,62 @@ inline const char* LeverName(int lever) noexcept {
         default: return "?";
     }
 }
+// Round 24: a hit on our Sam counts as a shot's when the MULE's shot count rose in that sample or within this before it, else as
+// melee (a strike: run 20261125-154710's 02029 hit her Sam with no shot of its own). Hit messages closer than kAttackGapMs are one
+// attack (a melee swing sends a burst of them ~15 ms apart).
+inline constexpr double kShotHitWindowMs = 2000.0;
+inline constexpr double kAttackGapMs = 300.0;
+enum class Attack : std::uint8_t { none, shot, melee };
+inline const char* AttackText(Attack a) noexcept { return a == Attack::shot ? "shot" : a == Attack::melee ? "melee" : "none"; }
 struct Push {
     double t0 = -1;           // the hand-over seen here (ms), -1 not yet
     double turn_ms = -1;      // first within the cone, from t0
     double shot_ms = -1;      // first shot, from t0
+    double melee_ms = -1;     // first melee hit on our Sam (a hit with no shot of its own before it), from t0
     double start_off = -1;    // its angle to our Sam at t0
     double min_off = 1e9;     // the smallest seen
     unsigned samples = 0;
+    unsigned shots = 0;       // its shots since t0
+    unsigned hits = 0, shot_hits = 0, melee_hits = 0;  // hit messages on our Sam since t0 (all; by kind)
+    unsigned attacks = 0;     // hit bursts (kAttackGapMs apart)
+    double last_shot_rise = -1e18, last_hit = -1e18;
     void Owned(double now, double off) noexcept {
-        t0 = now, start_off = off, samples = 0, min_off = 1e9, turn_ms = shot_ms = -1;
-        Sample(now, off, 0);
+        t0 = now, start_off = off, samples = 0, min_off = 1e9, turn_ms = shot_ms = melee_ms = -1;
+        shots = hits = shot_hits = melee_hits = attacks = 0;
+        last_shot_rise = last_hit = -1e18;
+        Sample(now, off, 0, 0);
     }
-    void Sample(double now, double off, unsigned shots_since) noexcept {
+    // shots_since / hits_since: its counts since t0 (monotonic)
+    void Sample(double now, double off, unsigned shots_since, unsigned hits_since = 0) noexcept {
         if (t0 < 0) return;
         ++samples;
         if (off >= 0 && off < min_off) min_off = off;
         if (turn_ms < 0 && WithinCone(off)) turn_ms = now - t0;
+        if (shots_since > shots) shots = shots_since, last_shot_rise = now;
         if (shot_ms < 0 && shots_since > 0) shot_ms = now - t0;
+        if (hits_since > hits) {
+            const unsigned d = hits_since - hits;
+            hits = hits_since;
+            const bool by_shot = now - last_shot_rise <= kShotHitWindowMs;
+            (by_shot ? shot_hits : melee_hits) += d;
+            if (!by_shot && melee_ms < 0) melee_ms = now - t0;
+            if (now - last_hit > kAttackGapMs) ++attacks;
+            last_hit = now;
+        }
     }
-    bool Done(double now, double timeout_ms) const noexcept { return t0 >= 0 && ((turn_ms >= 0 && shot_ms >= 0) || now - t0 >= timeout_ms); }
+    // the first attack: a shot or a melee hit, whichever came first (a shot wins a tie)
+    Attack FirstAttack() const noexcept {
+        if (shot_ms >= 0 && (melee_ms < 0 || shot_ms <= melee_ms)) return Attack::shot;
+        return melee_ms >= 0 ? Attack::melee : Attack::none;
+    }
+    double FirstAttackMs() const noexcept {
+        const Attack a = FirstAttack();
+        return a == Attack::shot ? shot_ms : a == Attack::melee ? melee_ms : -1;
+    }
+    // full: run the whole window (count the hits); else done once turned and shot
+    bool Done(double now, double timeout_ms, bool full = false) const noexcept {
+        return t0 >= 0 && ((!full && turn_ms >= 0 && shot_ms >= 0) || now - t0 >= timeout_ms);
+    }
     // "turned 1200 ms, shot 2400 ms" / "turned never, shot never"
     int Text(char* out, std::size_t cap) const noexcept {
         char a[32], b[32];
@@ -118,6 +156,15 @@ struct Push {
         if (shot_ms >= 0) std::snprintf(b, sizeof b, "%.0f ms", shot_ms);
         else std::snprintf(b, sizeof b, "never");
         return std::snprintf(out, cap, "turned %s, shot %s", a, b);
+    }
+    // "first attack after 2400 ms (shot), hits on our Sam 3 (shot 3, melee 0; attacks 1; shots 4)" / "first attack never, hits on
+    // our Sam 0 (...)"
+    int AttackLine(char* out, std::size_t cap) const noexcept {
+        char a[48];
+        const Attack k = FirstAttack();
+        if (k != Attack::none) std::snprintf(a, sizeof a, "after %.0f ms (%s)", FirstAttackMs(), AttackText(k));
+        else std::snprintf(a, sizeof a, "never");
+        return std::snprintf(out, cap, "first attack %s, hits on our Sam %u (shot %u, melee %u; attacks %u; shots %u)", a, hits, shot_hits, melee_hits, attacks, shots);
     }
 };
 

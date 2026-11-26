@@ -1,0 +1,101 @@
+# Round 24 b (docs/enemy-sync.md 14.17): in two-games-enemy-single case C (runs 180910 and 182106) MULE 02029, handed to her
+# game ALONE while alerted by the host and never live in her world before, ran straight away from her Sam (to ~60 m), while in
+# two-games-enemy-single-melee (181809) the same MULE, already live there once, fought her (melee) alone and with its camp.
+# This run separates the two remaining causes:
+#   N  native: the host's own 02029 (never handed over), alerted (enemy_target 3), the host's Sam 4 m in front, her Sam 60 m
+#      away; P5 on the host for 20 s plus the target follow lines (does a native 02029 also back away from a Sam 4 m in front?)
+#   G  the whole camp forced to her (enemy_own 0x2029 2), alerted by the host, her copy of 02029 never live before (fresh, as in
+#      C), her Sam 4 m in front; P2 on 02029. Fight = the single take is what sends it away; flee = any hand-over of a fresh
+#      alerted copy does.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-enemy-single-flee -SeedSaves complete-100 -GuestSeed profile-only -Id round24-flee
+# covers: enemy-own enemy-hits
+# select: probe
+role host
+graphics low
+timeout 300
+launcherini local-test
+ini enemy_m2_probes=1
+@guest ini enemy_m2_probes=1
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[config\] enemy_m2_probes=1
+@guest waitlog 5 \[config\] enemy_m2_probes=1
+waitlog 5 \[enemy\] mirror byte checks: [0-9]+/[0-9]+ ok
+@guest waitlog 5 \[enemy\] mirror byte checks: [0-9]+/[0-9]+ ok
+waitlog 30 \[enemy\] hits: outcome carry checks ok
+@guest waitlog 30 \[enemy\] hits: outcome carry checks ok
+goto mule-camp-sw-lkc
+@guest goto 1521.90 992.00 0
+wait 4000
+?@both action dev_god 2
+@both action dev_enemies 1
+waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+@guest waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+action enemy_probe 5 1
+@guest action enemy_probe 5 1
+waitlog 40 \[enemy\] sync on \(host\).*\(equal
+@guest waitlog 40 \[enemy\] sync on \(guest\).*\(equal
+waitlog 30 \[enemy\] hits on \(host\)
+@guest waitlog 30 \[enemy\] hits on \(guest\)
+waitlog 30 \[enemy\] own on \(
+@guest waitlog 30 \[enemy\] own on \(
+# ---- ownership off while both are placed (no proximity take), then on: the camp is the host's
+@both action enemy_sync 8 0
+waitlog 10 \[enemy\] ownership off
+@guest waitlog 10 \[enemy\] ownership off
+action enemy_look 0x202B 22
+@guest action enemy_look 0x202B 60
+wait 1000
+@both action enemy_sync 8 1
+waitlog 10 \[enemy\] ownership on
+@guest waitlog 10 \[enemy\] ownership on
+@guest waitlog 30 \[enemy\] mirror on id=
+wait 3000
+# ---- N: native, the host's own 02029, the host's Sam 4 m in front, her Sam 60 m away
+@guest action enemy_look 0x2029 60
+action enemy_look 0x2029 22
+wait 700
+action enemy_look -8 4
+action enemy_target 3 0x2029 5
+action enemy_m2 5 0x2029 20
+waitnew 30 \[probe\] P5 result #
+screenshot 01-host-n-02029-native
+wait 2000
+# ---- G: the whole camp to her, alerted by the host, her fresh copy of 02029 measured, her Sam 4 m in front
+action enemy_look 0x2029 22
+action enemy_target 3 0x2029 5
+@guest action enemy_look 0x2029 10
+wait 700
+@guest action enemy_look -8 4
+@guest action enemy_m2 2 0x2029 0
+@guest waitnew 5 \[probe\] P2 armed id=02029
+action enemy_own 0x2029 2
+waitnew 10 \[enemy\] camp .* -> guest \(forced
+@guest waitnew 30 \[probe\] P2 result id=02029 lever a
+@guest screenshot 02-guest-g-camp-02029-fresh
+action enemy_own -5 1
+waitnew 10 \[enemy\] camp .* -> host \(forced
+wait 3000
+# ---- the reset, off
+@both action enemy_sync 8 0
+@both action enemy_sync 2
+waitlog 5 \[enemy\] sync off \(debug action\)
+@guest waitlog 5 \[enemy\] sync off \(debug action\)
+nolog \[probe\] FAULT
+@guest nolog \[probe\] FAULT
+nolog \[enemy\] FAULT
+@guest nolog \[enemy\] FAULT
+nolog \[enemy\] hits FAULT
+@guest nolog \[enemy\] hits FAULT
+nolog byte check FAILED
+@guest nolog byte check FAILED
+nolog \[shots\] FAULT
+@guest nolog \[shots\] FAULT
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+action enemy_probe 5 0
+?@both action dev_god 0
+@guest quit
+wait 3000
+quit

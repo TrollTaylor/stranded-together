@@ -3195,10 +3195,10 @@ bool KRunStart(KRun& r, int probe, std::uint32_t id, double secs, char* msg, std
 struct PushRun {
     std::uint32_t id = 0, world = 0;
     int lever = 0;
-    double armed = 0, timeout_ms = 15000, next = 0;
+    double armed = 0, timeout_ms = 20000, next = 0, next_state = 0;
     ep::Push p;
     std::uintptr_t entity = 0, d_stim = 0, d_agent = 0;
-    unsigned shots0 = 0;
+    unsigned shots0 = 0, hits0 = 0, all_hits0 = 0;
     float d_mul = 0;
     double d_until = 0, dist = -1;
     char applied[160] = {};
@@ -3231,17 +3231,36 @@ void PushRestoreGuarded(const char* why) noexcept {
         Log("[probe] P2 lever d': our Sam's stimulus restore FAULTED (%s): forgotten", why);
     }
 }
+// Round 24: the handed-over MULE's state in OUR world at the hand-over, every 1 s and at the end: its state (ea0 / ea4), its phase
+// (+0x110) and its AI phase object's, its camp actor's (CP) phase here, and the other members of that camp here (frozen copies,
+// owned here, running here)
+void PushState(const char* when, const MuleNow& m, double off, double dist) {
+    esync::CampView cv;
+    const bool have = esync::CampViewOf(g_push.id, &cv);
+    const std::uintptr_t po = (g_tgroups & kTPhase) && m.entity ? PhaseObj(m.entity) : 0;
+    const int ai_phase = po ? static_cast<int>(U32(po + kPhaseNow)) : -1;
+    char camp[160];
+    if (!have) std::snprintf(camp, sizeof(camp), "camp unread");
+    else if (!cv.cp_id) std::snprintf(camp, sizeof(camp), "in no camp list here");
+    else
+        std::snprintf(camp, sizeof(camp), "camp cp %05X phase %d (%s); other members here %u: frozen %u, owned here %u, running %u", cv.cp_id,
+                      cv.cp_phase == 0xFF ? -1 : static_cast<int>(cv.cp_phase), cv.cp_live ? "live" : "the walk's", cv.members, cv.frozen, cv.owned, cv.running);
+    Log("[probe] P2 state id=%05X %s: state %u bits 0x%X a88 0x%X; phase %d, AI phase %d; %s; Sam %.1f m, %.0f deg off its facing; shots %u, hits on our Sam %u",
+        g_push.id, when, m.ea0, m.ea4, m.a88, have && cv.phase != 0xFF ? static_cast<int>(cv.phase) : -1, ai_phase, camp, dist, off, g_push.p.shots, g_push.p.hits);
+}
 void PushEnd(const char* why) {
     if (!g_push.id) return;
     PushRestore("the end");
-    char t[64];
+    char t[64], at[160];
     g_push.p.Text(t, sizeof(t));
+    g_push.p.AttackLine(at, sizeof(at));
     if (g_push.p.t0 < 0)
         Log("[probe] P2 result id=%05X lever %s: not handed over here (%s)", g_push.id, ep::LeverName(g_push.lever), why ? why : "no hand-over");
     else
-        Log("[probe] P2 result id=%05X lever %s: %s (Sam %.1f m, %.0f deg off its facing at the hand-over, at least %.0f deg; %u samples; %s)%s%s", g_push.id,
-            ep::LeverName(g_push.lever), t, g_push.dist, g_push.p.start_off, g_push.p.min_off > 360 ? -1.0 : g_push.p.min_off, g_push.p.samples, g_push.applied,
-            why ? "; ended: " : "", why ? why : "");
+        Log("[probe] P2 result id=%05X lever %s: %s; %s; all owned hits on our Sam %u (Sam %.1f m, %.0f deg off its facing at the hand-over, at least %.0f deg; "
+            "%u samples over %.1f s; %s)%s%s",
+            g_push.id, ep::LeverName(g_push.lever), t, at, esync::OwnedHitsOn(0) - g_push.all_hits0, g_push.dist, g_push.p.start_off,
+            g_push.p.min_off > 360 ? -1.0 : g_push.p.min_off, g_push.p.samples, (g_now - g_push.p.t0) / 1000.0, g_push.applied, why ? "; ended: " : "", why ? why : "");
     g_push = PushRun{};
 }
 void PushApply(const MuleNow& m) {
@@ -3321,11 +3340,14 @@ void PushTick() {
         g_push.dist = Dist(me, sam);
         g_push.entity = m.entity;
         g_push.shots0 = shots::ShotsBy(m.entity);
+        g_push.hits0 = esync::OwnedHitsOn(g_push.id), g_push.all_hits0 = esync::OwnedHitsOn(0);
         g_push.p.Owned(g_now, off);
         PushApply(m);
         Log("[probe] P2 owned id=%05X here (%.1f s after the arm): Sam %.1f m, %.0f deg off its facing; MULE state %u bits 0x%X; %s", g_push.id,
             (g_now - g_push.armed) / 1000.0, g_push.dist, off, m.ea0, m.ea4, g_push.applied);
-        if (g_push.p.Done(g_now, g_push.timeout_ms)) PushEnd(nullptr);
+        PushState("at the hand-over", m, off, g_push.dist);
+        g_push.next_state = g_now + 1000.0;
+        if (g_push.p.Done(g_now, g_push.timeout_ms, true)) PushEnd(nullptr);
         return;
     }
     if (!owned) return PushEnd("given back before the end");
@@ -3336,11 +3358,25 @@ void PushTick() {
         return PushEnd("the copy is gone");
     const double off = ep::OffDeg(YawOf(m.xf), m.xf.pos.x, m.xf.pos.y, sam[0], sam[1]);
     const unsigned shots = shots::ShotsBy(m.entity) - g_push.shots0;
-    const double turn0 = g_push.p.turn_ms, shot0 = g_push.p.shot_ms;
-    g_push.p.Sample(g_now, off, shots);
+    const unsigned hits = esync::OwnedHitsOn(g_push.id) - g_push.hits0;  // round 24: its melee strikes and owned rounds on our Sam
+    const double turn0 = g_push.p.turn_ms, shot0 = g_push.p.shot_ms, melee0 = g_push.p.melee_ms;
+    const unsigned hits_before = g_push.p.hits;
+    g_push.p.Sample(g_now, off, shots, hits);
+    const double me[3] = {m.xf.pos.x, m.xf.pos.y, m.xf.pos.z};
+    const double dist = Dist(me, sam);
     if (turn0 < 0 && g_push.p.turn_ms >= 0) Log("[probe] P2 id=%05X within %.0f deg of our Sam after %.0f ms (%.0f deg)", g_push.id, ep::kConeDeg, g_push.p.turn_ms, off);
     if (shot0 < 0 && g_push.p.shot_ms >= 0) Log("[probe] P2 id=%05X first shot after %.0f ms (%u)", g_push.id, g_push.p.shot_ms, shots);
-    if (g_push.p.Done(g_now, g_push.timeout_ms)) PushEnd(nullptr);
+    if (melee0 < 0 && g_push.p.melee_ms >= 0)
+        Log("[probe] P2 id=%05X first melee hit on our Sam after %.0f ms (%u hit messages; Sam %.1f m)", g_push.id, g_push.p.melee_ms, hits, dist);
+    if (hits_before == 0 && g_push.p.hits > 0 && g_push.p.shot_hits > 0)
+        Log("[probe] P2 id=%05X first hit on our Sam by its rounds after %.0f ms (Sam %.1f m)", g_push.id, g_now - g_push.p.t0, dist);
+    if (g_now >= g_push.next_state) {
+        g_push.next_state += 1000.0;
+        char when[32];
+        std::snprintf(when, sizeof(when), "t=%.1f s", (g_now - g_push.p.t0) / 1000.0);
+        PushState(when, m, off, dist);
+    }
+    if (g_push.p.Done(g_now, g_push.timeout_ms, true)) PushEnd(nullptr);
 }
 
 // ---- P4: the raycast from a copy's eye to our Sam (one call a tick, head and chest in turn)
@@ -3535,9 +3571,9 @@ bool M2Body(const double (&v)[3], char* msg, std::size_t cap) {
                 Log("[probe] P2 result id=%05X lever %s: skipped (%s)", id, ep::LeverName(lever), g_role != 2 ? "the guest's probe" : !id ? "no id" : "lever 0..3");
                 return std::snprintf(msg, cap, "P2 skipped"), true;
             }
-            g_push.id = id, g_push.lever = lever, g_push.world = g_world, g_push.armed = g_push.next = g_now, g_push.timeout_ms = 15000.0;
+            g_push.id = id, g_push.lever = lever, g_push.world = g_world, g_push.armed = g_push.next = g_now, g_push.timeout_ms = 20000.0;
             shots::ArmOwnerCounts(true);
-            Log("[probe] P2 armed id=%05X lever %s: waiting for the hand-over (%s now; 15 s after it)", id, ep::LeverName(lever),
+            Log("[probe] P2 armed id=%05X lever %s: waiting for the hand-over (%s now; 20 s after it, the whole window)", id, ep::LeverName(lever),
                 esync::OwnedHere(id) ? "owned here already" : "not owned here");
             return std::snprintf(msg, cap, "P2 armed %05X lever %d", id, lever), true;
         }

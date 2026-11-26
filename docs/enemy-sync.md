@@ -2342,3 +2342,47 @@ here` when there is none). A given id is taken as it is. The scenario's checks a
   behind it (P2, not run). A blocked raycast (P4). The notice constants (P5). Getting out of a vehicle (P6). (14.14)
 * **The untie after about 22 s** in the host's game, seen twice (14.15).
 * The probe scenario's own `pad B` crouch was never checked on a screenshot.
+
+### 14.17 Round 24: one MULE handed over alone (hidden runs only; six runs, 2026-11-25)
+
+The question: when ONE alerted MULE is handed to her game while the rest of its camp stays with the host's game (frozen copies
+in her world), does it fight her natively, and how fast? Round 23's P2 said "shot never". Run `154710` showed why that is not
+the whole answer: 02029 hit her Sam with no shot of its own, a melee strike that P2 did not count.
+
+* `enemy_own <id> 3` (the host; debug-actions.md) hands only that enemy over, with the usual OWN sequence (HostTakeOne, her
+  GuestTake). The other members keep their owner. While it is hers its camp is held out of the camp rules: no CampDecide, no
+  take, back or straggler, and a whole-camp `enemy_own .. 2` is refused. The loose-member loop leaves it alone. `enemy_own <id> 4`
+  gives it back (HostBackStart, then HostBackDone), and the camp gets the usual 15 s hold. An ownership reset clears the
+  singles. The single's own forced backs still apply while its camp is held (CampDecide on it as a camp of one with the hold
+  never over: a lost OWNACK, her silence, the range, unrealized there, a game sequence on the host's copy), so a failed take
+  never leaves the camp held until a reset.
+* P2 now runs the whole 20 s window and counts the hits on our Sam per attacker, using the hit observer's "an owned enemy hit our
+  Sam" attribution. A hit is a shot's when its shot count rose within 2 s before it, else melee. Hits under 300 ms apart are one
+  attack. The result line carries `first attack after N ms (shot|melee), hits on our Sam n`. `[probe] P2 state` lines at the
+  hand-over and every 1 s show the MULE's ea0 / ea4, its phase here, its camp actor's phase here, and whether the other members
+  are frozen copies here. These rules are unit-tested in tests/enemy_probe_rules_tests.cpp.
+* Scenario `two-games-enemy-single`: cp 04004, owned and alerted by the host. A: gun 0202B with her Sam 10 m in front. B: gun
+  0202F (weapon 63) with her Sam 10 m behind. C: melee 02029 with her Sam 4 m in front. D (the control): the whole camp forced
+  over, 0202B measured.
+
+Results (runs `180910`, `181809`, `182106`, `182601`, `182930` and `183229`; guest `[probe] P2 result` lines; checked
+independently in the round-24 review):
+
+* A MULE handed to her game ALONE fights her with its own AI. The frozen camp-mates do not stop it. Gun 0202B, 10 m in
+  front: first shot 1074 / 754 ms, 19 / 15 attacks. The whole-camp control on the same MULE: 967 / 533 ms. So round 23's
+  "shot never" was a probe artefact: 02029 is a melee-only MULE (it never fires in any run), and that P2 took the whole camp.
+* Melee 02029 alone, 4 m in front: it fought in 4 of 6 takes, with the first melee hit at 1055-1166 ms when it already
+  faced her, or 3565-3661 ms when it turned away for about 1 s first. In 2 takes it walked away to about 60 m and never hit.
+* Gun 0202F alone, her Sam 10 m behind it: it turned at 4.4 s and shot at 7.1 s in one run, and never noticed her in the repeat.
+* The take carries the phase, but not the copy's knowledge (DSAINoticeAndKnowledge, entity +0x228 -> +0x720). A fresh copy has
+  PlayerLastKnown at (0, 0, 0). Lever c (AlertForEntityWithPerfectThreatInfo) showed no measurable effect against its proper
+  comparison (F vs L: same course, 3565 vs 3661 ms).
+* The two walk-aways share three conditions the fights do not: her camp actor already at phase 4-5 before the take, a camp-mate
+  running natively in her world (0202E, released from a vehicle), and two earlier single takes in the same camp. A camp-level
+  order (regroup, or go to the vehicle) is at least as likely a cause as the missing knowledge. Not proven: 2 runs against 3.
+* Hit counts are hit messages, not damage. A melee swing sends a burst of about 8, so compare "attacks".
+
+What this decides for M3: the per-enemy design is workable. A switch from behind or after a camp alert is not yet reliable.
+M3 still needs (a) the walk-away retested under its own conditions, lever a and lever c paired, 3 or more runs each, with P1 on
+her copy, (b) B (behind) with lever c, and (c) the push found by then, or a switch only when the enemy faces the new player (S2's
+"seen" already implies it).

@@ -404,7 +404,7 @@ constexpr Row kRows[] = {
      &DoEnemyHitWatch},
     {{Action::enemy_target, Tab::tools, "Enemy target", "Hidden runs, the host (round 20 M1 probe): <op> [id | 0] [arg]: 0 read her body / our Sam / the MULE (AI agent, faction, hostility), 1 / 2 L1 alert (perfect / plain) -> 0 her body | 1 our Sam, 3 L3 phase 1..5, 4 0/1 her body's hit watch, 7 s follow (the MULE's facing), 8 the visual stimuli read, 9 <0 remove | 1 her agent | 2 + Sam's message | 3 the decoy> her body's visual stimulus (round 20 M2).", false},
      &DoEnemyTarget},
-    {{Action::enemy_own, Tab::tools, "Enemy own", "Hidden runs, the host (enemy_owner): a forced hand-over of the enemy's whole camp: <id | 0 the nearest the host owns to the partner | -5 the nearest the guest owns> <1 to the host | 2 to the guest>.", false},
+    {{Action::enemy_own, Tab::tools, "Enemy own", "Hidden runs, the host (enemy_owner): a forced hand-over of the enemy's whole camp: <id | 0 the nearest the host owns to the partner | -5 the nearest the guest owns> <1 to the host | 2 to the guest | 3 this one alone to the guest | 4 a single one back>.", false},
      &DoEnemyOwn},
     {{Action::enemy_camp, Tab::tools, "Enemy camp", "Hidden runs (enemy_owner, P1c): 0 the camp table (the host); 3 <id | 0 the look's> <k 0 faint | 1 sleep | 2 restrained> that outcome on this game's copy (the outcome setter).", false},
      &DoEnemyCamp},

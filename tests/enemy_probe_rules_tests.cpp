@@ -101,6 +101,55 @@ void TestPush() {
     r.Sample(1000, 140, 0);
     r.Text(t, sizeof t);
     CHECK(std::strcmp(t, "turned never, shot never") == 0);
+    char at[160];
+    r.AttackLine(at, sizeof at);
+    CHECK(std::strcmp(at, "first attack never, hits on our Sam 0 (shot 0, melee 0; attacks 0; shots 0)") == 0);
+    CHECK(r.FirstAttack() == Attack::none && r.FirstAttackMs() < 0);
+}
+
+// Round 24: the hits on our Sam by kind (a shot within 2 s before: its rounds; else melee), the bursts, the first attack, the
+// whole window
+void TestPushHits() {
+    // a melee MULE: no shot, a burst of 8 hit messages over two samples, then another swing 1 s later
+    Push m;
+    m.Owned(10000, 20);
+    m.Sample(10100, 15, 0, 0);
+    m.Sample(14000, 5, 0, 5);
+    CHECK(m.melee_ms == 4000 && m.melee_hits == 5 && m.shot_hits == 0 && m.attacks == 1 && m.hits == 5);
+    m.Sample(14100, 5, 0, 8);
+    CHECK(m.melee_hits == 8 && m.attacks == 1);  // within 300 ms: the same swing
+    m.Sample(15100, 5, 0, 12);
+    CHECK(m.melee_hits == 12 && m.attacks == 2 && m.melee_ms == 4000);
+    CHECK(m.FirstAttack() == Attack::melee && m.FirstAttackMs() == 4000 && m.shot_ms < 0);
+    char at[160];
+    m.AttackLine(at, sizeof at);
+    CHECK(std::strcmp(at, "first attack after 4000 ms (melee), hits on our Sam 12 (shot 0, melee 12; attacks 2; shots 0)") == 0);
+    // the whole window: turned and "shot" does not end it early
+    CHECK(!m.Done(29999, 20000, true) && m.Done(30000, 20000, true));
+    // a gun MULE: shots, then its rounds hit within 2 s (shot hits); a hit 2.5 s after the last shot rise counts as melee
+    Push g;
+    g.Owned(0, 120);
+    g.Sample(1500, 25, 0, 0);
+    g.Sample(2000, 10, 3, 0);
+    CHECK(g.shot_ms == 2000 && g.shots == 3 && g.turn_ms == 1500);
+    g.Sample(2600, 10, 3, 2);
+    CHECK(g.shot_hits == 2 && g.melee_hits == 0 && g.melee_ms < 0 && g.attacks == 1);
+    g.Sample(4500, 10, 3, 3);
+    CHECK(g.shot_hits == 2 && g.melee_hits == 1 && g.melee_ms == 4500 && g.attacks == 2);
+    CHECK(g.FirstAttack() == Attack::shot && g.FirstAttackMs() == 2000);
+    CHECK(g.Done(3000, 20000) && !g.Done(3000, 20000, true));  // the old end: turned and shot
+    g.AttackLine(at, sizeof at);
+    CHECK(std::strcmp(at, "first attack after 2000 ms (shot), hits on our Sam 3 (shot 2, melee 1; attacks 2; shots 3)") == 0);
+    // a new hand-over resets every count
+    g.Owned(9000, 50);
+    CHECK(g.hits == 0 && g.shots == 0 && g.attacks == 0 && g.melee_ms < 0 && g.shot_ms < 0 && g.FirstAttack() == Attack::none);
+    // a shot and a melee hit in the same sample: the shot's (and the first attack a shot)
+    Push s;
+    s.Owned(0, 0);
+    s.Sample(700, 0, 1, 1);
+    CHECK(s.shot_hits == 1 && s.melee_hits == 0 && s.FirstAttack() == Attack::shot);
+    CHECK(std::strcmp(AttackText(Attack::melee), "melee") == 0 && std::strcmp(AttackText(Attack::shot), "shot") == 0 &&
+          std::strcmp(AttackText(Attack::none), "none") == 0);
 }
 
 void TestPhase() {
@@ -155,6 +204,7 @@ int main() {
     TestFresh();
     TestAngles();
     TestPush();
+    TestPushHits();
     TestPhase();
     TestShorten();
     TestSigPtr();
