@@ -131,6 +131,7 @@ native/include/*                       link
 
 # ---- the mod: core
 native/mod/dllmain.cpp                 boot
+native/mod/seh_guard.*                 boot
 native/mod/winhttp_forwards.inc        boot
 native/mod/log.*                       boot
 native/mod/game_api.*                  boot
