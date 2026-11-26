@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <set>
 #include <vector>
 
 #include "automation.hpp"
@@ -1796,9 +1797,11 @@ bool Checks() {
 // ---------------------------------------------------------------- public
 void Install(const Config& config) noexcept {
     g_cfg = config;
-    // round 25: the take levers' sites, checked at start-up when a lever key or the probes are on (a mismatch turns that lever off)
-    if (config.enemy_take_know || config.enemy_take_camp || config.enemy_ticket_return || config.enemy_m2_probes || config.enemy_take_role ||
-        config.enemy_take_face)
+    // round 25: the take levers' sites, checked at start-up when a lever key or the probes are on (a mismatch turns that lever off).
+    // Round 26 review: the keys are on by default, so only with enemy sync on (as the hits below): nothing new with enemy_sync=0
+    if ((config.enemy_sync || automation::Enabled()) &&
+        (config.enemy_take_know || config.enemy_take_camp || config.enemy_ticket_return || config.enemy_m2_probes || config.enemy_take_role ||
+         config.enemy_take_face))
         TakeChecks();
     RingInit();
     if (!config.enemy_hits) {
@@ -3213,13 +3216,15 @@ struct PushRun {
     double last_diag = -1, next_camp = 0;
     double last_pos[3] = {}, last_pos_t = -1;
     ep::PathTrack path;
+    bool autoarm = false;  // round 26: armed by itself at her single take (lever a, read only), not by the debug action
 };
 PushRun g_push;
 
 // ---- Round 25 (docs/enemy-sync.md 14.18): her single takes. The diagnostics D1-D5 (the P2 window, the guest, reads only) and the
-// take levers K1 / C1 / T1 (enemy_sync.cpp GuestTake / GuestRefreeze call TakeBefore / TakeAfter / Refreeze; hidden runs only, each
-// behind its key or P2 lever e / f / g). Every site byte-checked (TakeChecks), every read fault-free, every write and call SEH-guarded:
-// a fault turns that lever off for the session.
+// take levers K1 / C1 / T1 (enemy_sync.cpp GuestTake / GuestRefreeze call TakeBefore / TakeAfter / Refreeze; each behind its key or
+// P2 lever e / f / g). Round 26 (14.19, at the user's request): the keys default on and the levers act in real games too (no longer
+// hidden runs only), at a take of one MULE alone (a forced take with no other member of its camp hers here) only. Every site
+// byte-checked (TakeChecks), every read fault-free, every write and call SEH-guarded: a fault turns that lever off for the session.
 constexpr std::uintptr_t kKForceFlag = 0x736, kKForcePos = 0x6A0, kKFocus = 0x5A8, kKeAge = 0x40, kKeMem = 0x44;
 constexpr std::uintptr_t kKProcess = 0x142E8DAF0;  // K's ProcessSensorResults (vt+0x38): the forced player visual's reader
 constexpr std::uintptr_t kKUpsert = 0x142EA0370;   // the knowledge upsert it calls
@@ -3276,8 +3281,8 @@ void LeverFault(unsigned group, const char* where) noexcept {
     Log("[enemy] take lever FAULT in %s: that lever is off for the session", where);
 }
 // why a lever cannot act now (nullptr: it can)
+// (round 26: no longer hidden runs only, docs/enemy-sync.md 14.19)
 const char* LeverWhy(unsigned group) noexcept {
-    if (!automation::Enabled()) return "hidden runs only";
     if (!(g_lgroups & group)) return "its byte checks failed";
     if (g_loff & group) return "off after a fault";
     return nullptr;
@@ -3388,6 +3393,24 @@ struct TakeRec {
     char text[200] = {};  // what the levers did (P2's lever e / f / g line)
 };
 TakeRec g_take;
+// round 26: the ids she took alone and still owns (T1's give-back return is for those only, not every give-back of a camp)
+std::set<std::uint32_t> g_alone;
+void PushEnd(const char* why);  // (below)
+// round 26: her single take with enemy_m2_probes=1 arms the read-only P2 window (lever a, nothing pushed: the D1-D8 lines) by
+// itself, in a real game too; a window the debug action enemy_m2 armed (hidden runs) is kept, an automatic one of another id ends
+void AutoArm(std::uint32_t id) {
+    if (!g_cfg.enemy_m2_probes || g_probe_off || !g_installed || g_stop.load()) return;
+    if (g_push.id && (!g_push.autoarm || g_push.id == id)) return;
+    if (g_push.id) PushEnd("replaced by her next single take");
+    TargetChecks();
+    StimChecks();
+    ProbeChecks();
+    g_push.id = id, g_push.lever = 0, g_push.world = g_world, g_push.armed = g_push.next = g_now, g_push.timeout_ms = ep::kP2DefaultSecs * 1000.0;
+    g_push.autoarm = true;
+    shots::ArmOwnerCounts(true);
+    Log("[probe] P2 armed id=%05X lever %s: by itself at her single take (enemy_m2_probes=1; read only; %d s after the hand-over)", id, ep::LeverName(0),
+        ep::kP2DefaultSecs);
+}
 // R2: the roles written on her taken MULEs (by id), each restored when it stops being hers (given back, or her own reset)
 struct RoleRec {
     std::uint32_t id = 0, cp_id = 0, world = 0;
@@ -3554,13 +3577,18 @@ void TakeRole(std::uint32_t id, std::uintptr_t actor, bool alone) {
     const std::size_t at = std::strlen(g_take.text);
     std::snprintf(g_take.text + at, sizeof(g_take.text) - at, "%sR2 role %d->%d", at ? "; " : "", role, to);
 }
-void RoleRestore(std::uint32_t id, const char* when) {
+void RoleRestore(std::uint32_t id, const char* when, bool world_gone = false) {
     const auto it = g_roles.find(id);
     if (it == g_roles.end()) return;
     const RoleRec r = it->second;
     g_roles.erase(it);
     if (!r.actor) return;
-    if (r.world != g_world) return void(Log("[enemy] take role id=%05X %s: not restored (the world changed)", id, when));
+    // round 26 review: g_world is the one this combat tick last saw; enemy_sync's world-change reset runs earlier in the frame, so the
+    // live counter is asked too (a load: not ready, or another counter -> never written: an address can repeat after a load)
+    std::uint32_t live = 0;
+    const bool ready = coop::WorldReady(&live);
+    if (r.world != g_world || (ready && live != r.world) || (world_gone && !ready))
+        return void(Log("[enemy] take role id=%05X %s: not restored (the world changed)", id, when));
     std::int32_t cpid = 0, aid = 0;
     // the same actor still (its id at +0x08 is the enemy sync's kActId [O]; its camp id unchanged)
     if (!mem::Rd(r.actor + 0x08, aid) || static_cast<std::uint32_t>(aid) != id || !mem::Rd(r.actor + kMCpId, cpid) || static_cast<std::uint32_t>(cpid) != r.cp_id)
@@ -3624,7 +3652,10 @@ void TakeFace(std::uint32_t id, std::uintptr_t actor, bool alone) {
 }
 // her take, before the member's SetPhase (game thread; enemy_sync.cpp GuestTake): D3 "before", C1
 void TakeBeforeBody(std::uint32_t id, std::uintptr_t actor, bool alone) {
+    if (alone) g_alone.insert(id), AutoArm(id);
     const int lever = ArmedLever(id);
+    // round 26: a member of a camp take (not hers alone) with no P2 window: nothing here (no lever, no line; her single's record kept)
+    if (!alone && lever < 0) return;
     g_take = TakeRec{};
     g_take.id = id, g_take.actor = actor, g_take.world = g_world, g_take.t = g_now, g_take.lever = lever;
     g_take.diag = g_cfg.enemy_m2_probes && lever >= 0 && !g_probe_off;
@@ -4304,7 +4335,8 @@ void ProbeTickGuarded() noexcept {
 
 namespace {
 void RefreezeBody(std::uint32_t id, std::uintptr_t entity) {
-    if (!((g_take.id == id && g_take.tickets) || g_cfg.enemy_ticket_return)) return;
+    // round 26: the key's give-back return only for a MULE she took alone (not every give-back of a camp take)
+    if (!((g_take.id == id && g_take.tickets) || (g_cfg.enemy_ticket_return && g_alone.count(id)))) return;
     if (const char* why = LeverWhy(kLTicket)) return void(Log("[enemy] take tickets id=%05X given back: skipped (%s)", id, why));
     ReturnTickets(id, entity, "given back (frozen again)");
 }
@@ -4313,7 +4345,7 @@ int HookSeh(int which, std::uint32_t id, std::uintptr_t actor, std::uintptr_t en
         if (which == 0) TakeBeforeBody(id, actor, alone);
         else if (which == 1) TakeAfterBody(id, actor, entity, alone);
         else if (which == 2) RefreezeBody(id, entity);
-        else RoleRestore(id, alone ? "given back" : "own reset");
+        else RoleRestore(id, alone ? "given back" : "own reset", entity != 0), g_alone.erase(id);  // (entity: TakeEnded's world_gone)
         return 0;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return -1;
@@ -4336,7 +4368,7 @@ void Hook(int which, std::uint32_t id, std::uintptr_t actor, std::uintptr_t enti
 void TakeBefore(std::uint32_t id, std::uintptr_t actor, bool alone) noexcept { Hook(0, id, actor, 0, alone); }
 void TakeAfter(std::uint32_t id, std::uintptr_t actor, std::uintptr_t entity, bool alone) noexcept { Hook(1, id, actor, entity, alone); }
 void Refreeze(std::uint32_t id, std::uintptr_t entity) noexcept { Hook(2, id, 0, entity, true); }
-void TakeEnded(std::uint32_t id, bool given_back) noexcept { Hook(3, id, 0, 0, given_back); }
+void TakeEnded(std::uint32_t id, bool given_back, bool world_gone) noexcept { Hook(3, id, 0, world_gone ? 1u : 0u, given_back); }
 
 bool M2Probe(const double (&v)[3], char* msg, std::size_t cap) noexcept {
     if (!Hidden(msg, cap)) return false;

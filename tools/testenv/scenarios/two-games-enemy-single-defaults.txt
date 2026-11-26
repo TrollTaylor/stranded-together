@@ -1,0 +1,135 @@
+# Round 26 (docs/enemy-sync.md 14.19): every round-25 key ON by default (at the user's request), from the launcher's own Local
+# test files with NO lever key given (no "ini" line at all). MULE Camp Southwest of Lake Knot City (cp 04004), as
+# two-games-enemy-single.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-enemy-single-defaults -SeedSaves complete-100 -GuestSeed profile-only -Id round26-defaults
+# Checked: the [config] lines show the new defaults in both games (enemy_m2_probes=1; K1 2 / 3 s, C1 1, T1, V1, R1, R2, F1 on);
+# the take byte checks pass in both. Then:
+#   A  gun MULE 0202B alerted, her Sam 10 m in front, enemy_own 0x202B 3 (no P2 armed by hand): R1 lets it through (RULE-W: no
+#      member hers earlier; RULE-B: it faces her, alerted; it may hold first, up to 20 s); her game arms the read-only P2
+#      window by itself and logs one line per lever (K1 know, C1 camp, T1 tickets, R2 role, F1 face: what it did or why not),
+#      the D1 / D3 / D5 lines and the P2 result; then the give-back (T1's give-back line, R2's restore).
+#   B  gun MULE 0202F alerted, her Sam 10 m behind it, enemy_own 0x202F 3: with R1 on, 0202B was hers earlier in this camp, so
+#      RULE-W answers "held: camp (...): the whole camp is taken instead" (or "held: RULE-W" when no camp take is possible): the
+#      whole camp goes to her (one OWN batch: no member counts as "alone", so no lever and no P2 window; only logged), then
+#      enemy_own -5 1 gives it back.
+# No FAULT, no failed byte check in either game.
+# covers: enemy-own enemy-hits
+# select: probe
+role host
+graphics low
+timeout 360
+launcherini local-test
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[config\] enemy_m2_probes=1
+@guest waitlog 5 \[config\] enemy_m2_probes=1
+waitlog 5 \[config\] enemy_take_know=2 enemy_take_know_secs=3 enemy_take_camp=1 enemy_ticket_return=1 enemy_single_hold_vehicle=1 enemy_single_rule=1 enemy_take_role=1 enemy_take_face=1
+@guest waitlog 5 \[config\] enemy_take_know=2 enemy_take_know_secs=3 enemy_take_camp=1 enemy_ticket_return=1 enemy_single_hold_vehicle=1 enemy_single_rule=1 enemy_take_role=1 enemy_take_face=1
+waitlog 5 \[enemy\] mirror byte checks: [0-9]+/[0-9]+ ok
+@guest waitlog 5 \[enemy\] mirror byte checks: [0-9]+/[0-9]+ ok
+waitlog 30 \[enemy\] hits: outcome carry checks ok
+@guest waitlog 30 \[enemy\] hits: outcome carry checks ok
+waitlog 30 \[enemy\] take byte checks \([0-9]+\): K1 know ok, C1 camp ok, T1 tickets ok, R2 role ok, F1 face ok
+@guest waitlog 30 \[enemy\] take byte checks \([0-9]+\): K1 know ok, C1 camp ok, T1 tickets ok, R2 role ok, F1 face ok
+goto mule-camp-sw-lkc
+@guest goto 1521.90 992.00 0
+wait 4000
+?@both action dev_god 2
+@both action dev_enemies 1
+waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+@guest waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+action enemy_probe 5 1
+@guest action enemy_probe 5 1
+waitlog 40 \[enemy\] sync on \(host\).*\(equal
+@guest waitlog 40 \[enemy\] sync on \(guest\).*\(equal
+waitlog 30 \[enemy\] hits on \(host\)
+@guest waitlog 30 \[enemy\] hits on \(guest\)
+waitlog 30 \[enemy\] own on \(
+@guest waitlog 30 \[enemy\] own on \(
+# ---- ownership off while both are placed (no proximity take), then on: the camp is the host's
+@both action enemy_sync 8 0
+waitlog 10 \[enemy\] ownership off
+@guest waitlog 10 \[enemy\] ownership off
+action enemy_look 0x202B 22
+@guest action enemy_look 0x202B 60
+wait 1000
+@both action enemy_sync 8 1
+waitlog 10 \[enemy\] ownership on
+@guest waitlog 10 \[enemy\] ownership on
+@guest waitlog 30 \[enemy\] mirror on id=
+wait 3000
+# ---- A: gun MULE 0202B alone to her, her Sam 10 m in front; nothing armed by hand
+action enemy_look 0x202B 22
+action enemy_target 3 0x202B 5
+@guest action enemy_look 0x202B 10
+wait 700
+@guest action enemy_look -8 10
+action enemy_own 0x202B 3
+waitnew 10 \[enemy\] single OWN id=0202B (R1: a single take|held: RULE-B)
+waitlog 30 \[enemy\] single OWN id=0202B -> guest \(forced; camp members left: [0-9]+
+@guest waitlog 10 \[enemy\] OWN id=0202B taken here
+@guest waitlog 5 \[probe\] P2 armed id=0202B lever a .*: by itself at her single take
+@guest waitlog 5 \[enemy\] take camp cp [0-9A-F]+.*0202B
+@guest waitlog 5 \[enemy\] take role id=0202B
+@guest waitlog 5 \[enemy\] take face id=0202B
+@guest waitlog 5 \[enemy\] take tickets id=0202B
+@guest waitlog 10 \[enemy\] take know id=0202B
+@guest waitlog 10 \[probe\] P2 owned id=0202B here
+@guest waitlog 10 \[probe\] P2 pos id=0202B
+@guest waitlog 10 \[probe\] P2 camp cp [0-9A-F]+ t=
+@guest waitlog 10 \[probe\] P2 tickets id=0202B
+?@guest waitlog 5 \[probe\] P2 know id=0202B
+?@guest waitlog 5 \[probe\] P2 posts id=0202B
+@guest waitnew 30 \[probe\] P2 result id=0202B lever a
+@guest screenshot 01-guest-a-0202B-front
+action enemy_own 0x202B 4
+waitnew 10 \[enemy\] single OWN id=0202B -> host \(forced give-back
+?@guest waitlog 10 \[enemy\] OWN id=0202B given back here \(epoch 2
+?@guest waitlog 5 \[enemy\] take tickets id=0202B given back
+# R2 writes only a role 1 (0202B is role 2: kept at the take, so nothing to restore); either line passes
+@guest waitlog 5 \[enemy\] take role id=0202B( given back|: role [0-9]+ kept)
+?waitlog 10 \[enemy\] single OWN id=0202B back here
+# (V1 is not checked here: cp 04004 has no MULE in a vehicle at this point; an optional miss would fail the run)
+wait 3000
+# ---- B: gun MULE 0202F behind her; R1's RULE-W (0202B was hers earlier) takes the whole camp instead
+action enemy_look 0x202F 22
+action enemy_target 3 0x202F 5
+@guest action enemy_look 0x202F 10
+wait 700
+@guest action enemy_look -8 -10
+action enemy_own 0x202F 3
+waitnew 20 \[enemy\] single OWN id=0202F held: (camp|RULE-W)
+waitlog 15 \[enemy\] camp .* -> guest \(forced
+@guest waitlog 15 \[enemy\] OWN id=0202F taken here
+@guest screenshot 02-guest-b-camp
+?action enemy_own -5 1
+?waitnew 10 \[enemy\] camp .* -> host \(forced
+wait 3000
+# ---- the reset, off
+@both action enemy_sync 8 0
+@both action enemy_sync 2
+waitlog 5 \[enemy\] sync off \(debug action\)
+@guest waitlog 5 \[enemy\] sync off \(debug action\)
+nolog \[probe\] FAULT
+@guest nolog \[probe\] FAULT
+# the whole-camp take in B: no single-take lever acts on any member other than 0202B (only A was a single take)
+@guest nolog \[enemy\] take (know|face|role) id=(0202[0-9AC-F]|0203)
+@guest nolog \[enemy\] take camp cp [0-9A-F]+ id=(0202[0-9AC-F]|0203)
+nolog \[enemy\] FAULT
+@guest nolog \[enemy\] FAULT
+nolog \[enemy\] take lever FAULT
+@guest nolog \[enemy\] take lever FAULT
+nolog \[enemy\] hits FAULT
+@guest nolog \[enemy\] hits FAULT
+nolog byte check FAILED
+@guest nolog byte check FAILED
+nolog \[shots\] FAULT
+@guest nolog \[shots\] FAULT
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+action enemy_probe 5 0
+?@both action dev_god 0
+@guest quit
+wait 3000
+quit

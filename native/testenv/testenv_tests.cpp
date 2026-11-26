@@ -982,6 +982,19 @@ void SandboxRules() {
     Check(te::ScenarioIniKeyAllowed("enemy_take_role") && te::ScenarioIniKeyAllowed("enemy_take_face") &&
               te::LauncherIniOverrideAllowed("enemy_take_role") && te::LauncherIniOverrideAllowed("enemy_take_face"),
           "scenario ini: the round-25 e lever keys (R2 role, F1 face) allowed");
+    // round 26 (docs/enemy-sync.md 14.19): the round-25 keys default on; a baseline pins them off on top of the launcher's files
+    // with plain ini lines (both games) and an arm turns its own key on in the guest (written after, so it wins)
+    {
+        te::Scenario pin;
+        Check(te::ParseScenario("role host\ngraphics low\nlauncherini local-test\nini enemy_take_know=0\nini enemy_take_face=0\nini enemy_m2_probes=0\n"
+                                "@guest ini enemy_take_know=2\nquit\n",
+                                &pin, &err) &&
+                  pin.ini.size() == 3 && pin.ini[0] == "enemy_take_know=0" && pin.guest_ini.size() == 1 && pin.guest_ini[0] == "enemy_take_know=2",
+              "scenario ini: round-26 pins of the round-25 keys on top of launcherini, the guest's arm after", err);
+        for (const char* k : {"enemy_m2_probes", "enemy_take_know", "enemy_take_know_secs", "enemy_take_camp", "enemy_ticket_return",
+                              "enemy_single_hold_vehicle", "enemy_single_rule", "enemy_take_role", "enemy_take_face"})
+            Check(te::ScenarioIniKeyAllowed(k) && te::LauncherIniOverrideAllowed(k), "scenario ini: a round-25 key can be pinned (also on top of launcherini)", k);
+    }
     Check(te::ScenarioIniKeyAllowed("test_net_latency_ms") && te::ScenarioIniKeyAllowed("test_net_burst"), "scenario ini: the test_net_* impairment allowed");
     Check(te::ScenarioIniKeyAllowed("held_items") && te::LauncherIniOverrideAllowed("held_items"),
           "scenario ini: held_items allowed (also on top of launcherini)");

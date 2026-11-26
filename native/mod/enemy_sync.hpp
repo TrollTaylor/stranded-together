@@ -154,7 +154,7 @@ std::uint8_t PeerDefeat(std::uint32_t id) noexcept;
 // Our frozen copies now (either game): ids, actors and entities, at most cap.
 unsigned FrozenCopies(std::uint32_t* ids, std::uintptr_t* actors, std::uintptr_t* entities, unsigned cap) noexcept;
 // enemy_own <id | 0 the nearest the host owns to the partner | -5 the nearest the guest owns> <1 host | 2 guest | 3 guest alone |
-// 4 host (a single back)> (hidden runs, the host): a forced hand-over (reason 7) of its camp (1 / 2; the rules apply again
+// 4 host (a single back)> (the host; real games too since round 26, docs/enemy-sync.md 14.19): a forced hand-over (reason 7) of its camp (1 / 2; the rules apply again
 // afterwards: the 15 s hold), or (round 24) of that one enemy alone (3), its camp held out of the camp decisions until it is
 // given back (4, or 1 on a single take).
 bool Own(const double (&v)[3], char* msg, std::size_t cap) noexcept;

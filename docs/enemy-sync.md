@@ -2548,3 +2548,73 @@ unchanged: A shot 776 ms, B 0202F never noticed, C 02029 walked to the spot, D 5
 * A switch of a lone MULE near its camp can send it to the WALK spot. Until the cause is found, prefer the whole-camp hand-over
   when the camp is alerted (round 24's whole-camp controls fought 4 of 4), with a better trigger than RULE-W's.
 * Before any of this becomes a default: an R1 scenario arm, run 3 or more times, and the WALK start varied on purpose.
+
+### 14.19 Round 26: every round-25 change ON by default, in real games too (at the user's request; 2026-11-25)
+
+**Why.** None of the round-25 levers fixed WALK-AWAY or BEHIND (14.18), and K1, F1 and C1 break stealth. The user asked for all
+of them to be enabled anyway so they can investigate in their own (real, non-hidden) games and give direction afterwards. This
+reverses 14.18's "nothing is adopted"; it is not a verdict that any lever works.
+
+**On by default now** (session.ini; the launcher writes none of these keys, so its Local test and Host / Join files get these
+defaults; `[config]` logs them at start in both games):
+
+| Key | Default | What it does | Off |
+|---|---|---|---|
+| `enemy_m2_probes` | 1 | her single takes get the read-only P2 window by itself (lever a, 20 s: D1-D5, D8, the P2 state / path / result lines) | `enemy_m2_probes=0` |
+| `enemy_take_know` | 2 (`_secs` 3) | K1: the game's forced player visual of her Sam into the taken MULE, 2 Hz for 3 s | `enemy_take_know=0` |
+| `enemy_take_camp` | 1 | C1: her camp forced to phase 5 before the take when it was already 4 or 5 | `enemy_take_camp=0` |
+| `enemy_ticket_return` | 1 | T1: tickets her frozen copies hold returned at the take (and at that MULE's give-back) | `enemy_ticket_return=0` |
+| `enemy_single_hold_vehicle` | 1 | V1: an in-vehicle mirror's release waits while a member of its camp is hers as a single take (no game writes) | `enemy_single_hold_vehicle=0` |
+| `enemy_single_rule` | 1 | R1 (host): RULE-W / RULE-B on single takes (a hold, or the whole camp instead) | `enemy_single_rule=0` |
+| `enemy_take_role` | 1 | R2: the taken MULE's camp role 1 reads 0 while it is hers, restored after | `enemy_take_role=0` |
+| `enemy_take_face` | 1 | F1: the taken MULE turned in place to face her Sam (> 60 deg off, 0.5-30 m) | `enemy_take_face=0` |
+
+**Stealth warning.** K1 tells the MULE where her Sam is whether or not it could see her; F1 turns an unaware MULE to face her;
+C1 raises her copy of the camp to combat phase. With these on, a MULE she takes alone will attack her even when it should not
+know about her. R2 changes camp tactics. To play stealthily, put `enemy_take_know=0`, `enemy_take_face=0`, `enemy_take_camp=0`
+(and `enemy_take_role=0`) in both games' session.ini.
+
+**How to start a single take in a real game.** Only the host can, from the debug menu (`debug_menu=1`, the launcher's default):
+`enemy_own 0 3` hands the MULE nearest her body (that the host owns) to her game alone; `enemy_own <id> 3` a given one. Give it back
+with `enemy_own -5 4` (the nearest one she owns) or `enemy_own <id> 4`. Ownership must be on (`enemy_owner`, on by default with
+`enemy_hits`). With R1 on, the host's log answers `single OWN id=.. R1: a single take (...)` and `-> guest`, or `held: RULE-B
+(...)` (waits up to 20 s for the MULE to face her within 60 deg and 25 m, alerted; else `not handed over: RULE-B held it 20 s`),
+or `held: camp (...): the whole camp is taken instead` (another member of that camp was hers earlier in this world). Her log
+then has `[probe] P2 armed id=.. lever a: by itself at her single take`, one line per lever (`[enemy] take know|camp|tickets|role|face
+id=..`: what it did, or `skipped (<why>)` / `not forced (..)` / `kept`), and the P2 lines until `[probe] P2 result id=..`.
+
+**What changed in the code (round 26):**
+
+* The defaults (config.hpp, config_values.hpp TakeKeys; unit test: TakeKeys and Config agree, each key turns off with 0).
+* Gates lifted: `LeverWhy` no longer refuses outside hidden runs (K1 / C1 / T1 / R2 / F1); the host's `enemy_own` (1 / 2 whole
+  camp, 3 / 4 single) works in a real game. Still hidden runs only: the `enemy_m2` action itself, `enemy_probe`, `enemy_camp`,
+  `enemy_restrain`, `enemy_target` (so D7, the host following its copy with `enemy_target 3`, does not run in a real game),
+  `enemy_look`, `enemy_sync 6 / 7 / 9`, the shot tests and the fake downs. Byte checks, SEH guards and fault-turns-lever-off
+  are unchanged.
+* "Alone" (her game's test that a take is a single) now also needs a forced take (OWN reason 7, the host's `enemy_own`): before,
+  the first member of every ordinary camp take (proximity) counted as alone, which with the levers on would have pushed K1 / C1 /
+  F1 / R2 / T1 into every camp she walked up to. Review fix: it also needs to be the only forced take in its batch of OWN
+  messages (`eprobe::TakeAlone`; `OwnDrain` counts them first), so a forced whole-camp take (`enemy_own .. 2`, or R1's "the
+  whole camp is taken instead"), which the host sends as one OWN per member in one tick, has no member alone. Left: if the
+  link splits such a take over two of her ticks, the first member alone in its batch still counts (not seen; the next ones
+  never do, as the first is hers by then).
+* A take that is not alone and has no P2 window does nothing in the take hooks (no lever, no line; before it reset the take
+  record, which stopped an earlier single's K1).
+* T1's give-back return (key on) is for a MULE she took alone only, not every give-back of a camp take.
+* The P2 window (lever a: reads only) arms by itself at a take alone when `enemy_m2_probes=1` and no window is armed; an armed
+  `enemy_m2 2` window (hidden runs) is kept.
+* R1 logs a straight pass: `[enemy] single OWN id=.. R1: a single take (RULE-W: no member of <camp> hers earlier; RULE-B passed: ..)`.
+* V1 is limited to singles (review fix; before, any take of a camp, also an ordinary one, held that camp's in-vehicle mirrors
+  frozen at the host's frames, which with V1 on by default would have changed every camp fight with a MULE truck): her record
+  of a take carries `alone`, and only an owned member taken alone holds its camp's in-vehicle release.
+* R2's restore after a reset for a gone world (a load, a world change) is skipped unless this game's live world
+  (`coop::WorldReady`) is still the take's (review fix: enemy_sync's reset runs before the combat tick in the same frame, so the
+  combat side's world stamp was one tick old there); a reset for the link or the gate in the same world still restores it.
+* The take byte checks at start-up run only with `enemy_sync=1` (or in a hidden run): with the keys on by default, a game with
+  enemy sync off runs none of this (review fix; a take still checks them first).
+* Scenarios: the round-24 / 25 baselines and the other two-game enemy scenarios pin every round-25 key they do not test to 0
+  (`ini enemy_take_know=0` ...; the arms keep their own key on the guest), so they still test what they tested.
+  `two-games-launcher-local-test` is not pinned (no `ini` line may change the launcher's file; it has no single take) and now
+  runs the new defaults. New: `two-games-enemy-single-defaults` (the launcher's files, no lever key given: the `[config]` lines
+  show the defaults in both games, one single take of 0202B in front of her with every lever's line, then 0202F behind her,
+  where R1's RULE-W turns the request into a whole-camp take).

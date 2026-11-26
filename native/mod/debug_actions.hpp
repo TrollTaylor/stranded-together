@@ -146,8 +146,8 @@ enum class Action : std::uint8_t {
     enemy_hit_send,       // v[0] = attack, v[1] = count, v[2] = id (0: the newest look's mirror): the guest's test HIT (kind 4)
     enemy_hit_watch,      // v[0] = id (0: as enemy_dump), v[1] = 0 off / 1 on: every DamageInfo on it logged (its hits pass)
     enemy_target,         // v[0] = op (0 read, 1 / 2 L1 alert, 3 L3 phase, 4 body watch, 7 follow), v[1] = id, v[2] = arg (round 20 M1 probe)
-    // Enemy sync P1b (enemy_sync.hpp; docs/enemy-sync.md 10): hidden runs only, the host
-    enemy_own,            // v[0] = id (0 the nearest the host owns to the partner, -5 the nearest the guest owns), v[1] = 1 host / 2 guest (P1c: its camp)
+    // Enemy sync P1b (enemy_sync.hpp; docs/enemy-sync.md 10): the host; real games too since round 26 (docs/enemy-sync.md 14.19)
+    enemy_own,            // v[0] = id (0 the nearest the host owns to the partner, -5 the nearest the guest owns), v[1] = 1 host / 2 guest (P1c: its camp), 3 alone / 4 a single back
     enemy_camp,           // P1c (docs/enemy-sync.md 13), hidden runs: v[0] = 0 the camp table, 3 an outcome (v[1] = id | 0 the look's, v[2] = k 0..2) here
     enemy_restrain,       // round 23 (docs/enemy-sync.md 14), hidden runs: v[0] = id (0 the look's, else the nearest frozen copy), v[1] = 0 native | 1 fallback | 2 knockout
     enemy_m2,             // round 23 E (docs/enemy-sync.md 14.11), hidden runs + enemy_m2_probes=1: v[0] = probe 0..6, v[1] / v[2] its arguments (read-only but P2)

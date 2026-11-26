@@ -1,7 +1,9 @@
 // Round 23 E (native/mod/enemy_probe_rules.hpp): the M2 probes' freshness, angles, push and phase trackers, ray trim, key.
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 
+#include "config.hpp"
 #include "config_values.hpp"
 #include "enemy_probe_rules.hpp"
 
@@ -261,7 +263,26 @@ void TestRound25() {
     CHECK(TicketsToReturn(h, 3, 0) == 0);
     // keys
     cfgval::TakeKeys k;
-    CHECK(k.know == 0 && k.know_secs == 3.0 && k.camp == 0 && !k.tickets && !k.hold_vehicle && !k.rule);
+    // round 26 (docs/enemy-sync.md 14.19): on by default, the tested arms K1 2 and C1 1; config.hpp's defaults the same
+    CHECK(k.know == 2 && k.know_secs == 3.0 && k.camp == 1 && k.tickets && k.hold_vehicle && k.rule && k.role && k.face);
+    {
+        const Config c;
+        CHECK(c.enemy_m2_probes && c.enemy_take_know == k.know && c.enemy_take_know_secs == k.know_secs && c.enemy_take_camp == k.camp);
+        CHECK(c.enemy_ticket_return == k.tickets && c.enemy_single_hold_vehicle == k.hold_vehicle && c.enemy_single_rule == k.rule);
+        CHECK(c.enemy_take_role == k.role && c.enemy_take_face == k.face);
+    }
+    // each turns off with 0
+    for (const char* key : {"enemy_take_know", "enemy_take_camp"}) {
+        cfgval::TakeKeys z;
+        CHECK(cfgval::SetTakeKey(z, key, "0") && (std::strcmp(key, "enemy_take_know") == 0 ? z.know == 0 : z.camp == 0));
+    }
+    {
+        cfgval::TakeKeys z;
+        for (const char* key : {"enemy_ticket_return", "enemy_single_hold_vehicle", "enemy_single_rule", "enemy_take_role", "enemy_take_face"})
+            CHECK(cfgval::SetTakeKey(z, key, "0"));
+        CHECK(!z.tickets && !z.hold_vehicle && !z.rule && !z.role && !z.face);
+    }
+    k.know = 0;
     CHECK(cfgval::SetTakeKey(k, "enemy_take_know", "2") && k.know == 2);
     CHECK(cfgval::SetTakeKey(k, "enemy_take_know", "7") && k.know == 2);
     CHECK(cfgval::SetTakeKey(k, "enemy_take_know_secs", "5") && k.know_secs == 5.0);
@@ -290,6 +311,15 @@ void TestRound25e() {
     CHECK(!FaceYaw(0, 0.0, 0, 0, -10, 0, &y) && !FaceYaw(2, 0.0, 0, 0, -10, 0, &y) && !FaceYaw(1, 0.0, 0, 0, -10, 0, nullptr));
     CHECK(!FaceYaw(1, std::nan(""), 0, 0, -10, 0, &y));
 }
+// round 26 review: a single take is a forced take, alone in its camp here and alone in its OWN batch
+void TestRound26() {
+    CHECK(TakeAlone(true, true, 0, 1));    // enemy_own <id> 3
+    CHECK(TakeAlone(true, true, 0, 0));    // (a batch count of 0 only outside OwnDrain: never more than one)
+    CHECK(!TakeAlone(false, true, 0, 1));  // an ordinary (proximity) take
+    CHECK(!TakeAlone(true, false, 0, 1));  // its camp not readable here
+    CHECK(!TakeAlone(true, true, 1, 1));   // another member of its camp hers already
+    CHECK(!TakeAlone(true, true, 0, 3));   // the first member of a forced whole-camp take (enemy_own .. 2, R1's camp verdict)
+}
 
 int main() {
     TestNames();
@@ -303,6 +333,7 @@ int main() {
     TestKey();
     TestRound25();
     TestRound25e();
+    TestRound26();
     std::printf("%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

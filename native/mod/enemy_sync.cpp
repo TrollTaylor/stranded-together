@@ -1995,11 +1995,11 @@ void GuestTick(const TickIn& in, double now, bool off, const char* off_why) {
             l.vehicle_check = true;
             l.in_vehicle_here = m.veh != erules::VehTest::none;
             l.in_vehicle_host = it != g_tracks.end() && it->second.Newest() && (it->second.Newest()->flags & ewire::kInVehicle);
-            // round 25 V1 (enemy_single_hold_vehicle): while a member of its camp is hers, its in-vehicle release waits
+            // round 25 V1 (enemy_single_hold_vehicle): while a member of its camp is hers as a single take, its in-vehicle release waits
             if (g_ecfg.enemy_single_hold_vehicle && (l.in_vehicle_here || l.in_vehicle_host) && CampOwnedHere(m.actor)) {
                 l.hold_vehicle_single = true;
                 if (g_v1_logged.insert(m.id).second)
-                    Log("[enemy] mirror id=%05X in a vehicle: release held (V1: a member of its camp is hers; frozen at the host's frames until that ends)", m.id);
+                    Log("[enemy] mirror id=%05X in a vehicle: release held (V1: a member of its camp is hers alone; frozen at the host's frames until that ends)", m.id);
             }
         }
         const erules::LeaseVerdict v = erules::Lease(l);
@@ -2217,7 +2217,7 @@ const char* CampName(std::uint64_t key) {
     std::snprintf(s, 24, "%s %05X", (key >> 32) == 1 ? "cp" : "loose", static_cast<unsigned>(key & 0xFFFFFFFFu));
     return s;
 }
-// Round 24 (hidden runs, the host: enemy_own <id> 3 / 4; docs/enemy-sync.md 14.17): ONE member handed to her game alone, the rest of
+// Round 24 (the host: enemy_own <id> 3 / 4; docs/enemy-sync.md 14.17; real games too since round 26, 14.19): ONE member handed to her game alone, the rest of
 // its camp left with its owner. While it is hers its camp is held out of the camp decisions (CampDecide, the stragglers, the loose
 // rule), so nothing pulls the rest over or takes it back: only enemy_own <id> 4 (or 1), her refusal, the OWNACK timeout, a vehicle
 // or a reset end it (SingleEnd at its return; the camp is decided again after the usual 15 s hold).
@@ -2280,8 +2280,10 @@ struct GuestRec {
     std::uint8_t last_phase = 0xFF;  // logged on change
     erules::VehTest veh = erules::VehTest::none;  // round 23 B: in a vehicle (every 1 s; her SEN1 kInVehicle)
     double veh_next = 0;
+    bool alone = false;  // round 26: taken here as a single take (eprobe::TakeAlone; V1 holds its camp's in-vehicle release)
 };
 std::map<std::uint32_t, GuestRec> g_gown;
+unsigned g_drain_forced = 0;  // round 26: the forced takes (OWN to her, reason 7) in the batch OwnDrain is handling now
 
 std::uint8_t PhaseOf(std::uintptr_t actor) {
     if (!g_own_ok || !actor) return erules::kPhaseUnknown;
@@ -3292,6 +3294,8 @@ void SingleTick(double now, const double (&guest)[3], bool have_guest, const dou
                 continue;
             }
             if (q.held_until > 0) Log("[enemy] single OWN id=%05X RULE-B passed after %.1f s (Sam %.1f m, %.0f deg off)", h->id, (now - (q.held_until - kRuleBHoldMs)) / 1000.0, si.dist_m, si.off_deg);
+            else Log("[enemy] single OWN id=%05X R1: a single take (RULE-W: no member of %s hers earlier; RULE-B passed: Sam %.1f m, %.0f deg off, phase %u)", h->id,
+                     CampName(key), si.dist_m, si.off_deg, ph);
         }
         HostRec& r = g_hown[h->id];
         r.actor = h->actor;
@@ -3415,9 +3419,14 @@ void GuestTake(const ewire::Own& o, GuestRec& r, double now) {
         if (err > erules::kBandStillM) ActorXf(actor, kActorTeleport, XfFromYaw(a.xf, p, o.yaw));
     }
     // round 25: her take hooks (the D3 lines, C1 before the SetPhase; K1 / T1 after the unfreeze). "alone": no other member of its
-    // camp is hers here (her game does not know the host's single)
+    // camp is hers here (her game does not know the host's single). Round 26 (the levers on in real games): and a forced take (the
+    // host's enemy_own), so the first member of an ordinary camp take (proximity) is never "alone"; and the only forced take of
+    // its OWN batch, so the first member of a forced whole-camp take (enemy_own .. 2, R1's camp verdict) is not either
     CampView cv_before;
-    const bool alone = CampViewOf(o.id, &cv_before) && cv_before.owned == 0;
+    const bool forced = o.reason == static_cast<std::uint8_t>(erules::OwnReason::forced);
+    const bool camp_read = forced && CampViewOf(o.id, &cv_before);
+    const bool alone = eprobe::TakeAlone(forced, camp_read, cv_before.owned, g_drain_forced);
+    r.alone = alone;
     ecombat::TakeBefore(o.id, actor, alone);
     // (calm there: SetPhase, exact)
     const std::uint8_t ph_before = PhaseOf(actor);
@@ -3467,7 +3476,7 @@ bool GuestRefreeze(std::uint32_t id, GuestRec& r, double now, std::uint32_t* ea4
             ecombat::Refreeze(id, a.entity);  // round 25 T1
         }
     }
-    r.g.owned = false;
+    r.g.owned = false, r.alone = false;
     ecombat::TakeEnded(id, true);  // round 25 R2: its role back, frozen or not
     g_tracks.erase(id), g_prx.erase(id);
     if (ea4_out) *ea4_out = ea4;
@@ -3488,14 +3497,15 @@ void GuestGiveBack(const ewire::Own& o, GuestRec& r, double now) {
         ea4);
 }
 // A reset on the guest: `refreeze` (the link and mirroring stay: a new generation) her copies are frozen again as P1a mirrors;
-// else (the link, the gate, a world) she is solo again: they keep running in her world.
-void GuestOwnReset(const char* why, bool refreeze, double now) {
+// else (the link, the gate, a world) she is solo again: they keep running in her world. `world_gone` (round 26): that world's
+// actors are gone or going (R2's role is then never written back: an address can repeat after a load).
+void GuestOwnReset(const char* why, bool refreeze, double now, bool world_gone = false) {
     unsigned n = 0;
     for (auto& kv : g_gown) {
         if (!kv.second.g.owned) continue;
         ++n;
         if (refreeze) GuestRefreeze(kv.first, kv.second, now, nullptr, nullptr);
-        else ecombat::TakeEnded(kv.first, false);  // round 25 R2: left running here: its own role back
+        else ecombat::TakeEnded(kv.first, false, world_gone);  // round 25 R2: left running here: its own role back (not when the world is gone)
     }
     g_gown.clear();
     PublishOwned();
@@ -3676,6 +3686,16 @@ void OwnDrain(double now) {
     std::vector<std::vector<std::uint8_t>> in;
     in.swap(g_own_in);
     static ewire::Own os[ewire::kOwnMax];
+    // round 26: the forced takes to her in this batch (a forced whole-camp take is one OWN per member, sent in one host tick: none of
+    // them counts as a single take, eprobe::TakeAlone)
+    g_drain_forced = 0;
+    if (g_role == 2 && g_own_on)
+        for (const auto& m : in) {
+            ewire::ScbHeader h;
+            if (!ewire::DecodeScbHeader(m.data(), m.size(), h) || h.type != ewire::kScbOwn || !ewire::DecodeOwns(m.data(), m.size(), h, os)) continue;
+            for (unsigned i = 0; i < h.n; ++i)
+                if (os[i].owner == 2 && os[i].reason == static_cast<std::uint8_t>(erules::OwnReason::forced)) ++g_drain_forced;
+        }
     for (const auto& m : in) {
         ewire::ScbHeader h;
         if (!ewire::DecodeScbHeader(m.data(), m.size(), h) || (g_fp_done && h.guids_fp != g_guids)) {
@@ -3700,6 +3720,7 @@ void OwnDrain(double now) {
             else ++g_os.stale;
         }
     }
+    g_drain_forced = 0;
 }
 
 // A reset of the whole table (a world or the link changed, the gate, the switch, a fault): the host's copies released (placed at
@@ -3707,7 +3728,7 @@ void OwnDrain(double now) {
 // `announce`: OWNRESET to the guest (the link stays).
 void OwnHardReset(const char* why, bool world_gone, bool announce, bool refreeze) {
     if (!g_hown.empty() || (g_role == 1 && g_own_on)) HostOwnReset(why, announce, world_gone);
-    if (!g_gown.empty() || (g_role == 2 && g_own_on)) GuestOwnReset(why, refreeze && !world_gone, g_tnow);
+    if (!g_gown.empty() || (g_role == 2 && g_own_on)) GuestOwnReset(why, refreeze && !world_gone, g_tnow, world_gone);
     if (g_role == 2) HostResetPoses();  // her captures
     g_hown.clear(), g_gown.clear();
     PublishOwned();
@@ -4638,12 +4659,13 @@ unsigned OwnedHitsOn(std::uint32_t id) noexcept {
 }
 
 namespace {
-// round 25 V1: another member of this actor's camp is hers here
+// round 25 V1: another member of this actor's camp is hers here, taken as a single take (round 26 review: singles only, as the key
+// says; with V1 on by default an ordinary camp take must not hold its in-vehicle members frozen)
 bool CampOwnedHere(std::uintptr_t actor) {
     const auto it = g_camp_of.find(actor);
     if (it == g_camp_of.end()) return false;
     for (const auto& g : g_gown) {
-        if (!g.second.g.owned || g.second.actor == actor) continue;
+        if (!g.second.g.owned || !g.second.alone || g.second.actor == actor) continue;
         const auto o = g_camp_of.find(g.second.actor);
         if (o != g_camp_of.end() && o->second.key == it->second.key) return true;
     }
@@ -4821,8 +4843,9 @@ bool RideFields(std::uintptr_t actor, std::uint32_t* e20, std::int32_t* seat) no
     return true;
 }
 
+// round 26 (docs/enemy-sync.md 14.19, at the user's request): no longer hidden runs only. What it starts is what ownership does by
+// itself (the host's copy frozen, her copy placed, its phase set and released; back: frozen again), for one MULE or its camp.
 bool Own(const double (&v)[3], char* msg, std::size_t cap) noexcept {
-    if (!automation::Enabled()) return std::snprintf(msg, cap, "hidden runs only"), false;
     if (g_role != 1) return std::snprintf(msg, cap, "the host's action"), false;
     if (!g_own_on) return std::snprintf(msg, cap, "ownership is not on (enemy_owner=1 on both, the gate)"), false;
     const int to = static_cast<int>(v[1]);

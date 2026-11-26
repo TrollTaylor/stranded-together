@@ -369,7 +369,8 @@ hidden (not down) for a second, or silent 3 s), `enemy_attack_registry` (shots w
 * `enemy_sync 5`: the ownership table (`[enemy] own id=XXXXX owner host|guest epoch n pending .. ms phase n guest phase n damaged
   n d_g .. d_h .. hold .. s follower none|mirror|far`; the guest's rows end `(here)`), then the `owned here` line.
 * `enemy_sync 8 <0|1>`: ownership off (a reset: every enemy the host's, `[enemy] own reset (off here)`) / on.
-* `enemy_own <id | 0 | -5> <1 | 2 | 3 | 4>` (hidden runs, the host): a forced hand-over (reason 7) of the enemy's whole camp (P1c; the
+* `enemy_own <id | 0 | -5> <1 | 2 | 3 | 4>` (the host; hidden runs only until round 25, real games too since round 26: [enemy-sync.md](enemy-sync.md)
+  14.19): a forced hand-over (reason 7) of the enemy's whole camp (P1c; the
   id's, the host-owned enemy nearest the partner body (0) or the guest-owned one nearest it (-5)) to the host (1) or the guest
   (2): `[enemy] camp cp XXXXX -> guest (forced: n=..` / `-> host (forced: n=..`; the rules apply afterwards.
   Round 24, a single enemy (`enemy_own <id> 3` / `4`): mode 3 hands ONLY that enemy to the guest with the usual OWN sequence
@@ -384,6 +385,13 @@ hidden (not down) for a second, or silent 3 s), `enemy_attack_registry` (shots w
   still apply while the camp is held (a lost OWNACK, her silence, the range, unrealized there, a game sequence on the host's copy;
   not the proximity backs): `[enemy] single OWN id=XXXXX -> host (<reason>; guest .. m, silence .. s): its camp is decided again
   once it is back` (round 24 review).
+  Round 26 (at the user's request): mode 3 in a real game is how to start a single take: the host opens the debug menu and runs
+  `enemy_own 0 3` (the MULE nearest her body) or `enemy_own <id> 3`, and `enemy_own -5 4` / `enemy_own <id> 4` to give it back.
+  With `enemy_single_rule=1` (now the default) the host may answer `[enemy] single OWN id=XXXXX held: RULE-B (...)` (it waits up
+  to 20 s until the MULE faces her within 60 deg and 25 m, alerted) or `held: camp (...): the whole camp is taken instead` (a
+  member of that camp was hers earlier); a straight pass logs `[enemy] single OWN id=XXXXX R1: a single take (...)`. Her game
+  then runs the round-25 levers on it (all on by default; `[enemy] take know|camp|tickets|role|face ...` lines) and, with
+  `enemy_m2_probes=1`, `[probe] P2 armed id=XXXXX lever a: by itself at her single take` and the D1-D8 lines (`enemy_m2` 2).
 * `enemy_camp 0` (hidden runs, the host, round 21): the camp table, one row per camp near her or hers (`[enemy] camp row cp|loose
   XXXXX: owner host|guest, n=.. hers .., guest .. m, host .. m, r .. m, engage .. m, margin .. m, loaded .., phase .., camp ..`),
   then `[enemy] camp rows n=.. (of .. known; owned here n=..; carried .., carry failed .., down already .., followers hidden ..
@@ -466,7 +474,8 @@ most 3 numbers, so `enemy_hit`'s part / owner / path are set apart (`enemy_hit_m
   made, the follow (7) also logs `[enemy] stimulus hers: at ..`). 10 byte-checked sites (`[enemy] stimulus: byte checks`).
   Probes only: none of it changes play outside hidden runs.
 
-* `enemy_m2 <probe> [id | 0] [arg]` (round 23 E, the M2 probes; hidden runs and `session.ini enemy_m2_probes=1`, default 0;
+* `enemy_m2 <probe> [id | 0] [arg]` (round 23 E, the M2 probes; hidden runs and `session.ini enemy_m2_probes=1`, default 1 since
+  round 26, the action itself still hidden runs only; a real game gets the P2 window, lever a, by itself at her single takes;
   [enemy-sync.md](enemy-sync.md) section 14.11). Probes: they only read the game (every read fault-free or behind an SEH guard),
   except P2's forced hand-over and its levers. Each logs `[probe] P<n> ...` lines and exactly one `[probe] P<n> result ...` line,
   also when it is skipped (`... skipped (<why>)`). Id 0: the last `enemy_look`'s enemy, else the first frozen copy here, else the
@@ -507,7 +516,8 @@ most 3 numbers, so `enemy_hit`'s part / owner / path are set apart (`enemy_hit_m
     levers: R2 `enemy_take_role=1` (`[enemy] take role id=XXXXX: role 1 -> 0 while hers (cp ..)` | `role n kept` | `skipped
     (..)`, and at the end of the take `... given back: role restored to 1` | `not restored (..)`) and F1 `enemy_take_face=1`
     (`[enemy] take face id=XXXXX: turned from N to M deg off (Sam .. m)` | `not turned (Sam .. m, .. deg off)` | `skipped
-    (..)`; a fault turns F1 off). Neither helped; every round-25 key stays 0 ([enemy-sync.md](enemy-sync.md) 14.18).
+    (..)`; a fault turns F1 off). Neither helped ([enemy-sync.md](enemy-sync.md) 14.18); round 26 turned every round-25 key on by
+    default at the user's request, in real games too (14.19; each off with `=0`).
   * 3: the perception reads: the partner body's and our Sam's entity +0x314, and the stimulus +0x88 of our agents' visual
     stimuli in the AI manager's thread-safe list (`[probe] P3 result: ...`).
   * 4 `<id> <s>`: the game's raycast (0x141C20CE0, the visual sense's own filter) from a copy's eye (+1.6 m) to our Sam's chest
@@ -524,8 +534,9 @@ most 3 numbers, so `enemy_hit`'s part / owner / path are set apart (`enemy_hit_m
 Scenarios: `enemy-hit-probe` (P2-0, solo), `two-games-enemy-hit` (the gate), `two-games-enemy-target-probe` (the M1 probe),
 `two-games-enemy-stim-probe` (the M2 stimulus probe), `two-games-enemy-probe` (round 23 E: P0-P5), `trucks-m2-probe-solo`
 (round 23 E: P6), `two-games-enemy-single` (round 24: P2 on one MULE handed over alone, `enemy_own <id> 3`, against a whole
-camp), 	wo-games-enemy-single-walk and its -know, -camp, -tickets, -hold, -role, -face, -roleface arms
-(round 25: the WALK-AWAY and BEHIND cases; enemy-sync.md 14.18).
+camp), `two-games-enemy-single-walk` and its -know, -camp, -tickets, -hold, -role, -face, -roleface arms
+(round 25: the WALK-AWAY and BEHIND cases; enemy-sync.md 14.18; round 26 pins the other keys to 0 in each),
+`two-games-enemy-single-defaults` (round 26: the new defaults from the launcher's own files, one single take, R1's camp take).
 
 * `enemy_restrain <id | 0> <mode>` (hidden runs, round 23; the guest, or the host while it relays its hits: `enemy_owner`; the
   restrain relay must be on: `[enemy] restrain relay on`): the tie-up relay's own send path on our frozen copy of an enemy the

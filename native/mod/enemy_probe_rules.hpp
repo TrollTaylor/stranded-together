@@ -22,6 +22,7 @@
 //   TicketsToReturn     T1: whether a frozen copy's individual really holds a ticket entry (the return is then called once)
 //   RoleWhileHers       R2: the camp role her taken MULE gets while it is hers (role 1 -> 0)
 //   FaceYaw             F1: the yaw her taken MULE is turned to at the take (her Sam more than 60 deg off, 0.5..30 m)
+//   TakeAlone           round 26: whether her take is a single take (the levers act on those only)
 #pragma once
 #include <cmath>
 #include <cstddef>
@@ -377,6 +378,13 @@ inline bool FaceYaw(int key, double yaw, double mx, double my, double sx, double
     if (OffDeg(yaw, mx, my, sx, sy) <= kFaceMinOffDeg) return false;
     *out = std::atan2(dy, dx);
     return true;
+}
+// Round 26 (docs/enemy-sync.md 14.19): her game's test that a take is a single take (the round-25 levers act on those only, on by
+// default in real games). TakeAlone: a forced take (OWN reason 7, the host's enemy_own), its camp readable here, no other member of
+// that camp hers already, and no other forced take in the same batch of OWN messages (a forced whole-camp take, enemy_own .. 2 or
+// R1's "the whole camp is taken instead", arrives as one OWN per member in one batch: none of them is alone).
+inline bool TakeAlone(bool forced, bool camp_read, unsigned owned_others, unsigned forced_in_batch) noexcept {
+    return forced && camp_read && owned_others == 0 && forced_in_batch <= 1;
 }
 
 }  // namespace st::eprobe

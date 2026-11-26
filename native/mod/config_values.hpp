@@ -133,8 +133,8 @@ inline bool SetTruckKey(TruckKeys& k, const std::string& key, bool v) {
     if (p) *p = v;
     return p != nullptr;
 }
-// The round-23 E key (docs/enemy-sync.md 14.11): enemy_m2_probes (off unless given 1: the debug action enemy_m2, the M2 probes P1-P6,
-// in hidden runs only). SetProbeKey: true when `key` is it.
+// The round-23 E key (docs/enemy-sync.md 14.11): enemy_m2_probes (on unless given 0 since round 26: her single takes' read-only P2
+// window D1-D8; the debug action enemy_m2, the M2 probes P1-P6, in hidden runs only). SetProbeKey: true when `key` is it.
 inline bool SetProbeKey(bool& on, const std::string& key, bool v) {
     if (key != "enemy_m2_probes") return false;
     on = v;
@@ -152,7 +152,8 @@ inline bool SetDownKey(bool& hold, const std::string& key, bool v) {
 }
 inline double DownRadius(const std::string& v, double keep) { return MirrorRadius(v, keep); }
 
-// The round-25 keys (docs/enemy-sync.md 14.18), all off by default; the levers that write game state act in hidden runs only.
+// The round-25 keys (docs/enemy-sync.md 14.18), ON by default since round 26 (14.19, at the user's request; each off with =0); the
+// levers that write game state act at a take of one MULE alone, in real games too.
 //   enemy_take_know 0|1|2       K1: her game forces a player visual (her Sam) into a MULE she takes alone (1 once, 2 then 2 Hz)
 //   enemy_take_know_secs 1..10  K1's window for mode 2 (default 3 s)
 //   enemy_take_camp 0|1|2       C1: her camp forced to phase 5 before the take (1 only when it was >= 4, 2 always)
@@ -162,15 +163,16 @@ inline double DownRadius(const std::string& v, double keep) { return MirrorRadiu
 //   enemy_take_role 0|1         R2: her taken MULE's camp role 1 reads 0 while it is hers (round 25 e)
 //   enemy_take_face 0|1         F1: her taken MULE turned in place to face her Sam at the take when she is > 60 deg off (round 25 e)
 // SetTakeKey: true when `key` is one of them (a bad value keeps the old one).
+// (the defaults: config.hpp's; round 26: K1 mode 2, C1 mode 1, the rest on)
 struct TakeKeys {
-    int know = 0;
+    int know = 2;
     double know_secs = 3.0;
-    int camp = 0;
-    bool tickets = false;
-    bool hold_vehicle = false;
-    bool rule = false;
-    bool role = false;
-    bool face = false;
+    int camp = 1;
+    bool tickets = true;
+    bool hold_vehicle = true;
+    bool rule = true;
+    bool role = true;
+    bool face = true;
 };
 inline bool TakeBool(const std::string& v) { return v == "1" || v == "true" || v == "yes" || v == "on"; }
 inline bool SetTakeKey(TakeKeys& k, const std::string& key, const std::string& v) {

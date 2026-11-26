@@ -93,7 +93,8 @@ bool Restrain(const double (&v)[3], char* msg, std::size_t cap) noexcept;
 // and aural lists; 9 <0 remove | 1 her agent with Sam's resource | 2 the same + Sam's component message | 3 the decoy (Sam's agent
 // at her body)>. Hidden runs only.
 bool TargetProbe(const double (&v)[3], char* msg, std::size_t cap) noexcept;
-// enemy_m2 <probe> [a] [b] (round 23 E, docs/enemy-sync.md 14.11; hidden runs and enemy_m2_probes=1): the M2 probes, each logging
+// enemy_m2 <probe> [a] [b] (round 23 E, docs/enemy-sync.md 14.11; hidden runs and enemy_m2_probes=1, still hidden runs only in round
+// 26: a real game gets P2 lever a by itself at her single takes, TakeBefore): the M2 probes, each logging
 // "[probe] P<n> ..." lines and one "[probe] P<n> result ..." line. 0 the byte checks; 1 <id | 0> <s> a copy's DSAINoticeAndKnowledge
 // slots every 0.5 s (a PlayerVisual entry for our Sam: fresh / stale / none); 2 <id | 0> <lever 0..3> (the guest) armed (15 s after the hand-over):
 // when the enemy is handed to her game, the lever (a nothing, b a test hit, c the perfect-threat alert, d' Sam's own stimulus +0xA4
@@ -103,14 +104,17 @@ bool TargetProbe(const double (&v)[3], char* msg, std::size_t cap) noexcept;
 bool M2Probe(const double (&v)[3], char* msg, std::size_t cap) noexcept;
 
 // Round 25 (docs/enemy-sync.md 14.18), her game, game thread (enemy_sync.cpp): her take of an enemy (TakeBefore before the member's
-// SetPhase, TakeAfter after the unfreeze; alone: no other member of its camp is hers) and its refreeze when given back. They log the
-// P2 diagnostics D3 / D5 (enemy_m2_probes, P2 armed for it) and run the levers: C1 (enemy_take_camp or P2 lever f: her camp forced to
-// 5 first), K1 (enemy_take_know or lever e: the game's forced player visual, then 2 Hz in the combat tick), T1 (enemy_ticket_return
-// or lever g: tickets held by frozen copies returned). The levers act in hidden runs only, on takes alone.
+// SetPhase, TakeAfter after the unfreeze; alone: a forced take with no other member of its camp hers) and its refreeze when given
+// back. They log the P2 diagnostics D3 / D5 (enemy_m2_probes, P2 armed for it; round 26: armed by itself, lever a, at a take alone)
+// and run the levers: C1 (enemy_take_camp or P2 lever f: her camp forced to 5 first), K1 (enemy_take_know or lever e: the game's
+// forced player visual, then 2 Hz in the combat tick), T1 (enemy_ticket_return or lever g: tickets held by frozen copies returned).
+// The levers act on takes alone only; since round 26 (docs/enemy-sync.md 14.19) on by default and in real games too.
 void TakeBefore(std::uint32_t id, std::uintptr_t actor, bool alone) noexcept;
 void TakeAfter(std::uint32_t id, std::uintptr_t actor, std::uintptr_t entity, bool alone) noexcept;
 void Refreeze(std::uint32_t id, std::uintptr_t entity) noexcept;
 // Her MULE no longer hers by any path (given back, frozen or not, or her own reset): R2's role written at its take restored.
-void TakeEnded(std::uint32_t id, bool given_back) noexcept;
+// `world_gone` (round 26): her reset is for a world that is gone or going: the role is written back only when this game's live
+// world (coop::WorldReady) is still the take's.
+void TakeEnded(std::uint32_t id, bool given_back, bool world_gone = false) noexcept;
 
 }  // namespace st::ecombat

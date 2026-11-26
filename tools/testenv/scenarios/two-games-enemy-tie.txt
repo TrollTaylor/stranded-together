@@ -29,6 +29,15 @@ role host
 graphics low
 timeout 360
 launcherini local-test
+# round 26 (docs/enemy-sync.md 14.19): the round-25 keys default on now; pinned off here as this scenario was written
+ini enemy_m2_probes=0
+ini enemy_take_know=0
+ini enemy_take_camp=0
+ini enemy_ticket_return=0
+ini enemy_single_hold_vehicle=0
+ini enemy_single_rule=0
+ini enemy_take_role=0
+ini enemy_take_face=0
 # host-owned mirrors only: P1c's camp ownership off (on by default since round 21; two-games-enemy-tie-host covers it on)
 ini enemy_owner=0
 start control 200
