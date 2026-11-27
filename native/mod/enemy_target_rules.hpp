@@ -14,13 +14,19 @@
 namespace st::erules {
 
 enum Who : std::uint8_t { kNone = 0, kLocal = 1, kPartner = 2 };
-enum Rule : std::uint8_t { rNone = 0, rOnly, rSticky, rHitBy, rNearer, rDefault, rKept, rGone, rForced, rPlace };
-enum Act : std::uint8_t { aNone = 0, aFrontLocal, aFrontPartner, aSuppress };
+enum Rule : std::uint8_t { rNone = 0, rOnly, rSticky, rHitBy, rNearer, rDefault, rKept, rGone, rForced, rPlace, rSeenEst };
+// aSynthPartner (pick bit 32): the bucket holds our Sam but not her, the MULE's target is her and our line-of-sight estimate says
+// she is visible: record[0] (Sam's) is rewritten into hers, so the game keeps shooting her.
+enum Act : std::uint8_t { aNone = 0, aFrontLocal, aFrontPartner, aSuppress, aSynthPartner };
 
 struct PickCfg {
     std::uint64_t fresh_ms = 1500;  // seen in the bucket this recently: still "visible" (H1)
     std::uint64_t hit_ms = 3000;    // a hit this recent counts
     std::uint64_t min_hold = 1000;  // a hit-by switch only after the target was held this long
+    std::uint64_t est_ms = 500;         // pick bit 16: a "clear" line-of-sight estimate this recent counts (PickIn::est_p)
+    std::uint64_t est_max_ms = 30000;   // ... but only while her bucket record was seen within this long (no estimate-only target)
+    bool est_on = false;                // pick bit 16
+    bool synth_on = false;              // pick bit 32 (needs est_on)
 };
 struct PickState {
     Who cur = kNone;
@@ -34,6 +40,7 @@ struct PickIn {
     float dp = 0, dl = 0;             // their records' +0x20 distance (the first matching record)
     bool partner_ok = true;           // her stimulus is ours and live (else she counts as gone)
     std::uint64_t hit_p = 0, hit_l = 0;
+    bool est_p = false;  // pick bit 16: our own line-of-sight estimate says she is visible (clear, at most est_ms old)
 };
 struct PickOut {
     PickState st;
@@ -52,6 +59,7 @@ inline const char* RuleText(Rule r) noexcept {
         case rGone: return "gone";
         case rForced: return "forced";
         case rPlace: return "by place";
+        case rSeenEst: return "sticky (line of sight)";
         default: return "none";
     }
 }
@@ -63,17 +71,20 @@ inline PickOut TargetPick(PickState s, const PickIn& x, const PickCfg& c) noexce
     auto fresh = [&](std::uint64_t t) { return t != 0 && x.now >= t && x.now - t <= c.fresh_ms; };
     auto recent = [&](std::uint64_t t) { return t != 0 && x.now >= t && x.now - t <= c.hit_ms; };
     const bool fp = x.partner_ok && fresh(s.seen_p), fl = fresh(s.seen_l);
+    // Pick bit 16: keep-only. The estimate never makes her the target (rules 1, 3, 4, 5 see only the bucket); it only keeps her
+    // when she already is (rule 2), and only while her bucket record was seen within est_max_ms.
+    const bool ep = c.est_on && x.partner_ok && x.est_p && s.seen_p != 0 && x.now >= s.seen_p && x.now - s.seen_p <= c.est_max_ms;
     Who next = s.cur;
     Rule r = s.rule;
     if (!x.partner_ok && s.cur == kPartner) next = kNone, r = rGone;
     const Who other = next == kPartner ? kLocal : kPartner;
-    const bool fcur = (next == kPartner && fp) || (next == kLocal && fl);
+    const bool fcur = (next == kPartner && (fp || ep)) || (next == kLocal && fl);
     const bool fother = other == kPartner ? fp : fl;
     const std::uint64_t hother = other == kPartner ? (x.partner_ok ? x.hit_p : 0) : x.hit_l;
     if (next != kNone && fother && recent(hother) && hother > s.since && x.now - s.since >= c.min_hold) {
         next = other, r = rHitBy;  // 1: hit by the other one, held long enough
     } else if (fcur) {
-        r = rSticky;  // 2: the current target is still visible
+        r = (next == kPartner && !fp) ? rSeenEst : rSticky;  // 2: the current target is still visible (bucket, or bit 16)
     } else if (fp != fl) {
         next = fp ? kPartner : kLocal, r = rOnly;  // 3: only one visible
     } else if (fp && fl) {  // 4: both visible, no usable current target
@@ -93,22 +104,82 @@ inline PickOut TargetPick(PickState s, const PickIn& x, const PickCfg& c) noexce
     if (o.changed) s.since = x.now;
     s.cur = next, s.rule = r;
     const bool tin = (next == kPartner && x.in_p) || (next == kLocal && x.in_l);
-    const bool tfresh = (next == kPartner && fp) || (next == kLocal && fl);
+    const bool tfresh = (next == kPartner && (fp || ep)) || (next == kLocal && fl);
     const bool oin = (next == kPartner && x.in_l) || (next == kLocal && x.in_p);
-    o.act = next == kNone ? aNone : tin ? (next == kPartner ? aFrontPartner : aFrontLocal) : (tfresh && oin) ? aSuppress : aNone;
+    const bool synth = next == kPartner && !x.in_p && x.in_l && ep && c.synth_on;
+    o.act = next == kNone ? aNone
+            : tin         ? (next == kPartner ? aFrontPartner : aFrontLocal)
+            : synth       ? aSynthPartner
+            : (tfresh && oin) ? aSuppress
+                              : aNone;
     o.st = s;
     return o;
 }
 
+// Pick bit 16, the mod's own line-of-sight estimate (SightTick, game thread, 10 Hz): from the MULE's eye to her chest. The cheap
+// tests first (no data, range, view cone, pitch, her visibility value), then one world ray (enemy_combat WorldRay: hits, 0 none,
+// < 0 an error). Only `clear` counts as seen (PickIn::est_p).
+enum class Sight : std::uint8_t { none, clear, blocked, out_range, out_cone, out_pitch, low_vis, no_data, ray_error };
+struct SightCfg {
+    double max_m = 60;       // horizontal range
+    double cone_deg = 60;    // |bearing| from the MULE's facing
+    double pitch_deg = 40;   // |pitch| eye -> chest
+    float min_vis = 0.05f;   // her visibility value (VisNow) below this: hidden (cloaked, in a cave, ...)
+};
+struct SightIn {
+    bool have = false;  // both positions, the MULE's facing and her visibility were read
+    double horiz = 0, bearing_deg = 0, pitch_deg = 0;
+    float vis = 1;
+    bool cast = false;  // the ray was cast; `ray` is its WorldRay result
+    int ray = 0;
+};
+// none: the cheap tests passed and no ray was cast yet (cast one, then ask again with `cast`)
+inline Sight SightVerdict(const SightIn& s, const SightCfg& c) noexcept {
+    if (!s.have || !(s.horiz == s.horiz) || !(s.bearing_deg == s.bearing_deg) || !(s.pitch_deg == s.pitch_deg)) return Sight::no_data;
+    if (s.horiz > c.max_m) return Sight::out_range;
+    if (s.bearing_deg > c.cone_deg || s.bearing_deg < -c.cone_deg) return Sight::out_cone;
+    if (s.pitch_deg > c.pitch_deg || s.pitch_deg < -c.pitch_deg) return Sight::out_pitch;
+    if (!(s.vis >= c.min_vis)) return Sight::low_vis;
+    if (!s.cast) return Sight::none;
+    return s.ray < 0 ? Sight::ray_error : s.ray > 0 ? Sight::blocked : Sight::clear;
+}
+inline const char* SightText(Sight v) noexcept {
+    switch (v) {
+        case Sight::clear: return "clear";
+        case Sight::blocked: return "blocked";
+        case Sight::out_range: return "out_range";
+        case Sight::out_cone: return "out_cone";
+        case Sight::out_pitch: return "out_pitch";
+        case Sight::low_vis: return "low_vis";
+        case Sight::no_data: return "no_data";
+        case Sight::ray_error: return "ray_error";
+        default: return "-";
+    }
+}
+
 struct Plan {
-    int swap = -1;  // swap record[0] with record[swap]
+    int swap = -1;       // swap record[0] with record[swap]
     bool count0 = false;
+    bool synth = false;  // rewrite record[0] (a local record: our Sam's) into her stimulus (aSynthPartner)
+    // (M3f review) aSynthPartner: suppress the bucket (count 0) when the synth is refused or cannot run, as bit 16 alone would
+    // (aSuppress); a refused synth never hands the original our Sam's record
+    bool fallback0 = false;
 };
 // who[i]: the owner of the bucket's record i (kPartner her, kLocal anything else: our Sam, a vehicle, ...)
 inline Plan PlanBucket(const std::uint8_t* who, int n, Act a) noexcept {
     Plan p;
     if (a == aSuppress) {
         p.count0 = n > 0;
+        return p;
+    }
+    if (a == aSynthPartner) {  // only over a bucket with no record of hers and a local record[0]
+        bool any_p = false;
+        for (int i = 0; who && i < n; ++i) any_p = any_p || who[i] == kPartner;
+        if (n > 0 && who && !any_p) {  // (never suppressed with a record of hers in it)
+            p.synth = who[0] == kLocal;
+            p.fallback0 = true;  // the count-0 write when the synth did not write (PsrOne), or at once with no synth
+            p.count0 = !p.synth;
+        }
         return p;
     }
     const Who w = a == aFrontPartner ? kPartner : a == aFrontLocal ? kLocal : kNone;
@@ -167,6 +238,8 @@ inline bool CarrierVtOk(std::uintptr_t vt, std::uintptr_t mule_vt, std::uintptr_
 
 // H3, our Sam's hit on a MULE (the OnHit detour): the attacker chain read with each object's vtable checked (in ds.exe) before its
 // fields. `bad`: an object of the chain was not one of the game's (a stale reference; counted as onhit_bad, never read further).
+// `odd`: the attacker is one of the game's objects but its +0x338 instance is not (a class whose +0x338 is not an instance
+// pointer; counted as onhit_odd, information only).
 struct AttackerView {
     bool is_sam = false;          // the attacker is our Sam himself
     bool vt_ok = false;           // the attacker's vtable is in the image
@@ -175,13 +248,13 @@ struct AttackerView {
     bool inst_vt_ok = false;      // that instance's vtable is in the image
     bool inst_owner_sam = false;  // that instance's +0x300 holder is our Sam
 };
-enum class HitBy : std::uint8_t { other, sam, bad };
+enum class HitBy : std::uint8_t { other, sam, bad, odd };
 inline HitBy AttackerVerdict(const AttackerView& a) noexcept {
     if (a.is_sam) return HitBy::sam;
     if (!a.vt_ok) return HitBy::bad;
     if (a.owner_sam) return HitBy::sam;
     if (!a.has_inst) return HitBy::other;
-    if (!a.inst_vt_ok) return HitBy::bad;
+    if (!a.inst_vt_ok) return HitBy::odd;
     return a.inst_owner_sam ? HitBy::sam : HitBy::other;
 }
 

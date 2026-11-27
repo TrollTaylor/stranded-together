@@ -1,5 +1,5 @@
-[    5.500][36368] [enemy] tgt byte checks (71): stimulus ok, registry ok, goals ok, sensor results ok, classifier ok, classifier flags ok, forced visual ok, MULE members ok, player objects ok, redirect 1 ok, 2a ok, 2b ok, 4 ok, 16 (vehicle chase) ok, 32 (shoot actor) ok; redirect 8 deferred (not built)
-[    6.000][36368] [enemy] pstim not made (the guest (host only))
-[    6.500][36368] [seh] test: a guarded read of a reserved page faulted and was caught; absorbed 0 -> 2, reported 0 -> 0 (guard on)
-[    6.750][36368] [seh] absorbed 2 fault(s) inside the mod's guards (last: code 0xC0000005 at mod rva 0x1F8CAC, from mod rva 0x0, mod rva 0x0); passed to the game's report 0, walk faults 0
-[   26.091][36368] [enemy] spv1 sent 2532 recv 2580 stale 0 bad 0; aim ours 1.15 m, hers 1.21 m (SPV1); our down 0
+[    5.750][36368] [enemy] tgt byte checks (71): stimulus ok, registry ok, goals ok, sensor results ok, classifier ok, classifier flags ok, forced visual ok, MULE members ok, player objects ok, redirect 1 ok, 2a ok, 2b ok, 4 ok, 16 (vehicle chase) ok, 32 (shoot actor) ok; redirect 8 deferred (not built)
+[    7.000][36368] [enemy] pstim not made (the guest (host only))
+[    7.500][36368] [seh] test: a guarded read of a reserved page faulted and was caught; absorbed 0 -> 2, reported 0 -> 0 (guard on)
+[    7.750][36368] [seh] absorbed 2 fault(s) inside the mod's guards (last: code 0xC0000005 at mod rva 0x1F8CAC, from mod rva 0x0, mod rva 0x0); passed to the game's report 0, walk faults 0
+[   27.841][36368] [enemy] spv1 sent 2532 recv 2580 stale 0 bad 0; aim ours 1.15 m, hers 1.21 m (SPV1); our down 0

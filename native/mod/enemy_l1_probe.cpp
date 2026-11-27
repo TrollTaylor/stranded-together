@@ -864,14 +864,23 @@ void SampleWatch() noexcept {
         std::snprintf(shoot_pt, sizeof(shoot_pt), "%s mode %d %.1f s (calls %u redir %u)", Who(sh.nearest), sh.mode, sh.age_ms / 1000.0, sh.calls, sh.redirected);
     else if (sh_ok)
         std::snprintf(shoot_pt, sizeof(shoot_pt), "none (calls %u redir %u)", sh.calls, sh.redirected);
+    // (M3f) the host's view of her for this MULE: her bucket record's age, the line-of-sight verdict and its age (`-` none)
+    char sight[96] = "";
+    etarget::SightStat ss;
+    if (g_role != 2 && etarget::SightStats(g_w.id, &ss)) {
+        char ba[16] = "-", la[16] = "-";
+        if (ss.bucket_age_ms != UINT32_MAX) std::snprintf(ba, sizeof(ba), "%.1f", ss.bucket_age_ms / 1000.0);
+        if (ss.los_age_ms != UINT32_MAX) std::snprintf(la, sizeof(la), "%.1f", ss.los_age_ms / 1000.0);
+        std::snprintf(sight, sizeof(sight), "; sight bucket %s s los %s %s s", ba, ss.los_age_ms != UINT32_MAX && ss.los_v ? etarget::SightText(ss.los_v) : "none", la);
+    }
     Log("[probe] L1 watch id=%05X t=%.2f: phase %d ea4 0x%X; faces her %.0f deg / Sam %.0f deg; her %.1f m Sam %.1f m; PV %d at %s %.1f m id %05X age "
         "%.1f; LK %d at %s; goal %p id 0x%X mode %u +68 0x%X +6C 0x%X place -> %s %.1f m; shoot pt -> %s; aim -> %s; daemon %s centre -> %s; cp alert -> %s; "
-        "rounds %u",
+        "rounds %u%s",
         g_w.id, s.t / 1000.0, static_cast<int>(U32(actor + kActPhase)), U32(actor + kActDown), fh, fs, s.her_ok ? R::Dist2d(s.mule, s.her) : -1.0,
         s.sam_ok ? R::Dist2d(s.mule, s.sam) : -1.0, kr.pv_n, Who(kr.pv_who), kr.pv_dist, kr.pv_actor, static_cast<double>(kr.pv_age), kr.lk_n, Who(kr.lk_who),
         reinterpret_cast<void*>(g_w.goal), g_w.goal_id, g_w.goal_mode, g68, g6c, place_who < 0 ? "-" : Who(place_who), place_d, shoot_pt,
         s.aim_ok ? Who(R::Nearest(s.aim, s.her_ok, s.her, s.sam_ok, s.sam)) : "-", daemon ? (g_w.daemon_player_sam ? "Sam" : "other") : "none",
-        daemon ? Who(s.daemon) : "-", Who(s.cp_who), g_w.a.fired);
+        daemon ? Who(s.daemon) : "-", Who(s.cp_who), g_w.a.fired, sight);
 }
 
 double Ms(double v) noexcept { return v < 0 ? -1.0 : v; }
@@ -1582,6 +1591,7 @@ void TargetArmPhase(bool hidden) noexcept {
     else if (!hidden && g_w.phase == 1) g_w.phase = 2;
 }
 std::uint32_t TargetArmId() noexcept { return g_w.on && g_w.ext ? g_w.id : 0u; }
+double TargetArmNoticedMs() noexcept { return g_w.on && g_w.ext ? g_w.a.noticed : -1.0; }
 
 void ReleaseBeforeFree(const char* why) noexcept {
     if (!g_her.stim || g_her.pending) return;

@@ -68,6 +68,15 @@ struct ShootStat {
     std::uint32_t t36 = 0;  // (run 3 review) the job's GetTargetPosition calls that took the MULE wrapper's type-0x36 branch
 };
 bool ShootStats(std::uint32_t id, ShootStat* out) noexcept;
+// (M3f) pick bit 16's view of MULE `id` (the L1 probe's watch line; game thread): her record's age in its PlayerVisual bucket,
+// the line-of-sight verdict (erules::Sight; 0 none yet) and its age (UINT32_MAX: never)
+struct SightStat {
+    std::uint32_t bucket_age_ms = UINT32_MAX;
+    std::uint8_t los_v = 0;
+    std::uint32_t los_age_ms = UINT32_MAX;
+};
+bool SightStats(std::uint32_t id, SightStat* out) noexcept;
+const char* SightText(std::uint8_t v) noexcept;  // erules::SightText
 
 // H3 (any thread; atomics only): a hit on MULE `id` by her (partner) or by our Sam; our Sam's from the OnHit detour.
 void NoteHit(std::uint32_t id, bool partner) noexcept;

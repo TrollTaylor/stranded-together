@@ -496,6 +496,120 @@ void TestRun3() {
     CHECK(ArmStep(0, false) == ArmGo::wait && ArmStep(2499, false) == ArmGo::wait && ArmStep(2500, false) == ArmGo::go_timeout);
 }
 
+// run 4: op 11 places her (TB, TF0, TF1, CL): the margin rule, the candidates, the MULE's motion and lead, the point, the arrival,
+// the keep-in-view rule
+void TestRun4() {
+    CHECK(ArmPlaces(2) && ArmPlaces(3) && ArmPlaces(4) && ArmPlaces(9));
+    CHECK(!ArmPlaces(1) && !ArmPlaces(5) && !ArmPlaces(6) && !ArmPlaces(7) && !ArmPlaces(8) && !ArmPlaces(0));
+    CHECK(ArmLimitMs(3) == 6000 && ArmLimitMs(1) == 2500 && ArmLimitMs(7) == 2500 && ArmLimitMs(2) == 9000 && ArmLimitMs(9) == 6000);
+    CHECK(ArmWaitsSeen(2) && !ArmWaitsSeen(3) && !ArmWaitsSeen(9));
+    CHECK(ArmSeen(1500, false, -1) && !ArmSeen(1501, false, -1) && !ArmSeen(-1, false, 0) && ArmSeen(-1, true, 500) && !ArmSeen(-1, true, 501));
+    CHECK(ArmStep(5999, false, ArmLimitMs(3)) == ArmGo::wait && ArmStep(6000, false, ArmLimitMs(3)) == ArmGo::go_timeout);
+    // the margin: inside GeomValid (run 170101's TF1: pitch 15.0 at the start; judged at <= 15)
+    CHECK(GeomValidMargin(3, true, -2.0, 22, 10, 13.9) && !GeomValidMargin(3, true, -2.0, 22, 10, 14.1) && GeomValid(3, true, -2.0, 22, 10, 14.9));
+    CHECK(!GeomValidMargin(3, true, 0, 22, 26, 2) && GeomValid(3, true, 0, 22, 26, 2));
+    CHECK(!GeomValidMargin(3, true, 0, 10.2, 0, 2) && !GeomValidMargin(3, true, 0, 29.8, 0, 2) && !GeomValidMargin(3, false, 0, 22, 0, 2));
+    CHECK(GeomValidMargin(9, true, 0.7, 6, 39, 0) && !GeomValidMargin(9, true, 0.9, 6, 0, 0) && GeomValid(9, true, 0.9, 6, 0, 0));
+    CHECK(!GeomValidMargin(9, true, 0, 6, 41, 0) && !GeomValidMargin(9, true, 0, 7.8, 0, 0) && !GeomValidMargin(9, true, 0, 6, -1, 0));
+    // a ground miss (the bearing fine): the next candidate; a bearing miss keeps it
+    CHECK(PlaceGroundMiss(3, false, 3) && !PlaceGroundMiss(3, false, 40) && !PlaceGroundMiss(3, true, 3) && !PlaceGroundMiss(3, false, -1));
+    CHECK(PlaceGroundMiss(9, false, 38) && !PlaceGroundMiss(9, false, 41));
+    // the candidates
+    CHECK(PlaceNominal(2) == 20 && PlaceNominal(3) == 22 && PlaceNominal(9) == 6);
+    CHECK(PlaceCandidate(3, 0).dist == 22 && PlaceCandidate(3, 0).deg == 0 && PlaceCandidate(3, 1).dist == 23.5 && PlaceCandidate(3, 2).deg == 12);
+    CHECK(PlaceCandidate(3, 3).deg == -12 && PlaceCandidate(3, 4).dist == 20 && PlaceCandidate(3, 10).dist == 22 && PlaceCandidate(3, 10).deg == 0);
+    CHECK(PlaceCandidates(3) == 10 && PlaceCandidate(3, 5).dist == 19 && PlaceCandidate(3, 6).deg == 20 && PlaceCandidate(3, 7).deg == -20);
+    CHECK(PlaceCandidate(3, 8).dist == 24 && PlaceCandidate(2, 8).dist == 26 && PlaceCandidate(3, 9).dist == 18);
+    CHECK(PlaceCandidate(9, 5).dist == 3.5 && PlaceCandidate(9, 6).deg == 35 && PlaceCandidate(9, 7).deg == -35);
+    CHECK(PlaceCandidate(9, 8).dist == 4 && PlaceCandidate(9, 8).deg == 35 && PlaceCandidate(9, 9).dist == 4 && PlaceCandidate(9, 9).deg == -35);
+    CHECK(PlaceCandidate(2, 0).dist == 20 && PlaceCandidate(9, 1).dist == 4.5 && PlaceCandidate(9, 2).deg == 20 && PlaceCandidate(9, 4).dist == 5);
+    for (unsigned k = 0; k < kPlaceCandidates; ++k) {
+        const PlaceCand c = PlaceCandidate(4, k), d = PlaceCandidate(9, k);
+        CHECK(ArmHerOk(4, true, c.dist) && c.deg <= 25 && c.deg >= -25);    // every gun candidate in TF's window
+        CHECK(ArmHerOk(9, true, d.dist) && GeomValidMargin(9, true, 0, d.dist, std::fabs(d.deg), 0));
+    }
+    // the motion: 20 deg/s and 1 m/s along x, read every 50 ms
+    MuleMotion mm;
+    CHECK(PlaceLeadDeg(mm) == 0);
+    for (int i = 0; i <= 10; ++i) MotionStep(mm, 1000 + 50.0 * i, (20.0 * 0.05 * i) * kPi / 180.0, 0.05 * i, 0);
+    CHECK(mm.have && std::fabs(mm.rate - 20.0) < 0.01 && std::fabs(mm.vx - 1.0) < 1e-6 && std::fabs(mm.vy) < 1e-9);
+    CHECK(std::fabs(PlaceLeadDeg(mm) - 7.0) < 0.01);
+    double lx = 0, ly = 0;
+    PlaceLeadM(mm, &lx, &ly);
+    CHECK(std::fabs(lx - 0.35) < 1e-6 && std::fabs(ly) < 1e-9);
+    // a read too close is skipped; a gap over 400 ms starts again
+    MotionStep(mm, 1510, 3.0, 9.0, 9.0);
+    CHECK(mm.have && std::fabs(mm.rate - 20.0) < 0.01);
+    MotionStep(mm, 2500, 0.0, 0, 0);
+    CHECK(!mm.have && PlaceLeadDeg(mm) == 0);
+    // across +-pi: -170 deg after 170 deg in 0.1 s is +200 deg/s, the lead clamped to 25 deg
+    MuleMotion w;
+    MotionStep(w, 0, 170.0 * kPi / 180.0, 0, 0);
+    MotionStep(w, 100, -170.0 * kPi / 180.0, 0, 0);
+    CHECK(w.have && std::fabs(w.rate - 200.0) < 0.01 && PlaceLeadDeg(w) == 25);
+    // the place lead clamped to 1 m
+    MuleMotion f;
+    MotionStep(f, 0, 0, 0, 0);
+    MotionStep(f, 100, 0, 1.0, 0);  // 10 m/s
+    PlaceLeadM(f, &lx, &ly);
+    CHECK(std::fabs(lx - 1.0) < 1e-9);
+    MotionStep(f, 150, std::nan(""), 0, 0);  // not finite: ignored
+    CHECK(f.t == 100);
+    // the point: 22 m along +y turned +12 deg (counter-clockwise), facing back at the MULE
+    const PlacePt p = PlacePoint(10, 20, kPi / 2, 22, 12);
+    const double a = (90.0 + 12.0) * kPi / 180.0;
+    CHECK(std::fabs(p.x - (10 + 22 * std::cos(a))) < 1e-9 && std::fabs(p.y - (20 + 22 * std::sin(a))) < 1e-9);
+    CHECK(std::fabs(p.fx + std::cos(a)) < 1e-9 && std::fabs(p.fy + std::sin(a)) < 1e-9);
+    const double mule[3] = {10, 20, 0}, at[3] = {p.x, p.y, 0};
+    CHECK(std::fabs(FacingOff(kPi / 2, mule, at) - 12.0) < 1e-6);
+    CHECK(PlaceArrived(p.x + 1.9, p.y, p.x, p.y) && !PlaceArrived(p.x + 1.5, p.y + 1.5, p.x, p.y));
+    // keep in view (TF0, TF1, CL; not TB)
+    CHECK(KeepViewArm(3) && KeepViewArm(4) && KeepViewArm(9) && !KeepViewArm(2) && !KeepViewArm(1));
+    CHECK(KeepViewOff(3, 21, 22) && !KeepViewOff(3, 19, 22) && KeepViewOff(3, 0, 31) && !KeepViewOff(3, 0, 8) && !KeepViewOff(3, -1, 50));
+    CHECK(KeepViewOff(9, 36, 5) && !KeepViewOff(9, 34, 5) && KeepViewOff(9, 0, 8.5) && !KeepViewOff(9, 0, 1.0));
+    CHECK(SamSepOff(29) && SamSepOff(51) && !SamSepOff(30) && !SamSepOff(40) && !SamSepOff(50) && SamSepOff(-1));
+}
+
+// M3f: the ground probe's chooser (run 20261126-175849's CL: placed 3.06 m up a ledge, pitch 30.3)
+PlaceProbe Probe(bool ok, double dz, double horiz, bool los, double aim = kChest) {
+    PlaceProbe p;
+    p.ok = ok, p.dz = dz, p.horiz = horiz, p.los = los, p.pitch = GeomPitch(dz, aim, horiz);
+    return p;
+}
+void TestPlaceChoose() {
+    // CL: every candidate +3..+5 m up but one (k 6 at +0.4): that one, 4 raised ones skipped before ... all raised counted
+    PlaceProbe cl[kPlaceCandidates];
+    for (unsigned k = 0; k < kPlaceCandidates; ++k) cl[k] = Probe(true, 3.0 + 0.2 * k, PlaceCandidate(9, k).dist, true);
+    cl[6] = Probe(true, 0.4, PlaceCandidate(9, 6).dist, true);
+    int raised = -1;
+    CHECK(PlaceChoose(9, 10, cl, &raised) == 6 && raised == 9);
+    // a clear line of sight preferred over an earlier valid one without it
+    PlaceProbe g[kPlaceCandidates];
+    for (unsigned k = 0; k < kPlaceCandidates; ++k) g[k] = Probe(true, 0.0, PlaceCandidate(3, k).dist, false);
+    g[3].los = true;
+    CHECK(PlaceChoose(3, 10, g, &raised) == 3 && raised == 0);
+    // none with a line of sight: the first valid one
+    g[3].los = false;
+    CHECK(PlaceChoose(3, 10, g, &raised) == 0);
+    // from `start` on (cyclic)
+    CHECK(PlaceChoose(3, 10, g, &raised, 4) == 4 && PlaceChoose(3, 10, g, &raised, 12) == 2);
+    // none valid: the probed one nearest the MULE's height; none probed: -1
+    for (unsigned k = 0; k < kPlaceCandidates; ++k) cl[k] = Probe(k != 2, 4.0 - 0.1 * k, PlaceCandidate(9, k).dist, true);
+    CHECK(PlaceChoose(9, 10, cl, &raised) == 9 && raised == 9);
+    for (auto& q : cl) q.ok = false;
+    CHECK(PlaceChoose(9, 10, cl, &raised) == -1 && raised == 0);
+    CHECK(PlaceChoose(9, 0, cl, &raised) == -1 && PlaceChoose(9, 10, nullptr, nullptr) == -1);
+    // gun: pitch 14.9 raised and rejected, 13.9 taken
+    PlaceProbe tf[2];
+    tf[0] = Probe(true, 0, 22, true), tf[1] = Probe(true, 0, 22, true);
+    tf[0].pitch = 14.9, tf[1].pitch = 13.9;
+    CHECK(PlaceChoose(3, 2, tf, &raised) == 1 && raised == 1);
+    // TF's window: 26 m is not (18..24), TB has none
+    PlaceProbe far[1] = {Probe(true, 0, 26, true)};
+    CHECK(PlaceChoose(3, 1, far, &raised) == 0);  // no valid one: still the probed one nearest the height
+    CHECK(!ArmHerOk(3, GeomValidMargin(3, true, 0, 26, 0, far[0].pitch), 26) && ArmHerOk(2, GeomValidMargin(2, true, 0, 26, 0, far[0].pitch), 26));
+}
+
 }  // namespace
 
 int main() {
@@ -513,6 +627,8 @@ int main() {
     TestGeomRule();
     TestCalm();
     TestRun3();
+    TestRun4();
+    TestPlaceChoose();
     std::printf("%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

@@ -2,6 +2,7 @@
 // compare and the key clamp. No game.
 #include <cstdio>
 #include <cstdint>
+#include <limits>
 #include <string_view>
 
 #include "config_values.hpp"
@@ -208,7 +209,10 @@ void TestKeys() {
     CHECK(cfgval::SetTargetKey(k, "enemy_partner_stim_radius", "5") && k.radius == 500.0);
     CHECK(cfgval::SetTargetKey(k, "enemy_partner_stim_radius", "x") && k.radius == 500.0);
     CHECK(cfgval::SetTargetKey(k, "enemy_target_pick", "7") && k.pick == 7);
-    CHECK(cfgval::SetTargetKey(k, "enemy_target_pick", "16") && k.pick == 7);
+    CHECK(cfgval::SetTargetKey(k, "enemy_target_pick", "64") && k.pick == 7);
+    CHECK(cfgval::SetTargetKey(k, "enemy_target_pick", "63") && k.pick == 63);
+    CHECK(cfgval::SetTargetKey(k, "enemy_target_pick", "55") && k.pick == 55);  // 1 2 4 16 32 (the scenario's)
+    CHECK(cfgval::SetTargetKey(k, "enemy_target_pick", "7") && k.pick == 7);
     CHECK(cfgval::SetTargetKey(k, "enemy_target_pick", "1.5") && k.pick == 7);
     CHECK(cfgval::SetTargetKey(k, "enemy_target_redirect", "39") && k.redirect == 39);  // 1 2 4 and 32 (the shoot actor)
     CHECK(cfgval::SetTargetKey(k, "enemy_target_redirect", "7") && k.redirect == 7);
@@ -245,7 +249,7 @@ void TestShootAndGuards() {
     a.owner_sam = true;
     CHECK(AttackerVerdict(a) == HitBy::sam);
     a.owner_sam = false, a.has_inst = true;
-    CHECK(AttackerVerdict(a) == HitBy::bad);  // an instance whose vtable is not the game's: never read
+    CHECK(AttackerVerdict(a) == HitBy::odd);  // an instance whose vtable is not the game's: never read (info only)
     a.inst_vt_ok = true;
     CHECK(AttackerVerdict(a) == HitBy::other);
     a.inst_owner_sam = true;
@@ -282,6 +286,119 @@ void TestTransitionRule() {
     CHECK(!o2.changed && o2.st.cur == kLocal && o2.st.rule == rSticky);
     CHECK(at_change == rOnly && o2.st.rule != at_change);
 }
+
+// Round 27 M3f, pick bits 16 (the line-of-sight keep) and 32 (her record from ours), and the sight verdict. The run-175849 repro:
+// on her since t0, both in the bucket; the sensor stops appending her record (Sam stays): rule 3 used to switch at +1.5 s.
+PickCfg EstCfg(bool synth) {
+    PickCfg c;
+    c.est_on = true, c.synth_on = synth;
+    return c;
+}
+PickIn EstIn(std::uint64_t now, bool p, bool l, bool est) {
+    PickIn x = In(now, p, l);
+    x.est_p = est;
+    return x;
+}
+void TestSightKeep() {
+    PickState on_her = Cur(kPartner, t0, t0, t0);
+    on_her.rule = rSticky;
+    // 1 bits off: the estimate is ignored, rule 3 switches to Sam (today's behaviour)
+    PickOut o = TargetPick(on_her, EstIn(t0 + 2000, false, true, true), kCfg);
+    CHECK(o.changed && o.st.cur == kLocal && o.st.rule == rOnly);
+    // 2 bit 16: kept on her by the estimate, the bucket suppressed (no synth without bit 32)
+    o = TargetPick(on_her, EstIn(t0 + 2000, false, true, true), EstCfg(false));
+    CHECK(!o.changed && o.st.cur == kPartner && o.st.rule == rSeenEst && o.act == aSuppress);
+    // 3 bit 32: her record from ours
+    o = TargetPick(on_her, EstIn(t0 + 2000, false, true, true), EstCfg(true));
+    CHECK(!o.changed && o.st.cur == kPartner && o.st.rule == rSeenEst && o.act == aSynthPartner);
+    // 4 the estimate not clear: rule 3 switches as before
+    o = TargetPick(on_her, EstIn(t0 + 2000, false, true, false), EstCfg(true));
+    CHECK(o.changed && o.st.cur == kLocal && o.st.rule == rOnly && o.act == aFrontLocal);
+    // 5 her record fresh: plain sticky, the bucket's own record to the front (no synth)
+    o = TargetPick(on_her, EstIn(t0 + 500, true, true, true), EstCfg(true));
+    CHECK(o.st.cur == kPartner && o.st.rule == rSticky && o.act == aFrontPartner);
+    // 6 keep-only: on Sam, her estimate clear but no bucket record: stays Sam
+    o = TargetPick(Cur(kLocal, t0, t0, t0), EstIn(t0 + 2000, false, true, true), EstCfg(true));
+    CHECK(!o.changed && o.st.cur == kLocal && o.act == aFrontLocal);
+    // 7 keep-only: no target yet, only the estimate: no target
+    o = TargetPick(PickState{}, EstIn(t0, false, false, true), EstCfg(true));
+    CHECK(o.st.cur == kNone && o.act == aNone);
+    // 8 her bucket record older than est_max_ms: the estimate stops counting
+    o = TargetPick(on_her, EstIn(t0 + 30001, false, true, true), EstCfg(true));
+    CHECK(o.changed && o.st.cur == kLocal && o.st.rule == rOnly);
+    o = TargetPick(on_her, EstIn(t0 + 30000, false, true, true), EstCfg(true));
+    CHECK(!o.changed && o.st.cur == kPartner && o.st.rule == rSeenEst);
+    // 9 her stimulus gone: gone, whatever the estimate
+    {
+        PickIn x = EstIn(t0 + 2000, false, true, true);
+        x.partner_ok = false;
+        o = TargetPick(on_her, x, EstCfg(true));
+        CHECK(o.st.cur != kPartner);
+    }
+    // 10 hit by Sam while kept by the estimate: rule 1 still switches (Sam fresh, his hit after the hold)
+    {
+        PickIn x = EstIn(t0 + 2000, false, true, true);
+        x.hit_l = t0 + 1900;
+        o = TargetPick(on_her, x, EstCfg(true));
+        CHECK(o.changed && o.st.cur == kLocal && o.st.rule == rHitBy);
+    }
+    // 11 neither in the bucket, kept by the estimate: no record to rewrite, nothing done
+    o = TargetPick(on_her, EstIn(t0 + 2000, false, false, true), EstCfg(true));
+    CHECK(o.st.cur == kPartner && o.st.rule == rSeenEst && o.act == aNone);
+    // 12 the 10 s repro: her record gone from t0+100, the estimate clear throughout, Sam every tick: never leaves her, and every
+    // tick without her record is a synth (inside fresh_ms too: better than suppressing the bucket)
+    {
+        PickState s = on_her;
+        bool stay = true;
+        unsigned synth = 0;
+        for (std::uint64_t t = t0 + 25; t <= t0 + 10000; t += 25) {
+            const PickOut q = TargetPick(s, EstIn(t, t <= t0 + 100, true, true), EstCfg(true));
+            if (q.st.cur != kPartner || q.changed) stay = false;
+            synth += q.act == aSynthPartner;
+            s = q.st;
+        }
+        CHECK(stay && synth == (10000 - 125) / 25 + 1);
+    }
+    // 13 the plan: synth only over a local record[0] with no record of hers
+    const std::uint8_t l1[1] = {kLocal}, lp[2] = {kLocal, kPartner}, pl[2] = {kPartner, kLocal};
+    Plan p = PlanBucket(l1, 1, aSynthPartner);
+    CHECK(p.synth && p.swap == -1 && !p.count0);
+    CHECK(!PlanBucket(lp, 2, aSynthPartner).synth && !PlanBucket(pl, 2, aSynthPartner).synth);
+    CHECK(!PlanBucket(l1, 0, aSynthPartner).synth && !PlanBucket(nullptr, 1, aSynthPartner).synth);
+    CHECK(!PlanBucket(l1, 1, aSuppress).synth && !PlanBucket(l1, 1, aFrontLocal).synth);
+    // (M3f review) a refused synth falls back to the count-0 write (as bit 16 alone suppresses); never with a record of hers
+    CHECK(p.fallback0);
+    CHECK(!PlanBucket(lp, 2, aSynthPartner).fallback0 && !PlanBucket(lp, 2, aSynthPartner).count0);
+    CHECK(!PlanBucket(l1, 0, aSynthPartner).fallback0 && !PlanBucket(nullptr, 1, aSynthPartner).fallback0);
+    CHECK(!PlanBucket(l1, 1, aSuppress).fallback0 && !PlanBucket(l1, 1, aFrontPartner).fallback0);
+    CHECK(std::string_view(RuleText(rSeenEst)) == "sticky (line of sight)");
+}
+void TestSightVerdict() {
+    const SightCfg c{};
+    SightIn s;
+    CHECK(SightVerdict(s, c) == Sight::no_data);
+    s.have = true, s.horiz = 20, s.bearing_deg = 10, s.pitch_deg = 5, s.vis = 1;
+    CHECK(SightVerdict(s, c) == Sight::none);  // the cheap tests passed: cast the ray
+    s.cast = true, s.ray = 0;
+    CHECK(SightVerdict(s, c) == Sight::clear);
+    s.ray = 2;
+    CHECK(SightVerdict(s, c) == Sight::blocked);
+    s.ray = -2;
+    CHECK(SightVerdict(s, c) == Sight::ray_error);
+    s.ray = 0, s.horiz = 61;
+    CHECK(SightVerdict(s, c) == Sight::out_range);
+    s.horiz = 20, s.bearing_deg = -61;
+    CHECK(SightVerdict(s, c) == Sight::out_cone);
+    s.bearing_deg = 60, s.pitch_deg = 41;
+    CHECK(SightVerdict(s, c) == Sight::out_pitch);
+    s.pitch_deg = -40, s.vis = 0.04f;
+    CHECK(SightVerdict(s, c) == Sight::low_vis);
+    s.vis = 0.05f;
+    CHECK(SightVerdict(s, c) == Sight::clear);
+    s.horiz = std::numeric_limits<double>::quiet_NaN();
+    CHECK(SightVerdict(s, c) == Sight::no_data);
+    CHECK(std::string_view(SightText(Sight::blocked)) == "blocked" && std::string_view(SightText(Sight::none)) == "-");
+}
 }  // namespace
 
 int main() {
@@ -291,6 +408,8 @@ int main() {
     TestForcedAndHelpers();
     TestShootAndGuards();
     TestTransitionRule();
+    TestSightKeep();
+    TestSightVerdict();
     std::printf("%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

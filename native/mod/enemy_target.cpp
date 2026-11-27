@@ -100,7 +100,9 @@ constexpr std::uintptr_t kEOwnId = 0x314, kEParent = 0x70, kPFlags = 0x2B0, kPWe
 constexpr std::uint32_t kIdMask = 0x1FFFFF;
 
 // the bits
-enum : unsigned { kPickReorder = 1, kPickH5 = 2, kPickH2 = 4, kPickForce = 8 };
+// (M3f) 16: the line-of-sight keep (SightTick's estimate keeps her the target while the bucket lost her record; needs 1);
+// 32: her record from ours (that bucket's record[0], our Sam's, rewritten into hers; needs 1 and 16)
+enum : unsigned { kPickReorder = 1, kPickH5 = 2, kPickH2 = 4, kPickForce = 8, kPickSight = 16, kPickSynth = 32 };
 enum : unsigned { kRedShoot = 1, kRedTurn = 2, kRedApproach = 4, kRedShadow = 8, kRedVehicle = 16, kRedShootActor = 32 };
 // the redirect sites (one bit each; redirect bit 2 = 2a | 2b; bit 16 = the vehicle chase; bit 32 = the shoot actor, whose hooks
 // are in with bit 32 on, or in a hidden run while the pick or a redirect is wanted: there the aim point is recorded with bit 32
@@ -404,7 +406,21 @@ struct Slot {
     std::atomic<double> own[3];
     std::atomic<std::uint64_t> own_ms{0};
     std::atomic<std::uint64_t> reg_ms{0};  // the last registration pass that listed it: the redirects refuse it older than kRegStaleMs
+    // (M3f) pick bit 16: SightTick's last verdict on her (erules::Sight; the game thread stores it, then its time, released) and
+    // what PsrOne did with it (the workers; op 4 resets): ticks kept by it, her record written from ours, a synth refused
+    std::atomic<std::uint8_t> los_v{0};
+    std::atomic<std::uint64_t> los_ms{0};
+    std::atomic<std::uint32_t> n_est_keep{0}, n_synth{0}, n_synth_skip{0};
+    // (M3f review) the last synth's record fields (the SIGHT line): +0x24 and +0x28 as kept (our Sam's), the velocity at +0x30
+    // before (our Sam's) and after (hers, from her stimulus +0x90); x / y only
+    std::atomic<float> syn_f24{0}, syn_f28{0}, syn_vs[2] = {}, syn_vh[2] = {};
+    std::atomic<std::uint64_t> first_p{0};  // her record first in its bucket since the arm's start (ms; op 4 resets)
     // game thread only
+    std::uint64_t arm_ms = 0;               // (M3f) the arm's start (TNow; op 4)
+    std::uint64_t los_next = 0;             // its next ray
+    unsigned los_n[9] = {};                 // its verdicts by erules::Sight (op 4 resets)
+    std::uint8_t los_logged = 0;            // the last verdict logged
+    unsigned los_logs = 0;                  // the changes logged in this arm (60 at most)
     std::uint64_t tomb_ms = 0;
     std::uintptr_t entity = 0, agent = 0;
     std::uint8_t logged_cur = 0, logged_rule = 0;
@@ -513,6 +529,9 @@ struct WCounts {
     // (run 3 review) the job's GetTargetPosition calls through the MULE wrapper that did not reach the base GetTargetPosition: the
     // component-type-0x36 branch, where the base SetTargetActor is never called either (calls 0 with this > 0)
     std::atomic<std::uint32_t> sh_t36{0};
+    // (M3f) pick bits 16 / 32 (all MULEs): ticks kept by the line of sight, her record written from ours, a synth refused by its
+    // checks; onhit_odd: an OnHit attacker of the game's whose +0x338 is not an object of the game's (information only)
+    std::atomic<std::uint32_t> est_keep{0}, synth{0}, synth_skip{0}, onhit_odd{0};
 } g_wc;
 // (run 3) the first instance of each, kept by the worker that saw it (one compare-exchange) and logged once by the tick
 struct FirstSeen {
@@ -530,7 +549,7 @@ struct FirstSeen {
         return state.compare_exchange_strong(r, 3, std::memory_order_acq_rel);
     }
 };
-FirstSeen g_first_vt_other, g_first_noslot, g_first_onhit_bad;
+FirstSeen g_first_vt_other, g_first_noslot, g_first_onhit_bad, g_first_onhit_odd;
 
 // ---------------------------------------------------------------- the detours' bodies (worker threads; no alloc / log / game call)
 using Fn4 = std::uintptr_t (*)(std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t);
@@ -542,6 +561,44 @@ bool PartnerStim(std::uintptr_t stim) noexcept {
     const std::uintptr_t pa = g_p_agent.load(std::memory_order_relaxed);
     std::uintptr_t ag = 0;
     return pa && SQ(stim + kSAgent, &ag) && ag == pa;
+}
+
+// (M3f) pick bit 32: record[0] (our Sam's, `stim0` when PsrOne read it) rewritten into her stimulus, its +0x20 distance hers from
+// the MULE and (M3f review) its +0x30..0x3F velocity hers (her stimulus +0x90: the visual sense's writer copies the stimulus's
+// +0x90 there, and the entry builder 0x142E9FF30 turns it into a rate). Every input checked first: her stimulus live and ours,
+// the MULE's own place and her chest fresh, the distance finite and in (0, 200] m, her velocity read, finite and at most
+// kSynthVelMax, record[0] still `stim0` (re-read); else nothing written (synth_skip) and false (PsrOne suppresses instead). A
+// refused write is a fault (the stop); true then (nothing more written).
+constexpr float kSynthVelMax = 50.0f;
+bool SynthOne(Slot* s, std::uintptr_t recs, std::uintptr_t stim0, std::uint64_t now) noexcept {
+    const std::uintptr_t ps = g_ps_stim.load(std::memory_order_relaxed);
+    double own[3] = {}, her[3] = {};
+    std::uintptr_t again = 0;
+    bool ok = stim0 && ps && ps != stim0 && PartnerStim(ps) && ReadOwn(s, own, now) && ReadPartner(kChest, her, now);
+    double d = 0;
+    if (ok) {
+        const double dx = her[0] - own[0], dy = her[1] - own[1], dz = her[2] - own[2];
+        d = std::sqrt(dx * dx + dy * dy + dz * dz);
+        ok = std::isfinite(d) && d > 0 && d <= 200.0;
+    }
+    float hv[4] = {}, mine[8] = {};  // her stimulus's velocity; record +0x20..0x3F as it is (ours)
+    ok = ok && SGet(ps + kSVel, hv, sizeof(hv)) && SGet(recs + 0x20, mine, sizeof(mine));
+    for (int i = 0; ok && i < 3; ++i) ok = std::isfinite(hv[i]) && std::fabs(hv[i]) <= kSynthVelMax;
+    ok = ok && SQ(recs, &again) && again == stim0;
+    if (!ok) {
+        s->n_synth_skip.fetch_add(1, std::memory_order_relaxed), g_wc.synth_skip.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+    const float df = static_cast<float>(d);
+    if (!SPut(recs + 0x30, hv, sizeof(hv)) || !SPut(recs + 0x20, &df, sizeof(df)) || !SPut(recs, &ps, sizeof(ps))) {
+        g_wc.faults.fetch_add(1);
+        return true;
+    }
+    s->syn_f24.store(mine[1], std::memory_order_relaxed), s->syn_f28.store(mine[2], std::memory_order_relaxed);
+    s->syn_vs[0].store(mine[4], std::memory_order_relaxed), s->syn_vs[1].store(mine[5], std::memory_order_relaxed);
+    s->syn_vh[0].store(hv[0], std::memory_order_relaxed), s->syn_vh[1].store(hv[1], std::memory_order_relaxed);
+    s->n_synth.fetch_add(1, std::memory_order_relaxed), g_wc.synth.fetch_add(1, std::memory_order_relaxed);
+    return true;
 }
 
 void PsrOne(Slot* s, std::uintptr_t k) noexcept {
@@ -564,6 +621,7 @@ void PsrOne(Slot* s, std::uintptr_t k) noexcept {
     const int n = bucket && recs && count > 0 ? (count > 16 ? 16 : count) : 0;
     const std::uintptr_t pa = g_p_agent.load(std::memory_order_relaxed);
     std::uint8_t who[16] = {};
+    std::uintptr_t stim0 = 0;  // record[0]'s stimulus as read here (the synth writes only over this one)
     R::PickIn x;
     x.now = TNow();
     for (int i = 0; i < n; ++i) {
@@ -574,6 +632,7 @@ void PsrOne(Slot* s, std::uintptr_t k) noexcept {
             who[i] = R::kLocal;
             continue;
         }
+        if (i == 0) stim0 = stim;
         // (round 27 run 2) the record's stimulus read fault-free (ReadProcessMemory, no exception): a stale one is a soft count
         if (!mem::Rd(stim + kSAgent, ag)) {
             g_wc.psr_rec_bad.fetch_add(1, std::memory_order_relaxed);
@@ -594,8 +653,14 @@ void PsrOne(Slot* s, std::uintptr_t k) noexcept {
             if (g32 > s->max_gap.load(std::memory_order_relaxed)) s->max_gap.store(g32, std::memory_order_relaxed);
         }
         s->last_p.store(x.now, std::memory_order_relaxed);
+        if (!s->first_p.load(std::memory_order_relaxed)) s->first_p.store(x.now, std::memory_order_relaxed);
     }
     x.partner_ok = pa != 0;
+    const unsigned pick = g_pick_live.load(std::memory_order_relaxed);
+    {  // (M3f) pick bit 16: SightTick's verdict, clear and at most est_ms old
+        const std::uint64_t lm = s->los_ms.load(std::memory_order_acquire);
+        x.est_p = lm && x.now >= lm && x.now - lm <= R::PickCfg{}.est_ms && s->los_v.load(std::memory_order_relaxed) == static_cast<std::uint8_t>(R::Sight::clear);
+    }
     x.hit_p = s->hit_p.load(std::memory_order_relaxed);
     x.hit_l = s->hit_l.load(std::memory_order_relaxed);
     R::PickState st;
@@ -608,7 +673,10 @@ void PsrOne(Slot* s, std::uintptr_t k) noexcept {
     st.last_dl = s->dl.load(std::memory_order_relaxed);
     R::PickCfg c;
     c.fresh_ms = g_fresh_ms.load(std::memory_order_relaxed);
+    c.est_on = (pick & kPickSight) != 0;
+    c.synth_on = c.est_on && (pick & kPickSynth) != 0;
     R::PickOut o = R::TargetPick(st, x, c);
+    if (o.st.rule == R::rSeenEst) s->n_est_keep.fetch_add(1, std::memory_order_relaxed), g_wc.est_keep.fetch_add(1, std::memory_order_relaxed);
     const std::uint8_t f = s->force.load(std::memory_order_relaxed);
     if (f == R::kPartner || f == R::kLocal) {
         const R::Who fw = static_cast<R::Who>(f);
@@ -632,7 +700,9 @@ void PsrOne(Slot* s, std::uintptr_t k) noexcept {
         if (SSwap64(recs, recs + 0x40ull * static_cast<unsigned>(p.swap))) s->n_front.fetch_add(1, std::memory_order_relaxed);
         else g_wc.faults.fetch_add(1);
     }
-    if (p.count0) {
+    // (M3f review) aSynthPartner: the synth first; refused, the bucket suppressed (count 0) as bit 16 alone would
+    const bool zero_it = p.count0 || (p.synth && !SynthOne(s, recs, stim0, x.now) && p.fallback0);
+    if (zero_it) {
         const std::int32_t zero = 0;
         if (SPut(bucket + 8, &zero, 4)) s->n_supp.fetch_add(1, std::memory_order_relaxed);
         else g_wc.faults.fetch_add(1);
@@ -1006,6 +1076,12 @@ struct Snap {
 unsigned g_mismatch = 0, g_forced_vis = 0, g_ind_mismatch = 0, g_registered = 0;
 std::uint32_t g_wfaults_seen = 0;
 unsigned g_reg_pass = 0;
+// (M3f) pick bits 16 / 32: the raycast's self-test (0 not yet, 1 ok, 2 failed, 3 a ray fault), the rays cast, the bits last logged
+int g_los_state = 0;
+unsigned g_sight_rays = 0, g_sight_rr = 0;
+double g_sight_next = 0;
+unsigned g_bits_logged = 0;
+bool g_bits_logged_any = false;
 
 void StimDead(const char* what) noexcept {
     if (!g_stim_dead) Log("[enemy] pstim %s FAULTED: no further creates or removes this run", what);
@@ -1415,6 +1491,23 @@ void Recompute() noexcept {
     if ((g_cfg.pick & kPickH5) && (g_groups & kGCls) && (g_groups & kGMule) && (g_sense_in & sense::kCls)) p |= kPickH5;
     if ((g_cfg.pick & kPickH2) && (g_groups & kGCls) && (g_groups & kGClsFlags) && (g_groups & kGPlayer) && (g_sense_in & sense::kCls)) p |= kPickH2;
     if ((g_cfg.pick & kPickForce) && (g_groups & kGForce) && (g_groups & kGPsr)) p |= kPickForce;
+    // (M3f) 16 with 1 live and the raycast's self-test passed; 32 with 16
+    if ((g_cfg.pick & kPickSight) && (p & kPickReorder) && g_los_state == 1) p |= kPickSight;
+    if ((g_cfg.pick & kPickSynth) && (p & kPickSight)) p |= kPickSynth;
+    if ((g_cfg.pick & (kPickSight | kPickSynth)) && (!g_bits_logged_any || ((p ^ g_bits_logged) & (kPickSight | kPickSynth)))) {
+        const char* why16 = (p & kPickSight)              ? "the self-test passed, bit 1 live"
+                            : !(g_cfg.pick & kPickSight)  ? "not in the key"
+                            : !(p & kPickReorder)         ? "bit 1 not live"
+                            : g_los_state == 0            ? "waiting for the raycast's self-test"
+                            : g_los_state == 2            ? "the raycast's self-test failed"
+                                                          : "a ray fault";
+        const char* why32 = (p & kPickSynth) ? "bit 16 live" : !(g_cfg.pick & kPickSynth) ? "not in the key" : "bit 16 not live";
+        if (!g_bits_logged_any || ((p ^ g_bits_logged) & kPickSight))
+            Log("[enemy] tgt pick 16 (line of sight): %s (%s)", (p & kPickSight) ? "on" : "off", why16);
+        if ((g_cfg.pick & kPickSynth) && (!g_bits_logged_any || ((p ^ g_bits_logged) & kPickSynth)))
+            Log("[enemy] tgt pick 32 (her record from ours): %s (%s)", (p & kPickSynth) ? "on" : "off", why32);
+        g_bits_logged = p, g_bits_logged_any = true;
+    }
     g_pick_live.store(p, std::memory_order_release);
     g_redir_live.store(SitesFor(RedirWant()) & g_sites_in, std::memory_order_release);
     // bit 32's hooks record the shoot job's aim point whenever they are in (read-only), whatever the redirect bits
@@ -1426,7 +1519,7 @@ void WipeTable() noexcept {
     for (Slot& s : g_slots) {
         s.key.store(0, std::memory_order_release);
         s.ind.store(0), s.id.store(0), s.cur.store(0), s.rule.store(0), s.force.store(0), s.chg_rule.store(0);
-        s.ent.store(0), s.reg_ms.store(0), s.own_ms.store(0), s.pt_ms.store(0);
+        s.ent.store(0), s.reg_ms.store(0), s.own_ms.store(0), s.pt_ms.store(0), s.los_ms.store(0), s.los_v.store(0);
         s.tomb_ms = 0, s.entity = 0, s.agent = 0, s.logged_cur = 0, s.logged_rule = 0, s.mm_logged = false;
     }
     for (IndIx& e : g_ix) e.key.store(0, std::memory_order_release), e.slot.store(-1), e.tomb_ms = 0;
@@ -1479,6 +1572,9 @@ Slot* Insert(std::uintptr_t k) noexcept {
             s.n_front.store(0), s.n_supp.store(0), s.n_calls.store(0), s.flips.store(0), s.last_p.store(0), s.max_gap.store(0), s.reg_ms.store(0);
             s.sh_calls.store(0), s.sh_redir.store(0), s.sh_pts.store(0), s.pt_ms.store(0), s.pt_mode.store(-1), s.own_ms.store(0);
             s.pt_actor.store(0), s.pt_place.store(0), s.pt_other.store(0), s.chg_rule.store(0), s.sh_t36.store(0);
+            s.los_v.store(0), s.los_ms.store(0), s.n_est_keep.store(0), s.n_synth.store(0), s.n_synth_skip.store(0), s.first_p.store(0);
+            s.arm_ms = 0, s.los_next = 0, s.los_logged = 0, s.los_logs = 0;
+            for (unsigned& c : s.los_n) c = 0;
             s.ind.store(0), s.id.store(0), s.ent.store(0);  // (a reused slot: Register() fills these and the two indexes)
             s.entity = 0, s.agent = 0, s.pass = 0, s.pt_seen_ms = 0, s.pt_her = 0, s.pt_sam = 0, s.pt_none = 0;
             s.logged_cur = 0, s.logged_rule = 0, s.tomb_ms = 0, s.mm_logged = false;
@@ -1733,6 +1829,15 @@ void LogFirsts() noexcept {
         Log("[enemy] tgt onhit_bad first: receiver %05X aref 0x%llX att 0x%llX vt 0x%llX node 0x%llX", static_cast<unsigned>(g_first_onhit_bad.a.load()),
             static_cast<unsigned long long>(g_first_onhit_bad.b.load()), static_cast<unsigned long long>(g_first_onhit_bad.c.load()),
             static_cast<unsigned long long>(g_first_onhit_bad.d.load()), static_cast<unsigned long long>(g_first_onhit_bad.e.load()));
+    if (g_first_onhit_odd.Take()) {
+        // (M3f) the attacker's class by its RTTI (read here, on the game thread, under the tick's guard)
+        const std::uintptr_t att = static_cast<std::uintptr_t>(g_first_onhit_odd.a.load());
+        const std::uintptr_t rt = att ? mem::RttiOf(att) : 0;
+        const char* name = rt ? mem::RttiName(rt) : nullptr;
+        Log("[enemy] tgt onhit odd first: att 0x%llX vt 0x%llX (%s) inst 0x%llX inst_vt 0x%llX", static_cast<unsigned long long>(att),
+            static_cast<unsigned long long>(g_first_onhit_odd.b.load()), name ? name : "?", static_cast<unsigned long long>(g_first_onhit_odd.c.load()),
+            static_cast<unsigned long long>(g_first_onhit_odd.d.load()));
+    }
 }
 Snap ReadSnap() noexcept {
     Snap n;
@@ -1763,12 +1868,14 @@ void Summary(const char* when) noexcept {
     // (round 27 run 2) bit 32's shoot numbers (deltas) and the soft counters (totals) at the end
     Log("[enemy] tgt%s%s: engaging her %u, Sam %u; reorders %u; suppress %u; redirects 1:%u 2a:%u (offset %u) 2b:%u 4:%u (not ours %u) veh:%u; "
         "h5 %u h2 %u/%u (no type-1 bucket %u) forced %u; registered %u; faults %u; mismatch %u; table clears %u; shoot 32: calls %u redirected %u "
-        "points %u (at her %u Sam %u none %u); soft onhit_bad %u psr_rec_bad %u turn_goal_bad %u; shoot32 vt_other %u noslot %u; t36 %u",
+        "points %u (at her %u Sam %u none %u); soft onhit_bad %u psr_rec_bad %u turn_goal_bad %u; shoot32 vt_other %u noslot %u; t36 %u; "
+        "sight keeps %u synth %u skip %u rays %u; onhit_odd %u",
         when ? " " : "", when ? when : "", her, sam, d(n.front, o.front), d(n.supp, o.supp), d(n.r1, o.r1), d(n.r2a, o.r2a), d(n.r2a_off, o.r2a_off),
         d(n.r2b, o.r2b), d(n.r4, o.r4), d(n.r4n, o.r4n), d(n.rveh, o.rveh), d(n.h5, o.h5), d(n.h2r, o.h2r), d(n.h2f, o.h2f), d(n.h2nb, o.h2nb),
         d(n.forced, o.forced), g_registered, n.faults, g_mismatch, g_table_clears, d(n.sh_calls, o.sh_calls), d(n.sh_redir, o.sh_redir),
         d(n.sh_pts, o.sh_pts), d(n.pt_her, o.pt_her), d(n.pt_sam, o.pt_sam), d(n.pt_none, o.pt_none), g_wc.onhit_bad.load(), g_wc.psr_rec_bad.load(),
-        g_wc.turn_goal_bad.load(), g_wc.sh_vt_other.load(), g_wc.sh_noslot.load(), g_wc.sh_t36.load());
+        g_wc.turn_goal_bad.load(), g_wc.sh_vt_other.load(), g_wc.sh_noslot.load(), g_wc.sh_t36.load(), g_wc.est_keep.load(), g_wc.synth.load(),
+        g_wc.synth_skip.load(), g_sight_rays, g_wc.onhit_odd.load());
     g_last_snap = n;
 }
 
@@ -2037,6 +2144,145 @@ bool TableGate() noexcept {
     return loading;
 }
 
+// ---- (M3f) pick bit 16: the line-of-sight estimate (game thread, 10 Hz, at most kSightRays rays a tick). For every MULE whose
+// pick is her: from its eye (its root + l1rules::kEye) to her chest (the partner record), the cheap tests first
+// (erules::SightVerdict: range, view cone, pitch, her visibility), then one world ray (ecombat::WorldRay, the visual sense's
+// filter; 0.6 m off the MULE's end, kSightHerTrimM off hers). The verdict and its time go to the slot; PsrOne reads them (est_p).
+constexpr unsigned kSightRays = 4;
+constexpr double kSightHerTrimM = 0.5;
+// the MULE's facing (rad) from its rotation's second row (as GeomNow reads it)
+bool MuleYaw(std::uintptr_t e, double* yaw) noexcept {
+    WorldTransform tr{};
+    std::uint8_t xb[0x3C];
+    if (!mem::Read(e + 0xC8, xb, sizeof(xb))) return false;
+    std::memcpy(&tr.rot, xb + 0x18, 0x24);
+    *yaw = std::atan2(static_cast<double>(tr.rot.m[1][1]), static_cast<double>(tr.rot.m[1][0]));
+    return std::isfinite(*yaw);
+}
+// One ray from `from` to `to`, `trim_from` / `trim_to` off its ends (WorldRay's result; `len` the full length)
+int SightRay(const double (&from)[3], const double (&to)[3], double trim_from, double trim_to, double (&hit)[3], double* len) noexcept {
+    const double d[3] = {to[0] - from[0], to[1] - from[1], to[2] - from[2]};
+    const double l = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    if (len) *len = l;
+    if (!(l > trim_from + trim_to + 0.1)) return 0;
+    double a[3], b[3];
+    for (int i = 0; i < 3; ++i) a[i] = from[i] + d[i] / l * trim_from, b[i] = to[i] - d[i] / l * trim_to;
+    double ignored = 0;
+    ++g_sight_rays;
+    return ecombat::WorldRay(a, b, 0.0, hit, &ignored);
+}
+void SightFault() noexcept {
+    g_los_state = 3;
+    Log("[enemy] tgt FAULT los ray (SEH) -- pick 16/32 off");
+    for (Slot& s : g_slots) s.los_ms.store(0, std::memory_order_release);
+    Recompute();
+}
+// Before the first estimate: a ray straight down from our Sam's chest must hit the ground at his root (within 0.75 m); else one
+// 1 m beside him (a ray that starts inside his own body may report it: within 1.5 m there, a slope). (M3f review) Never during a
+// load or before the first registration pass (TickBody's `loading`, g_table_ok); a miss, no physics world (-2), an odd return
+// (-4) or a hit out of tolerance is tried again kSelfTestGapMs later, up to kSelfTestTries attempts, before it fails for the run;
+// it fails at once only when the raycast is unchecked or the probes are off (-3), and a fault (-1) goes through SightFault.
+constexpr unsigned kSelfTestTries = 10;
+constexpr double kSelfTestGapMs = 500.0;
+unsigned g_los_tries = 0;
+void SightSelfTest() noexcept {
+    double root[3] = {};
+    if (!g_local || !g_local_ok || !Pos(g_local, root)) return;  // (tried again next tick; not an attempt)
+    const double from[3] = {root[0], root[1], root[2] + L::kChest}, to[3] = {root[0], root[1], root[2] - 5.0};
+    double hit[3] = {}, len = 0;
+    const int r = SightRay(from, to, 0.0, 0.0, hit, &len);
+    if (r == -1) return SightFault();
+    int r2 = 0;
+    bool ok = r > 0 && std::isfinite(hit[2]) && std::fabs(hit[2] - root[2]) <= 0.75;
+    if (!ok && r >= 0) {
+        const double f2[3] = {root[0] + 1.0, root[1], root[2] + L::kChest}, t2[3] = {root[0] + 1.0, root[1], root[2] - 5.0};
+        double h2[3] = {};
+        r2 = SightRay(f2, t2, 0.0, 0.0, h2, &len);
+        if (r2 == -1) return SightFault();
+        if (r2 > 0 && std::isfinite(h2[2]) && std::fabs(h2[2] - root[2]) <= 1.5) ok = true, hit[2] = h2[2];
+    }
+    ++g_los_tries;
+    if (ok) {
+        g_los_state = 1;
+        Log("[enemy] tgt los self-test: ok (hit %.2f m below the chest; attempt %u)", from[2] - hit[2], g_los_tries);
+        return Recompute();
+    }
+    const bool hard = r == -3 || r2 == -3;  // the raycast unchecked or the probes off: no retry helps
+    if (!hard && g_los_tries < kSelfTestTries) {
+        g_sight_next = g_now + kSelfTestGapMs;
+        Log("[enemy] tgt los self-test: attempt %u of %u missed (%d/%d, hit z %.2f vs root %.2f); trying again", g_los_tries, kSelfTestTries, r, r2, hit[2],
+            root[2]);
+        return;
+    }
+    g_los_state = 2;
+    Log("[enemy] tgt los self-test: failed (%d/%d, hit z %.2f vs root %.2f; %u attempts) -- %s; pick 16 off", r, r2, hit[2], root[2], g_los_tries,
+        hard ? "the raycast is unchecked or the probes are off" : "the raycast misses the ground");
+    Recompute();
+}
+void SightTick(bool loading) noexcept {
+    if (!(g_cfg.pick & kPickSight) || g_los_state >= 2 || g_now < g_sight_next) return;
+    if (g_los_state == 0 && (loading || !g_table_ok)) return;  // (M3f review) the self-test never runs mid-load
+    g_sight_next = g_now + 100;
+    if (g_los_state == 0) return SightSelfTest();
+    if (!(g_pick_live.load(std::memory_order_relaxed) & kPickSight)) return;
+    double her[3] = {};
+    const bool her_ok = ReadPartner(kChest, her, TNow());
+    const float vis = VisNow();
+    const R::SightCfg cfg{};
+    unsigned rays = 0, i = 0;
+    for (; i < kSlots && rays < kSightRays; ++i) {
+        Slot& s = g_slots[(g_sight_rr + i) & (kSlots - 1)];
+        if (s.key.load(std::memory_order_relaxed) <= 1 || !s.entity || s.cur.load(std::memory_order_relaxed) != R::kPartner) continue;
+        R::SightIn in;
+        double m[3] = {}, yaw = 0;
+        in.have = her_ok && Pos(s.entity, m) && mem::Q(s.entity + kEAgent) == s.agent && MuleYaw(s.entity, &yaw);
+        const double eye[3] = {m[0], m[1], m[2] + L::kEye};
+        if (in.have) {
+            in.horiz = L::Dist2d(her, m);
+            in.bearing_deg = L::FacingOff(yaw, m, her);
+            in.pitch_deg = std::atan2(her[2] - eye[2], in.horiz > 0.01 ? in.horiz : 0.01) * 180.0 / L::kPi;
+            in.vis = vis;
+        }
+        R::Sight v = R::SightVerdict(in, cfg);
+        double hit[3] = {}, len = -1;
+        if (v == R::Sight::none) {
+            in.cast = true, in.ray = SightRay(eye, her, 0.6, kSightHerTrimM, hit, &len);
+            ++rays;
+            if (in.ray == -1) return SightFault();
+            v = R::SightVerdict(in, cfg);
+        }
+        s.los_v.store(static_cast<std::uint8_t>(v), std::memory_order_relaxed);
+        s.los_ms.store(TNow(), std::memory_order_release);
+        ++s.los_n[static_cast<unsigned>(v) % 9u];
+        if (static_cast<std::uint8_t>(v) != s.los_logged && s.los_logs < 60) {
+            s.los_logged = static_cast<std::uint8_t>(v), ++s.los_logs;
+            const double at = in.cast && in.ray > 0 ? L::Dist(eye, hit) : -1.0;
+            Log("[enemy] tgt los id=%05X her %s (%.1f m, bearing %.0f, pitch %.1f, vis %.2f; hit at %.1f of %.1f m)", s.id.load(), R::SightText(v), in.horiz,
+                in.bearing_deg, in.pitch_deg, static_cast<double>(in.vis), at, len);
+        }
+    }
+    if (rays >= kSightRays) g_sight_rr = (g_sight_rr + i) & (kSlots - 1);
+}
+// The SIGHT line (op 7, op 8): the arm's verdicts and what PsrOne did with them, her bucket record's last time into the arm
+// (`-` never), the time from the arm's start to her first record (lead) and from her last one to now (tail)
+void SightLine(Slot& s) noexcept {
+    const std::uint64_t now = TNow(), last = s.last_p.load(), first = s.first_p.load(), a = s.arm_ms;
+    char lastb[24] = "-";
+    if (last && a && last >= a) std::snprintf(lastb, sizeof(lastb), "%.1f", (last - a) / 1000.0);
+    const unsigned lead = first && a && first >= a ? static_cast<unsigned>(first - a) : 0u, tail = last && now >= last ? static_cast<unsigned>(now - last) : 0u;
+    const unsigned* n = s.los_n;
+    auto at = [&](R::Sight v) { return n[static_cast<unsigned>(v)]; };
+    // (M3f review) the last synth's record fields: +0x24 / +0x28 kept (our Sam's), the +0x30 velocity before (Sam) and after (her)
+    char recb[128] = "";
+    if (s.n_synth.load())
+        std::snprintf(recb, sizeof(recb), "; rec +0x24 %.3f +0x28 %.3f vel Sam (%.2f, %.2f) her (%.2f, %.2f)", static_cast<double>(s.syn_f24.load()),
+                      static_cast<double>(s.syn_f28.load()), static_cast<double>(s.syn_vs[0].load()), static_cast<double>(s.syn_vs[1].load()),
+                      static_cast<double>(s.syn_vh[0].load()), static_cast<double>(s.syn_vh[1].load()));
+    Log("[enemy] tgt id=%05X sight: los clear %u blocked %u out %u low_vis %u; keeps %u synth %u skip %u; her bucket last %s s (gap lead %u tail %u ms)%s",
+        s.id.load(), at(R::Sight::clear), at(R::Sight::blocked), at(R::Sight::out_range) + at(R::Sight::out_cone) + at(R::Sight::out_pitch),
+        at(R::Sight::low_vis), s.n_est_keep.load(), s.n_synth.load(), s.n_synth_skip.load(), lastb, lead, tail, recb);
+}
+
 void ArmGeoTick() noexcept;  // op 11 (below)
 void TickBody() noexcept {
     if (g_ps.pending) Step2(false);
@@ -2084,6 +2330,7 @@ void TickBody() noexcept {
         if (!loading && g_now >= g_reg_next) g_reg_next = g_now + 1000, Register(), g_table_ok = true;
         Recompute();
         if (g_now >= g_own_next) g_own_next = g_now + 100, UpdateOwn();
+        SightTick(loading);  // (M3f) pick bit 16
         DrainHits();
         if (g_now >= g_place_next) g_place_next = g_now + 250, PlaceTick(), ShootTally(), LogChanges(), LogFirsts();
         const std::uint32_t wf = g_wc.faults.load();
@@ -2114,6 +2361,8 @@ struct Geom {
     double m[3] = {}, h[3] = {}, s[3] = {};
     double hdz = 0, hh = -1, hp = 0, hb = -1, sdz = 0, sh = -1, sp = 0, sb = -1, sep = -1;
     bool valid = false, her_valid = false;
+    bool her_margin = false;                                  // (run 4) her by l1rules::GeomValidMargin: the placed arms' judge
+    double yaw = std::numeric_limits<double>::quiet_NaN();  // (run 4) the MULE's facing (rad); NaN unread
 };
 bool GeomNow(std::uint32_t id, int code, Geom& g) noexcept {
     g = Geom{};
@@ -2132,11 +2381,13 @@ bool GeomNow(std::uint32_t id, int code, Geom& g) noexcept {
         std::memcpy(&t.rot, xb + 0x18, 0x24);
         const double yaw = std::atan2(static_cast<double>(t.rot.m[1][1]), static_cast<double>(t.rot.m[1][0]));
         if (std::isfinite(yaw)) {
+            g.yaw = yaw;
             if (g.ho) g.hb = L::FacingOff(yaw, g.m, g.h);
             if (g.so) g.sb = L::FacingOff(yaw, g.m, g.s);
         }
     }
     g.her_valid = L::GeomValid(code, g.ho, g.hdz, g.hh, g.hb, g.hp);
+    g.her_margin = L::GeomValidMargin(code, g.ho, g.hdz, g.hh, g.hb, g.hp);
     g.valid = L::SamArm(code) ? L::GeomValid(code, g.so, g.sdz, g.sh, g.sb, g.sp) : g.her_valid;
     g.sep = L::SepDeg(g.m, g.ho, g.h, g.so, g.s);
     return true;
@@ -2184,6 +2435,10 @@ bool StartArm(int code, std::uint32_t id, char* msg, std::size_t cap) noexcept {
         s->sh_calls.store(0), s->sh_redir.store(0), s->sh_pts.store(0), s->pt_ms.store(0);  // bit 32's numbers per arm
         s->pt_actor.store(0), s->pt_place.store(0), s->pt_other.store(0), s->sh_t36.store(0);
         s->logged_cur = 0, s->logged_rule = 0, s->pt_seen_ms = 0, s->pt_her = 0, s->pt_sam = 0, s->pt_none = 0, s->mm_logged = false;
+        // (M3f) the line-of-sight numbers per arm (the verdict itself stays: it is current)
+        s->n_est_keep.store(0), s->n_synth.store(0), s->n_synth_skip.store(0), s->first_p.store(0);
+        s->arm_ms = TNow(), s->los_logged = 0, s->los_logs = 0;
+        for (unsigned& c : s->los_n) c = 0;
     }
     g_arm_id = id, g_arm_label = label, g_arm_code = code;
     bool her_spv = false;
@@ -2198,6 +2453,12 @@ bool StartArm(int code, std::uint32_t id, char* msg, std::size_t cap) noexcept {
 // ---- op 11 (run 3, hidden runs): the arm at geometry. One pending at a time (a new op 11 or op 8 cancels it); the tick polls it
 // every 50 ms: her geometry valid for the arm and her distance in its window (l1rules::ArmHerOk), or 2.5 s, then our Sam placed
 // for TF0 / TF1 (170 m, 40 deg off her line) and CS (5 m along its facing), and op 4's start 150 ms later (the ground snap).
+// Run 4 (l1rules::ArmPlaces: TB, TF0, TF1, CL): op 11 places her itself. Her not valid (by the margin rule, GeomValidMargin), it
+// sends an SCB1 PLACE (ecombat::SendPlace; at most one per kPlaceGapMs) with her point from the MULE's own pose 0.35 s ahead (its
+// yaw rate and velocity from the polls) and the candidate's distance and angle (PlaceCandidate: the next one after a ground
+// miss); she is judged again once her synced body is within 2 m of the point (150 ms settled), or the PLACE goes again after
+// 1.2 s. For TF0 / TF1 her geometry is judged again after our Sam's snap (back to placing her when it fails; Sam placed again
+// only when `sep` left 30..50). 6 s, then the arm starts anyway. After the start (TF0, TF1, CL) she is kept in its view (KeepView).
 struct ArmGeo {
     bool on = false;
     std::uint32_t id = 0;
@@ -2206,27 +2467,248 @@ struct ArmGeo {
     bool judged = false, valid = false;
     double after_ms = 0, horiz = -1, bearing = -1;
     char sam[160] = "not moved";
+    // run 4: the placed arms
+    bool first = true;              // the first poll not logged yet
+    unsigned places = 0, cand = 0;  // PLACEs sent for this arm; the candidate the next one uses
+    bool sent = false;              // a PLACE under way: her judged once she arrived and settled, or sent again after kPlaceArriveMs
+    double sent_at = -1e18, arrived_at = -1, px = 0, py = 0;
+    bool sam_placed = false, recheck = false;
+    double sam_at = -1e18;
+    // (M3f) TB: placed valid, waiting until the MULE sees her (l1rules::ArmSeen; kArmSeenMs per candidate)
+    double seen_wait_at = -1;
+    bool want_next = false;  // not seen in time: the next PLACE (the next candidate) before judging her again
 } g_ag;
+// (run 4) shared by op 11 and the keep-in-view after its start: the MULE's motion, the last PLACE (any arm)
+L::MuleMotion g_motion;
+std::uint32_t g_motion_id = 0;
+double g_place_last = -1e18;
+// (run 4) after a placed arm's start (TF0, TF1, CL): her bearing over 20 deg (gun) / 35 deg (melee) or her too far, she is placed
+// again in front (candidate 0); it ends at the first of: the slot picks her, the probe's watch notices her, 6 s, op 4 / 8 / 11.
+struct KeepView {
+    bool on = false;
+    std::uint32_t id = 0;
+    int code = 0;
+    double t0 = 0, next = 0;
+    unsigned n = 0;
+    bool sent = false;
+    double sent_at = -1e18, px = 0, py = 0;
+} g_kv;
 void ArmGeoCancel(const char* why) noexcept {
     if (!g_ag.on) return;
     const char* label = ArmLabel(g_ag.code);
     Log("[enemy] tgt arm-at-geometry %s id=%05X: cancelled (%s)", label ? label : "?", g_ag.id, why);
     g_ag.on = false;
 }
+void KeepViewEnd(const char* why) noexcept {
+    if (!g_kv.on) return;
+    const char* label = ArmLabel(g_kv.code);
+    Log("[enemy] tgt arm %s id=%05X: kept in view: %u re-places (%s)", label ? label : "?", g_kv.id, g_kv.n, why);
+    g_kv.on = false;
+}
 void ArmGeoPlace(int mode, double dist, double deg, const char* placed) noexcept {
     char why[160] = {};
     if (esync::PlaceLocalOffLine(g_ag.id, dist, deg, mode, why, sizeof(why))) std::snprintf(g_ag.sam, sizeof(g_ag.sam), "%s", placed);
     else std::snprintf(g_ag.sam, sizeof(g_ag.sam), "not placed (%s)", why);
 }
+void Motion(std::uint32_t id, const Geom& g) noexcept {
+    if (g_motion_id != id) g_motion = L::MuleMotion{}, g_motion_id = id;
+    if (g.mo && std::isfinite(g.yaw)) L::MotionStep(g_motion, g_now, g.yaw, g.m[0], g.m[1]);
+}
+// One PLACE: her point from the MULE's predicted pose and candidate `cand`, and its line. True when the link took it.
+bool PlaceHer(std::uint32_t id, int code, const Geom& g, unsigned cand, const char* tag, double* px, double* py, unsigned* cand_used = nullptr) noexcept {
+    const char* label = ArmLabel(code);
+    g_place_last = g_now;
+    if (!g.mo || !std::isfinite(g.yaw)) {
+        Log("[enemy] tgt place id=%05X (%s, %s): not sent (the MULE's pose unread)", id, label ? label : "?", tag);
+        return false;
+    }
+    const double lead = L::PlaceLeadDeg(g_motion);
+    double lx = 0, ly = 0;
+    L::PlaceLeadM(g_motion, &lx, &ly);
+    const double mx = g.m[0] + lx, my = g.m[1] + ly, myaw = g.yaw + lead * L::kPi / 180.0;
+    // (M3f) every candidate's ground probed (a down ray from 30 m above the MULE's root to 10 m below it, at the point) and the
+    // MULE's line of sight to her chest there; l1rules::PlaceChoose picks from `cand` on. The PLACE still carries x / y only (the
+    // guest snaps her to its own ground), so a probe off or with no hit falls back to candidate `cand`.
+    constexpr int kN = static_cast<int>(L::kPlaceCandidates);
+    L::PlaceProbe pr[kN];
+    const double aim = HerChestDz();
+    const double eye[3] = {g.m[0], g.m[1], g.m[2] + L::kEye};
+    // (M3f review) no probe at all after a ray fault (SightFault: g_los_state 3; WorldRay latched it too)
+    bool probe_on = g_los_state != 3;
+    for (int k = 0; k < kN && probe_on; ++k) {
+        const L::PlaceCand ck = L::PlaceCandidate(code, static_cast<unsigned>(k));
+        const L::PlacePt q = L::PlacePoint(mx, my, myaw, ck.dist, ck.deg);
+        const double top[3] = {q.x, q.y, g.m[2] + 30.0}, bot[3] = {q.x, q.y, g.m[2] - 10.0};
+        double hit[3] = {}, len = 0;
+        const int r = SightRay(top, bot, 0.0, 0.0, hit, &len);
+        if (r < 0 && r != -4) {
+            probe_on = false;  // a fault, no world, or the raycast unchecked: no probe at all
+            if (r == -1) {
+                Log("[enemy] tgt place id=%05X: FAULT in the ground probe (SEH); placed without it", id);
+                SightFault();  // (M3f review) bits 16 and 32 off for the run, like SightTick's own fault
+            }
+            break;
+        }
+        if (r <= 0 || !std::isfinite(hit[2])) continue;
+        pr[k].ok = true, pr[k].dz = hit[2] - g.m[2];
+        const double q3[3] = {q.x, q.y, hit[2]};
+        pr[k].horiz = L::Dist2d(q3, g.m);
+        pr[k].pitch = L::GeomPitch(pr[k].dz, aim, pr[k].horiz);
+        const double chest[3] = {q.x, q.y, hit[2] + aim};
+        double h2[3] = {}, l2 = 0;
+        const int r2 = SightRay(eye, chest, 0.6, kSightHerTrimM, h2, &l2);
+        if (r2 == -1) {
+            probe_on = false;
+            Log("[enemy] tgt place id=%05X: FAULT in the line-of-sight probe (SEH); placed without it", id);
+            SightFault();  // (M3f review) bits 16 and 32 off for the run, like SightTick's own fault
+            break;
+        }
+        pr[k].los = r2 == 0;
+    }
+    int skipped = 0;
+    const int chosen = probe_on ? L::PlaceChoose(code, kN, pr, &skipped, static_cast<int>(cand % L::kPlaceCandidates)) : -1;
+    const unsigned use = chosen >= 0 ? static_cast<unsigned>(chosen) : cand % L::kPlaceCandidates;
+    const L::PlaceCand c = L::PlaceCandidate(code, use);
+    const L::PlacePt p = L::PlacePoint(mx, my, myaw, c.dist, c.deg);
+    char gz[48];
+    if (!probe_on) std::snprintf(gz, sizeof(gz), "- (probe off)");
+    else if (!pr[use].ok) std::snprintf(gz, sizeof(gz), "- (probe no hit)");
+    else std::snprintf(gz, sizeof(gz), "%.2f (probe hit%s)", pr[use].dz, pr[use].los ? ", los clear" : ", los blocked");
+    char why[96] = {};
+    std::uint32_t seq = 0;
+    if (!ecombat::SendPlace(id, p.x, p.y, p.fx, p.fy, static_cast<std::uint8_t>(code), &seq, why, sizeof(why))) {
+        Log("[enemy] tgt place id=%05X (%s, %s): not sent (%s)", id, label ? label : "?", tag, why);
+        return false;
+    }
+    // (M3f) "her before": where she stood when this PLACE was decided (not where it puts her); the ground probe's numbers are the
+    // chosen point's
+    Log("[enemy] tgt place #%u id=%05X (%s, %s): sent %.1f m %+.0f deg (candidate %u), lead %+.0f deg (rate %+.0f deg/s) %.2f m, to (%.2f, %.2f); "
+        "her before horiz %.1f m bearing %.0f dz %.2f pitch %.1f; ground dz %s, chosen %d of %d, skipped %d raised",
+        seq, id, label ? label : "?", tag, c.dist, c.deg, use, lead, g_motion.have ? g_motion.rate : 0.0, std::sqrt(lx * lx + ly * ly), p.x, p.y, g.hh,
+        g.hb, g.hdz, g.hp, gz, chosen, kN, skipped);
+    if (chosen >= 0 && cand_used) *cand_used = static_cast<unsigned>(chosen);
+    *px = p.x, *py = p.y;
+    return true;
+}
+void KeepViewTick() noexcept {
+    if (!g_kv.on || g_now < g_kv.next) return;
+    g_kv.next = g_now + 100;
+    const double el = g_now - g_kv.t0;
+    char why[80];
+    if (Slot* s = SlotOfId(g_kv.id); s && s->cur.load() == R::kPartner) {
+        std::snprintf(why, sizeof(why), "it picked her after %.0f ms", el);
+        return KeepViewEnd(why);
+    }
+    if (const double nt = l1probe::TargetArmNoticedMs(); nt >= 0) {
+        std::snprintf(why, sizeof(why), "its watch noticed her at %.0f ms", nt);
+        return KeepViewEnd(why);
+    }
+    if (el >= L::kKeepViewMs) return KeepViewEnd("6000 ms, not picked");
+    Geom g;
+    if (!GeomNow(g_kv.id, g_kv.code, g)) return;
+    Motion(g_kv.id, g);
+    if (g_kv.sent) {
+        const bool arrived = g.ho && L::PlaceArrived(g.h[0], g.h[1], g_kv.px, g_kv.py);
+        if (!arrived && g_now - g_kv.sent_at < L::kPlaceArriveMs) return;  // under way
+        g_kv.sent = false;
+    }
+    if (!L::KeepViewOff(g_kv.code, g.hb, g.hh) || g_now - g_place_last < L::kPlaceGapMs) return;
+    if (PlaceHer(g_kv.id, g_kv.code, g, 0, "kept in view", &g_kv.px, &g_kv.py)) g_kv.sent = true, g_kv.sent_at = g_now, ++g_kv.n;
+}
+// The placed arm's poll (run 4): judge her, place her, or start.
+void ArmPlaceStep(bool have, const Geom& g, double el) noexcept {
+    const char* label = ArmLabel(g_ag.code);
+    const bool ok = have && L::ArmHerOk(g_ag.code, g.her_margin, g.hh);
+    if (!ok) g_ag.seen_wait_at = -1;  // (M3f review) TB's seen-wait counts only while she stays valid at one point
+    if (g_ag.first) {
+        g_ag.first = false;
+        Log("[enemy] tgt arm-at-geometry %s id=%05X: first poll: her horiz %.1f m bearing %.0f dz %.2f pitch %.1f (%s)", label ? label : "?", g_ag.id,
+            have ? g.hh : -1.0, have ? g.hb : -1.0, have ? g.hdz : 0.0, have ? g.hp : 0.0, ok ? "valid" : have ? "not valid: placing her" : "no MULE read");
+    }
+    bool settled = false;
+    if (g_ag.sent) {
+        if (g_ag.arrived_at < 0 && have && g.ho && L::PlaceArrived(g.h[0], g.h[1], g_ag.px, g_ag.py)) g_ag.arrived_at = g_now;
+        settled = g_ag.arrived_at >= 0 && g_now - g_ag.arrived_at >= L::kPlaceSettleMs;
+    }
+    const bool judge = !g_ag.sent || settled;
+    const bool tf = g_ag.code == 3 || g_ag.code == 4;
+    const double limit = L::ArmLimitMs(g_ag.code);
+    if (judge && ok && L::ArmWaitsSeen(g_ag.code) && !g_ag.want_next) {
+        // (M3f) TB: her placed valid; the arm starts once the MULE sees her (its bucket or the line of sight), else the next candidate
+        etarget::SightStat ss;
+        const bool have_s = SightStats(g_ag.id, &ss);
+        const double ba = have_s && ss.bucket_age_ms != UINT32_MAX ? ss.bucket_age_ms : -1.0;
+        const double la = have_s && ss.los_age_ms != UINT32_MAX ? ss.los_age_ms : -1.0;
+        const bool clear = have_s && ss.los_v == static_cast<std::uint8_t>(R::Sight::clear);
+        if (g_ag.seen_wait_at < 0) g_ag.seen_wait_at = g_now;
+        const double w = g_now - g_ag.seen_wait_at;
+        if (!L::ArmSeen(ba, clear, la)) {
+            if (el < limit && w < L::kArmSeenMs) return;  // waiting
+            if (el < limit) {
+                Log("[enemy] tgt arm %s: her not seen after %u ms, next candidate", label ? label : "?", static_cast<unsigned>(w));
+                g_ag.seen_wait_at = -1, g_ag.want_next = true, ++g_ag.cand;
+                return;  // (placed below from the next poll on, kPlaceGapMs after the last PLACE)
+            }
+            Log("[enemy] tgt arm %s: her not seen after %u ms, at the limit: started anyway", label ? label : "?", static_cast<unsigned>(w));
+        } else {
+            char lb[24] = "-";
+            if (ba >= 0) std::snprintf(lb, sizeof(lb), "%.1f", ba / 1000.0);
+            Log("[enemy] tgt arm %s: her seen (bucket %s s, los %s) after %u ms", label ? label : "?", lb,
+                have_s && la >= 0 ? R::SightText(static_cast<R::Sight>(ss.los_v)) : "-", static_cast<unsigned>(w));
+        }
+        g_ag.judged = true, g_ag.valid = true, g_ag.start_at = g_now, g_ag.recheck = false;
+        return;
+    }
+    if (judge && ok && !g_ag.want_next) {
+        // TF0 / TF1: our Sam placed (again only when `sep` left 30..50, kPlaceGapMs after his last); the start re-judges her.
+        // Never two teleports of our Sam under kPlaceGapMs apart: at the limit inside that gap the arm starts with him where he is.
+        const bool sam_again = tf && g_ag.sam_placed && L::SamSepOff(g.sep);
+        const bool sam_soon = sam_again && g_now - g_ag.sam_at < L::kPlaceGapMs;
+        if (sam_soon && el < limit) return;
+        g_ag.judged = true, g_ag.valid = true;
+        if (tf && (!g_ag.sam_placed || (sam_again && !sam_soon))) {
+            ArmGeoPlace(0, 170.0, 40.0, "placed 170 m 40 deg off her line");
+            g_ag.sam_placed = true, g_ag.sam_at = g_now, g_ag.start_at = g_now + 150;
+            g_ag.recheck = true;
+        } else if (sam_soon) {
+            const std::size_t n = std::strlen(g_ag.sam);
+            std::snprintf(g_ag.sam + n, sizeof(g_ag.sam) - n, "; not placed again at the limit (sep %.0f deg, %.0f ms after his last)", g.sep,
+                          g_now - g_ag.sam_at);
+            g_ag.start_at = g_now, g_ag.recheck = false;
+        } else {
+            g_ag.start_at = g_now, g_ag.recheck = tf;
+        }
+        return;
+    }
+    if (el >= limit) {
+        g_ag.judged = true, g_ag.valid = false, g_ag.recheck = false;
+        if (tf && !g_ag.sam_placed) {
+            ArmGeoPlace(0, 170.0, 40.0, "placed 170 m 40 deg off her line");
+            g_ag.sam_placed = true, g_ag.sam_at = g_now, g_ag.start_at = g_now + 150;
+        } else {
+            g_ag.start_at = g_now;
+        }
+        return;
+    }
+    // judged not valid, or not arrived in time (an arrived PLACE waits for its settle, never sent again)
+    const bool need = judge || (g_ag.arrived_at < 0 && g_now - g_ag.sent_at >= L::kPlaceArriveMs);
+    if (!need || g_now - g_place_last < L::kPlaceGapMs) return;
+    if (g_ag.sent && settled && L::PlaceGroundMiss(g_ag.code, ok, have ? g.hb : -1.0)) ++g_ag.cand;
+    if (PlaceHer(g_ag.id, g_ag.code, g, g_ag.cand, "op 11", &g_ag.px, &g_ag.py, &g_ag.cand))
+        g_ag.sent = true, g_ag.sent_at = g_now, g_ag.arrived_at = -1, ++g_ag.places, g_ag.want_next = false, g_ag.seen_wait_at = -1;
+}
 void ArmGeoTick() noexcept {
+    KeepViewTick();
     if (!g_ag.on) return;
     const char* label = ArmLabel(g_ag.code);
+    const bool places = L::ArmPlaces(g_ag.code);
     if (g_ag.start_at < 0) {
         if (g_now < g_ag.next) return;
         g_ag.next = g_now + 50;
         const double el = g_now - g_ag.t0;
         Geom g;
         const bool have = GeomNow(g_ag.id, g_ag.code, g);
+        if (have) Motion(g_ag.id, g);
         g_ag.horiz = have ? g.hh : -1, g_ag.bearing = have ? g.hb : -1, g_ag.after_ms = el;
         if (L::SamArm(g_ag.code)) {  // CS: her not judged; our Sam 5 m along its facing
             g_ag.judged = false;
@@ -2234,6 +2716,7 @@ void ArmGeoTick() noexcept {
             g_ag.start_at = g_now + 150;
             return;
         }
+        if (places) return ArmPlaceStep(have, g, el);
         const L::ArmGo go = L::ArmStep(el, have && L::ArmHerOk(g_ag.code, g.her_valid, g.hh));
         if (go == L::ArmGo::wait) return;
         g_ag.judged = true, g_ag.valid = go == L::ArmGo::go_valid;
@@ -2245,18 +2728,46 @@ void ArmGeoTick() noexcept {
         g_ag.start_at = g_now;  // our Sam not moved: at once
     }
     if (g_now < g_ag.start_at) return;
+    if (g_ag.recheck) {
+        // (run 4) TF0 / TF1 after our Sam's snap: her judged again; not valid, back to placing her (until the limit)
+        g_ag.recheck = false;
+        Geom g;
+        const bool have = GeomNow(g_ag.id, g_ag.code, g);
+        if (have) Motion(g_ag.id, g);
+        const double el = g_now - g_ag.t0;
+        if (!(have && L::ArmHerOk(g_ag.code, g.her_margin, g.hh))) {
+            const bool again = el < L::ArmLimitMs(g_ag.code);
+            Log("[enemy] tgt arm-at-geometry %s id=%05X: her not valid after our Sam's placement (horiz %.1f m, bearing %.0f, dz %.2f, pitch %.1f); "
+                "%s",
+                label ? label : "?", g_ag.id, have ? g.hh : -1.0, have ? g.hb : -1.0, have ? g.hdz : 0.0, have ? g.hp : 0.0,
+                again ? "placing her again" : "at the limit: started anyway");
+            if (again) {
+                g_ag.start_at = -1, g_ag.judged = false, g_ag.valid = false, g_ag.sent = false, g_ag.next = g_now;
+                return;
+            }
+            g_ag.valid = false;  // judged stays true: the end line reads "her not valid in 6000 ms ...; started anyway"
+        }
+        if (have) g_ag.horiz = g.hh, g_ag.bearing = g.hb, g_ag.after_ms = el;
+    }
     g_ag.on = false;
+    char pl[40] = "";
+    if (places) std::snprintf(pl, sizeof(pl), "; %u place%s", g_ag.places, g_ag.places == 1 ? "" : "s");
     if (!g_ag.judged)
         Log("[enemy] tgt arm-at-geometry %s id=%05X: her not judged (a Sam arm; horiz %.1f m, bearing %.0f); Sam %s", label ? label : "?", g_ag.id,
             g_ag.horiz, g_ag.bearing, g_ag.sam);
     else if (g_ag.valid)
-        Log("[enemy] tgt arm-at-geometry %s id=%05X: her valid after %u ms (horiz %.1f m, bearing %.0f); Sam %s", label ? label : "?", g_ag.id,
-            static_cast<unsigned>(g_ag.after_ms), g_ag.horiz, g_ag.bearing, g_ag.sam);
+        Log("[enemy] tgt arm-at-geometry %s id=%05X: her valid after %u ms (horiz %.1f m, bearing %.0f%s); Sam %s", label ? label : "?", g_ag.id,
+            static_cast<unsigned>(g_ag.after_ms), g_ag.horiz, g_ag.bearing, pl, g_ag.sam);
     else
-        Log("[enemy] tgt arm-at-geometry %s id=%05X: her not valid in 2500 ms (horiz %.1f m, bearing %.0f); started anyway; Sam %s", label ? label : "?",
-            g_ag.id, g_ag.horiz, g_ag.bearing, g_ag.sam);
+        Log("[enemy] tgt arm-at-geometry %s id=%05X: her not valid in %u ms (horiz %.1f m, bearing %.0f%s); started anyway; Sam %s", label ? label : "?",
+            g_ag.id, static_cast<unsigned>(L::ArmLimitMs(g_ag.code)), g_ag.horiz, g_ag.bearing, pl, g_ag.sam);
     char msg[160];
     StartArm(g_ag.code, g_ag.id, msg, sizeof(msg));
+    if (places && L::KeepViewArm(g_ag.code)) {
+        KeepViewEnd("a new arm");
+        g_kv = KeepView{};
+        g_kv.on = true, g_kv.id = g_ag.id, g_kv.code = g_ag.code, g_kv.t0 = g_now, g_kv.next = g_now + 100;
+    }
 }
 }  // namespace
 
@@ -2264,7 +2775,7 @@ void Install(const Config& c) noexcept {
     g_cfg.stim = c.enemy_partner_stim;
     g_cfg.vis = c.enemy_partner_vis;
     g_cfg.radius = c.enemy_partner_stim_radius;
-    g_cfg.pick = static_cast<unsigned>(c.enemy_target_pick) & 15u;
+    g_cfg.pick = static_cast<unsigned>(c.enemy_target_pick) & 63u;
     g_cfg.redirect = static_cast<unsigned>(c.enemy_target_redirect) & 0xFFu;
     g_cfg.fresh_ms = c.enemy_target_fresh_ms;
     g_fresh_ms.store(R::FreshMs(c.enemy_target_fresh_ms));
@@ -2371,6 +2882,7 @@ bool Command(const double (&v)[3], char* msg, std::size_t cap) noexcept {
         }
         case 4:
             ArmGeoCancel("op 4");
+            KeepViewEnd("op 4");
             return StartArm(static_cast<int>(v[1]), IdArg(v[2]), msg, cap);
         case 5: {
             const std::uint32_t id = IdArg(v[1]);
@@ -2396,16 +2908,19 @@ bool Command(const double (&v)[3], char* msg, std::size_t cap) noexcept {
                 Log("[enemy] tgt id=%05X pick %s; flips her->Sam %u; her bucket gap max %u ms", id, R::WhoText(static_cast<R::Who>(s->cur.load())),
                     s->flips.load(), s->max_gap.load());
                 ShootLine(*s);
+                SightLine(*s);
             }
             return std::snprintf(msg, cap, "tgt geometry logged"), true;
         }
         case 8:
             ArmGeoCancel("op 8");
+            KeepViewEnd("the arm ended (op 8)");
             Summary("arm end");
             if (Slot* s = g_arm_id ? SlotOfId(g_arm_id) : nullptr) {
                 Log("[enemy] tgt arm %s id=%05X end: pick %s; flips her->Sam %u; her bucket gap max %u ms", g_arm_label ? g_arm_label : "?", g_arm_id,
                     R::WhoText(static_cast<R::Who>(s->cur.load())), s->flips.load(), s->max_gap.load());
                 ShootLine(*s);
+                SightLine(*s);
             }
             g_arm_id = 0, g_arm_label = nullptr, g_arm_code = 0;
             return l1probe::TargetArmEnd(msg, cap);
@@ -2463,6 +2978,7 @@ bool Command(const double (&v)[3], char* msg, std::size_t cap) noexcept {
             const std::uint32_t id = IdArg(v[1]);
             if (!ArmLabel(code) || !id) return std::snprintf(msg, cap, "enemy_tgt 11 <id> <arm 1..9>"), false;
             ArmGeoCancel("a new op 11");
+            KeepViewEnd("a new op 11");
             g_ag = ArmGeo{};
             g_ag.on = true, g_ag.id = id, g_ag.code = code, g_ag.t0 = g_now, g_ag.next = g_now;
             return std::snprintf(msg, cap, "tgt arm-at-geometry armed"), true;
@@ -2480,6 +2996,16 @@ bool ShootStats(std::uint32_t id, ShootStat* out) noexcept {
     FillShoot(*s, *out);
     return true;
 }
+bool SightStats(std::uint32_t id, SightStat* out) noexcept {
+    Slot* s = out && id ? SlotOfId(id) : nullptr;
+    if (!s) return false;
+    const std::uint64_t now = TNow(), last = s->last_p.load(), lm = s->los_ms.load();
+    out->bucket_age_ms = last && now >= last ? static_cast<std::uint32_t>(now - last > 0xFFFFFFF0ull ? 0xFFFFFFF0ull : now - last) : UINT32_MAX;
+    out->los_v = lm ? s->los_v.load() : 0;
+    out->los_age_ms = lm && now >= lm ? static_cast<std::uint32_t>(now - lm > 0xFFFFFFF0ull ? 0xFFFFFFF0ull : now - lm) : UINT32_MAX;
+    return true;
+}
+const char* SightText(std::uint8_t v) noexcept { return R::SightText(static_cast<R::Sight>(v)); }
 std::uintptr_t StimAgent() noexcept { return g_ps.stim && !g_ps.pending ? g_ps.agent : 0; }
 
 void NoteHit(std::uint32_t id, bool partner) noexcept {
@@ -2529,6 +3055,12 @@ void NoteOnHit(std::uintptr_t receiver, std::uintptr_t di) noexcept {
         // (run 3) the first chain of the run, for the tick's once-line (only what was read above)
         g_first_onhit_bad.Put(id, aref, att, a.is_sam ? 0 : mem::Q(att), node);
         return void(g_wc.onhit_bad.fetch_add(1, std::memory_order_relaxed));
+    }
+    if (v == R::HitBy::odd) {
+        // (M3f) the attacker is the game's, its +0x338 not an object of the game's: information only (no hit pushed)
+        const std::uintptr_t inst = mem::Q(att + 0x338);
+        g_first_onhit_odd.Put(att, mem::Q(att), inst, inst ? mem::Q(inst) : 0, id);
+        return void(g_wc.onhit_odd.fetch_add(1, std::memory_order_relaxed));
     }
     if (v == R::HitBy::sam) PushHit(id, R::kLocal);
 }

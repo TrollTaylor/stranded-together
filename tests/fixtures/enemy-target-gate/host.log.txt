@@ -1,108 +1,127 @@
-[    5.250][94712] [enemy] tgt byte checks (71): stimulus ok, registry ok, goals ok, sensor results ok, classifier ok, classifier flags ok, forced visual ok, MULE members ok, player objects ok, redirect 1 ok, 2a ok, 2b ok, 4 ok, 16 (vehicle chase) ok, 32 (shoot actor) ok; redirect 8 deferred (not built)
-[    5.500][94712] [enemy] tgt redirect 32 (shoot actor): on (bit 32 on)
-[    5.750][94712] [enemy] pstim made #1 (id 0x0, stim 0000068247DC2620, agent 000006824ACD5F90; nearest enemy 60 m, radius 300)
-[    6.000][94712] [enemy] pstim cycles 50: made 50 removed 50 faults 0; made again #52
-[    6.250][94712] [seh] test: a guarded read of a reserved page faulted and was caught; absorbed 0 -> 2, reported 0 -> 0 (guard on)
-[    6.500][94712] [seh] absorbed 2 fault(s) inside the mod's guards (last: code 0xC0000005 at mod rva 0x1F8CAC, from mod rva 0x0, mod rva 0x0); passed to the game's report 0, walk faults 0
-[    6.750][94712] [probe] L1 byte checks (36): stimulus ok, classifier ok (shared), append ok, sensor results ok, goals ok, daemon ok, phase ok, melee ok, reads ok, registry ok
-[    7.000][94712] [probe] L1 calm #1 id=0202B: phase 0 on 9 members, the CP at rest 2
-[    7.250][94712] [probe] L1 calm #1 id=0202B: ready (3.1 s; phase 0; PV 0 LK 1; 2 applies); members at 3-5 0/9, cp 2; CP forces 0, PV age -1.0
-[    7.500][94712] [enemy] tgt arm-at-geometry TA id=0202B: her valid after 350 ms (horiz 20.0 m, bearing 3); Sam not moved
-[    7.750][94712] [probe] L1 arm TA id=0202B: start (stim her, cp 04004)
-[    7.750][94712] [enemy] tgt arm TA id=0202B: start (stim her, vis 1.00, aim 1.17 m SPV1, pick live 7, redirect sites 0x37, pick reset)
-[    7.750][94712] [enemy] tgt geometry id=0202B (TA): her dz 0.60 m horiz 23.3 m pitch 1.0 bearing 1 valid 1; Sam dz 0.50 m horiz 150.7 m bearing 178 pitch 1.0; rule gun (her); sep 178
-[    8.000][94712] [enemy] tgt arm TA id=0202B end: pick her; flips her->Sam 0; her bucket gap max 300 ms
-[    8.000][94712] [enemy] tgt id=0202B shoot: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); last - mode -1 age -1.0 s, her -1.0 m, Sam -1.0 m; modes actor 0 place 0 other 0; t36 0
-[    8.000][94712] [enemy] tgt arm end: engaging her 1, Sam 0; reorders 4; suppress 2; redirects 1:3 2a:5 (offset 0) 2b:0 4:1 (not ours 0) veh:0; h5 0 h2 0/0 (no type-1 bucket 0) forced 0; registered 15; faults 0; mismatch 0; table clears 0; shoot 32: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0
-[    8.050][94712] [probe] L1 result arm TA id=0202B: stim_start=1 stim_n=60 stim_lost=0 releases=0 pv_start=0 calm_timeout=0 goals=1 valid=1 rays=5 tie=her calm=ready samples=60 noticed=535 turned_her=535 turned_sam=-1 approached_her=0 approached_sam=0 aim_n=5 aim_her=5 aim_sam=0 fired=5 at_her=5 at_sam=0 pv_her=60 pv_sam=0 switch_sam=-1 switch_her=-1 cls_her=1200 cls_sam=10 app_her=10 app_sam=0 rec0_her=10 rec0_sam=0 fired_p=0/0/0 at_her_p=0/0/0 at_sam_p=0/0/0
-[    8.300][94712] [enemy] tgt arm-at-geometry CL id=02029: her valid after 350 ms (horiz 20.0 m, bearing 3); Sam not moved
-[    8.550][94712] [probe] L1 arm CL id=02029: start (stim her, cp 04004)
-[    8.550][94712] [enemy] tgt arm CL id=02029: start (stim her, vis 1.00, aim 1.17 m SPV1, pick live 7, redirect sites 0x37, pick reset)
-[    8.550][94712] [enemy] tgt geometry id=02029 (CL): her dz 0.07 m horiz 4.2 m pitch 1.0 bearing 18 valid 1; Sam dz 0.50 m horiz 152.0 m bearing 166 pitch 1.0; rule melee (her); sep 166
-[    8.691][94712] [enemy] pstim made #2 (id 0x0, stim 0000068247DC2620, agent 000006824ACD5F90; nearest enemy 4 m, radius 300)
-[    8.941][94712] [enemy] tgt arm CL id=02029 end: pick her; flips her->Sam 0; her bucket gap max 300 ms
-[    8.941][94712] [enemy] tgt id=02029 shoot: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); last - mode -1 age -1.0 s, her -1.0 m, Sam -1.0 m; modes actor 0 place 0 other 0; t36 0
-[    8.941][94712] [enemy] tgt arm end: engaging her 1, Sam 0; reorders 4; suppress 2; redirects 1:3 2a:5 (offset 0) 2b:0 4:1 (not ours 0) veh:0; h5 0 h2 0/0 (no type-1 bucket 0) forced 0; registered 15; faults 0; mismatch 0; table clears 0; shoot 32: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0
-[    8.991][94712] [probe] L1 result arm CL id=02029: stim_start=1 stim_n=60 stim_lost=0 releases=0 pv_start=0 calm_timeout=0 goals=1 valid=1 rays=0 tie=her calm=ready samples=60 noticed=900 turned_her=900 turned_sam=-1 approached_her=0 approached_sam=0 aim_n=5 aim_her=5 aim_sam=0 fired=0 at_her=0 at_sam=0 pv_her=60 pv_sam=0 switch_sam=-1 switch_her=-1 cls_her=900 cls_sam=10 app_her=10 app_sam=0 rec0_her=10 rec0_sam=0 fired_p=0/0/0 at_her_p=0/0/0 at_sam_p=0/0/0
-[    9.241][94712] [enemy] tgt arm-at-geometry TE id=0202C: her valid after 350 ms (horiz 20.0 m, bearing 3); Sam not moved
-[    9.491][94712] [probe] L1 arm TE id=0202C: start (stim her, cp 04004)
-[    9.491][94712] [enemy] tgt arm TE id=0202C: start (stim her, vis 0.60, aim 1.17 m SPV1, pick live 7, redirect sites 0x37, pick reset)
-[    9.491][94712] [enemy] tgt geometry id=0202C (TE): her dz 0.10 m horiz 16.0 m pitch 1.0 bearing 5 valid 1; Sam dz 0.50 m horiz 150.0 m bearing 170 pitch 1.0; rule gun (her); sep 170
-[    9.741][94712] [enemy] tgt arm TE id=0202C end: pick her; flips her->Sam 0; her bucket gap max 300 ms
-[    9.741][94712] [enemy] tgt id=0202C shoot: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); last - mode -1 age -1.0 s, her -1.0 m, Sam -1.0 m; modes actor 0 place 0 other 0; t36 0
-[    9.741][94712] [enemy] tgt arm end: engaging her 1, Sam 0; reorders 4; suppress 2; redirects 1:3 2a:5 (offset 0) 2b:0 4:1 (not ours 0) veh:0; h5 0 h2 0/0 (no type-1 bucket 0) forced 0; registered 15; faults 0; mismatch 0; table clears 0; shoot 32: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0
-[    9.791][94712] [probe] L1 result arm TE id=0202C: stim_start=1 stim_n=60 stim_lost=0 releases=0 pv_start=0 calm_timeout=0 goals=1 valid=1 rays=0 tie=her calm=ready samples=60 noticed=1900 turned_her=1900 turned_sam=-1 approached_her=0 approached_sam=0 aim_n=5 aim_her=5 aim_sam=0 fired=0 at_her=0 at_sam=0 pv_her=60 pv_sam=0 switch_sam=-1 switch_her=-1 cls_her=1100 cls_sam=10 app_her=10 app_sam=0 rec0_her=10 rec0_sam=0 fired_p=0/0/0 at_her_p=0/0/0 at_sam_p=0/0/0
-[   10.041][94712] [enemy] tgt redirect bits for this run: 7 (live sites 0x17)
-[   10.291][94712] [enemy] tgt arm-at-geometry TF0 id=0202B: her valid after 350 ms (horiz 20.0 m, bearing 3); Sam not moved
-[   10.541][94712] [probe] L1 arm TF0 id=0202B: start (stim her, cp 04004)
-[   10.541][94712] [enemy] tgt arm TF0 id=0202B: start (stim her, vis 1.00, aim 1.17 m SPV1, pick live 7, redirect sites 0x37, pick reset)
-[   10.541][94712] [enemy] tgt geometry id=0202B (TF0): her dz 0.50 m horiz 22.0 m pitch 1.0 bearing 2 valid 1; Sam dz 0.50 m horiz 170.0 m bearing 40 pitch 1.0; rule gun (her); sep 40
-[   10.791][94712] [enemy] tgt id=0202B -> her (only visible)
-[   11.041][94712] [enemy] tgt arm TF0 id=0202B end: pick her; flips her->Sam 0; her bucket gap max 300 ms
-[   11.041][94712] [enemy] tgt id=0202B shoot: [enemy] tgt id=0202B shoot: calls 6 redirected 0 points 12 (at her 0 Sam 12 none 0); last Sam mode 0 age 0.1 s, her 15.0 m, Sam 15.0 m; modes actor 12 place 0 other 0; t36 0
-[   11.041][94712] [enemy] tgt arm end: engaging her 1, Sam 0; reorders 4; suppress 2; redirects 1:3 2a:5 (offset 0) 2b:0 4:1 (not ours 0) veh:0; h5 0 h2 0/0 (no type-1 bucket 0) forced 0; registered 15; faults 0; mismatch 0; table clears 0; shoot 32: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0
-[   11.091][94712] [probe] L1 result arm TF0 id=0202B: stim_start=1 stim_n=60 stim_lost=0 releases=0 pv_start=0 calm_timeout=0 goals=1 valid=1 rays=6 tie=her calm=ready samples=60 noticed=-1 turned_her=-1 turned_sam=-1 approached_her=0 approached_sam=0 aim_n=5 aim_her=5 aim_sam=0 fired=6 at_her=0 at_sam=6 pv_her=60 pv_sam=0 switch_sam=-1 switch_her=-1 cls_her=1000 cls_sam=10 app_her=10 app_sam=0 rec0_her=10 rec0_sam=0 fired_p=0/0/0 at_her_p=0/0/0 at_sam_p=0/0/0
-[   11.341][94712] [enemy] tgt redirect bits for this run: 39 (the key) (live sites 0x37)
-[   11.591][94712] [enemy] tgt arm-at-geometry TF1 id=0202B: her valid after 350 ms (horiz 20.0 m, bearing 3); Sam not moved
-[   11.841][94712] [probe] L1 arm TF1 id=0202B: start (stim her, cp 04004)
-[   11.841][94712] [enemy] tgt arm TF1 id=0202B: start (stim her, vis 1.00, aim 1.17 m SPV1, pick live 7, redirect sites 0x37, pick reset)
-[   11.841][94712] [enemy] tgt geometry id=0202B (TF1): her dz 0.50 m horiz 22.0 m pitch 1.0 bearing 2 valid 1; Sam dz 0.50 m horiz 170.0 m bearing 40 pitch 1.0; rule gun (her); sep 40
-[   12.091][94712] [enemy] tgt id=0202B -> her (only visible)
-[   12.341][94712] [fixture] tf1 summary
-[   12.591][94712] [enemy] tgt: engaging her 1, Sam 0; reorders 4; suppress 2; redirects 1:3 2a:5 (offset 0) 2b:0 4:1 (not ours 0) veh:0; h5 0 h2 0/0 (no type-1 bucket 0) forced 0; registered 15; faults 0; mismatch 0; table clears 0; shoot 32: calls 10 redirected 10 points 20 (at her 20 Sam 0 none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0
-[   12.841][94712] [enemy] tgt arm TF1 id=0202B end: pick her; flips her->Sam 0; her bucket gap max 300 ms
-[   12.841][94712] [enemy] tgt id=0202B shoot: [enemy] tgt id=0202B shoot: calls 10 redirected 10 points 20 (at her 20 Sam 0 none 0); last her mode 1 age 0.1 s, her 15.0 m, Sam 15.0 m; modes actor 0 place 20 other 0; t36 0
-[   12.841][94712] [enemy] tgt arm end: engaging her 1, Sam 0; reorders 4; suppress 2; redirects 1:3 2a:5 (offset 0) 2b:0 4:1 (not ours 0) veh:0; h5 0 h2 0/0 (no type-1 bucket 0) forced 0; registered 15; faults 0; mismatch 0; table clears 0; shoot 32: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0
-[   12.891][94712] [probe] L1 result arm TF1 id=0202B: stim_start=1 stim_n=60 stim_lost=0 releases=0 pv_start=0 calm_timeout=0 goals=1 valid=1 rays=9 tie=her calm=ready samples=60 noticed=-1 turned_her=-1 turned_sam=-1 approached_her=0 approached_sam=0 aim_n=5 aim_her=5 aim_sam=0 fired=9 at_her=9 at_sam=0 pv_her=60 pv_sam=0 switch_sam=-1 switch_her=-1 cls_her=1000 cls_sam=10 app_her=10 app_sam=0 rec0_her=10 rec0_sam=0 fired_p=0/0/0 at_her_p=0/0/0 at_sam_p=0/0/0
-[   13.141][94712] [enemy] tgt arm-at-geometry TB id=0202B: her valid after 350 ms (horiz 20.0 m, bearing 3); Sam not moved
-[   13.391][94712] [probe] L1 arm TB id=0202B: start (stim her, cp 04004)
-[   13.391][94712] [enemy] tgt arm TB id=0202B: start (stim her, vis 1.00, aim 1.17 m SPV1, pick live 7, redirect sites 0x37, pick reset)
-[   13.391][94712] [enemy] tgt geometry id=0202B (TB): her dz 0.40 m horiz 15.0 m pitch 1.0 bearing 1 valid 1; Sam dz 0.50 m horiz 150.0 m bearing 178 pitch 1.0; rule gun (her); sep 178
-[   13.641][94712] [enemy] tgt id=0202B -> her (only visible)
-[   13.891][94712] [probe] L1 watch id=0202B t=1.00: phase 5 ea4 0x42440000; faces her 2 deg / Sam 178 deg; her 15.0 m Sam 150.0 m; PV 1 at her 0.0 m id 00000 age 0.0; LK 1 at her; goal 0 id 0x0 mode 1; shoot pt -> her (calls 0 redir 0); rounds 0
-[   14.141][94712] [enemy] look id=0202B dist 15.0 m (25 deg off its line to her): snap: placed at (1593.05, 1099.30), ground snap next frame
-[   14.141][94712] [auto] 0065:1 action enemy_look -11 15 25 -> ok: Enemy look: id 0202B: snap: placed at (1593.05, 1099.30), ground snap next frame (16 ms)
-[   14.391][94712] [fixture] tb phase 0
-[   14.641][94712] [probe] L1 watch id=0202B t=2.00: phase 5 ea4 0x42440000; faces her 3 deg / Sam 22 deg; her 15.0 m Sam 15.0 m; PV 1 at her 0.0 m id 00000 age 0.0; LK 1 at her; goal 0 id 0x0 mode 1; shoot pt -> her (calls 0 redir 0); rounds 0
-[   14.891][94712] [probe] L1 watch id=0202B t=2.25: phase 5 ea4 0x42440000; faces her 3 deg / Sam 22 deg; her 15.0 m Sam 15.0 m; PV 1 at her 0.0 m id 00000 age 0.0; LK 1 at her; goal 0 id 0x0 mode 1; shoot pt -> her (calls 0 redir 0); rounds 0
-[   15.141][94712] [probe] L1 watch id=0202B t=2.50: phase 5 ea4 0x42440000; faces her 3 deg / Sam 22 deg; her 15.0 m Sam 15.0 m; PV 1 at her 0.0 m id 00000 age 0.0; LK 1 at her; goal 0 id 0x0 mode 1; shoot pt -> her (calls 0 redir 0); rounds 0
-[   15.391][94712] [probe] L1 watch id=0202B t=2.75: phase 5 ea4 0x42440000; faces her 3 deg / Sam 22 deg; her 15.0 m Sam 15.0 m; PV 1 at her 0.0 m id 00000 age 0.0; LK 1 at her; goal 0 id 0x0 mode 1; shoot pt -> her (calls 0 redir 0); rounds 0
-[   15.641][94712] [enemy] tgt: engaging her 1, Sam 0; reorders 4; suppress 2; redirects 1:3 2a:5 (offset 0) 2b:0 4:1 (not ours 0) veh:0; h5 0 h2 0/0 (no type-1 bucket 0) forced 0; registered 15; faults 0; mismatch 0; table clears 0; shoot 32: calls 5 redirected 5 points 9 (at her 9 Sam 0 none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0
-[   15.891][94712] [fixture] tb before op 7
-[   16.141][94712] [enemy] tgt geometry id=0202B (op 7): her dz 0.40 m horiz 15.0 m pitch 1.0 bearing 3 valid 1; Sam dz 0.50 m horiz 15.0 m bearing 22 pitch 1.0; rule gun (her); sep 25
-[   16.141][94712] [enemy] tgt id=0202B pick her; flips her->Sam 0; her bucket gap max 120 ms
-[   16.141][94712] [enemy] tgt id=0202B shoot: calls 5 redirected 5 points 9 (at her 9 Sam 0 none 0); last her mode 1 age 0.1 s, her 15.0 m, Sam 15.0 m; modes actor 0 place 9 other 0; t36 0
-[   16.391][94712] [enemy] tgt vis forced 0.00
-[   17.591][94712] [enemy] tgt id=0202B -> Sam (only visible)
-[   22.391][94712] [enemy] tgt vis forced 1.00
-[   22.641][94712] [enemy] tgt arm TB id=0202B end: pick her; flips her->Sam 0; her bucket gap max 300 ms
-[   22.641][94712] [enemy] tgt id=0202B shoot: [enemy] tgt id=0202B shoot: calls 2 redirected 0 points 15 (at her 0 Sam 15 none 0); last Sam mode 0 age 0.1 s, her 15.0 m, Sam 15.0 m; modes actor 15 place 0 other 0; t36 0
-[   22.641][94712] [enemy] tgt arm end: engaging her 1, Sam 0; reorders 4; suppress 2; redirects 1:3 2a:5 (offset 0) 2b:0 4:1 (not ours 0) veh:0; h5 0 h2 0/0 (no type-1 bucket 0) forced 0; registered 15; faults 0; mismatch 0; table clears 0; shoot 32: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0
-[   22.691][94712] [probe] L1 result arm TB id=0202B: stim_start=1 stim_n=60 stim_lost=0 releases=0 pv_start=0 calm_timeout=0 goals=1 valid=1 rays=15 tie=her calm=ready samples=60 noticed=-1 turned_her=-1 turned_sam=1200 approached_her=0 approached_sam=0 aim_n=5 aim_her=5 aim_sam=0 fired=15 at_her=4 at_sam=11 pv_her=60 pv_sam=20 switch_sam=1200 switch_her=-1 cls_her=1000 cls_sam=10 app_her=10 app_sam=0 rec0_her=10 rec0_sam=0 fired_p=4/5/6 at_her_p=4/0/0 at_sam_p=0/5/6
-[   22.941][94712] [enemy] tgt arm-at-geometry CH id=02029: her valid after 350 ms (horiz 20.0 m, bearing 3); Sam not moved
-[   23.191][94712] [probe] L1 arm CH id=02029: start (stim her, cp 04004)
-[   23.191][94712] [enemy] tgt arm CH id=02029: start (stim her, vis 1.00, aim 1.17 m SPV1, pick live 7, redirect sites 0x37, pick reset)
-[   23.191][94712] [enemy] tgt geometry id=02029 (CH): her dz 0.10 m horiz 5.0 m pitch 1.0 bearing 4 valid 1; Sam dz 0.50 m horiz 150.0 m bearing 170 pitch 1.0; rule melee (her); sep 170
-[   23.441][94712] [enemy] tgt arm CH id=02029 end: pick her; flips her->Sam 0; her bucket gap max 300 ms
-[   23.441][94712] [enemy] tgt id=02029 shoot: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); last - mode -1 age -1.0 s, her -1.0 m, Sam -1.0 m; modes actor 0 place 0 other 0; t36 0
-[   23.441][94712] [enemy] tgt arm end: engaging her 1, Sam 0; reorders 4; suppress 2; redirects 1:3 2a:5 (offset 0) 2b:0 4:1 (not ours 0) veh:0; h5 0 h2 0/0 (no type-1 bucket 0) forced 0; registered 15; faults 0; mismatch 0; table clears 0; shoot 32: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0
-[   23.491][94712] [probe] L1 result arm CH id=02029: stim_start=1 stim_n=60 stim_lost=0 releases=0 pv_start=0 calm_timeout=0 goals=1 valid=1 rays=0 tie=her calm=ready samples=60 noticed=535 turned_her=535 turned_sam=-1 approached_her=0 approached_sam=0 aim_n=5 aim_her=5 aim_sam=0 fired=0 at_her=0 at_sam=0 pv_her=60 pv_sam=0 switch_sam=-1 switch_her=-1 cls_her=386 cls_sam=10 app_her=10 app_sam=0 rec0_her=10 rec0_sam=0 fired_p=0/0/0 at_her_p=0/0/0 at_sam_p=0/0/0
-[   23.741][94712] [enemy] tgt arm-at-geometry CS id=02029: her not judged (a Sam arm); Sam placed 8.0 m in front
-[   23.991][94712] [probe] L1 arm CS id=02029: start (stim none, cp 04004)
-[   23.991][94712] [enemy] tgt arm CS id=02029: start (stim none, vis 1.00, aim 1.17 m SPV1, pick live 7, redirect sites 0x37, pick reset)
-[   23.991][94712] [enemy] tgt geometry id=02029 (CS): her dz 0.54 m horiz 147.1 m pitch 0.0 bearing 64 valid 1; Sam dz -0.67 m horiz 8.0 m bearing 12 pitch 1.0; rule melee (Sam); sep 52
-[   24.241][94712] [enemy] tgt arm CS id=02029 end: pick her; flips her->Sam 0; her bucket gap max 300 ms
-[   24.241][94712] [enemy] tgt id=02029 shoot: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); last - mode -1 age -1.0 s, her -1.0 m, Sam -1.0 m; modes actor 0 place 0 other 0; t36 0
-[   24.241][94712] [enemy] tgt arm end: engaging her 1, Sam 0; reorders 4; suppress 2; redirects 1:3 2a:5 (offset 0) 2b:0 4:1 (not ours 0) veh:0; h5 0 h2 0/0 (no type-1 bucket 0) forced 0; registered 15; faults 0; mismatch 0; table clears 0; shoot 32: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0
-[   24.291][94712] [probe] L1 result arm CS id=02029: stim_start=1 stim_n=60 stim_lost=0 releases=0 pv_start=0 calm_timeout=0 goals=1 valid=1 rays=0 tie=her calm=ready samples=60 noticed=-1 turned_her=-1 turned_sam=2088 approached_her=0 approached_sam=0 aim_n=5 aim_her=5 aim_sam=0 fired=0 at_her=0 at_sam=0 pv_her=60 pv_sam=1897 switch_sam=-1 switch_her=-1 cls_her=0 cls_sam=10 app_her=10 app_sam=0 rec0_her=10 rec0_sam=0 fired_p=0/0/0 at_her_p=0/0/0 at_sam_p=0/0/0
-[   24.541][94712] [enemy] tgt redirect bits for this run: 0 (live sites 0x0)
-[   24.791][94712] [enemy] tgt arm-at-geometry TX id=0202C: her valid after 350 ms (horiz 20.0 m, bearing 3); Sam not moved
-[   25.041][94712] [probe] L1 arm TX id=0202C: start (stim her, cp 04004)
-[   25.041][94712] [enemy] tgt arm TX id=0202C: start (stim her, vis 1.00, aim 1.17 m SPV1, pick live 7, redirect sites 0x37, pick reset)
-[   25.041][94712] [enemy] tgt geometry id=0202C (TX): her dz -0.60 m horiz 14.0 m pitch 1.0 bearing 1 valid 1; Sam dz 0.50 m horiz 152.6 m bearing 178 pitch 1.0; rule gun (her); sep 178
-[   25.291][94712] [enemy] tgt arm TX id=0202C end: pick her; flips her->Sam 0; her bucket gap max 300 ms
-[   25.291][94712] [enemy] tgt id=0202C shoot: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); last - mode -1 age -1.0 s, her -1.0 m, Sam -1.0 m; modes actor 0 place 0 other 0; t36 0
-[   25.291][94712] [enemy] tgt arm end: engaging her 1, Sam 0; reorders 4; suppress 2; redirects 1:3 2a:5 (offset 0) 2b:0 4:1 (not ours 0) veh:0; h5 0 h2 0/0 (no type-1 bucket 0) forced 0; registered 15; faults 0; mismatch 0; table clears 0; shoot 32: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0
-[   25.341][94712] [probe] L1 result arm TX id=0202C: stim_start=1 stim_n=60 stim_lost=0 releases=0 pv_start=0 calm_timeout=0 goals=1 valid=1 rays=0 tie=her calm=ready samples=60 noticed=540 turned_her=540 turned_sam=-1 approached_her=0 approached_sam=0 aim_n=5 aim_her=5 aim_sam=0 fired=0 at_her=0 at_sam=0 pv_her=60 pv_sam=0 switch_sam=-1 switch_her=-1 cls_her=900 cls_sam=10 app_her=10 app_sam=0 rec0_her=10 rec0_sam=0 fired_p=0/0/0 at_her_p=0/0/0 at_sam_p=0/0/0
-[   25.591][94712] [enemy] tgt status: engaging her 0, Sam 0; reorders 4; suppress 2; redirects 1:3 2a:5 (offset 0) 2b:0 4:1 (not ours 0) veh:0; h5 0 h2 0/0 (no type-1 bucket 0) forced 0; registered 15; faults 0; mismatch 0; table clears 0; shoot 32: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0
-[   25.841][94712] [enemy] spv1 sent 2632 recv 2548 stale 0 bad 0; aim ours 1.21 m, hers 1.30 m (default); our down 0
+[    5.250][94712] [config] enemy_partner_stim=1 enemy_partner_vis=1 enemy_partner_stim_radius=300 enemy_target_pick=55 enemy_target_redirect=39 enemy_target_fresh_ms=1500
+[    5.500][94712] [enemy] tgt byte checks (71): stimulus ok, registry ok, goals ok, sensor results ok, classifier ok, classifier flags ok, forced visual ok, MULE members ok, player objects ok, redirect 1 ok, 2a ok, 2b ok, 4 ok, 16 (vehicle chase) ok, 32 (shoot actor) ok; redirect 8 deferred (not built)
+[    5.750][94712] [enemy] tgt pick 16 (line of sight): off (waiting for the raycast's self-test)
+[    5.750][94712] [enemy] tgt pick 32 (her record from ours): off (bit 16 not live)
+[    6.000][94712] [enemy] tgt los self-test: ok (hit 1.21 m below the chest)
+[    6.250][94712] [enemy] tgt pick 16 (line of sight): on (the self-test passed, bit 1 live)
+[    6.250][94712] [enemy] tgt pick 32 (her record from ours): on (bit 16 live)
+[    6.500][94712] [enemy] tgt redirect 32 (shoot actor): on (bit 32 on)
+[    6.750][94712] [enemy] pstim made #1 (id 0x0, stim 0000068247DC2620, agent 000006824ACD5F90; nearest enemy 60 m, radius 300)
+[    7.000][94712] [enemy] pstim cycles 50: made 50 removed 50 faults 0; made again #52
+[    7.250][94712] [seh] test: a guarded read of a reserved page faulted and was caught; absorbed 0 -> 2, reported 0 -> 0 (guard on)
+[    7.500][94712] [seh] absorbed 2 fault(s) inside the mod's guards (last: code 0xC0000005 at mod rva 0x1F8CAC, from mod rva 0x0, mod rva 0x0); passed to the game's report 0, walk faults 0
+[    7.750][94712] [probe] L1 byte checks (36): stimulus ok, classifier ok (shared), append ok, sensor results ok, goals ok, daemon ok, phase ok, melee ok, reads ok, registry ok
+[    8.000][94712] [probe] L1 calm #1 id=0202B: phase 0 on 9 members, the CP at rest 2
+[    8.250][94712] [probe] L1 calm #1 id=0202B: ready (3.1 s; phase 0; PV 0 LK 1; 2 applies); members at 3-5 0/9, cp 2; CP forces 0, PV age -1.0
+[    8.500][94712] [enemy] tgt arm-at-geometry TA id=0202B: her valid after 350 ms (horiz 20.0 m, bearing 3); Sam not moved
+[    8.750][94712] [probe] L1 arm TA id=0202B: start (stim her, cp 04004)
+[    8.750][94712] [enemy] tgt arm TA id=0202B: start (stim her, vis 1.00, aim 1.17 m SPV1, pick live 7, redirect sites 0x37, pick reset)
+[    8.750][94712] [enemy] tgt geometry id=0202B (TA): her dz 0.60 m horiz 23.3 m pitch 1.0 bearing 1 valid 1; Sam dz 0.50 m horiz 150.7 m bearing 178 pitch 1.0; rule gun (her); sep 178
+[    9.000][94712] [enemy] tgt arm TA id=0202B end: pick her; flips her->Sam 0; her bucket gap max 300 ms
+[    9.000][94712] [enemy] tgt id=0202B shoot: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); last - mode -1 age -1.0 s, her -1.0 m, Sam -1.0 m; modes actor 0 place 0 other 0; t36 0
+[    9.000][94712] [enemy] tgt id=0202B sight: los clear 30 blocked 0 out 0 low_vis 0; keeps 0 synth 0 skip 0; her bucket last 4.0 s (gap lead 120 tail 80 ms)
+[    9.000][94712] [enemy] tgt arm end: engaging her 1, Sam 0; reorders 4; suppress 2; redirects 1:3 2a:5 (offset 0) 2b:0 4:1 (not ours 0) veh:0; h5 0 h2 0/0 (no type-1 bucket 0) forced 0; registered 15; faults 0; mismatch 0; table clears 0; shoot 32: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0; sight keeps 0 synth 0 skip 0 rays 120; onhit_odd 0
+[    9.050][94712] [probe] L1 result arm TA id=0202B: stim_start=1 stim_n=60 stim_lost=0 releases=0 pv_start=0 calm_timeout=0 goals=1 valid=1 rays=5 tie=her calm=ready samples=60 noticed=535 turned_her=535 turned_sam=-1 approached_her=0 approached_sam=0 aim_n=5 aim_her=5 aim_sam=0 fired=5 at_her=5 at_sam=0 pv_her=60 pv_sam=0 switch_sam=-1 switch_her=-1 cls_her=1200 cls_sam=10 app_her=10 app_sam=0 rec0_her=10 rec0_sam=0 fired_p=0/0/0 at_her_p=0/0/0 at_sam_p=0/0/0
+[    9.300][94712] [enemy] tgt place #2 id=02029 (CL, op 11): sent 4.0 m -35 deg (candidate 6), lead +0 deg (rate +0 deg/s) 0.00 m, to (1588.10, 1097.40); her before horiz 150.3 m bearing 120 dz 0.40 pitch 0.1; ground dz 0.07 (probe hit, los clear), chosen 6 of 10, skipped 3 raised
+[    9.550][94712] [enemy] tgt arm-at-geometry CL id=02029: her valid after 350 ms (horiz 20.0 m, bearing 3); Sam not moved
+[    9.800][94712] [probe] L1 arm CL id=02029: start (stim her, cp 04004)
+[    9.800][94712] [enemy] tgt arm CL id=02029: start (stim her, vis 1.00, aim 1.17 m SPV1, pick live 7, redirect sites 0x37, pick reset)
+[    9.800][94712] [enemy] tgt geometry id=02029 (CL): her dz 0.07 m horiz 4.2 m pitch 1.0 bearing 18 valid 1; Sam dz 0.50 m horiz 152.0 m bearing 166 pitch 1.0; rule melee (her); sep 166
+[    9.941][94712] [enemy] pstim made #2 (id 0x0, stim 0000068247DC2620, agent 000006824ACD5F90; nearest enemy 4 m, radius 300)
+[   10.191][94712] [enemy] tgt arm CL id=02029 end: pick her; flips her->Sam 0; her bucket gap max 300 ms
+[   10.191][94712] [enemy] tgt id=02029 shoot: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); last - mode -1 age -1.0 s, her -1.0 m, Sam -1.0 m; modes actor 0 place 0 other 0; t36 0
+[   10.191][94712] [enemy] tgt id=02029 sight: los clear 30 blocked 0 out 0 low_vis 0; keeps 0 synth 0 skip 0; her bucket last 4.0 s (gap lead 120 tail 80 ms)
+[   10.191][94712] [enemy] tgt arm end: engaging her 1, Sam 0; reorders 4; suppress 2; redirects 1:3 2a:5 (offset 0) 2b:0 4:1 (not ours 0) veh:0; h5 0 h2 0/0 (no type-1 bucket 0) forced 0; registered 15; faults 0; mismatch 0; table clears 0; shoot 32: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0; sight keeps 0 synth 0 skip 0 rays 120; onhit_odd 0
+[   10.241][94712] [probe] L1 result arm CL id=02029: stim_start=1 stim_n=60 stim_lost=0 releases=0 pv_start=0 calm_timeout=0 goals=1 valid=1 rays=0 tie=her calm=ready samples=60 noticed=900 turned_her=900 turned_sam=-1 approached_her=0 approached_sam=0 aim_n=5 aim_her=5 aim_sam=0 fired=0 at_her=0 at_sam=0 pv_her=60 pv_sam=0 switch_sam=-1 switch_her=-1 cls_her=900 cls_sam=10 app_her=10 app_sam=0 rec0_her=10 rec0_sam=0 fired_p=0/0/0 at_her_p=0/0/0 at_sam_p=0/0/0
+[   10.491][94712] [enemy] tgt arm-at-geometry TE id=0202C: her valid after 350 ms (horiz 20.0 m, bearing 3); Sam not moved
+[   10.741][94712] [probe] L1 arm TE id=0202C: start (stim her, cp 04004)
+[   10.741][94712] [enemy] tgt arm TE id=0202C: start (stim her, vis 0.60, aim 1.17 m SPV1, pick live 7, redirect sites 0x37, pick reset)
+[   10.741][94712] [enemy] tgt geometry id=0202C (TE): her dz 0.10 m horiz 16.0 m pitch 1.0 bearing 5 valid 1; Sam dz 0.50 m horiz 150.0 m bearing 170 pitch 1.0; rule gun (her); sep 170
+[   10.991][94712] [enemy] tgt arm TE id=0202C end: pick her; flips her->Sam 0; her bucket gap max 300 ms
+[   10.991][94712] [enemy] tgt id=0202C shoot: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); last - mode -1 age -1.0 s, her -1.0 m, Sam -1.0 m; modes actor 0 place 0 other 0; t36 0
+[   10.991][94712] [enemy] tgt id=0202C sight: los clear 30 blocked 0 out 0 low_vis 0; keeps 0 synth 0 skip 0; her bucket last 4.0 s (gap lead 120 tail 80 ms)
+[   10.991][94712] [enemy] tgt arm end: engaging her 1, Sam 0; reorders 4; suppress 2; redirects 1:3 2a:5 (offset 0) 2b:0 4:1 (not ours 0) veh:0; h5 0 h2 0/0 (no type-1 bucket 0) forced 0; registered 15; faults 0; mismatch 0; table clears 0; shoot 32: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0; sight keeps 0 synth 0 skip 0 rays 120; onhit_odd 0
+[   11.041][94712] [probe] L1 result arm TE id=0202C: stim_start=1 stim_n=60 stim_lost=0 releases=0 pv_start=0 calm_timeout=0 goals=1 valid=1 rays=0 tie=her calm=ready samples=60 noticed=1900 turned_her=1900 turned_sam=-1 approached_her=0 approached_sam=0 aim_n=5 aim_her=5 aim_sam=0 fired=0 at_her=0 at_sam=0 pv_her=60 pv_sam=0 switch_sam=-1 switch_her=-1 cls_her=1100 cls_sam=10 app_her=10 app_sam=0 rec0_her=10 rec0_sam=0 fired_p=0/0/0 at_her_p=0/0/0 at_sam_p=0/0/0
+[   11.291][94712] [enemy] tgt redirect bits for this run: 7 (live sites 0x17)
+[   11.541][94712] [enemy] tgt arm-at-geometry TF0 id=0202B: her valid after 350 ms (horiz 20.0 m, bearing 3); Sam not moved
+[   11.791][94712] [probe] L1 arm TF0 id=0202B: start (stim her, cp 04004)
+[   11.791][94712] [enemy] tgt arm TF0 id=0202B: start (stim her, vis 1.00, aim 1.17 m SPV1, pick live 7, redirect sites 0x37, pick reset)
+[   11.791][94712] [enemy] tgt geometry id=0202B (TF0): her dz 0.50 m horiz 22.0 m pitch 1.0 bearing 2 valid 1; Sam dz 0.50 m horiz 170.0 m bearing 40 pitch 1.0; rule gun (her); sep 40
+[   12.041][94712] [enemy] tgt id=0202B -> her (only visible)
+[   12.291][94712] [enemy] tgt arm TF0 id=0202B end: pick her; flips her->Sam 0; her bucket gap max 300 ms
+[   12.291][94712] [enemy] tgt id=0202B shoot: [enemy] tgt id=0202B shoot: calls 6 redirected 0 points 12 (at her 0 Sam 12 none 0); last Sam mode 0 age 0.1 s, her 15.0 m, Sam 15.0 m; modes actor 12 place 0 other 0; t36 0
+[   12.291][94712] [enemy] tgt id=0202B sight: los clear 30 blocked 0 out 0 low_vis 0; keeps 0 synth 0 skip 0; her bucket last 4.0 s (gap lead 120 tail 80 ms)
+[   12.291][94712] [enemy] tgt arm end: engaging her 1, Sam 0; reorders 4; suppress 2; redirects 1:3 2a:5 (offset 0) 2b:0 4:1 (not ours 0) veh:0; h5 0 h2 0/0 (no type-1 bucket 0) forced 0; registered 15; faults 0; mismatch 0; table clears 0; shoot 32: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0; sight keeps 0 synth 0 skip 0 rays 120; onhit_odd 0
+[   12.341][94712] [probe] L1 result arm TF0 id=0202B: stim_start=1 stim_n=60 stim_lost=0 releases=0 pv_start=0 calm_timeout=0 goals=1 valid=1 rays=6 tie=her calm=ready samples=60 noticed=-1 turned_her=-1 turned_sam=-1 approached_her=0 approached_sam=0 aim_n=5 aim_her=5 aim_sam=0 fired=6 at_her=0 at_sam=6 pv_her=60 pv_sam=0 switch_sam=-1 switch_her=-1 cls_her=1000 cls_sam=10 app_her=10 app_sam=0 rec0_her=10 rec0_sam=0 fired_p=0/0/0 at_her_p=0/0/0 at_sam_p=0/0/0
+[   12.591][94712] [enemy] tgt redirect bits for this run: 39 (the key) (live sites 0x37)
+[   12.841][94712] [enemy] tgt arm-at-geometry TF1 id=0202B: her valid after 350 ms (horiz 20.0 m, bearing 3); Sam not moved
+[   13.091][94712] [probe] L1 arm TF1 id=0202B: start (stim her, cp 04004)
+[   13.091][94712] [enemy] tgt arm TF1 id=0202B: start (stim her, vis 1.00, aim 1.17 m SPV1, pick live 7, redirect sites 0x37, pick reset)
+[   13.091][94712] [enemy] tgt geometry id=0202B (TF1): her dz 0.50 m horiz 22.0 m pitch 1.0 bearing 2 valid 1; Sam dz 0.50 m horiz 170.0 m bearing 40 pitch 1.0; rule gun (her); sep 40
+[   13.341][94712] [enemy] tgt id=0202B -> her (only visible)
+[   13.591][94712] [fixture] tf1 summary
+[   13.841][94712] [enemy] tgt: engaging her 1, Sam 0; reorders 4; suppress 2; redirects 1:3 2a:5 (offset 0) 2b:0 4:1 (not ours 0) veh:0; h5 0 h2 0/0 (no type-1 bucket 0) forced 0; registered 15; faults 0; mismatch 0; table clears 0; shoot 32: calls 10 redirected 10 points 20 (at her 20 Sam 0 none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0; sight keeps 0 synth 0 skip 0 rays 120; onhit_odd 0
+[   14.091][94712] [enemy] tgt arm TF1 id=0202B end: pick her; flips her->Sam 0; her bucket gap max 300 ms
+[   14.091][94712] [enemy] tgt id=0202B shoot: [enemy] tgt id=0202B shoot: calls 10 redirected 10 points 20 (at her 20 Sam 0 none 0); last her mode 1 age 0.1 s, her 15.0 m, Sam 15.0 m; modes actor 0 place 20 other 0; t36 0
+[   14.091][94712] [enemy] tgt id=0202B sight: los clear 30 blocked 0 out 0 low_vis 0; keeps 0 synth 0 skip 0; her bucket last 4.0 s (gap lead 120 tail 80 ms)
+[   14.091][94712] [enemy] tgt arm end: engaging her 1, Sam 0; reorders 4; suppress 2; redirects 1:3 2a:5 (offset 0) 2b:0 4:1 (not ours 0) veh:0; h5 0 h2 0/0 (no type-1 bucket 0) forced 0; registered 15; faults 0; mismatch 0; table clears 0; shoot 32: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0; sight keeps 0 synth 0 skip 0 rays 120; onhit_odd 0
+[   14.141][94712] [probe] L1 result arm TF1 id=0202B: stim_start=1 stim_n=60 stim_lost=0 releases=0 pv_start=0 calm_timeout=0 goals=1 valid=1 rays=9 tie=her calm=ready samples=60 noticed=-1 turned_her=-1 turned_sam=-1 approached_her=0 approached_sam=0 aim_n=5 aim_her=5 aim_sam=0 fired=9 at_her=9 at_sam=0 pv_her=60 pv_sam=0 switch_sam=-1 switch_her=-1 cls_her=1000 cls_sam=10 app_her=10 app_sam=0 rec0_her=10 rec0_sam=0 fired_p=0/0/0 at_her_p=0/0/0 at_sam_p=0/0/0
+[   14.391][94712] [enemy] tgt arm TB: her seen (bucket 0.2 s, los clear) after 400 ms
+[   14.641][94712] [enemy] tgt arm-at-geometry TB id=0202B: her valid after 350 ms (horiz 20.0 m, bearing 3); Sam not moved
+[   14.891][94712] [probe] L1 arm TB id=0202B: start (stim her, cp 04004)
+[   14.891][94712] [enemy] tgt arm TB id=0202B: start (stim her, vis 1.00, aim 1.17 m SPV1, pick live 7, redirect sites 0x37, pick reset)
+[   14.891][94712] [enemy] tgt geometry id=0202B (TB): her dz 0.40 m horiz 15.0 m pitch 1.0 bearing 1 valid 1; Sam dz 0.50 m horiz 150.0 m bearing 178 pitch 1.0; rule gun (her); sep 178
+[   15.141][94712] [enemy] tgt id=0202B -> her (only visible)
+[   15.391][94712] [probe] L1 watch id=0202B t=1.00: phase 5 ea4 0x42440000; faces her 2 deg / Sam 178 deg; her 15.0 m Sam 150.0 m; PV 1 at her 0.0 m id 00000 age 0.0; LK 1 at her; goal 0 id 0x0 mode 1; shoot pt -> her (calls 0 redir 0); rounds 0; sight bucket 0.2 s los clear 0.1 s
+[   15.641][94712] [enemy] look id=0202B dist 15.0 m (25 deg off its line to her): snap: placed at (1593.05, 1099.30), ground snap next frame
+[   15.641][94712] [auto] 0065:1 action enemy_look -11 15 25 -> ok: Enemy look: id 0202B: snap: placed at (1593.05, 1099.30), ground snap next frame (16 ms)
+[   15.891][94712] [fixture] tb phase 0
+[   16.141][94712] [enemy] tgt los id=0202B her clear (15.0 m, bearing 3, pitch 1.0, vis 1.00; hit at -1.0 of 14.0 m)
+[   16.391][94712] [probe] L1 watch id=0202B t=2.00: phase 5 ea4 0x42440000; faces her 3 deg / Sam 22 deg; her 15.0 m Sam 15.0 m; PV 1 at her 0.0 m id 00000 age 0.0; LK 1 at her; goal 0 id 0x0 mode 1; shoot pt -> her (calls 0 redir 0); rounds 0; sight bucket 0.2 s los clear 0.1 s
+[   16.641][94712] [probe] L1 watch id=0202B t=2.25: phase 5 ea4 0x42440000; faces her 3 deg / Sam 22 deg; her 15.0 m Sam 15.0 m; PV 1 at her 0.0 m id 00000 age 0.0; LK 1 at her; goal 0 id 0x0 mode 1; shoot pt -> her (calls 0 redir 0); rounds 0; sight bucket 0.2 s los clear 0.1 s
+[   16.891][94712] [probe] L1 watch id=0202B t=2.50: phase 5 ea4 0x42440000; faces her 3 deg / Sam 22 deg; her 15.0 m Sam 15.0 m; PV 1 at her 0.0 m id 00000 age 0.0; LK 1 at her; goal 0 id 0x0 mode 1; shoot pt -> her (calls 0 redir 0); rounds 0; sight bucket 0.2 s los clear 0.1 s
+[   17.141][94712] [probe] L1 watch id=0202B t=2.75: phase 5 ea4 0x42440000; faces her 3 deg / Sam 22 deg; her 15.0 m Sam 15.0 m; PV 1 at her 0.0 m id 00000 age 0.0; LK 1 at her; goal 0 id 0x0 mode 1; shoot pt -> her (calls 0 redir 0); rounds 0; sight bucket 0.2 s los clear 0.1 s
+[   17.391][94712] [enemy] tgt: engaging her 1, Sam 0; reorders 4; suppress 2; redirects 1:3 2a:5 (offset 0) 2b:0 4:1 (not ours 0) veh:0; h5 0 h2 0/0 (no type-1 bucket 0) forced 0; registered 15; faults 0; mismatch 0; table clears 0; shoot 32: calls 5 redirected 5 points 9 (at her 9 Sam 0 none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0; sight keeps 0 synth 0 skip 0 rays 120; onhit_odd 0
+[   17.641][94712] [fixture] tb before op 7
+[   17.891][94712] [enemy] tgt geometry id=0202B (op 7): her dz 0.40 m horiz 15.0 m pitch 1.0 bearing 3 valid 1; Sam dz 0.50 m horiz 15.0 m bearing 22 pitch 1.0; rule gun (her); sep 25
+[   17.891][94712] [enemy] tgt id=0202B pick her; flips her->Sam 0; her bucket gap max 120 ms
+[   17.891][94712] [enemy] tgt id=0202B shoot: calls 5 redirected 5 points 9 (at her 9 Sam 0 none 0); last her mode 1 age 0.1 s, her 15.0 m, Sam 15.0 m; modes actor 0 place 9 other 0; t36 0
+[   17.891][94712] [enemy] tgt id=0202B sight: los clear 12 blocked 0 out 0 low_vis 0; keeps 0 synth 0 skip 0; her bucket last 3.4 s (gap lead 120 tail 80 ms)
+[   18.141][94712] [enemy] tgt vis forced 0.00
+[   19.341][94712] [enemy] tgt id=0202B -> Sam (only visible)
+[   24.141][94712] [enemy] tgt vis forced 1.00
+[   24.391][94712] [enemy] tgt arm TB id=0202B end: pick her; flips her->Sam 0; her bucket gap max 300 ms
+[   24.391][94712] [enemy] tgt id=0202B shoot: [enemy] tgt id=0202B shoot: calls 2 redirected 0 points 15 (at her 0 Sam 15 none 0); last Sam mode 0 age 0.1 s, her 15.0 m, Sam 15.0 m; modes actor 15 place 0 other 0; t36 0
+[   24.391][94712] [enemy] tgt id=0202B sight: los clear 30 blocked 0 out 0 low_vis 0; keeps 0 synth 0 skip 0; her bucket last 4.0 s (gap lead 120 tail 80 ms)
+[   24.391][94712] [enemy] tgt arm end: engaging her 1, Sam 0; reorders 4; suppress 2; redirects 1:3 2a:5 (offset 0) 2b:0 4:1 (not ours 0) veh:0; h5 0 h2 0/0 (no type-1 bucket 0) forced 0; registered 15; faults 0; mismatch 0; table clears 0; shoot 32: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0; sight keeps 0 synth 0 skip 0 rays 120; onhit_odd 0
+[   24.441][94712] [probe] L1 result arm TB id=0202B: stim_start=1 stim_n=60 stim_lost=0 releases=0 pv_start=0 calm_timeout=0 goals=1 valid=1 rays=15 tie=her calm=ready samples=60 noticed=-1 turned_her=-1 turned_sam=1200 approached_her=0 approached_sam=0 aim_n=5 aim_her=5 aim_sam=0 fired=15 at_her=4 at_sam=11 pv_her=60 pv_sam=20 switch_sam=1200 switch_her=-1 cls_her=1000 cls_sam=10 app_her=10 app_sam=0 rec0_her=10 rec0_sam=0 fired_p=4/5/6 at_her_p=4/0/0 at_sam_p=0/5/6
+[   24.691][94712] [enemy] tgt arm-at-geometry CH id=02029: her valid after 350 ms (horiz 20.0 m, bearing 3); Sam not moved
+[   24.941][94712] [probe] L1 arm CH id=02029: start (stim her, cp 04004)
+[   24.941][94712] [enemy] tgt arm CH id=02029: start (stim her, vis 1.00, aim 1.17 m SPV1, pick live 7, redirect sites 0x37, pick reset)
+[   24.941][94712] [enemy] tgt geometry id=02029 (CH): her dz 0.10 m horiz 5.0 m pitch 1.0 bearing 4 valid 1; Sam dz 0.50 m horiz 150.0 m bearing 170 pitch 1.0; rule melee (her); sep 170
+[   25.191][94712] [enemy] tgt arm CH id=02029 end: pick her; flips her->Sam 0; her bucket gap max 300 ms
+[   25.191][94712] [enemy] tgt id=02029 shoot: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); last - mode -1 age -1.0 s, her -1.0 m, Sam -1.0 m; modes actor 0 place 0 other 0; t36 0
+[   25.191][94712] [enemy] tgt id=02029 sight: los clear 30 blocked 0 out 0 low_vis 0; keeps 0 synth 0 skip 0; her bucket last 4.0 s (gap lead 120 tail 80 ms)
+[   25.191][94712] [enemy] tgt arm end: engaging her 1, Sam 0; reorders 4; suppress 2; redirects 1:3 2a:5 (offset 0) 2b:0 4:1 (not ours 0) veh:0; h5 0 h2 0/0 (no type-1 bucket 0) forced 0; registered 15; faults 0; mismatch 0; table clears 0; shoot 32: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0; sight keeps 0 synth 0 skip 0 rays 120; onhit_odd 0
+[   25.241][94712] [probe] L1 result arm CH id=02029: stim_start=1 stim_n=60 stim_lost=0 releases=0 pv_start=0 calm_timeout=0 goals=1 valid=1 rays=0 tie=her calm=ready samples=60 noticed=535 turned_her=535 turned_sam=-1 approached_her=0 approached_sam=0 aim_n=5 aim_her=5 aim_sam=0 fired=0 at_her=0 at_sam=0 pv_her=60 pv_sam=0 switch_sam=-1 switch_her=-1 cls_her=386 cls_sam=10 app_her=10 app_sam=0 rec0_her=10 rec0_sam=0 fired_p=0/0/0 at_her_p=0/0/0 at_sam_p=0/0/0
+[   25.491][94712] [enemy] tgt arm-at-geometry CS id=02029: her not judged (a Sam arm); Sam placed 8.0 m in front
+[   25.741][94712] [probe] L1 arm CS id=02029: start (stim none, cp 04004)
+[   25.741][94712] [enemy] tgt arm CS id=02029: start (stim none, vis 1.00, aim 1.17 m SPV1, pick live 7, redirect sites 0x37, pick reset)
+[   25.741][94712] [enemy] tgt geometry id=02029 (CS): her dz 0.54 m horiz 147.1 m pitch 0.0 bearing 64 valid 1; Sam dz -0.67 m horiz 8.0 m bearing 12 pitch 1.0; rule melee (Sam); sep 52
+[   25.991][94712] [enemy] tgt arm CS id=02029 end: pick her; flips her->Sam 0; her bucket gap max 300 ms
+[   25.991][94712] [enemy] tgt id=02029 shoot: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); last - mode -1 age -1.0 s, her -1.0 m, Sam -1.0 m; modes actor 0 place 0 other 0; t36 0
+[   25.991][94712] [enemy] tgt id=02029 sight: los clear 30 blocked 0 out 0 low_vis 0; keeps 0 synth 0 skip 0; her bucket last 4.0 s (gap lead 120 tail 80 ms)
+[   25.991][94712] [enemy] tgt arm end: engaging her 1, Sam 0; reorders 4; suppress 2; redirects 1:3 2a:5 (offset 0) 2b:0 4:1 (not ours 0) veh:0; h5 0 h2 0/0 (no type-1 bucket 0) forced 0; registered 15; faults 0; mismatch 0; table clears 0; shoot 32: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0; sight keeps 0 synth 0 skip 0 rays 120; onhit_odd 0
+[   26.041][94712] [probe] L1 result arm CS id=02029: stim_start=1 stim_n=60 stim_lost=0 releases=0 pv_start=0 calm_timeout=0 goals=1 valid=1 rays=0 tie=her calm=ready samples=60 noticed=-1 turned_her=-1 turned_sam=2088 approached_her=0 approached_sam=0 aim_n=5 aim_her=5 aim_sam=0 fired=0 at_her=0 at_sam=0 pv_her=60 pv_sam=1897 switch_sam=-1 switch_her=-1 cls_her=0 cls_sam=10 app_her=10 app_sam=0 rec0_her=10 rec0_sam=0 fired_p=0/0/0 at_her_p=0/0/0 at_sam_p=0/0/0
+[   26.291][94712] [enemy] tgt redirect bits for this run: 0 (live sites 0x0)
+[   26.541][94712] [enemy] tgt arm-at-geometry TX id=0202C: her valid after 350 ms (horiz 20.0 m, bearing 3); Sam not moved
+[   26.791][94712] [probe] L1 arm TX id=0202C: start (stim her, cp 04004)
+[   26.791][94712] [enemy] tgt arm TX id=0202C: start (stim her, vis 1.00, aim 1.17 m SPV1, pick live 7, redirect sites 0x37, pick reset)
+[   26.791][94712] [enemy] tgt geometry id=0202C (TX): her dz -0.60 m horiz 14.0 m pitch 1.0 bearing 1 valid 1; Sam dz 0.50 m horiz 152.6 m bearing 178 pitch 1.0; rule gun (her); sep 178
+[   27.041][94712] [enemy] tgt arm TX id=0202C end: pick her; flips her->Sam 0; her bucket gap max 300 ms
+[   27.041][94712] [enemy] tgt id=0202C shoot: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); last - mode -1 age -1.0 s, her -1.0 m, Sam -1.0 m; modes actor 0 place 0 other 0; t36 0
+[   27.041][94712] [enemy] tgt id=0202C sight: los clear 30 blocked 0 out 0 low_vis 0; keeps 0 synth 0 skip 0; her bucket last 4.0 s (gap lead 120 tail 80 ms)
+[   27.041][94712] [enemy] tgt arm end: engaging her 1, Sam 0; reorders 4; suppress 2; redirects 1:3 2a:5 (offset 0) 2b:0 4:1 (not ours 0) veh:0; h5 0 h2 0/0 (no type-1 bucket 0) forced 0; registered 15; faults 0; mismatch 0; table clears 0; shoot 32: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0; sight keeps 0 synth 0 skip 0 rays 120; onhit_odd 0
+[   27.091][94712] [probe] L1 result arm TX id=0202C: stim_start=1 stim_n=60 stim_lost=0 releases=0 pv_start=0 calm_timeout=0 goals=1 valid=1 rays=0 tie=her calm=ready samples=60 noticed=540 turned_her=540 turned_sam=-1 approached_her=0 approached_sam=0 aim_n=5 aim_her=5 aim_sam=0 fired=0 at_her=0 at_sam=0 pv_her=60 pv_sam=0 switch_sam=-1 switch_her=-1 cls_her=900 cls_sam=10 app_her=10 app_sam=0 rec0_her=10 rec0_sam=0 fired_p=0/0/0 at_her_p=0/0/0 at_sam_p=0/0/0
+[   27.341][94712] [enemy] tgt status: engaging her 0, Sam 0; reorders 4; suppress 2; redirects 1:3 2a:5 (offset 0) 2b:0 4:1 (not ours 0) veh:0; h5 0 h2 0/0 (no type-1 bucket 0) forced 0; registered 15; faults 0; mismatch 0; table clears 0; shoot 32: calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0; sight keeps 0 synth 0 skip 0 rays 120; onhit_odd 0
+[   27.591][94712] [enemy] spv1 sent 2632 recv 2548 stale 0 bad 0; aim ours 1.21 m, hers 1.30 m (default); our down 0

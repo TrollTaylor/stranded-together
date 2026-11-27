@@ -23,7 +23,8 @@ def G(text, dt=0.25):
 
 SUM = ("[enemy] tgt%s: engaging her %d, Sam 0; reorders 4; suppress 2; redirects 1:3 2a:5 (offset 0) 2b:0 4:1 (not ours 0) veh:0; h5 0 h2 0/0 "
        "(no type-1 bucket 0) forced 0; registered 15; faults 0; mismatch 0; table clears 0; shoot 32: calls %d redirected %d points %d (at her %d Sam %d "
-       "none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0")
+       "none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0; sight keeps 0 synth 0 skip 0 rays 120; "
+       "onhit_odd 0")
 CHECKS = ("[enemy] tgt byte checks (71): stimulus ok, registry ok, goals ok, sensor results ok, classifier ok, classifier flags ok, forced visual ok, "
           "MULE members ok, player objects ok, redirect 1 ok, 2a ok, 2b ok, 4 ok, 16 (vehicle chase) ok, 32 (shoot actor) ok; redirect 8 deferred (not built)")
 SEH_T = "[seh] test: a guarded read of a reserved page faulted and was caught; absorbed 0 -> 2, reported 0 -> 0 (guard on)"
@@ -32,19 +33,25 @@ SEH_A = ("[seh] absorbed 2 fault(s) inside the mod's guards (last: code 0xC00000
 GEO = ("[enemy] tgt geometry id=%s (%s): her dz %.2f m horiz %.1f m pitch 1.0 bearing %d valid %d; Sam dz 0.50 m horiz %.1f m bearing %d pitch 1.0; "
        "rule %s (%s); sep %d")
 WATCH = ("[probe] L1 watch id=%s t=%.2f: phase 5 ea4 0x42440000; faces her %d deg / Sam %d deg; her %.1f m Sam %.1f m; PV 1 at %s 0.0 m id 00000 "
-         "age %.1f; LK 1 at her; goal 0 id 0x0 mode 1; shoot pt -> her (calls 0 redir 0); rounds 0")
+         "age %.1f; LK 1 at her; goal 0 id 0x0 mode 1; shoot pt -> her (calls 0 redir 0); rounds 0; sight bucket 0.2 s los clear 0.1 s")
 SHOOT = ("[enemy] tgt id=%s shoot: calls %d redirected %d points %d (at her %d Sam %d none 0); last %s mode %d age 0.1 s, her 15.0 m, Sam 15.0 m; "
          "modes actor %d place %d other 0; t36 0")
 BASE_RES = ("stim_start=1 stim_n=60 stim_lost=0 releases=0 pv_start=0 calm_timeout=0 goals=1 valid=1 rays=%d tie=her calm=ready samples=60 "
             "noticed=%d turned_her=%d turned_sam=%d approached_her=0 approached_sam=0 aim_n=5 aim_her=5 aim_sam=0 fired=%d at_her=%d at_sam=%d "
             "pv_her=60 pv_sam=%d switch_sam=%d switch_her=-1 cls_her=%d cls_sam=10 app_her=10 app_sam=0 rec0_her=10 rec0_sam=0 fired_p=%s "
             "at_her_p=%s at_sam_p=%s")
+# (M3f) the SIGHT line (op 7 and op 8, after the shoot line)
+SIGHT = ("[enemy] tgt id=%s sight: los clear %d blocked 0 out 0 low_vis 0; keeps %d synth %d skip 0; her bucket last %s s (gap lead 120 tail 80 ms)")
 NO_SHOOT = ("calls 0 redirected 0 points 0 (at her 0 Sam 0 none 0); last - mode -1 age -1.0 s, her -1.0 m, Sam -1.0 m; "
             "modes actor 0 place 0 other 0; t36 0")
 
 
 def arm(label, mid, geo, vis=1.00, stim="her", armgeo="her valid after 350 ms (horiz 20.0 m, bearing 3); Sam not moved", body=None, res=None,
-        shoot=None, engaged=False):
+        shoot=None, engaged=False, seen=None, place=None):
+    if place:
+        H(place)
+    if seen:
+        H("[enemy] tgt arm %s: her %s" % (label, seen))
     H("[enemy] tgt arm-at-geometry %s id=%s: %s" % (label, mid, armgeo))
     H("[probe] L1 arm %s id=%s: start (stim %s, cp 04004)" % (label, mid, stim))
     H("[enemy] tgt arm %s id=%s: start (stim %s, vis %.2f, aim 1.17 m SPV1, pick live 7, redirect sites 0x37, pick reset)" % (label, mid, stim, vis), 0)
@@ -55,12 +62,20 @@ def arm(label, mid, geo, vis=1.00, stim="her", armgeo="her valid after 350 ms (h
         body()
     H("[enemy] tgt arm %s id=%s end: pick her; flips her->Sam 0; her bucket gap max 300 ms" % (label, mid))
     H("[enemy] tgt id=%s shoot: %s" % (mid, shoot or NO_SHOOT), 0)
+    H(SIGHT % (mid, 30, 0, 0, "4.0"), 0)
     H(SUM % (" arm end", 1, 0, 0, 0, 0, 0), 0)
     H("[probe] L1 result arm %s id=%s: %s" % (label, mid, res), 0.05)
 
 
+H("[config] enemy_partner_stim=1 enemy_partner_vis=1 enemy_partner_stim_radius=300 enemy_target_pick=55 enemy_target_redirect=39 "
+  "enemy_target_fresh_ms=1500")
 H(CHECKS)
 G(CHECKS)
+H("[enemy] tgt pick 16 (line of sight): off (waiting for the raycast's self-test)")
+H("[enemy] tgt pick 32 (her record from ours): off (bit 16 not live)", 0)
+H("[enemy] tgt los self-test: ok (hit 1.21 m below the chest)")
+H("[enemy] tgt pick 16 (line of sight): on (the self-test passed, bit 1 live)")
+H("[enemy] tgt pick 32 (her record from ours): on (bit 16 live)", 0)
 H("[enemy] tgt redirect 32 (shoot actor): on (bit 32 on)")
 H("[enemy] pstim made #1 (id 0x0, stim 0000068247DC2620, agent 000006824ACD5F90; nearest enemy 60 m, radius 300)")
 G("[enemy] pstim not made (the guest (host only))")
@@ -83,6 +98,9 @@ def cl_body():  # the stimulus made 141 ms after the watch start
 
 
 arm("CL", "02029", GEO % ("02029", "CL", 0.07, 4.2, 18, 1, 152.0, 166, "melee", "her", 166), body=cl_body,
+    place=("[enemy] tgt place #2 id=02029 (CL, op 11): sent 4.0 m -35 deg (candidate 6), lead +0 deg (rate +0 deg/s) 0.00 m, to (1588.10, "
+           "1097.40); her before horiz 150.3 m bearing 120 dz 0.40 pitch 0.1; ground dz 0.07 (probe hit, los clear), chosen 6 of 10, "
+           "skipped 3 raised"),
     res=BASE_RES % (0, 900, 900, -1, 0, 0, 0, 0, -1, 900, "0/0/0", "0/0/0", "0/0/0"))
 # TE (crouched: vis 0.60 below TA's 1.00)
 arm("TE", "0202C", GEO % ("0202C", "TE", 0.1, 16.0, 5, 1, 150.0, 170, "gun", "her", 170), vis=0.60,
@@ -111,6 +129,7 @@ def tb_body():  # her first; the Sam step; phase 0 sticky her (op 7); she hides 
     H("[enemy] look id=0202B dist 15.0 m (25 deg off its line to her): snap: placed at (1593.05, 1099.30), ground snap next frame")
     H("[auto] 0065:1 action enemy_look -11 15 25 -> ok: Enemy look: id 0202B: snap: placed at (1593.05, 1099.30), ground snap next frame (16 ms)", 0)
     H("[fixture] tb phase 0")
+    H("[enemy] tgt los id=0202B her clear (15.0 m, bearing 3, pitch 1.0, vis 1.00; hit at -1.0 of 14.0 m)")
     for k in range(4):
         H(WATCH % ("0202B", 2.0 + k * 0.25, 3, 22, 15.0, 15.0, "her", 0.0))
     H(SUM % ("", 1, 5, 5, 9, 9, 0))
@@ -118,12 +137,14 @@ def tb_body():  # her first; the Sam step; phase 0 sticky her (op 7); she hides 
     H(GEO % ("0202B", "op 7", 0.4, 15.0, 3, 1, 15.0, 22, "gun", "her", 25))
     H("[enemy] tgt id=0202B pick her; flips her->Sam 0; her bucket gap max 120 ms", 0)
     H(SHOOT % ("0202B", 5, 5, 9, 9, 0, "her", 1, 0, 9), 0)
+    H(SIGHT % ("0202B", 12, 0, 0, "3.4"), 0)
     H("[enemy] tgt vis forced 0.00")
     H("[enemy] tgt id=0202B -> Sam (only visible)", 1.2)
     H("[enemy] tgt vis forced 1.00", 4.8)
 
 
 arm("TB", "0202B", GEO % ("0202B", "TB", 0.4, 15.0, 1, 1, 150.0, 178, "gun", "her", 178), engaged=True, body=tb_body,
+    seen="seen (bucket 0.2 s, los clear) after 400 ms",
     shoot=SHOOT % ("0202B", 2, 0, 15, 0, 15, "Sam", 0, 15, 0),
     res=BASE_RES % (15, -1, -1, 1200, 15, 4, 11, 20, 1200, 1000, "4/5/6", "4/0/0", "0/5/6"))
 # CH, CS, TX: printed, not gated

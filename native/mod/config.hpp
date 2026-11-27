@@ -324,7 +324,8 @@ struct Config {
     // launcher; flipped together only after the gates pass (critique C2). enemy_partner_stim: the partner body carries a visual
     // stimulus made with our Sam's own resource (enemy_target.cpp; the host only, hidden runs only), its visibility from the
     // partner's SPV1 (enemy_partner_vis), only while a realized human enemy is within enemy_partner_stim_radius m.
-    // enemy_target_pick (bits: 1 reorder, 2 MULE-only perceivers, 4 classifier flag fix, 8 her hits force a visual),
+    // enemy_target_pick (bits: 1 reorder, 2 MULE-only perceivers, 4 classifier flag fix, 8 her hits force a visual, 16
+    // line-of-sight keep, 32 her record from ours (needs 1 and 16)),
     // enemy_target_redirect (bits: 1 CanShoot's point, 2 turn / range check, 4 approach, 16 vehicle chase, 32 shoot actor; 8
     // deferred),
     // enemy_target_fresh_ms (500..3000).

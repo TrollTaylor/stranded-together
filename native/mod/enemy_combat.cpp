@@ -23,6 +23,7 @@
 #include "enemy_rules.hpp"
 #include "enemy_sync.hpp"
 #include "enemy_wire.hpp"
+#include "game_actions.hpp"
 #include "link.hpp"
 #include "log.hpp"
 #include "partner_source.hpp"
@@ -1477,6 +1478,41 @@ void GuestOutcome(const ewire::Outcome& o) {
     }
 }
 
+// ---- round 27 run 4 (hidden runs; docs/enemy-sync.md 16.6): op 11's PLACE (enemy_target.cpp, the host): her Sam teleported to the
+// host's point, which the host computed from the MULE's own pose (her mirror's facing lags it). Only in her game, a hidden run, the
+// same world (the guids fingerprint), a live mirror of that MULE within 40 m of the point, 700 ms after her last one; the
+// teleport's own "max 2 per second" refusal still applies.
+unsigned g_place_sent = 0, g_place_rx = 0, g_place_ok = 0, g_place_refused = 0;
+double g_place_last_ms = -1e18;
+void GuestPlace(const ewire::Place& p, std::uint32_t msg_guids, const esync::GateView& gv) {
+    ++g_place_rx;
+    static const char* const kArm[10] = {"?", "TA", "TB", "TF0", "TF1", "TE", "TX", "CH", "CS", "CL"};
+    const char* arm = kArm[p.code <= 9 ? p.code : 0];
+    const char* refuse = nullptr;
+    std::uintptr_t actor = 0, entity = 0;
+    WorldTransform mx{};
+    if (g_role != 2) refuse = "not the guest";
+    else if (!automation::Enabled()) refuse = "hidden runs only";
+    else if (!gv.guids || msg_guids != gv.guids) refuse = "another world (the guids fingerprint)";
+    else if (!esync::MirrorOf(p.id, &actor, &entity) || !entity || !ReadXf(entity, mx)) refuse = "no live mirror of it here";
+    else {
+        const double dx = p.x - mx.pos.x, dy = p.y - mx.pos.y;
+        if (!(dx * dx + dy * dy <= 40.0 * 40.0)) refuse = "over 40 m from its mirror";
+        else if (g_now - g_place_last_ms < 700.0) refuse = "under 700 ms after the last";
+    }
+    if (refuse) {
+        ++g_place_refused;
+        Log("[enemy] place #%u id=%05X (arm %s) refused (%s)", p.seq, p.id, arm, refuse);
+        return;
+    }
+    char why[160] = {};
+    const double fx = std::cos(static_cast<double>(p.yaw)), fy = std::sin(static_cast<double>(p.yaw));
+    const bool ok = game::TeleportLocalPlayerFacing(p.x, p.y, game::kSnapRayCentreZ, fx, fy, game::TeleportMode::snap_to_ground, why, sizeof(why));
+    if (ok) ++g_place_ok, g_place_last_ms = g_now;
+    else ++g_place_refused;
+    Log("[enemy] place #%u id=%05X (arm %s): %s%s", p.seq, p.id, arm, ok ? "" : "refused: ", why);
+}
+
 void DrainCombat(const esync::GateView& gv) {
     std::uint8_t buf[1100];
     std::size_t n = 0;
@@ -1572,6 +1608,11 @@ void DrainCombat(const esync::GateView& gv) {
             for (unsigned i = 0; i < h.n; ++i) GuestOutcome(oc[i]);
         } else if (h.type == ewire::kScbOwn || h.type == ewire::kScbOwnAck || h.type == ewire::kScbOwnReset) {
             esync::QueueOwnMessage(buf, n);  // P1b: enemy_sync's (its next tick)
+        } else if (h.type == ewire::kScbPlace) {
+            ewire::Place pl;
+            if (g_role != 2) ++g_wrong_role;
+            else if (!ewire::DecodePlace(buf, n, h, pl)) ++g_bad_msg;
+            else GuestPlace(pl, h.guids_fp, gv);  // round 27 run 4: op 11's PLACE
         }
     }
 }
@@ -1965,10 +2006,33 @@ void Status() noexcept {
         g_bad_msg, g_wrong_role, g_stop.load() ? "; STOPPED" : "");
     if (g_relay_on || g_relay_in) Log("[enemy] hits relay (P1c): %s; relayed in n=%u applied %u, not owned %u; carry %s", g_relay_on ? "the host relays" : "in", g_relay_in,
                                       g_relay_applied, g_relay_not_owned, CarryReady() ? "ready" : "off");
+    if (g_place_sent || g_place_rx)
+        Log("[enemy] hits: PLACE (op 11, round 27 run 4) sent %u; rx %u placed %u refused %u", g_place_sent, g_place_rx, g_place_ok, g_place_refused);
     Log("[enemy] restrain relay (round 23): %s (enemy_restrain_relay=%d, peer part %d, carry %s); watches %u (open %zu), sent %u (native %u, fallback %u), held HITs "
         "released %u, closed %u, swallowed %u; answers %u (refused %u); as owner: rx %u applied %u refused %u; holds pending %zu",
         g_restrain_send ? "on" : "off", g_cfg.enemy_restrain_relay ? 1 : 0, shots::PeerRestrain() ? 1 : 0, CarryReady() ? "ready" : "off", g_r_watches, g_rwatch.size(),
         g_r_sent, g_r_native, g_r_fallback, g_r_released, g_r_closed, g_r_swallowed, g_r_answers, g_r_answer_refused, g_r_rx, g_r_applied, g_r_refused, g_rsent.size());
+}
+bool SendPlace(std::uint32_t id, double x, double y, double fx, double fy, std::uint8_t code, std::uint32_t* seq, char* why, std::size_t cap) noexcept {
+    if (why && cap) why[0] = 0;
+    if (!automation::Enabled()) return std::snprintf(why, cap, "hidden runs only"), false;
+    if (!g_installed) return std::snprintf(why, cap, "enemy hits not installed"), false;
+    const esync::GateView gv = esync::Gate();
+    if (gv.role != 1 || g_role != 1) return std::snprintf(why, cap, "not the host"), false;
+    if (!gv.guids) return std::snprintf(why, cap, "no guids fingerprint yet"), false;
+    ewire::Place p;
+    p.id = id, p.seq = g_place_sent + 1, p.x = x, p.y = y, p.code = code;
+    p.yaw = static_cast<float>(std::atan2(fy, fx));
+    p.sender_ms = static_cast<std::uint32_t>(static_cast<std::uint64_t>(g_now > 0 ? g_now : 0));
+    ewire::ScbHeader h;
+    h.guids_fp = gv.guids, h.seq = g_scb_seq + 1;
+    std::uint8_t buf[ewire::kScbHeader + ewire::kPlaceSize];
+    const std::size_t size = ewire::EncodePlace(h, p, buf, sizeof(buf));
+    if (!size) return std::snprintf(why, cap, "does not encode"), false;
+    if (!link::SendCombat(buf, size)) return std::snprintf(why, cap, "the link did not take it"), false;
+    ++g_scb_seq, ++g_place_sent;
+    if (seq) *seq = p.seq;
+    return true;
 }
 void OutcomeTable() noexcept {
     unsigned n = 0;
@@ -4387,6 +4451,23 @@ bool M2Probe(const double (&v)[3], char* msg, std::size_t cap) noexcept {
         return std::snprintf(msg, cap, "FAULT"), false;
     }
     return r == 1;
+}
+
+int WorldRay(const double (&from)[3], const double (&to)[3], double trim_m, double (&hit)[3], double* len) noexcept {
+    hit[0] = hit[1] = hit[2] = 0;
+    if (len) *len = 0;
+    ProbeChecks();
+    if (!(g_pgroups & kPRay) || g_probe_off) return -3;
+    double ray[6] = {};
+    if (!eprobe::Shorten(from, to, trim_m, ray, len)) return 0;
+    const int r = SehRay(ray, hit);
+    if (r == -1000) {
+        // (M3f review) latched here for every caller (SightTick, the self-test, PlaceHer's probes): a fault inside the game's
+        // raycast is never entered again this run (later calls return -3), as P4's RayTick does
+        ProbeFault("M3f world ray");
+        return -1;
+    }
+    return r == -2000 ? -2 : r < 0 ? -4 : r;
 }
 
 }  // namespace st::ecombat

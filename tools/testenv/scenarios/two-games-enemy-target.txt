@@ -1,16 +1,22 @@
 # Round 27 run 3 gate (docs/enemy-sync.md 16): the partner stimulus (enemy_partner_stim 1; the host only, hidden runs only), SPV1,
-# the target pick (enemy_target_pick 7: the sensor-result reorder, MULE-only perceivers, the classifier flag fix) and the redirects
+# the target pick (enemy_target_pick 55: the sensor-result reorder, MULE-only perceivers, the classifier flag fix, M3f's 16 the
+# line-of-sight keep and 32 her record from ours) and the redirects
 # (enemy_target_redirect 39: 1 CanShoot's point, 2 turn / range check, 4 approach, 32 the shoot actor, now on the MULE's own weapon
 # carrier too; 16, the vehicle chase, is not in this run). MULE Camp Southwest of Lake Knot City (cp 04004). Launcher Local test
 # files; the host owns every enemy (enemy_owner=0), every round-25/26 key and the M2 probes pinned off.
 # Run 3 order (docs/enemy-sync.md 16.6): the notice arms on MULEs that have seen no one since dev_enemies 1 (TA 0202B, CL 02029,
-# TE 0202C), then the engaged block on 0202B (TF0 after a calm, TF1 and TB straight after it, her stimulus live throughout), then
-# CH and CS on 02029 and the control TX on 0202C. A calmed arm: the partner stimulus forced off (enemy_tgt 1 0), our Sam and her
-# 150 m away, the camp re-calmed (enemy_l1 6 <id> 8: ready when the MULE, its members and the CP (0..2 is at rest) are quiet and
+# TE 0202C; M3f: TB straight after TA on 0202B, while it still has her in its bucket), then the engaged block on 0202B (TF0 after
+# a calm, TF1 straight after it, her stimulus live throughout), then CH and CS on 02029 and the control TX on 0202C. A calmed
+# arm: the partner stimulus forced off (enemy_tgt 1 0), our Sam and her 150 m away, the camp re-calmed (enemy_l1 6 <id> 8: ready when the MULE, its members and the CP (0..2 is at rest) are quiet and
 # every PlayerVisual entry is stale), our Sam 150 m behind, her placed along its facing, the status, then op 11 (enemy_tgt 11 <id>
 # <code>: the arm starts from the tick once her geometry is valid for the arm and her distance is in its window, or after 2.5 s;
 # for TF0 / TF1 it places our Sam 170 m away 40 deg off its line to her, for CS 5 m along its facing) and only after the start the
 # stimulus (enemy_tgt 1 1), then the result (enemy_tgt 8) and the status again.
+# Run 4: for CL, TF0, TF1 and TB op 11 places her itself (an SCB1 PLACE to the guest from the host MULE's own pose, again until
+# her geometry holds, 6 s at most; then, for CL / TF0 / TF1, again whenever she leaves its view until it picks or notices her):
+# run 170101's MULEs walked and turned after the guest placed her along its mirror's facing. The guest pre-places her only near
+# it (enemy_look <id> 20 / 30, then 700 ms: a teleport of the same player at least 700 ms before op 11's first PLACE). No
+# optional step (a failed one fails the run): the informational "-> her" / round waits are plain waits; the gate reads the lines.
 #   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-enemy-target -SeedSaves complete-100 -GuestSeed profile-only -Id round27-m3
 #   python -I tools\testenv\enemy-target-gate.py build-testenv\runs\<run folder>   (the arm table, PASS / FAIL / INVALID per gate item)
 # The host: the stimulus made, byte checks, the crash-reporter guard test (two absorbed faults), 50 create / remove cycles then
@@ -18,11 +24,13 @@
 # TA (calm #1): her 25 m in front of gun MULE 0202B: notice, turn, no round at Sam (rounds, if any, >= 60 % at her). CL (#2): her
 # on level ground 6 m in front of melee MULE 02029 (a missed notice in the cone FAILs). TE (#3): her crouched 16 m in front of
 # gun MULE 0202C (her SPV1 visibility <= 0.7).
-# TF0 (#4, 0202B, bit 32 off): her 22 m in front, Sam 170 m away 40 deg off its line to her (beyond sight; a round at him passes
-# ~14 m beside her); the actor branch, when the job takes it, resolves to Sam (else "place branch only", not gated). TF1 (no calm,
-# the key: bit 32 on): the same placement made again: >= 3 rounds, >= 2/3 at her, none and no shoot point at Sam.
-# TB (no calm; engaged on her since TF1): it stays on her (a "-> her" first); our Sam steps out 15 m away 25 deg off its line to
-# her (enemy_look -11 15 25): both seen, sticky her, no round and no shoot point at Sam in phase 0 (bit 32 redirected); she hides
+# TF0 (#4, 0202B, bit 32 off): her 22 m in front (op 11's PLACE), Sam 170 m away 40 deg off its line to her (beyond sight; a
+# round at him passes ~14 m beside her); the actor branch, when the job takes it, resolves to Sam (else "place branch only", not
+# gated). TF1 (no calm, the key: bit 32 on): the same placement made again: >= 3 rounds, >= 2/3 at her, none and no shoot point
+# at Sam.
+# TB (no calm; engaged on her since TA; op 11 places her and waits until 0202B sees her): it stays on her (a "-> her" first); our
+# Sam steps out 15 m away 25 deg off its line to her (enemy_look -11 15 25): both seen, sticky her (the line-of-sight keep when
+# her bucket record drops out), no round and no shoot point at Sam in phase 0 (bit 32 redirected); she hides
 # (enemy_tgt 2 0): to Sam (only visible) <= 3 s; she is back with Sam still in view (phase 2): stays Sam.
 # CH (#5): her level 5 m in front of 02029. CS (#6, the control): no stimulus, her away, Sam 5 m along 02029's facing (op 11).
 # TX (#7, the control): the redirects off (enemy_tgt 6 0), her 16 m in front of 0202C.
@@ -42,7 +50,7 @@ ini enemy_single_rule=0
 ini enemy_take_role=0
 ini enemy_take_face=0
 ini enemy_partner_stim=1
-ini enemy_target_pick=7
+ini enemy_target_pick=55
 ini enemy_target_redirect=39
 start control 200
 waitlog 60 \[vshare\] host: world ready
@@ -104,6 +112,25 @@ wait 8000
 action enemy_tgt 8
 waitlog 5 \[probe\] L1 result arm TA id=0202B
 action enemy_tgt 0
+# ---- TB (no calm; 0202B engaged on her since TA, firing, her stimulus live, the key on): it stays on her (a "-> her" first);
+# our Sam steps out 15 m away 25 deg off its line to her (both seen) 7 s: sticky her, no flip, no round at Sam (op 7 marks the end,
+# logs the flips and its shoot line); she hides 6 s (phase 1: to Sam); she is back with Sam still in view 6 s (phase 2: stays Sam)
+# (M3f) straight after TA, while 0202B still has her in its bucket; op 11 waits until it sees her (bucket or line of sight, 9 s cap)
+action enemy_tgt 0
+action enemy_tgt 11 0x202B 2
+waitlog 12 \[probe\] L1 arm TB id=0202B: start
+wait 5000
+action enemy_look -11 15 25
+wait 7000
+action enemy_tgt 7 0x202B
+action enemy_tgt 2 0
+wait 6000
+action enemy_tgt 2 100
+wait 6000
+action enemy_tgt 8
+waitlog 5 \[probe\] L1 result arm TB id=0202B
+action enemy_tgt 2 -1
+action enemy_tgt 0
 # ---- CL (notice, 02029 fresh; calm #2): her on level ground 6 m in front of 02029, along its facing (bearing ~0: a missed
 # notice is a FAIL, not the cone); Sam 150 m behind
 action enemy_tgt 1 0
@@ -114,10 +141,9 @@ waitlog 12 \[probe\] L1 calm #2 id=02029: (ready|timeout)
 action enemy_look -8 -150
 @guest action enemy_look 0x2029 20
 wait 700
-@guest action enemy_look -8 6
 action enemy_tgt 0
 action enemy_tgt 11 0x2029 9
-waitlog 5 \[probe\] L1 arm CL id=02029: start
+waitlog 8 \[probe\] L1 arm CL id=02029: start
 action enemy_tgt 1 1
 waitnew 5 \[enemy\] pstim made #
 wait 6000
@@ -159,48 +185,25 @@ action enemy_l1 6 0x202B 8
 waitlog 12 \[probe\] L1 calm #4 id=0202B: (ready|timeout)
 @guest action enemy_look 0x202B 30
 wait 700
-@guest action enemy_look -8 22
 action enemy_tgt 0
 action enemy_tgt 11 0x202B 3
-waitlog 5 \[probe\] L1 arm TF0 id=0202B: start
+waitlog 8 \[probe\] L1 arm TF0 id=0202B: start
 action enemy_tgt 1 1
 waitnew 5 \[enemy\] pstim made #
-?waitnew 15 \[enemy\] tgt id=0202B -> her
-wait 10000
+wait 14000
 screenshot 06-host-tf0
 action enemy_tgt 8
 waitlog 5 \[probe\] L1 result arm TF0 id=0202B
 action enemy_tgt 0
-# ---- TF1 (no calm; her stimulus still live, so the pick is kept): her placed again 22 m along its facing, the key (bit 32 on),
+# ---- TF1 (no calm; her stimulus still live, so the pick is kept): her placed again 22 m in front (op 11), the key (bit 32 on),
 # op 11 places our Sam again 170 m 40 deg off its line to her
-@guest action enemy_look -8 22
 action enemy_tgt 6 -1
 waitnew 5 \[enemy\] tgt redirect bits for this run: 39 \(the key\)
 action enemy_tgt 11 0x202B 4
-waitlog 5 \[probe\] L1 arm TF1 id=0202B: start
-?waitnew 5 \[enemy\] tgt id=0202B -> her
-wait 10000
+waitlog 8 \[probe\] L1 arm TF1 id=0202B: start
+wait 12000
 action enemy_tgt 8
 waitlog 5 \[probe\] L1 result arm TF1 id=0202B
-action enemy_tgt 0
-# ---- TB (no calm; 0202B engaged on her since TF1, firing, her stimulus live, the key on): it stays on her (a "-> her" first);
-# our Sam steps out 15 m away 25 deg off its line to her (both seen) 7 s: sticky her, no flip, no round at Sam (op 7 marks the end,
-# logs the flips and its shoot line); she hides 6 s (phase 1: to Sam); she is back with Sam still in view 6 s (phase 2: stays Sam)
-action enemy_tgt 0
-action enemy_tgt 11 0x202B 2
-waitlog 5 \[probe\] L1 arm TB id=0202B: start
-?waitnew 3 \[enemy\] tgt id=0202B -> her
-?waitnew 8 \[probe\] L1 round id=0202B #
-action enemy_look -11 15 25
-wait 7000
-action enemy_tgt 7 0x202B
-action enemy_tgt 2 0
-wait 6000
-action enemy_tgt 2 100
-wait 6000
-action enemy_tgt 8
-waitlog 5 \[probe\] L1 result arm TB id=0202B
-action enemy_tgt 2 -1
 action enemy_tgt 0
 # ---- CH (02029 alerted since CL; calm #5): her on level ground 5 m in front of 02029, Sam 150 m behind
 action enemy_tgt 1 0

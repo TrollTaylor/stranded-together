@@ -378,10 +378,183 @@ inline bool ArmHerOk(int code, bool geom_valid, double horiz) noexcept {
     return geom_valid && (n < 0 || (horiz >= n - 4.0 && horiz <= n + 2.0));
 }
 enum class ArmGo : std::uint8_t { wait, go_valid, go_timeout };
-inline ArmGo ArmStep(double elapsed_ms, bool her_ok) noexcept {
+inline ArmGo ArmStep(double elapsed_ms, bool her_ok, double limit_ms = kArmGeoLimitMs) noexcept {
     if (her_ok) return ArmGo::go_valid;
-    return elapsed_ms >= kArmGeoLimitMs ? ArmGo::go_timeout : ArmGo::wait;
+    return elapsed_ms >= limit_ms ? ArmGo::go_timeout : ArmGo::wait;
 }
+
+// ---- run 4 (round 27): op 11 places her itself (the host's SCB1 PLACE, type 11; the guest teleports her Sam) for TB 2, TF0 3,
+// TF1 4 and CL 9. Run 20261126-170101: those MULEs walked and turned after the guest placed her along its mirror's facing (0.2-0.7
+// s behind the host's, and 0.3-3 s old when op 11 judged it), so op 11 timed out and the arms started with her 104-127 deg off
+// its facing. The host has the MULE's own pose. TA, TE, TX and CH are judged as in run 3 (2.5 s, the strict rule, never placed);
+// CS judges our Sam.
+inline bool ArmPlaces(int code) noexcept { return code == 2 || code == 3 || code == 4 || code == 9; }
+inline constexpr double kArmPlaceLimitMs = 6000;  // a placed arm starts anyway after this
+inline constexpr double kPlaceGapMs = 900;        // between two PLACEs (the game's 500 ms teleport limit; the guest's 700 ms refusal
+                                                  // timed from its own drain, so 200 ms for a frame hitch or a retransmit)
+inline constexpr double kPlaceArriveMs = 1200;    // her synced body not at the point by then: the PLACE is sent again
+inline constexpr double kPlaceArriveM = 2.0;      // her body within this (horizontally) of the point: arrived
+inline constexpr double kPlaceSettleMs = 150;     // judged only this long after she arrived (the ground snap's next frame)
+inline constexpr double kPlaceLeadS = 0.35;       // the MULE's pose predicted this far ahead (the PLACE's trip, her teleport)
+inline constexpr double kPlaceLeadDegMax = 25, kPlaceLeadMMax = 1.0;
+inline constexpr double kKeepViewMs = 6000;       // after the start: her kept in its view until it picks or notices her, or this
+// (M3f) TB (run 20261126-175849: its phase 0 never had both players in the MULE's bucket): once she is placed valid, op 11 also
+// waits until the MULE sees her (her record in its PlayerVisual bucket within 1.5 s, or the line-of-sight estimate clear within
+// 0.5 s), kArmSeenMs per candidate (then the next one), and TB's limit is kArmSeenCapMs.
+inline constexpr double kArmSeenMs = 3000, kArmSeenCapMs = 9000;
+inline bool ArmWaitsSeen(int code) noexcept { return code == 2; }
+inline bool ArmSeen(double bucket_age_ms, bool los_clear, double los_age_ms) noexcept {
+    return (bucket_age_ms >= 0 && bucket_age_ms <= 1500) || (los_clear && los_age_ms >= 0 && los_age_ms <= 500);
+}
+inline double ArmLimitMs(int code) noexcept { return ArmWaitsSeen(code) ? kArmSeenCapMs : ArmPlaces(code) ? kArmPlaceLimitMs : kArmGeoLimitMs; }
+// The placed arms judge her with a margin inside GeomValid (the start's geometry line re-reads her with the strict rule; run
+// 170101's TF1 was judged valid at pitch <= 15 and its line 150 ms later said pitch 15.0, valid 0): melee |dz| <= 0.8, 2.5-7.5 m,
+// bearing <= 40; gun 10.5-29.5 m, bearing <= 25, pitch <= 14.
+inline bool GeomValidMargin(int code, bool ok, double dz, double horiz, double bearing, double pitch) noexcept {
+    if (!ok || bearing < 0) return false;
+    if (MeleeArm(code)) return std::fabs(dz) <= 0.8 && horiz >= 2.5 && horiz <= 7.5 && bearing <= 40.0;
+    return horiz >= 10.5 && horiz <= 29.5 && bearing <= 25.0 && pitch <= 14.0;
+}
+// Her bearing within the margin but the place not valid (dz, pitch or distance): the ground there, so the next PLACE tries the
+// next candidate; a bearing miss (the MULE turned) keeps the candidate.
+inline bool PlaceGroundMiss(int code, bool her_ok_margin, double bearing) noexcept {
+    return !her_ok_margin && bearing >= 0 && bearing <= (MeleeArm(code) ? 40.0 : 25.0);
+}
+// Her placement's nominal distance: the arm's (ArmNominal), TB 20 m.
+inline double PlaceNominal(int code) noexcept { return code == 2 ? 20.0 : ArmNominal(code); }
+// Candidate k (cycling over PlaceCandidates, 10): the distance (m) and the angle (deg) off the MULE's predicted facing. Gun: n, n +
+// 1.5, n at +12 and -12 deg, n - 2 (farther first: a slope's pitch drops with the distance), then n - 3, n at +20 and -20 deg, n +
+// 6 (TB) / n + 2 (TF: its window ends at n + 2), n - 4; melee: n, n - 1.5, n at +20 and -20 deg, n - 1, then n - 2.5, n at +35
+// and -35 deg, n - 2 at +35 and -35 deg (CL, n 6: 6, 4.5, 6, 6, 5, 3.5, 6, 6, 4, 4).
+struct PlaceCand {
+    double dist = 0, deg = 0;
+};
+inline constexpr unsigned kPlaceCandidates = 10;
+inline int PlaceCandidates(int /*code*/) noexcept { return static_cast<int>(kPlaceCandidates); }
+inline PlaceCand PlaceCandidate(int code, unsigned k) noexcept {
+    const double n = PlaceNominal(code) > 0 ? PlaceNominal(code) : 20.0;
+    const bool m = MeleeArm(code);
+    PlaceCand c{n, 0};
+    switch (k % kPlaceCandidates) {
+        case 1: c.dist = m ? n - 1.5 : n + 1.5; break;
+        case 2: c.deg = m ? 20 : 12; break;
+        case 3: c.deg = m ? -20 : -12; break;
+        case 4: c.dist = m ? n - 1.0 : n - 2.0; break;
+        case 5: c.dist = m ? n - 2.5 : n - 3.0; break;
+        case 6: c.deg = m ? 35 : 20; break;
+        case 7: c.deg = m ? -35 : -20; break;
+        case 8:
+            if (m) c.dist = n - 2.0, c.deg = 35;
+            else c.dist = code == 2 ? n + 6.0 : n + 2.0;
+            break;
+        case 9:
+            if (m) c.dist = n - 2.0, c.deg = -35;
+            else c.dist = n - 4.0;
+            break;
+        default: break;
+    }
+    return c;
+}
+// Round 27 M3f (run 20261126-175849: CL was placed on a ledge 3.06 m above the MULE, pitch 30.3): before a PLACE the host probes
+// each candidate's ground (a down ray at the point: `ok`, its dz from the MULE's root, and from that her pitch eye -> chest) and
+// the MULE's line of sight to her chest there (`los`). The PLACE still carries only x / y (the guest snaps her to the ground), so
+// the probe only chooses. PlaceChoose, from candidate `start` on (cyclic): the first whose probed geometry passes the arm's margin
+// rule and window (bearing 0: the candidate is on the facing) with a clear line of sight; else the first passing without one;
+// else the probed one nearest the MULE's height; -1 when none was probed. skipped_raised: probed candidates skipped as raised
+// (melee |dz| > 0.8, gun pitch > 14).
+struct PlaceProbe {
+    bool ok = false;
+    double dz = 0, horiz = 0, pitch = 0;
+    bool los = false;
+};
+inline bool PlaceRaised(int code, const PlaceProbe& p) noexcept {
+    return p.ok && (MeleeArm(code) ? std::fabs(p.dz) > 0.8 : p.pitch > 14.0);
+}
+inline int PlaceChoose(int code, int n, const PlaceProbe* p, int* skipped_raised, int start = 0) noexcept {
+    if (skipped_raised) *skipped_raised = 0;
+    if (!p || n <= 0) return -1;
+    if (start < 0) start = 0;
+    auto at = [&](int i) { return (start + i) % n; };
+    auto good = [&](const PlaceProbe& q) { return q.ok && ArmHerOk(code, GeomValidMargin(code, true, q.dz, q.horiz, 0, q.pitch), q.horiz); };
+    int raised = 0, first_nolos = -1, best = -1;
+    for (int i = 0; i < n; ++i) {
+        const PlaceProbe& q = p[at(i)];
+        if (PlaceRaised(code, q)) ++raised;
+    }
+    if (skipped_raised) *skipped_raised = raised;
+    for (int i = 0; i < n; ++i) {
+        const int k = at(i);
+        if (!good(p[k])) continue;
+        if (p[k].los) return k;
+        if (first_nolos < 0) first_nolos = k;
+    }
+    if (first_nolos >= 0) return first_nolos;
+    for (int i = 0; i < n; ++i) {
+        const int k = at(i);
+        if (p[k].ok && (best < 0 || std::fabs(p[k].dz) < std::fabs(p[best].dz))) best = k;
+    }
+    return best;
+}
+// The MULE's motion from successive reads (ms, yaw rad, x, y): its yaw rate (deg/s) and velocity (m/s), smoothed (about 200 ms at
+// the 50 ms poll); a gap over 400 ms starts again.
+struct MuleMotion {
+    double t = -1, yaw = 0, x = 0, y = 0;
+    double rate = 0, vx = 0, vy = 0;
+    bool have = false;
+};
+inline void MotionStep(MuleMotion& m, double t_ms, double yaw, double x, double y) noexcept {
+    if (!std::isfinite(yaw) || !std::isfinite(x) || !std::isfinite(y)) return;
+    const double dt = (t_ms - m.t) / 1000.0;
+    if (m.t >= 0 && dt >= 0.03 && dt <= 0.4) {
+        double dy = yaw - m.yaw;
+        while (dy > kPi) dy -= 2 * kPi;
+        while (dy < -kPi) dy += 2 * kPi;
+        const double r = dy * 180.0 / kPi / dt, vx = (x - m.x) / dt, vy = (y - m.y) / dt;
+        const double a = m.have ? 0.4 : 1.0;
+        m.rate += a * (r - m.rate), m.vx += a * (vx - m.vx), m.vy += a * (vy - m.vy);
+        m.have = true;
+    } else if (m.t >= 0 && dt < 0.03 && dt >= 0) {
+        return;  // too close to the last read: kept for the next one
+    } else {
+        m.rate = 0, m.vx = 0, m.vy = 0, m.have = false;
+    }
+    m.t = t_ms, m.yaw = yaw, m.x = x, m.y = y;
+}
+// The yaw lead (deg): rate x kPlaceLeadS, clamped to +-kPlaceLeadDegMax (0 without a rate).
+inline double PlaceLeadDeg(const MuleMotion& m) noexcept {
+    if (!m.have) return 0;
+    const double d = m.rate * kPlaceLeadS;
+    return d > kPlaceLeadDegMax ? kPlaceLeadDegMax : d < -kPlaceLeadDegMax ? -kPlaceLeadDegMax : d;
+}
+// The place lead (m, x / y): velocity x kPlaceLeadS, its length clamped to kPlaceLeadMMax.
+inline void PlaceLeadM(const MuleMotion& m, double* dx, double* dy) noexcept {
+    double x = m.have ? m.vx * kPlaceLeadS : 0, y = m.have ? m.vy * kPlaceLeadS : 0;
+    const double l = std::sqrt(x * x + y * y);
+    if (l > kPlaceLeadMMax) x *= kPlaceLeadMMax / l, y *= kPlaceLeadMMax / l;
+    *dx = x, *dy = y;
+}
+// Her point: `dist` m from the MULE's place (mx, my) along its facing `yaw` (rad) turned `deg`; she faces the MULE (fx, fy).
+struct PlacePt {
+    double x = 0, y = 0, fx = 0, fy = 0;
+};
+inline PlacePt PlacePoint(double mx, double my, double yaw, double dist, double deg) noexcept {
+    const double a = yaw + deg * kPi / 180.0, ux = std::cos(a), uy = std::sin(a);
+    return PlacePt{mx + ux * dist, my + uy * dist, -ux, -uy};
+}
+// Her synced body (x, y) within kPlaceArriveM of the point sent.
+inline bool PlaceArrived(double hx, double hy, double px, double py) noexcept {
+    const double dx = hx - px, dy = hy - py;
+    return dx * dx + dy * dy <= kPlaceArriveM * kPlaceArriveM;
+}
+// After the start (TF0, TF1, CL): she is out of its view, so op 11 places her again: her bearing over 20 deg (gun) / 35 deg (melee)
+// or her farther than 30 m / 8 m (an unknown bearing: no).
+inline bool KeepViewArm(int code) noexcept { return code == 3 || code == 4 || code == 9; }
+inline bool KeepViewOff(int code, double bearing, double horiz) noexcept {
+    if (bearing < 0) return false;
+    return MeleeArm(code) ? bearing > 35.0 || horiz > 8.0 : bearing > 20.0 || horiz > 30.0;
+}
+// Our Sam placed again for TF0 / TF1 after she was placed again: only when the angle at the MULE between them left 30..50 deg.
+inline bool SamSepOff(double sep) noexcept { return sep < 30.0 || sep > 50.0; }
 
 // ---- run 2 (round 27): the re-calm (enemy_l1 6). One 500 ms reading of the target MULE, its camp and its knowledge.
 inline constexpr double kCalmHoldMs = 1500;   // quiet this long: ready

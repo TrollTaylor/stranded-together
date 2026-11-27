@@ -1,4 +1,4 @@
-"""Round 27 run 3 gate (docs/enemy-sync.md 16.6): the arm table and PASS / FAIL / INVALID per gate item (two-games-enemy-target).
+"""Round 27 run 3 / 4 gate (docs/enemy-sync.md 16.6): the arm table and PASS / FAIL / INVALID per gate item (two-games-enemy-target).
 
     python -I tools/testenv/enemy-target-gate.py <run folder>
 
@@ -51,7 +51,16 @@ the "[enemy] pstim / spv1 / tgt ..." and "[seh] ..." lines. Gate items:
             it: INCONCLUSIVE; not noticed with her bearing > 45 deg off its facing (outside the melee cone): INCONCLUSIVE;
             otherwise (a missed or late notice in the cone, or |dz| > 1) FAIL
   soft      both games: the soft counters (onhit_bad, psr_rec_bad, turn_goal_bad; their totals) all 0, else INCONCLUSIVE (the
-            host's "tgt onhit_bad first" once-line is printed with it)
+            host's "tgt onhit_bad first" once-line is printed with it); M3f: "onhit_odd" (an attacker of the game's whose +0x338
+            is not the game's) is an INFO item with its "tgt onhit odd first" once-line
+  M3f       (pick bits 16, the line-of-sight keep, and 32, her record from ours; docs/enemy-sync.md 16.2 / 16.6) "TB phase 0:
+            both visible": the last watch line before the Sam step has her bucket record <= 1.5 s old or the line of sight clear
+            <= 0.5 s old ("; sight bucket b s los v a s"), else INVALID with TB sticky and the other phase-0 items (no suffix:
+            INCONCLUSIVE); TB sticky's switch note adds the sight fields; "TB phase 0: bit 32" FAILs when the SIGHT line after
+            op 7 counts synth > 0 and the shoot line no actor-branch call; "TB sight" (INFO) prints the raycast's self-test, the
+            "tgt pick 16 / 32" transitions and the SIGHT numbers, and FAILs only when the key (the "[config]" line, else
+            session-host-deployed.ini) has bit 16, TB counts and the self-test is missing or failed; CL prints the PLACE's
+            ground probe (the chosen candidate, the raised ones skipped). INFO items never change the exit code.
   rays      TA, TB, TF0, TF1 (the arms whose verdict counts rounds): every round attributed by its ray (rays == fired), else
             INCONCLUSIVE (the rest fell back to the sample line)
 An arm says nothing (its items INVALID, not FAIL) when: its own geometry line (logged at its start, by that arm's rule) says
@@ -60,7 +69,9 @@ stimulus lost during it (their calm and pv_start do not count; TF0 / TF1 also ne
 line to her (the geometry line's "sep"; older lines: his bearing off its facing)); for TA, CL and TE (CALM_NEEDED: the notice
 needs a calm MULE) a re-calm that timed out (calm_timeout=1) or a watch that was not valid; for CH and TX her stimulus lost
 during the arm (their calm need not be ready); CS has no stimulus. TX (the redirects off), CH (her level 5 m in front of
-02029) and CS (Sam in front, no stimulus) are printed, not gated. Printed too: op 11's "tgt arm-at-geometry" line per arm,
+02029) and CS (Sam in front, no stimulus) are printed, not gated. Printed too: op 11's "tgt arm-at-geometry" line per arm (run
+4: for CL, TF0, TF1 and TB op 11 places her by SCB1 PLACEs, 6 s at most, then keeps CL / TF0 / TF1 in view; the per-arm PLACE
+counts, the "kept in view" line and the guest's placed / refused counts are printed, not gated),
 the calm end lines, the probe's byte-check line and the once-lines (shoot 32, onhit_bad first, mismatch). The redirect /
 reorder totals are the sums of the 5 s "[enemy] tgt: ..." lines; per arm, the sums of those within the arm (every MULE) and the
 arm MULE's own bit-32 numbers (its shoot line at the arm's end). Exit 0 all PASS; 1 any FAIL or an arm line missing; 3 no FAIL
@@ -97,30 +108,52 @@ CHANGE = re.compile(r"\[enemy\] tgt id=([0-9A-F]{5}) -> (\S+) \(([^)]*)\)")
 GEOM = re.compile(r"\[enemy\] tgt geometry id=([0-9A-F]{5}) \(([^)]*)\): her dz ([0-9.\-]+) m horiz ([0-9.\-]+) m pitch ([0-9.\-]+) bearing ([0-9.\-]+) "
                   r"valid (\d)(?:; Sam dz ([0-9.\-]+) m horiz ([0-9.\-]+) m bearing ([0-9.\-]+))?(?: pitch ([0-9.\-]+))?(?:; rule (\w+) \((\w+)\))?"
                   r"(?:; sep ([0-9.\-]+))?")
-# run 3: op 11's one line before the arm's start (her valid after n ms / not valid in 2500 ms / not judged (CS)), or cancelled
-ARMGEO = re.compile(r"\[enemy\] tgt arm-at-geometry (\w+|\?) id=([0-9A-F]{5}): (her valid after (\d+) ms|her not valid in 2500 ms|"
+# run 3: op 11's one line before the arm's start (her valid after n ms / not valid in 2500 ms / not judged (CS)), or cancelled;
+# run 4: the placed arms (CL, TF0, TF1, TB) "not valid in 6000 ms" and "...; k places)" in the parentheses
+ARMGEO = re.compile(r"\[enemy\] tgt arm-at-geometry (\w+|\?) id=([0-9A-F]{5}): (her valid after (\d+) ms|her not valid in \d+ ms|"
                     r"her not judged \(a Sam arm|cancelled \(([^)]*)\))(.*)$")
+# run 4: op 11's PLACEs to the guest (host: sent, per arm; "kept in view" after the start), its end line, and the guest's answer
+PLACE_SENT = re.compile(r"\[enemy\] tgt place #\d+ id=[0-9A-F]{5} \((\w+|\?), (op 11|kept in view)\): sent ")
+PLACE_NOT = re.compile(r"\[enemy\] tgt place id=[0-9A-F]{5} \((\w+|\?), [^)]*\): not sent \((.*)\)$")
+KEPT = re.compile(r"\[enemy\] tgt arm (\w+|\?) id=[0-9A-F]{5}: kept in view: (\d+) re-places \((.*)\)$")
+# (": refused: <teleport text>" and " refused (<why>)" refused; ": <teleport text>" placed; ": refused" tried before ": ")
+PLACE_RX = re.compile(r"\[enemy\] place #\d+ id=[0-9A-F]{5} \(arm (\w+|\?)\)(: refused| refused|: )")
 WATCH = re.compile(r"\[probe\] L1 watch id=([0-9A-F]{5}) t=[0-9.\-]+: .*?faces her (-?\d+) deg")
 # the same line's distances and its youngest PlayerVisual entry (who, age): "her 13.0 m Sam 11.8 m; PV 1 at her 0.0 m id 00000 age 1.5"
 WATCH_X = re.compile(r"; her ([0-9.\-]+) m Sam ([0-9.\-]+) m; PV (-?\d+) at (\w+) [0-9.\-]+ m id \w+ age ([0-9.\-]+)")
+# (M3f) the host's sight suffix: her bucket record's age (s), the line-of-sight verdict and its age (s; "-" none)
+WATCH_S = re.compile(r"; sight bucket ([\d.]+|-) s los (\w+) ([\d.]+|-) s")
+# (M3f) pick bits 16 / 32: the line-of-sight keep and her record from ours. The SIGHT line (op 7 and op 8, after the shoot line),
+# the verdict changes, the bit transitions, the raycast's self-test, op 11's TB "her seen" wait, the config key
+SIGHT = re.compile(r"\[enemy\] tgt id=([0-9A-F]{5}) sight: los clear (\d+) blocked (\d+) out (\d+) low_vis (\d+); keeps (\d+) synth (\d+) "
+                   r"skip (\d+); her bucket last ([\d.]+|-) s \(gap lead (\d+) tail (\d+) ms\)(?:; (rec \+0x24 .*))?")
+LOS = re.compile(r"\[enemy\] tgt los id=([0-9A-F]{5}) her (\w+) \((.*)\)$")
+PICKBIT = re.compile(r"\[enemy\] tgt pick (16|32) \([^)]*\): (on|off) \((.*)\)$")
+SELFTEST = re.compile(r"\[enemy\] tgt los self-test: (ok|failed) (.*)$")
+SEEN = re.compile(r"\[enemy\] tgt arm (\w+): her (seen|not seen) (.*)$")
+CONFIG_PICK = re.compile(r"\[config\] .*\benemy_target_pick=(\d+)")
+# (M3f) the PLACE line's ground probe: the chosen point's dz, the chosen candidate (-1: none valid, the cycling one) and the raised
+PLACE_PROBE = re.compile(r"; ground dz (\S+) \(probe ([^)]*)\), chosen (-?\d+) of (\d+), skipped (\d+) raised")
 CALM_END = re.compile(r"\[probe\] L1 calm #(\d+) id=([0-9A-F]{5}): (ready|timeout) \((.*)$")
 CALM_APPLY = re.compile(r"\[probe\] L1 calm #(\d+) id=([0-9A-F]{5}): phase 0 on (-?\d+) members, the CP (.*)$")
 PROBE_CHECKS = re.compile(r"\[probe\] L1 byte checks \((\d+)\): (.*)$")
 # run 3: the once-lines (the first of each)
 ONCE = re.compile(r"\[enemy\] tgt (shoot 32: the job's carrier has vtable .*|shoot 32: carrier .* is not a registered MULE|onhit_bad first: .*|"
-                  r"mismatch id=.*)$")
+                  r"onhit odd first: .*|mismatch id=.*)$")
 SUMMARY = re.compile(r"\[enemy\] tgt(?: status| arm end)?: engaging her (\d+), Sam (\d+); reorders (\d+); suppress (\d+); redirects 1:(\d+) "
                      r"2a:(\d+) \(offset (\d+)\) 2b:(\d+) 4:(\d+) \(not ours (\d+)\) veh:(\d+); h5 (\d+) h2 (\d+)/(\d+) \(no type-1 bucket (\d+)\) "
                      r"forced (\d+); registered (\d+); faults (\d+); mismatch (\d+); table clears (\d+)"
                      r"(?:; shoot 32: calls (\d+) redirected (\d+) points (\d+) \(at her (\d+) Sam (\d+) none (\d+)\); "
                      r"soft onhit_bad (\d+) psr_rec_bad (\d+) turn_goal_bad (\d+))?"
                      r"(?:; shoot32 vt_other (\d+) noslot (\d+))?"  # run 3: bit 32's carrier filter (totals)
-                     r"(?:; t36 (\d+))?")  # run 3 review: the type-0x36 branch (total)
+                     r"(?:; t36 (\d+))?"  # run 3 review: the type-0x36 branch (total)
+                     r"(?:; sight keeps (\d+) synth (\d+) skip (\d+) rays (\d+); onhit_odd (\d+))?")  # M3f: bits 16 / 32 (totals)
 SUM_NAMES = ("her", "sam", "reorders", "suppress", "r1", "r2a", "r2a_offset", "r2b", "r4", "r4_not_ours", "veh", "h5", "h2_refuse", "h2_fix",
              "h2_nobucket", "forced", "registered", "faults", "mismatch", "table_clears", "sh_calls", "sh_redir", "sh_pts", "pt_her", "pt_sam",
-             "pt_none", "onhit_bad", "psr_rec_bad", "turn_goal_bad", "vt_other", "noslot", "t36")
+             "pt_none", "onhit_bad", "psr_rec_bad", "turn_goal_bad", "vt_other", "noslot", "t36", "keeps", "synth", "synth_skip", "rays",
+             "onhit_odd")
 SUM_LAST = ("registered", "faults", "mismatch", "table_clears", "onhit_bad", "psr_rec_bad", "turn_goal_bad", "vt_other",
-            "noslot", "t36")  # totals already: the last value
+            "noslot", "t36", "keeps", "synth", "synth_skip", "rays", "onhit_odd")  # totals already: the last value
 SOFT = ("onhit_bad", "psr_rec_bad", "turn_goal_bad")
 REDIR = re.compile(r"\[enemy\] tgt redirect (\S+) \(([^)]*)\): (.*)$")
 SAM_STEP = re.compile(r"action enemy_look -1[01] 15\b")  # run 3: -11 15 25 (off its line to her); older runs -10 15
@@ -146,6 +179,11 @@ def fnum(x):
     return float(x) if x is not None else None
 
 
+def fdash(x):
+    """'1.5' -> 1.5, '-' / None -> None"""
+    return float(x) if x not in (None, "-") else None
+
+
 class Game:
     def __init__(self, path):
         self.lines = lines(path)
@@ -161,11 +199,22 @@ class Game:
         self.seh_tests = []
         self.seh_max, self.seh_last, self.seh_first_over = 0, None, None
         self.armgeo = {}      # label -> (line, text) (run 3: op 11)
+        self.places = {}      # (run 4) label -> [op 11 PLACEs sent, kept-in-view PLACEs sent, not sent, the first not-sent reason]
+        self.kept = {}        # (run 4) label -> (re-places, why it ended)
+        self.place_rx = {}    # (run 4, the guest) label -> [placed, refused]
         self.watches = []     # (line, id, faces her deg, her m, Sam m, PV who, PV age s; the last four None when not read)
         self.calm_ends, self.calm_applies = [], []  # (line, n, id, text)
         self.probe_checks = None
         self.onces = {}       # kind (vt_other, noslot, onhit_bad, mismatch) -> [line, text of the first, count]
         self.has_vt = False   # run 3: the summaries carry "shoot32 vt_other / noslot"
+        self.has_sight = False  # M3f: the summaries carry "sight keeps ..."
+        self.sights = []      # (M3f) (line, id, {...}) the SIGHT lines
+        self.los = []         # (M3f) (line, id, verdict, text)
+        self.pickbits = []    # (M3f) (line, bit, on, why)
+        self.selftest = None  # (M3f) (ok|failed, text) the first
+        self.seen = []        # (M3f) (line, label, seen|not seen, text)
+        self.ini_pick = None  # (M3f) the "[config] ... enemy_target_pick=n" key
+        self.place_probe = {}  # (M3f) label -> [(chosen, of, skipped, ground dz text, probe text)] per PLACE sent
         for i, line in enumerate(self.lines):
             m = RESULT.search(line)
             if m:
@@ -176,12 +225,62 @@ class Game:
             m = WATCH.search(line)
             if m:
                 x = WATCH_X.search(line)
+                s = WATCH_S.search(line)
                 self.watches.append((i, m.group(1), int(m.group(2))) + ((float(x.group(1)), float(x.group(2)), x.group(4), float(x.group(5)))
-                                                                         if x else (None, None, None, None)))
+                                                                         if x else (None, None, None, None)) +
+                                    ((fdash(s.group(1)), s.group(2), fdash(s.group(3))) if s else (None, None, None)))
                 continue
+            m = SIGHT.search(line)
+            if m:
+                g = m.groups()
+                self.sights.append((i, g[0], {"clear": int(g[1]), "blocked": int(g[2]), "out": int(g[3]), "low_vis": int(g[4]), "keeps": int(g[5]),
+                                              "synth": int(g[6]), "skip": int(g[7]), "last": fdash(g[8]), "lead": int(g[9]), "tail": int(g[10]),
+                                              "rec": g[11].strip() if g[11] else None}))
+                continue
+            m = LOS.search(line)
+            if m:
+                self.los.append((i, m.group(1), m.group(2), m.group(3)))
+                continue
+            m = PICKBIT.search(line)
+            if m:
+                self.pickbits.append((i, int(m.group(1)), m.group(2) == "on", m.group(3)))
+                continue
+            m = SELFTEST.search(line)
+            if m:
+                if self.selftest is None:
+                    self.selftest = (m.group(1), m.group(2))
+                continue
+            m = SEEN.search(line)
+            if m:
+                self.seen.append((i, m.group(1), m.group(2), m.group(3)))
+                continue
+            m = CONFIG_PICK.search(line)
+            if m and self.ini_pick is None:
+                self.ini_pick = int(m.group(1))
             m = ARMGEO.search(line)
             if m:
                 self.armgeo[m.group(1)] = (i, line[m.start():].replace("[enemy] tgt arm-at-geometry ", ""))
+                continue
+            m = PLACE_SENT.search(line)
+            if m:
+                self.places.setdefault(m.group(1), [0, 0, 0, None])[0 if m.group(2) == "op 11" else 1] += 1
+                x = PLACE_PROBE.search(line)
+                if x:
+                    self.place_probe.setdefault(m.group(1), []).append((int(x.group(3)), int(x.group(4)), int(x.group(5)), x.group(1), x.group(2)))
+                continue
+            m = PLACE_NOT.search(line)
+            if m:
+                pl = self.places.setdefault(m.group(1), [0, 0, 0, None])
+                pl[2] += 1
+                pl[3] = pl[3] or m.group(2)
+                continue
+            m = KEPT.search(line)
+            if m:
+                self.kept[m.group(1)] = (int(m.group(2)), m.group(3))
+                continue
+            m = PLACE_RX.search(line)
+            if m:
+                self.place_rx.setdefault(m.group(1), [0, 0])[0 if m.group(2) == ": " else 1] += 1
                 continue
             m = CALM_END.search(line)
             if m:
@@ -199,7 +298,7 @@ class Game:
             if m:
                 t = m.group(1)
                 kind = ("vt_other" if "has vtable" in t else "noslot" if "not a registered" in t else
-                        "onhit_bad" if t.startswith("onhit_bad") else "mismatch")
+                        "onhit_bad" if t.startswith("onhit_bad") else "onhit_odd" if t.startswith("onhit odd") else "mismatch")
                 if kind in self.onces:
                     self.onces[kind][2] += 1
                 else:
@@ -269,6 +368,8 @@ class Game:
                 vals = dict((k, int(v)) for k, v in zip(SUM_NAMES, m.groups()) if v is not None)
                 if "vt_other" in vals:
                     self.has_vt = True
+                if "keeps" in vals:
+                    self.has_sight = True
                 self.summaries.append((i, vals))
                 for k, v in vals.items():
                     if k in SUM_LAST:
@@ -572,6 +673,20 @@ def main(argv):
                     faces, last[5] or "?", ("%.1f" % last[6]) if last[6] is not None else "?")
             else:
                 tb_note = "; no watch line before the switch"
+    # (M3f) the arm MULE's SIGHT line right after op 7 (its phase-0 numbers: op 4 / 11 reset them at the start)
+    sight_tb = None
+    if marker is not None:
+        sight_tb = next((d for i, sid, d in host.sights if marker < i <= marker + 40 and sid == tb_id), None)
+    if to_sam and not inv["TB"] and tb_note and "PlayerVisual bucket" in tb_note:
+        last = [w for w in host.watches if s0 < w[0] < to_sam[0][0] and w[1] == tb_id][-1]
+        if last[8] is not None:
+            tb_note += "; sight at that watch: bucket %s s, los %s %s s" % (
+                ("%.1f" % last[7]) if last[7] is not None else "-", last[8], ("%.1f" % last[9]) if last[9] is not None else "-")
+        if sight_tb:
+            tb_note += "; phase 0 sight: los clear %d blocked %d out %d low_vis %d, keeps %d synth %d skip %d%s" % (
+                sight_tb["clear"], sight_tb["blocked"], sight_tb["out"], sight_tb["low_vis"], sight_tb["keeps"], sight_tb["synth"], sight_tb["skip"],
+                " (the line of sight never kept her: blocked or out of its view)" if sight_tb["keeps"] == 0 else
+                " (kept by the line of sight, then lost: the estimate stopped being clear)")
     g7 = next((g for g in host.geoms if g["i"] == marker), None) if marker is not None else None
     if not to_sam and not inv["TB"] and g7 and not (f7 and f7[3] > 0):
         if g7["sam_horiz"] is None:
@@ -591,28 +706,93 @@ def main(argv):
         why = "-> her before the Sam step: %s; %s; flips at op 7: %s%s" % (
             "yes" if her_first else "NO", ("%d logged switch(es) to Sam (%s)" % (len(to_sam), to_sam[0][3])) if to_sam else "none logged to Sam",
             f7[3] if f7 else "no line", tb_note)
-    gate("TB sticky her", marker is not None and bool(her_first) and not to_sam and bool(f7) and f7[3] == 0, why, inv["TB"])
+    # (M3f) TB phase 0's precondition (run 175849: her record had left its bucket ~9.7 s before our Sam stepped out, so phase 0 was
+    # never "both visible"): the last watch line before the Sam step has her bucket record <= 1.5 s old, or the line of sight
+    # clear <= 0.5 s old. Not seen: INVALID, and so the other phase-0 items (sticky, rounds, bit 32); no sight suffix (an older
+    # build): INCONCLUSIVE, the others graded as before.
+    p0_inv = None
+    prior_s = [w for w in host.watches if s0 is not None and sam_step is not None and s0 < w[0] < sam_step and w[1] == tb_id]
+    lw = prior_s[-1] if prior_s else None
+    seen_l = [x for x in host.seen if x[1] == "TB" and (s0 is None or x[0] < s0)]
+    seen_txt = ("; op 11: her %s %s" % (seen_l[-1][2], seen_l[-1][3])) if seen_l else ""
+    if sam_step is None or lw is None:
+        gate("TB phase 0: both visible", "INCONCLUSIVE", "no watch line before the Sam step" + seen_txt, inv["TB"])
+    elif lw[8] is None:
+        gate("TB phase 0: both visible", "INCONCLUSIVE", "no sight suffix on the watch line (an older build)" + seen_txt, inv["TB"])
+    else:
+        bucket, los, los_age = lw[7], lw[8], lw[9]
+        ok_p0 = (bucket is not None and bucket <= 1.5) or (los == "clear" and los_age is not None and los_age <= 0.5)
+        why_p0 = "at the last watch before the Sam step: her bucket record %s s old, los %s %s s%s" % (
+            ("%.1f" % bucket) if bucket is not None else "-", los, ("%.1f" % los_age) if los_age is not None else "-", seen_txt)
+        if ok_p0 or inv["TB"]:
+            gate("TB phase 0: both visible", True, why_p0, inv["TB"])
+        else:
+            p0_inv = "her not seen by it when our Sam stepped out (%s)" % why_p0
+            gate("TB phase 0: both visible", True, why_p0, "her not seen by it when our Sam stepped out")
+    inv_p0 = inv["TB"] or p0_inv
+    gate("TB sticky her", marker is not None and bool(her_first) and not to_sam and bool(f7) and f7[3] == 0, why, inv_p0)
     # TB phase 0 (her visible; Sam far, then in view at 15 m): no round at Sam
     fp, hp, sp = phases(tb, "fired_p"), phases(tb, "at_her_p"), phases(tb, "at_sam_p")
     if not fp or not sp:
-        gate("TB phase 0: no round at Sam", "INCONCLUSIVE", "no fired_p / at_sam_p on its result line (an older build)", inv["TB"])
+        gate("TB phase 0: no round at Sam", "INCONCLUSIVE", "no fired_p / at_sam_p on its result line (an older build)", inv_p0)
     else:
         res = "INCONCLUSIVE" if fp[0] == 0 else sp[0] == 0
-        gate("TB phase 0: no round at Sam", res, "phase 0 fired %d at her %d at Sam %d" % (fp[0], hp[0] if hp else -1, sp[0]), inv["TB"])
+        gate("TB phase 0: no round at Sam", res, "phase 0 fired %d at her %d at Sam %d" % (fp[0], hp[0] if hp else -1, sp[0]), inv_p0)
     # (run 3) TB phase 0's bit 32: the arm MULE's shoot line right after op 7 (op 4 / 11 reset its counts at the start, so these
     # are phase 0's numbers): with Sam 15 m away and visible, the decisive bit-32 item
     sh_tb = None
     if marker is not None:
         sh_tb = next((d for i, sid, d in host.shoots if marker < i <= marker + 40 and sid == tb_id), None)
     sp0 = sp[0] if sp else 0
+    synth0 = sight_tb["synth"] if sight_tb else 0
+    sight_txt = ("; sight keeps %d synth %d skip %d" % (sight_tb["keeps"], synth0, sight_tb["skip"])) if sight_tb else ""
     if not sh_tb:
-        gate("TB phase 0: bit 32", "INCONCLUSIVE", "no shoot line after the op 7 marker (an older build)", inv["TB"])
+        gate("TB phase 0: bit 32", "INCONCLUSIVE", "no shoot line after the op 7 marker (an older build)", inv_p0)
+    elif sh_tb["calls"] == 0 and synth0 > 0:
+        # (M3f) her record was written from ours (the game had her as its sensed target) and no SetTargetActor(0) call: graded
+        # on where the shots went (M3f review). The job aiming through its place branch at her stimulus is the outcome the synth
+        # is for (TF1 run 175849: 30/30 at her, actor 0); a point or a round at Sam FAILs; no point or round at her proves nothing.
+        p0_fired = fp[0] if fp else 0
+        to_sam0 = sp0 > 0 or sh_tb["at_sam"] > 0 or sh_tb["last"] == "Sam"
+        if to_sam0:
+            gate("TB phase 0: bit 32", False, "synth wrote her record (%d) but the shot went to Sam (no actor call to redirect); shoot %s; "
+                 "phase 0 rounds at Sam %d%s" % (synth0, shoot_text(sh_tb), sp0, sight_txt), inv_p0)
+        elif p0_fired == 0 or sh_tb["at_her"] == 0 or not (sh_tb["place"] or 0):
+            gate("TB phase 0: bit 32", "INCONCLUSIVE", "synth wrote her record (%d), no actor call, but no point at her or no round in "
+                 "phase 0 (fired %d); shoot %s%s" % (synth0, p0_fired, shoot_text(sh_tb), sight_txt), inv_p0)
+        else:
+            gate("TB phase 0: bit 32", True, "synth kept her (place branch only, no actor call to redirect): synth %d; shoot %s; phase 0 "
+                 "fired %d, at Sam 0%s" % (synth0, shoot_text(sh_tb), p0_fired, sight_txt), inv_p0)
     elif sh_tb["calls"] == 0:
-        gate("TB phase 0: bit 32", "INCONCLUSIVE", "%s in phase 0; shoot %s" % (
-            "the type-0x36 branch (no SetTargetActor)" if (sh_tb.get("t36") or 0) > 0 else "no actor-branch call", shoot_text(sh_tb)), inv["TB"])
+        gate("TB phase 0: bit 32", "INCONCLUSIVE", "%s in phase 0; shoot %s%s" % (
+            "the type-0x36 branch (no SetTargetActor)" if (sh_tb.get("t36") or 0) > 0 else "no actor-branch call", shoot_text(sh_tb), sight_txt),
+             inv_p0)
     else:
         gate("TB phase 0: bit 32", sh_tb["redirected"] > 0 and sh_tb["at_sam"] == 0 and sp0 == 0,
-             "shoot %s; phase 0 rounds at Sam %d" % (shoot_text(sh_tb), sp0), inv["TB"])
+             "shoot %s; phase 0 rounds at Sam %d%s" % (shoot_text(sh_tb), sp0, sight_txt), inv_p0)
+    # (M3f) "TB sight" (information): the raycast's self-test, the bit transitions and TB's phase-0 sight numbers. FAIL only when
+    # the key has bit 16, TB counts and the self-test is missing or failed (bit 16 never came on)
+    pick = host.ini_pick
+    if pick is None:
+        for ln in lines(os.path.join(run, "session-host-deployed.ini")):
+            mm = re.match(r"\s*enemy_target_pick\s*=\s*(\d+)", ln)
+            if mm:
+                pick = int(mm.group(1))
+    st = host.selftest
+    bits = ", ".join("%d %s at %s" % (b, "on" if on else "off", ("%.1f s" % (ts_ms(host.lines[i]) / 1000.0)) if ts_ms(host.lines[i]) is not None else "?")
+                     for i, b, on, _ in host.pickbits) or "no pick 16 / 32 line"
+    los_tb = [x for x in host.los if x[1] == tb_id and s0 is not None and marker is not None and s0 < x[0] < marker]
+    why_s = "pick key %s; self-test %s; bits %s; TB phase 0 los changes %d%s%s" % (
+        pick if pick is not None else "-", ("%s %s" % st) if st else "none", bits, len(los_tb),
+        (" (last: her %s)" % los_tb[-1][2]) if los_tb else "",
+        ("; sight clear %d blocked %d out %d low_vis %d keeps %d synth %d skip %d, her bucket last %s s (lead %d tail %d ms)" % (
+            sight_tb["clear"], sight_tb["blocked"], sight_tb["out"], sight_tb["low_vis"], sight_tb["keeps"], sight_tb["synth"], sight_tb["skip"],
+            ("%.1f" % sight_tb["last"]) if sight_tb["last"] is not None else "-", sight_tb["lead"], sight_tb["tail"]) +
+         (("; synth %s" % sight_tb["rec"]) if sight_tb.get("rec") else "")) if sight_tb else "; no SIGHT line")
+    if pick is not None and pick & 16 and not inv["TB"] and (st is None or st[0] != "ok"):
+        gate("TB sight", False, why_s + " (bit 16 in the key, the raycast's self-test %s)" % ("missing" if st is None else "failed"))
+    else:
+        gate("TB sight", "INFO", why_s if (pick is not None and pick & 16) else why_s + " (bit 16 not in the key)")
     sw_s, sw_h = num(tb, "switch_sam"), num(tb, "switch_her")
     why_sw = "switch_sam %s; phase 1 fired %s at Sam %s at her %s" % (
         tb.get("switch_sam", "-"), fp[1] if fp else "-", sp[1] if sp else "-", hp[1] if hp else "-")
@@ -751,6 +931,10 @@ def main(argv):
             ("%.0f" % dly) if dly is not None else "-")
         if n_cl >= 0 and dly is not None:
             why += " (%.0f ms after the stimulus)" % adj
+        pcl = host.place_probe.get("CL")
+        if pcl:
+            ch, of, sk, gz, pt = pcl[-1]
+            why += "; last PLACE chose %d of %d, skipped %d raised, ground dz %s (probe %s)" % (ch, of, sk, gz, pt)
         if dly is None:
             res = "INCONCLUSIVE"
             why += "; no 'pstim made' line in the arm"
@@ -778,6 +962,9 @@ def main(argv):
             # (run 3) the first chain's once-line must be there when any occurred
             why_soft += ("; first: %s" % g.onces["onhit_bad"][1]) if "onhit_bad" in g.onces else "; no 'tgt onhit_bad first' line (an older build?)"
         gate("soft " + who, "INCONCLUSIVE" if bad else "PASS", why_soft)
+        if g.has_sight:
+            # (M3f) an attacker of the game's whose +0x338 is not an object of the game's: information only
+            gate("onhit_odd " + who, "INFO", "%d%s" % (g.sums["onhit_odd"], ("; first: %s" % g.onces["onhit_odd"][1]) if "onhit_odd" in g.onces else ""))
     for label in ("TA", "TB", "TF0", "TF1"):
         a = arms.get(label, {})
         if a.get("fired") is None or a.get("rays") is None:
@@ -804,7 +991,7 @@ def main(argv):
     print("host calms: %d ready of %d" % (n_ready, len(host.calm_ends)))
     for _, n, cid, t in host.calm_ends:
         print("  calm #%d id=%s: %s | %s" % (n, cid, applies.get(n, "no apply line"), t))
-    for kind in ("vt_other", "noslot", "onhit_bad", "mismatch"):
+    for kind in ("vt_other", "noslot", "onhit_bad", "onhit_odd", "mismatch"):
         if kind in host.onces:
             print("host once %s (%d): %s" % (kind, host.onces[kind][2], host.onces[kind][1]))
     table = [[t for t, _ in COLS]]
@@ -835,6 +1022,16 @@ def main(argv):
         ag = host.armgeo.get(label)
         if ag:
             print("    op 11: %s" % ag[1])
+        for _, lab, what, txt in host.seen:
+            if lab == label:
+                print("    op 11 (M3f): her %s %s" % (what, txt))
+        for ch, of, sk, gz, pt in host.place_probe.get(label, []):
+            print("    PLACE ground probe (M3f): chose %d of %d, skipped %d raised, ground dz %s (probe %s)" % (ch, of, sk, gz, pt))
+        pl, kv, rx = host.places.get(label), host.kept.get(label), guest.place_rx.get(label)
+        if pl or kv or rx:
+            print("    op 11 PLACEs (run 4): sent %d at the start, %d kept in view%s; kept in view %s; the guest placed %d refused %d" % (
+                pl[0] if pl else 0, pl[1] if pl else 0, (", %d not sent (%s)" % (pl[2], pl[3])) if pl and pl[2] else "",
+                ("%d re-places (%s)" % kv) if kv else "-", rx[0] if rx else 0, rx[1] if rx else 0))
         if a:
             n, w = host.arm_sums(label)
             print("    redirects in the arm (%d summaries, every MULE): r1 %d r2a %d r2b %d r4 %d veh %d; bit 32 calls %d redirected %d points %d "

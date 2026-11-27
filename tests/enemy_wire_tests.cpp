@@ -654,6 +654,75 @@ void TestSpv() {
     v.b0 = std::numeric_limits<float>::infinity();
     CHECK(!ewire::EncodeVisibility(v, b, sizeof(b)));
 }
+// round 27 run 4: PLACE (SCB1 type 11, host -> guest; op 11 places her Sam)
+void TestScbPlace() {
+    ewire::ScbHeader hd;
+    hd.guids_fp = 0x55AD7620u, hd.seq = 41;
+    ewire::Place p;
+    p.id = 0x202B, p.seq = 7, p.x = 1603.6125, p.y = -1111.0034, p.yaw = static_cast<float>(-2.5), p.code = 3, p.sender_ms = 123456;
+    std::uint8_t buf[ewire::kScbHeader + ewire::kPlaceSize + 8];
+    const std::size_t size = ewire::EncodePlace(hd, p, buf, sizeof(buf));
+    CHECK(size == ewire::kScbHeader + ewire::kPlaceSize && buf[4] == ewire::kScbPlace && buf[6] == 1);
+    ewire::ScbHeader g;
+    ewire::Place q;
+    CHECK(ewire::DecodeScbHeader(buf, size, g) && g.type == ewire::kScbPlace && g.n == 1 && g.guids_fp == 0x55AD7620u && g.seq == 41);
+    CHECK(ewire::DecodePlace(buf, size, g, q));
+    CHECK(q.id == 0x202B && q.seq == 7 && q.code == 3 && q.sender_ms == 123456);
+    CHECK(std::fabs(q.x - p.x) <= 0.0006 && std::fabs(q.y - p.y) <= 0.0006 && YawErrDeg(q.yaw, p.yaw) < 0.01);
+    // encoder refusals
+    auto enc_bad = [&](void (*f)(ewire::Place&)) {
+        ewire::Place x = p;
+        f(x);
+        return ewire::EncodePlace(hd, x, buf, sizeof(buf)) == 0;
+    };
+    CHECK(enc_bad([](ewire::Place& x) { x.id = 0x4000u | 5; }));  // not an enemy
+    CHECK(enc_bad([](ewire::Place& x) { x.code = 0; }));
+    CHECK(enc_bad([](ewire::Place& x) { x.code = 10; }));
+    CHECK(enc_bad([](ewire::Place& x) { x.x = std::nan(""); }));
+    CHECK(enc_bad([](ewire::Place& x) { x.y = 2.0e6; }));
+    CHECK(enc_bad([](ewire::Place& x) { x.yaw = std::nanf(""); }));
+    CHECK(!enc_bad([](ewire::Place& x) { x.code = 9; }));
+    CHECK(ewire::EncodePlace(hd, p, buf, ewire::kScbHeader + ewire::kPlaceSize - 1) == 0);  // cap
+    // decoder refusals on the wire bytes
+    const std::size_t ok = ewire::EncodePlace(hd, p, buf, sizeof(buf));
+    CHECK(ok == ewire::kScbHeader + ewire::kPlaceSize);
+    auto bad = [&](std::size_t at, std::uint8_t v) {
+        std::uint8_t c[ewire::kScbHeader + ewire::kPlaceSize];
+        std::memcpy(c, buf, ok);
+        c[at] = v;
+        ewire::ScbHeader h2;
+        ewire::Place o;
+        return !ewire::DecodePlace(c, ok, h2, o);
+    };
+    CHECK(bad(16 + 18, 0));    // code 0
+    CHECK(bad(16 + 18, 10));   // code 10
+    CHECK(bad(16 + 19, 1));    // the pad
+    CHECK(bad(16 + 2, 0x10));  // the id's type byte: not an enemy
+    CHECK(bad(6, 2));          // n 2 (and the size)
+    CHECK(bad(4, ewire::kScbOwnReset));  // another type
+    CHECK(!bad(16 + 18, 9));
+    ewire::Place o;
+    CHECK(!ewire::DecodePlace(buf, ok - 1, g, o));  // short
+    {
+        // n 2 with the size to match: refused (PLACE is n 1)
+        std::uint8_t c[ewire::kScbHeader + 2 * ewire::kPlaceSize];
+        std::memcpy(c, buf, ok);
+        std::memcpy(c + ok, buf + ewire::kScbHeader, ewire::kPlaceSize);
+        c[6] = 2;
+        CHECK(!ewire::DecodeScbHeader(c, sizeof(c), g) && !ewire::DecodePlace(c, sizeof(c), g, o));
+    }
+    {
+        // x beyond 2000 km written raw (2.1e9 mm): refused
+        std::uint8_t c[ewire::kScbHeader + ewire::kPlaceSize];
+        std::memcpy(c, buf, ok);
+        const std::uint32_t far = 2100000000u;
+        for (int i = 0; i < 4; ++i) c[16 + 8 + i] = static_cast<std::uint8_t>(far >> (8 * i));
+        CHECK(!ewire::DecodePlace(c, ok, g, o));
+    }
+    // a PLACE is not a HIT / OWN
+    ewire::Own oo[ewire::kOwnMax];
+    CHECK(!ewire::DecodeOwns(buf, ok, g, oo));
+}
 }  // namespace
 
 int main() {
@@ -666,6 +735,7 @@ int main() {
     TestEnemyShots();
     TestScbHits();
     TestScbOthers();
+    TestScbPlace();
     std::printf("%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

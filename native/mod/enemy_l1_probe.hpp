@@ -51,5 +51,6 @@ bool TargetArm(const char* label, std::uint32_t id, double secs, char* msg, std:
 bool TargetArmEnd(char* msg, std::size_t cap) noexcept;
 void TargetArmPhase(bool hidden) noexcept;
 std::uint32_t TargetArmId() noexcept;  // the running target arm's MULE (0 none)
+double TargetArmNoticedMs() noexcept;  // round 27 run 4: the running target arm's notice time (ms after its start; -1 none yet)
 
 }  // namespace st::l1probe

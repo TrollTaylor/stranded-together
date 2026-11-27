@@ -122,10 +122,14 @@ std::size_t EncodeEnemyPose(const EnemyPose& p, std::uint8_t* out, std::size_t c
 //   type 9 OWNACK (guest -> host), the same layout: owner = the owner she now applies, reason 6 (ack), the u16 at +14 = result
 //      (0 taken, 1 released, 2 refused) << 8 | the refusal code (erules::OwnRefuse); place / yaw / vel / phase her copy's after it
 //   type 10 OWNRESET (host -> guest), n 1, 4 B: u32 the new generation (everything is the host's).
-inline constexpr std::size_t kScbHeader = 16, kHitSize = 80, kHitResSize = 12, kOutcomeSize = 24, kOwnSize = 40, kOwnResetSize = 4;
+// Round 27 run 4 (docs/enemy-sync.md 16.6; hidden runs only): op 11 places her Sam itself.
+//   type 11 PLACE (host -> guest), n 1, 24 B: u32 id (the arm's MULE) | u32 place_seq (the host's PLACE count) | i32 x mm | i32 y mm
+//      | u16 the yaw she faces (YawToU16) | u8 the arm code 1..9 | u8 0 | u32 sender_ms. The guest teleports her Sam there (ground
+//      snapped), facing that way. An older peer refuses type 11 in DecodeScbHeader (a bad message, nothing else).
+inline constexpr std::size_t kScbHeader = 16, kHitSize = 80, kHitResSize = 12, kOutcomeSize = 24, kOwnSize = 40, kOwnResetSize = 4, kPlaceSize = 24;
 inline constexpr unsigned kHitMax = 12, kHitResMax = 64, kOutcomeMax = 32, kOwnMax = 16;
 inline constexpr std::size_t kScbMaxSize = kScbHeader + kHitMax * kHitSize;  // 976 B
-enum ScbType : std::uint8_t { kScbOwn = 3, kScbHit = 4, kScbHitRes = 5, kScbOutcome = 6, kScbPhase = 7, kScbResync = 8, kScbOwnAck = 9, kScbOwnReset = 10 };
+enum ScbType : std::uint8_t { kScbOwn = 3, kScbHit = 4, kScbHitRes = 5, kScbOutcome = 6, kScbPhase = 7, kScbResync = 8, kScbOwnAck = 9, kScbOwnReset = 10, kScbPlace = 11 };
 // kKindRestrain (5, round 23, docs/enemy-sync.md 14): "the acting game's copy was tied up (or knocked out) by its own Sam": no damage
 // carried; b180 = the outcome setter's k (0 faint, 2 restrained), depth = the signal (1 the copy's own +0xEA4 read, 2 the fallback:
 // strand weapon 41 + attack 0x15C at contact, 3 a hidden-run test), amount 0; byte 19 stays the zero pad. Sent only to a partner
@@ -182,6 +186,13 @@ struct Own {
     float vel[3] = {};   // m/s
     float health = 0;    // NaN: not carried
 };
+struct Place {
+    std::uint32_t id = 0, seq = 0;
+    double x = 0, y = 0;  // m, world (mm on the wire)
+    float yaw = 0;        // rad: the way she faces
+    std::uint8_t code = 0;  // the arm code 1..9
+    std::uint32_t sender_ms = 0;
+};
 // The encoders return the size, 0 when it does not encode (n out of range, an entry that would not decode).
 std::size_t EncodeHits(const ScbHeader& h, const Hit* hits, unsigned n, std::uint8_t* out, std::size_t cap) noexcept;
 std::size_t EncodeHitRes(const ScbHeader& h, const HitRes* r, unsigned n, std::uint8_t* out, std::size_t cap) noexcept;
@@ -190,7 +201,9 @@ std::size_t EncodeResync(const ScbHeader& h, std::uint8_t* out, std::size_t cap)
 // type kScbOwn or kScbOwnAck (an OWN carries result / refusal 0).
 std::size_t EncodeOwns(const ScbHeader& h, std::uint8_t type, const Own* o, unsigned n, std::uint8_t* out, std::size_t cap) noexcept;
 std::size_t EncodeOwnReset(const ScbHeader& h, std::uint32_t gen, std::uint8_t* out, std::size_t cap) noexcept;
-// Strict: the magic, a known type (4, 5, 6, 8), the version, n in its bounds, byte 7 zero, the exact size. `type`, `n`, the
+// 0 when it does not encode (not an enemy id, a code outside 1..9, a place not finite or beyond kMaxCoordM, a yaw not finite).
+std::size_t EncodePlace(const ScbHeader& h, const Place& p, std::uint8_t* out, std::size_t cap) noexcept;
+// Strict: the magic, a known type (3, 4, 5, 6, 8, 9, 10, 11), the version, n in its bounds, byte 7 zero, the exact size. `type`, `n`, the
 // fingerprint and seq into h.
 bool DecodeScbHeader(const std::uint8_t* d, std::size_t n, ScbHeader& h) noexcept;
 // Strict per entry (an enemy key, AttackOk, a known kind, finite values, |point| <= 8 m, the reserved bytes zero, a known result /
@@ -202,6 +215,8 @@ bool DecodeOutcomes(const std::uint8_t* d, std::size_t n, ScbHeader& h, Outcome 
 // refusal 0..9, phase 0..5 or 0xFF, the flags' high bits zero, a finite place within 2000 km (health may be NaN).
 bool DecodeOwns(const std::uint8_t* d, std::size_t n, ScbHeader& h, Own (&out)[kOwnMax]) noexcept;
 bool DecodeOwnReset(const std::uint8_t* d, std::size_t n, ScbHeader& h, std::uint32_t* gen) noexcept;
+// Strict: n 1 and the exact size (the header's), an enemy id, the code 1..9, the pad byte 0, |x|, |y| < kMaxCoordM.
+bool DecodePlace(const std::uint8_t* d, std::size_t n, ScbHeader& h, Place& out) noexcept;
 // Strict on the header (magic, version, slot 0..7, the reserved word 0, an enemy id) and the STJ1 bytes (wire::DecodeJoints).
 // A frame with another layout hash is decoded with foreign_layout set.
 bool DecodeEnemyPose(const std::uint8_t* d, std::size_t n, EnemyPose& out) noexcept;

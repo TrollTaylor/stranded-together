@@ -72,6 +72,9 @@ std::uint32_t LastHitId() noexcept;                   // the newest HIT's enemy 
 bool DrainsCombat() noexcept;
 bool Vitals(std::uintptr_t entity, float* health, float* stamina) noexcept;
 void Status() noexcept;                               // the `enemy_sync 0` lines
+// Round 27 run 4 (enemy_target.cpp's op 11; hidden runs, the host, game thread): an SCB1 PLACE to the guest: her Sam to (x, y)
+// ground-snapped, facing (fx, fy), for the MULE `id`'s arm `code`. False with the reason in `why`; `seq` the PLACE's number.
+bool SendPlace(std::uint32_t id, double x, double y, double fx, double fy, std::uint8_t code, std::uint32_t* seq, char* why, std::size_t cap) noexcept;
 void OutcomeTable() noexcept;                         // `enemy_sync 4`
 
 // ---- debug actions (docs/debug-actions.md "Enemy hits"; game thread; all but the table hidden runs only)
@@ -102,6 +105,11 @@ bool TargetProbe(const double (&v)[3], char* msg, std::size_t cap) noexcept;
 // 4 <id | 0> <s> the raycast from a copy's eye to our Sam (one call a tick); 5 <id | 0> <s> the host's own MULE: phase, state,
 // facing and knowledge every 0.25 s; 6 [id | 0] [m] the parent chain (+0x70) and ride fields of the MULEs within m (a seated one).
 bool M2Probe(const double (&v)[3], char* msg, std::size_t cap) noexcept;
+// Round 27 M3f (enemy_target's line-of-sight estimate and the placement's ground probe; game thread only): one world ray, the
+// visual sense's filter, from `from` to `to` shortened by trim_m at both ends (P4's eprobe::Shorten; 0 when too short to cast).
+// The hit count (0 clear), `hit` the first hit; -1 a fault (SEH), -2 no physics world, -3 the raycast's byte checks failed or
+// the probes are off after a fault, -4 another negative return.
+int WorldRay(const double (&from)[3], const double (&to)[3], double trim_m, double (&hit)[3], double* len) noexcept;
 
 // Round 25 (docs/enemy-sync.md 14.18), her game, game thread (enemy_sync.cpp): her take of an enemy (TakeBefore before the member's
 // SetPhase, TakeAfter after the unfreeze; alone: a forced take with no other member of its camp hers) and its refreeze when given

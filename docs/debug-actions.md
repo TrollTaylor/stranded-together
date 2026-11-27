@@ -630,6 +630,8 @@ camp), `two-games-enemy-single-walk` and its -know, -camp, -tickets, -hold, -rol
     ([enemy-sync.md](enemy-sync.md) 16.4; run 3: the points by the carrier's mode after them).
   * 8: the arm ends: the probe's `[probe] L1 result arm X id=XXXXX: key=value ...` line and `[enemy] tgt arm X id=XXXXX end: pick
     ..; flips her->Sam n; her bucket gap max n ms`, then that MULE's shoot line.
+    M3f: ops 7 and 8 then log that MULE's SIGHT line: `[enemy] tgt id=XXXXX sight: los clear n blocked n out n low_vis n; keeps n
+    synth n skip n; her bucket last s s (gap lead a tail b ms)` (pick bits 16 / 32; [enemy-sync.md](enemy-sync.md) 16.3).
   * 9 `<n>` (default 50, at most 500): n create / remove cycles of the partner stimulus while her body lives (U15), radius
     ignored, then made again at once by the same op (the usual rules): `[enemy] pstim cycles n: made n removed n faults n[;
     stopped: <why>]; made again #n` (or `; not made again (<why>)`). Refused while a release is pending.
@@ -644,6 +646,19 @@ camp), `two-games-enemy-single-walk` and its -know, -camp, -tickets, -hold, -rol
     `... her not judged (a Sam arm; horiz h m, bearing b); Sam <s>` (CS), where s is `placed 170 m 40 deg off her line`,
     `placed 5 m along its facing`, `not moved` or `not placed (<why>)`. A new op 11, op 4 or op 8 cancels a pending one:
     `[enemy] tgt arm-at-geometry X id=XXXXX: cancelled (<why>)`.
+    Run 4 (CL 9, TF0 3, TF1 4, TB 2; [enemy-sync.md](enemy-sync.md) 16.6): op 11 places her itself with SCB1 PLACEs to the guest
+    (her point from the MULE's own pose 0.35 s ahead, the candidates cycled on a ground miss, >= 900 ms apart, again after 1.2 s
+    when she has not arrived within 2 m) until her geometry holds by the margin rule, 6 s at most; TF0 / TF1 judge her again
+    after our Sam's snap. Lines: `... first poll: her horiz h m bearing b dz z pitch p (<state>)`, `[enemy] tgt place #n
+    id=XXXXX (X, op 11 | kept in view): sent ...` or `... not sent (<why>)`, the end line with `; k places` in its parentheses
+    (`her not valid in 6000 ms`). After the start CL / TF0 / TF1 keep her in view (placed again when she leaves its view) until
+    it picks or notices her, 6 s or op 4 / 8 / 11: `[enemy] tgt arm X id=XXXXX: kept in view: n re-places (<why>)`. The guest:
+    `[enemy] place #n id=XXXXX (arm X): <teleport text>` or `... refused (<why>)`.
+    M3f: before each PLACE the host probes all 10 candidates (the ground below each point and the line of sight to her chest
+    there) and sends the first whose margin rule holds with the line of sight clear, else the first that holds, else the nearest
+    in dz; the PLACE line ends `; ground dz <g>, chosen k of 10, skipped s raised`. TB (code 2) then waits until the MULE sees her
+    (her bucket record <= 1.5 s old or the line of sight clear <= 0.5 s), 3 s per candidate, 9 s at most: `[enemy] tgt arm TB:
+    her seen (bucket b s, los v) after n ms`, `... her not seen after n ms, next candidate` or `... at the limit: started anyway`.
   Scenario `two-games-enemy-target`; checker `python -I tools/testenv/enemy-target-gate.py <run folder>` (PASS / FAIL / INVALID /
   INCONCLUSIVE per gate item).
 

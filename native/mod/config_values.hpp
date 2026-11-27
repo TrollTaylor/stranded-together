@@ -203,8 +203,9 @@ inline bool SetTakeKey(TakeKeys& k, const std::string& key, const std::string& v
 //                                   hidden runs only until the body-destroy gap is closed); both games send SPV1
 //   enemy_partner_vis 0|1           its +0xA4 follows the partner's own (SPV1); 0: always 1.0 (default 1)
 //   enemy_partner_stim_radius       m: a realized human enemy this near the partner body, else no stimulus (20..2000, default 300)
-//   enemy_target_pick 0..15         M3 bits: 1 the PlayerVisual reorder / suppress, 2 the MULE-only perceivers (H5), 4 the
-//                                   classifier flag fix (H2), 8 her hits force a visual (H3)
+//   enemy_target_pick 0..63         M3 bits: 1 the PlayerVisual reorder / suppress, 2 the MULE-only perceivers (H5), 4 the
+//                                   classifier flag fix (H2), 8 her hits force a visual (H3), 16 the line-of-sight keep, 32 her
+//                                   record from ours (needs 1 and 16)
 //   enemy_target_redirect 0..255    M3 bits: 1 CanShoot's point, 2 turn / range check, 4 approach, 16 the vehicle chase, 32 the
 //                                   shoot actor (8: the PlayerInfo shadow, not built: ignored)
 //   enemy_target_fresh_ms 500..3000 how long a target missing from the bucket stays "visible" (default 1500)
@@ -234,7 +235,7 @@ inline bool SetTargetKey(TargetKeys& k, const std::string& key, const std::strin
         return true;
     }
     if (key == "enemy_target_pick" || key == "enemy_target_redirect") {
-        const double top = key == "enemy_target_pick" ? 15.0 : 255.0;
+        const double top = key == "enemy_target_pick" ? 63.0 : 255.0;
         if (num && d >= 0.0 && d <= top && d == static_cast<double>(static_cast<int>(d))) (key == "enemy_target_pick" ? k.pick : k.redirect) = static_cast<int>(d);
         return true;
     }

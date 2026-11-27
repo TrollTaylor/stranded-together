@@ -132,11 +132,11 @@ std::int16_t X100(float v) noexcept {
 }
 std::size_t PerEntry(std::uint8_t type) noexcept {
     return type == kScbHit ? kHitSize : type == kScbHitRes ? kHitResSize : type == kScbOutcome ? kOutcomeSize : type == kScbResync ? 0
-         : type == kScbOwn || type == kScbOwnAck ? kOwnSize : type == kScbOwnReset ? kOwnResetSize : SIZE_MAX;
+         : type == kScbOwn || type == kScbOwnAck ? kOwnSize : type == kScbOwnReset ? kOwnResetSize : type == kScbPlace ? kPlaceSize : SIZE_MAX;
 }
 unsigned MaxOf(std::uint8_t type) noexcept {
     return type == kScbHit ? kHitMax : type == kScbHitRes ? kHitResMax : type == kScbOutcome ? kOutcomeMax : type == kScbOwn || type == kScbOwnAck ? kOwnMax
-         : type == kScbOwnReset ? 1 : 0;
+         : type == kScbOwnReset || type == kScbPlace ? 1 : 0;
 }
 bool CountOk(std::uint8_t type, unsigned n) noexcept { return type == kScbResync ? n == 0 : n >= 1 && n <= MaxOf(type); }
 std::size_t Header(const ScbHeader& h, std::uint8_t type, unsigned n, std::uint8_t* out, std::size_t cap) noexcept {
@@ -378,6 +378,46 @@ bool DecodeOwnReset(const std::uint8_t* d, std::size_t n, ScbHeader& h, std::uin
     ScbHeader hh;
     if (!DecodeScbHeader(d, n, hh) || hh.type != kScbOwnReset) return false;
     if (gen) *gen = Get32(d + kScbHeader);
+    h = hh;
+    return true;
+}
+
+namespace {
+bool PlaceOk(const Place& p) noexcept {
+    return enemy::IsHumanEnemyId(p.id) && p.code >= 1 && p.code <= 9 && std::isfinite(p.x) && std::isfinite(p.y) && std::fabs(p.x) < kMaxCoordM &&
+           std::fabs(p.y) < kMaxCoordM && std::isfinite(p.yaw);
+}
+}  // namespace
+
+std::size_t EncodePlace(const ScbHeader& h, const Place& p, std::uint8_t* out, std::size_t cap) noexcept {
+    if (!PlaceOk(p)) return 0;
+    const std::size_t size = Header(h, kScbPlace, 1, out, cap);
+    if (!size) return 0;
+    std::uint8_t* q = out + kScbHeader;
+    Put32(q + 0, p.id);
+    Put32(q + 4, p.seq);
+    Put32(q + 8, static_cast<std::uint32_t>(static_cast<std::int32_t>(std::llround(p.x * 1000.0))));
+    Put32(q + 12, static_cast<std::uint32_t>(static_cast<std::int32_t>(std::llround(p.y * 1000.0))));
+    Put16(q + 16, YawToU16(p.yaw));
+    q[18] = p.code, q[19] = 0;
+    Put32(q + 20, p.sender_ms);
+    return size;
+}
+
+bool DecodePlace(const std::uint8_t* d, std::size_t n, ScbHeader& h, Place& out) noexcept {
+    ScbHeader hh;
+    if (!DecodeScbHeader(d, n, hh) || hh.type != kScbPlace || hh.n != 1) return false;
+    const std::uint8_t* q = d + kScbHeader;
+    Place p;
+    p.id = Get32(q + 0);
+    p.seq = Get32(q + 4);
+    p.x = static_cast<std::int32_t>(Get32(q + 8)) / 1000.0;
+    p.y = static_cast<std::int32_t>(Get32(q + 12)) / 1000.0;
+    p.yaw = YawFromU16(Get16(q + 16));
+    p.code = q[18];
+    p.sender_ms = Get32(q + 20);
+    if (q[19] || !PlaceOk(p)) return false;
+    out = p;
     h = hh;
     return true;
 }
