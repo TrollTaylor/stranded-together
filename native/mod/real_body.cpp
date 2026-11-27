@@ -40,6 +40,7 @@
 #include "hood_fold.hpp"
 #include "enemy_l1_probe.hpp"
 #include "enemy_target.hpp"
+#include "entity_remove_hook.hpp"
 #include "wardrobe.hpp"
 
 namespace st::realbody {
@@ -3354,6 +3355,8 @@ bool Teardown(BodySlot& b, const char* why) {
         ResetSlot(b);
         return false;
     }
+    // round 27 M4: the destroy guard no longer watches it
+    if (&b == &g_p) rmhook::Watch(rmhook::kWatchBody, 0);
     // Player collision: the partner body's capsule leaves the world while the body is still live
     // (a teardown that cannot remove the entity must not leave an invisible wall).
     if (&b == &g_p && b.spawn.e) collision::BodyGoing(b.spawn.e);
@@ -3550,6 +3553,20 @@ double g_next_stats_ms = 0;
 PollResult PollSlot(BodySlot& slot, double now_ms, char* why, std::size_t cap) {
     if (slot.phase == Phase::idle) return PollResult::idle;
     if (slot.phase == Phase::live) {
+        // round 27 M4 (docs/enemy-sync.md 16.2): the destroy guard saw the game begin removing the partner entity (its
+        // RemoveEntityNow detour, before the entity can be freed): the slot is dropped without touching the entity (the game is
+        // removing it already: no remove of ours, no collision or hood write-back)
+        if (&slot == &g_p && rmhook::Removed(rmhook::kWatchBody, reinterpret_cast<std::uintptr_t>(slot.spawn.e))) {
+            Set(why, cap, "the real body entity %p is being removed by the game (seen before the free)", slot.spawn.e);
+            Log("[%s] the real body entity %p is being removed by the game (seen before the free): its slot dropped, the entity not touched", slot.tag,
+                slot.spawn.e);
+            l1probe::ReleaseBeforeFree("a real body being removed by the game");
+            etarget::ReleaseBeforeFree("a real body being removed by the game");
+            Unpublish(slot);
+            slot.spawn.e = nullptr;
+            Teardown(slot, "entity being removed by the game");
+            return PollResult::failed;
+        }
         if (holo::SpawnAlive(slot.spawn)) return PollResult::live;
         Set(why, cap, "the real body entity %p was destroyed by the game", slot.spawn.e);
         Log("[%s] %s", slot.tag, why);
@@ -3631,6 +3648,8 @@ PollResult PollSlot(BodySlot& slot, double now_ms, char* why, std::size_t cap) {
     slot.phase = Phase::live;
     slot.live_tick = GetTickCount64();
     ++slot.lives;
+    // round 27 M4: the destroy guard watches the partner entity (the game's removal seen before the free; PollSlot drops it)
+    if (&slot == &g_p) rmhook::Watch(rmhook::kWatchBody, reinterpret_cast<std::uintptr_t>(e));
     slot.logged_latch = false;
     // Without a body the stats ran every 10 s; a body removed within that wait (a debug tour
     // spends about 6 s on each) never got its latch line (run 20261116-194441: 9 of 16 missing).
@@ -5542,6 +5561,9 @@ void ResetRefused() noexcept { g_p.refused = 0; }
 
 game::Entity* LiveEntity() noexcept {
     if (g_p.phase != Phase::live || !holo::SpawnAlive(g_p.spawn)) return nullptr;
+    // round 27 M4: none once the game began removing it (the destroy guard; PollSlot drops the slot on its next poll). Residual
+    // (docs/enemy-sync.md 16.7): a pose write of player_sync's already past this test when another thread begins the removal
+    if (rmhook::Removed(rmhook::kWatchBody, reinterpret_cast<std::uintptr_t>(g_p.spawn.e))) return nullptr;
     return g_p.spawn.e;
 }
 

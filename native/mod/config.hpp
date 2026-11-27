@@ -320,21 +320,24 @@ struct Config {
     // turned in place to face her Sam at the take). Both write game state; on by default since round 26 (real games too).
     bool enemy_take_role = true;
     bool enemy_take_face = true;
-    // Round 27 M2 / M3 (docs/enemy-sync.md 16; cfgval::SetTargetKey), all inert at their defaults and never written by the
-    // launcher; flipped together only after the gates pass (critique C2). enemy_partner_stim: the partner body carries a visual
-    // stimulus made with our Sam's own resource (enemy_target.cpp; the host only, hidden runs only), its visibility from the
-    // partner's SPV1 (enemy_partner_vis), only while a realized human enemy is within enemy_partner_stim_radius m.
-    // enemy_target_pick (bits: 1 reorder, 2 MULE-only perceivers, 4 classifier flag fix, 8 her hits force a visual, 16
-    // line-of-sight keep, 32 her record from ours (needs 1 and 16)),
-    // enemy_target_redirect (bits: 1 CanShoot's point, 2 turn / range check, 4 approach, 16 vehicle chase, 32 shoot actor; 8
-    // deferred),
+    // Round 27 M2 / M3 / M4 (docs/enemy-sync.md 16; cfgval::SetTargetKey, TargetDefaults), never written by the launcher. Round
+    // 27 M4: on by default with enemy_hits (the destroy guard closed the body-destroy gap); a key given always wins (the *_set
+    // flags). enemy_partner_stim (default 1 with enemy_hits): the partner body carries a visual stimulus made with our Sam's own
+    // resource (enemy_target.cpp; the host only, only while the destroy guard is in), its visibility from the partner's SPV1
+    // (enemy_partner_vis), only while a realized human enemy is within enemy_partner_stim_radius m.
+    // enemy_target_pick (default 71 = 1 + 2 + 4 + 64 with enemy_hits; bits: 1 reorder, 2 MULE-only perceivers, 4 classifier flag
+    // fix, 8 her hits force a visual, 16 line-of-sight keep, 32 her record from ours (needs 1 and 16), 64 take first),
+    // enemy_target_redirect (default 35 = 1 + 2 + 32 with enemy_hits; bits: 1 CanShoot's point, 2 turn / range check, 4 approach,
+    // 16 vehicle chase, 32 shoot actor; 8 deferred),
     // enemy_target_fresh_ms (500..3000).
+    // The int values below are the "not given" placeholders: config.cpp applies TargetDefaults after the parse.
     int enemy_partner_stim = 0;
     bool enemy_partner_vis = true;
     double enemy_partner_stim_radius = 300.0;
     int enemy_target_pick = 0;
     int enemy_target_redirect = 0;
     int enemy_target_fresh_ms = 1500;
+    bool enemy_partner_stim_set = false, enemy_target_pick_set = false, enemy_target_redirect_set = false;
     // Round 23 C (docs/enemy-sync.md 14.9; cfgval::SetDownKey, DownRadius). enemy_down_hold: while the other player is down (death or
     // KnotSpace, from its SEH1 beacon; never a faint), the copies of that game's fights here are held frozen in their last pose (or
     // hidden if never posed; a down one far away hidden), never given back alive, no new mirror, no ownership change, until that

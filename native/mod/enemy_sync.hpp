@@ -151,6 +151,16 @@ bool CampOfId(std::uint32_t id, CampOf* out) noexcept;
 // Round 27 run 2 (game thread; the L1 probe's re-calm): the camp walk now, also with ownership off (enemy_owner=0: nothing else walks
 // the camps; its byte checks run at enemy init either way). False: the camp checks failed (no walk).
 bool CampWalkNow() noexcept;
+// Round 27 M4, take first (the host, game thread; enemy_target_pick bit 64, docs/enemy-sync.md 16.7): MULE `id` is a member of a
+// calm host camp that erules::CampTakeFirst holds for her take (the last 2 Hz camp walk, within 1.5 s; ownership live): her
+// partner stimulus is refused for it until the take. `info` its camp's CP id (the camp key's low half) and the distances.
+struct TakeFirstInfo {
+    std::uint32_t cp = 0;
+    double d_h = -1, d_g = -1;
+};
+bool TakeFirstOf(std::uint32_t id, TakeFirstInfo* info = nullptr) noexcept;
+// Round 27 M4: ownership live (both beacons carry kPartCamp; game thread)
+bool OwnOn() noexcept;
 // round 25 e F1 (guest, game thread, her take before the unfreeze): <id>'s copy turned in place to `yaw` (radians). 1 done, 0 not
 // done (no realized copy), -1 the teleport faulted
 int TurnInPlace(std::uint32_t id, std::uintptr_t actor, float yaw) noexcept;

@@ -2166,12 +2166,22 @@ std::map<std::uintptr_t, CampSeen> g_camp_of;
 unsigned g_camp_conflicts = 0;
 struct CampRec {
     double hold_until = -1e18, kept_next = 0, t_change = -1e18;
+    double close_since = -1;  // (round 27 M4, take first) she within its engage distance without a take since (-1 not)
     bool refused = false, force_take = false;
     erules::CampIn last;
     erules::OwnVerdict v;
     unsigned n = 0, hers = 0;
 };
 std::map<std::uint64_t, CampRec> g_camps;
+// Round 27 M4, take first (erules::CampTakeFirst; enemy_target_pick bit 64): the members of the camps it holds now, rebuilt at
+// every 2 Hz camp walk (empty when no walk ran within kTakeFirstStaleMs)
+struct TakeFirstRec {
+    std::uint32_t cp = 0;
+    double d_h = -1, d_g = -1;
+};
+std::map<std::uint32_t, TakeFirstRec> g_take_first;
+double g_take_first_at = -1e18;
+constexpr double kTakeFirstStaleMs = 1500.0;
 double g_camp_last_take = -1e18;
 std::uint64_t g_cnt_key = 0;  // the "no take" line's nearest camp, its reason
 const char* g_cnt_why = nullptr;
@@ -3068,6 +3078,8 @@ void CampHostTick(double now, const double (&guest_in)[3], bool have_guest_in, c
     const char* near_why = nullptr;
     erules::CampIn near_in;
     std::vector<erules::CampMember> mm;
+    g_take_first.clear();
+    g_take_first_at = now;
     for (auto& cv : views) {
         const std::uint64_t key = cv.first;
         const std::vector<const HostEnemy*>& ms = cv.second;
@@ -3105,6 +3117,12 @@ void CampHostTick(double now, const double (&guest_in)[3], bool have_guest_in, c
         if (cr.force_take && ci.owner == erules::Owner::host && !ci.pending && !took) v = {erules::OwnAct::take, erules::OwnReason::forced};
         if (down_freeze && v.act != erules::OwnAct::none) v = {erules::OwnAct::none, v.reason}, ++down_kept;
         cr.last = ci, cr.v = v, cr.n = ci.members, cr.hers = ag.hers;
+        // (round 27 M4) take first: her time within its engage distance without a take, then the rule
+        const bool close = ci.owner == erules::Owner::host && ci.d_g >= 0 && ci.d_g <= erules::CampEngage(ci.r) && v.act != erules::OwnAct::take;
+        if (!close) cr.close_since = -1;
+        else if (cr.close_since < 0) cr.close_since = now;
+        if (!down_freeze && v.act != erules::OwnAct::take && erules::CampTakeFirst(ci, cr.close_since < 0 ? 0.0 : now - cr.close_since))
+            for (const HostEnemy* h : ms) g_take_first[h->id] = TakeFirstRec{static_cast<std::uint32_t>(key & 0xFFFFFFFFu), ci.d_h, ci.d_g};
         if (v.act == erules::OwnAct::take) {
             CampTake(key, cr, ms, ci, v.reason, now, guest, have_guest, hs, have_host);
             took = true;
@@ -4752,6 +4770,14 @@ bool CampOwnedHere(std::uintptr_t actor) {
     return false;
 }
 }  // namespace
+bool TakeFirstOf(std::uint32_t id, TakeFirstInfo* info) noexcept {
+    if (!g_own_on || g_tnow - g_take_first_at > kTakeFirstStaleMs) return false;
+    const auto it = g_take_first.find(id);
+    if (it == g_take_first.end()) return false;
+    if (info) info->cp = it->second.cp, info->d_h = it->second.d_h, info->d_g = it->second.d_g;
+    return true;
+}
+bool OwnOn() noexcept { return g_own_on; }
 bool CampWalkNow() noexcept {
     if (!g_cp_ok) return false;
     g_cp_next = 0;  // (its own 500 ms limit is for the 2 Hz walk)

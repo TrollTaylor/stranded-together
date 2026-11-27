@@ -1,4 +1,4 @@
-# Round 27 run 3 gate (docs/enemy-sync.md 16): the partner stimulus (enemy_partner_stim 1; the host only, hidden runs only), SPV1,
+# Round 27 run 3 gate (docs/enemy-sync.md 16): the partner stimulus (enemy_partner_stim 1; the host only), SPV1,
 # the target pick (enemy_target_pick 55: the sensor-result reorder, MULE-only perceivers, the classifier flag fix, M3f's 16 the
 # line-of-sight keep and 32 her record from ours) and the redirects
 # (enemy_target_redirect 39: 1 CanShoot's point, 2 turn / range check, 4 approach, 32 the shoot actor, now on the MULE's own weapon
@@ -19,6 +19,9 @@
 # optional step (a failed one fails the run): the informational "-> her" / round waits are plain waits; the gate reads the lines.
 #   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-enemy-target -SeedSaves complete-100 -GuestSeed profile-only -Id round27-m3
 #   python -I tools\testenv\enemy-target-gate.py build-testenv\runs\<run folder>   (the arm table, PASS / FAIL / INVALID per gate item)
+# Round 27 M4: the explicit keys stay (pick 55: bits 16 / 32 with the fixed ray on layer 0x20; the self-test reads L32 / L47 / L52),
+# the destroy guard is in ("tgt destroy guard: RemoveEntityNow hook on"); TF0 is information, TE needs no calm, "TB sight" PASSes
+# on the self-test ok and a clear sight ray in TB phase 0. The defaults (no key) run in two-games-enemy-target-defaults.
 # The host: the stimulus made, byte checks, the crash-reporter guard test (two absorbed faults), 50 create / remove cycles then
 # made again (U15), SPV1 both ways; the guest: byte checks, the guard test, the stimulus refused (the guest), SPV1.
 # TA (calm #1): her 25 m in front of gun MULE 0202B: notice, turn, no round at Sam (rounds, if any, >= 60 % at her). CL (#2): her
@@ -34,11 +37,11 @@
 # (enemy_tgt 2 0): to Sam (only visible) <= 3 s; she is back with Sam still in view (phase 2): stays Sam.
 # CH (#5): her level 5 m in front of 02029. CS (#6, the control): no stimulus, her away, Sam 5 m along 02029's facing (op 11).
 # TX (#7, the control): the redirects off (enemy_tgt 6 0), her 16 m in front of 0202C.
-# covers: enemy-hits
+# covers: enemy-hits enemy-target
 # select: probe
 role host
 graphics low
-timeout 360
+timeout 300
 launcherini local-test
 ini enemy_owner=0
 ini enemy_m2_probes=0

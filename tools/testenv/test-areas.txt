@@ -71,6 +71,7 @@ area enemy-compat          : enemy sync P2 against a partner without the hits (e
 area enemy-own             : enemy sync P1b/P1c ownership per camp (default on with enemy_hits since round 21; gate two-games-enemy-camp; the older P1b probe two-games-enemy-own stays select: probe)
 area enemy-restrain       : round 23 A: the tie-up relay (a strand / bola / knockout of a copy goes to its owner as HIT kind 5, the copy held, the readback) and the replay flush (gates two-games-enemy-tie, two-games-enemy-tie-host)
 area enemy-down           : round 23 C: a player down (death, limbo): the partner holds its copies, no ownership change until back (enemy_sync 9 test trigger; gates two-games-enemy-tie, two-games-enemy-tie-host)
+area enemy-target          : round 27 M2-M4: MULEs target both players (partner stimulus, pick, redirects, destroy guard; gates two-games-enemy-target-defaults, two-games-enemy-target)
 area shots                 : the players' shots on the other screen (docs/enemy-sync.md P3a): capture, SFX1, the CreateBullet replay, its damage dropped
 area story                 : story tools, story loads
 area dev-tools             : dev tools: spawn, goto, weather, refill, god mode
@@ -169,6 +170,13 @@ native/mod/enemy_census.*              enemies
 native/mod/enemy_sync.*                enemy-mirror
 native/mod/enemy_rules.hpp             enemy-mirror
 native/mod/enemy_wire.*                enemy-mirror
+# round 27 M2-M4 (docs/enemy-sync.md 16): targeting both players, on by default since M4 (the destroy guard's RemoveEntityNow
+# hook also watches the partner's real body)
+native/mod/enemy_target.*              enemy-target
+native/mod/enemy_target_rules.hpp      enemy-target
+native/mod/enemy_sense_hooks.*         enemy-target
+native/mod/enemy_stim_core.hpp         enemy-target
+native/mod/entity_remove_hook.*        enemy-target partner-body
 native/mod/enemy_*                     enemies
 native/mod/npc_damage.*                enemy-mirror shots
 # ---- the mod: shots (docs/enemy-sync.md P3a) and the shared Sam damage detour (vehicle hits, shots, the enemy rounds)
@@ -246,6 +254,9 @@ native/mod/debug_actions.*  ~enemy_own|EnemyOwn|enemy_camp|EnemyCamp            
 native/mod/debug_actions.*  ~enemy_|[Ee]nemy                                                  enemy-mirror
 native/mod/debug_actions.*  ~shots_|[Ss]hots                                                  shots
 native/mod/real_body.*      ~[Ee]nemy                                                         enemy-mirror
+native/mod/real_body.*      ~rmhook|etarget::                                                 enemy-target
+native/mod/debug_actions.*  ~enemy_tgt                                                        enemy-target
+native/mod/enemy_combat.*   ~WorldRay|SehRay|kRayLayer|LayerNamed                             enemy-target
 native/mod/partner_tackle.* ~QueryHit                                                         enemy-hits
 native/mod/player_sync.*    ~shots::|esync::                                                  shots enemy-mirror
 native/mod/player_sync.*    ~ecombat::                                                        enemy-hits
@@ -254,6 +265,8 @@ native/mod/enemy_sync.*     ~ecombat::|GuestDefeat|HostDefeat|DeadRelease|HideDe
 native/mod/enemy_sync.*     ~[Oo]wn[A-Z_]|own_|g_hown|g_gown|OWN|HostBack|HostTake|GuestTake|GuestRefreeze  enemy-own
 native/mod/enemy_rules.hpp  ~Hit|Outcome|Defeat|Lethal|Attack|RateLimit|HostSerial|ApplyGate     enemy-hits
 native/mod/enemy_rules.hpp  ~Own|HostDecide|TakeBlock|Calm|Camp|Phase|Epoch|GenNewer|BackPlace   enemy-own
+native/mod/enemy_rules.hpp  ~TakeFirst                                                        enemy-target
+native/mod/enemy_sync.*     ~TakeFirst|take_first|close_since|OwnOn                           enemy-target
 native/mod/enemy_wire.*     ~Hit|Outcome|Resync|Scb                                           enemy-hits
 native/mod/enemy_wire.*     ~Own                                                              enemy-own
 native/mod/enemy_combat.*   ~SetHitsPart|kPartHits|CaptureOurRounds|hits\s(on|off|OFF)        enemy-compat
@@ -263,6 +276,7 @@ native/mod/config_values.hpp ~ShotsSound                                        
 native/mod/config_values.hpp ~Mirror|Pose|EnemyFreeze|EnemyDefaults|EnemyKeys                 enemy-mirror
 native/mod/config_values.hpp ~Hit|EnemyDefaults|EnemyKeys                                     enemy-hits enemy-compat
 native/mod/config_values.hpp ~[Oo]wner\b|EnemyDefaults                                        enemy-own
+native/mod/config_values.hpp ~Target(Defaults|Keys)|kTarget                                    enemy-target
 native/mod/enemy_combat.*   ~[Rr]estrain|RWatch|g_rwatch|g_rback|g_rsent                    enemy-restrain
 native/mod/enemy_sync.*     ~[Rr]estrain|HoldCopy|ReleaseHold|Holding\(|g_hold                enemy-restrain
 native/mod/enemy_sync.*     ~Down[A-Z]|g_down|_fake\b|PlayerDown|down.?hold                   enemy-down
@@ -315,6 +329,7 @@ native/mod/config.*         ~("|bool\s+)shots_                                  
 native/mod/config.*         ~("|bool\s+|int\s+|double\s+)enemy_(?!hit|owner)                enemy-mirror
 native/mod/config.*         ~("|bool\s+|int\s+)enemy_hit                                    enemy-hits enemy-compat
 native/mod/config.*         ~("|bool\s+)enemy_owner                                         enemy-own
+native/mod/config.*         ~("|bool\s+|int\s+)enemy_(partner_|target_)                      enemy-target
 native/mod/config.*         ~("|bool\s+)enemy_(restrain|replay_flush)                        enemy-restrain
 native/mod/config.*         ~("|bool\s+|int\s+|double\s+|float\s+)enemy_down_hold          enemy-down
 native/mod/config.*         ~("|bool\s+)vehicle_mule                                         vehicle-mule

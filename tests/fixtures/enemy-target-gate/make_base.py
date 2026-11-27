@@ -1,6 +1,8 @@
 """Write the enemy-target-gate base fixture (a trimmed run-3-format host / guest log in which every gate item PASSes); synthetic, not
 evidence. tests/enemy_target_gate_test.py lays them out as a run folder (game/ and guest/game/stranded_together.log) and mutates
-the host log per case. (*.log is ignored by git: the fixture is host.log.txt / guest.log.txt.)
+the host log per case. (*.log is ignored by git: the fixture is host.log.txt / guest.log.txt.) Round 27 M4: the destroy guard line,
+the self-test's three-layer format and the guard summary suffix; tests/enemy_target_gate_test.py builds the defaults-mode run from
+it (DEFAULTS).
 
     python -I tests/fixtures/enemy-target-gate/make_base.py tests/fixtures/enemy-target-gate
 """
@@ -24,7 +26,7 @@ def G(text, dt=0.25):
 SUM = ("[enemy] tgt%s: engaging her %d, Sam 0; reorders 4; suppress 2; redirects 1:3 2a:5 (offset 0) 2b:0 4:1 (not ours 0) veh:0; h5 0 h2 0/0 "
        "(no type-1 bucket 0) forced 0; registered 15; faults 0; mismatch 0; table clears 0; shoot 32: calls %d redirected %d points %d (at her %d Sam %d "
        "none 0); soft onhit_bad 0 psr_rec_bad 0 turn_goal_bad 0; shoot32 vt_other 0 noslot 0; t36 0; sight keeps 0 synth 0 skip 0 rays 120; "
-       "onhit_odd 0")
+       "onhit_odd 0; guard calls 120 (4/s) matched 0 dead-refused 0 trips 0; take-first 0; cls 900/s psr 300/s")
 CHECKS = ("[enemy] tgt byte checks (71): stimulus ok, registry ok, goals ok, sensor results ok, classifier ok, classifier flags ok, forced visual ok, "
           "MULE members ok, player objects ok, redirect 1 ok, 2a ok, 2b ok, 4 ok, 16 (vehicle chase) ok, 32 (shoot actor) ok; redirect 8 deferred (not built)")
 SEH_T = "[seh] test: a guarded read of a reserved page faulted and was caught; absorbed 0 -> 2, reported 0 -> 0 (guard on)"
@@ -71,9 +73,10 @@ H("[config] enemy_partner_stim=1 enemy_partner_vis=1 enemy_partner_stim_radius=3
   "enemy_target_fresh_ms=1500")
 H(CHECKS)
 G(CHECKS)
+H("[enemy] tgt destroy guard: RemoveEntityNow hook on (byte checks 6/6)")
 H("[enemy] tgt pick 16 (line of sight): off (waiting for the raycast's self-test)")
 H("[enemy] tgt pick 32 (her record from ours): off (bit 16 not live)", 0)
-H("[enemy] tgt los self-test: ok (hit 1.21 m below the chest)")
+H("[enemy] tgt los self-test: L32 hits 1 z 101.30, L47 hits 1 z 101.30, L52 hits 0 (control) vs root 101.30; attempt 1 -- ok")
 H("[enemy] tgt pick 16 (line of sight): on (the self-test passed, bit 1 live)")
 H("[enemy] tgt pick 32 (her record from ours): on (bit 16 live)", 0)
 H("[enemy] tgt redirect 32 (shoot actor): on (bit 32 on)")
@@ -129,7 +132,7 @@ def tb_body():  # her first; the Sam step; phase 0 sticky her (op 7); she hides 
     H("[enemy] look id=0202B dist 15.0 m (25 deg off its line to her): snap: placed at (1593.05, 1099.30), ground snap next frame")
     H("[auto] 0065:1 action enemy_look -11 15 25 -> ok: Enemy look: id 0202B: snap: placed at (1593.05, 1099.30), ground snap next frame (16 ms)", 0)
     H("[fixture] tb phase 0")
-    H("[enemy] tgt los id=0202B her clear (15.0 m, bearing 3, pitch 1.0, vis 1.00; hit at -1.0 of 14.0 m)")
+    H("[enemy] tgt los id=0202B clear (hits 0; 15.0 m; hit (0.00, 0.00, 0.00))")
     for k in range(4):
         H(WATCH % ("0202B", 2.0 + k * 0.25, 3, 22, 15.0, 15.0, "her", 0.0))
     H(SUM % ("", 1, 5, 5, 9, 9, 0))

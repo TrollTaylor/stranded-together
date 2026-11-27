@@ -151,6 +151,7 @@ Config LoadConfig(const std::wstring& dir) {
                 if (cfgval::SetTargetKey(tg, k, v)) {
                     c.enemy_partner_stim = tg.stim, c.enemy_partner_vis = tg.vis, c.enemy_partner_stim_radius = tg.radius;
                     c.enemy_target_pick = tg.pick, c.enemy_target_redirect = tg.redirect, c.enemy_target_fresh_ms = tg.fresh_ms;
+                    c.enemy_partner_stim_set |= tg.stim_set, c.enemy_target_pick_set |= tg.pick_set, c.enemy_target_redirect_set |= tg.red_set;
                     continue;
                 }
             }
@@ -462,6 +463,14 @@ Config LoadConfig(const std::wstring& dir) {
                                                           c.enemy_owner);
         c.enemy_sync = k.sync, c.enemy_hits = k.hits, c.enemy_owner = k.owner;
     }
+    // Round 27 M4 (docs/enemy-sync.md 16.1): enemy targeting follows enemy_hits (enemy_partner_stim 1, enemy_target_pick 71,
+    // enemy_target_redirect 35); a key given is kept (cfgval::TargetDefaults, tested in st_enemy_target_rules_tests)
+    {
+        cfgval::TargetKeys tg;
+        tg.stim = c.enemy_partner_stim, tg.pick = c.enemy_target_pick, tg.redirect = c.enemy_target_redirect;
+        tg = cfgval::TargetDefaults(c.enemy_hits, tg, c.enemy_partner_stim_set, c.enemy_target_pick_set, c.enemy_target_redirect_set);
+        c.enemy_partner_stim = tg.stim, c.enemy_target_pick = tg.pick, c.enemy_target_redirect = tg.redirect;
+    }
     Log("[config] role=%s transport=%s peer=%llu udp=%s:%u->%u send_hz=%u interp=%ums debug_menu=%d key=0x%X",
         RoleName(c.role), c.transport == Transport::udp ? "udp" : "steam",
         static_cast<unsigned long long>(c.peer_steam_id), c.udp_peer.c_str(), c.udp_port_local, c.udp_port_peer,
@@ -513,10 +522,13 @@ Config LoadConfig(const std::wstring& dir) {
         "enemy_single_rule=%d enemy_take_role=%d enemy_take_face=%d",
         c.enemy_take_know, c.enemy_take_know_secs, c.enemy_take_camp, c.enemy_ticket_return ? 1 : 0, c.enemy_single_hold_vehicle ? 1 : 0,
         c.enemy_single_rule ? 1 : 0, c.enemy_take_role ? 1 : 0, c.enemy_take_face ? 1 : 0);
-    Log("[config] enemy_partner_stim=%d enemy_partner_vis=%d enemy_partner_stim_radius=%.0f enemy_target_pick=%d enemy_target_redirect=%d "
-        "enemy_target_fresh_ms=%d",
-        c.enemy_partner_stim, c.enemy_partner_vis ? 1 : 0, c.enemy_partner_stim_radius, c.enemy_target_pick, c.enemy_target_redirect,
-        c.enemy_target_fresh_ms);
+    {
+        auto dflt = [&](bool set) { return set ? "" : c.enemy_hits ? " (default: on with enemy_hits)" : " (default: off)"; };
+        Log("[config] enemy_partner_stim=%d%s enemy_partner_vis=%d enemy_partner_stim_radius=%.0f enemy_target_pick=%d%s enemy_target_redirect=%d%s "
+            "enemy_target_fresh_ms=%d",
+            c.enemy_partner_stim, dflt(c.enemy_partner_stim_set), c.enemy_partner_vis ? 1 : 0, c.enemy_partner_stim_radius, c.enemy_target_pick,
+            dflt(c.enemy_target_pick_set), c.enemy_target_redirect, dflt(c.enemy_target_redirect_set), c.enemy_target_fresh_ms);
+    }
     // Fragile's textures: only whether a folder came and its length (the path itself names the Windows user).
     Log("[config] textures_dir=%s", c.textures_dir.empty() ? "- (none)" : ("set (" + std::to_string(c.textures_dir.size()) + " bytes)").c_str());
     Log("[config] fragile_textures=%d textures_send=%d textures_receive=%d textures_hot_reload=%d textures_free=%d textures_defaults=%d", c.fragile_textures ? 1 : 0,

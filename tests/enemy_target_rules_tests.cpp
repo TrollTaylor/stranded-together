@@ -197,10 +197,11 @@ void TestForcedAndHelpers() {
     CHECK(std::string_view(RuleText(rSticky)) == "sticky" && std::string_view(WhoText(kPartner)) == "her");
 }
 
-// the round-27 keys (cfgval::SetTargetKey): defaults inert, ranges, bad values kept
+// the round-27 keys (cfgval::SetTargetKey): the "not given" placeholders, ranges, bad values kept
 void TestKeys() {
     cfgval::TargetKeys k;
     CHECK(k.stim == 0 && k.vis && k.radius == 300.0 && k.pick == 0 && k.redirect == 0 && k.fresh_ms == 1500);
+    CHECK(!k.stim_set && !k.pick_set && !k.red_set);
     CHECK(cfgval::SetTargetKey(k, "enemy_partner_stim", "1") && k.stim == 1);
     CHECK(cfgval::SetTargetKey(k, "enemy_partner_stim", "2") && k.stim == 1);
     CHECK(cfgval::SetTargetKey(k, "enemy_partner_stim", "0") && k.stim == 0);
@@ -209,7 +210,9 @@ void TestKeys() {
     CHECK(cfgval::SetTargetKey(k, "enemy_partner_stim_radius", "5") && k.radius == 500.0);
     CHECK(cfgval::SetTargetKey(k, "enemy_partner_stim_radius", "x") && k.radius == 500.0);
     CHECK(cfgval::SetTargetKey(k, "enemy_target_pick", "7") && k.pick == 7);
-    CHECK(cfgval::SetTargetKey(k, "enemy_target_pick", "64") && k.pick == 7);
+    CHECK(cfgval::SetTargetKey(k, "enemy_target_pick", "128") && k.pick == 7);  // (M4) the top is 127
+    CHECK(cfgval::SetTargetKey(k, "enemy_target_pick", "127") && k.pick == 127);
+    CHECK(cfgval::SetTargetKey(k, "enemy_target_pick", "71") && k.pick == 71);  // 1 2 4 64 (the default)
     CHECK(cfgval::SetTargetKey(k, "enemy_target_pick", "63") && k.pick == 63);
     CHECK(cfgval::SetTargetKey(k, "enemy_target_pick", "55") && k.pick == 55);  // 1 2 4 16 32 (the scenario's)
     CHECK(cfgval::SetTargetKey(k, "enemy_target_pick", "7") && k.pick == 7);
@@ -223,6 +226,74 @@ void TestKeys() {
     CHECK(cfgval::SetTargetKey(k, "enemy_target_fresh_ms", "2000") && k.fresh_ms == 2000);
     CHECK(!cfgval::SetTargetKey(k, "enemy_partner_aural", "1"));
     CHECK(!cfgval::SetTargetKey(k, "enemy_owner", "1"));
+    CHECK(k.stim_set && k.pick_set && k.red_set);
+}
+// (round 27 M4) the defaults: the keys not given follow enemy_hits (1 / 71 / 35 on, 0 / 0 / 0 off); a given key is kept (0 too)
+void TestTargetDefaults() {
+    cfgval::TargetKeys k;
+    cfgval::TargetKeys d = cfgval::TargetDefaults(true, k, false, false, false);
+    CHECK(d.stim == 1 && d.pick == 71 && d.redirect == 35 && d.vis && d.radius == 300.0 && d.fresh_ms == 1500);
+    static_assert(cfgval::kTargetStimDefault == 1 && cfgval::kTargetPickDefault == 71 && cfgval::kTargetRedirectDefault == 35);
+    d = cfgval::TargetDefaults(false, k, false, false, false);
+    CHECK(d.stim == 0 && d.pick == 0 && d.redirect == 0);
+    // an explicit 0 with enemy_hits on stays 0
+    cfgval::TargetKeys z;
+    CHECK(cfgval::SetTargetKey(z, "enemy_partner_stim", "0") && z.stim_set);
+    d = cfgval::TargetDefaults(true, z, z.stim_set, z.pick_set, z.red_set);
+    CHECK(d.stim == 0 && d.pick == 71 && d.redirect == 35);
+    // explicit keys with enemy_hits off are kept
+    cfgval::TargetKeys e;
+    CHECK(cfgval::SetTargetKey(e, "enemy_target_pick", "55") && cfgval::SetTargetKey(e, "enemy_target_redirect", "39"));
+    d = cfgval::TargetDefaults(false, e, e.stim_set, e.pick_set, e.red_set);
+    CHECK(d.stim == 0 && d.pick == 55 && d.redirect == 39);
+    d = cfgval::TargetDefaults(true, e, e.stim_set, e.pick_set, e.red_set);
+    CHECK(d.stim == 1 && d.pick == 55 && d.redirect == 39);
+    // a bad value is not "given": the default applies
+    cfgval::TargetKeys b;
+    CHECK(cfgval::SetTargetKey(b, "enemy_target_pick", "128") && !b.pick_set);
+    CHECK(cfgval::SetTargetKey(b, "enemy_partner_stim", "2") && !b.stim_set);
+    d = cfgval::TargetDefaults(true, b, b.stim_set, b.pick_set, b.red_set);
+    CHECK(d.stim == 1 && d.pick == 71 && d.redirect == 35);
+}
+// (round 27 M4) the destroy guard's body flags and the raycast self-test's verdict
+void TestGuardAndSelfTest() {
+    CHECK(BodyFlagsLive(0x32844443ull));                       // a live partner body (bit 29 set, 30 / 31 clear)
+    CHECK(!BodyFlagsLive(0x32844443ull | (1ull << 30)));       // queued for removal
+    CHECK(!BodyFlagsLive(0x32844443ull | (1ull << 31)));       // being removed now
+    CHECK(!BodyFlagsLive(0x32844443ull & ~(1ull << 29)));      // not in the world
+    CHECK(!BodyFlagsLive(0) && BodyFlagsLive(1ull << 29));
+    // (review) the gone mark on her current body: stale (cleared after kGoneStaleMs) only when nothing backs a removal
+    const std::uint64_t live = 0x32844443ull;
+    CHECK(GoneMarkStale(false, false, false, true, live, false));                 // a trip on a live body: the agent changed
+    CHECK(!GoneMarkStale(true, false, false, true, live, false));                 // op 12's simulate: "12 0" ends it
+    CHECK(!GoneMarkStale(false, true, false, true, live, false));                 // the stimulus not removed yet
+    CHECK(!GoneMarkStale(false, false, true, true, live, false));                 // the RemoveEntityNow hook saw the body
+    CHECK(!GoneMarkStale(false, false, false, false, live, false));               // its flags unread
+    CHECK(!GoneMarkStale(false, false, false, true, live | (1ull << 31), false)); // being removed now
+    CHECK(!GoneMarkStale(false, false, false, true, live | (1ull << 30), false)); // queued for removal
+    CHECK(!GoneMarkStale(false, false, false, true, live, true));                 // the trip saw its vtable change (freed)
+    static_assert(kGoneStaleMs >= 500.0 && kGoneStaleMs <= 2000.0, "the stale hold: about 1 s");
+    const double root = 352.49;
+    // L32 at the root: ok; L47 only: ok (static only); neither: retry; a fault on either: fault
+    CHECK(LosSelfTest(1, 352.40, 1, 352.40, 0, root, false) == SelfTest::ok);
+    CHECK(LosSelfTest(0, 0.0, 1, 352.10, 0, root, false) == SelfTest::ok_static);
+    CHECK(LosSelfTest(0, 0.0, 0, 0.0, 0, root, false) == SelfTest::retry);
+    CHECK(LosSelfTest(-1, 0.0, 1, 352.40, 0, root, false) == SelfTest::fault);
+    CHECK(LosSelfTest(1, 352.40, -1, 0.0, 0, root, false) == SelfTest::fault);
+    // the tolerance: 0.75 m on the vertical ray, 1.5 m beside
+    CHECK(LosSelfTest(1, root - 1.2, 0, 0.0, 0, root, false) == SelfTest::retry);
+    CHECK(LosSelfTest(1, root - 1.2, 0, 0.0, 0, root, true) == SelfTest::ok);
+    CHECK(LosSelfTest(1, root - 1.6, 0, 0.0, 0, root, true) == SelfTest::retry);
+    CHECK(LosSelfTest(1, root + 0.7, 0, 0.0, 0, root, false) == SelfTest::ok);
+    // a NaN height is a miss
+    CHECK(LosSelfTest(1, std::numeric_limits<double>::quiet_NaN(), 0, 0.0, 0, root, false) == SelfTest::retry);
+    // L52 (the control) is not gated: its hit passes nothing, its miss fails nothing
+    CHECK(LosSelfTest(0, 0.0, 0, 0.0, 1, root, false) == SelfTest::retry);
+    CHECK(LosSelfTest(1, 352.40, 0, 0.0, 1, root, false) == SelfTest::ok);
+    // the 10-attempt fail is the caller's (retry, then no attempt left): the verdict itself stays retry
+    for (int i = 0; i < 10; ++i) CHECK(LosSelfTest(0, 0.0, 0, 0.0, 0, root, i % 2 == 1) == SelfTest::retry);
+    CHECK(std::string_view(SelfTestText(SelfTest::ok)) == "ok" && std::string_view(SelfTestText(SelfTest::retry)) == "trying again");
+    CHECK(std::string_view(SelfTestText(SelfTest::ok_static)).substr(0, 18) == "ok (static only: t");
 }
 // redirect bit 32 (the shoot actor), the OnHit attacker verdict and the fresh goal check
 void TestShootAndGuards() {
@@ -403,6 +474,8 @@ void TestSightVerdict() {
 
 int main() {
     TestKeys();
+    TestTargetDefaults();
+    TestGuardAndSelfTest();
     TestPick();
     TestPlan();
     TestForcedAndHelpers();

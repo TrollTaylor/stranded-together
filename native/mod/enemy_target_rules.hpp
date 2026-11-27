@@ -267,4 +267,46 @@ inline GoalCheck CheckGoal(std::uintptr_t goal, bool vt_read, std::uintptr_t vt,
     return vt_read && want && vt == want ? GoalCheck::ok : GoalCheck::bad;
 }
 
+// Round 27 M4, the worker guard (G3; docs/enemy-sync.md 16.2): an entity's +0x88 flags say it is in the world and no removal is
+// under way: bit 29 set (live), bit 30 clear (RemoveEntity 0x14237AE10 queued its removal), bit 31 clear (RemoveEntityNow
+// 0x14237B390 began it).
+inline constexpr bool BodyFlagsLive(std::uint64_t f) noexcept {
+    return (f & (1ull << 29)) != 0 && (f & (1ull << 30)) == 0 && (f & (1ull << 31)) == 0;
+}
+// (M4 review) the gone mark on the CURRENT partner body (a worker-guard trip or a late catch on a body the game did not remove: her
+// agent changed, bit 29 clear for a moment) is stale when nothing says a removal is under way: not op 12's simulate, the stimulus
+// ended (removed), the RemoveEntityNow hook did not see the body, its +0x88 flags read and live, and the trip (when one set the
+// mark) saw the body's vtable unchanged. The caller holds it kGoneStaleMs before it clears the mark (Make runs again).
+inline constexpr double kGoneStaleMs = 1000.0;
+inline constexpr bool GoneMarkStale(bool sim, bool stim, bool hook_removed, bool flags_read, std::uint64_t flags, bool trip_vt_changed) noexcept {
+    return !sim && !stim && !hook_removed && flags_read && BodyFlagsLive(flags) && !trip_vt_changed;
+}
+
+// Round 27 M4 (docs/enemy-sync.md 16.8): the line-of-sight self-test's verdict for one attempt. The same vertical ray (our Sam's
+// chest to his root - 5 m) on layer 0x20 (vs Eye blocker: h32, its first hit's z32), 0x2F (Ray vs Static: h47, z47) and 0x34
+// (vs AI hearing, the control: h52, logged, never gated); `beside` when these are the 1 m-beside pair's (a ray starting inside his
+// own body may report it; a slope there: 1.5 m). ok: the eye-blocker layer hits the ground at his root; ok_static: only the
+// static layer does (the ground here is not an eye blocker; the estimate still runs on layer 0x20); fault: a ray fault (-1);
+// retry otherwise (the caller fails the test after its attempts).
+enum class SelfTest : std::uint8_t { ok, ok_static, retry, fault };
+inline constexpr double kSelfTestTolM = 0.75, kSelfTestBesideTolM = 1.5;
+inline SelfTest LosSelfTest(int h32, double z32, int h47, double z47, int h52, double root, bool beside) noexcept {
+    (void)h52;  // the control: not gated
+    if (h32 == -1 || h47 == -1) return SelfTest::fault;
+    const double tol = beside ? kSelfTestBesideTolM : kSelfTestTolM;
+    auto at_root = [&](int h, double z) { return h > 0 && (z - root <= tol) && (root - z <= tol); };
+    if (at_root(h32, z32)) return SelfTest::ok;
+    if (at_root(h47, z47)) return SelfTest::ok_static;
+    return SelfTest::retry;
+}
+inline const char* SelfTestText(SelfTest v) noexcept {
+    switch (v) {
+        case SelfTest::ok: return "ok";
+        case SelfTest::ok_static: return "ok (static only: the ground here is not an eye blocker)";
+        case SelfTest::retry: return "trying again";
+        case SelfTest::fault: return "a ray fault";
+    }
+    return "?";
+}
+
 }  // namespace st::erules

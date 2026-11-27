@@ -1,7 +1,9 @@
 """Regression test of tools/testenv/enemy-target-gate.py (round 27 run 3 review): the gate's verdict rules on a trimmed run-3-format
 fixture (tests/fixtures/enemy-target-gate/host.log.txt and guest.log.txt, laid out as a run folder: every item PASS; make_base.py
 writes them; *.log is ignored by git) and on mutations of the host log (and, for a case with a sixth field, the guest log), each asserting the gate's exit code and the status (and a
-reason fragment) of the items it is about. Read only; no game.
+reason fragment) of the items it is about. Round 27 M4: a seventh field writes the run's session-host-deployed.ini (no
+enemy_target_pick line: the gate's defaults mode, two-games-enemy-target-defaults); DEFAULTS builds that run from the base. Read
+only; no game.
 
     python -I tests/enemy_target_gate_test.py
 """
@@ -70,6 +72,64 @@ def no_calls(t):
     return resub(t, NO_CALLS, "shoot 32: calls 0 redirected 0 points 0 (at her 0 Sam 0")
 
 
+# (M4) the defaults scenario (two-games-enemy-target-defaults): the launcher's ini (no enemy_* key), the derived [config] lines, TO
+# (take first, then cp 04004's take), TS (op 12) and TR (op 13) appended with their own times
+DFLT = " (default: on with enemy_hits)"
+CFG_TGT = ("[config] enemy_partner_stim=1%s enemy_partner_vis=1 enemy_partner_stim_radius=300 enemy_target_pick=71%s enemy_target_redirect=35%s "
+           "enemy_target_fresh_ms=1500" % (DFLT, DFLT, DFLT))
+CFG_OWN = "[config] enemy_owner=1%s outcomes=1 hits=1 follow_guard=1 attack_registry=1" % DFLT
+LAUNCHER_INI = "[stranded_together]\nenemy_hits=1\nenemy_sync=1\n"
+TF_LINE = "[enemy] tgt id=0202B take first (cp 04004 calm, Sam 150 m, her 25 m): her stimulus refused"
+TAKE = ("[enemy] camp cp 04004 -> guest (proximity: n=9 of 9, guest 25.0 m, host 150.0 m, r 120 m, engage 150 m, margin 40 m, loaded 1, phase 0, "
+        "camp 2; ids 02029 0202A 0202B)")
+PARK = ("[enemy] pstim the game is removing the partner body 0000068250A01000 (seen before the free; thread 94712 (the game thread)%s): parked "
+        "(agent cleared, copies 2, faults 0); removed on a later tick")
+GONE_CLEARED = ("[enemy] pstim the gone mark on the partner body 0000068250A01000 cleared: still live, no removal seen (flags 0x32844443); "
+                "made again when ready")
+REAL_GONE = ("[real] the real body entity 0000068250A01000 is being removed by the game (seen before the free): its slot dropped, the entity not "
+             "touched")
+TS_TR = [(0.5, "[enemy] tgt op 12: the destroy guard's removal simulated on the partner body 0000068250A01000"),
+         (0.1, PARK % ", simulated (op 12)"),
+         (0.1, "[enemy] pstim removed (12.0 s)"),
+         (1.0, "[enemy] tgt op 12 0: the simulated removal ended"),
+         (0.4, "[enemy] pstim made #9 (id 0x0, stim 0000068247DC2620, agent 000006824ACD5F90; nearest enemy 20 m, radius 300)"),
+         # (M4 review) TG: op 12 2, the worker guard's trip simulated on her live body; the gone mark clears by itself
+         (2.0, "[enemy] tgt op 12 2: the worker guard's trip simulated on the partner body 0000068250A01000 (still live)"),
+         (0.02, "[enemy] pstim worker guard: the partner body failed its check (flags 0x32844443, vt ok, agent changed): refused and parked"),
+         (0.0, PARK % ""),
+         (0.04, "[enemy] pstim removed (4.4 s)"),
+         (1.0, GONE_CLEARED),
+         (1.1, "[enemy] pstim made #10 (id 0x0, stim 0000068247DC2620, agent 000006824ACD5F90; nearest enemy 20 m, radius 300)"),
+         (2.0, "[enemy] tgt op 13: the game's RemoveEntityNow on the partner body 0000068250A01000 (world 0000068240000000; guard on)"),
+         (0.0, "[enemy] tgt op 13: called; guard calls 120 -> 121, matched 0 -> 1 (thread 94712, the game thread)"),
+         (0.05, REAL_GONE),
+         (0.05, PARK % ""),
+         (0.1, "[enemy] pstim removed (2.5 s)"),
+         (2.0, "[enemy] pstim made #11 (id 0x0, stim 0000068247DC2620, agent 000006824ACD6F90; nearest enemy 20 m, radius 300)"),
+         (2.0, "[enemy] tgt status: engaging her 0, Sam 0")]
+
+
+def append(text, timed):
+    """the lines appended after the log's last one, each `dt` seconds after the one before"""
+    out = text.rstrip("\n").split("\n")
+    t = float(re.match(r"^\[\s*([0-9.]+)\]", out[-1]).group(1))
+    for dt, line in timed:
+        t += dt
+        out.append("[%9.3f][94712] %s" % (t, line))
+    return "\n".join(out) + "\n"
+
+
+def defaults(t, to=None, ts_tr=None):
+    t = resub(t, r"\[config\] enemy_partner_stim=1 enemy_partner_vis=.*enemy_target_fresh_ms=1500", CFG_TGT + "\n" + ts_of(t) + CFG_OWN)
+    t = sub(t, "take-first 0", "take-first 3", 0)
+    t = insert_after(t, "[probe] L1 calm #1 id=0202B: ready", to if to is not None else [TF_LINE, TAKE])
+    return append(t, ts_tr if ts_tr is not None else TS_TR)
+
+
+def gdefaults(t):
+    return ts_of(t) + CFG_TGT + "\n" + ts_of(t) + CFG_OWN + "\n" + t
+
+
 # (M3f) the TB watch before the Sam step (t=1.00) with another sight suffix; the lines an older build does not write
 TB_W0 = r"(L1 watch id=0202B t=1\.00:.*); sight bucket 0\.2 s los clear 0\.1 s"
 M3F_LINE = re.compile(r"\[enemy\] tgt (?:id=\w+ sight: |los |pick (?:16|32) |arm \w+: her (?:not )?seen )")
@@ -90,8 +150,10 @@ def older_m3f(t):
 # (name, host mutation, expected exit code, {item: (status, reason fragment or None)}, output fragments[, guest mutation])
 CASES = [
     ("base", None, 0, {"TB sticky her": ("PASS", None), "TF1 bit 32 on: no round at Sam": ("PASS", None), "bit 32 filter": ("PASS", None),
-                       "bit 32 live": ("PASS", None), "TF0 bit 32 off: the actor branch at Sam": ("PASS", None)},
-     ["op 11: CS id=02029: her not judged (a Sam arm)", "gate: PASS"]),
+                       "bit 32 live": ("PASS", None), "TF0 without bit 32": ("INFO", "without bit 32: at her 0 / Sam 6 / elsewhere 0"),
+                       "TB sight": ("PASS", "self-test ok: L32 hits 1"), "destroy guard": ("PASS", "RemoveEntityNow hook on (byte checks 6/6)"),
+                       "TE crouched: lower vis, seen": ("PASS", None)},
+     ["mode: probe", "op 11: CS id=02029: her not judged (a Sam arm)", "gate: PASS"]),
     # a switch to Sam in phase 0 FAILs whatever its rule (review: was INVALID for "only visible")
     ("TB switch, it turned off her", lambda t: insert_after(t, "[fixture] tb before op 7", [watch(82, 15.0, 0.9), SWITCH]), 1,
      {"TB sticky her": ("FAIL", "the turn redirect did not hold")}, ["gate: FAIL (TB sticky her)"]),
@@ -129,7 +191,7 @@ CASES = [
                             "[enemy] tgt arm-at-geometry TF0 id=0202B", [PLACE % (4, "op 11"), PLACE % (5, "op 11"), PLACE % (6, "kept in view"),
                                                                        "[enemy] tgt place id=0202B (TF0, op 11): not sent (the link did not take it)",
                                                                        "[enemy] tgt arm TF0 id=0202B: kept in view: 1 re-places (it picked her after 900 ms)"]), 0,
-     {"TF0 bit 32 off: the actor branch at Sam": ("PASS", None)},
+     {"TF0 without bit 32": ("INFO", None)},
      ["op 11: TF0 id=0202B: her not valid in 6000 ms (horiz 22.3 m, bearing 104; 5 places); started anyway",
       "op 11 PLACEs (run 4): sent 2 at the start, 1 kept in view, 1 not sent (the link did not take it); kept in view 1 re-places "
       "(it picked her after 900 ms); the guest placed 1 refused 2", "PLACE ground probe (M3f): chose -1 of 10, skipped 0 raised, ground dz - "
@@ -152,7 +214,7 @@ CASES = [
     ("TB synth, place branch at her", lambda t: sub(sub(t, "shoot: calls 5 redirected 5", "shoot: calls 0 redirected 0"),
                                                     "keeps 0 synth 0 skip 0; her bucket last 3.4 s", "keeps 30 synth 120 skip 0; her bucket last 3.4 s"), 0,
      {"TB phase 0: bit 32": ("PASS", "synth kept her (place branch only, no actor call to redirect): synth 120"),
-      "TB sight": ("INFO", "keeps 30 synth 120")}, ["gate: PASS"]),
+      "TB sight": ("PASS", "keeps 30 synth 120")}, ["gate: PASS"]),
     ("TB synth, shot at Sam", lambda t: sub(sub(sub(t, "shoot: calls 5 redirected 5 points 9 (at her 9 Sam 0 none 0); last her",
                                                     "shoot: calls 0 redirected 0 points 9 (at her 0 Sam 9 none 0); last Sam"),
                                                 "keeps 0 synth 0 skip 0; her bucket last 3.4 s", "keeps 30 synth 120 skip 0; her bucket last 3.4 s"),
@@ -171,12 +233,71 @@ CASES = [
       "TB sight": ("INFO", "self-test none; bits no pick 16 / 32 line"), "CL level: notice <= 2 s": ("PASS", None)},
      ["gate: INCOMPLETE (TB phase 0: both visible)"]),
     # the key has bit 16 and the raycast's self-test failed: bit 16 never came on
-    ("TB sight: self-test failed", lambda t: sub(t, "[enemy] tgt los self-test: ok (hit 1.21 m below the chest)",
-                                                 "[enemy] tgt los self-test: failed (0, hit z 0.00 vs root 101.30) -- the raycast misses the ground; "
-                                                 "pick 16 off"), 1,
+    ("TB sight: self-test failed", lambda t: sub(t, "L52 hits 0 (control) vs root 101.30; attempt 1 -- ok",
+                                                 "L52 hits 0 (control) vs root 101.30; attempt 10 -- failed: the raycast misses on L47 too; "
+                                                 "pick 16/32 off"), 1,
      {"TB sight": ("FAIL", "the raycast's self-test failed")}, ["gate: FAIL (TB sight)"]),
     ("TB sight: no self-test", lambda t: "\n".join(line for line in t.split("\n") if "los self-test" not in line), 1,
      {"TB sight": ("FAIL", "self-test missing")}, []),
+    # (M4) the self-test's verdicts: static only passes; still trying at the end FAILs; an older build's "ok (...)" line passes
+    ("TB sight: static only", lambda t: sub(t, "attempt 1 -- ok", "attempt 1 -- ok (static only: the ground here is not an eye blocker)"), 0,
+     {"TB sight": ("PASS", "ok (static only")}, ["gate: PASS"]),
+    ("TB sight: trying again, then ok", lambda t: insert_after(t, "[enemy] tgt pick 32 (her record from ours): off", [
+        "[enemy] tgt los self-test: L32 hits 0 z 0.00, L47 hits 0 z 0.00, L52 hits 0 (control) vs root 101.30; attempt 1 -- trying again"]), 0,
+     {"TB sight": ("PASS", "attempt 1 -- ok")}, []),
+    ("TB sight: still trying", lambda t: sub(t, "attempt 1 -- ok", "attempt 3 -- trying again"), 1,
+     {"TB sight": ("FAIL", "still trying at the run's end")}, []),
+    ("TB sight: an older ok line", lambda t: resub(t, r"\[enemy\] tgt los self-test: L32 .*", "[enemy] tgt los self-test: ok (hit 1.21 m below the chest)"), 0,
+     {"TB sight": ("PASS", "self-test ok: ok (hit 1.21 m below the chest)")}, []),
+    ("TB sight: a los fault", lambda t: insert_after(t, "[fixture] tb phase 0", ["[enemy] tgt FAULT los ray (SEH) -- pick 16/32 off"]), 1,
+     {"TB sight": ("FAIL", "1 'tgt FAULT los ray' line(s)")}, []),
+    ("TB sight: no clear ray in phase 0", lambda t: sub("\n".join(x for x in t.split("\n") if "tgt los id=0202B clear" not in x),
+                                                        "sight: los clear 12 blocked", "sight: los clear 0 blocked"), 3,
+     {"TB sight": ("INCONCLUSIVE", "no clear sight ray in TB phase 0")}, []),
+    # (M4) TE no longer needs a calm: its calm timeout is printed, not gated
+    ("TE valid without a calm", lambda t: resub(t, r"(L1 result arm TE id=0202C: .*?)calm_timeout=0(.*?)calm=ready", r"\1calm_timeout=1\2calm=timeout"), 0,
+     {"TE crouched: lower vis, seen": ("PASS", "calm timeout (timeout 1; not gated)")}, ["gate: PASS"]),
+    # (M4) the destroy guard (both modes)
+    ("destroy guard missing", lambda t: "\n".join(x for x in t.split("\n") if "tgt destroy guard" not in x), 1,
+     {"destroy guard": ("FAIL", "no 'tgt destroy guard' line")}, ["gate: FAIL (destroy guard)"]),
+    ("destroy guard off", lambda t: sub(t, "hook on (byte checks 6/6)", "hook off (byte checks 5/6)"), 1,
+     {"destroy guard": ("FAIL", "hook off (byte checks 5/6)")}, []),
+    # (M4) the defaults mode: auto-selected by an ini without enemy_target_pick; TO / TS / TR / CFG; the probe-only items not there
+    ("defaults", defaults, 0,
+     {"CFG host": ("PASS", None), "CFG guest": ("PASS", None), "destroy guard": ("PASS", None),
+      "TO take first": ("PASS", "take-first 3 (the summaries); 1 take-first line(s) (first: id=0202B cp 04004); cp 04004 take to the guest: yes"),
+      "TS simulate": ("PASS", "made again 0.4 s after it"),
+      "TG trip on a live body": ("PASS", "gone mark cleared yes (1.0 s after the removal); made again 2.1 s after the removal"),
+      "TR game removal": ("PASS", "matched 0 -> 1 (thread 94712, the game thread); real body line after it; parked yes"),
+      "cpu": ("INFO", "cls 900/s psr 300/s"), "TF1 bit 32 on: no round at Sam": ("PASS", None), "TB sticky her": ("PASS", None)},
+     ["mode: defaults (the session ini has no enemy_target_pick", "gate: PASS"], gdefaults, LAUNCHER_INI),
+    ("defaults: her engaged before the take", lambda t: defaults(t, to=[TF_LINE, "[enemy] tgt id=0202B -> her (only visible)", TAKE]), 1,
+     {"TO take first": ("FAIL", "0202B -> her before it: 1")}, ["take first FAILED: ship pick 7", "gate: FAIL (TO take first)"], gdefaults,
+     LAUNCHER_INI),
+    ("defaults: no take", lambda t: defaults(t, to=[TF_LINE]), 1, {"TO take first": ("FAIL", "take to the guest: NO")}, [], gdefaults, LAUNCHER_INI),
+    ("defaults: flagged, no refusal", lambda t: sub(defaults(t), "take-first 3", "take-first 0", 0), 3,
+     {"TO take first": ("INCONCLUSIVE", "no classifier call refused her")}, [], gdefaults, LAUNCHER_INI),
+    ("defaults: an explicit key", lambda t: sub(defaults(t), "enemy_target_pick=71" + DFLT, "enemy_target_pick=71"), 1,
+     {"CFG host": ("FAIL", "enemy_target_pick=71 enemy_target_redirect"), "CFG guest": ("PASS", None)}, [], gdefaults, LAUNCHER_INI),
+    ("defaults: the real body line first", lambda t: defaults(t, ts_tr=[x for x in TS_TR if x[1] != REAL_GONE][:5] + [(1.0, REAL_GONE)] +
+                                                              [x for x in TS_TR if x[1] != REAL_GONE][5:]), 1,
+     {"TR game removal": ("FAIL", "real body line BEFORE it")}, [], gdefaults, LAUNCHER_INI),
+    ("defaults: op 13 not matched", lambda t: sub(defaults(t), "matched 0 -> 1", "matched 0 -> 0"), 1,
+     {"TR game removal": ("FAIL", "matched 0 -> 0")}, [], gdefaults, LAUNCHER_INI),
+    ("defaults: made again late", lambda t: defaults(t, ts_tr=[(dt if "pstim made #9" not in x else 4.0, x) for dt, x in TS_TR]), 1,
+     {"TS simulate": ("FAIL", "made again 4.0 s after it")}, [], gdefaults, LAUNCHER_INI),
+    ("defaults: the trip mark never clears", lambda t: defaults(t, ts_tr=[x for x in TS_TR if x[1] != GONE_CLEARED]), 1,
+     {"TG trip on a live body": ("FAIL", "gone mark cleared NO"), "TS simulate": ("PASS", None), "TR game removal": ("PASS", None)}, [],
+     gdefaults, LAUNCHER_INI),
+    # (run 212917) TG's parked record leaves as "forgotten" instead of "removed": still a PASS
+    ("defaults: the trip record forgotten", lambda t: defaults(t, ts_tr=[(dt, x if x != "[enemy] pstim removed (4.4 s)" else
+                                                                          "[enemy] pstim forgotten (not in the live list as ours any more; not removed)")
+                                                                     for dt, x in TS_TR]), 0,
+     {"TG trip on a live body": ("PASS", "gone mark cleared yes"), "TR game removal": ("PASS", None)}, [], gdefaults, LAUNCHER_INI),
+    ("defaults: the game gone after op 13", lambda t: defaults(t, ts_tr=TS_TR[:-2]), 1,
+     {"TR game removal": ("FAIL", "logged 0.2 s after it")}, [], gdefaults, LAUNCHER_INI),
+    ("defaults: forced on the probe run", None, 1, {"CFG host": ("FAIL", "enemy_target_pick=55"), "TS simulate": ("FAIL", "op 12 NO")},
+     ["mode: defaults (--mode given; no session ini)"], None, None, ["--mode", "defaults"]),
     # onhit_odd: information only, with its once-line
     ("onhit_odd", lambda t: insert_after(sub(t, "onhit_odd 0", "onhit_odd 2", 0), "[enemy] tgt redirect 32 (shoot actor)",
                                          ["[enemy] tgt onhit odd first: att 0x7FF6A0001000 vt 0x7FF6A1234560 (no RTTI name) inst 0x7FF6A0002000 "
@@ -189,8 +310,12 @@ CASES = [
 ]
 
 
-def run_case(tmp, name, mutate, gmutate=None):
+def run_case(tmp, name, mutate, gmutate=None, ini=None, args=None):
     d = os.path.join(tmp, re.sub(r"\W+", "_", name))
+    if ini is not None:
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "session-host-deployed.ini"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(ini)
     for src, dst in (("host.log.txt", HOST), ("guest.log.txt", GUEST)):
         os.makedirs(os.path.dirname(os.path.join(d, dst)), exist_ok=True)
         with open(os.path.join(FIX, src), encoding="utf-8") as f:
@@ -202,7 +327,7 @@ def run_case(tmp, name, mutate, gmutate=None):
         with open(os.path.join(d, dst), "w", encoding="utf-8", newline="\n") as f:
             f.write(text)
     env = dict(os.environ, PYTHONIOENCODING="utf-8")
-    r = subprocess.run([sys.executable, "-I", "-B", GATE, d], capture_output=True, text=True, encoding="utf-8", env=env)
+    r = subprocess.run([sys.executable, "-I", "-B", GATE, d] + (args or []), capture_output=True, text=True, encoding="utf-8", env=env)
     return r.returncode, r.stdout + r.stderr
 
 
@@ -211,7 +336,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         for case in CASES:
             name, mutate, code, want, frags = case[:5]
-            rc, out = run_case(tmp, name, mutate, case[5] if len(case) > 5 else None)
+            rc, out = run_case(tmp, name, mutate, *case[5:])
             items = {}
             for line in out.splitlines():
                 m = ITEM.match(line)

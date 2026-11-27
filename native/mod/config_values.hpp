@@ -197,19 +197,21 @@ inline bool SetTakeKey(TakeKeys& k, const std::string& key, const std::string& v
     return p != nullptr;
 }
 
-// The round-27 M2 / M3 keys (docs/enemy-sync.md 16), all inert at their defaults; never written by the launcher. They are flipped
-// together only after the gates pass (critique C2):
+// The round-27 M2 / M3 / M4 keys (docs/enemy-sync.md 16; never written by the launcher). Round 27 M4: on by default with
+// enemy_hits (TargetDefaults; the destroy guard closed the body-destroy gap, 16.2); an explicit key always wins (0 too):
 //   enemy_partner_stim 0|1          M2: the host gives the partner body a visual stimulus made with its own Sam's resource (L1;
-//                                   hidden runs only until the body-destroy gap is closed); both games send SPV1
+//                                   only while the destroy guard is in); both games send SPV1. Default 1 with enemy_hits
 //   enemy_partner_vis 0|1           its +0xA4 follows the partner's own (SPV1); 0: always 1.0 (default 1)
 //   enemy_partner_stim_radius       m: a realized human enemy this near the partner body, else no stimulus (20..2000, default 300)
-//   enemy_target_pick 0..63         M3 bits: 1 the PlayerVisual reorder / suppress, 2 the MULE-only perceivers (H5), 4 the
+//   enemy_target_pick 0..127        M3 bits: 1 the PlayerVisual reorder / suppress, 2 the MULE-only perceivers (H5), 4 the
 //                                   classifier flag fix (H2), 8 her hits force a visual (H3), 16 the line-of-sight keep, 32 her
-//                                   record from ours (needs 1 and 16)
+//                                   record from ours (needs 1 and 16), 64 take first (M4: a camp about to go to her stays calm).
+//                                   Default 71 (1 + 2 + 4 + 64) with enemy_hits
 //   enemy_target_redirect 0..255    M3 bits: 1 CanShoot's point, 2 turn / range check, 4 approach, 16 the vehicle chase, 32 the
-//                                   shoot actor (8: the PlayerInfo shadow, not built: ignored)
+//                                   shoot actor (8: the PlayerInfo shadow, not built: ignored). Default 35 (1 + 2 + 32) with enemy_hits
 //   enemy_target_fresh_ms 500..3000 how long a target missing from the bucket stays "visible" (default 1500)
-// SetTargetKey: true when `key` is one of them (a bad value keeps the old one).
+// SetTargetKey: true when `key` is one of them (a bad value keeps the old one); the *_set flags: a valid value was given.
+inline constexpr int kTargetStimDefault = 1, kTargetPickDefault = 71, kTargetRedirectDefault = 35, kTargetPickMax = 127;
 struct TargetKeys {
     int stim = 0;
     bool vis = true;
@@ -217,13 +219,21 @@ struct TargetKeys {
     int pick = 0;
     int redirect = 0;
     int fresh_ms = 1500;
+    bool stim_set = false, pick_set = false, red_set = false;
 };
+// The defaults (round 27 M4): the keys not given follow enemy_hits (on: 1 / 71 / 35; off: 0 / 0 / 0); a given key is kept.
+inline TargetKeys TargetDefaults(bool hits, TargetKeys k, bool stim_set, bool pick_set, bool red_set) {
+    if (!stim_set) k.stim = hits ? kTargetStimDefault : 0;
+    if (!pick_set) k.pick = hits ? kTargetPickDefault : 0;
+    if (!red_set) k.redirect = hits ? kTargetRedirectDefault : 0;
+    return k;
+}
 inline bool SetTargetKey(TargetKeys& k, const std::string& key, const std::string& v) {
     char* end = nullptr;
     const double d = std::strtod(v.c_str(), &end);
     const bool num = !v.empty() && end && !*end && d == d;
     if (key == "enemy_partner_stim") {
-        if (num && (d == 0.0 || d == 1.0)) k.stim = static_cast<int>(d);
+        if (num && (d == 0.0 || d == 1.0)) k.stim = static_cast<int>(d), k.stim_set = true;
         return true;
     }
     if (key == "enemy_partner_vis") {
@@ -235,8 +245,12 @@ inline bool SetTargetKey(TargetKeys& k, const std::string& key, const std::strin
         return true;
     }
     if (key == "enemy_target_pick" || key == "enemy_target_redirect") {
-        const double top = key == "enemy_target_pick" ? 63.0 : 255.0;
-        if (num && d >= 0.0 && d <= top && d == static_cast<double>(static_cast<int>(d))) (key == "enemy_target_pick" ? k.pick : k.redirect) = static_cast<int>(d);
+        const bool pick = key == "enemy_target_pick";
+        const double top = pick ? static_cast<double>(kTargetPickMax) : 255.0;
+        if (num && d >= 0.0 && d <= top && d == static_cast<double>(static_cast<int>(d))) {
+            (pick ? k.pick : k.redirect) = static_cast<int>(d);
+            (pick ? k.pick_set : k.red_set) = true;
+        }
         return true;
     }
     if (key == "enemy_target_fresh_ms") {

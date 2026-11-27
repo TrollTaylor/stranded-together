@@ -24,6 +24,7 @@
 #include "enemy_sync.hpp"
 #include "enemy_target_rules.hpp"
 #include "enemy_wire.hpp"
+#include "entity_remove_hook.hpp"
 #include "game_actions.hpp"
 #include "link.hpp"
 #include "log.hpp"
@@ -102,7 +103,9 @@ constexpr std::uint32_t kIdMask = 0x1FFFFF;
 // the bits
 // (M3f) 16: the line-of-sight keep (SightTick's estimate keeps her the target while the bucket lost her record; needs 1);
 // 32: her record from ours (that bucket's record[0], our Sam's, rewritten into hers; needs 1 and 16)
-enum : unsigned { kPickReorder = 1, kPickH5 = 2, kPickH2 = 4, kPickForce = 8, kPickSight = 16, kPickSynth = 32 };
+// (M4) 64: take first (a calm host camp about to go to her: her stimulus refused for its members until the take; esync's
+// erules::CampTakeFirst)
+enum : unsigned { kPickReorder = 1, kPickH5 = 2, kPickH2 = 4, kPickForce = 8, kPickSight = 16, kPickSynth = 32, kPickTakeFirst = 64 };
 enum : unsigned { kRedShoot = 1, kRedTurn = 2, kRedApproach = 4, kRedShadow = 8, kRedVehicle = 16, kRedShootActor = 32 };
 // the redirect sites (one bit each; redirect bit 2 = 2a | 2b; bit 16 = the vehicle chase; bit 32 = the shoot actor, whose hooks
 // are in with bit 32 on, or in a hidden run while the pick or a redirect is wanted: there the aim point is recorded with bit 32
@@ -335,6 +338,30 @@ std::atomic<std::uint32_t> g_her_flags{0}, g_own_flags{0};          // H2: the p
 std::atomic<std::uintptr_t> g_sym_in{0}, g_sym_out{0};              // 2b's symbols ([0x147BFB918] / [0x147BFB920])
 // the emergency stop's view of the partner stimulus
 std::atomic<std::uintptr_t> g_ps_stim{0}, g_ps_agent{0}, g_ps_res{0}, g_ps_mgr{0};
+// (M4) the destroy guard (docs/enemy-sync.md 16.2). The stimulus' body, its agent and their vtables (Make publishes them; they stay
+// until Step2 / Forget ends the stimulus, so a removal while it is parked still sets the dead agent): the RemoveEntityNow detour
+// (GameRemoving) and the worker guard (G3) read them.
+std::atomic<std::uintptr_t> g_ps_body{0}, g_ps_bagent{0}, g_ps_body_vt{0}, g_ps_agent_vt{0};
+std::atomic<std::uintptr_t> g_gone_body{0};   // the game began removing this body (GameRemoving; StimTick and StimWrite read it)
+std::atomic<bool> g_gone_sim{false};          // ... by op 12's simulate
+std::atomic<std::uint32_t> g_gone_tid{0};     // ... on this thread
+std::atomic<unsigned> g_gone_faults{0}, g_gone_copies{0};
+std::atomic<std::uintptr_t> g_dead_agent{0};  // G2: the classifier refuses every stimulus whose +0x10 is this agent
+std::atomic<int> g_body_gone{0};              // G3: the first worker whose check fails parks the stimulus (1)
+std::atomic<unsigned> g_gr_busy{0};           // GameRemoving in flight: the tick's removes wait it out (GrQuiet)
+std::atomic<std::uint64_t> g_trip_flags{0};   // G3's view when it tripped (the tick logs it)
+std::atomic<int> g_trip_vt{0}, g_trip_agent{0};
+// (M4) take first (pick bit 64): the MULEs whose camp erules::CampTakeFirst holds (UpdateOwn writes them at 10 Hz)
+constexpr unsigned kTfCap = 32;
+std::atomic<std::uint32_t> g_tf_ids[kTfCap];
+std::atomic<unsigned> g_tf_n{0};
+bool TakeFirstHas(std::uint32_t own) noexcept {
+    const std::uint32_t id = own & 0x1FFFFFu;
+    const unsigned n = g_tf_n.load(std::memory_order_acquire);
+    for (unsigned i = 0; i < n && i < kTfCap; ++i)
+        if (g_tf_ids[i].load(std::memory_order_relaxed) == id) return true;
+    return false;
+}
 
 // the partner record (seqlock; game thread writes once per tick, after the stimulus tick, valid only while our partner stimulus is
 // live): feet = the body's root; the aim point = feet + her SPV1 aim height (her own player object's info +0x198 above her root,
@@ -415,7 +442,11 @@ struct Slot {
     // before (our Sam's) and after (hers, from her stimulus +0x90); x / y only
     std::atomic<float> syn_f24{0}, syn_f28{0}, syn_vs[2] = {}, syn_vh[2] = {};
     std::atomic<std::uint64_t> first_p{0};  // her record first in its bucket since the arm's start (ms; op 4 resets)
+    std::atomic<std::uint8_t> take_first{0};  // (M4) pick bit 64: its camp is held for her take (UpdateOwn)
     // game thread only
+    double chg_at = -1e18;                  // (M4) its last change line (outside hidden runs: one per 10 s, the rest counted)
+    unsigned chg_supp = 0;
+    double tf_at = -1e18;                   // its last take-first line
     std::uint64_t arm_ms = 0;               // (M3f) the arm's start (TNow; op 4)
     std::uint64_t los_next = 0;             // its next ray
     unsigned los_n[9] = {};                 // its verdicts by erules::Sight (op 4 resets)
@@ -532,6 +563,9 @@ struct WCounts {
     // (M3f) pick bits 16 / 32 (all MULEs): ticks kept by the line of sight, her record written from ours, a synth refused by its
     // checks; onhit_odd: an OnHit attacker of the game's whose +0x338 is not an object of the game's (information only)
     std::atomic<std::uint32_t> est_keep{0}, synth{0}, synth_skip{0}, onhit_odd{0};
+    // (M4) the destroy guard: stimuli refused by the dead agent (G2), the worker guard's trips (G3); take first's refusals (pick
+    // bit 64); the classifier's calls (the cpu line)
+    std::atomic<std::uint32_t> dead_refuse{0}, guard_trip{0}, take_first{0}, cls_calls{0};
 } g_wc;
 // (run 3) the first instance of each, kept by the worker that saw it (one compare-exchange) and logged once by the tick
 struct FirstSeen {
@@ -561,6 +595,27 @@ bool PartnerStim(std::uintptr_t stim) noexcept {
     const std::uintptr_t pa = g_p_agent.load(std::memory_order_relaxed);
     std::uintptr_t ag = 0;
     return pa && SQ(stim + kSAgent, &ag) && ag == pa;
+}
+// (M4) G3, the worker guard (any thread; SEH reads only): the partner body still in the world with no removal under way
+// (erules::BodyFlagsLive: +0x88 bit 29 set, bits 30 / 31 clear), its vtable and agent as made, the agent's vtable as made. It
+// catches a free that bypasses RemoveEntityNow (a world teardown) and a queued removal (bit 30) before the hook. On a failed
+// check the first worker parks the stimulus (GameRemoving: lock-free) and every call refuses it.
+bool WorkerBodyOk() noexcept {
+    const std::uintptr_t body = g_ps_body.load(std::memory_order_acquire), agent = g_ps_bagent.load(std::memory_order_acquire);
+    if (!body || !agent) return false;  // (never: PartnerStim matched a stimulus Make published)
+    std::uintptr_t flags = 0, vt = 0, ag = 0, avt = 0;
+    const bool rf = SQ(body + 0x88, &flags);
+    const bool vt_ok = SQ(body, &vt) && vt && vt == g_ps_body_vt.load(std::memory_order_relaxed);
+    const bool ag_ok = SQ(body + kEAgent, &ag) && ag == agent && SQ(agent, &avt) && avt && avt == g_ps_agent_vt.load(std::memory_order_relaxed);
+    if (rf && R::BodyFlagsLive(flags) && vt_ok && ag_ok) return true;
+    g_wc.guard_trip.fetch_add(1, std::memory_order_relaxed);
+    int z = 0;
+    if (g_body_gone.compare_exchange_strong(z, 1, std::memory_order_acq_rel)) {
+        g_trip_flags.store(rf ? flags : ~0ull, std::memory_order_relaxed);
+        g_trip_vt.store(vt_ok ? 1 : 0, std::memory_order_relaxed), g_trip_agent.store(ag_ok ? 1 : 0, std::memory_order_relaxed);
+        GameRemoving(body, false);
+    }
+    return false;
 }
 
 // (M3f) pick bit 32: record[0] (our Sam's, `stim0` when PsrOne read it) rewritten into her stimulus, its +0x20 distance hers from
@@ -995,7 +1050,16 @@ unsigned g_sites_in = 0;    // redirect sites whose detours are in
 unsigned g_sites_tried = 0;
 bool g_mh_tried = false, g_mh_ok = false;
 unsigned g_sense_in = 0;
-bool g_sense_tried = false;
+unsigned g_sense_tried = 0;  // (review S5; M4: per hook) the sense hooks tried once each
+// (M4) the destroy guard and the log cadence (game thread)
+bool g_rm_tried = false;           // the RemoveEntityNow hook's install tried (once)
+bool g_verbose = false;            // Config.verbose: the hidden-run cadence outside hidden runs too
+double g_dead_seen_at = -1;        // the dead agent first seen by the tick with no stimulus body (its 2 s lifetime)
+std::uintptr_t g_dead_seen_val = 0;
+bool g_trip_logged = false;        // G3's trip line for this stimulus
+double g_gone_stale_at = -1;       // (M4 review) since when the gone mark on her current body is stale (R::GoneMarkStale; -1 not)
+double g_rate_at = -1;             // the summary's per-second rates: the last sample
+std::uint32_t g_rate_cls = 0, g_rate_psr = 0, g_rate_rm = 0;
 int g_redir_override = -1;  // op 6 (hidden runs): the redirect bits for this run
 bool g_stopped = false, g_wiped = false;
 double g_stop_at = 0;
@@ -1092,20 +1156,49 @@ void Publish() noexcept {
     g_ps_res.store(g_ps.res, std::memory_order_relaxed);
     g_ps_mgr.store(g_ps.mgr, std::memory_order_relaxed);
     g_ps_agent.store(g_ps.agent, std::memory_order_relaxed);
-    g_ps_stim.store(g_ps.stim, std::memory_order_release);
+    // (M4) the destroy guard's view: kept until the stimulus ends (ClearBody), not cleared by Unpublish
+    g_ps_bagent.store(g_ps.agent, std::memory_order_relaxed);
+    g_ps_body.store(g_ps.body, std::memory_order_release);
+    g_ps_stim.store(g_ps.stim, std::memory_order_seq_cst);
 }
 void Unpublish() noexcept {
     g_p_agent.store(0, std::memory_order_release);
-    g_ps_stim.store(0, std::memory_order_release);
+    // (M4) seq_cst: the Dekker pair with GameRemoving (it raises g_gr_busy, then reads g_ps_stim; GrQuiet reads g_gr_busy after this)
+    g_ps_stim.store(0, std::memory_order_seq_cst);
     g_ps_agent.store(0, std::memory_order_relaxed);
     g_ps_res.store(0, std::memory_order_relaxed);
     g_ps_mgr.store(0, std::memory_order_relaxed);
 }
+// (M4) the stimulus ended (removed or forgotten): the destroy guard stops watching its body (the dead agent stays, TickBody ends it)
+void ClearBody() noexcept {
+    g_ps_body.store(0, std::memory_order_release);
+    g_ps_bagent.store(0, std::memory_order_relaxed);
+    g_ps_body_vt.store(0, std::memory_order_relaxed), g_ps_agent_vt.store(0, std::memory_order_relaxed);
+    rmhook::Watch(rmhook::kWatchStim, 0);
+}
+// (M4) every GameRemoving that read the stimulus before it was unpublished is done (the tick's removes wait it out; ~4000 spins)
+bool GrQuiet() noexcept {
+    for (int i = 0; i < 4000; ++i) {
+        if (g_gr_busy.load(std::memory_order_seq_cst) == 0) return true;
+        YieldProcessor();
+    }
+    return g_gr_busy.load(std::memory_order_seq_cst) == 0;
+}
+// (M4) the game began removing our stimulus' body (GameRemoving: the agent cleared, the copies written invisible): parked, Step2
+// removes it two ticks later (the stimulus is not the body's: it outlives it in the pool)
+bool GoneNow() noexcept {
+    const std::uintptr_t g = g_gone_body.load(std::memory_order_seq_cst);
+    return g && g_ps.stim && !g_ps.pending && g == g_ps.body;
+}
+// (M4 review) the gone mark names our stimulus' body (live or not): a check that found it "not ours" parks it, never forgets it (a
+// GameRemoving between the gone test and the check cleared its +0x10)
+bool GoneOurs() noexcept { return g_ps.stim && g_ps.body && g_gone_body.load(std::memory_order_seq_cst) == g_ps.body; }
 void Forget(const char* why) noexcept {
     Log("[enemy] pstim forgotten (%s; not removed)", why);
     ++g_forgotten;
     Unpublish();
     g_ps = PStim{};
+    ClearBody();
 }
 // the pool lock, remembered so the tick's fault handler can leave it
 struct Lock {
@@ -1125,16 +1218,51 @@ struct Lock {
 bool OursLiveP(std::uintptr_t s) noexcept { return stimcore::OursLive(s, g_ps.agent, g_ps.res); }
 bool OursParkedP(std::uintptr_t s) noexcept { return stimcore::OursParked(s, g_ps.res); }
 
+// (M4 review) a park's step 1 on the game thread: a GameRemoving in flight may read g_ps_stim after the Unpublish (seq_cst allows
+// it) and skip its Step1Any, so the tick writes step 1 itself (idempotent with Step1Any: +0x10 by a compare-exchange). Under the
+// pool lock (`held`: the caller holds it), only while the record is in the live list and ours (live, or parked already); the
+// manager changed: nothing (Step2 forgets it). Returns the faults.
+unsigned ParkStep1(bool held) noexcept {
+    const std::uintptr_t mgr = mem::Q(A(kStimMgr));
+    if (mgr && mgr != g_ps.mgr) return 0;
+    const auto ours = [] { return OursLiveP(g_ps.stim) || OursParkedP(g_ps.stim); };
+    if (!mgr) return ours() ? Step1(g_ps.stim, g_ps.agent, g_ps.res, 0) : 0;
+    if (held) return InLiveList(mgr, g_ps.stim) && ours() ? Step1(g_ps.stim, g_ps.agent, g_ps.res, mgr) : 0;
+    Lock lk(mgr);
+    if (!lk.held) {
+        StimDead("the pool lock");
+        return 0;
+    }
+    return InLiveList(mgr, g_ps.stim) && ours() ? Step1(g_ps.stim, g_ps.agent, g_ps.res, mgr) : 0;
+}
+// (M4) the game began removing our stimulus' body: unpublished, step 1 (ParkStep1), parked; Step2 removes it two ticks later (the
+// stimulus is not the body's: it outlives it in the pool). `held`: the caller holds the pool lock; `counted`: its release counted
+void ParkGone(bool held = false, bool counted = false) noexcept {
+    Unpublish();
+    const unsigned f1 = ParkStep1(held);
+    g_ps.pending = true;
+    g_ps.pending_tick = g_tick;
+    if (!counted) ++g_releases;
+    const unsigned faults = g_gone_faults.load() + f1, copies = g_gone_copies.load();
+    if (faults) ++g_faults;
+    const std::uint32_t tid = g_gone_tid.load();
+    Log("[enemy] pstim the game is removing the partner body %p (seen before the free; thread %lu %s%s): parked (agent cleared, copies %u, "
+        "faults %u); removed on a later tick",
+        reinterpret_cast<void*>(g_ps.body), static_cast<unsigned long>(tid), tid == GetCurrentThreadId() ? "(the game thread)" : "(another thread)",
+        g_gone_sim.load() ? ", simulated (op 12)" : "", copies, faults);
+}
+
 // ---- the release (C1, as the M1 probe proved it): step 1 at once, step 2 two ticks later
 void Release(const char* why) noexcept {
     if (!g_ps.stim || g_ps.pending) return;
+    if (GoneNow()) return ParkGone();  // (M4) its agent is cleared already: OursLiveP would read "not ours" and forget it
     ++g_releases;
     Unpublish();
     const std::uintptr_t mgr = mem::Q(A(kStimMgr));
     unsigned faults = 0;
     if (mgr && mgr != g_ps.mgr) return Forget("the AI manager changed");
     if (!mgr) {
-        if (!OursLiveP(g_ps.stim)) return Forget("no AI manager and no longer ours");
+        if (!OursLiveP(g_ps.stim)) return GoneOurs() ? ParkGone(false, true) : Forget("no AI manager and no longer ours");
         faults = Step1(g_ps.stim, g_ps.agent, g_ps.res, 0);
     } else {
         Lock lk(mgr);
@@ -1142,7 +1270,8 @@ void Release(const char* why) noexcept {
             StimDead("the pool lock");
             return Forget("the pool lock faulted");
         }
-        if (!InLiveList(mgr, g_ps.stim) || !OursLiveP(g_ps.stim)) return Forget("no longer ours at the release");
+        // (M4 review) a GameRemoving since the gone test cleared +0x10: parked, not forgotten (Step2 removes it)
+        if (!InLiveList(mgr, g_ps.stim) || !OursLiveP(g_ps.stim)) return GoneOurs() ? ParkGone(true, true) : Forget("no longer ours at the release");
         faults = Step1(g_ps.stim, g_ps.agent, g_ps.res, mgr);
     }
     if (faults) ++g_faults;
@@ -1167,7 +1296,19 @@ void Step2(bool now) noexcept {
         StimDead("the pool lock");
         return Forget("the pool lock faulted");
     }
+    if (InLiveList(mgr, s) && !OursParkedP(s) && OursLiveP(s)) {
+        // (M4 review) still live and ours: a park whose step 1 nobody wrote (a GameRemoving that read it after the Unpublish): step
+        // 1 now, under the lock, and parked again (removed two ticks later)
+        if (Step1(s, g_ps.agent, g_ps.res, mgr)) {
+            StimDead("step 1 at the remove");
+            return Forget("step 1 at the remove faulted");
+        }
+        g_ps.pending_tick = g_tick;
+        Log("[enemy] pstim release: still live at the remove; step 1 again, removed on a later tick");
+        return;
+    }
     if (!InLiveList(mgr, s) || !OursParkedP(s)) return Forget("not in the live list as ours any more");
+    if (!GrQuiet()) return;  // (M4) a GameRemoving still writing it: the next tick
     const std::uint8_t zero = 0, one = 1;
     int r = SehWrite(s + kSOff, &zero, 1);
     if (r > 0) r = SehStimRemove(mgr, s);
@@ -1178,11 +1319,13 @@ void Step2(bool now) noexcept {
     Log("[enemy] pstim removed (%.1f s%s)%s", (g_now - g_ps.t0) / 1000.0, still ? "; still in the live list: the remove did nothing, parked again" : "",
         r < 0 ? " FAULT" : "");
     g_ps = PStim{};
+    ClearBody();
 }
 // a direct remove while the partner body is alive (op 1 0, op 9); still listed afterwards: released instead
 void RemoveNow(const char* why, bool quiet = false) noexcept {
     if (!g_ps.stim) return;
     if (g_ps.pending) return;  // (review S10) a release in progress: the tick's step 2 finishes it, two ticks after step 1
+    if (GoneNow()) return ParkGone();  // (M4)
     const std::uintptr_t mgr = mem::Q(A(kStimMgr));
     if (!mgr || g_stim_dead) return Release(why);
     if (mgr != g_ps.mgr) return Forget("the AI manager changed");
@@ -1192,14 +1335,23 @@ void RemoveNow(const char* why, bool quiet = false) noexcept {
             StimDead("the pool lock");
             return Forget("the pool lock faulted");
         }
-        if (!InLiveList(mgr, g_ps.stim) || !OursLiveP(g_ps.stim)) return Forget("no longer ours at the remove");
+        if (!InLiveList(mgr, g_ps.stim) || !OursLiveP(g_ps.stim)) return GoneOurs() ? ParkGone(true) : Forget("no longer ours at the remove");
         Unpublish();
+        if (!GrQuiet()) {
+            // (M4) a GameRemoving still writing it: parked instead, Step2 removes it on a later tick. (review) Step 1 here, under the
+            // lock: the busy GameRemoving may have read g_ps_stim after the Unpublish and skipped its Step1Any
+            if (Step1(g_ps.stim, g_ps.agent, g_ps.res, mgr)) ++g_faults;
+            g_ps.pending = true, g_ps.pending_tick = g_tick, ++g_releases;
+            if (!quiet) Log("[enemy] pstim remove (%s): the destroy guard is writing it; parked, removed on a later tick", why);
+            return;
+        }
         const int r = SehStimRemove(mgr, g_ps.stim);
         if (r < 0) StimDead("the remove");
         if (r >= 0 && !InLiveList(mgr, g_ps.stim)) {
             ++g_removed;
             if (!quiet) Log("[enemy] pstim removed (%s; %.1f s)", why, (g_now - g_ps.t0) / 1000.0);
             g_ps = PStim{};
+            ClearBody();
             return;
         }
         Log("[enemy] pstim remove (%s): %s; released instead", why, r < 0 ? "FAULT" : "still in the live list");
@@ -1377,6 +1529,8 @@ void Checks() noexcept {
 
 unsigned RedirWant() noexcept { return g_redir_override >= 0 ? static_cast<unsigned>(g_redir_override) : g_cfg.redirect; }
 bool PickOrRedirWanted() noexcept { return g_cfg.pick != 0 || RedirWant() != 0; }
+// (review) the M3 path (the sense hooks, the redirects, the table): the host only, as 16.7 says (the guest refuses her stimulus)
+bool M3Wanted() noexcept { return PickOrRedirWanted() && g_role == 1; }
 // (run 3 review) bit 32's three hooks go in only when bit 32 is on, or in a hidden run (automation), where the aim point is
 // recorded with bit 32 off too (TF0's record); never for players with bit 32 off
 unsigned ShootHooksWant() noexcept { return ((RedirWant() & kRedShootActor) || automation::Enabled()) ? kRedShootActor : 0u; }
@@ -1468,13 +1622,15 @@ void EnsureRedirects(unsigned bits) noexcept {
 void EnsureSense(unsigned pick) noexcept {
     unsigned want = 0;
     if (pick & kPickReorder) want |= sense::kPsr;
-    if (pick & (kPickH5 | kPickH2)) want |= sense::kCls;
-    // (review S5) one try per run: a hook MinHook refused, or one off by its byte checks, is not tried (or logged) again each tick
-    if (!want || g_sense_tried) {
+    // (M4) the classifier also carries the destroy guard's G2 / G3 (the host with the stimulus key on), and take first (bit 64)
+    if ((pick & (kPickH5 | kPickH2 | kPickTakeFirst)) || (g_cfg.stim && g_role == 1)) want |= sense::kCls;
+    // (review S5) one try per hook per run: a hook MinHook refused, or one off by its byte checks, is not tried (or logged) again
+    want &= ~g_sense_tried;
+    if (!want) {
         g_sense_in = sense::Installed();
         return;
     }
-    g_sense_tried = true;
+    g_sense_tried |= want;
     const char* text[3] = {"-", "-", "-"};
     const unsigned ok = ((g_groups & kGCls) ? sense::kCls : 0u) | ((g_groups & kGPsr) ? sense::kPsr : 0u);
     g_sense_in = sense::Ensure(want, ok, text);
@@ -1494,6 +1650,8 @@ void Recompute() noexcept {
     // (M3f) 16 with 1 live and the raycast's self-test passed; 32 with 16
     if ((g_cfg.pick & kPickSight) && (p & kPickReorder) && g_los_state == 1) p |= kPickSight;
     if ((g_cfg.pick & kPickSynth) && (p & kPickSight)) p |= kPickSynth;
+    // (M4) 64, take first: the classifier hook and ownership live (esync's camp walk writes the camps it holds)
+    if ((g_cfg.pick & kPickTakeFirst) && (g_groups & kGCls) && (g_sense_in & sense::kCls) && esync::OwnOn()) p |= kPickTakeFirst;
     if ((g_cfg.pick & (kPickSight | kPickSynth)) && (!g_bits_logged_any || ((p ^ g_bits_logged) & (kPickSight | kPickSynth)))) {
         const char* why16 = (p & kPickSight)              ? "the self-test passed, bit 1 live"
                             : !(g_cfg.pick & kPickSight)  ? "not in the key"
@@ -1521,7 +1679,9 @@ void WipeTable() noexcept {
         s.ind.store(0), s.id.store(0), s.cur.store(0), s.rule.store(0), s.force.store(0), s.chg_rule.store(0);
         s.ent.store(0), s.reg_ms.store(0), s.own_ms.store(0), s.pt_ms.store(0), s.los_ms.store(0), s.los_v.store(0);
         s.tomb_ms = 0, s.entity = 0, s.agent = 0, s.logged_cur = 0, s.logged_rule = 0, s.mm_logged = false;
+        s.take_first.store(0);
     }
+    g_tf_n.store(0, std::memory_order_release);
     for (IndIx& e : g_ix) e.key.store(0, std::memory_order_release), e.slot.store(-1), e.tomb_ms = 0;
     for (IndIx& e : g_ex) e.key.store(0, std::memory_order_release), e.slot.store(-1), e.tomb_ms = 0;
     g_registered = 0;
@@ -1578,6 +1738,7 @@ Slot* Insert(std::uintptr_t k) noexcept {
             s.ind.store(0), s.id.store(0), s.ent.store(0);  // (a reused slot: Register() fills these and the two indexes)
             s.entity = 0, s.agent = 0, s.pass = 0, s.pt_seen_ms = 0, s.pt_her = 0, s.pt_sam = 0, s.pt_none = 0;
             s.logged_cur = 0, s.logged_rule = 0, s.tomb_ms = 0, s.mm_logged = false;
+            s.take_first.store(0), s.chg_at = -1e18, s.chg_supp = 0, s.tf_at = -1e18;
             s.key.store(k, std::memory_order_release);
             return &s;
         }
@@ -1665,6 +1826,23 @@ void UpdateOwn() noexcept {
         s.own_ms.store(TNow(), std::memory_order_relaxed);
         s.own_seq.store(q + 2, std::memory_order_release);
     }
+    // (M4) pick bit 64, take first: the MULEs whose calm camp esync holds for her take (SenseClsRefuse refuses her stimulus for them)
+    const bool tf_live = (g_pick_live.load(std::memory_order_relaxed) & kPickTakeFirst) != 0;
+    unsigned n = 0;
+    for (Slot& s : g_slots) {
+        if (s.key.load(std::memory_order_relaxed) <= 1) continue;
+        const std::uint32_t id = s.id.load(std::memory_order_relaxed);
+        esync::TakeFirstInfo info;
+        const bool tf = tf_live && id && esync::TakeFirstOf(id, &info);
+        const bool was = s.take_first.load(std::memory_order_relaxed) != 0;
+        s.take_first.store(tf ? 1 : 0, std::memory_order_relaxed);
+        if (tf && n < kTfCap) g_tf_ids[n++].store(id, std::memory_order_relaxed);
+        if (tf && !was) {
+            s.tf_at = g_now;
+            Log("[enemy] tgt id=%05X take first (cp %05X calm, Sam %.0f m, her %.0f m): her stimulus refused", id, info.cp, info.d_h, info.d_g);
+        }
+    }
+    g_tf_n.store(n, std::memory_order_release);
 }
 Slot* SlotOfId(std::uint32_t id) noexcept {
     for (Slot& s : g_slots)
@@ -1814,7 +1992,15 @@ void LogChanges() noexcept {
         if (cur == s.logged_cur) continue;
         s.logged_cur = cur, s.logged_rule = rule;
         if (cur == R::kNone) continue;
-        Log("[enemy] tgt id=%05X -> %s (%s)", s.id.load(), R::WhoText(static_cast<R::Who>(cur)), R::RuleText(static_cast<R::Rule>(rule)));
+        // (M4) outside hidden runs (and without verbose): one line per slot per 10 s, the rest counted on the next one
+        if (!automation::Enabled() && !g_verbose && g_now - s.chg_at < 10000) {
+            ++s.chg_supp;
+            continue;
+        }
+        s.chg_at = g_now;
+        char supp[40] = "";
+        if (s.chg_supp) std::snprintf(supp, sizeof(supp), " (+%u changes not logged)", s.chg_supp), s.chg_supp = 0;
+        Log("[enemy] tgt id=%05X -> %s (%s)%s", s.id.load(), R::WhoText(static_cast<R::Who>(cur)), R::RuleText(static_cast<R::Rule>(rule)), supp);
     }
 }
 // (run 3) the first instance of each worker-side diagnostic, logged once from the tick
@@ -1853,6 +2039,20 @@ Snap ReadSnap() noexcept {
     n.pt_her = g_pt_her_all, n.pt_sam = g_pt_sam_all, n.pt_none = g_pt_none_all;
     return n;
 }
+// (M4) the summary's destroy guard / take first / cpu numbers: the RemoveEntityNow detour's calls (and per second), the matches,
+// the dead-agent refusals (G2), the worker guard's trips (G3), take first's refusals, the classifier's and PSR's calls per second
+const char* GuardText() noexcept {
+    static char b[200];
+    const rmhook::Stats rs = rmhook::Snapshot();
+    const std::uint32_t cls = g_wc.cls_calls.load(), psr = g_wc.psr.load();
+    const double dt = g_rate_at >= 0 && g_now > g_rate_at ? (g_now - g_rate_at) / 1000.0 : 0.0;
+    auto per = [&](std::uint32_t a, std::uint32_t b0) { return dt > 0 && a >= b0 ? static_cast<unsigned>((a - b0) / dt + 0.5) : 0u; };
+    std::snprintf(b, sizeof(b), "; guard calls %u (%u/s) matched %u dead-refused %u trips %u; take-first %u; cls %u/s psr %u/s", rs.calls,
+                  per(rs.calls, g_rate_rm), rs.matched, g_wc.dead_refuse.load(), g_wc.guard_trip.load(), g_wc.take_first.load(), per(cls, g_rate_cls),
+                  per(psr, g_rate_psr));
+    g_rate_at = g_now, g_rate_cls = cls, g_rate_psr = psr, g_rate_rm = rs.calls;
+    return b;
+}
 void Summary(const char* when) noexcept {
     unsigned her = 0, sam = 0;
     for (Slot& s : g_slots) {
@@ -1869,13 +2069,13 @@ void Summary(const char* when) noexcept {
     Log("[enemy] tgt%s%s: engaging her %u, Sam %u; reorders %u; suppress %u; redirects 1:%u 2a:%u (offset %u) 2b:%u 4:%u (not ours %u) veh:%u; "
         "h5 %u h2 %u/%u (no type-1 bucket %u) forced %u; registered %u; faults %u; mismatch %u; table clears %u; shoot 32: calls %u redirected %u "
         "points %u (at her %u Sam %u none %u); soft onhit_bad %u psr_rec_bad %u turn_goal_bad %u; shoot32 vt_other %u noslot %u; t36 %u; "
-        "sight keeps %u synth %u skip %u rays %u; onhit_odd %u",
+        "sight keeps %u synth %u skip %u rays %u; onhit_odd %u%s",
         when ? " " : "", when ? when : "", her, sam, d(n.front, o.front), d(n.supp, o.supp), d(n.r1, o.r1), d(n.r2a, o.r2a), d(n.r2a_off, o.r2a_off),
         d(n.r2b, o.r2b), d(n.r4, o.r4), d(n.r4n, o.r4n), d(n.rveh, o.rveh), d(n.h5, o.h5), d(n.h2r, o.h2r), d(n.h2f, o.h2f), d(n.h2nb, o.h2nb),
         d(n.forced, o.forced), g_registered, n.faults, g_mismatch, g_table_clears, d(n.sh_calls, o.sh_calls), d(n.sh_redir, o.sh_redir),
         d(n.sh_pts, o.sh_pts), d(n.pt_her, o.pt_her), d(n.pt_sam, o.pt_sam), d(n.pt_none, o.pt_none), g_wc.onhit_bad.load(), g_wc.psr_rec_bad.load(),
         g_wc.turn_goal_bad.load(), g_wc.sh_vt_other.load(), g_wc.sh_noslot.load(), g_wc.sh_t36.load(), g_wc.est_keep.load(), g_wc.synth.load(),
-        g_wc.synth_skip.load(), g_sight_rays, g_wc.onhit_odd.load());
+        g_wc.synth_skip.load(), g_sight_rays, g_wc.onhit_odd.load(), GuardText());
     g_last_snap = n;
 }
 
@@ -1964,9 +2164,9 @@ const char* HardReason() noexcept {
     // (review S1) the host only: the guest's partner body is the host's Sam, whose enemies the host owns
     if (g_role == 2) return "the guest (host only)";
     if (g_role != 1) return "no session (host only)";
-    // (review S1) hidden runs only for now: the real body can be destroyed by the game before ReleaseBeforeFree runs (the
-    // body-destroy gap), and no live session may meet that before it is closed
-    if (!automation::Enabled()) return "hidden runs only (the game's body-destroy gap)";
+    // (round 27 M4) the body-destroy gap is closed by the destroy guard (docs/enemy-sync.md 16.2): the RemoveEntityNow detour sees
+    // the game's removal before the free; no stimulus without it
+    if (!rmhook::Ready()) return "the destroy guard is not in";
     if (!g_net) return "no link";
     if (const char* b = BodyRefusal()) return b;
     if (!g_local || !g_local_ok) return "Sam asleep";
@@ -2026,13 +2226,23 @@ void StimWrite() noexcept {
         StimDead("the pool lock");
         return Forget("the pool lock faulted");
     }
-    if (!InLiveList(g_ps.mgr, g_ps.stim) || !OursLiveP(g_ps.stim)) return Forget("no longer ours: not in the live list, or its agent or resource changed");
+    // (M4) the Dekker pair with GameRemoving: gone before the writes, nothing written (StimTick parks it); gone during them, the
+    // invisible writes again after them
+    if (g_gone_body.load(std::memory_order_seq_cst) == g_ps.body) return;
+    if (!InLiveList(g_ps.mgr, g_ps.stim) || !OursLiveP(g_ps.stim))
+        return GoneOurs() ? ParkGone(true) : Forget("no longer ours: not in the live list, or its agent or resource changed");
     int r = SehWrite(g_ps.stim + kSPos, at, sizeof(at));
     if (r > 0) r = SehWrite(g_ps.stim + kSVel, vel, sizeof(vel));
     if (r > 0) r = SehWrite(g_ps.stim + kSMul, &vis, 4);
     if (r > 0) r = SehWrite(g_ps.stim + kSA0, &a0, 4);
     if (r > 0) r = SehWrite(g_ps.stim + kSB0, &b0, 4);
     if (r > 0) r = SehWrite(g_ps.stim + kSId, &g_ps.id88, 4);
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    if (g_gone_body.load(std::memory_order_seq_cst) == g_ps.body) {
+        unsigned c = 0;
+        Step1Any(g_ps.stim, g_ps.agent, g_ps.res, g_ps.mgr, &c);
+        return;
+    }
     if (r < 0) {
         ++g_faults;
         Log("[enemy] pstim tick write FAULT: released");
@@ -2047,10 +2257,18 @@ const char* Make(bool ignore_radius, bool quiet) noexcept {
     if (const char* h = HardReason()) return h;
     if (!ignore_radius)
         if (const char* s = SoftReason()) return s;
+    // (M4) the classifier guard (G2 / G3) in; the body not being removed (the hook, or its +0x88 flags) and its agent not dead
+    if (!(g_sense_in & sense::kCls)) return "the classifier guard is not in";
+    {
+        std::uint64_t fl = 0;
+        if (g_gone_body.load() == g_body || rmhook::Removed(rmhook::kWatchBody, g_body) || !mem::Rd(g_body + 0x88, fl) || !R::BodyFlagsLive(fl))
+            return "the partner body is being removed by the game";
+    }
     const std::uintptr_t mgr = mem::Q(A(kStimMgr));
     if (!mgr) return "no AI manager";
     const std::uintptr_t agent = mem::Q(g_body + kEAgent);
     if (!agent) return "the partner body has no agent";
+    if (agent == g_dead_agent.load()) return "the partner body is being removed by the game";
     // the agent gate (M1): its vt+0x10 must return the partner body (the sensor walks that entity's parent chain, no null check)
     if (SehAgentEntity(agent) != g_body) return "the partner agent's vt+0x10 is not the partner body";
     const std::uintptr_t res = SehResource(g_local);
@@ -2075,7 +2293,15 @@ const char* Make(bool ignore_radius, bool quiet) noexcept {
     SehWrite(s + kSOff, &zero, 1);
     g_ps = PStim{};
     g_ps.stim = s, g_ps.res = res, g_ps.agent = agent, g_ps.body = g_body, g_ps.mgr = mgr, g_ps.t0 = g_now, g_ps.id88 = id;
+    // (M4) the worker guard's reference (G3), then the stimulus published; the hook watches its body
+    g_ps_body_vt.store(mem::Q(g_body), std::memory_order_relaxed), g_ps_agent_vt.store(mem::Q(agent), std::memory_order_relaxed);
+    g_body_gone.store(0), g_trip_logged = false;
     Publish();
+    rmhook::Watch(rmhook::kWatchStim, g_body);
+    // (review) the store-load pair with the detour's Match (it stores the removed mark, then loads the watch): the watch store must be
+    // visible before the removed load (Watch's store is seq_cst too; the fence also covers Watch's no-store path)
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    if (rmhook::Removed(rmhook::kWatchBody, g_body)) GameRemoving(g_body, false);  // (the removal began between the test and now)
     ++g_made;
     g_bad_since = -1;
     g_last_not = nullptr;
@@ -2086,6 +2312,7 @@ const char* Make(bool ignore_radius, bool quiet) noexcept {
     return nullptr;
 }
 void StimTick() noexcept {
+    if (GoneNow()) return ParkGone();  // (M4) the destroy guard saw the game begin removing its body
     if (g_ps.pending) return Step2(false);
     if (g_ps.stim) {
         // the body changed or went, its agent changed, the manager changed: at once
@@ -2160,7 +2387,8 @@ bool MuleYaw(std::uintptr_t e, double* yaw) noexcept {
     return std::isfinite(*yaw);
 }
 // One ray from `from` to `to`, `trim_from` / `trim_to` off its ends (WorldRay's result; `len` the full length)
-int SightRay(const double (&from)[3], const double (&to)[3], double trim_from, double trim_to, double (&hit)[3], double* len) noexcept {
+int SightRay(const double (&from)[3], const double (&to)[3], double trim_from, double trim_to, double (&hit)[3], double* len,
+             std::uint32_t layer = ecombat::kRayLayerEye) noexcept {
     const double d[3] = {to[0] - from[0], to[1] - from[1], to[2] - from[2]};
     const double l = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
     if (len) *len = l;
@@ -2169,7 +2397,7 @@ int SightRay(const double (&from)[3], const double (&to)[3], double trim_from, d
     for (int i = 0; i < 3; ++i) a[i] = from[i] + d[i] / l * trim_from, b[i] = to[i] - d[i] / l * trim_to;
     double ignored = 0;
     ++g_sight_rays;
-    return ecombat::WorldRay(a, b, 0.0, hit, &ignored);
+    return ecombat::WorldRay(a, b, 0.0, hit, &ignored, layer);
 }
 void SightFault() noexcept {
     g_los_state = 3;
@@ -2177,46 +2405,60 @@ void SightFault() noexcept {
     for (Slot& s : g_slots) s.los_ms.store(0, std::memory_order_release);
     Recompute();
 }
-// Before the first estimate: a ray straight down from our Sam's chest must hit the ground at his root (within 0.75 m); else one
-// 1 m beside him (a ray that starts inside his own body may report it: within 1.5 m there, a slope). (M3f review) Never during a
-// load or before the first registration pass (TickBody's `loading`, g_table_ok); a miss, no physics world (-2), an odd return
-// (-4) or a hit out of tolerance is tried again kSelfTestGapMs later, up to kSelfTestTries attempts, before it fails for the run;
-// it fails at once only when the raycast is unchecked or the probes are off (-3), and a fault (-1) goes through SightFault.
+// Before the first estimate (round 27 M4: erules::LosSelfTest): a ray straight down from our Sam's chest to 5 m below his root,
+// cast three times: on layer 0x20 (the eye blocker the sight rays use), 0x2F (static) and 0x34 (AI hearing: the control, logged,
+// not gated). L32 at his root (0.75 m): ok; else L47 there: ok (static only). Neither: the 1 m-beside pair (L32, L47; 1.5 m: a ray
+// that starts inside his own body may report it, a slope). (M3f review) Never during a load or before the first registration pass
+// (TickBody's `loading`, g_table_ok); a retry is tried again kSelfTestGapMs later, up to kSelfTestTries attempts, before it fails
+// for the run (L47 missing too); it fails at once only when the raycast is unchecked or the probes are off (-3), and a fault (-1)
+// goes through SightFault.
 constexpr unsigned kSelfTestTries = 10;
 constexpr double kSelfTestGapMs = 500.0;
 unsigned g_los_tries = 0;
 void SightSelfTest() noexcept {
     double root[3] = {};
     if (!g_local || !g_local_ok || !Pos(g_local, root)) return;  // (tried again next tick; not an attempt)
-    const double from[3] = {root[0], root[1], root[2] + L::kChest}, to[3] = {root[0], root[1], root[2] - 5.0};
-    double hit[3] = {}, len = 0;
-    const int r = SightRay(from, to, 0.0, 0.0, hit, &len);
-    if (r == -1) return SightFault();
-    int r2 = 0;
-    bool ok = r > 0 && std::isfinite(hit[2]) && std::fabs(hit[2] - root[2]) <= 0.75;
-    if (!ok && r >= 0) {
-        const double f2[3] = {root[0] + 1.0, root[1], root[2] + L::kChest}, t2[3] = {root[0] + 1.0, root[1], root[2] - 5.0};
-        double h2[3] = {};
-        r2 = SightRay(f2, t2, 0.0, 0.0, h2, &len);
-        if (r2 == -1) return SightFault();
-        if (r2 > 0 && std::isfinite(h2[2]) && std::fabs(h2[2] - root[2]) <= 1.5) ok = true, hit[2] = h2[2];
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    auto cast = [&](double dx, std::uint32_t layer, double* z) {
+        const double f[3] = {root[0] + dx, root[1], root[2] + L::kChest}, t[3] = {root[0] + dx, root[1], root[2] - 5.0};
+        double h[3] = {}, len = 0;
+        const int r = SightRay(f, t, 0.0, 0.0, h, &len, layer);
+        *z = r > 0 && std::isfinite(h[2]) ? h[2] : nan;
+        return r;
+    };
+    double z32 = nan, z47 = nan, z52 = nan;
+    int h32 = cast(0.0, ecombat::kRayLayerEye, &z32);
+    int h47 = cast(0.0, ecombat::kRayLayerStatic, &z47);
+    const int h52 = cast(0.0, ecombat::kRayLayerHearing, &z52);
+    if (h52 == -1) return SightFault();
+    R::SelfTest v = R::LosSelfTest(h32, z32, h47, z47, h52, root[2], false);
+    bool beside = false;
+    if (v == R::SelfTest::retry) {
+        double b32 = nan, b47 = nan;
+        const int g32 = cast(1.0, ecombat::kRayLayerEye, &b32), g47 = cast(1.0, ecombat::kRayLayerStatic, &b47);
+        const R::SelfTest vb = R::LosSelfTest(g32, b32, g47, b47, h52, root[2], true);
+        if (vb != R::SelfTest::retry) v = vb, beside = true, h32 = g32, z32 = b32, h47 = g47, z47 = b47;
     }
+    if (v == R::SelfTest::fault) return SightFault();
     ++g_los_tries;
-    if (ok) {
+    const bool hard = h32 == -3 || h47 == -3;  // the raycast unchecked or the probes off: no retry helps
+    const bool pass = v == R::SelfTest::ok || v == R::SelfTest::ok_static;
+    const bool again = !pass && !hard && g_los_tries < kSelfTestTries;
+    char verdict[112];
+    if (pass) std::snprintf(verdict, sizeof(verdict), "%s%s", R::SelfTestText(v), beside ? " (1 m beside)" : "");
+    else if (again) std::snprintf(verdict, sizeof(verdict), "%s", R::SelfTestText(v));
+    else std::snprintf(verdict, sizeof(verdict), "failed: %s; pick 16/32 off", hard ? "the raycast is unchecked or the probes are off" : "the raycast misses on L47 too");
+    Log("[enemy] tgt los self-test: L32 hits %d z %.2f, L47 hits %d z %.2f, L52 hits %d (control) vs root %.2f; attempt %u -- %s", h32, z32, h47, z47, h52,
+        root[2], g_los_tries, verdict);
+    if (pass) {
         g_los_state = 1;
-        Log("[enemy] tgt los self-test: ok (hit %.2f m below the chest; attempt %u)", from[2] - hit[2], g_los_tries);
         return Recompute();
     }
-    const bool hard = r == -3 || r2 == -3;  // the raycast unchecked or the probes off: no retry helps
-    if (!hard && g_los_tries < kSelfTestTries) {
+    if (again) {
         g_sight_next = g_now + kSelfTestGapMs;
-        Log("[enemy] tgt los self-test: attempt %u of %u missed (%d/%d, hit z %.2f vs root %.2f); trying again", g_los_tries, kSelfTestTries, r, r2, hit[2],
-            root[2]);
         return;
     }
     g_los_state = 2;
-    Log("[enemy] tgt los self-test: failed (%d/%d, hit z %.2f vs root %.2f; %u attempts) -- %s; pick 16 off", r, r2, hit[2], root[2], g_los_tries,
-        hard ? "the raycast is unchecked or the probes are off" : "the raycast misses the ground");
     Recompute();
 }
 void SightTick(bool loading) noexcept {
@@ -2256,9 +2498,10 @@ void SightTick(bool loading) noexcept {
         ++s.los_n[static_cast<unsigned>(v) % 9u];
         if (static_cast<std::uint8_t>(v) != s.los_logged && s.los_logs < 60) {
             s.los_logged = static_cast<std::uint8_t>(v), ++s.los_logs;
-            const double at = in.cast && in.ray > 0 ? L::Dist(eye, hit) : -1.0;
-            Log("[enemy] tgt los id=%05X her %s (%.1f m, bearing %.0f, pitch %.1f, vis %.2f; hit at %.1f of %.1f m)", s.id.load(), R::SightText(v), in.horiz,
-                in.bearing_deg, in.pitch_deg, static_cast<double>(in.vis), at, len);
+            // (M4) the ray's own result: its hits, the distance (to the hit, else the ray's length) and the hit position
+            const double at = in.cast && in.ray > 0 ? L::Dist(eye, hit) : len;
+            Log("[enemy] tgt los id=%05X %s (hits %d; %.1f m; hit (%.2f, %.2f, %.2f))", s.id.load(), R::SightText(v), in.cast ? in.ray : 0, at, hit[0], hit[1],
+                hit[2]);
         }
     }
     if (rays >= kSightRays) g_sight_rr = (g_sight_rr + i) & (kSlots - 1);
@@ -2284,6 +2527,47 @@ void SightLine(Slot& s) noexcept {
 }
 
 void ArmGeoTick() noexcept;  // op 11 (below)
+// (M4) the destroy guard's game-thread side: G3's trip line (from atomics), the gone mark and the dead agent ended
+void GuardTick() noexcept {
+    if (g_body_gone.load() && !g_trip_logged) {
+        g_trip_logged = true;
+        Log("[enemy] pstim worker guard: the partner body failed its check (flags 0x%llX, vt %s, agent %s): refused and parked",
+            static_cast<unsigned long long>(g_trip_flags.load()), g_trip_vt.load() ? "ok" : "changed", g_trip_agent.load() ? "ok" : "changed");
+    }
+    // the gone mark: kept while it names our live stimulus' body (StimTick parks it) or a simulate's still-live body (op 12; "12 0")
+    const std::uintptr_t gone = g_gone_body.load(std::memory_order_seq_cst);
+    if (gone && gone != g_body && (!g_ps.stim || g_ps.pending || g_ps.body != gone)) {
+        g_gone_body.store(0, std::memory_order_seq_cst), g_gone_sim.store(false), g_gone_stale_at = -1;
+    } else if (gone && gone == g_body) {
+        // (M4 review) a mark on her current body that no removal backs (R::GoneMarkStale) clears after 1 s: Make runs again (its own
+        // checks still refuse a real removal: the hook, the flags, the dead agent, the agent gate)
+        std::uint64_t fl = 0;
+        const bool rd = mem::Rd(g_body + 0x88, fl);
+        const bool vt_changed = g_body_gone.load() != 0 && g_trip_vt.load() == 0;
+        if (!R::GoneMarkStale(g_gone_sim.load(), g_ps.stim != 0, rmhook::Removed(rmhook::kWatchBody, g_body), rd, fl, vt_changed)) {
+            g_gone_stale_at = -1;
+        } else if (g_gone_stale_at < 0) {
+            g_gone_stale_at = g_now;
+        } else if (g_now - g_gone_stale_at >= R::kGoneStaleMs) {
+            g_gone_body.store(0, std::memory_order_seq_cst), g_gone_sim.store(false), g_body_gone.store(0), g_gone_stale_at = -1;
+            Log("[enemy] pstim the gone mark on the partner body %p cleared: still live, no removal seen (flags 0x%llX); made again when ready",
+                reinterpret_cast<void*>(g_body), static_cast<unsigned long long>(fl));
+        }
+    } else {
+        g_gone_stale_at = -1;
+    }
+    // the dead agent: 2 s after the stimulus ended (its thread-safe copies gone with it), unless a new stimulus carries it
+    const std::uintptr_t dead = g_dead_agent.load();
+    if (!dead) {
+        g_dead_seen_at = -1, g_dead_seen_val = 0;
+    } else if (g_ps_body.load() || dead != g_dead_seen_val) {
+        g_dead_seen_val = dead, g_dead_seen_at = g_ps_body.load() ? -1 : g_now;
+    } else if (g_dead_seen_at < 0) {
+        g_dead_seen_at = g_now;
+    } else if (g_now - g_dead_seen_at >= 2000 && g_ps.agent != dead) {
+        g_dead_agent.store(0), g_dead_seen_at = -1, g_dead_seen_val = 0;
+    }
+}
 void TickBody() noexcept {
     if (g_ps.pending) Step2(false);
     if (g_stopped) {
@@ -2294,6 +2578,18 @@ void TickBody() noexcept {
     const bool any = g_cfg.stim || PickOrRedirWanted() || g_ps.stim;
     if (!any) return;
     Checks();
+    // (M4) the destroy guard (the host with the stimulus key on): the classifier guard (G2 / G3) and the RemoveEntityNow hook (G1)
+    if (g_cfg.stim && g_role == 1) {
+        EnsureSense(g_cfg.pick);
+        if (!g_rm_tried) {
+            g_rm_tried = true;
+            rmhook::Install();
+            unsigned ok = 0, total = 0;
+            rmhook::Counts(&ok, &total);
+            Log("[enemy] tgt destroy guard: RemoveEntityNow hook %s (byte checks %u/%u)", rmhook::State(), ok, total);
+        }
+    }
+    GuardTick();
     // what the workers match against
     g_l_sam.store(g_local_ok ? g_local : 0, std::memory_order_relaxed);
     const std::uintptr_t pl = g_local && g_local_ok ? PlayerOf(g_local) : 0;
@@ -2311,16 +2607,23 @@ void TickBody() noexcept {
     g_her_flags.store(SpvFresh() ? g_spv.pinfo_flags : 0, std::memory_order_relaxed);
     // M2
     StimTick();
-    g_p_agent.store(g_ps.stim && !g_ps.pending ? g_ps.agent : 0, std::memory_order_release);
+    // (M4) never the agent of a body the game is removing (GameRemoving cleared it; a removal that began after this is cleared again)
+    {
+        const std::uintptr_t gone = g_gone_body.load(std::memory_order_seq_cst);
+        g_p_agent.store(g_ps.stim && !g_ps.pending && gone != g_ps.body ? g_ps.agent : 0, std::memory_order_seq_cst);
+        if (g_gone_body.load(std::memory_order_seq_cst) == g_ps.body && g_ps.body) g_p_agent.store(0, std::memory_order_seq_cst);
+    }
     // the partner record, after the stimulus tick: valid only while our partner stimulus is live (review S6)
     {
         double p[3] = {};
         const bool ok = g_body && g_ps.stim && !g_ps.pending && !BodyRefusal() && Pos(g_body, p);
         PubPartner(ok, p, HerChestDz());
     }
-    if (g_cfg.stim && g_now >= g_status_next) g_status_next = g_now + 10000, StatusLine();
-    // M3
-    if (PickOrRedirWanted()) {
+    // (M4) outside hidden runs (and without verbose) the status and summary lines every 60 s
+    const bool chatty = automation::Enabled() || g_verbose;
+    if (g_cfg.stim && g_now >= g_status_next) g_status_next = g_now + (chatty ? 10000 : 60000), StatusLine();
+    // M3 (review: the host only; on the guest her stimulus is refused, so the pick could never be her: no detour, no table walk)
+    if (M3Wanted()) {
         const bool loading = TableGate();
         EnsureSense(g_cfg.pick);
         // bit 32's hooks with bit 32 on, or in a hidden run (the aim point record); the redirect itself only with bit 32
@@ -2338,7 +2641,7 @@ void TickBody() noexcept {
             g_wfaults_seen = wf;
             return StopAll("a detour read fault", true);
         }
-        if (g_now >= g_log_next) g_log_next = g_now + 5000, Summary(nullptr);
+        if (g_now >= g_log_next) g_log_next = g_now + (chatty ? 5000 : 60000), Summary(nullptr);
     } else {
         Recompute();
     }
@@ -2771,11 +3074,34 @@ void ArmGeoTick() noexcept {
 }
 }  // namespace
 
+// (M4) the destroy guard, G1 (rmhook's RemoveEntityNow detour, G3's first trip, Make's late catch; any thread). Lock-free: the
+// gone mark, the detours' agent cleared, the agent marked dead (G2), then the stimulus' four step-1 writes and its copies'
+// invisible writes (SEH; Step1Any) while it is still published. g_gr_busy brackets it (GrQuiet: the tick never removes the stimulus
+// under it).
+void GameRemoving(std::uintptr_t e, bool sim) noexcept {
+    if (!e || g_ps_body.load(std::memory_order_acquire) != e) return;
+    g_gr_busy.fetch_add(1, std::memory_order_seq_cst);
+    g_gone_body.store(e, std::memory_order_seq_cst);
+    g_gone_sim.store(sim, std::memory_order_relaxed);
+    g_gone_tid.store(GetCurrentThreadId(), std::memory_order_relaxed);
+    g_p_agent.store(0, std::memory_order_seq_cst);
+    const std::uintptr_t agent = g_ps_bagent.load(std::memory_order_acquire);
+    if (agent) g_dead_agent.store(agent, std::memory_order_seq_cst);
+    const std::uintptr_t stim = g_ps_stim.load(std::memory_order_seq_cst);
+    if (stim && agent) {
+        unsigned c = 0;
+        const unsigned f = Step1Any(stim, agent, g_ps_res.load(std::memory_order_relaxed), g_ps_mgr.load(std::memory_order_relaxed), &c);
+        g_gone_faults.store(f, std::memory_order_relaxed), g_gone_copies.store(c, std::memory_order_relaxed);
+    }
+    g_gr_busy.fetch_sub(1, std::memory_order_seq_cst);
+}
+
 void Install(const Config& c) noexcept {
     g_cfg.stim = c.enemy_partner_stim;
     g_cfg.vis = c.enemy_partner_vis;
     g_cfg.radius = c.enemy_partner_stim_radius;
-    g_cfg.pick = static_cast<unsigned>(c.enemy_target_pick) & 63u;
+    g_cfg.pick = static_cast<unsigned>(c.enemy_target_pick) & 127u;
+    g_verbose = c.verbose;
     g_cfg.redirect = static_cast<unsigned>(c.enemy_target_redirect) & 0xFFu;
     g_cfg.fresh_ms = c.enemy_target_fresh_ms;
     g_fresh_ms.store(R::FreshMs(c.enemy_target_fresh_ms));
@@ -2895,7 +3221,7 @@ bool Command(const double (&v)[3], char* msg, std::size_t cap) noexcept {
         }
         case 6:
             g_redir_override = v[1] < 0 ? -1 : static_cast<int>(v[1]) & 0xFF;
-            if (PickOrRedirWanted()) EnsureRedirects(RedirWant() | ShootHooksWant());
+            if (M3Wanted()) EnsureRedirects(RedirWant() | ShootHooksWant());
             Recompute();
             Log("[enemy] tgt redirect bits for this run: %u%s (live sites 0x%X)", RedirWant(), g_redir_override < 0 ? " (the key)" : "", g_redir_live.load());
             return std::snprintf(msg, cap, "tgt redirect %u", RedirWant()), true;
@@ -2983,8 +3309,51 @@ bool Command(const double (&v)[3], char* msg, std::size_t cap) noexcept {
             g_ag.on = true, g_ag.id = id, g_ag.code = code, g_ag.t0 = g_now, g_ag.next = g_now;
             return std::snprintf(msg, cap, "tgt arm-at-geometry armed"), true;
         }
+        case 12: {
+            // (M4) the destroy guard's removal simulated (rmhook::Simulate: the detour's match path on kWatchStim, nothing freed); with a
+            // simulate in place "12 0" (or "12") ends it (the gone mark cleared: the stimulus made again once the dead agent ends, 2 s);
+            // "12 1" always simulates
+            if (v[1] == 2) {
+                // (M4 review) "12 2": the worker guard's trip (G3) simulated on her live body (her agent "changed", the flags and the
+                // vtable as made): parked and removed as for a trip; the gone mark then clears by itself (the body is still live, no
+                // removal seen: R::GoneMarkStale, 1 s) and the stimulus is made again once the dead agent ends (2 s)
+                if (!g_ps.stim || g_ps.pending || !g_ps.body || g_ps.body != g_body || g_gone_body.load())
+                    return std::snprintf(msg, cap, "tgt trip: no live partner stimulus"), false;
+                int z = 0;
+                if (!g_body_gone.compare_exchange_strong(z, 1)) return std::snprintf(msg, cap, "tgt trip: a trip already"), false;
+                std::uint64_t fl = 0;
+                g_trip_flags.store(mem::Rd(g_body + 0x88, fl) ? fl : ~0ull), g_trip_vt.store(1), g_trip_agent.store(0);
+                Log("[enemy] tgt op 12 2: the worker guard's trip simulated on the partner body %p (still live)", reinterpret_cast<void*>(g_body));
+                GameRemoving(g_body, false);
+                return std::snprintf(msg, cap, "tgt trip sent"), true;
+            }
+            if (v[1] <= 0 && g_gone_sim.load() && g_gone_body.load()) {
+                g_gone_body.store(0, std::memory_order_seq_cst), g_gone_sim.store(false);
+                Log("[enemy] tgt op 12 0: the simulated removal ended");
+                return std::snprintf(msg, cap, "tgt simulate ended"), true;
+            }
+            const std::uintptr_t b = g_ps.body ? g_ps.body : g_body;
+            if (!b || !g_ps.stim) return std::snprintf(msg, cap, "tgt simulate: no partner stimulus"), false;
+            Log("[enemy] tgt op 12: the destroy guard's removal simulated on the partner body %p", reinterpret_cast<void*>(b));
+            rmhook::Simulate(b);
+            return std::snprintf(msg, cap, "tgt simulate sent"), true;
+        }
+        case 13: {
+            // (M4) the game's own removal of the partner body (the world's vt+0x20, as its child loop calls it): the guard must see it
+            // before the free. The last step of a run: it ends her body (real_body spawns a new one)
+            if (!g_body) return std::snprintf(msg, cap, "tgt remove: no partner body"), false;
+            const rmhook::Stats s0 = rmhook::Snapshot();
+            Log("[enemy] tgt op 13: the game's RemoveEntityNow on the partner body %p (world %p; guard %s)", reinterpret_cast<void*>(g_body),
+                reinterpret_cast<void*>(rmhook::WorldGlobal()), rmhook::State());
+            const int r = rmhook::TestRemove(g_body);
+            const rmhook::Stats s1 = rmhook::Snapshot();
+            Log("[enemy] tgt op 13: %s; guard calls %u -> %u, matched %u -> %u (thread %lu%s)",
+                r > 0 ? "called" : r == 0 ? "refused (no world, or its checks failed)" : "FAULT", s0.calls, s1.calls, s0.matched, s1.matched,
+                static_cast<unsigned long>(s1.last_tid), s1.last_tid == GetCurrentThreadId() ? ", the game thread" : "");
+            return std::snprintf(msg, cap, "tgt remove %s", r > 0 ? "called" : r == 0 ? "refused" : "FAULT"), r > 0;
+        }
         default:
-            return std::snprintf(msg, cap, "enemy_tgt <op 0..11>"), false;
+            return std::snprintf(msg, cap, "enemy_tgt <op 0..13>"), false;
     }
 }
 
@@ -3066,8 +3435,19 @@ void NoteOnHit(std::uintptr_t receiver, std::uintptr_t di) noexcept {
 }
 
 bool SenseClsRefuse(std::uintptr_t stim, std::uint32_t own) noexcept {
+    g_wc.cls_calls.fetch_add(1, std::memory_order_relaxed);
+    // (M4) G2: a stimulus (or a thread-safe copy) of a body the game is removing, by its agent's value
+    if (const std::uintptr_t dead = g_dead_agent.load(std::memory_order_acquire)) {
+        std::uintptr_t ag = 0;
+        if (SQ(stim + kSAgent, &ag) && ag == dead) return g_wc.dead_refuse.fetch_add(1, std::memory_order_relaxed), true;
+    }
+    if (!PartnerStim(stim)) return false;
+    // (M4) G3: the partner body still live as made
+    if (!WorkerBodyOk()) return true;
     const unsigned pick = g_pick_live.load(std::memory_order_relaxed);
-    if (!(pick & (kPickH5 | kPickH2)) || !PartnerStim(stim)) return false;
+    // (M4) pick bit 64: a camp held for her take
+    if ((pick & kPickTakeFirst) && TakeFirstHas(own)) return g_wc.take_first.fetch_add(1, std::memory_order_relaxed), true;
+    if (!(pick & (kPickH5 | kPickH2))) return false;
     if ((pick & kPickH5) && g_h5_ready.load(std::memory_order_acquire) && (!enemy::IsHumanEnemyId(own & kIdMask) || !H5Has(own))) {
         g_wc.h5.fetch_add(1, std::memory_order_relaxed);
         return true;

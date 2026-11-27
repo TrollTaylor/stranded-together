@@ -1,7 +1,13 @@
-// Round 27 M2 / M3 (docs/enemy-sync.md 16): enemies notice, pick and fight the partner body as well as our Sam. All keys default
-// off (enemy_partner_stim 0, enemy_target_pick 0, enemy_target_redirect 0): nothing here touches the game until one is given.
+// Round 27 M2 / M3 / M4 (docs/enemy-sync.md 16): enemies notice, pick and fight the partner body as well as our Sam. M4: on by
+// default with enemy_hits (enemy_partner_stim 1, enemy_target_pick 71, enemy_target_redirect 35; cfgval::TargetDefaults); with
+// every key 0 nothing here touches the game.
 //
-// M2, the partner stimulus (the host only, hidden runs only until the game's body-destroy gap is closed; game thread): her real
+// M4, the destroy guard (docs/enemy-sync.md 16.2; the host with the stimulus key on): G1 rmhook's RemoveEntityNow detour sees the
+// game's removal of the partner body before the free (GameRemoving: the stimulus parked lock-free, the agent cleared); G2 the
+// classifier refuses every stimulus carrying that dead agent; G3 the classifier's worker guard (WorkerBodyOk: +0x88 flags and the
+// vtables) parks it on a removal the hook did not see. No stimulus is made without G1 and the classifier hook.
+//
+// M2, the partner stimulus (the host only, only while the destroy guard is in; game thread): her real
 // body (realbody::LiveEntity()) gets a visual stimulus made with our own Sam's AIVisualStimulusResource and the local player's actor
 // id (lever L1, proven by the M1 probe, docs/enemy-sync.md 15), only while: a link, the body is there and its agent's vt+0x10
 // returns it, the resource reads, the partner is not down, a fresh SPV1 frame from her, no cutscene on either side, and a realized
@@ -40,9 +46,17 @@ void AfterStop() noexcept;
 // (hidden runs); 6 <bits> the redirect bits for this run (hidden runs; -1 back to the key); 7 <id> [arm code] the geometry line
 // (valid by that arm's rule: the code given, else the running arm's, else the gun rule) and the MULE's shoot line; 8 the arm ends (with its shoot line); 9 <n> n create / remove cycles, then made again (hidden runs,
 // U15); 10 the crash-reporter guard test; 11 <id> <arm code> (run 3, hidden runs) the arm at geometry: op 4 once her geometry is
-// valid for the arm (or 2.5 s), our Sam placed first for TF0 / TF1 (170 m, 40 deg off her line) and CS (5 m along its facing).
-// Ops 1..11 refuse after a stop or a fault.
+// valid for the arm (or 2.5 s), our Sam placed first for TF0 / TF1 (170 m, 40 deg off her line) and CS (5 m along its facing);
+// 12 [0] (round 27 M4) the destroy guard's removal simulated on the partner body (the stimulus parked and removed, the dead
+// agent refused; nothing is freed; "12 0" ends a simulate); 13 the game's own removal of the partner body (world vt+0x20; the
+// last step of a run: the guard must see it before the free). Ops 1..13 refuse after a stop or a fault; ops 1..13 but 0 run in
+// hidden runs only.
 bool Command(const double (&v)[3], char* msg, std::size_t cap) noexcept;
+// (round 27 M4) the destroy guard (docs/enemy-sync.md 16.2; any thread, lock-free, no allocation or logging): the game began
+// removing entity `e` (the RemoveEntityNow detour, before the free; `sim` op 12). When `e` is the partner stimulus' body the
+// detour clears the agent the detours compare (g_p_agent), marks its agent dead for the classifier, writes the stimulus'
+// copies invisible (SEH writes) and leaves the remove to the game thread's next tick.
+void GameRemoving(std::uintptr_t e, bool sim) noexcept;
 
 // game thread: the partner stimulus is ours and live / its agent (0 none)
 bool StimLive() noexcept;

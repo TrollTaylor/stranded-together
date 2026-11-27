@@ -152,7 +152,7 @@ enum class Action : std::uint8_t {
     enemy_restrain,       // round 23 (docs/enemy-sync.md 14), hidden runs: v[0] = id (0 the look's, else the nearest frozen copy), v[1] = 0 native | 1 fallback | 2 knockout
     enemy_m2,             // round 23 E (docs/enemy-sync.md 14.11), hidden runs + enemy_m2_probes=1: v[0] = probe 0..6, v[1] / v[2] its arguments (read-only but P2)
     enemy_l1,             // round 27 M1 (docs/enemy-sync.md 15), hidden runs only: v[0] = op 0..9, v[1] / v[2] its arguments (the L1 probe)
-    enemy_tgt,            // round 27 M2/M3 (docs/enemy-sync.md 16): v[0] = op 0..9, v[1] / v[2] its arguments (the partner stimulus, the pick, the redirects)
+    enemy_tgt,            // round 27 M2-M4 (docs/enemy-sync.md 16): v[0] = op 0..13, v[1] / v[2] its arguments (the partner stimulus, the pick, the redirects, the destroy guard)
     // Map markers (dev_tools.cpp; docs/debug-actions.md "Teleport to map marker")
     teleport_to_marker,   // v[0] = the marker's id + 1 (0 = the newest on this map): Sam on the ground there (Player tab; any session, no dev tools needed)
     dev_marker,           // v[0] = 0 log the map's user markers, 1 add one v[1] m east / v[2] m north of Sam (hidden runs only)

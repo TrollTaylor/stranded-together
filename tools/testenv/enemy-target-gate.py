@@ -1,6 +1,35 @@
-"""Round 27 run 3 / 4 gate (docs/enemy-sync.md 16.6): the arm table and PASS / FAIL / INVALID per gate item (two-games-enemy-target).
+"""Round 27 run 3 / 4 gate (docs/enemy-sync.md 16.6): the arm table and PASS / FAIL / INVALID per gate item (two-games-enemy-target,
+and round 27 M4's two-games-enemy-target-defaults).
 
-    python -I tools/testenv/enemy-target-gate.py <run folder>
+    python -I tools/testenv/enemy-target-gate.py <run folder> [--mode probe|defaults]
+
+Round 27 M4 (docs/enemy-sync.md 16.2 / 16.7 / 16.8): the mode is "defaults" when the run's session-host-deployed.ini has no
+enemy_target_pick line (the launcher's ini: the DLL defaults), else "probe" (the explicit keys of two-games-enemy-target).
+  destroy guard  the host: "[enemy] tgt destroy guard: RemoveEntityNow hook on (byte checks n/n)" (both modes)
+  TB sight  (probe; M4) PASS: the raycast's self-test reads "ok" or "ok (static only ...)", TB phase 0 has a clear sight ray (its
+            SIGHT line's los clear > 0, or a "tgt los id=<id> clear" line in the phase) and no "tgt FAULT los ray"; FAIL: the
+            self-test failed (L47 missing too), is missing with bit 16 in the key, or a los fault; the blocked counts printed
+  TF0       (probe; M4) INFO: "without bit 32: at her n / Sam n / elsewhere n" (the rounds) and its shoot line (the actor branch's
+            "at Sam" premise was wrong: +0x198 is CanShoot's point, not his chest)
+  TE        (probe; M4) no longer needs a calm (not in CALM_NEEDED): its geometry valid and her stimulus not lost; the calm printed
+  --mode defaults (two-games-enemy-target-defaults): the reused items (checks, spv1, faults, seh test, seh, made, host only,
+            cycles (the scenario's "enemy_tgt 9 20"), TF1, TB (all but sight), bit 32 filter / live, rays TF1 / TB, soft) and:
+  CFG       both games: the "[config] enemy_partner_stim=1 (default: on with enemy_hits) ... enemy_target_pick=71 (default: on with
+            enemy_hits) enemy_target_redirect=35 (default: on with enemy_hits)" line and "[config] enemy_owner=1 (default: on with
+            enemy_hits)"
+  TO        take first (pick bit 64): the summaries' "take-first n" > 0 (or a "tgt id=<id> take first (cp 04004 ..." line), a
+            "[enemy] camp cp 04004 -> guest" take, and no "tgt id=0202B -> her" between the first take-first line and the take;
+            on a FAIL the gate prints "take first FAILED: ship pick 7" (the release decision goes to the user)
+  TS        op 12 (the simulate): the "pstim the game is removing the partner body ... simulated (op 12)" line, a "pstim removed"
+            after it, then op 12 0's "the simulated removal ended" and a "pstim made" within 3 s of it
+  TG        (M4 review) op 12 2 (the worker guard's trip simulated on her live body): "tgt op 12 2: the worker guard's trip
+            simulated", a "pstim the game is removing" line (not simulated), "pstim removed", "pstim the gone mark on the partner
+            body .. cleared" and a "pstim made" within 4 s of the removal; no FAULT
+  TR        op 13 (the game's own removal): "tgt op 13: called; guard calls a -> b, matched m0 -> m1" with m1 > m0, logged before
+            the real body's "is being removed by the game (seen before the free)" line, a "pstim the game is removing" line and a
+            "pstim removed" after op 13, and lines logged >= 3 s after it (the game alive); INFO: a "pstim made" on a new body
+  cpu       (INFO) the last summary's "guard calls n (n/s) ... cls n/s psr n/s"
+  Not applicable in defaults mode: TA, CL, CH, CS, TX, TE, TF0, TB sight (and their arms are not "missing").
 
 Reads <run>/game/stranded_together.log (the host) and <run>/guest/game/stranded_together.log (the guest). The arms are the L1
 probe's watch ("[probe] L1 result arm X id=XXXXX: key=value ..."; enemy-target.py reads the M1 arms of the same lines), the rest
@@ -127,9 +156,35 @@ WATCH_S = re.compile(r"; sight bucket ([\d.]+|-) s los (\w+) ([\d.]+|-) s")
 # the verdict changes, the bit transitions, the raycast's self-test, op 11's TB "her seen" wait, the config key
 SIGHT = re.compile(r"\[enemy\] tgt id=([0-9A-F]{5}) sight: los clear (\d+) blocked (\d+) out (\d+) low_vis (\d+); keeps (\d+) synth (\d+) "
                    r"skip (\d+); her bucket last ([\d.]+|-) s \(gap lead (\d+) tail (\d+) ms\)(?:; (rec \+0x24 .*))?")
-LOS = re.compile(r"\[enemy\] tgt los id=([0-9A-F]{5}) her (\w+) \((.*)\)$")
+# (M4) "tgt los id=X clear (hits 0; 14.0 m; hit (...))"; older builds "tgt los id=X her clear (15.0 m, bearing ...)"
+LOS = re.compile(r"\[enemy\] tgt los id=([0-9A-F]{5}) (?:her )?(\w+) \((.*)\)$")
 PICKBIT = re.compile(r"\[enemy\] tgt pick (16|32) \([^)]*\): (on|off) \((.*)\)$")
 SELFTEST = re.compile(r"\[enemy\] tgt los self-test: (ok|failed) (.*)$")
+# (M4) the self-test's three layers and its verdict ("ok", "ok (static only: ...)", "trying again", "failed: ...")
+SELFTEST4 = re.compile(r"\[enemy\] tgt los self-test: (L32 hits -?\d+ z \S+, L47 hits -?\d+ z \S+, L52 hits -?\d+ \(control\) vs root \S+); "
+                       r"attempt (\d+) -- (.*)$")
+LOS_FAULT = re.compile(r"\[enemy\] tgt FAULT los ray")
+# (M4) the destroy guard, take first, op 12 / op 13 and the config lines
+GUARD = re.compile(r"\[enemy\] tgt destroy guard: RemoveEntityNow hook (.*) \(byte checks (\d+)/(\d+)\)$")
+PARKED = re.compile(r"\[enemy\] pstim the game is removing the partner body (\S+) \(seen before the free; thread (\d+) (\([^)]*\))(, simulated \(op 12\))?\): "
+                    r"parked \(agent cleared, copies (\d+), faults (\d+)\)")
+WORKER_TRIP = re.compile(r"\[enemy\] pstim worker guard: (.*)$")
+RB_GONE = re.compile(r"\] the real body entity \S+ is being removed by the game \(seen before the free\)")
+REMOVED = re.compile(r"\[enemy\] pstim removed \(")
+FORGOTTEN = re.compile(r"\[enemy\] pstim forgotten \(")
+OP12 = re.compile(r"\[enemy\] tgt op 12: the destroy guard's removal simulated")
+OP12_END = re.compile(r"\[enemy\] tgt op 12 0: the simulated removal ended")
+# (M4 review) TG: op 12 2 (the worker guard's trip simulated on her live body) and the gone mark clearing by itself
+OP12_TRIP = re.compile(r"\[enemy\] tgt op 12 2: the worker guard's trip simulated")
+GONE_CLEARED = re.compile(r"\[enemy\] pstim the gone mark on the partner body \S+ cleared")
+OP13 = re.compile(r"\[enemy\] tgt op 13: (called|refused[^;]*|FAULT); guard calls (\d+) -> (\d+), matched (\d+) -> (\d+) \(thread (\d+)([^)]*)\)")
+TAKE = re.compile(r"\[enemy\] camp (cp|loose) ([0-9A-F]{5}) -> (guest|host) \(")
+TFLINE = re.compile(r"\[enemy\] tgt id=([0-9A-F]{5}) take first \(cp ([0-9A-F]{5}) calm")
+CONFIG_TGT = re.compile(r"\[config\] enemy_partner_stim=(\d)(.*?) enemy_partner_vis=.* enemy_target_pick=(\d+)(.*?) enemy_target_redirect=(\d+)(.*?) "
+                        r"enemy_target_fresh_ms=")
+CONFIG_OWNER = re.compile(r"\[config\] enemy_owner=(\d)(.*?) outcomes=")
+GUARD_SUM = re.compile(r"; guard calls (\d+) \((\d+)/s\) matched (\d+) dead-refused (\d+) trips (\d+); take-first (\d+); cls (\d+)/s psr (\d+)/s")
+CPTO = "04004"  # (M4) the defaults scenario's camp (MULE Camp Southwest of Lake Knot City)
 SEEN = re.compile(r"\[enemy\] tgt arm (\w+): her (seen|not seen) (.*)$")
 CONFIG_PICK = re.compile(r"\[config\] .*\benemy_target_pick=(\d+)")
 # (M3f) the PLACE line's ground probe: the chosen point's dz, the chosen candidate (-1: none valid, the cycling one) and the raised
@@ -165,7 +220,8 @@ SEH_MAX = 2  # op 10's self-test: two guarded reads of a reserved page
 PAIR = re.compile(r"(\w+)=(\S+)")
 ARMS = ("TA", "CL", "TE", "TB", "TF0", "TF1", "CH", "CS", "TX")
 ENGAGED = ("TB", "TF0", "TF1")  # start on an alerted MULE: their precondition is "-> her", not the calm
-CALM_NEEDED = ("TA", "CL", "TE")  # the notice arms: a calm that timed out (or a watch not valid) makes them say nothing
+CALM_NEEDED = ("TA", "CL")  # the notice arms: a calm that timed out (or a watch not valid) makes them say nothing (M4: TE not)
+DEFAULTS_ARMS = ("TF1", "TB")  # (M4) the arms of the defaults scenario
 
 
 def lines(path):
@@ -215,7 +271,23 @@ class Game:
         self.seen = []        # (M3f) (line, label, seen|not seen, text)
         self.ini_pick = None  # (M3f) the "[config] ... enemy_target_pick=n" key
         self.place_probe = {}  # (M3f) label -> [(chosen, of, skipped, ground dz text, probe text)] per PLACE sent
+        # (M4) the destroy guard, take first, ops 12 / 13, the config lines
+        self.guard = None      # (state, ok, total) the install line
+        self.parked, self.trips, self.rb_gone, self.removed, self.op12, self.op12_end = [], [], [], [], [], []  # line indices / tuples
+        self.forgotten = []   # (run 212917) "pstim forgotten (" lines
+        self.op13 = []         # (line, result, calls0, calls1, matched0, matched1, thread, its text)
+        self.op12_trip, self.gone_cleared = [], []  # (M4 review) TG: line indices
+        self.takes = []        # (line, cp|loose, id, guest|host)
+        self.tf_lines = []     # (line, id, cp)
+        self.made_at = []      # the "pstim made" line indices
+        self.cfg_tgt = None    # (stim, its suffix, pick, its suffix, redirect, its suffix)
+        self.cfg_owner = None  # (owner, its suffix)
+        self.guard_sums = []   # (line, calls, per s, matched, dead-refused, trips, take-first, cls/s, psr/s)
+        self.selftests4 = []   # (line, layers text, attempt, verdict)
+        self.los_fault = 0
         for i, line in enumerate(self.lines):
+            if "[enemy] " in line or "[config] " in line or "] the real body" in line:
+                self.parse_m4(i, line)
             m = RESULT.search(line)
             if m:
                 d = dict(PAIR.findall(m.group(3)))
@@ -395,6 +467,71 @@ class Game:
                 self.seh_max = max(self.seh_max, n)
                 if n > SEH_MAX and self.seh_first_over is None:
                     self.seh_first_over = rec
+
+    def parse_m4(self, i, line):
+        """(M4) the destroy guard / take first / op 12 / op 13 / config lines (none of them continues the main loop)"""
+        m = GUARD.search(line)
+        if m and self.guard is None:
+            self.guard = (m.group(1), int(m.group(2)), int(m.group(3)))
+        m = PARKED.search(line)
+        if m:
+            self.parked.append((i, bool(m.group(4)), m.group(3), int(m.group(5)), int(m.group(6))))
+        if WORKER_TRIP.search(line):
+            self.trips.append(i)
+        if RB_GONE.search(line):
+            self.rb_gone.append(i)
+        if REMOVED.search(line):
+            self.removed.append(i)
+        if FORGOTTEN.search(line):
+            self.forgotten.append(i)
+        if MADE.search(line):
+            self.made_at.append(i)
+        if OP12.search(line):
+            self.op12.append(i)
+        if OP12_END.search(line):
+            self.op12_end.append(i)
+        if OP12_TRIP.search(line):
+            self.op12_trip.append(i)
+        if GONE_CLEARED.search(line):
+            self.gone_cleared.append(i)
+        m = OP13.search(line)
+        if m:
+            self.op13.append((i, m.group(1), int(m.group(2)), int(m.group(3)), int(m.group(4)), int(m.group(5)), m.group(6), m.group(7)))
+        m = TAKE.search(line)
+        if m:
+            self.takes.append((i, m.group(1), m.group(2), m.group(3)))
+        m = TFLINE.search(line)
+        if m:
+            self.tf_lines.append((i, m.group(1), m.group(2)))
+        m = CONFIG_TGT.search(line)
+        if m and self.cfg_tgt is None:
+            self.cfg_tgt = (int(m.group(1)), m.group(2), int(m.group(3)), m.group(4), int(m.group(5)), m.group(6))
+        m = CONFIG_OWNER.search(line)
+        if m and self.cfg_owner is None:
+            self.cfg_owner = (int(m.group(1)), m.group(2))
+        m = GUARD_SUM.search(line)
+        if m:
+            self.guard_sums.append((i,) + tuple(int(x) for x in m.groups()))
+        m = SELFTEST4.search(line)
+        if m:
+            self.selftests4.append((i, m.group(1), int(m.group(2)), m.group(3)))
+        if LOS_FAULT.search(line):
+            self.los_fault += 1
+
+    def selftest_verdict(self):
+        """(M4) the raycast's self-test: ("ok" | "ok_static" | "failed" | "retry", text) from its last decided line (M4's format,
+        else the older "ok (...)" / "failed (...)"), None when there is none"""
+        dec = [x for x in self.selftests4 if not x[3].startswith("trying again")]
+        if dec:
+            v = dec[-1][3]
+            kind = "ok_static" if v.startswith("ok (static only") else "ok" if v.startswith("ok") else "failed"
+            return kind, "%s; attempt %d -- %s" % (dec[-1][1], dec[-1][2], v)
+        if self.selftests4:
+            x = self.selftests4[-1]
+            return "retry", "%s; attempt %d -- %s" % (x[1], x[2], x[3])
+        if self.selftest:
+            return ("ok" if self.selftest[0] == "ok" else "failed"), "%s %s" % self.selftest
+        return None
 
     def geom(self, label):
         """the arm's own geometry line (enemy_tgt 4 logs it with the arm's label)"""
@@ -580,14 +717,147 @@ def shoot_text(d):
     return t
 
 
+def after(idx, i0):
+    """the first index in `idx` after i0 (None: none)"""
+    return next((i for i in idx if i0 is not None and i > i0), None)
+
+
+def secs(game, i0, i1):
+    """seconds between two lines of a game's log (None: a line without a time)"""
+    t0, t1 = ts_ms(game.lines[i0]), ts_ms(game.lines[i1])
+    return (t1 - t0) / 1000.0 if t0 is not None and t1 is not None else None
+
+
+def defaults_items(host, guest, gate):
+    """(M4) the defaults scenario's own items (docs/enemy-sync.md 16.9): CFG, TO, TS, TR, cpu"""
+    # CFG: the derived defaults in both games (the launcher's ini sets no enemy_* key)
+    dflt = " (default: on with enemy_hits)"
+    for who, g in (("host", host), ("guest", guest)):
+        t, o = g.cfg_tgt, g.cfg_owner
+        ok = bool(t) and bool(o) and t[0] == 1 and t[2] == 71 and t[4] == 35 and t[1] == dflt and t[3] == dflt and t[5] == dflt and \
+            o[0] == 1 and o[1] == dflt
+        why = ("enemy_partner_stim=%d%s enemy_target_pick=%d%s enemy_target_redirect=%d%s" % t) if t else "no '[config] enemy_partner_stim' line"
+        why += ("; enemy_owner=%d%s" % o) if o else "; no '[config] enemy_owner' line"
+        gate("CFG " + who, ok, why)
+    # TO: take first (bit 64). The window: the first take-first line of a cp 04004 member (else the first one) to cp 04004's take
+    tfs = [x for x in host.tf_lines if x[2] == CPTO] or host.tf_lines
+    tf_n = max((s[6] for s in host.guard_sums), default=0)
+    i_tf = tfs[0][0] if tfs else None
+    take = next((x for x in host.takes if x[1] == "cp" and x[2] == CPTO and x[3] == "guest" and (i_tf is None or x[0] > i_tf)), None)
+    w0 = i_tf
+    if w0 is None and host.calm_ends:
+        w0 = host.calm_ends[0][0]
+    her_pre = [ch for ch in host.changes if w0 is not None and take is not None and w0 < ch[0] < take[0] and ch[1] == "0202B" and ch[2] == "her"]
+    why = "take-first %d (the summaries); %d take-first line(s)%s; cp %s take to the guest: %s; 0202B -> her before it: %d" % (
+        tf_n, len(host.tf_lines), (" (first: id=%s cp %s)" % (tfs[0][1], tfs[0][2])) if tfs else "", CPTO,
+        ("yes (%.1f s after the first take-first line)" % secs(host, i_tf, take[0]) if i_tf is not None and secs(host, i_tf, take[0]) is not None
+         else "yes") if take else "NO", len(her_pre))
+    if her_pre:
+        why += " (%s)" % her_pre[0][3]
+    if not take or her_pre:
+        gate("TO take first", False, why)
+    elif tf_n == 0 and not tfs:
+        # (M4 run 212051) the take came before any host MULE turned on her: ownership worked, the rule had nothing to do
+        gate("TO take first", "INCONCLUSIVE", why + " (the camp went to the guest before any host MULE engaged her: the rule was not needed)")
+    elif tf_n == 0:
+        gate("TO take first", "INCONCLUSIVE", why + " (flagged, but no classifier call refused her before the take)")
+    else:
+        gate("TO take first", True, why)
+    # TS: op 12, the simulate: parked (simulated), removed, op 12 0, made again within 3 s; no FAULT after op 12
+    i12 = host.op12[0] if host.op12 else None
+    pk = next((p for p in host.parked if i12 is not None and p[0] > i12 and p[1]), None)
+    rm = after(host.removed, pk[0] if pk else None)
+    e12 = after(host.op12_end, rm)
+    mk = after(host.made_at, e12)
+    dt = secs(host, e12, mk) if e12 is not None and mk is not None else None
+    flt = [i for i in range(i12 or 0, len(host.lines)) if i12 is not None and "FAULT" in host.lines[i] and "[enemy]" in host.lines[i]]
+    why = "op 12 %s; parked (simulated) %s; removed %s; op 12 0 %s; made again %s" % (
+        "yes" if i12 is not None else "NO", ("yes (thread %s, copies %d, faults %d)" % (pk[2], pk[3], pk[4])) if pk else "NO",
+        "yes" if rm is not None else "NO", "yes" if e12 is not None else "NO",
+        ("%.1f s after it" % dt) if dt is not None else "yes" if mk is not None else "NO")
+    if flt:
+        why += "; FAULT: %s" % host.lines[flt[0]].strip()[-120:]
+    gate("TS simulate", i12 is not None and bool(pk) and pk[4] == 0 and rm is not None and e12 is not None and dt is not None and dt <= 3.0 and not flt,
+         why)
+    # TG (M4 review): op 12 2, the worker guard's trip simulated on her live body: parked (not simulated), removed, the gone mark
+    # cleared by itself, made again within 4 s of the removal; no FAULT from op 12 2 to the made line
+    it = host.op12_trip[0] if host.op12_trip else None
+    pk = next((p for p in host.parked if it is not None and p[0] > it and not p[1]), None)
+    # (run 212917) the parked record can leave as "pstim forgotten (not in the live list as ours any more ...)" instead of
+    # "pstim removed": either ends the record (the step-1 write cleared its agent first)
+    rm = after(sorted(host.removed + host.forgotten), pk[0] if pk else None)
+    gc = after(host.gone_cleared, rm)
+    mk = after(host.made_at, gc)
+    dt = secs(host, rm, mk) if rm is not None and mk is not None else None
+    flt = [i for i in range(it or 0, mk if mk is not None else len(host.lines)) if it is not None and "FAULT" in host.lines[i] and
+           "[enemy]" in host.lines[i]]
+    why = "op 12 2 %s; parked %s; removed %s; gone mark cleared %s; made again %s" % (
+        "yes" if it is not None else "NO", ("yes (copies %d, faults %d)" % (pk[3], pk[4])) if pk else "NO", "yes" if rm is not None else "NO",
+        ("yes (%.1f s after the removal)" % secs(host, rm, gc)) if gc is not None and secs(host, rm, gc) is not None else
+        "yes" if gc is not None else "NO", ("%.1f s after the removal" % dt) if dt is not None else "yes" if mk is not None else "NO")
+    if flt:
+        why += "; FAULT: %s" % host.lines[flt[0]].strip()[-120:]
+    gate("TG trip on a live body", it is not None and bool(pk) and pk[4] == 0 and rm is not None and gc is not None and dt is not None and
+         dt <= 4.0 and not flt, why)
+    # TR: op 13, the game's own removal: called with the guard matched, before real_body's line; parked, removed; the log goes on
+    o13 = next((o for o in host.op13 if o[1] == "called"), host.op13[0] if host.op13 else None)
+    if not o13:
+        gate("TR game removal", False, "no 'tgt op 13:' result line")
+    else:
+        i13 = o13[0]
+        # the real body line from the end of op 12 (TS) on: TR needs it after op 13's result line
+        base = max([i for i in host.op12_end if i < i13], default=-1)
+        rb = after(host.rb_gone, base)
+        pk = next((p for p in host.parked if p[0] > i13 - 2 and not p[1]), None)
+        rm = after(host.removed, pk[0] if pk else None)
+        flt = [i for i in range(i13, len(host.lines)) if "FAULT" in host.lines[i] and "[enemy]" in host.lines[i]]
+        tail = secs(host, i13, len(host.lines) - 1)
+        mk = after(host.made_at, rm)
+        why = "op 13 %s; guard calls %d -> %d, matched %d -> %d (thread %s%s); real body line %s; parked %s; removed %s; logged %s s after it" % (
+            o13[1], o13[2], o13[3], o13[4], o13[5], o13[6], o13[7], ("after it" if rb is not None and rb > i13 else "BEFORE it" if rb is not None
+                                                                     else "NO"),
+            ("yes (thread %s, copies %d, faults %d)" % (pk[2], pk[3], pk[4])) if pk else "NO", "yes" if rm is not None else "NO",
+            ("%.1f" % tail) if tail is not None else "-")
+        if flt:
+            why += "; FAULT: %s" % host.lines[flt[0]].strip()[-120:]
+        why += "; made on a new body: %s" % ("yes" if mk is not None else "no")
+        ok = o13[1] == "called" and o13[5] - o13[4] >= 1 and rb is not None and rb > i13 and bool(pk) and pk[4] == 0 and rm is not None and \
+            not flt and tail is not None and tail >= 3.0
+        gate("TR game removal", ok, why)
+    # cpu (information): the last summary's per-second counters
+    gs = host.guard_sums[-1] if host.guard_sums else None
+    gate("cpu", "INFO", ("guard calls %d (%d/s) matched %d dead-refused %d trips %d; take-first %d; cls %d/s psr %d/s" % gs[1:]) if gs else
+         "no guard suffix on the summaries")
+    if host.trips:
+        gate("worker guard trips", "INFO", "%d line(s); first: %s" % (len(host.trips), host.lines[host.trips[0]].strip()[-140:]))
+
+
 def main(argv):
-    if len(argv) < 2:
+    args = [a for a in argv[1:] if not a.startswith("--mode")]
+    mode = None
+    for k, a in enumerate(argv[1:]):
+        if a.startswith("--mode="):
+            mode = a.split("=", 1)[1]
+        elif a == "--mode" and k + 2 < len(argv):
+            mode = argv[k + 2]
+            args = [x for x in args if x != mode]
+    if not args or mode not in (None, "probe", "defaults"):
         print(__doc__)
         return 2
-    run = argv[1]
+    run = args[0]
     host = Game(os.path.join(run, "game", "stranded_together.log"))
     guest = Game(os.path.join(run, "guest", "game", "stranded_together.log"))
     items = []
+    # (M4) the mode: "defaults" when the session ini has no enemy_target_pick line (the launcher's ini, the DLL defaults)
+    ini_lines = lines(os.path.join(run, "session-host-deployed.ini"))
+    ini_pick = any(re.match(r"\s*enemy_target_pick\s*=", ln) for ln in ini_lines)
+    forced = mode is not None
+    if mode is None:
+        mode = "probe" if ini_pick or not ini_lines else "defaults"
+    probe = mode == "probe"
+    why = ("the session ini sets enemy_target_pick" if ini_pick else
+           "no session ini" if not ini_lines else "the session ini has no enemy_target_pick: the DLL defaults")
+    print("mode: %s (%s%s)" % (mode, "--mode given; " if forced else "", why))
 
     def gate(name, ok, why, inv=None):
         if inv:
@@ -620,18 +890,25 @@ def main(argv):
     c = host.cycles
     gate("cycles", bool(c) and c[1] == c[0] and c[2] == c[0] and c[3] == 0 and c[4].startswith("made again"),
          ("%d: made %d removed %d faults %d; %s" % c) if c else "no cycles line")
+    # (M4) the destroy guard: the hook in, every byte check passed (the host only)
+    gd = host.guard
+    gate("destroy guard", bool(gd) and gd[0] == "on" and gd[2] > 0 and gd[1] == gd[2],
+         ("RemoveEntityNow hook %s (byte checks %d/%d)" % gd) if gd else "no 'tgt destroy guard' line (an older build?)")
+    if not probe:
+        defaults_items(host, guest, gate)
 
     arms = host.arms
-    missing = [n for n in ARMS if n not in arms]
+    missing = [n for n in (ARMS if probe else DEFAULTS_ARMS) if n not in arms]
     inv = dict((n, invalid(host, n)) for n in ARMS)
     ta, tb, te, cl = arms.get("TA", {}), arms.get("TB", {}), arms.get("TE", {}), arms.get("CL", {})
     # (run 3) a MULE out of a calm often moves first (phase 5) and fires late: the firing goal is gated in TF1 and TB; TA needs the
     # notice and the turn, no round at Sam, and >= 60 % at her only when it fired
     ta_fired = num(ta, "fired", 0)
-    gate("TA notice+turn (fire if any)",
-         num(ta, "noticed") >= 0 and num(ta, "turned_her") >= 0 and num(ta, "at_sam", 0) == 0 and (ta_fired < 1 or fires_at_her(ta)),
-         "noticed %s turned_her %s; fired %s at_her %s at_sam %s" % (ta.get("noticed", "-"), ta.get("turned_her", "-"), ta.get("fired", "-"),
-                                                                      ta.get("at_her", "-"), ta.get("at_sam", "-")), inv["TA"])
+    if probe:
+        gate("TA notice+turn (fire if any)",
+             num(ta, "noticed") >= 0 and num(ta, "turned_her") >= 0 and num(ta, "at_sam", 0) == 0 and (ta_fired < 1 or fires_at_her(ta)),
+             "noticed %s turned_her %s; fired %s at_her %s at_sam %s" % (ta.get("noticed", "-"), ta.get("turned_her", "-"), ta.get("fired", "-"),
+                                                                          ta.get("at_her", "-"), ta.get("at_sam", "-")), inv["TA"])
     # TB sticky: picked her before the Sam step; no switch to Sam between its start and its op 7 marker; no unlogged flip either
     tb_id = tb.get("id", "0202B")
     s0 = host.first_start("TB")
@@ -778,19 +1055,32 @@ def main(argv):
             mm = re.match(r"\s*enemy_target_pick\s*=\s*(\d+)", ln)
             if mm:
                 pick = int(mm.group(1))
-    st = host.selftest
+    st = host.selftest_verdict()
     bits = ", ".join("%d %s at %s" % (b, "on" if on else "off", ("%.1f s" % (ts_ms(host.lines[i]) / 1000.0)) if ts_ms(host.lines[i]) is not None else "?")
                      for i, b, on, _ in host.pickbits) or "no pick 16 / 32 line"
     los_tb = [x for x in host.los if x[1] == tb_id and s0 is not None and marker is not None and s0 < x[0] < marker]
+    los_clear_tb = sum(1 for x in los_tb if x[2] == "clear")
     why_s = "pick key %s; self-test %s; bits %s; TB phase 0 los changes %d%s%s" % (
-        pick if pick is not None else "-", ("%s %s" % st) if st else "none", bits, len(los_tb),
-        (" (last: her %s)" % los_tb[-1][2]) if los_tb else "",
+        pick if pick is not None else "-", ("%s: %s" % st) if st else "none", bits, len(los_tb),
+        (" (last: %s %s)" % (los_tb[-1][2], los_tb[-1][3])) if los_tb else "",
         ("; sight clear %d blocked %d out %d low_vis %d keeps %d synth %d skip %d, her bucket last %s s (lead %d tail %d ms)" % (
             sight_tb["clear"], sight_tb["blocked"], sight_tb["out"], sight_tb["low_vis"], sight_tb["keeps"], sight_tb["synth"], sight_tb["skip"],
             ("%.1f" % sight_tb["last"]) if sight_tb["last"] is not None else "-", sight_tb["lead"], sight_tb["tail"]) +
          (("; synth %s" % sight_tb["rec"]) if sight_tb.get("rec") else "")) if sight_tb else "; no SIGHT line")
-    if pick is not None and pick & 16 and not inv["TB"] and (st is None or st[0] != "ok"):
-        gate("TB sight", False, why_s + " (bit 16 in the key, the raycast's self-test %s)" % ("missing" if st is None else "failed"))
+    # (M4) PASS: the self-test ok (or ok, static only), a clear sight ray in TB phase 0, no los fault; FAIL: the self-test failed
+    # (L47 missing too) or missing with bit 16 in the key, or a los fault; the blocked counts are printed
+    if not probe:
+        pass
+    elif host.los_fault:
+        gate("TB sight", False, why_s + " (%d 'tgt FAULT los ray' line(s))" % host.los_fault)
+    elif pick is not None and pick & 16 and not inv["TB"] and (st is None or st[0] not in ("ok", "ok_static")):
+        gate("TB sight", False, why_s + " (bit 16 in the key, the raycast's self-test %s)" % (
+            "missing" if st is None else "still trying at the run's end" if st[0] == "retry" else "failed"))
+    elif pick is not None and pick & 16 and not inv["TB"]:
+        clear_p0 = (sight_tb["clear"] if sight_tb else 0) + los_clear_tb
+        gate("TB sight", True if clear_p0 > 0 else "INCONCLUSIVE",
+             why_s + ("" if clear_p0 > 0 else " (no clear sight ray in TB phase 0)") +
+             ("; blocked %d (TB's hide is a visibility change: none expected)" % sight_tb["blocked"] if sight_tb else ""))
     else:
         gate("TB sight", "INFO", why_s if (pick is not None and pick & 16) else why_s + " (bit 16 not in the key)")
     sw_s, sw_h = num(tb, "switch_sam"), num(tb, "switch_her")
@@ -804,6 +1094,13 @@ def main(argv):
     tb_end = host.arm_end("TB")
     back = next((i for i, v in host.vis if s0 is not None and tb_end is not None and s0 < i < tb_end and v > 0), None)
     to_her2 = [ch for ch in host.changes if back is not None and back < ch[0] < tb_end and ch[1] == tb_id and ch[2] == "her"]
+    # (M4) a switch to her after Sam left its sight is the rule working ("the other is visible"), not a flip: excused when the last
+    # watch before it shows its PlayerVisual entry on Sam and older than fresh_ms (1.5 s); rounds at her still FAIL the item
+    def sam_gone(ch):
+        prior = [w for w in host.watches if back < w[0] < ch[0] and w[1] == tb_id]
+        return bool(prior) and prior[-1][5] == "Sam" and prior[-1][6] is not None and prior[-1][6] >= 1.5
+    excused2 = [ch for ch in to_her2 if sam_gone(ch)]
+    to_her2 = [ch for ch in to_her2 if not sam_gone(ch)]
     if back is None:
         gate("TB phase 2: stays Sam", False, "no 'tgt vis forced' > 0 line in the arm", inv["TB"])
     elif not hp or not sp:
@@ -817,7 +1114,8 @@ def main(argv):
     else:
         gate("TB phase 2: stays Sam", not to_her2 and hp[2] == 0, "%s; phase 2 fired %d at her %d at Sam %d; switch_her %s" % (
             ("%d logged switch(es) to her (%s)" % (len(to_her2), to_her2[0][3])) if to_her2 else "no logged switch to her", fp[2], hp[2],
-            sp[2], tb.get("switch_her", "-")), inv["TB"])
+            sp[2], tb.get("switch_her", "-")) + ("; %d switch(es) to her after Sam was out of its sight >= 1.5 s (allowed)" % len(excused2)
+                                                  if excused2 else ""), inv["TB"])
     # TF0 (bit 32 off): the actor branch, when the job takes it, resolves to Sam; TF1 (bit 32 on): the fix
     tf0, tf1 = arms.get("TF0", {}), arms.get("TF1", {})
     sh0 = host.arm_shoot("TF0", tf0.get("id", "")) if tf0 else None
@@ -826,18 +1124,15 @@ def main(argv):
     pt_sam0 = bool(sh0) and (sh0["at_sam"] > 0 or sh0["last"] == "Sam")
     why0 = "fired %d at her %d at Sam %d; shoot %s" % (f0, num(tf0, "at_her", 0), s0_, shoot_text(sh0))
     tf0_note = None
-    if sh0 and sh0["redirected"] > 0:
-        gate("TF0 bit 32 off: the actor branch at Sam", False, why0 + " (bit 32 was not off)", inv["TF0"])
-    elif not sh0:
-        gate("TF0 bit 32 off: the actor branch at Sam", "INCONCLUSIVE", why0, inv["TF0"])
-    elif sh0["actor"] is None:
-        # an older build (no per-mode counts): the run-2 rule, rounds or the point at Sam prove the path
-        gate("TF0 bit 32 off: the actor branch at Sam", True if (s0_ > 0 or pt_sam0) else "INCONCLUSIVE", why0 + " (no per-mode counts)", inv["TF0"])
-    elif sh0["actor"] == 0:
-        tf0_note = "TF0: place branch only (actor 0 place %d): nothing to prove" % sh0["place"]
-    else:
-        gate("TF0 bit 32 off: the actor branch at Sam", s0_ > 0 or sh0["at_sam"] > 0,
-             why0 + ("" if (s0_ > 0 or sh0["at_sam"] > 0) else " (actor branch did not resolve to Sam)"), inv["TF0"])
+    # (M4) information only: the "actor branch at Sam" premise was wrong (+0x198 is CanShoot's point, not his chest)
+    if probe:
+        h0_ = num(tf0, "at_her", 0)
+        gate("TF0 without bit 32", "INFO", "without bit 32: at her %d / Sam %d / elsewhere %d (rounds); shoot %s%s%s" % (
+            h0_, s0_, max(0, f0 - h0_ - s0_), shoot_text(sh0), " (bit 32 was not off: redirected)" if sh0 and sh0["redirected"] > 0 else "",
+            (" (%s)" % inv["TF0"]) if inv["TF0"] else ""))
+        if sh0 and sh0["actor"] == 0:
+            tf0_note = "TF0: place branch only (actor 0 place %d)" % sh0["place"]
+    _ = pt_sam0
     f1, h1, s1 = num(tf1, "fired", 0), num(tf1, "at_her", 0), num(tf1, "at_sam", 0)
     why1 = "fired %d at her %d at Sam %d; shoot %s" % (f1, h1, s1, shoot_text(sh1))
     # (review) the shoot line is the direct measure of where the job's aim point went: any at Sam FAILs; with actor-branch calls
@@ -916,12 +1211,16 @@ def main(argv):
     va, ve = (sa[2] if sa else None), (se[2] if se else None)
     na, ne = num(ta, "noticed"), num(te, "noticed")
     lower = ve is not None and va is not None and ve <= 0.7 and ve < va
-    gate("TE crouched: lower vis, seen", lower and num(te, "cls_her", 0) > 0,
-         "arm-start vis TA %s TE %s; cls_her %s; notice TA %s TE %s (TE > TA + 1 s or none: %s)" % (
-             ("%.2f" % va) if va is not None else "-", ("%.2f" % ve) if ve is not None else "-", te.get("cls_her", "-"), ta.get("noticed", "-"),
-             te.get("noticed", "-"), "yes" if (ne < 0 or (na >= 0 and ne > na + 1000)) else "no"), inv["TE"])
+    if probe:
+        gate("TE crouched: lower vis, seen", lower and num(te, "cls_her", 0) > 0,
+             "arm-start vis TA %s TE %s; cls_her %s; notice TA %s TE %s (TE > TA + 1 s or none: %s); calm %s (timeout %s; not gated)" % (
+                 ("%.2f" % va) if va is not None else "-", ("%.2f" % ve) if ve is not None else "-", te.get("cls_her", "-"), ta.get("noticed", "-"),
+                 te.get("noticed", "-"), "yes" if (ne < 0 or (na >= 0 and ne > na + 1000)) else "no", te.get("calm", "-"),
+                 te.get("calm_timeout", "-")), inv["TE"])
     gcl = host.geom("CL")
-    if gcl:
+    if not probe:
+        pass
+    elif gcl:
         n_cl = num(cl, "noticed")
         # (review) the watch starts before the stimulus is made (enemy_tgt 4, then 1 1): the notice is timed from the stimulus
         dly = stim_delay(host, "CL")
@@ -965,7 +1264,7 @@ def main(argv):
         if g.has_sight:
             # (M3f) an attacker of the game's whose +0x338 is not an object of the game's: information only
             gate("onhit_odd " + who, "INFO", "%d%s" % (g.sums["onhit_odd"], ("; first: %s" % g.onces["onhit_odd"][1]) if "onhit_odd" in g.onces else ""))
-    for label in ("TA", "TB", "TF0", "TF1"):
+    for label in (("TA", "TB", "TF0", "TF1") if probe else ("TF1", "TB")):
         a = arms.get(label, {})
         if a.get("fired") is None or a.get("rays") is None:
             gate("rays " + label, "INCONCLUSIVE", "no fired / rays on its result line", inv[label])
@@ -994,6 +1293,8 @@ def main(argv):
     for kind in ("vt_other", "noslot", "onhit_bad", "onhit_odd", "mismatch"):
         if kind in host.onces:
             print("host once %s (%d): %s" % (kind, host.onces[kind][2], host.onces[kind][1]))
+    if not probe and any(n == "TO take first" and st == "FAIL" for n, st, _ in items):
+        print("take first FAILED: ship pick 7 (enemy_target_pick 7; the release decision goes to the user)")
     table = [[t for t, _ in COLS]]
     for n in ARMS:
         if n in arms:
@@ -1003,7 +1304,7 @@ def main(argv):
     for r in table:
         print("  ".join(v.ljust(widths[i]) for i, v in enumerate(r)))
     print()
-    for label in ARMS:
+    for label in (ARMS if probe else DEFAULTS_ARMS):
         g = host.geom(label)
         s = host.tstarts.get(label)
         e = host.tends.get(label)

@@ -2702,31 +2702,44 @@ had put her on top of a 3.4 m structure, so her point was about 40 deg above its
 rejects that, and the structure was in the ray anyway. Nothing points at the melee MULE or at L1; the M3 gate's CH / CS / CL arms
 check it on level ground (section 16.6).
 
-## 16. Round 27: rebuild - partner stimulus, target pick and redirects (M2/M3)
+## 16. Round 27: rebuild - partner stimulus, target pick and redirects (M2/M3/M4)
 
 **What it is.** M2 and M3 of the round-27 design, built as production code in `enemy_target.cpp` (plus the shared stimulus
 primitives in `enemy_stim_core.hpp`, the shared sense detours in `enemy_sense_hooks.cpp` and the pure rules in
-`enemy_target_rules.hpp`, tested by `st_enemy_target_rules_tests`). Every key defaults off; they are flipped together only after
-the gates pass (critique C2). "Her" is the partner body, "Sam" our own Sam. The partner stimulus is made by the host only (the
-host owns the enemies; review S1) and, for now, in hidden runs only (16.2); SPV1 is sent by both games.
+`enemy_target_rules.hpp`, tested by `st_enemy_target_rules_tests`). "Her" is the partner body, "Sam" our own Sam. The partner
+stimulus is made by the host only (the host owns the enemies; review S1); SPV1 is sent by both games. **M4 (round 27, the user:
+"keep it on by default though if its functional"):** the keys default on with `enemy_hits` (16.1), the hidden-runs-only refusal
+is replaced by the destroy guard (16.2), take first (pick bit 64) keeps a calm host camp calm until her take (16.7), the
+line-of-sight ray uses the visual sense's own layer (16.8), and the defaults gate (16.9) runs the launcher's files with no key.
+The default flip ships only once the probe run (16.6) and the defaults run (16.9) pass (16.9's "what the next runs must show").
 
 ### 16.1 Keys
 
 | Key | Default | Meaning |
 |---|---|---|
-| `enemy_partner_stim` | 0 | 1: the partner body carries a visual stimulus (lever L1, 16.2; the host, hidden runs) |
+| `enemy_partner_stim` | 1 with `enemy_hits` (M4; else 0) | 1: the partner body carries a visual stimulus (lever L1, 16.2; the host only, with the destroy guard in) |
 | `enemy_partner_vis` | 1 | its +0xA4 from the partner's SPV1 (0: always 1.0) |
 | `enemy_partner_stim_radius` | 300 | only while a realized human enemy is within this many m of the partner body |
-| `enemy_target_pick` | 0 | bits (0..63): 1 the sensor-result reorder (16.3), 2 MULE-only perceivers (H5), 4 the classifier flag fix (H2), 8 her hits force a visual (H3), 16 the line-of-sight keep (M3f, 16.3; needs 1), 32 her record from ours (M3f, 16.3; needs 1 and 16) |
-| `enemy_target_redirect` | 0 | bits: 1 CanShoot's point, 2 turn / range check, 4 approach, 16 the vehicle chase, 32 the shoot actor (16.4); 8 (the PlayerInfo shadow) is deferred |
+| `enemy_target_pick` | 71 with `enemy_hits` (M4: 1 + 2 + 4 + 64; else 0) | bits (0..127): 1 the sensor-result reorder (16.3), 2 MULE-only perceivers (H5), 4 the classifier flag fix (H2), 8 her hits force a visual (H3), 16 the line-of-sight keep (M3f, 16.3; needs 1), 32 her record from ours (M3f, 16.3; needs 1 and 16), 64 take first (M4, 16.7; needs `enemy_owner` and the classifier hook) |
+| `enemy_target_redirect` | 35 with `enemy_hits` (M4: 1 + 2 + 32; else 0) | bits: 1 CanShoot's point, 2 turn / range check, 4 approach, 16 the vehicle chase, 32 the shoot actor (16.4); 8 (the PlayerInfo shadow) is deferred |
 | `enemy_target_fresh_ms` | 1500 | how long a sighting counts (500..3000) |
+
+**The derive rule (M4; `cfgval::TargetDefaults`, after `EnemyDefaults`).** A key the ini does not set (`enemy_partner_stim_set`,
+`enemy_target_pick_set`, `enemy_target_redirect_set` false) takes its default from `enemy_hits` (itself on with `enemy_sync`):
+on, 1 / 71 / 35; off, 0 / 0 / 0. A key the ini sets always wins, 0 included (`enemy_target_pick` 0..127; 128 and over is refused
+and keeps the default). The launcher writes no `enemy_*` key (core_model.cpp), so Local test and Host / Join get the defaults. The
+`[config]` line says which: `[config] enemy_partner_stim=1 (default: on with enemy_hits) enemy_partner_vis=1
+enemy_partner_stim_radius=300 enemy_target_pick=71 (default: on with enemy_hits) enemy_target_redirect=35 (default: on with
+enemy_hits) enemy_target_fresh_ms=1500` (per key: nothing when the ini set it, ` (default: off)` when `enemy_hits` is off). Bits 8,
+16 and 32 stay out of the default: 8 has never run, and 16 / 32 are unproven until the fixed ray (16.8) passes in the probe run.
+If TO (16.9) fails, the default pick is 7 and take first stays opt-in (the release decision goes to the user).
 
 ### 16.2 The partner stimulus (M2)
 
 The M1 probe's proven code, shared through `enemy_stim_core.hpp`: the create (0x1425249A0) with our Sam's own
 `AIVisualStimulusResource` and the local player's id (the registry's vt+0x40), the C1 two-step release, the pool lock, the
 ownership signatures and the emergency stop. It is made only while: the key is on (and not forced off by `enemy_tgt 1 0`); this
-game is the host; a hidden run (automation) is on; a link is up; the partner body is the live real body the partner owns (never
+game is the host; the destroy guard is in (below; M4, in place of "a hidden run is on"); a link is up; the partner body is the live real body the partner owns (never
 the hologram); its agent's vt+0x10 returns that body; our Sam is awake and his resource reads; no load or setup; the partner is not
 down (enemy sync's peer-down, or her SPV1 down flag); a fresh SPV1 frame from her (under 1 s); no cutscene in either game; and a
 realized human enemy is within the radius (checked every 0.5 s). Every tick, under the pool lock and only while it is still in
@@ -2734,10 +2747,63 @@ the live list as ours, it writes the place (the body plus the offset our Sam's o
 difference, zeroed after a jump over 2 m, at most 12 m/s), +0xA4 (her SPV1 visibility, 1.0 when stale, or `enemy_tgt 2`'s),
 +0xA0 / +0xB0 (hers from SPV1, else our Sam's) and the player id at +0x88.
 
-**Hidden runs only (review S1).** The real body can be destroyed by the game before `etarget::ReleaseBeforeFree` runs (real_body
-calls it after the game freed the body on one path): a stimulus whose agent is freed would be walked by the sensor. Until that gap
-is closed (a release on the game's own destroy), `HardReason` refuses outside automation: `pstim not made (hidden runs only (the
-game's body-destroy gap))`. The guest refuses with `pstim not made (the guest (host only))`.
+**The destroy guard (M4; in place of M2's "hidden runs only", review S1).** The real body can be destroyed by the game before
+`etarget::ReleaseBeforeFree` runs (real_body calls it after the game freed the body on one path): a stimulus whose agent is freed
+would be walked by the sensor. Three layers close that gap:
+- **G1, the RemoveEntityNow hook** (`entity_remove_hook.{hpp,cpp}`, `st::rmhook`). World::RemoveEntityNow (0x14237B390; rcx the
+  world, rdx the entity) is the game's own removal: it marks the entity (+0x88 bit 31, the `lock or` at 0x14237B3C4) and appends
+  it to the destroy list (0x14237B7AB), which frees it later. The detour runs before either, so a watched entity is seen before it
+  can be freed. Six byte checks, all needed (`Ready`): its prologue, the bit-31 mark, its two callers' rel32 calls (0x14237AF33,
+  0x142379FBA), the destroy list's append, and the child loop's world global (0x14237B634 -> [0x147BC4E70], op 13's world; the
+  world vtable's +0x20 being 0x143587110 is op 13's own check, not counted). Installed once, on the host with
+  `enemy_partner_stim` on, after the target byte checks: `[enemy] tgt destroy guard: RemoveEntityNow hook <on | off (byte checks:
+  <name>) | off (MinHook <status>)> (byte checks n/6)`; a failed check also logs `[enemy] tgt destroy guard byte check FAILED:
+  <name>`. Two watch slots: `kWatchBody` (real_body's partner entity: its PollSlot drops the slot without touching the entity,
+  `[real] the real body entity 0x.. is being removed by the game (seen before the free): its slot dropped, the entity not touched`,
+  releases the stimulus and tears the body down; `LiveEntity` returns null once it is marked) and `kWatchStim` (the stimulus'
+  body: `etarget::GameRemoving`). The detour runs on any thread, possibly under the world's lock: atomics, a TEB read and
+  `GameRemoving` only (no lock, no allocation, no logging, no ReadProcessMemory).
+- `GameRemoving(e)` (lock-free, SEH reads and writes): when `e` is the stimulus' body it clears the agent the detours compare
+  (`g_p_agent`), marks the body gone (thread id, simulated or not), sets the dead agent (G2), and writes the stimulus and each of
+  its thread-safe copies invisible (`enemy_stim_core::Step1Any`: +0xA4 the visibility 0, +0x88 no actor, +0x84 1, the agent CAS'd to 0
+  on the stimulus, the copies matched by agent and resource). The game thread's next tick parks the stimulus (`[enemy] pstim the game is
+  removing the partner body 0x.. (seen before the free; thread n (the game thread | another thread)[, simulated (op 12)]):
+  parked (agent cleared, copies n, faults n); removed on a later tick`) and removes it as a release does (`[enemy] pstim removed
+  (..)`); Release, RemoveNow and StimTick park first when the mark is set, so a removal while a release runs never forgets (leaks)
+  the stimulus. (Review) A park writes step 1 itself on the game thread, under the pool lock (`ParkStep1`, idempotent with
+  Step1Any: +0x10 by a compare-exchange), since a GameRemoving in flight may load the stimulus after the Unpublish and skip its
+  Step1Any; so does RemoveNow's "the destroy guard is writing it" park. A check that finds the stimulus "not ours" any more
+  (Release, RemoveNow, StimWrite) parks it instead of forgetting it when the mark names its body (a GameRemoving cleared +0x10
+  between the gone test and the check), and Step2, finding the record still live and ours, writes step 1 and parks it again
+  (`pstim release: still live at the remove; step 1 again, removed on a later tick`). While the mark stays (and while the body is
+  `Removed`, its +0x88 flags say a removal, or the agent is the dead one), Make refuses: `pstim not made (the partner body is
+  being removed by the game)`. The mark on another body clears once our stimulus no longer names it; on her CURRENT body (a G3
+  trip or a late catch the game did not follow with a removal: her agent changed, bit 29 clear for a moment) it clears after 1 s
+  once `erules::GoneMarkStale` holds: not a simulate, the stimulus removed, the hook did not see the body, its +0x88 flags read
+  live, and the trip (when one set it) saw the vtable unchanged (`[enemy] pstim the gone mark on the partner body 0x.. cleared:
+  still live, no removal seen (flags 0x..); made again when ready`). Make's own checks still refuse a real removal.
+- **The Dekker pair.** The tick's removes must not run while a `GameRemoving` on another thread is writing the stimulus:
+  Unpublish's seq_cst store of the stimulus to 0 against GameRemoving's `g_gr_busy` increment followed by its seq_cst load of the
+  stimulus. Step2 and RemoveNow wait for `g_gr_busy` 0 (`GrQuiet`, at most 4000 spins with YieldProcessor); still busy, the
+  remove waits for a later tick (`pstim remove (<why>): the destroy guard is writing it; parked, removed on a later tick`).
+  StimWrite checks the mark before its writes and again after a fence (Step1Any when it was set meanwhile). (Review) Make's
+  watch-then-removed check against the detour's removed-then-watch match is a store-load pair too: `rmhook::Watch` stores the slot
+  seq_cst (an xchg), `Removed` and Match load seq_cst, and Make fences between `Watch` and `Removed`, so a removal that begins
+  during Make is seen by one side or the other.
+- **G2, the dead agent.** The classifier detour (SenseClsRefuse) refuses every stimulus whose +0x10 is the dead agent, first,
+  before any other test (`dead-refused` on the summary): a copy the game made before the clear never counts. Its lifetime: it stays
+  while the stimulus body is published and clears 2 s after ClearBody (Step2 / Forget / the RemoveNow success path) once no
+  stimulus has that agent.
+- **G3, the worker guard** (`WorkerBodyOk`, every classifier call on the partner stimulus; SEH reads only): the body's +0x88 flags
+  live (`erules::BodyFlagsLive`: bit 29 set, bits 30 / 31 clear), its vtable and agent as made, the agent's vtable as made. It
+  catches a free that bypasses RemoveEntityNow (a world teardown) and a queued removal (bit 30) before the hook. On a failed check
+  the first worker calls `GameRemoving` and every call refuses it; the tick logs `[enemy] pstim worker guard: the partner body
+  failed its check (flags 0x.., vt ok|changed, agent ok|changed): refused and parked`.
+`HardReason` refuses `pstim not made (the destroy guard is not in)` when the hook is not Ready, and `(the classifier guard is not
+in)` when the classifier detour (G2 / G3) is not. The summary appends `; guard calls n (n/s) matched n dead-refused n trips n;
+take-first n; cls n/s psr n/s` (the detour's calls and matches, G2's refusals, G3's trips, take first's refusals, the classifier's
+and PSR's calls per second: the cpu number). Ops 12 and 13 (hidden runs) exercise it (16.9). The guest refuses with `pstim not made
+(the guest (host only))`.
 
 It is released at once when the body changes or goes, its agent or the AI manager changes, a load starts, the partner is down,
 the key goes off, the link goes or our Sam sleeps; after 2 s when no enemy is within the radius, no fresh SPV1 arrives or a
@@ -3008,7 +3074,7 @@ The detours run on AI worker threads: no allocation, no logging, no game call bu
 the next tick sees the count and stops the whole layer: `[enemy] tgt FAULT (<why>): the partner stimulus released, the table
 cleared, the pick and every redirect off for this run`. The tick itself runs under SEH (the pool lock it held is left in the
 handler, as many times as it was entered; review S8), and an exception there takes the same path. Enemy sync's own fault stop and
-the mod's emergency stop also reach it (`etarget::Stop`, `EmergencyStop`, `AfterStop`). After a stop `enemy_tgt` ops 1..11 refuse
+the mod's emergency stop also reach it (`etarget::Stop`, `EmergencyStop`, `AfterStop`). After a stop `enemy_tgt` ops 1..13 refuse
 (review S10). The hooks stay in once installed; the effective bits drop to 0, so each detour only calls the original (bit 32's
 aim-point record too: the stop paths and the table gate clear it with the pick and the redirect bits, and its two detours also
 pass straight through once the module is off). The sense hooks are tried once per run (review S5).
@@ -3121,13 +3187,16 @@ The gate parses `not valid in N ms` and prints per arm `op 11 PLACEs (run 4): se
   45 deg (outside the melee cone); a missed or late notice in the cone FAILs.
 * **TE** (notice, calm #3): her crouched (`@guest pad B 150`, 700 ms, the screenshot) 16 m in front of 0202C before op 11: her
   SPV1 visibility at the arm's start <= 0.7 and lower than TA's, and the classifier saw her; the notice timing is printed only.
+  M4: TE no longer needs a calm (out of `CALM_NEEDED`): it counts when its geometry is valid and her stimulus was not lost; the
+  calm and its timeout are printed (run 192344 would have passed: vis 0.60 against 1.00, `cls_her` 1261).
 * **TF0** (0202B alerted since TA, calm #4, bit 32 off: `enemy_tgt 6 7`): her 22 m in front along its facing, op 11 places our
   Sam 170 m away 40 deg off its line to her (beyond its sight; a round at him passes about 14 m beside her, so the rays tell them
   apart). Since run 3 bit 32 counts the job's actor-branch points even with the bit off (the shoot line's `modes actor n place
   m other k`), so TF0 is a conditional check: no actor-branch point (`actor 0`) prints `TF0: place branch only (actor 0 place
   N): nothing to prove` and is no gate item; the actor branch taken and nothing redirected PASSes when the points or the rounds
   reached Sam (`Sam n` > 0 or `at_sam` > 0), else FAILs ("actor branch did not resolve to Sam"); anything redirected FAILs (bit
-  32 was not off).
+  32 was not off). **M4: TF0 is information only** (`TF0 without bit 32`, INFO: `without bit 32: at her n / Sam n / elsewhere n`
+  and its shoot line): the "actor branch at Sam" premise was wrong (+0x198 is CanShoot's point, not his chest).
 * **TF1** (no calm, her stimulus still live, so op 4's body keeps the pick): her placed again 22 m along its facing, the key
   (`enemy_tgt 6 -1`, bit 32 on), op 11 places Sam again. A round at Sam or the shoot point at Sam (`Sam n` > 0 or `last Sam`)
   FAILs; fewer than 3 rounds is INCONCLUSIVE; no actor-branch call (`calls` 0) is INCONCLUSIVE ("bit 32 not exercised", or "the
@@ -3170,7 +3239,12 @@ The gate parses `not valid in N ms` and prints per arm `op 11 PLACEs (run 4): se
     branch only, no actor call to redirect)").
   - *sight* (M3f, INFO: never changes the exit code): the pick key (the `[config]` line, else `session-host-deployed.ini`), the
     self-test, the `tgt pick 16 / 32` transitions with their times, TB's phase-0 `tgt los` changes and the SIGHT numbers. It FAILs
-    only when the key has bit 16, TB counts (not INVALID) and the self-test is missing or failed.
+    only when the key has bit 16, TB counts (not INVALID) and the self-test is missing or failed. **M4 (the fixed ray, 16.8):**
+    with bit 16 in the key and TB counting, PASS needs the self-test's last decided line `ok` or `ok (static only ...)`, a clear
+    sight ray in TB phase 0 (its SIGHT line's `los clear` > 0, or a `tgt los id=<id> clear` line in the phase) and no `tgt FAULT
+    los ray`; FAIL: the self-test failed (L47 missing too), is missing or still `trying again` at the run's end, or a los fault;
+    no clear ray: INCONCLUSIVE. The blocked counts are printed (TB's "she hides" is a visibility change, not geometry: no blocked
+    ray is expected). Bit 16 not in the key or TB INVALID: INFO.
   - *switch to Sam <= 3 s* after she hides (`switch_sam` 0..3000); `switch_sam -2` (phase 0 already ended on Sam) is
     INCONCLUSIVE ("no switch to measure"); anything else FAILs.
   - *phase 2: stays Sam*: no logged `-> her` after `tgt vis forced 1.00` and `at_her_p` [2] = 0. INCONCLUSIVE when phase 1
@@ -3183,7 +3257,7 @@ Validity (INVALID, not FAIL: the run says nothing about the item): the arm's own
 (`l1rules::GeomValid` by its code); for TB, TF0 and TF1 (they start on an alerted MULE, so the calm and `pv_start` do not count)
 no `tgt id=<id> -> her` after the arm's start (TB: before the Sam step) or her stimulus lost during it, and for TF0 / TF1 our Sam
 not 140-210 m away or not 30-50 deg off its line to her (the geometry line's `sep`, the angle at the MULE between her and Sam;
-older lines: his bearing off its facing); for TA, CL and TE (`CALM_NEEDED`: a notice needs a calm MULE) a re-calm that timed
+older lines: his bearing off its facing); for TA and CL (`CALM_NEEDED`: a notice needs a calm MULE; M4: not TE) a re-calm that timed
 out or a watch that was not valid; for CH and TX only her stimulus lost (their calm need not be ready); CS has no stimulus. Both
 games also: the byte checks, SPV1, no FAULT line, the crash-reporter guard test (`[seh] test: ... faulted and was caught`: op 10
 faults twice, through a noexcept guard and one that is not) and at most 2 absorbed faults over the run (the last `[seh] absorbed
@@ -3279,3 +3353,102 @@ live).
 - *The shoot path in the watch.* Each watch line adds the shoot goal's +0x68 / +0x6C, its +0x48 place (at her / Sam / none) and the
   body shoot job's last aim point (bit 32's record, `etarget::ShootStats`: at whom, the carrier's mode, its age, the calls and
   redirects); each new round's line adds its angle off the line to her chest, to Sam's chest and off the MULE's facing.
+
+### 16.7 Default on (M4)
+
+With the defaults of 16.1 a player's game runs the partner stimulus, the pick bits 1, 2, 4 and 64 and the redirects 1, 2 and 32,
+as the host only (review: the guest's game derives the same keys, but the M3 path, its sense hooks, redirect sites, shoot-actor
+hooks and table walks, runs only with role 1: on the guest her stimulus is refused, so the pick could never be her). What that
+means in a real session:
+- **Take first (pick bit 64; `erules::CampTakeFirst`, `esync::TakeFirstOf`, `etarget::UpdateOwn`).** With the stimulus on, the
+  host's MULEs would notice her on her approach and alert their camp on the host, which then refuses her take for "the camp's
+  phase" (the fight stays on the host's game, P1c). So while a calm, loaded host camp would go to her (the host its margin
+  farther and beyond 25 m, her and the host both read, no cutscene, no pending change, not over the members cap) and she has been
+  within its engage distance under `kTakeFirstCloseMaxMs` (20 s; `CampRec::close_since`, the camp decision's clock), the host
+  flags its members (UpdateOwn at 10 Hz, from the 2 Hz camp decision's map; stale after 1.5 s) and the classifier refuses her
+  stimulus for them (after G2 / G3, before H5; `take-first n` on the summary). The camp stays calm until the take; after 20 s
+  a blocked take never hides her for good. Live only with `enemy_owner` on, ownership live (`esync::OwnOn`), the classifier
+  group checked and its hook in. A change to flagged logs `[enemy] tgt id=XXXXX take first (cp XXXXX calm, Sam d m, her d m):
+  her stimulus refused`.
+- **Guest-owned camps never target the host's Sam from her stimulus**: the stimulus exists on the host only (S1); her own game
+  runs her camps' AI against her own Sam and the partner copy is never a stimulus there.
+- **An older partner without SPV1** never gets a stimulus (`SoftReason`: no fresh SPV1 frame).
+- **Logging outside hidden runs** (no automation and `verbose` off): the `pstim` / `tgt` summaries every 60 s (5 s in hidden
+  runs), the status line every 60 s, and the per-slot change lines at most one per slot per 10 s with ` (+n changes not logged)`
+  on the next one.
+- **Residuals** (accepted for the default): frees that bypass RemoveEntityNow (a world teardown: covered by `LoadOrSetup`, which
+  releases first, plus G3 only); player_sync's pose writes racing a removal begun on another thread (the write already past its
+  test); redirect 2b unproven; pick bits 8, 16 and 32 off; the line of sight (bit 16) stopping on her vehicle while she rides.
+
+### 16.8 Ray layers (M4)
+
+The raycast (0x141C20CE0; `(world, const double ray[6], result[0x40 each], max, filter, flag) -> hits`) takes a filter whose +8
+is ONE 7-bit layer (0x141C3E930 packs +0x10 / +0xC / +8 into the query word), not a mask; the names come from the game's layer
+table (0x144ADE240, `{const char* name, u64 kind}` per layer, byte-checked by name):
+
+| Layer | Name | Who casts it |
+|---|---|---|
+| 0x20 | vs Eye blocker | the visual sense (0x142E4F486), a layer-only filter at 0x1425B7F86; the line-of-sight estimate (bit 16) and the PLACE probe since M4 |
+| 0x2F | Ray vs Static | the static probe (0x142A94BAF); the self-test's second ray |
+| 0x34 | vs AI hearing | the aural sense (0x142E81692); M3f's ray copied this filter; the self-test's control |
+
+A result entry (0x40 bytes, initialised by 0x14240B7E0): +8 the hit position (three doubles; M3f read another field), +0x30 the
+fraction along the ray, +0x38 the body hit. `ecombat::WorldRay(from, to, trim, hit, len, layer = 0x20)`; the `kPRay` group
+byte-checks the five new sites with the old ones. Run 192344's self-test (layer 0x34): 0 hits in 10 attempts, so bits 16 / 32 never
+came on.
+
+**The self-test** (`erules::LosSelfTest`, the tick, until decided): the same vertical ray from our Sam's chest to his root - 5 m on
+layers 0x20, 0x2F and 0x34: ok when the eye-blocker layer hits within 0.75 m of his root; ok (static only) when only 0x2F does
+(the ground here is not an eye blocker; the estimate still runs on 0x20); otherwise it tries again, the second time 1 m beside him
+(a ray starting inside his own body may report it; tolerance 1.5 m), up to 10 attempts. A ray fault fails it at once. Line, every
+attempt: `[enemy] tgt los self-test: L32 hits n z z32, L47 hits n z z47, L52 hits n (control) vs root r; attempt k -- <verdict>`
+(the layers in decimal) with the verdict `ok`, `ok (static only: the ground here is not an eye blocker)` (either with ` (1 m
+beside)`), `trying again`, `failed: the raycast misses on L47 too; pick 16/32 off` or `failed: the raycast is unchecked or the
+probes are off; pick 16/32 off`. A verdict flip of the estimate logs `[enemy] tgt los id=XXXXX <clear | blocked | ...> (hits n;
+d m; hit (x, y, z))`.
+
+### 16.9 The defaults gate (`two-games-enemy-target-defaults`, M4)
+
+The launcher's Local test files and NO ini key (`launcherini local-test` only): what players get. The gate
+(`tools/testenv/enemy-target-gate.py`) picks `--mode defaults` itself when the run's `session-host-deployed.ini` has no
+`enemy_target_pick` line (else `probe`, the explicit keys of 16.6). Steps (about 200 s, timeout 300; one player's teleports at
+least 700 ms apart):
+- **CFG**: both games' `[config] enemy_partner_stim=1 (default: on with enemy_hits) ... enemy_target_pick=71 (default: on with
+  enemy_hits) enemy_target_redirect=35 (default: on with enemy_hits)` and `[config] enemy_owner=1 (default: on with enemy_hits)`.
+- **CHK**: the byte checks; the host's `tgt destroy guard: RemoveEntityNow hook on (byte checks 6/6)` (the guest never installs
+  it); the stimulus made on the host and refused on the guest (host only); redirect 32 in. **SEH**: the crash-reporter guard test,
+  20 create / remove cycles.
+- **TO** (take first): cp 04004 re-calmed (calm #1 on 0202B) with her stimulus on while she is 150 m away and our Sam 150 m
+  behind 0202B; she comes to 30 m, then 25 m in front of it. PASS: the summaries' `take-first` > 0, a `camp cp 04004 -> guest`
+  take after the first take-first line, and no `tgt id=0202B -> her` between them; flagged but no refusal counted: INCONCLUSIVE;
+  otherwise FAIL, and the gate prints `take first FAILED: ship pick 7` (the default pick becomes 7; the decision goes to the
+  user). A forced back follows (`enemy_own -5 1`).
+- **ENG**: our Sam 20 m in front of 0202B (within 25 m: no take, take first off): the camp alerts on the host.
+- **TF1** and **TB** as in 16.6 (op 11 codes 4 and 2), with the default key (redirect 35, bit 32 on).
+- **TS** (op 12, the simulate: `rmhook::Simulate(body)`, the detour's own path on `kWatchStim` only, nothing freed): the
+  `pstim the game is removing the partner body ... simulated (op 12)` line with faults 0, `pstim removed` after it, then `12 0`
+  (`tgt op 12 0: the simulated removal ended`) and `pstim made` within 3 s; no `[enemy]` FAULT after op 12.
+- **TG** (review; op 12 2, the worker guard's trip simulated on her live body: `GameRemoving(body, false)` with the trip's
+  fields as G3 sets them, her agent "changed"): `tgt op 12 2: the worker guard's trip simulated ...`, the parked line (not
+  simulated), `pstim removed`, `pstim the gone mark on the partner body .. cleared` and `pstim made` within 4 s of the removal
+  (the mark's 1 s, the dead agent's 2 s); no FAULT.
+- **The scenario's waits** (review): one `waitnew` right after each of ops 12 and 13, on the last line of its sequence (`pstim
+  removed`, then `pstim made` for 12 0 and 12 2): a `waitnew` searches from the start of the step before it, so a second one
+  would miss the lines the action's next ticks wrote. The gate grades the lines between and their order.
+- **TR** (op 13, the last step: `world->vt+0x20(world, body, 0, 0)`, the child loop's own removal call, on the game thread after
+  its checks): `tgt op 13: called; guard calls a -> b, matched m -> m+1 (thread t, the game thread)` logged before real_body's
+  `[real] the real body entity .. is being removed by the game (seen before the free)`, the parked line (not simulated) and
+  `pstim removed` after op 13, no FAULT, and the log going on >= 3 s after it (the game alive). INFO: `pstim made` on her new
+  body.
+- Reused: checks, spv1, faults, seh test, seh, made, host only, cycles, TF1, TB (all but sight), bit 32 filter / live, rays TF1 /
+  TB, soft; `destroy guard` (both modes); **cpu** (INFO): the last summary's `guard calls n (n/s) ... cls n/s psr n/s`. Not
+  applicable: TA, CL, CH, CS, TX, TE, TF0, TB sight (only TF1 and TB count as missing arms).
+
+**What the next runs must show.** (1) The probe run (`two-games-enemy-target`, pick 55): the self-test `L32 hits 1 z` at the root
+(or L47), `L52 hits 0`, ok; `tgt pick 16 ... on` and `32 ... on`; the sight flip lines with real hit positions; TB sight PASS,
+TF0 INFO, TE valid; everything that passed before still passes; the destroy guard on; no FAULT, the seh log only the self-test.
+(2) The defaults run: CFG, CHK, TO, ENG / TF1, TB, TS, TG and TR pass; TR's `matched` up by 1 with the op-13 line before the
+real_body line, then `pstim removed`, no AV; both games run to the end. (2b) `two-games-enemy-camp` (the P1c ownership gate: its
+takes, backs and outcomes), which now runs under the new defaults (her stimulus on, take first): the defaults scenario does not
+cover `enemy-own` (its one take is no proof of the camp gate). (3) Only then the default flip ships (pick 71, or 7 if TO fails),
+then the docs and the release.

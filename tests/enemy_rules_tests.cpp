@@ -1221,6 +1221,34 @@ bool TakeBlocked(const CampIn& in, const char* want) {
     return b && std::strcmp(b, want) == 0 && CampDecide(in).act == OwnAct::none;
 }
 
+// (round 27 M4) take first: a calm host camp she is closing on, our Sam far, holds her stimulus off until the take (20 s at most)
+void TestCampTakeFirst() {
+    const CampIn c = CalmCamp();
+    CHECK(CampTakeFirst(c, 0));
+    CHECK(CampTakeFirst(c, kTakeFirstCloseMaxMs - 1));
+    CHECK(!CampTakeFirst(c, kTakeFirstCloseMaxMs));  // a blocked take never hides her for good
+    { CampIn x = c; x.d_g = 200, x.d_h = 400; CHECK(CampTakeFirst(x, 0)); }  // her approach: no engage distance in the rule
+    { CampIn x = c; x.cp_phase = kPhaseCaution; CHECK(!CampTakeFirst(x, 0)); }  // alerted
+    { CampIn x = c; x.cp_phase = kPhaseUnknown; CHECK(CampTakeFirst(x, 0)); }   // a loose camp: no CP phase
+    { CampIn x = c; x.phase = kPhaseCaution; CHECK(!CampTakeFirst(x, 0)); }
+    { CampIn x = c; x.phase = kPhaseUnknown; CHECK(!CampTakeFirst(x, 0)); }
+    { CampIn x = c; x.d_g = 5, x.d_h = 24; CHECK(!CampTakeFirst(x, 0)); }  // Sam within 25 m
+    { CampIn x = c; x.d_h = 34.9; CHECK(!CampTakeFirst(x, 0)); }           // the margin short
+    { CampIn x = c; x.d_h = 35; CHECK(CampTakeFirst(x, 0)); }              // exactly the margin
+    { CampIn x = c; x.owner = Owner::guest; CHECK(!CampTakeFirst(x, 0)); }
+    { CampIn x = c; x.pending = true; CHECK(!CampTakeFirst(x, 0)); }
+    { CampIn x = c; x.parts_ok = false; CHECK(!CampTakeFirst(x, 0)); }
+    { CampIn x = c; x.members = kCampMaxMembers + 1; CHECK(!CampTakeFirst(x, 0)); }
+    { CampIn x = c; x.takeable = 0; CHECK(!CampTakeFirst(x, 0)); }
+    { CampIn x = c; x.host_loaded = false; CHECK(!CampTakeFirst(x, 0)); }
+    { CampIn x = c; x.d_g = -1; CHECK(!CampTakeFirst(x, 0)); }
+    { CampIn x = c; x.d_h = -1; CHECK(!CampTakeFirst(x, 0)); }
+    { CampIn x = c; x.guest_ok = false; CHECK(!CampTakeFirst(x, 0)); }
+    { CampIn x = c; x.host_ok = false; CHECK(!CampTakeFirst(x, 0)); }
+    // the hold, her cap and one-at-a-time do not end it (the take waits; close_ms bounds that)
+    { CampIn x = c; x.hold_over = false; CHECK(CampTakeFirst(x, 0)); }
+}
+
 void TestCampTake() {
     const CampIn c = CalmCamp();
     CHECK(CampTakeBlock(c) == nullptr);
@@ -1862,6 +1890,7 @@ void TestSingleRule() {
 int main() {
     TestCampGeometry();
     TestCampTake();
+    TestCampTakeFirst();
     TestCampBack();
     TestCampSplits();
     TestCampAggregate();

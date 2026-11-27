@@ -183,4 +183,34 @@ inline unsigned Step1(std::uintptr_t stim, std::uintptr_t agent, std::uintptr_t 
     return faults;
 }
 
+// Round 27 M4 (the destroy guard, docs/enemy-sync.md 16.2): a volatile read under SEH (0 on a fault). Any thread, no
+// ReadProcessMemory: the World::RemoveEntityNow detour and the classifier detour may use it.
+inline std::uintptr_t SehQ(std::uintptr_t a) noexcept {
+    __try {
+        return a ? *reinterpret_cast<volatile std::uintptr_t*>(a) : 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return 0;
+    }
+}
+// Step1 for any thread (the destroy guard's detour, the worker guard): the live record's same four writes, then its thread-safe
+// copies walked with SehQ (not mem::Q, a ReadProcessMemory) and given +0xA4 0 and +0x88 "no actor" only: their +0x10 keeps the agent
+// (the classifier guard refuses it by value). No lock, no allocation, no log. Returns the faults; `copies` the copies matched.
+inline unsigned Step1Any(std::uintptr_t stim, std::uintptr_t agent, std::uintptr_t res, std::uintptr_t mgr, unsigned* copies) noexcept {
+    unsigned faults = 0, matched = 0;
+    const std::uint8_t one = 1;
+    if (SehStore32(stim + kSMul, 0) < 0) ++faults;
+    if (SehStore32(stim + kSId, kNoActor) < 0) ++faults;
+    if (SehWrite(stim + kSOff, &one, 1) < 0) ++faults;
+    if (SehCas64(stim + kSAgent, agent, 0) < 0) ++faults;
+    unsigned n = 0;
+    for (std::uintptr_t s = mgr && agent ? SehQ(mgr + kMgrTs) : 0; s && n < kListCap; s = SehQ(s + kSNext), ++n)
+        if (SehQ(s + kSAgent) == agent && SehQ(s + kSRes) == res) {
+            ++matched;
+            if (SehStore32(s + kSMul, 0) < 0) ++faults;
+            if (SehStore32(s + kSId, kNoActor) < 0) ++faults;
+        }
+    if (copies) *copies = matched;
+    return faults;
+}
+
 }  // namespace st::stimcore

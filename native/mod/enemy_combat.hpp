@@ -105,11 +105,17 @@ bool TargetProbe(const double (&v)[3], char* msg, std::size_t cap) noexcept;
 // 4 <id | 0> <s> the raycast from a copy's eye to our Sam (one call a tick); 5 <id | 0> <s> the host's own MULE: phase, state,
 // facing and knowledge every 0.25 s; 6 [id | 0] [m] the parent chain (+0x70) and ride fields of the MULEs within m (a seated one).
 bool M2Probe(const double (&v)[3], char* msg, std::size_t cap) noexcept;
-// Round 27 M3f (enemy_target's line-of-sight estimate and the placement's ground probe; game thread only): one world ray, the
-// visual sense's filter, from `from` to `to` shortened by trim_m at both ends (P4's eprobe::Shorten; 0 when too short to cast).
-// The hit count (0 clear), `hit` the first hit; -1 a fault (SEH), -2 no physics world, -3 the raycast's byte checks failed or
-// the probes are off after a fault, -4 another negative return.
-int WorldRay(const double (&from)[3], const double (&to)[3], double trim_m, double (&hit)[3], double* len) noexcept;
+// Round 27 M4 (docs/enemy-sync.md 16.8): the ray layers (the filter's +8 is ONE 7-bit layer, not a mask; the names from the
+// game's layer table 0x144ADE240, byte-checked in P0)
+inline constexpr std::uint32_t kRayLayerEye = 0x20;      // "vs Eye blocker": the visual sense (0x142E4F486), 0x1425B7F86 with the same filter
+inline constexpr std::uint32_t kRayLayerStatic = 0x2F;   // "Ray vs Static": the static probe 0x142A94BAF
+inline constexpr std::uint32_t kRayLayerHearing = 0x34;  // "vs AI hearing": the aural sense's (the self-test's control)
+// Round 27 M3f (enemy_target's line-of-sight estimate and the placement's ground probe; game thread only): one world ray on
+// `layer` (the visual sense's by default) from `from` to `to` shortened by trim_m at both ends (P4's eprobe::Shorten; 0 when too
+// short to cast). The hit count (0 clear), `hit` the first hit's position; -1 a fault (SEH), -2 no physics world, -3 the
+// raycast's byte checks failed or the probes are off after a fault, -4 another negative return.
+int WorldRay(const double (&from)[3], const double (&to)[3], double trim_m, double (&hit)[3], double* len,
+             std::uint32_t layer = kRayLayerEye) noexcept;
 
 // Round 25 (docs/enemy-sync.md 14.18), her game, game thread (enemy_sync.cpp): her take of an enemy (TakeBefore before the member's
 // SetPhase, TakeAfter after the unfreeze; alone: a forced take with no other member of its camp hers) and its refreeze when given

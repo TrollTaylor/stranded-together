@@ -590,14 +590,16 @@ camp), `two-games-enemy-single-walk` and its -know, -camp, -tickets, -hold, -rol
   removed a tick later only while still in the AI manager's live list (else `hers forgotten`). Scenario
   `two-games-enemy-l1-probe`; checker `tools/testenv/enemy-target.py <run folder>`.
 
-* `enemy_tgt <op> [a] [b]` (round 27 M2 / M3; op 0 in any session, the rest hidden runs only; [enemy-sync.md](enemy-sync.md)
+* `enemy_tgt <op> [a] [b]` (round 27 M2 / M3 / M4; op 0 in any session, the rest hidden runs only; [enemy-sync.md](enemy-sync.md)
   section 16). The partner stimulus (`enemy_partner_stim`), SPV1, the target pick (`enemy_target_pick`) and the redirects
-  (`enemy_target_redirect`); nothing here acts unless one of those keys is on (op 9 needs `enemy_partner_stim`). The stimulus is
+  (`enemy_target_redirect`); nothing here acts unless one of those keys is on (op 9 needs `enemy_partner_stim`). Round 27 M4:
+  the keys are on by default with `enemy_hits` (1 / 71 / 35; 16.1), the destroy guard (16.2) replaces the hidden-runs-only
+  refusal. The stimulus is
   made by the host only (the guest logs `[enemy] pstim not made (the guest (host only))`). The first tick with a key on
   byte-checks every site (`[enemy] tgt byte checks (n): stimulus ok, ..., MULE members ok, player objects ok, redirect 1 ok, 2a ok,
   2b ok, 4 ok, 16 (vehicle chase) ok, 32 (shoot actor) ok; redirect 8 deferred (not built)`; a mismatch logs `[enemy] tgt byte check FAILED: <site>`
   and turns that part off; run 3: bit 32 also checks the MULE carrier's wrappers, DSMuleWeaponComponent's vtable 0x143DBA800,
-  and its GetTargetPosition wrapper gets its own detour). After a stop or a fault ops 1..11 refuse (`tgt stopped (<why>)`); op 0
+  and its GetTargetPosition wrapper gets its own detour). After a stop or a fault ops 1..13 refuse (`tgt stopped (<why>)`); op 0
   still logs the status, with `; shoot32 vt_other n noslot n` on its summary (the job's calls on a carrier that is neither the
   MULE's nor the plain NPC's, and on a MULE carrier not registered). Once per run: `[enemy] tgt shoot 32: the job's carrier has
   vtable 0x.. (not the MULE's / the NPC's); not counted`, `[enemy] tgt shoot 32: carrier 0x.. entity 0x.. is not a registered
@@ -659,8 +661,26 @@ camp), `two-games-enemy-single-walk` and its -know, -camp, -tickets, -hold, -rol
     in dz; the PLACE line ends `; ground dz <g>, chosen k of 10, skipped s raised`. TB (code 2) then waits until the MULE sees her
     (her bucket record <= 1.5 s old or the line of sight clear <= 0.5 s), 3 s per candidate, 9 s at most: `[enemy] tgt arm TB:
     her seen (bucket b s, los v) after n ms`, `... her not seen after n ms, next candidate` or `... at the limit: started anyway`.
-  Scenario `two-games-enemy-target`; checker `python -I tools/testenv/enemy-target-gate.py <run folder>` (PASS / FAIL / INVALID /
-  INCONCLUSIVE per gate item).
+  * 12 `[0]` (round 27 M4, hidden runs): the destroy guard's removal simulated on the partner body (`rmhook::Simulate`: the
+    detour's own path, the game's remove not called, nothing freed): `[enemy] tgt op 12: the destroy guard's removal simulated on
+    the partner body 0x..`, then the tick's `[enemy] pstim the game is removing the partner body 0x.. (seen before the free;
+    thread n (the game thread), simulated (op 12)): parked (agent cleared, copies n, faults n); removed on a later tick` and
+    `[enemy] pstim removed (..)`; the stimulus is refused while the mark stays. `12 0` ends it (`[enemy] tgt op 12 0: the
+    simulated removal ended`) and the next tick makes it again. No stimulus: `tgt simulate: no partner stimulus` (refused).
+    `12 2` (review): the worker guard's trip (G3) simulated on her live body (`[enemy] tgt op 12 2: the worker guard's trip
+    simulated on the partner body 0x.. (still live)`, then the trip line, the parked line (not simulated) and `pstim removed`);
+    the gone mark then clears by itself after 1 s (`[enemy] pstim the gone mark on the partner body 0x.. cleared: still live, no
+    removal seen (flags 0x..); made again when ready`) and the stimulus is made again once the dead agent ends (2 s). No live
+    stimulus: `tgt trip: no live partner stimulus`; a trip already: `tgt trip: a trip already` (both refused).
+  * 13 (round 27 M4, hidden runs; the last step of a run: it ends her body): the game's own RemoveEntityNow on the partner body
+    (the world's vt+0x20 after its byte checks, on the game thread): `[enemy] tgt op 13: the game's RemoveEntityNow on the partner
+    body 0x.. (world 0x..; guard on)`, `[enemy] tgt op 13: called | refused (no world, or its checks failed) | FAULT; guard calls a
+    -> b, matched m -> n (thread t, the game thread)`; then the parked line (not simulated), `[enemy] pstim removed (..)` and
+    real_body's `[real] the real body entity 0x.. is being removed by the game (seen before the free): its slot dropped, the
+    entity not touched` (it spawns her a new body).
+  Scenarios `two-games-enemy-target` (the explicit keys) and `two-games-enemy-target-defaults` (M4: no key, ops 12 / 13);
+  checker `python -I tools/testenv/enemy-target-gate.py <run folder> [--mode probe|defaults]` (PASS / FAIL / INVALID /
+  INCONCLUSIVE per gate item; the mode from the run's session ini when not given).
 
 * `enemy_restrain <id | 0> <mode>` (hidden runs, round 23; the guest, or the host while it relays its hits: `enemy_owner`; the
   restrain relay must be on: `[enemy] restrain relay on`): the tie-up relay's own send path on our frozen copy of an enemy the

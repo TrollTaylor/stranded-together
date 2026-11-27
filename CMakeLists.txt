@@ -177,6 +177,7 @@ add_library(st_mod SHARED
   native/mod/enemy_l1_probe.cpp
   native/mod/enemy_sense_hooks.cpp
   native/mod/enemy_target.cpp
+  native/mod/entity_remove_hook.cpp
   native/mod/seh_guard.cpp
   native/mod/enemy_wire.cpp
   native/mod/npc_damage.cpp

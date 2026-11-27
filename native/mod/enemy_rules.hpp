@@ -1078,6 +1078,22 @@ inline const char* CampTakeBlock(const CampIn& in) noexcept {
     if (in.since_change_ms < kCampChangeGapMs || in.other_pending) return "one change at a time";
     return nullptr;
 }
+// Round 27 M4, take first (enemy_target_pick bit 64; docs/enemy-sync.md 16.7): with the partner stimulus on, the host's MULEs
+// would notice her on her approach and alert their camp on the host, which then refuses her take for "the camp's phase" (the
+// fight stays on the host's game). While a calm, loaded host camp would go to her on her approach (the host its margin farther,
+// beyond 25 m), her stimulus is refused for its members so the camp stays calm until the take. `close_ms`: how long she has been
+// within its engage distance without a take (the caller's clock); after kTakeFirstCloseMaxMs a blocked take never hides her for
+// good. Her engage distance is deliberately left out: the rule covers her approach.
+inline constexpr double kTakeFirstCloseMaxMs = 20000.0;
+inline bool CampTakeFirst(const CampIn& in, double close_ms) noexcept {
+    if (in.owner != Owner::host || in.pending || !in.parts_ok) return false;
+    if (in.members > kCampMaxMembers || in.takeable == 0) return false;
+    if (!in.host_loaded || !(in.d_g >= 0) || !(in.d_h >= 0)) return false;
+    if (in.d_h < in.d_g + CampMargin(in.r) || in.d_h <= kTakeHostMinM) return false;
+    if (!Calm(in.phase) || CampAlerted(in.cp_phase)) return false;
+    if (!in.guest_ok || !in.host_ok) return false;
+    return close_ms < kTakeFirstCloseMaxMs;
+}
 inline OwnVerdict CampDecide(const CampIn& in) noexcept {
     if (in.owner == Owner::guest) {
         // forced: ignore phase, the hold and her downs (each member's outcome is carried or left as P1b left it)

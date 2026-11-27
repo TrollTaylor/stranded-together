@@ -2828,7 +2828,11 @@ constexpr std::uintptr_t kKX = 0x28, kXAgent = 0x118, kKBucketN = 0x590, kKBucke
 constexpr std::uintptr_t kKeKey = 0x10, kKeType = 0x18, kKeSub = 0x1C, kKePos = 0x20, kKeActor = 0x68, kKeFlags = 0x78, kKeSize = 0x80;
 constexpr std::uintptr_t kRay = 0x141C20CE0;         // (world, const double ray[6], result[0x40 each], max, filter, flag) -> hits
 constexpr std::uintptr_t kRayWorld = 0x14578C140;    // the physics world global both senses pass
-constexpr std::uintptr_t kRayFilterVt = 0x143BA8938; // the aural sense's filter vtable (+8 0x34, +0xC 0xFF, +0x20 an array)
+// the generic layer-only filter's vtable (vt[2] 0x141A4D710: callbacks only when +0x18 != 0): +8 the 7-bit LAYER (0x141C3E930
+// packs +0x10 / +0xC / +8 into the query word; not a mask), +0xC 0xFF, +0x20 an array (round 27 M4: the aural sense passes layer
+// 0x34 "vs AI hearing", the visual sense 0x20 "vs Eye blocker"; docs/enemy-sync.md 16.8)
+constexpr std::uintptr_t kRayFilterVt = 0x143BA8938;
+constexpr std::uintptr_t kLayerNames = 0x144ADE240;  // {const char* name, u64 kind} per layer
 constexpr std::uintptr_t kRayFree = 0x1419D5870;     // the filter's array free (null-safe)
 constexpr std::uintptr_t kRayResInit = 0x14240B7E0;  // a result entry's init
 constexpr std::uintptr_t kEPerceive = 0x314, kSClass = 0x88, kMgrTsVis = 0x3C398;
@@ -2857,10 +2861,24 @@ constexpr Site kProbeSites[] = {
     {0x142E5FA60,  "8B 9A 88 00 00 00", "the classifier's stimulus +0x88", kPSense},
     {0x142E5FA70,  "81 E3 FF FF 1F 00", "its id mask (0x1FFFFF)", kPSense},
     {0x14251D376,  "C5 FA 10 8F A4 00 00 00", "a stimulus +0xA4 read", kPStimMul},
+    // round 27 M4 (docs/enemy-sync.md 16.8): the filter's +8 is the layer; the visual sense's layer 0x20 (vs Eye blocker), the
+    // same filter vtable with 0x20 at 0x1425B7F86, the static probe's 0x2F (Ray vs Static)
+    {0x141C3E930,  "8B 41 10 C1 E0 08 0B 41 0C C1 E0 0F 0B 41 08 0F BA E8 1F C3", "the filter's query word (+8 the layer)", kPRay},
+    {0x142E4F486,  "C7 45 58 20 00 00 00", "the visual sense's layer 0x20", kPRay},
+    {0x1425B7E8F,  "48 8D 3D ?? ?? ?? ??", "a layer-only filter's vtable (0x1425B7E8F)", kPRay},
+    {0x1425B7F86,  "C7 45 90 20 00 00 00", "its layer 0x20", kPRay},
+    {0x142A94BAF,  "C7 44 24 48 2F 00 00 00", "the static probe's layer 0x2F", kPRay},
 };
 // clang-format on
 bool g_pchecked = false, g_probe_off = false;
 unsigned g_pgroups = 0;
+// the layer table's name for `layer` (a guarded read of the char* at [kLayerNames + 16 * layer]) is `want`
+bool LayerNamed(std::uint32_t layer, const char* want) {
+    const std::uintptr_t p = mem::Q(A(kLayerNames) + 16u * layer);
+    char name[32] = {};
+    if (!p || !mem::Read(p, name, sizeof(name) - 1)) return false;
+    return std::strncmp(name, want, sizeof(name) - 1) == 0;
+}
 void ProbeChecks() {
     if (g_pchecked) return;
     g_pchecked = true;
@@ -2880,6 +2898,10 @@ void ProbeChecks() {
         {mem::RipTarget(A(0x142E4F6F3), 3, 7) == A(kRayWorld) && mem::RipTarget(A(0x142E81692), 3, 7) == A(kRayWorld), kPRay, "both pass the world global"},
         {mem::RipTarget(A(0x142E816AE), 3, 7) == A(kRayFilterVt) && mem::RipTarget(A(0x142E81727), 1, 5) == A(kRayFree), kPRay, "the filter vtable and its free"},
         {mem::RipTarget(A(0x142E4F340), 3, 7) == A(kStimMgr), kPSense, "the thread-safe list's AI manager"},
+        {mem::RipTarget(A(0x1425B7E8F), 3, 7) == A(kRayFilterVt), kPRay, "the layer-only filter's vtable at 0x1425B7E8F"},
+        {LayerNamed(kRayLayerEye, "vs Eye blocker"), kPRay, "layer 0x20's name (vs Eye blocker)"},
+        {LayerNamed(kRayLayerStatic, "Ray vs Static"), kPRay, "layer 0x2F's name (Ray vs Static)"},
+        {LayerNamed(kRayLayerHearing, "vs AI hearing"), kPRay, "layer 0x34's name (vs AI hearing)"},
     };
     for (const auto& d : data) {
         ++n;
@@ -4172,7 +4194,9 @@ struct RayRun {
     bool frozen = false;
 };
 RayRun g_ray;
-int SehRay(const double (&ray)[6], double (&hit)[3]) noexcept {
+// one ray on `layer` (+8 of the filter: the 7-bit layer, round 27 M4); `hit` the first hit's position, result +8 / +0x10 / +0x18
+// (f64; +0 is a u64, +0x30 the fraction, +0x38 the body)
+int SehRay(const double (&ray)[6], double (&hit)[3], std::uint32_t layer) noexcept {
     alignas(16) std::uint8_t res[0x80] = {};
     alignas(16) std::uint8_t filt[0x40] = {};
     __try {
@@ -4181,15 +4205,15 @@ int SehRay(const double (&ray)[6], double (&hit)[3]) noexcept {
         reinterpret_cast<void* (*)(void*)>(A(kRayResInit))(res);
         reinterpret_cast<void* (*)(void*)>(A(kRayResInit))(res + 0x40);
         const std::uintptr_t vt = A(kRayFilterVt);
-        const std::uint32_t mask = 0x34, ff = 0xFF;
+        const std::uint32_t ff = 0xFF;
         std::memcpy(filt, &vt, 8);
-        std::memcpy(filt + 8, &mask, 4);
+        std::memcpy(filt + 8, &layer, 4);
         std::memcpy(filt + 0xC, &ff, 4);
         const int r = reinterpret_cast<int (*)(std::uintptr_t, const double*, void*, int, void*, std::uint8_t)>(A(kRay))(world, ray, res, 1, filt, 1);
         std::uintptr_t arr = 0;
         std::memcpy(&arr, filt + 0x20, 8);
         if (arr) reinterpret_cast<void (*)(std::uintptr_t)>(A(kRayFree))(arr);
-        std::memcpy(hit, res, sizeof(hit));
+        std::memcpy(hit, res + 8, sizeof(hit));
         return r;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return -1000;
@@ -4214,7 +4238,7 @@ void RayTick() {
     const double from[3] = {me[0], me[1], me[2] + 1.6}, to[3] = {sam[0], sam[1], sam[2] + (which ? 1.5 : 1.0)};
     double ray[6] = {}, len = 0, hit[3] = {};
     if (!ep::Shorten(from, to, ep::kRayTrimM, ray, &len)) return;
-    const int r = SehRay(ray, hit);
+    const int r = SehRay(ray, hit, kRayLayerEye);
     if (r == -1000) {
         ProbeFault("P4 the raycast");
         return RayEnd("FAULT");
@@ -4225,7 +4249,7 @@ void RayTick() {
     const int now_b = r >= 1 ? 1 : 0;
     ++g_ray.n[which][now_b];
     if (g_ray.last[which] != now_b) {
-        Log("[probe] P4 t=%.2f s id=%05X %s %s (hits %d; ray %.1f m; first hit +0 at (%.2f, %.2f, %.2f))", (g_now - g_ray.t0) / 1000.0, g_ray.id,
+        Log("[probe] P4 t=%.2f s id=%05X %s %s (hits %d; ray %.1f m; first hit at (%.2f, %.2f, %.2f))", (g_now - g_ray.t0) / 1000.0, g_ray.id,
             which ? "head" : "chest", now_b ? "blocked" : "clear", r, len, hit[0], hit[1], hit[2]);
         g_ray.last[which] = now_b;
     }
@@ -4453,14 +4477,14 @@ bool M2Probe(const double (&v)[3], char* msg, std::size_t cap) noexcept {
     return r == 1;
 }
 
-int WorldRay(const double (&from)[3], const double (&to)[3], double trim_m, double (&hit)[3], double* len) noexcept {
+int WorldRay(const double (&from)[3], const double (&to)[3], double trim_m, double (&hit)[3], double* len, std::uint32_t layer) noexcept {
     hit[0] = hit[1] = hit[2] = 0;
     if (len) *len = 0;
     ProbeChecks();
     if (!(g_pgroups & kPRay) || g_probe_off) return -3;
     double ray[6] = {};
     if (!eprobe::Shorten(from, to, trim_m, ray, len)) return 0;
-    const int r = SehRay(ray, hit);
+    const int r = SehRay(ray, hit, layer & 0x7Fu);
     if (r == -1000) {
         // (M3f review) latched here for every caller (SightTick, the self-test, PlaceHer's probes): a fault inside the game's
         // raycast is never entered again this run (later calls return -3), as P4's RayTick does

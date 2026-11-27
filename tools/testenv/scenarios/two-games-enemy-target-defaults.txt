@@ -1,0 +1,173 @@
+# Round 27 M4 gate (docs/enemy-sync.md 16.9): enemy targeting on by default. The launcher's Local test files and NO ini key: every
+# enemy_* key is the DLL's default, so the run proves what players get (enemy_partner_stim 1, enemy_target_pick 71 = 1 + 2 + 4 + 64
+# take first, enemy_target_redirect 35 = 1 + 2 + 32, enemy_owner 1: each "[config]" line says "(default: on with enemy_hits)").
+# MULE Camp Southwest of Lake Knot City (cp 04004, gun MULE 0202B).
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-enemy-target-defaults -SeedSaves complete-100 -GuestSeed profile-only -Id round27-m4
+#   python -I tools\testenv\enemy-target-gate.py build-testenv\runs\<run folder>   (defaults mode: the session ini has no enemy_target_pick)
+# CFG the derived defaults in both games. CHK the byte checks; the host's destroy guard in ("RemoveEntityNow hook on (byte checks
+# 6/6)"); the host makes the stimulus, the guest refuses it (host only); redirect 32 in. SEH the crash-reporter guard test, 20
+# create / remove cycles.
+# TO (take first, bit 64): cp 04004 re-calmed with her stimulus on while she is 150 m away and our Sam 150 m behind 0202B; she comes
+# to 30 m, then 25 m in front of it: the host flags the camp (her stimulus refused for its members: "tgt id=.. take first") until it
+# goes to her ("camp cp 04004 -> guest"), with no "tgt id=0202B -> her" before the take; a forced back after it (enemy_own -5 1).
+# ENG our Sam 20 m in front of 0202B: the camp alerts on the host (no take, take first off). TF1 (op 11 code 4): her placed 22 m in
+# front, our Sam 170 m away 40 deg off its line to her: >= 3 rounds, >= 2/3 at her, none and no shoot point at Sam. TB (op 11 code
+# 2): both visible 7 s (sticky her), she hides 6 s (to Sam <= 3 s), back 6 s (stays Sam).
+# TS (op 12, the destroy guard's removal simulated on her body: nothing freed): parked "(... simulated (op 12))", removed, then
+# "12 0" ends it and the stimulus is made again within 3 s. TG (op 12 2, the worker guard's trip simulated on her live body):
+# parked, removed, "the gone mark ... cleared", made again within 4 s. TR (op 13, the LAST step: the game's own RemoveEntityNow
+# on her body, on the game thread): "tgt op 13: called; ... matched m -> m+1" before real_body's "[real] the real body entity ..
+# is being removed by the game (seen before the free)", parked, removed; no AV, no FAULT; both games run to the end.
+# Teleports of one player at least 700 ms apart. No optional step but the forced back after TO (a failed step fails the run); the
+# informational waits are plain waits: the gate reads the lines (TS / TG / TR: one waitnew per action, on its last line; the gate
+# grades the parked / real body / cleared lines and their order). Ownership (enemy-own) is two-games-enemy-camp's gate (P1c: the
+# takes, backs and outcomes, now under the new defaults): run it with this one before the default flip ships.
+# covers: enemy-target
+role host
+graphics low
+timeout 300
+launcherini local-test
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+# ---- CFG: the derived defaults (no ini key), both games
+waitlog 5 \[config\] enemy_partner_stim=1 \(default: on with enemy_hits\) .* enemy_target_pick=71 \(default: on with enemy_hits\) enemy_target_redirect=35 \(default: on with enemy_hits\)
+@guest waitlog 5 \[config\] enemy_partner_stim=1 \(default: on with enemy_hits\) .* enemy_target_pick=71 \(default: on with enemy_hits\) enemy_target_redirect=35 \(default: on with enemy_hits\)
+waitlog 5 \[config\] enemy_owner=1 \(default: on with enemy_hits\)
+@guest waitlog 5 \[config\] enemy_owner=1 \(default: on with enemy_hits\)
+waitlog 5 \[enemy\] hits: byte checks [0-9]+/[0-9]+ ok
+goto mule-camp-sw-lkc
+@guest goto 1521.90 992.00 0
+wait 4000
+@both action dev_god 2
+@both action dev_enemies 1
+waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+@guest waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+action enemy_probe 5 1
+@guest action enemy_probe 5 1
+waitlog 40 \[enemy\] sync on \(host\).*\(equal
+@guest waitlog 40 \[enemy\] sync on \(guest\).*\(equal
+@guest waitlog 30 \[enemy\] mirror on id=0202B
+waitlog 30 \[enemy\] hits on \(host\)
+@guest waitlog 30 \[enemy\] hits on \(guest\)
+waitlog 30 \[enemy\] own on \(
+@guest waitlog 30 \[enemy\] own on \(
+# ---- CHK: the byte checks, the destroy guard (the host only), the stimulus (the host only), the redirects
+waitlog 10 \[enemy\] tgt byte checks \([0-9]+\)
+@guest waitlog 10 \[enemy\] tgt byte checks \([0-9]+\)
+waitlog 20 \[enemy\] tgt destroy guard: RemoveEntityNow hook on \(byte checks 6/6\)
+waitlog 20 \[enemy\] pstim made #
+@guest waitlog 20 \[enemy\] pstim not made \(the guest
+waitlog 10 \[enemy\] tgt redirect 32 \(shoot actor\):
+@both action enemy_tgt 0
+waitlog 5 \[enemy\] tgt status:
+# (run 212051) no forced back here: cp 04004 is the host's at this point (her boot place is far from it), and a failed
+# optional step fails the run
+# ---- SEH: the crash-reporter guard (two absorbed faults a game), then 20 create / remove cycles (the host)
+waitlog 5 \[seh\] the game's crash reporter
+@guest waitlog 5 \[seh\] the game's crash reporter
+@both action enemy_tgt 10
+waitlog 5 \[seh\] test: a guarded read of a reserved page faulted and was caught
+@guest waitlog 5 \[seh\] test: a guarded read of a reserved page faulted and was caught
+action enemy_tgt 9 20
+waitlog 10 \[enemy\] pstim cycles 20: .*made again #
+# ---- TO (take first; calm #1 on 0202B): her stimulus off for the calm, both 150 m away; then on while she is still 150 m away;
+# our Sam 150 m behind 0202B; she comes to 30 m, then (700 ms later) 25 m in front of it: take first holds the camp calm until
+# cp 04004 goes to her (the gate reads the lines); then a forced back of her nearest camp (the rest of the run needs 0202B here)
+action enemy_tgt 1 0
+action enemy_look 0x202B 150
+@guest action enemy_look 0x202B 150
+action enemy_l1 6 0x202B 8
+waitlog 12 \[probe\] L1 calm #1 id=0202B: (ready|timeout)
+action enemy_tgt 1 1
+waitnew 5 \[enemy\] pstim made #
+action enemy_look -8 -150
+@guest action enemy_look 0x202B 30
+wait 700
+@guest action enemy_look -8 25
+wait 15000
+screenshot 01-host-to
+@guest screenshot 01-guest-to
+action enemy_tgt 0
+?action enemy_own -5 1
+wait 3000
+# ---- ENG: our Sam 20 m in front of 0202B (within 25 m: no take, take first off); the camp alerts on the host
+action enemy_look 0x202B 20
+wait 8000
+action enemy_tgt 0
+# ---- TF1 (no calm; her stimulus live; the default key: bit 32 on): op 11 places her 22 m in front and our Sam 170 m away 40 deg
+# off its line to her
+action enemy_tgt 11 0x202B 4
+waitlog 8 \[probe\] L1 arm TF1 id=0202B: start
+wait 12000
+screenshot 02-host-tf1
+action enemy_tgt 8
+waitlog 5 \[probe\] L1 result arm TF1 id=0202B
+action enemy_tgt 0
+# ---- TB (no calm; 0202B engaged on her since TF1): op 11 waits until it sees her; our Sam steps out 15 m away 25 deg off its
+# line to her (both seen) 7 s: sticky her (op 7 marks the end); she hides 6 s (phase 1: to Sam); back 6 s (phase 2: stays Sam)
+action enemy_tgt 11 0x202B 2
+waitlog 12 \[probe\] L1 arm TB id=0202B: start
+wait 5000
+action enemy_look -11 15 25
+wait 7000
+action enemy_tgt 7 0x202B
+action enemy_tgt 2 0
+wait 6000
+action enemy_tgt 2 100
+wait 6000
+action enemy_tgt 8
+waitlog 5 \[probe\] L1 result arm TB id=0202B
+action enemy_tgt 2 -1
+action enemy_tgt 0
+# ---- SPV1 both ways (before TR ends her body)
+action enemy_tgt 0
+waitnew 5 \[enemy\] spv1 sent [1-9][0-9]* recv [1-9]
+@guest action enemy_tgt 0
+@guest waitnew 5 \[enemy\] spv1 sent [1-9][0-9]* recv [1-9]
+# ---- TS (op 12): the destroy guard's removal simulated on her body (nothing freed): parked, removed; "12 0" ends it, made again
+# (review) one waitnew right after each action, on the LAST line of its sequence (a waitnew searches from the start of the step
+# before it: a second one would miss the lines the action's next ticks wrote); the gate grades the lines in between and their order
+action enemy_tgt 12
+waitnew 5 \[enemy\] pstim removed \(
+wait 1500
+action enemy_tgt 12 0
+waitnew 5 \[enemy\] pstim made #
+wait 2000
+# ---- TG (op 12 2): the worker guard's trip simulated on her live body: parked, removed; the gone mark clears by itself (1 s) and
+# the stimulus is made again once the dead agent ends (2 s)
+action enemy_tgt 12 2
+waitnew 8 \[enemy\] pstim made #
+wait 1500
+# ---- TR (op 13, the last step: it ends her body): the game's own RemoveEntityNow on the game thread; the guard sees it before
+# real_body's line; parked, removed; both games go on (real_body spawns her a new body)
+action enemy_tgt 13
+waitnew 5 \[enemy\] pstim removed \(
+wait 8000
+screenshot 03-host-tr
+@guest screenshot 03-guest-tr
+action enemy_tgt 0
+@guest action enemy_tgt 0
+# ---- the end: the usual checks
+@both action enemy_l1 9
+waitlog 5 \[probe\] L1 stop
+@guest waitlog 5 \[probe\] L1 stop
+action enemy_sync 0
+nolog \[enemy\] FAULT
+@guest nolog \[enemy\] FAULT
+nolog \[enemy\] (tgt|pstim) .*FAULT
+@guest nolog \[enemy\] (tgt|pstim) .*FAULT
+nolog \[enemy\] tgt byte check FAILED
+@guest nolog \[enemy\] tgt byte check FAILED
+@guest nolog \[enemy\] tgt destroy guard:
+nolog \[probe\] L1 .*FAULT
+@guest nolog \[probe\] L1 .*FAULT
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@both action enemy_sync 2
+action enemy_probe 5 0
+@guest action enemy_probe 5 0
+@both action dev_god 0
+@guest quit
+wait 3000
+quit
