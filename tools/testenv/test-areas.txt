@@ -75,6 +75,7 @@ area enemy-target          : round 27 M2-M4: MULEs target both players (partner 
 area enemy-melee           : round 28 E2: MULE melee hurts her (the PHIT relay, redirect bit 64; gate two-games-enemy-attacks)
 area odradek-gear          : round 28 O1: the partner's Odradek as cinematic props (odradek_gear, kGearOdraCap; gate two-games-odradek)
 area odradek-scan          : round 28 O3: the partner's Odradek scan on both screens (odradek_scan_sync, SOD1; gate two-games-odradek-scan)
+area odradek-pose          : round 29 O2: the partner's Odradek animates (odradek_pose, kGearOdraPoseCap, STK1 kGearPoseOdra, the body on the arm tip; gate two-games-odradek-pose)
 area bt-sync               : round 28 B1: the BT field sync (bt_sync, BTS1, the host's RESET on the guest; gate two-games-bt-field)
 area shots                 : the players' shots on the other screen (docs/enemy-sync.md P3a): capture, SFX1, the CreateBullet replay, its damage dropped
 area story                 : story tools, story loads
@@ -228,6 +229,7 @@ native/mod/texture_*                   textures
 native/mod/partner_gear.*              gear
 native/mod/gear_wear.hpp               gear-wear
 native/mod/gear_odra.hpp               odradek-gear gear
+native/mod/odra_pose_rules.hpp         odradek-pose
 native/mod/gear_keep.hpp               gear private-room
 native/mod/gear_*                      gear
 native/mod/boots_look.hpp              boots
@@ -333,6 +335,7 @@ native/mod/texture_share.*  ~[Ll]ogo                                            
 native/mod/texture_wire.*   ~[Ll]ogo|~7u                                                      logo texture-share
 native/mod/partner_gear.*   ~[Ll]ogo                                                          logo
 native/mod/partner_gear.*   ~odra|kPropOdradek|gearodra                                       odradek-gear
+native/mod/partner_gear.*   ~odrapose|OdraPose|OdraRx|OdraTx|g_opose|kGearPoseOdra|kGearOdraPoseCap|TakeSendPose  odradek-pose
 native/mod/fragile_textures.* ~[Ll]ogo|mesh.?probe|mesh_filter|mesh_mask|probed?_|AnySlot|SlotId  logo
 native/mod/config.*         ~fragile_logo                                                     logo
 native/launcher/core/core_textures.* ~[Rr]eady.?[Mm]ade|[Ee]xtract|[Mm]anifest|textures_defaults|[Dd]efaults|gold|silver  suit-defaults
@@ -363,6 +366,7 @@ native/mod/config.*         ~("|bool\s+|int\s+)enemy_(partner_melee|melee_face) 
 native/mod/config_values.hpp ~PartnerMelee                                                    enemy-melee
 native/mod/config.*         ~("|bool\s+)odradek_gear                                         odradek-gear
 native/mod/config.*         ~("|bool\s+)odradek_scan_sync                                    odradek-scan
+native/mod/config.*         ~("|bool\s+)odradek_pose                                         odradek-pose
 native/mod/config.*         ~("|int\s+)bt_sync                                               bt-sync
 native/mod/config.*         ~("|bool\s+|int\s+)host_save                                     host-save
 native/mod/config.*         ~("|bool\s+|int\s+|double\s+)dev_(tools|give)                  dev-tools
@@ -373,6 +377,10 @@ native/mod/real_body.*      ~facesync                                           
 native/mod/pose_wire.*      ~kJointsFace|kFaceSize|kFaceFlags|\bFace\b                        face
 native/mod/pose_wire.*      ~[Hh]ood                                                          hood
 native/mod/pose_wire.*      ~kGearOdraCap                                                     odradek-gear
+native/mod/pose_wire.*      ~kGearPoseOdra|kGearOdraPoseCap|kGearPoseKnown                    odradek-pose held-items
+native/mod/real_body.*      ~kOdra(Arm|Body)PoseTarget|GearPoseApplies|kMaxPoseTargets        odradek-pose
+native/mod/player_sync.*    ~TakeSendPose                                                     odradek-pose held-items
+native/mod/link.*           ~kKQueue                                                          odradek-pose
 native/mod/exo_parts.hpp    ~[Hh]ood                                                          hood
 native/mod/player_sync.*    ~vehicle                                                          vehicle-share
 native/mod/sandbox.*        ~host_save|refuse                                                 host-save

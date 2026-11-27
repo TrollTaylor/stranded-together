@@ -254,11 +254,15 @@ bool BeginByPathGuid(const char* path, const std::uint8_t (&guid)[16], const gam
 // checks out). The same prop again only replaces the joints. sp = nullptr / pose = nullptr clears the
 // target (waits until no detour uses it: call before the prop is removed). A pose write that faults
 // turns gear poses off for the session (false from then on). Game thread.
-inline constexpr unsigned kMaxPoseTargets = 9;
+inline constexpr unsigned kMaxPoseTargets = 11;
 // Targets 0..7 are the gear's (partner_gear.cpp); target 8 is the partner's vehicle copy (vehicle_sync.cpp,
-// docs/real-partner-body.md section 22).
+// docs/real-partner-body.md section 22); targets 9 and 10 (round 29 O2, section 12.10) the partner's Odradek arm and body
+// props (partner_gear.cpp OdraApplyPoses).
 inline constexpr unsigned kGearPoseTargets = 8;
 inline constexpr unsigned kVehiclePoseTarget = 8;
+inline constexpr unsigned kOdraArmPoseTarget = 9;
+inline constexpr unsigned kOdraBodyPoseTarget = 10;
+static_assert(kOdraBodyPoseTarget < kMaxPoseTargets && kOdraArmPoseTarget > kVehiclePoseTarget, "pose targets");
 // `ip` (optional; the vehicle copy): `pose` is the pose at ip->key_a and ip->b the pose at ip->key_b (same skeleton and
 // joint count); the prop's own model update interpolates between them at that moment's play time (ip->play_ms now,
 // advanced by the QPC time since), as the partner body's does (smooth bit kSmoothDetourInterp; without it `pose` stands).
@@ -320,6 +324,8 @@ bool SlotIsFragileSuit(GearSlot slot) noexcept;
 bool HoodRow(GearSlot slot, std::uint8_t* row, bool* from_look = nullptr) noexcept;
 void ClearGearPose(unsigned k) noexcept;
 void GearPoseCounters(char* out, std::size_t cap) noexcept;
+// Round 29 O2: the pose writes target k made in its prop's model updates (since the session started; 0 for a bad k).
+std::uint32_t GearPoseApplies(unsigned k) noexcept;
 // How many props of the slot the detour places now (0: unpublished, or a placement fault switched
 // the list off until it is published again).
 unsigned GearPublished(GearSlot slot) noexcept;

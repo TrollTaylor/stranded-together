@@ -384,9 +384,14 @@ struct Config {
     // odradek_probe=1 (round 28 P4; default 0): the Odradek probe (odradek_sync.hpp): the FUN_14282B530 detour, the "[odra]" lines,
     // the debug actions odra / odra_replay (scan and replay in hidden runs or with dev_tools only)
     bool odradek_probe = false;
-    // odradek_gear=1 (round 28 O1; default 0): the partner's Odradek on the partner body (partner_gear.cpp, gear_odra.hpp): ours sent as
+    // odradek_gear=1 (round 28 O1; default 1 since round 29, runs 20261127-080823 / -081130 two-games-odradek-pose PASS and seen on both
+    // screens; the launcher writes none): the partner's Odradek on the partner body (partner_gear.cpp, gear_odra.hpp): ours sent as
     // two STC1 odradek items while the partner's frames carry kGearOdraCap, the partner's drawn as cinematic props (never a DSOdradek copy)
-    bool odradek_gear = false;
+    bool odradek_gear = true;
+    // odradek_pose=1 (round 29 O2; default 1; an effect only while odradek_gear=1): the Odradek animates on the other screen
+    // (partner_gear.cpp, odra_pose_rules.hpp): our arm and body poses sent as STK1 kGearPoseOdra frames while the partner's
+    // frames carry kGearOdraPoseCap, the partner's played on its props (docs/real-partner-body.md section 12.10)
+    bool odradek_pose = true;
     // odradek_scan_sync=0|1 (round 28 O3; default 1 since run 20261127-025035, two-games-odradek-scan PASS; the launcher writes
     // none): the partner's Odradek scan shown here and ours sent (odradek_sync.hpp; SOD1 on channel 6, HELLO caps 0x01; nothing is
     // sent or shown unless the partner's HELLO has the bit, so an older or key-off partner gets nothing). Two-game sessions only

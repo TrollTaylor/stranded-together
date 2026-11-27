@@ -1020,7 +1020,12 @@ Scenarios: `collision`, `collision-off`, `two-games-collision`, `two-games-all`.
   partner's Odradek on the partner body (two STC1 odradek items, drawn as cinematic props). `gear 40 0|1` sets odradek_gear off /
   on at run time and re-lays out the partner props; `gear 40 2` the status line (`[odragear] ...`); `gear 40 3 0|1` the test hold
   (our Odradek read as in a cutscene: not sent); `gear 40 4 <joint|-1>` the anchor joint (-1 auto: the shoulder 35, or the chest 5
-  when the other screen draws us as Fragile). Scenario `two-games-odradek`.
+  when the other screen draws us as Fragile). Scenario `two-games-odradek`. Round 29 O2 (section 12.10; `session.ini
+  odradek_pose`, default 1, effective while odradek_gear is on): `gear 40 5` the Odradek pose streams' status, written to the
+  log as `[odrapose] status: odradek_pose on|off, ...` (what we send, what arrives, the props' pose targets, the body follow, the
+  FK check, and the counts since the last `gear 40 5`: `received arm +n (moving +m), body +n (moving +m), applied arm +n body
+  +n`; the reply is a short line); `gear 40 6 0|1` odradek_pose off / on at run time; `gear 40 7 0|1` whether the partner's
+  body prop may follow its arm prop's tip. Every 30 s `[odrapose] summary: ...`. Scenario `two-games-odradek-pose`.
 * `action gear 37 <0|1>` (round 20 cap probe, hidden runs; docs/textures.md "For developers"): does the per-drawable texture
   override reach a worn cap's entity? 0 our head accessories (Sam's own entities on her head under the self view), 1 the
   partner's head props (joints 31..34). Per entity: `[tex] cap probe <who> <p> <class>: +0xB8 <p> <class>, drawable <p>, n

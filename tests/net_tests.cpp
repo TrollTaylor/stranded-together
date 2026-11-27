@@ -376,11 +376,16 @@ void TestGearFrames() {
     bad[16 + 18 * 2 + 1] = 5;  // model changed without the hash: rejected
     CHECK(!wire::DecodeGear(bad, n, g));
     std::memcpy(bad, buf, n);
-    bad[10] = 0xE1;  // unknown flag bits are cleared (bits 1-3, the parts blocks, are known: no blocks, so not set here; bit 4 is the Odradek flag)
+    bad[10] = 0xC1;  // unknown flag bits are cleared (bits 1-3, the parts blocks, are known: no blocks, so not set here; bit 4 is the
+                     // Odradek flag, bit 5 the Odradek pose flag)
     CHECK(wire::DecodeGear(bad, n, g) && g.flags == wire::kGearValid);
     std::memcpy(bad, buf, n);
     bad[10] = 0x11;  // kGearOdraCap: no block, kept
     CHECK(wire::DecodeGear(bad, n, g) && g.flags == (wire::kGearValid | wire::kGearOdraCap));
+    std::memcpy(bad, buf, n);
+    bad[10] = 0x31;  // round 29 O2: kGearOdraPoseCap: no block, kept
+    CHECK(wire::DecodeGear(bad, n, g) && g.flags == (wire::kGearValid | wire::kGearOdraCap | wire::kGearOdraPoseCap));
+    static_assert(wire::kGearOdraPoseCap == 0x20 && (wire::kGearKnown & wire::kGearOdraPoseCap) != 0, "the Odradek pose flag");
     std::memcpy(bad, buf, n);
     bad[8] = 3;  // version 3 (v0.9 - v0.11 builds)
     CHECK(!wire::DecodeGear(bad, n, g));
@@ -667,8 +672,24 @@ void TestGearLook() {
     b.flags = wire::kGearPoseHeld | 0x80;
     const std::size_t pn3 = wire::EncodeGearPose(b, pb, sizeof(pb));
     CHECK(pn3 == pn2 && pb[13] == wire::kGearPoseHeld && wire::DecodeGearPose(pb, pn3, q) && q.flags == wire::kGearPoseHeld);
-    pb[13] = 0xFF;
-    CHECK(wire::DecodeGearPose(pb, pn3, q) && q.flags == wire::kGearPoseHeld);
+    pb[13] = 0xFF;  // round 29 O2: bits 1 and 2 are known now (the Odradek streams), the rest dropped
+    CHECK(wire::DecodeGearPose(pb, pn3, q) && q.flags == wire::kGearPoseKnown && wire::kGearPoseKnown == 7);
+    // round 29 O2: an Odradek part's stream (bit 1) and the FK bit (bit 2) round-trip; unknown bits are not written
+    b = p;
+    b.n = 14;
+    b.skeleton = 0xA7074286u;
+    b.item = 7;
+    b.flags = wire::kGearPoseOdra | wire::kGearPoseOdraFk | 0x40;
+    const std::size_t pn4 = wire::EncodeGearPose(b, pb, sizeof(pb));
+    CHECK(pn4 == wire::GearPoseSize(14) && pb[13] == (wire::kGearPoseOdra | wire::kGearPoseOdraFk));
+    CHECK(wire::DecodeGearPose(pb, pn4, q) && q.flags == (wire::kGearPoseOdra | wire::kGearPoseOdraFk) && q.item == 7 && q.n == 14 &&
+          q.skeleton == 0xA7074286u);
+    CHECK(wire::GearPoseDiff(b, q, &dm, &dd) && dm < 1e-4f && dd < 0.05f);
+    b.flags = wire::kGearPoseOdra;
+    const std::size_t pn5 = wire::EncodeGearPose(b, pb, sizeof(pb));
+    CHECK(pn5 == pn4 && pb[13] == wire::kGearPoseOdra && wire::DecodeGearPose(pb, pn5, q) && q.flags == wire::kGearPoseOdra);
+    // what v0.40's decoder made of it (flags & kGearPoseHeld): 0, the backpack's stream. Hence kGearOdraPoseCap (STC1 bit 5)
+    CHECK((pb[13] & wire::kGearPoseHeld) == 0);
 }
 
 void TestGearV2() {

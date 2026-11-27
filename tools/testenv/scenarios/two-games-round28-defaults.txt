@@ -21,6 +21,10 @@ waitlog 5 \[config\] enemy_partner_melee=1 enemy_melee_face=0
 @guest waitlog 5 \[config\] enemy_partner_melee=1 enemy_melee_face=0
 waitlog 5 \[config\] odradek_scan_sync=1
 @guest waitlog 5 \[config\] odradek_scan_sync=1
+waitlog 5 \[config\] odradek_gear=1
+@guest waitlog 5 \[config\] odradek_gear=1
+waitlog 5 \[config\] odradek_pose=1
+@guest waitlog 5 \[config\] odradek_pose=1
 waitlog 5 \[config\] bt_sync=2 \(BT field sync
 @guest waitlog 5 \[config\] bt_sync=2 \(BT field sync
 # ---- start-up: byte checks and hooks
@@ -41,6 +45,10 @@ waitlog 30 \[odra\] partner hello caps=0x01
 @guest waitlog 30 \[odra\] partner hello caps=0x01
 waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role guest
 @guest waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role host
+waitlog 60 \[odrapose\] the partner's frames carry the Odradek pose flag
+@guest waitlog 60 \[odrapose\] the partner's frames carry the Odradek pose flag
+waitlog 60 \[odragear\] partner Odradek: 2 part\(s\) in its frame, 2 prop\(s\) live, 2 shown
+@guest waitlog 60 \[odragear\] partner Odradek: 2 part\(s\) in its frame, 2 prop\(s\) live, 2 shown
 # ---- the camp: the world gate up, then her PHIT hello and the host armed
 goto mule-camp-sw-lkc
 @guest goto 1521.90 992.00 0

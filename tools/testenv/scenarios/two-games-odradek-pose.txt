@@ -1,0 +1,126 @@
+# The partner's Odradek animates (round 29 O2; docs/real-partner-body.md section 12.10), part 3 of the Odradek: "her Odradek
+# opens, flaps, points and folds on the other screen". Hidden, on the launcher's own Local test files (host Sam, guest Fragile):
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-odradek-pose -SeedSaves complete-100 -GuestSeed profile-only -Id round29-o2
+# odradek_gear=1 and odradek_pose=1 on both games: each sends its Odradek's arm and body (O1) and, while the other's frames carry
+# the Odradek pose flag (kGearOdraPoseCap), their local skinned poses (14 / 44 joints) as STK1 gear poses flagged kGearPoseOdra,
+# read every 30 ms, sent when changed (at most every 66 ms) and every second. The receiver writes them onto its two cinematic
+# props (pose targets 9 / 10), interpolated in their own updates 100 ms behind, and puts the body prop on the arm prop's tip
+# (arm * FK(arm pose)[13] * HLP_Oderadek) while the sender's FK check passes. The scans are the game's own (odra 2: O3's
+# trigger; odradek_scan_sync is on by default). Steps: the host stands 1.5 m behind-left of the guest's body, its camera steered
+# at her (00-*: idle, folded); the guest scans (10-* about 0.3 s in: opening, 11-* about 1.2 s in: pointing, 12-* 4 s in); then the other way
+# round (20-* / 21-*: the guest watching the host scan). `gear 40 5` before and after each scan counts what arrived and what
+# the props' updates wrote in between.
+# Pass: every step ok (each receiver logs "partner body follows the arm tip"; the status after each scan counts moving frames
+# of both parts; no FK check turned off for the session); the FK check lines (at start, and at the scanner's first scan) are in
+# the logs: read their cm / deg; the
+# screenshots 10-*/11-* and 20-*/21-* show the partner's Odradek opened (not folded as in 00-*); no FAULT, no DSOdradek copy
+# refused, no pose refused for its skeleton; summary.json result pass.
+# covers: odradek-pose odradek-gear
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini odradek_gear=1
+ini odradek_pose=1
+start control 200
+@guest waitlog 60 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+waitlog 30 \[odrapose\] odradek_pose=1: our Odradek's arm and body poses sent
+@guest waitlog 30 \[odrapose\] odradek_pose=1: our Odradek's arm and body poses sent
+@both goto mknot-road
+wait 6000
+# the guest walks ~5 m ahead, then turns back
+@guest pad none 1300 ly=32767
+@guest pad none 500 ly=-32767
+wait 2000
+# ---- O1 first: both sides send and draw the two parts
+waitlog 30 \[odragear\] our Odradek sent \(shown
+@guest waitlog 30 \[odragear\] our Odradek sent \(shown
+waitlog 40 \[odragear\] partner Odradek: 2 part\(s\) in its frame, 2 prop\(s\) live, 2 shown
+@guest waitlog 40 \[odragear\] partner Odradek: 2 part\(s\) in its frame, 2 prop\(s\) live, 2 shown
+# ---- O2: the flag, both streams on each side, the FK check, the frames, the props' pose targets
+waitlog 30 \[odrapose\] the partner's frames carry the Odradek pose flag
+@guest waitlog 30 \[odrapose\] the partner's frames carry the Odradek pose flag
+waitlog 20 \[odrapose\] our arm pose stream on \(item [0-9]+, 14 joints, skeleton A7074286
+waitlog 20 \[odrapose\] our body pose stream on \(item [0-9]+, 44 joints, skeleton 2A97D3D4
+@guest waitlog 20 \[odrapose\] our arm pose stream on \(item [0-9]+, 14 joints, skeleton A7074286
+@guest waitlog 20 \[odrapose\] our body pose stream on \(item [0-9]+, 44 joints, skeleton 2A97D3D4
+waitlog 20 \[odrapose\] sender FK check \(at start\): arm joint 13 from the locals vs its model matrix
+@guest waitlog 20 \[odrapose\] sender FK check \(at start\): arm joint 13 from the locals vs its model matrix
+waitlog 20 \[odrapose\] the partner's arm pose: first frame \(item [0-9]+, 14 joints, skeleton A7074286
+waitlog 20 \[odrapose\] the partner's body pose: first frame \(item [0-9]+, 44 joints, skeleton 2A97D3D4
+@guest waitlog 20 \[odrapose\] the partner's arm pose: first frame \(item [0-9]+, 14 joints, skeleton A7074286
+@guest waitlog 20 \[odrapose\] the partner's body pose: first frame \(item [0-9]+, 44 joints, skeleton 2A97D3D4
+waitlog 20 \[odrapose\] partner arm prop pose target taken: .* \(14 joints
+waitlog 20 \[odrapose\] partner body prop pose target taken: .* \(44 joints
+@guest waitlog 20 \[odrapose\] partner arm prop pose target taken: .* \(14 joints
+@guest waitlog 20 \[odrapose\] partner body prop pose target taken: .* \(44 joints
+# the body on the arm tip: the senders' FK checks passed (each receiver logs it once its arm frames carry the bit)
+waitlog 20 \[odrapose\] partner body follows the arm tip
+@guest waitlog 20 \[odrapose\] partner body follows the arm tip
+# ---- A: the host watches the guest scan (1.5 m behind her left shoulder, the camera steered at her)
+action shots 3 3.5 225
+wait 2500
+action shots 9 0 0
+action shots 4 4 1
+waitnew 30 \[shots\] camera aimed #[0-9]+ at the partner body \(steered
+wait 1000
+screenshot 00-host-sees-guest-odradek-idle
+action gear 40 5
+waitnew 5 \[odrapose\] status: odradek_pose on
+@guest action odra 2
+@guest waitnew 5 \[odra\] scan triggered
+wait 300
+screenshot 10-host-sees-guest-scan-300ms
+wait 900
+screenshot 11-host-sees-guest-scan-1200ms
+@guest waitlog 10 \[odrapose\] sender FK check \(at the first scan, state [0-9A-F]+\): arm joint 13 from the locals
+wait 2500
+screenshot 12-host-sees-guest-scan-4s
+action gear 40 5
+waitnew 5 \[odrapose\] status: .*since the last status: received arm \+[1-9][0-9]* \(moving \+[1-9][0-9]*\), body \+[1-9][0-9]* \(moving \+[1-9][0-9]*\), applied arm \+[1-9][0-9]* body \+[1-9][0-9]*
+pad none 0
+wait 4000
+# ---- B: the guest watches the host scan (the same place around his body)
+@guest action shots 3 3.5 225
+wait 2500
+@guest action shots 9 0 0
+@guest action shots 4 4 1
+@guest waitnew 30 \[shots\] camera aimed #[0-9]+ at the partner body \(steered
+wait 1000
+@guest screenshot 01-guest-sees-host-odradek-idle
+@guest action gear 40 5
+@guest waitnew 5 \[odrapose\] status: odradek_pose on
+action odra 2
+waitnew 5 \[odra\] scan triggered
+wait 300
+@guest screenshot 20-guest-sees-host-scan-300ms
+wait 900
+@guest screenshot 21-guest-sees-host-scan-1200ms
+waitlog 10 \[odrapose\] sender FK check \(at the first scan, state [0-9A-F]+\): arm joint 13 from the locals
+wait 2500
+@guest screenshot 22-guest-sees-host-scan-4s
+@guest action gear 40 5
+@guest waitnew 5 \[odrapose\] status: .*since the last status: received arm \+[1-9][0-9]* \(moving \+[1-9][0-9]*\), body \+[1-9][0-9]* \(moving \+[1-9][0-9]*\), applied arm \+[1-9][0-9]* body \+[1-9][0-9]*
+@guest pad none 0
+wait 1000
+@both action gear 40 2
+@both action gear 40 5
+nolog \[gear\] .*FAULT
+@guest nolog \[gear\] .*FAULT
+nolog refused for this session: a DSOdradek
+@guest nolog refused for this session: a DSOdradek
+nolog DSOdradek copies refused [1-9]
+@guest nolog DSOdradek copies refused [1-9]
+nolog \[odrapose\] our (arm|body) pose not read
+@guest nolog \[odrapose\] our (arm|body) pose not read
+nolog \[odrapose\] partner (arm|body) prop pose target NOT TAKEN
+@guest nolog \[odrapose\] partner (arm|body) prop pose target NOT TAKEN
+nolog \[odragear\] Odradek checks failed
+@guest nolog \[odragear\] Odradek checks failed
+nolog \[odrapose\] sender FK check .* -> the receiver keeps the frame's body transform \(off for this session\)
+@guest nolog \[odrapose\] sender FK check .* -> the receiver keeps the frame's body transform \(off for this session\)
+@both action log_status
+@guest quit
+wait 3000
+quit

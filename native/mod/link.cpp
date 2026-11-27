@@ -122,7 +122,7 @@ struct RxK {
     wire::GearPose p;
     std::uint32_t generation;
 };
-constexpr unsigned kKQueue = 4;
+constexpr unsigned kKQueue = 8;  // four pose streams (round 29 O2: the Odradek arm and body too), drained every tick
 RxK g_kqueue[kKQueue];
 unsigned g_kq_head = 0, g_kq_count = 0;
 // Vehicle frames (STM1, docs/real-partner-body.md section 22): a small queue of their own (each ~1.8 KB decoded),

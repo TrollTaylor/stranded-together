@@ -153,10 +153,12 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
   MULE drives off can be in a different place on each screen. A MULE that gets into a vehicle is
   left to each game the same way. There is no launcher switch yet.
 - New in round 28: when either player scans with the Odradek, the scan shows on both screens (both need this
-  version). The partner's Odradek on their body is not shown yet.
+  version).
+- New in round 29: the partner's Odradek is shown on their left shoulder, and it opens, flaps, points and folds as
+  theirs does (both need this version).
 - New in round 28: the BTs compare their fields across both games; when the host's BTs reset, the guest's do too
   (only when Host holds the save), and when a BT senses one player, the other is told. Both need this version.
-- Not yet: the tools' effects (the PCC's and anchor's build holograms, the spray), the partner's Odradek on their body, the cuff device,
+- Not yet: the tools' effects (the PCC's and anchor's build holograms, the spray), the cuff device,
   the chiral cylinder, the exoskeleton on non-Sam characters,
   facial animation, the partner's gear sounds (footsteps, movement and
   rifle handling are heard, experimental), thrown grenades, bolas and launcher rounds, the game's own passenger animation, a vehicle

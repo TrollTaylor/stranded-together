@@ -150,6 +150,10 @@ Config LoadConfig(const std::wstring& dir) {
                 c.odradek_gear = ParseBool(v);
                 continue;
             }
+            if (k == "odradek_pose") {
+                c.odradek_pose = ParseBool(v);
+                continue;
+            }
             if (k == "odradek_scan_sync") {
                 c.odradek_scan_sync = ParseBool(v);
                 continue;
@@ -555,6 +559,7 @@ Config LoadConfig(const std::wstring& dir) {
     Log("[config] enemy_partner_melee=%d enemy_melee_face=%d", c.enemy_partner_melee, c.enemy_melee_face ? 1 : 0);
     Log("[config] odradek_probe=%d", c.odradek_probe ? 1 : 0);
     Log("[config] odradek_gear=%d", c.odradek_gear ? 1 : 0);
+    Log("[config] odradek_pose=%d", c.odradek_pose ? 1 : 0);
     Log("[config] odradek_scan_sync=%d", c.odradek_scan_sync ? 1 : 0);
     Log("[config] enemy_take_know=%d enemy_take_know_secs=%.0f enemy_take_camp=%d enemy_ticket_return=%d enemy_single_hold_vehicle=%d "
         "enemy_single_rule=%d enemy_take_role=%d enemy_take_face=%d",

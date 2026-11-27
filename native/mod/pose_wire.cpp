@@ -783,7 +783,7 @@ std::size_t EncodeGearPose(const GearPose& g, std::uint8_t* out, std::size_t cap
     Put(p, g.layout);
     Put(p, g.skeleton);
     Put(p, g.n);
-    Put(p, static_cast<std::uint8_t>(g.flags & kGearPoseHeld));
+    Put(p, static_cast<std::uint8_t>(g.flags & kGearPoseKnown));
     Put(p, std::uint16_t{0});
     for (unsigned j = 0; j < g.n; ++j) {
         const std::uint64_t b = PackQuat(g.q[j]);
@@ -803,7 +803,7 @@ bool DecodeGearPose(const std::uint8_t* data, std::size_t size, GearPose& out) n
     g.layout = Get<std::uint16_t>(p);
     g.skeleton = Get<std::uint32_t>(p);
     g.n = Get<std::uint8_t>(p);
-    g.flags = static_cast<std::uint8_t>(Get<std::uint8_t>(p) & kGearPoseHeld);
+    g.flags = static_cast<std::uint8_t>(Get<std::uint8_t>(p) & kGearPoseKnown);  // v0.40 and before: & kGearPoseHeld (see kGearOdraPoseCap)
     Get<std::uint16_t>(p);
     if (g.item >= kMaxGearItems || g.n == 0 || g.n > kMaxGearPoseJoints || size != GearPoseSize(g.n)) return false;
     for (unsigned j = 0; j < g.n; ++j) {

@@ -288,7 +288,12 @@ enum GearFlags : std::uint8_t {
     // Round 28 O1: no block. The sender draws the partner's Odradek (odradek_gear=1 and a build with the two-part odradek
     // items): the partner sends its own only to a game whose frames say so. An older build clears the bit (not known there).
     kGearOdraCap = 1u << 4,
-    kGearKnown = kGearValid | kGearParts | kGearPackParts | kGearBoots | kGearOdraCap,
+    // Round 29 O2: no block. The sender plays the partner's Odradek poses (odradek_gear=1 and odradek_pose=1, a build that
+    // knows STK1 kGearPoseOdra): the partner sends its Odradek's arm and body poses only to a game whose frames say so. An
+    // older build clears the bit, so it never gets them (its DecodeGearPose would strip kGearPoseOdra and take an Odradek pose
+    // for the backpack's).
+    kGearOdraPoseCap = 1u << 5,
+    kGearKnown = kGearValid | kGearParts | kGearPackParts | kGearBoots | kGearOdraCap | kGearOdraPoseCap,
 };
 
 struct GearItem {
@@ -427,6 +432,10 @@ std::uint32_t GearLookHash(const GearLook& l) noexcept;
 //   'STK1' | u8 version (1) | u8 item | u16 layout hash | u32 skeleton layout hash | u8 n | u8 flags | u16 0  (16 bytes)
 //   flags bit 0 (round 6): the held item's stream (section 31), else the backpack's. Older senders send 0 (the receiver then
 //   tells the streams apart by its own copy of the layout).
+//   flags bit 1 (round 29 O2, section 12.10): an Odradek part's stream (the item is the part's STC1 odradek item: the arm's or
+//   the body's), bit 2 with it on the arm's: the sender's FK check passed (the receiver places the body on the arm's tip).
+//   Sent only to a partner whose STC1 frames carry kGearOdraPoseCap: a build before it masks the flags to bit 0 and would take
+//   such a pose for the backpack's.
 //   n x { 6-byte rotation | i16 x, y, z }                                             (12 bytes each)
 inline constexpr std::uint8_t kGearPoseMagic[4] = {'S', 'T', 'K', '1'};
 inline constexpr std::uint8_t kGearPoseVersion = 1;
@@ -437,9 +446,12 @@ inline constexpr std::size_t GearPoseSize(unsigned n) { return kGearPoseHeaderSi
 inline constexpr std::size_t kMaxGearPoseFrameSize = GearPoseSize(kMaxGearPoseJoints);  // 976
 
 inline constexpr std::uint8_t kGearPoseHeld = 1;
+inline constexpr std::uint8_t kGearPoseOdra = 2;    // round 29 O2: an Odradek part's pose (arm or body: the item's model)
+inline constexpr std::uint8_t kGearPoseOdraFk = 4;  // with kGearPoseOdra: the sender's FK check passed (odra_pose_rules.hpp)
+inline constexpr std::uint8_t kGearPoseKnown = kGearPoseHeld | kGearPoseOdra | kGearPoseOdraFk;
 struct GearPose {
     std::uint8_t item = 0;
-    std::uint8_t flags = 0;      // kGearPoseHeld: the held item's pose (not the backpack's)
+    std::uint8_t flags = 0;      // kGearPoseHeld: the held item's pose (not the backpack's); kGearPoseOdra (+ kGearPoseOdraFk): an Odradek part's
     std::uint16_t layout = 0;
     std::uint32_t skeleton = 0;  // the skeleton's layout hash (the receiver's copy must have the same)
     std::uint8_t n = 0;          // joints (1..kMaxGearPoseJoints)

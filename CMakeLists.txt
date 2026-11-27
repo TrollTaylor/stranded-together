@@ -345,6 +345,14 @@ target_compile_options(st_gear_odra_tests PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_gear_odra_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_test(NAME st_gear_odra_tests COMMAND st_gear_odra_tests)
 
+# ---- The partner's Odradek animates, the pure part (native/mod/odra_pose_rules.hpp, round 29 O2): the skeletons, the sender's gate
+# and schedule, the routing, the playback bracket and stale rule, the arm's FK, the body on its tip, the FK check (section 12.10).
+add_executable(st_odra_pose_tests tests/odra_pose_tests.cpp)
+target_include_directories(st_odra_pose_tests PRIVATE native/mod)
+target_compile_options(st_odra_pose_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_odra_pose_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_odra_pose_tests COMMAND st_odra_pose_tests)
+
 # ---- Fragile's boots, the pure part (native/mod/boots_look.hpp): the style, the boots' ArtParts bits (settled, worn, her own
 # boots), the boot type -> folder, Worn / Gold / Silver and the look keys (docs/real-partner-body.md section 30).
 add_executable(st_boots_look_tests tests/boots_look_tests.cpp)

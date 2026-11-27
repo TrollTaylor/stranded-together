@@ -65,8 +65,12 @@ bool TakeSendLook(double now_ms, wire::GearLook* out) noexcept;
 void MarkLooksUnsent() noexcept;
 void SetPartnerLook(const wire::GearLook& l) noexcept;
 // The backpack's skinned pose (STK1): ours when it should go out (changed by more than 1 mm / 0.5 deg,
-// at most every 100 ms; else every 1 s), the partner's (written onto our copies of its backpack).
-bool TakeSendPose(double now_ms, wire::GearPose* out) noexcept;
+// at most every 100 ms; else every 1 s), the partner's (written onto our copies of its backpack). Also the held item's
+// (section 31) and the Odradek arm's and body's (round 29 O2, section 12.10: every 66 ms when changed, flagged
+// kGearPoseOdra): one per call, the streams in turn; ask up to 4 times a tick. net: the poses go out on the link (the
+// Odradek's only to a partner whose frames carry kGearOdraPoseCap, and only while same_session: player_sync has taken the
+// link's current session); else the echo.
+bool TakeSendPose(double now_ms, wire::GearPose* out, bool net, bool same_session) noexcept;
 void SetPartnerPose(const wire::GearPose& p) noexcept;
 
 // The per-frame sync faulted: the detour stops placing props (they stay where they are).
@@ -88,7 +92,9 @@ bool CargoProp(std::uint8_t model, const char** key, const char** path, const ch
 // sync off / on, 14 / 15 accessories / cap colour (tests), 16 <0/1> head parts, 17 <0/1> weapons off / on
 // (section 17: weapons in a hand and on the backpack, drawn as cutscene props). ... 40 the partner's Odradek (round 28 O1,
 // section 12.9): 40 <0/1> odradek_gear off / on, 40 2 status, 40 3 <0/1> test hold (ours read as in a cutscene), 40 4 <j | -1>
-// its anchor joint (-1 auto: the left shoulder, the chest while the other screen draws us as Fragile).
+// its anchor joint (-1 auto: the left shoulder, the chest while the other screen draws us as Fragile); round 29 O2 (section
+// 12.10): 40 5 the Odradek pose streams' status (to the log, with the counts since the last 40 5), 40 6 <0/1> odradek_pose off /
+// on, 40 7 <0/1> the partner's body prop may follow its arm prop's tip.
 bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 
 }  // namespace st::gear

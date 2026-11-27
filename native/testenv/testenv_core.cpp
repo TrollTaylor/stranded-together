@@ -360,7 +360,7 @@ bool LauncherIniOverrideAllowed(const std::string& key) {
                                            "enemy_take_role", "enemy_take_face", "enemy_partner_stim",
                                            "enemy_partner_vis", "enemy_partner_stim_radius", "enemy_target_pick",
                                            "enemy_target_redirect", "enemy_target_fresh_ms", "enemy_phit_probe",
-                                           "enemy_partner_melee", "enemy_melee_face", "odradek_probe", "odradek_gear",
+                                           "enemy_partner_melee", "enemy_melee_face", "odradek_probe", "odradek_gear", "odradek_pose",
                                            "odradek_scan_sync", "bt_sync", "vehicle_mule_v3"};
     for (const char* k : kAllowed)
         if (key == k) return true;
@@ -394,7 +394,7 @@ bool ScenarioIniKeyAllowed(const std::string& key) {
                                            "enemy_partner_vis", "enemy_partner_stim_radius", "enemy_target_pick",
                                            "enemy_target_redirect", "enemy_target_fresh_ms", "enemy_phit_probe",
                                            "vehicle_truck_probe", "odradek_probe", "bt_probe",
-                                           "enemy_partner_melee", "enemy_melee_face", "odradek_gear", "odradek_scan_sync",
+                                           "enemy_partner_melee", "enemy_melee_face", "odradek_gear", "odradek_pose", "odradek_scan_sync",
                                            "bt_sync", "vehicle_mule_v3"};
 
     for (const char* k : kAllowed)
@@ -782,7 +782,7 @@ bool ParseScenario(const std::string& text, Scenario* out, std::string* error, c
             for (const std::string& kv : *list)
                 if (!LauncherIniOverrideAllowed(kv.substr(0, kv.find('='))))
                     return *error = at + "plays the launcher's file: only test switches may be added (" + kv.substr(0, kv.find('=')) +
-                                    " is not one: fragile_suit_colour, fragile_textures, textures_send, textures_receive, textures_hot_reload, textures_free, textures_defaults, boots_look, boots_own_porter, held_items, room_outfit, fragile_hood, hood_hair, hood_colour, hood_fold_hide, shots_sync, shots_friendly_fire, enemy_*, odradek_probe, odradek_gear, odradek_scan_sync, bt_sync, vehicle_mule_v3)",
+                                    " is not one: fragile_suit_colour, fragile_textures, textures_send, textures_receive, textures_hot_reload, textures_free, textures_defaults, boots_look, boots_own_porter, held_items, room_outfit, fragile_hood, hood_hair, hood_colour, hood_fold_hide, shots_sync, shots_friendly_fire, enemy_*, odradek_probe, odradek_gear, odradek_pose, odradek_scan_sync, bt_sync, vehicle_mule_v3)",
                            false;
         if (out->guest_unredirected) return *error = at + "and guest unredirected do not go together", false;
         if (!out->low_graphics) return *error = at + "needs 'graphics low' (the launcher's file has appdir_settings=1)", false;

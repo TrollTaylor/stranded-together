@@ -1295,7 +1295,10 @@ void Tick() noexcept {
                 }
             }
             static wire::GearPose gp, gpback;
-            if (realbody::HookInstalled() && gear::TakeSendPose(now, &gp)) {
+            // up to 4 a tick: the backpack, the held item and (round 29 O2) the Odradek arm and body, taken in turn; the Odradek's
+            // wait while the link's session is newer than the one the receive section has taken (the old partner's flag)
+            const bool same_session = !g_net || link::Generation() == g_generation;
+            for (int k = 0; k < 4 && realbody::HookInstalled() && gear::TakeSendPose(now, &gp, g_net, same_session); ++k) {
                 if (g_net) {
                     link::SendGearPose(gp);
                 } else {

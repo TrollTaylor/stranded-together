@@ -24,6 +24,7 @@
 #include "hood_fold.hpp"
 #include "log.hpp"
 #include "logo_slots.hpp"
+#include "odra_pose_rules.hpp"
 #include "partner_holo.hpp"
 #include "partner_outfit.hpp"
 #include "partner_source.hpp"
@@ -1227,6 +1228,84 @@ struct OdraGear {
     double rx_next_ms = 0;
 } g_odra;
 
+// ---------------------------------------------------------------- round 29 O2: the Odradek's own poses (section 12.10, odra_pose_rules.hpp)
+// Sender: the arm's and the body's local skinned poses, read every 30 ms while ReadOdradek sends the two parts, go out as STK1
+// gear poses flagged wire::kGearPoseOdra to a partner whose frames carry wire::kGearOdraPoseCap. Receiver: the partner's go
+// onto its two Odradek props (pose targets kOdraArmPoseTarget / kOdraBodyPoseTarget), interpolated in the props' updates; the
+// body prop follows the arm prop's tip while the sender's FK check passes (the frames' kGearPoseOdraFk).
+bool g_opose_on = true;          // session.ini odradek_pose (effective while odradek_gear is on) / `gear 40 6 <0/1>`
+bool g_ofollow_allowed = true;   // `gear 40 7 <0/1>`: the body prop may follow the arm prop's tip
+double QpcMs() {
+    static double per_ms = 0;
+    if (per_ms <= 0) {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        per_ms = static_cast<double>(f.QuadPart) / 1000.0;
+    }
+    LARGE_INTEGER c;
+    QueryPerformanceCounter(&c);
+    return static_cast<double>(c.QuadPart) / per_ms;
+}
+const char* OdraPartName(int part) { return part == gearodra::kPartArm ? "arm" : "body"; }
+unsigned OdraPoseTarget(int part) { return part == gearodra::kPartArm ? realbody::kOdraArmPoseTarget : realbody::kOdraBodyPoseTarget; }
+struct OdraTx {  // per part (gearodra::kPartBody 0, kPartArm 1)
+    wire::GearPose local, sent;
+    bool have_local = false, have_sent = false;
+    double sent_ms = 0;
+    std::uint32_t reads = 0, sent_n = 0, refused = 0;
+    std::uintptr_t refused_e = 0;  // the entity whose refusal was logged
+    std::uintptr_t on_e = 0;       // the stream's entity when "on" was logged (0: off)
+    int off_logged = -1;           // the SendWhy logged as "off"
+    unsigned logs = 0;
+};
+struct OdraRxFrame {
+    wire::GearPose p;
+    double key = 0;  // receive time (QpcMs)
+    std::uint32_t seq = 0;
+};
+constexpr unsigned kOdraRing = 4;
+struct OdraRx {
+    OdraRxFrame ring[kOdraRing];  // the newest frames, oldest first
+    unsigned n = 0;
+    std::uint32_t seq = 0, rx = 0, moving = 0, echo = 0;
+    double last_rx = 0;
+    bool stale = false;
+    std::uint32_t stale_holds = 0;
+    std::uintptr_t target_e = 0;  // the prop the pose target holds (0 none)
+    std::uint32_t pub[3] = {};    // the frames (seqs) last handed to it
+    bool pub_interp = false;
+    std::uint32_t taken = 0, not_taken = 0, sets = 0;
+    std::uintptr_t skel_logged_e = 0, refused_e = 0;  // refused_e: SetGearPose refused this prop (not tried again)
+    unsigned logs = 0;
+};
+struct OdraPose {
+    double next_read_ms = 0;
+    OdraTx tx[2];
+    OdraRx rx[2];
+    unsigned rr = 0;  // TakeSendPose's round robin over its four streams
+    std::uint32_t unrouted = 0, ignored = 0, rx_total = 0;
+    int cap_seen = -1;
+    unsigned cap_logs = 0, init_logged = 0;
+    // the sender's FK check
+    odrapose::FkState fk;
+    double fk_next_ms = 0, fk_scan_at_ms = 0;
+    bool fk_scan_done = false;
+    std::uint8_t scan_state = 0x01;
+    double fk_joint_cm = -1, fk_joint_deg = -1, fk_other_cm = -1, fk_other_deg = -1, fk_body_cm = -1, fk_body_deg = -1;
+    // the receiver's body follow
+    bool follow = false;
+    int follow_logged = -1;
+    unsigned follow_arm = 0xFF, follow_body = 0xFF;  // the items of s.want
+    double fp[3] = {};
+    float fr[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    bool have_follow = false;
+    std::uint32_t follow_pubs = 0, follow_ticks = 0;
+    char follow_why[96] = "";
+    unsigned follow_logs = 0;
+    double next_summary_ms = 0;
+    std::uint32_t st_rx[2] = {}, st_moving[2] = {}, st_applied[2] = {};  // `gear 40 5`: the counts at the last status
+} g_opose;
+
 bool OdraChecked() {
     if (g_odra.checked) return g_odra.ok;
     g_odra.checked = true;
@@ -1775,6 +1854,11 @@ bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_
     wire::GearFrame f;
     f.flags = wire::kGearValid;
     if (g_odra_on) f.flags |= wire::kGearOdraCap;  // round 28 O1: we draw the partner's Odradek (its sender sends it only then)
+    // round 29 O2: we pose it too. A v0.40 receiver's DecodeGearPose strips the flag bits it does not know (it keeps only
+    // kGearPoseHeld), so an Odradek pose sent to it would be taken for the backpack's: it would replace the backpack's pose and,
+    // its item not being the backpack, take the pose off the backpack props. The sender sends them only to frames that carry
+    // this flag, which v0.40 never sets.
+    if (g_odra_on && g_opose_on) f.flags |= wire::kGearOdraPoseCap;
     // Joint frames of Sam (model matrices) in world space.
     Xf joints[77];
     bool have_joint[77] = {};
@@ -3479,6 +3563,18 @@ void ReleaseBootsTarget(game::Entity* e) {
     g_boots_prop_e = 0;
 }
 
+// Round 29 O2: the Odradek props' pose targets (section 12.10) go before the props do (e = 0: both).
+void ReleaseOdraTarget(game::Entity* e, const char* why) {
+    for (int part = 0; part < 2; ++part) {
+        OdraRx& r = g_opose.rx[part];
+        if (!r.target_e || (e && reinterpret_cast<std::uintptr_t>(e) != r.target_e)) continue;
+        realbody::ClearGearPose(OdraPoseTarget(part));
+        if (++r.logs <= 40) Log("[odrapose] partner %s prop pose target released: %p (%s)", OdraPartName(part), reinterpret_cast<void*>(r.target_e), why);
+        r.target_e = 0;
+        r.pub[0] = r.pub[1] = r.pub[2] = 0;
+    }
+}
+
 void ClearPoses(PropSet& s) {
     for (unsigned k = 0; k < realbody::kGearPoseTargets; ++k)
         if (s.pose_e[k]) {
@@ -3487,6 +3583,7 @@ void ClearPoses(PropSet& s) {
             s.pose_seq_pub[k] = 0;
         }
     s.pose_targets = 0;
+    if (&s == &g_sets[0]) ReleaseOdraTarget(nullptr, "the props unpublished");
 }
 
 void Unpublish(PropSet& s) {
@@ -3505,6 +3602,7 @@ void NoteHeldRemoved(const PropSet& s, const Prop& p, const char* step) {
 void RemoveProp(PropSet& s, unsigned i, const char* why) {
     Prop& p = s.props[i];
     ReleaseBootsTarget(p.sp.e);
+    if (&s == &g_sets[0] && p.sp.e) ReleaseOdraTarget(p.sp.e, "its prop removed");
     if (p.loading || p.live || p.sp.sp || p.sp.direct) {
         const Prop was = p;
         char step[160] = {};
@@ -3518,6 +3616,7 @@ void RemoveProp(PropSet& s, unsigned i, const char* why) {
 void RemoveSpare(PropSet& s, unsigned k, const char* why) {
     PropSet::Spare& sp = s.spare[k];
     ReleaseBootsTarget(sp.p.sp.e);
+    if (&s == &g_sets[0] && sp.p.sp.e) ReleaseOdraTarget(sp.p.sp.e, "its prop removed");
     if (sp.p.loading || sp.p.live || sp.p.sp.sp || sp.p.sp.direct) {
         const Prop was = sp.p;
         char step[160] = {};
@@ -3565,6 +3664,15 @@ void PublishNow(PropSet& s) {
         g.parent = it.parent == wire::kGearNoParent ? std::int8_t{-1} : static_cast<std::int8_t>(it.parent);
         g.p[0] = it.p[0], g.p[1] = it.p[1], g.p[2] = it.p[2];
         wire::MatrixFromQuat(it.q, g.r);
+        if (&s == &g_sets[0] && g_opose.follow && g_opose.have_follow && i == g_opose.follow_body && g_opose.follow_arm < i) {
+            // round 29 O2 (section 12.10): the Odradek body on the arm prop's tip, arm * FK(arm pose)[13] * HLP_Oderadek
+            // (OdraApplyPoses), in place of the frame's own body transform
+            g.parent = static_cast<std::int8_t>(g_opose.follow_arm);
+            for (int k = 0; k < 3; ++k) {
+                g.p[k] = static_cast<float>(g_opose.fp[k]);
+                for (int c = 0; c < 3; ++c) g.r[k][c] = g_opose.fr[k][c];
+            }
+        }
     }
     // the exo carrier (section 32): on the body's joint 0, identity pose (its own root is identity: its joints are the body's)
     if (s.exo.p.live && s.exo.target && n < realbody::kMaxGearProps) {
@@ -3748,6 +3856,8 @@ void ApplyLooks(PropSet& s, double now) {
 
 // The partner's backpack pose onto the backpack prop and onto every prop on it that has the same
 // skeleton (the rain cover, the frame's own sub-entities), in their model updates (real_body).
+bool OdraApplyPoses(PropSet& s, double now);  // round 29 O2 (below, with the Odradek's receiver lines)
+
 void ApplyPoses(PropSet& s, double now) {
     const bool debug = realbody::GetOwner() == realbody::Owner::debug;
     const wire::GearPose* pose = debug ? (g_have_pose_local ? &g_pose_local : nullptr) : (g_have_pose_partner ? &g_pose_partner : nullptr);
@@ -5155,6 +5265,7 @@ void DriveSet(PropSet& s, game::Entity* body, bool body_visible, bool local_acti
     if (&s == &g_sets[0]) {
         ApplyLooks(s, now);
         ApplyPoses(s, now);
+        if (OdraApplyPoses(s, now)) changed = true;  // round 29 O2: the body prop's follow moved (published again)
     } else if (g_hood.e) {
         ApplyLooks(s, now);  // the self view's hat in the rain: our own cap's colour (WantLook's self branch; section 26.8)
     }
@@ -5497,7 +5608,19 @@ void OdraTick(PropSet& s, game::Entity* body, double now) {
                 const double ip[3] = {it.p[0], it.p[1], it.p[2]};
                 float ir[3][3];
                 wire::MatrixFromQuat(it.q, ir);
-                const Xf want = Compose(jw, ip, ir);
+                Xf want = Compose(jw, ip, ir);
+                Xf ajw;
+                bool want_follow = false;
+                if (k == 0 && g_opose.follow && g_opose.have_follow && i == g_opose.follow_body && g_opose.follow_arm < s.want.count &&
+                    realbody::JointFrameWorld(body, s.want.items[g_opose.follow_arm].joint, ajw.p, ajw.r)) {
+                    // round 29 O2: the body follows the arm prop's tip (PublishNow): where the arm item is, then the follow
+                    const wire::GearItem& ai = s.want.items[g_opose.follow_arm];
+                    const double ap[3] = {ai.p[0], ai.p[1], ai.p[2]};
+                    float ar[3][3];
+                    wire::MatrixFromQuat(ai.q, ar);
+                    want = Compose(Compose(ajw, ap, ar), g_opose.fp, g_opose.fr);
+                    want_follow = true;
+                }
                 double rp[3];
                 float rr[3][3];
                 Relative(want, placed, rp, rr);
@@ -5510,9 +5633,9 @@ void OdraTick(PropSet& s, game::Entity* body, double now) {
                 if (cm > g_odra.att_worst_cm[k]) g_odra.att_worst_cm[k] = cm;
                 if ((ok && g_odra.att_logged[k] != 2) || (!ok && g_odra.att_logged[k] == 0 && g_odra.att_bad_now[k] >= 3)) {
                     g_odra.att_logged[k] = ok ? 2 : 1;
-                    Log("[odragear] partner Odradek %s (prop %u '%s') shown on the body's joint %u: %s, %.1f cm / %.1f deg from its place, %.1f cm from the joint",
+                    Log("[odragear] partner Odradek %s (prop %u '%s') shown on the body's joint %u: %s, %.1f cm / %.1f deg from its place, %.1f cm from the joint%s",
                         k ? "arm" : "body", i, KeyLabel(p.def, s.res), static_cast<unsigned>(it.joint), ok ? "attached" : "NOT attached", cm, deg,
-                        Dist(jw, placed) * 100.0);
+                        Dist(jw, placed) * 100.0, want_follow ? " (its place: the arm prop's tip)" : "");
                 }
             }
         }
@@ -5534,6 +5657,443 @@ void OdraTick(PropSet& s, game::Entity* body, double now) {
     }
 }
 
+// ---------------------------------------------------------------- round 29 O2: the Odradek's own poses (section 12.10)
+// The frame's item for each part (-1 none; the first odradek item of that model). fe: only items with an entity.
+void OdraItems(const wire::GearFrame& f, bool have, const std::uintptr_t* fe, int (&idx)[2]) {
+    idx[0] = idx[1] = -1;
+    for (unsigned i = 0; have && i < f.count && i < wire::kMaxGearItems; ++i) {
+        const wire::GearItem& it = f.items[i];
+        if (it.kind != wire::GearKind::odradek) continue;
+        const int part = gearodra::PartOf(it.model);
+        if (part < 0 || idx[part] >= 0 || (fe && !fe[i])) continue;
+        idx[part] = static_cast<int>(i);
+    }
+}
+
+// A frame into the part's ring (its key the receive time, kept increasing).
+void OdraRxPush(int part, const wire::GearPose& p, double key) {
+    OdraRx& r = g_opose.rx[part];
+    if (r.n > 0) {
+        const OdraRxFrame& last = r.ring[r.n - 1];
+        float dm = 0, dd = 0;
+        if (!wire::GearPoseDiff(last.p, p, &dm, &dd) || dm > odrapose::kChangeM || dd > odrapose::kChangeDeg) ++r.moving;
+        if (key <= last.key) key = last.key + 1;
+    }
+    if (r.n == kOdraRing) {
+        for (unsigned j = 1; j < kOdraRing; ++j) r.ring[j - 1] = r.ring[j];
+        --r.n;
+    }
+    OdraRxFrame& fr = r.ring[r.n++];
+    fr.p = p;
+    fr.key = key;
+    fr.seq = ++r.seq;
+    ++r.rx;
+    if (r.stale) {
+        r.stale = false;
+        if (++r.logs <= 40) Log("[odrapose] partner %s pose: frames again after %.1f s", OdraPartName(part), (key - r.last_rx) / 1000.0);
+    }
+    r.last_rx = key;
+    if (r.rx == 1)
+        Log("[odrapose] the partner's %s pose: first frame (item %u, %u joints, skeleton %08X%s)", OdraPartName(part), p.item, p.n, p.skeleton,
+            (p.flags & wire::kGearPoseOdraFk) ? ", its sender's FK check passed" : "");
+}
+
+// The partner's STK1 pose flagged kGearPoseOdra (SetPartnerPose): routed by its gear frame's item (or its skeleton).
+void OdraPoseRx(const wire::GearPose& p) {
+    ++g_opose.rx_total;
+    odrapose::RouteIn in;
+    in.layout_match = g_have_partner && p.layout == wire::GearLayoutHash(g_partner);
+    in.item_in_frame = in.layout_match && p.item < g_partner.count;
+    if (in.item_in_frame) {
+        in.kind_odradek = g_partner.items[p.item].kind == wire::GearKind::odradek;
+        in.model = g_partner.items[p.item].model;
+    }
+    in.skeleton = p.skeleton;
+    in.n = p.n;
+    const int part = odrapose::Route(in);
+    if (part < 0) {
+        if (++g_opose.unrouted <= 10)
+            Log("[odrapose] the partner's Odradek pose dropped: item %u, %u joints, skeleton %08X, layout %04X (%s)", p.item, p.n, p.skeleton, p.layout,
+                in.item_in_frame ? "not an Odradek part of its frame, or another skeleton" : "no skeleton of the two parts");
+        return;
+    }
+    if (realbody::GetOwner() == realbody::Owner::debug) {
+        ++g_opose.rx[part].echo;  // the debug body plays our own reads (OdraPoseRead); the echo only proves the wire
+        return;
+    }
+    if (!g_odra_on || !g_opose_on) {
+        ++g_opose.ignored;
+        return;
+    }
+    OdraRxPush(part, p, QpcMs());
+}
+
+// Rows of an Xf as an FK frame.
+odrapose::Frame XfFrame(const Xf& x) {
+    odrapose::Frame f;
+    f.p = ridepose::V{x.p[0], x.p[1], x.p[2]};
+    for (int k = 0; k < 3; ++k) ridepose::SetRow(f.r, k, ridepose::V{x.r[k][0], x.r[k][1], x.r[k][2]});
+    return f;
+}
+void OdraJoints(const wire::GearPose& p, float (*q)[4], float (*t)[3], unsigned n) {
+    for (unsigned j = 0; j < n && j < p.n; ++j) {
+        q[j][0] = p.q[j].x, q[j][1] = p.q[j].y, q[j][2] = p.q[j].z, q[j][3] = p.q[j].w;
+        t[j][0] = p.t[j][0], t[j][1] = p.t[j][1], t[j][2] = p.t[j][2];
+    }
+}
+
+// The sender's FK check (odra_pose_rules.hpp): joint 13 from our arm's locals against its own model matrix (both conventions),
+// and the body where joint 13 * HLP_Oderadek puts it against where the game put it. It sets kGearPoseOdraFk on our frames.
+void OdraFkCheck(double now, const char* when, const int (&idx)[2]) {
+    const wire::GearPose& ap = g_opose.tx[gearodra::kPartArm].local;
+    const std::uintptr_t arm = g_local_e[idx[gearodra::kPartArm]], body = g_local_e[idx[gearodra::kPartBody]];
+    float q[odrapose::kArmJoints][4], t[odrapose::kArmJoints][3];
+    OdraJoints(ap, q, t, odrapose::kArmJoints);
+    odrapose::Frame f0, f1;
+    const bool c0 = odrapose::ChainFrame(q, t, odrapose::kArmJoints, odrapose::kArmTip, odrapose::kConv, &f0);
+    const bool c1 = odrapose::ChainFrame(q, t, odrapose::kArmJoints, odrapose::kArmTip, 1 - odrapose::kConv, &f1);
+    float m[4][4];
+    unsigned cnt = 0;
+    double jcm = -1, jdeg = -1, ocm = -1, odeg = -1, bcm = -1, bdeg = -1;
+    if (realbody::ReadJointModelAny(reinterpret_cast<game::Entity*>(arm), odrapose::kArmTip, &cnt, m, nullptr, 0) && cnt == odrapose::kArmJoints) {
+        const odrapose::Frame mm = odrapose::FromModelMatrix(m);
+        if (c0) odrapose::FrameDelta(f0, mm, &jcm, &jdeg);
+        if (c1) odrapose::FrameDelta(f1, mm, &ocm, &odeg);
+    }
+    Xf aw, bw;
+    double bp[3];
+    float br[3][3];
+    const bool measured = c0 && ReadWorld(arm, &aw) && ReadWorld(body, &bw) && odrapose::BodyInArm(f0, bp, br);
+    if (measured) odrapose::FrameDelta(XfFrame(Compose(aw, bp, br)), XfFrame(bw), &bcm, &bdeg);
+    g_opose.fk_joint_cm = jcm, g_opose.fk_joint_deg = jdeg, g_opose.fk_other_cm = ocm, g_opose.fk_other_deg = odeg;
+    g_opose.fk_body_cm = bcm, g_opose.fk_body_deg = bdeg;
+    if (!measured) {
+        g_opose.fk_next_ms = now + odrapose::kFkRetryMs;  // not counted: tried again
+        Log("[odrapose] sender FK check (%s): not measured (the arm's chain or the parts' transforms unreadable); again in %.0f s", when,
+            odrapose::kFkRetryMs / 1000.0);
+        return;
+    }
+    g_opose.fk_next_ms = now + odrapose::FkStep(g_opose.fk, bcm, bdeg);
+    Log("[odrapose] sender FK check (%s): arm joint 13 from the locals vs its model matrix %.2f cm / %.2f deg (the other convention %.2f cm / %.2f deg); "
+        "the body predicted (joint 13 * HLP_Oderadek) vs where the game put it: %.2f cm / %.2f deg (%s, %u of %u passed) -> %s",
+        when, jcm, jdeg, ocm, odeg, bcm, bdeg, odrapose::FkPass(bcm, bdeg) ? "pass" : "FAIL", g_opose.fk.passed, g_opose.fk.checks,
+        g_opose.fk.ok    ? "the receiver follows the arm tip"
+        : g_opose.fk.off ? "the receiver keeps the frame's body transform (off for this session)"
+                         : "the receiver keeps the frame's body transform");
+}
+
+// Sender, every tick: our Odradek's two poses (every 30 ms while its parts are sent), the FK check, the debug body's frames.
+void OdraPoseRead(double now, bool local_active) {
+    if (!local_active) {
+        g_opose.tx[0].have_local = g_opose.tx[1].have_local = false;
+        return;
+    }
+    if (now < g_opose.next_read_ms) return;
+    g_opose.next_read_ms = now + odrapose::kReadMs;
+    const bool debug_body = realbody::GetOwner() == realbody::Owner::debug && g_debug_body;
+    const bool cap = (g_have_partner && (g_partner.flags & wire::kGearOdraPoseCap) != 0) || debug_body;
+    int idx[2];
+    OdraItems(g_local, g_have_local, g_local_e, idx);
+    const std::uint16_t layout = g_have_local ? wire::GearLayoutHash(g_local) : 0;
+    for (int part = 0; part < 2; ++part) {
+        OdraTx& t = g_opose.tx[part];
+        odrapose::SendIn in;
+        in.gear_on = g_odra_on && g_odra.checked && g_odra.ok;
+        in.pose_on = g_opose_on;
+        in.parts_sent = g_odra.hold.shown;
+        in.partner_cap = cap;
+        in.item = idx[part] >= 0;
+        const odrapose::SendWhy w = odrapose::ShouldSendOdraPose(in);
+        t.have_local = false;
+        int state = static_cast<int>(w);  // the SendWhy, or 99: its skeleton is not the part's
+        bool torn = false;
+        std::uintptr_t e = 0;
+        if (w == odrapose::SendWhy::send) {
+            e = g_local_e[idx[part]];
+            static wire::GearPose rd;
+            const bool read = look::ReadPose(e, &rd);
+            if (read && odrapose::SkeletonOk(part, rd.skeleton, rd.n)) {
+                rd.item = static_cast<std::uint8_t>(idx[part]);
+                rd.layout = layout;
+                rd.flags = wire::kGearPoseOdra | (g_opose.fk.ok ? wire::kGearPoseOdraFk : 0);
+                t.local = rd;
+                t.have_local = true;
+                ++t.reads;
+            } else {
+                std::uintptr_t sk = 0;
+                std::uint32_t lay = 0;
+                std::int32_t c = 0;
+                const bool have = look::PoseSkeleton(e, &sk, &lay, &c);
+                // a torn read (the update wrote between the two reads) is tried again at the next read; another skeleton is refused
+                torn = !read && have && odrapose::SkeletonOk(part, lay, c > 0 ? static_cast<unsigned>(c) : 0u);
+                if (!torn) {
+                    state = 99;
+                    ++t.refused;
+                    if (t.refused_e != e && ++t.logs <= 40) {
+                        t.refused_e = e;
+                        Log("[odrapose] our %s pose not read: skeleton %08X with %d joints (want %08X, %u): not sent", OdraPartName(part), lay, c,
+                            part == gearodra::kPartArm ? odrapose::kArmLayout : odrapose::kBodyLayout,
+                            part == gearodra::kPartArm ? odrapose::kArmJoints : odrapose::kBodyJoints);
+                    }
+                }
+            }
+        }
+        if (t.have_local) {
+            if (t.on_e != e) {
+                t.on_e = e;
+                t.off_logged = -1;
+                if (++t.logs <= 40)
+                    Log("[odrapose] our %s pose stream on (item %u, %u joints, skeleton %08X, layout %04X)", OdraPartName(part), t.local.item, t.local.n,
+                        t.local.skeleton, layout);
+            }
+            if (debug_body) OdraRxPush(part, t.local, QpcMs());  // the debug body plays our own reads
+        } else if (!torn && state != t.off_logged) {
+            if ((t.on_e || state == 99 || w == odrapose::SendWhy::no_cap) && ++t.logs <= 40)
+                Log("[odrapose] our %s pose stream off (%s)", OdraPartName(part), state == 99 ? "its skeleton is not the part's" : odrapose::SendWhyName(w));
+            t.off_logged = state;
+            t.on_e = 0;
+        }
+    }
+    // the FK check: at the first read, at the first scan (the body leaves its idle state 01), then every 30 s (2 s after a failure)
+    const OdraTx& ta = g_opose.tx[gearodra::kPartArm];
+    const OdraTx& tb = g_opose.tx[gearodra::kPartBody];
+    if (!ta.have_local || !tb.have_local) return;
+    std::uint8_t st = 0;
+    if (Rd(g_local_e[idx[gearodra::kPartBody]] + kOdraState, st)) {
+        if (st != 0x01 && g_opose.scan_state == 0x01 && !g_opose.fk_scan_done && g_opose.fk_scan_at_ms <= 0) g_opose.fk_scan_at_ms = now + 400;
+        g_opose.scan_state = st;
+    }
+    char when[64] = "";
+    if (!g_opose.fk.checked) {
+        if (now >= g_opose.fk_next_ms) std::snprintf(when, sizeof(when), "at start");  // a check not measured: again in 2 s
+    } else if (!g_opose.fk_scan_done && g_opose.fk_scan_at_ms > 0 && now >= g_opose.fk_scan_at_ms) {
+        g_opose.fk_scan_done = true;
+        std::snprintf(when, sizeof(when), "at the first scan, state %02X", static_cast<unsigned>(st));
+    } else if (now >= g_opose.fk_next_ms) {
+        std::snprintf(when, sizeof(when), "%s", g_opose.fk.fails > 0 && !g_opose.fk.off ? "again" : "every 30 s");
+    }
+    if (when[0]) OdraFkCheck(now, when, idx);
+}
+
+// The arm's pose at `play` as its prop's own update draws it (the same bracket and blend; ApplyGearPose).
+bool OdraArmAt(const OdraRx& r, const odrapose::Bracket& br, bool interp_on, double play, float (&q)[odrapose::kArmJoints][4],
+               float (&t)[odrapose::kArmJoints][3]) {
+    if (r.n == 0) return false;
+    const wire::GearPose* a = &r.ring[r.n - 1].p;
+    const wire::GearPose* b = nullptr;
+    float u = 0;
+    if (interp_on && br.a >= 0) {
+        a = &r.ring[br.a].p;
+        if (br.b >= 0) {
+            if (play > br.key_b && br.c >= 0) {
+                a = &r.ring[br.b].p, b = &r.ring[br.c].p;
+                u = odrapose::SegU(play, br.key_b, br.key_c);
+            } else {
+                b = &r.ring[br.b].p;
+                u = odrapose::SegU(play, br.key_a, br.key_b);
+            }
+        }
+    }
+    if (a->n != odrapose::kArmJoints || (b && b->n != a->n)) return false;
+    if (!b) b = a;
+    for (unsigned j = 0; j < odrapose::kArmJoints; ++j) {
+        const float qa[4] = {a->q[j].x, a->q[j].y, a->q[j].z, a->q[j].w};
+        const float qb[4] = {b->q[j].x, b->q[j].y, b->q[j].z, b->q[j].w};
+        odrapose::Nlerp(qa, qb, u, q[j]);
+        for (int c = 0; c < 3; ++c) t[j][c] = a->t[j][c] + u * (b->t[j][c] - a->t[j][c]);
+    }
+    return true;
+}
+
+// Receiver, every tick (partner slot, after ApplyPoses): the two props' pose targets and the body's follow. True: the follow
+// moved (the props are published again).
+bool OdraApplyPoses(PropSet& s, double now) {
+    if (&s != &g_sets[0]) return false;
+    const bool on = g_odra_on && g_opose_on;
+    const double qnow = QpcMs(), play = qnow - odrapose::kPlayDelayMs;
+    int idx[2];
+    OdraItems(s.want, s.have_want, nullptr, idx);
+    const bool interp_on = realbody::PoseInterpOn();
+    odrapose::Bracket brs[2];
+    for (int part = 0; part < 2; ++part) {
+        OdraRx& r = g_opose.rx[part];
+        const unsigned k = OdraPoseTarget(part);
+        // a part gone from the frame for a while: its old frames go (the next ones start afresh)
+        if (idx[part] < 0 && r.n && qnow - r.last_rx > odrapose::kStaleMs) r.n = 0, r.stale = false;
+        if (r.n && r.target_e && odrapose::Stale(qnow, r.last_rx) && !r.stale) {
+            r.stale = true;
+            ++r.stale_holds;
+            if (++r.logs <= 40) Log("[odrapose] partner %s pose: no frame for 1.5 s: the last pose held", OdraPartName(part));
+        }
+        const wire::GearPose* newest = r.n ? &r.ring[r.n - 1].p : nullptr;
+        const Prop* tp = nullptr;
+        const char* why = !on ? "odradek_pose off" : idx[part] < 0 ? "the part is not in the frame" : !newest ? "no frame yet" : "its prop is not live";
+        if (on && idx[part] >= 0 && newest) {
+            const Prop& p = s.props[idx[part]];
+            if (p.live && p.sp.e && holo::SpawnAlive(p.sp) && now - p.live_ms >= 500) {
+                const auto pe = reinterpret_cast<std::uintptr_t>(p.sp.e);
+                std::uintptr_t sk = 0;
+                std::uint32_t lay = 0;
+                std::int32_t c = 0;
+                if (look::PoseSkeleton(pe, &sk, &lay, &c) && lay == newest->skeleton && c == static_cast<std::int32_t>(newest->n)) {
+                    tp = &p;
+                } else {
+                    why = "its prop's skeleton differs";
+                    if (r.skel_logged_e != pe && ++r.logs <= 40) {
+                        r.skel_logged_e = pe;
+                        Log("[odrapose] partner %s prop %p: skeleton %08X with %d joints, the frames' %08X with %u: not posed", OdraPartName(part),
+                            reinterpret_cast<void*>(pe), lay, c, newest->skeleton, newest->n);
+                    }
+                }
+            }
+        }
+        double keys[kOdraRing] = {};
+        for (unsigned j = 0; j < r.n; ++j) keys[j] = r.ring[j].key;
+        const odrapose::Bracket br = odrapose::Pick(keys, r.n, play);
+        brs[part] = br;
+        const bool interp = interp_on && br.a >= 0 && br.b >= 0;
+        std::uint32_t want[3] = {};
+        if (r.n) {
+            if (interp_on && br.a >= 0) {
+                want[0] = r.ring[br.a].seq;
+                if (br.b >= 0) want[1] = r.ring[br.b].seq;
+                if (br.c >= 0) want[2] = r.ring[br.c].seq;
+            } else {
+                want[0] = r.ring[r.n - 1].seq;
+            }
+        }
+        std::uintptr_t te = tp ? reinterpret_cast<std::uintptr_t>(tp->sp.e) : 0;
+        if (te && te == r.refused_e) te = 0;  // refused once (SetGearPose's own checks): not tried again on this prop
+        if (te != r.target_e || (te && (want[0] != r.pub[0] || want[1] != r.pub[1] || want[2] != r.pub[2]))) {
+            bool ok = true;
+            if (!te) {
+                realbody::ClearGearPose(k);
+            } else {
+                const wire::GearPose* base = interp_on && br.a >= 0 ? &r.ring[br.a].p : newest;
+                realbody::GearPoseInterp ip;
+                if (interp) {
+                    ip.b = &r.ring[br.b].p;
+                    ip.key_a = br.key_a, ip.key_b = br.key_b, ip.play_ms = play;
+                    if (br.c >= 0) ip.c = &r.ring[br.c].p, ip.key_c = br.key_c;
+                }
+                ok = realbody::SetGearPose(k, &tp->sp, base, interp ? &ip : nullptr);
+                ++r.sets;
+            }
+            if (te != r.target_e) {
+                if (te && ok) ++r.taken;
+                else if (te) ++r.not_taken, r.refused_e = te;
+                if (++r.logs <= 40) {
+                    if (te)
+                        Log("[odrapose] partner %s prop pose target %s: %p (%u joints, %s)", OdraPartName(part), ok ? "taken" : "NOT TAKEN",
+                            reinterpret_cast<void*>(te), newest->n, interp_on ? "interpolated in its own update" : "the newest frame");
+                    else
+                        Log("[odrapose] partner %s prop pose target released: %p (%s)", OdraPartName(part), reinterpret_cast<void*>(r.target_e), why);
+                }
+            }
+            r.target_e = ok ? te : 0;
+            for (int c = 0; c < 3; ++c) r.pub[c] = ok && te ? want[c] : 0;
+        }
+    }
+    // the body on the arm prop's tip: arm * FK(the arm's pose as its prop draws it now)[13] * HLP_Oderadek, while the sender's FK
+    // check passes (its frames' kGearPoseOdraFk); otherwise the frame's own body transform (O1)
+    const OdraRx& ra = g_opose.rx[gearodra::kPartArm];
+    const int ai = idx[gearodra::kPartArm], bi = idx[gearodra::kPartBody];
+    const char* why = nullptr;
+    if (!on) why = "odradek_pose off";
+    else if (!g_ofollow_allowed) why = "the follow is switched off (gear 40 7 0)";
+    else if (ai < 0 || bi < 0) why = "the two parts are not both in the frame";
+    else if (ai >= bi) why = "the arm item comes after the body's";
+    else if (!ra.n) why = "no arm pose yet";
+    else if (!(ra.ring[ra.n - 1].p.flags & wire::kGearPoseOdraFk)) why = "the sender's FK check has not passed";
+    else if (!ra.target_e) why = "the arm prop is not posed";
+    double fp[3] = {};
+    float fr[3][3] = {};
+    if (!why) {
+        float q[odrapose::kArmJoints][4], t[odrapose::kArmJoints][3];
+        odrapose::Frame tip;
+        if (!OdraArmAt(ra, brs[gearodra::kPartArm], interp_on, play, q, t) ||
+            !odrapose::ChainFrame(q, t, odrapose::kArmJoints, odrapose::kArmTip, odrapose::kConv, &tip) || !odrapose::BodyInArm(tip, fp, fr))
+            why = "the arm pose's chain is degenerate";
+    }
+    const bool follow = why == nullptr;
+    bool publish = follow != g_opose.follow;
+    if (follow) {
+        ++g_opose.follow_ticks;
+        const bool same_items = g_opose.follow_arm == static_cast<unsigned>(ai) && g_opose.follow_body == static_cast<unsigned>(bi);
+        double d = 0;
+        for (int c = 0; c < 3; ++c) d += (fp[c] - g_opose.fp[c]) * (fp[c] - g_opose.fp[c]);
+        if (!g_opose.have_follow || !same_items || std::sqrt(d) > 0.0005 || gearodra::AngleDeg(fr, g_opose.fr) > 0.05) {
+            for (int c = 0; c < 3; ++c) {
+                g_opose.fp[c] = fp[c];
+                for (int k = 0; k < 3; ++k) g_opose.fr[c][k] = fr[c][k];
+            }
+            g_opose.have_follow = true;
+            publish = true;
+        }
+        g_opose.follow_arm = static_cast<unsigned>(ai), g_opose.follow_body = static_cast<unsigned>(bi);
+    } else {
+        g_opose.have_follow = false;
+    }
+    g_opose.follow = follow;
+    // logged when it changes (only once the partner's frame has an Odradek part)
+    const char* now_why = follow ? "" : why;
+    if ((follow ? 1 : 0) != g_opose.follow_logged || (!follow && std::strcmp(now_why, g_opose.follow_why) != 0)) {
+        if ((ai >= 0 || bi >= 0 || g_opose.follow_logged == 1) && ++g_opose.follow_logs <= 40) {
+            if (follow)
+                Log("[odrapose] partner body follows the arm tip (items %d -> %d: the arm prop * its joint 13 * HLP_Oderadek; the sender's FK check "
+                    "passed)",
+                    ai, bi);
+            else
+                Log("[odrapose] partner body keeps the frame's body transform (%s)", why);
+            g_opose.follow_logged = follow ? 1 : 0;
+            std::snprintf(g_opose.follow_why, sizeof(g_opose.follow_why), "%s", now_why);
+        }
+    }
+    if (publish) ++g_opose.follow_pubs;
+    return publish;
+}
+
+// `gear 40 5` and the 30 s line: the pose streams' state and counters.
+void OdraPoseStatus(char* out, std::size_t cap, bool deltas) {
+    const OdraTx& ta = g_opose.tx[gearodra::kPartArm];
+    const OdraTx& tb = g_opose.tx[gearodra::kPartBody];
+    const OdraRx& ra = g_opose.rx[gearodra::kPartArm];
+    const OdraRx& rb = g_opose.rx[gearodra::kPartBody];
+    const std::uint32_t app_a = realbody::GearPoseApplies(realbody::kOdraArmPoseTarget), app_b = realbody::GearPoseApplies(realbody::kOdraBodyPoseTarget);
+    int n = std::snprintf(out, cap,
+                          "odradek_pose %s (odradek_gear %s), the partner's frames %s the pose flag; sender: arm %u read / %u sent (%u joints), body %u read / "
+                          "%u sent (%u joints), %u refused; FK checks %u (%u passed; %s; last: joint %.2f cm, body %.2f cm / %.2f deg); receiver: arm %u "
+                          "(moving %u), body %u (moving %u), unrouted %u, echo %u; applied arm %u, body %u; targets arm %s, body %s (%s); follow %s (%u "
+                          "publishes); stale holds arm %u, body %u",
+                          g_opose_on ? "on" : "off", g_odra_on ? "on" : "off",
+                          g_opose.cap_seen < 0 ? "(none received yet) carry" : g_opose.cap_seen ? "carry" : "do not carry", ta.reads, ta.sent_n,
+                          ta.have_local ? ta.local.n : 0u, tb.reads, tb.sent_n, tb.have_local ? tb.local.n : 0u, ta.refused + tb.refused, g_opose.fk.checks,
+                          g_opose.fk.passed, g_opose.fk.ok ? "ok" : g_opose.fk.off ? "off for the session" : "not passed", g_opose.fk_joint_cm,
+                          g_opose.fk_body_cm, g_opose.fk_body_deg, ra.rx, ra.moving, rb.rx, rb.moving, g_opose.unrouted, ra.echo + rb.echo, app_a, app_b,
+                          ra.target_e ? "taken" : "-", rb.target_e ? "taken" : "-", realbody::PoseInterpOn() ? "interpolated" : "the newest frame",
+                          g_opose.follow ? "on" : "off", g_opose.follow_pubs, ra.stale_holds, rb.stale_holds);
+    if (!deltas || n < 0 || static_cast<std::size_t>(n) >= cap) return;
+    std::snprintf(out + n, cap - static_cast<std::size_t>(n),
+                  "; since the last status: received arm +%u (moving +%u), body +%u (moving +%u), applied arm +%u body +%u", ra.rx - g_opose.st_rx[1],
+                  ra.moving - g_opose.st_moving[1], rb.rx - g_opose.st_rx[0], rb.moving - g_opose.st_moving[0], app_a - g_opose.st_applied[1],
+                  app_b - g_opose.st_applied[0]);
+    g_opose.st_rx[1] = ra.rx, g_opose.st_moving[1] = ra.moving, g_opose.st_applied[1] = app_a;
+    g_opose.st_rx[0] = rb.rx, g_opose.st_moving[0] = rb.moving, g_opose.st_applied[0] = app_b;
+}
+
+void OdraPoseSummary(double now) {
+    if (!g_odra_on || now < g_opose.next_summary_ms) return;
+    const bool first = g_opose.next_summary_ms <= 0;
+    g_opose.next_summary_ms = now + 30000;
+    if (first) return;
+    const OdraTx* t = g_opose.tx;
+    const OdraRx* r = g_opose.rx;
+    if (!(t[0].reads + t[1].reads + r[0].rx + r[1].rx + g_opose.unrouted + r[0].echo + r[1].echo)) return;
+    static char buf[1400];
+    OdraPoseStatus(buf, sizeof(buf), false);
+    Log("[odrapose] summary: %s", buf);
+}
+
 }  // namespace
 
 void Init(const Config& config) noexcept {
@@ -5549,6 +6109,11 @@ void Init(const Config& config) noexcept {
         g_odra_on ? "our Odradek sent to a partner that draws it, the partner's drawn as its cinematic props (round 28 O1; anchor: the left shoulder, "
                     "the chest while drawn as Fragile)"
                   : "no Odradek on the partner (v0.39)");
+    g_opose_on = config.odradek_pose;
+    Log("[odrapose] odradek_pose=%d: %s", g_opose_on ? 1 : 0,
+        !g_odra_on   ? "no effect (odradek_gear=0)"
+        : g_opose_on ? "our Odradek's arm and body poses sent to a partner that poses its props, the partner's played on its props (round 29 O2)"
+                     : "the Odradek props keep their folded pose (v0.40)");
     g_boots_style = config.boots_look_own ? bootslook::Style::own : bootslook::Style::prop;
     g_boots_own_porter = config.boots_own_porter;
     g_exo_on = config.exo_carrier;
@@ -5693,6 +6258,7 @@ void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
     if (!g_enabled || !realbody::HookInstalled()) return;
     if (local_active && g_chk.ok) WatchWeapon(local, now_ms);
     ReadLocalTick(local, local_active, now_ms);
+    OdraPoseRead(now_ms, local_active);  // round 29 O2: our Odradek's two poses (every 30 ms while sent)
     HeadgearTick(static_cast<double>(GetTickCount64()), false);
     LogoTick(now_ms);   // round 20 (section 42)
     realbody::GearMeterTick(now_ms);  // hidden tests: before this tick's placements (section 26.7)
@@ -5715,6 +6281,7 @@ void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
     DriveSet(ps, pbody, pvis, local_active, now_ms);
     BootsTick(ps, pbody, now_ms);
     OdraTick(ps, pbody, now_ms);  // round 28 O1 (section 12.9)
+    OdraPoseSummary(now_ms);     // round 29 O2 (section 12.10)
     // The partner's own gear parts (exoskeleton, BB pod pipe, ...) on a Sam body, and its backpack's
     // parts (the bag, rain cover, pouches) on the backpack prop: each only when the target's ArtParts
     // are the same resources as our own Sam's / backpack's.
@@ -5914,36 +6481,66 @@ void SetPartnerLook(const wire::GearLook& l) noexcept {
     p.have = true;
 }
 
-bool TakeSendPose(double now_ms, wire::GearPose* out) noexcept {
-    if (!g_enabled || !g_poses_on || !out) return false;
-    // two streams on STK1: the backpack's pose, and the held item's (section 31; its weapon item's index tells them apart)
-    auto due = [now_ms](const wire::GearPose& local, const wire::GearPose& sent, bool have_sent, double sent_ms, double min_ms) {
-        const double since = now_ms - sent_ms;
+bool TakeSendPose(double now_ms, wire::GearPose* out, bool net, bool same_session) noexcept {
+    if (!g_enabled || !out) return false;
+    // the Odradek streams' own gate at send time (OdraPoseRead's have_local can be 30 ms old, or from the previous session's
+    // partner): on the link the partner's newest frame must carry kGearOdraPoseCap and the link session must be the one its
+    // frames came from; our own gear on the debug body counts only in echo (its frames are pushed locally, never sent)
+    const bool odra_cap = net ? same_session && g_have_partner && (g_partner.flags & wire::kGearOdraPoseCap) != 0
+                              : (g_have_partner && (g_partner.flags & wire::kGearOdraPoseCap) != 0) ||
+                                    (realbody::GetOwner() == realbody::Owner::debug && g_debug_body);
+    // four streams on STK1: the backpack's pose, the held item's (section 31; its weapon item's index and kGearPoseHeld tell them
+    // apart), and round 29 O2's Odradek arm and body (kGearPoseOdra; section 12.10). One pose per call, the streams taken in turn
+    // from where the last call stopped, so a busy stream never starves the others (player_sync takes up to 4 per tick).
+    auto changed = [](const wire::GearPose& local, const wire::GearPose& sent, bool have_sent, float min_m, float min_deg) {
         float dm = 0, dd = 0;
-        const bool same = have_sent && sent.item == local.item && sent.layout == local.layout && wire::GearPoseDiff(sent, local, &dm, &dd);
-        const bool changed = !same || dm > 0.001f || dd > 0.5f;
-        return since >= 1000 || (changed && since >= min_ms);
+        const bool same = have_sent && sent.item == local.item && sent.layout == local.layout && sent.flags == local.flags &&
+                          wire::GearPoseDiff(sent, local, &dm, &dd);
+        return !same || dm > min_m || dd > min_deg;
     };
-    if (g_have_pose_local && due(g_pose_local, g_pose_sent, g_have_pose_sent, g_pose_sent_ms, 100)) {
-        g_pose_sent = g_pose_local;
-        g_have_pose_sent = true;
-        g_pose_sent_ms = now_ms;
-        ++g_poses_sent;
-        *out = g_pose_local;
-        return true;
-    }
-    if (g_have_hpose_local && due(g_hpose_local, g_hpose_sent, g_have_hpose_sent, g_hpose_sent_ms, 100)) {
-        g_hpose_sent = g_hpose_local;
-        g_have_hpose_sent = true;
-        g_hpose_sent_ms = now_ms;
-        ++g_hposes_sent;
-        *out = g_hpose_local;
+    auto due = [&](const wire::GearPose& local, const wire::GearPose& sent, bool have_sent, double sent_ms, double min_ms) {
+        const double since = now_ms - sent_ms;
+        return since >= 1000 || (changed(local, sent, have_sent, 0.001f, 0.5f) && since >= min_ms);
+    };
+    for (unsigned n = 0; n < 4; ++n) {
+        const unsigned s = (g_opose.rr + n) % 4;
+        if (s == 0 && g_poses_on && g_have_pose_local && due(g_pose_local, g_pose_sent, g_have_pose_sent, g_pose_sent_ms, 100)) {
+            g_pose_sent = g_pose_local;
+            g_have_pose_sent = true;
+            g_pose_sent_ms = now_ms;
+            ++g_poses_sent;
+            *out = g_pose_local;
+        } else if (s == 1 && g_poses_on && g_have_hpose_local && due(g_hpose_local, g_hpose_sent, g_have_hpose_sent, g_hpose_sent_ms, 100)) {
+            g_hpose_sent = g_hpose_local;
+            g_have_hpose_sent = true;
+            g_hpose_sent_ms = now_ms;
+            ++g_hposes_sent;
+            *out = g_hpose_local;
+        } else if (s >= 2) {
+            OdraTx& t = g_opose.tx[s == 2 ? gearodra::kPartArm : gearodra::kPartBody];
+            if (!odra_cap || !t.have_local ||
+                !odrapose::Due(t.have_sent, changed(t.local, t.sent, t.have_sent, odrapose::kChangeM, odrapose::kChangeDeg), now_ms - t.sent_ms))
+                continue;
+            t.sent = t.local;
+            t.have_sent = true;
+            t.sent_ms = now_ms;
+            ++t.sent_n;
+            *out = t.local;
+        } else {
+            continue;
+        }
+        g_opose.rr = (s + 1) % 4;
         return true;
     }
     return false;
 }
 
 void SetPartnerPose(const wire::GearPose& p) noexcept {
+    // round 29 O2 (section 12.10): an Odradek part's pose goes to its own slots, never to the backpack's or the held item's
+    if (p.flags & wire::kGearPoseOdra) {
+        OdraPoseRx(p);
+        return;
+    }
     // the held item's stream (section 31): flagged by the sender (round 6), so a held pose that arrives before its layout's
     // gear frame (STC1 is one unreliable send per change) never lands in the backpack's slot and takes the frame's pose off.
     // An older sender (no flag): the pose of a weapon item of the partner's current layout.
@@ -5972,7 +6569,21 @@ void SetPartnerGear(const wire::GearFrame* f) noexcept {
         g_have_pose_partner = false;
         g_have_hpose_partner = false;
         g_odra.cap_seen = -1;
+        g_opose.cap_seen = -1;
+        for (OdraRx& r : g_opose.rx) r.n = 0, r.stale = false;  // round 29 O2: the partner's Odradek frames go with its gear
+        // and our two streams wait for the next partner's flag (a new partner gets the first frame at once)
+        for (OdraTx& t : g_opose.tx) t.have_local = false, t.have_sent = false;
+        g_opose.next_read_ms = 0;
         return;
+    }
+    {
+        // round 29 O2: the partner poses our Odradek's props (odradek_pose there): our sender's gate for the two pose streams
+        const int cap_now = (f->flags & wire::kGearOdraPoseCap) != 0 ? 1 : 0;
+        if (cap_now != g_opose.cap_seen && ++g_opose.cap_logs <= 20)
+            Log("[odrapose] the partner's frames %s the Odradek pose flag (%s)", cap_now ? "carry" : "do not carry",
+                cap_now ? "it poses ours: our arm and body poses sent while our Odradek is"
+                        : "odradek_pose=0 or odradek_gear=0 there, or an older build: our Odradek's poses are not sent");
+        g_opose.cap_seen = cap_now;
     }
     {
         // round 28 O1: the partner's build draws our Odradek and its odradek_gear is on (our sender's gate, ReadOdradek)
@@ -6745,8 +7356,22 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
                 g_odra.test_hold = v[2] != 0;
             } else if (a == 4) {
                 g_odra.force_joint = v[2] >= 0 && v[2] < 77 ? static_cast<int>(v[2]) : -1;
+            } else if (a == 5 || a == 6 || a == 7) {
+                // round 29 O2 (section 12.10): 5 the pose streams' status, 6 <0/1> odradek_pose, 7 <0/1> the body's follow
+                if (a == 6) g_opose_on = v[2] != 0, g_next_read_ms = 0;
+                if (a == 7) g_ofollow_allowed = v[2] != 0;
+                static char st[1400];  // the action's reply is short (160): the full status goes to the log
+                OdraPoseStatus(st, sizeof(st), a == 5);
+                Log("[odrapose] status: %s", st);
+                std::snprintf(msg, cap, "Odradek poses %s: received arm %u, body %u; applied arm %u, body %u; follow %s (the full status in the log)",
+                              g_opose_on ? "on" : "off", g_opose.rx[gearodra::kPartArm].rx, g_opose.rx[gearodra::kPartBody].rx,
+                              realbody::GearPoseApplies(realbody::kOdraArmPoseTarget), realbody::GearPoseApplies(realbody::kOdraBodyPoseTarget),
+                              g_opose.follow ? "on" : "off");
+                return true;
             } else if (a != 2) {
-                std::snprintf(msg, cap, "gear 40: 0 / 1 off / on, 2 status, 3 <0/1> test hold, 4 <joint | -1> anchor");
+                std::snprintf(msg, cap,
+                              "gear 40: 0 / 1 off / on, 2 status, 3 <0/1> test hold, 4 <joint | -1> anchor, 5 pose status, 6 <0/1> odradek_pose, 7 <0/1> "
+                              "body follow");
                 return false;
             }
             g_next_read_ms = 0;
@@ -6774,7 +7399,7 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             return who != nullptr;
         }
         default:
-            std::snprintf(msg, cap, "unknown op %d (0 log, 1 partner 0/1, 2 self 0/1, 3 test cases n, 4 debug body 0/1, 5 n / 6 test faults, 7 level, 8 pod entity, 9 census 0/1/2, 10 walk cache 0/1, 11 looks 0/1, 12 looks off/on, 13 backpack pose off/on, 14 accessory list, 15 cap colour, 16 head parts off/on, 17 weapons off/on, 18 headgear offsets off/on, 19 headgear meter off/on, 20 partner feet scale percent, 21 boots sync off/on, 22 hat in the rain, 23 glasses colour, 24 rain cover durability percent, 25 boots look 0 prop / 1 own / 2 log, 26 held items, 27 exo carrier 0/1/2, 28 skeleton type -1..4, 29 LegOut 0/1, 30 BB pod rule 0/1/2, 31 her hood 0/1/2/3, 32 hood state -1..12 [type], 33 hair under the hood 0/1, 34 hood fold test, 35 hood colour 0/1, 36 hip crates 0/1 / status, 37 cap probe 0 ours / 1 the partner's, 38 suit rig 0/1 [extra] / 2 status, 39 logo 0/1 / 2 status, 40 Odradek 0/1 / 2 status / 3 test hold / 4 anchor)", op);
+            std::snprintf(msg, cap, "unknown op %d (0 log, 1 partner 0/1, 2 self 0/1, 3 test cases n, 4 debug body 0/1, 5 n / 6 test faults, 7 level, 8 pod entity, 9 census 0/1/2, 10 walk cache 0/1, 11 looks 0/1, 12 looks off/on, 13 backpack pose off/on, 14 accessory list, 15 cap colour, 16 head parts off/on, 17 weapons off/on, 18 headgear offsets off/on, 19 headgear meter off/on, 20 partner feet scale percent, 21 boots sync off/on, 22 hat in the rain, 23 glasses colour, 24 rain cover durability percent, 25 boots look 0 prop / 1 own / 2 log, 26 held items, 27 exo carrier 0/1/2, 28 skeleton type -1..4, 29 LegOut 0/1, 30 BB pod rule 0/1/2, 31 her hood 0/1/2/3, 32 hood state -1..12 [type], 33 hair under the hood 0/1, 34 hood fold test, 35 hood colour 0/1, 36 hip crates 0/1 / status, 37 cap probe 0 ours / 1 the partner's, 38 suit rig 0/1 [extra] / 2 status, 39 logo 0/1 / 2 status, 40 Odradek 0/1 / 2 status / 3 test hold / 4 anchor / 5 pose status / 6 odradek_pose / 7 body follow)", op);
             return false;
     }
 }

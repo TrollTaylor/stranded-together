@@ -1777,6 +1777,98 @@ props' joints); the chest anchor under Fragile is a judgement call; the visible 
 measured (the holds cover short dips); the attach check reads at tick time while the detour places at render time; the guest's
 profile-only seed may have no Odradek; the props carry no lights; RoomRegainTick may now name "2 x Odradek".
 
+### 12.10 Round 29 O2: the partner's Odradek animates (`odradek_pose`, default 1 while `odradek_gear` is on)
+
+Goal: "her Odradek animates on the other screen: it opens, flaps, points and folds". O1's props hold their neutral pose; O2
+drives their joints from the sender's own Odradek. `native/mod/partner_gear.cpp` (OdraPoseRead, OdraFkCheck, TakeSendPose,
+OdraPoseRx, OdraApplyPoses, PublishNow), pure part `native/mod/odra_pose_rules.hpp` (tests `tests/odra_pose_tests.cpp`);
+two new pose targets in `real_body` (`kOdraArmPoseTarget` 9, `kOdraBodyPoseTarget` 10; `kMaxPoseTargets` 11; the gear keeps
+0..7, the vehicle copy 8); scenario `two-games-odradek-pose`; the actions `gear 40 5|6|7`. Not run in a game yet.
+
+**Wire (no new version).**
+- STC1: the flag `kGearOdraPoseCap = 1u << 5` (in `kGearKnown`), set while `odradek_gear` and `odradek_pose` are both on: "I
+  pose your Odradek's props". No block, not in GearLayoutHash.
+- STK1 (the gear pose frame, version unchanged): flag bit 1 `kGearPoseOdra` (an Odradek part's pose; the item's model names the
+  part), bit 2 `kGearPoseOdraFk` (the sender's FK check holds, below). Encode and decode keep `kGearPoseKnown` (held | odra |
+  odra-fk) and drop the rest. `item` is the part's index in the sender's gear frame, `layout` that frame's GearLayoutHash.
+- Why the flag: a v0.40 decoder keeps only `kGearPoseHeld`, so an Odradek pose sent to it reads as the backpack's pose (it
+  replaces the backpack's, and its item not being the backpack, the backpack props lose their pose). v0.40 never sets bit 5
+  (and clears it on decode), so it never gets them.
+
+**Sender** (OdraPoseRead, every tick, a read every 30 ms on the game thread).
+- Gate (`ShouldSendOdraPose`): odradek_gear on (and O1's byte checks), odradek_pose on, ReadOdradek's hold says the two parts
+  are sent, the partner's newest frame carries `kGearOdraPoseCap` (or our own gear on the debug body), the part an item of our
+  current frame. `TakeSendPose` checks the flag again when it sends: on the link only the partner's own flag counts (the debug
+  body's frames are pushed locally, never sent), and only once player_sync has taken the link's current session (a new
+  partner never gets frames on the previous one's flag); the partner's gear cleared also clears both streams.
+- Read: `look::ReadPose` on the item's entity (two equal reads). The arm must be layout 0xA7074286 with 14 joints, the body
+  0x2A97D3D4 with 44; anything else is refused (logged once per entity). A torn read (the update wrote between the two reads)
+  is tried again 30 ms later.
+- Send (`TakeSendPose`): changed (a joint moved 1 mm or turned 0.5 deg, or the item / layout / flags changed) at most every
+  66 ms per part, else every 1 s. Four streams now share STK1 (the backpack, the held item, the arm, the body): each call takes
+  the next due one from where the last stopped, so none starves the others; player_sync takes up to 4 a tick, and link's
+  STK1 receive queue is 8 (was 4).
+- FK check (`OdraFkCheck`): at the first read, about 0.4 s into our first scan (the body's state +0x348 leaves 0x01), then
+  every 30 s. It builds arm joint 13 from the read locals (FK below), compares it with the arm's own model matrix 13 (both
+  conventions: the right one should be ~0), and puts the body at arm world * joint 13 * HLP_Oderadek against where the game put
+  it (cm / deg). The bit `kGearPoseOdraFk` goes on with the first pass (3 cm and 10 deg or less: HLP_Oderadek's offset is only
+  1.6 cm, so a wrong attach rotation shows in the turn, not the place). A check that cannot be measured (the chain or the
+  parts' transforms unreadable) is not counted and tried again 2 s later. A failure is tried again after 2 s; one
+  failure alone keeps the bit (a check taken during a swing can see the body a frame late), 3 in a row turn it off for the
+  session. Without the bit the receiver keeps the STC1 item's own body transform (O1), so a wrong convention or another attach
+  never misplaces her body: the evidence is the sender's own game.
+
+**FK convention** (the game's, as measured before; cited in odra_pose_rules.hpp):
+- A model matrix is 4 rows: the joint's x, y, z axes in model space, then its position (real_body.cpp JointFrame; the head lift
+  check at real_body.cpp:1155-1157: the child sits at the parent's position + t . the parent's rows).
+- A local joint is {q x, y, z, w | t | scale}, 0x30 bytes (real_body.cpp:124 `struct Joint`); ReadPose keeps q and t
+  (gear_look.cpp ReadPose: q = p[0..3], t = p[4..6]).
+- The child's rows are L * P with L = R(q)^T (convention 0, ride_pose_math.hpp:5-8 and :98; the seated-arms gate measured it,
+  real_body.cpp:795-806: error 1e-7, the other convention 1.7). That is the plain column-vector chain W_j = W_j-1 R(q_j),
+  p_j = p_j-1 + W_j-1 t_j (the unit test checks it on a bent 14-joint chain).
+- The arm is one chain (the parent of j is j - 1), HLP_Oderadek on joint 13: identity rotation, t = (0, 0.011729, 0.011248) m
+  (static-Q5Q6). The game parents the body to it (0x142977420 -> 0x14235E990(body, arm, 0)). Scales are taken as 1 (ReadPose
+  does not carry them); the joint part of the FK check would show otherwise.
+
+**Receiver.**
+- Routing (`OdraPoseRx`, from SetPartnerPose, before the held / backpack branches): with the partner's current frame (same
+  layout, item in range) the item must be an odradek item and the pose on its part's skeleton; a pose ahead of its frame is
+  routed by its skeleton. Anything else is dropped and counted, never handed to the backpack. Each part keeps its 4 newest
+  frames keyed by the receive time (QPC ms).
+- Targets (`OdraApplyPoses`, the partner slot, after ApplyPoses): the part's prop, live for 500 ms, whose PoseSkeleton has the
+  frames' layout and joint count, gets pose target 9 (arm) / 10 (body). Played 100 ms behind arrival: the two frames around the
+  play time (and the one after, when within 250 ms) go to `SetGearPose` with `GearPoseInterp`, and the props' own model updates
+  blend them (as the vehicle copy's; without `kSmoothDetourInterp` the newest frame stands). After a pause (the 1 s keepalive)
+  a segment starts 100 ms before its frame. SetGearPose is called only when the bracket's frames or the prop change.
+- Stale: no frame for 1.5 s holds the last pose (the prop keeps it; logged, counted). A part gone from the frame for 1.5 s drops
+  its frames; the partner's gear cleared drops them all.
+- Lifetime: the targets are released before their props go (RemoveProp, RemoveSpare, and every Unpublish via ClearPoses);
+  a prop that SetGearPose refused is not tried again.
+- Body follow: while the newest arm frame carries `kGearPoseOdraFk`, the arm prop is posed, both parts are in the frame and the
+  arm item comes first (ReadItems adds the arm first), PublishNow places the body item on the arm prop (parent = the arm item)
+  at FK(the arm pose as its prop draws it now)[13] * HLP_Oderadek instead of the frame's body transform. A change of 0.5 mm /
+  0.05 deg publishes again (during a scan that is most ticks, and each publish restarts the gear's extrapolation history,
+  section 26.7). OdraTick's attach check then compares the body with the arm item's place times the follow.
+
+**Config.** `odradek_pose` (bool, default 1; testenv allows it in scenarios and the launcher's ini). It does nothing while
+`odradek_gear` is 0. `gear 40 6 0|1` sets it at run time, `gear 40 7 0|1` allows the body follow.
+
+**Lines** (prefix `[odrapose]`): `odradek_pose=N: ...`, `the partner's frames carry | do not carry the Odradek pose flag`,
+`our arm|body pose stream on (item i, n joints, skeleton X, layout Y)` / `off (<why>)`, `our arm|body pose not read: skeleton X
+with n joints (want ...): not sent`, `sender FK check (at start | at the first scan, state XX | every 30 s | again): arm joint 13
+from the locals vs its model matrix a cm / b deg (the other convention c cm / d deg); the body predicted (joint 13 *
+HLP_Oderadek) vs where the game put it: e cm / f deg (pass|FAIL, n of m passed) -> ...`, `the partner's arm|body pose: first
+frame (...)`, `the partner's Odradek pose dropped: ...`, `partner arm|body prop pose target taken | NOT TAKEN: p (n joints, ...)`
+/ `released: p (<why>)`, `partner body follows the arm tip (...)` / `keeps the frame's body transform (<why>)`, `partner
+arm|body pose: no frame for 1.5 s: the last pose held` / `frames again after s`, `status: ...` (`gear 40 5`, with the counts
+since the last `gear 40 5`) and the 30 s `summary: ...`.
+
+**Open risks.** The FK check during the first scan may see the body a frame behind the arm and fail once (it keeps the bit;
+three in a row would turn it off); the follow republishes the gear list most ticks during a scan (the extrapolation restarts);
+the props' updates and the tick's follow use the same play time but read QPC at different moments (under a frame); a scan
+triggered by `odra 2` is assumed to play the Odradek's own animation (the screenshots and the `moving` counts tell); ~11 KB/s
+more on the link while both parts move (the body's frame is 544 bytes).
+
 ## 13. Gear looks and the back cargo: colours, variations and the backpack's pose
 
 **Status (2026-11-17, after v0.8.0): works in hidden two-game runs.** The user's report on v0.8: "the

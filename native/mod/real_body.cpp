@@ -526,6 +526,7 @@ struct PoseTarget {
     std::atomic<std::uint32_t> n{0};
     holo::Spawn spawn;  // the prop's spawn (game thread: SpawnAlive before a forced update)
     std::atomic<std::uint32_t> game_updates{0};
+    std::atomic<std::uint32_t> applies{0};  // pose writes on this target (round 29 O2: the Odradek props' counters)
     ULONGLONG last_game_ms = 0;
     std::uint32_t forced = 0;
 };
@@ -2530,6 +2531,7 @@ void ApplyGearPose(unsigned k, std::uintptr_t sm) {
         return;
     }
     g_pt_applies.fetch_add(1, std::memory_order_relaxed);
+    t.applies.fetch_add(1, std::memory_order_relaxed);
 }
 
 // The partner's boots prop (docs/real-partner-body.md section 21): ds/entities/cinematics/demo_apv_sam_foot_def_v01, the
@@ -6130,6 +6132,8 @@ void GearPoseCounters(char* out, std::size_t cap) noexcept {
     std::snprintf(out, cap, "%u target(s), %u pose writes, %u forced updates, rejects %u, torn %u, write failures %u, faults %u%s", live, g_pt_applies.load(),
                   forced, g_pt_rejects.load(), g_pt_torn.load(), g_pt_wpm.load(), g_pt_faults.load(), g_pt_faulted.load() ? " (OFF for this session)" : "");
 }
+
+std::uint32_t GearPoseApplies(unsigned k) noexcept { return k < kMaxPoseTargets ? g_pt[k].applies.load(std::memory_order_relaxed) : 0u; }
 
 game::Entity* SlotEntity(GearSlot slot) noexcept {
     BodySlot& b = g_slots[slot == GearSlot::self ? 1 : 0];
