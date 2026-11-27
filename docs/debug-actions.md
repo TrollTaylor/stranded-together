@@ -1691,6 +1691,18 @@ per caller. `truck_v3 0`: the watch off and the `status` line. Scenario: trucks-
 state, hello tx/rx, host MULE-driven/starts/stops/DRIVE+npc frames/claims denied/PARK lifts, guest followed/attached/frames
 in/refused/parked lifts/driver-seat refusals). Scenario: two-games-truck-v3-host (gate `python -I tools\testenv\truck-v3.py <run>`).
 
+`truck_v3 4` (round 29 T2, `vehicle_mule_seat`, default 1, acts only with vehicle_mule_v3=1; works with vehicle_truck_probe=0;
+docs/enemy-sync.md 14.22): the `[truckv3] v3 seats status:` line (key, ready, byte-check groups and the capsule toggle, V3 live,
+the partner's seats bit; host: STO1 sent / empty / failed, entries from the parent chain / the seat table, over 8, unsendable,
+trucks; guest: STO1 in / bad / dropped / old / empty, records, seated noted; capsule off / on / failed; shove alarms). With the
+seat key on the byte checks are `n/58` (group 0x40: the capsule toggle; 0x80: a MULE's body parts, ragdoll and mover). Scenario:
+two-games-truck-v3-seated (gate `python -I tools\testenv\truck-v3.py <run>`, its T2 checks).
+
+`truck_v3 5 <mask>` and `truck_v3 6 <mode>` (round 29 T2, hidden runs only; refused otherwise): on the guest, only the seats
+whose bit is set in `mask` are shown (-1 all, the default), and only the passes in `mode` switch a shown seated MULE's physics
+off (bit 0 its art-part bodies, bit 1 its ragdoll; -1 both, the default). Lines `[truckv3] v3 seats: the seat mask 0x..` /
+`the body passes 0x..`. For comparing which part of a rider pushes her truck.
+
 ### World sync (`world_dump`, `world_sync`, `dev_build`, `dev_build_remove`, `dev_build_decay`, `dev_build_mats`, `dev_ladder`, `dev_rope`; ziplines W4; on with `host_save=1` unless `world_sync=0`)
 
 Shared structures (docs/world-sync.md). All log `[world] ...` lines. `world_dump` and `world_sync` work in any session

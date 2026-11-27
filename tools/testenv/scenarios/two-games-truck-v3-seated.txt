@@ -1,0 +1,109 @@
+# Round 29 T2 gate (docs/enemy-sync.md 14.22; vehicle_mule_v3=1 on both games, vehicle_mule_seat at its default 1): the MULEs
+# riding in the host's V3 MULE truck sit in the truck on the guest's screen. The host sends each V3 truck's occupants (STO1, SVM1
+# type 52); the guest shows a seated mirror the record names at its seat in the truck her follower holds (her truck's transform
+# times the seat's local transform), posed through the mirror pose slots, its capsule out of the world. Same place and setup as
+# two-games-truck-v3-host (the MULE Camp Southwest of Lake Knot City; do not move either Sam into the camp, do not alert it).
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-truck-v3-seated -SeedSaves complete-100 -GuestSeed profile-only -Id round29-t2
+# Afterwards (PASS only when Run-Batch's PASS and this script's PASS both hold; the T2 checks run when the guest's log has the
+# "v3 seats: vehicle_mule_seat=1: STO1" line):
+#   python -I tools\testenv\truck-v3.py build-testenv\runs\<run>
+#   (T1's checks, and: at least one 5 s line with >= 1 shown; the seat error max <= 0.3 m over every 5 s line that measured ticks;
+#   no "shoved?" line; no capsule "NOT restored" line)
+# Look at the screenshots: 03/04 (20 s / 40 s of driving) must show the MULEs sitting in the truck on both screens.
+# covers: vehicle-mule
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini vehicle_mule_v3=1
+ini vehicle_mule_seat=1
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[config\] vehicle_mule_v3=1
+@guest waitlog 5 \[config\] vehicle_mule_v3=1
+waitlog 5 \[config\] vehicle_mule_v3=1 vehicle_mule_seat=1
+@guest waitlog 5 \[config\] vehicle_mule_v3=1 vehicle_mule_seat=1
+waitlog 5 \[truckv3\] v3: vehicle_mule_v3=1
+@guest waitlog 5 \[truckv3\] v3: vehicle_mule_v3=1
+waitlog 5 \[truckv3\] v3 seats: vehicle_mule_seat=1: STO1 \(SVM1 type 52\) on
+@guest waitlog 5 \[truckv3\] v3 seats: vehicle_mule_seat=1: STO1 \(SVM1 type 52\) on
+goto mule-camp-sw-lkc
+@guest goto 1521.90 992.00 0
+waitlog 30 \[truckv3\] v3: the partner's STV3 hello: version 1, features 0x3, role guest
+@guest waitlog 30 \[truckv3\] v3: the partner's STV3 hello: version 1, features 0x3, role host
+waitlog 30 \[truckv3\] v3 host: LIVE
+@guest waitlog 30 \[truckv3\] v3 guest: LIVE
+waitlog 10 \[truckv3\] v3 host: the MULE occupants of the V3 trucks go to the guest
+@both action vehicle_share 9 1 400
+waitlog 10 \[vshare\] trucks tag=1 done
+@guest waitlog 10 \[vshare\] trucks tag=1 done
+screenshot 01-host-calm
+@guest screenshot 01-guest-calm
+# ---- the patrol boards: the host sends its truck as DRIVE frames, the guest follows it
+waitlog 150 \[truckv3\] v3 host: truck 0x0200(0F|10) MULE 0x[0-9A-F]+ drives it: DRIVE frames to the guest \(#1;
+@guest waitlog 15 \[truckv3\] v3 guest: truck 0x0200(0F|10): the host's MULE drives it: followed here
+@guest waitlog 15 \[vdrive\] follower of truck 0x0200(0F|10) attached #1:
+# ---- T2: the occupants go over and the seated mirrors are shown in her truck
+waitlog 15 \[truckv3\] v3 host: truck 0x0200(0F|10) occupants \(STO1 #[0-9]+\): MULE 0x
+@guest waitlog 15 \[truckv3\] v3 guest: truck 0x0200(0F|10) occupants from the host \(STO1 #[0-9]+\): MULE 0x
+@guest waitlog 30 \[truckv3\] v3 guest: mirror id=[0-9A-F]+ seated in truck 0x0200(0F|10) seat [0-9?]+ \(shown\)
+@guest waitlog 5 \[enemy\] mirror id=[0-9A-F]+ seated in V3 truck 0x0200(0F|10): shown at its seat in her truck
+screenshot 02-host-boarded
+@guest screenshot 02-guest-boarded
+wait 17000
+# the guest looks at the truck: our Sam 20 m from its driver (MULE 0x202E in this save: the driver of every run so far), facing
+# it, the screenshot at once (run 105408 put her 25 m ahead of it: the host's truck met the partner body and its MULEs got off;
+# run 112618 at 20 m and 0.9 s: the truck 27 m off, too small to see its riders: 10 m, 0.25 s, from where she stood, behind it)
+@guest action enemy_look 0x202E 10 1.0
+wait 250
+screenshot 03-host-20s
+@guest screenshot 03-guest-20s
+wait 20000
+screenshot 04-host-40s
+@guest screenshot 04-guest-40s
+@guest waitlog 5 \[truckv3\] v3 guest: follower of truck 0x0200(0F|10) \(the host's MULE drives it\): placement error mean
+# the 5 s seat line: at least one shown, the seat error max <= 0.3 m (waitlog: any 5 s line so far; truck-v3.py checks them all)
+@guest waitlog 10 \[truckv3\] v3 guest: seated [1-9][0-9]* shown, .*; seat error mean [0-9.]+ max 0\.([0-2][0-9][0-9]|300) m over [1-9][0-9]* ticks
+@guest waitlog 10 \[truckv3\] v3 guest: seat sanity: 
+# ---- the census (tag 2) and the counters
+@both action vehicle_share 9 2 400
+waitlog 10 \[vshare\] trucks tag=2 done
+@guest waitlog 10 \[vshare\] trucks tag=2 done
+action truck_v3 3
+waitnew 5 \[truckv3\] v3 status: key 1, LIVE .*host: [0-9]+ MULE-driven now, [1-9][0-9]* starts
+@guest action truck_v3 3
+@guest waitnew 5 \[truckv3\] v3 status: key 1, LIVE .*guest: [0-9]+ followed \([0-9]+ attached\), [1-9][0-9]* DRIVE\+npc frames in, 0 refused
+action truck_v3 4
+waitnew 5 \[truckv3\] v3 seats status: key 1 ready 1 .*partner seats 1; host: [1-9][0-9]* STO1 sent
+@guest action truck_v3 4
+@guest waitnew 5 \[truckv3\] v3 seats status: key 1 ready 1 .*partner seats 1; .*guest: [1-9][0-9]* STO1 in, 0 bad
+@both action vehicle_drive 0
+screenshot 05-host-end
+@guest screenshot 05-guest-end
+# ---- off
+nolog \[vshare\] FAULT
+@guest nolog \[vshare\] FAULT
+nolog \[vdrive\] FAULT
+@guest nolog \[vdrive\] FAULT
+nolog \[enemy\] FAULT
+@guest nolog \[enemy\] FAULT
+nolog byte check FAILED
+@guest nolog byte check FAILED
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@guest nolog \[enemy\] mirror id=[0-9A-F]+ in a vehicle \(
+nolog owner guest \(MULE
+@guest nolog owner guest \(MULE
+@guest nolog \[truckv3\] v3 guest: follower of truck 0x[0-9A-F]+ refused
+@guest nolog \[truckv3\] v3 guest: a MULE-driven truck's frame for
+nolog \[truckv3\] v3 host: a MULE-driven truck's frame for
+@guest nolog \[truckv3\] v3 guest: truck 0x[0-9A-F]+ shoved\?
+@guest nolog \[enemy\] mirror id=[0-9A-F]+: its capsule [0-9A-Fa-fx]+ back in the world \([^)]*\): NOT restored
+@guest nolog \[enemy\] mirror id=[0-9A-F]+ seated in V3 truck 0x[0-9A-F]+: its capsule could not be taken out of the world
+@guest nolog \[enemy\] mirror id=[0-9A-F]+: its capsule [0-9A-Fa-fx]+ back in the world \(still within her truck's box after 10 s
+nolog \[truckv3\] v3 seats: vehicle_mule_seat=1: OFF
+@guest nolog \[truckv3\] v3 seats: vehicle_mule_seat=1: OFF
+@guest quit
+wait 3000
+quit

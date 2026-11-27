@@ -91,6 +91,10 @@ Config LoadConfig(const std::wstring& dir) {
             c.vehicle_mule_v3 = ParseBool(v);
             continue;
         }
+        if (k == "vehicle_mule_seat") {
+            c.vehicle_mule_seat = ParseBool(v);
+            continue;
+        }
         if (k == "enemy_host_hide") {
             c.enemy_host_hide = ParseBool(v);
             continue;
@@ -552,7 +556,7 @@ Config LoadConfig(const std::wstring& dir) {
     Log("[config] enemy_mirror_hold_check=%d enemy_mirror_vehicle=%d", c.enemy_mirror_hold_check ? 1 : 0, c.enemy_mirror_vehicle ? 1 : 0);
     Log("[config] vehicle_mule_log=%d vehicle_mule_hold=%d", c.vehicle_mule_log ? 1 : 0, c.vehicle_mule_hold ? 1 : 0);
     Log("[config] vehicle_truck_probe=%d", c.vehicle_truck_probe ? 1 : 0);
-    Log("[config] vehicle_mule_v3=%d", c.vehicle_mule_v3 ? 1 : 0);
+    Log("[config] vehicle_mule_v3=%d vehicle_mule_seat=%d", c.vehicle_mule_v3 ? 1 : 0, c.vehicle_mule_seat ? 1 : 0);
     Log("[config] enemy_down_hold=%d enemy_down_hold_radius=%.0f", c.enemy_down_hold ? 1 : 0, c.enemy_down_hold_radius);
     Log("[config] enemy_m2_probes=%d", c.enemy_m2_probes ? 1 : 0);
     Log("[config] enemy_phit_probe=%d", c.enemy_phit_probe ? 1 : 0);

@@ -449,7 +449,7 @@ constexpr Row kRows[] = {
       false},
      &DoDev<dev::Op::give>},
     {{Action::truck_v3, Tab::tools, "Truck v3",
-      "session.ini vehicle_truck_probe=1 (round 28 P2, read-only; '[truckv3] ...' lines): 0 the watch off + status; 1 [s] the watch (board / leave / drive lines); 3 the V3 status (round 28 T1, vehicle_mule_v3; any probe key); 8 the seated MULEs in their truck's frame + capsule; 9 the controller identity of every MULE-driven vehicle.",
+      "session.ini vehicle_truck_probe=1 (round 28 P2, read-only; '[truckv3] ...' lines): 0 the watch off + status; 1 [s] the watch (board / leave / drive lines); 3 the V3 status (round 28 T1, vehicle_mule_v3; any probe key); 4 the T2 seat status (round 29, vehicle_mule_seat; any probe key); 8 the seated MULEs in their truck's frame + capsule; 9 the controller identity of every MULE-driven vehicle.",
       false},
      &DoTruckV3},
     {{Action::bt_sync, Tab::tools, "Bt sync", "BT field sync B1 (bt_sync=1|2 in session.ini): <op> 0 the status line ([bt] sync status), 1 FIELD at the next census; hidden runs: 3 a test VOID, 4 a test NOTICED to the partner.", false},

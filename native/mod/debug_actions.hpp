@@ -161,7 +161,7 @@ enum class Action : std::uint8_t {
     bt_probe,             // v[0] = 0 stop (totals line), 1 the census once a second (v[1] = seconds, 0 = 1 s), 2 one full dump now
     odra,                 // v[0] op: 0 dump, 1 <0|1> watch, 2 scan, 3 <m> [mode] replay ahead, 4 <mode>, 5 <m> [mask] test scan, 6 <mask>, 7 status, 8 <m> send test (odradek_probe / odradek_scan_sync)
     odra_replay,          // v = x y z (z 0: Sam's height): the survey shown from that point (odradek_sync.hpp; odradek_probe=1)
-    truck_v3,             // round 28 P2 (docs/enemy-sync.md 14.20; vehicle_truck_probe=1): v[0] = op 0 off / 1 [s] watch / 3 V3 status (T1) / 8 seats / 9 identity
+    truck_v3,             // round 28 P2 (docs/enemy-sync.md 14.20; vehicle_truck_probe=1): v[0] = op 0 off / 1 [s] watch / 3 V3 status (T1) / 4 seat status (T2) / 8 seats / 9 identity
     bt_sync,              // round 28 lane B1 (bt_sync=1|2): v[0] = 0 status, 1 FIELD now, 3 test VOID, 4 test NOTICED (3/4 hidden runs)
     count
 

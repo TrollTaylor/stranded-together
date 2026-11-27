@@ -1,7 +1,8 @@
 """Round 28 T1 gate, host-owned MULE trucks (docs/enemy-sync.md 14.21): the host's MULE truck is the same truck on both screens
-(two-games-truck-v3-host, vehicle_mule_v3=1 on both games).
+(two-games-truck-v3-host, vehicle_mule_v3=1 on both games); round 29 T2 (docs/enemy-sync.md 14.22, two-games-truck-v3-seated,
+vehicle_mule_seat=1): the MULEs riding in it sit in her truck.
 
-    python -I tools/testenv/truck-v3.py <run folder> [--tag N] [--strict-final]
+    python -I tools/testenv/truck-v3.py <run folder> [--tag N] [--strict-final] [--seated | --no-seated]
 
 Reads <run>/game/stranded_together.log (the host) and <run>/guest/game/stranded_together.log (the guest):
   - the host's "[truckv3] v3 host: truck 0xT MULE 0xM drives it: DRIVE frames ..." and "... no longer drives it ..." lines,
@@ -9,7 +10,10 @@ Reads <run>/game/stranded_together.log (the host) and <run>/guest/game/stranded_
     MULE drives it): ..." 5 s lines and "... over the follow (the host's MULE drove it): ..." detach lines,
   - the guest's enemy lines "[enemy] mirror id=X in a vehicle (" (the v2 release) and "seated in V3 truck" (the v3 verdict),
   - "owner guest (MULE" on either game (a MULE of the guest's game drives her copy),
-  - the truck census of tag N (default 2; vehicle_share 9) on both games.
+  - the truck census of tag N (default 2; vehicle_share 9) on both games;
+  - T2 (when the guest's log has "[truckv3] v3 seats: vehicle_mule_seat=1: STO1 ... on", or with --seated; --no-seated skips it):
+    the guest's 5 s lines "[truckv3] v3 guest: seated N shown, ...; seat error mean M max X m over K ticks; ...", her
+    "... truck 0xT shoved? ..." lines and "[enemy] mirror id=X: its capsule ... back in the world (...): NOT restored" lines.
 It FAILS (exit 1) when:
   - the host never sent a MULE-driven truck, or the guest's follower never attached to one it sent;
   - over the guest's follows (the detach summaries; a follow still attached at the end: its newest 5 s line) the placement
@@ -19,7 +23,9 @@ It FAILS (exit 1) when:
   - an "owner guest (MULE" line on either game, or a "follower of truck ... refused" line on the guest;
   - at census tag N a truck both games list and the host lists parked ("MULE truck empty") is more than 0.5 m apart; a
     followed truck still MULE-driven on the host at tag N is checked by the guest's last 5 s max (<= 0.5 m) instead, and
-    with --strict-final it must be parked (the MULE stopped driving it before tag N).
+    with --strict-final it must be parked (the MULE stopped driving it before tag N);
+  - T2: no 5 s line with >= 1 shown; a 5 s line that measured ticks with a seat error max over 0.3 m; a "shoved?" line; a capsule
+    "NOT restored" line.
 Read only; no game.
 """
 import re
@@ -37,6 +43,13 @@ SEATED = re.compile(r"\[enemy\] mirror id=([0-9A-F]+) seated in V3 truck 0x([0-9
 OWNER_GUEST = re.compile(r"owner guest \(MULE")
 REFUSED = re.compile(r"\[truckv3\] v3 guest: follower of truck 0x([0-9A-F]{6}) refused")
 # (the optional " (host's id differs)" between the id and ':' is group 7: such a truck is a FAIL, never skipped)
+# round 29 T2
+SEATS_ON = re.compile(r"\[truckv3\] v3 seats: vehicle_mule_seat=1: STO1 ")
+SEAT_WIN = re.compile(r"\[truckv3\] v3 guest: seated (\d+) shown, (\d+) hidden \(no pose slot\), (\d+) hidden \(no occupant record\); seat error mean "
+                      r"([0-9.]+) max ([0-9.]+) m over (\d+) ticks")
+SEAT_SHOWN = re.compile(r"\[truckv3\] v3 guest: mirror id=([0-9A-F]+) seated in truck 0x([0-9A-F]{6}) seat (\S+) \(shown\)")
+SHOVED = re.compile(r"\[truckv3\] v3 guest: truck 0x([0-9A-F]{6}) shoved\?")
+CAP_NOT = re.compile(r"\[enemy\] mirror id=([0-9A-F]+): its capsule \S+ back in the world \([^)]*\): NOT restored")
 CENSUS = re.compile(r"\[vshare\] trucks tag=(\d+) t\d+ truck 0x([0-9A-F]{6})( \(host's id differs\))?: (MULE truck[^;(]*).*? at \(([-0-9.]+), ([-0-9.]+), ([-0-9.]+)\)")
 
 
@@ -146,6 +159,40 @@ def main(argv):
         fails.append("guest: no mirror \"seated in V3 truck\" (the seated verdict was never shown)")
     fails += ["guest: " + r for r in refused[:5]]
 
+    # round 29 T2: the seated MULEs shown in her truck
+    t2 = "--seated" in argv or ("--no-seated" not in argv and any(SEATS_ON.search(l) for l in guest))
+    if t2:
+        wins, shown_ids, shoves, cap_not = [], set(), [], []
+        for line in guest:
+            m = SEAT_WIN.search(line)
+            if m:
+                wins.append(dict(shown=int(m.group(1)), no_slot=int(m.group(2)), no_rec=int(m.group(3)), mean=float(m.group(4)),
+                                 mx=float(m.group(5)), n=int(m.group(6))))
+            m = SEAT_SHOWN.search(line)
+            if m:
+                shown_ids.add(m.group(1))
+            if SHOVED.search(line):
+                shoves.append(line.strip()[:200])
+            if CAP_NOT.search(line):
+                cap_not.append(line.strip()[:200])
+        with_shown = [w for w in wins if w["shown"] >= 1]
+        measured = [w for w in wins if w["n"] > 0]
+        n = sum(w["n"] for w in measured)
+        mean = sum(w["mean"] * w["n"] for w in measured) / n if n else 0.0
+        mx = max((w["mx"] for w in measured), default=0.0)
+        print("guest T2: %d mirror(s) shown seated; %d 5 s lines (%d with >= 1 shown, most shown %d, most hidden for no pose slot %d, for no "
+              "occupant record %d); seat error mean %.3f max %.3f m over %d ticks" % (
+                  len(shown_ids), len(wins), len(with_shown), max((w["shown"] for w in wins), default=0),
+                  max((w["no_slot"] for w in wins), default=0), max((w["no_rec"] for w in wins), default=0), mean, mx, n))
+        if not with_shown:
+            fails.append("guest T2: no 5 s seat line with >= 1 seated mirror shown")
+        if not n:
+            fails.append("guest T2: the seat error measured no ticks")
+        elif mx > 0.3:
+            fails.append("guest T2: seat error max %.3f m (limit 0.3)" % mx)
+        fails += ["guest T2: " + s for s in shoves[:5]]
+        fails += ["guest T2: " + s for s in cap_not[:5]]
+
     # the final positions (census tag N)
     def census(lines):
         out = {}
@@ -191,7 +238,8 @@ def main(argv):
         return 1
     for n in notes:
         print("NOTE: " + n)
-    print("PASS: the host's MULE truck followed on the guest (placement, teleports, seated mirrors, final positions)")
+    print("PASS: the host's MULE truck followed on the guest (placement, teleports, seated mirrors, final positions%s)" % (
+        "; T2: seated MULEs shown in her truck" if t2 else ""))
     return 0
 
 

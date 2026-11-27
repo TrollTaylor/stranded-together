@@ -59,7 +59,7 @@ area voice                 : partner voice and the self-voice mute
 area sound                 : partner sounds (footsteps, efforts) and their volume
 area vehicles              : vehicle copies (vehicle_sync: look, state, sounds of the partner's vehicle)
 area vehicle-share         : shared real vehicles: identity, summon, remote driving, handoff, persistence
-area vehicle-mule          : round 23 D: the MULE trucks left to each game (no PARK frames, no parked correction), the truck census (gate two-games-truck-hold); round 28 T1: host-owned MULE trucks (vehicle_mule_v3; + two-games-truck-v3-host)
+area vehicle-mule          : round 23 D: the MULE trucks left to each game (no PARK frames, no parked correction), the truck census (gate two-games-truck-hold); round 28 T1: host-owned MULE trucks (vehicle_mule_v3; + two-games-truck-v3-host); round 29 T2: their MULEs seated in them (vehicle_mule_seat; + two-games-truck-v3-seated)
 area vehicle-hit           : vehicle hits, bumps and tackles
 area sam-damage            : the shared Sam damage detour (sam_damage.*): the vehicle hits' observer and the shots' filter; a hit made (two-games-vehicle-hit)
 area ride                  : riding together: boarding, seats, ride camera, forced exits

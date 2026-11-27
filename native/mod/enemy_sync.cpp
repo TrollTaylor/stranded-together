@@ -1055,7 +1055,7 @@ void HostTick(const TickIn& in, double now) {
         // P2: a dead or down one is still posed (it lies where the host's lies), in the 5 Hz half, never taking a live one's fast rank
         for (const HostEnemy& h : g_host) {
             const bool down = h.now.dead || ecombat::HostDefeat(h.id) != 0;
-            pc.push_back(erules::PoseCand{h.id, h.dist, h.now.realized && !HostSkips(h.id), down});
+            pc.push_back(erules::PoseCand{h.id, h.dist, h.now.realized && !HostSkips(h.id), down, truckv3::SeatHostOccupant(h.id)});
         }
         UpdateCaptureSlots(pc.data(), static_cast<unsigned>(pc.size()), [](std::uint32_t id) -> std::uintptr_t {
             for (const HostEnemy& h : g_host)
@@ -1416,10 +1416,12 @@ void DownUnhideAll(const char* why) {
 bool g_down_kept = false;          // the keep is in force (logged once)
 bool g_down_nothold_logged = false;  // the deferred not-holding retry was logged for this spell
 bool g_down_nobeacon_logged = false; // DownTick: the partner down and its beacon gone (logged once per spell)
+void SeatHoldReHide(Mirror& m, const char* why);  // round 29 T2 (below)
 void DownKeep(const char* why) {
     unsigned held = 0;
-    for (const Mirror& m : g_mirrors) {
+    for (Mirror& m : g_mirrors) {
         if (!m.frozen || g_down_hid.count(m.id)) continue;
+        SeatHoldReHide(m, "the down hold (sync off)");  // round 29 T2 review: never left shown, unplaced, at a seat
         if (g_down_held.insert(m.id).second) ++g_ds.holds;
         ++held;
     }
@@ -1447,15 +1449,90 @@ struct SeatHid {
     std::uint32_t a88_pre = 0;
     std::uint32_t truck = 0;
     double since = 0;
+    // round 29 T2 (vehicle_mule_seat; docs/enemy-sync.md 14.22): shown at its seat in her truck (SeatShowTick)
+    bool shown = false;
+    bool placed = false, placed_first = false;  // placed at a tick (placed_tick); that was its first shown tick (the meter's rule)
+    std::uint32_t placed_tick = 0;              // review: the GuestTick of that placement (g_gtick: the meter counts only the next one)
+    double placed_ms = 0;
+    double seat_prev[3] = {};                   // the seat's place at that placement (the meter's truck-move test)
+    std::uintptr_t entity = 0, cap = 0;         // its capsule we took out of the world (Capsule::Disable), 0 none
+    double cap_retry_ms = 0;                    // review: Capsule::Disable failed: tried again at this time (kept hidden meanwhile)
+    bool cap_fail_logged = false;
+    std::uintptr_t nocap_entity = 0;            // its entity had no CapsuleComponent at all (a MULE has none; rechecked every 1 s while seated)
+    bool nocap_logged = false;
+    truckv3::SeatBodies bodies;                 // while shown: its art-part bodies and ragdoll switched off (truckv3::SeatBodiesOff)
+    double body_probe_ms = 0;                   // the next probe line (1 s apart, 12 a seat episode)
+    unsigned body_probe_lines = 0;
+    bool woke = false, mover_off = false;       // shown: woken by us (drawn), its mover switched off by us
+    // review: where it was placed (it stays there until moved out: SeatMoveOut): her truck then, the seat in its frame, its host id
+    bool at_seat = false;
+    truckv3::Xf truck_xf;
+    double lpos[3] = {};
+    std::uint32_t place_truck = 0;
 };
 std::map<std::uint32_t, SeatHid> g_seat_hid;
 unsigned g_seat_hides = 0, g_seat_shows = 0, g_seat_entries = 0;
+std::uint32_t g_gtick = 0;  // round 29 T2 review: GuestTick's count (the seat meter's "placed at the previous tick")
+// Round 29 T2: a seated mirror's capsule back in the world (Capsule::Enable, validated by truckv3::SeatCapsuleOn). Review: the
+// mirror is first moved out of her truck (SeatMoveOut); while GuestTick runs, the capsule comes back once the mirror stands clear of
+// her truck's box (truckv3::SeatClearOf: the truck now, else where it was at the move), at most 10 s later; at once on off / reset /
+// a fault; a new world forgets them untouched.
+constexpr double kCapBackMaxMs = 10000.0;
+struct CapBack {
+    std::uint32_t id = 0;
+    std::uintptr_t actor = 0, entity = 0, cap = 0;
+    std::uint32_t truck = 0;  // her truck's host id (0: none known: back at the next tick)
+    bool truck_ok = false;
+    truckv3::Xf truck_xf;     // ... where it was when the mirror was moved out
+    double since = 0;
+};
+std::vector<CapBack> g_cap_back;
+unsigned g_cap_lines = 0, g_seat_t2_lines = 0;
+void CapBackNow(const CapBack& c, const char* why) {
+    const bool ok = truckv3::SeatCapsuleOn(c.entity, c.cap);
+    if (g_cap_lines < 200) {
+        ++g_cap_lines;
+        Log("[enemy] mirror id=%05X: its capsule %p back in the world (%s)%s", c.id, reinterpret_cast<void*>(c.cap), why,
+            ok ? "" : ": NOT restored (not the same component any more, or its counter is down already)");
+    }
+}
+void SeatCapBack(std::uint32_t id, SeatHid& h, const char* why, bool defer) {
+    if (!h.cap) return;
+    CapBack c;
+    c.id = id, c.actor = h.actor, c.entity = h.entity, c.cap = h.cap, c.since = g_tnow;
+    c.truck = h.place_truck, c.truck_ok = h.place_truck != 0, c.truck_xf = h.truck_xf;
+    h.cap = 0, h.entity = 0;
+    if (defer) g_cap_back.push_back(c);
+    else CapBackNow(c, why);
+}
+// Whether a given-back seated mirror stands clear of her truck (its capsule can come back): the truck now when her game has it,
+// else where it was; an actor gone or without a place: true (SeatCapsuleOn validates the component anyway).
+bool CapBackClear(const CapBack& c) {
+    ActorNow a;
+    if (!c.truck || !ReadActor(c.actor, c.id, a) || !a.have_xf) return true;
+    truckv3::Xf t;
+    if (truckv3::V3TruckXf(c.truck, t)) return truckv3::SeatClearOf(t, a.pos);
+    return !c.truck_ok || truckv3::SeatClearOf(c.truck_xf, a.pos);
+}
+void CapBackTick(bool all, const char* why) {
+    for (std::size_t i = 0; i < g_cap_back.size();) {
+        const bool late = g_tnow - g_cap_back[i].since >= kCapBackMaxMs;
+        if (!all && !late && !CapBackClear(g_cap_back[i])) {
+            ++i;
+            continue;
+        }
+        const CapBack c = g_cap_back[i];
+        g_cap_back.erase(g_cap_back.begin() + static_cast<std::ptrdiff_t>(i));
+        CapBackNow(c, all ? why : late ? "still within her truck's box after 10 s: back all the same" : "clear of her truck");
+    }
+}
 void SeatHideMirror(Mirror& m, double now) {
     const auto it = g_seat_hid.find(m.id);
     if (it != g_seat_hid.end() && it->second.actor == m.actor) {
         it->second.truck = m.v3_truck ? m.v3_truck : it->second.truck;
         return;
     }
+    if (it != g_seat_hid.end()) SeatCapBack(m.id, it->second, "another actor with its id", false);  // round 29 T2
     ActorNow a;
     if (!ReadActor(m.actor, m.id, a)) return;
     SeatHid h;
@@ -1469,14 +1546,61 @@ void SeatHideMirror(Mirror& m, double now) {
     Log("[enemy] mirror id=%05X seated in V3 truck 0x%06X: kept frozen, hidden and asleep here (#%u; a88 0x%X -> 0x%X%s)", m.id, h.truck, g_seat_hides, a.a88,
         U32(m.actor + kActFlags88), ok ? "" : ", a call FAULTED");
 }
-bool SeatShowMirror(std::uint32_t id, const char* why, double now) {
+// Round 29 T2 review: a mirror placed at a seat in her truck stays there (hidden, asleep or shown) until this: before it is shown,
+// woken or given back (any verdict end, a release, off, a reset), it is moved out of the truck, beside it at its seat's side
+// (truckv3::SeatOutLocal), upright, heading as the truck; then its capsule comes back only once it stands clear (CapBackTick).
+// The truck: hers now when the mirror is within its box, else where it was at the mirror's last placement.
+void SeatMoveOut(std::uint32_t id, SeatHid& h) {
+    if (!h.at_seat) return;
+    h.at_seat = false;
+    ActorNow a;
+    if (!ReadActor(h.actor, id, a) || !a.realized || !a.have_xf) return;
+    truckv3::Xf now_xf;
+    const truckv3::Xf* t = nullptr;
+    if (truckv3::V3TruckXf(h.place_truck, now_xf) && !truckv3::SeatClearOf(now_xf, a.pos)) t = &now_xf;
+    else if (!truckv3::SeatClearOf(h.truck_xf, a.pos)) t = &h.truck_xf;
+    if (!t) return;  // clear of it already (her truck drove on while it was hidden)
+    if (t == &now_xf) h.truck_xf = now_xf;  // (the capsule's clear test, where her game has no truck any more)
+    double out[3];
+    truckv3::SeatOutLocal(h.lpos, out);
+    const double id3[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    const truckv3::Xf w = truckv3::SeatWorld(*t, out, id3);
+    // upright: the truck's forward row flattened, up = +z, row 0 = row 1 x row 2 (the identity's handedness)
+    double f0 = t->rot[1][0], f1 = t->rot[1][1];
+    const double fl = std::sqrt(f0 * f0 + f1 * f1);
+    if (!(fl > 1e-3)) f0 = 0, f1 = 1;
+    else f0 /= fl, f1 /= fl;
+    WorldTransform xf = a.xf;
+    xf.pos.x = w.pos[0], xf.pos.y = w.pos[1], xf.pos.z = w.pos[2];
+    const float r[3][3] = {{static_cast<float>(f1), static_cast<float>(-f0), 0.0f}, {static_cast<float>(f0), static_cast<float>(f1), 0.0f}, {0.0f, 0.0f, 1.0f}};
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j) xf.rot.m[i][j] = r[i][j];
+    const bool ok = ActorXf(h.actor, kActorTeleport, xf) && ActorXf(h.actor, kVtSet, xf) && EntityXf(a.entity, xf);
+    if (ok) ++g_gs.teleports;
+    else ++g_gs.set_faults;
+    if (g_seat_t2_lines < 200) {
+        ++g_seat_t2_lines;
+        Log("[enemy] mirror id=%05X: moved out of her truck 0x%06X (%s), %.1f m to its %s side (%.2f %.2f %.2f)%s", id, h.place_truck,
+            t == &now_xf ? "her truck now" : "where her truck was at its last placement", truckv3::kSeatOutSideM, out[0] > 0 ? "right" : "left", w.pos[0],
+            w.pos[1], w.pos[2], ok ? "" : ", a call FAULTED");
+    }
+}
+bool SeatShowMirror(std::uint32_t id, const char* why, double now, bool defer = true) {
     const auto it = g_seat_hid.find(id);
     if (it == g_seat_hid.end()) return false;
+    SeatMoveOut(id, it->second);              // round 29 T2 review: out of her truck first (still hidden and asleep if T1 hid it)
+    SeatCapBack(id, it->second, why, defer);  // round 29 T2: its collision back (once clear of her truck while GuestTick runs)
+    truckv3::SeatEnd(id);
     ActorNow a;
     if (ReadActor(it->second.actor, id, a)) {
         bool ok = true;
         if ((a.a88 & 1u) && !(it->second.a88_pre & 1u)) ok = ActorBool(it->second.actor, kVtHidden, 0) && ok;
         if ((a.a88 & 2u) && !(it->second.a88_pre & 2u)) ok = ActorBool(it->second.actor, kVtSleep, 0) && ok;
+        // round 29 T2: shown awake, its mover back on (asleep, not by us: the game's Wake turns it on)
+        if (it->second.mover_off && !(U32(it->second.actor + kActFlags88) & 2u)) ok = truckv3::SeatMoverSet(a.entity, true) && ok;
+        // round 29 T2: its body parts and ragdoll back on their own layers (moved out already), after the show above: SetHidden(0)
+        // keeps ours off (its snapshot), so they are restored here; still hidden (not by us): the ragdoll only
+        truckv3::SeatBodiesOn(a.entity, it->second.bodies, !(U32(it->second.actor + kActFlags88) & 1u));
         ++g_seat_shows;
         Log("[enemy] mirror id=%05X out of V3 truck 0x%06X: shown and woken again here (%s; seated %.1f s; a88 0x%X -> 0x%X%s)", id, it->second.truck, why,
             now > it->second.since ? (now - it->second.since) / 1000.0 : 0.0, a.a88, U32(it->second.actor + kActFlags88), ok ? "" : ", a call FAULTED");
@@ -1485,7 +1609,35 @@ bool SeatShowMirror(std::uint32_t id, const char* why, double now) {
     return true;
 }
 void SeatShowAll(const char* why, double now) {
-    while (!g_seat_hid.empty()) SeatShowMirror(g_seat_hid.begin()->first, why, now);
+    while (!g_seat_hid.empty()) SeatShowMirror(g_seat_hid.begin()->first, why, now, false);
+    CapBackTick(true, why);  // round 29 T2: the deferred ones at once (GuestTick may not run again)
+}
+// Round 29 T2: a shown seated mirror hidden and asleep again (T1's state: only the bits we set), its pose slot freed.
+void SeatReHide(Mirror& m, SeatHid& h, const char* why) {
+    ActorNow a;
+    bool ok = true;
+    if (ReadActor(h.actor, m.id, a)) {
+        // its body parts and ragdoll back first (SetHidden(1) snapshots the parts already off: ours would stay off when shown);
+        // hidden already (not by us): the ragdoll only
+        truckv3::SeatBodiesOn(a.entity, h.bodies, !(a.a88 & 1u));
+        if (!(a.a88 & 1u) && !(h.a88_pre & 1u)) ok = ActorBool(h.actor, kVtHidden, 1) && ok;
+        if (!(a.a88 & 2u) && !(h.a88_pre & 2u)) ok = ActorBool(h.actor, kVtSleep, 1) && ok;
+    }
+    h.bodies = truckv3::SeatBodies{};
+    // asleep again (the game's Sleep turns the mover off; Wake at the give-back turns it on); not asleep (a fault): its mover back on
+    if (h.mover_off && ReadActor(h.actor, m.id, a) && !(a.a88 & 2u)) truckv3::SeatMoverSet(a.entity, true);
+    h.woke = false, h.mover_off = false;
+    FreeSlot(m);
+    h.shown = false, h.placed = false;
+    if (g_seat_t2_lines < 200) {
+        ++g_seat_t2_lines;
+        Log("[enemy] mirror id=%05X seated in V3 truck 0x%06X: hidden and asleep again (%s)%s", m.id, h.truck, why, ok ? "" : ", a call FAULTED");
+    }
+}
+// Round 29 T2 review: a shown seated mirror hidden and asleep again (the down hold never places it); not shown: nothing.
+void SeatHoldReHide(Mirror& m, const char* why) {
+    const auto it = g_seat_hid.find(m.id);
+    if (it != g_seat_hid.end() && it->second.shown && it->second.actor == m.actor) SeatReHide(m, it->second, why);
 }
 bool ReleaseHeld() { return g_holding || InCutscene(); }
 // The posts that give one mirror back: only while it is still the same in-use MULE actor AND still frozen by us (+0xEA4 bit 14:
@@ -1521,7 +1673,7 @@ bool PostRelease(const Mirror& m, const char* why) {
 bool ReleaseMirror(Mirror& m, const char* why) {
     if (!m.frozen) return false;
     DownUnhideMirror(m.id, "released");  // round 23 C: shown first (never released hidden)
-    SeatShowMirror(m.id, "released", 0);  // round 28 T1: likewise
+    SeatShowMirror(m.id, "released", 0, !g_stopped && g_switch);  // round 28 T1: likewise (round 29 T2: moved out of her truck, its capsule back once clear while ticking)
     g_down_held.erase(m.id);
     m.frozen = false;
     FreeSlot(m);
@@ -1854,6 +2006,18 @@ const wire::JointFrame& HoldBlend(std::uint32_t id, const wire::JointFrame& f) {
     return out;
 }
 
+// A pose slot for the mirror: held, or taken now (apply first; P1b: a capture of an enemy this game owns gives its slot up).
+bool TakeSlot(Mirror& m) {
+    if (m.slot >= 0) return true;
+    bool stolen = false;
+    const int k = m.sm ? g_palloc.Take(erules::PoseAlloc::kApply, static_cast<unsigned>(g_ecfg.enemy_pose_count), &stolen) : -1;
+    if (k >= 0 && stolen)
+        for (unsigned c = 0; c < erules::kPoseSlots; ++c)
+            if (g_pslot_real[c] == k) g_pslot_real[c] = -1, g_pslot_sm[c] = 0;  // the slot is the apply's now (its mode set below)
+    if (k >= 0 && realbody::SetEnemySlot(static_cast<unsigned>(k), m.sm, realbody::EnemySlotMode::apply)) m.slot = k;
+    else if (k >= 0) g_palloc.Free(k);
+    return m.slot >= 0;
+}
 void GivePose(Mirror& m, const erules::Track& tr, double render, bool posed_on_host) {
     auto it = g_prx.find(m.id);
     const bool have = it != g_prx.end() && it->second.tb > -1e17 && posed_on_host;
@@ -1863,19 +2027,9 @@ void GivePose(Mirror& m, const erules::Track& tr, double render, bool posed_on_h
         return;
     }
     (void)tr;
-    if (m.slot < 0) {
-        // apply first (P1b: a capture of an enemy this game owns gives its slot up)
-        bool stolen = false;
-        const int k = m.sm ? g_palloc.Take(erules::PoseAlloc::kApply, static_cast<unsigned>(g_ecfg.enemy_pose_count), &stolen) : -1;
-        if (k >= 0 && stolen)
-            for (unsigned c = 0; c < erules::kPoseSlots; ++c)
-                if (g_pslot_real[c] == k) g_pslot_real[c] = -1, g_pslot_sm[c] = 0;  // the slot is the apply's now (its mode set below)
-        if (k >= 0 && realbody::SetEnemySlot(static_cast<unsigned>(k), m.sm, realbody::EnemySlotMode::apply)) m.slot = k;
-        else if (k >= 0) g_palloc.Free(k);
-        if (m.slot < 0) {
-            ++g_gs.no_pose;
-            return;
-        }
+    if (m.slot < 0 && !TakeSlot(m)) {
+        ++g_gs.no_pose;
+        return;
     }
     const PoseRx& r = it->second;
     static wire::JointFrame out;
@@ -1985,9 +2139,150 @@ void MirrorLine(double now) {
     g_gs.no_pose = 0;
 }
 
+// Round 29 T2 (vehicle_mule_seat; docs/enemy-sync.md 14.22; truckv3::SeatFindFor, truckv3::SeatDecide): a seated mirror (T1 has
+// hidden it) that the host's STO1 names, in a truck her follower holds, with the host's pose here and a pose slot: shown at its seat
+// in her truck (its follower's transform now times the seat's local transform, one tick ahead along its velocity), placed every tick,
+// posed with the host's pose, its capsule out of the world. Anything else: hidden and asleep as T1 keeps it (and counted why). T2 off
+// here (the key, V3, the partner's hello): T1 exactly.
+void SeatShowTick(Mirror& m, const ActorNow& a, const erules::Track* tr, double render, double now) {
+    const auto hit = g_seat_hid.find(m.id);
+    if (hit == g_seat_hid.end() || hit->second.actor != m.actor) return;
+    SeatHid& h = hit->second;
+    truckv3::SeatFind f;
+    truckv3::SeatFindFor(m.id, now, f);
+    if (!f.in.on) {
+        if (h.shown) SeatReHide(m, h, "seat sync off");
+        return;
+    }
+    const bool posed_on_host = tr && tr->Newest() && (tr->Newest()->state & ewire::kPosed);
+    const auto pr = g_prx.find(m.id);
+    f.in.host_pose = posed_on_host && pr != g_prx.end() && pr->second.tb > -1e17;
+    // the meter: its place now (last tick's placement after the frame's physics) against the seat on her truck now; review: only
+    // after a placement at the previous GuestTick, with no follower correction since, the seat's move explained by the truck's speed
+    double err = -1, sanity = -1;
+    const bool live = a.realized && a.entity == m.entity && a.have_xf;
+    if (f.in.followed && h.shown && live) {
+        truckv3::SeatSample s;
+        s.placed_prev_tick = h.placed && h.placed_tick + 1 == g_gtick;
+        s.first_shown_tick = h.placed_first;
+        s.placed_ms = h.placed_ms, s.now_ms = now, s.corr_ms = f.corr_ms, s.speed_mps = f.speed_mps;
+        s.seat_moved_m = truckv3::PosDist(f.exact.pos, h.seat_prev);
+        if (truckv3::SeatErrCounts(s)) err = truckv3::PosDist(a.pos, f.exact.pos);
+    }
+    if (f.in.followed && h.shown && tr) {
+        double hp[3];
+        float yaw = 0;
+        if (tr->At(render, hp, &yaw)) sanity = truckv3::PosDist(hp, f.exact.pos);
+    }
+    // its capsule out of the world (once a seat episode; review: before the slot, and never shown without it: retried every 1 s,
+    // kept hidden meanwhile)
+    // (review run 20261127-103721: a MULE has no CapsuleComponent at all: its collision is its art-part bodies and ragdoll, switched
+    // off below once shown (truckv3::SeatBodiesOff, group kGBody: without those checks it stays hidden); rechecked every 1 s, and a
+    // capsule that turns up is taken out, or the mirror hidden again while that fails)
+    if (h.nocap_entity && (!live || h.nocap_entity != a.entity)) h.nocap_entity = 0;
+    if (f.in.record && f.in.followed && f.in.host_pose && live && !h.cap && now >= h.cap_retry_ms) {
+        std::int32_t cnt = -1;
+        std::uintptr_t cap = 0;
+        if (truckv3::SeatNoCapsule(a.entity)) {
+            h.nocap_entity = a.entity, h.cap_retry_ms = now + 1000;
+            if (!h.nocap_logged && g_seat_t2_lines < 200) {
+                h.nocap_logged = true;
+                ++g_seat_t2_lines;
+                Log("[enemy] mirror id=%05X seated in V3 truck 0x%06X: its entity %p has no CapsuleComponent (a MULE has none): its body parts and "
+                    "ragdoll are switched off instead (rechecked every 1 s)",
+                    m.id, f.truck, reinterpret_cast<void*>(a.entity));
+            }
+        } else if (truckv3::SeatCapsuleOff(a.entity, &cap, &cnt)) {
+            h.nocap_entity = 0;
+            h.cap = cap, h.entity = a.entity;
+            if (g_seat_t2_lines < 200) {
+                ++g_seat_t2_lines;
+                Log("[enemy] mirror id=%05X: its capsule %p (the CapsuleComponent of entity %p) out of the world: disable count %d", m.id,
+                    reinterpret_cast<void*>(h.cap), reinterpret_cast<void*>(h.entity), cnt);
+            }
+        } else {
+            h.nocap_entity = 0;
+            h.cap_retry_ms = now + 1000;
+            if (!h.cap_fail_logged && g_seat_t2_lines < 200) {
+                h.cap_fail_logged = true;
+                ++g_seat_t2_lines;
+                char why[1024];
+                truckv3::SeatCapsuleWhy(a.entity, why, sizeof(why));
+                Log("[enemy] mirror id=%05X seated in V3 truck 0x%06X: its capsule could not be taken out of the world (%s): kept hidden and "
+                    "asleep (tried again every 1 s)",
+                    m.id, f.truck, why);
+            }
+        }
+    }
+    f.in.capsule = h.cap != 0 || (h.nocap_entity != 0 && truckv3::SeatBodiesReady());
+    f.in.slot = m.slot >= 0;
+    if (f.in.record && f.in.followed && f.in.host_pose && f.in.capsule && live && !f.in.slot) f.in.slot = TakeSlot(m);
+    truckv3::SeatWhy why = truckv3::SeatDecide(f.in);
+    if (why == truckv3::SeatWhy::shown && !live) why = truckv3::SeatWhy::not_followed;  // (not realized as it was: never placed)
+    truckv3::SeatNote(m.id, h.truck, f, why, err, sanity, now);
+    if (why != truckv3::SeatWhy::shown) {
+        if (h.shown) SeatReHide(m, h, truckv3::SeatWhyName(why));
+        h.placed = false;
+        return;
+    }
+    const bool first = !h.shown;
+    if (first) {
+        // its collision is off (above); shown and woken (only the bits T1 set), its mover switched off. A sleeper is never drawn
+        // where it is moved (run 20261127-114906: the scheduler skips its model / animation update; her truck looked empty, the
+        // riders stood where they fell asleep); awake with its mover on, run 20261127-113528's riders drifted 0.9 m between
+        // placements. (Run 20261127-104042's shove as they pulled away: their bodies, now on layer 0x7F.)
+        // (the flags now: run 20261127-115518's first rider was hidden by T1 in this same tick, after `a` was read, and stayed hidden)
+        const std::uint32_t f88 = U32(m.actor + kActFlags88);
+        bool ok = true;
+        if ((f88 & 1u) && !(h.a88_pre & 1u)) ok = ActorBool(m.actor, kVtHidden, 0) && ok;
+        if ((f88 & 2u) && !(h.a88_pre & 2u)) {
+            const bool w = ActorBool(m.actor, kVtSleep, 0);
+            ok = w && ok;
+            h.woke = w;
+        }
+        // its mover off only when awake now (asleep, not by us: the game's Sleep already has it off, and its Wake turns it on)
+        const char* mv = "asleep (not by us)";
+        h.mover_off = !(U32(m.actor + kActFlags88) & 2u) && truckv3::SeatMoverSet(a.entity, false, &mv);
+        h.shown = true;
+        if (g_seat_t2_lines < 200) {
+            ++g_seat_t2_lines;
+            Log("[enemy] mirror id=%05X seated in V3 truck 0x%06X: shown at its seat in her truck (posed, pose slot %d; collision off: %s; a88 0x%X -> "
+                "0x%X%s; its mover %s %s%s%s)",
+                m.id, f.truck, m.slot, h.cap ? "its capsule out of the world" : "its body parts and ragdoll on layer 0x7F", f88, U32(m.actor + kActFlags88),
+                ok ? "" : ", a call FAULTED", truckv3::SeatMoverClass(a.entity), h.mover_off ? "off" : "NOT off: ", h.mover_off ? "" : (mv ? mv : "?"),
+                "");
+        }
+        h.body_probe_ms = 0, h.body_probe_lines = 0;
+    }
+    // round 29 T2: its art-part bodies and ragdoll off every tick while shown (after the SetHidden(0) above: it re-enables them)
+    if (!(U32(m.actor + kActFlags88) & 1u)) truckv3::SeatBodiesOff(a.entity, h.bodies);  // (not while hidden: nothing to switch)
+    if (now >= h.body_probe_ms && h.body_probe_lines < 12 && g_seat_t2_lines < 200) {
+        h.body_probe_ms = now + 1000, ++h.body_probe_lines, ++g_seat_t2_lines;
+        char t[512];
+        truckv3::SeatBodiesProbe(a.entity, h.bodies, t, sizeof(t));
+        Log("[enemy] mirror id=%05X seated in V3 truck 0x%06X: its physics: %s", m.id, f.truck, t);
+    }
+    WorldTransform xf{};
+    xf.pos.x = f.led.pos[0], xf.pos.y = f.led.pos[1], xf.pos.z = f.led.pos[2];
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 3; ++c) xf.rot.m[r][c] = f.led.rot[r][c];
+    // a first placement or a jump (her truck teleported): the teleport, as DriveMirror's band; then the set every tick
+    if (first || truckv3::PosDist(a.pos, f.led.pos) > truckv3::kSeatJumpM) {
+        if (ActorXf(m.actor, kActorTeleport, xf)) ++g_gs.teleports, m.last_tp = now;
+        else ++g_gs.set_faults;
+    }
+    if (ActorXf(m.actor, kVtSet, xf) && EntityXf(m.entity, xf)) ++g_gs.sets, ++g_sets_win;
+    else ++g_gs.set_faults;
+    h.placed = true, h.placed_first = first, h.placed_tick = g_gtick, h.placed_ms = now;
+    for (int i = 0; i < 3; ++i) h.seat_prev[i] = f.exact.pos[i], h.lpos[i] = f.lpos[i];
+    h.at_seat = true, h.truck_xf = f.truck_xf, h.place_truck = f.truck;  // review: moved out of the truck before it is given back
+    GivePose(m, *tr, render, posed_on_host);
+}
+
 bool CampOwnedHere(std::uintptr_t actor);  // round 25 V1 (below)
 std::set<std::uint32_t> g_v1_logged;
 void GuestTick(const TickIn& in, double now, bool off, const char* off_why) {
+    ++g_gtick;  // round 29 T2 review: every GuestTick (the early returns too: the seat meter's previous-tick rule)
     GuestDrain(now);
     double sam[3] = {};
     const bool have_sam = in.local_ok && LocalPlace(in.local, sam);
@@ -2009,6 +2304,7 @@ void GuestTick(const TickIn& in, double now, bool off, const char* off_why) {
             Log("[enemy] down hold: %zu not-holding copies stay hidden and asleep here until the host's Sam is back (no 5 s retry meanwhile)", g_nothold.size());
         }
     }
+    if (!g_cap_back.empty()) CapBackTick(off, off ? off_why : "");  // round 29 T2: the seated mirrors' capsules, once clear of her truck
     if (off || !have_sam) {
         // round 23 review: sync off (the host's reload after his death turns the gate off) or no local Sam while the host's Sam is
         // down: every frozen copy kept frozen as it is (held, or hidden by the hold), never given back alive
@@ -2102,6 +2398,9 @@ void GuestTick(const TickIn& in, double now, bool off, const char* off_why) {
             d.dist_m = same && a.have_xf ? Dist3(a.pos, sam) : -1;
             d.radius_m = g_ecfg.enemy_down_hold_radius;
             const erules::DownAct act = erules::DownLease(g_ecfg.enemy_down_hold, true, v, d);
+            // round 29 T2 review: a shown seated mirror whose verdict left `seated` is never placed while held: hidden and asleep
+            // again (T1's state) until the usual rules give it back
+            if (act != erules::DownAct::usual && v != erules::LeaseVerdict::seated) SeatHoldReHide(m, "the down hold");
             if (act == erules::DownAct::hold) {
                 if (g_down_held.insert(m.id).second) ++g_ds.holds;
                 continue;
@@ -2116,7 +2415,10 @@ void GuestTick(const TickIn& in, double now, bool off, const char* off_why) {
         DownUnhideMirror(m.id, "the usual rules again");  // (only one we hid: a far standing one, or the hold turned off)
         // round 28 T1: seated in the truck she follows: hidden and asleep, nothing written; out of it: shown first
         if (v == erules::LeaseVerdict::seated) {
-            if (same) SeatHideMirror(m, now);
+            if (same) {
+                SeatHideMirror(m, now);
+                SeatShowTick(m, a, it != g_tracks.end() ? &it->second : nullptr, render, now);  // round 29 T2: shown at its seat when it can be
+            }
             continue;
         }
         SeatShowMirror(m.id, l.in_vehicle_host ? "no truck of hers near its host copy" : "its host copy is out of the vehicle", now);
@@ -2548,6 +2850,9 @@ void AddFollower(std::uint32_t id, std::uintptr_t actor, const ActorNow& a, bool
 bool TakeMirrorOut(std::uint32_t id, Mirror* out) {
     for (std::size_t i = 0; i < g_mirrors.size(); ++i) {
         if (g_mirrors[i].id != id) continue;
+        // round 29 T2 review: never left seated (its hidden / asleep bits, its capsule out of the world) once out of the lease loop
+        // (GuestTake refuses a seated one: this is the safety net)
+        SeatShowMirror(id, "taken out of the mirrors", g_tnow);
         FreeSlot(g_mirrors[i]);
         if (out) *out = g_mirrors[i];
         g_mirrors.erase(g_mirrors.begin() + static_cast<std::ptrdiff_t>(i));
@@ -3503,6 +3808,9 @@ void GuestTake(const ewire::Own& o, GuestRec& r, double now) {
     else if (!ReadActor(m->actor, o.id, a) || !a.realized || a.entity != m->entity) code = erules::OwnRefuse::not_realized;
     else if (a.dead) code = erules::OwnRefuse::dead;
     else if (!a.held) code = erules::OwnRefuse::held;  // bit 14 not ours any more: a game sequence has it
+    // round 29 T2 review: seated in her truck (T1 hidden and asleep, or T2 shown with its capsule out of the world): refused until its
+    // verdict ends here (moved out of the truck, shown, its capsule back), as a hidden one (its camp's takes skip it 15 s)
+    else if (g_seat_hid.count(o.id)) code = erules::OwnRefuse::hidden;
     else if (g_holding || InCutscene()) code = erules::OwnRefuse::cutscene;
     else if (OwnedHereCount() >= erules::kMaxGuestOwnedMembers) code = erules::OwnRefuse::cap;
     // (her camp alerted: taken all the same; its push makes it join her camp's fight here, logged below. Refusing would keep
@@ -4103,6 +4411,7 @@ void P1Tick(const TickIn& in, double now) {
             g_nothold.clear(), g_nothold_n.clear();  // round 23 review: the not-holding ones too (never touched in the new world)
             if (!g_seat_hid.empty()) Log("[enemy] the world changed: %zu seated (V3) mirror(s) of the old world forgotten", g_seat_hid.size());
             g_seat_hid.clear();  // round 28 T1 (likewise)
+            g_cap_back.clear();  // round 29 T2: their capsules too (never touched in the new world)
             g_gs.host_hidden_now = 0;
         } else {
             UnhideDead(true, world_changed ? "the world changed" : "the link changed");
@@ -4367,7 +4676,7 @@ void Tick(const TickIn& in, double now) noexcept {
         if (!g_dead_hidden.empty()) UnhideDead(true, "off");
         if (!g_host_hid.empty()) UnhideHostHidden(true, "off", now);
         if (!g_nothold.empty()) UnhideNotHolding(true, "off", now);
-        if (!g_seat_hid.empty()) SeatShowAll("off", now);  // round 28 T1
+        if (!g_seat_hid.empty() || !g_cap_back.empty()) SeatShowAll("off", now);  // round 28 T1 (round 29 T2: the deferred capsules)
         if (!g_down_hid.empty() || !g_down_fhid.empty()) DownResume("off");  // round 23 C
         if (!g_mirrors.empty() || g_mirroring) {
             OwnHardReset("off (enemy_sync 2)", false, true, false);

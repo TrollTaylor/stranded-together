@@ -301,8 +301,12 @@ struct Config {
     // Round 28 P2 (docs/enemy-sync.md 14.20; truck_v3.hpp): vehicle_truck_probe=1 installs the truck controller probe (byte checks,
     // the read-only get-off counting detour at start-up) and allows the debug action truck_v3. Default 0; the launcher writes none.
     bool vehicle_truck_probe = false;
-    // Round 28 T1 (docs/enemy-sync.md 14.21; vehicle_drive.cpp V3, enemy_sync seated mirrors): vehicle_mule_v3=1 sends/follows the host's MULE-driven trucks (both games must run it: the STV3 hello). Default 0; the launcher writes none.
-    bool vehicle_mule_v3 = false;
+    // Round 28 T1 (docs/enemy-sync.md 14.21; vehicle_drive.cpp V3, enemy_sync seated mirrors): vehicle_mule_v3=1 sends/follows the host's MULE-driven trucks (both games must run it: the STV3 hello). Default 1 since round 29 (runs 20261127-120510 and the regressions); 0: each game's MULE trucks its own, as round 23 D. The launcher writes none.
+    bool vehicle_mule_v3 = true;
+    // Round 29 T2 (docs/enemy-sync.md 14.22; truck_v3.cpp STO1, enemy_sync seated mirrors): with vehicle_mule_v3=1 and V3 live, the host
+    // sends the MULEs riding in its V3 trucks (SVM1 type 52) and the guest shows their mirrors sitting in her follower (posed, collision
+    // off). Default 1; it does nothing while vehicle_mule_v3 is 0. 0: T1's hidden seated mirrors exactly. The launcher writes none.
+    bool vehicle_mule_seat = true;
     // Round 23 E (docs/enemy-sync.md 14.11; cfgval::SetProbeKey). enemy_m2_probes: the debug action enemy_m2 (the M2 probes P1-P6:
     // the knowledge dump, the push levers, the perception reads, the raycast, the notice timing, the seated MULE's chain) is
     // allowed (the action itself stays hidden runs only), and her single takes get the read-only P2 window (D1-D8; armed by

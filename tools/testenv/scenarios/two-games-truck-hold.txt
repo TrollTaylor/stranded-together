@@ -17,6 +17,8 @@ role host
 graphics low
 timeout 360
 launcherini local-test
+# round 29: vehicle_mule_v3 is on by default; off here (each game's MULE trucks its own, the round 23 D hold this gate checks)
+ini vehicle_mule_v3=0
 start control 200
 waitlog 60 \[vshare\] host: world ready
 @guest waitlog 60 \[vshare\] guest: world ready

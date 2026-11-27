@@ -2658,7 +2658,7 @@ Results (run 20261127-002653-trucks-v3-solo, passed; MULE Camp Southwest of Lake
   on a MULE (back-ref OTHER or unreadable on every rider).
 * Get-off: no call in the run (`get-off calls 0`): the riders were still aboard at the end, so the callers stay the static six.
 
-### 14.21 Round 28 T1: host-owned MULE trucks (`vehicle_mule_v3`, default 0)
+### 14.21 Round 28 T1: host-owned MULE trucks (`vehicle_mule_v3`, default 1 since round 29; 0 before)
 
 `native/mod/vehicle_drive.cpp` (the V3 part; API `st::truckv3` in `truck_v3.hpp`), `vehicle_truck_rules.hpp` (the STV3 hello,
 `V3Gate`, `NpcDrive`, `NpcSendDue`), `vehicle_wire.*` (`kDrvNpc`), `enemy_rules.hpp` / `enemy_sync.cpp` (the seated mirrors).
@@ -2706,6 +2706,144 @@ Open risks: seated mirrors stay (asleep) at the boarding spot; her own unmirrore
 attaches (refused line, "owner guest (MULE"); silence gives a seated mirror back alive; stream-out past 300 m ends the follow;
 a follower lag over 5 m for 3 s releases the mirror "in a vehicle"; MULE input semantics at speed are unproven. Key-off
 regression: `two-games-truck-hold` (unchanged paths with the key at 0).
+
+### 14.22 Round 29 T2: the MULEs seated in the host's V3 truck (`vehicle_mule_seat`, default 1)
+
+`native/mod/truck_v3.cpp` (STO1, the guest's records and meters, the capsule toggle; API `st::truckv3` in `truck_v3.hpp`),
+`truck_v3_rules.hpp` (the STO1 codec, the seat table, `OccEntryOf`, `SeatPlaceOf`, `SeatDecide`, `ShoveSpike`; tests in
+`tests/truck_v3_rules_tests.cpp`), `vehicle_drive.cpp` (the host's send call, `V3FollowedXf`, the shove meter),
+`enemy_sync.cpp` (`SeatShowTick`, `SeatReHide`, the capsule restore). Scenario `two-games-truck-v3-seated` with the gate
+`python -I tools\testenv\truck-v3.py <run>` (its T2 checks run when the guest's log has the seats line); `truck_v3 4` is the
+seat status line ([debug-actions.md](debug-actions.md) "Truck v3"). Not run in a game yet.
+
+Goal: the MULEs riding in a V3 truck sit in that truck on the guest's screen (T1 hides them). The key only acts while
+`vehicle_mule_v3` is on and V3 is live; with it at 0 (or V3 not live, or the partner's hello without the seats bit) every path is
+T1's. `two-games-truck-v3-host` sets `vehicle_mule_seat=0` so it stays the T1 gate.
+
+Capability:
+* The STV3 hello's feature bit 1 (`trucks::kV3FeatSeats`) is set while the seat key is on and its install worked (the actor walk's
+  and the capsule toggle's byte checks, SVM1 type 52 registered): the hello says `features 0x3`. Each side sends or shows seats
+  only when the partner's hello has the bit.
+* Byte checks group 0x40 (`kGCap`, 4 checks: Capsule::Disable 0x14243A740 and Enable 0x14243A9E0 signatures, the capsule vtable
+  0x143D1BD08's RTTI and the CapsuleComponent RTTI 0x144B39F70). The probe's start-up line becomes `n/58 ok (groups ok 0xFF)` with group 0x80 below.
+  Without the group T2 is off in that game (`v3 seats: vehicle_mule_seat=1: OFF (the capsule toggle's byte checks failed ...)`):
+  a mirror is never shown in her truck with its collision in the world.
+* Byte checks group 0x80 (`kGBody`, 11 checks: PartBody_DisableCollision 0x141C3DB90 and PartBody_RestoreCollision 0x141C3DC20,
+  the ragdoll interface's Release 0x14232ABD0, the ragdoll component vtable 0x143D00D78's RTTI and its interface vtable
+  0x143D00DE0's slot +0x10 = Release; the mover SetActive overrides of HumanoidMover 0x143609570, AIMover 0x1436A03B0 and
+  LocomotionMover 0x1423B6AA0, each with its call to Mover::SetActive 0x1423B6AD0); groups ok `0xFF`. Without it a MULE (no
+  capsule) is never shown in her truck.
+
+STO1 (SVM1 external type 52, after the 8-byte SVM1 header):
+* Header 12 bytes: `"STO1" | u8 version 1 | u8 n (0..8) | u16 seq | u32 truck id` (a 24-bit truck id). Entry 28 bytes:
+  `u32 MULE id | u8 seat (0..7, 0xFF unknown) | u8 src (1 parent chain, 2 seat table) | u16 0 | f32 x y z (the local position, each
+  within 5 m) | 4 x i16 quaternion / 32767` (its norm within 10 percent). The decoder is strict: exact size, version, n, source,
+  reserved bytes, ids, finite values; a truck is listed once and a MULE once. Unit tests and a 40000-frame fuzz.
+* Host (`SeatHostTick`, from V3Tick while this game is the host): every 250 ms, for each truck it sends as MULE-driven, the
+  realized MULEs whose parent chain (4 levels) reaches the truck's entity, else whose ride names it. The local transform is the
+  MULE's world transform in the truck's frame (`src 1`) when it is sane (within 4 m, a rotation), else the seat table's place for
+  its ride seat with no rotation (`src 2`). A frame goes on a change (another set, a seat, 2 cm, 2 degrees; at most every
+  100 ms) and every 1 s as a keepalive; a truck no longer sent gets one empty frame. Nothing is sent unless V3 is live. The
+  sequence number is one host-wide counter for every STO1 (the empty ones too), so a truck forgotten and sent again keeps
+  counting up and the guest's fresh record never takes its frames for old ones.
+* Guest (`OnOcc`): dropped unless the seat install worked, this game is the guest and V3 is live; one record per truck, the newest
+  (a sequence number older than the record's is dropped while it is fresh); a record is used for 3 s; a new link generation
+  forgets them; an empty frame ends the truck's record at once.
+
+Guest (`SeatShowTick`, called for a mirror with the seated verdict after T1's `SeatHideMirror`):
+* `SeatDecide`: shown only with the seat sync on, an occupant record that names this MULE, the truck in that record followed by
+  her follower (`V3FollowedXf`: `npc_follow`, the follower block, its controller entity), the host's pose of it, its capsule
+  out of the world, a pose slot (taken here, apply first) and a live actor. Otherwise hidden as T1 keeps it, and counted by
+  reason: no occupant record, truck not followed, no host pose, no capsule out of the world, no pose slot, seat sync off.
+* Its CapsuleComponent (found by name, validated by its vtable, its entity back-pointer and the entity's component list, up to
+  512) is taken out of the world (Capsule::Disable, +0x58 counts up) before the slot, once a seat episode; when that fails the
+  mirror stays hidden (`its capsule could not be taken out of the world ...: kept hidden and asleep`, tried again every 1 s).
+  A MULE has no CapsuleComponent at all (run 20261127-103721: 39 components, none a capsule; its collision is its art-part
+  bodies and its ragdoll): then `its entity ... has no CapsuleComponent (a MULE has none): its body parts and ragdoll are
+  switched off instead`, and it is rechecked every 1 s (a capsule that turns up is taken out, or the mirror hidden again while
+  that fails). The failure line names the check that refused and lists the entity's component types.
+* Its body parts and ragdoll (`truckv3::SeatBodiesOff`, every tick while shown, after the first tick's SetHidden(0), which turns
+  them all back on). Run 20261127-104042: shown riders shoved her truck sideways as it pulled away (hidden ones never do), and
+  SetHidden(1)'s physics half is exactly this switch. (A) the art parts: model = entity +0xB8 (its +0x48 the entity), parts
+  +0x58 count / +0x60 array, stride 0x100, body = part +0xD0; a body on its own filter (+0xE0 clear, +0x58 not 0, vtable slot
+  +0x68 = 0x141C46690) goes through PartBody_DisableCollision (it saves +0x58 at +0xE0 and moves the body to layer 0x7F, which
+  collides with nothing); each is recorded with its part's +0xF0 bit 4 (collision on at creation). (B) the ragdoll component
+  (entity components: vtable 0x143D00D78, +0x48 the entity, +0x50 its interface): its layer +0x88 set to 0x7F (the old one
+  saved) and a live instance (+0x78) released once through the interface (vt +0x10, the game's own Release when a ragdoll is
+  far from every focus): the next one is acquired on 0x7F. Undone before any SetHidden(1) (`SeatReHide`) and at the give-back
+  after `SeatMoveOut` (`SeatShowMirror`), only while shown: PartBody_RestoreCollision on the recorded bodies born on, still the
+  same body and still off (the others stay off as the game made them); the ragdoll's layer back and a live instance released
+  (re-acquired on its real layer). A changed entity drops the records with no calls. Probe line, 1 s apart, 12 a seat episode:
+  `its physics: parts N, bodies N (on layer 0x7F N, filter saved N, born on N), recorded N (overflow N); ragdoll P instance P
+  layer 0xL (its own 0xL) timer T +0xE8 N, released N; faults N; passes 0xM`. Hidden runs: `truck_v3 6 <mode>` (bit 0 the art
+  parts, bit 1 the ragdoll; -1 both) and `truck_v3 5 <mask>` (only the seats in the mask shown; -1 all) for comparisons.
+* The place every tick is her truck's transform times the seat's local transform, led one tick ahead along the truck's
+  velocity (SeatTarget's lead: measured within 100 ms, 0.5 to 80 m/s, at most 50 ms): `kVtSet` plus the entity transform, a
+  teleport on the first shown tick and on a jump over 3 m. Its pose comes through the mirror pose slots (`GivePose`).
+* Drawn and still. On the first shown tick the T1 hidden and sleep bits we set are cleared (read from the actor then: run
+  20261127-115518's first rider was hidden by T1 in that same tick and stayed hidden) and its mover is switched off
+  (`truckv3::SeatMoverSet`: entity +0xB0, whose +0x48 is the entity, through its own SetActive, vt +0x60, the slot the game's
+  Entity Wake 0x1423614F0 and Sleep call; one of the three checked overrides or any object whose RTTI derives from Mover; a MULE's
+  is a DSGroundMovementComponent). A sleeping entity is never drawn where it is moved (the scheduler skips its model and
+  animation update: run 20261127-114906 placed sleeping riders every tick and her truck looked empty), and awake with its mover
+  on a rider walks off its seat between placements (run 20261127-113528: seat error 0.9 m). Woken with the mover off, run
+  20261127-120510: riders drawn in her truck, seat error mean 0.007 m, max 0.27 m. The shown line ends `its mover <class> off` (or
+  `NOT off: <reason>`: byte checks, no mover, the mover's entity is another, not a Mover, a fault). At the give-back
+  (`SeatShowMirror`) the mover is switched on again; a shown mirror whose reason changes is hidden and asleep again
+  (`SeatReHide`; the game's Sleep switches the mover off, its Wake on), its slot freed; it stays at its last seat place. A
+  mirror the game itself had asleep is left so (its mover never switched). The down hold never places a mirror, so a shown one
+  is hidden and asleep again there too (`SeatHoldReHide`: in DownKeep, and in the lease's hold / hide once its verdict has left
+  `seated`); the usual rules give it back afterwards.
+  (Run 20261127-104042's shove as woken riders pulled away came from their bodies, now on layer 0x7F above.)
+* The verdict end (T1's `SeatShowMirror`: release, forget_taken, reset, a fault, off, the lease's keep) also ends the seat
+  episode. A mirror placed at a seat is first moved out of her truck (`SeatMoveOut`): teleported beside it, 3 m to the side of
+  its seat (y within 2 m, the truck's origin height), upright, heading as the truck; the truck is hers now when the mirror is
+  within its box, else where it was at the last placement. Then the capsule comes back once the mirror stands clear of the
+  truck's box (`SeatClearOf`: |x| over 2.2 m, |y| over 4.5 m or |z| over 4 m in the truck's frame; the truck now, else where it
+  was), at most 10 s later, while GuestTick runs (Capsule::Enable, only if the same component still has a count above 0); at
+  once on off, reset or a fault; a world change forgets them untouched.
+* An OWN take (`GuestTake`) of a mirror that is seated here is refused as `hidden` (its camp's takes skip it 15 s): its seat
+  state, hidden bits and capsule end with its verdict first. `TakeMirrorOut` ends a seat episode as a safety net.
+
+Meters (guest, every line starts `[truckv3] v3 guest:` unless noted):
+* Per mirror on each change (6 a seat episode, 300 a run): `mirror id=X seated in truck 0xT seat S (shown)` or
+  `(hidden: <reason>)`, then `; its seat from the host's parent chain` or `... seat table`.
+* Every 5 s: `seated N shown, N hidden (no pose slot), N hidden (no occupant record); seat error mean M max X m over K ticks;
+  also hidden: N truck not followed, N no host pose, N no capsule out of the world, N seat sync off; N occupant records; shove
+  alarms N`. The seat error is the mirror's place after the frame's physics against the seat's place on her truck now. A sample
+  counts only after a placement at the previous GuestTick (not an earlier one), not the first shown tick, with no follower
+  correction of that truck (a RequestTeleport: parked, stuck, angle, stopped) since 150 ms before that placement, and with the
+  seat's move between the two within the truck's speed times the time plus 0.3 m (`SeatErrCounts`).
+* `seat sanity: ... mean M max X m over K ticks ...`: the host's place of the shown MULE (its track at the render time) against
+  her truck times its seat; includes the follower's error and the render delay, so it is a sanity check, not the gate.
+* `truck 0xT shoved? placement error E m (P m the tick before) while N seated mirror(s) are shown in it`: the follower's error
+  jumped (over 0.75 m and 0.4 m above the tick before) while seated mirrors are shown in it (a capsule left in the world).
+* `[enemy] mirror id=X seated in V3 truck 0xT: shown at its seat in her truck (posed, pose slot k; collision off ...)`, the
+  capsule's disable count, `hidden and asleep again (...)`, `mirror id=X: moved out of her truck 0xT (...), 3.0 m to its
+  left|right side (x y z)`, `its capsule ... back in the world (clear of her truck|<off reason>|still within her truck's box after
+  10 s: back all the same)`.
+* Host: `[truckv3] v3 host: truck 0xT occupants (STO1 #n): MULE 0x.. seat S (parent chain|seat table) local (x, y, z) yaw ..`
+  on a set change (80 a run).
+
+Gate (`two-games-truck-v3-seated`, T1's place and steps): the hellos with `features 0x3`, the STO1 lines on both games, a
+mirror `seated in truck .. (shown)`, a 5 s line with >= 1 shown and a seat error max <= 0.3 m, the seats status lines, the
+screenshots of the truck on both screens; no `shoved?` line, no capsule `NOT restored`, `could not be taken out` or `after 10 s`
+line, T1's no-lines.
+
+Open risks: whether Capsule::Disable alone takes the seated MULE's collision out of the world (the shove meter watches it);
+whether `kVtSet` with the full 3D rotation holds the MULE in place in the moving truck; the seat error at speed; seat 3's place
+in the seat table is inferred (mirrored from seats 1 and 4); a mirror's first line can be `hidden: no occupant record` before
+the host's first STO1 arrives; the sanity line mixes the follower's error with the render delay; whether the way out (3 m
+beside the truck at its origin height) lands on walkable ground everywhere, and whether a MULE given back with its capsule out of
+the world for a tick or two stays on the ground.
+
+* Host pose slots (first run 20261127-102332: all five seated mirrors stayed hidden as "no host pose": the 6 capture slots
+  went to idle MULEs nearer to her): a MULE in the newest occupant list of a truck whose STO1 goes to the guest
+  (`truckv3::SeatHostOccupant`) is ranked ahead of every other candidate (`erules::PoseCand::seated`, a 1000 m lead in the
+  score). The capture period still follows the real distance. A full truck can take five of the six slots while it is
+  near her; the idle MULEs it pushes out keep their own idle. The second run (20261127-102836) was still "no host pose":
+  the truck is sent from 145 m, past the 120 m pose radius, so a seated occupant uses `erules::kPoseSeatedRadiusM`
+  (270 m, the mirrors' own 250 m + 20) instead.
 
 ## 15. Round 27: rebuild - M1 probe (`enemy_l1`, hidden runs only)
 

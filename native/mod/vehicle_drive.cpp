@@ -624,6 +624,8 @@ struct Veh {
     unsigned fast_n = 0;
     double v3_win_max = 0;             // guest: its largest placement error since the last 5 s line (the gate's final check)
     double v3_log_ms = 0, v3_refused_ms = -1e18;
+    // round 29 T2 (vehicle_mule_seat): the truck-shove detector (guest): the previous tick's placement error, the last alarm
+    double v3_prev_err = 0, v3_shove_ms = -1e18;
 };
 std::map<std::uint32_t, Veh> g_veh;
 Veh& V(const vwire::VKey& k) {
@@ -1689,6 +1691,17 @@ void DriveCorrect(Veh& v, const vshare::Unit& u, const WorldTransform& target_in
             if (tspeed >= 5.0) v.fast_sum += err, ++v.fast_n, v.fast_max = (std::max)(v.fast_max, err);
         }
     }
+    // round 29 T2 (vehicle_mule_seat): the truck-shove detector: a placement error spike while a seated mirror is shown in her copy
+    if (v.npc_follow) {
+        unsigned shown = 0;
+        if (truckv3::ShoveSpike(err, v.v3_prev_err) && (shown = truckv3::SeatShownIn(v.key.id)) != 0 && g_now - v.v3_shove_ms >= 1000) {
+            v.v3_shove_ms = g_now;
+            Log("[truckv3] v3 guest: truck 0x%06X shoved? placement error %.2f m (%.2f m the tick before) while %u seated mirror(s) are shown in it "
+                "(#%u)",
+                v.key.id, err, v.v3_prev_err, shown, truckv3::SeatShoveAlarm());
+        }
+        v.v3_prev_err = err;
+    }
     const bool carried_here = u.unit && g_carried_unit.load(std::memory_order_relaxed) == u.unit;
     if (g_now - v.win_log_ms >= 1000) {
         if (v.win_n) {
@@ -2660,6 +2673,7 @@ void V3Pre(double now, bool ready) {
         g_v3_hello_next = now + trucks::kV3HelloEveryMs;
         trucks::V3Hello h;
         h.features = trucks::kV3FeatHostTrucks;
+        if (truckv3::SeatReady()) h.features |= trucks::kV3FeatSeats;  // round 29 T2 (vehicle_mule_seat): truck occupants, STO1
         h.role = static_cast<std::uint8_t>(g_role);
         std::uint8_t buf[vwire::kHeaderSize + trucks::kV3HelloSize];
         const std::size_t hs = vwire::WriteHeader(trucks::kV3HelloType, buf, sizeof(buf));
@@ -2699,6 +2713,8 @@ void V3Tick() {
     if (g_role == 1) {
         double pp[3] = {};
         const bool have_p = vshare::PartnerPlace(pp);
+        truckv3::OccTruck occ[16];  // round 29 T2: the trucks sent now, for their occupants (STO1)
+        std::size_t n_occ = 0;
         for (const vshare::Unit& u : g_units) {
             if (u.key.kind != trucks::kKindTruck) continue;
             Veh* pv = FindV(u.key.id);
@@ -2738,6 +2754,7 @@ void V3Tick() {
                     Log("[truckv3] v3 host: truck 0x%06X: its driver is MULE 0x%05X now (was 0x%05X)", u.key.id, n.driver, v.npc_driver);
                     v.npc_driver = n.driver;
                 }
+                if (n_occ < std::size(occ)) occ[n_occ].id = u.key.id, occ[n_occ].entity = u.entity, ++n_occ;
                 continue;
             }
             if (!pv) continue;
@@ -2767,6 +2784,8 @@ void V3Tick() {
                 Log("[truckv3] v3 host: truck 0x%06X is gone here: no more DRIVE frames (#%u)", v.key.id, g_v3.stops);
             }
         }
+        // round 29 T2 (vehicle_mule_seat): their MULE occupants to the guest (only while V3 is live and her hello takes them)
+        truckv3::SeatHostTick(occ, n_occ, V3On() && (g_v3_peer.features & trucks::kV3FeatSeats) != 0, g_now);
         return;
     }
     if (g_role != 2) return;
@@ -2931,7 +2950,7 @@ void Install(const Config& config) noexcept {
     g_vt_copy[2] = reinterpret_cast<std::uintptr_t>(&InUpdate);
     g_vt_ready = true;
     for (std::uint8_t t = 16; t <= 19; ++t) vshare::RegisterHandler(t, &OnOwn);
-    // round 28 T1 (vehicle_mule_v3, default 0): the STV3 hello's handler only with the key on (off: type 51 dropped as before)
+    // round 28 T1 (vehicle_mule_v3, default 1 since round 29): the STV3 hello's handler only with the key on (off: type 51 dropped as before)
     g_v3_key = config.vehicle_mule_v3;
     if (g_v3_key && !vshare::RegisterHandler(trucks::kV3HelloType, &OnV3Hello)) {
         g_v3_key = false;
@@ -3607,6 +3626,55 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept 
 namespace st::truckv3 {
 
 bool V3Live() noexcept { return vdrive::V3On(); }
+
+bool V3PeerSeats() noexcept { return vdrive::V3On() && (vdrive::g_v3_peer.features & trucks::kV3FeatSeats) != 0; }
+
+int V3Role() noexcept { return vdrive::g_role; }
+
+bool V3FollowedXf(std::uint32_t truck_id, Xf& now, double (&lead)[3], double* speed_mps, double* corr_ms) noexcept {
+    using namespace st::vdrive;
+    lead[0] = lead[1] = lead[2] = 0;
+    if (speed_mps) *speed_mps = 0;
+    if (corr_ms) *corr_ms = -1e18;
+    if (!V3On() || g_role != 2) return false;
+    const Veh* v = FindV(truck_id);
+    if (!v || !v->npc_follow || !v->block || !v->ctl_entity) return false;
+    WorldTransform vx{};
+    if (!EntityLive(v->ctl_unit, v->ctl_entity, v->key.kind) || !ReadXf(v->ctl_entity, vx)) return false;
+    now.pos[0] = vx.pos.x, now.pos[1] = vx.pos.y, now.pos[2] = vx.pos.z;
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 3; ++c) now.rot[r][c] = vx.rot.m[r][c];
+    if (!XfSane(now)) return false;
+    // SeatTarget's lead (section 26.6): one tick ahead along the measured velocity (this runs after vdrive::Tick measured it)
+    const double ahead = (std::min)(0.05, g_tick_ms / 1000.0);
+    const bool meas = v->meas_have && g_now - v->meas_ms < 100 && v->speed_mps < 80;
+    if (meas && v->speed_mps > 0.5)
+        for (int i = 0; i < 3; ++i) lead[i] = static_cast<double>(v->vel[i]) * ahead;
+    if (speed_mps && meas && std::isfinite(v->speed_mps)) *speed_mps = v->speed_mps;
+    // round 29 T2 review: the follower's corrections (every RequestTeleport stamps both)
+    if (corr_ms) *corr_ms = (std::max)(v->last_tp_ms, v->last_interp_ms);
+    return true;
+}
+
+bool V3TruckXf(std::uint32_t truck_id, Xf& now) noexcept {
+    using namespace st::vdrive;
+    if (g_role != 2) return false;
+    WorldTransform vx{};
+    bool have = false;
+    const Veh* v = FindV(truck_id);
+    if (v && v->ctl_entity && EntityLive(v->ctl_unit, v->ctl_entity, v->key.kind)) have = ReadXf(v->ctl_entity, vx);
+    if (!have)
+        for (const vshare::Unit& u : g_units)
+            if (u.key.kind == trucks::kKindTruck && u.key.id == truck_id && u.entity && EntityLive(u.unit, u.entity, u.key.kind)) {
+                have = ReadXf(u.entity, vx);
+                break;
+            }
+    if (!have) return false;
+    now.pos[0] = vx.pos.x, now.pos[1] = vx.pos.y, now.pos[2] = vx.pos.z;
+    for (int r = 0; r < 3; ++r)
+        for (int c = 0; c < 3; ++c) now.rot[r][c] = vx.rot.m[r][c];
+    return XfSane(now);
+}
 
 bool V3SeatNear(const double (&pos)[3], double radius_m, std::uint32_t* truck_id) noexcept {
     using namespace st::vdrive;

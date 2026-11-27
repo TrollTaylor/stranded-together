@@ -123,6 +123,8 @@ private:
 // ---------------------------------------------------------------- the pose slots (SEP1, host)
 inline constexpr unsigned kPoseSlots = 8;
 inline constexpr double kPoseRadiusM = 120.0, kPoseHystM = 10.0;
+inline constexpr double kPoseSeatedRankM = 1000.0;  // round 29 T2: a seated V3 occupant's rank lead
+inline constexpr double kPoseSeatedRadiusM = 270.0;  // and its radius: the mirrors' (enemy_mirror_radius 250 + 20; a V3 truck is sent from 145 m)
 inline constexpr double kPoseFastMs = 100.0, kPoseSlowMs = 200.0;
 struct PoseCand {
     std::uint32_t id = 0;
@@ -130,6 +132,8 @@ struct PoseCand {
     bool realized = false;  // realized on the host (its pose can be captured); P2: a dead one too (its corpse keeps being posed)
     bool slow = false;      // P2: a dead or down one (it lies still) is posed in the 5 Hz half whatever its rank, and is not counted
                             // in the live ones' fast ranks
+    bool seated = false;    // round 29 T2: a MULE riding a truck the host sends as V3 (its occupants go to the guest): ranked
+                            // ahead of every other candidate, to kPoseSeatedRadiusM (the guest shows it only with the host's pose)
 };
 class PoseSlots {
 public:
@@ -149,8 +153,9 @@ public:
         for (unsigned i = 0; i < n && nr < 256; ++i) {
             if (!c[i].realized || !c[i].id || !(c[i].dist >= 0)) continue;
             const bool member = SlotOf(c[i].id) >= 0;
-            if (c[i].dist > radius_m + (member ? hyst_m : 0.0)) continue;
-            r[nr++] = R{i, c[i].dist - (member ? hyst_m : 0.0)};
+            const double rad = c[i].seated && kPoseSeatedRadiusM > radius_m ? kPoseSeatedRadiusM : radius_m;
+            if (c[i].dist > rad + (member ? hyst_m : 0.0)) continue;
+            r[nr++] = R{i, c[i].dist - (member ? hyst_m : 0.0) - (c[i].seated ? kPoseSeatedRankM : 0.0)};
         }
         std::sort(r, r + nr, [&](const R& a, const R& b) { return a.score != b.score ? a.score < b.score : c[a.i].id < c[b.i].id; });
         if (nr > count) nr = count;

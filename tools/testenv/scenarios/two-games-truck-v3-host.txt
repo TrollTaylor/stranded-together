@@ -12,12 +12,14 @@
 # Steps: both STV3 hellos and V3 live on both; census tag 1 (calm); the host's MULE takes a truck: DRIVE frames with kDrvNpc; the
 #   guest follows it (attached); 40 s of driving with a screenshot pair every 20 s; census tag 2; the V3 status line (truck_v3 3)
 #   and vehicle_drive 0 on both. The key-off regression is two-games-truck-hold (unchanged, key default 0).
+# Round 29: vehicle_mule_seat=0 here (T1 exactly: the hellos say features 0x1); the T2 gate is two-games-truck-v3-seated.
 # covers: vehicle-mule
 role host
 graphics low
 timeout 360
 launcherini local-test
 ini vehicle_mule_v3=1
+ini vehicle_mule_seat=0
 start control 200
 waitlog 60 \[vshare\] host: world ready
 @guest waitlog 60 \[vshare\] guest: world ready

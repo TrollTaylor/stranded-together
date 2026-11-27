@@ -119,6 +119,21 @@ void TestPoseSlots() {
     for (unsigned i = 0; i < 12; ++i) many[i] = PoseCand{0x2100u + i, 5.0 + i, true};
     z.Update(many, 12, 12);
     CHECK(z.Used() == 8);
+    // round 29 T2: seated V3 occupants rank ahead of nearer idle ones, out to kPoseSeatedRadiusM
+    PoseSlots s;
+    PoseCand sc[9];
+    for (unsigned i = 0; i < 6; ++i) sc[i] = PoseCand{0x2200u + i, 10.0 + i, true};
+    sc[6] = PoseCand{0x2300, 100.0, true, false, true};
+    sc[7] = PoseCand{0x2301, 110.0, true, false, true};
+    sc[8] = PoseCand{0x2302, 280.0, true, false, true};  // beyond the seated radius: not posed
+    s.Update(sc, 9, 6);
+    CHECK(s.Used() == 6 && s.SlotOf(0x2300) >= 0 && s.SlotOf(0x2301) >= 0 && s.SlotOf(0x2302) < 0);
+    PoseSlots s2;
+    PoseCand trk[2] = {PoseCand{0x2400, 145.0, true, false, true}, PoseCand{0x2401, 145.0, true}};  // the truck's start
+    s2.Update(trk, 2, 6);
+    CHECK(s2.SlotOf(0x2400) >= 0 && s2.SlotOf(0x2401) < 0);
+    CHECK(s.SlotOf(0x2204) < 0 && s.SlotOf(0x2205) < 0 && s.SlotOf(0x2200) >= 0);
+    CHECK(s.Period(static_cast<unsigned>(s.SlotOf(0x2300))) == kPoseSlowMs);  // periods still by the real distance
 }
 
 void TestClock() {
