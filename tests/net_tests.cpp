@@ -376,8 +376,11 @@ void TestGearFrames() {
     bad[16 + 18 * 2 + 1] = 5;  // model changed without the hash: rejected
     CHECK(!wire::DecodeGear(bad, n, g));
     std::memcpy(bad, buf, n);
-    bad[10] = 0xF1;  // unknown flag bits are cleared (bits 1-3, the parts blocks, are known: no blocks, so not set here)
+    bad[10] = 0xE1;  // unknown flag bits are cleared (bits 1-3, the parts blocks, are known: no blocks, so not set here; bit 4 is the Odradek flag)
     CHECK(wire::DecodeGear(bad, n, g) && g.flags == wire::kGearValid);
+    std::memcpy(bad, buf, n);
+    bad[10] = 0x11;  // kGearOdraCap: no block, kept
+    CHECK(wire::DecodeGear(bad, n, g) && g.flags == (wire::kGearValid | wire::kGearOdraCap));
     std::memcpy(bad, buf, n);
     bad[8] = 3;  // version 3 (v0.9 - v0.11 builds)
     CHECK(!wire::DecodeGear(bad, n, g));

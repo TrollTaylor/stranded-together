@@ -59,7 +59,7 @@ area voice                 : partner voice and the self-voice mute
 area sound                 : partner sounds (footsteps, efforts) and their volume
 area vehicles              : vehicle copies (vehicle_sync: look, state, sounds of the partner's vehicle)
 area vehicle-share         : shared real vehicles: identity, summon, remote driving, handoff, persistence
-area vehicle-mule          : round 23 D: the MULE trucks left to each game (no PARK frames, no parked correction), the truck census (gate two-games-truck-hold)
+area vehicle-mule          : round 23 D: the MULE trucks left to each game (no PARK frames, no parked correction), the truck census (gate two-games-truck-hold); round 28 T1: host-owned MULE trucks (vehicle_mule_v3; + two-games-truck-v3-host)
 area vehicle-hit           : vehicle hits, bumps and tackles
 area sam-damage            : the shared Sam damage detour (sam_damage.*): the vehicle hits' observer and the shots' filter; a hit made (two-games-vehicle-hit)
 area ride                  : riding together: boarding, seats, ride camera, forced exits
@@ -72,6 +72,10 @@ area enemy-own             : enemy sync P1b/P1c ownership per camp (default on w
 area enemy-restrain       : round 23 A: the tie-up relay (a strand / bola / knockout of a copy goes to its owner as HIT kind 5, the copy held, the readback) and the replay flush (gates two-games-enemy-tie, two-games-enemy-tie-host)
 area enemy-down           : round 23 C: a player down (death, limbo): the partner holds its copies, no ownership change until back (enemy_sync 9 test trigger; gates two-games-enemy-tie, two-games-enemy-tie-host)
 area enemy-target          : round 27 M2-M4: MULEs target both players (partner stimulus, pick, redirects, destroy guard; gates two-games-enemy-target-defaults, two-games-enemy-target)
+area enemy-melee           : round 28 E2: MULE melee hurts her (the PHIT relay, redirect bit 64; gate two-games-enemy-attacks)
+area odradek-gear          : round 28 O1: the partner's Odradek as cinematic props (odradek_gear, kGearOdraCap; gate two-games-odradek)
+area odradek-scan          : round 28 O3: the partner's Odradek scan on both screens (odradek_scan_sync, SOD1; gate two-games-odradek-scan)
+area bt-sync               : round 28 B1: the BT field sync (bt_sync, BTS1, the host's RESET on the guest; gate two-games-bt-field)
 area shots                 : the players' shots on the other screen (docs/enemy-sync.md P3a): capture, SFX1, the CreateBullet replay, its damage dropped
 area story                 : story tools, story loads
 area dev-tools             : dev tools: spawn, goto, weather, refill, god mode
@@ -108,6 +112,7 @@ tools/testenv/enemy-tie.py             none
 tools/testenv/enemy-target.py          none
 tools/testenv/enemy-target-gate.py     none
 tools/testenv/truck-hold.py            none
+tools/testenv/truck-v3.py              none
 tools/testenv/Story-Library.ps1        story
 tools/testenv/*                        testenv
 native/testenv/*                       testenv
@@ -158,13 +163,21 @@ native/mod/story_*                     story
 native/mod/anim_census.*               research
 native/mod/holo_catalog.*              research
 native/mod/audio_probe.*               research
+# round 28 O3 (odradek_sync.cpp also holds P4's probe, research): a feature behind odradek_scan_sync with its own gate
+native/mod/odradek_sync.*              odradek-scan
+native/mod/odra_rules.hpp              odradek-scan
 
 # ---- the mod: enemy sync (docs/enemy-sync.md). P0's census is the gate of the later phases (its byte-checked sites are
 # what P1 builds on), so it stays an area with its own run (two-games-enemy-census), unlike anim_census (research).
 # The phases are areas of their own (review rv-tests 1): P1a's mirrors (enemy-mirror: the shared base of enemy_sync, the rules and
 # the wire; its gate two-games-enemy-mirror), P2's hits (enemy-hits: two-games-enemy-hit; enemy-compat: two-games-enemy-hits-off),
 # P1b/P1c's ownership (enemy-own: auto run since round 21, its gate two-games-enemy-camp passed). The ~regex lines below add the later phases by the changed lines.
+native/mod/bt_sync.*                   bt-sync
+native/mod/bt_rules.hpp                bt-sync
+native/mod/bt_*                        research
 native/mod/enemy_l1_*                  research
+native/mod/enemy_phit*                 enemy-melee
+native/mod/truck_v3*                   research
 native/mod/enemy_combat.*              enemy-hits
 native/mod/enemy_census.*              enemies
 native/mod/enemy_sync.*                enemy-mirror
@@ -214,6 +227,7 @@ native/mod/texture_wire.*              textures texture-share
 native/mod/texture_*                   textures
 native/mod/partner_gear.*              gear
 native/mod/gear_wear.hpp               gear-wear
+native/mod/gear_odra.hpp               odradek-gear gear
 native/mod/gear_keep.hpp               gear private-room
 native/mod/gear_*                      gear
 native/mod/boots_look.hpp              boots
@@ -257,6 +271,17 @@ native/mod/real_body.*      ~[Ee]nemy                                           
 native/mod/real_body.*      ~rmhook|etarget::                                                 enemy-target
 native/mod/debug_actions.*  ~enemy_tgt                                                        enemy-target
 native/mod/enemy_combat.*   ~WorldRay|SehRay|kRayLayer|LayerNamed                             enemy-target
+native/mod/enemy_combat.*   ~Phit                                                              enemy-melee
+native/mod/enemy_wire.*     ~Phit                                                              enemy-melee
+native/mod/enemy_target.*   ~Melee|kS64|kGS64|m64_|kRedMeleeFace                               enemy-melee
+native/mod/enemy_sync.*     ~ephit::|IsOwnApply                                                enemy-melee
+native/mod/enemy_sync.cpp   ~V3|SeatHide|SeatShow|seat_hid                                     vehicle-mule
+native/mod/enemy_rules.hpp  ~V3|[Ss]eated                                                      vehicle-mule
+native/mod/truck_v3*        ~V3                                                                vehicle-mule
+native/mod/link.*           ~SOD1|PopOdradek|OdradekCounts|OdradekOversize|kOdradekMax|g_odra  odradek-scan
+native/mod/link.*           ~BTS1|PopBtMessage|BtMessageCounts|g_bt_|RxBt                      bt-sync
+native/mod/debug_actions.*  ~bt_sync|BtSync                                                    bt-sync
+native/mod/debug_actions.*  ~DoOdra|odradek_scan_sync|odra\s                                    odradek-scan
 native/mod/partner_tackle.* ~QueryHit                                                         enemy-hits
 native/mod/player_sync.*    ~shots::|esync::                                                  shots enemy-mirror
 native/mod/player_sync.*    ~ecombat::                                                        enemy-hits
@@ -307,6 +332,7 @@ native/mod/texture_looks.*  ~[Ll]ogo                                            
 native/mod/texture_share.*  ~[Ll]ogo                                                          logo texture-share
 native/mod/texture_wire.*   ~[Ll]ogo|~7u                                                      logo texture-share
 native/mod/partner_gear.*   ~[Ll]ogo                                                          logo
+native/mod/partner_gear.*   ~odra|kPropOdradek|gearodra                                       odradek-gear
 native/mod/fragile_textures.* ~[Ll]ogo|mesh.?probe|mesh_filter|mesh_mask|probed?_|AnySlot|SlotId  logo
 native/mod/config.*         ~fragile_logo                                                     logo
 native/launcher/core/core_textures.* ~[Rr]eady.?[Mm]ade|[Ee]xtract|[Mm]anifest|textures_defaults|[Dd]efaults|gold|silver  suit-defaults
@@ -333,6 +359,11 @@ native/mod/config.*         ~("|bool\s+|int\s+)enemy_(partner_|target_)         
 native/mod/config.*         ~("|bool\s+)enemy_(restrain|replay_flush)                        enemy-restrain
 native/mod/config.*         ~("|bool\s+|int\s+|double\s+|float\s+)enemy_down_hold          enemy-down
 native/mod/config.*         ~("|bool\s+)vehicle_mule                                         vehicle-mule
+native/mod/config.*         ~("|bool\s+|int\s+)enemy_(partner_melee|melee_face)              enemy-melee
+native/mod/config_values.hpp ~PartnerMelee                                                    enemy-melee
+native/mod/config.*         ~("|bool\s+)odradek_gear                                         odradek-gear
+native/mod/config.*         ~("|bool\s+)odradek_scan_sync                                    odradek-scan
+native/mod/config.*         ~("|int\s+)bt_sync                                               bt-sync
 native/mod/config.*         ~("|bool\s+|int\s+)host_save                                     host-save
 native/mod/config.*         ~("|bool\s+|int\s+|double\s+)dev_(tools|give)                  dev-tools
 native/mod/player_sync.*    ~textures?_                                                       textures
@@ -341,6 +372,7 @@ native/mod/player_sync.*    ~facesync|kJointsFace                               
 native/mod/real_body.*      ~facesync                                                         face
 native/mod/pose_wire.*      ~kJointsFace|kFaceSize|kFaceFlags|\bFace\b                        face
 native/mod/pose_wire.*      ~[Hh]ood                                                          hood
+native/mod/pose_wire.*      ~kGearOdraCap                                                     odradek-gear
 native/mod/exo_parts.hpp    ~[Hh]ood                                                          hood
 native/mod/player_sync.*    ~vehicle                                                          vehicle-share
 native/mod/sandbox.*        ~host_save|refuse                                                 host-save

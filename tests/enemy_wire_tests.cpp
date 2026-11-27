@@ -723,6 +723,100 @@ void TestScbPlace() {
     ewire::Own oo[ewire::kOwnMax];
     CHECK(!ewire::DecodeOwns(buf, ok, g, oo));
 }
+
+// Round 28 E2: SCB1 type 12 (PHIT): a strike and the guest's hello
+void TestScbPhit() {
+    ewire::ScbHeader hd;
+    hd.guids_fp = 0x55AD7620u, hd.seq = 9;
+    ewire::Phit p;
+    p.id = 0x2029, p.seq = 3, p.attack = 0x16E, p.kind = ewire::kPhitCapsule;
+    p.point[0] = 0.42f, p.point[1] = -0.17f, p.point[2] = 1.2f;
+    p.dir[0] = 0.6f, p.dir[1] = -0.8f;
+    p.depth_m = 0.31f;
+    p.her[0] = 1603.6125, p.her[1] = -1111.0034, p.her[2] = 254.25;
+    p.sender_ms = 98765;
+    std::uint8_t buf[ewire::kScbHeader + ewire::kPhitSize + 8];
+    const std::size_t size = ewire::EncodePhit(hd, p, buf, sizeof(buf));
+    CHECK(size == ewire::kScbHeader + ewire::kPhitSize && buf[4] == ewire::kScbPhit && buf[6] == 1);
+    ewire::ScbHeader g;
+    ewire::Phit q;
+    CHECK(ewire::DecodeScbHeader(buf, size, g) && g.type == ewire::kScbPhit && g.n == 1 && g.guids_fp == 0x55AD7620u && g.seq == 9);
+    CHECK(ewire::DecodePhit(buf, size, g, q));
+    CHECK(q.id == 0x2029 && q.seq == 3 && q.attack == 0x16E && q.kind == ewire::kPhitCapsule && q.flags == 0 && q.sender_ms == 98765);
+    CHECK(std::fabs(q.point[0] - 0.42f) <= 0.006f && std::fabs(q.point[1] + 0.17f) <= 0.006f && std::fabs(q.point[2] - 1.2f) <= 0.006f);
+    CHECK(std::fabs(q.dir[0] - 0.6f) <= 0.0001f && std::fabs(q.dir[1] + 0.8f) <= 0.0001f && std::fabs(q.depth_m - 0.31f) <= 0.0006f);
+    CHECK(std::fabs(q.her[0] - p.her[0]) <= 0.0006 && std::fabs(q.her[1] - p.her[1]) <= 0.0006 && std::fabs(q.her[2] - p.her[2]) <= 0.0006);
+    // a hello: everything zero but the kind and the capability flags
+    ewire::Phit hello;
+    hello.kind = ewire::kPhitHello, hello.flags = ewire::kPhitCapApply, hello.sender_ms = 5;
+    const std::size_t hs = ewire::EncodePhit(hd, hello, buf, sizeof(buf));
+    CHECK(hs == ewire::kScbHeader + ewire::kPhitSize);
+    CHECK(ewire::DecodePhit(buf, hs, g, q) && q.kind == ewire::kPhitHello && q.flags == ewire::kPhitCapApply && q.id == 0 && q.sender_ms == 5);
+    // encoder refusals
+    auto enc_bad = [&](void (*f)(ewire::Phit&)) {
+        ewire::Phit x = p;
+        f(x);
+        return ewire::EncodePhit(hd, x, buf, sizeof(buf)) == 0;
+    };
+    CHECK(enc_bad([](ewire::Phit& x) { x.attack = 0x15E; }));   // her push: not relayed
+    CHECK(enc_bad([](ewire::Phit& x) { x.attack = 0x17B; }));   // ElectricZone
+    CHECK(enc_bad([](ewire::Phit& x) { x.flags = 1; }));        // a strike carries no flags
+    CHECK(enc_bad([](ewire::Phit& x) { x.kind = 0; }));
+    CHECK(enc_bad([](ewire::Phit& x) { x.kind = 4; }));
+    CHECK(enc_bad([](ewire::Phit& x) { x.id = 0x4000u | 5; }));  // not an enemy
+    CHECK(enc_bad([](ewire::Phit& x) { x.point[1] = 8.5f; }));   // beyond 8 m of her
+    CHECK(enc_bad([](ewire::Phit& x) { x.point[2] = std::nanf(""); }));
+    CHECK(enc_bad([](ewire::Phit& x) { x.dir[0] = 1.5f; }));
+    CHECK(enc_bad([](ewire::Phit& x) { x.depth_m = -0.1f; }));
+    CHECK(enc_bad([](ewire::Phit& x) { x.her[0] = 2.5e6; }));
+    CHECK(enc_bad([](ewire::Phit& x) { x.her[2] = std::nan(""); }));
+    CHECK(!enc_bad([](ewire::Phit& x) { x.attack = 0x171; }));
+    CHECK(!enc_bad([](ewire::Phit& x) { x.attack = 0x16D, x.kind = ewire::kPhitSphere; }));
+    {
+        // a hello with an id, an attack, a place or an unknown flag: refused
+        ewire::Phit x = hello;
+        x.id = 0x2029;
+        CHECK(ewire::EncodePhit(hd, x, buf, sizeof(buf)) == 0);
+        x = hello, x.attack = 0x16F;
+        CHECK(ewire::EncodePhit(hd, x, buf, sizeof(buf)) == 0);
+        x = hello, x.her[0] = 1.0;
+        CHECK(ewire::EncodePhit(hd, x, buf, sizeof(buf)) == 0);
+        x = hello, x.flags = 0x02;
+        CHECK(ewire::EncodePhit(hd, x, buf, sizeof(buf)) == 0);
+    }
+    CHECK(ewire::EncodePhit(hd, p, buf, ewire::kScbHeader + ewire::kPhitSize - 1) == 0);  // cap
+    // decoder refusals on the wire bytes
+    const std::size_t ok = ewire::EncodePhit(hd, p, buf, sizeof(buf));
+    CHECK(ok == ewire::kScbHeader + ewire::kPhitSize);
+    auto bad = [&](std::size_t at, std::uint8_t v) {
+        std::uint8_t c[ewire::kScbHeader + ewire::kPhitSize];
+        std::memcpy(c, buf, ok);
+        c[at] = v;
+        ewire::ScbHeader h2;
+        ewire::Phit o;
+        return !ewire::DecodePhit(c, ok, h2, o);
+    };
+    CHECK(bad(16 + 8, 0x5E));   // attack 0x15E
+    CHECK(bad(16 + 10, 0));     // kind 0
+    CHECK(bad(16 + 10, 7));     // kind 7
+    CHECK(bad(16 + 11, 1));     // flags on a strike
+    CHECK(bad(16 + 2, 0x10));   // the id's type byte: not an enemy
+    CHECK(bad(16 + 13, 0x04));  // point x 10.66 m
+    CHECK(bad(6, 2));           // n 2 (and the size)
+    CHECK(bad(4, ewire::kScbPlace));  // another type
+    CHECK(!bad(16 + 8, 0x6F));  // attack 0x16F
+    ewire::Phit o;
+    CHECK(!ewire::DecodePhit(buf, ok - 1, g, o));  // short
+    // a PHIT is not a PLACE / HIT; a PLACE is not a PHIT
+    ewire::Place pl;
+    CHECK(!ewire::DecodePlace(buf, ok, g, pl));
+    ewire::Hit hh[ewire::kHitMax];
+    CHECK(!ewire::DecodeHits(buf, ok, g, hh));
+    ewire::Place pp;
+    pp.id = 0x202B, pp.seq = 7, pp.x = 10, pp.y = 20, pp.yaw = 0, pp.code = 3;
+    const std::size_t ps = ewire::EncodePlace(hd, pp, buf, sizeof(buf));
+    CHECK(ps && !ewire::DecodePhit(buf, ps, g, o));
+}
 }  // namespace
 
 int main() {
@@ -736,6 +830,7 @@ int main() {
     TestScbHits();
     TestScbOthers();
     TestScbPlace();
+    TestScbPhit();
     std::printf("%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;
 }

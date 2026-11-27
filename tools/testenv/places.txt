@@ -28,6 +28,10 @@ incinerator-lkc    200  -341.64  2226.21  218.15  # Incinerator West of Lake Kno
 terrorist-camp-nw  200 -1694.60  1086.98  219.68  # Terrorist Camp Northwest of Mountain Knot City
 mule-camp-sw-ckc   200   -48.75 -1266.14  117.12  # MULE Camp Southwest of Capital Knot City
 mule-camp-sw-lkc   200  1517.90   992.00  172.07  # MULE Camp Southwest of Lake Knot City
+# ---- area 200: BT fields (round 28 P3; field ids and centres from the archive: native/mod/bt_rules.hpp kKnownFields;
+# bt-field-mknot-s used by runs 20261127-000239 / -002916)
+bt-field-mknot-s   200 -1040.00    40.00    0.00  # BT field bt211_01's west edge, west of Mountain Knot City: inside the bt211 catcher territory (280 m), 59 m from the nearest gazer (bt211_01_bt_n_mt2_01, loc 40AB1A93); all 35 bt211_01 gazers stream in on arrival (run round 28 P3)
+bt-field-mknot-n   200 -1120.00   800.00    0.00  # BT field bt209 north of Mountain Knot City (kKnownFields centre -1069 686), 50 m from the nearest gazer by the archive (unvalidated: no run has used it)
 # ---- area 200: roads (vehicle tests)
 road-holo          200 -1448.20   403.10  334.70  # the road start of vehicle_drive.cpp's autopilot route (kRoute), on the highway
 mknot-road         200 -1217.21   291.45  361.61  # the road rebuilder next to Mountain Knot City

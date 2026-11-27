@@ -17,6 +17,7 @@
 #include "game_actions.hpp"
 #include "gear_keep.hpp"
 #include "gear_look.hpp"
+#include "gear_odra.hpp"
 #include "gear_wear.hpp"
 #include "held_items.hpp"
 #include "held_rules.hpp"
@@ -45,6 +46,8 @@ constexpr std::uintptr_t kPlayerVtable = 0x3D7D0D8;   // DSPlayerEntity
 constexpr std::uintptr_t kInitInvStore = 0x271FC22;   // mov [rbx+0x54C8],rax  (inventory component)
 constexpr std::uintptr_t kInitCarStore = 0x271FC38;   // mov [rbx+0x54D0],rax  (DSBaggage2CarrierComponent)
 constexpr std::uintptr_t kInvOdraStore = 0x27C0BC8;   // mov [rdi+0x4CA0],r13  (Odradek body, a ref: entity = value - 0x20)
+constexpr std::uintptr_t kInvOdraArmStore = 0x27C0B9C;  // mov [rdi+0x4C88],r13  (Odradek arm, a ref; round 28 O1, section 12.9)
+constexpr std::uintptr_t kOdraReadyFn = 0x295BA70;      // test byte [rcx+0x3E4],4 ... movzx eax,byte [rcx+0x348] (the body's ready predicate)
 constexpr std::uintptr_t kInvPackStore = 0x27C0D11;   // mov [rdi+0x4CB8],r15  (backpack, entity = value - 0x20)
 constexpr std::uintptr_t kCarrierBind = 0x2CB1ED0;    // mov rax,[rcx+0x40]; mov [rcx+0x50],rdx; mov [rax+0x30],rdx; ret
 constexpr std::uintptr_t kSlotLookup = 0x2C52010;     // carrier +0x18 slots, +0x10 count; slot +1 type
@@ -54,6 +57,7 @@ constexpr std::uintptr_t kSlotWalk3 = 0x2C53736;      // mov rbx,[rax+0x18]; mov
 constexpr std::uintptr_t kBagSetWorld = 0x2C73D08;    // mov rax,[rcx+0x330]; cmp byte [rax+0x21],1 (cargo entity -> DSBaggage2)
 constexpr std::uintptr_t kPInv = 0x54C8, kPCarrier = 0x54D0, kCompOwner = 0x48;
 constexpr std::uintptr_t kInvOdra = 0x4CA0, kInvPack = 0x4CB8, kInvBbPod = 0x4D48;  // +0x4D48: the pod (a reference); +0x4D60 is its DSBBPodComponent
+constexpr std::uintptr_t kInvOdraArm = 0x4C88, kOdraState = 0x348, kOdraFlags = 0x3E4;  // the arm ref; the body entity's state byte / flags
 constexpr std::uintptr_t kCarrierObj = 0x50, kCarSlotN = 0x10, kCarSlots = 0x18;
 constexpr std::uintptr_t kSlotType = 0x01, kSlotStackN = 0x18, kSlotStacks = 0x20;
 constexpr std::uintptr_t kStackN = 0x10, kStackItems = 0x18;
@@ -94,6 +98,9 @@ constexpr PropDef kProps[] = {
     // The equipped boots (docs/real-partner-body.md section 21): the cutscene copy of DSPlayerBootsComponent's entity, the
     // same ArtParts (part_sam_foot_def) on the same 10-joint skeleton, posed from the partner body's legs (real_body.cpp).
     {"boots", "ds/entities/cinematics/demo_apv_sam_foot_def_v01", "7e71552e-bf48-464d-8628-fd9f0afc70cd"},
+    // Round 28 O1 (section 12.9): the Odradek's arm, the cutscene copy of odra_arms_def (the player's own art part on the same
+    // 14-joint skeleton); the body is "odradek" above (odra_main_def, 44 joints). Never a DSOdradek*Entity (0x14296F3AE).
+    {"odradek_arm", "ds/entities/cinematics/demo_odra_arms_def_new", "f760e327-8bf4-284f-9e79-7e560fd9be37"},
     // Weapons and hand tools (docs/real-partner-body.md section 17): cutscene props with the player
     // weapon's own art parts (decoded offline from the cores; a copy of the game's DSWeaponEntity crashes).
     {"w_assault_rifle", "ds/entities/cinematics/demo_apv_asr2_main_def_v04_def", "d6215dea-4e9d-7e4c-8ef6-bd9f9751ab39"},
@@ -106,7 +113,7 @@ constexpr PropDef kProps[] = {
     {"w_shot_gun", "ds/entities/cinematics/demo_shg2_main_def", "c739ae4a-1ed9-2d47-8c91-e237dab76b69"},
 };
 enum PropId : int {
-    kPropNone = -1, kPropBackpack = 0, kPropOdradek, kPropBbPod, kPropS, kPropM, kPropL, kPropXL, kPropCube, kPropBoots,
+    kPropNone = -1, kPropBackpack = 0, kPropOdradek, kPropBbPod, kPropS, kPropM, kPropL, kPropXL, kPropCube, kPropBoots, kPropOdradekArm,
     kPropWAsr, kPropWGrbl, kPropWGrdc, kPropWGrfl, kPropWGrsm, kPropWMrod, kPropWHag, kPropWShg, kPropCount
 };
 static_assert(sizeof(kProps) / sizeof(kProps[0]) == kPropCount, "prop table");
@@ -181,10 +188,17 @@ struct ResEntry;
 // weapon's prop follows its resource's core; without a table a weapon has none).
 int PropFor(const wire::GearItem& it, const ResEntry* res);
 bool g_boots_sync = true;  // session.ini boots_sync / `gear 21 <0/1>` (section 21)
+bool g_odra_on = false;     // round 28 O1 (section 12.9): session.ini odradek_gear / `gear 40 <0/1>`: our Odradek sent, the partner's drawn
+bool g_own_fragile = false; // Init: the other screen draws us as Fragile (the Odradek's anchor joint, gearodra::AnchorJoint)
 int PropForKind(const wire::GearItem& it) {
     switch (it.kind) {
         case wire::GearKind::backpack: return kPropBackpack;
-        case wire::GearKind::odradek: return kPropOdradek;
+        case wire::GearKind::odradek: {
+            // round 28 O1: `model` names the part (gear_odra.hpp); nothing without our own key (the frames carry it only then)
+            if (!g_odra_on) return kPropNone;
+            const int part = gearodra::PartOf(it.model);
+            return part == gearodra::kPartArm ? kPropOdradekArm : part == gearodra::kPartBody ? kPropOdradek : kPropNone;
+        }
         case wire::GearKind::bb_pod: return kPropBbPod;
         case wire::GearKind::boots: return g_boots_sync ? kPropBoots : kPropNone;
         case wire::GearKind::cargo: {
@@ -1181,6 +1195,146 @@ bool PodTick(std::uintptr_t p, std::uintptr_t inv, std::uintptr_t pod) {
     return o.vis;
 }
 
+// ---------------------------------------------------------------- round 28 O1: our Odradek (section 12.9, gear_odra.hpp)
+// The arm (inv +0x4C88) and the body (inv +0x4CA0) as two STC1 odradek items, `model` the part, while the game shows them on
+// our Sam and the partner's frames carry kGearOdraCap. Read every gear read on the game thread (fault-free reads only).
+struct OdraGear {
+    bool checked = false, ok = false;
+    char why[160] = "";
+    gearodra::Hold hold;
+    int force_joint = -1;    // `gear 40 4 <j>` (-1: auto, gearodra::AnchorJoint)
+    bool test_hold = false;  // `gear 40 3 1` (hidden tests): our Odradek read as in a cutscene
+    std::uint8_t anchor = gearodra::kJointShoulderL;
+    std::uintptr_t arm = 0, body = 0;  // the entities last read
+    bool have_rel = false;             // the parts' last poses in Sam's frame (kept through a short unreadable stretch)
+    double rel_p[2][3] = {};
+    float rel_r[2][3][3] = {};
+    std::uint32_t reads = 0, shown_reads = 0, changes = 0, why_n[gearodra::kWhyCount] = {};
+    std::uint32_t logged_flags = 0xFFFFFFFFu;
+    std::uint8_t logged_state = 0xFF;
+    int logged_why = -1;
+    unsigned state_logs = 0, why_logs = 0, helper_logs = 0, cap_logs = 0;
+    double next_summary_ms = 0, helper_next_ms = 0;
+    int cap_seen = -1;  // the partner's newest frame carries kGearOdraCap (-1 no frame)
+    // receiver (OdraTick): per part (0 body, 1 arm)
+    std::uintptr_t att_e[2] = {}, pose_e[2] = {};
+    unsigned att_joint[2] = {255, 255};  // the item's joint att_e was checked on (a new anchor is checked and logged again)
+    int att_logged[2] = {};  // 0 nothing yet, 1 "NOT attached" logged, 2 "attached" logged (for att_e)
+    unsigned att_ok[2] = {}, att_bad[2] = {}, att_bad_now[2] = {}, pose_checks = 0, pose_close = 0, copies_refused = 0;
+    double att_worst_cm[2] = {}, att_next_ms[2] = {};
+    int rx_parts = -1, rx_live = -1, rx_shown = -1;
+    unsigned rx_logs = 0;
+    double rx_next_ms = 0;
+} g_odra;
+
+bool OdraChecked() {
+    if (g_odra.checked) return g_odra.ok;
+    g_odra.checked = true;
+    struct Sig {
+        const char* name;
+        std::uintptr_t rva;
+        const char* sig;
+    };
+    static const Sig kSigs[] = {{"Odradek arm store", kInvOdraArmStore, "4C 89 AF 88 4C 00 00"},
+                                {"Odradek body store", kInvOdraStore, "4C 89 AF A0 4C 00 00"},
+                                {"Odradek ready predicate", kOdraReadyFn, "F6 81 E4 03 00 00 04 74 1B 0F B6 81 48 03 00 00"}};
+    g_odra.ok = true;
+    for (const Sig& c : kSigs)
+        if (!mem::CodeMatches(mem::Base() + c.rva, c.sig)) {
+            std::snprintf(g_odra.why, sizeof(g_odra.why), "%s at ds.exe+0x%llX does not match", c.name, static_cast<unsigned long long>(c.rva));
+            g_odra.ok = false;
+            break;
+        }
+    if (g_odra.ok) {
+        std::snprintf(g_odra.why, sizeof(g_odra.why), "ok");
+        Log("[odragear] Odradek offsets verified (arm ref inv +0x4C88, body ref inv +0x4CA0, body +0x3E4 / +0x348)");
+    } else {
+        Log("[odragear] Odradek checks failed: %s (our Odradek is not sent this session)", g_odra.why);
+    }
+    return g_odra.ok;
+}
+
+struct OdraRead {
+    bool send = false;
+    std::uintptr_t arm = 0, body = 0;
+    Xf arm_w, body_w;
+};
+
+// Our Odradek this read: whether its two parts go out, and their world poses.
+void ReadOdradek(std::uintptr_t p, std::uintptr_t inv, const Xf& sam, OdraRead* out) {
+    *out = OdraRead{};
+    const double now = static_cast<double>(GetTickCount64());
+    gearodra::In in;
+    in.on = g_odra_on && OdraChecked();
+    const bool debug_body = realbody::GetOwner() == realbody::Owner::debug && g_debug_body;  // our own gear on the debug body
+    in.partner_cap = (g_have_partner && (g_partner.flags & wire::kGearOdraCap) != 0) || debug_body;
+    std::uintptr_t arm = 0, body = 0;
+    Xf aw, bw;
+    if (in.on) {
+        arm = RefEntity(Q(inv + kInvOdraArm));
+        body = RefEntity(Q(inv + kInvOdra));
+        in.arm = arm && Derives(arm, "DSOdradekArmEntity");
+        in.body = body && Derives(body, "DSOdradekBodyEntity");
+        in.arm_vis = in.arm && Visible(arm);
+        in.body_vis = in.body && Visible(body);
+        if (in.body) {
+            std::uint32_t fl = 0;
+            std::uint8_t st = 0;
+            if (Rd(body + kOdraFlags, fl)) in.body_flags = fl;
+            if (Rd(body + kOdraState, st)) in.body_state = st;
+        }
+        in.on_sam = in.arm && in.body && ReadWorld(arm, &aw) && ReadWorld(body, &bw) && Dist(aw, sam) < 5.0 && Dist(bw, sam) < 5.0;
+        bool seated = false;
+        in.riding = vsync::VehicleClass(Q(p + 0x70)) >= 0 || (vsync::ReportedVehicle(now, &seated) && seated) || ride::Carried();
+        std::uint64_t gs = 0;
+        const char* load = game::LoadOrSetup(&gs, nullptr);
+        in.cutscene = g_odra.test_hold || load != nullptr || (gs & (game::kGameStateCutscene | kGsInGameCutscene | kGsMovie)) != 0;
+    }
+    const gearodra::Why w = gearodra::Decide(in);
+    bool changed = false;
+    const bool shown = gearodra::Step(g_odra.hold, w, now, &changed);
+    g_odra.anchor = gearodra::AnchorJoint(g_own_fragile, g_odra.force_joint);
+    if (in.on) {
+        ++g_odra.reads;
+        ++g_odra.why_n[static_cast<unsigned>(w) < gearodra::kWhyCount ? static_cast<unsigned>(w) : 0];
+    }
+    if (in.on_sam) {
+        // the parts in Sam's frame (a short stretch of unreadable transforms keeps them, the hold keeps the items)
+        Relative(sam, aw, g_odra.rel_p[0], g_odra.rel_r[0]);
+        Relative(sam, bw, g_odra.rel_p[1], g_odra.rel_r[1]);
+        g_odra.have_rel = true;
+        g_odra.arm = arm, g_odra.body = body;
+    }
+    if (in.on && in.body && (in.body_flags != g_odra.logged_flags || in.body_state != g_odra.logged_state) && ++g_odra.state_logs <= 40)
+        Log("[odragear] our Odradek body: state %02X flags %08X (%s)", static_cast<unsigned>(in.body_state), in.body_flags,
+            gearodra::BodyUp(in.body_flags, in.body_state) ? "set up" : "not set up");
+    if (in.body) g_odra.logged_flags = in.body_flags, g_odra.logged_state = in.body_state;
+    if (changed && ++g_odra.changes <= 60)
+        Log("[odragear] our Odradek %s (%s; arm %p %s, body %p %s, state %02X flags %08X; anchor joint %u%s)", shown ? "sent" : "no longer sent",
+            gearodra::WhyName(w), reinterpret_cast<void*>(arm), in.arm ? (in.arm_vis ? "shown" : "hidden") : "-", reinterpret_cast<void*>(body),
+            in.body ? (in.body_vis ? "shown" : "hidden") : "-", static_cast<unsigned>(in.body_state), in.body_flags, static_cast<unsigned>(g_odra.anchor),
+            g_odra.force_joint >= 0 ? ", forced" : g_own_fragile ? ", drawn as Fragile there: the chest" : ", drawn as Sam there: the left shoulder");
+    if (!shown && in.on && static_cast<int>(w) != g_odra.logged_why && ++g_odra.why_logs <= 30)
+        Log("[odragear] our Odradek not sent: %s", gearodra::WhyName(w));
+    g_odra.logged_why = static_cast<int>(w);
+    if (in.on && now >= g_odra.next_summary_ms) {
+        if (g_odra.next_summary_ms > 0) {
+            const std::uint32_t* n = g_odra.why_n;
+            Log("[odragear] sender: %u reads, %u sent, %u changes; shown %u, no flag %u, cutscene %u, riding %u, no Odradek %u, hidden %u, far %u, "
+                "not set up %u",
+                g_odra.reads, g_odra.shown_reads, g_odra.changes, n[0], n[2], n[3], n[4], n[5], n[6], n[7], n[8]);
+        }
+        g_odra.next_summary_ms = now + 30000;
+    }
+    if (!shown || !g_odra.have_rel) return;
+    ++g_odra.shown_reads;
+    out->send = true;
+    out->arm = in.on_sam ? arm : g_odra.arm;
+    out->body = in.on_sam ? body : g_odra.body;
+    out->arm_w = in.on_sam ? aw : Compose(sam, g_odra.rel_p[0], g_odra.rel_r[0]);
+    out->body_w = in.on_sam ? bw : Compose(sam, g_odra.rel_p[1], g_odra.rel_r[1]);
+}
+
 // Reads every gear item of the local player into g_items. `verbose`: the full walk to the log.
 bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
     g_item_count = 0;
@@ -1275,6 +1429,15 @@ bool ReadItems(game::Entity* local, bool verbose, char* why, std::size_t cap) {
     if (verbose)
         Log("[gear] inventory %p: backpack %p (%s), Odradek %p (%s)", reinterpret_cast<void*>(inv), reinterpret_cast<void*>(pack),
             pack ? TypeOf(pack) : "-", reinterpret_cast<void*>(odra), odra ? TypeOf(odra) : "-");
+    {
+        // round 28 O1 (section 12.9): the Odradek's arm and body, while the game shows them and the partner draws them
+        OdraRead od;
+        ReadOdradek(p, inv, sam, &od);
+        if (od.send) {
+            add(wire::GearKind::odradek, gearodra::kPartArm, 0, od.arm, true, od.arm_w);
+            add(wire::GearKind::odradek, gearodra::kPartBody, 0, od.body, true, od.body_w);
+        }
+    }
     // Every other gear entity the game shows on Sam (docs/real-partner-body.md section 12): his child
     // entities and theirs (depth 3, at most 320 visited), each visible one that has a model and an
     // entity resource under ds/entities/ (weapons in hand and stowed, the BB pod and what hangs on it,
@@ -1611,6 +1774,7 @@ void RememberJoint(std::uintptr_t e, std::uint8_t j) {
 bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_poses, wire::GearFrame* out, std::uintptr_t* out_e) {
     wire::GearFrame f;
     f.flags = wire::kGearValid;
+    if (g_odra_on) f.flags |= wire::kGearOdraCap;  // round 28 O1: we draw the partner's Odradek (its sender sends it only then)
     // Joint frames of Sam (model matrices) in world space.
     Xf joints[77];
     bool have_joint[77] = {};
@@ -1703,7 +1867,7 @@ bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_
         } else {
             std::uint8_t j = kJSpine4;
             if (it.kind == wire::GearKind::boots) j = 0;
-            else if (it.kind == wire::GearKind::odradek) j = kJLShoulder;
+            else if (it.kind == wire::GearKind::odradek) j = g_odra.anchor;  // round 28 O1: the left shoulder, or the chest under Fragile
             else if (it.kind == wire::GearKind::bb_pod) j = kJSpine5;
             else if (it.kind == wire::GearKind::cargo && it.slot_type != 1) {
                 // arms (slot types 2, 3) on the upper arm, waist (4, 5) on the hips, hands (6, 7) on the
@@ -1743,6 +1907,27 @@ bool BuildFrame(game::Entity* local, const Xf& sam, bool self_hidden, bool keep_
                 for (int c = 0; c < 3; ++c) rr[a][c] = hc_r[a][c];
         }
         if (std::fabs(rp[0]) > 30 || std::fabs(rp[1]) > 30 || std::fabs(rp[2]) > 30) continue;
+        if (it.kind == wire::GearKind::odradek && it.model == gearodra::kPartArm && g_odra.helper_logs < 6) {
+            // round 28 O1: the arm on joint 35 against Sam's HLP_Odradek (the static decode), every 5 s, a few times a session
+            const double tnow = static_cast<double>(GetTickCount64());
+            const Xf* js = joint(gearodra::kJointShoulderL);
+            if (js && tnow >= g_odra.helper_next_ms) {
+                g_odra.helper_next_ms = tnow + 5000;
+                ++g_odra.helper_logs;
+                double hp[3];
+                float hr[3][3];
+                Relative(*js, it.world, hp, hr);
+                const float hpf[3] = {static_cast<float>(hp[0]), static_cast<float>(hp[1]), static_cast<float>(hp[2])};
+                const gearodra::HelperDelta hd = gearodra::CompareHelper(hpf, hr);
+                double body_cm = -1;
+                for (unsigned b = 0; b < g_item_count; ++b)
+                    if (g_items[b].kind == wire::GearKind::odradek && g_items[b].model == gearodra::kPartBody) body_cm = Dist(g_items[b].world, it.world) * 100.0;
+                Log("[odragear] sender: our arm on joint 35 at (%.1f, %.1f, %.1f) cm, HLP_Odradek (%.1f, %.1f, %.1f) cm: %.1f cm apart, axes %.1f deg (rows) / "
+                    "%.1f deg (columns); sent on joint %u at (%.1f, %.1f, %.1f) cm; the body %.1f cm from the arm",
+                    hp[0] * 100.0, hp[1] * 100.0, hp[2] * 100.0, gearodra::kHelperT[0] * 100.0, gearodra::kHelperT[1] * 100.0, gearodra::kHelperT[2] * 100.0,
+                    hd.cm, hd.deg_rows, hd.deg_cols, static_cast<unsigned>(gi.joint), rp[0] * 100.0, rp[1] * 100.0, rp[2] * 100.0, body_cm);
+            }
+        }
         gi.p[0] = static_cast<float>(rp[0]), gi.p[1] = static_cast<float>(rp[1]), gi.p[2] = static_cast<float>(rp[2]);
         gi.q = wire::Normalize(wire::QuatFromMatrix(rr));
         if (it.kind == wire::GearKind::boots) {
@@ -3405,6 +3590,10 @@ bool ValidateProp(game::Entity* e, bool entity_item, char* why, std::size_t cap)
     if (!rtti) return std::snprintf(why, cap, "entity type unknown"), false;
     if (mem::DerivesFrom(rtti, "Humanoid") || mem::DerivesFrom(rtti, "DSPlayerEntity") || mem::DerivesFrom(rtti, "DSBackpackEntity"))
         return std::snprintf(why, cap, "a Humanoid / player / backpack entity"), false;
+    if (mem::DerivesFrom(rtti, "DSOdradekArmEntity") || mem::DerivesFrom(rtti, "DSOdradekBodyEntity") || std::strncmp(TypeOf(a), "DSOdradek", 9) == 0) {
+        ++g_odra.copies_refused;  // round 28 O1: the Odradek is only ever its cinematic props
+        return std::snprintf(why, cap, "a DSOdradek entity (never copied: 0x14296F3AE)"), false;
+    }
     for (const char* bad : {"AIIndividualComponent", "AIBodyComponent", "DSPlayerControllerComponent", "HumanoidController", "CapsuleComponent",
                             "PhysicsCollisionComponent", "PhysicsRagdollComponent"})
         if (partner::FindComponentByName(e, bad)) return std::snprintf(why, cap, "carries %s", bad), false;
@@ -5226,6 +5415,125 @@ void Census(game::Entity* who, bool sam_like) {
     }
 }
 
+// ---------------------------------------------------------------- round 28 O1: the partner's Odradek (receiver lines)
+// Our own Odradek part (the pose check's reference): our Sam's arm / body entity, 0 when there is none.
+std::uintptr_t OwnOdraPart(int part) {
+    game::Entity* local = nullptr;
+    game::TryGetLocalPlayer(&local);
+    const auto lp = reinterpret_cast<std::uintptr_t>(local);
+    if (!lp || Q(lp) != mem::Base() + kPlayerVtable) return 0;
+    const std::uintptr_t inv = Q(lp + kPInv);
+    if (!inv || Q(inv + kCompOwner) != lp) return 0;
+    const bool arm = part == gearodra::kPartArm;
+    const std::uintptr_t e = RefEntity(Q(inv + (arm ? kInvOdraArm : kInvOdra)));
+    return e && Derives(e, arm ? "DSOdradekArmEntity" : "DSOdradekBodyEntity") ? e : 0;
+}
+
+// The prop's joints (its neutral animation) against our own part's (model space, joint by joint): folded like ours at idle?
+void OdraPoseCheck(int part, game::Entity* prop) {
+    const bool arm = part == gearodra::kPartArm;
+    const unsigned want = arm ? gearodra::kArmJoints : gearodra::kBodyJoints;
+    float m[4][4], o[4][4];
+    unsigned n = 0, on = 0, compared = 0, worst_j = 0, worst_dj = 0;
+    char nm[64] = "", worst_name[64] = "";
+    double worst_cm = 0, worst_deg = 0;
+    ++g_odra.pose_checks;
+    if (!realbody::ReadJointModelAny(prop, 0, &n, m, nm, sizeof(nm))) {
+        Log("[odragear] pose check: the partner's %s prop's joints are unreadable", arm ? "arm" : "body");
+        return;
+    }
+    const std::uintptr_t own = OwnOdraPart(part);
+    auto* own_e = reinterpret_cast<game::Entity*>(own);
+    std::uint8_t own_state = 0;
+    if (own && !arm) Rd(own + kOdraState, own_state);
+    if (own && realbody::ReadJointModelAny(own_e, 0, &on, o, nm, sizeof(nm)))
+        for (unsigned j = 0; j < n && j < on && j < 64; ++j) {
+            unsigned c1 = 0, c2 = 0;
+            if (!realbody::ReadJointModelAny(prop, j, &c1, m, nm, sizeof(nm)) || !realbody::ReadJointModelAny(own_e, j, &c2, o, nullptr, 0)) continue;
+            double cm = 0, deg = 0;
+            if (!gearodra::JointDelta(m, o, &cm, &deg)) continue;
+            ++compared;
+            if (cm > worst_cm) {
+                worst_cm = cm, worst_j = j;
+                std::snprintf(worst_name, sizeof(worst_name), "%s", nm);
+            }
+            if (deg > worst_deg) worst_deg = deg, worst_dj = j;
+        }
+    const bool close = compared > 0 && worst_cm <= 3.0 && worst_deg <= 15.0;
+    g_odra.pose_close += close;
+    Log("[odragear] pose check: the partner's %s prop has %u joints (the skeleton's %u); against our own %s (%u joints%s): %u compared, worst %.1f cm "
+        "(joint %u '%s') / %.1f deg (joint %u): %s",
+        arm ? "arm" : "body", n, want, arm ? "arm" : "body", on, own ? "" : ", none", compared, worst_cm, worst_j, worst_name, worst_deg, worst_dj,
+        !own ? "no own Odradek to compare" : compared == 0 ? "nothing compared" : close ? "close to our idle pose (folded)" : "differs from our idle pose");
+    if (own && !arm) Log("[odragear] pose check: our own body's state %02X while compared (01: idle on the shoulder)", static_cast<unsigned>(own_state));
+}
+
+// The partner's Odradek props (partner slot only): attached where the item says, their pose, the counts.
+void OdraTick(PropSet& s, game::Entity* body, double now) {
+    if (!g_odra_on || &s != &g_sets[0]) return;
+    int parts = 0, live = 0, shown = 0;
+    for (unsigned i = 0; s.have_want && i < s.want.count && i < wire::kMaxGearItems; ++i) {
+        const wire::GearItem& it = s.want.items[i];
+        if (it.kind != wire::GearKind::odradek) continue;
+        const int part = gearodra::PartOf(it.model);
+        if (part < 0) continue;
+        ++parts;
+        Prop& p = s.props[i];
+        if (!p.live || !holo::SpawnAlive(p.sp) || !p.sp.e) continue;
+        ++live;
+        if (!p.shown) continue;
+        ++shown;
+        const unsigned k = part == gearodra::kPartArm ? 1u : 0u;
+        const auto pe = reinterpret_cast<std::uintptr_t>(p.sp.e);
+        if (!body || it.parent != wire::kGearNoParent || now - p.live_ms < 500) continue;
+        if (g_odra.att_e[k] != pe || g_odra.att_joint[k] != it.joint) {
+            g_odra.att_e[k] = pe, g_odra.att_joint[k] = it.joint;
+            g_odra.att_logged[k] = 0, g_odra.att_bad_now[k] = 0, g_odra.att_next_ms[k] = 0;
+        }
+        if (now >= g_odra.att_next_ms[k]) {
+            g_odra.att_next_ms[k] = now + 2000;
+            Xf placed, jw;
+            if (ReadWorld(pe, &placed) && realbody::JointFrameWorld(body, it.joint, jw.p, jw.r)) {
+                const double ip[3] = {it.p[0], it.p[1], it.p[2]};
+                float ir[3][3];
+                wire::MatrixFromQuat(it.q, ir);
+                const Xf want = Compose(jw, ip, ir);
+                double rp[3];
+                float rr[3][3];
+                Relative(want, placed, rp, rr);
+                static const float kId[3][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+                const double cm = std::sqrt(rp[0] * rp[0] + rp[1] * rp[1] + rp[2] * rp[2]) * 100.0;
+                const double deg = gearodra::AngleDeg(rr, kId);
+                const bool ok = cm <= gearodra::kAttachOkCm && deg <= 5.0;
+                if (ok) ++g_odra.att_ok[k];
+                else ++g_odra.att_bad[k], ++g_odra.att_bad_now[k];
+                if (cm > g_odra.att_worst_cm[k]) g_odra.att_worst_cm[k] = cm;
+                if ((ok && g_odra.att_logged[k] != 2) || (!ok && g_odra.att_logged[k] == 0 && g_odra.att_bad_now[k] >= 3)) {
+                    g_odra.att_logged[k] = ok ? 2 : 1;
+                    Log("[odragear] partner Odradek %s (prop %u '%s') shown on the body's joint %u: %s, %.1f cm / %.1f deg from its place, %.1f cm from the joint",
+                        k ? "arm" : "body", i, KeyLabel(p.def, s.res), static_cast<unsigned>(it.joint), ok ? "attached" : "NOT attached", cm, deg,
+                        Dist(jw, placed) * 100.0);
+                }
+            }
+        }
+        if (g_odra.pose_e[k] != pe && now - p.live_ms >= 1000) {
+            g_odra.pose_e[k] = pe;
+            OdraPoseCheck(part, p.sp.e);
+        }
+    }
+    if ((parts != g_odra.rx_parts || live != g_odra.rx_live || shown != g_odra.rx_shown) && ++g_odra.rx_logs <= 60)
+        Log("[odragear] partner Odradek: %d part(s) in its frame, %d prop(s) live, %d shown", parts, live, shown);
+    g_odra.rx_parts = parts, g_odra.rx_live = live, g_odra.rx_shown = shown;
+    if (now >= g_odra.rx_next_ms) {
+        if (g_odra.rx_next_ms > 0 && (parts || g_odra.att_ok[0] + g_odra.att_ok[1] + g_odra.att_bad[0] + g_odra.att_bad[1]))
+            Log("[odragear] receiver: %d part(s), %d live, %d shown; attached body %u / %u, arm %u / %u (worst %.1f / %.1f cm); pose checks %u (%u close); "
+                "DSOdradek copies refused %u",
+                parts, live, shown, g_odra.att_ok[0], g_odra.att_ok[0] + g_odra.att_bad[0], g_odra.att_ok[1], g_odra.att_ok[1] + g_odra.att_bad[1],
+                g_odra.att_worst_cm[0], g_odra.att_worst_cm[1], g_odra.pose_checks, g_odra.pose_close, g_odra.copies_refused);
+        g_odra.rx_next_ms = now + 30000;
+    }
+}
+
 }  // namespace
 
 void Init(const Config& config) noexcept {
@@ -5233,8 +5541,14 @@ void Init(const Config& config) noexcept {
     {
         const bodies::OwnChoice own = bodies::ChooseOwn(config.role == Role::host, config.my_character.c_str());
         g_own_hoodless = own.body && std::strncmp(own.body->key, "fragile", 7) == 0;  // fragile, fragile_suit: no hood
+        g_own_fragile = g_own_hoodless;
     }
     g_boots_sync = config.boots_sync;
+    g_odra_on = config.odradek_gear;
+    Log("[odragear] odradek_gear=%d: %s", g_odra_on ? 1 : 0,
+        g_odra_on ? "our Odradek sent to a partner that draws it, the partner's drawn as its cinematic props (round 28 O1; anchor: the left shoulder, "
+                    "the chest while drawn as Fragile)"
+                  : "no Odradek on the partner (v0.39)");
     g_boots_style = config.boots_look_own ? bootslook::Style::own : bootslook::Style::prop;
     g_boots_own_porter = config.boots_own_porter;
     g_exo_on = config.exo_carrier;
@@ -5400,6 +5714,7 @@ void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
     const bool pvis = pbody && partner::ReadFlags(pbody, &flags) && (flags & 0x2) != 0;
     DriveSet(ps, pbody, pvis, local_active, now_ms);
     BootsTick(ps, pbody, now_ms);
+    OdraTick(ps, pbody, now_ms);  // round 28 O1 (section 12.9)
     // The partner's own gear parts (exoskeleton, BB pod pipe, ...) on a Sam body, and its backpack's
     // parts (the bag, rain cover, pouches) on the backpack prop: each only when the target's ArtParts
     // are the same resources as our own Sam's / backpack's.
@@ -5656,7 +5971,16 @@ void SetPartnerGear(const wire::GearFrame* f) noexcept {
         for (PartnerLook& l : g_plook) l = PartnerLook{};
         g_have_pose_partner = false;
         g_have_hpose_partner = false;
+        g_odra.cap_seen = -1;
         return;
+    }
+    {
+        // round 28 O1: the partner's build draws our Odradek and its odradek_gear is on (our sender's gate, ReadOdradek)
+        const int cap_now = (f->flags & wire::kGearOdraCap) != 0 ? 1 : 0;
+        if (cap_now != g_odra.cap_seen && ++g_odra.cap_logs <= 20)
+            Log("[odragear] the partner's frames %s the Odradek flag (%s)", cap_now ? "carry" : "do not carry",
+                cap_now ? "it draws ours: sent while the game shows it" : "odradek_gear=0 there or an older build: ours is not sent");
+        g_odra.cap_seen = cap_now;
     }
     if (!g_have_partner || wire::GearLayoutHash(*f) != wire::GearLayoutHash(g_partner)) DescribeFrame(*f, "the partner's gear", g_res_partner);
     g_partner = *f;
@@ -6410,6 +6734,34 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             Log("[tex] cap probe: %s", msg);
             return n > 0;
         }
+        case 40: {
+            // round 28 O1 (section 12.9): the partner's Odradek. 0 / 1 the key (odradek_gear) off / on, 2 status, 3 <0/1> test hold
+            // (hidden tests: our Odradek read as in a cutscene, not sent), 4 <j | -1> its anchor joint (-1 auto)
+            const int a = static_cast<int>(v[1]);
+            if (a == 0 || a == 1) {
+                g_odra_on = a != 0;
+                g_sets[0].published_hash = 0xFFFF;  // the partner's props taken again (PropForKind follows the key)
+            } else if (a == 3) {
+                g_odra.test_hold = v[2] != 0;
+            } else if (a == 4) {
+                g_odra.force_joint = v[2] >= 0 && v[2] < 77 ? static_cast<int>(v[2]) : -1;
+            } else if (a != 2) {
+                std::snprintf(msg, cap, "gear 40: 0 / 1 off / on, 2 status, 3 <0/1> test hold, 4 <joint | -1> anchor");
+                return false;
+            }
+            g_next_read_ms = 0;
+            std::snprintf(msg, cap,
+                          "Odradek %s (checks %s), the partner's frames %s the flag; ours %s (%s), anchor joint %u%s; %u reads, %u sent, %u changes; "
+                          "partner props: body attached %u / %u, arm %u / %u (worst %.1f / %.1f cm), pose checks %u (%u close), DSOdradek copies refused %u; "
+                          "test hold %d",
+                          g_odra_on ? "on" : "off", g_odra.checked ? g_odra.why : "not yet", g_odra.cap_seen < 0 ? "(none received yet) carry" : g_odra.cap_seen ? "carry" : "do not carry",
+                          g_odra.hold.shown ? "sent" : "not sent", gearodra::WhyName(g_odra.hold.last), static_cast<unsigned>(g_odra.anchor),
+                          g_odra.force_joint >= 0 ? " (forced)" : "", g_odra.reads, g_odra.shown_reads, g_odra.changes, g_odra.att_ok[0],
+                          g_odra.att_ok[0] + g_odra.att_bad[0], g_odra.att_ok[1], g_odra.att_ok[1] + g_odra.att_bad[1], g_odra.att_worst_cm[0],
+                          g_odra.att_worst_cm[1], g_odra.pose_checks, g_odra.pose_close, g_odra.copies_refused, g_odra.test_hold ? 1 : 0);
+            Log("[odragear] %s", msg);
+            return true;
+        }
         case 9: {
             // census: 0 the local player, 1 the partner / debug body, 2 the self body
             game::Entity* who = nullptr;
@@ -6422,7 +6774,7 @@ bool DebugCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noex
             return who != nullptr;
         }
         default:
-            std::snprintf(msg, cap, "unknown op %d (0 log, 1 partner 0/1, 2 self 0/1, 3 test cases n, 4 debug body 0/1, 5 n / 6 test faults, 7 level, 8 pod entity, 9 census 0/1/2, 10 walk cache 0/1, 11 looks 0/1, 12 looks off/on, 13 backpack pose off/on, 14 accessory list, 15 cap colour, 16 head parts off/on, 17 weapons off/on, 18 headgear offsets off/on, 19 headgear meter off/on, 20 partner feet scale percent, 21 boots sync off/on, 22 hat in the rain, 23 glasses colour, 24 rain cover durability percent, 25 boots look 0 prop / 1 own / 2 log, 26 held items, 27 exo carrier 0/1/2, 28 skeleton type -1..4, 29 LegOut 0/1, 30 BB pod rule 0/1/2, 31 her hood 0/1/2/3, 32 hood state -1..12 [type], 33 hair under the hood 0/1, 34 hood fold test, 35 hood colour 0/1, 36 hip crates 0/1 / status, 37 cap probe 0 ours / 1 the partner's, 38 suit rig 0/1 [extra] / 2 status, 39 logo 0/1 / 2 status)", op);
+            std::snprintf(msg, cap, "unknown op %d (0 log, 1 partner 0/1, 2 self 0/1, 3 test cases n, 4 debug body 0/1, 5 n / 6 test faults, 7 level, 8 pod entity, 9 census 0/1/2, 10 walk cache 0/1, 11 looks 0/1, 12 looks off/on, 13 backpack pose off/on, 14 accessory list, 15 cap colour, 16 head parts off/on, 17 weapons off/on, 18 headgear offsets off/on, 19 headgear meter off/on, 20 partner feet scale percent, 21 boots sync off/on, 22 hat in the rain, 23 glasses colour, 24 rain cover durability percent, 25 boots look 0 prop / 1 own / 2 log, 26 held items, 27 exo carrier 0/1/2, 28 skeleton type -1..4, 29 LegOut 0/1, 30 BB pod rule 0/1/2, 31 her hood 0/1/2/3, 32 hood state -1..12 [type], 33 hair under the hood 0/1, 34 hood fold test, 35 hood colour 0/1, 36 hip crates 0/1 / status, 37 cap probe 0 ours / 1 the partner's, 38 suit rig 0/1 [extra] / 2 status, 39 logo 0/1 / 2 status, 40 Odradek 0/1 / 2 status / 3 test hold / 4 anchor)", op);
             return false;
     }
 }

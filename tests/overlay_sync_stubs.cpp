@@ -436,6 +436,19 @@ bool Command(const double (&)[3], char* msg, std::size_t cap) noexcept { return 
 namespace st::etarget {
 bool Command(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "enemy tgt (stub)"), true; }
 }  // namespace st::etarget
+namespace st::bt {  // round 28 P3 (bt_sync.cpp)
+bool Command(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "bt probe (stub)"), true; }
+void Tick(double) noexcept {}
+bool SyncCommand(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "bt sync (stub)"), true; }  // round 28 B1
+void EmergencyStop() noexcept {}
+}  // namespace st::bt
+namespace st::odra {  // round 28 P4 (odradek_sync.cpp)
+bool Command(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "odra (stub)"), true; }
+bool Replay(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "odra replay (stub)"), true; }
+}  // namespace st::odra
+namespace st::truckv3 {  // round 28 P2 (truck_v3.cpp)
+bool Command(const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "truck v3 (stub)"), true; }
+}  // namespace st::truckv3
 namespace st::shots {
 bool Command(int, const double (&)[3], char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "shots (stub)"), true; }
 bool Test(double, int, int, char* msg, std::size_t cap) noexcept { return std::snprintf(msg, cap, "shots test (stub)"), true; }

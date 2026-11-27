@@ -10,6 +10,7 @@
 
 #include "audio_probe.hpp"
 #include "automation.hpp"
+#include "bt_sync.hpp"
 #include "config.hpp"
 #include "coop_session.hpp"
 #include "quickstart.hpp"
@@ -17,6 +18,8 @@
 #include "enemy_combat.hpp"
 #include "enemy_l1_probe.hpp"
 #include "enemy_target.hpp"
+#include "enemy_phit.hpp"
+#include "truck_v3.hpp"
 #include "enemy_sync.hpp"
 #include "shot_sync.hpp"
 #include "suit_colour.hpp"
@@ -27,6 +30,7 @@
 #include "world_share.hpp"
 #include "debug_actions.hpp"
 #include "dev_tools.hpp"
+#include "odradek_sync.hpp"
 #include "self_voice.hpp"
 #include "partner_sound.hpp"
 #include "partner_voice.hpp"
@@ -103,6 +107,10 @@ bool GuardedEmergencyStop() noexcept {
     // the save guard first: no tick will refresh the ride's state it holds captures on (its detours pass everything through)
     const bool l1 = GuardedStop(&st::l1probe::EmergencyStop);  // round 27 M1: her probe stimulus loses its agent; the counting detours pass through
     const bool tgt = GuardedStop(&st::etarget::EmergencyStop);  // round 27 M2 / M3: the partner stimulus loses its agent; pick and redirects pass through
+    const bool phit = GuardedStop(&st::ephit::EmergencyStop);  // round 28 P1: the attack probe's detours pass through
+    const bool trk = GuardedStop(&st::truckv3::EmergencyStop);  // round 28 P2: the watch off, the get-off detour passes through
+    const bool odr = GuardedStop(&st::odra::EmergencyStop);     // round 28 P4: the scan-machine detour passes through, requests dropped
+    const bool bts = GuardedStop(&st::bt::EmergencyStop);       // round 28 B1: the voidout detour passes through, no more BTS1 / RESET
     const bool save = GuardedStop(&st::saveguard::EmergencyStop);
     const bool coll = GuardedStop(&st::collision::EmergencyStop);
     const bool body = GuardedStop(&st::realbody::EmergencyStop);
@@ -115,7 +123,7 @@ bool GuardedEmergencyStop() noexcept {
     const bool world = GuardedStop(&st::wshare::EmergencyStop);   // shared structures: the detours pass everything through
     const bool suit = GuardedStop(&st::suitcol::PutBack);        // her Sam's suit colour byte: the world's own back (section 40)
     const bool coop = GuardedStop(&CoopStopAfterFault);
-    return l1 && tgt && save && coll && body && gear && veh && share && drive && ride && hit && world && suit && coop;
+    return l1 && tgt && phit && trk && odr && bts && save && coll && body && gear && veh && share && drive && ride && hit && world && suit && coop;
 }
 
 // frame_cap=<fps> (session.ini; the launcher's local two-instance test and hidden two-game
@@ -311,7 +319,11 @@ DWORD WINAPI Bootstrap(LPVOID) {
     st::esync::Install(cfg);   // enemy sync P1a (docs/enemy-sync.md 8): byte checks, the mirrors' Sam / NPC damage filters (after the shots')
     st::ecombat::Install(cfg); // enemy sync P2 (docs/enemy-sync.md 9): her hits on the host's enemies: the OnHit and MULE handler detours
     st::etarget::Install(cfg); // round 27 M2 / M3 (docs/enemy-sync.md 16): the partner stimulus / target pick keys (all off by default)
+    st::ephit::Install(cfg);   // round 28 P1 / E2 (docs/enemy-sync.md 17 / 20): the attack probe; with enemy_partner_melee its detours go in now (after vhit's checks)
+    st::truckv3::Install(cfg.vehicle_truck_probe);  // round 28 P2 (truck_v3.hpp): the truck controller probe, read-only (key default 0)
     st::dev::Install(cfg);     // dev tools (dev_tools=1 / hidden runs): no hooks; byte checks on the first tick
+    st::bt::Install(cfg);      // the BT census (bt_probe) and the BT sync (round 28 B1, bt_sync=1|2: the voidout detour goes in now, byte-checked)
+    st::odra::Install(cfg);    // round 28 P4 / O3 (odradek_probe=1 or odradek_scan_sync=1): byte checks, the scan state machine detour (FUN_14282B530)
     // Real partner body (docs/real-partner-body.md): the pose hook goes in at start-up, never
     // mid-game (enabling a hook suspends every thread while job threads may be inside it).
     if (cfg.partner_body == st::PartnerBody::real || cfg.pose_hook) st::realbody::InstallHook();

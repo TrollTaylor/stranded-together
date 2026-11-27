@@ -6,6 +6,7 @@
 #include <fstream>
 #include <sstream>
 
+#include "bt_rules.hpp"
 #include "config_values.hpp"
 #include "give_rules.hpp"
 #include "log.hpp"
@@ -82,6 +83,14 @@ Config LoadConfig(const std::wstring& dir) {
             c.fragile_logo = ParseBool(v);
             continue;
         }
+        if (k == "vehicle_truck_probe") {
+            c.vehicle_truck_probe = ParseBool(v);
+            continue;
+        }
+        if (k == "vehicle_mule_v3") {
+            c.vehicle_mule_v3 = ParseBool(v);
+            continue;
+        }
         if (k == "enemy_host_hide") {
             c.enemy_host_hide = ParseBool(v);
             continue;
@@ -131,6 +140,28 @@ Config LoadConfig(const std::wstring& dir) {
             }
             if (cfgval::SetDownKey(c.enemy_down_hold, k, ParseBool(v))) continue;
             if (cfgval::SetProbeKey(c.enemy_m2_probes, k, ParseBool(v))) continue;
+            if (cfgval::SetPhitKey(c.enemy_phit_probe, k, ParseBool(v))) continue;
+            if (cfgval::SetPartnerMeleeKey(c.enemy_partner_melee, c.enemy_melee_face, k, v, ParseBool(v))) continue;
+            if (k == "odradek_probe") {
+                c.odradek_probe = ParseBool(v);
+                continue;
+            }
+            if (k == "odradek_gear") {
+                c.odradek_gear = ParseBool(v);
+                continue;
+            }
+            if (k == "odradek_scan_sync") {
+                c.odradek_scan_sync = ParseBool(v);
+                continue;
+            }
+            if (k == "bt_probe") {  // round 28 P3 (here: the else-if chain below is at the compiler's nesting limit)
+                c.bt_probe = btrules::ProbeMode(std::atof(v.c_str()));  // the tested rule: 0..2, malformed / negative 0
+                continue;
+            }
+            if (k == "bt_sync") {  // round 28 lane B1: 0..2, malformed / negative 0
+                c.bt_sync = btrules::SyncLevel(std::atof(v.c_str()));
+                continue;
+            }
             {
                 cfgval::TakeKeys tk2{c.enemy_take_know, c.enemy_take_know_secs, c.enemy_take_camp, c.enemy_ticket_return,
                                      c.enemy_single_hold_vehicle, c.enemy_single_rule, c.enemy_take_role, c.enemy_take_face};
@@ -516,8 +547,15 @@ Config LoadConfig(const std::wstring& dir) {
     Log("[config] enemy_restrain_relay=%d enemy_replay_flush=%d", c.enemy_restrain_relay ? 1 : 0, c.enemy_replay_flush ? 1 : 0);
     Log("[config] enemy_mirror_hold_check=%d enemy_mirror_vehicle=%d", c.enemy_mirror_hold_check ? 1 : 0, c.enemy_mirror_vehicle ? 1 : 0);
     Log("[config] vehicle_mule_log=%d vehicle_mule_hold=%d", c.vehicle_mule_log ? 1 : 0, c.vehicle_mule_hold ? 1 : 0);
+    Log("[config] vehicle_truck_probe=%d", c.vehicle_truck_probe ? 1 : 0);
+    Log("[config] vehicle_mule_v3=%d", c.vehicle_mule_v3 ? 1 : 0);
     Log("[config] enemy_down_hold=%d enemy_down_hold_radius=%.0f", c.enemy_down_hold ? 1 : 0, c.enemy_down_hold_radius);
     Log("[config] enemy_m2_probes=%d", c.enemy_m2_probes ? 1 : 0);
+    Log("[config] enemy_phit_probe=%d", c.enemy_phit_probe ? 1 : 0);
+    Log("[config] enemy_partner_melee=%d enemy_melee_face=%d", c.enemy_partner_melee, c.enemy_melee_face ? 1 : 0);
+    Log("[config] odradek_probe=%d", c.odradek_probe ? 1 : 0);
+    Log("[config] odradek_gear=%d", c.odradek_gear ? 1 : 0);
+    Log("[config] odradek_scan_sync=%d", c.odradek_scan_sync ? 1 : 0);
     Log("[config] enemy_take_know=%d enemy_take_know_secs=%.0f enemy_take_camp=%d enemy_ticket_return=%d enemy_single_hold_vehicle=%d "
         "enemy_single_rule=%d enemy_take_role=%d enemy_take_face=%d",
         c.enemy_take_know, c.enemy_take_know_secs, c.enemy_take_camp, c.enemy_ticket_return ? 1 : 0, c.enemy_single_hold_vehicle ? 1 : 0,
@@ -543,6 +581,8 @@ Config LoadConfig(const std::wstring& dir) {
         c.world_anim == 1 ? "bits" : c.world_anim == 2 ? "loaded" : c.world_anim == 3 ? "off" : "645", c.world_test_fail.empty() ? "" : " test_fail=",
         c.world_test_fail.c_str());
     if (c.audio_probe) Log("[config] audio_probe=1 (logging only)");
+    if (c.bt_probe) Log("[config] bt_probe=%d (BT census, logging only)", c.bt_probe);
+    if (c.bt_sync) Log("[config] bt_sync=%d (BT field sync: FIELD / NOTICED / VOID%s)", c.bt_sync, c.bt_sync >= 2 ? " / RESET applied on the guest" : "");
     Log("[config] self_voice=%s voice_sync=%d voice_subtitles=%d sound_sync=%d sound_steps=%d partner_volume=%d vehicle_sound=%d",
         selfvoice::ModeName(c.self_voice), c.voice_sync ? 1 : 0, c.voice_subtitles ? 1 : 0, c.sound_sync ? 1 : 0, c.sound_steps ? 1 : 0, c.partner_volume,
         c.vehicle_sound ? 1 : 0);

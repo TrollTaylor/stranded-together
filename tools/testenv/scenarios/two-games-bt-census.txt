@@ -1,0 +1,99 @@
+# Round 28 P3 (BT sync B0): the BT field census on both games (native/mod/bt_sync.cpp, action bt_probe; docs/enemy-sync.md
+# "BT census"). Read only: no gameplay change, nothing sent on the link. Launcher Local test files.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-bt-census -SeedSaves complete-100 -GuestSeed profile-only -Id round28-p3
+# Run 1 (20261127-000239) answered: both games stream the same 35 bt211_01 gazers (locator print DBE6C47C = the archive, equal
+# fieldfp / killfp), actor ids differ per game, ResetAllGazers sets the field total to 0x7FFFFFFF and leaves live gazers alone, and
+# the host 9.3 m from gazer 40AB1A93 set its near bit (0x1000) on the host only. +0x230 is a stillness meter, not perception.
+# Run 2 adds:
+#  * timefall (dev_weather 1) on the HOST only: if the guest still gets 35 gazers, rain is not needed (static Q3c);
+#  * deterministic perception gates: the host logs "[bt] near: gazer loc 40AB1A93", the guest logs no "[bt] near:" line at all;
+#  * after the reset, the host leaves the field (the gazers stream out) and comes back: does bt211_01's total register again (35)?
+#  * last, the host 3 m from the gazer for 20 s: is the player noticed (hunter area ACTIVE / the found-player action)? Read from
+#    the logs afterwards; no gate depends on it (dev_god 2 keeps Sam alive if hands or a catcher come).
+# The bt209 leg (an unvalidated point north of the city) is left out.
+# The decision (by hand from the two logs): equal locfp / killfp at the field on both; "near: gazer loc 40AB1A93" on the host
+# only; "perceived yes" on the host and "perceived no" on the guest in the stop lines; the guest's gazer count without timefall.
+# covers: research
+# select: probe
+role host
+graphics low
+timeout 360
+launcherini local-test
+# round 28: bt_sync defaults to 2; pinned off here: this census is read only with nothing sent on the link (with the sync on the
+# guest would apply the host's dev_enemies 3 reset, which this research compares across the two games)
+ini bt_sync=0
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+@both action dev_god 2
+# ---- baseline at Mountain Knot City
+@both action bt_probe 1
+waitlog 10 \[bt\] byte checks: [0-9]+/[0-9]+ ok
+@guest waitlog 10 \[bt\] byte checks: [0-9]+/[0-9]+ ok
+waitlog 10 \[bt\] #2 gazers
+@guest waitlog 10 \[bt\] #2 gazers
+@both action bt_probe 2
+waitlog 10 \[bt\] dump done
+@guest waitlog 10 \[bt\] dump done
+# ---- timefall on the host only (dev_weather 1; sandboxed saves only): the guest tells whether gazers need it
+action dev_weather 1
+wait 3000
+# ---- the bt211_01 field: its west edge, inside the catcher territory, 56 m from the nearest gazer
+goto bt-field-mknot-s
+@guest goto -1046 36 0
+wait 15000
+waitnew 10 \[bt\] #[0-9]+ gazers
+@guest waitnew 10 \[bt\] #[0-9]+ gazers
+screenshot 01-host-field
+@guest screenshot 01-guest-field
+action bt_probe 2
+waitnew 10 \[bt\] dump done
+@guest action bt_probe 2
+@guest waitnew 10 \[bt\] dump done
+@both action enemy_census 28 400 1
+waitlog 20 \[enemy\] census done tag=28
+@guest waitlog 20 \[enemy\] census done tag=28
+# ---- the host resets the BTs (dev_enemies 3: ResetAllGazers, its own world), then both dump the field records again
+action dev_enemies 3
+wait 2000
+action bt_probe 2
+waitnew 10 \[bt\] dump done
+@guest action bt_probe 2
+@guest waitnew 10 \[bt\] dump done
+# ---- the host 9.3 m from gazer bt211_01_bt_n_mt2_01 (loc 40AB1A93); the guest stays where she is (66 m from it)
+goto -978 58 0
+waitlog 20 \[bt\] near: gazer loc 40AB1A93
+wait 10000
+screenshot 02-host-near-gazer
+@guest screenshot 02-guest-watch
+action bt_probe 2
+waitnew 10 \[bt\] dump done
+@guest action bt_probe 2
+@guest waitnew 10 \[bt\] dump done
+# ---- out of the field (its gazers stream out), then back: does the reset field register its total again?
+goto mknot
+wait 8000
+goto bt-field-mknot-s
+wait 15000
+waitnew 10 \[bt\] #[0-9]+ gazers
+action bt_probe 2
+waitnew 10 \[bt\] dump done
+# ---- the host 3 m from the gazer for 20 s: noticed? (read afterwards: hunter area ACTIVE, near, flag lines)
+goto -983.6 58.1 0
+wait 20000
+screenshot 03-host-at-gazer
+@guest screenshot 03-guest-watch
+action bt_probe 2
+waitnew 10 \[bt\] dump done
+# ---- stop: the totals line on both
+@both action bt_probe 0
+waitlog 5 \[bt\] probe stop
+@guest waitlog 5 \[bt\] probe stop
+nolog \[bt\] byte check FAILED
+@guest nolog \[bt\] byte check FAILED
+@guest nolog \[bt\] near: gazer
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@guest quit
+wait 3000
+quit

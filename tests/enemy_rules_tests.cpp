@@ -1182,6 +1182,64 @@ void TestMirrorsB() {
     CHECK(std::strstr(RefusalText(Refusal::host_in_vehicle), "in a vehicle on the host") != nullptr);
     e.in_vehicle = true;
     CHECK(Eligible(e) == Refusal::in_vehicle);
+    // round 28 T1 (vehicle_mule_v3): the host's copy seated in the truck she follows
+    {
+        LeaseIn s;
+        s.frozen_by_us = true, s.vehicle_check = true, s.in_vehicle_host = true;
+        CHECK(Lease(s) == LeaseVerdict::release_vehicle);  // V3 not live: as before
+        s.v3_live = true, s.v3_seat = true;
+        CHECK(Lease(s) == LeaseVerdict::seated && !Releases(LeaseVerdict::seated) && SeatedV3(s));
+        CHECK(std::strcmp(LeaseText(LeaseVerdict::seated), "seated in a V3 truck") == 0);
+        CHECK(DownLease(true, true, LeaseVerdict::seated, DownIn{}) == DownAct::usual);  // the down hold leaves it to the seat rule
+        LeaseIn x = s;
+        x.v3_seat = false, x.v3_unseated_ms = 0;
+        CHECK(Lease(x) == LeaseVerdict::seated);  // boarded before the follower attached: it waits
+        x.v3_unseated_ms = kV3SeatWaitMs - 1;
+        CHECK(Lease(x) == LeaseVerdict::seated);
+        x.v3_unseated_ms = kV3SeatWaitMs;
+        CHECK(Lease(x) == LeaseVerdict::release_vehicle);  // no truck of hers came: the V2 release
+        x = s, x.v3_live = false;
+        CHECK(Lease(x) == LeaseVerdict::release_vehicle);
+        x = s, x.in_vehicle_here = true;
+        CHECK(Lease(x) == LeaseVerdict::release_vehicle);  // our copy in a vehicle here: not ours to hide
+        x = s, x.vehicle_check = false;
+        CHECK(Lease(x) == LeaseVerdict::keep);  // enemy_mirror_vehicle 0: the old behaviour
+        x = s, x.in_vehicle_host = false;
+        CHECK(Lease(x) == LeaseVerdict::keep);  // out of the truck on the host: driven again
+        x = s, x.host_guard = true, x.host_realized = false;
+        CHECK(Lease(x) == LeaseVerdict::release_host_unrealized);  // unloaded there: given back
+        x = s, x.host_guard = true, x.host_hidden = true;
+        CHECK(Lease(x) == LeaseVerdict::seated);  // seated MULEs may read hidden there: the seat wins
+        x = s, x.host_guard = true, x.host_far_m = 1500, x.host_dist_m = 2000;
+        CHECK(Lease(x) == LeaseVerdict::seated);  // the truck drove away from the host's Sam
+        x = s, x.dist_m = 400;
+        CHECK(Lease(x) == LeaseVerdict::seated);  // beyond her radius: still the same truck
+        x = s, x.frame_age_ms = 1600;
+        CHECK(Lease(x) == LeaseVerdict::release_silence);  // silence first
+        x = s, x.off = true;
+        CHECK(Lease(x) == LeaseVerdict::release_off);
+        x = s, x.bit14_now = false;
+        CHECK(Lease(x) == LeaseVerdict::forget_taken);
+        x = s, x.hold = true;
+        CHECK(Lease(x) == LeaseVerdict::hold);
+        x = s, x.hold_vehicle_single = true;
+        CHECK(Lease(x) == LeaseVerdict::seated);
+        // entry: a host copy in a vehicle is taken when it sits in her V3 truck (then seated), not when hers sits in one
+        EligibleIn ev;
+        ev.host_in_vehicle = true;
+        CHECK(Eligible(ev) == Refusal::host_in_vehicle);
+        ev.v3_seat = true;
+        CHECK(Eligible(ev) == Refusal::ok);
+        ev.host_hidden = true, ev.entry_err_max_m = 20, ev.entry_err_m = 200, ev.host_dist_m = 5000, ev.host_far_m = 1500;
+        CHECK(Eligible(ev) == Refusal::ok);  // seated: not placed, hidden here
+        ev.v3_seat = false, ev.host_in_vehicle = false;
+        CHECK(Eligible(ev) == Refusal::host_hidden);
+        ev.v3_seat = true, ev.host_in_vehicle = true, ev.host_realized = false;
+        CHECK(Eligible(ev) == Refusal::host_unrealized);  // unloaded there: never
+        ev.host_realized = true;
+        ev.in_vehicle = true;
+        CHECK(Eligible(ev) == Refusal::in_vehicle);
+    }
     // the keys
     cfgval::MirrorKeys k;
     CHECK(k.hold_check && k.vehicle);

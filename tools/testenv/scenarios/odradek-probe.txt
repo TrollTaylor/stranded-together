@@ -1,0 +1,122 @@
+# Round 28 P4 (native/mod/odradek_sync.cpp, odra_rules.hpp), solo, hidden: the Odradek probe (odradek_probe=1). Sam at the
+# road rebuilder next to Mountain Knot City (mknot-road, outdoors; the weather-station place is inside its terminal room, where
+# the 1st run stood), the watch on: every transition of the scan state machine (inv +0x4850) and of the survey
+# component (+0x244 / +0x245 / +0x246 / +0xC0), the wave (+0x2BD / +0x2C1) and the DecalManager centre (+0xE0) is an
+# "[odra] ..." line. One local scan (action odra 2: the native trigger's writes, on the machine's own thread), each must
+# give "[odra] scan cycle 0>1>2>3>4>5>0 complete" and its "[odra] scan edge 3 -> 4: origin ..." line. Then the replay
+# (FUN_1433123C0 on our own survey comp, 20 m ahead of Sam): mode 0 (the component only) and mode 1 (the finished wave moved
+# there first), each "replay done ... survey 244 0 -> 1" then "replay survey ended", with screenshots (Q8 item 1: is the
+# visible grid at the replay point, or at the decal centre = the last local scan?). Refusals: 400 m (too far), a replay
+# while a local scan runs (busy). The first scan's "state 4 -> 5" / cycle line and each replay's "replay survey ended seq n
+# mode m" are waitlog steps (the first of their kind in the log), so a short state is not missed behind a wait / screenshot.
+# Last: a local scan still works after the replays. Read the dump's thread line (Q8 item 3),
+# the first sample's wave / 2bd / 2c1 at idle (item 2) and the config +0x3320 / +0x3324 values (item 5).
+# Round 28 O3 (the same detour; odradek_scan_sync stays 0 here: odra 5 drives the start path without the link): the partner's
+# scan 20 m ahead of Sam through the new path (the wave restarted there after the machine ran; the machine's own per-frame tail
+# draws it). PASS needs: "[odra] partner scan shown origin=... mode=full steps=0x7F", the wave's own end ("wave ... 2bd 0 -> 1"),
+# and the screenshots 40-o3-full-early / 41-o3-full-mid showing the scan grid / ring centred about 20 m in front of Sam, with
+# no Odradek arm animation and no marks on Sam's side; 50-o3-wave-only (mask 1: the wave steps alone) tells whether the wave
+# restart is enough; 51-o3-no-wave (mask 126: every step but the wave) is the control (nothing should sweep). The queue: a scan
+# while one expands is "queued: wave_running" and a newer one replaces it ("dropped: superseded"), then shown; a scan during
+# the local scan is "queued: busy_local_scan" and shown on its 4 -> 5 step as "mode=visual steps=0x5F ... state=5"
+# (12-o3-visual-in-marks: the grid 25 m ahead while the local marks stay up). No SOD1 traffic (the key is 0).
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios odradek-probe -SeedSaves complete-100 -Id round28-p4
+# covers: research
+# select: probe
+role solo
+graphics low
+timeout 360
+ini dev_tools=1
+ini odradek_probe=1
+# round 28: odradek_scan_sync defaults to 1; pinned off here (no SOD1 traffic: the O3 section drives the start path alone)
+ini odradek_scan_sync=0
+start
+wait 2000
+waitlog 30 \[dev\] dev tools: [0-9]+/[0-9]+ byte checks ok
+waitlog 10 \[config\] odradek_probe=1
+waitlog 10 \[odra\] byte checks [0-9]+/[0-9]+ ok
+waitlog 5 \[odra\] detour installed
+waitlog 20 \[odra\] first sample
+goto mknot-road
+wait 4000
+?action dev_god 2
+action odra 0
+waitnew 5 \[odra\] dump: DSPlayerSystem
+screenshot 00-idle
+# ---- the replay first, while no local scan has run (a local survey and its marks stay up about 2 min: state 5 holds
+# for DisplayMarkTime 120 s, run 20261127-003315), mode 0 then mode 1, each 20 m ahead of Sam
+action odra 4 0
+until 30 3000 \[odra\] replay done seq [0-9]+ .* mode 0 => action odra 3 20
+wait 600
+screenshot 20-replay0
+wait 2500
+screenshot 21-replay0-later
+waitlog 60 \[odra\] replay survey ended seq [0-9]+ mode 0
+action odra 4 1
+until 30 3000 \[odra\] replay done seq [0-9]+ .* mode 1 => action odra 3 20
+wait 600
+screenshot 30-replay1
+wait 2500
+screenshot 31-replay1-later
+waitlog 60 \[odra\] replay survey ended seq [0-9]+ mode 1
+action odra 4 0
+action odra 3 400
+waitnew 5 \[odra\] replay refused: too far
+# ---- O3: the partner's scan through the new start path, 20 m ahead (the machine idle: every step, mask 0x7F)
+action odra 7
+waitnew 5 \[odra\] scan sync: key 0, start path on \(mask 0x7F\)
+action odra 5 20
+waitnew 5 \[odra\] partner scan shown origin=.* mode=full steps=0x7F
+wait 700
+screenshot 40-o3-full-early
+wait 1300
+screenshot 41-o3-full-mid
+waitlog 15 \[odra\] wave .* 2bd 0 -> 1
+wait 1500
+screenshot 42-o3-full-after
+# the queue: a scan while that wave expands waits; a newer one replaces it; the newer one is shown when the wave ends
+action odra 5 20
+waitnew 5 \[odra\] partner scan shown origin=.* mode=full
+action odra 5 30
+waitnew 5 \[odra\] partner scan queued: wave_running
+action odra 5 40
+waitnew 5 \[odra\] partner scan dropped: superseded
+waitnew 15 \[odra\] partner scan shown origin=.* mode=full steps=0x7F
+wait 4500
+# the bisect: the wave steps alone (mask 1), then every step but the wave (mask 126, the control)
+action odra 5 20 1
+waitnew 5 \[odra\] partner scan shown origin=.* mode=full steps=0x1 dist=
+wait 1200
+screenshot 50-o3-wave-only
+wait 3500
+action odra 5 20 126
+waitnew 5 \[odra\] partner scan shown origin=.* mode=full steps=0x7E
+wait 1200
+screenshot 51-o3-no-wave
+action odra 7
+waitnew 5 \[odra\] scan sync: .*dropped 1, faults 0
+# ---- one local scan, then a replay while it runs (busy)
+action odra 2
+waitnew 5 \[odra\] scan triggered
+waitlog 10 \[odra\] state 0 -> 1
+action odra 5 25
+waitnew 5 \[odra\] partner scan queued: busy_local_scan
+waitlog 10 \[odra\] scan edge 3 -> 4: origin
+wait 500
+screenshot 10-scan1-expanding
+action odra 3 20
+waitnew 5 \[odra\] replay refused: busy
+waitlog 20 \[odra\] state 4 -> 5
+screenshot 11-scan1-marks
+waitlog 10 \[odra\] partner scan shown origin=.* mode=visual steps=0x5F .*state=5
+wait 1500
+screenshot 12-o3-visual-in-marks
+action odra 0
+waitnew 5 \[odra\] dump: DSPlayerSystem
+?action dev_god 0
+nolog \[odra\].*FAULT
+nolog \[odra\] byte checks: .* failed
+nolog \[odra\] (scan|replay) request expired
+nolog \[odra\] partner scan dropped: (stale|bad_state|no_player|too_far)
+nolog \[odra\] (hello sent|partner scan sent|partner hello)
+quit

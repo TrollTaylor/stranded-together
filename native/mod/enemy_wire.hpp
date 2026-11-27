@@ -126,10 +126,22 @@ std::size_t EncodeEnemyPose(const EnemyPose& p, std::uint8_t* out, std::size_t c
 //   type 11 PLACE (host -> guest), n 1, 24 B: u32 id (the arm's MULE) | u32 place_seq (the host's PLACE count) | i32 x mm | i32 y mm
 //      | u16 the yaw she faces (YawToU16) | u8 the arm code 1..9 | u8 0 | u32 sender_ms. The guest teleports her Sam there (ground
 //      snapped), facing that way. An older peer refuses type 11 in DecodeScbHeader (a bad message, nothing else).
-inline constexpr std::size_t kScbHeader = 16, kHitSize = 80, kHitResSize = 12, kOutcomeSize = 24, kOwnSize = 40, kOwnResetSize = 4, kPlaceSize = 24;
+// Round 28 E2 (docs/enemy-sync.md 20): a host MULE's melee strike reached her partner body.
+//   type 12 PHIT (both ways), n 1, 40 B: u32 id (the MULE; 0 on a hello) | u32 phit_seq (the sender's PHIT count) | u16 attack
+//      (0x16D..0x171; 0 on a hello) | u8 kind (kPhitSphere 1, kPhitCapsule 2: a strike; kPhitHello 3) | u8 flags (a hello: the
+//      kPhitCap* the sender takes; a strike: 0) | i16 point[3] cm (the contact point minus her feet, each |..| <= 8 m) | i16
+//      dir[2] q15 (the strike's horizontal direction) | u16 depth mm (how far the query reached into her body, -gap) | i32 her[3]
+//      mm (her body's feet on the host when it saw the strike, world) | u32 sender_ms. A hello (the guest, while
+//      enemy_partner_melee is on: once per link session and world, on a change, then every 30 s) carries id 0, attack 0, no point; the host sends strikes only after one (an older host
+//      refuses type 12 in DecodeScbHeader: a bad message, nothing else; an older guest never says hello, so it is never sent one).
+inline constexpr std::size_t kScbHeader = 16, kHitSize = 80, kHitResSize = 12, kOutcomeSize = 24, kOwnSize = 40, kOwnResetSize = 4, kPlaceSize = 24,
+                             kPhitSize = 40;
 inline constexpr unsigned kHitMax = 12, kHitResMax = 64, kOutcomeMax = 32, kOwnMax = 16;
 inline constexpr std::size_t kScbMaxSize = kScbHeader + kHitMax * kHitSize;  // 976 B
-enum ScbType : std::uint8_t { kScbOwn = 3, kScbHit = 4, kScbHitRes = 5, kScbOutcome = 6, kScbPhase = 7, kScbResync = 8, kScbOwnAck = 9, kScbOwnReset = 10, kScbPlace = 11 };
+enum ScbType : std::uint8_t { kScbOwn = 3, kScbHit = 4, kScbHitRes = 5, kScbOutcome = 6, kScbPhase = 7, kScbResync = 8, kScbOwnAck = 9, kScbOwnReset = 10, kScbPlace = 11, kScbPhit = 12 };
+enum PhitKind : std::uint8_t { kPhitSphere = 1, kPhitCapsule = 2, kPhitHello = 3 };
+inline constexpr std::uint8_t kPhitCapApply = 1;  // a hello's flags: this game applies PHIT strikes to its Sam
+inline constexpr std::uint8_t kPhitCapKnown = 0x01;
 // kKindRestrain (5, round 23, docs/enemy-sync.md 14): "the acting game's copy was tied up (or knocked out) by its own Sam": no damage
 // carried; b180 = the outcome setter's k (0 faint, 2 restrained), depth = the signal (1 the copy's own +0xEA4 read, 2 the fallback:
 // strand weapon 41 + attack 0x15C at contact, 3 a hidden-run test), amount 0; byte 19 stays the zero pad. Sent only to a partner
@@ -186,6 +198,16 @@ struct Own {
     float vel[3] = {};   // m/s
     float health = 0;    // NaN: not carried
 };
+struct Phit {
+    std::uint32_t id = 0, seq = 0;
+    std::uint16_t attack = 0;
+    std::uint8_t kind = 0, flags = 0;
+    float point[3] = {};   // m, the contact point minus her feet (cm on the wire)
+    float dir[2] = {};     // unit, horizontal (q15)
+    float depth_m = 0;     // >= 0 (mm on the wire, clamped to 65.535 m)
+    double her[3] = {};    // m, world (mm on the wire)
+    std::uint32_t sender_ms = 0;
+};
 struct Place {
     std::uint32_t id = 0, seq = 0;
     double x = 0, y = 0;  // m, world (mm on the wire)
@@ -203,7 +225,7 @@ std::size_t EncodeOwns(const ScbHeader& h, std::uint8_t type, const Own* o, unsi
 std::size_t EncodeOwnReset(const ScbHeader& h, std::uint32_t gen, std::uint8_t* out, std::size_t cap) noexcept;
 // 0 when it does not encode (not an enemy id, a code outside 1..9, a place not finite or beyond kMaxCoordM, a yaw not finite).
 std::size_t EncodePlace(const ScbHeader& h, const Place& p, std::uint8_t* out, std::size_t cap) noexcept;
-// Strict: the magic, a known type (3, 4, 5, 6, 8, 9, 10, 11), the version, n in its bounds, byte 7 zero, the exact size. `type`, `n`, the
+// Strict: the magic, a known type (3, 4, 5, 6, 8, 9, 10, 11, 12), the version, n in its bounds, byte 7 zero, the exact size. `type`, `n`, the
 // fingerprint and seq into h.
 bool DecodeScbHeader(const std::uint8_t* d, std::size_t n, ScbHeader& h) noexcept;
 // Strict per entry (an enemy key, AttackOk, a known kind, finite values, |point| <= 8 m, the reserved bytes zero, a known result /
@@ -217,6 +239,11 @@ bool DecodeOwns(const std::uint8_t* d, std::size_t n, ScbHeader& h, Own (&out)[k
 bool DecodeOwnReset(const std::uint8_t* d, std::size_t n, ScbHeader& h, std::uint32_t* gen) noexcept;
 // Strict: n 1 and the exact size (the header's), an enemy id, the code 1..9, the pad byte 0, |x|, |y| < kMaxCoordM.
 bool DecodePlace(const std::uint8_t* d, std::size_t n, ScbHeader& h, Place& out) noexcept;
+// Round 28 E2. Encode: 0 when it would not decode (below). Decode, strict: n 1 and the exact size; a hello: id 0, attack 0, the
+// flags within kPhitCapKnown, the point / dir / depth / her all zero; a strike: an enemy id, attack 0x16D..0x171, flags 0,
+// |point| <= 8 m each, |her| < kMaxCoordM, |dir| <= 1 each, depth >= 0.
+std::size_t EncodePhit(const ScbHeader& h, const Phit& p, std::uint8_t* out, std::size_t cap) noexcept;
+bool DecodePhit(const std::uint8_t* d, std::size_t n, ScbHeader& h, Phit& out) noexcept;
 // Strict on the header (magic, version, slot 0..7, the reserved word 0, an enemy id) and the STJ1 bytes (wire::DecodeJoints).
 // A frame with another layout hash is decoded with foreign_layout set.
 bool DecodeEnemyPose(const std::uint8_t* d, std::size_t n, EnemyPose& out) noexcept;

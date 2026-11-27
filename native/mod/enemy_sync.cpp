@@ -32,7 +32,10 @@
 #include "shot_sync.hpp"
 #include "enemy_l1_probe.hpp"
 #include "enemy_target.hpp"
+#include "enemy_phit.hpp"
+#include "truck_v3.hpp"
 #include "vehicle_share.hpp"
+#include "vehicle_truck_rules.hpp"
 
 namespace st::esync {
 namespace {
@@ -818,6 +821,7 @@ bool MirrorAttacker(std::uintptr_t attacker) {
     return holder && g_mset.Find(holder);
 }
 samdmg::Verdict MirrorAttackerFilter(const samdmg::View& v) {
+    if (ephit::IsOwnApply(v.ctx)) return samdmg::Verdict::keep;  // round 28 E2: this game's own PHIT apply (the MULE's mirror as its attacker)
     if (!g_any_frozen.load(std::memory_order_relaxed) || !MirrorAttacker(v.attacker)) return samdmg::Verdict::keep;
     g_att_seen.fetch_add(1, std::memory_order_relaxed);
     erules::DamageIn d;
@@ -1138,6 +1142,9 @@ struct Mirror {
     std::int32_t veh_seat = -1;
     bool nothold_logged = false;  // a follower (the host) not holding: logged once
     bool posed_once = false;      // round 23 C: it has had the owner's pose here (a frame pushed) since its freeze
+    // round 28 T1 (vehicle_mule_v3): since when its host copy is in a vehicle with no truck of hers near (0: not), the truck
+    double v3_unseated_since = 0;
+    std::uint32_t v3_truck = 0;
 };
 std::map<std::uint32_t, erules::Track> g_tracks;
 std::map<std::uint32_t, PoseRx> g_prx;
@@ -1430,6 +1437,56 @@ void FreeSlot(Mirror& m) {
         m.slot = -1;
     }
 }
+// Round 28 T1 (vehicle_mule_v3; docs/enemy-sync.md 14.21; erules::SeatedV3): the guest's mirrors whose host copy sits in a truck
+// she follows (the host's MULE drives it, vehicle_drive's follower holds her copy): kept frozen, hidden and asleep here (no
+// place, no pose, no posts; M0's pattern: only the a88 bits we set, only while it is the same in-use MULE), never given back alive
+// to board her copy. Shown and woken again when its host copy is out of the vehicle (then driven to the host's place as usual),
+// before any release posts, and on off / reset / a fault; a new world forgets them untouched (an address and id can repeat).
+struct SeatHid {
+    std::uintptr_t actor = 0;
+    std::uint32_t a88_pre = 0;
+    std::uint32_t truck = 0;
+    double since = 0;
+};
+std::map<std::uint32_t, SeatHid> g_seat_hid;
+unsigned g_seat_hides = 0, g_seat_shows = 0, g_seat_entries = 0;
+void SeatHideMirror(Mirror& m, double now) {
+    const auto it = g_seat_hid.find(m.id);
+    if (it != g_seat_hid.end() && it->second.actor == m.actor) {
+        it->second.truck = m.v3_truck ? m.v3_truck : it->second.truck;
+        return;
+    }
+    ActorNow a;
+    if (!ReadActor(m.actor, m.id, a)) return;
+    SeatHid h;
+    h.actor = m.actor, h.a88_pre = a.a88 & 3u, h.truck = m.v3_truck, h.since = now;
+    bool ok = true;
+    if (!(h.a88_pre & 1u)) ok = ActorBool(m.actor, kVtHidden, 1) && ok;
+    if (!(h.a88_pre & 2u)) ok = ActorBool(m.actor, kVtSleep, 1) && ok;
+    g_seat_hid[m.id] = h;
+    FreeSlot(m);  // no pose for a hidden copy
+    ++g_seat_hides;
+    Log("[enemy] mirror id=%05X seated in V3 truck 0x%06X: kept frozen, hidden and asleep here (#%u; a88 0x%X -> 0x%X%s)", m.id, h.truck, g_seat_hides, a.a88,
+        U32(m.actor + kActFlags88), ok ? "" : ", a call FAULTED");
+}
+bool SeatShowMirror(std::uint32_t id, const char* why, double now) {
+    const auto it = g_seat_hid.find(id);
+    if (it == g_seat_hid.end()) return false;
+    ActorNow a;
+    if (ReadActor(it->second.actor, id, a)) {
+        bool ok = true;
+        if ((a.a88 & 1u) && !(it->second.a88_pre & 1u)) ok = ActorBool(it->second.actor, kVtHidden, 0) && ok;
+        if ((a.a88 & 2u) && !(it->second.a88_pre & 2u)) ok = ActorBool(it->second.actor, kVtSleep, 0) && ok;
+        ++g_seat_shows;
+        Log("[enemy] mirror id=%05X out of V3 truck 0x%06X: shown and woken again here (%s; seated %.1f s; a88 0x%X -> 0x%X%s)", id, it->second.truck, why,
+            now > it->second.since ? (now - it->second.since) / 1000.0 : 0.0, a.a88, U32(it->second.actor + kActFlags88), ok ? "" : ", a call FAULTED");
+    }
+    g_seat_hid.erase(it);
+    return true;
+}
+void SeatShowAll(const char* why, double now) {
+    while (!g_seat_hid.empty()) SeatShowMirror(g_seat_hid.begin()->first, why, now);
+}
 bool ReleaseHeld() { return g_holding || InCutscene(); }
 // The posts that give one mirror back: only while it is still the same in-use MULE actor AND still frozen by us (+0xEA4 bit 14:
 // cleared means a game sequence took it: forgotten, nothing posted, as the lease's "taken"); Required{0} only when bit 13 was
@@ -1464,6 +1521,7 @@ bool PostRelease(const Mirror& m, const char* why) {
 bool ReleaseMirror(Mirror& m, const char* why) {
     if (!m.frozen) return false;
     DownUnhideMirror(m.id, "released");  // round 23 C: shown first (never released hidden)
+    SeatShowMirror(m.id, "released", 0);  // round 28 T1: likewise
     g_down_held.erase(m.id);
     m.frozen = false;
     FreeSlot(m);
@@ -1517,6 +1575,7 @@ void GuestReset() {
     UnhideDead(true, "reset");
     UnhideHostHidden(true, "reset", 0);
     UnhideNotHolding(true, "reset", 0);
+    SeatShowAll("reset", 0);  // round 28 T1
     g_nothold_n.clear();
     g_over20.clear();
     ReleaseAll("reset");
@@ -1675,6 +1734,10 @@ void TryEnter(std::uint32_t id, const erules::Track& tr, double now, const doubl
     // round 23 B (enemy_mirror_vehicle): both tests here, and the owner's SEN1 bit (off: the parent chain only, as before)
     e.in_vehicle = a.realized && (g_ecfg.enemy_mirror_vehicle ? VehicleOf(id, actor, a.entity, nullptr, nullptr) != erules::VehTest::none : InVehicle(a.entity));
     e.host_in_vehicle = g_ecfg.enemy_mirror_vehicle && (z->flags & ewire::kInVehicle) != 0;
+    // round 28 T1 (vehicle_mule_v3): a host copy seated in a truck she follows is taken hidden (never placed, never left free to
+    // board her copy)
+    std::uint32_t v3_truck = 0;
+    if (e.host_in_vehicle && !e.in_vehicle && truckv3::V3Live()) e.v3_seat = truckv3::V3SeatNear(z->pos, trucks::kV3SeatNearM, &v3_truck);
     e.owner_down = DownOn();  // round 23 C: no new mirror while the host's Sam is down (counted, not logged per id)
     // M0 (enemy_host_guard): the host's copy unloaded or hidden there, or its place far from ours: never a statue
     double pos0[3] = {};
@@ -1728,12 +1791,16 @@ void TryEnter(std::uint32_t id, const erules::Track& tr, double now, const doubl
     if (tr.At(g_clock.Render(now), pos, &yaw)) {
         err = Dist3(pos, a.pos);
         const WorldTransform xf = XfFromYaw(a.xf, pos, yaw);
-        if (ActorXf(actor, kActorTeleport, xf)) m.last_tp = now, ++g_gs.teleports;
+        if (!e.v3_seat && ActorXf(actor, kActorTeleport, xf)) m.last_tp = now, ++g_gs.teleports;  // (round 28 T1: seated: not placed)
     }
+    m.v3_truck = v3_truck;
     g_mirrors.push_back(m);
     PublishMirrors();
     ++g_gs.on;
-    Log("[enemy] mirror on id=%05X (dist %.1f m, err at entry %.2f m, ea4 0x%X)", id, Dist3(z->pos, sam), err, ea4);
+    if (e.v3_seat) ++g_seat_entries;
+    Log("[enemy] mirror on id=%05X (dist %.1f m, err at entry %.2f m, ea4 0x%X)%s", id, Dist3(z->pos, sam), err, ea4,
+        e.v3_seat ? " (seated in a V3 truck on the host: not placed, hidden here)" : "");
+    if (e.v3_seat) SeatHideMirror(g_mirrors.back(), now);
 }
 
 // ---------------------------------------------------------------- round 23: the tie-up relay's pose hold (docs/enemy-sync.md 14)
@@ -1997,6 +2064,17 @@ void GuestTick(const TickIn& in, double now, bool off, const char* off_why) {
             l.vehicle_check = true;
             l.in_vehicle_here = m.veh != erules::VehTest::none;
             l.in_vehicle_host = it != g_tracks.end() && it->second.Newest() && (it->second.Newest()->flags & ewire::kInVehicle);
+            // round 28 T1 (vehicle_mule_v3): its host copy in a vehicle that is a truck she follows (within 5 m of the host's place)
+            if (l.in_vehicle_host && !l.in_vehicle_here && truckv3::V3Live()) {
+                std::uint32_t truck = 0;
+                l.v3_live = true;
+                l.v3_seat = truckv3::V3SeatNear(it->second.Newest()->pos, trucks::kV3SeatNearM, &truck);
+                if (l.v3_seat) m.v3_truck = truck, m.v3_unseated_since = 0;
+                else if (m.v3_unseated_since == 0) m.v3_unseated_since = now;
+                l.v3_unseated_ms = l.v3_seat ? 0 : now - m.v3_unseated_since;
+            } else {
+                m.v3_unseated_since = 0;
+            }
             // round 25 V1 (enemy_single_hold_vehicle): while a member of its camp is hers as a single take, its in-vehicle release waits
             if (g_ecfg.enemy_single_hold_vehicle && (l.in_vehicle_here || l.in_vehicle_host) && CampOwnedHere(m.actor)) {
                 l.hold_vehicle_single = true;
@@ -2010,6 +2088,7 @@ void GuestTick(const TickIn& in, double now, bool off, const char* off_why) {
             m.frozen = false;
             changed = true;
             FreeSlot(m);
+            SeatShowMirror(m.id, "taken by a game sequence", now);  // round 28 T1: never left hidden
             Log("[enemy] lease released id=%05X: taken (a game sequence cleared bit 14: forgotten, nothing posted; ea4 0x%X)", m.id, a.ea4);
             continue;
         }
@@ -2035,6 +2114,12 @@ void GuestTick(const TickIn& in, double now, bool off, const char* off_why) {
         }
         g_down_held.erase(m.id);
         DownUnhideMirror(m.id, "the usual rules again");  // (only one we hid: a far standing one, or the hold turned off)
+        // round 28 T1: seated in the truck she follows: hidden and asleep, nothing written; out of it: shown first
+        if (v == erules::LeaseVerdict::seated) {
+            if (same) SeatHideMirror(m, now);
+            continue;
+        }
+        SeatShowMirror(m.id, l.in_vehicle_host ? "no truck of hers near its host copy" : "its host copy is out of the vehicle", now);
         if (erules::Releases(v)) {
             if (v == erules::LeaseVerdict::release_host_unrealized || v == erules::LeaseVerdict::release_host_hidden || v == erules::LeaseVerdict::release_host_far)
                 ++g_gs.host_released;
@@ -3849,6 +3934,7 @@ void Stop(const char* step) {
     UnhideDead(true, "a fault");
     UnhideHostHidden(true, "a fault", 0);  // (review r20 enemy 1: Tick never reaches GuestTick again)
     UnhideNotHolding(true, "a fault", 0);  // round 23 review: the not-holding copies too (GuestTick's retry never runs again)
+    SeatShowAll("a fault", 0);             // round 28 T1
     g_nothold_n.clear();
     DownResume("a fault");  // round 23 C
     g_peer_down = g_our_down = 0;
@@ -4015,6 +4101,8 @@ void P1Tick(const TickIn& in, double now) {
                     g_nothold.size());
             g_dead_hidden.clear(), g_host_hid.clear();
             g_nothold.clear(), g_nothold_n.clear();  // round 23 review: the not-holding ones too (never touched in the new world)
+            if (!g_seat_hid.empty()) Log("[enemy] the world changed: %zu seated (V3) mirror(s) of the old world forgotten", g_seat_hid.size());
+            g_seat_hid.clear();  // round 28 T1 (likewise)
             g_gs.host_hidden_now = 0;
         } else {
             UnhideDead(true, world_changed ? "the world changed" : "the link changed");
@@ -4279,6 +4367,7 @@ void Tick(const TickIn& in, double now) noexcept {
         if (!g_dead_hidden.empty()) UnhideDead(true, "off");
         if (!g_host_hid.empty()) UnhideHostHidden(true, "off", now);
         if (!g_nothold.empty()) UnhideNotHolding(true, "off", now);
+        if (!g_seat_hid.empty()) SeatShowAll("off", now);  // round 28 T1
         if (!g_down_hid.empty() || !g_down_fhid.empty()) DownResume("off");  // round 23 C
         if (!g_mirrors.empty() || g_mirroring) {
             OwnHardReset("off (enemy_sync 2)", false, true, false);

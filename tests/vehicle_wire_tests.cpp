@@ -978,8 +978,21 @@ void TestDriveFrames() {
         f.flags = static_cast<std::uint8_t>(f.flags & ~kDrvSeated);
         rejects(f, "a drive frame without seated");
         f = Drive(DriveType::park);
-        f.flags |= 128;
-        rejects(f, "unknown flag");
+        f.flags |= kDrvNpc;
+        rejects(f, "npc (a MULE driver) on a park frame");
+        // round 28 T1: an npc DRIVE frame round-trips; an old (v1-mask) decoder would refuse it
+        static_assert((kDrvNpc & kDrvAllFlagsV1) == 0, "kDrvNpc outside the v1 mask");
+        {
+            DriveFrame n = Drive(DriveType::drive);
+            n.flags |= kDrvNpc;
+            std::uint8_t nb[256];
+            const std::size_t nn = EncodeDrive(n, nb, sizeof(nb));
+            CHECK(nn == kDriveFrameSize);
+            DriveFrame nback;
+            CHECK(DecodeDrive(nb, nn, nback));
+            CHECK(nback.Has(kDrvNpc) && nback.Has(kDrvSeated) && nback.type == DriveType::drive);
+            CHECK((nback.flags & ~kDrvAllFlagsV1) != 0);  // what the v1 decoder tests
+        }
         f = Drive(DriveType::park);
         f.ride_state = 16;
         rejects(f, "ride state 16");

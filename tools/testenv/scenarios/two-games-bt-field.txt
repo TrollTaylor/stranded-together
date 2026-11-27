@@ -1,0 +1,103 @@
+# Round 28 lane B1 (BT sync B1, bt_sync=2): the BT field sync on two games (native/mod/bt_sync.cpp, bt_rules.hpp "B1";
+# docs/enemy-sync.md section 21). Each game keeps its own BT field; BTS1 on channel 6 relays:
+#   FIELD    the record summary + the biggest live fields, compared on the other game ("[bt] field compare #n: ...");
+#   NOTICED  this game's own gazer raising its near bit (0x1000) for this game's player -> "[bt] partner sensed (near)" + a toast
+#            on the other game, keyed by the field id and the locator hash (the actor ids differ per game);
+#   RESET    the host's ResetAllGazers (dev_enemies 3), polled, applied on the guest (bt_sync=2) through ResetAllGazers;
+#   VOID     the pass-through voidout detour (FUN_14299B1B0): a notice only (here the test message, no real voidout).
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-bt-field -SeedSaves complete-100 -GuestSeed profile-only -Id round28-b1
+# Spots as in two-games-bt-census (runs 20261127-000239 / -002916): bt-field-mknot-s is 59 m from gazer 40AB1A93, -978 58 0 is
+# 9.3 m from it (inside its 20 m trigger), the guest's -1046 36 0 is 66 m away. Timefall on BOTH games (run 2: without rain the
+# guest's gazers sat in another mode, flags 01010004 -> 00010004). dev_god 2 keeps both Sams alive.
+# covers: bt-sync
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini bt_sync=2
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+# ---- start-up: the key read, the voidout detour in (byte-checked prologue), the hello both ways
+waitlog 5 \[bt\] sync: bt_sync=2 as the host
+@guest waitlog 5 \[bt\] sync: bt_sync=2 as the guest
+waitlog 5 \[bt\] sync: voidout hook in
+@guest waitlog 5 \[bt\] sync: voidout hook in
+waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role guest
+@guest waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role host
+@both action dev_god 2
+# (w2b) diagnostic only: the read-only probe census (once a second) beside the sync, so its flag / state change lines show
+# whether gazer 40AB1A93's near bit rose at all (launcherini takes no bt_probe key, so the action). Remove once NOTICED (near)
+# is understood. A pass with it on proves the relay, not the cause.
+@both action bt_probe 1
+@both action dev_weather 1
+wait 3000
+# ---- baseline at Mountain Knot City: FIELD both ways and a first compare (the record sets may still differ while scenes register)
+waitlog 20 \[bt\] FIELD received #1
+@guest waitlog 20 \[bt\] FIELD received #1
+waitlog 20 \[bt\] field compare #1:
+@guest waitlog 20 \[bt\] field compare #1:
+# ---- the bt211_01 field: the host on its west edge, the guest 66 m from gazer 40AB1A93; both stream the same 35 gazers
+goto bt-field-mknot-s
+@guest goto -1046 36 0
+wait 15000
+waitlog 20 \[bt\] field compare #[0-9]+: records equal .*bt211_01 35/35 print equal
+@guest waitlog 20 \[bt\] field compare #[0-9]+: records equal .*bt211_01 35/35 print equal
+screenshot 01-host-field
+@guest screenshot 01-guest-field
+# ---- (w2) natural order (no reset yet): the host into gazer 40AB1A93's trigger; not gated, read from the log ("NOTICED sent"
+# or "near not set"). Both census runs had reset ~3 s before their approach; this leg tells the reset apart from the rest
+goto -978 58 0
+wait 10000
+goto bt-field-mknot-s
+wait 3000
+# ---- the host resets its BTs (ResetAllGazers): the poll sees it, RESET goes, the guest applies it and sees its own echo
+action dev_enemies 3
+waitlog 10 \[bt\] reset seen here: epoch 1
+waitlog 5 \[bt\] RESET epoch 1 sent
+@guest waitlog 10 \[bt\] RESET epoch 1 applied \(ResetAllGazers
+@guest waitlog 10 \[bt\] reset seen here: the applied host epoch 1
+# the compare on both: the host sent epoch 1, the guest applied it
+waitlog 20 \[bt\] field compare #[0-9]+: records equal .* unset [0-9]+/[0-9]+, epoch 1/0 \(applied 0/1\)
+@guest waitlog 20 \[bt\] field compare #[0-9]+: records equal .* unset [0-9]+/[0-9]+, epoch 0/1 \(applied 1/0\)
+# ---- the host into gazer 40AB1A93's trigger: the host's gazer senses the host -> the guest is told, the gazer live there too
+goto -978 58 0
+waitlog 20 \[bt\] NOTICED sent \(near\): gazer loc [0-9A-F]{8} \(field 390B7DE4 bt211_01\)
+@guest waitlog 10 \[bt\] partner sensed \(near\): gazer loc [0-9A-F]{8} \(field 390B7DE4 bt211_01\) .*here: live \(id
+@guest screenshot 02-guest-toast-host-sensed
+screenshot 02-host-near-gazer
+# ---- the other way: the host back to the edge, the guest into the trigger -> the host is told
+goto bt-field-mknot-s
+wait 3000
+@guest goto -978 58 0
+@guest waitlog 20 \[bt\] NOTICED sent \(near\): gazer loc [0-9A-F]{8} \(field 390B7DE4 bt211_01\)
+waitlog 10 \[bt\] partner sensed \(near\): gazer loc [0-9A-F]{8} \(field 390B7DE4 bt211_01\) .*here: live \(id
+screenshot 03-host-toast-guest-sensed
+@guest screenshot 03-guest-near-gazer
+# ---- the relay's test messages both ways (hidden runs only): VOID and NOTICED
+action bt_sync 3
+@guest waitlog 10 \[bt\] partner voidout \(test\): .*notice only \(no game effect\)
+@guest action bt_sync 3
+waitlog 10 \[bt\] partner voidout \(test\): .*notice only \(no game effect\)
+action bt_sync 4
+@guest waitlog 10 \[bt\] partner sensed \(test\)
+@guest action bt_sync 4
+waitlog 10 \[bt\] partner sensed \(test\)
+# ---- stop: the counters on both
+@both action bt_sync 0
+waitlog 5 \[bt\] sync status \(action\): bt_sync 2 role host, partner on .* bad 0,
+@guest waitlog 5 \[bt\] sync status \(action\): bt_sync 2 role guest, partner on .* bad 0,
+nolog \[bt\] byte check FAILED
+@guest nolog \[bt\] byte check FAILED
+nolog \[bt\] sync off
+@guest nolog \[bt\] sync off
+nolog \[bt\] sync: a bad BTS1
+@guest nolog \[bt\] sync: a bad BTS1
+@guest nolog \[bt\] RESET epoch [0-9]+ from the host: not applied
+nolog ResetAllGazers FAULTED
+@guest nolog ResetAllGazers FAULTED
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@guest quit
+wait 3000
+quit

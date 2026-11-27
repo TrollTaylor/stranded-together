@@ -34,6 +34,9 @@
 #include "enemy_combat.hpp"
 #include "enemy_l1_probe.hpp"
 #include "enemy_target.hpp"
+#include "enemy_phit.hpp"
+#include "truck_v3.hpp"
+#include "odradek_sync.hpp"
 #include "enemy_sync.hpp"
 #include "shot_sync.hpp"
 #include "ride_together.hpp"
@@ -1553,6 +1556,8 @@ void Tick() noexcept {
         ecombat::Tick(cin, now);
         l1probe::Tick(cin, now);  // round 27 M1 (enemy_l1_probe.hpp): the L1 probe, hidden runs; its release's second step
         etarget::Tick(cin, now);  // round 27 M2 / M3 (enemy_target.hpp): the partner stimulus, SPV1, the target pick (keys default off)
+        ephit::Tick(cin, now);    // round 28 P1 (enemy_phit.hpp): the attack probe's body record, ring drain and watch (key default off)
+        truckv3::Tick(now);  // round 28 P2 (truck_v3.hpp): the get-off ring drained, the watch (vehicle_truck_probe=1 only)
     }
 
     // Player collision (partner_collision.hpp): only the partner slot's real body, never the
@@ -1618,6 +1623,7 @@ void Tick() noexcept {
     Hotkeys(now);
     PublishStatus(now);
     audioprobe::Tick(g_local, now);  // audio_probe=1 only: drains the probe rings (docs/audio-research.md section 9)
+    odra::Tick(g_local, now);        // odradek_probe=1 only: the local inventory, the request timeouts, the "[odra]" lines
     selfvoice::Tick(g_local, now);   // self_voice muting only: publishes the local player and the menu figure, logs counts
     coop::Tick(now);     // host_save=1 only: the host-held save session (docs/coop-session.md)
     texshare::Tick(now, coop::WorldReady(nullptr) || (!coop::Active() && g_local_valid));  // Fragile's edited textures over the link (texture_share.hpp)

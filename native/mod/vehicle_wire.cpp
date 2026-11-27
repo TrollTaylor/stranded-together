@@ -855,6 +855,7 @@ bool DecodeDrive(const std::uint8_t* in, std::size_t size, DriveFrame& out) noex
     if (!r.done()) return false;
     if ((f.flags & ~kDrvAllFlags) != 0) return false;
     if ((f.type == DriveType::drive) != f.Has(kDrvSeated)) return false;  // seated exactly on DRIVE
+    if (f.type != DriveType::drive && f.Has(kDrvNpc)) return false;     // a MULE driver only on DRIVE
     if (f.ride_state > 15) return false;
     if (!PosOk(f.pos) || !QuatOk(f.quat) || !Vec3Ok(f.vel, 200.0) || !Vec3Ok(f.avel, 50.0) || !Finite(f.speed_kmh, 1000.0)) return false;
     if (!Finite(f.life_max, 1e6) || !Finite(f.life, 1e6) || f.life < 0 || f.life_max < 0 || f.life > f.life_max) return false;

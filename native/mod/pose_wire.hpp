@@ -261,7 +261,8 @@ inline constexpr std::uint8_t kGearNone = 0xFF;      // GearItem::model / variat
 
 enum class GearKind : std::uint8_t {
     backpack = 1,  // the backpack frame
-    odradek = 2,   // the Odradek on the left shoulder
+    odradek = 2,   // the Odradek on the left shoulder. Round 28 O1 (gear_odra.hpp): `model` names the part, 0 the body
+                   // (odra_main_def), 1 the arm (odra_arms_def); sent only to a partner whose frames carry kGearOdraCap
     bb_pod = 3,    // the BB pod on the chest
     cargo = 4,     // one baggage piece; model = EDSBaggage2Model
     entity = 5,    // one of the game's own gear entities (BB pod, accessory, what hangs on the backpack ...):
@@ -284,7 +285,10 @@ enum GearFlags : std::uint8_t {
     kGearParts = 1u << 1,   // the parts block follows the header
     kGearPackParts = 1u << 2,  // the backpack's parts block follows (after the parts block)
     kGearBoots = 1u << 3,      // the boots' parts block follows (after the backpack's); exactly with a boots item
-    kGearKnown = kGearValid | kGearParts | kGearPackParts | kGearBoots,
+    // Round 28 O1: no block. The sender draws the partner's Odradek (odradek_gear=1 and a build with the two-part odradek
+    // items): the partner sends its own only to a game whose frames say so. An older build clears the bit (not known there).
+    kGearOdraCap = 1u << 4,
+    kGearKnown = kGearValid | kGearParts | kGearPackParts | kGearBoots | kGearOdraCap,
 };
 
 struct GearItem {

@@ -1538,7 +1538,8 @@ checked at run time).
   of v0.7 (`gear 3 <n>` synthetic cases in the tests).
 - Not mirrored (never spawned on the receiver): the boots on Sam's feet (the body's own feet), the baby,
   the cuff device (talk / voice components), the Odradek (its classes update with the player: run
-  `20261117-131822` crashed a worker thread at `0x14296F3AE` right after copies of it were created),
+  `20261117-131822` crashed a worker thread at `0x14296F3AE` right after copies of it were created; since round 28 O1, with
+  `odradek_gear=1` on both games, it is drawn as two cinematic props instead, never a copy: section 12.9),
   weapons (DSWeaponEntity: never copied, at any level; since section 17 they are sent as their own kind and
   drawn as cutscene props).
 
@@ -1718,6 +1719,63 @@ hidden behind the mod's back: shown again in the next tick, `15 reshown`) on the
 (`20261117-132631`) and on the guest's view of the host after 12 layout changes both ways
 (`20261117-133245`: `6 failures, 6 retries, 9 reshown`, `17 items, 17 props live`).
 
+
+### 12.9 Round 28 O1: the partner's Odradek on the partner body (`odradek_gear`, default 0)
+
+Goal: "I can see her Odradek on her shoulder" (and Sam's on the guest's screen). It is drawn as cinematic props, never as a
+DSOdradek*Entity copy (a copy crashes on a null owner at 0x14296F3AE, 12.2). `native/mod/partner_gear.cpp` (ReadOdradek,
+OdraTick), pure part `native/mod/gear_odra.hpp` (tests `tests/gear_odra_tests.cpp`); scenario `two-games-odradek`; the action
+`gear 40` ([debug-actions.md](debug-actions.md) "Gear"). Not run in a game yet.
+
+**Wire (STC1 v5, no new version).**
+- `GearKind::odradek` (in the enum, never sent before) now goes out as two items; `model` names the part: 0 the body
+  (odra_main_def, 44 joints), 1 the arm (odra_arms_def, 14 joints). 0xFF still maps to the body; any other model is refused.
+- The capability is the STC1 flag `kGearOdraCap = 1u << 4` (pose_wire.hpp, in `kGearKnown`), set in every gear frame while
+  `odradek_gear` is on. A sender emits its Odradek items only while the partner's newest frame carries the flag; a receiver maps
+  them to props only with its own key on. An older build clears the unknown bit on decode, so it never sees the flag or gets the
+  items. The flag has no block and is not in GearLayoutHash (toggling it never respawns props).
+
+**Sender** (ReadOdradek, from ReadItems every 100 ms on the game thread).
+- Presence: the arm ref inv +0x4C88 and the body ref inv +0x4CA0 resolve to DSOdradekArmEntity / DSOdradekBodyEntity; both
+  entities' visible bit (+0x88 bit 1) set; the body up (+0x3E4 bit 2, the first test of the game's FUN_14295BA70, and state
+  +0x348 in 1..0x21); both within 5 m of Sam. inv +0x4C7F is not used (a one-shot request flag), nor the scan predicate's mask
+  (it leaves out 0x14, open: the Odradek would blink off at every scan).
+- Hard hides (at once): the key off or the partner's frames without the flag; a load, a cutscene, an in-game cutscene or a
+  movie (DSGameState), or the `gear 40 3 1` test hold; riding (Sam's parent +0x70 a drivable vehicle, vsync seated, or
+  `ride::Carried()`).
+- Soft hides (gear_odra.hpp Decide / Step): a hidden part or a missing ref after 250 ms, a body not set up after 2 s; shown again
+  after 150 ms of agreeing reads.
+- Pose: each part's world pose relative to the anchor joint: the left shoulder (35, JNT_L_B_000_Shoulder, where HLP_Odradek is)
+  when the other screen draws us as Sam, the chest (spine 5) when it draws us as Fragile (the shoulder frame turns on her
+  skeleton, run `20261117-132631`). `gear 40 4 <j>` forces one; keep_poses holds the poses while Sam moves.
+- Byte checks (`OdraChecked`; a failure means our Odradek is not sent this session; drawing the partner's needs none):
+
+| Address | Instruction | Bytes |
+|---|---|---|
+| 0x1427C0B9C | mov [rdi+0x4C88],r13 | 4C 89 AF 88 4C 00 00 |
+| 0x1427C0BC8 | mov [rdi+0x4CA0],r13 | 4C 89 AF A0 4C 00 00 |
+| 0x14295BA70 | test byte [rcx+0x3E4],4 / jz / movzx eax,byte [rcx+0x348] | F6 81 E4 03 00 00 04 74 1B 0F B6 81 48 03 00 00 |
+
+**Receiver.**
+- Props: `kPropOdradek` (demo_odra_main_def_new) the body; the new `kPropOdradekArm` (demo_odra_arms_def_new,
+  f760e327-8bf4-284f-9e79-7e560fd9be37) the arm, placed before the weapon range. They share the player parts' skeletons.
+- They ride the existing gear path (layout, spawn, ValidateProp, collision off, the realbody detour's joint placement,
+  visibility). ValidateProp now refuses any DSOdradek* class (`copies_refused`).
+- OdraTick (the partner slot, after BootsTick) checks every 2 s that the prop sits on the body joint composed with the item pose
+  ("NOT attached" needs 3 bad samples), and one second after a prop is live compares its joints with our own Odradek part (does
+  the props' "neutral" ExternalAnimation look like the folded idle Odradek?).
+
+**Lines** (prefix `[odragear]`): `odradek_gear=N`, `Odradek offsets verified` / `Odradek checks failed: ...`, `the partner's
+frames carry | do not carry the Odradek flag`, `our Odradek sent | no longer sent (<why>; ... anchor joint J, drawn as Sam|Fragile
+there)`, `our Odradek not sent: <why>`, `sender: our arm on joint 35 at (..) cm, HLP_Odradek (5.5, -24.6, 11.4) cm: ...`,
+`partner Odradek arm|body (prop i 'odradek_arm'|'odradek') shown on the body's joint J: attached|NOT attached ...`, `pose check:
+the partner's arm|body prop has N joints ...`, `partner Odradek: P part(s) in its frame, L prop(s) live, S shown`, and 30 s
+sender / receiver summaries. The gear's own `[gear] the partner's gear: N items (backpack N, Odradek 2, ...` counts them.
+
+**Open risks.** The neutral pose may not look folded (the pose check and the screenshots tell; a follow-up would drive the
+props' joints); the chest anchor under Fragile is a judgement call; the visible bit and body +0x3E4 bit 2 during scans are not
+measured (the holds cover short dips); the attach check reads at tick time while the detour places at render time; the guest's
+profile-only seed may have no Odradek; the props carry no lights; RoomRegainTick may now name "2 x Odradek".
 
 ## 13. Gear looks and the back cargo: colours, variations and the backpack's pose
 

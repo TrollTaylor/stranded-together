@@ -128,6 +128,9 @@ Config g_cfg;
 bool g_checks_ok = false, g_npc_checks_ok = false;
 unsigned g_checks_n = 0, g_checks_pass = 0;
 bool g_hooked = false, g_npc_hooked = false, g_filter_registered = false;
+// the SEH1 beacon without the shots hooks (shots_sync=0 without enemy sync, or a failed check): odradek_scan_sync and bt_sync
+// wait for the partner's beacon (it proves channel 6), so it still goes, with parts 0, in a two-game session (review round 28)
+bool g_beacon_want = false;
 std::atomic<bool> g_on{false};        // capture, send, replay (shots 1 / 2 live)
 std::atomic<bool> g_stopped{false};   // a fault: off for the session
 char g_off[200] = "shots_sync=0";
@@ -1492,6 +1495,7 @@ void ShooterTick(const TickIn& in) {
 // The enemy fire bit the same for the enemies' shots (enemy_sync and enemy_shots); the mirror bit and the fingerprints are
 // enemy_sync's (SetEnemyBeacon).
 std::uint8_t OurParts() noexcept {
+    if (!g_hooked) return 0;  // the beacon alone (g_beacon_want): nothing replayed or captured here
     std::uint8_t p = g_on.load() && CanReplay() ? shotw::kPartFire : 0;
     p |= g_enemy_parts & (shotw::kPartMirror | shotw::kPartOwn | shotw::kPartCamp);  // P1b / P1c: kPartOwn, kPartCamp are enemy_sync's
     if (AttackListed()) p |= shotw::kPartAttackWide;  // P1c: this build replays the listed attack ids above 0x18C
@@ -2296,6 +2300,16 @@ bool TickGuarded(const TickIn& in, double now) noexcept {
     }
 }
 
+bool BeaconGuarded(const TickIn& in, double now) noexcept {
+    __try {
+        g_now = now;
+        BeaconTick(in);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------- public
@@ -2307,12 +2321,13 @@ void Install(const Config& config) noexcept {
     if (g_cfg.shots_sound < 0) g_cfg.shots_sound = config.sound_sync ? 0 : 1;
     g_enemy_want = config.enemy_sync && config.enemy_shots;
     g_attack_want = config.enemy_attack_registry;
+    g_beacon_want = (config.role == Role::host || config.role == Role::guest) && (config.odradek_scan_sync || config.bt_sync != 0);
     // enemy sync needs the hooks even without its shots: the frozen mirrors' own fire dropped in the Enqueue and their bullet hits
     // dropped at the bullet (the guard); it runs only with enemy_freeze=occupied and host_save=1 (enemy_sync.cpp Install)
     const bool esync_wanted = config.enemy_sync && config.enemy_freeze == 1 && config.host_save;
     if (!config.shots_sync && !esync_wanted) {
         std::snprintf(g_off, sizeof(g_off), "shots_sync=0");
-        Log("[shots] off (shots_sync=0)");
+        Log("[shots] off (shots_sync=0)%s", g_beacon_want ? "; the SEH1 beacon still goes (parts 0: the Odradek scan / BT sync wait for it)" : "");
         return;
     }
     // no partner can ever be in this session (no role, or the solo debug role): no hooks (hidden runs keep them: the echo)
@@ -2467,7 +2482,11 @@ bool EnqueueHooked() noexcept { return g_hooked; }
 
 void Tick(const TickIn& in, double now) noexcept {
     LogFlushLater();  // the detours' lines (worker threads only format them)
-    if (!g_hooked || g_stopped.load()) return;
+    if (g_stopped.load()) return;
+    if (!g_hooked) {
+        if (g_beacon_want && !BeaconGuarded(in, now)) Stop("the beacon tick");
+        return;
+    }
     if (!TickGuarded(in, now)) Stop("the shots tick");
 }
 

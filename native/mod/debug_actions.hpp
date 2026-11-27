@@ -152,11 +152,17 @@ enum class Action : std::uint8_t {
     enemy_restrain,       // round 23 (docs/enemy-sync.md 14), hidden runs: v[0] = id (0 the look's, else the nearest frozen copy), v[1] = 0 native | 1 fallback | 2 knockout
     enemy_m2,             // round 23 E (docs/enemy-sync.md 14.11), hidden runs + enemy_m2_probes=1: v[0] = probe 0..6, v[1] / v[2] its arguments (read-only but P2)
     enemy_l1,             // round 27 M1 (docs/enemy-sync.md 15), hidden runs only: v[0] = op 0..9, v[1] / v[2] its arguments (the L1 probe)
-    enemy_tgt,            // round 27 M2-M4 (docs/enemy-sync.md 16): v[0] = op 0..13, v[1] / v[2] its arguments (the partner stimulus, the pick, the redirects, the destroy guard)
+    enemy_tgt,            // round 27 M2-M4 (docs/enemy-sync.md 16): v[0] = op 0..14, v[1] / v[2] its arguments (the partner stimulus, the pick, the redirects, the destroy guard)
     // Map markers (dev_tools.cpp; docs/debug-actions.md "Teleport to map marker")
     teleport_to_marker,   // v[0] = the marker's id + 1 (0 = the newest on this map): Sam on the ground there (Player tab; any session, no dev tools needed)
     dev_marker,           // v[0] = 0 log the map's user markers, 1 add one v[1] m east / v[2] m north of Sam (hidden runs only)
     dev_give,             // v[0] = group 1..7 (give_rules.hpp) or 0: v[1] = baggage code, v[2] = count: gear to Sam (sandboxed saves only)
+    // BT sync B0 (round 28 P3; bt_sync.hpp; docs/enemy-sync.md section 18): read only, hidden runs or session.ini bt_probe
+    bt_probe,             // v[0] = 0 stop (totals line), 1 the census once a second (v[1] = seconds, 0 = 1 s), 2 one full dump now
+    odra,                 // v[0] op: 0 dump, 1 <0|1> watch, 2 scan, 3 <m> [mode] replay ahead, 4 <mode>, 5 <m> [mask] test scan, 6 <mask>, 7 status, 8 <m> send test (odradek_probe / odradek_scan_sync)
+    odra_replay,          // v = x y z (z 0: Sam's height): the survey shown from that point (odradek_sync.hpp; odradek_probe=1)
+    truck_v3,             // round 28 P2 (docs/enemy-sync.md 14.20; vehicle_truck_probe=1): v[0] = op 0 off / 1 [s] watch / 3 V3 status (T1) / 8 seats / 9 identity
+    bt_sync,              // round 28 lane B1 (bt_sync=1|2): v[0] = 0 status, 1 FIELD now, 3 test VOID, 4 test NOTICED (3/4 hidden runs)
     count
 
 };

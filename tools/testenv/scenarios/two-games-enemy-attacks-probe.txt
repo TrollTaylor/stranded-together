@@ -1,0 +1,175 @@
+# Round 28 P1 (docs/enemy-sync.md 17): the enemy attack probe (enemy_phit_probe 1; logs only, no gameplay change). How a MULE's
+# melee (kick 0x16F, push 0x170 / 0x15E, rod 0x16D / 0x16E, tackle 0x171) reaches a body, and whether it would reach her partner
+# body on the host: the counting detours on the attack sphere query 0x1429934E0, the attack capsule query 0x14298A3F0 and the
+# paired grab start 0x1424BAA70 (enemy_tgt 14 3 puts them in, after vhit's start-up byte checks of the same sphere prologue),
+# each call's caller site (through the four sphere wrappers), attacker id, attack id, radius, filter layer, thread, result and
+# its gap to her standing body (0.35 m x 1.8 m at the live real body's root) and to our Sam.
+# MULE Camp Southwest of Lake Knot City (cp 04004). Launcher Local test files; the host owns every enemy (enemy_owner=0), every
+# round-25/26 key and the M2 probes pinned off; the round-27 stimulus / pick / redirect keys as in two-games-enemy-target.
+# MEL: melee MULE 02029 calmed (calm #1), our Sam 150 m behind it, her placed by op 11 CL (enemy_tgt 11 0x2029 9: on level ground
+# in front, kept in its view), the stimulus on, then (3 s) her 4 m in front along its facing; a 40 s watch in both games.
+# MEL-B (P1b): 02029 again, her 2 m in front and our Sam 150 m in front beyond her (one line); a 30 s watch in both games.
+# GUN: gun MULE 0202B, our Sam 150 m behind, her 3 m in front; a 25 s watch in both games.
+# P1b (after run 20261126-235739, whose only kick faced our Sam): "[phit] call:" lines give every MULE melee call's attacker
+# pose (distance and facing offset to her body, to the shape's centre and to our Sam); the attacker summary adds "faced pbody /
+# sam" counts; the MULE attacks' registry entries are logged (enemy_attack); her overlap is information, not a gate.
+# The gate reads the "[phit] ..." lines: the host's summary per attacker (02029 with calls and pbody overlaps, its sites and
+# layer), the attack ids seen, the grabs and their actors (pbody / Sam / other), our Sam's jumps (none: no grab warps him), the
+# thread of the MULE's calls, and whether the capsule is used (weapon-capsule calls: E2 needs the second detour then).
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-enemy-attacks-probe -SeedSaves complete-100 -GuestSeed profile-only -Id round28-p1
+# covers: research
+# select: probe
+role host
+graphics low
+timeout 300
+launcherini local-test
+ini enemy_owner=0
+ini enemy_m2_probes=0
+ini enemy_take_know=0
+ini enemy_take_camp=0
+ini enemy_ticket_return=0
+ini enemy_single_hold_vehicle=0
+ini enemy_single_rule=0
+ini enemy_take_role=0
+ini enemy_take_face=0
+ini enemy_partner_stim=1
+ini enemy_target_pick=55
+ini enemy_target_redirect=39
+ini enemy_phit_probe=1
+# round 28: the PHIT relay is on by default (enemy_partner_melee=1); pinned off here: this probe logs only (no gameplay change)
+ini enemy_partner_melee=0
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[enemy\] hits: byte checks [0-9]+/[0-9]+ ok
+waitlog 5 \[phit\] attack probe key on
+@guest waitlog 5 \[phit\] attack probe key on
+goto mule-camp-sw-lkc
+@guest goto 1521.90 992.00 0
+wait 4000
+@both action dev_god 2
+@both action dev_enemies 1
+waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+@guest waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+action enemy_probe 5 1
+@guest action enemy_probe 5 1
+waitlog 40 \[enemy\] sync on \(host\).*\(equal
+@guest waitlog 40 \[enemy\] sync on \(guest\).*\(equal
+@guest waitlog 30 \[enemy\] mirror on id=0202B
+waitlog 30 \[enemy\] hits on \(host\)
+@guest waitlog 30 \[enemy\] hits on \(guest\)
+waitlog 10 \[enemy\] tgt byte checks \([0-9]+\)
+@guest waitlog 10 \[enemy\] tgt byte checks \([0-9]+\)
+waitlog 20 \[enemy\] pstim made #
+# ---- P1b: the MULE attacks' registry entries (damage +0x24, +0x28, stun +0x2C, parts, flags; no combat): kick, push, rod
+# swing / thrust, tackle, Push (her contact push), ElectricZone. The run 20261126-235739 kick had amount -1 -> eff 0.0 (+0x24 0).
+action enemy_attack 0x16F
+waitlog 3 \[enemy\] attack 0x16F: entry
+action enemy_attack 0x170
+action enemy_attack 0x16D
+action enemy_attack 0x16E
+action enemy_attack 0x171
+action enemy_attack 0x15E
+action enemy_attack 0x17B
+# ---- the probe's hooks (both games): byte checks, then the three detours in; the status
+@both action enemy_tgt 14 3
+waitlog 5 \[phit\] hooks: sphere on capsule on grab on; byte checks [0-9]+/[0-9]+ ok
+@guest waitlog 5 \[phit\] hooks: sphere on capsule on grab on; byte checks [0-9]+/[0-9]+ ok
+# ---- MEL (02029; calm #1): her placed by op 11 CL, then 4 m in front of it; our Sam 150 m behind it
+action enemy_tgt 1 0
+action enemy_look 0x2029 150
+@guest action enemy_look 0x2029 150
+action enemy_l1 6 0x2029 8
+waitlog 12 \[probe\] L1 calm #1 id=02029: (ready|timeout)
+action enemy_look -8 -150
+@guest action enemy_look 0x2029 20
+wait 700
+action enemy_tgt 0
+action enemy_tgt 11 0x2029 9
+waitlog 8 \[probe\] L1 arm CL id=02029: start
+@both action enemy_tgt 14 1 40
+waitlog 3 \[phit\] watch on: 40 s
+@guest waitlog 3 \[phit\] watch on: 40 s
+action enemy_tgt 1 1
+waitnew 5 \[enemy\] pstim made #
+wait 3000
+@guest action enemy_look -8 4
+wait 6000
+screenshot 01-host-mel
+@guest screenshot 01-guest-mel
+wait 6000
+@guest screenshot 02-guest-mel-12s
+action enemy_tgt 8
+waitlog 5 \[probe\] L1 result arm CL id=02029
+action enemy_tgt 14 0
+waitnew 5 \[phit\] summary \(off\):
+@guest action enemy_tgt 14 0
+@guest waitnew 5 \[phit\] summary \(off\):
+action enemy_tgt 0
+# ---- MEL-B (P1b; 02029 again, still engaging her): her 2 m in front of it, then our Sam 150 m in front of it along the same
+# facing (beyond her), so a strike turned to our Sam (MEL's kick in run 20261126-235739: 2 deg off Sam, 164 deg off her, gap
+# 1.62 m) passes her body: does the kick / push sphere reach her then? The "[phit] call:" lines give each call's attacker pose.
+@guest action enemy_look -8 2
+action enemy_look -8 150
+@both action enemy_tgt 14 1 30
+waitlog 3 \[phit\] watch on: 30 s
+@guest waitlog 3 \[phit\] watch on: 30 s
+wait 12000
+screenshot 02b-host-melb
+@guest screenshot 02b-guest-melb
+wait 12000
+action enemy_tgt 14 0
+waitnew 5 \[phit\] summary \(off\):
+@guest action enemy_tgt 14 0
+@guest waitnew 5 \[phit\] summary \(off\):
+# ---- GUN (0202B, no calm): our Sam 150 m behind it, her 3 m in front of it
+action enemy_look 0x202B 150
+wait 700
+action enemy_look -8 -150
+@guest action enemy_look 0x202B 30
+wait 700
+@guest action enemy_look -8 3
+@both action enemy_tgt 14 1 25
+waitlog 3 \[phit\] watch on: 25 s
+action enemy_tgt 1 1
+wait 10000
+screenshot 03-host-gun
+@guest screenshot 03-guest-gun
+wait 10000
+action enemy_tgt 14 0
+waitnew 5 \[phit\] summary \(off\):
+@guest action enemy_tgt 14 0
+@guest waitnew 5 \[phit\] summary \(off\):
+# ---- the gate lines (the host): 02029's calls at the MULE melee site, the attack ids, the grab counts; no warp of our Sam.
+# Her overlap ("pbody N" / "[phit] overlap pbody:") is the question, read from the log, not a gate: run 20261126-235739 failed
+# here on "pbody [1-9]" because the only kick was aimed at our Sam (a game fact, not a probe fault).
+waitlog 3 \[phit\] attacker id=02029 \(mule\) calls [1-9][0-9]* \(sphere [0-9]+ capsule [0-9]+\) .*sites 0x142B53F99 mule-melee
+waitlog 3 \[phit\] call: sphere site 0x142B53F99 \(mule-melee\) attacker id=02029 .*attacker posed
+waitlog 3 \[phit\] attacks seen:
+waitlog 3 \[phit\] summary \(off\): .*grabs [0-9]+
+nolog \[phit\] summary \(off\): .*sam jumps [1-9]
+nolog \[phit\] .*FAULT
+@guest nolog \[phit\] .*FAULT
+nolog \[phit\] byte check FAILED
+@guest nolog \[phit\] byte check FAILED
+nolog \[vhit\] byte check FAILED
+# ---- the end
+@both action enemy_l1 9
+waitlog 5 \[probe\] L1 stop
+@guest waitlog 5 \[probe\] L1 stop
+action enemy_sync 0
+nolog \[enemy\] FAULT
+@guest nolog \[enemy\] FAULT
+nolog \[enemy\] (tgt|pstim) .*FAULT
+@guest nolog \[enemy\] (tgt|pstim) .*FAULT
+nolog \[enemy\] tgt byte check FAILED
+@guest nolog \[enemy\] tgt byte check FAILED
+nolog \[probe\] L1 .*FAULT
+@guest nolog \[probe\] L1 .*FAULT
+@both action enemy_sync 2
+action enemy_probe 5 0
+@guest action enemy_probe 5 0
+@both action dev_god 0
+@guest quit
+wait 3000
+quit

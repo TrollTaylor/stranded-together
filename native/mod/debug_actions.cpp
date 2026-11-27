@@ -10,10 +10,13 @@
 #include <cstring>
 
 #include "dev_tools.hpp"
+#include "bt_sync.hpp"
 #include "enemy_census.hpp"
 #include "enemy_combat.hpp"
 #include "enemy_l1_probe.hpp"
+#include "truck_v3.hpp"
 #include "enemy_target.hpp"
+#include "odradek_sync.hpp"
 #include "enemy_sync.hpp"
 #include "shot_sync.hpp"
 #include "log.hpp"
@@ -186,6 +189,8 @@ bool DoTex(const Request& r, char* msg, std::size_t cap) { return game::RealBody
 bool DoEnemyCensus(const Request& r, char* msg, std::size_t cap) {
     return enemy::Census(static_cast<int>(r.v[0]), r.v[1], static_cast<int>(r.v[2]), msg, cap);
 }
+bool DoBtProbe(const Request& r, char* msg, std::size_t cap) { return bt::Command(r.v, msg, cap); }
+bool DoBtSync(const Request& r, char* msg, std::size_t cap) { return bt::SyncCommand(r.v, msg, cap); }
 bool DoEnemyProbe(const Request& r, char* msg, std::size_t cap) { return esync::Probe(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoShots(const Request& r, char* msg, std::size_t cap) { return shots::Command(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoShotsTest(const Request& r, char* msg, std::size_t cap) {
@@ -208,7 +213,10 @@ bool DoEnemyCamp(const Request& r, char* msg, std::size_t cap) { return esync::C
 bool DoEnemyRestrain(const Request& r, char* msg, std::size_t cap) { return ecombat::Restrain(r.v, msg, cap); }
 bool DoEnemyM2(const Request& r, char* msg, std::size_t cap) { return ecombat::M2Probe(r.v, msg, cap); }
 bool DoEnemyL1(const Request& r, char* msg, std::size_t cap) { return l1probe::Command(r.v, msg, cap); }
+bool DoTruckV3(const Request& r, char* msg, std::size_t cap) { return truckv3::Command(r.v, msg, cap); }
 bool DoEnemyTgt(const Request& r, char* msg, std::size_t cap) { return etarget::Command(r.v, msg, cap); }
+bool DoOdra(const Request& r, char* msg, std::size_t cap) { return odra::Command(r.v, msg, cap); }
+bool DoOdraReplay(const Request& r, char* msg, std::size_t cap) { return odra::Replay(r.v, msg, cap); }
 bool DoAudioProbe(const Request& r, char* msg, std::size_t cap) { return game::AudioProbeCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoSelfVoice(const Request& r, char* msg, std::size_t cap) { return game::SelfVoiceCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
 bool DoVoiceSync(const Request& r, char* msg, std::size_t cap) { return game::VoiceSyncCommand(static_cast<int>(r.v[0]), r.v, msg, cap); }
@@ -380,6 +388,8 @@ constexpr Row kRows[] = {
      &DoTex},
     {{Action::enemy_census, Tab::tools, "Enemy census", "Enemy sync P0, read only: every MULE / Demens / warrior actor with its GUID, state, place and entity to the log: <tag> [radius m, 0 all] [flags: 1 every other actor type, 2 the MULE killed records].", false},
      &DoEnemyCensus},
+    {{Action::bt_probe, Tab::tools, "Bt probe", "BT sync B0, read only: the BT field census to the log ([bt]): gazers, their fields and killed lists, the hunter area, the catchers, the concentration meter. <op> 0 stop, 1 once a second [seconds], 2 one full dump. Hidden runs or session.ini bt_probe.", false},
+     &DoBtProbe},
     {{Action::enemy_probe, Tab::tools, "Enemy probe", "Enemy sync P1-0, hidden runs only: 0 [m] check and pick the nearest realized MULE, 3 s path the next tests' length and path, 1 lever mode freeze / drive / release / watch, 2 s our Sam's pose onto it, 9 release.", false},
      &DoEnemyProbe},
     {{Action::shots, Tab::tools, "Shots", "The players' shots on the other screen (shots_sync): 0 status, 1 on, 2 off, 3 m deg our Sam beside the partner body facing it, 4 [deg] [1 steered, 2 steered then 2 s of fire] aim the camera at it, 5 target n aimed test, 6 cargo target, 8 muzzle magazine, 9 yaw pitch aim offset, 10 m the enemy replays' start along the shot (hidden runs).", false}, &DoShots},
@@ -418,14 +428,32 @@ constexpr Row kRows[] = {
      &DoEnemyM2},
     {{Action::enemy_l1, Tab::tools, "Enemy l1", "Hidden runs only (round 27 M1, the L1 probe; '[probe] L1 ...' lines): 0 checks + reads; 1 <0 | 1> her stimulus off / L1; 2 <vis x100> her +0xA4 forced; 3 <id> <s> the watch; 4 <arm 1 A | 2 B | 3 C | 4 D | 7 G> <id> an arm starts; 5 <0 standing | 1 crouched> her own stimulus (the guest); 6 <id> [s] re-calm its camp; 7 <id> [attack] the melee query at her chest; 8 the arm ends; 9 stop.", false},
      &DoEnemyL1},
-    {{Action::enemy_tgt, Tab::tools, "Enemy tgt", "Round 27 M2-M4 ('[enemy] pstim / tgt ...' lines; 0 any session, the rest hidden runs only): 0 status; 1 <0 | 1> the partner stimulus off / back to the key; 2 <vis x100> her +0xA4 forced (-1 back to SPV1); 3 <id> [s] the watch; 4 <arm 1..9> <id> a labelled arm; 5 <id> <0 | 1 her | 2 Sam> a forced pick; 6 <bits | -1> the redirect bits for this run (32 the shoot actor); 7 <id> [arm code] the geometry and shoot lines (its validity by that arm's rule); 8 the arm ends; 9 <n> create / remove cycles; 10 the crash-reporter guard test (a guarded fault); 11 <id> <arm 1..9> the arm at geometry: op 4 once her geometry is valid for the arm (or 2.5 s), our Sam placed first for TF0 / TF1 (170 m, 40 deg off her line) and CS (5 m along its facing); 12 [0 | 1] the destroy guard's removal simulated on the partner body (12 0 ends it); 13 the game's own removal of the partner body (ends her body: the last step).", false},
+    {{Action::enemy_tgt, Tab::tools, "Enemy tgt", "Round 27 M2-M4 ('[enemy] pstim / tgt ...' lines; 0 any session, the rest hidden runs only): 0 status; 1 <0 | 1> the partner stimulus off / back to the key; 2 <vis x100> her +0xA4 forced (-1 back to SPV1); 3 <id> [s] the watch; 4 <arm 1..9> <id> a labelled arm; 5 <id> <0 | 1 her | 2 Sam> a forced pick; 6 <bits | -1> the redirect bits for this run (32 the shoot actor); 7 <id> [arm code] the geometry and shoot lines (its validity by that arm's rule); 8 the arm ends; 9 <n> create / remove cycles; 10 the crash-reporter guard test (a guarded fault); 11 <id> <arm 1..9> the arm at geometry: op 4 once her geometry is valid for the arm (or 2.5 s), our Sam placed first for TF0 / TF1 (170 m, 40 deg off her line) and CS (5 m along its facing); 12 [0 | 1] the destroy guard's removal simulated on the partner body (12 0 ends it); 13 the game's own removal of the partner body (ends her body: the last step); 14 <1 [s] | 0 | 2 | 3> the attack probe (session.ini enemy_phit_probe=1; '[phit] ...' lines): 1 the watch on for s seconds (default 60, max 300), 0 off + summary, 2 the summary now, 3 the status (in hidden runs the hooks go in first); the PHIT relay (round 28 E2, enemy_partner_melee != 0, hidden runs): 5 <m> the dodge test (0 off), 6 <attack> a local apply test on the guest, 7 the relay status, 8 <0 | 1 | 2 | -1> the apply mode for this run (-1 the key).", false},
      &DoEnemyTgt},
+    {{Action::odra, Tab::tools, "Odra",
+      "Round 28 P4 / O3, the Odradek probe and scan sync (session.ini odradek_probe=1 or odradek_scan_sync=1; '[odra] ...' lines): 0 the state dump; 1 <0 | 1> the watch (the "
+      "transition lines) off / on; 2 a local scan (hidden runs or dev_tools); 3 <m> [mode] the survey replayed m metres ahead of Sam "
+      "(default 20; mode 1 forces mode 1, 0 or absent = op 4's mode); 4 <mode> the replay mode: 0 the survey component only, 1 the finished wave moved there first"
+      "; 5 <m> [mask] a test partner scan m metres ahead shown here (probe); 6 <mask> the start steps (probe; 1 wave 2 emit dir 4 slot 8 sensor 16 front 32 system 64 survey, default 127); 7 the scan sync status; 8 <m> a test scan m metres ahead sent to the partner (needs odradek_probe=1 and odradek_scan_sync=1).",
+      false},
+     &DoOdra},
+    {{Action::odra_replay, Tab::tools, "Odra replay",
+      "Round 28 P4 (odradek_probe=1, hidden runs or dev_tools): x y z, the survey shown from that point (z 0: Sam's height); refused "
+      "while the local scan or a survey runs, beyond 300 m, within 1.5 s of the last.",
+      false},
+     &DoOdraReplay},
     {{Action::dev_marker, Tab::dev, "Dev marker", "Map markers: 0 log them, 1 <m east> <m north> add one there through the game's own add (hidden runs only).", false},
      &DoDev<dev::Op::marker_test>},
     {{Action::dev_give, Tab::dev, "Dev give",
       "Give Sam gear (sandboxed saves only; up to dev_give_max_kg a press): 1 weapons, 2 throwables, 3 tools, 4 equipment, 5 supplies, 6 late, 7 custom, 0 <baggage code> [count].",
       false},
      &DoDev<dev::Op::give>},
+    {{Action::truck_v3, Tab::tools, "Truck v3",
+      "session.ini vehicle_truck_probe=1 (round 28 P2, read-only; '[truckv3] ...' lines): 0 the watch off + status; 1 [s] the watch (board / leave / drive lines); 3 the V3 status (round 28 T1, vehicle_mule_v3; any probe key); 8 the seated MULEs in their truck's frame + capsule; 9 the controller identity of every MULE-driven vehicle.",
+      false},
+     &DoTruckV3},
+    {{Action::bt_sync, Tab::tools, "Bt sync", "BT field sync B1 (bt_sync=1|2 in session.ini): <op> 0 the status line ([bt] sync status), 1 FIELD at the next census; hidden runs: 3 a test VOID, 4 a test NOTICED to the partner.", false},
+     &DoBtSync},
 };
 constexpr std::size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);
 static_assert(kRowCount == static_cast<std::size_t>(Action::count), "every Action needs exactly one registry row");
@@ -542,6 +570,7 @@ void OnTick(double now_ms) noexcept {
     g_last_tick_ms = now_ms;
     game::ActionsTick(now_ms);  // resolves game_actions once, post-teleport checks
     dev::Tick(now_ms);          // the dev tools' checks, place list and page view
+    bt::Tick(now_ms);           // the BT census / sync (round 28 P3 / B1): one flag test while off
     Drain();
     const bool open = MenuOpen();
     if (open || now_ms >= g_next_publish_ms) {

@@ -70,6 +70,7 @@ std::uint32_t LastHitId() noexcept;                   // the newest HIT's enemy 
 // while it does not (not installed, stopped), enemy_sync drains it itself. A realized MULE entity's health and stamina (its
 // damage component; false: none).
 bool DrainsCombat() noexcept;
+bool PhitApplyReady() noexcept;  // round 28 E2: this game drains channel 6 and its apply group passed (the guest's PHIT hello says so)
 bool Vitals(std::uintptr_t entity, float* health, float* stamina) noexcept;
 void Status() noexcept;                               // the `enemy_sync 0` lines
 // Round 27 run 4 (enemy_target.cpp's op 11; hidden runs, the host, game thread): an SCB1 PLACE to the guest: her Sam to (x, y)

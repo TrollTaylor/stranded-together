@@ -140,6 +140,26 @@ inline bool SetProbeKey(bool& on, const std::string& key, bool v) {
     on = v;
     return true;
 }
+// Round 28 P1: session.ini enemy_phit_probe (the attack probe, enemy_tgt 14). SetPhitKey: true when `key` is it.
+inline bool SetPhitKey(bool& on, const std::string& key, bool v) {
+    if (key != "enemy_phit_probe") return false;
+    on = v;
+    return true;
+}
+// Round 28 E2: session.ini enemy_partner_melee (0 / 1 / 2, anything else 0) and enemy_melee_face. True when `key` is one of them.
+inline bool SetPartnerMeleeKey(int& mode, bool& face, const std::string& key, const std::string& v, bool vbool) {
+    if (key == "enemy_partner_melee") {
+        char* end = nullptr;
+        const long n = std::strtol(v.c_str(), &end, 10);
+        mode = end != v.c_str() && (n == 1 || n == 2) ? static_cast<int>(n) : 0;
+        return true;
+    }
+    if (key == "enemy_melee_face") {
+        face = vbool;
+        return true;
+    }
+    return false;
+}
 // The round-23 C keys (docs/enemy-sync.md 14.9): enemy_down_hold (on unless given 0: while the other player is down - death or
 // KnotSpace, never a faint - the copies of that game's fights are held frozen in their last pose or hidden here, never given back
 // alive, and no ownership changes), enemy_down_hold_radius (m from our player: nearer copies are held or hidden, farther standing
@@ -208,7 +228,8 @@ inline bool SetTakeKey(TakeKeys& k, const std::string& key, const std::string& v
 //                                   record from ours (needs 1 and 16), 64 take first (M4: a camp about to go to her stays calm).
 //                                   Default 71 (1 + 2 + 4 + 64) with enemy_hits
 //   enemy_target_redirect 0..255    M3 bits: 1 CanShoot's point, 2 turn / range check, 4 approach, 16 the vehicle chase, 32 the
-//                                   shoot actor (8: the PlayerInfo shadow, not built: ignored). Default 35 (1 + 2 + 32) with enemy_hits
+//                                   shoot actor (8: the PlayerInfo shadow, not built: ignored). Default 35 (1 + 2 + 32) with enemy_hits.
+//                                   Bit 64 (the melee face) is ignored here: only enemy_melee_face=1 sets it
 //   enemy_target_fresh_ms 500..3000 how long a target missing from the bucket stays "visible" (default 1500)
 // SetTargetKey: true when `key` is one of them (a bad value keeps the old one); the *_set flags: a valid value was given.
 inline constexpr int kTargetStimDefault = 1, kTargetPickDefault = 71, kTargetRedirectDefault = 35, kTargetPickMax = 127;

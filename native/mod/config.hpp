@@ -298,11 +298,28 @@ struct Config {
     // parked teleport, no removal and no re-mirror by the shared vehicles. Both default on; the launcher writes neither.
     bool vehicle_mule_log = true;
     bool vehicle_mule_hold = true;
+    // Round 28 P2 (docs/enemy-sync.md 14.20; truck_v3.hpp): vehicle_truck_probe=1 installs the truck controller probe (byte checks,
+    // the read-only get-off counting detour at start-up) and allows the debug action truck_v3. Default 0; the launcher writes none.
+    bool vehicle_truck_probe = false;
+    // Round 28 T1 (docs/enemy-sync.md 14.21; vehicle_drive.cpp V3, enemy_sync seated mirrors): vehicle_mule_v3=1 sends/follows the host's MULE-driven trucks (both games must run it: the STV3 hello). Default 0; the launcher writes none.
+    bool vehicle_mule_v3 = false;
     // Round 23 E (docs/enemy-sync.md 14.11; cfgval::SetProbeKey). enemy_m2_probes: the debug action enemy_m2 (the M2 probes P1-P6:
     // the knowledge dump, the push levers, the perception reads, the raycast, the notice timing, the seated MULE's chain) is
     // allowed (the action itself stays hidden runs only), and her single takes get the read-only P2 window (D1-D8; armed by
     // itself at the take, round 26). On by default since round 26 (at the user's request); the launcher never writes it.
     bool enemy_m2_probes = true;
+    // Round 28 P1 (docs/enemy-sync.md 17; cfgval::SetPhitKey): the enemy attack probe (enemy_phit.hpp; enemy_tgt 14): counting
+    // detours on the attack sphere / capsule queries and the grab start, logs only ("[phit] ..."). Default off.
+    bool enemy_phit_probe = false;
+    // Round 28 E2 (docs/enemy-sync.md 20; cfgval::SetPartnerMeleeKey): the PHIT relay (enemy_phit.hpp): a host MULE's melee
+    // strike that reaches her partner body is relayed and strikes her real Sam. 0 off, 1 the MULE's mirror as the attacker with
+    // the game's amount (the one that works: run 20261127-033043, her health 1000 -> 988 from a baton swing), 2 no attacker with
+    // the attack entry's amount (applies with no damage in our runs; use 1). Both games must run it (the guest's hello: an older or
+    // key-off partner gets nothing). Default 1 since round 28; the launcher writes none. Only with enemy_sync in a two-game
+    // session (else "[phit] relay off": no detours, no damage observer).
+    int enemy_partner_melee = 1;
+    // Round 28 E2: redirect bit 64 (enemy_target.cpp): the MULE melee state aimed at her body when its pick is her. Default off.
+    bool enemy_melee_face = false;
     // Round 25 (docs/enemy-sync.md 14.18; cfgval::SetTakeKey). The single-take levers, never written by the launcher, ON by default
     // since round 26 (docs/enemy-sync.md 14.19, at the user's request: none fixed the problems; K1 / F1 / C1 break stealth), each
     // off with =0: enemy_take_know (K1: her game forces a player visual of her Sam into a MULE she takes alone; 1 once, 2 then 2 Hz
@@ -364,6 +381,18 @@ struct Config {
     // dev_tools=1: the debug menu's Dev tools page and the dev_* debug actions (dev_tools.hpp; the launcher's Debug page
     // "Dev tools"). Tools that change what a save keeps run only on a sandboxed save (dev_rules.hpp). Hidden runs have them on.
     bool dev_tools = false;
+    // odradek_probe=1 (round 28 P4; default 0): the Odradek probe (odradek_sync.hpp): the FUN_14282B530 detour, the "[odra]" lines,
+    // the debug actions odra / odra_replay (scan and replay in hidden runs or with dev_tools only)
+    bool odradek_probe = false;
+    // odradek_gear=1 (round 28 O1; default 0): the partner's Odradek on the partner body (partner_gear.cpp, gear_odra.hpp): ours sent as
+    // two STC1 odradek items while the partner's frames carry kGearOdraCap, the partner's drawn as cinematic props (never a DSOdradek copy)
+    bool odradek_gear = false;
+    // odradek_scan_sync=0|1 (round 28 O3; default 1 since run 20261127-025035, two-games-odradek-scan PASS; the launcher writes
+    // none): the partner's Odradek scan shown here and ours sent (odradek_sync.hpp; SOD1 on channel 6, HELLO caps 0x01; nothing is
+    // sent or shown unless the partner's HELLO has the bit, so an older or key-off partner gets nothing). Two-game sessions only
+    // (solo / echo: off, no detour unless odradek_probe). The HELLO waits for the partner's SEH1 beacon, which goes also with
+    // shots_sync=0 (shot_sync.cpp g_beacon_want).
+    bool odradek_scan_sync = true;
     // dev_give=0|1 (default 1; round 22): the Dev tools page's Give buttons and dev_give (dev_tools.cpp, give_rules.hpp): the game's
     // own CreateAndAddBaggageToPlayer gives Sam weapons, tools and equipment (sandboxed saves only, like dev_items).
     // dev_give_max_kg (1..200, default 30): the weight one press may add; dev_give_per_frame (1..16, default 4): requests a tick.
@@ -407,6 +436,19 @@ struct Config {
     // (voice queue, talk handler, animation sound events) and on the exported Wwise API (PostEvent, RegisterGameObj,
     // SetSwitch, SetRTPCValue, SetPosition, StopPlayingID per game object). Changes nothing the game does.
     bool audio_probe = false;
+    // bt_probe=0|1|2 (default 0; round 28 P3, bt_sync.hpp; docs/enemy-sync.md section 18): the BT field census, read only and
+    // logging only. 1 = a "[bt]" census line once a second from the first tick in a world; 2 = also one full dump when gazers first
+    // appear. 0: nothing runs unless the debug action "Bt probe" asks (allowed in hidden runs, or with this key != 0).
+    int bt_probe = 0;
+    // bt_sync=0|1|2 (default 2 since run 20261127-032816, two-games-bt-field PASS; the launcher writes none; round 28 lane B1,
+    // bt_sync.hpp; docs/enemy-sync.md section 21): the BT field sync over BTS1
+    // (channel 6). 1 = FIELD compare, NOTICED (this game's gazers sensing this player, told to the partner) and VOID notices
+    // (a pass-through detour on the voidout, installed at start-up); 2 = also the host's ResetAllGazers applied on the guest,
+    // only on a sandboxed save (a host-save guest, a test save, a hidden run: never her own real save with host_save=0) and
+    // refused in a menu / cutscene / scripted scene, while Sam is asleep or in a BT encounter (the hunter area).
+    // Only in a two-game session and only once the partner's build says hello (its bt_sync != 0: an older or key-off partner gets
+    // nothing).
+    int bt_sync = 2;
     // self_voice=auto|sam|mute (docs/audio-research.md section 9, Phase 1; self_voice.cpp): Sam's own voice (spoken
     // lines, grunts, efforts, breathing) on THIS player's game. auto = muted when this player's character
     // (my_character; the host is always sam) is not Sam, and the cargo menu's figure while it shows that character;

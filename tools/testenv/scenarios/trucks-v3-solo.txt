@@ -1,0 +1,64 @@
+# Round 28 P2 (trucks M0, docs/enemy-sync.md 14.20), solo, hidden: the truck controller probe (native/mod/truck_v3.cpp) at the MULE
+# Camp Southwest of Lake Knot City (its trucks 0x02000F and 0x020010). The camp is NOT alerted. Run 20261126-235943 raised 02029 to
+# combat (enemy_look 25 m + enemy_target 3) with Sam inside the camp: no MULE boarded, and at 81 s the game moved Sam back to the
+# save's start at Lake Knot City (2700 m away), so the camp unloaded. The boarding round 23 saw is the camp's CALM patrol: MULE
+# 0x0202E takes the driver seat (0) and 0x0202D seat 2 of truck 0x02000F about 48-52 s after the goto, with Sam standing at the
+# goto spot 60-90 m from the camp, phase 0 (two-games-truck-hold runs 163342 / 163849 / 171219: game time 84-89 s; also the
+# trucks-m2-probe-solo run 155517). truck_v3 1 watches: board / leave lines (the ride bit +0xE44 or the entity's parent chain
+# +0x70), vdriver lines (a vehicle's driver seat +0x8B0); either one reads the driver's identity at once. truck_v3 9 dumps the
+# identity (is [vehicle+0x528] the MULE's own controller input actor+0x400; ride +0xA60 / +0xA68 / +0xA84; ctl state / driver /
+# AI drive component; the 48 inputs; speed) and lists the walked vehicles when that list changes ("veh" lines). truck_v3 8 dumps
+# the seats (a riding MULE's transform in its truck's frame and its capsule). The get-off detour's callers are read afterwards
+# from the "[truckv3] get-off #" lines and the final status line (no step waits for one: a failed optional step still fails the
+# run). Do not move Sam into the camp and do not alert it: the patrol is what boards.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios trucks-v3-solo -SeedSaves complete-100 -Id round28-p2
+# covers: research
+# select: probe
+role solo
+graphics low
+timeout 360
+ini dev_tools=1
+ini vehicle_truck_probe=1
+start control 200
+wait 3000
+waitlog 30 \[dev\] dev tools: [0-9]+/[0-9]+ byte checks ok
+waitlog 10 \[config\] vehicle_truck_probe=1
+waitlog 10 \[truckv3\] byte checks [0-9]+/[0-9]+ ok \(groups ok 0x[0-9A-F]+\), get-off detour
+goto mule-camp-sw-lkc
+wait 3000
+?action dev_god 2
+action truck_v3 1 1
+waitnew 5 \[truckv3\] watch on
+action truck_v3 9
+waitnew 5 \[truckv3\] id done
+screenshot 01-camp-calm
+# the patrol's driver boards (round 23: about 50 s after the goto); the dump every 5 s until then. Either side of the watch counts:
+# the MULE's board line (ride bit or parent chain) or the vehicle's driver seat taken by a MULE.
+until 150 5000 \[truckv3\] (board MULE 0x[0-9A-F]+ truck 0x[0-9A-F]+ seat 0 |vdriver truck 0x[0-9A-F]+ (set|changed): driver 0x[0-9A-F]+ -> 0x[0-9A-F]+ \(MULE\)) => action truck_v3 9
+wait 2000
+action truck_v3 9
+waitnew 5 \[truckv3\] id done
+action truck_v3 8
+waitnew 5 \[truckv3\] seats done
+screenshot 02-boarded
+wait 5000
+action truck_v3 9
+waitnew 5 \[truckv3\] id done
+action truck_v3 8
+waitnew 5 \[truckv3\] seats done
+screenshot 03-driving
+wait 10000
+action truck_v3 9
+waitnew 5 \[truckv3\] id done
+action truck_v3 8
+waitnew 5 \[truckv3\] seats done
+screenshot 04-later
+wait 30000
+action truck_v3 9
+waitnew 5 \[truckv3\] id done
+action truck_v3 0
+waitnew 5 \[truckv3\] status \(truck_v3 0\)
+nolog \[truckv3\] byte check FAILED
+nolog \[truckv3\] FAULT
+?action dev_god 0
+quit

@@ -18,6 +18,7 @@
 #include "config_values.hpp"
 #include "coop_session.hpp"
 #include "enemy_census.hpp"
+#include "enemy_phit.hpp"
 #include "enemy_target.hpp"
 #include "enemy_probe_rules.hpp"
 #include "enemy_rules.hpp"
@@ -779,6 +780,69 @@ int ApplyCall(const ApplyArgs& a, ApplyOut& o) noexcept {
         return -1;
     }
 }
+// ---------------------------------------------------------------- round 28 E2: the PHIT apply (enemy_phit.hpp; game thread)
+struct SamQueryUser {
+    std::uintptr_t sam = 0;
+    unsigned seen = 0, kept = 0;
+    std::uint32_t part = 0xFFFFFFFFu;
+    double hit[3] = {};
+};
+// Only our Sam's receivers (the entity itself or its entity receiver); the DamageInfo is the game's own (its amount, its
+// multiplier: nothing is changed).
+char SamQueryCb(std::uintptr_t /*ctx*/, std::uintptr_t receiver, std::uintptr_t di, std::uintptr_t user) {
+    auto* u = reinterpret_cast<SamQueryUser*>(user);
+    ++u->seen;
+    if (!(receiver == u->sam || ReceiverEntity(receiver) == u->sam)) return 0;
+    if (u->kept++ == 0) {
+        mem::Rd(di + 0x68, u->part);
+        mem::Read(di + 0x80, u->hit, sizeof(u->hit));
+    }
+    return 1;
+}
+}  // namespace
+
+int PhitApply(const PhitApplyArgs& a, PhitApplyOut& o) noexcept {
+    o = PhitApplyOut{};
+    if (!(g_groups & kGApply) || g_stop.load() || !a.sam || !a.filter) return 0;
+    __try {
+        o.step = 1;
+        const std::uintptr_t ctx = reinterpret_cast<FnCtxCreate>(A(kCtxCreate))(a.owner, a.attack);
+        o.ctx = ctx;
+        if (!ctx) return 0;
+        o.step = 2;
+        const std::uintptr_t P = reinterpret_cast<FnCtxParams>(A(kCtxParams))(ctx);
+        if (P != ctx + 0x120) return 0;
+        if (*reinterpret_cast<volatile std::uint16_t*>(P + 0x0C) != a.attack) *reinterpret_cast<volatile std::uint16_t*>(P + 0x0C) = a.attack;
+        o.step = 3;
+        o.res = *reinterpret_cast<volatile std::uintptr_t*>(P + 0x18);
+        if (!o.res || U16(o.res + 0x20) != a.attack) {
+            const std::uintptr_t e = AttackEntry(a.attack);
+            if (!e) return 0;
+            *reinterpret_cast<volatile std::uintptr_t*>(P + 0x18) = e;
+            o.res = e;
+        }
+        if (a.before) a.before(ctx);
+        o.step = 7;
+        SamQueryUser u;
+        u.sam = a.sam;
+        const int r = vhit::QueryHit(a.filter, ctx, a.centre, a.radius, a.amount, &SamQueryCb, reinterpret_cast<std::uintptr_t>(&u));
+        o.seen = u.seen, o.kept = u.kept, o.part = u.part;
+        std::memcpy(o.hit, u.hit, sizeof(o.hit));
+        if (r < 0) return -1;
+        if (r == 0) return 0;
+        o.step = 8;
+        return u.kept ? 1 : 0;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+std::uint32_t PhitEntry28(std::uint16_t attack) noexcept {
+    const std::uintptr_t e = AttackEntry(attack);
+    std::uint32_t v = 0;
+    return e && mem::Rd(e + 0x28, v) ? v : 0u;
+}
+
+namespace {
 const char* StepText(int step, int path) noexcept {
     switch (step) {
         case 1: return "no context";
@@ -1613,6 +1677,8 @@ void DrainCombat(const esync::GateView& gv) {
             if (g_role != 2) ++g_wrong_role;
             else if (!ewire::DecodePlace(buf, n, h, pl)) ++g_bad_msg;
             else GuestPlace(pl, h.guids_fp, gv);  // round 27 run 4: op 11's PLACE
+        } else if (h.type == ewire::kScbPhit) {
+            ephit::OnScb(buf, n, gv.guids);  // round 28 E2: the PHIT relay (its own decode, gates and counters)
         }
     }
 }
@@ -1978,6 +2044,7 @@ void NoteSenDefeat(std::uint32_t id, std::uint8_t defeat) noexcept {
 }
 std::uint32_t LastHitId() noexcept { return g_last_hit_id; }
 bool DrainsCombat() noexcept { return g_installed && !g_stop.load(std::memory_order_relaxed); }
+bool PhitApplyReady() noexcept { return DrainsCombat() && (g_groups & kGApply) != 0; }
 bool Vitals(std::uintptr_t entity, float* health, float* stamina) noexcept {
     const std::uintptr_t comp = DamageComponent(entity);
     if (!comp) return false;

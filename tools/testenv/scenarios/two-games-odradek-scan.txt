@@ -1,0 +1,111 @@
+# The partner's scan shown here (round 28 O3; native/mod/odradek_sync.cpp, odra_rules.hpp; docs/enemy-sync.md section 19),
+# part 2 of two-games-odradek (part 1 is the gear, O1): "when either of us scans, the scan shows on both screens". Hidden, on
+# the launcher's own Local test files (host Sam, guest Fragile), odradek_scan_sync=1 on both (odradek_probe=1 too: the scans
+# are driven with odra 2, the native trigger's writes on the machine's own thread, and the test pulses with odra 8):
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-odradek-scan -SeedSaves complete-100 -GuestSeed profile-only -Id round28-o3
+# Each game announces the capability in a SOD1 HELLO (caps 0x01) on combat channel 6; a game's own pulse (its 3 -> 4 edge)
+# goes out as a SOD1 SCAN {seq, origin, dir}; the other game restarts its own wave there inside its scan-machine detour (the
+# machine idle: mode=full; showing marks: mode=visual), or queues the latest one while its own scan runs.
+# Steps: the host scans, the guest shows it (10-*/11-*: the grid sweeping out from the host's position, 20 m west of her);
+# the guest scans, the host shows it (20-*/21-*); both scan at once (each queued "busy_local_scan", each shown when its own
+# wave ends); two test pulses from the guest while the host scans (the older "dropped: superseded"); a pulse 600 m away
+# ("dropped: too_far").
+# Pass: every step ok; the screenshots 10-guest-* / 11-guest-* show the host's scan on the guest's screen (the grid / ring
+# centred on the host, not on Fragile, and no Odradek animation on her), 20-host-* / 21-host-* the guest's scan on the host's
+# screen; no FAULT, no refused SOD1 message, no "not sent"; summary.json result pass.
+# covers: odradek-scan
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini odradek_scan_sync=1
+ini odradek_probe=1
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 10 \[config\] odradek_scan_sync=1
+@guest waitlog 10 \[config\] odradek_scan_sync=1
+waitlog 10 \[odra\] byte checks [0-9]+/[0-9]+ ok
+@guest waitlog 10 \[odra\] byte checks [0-9]+/[0-9]+ ok
+waitlog 10 \[odra\] detour installed .*scan sync on
+@guest waitlog 10 \[odra\] detour installed .*scan sync on
+# ---- the capability, both ways (after each side saw the other's SEH1 beacon: channel 6 known)
+waitlog 60 \[odra\] hello sent caps=0x01
+@guest waitlog 60 \[odra\] hello sent caps=0x01
+waitlog 30 \[odra\] partner hello caps=0x01
+@guest waitlog 30 \[odra\] partner hello caps=0x01
+@both action dev_god 2
+goto mknot-road
+@guest goto -1197.2 291.5 0
+wait 4000
+# (w2) one game at a time: a waitnew searches from the previous step's start, so each follows its own game's action
+action odra 7
+waitnew 5 \[odra\] scan sync: key 1, start path on .*partner hello caps 0x01
+@guest action odra 7
+@guest waitnew 5 \[odra\] scan sync: key 1, start path on .*partner hello caps 0x01
+# ---- the host scans: the guest shows it at the host's origin
+action odra 2
+waitnew 5 \[odra\] scan triggered
+waitlog 10 \[odra\] partner scan sent seq=[0-9]+ origin=
+@guest waitlog 10 \[odra\] partner scan received seq=[0-9]+ origin=
+@guest waitlog 10 \[odra\] partner scan shown origin=.* mode=full
+wait 500
+@guest screenshot 10-guest-sees-host-scan
+screenshot 10-host-own-scan
+wait 1500
+@guest screenshot 11-guest-host-scan-mid
+wait 3000
+# ---- the guest scans: the host shows it (mode full, or visual while the host's own marks are up)
+@guest action odra 2
+@guest waitnew 5 \[odra\] scan triggered
+@guest waitlog 10 \[odra\] partner scan sent seq=[0-9]+ origin=
+waitlog 10 \[odra\] partner scan received seq=[0-9]+ origin=
+waitlog 10 \[odra\] partner scan shown origin=.* mode=(full|visual)
+wait 500
+screenshot 20-host-sees-guest-scan
+@guest screenshot 20-guest-own-scan
+wait 1500
+screenshot 21-host-guest-scan-mid
+wait 4000
+# ---- busy: both scan at once; each side's partner scan waits for its own scan and is shown when its own wave ends
+@guest action odra 2
+action odra 2
+waitlog 10 \[odra\] partner scan queued: busy_local_scan
+@guest waitlog 10 \[odra\] partner scan queued: busy_local_scan
+wait 6000
+screenshot 30-host-after-both
+@guest screenshot 30-guest-after-both
+action odra 7
+waitnew 5 \[odra\] scan sync: .*sent 2 .*received 2 .*shown 2 \(full [0-9]+, visual [0-9]+\), queued 1,
+@guest action odra 7
+@guest waitnew 5 \[odra\] scan sync: .*sent 2 .*received 2 .*shown 2 \(full [0-9]+, visual [0-9]+\), queued 1,
+# ---- the latest wins: the host scans, the guest sends two test pulses meanwhile; the host drops the older, shows the newer
+wait 2000
+action odra 2
+waitnew 5 \[odra\] scan triggered
+@guest action odra 8 20
+@guest action odra 8 40
+waitlog 10 \[odra\] partner scan dropped: superseded
+wait 6000
+action odra 7
+waitnew 5 \[odra\] scan sync: .*received 4 .*shown 3 .*dropped 1,
+# ---- too far: a test pulse 600 m ahead of the guest
+@guest action odra 8 600
+waitlog 10 \[odra\] partner scan dropped: too_far
+@both action odra 0
+nolog \[odra\].*FAULT
+@guest nolog \[odra\].*FAULT
+nolog \[odra\] byte checks: .* failed
+@guest nolog \[odra\] byte checks: .* failed
+nolog \[odra\] partner message refused
+@guest nolog \[odra\] partner message refused
+nolog \[odra\] partner scan not sent
+@guest nolog \[odra\] partner scan not sent
+nolog \[odra\] partner scan dropped: (off|no_hello|no_player|duplicate|stale|bad_state|new link)
+@guest nolog \[odra\] partner scan dropped: (off|no_hello|no_player|duplicate|stale|bad_state|new link|superseded|too_far)
+nolog refused for this session: a DSOdradek
+@guest nolog refused for this session: a DSOdradek
+@both action log_status
+@guest quit
+wait 3000
+quit

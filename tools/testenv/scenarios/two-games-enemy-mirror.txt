@@ -33,6 +33,9 @@ ini enemy_take_face=0
 # the host-owned mirrors this scenario tests need P1c's camp ownership off (on by default since round 21: the guest near
 # the camp would take it); two-games-enemy-camp covers ownership on
 ini enemy_owner=0
+# round 28: the PHIT relay is on by default; pinned off here: the host MULEs' melee would strike her real Sam, and the damage
+# policy step needs her health at 1000.0 (as written, the host's enemies never hurt her but through the replayed shots)
+ini enemy_partner_melee=0
 start control 200
 waitlog 60 \[vshare\] host: world ready
 @guest waitlog 60 \[vshare\] guest: world ready

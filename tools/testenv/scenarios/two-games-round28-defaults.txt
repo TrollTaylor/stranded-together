@@ -1,0 +1,114 @@
+# Round 28 defaults gate: the three round-28 features that are on by default now (docs/enemy-sync.md 19.1, 20, 21), on the
+# launcher's own Local test files and NO ini key, so the run proves what players get: odradek_scan_sync=1 (SOD1), the PHIT relay
+# enemy_partner_melee=1 (SCB1 type 12) and bt_sync=2 (BTS1). Each needs both games to run it (its capability hello), so this
+# checks the keys, the byte checks / hooks, the hellos both ways and each relay armed, one real host scan shown on the guest's
+# screen (odra 2 is allowed with odradek_scan_sync alone in a hidden run: odradek_probe stays 0, the watch off, as players
+# have it), then the status lines (bad 0). The features in depth are gated by two-games-odradek-scan, two-games-enemy-attacks
+# and two-games-bt-field (explicit keys).
+# MULE Camp Southwest of Lake Knot City (the world gate and the guest's combat apply path for her PHIT hello); both Sams
+# invulnerable and shielded (dev_god 2, enemy_probe 5 1: a MULE strike is applied with no drop).
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-round28-defaults -SeedSaves complete-100 -GuestSeed profile-only -Id round28-defaults
+# covers: odradek-scan bt-sync enemy-melee
+role host
+graphics low
+timeout 300
+launcherini local-test
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+# ---- the defaults (no ini key), both games
+waitlog 5 \[config\] enemy_partner_melee=1 enemy_melee_face=0
+@guest waitlog 5 \[config\] enemy_partner_melee=1 enemy_melee_face=0
+waitlog 5 \[config\] odradek_scan_sync=1
+@guest waitlog 5 \[config\] odradek_scan_sync=1
+waitlog 5 \[config\] bt_sync=2 \(BT field sync
+@guest waitlog 5 \[config\] bt_sync=2 \(BT field sync
+# ---- start-up: byte checks and hooks
+waitlog 10 \[odra\] byte checks [0-9]+/[0-9]+ ok
+@guest waitlog 10 \[odra\] byte checks [0-9]+/[0-9]+ ok
+waitlog 10 \[odra\] detour installed .*scan sync on
+@guest waitlog 10 \[odra\] detour installed .*scan sync on
+waitlog 5 \[phit\] relay key on: enemy_partner_melee=1 .*enemy_melee_face=0; sphere on capsule on .*byte checks [0-9]+/[0-9]+ ok; damage observer on
+@guest waitlog 5 \[phit\] relay key on: enemy_partner_melee=1 .*sphere off \(the guest: not needed\) capsule off .*byte checks [0-9]+/[0-9]+ ok; damage observer on
+waitlog 5 \[bt\] sync: bt_sync=2 as the host
+@guest waitlog 5 \[bt\] sync: bt_sync=2 as the guest
+waitlog 5 \[bt\] sync: voidout hook in
+@guest waitlog 5 \[bt\] sync: voidout hook in
+# ---- the capability hellos (after each side saw the other's SEH1 beacon: channel 6 known)
+waitlog 60 \[odra\] hello sent caps=0x01
+@guest waitlog 60 \[odra\] hello sent caps=0x01
+waitlog 30 \[odra\] partner hello caps=0x01
+@guest waitlog 30 \[odra\] partner hello caps=0x01
+waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role guest
+@guest waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role host
+# ---- the camp: the world gate up, then her PHIT hello and the host armed
+goto mule-camp-sw-lkc
+@guest goto 1521.90 992.00 0
+wait 4000
+@both action dev_god 2
+@both action dev_enemies 1
+waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+@guest waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+action enemy_probe 5 1
+@guest action enemy_probe 5 1
+waitlog 40 \[enemy\] sync on \(host\).*\(equal
+@guest waitlog 40 \[enemy\] sync on \(guest\).*\(equal
+@guest waitlog 30 \[phit\] hello sent \(guest: this game applies PHIT, mode 1\)
+waitlog 10 \[phit\] hello from the guest: her game applies PHIT
+waitlog 10 \[phit\] relay \(host\): armed \(her game takes PHIT\)
+# ---- FIELD both ways (the BT relay carries data, not only hellos)
+waitlog 40 \[bt\] FIELD received #1
+@guest waitlog 40 \[bt\] FIELD received #1
+# ---- a real scan with the shipped keys: the host's own scan, sent, shown on the guest's screen
+wait 2000
+action odra 2
+waitnew 5 \[odra\] scan triggered
+waitlog 10 \[odra\] partner scan sent seq=[0-9]+ origin=
+@guest waitlog 10 \[odra\] partner scan received seq=[0-9]+ origin=
+@guest waitlog 10 \[odra\] partner scan shown origin=.* mode=full
+wait 500
+@guest screenshot 10-guest-sees-host-scan
+wait 5000
+# ---- the status lines, one game at a time (a waitnew searches from the previous step's start)
+action odra 7
+waitnew 5 \[odra\] scan sync: key 1, start path on .*partner hello caps 0x01.*, sent [1-9][0-9]* \(refused 0, not sent 0\)
+@guest action odra 7
+@guest waitnew 5 \[odra\] scan sync: key 1, start path on .*partner hello caps 0x01.*received [1-9][0-9]* \(bad 0\), shown [1-9]
+action bt_sync 0
+waitnew 5 \[bt\] sync status \(action\): bt_sync 2 role host, partner on .* bad 0,
+@guest action bt_sync 0
+@guest waitnew 5 \[bt\] sync status \(action\): bt_sync 2 role guest, partner on .* bad 0,
+action enemy_tgt 14 7
+waitnew 3 \[phit\] relay \(host\) status: armed;
+@guest action enemy_tgt 14 7
+@guest waitnew 3 \[phit\] relay \(guest\) status: mode 1; hellos sent [1-9][0-9]*; .*faults 0, bad 0;
+# ---- the end
+nolog \[phit\] .*FAULT
+@guest nolog \[phit\] .*FAULT
+nolog \[odra\] .*FAULT
+@guest nolog \[odra\] .*FAULT
+nolog \[odra\] partner scan not sent
+@guest nolog \[odra\] partner scan not sent
+nolog \[odra\] partner message refused
+@guest nolog \[odra\] partner message refused
+nolog \[odra\] scan refused
+nolog \[bt\] .*FAULT
+@guest nolog \[bt\] .*FAULT
+nolog byte check FAILED
+@guest nolog byte check FAILED
+nolog \[phit\] relay key on \(enemy_partner_melee=1\) but
+@guest nolog \[phit\] relay key on \(enemy_partner_melee=1\) but
+nolog \[bt\] sync: no partner hello
+@guest nolog \[bt\] sync: no partner hello
+nolog \[bt\] sync off
+@guest nolog \[bt\] sync off
+nolog \[enemy\] FAULT
+@guest nolog \[enemy\] FAULT
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+action enemy_probe 5 0
+@guest action enemy_probe 5 0
+@both action dev_god 0
+@guest quit
+wait 3000
+quit

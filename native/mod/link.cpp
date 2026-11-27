@@ -207,6 +207,24 @@ SRWLOCK g_combat_lock = SRWLOCK_INIT;
 RxSave g_combat_q[kCombatQueue];
 unsigned g_combat_head = 0, g_combat_count = 0;
 volatile LONG64 g_rx_combat = 0, g_tx_combat = 0;
+// SOD1 (round 28 O3, odradek_sync.cpp): the channel 6 messages starting "SOD1", their own queue (under g_combat_lock).
+constexpr unsigned kOdraQueue = 8;
+RxSave g_odra_q[kOdraQueue];
+unsigned g_odra_head = 0, g_odra_count = 0;
+volatile LONG64 g_rx_odra = 0, g_odra_dropped = 0, g_odra_oversize = 0;
+// Received BTS1 (round 28 lane B1, bt_sync.cpp): split out of the combat queue in DrainCombatLocked (SCB1's consumers would count
+// them as bad), oldest dropped when full (counted). Under g_bt_lock (taken inside g_combat_lock).
+constexpr unsigned kBtQueue = 32;
+constexpr std::size_t kBtMax = 256;
+struct RxBt {
+    std::uint8_t bytes[kBtMax];
+    std::uint16_t size;
+    std::uint32_t generation;
+};
+SRWLOCK g_bt_lock = SRWLOCK_INIT;
+RxBt g_bt_q[kBtQueue];
+unsigned g_bt_head = 0, g_bt_count = 0;
+volatile LONG64 g_rx_bt = 0, g_rx_bt_dropped = 0;
 // The combat frames (SEH1 the beacon, SEN1 enemy states, SEP1 enemy poses, SFX1 shots; docs/enemy-sync.md): raw bytes per kind
 // (the magic and the size bound checked here, the strict decoders run on the game thread), oldest first; when full the oldest
 // goes (counted). Queues of 2 / 8 / 16 / 32 / 4 (SEH1, SEN1, SEP1, SFX1, SPV1). Under g_rx.
@@ -300,6 +318,43 @@ void DrainCombatLocked(std::uint64_t now, std::uint32_t generation) noexcept {
     while (g_combat_count < kCombatQueue) {
         RxSave& slot = g_combat_q[(g_combat_head + g_combat_count) % kCombatQueue];
         if (!g_rel_rx[lk::kCombatChannel].Drain(slot.bytes, sizeof(slot.bytes), got, now)) break;
+        // Round 28: SOD1 (O3, the Odradek scan sync) and BTS1 (B1, the BT field sync) share channel 6 with SCB1 but go to queues
+        // of their own (SCB1's consumers would count them as bad); the combat slot is not committed and is reused.
+        if (got >= 4 && std::memcmp(slot.bytes, "SOD1", 4) == 0) {
+            if (got > kOdradekMax) {  // larger than any SOD1 this build knows (a malformed or newer one): dropped, counted
+                InterlockedIncrement64(&g_odra_dropped);
+                InterlockedIncrement64(&g_odra_oversize);
+                continue;
+            }
+            if (g_odra_count == kOdraQueue) {
+                g_odra_head = (g_odra_head + 1) % kOdraQueue;
+                --g_odra_count;
+                InterlockedIncrement64(&g_odra_dropped);
+            }
+            RxSave& o = g_odra_q[(g_odra_head + g_odra_count) % kOdraQueue];
+            std::memcpy(o.bytes, slot.bytes, got);
+            o.size = static_cast<std::uint16_t>(got);
+            o.generation = generation;
+            ++g_odra_count;
+            InterlockedIncrement64(&g_rx_odra);
+            continue;
+        }
+        if (got >= 12 && got <= kBtMax && std::memcmp(slot.bytes, "BTS1", 4) == 0) {
+            AcquireSRWLockExclusive(&g_bt_lock);
+            if (g_bt_count == kBtQueue) {
+                g_bt_head = (g_bt_head + 1) % kBtQueue;
+                --g_bt_count;
+                InterlockedIncrement64(&g_rx_bt_dropped);
+            }
+            RxBt& b = g_bt_q[(g_bt_head + g_bt_count) % kBtQueue];
+            std::memcpy(b.bytes, slot.bytes, got);
+            b.size = static_cast<std::uint16_t>(got);
+            b.generation = generation;
+            ++g_bt_count;
+            ReleaseSRWLockExclusive(&g_bt_lock);
+            InterlockedIncrement64(&g_rx_bt);
+            continue;
+        }
         slot.size = static_cast<std::uint16_t>(got);
         slot.generation = generation;
         ++g_combat_count;
@@ -569,6 +624,11 @@ void OnDatagram(void*, const std::uint8_t* data, std::size_t size, const lab::En
         if (new_session) {
             AcquireSRWLockExclusive(&g_combat_lock);
             g_combat_count = 0;
+            g_odra_count = 0;  // round 28 O3: SOD1
+            AcquireSRWLockExclusive(&g_bt_lock);  // round 28 B1: BTS1
+            g_bt_count = 0;
+            g_bt_head = 0;
+            ReleaseSRWLockExclusive(&g_bt_lock);
             ReleaseSRWLockExclusive(&g_combat_lock);
         }
         DrainCombatLocked(now, g_generation + (new_session ? 1u : 0u));
@@ -1403,6 +1463,63 @@ bool PopCombat(std::uint8_t* out, std::size_t cap, std::size_t& size, std::uint3
 void CombatChannelCounts(std::uint64_t* sent, std::uint64_t* received) noexcept {
     if (sent) *sent = static_cast<std::uint64_t>(InterlockedCompareExchange64(&g_tx_combat, 0, 0));
     if (received) *received = static_cast<std::uint64_t>(InterlockedCompareExchange64(&g_rx_combat, 0, 0));
+}
+
+bool PopOdradek(std::uint8_t* out, std::size_t cap, std::size_t& size, std::uint32_t& generation) noexcept {
+    bool ok = false;
+    AcquireSRWLockExclusive(&g_combat_lock);
+    // a head larger than the caller's buffer is dropped (counted), never left to block the queue
+    while (g_odra_count && out && g_odra_q[g_odra_head].size > cap) {
+        g_odra_head = (g_odra_head + 1) % kOdraQueue;
+        --g_odra_count;
+        InterlockedIncrement64(&g_odra_dropped);
+        InterlockedIncrement64(&g_odra_oversize);
+    }
+    if (g_odra_count && out) {
+        const RxSave& s = g_odra_q[g_odra_head];
+        std::memcpy(out, s.bytes, s.size);
+        size = s.size;
+        generation = s.generation;
+        g_odra_head = (g_odra_head + 1) % kOdraQueue;
+        --g_odra_count;
+        ok = true;
+    }
+    ReleaseSRWLockExclusive(&g_combat_lock);
+    return ok;
+}
+
+void OdradekCounts(std::uint64_t* received, std::uint64_t* dropped) noexcept {
+    if (received) *received = static_cast<std::uint64_t>(InterlockedCompareExchange64(&g_rx_odra, 0, 0));
+    if (dropped) *dropped = static_cast<std::uint64_t>(InterlockedCompareExchange64(&g_odra_dropped, 0, 0));
+}
+
+std::uint64_t OdradekOversize() noexcept { return static_cast<std::uint64_t>(InterlockedCompareExchange64(&g_odra_oversize, 0, 0)); }
+
+bool PopBtMessage(std::uint8_t* out, std::size_t cap, std::size_t& size, std::uint32_t& generation) noexcept {
+    bool ok = false;
+    AcquireSRWLockExclusive(&g_bt_lock);
+    // a head larger than the caller's buffer is dropped (counted), never left to block the queue
+    while (g_bt_count && out && g_bt_q[g_bt_head].size > cap) {
+        g_bt_head = (g_bt_head + 1) % kBtQueue;
+        --g_bt_count;
+        InterlockedIncrement64(&g_rx_bt_dropped);
+    }
+    if (g_bt_count && out) {
+        const RxBt& b = g_bt_q[g_bt_head];
+        std::memcpy(out, b.bytes, b.size);
+        size = b.size;
+        generation = b.generation;
+        g_bt_head = (g_bt_head + 1) % kBtQueue;
+        --g_bt_count;
+        ok = true;
+    }
+    ReleaseSRWLockExclusive(&g_bt_lock);
+    return ok;
+}
+
+void BtMessageCounts(std::uint64_t* received, std::uint64_t* dropped) noexcept {
+    if (received) *received = static_cast<std::uint64_t>(InterlockedCompareExchange64(&g_rx_bt, 0, 0));
+    if (dropped) *dropped = static_cast<std::uint64_t>(InterlockedCompareExchange64(&g_rx_bt_dropped, 0, 0));
 }
 
 bool SendCombatFrame(const std::uint8_t* bytes, std::size_t size) noexcept {

@@ -809,7 +809,10 @@ def defaults_items(host, guest, gate):
         base = max([i for i in host.op12_end if i < i13], default=-1)
         rb = after(host.rb_gone, base)
         pk = next((p for p in host.parked if p[0] > i13 - 2 and not p[1]), None)
-        rm = after(host.removed, pk[0] if pk else None)
+        # (run 20261127-023013) TR, like TG: the game's pool can end the parked record before Step2 (next make reuses the same stim address);
+        # only that Forget reason counts (not a faulted lock / step / manager change)
+        rm = after(sorted(host.removed + [i for i in host.forgotten if "not in the live list as ours any more" in host.lines[i]]),
+                   pk[0] if pk else None)
         flt = [i for i in range(i13, len(host.lines)) if "FAULT" in host.lines[i] and "[enemy]" in host.lines[i]]
         tail = secs(host, i13, len(host.lines) - 1)
         mk = after(host.made_at, rm)

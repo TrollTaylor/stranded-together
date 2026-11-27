@@ -366,7 +366,12 @@ inline constexpr std::uint8_t kDrvAtRest = 16u;     // under 0.2 m/s for 1 s on 
 inline constexpr std::uint8_t kDrvBattery = 32u;    // `battery` carries the probed battery field (else 0)
 inline constexpr std::uint8_t kDrvPhysVel = 64u;    // v0.21: vel / avel are the chassis body's physics velocities (world;
                                                     // avel all three axes), not a finite difference of the transform
-inline constexpr std::uint8_t kDrvAllFlags = 127u;
+// Round 28 T1 (vehicle_mule_v3): the driver seat holds a non-player of the SENDER's game (a MULE driving its truck), not
+// the sender's Sam. DRIVE only (with kDrvSeated: the seat is taken). Only sent to a partner that announced STV3 (type 51,
+// vehicle_truck_rules.hpp); an older decoder (mask kDrvAllFlagsV1) rejects the frame, so nothing reaches an old build.
+inline constexpr std::uint8_t kDrvNpc = 128u;
+inline constexpr std::uint8_t kDrvAllFlagsV1 = 127u;  // the flags every build since v0.21 knows
+inline constexpr std::uint8_t kDrvAllFlags = 255u;
 struct DriveFrame {
     DriveType type = DriveType::park;
     std::uint8_t flags = 0;
@@ -389,7 +394,7 @@ struct DriveFrame {
 // +0x34..+0x36 0 / 1 and +0x37 zero (the sender clears it).
 bool InputsValid(const std::uint8_t (&in)[kDriveInputBytes]) noexcept;
 std::size_t EncodeDrive(const DriveFrame& f, std::uint8_t* out, std::size_t cap) noexcept;
-// Strict: the magic, version 1, type 1 or 2 with its exact size, known flag bits (seated on DRIVE only and always there),
+// Strict: the magic, version 1, type 1 or 2 with its exact size, known flag bits (seated and npc on DRIVE only, seated always there),
 // ride state <= 15, a valid key, finite numbers in range (|pos| <= 1e7, a unit quaternion within 10 %, |vel| <= 200 m/s,
 // |avel| <= 50 rad/s, |speed| <= 1000, 0 <= life <= max <= 1e6, battery 0..1e6 only with its flag, else 0) and valid inputs.
 bool DecodeDrive(const std::uint8_t* in, std::size_t size, DriveFrame& out) noexcept;

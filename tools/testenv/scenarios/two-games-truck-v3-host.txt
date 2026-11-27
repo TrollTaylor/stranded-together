@@ -1,0 +1,82 @@
+# Round 28 T1 gate (docs/enemy-sync.md 14.21; vehicle_mule_v3=1 on both games): the host's MULE trucks are the same truck on both
+# screens. At the MULE Camp Southwest of Lake Knot City (trucks 0x02000F and 0x020010; the probe run 20261127-002653: the calm
+# patrol's MULE 0x0202E takes the driver seat of 0x02000F about 50 s after the goto, four more MULEs ride along, about 6.4 m/s
+# from about 7 s later), on the launcher's own Local test files plus the key. Do not move either Sam into the camp, do not alert
+# it: the patrol is what boards.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-truck-v3-host -SeedSaves complete-100 -GuestSeed profile-only -Id round28-t1
+# Afterwards (the gate is PASS only when Run-Batch's PASS and this script's PASS both hold; Run-Batch does not run it):
+#   python -I tools\testenv\truck-v3.py build-testenv\runs\<run>
+#   (the guest's follower attached to the MULE-driven truck; placement error at >= 5 m/s mean <= 0.3 m and max <= 2.5 m;
+#   <= 2 driven teleports; no "in a vehicle" release and at least one "seated in V3 truck" mirror on the guest; no "owner guest
+#   (MULE" line; the final positions within 0.5 m: the parked census when the MULE stopped driving, else the follower's last 5 s)
+# Steps: both STV3 hellos and V3 live on both; census tag 1 (calm); the host's MULE takes a truck: DRIVE frames with kDrvNpc; the
+#   guest follows it (attached); 40 s of driving with a screenshot pair every 20 s; census tag 2; the V3 status line (truck_v3 3)
+#   and vehicle_drive 0 on both. The key-off regression is two-games-truck-hold (unchanged, key default 0).
+# covers: vehicle-mule
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini vehicle_mule_v3=1
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[config\] vehicle_mule_v3=1
+@guest waitlog 5 \[config\] vehicle_mule_v3=1
+waitlog 5 \[truckv3\] v3: vehicle_mule_v3=1
+@guest waitlog 5 \[truckv3\] v3: vehicle_mule_v3=1
+goto mule-camp-sw-lkc
+@guest goto 1521.90 992.00 0
+waitlog 30 \[truckv3\] v3: the partner's STV3 hello: version 1, features 0x1, role guest
+@guest waitlog 30 \[truckv3\] v3: the partner's STV3 hello: version 1, features 0x1, role host
+waitlog 30 \[truckv3\] v3 host: LIVE
+@guest waitlog 30 \[truckv3\] v3 guest: LIVE
+@both action vehicle_share 9 1 400
+waitlog 10 \[vshare\] trucks tag=1 done
+@guest waitlog 10 \[vshare\] trucks tag=1 done
+screenshot 01-host-calm
+@guest screenshot 01-guest-calm
+# ---- the patrol boards: the host sends its truck as DRIVE frames, the guest follows it
+waitlog 150 \[truckv3\] v3 host: truck 0x0200(0F|10) MULE 0x[0-9A-F]+ drives it: DRIVE frames to the guest \(#1;
+@guest waitlog 15 \[truckv3\] v3 guest: truck 0x0200(0F|10): the host's MULE drives it: followed here
+@guest waitlog 15 \[vdrive\] follower of truck 0x0200(0F|10) attached #1:
+screenshot 02-host-boarded
+@guest screenshot 02-guest-boarded
+wait 20000
+screenshot 03-host-20s
+@guest screenshot 03-guest-20s
+wait 20000
+screenshot 04-host-40s
+@guest screenshot 04-guest-40s
+@guest waitlog 5 \[truckv3\] v3 guest: follower of truck 0x0200(0F|10) \(the host's MULE drives it\): placement error mean
+# ---- the census (tag 2) and the counters
+@both action vehicle_share 9 2 400
+waitlog 10 \[vshare\] trucks tag=2 done
+@guest waitlog 10 \[vshare\] trucks tag=2 done
+action truck_v3 3
+waitnew 5 \[truckv3\] v3 status: key 1, LIVE .*host: [0-9]+ MULE-driven now, [1-9][0-9]* starts
+@guest action truck_v3 3
+@guest waitnew 5 \[truckv3\] v3 status: key 1, LIVE .*guest: [0-9]+ followed \([0-9]+ attached\), [1-9][0-9]* DRIVE\+npc frames in, 0 refused
+@both action vehicle_drive 0
+screenshot 05-host-end
+@guest screenshot 05-guest-end
+# ---- off
+nolog \[vshare\] FAULT
+@guest nolog \[vshare\] FAULT
+nolog \[vdrive\] FAULT
+@guest nolog \[vdrive\] FAULT
+nolog \[enemy\] FAULT
+@guest nolog \[enemy\] FAULT
+nolog byte check FAILED
+@guest nolog byte check FAILED
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@guest nolog \[enemy\] mirror id=[0-9A-F]+ in a vehicle \(
+nolog owner guest \(MULE
+@guest nolog owner guest \(MULE
+@guest nolog \[truckv3\] v3 guest: follower of truck 0x[0-9A-F]+ refused
+@guest nolog \[truckv3\] v3 guest: a MULE-driven truck's frame for
+nolog \[truckv3\] v3 host: a MULE-driven truck's frame for
+@guest quit
+wait 3000
+quit

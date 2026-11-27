@@ -2620,6 +2620,93 @@ id=..`: what it did, or `skipped (<why>)` / `not forced (..)` / `kept`), and the
   show the defaults in both games, one single take of 0202B in front of her with every lever's line, then 0202F behind her,
   where R1's RULE-W turns the request into a whole-camp take).
 
+### 14.20 Round 28 P2: the truck controller probe (`truck_v3`; `vehicle_truck_probe`, default 0)
+
+`native/mod/truck_v3.cpp` (pure part `truck_v3_rules.hpp`, tests `tests/truck_v3_rules_tests.cpp`; scenario `trucks-v3-solo`;
+the action in [debug-actions.md](debug-actions.md) "Truck v3"). Read only, every read through partner::mem; no wire message.
+Questions: Q2, is a MULE-driven vehicle's input object [vehicle+0x528] the driver MULE's own NPC drive controller input
+(ctl+0x30), and does the truck carry an AI drive component (ctl+0x100)? Q7, the MULE seat offsets in the truck's frame, and
+is Humanoid +0x5A0 the capsule ref on a MULE? And which callers reach the get-off 0x142AFB010, on which thread?
+
+Static facts (verified against ds.exe):
+* The MULE actor (DSMuleGameActor, vt 0x143DB7078) holds its ride at actor+0x3C0; the NPC drive controller is ride+0x10 =
+  actor+0x3D0 (the MULE ctor's `lea rcx,[rbx+0x3D0]` at 0x142A981C4, the call at 0x142A98247 to the ctl ctor 0x142F51C60).
+  The ctl ctor stores the input vtable 0x143E229B8 at ctl+0x30 (lea 0x142F51C7D, store 0x142F51CEE).
+* Attach 0x142F5A590(ctl, vehicle, u32* id): ctl+0 = vehicle+0x20 (the handle); SetController(vehicle, ctl+0x30) at
+  0x142F5A65A, so [vehicle+0x528] = ctl+0x30 = actor+0x400 is expected; ctl+0x100 = the AI drive component (0x142F5A68B);
+  ctl+0x18 = 2, ctl+0x20 = the driver id (0x142F5A785). The driver seat path (0x142B19479) attaches with ride+0x10 and
+  [ride+0xA68]-0x20, then ride+0xA84 |= 1 (0x142B194FD).
+* Get-off 0x142AFB010(ride, rdx): seat 0 and riding: SetEngine 0 in state 3, Detach above state 1; a passenger posts through
+  0x1422FB870; both then clear +0xA80 and the riding bit. Its six callers (all E8): 0x142AF563B, 0x142AF7E37, 0x142B00A71,
+  0x142B3AA73, 0x142B3AB63 (abort / get-out), 0x142B4506E.
+
+The probe: 43 byte checks in six groups (0x01 pools, 0x02 vehicle, 0x04 actors required; 0x08 ride, 0x10 controller, 0x20
+get-off optional, the last gating a pass-through counting detour on the get-off, put in at start-up). Ops `truck_v3 9` (the
+identity per MULE-driven vehicle), `8` (the seats in the truck's frame and the capsule), `1 [s]` (the watch), `0` (off, status).
+
+Results (run 20261127-002653-trucks-v3-solo, passed; MULE Camp Southwest of Lake Knot City, the camp left calm):
+* `[truckv3] byte checks 43/43 ok (groups ok 0x3F), get-off detour on`.
+* Boarding is the calm patrol's: Sam settled at the camp at 28 s; the first MULE boarded truck 0x2000F at 76.5 s (about 48 s
+  later), the driver MULE 0x0202E at 78.5 s, then three more passengers (seats 2, 0, 1, 4, 3). Truck 0x20010 stayed empty.
+* Q2: SAME. `id truck 0x2000F driver MULE 0x0202E: input .. vt npc-ctl, ctl+0x30 .. -> SAME`: [vehicle+0x528] is the driver
+  MULE's ctl+0x30 (the input vtable 0x143E229B8), the AI drive component (ctl+0x100) is non-null, the ride's seat 0 / handle /
+  riding bit agree ("all agree"); run tally checked 6, same 6, differs 0, no-drive-comp 0. The ctl state is 2 when the driver
+  is seated and 3 once it drives (ride state 0 -> 2 at 84.7 s, about 23 km/h). The live input floats fail the DRIVE wire's
+  range check (`the wire check REJECTS`, pad 0x1E), so T1 does not send the MULE's input as it is (14.21).
+* Q7, seats (local, the truck's frame): seat 0 (the driver) (-0.437, 0.810, 0.157); seats 1 / 2 (+-1.299, 0.127, 0.778); seats
+  3 / 4 (+-1.299, -0.692, 0.778); a MULE still boarding shows "parent none" with its own yaw. Humanoid +0x5A0 is not the capsule
+  on a MULE (back-ref OTHER or unreadable on every rider).
+* Get-off: no call in the run (`get-off calls 0`): the riders were still aboard at the end, so the callers stay the static six.
+
+### 14.21 Round 28 T1: host-owned MULE trucks (`vehicle_mule_v3`, default 0)
+
+`native/mod/vehicle_drive.cpp` (the V3 part; API `st::truckv3` in `truck_v3.hpp`), `vehicle_truck_rules.hpp` (the STV3 hello,
+`V3Gate`, `NpcDrive`, `NpcSendDue`), `vehicle_wire.*` (`kDrvNpc`), `enemy_rules.hpp` / `enemy_sync.cpp` (the seated mirrors).
+Scenario `two-games-truck-v3-host` with the gate `python -I tools\testenv\truck-v3.py <run>`; `truck_v3 3` is the status line
+([debug-actions.md](debug-actions.md) "Truck v3"). Not run in a game yet.
+
+Goal: the host's MULE trucks are the same truck on both screens. The host sends the pose, velocity and wheels of a truck one of
+its MULEs drives, reusing the player-vehicle DRIVE frames; the guest's copy becomes vehicle_drive's follower, so her own MULE
+driver cannot board it. A "seated" verdict replaces the guest's "in a vehicle on the host" release; the occupants stay frozen and
+hidden (T2 seats them).
+
+Capability (the STV3 hello):
+* SVM1 external type 51, 8 bytes: `"STV3" | u8 version 1 | u8 features (bit 0 host trucks) | u8 role 1/2 | u8 0`, sent every
+  2 s by both games while the key is on, the world is ready, remote driving is on and the link is up. An old build drops it.
+* `trucks::V3Gate` is live only with the key on, remote driving on with a valid role, and the partner's hello in this link
+  session (no older than 7 s) with feature bit 0 and the other role. With the key off the handler is never registered.
+* `kDrvNpc` (flag 128) is valid on DRIVE frames only; older builds mask flags with 127 and reject it, and the host never sends it
+  unless V3 is live (the partner's hello).
+
+Host (V3Tick, TakeSend):
+* Each truck (kind 2) is tested with `trucks::NpcDrive` every tick while V3 is live: +0x63C is 1 and +0x8B0 a MULE id;
+  [+0x528] non-null with the game's input vtable (not our follower's); not our follower, our Sam not on it; ours; the partner
+  body within 300 m. Such a truck is `npc_on`: `FillFrame(drive) | kDrvNpc`, at most 4 a tick (every tick within 100 m, else
+  10 Hz).
+* A truck whose MULE stopped driving gets PARK frames again at once. For a truck MULE-driven in this world the round-23 D MuleHeld
+  PARK skip is lifted while no MULE sits in its driver seat. A guest claim on an `npc_on` truck is denied.
+
+Guest (OnFrame, FollowTick, V3Tick):
+* A kDrvNpc frame is refused unless this game is the guest and V3 is live (counted, a line at most every 5 s).
+* `npc_follow` follows the newest DRIVE frame's flag; FollowTick attaches the follower as for the host's Sam. The partner's-Sam
+  queries (SeatTarget, PartnerVehicleEntity, PartnerDriving, PartnerDrivenEntity) skip these trucks.
+* Meters: the placement error at owner speed >= 5 m/s, a 5 s line and a summary at detach; "refused: her copy's driver seat holds
+  0x.." when her own driver blocks the attach. ParkedTick lifts the MuleHeld skip on a V3 truck.
+
+Guest enemy sync (`erules::SeatedV3`, `LeaseVerdict::seated`):
+* A frozen mirror whose host copy is in a vehicle while V3 is live is "seated" when `truckv3::V3SeatNear(newest host pos, 5 m)`
+  finds a bound truck of hers, or the host copy has been in a vehicle for under 3 s (it boarded before the follower attached).
+  Not when our own copy is in a vehicle here; a copy the host has unloaded is given back as "host unrealized".
+* The check comes after silence / off / taken / hold and before release_vehicle. A seated mirror is hidden and asleep (M0's
+  pattern, only the a88 bits we set), its pose slot freed, nothing written. It is shown again when the verdict changes, on a
+  release, forget_taken, reset, a fault or off; a world change forgets the table without touching the actors.
+* Entry: `Eligible` accepts a host-in-vehicle copy with `v3_seat`; it is taken hidden and never placed.
+
+Open risks: seated mirrors stay (asleep) at the boarding spot; her own unmirrored MULEs could board her copy before the follower
+attaches (refused line, "owner guest (MULE"); silence gives a seated mirror back alive; stream-out past 300 m ends the follow;
+a follower lag over 5 m for 3 s releases the mirror "in a vehicle"; MULE input semantics at speed are unproven. Key-off
+regression: `two-games-truck-hold` (unchanged paths with the key at 0).
+
 ## 15. Round 27: rebuild - M1 probe (`enemy_l1`, hidden runs only)
 
 **Why.** Round 27 rebuilds enemy sync from the ground up. Its plan rests on one question: can the host's own MULEs be made to
@@ -2721,7 +2808,7 @@ The default flip ships only once the probe run (16.6) and the defaults run (16.9
 | `enemy_partner_vis` | 1 | its +0xA4 from the partner's SPV1 (0: always 1.0) |
 | `enemy_partner_stim_radius` | 300 | only while a realized human enemy is within this many m of the partner body |
 | `enemy_target_pick` | 71 with `enemy_hits` (M4: 1 + 2 + 4 + 64; else 0) | bits (0..127): 1 the sensor-result reorder (16.3), 2 MULE-only perceivers (H5), 4 the classifier flag fix (H2), 8 her hits force a visual (H3), 16 the line-of-sight keep (M3f, 16.3; needs 1), 32 her record from ours (M3f, 16.3; needs 1 and 16), 64 take first (M4, 16.7; needs `enemy_owner` and the classifier hook) |
-| `enemy_target_redirect` | 35 with `enemy_hits` (M4: 1 + 2 + 32; else 0) | bits: 1 CanShoot's point, 2 turn / range check, 4 approach, 16 the vehicle chase, 32 the shoot actor (16.4); 8 (the PlayerInfo shadow) is deferred |
+| `enemy_target_redirect` | 35 with `enemy_hits` (M4: 1 + 2 + 32; else 0) | bits: 1 CanShoot's point, 2 turn / range check, 4 approach, 16 the vehicle chase, 32 the shoot actor (16.4); 8 (the PlayerInfo shadow) is deferred; 64 (the melee face, section 20) is ignored here and set only by `enemy_melee_face=1` |
 | `enemy_target_fresh_ms` | 1500 | how long a sighting counts (500..3000) |
 
 **The derive rule (M4; `cfgval::TargetDefaults`, after `EnemyDefaults`).** A key the ini does not set (`enemy_partner_stim_set`,
@@ -3452,3 +3539,292 @@ real_body line, then `pstim removed`, no AV; both games run to the end. (2b) `tw
 takes, backs and outcomes), which now runs under the new defaults (her stimulus on, take first): the defaults scenario does not
 cover `enemy-own` (its one take is no proof of the camp gate). (3) Only then the default flip ships (pick 71, or 7 if TO fails),
 then the docs and the release.
+
+## 17. Round 28 P1: the enemy attack probe
+
+`native/mod/enemy_phit.cpp` (key `enemy_phit_probe`, default 0; `enemy_tgt 14`; scenario `two-games-enemy-attacks-probe`).
+Logs only. Question: how does a MULE's melee (kick 0x16F, push 0x170 / 0x15E, rod 0x16D / 0x16E, tackle 0x171) or a paired
+grab reach a body, and would it reach her partner body on the host (her capsule is on layer 10; MULE melee filters layer 0x1D)?
+- Detours (lazy: at `enemy_tgt 14 3` / `14 1` in a hidden run, after vhit's start-up check of the same sphere prologue;
+  outside hidden runs `14 3` is the status only, no hook goes in mid-game): the sphere query
+  0x1429934E0 (every wrapper: 0x1429933B0, 0x142993440, 0x142993C70, 0x14294B000; the caller through the wrapper's frame),
+  the capsule query 0x14298A3F0 (DSWeaponEntity shape-1 strikes, which bypass the sphere), MeleeAttackEventInstance Start
+  0x1424BAA70 (engaged = 0; actors at +0x60 / +0x68, entity = [actor+0x60] - 0x20).
+- Per call: site, attacker id (P+0x20), attack id (P+0x0C), radius, amount (and the resource default), layer, thread, result,
+  and the geometric gap to a standing body (r 0.35 m, h 1.8 m) at the live partner body's root and at our Sam's.
+- The mod's own calls (partner_tackle, enemy_combat) are flagged by their return address in the mod's image.
+- Summary per attacker / site, the attack ids, grabs (at pbody / Sam / other) and our Sam's jumps (> 3 m in a tick).
+What E2 takes from it: the site set (one sphere detour, or the capsule too), the thread, layer / radius, and whether grabs bind
+the host's Sam (then E2 blocks the grab at 0x1424BAA70 or relays it).
+
+Results (run 20261127-002430, the host; section 20 builds on them):
+* MultiRodThrust 0x16E and MultiRodSwing 0x16D go through the capsule query 0x14298A3F0 from the sites 0x142917C22 /
+  0x142917F81, on worker threads, layer 0x1D, r 0.5. 12 of 12 overlapped her partner body (gap < 0); none reached the guest.
+* MuleKick 0x16F goes through the sphere 0x1429934E0 from the site 0x142B53F99 (its queries span 266-281 ms).
+* ElectricZone 0x17B is a sphere on the main thread (never relayed). No grab engaged.
+* Her capsule (layer 10) never matches layer 0x1D, so "reached her" can only be the probe's geometric gap test.
+* Amount -1 resolves to 0.0: the receiver derives the damage from the attack's parameters.
+* Earlier (run 20261126-235739): a MULE whose target pick was her turned about 110 deg to face the host's Sam 155 m away and kicked
+  at him. The melee facing / turn goal follows the local player, as the rifle aim did before the v0.39 aim redirect.
+
+## 18. Round 28 P3: the BT field census (`bt_probe`; read only)
+
+`native/mod/bt_sync.cpp` (pure part `bt_rules.hpp`, tests `tests/bt_rules_tests.cpp`). It reads only, through
+partner::mem::Read: no game call, no hook, no write, nothing on the link. Every address is byte-checked on first use
+("[bt] byte checks: N/N ok; ..."). A failed group is off with "[bt] byte check FAILED: ...", and without the gazer list the probe refuses.
+
+What it reads:
+* The gazer manager `[0x147BEBEC0]`: the live gazers' actor ids (+0x78 count, +0x80 ids). Each id is resolved through the actor registry's groups (read directly).
+* Each gazer: its state, position and +0x1B4 flags (0x50 react, 0x400000 no kill list, 0x2000000 caught, 0x4000000 respawn).
+* Each gazer's locator. Gazer id = crc32c(locator +0x88 GUID). Field id = crc32c(scene +0x98 GUID), the scene being locator +0x80.
+* The field map +0x1750 (killed +0, killed ids +8, timers +0x10, total +0x20; killed == total means cleared, message 0x324D8FD4).
+* The concentration meter (+0x230) and the "not perceivable" byte (+0x23B).
+* The hunter manager `[0x147BECBD0]` +0x140: an active hunter area, meaning this game's player was noticed.
+* The catcher manager `[0x147BEE060]`: records of 0x110 (+0xF0 inactive, +0xF4 health).
+
+The ids are crc32c hashes of static archive GUIDs, so both games print the same numbers for the same field.
+`bt_rules.hpp` has the archive's 25 area-200 fields (locator count and print), and every live field is matched against it.
+
+* `session.ini bt_probe=0|1|2` (default 0): 1 = the census once a second from the first world; 2 = also one dump when gazers appear.
+* `action bt_probe <op> [seconds]` (hidden runs, or bt_probe != 0):
+  * 0 stop: "[bt] probe stop (...): censuses, max gazers, noticed, conc max, perceived yes/no".
+  * 1 the census: "[bt] #n gazers N (...) fields F locfp= fieldfp= killfp= nearest me ... hunter ... catchers ...", plus "[bt] #n live fields: ..." and change lines, at most 16 a second.
+  * 2 one dump: "[bt] dump gazer / field / hunter / catcher / registry ...", ending with "[bt] dump done".
+* Scenario `two-games-bt-census`: both games at the bt211_01 field (place `bt-field-mknot-s`, the guest at (-1046, 36)), timefall
+  on the host only (`dev_weather 1`, run 2); a dump on both, then the host's `dev_enemies 3` (ResetAllGazers, its first run in a
+  BT area) and a second dump on both (plan Q4: the +0x1750 field records before / after the reset); then the host at
+  (-978, 58), 9.3 m from gazer 40AB1A93, while the guest stays 66 m from it; the host leaves the field and comes back after the
+  reset (`goto mknot`, then `bt-field-mknot-s`), then 20 s 3 m from the gazer (-983.6, 58.1). The hunter area / concentration /
+  gazer flag change lines are read from the logs afterwards (not run steps: a failed optional step still fails the run). The
+  bt209 leg north of the city is left out until a point there is validated.
+
+Results (runs 20261127-000239 and -002916):
+* Both games load the same 35 bt211_01 gazers from the same locators: locfp DBE6C47C on both (the archive's print), fieldfp and
+  killfp equal until the host's reset; per locator, equal positions and flags. The actor ids differ (locator 40AB1A93 is 1000F
+  on the host, 10010 on the guest), so any sync keys by the field id and the locator hash, never by actor id.
+* Each game streams the gazers around its own player (the host back in the city: 0; the guest still at the field: 35).
+* A gazer senses only the local player: the host 9.3 m from 40AB1A93 set its near bit 0x1000 (flags 00090200 -> 00011200); the
+  guest's copy, with the host's puppet 9.3 m from it, stayed 00090200.
+* The hunter manager stayed `none` in every census (12 s at 9.3 m, still, god mode): the planned NOTICED-by-hunter signal never
+  fired, so B1's NOTICED is the near bit's rise.
+* `dev_enemies 3` (ResetAllGazers) changed the host's fieldfp only (EE2FFFB0 -> 7A29972D): every record's total became
+  0x7FFFFFFF, the live gazers did not change; the guest's stayed EE2FFFB0.
+
+## 19. Round 28 P4: the Odradek probe (`odra`, `odra_replay`; `odradek_probe`, default 0)
+
+`native/mod/odradek_sync.cpp` (pure part `odra_rules.hpp`, tests `tests/odra_rules_tests.cpp`; debug actions in
+[debug-actions.md](debug-actions.md) "Odradek probe"; scenario `odradek-probe`, solo). Local only: no wire messages.
+
+* One byte-checked detour on the scan state machine FUN_14282B530(inventory, dt), called from the local player's
+  MsgEntityUpdate (0x1427D3A76), installed at start-up with the other detours. It acts only for the local player's inventory.
+* The state machine (inv +0x4850): 0 idle, 1 arm (waits for the arm entity's +0x348 == 0x14, 2 s timeout), 2 body, 3 charge
+  (+0x4934 counts down), 4 expanding (the wave grows; wave +0x2BD set moves on to 5), 5 marks shown (while a +0x48D8 mark entry
+  is live), then 0. The pulse (the survey component's FUN_1433123C0 call, the DSPlayerSystem origin) is the 3 -> 4 step.
+* Sampled into a lock-free ring (drained on the game thread into `[odra] ...` lines): the state, the wave (+0x4EF8 / +0x4F00,
+  its +0x2BD / +0x2C0 / +0x2C1), the survey component DSOdradekSurveyEffectComponent (+0x244 active, +0x245 finished, +0x246,
+  +0xC0 origin, +0x228) and the DecalManager centre (+0xE0).
+* The local scan (`odra 2`): the native trigger's writes (0x142805F80: +0x4C79 |= 0x20, +0x4934 = 0.4f, +0x493C = 4.0f) just
+  before the machine runs, only in state 0 / 5 with the Odradek present, a wave, and the body ready (`ScanRequest`).
+* The replay (`odra 3`, `odra_replay`): after the machine ran, comp +0x246 = 1, comp +0xF0 = the scan direction,
+  FUN_1433123C0(comp, origin), inside the entity update (the survey call is only safe there). Guards (`AcceptScan`): local
+  state 0, survey idle, wave non-null, within 300 m, at most one per 1.5 s. Mode 1 first moves the finished wave there
+  (FUN_141E0B020, only while wave +0x2BD != 0). Each replay logs `replay done seq n ... mode m` and, when its survey ends,
+  `replay survey ended seq n mode m`.
+* P4 (the probe and its replay) never calls the AI stimulus FUN_14298B170 (enemies would see the flash) or MULE manager +0x1B8,
+  and never writes DSPlayerSystem +0x205D8. O3's system step (mask 32) does write +0x205D8 / +0x205F4 / +0x205F8 from the same
+  detour (19.1).
+* A request the machine did not take within 3 s expires (`[odra] scan|replay request expired`). After the mod's emergency
+  stop the detour passes straight through, pending requests are dropped and new ones refused.
+
+### 19.1 Round 28 O3: the partner's Odradek scan on both screens (`odradek_scan_sync`, default 1)
+
+`native/mod/odradek_sync.cpp` / `odra_rules.hpp` (tests `tests/odra_rules_tests.cpp`); scenarios `odradek-probe` (one game, the
+O3 section) and `two-games-odradek-scan`. Proven in run 20261127-025035 (`two-games-odradek-scan` PASS: each game's scan
+shown on the other's screen, `[odra] partner scan shown ... mode=full` and `mode=visual`); on by default since then (the launcher
+writes no key). Both games must run it: nothing is sent or shown before the partner's SOD1 HELLO with cap 0x01, so an older or
+key-off partner gets nothing.
+
+Why the P4 replay drew nothing: the visible scan does not come from the pulse states or the survey component. The scan machine's
+per-frame tail at 0x14282C542 runs on every call in any state and, while the selected wave is non-null and wave +0x2BD == 0,
+draws the scan (the shader globals, the sensors [0x147BFDFF0] / [0x147BFD940], the decal ring, DSPlayerSystem +0x205F0, the front
+[0x147BF09D8] +0x1F8). The replay re-ran states 3 / 4 with +0x2BD already 1. O3 restarts the wave itself with the partner's
+transform, inside the detour on the worker thread. No DSOdradek*Entity is created and the arm / body bits are not touched: Sam
+plays no animation or arm sound.
+
+Start steps (`odra 6 <mask>`): 1 wave (xform, 28C, 250, 2C0, the reset FUN_1432FC7A0, 2C1), 2 EmitDir, 4 slot (shader slot
+parity), 8 sensor (three sensor calls and the block writes), 16 front (the 15-dword copy), 32 system (DSPlayerSystem origin,
+angle, yaw), 64 survey (246, F0, the survey call). State 0 (idle): 0x7F ("full"); state 5 (the local marks shown): 0x5F
+("visual", the system step skipped). Other states wait (busy_local_scan, wave_running, busy_survey, no_wave, bad_state). All
+calls and writes run inside one `__try`; a fault turns the start path off ("[odra] partner scan FAULT").
+
+Wire: SOD1 on channel 6 (reliable, `link::SendCombat`; link.cpp routes "SOD1" to its own queue, `link::PopOdradek`):
+* HELLO, 8 B: "SOD1", version 1, type 1, caps, 0. Caps bit `odrarules::kCapOdradekScan` = 0x01 (unknown bits masked).
+* SCAN, 46 B: "SOD1", version 1, type 2, seq u16 @6, flags @8 (bit 1 test), 0 @9, origin 3 doubles @10, dir 2 floats @34,
+  the sender's world fingerprint u32 @42 (`esync::Gate().guids`, 0 when it has none). Strict decode (exact size, version,
+  reserved 0, known flags, finite origin within 1e7 and not all zero, dir length^2 0.81..1.21).
+* link.cpp drops (counts) a SOD1 message over `link::kOdradekMax` (64 B) on receipt, and `PopOdradek` drops a head larger than
+  its buffer instead of leaving it to block the queue (the status line's `link drops N (oversize N)`).
+* The message's link generation is the authority: one of a newer session than the module's starts that session first (its
+  once-only HELLO is kept), only older ones are dropped.
+* The HELLO needs the key on, the link up and channel 6 proved by the partner's SEH1 beacon (`shots::PeerBeacon`); a SCAN also
+  needs the partner's HELLO with cap 0x01. Caps 0 is announced when the key goes off; a new link generation resets the state.
+  The beacon goes also with `shots_sync=0` and no enemy sync (shot_sync.cpp `g_beacon_want`: the beacon alone, parts 0, in a
+  two-game session with odradek_scan_sync or bt_sync on), so unticking "Show my partner's gunfire" does not turn the scan sync off (scenario
+  `two-games-round28-gunfire-off`).
+* Two-game sessions only: with role solo / echo the key is turned off (`[odra] scan sync off: needs a two-game session`; no
+  detour unless odradek_probe=1).
+* `odra 2` (this game's own scan) is also allowed with odradek_scan_sync alone in a hidden run, so `two-games-round28-defaults`
+  drives a real scan with the shipped keys (odradek_probe=0, the watch off). "partner scan not sent" is logged for the first 5
+  and on each new reason, then only counted (the status line's `not sent`).
+
+Sender: the detour sees its own 3 -> 4 edge, reads the origin and direction and pushes them to an outbox of 8; Tick sends SCAN.
+Receiver (Tick, up to 16 a tick): decode, `AdmitRemote` (queue, off, no_hello, other_world (both fingerprints known and
+different), no_player, too_far > 500 m, duplicate, stale seq; a test scan skips the hello and seq checks), then a one-slot
+handoff to the detour (`RemoteStart`). Only the latest scan is kept: a newer one supersedes the pending one ("dropped:
+superseded"); a pending one expires after 10 s ("dropped: stale"). Until the detour takes it, a waiting partner scan is checked
+again every tick (`KeepPending`): a load (the stop gates), a new world fingerprint here, no local player or the player now over
+500 m from it drops it ("dropped: a load" / "another world here" / "too_far (the local player moved)"; the status line's
+`rechecked drops`), and so does a change of the local inventory (a load). A scan never starts at an old origin after a load or
+fast travel.
+
+Ops: `odra 5 <m> [mask]` a local test partner scan m ahead (probe), `6 <mask>`, `7` the status line ("scan sync: key .., start
+path .. (mask 0x..), ..."), `8 <m>` a test scan sent to the partner. Lines: `hello sent caps=0x01`, `partner hello caps=0x01`,
+`partner scan sent|received|queued: <why>|shown ... mode=<full|visual> steps=0x..|dropped: <why>`.
+
+Open risks: the wave's own Start / Edge sounds play at the partner's origin; the system step overwrites DSPlayerSystem
+205D8 / 205F4 / 205F8 (local in-wave tests may fire around the partner's origin; skipped in state 5); the sensors' roles are
+inferred; the slot step's parity (the mask tests 1 / 126 isolate it); SOD1 waits behind a full SCB1 queue (delayed, not lost);
+the survey step may reveal local items around the partner's origin.
+
+## 20. Round 28 E2: the PHIT relay (MULE melee hurts her) and redirect bit 64
+
+`native/mod/enemy_phit.cpp` (the relay beside P1's probe; pure part `enemy_phit_rules.hpp`, tests
+`tests/enemy_phit_rules_tests.cpp`), `enemy_wire.*` (SCB1 type 12), `enemy_combat.cpp` (`ecombat::PhitApply`), `enemy_target.cpp`
+(bit 64). Scenario `two-games-enemy-attacks`. Mode 1 proven in run 20261127-033043: MULE 02029's stun baton (0x16D
+MultiRodSwing) relayed, `[phit] PHIT applied ... health 1000.0 -> 988.1 (hurt)` on the guest; `enemy_partner_melee=1` is the
+default since then. Mode 2 applies but does not hurt (below). Both games must run it (the guest's hello), so an older or key-off
+partner gets nothing.
+
+Keys (`cfgval::SetPartnerMeleeKey`; the launcher writes neither):
+* `enemy_partner_melee` (default 1): 0 off; 1 the MULE's mirror as the attacker with the game's own amount (-1), the mode that
+  works; 2 no attacker, the attack entry's +0x28 amount (f32 in 1..1000, else i32, else 10; capped at 100). Mode 2 is unproven
+  and does not hurt in our test: run 20261127-033043's local apply test (`enemy_tgt 14 8 2`, then `14 6 0x16F`) logged `PHIT
+  applied #0 ... MuleKick: health 988.1 -> 988.1 (no drop), damage messages 1 (amount 10.0)`. Use 1. `two-games-enemy-attacks`
+  accepts hurt or no drop for its mode-2 leg and still requires the mode-2 struck line.
+* `enemy_melee_face` (default 0): redirect bit 64 (unproven, below).
+
+Capability: the guest sends a hello (SCB1 type 12, kind 3, flags `kPhitCapApply`) once per link session and world, again when
+what it says changes, and then only every 30 s; it says "applies PHIT" only while her key is on, the world gate is up and her
+combat drain and apply group run (`ecombat::PhitApplyReady`: DrainsCombat and the apply byte checks), and sends flags 0 once
+when that stops. The host is armed only when its key is on, it is not stopped, the link is up, the sphere or capsule detour is
+in, the guest's last hello of the current link session said "applies", and the partner body is live. An older host counts each
+hello as one bad SCB1 message (one per session, then one per 30 s) and does nothing else. SCB1 is drained by ecombat (enemy
+hits, default on).
+
+Host: with the key on the sphere 0x1429934E0 and capsule 0x14298A3F0 detours go in at start-up on the host only (after vhit's
+byte checks of the same sphere prologue); unarmed they pass straight through. The guest gets none from the key, and the grab
+detour 0x1424BAA70 goes in only with the probe's ops (`enemy_tgt 14 1 / 3`). A query is a candidate when the attacker id
+(P+0x20) is a MULE (0x2xxx), the attack (P+0x0C) is 0x16D..0x171, the return address is outside the mod, and the shape's gap to
+her standing capsule (0.35 m x 1.8 m, from the bodies record) is <= 0. Candidates go to a lock-free ring (worker threads). The
+tick drops stale ones (> 1 s), a repeat of the same MULE and attack (a sliding 300 ms window on the query's own time: one long
+kick is one PHIT), a MULE she owns or a frozen mirror, then the rate cap (3 per MULE, 8 in all per second), and sends the PHIT. Her push 0x15E and ElectricZone 0x17B are never relayed; grabs
+at her body are logged only (`[phit] grab engaged at her body`).
+
+Wire (SCB1 type 12, 40 B, strict `PhitOk`): 0 id | 4 seq | 8 u16 attack | 10 kind (1 sphere, 2 capsule, 3 hello) | 11 flags |
+12 i16 contact point cm x3 (relative to her feet, within 8 m) | 18 i16 dir q15 x2 | 22 u16 depth mm | 24 i32 her feet mm x3 |
+36 sender ms.
+
+Guest: first her own freshness test: a strike more than 1 s behind the best (her ms - the host's sender ms) seen is a backlog
+(channel 6 is reliable, so a stall's strikes arrive at once) and is refused (`PHIT stale`, `stale_rx`). Then `PhitDecide`, in
+order: off, no_peer, not_valid, no_sam, not_on_foot (Q(sam+0x70) != 0), down, cutscene, dodged (her live feet over 4 m from the
+feet the host sent, plus the dodge test's offset), no_owner (mode 1 needs the mirror). Then her own dedupe (MULE + attack,
+300 ms, `deduped_rx`) and rate cap (3 per MULE, 8 in all per second, `capped_rx`): what lands in one tick is capped here too. Then
+`ecombat::PhitApply`: CtxCreate(owner, attack), P+0x0C and P+0x18 stamped, `vhit::QueryHit` at her chest (r 0.5) with a callback
+that keeps only our Sam. Her health is watched for up to 1 s: `PHIT applied #n ... health a -> b (hurt|no drop)`. After 3 faults
+the relay stops. Mode 1 needs the exemption in enemy_sync's `MirrorAttackerFilter`: `ephit::IsOwnApply(ctx)` keeps this game's
+own apply (otherwise the mirror filter drops it). The shield and any earlier samdmg filter can still drop an apply.
+
+Bit 64 (`enemy_melee_face`): a detour on the MeleeAttack state Enter 0x142B44B20 (prologue byte-checked, state vtable
+0x143DBA370 checked per call). While the relay is armed, the slot's pick is her, both records are fresh and `MeleeFaceWants`
+(within 6 m horizontally, 3 m vertically), it writes her feet into the target place (state+0x20) before the original runs.
+Line: `[enemy] tgt melee face 64: in|not in; enters N, at her N, not her N, far N, other vt N, raw calls N` (raw calls: every call of the hooked Enter, before any filter). Unverified: the kick's facing may
+come from elsewhere (P1 run 20261126-235739: a MULE whose pick was her kicked at the host's Sam 155 m away).
+Status (round 28 rerun): site in, never exercised. MULE 02029 used only the stun baton (0x16D/0x16E), and the baton and
+MuleTackle (0x171) go through attack select 0x142B48F20 and the DSWeaponEntity sweep, never this state (static RE: only
+MuleKick 0x16F and MulePush 0x170 enter it). 0 enters, so bit 64 stays unproven; proving it needs a run with a 0x16F/0x170
+PHIT. The baton needs no facing hook: it already turned to her and hit her body.
+
+Ops (`enemy_tgt 14`, hidden runs, enemy_partner_melee != 0): 5 <m> the dodge test, 6 <attack> a local apply test on the guest
+(from enemy_look's MULE, `PHIT struck #0 ... (test)`), 7 the relay status, 8 <0|1|2|-1> the apply mode for this run.
+Op 6 reads our Sam from the relay's last tick; the guest has no hook, so its no-hook Tick path sets it too (before the
+fix it stayed 0 there and op 6 always said "no Sam").
+
+Open risks: amount -1 resolved to 0 in the P1 run, and run 033043's mode-1 damage message said amount 0.0 too, yet her health
+dropped (1000.0 -> 988.1); mode 2, meant as the fallback, did not hurt (amount 10.0, no drop); the receiver match (our
+Sam or a receiver whose ReceiverEntity is our Sam) is assumed; the dodge and the candidate test use the host's bodies record (a
+tick old or more).
+
+## 21. Round 28 B1: the BT field sync (`bt_sync`; default 2)
+
+`native/mod/bt_sync.cpp` (beside P3's census; pure part `bt_rules.hpp`, tests `tests/bt_rules_tests.cpp`); scenario
+`two-games-bt-field`; the action `bt_sync` ([debug-actions.md](debug-actions.md) "Bt sync"). Proven in run 20261127-032816
+(`two-games-bt-field` PASS: FIELD compared equal, the host's RESET applied on the guest, NOTICED (near) relayed both ways with
+the toast); `bt_sync=2` is the default since then (the launcher writes no key). Both games must run it (the BTS1 HELLO), so an
+older or key-off partner gets nothing. No game
+effect on the receiver (B2, the host's BTs sensing her, needs the stimulus / knowledge injection and is not done).
+
+From the probes (section 18; runs 20261127-000239 / -002916): both games stream the same 35 bt211_01 gazers from the same
+locators (equal prints), with different actor ids, so everything is keyed by the field id and the locator GUID hash. The near
+bit 0x1000 is set only for the game's own player, so "the BTs sense the partner" can only come from the partner's own game.
+
+Levels: 0 nothing (no detour, no messages); 1 the voidout detour, HELLO, FIELD, NOTICED and VOID (a received RESET is logged
+"not applied: bt_sync=1 here"); 2 also the host's RESET applied on the guest. Only with role host or guest (`[bt] sync off:
+needs a two-game session`); if both games claim the same role the relay stays off.
+
+Capability: nothing is sent before the partner's SEH1 beacon (`shots::PeerBeacon`; channel 6 is up there). The BTS1 HELLO goes
+first (caps: field 1, noticed 2, void 4, reset-apply 8), and nothing but a HELLO is taken before the partner's HELLO. A partner
+with bt_sync=0 or an older build never says hello: `[bt] sync: no partner hello after 15 s ... relay off`. A message of a newer
+link session than this module's starts that session first (its once-only HELLO is kept); only older ones count as stale.
+
+Messages (BTS1 on channel 6 via `link::SendCombat`; link.cpp routes "BTS1" to its own queue, `link::PopBtMessage`; header 12 B
+`'BTS1' | type | version 1 | n | 0 | u32 seq`; strict decoders):
+* HELLO, 20 B.
+* FIELD, 36 + 16n B (n <= 6): the record summary and the 6 biggest live fields, compared on each game: `[bt] field compare #n:
+  records equal|DIFFER ...; bt211_01 35/35 print equal` (on a change and every 30 s).
+* RESET, 20 B: detected by polling (the same record set, every record now unset, not all before, nothing killed). With
+  bt_sync=2 the guest applies the host's RESET through ResetAllGazers (0x1429A7220 / 0x1429A17A0, byte-checked with its rip and
+  jmp; on the game thread, SEH-guarded) only when the epoch is newer, the record set equals its last census, a live local
+  player is there now and no load is in progress (refused "loading ..."). Since the round 28 defaults review also only on a
+  sandboxed save (`automation::SavesRedirected()`: a host-save guest, a test save, a hidden run; with host_save=0 she plays on
+  her own real save, refused "this game plays on its own real save", and her hello leaves out the reset-apply cap 8), and not
+  while Sam is asleep, a menu / cutscene / scripted scene runs (dev_tools' Playing tests) or she is in the hunter area. The census state is cleared whenever the player is
+  gone (the title, a load) or the manager check fails, so a RESET is never checked against a census from before a load. The host owns the
+  field state: a guest's RESET is only logged there. A reset seen within 5 s of applying one is not sent back.
+* NOTICED, 52 B: this game's own gazer raising its near bit for this player (kind, field id, locator hash, gazer and player
+  positions, the game's distance; one per field per 5 s, the same locator again after 15 s). The other game logs `[bt] partner
+  sensed (near): ... here: live (id ..) | not streamed here` and shows a toast ("A BT senses your partner", at most every 8 s).
+  A rise seen while the gazer's state is not 0 or a position is unreadable is held, not consumed: the near bit is stored clear,
+  so a later census (state 0, positions read) sends it (`[bt] near here, not sent yet: ...`, once per gazer). This is a
+  behaviour change from round 28's first version, which consumed such a rise for good; a rise held by the notice gate is
+  still consumed. Read-only diagnostics, once per gazer and again after a reset: `[bt] near check: ...` for a gazer within
+  25 m (the game's +0x204 distance or ours: state, flags, trigger, both distances, pos_ok, me_ok), `[bt] near already set
+  when first seen`, and `[bt] census: N gazer(s) without an actor skipped` (the most so far).
+* VOID, 44 B: a pass-through MinHook detour on the voidout FUN_14299B1B0 (its 44-byte prologue byte-checked; installed at
+  start-up; the caller named from the return address, 4 known E8 sites) records each call into a locked ring of 8, relayed as a
+  notice only (`[bt] partner voidout ... notice only (no game effect)`).
+
+Ops (`bt_sync`, refused with bt_sync=0): 0 the status line (`[bt] sync status ... bad N, stale N, unsent N`), 1 FIELD at the
+next census; hidden runs: 3 a test VOID, 4 a test NOTICED.
+
+Round 28 rerun (w2b): NOTICED (near) was unproven. In run w2b the host stood 9.3 m from gazer 40AB1A93 twice (before and after the
+reset) and the game reacted (the orange Odradek), but the sync logged nothing: no rise, no "near not set". The run could not
+tell "the bit never rose", "rose but held (state / position)" and "position unreadable" apart, so two-games-bt-field now
+runs `action bt_probe 1` on both games beside the sync (diagnostic) and the lines above were added. Run 20261127-032816 then
+logged `NOTICED sent (near)` on each game (gazer 40AB1A93 at 9.3 m) and `partner sensed (near)` on the other, so NOTICED is
+proven and bt_sync defaults to 2.
+
+Open risks: the hello waits for the SEH1 beacon (it goes also with shots_sync=0: shot_sync.cpp `g_beacon_want`, the beacon
+alone with parts 0); the guest's own near bit is not yet seen in a
+run (the scenario turns on rain on both); the reset detection is a heuristic; ResetAllGazers resets every record; the voidout
+reasons are inferred and the real voidout path has not run; the detour's return is assumed to fit in rax; the toast reuses
+SetVehicleNotice.

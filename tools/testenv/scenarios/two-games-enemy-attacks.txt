@@ -1,0 +1,155 @@
+# Round 28 E2 (docs/enemy-sync.md 20): MULEs that punch, kick, swing a baton or tackle her actually hurt her (the PHIT relay,
+# session.ini enemy_partner_melee=1 on both games; redirect bit 64, enemy_melee_face=1). The host's sphere / capsule detours
+# (installed at start-up with the key, byte-checked) test every MULE melee query (0x16D..0x171) against her partner body; one
+# that reaches it is sent as SCB1 type 12 ("[phit] PHIT sent #n"); the guest strikes her real Sam with that attack (the MULE's
+# mirror as the attacker, the game's own amount) unless she moved more than 4 m since the host saw it ("[phit] PHIT dodged").
+# Capability: the guest says hello once per link session (again on a change, then every 30 s; "[phit] hello sent"), and only while
+# her combat drain and apply group run; the host relays only on a hello of the current session ("relay (host): armed").
+# MULE Camp Southwest of Lake Knot City (cp 04004), as two-games-enemy-attacks-probe: the host owns every enemy, the round-27
+# stimulus / pick / redirect keys on, MEL: melee MULE 02029 calmed (calm #1), our Sam 150 m behind it, her placed by op 11 CL
+# (enemy_tgt 11 0x2029 9), the stimulus on, her 2 m in front along its facing. Host: dev_god 2 and the shield (enemy_probe 5 1).
+# Guest: dev_god 0 and no shield from the MEL phase on (the gate is her health dropping).
+# Gates: the keys and hooks on both; the hello both ways and the host armed; MEL: a PHIT sent, struck and applied with her health
+# dropping (b < a); the dodge test (each PHIT counts her as 6 m further: dodged); the local apply tests (mode 2 applied, hurt or no drop; with the
+# shield on: applied, no drop); the bullet replay still hurts her (enemy_shot_test 0); no FAULT, no byte check FAILED.
+# Redirect bit 64's counters ("[enemy] tgt melee face 64: in; enters ..") are information: its facing source is unverified.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-enemy-attacks -SeedSaves complete-100 -GuestSeed profile-only -Id round28-e2
+# covers: enemy-melee enemy-hits
+role host
+graphics low
+timeout 300
+launcherini local-test
+ini enemy_owner=0
+ini enemy_m2_probes=0
+ini enemy_take_know=0
+ini enemy_take_camp=0
+ini enemy_ticket_return=0
+ini enemy_single_hold_vehicle=0
+ini enemy_single_rule=0
+ini enemy_take_role=0
+ini enemy_take_face=0
+ini enemy_partner_stim=1
+ini enemy_target_pick=55
+ini enemy_target_redirect=39
+ini enemy_partner_melee=1
+ini enemy_melee_face=1
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[enemy\] hits: byte checks [0-9]+/[0-9]+ ok
+waitlog 5 \[phit\] relay key on: enemy_partner_melee=1 .*enemy_melee_face=1; sphere on capsule on .*byte checks [0-9]+/[0-9]+ ok; damage observer on
+@guest waitlog 5 \[phit\] relay key on: enemy_partner_melee=1 .*sphere off \(the guest: not needed\) capsule off .*byte checks [0-9]+/[0-9]+ ok; damage observer on
+goto mule-camp-sw-lkc
+@guest goto 1521.90 992.00 0
+wait 4000
+@both action dev_god 2
+@both action dev_enemies 1
+waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+@guest waitlog 10 \[dev\] enemies: every MULE / terrorist resurrected
+action enemy_probe 5 1
+@guest action enemy_probe 5 1
+waitlog 40 \[enemy\] sync on \(host\).*\(equal
+@guest waitlog 40 \[enemy\] sync on \(guest\).*\(equal
+@guest waitlog 30 \[enemy\] mirror on id=02029
+waitlog 30 \[enemy\] hits on \(host\)
+@guest waitlog 30 \[enemy\] hits on \(guest\)
+waitlog 10 \[enemy\] tgt byte checks \([0-9]+\)
+waitlog 20 \[enemy\] pstim made #
+# ---- the capability: her hello, the host armed
+@guest waitlog 30 \[phit\] hello sent \(guest: this game applies PHIT, mode 1\)
+waitlog 10 \[phit\] hello from the guest: her game applies PHIT
+waitlog 10 \[phit\] relay \(host\): armed \(her game takes PHIT\)
+# ---- MEL (02029; calm #1): her placed by op 11 CL, then 2 m in front of it; our Sam 150 m behind it; her unprotected
+action enemy_tgt 1 0
+action enemy_look 0x2029 150
+@guest action enemy_look 0x2029 150
+action enemy_l1 6 0x2029 8
+waitlog 12 \[probe\] L1 calm #1 id=02029: (ready|timeout)
+action enemy_look -8 -150
+@guest action enemy_look 0x2029 20
+wait 700
+action enemy_tgt 0
+action enemy_tgt 11 0x2029 9
+waitlog 8 \[probe\] L1 arm CL id=02029: start
+@guest action enemy_probe 5 0
+@guest action dev_god 0
+action enemy_tgt 1 1
+waitnew 5 \[enemy\] pstim made #
+wait 3000
+# ---- the dodge first (lag; she is still unhurt, not down): each PHIT counts her as 6 m further than the host saw her
+@guest action enemy_tgt 14 5 6
+@guest waitlog 3 \[phit\] dodge test: on
+@guest action enemy_look -8 2
+# (any MULE: the camp sometimes sends 02032 in first; the gate is a MULE strike reaching her, not which MULE)
+waitnew 60 \[phit\] PHIT sent #[0-9]+ id=02[0-9A-F]{3} attack 0x(16[D-F]|17[01]) 
+@guest waitnew 10 \[phit\] PHIT dodged #[0-9]+ id=02[0-9A-F]{3} .*she moved [0-9.]+ m \(> 4 m\) since the host saw it \(the dodge test\)
+@guest action enemy_tgt 14 5 0
+@guest waitnew 3 \[phit\] dodge test: off
+# ---- the strike: the next PHIT hurts her (her health a -> b, b < a)
+waitnew 60 \[phit\] PHIT sent #[0-9]+ id=02[0-9A-F]{3} attack 0x(16[D-F]|17[01]) 
+# (w2) applied first (the waitnew: its window opens at the PHIT-sent step's start); applied implies struck (g_pend is set
+# right after the struck line), so struck is a waitlog: the two lines come ~1 tick apart, a second waitnew would miss it
+@guest waitnew 10 \[phit\] PHIT applied #[0-9]+ id=02[0-9A-F]{3} attack 0x[0-9A-F]+ [^:]*: health [0-9.]+ -> [0-9.]+ \(hurt\)
+@guest waitlog 3 \[phit\] PHIT struck #[0-9]+ id=02[0-9A-F]{3} attack 0x[0-9A-F]+ [^:]*: mode 1 \(attacker its mirror
+screenshot 01-host-mel
+@guest screenshot 01-guest-mel
+# ---- the counters (both) and redirect bit 64's (the host; information)
+action enemy_tgt 14 7
+waitnew 3 \[phit\] relay \(host\) status: armed; queries tested [1-9][0-9]*, at her [1-9][0-9]*, sent [1-9][0-9]*,
+@guest action enemy_tgt 14 7
+@guest waitnew 3 \[phit\] relay \(guest\) status: mode 1; hellos sent [1-9][0-9]*; PHIT rx [1-9][0-9]*, applied [1-9][0-9]* \(hurt [1-9][0-9]*, .*dodged [1-9][0-9]*, .*faults 0, bad 0; stale_rx [0-9]+, deduped_rx [0-9]+, capped_rx [0-9]+; apply path ready
+action enemy_tgt 8
+waitlog 5 \[probe\] L1 result arm CL id=02029
+waitlog 3 \[enemy\] tgt melee face 64: in; enters [0-9]+, at her [0-9]+
+action enemy_tgt 1 0
+action enemy_tgt 0
+# ---- the local apply tests (the guest; 02029 her enemy_look; the stimulus off, her 150 m from it, so no field PHIT
+# lands between): mode 2 applied (hurt or no drop); with the shield on: applied, no drop
+# mode 2 is unproven and does not hurt in our test (run 20261127-033043: "PHIT applied #0 ... MuleKick: health 988.1 -> 988.1
+# (no drop), damage messages 1 (amount 10.0)"); mode 1 (the default) is the one that works (MEL above). Its struck line stays required.
+@guest action enemy_look -8 150
+wait 3000
+@guest action enemy_tgt 14 8 2
+@guest waitnew 3 \[phit\] apply mode for this run: 2
+@guest action enemy_tgt 14 6 0x16F
+@guest waitnew 4 \[phit\] PHIT applied #0 id=02029 attack 0x16F [^:]*: health [0-9.]+ -> [0-9.]+ \((hurt|no drop)\)
+@guest waitlog 3 \[phit\] PHIT struck #0 id=02029 attack 0x16F [^:]* \(test\): mode 2 \(attacker none, amount [1-9][0-9.]*\)
+@guest action enemy_tgt 14 8 -1
+@guest waitnew 3 \[phit\] apply mode for this run: 1 \(the key\)
+@guest action enemy_probe 5 1
+@guest action enemy_tgt 14 6 0x16F
+@guest waitnew 3 \[phit\] PHIT struck #0 id=02029 attack 0x16F [^:]* \(test\): mode 1
+@guest waitnew 4 \[phit\] PHIT applied #0 id=02029 attack 0x16F [^:]*: health [0-9.]+ -> [0-9.]+ \(no drop\)
+# ---- the bullet replay still hurts her (round 16b's policy; the shield off)
+@guest action enemy_probe 5 0
+@guest action enemy_shot_test 0
+@guest waitnew 6 \[enemy\] shot test: ref match=1 kept \(enemy_shots_hurt\) amount [0-9.]+ health [0-9.]+ -> [0-9.]+
+?@guest action dev_god 2
+@guest action enemy_probe 5 1
+# ---- the end
+nolog \[phit\] .*FAULT
+@guest nolog \[phit\] .*FAULT
+nolog \[phit\] byte check FAILED
+@guest nolog \[phit\] byte check FAILED
+nolog \[phit\] relay key on \(enemy_partner_melee=1\) but
+@guest nolog \[phit\] relay key on \(enemy_partner_melee=1\) but
+nolog \[vhit\] byte check FAILED
+@both action enemy_l1 9
+waitlog 5 \[probe\] L1 stop
+@guest waitlog 5 \[probe\] L1 stop
+action enemy_sync 0
+nolog \[enemy\] FAULT
+@guest nolog \[enemy\] FAULT
+nolog \[enemy\] (tgt|pstim) .*FAULT
+@guest nolog \[enemy\] (tgt|pstim) .*FAULT
+nolog \[enemy\] tgt byte check FAILED
+@guest nolog \[enemy\] tgt byte check FAILED
+nolog \[probe\] L1 .*FAULT
+@guest nolog \[probe\] L1 .*FAULT
+@both action enemy_sync 2
+action enemy_probe 5 0
+@guest action enemy_probe 5 0
+@both action dev_god 0
+@guest quit
+wait 3000
+quit

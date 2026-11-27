@@ -137,9 +137,11 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
   runs, it is not the same for both players yet: a MULE she has not
   hit ignores her and goes only for the host. Once she hits one, it turns on her: on the
   host's screen it goes for her body, on hers her copy of it follows the host's frames, and
-  its gunfire at her can reach her and hurt her; its melee, thrown spears and tackles cannot.
-  The host's MULE rounds can also hurt the guest if they cross her; the host's melee, thrown
-  spears, tackles, cargo theft and truck rams never reach her. A downed MULE that she walks
+  its gunfire at her can reach her and hurt her, and its melee can now hurt her too (new in round 28:
+  a stun baton swing, tested; kicks and pushes untested); its thrown spears and tackles cannot.
+  The host's MULE rounds can also hurt the guest if they cross her, and the host's MULEs' melee
+  strikes that reach her are passed on and hurt her (new in round 28; both players need this
+  version); thrown spears, cargo theft and truck rams never reach her. A downed MULE that she walks
   away from stands up again in her world until she comes back (it then lies with the host's
   again). If the host goes far away (a teleport, or the game moving him after he faints), her
   copies of his MULEs are handed back to her own game within a few seconds instead of hanging
@@ -150,13 +152,18 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
   longer dragged across the other screen: each game's MULEs drive their own truck, so a truck a
   MULE drives off can be in a different place on each screen. A MULE that gets into a vehicle is
   left to each game the same way. There is no launcher switch yet.
-- Not yet: the tools' effects (the PCC's and anchor's build holograms, the spray), the Odradek, the cuff device,
+- New in round 28: when either player scans with the Odradek, the scan shows on both screens (both need this
+  version). The partner's Odradek on their body is not shown yet.
+- New in round 28: the BTs compare their fields across both games; when the host's BTs reset, the guest's do too
+  (only when Host holds the save), and when a BT senses one player, the other is told. Both need this version.
+- Not yet: the tools' effects (the PCC's and anchor's build holograms, the spray), the partner's Odradek on their body, the cuff device,
   the chiral cylinder, the exoskeleton on non-Sam characters,
   facial animation, the partner's gear sounds (footsteps, movement and
   rifle handling are heard, experimental), thrown grenades, bolas and launcher rounds, the game's own passenger animation, a vehicle
   camera for the passenger, shared cargo on vehicles, carts (and for the copies without Host holds the
   save: a roadster, the Kusanagi's own look, mud / snow, the light the lamps throw, damage),
-  world/BT/mission sync.
+  world/mission sync, and BTs that react to the partner (round 28 compares the BT field and passes on a BT reset and BT
+  noticing).
 
 ## Download
 

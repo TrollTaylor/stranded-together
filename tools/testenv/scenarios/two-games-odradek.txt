@@ -1,0 +1,96 @@
+# The partner's Odradek on its shoulder (round 28 O1; docs/real-partner-body.md section 12.9), part 1: the gear. Hidden, on
+# the launcher's own Local test files (host Sam, guest Fragile):
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-odradek -SeedSaves complete-100 -GuestSeed profile-only
+# odradek_gear=1 on both games: each sends its Odradek's arm (inv +0x4C88) and body (inv +0x4CA0) as two STC1 odradek items
+# (model 1 / 0) once the other's frames carry the Odradek flag, and draws the other's as the cinematic props
+# demo_odra_arms_def_new / demo_odra_main_def_new (never a DSOdradek*Entity). Anchors: the host is drawn as Sam on the
+# guest's screen (the left shoulder, joint 35, where the game hangs it: HLP_Odradek), the guest as Fragile on the host's
+# (the chest, joint 5: the shoulder frames differ on her skeleton). Steps: both stand ~5 m apart (screenshots on both); the
+# guest's anchor forced to the shoulder for one host screenshot (the comparison), then auto again; a test hold on the host
+# (its Odradek read as in a cutscene: not sent, gone from the guest's screen, back after); the host drives the truck (not
+# sent while riding), gets off (sent again).
+# Pass: every step ok, both "attached" lines per side, the pose check lines (they say whether the props' neutral pose is
+# folded like our own idle Odradek: look at 00-*/01-* too), no FAULT, no DSOdradek copy refused, summary.json result pass.
+# covers: odradek-gear gear
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini odradek_gear=1
+start control 200
+@guest waitlog 60 \[self\] showing 'fragile_suit' in place of Sam .*fit on
+waitlog 60 \[sync\] partner body: real 'fragile_suit'
+waitlog 30 \[odragear\] odradek_gear=1
+@guest waitlog 30 \[odragear\] odradek_gear=1
+@both goto mknot-road
+wait 6000
+# the guest walks ~5 m ahead, then turns back to face the host
+@guest pad none 1300 ly=32767
+@guest pad none 500 ly=-32767
+wait 2000
+# ---- both sides send and draw
+waitlog 30 \[odragear\] Odradek offsets verified
+@guest waitlog 30 \[odragear\] Odradek offsets verified
+waitlog 30 \[odragear\] the partner's frames carry the Odradek flag
+@guest waitlog 30 \[odragear\] the partner's frames carry the Odradek flag
+waitlog 30 \[odragear\] our Odradek sent \(shown; .*anchor joint 35, drawn as Sam there
+@guest waitlog 30 \[odragear\] our Odradek sent \(shown; .*anchor joint 5, drawn as Fragile there
+waitlog 30 \[gear\] the partner's gear: [0-9]+ items \(backpack [0-9]+, Odradek 2,
+@guest waitlog 30 \[gear\] the partner's gear: [0-9]+ items \(backpack [0-9]+, Odradek 2,
+waitlog 40 \[odragear\] partner Odradek arm \(prop [0-9]+ 'odradek_arm'\) shown on the body's joint 5: attached
+waitlog 20 \[odragear\] partner Odradek body \(prop [0-9]+ 'odradek'\) shown on the body's joint 5: attached
+@guest waitlog 40 \[odragear\] partner Odradek arm \(prop [0-9]+ 'odradek_arm'\) shown on the body's joint 35: attached
+@guest waitlog 20 \[odragear\] partner Odradek body \(prop [0-9]+ 'odradek'\) shown on the body's joint 35: attached
+waitlog 20 \[odragear\] pose check: the partner's arm prop has 14 joints
+waitlog 20 \[odragear\] pose check: the partner's body prop has 44 joints
+@guest waitlog 20 \[odragear\] pose check: the partner's arm prop has 14 joints
+@guest waitlog 20 \[odragear\] pose check: the partner's body prop has 44 joints
+waitlog 20 \[odragear\] partner Odradek: 2 part\(s\) in its frame, 2 prop\(s\) live, 2 shown
+@guest waitlog 20 \[odragear\] partner Odradek: 2 part\(s\) in its frame, 2 prop\(s\) live, 2 shown
+waitlog 20 \[odragear\] sender: our arm on joint 35 at
+@guest waitlog 20 \[odragear\] sender: our arm on joint 35 at
+wait 2000
+screenshot 00-host-sees-guest-odradek-chest
+@guest screenshot 00-guest-sees-host-odradek-shoulder
+@both action gear 40 2
+# ---- the comparison: the guest's Odradek on her shoulder joint (35) on the host's screen, then auto (the chest) again
+@guest action gear 40 4 35
+waitnew 20 \[odragear\] partner Odradek arm \(prop [0-9]+ 'odradek_arm'\) shown on the body's joint 35: (attached|NOT attached)
+wait 2000
+screenshot 01-host-sees-guest-odradek-shoulder
+@guest action gear 40 4 -1
+waitnew 20 \[odragear\] partner Odradek arm \(prop [0-9]+ 'odradek_arm'\) shown on the body's joint 5: attached
+# ---- the test hold: the host's Odradek read as in a cutscene: not sent, gone from the guest's screen; then back
+action gear 40 3 1
+waitnew 10 \[odragear\] our Odradek no longer sent \(a load / cutscene / movie
+@guest waitnew 15 \[odragear\] partner Odradek: 0 part\(s\) in its frame
+wait 1500
+@guest screenshot 02-guest-sees-host-held-no-odradek
+action gear 40 3 0
+waitnew 10 \[odragear\] our Odradek sent \(shown
+@guest waitnew 40 \[odragear\] partner Odradek: 2 part\(s\) in its frame, 2 prop\(s\) live, 2 shown
+# ---- riding: the host drives the truck (not sent), gets off (sent again)
+action vehicle_sync 8 1.8 2
+wait 1500
+until 20 4000 \[vdrive\] host: our Sam drives truck => pad X 150
+# (w2) the guest first: its window opens at the until step's start (before pad X); the host's line is unique (waitlog)
+@guest waitnew 15 \[odragear\] partner Odradek: 0 part\(s\) in its frame
+waitlog 15 \[odragear\] our Odradek no longer sent \((riding a vehicle|the game hides it)
+wait 2000
+@guest screenshot 03-guest-sees-host-driving
+pad X 150
+waitnew 30 \[odragear\] our Odradek sent \(shown
+@guest waitnew 40 \[odragear\] partner Odradek: 2 part\(s\) in its frame, 2 prop\(s\) live, 2 shown
+wait 2000
+@guest screenshot 04-guest-sees-host-off-truck
+@both action gear 40 2
+nolog \[gear\] .*FAULT
+@guest nolog \[gear\] .*FAULT
+nolog refused for this session: a DSOdradek
+@guest nolog refused for this session: a DSOdradek
+nolog \[odragear\] Odradek checks failed
+@guest nolog \[odragear\] Odradek checks failed
+@both action log_status
+@guest quit
+wait 3000
+quit

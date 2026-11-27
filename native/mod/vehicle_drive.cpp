@@ -21,6 +21,7 @@
 #include "log.hpp"
 #include "overlay/overlay_input.hpp"
 #include "partner_source.hpp"
+#include "truck_v3.hpp"
 #include "vehicle_share.hpp"
 #include "vehicle_sync.hpp"
 
@@ -610,6 +611,19 @@ struct Veh {
     double fd_speed = 0;               // the finite-difference speed (Measure), against the body's
     double body_disagree_since = 0;
     bool body_vel_bad = false;
+    // round 28 T1 (vehicle_mule_v3; trucks::NpcDrive): a MULE truck of the host's game that a MULE drives
+    bool npc_on = false;               // host: a MULE of ours drives it now: its DRIVE frames go out with kDrvNpc
+    std::uint32_t npc_driver = kNoActor;
+    double npc_since = 0, npc_sent_ms = -1e18, npc_partner_m = -1;
+    bool npc_ever = false;             // host: sent MULE-driven in this world; guest: kDrvNpc frames came (its PARK frames are taken)
+    bool npc_seat_mule = false;        // host: a MULE sits in its driver seat now (V3Tick's last scan; not sent: still left to each game)
+    bool npc_follow = false;           // guest: the newest DRIVE frame carries kDrvNpc (a host MULE drives it, not the partner's Sam)
+    std::uint64_t npc_frames = 0;
+    std::uint8_t npc_why = 0xFF;       // host: the last NpcDrive answer logged for a MULE in its seat
+    double fast_sum = 0, fast_max = 0; // guest: the follow's placement error while the owner moves at >= 5 m/s
+    unsigned fast_n = 0;
+    double v3_win_max = 0;             // guest: its largest placement error since the last 5 s line (the gate's final check)
+    double v3_log_ms = 0, v3_refused_ms = -1e18;
 };
 std::map<std::uint32_t, Veh> g_veh;
 Veh& V(const vwire::VKey& k) {
@@ -645,6 +659,27 @@ const vshare::Unit* UnitFor(std::uint32_t host_id) noexcept {
 // counters
 std::uint64_t g_tx_drive = 0, g_tx_park = 0, g_rx_drive = 0, g_rx_park = 0, g_rx_refused = 0, g_attaches = 0, g_detaches = 0, g_attach_fail = 0;
 std::uint64_t g_own_tx = 0, g_own_rx = 0, g_force_offs = 0, g_claims = 0, g_grants = 0, g_denies = 0;
+
+// ---------------------------------------------------------------- round 28 T1: host-owned MULE trucks (vehicle_mule_v3)
+// docs/enemy-sync.md 14.21; the pure part trucks::V3Gate / NpcDrive / the STV3 codec (vehicle_truck_rules.hpp). Both games send
+// the STV3 hello (SVM1 type 51) every 2 s while the key is on; V3 is live only while the partner's fresh hello of this link
+// session says it follows host MULE trucks. Then the host sends DRIVE frames with vwire::kDrvNpc for every truck a MULE of its
+// game drives (within 300 m of the partner body), the guest follows them with the usual follower, and the guest's enemy sync
+// keeps the occupants' mirrors frozen and hidden (truckv3::V3SeatNear). Every line starts "[truckv3] v3".
+bool g_v3_key = false;  // session.ini vehicle_mule_v3
+trucks::V3State g_v3_state = trucks::V3State::key_off;
+bool g_v3_state_logged = false;
+bool g_v3_have_hello = false;
+double g_v3_hello_ms = -1e18;
+std::uint32_t g_v3_hello_gen = 0;
+trucks::V3Hello g_v3_peer;
+double g_v3_hello_next = 0;
+struct V3Counts {
+    std::uint64_t hello_tx = 0, hello_rx = 0, hello_bad = 0, npc_tx = 0, npc_rx = 0, npc_refused = 0, fill_fail = 0;
+    unsigned starts = 0, stops = 0, claims_denied = 0, park_lifted = 0, parked_lifted = 0, refused_driver = 0, why_lines = 0;
+} g_v3;
+double g_v3_refuse_log_ms = -1e18;
+bool V3On() noexcept { return g_v3_state == trucks::V3State::live; }
 
 // ---------------------------------------------------------------- round 23 D: MULE trucks (vshare::TruckHeld; docs/enemy-sync.md 14.10)
 // A truck vshare leaves to each game (a non-player drives it in either game, or a MULE truck no player drives) gets no PARK
@@ -860,6 +895,15 @@ void OnOwn(std::uint8_t type, const std::uint8_t* msg, std::size_t size, std::ui
         switch (m.type) {
             case vwire::OwnType::claim: {
                 ++g_claims;
+                if (v.npc_on) {
+                    // round 28 T1: a MULE of ours drives it (the guest follows it): the host's, like its Sam on it
+                    ++g_denies;
+                    ++g_v3.claims_denied;
+                    Log("[truckv3] v3 host: the guest claims %s 0x%06X (%s) while our MULE 0x%05X drives it: DENIED", vwire::KindName(m.key.kind), m.key.id,
+                        m.reason == vwire::kClaimPush ? "push" : "get on", v.npc_driver);
+                    SendOwn(vwire::OwnType::deny, v.key, vwire::kOwnerHost, vwire::kDenyHostDrives, v.own.epoch, nullptr, nullptr);
+                    return;
+                }
                 const bool host_on = g_drive.on && g_drive.key.id == m.key.id;
                 const double ago = v.host_drove_ms > -1e17 ? now - v.host_drove_ms : -1;
                 const vwire::OwnStep st = vwire::HostOnClaim(v.own, m.reason, host_on, host_on ? 0 : ago);
@@ -1070,6 +1114,10 @@ void Detach(Veh& v, const char* why) {
         Log("[vdrive] follower of %s 0x%06X over the follow: placement error mean %.3f max %.3f m, %u of %u ticks over 0.25 m; %u driven teleports, %u "
             "velocity sets",
             vwire::KindName(v.key.kind), v.key.id, v.ride_sum / v.ride_n, v.ride_max, v.ride_over, v.ride_n, v.n_tp_driven, v.n_vel);
+    if (v.npc_follow)  // round 28 T1: the gate's numbers for a truck the host's MULE drove
+        Log("[truckv3] v3 guest: follower of truck 0x%06X over the follow (the host's MULE drove it): at >= 5 m/s mean %.3f max %.3f m over %u ticks; "
+            "all mean %.3f max %.3f m over %u; %u driven teleports",
+            v.key.id, v.fast_n ? v.fast_sum / v.fast_n : 0.0, v.fast_max, v.fast_n, v.ride_n ? v.ride_sum / v.ride_n : 0.0, v.ride_max, v.ride_n, v.n_tp_driven);
     if (ok) VirtualFree(reinterpret_cast<void*>(v.block), 0, MEM_RELEASE);  // a fault leaves the block (it may still be referenced)
     v.block = 0;
     v.ctl_entity = 0;
@@ -1151,6 +1199,7 @@ bool Attach(Veh& v, const vshare::Unit& u) {
     v.ctl_unit = u.unit;
     v.attach_ms = g_now;
     v.ride_sum = v.ride_max = 0, v.ride_n = v.ride_over = 0;
+    v.fast_sum = v.fast_max = v.v3_win_max = 0, v.fast_n = 0, v.v3_log_ms = g_now;  // round 28 T1
     v.n_tp_driven = v.n_vel = v.n_no_body = v.n_extrap = 0;
     v.bias[0] = v.bias[1] = v.bias[2] = 0;
     v.stuck_since = v.still_since = v.owner_still_since = 0;
@@ -1635,6 +1684,10 @@ void DriveCorrect(Veh& v, const vshare::Unit& u, const WorldTransform& target_in
         v.ride_sum += err, ++v.ride_n;
         v.ride_max = (std::max)(v.ride_max, err);
         if (err > 0.25) ++v.ride_over;
+        if (v.npc_follow) {  // round 28 T1
+            v.v3_win_max = (std::max)(v.v3_win_max, err);
+            if (tspeed >= 5.0) v.fast_sum += err, ++v.fast_n, v.fast_max = (std::max)(v.fast_max, err);
+        }
     }
     const bool carried_here = u.unit && g_carried_unit.load(std::memory_order_relaxed) == u.unit;
     if (g_now - v.win_log_ms >= 1000) {
@@ -2277,7 +2330,10 @@ void ParkedTick() {
         if (!v.track.empty() && v.track.back().key > v.park.key) continue;  // the partner drives it (its frames play)
         if (g_now < v.next_corr_ms) continue;
         v.next_corr_ms = g_now + 100;
-        if (MuleHeld(v.key.id, kHeldParked)) continue;  // round 23 D
+        // round 23 D; round 28 T1: a truck the host's MULE drove in this world (V3) is the host's when it parks (the rider check
+        // below still leaves one a MULE of ours rides alone)
+        if (V3On() && v.npc_ever) ++g_v3.parked_lifted;
+        else if (MuleHeld(v.key.id, kHeldParked)) continue;
         const vshare::Unit* u = UnitFor(v.key.id);
         if (!u || !u->entity || u->rider != vwire::kNoRider) continue;  // not spawned here, or somebody rides it here
         // the unit list is the 10 Hz poll's: the entity checked again now, before the correction and the state writes
@@ -2577,6 +2633,170 @@ void AutoTick() {
     }
 }
 
+// ---------------------------------------------------------------- round 28 T1 (vehicle_mule_v3): the hello, the gate, the scan
+void OnV3Hello(std::uint8_t type, const std::uint8_t* msg, std::size_t size, std::uint32_t generation, double now) {
+    (void)type;
+    trucks::V3Hello h;
+    if (!g_v3_key) return;  // (never registered with the key off)
+    if (size < vwire::kHeaderSize || !trucks::DecodeV3Hello(msg + vwire::kHeaderSize, size - vwire::kHeaderSize, h)) {
+        if (++g_v3.hello_bad <= 5) Log("[truckv3] v3: dropped a STV3 hello (%zu bytes): not valid", size);
+        return;
+    }
+    ++g_v3.hello_rx;
+    const bool first = !g_v3_have_hello || g_v3_hello_gen != generation || g_v3_peer.features != h.features || g_v3_peer.role != h.role;
+    g_v3_have_hello = true;
+    g_v3_peer = h;
+    g_v3_hello_ms = now;
+    g_v3_hello_gen = generation;
+    if (first)
+        Log("[truckv3] v3: the partner's STV3 hello: version %u, features 0x%X, role %s (link session %u)", h.version, h.features, h.role == 1 ? "host" : "guest",
+            generation);
+}
+
+// Every tick (before the world gate returns): the hello out and the gate's state.
+void V3Pre(double now, bool ready) {
+    if (!g_v3_key) return;
+    if (ready && g_on.load() && (g_role == 1 || g_role == 2) && link::GetInfo().connected && now >= g_v3_hello_next) {
+        g_v3_hello_next = now + trucks::kV3HelloEveryMs;
+        trucks::V3Hello h;
+        h.features = trucks::kV3FeatHostTrucks;
+        h.role = static_cast<std::uint8_t>(g_role);
+        std::uint8_t buf[vwire::kHeaderSize + trucks::kV3HelloSize];
+        const std::size_t hs = vwire::WriteHeader(trucks::kV3HelloType, buf, sizeof(buf));
+        const std::size_t bs = hs ? trucks::EncodeV3Hello(h, buf + hs, sizeof(buf) - hs) : 0;
+        if (bs && vshare::SendEvent(buf, hs + bs)) {
+            if (g_v3.hello_tx++ == 0) Log("[truckv3] v3: STV3 hello sent (role %s, features 0x%X; every %.0f s)", g_role == 1 ? "host" : "guest", h.features,
+                                         trucks::kV3HelloEveryMs / 1000.0);
+        }
+    }
+    trucks::V3GateIn g;
+    g.key_on = g_v3_key;
+    g.drive_on = ready && g_on.load();
+    g.role = g_role;
+    g.have_hello = g_v3_have_hello;
+    g.same_session = g_v3_hello_gen == link::Generation();
+    g.hello_age_ms = now - g_v3_hello_ms;
+    g.features = g_v3_peer.features;
+    g.peer_role = g_v3_peer.role;
+    const trucks::V3State s = trucks::V3Gate(g);
+    if (s != g_v3_state || !g_v3_state_logged) {
+        const bool was = V3On();
+        g_v3_state = s;
+        g_v3_state_logged = true;
+        if (s == trucks::V3State::live)
+            Log("[truckv3] v3 %s: LIVE (the partner's hello v%u features 0x%X): %s", g_role == 1 ? "host" : "guest", g_v3_peer.version, g_v3_peer.features,
+                g_role == 1 ? "trucks our MULEs drive are sent as DRIVE frames" : "the host's MULE-driven trucks are followed here");
+        else
+            Log("[truckv3] v3 %s: not live (%s)%s", g_role == 1 ? "host" : g_role == 2 ? "guest" : "?", trucks::V3StateName(s),
+                was ? ": the MULE trucks are left to each game again" : "");
+    }
+}
+
+// Host: which trucks a MULE of ours drives (trucks::NpcDrive); the start and stop lines. Guest: the follow's meter (5 s) and a
+// follower her own driver refuses.
+void V3Tick() {
+    if (!g_v3_key) return;
+    if (g_role == 1) {
+        double pp[3] = {};
+        const bool have_p = vshare::PartnerPlace(pp);
+        for (const vshare::Unit& u : g_units) {
+            if (u.key.kind != trucks::kKindTruck) continue;
+            Veh* pv = FindV(u.key.id);
+            trucks::NpcWhy why = trucks::NpcWhy::no_seat;
+            trucks::NpcDriveIn n;
+            if (V3On() && u.entity && EntityLive(u.unit, u.entity, u.key.kind)) {
+                std::int32_t has = 0;
+                std::uint32_t drv = kNoActor;
+                n.seat_read = mem::Rd(u.entity + kVHasDriver, has) && mem::Rd(u.entity + kVDriver, drv);
+                n.has = static_cast<std::uint32_t>(has);
+                n.driver = drv;
+                const std::uintptr_t inp = mem::Q(u.entity + kVInput);
+                n.input = inp != 0;
+                n.input_game = inp && mem::Q(inp) == A(kInVt);
+                n.follower_here = pv && pv->block;
+                n.sam_drives = g_drive.on && g_drive.key.id == u.key.id;
+                n.we_own = !pv || WeOwn(*pv);
+                n.partner_m = have_p && u.has_xf ? Dist3(u.xf, pp) : -1;
+                why = trucks::NpcDrive(n);
+            }
+            if (pv) pv->npc_seat_mule = n.seat_read && n.has == 1 && trucks::DriverOf(n.driver) == trucks::Driver::mule;
+            if (why == trucks::NpcWhy::drives) {
+                Veh& v = pv ? *pv : V(u.key);
+                v.npc_partner_m = n.partner_m;
+                if (!v.npc_on) {
+                    v.npc_on = true;
+                    v.npc_ever = true;
+                    v.npc_driver = n.driver;
+                    v.npc_since = g_now;
+                    v.npc_sent_ms = -1e18;
+                    v.npc_frames = 0;
+                    v.npc_why = static_cast<std::uint8_t>(why);
+                    ++g_v3.starts;
+                    Log("[truckv3] v3 host: truck 0x%06X MULE 0x%05X drives it: DRIVE frames to the guest (#%u; partner %.0f m, owner host, epoch %u)", u.key.id,
+                        n.driver, g_v3.starts, n.partner_m, v.own.epoch);
+                } else if (v.npc_driver != n.driver) {
+                    Log("[truckv3] v3 host: truck 0x%06X: its driver is MULE 0x%05X now (was 0x%05X)", u.key.id, n.driver, v.npc_driver);
+                    v.npc_driver = n.driver;
+                }
+                continue;
+            }
+            if (!pv) continue;
+            Veh& v = *pv;
+            if (v.npc_on) {
+                v.npc_on = false;
+                v.park_sent_have = false;  // its PARK frame at once
+                ++g_v3.stops;
+                Log("[truckv3] v3 host: truck 0x%06X: MULE 0x%05X no longer drives it (%s) after %.1f s, %llu DRIVE frames: PARK frames again (#%u)", u.key.id,
+                    v.npc_driver, V3On() ? trucks::NpcWhyName(why) : "V3 not live", (g_now - v.npc_since) / 1000.0, static_cast<unsigned long long>(v.npc_frames),
+                    g_v3.stops);
+            }
+            // a MULE in the seat that is not sent: why (once per change, 40 lines a run)
+            if (n.seat_read && n.has == 1 && trucks::DriverOf(n.driver) == trucks::Driver::mule && v.npc_why != static_cast<std::uint8_t>(why) &&
+                g_v3.why_lines < 40) {
+                ++g_v3.why_lines;
+                v.npc_why = static_cast<std::uint8_t>(why);
+                Log("[truckv3] v3 host: truck 0x%06X MULE 0x%05X in its driver seat: not sent (%s)", u.key.id, n.driver, trucks::NpcWhyName(why));
+            }
+        }
+        // a vehicle that left our units: stopped (its frames end; the guest's follower detaches)
+        for (auto& kv : g_veh) {
+            Veh& v = kv.second;
+            if (v.npc_on && !UnitFor(v.key.id)) {
+                v.npc_on = false;
+                ++g_v3.stops;
+                Log("[truckv3] v3 host: truck 0x%06X is gone here: no more DRIVE frames (#%u)", v.key.id, g_v3.stops);
+            }
+        }
+        return;
+    }
+    if (g_role != 2) return;
+    for (auto& kv : g_veh) {
+        Veh& v = kv.second;
+        if (!v.npc_follow) continue;
+        if (v.block && g_now - v.v3_log_ms >= 5000) {
+            v.v3_log_ms = g_now;
+            Log("[truckv3] v3 guest: follower of truck 0x%06X (the host's MULE drives it): placement error mean %.3f max %.3f m over %u ticks; at >= 5 m/s "
+                "mean %.3f max %.3f m over %u; last 5 s max %.3f m; %u driven teleports; %llu frames",
+                v.key.id, v.ride_n ? v.ride_sum / v.ride_n : 0.0, v.ride_max, v.ride_n, v.fast_n ? v.fast_sum / v.fast_n : 0.0, v.fast_max, v.fast_n, v.v3_win_max,
+                v.n_tp_driven, static_cast<unsigned long long>(v.npc_frames));
+            v.v3_win_max = 0;
+        }
+        // her copy's seat taken by a driver of her own game: the follower cannot attach (Attach refuses a held seat)
+        if (!v.block && g_now - v.track_rx_ms < 1000 && g_now - v.v3_refused_ms >= 5000) {
+            const vshare::Unit* u = UnitFor(v.key.id);
+            std::int32_t has = 0;
+            std::uint32_t drv = kNoActor;
+            if (u && u->entity && EntityLive(u->unit, u->entity, v.key.kind) && mem::Rd(u->entity + kVHasDriver, has) && has != 0 &&
+                mem::Rd(u->entity + kVDriver, drv)) {
+                v.v3_refused_ms = g_now;
+                ++g_v3.refused_driver;
+                Log("[truckv3] v3 guest: follower of truck 0x%06X refused: her copy's driver seat holds 0x%06X (%s of her own game) (#%u)", v.key.id, drv,
+                    trucks::DriverName(trucks::DriverOf(drv)), g_v3.refused_driver);
+            }
+        }
+    }
+}
+
 void TickBody(const TickIn& in, double now) {
     g_now = now;
     g_local = in.local;
@@ -2589,6 +2809,7 @@ void TickBody(const TickIn& in, double now) {
         g_gen = gen;
         if (!g_veh.empty()) Log("[vdrive] a new link session: every vehicle is the host's again");
         ResetAll("a new link session");
+        g_v3_hello_next = 0;  // round 28 T1: our hello at once in the new session (the partner's old one no longer counts)
     }
     std::uint32_t counter = 0;
     const bool ready = vshare::WorldReadyNow(&counter);
@@ -2600,6 +2821,7 @@ void TickBody(const TickIn& in, double now) {
         g_counter = counter;
         g_ready_since = now;
     }
+    V3Pre(now, ready);  // round 28 T1 (vehicle_mule_v3)
     if (!ready) return;
     // this tick's units
     static vshare::Unit buf[256];
@@ -2611,6 +2833,7 @@ void TickBody(const TickIn& in, double now) {
         if (kv.second.block && !UnitFor(kv.first)) Detach(kv.second, "the vehicle is gone here");
     DetectLocalDrive(in);
     MeasureTick(in);
+    V3Tick();  // round 28 T1
     AutoTick();
     OwnershipTick(in);
     PushTick(in);
@@ -2708,6 +2931,14 @@ void Install(const Config& config) noexcept {
     g_vt_copy[2] = reinterpret_cast<std::uintptr_t>(&InUpdate);
     g_vt_ready = true;
     for (std::uint8_t t = 16; t <= 19; ++t) vshare::RegisterHandler(t, &OnOwn);
+    // round 28 T1 (vehicle_mule_v3, default 0): the STV3 hello's handler only with the key on (off: type 51 dropped as before)
+    g_v3_key = config.vehicle_mule_v3;
+    if (g_v3_key && !vshare::RegisterHandler(trucks::kV3HelloType, &OnV3Hello)) {
+        g_v3_key = false;
+        Log("[truckv3] v3: SVM1 type %u is taken: vehicle_mule_v3 OFF", trucks::kV3HelloType);
+    }
+    Log("[truckv3] v3: vehicle_mule_v3=%d (%s)", g_v3_key ? 1 : 0,
+        g_v3_key ? "host MULE trucks: live once the partner's STV3 hello comes" : "off: MULE trucks are left to each game");
     vshare::SetGuestOwnsQuery(&GuestOwnsQuery);
     vshare::SetFollowedQuery(&FollowedQuery);
     g_off[0] = 0;
@@ -2746,6 +2977,33 @@ unsigned TakeSend(game::Entity* local, std::uint32_t sender_ms, double now, std:
                 if (s) sizes[n++] = s, ++g_tx_drive;
             }
         }
+        // round 28 T1 (vehicle_mule_v3): the trucks a MULE of ours drives (V3Tick), as DRIVE frames with kDrvNpc (at most 4 a tick;
+        // every tick within 100 m of the partner body, else 10 Hz). Only while V3 is live: an older build never gets one.
+        if (g_role == 1 && V3On()) {
+            unsigned npc_n = 0;
+            for (auto& kv : g_veh) {
+                if (n >= max || npc_n >= 4) break;
+                Veh& v = kv.second;
+                if (!v.npc_on || !trucks::NpcSendDue(v.npc_partner_m, now - v.npc_sent_ms)) continue;
+                const vshare::Unit* u = UnitFor(v.key.id);
+                WorldTransform xf{};
+                if (!u || !u->entity || !EntityLive(u->unit, u->entity, v.key.kind) || !ReadXf(u->entity, xf)) continue;
+                vwire::DriveFrame f;
+                if (!FillFrame(v, u->entity, xf, vwire::DriveType::drive, sender_ms, &f)) {
+                    ++g_v3.fill_fail;
+                    continue;
+                }
+                f.flags |= vwire::kDrvNpc;
+                const std::size_t s = vwire::EncodeDrive(f, out[n], vwire::kMaxDriveFrameSize);
+                if (!s) {
+                    ++g_v3.fill_fail;
+                    continue;
+                }
+                sizes[n++] = s;
+                ++g_tx_drive, ++g_v3.npc_tx, ++v.npc_frames, ++npc_n;
+                v.npc_sent_ms = now;
+            }
+        }
         // parked vehicles we own: 1 Hz, at once on a change (5 cm / 2 deg, at most 10 Hz each); the changed ones first
         for (int pass = 0; pass < 2 && n < max; ++pass) {
             for (const vshare::Unit& u : g_units) {
@@ -2753,7 +3011,14 @@ unsigned TakeSend(game::Entity* local, std::uint32_t sender_ms, double now, std:
                 Veh* v = FindV(u.key.id);
                 if (!v || !WeOwn(*v) || !u.entity || v->block || (g_drive.on && g_drive.key.id == u.key.id)) continue;
                 if (!v->meas_have || now - v->meas_ms > 1000) continue;  // not measured: not near either player
-                if (MuleHeld(u.key.id, kHeldPark)) continue;              // round 23 D
+                if (v->npc_on) continue;                                  // round 28 T1: its DRIVE frames go out above
+                // round 23 D; round 28 T1: a truck our MULE drove in this world (V3) is sent parked (the guest's follower lets go
+                // and her copy is placed where ours stopped)
+                if (V3On() && v->npc_ever && !v->npc_seat_mule) {
+                    if (pass == 1) ++g_v3.park_lifted;
+                } else if (MuleHeld(u.key.id, kHeldPark)) {
+                    continue;
+                }
                 const WorldTransform& xf = v->meas_last;
                 const bool changed = !v->park_sent_have || Dist3(xf, v->park_sent) > 0.05 ||
                                      vwire::AngleBetweenRows(Rows(xf), Rows(v->park_sent)) > 2.0 || (v->speed_mps > 0.05 && !v->rest.AtRest());
@@ -2788,6 +3053,17 @@ void OnFrame(const vwire::DriveFrame& f, double key, double now) noexcept {
     }
     if (g_role == 1 && !FindV(f.key.id)) {
         ++g_rx_refused;  // the guest owns nothing it was not granted
+        return;
+    }
+    // round 28 T1: a MULE-driven truck's frames: the host's only, and only while V3 is live here (vehicle_mule_v3 and the hello)
+    if (f.Has(vwire::kDrvNpc) && (g_role != 2 || !V3On())) {
+        ++g_rx_refused;
+        ++g_v3.npc_refused;
+        if (now - g_v3_refuse_log_ms > 5000) {
+            g_v3_refuse_log_ms = now;
+            Log("[truckv3] v3 %s: a MULE-driven truck's frame for 0x%06X refused (%s; %llu so far)", g_role == 1 ? "host" : "guest", f.key.id,
+                g_role != 2 ? "the guest never sends one" : trucks::V3StateName(g_v3_state), static_cast<unsigned long long>(g_v3.npc_refused));
+        }
         return;
     }
     Veh& v = V(f.key);
@@ -2848,6 +3124,15 @@ void OnFrame(const vwire::DriveFrame& f, double key, double now) noexcept {
         while (v.track.size() > 120) v.track.pop_front();
         v.track_rx_ms = now;
         v.release_detach_ms = 0;  // it drives (again)
+        // round 28 T1: the host's MULE drives it (the follower is not the partner's Sam: no seat, no ride)
+        v.npc_follow = f.Has(vwire::kDrvNpc);
+        if (v.npc_follow) {
+            ++v.npc_frames, ++g_v3.npc_rx;
+            if (!v.npc_ever) {
+                v.npc_ever = true;
+                Log("[truckv3] v3 guest: truck 0x%06X: the host's MULE drives it: followed here (owner host, epoch %u)", f.key.id, v.own.epoch);
+            }
+        }
     } else {
         ++g_rx_park;
         if (v.have_park && v.park.key > 0 && key <= v.park.key) return;
@@ -2954,7 +3239,7 @@ bool SeatTarget(double play_ms, game::WorldTransform* target) noexcept {
     if (!Active() || !target) return false;
     for (auto& kv : g_veh) {
         Veh& v = kv.second;
-        if (!v.block || !v.ctl_entity) continue;
+        if (!v.block || !v.ctl_entity || v.npc_follow) continue;  // (round 28 T1: a host MULE drives that one)
         float seat[3], seat_r[3][3];
         std::uint8_t kind = 0;
         if (!vsync::PartnerSeatAt(play_ms, seat, seat_r, &kind) || kind != v.key.kind) return false;
@@ -3021,12 +3306,12 @@ bool PartnerVehicleEntity(std::uintptr_t* entity) noexcept {
     if (!Active() || !entity) return false;
     std::uintptr_t e = 0;
     for (auto& kv : g_veh)
-        if (kv.second.block && EntityLive(kv.second.ctl_unit, kv.second.ctl_entity, kv.second.key.kind)) e = kv.second.ctl_entity;
+        if (kv.second.block && !kv.second.npc_follow && EntityLive(kv.second.ctl_unit, kv.second.ctl_entity, kv.second.key.kind)) e = kv.second.ctl_entity;
     if (!e) {
         double newest = -1e18;
         for (auto& kv : g_veh) {
             const Veh& x = kv.second;
-            if (x.track_rx_ms < newest || x.track_rx_ms < -1e17) continue;  // the partner's DRIVE frames: it drove it (it may be ours again)
+            if (x.npc_ever || x.track_rx_ms < newest || x.track_rx_ms < -1e17) continue;  // (round 28 T1: not a host MULE's truck)  // the partner's DRIVE frames: it drove it (it may be ours again)
             const vshare::Unit* u = UnitFor(kv.first);
             if (u && u->entity) newest = x.track_rx_ms, e = u->entity;
         }
@@ -3074,7 +3359,7 @@ bool PartnerDriving(DrivenView* out) noexcept {
     if (!Active()) return false;
     for (auto& kv : g_veh) {
         const Veh& v = kv.second;
-        if (!v.block || !v.ctl_entity || !EntityLive(v.ctl_unit, v.ctl_entity, v.key.kind)) continue;
+        if (!v.block || !v.ctl_entity || v.npc_follow || !EntityLive(v.ctl_unit, v.ctl_entity, v.key.kind)) continue;
         if (out) FillView(v, v.ctl_entity, v.ctl_unit, out);
         return true;
     }
@@ -3109,7 +3394,7 @@ bool RecentTeleport(std::uintptr_t entity, double within_ms, game::WorldTransfor
 bool PartnerDrivenEntity(std::uintptr_t* entity) noexcept {
     if (!Active()) return false;
     for (auto& kv : g_veh)
-        if (kv.second.block && kv.second.ctl_entity && EntityLive(kv.second.ctl_unit, kv.second.ctl_entity, kv.second.key.kind)) {
+        if (kv.second.block && kv.second.ctl_entity && !kv.second.npc_follow && EntityLive(kv.second.ctl_unit, kv.second.ctl_entity, kv.second.key.kind)) {
             if (entity) *entity = kv.second.ctl_entity;
             return true;
         }
@@ -3317,6 +3602,59 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept 
 }
 
 }  // namespace st::vdrive
+
+// ---------------------------------------------------------------- round 28 T1: the V3 queries (truck_v3.hpp; game thread)
+namespace st::truckv3 {
+
+bool V3Live() noexcept { return vdrive::V3On(); }
+
+bool V3SeatNear(const double (&pos)[3], double radius_m, std::uint32_t* truck_id) noexcept {
+    using namespace st::vdrive;
+    if (!V3On() || g_role != 2 || !std::isfinite(pos[0]) || !std::isfinite(pos[1]) || !std::isfinite(pos[2]) || !(radius_m > 0)) return false;
+    double best = 1e18;
+    bool best_follow = false;
+    std::uint32_t best_id = 0;
+    __try {
+        for (const vshare::Unit& u : g_units) {
+            if (u.key.kind != trucks::kKindTruck || !u.bound) continue;
+            WorldTransform xf{};
+            bool have = false;
+            if (u.entity && EntityLive(u.unit, u.entity, u.key.kind)) have = ReadXf(u.entity, xf);
+            if (!have && u.has_xf) xf = u.xf, have = true;
+            if (!have) continue;
+            const double d = Dist3(xf, pos);
+            if (!(d <= radius_m)) continue;
+            const Veh* v = FindV(u.key.id);
+            const bool follow = v && v->npc_follow && v->block;  // the host's MULE drives it, followed here: preferred
+            if ((follow && !best_follow) || (follow == best_follow && d < best)) best = d, best_follow = follow, best_id = u.key.id;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    if (!best_id) return false;
+    if (truck_id) *truck_id = best_id;
+    return true;
+}
+
+bool V3Status(char* msg, std::size_t cap) noexcept {
+    using namespace st::vdrive;
+    unsigned on = 0, follow = 0, attached = 0;
+    for (const auto& kv : g_veh) {
+        if (kv.second.npc_on) ++on;
+        if (kv.second.npc_follow) ++follow, attached += kv.second.block ? 1u : 0u;
+    }
+    Log("[truckv3] v3 status: key %d, %s (%s); hello tx %llu rx %llu bad %llu; host: %u MULE-driven now, %u starts, %u stops, %llu DRIVE+npc "
+        "frames sent, %u claims denied, %u PARK lifts; guest: %u followed (%u attached), %llu DRIVE+npc frames in, %llu refused, %u parked lifts, %u "
+        "driver-seat refusals; %llu fill failures",
+        g_v3_key ? 1 : 0, V3On() ? "LIVE" : "not live", trucks::V3StateName(g_v3_state), static_cast<unsigned long long>(g_v3.hello_tx),
+        static_cast<unsigned long long>(g_v3.hello_rx), static_cast<unsigned long long>(g_v3.hello_bad), on, g_v3.starts, g_v3.stops,
+        static_cast<unsigned long long>(g_v3.npc_tx), g_v3.claims_denied, g_v3.park_lifted, follow, attached, static_cast<unsigned long long>(g_v3.npc_rx),
+        static_cast<unsigned long long>(g_v3.npc_refused), g_v3.parked_lifted, g_v3.refused_driver, static_cast<unsigned long long>(g_v3.fill_fail));
+    if (msg && cap) std::snprintf(msg, cap, "v3 %s (%s): %u MULE-driven, %u followed", V3On() ? "live" : "not live", trucks::V3StateName(g_v3_state), on, follow);
+    return true;
+}
+
+}  // namespace st::truckv3
 
 namespace st::game {
 bool VehicleDriveCommand(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept { return vdrive::Command(op, v, msg, cap); }

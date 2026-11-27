@@ -141,8 +141,9 @@ waitnew 8 \[enemy\] pstim made #
 wait 1500
 # ---- TR (op 13, the last step: it ends her body): the game's own RemoveEntityNow on the game thread; the guard sees it before
 # real_body's line; parked, removed; both games go on (real_body spawns her a new body)
+# (run 20261127-023013) like TG: the game's pool can end the parked record before Step2 ("forgotten (not in the live list ...")
 action enemy_tgt 13
-waitnew 5 \[enemy\] pstim removed \(
+waitnew 5 \[enemy\] pstim (removed \(|forgotten \(not in the live list as ours any more)
 wait 8000
 screenshot 03-host-tr
 @guest screenshot 03-guest-tr

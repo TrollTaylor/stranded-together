@@ -295,4 +295,130 @@ inline bool FactChanged(const Fact& a, const Fact& b) noexcept {
     return a.model != b.model || a.driver != b.driver || a.driver_id != b.driver_id;
 }
 
+// ================================================================ round 28 T1: host-owned MULE trucks (vehicle_mule_v3)
+// docs/enemy-sync.md 14.21 (design: round 28 r-trucks.md section 3). A truck a MULE of the HOST's game drives is the host's
+// vehicle like one its Sam drives: the host sends STD1 DRIVE frames for it (the MULE's 48 input bytes, read from the vehicle's
+// input object [vehicle+0x528] = the MULE's NPC drive controller ctl+0x30, plan Q2) with vwire::kDrvNpc, and the guest's
+// copy becomes vehicle_drive's follower (the seat held by the mod's controller: her own MULEs cannot board it). The guest's
+// mirrors of the occupants stay frozen and hidden while their host copy sits in a truck she follows (enemy_rules
+// LeaseVerdict::seated) instead of being released to her game ("in a vehicle on the host").
+//
+//   STV3     the capability hello (SVM1 external type 51, channel 3, both ways, every 2 s while the key is on): an old build
+//            drops the unknown type, and kDrvNpc frames are never sent to a partner whose hello is missing or stale.
+//   V3Gate   whether V3 is live here: the key, remote driving on, a valid role, the partner's fresh hello of this link
+//            session with the feature bit, from the other role.
+//   NpcDrive the host's test of one truck: seated (+0x63C = 1) with a MULE id (+0x8B0, actor type 1), the input object present
+//            with the game's input vtable (not our follower's copy), not ours to follow, our Sam not on it, ours, and the
+//            partner body within 300 m.
+inline constexpr std::uint8_t kV3HelloType = 51;          // SVM1 external type
+inline constexpr std::size_t kV3HelloSize = 8;            // "STV3" | u8 version | u8 features | u8 role (1 host, 2 guest) | u8 0
+inline constexpr std::uint8_t kV3Version = 1;
+inline constexpr std::uint8_t kV3FeatHostTrucks = 1;      // T1: the host sends, the guest follows, host-owned MULE-driven trucks
+inline constexpr std::uint8_t kV3AllFeatures = 1;
+inline constexpr double kV3HelloEveryMs = 2000.0;
+inline constexpr double kV3HelloFreshMs = 7000.0;         // the partner's hello counts this long
+inline constexpr double kV3SendRangeM = 300.0;            // the partner body within this of the truck (the PARK frames' range)
+inline constexpr double kV3SeatNearM = 5.0;               // guest: a host copy in a vehicle within this of a truck of hers
+
+struct V3Hello {
+    std::uint8_t version = kV3Version;
+    std::uint8_t features = 0;
+    std::uint8_t role = 0;  // 1 host, 2 guest
+};
+// The body (after the SVM1 header). 0 when it does not validate or does not fit.
+inline std::size_t EncodeV3Hello(const V3Hello& h, std::uint8_t* out, std::size_t cap) noexcept {
+    if (!out || cap < kV3HelloSize || h.version < 1 || (h.role != 1 && h.role != 2)) return 0;
+    std::memcpy(out, "STV3", 4);
+    out[4] = h.version, out[5] = h.features, out[6] = h.role, out[7] = 0;
+    return kV3HelloSize;
+}
+// Strict: the magic, the exact size, version >= 1, role 1 or 2, the reserved byte 0. Unknown feature bits are dropped.
+inline bool DecodeV3Hello(const std::uint8_t* in, std::size_t size, V3Hello& h) noexcept {
+    if (!in || size != kV3HelloSize || std::memcmp(in, "STV3", 4) != 0) return false;
+    if (in[4] < 1 || (in[6] != 1 && in[6] != 2) || in[7] != 0) return false;
+    h.version = in[4];
+    h.features = static_cast<std::uint8_t>(in[5] & kV3AllFeatures);
+    h.role = in[6];
+    return true;
+}
+
+enum class V3State : std::uint8_t { live, key_off, drive_off, no_hello, old_session, stale_hello, no_feature, same_role };
+inline const char* V3StateName(V3State s) noexcept {
+    switch (s) {
+        case V3State::live: return "live";
+        case V3State::key_off: return "vehicle_mule_v3=0";
+        case V3State::drive_off: return "remote driving off";
+        case V3State::no_hello: return "no STV3 hello from the partner (an older build, or its key is off)";
+        case V3State::old_session: return "the partner's hello is from an older link session";
+        case V3State::stale_hello: return "the partner's hello is stale";
+        case V3State::no_feature: return "the partner does not follow host MULE trucks";
+        case V3State::same_role: return "the partner's hello names our own role";
+    }
+    return "?";
+}
+struct V3GateIn {
+    bool key_on = false;           // session.ini vehicle_mule_v3
+    bool drive_on = false;         // vdrive::Active and the world ready
+    int role = 0;                  // ours: 1 host, 2 guest
+    bool have_hello = false;
+    bool same_session = false;     // the hello came in this link session (generation)
+    double hello_age_ms = 1e18;
+    std::uint8_t features = 0;
+    std::uint8_t peer_role = 0;
+};
+inline V3State V3Gate(const V3GateIn& g) noexcept {
+    if (!g.key_on) return V3State::key_off;
+    if (!g.drive_on || (g.role != 1 && g.role != 2)) return V3State::drive_off;
+    if (!g.have_hello) return V3State::no_hello;
+    if (!g.same_session) return V3State::old_session;
+    if (!(g.hello_age_ms >= 0 && g.hello_age_ms <= kV3HelloFreshMs)) return V3State::stale_hello;
+    if (!(g.features & kV3FeatHostTrucks)) return V3State::no_feature;
+    if (g.peer_role != 3 - g.role) return V3State::same_role;
+    return V3State::live;
+}
+
+enum class NpcWhy : std::uint8_t { drives, no_seat, not_mule, no_input, not_game_input, our_follower, our_sam, not_ours, partner_far };
+inline const char* NpcWhyName(NpcWhy w) noexcept {
+    switch (w) {
+        case NpcWhy::drives: return "a MULE drives it";
+        case NpcWhy::no_seat: return "nobody in the driver seat";
+        case NpcWhy::not_mule: return "the driver is not a MULE";
+        case NpcWhy::no_input: return "no input object";
+        case NpcWhy::not_game_input: return "the input object is not the game's";
+        case NpcWhy::our_follower: return "our follower holds it";
+        case NpcWhy::our_sam: return "our Sam drives it";
+        case NpcWhy::not_ours: return "the partner owns it";
+        case NpcWhy::partner_far: return "the partner is far";
+    }
+    return "?";
+}
+struct NpcDriveIn {
+    bool seat_read = false;          // +0x63C / +0x8B0 read
+    std::uint32_t has = 0;           // +0x63C
+    std::uint32_t driver = kNoActor; // +0x8B0
+    bool input = false;              // [+0x528] non-null
+    bool input_game = false;         // its vtable is the game's input vtable 0x143E229B8
+    bool follower_here = false;      // our follower controller holds it
+    bool sam_drives = false;         // our Sam holds the seat
+    bool we_own = false;             // the host owns it (VOWN)
+    double partner_m = -1;           // the partner body from it (-1 unknown)
+};
+inline NpcWhy NpcDrive(const NpcDriveIn& n) noexcept {
+    if (n.follower_here) return NpcWhy::our_follower;
+    if (n.sam_drives) return NpcWhy::our_sam;
+    if (!n.seat_read || n.has != 1 || n.driver >= kNoActor) return NpcWhy::no_seat;
+    if (DriverOf(n.driver) != Driver::mule) return NpcWhy::not_mule;
+    if (!n.input) return NpcWhy::no_input;
+    if (!n.input_game) return NpcWhy::not_game_input;
+    if (!n.we_own) return NpcWhy::not_ours;
+    if (!(n.partner_m >= 0 && n.partner_m <= kV3SendRangeM)) return NpcWhy::partner_far;
+    return NpcWhy::drives;
+}
+// The host's send pacing for one MULE-driven truck: every pose tick (30 Hz) while the partner body is within 100 m, else at
+// most 10 Hz.
+inline constexpr double kV3NearM = 100.0, kV3FarGapMs = 100.0;
+inline bool NpcSendDue(double partner_m, double since_last_ms) noexcept {
+    return (partner_m >= 0 && partner_m <= kV3NearM) || since_last_ms >= kV3FarGapMs;
+}
+
 }  // namespace st::trucks

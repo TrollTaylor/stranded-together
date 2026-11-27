@@ -265,6 +265,101 @@ void TestCodec() {
     CHECK(FactChanged(a, b));
 }
 
+// round 28 T1 (vehicle_mule_v3): the STV3 hello, the gate, the host's MULE-driver test and its pacing
+void TestV3() {
+    // the hello round-trips; strict decode
+    V3Hello h;
+    h.features = kV3FeatHostTrucks, h.role = 1;
+    std::uint8_t b[16] = {};
+    CHECK(EncodeV3Hello(h, b, sizeof(b)) == kV3HelloSize);
+    CHECK(std::memcmp(b, "STV3", 4) == 0 && b[4] == kV3Version && b[5] == 1 && b[6] == 1 && b[7] == 0);
+    V3Hello back;
+    CHECK(DecodeV3Hello(b, kV3HelloSize, back) && back.version == 1 && back.features == kV3FeatHostTrucks && back.role == 1);
+    CHECK(!DecodeV3Hello(b, kV3HelloSize - 1, back) && !DecodeV3Hello(b, kV3HelloSize + 1, back) && !DecodeV3Hello(nullptr, kV3HelloSize, back));
+    CHECK(EncodeV3Hello(h, b, kV3HelloSize - 1) == 0);
+    V3Hello bad = h;
+    bad.role = 3;
+    CHECK(EncodeV3Hello(bad, b, sizeof(b)) == 0);
+    bad = h, bad.version = 0;
+    CHECK(EncodeV3Hello(bad, b, sizeof(b)) == 0);
+    EncodeV3Hello(h, b, sizeof(b));
+    b[7] = 1;
+    CHECK(!DecodeV3Hello(b, kV3HelloSize, back));  // the reserved byte
+    b[7] = 0, b[6] = 0;
+    CHECK(!DecodeV3Hello(b, kV3HelloSize, back));  // no role
+    b[6] = 2, b[4] = 0;
+    CHECK(!DecodeV3Hello(b, kV3HelloSize, back));  // version 0
+    b[4] = 2, b[5] = 0xFF;
+    CHECK(DecodeV3Hello(b, kV3HelloSize, back) && back.version == 2 && back.features == kV3AllFeatures && back.role == 2);  // unknown bits dropped
+    b[0] = 'X';
+    CHECK(!DecodeV3Hello(b, kV3HelloSize, back));
+    static_assert(kV3HelloType != kFactsType && kV3HelloType >= 16 && kV3HelloType <= 63, "STV3 hello type");
+    // the gate: first failing condition wins
+    V3GateIn g;
+    CHECK(V3Gate(g) == V3State::key_off);
+    g.key_on = true;
+    CHECK(V3Gate(g) == V3State::drive_off);
+    g.drive_on = true;
+    CHECK(V3Gate(g) == V3State::drive_off);  // no role
+    g.role = 2;
+    CHECK(V3Gate(g) == V3State::no_hello);
+    g.have_hello = true;
+    CHECK(V3Gate(g) == V3State::old_session);
+    g.same_session = true;
+    CHECK(V3Gate(g) == V3State::stale_hello);  // the default age
+    g.hello_age_ms = kV3HelloFreshMs + 1;
+    CHECK(V3Gate(g) == V3State::stale_hello);
+    g.hello_age_ms = 1500;
+    CHECK(V3Gate(g) == V3State::no_feature);
+    g.features = kV3FeatHostTrucks;
+    CHECK(V3Gate(g) == V3State::same_role);  // peer role 0
+    g.peer_role = 2;
+    CHECK(V3Gate(g) == V3State::same_role);
+    g.peer_role = 1;
+    CHECK(V3Gate(g) == V3State::live);
+    g.role = 1, g.peer_role = 2;
+    CHECK(V3Gate(g) == V3State::live);
+    g.key_on = false;
+    CHECK(V3Gate(g) == V3State::key_off);
+    for (int s = 0; s <= 7; ++s) CHECK(std::strcmp(V3StateName(static_cast<V3State>(s)), "?") != 0);
+    // the host's MULE-driver test (run 20261127-002653: 0x2000F, driver 0x0202E, [+0x528] the MULE's ctl+0x30)
+    NpcDriveIn n;
+    CHECK(NpcDrive(n) == NpcWhy::no_seat);
+    n.seat_read = true, n.has = 1, n.driver = 0x0202E;
+    n.input = n.input_game = n.we_own = true;
+    n.partner_m = 40;
+    CHECK(NpcDrive(n) == NpcWhy::drives);
+    NpcDriveIn x = n;
+    x.has = 0;
+    CHECK(NpcDrive(x) == NpcWhy::no_seat);
+    x = n, x.driver = kNoActor;
+    CHECK(NpcDrive(x) == NpcWhy::no_seat);  // our follower's own driver id
+    x = n, x.driver = kSam;
+    CHECK(NpcDrive(x) == NpcWhy::not_mule);
+    x = n, x.driver = kOther;
+    CHECK(NpcDrive(x) == NpcWhy::not_mule);
+    x = n, x.input = false;
+    CHECK(NpcDrive(x) == NpcWhy::no_input);
+    x = n, x.input_game = false;
+    CHECK(NpcDrive(x) == NpcWhy::not_game_input);
+    x = n, x.follower_here = true;
+    CHECK(NpcDrive(x) == NpcWhy::our_follower);
+    x = n, x.sam_drives = true;
+    CHECK(NpcDrive(x) == NpcWhy::our_sam);
+    x = n, x.we_own = false;
+    CHECK(NpcDrive(x) == NpcWhy::not_ours);
+    x = n, x.partner_m = -1;
+    CHECK(NpcDrive(x) == NpcWhy::partner_far);
+    x = n, x.partner_m = kV3SendRangeM + 0.5;
+    CHECK(NpcDrive(x) == NpcWhy::partner_far);
+    x = n, x.partner_m = kV3SendRangeM;
+    CHECK(NpcDrive(x) == NpcWhy::drives);
+    for (int w = 0; w <= 8; ++w) CHECK(std::strcmp(NpcWhyName(static_cast<NpcWhy>(w)), "?") != 0);
+    // pacing: every tick near, 10 Hz far
+    CHECK(NpcSendDue(50, 0) && NpcSendDue(kV3NearM, 10));
+    CHECK(!NpcSendDue(150, 50) && NpcSendDue(150, kV3FarGapMs) && !NpcSendDue(-1, 10) && NpcSendDue(-1, 200));
+}
+
 void TestKeys() {
     cfgval::TruckKeys k;
     CHECK(k.log && k.hold);
@@ -281,6 +376,7 @@ int main() {
     TestPlayerLast();
     TestLatch();
     TestCodec();
+    TestV3();
     TestKeys();
     std::printf("%d checks, %d failed\n", g_checks, g_fail);
     return g_fail ? 1 : 0;

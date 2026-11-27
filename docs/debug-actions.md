@@ -286,6 +286,58 @@ our own Sam's entity and place come from the mod's usual guarded getters (GetLoc
 
 Scenario: `two-games-enemy-census` (the T0 run).
 
+### Bt probe (`bt_probe`; round 28 P3, [enemy-sync.md](enemy-sync.md) section 18; hidden runs or session.ini bt_probe)
+
+`action bt_probe <op> [seconds]`: the BT field census, read only, logged as "[bt]".
+* 0 stops it, with a totals line.
+* 1 logs a census once a second (or every [seconds], 0.25..30): gazer count, fingerprints both games can compare, nearest gazer, hunter area, catchers and concentration meter, plus change lines.
+* 2 writes one full dump: every gazer, every field record with its killed list, the hunter manager, the catchers, and the registry's type-8 count.
+
+It is refused outside hidden runs unless `bt_probe` is set in session.ini.
+
+### Bt sync (`bt_sync`; round 28 lane B1, [enemy-sync.md](enemy-sync.md) section 21; session.ini bt_sync=0|1|2, default 2)
+
+`action bt_sync <op>`: the BT field sync between the two games, logged as "[bt]". Refused with `bt_sync=0` (the default is 2).
+* 0 the status line: `[bt] sync status (action): bt_sync N role R, partner on|off ... bad N, stale N, unsent N`.
+* 1 sends FIELD at the next census.
+* 3 (hidden runs) a test VOID to the partner: there `[bt] partner voidout (test): ... notice only (no game effect)`.
+* 4 (hidden runs) a test NOTICED to the partner: there `[bt] partner sensed (test): ...`.
+
+Nothing goes out before the partner's SEH1 beacon and its BTS1 hello (its bt_sync != 0). With bt_sync=2 the guest applies the
+host's RESET only on a sandboxed save (host-save guest, test save, hidden run) and not in a menu / cutscene or the hunter area.
+Scenario: `two-games-bt-field`.
+
+### Odradek probe (`odra`, `odra_replay`; round 28 P4, [enemy-sync.md](enemy-sync.md) section 19; session.ini odradek_probe=1)
+
+`odra <op> ...` / `odra_replay x y z` (`session.ini odradek_probe=1`, default 0; scan and replay in hidden runs or with dev_tools
+only; `odradek_sync.cpp`, `odra_rules.hpp`). One byte-checked detour on the scan state machine FUN_14282B530: `[odra] state a -> b`,
+`scan edge 3 -> 4: origin ...`, `scan cycle 0>1>2>3>4>5>0 complete`, `survey 244 a -> b ...`, `wave ...`, `decal centre ...`,
+`beat ...` (watch on by default).
+* 0 the dump (threads, inventory, waves, survey comp and resource, config +0x3320/+0x3324, DSPlayerSystem).
+* 1 <0|1> the watch.
+* 2 a local scan (the native trigger's writes, state 0/5, Odradek present, body ready). Also with odradek_scan_sync alone
+  (odradek_probe=0) in a hidden run: the shipped config's sender (`two-games-round28-defaults`).
+* 3 <m> [mode] the survey replayed m m ahead of Sam (FUN_1433123C0 on our own comp; refused while the local scan or a survey
+  runs, beyond 300 m, within 1.5 s). mode 1 forces mode 1; 0 or absent uses op 4's mode (mode 0 cannot be forced per call).
+* 4 <mode> 0 the comp only, 1 the finished wave moved there first.
+* `odra_replay x y z` the same at a point (z 0 = Sam's height).
+
+Ops 0-4 send no wire messages. After the mod's emergency stop the detour passes straight through and pending requests are dropped.
+Scenario: `odradek-probe`.
+
+Round 28 O3, the scan sync ([enemy-sync.md](enemy-sync.md) section 19.1; `session.ini odradek_scan_sync`, default 1; the
+detour then goes in with either key):
+* 5 <m> [mask] a test partner scan m metres ahead shown here (needs odradek_probe): `[odra] partner scan shown ... mode=full|visual
+  steps=0x..`, or `queued: <why>` / `dropped: <why>`.
+* 6 <mask> the start steps (needs odradek_probe; 1 wave, 2 emit dir, 4 slot, 8 sensor, 16 front, 32 system, 64 survey; default
+  127).
+* 7 the scan sync status (`[odra] scan sync: key .., start path .. (mask 0x..), ...`; also with odradek_probe=0 when
+  odradek_scan_sync=1).
+* 8 <m> a test scan m metres ahead sent to the partner (needs odradek_probe=1 and odradek_scan_sync=1; the partner's SOD1 hello
+  with cap 0x01 first).
+
+Every op but 7 is refused with odradek_probe=0 ("odradek_probe is off"). Scenario: `two-games-odradek-scan`.
+
 ### Enemy probe (`enemy_probe`; enemy sync P1-0, [enemy-sync.md](enemy-sync.md) section 7.2; hidden runs only)
 
 `native/mod/enemy_sync.cpp`: freezes one realized MULE with one lever, drives its place, gives it back and watches it.
@@ -682,6 +734,20 @@ camp), `two-games-enemy-single-walk` and its -know, -camp, -tickets, -hold, -rol
   checker `python -I tools/testenv/enemy-target-gate.py <run folder> [--mode probe|defaults]` (PASS / FAIL / INVALID /
   INCONCLUSIVE per gate item; the mode from the run's session ini when not given).
 
+* `enemy_tgt 14 <1 [s] | 0 | 2 | 3>` (round 28 P1, the attack probe; `session.ini enemy_phit_probe=1`, default 0; 1, 0 and 2 hidden
+  runs only; [enemy-sync.md](enemy-sync.md) section 17). 3 in a hidden run puts in the three counting detours (the attack sphere query 0x1429934E0,
+  the capsule query 0x14298A3F0, the grab start 0x1424BAA70; byte-checked first) and logs `[phit] hooks: sphere on capsule on grab
+  on; byte checks n/n ok`; outside hidden runs 3 only byte-checks and logs that status line (no hook goes in mid-game); 1 [s] starts a watch (default 60 s, at most 300; the hooks first), 0 ends it with the summary, 2 logs the
+  summary now. Lines: `[phit] new: ...`, `[phit] overlap pbody|sam: ...`, `[phit] grab: ...`, `[phit] attacker id=XXXXX ...`,
+  `[phit] site ...`, `[phit] attacks seen: ...`, `[phit] summary (<why>): ...`. Logs only; no gameplay change.
+
+* `enemy_tgt 14 <5 | 6 | 7 | 8> ...` (round 28 E2, the PHIT relay; `session.ini enemy_partner_melee=1|2`, default 1; mode 2 applies with no damage in our runs; hidden runs
+  only; [enemy-sync.md](enemy-sync.md) section 20): 5 <m> the dodge test (each PHIT counts her as m metres further away; 0 off:
+  `[phit] dodge test: on|off`); 6 <attack> a local apply test on the guest (a PHIT from the latest `enemy_look` MULE, seq #0,
+  applied as if received: `[phit] PHIT struck #0 ... (test): mode ..`, then `PHIT applied #0 ... (hurt|no drop)`); 7 the relay
+  status (`[phit] relay (host|guest) status: ...`); 8 <0|1|2|-1> the apply mode for this run (-1 back to the key). Scenario
+  `two-games-enemy-attacks`.
+
 * `enemy_restrain <id | 0> <mode>` (hidden runs, round 23; the guest, or the host while it relays its hits: `enemy_owner`; the
   restrain relay must be on: `[enemy] restrain relay on`): the tie-up relay's own send path on our frozen copy of an enemy the
   other game owns (id 0: the last `enemy_look`'s, else the frozen copy nearest our Sam). Mode 0 native: the outcome setter k 2 on
@@ -950,6 +1016,11 @@ Scenarios: `collision`, `collision-off`, `two-games-collision`, `two-games-all`.
   logo-carrier <p> look ...; logo-carrier-self ...; logo-cap-ours ...; logo-cap-partner ...` and each carrier's mesh mask;
   on a change `[logo] exo-self carrier <p>: the Fragile Express logo on its hood` / `BRIDGES on its hood again` and
   `[logo] logo-cap-ours <p>: the Fragile Express logo on it` / `BRIDGES on it again` (a silver or gold cap: BRIDGES).
+* `action gear 40 <op>` (round 28 O1; docs/real-partner-body.md section 12.9; `session.ini odradek_gear`, default 0): the
+  partner's Odradek on the partner body (two STC1 odradek items, drawn as cinematic props). `gear 40 0|1` sets odradek_gear off /
+  on at run time and re-lays out the partner props; `gear 40 2` the status line (`[odragear] ...`); `gear 40 3 0|1` the test hold
+  (our Odradek read as in a cutscene: not sent); `gear 40 4 <joint|-1>` the anchor joint (-1 auto: the shoulder 35, or the chest 5
+  when the other screen draws us as Fragile). Scenario `two-games-odradek`.
 * `action gear 37 <0|1>` (round 20 cap probe, hidden runs; docs/textures.md "For developers"): does the per-drawable texture
   override reach a worn cap's entity? 0 our head accessories (Sam's own entities on her head under the self view), 1 the
   partner's head props (joints 31..34). Per entity: `[tex] cap probe <who> <p> <class>: +0xB8 <p> <class>, drawable <p>, n
@@ -1596,6 +1667,24 @@ that kind |m| m in front of the vehicle the partner drives here (else of our Sam
 broadside). `vehicle_hit 11` logs the life (`+0x6E8` / `+0x6EC`) and place of every shared vehicle within 300 m (compare
 both games). `vehicle_hit 12 <kind> <m>` (hidden tests) puts the nearest free vehicle of that kind m along the nearest free
 truck's forward (negative: behind it), on its heading.
+
+### Truck v3 (`truck_v3`; round 28 P2; `session.ini vehicle_truck_probe=1`, default 0)
+
+Read-only probe of the MULE trucks' controllers (docs/enemy-sync.md 14.20); every line starts `[truckv3]`. At start-up (key on)
+`[truckv3] byte checks n/43 ok (groups ok 0x3F), get-off detour on` (groups: 0x01 pools, 0x02 vehicle, 0x04 actors required;
+0x08 ride, 0x10 controller, 0x20 get-off optional). `truck_v3 9` logs, per vehicle whose driver seat (+0x8B0) is a non-player,
+an `id` line: [vehicle+0x528] against the driver MULE's controller input (actor+0x3D0+0x30) SAME / DIFFERS, the controller's
+state (+0x18), driver (+0x20), vehicle (+0x00) and AI drive component (+0x100), the ride's seat (+0x3C0), vehicle id (+0xE20),
+handle (+0xE28) and riding bit (+0xE44), +0x63C, the ride state, speed, life, the mismatches; then the 48 input bytes and
+whether the wire check accepts them; `id done: ... identity same k/n`. `truck_v3 8`: every riding MULE's transform in its
+truck's frame (local position, rows, yaw, parent) and its capsule (+0x5A0); `seats done`. `truck_v3 1 [s]`: the watch
+(`board` / `leave` / `seat` / `ctl` lines, a driver's boarding reads its identity; a `drive` line per MULE-driven vehicle every
+5 s). The get-off detour (0x142AFB010, pass-through) logs `get-off #n caller site 0x.. (name) ...` (the first 40) and counts
+per caller. `truck_v3 0`: the watch off and the `status` line. Scenario: trucks-v3-solo.
+
+`truck_v3 3` (round 28 T1, works with vehicle_truck_probe=0; docs/enemy-sync.md 14.21): the `[truckv3] v3 status:` line (key, live
+state, hello tx/rx, host MULE-driven/starts/stops/DRIVE+npc frames/claims denied/PARK lifts, guest followed/attached/frames
+in/refused/parked lifts/driver-seat refusals). Scenario: two-games-truck-v3-host (gate `python -I tools\testenv\truck-v3.py <run>`).
 
 ### World sync (`world_dump`, `world_sync`, `dev_build`, `dev_build_remove`, `dev_build_decay`, `dev_build_mats`, `dev_ladder`, `dev_rope`; ziplines W4; on with `host_save=1` unless `world_sync=0`)
 

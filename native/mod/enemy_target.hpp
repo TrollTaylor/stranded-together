@@ -49,8 +49,9 @@ void AfterStop() noexcept;
 // valid for the arm (or 2.5 s), our Sam placed first for TF0 / TF1 (170 m, 40 deg off her line) and CS (5 m along its facing);
 // 12 [0] (round 27 M4) the destroy guard's removal simulated on the partner body (the stimulus parked and removed, the dead
 // agent refused; nothing is freed; "12 0" ends a simulate); 13 the game's own removal of the partner body (world vt+0x20; the
-// last step of a run: the guard must see it before the free). Ops 1..13 refuse after a stop or a fault; ops 1..13 but 0 run in
-// hidden runs only.
+// last step of a run: the guard must see it before the free); 14 <1 [s] | 0 | 2 | 3> the attack probe (forwarded to
+// ephit::Command before these checks: its own key enemy_phit_probe, its own stop; 3 any session, the rest hidden runs only).
+// Ops 1..13 refuse after a stop or a fault; ops 1..13 but 0 run in hidden runs only.
 bool Command(const double (&v)[3], char* msg, std::size_t cap) noexcept;
 // (round 27 M4) the destroy guard (docs/enemy-sync.md 16.2; any thread, lock-free, no allocation or logging): the game began
 // removing entity `e` (the RemoveEntityNow detour, before the free; `sim` op 12). When `e` is the partner stimulus' body the

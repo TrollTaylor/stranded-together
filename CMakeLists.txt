@@ -175,9 +175,13 @@ add_library(st_mod SHARED
   native/mod/enemy_sync.cpp
   native/mod/enemy_combat.cpp
   native/mod/enemy_l1_probe.cpp
+  native/mod/bt_sync.cpp
   native/mod/enemy_sense_hooks.cpp
+  native/mod/odradek_sync.cpp
   native/mod/enemy_target.cpp
+  native/mod/truck_v3.cpp
   native/mod/entity_remove_hook.cpp
+  native/mod/enemy_phit.cpp
   native/mod/seh_guard.cpp
   native/mod/enemy_wire.cpp
   native/mod/npc_damage.cpp
@@ -333,6 +337,14 @@ target_compile_options(st_gear_keep_tests PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_gear_keep_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_test(NAME st_gear_keep_tests COMMAND st_gear_keep_tests)
 
+# ---- The partner's Odradek, the pure part (native/mod/gear_odra.hpp): the part an STC1 odradek item names, the sender's presence
+# rule and hold, the anchor joint, the HLP_Odradek comparison (docs/real-partner-body.md section 12.9).
+add_executable(st_gear_odra_tests tests/gear_odra_tests.cpp)
+target_include_directories(st_gear_odra_tests PRIVATE native/mod)
+target_compile_options(st_gear_odra_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_gear_odra_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_gear_odra_tests COMMAND st_gear_odra_tests)
+
 # ---- Fragile's boots, the pure part (native/mod/boots_look.hpp): the style, the boots' ArtParts bits (settled, worn, her own
 # boots), the boot type -> folder, Worn / Gold / Silver and the look keys (docs/real-partner-body.md section 30).
 add_executable(st_boots_look_tests tests/boots_look_tests.cpp)
@@ -353,6 +365,11 @@ target_include_directories(st_enemy_census_tests PRIVATE native/mod)
 target_compile_options(st_enemy_census_tests PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_enemy_census_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_test(NAME st_enemy_census_tests COMMAND st_enemy_census_tests)
+add_executable(st_bt_rules_tests tests/bt_rules_tests.cpp)
+target_include_directories(st_bt_rules_tests PRIVATE native/mod)
+target_compile_options(st_bt_rules_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_bt_rules_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_bt_rules_tests COMMAND st_bt_rules_tests)
 
 # ---- Shots, the pure part (native/mod/shot_wire.*): the SFX1 / SEH1 codecs, the record flag byte, the replay set, the dedupe,
 # the hand anchor, the play gate, pulls, the rate cap (docs/enemy-sync.md P3a).
@@ -379,6 +396,11 @@ target_include_directories(st_vehicle_truck_rules_tests PRIVATE native/mod)
 target_compile_options(st_vehicle_truck_rules_tests PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_vehicle_truck_rules_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_test(NAME st_vehicle_truck_rules_tests COMMAND st_vehicle_truck_rules_tests)
+add_executable(st_truck_v3_rules_tests tests/truck_v3_rules_tests.cpp)
+target_include_directories(st_truck_v3_rules_tests PRIVATE native/mod)
+target_compile_options(st_truck_v3_rules_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_truck_v3_rules_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_truck_v3_rules_tests COMMAND st_truck_v3_rules_tests)
 add_executable(st_enemy_probe_rules_tests tests/enemy_probe_rules_tests.cpp)
 target_include_directories(st_enemy_probe_rules_tests PRIVATE native/mod)
 target_compile_options(st_enemy_probe_rules_tests PRIVATE ${ST_WARNINGS})
@@ -391,11 +413,21 @@ target_include_directories(st_enemy_l1_rules_tests PRIVATE native/mod)
 target_compile_options(st_enemy_l1_rules_tests PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_enemy_l1_rules_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_test(NAME st_enemy_l1_rules_tests COMMAND st_enemy_l1_rules_tests)
+add_executable(st_odra_rules_tests tests/odra_rules_tests.cpp)
+target_include_directories(st_odra_rules_tests PRIVATE native/mod)
+target_compile_options(st_odra_rules_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_odra_rules_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_odra_rules_tests COMMAND st_odra_rules_tests)
 add_executable(st_enemy_target_rules_tests tests/enemy_target_rules_tests.cpp)
 target_include_directories(st_enemy_target_rules_tests PRIVATE native/mod)
 target_compile_options(st_enemy_target_rules_tests PRIVATE ${ST_WARNINGS})
 target_compile_definitions(st_enemy_target_rules_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
 add_test(NAME st_enemy_target_rules_tests COMMAND st_enemy_target_rules_tests)
+add_executable(st_enemy_phit_rules_tests tests/enemy_phit_rules_tests.cpp)
+target_include_directories(st_enemy_phit_rules_tests PRIVATE native/mod)
+target_compile_options(st_enemy_phit_rules_tests PRIVATE ${ST_WARNINGS})
+target_compile_definitions(st_enemy_phit_rules_tests PRIVATE _CRT_SECURE_NO_WARNINGS)
+add_test(NAME st_enemy_phit_rules_tests COMMAND st_enemy_phit_rules_tests)
 
 # ---- Fragile's face (face_rules.hpp): the wire ids of Sam's facial clips, the manager's choice, when a face gets a clip
 add_executable(st_face_rules_tests tests/face_rules_tests.cpp)

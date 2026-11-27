@@ -132,11 +132,12 @@ std::int16_t X100(float v) noexcept {
 }
 std::size_t PerEntry(std::uint8_t type) noexcept {
     return type == kScbHit ? kHitSize : type == kScbHitRes ? kHitResSize : type == kScbOutcome ? kOutcomeSize : type == kScbResync ? 0
-         : type == kScbOwn || type == kScbOwnAck ? kOwnSize : type == kScbOwnReset ? kOwnResetSize : type == kScbPlace ? kPlaceSize : SIZE_MAX;
+         : type == kScbOwn || type == kScbOwnAck ? kOwnSize : type == kScbOwnReset ? kOwnResetSize : type == kScbPlace ? kPlaceSize
+         : type == kScbPhit ? kPhitSize : SIZE_MAX;
 }
 unsigned MaxOf(std::uint8_t type) noexcept {
     return type == kScbHit ? kHitMax : type == kScbHitRes ? kHitResMax : type == kScbOutcome ? kOutcomeMax : type == kScbOwn || type == kScbOwnAck ? kOwnMax
-         : type == kScbOwnReset || type == kScbPlace ? 1 : 0;
+         : type == kScbOwnReset || type == kScbPlace || type == kScbPhit ? 1 : 0;
 }
 bool CountOk(std::uint8_t type, unsigned n) noexcept { return type == kScbResync ? n == 0 : n >= 1 && n <= MaxOf(type); }
 std::size_t Header(const ScbHeader& h, std::uint8_t type, unsigned n, std::uint8_t* out, std::size_t cap) noexcept {
@@ -417,6 +418,68 @@ bool DecodePlace(const std::uint8_t* d, std::size_t n, ScbHeader& h, Place& out)
     p.code = q[18];
     p.sender_ms = Get32(q + 20);
     if (q[19] || !PlaceOk(p)) return false;
+    out = p;
+    h = hh;
+    return true;
+}
+
+namespace {
+std::int16_t Cm(float v) noexcept {
+    const double c = std::round(static_cast<double>(v) * 100.0);
+    return static_cast<std::int16_t>(c > 32767 ? 32767 : c < -32767 ? -32767 : c);
+}
+bool PhitOk(const Phit& p) noexcept {
+    if (p.kind == kPhitHello) {
+        if (p.id || p.attack || (p.flags & ~kPhitCapKnown) || p.depth_m != 0.0f) return false;
+        for (int k = 0; k < 3; ++k)
+            if (p.point[k] != 0.0f || p.her[k] != 0.0) return false;
+        return p.dir[0] == 0.0f && p.dir[1] == 0.0f;
+    }
+    if (p.kind != kPhitSphere && p.kind != kPhitCapsule) return false;
+    if (!enemy::IsHumanEnemyId(p.id) || p.attack < 0x16D || p.attack > 0x171 || p.flags) return false;
+    if (!std::isfinite(p.depth_m) || p.depth_m < 0.0f || !std::isfinite(p.dir[0]) || !std::isfinite(p.dir[1])) return false;
+    if (std::fabs(p.dir[0]) > 1.001f || std::fabs(p.dir[1]) > 1.001f) return false;
+    for (int k = 0; k < 3; ++k) {
+        if (!std::isfinite(p.point[k]) || std::fabs(p.point[k]) > kHitPointMaxM) return false;
+        if (!std::isfinite(p.her[k]) || std::fabs(p.her[k]) >= kMaxCoordM) return false;
+    }
+    return true;
+}
+}  // namespace
+
+std::size_t EncodePhit(const ScbHeader& h, const Phit& p, std::uint8_t* out, std::size_t cap) noexcept {
+    if (!PhitOk(p)) return 0;
+    const std::size_t size = Header(h, kScbPhit, 1, out, cap);
+    if (!size) return 0;
+    std::uint8_t* q = out + kScbHeader;
+    Put32(q + 0, p.id);
+    Put32(q + 4, p.seq);
+    Put16(q + 8, p.attack);
+    q[10] = p.kind, q[11] = p.flags;
+    for (int k = 0; k < 3; ++k) Put16(q + 12 + 2 * k, static_cast<std::uint16_t>(Cm(p.point[k])));
+    for (int k = 0; k < 2; ++k) Put16(q + 18 + 2 * k, static_cast<std::uint16_t>(Q15(p.dir[k])));
+    const double mm = std::round(static_cast<double>(p.depth_m) * 1000.0);
+    Put16(q + 22, static_cast<std::uint16_t>(mm > 65535 ? 65535 : mm < 0 ? 0 : mm));
+    for (int k = 0; k < 3; ++k) Put32(q + 24 + 4 * k, static_cast<std::uint32_t>(static_cast<std::int32_t>(std::llround(p.her[k] * 1000.0))));
+    Put32(q + 36, p.sender_ms);
+    return size;
+}
+
+bool DecodePhit(const std::uint8_t* d, std::size_t n, ScbHeader& h, Phit& out) noexcept {
+    ScbHeader hh;
+    if (!DecodeScbHeader(d, n, hh) || hh.type != kScbPhit || hh.n != 1) return false;
+    const std::uint8_t* q = d + kScbHeader;
+    Phit p;
+    p.id = Get32(q + 0);
+    p.seq = Get32(q + 4);
+    p.attack = Get16(q + 8);
+    p.kind = q[10], p.flags = q[11];
+    for (int k = 0; k < 3; ++k) p.point[k] = static_cast<float>(static_cast<std::int16_t>(Get16(q + 12 + 2 * k)) / 100.0);
+    for (int k = 0; k < 2; ++k) p.dir[k] = static_cast<float>(static_cast<std::int16_t>(Get16(q + 18 + 2 * k)) / 32767.0);
+    p.depth_m = static_cast<float>(Get16(q + 22) / 1000.0);
+    for (int k = 0; k < 3; ++k) p.her[k] = static_cast<std::int32_t>(Get32(q + 24 + 4 * k)) / 1000.0;
+    p.sender_ms = Get32(q + 36);
+    if (!PhitOk(p)) return false;
     out = p;
     h = hh;
     return true;

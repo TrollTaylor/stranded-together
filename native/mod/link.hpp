@@ -161,6 +161,17 @@ bool SendCombat(const void* bytes, std::size_t size) noexcept;
 unsigned CombatQueued() noexcept;
 bool PopCombat(std::uint8_t* out, std::size_t cap, std::size_t& size, std::uint32_t& generation) noexcept;
 void CombatChannelCounts(std::uint64_t* sent, std::uint64_t* received) noexcept;
+// Round 28 O3: channel 6 messages that start "SOD1" (the Odradek scan sync) go to a queue of their own (8, the oldest dropped,
+// counted; cleared by a new link session); PopCombat never returns them. One over kOdradekMax bytes is dropped on receipt, and
+// PopOdradek drops (counts) a head larger than its `cap` instead of leaving it to block the queue.
+inline constexpr std::size_t kOdradekMax = 64;
+bool PopOdradek(std::uint8_t* out, std::size_t cap, std::size_t& size, std::uint32_t& generation) noexcept;
+void OdradekCounts(std::uint64_t* received, std::uint64_t* dropped) noexcept;
+std::uint64_t OdradekOversize() noexcept;  // of the dropped: the oversized ones
+// Round 28 lane B1 (bt_sync.cpp): BTS1 messages on channel 6 (sent with SendCombat), split out of PopCombat's queue on receipt;
+// oldest first, 32 deep (the oldest dropped when full, counted), with the generation; a new link session clears them.
+bool PopBtMessage(std::uint8_t* out, std::size_t cap, std::size_t& size, std::uint32_t& generation) noexcept;
+void BtMessageCounts(std::uint64_t* received, std::uint64_t* dropped) noexcept;
 // The combat frames, unreliable: SEH1 (the beacon, 24 B), SEN1 (enemy states), SEP1 (enemy poses), SFX1 (shots), SPV1 (the
 // player's own visibility, 32 B; round 27 M2), each one FRAME
 // message in a datagram of its own; received ones as raw bytes per kind (the magic and the size checked here; the strict

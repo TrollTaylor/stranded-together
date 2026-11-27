@@ -23,6 +23,8 @@
 #include "enemy_stim_core.hpp"
 #include "enemy_sync.hpp"
 #include "enemy_target_rules.hpp"
+#include "enemy_phit.hpp"
+#include "enemy_phit_rules.hpp"
 #include "enemy_wire.hpp"
 #include "entity_remove_hook.hpp"
 #include "game_actions.hpp"
@@ -67,6 +69,10 @@ constexpr std::uintptr_t kVehVt = 0x143E1B4C0, kVehStart = 0x142F09340, kVehUpda
 constexpr std::uintptr_t kMoveVt = 0x143E1B028, kMoveUpdate = 0x142F0F290, kMoveBlock = 0x142F0F2C1, kMoveFlag = 0x142F0F659, kMoveId = 0x142F0F668,
                          kMoveOverride = 0x142F0F7D6, kMoveRttiSite = 0x142F0F577;
 constexpr std::uintptr_t kAimRtti = 0x144C922A0, kVehRtti = 0x144C916E0, kMoveRtti = 0x144C91610;
+// (round 28 E2) 64, the melee face: DSMuleWeaponComponent's melee state (comp+0x430, vtable 0x143DBA370; state+8 the component,
+// comp+0x48 the entity) Enter 0x142B44B20 (one argument, rcx: the state) reads its target place (doubles at +0x20) to pick the
+// strike's anim variant (kinds 1 / 3: kick 0x16F; else punch 0x170) before it makes the attack context (static RE, round 28)
+constexpr std::uintptr_t kMeleeEnter = 0x142B44B20, kMeleeStateVt = 0x143DBA370;
 // (round 27 run 2: no goal cache) the goals' vtables, each found by the only data reference to its GetRTTI getter (vtable[0],
 // `lea rax, [rip + rtti]; ret`; mem::RttiOf decodes the same slot): AIBodyGoalDSTurn (the aim goal), AIBodyGoalDSVehicleMove,
 // AIBodyGoalDSWalk (the move goal). Byte-checked: the vtable's slot 0 is the getter and the getter returns the RTTI.
@@ -106,14 +112,14 @@ constexpr std::uint32_t kIdMask = 0x1FFFFF;
 // (M4) 64: take first (a calm host camp about to go to her: her stimulus refused for its members until the take; esync's
 // erules::CampTakeFirst)
 enum : unsigned { kPickReorder = 1, kPickH5 = 2, kPickH2 = 4, kPickForce = 8, kPickSight = 16, kPickSynth = 32, kPickTakeFirst = 64 };
-enum : unsigned { kRedShoot = 1, kRedTurn = 2, kRedApproach = 4, kRedShadow = 8, kRedVehicle = 16, kRedShootActor = 32 };
+enum : unsigned { kRedShoot = 1, kRedTurn = 2, kRedApproach = 4, kRedShadow = 8, kRedVehicle = 16, kRedShootActor = 32, kRedMeleeFace = 64 };
 // the redirect sites (one bit each; redirect bit 2 = 2a | 2b; bit 16 = the vehicle chase; bit 32 = the shoot actor, whose hooks
 // are in with bit 32 on, or in a hidden run while the pick or a redirect is wanted: there the aim point is recorded with bit 32
 // off too)
-enum : unsigned { kS1 = 1, kS2a = 2, kS2b = 4, kSVeh = 8, kS4 = 16, kS32 = 32 };
+enum : unsigned { kS1 = 1, kS2a = 2, kS2b = 4, kSVeh = 8, kS4 = 16, kS32 = 32, kS64 = 64 };
 // the byte-check groups
 enum : unsigned { kGStim = 1, kGReg = 2, kGGoal = 4, kGPsr = 8, kGCls = 16, kGClsFlags = 32, kGForce = 64, kGS1 = 128, kGS2a = 256, kGS2b = 512,
-                  kGVeh = 1024, kGS4 = 2048, kGMule = 4096, kGPlayer = 8192, kGS32 = 16384 };
+                  kGVeh = 1024, kGS4 = 2048, kGMule = 4096, kGPlayer = 8192, kGS32 = 16384, kGS64 = 32768 };
 
 struct Site {
     std::uintptr_t va;
@@ -175,6 +181,9 @@ constexpr Site kSites[] = {
     {kMuleGetPosType,   "3C 36 74 19 48 8B D3 48 8B CF E8", "the MULE carrier's GetTargetPosition type test (bit 32)", kGS32},
     {kMuleGetRet,       "48 8B C3", "the MULE carrier's GetTargetPosition after its base call (bit 32)", kGS32},
     {kMuleCtorStore,    "48 8D 05", "the MULE weapon component's carrier vtable store (bit 32)", kGS32},
+    // (round 28 E2) the melee state Enter: mov r11, rsp; push rbx; sub rsp, 0xA0; the cookie; rbx = rcx; rcx = [rcx+8] (the component)
+    {kMeleeEnter,       "4C 8B DC 53 48 81 EC A0 00 00 00 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 44 24 50", "the MULE melee state's Enter (bit 64)", kGS64},
+    {kMeleeEnter + 0x2F, "48 8B D9 48 8B 49 08", "the melee Enter's state / component reads (bit 64)", kGS64},
 };
 // clang-format on
 
@@ -566,6 +575,9 @@ struct WCounts {
     // (M4) the destroy guard: stimuli refused by the dead agent (G2), the worker guard's trips (G3); take first's refusals (pick
     // bit 64); the classifier's calls (the cpu line)
     std::atomic<std::uint32_t> dead_refuse{0}, guard_trip{0}, take_first{0}, cls_calls{0};
+    // (round 28 E2) bit 64, the melee face: Enters seen on a registered MULE, those given her feet, those refused (not her pick /
+    // her record stale / too far), a state of another vtable
+    std::atomic<std::uint32_t> m64_enter{0}, m64_redir{0}, m64_not{0}, m64_far{0}, m64_vt{0}, m64_raw{0};
 } g_wc;
 // (run 3) the first instance of each, kept by the worker that saw it (one compare-exchange) and logged once by the tick
 struct FirstSeen {
@@ -588,7 +600,7 @@ FirstSeen g_first_vt_other, g_first_noslot, g_first_onhit_bad, g_first_onhit_odd
 // ---------------------------------------------------------------- the detours' bodies (worker threads; no alloc / log / game call)
 using Fn4 = std::uintptr_t (*)(std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t);
 Fn4 o_shoot = nullptr, o_turn_s = nullptr, o_turn_u = nullptr, o_range = nullptr, o_veh_s = nullptr, o_veh_u = nullptr, o_move = nullptr,
-    o_set_actor = nullptr, o_get_pos = nullptr, o_mule_get_pos = nullptr;
+    o_set_actor = nullptr, o_get_pos = nullptr, o_mule_get_pos = nullptr, o_melee_enter = nullptr;
 bool Live(unsigned site) noexcept { return (g_redir_live.load(std::memory_order_relaxed) & site) != 0; }
 
 bool PartnerStim(std::uintptr_t stim) noexcept {
@@ -834,6 +846,34 @@ std::uintptr_t H_TurnStart(std::uintptr_t task, std::uintptr_t args, std::uintpt
         }
     }
     return r;
+}
+// (round 28 E2) 64, the melee face, before the original: the melee state's target place (+0x20, three doubles) becomes her FEET
+// when the MULE (state+8 -> comp+0x48, its entity: bit 32's entity index) is registered, its pick is her, her record is fresh and
+// she is within phrules::kMeleeFaceM of it (its own place, 1 s fresh). The strike's variant and the place it is aimed at follow;
+// whether the body turns with it is [U] (gate: the phit relay's hits and the probe's "to pbody" degrees).
+bool MeleeFix(std::uintptr_t state) noexcept {
+    std::uintptr_t vt = 0, comp = 0, e = 0;
+    if (!SQ(state, &vt) || vt != A(kMeleeStateVt)) return void(g_wc.m64_vt.fetch_add(1, std::memory_order_relaxed)), false;
+    if (!SQ(state + 8, &comp) || !SQ(comp + 0x48, &e)) return false;
+    Slot* s = FindEnt(e);
+    if (!s) return false;
+    if (!ephit::RelayArmed()) return false;  // her game takes PHIT (its hello) and ours relays: a strike at her body reaches her
+    g_wc.m64_enter.fetch_add(1, std::memory_order_relaxed);
+    double feet[3], own[3];
+    if (!g_p_agent.load(std::memory_order_relaxed) || s->cur.load(std::memory_order_relaxed) != R::kPartner || !ReadPartner(kFeet, feet, TNow()) ||
+        !ReadOwn(s, own, TNow()))
+        return void(g_wc.m64_not.fetch_add(1, std::memory_order_relaxed)), false;
+    if (!phrules::MeleeFaceWants(phrules::V3{own[0], own[1], own[2]}, phrules::V3{feet[0], feet[1], feet[2]}))
+        return void(g_wc.m64_far.fetch_add(1, std::memory_order_relaxed)), false;
+    if (!SPut(state + 0x20, feet, sizeof(feet))) return void(g_wc.faults.fetch_add(1)), false;
+    g_wc.m64_redir.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+std::uintptr_t H_MeleeEnter(std::uintptr_t state, std::uintptr_t a, std::uintptr_t r8, std::uintptr_t r9) {
+    // every call, before the vtable / MULE / relay filters: tells "never entered" (no kick / push) from "filtered"
+    g_wc.m64_raw.fetch_add(1, std::memory_order_relaxed);
+    if (Live(kS64)) MeleeFix(state);
+    return o_melee_enter(state, a, r8, r9);
 }
 std::uintptr_t H_TurnUpdate(std::uintptr_t task, std::uintptr_t a, std::uintptr_t r8, std::uintptr_t r9) {
     const std::uintptr_t r = o_turn_u(task, a, r8, r9);
@@ -1512,7 +1552,7 @@ void Checks() noexcept {
         if (r.got != r.want) bad |= r.group, Log("[enemy] tgt byte check FAILED: %s", r.name);
     }
     const unsigned all =
-        kGStim | kGReg | kGGoal | kGPsr | kGCls | kGClsFlags | kGForce | kGS1 | kGS2a | kGS2b | kGVeh | kGS4 | kGMule | kGPlayer | kGS32;
+        kGStim | kGReg | kGGoal | kGPsr | kGCls | kGClsFlags | kGForce | kGS1 | kGS2a | kGS2b | kGVeh | kGS4 | kGMule | kGPlayer | kGS32 | kGS64;
     g_groups = all & ~bad;
     // the goal-backed redirects need the goal lookup
     if (!(g_groups & kGGoal)) g_groups &= ~(kGS2a | kGVeh | kGS4);
@@ -1521,10 +1561,10 @@ void Checks() noexcept {
     g_move_vt.store((g_groups & kGS4) ? A(kMoveGoalVt) : 0, std::memory_order_release);
     auto ok = [&](unsigned g) { return (g_groups & g) ? "ok" : "FAILED"; };
     Log("[enemy] tgt byte checks (%u): stimulus %s, registry %s, goals %s, sensor results %s, classifier %s, classifier flags %s, forced visual %s, "
-        "MULE members %s, player objects %s, redirect 1 %s, 2a %s, 2b %s, 4 %s, 16 (vehicle chase) %s, 32 (shoot actor) %s; redirect 8 deferred (not "
+        "MULE members %s, player objects %s, redirect 1 %s, 2a %s, 2b %s, 4 %s, 16 (vehicle chase) %s, 32 (shoot actor) %s, 64 (melee face) %s; redirect 8 deferred (not "
         "built)",
         n, ok(kGStim), ok(kGReg), ok(kGGoal), ok(kGPsr), ok(kGCls), ok(kGClsFlags), ok(kGForce), ok(kGMule), ok(kGPlayer), ok(kGS1), ok(kGS2a), ok(kGS2b),
-        ok(kGS4), ok(kGVeh), ok(kGS32));
+        ok(kGS4), ok(kGVeh), ok(kGS32), ok(kGS64));
 }
 
 unsigned RedirWant() noexcept { return g_redir_override >= 0 ? static_cast<unsigned>(g_redir_override) : g_cfg.redirect; }
@@ -1541,6 +1581,7 @@ unsigned SitesFor(unsigned bits) noexcept {
     if (bits & kRedApproach) s |= kS4;
     if (bits & kRedVehicle) s |= kSVeh;
     if (bits & kRedShootActor) s |= kS32;
+    if (bits & kRedMeleeFace) s |= kS64;
     return s;
 }
 unsigned SiteOk(unsigned site) noexcept {
@@ -1551,6 +1592,7 @@ unsigned SiteOk(unsigned site) noexcept {
         case kSVeh: return g_groups & kGVeh;
         case kS4: return g_groups & kGS4;
         case kS32: return g_groups & kGS32;
+        case kS64: return g_groups & kGS64;
         default: return 0;
     }
 }
@@ -1589,6 +1631,8 @@ void EnsureRedirects(unsigned bits) noexcept {
          {reinterpret_cast<void*>(&H_SetActor), reinterpret_cast<void*>(&H_GetPos), reinterpret_cast<void*>(&H_MuleGetPos)},
          {reinterpret_cast<void**>(&o_set_actor), reinterpret_cast<void**>(&o_get_pos), reinterpret_cast<void**>(&o_mule_get_pos)},
          "32 (shoot actor)"},
+        {kS64, {kMeleeEnter, 0, 0}, {reinterpret_cast<void*>(&H_MeleeEnter), nullptr, nullptr}, {reinterpret_cast<void**>(&o_melee_enter), nullptr, nullptr},
+         "64 (melee face)"},
     };
     for (const One& o : ones) {
         if (!(want & o.site) || (g_sites_tried & o.site)) continue;
@@ -2076,6 +2120,9 @@ void Summary(const char* when) noexcept {
         d(n.sh_pts, o.sh_pts), d(n.pt_her, o.pt_her), d(n.pt_sam, o.pt_sam), d(n.pt_none, o.pt_none), g_wc.onhit_bad.load(), g_wc.psr_rec_bad.load(),
         g_wc.turn_goal_bad.load(), g_wc.sh_vt_other.load(), g_wc.sh_noslot.load(), g_wc.sh_t36.load(), g_wc.est_keep.load(), g_wc.synth.load(),
         g_wc.synth_skip.load(), g_sight_rays, g_wc.onhit_odd.load(), GuardText());
+    if ((RedirWant() & kRedMeleeFace) || g_wc.m64_enter.load())
+        Log("[enemy] tgt melee face 64: %s; enters %u, at her %u, not her %u, far %u, other vt %u, raw calls %u", (g_sites_in & kS64) ? "in" : "not in",
+            g_wc.m64_enter.load(), g_wc.m64_redir.load(), g_wc.m64_not.load(), g_wc.m64_far.load(), g_wc.m64_vt.load(), g_wc.m64_raw.load());
     g_last_snap = n;
 }
 
@@ -3102,7 +3149,9 @@ void Install(const Config& c) noexcept {
     g_cfg.radius = c.enemy_partner_stim_radius;
     g_cfg.pick = static_cast<unsigned>(c.enemy_target_pick) & 127u;
     g_verbose = c.verbose;
-    g_cfg.redirect = static_cast<unsigned>(c.enemy_target_redirect) & 0xFFu;
+    // bit 64 comes only from its own key: a legacy enemy_target_redirect value (64, 127, 255) never turns it on
+    g_cfg.redirect = (static_cast<unsigned>(c.enemy_target_redirect) & 0xFFu) & ~static_cast<unsigned>(kRedMeleeFace);
+    if (c.enemy_melee_face) g_cfg.redirect |= kRedMeleeFace;  // (round 28 E2) session.ini enemy_melee_face=1 (default 0): redirect bit 64
     g_cfg.fresh_ms = c.enemy_target_fresh_ms;
     g_fresh_ms.store(R::FreshMs(c.enemy_target_fresh_ms));
     if (!g_epoch) g_epoch = GetTickCount64();
@@ -3169,6 +3218,7 @@ void AfterStop() noexcept {
 bool Command(const double (&v)[3], char* msg, std::size_t cap) noexcept {
     if (!mem::Base()) return std::snprintf(msg, cap, "no game image"), false;
     const int op = static_cast<int>(v[0]);
+    if (op == 14) return ephit::Command(v, msg, cap);  // round 28 P1: the attack probe (its own key and gates)
     if (op != 0 && !automation::Enabled()) return std::snprintf(msg, cap, "hidden runs only"), false;
     // (review S10) nothing but the status after a stop or a fault: no create, remove or forced state on a stopped module
     if (op != 0 && (g_stopped || g_off.load())) return std::snprintf(msg, cap, "tgt stopped (%s)", g_stop_why ? g_stop_why : "the emergency stop"), false;
@@ -3219,12 +3269,16 @@ bool Command(const double (&v)[3], char* msg, std::size_t cap) noexcept {
             Log("[enemy] tgt id=%05X forced %s", id, w == 1 ? "her" : w == 2 ? "Sam" : "off");
             return std::snprintf(msg, cap, "tgt forced"), true;
         }
-        case 6:
-            g_redir_override = v[1] < 0 ? -1 : static_cast<int>(v[1]) & 0xFF;
+        case 6: {
+            // bit 64 (the melee face) only while enemy_melee_face=1 gave it: op 6 never adds it
+            unsigned bits = static_cast<unsigned>(v[1]) & 0xFFu;
+            if (!(g_cfg.redirect & kRedMeleeFace)) bits &= ~static_cast<unsigned>(kRedMeleeFace);
+            g_redir_override = v[1] < 0 ? -1 : static_cast<int>(bits);
             if (M3Wanted()) EnsureRedirects(RedirWant() | ShootHooksWant());
             Recompute();
             Log("[enemy] tgt redirect bits for this run: %u%s (live sites 0x%X)", RedirWant(), g_redir_override < 0 ? " (the key)" : "", g_redir_live.load());
             return std::snprintf(msg, cap, "tgt redirect %u", RedirWant()), true;
+        }
         case 7: {
             const std::uint32_t id = IdArg(v[1]);
             if (!id) return std::snprintf(msg, cap, "enemy_tgt 7 <id> [arm code]"), false;
@@ -3353,7 +3407,7 @@ bool Command(const double (&v)[3], char* msg, std::size_t cap) noexcept {
             return std::snprintf(msg, cap, "tgt remove %s", r > 0 ? "called" : r == 0 ? "refused" : "FAULT"), r > 0;
         }
         default:
-            return std::snprintf(msg, cap, "enemy_tgt <op 0..13>"), false;
+            return std::snprintf(msg, cap, "enemy_tgt <op 0..14>"), false;
     }
 }
 

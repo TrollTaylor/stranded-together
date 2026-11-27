@@ -324,6 +324,9 @@ struct EligibleIn {
     // round 23 C (enemy_down_hold): the owner's player is down (death / KnotSpace): no new freeze until it is back (critique R7d: the
     // owner's game may have hidden its copy for the Seam)
     bool owner_down = false;
+    // round 28 T1 (vehicle_mule_v3): V3 is live and a truck of hers is within 5 m (trucks::kV3SeatNearM) of the host's copy (the truck the host's MULE
+    // drives, followed here): its host copy in a vehicle no longer refuses it (it is frozen and hidden, LeaseVerdict::seated)
+    bool v3_seat = false;
 };
 enum class Refusal : std::uint8_t {
     ok, stale, not_realized, dead, hidden_or_asleep, sequence_only, held_here, held_on_host, cutscene, in_vehicle, host_unrealized, host_hidden, entry_far,
@@ -342,8 +345,11 @@ inline Refusal Eligible(const EligibleIn& e) noexcept {
     if (e.held_here) return Refusal::held_here;
     if (e.held_on_host) return Refusal::held_on_host;
     if (e.in_vehicle) return Refusal::in_vehicle;
-    if (e.host_in_vehicle) return Refusal::host_in_vehicle;
+    if (e.host_in_vehicle && !e.v3_seat) return Refusal::host_in_vehicle;
     if (!e.host_realized) return Refusal::host_unrealized;
+    // round 28 T1: a host copy seated in her V3 truck is taken hidden and never placed: a seated MULE may read hidden there, its
+    // copy here stays where it was (the entry error and the host's distance do not matter)
+    if (e.v3_seat) return Refusal::ok;
     if (e.host_hidden) return Refusal::host_hidden;
     if (e.entry_err_max_m > 0 && e.entry_err_m > e.entry_err_max_m) return Refusal::entry_far;
     if (HostFar(e.host_dist_m, e.host_far_m)) return Refusal::host_far;
@@ -394,11 +400,24 @@ struct LeaseIn {
     // round 25 V1 (enemy_single_hold_vehicle): a MULE of its camp is owned here as a single, so the in-vehicle release waits (the
     // mirror stays frozen at the host's frames, as before round 23) until the single ends
     bool hold_vehicle_single = false;
+    // round 28 T1 (vehicle_mule_v3; docs/enemy-sync.md 14.21): V3 is live (both games run it); a truck of hers is within 5 m (trucks::kV3SeatNearM) of the
+    // host's copy (the host's MULE truck, followed here: the same truck); how long the host's copy has been in a vehicle with no
+    // such truck near (0 while one is; a passenger boarding before the follower attaches waits kV3SeatWaitMs)
+    bool v3_live = false;
+    bool v3_seat = false;
+    double v3_unseated_ms = 0;
 };
+inline constexpr double kV3SeatWaitMs = 3000.0;
 enum class LeaseVerdict : std::uint8_t {
     none, keep, hold, release_off, release_unrealized, release_silence, release_range, forget_taken, release_host_unrealized, release_host_hidden,
-    release_host_far, release_vehicle
+    release_host_far, release_vehicle, seated
 };
+// Round 28 T1: the host's copy sits in a vehicle that is the same truck here (V3): kept frozen, hidden and asleep here (the
+// occupants are seated on her truck in T2), never given back alive to board her copy. Not while the host has it unloaded.
+inline constexpr bool SeatedV3(const LeaseIn& l) noexcept {
+    return l.v3_live && l.vehicle_check && l.in_vehicle_host && !l.in_vehicle_here && !(l.host_guard && !l.host_realized) &&
+           (l.v3_seat || (l.v3_unseated_ms >= 0 && l.v3_unseated_ms < kV3SeatWaitMs));
+}
 inline LeaseVerdict Lease(const LeaseIn& l) noexcept {
     if (!l.frozen_by_us) return LeaseVerdict::none;  // never touch what we did not freeze
     if (l.hold) return LeaseVerdict::hold;
@@ -406,6 +425,11 @@ inline LeaseVerdict Lease(const LeaseIn& l) noexcept {
     if (l.off) return LeaseVerdict::release_off;
     if (!l.realized_here) return LeaseVerdict::release_unrealized;
     if (l.frame_age_ms > (l.cls == Class::near10 ? kSilenceNearMs : kSilenceFarMs)) return LeaseVerdict::release_silence;
+    // round 28 T1: its host copy seated in the truck she follows (V3): frozen and hidden here, not released
+    if (SeatedV3(l)) return LeaseVerdict::seated;
+    // ... but a seated copy the host has unloaded is given back as unloaded there (M0), not as "in a vehicle"
+    if (l.v3_live && l.vehicle_check && l.in_vehicle_host && !l.in_vehicle_here && l.host_guard && !l.host_realized)
+        return LeaseVerdict::release_host_unrealized;
     // round 23 B: seated in a vehicle (here or on the owner's side): given back to its own game (M0's release, not hidden) until
     // vehicles are synced (design 8, V3)
     if (l.vehicle_check && (l.in_vehicle_here || l.in_vehicle_host) && !l.hold_vehicle_single) return LeaseVerdict::release_vehicle;
@@ -445,6 +469,7 @@ inline const char* LeaseText(LeaseVerdict v) noexcept {
         case LeaseVerdict::release_host_hidden: return "host hidden";
         case LeaseVerdict::release_host_far: return "host far";
         case LeaseVerdict::release_vehicle: return "in a vehicle";
+        case LeaseVerdict::seated: return "seated in a V3 truck";
         case LeaseVerdict::forget_taken: return "taken";
         case LeaseVerdict::hold: return "hold";
         case LeaseVerdict::keep: return "keep";
