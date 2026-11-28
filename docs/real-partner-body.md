@@ -5191,300 +5191,62 @@ Not done / not proven:
 - A ride after a link blackout did not board again in run `20261121-133024` (the guest's presses at the door were not
   taken); not looked into (riding, not the hide).
 
-### 24.19 Side riding on the MULE trucks: stage 0, the probes (round 30; no visible change)
+### 24.19 Side riding on the MULE trucks: removed in round 31
 
-The user's ask: the guest hangs on the side of a truck as the MULEs do, with their get on / get off animations, and the
-passenger seat reuses those poses. Stage 0 only measures (ops in hidden runs or with dev_tools; no config key, no default
-changes; nothing is sent to the partner). The shared rules are `native/mod/mule_ride_rules.hpp` (`st::muleride`, tested by
-`st_mule_ride_rules_tests`): the helper names and their keys, the side seats' anchors, the frame maths, the clip pairing, the
-board / alight watch and the clip check. What each probe answers for stage A:
+Round 30 (v0.43.0) let the passenger hang off a truck's side at the MULEs' places (side seats 3..6, the `HLP_Enemy*`
+helpers), with a MULE hang pose (a library learned from seated MULEs and cached in `%LOCALAPPDATA%`, else a procedural hang
+with arm and leg IK) and get-on / get-off glides. The user tried it and asked for it to go: it did not work well with the
+players' vehicles. Round 31 takes it out; riding is the passenger seat only (the trike's pillion), as in round 29
+(sections 24.1-24.18).
 
-| Probe | Op | Lines | Answers |
-|---|---|---|---|
-| P1 the game's helpers | `ride_test 41 [vehicle id]` | `[ride] helper ...`, `[ride] key check: ...` | where a truck's seat / hand helpers are (its model frame), and that our keys are the game's |
-| P2 the seated MULEs' frames | `truck_v3 10` (also vehicle_truck_probe=1) | `[mrec] conv ...`, `[mrec] skeleton: ...` | a seated MULE's joints, feet and inboard hand against its seat's helper; MULE skeleton == Sam's |
-| P4 the clip recorder | `mule_rec 1` / `0` | `[mrec] <board|alight> seat N: ...` | a board / alight clip of one MULE, validated; a board's seated end per side seat (memory only) |
-| P3 the ghost | `ride_test 43 <seat 1..4>` | `[ride] ghost seat N: ...` | our Sam carried at a side seat with a MULE's pose (source 4): the joint error, the feet |
+Removed: the side seats and their approach and exit spots, the side carry, the glides (and the pose flag `kPoseRideGlide`),
+the hang pose and the side library (with `LearnSideFrame`, the recorder and the taps in the enemy sync), the STR1 hello
+(SVM1 type 53), `mule_ride_rules.hpp` and its tests, the `session.ini` keys `ride_sides`, `ride_mule_pose`,
+`ride_mule_record`, `ride_mule_cache` and `ride_side_hide_pack` (an old ini line with them is ignored), the probes
+`ride_test 40-44`, `truck_v3 10` and `mule_rec`, and the scenarios `mule-ride-probe`, `seat-measure-side` and
+`two-games-ride-sides`.
 
-**The helper lookup (P1)**: `0x142F6B290` is `DSVehicleTruck`'s vtable (`0x143E26790`) slot +0x130 (`0x143E268C0`): `bool (entity,
-float out[16], const u32* key)`; the out matrix is written with VMOVDQA (16-byte aligned) in the truck's model frame, row 3 the
-position. The key is the name's CRC-32C (reflected 0x82F63B78, init 0, no final xor) & 0x7FFFFFFF: the game's `0x14190D040`
-caches it at the string - 0xC (the length at - 8). The seat names come from `0x142DC8520 (unused, seat)`: 0 HLP_Driver, 1
-HLP_Enemy_3, 2 HLP_Enemy, 3 HLP_Enemy_4, 4 HLP_Enemy_2; the hands from `0x142DC78B0 (unused, seat, side)`: side != 0: 0
-HandleHandL, 1 MuleHandRF, 3 MuleHandRB; side 0: 0 HandleHandR, 2 MuleHandLF, 4 MuleHandLB (the others an empty name). Seats 1
-and 3 are on the right (the inboard hand the left, joint 38), 2 and 4 on the left (joint 9). Game thread only: the probe refuses
-when it runs on the animate detour's thread. The anchors in `SideAnchor` are the seat table's (`truckv3::kSeatTable`, measured
-in round 29): x +-1.299, y 0.127 (front) / -0.692 (back), z 0.778 (seat 3 is inferred: no MULE was seen in it).
+With a v0.43 partner: no STR1 hello is sent, so its build offers the cab seat only (as it does to v0.42). A side seat in a
+REQUEST is not a seat of that vehicle and is dropped, as v0.42 drops it.
 
-Byte checks (`kHelperSites` in ride_together.cpp: 4 sites + 1 structural; a group of their own, run on the first use: a mismatch
-or a fault turns only these probes off, riding together keeps its own 24.8 checks):
+The old cache: at start-up the mod deletes `%LOCALAPPDATA%\StrandedTogether\mule_ride_lib.bin` if it is there (that file
+only) and logs `[ride] removed the old side-ride pose cache`. The package and log-bundle exclusions of that file stay.
 
-| Check | VA |
-|---|---|
-| the helper lookup (`40 53 56 57 48 81 EC 80 00 00 00 41 8B 00 48 8D B1 10 11 00 00 48 8B FA`: map +0x1110) | `0x142F6B290` |
-| the name key (`48 8B 11 8B 42 F4 4C 8D 4A F4 83 F8 FF 75 64 ...`: string - 0xC, length - 8) | `0x14190D040` |
-| the seat helper names | `0x142DC8520` |
-| the hand helper names | `0x142DC78B0` |
-| the truck vtable's slot +0x130 is the helper lookup (also checked on each truck before a call) | `0x143E268C0` |
+### 24.20 What round 30 kept for the cab seat
 
-**The recorder slot (P4)**: realbody's enemy pose slots get a ninth, `kRecorderSlot = 8` (mode `record`), after the SEP1
-slots 0..7 (the probe slot 7 unchanged): the animate detour still gives a model the first SEP1 slot that matches, and also asks
-the recorder slot (a MULE mirrored there is recorded too). Each animate of the recorded model writes a `muleride::PoseFrame` (QPC
-ms, 77 local quaternions, root and pelvis translations) into a 600-frame ring (`RecordedFrames` / `RecordedFrame`; a slot change
-restarts it, a copy across a restart is dropped; round 30 review: the generation and the count are one 64-bit word, so a writer
-still inside after the slot change's bounded wait fails its compare-exchange and its frame is dropped, never counted in the new
-clip). The game tick pairs those frames with the MULE's entity in the truck's frame
-(`LocalSample`, QPC ms) within 40 ms. A clip is checked (`muleride::ClipCheck`): unit quaternions (0.01), no frame gap of 50 ms or
-more, no joint over 1440 deg/s, no entity step over 0.5 m, at least 10 frames; a board starts within 2.5 m of its seat's anchor
-(earlier frames trimmed) and ends within 3 cm; an alight starts within 3 cm and ends 0.3 m or more away.
-
-**Pose source 4 (P3)**: `SetRidePose(4)`: RideOverride takes all 77 quaternions and the root / pelvis translations from the
-sample `SetRideSample` names (the live recorder slot's newest frame, or a kept frame), then the usual fit and write; with no
-sample it is the seated idle (source 3). Only `ride_test 43` selects it (a carry of our own Sam, the measured truck, solo), at the
-seat's anchor instead of the passenger seat; ending the carry clears the sample and gives the slot back.
-
-Scenario: `mule-ride-probe` (one game, hidden, `-SeedSaves complete-100`; `# select: probe`): the camp's patrol boards
-(`[mrec] board seat N: ... ok`), `truck_v3 10`, `ride_test 41 131087` (the camp truck 0x2000F), 20 s more of the recorder and
-`truck_v3 10` again at the camp, then away from the camp at mknot-road (round 30 review: `vehicle_sync 8` does not summon a
-truck, it puts Sam beside the nearest registered truck within 400 m, which at the camp is a MULE truck) the save's own truck
-measured, then `ride_test 43 2` / `43 3` with screenshots G01..G04 (source `recorded MULE`: no MULE is seated there). Look for: `[ride] helper probe: byte checks 5/5 ok`, `[ride] key check: ours
-== game's`, the `found` helpers' places against the seat table, the conv lines' `hand-helper ... cm`, `[mrec] skeleton: MULE ==
-Sam`, the clip's verdict, the ghost's `joint err` and `feet z`.
-
-Not done / not proven (stage 0):
-
-- Nothing has run in the game yet: every address above is from the static binary and is byte-checked before use; the name
-  functions' return value (a name object, its first qword the string) and their unused first argument are read from the code.
-- One clip at a time: when the driver and a rider board together, the second is `skipped`.
-- The ghost needs a truck measured by `seat_measure`; its live reference is a MULE on another truck (one frame of lag
-  between the two frames), so the error mixes the two trucks' sway.
-- The recorded clips and seated ends stay in memory for the session; extracted animation data never goes in the repo.
-
-### 24.20 Side riding on the MULE trucks: release A (round 30; `session.ini ride_sides`, default 1)
-
-What the user sees: at a truck the partner drives, the guest (or the host) walks up to one of its four side spots and uses
-the game's own "Use Vehicle". Sam glides onto the side (about half a second), hangs there as the MULEs do while the truck
-drives, and on a press settles for a moment, glides off and stands beside the truck on that side. The driver sees the partner
-body hanging at that spot. No new text, banner or toast: the only feedback is Sam on the truck. The cab's passenger seat is
-unchanged.
-
-**The seats** (`ride_wire.hpp`): `Seat` gains 3 right front side, 4 left front side, 5 right rear side, 6 left rear side
-(the MULE seats 1..4, the game's HLP_Enemy_3 / HLP_Enemy / HLP_Enemy_4 / HLP_Enemy_2; trucks only, `SeatValidFor`). Their
-anchors (`SeatAnchor`, the truck frame) are the measured seat table's: x +-1.299, y 0.127 (front) / -0.692 (rear), z 0.778.
-The inboard hand target is the seat's HLP_MuleHand* helper (`SideHandle`: its place from the stage 0 helper probe, kept as
-a constant). `ApproachPoint`: the anchor 1.0 m outward, on the
-ground plane; `PickSeat`: the nearest approach point within 3 m, and a side seat only when it is 0.5 m nearer than the cab's
-door (`kPickCabBiasM`), else the cab seat (the old door rule). `ExitPlacement(kind,
-seat, ...)`: a side seat by choice puts Sam 0.9 m beyond the body's edge on that seat's side (the cab seats keep the old rule);
-forced exits keep their old placement.
-
-**Who is offered them: the STR1 hello** (SVM1 type 53, channel 3; `rwire::Hello`, 16 bytes with the SVM1 header: `"STR1"`, version 1,
-features, role, 0). Each game sends it every 2 s while linked; features bit 0 (1) riding together, bit 1 (2) the side seats, so a build
-with them on sends 0x3. Side seats are offered only when they are on here and the partner's hello is fresh (same link
-session, under 7 s old) and has bit 1 (`SidesOffered`). An older partner sends no hello (and has no type 53 handler, so ours
-is dropped silently there): the cab seat only. The driver checks too: a request for a side seat without a fresh hello gets
-the cab seat instead (review: no deny, so no "Cannot ride" banner); a resume keeps its side seat while ride_sides is on.
-
-**The wire**: the REQUEST, the ACCEPT, the END and the resume after a save carry the seat (STQ1's seat byte, 3..6). The
-passenger takes the ACCEPT's seat. A resume asks for the seat it had, and the driver gives the same seat back.
-
-**Get on, get off** (`muleride::Glide`, `mule_ride_rules.hpp`): get-on is a 0.5 s eased glide from where Sam stands (if he
-is within 4 m of the anchor) onto the anchor, the hang blended in. A resume after a save, an unreadable place, or a start
-over 4 m away puts him straight on the anchor. Get-off by choice (a press of X / F, as for the cab) is a 0.3 s settle on the
-seat, a 0.4 s glide out to the exit spot, then the usual `PlaceBeside` (its gates and the game's PlaceOn). Presses while
-getting off are ignored. Every forced exit (a crash, a save, a lost link, the hunter area, the mod stopping) snaps as before.
-
-**The pose** (`real_body.cpp`, ride pose source 5, `SetRideSide`; never the seated idle, whose feet are at the cab floor):
-1. The side library's idle for that seat, when this session (or the cache) has one: a loop learned from a MULE seated on
-   that side seat (`muleride::LoopPick` / `SeatLoop`: the window whose ends match best, with a cross-fade). No left / right
-   mirroring: each seat learns from its own MULEs only.
-2. Otherwise the procedural hang: our standing pose lifted so that the lower foot is 0.12 m over the anchor (the step;
-   `HangLift`, clamped -0.10..0.40 m), the inboard arm put on the seat's hand helper by the two-bone IK, the outboard arm out
-   (`OutboardTarget`).
-
-A library loop whose feet stray from the step is turned off for the session (the feet check), then the procedural hang is used.
-
-**The library and its cache**: learning comes from two taps in `enemy_sync.cpp` (docs/enemy-sync.md section 23). The host
-learns from the MULEs it captures whose V3 occupant list puts them on a side seat (`truckv3::SeatHostSeat`). The guest learns
-from the mirrors `SeatShowTick` shows seated on a side seat with the host's pose. With `ride_mule_cache=1` the library is kept in
-`%LOCALAPPDATA%\StrandedTogether\mule_ride_lib.bin`, outside the game folder: header `STML`, version, the 77-joint layout hash
-0xBE39C83F, the ds.exe fingerprint and a CRC (`LibEncode` / `LibDecode`). A file that does not match is refused, relearned and
-replaced. It is written at most every 10 s after a change, through a temporary file named for the process. This is animation
-data taken from the game: it never goes in the repo (`.gitignore`), a release zip (`tools/package.ps1` refuses a stage or a zip
-holding it), or a log bundle (the launcher's CollectLogs list never names it and skips any path with `mule_ride_lib`).
-
-**The driver's screen**: `PassengerTarget` puts the partner body at the side anchor (`the partner body sits in our truck ... at
-the <seat>`). While the partner glides on or off (review, below) the body follows the partner's own pose instead, so the
-driver sees the glide too.
-
-**Config** (logged as `[config] ride_sides=1 ride_mule_pose=1 ride_mule_record=1 ride_mule_cache=1 ride_side_hide_pack=0`):
-
-| Key | Default | Meaning |
-|---|---|---|
-| `ride_sides` | 1 | side seats offered on the partner's truck (and the hello says so) |
-| `ride_mule_pose` | 1 | the library idle when there is one; 0 = always the procedural hang |
-| `ride_mule_record` | 1 | learn the library from MULEs seen this session |
-| `ride_mule_cache` | 1 | keep the library on disk (the file above); 0 = memory only |
-| `ride_side_hide_pack` | 0 | 1 = hide our own Sam's backpack while on a side seat (the trike pillion's hide) |
-
-**Ops** (docs/debug-actions.md): `ride_test 40 <3..6>` carries our Sam on our measured truck's side seat as a passenger is
-carried (solo, no notice); `ride_test 2 1` gets off as a press does (the settle and the glide); `ride_test 42` logs the library
-and the hang; `ride_test 8 <m> <3..6>` puts our Sam at a side seat's approach point of the partner's truck; `ride_test 44
-0|1|2` (hidden runs or dev_tools) turns the side seats off here, on, or off with no hello at all (an older build).
-
-**Log lines**:
-- `[ride] side seats ON|OFF (session.ini ride_sides=N): offered to a partner whose STR1 hello has them`
-- `[ride] STR1 hello sent (role R, features 0xF; every 2 s)`
-- `[ride] STR1 hello received: version 1, features 0xF (side seats yes|no), role R (link session N)` (the first and every change)
-- `[ride] dropped a STR1 hello (N bytes): not valid`
-- `[ride] STR1 hello: channel 3 type 53 is taken: the side seats are not offered`
-- `[ride] side seats not offered: <the partner sends no STR1 hello (an older build, riding together off there, or its checks
-  failed)|the partner's STR1 hello is stale|the partner's build has its side seats off>: the cab seat only` (once per link session)
-- `[ride] <role>: asking to ride the truck ... <seat>)` / `... ACCEPTED (#n; ... <seat>)` / `... at the <seat> (ride #..):
-  side seats not offered here now (session.ini ride_sides=0|no fresh STR1 hello with the side seats): the cab seat instead`
-- `[ride] ride #X: asked for the <seat>, the driver accepted the <seat>` (only when they differ)
-- `[ride] side seat <seat> (MULE seat N): a 0.5 s glide onto the anchor, the hang blended in` or `put on the anchor (no glide:
-  a resume|a place unread|over 4 m from the seat)`
-- `[ride] side seat <seat>: <phase> (T ms into the ride)` (on the seat, settle, off, done)
-- every second: `[ride] side seat <seat>: pose library idle|procedural hang|none yet, <phase>; feet z .. m over the anchor (the
-  step: 0.12), Sam vs the seat mean .. m; hand err .. cm; lift .. m; writes .. (library ..), IK .. ok .. failed, .. failed; legs
-  .. ok .. failed, base standing still|the boarding frame|none`
-- `[ride] get off the truck's <seat>: settle 300 ms, glide 400 ms to its exit spot (x, y, z in its frame)`
-- the carry's end line gains `; side seat <seat>`
-- `[ride] side library: seat N learned from a seated MULE (host|guest): n frames, s s, seam d deg`, `... no loop from n frames
-  (...)`, `the cache file loaded|saved|was refused (...)|could not be saved (error e)`
-
-**Scenarios** (hidden, `-SeedSaves complete-100`):
-- `seat-measure-side` (one game, `# select: probe`): our own truck measured; seats 3..6 by `ride_test 40` (the glide, the
-  pose line, screenshots X31..X63 from the side and the front); 3 and 6 off by `ride_test 2 1` (settle 300 ms, glide 400 ms,
-  `got off`, the capsule back), 4 and 5 by `ride_test 2` (a snap). Gates: every seat carried, `on the seat`, the pose line, no
-  `[ride]` FAULT, the cache not refused.
-- `two-games-ride-sides` (`-GuestSeed profile-only`, host_save=1): both hellos with 0x3; the guest boards the host's right
-  front side by the native press and gets ACCEPTED with that seat; the glide; the host sees the body at the seat; a drive; a
-  1.5 s blackout ridden out; get off by a press. The swap: the host on the left rear side, a save (the save guard puts him off),
-  the resume to the SAME seat without a glide, get off. The old-partner leg: the guest turns its side seats off (`ride_test 44
-  0`), the host is offered the cab seat only and boards the passenger seat. Gates also: no `asked for the` mismatch, no
-  `DENIED, no fresh STR1 hello`, no FAULT in `[ride]` / `[vdrive]` / `[save]`.
-
-Not done / not proven (release A):
-- Nothing has run in the game yet. No new game address: since the review, release A calls the stage 0 helper lookup (its
-  own byte checks on first use, checked again on each truck before a call, SEH-guarded, never on the animate thread) for the
-  live anchor; the pose paths reuse the existing byte-checked writes and IK.
-- The library is learned only where MULEs ride a V3 truck's side seats near a player. Most sessions use the procedural hang.
-  The recorder's board / alight clips are still not played.
-- The leg IK and the crouch (review, below) have not run in the game yet.
-- The BT meter of the plan (the hunter state once a second while carried) is not built (docs/enemy-sync.md 23).
-- `ride_side_hide_pack=1` reuses the trike's hide; its log still says "trike pillion".
-
-#### Release A review fixes (round 30)
-
-Three reviews (crash, logic, ux) of release A; what changed:
-
-- **The hang's base is Sam standing still** (`StandTrack`, real_body.cpp). While Sam is on foot and not riding (the ride tick's
-  `realbody::SetStandTrack`), his clean pose is kept once every joint but the fingers has turned under 1 degree since the last
-  update for 12 updates in a row (`muleride::StillStep`). A side carry starts from that pose, not from the frame he boarded on
-  (a walk froze him mid-stride). With none kept yet, the boarding frame is used as before.
-- **The crouch**: the procedural hang lowers the pelvis 0.15 m (`kHangCrouchM`) and bends the knees with a two-bone leg IK
-  (thigh, calf, foot: joints 61-62-63 and 66-67-68) that keeps each foot where the lift put it; the foot keeps its model rows.
-  It runs only once the joint convention is known. A leg that cannot be solved takes the crouch back for that update; 30
-  failures in a row (`kLegFailRun`) turn the crouch off for the rest of that carry.
-- **The library learns only a calm MULE on its seat** (`muleride::LearnRefusal`): its place in the truck must be measured (V3's
-  parent chain) and within 0.10 m of the seat's anchor (not climbing on or off), and it must not be alerted (phase 4 or 5;
-  unknown passes). Frames of another MULE on that seat start the window again. A refused frame breaks the window. The cache
-  version is now 2: a version-1 file (learned without these gates) is refused and relearned.
-- **The glide on the driver's screen**: the passenger's STP1 pose carries a new flag `kPoseRideGlide` (8) while it glides onto
-  or off a side seat. The driver's game lets the partner body follow that pose for 650 ms after the accept and while the flag
-  is under 250 ms old (`rwire::DriverBodyFree`; never for a resume). After a glide off, a fresh pose without the passenger
-  bit keeps the body free until the END comes. Older builds ignore the flag.
-- **The glide turns Sam** (`muleride::GlideYaw`): getting on, from his own facing to the truck's; getting off, from the truck's
-  to the exit spot's (toward the truck). The turn is about the truck's up axis.
-- **The glide's path** (`muleride::GlidePath`): from more than 0.3 m past the seat's approach point, Sam first goes to that
-  point (1 m out from the anchor, at his own height), then up onto the anchor with the arc, as the MULEs climb on.
-- **The anchor follows the truck's body**: the seat's inboard hand helper (HLP_MuleHand*) is read live with the byte-checked
-  helper lookup (`ride::TruckHelper`, game thread) as a carry starts and about once a second, on both games. Its shift from its
-  table place (the stage 0 measurement) moves the anchor when it is under 0.5 m. Else the table's anchor is used.
-- **A carry's end clears the side seat** (`SideFeed(false, ...)`), so the next side carry takes a new base.
-- **A model-matrix fault**: once the pose functions faulted this session (`g_fit_faulted`), no ride pose source calls them
-  again; an override in place ends with Sam's clean joints written back.
-- **The library's copy** is read into a scratch copy first, so a torn read never mixes two loops.
-
-Log lines added:
-- `[ride] side seat <seat>: anchor live from HLP_MuleHand.. (x y z), d m from the table` once a ride, or `... anchor from the
-  table: <helper> d m from its table place (over 0.5 m)` / `... <helper> not read (the helper lookup's checks, the animate
-  thread, or missing)`
-- `[ride] the partner body follows its own pose while it glides (side seat <seat>)` (the driver, once a ride)
-- `[ride] <role>: the partner asks to ride our truck ... at the <seat> (ride #..): side seats not offered here now (<why>): the
-  cab seat instead` (replaces the DENIED line)
-- `[ride] side seats not offered: the partner sends no STR1 hello (an older build, riding together off there, or its checks
-  failed): the cab seat only` (reworded)
-- the side seat's line every second gains `; legs n ok m failed, base standing still|the boarding frame|none`
-- `[ride] side library: seat N (host|guest): MULE id not learned: <not a side seat|its place is not measured|off its anchor
-  (getting on or off)|alerted> (n frames dropped)` (up to 8 a seat)
-
-#### Boarding when the game shows no Use Vehicle (round 30 fix)
-
-The first two-game run of release A (20261127-171443, two-games-ride-sides leg 2) failed at the left rear side. The mod said
-boarding was allowed, but the host's game showed no Use Vehicle for 15 s, so five presses of X did nothing. The prompt only
-came when Sam's idle animation turned him.
-
-Why: the mod's prompt hook can only take the cross-out off a Use Vehicle that the game has already decided to show. It cannot
-make one. The game's own targeting decides that, and it asks different questions from the mod:
-- the truck must be in the game's world vehicle registry (the candidate pass FUN_142823210);
-- its origin (not the seat) must be within 3 m, and Sam's body must face it (Select FUN_142796410: dot over 0.2);
-- two rays from Sam to the truck's centre must be clear (the candidate pass and the provider's cached ray).
-Which of these failed is not known yet. The likeliest is a blocked ray at the low rear corner; a facing drift after the
-placement slide, or the follower's attach taking the truck out of the registry, are possible too.
-
-The fix:
-- **A press boards even without the game's prompt** (`rwire::NoPromptPress`, the native prompt on). A press of X / Square or
-  F counts as the board press when all of these hold:
+- **No riding banners.** No "Riding with ..." for the passenger and no "... rides with you." for the driver; with the
+  game's own Use Vehicle prompt, no "Asking to ride..." either. The solo seat test still says "Seat test: carried on the ...".
+- **A press boards even without the game's prompt** (`rwire::NoPromptPress`, the native prompt on). The game's targeting
+  sometimes offers no Use Vehicle beside the partner's vehicle although the mod allows boarding (run 20261127-171443: 15 s
+  with none). A press of X / Square or F then counts as the board press when all of these hold:
   - boarding is allowed, and has been for 0.3 s;
-  - Sam is within 2.5 m of the chosen seat's approach point (the cab: its door), not just the 7 m the game's prompt allows;
+  - Sam is within 2.5 m of the passenger door point, not just the 7 m the game's prompt allows;
   - the game has offered no Use Vehicle on the partner's vehicle for 0.3 s (else its own prompt handles the press);
   - it has offered none on any other vehicle for 0.3 s (else the press is the game's get-on there);
   - the game's own press handler took no press in the last 0.5 s;
   - the last such press was 1 s ago or more.
-  The press sends the same REQUEST as the game's prompt does, so an older partner's build answers it as before. Nothing new
-  is drawn on screen.
+  The press sends the same REQUEST as the game's prompt, so an older partner's build answers it as before.
 - **Diagnostics.** After 1.5 s of allowed boarding with no Use Vehicle from the game, one line says what the game's targeting
-  makes of the truck: registry yes or NO, the distance to its origin, Sam's facing dot, the bytes +0x1EC and +0x59C, and the
-  ride action's context (*(action+0x60): the candidate ids and distances, the selected vehicle, flags bit 2 "usable"). The
-  same text is in `ride_state` and on the board press line. These are plain reads; nothing in the game is called or changed.
-- `ride_test 8 <m> <seat 3..6>` now refuses while Sam is asking to ride or carried, so a scenario can place him again
-  before each round of presses.
+  makes of the vehicle (registry, origin distance, facing dot, the ride action's candidates). Plain reads only.
+- **F6:** the BTs finding Sam (the hunter area rising while he is carried) ends the ride (docs/enemy-sync.md section 22).
+- **`ride_test 8`** refuses while Sam is asking to ride or carried.
+- **The model-matrix fault guard:** once the game's pose functions faulted this session, the ride pose calls them no more;
+  an override in place ends with Sam's clean joints written back.
 
-Not done, on purpose:
-- The approach points and the side exit spots are unchanged (1.0 m out from the anchor; exit 0.9 m past the body's box).
-  The run's evidence shows the distance (2.0 m) and the facing (dot 0.96) passed. Bringing the right front approach point to
-  0.6 m would put it 0.68 m from the cab door, so a 0.2 m slide would turn a side request into a cab one.
-- No hook on the game's Select, and no re-registering of the truck. The next run's diagnostics line says whether either is
-  needed.
-
-Log lines added:
-- `[ride] board press without the game's prompt (<pad or key>): no Use Vehicle on the partner's truck 0x.. yet|for over
-  0.3 s, the <seat> d m from its approach point; <targeting>`, then the usual `asking to ride ... (the board press without
-  the game's prompt, ...)`
-- `[ride] board press left to the game: <too far from the seat's approach point|too soon|the game offers another vehicle>
-  (...)` (up to 20)
-- `[ride] native prompt: boarding the partner's truck 0x.. is allowed (the <seat>, d m from its approach point) but the
-  game offers no Use Vehicle on it for t s: <targeting>; a press of X / F still asks to ride` (once each time boarding
-  becomes allowed, up to 40)
-- `[ride] state: game targeting: registry yes|NO|unread; origin d m (3D; the game's limit 3), Sam facing it dot f (over
-  0.2); +0x1EC n, +0x59C f; the game's target: n candidate(s) [0x.. d m, ...], the partner's listed|NOT listed; selected #i
-  the partner's|another vehicle|none, flags 0x.. (usable|not usable); RideOn on the partner's vehicle n (t s ago), on
-  others n; board presses without the game's prompt n`
-
-The tests: two-games-ride-sides leg 2 waits for the game's prompt (optional), logs `ride_state`, places Sam again between
-rounds of presses, and passes on either path; its asking line must name the path that boarded. seat-measure-side's side
-screenshots now look from each seat's own side (the camera keeps its yaw between seats; the run's X32, X41 and X61 looked
-from the far side).
-
+Log lines:
+- `[ride] board press without the game's prompt (<pad or key>): no Use Vehicle on the partner's <kind> 0x.. yet|for over
+  0.3 s, the passenger seat d m from its door point; <targeting>`, then the usual `asking to ride ...`
+- `[ride] board press left to the game: <too far from the door point|too soon|the game offers another vehicle|...> (...)`
+- `[ride] native prompt: boarding the partner's <kind> 0x.. is allowed (the passenger seat, d m from its door point) but the
+  game offers no Use Vehicle on it for t s: <targeting>; a press of X / F still asks to ride`
+- `[ride] state: game targeting: ...; RideOn on the partner's vehicle n (t s ago), on others n; board presses without the
+  game's prompt n`
 
 ### 24.21 BTs and riding (round 30 BT S1 / S2; docs/enemy-sync.md section 24)
 
-The BT relay adds no notice for riding. When Sam rides as a passenger (on a seat or a side seat), his trouble messages carry a
-"carried" flag, which the partner only logs. A partner's gazer kill waits ("held: Sam rides as a passenger") until the ride
-ends; after 60 s it is dropped. The partner's trouble marks are drawn the same way whether either of them rides.
+The BT relay adds no notice for riding. When Sam rides as a passenger, his trouble messages carry a "carried" flag, which
+the partner only logs. A partner's gazer kill waits ("held: Sam rides as a passenger") until the ride ends; after 60 s it is
+dropped. The partner's trouble marks are drawn the same way whether either of them rides.
 
 ## 25. Vehicle hits (`session.ini partner_vehicle_damage`, default 1, with `vehicle_sync=5`; design milestone M4)
 

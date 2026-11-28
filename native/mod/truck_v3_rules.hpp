@@ -612,12 +612,12 @@ inline bool ShoveSpike(double err, double prev_err) {
 // ---------------------------------------------------------------- the action
 // truck_v3 <op>: 0 off (+ status), 1 on [period s], 8 the seat dump, 9 the identity dump. PeriodOf clamps the watch period.
 // v3: round 28 T1's status (truck_v3 3); seat: round 29 T2's (truck_v3 4).
-enum class Op : std::uint8_t { off, on, seats, ident, bad, v3, seat, conv };  // conv: round 30 stage 0 (side riding P2)
+enum class Op : std::uint8_t { off, on, seats, ident, bad, v3, seat };
 inline Op OpOf(double v) {
     if (!std::isfinite(v) || std::fabs(v) > 1000) return Op::bad;
     const int i = static_cast<int>(v);
     if (static_cast<double>(i) != v) return Op::bad;
-    return i == 0 ? Op::off : i == 1 ? Op::on : i == 3 ? Op::v3 : i == 4 ? Op::seat : i == 8 ? Op::seats : i == 9 ? Op::ident : i == 10 ? Op::conv : Op::bad;
+    return i == 0 ? Op::off : i == 1 ? Op::on : i == 3 ? Op::v3 : i == 4 ? Op::seat : i == 8 ? Op::seats : i == 9 ? Op::ident : Op::bad;
 }
 inline double PeriodOf(double v) { return !std::isfinite(v) || v <= 0 ? 1.0 : v < 0.2 ? 0.2 : v > 10 ? 10.0 : v; }
 

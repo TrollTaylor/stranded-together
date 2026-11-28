@@ -406,8 +406,6 @@ ini <key>=<value>            an extra session.ini line, for every game of the ru
                              sound_steps, partner_volume, self_headgear, self_feet_hide, boots_sync,
                              vehicle_sync, vehicle_overlap_hide, vehicle_look, vehicle_packs, vehicle_sound,
                              vehicle_real_native, host_save, ride_together, partner_vehicle_damage,
-                             ride_sides, ride_mule_pose, ride_mule_record, ride_mule_cache,
-                             ride_side_hide_pack,
                              coop_test_build, coop_test_title_off, guest_skip_logos (the host-held
                              save session, docs/coop-session.md; coop_test_build: a fake game build;
                              coop_test_title_off=1: the guest's native title not installed, the

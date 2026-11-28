@@ -31,17 +31,8 @@ enum class MsgType : std::uint8_t {
 };
 const char* MsgTypeName(std::uint8_t t) noexcept;
 
-// Round 30 release A (docs/real-partner-body.md section 24.20): the truck's four side seats, where the game's MULEs hang on
-// (its MULE seats 1..4 = our seats 3..6). Offered only to a partner whose STR1 hello says it knows them (kFeatSides).
-enum class Seat : std::uint8_t { none = 0, passenger = 1, pillion = 2, side_rf = 3, side_lf = 4, side_rr = 5, side_lr = 6 };
+enum class Seat : std::uint8_t { none = 0, passenger = 1, pillion = 2 };
 const char* SeatName(std::uint8_t s) noexcept;
-inline constexpr bool SideSeat(std::uint8_t s) noexcept { return s >= 3 && s <= 6; }
-// The game's MULE seat of one of our side seats (1 right front, 2 left front, 3 right rear, 4 left rear), else 0.
-inline constexpr int MuleSeatOf(std::uint8_t s) noexcept { return SideSeat(s) ? s - 2 : 0; }
-// +1 on the truck's right (side_rf, side_rr), -1 on its left, 0 not a side seat.
-inline constexpr int SideOf(std::uint8_t s) noexcept { return !SideSeat(s) ? 0 : (s == 3 || s == 5) ? 1 : -1; }
-// A seat a passenger may take on a kind: the kind's own seat (SeatOf), or on the truck (kind 2) a side seat.
-bool SeatValidFor(std::uint8_t kind, std::uint8_t seat) noexcept;
 
 // REQUEST reasons: the ImGui fallback's hold (kReqHold), a debug action (kReqTest), the game's own "Use Vehicle" prompt
 // pressed beside the partner's vehicle (kReqNative: the driver's game checks the passenger near the vehicle, not the door)
@@ -57,7 +48,6 @@ enum class Deny : std::uint8_t {
     not_near = 3,        // the driver's game does not see the passenger's Sam beside the vehicle
     off = 4,          // riding together is off on the driver's game (session.ini ride_together=0, a failed check)
     world = 5,        // not in the same world
-    seat = 6,         // round 30: that seat is not offered (a side seat to a game without side seats, or one taken)
     count
 };
 const char* DenyName(std::uint8_t r) noexcept;
@@ -100,8 +90,7 @@ struct Msg {
 // Returns kMessageSize, 0 for an invalid message (EncodeMsg refuses what DecodeMsg would).
 std::size_t EncodeMsg(const Msg& m, std::uint8_t* out, std::size_t cap) noexcept;
 // Strict: the SVM1 header (type 48, version 1, reserved 0), the exact size, the magic, a known type, the seat valid for
-// the kind (the trike: pillion only; the roadster: passenger only; the truck: passenger or a side seat 3..6), the reason in
-// the type's range, from 0 / 1,
+// the kind (the trike: pillion only; roadster and truck: passenger only), the reason in the type's range, from 0 / 1,
 // ride id != 0, a valid kind whose actor type matches the id, zero reserved bytes.
 bool DecodeMsg(const std::uint8_t* in, std::size_t size, Msg& out) noexcept;
 
@@ -115,54 +104,6 @@ bool DriverSeat(std::uint8_t kind, float (&off)[3]) noexcept;
 // Where a passenger boards / gets off: the door point (vehicle frame) on the passenger's side, on the ground plane of the
 // vehicle (z 0). The trike's pillion boards from the right.
 bool DoorPoint(std::uint8_t kind, float (&off)[3]) noexcept;
-
-// ---------------------------------------------------------------- side seats (round 30 release A, section 24.20)
-// The seat's anchor in the vehicle's frame: a side seat's is where the game puts a MULE's entity on that seat (truck_v3
-// kSeatTable, the P2 probe: (+-1.299, 0.127 / -0.692, 0.778)); any other seat is PassengerSeat (the ROOT on the cab seat).
-// The carried Sam's entity goes there, facing the vehicle's forward.
-bool SeatAnchor(std::uint8_t kind, std::uint8_t seat, float (&off)[3]) noexcept;
-// The inboard hand's target in the vehicle's frame: the truck's HLP_MuleHand helper of that side seat (measured by
-// `ride_test 41`: RF (1.149, 0.341, 2.187), LF (-1.166, 0.316, 2.160), RB (1.170, -0.758, 2.170), LB (-1.179, -0.716,
-// 2.163)). False for anything else.
-bool SideHandle(std::uint8_t seat, float (&off)[3]) noexcept;
-// Where a passenger walks up to a seat (vehicle frame, ground plane z 0): a side seat's anchor kApproachOutM outward; any
-// other seat the door point.
-inline constexpr double kApproachOutM = 1.0;
-bool ApproachPoint(std::uint8_t kind, std::uint8_t seat, float (&off)[3]) noexcept;
-// The seat for a passenger at `local` (his Sam in the vehicle's frame): with side seats offered (the truck, both games know
-// them), the seat whose approach point (the cab's door one of them) is nearest within kPickRadiusM (horizontal); else, or
-// none that close, the kind's own seat (SeatOf). `taken` (bit s) leaves side seats out. Review (logic 3): a side seat only when
-// its approach point is kPickCabBiasM nearer than the cab's door (standing at the door, the cab seat).
-inline constexpr double kPickRadiusM = 3.0, kPickCabBiasM = 0.5;
-std::uint8_t PickSeat(std::uint8_t kind, bool sides, const double (&local)[3], std::uint32_t taken = 0) noexcept;
-
-// ---------------------------------------------------------------- the STR1 hello (round 30 release A)
-// Every kRideHelloEveryMs each game sends what it knows of riding together on SVM1 external type 53 (an old build drops an
-// unknown type silently: vehicle_share). A partner whose hello is under kRideHelloFreshMs old and carries kFeatSides gets the
-// side seats; anyone else is offered the cab only.
-//   "STR1" | u8 version 1 | u8 features | u8 role (1 host, 2 guest) | u8 0
-inline constexpr std::uint8_t kHelloSvmType = 53;
-inline constexpr std::size_t kHelloBodySize = 8;
-inline constexpr std::size_t kHelloMessageSize = kSvmHeaderSize + kHelloBodySize;
-inline constexpr std::uint8_t kHelloVersion = 1;
-inline constexpr std::uint8_t kFeatRide = 1;      // bit 0: riding together is on
-inline constexpr std::uint8_t kFeatSides = 2;     // bit 1: the side seats (seats 3..6 on the truck)
-inline constexpr std::uint8_t kAllFeatures = 3;
-inline constexpr double kRideHelloEveryMs = 2000.0, kRideHelloFreshMs = 7000.0;
-struct Hello {
-    std::uint8_t version = kHelloVersion;
-    std::uint8_t features = 0;
-    std::uint8_t role = 0;  // 1 host, 2 guest
-};
-// The whole message (SVM1 header of type 53, then the body). 0 when it does not validate or fit.
-std::size_t EncodeHello(const Hello& h, std::uint8_t* out, std::size_t cap) noexcept;
-// Strict: the header (type 53), the exact size, the magic, version >= 1, role 1 / 2, the reserved byte 0. Unknown feature
-// bits are dropped.
-bool DecodeHello(const std::uint8_t* in, std::size_t size, Hello& out) noexcept;
-// Side seats are offered: on here, and the partner's hello is fresh (same link session) with kFeatSides.
-inline bool SidesOffered(bool sides_on, bool have_hello, bool same_session, double hello_age_ms, std::uint8_t peer_features) noexcept {
-    return sides_on && have_hello && same_session && hello_age_ms >= 0 && hello_age_ms < kRideHelloFreshMs && (peer_features & kFeatSides) != 0;
-}
 
 // A point in the vehicle's frame to the world: pos + off.x * row0 + off.y * row1 + off.z * row2.
 void ToWorld(const double (&pos)[3], const float (&rows)[9], const float (&off)[3], double (&out)[3]) noexcept;
@@ -227,11 +168,6 @@ bool DriverAccepts(const DriverIn& in, Deny* why) noexcept;
 // partner's pose says it is our passenger (STP1 kPosePassenger) within the last second, or the accept is under 3 s old.
 inline constexpr double kAcceptGraceMs = 3000.0, kPassengerBitMs = 1000.0;
 bool DriverPlacesBody(bool accepted, double since_accept_ms, double passenger_bit_age_ms) noexcept;
-// Review (ux 1): the driver's game lets the partner body follow the partner's own pose (STP1) while it glides onto or off a side
-// seat: for kSideGlideFreeMs after the accept (the get-on glide, rwire's side of muleride::kBoardGlideMs plus the answer's way),
-// never for a resume (no glide there), and while the partner's newest STP1 with kPoseRideGlide is under kGlideBitMs old.
-inline constexpr double kSideGlideFreeMs = 650.0, kGlideBitMs = 250.0;
-bool DriverBodyFree(bool side_seat, bool resume, double since_accept_ms, double glide_bit_age_ms) noexcept;
 // The driver's game ends a ride the partner no longer shows as seated (after the grace).
 inline constexpr double kDriverTimeoutMs = 5000.0;
 bool DriverTimedOut(bool accepted, double since_accept_ms, double passenger_bit_age_ms) noexcept;
@@ -309,11 +245,12 @@ inline bool NativePressIsNew(double last_press_ms, double now_ms) noexcept { ret
 
 // Round 30 (run 20261127-171443, leg 2): the board press without the game's prompt. The game's own targeting (FUN_142823210,
 // FUN_142796410 and the provider's line-of-sight early out) can decide not to offer Use Vehicle on the partner's truck even
-// where the mod allows boarding (Sam at the left rear side: 15 s of presses, no prompt). The provider post-hook can only lift
-// a RideOn the game made; it cannot make one. So, with the native prompt on, a press of the board button (pad X / Square,
-// key F) is taken as the board press when all of these hold:
+// where the mod allows boarding (15 s of presses beside the truck, no prompt). The provider post-hook can only lift a RideOn
+// the game made; it cannot make one. So, with the native prompt on, a press of the board button (pad X / Square, key F) is
+// taken as the board press when all of these hold:
 //   * boarding is allowed (BoardCheck ok, the partner's vehicle known) and has been for kNoPromptQuietMs;
-//   * our Sam stands within kBoardRadiusM of the chosen seat's approach point (the door rule, not the native 7 m one);
+//   * our Sam stands within kBoardRadiusM of the seat's door point (the door rule, not the native 7 m one; round 31: the cab
+//     seat is the only seat, so this is BoardCheck's own door distance);
 //   * the game offered no RideOn on the partner's vehicle for kNoPromptQuietMs (else its own press path has it);
 //   * the game offered no RideOn on any other vehicle for kNoPromptQuietMs (that press is the game's own get-on);
 //   * the game's TryStart took no press this tick, and none within kNoPromptGameMs;
@@ -325,7 +262,7 @@ enum class NoPrompt : std::uint8_t {
     idle,            // no press this tick, or the native prompt is off (the ImGui hold prompt boards then)
     not_allowed,     // boarding is not allowed now
     too_soon,        // boarding allowed for under kNoPromptQuietMs, or the last such press under kNoPromptGapMs ago
-    too_far,         // beyond kBoardRadiusM of the seat's approach point
+    too_far,         // beyond kBoardRadiusM of the door point
     game_prompt,     // the game offers RideOn on the partner's vehicle: its own press path boards
     other_vehicle,   // the game offers RideOn on another vehicle: the press is its get-on
     game_press,      // the game's TryStart took a press
@@ -337,7 +274,7 @@ struct NoPromptIn {
     bool pressed = false;               // the board button went down this tick (after a release)
     bool allowed = false;
     double allowed_for_ms = 0;
-    double approach_dist_m = 1e9;       // horizontal, to the chosen seat's approach point (the cab: its door)
+    double approach_dist_m = 1e9;       // horizontal, to the seat's door point
     double partner_prompt_age_ms = 1e18;
     double other_prompt_age_ms = 1e18;
     bool game_press_now = false;
@@ -411,11 +348,6 @@ struct ExitSpot {
 // right and forward axes projected onto it (a vehicle on its side or roof: the spot is outside its footprint, at the
 // height of its lowest point, never along its tilted up or right axis into the ground or onto the wreck).
 ExitSpot ExitPlacement(std::uint8_t kind, const double (&pos)[3], const float (&rows)[9], const float (&vel)[3], bool forced) noexcept;
-// Per seat (round 30): a side seat by choice puts him on that seat's side, kSideExitOutM beyond the body's edge, at the
-// anchor's place along the vehicle; forced, the side away from the sideways velocity as above, at the anchor's place moved
-// back as above. Any other seat: the rule above.
-inline constexpr double kSideExitOutM = 0.9;
-ExitSpot ExitPlacement(std::uint8_t kind, std::uint8_t seat, const double (&pos)[3], const float (&rows)[9], const float (&vel)[3], bool forced) noexcept;
 
 // ---------------------------------------------------------------- the save guard (save_guard.cpp; docs section 24.12)
 // Every save the game makes is posted into one pending-save holder; the game's save processor issues it into the save

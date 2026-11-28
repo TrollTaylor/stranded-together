@@ -16,8 +16,6 @@ enum PoseFlags : std::uint32_t {
     kPoseValid = 1u << 0,     // sender has a live local player
     kPoseInVehicle = 1u << 1, // the sender rides something (a parent entity: vehicle, mount); player collision
     kPosePassenger = 1u << 2, // the sender's Sam is carried as the passenger of the receiver's vehicle (riding together, M3)
-    kPoseRideGlide = 1u << 3, // round 30 review (ux 1): ... and glides onto or off a side seat (the driver's game: the body follows
-                              // this pose, not the seat); older builds ignore it
 };
 
 struct Quat {

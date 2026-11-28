@@ -219,7 +219,6 @@ void TestOps() {
     CHECK(OpOf(0) == Op::off && OpOf(1) == Op::on && OpOf(8) == Op::seats && OpOf(9) == Op::ident);
     CHECK(OpOf(3) == Op::v3 && OpOf(3.5) == Op::bad);  // round 28 T1
     CHECK(OpOf(4) == Op::seat && OpOf(4.5) == Op::bad);  // round 29 T2
-    CHECK(OpOf(10) == Op::conv && OpOf(10.5) == Op::bad && OpOf(11) == Op::bad);  // round 30 stage 0 (P2)
     CHECK(OpOf(2) == Op::bad && OpOf(-1) == Op::bad && OpOf(1.5) == Op::bad && OpOf(NAN) == Op::bad && OpOf(INFINITY) == Op::bad);
     CHECK(PeriodOf(0) == 1.0 && PeriodOf(-3) == 1.0 && PeriodOf(NAN) == 1.0 && PeriodOf(0.05) == 0.2 && PeriodOf(60) == 10.0 && PeriodOf(2.5) == 2.5);
 }

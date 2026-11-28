@@ -1672,34 +1672,8 @@ the mod stopped); the passenger's `[gear] the partner's backpack props hidden (o
 pillion)` / `... follow its frame again`. `gear 0`'s carrier line counts the pieces the game hides (`n hidden by the game:
 hide mask 0xM`), and every change of that count is logged (`[gear] our carried cargo: n of m pieces hidden by the game
 now (carrier hide mask 0xM)`): hidden pieces are not sent (v0.22 sent every carried piece as shown).
-Side riding on the MULE trucks, stage 0 (round 30, probes only; docs/real-partner-body.md 24.19; hidden runs or dev_tools,
-refused otherwise): `41 [vehicle id]` calls the game's skeleton helper lookup (the truck's vtable slot +0x130) on a truck (the
-named one, as a decimal id: 131087 = 0x2000F; else the one the partner drives here, ours, or the nearest within 300 m) for the
-12 seat / hand helpers: `[ride] helper probe on <whose> truck 0x...: thread T, the animate detour's A (another | the SAME:
-refused | not seen yet)`, per helper `[ride] helper <name> on truck 0x...: found (x y z) axes x (..) y (..)` (the truck's model
-frame) or `missing`, once per session the key check (`[ride] key check: ours == game's (n names, k named differently)`, or
-`DIFFERS (...; first: ...)`, `<what> is '<game>' in the game, '<ours>' in our table`), then `[ride] helper probe done: <whose>
-truck 0x..., n of 12 found`. Its own 5 byte checks run on first use (`[ride] helper probe: byte checks 5/5 ok`; a failure turns
-only these probes off). `43 <seat 1..4>` (needs a truck measured by `seat_measure` and our Sam on foot) carries our Sam at that
-MULE side seat of the measured truck with pose source 4 (the live MULE seated there now, else the newest validated board clip's
-seated end for that seat (`mule_rec`), else the seated idle): `[ride] ghost seat N: our Sam carried on our truck 0x... at (x y
-z), source live MULE|recorded MULE|none 0x...` (and `... no MULE sample (...): the seated idle`), 1.5 s later `[ride] ghost
-seat N: joint err mean .. cm max .. cm (joint j, n joints, fingers excluded), feet z .., source <live|recorded> MULE 0x...|none,
-pose source 4` (each in its truck's frame) or `joint err n/a (...)` (round 30 review: also `joint err n/a (the carry ended
-before the measurement)` / `(the carry is not riding)` when the carry did not last the 1.5 s); `ride_test 2` ends it.
-Side riding on the MULE trucks, release A (round 30; docs/real-partner-body.md 24.20; `session.ini ride_sides`, default 1):
-`8 [m] <seat 3..6>` places our Sam at that side seat's approach point of the truck the partner drives here (1 m outward on its
-side, facing the truck) instead of the passenger door (round 30: refused while our Sam asks to ride or is carried); `40 <seat 3..6>` (needs a truck measured by `seat_measure` and our
-Sam on foot) carries our Sam on that side seat of the measured truck as a side passenger is carried (solo, no notice: the
-0.5 s glide onto the anchor, the hang: the side library's idle or the procedural one): `[ride] solo: our Sam carried on the
-truck 0x... (<seat>, ride #00005E58, #n)`, `[ride] side seat <seat> (MULE seat N): a 0.5 s glide onto the anchor ...`, then
-the once-a-second side line (24.20); `2` ends it at once (a snap), `2 1` ends it as a press does (`[ride] test: get off as
-by a press`: the 0.3 s settle, the 0.4 s glide, the placement on that side). `42` logs `[ride] side library: play on|off,
-learn on|off, cache on|off (<file state>); seat 1 .. seat 4 ...` and `[ride] side hang: seat N, mode library|procedural|none,
-writes ..., IK .., lift .., feet z .., hand err ..; STR1 hello received|none (tx rx bad), side seats offered|not offered`.
-`44 <0|1|2>` (hidden runs or dev_tools): the side seats off here (as `ride_sides=0`: the STR1 hello says no), on, or off with
-no STR1 hello at all (as an older build): `[ride] test: side seats OFF (as ride_sides=0)|ON|OFF and no STR1 hello (as an
-older build)`.
+Round 30: `8` refuses while our Sam asks to ride or is carried. Round 31: the truck side seats were removed
+(docs/real-partner-body.md 24.19), and with them `40`-`44` and `2 1`.
 
 ### Save guard (`save_guard`; with riding together, or in a hidden run)
 
@@ -1762,30 +1736,6 @@ two-games-truck-v3-seated (gate `python -I tools\testenv\truck-v3.py <run>`, its
 whose bit is set in `mask` are shown (-1 all, the default), and only the passes in `mode` switch a shown seated MULE's physics
 off (bit 0 its art-part bodies, bit 1 its ragdoll; -1 both, the default). Lines `[truckv3] v3 seats: the seat mask 0x..` /
 `the body passes 0x..`. For comparing which part of a rider pushes her truck.
-
-`truck_v3 10` (round 30 stage 0, P2; docs/real-partner-body.md 24.19; vehicle_truck_probe=1, and hidden runs or dev_tools since
-the hand helpers call the game's helper lookup, else `hidden runs or dev_tools only`): per seated MULE `[mrec] conv seat N
-MULE 0x... truck 0x...: entity (x y z) yaw .., root t (..) pelvis t (..) | in the truck: j0 (..) j1 (..) foot R (..) foot L (..)
-hand R (..) hand L (..) | foot z .. | hand-helper <name> (x y z) d cm from hand L|R` (all in the truck's frame; a side seat: its
-inboard hand's helper; the driver: both handle helpers; `missing` when the game's lookup has none) or `... not compared (...)`,
-then `[mrec] skeleton: MULE == Sam (n MULEs, skeleton 0x...)` / `MULE differs (...)` / `not compared (...)` and `[mrec] conv done:
-n seated MULEs, m logged`. Scenario: mule-ride-probe.
-
-### Mule rec (`mule_rec`; round 30 stage 0; hidden runs or dev_tools, with `session.ini vehicle_truck_probe=1`)
-
-The MULE clip recorder (side riding P4, docs/real-partner-body.md 24.19). `action mule_rec 1`: every 100 ms the MULEs' ride bits
-(+0xE44) are watched; the rising edge of bit 2 (the get on / off action) starts a clip of that one MULE: a board (bit 0 newly
-set, or +0xE20 names a vehicle) ends 0.3 s after bit 2 clears, an alight (bit 0 already set) 0.5 s after bit 0 clears, either
-at most 6 s. Its 77 local joints and its root / pelvis translations are captured every animate on realbody's recorder slot 8
-(never the SEP1 slots 0..7; a 600-frame ring), its entity in the truck's frame every game tick. Lines: `[mrec] <board|alight>
-seat N: recording MULE 0x... (truck 0x...)`, then `[mrec] <kind> seat N: S s, F fr, R fps, start (x y z) end (x y z) ok|bad <why>
-| MULE 0x... truck 0x..., trimmed n, paired n of m ticks, max D deg/s (joint j), step M m, gap G ms, bad quats n, from the
-anchor: start .. m end .. m` (why: no frames, never near the anchor, no truck frame, too few frames, non-unit quaternions, frame
-gap, joint spin, entity jump, end off the anchor, start off the anchor, never left the seat); an ok side-seat board keeps its
-seated end (`[mrec] board seat N: the seated end kept (...)`; `ride_test 43`'s recorded source). One clip at a time: another
-MULE's start meanwhile is `... skipped (the recorder slot is on ...)`; `... not recordable (...)`, `...'s clip dropped (...)`.
-`mule_rec 0`: a clip being recorded is dropped; `[mrec] recorder off: n clips ok, n bad, n skipped; seated ends kept for n
-seats`. Memory only: nothing is written to disk or the repo. Scenario: mule-ride-probe.
 
 ### World sync (`world_dump`, `world_sync`, `dev_build`, `dev_build_remove`, `dev_build_decay`, `dev_build_mats`, `dev_ladder`, `dev_rope`; ziplines W4; on with `host_save=1` unless `world_sync=0`)
 
@@ -2002,8 +1952,7 @@ or battery notify that faults at run time turns repair off for the run with the 
 | Vehicle classes: vtable slot 0 = the RTTI getter (`DSVehicleSpeedCar` / `DSVehicleTruck` / `DSVehicleMotorbike`), the constructors' `+0x4C4` kind writes, the type / ride state reads (`+0x4C4`, `+0x4CC`), Entity_ExportedGetParent (`+0x70`) | `0x3E274D8`/`0x2F6BC10`, `0x3E26790`/`0x2F6BCB0`, `0x3E25DB8`/`0x2F6BB60`; `0x2F62201`, `0x2F62571`, `0x2F61CFC`; `0x2FA73B6`, `0x2FA74B8`, `0x2361B80` | vehicle sync (sender) |
 
 Regenerate the hex with `DS.load().rd(va, n).hex()` from `tools/re/dsre.py` after a game
-patch, re-verifying each meaning first. The save guard's own 18 checks are in docs/real-partner-body.md section 24.12; the
-side-riding probes' 5 (round 30) in section 24.19.
+patch, re-verifying each meaning first. The save guard's own 18 checks are in docs/real-partner-body.md section 24.12.
 
 ## Tests
 

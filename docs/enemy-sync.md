@@ -4051,30 +4051,15 @@ is not taken (rain-gone has no stats). P3's crater slot is released by the game 
 it). The thread-local gate drops the flow only on the probe's own thread and call, but the flow's tail (clearing +0x4B) is
 skipped with it.
 
-## 23. Round 30 release A: riding on the trucks' sides (BT and MULE side)
+## 23. Round 30 release A: riding on the trucks' sides (removed in round 31)
 
-The side seats themselves are in docs/real-partner-body.md section 24.20. Two parts touch this module:
+Round 30 tapped the enemy sync for the side-ride pose library: the host's `SendCaptures` and the guest's `SeatShowTick`
+passed seated side MULEs' joint frames to `realbody::LearnSideFrame` (through `truckv3::SeatHostEntry`). Round 31 removed
+side riding at the user's request (it did not work well with the players' vehicles; docs/real-partner-body.md 24.19), and
+these taps with it. The enemy sync and the V3 trucks are as in round 29 again.
 
-* The side library's taps (`enemy_sync.cpp`; config `ride_mule_record`, default 1). The host taps `SendCaptures`: when a
-  capture slot's MULE is on a side seat 1..4 of a V3 truck (`truckv3::SeatHostSeat`, the newest occupant list), its joint frame
-  goes to `realbody::LearnSideFrame(seat, frame, now, "host")`. The guest taps the end of `SeatShowTick`: a mirror shown seated
-  on a side seat with the host's pose gives its newest SEP1 frame to `LearnSideFrame(seat, ..., "guest")` (a frame already seen
-  is skipped). Nothing is sent and nothing in the enemy sync changes; the learner logs `[ride] side library: seat N learned from
-  a seated MULE (host|guest): ...`.
-* BTs while riding a side seat: S0's hunter-area exit (section 22, F6) applies unchanged to every seat. When the hunter area
-  comes up while Sam is carried, the ride ends as a forced exit and he is put beside the truck at once, with no glide.
-
-Not built: the plan's BT meter (the hunter state 0x1427AD2F0 once a second while carried, the taken bits). It was optional
-(a log only, no behaviour) and is left for later. No new game address was added in release A.
-
-### 23.1 Release A review: what the taps pass on
-
-Both taps now pass the MULE's id, its place in the truck and its phase, and `muleride::LearnRefusal` decides
-(docs/real-partner-body.md 24.20, "Release A review fixes"). The host uses `truckv3::SeatHostEntry` (the whole occupant
-entry: the seat, the place in the truck's frame, and whether it was measured by the parent chain) and the phase of its own
-copy (`PhaseOf`). The guest uses the STO1 record's place and source (`SeatFindFor`) and the host's phase from the newest SEN1
-sample. A MULE that is climbing on or off, or alerted, is not learned: `[ride] side library: seat N (host|guest): MULE id not
-learned: <why> (n frames dropped)`.
+What stayed: S0's hunter-area exit (section 22, F6) ends a ride on the cab seat; the BT work of sections 22 and 24 is
+unchanged.
 
 ## 24. Round 30 BT S1 / S2: the partner's trouble as markers, and gazer kills in both worlds
 

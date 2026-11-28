@@ -396,8 +396,7 @@ bool ScenarioIniKeyAllowed(const std::string& key) {
                                            "enemy_target_redirect", "enemy_target_fresh_ms", "enemy_phit_probe",
                                            "vehicle_truck_probe", "odradek_probe", "bt_probe",
                                            "enemy_partner_melee", "enemy_melee_face", "odradek_gear", "odradek_pose", "odradek_scan_sync",
-                                           "bt_sync", "bt_trouble", "bt_markers", "bt_kill", "vehicle_mule_v3", "vehicle_mule_seat", "ride_sides", "ride_mule_pose", "ride_mule_record",
-                                           "ride_mule_cache", "ride_side_hide_pack"};
+                                           "bt_sync", "bt_trouble", "bt_markers", "bt_kill", "vehicle_mule_v3", "vehicle_mule_seat"};
 
     for (const char* k : kAllowed)
         if (key == k) return true;

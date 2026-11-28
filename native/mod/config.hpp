@@ -187,19 +187,6 @@ struct Config {
     // The carried passenger's camera (section 24.15): 1 (default) the game's own ride camera of the vehicle he rides (the
     // driver's camera); 0 = v0.20's on-foot camera on the carried Sam.
     bool ride_camera = true;
-    // Round 30 release A (section 24.20): the truck's side seats (the MULEs' hanging places, seats 3..6): 1 (default) offered
-    // to a partner whose build knows them (its STR1 hello); 0 = the cab seat only (as v0.42).
-    bool ride_sides = true;
-    // The side hang's pose: 1 (default) a seat's library idle (learned from seated MULEs this session or the cache) when there
-    // is one, else the procedural hang; 0 = the procedural hang only.
-    bool ride_mule_pose = true;
-    // Learn the library from seated MULEs (the host's captures, the guest's mirrors). Default on.
-    bool ride_mule_record = true;
-    // Keep the library in %LOCALAPPDATA%\StrandedTogether\mule_ride_lib.bin (never in the game's folder, a zip or a log
-    // bundle). Default on; 0 = this session only.
-    bool ride_mule_cache = true;
-    // Hide our backpack while we hang on a side seat. Default off (the pack stays on Sam's back).
-    bool ride_side_hide_pack = false;
     // Vehicle hits (design M4; docs/real-partner-body.md section 25), with vehicle_sync=5: the partner's vehicle hits our Sam
     // like an NPC-driven truck (the game's own vehicle attack: damage and the Blow knock-down, never an instant kill), and a
     // passenger thrown off in a crash takes the same hit. Default on; 0 = the partner's vehicles never hurt THIS player's Sam

@@ -87,13 +87,8 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
   link drops, the driver gets off, the vehicle crashes, flips or breaks, or the game needs
   your Sam (a cutscene, a load). While you ride you can look around but not move or act;
   you sit in your partner's driving pose (hands on a wheel that is not there).
-  New in round 30: on a truck you can also ride hanging off its side, the way MULEs do: walk up
-  to one of the four side spots (beside the front or back of the truck, left or right) and
-  press X / F there. You climb onto the step with a hand on the rail, and climb back down when
-  you press it again. If the game shows no Use Vehicle there, the press still works. The pose is
-  learned from MULEs riding trucks near you (kept on your PC only), otherwise a built-in one is used.
-  No banner tells either player that someone is riding any more. Both need this version
-  (an older partner gets the cab seat only).
+  Round 31: the truck side spots of round 30 are gone; you ride in the passenger seat only.
+  No banner tells either player that someone is riding any more.
 - **Experimental:** your partner's vehicle hits you like an enemy MULE truck: drive into
   your partner above about 15 km/h and they are knocked down and hurt on their screen (the
   game's own hit; you see them fall on yours). It never kills at once, however fast. A

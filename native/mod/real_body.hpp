@@ -29,10 +29,6 @@
 #include "partner_holo.hpp"
 #include "pose_wire.hpp"
 
-namespace st::muleride {
-struct PoseFrame;  // mule_ride_rules.hpp (round 30)
-}
-
 namespace st::realbody {
 
 // ---- startup (Bootstrap, after MH_Initialize, before the frame pump hook):
@@ -185,35 +181,14 @@ EnemySlotStats GetEnemySlotStats(bool reset) noexcept;
 // SetEnemySlot (game thread) checks the model as the probe did (our SkinnedModel vtable, its skeleton 77 joints, layout
 // BE39C83F; false otherwise) and waits out a detour inside before the change; sm 0 or off frees it. A fault in the pose
 // functions turns every slot off for the session (EnemyPoseFaulted).
-//   record     round 30 stage 0 (side riding P4, the recorder slot 8 only): capture, and every animate's local rotations, root and
-//              pelvis translations (with the QPC ms) into a ring of kRecordFrames (RecordedFrames / RecordedFrame, game thread)
-enum class EnemySlotMode : int { off = 0, count = 1, capture = 2, apply = 3, probe_sam = 4, record = 5 };
-inline constexpr unsigned kEnemyPoseSlots = 8;  // the SEP1 slots 0..7 (enemy_sync; slot 7 is also the P1-0 probe's)
-inline constexpr unsigned kRecorderSlot = 8;    // round 30: the MULE recorder's own slot (truck_v3 mule_rec / the ghost)
+enum class EnemySlotMode : int { off = 0, count = 1, capture = 2, apply = 3, probe_sam = 4 };
+inline constexpr unsigned kEnemyPoseSlots = 8;
 bool SetEnemySlot(unsigned k, std::uintptr_t sm, EnemySlotMode m) noexcept;
 std::uintptr_t EnemySlotModel(unsigned k) noexcept;
 bool CaptureEnemyFrame(unsigned k, wire::JointFrame* out, double* captured_ms) noexcept;  // game thread: the newest capture
 bool PushEnemyFrame(unsigned k, const wire::JointFrame& f) noexcept;                     // game thread: the frame to apply
 EnemySlotStats GetEnemySlotStats(unsigned k, bool reset) noexcept;
 bool EnemyPoseFaulted() noexcept;
-// Round 30 stage 0 (side riding P4 / P3; docs/real-partner-body.md 24.19). The recorder slot's ring (SetEnemySlot(kRecorderSlot, sm,
-// record) restarts it at 0): the frames recorded so far, and frame `i` of them (false: not recorded yet, or overwritten; game thread).
-inline constexpr unsigned kRecordFrames = 600;
-std::uint32_t RecordedFrames() noexcept;
-bool RecordedFrame(std::uint32_t i, muleride::PoseFrame& out) noexcept;
-// The ride pose's source 4 (SetRidePose(4), ride_test 43): all 77 local rotations, the root's and the pelvis' translation from an
-// external sample: `live` the recorder slot's newest frame (a seated MULE now), else a copy of `f`; neither (f nullptr, live false):
-// no sample, source 4 keeps the seated idle (source 3). Game thread.
-void SetRideSample(const muleride::PoseFrame* f, bool live) noexcept;
-// The thread of the newest animate detour call on our Sam's model (0: none yet); a helper lookup refuses to run on it.
-std::uint32_t AnimateThreadId() noexcept;
-// The QPC clock the recorder stamps its frames with (ms).
-double QpcNowMs() noexcept;
-// The skeleton object of an entity's SkinnedModel (its pose +0x20), and our Sam's (0: none / unread).
-std::uintptr_t SkeletonOf(game::Entity* e) noexcept;
-std::uintptr_t SamSkeleton() noexcept;
-// Joint j's local translation in an entity's 77-joint pose (fault-free reads; false: not a 77-joint SkinnedModel or unread).
-bool ReadLocalT(game::Entity* e, unsigned j, float (&t)[3]) noexcept;
 // Joint `sam_joint` (as JointWorld) as a world frame: position and rotation rows (right, forward, up; normalised).
 bool JointFrameWorld(game::Entity* e, unsigned sam_joint, double (&p)[3], float (&r)[3][3]) noexcept;
 // Joint j of an entity whose skeleton has n joints (any layout: the boots' 10), position in world space (row 3 only).
@@ -381,9 +356,6 @@ void EmergencyStop() noexcept;
 // self view) carries it. Any thread.
 // 3 = the seated idle (v0.21, play test 3; section 24.14): a held seated base of the vehicle kind (SetRideSeat), the
 // hands resting on the thighs (two-bone IK), the hands and fingers of our Sam's pose as the carry started.
-// 4 = round 30 stage 0 (ride_test 43, the ghost): the sample SetRideSample gave (all 77 rotations, root and pelvis translations),
-// else the seated idle.
-// 5 = round 30 release A (section 24.20): the side-seat hang (SetRideSide). Never the seated idle (its feet are at the cab's floor).
 void SetRidePose(int src) noexcept;
 int RidePose() noexcept;
 // The ride tick, every carry tick: the carried vehicle's kind and, when it drives calmly (3 - 30 m/s, yaw rate under
@@ -414,43 +386,6 @@ struct RidePoseStats {
 bool RidePoseStatus(RidePoseStats* s, bool take_errors = true) noexcept;
 // Game thread: our Sam's newest captured pose becomes the source-2 snapshot (taken while he drives: `seat_measure`).
 bool SnapshotRidePose(int kind = 0) noexcept;
-
-// Round 30 release A (side seats; docs/real-partner-body.md section 24.20): source 5, the side-seat hang. The ride tick sets the MULE
-// seat (1..4; 0 off), the pose weight (0 our own standing pose as the carry started .. 1 the hang: the get-on / get-off glide) and
-// the inboard hand's target in Sam's model frame (the truck's HLP_MuleHand helper minus the seat's anchor: the entity sits on the
-// anchor facing the truck's forward). The hang, in order: the seat's library idle (learned this session or from the cache), else the
-// procedural hang (our own parameters: the root lifted so the lower foot joint is muleride::kHangFeetZ above the anchor and moved
-// out, the inboard hand on the handle and the outboard arm out by two-bone IK). Any thread.
-void SetRideSide(int mule_seat, double pose_w, const double (&hand)[3]) noexcept;
-struct SideHangStats {
-    int seat = 0;
-    int mode = 0;                 // the newest update: 0 none, 1 library, 2 procedural
-    std::uint32_t writes = 0, lib_writes = 0, ik_ok = 0, ik_fail = 0, failed = 0;
-    float lift_m = 0;             // the procedural root lift
-    float feet_z = 0;             // the lower foot joint's model z after the newest update
-    float hand_err_cm = -1;       // the inboard hand against its target (procedural, the newest update; < 0 none)
-    bool lib_off = false;         // the feet check turned the library off for the session
-    std::uint32_t leg_ok = 0, leg_fail = 0;  // review (ux 4): the procedural crouch's leg IK solves
-    int base = 0;                 // the newest carry's base: 1 Sam standing still (kept), 2 the frame he boarded on, 0 none
-};
-bool SideHangStatus(SideHangStats* s) noexcept;
-// Review (ux 4): the ride tick, each tick: true while Sam is on foot and not riding; his still pose is then kept as the next
-// side carry's base (Sam's update; false clears the run, the kept pose stays).
-void SetStandTrack(bool on) noexcept;
-// The library (game thread): a seated MULE's frame (Sam's layout) on side seat `mule_seat` (1..4): the host's capture of its own
-// MULE, or the guest's SEP1 mirror shown seated; `src` names it in the log. Once ~4.5 s of one seat's frames are in, a loop is
-// picked (muleride::LoopPick) and replaces that seat's when its seam is better. Not mirrored left / right.
-// Review (logic 1 / ux 5): `actor` the MULE's id (another MULE on that seat starts the window again); `lpos_measured` / `lpos` its
-// place in the truck's frame (truckv3 kOccSrcChain: measured), `phase` its phase (0xFF unknown): muleride::LearnRefusal decides.
-void LearnSideFrame(int mule_seat, std::uint32_t actor, bool lpos_measured, const double (&lpos)[3], std::uint8_t phase, const wire::JointFrame& f,
-                    double now_ms, const char* src) noexcept;
-// The config (session.ini ride_mule_pose: play the library; ride_mule_record: learn it; ride_mule_cache: keep it in
-// %LOCALAPPDATA%\StrandedTogether\mule_ride_lib.bin).
-void SetSideLibrary(bool use, bool learn, bool cache) noexcept;
-// Game thread, every tick: the cache file loaded once, saved after a new loop (at most every 10 s); the learner's log lines.
-void SideLibraryTick(double now_ms) noexcept;
-// The "[ride] side library: ..." text (ride_test 42).
-void SideLibraryStatus(char* buf, std::size_t cap) noexcept;
 void RidePoseCounters(std::uint32_t* writes, std::uint32_t* nosrc, std::uint32_t* restores, std::uint32_t* failed) noexcept;
 // The partner's frame was published within `max_age_ms` (the source-1 pose is there).
 bool PartnerFrameFresh(unsigned max_age_ms) noexcept;

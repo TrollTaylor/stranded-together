@@ -214,7 +214,6 @@ bool DoEnemyRestrain(const Request& r, char* msg, std::size_t cap) { return ecom
 bool DoEnemyM2(const Request& r, char* msg, std::size_t cap) { return ecombat::M2Probe(r.v, msg, cap); }
 bool DoEnemyL1(const Request& r, char* msg, std::size_t cap) { return l1probe::Command(r.v, msg, cap); }
 bool DoTruckV3(const Request& r, char* msg, std::size_t cap) { return truckv3::Command(r.v, msg, cap); }
-bool DoMuleRec(const Request& r, char* msg, std::size_t cap) { return truckv3::RecCommand(r.v[0] != 0, msg, cap); }  // round 30 stage 0
 bool DoEnemyTgt(const Request& r, char* msg, std::size_t cap) { return etarget::Command(r.v, msg, cap); }
 bool DoOdra(const Request& r, char* msg, std::size_t cap) { return odra::Command(r.v, msg, cap); }
 bool DoOdraReplay(const Request& r, char* msg, std::size_t cap) { return odra::Replay(r.v, msg, cap); }
@@ -339,7 +338,7 @@ constexpr Row kRows[] = {
     {{Action::ride_board, Tab::tools, "Ride board", "Ride the partner's vehicle now (as a 0.6 s hold of X beside its door).", true}, &DoRideBoard},
     {{Action::ride_exit, Tab::tools, "Ride exit", "Get off the partner's vehicle now (1: also above 2 m/s, tests).", false}, &DoRideExit},
     {{Action::seat_measure, Tab::tools, "Seat measure", "The vehicle our Sam drives (or last drove): his root and pelvis, the game's seat helpers, in its frame.", false}, &DoSeatMeasure},
-    {{Action::ride_test, Tab::tools, "Ride test", "Hidden tests: 1 solo seat carry, 2 end, 4 crash, 5 flip / 6 stop our vehicle, 7 taken, 30-33 seat tuning; v0.21: 15 shield and health state, 16 0/1 landing shield and health guard off / on, 17 0/1 v0.20's crash rule / the confirmed one, 18 0/1 health write watchpoint; passenger pose / camera: 20 0/1 ride camera, 21 0/1 camera meter 1 s, 22 0/1 pose v0.20 / seated idle, 23 <what> <v> pose tuning, 24 pose state, 25 0/1 camera ignores the vehicle, 26 0/1 hold the seat teleport while stopped, 27 0/1/2 yaw quaternion, 28 0/1 heading follow; v0.22: 34 0/1 boots meter 1 s, 34 2 boots mark, 35 0/1 boots guard off / on; round 30 (hidden runs or dev_tools): 41 [vehicle id] the game's helpers on a truck + the key check, 43 <seat 1..4> the ghost at a MULE side seat of our measured truck; release A: 2 1 end as a press, 8 [m] <seat 3..6> at a truck side seat, 40 <seat 3..6> solo side seat test, 42 side library and hang, 44 0/1/2 side seats off / on / no hello (hidden runs or dev_tools).", false}, &DoRideTest},
+    {{Action::ride_test, Tab::tools, "Ride test", "Hidden tests: 1 solo seat carry, 2 end, 4 crash, 5 flip / 6 stop our vehicle, 7 taken, 30-33 seat tuning; v0.21: 15 shield and health state, 16 0/1 landing shield and health guard off / on, 17 0/1 v0.20's crash rule / the confirmed one, 18 0/1 health write watchpoint; passenger pose / camera: 20 0/1 ride camera, 21 0/1 camera meter 1 s, 22 0/1 pose v0.20 / seated idle, 23 <what> <v> pose tuning, 24 pose state, 25 0/1 camera ignores the vehicle, 26 0/1 hold the seat teleport while stopped, 27 0/1/2 yaw quaternion, 28 0/1 heading follow; v0.22: 34 0/1 boots meter 1 s, 34 2 boots mark, 35 0/1 boots guard off / on; round 30: 8 refuses while our Sam asks to ride or is carried (round 31: the truck's side seats and their probes 40-44 removed).", false}, &DoRideTest},
     {{Action::vehicle_hit, Tab::tools, "Vehicle hit", "Vehicle hits (vehicle_sync=5): 0 state and counters, 1 kind path (0 auto, 1 direct, 2 bracket), 2 one hit on our Sam now (tests), 8 [m ahead] [m right] our Sam in front of the partner's vehicle (tests), 9 the capsule's vehicle boxes.", false}, &DoVehicleHit},
     {{Action::save_guard, Tab::tools, "Save guard", "No save captures Sam while he rides as a passenger: 0 state, 1 [type] a save now (tests: 4 auto, 1 manual), 2 Sam's place vs the last held save, 3 load the run's newest save (host, tests), 4 0/1 the hold off/on (tests), 5 why a save is refused now (tests), 6 / 7 [s] the next forced save stays pending until a boarding / without one (tests).", false}, &DoSaveGuard},
     // Dev tools (the Dev tools page draws them with its own widgets; the labels are the hidden scenarios' action names)
@@ -450,15 +449,11 @@ constexpr Row kRows[] = {
       false},
      &DoDev<dev::Op::give>},
     {{Action::truck_v3, Tab::tools, "Truck v3",
-      "session.ini vehicle_truck_probe=1 (round 28 P2, read-only; '[truckv3] ...' lines): 0 the watch off + status; 1 [s] the watch (board / leave / drive lines); 3 the V3 status (round 28 T1, vehicle_mule_v3; any probe key); 4 the T2 seat status (round 29, vehicle_mule_seat; any probe key); 8 the seated MULEs in their truck's frame + capsule; 9 the controller identity of every MULE-driven vehicle; 10 (round 30; hidden runs or dev_tools: the hand helpers are a game call) the seated MULEs' joints, feet, hand helpers and skeleton ('[mrec] conv ...').",
+      "session.ini vehicle_truck_probe=1 (round 28 P2, read-only; '[truckv3] ...' lines): 0 the watch off + status; 1 [s] the watch (board / leave / drive lines); 3 the V3 status (round 28 T1, vehicle_mule_v3; any probe key); 4 the T2 seat status (round 29, vehicle_mule_seat; any probe key); 8 the seated MULEs in their truck's frame + capsule; 9 the controller identity of every MULE-driven vehicle.",
       false},
      &DoTruckV3},
     {{Action::bt_sync, Tab::tools, "Bt sync", "BT field sync B1 (bt_sync=1|2 in session.ini): <op> 0 the status line ([bt] sync status), 1 FIELD at the next census; hidden runs: 3 a test VOID, 4 a test NOTICED, 5 a test TROUBLE sequence, 6 a test GZST to the partner, 7 hi16 lo16 a real kill of that gazer here (0 0 nearest; sandboxed save) sent as KILL.", false},
      &DoBtSync},
-    {{Action::mule_rec, Tab::tools, "Mule rec",
-      "Round 30 (hidden runs or dev_tools; the truck byte checks, vehicle_truck_probe=1): 1 the MULE clip recorder on (a board / alight of one MULE at a time, validated, '[mrec] ...' lines; memory only), 0 off.",
-      false},
-     &DoMuleRec},
 };
 constexpr std::size_t kRowCount = sizeof(kRows) / sizeof(kRows[0]);
 static_assert(kRowCount == static_cast<std::size_t>(Action::count), "every Action needs exactly one registry row");

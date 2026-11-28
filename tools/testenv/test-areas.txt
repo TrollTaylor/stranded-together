@@ -253,7 +253,6 @@ native/mod/vehicle_*                   vehicle-share
 native/mod/partner_tackle.*            vehicle-hit
 native/mod/tackle_rules.*              vehicle-hit
 native/mod/ride_*                      ride
-native/mod/mule_ride_rules.hpp         ride research
 native/mod/world_*                     world-sync
 
 # ---- narrowing by the changed lines (added to the file's areas above). Keep the regexes specific: a match costs a run.

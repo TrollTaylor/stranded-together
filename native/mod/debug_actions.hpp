@@ -162,10 +162,9 @@ enum class Action : std::uint8_t {
                           // round 30 (hidden runs only; docs/enemy-sync.md 22): 9 gazer update threads, 10 hi16 lo16 kill, 11 [m] crater, 12 weather, 14 [m] hunter area
     odra,                 // v[0] op: 0 dump, 1 <0|1> watch, 2 scan, 3 <m> [mode] replay ahead, 4 <mode>, 5 <m> [mask] test scan, 6 <mask>, 7 status, 8 <m> send test (odradek_probe / odradek_scan_sync)
     odra_replay,          // v = x y z (z 0: Sam's height): the survey shown from that point (odradek_sync.hpp; odradek_probe=1)
-    truck_v3,             // round 28 P2 (docs/enemy-sync.md 14.20; vehicle_truck_probe=1): v[0] = op 0 off / 1 [s] watch / 3 V3 status (T1) / 4 seat status (T2) / 8 seats / 9 identity / 10 seated MULE frames (round 30)
+    truck_v3,             // round 28 P2 (docs/enemy-sync.md 14.20; vehicle_truck_probe=1): v[0] = op 0 off / 1 [s] watch / 3 V3 status (T1) / 4 seat status (T2) / 8 seats / 9 identity
     bt_sync,              // round 28 lane B1 (bt_sync=1|2): v[0] = 0 status, 1 FIELD now, 3 test VOID, 4 test NOTICED; round 30: 5 test
                           // TROUBLE, 6 test GZST, 7 <hi16> <lo16> a kill here sent as KILL (3..7 hidden runs)
-    mule_rec,             // round 30 stage 0 (docs/real-partner-body.md 24.19; hidden runs or dev_tools): v[0] = 1 the MULE clip recorder on, 0 off
     count
 
 };

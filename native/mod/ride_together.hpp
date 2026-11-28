@@ -130,21 +130,10 @@ void SetCrashHitHandler(CrashHitFn fn) noexcept;
 //     and the emergency stop in the same call (hidden tests: the driver's ACCEPT arrives after the stop), 11 log the boarding
 //     check now ("the game is saving" while a save is pending or written; the action succeeds either way), 12 <0|1> the
 //     game's own Use Vehicle prompt off (the ImGui hold prompt boards) / on.
-//     Round 30 stage 0 (hidden runs or dev_tools; section 24.19): 41 [vehicle id] the game's helpers on a truck (the partner's,
-//     ours, the nearest; "[ride] helper <name> on truck 0x..: found (x y z) | missing") and, once, the key check against the
-//     game's own name keys; 43 <seat 1..4> the ghost: our Sam carried at that side seat of our measured truck with the ride pose's
-//     source 4 (a seated MULE's live pose there, else the newest recorded seated end, else the seated idle), measured after 1.5 s.
 bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept;
 bool StateCommand(char* msg, std::size_t cap) noexcept;
 bool BoardCommand(char* msg, std::size_t cap) noexcept;
 bool ExitCommand(const double (&v)[3], char* msg, std::size_t cap) noexcept;
 bool SeatMeasureCommand(const double (&v)[3], char* msg, std::size_t cap) noexcept;
-
-// Round 30 stage 0 (side riding P1; docs/real-partner-body.md 24.19): the game's own helper lookup on a truck (DSVehicleTruck's vt
-// slot +0x130 = 0x142F6B290: the helper map at entity +0x1110, the helper's matrix through the model's joint; byte-checked on first
-// use as a group of its own, which never turns riding off; game thread only, never on the animate detour's thread; SEH). `m`: helper
-// `name`'s matrix in the truck's model frame (rows; row 3 its place). False: not a truck, the checks failed, the helper is missing
-// or a fault.
-bool TruckHelper(std::uintptr_t truck_entity, const char* name, float (&m)[4][4]) noexcept;
 
 }  // namespace st::ride
