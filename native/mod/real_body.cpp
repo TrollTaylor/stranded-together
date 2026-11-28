@@ -41,6 +41,7 @@
 #include "enemy_l1_probe.hpp"
 #include "enemy_target.hpp"
 #include "entity_remove_hook.hpp"
+#include "mule_ride_rules.hpp"
 #include "wardrobe.hpp"
 
 namespace st::realbody {
@@ -637,6 +638,46 @@ bool g_ride_active = false;  // Sam's update only (under g_fit_busy)
 Joint g_ride_written[kJ] = {};
 Joint g_ride_clean[kJ] = {};
 
+// ---- round 30 stage 0 (side riding P4 / P3; section 24.19): the recorder slot's ring (one writer: the recorder slot's model's
+// animate; readers: the game thread, source 4 in Sam's update) and source 4's sample.
+static_assert(muleride::kJoints == kJ, "the recorder's frames are Sam's layout");
+static_assert(muleride::kRecorderSlot == kRecorderSlot && muleride::kProbeSlot == 7, "the recorder / probe slots");
+muleride::PoseFrame g_rec_ring[kRecordFrames];
+// round 30: one 64-bit word, the generation (high half, bumped on every restart by SetEnemySlot(kRecorderSlot, ...): a reader's
+// copy across one is dropped) and the frames written (low half, the next index). One word so a writer still inside after
+// SetEnemySlot's bounded wait cannot publish over a restart: its compare-exchange fails and the frame is dropped (review).
+std::atomic<std::uint64_t> g_rec_pos{0};
+inline std::uint32_t RecN(std::uint64_t p) { return static_cast<std::uint32_t>(p); }
+inline std::uint32_t RecGen(std::uint64_t p) { return static_cast<std::uint32_t>(p >> 32); }
+std::atomic<bool> g_ride_live{false};     // source 4: the ring's newest frame
+struct RideSample {
+    bool have = false;
+    muleride::PoseFrame f;
+};
+SeqLock<RideSample> g_ride_sample;          // source 4: a copy (the game thread writes)
+std::atomic<std::uint32_t> g_anim_tid{0};  // the thread of the newest animate call on our Sam's model
+
+bool RecordedFrameImpl(std::uint32_t i, muleride::PoseFrame& out) {
+    const std::uint64_t p = g_rec_pos.load(std::memory_order_acquire);
+    const std::uint32_t n = RecN(p);
+    if (i >= n || n - i >= kRecordFrames - 4) return false;  // not yet / about to be overwritten
+    std::memcpy(&out, &g_rec_ring[i % kRecordFrames], sizeof(out));
+    std::atomic_thread_fence(std::memory_order_acquire);
+    const std::uint64_t p2 = g_rec_pos.load(std::memory_order_acquire);
+    return RecGen(p2) == RecGen(p) && RecN(p2) - i < kRecordFrames;
+}
+// Source 4's sample now (any thread).
+bool RideSampleNow(muleride::PoseFrame& out) {
+    if (g_ride_live.load(std::memory_order_acquire)) {
+        const std::uint32_t n = RecN(g_rec_pos.load(std::memory_order_acquire));
+        return n && RecordedFrameImpl(n - 1, out);
+    }
+    static thread_local RideSample rs;
+    if (!g_ride_sample.Read(rs) || !rs.have) return false;
+    out = rs.f;
+    return true;
+}
+
 // ---- source 3: the seated idle (play test 3 of v0.20: "the passenger is doing the exact same animation as the driver even
 // when turning"; docs/real-partner-body.md section 24.14). The passenger sits still in his seat whatever the driver does:
 //   the base  every joint's rotation and the root / pelvis translations of ONE seated driver frame of this vehicle kind,
@@ -777,6 +818,25 @@ void QuatToJoint(const double (&q)[4], float (&dst)[4]) {
     for (int k = 0; k < 4; ++k) dst[k] = static_cast<float>(q[k] * s);
 }
 
+// The joint convention's gate, once a session (SeatedArms, the side hang): the child's rows predicted from the parent's and the
+// local quaternion we wrote (`cur`), both conventions, against the model step's rows `r` (joints 1, 2, 6, 7, 8, 36, 37, 61, 62
+// read). False: refused (g_ik_conv 2: no IK this session).
+bool IkGate(const Joint (&cur)[kJ], const ridepose::M3 (&r)[kJ]) {
+    if (g_ik_conv >= 0) return g_ik_conv != 2;
+    static const unsigned kPairs[][2] = {{6, 7}, {7, 8}, {36, 37}, {61, 62}, {1, 2}};
+    double err[2] = {0, 0};
+    for (int conv = 0; conv < 2; ++conv)
+        for (const auto& p : kPairs) {
+            const double q[4] = {cur[p[1]].q[0], cur[p[1]].q[1], cur[p[1]].q[2], cur[p[1]].q[3]};
+            err[conv] = std::fmax(err[conv], ridepose::MaxDiff(ridepose::Mul(ridepose::LocalRows(q, conv), r[p[0]]), r[p[1]]));
+        }
+    g_ik_gate_err[0].store(static_cast<float>(err[0]), std::memory_order_relaxed);
+    g_ik_gate_err[1].store(static_cast<float>(err[1]), std::memory_order_relaxed);
+    g_ik_conv = err[0] < 1e-3 && err[0] <= err[1] ? 0 : err[1] < 1e-3 ? 1 : 2;
+    g_ik_state.store(g_ik_conv, std::memory_order_relaxed);
+    return g_ik_conv != 2;
+}
+
 // The arms by IK on the base (Sam's update; the base and the hands are in `cur`). Writes `cur` and runs the game's model
 // step on it (no bounds), reads the model matrices, measures the convention once, solves both arms into cur[7 / 8 / 36 /
 // 37]. `tw` gets the wrists' targets. False: nothing solved (cur unchanged but for what was written).
@@ -793,21 +853,7 @@ bool SeatedArms(std::uintptr_t sm, std::uintptr_t pose, std::uintptr_t local, st
     ridepose::M3 r[kJ];
     for (unsigned j : {1u, 2u, 5u, 6u, 7u, 8u, 9u, 35u, 36u, 37u, 38u, 61u, 62u, 66u, 67u})
         if (!MdlRows(m[j], &r[j])) return false;
-    if (g_ik_conv < 0) {
-        // the gate: the child's rows predicted from the parent's and the local quaternion we wrote, both conventions
-        static const unsigned kPairs[][2] = {{6, 7}, {7, 8}, {36, 37}, {61, 62}, {1, 2}};
-        double err[2] = {0, 0};
-        for (int conv = 0; conv < 2; ++conv)
-            for (const auto& p : kPairs) {
-                const double q[4] = {cur[p[1]].q[0], cur[p[1]].q[1], cur[p[1]].q[2], cur[p[1]].q[3]};
-                err[conv] = std::fmax(err[conv], ridepose::MaxDiff(ridepose::Mul(ridepose::LocalRows(q, conv), r[p[0]]), r[p[1]]));
-            }
-        g_ik_gate_err[0].store(static_cast<float>(err[0]), std::memory_order_relaxed);
-        g_ik_gate_err[1].store(static_cast<float>(err[1]), std::memory_order_relaxed);
-        g_ik_conv = err[0] < 1e-3 && err[0] <= err[1] ? 0 : err[1] < 1e-3 ? 1 : 2;
-        g_ik_state.store(g_ik_conv, std::memory_order_relaxed);
-        if (g_ik_conv == 2) return false;
-    }
+    if (!IkGate(cur, r)) return false;  // (the gate, once a session)
     ridepose::HandRest rest;
     rest.along = g_rest_along.load(std::memory_order_relaxed);
     rest.up = g_rest_up.load(std::memory_order_relaxed);
@@ -925,6 +971,269 @@ void HandMeter(std::uintptr_t mb) {
     g_hand_box.Write(g_hand_acc);
 }
 
+// ---- round 30 release A (side seats; docs/real-partner-body.md section 24.20): source 5, the side-seat hang.
+std::atomic<int> g_side_seat{0};             // the MULE seat 1..4 (0 off; the ride tick)
+std::atomic<float> g_side_w{0.0f};           // the pose weight (0 standing .. 1 the hang)
+std::atomic<float> g_side_hand[3] = {};      // the inboard hand's target, Sam's model frame
+std::atomic<bool> g_side_want{false};        // take the standing snapshot on the next override
+std::atomic<bool> g_lib_use{true}, g_lib_learn{true}, g_lib_cache{true};
+std::atomic<bool> g_lib_off{false};          // the feet check turned the library off (session)
+std::atomic<int> g_side_mode{0};
+std::atomic<std::uint32_t> g_side_writes{0}, g_side_lib_writes{0}, g_side_ik_ok{0}, g_side_ik_fail{0}, g_side_failed{0};
+std::atomic<float> g_side_lift{0.0f}, g_side_feet_z{0.0f}, g_side_hand_err{-1.0f};
+// Sam's update only
+Joint g_side_stand[kJ] = {};
+bool g_side_have = false, g_side_lift_ok = false;
+float g_side_lift_m = 0;
+std::int64_t g_side_t0_qpc = 0;
+unsigned g_side_feet_bad = 0;
+// the library: per MULE seat (index seat - 1) a published loop (the game thread writes; Sam's update copies it on a new version)
+struct LibSlot {
+    std::atomic<std::uint32_t> ver{0};
+    SeqLock<muleride::SeatLoop> loop;
+};
+LibSlot g_lib[4];
+muleride::SeatLoop g_side_loop;              // Sam's update: the copy of its seat's loop
+int g_side_loop_seat = 0;
+std::uint32_t g_side_loop_ver = 0;
+// review (ux 4): the hang's base is Sam standing still, not whatever frame he boarded on (a mid-stride pose held for the whole
+// ride). Sam's update, while no ride override runs: his clean pose is kept each update in which every joint (fingers aside)
+// turned under muleride::kStillDeg since the last one, after muleride::kStillRun such updates in a row.
+std::atomic<bool> g_stand_track{false};  // the ride tick: Sam on foot, not riding (SetStandTrack)
+Joint g_still_prev[kJ] = {};
+bool g_still_have_prev = false;
+unsigned g_still_run = 0;
+Joint g_stand_ref[kJ] = {};
+bool g_stand_ref_ok = false;
+std::atomic<int> g_side_base{0};  // the last snapshot's base: 1 Sam standing still (kept), 2 the live frame (none kept)
+std::atomic<std::uint32_t> g_side_leg_ok{0}, g_side_leg_fail{0};
+bool g_side_leg_off = false;      // Sam's update: the leg IK failed kLegFailRun updates in a row (this carry)
+unsigned g_side_leg_bad = 0;
+
+void StandTrack(const Capture& c) {
+    if (g_still_have_prev) {
+        float min_dot = 1.0f;
+        for (unsigned j = 0; j < kJ; ++j) {
+            if (muleride::IsFinger(j)) continue;
+            const float* a = c.j[j].q;
+            const float* b = g_still_prev[j].q;
+            const float d = std::fabs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
+            if (!(d <= 1.5f)) min_dot = -1.0f;  // NaN or garbage: not still
+            else if (d < min_dot) min_dot = d;
+        }
+        g_still_run = muleride::StillStep(min_dot, g_still_run);
+    }
+    std::memcpy(g_still_prev, c.j, sizeof(g_still_prev));
+    g_still_have_prev = true;
+    if (g_still_run < muleride::kStillRun) return;
+    Joint s[kJ];
+    std::memcpy(s, c.j, sizeof(s));
+    bool ok = true;
+    for (unsigned j = 0; j < kJ && ok; ++j) ok = LatchQuat(c.j[j].q, s[j].q);
+    for (int k = 0; k < 3 && ok; ++k) ok = std::isfinite(s[kSamRoot].t[k]) && std::fabs(s[kSamRoot].t[k]) < 3.0f;
+    if (!ok) return;
+    std::memcpy(g_stand_ref, s, sizeof(g_stand_ref));
+    g_stand_ref_ok = true;
+}
+
+// The standing snapshot (Sam standing still, kept by StandTrack; else his clean pose as the side carry started) is there
+// (taken now if due). `c`: Sam's clean pose.
+bool SideReady(const Capture& c) {
+    const int seat = g_side_seat.load(std::memory_order_acquire);
+    if (seat < 1 || seat > 4) return false;
+    if (g_side_want.exchange(false, std::memory_order_acq_rel)) {
+        bool ok = true;
+        Joint s[kJ];
+        if (g_stand_ref_ok) {
+            std::memcpy(s, g_stand_ref, sizeof(s));
+        } else {
+            std::memcpy(s, c.j, sizeof(s));
+            for (unsigned j = 0; j < kJ && ok; ++j) ok = LatchQuat(c.j[j].q, s[j].q);
+            for (int k = 0; k < 3 && ok; ++k) ok = std::isfinite(s[kSamRoot].t[k]) && std::fabs(s[kSamRoot].t[k]) < 3.0f;
+        }
+        if (ok) std::memcpy(g_side_stand, s, sizeof(g_side_stand));
+        g_side_base.store(ok ? (g_stand_ref_ok ? 1 : 2) : 0, std::memory_order_relaxed);
+        g_side_have = ok;
+        g_side_lift_ok = false;
+        g_side_t0_qpc = Qpc();
+        g_side_feet_bad = 0;
+        g_side_leg_off = false;
+        g_side_leg_bad = 0;
+    }
+    return g_side_have;
+}
+
+// The lower foot joint's model z after the newest model step (mb), or NaN.
+float FeetZ(std::uintptr_t mb) {
+    float a[4][4], b[4][4];
+    if (!mb || !mem::Read(mb + 0x40ull * muleride::kFootR, a, sizeof(a)) || !mem::Read(mb + 0x40ull * muleride::kFootL, b, sizeof(b))) return std::nanf("");
+    return std::fmin(a[3][2], b[3][2]);
+}
+
+// Source 5 into `cur`; then the game's model and bounds steps. False: not written.
+bool SideHang(std::uintptr_t sm, std::uintptr_t pose, std::uintptr_t local, std::uintptr_t mb, Joint (&cur)[kJ]) {
+    const int seat = g_side_seat.load(std::memory_order_acquire);
+    if (seat < 1 || seat > 4 || !g_side_have || !mb) return false;
+    const int side = muleride::RightSide(seat) ? 1 : -1;
+    double w = g_side_w.load(std::memory_order_relaxed);
+    if (!(w > 0)) w = 0;
+    if (w > 1) w = 1;
+    // the seat's library loop (a copy on a new version)
+    static thread_local muleride::PoseFrame lf;
+    bool lib = false;
+    if (g_lib_use.load(std::memory_order_relaxed) && !g_lib_off.load(std::memory_order_relaxed)) {
+        const std::uint32_t v = g_lib[seat - 1].ver.load(std::memory_order_acquire);
+        if (v && (g_side_loop_seat != seat || g_side_loop_ver != v)) {
+            // review (crash 1): read into a scratch copy; a torn read (the game thread publishing) never mixes two loops
+            static thread_local muleride::SeatLoop tmp;
+            if (g_lib[seat - 1].loop.Read(tmp)) g_side_loop = tmp, g_side_loop_seat = seat, g_side_loop_ver = v;
+        }
+        if (g_side_loop_seat == seat && g_side_loop.n >= 2 && g_qpc_per_ms > 0)
+            lib = muleride::LoopSample(g_side_loop.f, g_side_loop.n, static_cast<double>(Qpc() - g_side_t0_qpc) / g_qpc_per_ms, lf);
+    }
+    if (lib) {
+        std::memcpy(cur, g_side_stand, sizeof(Joint) * kJ);
+        for (unsigned j = 0; j < kJ; ++j) {
+            float o[4];
+            muleride::QuatBlend(g_side_stand[j].q, lf.q[j], w, o);
+            std::memcpy(cur[j].q, o, sizeof(o));
+        }
+        for (int k = 0; k < 3; ++k) {
+            cur[kSamRoot].t[k] = static_cast<float>(g_side_stand[kSamRoot].t[k] + (lf.root_t[k] - g_side_stand[kSamRoot].t[k]) * w);
+            cur[kSamPelvis].t[k] = static_cast<float>(g_side_stand[kSamPelvis].t[k] + (lf.pelvis_t[k] - g_side_stand[kSamPelvis].t[k]) * w);
+        }
+        if (!FitWrite(sm, pose, local, cur, true)) return false;
+        g_side_mode.store(1, std::memory_order_relaxed);
+        g_side_lib_writes.fetch_add(1, std::memory_order_relaxed);
+        // the feet check: on the seat the lower foot joint near the step, else the library is off for the session
+        const float fz = FeetZ(mb);
+        if (std::isfinite(fz)) g_side_feet_z.store(fz, std::memory_order_relaxed);
+        if (w > 0.95) {
+            g_side_feet_bad = !(std::fabs(fz - muleride::kHangFeetZ) <= muleride::kLibFeetTolM) ? g_side_feet_bad + 1 : 0;
+            if (g_side_feet_bad >= muleride::kLibFeetBadRun) g_lib_off.store(true, std::memory_order_relaxed);
+        }
+        return true;
+    }
+    // procedural: the root's lift measured once a carry on the standing snapshot (its model step)
+    if (!g_side_lift_ok) {
+        std::memcpy(cur, g_side_stand, sizeof(Joint) * kJ);
+        if (!FitWrite(sm, pose, local, cur, false)) return false;
+        if (!CallPoseFns(sm, pose, false)) {
+            g_fit_faults.fetch_add(1, std::memory_order_relaxed);
+            g_fit_faulted.store(true, std::memory_order_seq_cst);
+            return false;
+        }
+        float a[4][4], b[4][4];
+        if (!mem::Read(mb + 0x40ull * muleride::kFootR, a, sizeof(a)) || !mem::Read(mb + 0x40ull * muleride::kFootL, b, sizeof(b))) return false;
+        g_side_lift_m = static_cast<float>(muleride::HangLift(a[3][2], b[3][2]));
+        g_side_lift_ok = true;
+        g_side_lift.store(g_side_lift_m, std::memory_order_relaxed);
+    }
+    std::memcpy(cur, g_side_stand, sizeof(Joint) * kJ);
+    cur[kSamRoot].t[0] += static_cast<float>(side * muleride::kHangPelvisOut * w);
+    cur[kSamRoot].t[2] += static_cast<float>(g_side_lift_m * w);
+    // review (ux 4): the crouch (the pelvis lower, the knees bent by the leg IK below) only once the joint convention is known
+    // and the leg IK has not failed this carry; a failed leg this update takes the crouch back
+    const bool ik_on = g_ik_conv != 2 && g_ik_want.load(std::memory_order_relaxed);
+    const float crouch = ik_on && g_ik_conv >= 0 && !g_side_leg_off ? static_cast<float>(muleride::kHangCrouchM * w) : 0.0f;
+    cur[kSamRoot].t[2] -= crouch;
+    // the arms: the inboard hand onto the handle, the outboard arm out; the legs: the feet back where the lift put them (two-
+    // bone IK on this base's model step)
+    V tw_in{};
+    bool have_in = false;
+    if (ik_on) {
+        if (!FitWrite(sm, pose, local, cur, false)) return false;
+        if (!CallPoseFns(sm, pose, false)) {
+            g_fit_faults.fetch_add(1, std::memory_order_relaxed);
+            g_fit_faulted.store(true, std::memory_order_seq_cst);
+            return false;
+        }
+        static thread_local float m[kJ][4][4];
+        ridepose::M3 r[kJ];
+        bool rows = mem::Read(mb, m, sizeof(m));
+        for (unsigned j : {1u, 2u, 6u, 7u, 8u, 9u, 35u, 36u, 37u, 38u, 61u, 62u, 63u, 66u, 67u, 68u})
+            if (rows && !MdlRows(m[j], &r[j])) rows = false;
+        if (rows && IkGate(cur, r) && crouch > 0) {
+            // the legs: thigh 61 / 66, calf 62 / 67, foot 63 / 68; the thigh's parent rows from its own rows and local
+            // rotation (child = local x parent), so no parent index is assumed; the foot keeps its model rows (flat)
+            bool legs = true;
+            ridepose::ArmOut lo[2];
+            for (int leg = 0; leg < 2 && legs; ++leg) {
+                const unsigned jt = leg ? 66 : 61, jc = leg ? 67 : 62, jf = leg ? 68 : 63;
+                const double qt[4] = {cur[jt].q[0], cur[jt].q[1], cur[jt].q[2], cur[jt].q[3]};
+                ridepose::ArmIn in;
+                in.s = MdlPos(m[jt]), in.e = MdlPos(m[jc]), in.w = MdlPos(m[jf]);
+                in.parent = ridepose::Mul(ridepose::T(ridepose::LocalRows(qt, g_ik_conv)), r[jt]);
+                in.upper = r[jt], in.fore = r[jc];
+                in.target = in.w + V{0.0, 0.0, static_cast<double>(crouch)};  // the foot where the lift (and the pelvis out) put it
+                in.pole = ridepose::Norm(V{side * 0.2, 1.0, 0.0});  // the knee forward, a little outward
+                in.fallback_n = ridepose::Cross(V{0, 0, -1}, V{0, -1, 0});
+                in.conv = g_ik_conv;
+                legs = ridepose::SolveArm(in, &lo[leg]);
+            }
+            if (legs) {
+                for (int leg = 0; leg < 2; ++leg) {
+                    const unsigned jt = leg ? 66 : 61, jc = leg ? 67 : 62, jf = leg ? 68 : 63;
+                    QuatToJoint(lo[leg].q_upper, cur[jt].q);
+                    QuatToJoint(lo[leg].q_fore, cur[jc].q);
+                    double qf[4];
+                    ridepose::QuatFromLocalRows(ridepose::Mul(r[jf], ridepose::T(lo[leg].fore)), g_ik_conv, qf);
+                    QuatToJoint(qf, cur[jf].q);
+                }
+                g_side_leg_ok.fetch_add(1, std::memory_order_relaxed);
+                g_side_leg_bad = 0;
+            } else {
+                cur[kSamRoot].t[2] += crouch;  // no crouch this update (the arms' targets stay: a few cm off for one frame)
+                g_side_leg_fail.fetch_add(1, std::memory_order_relaxed);
+                if (++g_side_leg_bad >= muleride::kLegFailRun) g_side_leg_off = true;
+            }
+        } else if (crouch > 0) {
+            cur[kSamRoot].t[2] += crouch;
+        }
+        if (rows && IkGate(cur, r)) {
+            const V hand{g_side_hand[0].load(std::memory_order_relaxed), g_side_hand[1].load(std::memory_order_relaxed),
+                         g_side_hand[2].load(std::memory_order_relaxed)};
+            double ot[3];
+            muleride::OutboardTarget(side, ot);
+            const V out_t{ot[0], ot[1], ot[2]};
+            const V bend = ridepose::Cross(V{0, 0, -1}, V{0, 1, 0});  // an arm hanging down, bending forward
+            for (int arm = 0; arm < 2; ++arm) {
+                // arm 0 the inboard one: the left arm (35..38) on the right side, the right arm (6..9) on the left
+                const bool left = (arm == 0) == (side > 0);
+                const unsigned jp = left ? 35 : 6, js = left ? 36 : 7, je = left ? 37 : 8, jw = left ? 38 : 9;
+                ridepose::ArmIn in;
+                in.s = MdlPos(m[js]), in.e = MdlPos(m[je]), in.w = MdlPos(m[jw]);
+                in.parent = r[jp], in.upper = r[js], in.fore = r[je];
+                const V goal = arm == 0 ? hand : out_t;
+                in.target = in.w + (goal - in.w) * w;
+                in.pole = arm == 0 ? ridepose::Norm(V{side * 0.6, -0.2, -1.0}) : ridepose::Norm(V{side * 0.3, -1.0, -0.3});
+                in.fallback_n = bend;
+                in.conv = g_ik_conv;
+                ridepose::ArmOut o;
+                if (!ridepose::SolveArm(in, &o)) {
+                    g_side_ik_fail.fetch_add(1, std::memory_order_relaxed);
+                    continue;
+                }
+                QuatToJoint(o.q_upper, cur[js].q);
+                QuatToJoint(o.q_fore, cur[je].q);
+                g_side_ik_ok.fetch_add(1, std::memory_order_relaxed);
+                if (arm == 0) tw_in = in.target, have_in = true;
+            }
+        }
+    }
+    if (g_fit_faulted.load(std::memory_order_relaxed)) return false;
+    if (!FitWrite(sm, pose, local, cur, true)) return false;
+    g_side_mode.store(2, std::memory_order_relaxed);
+    const float fz = FeetZ(mb);
+    if (std::isfinite(fz)) g_side_feet_z.store(fz, std::memory_order_relaxed);
+    if (have_in) {
+        float h[4][4];
+        const unsigned jw = side > 0 ? muleride::kHandL : muleride::kHandR;
+        if (mem::Read(mb + 0x40ull * jw, h, sizeof(h))) g_side_hand_err.store(static_cast<float>(ridepose::Len(MdlPos(h) - tw_in) * 100.0), std::memory_order_relaxed);
+    }
+    return true;
+}
+
 void RideOverride(std::uintptr_t sm, std::uintptr_t pose, std::uintptr_t local, std::uintptr_t mb, Capture& c) {
     unsigned held = 0;
     if (g_ride_active) {
@@ -941,13 +1250,28 @@ void RideOverride(std::uintptr_t sm, std::uintptr_t pose, std::uintptr_t local, 
             }
         }
     }
-    const int src = g_ride_src.load(std::memory_order_acquire);
+    // review (crash 2): a model-matrix call faulted this session: no source calls the game's pose functions again (the
+    // seated idle's arms, the side hang, sources 1 / 2 / 4); an override in place ends with Sam's clean values written back
+    // (the local joints only, no model step)
+    if (g_fit_faulted.load(std::memory_order_relaxed)) {
+        if (g_ride_src.load(std::memory_order_relaxed)) g_ride_nosrc.fetch_add(1, std::memory_order_relaxed);
+        if (g_ride_active) {
+            if (held && FitWrite(sm, pose, local, c.j, false)) g_ride_restores.fetch_add(1, std::memory_order_relaxed);
+            g_ride_active = false;
+        }
+        return;
+    }
+    int src = g_ride_src.load(std::memory_order_acquire);
     static thread_local ApplyBuf a;
     static thread_local Capture snap;
+    static thread_local muleride::PoseFrame ghost;  // round 30: source 4's sample
     bool have = false;
+    if (src == 4 && !RideSampleNow(ghost)) src = 3;  // round 30: no sample: the seated idle
     if (src == 1) have = GetTickCount64() - g_apply_tick.load(std::memory_order_acquire) < 500 && g_apply.Read(a);
     else if (src == 2) have = g_ride_have_snap.load(std::memory_order_acquire) && g_ride_snap.Read(snap);
     else if (src == 3) have = SeatedReady(c);
+    else if (src == 4) have = true;
+    else if (src == 5) have = SideReady(c);
     if (!have) {
         if (src) g_ride_nosrc.fetch_add(1, std::memory_order_relaxed);
         if (g_ride_active) {
@@ -970,17 +1294,31 @@ void RideOverride(std::uintptr_t sm, std::uintptr_t pose, std::uintptr_t local, 
         g_ride_writes.fetch_add(1, std::memory_order_relaxed);
         return;
     }
+    if (src == 5) {  // round 30 release A: the side-seat hang
+        if (!SideHang(sm, pose, local, mb, cur)) {
+            g_ride_failed.fetch_add(1, std::memory_order_relaxed);
+            g_side_failed.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        std::memcpy(g_ride_written, cur, sizeof(g_ride_written));
+        std::memcpy(c.j, cur, sizeof(c.j));
+        g_ride_active = true;
+        g_ride_writes.fetch_add(1, std::memory_order_relaxed);
+        g_side_writes.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
     for (unsigned j = 0; j < kJ; ++j) {
         float q[4];
         if (src == 1) q[0] = a.q[j].x, q[1] = a.q[j].y, q[2] = a.q[j].z, q[3] = a.q[j].w;
+        else if (src == 4) std::memcpy(q, ghost.q[j], sizeof(q));
         else std::memcpy(q, snap.j[j].q, sizeof(q));
         const float n = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
         if (!(n > 0.5f && n < 1.5f)) continue;  // a joint the frame does not carry: Sam's own
         for (float& v : q) v /= n;
         std::memcpy(cur[j].q, q, sizeof(q));
     }
-    const float* troot = src == 1 ? a.troot : snap.j[kSamRoot].t;
-    const float* tpel = src == 1 ? a.tpelvis : snap.j[kSamPelvis].t;
+    const float* troot = src == 1 ? a.troot : src == 4 ? ghost.root_t : snap.j[kSamRoot].t;
+    const float* tpel = src == 1 ? a.tpelvis : src == 4 ? ghost.pelvis_t : snap.j[kSamPelvis].t;
     for (int k = 0; k < 3; ++k) {
         if (std::isfinite(troot[k]) && std::fabs(troot[k]) < 3.0f) cur[kSamRoot].t[k] = troot[k];
         if (std::isfinite(tpel[k]) && std::fabs(tpel[k]) < 3.0f) cur[kSamPelvis].t[k] = tpel[k];
@@ -1007,6 +1345,7 @@ thread_local SamModelPts t_sam_m;
 
 void CaptureSam(std::uintptr_t sm) {
     t_sam_m.ok = false;
+    g_anim_tid.store(GetCurrentThreadId(), std::memory_order_relaxed);  // round 30: the helper probe's thread check
     std::uint8_t hdr[kPoseSize];
     std::uintptr_t pose = 0, local = 0;
     if (!ReadPoseHdr(sm, hdr, &pose)) return;
@@ -1060,7 +1399,11 @@ void CaptureSam(std::uintptr_t sm) {
         }
     }
     if (g_ride_src.load(std::memory_order_relaxed) || g_ride_active) RideOverride(sm, pose, local, Field<std::uintptr_t>(hdr, kHdrModel), c);
-    else LatchFromOwn(c);
+    else {
+        LatchFromOwn(c);
+        if (g_stand_track.load(std::memory_order_relaxed)) StandTrack(c);
+        else g_still_run = 0, g_still_have_prev = false;
+    }
     HandMeter(Field<std::uintptr_t>(hdr, kHdrModel));
     {
         // The review's leak check: the captured pelvis length with the fit on / off, and (fit on) how
@@ -2715,7 +3058,9 @@ void ApplyExoPose(int x, std::uintptr_t sm) {
 // local rotations 1..76 from the frame, its own root, the pelvis translation from the frame); probe_sam writes our Sam's live
 // local pose (the P1-0 pose test) and measures the largest joint rotation difference to Sam's model pose. A fault in the pose
 // functions turns every slot off for the session.
-constexpr unsigned kEnemySlots = 8;
+constexpr unsigned kEnemySlots = 9;  // round 30: 0..7 enemy_sync's (7 also the probe's), 8 the MULE recorder (kRecorderSlot)
+constexpr unsigned kProbeSlot = 7;   // the P1-0 probe's slot (fixed: never the recorder's)
+static_assert(kRecorderSlot == kEnemySlots - 1 && kEnemyPoseSlots == kRecorderSlot, "the recorder slot is the last, after the SEP1 slots");
 struct EnemyCap {
     double ms = 0;        // QPC ms when captured
     std::uint32_t n = 0;  // captures so far (0: none)
@@ -2811,6 +3156,35 @@ void ApplyEnemyFrame(EnemySlot& s, std::uintptr_t sm) {
     s.applies.fetch_add(1, std::memory_order_relaxed);
 }
 
+// round 30 stage 0 (side riding P4): the recorder slot's model's finished local pose into the ring (rotations, root and pelvis
+// translations, the QPC ms). One writer (this slot's own animate); a restart while it is inside drops its frame (round 30).
+void RecordEnemyPose(EnemySlot& s, std::uintptr_t sm) {
+    const std::uint64_t p = g_rec_pos.load(std::memory_order_acquire);  // the generation this frame belongs to
+    std::uintptr_t pose = 0, lb = 0, mb = 0;
+    if (!EnemyHdr(sm, &pose, &lb, &mb, false)) {
+        s.rejects.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    static thread_local Joint cur[kJ];
+    if (!mem::Read(lb, cur, sizeof(cur))) {
+        s.rejects.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    const std::uint32_t n = RecN(p);
+    muleride::PoseFrame& f = g_rec_ring[n % kRecordFrames];
+    f.ms = QpcMs();
+    for (unsigned j = 0; j < kJ; ++j) std::memcpy(f.q[j], cur[j].q, sizeof(f.q[j]));
+    std::memcpy(f.root_t, cur[kSamRoot].t, sizeof(f.root_t));
+    std::memcpy(f.pelvis_t, cur[kSamPelvis].t, sizeof(f.pelvis_t));
+    // publish only in the generation read at entry (the same n): a restart in between fails the exchange, the frame is dropped
+    std::uint64_t expect = p;
+    if (!g_rec_pos.compare_exchange_strong(expect, p + 1, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+        s.rejects.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    s.captures.fetch_add(1, std::memory_order_relaxed);
+}
+
 // probe_sam (the P1-0 pose test): our Sam's live local pose onto the enemy, then the largest model-space rotation difference.
 void ApplyEnemyPose(EnemySlot& es, std::uintptr_t sm) {
     if (g_et_faulted.load(std::memory_order_relaxed)) return;
@@ -2884,6 +3258,7 @@ void ApplyEnemyPose(EnemySlot& es, std::uintptr_t sm) {
 // The detour's enemy part (after g_orig): true when `s` is an enemy slot's model (handled).
 bool EnemyDetour(std::uintptr_t s) {
     if (!s || !g_et_any.load(std::memory_order_relaxed)) return false;
+    bool hit = false;
     for (unsigned k = 0; k < kEnemySlots; ++k) {
         EnemySlot& e = g_es[k];
         if (e.sm.load(std::memory_order_relaxed) != s) continue;
@@ -2895,14 +3270,19 @@ bool EnemyDetour(std::uintptr_t s) {
                 case EnemySlotMode::capture: CaptureEnemyPose(e, s); break;
                 case EnemySlotMode::apply: ApplyEnemyFrame(e, s); break;
                 case EnemySlotMode::probe_sam: ApplyEnemyPose(e, s); break;
+                case EnemySlotMode::record: RecordEnemyPose(e, s); break;
                 default: break;
             }
         }
         e.busy.fetch_sub(1, std::memory_order_seq_cst);
         g_inflight.fetch_sub(1, std::memory_order_seq_cst);
-        return true;
+        hit = true;
+        // round 30: the SEP1 slots keep their first-match rule among themselves; the recorder slot may watch the same MULE as one
+        // of them (the host's capture), so it is still asked
+        if (k >= kRecorderSlot) break;
+        k = kRecorderSlot - 1;
     }
-    return false;
+    return hit;
 }
 
 void Detour(void* sm, float dt) {
@@ -6258,12 +6638,14 @@ bool JointWorld(game::Entity* e, unsigned sam_joint, double (&pos)[3]) noexcept 
 }
 
 void SetRidePose(int src) noexcept {
-    if (src == 3) g_relax_want.store(true, std::memory_order_release);
-    const int was = g_ride_src.exchange(src >= 1 && src <= 3 ? src : 0, std::memory_order_acq_rel);
+    if (src == 3 || src == 4) g_relax_want.store(true, std::memory_order_release);  // 4 falls back to the seated idle
+    const int was = g_ride_src.exchange(src >= 1 && src <= 5 ? src : 0, std::memory_order_acq_rel);
     if (was != g_ride_src.load(std::memory_order_relaxed))
         Log("[real] riding: Sam's pose override %s", src == 1   ? "ON (the driver's seated pose from the partner's frames)"
                                                      : src == 2 ? "ON (the driver pose snapshot)"
                                                      : src == 3 ? "ON (seated idle: a held seated base, the hands on the thighs)"
+                                                     : src == 4 ? "ON (round 30 ghost: an external MULE sample, else the seated idle)"
+                                                     : src == 5 ? "ON (round 30 side seat: the hang, the library idle or the procedural one)"
                                                                 : "off");
 }
 void SetRideSeat(int kind, double calm_mps) noexcept {
@@ -6580,6 +6962,11 @@ bool SetEnemySlot(unsigned k, std::uintptr_t sm, EnemySlotMode m) noexcept {
     static const EnemyPush kNoPush{};
     e.cap.Write(kNoCap);
     e.push.Write(kNoPush);
+    if (k == kRecorderSlot) {  // round 30: the ring restarts (its writer is out: busy is 0 and the model unpublished)
+        // the next generation with n 0 in one store (a late writer's compare-exchange then fails; round 30 review)
+        g_rec_pos.store((static_cast<std::uint64_t>(RecGen(g_rec_pos.load(std::memory_order_acquire)) + 1u)) << 32, std::memory_order_release);
+        e.captures.store(0, std::memory_order_relaxed);
+    }
     if (!sm || m == EnemySlotMode::off || g_et_faulted.load()) return !sm || m == EnemySlotMode::off;
     std::uintptr_t vt = 0;
     if (!Rd(sm, vt) || vt != g_sm_vt) return false;
@@ -6640,10 +7027,253 @@ bool EnemyPoseFaulted() noexcept { return g_et_faulted.load(); }
 
 // The P1-0 probe's single slot (slot 7): mode 1 count, 3 our Sam's pose (probe_sam), 0 off.
 bool SetEnemyPoseSlot(std::uintptr_t sm, int mode) noexcept {
-    return SetEnemySlot(kEnemySlots - 1, sm, mode == 1 ? EnemySlotMode::count : mode == 3 ? EnemySlotMode::probe_sam : EnemySlotMode::off);
+    return SetEnemySlot(kProbeSlot, sm, mode == 1 ? EnemySlotMode::count : mode == 3 ? EnemySlotMode::probe_sam : EnemySlotMode::off);
 }
 
-EnemySlotStats GetEnemySlotStats(bool reset) noexcept { return GetEnemySlotStats(kEnemySlots - 1, reset); }
+EnemySlotStats GetEnemySlotStats(bool reset) noexcept { return GetEnemySlotStats(kProbeSlot, reset); }
+
+// ---- round 30 stage 0 (side riding; section 24.19)
+std::uint32_t RecordedFrames() noexcept { return RecN(g_rec_pos.load(std::memory_order_acquire)); }
+bool RecordedFrame(std::uint32_t i, muleride::PoseFrame& out) noexcept { return RecordedFrameImpl(i, out); }
+void SetRideSample(const muleride::PoseFrame* f, bool live) noexcept {
+    static RideSample rs;  // game thread
+    rs.have = f != nullptr;
+    if (f) rs.f = *f;
+    g_ride_sample.Write(rs);
+    g_ride_live.store(live, std::memory_order_release);
+}
+std::uint32_t AnimateThreadId() noexcept { return g_anim_tid.load(std::memory_order_relaxed); }
+
+// ---- round 30 release A: the side hang's API and the library (game thread unless noted)
+void SetRideSide(int mule_seat, double pose_w, const double (&hand)[3]) noexcept {
+    const int seat = mule_seat >= 1 && mule_seat <= 4 ? mule_seat : 0;
+    for (int k = 0; k < 3; ++k) g_side_hand[k].store(std::isfinite(hand[k]) ? static_cast<float>(hand[k]) : 0.0f, std::memory_order_relaxed);
+    g_side_w.store(std::isfinite(pose_w) ? static_cast<float>(pose_w) : 0.0f, std::memory_order_relaxed);
+    const int was = g_side_seat.exchange(seat, std::memory_order_acq_rel);
+    if (seat && seat != was) g_side_want.store(true, std::memory_order_release);  // a new side carry: a new standing snapshot
+    if (!seat) g_side_mode.store(0, std::memory_order_relaxed);
+}
+bool SideHangStatus(SideHangStats* s) noexcept {
+    if (!s) return false;
+    s->seat = g_side_seat.load(std::memory_order_relaxed);
+    s->mode = g_side_mode.load(std::memory_order_relaxed);
+    s->writes = g_side_writes.load(std::memory_order_relaxed);
+    s->lib_writes = g_side_lib_writes.load(std::memory_order_relaxed);
+    s->ik_ok = g_side_ik_ok.load(std::memory_order_relaxed);
+    s->ik_fail = g_side_ik_fail.load(std::memory_order_relaxed);
+    s->failed = g_side_failed.load(std::memory_order_relaxed);
+    s->lift_m = g_side_lift.load(std::memory_order_relaxed);
+    s->feet_z = g_side_feet_z.load(std::memory_order_relaxed);
+    s->hand_err_cm = g_side_hand_err.load(std::memory_order_relaxed);
+    s->lib_off = g_lib_off.load(std::memory_order_relaxed);
+    s->leg_ok = g_side_leg_ok.load(std::memory_order_relaxed);
+    s->leg_fail = g_side_leg_fail.load(std::memory_order_relaxed);
+    s->base = g_side_base.load(std::memory_order_relaxed);
+    return true;
+}
+void SetStandTrack(bool on) noexcept { g_stand_track.store(on, std::memory_order_relaxed); }
+
+namespace {
+struct SideLearner {
+    std::vector<muleride::PoseFrame> f;
+    std::uint32_t last_seq = 0, actor = 0;
+    double next_try = 0;
+    unsigned frames = 0, picks = 0, misses = 0, refused = 0;
+    const char* last_why = "";
+    const char* last_refusal = "";
+};
+SideLearner g_learn[4];
+muleride::SeatLoop g_lib_master[4];  // the game thread's copy of the published loops (the cache's source)
+float g_lib_seam[4] = {1e9f, 1e9f, 1e9f, 1e9f};
+const char* g_lib_src[4] = {"", "", "", ""};
+bool g_lib_dirty = false, g_lib_loaded = false;
+double g_lib_save_next = 0;
+unsigned g_lib_saves = 0, g_lib_save_fails = 0, g_lib_learned = 0;
+char g_lib_file_state[96] = "not read";
+
+void PublishLoop(int seat, const char* src) {
+    muleride::SeatLoop& l = g_lib_master[seat - 1];
+    if (!g_lib[seat - 1].loop.Write(l)) return;
+    g_lib[seat - 1].ver.fetch_add(1, std::memory_order_acq_rel);
+    g_lib_seam[seat - 1] = l.seam_deg;
+    g_lib_src[seat - 1] = src;
+}
+std::uint64_t ExeFingerprint() {
+    const auto* base = reinterpret_cast<const std::uint8_t*>(GetModuleHandleW(nullptr));
+    if (!base) return 0;
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE) return 0;
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE) return 0;
+    return static_cast<std::uint64_t>(nt->FileHeader.TimeDateStamp) << 32 | (nt->OptionalHeader.SizeOfImage ^ nt->OptionalHeader.CheckSum);
+}
+// %LOCALAPPDATA%\StrandedTogether\mule_ride_lib.bin (the folder made on a save). Empty: no LOCALAPPDATA.
+std::wstring LibPath(bool make_dir) {
+    wchar_t buf[MAX_PATH];
+    const DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", buf, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return std::wstring();
+    std::wstring dir = std::wstring(buf) + L"\\StrandedTogether";
+    if (make_dir) CreateDirectoryW(dir.c_str(), nullptr);
+    return dir + L"\\mule_ride_lib.bin";
+}
+void LibLoad() {
+    g_lib_loaded = true;
+    const std::wstring path = LibPath(false);
+    if (path.empty()) return (void)std::snprintf(g_lib_file_state, sizeof(g_lib_file_state), "no LOCALAPPDATA");
+    HANDLE h = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return (void)std::snprintf(g_lib_file_state, sizeof(g_lib_file_state), "none yet");
+    LARGE_INTEGER sz{};
+    std::vector<std::uint8_t> bytes;
+    DWORD got = 0;
+    const bool read = GetFileSizeEx(h, &sz) && sz.QuadPart > 0 && sz.QuadPart <= static_cast<LONGLONG>(muleride::kLibMaxBytes) &&
+                      (bytes.resize(static_cast<std::size_t>(sz.QuadPart)), ReadFile(h, bytes.data(), static_cast<DWORD>(bytes.size()), &got, nullptr)) &&
+                      got == bytes.size();
+    CloseHandle(h);
+    if (!read) return (void)std::snprintf(g_lib_file_state, sizeof(g_lib_file_state), "unreadable (%lld bytes)", static_cast<long long>(sz.QuadPart));
+    static muleride::SeatLoop tmp[4];
+    const char* why = "";
+    if (!muleride::LibDecode(bytes.data(), bytes.size(), ExeFingerprint(), tmp, &why)) {
+        std::snprintf(g_lib_file_state, sizeof(g_lib_file_state), "refused (%s): relearned this session", why);
+        Log("[ride] side library: the cache file was refused (%s); it is relearned and replaced", why);
+        return;
+    }
+    unsigned seats = 0;
+    for (int s = 1; s <= 4; ++s)
+        if (tmp[s - 1].n >= 2) {
+            g_lib_master[s - 1] = tmp[s - 1];
+            PublishLoop(s, "cache");
+            ++seats;
+        }
+    std::snprintf(g_lib_file_state, sizeof(g_lib_file_state), "loaded (%u seats)", seats);
+    Log("[ride] side library: the cache file loaded: %u of 4 seats (%zu bytes)", seats, bytes.size());
+}
+void LibSave() {
+    const std::wstring path = LibPath(true);
+    if (path.empty()) return;
+    std::vector<std::uint8_t> bytes;
+    muleride::LibEncode(g_lib_master, ExeFingerprint(), bytes);
+    // per process: two games on one machine (a Local test) never share the temporary file
+    const std::wstring tmp = path + L"." + std::to_wstring(GetCurrentProcessId()) + L".tmp";
+    HANDLE h = CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    DWORD put = 0;
+    bool ok = h != INVALID_HANDLE_VALUE && WriteFile(h, bytes.data(), static_cast<DWORD>(bytes.size()), &put, nullptr) && put == bytes.size();
+    if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+    ok = ok && MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+    if (ok) {
+        ++g_lib_saves;
+        std::snprintf(g_lib_file_state, sizeof(g_lib_file_state), "saved (%zu bytes)", bytes.size());
+        if (g_lib_saves <= 5) Log("[ride] side library: the cache file saved (%zu bytes)", bytes.size());
+    } else {
+        const DWORD err = GetLastError();
+        DeleteFileW(tmp.c_str());
+        if (++g_lib_save_fails <= 3) Log("[ride] side library: the cache file could not be saved (error %lu)", err);
+    }
+}
+}  // namespace
+
+void SetSideLibrary(bool use, bool learn, bool cache) noexcept {
+    g_lib_use.store(use, std::memory_order_relaxed);
+    g_lib_learn.store(learn, std::memory_order_relaxed);
+    g_lib_cache.store(cache, std::memory_order_relaxed);
+}
+void LearnSideFrame(int seat, std::uint32_t actor, bool lpos_measured, const double (&lpos)[3], std::uint8_t phase, const wire::JointFrame& jf, double now,
+                    const char* src) noexcept {
+    if (!g_lib_learn.load(std::memory_order_relaxed) || seat < 1 || seat > 4 || jf.layout_hash != wire::kSamLayoutHash || jf.joint_count < kJ) return;
+    SideLearner& L = g_learn[seat - 1];
+    // review (logic 1 / ux 5): one MULE's frames only (another on that seat starts the window again), and only while it sits on
+    // its anchor, not alerted; a refused frame breaks the window (the loop never spans a climb or a fight)
+    if (actor != L.actor) L.f.clear(), L.last_seq = 0, L.actor = actor;
+    if (const char* no = muleride::LearnRefusal(seat, lpos_measured, lpos, phase)) {
+        if (!L.f.empty() || no != L.last_refusal) {
+            if (++L.refused <= 8)
+                Log("[ride] side library: seat %d (%s): MULE %05X not learned: %s (%zu frames dropped)", seat, src, actor, no, L.f.size());
+            L.f.clear();
+        }
+        L.last_refusal = no, L.last_why = no;
+        return;
+    }
+    L.last_refusal = "";
+    if (!L.f.empty() && jf.seq == L.last_seq) return;
+    muleride::PoseFrame p;
+    p.ms = now;
+    for (unsigned j = 0; j < kJ; ++j) {
+        const float q[4] = {jf.q[j].x, jf.q[j].y, jf.q[j].z, jf.q[j].w};
+        if (!LatchQuat(q, p.q[j])) return;
+    }
+    bool root = false, pel = false;
+    for (unsigned k = 0; k < jf.t_count && k < wire::kMaxJointTranslations; ++k) {
+        float* dst = jf.t_joint[k] == kSamRoot ? p.root_t : jf.t_joint[k] == kSamPelvis ? p.pelvis_t : nullptr;
+        if (!dst) continue;
+        for (int i = 0; i < 3; ++i) dst[i] = jf.t[k][i];
+        (jf.t_joint[k] == kSamRoot ? root : pel) = true;
+    }
+    if (!pel || !muleride::UnitFrame(p)) return;
+    (void)root;  // (a frame without the root's: 0, as the MULE's is)
+    L.last_seq = jf.seq;
+    ++L.frames;
+    if (!L.f.empty() && (now - L.f.back().ms > muleride::kLibMaxGapMs || !(now > L.f.back().ms))) L.f.clear();
+    L.f.push_back(p);
+    if (L.f.size() > muleride::kLibLearnFrames) L.f.erase(L.f.begin());
+    if (now < L.next_try || L.f.back().ms - L.f.front().ms < muleride::kLibMaxMs + 500) return;
+    L.next_try = now + 10000;
+    const muleride::LoopInfo li = muleride::LoopPick(L.f.data(), L.f.size());
+    if (!li.ok) {
+        L.last_why = li.why;
+        if (++L.misses <= 3) Log("[ride] side library: seat %d (%s): no loop from %zu frames (%s; seam %.1f deg)", seat, src, L.f.size(), li.why, li.seam_deg);
+        return;
+    }
+    if (!(li.seam_deg < g_lib_seam[seat - 1] - 0.5)) return;  // not better than the one we have
+    muleride::SeatLoop& m = g_lib_master[seat - 1];
+    m.n = li.n;
+    m.seam_deg = static_cast<float>(li.seam_deg);
+    for (unsigned i = 0; i < li.n; ++i) m.f[i] = L.f[li.start + i];
+    PublishLoop(seat, src);
+    ++L.picks, ++g_lib_learned;
+    g_lib_dirty = true;
+    Log("[ride] side library: seat %d learned from a seated MULE (%s): %u frames, %.2f s, seam %.1f deg", seat, src, li.n, li.len_ms / 1000.0, li.seam_deg);
+}
+void SideLibraryTick(double now) noexcept {
+    if (!g_lib_cache.load(std::memory_order_relaxed)) return;
+    if (!g_lib_loaded) LibLoad();
+    if (g_lib_dirty && now >= g_lib_save_next) {
+        g_lib_dirty = false;
+        g_lib_save_next = now + 10000;
+        LibSave();
+    }
+}
+void SideLibraryStatus(char* buf, std::size_t cap) noexcept {
+    if (!buf || !cap) return;
+    int n = std::snprintf(buf, cap, "play %s%s, learn %s, cache %s (%s);", g_lib_use.load() ? "on" : "off", g_lib_off.load() ? " (off: the feet check)" : "",
+                          g_lib_learn.load() ? "on" : "off", g_lib_cache.load() ? "on" : "off", g_lib_file_state);
+    for (int s = 1; s <= 4 && n > 0 && static_cast<std::size_t>(n) < cap; ++s) {
+        const muleride::SeatLoop& l = g_lib_master[s - 1];
+        const SideLearner& L = g_learn[s - 1];
+        if (g_lib[s - 1].ver.load() && l.n >= 2)
+            n += std::snprintf(buf + n, cap - n, " seat %d %s %u frames %.2f s seam %.1f deg (frames seen %u);", s, g_lib_src[s - 1], l.n,
+                               (l.f[l.n - 1].ms - l.f[0].ms) / 1000.0, l.seam_deg, L.frames);
+        else
+            n += std::snprintf(buf + n, cap - n, " seat %d none (frames seen %u%s%s);", s, L.frames, L.last_why[0] ? ", last: " : "", L.last_why);
+    }
+}
+double QpcNowMs() noexcept { return QpcMs(); }
+std::uintptr_t SkeletonOf(game::Entity* e) noexcept {
+    const std::uintptr_t sm = e ? ModelOf(reinterpret_cast<std::uintptr_t>(e)) : 0;
+    return sm ? PoseSkeleton(sm).skel : 0;
+}
+std::uintptr_t SamSkeleton() noexcept { return g_sam_skel.load(std::memory_order_acquire); }
+bool ReadLocalT(game::Entity* e, unsigned j, float (&t)[3]) noexcept {
+    const std::uintptr_t sm = e ? ModelOf(reinterpret_cast<std::uintptr_t>(e)) : 0;
+    if (!sm || j >= kJ) return false;
+    std::uint8_t hdr[kPoseSize];
+    std::uintptr_t pose = 0;
+    if (!ReadPoseHdr(sm, hdr, &pose)) return false;
+    const std::uintptr_t l = Field<std::uintptr_t>(hdr, kHdrLocal), le = Field<std::uintptr_t>(hdr, kHdrLocalEnd);
+    if (!l || le - l != kJ * sizeof(Joint)) return false;
+    Joint jt{};
+    if (!mem::Read(l + j * sizeof(Joint), &jt, sizeof(jt))) return false;
+    std::memcpy(t, jt.t, sizeof(t));
+    return std::isfinite(t[0]) && std::isfinite(t[1]) && std::isfinite(t[2]);
+}
 
 void Tick(game::Entity* local, bool local_active, double now_ms) noexcept {
     g_now = now_ms;

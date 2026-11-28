@@ -7,6 +7,7 @@
 // (ReadProcessMemory only, vtable + byte checked) and draws.
 #pragma once
 #include <cstddef>
+#include <cstdint>
 
 #include "config.hpp"
 #include "game_api.hpp"
@@ -23,5 +24,7 @@ bool CameraForward(game::Entity* local, double (&fwd)[2]) noexcept;
 // The game camera's position and forward axis (unit) as the view object holds them this frame. False when unavailable.
 // The ride camera's meter (ride_camera.cpp).
 bool CameraView(game::Entity* local, double (&pos)[3], double (&fwd)[3]) noexcept;
+// Round 30 BT marks (bt_markers.cpp): the game's camera view object the overlay reads (0 when unavailable: byte checks, no view).
+std::uintptr_t CameraViewObject(game::Entity* local) noexcept;
 
 }  // namespace st::nametags

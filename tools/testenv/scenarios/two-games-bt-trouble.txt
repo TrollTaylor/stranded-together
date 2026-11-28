@@ -1,0 +1,98 @@
+# Round 30 BT S1 (docs/enemy-sync.md section 24): the partner's trouble relay on two games. TROUBLE (type 6) and GZST (type 7) on
+# BTS1; the receiving game only logs, draws small in-world markers (bt_markers.cpp: a tar ring round the partner, a ring with a
+# health bar for a catcher, a diamond over a gazer sensing the partner) and (review ux 3) no toast while the markers are on (bt_markers=0: one per episode). No game writes.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-bt-trouble -SeedSaves complete-100 -GuestSeed profile-only -Id round30-bt-s1
+# Spots as in two-games-bt-field: the host at bt-field-mknot-s, the guest at -1046 36 0 (about 7 m apart, both 59 / 66 m from
+# gazer 40AB1A93, all 35 bt211_01 gazers streamed on both). bt_sync 5 is the test sequence (HUNTED, CATCHER 100 / 60 / 20 %,
+# CLEAR over 6 s), bt_sync 6 a test GZST of the sender's nearest gazer (hidden runs only).
+# Look at: 01 (the tar ring round the partner), 02 (the catcher ring and its bar over the partner), 05 / 06 (a gazer diamond).
+# covers: bt-sync
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini bt_sync=2
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[bt\] sync: TROUBLE / GZST on
+@guest waitlog 5 \[bt\] sync: TROUBLE / GZST on
+waitlog 5 \[bt\] markers on
+@guest waitlog 5 \[bt\] markers on
+waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role guest
+@guest waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role host
+waitlog 5 \[bt\] sync: TROUBLE on, GZST on
+@guest waitlog 5 \[bt\] sync: TROUBLE on, GZST on
+@both action dev_god 2
+@both action dev_weather 1
+wait 3000
+goto bt-field-mknot-s
+@guest goto -1046 36 0
+wait 15000
+waitlog 20 \[bt\] field compare #[0-9]+: records equal .*bt211_01 35/35 print equal
+@guest waitlog 20 \[bt\] field compare #[0-9]+: records equal .*bt211_01 35/35 print equal
+# ---- the host's test sequence: the guest logs each step, draws the markers, logs the catcher fight's toast as not shown
+action bt_sync 5
+waitlog 5 \[bt\] TROUBLE sent \(test\): HUNTED
+@guest waitlog 5 \[bt\] partner trouble: HUNTED \(episode [0-9]+, test
+@guest waitlog 5 \[bt\] markers: [1-9][0-9]* drawn .*tar [1-9]
+@guest screenshot 01-guest-tar-ring
+@guest waitlog 5 \[bt\] partner trouble: CATCHER hp 100% \(episode [0-9]+, test
+@guest waitlog 3 \[bt\] partner trouble toast \(once this episode [0-9]+\): Your partner is fighting a catcher: not shown \(the markers show it\)
+@guest screenshot 02-guest-catcher
+@guest waitlog 5 \[bt\] partner trouble: CATCHER hp 60%
+@guest waitlog 5 \[bt\] partner trouble: CATCHER hp 20%
+@guest waitlog 5 \[bt\] partner trouble: CLEAR \(episode [0-9]+, test
+waitlog 5 \[bt\] TROUBLE sent \(test\): CLEAR
+wait 4000
+# ---- the guest's test sequence: the host the same
+@guest action bt_sync 5
+@guest waitlog 5 \[bt\] TROUBLE sent \(test\): HUNTED
+waitlog 5 \[bt\] partner trouble: HUNTED \(episode [0-9]+, test
+waitlog 5 \[bt\] markers: [1-9][0-9]* drawn .*tar [1-9]
+screenshot 03-host-tar-ring
+waitlog 5 \[bt\] partner trouble: CATCHER hp 100% \(episode [0-9]+, test
+waitlog 3 \[bt\] partner trouble toast \(once this episode [0-9]+\): Your partner is fighting a catcher: not shown \(the markers show it\)
+screenshot 04-host-catcher
+waitlog 5 \[bt\] partner trouble: CATCHER hp 60%
+waitlog 5 \[bt\] partner trouble: CATCHER hp 20%
+waitlog 5 \[bt\] partner trouble: CLEAR \(episode [0-9]+, test
+wait 4000
+# ---- a test GZST both ways: the gazer is live in the other game too (the marker on its own copy)
+action bt_sync 6
+waitlog 5 \[bt\] GZST sent \(test\): loc [0-9A-F]{8} \(field 390B7DE4 bt211_01\)
+@guest waitlog 5 \[bt\] partner gazer state: loc [0-9A-F]{8} \(field 390B7DE4 bt211_01\) bits.* test.*here: live \(id
+@guest screenshot 05-guest-gazer-mark
+wait 4000
+@guest action bt_sync 6
+@guest waitlog 5 \[bt\] GZST sent \(test\): loc [0-9A-F]{8} \(field 390B7DE4 bt211_01\)
+waitlog 5 \[bt\] partner gazer state: loc [0-9A-F]{8} \(field 390B7DE4 bt211_01\) bits.* test.*here: live \(id
+screenshot 06-host-gazer-mark
+# ---- the natural leg (logged, not gated): the host into gazer 40AB1A93's trigger (9.3 m); GZST / TROUBLE as they come
+goto -978 58 0
+wait 10000
+screenshot 07-host-near-gazer
+@guest screenshot 07-guest-partner-near-gazer
+goto bt-field-mknot-s
+wait 5000
+# ---- stop: the counters on both
+@both action bt_sync 0
+waitlog 5 \[bt\] sync status \(action\): bt_sync 2 role host, partner on .* bad 0, stale [0-9]+, unsent 0; trouble sent [1-9]
+@guest waitlog 5 \[bt\] sync status \(action\): bt_sync 2 role guest, partner on .* bad 0, stale [0-9]+, unsent 0; trouble sent [1-9]
+nolog \[bt\] byte check FAILED
+@guest nolog \[bt\] byte check FAILED
+nolog \[bt\] world byte check FAILED
+@guest nolog \[bt\] world byte check FAILED
+nolog \[bt\] sync off
+@guest nolog \[bt\] sync off
+nolog \[bt\] sync: a bad BTS1
+@guest nolog \[bt\] sync: a bad BTS1
+nolog \[bt\] TROUBLE NOT sent
+@guest nolog \[bt\] TROUBLE NOT sent
+nolog \[bt\] partner trouble: PULLED
+@guest nolog \[bt\] partner trouble: PULLED
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@guest quit
+wait 3000
+quit

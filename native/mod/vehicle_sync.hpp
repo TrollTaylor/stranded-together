@@ -92,6 +92,9 @@ bool CopyTucked() noexcept;
 // fault-free reads only). The vehicle we report this send tick (seated or parked; 0 none), and a world point in its
 // frame (x right, y forward, z up; fault-free reads of it, false when it is no longer the one we report).
 int VehicleClass(std::uintptr_t e) noexcept;
+// Round 30 (diagnostics): the vehicle is in the game's world vehicle registry with its registered bit (+0x560 & 2): 1 yes,
+// 0 no, -1 unreadable / unchecked. Game thread (the tick), fault-free reads only.
+int VehicleRegistered(std::uintptr_t e) noexcept;
 std::uintptr_t ReportedVehicle(double now_ms, bool* seated) noexcept;
 bool ReportedVehicleLocal(std::uintptr_t e, const double (&p)[3], float (&out)[3]) noexcept;
 // Receiver: a point in the partner vehicle's frame to the world, at the place its frames play this tick (with or

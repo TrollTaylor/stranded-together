@@ -343,8 +343,10 @@ bool CollectLogs(Env& env, const InstancePaths& paths, const std::string& summar
         {&paths.package_json, "package.json", 64u << 10},
         {&paths.crash_report, "error.txt", 1u << 20},
     };
+    // Only these files: never the side seats' pose cache (%LOCALAPPDATA%\StrandedTogether\mule_ride_lib.bin, game animation
+    // data the mod learns at runtime), nor anything else of the game's.
     for (const Source& s : sources) {
-        if (!IsFile(*s.path)) continue;
+        if (!IsFile(*s.path) || s.path->find(L"mule_ride_lib") != std::wstring::npos) continue;
         const std::string text = ReadTail(*s.path, s.max);
         add_text(s.name, Redact(text));
     }

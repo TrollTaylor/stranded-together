@@ -2676,6 +2676,7 @@ void SetHitsPart(bool on, const char* why_off) noexcept {
 }
 void SetRestrainPart(bool on) noexcept { g_restrain_part.store(on, std::memory_order_relaxed); }
 bool PeerRestrain() noexcept { return g_have_peer && (g_peer_parts & shotw::kPartRestrain) != 0; }
+bool DownChannel() noexcept { return PeerRestrain() && (OurParts() & shotw::kPartRestrain) != 0; }  // round 30 review (bt's VOID verdict)
 std::uint8_t SetPlayerDown(std::uint8_t code) noexcept {
     g_player_down = code <= shotw::kBeaconDownMax ? code : std::uint8_t{0};
     return g_peer_down_cap ? g_player_down : std::uint8_t{0};

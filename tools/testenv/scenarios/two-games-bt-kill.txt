@@ -1,0 +1,94 @@
+# Round 30 BT S2 (docs/enemy-sync.md section 24): a gazer killed in one game ends in both. bt_world.cpp's one gazer update hook
+# reads each death edge; a kill a player caused (here bt_sync 7's test kill, cause "a test") goes as KILL (BTS1 type 8); the other
+# game's gate (btrules::KillApplyGate) arms the same kill for its own copy (the update's own rain-gone kill, tagged a mirror so
+# its death edge is never sent back), which must be live there, at least 15 m from that game's player.
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios two-games-bt-kill -SeedSaves complete-100 -GuestSeed profile-only -Id round30-bt-s2
+# Spots as in two-games-bt-field: the host at bt-field-mknot-s (59 m from gazer 40AB1A93), the guest at -1046 36 0 (66 m). Leg 1:
+# the host kills 40AB1A93, the guest applies it. Leg 2: the guest at -978 58 0 kills its nearest live gazer, the host applies it
+# (the host takes a guest's kill only from a sandboxed save, the same world print and equal BT records).
+# Round 30 fix: +0x3A8 is the scene of the gazer's own locator (FUN_142994B40 sets it on every placed gazer), not a mission group;
+# it no longer refuses a partner kill. The armed lines must show it set and equal to [[actor+0x18]+0x80], so the kill is proven to
+# apply on a gazer that the old guard refused.
+# Look at: 01 / 02 (the gazer gone on both), the log lines below.
+# covers: bt-sync
+role host
+graphics low
+timeout 360
+launcherini local-test
+ini bt_sync=2
+start control 200
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+waitlog 5 \[bt\] sync: TROUBLE / GZST on .*KILL on \(partner kills applied here\)
+@guest waitlog 5 \[bt\] sync: TROUBLE / GZST on .*KILL on \(partner kills applied here\)
+waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role guest
+@guest waitlog 60 \[bt\] sync: partner hello: bt_sync 2, role host
+waitlog 5 \[bt\] sync: TROUBLE on, GZST on, KILL on \(partner kills applied here: yes; mine applied there: yes\)
+@guest waitlog 5 \[bt\] sync: TROUBLE on, GZST on, KILL on \(partner kills applied here: yes; mine applied there: yes\)
+waitlog 10 \[bt\] world byte checks: [0-9]+/[0-9]+ ok; hook ok, kill ok, bt-allowed ok, player id ok, scene owner ok
+@guest waitlog 10 \[bt\] world byte checks: [0-9]+/[0-9]+ ok; hook ok, kill ok, bt-allowed ok, player id ok, scene owner ok
+waitlog 10 \[bt\] gazer update hook in \(FUN_142995210, for the kill relay\)
+@guest waitlog 10 \[bt\] gazer update hook in \(FUN_142995210, for the kill relay\)
+@both action dev_god 2
+@both action dev_weather 1
+wait 3000
+goto bt-field-mknot-s
+@guest goto -1046 36 0
+wait 15000
+waitlog 20 \[bt\] field compare #[0-9]+: records equal .*bt211_01 35/35 print equal
+@guest waitlog 20 \[bt\] field compare #[0-9]+: records equal .*bt211_01 35/35 print equal
+# ---- leg 1: the host kills gazer 40AB1A93; the guest applies it to its own copy
+action bt_sync 7 0x40AB 0x1A93
+waitlog 5 \[bt\] test kill loc 40AB1A93 .*armed
+waitlog 10 \[bt\] KILL sent \(test\): loc 40AB1A93 \(field 390B7DE4 bt211_01, reason 01322187, cause a test
+@guest waitlog 5 \[bt\] KILL received: loc 40AB1A93 .*sandboxed
+@guest waitlog 10 \[bt\] partner kill loc 40AB1A93: armed \(id [0-9A-F]+, field 390B7DE4 bt211_01; [0-9]+ m from you, \+0x3A8 0x[1-9A-F][0-9A-F]+ \(the locator's scene\)
+@guest waitlog 10 \[bt\] kill here: loc 40AB1A93 .*not sent: a partner kill applied here \(never sent back\)
+@guest waitlog 10 \[bt\] partner kill applied loc 40AB1A93 .*\+0x3A8 0x[1-9A-F][0-9A-F]+\): death edge seen \(field killed \+1\)
+waitlog 10 \[bt\] test kill loc 40AB1A93: applied here, death edge seen \(field killed \+1\)
+screenshot 01-host-killed
+@guest screenshot 01-guest-killed
+wait 3000
+# the next compares: both fields one kill further, the records still equal
+waitlog 40 \[bt\] field compare #[0-9]+: records equal .*kills equal
+@guest waitlog 40 \[bt\] field compare #[0-9]+: records equal .*kills equal
+# ---- leg 2: the guest into the field kills its nearest live gazer; the host applies it
+@guest goto -978 58 0
+wait 6000
+@guest action bt_sync 7 0 0
+@guest waitlog 5 \[bt\] test kill loc [0-9A-F]{8} .*armed
+@guest waitlog 10 \[bt\] KILL sent \(test\): loc [0-9A-F]{8} \(field 390B7DE4 bt211_01, reason 01322187, cause a test, world [0-9A-F]{8}, sandboxed
+waitlog 5 \[bt\] KILL received: loc [0-9A-F]{8} .*sandboxed
+waitlog 10 \[bt\] partner kill loc [0-9A-F]{8}: armed \(id [0-9A-F]+, field 390B7DE4 bt211_01; [0-9]+ m from you, \+0x3A8 0x[1-9A-F][0-9A-F]+ \(the locator's scene\)
+waitlog 10 \[bt\] partner kill applied loc [0-9A-F]{8} .*\+0x3A8 0x[1-9A-F][0-9A-F]+\): death edge seen \(field killed \+1\)
+waitlog 10 \[bt\] kill here: loc [0-9A-F]{8} .*not sent: a partner kill applied here \(never sent back\)
+@guest waitlog 10 \[bt\] test kill loc [0-9A-F]{8}: applied here, death edge seen \(field killed \+1\)
+screenshot 02-host-killed
+@guest screenshot 02-guest-killed
+@guest goto -1046 36 0
+wait 3000
+# ---- stop: the counters on both
+@both action bt_sync 0
+waitlog 5 \[bt\] sync status \(action\): bt_sync 2 role host, partner on .* bad 0, stale [0-9]+, unsent 0; .*kill sent 1 \(not sent [0-9]+\) got 1 \(applied 1, refused 0
+@guest waitlog 5 \[bt\] sync status \(action\): bt_sync 2 role guest, partner on .* bad 0, stale [0-9]+, unsent 0; .*kill sent 1 \(not sent [0-9]+\) got 1 \(applied 1, refused 0
+nolog \[bt\] byte check FAILED
+@guest nolog \[bt\] byte check FAILED
+nolog \[bt\] world byte check FAILED
+@guest nolog \[bt\] world byte check FAILED
+nolog \[bt\] sync off
+@guest nolog \[bt\] sync off
+nolog \[bt\] sync: a bad BTS1
+@guest nolog \[bt\] sync: a bad BTS1
+nolog \[bt\] KILL sent:
+@guest nolog \[bt\] KILL sent:
+nolog \[bt\] partner kill loc [0-9A-F]{8}: not applied
+@guest nolog \[bt\] partner kill loc [0-9A-F]{8}: not applied
+nolog \[bt\] partner kill loc [0-9A-F]{8}: armed .*NOT the locator's scene
+@guest nolog \[bt\] partner kill loc [0-9A-F]{8}: armed .*NOT the locator's scene
+nolog FAULTED
+@guest nolog FAULTED
+nolog \[gate\] OTGC WRITE
+@guest nolog \[gate\] OTGC WRITE
+@guest quit
+wait 3000
+quit

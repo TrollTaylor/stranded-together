@@ -187,6 +187,19 @@ struct Config {
     // The carried passenger's camera (section 24.15): 1 (default) the game's own ride camera of the vehicle he rides (the
     // driver's camera); 0 = v0.20's on-foot camera on the carried Sam.
     bool ride_camera = true;
+    // Round 30 release A (section 24.20): the truck's side seats (the MULEs' hanging places, seats 3..6): 1 (default) offered
+    // to a partner whose build knows them (its STR1 hello); 0 = the cab seat only (as v0.42).
+    bool ride_sides = true;
+    // The side hang's pose: 1 (default) a seat's library idle (learned from seated MULEs this session or the cache) when there
+    // is one, else the procedural hang; 0 = the procedural hang only.
+    bool ride_mule_pose = true;
+    // Learn the library from seated MULEs (the host's captures, the guest's mirrors). Default on.
+    bool ride_mule_record = true;
+    // Keep the library in %LOCALAPPDATA%\StrandedTogether\mule_ride_lib.bin (never in the game's folder, a zip or a log
+    // bundle). Default on; 0 = this session only.
+    bool ride_mule_cache = true;
+    // Hide our backpack while we hang on a side seat. Default off (the pack stays on Sam's back).
+    bool ride_side_hide_pack = false;
     // Vehicle hits (design M4; docs/real-partner-body.md section 25), with vehicle_sync=5: the partner's vehicle hits our Sam
     // like an NPC-driven truck (the game's own vehicle attack: damage and the Blow knock-down, never an instant kill), and a
     // passenger thrown off in a crash takes the same hit. Default on; 0 = the partner's vehicles never hurt THIS player's Sam
@@ -458,6 +471,19 @@ struct Config {
     // Only in a two-game session and only once the partner's build says hello (its bt_sync != 0: an older or key-off partner gets
     // nothing).
     int bt_sync = 2;
+    // bt_trouble=0|1 (default 1; round 30 BT S1, bt_sync.hpp; docs/enemy-sync.md section 24): with bt_sync, this game's BT
+    // trouble (the hunter area, a gazer catching Sam, a catcher and its health) and its sensing gazers are told to the partner
+    // (TROUBLE / GZST); nothing in the partner's world changes.
+    bool bt_trouble = true;
+    // bt_markers=0|1 (default 1; round 30 BT S1): the partner's BT trouble drawn in this game's world through the overlay: a small
+    // diamond over the gazer that senses them, a tar ring around them while they are hunted, a catcher's health bar. No text
+    // banners; at most one short toast when the partner is caught or a catcher fight starts.
+    bool bt_markers = true;
+    // bt_kill=0|1|2 (default 2; round 30 BT S2, bt_world.hpp; docs/enemy-sync.md section 24): gazers a player kills end in both
+    // worlds. 1 = this game's kills are told to the partner (KILL); 2 = also the partner's kills applied here (the gazer update's
+    // own rain-gone kill, no stats), only under the apply rules (a guest on a sandboxed save; the host only from a host-save guest
+    // with the same records) and never in a load, menu, cutscene, with Sam carried, or within 15 m of this game's player.
+    int bt_kill = 2;
     // self_voice=auto|sam|mute (docs/audio-research.md section 9, Phase 1; self_voice.cpp): Sam's own voice (spoken
     // lines, grunts, efforts, breathing) on THIS player's game. auto = muted when this player's character
     // (my_character; the host is always sam) is not Sam, and the cargo menu's figure while it shows that character;

@@ -950,6 +950,7 @@ void UpdateCaptureSlots(const erules::PoseCand* pc, unsigned n, SmOf sm_of) {
         g_pslot_seq[k] = 0;
     }
 }
+std::uint8_t PhaseOf(std::uintptr_t actor);  // (below)
 // SEP1: each capture slot at its period, a new capture only.
 void SendCaptures(double now) {
     for (unsigned k = 0; k < erules::kPoseSlots; ++k) {
@@ -961,6 +962,19 @@ void SendCaptures(double now) {
         g_pslot_seq[k] = p.joints.seq;
         p.slot = static_cast<std::uint8_t>(k);
         p.actor_id = g_pslots.Id(k);
+        {
+            // round 30 release A (docs/real-partner-body.md 24.20): a MULE hanging on a side seat (1..4) of a V3 truck teaches
+            // that seat's idle to the side library (the host's own capture)
+            // review (logic 1 / ux 5): with its measured place in the truck and its phase (a MULE climbing on or off, or alerted
+            // on the seat, is not learned)
+            truckv3::OccEntry oe;
+            if (truckv3::SeatHostEntry(p.actor_id, &oe) && oe.seat >= 1 && oe.seat <= 4) {
+                std::uint8_t phase = erules::kPhaseUnknown;
+                for (const HostEnemy& h : g_host)
+                    if (h.id == p.actor_id && h.now.realized) phase = PhaseOf(h.actor);
+                realbody::LearnSideFrame(oe.seat, p.actor_id, oe.src == truckv3::kOccSrcChain, oe.lpos, phase, p.joints, now, "host");
+            }
+        }
         p.sender_ms = static_cast<std::uint32_t>(static_cast<std::uint64_t>(now) & 0xFFFFFFFFull);
         p.joints.sender_ms = p.sender_ms;
         std::uint8_t buf[ewire::kSepMaxSize];
@@ -2277,6 +2291,15 @@ void SeatShowTick(Mirror& m, const ActorNow& a, const erules::Track* tr, double 
     for (int i = 0; i < 3; ++i) h.seat_prev[i] = f.exact.pos[i], h.lpos[i] = f.lpos[i];
     h.at_seat = true, h.truck_xf = f.truck_xf, h.place_truck = f.truck;  // review: moved out of the truck before it is given back
     GivePose(m, *tr, render, posed_on_host);
+    // round 30 release A (docs/real-partner-body.md 24.20): a mirror shown hanging on a side seat (1..4) with the host's pose
+    // teaches that seat's idle to the side library (the newest SEP1 frame; the learner skips a frame it has seen)
+    if (f.seat >= 1 && f.seat <= 4 && posed_on_host) {
+        const auto lr = g_prx.find(m.id);
+        // review (logic 1 / ux 5): the host-sent place (measured: its source the parent chain) and the host's phase
+        const std::uint8_t phase = tr && tr->Newest() ? tr->Newest()->phase : erules::kPhaseUnknown;
+        if (lr != g_prx.end() && lr->second.tb > -1e17)
+            realbody::LearnSideFrame(f.seat, m.id, f.src == truckv3::kOccSrcChain, f.lpos, phase, lr->second.b, now, "guest");
+    }
 }
 
 bool CampOwnedHere(std::uintptr_t actor);  // round 25 V1 (below)

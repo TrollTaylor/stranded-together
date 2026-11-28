@@ -4,6 +4,11 @@
 // B1 (round 28 lane B1, bt_sync=1|2; the second half of this file): the same census once a second feeds the BTS1 relay (FIELD /
 // RESET / NOTICED / VOID on channel 6), one pass-through detour on the voidout FUN_14299B1B0 (start-up, byte-checked), and with
 // bt_sync=2 the host's RESET applied on the guest through ResetAllGazers (byte-checked, the game thread, SEH-guarded).
+// Round 30 BT S0 (the end of the anonymous namespace): the VOID verdict (a toast only when the partner's GameOver is seen within 5 s),
+// HunterAreaUp for the ride (F6), and the world probes bt_probe 9..14: hidden runs only, each lazily hooked or called on its op.
+// Round 30 BT S1 / S2 (docs/enemy-sync.md section 24; the very end of the anonymous namespace): TROUBLE and GZST (the partner's
+// trouble as markers, bt_markers.cpp; nothing received changes the game) and KILL (a gazer a player kills ends in both worlds,
+// through bt_world.cpp's one gazer update hook).
 #include "bt_sync.hpp"
 
 #ifndef NOMINMAX
@@ -26,15 +31,19 @@
 #include <vector>
 
 #include "automation.hpp"
+#include "bt_markers.hpp"
 #include "bt_rules.hpp"
+#include "bt_world.hpp"
 #include "config.hpp"
 #include "coop_session.hpp"
+#include "enemy_sync.hpp"
 #include "game_actions.hpp"
 #include "game_api.hpp"
 #include "link.hpp"
 #include "log.hpp"
 #include "partner_source.hpp"
 #include "player_sync.hpp"
+#include "ride_together.hpp"
 #include "shot_sync.hpp"
 
 namespace st::bt {
@@ -64,6 +73,9 @@ constexpr std::uintptr_t kActEntRef = 0x68, kActFlags = 0x1B4;
 // +0x204: the gazer's own distance to the LOCAL player (0x1429953EB, from FUN_14283EC70 +0x270); +0x388: its parameters, +0x98
 // the near trigger radius (0x142995C3D) [V code, round 28 P3]
 constexpr std::uintptr_t kActPlayerDist = 0x204, kActParams = 0x388, kParTrigger = 0x98;
+// round 30 S1 (GZST): +0x1A8 the gazer's mode byte (read at 0x142995822 / 0x14299694A), +0xB4 its approach (written at
+// 0x142995CFB) [V code; I meaning]
+constexpr std::uintptr_t kActMode = 0x1A8, kActApproach = 0xB4;
 constexpr std::size_t kActHead = 0x390;  // one read covers every field above
 // the locator (DSGazerGameActorLocator): +0x80 its scene, +0x88 its GUID; the scene: +0x98 its GUID
 constexpr std::uintptr_t kLocScene = 0x80, kLocGuid = 0x88, kSceneGuid = 0x98;
@@ -304,6 +316,8 @@ std::uintptr_t Resolve(std::uint32_t id) {
 struct Gazer {
     std::uint32_t id = 0, c = 0, flags = 0, loc_hash = 0, field = 0;
     std::int32_t state = -1;
+    std::uint8_t mode = 0;  // round 30 S1 (GZST): +0x1A8
+    float approach = 0;     // +0xB4
     float pdist = -1, trig = -1;  // +0x204 (the game's distance to the local player), [+0x388] +0x98 (the near radius)
     std::uintptr_t actor = 0;
     bool located = false, pos_ok = false;
@@ -316,8 +330,9 @@ struct Field {
 };
 struct Catcher {
     std::uint32_t actor = 0;
-    bool entity = false, active = false;
+    bool entity = false, active = false, pos_ok = false;
     float hp = 0;
+    double pos[3] = {0, 0, 0};  // round 30 S1: its entity's position (record +0 entity ref - 0x20, +0xC8)
 };
 struct Census {
     bool mgr = false;
@@ -358,6 +373,9 @@ void ReadGazer(Gazer& z) {
     std::memcpy(&z.flags, h + kActFlags, 4);
     std::memcpy(&z.pdist, h + kActPlayerDist, 4);
     if (!std::isfinite(z.pdist)) z.pdist = -1;
+    z.mode = h[kActMode];
+    std::memcpy(&z.approach, h + kActApproach, 4);
+    if (!std::isfinite(z.approach)) z.approach = 0;
     std::uintptr_t params = 0;
     std::memcpy(&params, h + kActParams, 8);
     if (params && !(mem::Rd(params + kParTrigger, z.trig) && std::isfinite(z.trig))) z.trig = -1;
@@ -471,6 +489,7 @@ void TakeCensus(double now_ms, Census& c) {
                         std::memcpy(&k.hp, r + kCatHp, 4);
                         k.entity = ent != 0;
                         k.active = r[kCatInactive] == 0;
+                        if (ent > 0x20 && mem::Read(ent - 0x20 + kEntPos, k.pos, sizeof(k.pos))) k.pos_ok = R::PosSane(k.pos);
                         if (!std::isfinite(k.hp)) k.hp = 0;
                         c.c.push_back(k);
                     }
@@ -752,13 +771,21 @@ constexpr std::uintptr_t kVoidFn = 0x14299B1B0;
 constexpr const char* kVoidSig =
     "48 8B C4 48 89 78 18 41 54 41 56 41 57 48 81 EC 80 00 00 00 48 83 79 68 00 45 0F B6 F9 45 0F B6 E0 4C 8B F2 48 8B F9 0F 84 AE 01 00 00";
 constexpr std::uintptr_t kVoidRes = 0x68, kResFarDist = 0x54;  // 0x14299B1F6 / 0x14299B22D
-// Its four E8 call sites (the return addresses name the caller; the only references to it in the image).
+// Its four E8 call sites (the return addresses name the caller; the only references to it in the image). Round 30 read each caller
+// [V code] and renamed the sources (the numbers stay; bt_rules.hpp VoidSource):
+//   0x14299B44B  FUN_14299B3B0, whose only caller is the timer list FUN_142B21CA0: a scripted / timed voidout;
+//   0x14299F360  FUN_14299EFB0, the gazer catch (message 0x682DFB3B);
+//   0x1429A5509  the gazer manager update FUN_1429A3F50: a human corpse on the list +0x1760 (FUN_1429A1230 sets +0x1780 bit 0),
+//                3 s later (corpse necrosis; ResetAllGazers clears +0x1780, so a RESET cancels a pending one);
+//   0x142A9766A  FUN_142A97650, queued by the MULE actor FUN_142AA2230: a MULE corpse's necrosis (not the BT catcher).
 struct VoidCaller {
     std::uintptr_t ret;
     std::uint8_t source;
 };
-constexpr VoidCaller kVoidCallers[] = {
-    {0x14299B44B, R::kVoidSrcB3B0}, {0x14299F360, R::kVoidSrcCatch}, {0x1429A5509, R::kVoidSrcPending}, {0x142A9766A, R::kVoidSrcCatcher}};
+constexpr VoidCaller kVoidCallers[] = {{0x14299B44B, R::kVoidSrcScripted},
+                                       {0x14299F360, R::kVoidSrcCatch},
+                                       {0x1429A5509, R::kVoidSrcCorpseNecrosis},
+                                       {0x142A9766A, R::kVoidSrcMuleCorpse}};
 constexpr unsigned kVoidCallerCount = sizeof(kVoidCallers) / sizeof(kVoidCallers[0]);
 // ResetAllGazers (the thunk dev_tools.cpp calls for dev_enemies 3: mov rcx, [the gazer manager]; jmp the body)
 constexpr std::uintptr_t kResetThunk = 0x1429A7220, kResetBody = 0x1429A17A0;
@@ -779,6 +806,7 @@ VoidRec g_void_q[kVoidRing];
 unsigned g_void_n = 0;
 std::atomic<unsigned> g_void_calls{0}, g_void_lost{0};
 std::atomic<bool> g_void_pass{false};  // EmergencyStop: straight through
+thread_local bool t_crater = false;  // round 30 P3: inside the probe's guarded crater (no VOID relay, the flow call dropped)
 std::uintptr_t g_void_ret[kVoidCallerCount] = {};
 using VoidFn = std::uint64_t (*)(void*, const double*, std::uint8_t, std::uint8_t);
 VoidFn g_void_orig = nullptr;
@@ -801,7 +829,7 @@ void VoidRecord(void* mgr, const double* pos, std::uint8_t caused, std::uint8_t 
     ReleaseSRWLockExclusive(&g_void_lock);
 }
 std::uint64_t VoidDetour(void* mgr, const double* pos, std::uint8_t caused, std::uint8_t baggage) {
-    if (!g_void_pass.load(std::memory_order_relaxed)) VoidRecord(mgr, pos, caused, baggage, reinterpret_cast<std::uintptr_t>(_ReturnAddress()));
+    if (!g_void_pass.load(std::memory_order_relaxed) && !t_crater) VoidRecord(mgr, pos, caused, baggage, reinterpret_cast<std::uintptr_t>(_ReturnAddress()));
     return g_void_orig(mgr, pos, caused, baggage);
 }
 unsigned TakeVoids(VoidRec* out, unsigned cap) noexcept {
@@ -902,7 +930,7 @@ double g_s_cmp_ms = -1e18;
 double g_s_me[3] = {0, 0, 0};
 bool g_s_me_ok = false;
 struct LocalGazer {
-    std::uint32_t id = 0;
+    std::uint32_t id = 0, field = 0;
     double pos[3] = {0, 0, 0};
     bool pos_ok = false;
 };
@@ -922,10 +950,88 @@ const char* RoleText(int r) { return r == 1 ? "host" : r == 2 ? "guest" : "?"; }
 // hello's reset-apply cap says so.
 bool ResetApplyHere() { return g_sync >= 2 && g_role == 2 && automation::SavesRedirected(); }
 
+// Round 30 S1 / S2 (the code is at the end of the anonymous namespace).
+bool g_trouble_on = false;  // bt_trouble (with bt_sync)
+int g_kill_level = 0;       // bt_kill, at most bt_sync (bt_sync=1 applies nothing)
+double g_reset_ms = -1e18;  // the last reset here, seen or applied: no kill is sent within 5 s of it
+struct Counts2 {
+    unsigned tx_trouble = 0, tx_gzst = 0, tx_kill = 0, unsent_kill = 0;
+    unsigned rx_trouble = 0, rx_gzst = 0, rx_kill = 0, kill_applied = 0, kill_refused = 0, events_lost = 0;
+} g_s2;
+// KILL goes from here: the gazer update hook can go in (its byte checks) and bt_kill >= 1.
+bool KillSendable() {
+    const unsigned w = btworld::Check();
+    return g_kill_level >= 1 && (w & btworld::kBitHook) && (w & btworld::kBitKill);
+}
+// A partner's KILL may be applied here: bt_kill 2; the guest only on a sandboxed save (Must-NOT 5).
+bool KillApplyHere() { return g_kill_level >= 2 && KillSendable() && (g_role == 1 || automation::SavesRedirected()); }
+void TroubleCensus(double now_ms, const Census& c);
+void GzstCensus(double now_ms, const Census& c);
+void OnTrouble(double now_ms, const std::uint8_t* b, std::size_t n);
+void OnGzst(double now_ms, const std::uint8_t* b, std::size_t n);
+void OnKill(double now_ms, const std::uint8_t* b, std::size_t n);
+void InstallKillHook(const char* why);
+void S12Session();
+void S12Tick(double now_ms);
+
 void Toast(double now_ms, const char* text) {
     if (now_ms < g_s_toast_ms) return;
     g_s_toast_ms = now_ms + 8000.0;
     coop::SetVehicleNotice(text, true, now_ms + 5000.0);
+}
+
+// Round 30: a partner VOID waits up to R::kVoidDownWindowMs for the partner's GameOver (their SEH1 beacon's player_down == 1, game
+// state bit 13) before its verdict: "Your partner was voided out" only then; otherwise logged only (a corpse or a MULE corpse
+// voiding out near them, a scripted crater). g_s_down_ms: when the newest beacon that said "down (GameOver)" arrived (-1 none).
+struct PendVoid {
+    double void_ms = 0;
+    bool test = false;
+    std::uint8_t source = R::kVoidSrcUnknown;
+};
+constexpr unsigned kPendVoids = 8;
+PendVoid g_s_pend[kPendVoids];
+unsigned g_s_pend_n = 0;
+double g_s_down_ms = -1;
+
+void SampleDown(double now_ms) {
+    shotw::Beacon b;
+    double age = 0;
+    if (!shots::PeerBeacon(&b, &age) || b.player_down != R::kBeaconDownDead) return;
+    const double at = now_ms - (std::isfinite(age) && age > 0 ? age : 0);
+    if (at > g_s_down_ms) g_s_down_ms = at;
+}
+
+void ResolveVoids(double now_ms) {
+    unsigned keep = 0;
+    // round 30 review: without the down channel no GameOver can come (VoidVerdict decides by source at once)
+    const bool channel = g_s_pend_n && shots::DownChannel();
+    for (unsigned i = 0; i < g_s_pend_n; ++i) {
+        const PendVoid& pv = g_s_pend[i];
+        const R::VoidCall c = R::VoidVerdict(pv.test, pv.void_ms, g_s_down_ms, now_ms, channel, pv.source);
+        switch (c) {
+            case R::VoidCall::wait: g_s_pend[keep++] = pv; break;
+            case R::VoidCall::test:
+                Log("[bt] partner voidout verdict: a test: toast");
+                Toast(now_ms, "Voidout test from your partner");
+                break;
+            case R::VoidCall::partner:
+                Log("[bt] partner voidout verdict: the partner went down (GameOver) within 5 s: toast; source %s", R::VoidSourceName(pv.source));
+                Toast(now_ms, "Your partner was voided out");
+                break;
+            case R::VoidCall::log_only:
+                Log("[bt] partner voidout verdict: no GameOver from the partner within 5 s: log only; source %s", R::VoidSourceName(pv.source));
+                break;
+            case R::VoidCall::no_channel_toast:
+                Log("[bt] partner voidout verdict: no down channel (restrain part off here or there): toast by source; source %s",
+                    R::VoidSourceName(pv.source));
+                Toast(now_ms, "Your partner was voided out");
+                break;
+            case R::VoidCall::no_channel_log:
+                Log("[bt] partner voidout verdict: no down channel (restrain part off here or there): log only; source %s", R::VoidSourceName(pv.source));
+                break;
+        }
+    }
+    g_s_pend_n = keep;
 }
 
 bool Send(const std::uint8_t* b, std::size_t n) {
@@ -942,7 +1048,9 @@ void SendHello(double now_ms) {
     R::BtsHello h;
     h.level = static_cast<std::uint8_t>(g_sync);
     h.role = static_cast<std::uint8_t>(g_role);
-    h.caps = R::kCapField | R::kCapNoticed | (g_void_hook ? R::kCapVoid : 0) | (ResetApplyHere() ? R::kCapResetApply : 0);
+    h.caps = static_cast<std::uint16_t>(R::kCapField | R::kCapNoticed | (g_void_hook ? R::kCapVoid : 0) | (ResetApplyHere() ? R::kCapResetApply : 0) |
+                                        (g_trouble_on ? (R::kCapTrouble | R::kCapGzst) : 0) | (KillSendable() ? R::kCapKill : 0) |
+                                        (KillApplyHere() ? R::kCapKillApply : 0));
     std::uint8_t b[R::kBtsHelloSize];
     if (!Send(b, R::EncodeHello(g_s_seq, h, b, sizeof(b)))) return;
     g_s_hello_sent = true;
@@ -1062,6 +1170,7 @@ void SyncCensus(double now_ms) {
     // the reset (polled: the records all unset at once, nothing killed)
     if (g_s_have_rec && R::LooksLikeReset(g_s_rec, rec)) {
         ++g_s.resets_here;
+        g_reset_ms = now_ms;  // round 30 S2: no kill is sent within 5 s of a reset
         g_s_quiet.clear();  // the "near not set" diagnostic logs again after a reset (before / after it are told apart)
         g_s_skip_logged.clear();
         g_s_close_logged.clear();
@@ -1098,6 +1207,7 @@ void SyncCensus(double now_ms) {
         if (z.located) {
             LocalGazer& l = g_s_locs[z.loc_hash];
             l.id = z.id;
+            l.field = z.field;
             l.pos_ok = z.pos_ok;
             std::memcpy(l.pos, z.pos, sizeof(l.pos));
         }
@@ -1170,6 +1280,9 @@ void SyncCensus(double now_ms) {
         SendNoticed(n, "found: hunter area", z ? z->trig : -1.0);
     }
     if (c.hunter_ok) g_s_prev_hunter = c.hunter_area;
+    // round 30 S1: this game's player's trouble (TROUBLE) and the gazers sensing them (GZST)
+    TroubleCensus(now_ms, c);
+    GzstCensus(now_ms, c);
     // FIELD: on a change (at most 1 Hz), else every 10 s
     g_s_here = m;
     g_s_have_here = true;
@@ -1206,6 +1319,12 @@ void OnHello(const std::uint8_t* b, std::size_t n) {
     g_s_peer = true;
     Log("[bt] sync: partner hello: bt_sync %u, role %s, caps 0x%X; relay on (FIELD, NOTICED%s%s)", h.level, RoleText(h.role), h.caps,
         (h.caps & R::kCapVoid) ? ", VOID" : ", VOID (its hook is out)", (h.caps & R::kCapResetApply) ? ", RESET applied there" : "");
+    // round 30 S1 / S2: each new type only to a partner whose hello names it (an older build never gets one)
+    const bool tr = g_trouble_on && (h.caps & R::kCapTrouble), gz = g_trouble_on && (h.caps & R::kCapGzst);
+    const bool kill = KillSendable() && (h.caps & R::kCapKill);
+    Log("[bt] sync: TROUBLE %s, GZST %s, KILL %s (partner kills applied here: %s; mine applied there: %s)", tr ? "on" : "off", gz ? "on" : "off",
+        kill ? "on" : "off", KillApplyHere() ? "yes" : "no", (h.caps & R::kCapKillApply) ? "yes" : "no");
+    if (kill) InstallKillHook("the kill relay");
 }
 
 void OnField(double now_ms, const std::uint8_t* b, std::size_t n) {
@@ -1280,6 +1399,7 @@ void OnReset(double now_ms, const std::uint8_t* b, std::size_t n) {
     ++g_s.applied;
     g_applied_epoch = r.epoch;
     g_s_applied_ms = now_ms;
+    g_reset_ms = now_ms;  // round 30 S2
     Log("[bt] RESET epoch %u applied (ResetAllGazers; %d records, %d unset before)", r.epoch, g_s_rec.fields, before);
 }
 
@@ -1302,6 +1422,11 @@ void OnNoticed(double now_ms, const std::uint8_t* b, std::size_t n) {
         "%u near there",
         kind, m.loc, m.field, R::FieldName(m.field), gz[0], gz[1], gz[2], R::Dist3(gz, pp), m.game_dist, g_s_me_ok ? R::Dist3(gz, g_s_me) : -1.0, here,
         m.near_n);
+    // round 30 S1: with the markers on and a partner sending GZST / TROUBLE, the in-world marks say this (no toast)
+    if (m.kind != R::kNoticeTest && btmarks::On() && (g_s_peer_caps & R::kCapGzst)) {
+        if (g_s_budget.Take(now_ms)) Log("[bt] partner sensed: no toast (the markers show it)");
+        return;
+    }
     Toast(now_ms, m.kind == R::kNoticeFound ? "The BTs found your partner" : "A BT senses your partner");
 }
 
@@ -1318,7 +1443,12 @@ void OnVoid(double now_ms, const std::uint8_t* b, std::size_t n) {
         "notice only (no game effect)",
         test ? " (test)" : "", p[0], p[1], p[2], v.reason, R::VoidReasonName(v.reason), R::VoidSourceName(v.source), v.player_dist,
         g_s_me_ok ? R::Dist3(p, g_s_me) : -1.0, v.far_dist);
-    if (R::VoidToast(v.source)) Toast(now_ms, test ? "Voidout test from your partner" : "Your partner was voided out");
+    // round 30: the toast only when the partner's own game went to GameOver within 5 s (VoidVerdict); resolved in SyncTick
+    PendVoid pv;
+    pv.void_ms = now_ms, pv.test = test, pv.source = v.source;
+    if (g_s_pend_n < kPendVoids) g_s_pend[g_s_pend_n++] = pv;
+    else Log("[bt] partner voidout verdict: %u already pending: log only; source %s", kPendVoids, R::VoidSourceName(v.source));
+    ResolveVoids(now_ms);
 }
 
 void NewSession(std::uint32_t gen);
@@ -1354,6 +1484,9 @@ void SyncDrain(double now_ms) {
             case R::kBtsReset: OnReset(now_ms, buf, n); break;
             case R::kBtsNoticed: OnNoticed(now_ms, buf, n); break;
             case R::kBtsVoid: OnVoid(now_ms, buf, n); break;
+            case R::kBtsTrouble: OnTrouble(now_ms, buf, n); break;
+            case R::kBtsGzst: OnGzst(now_ms, buf, n); break;
+            case R::kBtsKill: OnKill(now_ms, buf, n); break;
             default: ++g_s.bad; break;
         }
     }
@@ -1361,6 +1494,10 @@ void SyncDrain(double now_ms) {
 
 void NewSession(std::uint32_t gen) {
     g_s_gen = gen;
+    g_s_down_ms = -1;  // round 30: a GameOver from the last link session is not this one's
+    if (g_s_pend_n)    // round 30 review: nor is a VOID still pending from it (it could meet this session's GameOver)
+        Log("[bt] partner voidout verdict: %u pending dropped (a new link session): log only", g_s_pend_n);
+    g_s_pend_n = 0;
     g_s_beacon = g_s_hello_sent = g_s_peer = g_s_wait_logged = g_s_hello_wait_logged = false;
     g_s_seq = 0;
     g_applied_epoch = 0;
@@ -1370,15 +1507,19 @@ void NewSession(std::uint32_t gen) {
     g_s_cmp_key = 0;
     g_s_peer_level = g_s_peer_role = 0;
     g_s_peer_caps = 0;
+    S12Session();
 }
 
+unsigned PendingKills();
 void SyncStatus(const char* why) {
     Log("[bt] sync status (%s): bt_sync %d role %s, partner %s (bt_sync %d), voidout hook %s; sent hello %u field %u noticed %u (held %u) void %u reset %u; "
         "got hello %u field %u noticed %u void %u reset %u (applied %u, refused %u); compares %u, resets here %u, voidout calls %u (lost %u), bad %u, "
-        "stale %u, unsent %u",
+        "stale %u, unsent %u; trouble sent %u got %u, gzst sent %u got %u, kill sent %u (not sent %u) got %u (applied %u, refused %u, pending %u), "
+        "world events lost %u",
         why, g_sync, RoleText(g_role), g_s_peer ? "on" : "none", g_s_peer_level, g_void_text, g_s.tx_hello, g_s.tx_field, g_s.tx_noticed, g_s.held_noticed,
         g_s.tx_void, g_s.tx_reset, g_s.rx_hello, g_s.rx_field, g_s.rx_noticed, g_s.rx_void, g_s.rx_reset, g_s.applied, g_s.refused, g_s.compares,
-        g_s.resets_here, g_void_calls.load(), g_void_lost.load(), g_s.bad, g_s.stale, g_s.unsent);
+        g_s.resets_here, g_void_calls.load(), g_void_lost.load(), g_s.bad, g_s.stale, g_s.unsent, g_s2.tx_trouble, g_s2.rx_trouble, g_s2.tx_gzst,
+        g_s2.rx_gzst, g_s2.tx_kill, g_s2.unsent_kill, g_s2.rx_kill, g_s2.kill_applied, g_s2.kill_refused, PendingKills(), g_s2.events_lost);
 }
 
 void SyncTick(double now_ms) {
@@ -1390,6 +1531,10 @@ void SyncTick(double now_ms) {
     VoidRec vr[kVoidRing];
     const unsigned nv = TakeVoids(vr, kVoidRing);
     for (unsigned i = 0; i < nv; ++i) SendVoid(now_ms, vr[i], false);
+    // round 30: the partner's GameOver (beacon) and the pending VOID verdicts
+    if (g_s_peer) SampleDown(now_ms);
+    if (g_s_pend_n) ResolveVoids(now_ms);
+    S12Tick(now_ms);  // round 30 S1 / S2: the trouble view's expiry, the test sequence, the partner kills (4 Hz)
     if (now_ms < g_s_next_ms) return;
     g_s_next_ms = now_ms + 1000.0;
     if (link::GetInfo().connected) {
@@ -1422,6 +1567,1174 @@ void SyncTick(double now_ms) {
     SyncCensus(now_ms);
 }
 
+// ================================================================ round 30 BT S0: the world probes (bt_probe 9..14; hidden runs only)
+// Nothing here is installed or called outside a hidden run (automation::Enabled()) and the bt_probe action. The game-changing ones
+// (10 kill, 11 crater, 14 hunter area) also need a sandboxed save (automation::SavesRedirected()). Every address is byte-checked
+// on the first probe op (ProbeCheck), every game call and write is SEH-guarded.
+//   P1 (op 9)  a lazy pass-through detour on the gazer update FUN_142995210 counts its calls on the Tick thread and on others;
+//   P2 (op 10) a kill armed for one gazer, applied inside that detour before the original (the update's own rain-gone kill);
+//   P3 (op 11) the guarded crater: the voidout called with its GameOver flow call FUN_14341F840 dropped (a thread-local gate);
+//   P4 (op 12) the weather rows, the rain at Sam, the gazer manager's +0x238 / +0x239;
+//   P7 (op 14) the hunter area FUN_1429B8D60 placed ahead of Sam, then watched for 30 s.
+// The gazer update hook (P1 / P2) is bt_world.cpp's (round 30 S2): one detour on FUN_142995210 for the probes and the kill relay.
+// The gazer's health +0x180 and the last update's health +0x2B0 (copied from +0x180 by FUN_14299A3D0 at the end of each update).
+constexpr std::uintptr_t kGzHealth = 0x180, kGzPrevHealth = 0x2B0;
+// the voidout's insides: the crater slot +0x2B0 (an entity ref, entity = ref - 0x20), the early-return query FUN_143409690 on
+// [0x147C0D6C0] kind 4, and the GameOver flow FUN_14341F840 (8 arguments: 4 integer registers and 4 stack slots, passed verbatim)
+constexpr std::uintptr_t kMgrCraterSlot = 0x2B0, kFlowGlobal = 0x147C0D6C0, kFlowQuery = 0x143409690, kFlowFn = 0x14341F840;
+// the rain at a point: float FUN_142E0C3F0(obj, const double pos[3]), obj = [[0x144C73850]] (the gazer update's own read, 0x1429957A4)
+constexpr std::uintptr_t kRainGlobal = 0x144C73850, kRainFn = 0x142E0C3F0;
+// the weather table (dev_tools' global): row = wg + ((i32 [wg+0x64A0] * 0x40 + 0x18 + region) * 0x5C), +0 the forecast type
+constexpr std::uintptr_t kWeatherGlobal = 0x147BF83B8, kWeatherSlot = 0x64A0;
+constexpr std::uintptr_t kMgrTimefall = 0x238, kMgrInArea = 0x239;  // FUN_1429A3F50's writes (0x1429A4958 / 0x1429A4A41)
+// the hunter area FUN_1429B8D60(hunter manager, const double pos[3], char gold, u8): returns the area entity (or 0 without a
+// resource); an area already up is moved
+constexpr std::uintptr_t kHunterAreaFn = 0x1429B8D60;
+
+enum PBit : unsigned { kPbGz = 1u, kPbKill = 2u, kPbCrater = 4u, kPbWeather = 8u, kPbHunter = 16u };
+struct PSite {
+    std::uintptr_t va;
+    const char* sig;
+    const char* name;
+    unsigned bits;
+};
+// clang-format off
+constexpr PSite kProbeSites[] = {
+    // (round 30 S2: the gazer update's sites, P1 / P2's, are bt_world.cpp's checks now: one hook, one set of checks)
+    {0x14299B1B0, "48 8B C4 48 89 78 18 41 54 41 56 41 57 48 81 EC 80 00 00 00 48 83 79 68 00 45 0F B6 F9 45 0F B6 E0 4C 8B F2 48 8B F9 "
+                  "0F 84 AE 01 00 00", "the voidout FUN_14299B1B0 (+0x68)", kPbCrater},
+    {0x14299B22D, "C5 FA 10 42 54", "the voidout's far distance [+0x68] +0x54", kPbCrater},
+    {0x14299B24F, "48 81 C7 B0 02 00 00", "the voidout's crater slot +0x2B0", kPbCrater},
+    {0x14299B30B, "48 8B 0D AE 23 27 05 B2 04 E8 77 E3 A6 00 48 8B B4 24 A8 00 00 00 84 C0 75 5E", "the voidout's early return (kind 4)", kPbCrater},
+    {kFlowQuery, "48 8B 41 10 48 63 49 08 4C 8D 04 C8 49 3B C0 74 1C 48 8B 08 48 85 C9 74 0B 38 51 11 75 06 F6 41 14 01 75 06",
+     "the query FUN_143409690 (+0x10 / +0x08, entry +0x11 / +0x14)", kPbCrater},
+    {kFlowFn, "40 53 48 83 EC 70 48 89 6C 24 68 48 8D 99 88 05 00 00", "the GameOver flow FUN_14341F840", kPbCrater},
+    {0x1429957A4, "48 8B 05 ?? ?? ?? ?? 49 8B D7 48 8B 08 E8", "the update's rain read", kPbWeather},
+    {kRainFn, "48 83 EC 48 C5 FB 10 42 10 C5 FB 5C 49 18 C5 FB 10 52 08 C5 EB 5C 41 10", "the rain at a point FUN_142E0C3F0", kPbWeather},
+    {0x142E1FE79, "66 3B F0 75 29 48 63 8B A0 64 00 00 48 C1 E1 06 48 83 C1 18 40 0F B6 C5 48 03 C8 40 0F B6 C7 48 6B D1 5C 89 04 1A",
+     "the weather rows", kPbWeather},
+    {0x1429A4958, "48 8D 9F A0 00 00 00 88 87 38 02 00 00", "the gazer manager +0x238", kPbWeather},
+    {0x1429A4A41, "88 87 39 02 00 00 48 8B 05", "the gazer manager +0x239", kPbWeather},
+    {kHunterAreaFn, "40 55 53 41 54 41 55 41 56 48 8B EC 48 83 EC 70 48 8B 05 ?? ?? ?? ?? 48 33 C4 48 89 45 E8 48 83 B9 38 01 00 00 00",
+     "the hunter area FUN_1429B8D60", kPbHunter},
+};
+// clang-format on
+struct PRip {
+    std::uintptr_t insn;
+    unsigned off, len;
+    std::uintptr_t want;
+    const char* what;
+    unsigned bits;
+};
+constexpr PRip kProbeRips[] = {
+    {0x14299B30B, 3, 7, kFlowGlobal, "the voidout's query object 0x147C0D6C0", kPbCrater},
+    {0x14299B314, 1, 5, kFlowQuery, "the voidout's call to FUN_143409690", kPbCrater},
+    {0x14299B37E, 1, 5, kFlowFn, "the voidout's call to FUN_14341F840", kPbCrater},
+    {0x1429957A4, 3, 7, kRainGlobal, "the rain object 0x144C73850", kPbWeather},
+    {0x1429957B1, 1, 5, kRainFn, "the update's call to FUN_142E0C3F0", kPbWeather},
+    {0x142E1FE34, 3, 7, kWeatherGlobal, "the weather global 0x147BF83B8", kPbWeather},
+    {0x1429C4EFA, 1, 5, kHunterAreaFn, "the call to FUN_1429B8D60 (FUN_1429C49D0)", kPbHunter},
+};
+bool g_p_checked = false;
+unsigned g_p_bits = 0;
+
+unsigned ProbeCheck() {
+    if (g_p_checked) return g_p_bits;
+    g_p_checked = true;
+    if (!mem::Base()) {
+        Log("[bt] probe byte checks: ds.exe base unknown (the world probes refuse)");
+        return g_p_bits = 0;
+    }
+    unsigned bits = kPbGz | kPbKill | kPbCrater | kPbWeather | kPbHunter;
+    int ok = 0, total = 0;
+    for (const PSite& s : kProbeSites) {
+        ++total;
+        if (mem::CodeMatches(A(s.va), s.sig)) {
+            ++ok;
+            continue;
+        }
+        Log("[bt] probe byte check FAILED: %s at 0x%llX", s.name, static_cast<unsigned long long>(s.va));
+        bits &= ~s.bits;
+    }
+    for (const PRip& r : kProbeRips) {
+        ++total;
+        if (mem::RipTarget(A(r.insn), r.off, r.len) == A(r.want)) {
+            ++ok;
+            continue;
+        }
+        Log("[bt] probe byte check FAILED: %s", r.what);
+        bits &= ~r.bits;
+    }
+    const unsigned w = btworld::Check();  // the gazer update's checks (bt_world.cpp, logged there)
+    if (!(w & btworld::kBitHook)) bits &= ~kPbGz;
+    if (!(w & btworld::kBitKill)) bits &= ~kPbKill;
+    if (!(bits & kPbGz)) bits &= ~kPbKill;
+    if (!(Check() & kHunter)) bits &= ~kPbHunter;
+    if (!(Check() & kMgr)) bits &= ~(kPbKill | kPbCrater | kPbWeather);
+    g_p_bits = bits;
+    Log("[bt] probe byte checks: %d/%d ok; threads %s, kill %s, crater %s, weather %s, hunter %s", ok, total, (bits & kPbGz) ? "ok" : "OFF",
+        (bits & kPbKill) ? "ok" : "OFF", (bits & kPbCrater) ? "ok" : "OFF", (bits & kPbWeather) ? "ok" : "OFF", (bits & kPbHunter) ? "ok" : "OFF");
+    return bits;
+}
+
+bool MhInit(char* msg, std::size_t cap) {
+    const MH_STATUS init = MH_Initialize();
+    if (init == MH_OK || init == MH_ERROR_ALREADY_INITIALIZED) return true;
+    Put(msg, cap, "bt probe: MinHook %s", MH_StatusToString(init));
+    return false;
+}
+
+// ---------------------------------------------------------------- P1 / P2: the gazer update hook (bt_world.cpp since round 30 S2)
+bool InstallGz(char* msg, std::size_t cap) {
+    if (btworld::HookIn()) return true;
+    if (!(ProbeCheck() & kPbGz)) return Put(msg, cap, "bt probe: the gazer update byte checks failed (log)"), false;
+    return btworld::InstallHook("the world probes", msg, cap);
+}
+void ThreadsLine() {
+    unsigned tick = 0, other = 0, k = 0;
+    bool over = false;
+    btworld::Threads(&tick, &other, &k, &over);
+    Log("[bt] gz update threads: tick %u, other %u (threads %u%s)", tick, other, k, over ? "+" : "");
+}
+
+// P2's watch (game thread)
+// P2's watch (the outcome comes from bt_world's event ring: OnProbeEvent)
+constexpr int kKillFault = btworld::kApplyFault;
+// An armed kill's refusal in the update (review crash 3: kApplyStale, another gazer at that address).
+const char* ApplyText(int r) {
+    return r == btworld::kApplyFault ? "FAULTED" : r == btworld::kApplyStale ? "another gazer at that address (its id changed)" : R::KillGuardText(r);
+}
+struct KillWatch {
+    bool on = false, done = false;
+    std::uint32_t loc = 0, field = 0;
+    std::uintptr_t actor = 0;
+    double arm_ms = 0, done_ms = 0;
+    std::int32_t list0 = 0, killed0 = -1;
+    int result = btworld::kNotArmed;
+    std::uint32_t prev_after = 0, flags_after = 0;
+} g_kw;
+void OnProbeEvent(const btworld::Event& e) {
+    if (!g_kw.on || g_kw.done || e.actor != g_kw.actor || e.applied == btworld::kNotArmed) return;
+    g_kw.done = true;
+    g_kw.result = e.applied;
+    if (e.read_ok) std::memcpy(&g_kw.prev_after, &e.prev_after, 4), g_kw.flags_after = e.flags;
+    else g_kw.prev_after = g_kw.flags_after = 0xFFFFFFFFu;
+}
+
+// ---------------------------------------------------------------- P3: the guarded crater
+using FlowFn = void (*)(void*, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t);
+FlowFn g_flow_orig = nullptr;
+bool g_flow_hook = false;
+bool g_crater_dead = false;  // FATAL-GUARD (or EmergencyStop): no more P3 this run
+std::atomic<unsigned> g_flow_drops{0};
+void FlowDetour(void* a, std::uint64_t b, std::uint64_t c, std::uint64_t d, std::uint64_t e, std::uint64_t f, std::uint64_t g, std::uint64_t h) {
+    if (t_crater) {
+        g_flow_drops.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    g_flow_orig(a, b, c, d, e, f, g, h);
+}
+// FUN_143409690(obj, 4) replicated with reads: an entry of [obj+0x10] (count i32 [obj+8]) with +0x11 == 4 and +0x14 bit 0.
+bool FlowEarlyNow() {
+    const std::uintptr_t obj = mem::Q(A(kFlowGlobal));
+    std::int32_t n = 0;
+    if (!obj || !mem::Rd(obj + 8, n) || n <= 0 || n > 4096) return false;
+    const std::uintptr_t list = mem::Q(obj + 0x10);
+    if (!list) return false;
+    for (std::int32_t i = 0; i < n; ++i) {
+        const std::uintptr_t e = mem::Q(list + static_cast<std::uintptr_t>(i) * 8);
+        std::uint8_t kind = 0, fl = 0;
+        if (e && mem::Rd(e + 0x11, kind) && kind == 4 && mem::Rd(e + 0x14, fl) && (fl & 1)) return true;
+    }
+    return false;
+}
+bool CallVoidGuarded(std::uintptr_t fn, void* mgr, const double* pos) noexcept {
+    bool ok = false;
+    __try {
+        __try {
+            t_crater = true;
+            reinterpret_cast<void (*)(void*, const double*, std::uint8_t, std::uint8_t)>(fn)(mgr, pos, 0, 0);
+            ok = true;
+        } __finally {
+            t_crater = false;
+        }
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        ok = false;
+    }
+    return ok;
+}
+struct CraterWatch {
+    bool on = false;
+    double start_ms = 0, next_ms = 0;
+    int n = 0;
+} g_cw;
+
+// ---------------------------------------------------------------- P4: the weather
+float RainAt(std::uintptr_t obj, const double* pos, bool* ok) noexcept {
+    __try {
+        const float r = reinterpret_cast<float (*)(void*, const double*)>(A(kRainFn))(reinterpret_cast<void*>(obj), pos);
+        *ok = true;
+        return r;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *ok = false;
+        return 0;
+    }
+}
+
+// ---------------------------------------------------------------- P7: the hunter area
+std::uintptr_t CallHunterArea(std::uintptr_t hm, const double* pos, bool* ok) noexcept {
+    __try {
+        const std::uintptr_t e = reinterpret_cast<std::uintptr_t (*)(void*, const double*, char, std::uint8_t)>(A(kHunterAreaFn))(
+            reinterpret_cast<void*>(hm), pos, 0, 0);
+        *ok = true;
+        return e;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *ok = false;
+        return 0;
+    }
+}
+struct HunterWatch {
+    bool on = false;
+    double start_ms = 0, next_ms = 0;
+    int n = 0;
+} g_hw;
+
+bool SamFacing(double (&me)[3], double* fx, double* fy) {
+    game::Entity* e = nullptr;
+    game::WorldTransform wt{};
+    if (!game::TryGetLocalPlayer(&e) || !e || !game::TryGetTransform(e, &wt)) return false;
+    me[0] = wt.pos.x, me[1] = wt.pos.y, me[2] = wt.pos.z;
+    *fx = wt.rot.m[1][0], *fy = wt.rot.m[1][1];
+    return R::PosSane(me);
+}
+
+const Field* FindField(const Census& c, std::uint32_t id) {
+    for (const Field& f : c.f)
+        if (f.id == id) return &f;
+    return nullptr;
+}
+
+// ---------------------------------------------------------------- the ops (game thread, the action)
+bool OpKill(const double (&v)[3], char* msg, std::size_t cap) {
+    if (!automation::SavesRedirected()) return Put(msg, cap, "bt probe kill: only on a sandboxed save (a hidden run)"), false;
+    std::uint32_t loc = 0;
+    if (!R::LocArg(v[1], v[2], &loc)) return Put(msg, cap, "bt probe kill: 10 <locator hi16> <lo16> (0 0 = the nearest live gazer)"), false;
+    if (!(ProbeCheck() & kPbKill) || !(Check() & kActor)) return Put(msg, cap, "bt probe kill: off (byte checks; log)"), false;
+    if (g_kw.on) return Put(msg, cap, "bt probe kill: one is armed already"), false;
+    double me[3];
+    if (!LocalPos(me)) return Put(msg, cap, "bt probe kill: no local player (not in a world)"), false;
+    Census c;
+    TakeCensus(g_now_ms, c);
+    const Gazer* z = nullptr;
+    double best = -1;
+    for (const Gazer& g : c.g) {
+        if (!g.actor) continue;
+        if (loc) {
+            if (g.located && g.loc_hash == loc) z = &g;
+            continue;
+        }
+        if (g.state != 0 || !g.pos_ok) continue;
+        const double d = R::Dist3(g.pos, me);
+        if (!z || d < best) z = &g, best = d;
+    }
+    if (!z) return Put(msg, cap, "bt probe kill: no live gazer %s", loc ? "with that locator" : "here"), false;
+    float h = 0, prev = 0;
+    std::uint32_t flags = 0;
+    std::int32_t state = -1;
+    if (!mem::Rd(z->actor + kActState, state) || !mem::Rd(z->actor + kGzHealth, h) || !mem::Rd(z->actor + kGzPrevHealth, prev) ||
+        !mem::Rd(z->actor + kActFlags, flags))
+        return Put(msg, cap, "bt probe kill: the gazer is unreadable"), false;
+    const int g = R::KillGuard(state, h, prev, flags);
+    if (g != R::kKillOk) {
+        Log("[bt] probe kill loc %08X: refused: %s (state %d, health %.2f, last %.2f, flags 0x%X)", z->loc_hash, R::KillGuardText(g), state, h, prev, flags);
+        return Put(msg, cap, "bt probe kill: refused: %s", R::KillGuardText(g)), false;
+    }
+    if (!InstallGz(msg, cap)) return false;
+    const Field* f = FindField(c, z->field);
+    g_kw = KillWatch{};
+    g_kw.on = true, g_kw.loc = z->loc_hash, g_kw.field = z->field, g_kw.actor = z->actor, g_kw.arm_ms = g_now_ms;
+    g_kw.list0 = c.list, g_kw.killed0 = f ? f->killed : -1;
+    if (!btworld::ArmKill(z->actor, z->id, R::kTagProbe)) {
+        g_kw.on = false;
+        return Put(msg, cap, "bt probe kill: not armed (the kill slots are full or that gazer is armed already)"), false;
+    }
+    Log("[bt] probe kill loc %08X (id %05X, field %08X %s): armed (health %.2f, last %.2f, flags 0x%X; reason 0x%08X at its next update)", z->loc_hash,
+        z->id, z->field, R::FieldName(z->field), h, prev, flags, R::kKillRainGone);
+    return Put(msg, cap, "bt probe kill: armed for loc %08X (log)", z->loc_hash), true;
+}
+
+bool OpCrater(const double (&v)[3], char* msg, std::size_t cap) {
+    if (!automation::SavesRedirected()) return Put(msg, cap, "bt probe crater: only on a sandboxed save (a hidden run)"), false;
+    if (g_crater_dead) return Put(msg, cap, "bt probe crater: refused for the rest of the run (FATAL-GUARD or emergency stop)"), false;
+    if (!(ProbeCheck() & kPbCrater)) return Put(msg, cap, "bt probe crater: off (byte checks; log)"), false;
+    if (g_cw.on) return Put(msg, cap, "bt probe crater: the last one is still watched"), false;
+    const double m = v[1] > 0 && std::isfinite(v[1]) ? v[1] : 200.0;
+    double me[3], fx = 0, fy = 0, pos[3];
+    if (!SamFacing(me, &fx, &fy) || !R::AheadOf(me, fx, fy, m, pos)) return Put(msg, cap, "bt probe crater: no local player transform"), false;
+    const std::uintptr_t mgr = mem::Q(A(kGazerGlobal));
+    const std::uintptr_t res = mgr ? mem::Q(mgr + kMgrResource) : 0;
+    const std::uintptr_t slot = mgr ? mem::Q(mgr + kMgrCraterSlot) : 1;
+    float far_m = -1;
+    if (res && !(mem::Rd(res + kResFarDist, far_m) && std::isfinite(far_m))) far_m = -1;
+    const double dist = R::Dist3(me, pos);
+    if (const char* why = R::CraterGate(res != 0, slot == 0 || slot == 0x20, dist, far_m)) {
+        Log("[bt] probe crater at (%.1f %.1f %.1f) m %.0f: refused: %s (far %.0f m, slot 0x%llX)", pos[0], pos[1], pos[2], m, why, far_m,
+            static_cast<unsigned long long>(slot));
+        return Put(msg, cap, "bt probe crater: refused: %s", why), false;
+    }
+    if (!g_flow_hook) {
+        if (!MhInit(msg, cap)) return false;
+        void* target = reinterpret_cast<void*>(A(kFlowFn));
+        MH_STATUS s = MH_CreateHook(target, reinterpret_cast<void*>(&FlowDetour), reinterpret_cast<void**>(&g_flow_orig));
+        if (s == MH_OK) s = MH_EnableHook(target);
+        g_flow_hook = s == MH_OK;
+        Log("[bt] probe: GameOver flow gate %s (FUN_14341F840, drops a call only inside the probe's crater)", g_flow_hook ? "in" : MH_StatusToString(s));
+        if (!g_flow_hook) return Put(msg, cap, "bt probe crater: the flow gate failed: %s", MH_StatusToString(s)), false;
+    }
+    std::uint8_t first = 0;
+    if (!mem::Rd(A(kFlowFn), first) || first != 0xE9) {
+        g_crater_dead = true;
+        Log("[bt] FATAL-GUARD: FUN_14341F840 does not start with our jmp (0x%02X); bt_probe 11 refused for the rest of the run", first);
+        return Put(msg, cap, "bt probe crater: FATAL-GUARD (the flow gate is not in)"), false;
+    }
+    const unsigned drops0 = g_flow_drops.load();
+    const bool early0 = FlowEarlyNow();
+    const bool called = CallVoidGuarded(A(kVoidFn), reinterpret_cast<void*>(mgr), pos);
+    const unsigned drops = g_flow_drops.load() - drops0;
+    const bool early = early0 || FlowEarlyNow();
+    if (!called) {
+        g_crater_dead = true;
+        Log("[bt] probe crater at (%.1f %.1f %.1f) m %.0f: the voidout FAULTED (flow dropped %u); bt_probe 11 refused for the rest of the run", pos[0],
+            pos[1], pos[2], m, drops);
+        return Put(msg, cap, "bt probe crater: the voidout faulted"), false;
+    }
+    if (drops != 1 && !early) {
+        g_crater_dead = true;
+        Log("[bt] FATAL-GUARD: the crater's GameOver flow was neither dropped (%u) nor skipped by the early return; bt_probe 11 refused for the "
+            "rest of the run",
+            drops);
+    }
+    const std::uintptr_t after = mem::Q(mgr + kMgrCraterSlot);
+    Log("[bt] probe crater at (%.1f %.1f %.1f) m %.0f: flow dropped %u%s, crater entity 0x%llX (+0x2B0)", pos[0], pos[1], pos[2], m, drops,
+        early ? " (the early return: kind 4 set)" : "", static_cast<unsigned long long>(after > 0x20 ? after - 0x20 : 0));
+    g_cw = CraterWatch{};
+    g_cw.on = true, g_cw.start_ms = g_now_ms, g_cw.next_ms = g_now_ms + 1000.0;
+    return Put(msg, cap, "bt probe crater: %.0f m ahead, flow dropped %u (log)", m, drops), true;
+}
+
+bool OpWeather(char* msg, std::size_t cap) {
+    if (!(ProbeCheck() & kPbWeather)) return Put(msg, cap, "bt probe weather: off (byte checks; log)"), false;
+    const std::uintptr_t wg = mem::Q(A(kWeatherGlobal));
+    std::int32_t slot = -1;
+    if (!wg || !mem::Rd(wg + kWeatherSlot, slot) || slot < 0 || slot > 255) return Put(msg, cap, "bt probe weather: no weather manager (no world?)"), false;
+    int n = 0, rain = 0, heavy = 0, sunny = 0, mix = 0, other = 0;
+    char rows[512] = "";
+    std::size_t at = 0;
+    for (int r = 0; r < 64; ++r) {
+        const std::uintptr_t row = wg + (static_cast<std::uintptr_t>(slot) * 0x40 + 0x18 + static_cast<std::uintptr_t>(r)) * 0x5C;
+        std::uint32_t t[3] = {0, 0, 0};
+        if (!mem::Read(row, t, sizeof(t))) continue;
+        if (t[0] == 0) continue;
+        ++n;
+        (t[0] == 3 ? rain : t[0] == 5 ? heavy : t[0] == 6 ? sunny : t[0] == 2 ? mix : other)++;
+        if (at + 24 < sizeof(rows)) at += static_cast<std::size_t>(std::snprintf(rows + at, sizeof(rows) - at, " %d:%u/%u/%u", r, t[0], t[1], t[2]));
+    }
+    double me[3];
+    bool rain_ok = false;
+    float here = 0;
+    const std::uintptr_t ro = mem::Q(A(kRainGlobal));
+    const std::uintptr_t obj = ro ? mem::Q(ro) : 0;
+    if (obj && LocalPos(me)) here = RainAt(obj, me, &rain_ok);
+    const std::uintptr_t mgr = mem::Q(A(kGazerGlobal));
+    std::uint8_t tf = 0xFF, in_area = 0xFF;
+    if (mgr) mem::Rd(mgr + kMgrTimefall, tf), mem::Rd(mgr + kMgrInArea, in_area);
+    char rain_txt[24] = "unreadable";
+    if (rain_ok) std::snprintf(rain_txt, sizeof(rain_txt), "%.2f", here);
+    Log("[bt] weather: area %d, regions %d (rain only %d, heavy %d, sunny %d, mix %d, other %d), rain here %s, mgr timefall %u area %u", slot, n, rain,
+        heavy, sunny, mix, other, rain_txt, tf, in_area);
+    Log("[bt] weather rows (region:type/+4/+8):%s", n ? rows : " none set");
+    return Put(msg, cap, "bt probe weather: area %d, %d regions, rain here %s, timefall %u (log)", slot, n, rain_txt, tf), true;
+}
+
+bool OpHunter(const double (&v)[3], char* msg, std::size_t cap) {
+    if (!automation::SavesRedirected()) return Put(msg, cap, "bt probe hunter: only on a sandboxed save (a hidden run)"), false;
+    if (ride::Carried()) return Put(msg, cap, "bt probe hunter: refused during a carry"), false;
+    if (!(ProbeCheck() & kPbHunter)) return Put(msg, cap, "bt probe hunter: off (byte checks; log)"), false;
+    const double m = v[1] > 0 && std::isfinite(v[1]) ? v[1] : 30.0;
+    double me[3], fx = 0, fy = 0, pos[3];
+    if (!SamFacing(me, &fx, &fy) || !R::AheadOf(me, fx, fy, m, pos)) return Put(msg, cap, "bt probe hunter: no local player transform"), false;
+    const std::uintptr_t hm = mem::Q(A(kHunterGlobal));
+    std::uintptr_t res = 0, area0 = 0;
+    if (!hm || !mem::Rd(hm + kHunResource, res) || !mem::Rd(hm + kHunArea, area0)) return Put(msg, cap, "bt probe hunter: no hunter manager"), false;
+    if (!res) return Put(msg, cap, "bt probe hunter: the hunter manager has no resource (+0x138)"), false;
+    bool ok = false;
+    const std::uintptr_t ent = CallHunterArea(hm, pos, &ok);
+    std::uintptr_t area1 = 0;
+    mem::Rd(hm + kHunArea, area1);
+    Log("[bt] probe hunter area at (%.1f %.1f %.1f) m %.0f: FUN_1429B8D60 %s 0x%llX, +0x140 0x%llX -> 0x%llX", pos[0], pos[1], pos[2], m,
+        ok ? "returned" : "FAULTED", static_cast<unsigned long long>(ent), static_cast<unsigned long long>(area0), static_cast<unsigned long long>(area1));
+    if (!ok) return Put(msg, cap, "bt probe hunter: the call faulted"), false;
+    g_hw = HunterWatch{};
+    g_hw.on = true, g_hw.start_ms = g_now_ms, g_hw.next_ms = g_now_ms + 1000.0;
+    return Put(msg, cap, "bt probe hunter: area %.0f m ahead (%s; log)", m, area1 ? "up" : "not up"), true;
+}
+
+bool ProbeOps(int op, const double (&v)[3], char* msg, std::size_t cap) {
+    if (!automation::Enabled()) return Put(msg, cap, "bt probe %d: hidden runs only", op), false;
+    switch (op) {
+        case R::kOpThreads:
+            if (!btworld::HookIn()) {
+                if (!InstallGz(msg, cap)) return false;
+                return Put(msg, cap, "bt probe: the gazer update counter is in (bt_probe 9 again for the counts)"), true;
+            }
+            ThreadsLine();
+            return Put(msg, cap, "bt probe: gz update counts (log)"), true;
+        case R::kOpKill: return OpKill(v, msg, cap);
+        case R::kOpCrater: return OpCrater(v, msg, cap);
+        case R::kOpWeather: return OpWeather(msg, cap);
+        case R::kOpHunter: return OpHunter(v, msg, cap);
+    }
+    return Put(msg, cap, "bt probe %d: not built (9 threads, 10 kill, 11 crater, 12 weather, 14 hunter area)", op), false;
+}
+
+// The watchers (game thread, every tick while one runs).
+void ProbeTick(double now_ms) {
+    btworld::NoteTickThread();
+    if (g_kw.on) {
+        if (g_kw.done) {
+            if (g_kw.done_ms == 0) g_kw.done_ms = now_ms;
+            if (now_ms - g_kw.done_ms >= 2000.0) {  // the kill list and the field record after the death processing
+                g_kw.on = false;
+                const int r = g_kw.result;
+                if (r != R::kKillOk) {
+                    Log("[bt] probe kill loc %08X: refused in the update: %s", g_kw.loc, ApplyText(r));
+                } else {
+                    // round 30 review: +0x2B0 after the update only says whether the update ran to its end (0x142996A45's copy
+                    // FUN_14299A3D0 writes +0x180, 0 after the kill, into +0x2B0 whether or not the death branch ran). The death
+                    // branch's own mark is its last call FUN_1429A31A0 (0x142995FA6, skipped with +0x1B4 bit 0x400000): it kills
+                    // into the field record, so the field's kill count rising is the death edge.
+                    const std::uint32_t pb = g_kw.prev_after, fl = g_kw.flags_after;
+                    float prev = 0;
+                    std::memcpy(&prev, &pb, 4);
+                    Census c;
+                    TakeCensus(now_ms, c);
+                    const Field* f = FindField(c, g_kw.field);
+                    const char* upd = pb == 0xFFFFFFFFu ? "unread" : prev > 0 ? "returned early" : "ran to its end";
+                    char edge[64];
+                    if (fl != 0xFFFFFFFFu && (fl & 0x400000u))
+                        std::snprintf(edge, sizeof(edge), "n/a (+0x1B4 0x400000: no kill list)");
+                    else if (!f || g_kw.killed0 < 0)
+                        std::snprintf(edge, sizeof(edge), "n/a (no field record)");
+                    else
+                        std::snprintf(edge, sizeof(edge), "%s (field killed %+d)", f->killed > g_kw.killed0 ? "seen" : "not seen", f->killed - g_kw.killed0);
+                    Log("[bt] probe kill loc %08X: applied, the update %s (+0x2B0 %.3g), death edge %s, list %d -> %d, field killed %d -> %d", g_kw.loc,
+                        upd, pb == 0xFFFFFFFFu ? 0.0 : static_cast<double>(prev), edge, g_kw.list0, c.list, g_kw.killed0, f ? f->killed : -1);
+                }
+            }
+        } else if (now_ms - g_kw.arm_ms > 10000.0) {
+            if (btworld::Disarm(g_kw.actor)) {  // the detour never took it
+                g_kw.on = false;
+                Log("[bt] probe kill loc %08X: not applied (the gazer did not update in 10 s)", g_kw.loc);
+            }
+        }
+    }
+    if (g_cw.on && now_ms >= g_cw.next_ms) {
+        g_cw.next_ms = now_ms + 1000.0;
+        ++g_cw.n;
+        const std::uintptr_t mgr = mem::Q(A(kGazerGlobal));
+        Log("[bt] probe crater +%d s: +0x2B0 0x%llX", g_cw.n, static_cast<unsigned long long>(mgr ? mem::Q(mgr + kMgrCraterSlot) : 0));
+        if (g_cw.n >= 20) g_cw.on = false;
+    }
+    if (g_hw.on && now_ms >= g_hw.next_ms) {
+        g_hw.next_ms = now_ms + 1000.0;
+        ++g_hw.n;
+        const std::uintptr_t hm = mem::Q(A(kHunterGlobal));
+        std::uintptr_t area = 0;
+        std::int32_t spawns = 0;
+        std::uint8_t gold = 0;
+        double ap[3] = {0, 0, 0};
+        bool ap_ok = false;
+        if (hm && mem::Rd(hm + kHunArea, area) && area > 0x20) ap_ok = mem::Read(area - 0x20 + kEntPos, ap, sizeof(ap)) && R::PosSane(ap);
+        if (hm) mem::Rd(hm + kHunSpawns, spawns), mem::Rd(hm + kHunGold, gold);
+        std::uint64_t state = 0;
+        std::uint32_t load = 0;
+        const bool st_ok = game::ReadStopGates(&state, &load);
+        game::Diagnostics d;
+        game::ReadDiagnostics(&d);
+        double me[3];
+        const bool me_ok = LocalPos(me);
+        Log("[bt] probe hunter +%d s: +0x140 0x%llX at (%.1f %.1f %.1f)%s, spawns %d gold %u; game state 0x%llX (GameOver %s, stopping %s), Sam health "
+            "%.0f, Sam %.1f m from it",
+            g_hw.n, static_cast<unsigned long long>(area), ap[0], ap[1], ap[2], ap_ok ? "" : " (no position)", spawns, gold,
+            static_cast<unsigned long long>(state), st_ok ? ((state & (1ull << 13)) ? "yes" : "no") : "?",
+            st_ok ? ((state & game::kStoppingGameEventMask) ? "yes" : "no") : "?", d.health_valid ? d.health : -1.0f,
+            ap_ok && me_ok ? R::Dist3(ap, me) : -1.0);
+        if (g_hw.n >= 30) g_hw.on = false;
+    }
+}
+
+// ================================================================ round 30 BT S1 / S2 (docs/enemy-sync.md section 24)
+// S1: TROUBLE (this game's player hunted, caught or fighting a catcher) and GZST (this game's gazers sensing this game's player) go
+// to the partner, whose game logs them, draws markers (bt_markers.cpp) and shows at most one toast per episode (caught, or a
+// catcher fight starting). Nothing received changes the game. PULLED is never sent (no pull reading exists yet).
+// S2: a gazer a player kills here (bt_world's death edge; btrules::KillRelay) goes as KILL. The partner's game applies it to its own
+// copy of that gazer (btrules::KillApplyGate, then bt_world's armed kill: the update's own rain-gone kill, tagged "mirror" so its
+// death edge is never sent back), or holds it (up to 60 s) or refuses it, with the reason logged.
+
+R::TroubleTracker g_tr;
+R::TroubleView g_tv;
+std::uint8_t g_tr_logged = 0;  // the kind last logged as sent
+struct TroubleTest {
+    bool on = false;
+    double t0 = 0;
+    int step = -1;
+    std::uint16_t episode = 0;
+    double pos[3] = {0, 0, 0};
+    bool pos_ok = false;
+} g_tt;
+std::map<std::uint32_t, std::uint8_t> g_gz_sent;    // locator -> bits, the interesting gazers in the last GZST
+double g_gz_ms = -1e18;
+std::map<std::uint32_t, std::uint8_t> g_gz_logged;  // receiver: locator -> bits last logged
+R::EchoRing g_echo;
+struct PendKill {
+    R::BtsKill k;
+    double rx_ms = 0, arm_ms = 0, done_ms = 0, dist = -1;
+    const char* last_why = nullptr;
+    bool armed = false, done = false;
+    int result = btworld::kNotArmed;
+    std::uintptr_t actor = 0, scene = 0;
+    std::uint32_t id = 0, field_here = 0;
+    std::int32_t list0 = 0, killed0 = -1;
+};
+constexpr unsigned kPendKills = 16;
+std::vector<PendKill> g_pk;
+double g_pk_next_ms = 0;
+struct TestKill {
+    bool on = false, done = false;
+    std::uint32_t loc = 0, field = 0, id = 0;
+    std::uintptr_t actor = 0;
+    double arm_ms = 0, done_ms = 0;
+    int result = btworld::kNotArmed;
+    std::int32_t list0 = 0, killed0 = -1;
+} g_tk;
+
+unsigned PendingKills() { return static_cast<unsigned>(g_pk.size()); }
+
+void InstallKillHook(const char* why) {
+    if (btworld::HookIn()) return;
+    char msg[160] = "";
+    if (!btworld::InstallHook(why, msg, sizeof(msg))) Log("[bt] kill relay off: %s", msg[0] ? msg : "the gazer update hook did not go in");
+}
+
+// "death edge seen (field killed +1)": the death branch's last call kills into the field record, so its count rising is the edge
+// (the +0x2B0 copy alone does not tell it; see ProbeTick).
+void EdgeText(const Census& c, std::uint32_t field, std::int32_t killed0, char* out, std::size_t cap) {
+    const Field* f = FindField(c, field);
+    if (!f || killed0 < 0) std::snprintf(out, cap, "n/a (no field record)");
+    else std::snprintf(out, cap, "%s (field killed %+d)", f->killed > killed0 ? "seen" : "not seen", f->killed - killed0);
+}
+
+// ---------------------------------------------------------------- S1 sender
+void TroubleSend(std::uint8_t kind, std::uint8_t flags, std::uint16_t episode, const double* pos, float hp, std::uint32_t field, std::uint32_t loc,
+                 const char* where) {
+    R::BtsTrouble t;
+    t.kind = kind, t.flags = flags, t.episode = episode, t.hp = hp, t.field = field, t.loc = loc;
+    for (int i = 0; i < 3; ++i) t.pos[i] = pos ? static_cast<float>(pos[i]) : 0.0f;
+    const std::uint32_t seq = g_s_seq;
+    std::uint8_t b[R::kBtsTroubleSize];
+    const bool sent = Send(b, R::EncodeTrouble(seq, t, b, sizeof(b)));
+    if (sent) ++g_s2.tx_trouble;
+    const bool test = (flags & R::kTrfTest) != 0;
+    if (kind == g_tr_logged && !test && sent) return;  // a keepalive or a health step: the kind was logged
+    g_tr_logged = kind;
+    char hp_text[24] = "";
+    if (kind == R::kTrCatcher) std::snprintf(hp_text, sizeof(hp_text), " hp %.0f%%", static_cast<double>(hp));
+    char gz[48] = "";
+    if (loc) std::snprintf(gz, sizeof(gz), ", gazer loc %08X (field %08X)", loc, field);
+    Log("[bt] TROUBLE %s%s: %s%s (episode %u%s%s), at (%.1f %.1f %.1f) (%s)%s (seq %u)", sent ? "sent" : "NOT sent", test ? " (test)" : "",
+        R::TroubleName(kind), hp_text, episode, (flags & R::kTrfGold) ? ", gold" : "", (flags & R::kTrfCarried) ? ", carried" : "", t.pos[0], t.pos[1],
+        t.pos[2], where, gz, seq);
+}
+
+void TroubleCensus(double now_ms, const Census& c) {
+    if (!g_trouble_on || !g_s_peer || !(g_s_peer_caps & R::kCapTrouble) || g_tt.on) return;
+    R::TroubleIn in;
+    in.hunted = c.hunter_ok && c.hunter_area;
+    const Gazer* caught = nullptr;  // a gazer within 10 m holding this game's player (+0x1B4 0x2000000)
+    if (c.me_ok)
+        for (const Gazer& z : c.g)
+            if (z.actor && z.state == 0 && z.pos_ok && (z.flags & R::kFlagCaught) && R::Dist3(z.pos, c.me) <= 10.0) {
+                caught = &z;
+                break;
+            }
+    in.caught = caught != nullptr;
+    const Catcher* cat = nullptr;  // an active catcher record (+0xF0 clear) with an entity and health
+    for (const Catcher& k : c.c)
+        if (k.entity && k.active && k.hp > 0 && (!cat || (k.pos_ok && !cat->pos_ok))) cat = &k;
+    in.catcher = cat != nullptr;
+    in.catcher_hp = cat ? cat->hp : 0.0f;
+    float pct = -1;
+    const std::uint8_t kind = g_tr.Step(in, now_ms, &pct);
+    if (!kind) return;
+    const std::uint8_t flags = static_cast<std::uint8_t>((c.gold ? R::kTrfGold : 0) | (ride::Carried() ? R::kTrfCarried : 0));
+    const double* pos = c.me_ok ? c.me : nullptr;
+    const char* where = c.me_ok ? "my position" : "no position";
+    std::uint32_t field = 0, loc = 0;
+    if (kind == R::kTrCatcher && cat && cat->pos_ok) pos = cat->pos, where = "the catcher";
+    if (kind == R::kTrCaught && caught) field = caught->field, loc = caught->loc_hash;
+    TroubleSend(kind, flags, g_tr.episode, pos, kind == R::kTrCatcher ? pct : -1.0f, field, loc, where);
+}
+
+void FillGz(R::GzEntry& e, const Gazer& z, std::uint8_t bits) {
+    e.field = z.field, e.loc = z.loc_hash;
+    e.state = static_cast<std::uint8_t>(std::clamp(z.state, 0, 255));
+    e.mode = z.mode, e.bits = bits, e.approach = z.approach;
+    for (int i = 0; i < 3; ++i) e.pos[i] = static_cast<float>(z.pos[i]);
+}
+
+// The gazers sensing, reacting to or holding this game's player (nearest first, up to 8), on a change and every second while any;
+// a gazer that stopped goes once more with its bits now (the partner drops its marker).
+void GzstCensus(double now_ms, const Census& c) {
+    if (!g_trouble_on || !g_s_peer || !(g_s_peer_caps & R::kCapGzst)) return;
+    struct Cand {
+        const Gazer* z;
+        double d;
+        std::uint8_t bits;
+    };
+    std::vector<Cand> v;
+    for (const Gazer& z : c.g) {
+        if (!z.actor || !z.located || !z.pos_ok) continue;
+        const std::uint8_t bits = R::GzBits(z.flags, z.state);
+        if (R::GzInteresting(bits)) v.push_back({&z, c.me_ok ? R::Dist3(z.pos, c.me) : 1e9, bits});
+    }
+    std::sort(v.begin(), v.end(), [](const Cand& a, const Cand& b) { return a.d < b.d; });
+    R::BtsGzst m;
+    std::map<std::uint32_t, std::uint8_t> now_set;
+    for (const Cand& k : v) {
+        if (m.n >= R::kBtsGzstMax) break;
+        FillGz(m.e[m.n++], *k.z, k.bits);
+        now_set[k.z->loc_hash] = k.bits;
+    }
+    unsigned ended = 0;
+    for (const auto& kv : g_gz_sent) {
+        if (m.n >= R::kBtsGzstMax) break;  // the rest expire on the partner (3 s)
+        if (now_set.count(kv.first)) continue;
+        R::GzEntry& e = m.e[m.n++];
+        e = R::GzEntry{};
+        e.loc = kv.first;
+        for (const Gazer& z : c.g)
+            if (z.located && z.loc_hash == kv.first) {
+                FillGz(e, z, static_cast<std::uint8_t>(R::GzBits(z.flags, z.state) & ~(R::kGzNear | R::kGzReact | R::kGzCaught)));
+                if (!z.pos_ok) e.pos[0] = e.pos[1] = e.pos[2] = 0;
+                break;
+            }
+        ++ended;
+    }
+    const bool changed = now_set != g_gz_sent;
+    if (!changed && (now_set.empty() || now_ms - g_gz_ms < 1000.0)) return;
+    if (!m.n) {
+        g_gz_sent.clear();
+        return;
+    }
+    m.sender_ms = static_cast<std::uint32_t>(link::NowMs());
+    const std::uint32_t seq = g_s_seq;
+    std::uint8_t b[R::kBtsMaxSize];
+    if (!Send(b, R::EncodeGzst(seq, m, b, sizeof(b)))) return;
+    ++g_s2.tx_gzst;
+    g_gz_ms = now_ms;
+    if (changed && g_s_budget.Take(now_ms)) {
+        char near_text[96] = "";
+        if (!now_set.empty()) {
+            char bits[64];
+            R::GzBitsText(m.e[0].bits, bits, sizeof(bits));
+            std::snprintf(near_text, sizeof(near_text), "; nearest loc %08X (field %08X %s) bits%s", m.e[0].loc, m.e[0].field, R::FieldName(m.e[0].field),
+                          bits);
+        }
+        Log("[bt] GZST sent: %u sensing, %u ended%s (seq %u)", static_cast<unsigned>(now_set.size()), ended, near_text, seq);
+    }
+    g_gz_sent.swap(now_set);
+}
+
+// ---------------------------------------------------------------- S1 receiver
+void OnTrouble(double now_ms, const std::uint8_t* b, std::size_t n) {
+    R::BtsTrouble m;
+    if (!R::DecodeTrouble(b, n, m)) {
+        ++g_s.bad;
+        return;
+    }
+    ++g_s2.rx_trouble;
+    const bool test = (m.flags & R::kTrfTest) != 0, gold = (m.flags & R::kTrfGold) != 0;
+    const R::TroubleView::Out o = g_tv.Take(m, now_ms);
+    const double p[3] = {m.pos[0], m.pos[1], m.pos[2]};
+    switch (m.kind) {
+        case R::kTrHunted:
+        case R::kTrPulled:
+        case R::kTrCaught: btmarks::Tar(p, gold, test, now_ms); break;
+        case R::kTrCatcher: btmarks::Catcher(p, m.hp, now_ms); break;
+        case R::kTrClear: btmarks::ClearTrouble(); break;
+    }
+    if (o.log) {
+        char what[32];
+        if (m.kind == R::kTrCatcher) std::snprintf(what, sizeof(what), "CATCHER hp %.0f%%", static_cast<double>(m.hp));
+        else std::snprintf(what, sizeof(what), "%s", R::TroubleName(m.kind));
+        char gz[48] = "";
+        if (m.loc) std::snprintf(gz, sizeof(gz), ", gazer loc %08X (%s)", m.loc, g_s_locs.count(m.loc) ? "live here" : "not streamed here");
+        Log("[bt] partner trouble: %s (episode %u%s%s%s) at (%.1f %.1f %.1f), you %.0f m%s; %s", what, m.episode, test ? ", test" : "", gold ? ", gold" : "",
+            (m.flags & R::kTrfCarried) ? ", carried" : "", p[0], p[1], p[2], g_s_me_ok ? R::Dist3(p, g_s_me) : -1.0, gz,
+            m.kind == R::kTrClear ? "markers gone" : btmarks::On() ? "marker kept 3 s" : "no marker (bt_markers=0)");
+    }
+    if (o.toast) {
+        const char* t = m.kind == R::kTrCaught ? "Your partner was caught by a BT" : "Your partner is fighting a catcher";
+        // review (ux 3): with the in-world markers on, they show it (the tar, the catcher's ring); no text on the screen
+        if (btmarks::On()) {
+            Log("[bt] partner trouble toast (once this episode %u): %s: not shown (the markers show it)", m.episode, t);
+        } else {
+            Log("[bt] partner trouble toast (once this episode %u): %s", m.episode, t);
+            Toast(now_ms, t);
+        }
+    }
+}
+
+void OnGzst(double now_ms, const std::uint8_t* b, std::size_t n) {
+    R::BtsGzst m;
+    if (!R::DecodeGzst(b, n, m)) {
+        ++g_s.bad;
+        return;
+    }
+    ++g_s2.rx_gzst;
+    if (g_gz_logged.size() > 64) g_gz_logged.clear();
+    for (unsigned i = 0; i < m.n; ++i) {
+        const R::GzEntry& e = m.e[i];
+        const bool test = (e.bits & R::kGzTest) != 0;
+        const auto it = g_s_locs.find(e.loc);
+        const bool live = it != g_s_locs.end();
+        double at[3] = {e.pos[0], e.pos[1], e.pos[2]};
+        if (live && it->second.pos_ok) std::memcpy(at, it->second.pos, sizeof(at));  // the marker on this game's own copy
+        if (R::GzInteresting(e.bits)) btmarks::Gazer(e.loc, at, test, now_ms);
+        else btmarks::DropGazer(e.loc);
+        const auto lg = g_gz_logged.find(e.loc);
+        if (lg != g_gz_logged.end() && lg->second == e.bits) continue;
+        g_gz_logged[e.loc] = e.bits;
+        if (!test && !g_s_budget.Take(now_ms)) continue;
+        char bits[64];
+        R::GzBitsText(e.bits, bits, sizeof(bits));
+        char here_text[96] = "not streamed here";
+        if (live)
+            std::snprintf(here_text, sizeof(here_text), "live (id %05X, you %.1f m from it)", it->second.id,
+                          (it->second.pos_ok && g_s_me_ok) ? R::Dist3(it->second.pos, g_s_me) : -1.0);
+        Log("[bt] partner gazer state: loc %08X (field %08X %s) bits%s, state %u mode %u approach %.2f at (%.1f %.1f %.1f); here: %s", e.loc, e.field,
+            R::FieldName(e.field), bits, e.state, e.mode, static_cast<double>(e.approach), at[0], at[1], at[2], here_text);
+    }
+}
+
+// ---------------------------------------------------------------- S2: this game's kills (bt_world's events, game thread)
+void KillEvent(double now_ms, const btworld::Event& e) {
+    if (e.applied != btworld::kNotArmed) {  // an armed kill's outcome
+        if (e.tag == R::kTagMirror)
+            for (PendKill& p : g_pk)
+                if (p.armed && !p.done && p.actor == e.actor) p.done = true, p.done_ms = now_ms, p.result = e.applied;
+        if (e.tag == R::kTagTest && g_tk.on && !g_tk.done && e.actor == g_tk.actor) g_tk.done = true, g_tk.done_ms = now_ms, g_tk.result = e.applied;
+    }
+    if (!e.edge || !g_sync || g_sync_dead.load()) return;
+    std::uint32_t loc = 0, field = 0;
+    for (const auto& kv : g_s_locs)
+        if (kv.second.id == e.id) {
+            loc = kv.first, field = kv.second.field;
+            break;
+        }
+    if (!loc) {  // streamed in since the last census
+        Census c;
+        TakeCensus(now_ms, c);
+        for (const Gazer& z : c.g)
+            if (z.located && (z.actor == e.actor || z.id == e.id)) {
+                loc = z.loc_hash, field = z.field;
+                break;
+            }
+    }
+    std::uint32_t pid = 0;
+    const bool pid_ok = btworld::PlayerId(&pid);
+    std::uint8_t cause = 0;
+    const double since_reset = g_reset_ms > -1e17 ? now_ms - g_reset_ms : -1.0;
+    const char* why = R::KillRelay(e.reason, e.killer, pid_ok, pid, e.tag, g_echo.Has(loc, now_ms), since_reset, &cause);
+    if (!why && !loc) why = "its locator is unknown (not in the census)";
+    if (!why && g_kill_level < 1) why = "bt_kill=0 here";
+    if (!why && !g_s_peer) why = "no partner hello";
+    if (!why && !(g_s_peer_caps & R::kCapKill)) why = "the partner's build takes no KILL";
+    // review (logic 7): a partner that would refuse every kill (its bt_kill below 2, or the guest on its real save) gets none
+    if (!why && !(g_s_peer_caps & R::kCapKillApply)) why = "the partner does not apply kills (its bt_kill, or its real save)";
+    if (why) {
+        ++g_s2.unsent_kill;
+        if (e.tag != R::kTagNone || g_s_budget.Take(now_ms))
+            Log("[bt] kill here: loc %08X (field %08X %s, id %05X, reason %08X, killer %05X, me %05X%s): not sent: %s", loc, field, R::FieldName(field), e.id,
+                e.reason, e.killer, pid, pid_ok ? "" : " unknown", why);
+        return;
+    }
+    R::BtsKill k;
+    k.field = field, k.loc = loc, k.reason = e.reason, k.world = esync::Gate().guids, k.cause = cause;
+    k.flags = static_cast<std::uint8_t>((automation::SavesRedirected() ? R::kKfSandboxed : 0) | (e.tag == R::kTagTest ? R::kKfTest : 0));
+    for (int i = 0; i < 3; ++i) k.pos[i] = e.pos_ok ? static_cast<float>(e.pos[i]) : 0.0f;
+    k.sender_ms = static_cast<std::uint32_t>(link::NowMs());
+    const std::uint32_t seq = g_s_seq;
+    std::uint8_t b[R::kBtsKillSize];
+    if (!Send(b, R::EncodeKill(seq, k, b, sizeof(b)))) {
+        ++g_s2.unsent_kill;
+        Log("[bt] kill here: loc %08X: not sent: the link did not take it", loc);
+        return;
+    }
+    ++g_s2.tx_kill;
+    Log("[bt] KILL sent%s: loc %08X (field %08X %s, reason %08X, cause %s, world %08X%s) (seq %u)", e.tag == R::kTagTest ? " (test)" : "", loc, field,
+        R::FieldName(field), e.reason, R::CauseName(cause), k.world, (k.flags & R::kKfSandboxed) ? ", sandboxed" : ", real save", seq);
+}
+
+void WorldEvents(double now_ms) {
+    btworld::Event ev[32];
+    unsigned lost = 0;
+    const unsigned n = btworld::TakeEvents(ev, 32, &lost);
+    if (lost) {
+        g_s2.events_lost += lost;
+        if (g_s_budget.Take(now_ms)) Log("[bt] world events: %u lost (the ring of 32 was full)", lost);
+    }
+    for (unsigned i = 0; i < n; ++i) {
+        OnProbeEvent(ev[i]);
+        KillEvent(now_ms, ev[i]);
+    }
+}
+
+// ---------------------------------------------------------------- S2: the partner's kills
+void OnKill(double now_ms, const std::uint8_t* b, std::size_t n) {
+    R::BtsKill k;
+    if (!R::DecodeKill(b, n, k)) {
+        ++g_s.bad;
+        return;
+    }
+    ++g_s2.rx_kill;
+    g_echo.Add(k.loc, now_ms);  // this gazer's death edge here within 10 s is not sent back
+    const std::uint32_t world = esync::Gate().guids;
+    Log("[bt] KILL received: loc %08X (field %08X %s, reason %08X, cause %s%s%s), world %08X / here %08X, from the %s", k.loc, k.field,
+        R::FieldName(k.field), k.reason, R::CauseName(k.cause), (k.flags & R::kKfTest) ? ", test" : "",
+        (k.flags & R::kKfSandboxed) ? ", sandboxed" : ", real save", k.world, world, RoleText(g_s_peer_role));
+    for (const PendKill& q : g_pk)
+        if (q.k.loc == k.loc) {
+            Log("[bt] partner kill loc %08X: not applied: one for it is pending already", k.loc);
+            return;
+        }
+    if (g_pk.size() >= kPendKills) {
+        ++g_s2.kill_refused;
+        Log("[bt] partner kill loc %08X: not applied: %u pending already", k.loc, kPendKills);
+        return;
+    }
+    PendKill p;
+    p.k = k;
+    p.rx_ms = now_ms;
+    g_pk.push_back(p);
+    g_pk_next_ms = 0;  // the next tick looks at it
+}
+
+// An armed partner kill: true when it is finished (logged).
+bool ArmedStep(double now_ms, PendKill& p) {
+    if (p.done) {
+        if (now_ms - p.done_ms < 2000.0) return false;  // the kill list and the field record after the death processing
+        if (p.result != R::kKillOk) {
+            ++g_s2.kill_refused;
+            Log("[bt] partner kill loc %08X: not applied: refused in the update: %s", p.k.loc, ApplyText(p.result));
+            return true;
+        }
+        Census c;
+        TakeCensus(now_ms, c);
+        char edge[64];
+        EdgeText(c, p.field_here, p.killed0, edge, sizeof(edge));
+        ++g_s2.kill_applied;
+        Log("[bt] partner kill applied loc %08X (id %05X, field %08X %s; from the %s, reason %08X, cause %s%s; %.0f m from you, +0x3A8 0x%llX): death edge "
+            "%s, list %d -> %d",
+            p.k.loc, p.id, p.field_here, R::FieldName(p.field_here), RoleText(g_s_peer_role), p.k.reason, R::CauseName(p.k.cause),
+            (p.k.flags & R::kKfTest) ? ", test" : "", p.dist, static_cast<unsigned long long>(p.scene), edge, p.list0, c.list);
+        return true;
+    }
+    if (now_ms - p.arm_ms > 10000.0 && btworld::Disarm(p.actor)) {
+        ++g_s2.kill_refused;
+        Log("[bt] partner kill loc %08X: not applied: the gazer did not update in 10 s", p.k.loc);
+        return true;
+    }
+    // review (crash 4): the update took the kill but its outcome never came (the event ring was full): finished, not waited on
+    if (now_ms - p.arm_ms > 12000.0 && !btworld::Armed(p.actor)) {
+        ++g_s2.kill_refused;
+        Log("[bt] partner kill loc %08X: not applied: its outcome was lost (the event ring was full)", p.k.loc);
+        return true;
+    }
+    return false;
+}
+
+void ProcessKills(double now_ms) {
+    if (g_pk.empty()) return;
+    const char* not_playing = LoadingNow() ? "loading (no live player, or a load in progress)" : PlayingWhy();
+    const bool carried = ride::Carried();
+    const int allowed = not_playing ? -1 : btworld::BtAllowed();
+    const std::uint32_t world = esync::Gate().guids;
+    const bool records = g_s_have_here && g_s_have_there && R::CompareFields(g_s_here, g_s_there).records;
+    std::vector<PendKill> keep;
+    const bool loading = LoadingNow();
+    for (PendKill& p : g_pk) {
+        if (p.armed) {
+            // review (crash 3): a load frees the gazers; an armed kill is taken back, never applied to what comes next there
+            if (loading && !p.done && btworld::Disarm(p.actor)) {
+                ++g_s2.kill_refused;
+                Log("[bt] partner kill loc %08X: not applied: a load (disarmed)", p.k.loc);
+                continue;
+            }
+            if (!ArmedStep(now_ms, p)) keep.push_back(p);
+            continue;
+        }
+        R::KillApplyIn in;
+        in.bt_kill = g_kill_level;
+        in.role = g_role;
+        in.sandboxed = automation::SavesRedirected();
+        in.sender_sandboxed = (p.k.flags & R::kKfSandboxed) != 0;
+        in.world_equal = world && p.k.world && world == p.k.world;
+        in.records_equal = records;
+        in.age_ms = now_ms - p.rx_ms;
+        in.not_playing = not_playing;
+        in.carried = carried;
+        in.bt_allowed = allowed;
+        std::uintptr_t actor = 0, scene = 0;
+        std::uint32_t id = 0, field_here = 0;
+        double dist = -1;
+        const auto it = g_s_locs.find(p.k.loc);
+        if (it != g_s_locs.end()) {
+            id = it->second.id, field_here = it->second.field;
+            actor = Resolve(id);
+            if (it->second.pos_ok && g_s_me_ok) dist = R::Dist3(it->second.pos, g_s_me);
+        }
+        in.streamed = actor != 0;
+        // round 30: +0x3A8 is the scene of the gazer's own locator (FUN_142994B40), set on every placed gazer. It is read for the
+        // log lines only; it never refuses a kill (ArmKill's actor id check covers a re-used actor).
+        std::uintptr_t loc_scene = 0;
+        if (actor) {
+            if (!btworld::SceneOwner(actor, &scene)) scene = 0;
+            in.scene_owner = scene != 0;
+            const std::uintptr_t loc = mem::Q(actor + kActLoc);
+            loc_scene = loc ? mem::Q(loc + kLocScene) : 0;
+            std::int32_t state = -1;
+            float h = 0, prev = 0;
+            std::uint32_t flags = 0;
+            if (mem::Rd(actor + kActState, state) && mem::Rd(actor + kGzHealth, h) && mem::Rd(actor + kGzPrevHealth, prev) && mem::Rd(actor + kActFlags, flags))
+                in.guard = R::KillGuard(state, h, prev, flags);
+            else
+                in.streamed = false;  // unreadable now: held as not streamed
+        }
+        in.dist_m = dist;
+        R::KillVerdict v = R::KillApplyGate(in);
+        if (v.call == R::KillCall::apply && !KillApplyHere()) v = {R::KillCall::refuse, "the kill byte checks failed here"};
+        if (v.call == R::KillCall::apply) {
+            InstallKillHook("the kill relay");
+            Census c;
+            TakeCensus(now_ms, c);
+            const Field* f = FindField(c, field_here);
+            p.list0 = c.list, p.killed0 = f ? f->killed : -1;
+            if (btworld::ArmKill(actor, id, R::kTagMirror)) {
+                p.armed = true, p.actor = actor, p.id = id, p.arm_ms = now_ms, p.scene = scene, p.dist = dist, p.field_here = field_here;
+                Log("[bt] partner kill loc %08X: armed (id %05X, field %08X %s; %.0f m from you, +0x3A8 0x%llX %s, after %.1f s)", p.k.loc, id, field_here,
+                    R::FieldName(field_here), dist, static_cast<unsigned long long>(scene),
+                    !scene ? "(unread or 0)" : scene == loc_scene ? "(the locator's scene)" : "(NOT the locator's scene: logged only)", in.age_ms / 1000.0);
+                keep.push_back(p);
+                continue;
+            }
+            v = {R::KillCall::hold, "the kill slots are busy"};
+        }
+        if (v.call == R::KillCall::hold) {
+            if (p.last_why != v.why) {
+                p.last_why = v.why;
+                Log("[bt] partner kill loc %08X: held: %s", p.k.loc, v.why);
+            }
+            keep.push_back(p);
+            continue;
+        }
+        ++g_s2.kill_refused;
+        Log("[bt] partner kill loc %08X: not applied: %s", p.k.loc, v.why);
+    }
+    g_pk.swap(keep);
+}
+
+// ---------------------------------------------------------------- the tests (hidden runs) and the tick
+void TestTroubleTick(double now_ms) {
+    if (!g_tt.on) return;
+    const int k = R::TestStepAt(now_ms - g_tt.t0);
+    while (g_tt.step < k) {
+        const R::TestStep& st = R::kTestSteps[++g_tt.step];
+        TroubleSend(st.kind, R::kTrfTest, g_tt.episode, g_tt.pos_ok ? g_tt.pos : nullptr, st.hp, 0, 0, "a test step at my position");
+    }
+    if (g_tt.step >= static_cast<int>(R::kTestStepCount) - 1) {
+        g_tt.on = false;
+        g_tr_logged = 0;
+    }
+}
+
+void TestKillTick(double now_ms) {
+    if (!g_tk.on) return;
+    if (g_tk.done) {
+        if (now_ms - g_tk.done_ms < 2000.0) return;
+        g_tk.on = false;
+        if (g_tk.result != R::kKillOk) {
+            Log("[bt] test kill loc %08X: refused in the update: %s", g_tk.loc, ApplyText(g_tk.result));
+            return;
+        }
+        Census c;
+        TakeCensus(now_ms, c);
+        char edge[64];
+        EdgeText(c, g_tk.field, g_tk.killed0, edge, sizeof(edge));
+        Log("[bt] test kill loc %08X: applied here, death edge %s, list %d -> %d", g_tk.loc, edge, g_tk.list0, c.list);
+    } else if (now_ms - g_tk.arm_ms > 10000.0 && btworld::Disarm(g_tk.actor)) {
+        g_tk.on = false;
+        Log("[bt] test kill loc %08X: not applied (the gazer did not update in 10 s)", g_tk.loc);
+    } else if (LoadingNow() && btworld::Disarm(g_tk.actor)) {
+        g_tk.on = false;
+        Log("[bt] test kill loc %08X: not applied (a load: disarmed)", g_tk.loc);
+    } else if (now_ms - g_tk.arm_ms > 12000.0 && !btworld::Armed(g_tk.actor)) {
+        g_tk.on = false;
+        Log("[bt] test kill loc %08X: not applied (its outcome was lost: the event ring was full)", g_tk.loc);
+    }
+}
+
+void S12Tick(double now_ms) {
+    if (g_tv.Expire(now_ms)) {
+        btmarks::ClearTrouble();
+        Log("[bt] partner trouble: no TROUBLE for 3 s (no CLEAR came): its markers are gone");
+    }
+    TestTroubleTick(now_ms);
+    if ((g_pk.empty() && !g_tk.on) || now_ms < g_pk_next_ms) return;
+    g_pk_next_ms = now_ms + 250.0;
+    ProcessKills(now_ms);
+    TestKillTick(now_ms);
+}
+
+void S12Session() {
+    const std::uint16_t ep = g_tr.episode;
+    g_tr = R::TroubleTracker{};
+    g_tr.episode = ep;  // episodes keep counting (the partner tells them apart)
+    g_tr_logged = 0;
+    g_tt.on = false;
+    g_tv = R::TroubleView{};
+    g_gz_sent.clear();
+    g_gz_ms = -1e18;
+    g_gz_logged.clear();
+    g_echo = R::EchoRing{};
+    if (!g_pk.empty()) {
+        for (const PendKill& p : g_pk)
+            if (p.armed && !p.done) btworld::Disarm(p.actor);
+        Log("[bt] partner kills: %u pending dropped (a new link session)", static_cast<unsigned>(g_pk.size()));
+    }
+    g_pk.clear();
+    btmarks::ClearTrouble();
+}
+
+// The nearest live gazer (loc 0) or the one with that locator.
+const Gazer* PickGazer(const Census& c, std::uint32_t loc, const double* me, bool killable = false) {
+    const Gazer* z = nullptr;
+    double best = -1;
+    for (const Gazer& g : c.g) {
+        if (!g.actor) continue;
+        if (loc) {
+            if (g.located && g.loc_hash == loc) z = &g;
+            continue;
+        }
+        if (g.state != 0 || !g.pos_ok || !g.located) continue;
+        // review (logic 6): for the test kill, the nearest one the kill can take (KillGuard: dying, or flags 0x9, is refused in the update)
+        if (killable) {
+            float h = 0, prev = 0;
+            if (!mem::Rd(g.actor + kGzHealth, h) || !mem::Rd(g.actor + kGzPrevHealth, prev) || R::KillGuard(g.state, h, prev, g.flags) != R::kKillOk) continue;
+        }
+        const double d = R::Dist3(g.pos, me);
+        if (!z || d < best) z = &g, best = d;
+    }
+    return z;
+}
+
+// bt_sync 5: the test TROUBLE sequence (HUNTED, CATCHER 100 / 60 / 20 %, CLEAR over 6 s), each flagged a test.
+bool OpTestTrouble(char* msg, std::size_t cap) {
+    if (!automation::Enabled()) return Put(msg, cap, "bt sync: the test messages are for hidden runs only"), false;
+    if (!g_trouble_on) return Put(msg, cap, "bt sync: bt_trouble=0 here"), false;
+    if (!g_s_peer) return Put(msg, cap, "bt sync: no partner hello yet"), false;
+    if (!(g_s_peer_caps & R::kCapTrouble)) return Put(msg, cap, "bt sync: the partner's build takes no TROUBLE"), false;
+    if (g_tt.on) return Put(msg, cap, "bt sync: a test sequence runs already"), false;
+    if (g_tr.kind) return Put(msg, cap, "bt sync: this game's player is in trouble now (%s)", R::TroubleName(g_tr.kind)), false;
+    g_tt = TroubleTest{};
+    g_tt.on = true;
+    g_tt.t0 = g_now_ms;
+    if (++g_tr.episode == 0) g_tr.episode = 1;
+    g_tt.episode = g_tr.episode;
+    g_tt.pos_ok = LocalPos(g_tt.pos);
+    Log("[bt] test TROUBLE sequence: episode %u (HUNTED, CATCHER 100/60/20 %%, CLEAR over 6 s)", g_tt.episode);
+    return Put(msg, cap, "bt sync: test TROUBLE sequence, episode %u (log)", g_tt.episode), true;
+}
+
+// bt_sync 6: a test GZST of the nearest live gazer here.
+bool OpTestGzst(char* msg, std::size_t cap) {
+    if (!automation::Enabled()) return Put(msg, cap, "bt sync: the test messages are for hidden runs only"), false;
+    if (!g_trouble_on) return Put(msg, cap, "bt sync: bt_trouble=0 here"), false;
+    if (!g_s_peer) return Put(msg, cap, "bt sync: no partner hello yet"), false;
+    if (!(g_s_peer_caps & R::kCapGzst)) return Put(msg, cap, "bt sync: the partner's build takes no GZST"), false;
+    double me[3];
+    if (!LocalPos(me)) return Put(msg, cap, "bt sync: no local player (not in a world)"), false;
+    Census c;
+    TakeCensus(g_now_ms, c);
+    const Gazer* z = PickGazer(c, 0, me);
+    if (!z) return Put(msg, cap, "bt sync: no live located gazer here"), false;
+    R::BtsGzst m;
+    m.n = 1;
+    FillGz(m.e[0], *z, static_cast<std::uint8_t>((R::GzBits(z->flags, z->state) & ~R::kGzDead) | R::kGzTest));
+    m.sender_ms = static_cast<std::uint32_t>(link::NowMs());
+    const std::uint32_t seq = g_s_seq;
+    std::uint8_t b[R::kBtsMaxSize];
+    if (!Send(b, R::EncodeGzst(seq, m, b, sizeof(b)))) return Put(msg, cap, "bt sync: the link did not take the test GZST"), false;
+    ++g_s2.tx_gzst;
+    char bits[64];
+    R::GzBitsText(m.e[0].bits, bits, sizeof(bits));
+    Log("[bt] GZST sent (test): loc %08X (field %08X %s) bits%s, %.1f m from me (seq %u)", z->loc_hash, z->field, R::FieldName(z->field), bits,
+        R::Dist3(z->pos, me), seq);
+    return Put(msg, cap, "bt sync: a test GZST for loc %08X (log)", z->loc_hash), true;
+}
+
+// bt_sync 7 <hi16> <lo16>: a real kill of one gazer here (0 0 = the nearest live one), as bt_probe 10 but tagged a test: its death
+// edge goes to the partner as KILL (cause "a test"), where the receiver's gate decides as for any kill.
+bool OpTestKill(const double (&v)[3], char* msg, std::size_t cap) {
+    if (!automation::Enabled()) return Put(msg, cap, "bt sync: the test kill is for hidden runs only"), false;
+    if (!automation::SavesRedirected()) return Put(msg, cap, "bt sync: the test kill only on a sandboxed save"), false;
+    if (g_kill_level < 1) return Put(msg, cap, "bt sync: bt_kill=0 here"), false;
+    std::uint32_t loc = 0;
+    if (!R::LocArg(v[1], v[2], &loc)) return Put(msg, cap, "bt sync: 7 <locator hi16> <lo16> (0 0 = the nearest live gazer)"), false;
+    if (!(Check() & kActor) || !KillSendable()) return Put(msg, cap, "bt sync: the kill is off (byte checks; log)"), false;
+    if (g_tk.on) return Put(msg, cap, "bt sync: a test kill is armed already"), false;
+    double me[3];
+    if (!LocalPos(me)) return Put(msg, cap, "bt sync: no local player (not in a world)"), false;
+    Census c;
+    TakeCensus(g_now_ms, c);
+    const Gazer* z = PickGazer(c, loc, me, true);
+    if (!z) return Put(msg, cap, "bt sync: no live gazer %s", loc ? "with that locator" : "here"), false;
+    float h = 0, prev = 0;
+    std::uint32_t flags = 0;
+    std::int32_t state = -1;
+    if (!mem::Rd(z->actor + kActState, state) || !mem::Rd(z->actor + kGzHealth, h) || !mem::Rd(z->actor + kGzPrevHealth, prev) ||
+        !mem::Rd(z->actor + kActFlags, flags))
+        return Put(msg, cap, "bt sync: the gazer is unreadable"), false;
+    const int g = R::KillGuard(state, h, prev, flags);
+    if (g != R::kKillOk) {
+        Log("[bt] test kill loc %08X: refused: %s (state %d, health %.2f, last %.2f, flags 0x%X)", z->loc_hash, R::KillGuardText(g), state, h, prev, flags);
+        return Put(msg, cap, "bt sync: test kill refused: %s", R::KillGuardText(g)), false;
+    }
+    if (!btworld::HookIn() && !btworld::InstallHook("the kill test", msg, cap)) return false;
+    const Field* f = FindField(c, z->field);
+    g_tk = TestKill{};
+    g_tk.on = true, g_tk.loc = z->loc_hash, g_tk.field = z->field, g_tk.id = z->id, g_tk.actor = z->actor, g_tk.arm_ms = g_now_ms;
+    g_tk.list0 = c.list, g_tk.killed0 = f ? f->killed : -1;
+    if (!btworld::ArmKill(z->actor, z->id, R::kTagTest)) {
+        g_tk.on = false;
+        return Put(msg, cap, "bt sync: not armed (the kill slots are full or that gazer is armed already)"), false;
+    }
+    Log("[bt] test kill loc %08X (id %05X, field %08X %s): armed, %.1f m from me (the update's own kill at its next update; its death edge goes as "
+        "KILL)",
+        z->loc_hash, z->id, z->field, R::FieldName(z->field), z->pos_ok ? R::Dist3(z->pos, me) : -1.0);
+    return Put(msg, cap, "bt sync: test kill armed for loc %08X (log)", z->loc_hash), true;
+}
+
 }  // namespace
 
 void Install(const Config& config) noexcept {
@@ -1439,6 +2752,13 @@ void Install(const Config& config) noexcept {
                 : g_sync >= 2 && g_role == 2 ? ", the host's RESET not applied here (this game plays on its own real save)"
                                                : "");
             InstallVoidHook();
+            // round 30 S1 / S2
+            g_trouble_on = config.bt_trouble;
+            g_kill_level = std::min(R::SyncLevel(static_cast<double>(config.bt_kill)), g_sync);
+            btmarks::Init(config);
+            Log("[bt] sync: TROUBLE / GZST %s; KILL %s%s", g_trouble_on ? "on (the partner's trouble as markers here)" : "off (bt_trouble=0)",
+                g_kill_level >= 2 ? "on (partner kills applied here)" : g_kill_level == 1 ? "relayed, not applied (bt_kill=1 or bt_sync=1)" : "off (bt_kill=0)",
+                g_kill_level >= 2 && g_role == 2 && !automation::SavesRedirected() ? "; but never on this real save (host_save=0)" : "");
         }
     }
     g_ini = R::ProbeMode(static_cast<double>(config.bt_probe));
@@ -1453,6 +2773,8 @@ void Install(const Config& config) noexcept {
 void Tick(double now_ms) noexcept {
     g_now_ms = now_ms;
     if (g_sync) SyncTick(now_ms);
+    if (btworld::HookIn()) WorldEvents(now_ms);  // round 30 S2: the gazer update's events (the kill relay and the probe's watch)
+    if (btworld::HookIn() || g_kw.on || g_cw.on || g_hw.on) ProbeTick(now_ms);  // round 30: the world probes (hidden runs only)
     if (!g_on || now_ms < g_next_ms) return;
     g_next_ms = now_ms + g_interval_ms;
     double me[3];
@@ -1476,7 +2798,8 @@ void Tick(double now_ms) noexcept {
 
 bool Command(const double (&v)[3], char* msg, std::size_t cap) noexcept {
     if (const char* why = Refusal()) return Put(msg, cap, "bt probe: %s", why), false;
-    const int op = R::ProbeMode(v[0]);
+    const int op = R::ProbeOp(v[0]);
+    if (op >= R::kOpThreads) return ProbeOps(op, v, msg, cap);  // round 30: the world probes (hidden runs only)
     if (op == 0) {
         if (!g_on) return Put(msg, cap, "bt probe: already off (%d censuses)", g_n), true;
         g_on = false;
@@ -1505,8 +2828,7 @@ bool Command(const double (&v)[3], char* msg, std::size_t cap) noexcept {
 
 bool SyncCommand(const double (&v)[3], char* msg, std::size_t cap) noexcept {
     if (!g_sync) return Put(msg, cap, "bt sync: off (bt_sync=0 in session.ini, or not a two-game session)"), false;
-    const double d = v[0];
-    const int op = std::isfinite(d) && d >= 0 && d <= 9 ? static_cast<int>(d) : -1;
+    const int op = R::SyncOp(v[0]);
     if (op == 0) {
         SyncStatus("action");
         return Put(msg, cap, "bt sync: partner %s; sent %u field / %u noticed / %u void / %u reset; got %u / %u / %u / %u (applied %u) (log)",
@@ -1539,12 +2861,26 @@ bool SyncCommand(const double (&v)[3], char* msg, std::size_t cap) noexcept {
         if (!SendNoticed(n, "test", -1.0)) return Put(msg, cap, "bt sync: the link did not take the test NOTICED"), false;
         return Put(msg, cap, "bt sync: a test NOTICED (log)"), true;
     }
-    return Put(msg, cap, "bt sync: v[0] 0 status, 1 FIELD now, 3 test VOID, 4 test NOTICED"), false;
+    if (op == 5) return OpTestTrouble(msg, cap);
+    if (op == 6) return OpTestGzst(msg, cap);
+    if (op == 7) return OpTestKill(v, msg, cap);
+    return Put(msg, cap, "bt sync: v[0] 0 status, 1 FIELD now, 3 test VOID, 4 test NOTICED, 5 test TROUBLE, 6 test GZST, 7 <hi16> <lo16> a kill here"),
+           false;
+}
+
+int HunterAreaUp() noexcept {
+    if (!(Check() & kHunter)) return -1;
+    const std::uintptr_t hm = mem::Q(A(kHunterGlobal));
+    std::uintptr_t area = 0;
+    if (!hm || !mem::Rd(hm + kHunArea, area)) return -1;
+    return area ? 1 : 0;
 }
 
 void EmergencyStop() noexcept {
     g_void_pass.store(true);
     g_sync_dead.store(true);
+    btworld::EmergencyStop();    // round 30: the gazer update hook straight through, armed kills dropped
+    g_crater_dead = true;        // no more guarded craters (the flow gate passes everything while t_crater is clear)
 }
 
 }  // namespace st::bt

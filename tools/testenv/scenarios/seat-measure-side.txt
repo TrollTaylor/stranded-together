@@ -1,0 +1,120 @@
+# Round 30 release A: the truck's side seats, one game (docs/real-partner-body.md section 24.20), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario seat-measure-side -SeedSaves complete-100
+# Sam drives the save's own truck (X) and `seat_measure` keeps it; he gets off; then for each side seat (3 right front, 4 left
+# front, 5 right rear, 6 left rear) `ride_test 40 <seat>` carries him there exactly as a side passenger is carried (no notice):
+# the 0.5 s glide from where he stands onto the seat's anchor, the hang (the seat's library idle when this machine has one in
+# its cache, else the procedural hang: the feet on the step, the inboard hand on the rail, the outboard arm out). The camera is
+# turned for a side and a front view. Seats 3 and 6 get off as a press does (`ride_test 2 1`: the 0.3 s settle, the 0.4 s
+# glide out, the placement beside the truck on that side); seats 4 and 5 by `ride_test 2` (a snap, as a forced exit).
+# Pass (in the logs): every seat carried ("(<seat>, ride #..."), "on the seat", the once-a-second side line ("pose library
+# idle|procedural hang ...; feet z .. m over the anchor (the step: 0.12), Sam vs the seat mean .. m; hand err .. cm"), each exit
+# with the capsule back on, no fault. Read in the X screenshots: Sam hanging on the truck's side, his feet on the step, a hand
+# at the rail, not inside the truck, not floating.
+# The camera (round 30 fix): it keeps its yaw from seat to seat (run 20261127-171254: X41 / X61 looked from the truck's right
+# side at a left seat, X32 from its left side at a right seat, Sam hidden behind the truck each time). A 700 ms full right
+# stick turns it about 90 deg: rx=32767 puts it on the truck's left side (seen from behind), rx=-32767 on its right side. Each
+# side view now looks from that seat's own side and each seat ends on the front view (yaw 180 from behind), so the next seat
+# starts from the same place: seat 3 from behind, right (-90), front; seat 4 left (+90 from the front), front; seat 5 right,
+# front; seat 6 left, front.
+# covers: ride
+# select: probe
+role echo
+timeout 360
+ini partner_body=real
+ini echo_offset_m=40
+ini echo_delay_s=0.5
+ini partner_collision=0
+ini vehicle_sync=0
+waitready 90
+waitlog 120 \[overlay\] input attached
+waitlog 10 \[config\] ride_sides=1 ride_mule_pose=1 ride_mule_record=1 ride_mule_cache=1 ride_side_hide_pack=0
+wait 25000
+pad A 150
+wait 4000
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+until 120 500 ly=32760 -> ok: .*player moved ([1-9]|[1-9][0-9]+)\.[0-9]+ m => pad none 1000 ly=32760
+wait 1500
+action ride_test 42
+waitnew 3 \[ride\] side library:
+# ---- our own truck, measured
+action vehicle_sync 8 1.8 2
+wait 1500
+until 20 4000 \[ride\] our Sam is seated in the truck => pad X 150
+wait 3500
+action seat_measure
+pad X 150
+waitlog 15 \[ride\] our Sam is out of the vehicle
+wait 3000
+# ---- seat 3, right front side: on, the hang, off by a press
+action ride_test 40 3
+waitnew 5 \[ride\] solo: our Sam carried on the truck 0x[0-9A-F]+ \(right front side, ride #
+waitlog 3 \[ride\] side seat right front side \(MULE seat 1\): a 0\.5 s glide onto the anchor
+waitlog 3 \[ride\] side seat right front side: on the seat
+waitlog 4 \[ride\] side seat right front side: pose (library idle|procedural hang), on the seat; feet z -?[0-9.]+ m over the anchor
+screenshot X31-seat3-behind
+pad none 700 rx=-32767
+wait 800
+screenshot X32-seat3-side
+pad none 700 rx=-32767
+wait 800
+screenshot X33-seat3-front
+action ride_test 42
+waitnew 3 \[ride\] side hang: seat 1, mode (library|procedural)
+action ride_test 2 1
+waitnew 3 \[ride\] get off the truck's right front side: settle 300 ms, glide 400 ms
+waitlog 4 \[ride\] solo: our Sam off the truck .*got off\).*side seat right front side
+waitlog 3 \[ride\] capsule back ON \(got off
+wait 2500
+screenshot X34-seat3-off
+# ---- seat 4, left front side: off by a snap
+action ride_test 40 4
+waitnew 5 \[ride\] solo: our Sam carried on the truck 0x[0-9A-F]+ \(left front side, ride #
+waitlog 3 \[ride\] side seat left front side: on the seat
+waitlog 4 \[ride\] side seat left front side: pose (library idle|procedural hang), on the seat; feet z -?[0-9.]+ m over the anchor
+pad none 700 rx=-32767
+wait 800
+screenshot X41-seat4-side
+pad none 700 rx=32767
+wait 800
+screenshot X42-seat4-front
+action ride_test 2
+waitnew 4 \[ride\] solo: our Sam off the truck .*test\).*side seat left front side
+waitlog 3 \[ride\] capsule back ON \(test
+wait 2500
+# ---- seat 5, right rear side: off by a snap
+action ride_test 40 5
+waitnew 5 \[ride\] solo: our Sam carried on the truck 0x[0-9A-F]+ \(right rear side, ride #
+waitlog 3 \[ride\] side seat right rear side: on the seat
+waitlog 4 \[ride\] side seat right rear side: pose (library idle|procedural hang), on the seat; feet z -?[0-9.]+ m over the anchor
+pad none 700 rx=32767
+wait 800
+screenshot X51-seat5-side
+pad none 700 rx=-32767
+wait 800
+screenshot X52-seat5-front
+action ride_test 2
+waitnew 4 \[ride\] solo: our Sam off the truck .*test\).*side seat right rear side
+wait 2500
+# ---- seat 6, left rear side: off by a press
+action ride_test 40 6
+waitnew 5 \[ride\] solo: our Sam carried on the truck 0x[0-9A-F]+ \(left rear side, ride #
+waitlog 3 \[ride\] side seat left rear side: on the seat
+waitlog 4 \[ride\] side seat left rear side: pose (library idle|procedural hang), on the seat; feet z -?[0-9.]+ m over the anchor
+pad none 700 rx=-32767
+wait 800
+screenshot X61-seat6-side
+pad none 700 rx=32767
+wait 800
+screenshot X62-seat6-front
+action ride_test 2 1
+waitnew 3 \[ride\] get off the truck's left rear side: settle 300 ms, glide 400 ms
+waitlog 4 \[ride\] solo: our Sam off the truck .*got off\).*side seat left rear side
+wait 2500
+screenshot X63-seat6-off
+action ride_test 42
+action ride_state
+nolog \[ride\].*FAULT
+nolog \[ride\] side library: the cache file was refused
+action log_status
+quit

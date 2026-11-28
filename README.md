@@ -87,6 +87,13 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
   link drops, the driver gets off, the vehicle crashes, flips or breaks, or the game needs
   your Sam (a cutscene, a load). While you ride you can look around but not move or act;
   you sit in your partner's driving pose (hands on a wheel that is not there).
+  New in round 30: on a truck you can also ride hanging off its side, the way MULEs do: walk up
+  to one of the four side spots (beside the front or back of the truck, left or right) and
+  press X / F there. You climb onto the step with a hand on the rail, and climb back down when
+  you press it again. If the game shows no Use Vehicle there, the press still works. The pose is
+  learned from MULEs riding trucks near you (kept on your PC only), otherwise a built-in one is used.
+  No banner tells either player that someone is riding any more. Both need this version
+  (an older partner gets the cab seat only).
 - **Experimental:** your partner's vehicle hits you like an enemy MULE truck: drive into
   your partner above about 15 km/h and they are knocked down and hurt on their screen (the
   game's own hit; you see them fall on yours). It never kills at once, however fast. A
@@ -154,6 +161,8 @@ Not affiliated with Kojima Productions, 505 Games or Sony Interactive Entertainm
   left to each game the same way. There is no launcher switch yet.
 - New in round 28: when either player scans with the Odradek, the scan shows on both screens (both need this
   version).
+- New in round 30: when BTs notice, hunt or catch your partner you see small markers on your screen (the BT, the
+  tar around them, the catcher's health), and a BT either of you kills dies in both games. Both need this version.
 - New in round 29: the partner's Odradek is shown on their left shoulder, and it opens, flaps, points and folds as
   theirs does (both need this version).
 - New in round 28: the BTs compare their fields across both games; when the host's BTs reset, the guest's do too

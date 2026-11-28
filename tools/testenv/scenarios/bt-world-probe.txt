@@ -1,0 +1,73 @@
+# Round 30 BT S0 (docs/enemy-sync.md 22): the world probes, solo, hidden, at the bt211_01 field south of Mountain Knot City:
+#   pwsh -File tools\testenv\Run-Batch.ps1 -Scenarios bt-world-probe -SeedSaves complete-100 -Id round30-bt-s0
+# Timefall (dev_weather 1), god mode 2 (Sam survives a catch), the census (bt_probe 1), then the probes (hidden runs only):
+#   P1 `bt_probe 9` installs the gazer update counter; 20 s later "[bt] gz update threads: tick N, other M (threads k)" says
+#      which threads update the gazers (other 0: the game thread only, so writes from Tick do not race the update);
+#   P4 `bt_probe 12`: "[bt] weather: area .., regions n (...), rain here x, mgr timefall t area a" and the rows;
+#   P2 `bt_probe 10 0x40AB 0x1A93` (optional): the update's own rain-gone kill on gazer 40AB1A93 (59 m from the place),
+#      "[bt] probe kill loc 40AB1A93: applied, the update ran to its end (+0x2B0 0), death edge seen (field killed +1), list a -> b,
+#      field killed x -> y" (the death edge from the field's kill count; "not seen" / "n/a (...)" otherwise);
+#   P3 `bt_probe 11 200`: the guarded crater 200 m ahead (the voidout with its GameOver flow dropped), "[bt] probe crater at
+#      (..) m 200: flow dropped 1, crater entity 0x.. (+0x2B0)" and 20 lines "[bt] probe crater +n s: +0x2B0 0x..";
+#   P7 `bt_probe 14 30`: the hunter area 30 m ahead, "[bt] probe hunter area at (..) m 30: FUN_1429B8D60 returned 0x..,
+#      +0x140 0x.. -> 0x.." and 30 lines "[bt] probe hunter +n s: ..." (does the tar pull Sam: GameOver, health, distance);
+#   last the P1 status again and the census stop line.
+# Look at: 02 / 03 (a crater 200 m ahead, Sam untouched), 04 / 05 (tar and hands around the area, Sam pulled or not).
+# Pass (in the log): "[bt] probe byte checks: n/n ok; threads ok, kill ok, crater ok, weather ok, hunter ok", the lines above,
+# no "[bt] FATAL-GUARD", no FAULTED, Sam not voided out (no GameOver from the crater). Research: none of this is a feature.
+# covers: research
+# select: probe
+role solo
+graphics low
+timeout 360
+start control 200
+goto bt-field-mknot-s
+action dev_god 2
+action dev_weather 1
+wait 3000
+action bt_probe 1
+waitlog 10 \[bt\] byte checks: [0-9]+/[0-9]+ ok
+# ---- P1: the gazer update's threads
+action bt_probe 9
+waitlog 10 \[bt\] probe byte checks: [0-9]+/[0-9]+ ok
+waitlog 5 \[bt\] probe: gazer update hook in
+wait 15000
+waitnew 10 \[bt\] #[0-9]+ gazers
+screenshot 01-field
+wait 5000
+action bt_probe 9
+waitnew 5 \[bt\] gz update threads: tick [0-9]+, other [0-9]+
+# ---- P4: the weather
+action bt_probe 12
+waitnew 5 \[bt\] weather: area
+# ---- P2: the kill (optional: the gazer may not be live here)
+?action bt_probe 10 0x40AB 0x1A93
+?waitnew 15 \[bt\] probe kill loc 40AB1A93: (applied|refused|not applied)
+wait 3000
+action bt_probe 2
+waitnew 10 \[bt\] dump done
+# ---- P3: the guarded crater 200 m ahead
+action bt_probe 11 200
+waitnew 5 \[bt\] probe crater at
+screenshot 02-crater
+wait 5000
+screenshot 03-crater-5s
+waitnew 25 \[bt\] probe crater \+20 s
+# ---- P7: the hunter area 30 m ahead
+action bt_probe 14 30
+waitnew 5 \[bt\] probe hunter area at
+wait 3000
+screenshot 04-hunter-3s
+wait 10000
+screenshot 05-hunter-13s
+waitnew 25 \[bt\] probe hunter \+30 s
+screenshot 06-end
+# ---- the final status
+action bt_probe 9
+waitnew 5 \[bt\] gz update threads
+action bt_probe 0
+waitlog 5 \[bt\] probe stop
+nolog \[bt\] FATAL-GUARD
+nolog \[bt\] probe byte check FAILED
+nolog \[bt\] .*FAULTED
+quit

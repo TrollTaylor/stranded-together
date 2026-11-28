@@ -20,6 +20,7 @@
 #include "game_api.hpp"
 #include "link.hpp"
 #include "log.hpp"
+#include "bt_markers.hpp"
 #include "nametags.hpp"
 #include "overlay/overlay_input.hpp"
 #include "partner_collision.hpp"
@@ -1578,6 +1579,8 @@ void Tick() noexcept {
 
     // Name tags (nametags.hpp): the partner's name above their head, our own name to the link.
     nametags::Tick(g_local, g_local_active && g_local_valid, BodyEntity(), remote_fresh, now);
+    // Round 30 BT S1 (bt_markers.hpp): the partner's BT trouble as small marks, under the same gates.
+    btmarks::Tick(g_local, g_local_active && g_local_valid, BodyEntity(), remote_fresh, now);
 
     // Partner voice (partner_voice.hpp, voice_sync=1): our talks out (STS1), the partner's played on the talking entity.
     {

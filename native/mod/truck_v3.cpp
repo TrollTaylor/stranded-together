@@ -1,5 +1,6 @@
 // Round 28 P2 (trucks M0): the truck controller probe. See truck_v3.hpp. Read-only: every game read is partner::mem (never
-// faults); the only hook is a pass-through counting detour on the get-off function, installed at start-up.
+// faults); the only hook is a pass-through counting detour on the get-off function, installed at start-up. Round 30: op 10's
+// hand helpers call the game's helper lookup (ride::TruckHelper, SEH-guarded), so op 10 is hidden runs / dev_tools only.
 #include "truck_v3.hpp"
 
 #include <windows.h>
@@ -16,8 +17,12 @@
 #include <vector>
 
 #include "automation.hpp"
+#include "dev_tools.hpp"
 #include "log.hpp"
+#include "mule_ride_rules.hpp"
 #include "partner_source.hpp"
+#include "real_body.hpp"
+#include "ride_together.hpp"
 #include "truck_v3_rules.hpp"
 #include "vehicle_share.hpp"
 #include "vehicle_wire.hpp"
@@ -942,7 +947,414 @@ bool SeatStatus(char* msg, std::size_t cap) noexcept {
     return true;
 }
 
+// ---------------------------------------------------------------- round 30 stage 0 (side riding; docs/real-partner-body.md 24.19)
+// mule_rec (P4): one MULE's board / alight clip at a time into realbody's recorder slot (kRecorderSlot: its 77 local joints, root
+// and pelvis translations every animate, a ring with the QPC ms) and its entity in the truck's frame every game tick (paired by
+// QPC time); validated (muleride::ClipCheck), logged, kept in memory only. truck_v3 10 (P2; hidden runs / dev_tools and
+// vehicle_truck_probe=1): the seated MULEs' frames. The ghost
+// (ride_test 43, P3): source 4's sample.
+constexpr unsigned kRecGroups = kGPools | kGVeh | kGActors | kGRide;
+constexpr double kRecWalkMs = 100;
+constexpr std::uintptr_t kRecEModel = 0xB8;  // entity +0xB8: its SkinnedModel (enemy_sync's)
+struct RecClip {
+    bool on = false;
+    std::uint32_t mule = 0, truck_id = kNoActor;
+    std::uintptr_t actor = 0, entity = 0, truck = 0;
+    int seat = -1;
+    muleride::ClipKind kind = muleride::ClipKind::none;
+};
+std::atomic<bool> g_mrec_on{false};  // EmergencyStop (any thread) clears it
+double g_mrec_next_walk = 0;
+std::map<std::uint32_t, muleride::RecWatch> g_mrec_watch;
+RecClip g_clip;
+std::vector<muleride::LocalSample> g_clip_local;
+std::vector<muleride::PoseFrame> g_clip_frames;  // the clip's frames at its end (scratch)
+unsigned g_mrec_ok = 0, g_mrec_bad = 0, g_mrec_skipped = 0;
+struct SeatRef {
+    bool have = false;
+    std::uint32_t mule = 0;
+    muleride::PoseFrame f;                 // the board's seated end (the clip's newest frame)
+    double j[muleride::kJoints][3] = {};   // the MULE's model joints in its truck's frame then
+    bool jok[muleride::kJoints] = {};
+};
+SeatRef g_seat_ref[5];
+int g_ghost_seat = 0, g_ghost_kind = 0;
+std::uint32_t g_ghost_mule = 0;
+std::uintptr_t g_ghost_actor = 0, g_ghost_entity = 0, g_ghost_truck = 0;
+
+bool RecGroupsOk() noexcept { return g_checked && (g_ok & kRecGroups) == kRecGroups; }
+
+// The MULE's truck: its ride's handle, its parent chain, its vehicle id (a truck of the pools only).
+std::uintptr_t TruckOf(const Mule& m, const std::vector<Veh>& vs, std::uint32_t* id) noexcept {
+    const Veh* v = m.riding() ? VehByEntity(vs, m.veh) : nullptr;
+    if (!v && m.chain) v = VehByEntity(vs, m.chain);
+    if (!v && m.veh_id != kNoActor) v = VehById(vs, m.veh_id);
+    if (!v || v->kind != 2) return 0;
+    if (id) *id = v->id;
+    return v->entity;
+}
+
+// Joint j's place in an entity's model space -> the truck's frame; every joint of a 77-joint model.
+bool JointIn(std::uintptr_t entity, const Xf& ex, const Xf& tx, unsigned j, double (&out)[3]) noexcept {
+    float m[4][4] = {};
+    unsigned count = 0;
+    if (!realbody::ReadJointModelAny(reinterpret_cast<game::Entity*>(entity), j, &count, m, nullptr, 0) || count != muleride::kJoints) return false;
+    const float p[3] = {m[3][0], m[3][1], m[3][2]};
+    if (!std::isfinite(p[0]) || !std::isfinite(p[1]) || !std::isfinite(p[2])) return false;
+    double w[3];
+    muleride::PointWorld(ex, p, w);
+    muleride::PointLocal(tx, w, out);
+    return true;
+}
+unsigned JointsIn(std::uintptr_t entity, std::uintptr_t truck, double (&out)[muleride::kJoints][3], bool (&ok)[muleride::kJoints]) noexcept {
+    Xf ex, tx;
+    unsigned n = 0;
+    for (bool& b : ok) b = false;
+    if (!ReadXf(entity, ex) || !ReadXf(truck, tx)) return 0;
+    for (unsigned j = 0; j < muleride::kJoints; ++j)
+        if ((ok[j] = JointIn(entity, ex, tx, j, out[j])) != false) ++n;
+    return n;
+}
+
+bool AnchorOf(int seat, double (&a)[3]) noexcept {
+    if (muleride::SideAnchor(seat, a)) return true;
+    return seat == 0 && SeatTableLocal(0, a);
+}
+
+void RecDrop(const char* why) noexcept {
+    if (g_clip.on) {
+        Log("[mrec] %s seat %d: MULE 0x%05X's clip dropped (%s)", muleride::ClipKindName(g_clip.kind), g_clip.seat, g_clip.mule, why);
+        g_mrec_watch[g_clip.mule].Done();
+        realbody::SetEnemySlot(realbody::kRecorderSlot, 0, realbody::EnemySlotMode::off);
+    }
+    g_clip = RecClip{};
+    g_clip_local.clear();
+}
+
+void RecStart(const Mule& m, muleride::ClipKind kind, const std::vector<Veh>& vs, double now_ms) noexcept {
+    (void)now_ms;
+    muleride::RecWatch& w = g_mrec_watch[m.id];
+    if (g_clip.on || g_ghost_kind == 1) {
+        ++g_mrec_skipped;
+        Log("[mrec] %s seat %d: MULE 0x%05X skipped (the recorder slot is on %s 0x%05X)", muleride::ClipKindName(kind), m.seat, m.id,
+            g_clip.on ? "the clip of MULE" : "the ghost's MULE", g_clip.on ? g_clip.mule : g_ghost_mule);
+        w.Done();
+        return;
+    }
+    const std::uintptr_t sm = m.entity ? mem::Q(m.entity + kRecEModel) : 0;
+    if (!sm || !realbody::SetEnemySlot(realbody::kRecorderSlot, sm, realbody::EnemySlotMode::record)) {
+        ++g_mrec_skipped;
+        Log("[mrec] %s seat %d: MULE 0x%05X not recordable (%s)", muleride::ClipKindName(kind), m.seat, m.id,
+            !m.entity ? "not realized" : !sm ? "no model" : "the recorder slot refused its model (pose hook off, or not the 77-joint layout)");
+        w.Done();
+        return;
+    }
+    g_clip = RecClip{};
+    g_clip.on = true, g_clip.kind = kind, g_clip.mule = m.id, g_clip.actor = m.actor, g_clip.entity = m.entity, g_clip.seat = m.seat;
+    g_clip.truck = TruckOf(m, vs, &g_clip.truck_id);
+    g_clip_local.clear();
+    g_clip_local.reserve(1024);
+    Log("[mrec] %s seat %d: recording MULE 0x%05X (truck %s0x%05X)", muleride::ClipKindName(kind), m.seat, m.id, g_clip.truck ? "" : "not found yet, ",
+        g_clip.truck_id);
+}
+
+void RecFinish(bool capped) noexcept {
+    const std::uint32_t n = realbody::RecordedFrames();
+    const std::uint32_t first = n > realbody::kRecordFrames - 8 ? n - (realbody::kRecordFrames - 8) : 0;
+    g_clip_frames.clear();
+    g_clip_frames.reserve(realbody::kRecordFrames);
+    for (std::uint32_t i = first; i < n; ++i) {
+        g_clip_frames.emplace_back();
+        if (!realbody::RecordedFrame(i, g_clip_frames.back())) g_clip_frames.pop_back();
+    }
+    double anchor[3] = {};
+    const bool have_anchor = AnchorOf(g_clip.seat, anchor);
+    muleride::ClipVerdict v;
+    if (have_anchor)
+        v = muleride::ClipCheck(g_clip.kind, g_clip_frames.data(), g_clip_frames.size(), g_clip_local.data(), g_clip_local.size(), anchor);
+    else
+        v.why = "seat unknown", v.frames = static_cast<unsigned>(g_clip_frames.size());
+    ++(v.ok ? g_mrec_ok : g_mrec_bad);
+    Log("[mrec] %s seat %d: %.2f s, %u fr, %.1f fps, start (%.3f %.3f %.3f) end (%.3f %.3f %.3f) %s%s | MULE 0x%05X truck 0x%05X%s, trimmed %u, paired %u "
+        "of %zu ticks, max %.0f deg/s (joint %d), step %.3f m, gap %.0f ms, bad quats %u, from the anchor: start %.3f m end %.3f m",
+        muleride::ClipKindName(g_clip.kind), g_clip.seat, v.dur_s, v.frames, v.fps, v.start[0], v.start[1], v.start[2], v.end[0], v.end[1], v.end[2],
+        v.ok ? "ok" : "bad ", v.ok ? "" : v.why, g_clip.mule, g_clip.truck_id, capped ? ", capped at 6 s" : "", v.first, v.paired, g_clip_local.size(),
+        v.max_dps, v.spin_joint, v.max_step_m, v.max_gap_ms, v.bad_quats, v.start_d, v.end_d);
+    if (v.ok && g_clip.kind == muleride::ClipKind::board && muleride::SideSeat(g_clip.seat) && !g_clip_frames.empty() && g_clip.truck) {
+        SeatRef& r = g_seat_ref[g_clip.seat];
+        r.f = g_clip_frames.back();
+        r.mule = g_clip.mule;
+        const unsigned nj = JointsIn(g_clip.entity, g_clip.truck, r.j, r.jok);
+        r.have = nj >= muleride::kJoints / 2;
+        Log("[mrec] board seat %d: the seated end kept (MULE 0x%05X, %u joints in the truck's frame)%s", g_clip.seat, g_clip.mule, nj,
+            r.have ? "" : ": too few, NOT kept");
+    }
+    g_mrec_watch[g_clip.mule].Done();
+    realbody::SetEnemySlot(realbody::kRecorderSlot, 0, realbody::EnemySlotMode::off);
+    g_clip = RecClip{};
+    g_clip_local.clear();
+}
+
+// Every game tick while armed (or while a clip runs).
+void RecTick(double now_ms) noexcept {
+    if (!g_mrec_on && !g_clip.on) return;
+    if (!RecGroupsOk()) return;
+    if (g_clip.on) {
+        std::uint32_t bits = 0, veh_id = kNoActor;
+        std::int32_t seat = -1;
+        const std::uintptr_t ride = g_clip.actor + kActRide;
+        if (mem::Q(g_clip.actor) != A(kMuleVt) || U32(g_clip.actor + kActId) != g_clip.mule || !mem::Rd(ride + kRBits, bits) || !mem::Rd(ride + kRVehId, veh_id)) {
+            RecDrop("the MULE is gone");
+        } else {
+            if (mem::Rd(ride, seat) && seat >= 0 && seat <= 4) g_clip.seat = seat;
+            if (!g_clip.truck) {
+                const std::uintptr_t ref = mem::Q(ride + kRVehRef);
+                const std::uintptr_t e = ref ? ref - 0x20 : 0;
+                if (e && KindOfEntity(e) == 2) g_clip.truck = e, g_clip.truck_id = U32(mem::Q(e + kEUnit) + kUId);
+            }
+            Xf tx, mx;
+            if (g_clip.truck && ReadXf(g_clip.truck, tx) && ReadXf(g_clip.entity, mx)) {
+                double lp[3], lr[3][3];
+                LocalOf(tx, mx, lp, lr);
+                muleride::LocalSample s;
+                s.ms = realbody::QpcNowMs();
+                for (int i = 0; i < 3; ++i) s.pos[i] = lp[i];
+                if (g_clip_local.size() < 4096) g_clip_local.push_back(s);
+            }
+            const muleride::RecEvent ev = g_mrec_watch[g_clip.mule].Step(bits & 0xFFu, veh_id != kNoActor, now_ms);
+            if (ev == muleride::RecEvent::stop || ev == muleride::RecEvent::capped) RecFinish(ev == muleride::RecEvent::capped);
+        }
+    }
+    if (!g_mrec_on || now_ms < g_mrec_next_walk) return;
+    g_mrec_next_walk = now_ms + kRecWalkMs;
+    std::vector<Veh> vs;
+    std::vector<Mule> ms;
+    WalkVehicles(vs);
+    WalkMules(ms);
+    MarkChains(ms, vs);
+    std::vector<std::uint32_t> present;
+    present.reserve(ms.size());
+    for (const Mule& m : ms) {
+        present.push_back(m.id);
+        if (g_clip.on && m.id == g_clip.mule) continue;  // stepped every tick above
+        muleride::RecWatch& w = g_mrec_watch[m.id];
+        const muleride::RecEvent ev = w.Step(m.bits & 0xFFu, m.veh_id != kNoActor, now_ms);
+        if (ev == muleride::RecEvent::start) RecStart(m, w.kind, vs, now_ms);
+        else if (ev != muleride::RecEvent::none) w.Done();  // the end of a clip it did not record
+    }
+    for (auto it = g_mrec_watch.begin(); it != g_mrec_watch.end();) {
+        bool keep = g_clip.on && it->first == g_clip.mule;
+        for (std::uint32_t id : present) keep = keep || id == it->first;
+        it = keep ? std::next(it) : g_mrec_watch.erase(it);
+    }
+}
+
+// truck_v3 10 (P2): every seated MULE's frames.
+void ConvDump() noexcept {
+    std::vector<Veh> vs;
+    std::vector<Mule> ms;
+    WalkVehicles(vs);
+    WalkMules(ms);
+    MarkChains(ms, vs);
+    const std::uintptr_t sam_skel = realbody::SamSkeleton();
+    unsigned n = 0, logged = 0, same = 0, differs = 0;
+    std::uint32_t diff_id = 0;
+    std::uintptr_t diff_skel = 0, any_skel = 0;
+    for (const Mule& m : ms) {
+        if (!m.seated() || !m.entity) continue;
+        ++n;
+        std::uint32_t tid = kNoActor;
+        const std::uintptr_t truck = TruckOf(m, vs, &tid);
+        Xf tx, mx;
+        if (!truck || !ReadXf(truck, tx) || !ReadXf(m.entity, mx)) {
+            Log("[mrec] conv seat %d MULE 0x%05X: not compared (%s)", m.seat, m.id, !truck ? "no truck of the pools" : "a transform unreadable");
+            continue;
+        }
+        ++logged;
+        double lp[3], lr[3][3];
+        LocalOf(tx, mx, lp, lr);
+        float rt[3] = {}, pt[3] = {};
+        const bool hr = realbody::ReadLocalT(reinterpret_cast<game::Entity*>(m.entity), 0, rt);
+        const bool hp = realbody::ReadLocalT(reinterpret_cast<game::Entity*>(m.entity), 1, pt);
+        constexpr unsigned kShow[6] = {0, 1, muleride::kFootR, muleride::kFootL, muleride::kHandR, muleride::kHandL};
+        double jp[6][3] = {};
+        bool jok[6] = {};
+        for (int i = 0; i < 6; ++i) jok[i] = JointIn(m.entity, mx, tx, kShow[i], jp[i]);
+        double foot_z = 1e9;
+        for (int i = 2; i < 4; ++i)
+            if (jok[i] && jp[i][2] < foot_z) foot_z = jp[i][2];
+        char jt[420];
+        std::size_t jn = 0;
+        static const char* const kJn[6] = {"j0", "j1", "foot R", "foot L", "hand R", "hand L"};
+        jt[0] = 0;
+        for (int i = 0; i < 6 && jn + 1 < sizeof(jt); ++i) {
+            const int w = jok[i] ? std::snprintf(jt + jn, sizeof(jt) - jn, "%s%s (%.3f %.3f %.3f)", i ? " " : "", kJn[i], jp[i][0], jp[i][1], jp[i][2])
+                                 : std::snprintf(jt + jn, sizeof(jt) - jn, "%s%s unread", i ? " " : "", kJn[i]);
+            if (w > 0) jn += static_cast<std::size_t>(w);
+            if (jn >= sizeof(jt)) jn = sizeof(jt) - 1;
+        }
+        // the hand helper(s): a side seat's inboard hand; the driver's both handle hands
+        char ht[200] = "-";
+        std::size_t hn = 0;
+        for (int side = 0; side < 2; ++side) {
+            const char* name = m.seat == 0 ? muleride::HandHelper(0, side != 0) : side == 0 ? muleride::InboardHelper(m.seat) : nullptr;
+            if (!name) continue;
+            const int hand = m.seat == 0 ? (side != 0 ? 5 : 4) : (muleride::InboardHandJoint(m.seat) == static_cast<int>(muleride::kHandL) ? 5 : 4);
+            float hm[4][4] = {};
+            const bool found = ride::TruckHelper(truck, name, hm);
+            if (found && jok[hand]) {
+                const double h[3] = {hm[3][0], hm[3][1], hm[3][2]};
+                hn += std::snprintf(ht + hn, sizeof(ht) - hn, "%s%s (%.3f %.3f %.3f) %.1f cm from %s", hn ? ", " : "", name, h[0], h[1], h[2],
+                                    muleride::Dist(jp[hand], h) * 100.0, kJn[hand]);
+            } else {
+                hn += std::snprintf(ht + hn, sizeof(ht) - hn, "%s%s %s", hn ? ", " : "", name, !found ? "missing" : "(hand unread)");
+            }
+            if (hn >= sizeof(ht)) hn = sizeof(ht) - 1;
+        }
+        const std::uintptr_t skel = realbody::SkeletonOf(reinterpret_cast<game::Entity*>(m.entity));
+        if (skel) any_skel = skel;
+        if (skel && sam_skel && skel == sam_skel) ++same;
+        else if (skel && sam_skel && !diff_id) ++differs, diff_id = m.id, diff_skel = skel;
+        else if (skel && sam_skel) ++differs;
+        Log("[mrec] conv seat %d MULE 0x%05X truck 0x%05X: entity (%.3f %.3f %.3f) yaw %.1f, root t %s(%.3f %.3f %.3f) pelvis t %s(%.3f %.3f %.3f) | in the "
+            "truck: %s | foot z %.3f | hand-helper %s",
+            m.seat, m.id, tid, lp[0], lp[1], lp[2], LocalYawDeg(lr), hr ? "" : "unread ", rt[0], rt[1], rt[2], hp ? "" : "unread ", pt[0], pt[1], pt[2],
+            jt, foot_z < 1e8 ? foot_z : 0.0, ht);
+    }
+    if (!sam_skel || (!same && !differs))
+        Log("[mrec] skeleton: not compared (%s)", !sam_skel ? "our Sam's skeleton unread (the pose hook off?)" : "no seated MULE's model read");
+    else if (!differs)
+        Log("[mrec] skeleton: MULE == Sam (%u MULEs, skeleton %p)", same, reinterpret_cast<void*>(sam_skel));
+    else
+        Log("[mrec] skeleton: MULE differs (%u of %u: MULE 0x%05X %p, Sam %p)", differs, same + differs, diff_id, reinterpret_cast<void*>(diff_skel),
+            reinterpret_cast<void*>(sam_skel));
+    (void)any_skel;
+    Log("[mrec] conv done: %u seated MULEs, %u logged", n, logged);
+}
+
 }  // namespace
+
+// ---------------------------------------------------------------- round 30 stage 0: public
+bool TruckById(std::uint32_t id, std::uintptr_t* entity) noexcept {
+    if (!g_checked || (g_ok & (kGPools | kGVeh)) != (kGPools | kGVeh)) return false;
+    std::vector<Veh> vs;
+    WalkVehicles(vs);
+    const Veh* v = VehById(vs, id);
+    if (!v || v->kind != 2) return false;
+    if (entity) *entity = v->entity;
+    return true;
+}
+
+bool NearestTruck(const double (&pos)[3], double max_m, std::uintptr_t* entity, std::uint32_t* id) noexcept {
+    if (!g_checked || (g_ok & (kGPools | kGVeh)) != (kGPools | kGVeh)) return false;
+    std::vector<Veh> vs;
+    WalkVehicles(vs);
+    double best = max_m;
+    const Veh* bv = nullptr;
+    for (const Veh& v : vs) {
+        Xf x;
+        if (v.kind != 2 || !ReadXf(v.entity, x)) continue;
+        const double d = std::sqrt((x.pos[0] - pos[0]) * (x.pos[0] - pos[0]) + (x.pos[1] - pos[1]) * (x.pos[1] - pos[1]) + (x.pos[2] - pos[2]) * (x.pos[2] - pos[2]));
+        if (d <= best) best = d, bv = &v;
+    }
+    if (!bv) return false;
+    if (entity) *entity = bv->entity;
+    if (id) *id = bv->id;
+    return true;
+}
+
+bool RecCommand(bool on, char* msg, std::size_t cap) noexcept {
+    if (!automation::Enabled() && !dev::Enabled()) return std::snprintf(msg, cap, "hidden runs or dev_tools only"), false;
+    if (!g_checked) return std::snprintf(msg, cap, "the truck byte checks did not run (vehicle_truck_probe=0)"), false;
+    if (!RecGroupsOk()) return std::snprintf(msg, cap, "byte checks failed (groups ok 0x%02X)", g_ok), false;
+    if (!on) {
+        RecDrop("mule_rec 0");
+        g_mrec_on.store(false);
+        g_mrec_watch.clear();
+        unsigned kept = 0;
+        for (const SeatRef& r : g_seat_ref) kept += r.have ? 1u : 0u;
+        Log("[mrec] recorder off: %u clips ok, %u bad, %u skipped; seated ends kept for %u seats", g_mrec_ok, g_mrec_bad, g_mrec_skipped, kept);
+        return std::snprintf(msg, cap, "recorder off (%u ok, %u bad)", g_mrec_ok, g_mrec_bad), true;
+    }
+    g_mrec_next_walk = 0;
+    g_mrec_on.store(true);
+    Log("[mrec] recorder on: the MULEs' ride bits every %.0f ms; one clip at a time on the recorder slot %u (up to %.0f s, %u frames)", kRecWalkMs,
+        realbody::kRecorderSlot, muleride::kClipCapMs / 1000.0, realbody::kRecordFrames);
+    return std::snprintf(msg, cap, "recorder on"), true;
+}
+
+int GhostStart(int seat, std::uint32_t* mule) noexcept {
+    GhostStop();
+    if (mule) *mule = 0;
+    if (!muleride::SideSeat(seat)) return 0;
+    g_ghost_seat = seat;
+    if (RecGroupsOk() && !g_clip.on) {
+        std::vector<Veh> vs;
+        std::vector<Mule> ms;
+        WalkVehicles(vs);
+        WalkMules(ms);
+        MarkChains(ms, vs);
+        for (const Mule& m : ms) {
+            if (!m.riding() || !m.seated() || m.seat != seat || !m.entity) continue;
+            std::uint32_t tid = kNoActor;
+            const std::uintptr_t truck = TruckOf(m, vs, &tid);
+            const std::uintptr_t sm = mem::Q(m.entity + kRecEModel);
+            if (!truck || !sm || !realbody::SetEnemySlot(realbody::kRecorderSlot, sm, realbody::EnemySlotMode::record)) continue;
+            realbody::SetRideSample(nullptr, true);
+            g_ghost_kind = 1, g_ghost_mule = m.id, g_ghost_actor = m.actor, g_ghost_entity = m.entity, g_ghost_truck = truck;
+            if (mule) *mule = m.id;
+            return 1;
+        }
+    }
+    const SeatRef& r = g_seat_ref[seat];
+    if (r.have) {
+        realbody::SetRideSample(&r.f, false);
+        g_ghost_kind = 2, g_ghost_mule = r.mule;
+        if (mule) *mule = r.mule;
+        return 2;
+    }
+    realbody::SetRideSample(nullptr, false);
+    return 0;
+}
+
+void GhostStop() noexcept {
+    if (g_ghost_kind == 1) realbody::SetEnemySlot(realbody::kRecorderSlot, 0, realbody::EnemySlotMode::off);
+    if (g_ghost_seat) realbody::SetRideSample(nullptr, false);
+    g_ghost_seat = 0, g_ghost_kind = 0, g_ghost_mule = 0, g_ghost_actor = 0, g_ghost_entity = 0, g_ghost_truck = 0;
+}
+
+bool GhostCompare(std::uintptr_t sam_entity, std::uintptr_t truck_entity, GhostErr& out) noexcept {
+    out = GhostErr{};
+    out.kind = g_ghost_kind, out.mule = g_ghost_mule;
+    static double sj[muleride::kJoints][3], rj[muleride::kJoints][3];
+    static bool sok[muleride::kJoints], rok[muleride::kJoints];
+    if (!JointsIn(sam_entity, truck_entity, sj, sok)) return false;
+    if (sok[muleride::kFootR] || sok[muleride::kFootL]) {
+        out.feet = true;
+        out.feet_z = !sok[muleride::kFootR] ? sj[muleride::kFootL][2]
+                     : !sok[muleride::kFootL] ? sj[muleride::kFootR][2]
+                     : sj[muleride::kFootR][2] < sj[muleride::kFootL][2] ? sj[muleride::kFootR][2]
+                                                                           : sj[muleride::kFootL][2];
+    }
+    if (g_ghost_kind == 1) {
+        if (mem::Q(g_ghost_actor) != A(kMuleVt) || U32(g_ghost_actor + kActId) != g_ghost_mule || !JointsIn(g_ghost_entity, g_ghost_truck, rj, rok)) return false;
+    } else if (g_ghost_kind == 2 && g_ghost_seat >= 1 && g_ghost_seat <= 4 && g_seat_ref[g_ghost_seat].have) {
+        std::memcpy(rj, g_seat_ref[g_ghost_seat].j, sizeof(rj));
+        std::memcpy(rok, g_seat_ref[g_ghost_seat].jok, sizeof(rok));
+    } else {
+        return false;
+    }
+    double sum = 0;
+    for (unsigned j = 0; j < muleride::kJoints; ++j) {
+        if (muleride::IsFinger(j) || !sok[j] || !rok[j]) continue;
+        const double d = muleride::Dist(sj[j], rj[j]) * 100.0;
+        sum += d, ++out.n;
+        if (d > out.max_cm) out.max_cm = d, out.max_j = static_cast<int>(j);
+    }
+    if (!out.n) return false;
+    out.mean_cm = sum / out.n;
+    return true;
+}
 
 void Install(bool probe_on, bool seat_on) noexcept {
     g_key = probe_on;
@@ -977,6 +1389,7 @@ void Install(bool probe_on, bool seat_on) noexcept {
 
 void Tick(double now_ms) noexcept {
     SeatTick(now_ms);  // round 29 T2: the guest's 5 s seat line (vehicle_mule_seat; any probe key)
+    RecTick(now_ms);   // round 30 stage 0: mule_rec (hidden runs / dev_tools; off by default)
     if (!g_key) return;
     g_game_tid.store(GetCurrentThreadId(), std::memory_order_relaxed);
     DrainOff();
@@ -1021,12 +1434,18 @@ bool Command(const double (&v)[3], char* msg, std::size_t cap) noexcept {
         case Op::ident:
             IdentDump();
             return std::snprintf(msg, cap, "identity dump logged"), true;
+        case Op::conv:
+            // round 30: the hand-helper lookup is a game call (FUN_142F6B290), so the same gate as ride_test 41
+            if (!automation::Enabled() && !dev::Enabled()) return std::snprintf(msg, cap, "hidden runs or dev_tools only"), false;
+            if (!(g_ok & kGRide)) return std::snprintf(msg, cap, "the ride's byte checks failed"), false;
+            ConvDump();
+            return std::snprintf(msg, cap, "seated MULE frames logged"), true;
         case Op::v3:
         case Op::seat:
         case Op::bad:
             break;
     }
-    return std::snprintf(msg, cap, "op 0 off, 1 [s] watch, 3 v3 status, 4 v3 seat status, 8 seats, 9 identity"), false;
+    return std::snprintf(msg, cap, "op 0 off, 1 [s] watch, 3 v3 status, 4 v3 seat status, 8 seats, 9 identity, 10 seated MULE frames"), false;
 }
 
 // ---------------------------------------------------------------- round 29 T2 (vehicle_mule_seat)
@@ -1037,6 +1456,20 @@ bool SeatHostOccupant(std::uint32_t mule) noexcept {
     for (const HostOcc& h : g_hocc)
         for (unsigned i = 0; i < h.last.n && i < kOccMaxPerTruck; ++i)
             if (h.last.e[i].mule == mule) return true;
+    return false;
+}
+std::uint8_t SeatHostSeat(std::uint32_t mule) noexcept {
+    if (!g_hsend_was || !mule) return kOccSeatUnknown;
+    for (const HostOcc& h : g_hocc)
+        for (unsigned i = 0; i < h.last.n && i < kOccMaxPerTruck; ++i)
+            if (h.last.e[i].mule == mule) return h.last.e[i].seat;
+    return kOccSeatUnknown;
+}
+bool SeatHostEntry(std::uint32_t mule, OccEntry* out) noexcept {
+    if (!out || !g_hsend_was || !mule) return false;
+    for (const HostOcc& h : g_hocc)
+        for (unsigned i = 0; i < h.last.n && i < kOccMaxPerTruck; ++i)
+            if (h.last.e[i].mule == mule) return *out = h.last.e[i], true;
     return false;
 }
 void SeatHostTick(const OccTruck* trucks, std::size_t n, bool send, double now_ms) noexcept {
@@ -1455,6 +1888,7 @@ void SeatBodiesProbe(std::uintptr_t entity, const SeatBodies& s, char* buf, std:
 void EmergencyStop() noexcept {
     g_rec.store(false);
     g_watch.store(false);
+    g_mrec_on.store(false);  // round 30: the recorder arms no new clip (a running one ends on its own tick)
 }
 
 }  // namespace st::truckv3

@@ -58,6 +58,12 @@ void SeatHostTick(const OccTruck* trucks, std::size_t n, bool send, double now_m
 // Host: MULE `mule` is in the newest occupant list of a truck whose STO1 goes to the guest now (its pose slot is ranked first:
 // erules::PoseCand::seated). False while occupants are not sent.
 bool SeatHostOccupant(std::uint32_t mule) noexcept;
+// Host: MULE `mule`'s seat (0..4) in that newest occupant list, else kOccSeatUnknown (round 30 release A: the side library
+// learns from the side seats 1..4).
+std::uint8_t SeatHostSeat(std::uint32_t mule) noexcept;
+// Host: MULE `mule`'s whole entry in that newest occupant list (its seat, its place in the truck's frame and whether that place
+// was measured: truckv3::kOccSrcChain). False when it is in none (review logic 1: the side library learns from a seated one).
+bool SeatHostEntry(std::uint32_t mule, OccEntry* out) noexcept;
 // Guest (enemy_sync, a seated mirror each tick): what T2 knows of MULE `mule`: `in.on` (the key, V3 live, the guest, the partner
 // sends occupants), `in.record` (a fresh STO1 names it: its truck, seat, source), `in.followed` (her follower holds that truck: the
 // placement `led` and the seat now `exact`). in.host_pose / in.slot are the caller's.
@@ -134,8 +140,38 @@ void Install(bool probe_on, bool seat_on) noexcept;
 void Tick(double now_ms) noexcept;
 // truck_v3 <op> [a] (debug action, game thread): 0 the watch off + the status line; 1 [period s] the watch on (default 1 s);
 // 3 the V3 status line (round 28 T1; any probe key); 4 the T2 seat status line (round 29; any probe key); 8 the seat dump; 9 the
-// identity dump. Every vehicle and every MULE of this game.
+// identity dump; 10 (round 30 stage 0, P2) the seated MULEs' frames ("[mrec] conv ..." and "[mrec] skeleton: ..."). Every vehicle
+// and every MULE of this game.
 bool Command(const double (&v)[3], char* msg, std::size_t cap) noexcept;
+
+// ---- round 30 stage 0 (side riding; docs/real-partner-body.md 24.19). Game thread. Lines start "[mrec]". Read-only in the game:
+// the recorder slot is realbody's (kRecorderSlot 8, never the SEP1 slots); the helper lookup is ride_together's (ride::TruckHelper).
+// A truck of the pools by its unit id / the nearest one within max_m of pos (the actor walk's byte checks; false: none, or off).
+bool TruckById(std::uint32_t id, std::uintptr_t* entity) noexcept;
+bool NearestTruck(const double (&pos)[3], double max_m, std::uintptr_t* entity, std::uint32_t* id) noexcept;
+// mule_rec 0|1 (debug action; hidden runs or dev_tools): the MULE clip recorder (P4). On: every 100 ms the MULEs' ride bits
+// (+0xE44) are watched; the rising edge of bit 2 starts a board (bit 0 newly set, or +0xE20 names a vehicle) or an alight (bit 0
+// already set) of one MULE at a time: its 77 local joints, root and pelvis translations every animate (the recorder slot's ring)
+// and its entity in the truck's frame every game tick, up to 6 s; then validated and logged ("[mrec] board seat N: ..."). The clips
+// stay in memory (a board's seated end per seat: the ghost's recorded sample). Off: a clip being recorded is dropped.
+bool RecCommand(bool on, char* msg, std::size_t cap) noexcept;
+// ride_test 43 (P3): source 4's sample for side seat `seat` (1..4): 1 live (a MULE seated there now: the recorder slot on it),
+// 2 the newest validated board clip's seated end for that seat, 0 none (SetRideSample(nullptr): the seated idle). `mule`: its id.
+// GhostStop gives the slot back and clears the sample.
+int GhostStart(int seat, std::uint32_t* mule) noexcept;
+void GhostStop() noexcept;
+// The ghost's error: our Sam's model joints in our truck's frame against the reference (the live MULE's in its truck's frame, or
+// the recorded seated end's), fingers left out; and our Sam's lowest foot z in our truck's frame. False: nothing compared.
+struct GhostErr {
+    unsigned n = 0;
+    double mean_cm = 0, max_cm = 0;
+    int max_j = -1;
+    bool feet = false;
+    double feet_z = 0;
+    int kind = 0;  // GhostStart's
+    std::uint32_t mule = 0;
+};
+bool GhostCompare(std::uintptr_t sam_entity, std::uintptr_t truck_entity, GhostErr& out) noexcept;
 // The mod's emergency stop (any thread): the watch off and the detour's records dropped (it passes through).
 void EmergencyStop() noexcept;
 

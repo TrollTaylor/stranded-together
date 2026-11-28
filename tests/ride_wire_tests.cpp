@@ -692,6 +692,199 @@ void TestSaveBoxAndSpot() {
 
 }  // namespace
 
+// Round 30 release A: the side seats, the seat choice, the per-seat exit and the STR1 hello.
+void TestSideSeats() {
+    // names, sides, MULE seats
+    CHECK(std::strcmp(SeatName(3), "right front side") == 0 && std::strcmp(SeatName(6), "left rear side") == 0 && std::strcmp(SeatName(7), "no seat") == 0);
+    CHECK(SideSeat(3) && SideSeat(6) && !SideSeat(2) && !SideSeat(7) && !SideSeat(0));
+    CHECK(MuleSeatOf(3) == 1 && MuleSeatOf(4) == 2 && MuleSeatOf(5) == 3 && MuleSeatOf(6) == 4 && MuleSeatOf(1) == 0);
+    CHECK(SideOf(3) == 1 && SideOf(5) == 1 && SideOf(4) == -1 && SideOf(6) == -1 && SideOf(1) == 0);
+    CHECK(SeatValidFor(2, 1) && SeatValidFor(2, 3) && SeatValidFor(2, 6) && !SeatValidFor(2, 2) && !SeatValidFor(2, 7) && !SeatValidFor(2, 0));
+    CHECK(SeatValidFor(1, 1) && !SeatValidFor(1, 3) && SeatValidFor(3, 2) && !SeatValidFor(3, 4) && !SeatValidFor(0, 0));
+    CHECK(std::strcmp(DenyName(static_cast<std::uint8_t>(Deny::seat)), "that seat is not offered") == 0);
+    // the anchors (MULE seats 1..4) and the hand helpers
+    float a[3], h[3];
+    CHECK(SeatAnchor(2, 3, a) && a[0] == 1.299f && a[1] == 0.127f && a[2] == 0.778f);
+    CHECK(SeatAnchor(2, 4, a) && a[0] == -1.299f && a[1] == 0.127f);
+    CHECK(SeatAnchor(2, 5, a) && a[0] == 1.299f && a[1] == -0.692f);
+    CHECK(SeatAnchor(2, 6, a) && a[0] == -1.299f && a[1] == -0.692f && a[2] == 0.778f);
+    CHECK(!SeatAnchor(1, 3, a) && !SeatAnchor(3, 5, a));
+    float p[3];
+    CHECK(SeatAnchor(2, 1, a) && PassengerSeat(2, p) && a[0] == p[0] && a[1] == p[1] && a[2] == p[2]);
+    for (std::uint8_t s = 3; s <= 6; ++s) {
+        CHECK(SideHandle(s, h) && SeatAnchor(2, s, a));
+        // the hand helper is inboard of the anchor, above it, near it along the truck
+        CHECK(SideOf(s) * (h[0] - a[0]) < 0 && h[2] - a[2] > 1.3f && std::fabs(h[1] - a[1]) < 0.25f);
+        float ap[3];
+        CHECK(ApproachPoint(2, s, ap) && ap[2] == 0.0f && std::fabs(ap[0] - (a[0] + SideOf(s) * 1.0f)) < 1e-6f && ap[1] == a[1]);
+    }
+    CHECK(!SideHandle(1, h) && !SideHandle(7, h));
+    float door[3], ap[3];
+    CHECK(DoorPoint(2, door) && ApproachPoint(2, 1, ap) && ap[0] == door[0] && ap[1] == door[1]);
+    // the choice: nearest approach point within 3 m, else the cab
+    const double at_rf[3] = {2.4, 0.1, 0}, at_lr[3] = {-2.3, -0.8, 0}, at_door[3] = {1.8, 0.9, 0}, far[3] = {9, 9, 0}, at_lf[3] = {-2.2, 0.2, 0.4};
+    CHECK(PickSeat(2, true, at_rf) == 3 && PickSeat(2, true, at_lr) == 6 && PickSeat(2, true, at_door) == 1 && PickSeat(2, true, at_lf) == 4);
+    CHECK(PickSeat(2, true, far) == 1);
+    CHECK(PickSeat(2, false, at_rf) == 1 && PickSeat(2, false, at_lr) == 1);  // not offered: the cab
+    CHECK(PickSeat(1, true, at_rf) == 1 && PickSeat(3, true, at_rf) == 2);   // only the truck has side seats
+    CHECK(PickSeat(2, true, at_rf, 1u << 3) != 3);                           // taken
+    const double nan[3] = {std::nan(""), 0, 0};
+    CHECK(PickSeat(2, true, nan) == 1);
+    // review (logic 3): between the door and the right front approach point, the side seat 0.25 m off, the door 0.60 m: under
+    // kPickCabBiasM nearer, the cab
+    const double between[3] = {2.2, 0.35, 0}, nearer_rf[3] = {2.35, 0.05, 0};
+    CHECK(PickSeat(2, true, between) == 1);
+    CHECK(PickSeat(2, true, nearer_rf) == 3);
+    static_assert(kPickCabBiasM == 0.5, "the cab bias");
+    // review (ux 1): the driver lets the body glide on a side seat (not a resume): the first 650 ms, or a fresh glide bit
+    CHECK(DriverBodyFree(true, false, 100, 1e9) && !DriverBodyFree(true, false, 700, 1e9));
+    CHECK(DriverBodyFree(true, false, 5000, 100) && !DriverBodyFree(true, false, 5000, 300));
+    CHECK(!DriverBodyFree(false, false, 100, 0) && !DriverBodyFree(true, true, 100, 0));
+    // the message carries a side seat on the truck only
+    Msg m = Req();
+    std::uint8_t buf[64];
+    for (std::uint8_t s = 3; s <= 6; ++s) {
+        m.seat = static_cast<Seat>(s);
+        const std::size_t n = EncodeMsg(m, buf, sizeof(buf));
+        Msg o;
+        CHECK(n == kMessageSize && DecodeMsg(buf, n, o) && static_cast<std::uint8_t>(o.seat) == s);
+    }
+    m.seat = static_cast<Seat>(7);
+    CHECK(EncodeMsg(m, buf, sizeof(buf)) == 0);
+    m = Req(), m.vehicle_id = kRoadster, m.kind = 1, m.seat = Seat::side_rf;
+    CHECK(EncodeMsg(m, buf, sizeof(buf)) == 0);
+    m = Req(), m.type = MsgType::deny, m.reason = static_cast<std::uint8_t>(Deny::seat), m.seat = Seat::side_lr;
+    {
+        const std::size_t n = EncodeMsg(m, buf, sizeof(buf));
+        Msg o;
+        CHECK(n && DecodeMsg(buf, n, o) && o.reason == 6 && o.seat == Seat::side_lr);
+        m.reason = 7;
+        CHECK(EncodeMsg(m, buf, sizeof(buf)) == 0);
+    }
+    // the exit per seat: a side seat by choice on its own side at its anchor's place along the truck
+    const double pos[3] = {0, 0, 5};
+    const float rows[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+    const float still[3] = {0, 0, 0};
+    float half[3];
+    st::vwire::KindHalfExtents(2, half);
+    for (std::uint8_t s = 3; s <= 6; ++s) {
+        SeatAnchor(2, s, a);
+        const ExitSpot e = ExitPlacement(2, s, pos, rows, still, false);
+        CHECK(e.side == SideOf(s) && std::fabs(e.pos[0] - SideOf(s) * (half[0] + kSideExitOutM)) < 1e-5 && std::fabs(e.pos[1] - a[1]) < 1e-5 && e.pos[2] == 5);
+        CHECK(std::fabs(e.facing[0] + SideOf(s)) < 1e-6);
+    }
+    // forced, sliding toward the left: put off on the right even from a left seat, moved back when fast
+    const float slide_left[3] = {-4, 20, 0};
+    ExitSpot e = ExitPlacement(2, 4, pos, rows, slide_left, true);
+    SeatAnchor(2, 4, a);
+    CHECK(e.side == 1 && e.pos[1] < a[1] - 1.0);
+    // the cab seat keeps the old rule
+    const ExitSpot c1 = ExitPlacement(2, 1, pos, rows, still, false), c0 = ExitPlacement(2, pos, rows, still, false);
+    CHECK(c1.pos[0] == c0.pos[0] && c1.pos[1] == c0.pos[1] && c1.side == c0.side);
+    // every side exit is outside the truck's box
+    for (std::uint8_t s = 3; s <= 6; ++s) {
+        const ExitSpot x = ExitPlacement(2, s, pos, rows, still, false);
+        const double xp[3] = {x.pos[0], x.pos[1], x.pos[2] + 0.5};
+        CHECK(!InVehicleBox(2, pos, rows, xp));
+    }
+}
+
+// Round 30 (run 20261127-171443 leg 2): the board press without the game's prompt
+void TestNoPrompt() {
+    NoPromptIn in;
+    in.native_on = true, in.pressed = true, in.allowed = true, in.allowed_for_ms = 5000, in.approach_dist_m = 0.4;
+    CHECK(NoPromptPress(in) == NoPrompt::board);  // the defaults: no prompt, no game press, no earlier press
+    NoPromptIn x = in;
+    x.native_on = false;  // the ImGui hold prompt boards then
+    CHECK(NoPromptPress(x) == NoPrompt::idle);
+    x = in, x.pressed = false;
+    CHECK(NoPromptPress(x) == NoPrompt::idle);
+    x = in, x.allowed = false;
+    CHECK(NoPromptPress(x) == NoPrompt::not_allowed);
+    // the game's own prompt on the partner's vehicle: its press path, never a second REQUEST
+    x = in, x.partner_prompt_age_ms = 0;
+    CHECK(NoPromptPress(x) == NoPrompt::game_prompt);
+    x.partner_prompt_age_ms = kNoPromptQuietMs - 1;
+    CHECK(NoPromptPress(x) == NoPrompt::game_prompt);
+    x.partner_prompt_age_ms = kNoPromptQuietMs;
+    CHECK(NoPromptPress(x) == NoPrompt::board);
+    // another vehicle's RideOn: the press is the game's get-on there
+    x = in, x.other_prompt_age_ms = 100;
+    CHECK(NoPromptPress(x) == NoPrompt::other_vehicle);
+    // the game's TryStart took a press (this tick, or under 500 ms ago)
+    x = in, x.game_press_now = true;
+    CHECK(NoPromptPress(x) == NoPrompt::game_press);
+    x = in, x.game_press_age_ms = kNoPromptGameMs - 1;
+    CHECK(NoPromptPress(x) == NoPrompt::game_press);
+    // the door rule, not the native 7 m: only beside the chosen seat
+    x = in, x.approach_dist_m = kBoardRadiusM + 0.01;
+    CHECK(NoPromptPress(x) == NoPrompt::too_far);
+    x.approach_dist_m = std::nan("");
+    CHECK(NoPromptPress(x) == NoPrompt::too_far);
+    // the game gets its chance first, and one press per second at most
+    x = in, x.allowed_for_ms = 100;
+    CHECK(NoPromptPress(x) == NoPrompt::too_soon);
+    x = in, x.since_last_ms = 900;
+    CHECK(NoPromptPress(x) == NoPrompt::too_soon);
+    x.since_last_ms = kNoPromptGapMs;
+    CHECK(NoPromptPress(x) == NoPrompt::board);
+    // NaN ages never board
+    x = in, x.partner_prompt_age_ms = std::nan("");
+    CHECK(NoPromptPress(x) == NoPrompt::game_prompt);
+    for (int i = 0; i <= static_cast<int>(NoPrompt::count); ++i) CHECK(NoPromptName(static_cast<NoPrompt>(i)) != nullptr);
+}
+
+void TestHello() {
+    Hello h;
+    h.features = kFeatRide | kFeatSides, h.role = 2;
+    std::uint8_t buf[32];
+    const std::size_t n = EncodeHello(h, buf, sizeof(buf));
+    CHECK(n == kHelloMessageSize && n == 16);
+    std::uint8_t t = 0;
+    CHECK(st::vwire::PeekType(buf, n, &t) && t == kHelloSvmType && t == 53);
+    Hello o;
+    CHECK(DecodeHello(buf, n, o) && o.version == 1 && o.features == 3 && o.role == 2);
+    const auto flip = [&](std::size_t at, std::uint8_t v) {
+        std::uint8_t b[32];
+        std::memcpy(b, buf, n);
+        b[at] = v;
+        Hello x;
+        return DecodeHello(b, n, x);
+    };
+    CHECK(!flip(4, 48));   // another type
+    CHECK(!flip(8, 'X'));  // magic
+    CHECK(!flip(12, 0));   // version 0
+    CHECK(!flip(14, 0) && !flip(14, 3));  // role
+    CHECK(!flip(15, 1));   // reserved
+    CHECK(flip(12, 2));    // a newer version is read
+    {
+        std::uint8_t b[32];
+        std::memcpy(b, buf, n);
+        b[13] = 0xFF;  // unknown feature bits dropped
+        Hello x;
+        CHECK(DecodeHello(b, n, x) && x.features == kAllFeatures);
+    }
+    CHECK(!DecodeHello(buf, n - 1, o) && !DecodeHello(nullptr, n, o));
+    h.role = 0;
+    CHECK(EncodeHello(h, buf, sizeof(buf)) == 0);
+    h.role = 1;
+    CHECK(EncodeHello(h, buf, 15) == 0);
+    // a STQ1 message is not a hello, nor a hello a STQ1
+    Msg m = Req();
+    std::uint8_t q[64];
+    const std::size_t qn = EncodeMsg(m, q, sizeof(q));
+    CHECK(!DecodeHello(q, qn, o));
+    Msg mo;
+    CHECK(!DecodeMsg(buf, EncodeHello(h, buf, sizeof(buf)), mo));
+    // offered
+    CHECK(SidesOffered(true, true, true, 1000, kFeatSides));
+    CHECK(!SidesOffered(false, true, true, 1000, kFeatSides));
+    CHECK(!SidesOffered(true, false, true, 1000, kFeatSides));
+    CHECK(!SidesOffered(true, true, false, 1000, kFeatSides));
+    CHECK(!SidesOffered(true, true, true, 7000, kFeatSides));
+    CHECK(!SidesOffered(true, true, true, 1000, kFeatRide));
+}
+
 int main() {
     setvbuf(stdout, nullptr, _IONBF, 0);
     TestMessages();
@@ -702,6 +895,9 @@ int main() {
     TestExit();
     TestSaveGate();
     TestSaveBoxAndSpot();
+    TestSideSeats();
+    TestHello();
+    TestNoPrompt();
     if (g_fail) {
         std::printf("st_ride_wire_tests: %d of %d checks FAILED\n", g_fail, g_checks);
         return 1;

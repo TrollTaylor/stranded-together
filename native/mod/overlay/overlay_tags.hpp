@@ -37,7 +37,28 @@ void SetViewReader(ViewReader reader) noexcept;
 
 // Game thread, every tick while the feature is on (a frame older than 500 ms is not drawn).
 void Publish(const Frame& f) noexcept;
-// Render thread: a fresh frame wants drawing (the overlay keeps its renderer for it).
+
+// Round 30 BT S1 (docs/enemy-sync.md section 24): the partner's BT trouble as small in-world marks, published by bt_markers.cpp
+// beside the name tags and drawn through the same camera reader. No text: a diamond over a gazer sensing the partner, a dark ring
+// on the ground round the partner while BTs hunt them, a circle with a health bar over the catcher they fight.
+inline constexpr unsigned kMaxBtMarks = 8;
+enum BtMarkKind : std::uint8_t { kBtGazer = 1, kBtTar = 2, kBtCatcher = 3 };
+struct BtMark {
+    std::uint8_t kind = 0;
+    double anchor[3] = {};  // gazer: over its head; tar: the ground under the partner; catcher: over it
+    float radius = 0;       // tar: the ring's radius (m)
+    float hp = -1;          // catcher: 0..100 (percent), else -1
+    bool gold = false;      // tar: a golden hunt (the ring drawn gold)
+};
+struct BtFrame {
+    bool show = false;
+    std::uintptr_t view = 0;
+    unsigned count = 0;
+    BtMark marks[kMaxBtMarks];
+};
+void PublishBt(const BtFrame& f) noexcept;
+
+// Render thread: a fresh frame (names or BT marks) wants drawing (the overlay keeps its renderer for it).
 bool Wanted() noexcept;
 // Render thread, between ImGui::NewFrame and Render. w, h: back buffer; ui_scale: the overlay's.
 void Draw(ImDrawList* dl, float w, float h, float ui_scale) noexcept;
@@ -52,6 +73,9 @@ struct Stats {
     float last_dist = 0;              // metres
     float last_size = 0;              // text px
     bool last_fitted = false;         // letter-/pillarboxed viewport
+    // round 30 BT marks
+    unsigned long bt_published = 0, bt_drawn_frames = 0;
+    unsigned bt_last_drawn = 0, bt_last_gazer = 0, bt_last_tar = 0, bt_last_catcher = 0;  // the last frame that drew a mark
 };
 Stats GetStats() noexcept;
 

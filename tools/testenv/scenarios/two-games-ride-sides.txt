@@ -1,0 +1,182 @@
+# Round 30 release A: riding on the truck's side seats together (docs/real-partner-body.md section 24.20), hidden:
+#   pwsh -File tools\testenv\Start-TestRun.ps1 -Scenario two-games-ride-sides -SeedSaves complete-100 -GuestSeed profile-only
+# host_save=1, the real shared vehicles with remote driving, the side library's cache off (two games on one machine).
+# Both games say which ride features they know (the STR1 hello, SVM1 type 53: "side seats yes").
+# 1. The host drives the truck; the guest stands at its right front side (ride_test 8 1 3: that seat's approach point) and
+#    boards with the game's own Use Vehicle: the request names the right front side, the host ACCEPTs it, the guest's Sam
+#    glides onto the seat's anchor and hangs there (the library idle or the procedural hang), the host's screen shows the
+#    partner body at that seat. The host drives forward and stops. A link blackout (the guest's game drops every datagram for
+#    1.5 s) is ridden out on the seat. The guest gets off with a press: the settle, the glide out, put beside the truck on
+#    its right.
+# 2. The swap: the host gets off, the guest takes the wheel, the host boards the left rear side the same way. A save on the
+#    host while it hangs there: the save guard puts it off for the capture, then its game asks for the seat back and gets
+#    the SAME seat (the left rear side), put on the anchor without a glide. The host gets off with a press.
+#    Round 30 fix (run 20261127-171443: no game prompt for 15 s at the left rear side): the game's own targeting may not offer
+#    Use Vehicle there; a press of X then boards through the mod's board press without the game's prompt. The leg waits
+#    (optionally) for the prompt, logs what the game's targeting makes of the truck (ride_state), places Sam again before
+#    each round of presses, and passes on either path; the asking line names which one boarded.
+# 3. The old-partner leg: the guest (driving) turns its side seats off (ride_test 44 0, as ride_sides=0: its STR1 hello
+#    without them); the host at the right front side is offered the cab seat only ("side seats not offered ... the cab seat
+#    only"), boards the passenger seat, gets off; the guest's side seats back on.
+# Pass (in the logs): the hellos, every ACCEPT with its seat, the carries with their seats, the blackout ridden out, the
+# resume to the same seat, every exit by choice with the capsule back on, no FAULT. Check enlarged: R02 / S01 (both screens:
+# the passenger hanging on the truck's side, not in the cab), R05 (the guest beside the truck's right side).
+# covers: ride save-guard
+role host
+graphics low
+timeout 360
+ini host_save=1
+ini partner_body=real
+ini partner_collision=0
+ini ride_mule_cache=0
+waitready 90
+@guest waitready 120
+waitlog 120 \[overlay\] input attached
+@guest waitlog 120 \[overlay\] input attached
+waitlog 10 \[config\] ride_sides=1 ride_mule_pose=1 ride_mule_record=1 ride_mule_cache=0
+@guest waitlog 10 \[config\] ride_sides=1 ride_mule_pose=1 ride_mule_record=1 ride_mule_cache=0
+waitlog 10 \[coop\] host-held save session ON \(host
+@guest waitlog 10 \[coop\] host-held save session ON \(guest
+waitlog 60 \[vshare\] shared real vehicles ON \(host
+@guest waitlog 60 \[vshare\] shared real vehicles ON \(guest
+waitlog 10 \[ride\] riding together ON \(host
+@guest waitlog 10 \[ride\] riding together ON \(guest
+waitlog 5 \[ride\] side seats ON \(session\.ini ride_sides=1\)
+@guest waitlog 5 \[ride\] side seats ON \(session\.ini ride_sides=1\)
+wait 22000
+waitlog 30 \[link\] CONNECTED
+pad A 150
+waitlog 30 \[coop\] host: title Continue
+@guest waitlog 120 \[coop\] guest: wrote the host's save #1 as manualsave5
+until 240 5000 \[sync\] local player entity 0+ -> 0*[1-9A-F] => pad A 120
+waitplayer 60
+@guest waitlog 180 \[coop\] guest: in the world after
+@guest waitplayer 60
+waitlog 60 \[vshare\] host: world ready
+@guest waitlog 60 \[vshare\] guest: world ready
+@guest waitlog 60 \[vshare\] guest: the host's snapshot #[0-9]+ is complete
+@guest waitlog 30 \[vshare\] guest: binding:
+waitlog 10 \[ride\] STR1 hello received: version 1, features 0x3 \(side seats yes\), role guest
+@guest waitlog 10 \[ride\] STR1 hello received: version 1, features 0x3 \(side seats yes\), role host
+wait 8000
+# ---- 1. the host drives, the guest boards the right front side
+action vehicle_sync 8 1.8 2
+@guest action vehicle_sync 8 8 2
+wait 1500
+until 20 4000 \[vdrive\] host: our Sam drives truck => pad X 150
+@guest waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached
+wait 2500
+@guest action ride_test 8 1 3
+@guest waitlog 8 \[ride\] native prompt: the partner's truck 0x[0-9A-F]+: boarding allowed
+@guest screenshot R01-guest-at-side
+@guest until 15 3000 \[ride\] guest: our Sam carried on the truck 0x[0-9A-F]+ \(right front side, ride # => pad X 150
+waitlog 10 \[ride\] host: the partner asks to ride our truck .*ACCEPTED \(#1;.*right front side\)
+@guest waitlog 3 \[ride\] guest: asking to ride the truck .*right front side\)
+@guest waitlog 3 \[ride\] side seat right front side \(MULE seat 1\): a 0\.5 s glide onto the anchor
+@guest waitlog 3 \[ride\] side seat right front side: on the seat
+waitlog 5 \[ride\] the partner body sits in our truck 0x[0-9A-F]+ at the right front side
+@guest waitlog 4 \[ride\] side seat right front side: pose (library idle|procedural hang), on the seat; feet z
+wait 1000
+screenshot R02-host-sees-side
+@guest screenshot R02-guest-hanging
+@guest pad none 600 rx=32767
+@guest screenshot R02b-guest-hanging-side
+pad none 3000 rt=150 keep
+@guest screenshot R03-guest-moving
+screenshot R03-host-moving
+pad none 1500 lt=255 keep
+pad none 0
+wait 2000
+# the blackout: ridden out on the seat
+@guest action coop_session 1 1500
+@guest waitlog 4 \[ride\] no pose from the driver for [0-9]+ ms: our Sam stays on the seat \(link still connected
+@guest waitlog 6 \[ride\] the driver's poses are back after [0-9]+ ms: the ride goes on
+@guest screenshot R04-guest-after-blackout
+wait 1500
+@guest action ride_state
+@guest waitlog 3 \[ride\] state: .*riding
+@guest pad X 150
+@guest waitnew 3 \[ride\] get off the truck's right front side: settle 300 ms, glide 400 ms
+@guest waitlog 4 \[ride\] guest: our Sam off the truck .*\(#1, got off\).*side seat right front side
+waitlog 6 \[ride\] host: the partner's ride .* is over \(got off\)
+@guest waitlog 4 \[ride\] capsule back ON \(got off
+wait 2000
+@guest screenshot R05-guest-off
+screenshot R05-host-sees-off
+# ---- 2. the swap: the guest drives, the host boards the left rear side; a save while it hangs: the same seat back
+pad X 150
+waitlog 20 \[vdrive\] host: our Sam got off truck
+wait 5000
+action vehicle_sync 8 8 2
+@guest action vehicle_sync 8 1.8 2
+wait 1500
+@guest until 20 4000 \[vdrive\] guest: our Sam drives truck => pad X 150
+waitlog 20 \[vdrive\] host: the guest claims truck 0x[0-9A-F]+ \(get on, epoch [0-9]+\): granted
+waitlog 20 \[vdrive\] follower of truck 0x[0-9A-F]+ attached
+wait 2500
+action ride_test 8 1 6
+waitnew 8 \[ride\] native prompt: the partner's truck 0x[0-9A-F]+: boarding allowed
+# a failed optional step fails the run (docs/hidden-testing.md), so no optional steps here: run 20261127-175449 showed the host's
+# game never offers Use Vehicle on the partner-driven truck (registry NO, +0x1EC 0), and the board press without the prompt boards
+wait 1500
+action ride_state
+waitnew 3 \[ride\] state: game targeting: registry (yes|NO|unread)
+until 12 1500 \[ride\] host: our Sam carried on the truck 0x[0-9A-F]+ \(left rear side, ride #[0-9A-F]+, #1\) => pad X 150
+waitlog 3 \[ride\] host: asking to ride the truck 0x[0-9A-F]+ \((the game's Use Vehicle|the board press without the game's prompt), .*left rear side\)
+@guest waitlog 10 \[ride\] guest: the partner asks to ride our truck .*ACCEPTED \(#1;.*left rear side\)
+@guest waitlog 5 \[ride\] the partner body sits in our truck 0x[0-9A-F]+ at the left rear side
+waitlog 4 \[ride\] side seat left rear side: pose (library idle|procedural hang), on the seat; feet z
+wait 1000
+screenshot S01-host-hanging
+@guest screenshot S01-guest-sees-side
+until 20 1000 \[save\] #[0-9]+ pending \(forced save F[0-9]+\): auto save.*our Sam CARRIED => action save_guard 1 4 1
+waitlog 5 \[save\] #[0-9]+ HELD: our Sam is carried
+waitlog 5 \[ride\] host: our Sam off the truck .*\(#1, the game saves, forced\).*side seat left rear side
+waitlog 5 \[ride\] once the save is written our Sam asks for the truck's seat back
+waitlog 30 \[save\] finished ok: #[0-9]+ \(forced save F[0-9]+\) \(after the hold
+waitlog 10 \[ride\] host: asking for the truck 0x[0-9A-F]+'s seat back after the save
+@guest waitlog 10 \[ride\] guest: the partner asks to ride our truck .*the seat back after a save\): ACCEPTED .*left rear side\)
+waitlog 10 \[ride\] host: our Sam carried on the truck 0x[0-9A-F]+ \(left rear side, ride #[0-9A-F]+, #2\)
+waitlog 3 \[ride\] side seat left rear side \(MULE seat 4\): put on the anchor \(no glide: a resume\)
+waitlog 10 \[ride\] host: our Sam back on the truck's seat after the save
+wait 1500
+screenshot S02-host-back-on
+action save_guard 0
+pad X 150
+waitnew 3 \[ride\] get off the truck's left rear side: settle 300 ms, glide 400 ms
+waitlog 4 \[ride\] host: our Sam off the truck .*\(#2, got off\).*side seat left rear side
+@guest waitlog 6 \[ride\] guest: the partner's ride .* is over \(got off\)
+wait 2500
+screenshot S03-host-off
+# ---- 3. the old-partner leg: the driver's side seats off (as ride_sides=0): the cab seat only
+@guest action ride_test 44 0
+waitlog 6 \[ride\] STR1 hello received: version 1, features 0x1 \(side seats no\)
+action ride_test 8 1 3
+wait 1500
+until 15 3000 \[ride\] host: our Sam carried on the truck 0x[0-9A-F]+ \(passenger seat, ride #[0-9A-F]+, #3\) => pad X 150
+waitlog 3 \[ride\] side seats not offered: the partner's build has its side seats off: the cab seat only
+@guest waitlog 10 \[ride\] guest: the partner asks to ride our truck .*ACCEPTED \(#3;.*passenger seat\)
+wait 2000
+screenshot T01-host-in-cab
+pad X 150
+waitlog 6 \[ride\] host: our Sam off the truck .*\(#3, got off\)
+@guest action ride_test 44 1
+@both action ride_state
+@both action ride_test 42
+waitnew 3 \[ride\] side library:
+nolog \[ride\] host: our Sam off the truck .*side seat .*link lost
+@guest nolog \[ride\] guest: our Sam off the truck .*link lost
+nolog \[ride\] no seat back after the save
+nolog \[ride\] ride #[0-9A-F]+: asked for the
+@guest nolog \[ride\] .*DENIED, no fresh STR1 hello
+nolog \[ride\] .*side seats not offered here now .*the cab seat instead
+@guest nolog \[ride\] .*side seats not offered here now .*the cab seat instead
+nolog \[ride\].*FAULT
+@guest nolog \[ride\].*FAULT
+nolog \[vdrive\].*FAULT
+@guest nolog \[vdrive\].*FAULT
+nolog \[save\].*FAULT
+@guest nolog \[save\].*FAULT
+@guest quit
+wait 3000
+quit

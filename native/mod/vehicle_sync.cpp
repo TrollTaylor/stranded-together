@@ -2480,6 +2480,7 @@ Entity* CopyEntity() noexcept { return g_copy.live && holo::SpawnAlive(g_copy.sp
 bool CopyTucked() noexcept { return g_copy.live && g_ovl.hidden; }
 
 int VehicleClass(std::uintptr_t e) noexcept { return g_ok && e ? ClassOf(e) : -1; }
+int VehicleRegistered(std::uintptr_t e) noexcept { return e ? Registered(e) : -1; }
 
 std::uintptr_t ReportedVehicle(double now, bool* seated) noexcept {
     if (g_mode == 0 || !g_ours.e || !g_ours.res || g_ours.last_sent_ms <= 0 || now - g_ours.last_sent_ms > 250) return 0;

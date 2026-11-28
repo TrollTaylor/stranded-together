@@ -2643,6 +2643,8 @@ Static facts (verified against ds.exe):
 The probe: 43 byte checks in six groups (0x01 pools, 0x02 vehicle, 0x04 actors required; 0x08 ride, 0x10 controller, 0x20
 get-off optional, the last gating a pass-through counting detour on the get-off, put in at start-up). Ops `truck_v3 9` (the
 identity per MULE-driven vehicle), `8` (the seats in the truck's frame and the capsule), `1 [s]` (the watch), `0` (off, status).
+Round 30 adds `10` (the seated MULEs' joints, feet, hand helpers and skeleton; real-partner-body.md 24.19): not read only (its
+hand helpers call the game's helper lookup, SEH-guarded), so it also needs a hidden run or dev_tools.
 
 Results (run 20261127-002653-trucks-v3-solo, passed; MULE Camp Southwest of Lake Knot City, the camp left calm):
 * `[truckv3] byte checks 43/43 ok (groups ok 0x3F), get-off detour on`.
@@ -3949,7 +3951,11 @@ Messages (BTS1 on channel 6 via `link::SendCombat`; link.cpp routes "BTS1" to it
   when first seen`, and `[bt] census: N gazer(s) without an actor skipped` (the most so far).
 * VOID, 44 B: a pass-through MinHook detour on the voidout FUN_14299B1B0 (its 44-byte prologue byte-checked; installed at
   start-up; the caller named from the return address, 4 known E8 sites) records each call into a locked ring of 8, relayed as a
-  notice only (`[bt] partner voidout ... notice only (no game effect)`).
+  notice only (`[bt] partner voidout ... notice only (no game effect)`). Corrected in round 30 (section 22): the four callers
+  are 1 "scripted / timed" (FUN_14299B3B0, from the timer list), 2 "gazer catch", 3 "corpse necrosis (manager, 3 s)" and
+  4 "MULE corpse (necrosis)" (round 28 called them FUN_14299B3B0, gazer catch, manager (pending area) and catcher; the 4th is
+  not the BT catcher). A corpse voidout is not the partner's player, so the toast now waits for the partner's GameOver
+  (`[bt] partner voidout verdict: ...`, section 22).
 
 Ops (`bt_sync`, refused with bt_sync=0): 0 the status line (`[bt] sync status ... bad N, stale N, unsent N`), 1 FIELD at the
 next census; hidden runs: 3 a test VOID, 4 a test NOTICED.
@@ -3963,6 +3969,265 @@ proven and bt_sync defaults to 2.
 
 Open risks: the hello waits for the SEH1 beacon (it goes also with shots_sync=0: shot_sync.cpp `g_beacon_want`, the beacon
 alone with parts 0); the guest's own near bit is not yet seen in a
-run (the scenario turns on rain on both); the reset detection is a heuristic; ResetAllGazers resets every record; the voidout
-reasons are inferred and the real voidout path has not run; the detour's return is assumed to fit in rax; the toast reuses
-SetVehicleNotice.
+run (the scenario turns on rain on both); the reset detection is a heuristic; ResetAllGazers resets every record (and, read in
+round 30, clears the manager's +0x1780 and its crater slot +0x2B0, so a RESET cancels a pending corpse voidout); the reason
+pairs (13 / 14 / 3 / 16) are read from the code, but the real voidout path has not run in a run; the detour's return is assumed
+to fit in rax (the function returns void); the toast reuses SetVehicleNotice.
+
+## 22. Round 30 BT S0: the voidout fixes, the ride's hunter-area exit, the world probes
+
+`native/mod/bt_sync.cpp` (pure part `bt_rules.hpp`, tests `tests/bt_rules_tests.cpp`), `native/mod/ride_together.cpp` (F6);
+scenario `bt-world-probe` (solo, hidden run). Default behaviour is unchanged except the VOID labels and verdict and F6.
+
+Fixes:
+* The voidout sources keep their wire numbers, renamed after reading their callers [V code]: 1 `kVoidSrcScripted` "scripted /
+  timed" (FUN_14299B3B0, whose only caller is the timer list FUN_142B21CA0), 2 `kVoidSrcCatch` "gazer catch" (FUN_14299EFB0,
+  message 0x682DFB3B), 3 `kVoidSrcCorpseNecrosis` "corpse necrosis (manager, 3 s)" (the manager update FUN_1429A3F50: a human
+  corpse on the list +0x1760, FUN_1429A1230 sets +0x1780 bit 0, the voidout 3 s later), 4 `kVoidSrcMuleCorpse` "MULE corpse
+  (necrosis)" (FUN_142A97650, queued by the MULE actor FUN_142AA2230).
+* The VOID verdict (`btrules::VoidVerdict`): a received VOID waits up to 5 s for the partner's GameOver, the SEH1 beacon's
+  `player_down == 1` (game state bit 13), seen before or after it. Then `[bt] partner voidout verdict: the partner went down
+  (GameOver) within 5 s: toast; source ...` and "Your partner was voided out"; otherwise `[bt] partner voidout verdict: no
+  GameOver from the partner within 5 s: log only; source ...`. A test VOID: `[bt] partner voidout verdict: a test: toast`. It
+  replaces round 28's per-source toast while the down channel is up. The down channel (`shots::DownChannel()`, round 30
+  review): the partner's GameOver reaches us only from its enemy_sync down tick, in its beacon's byte 22, sent only while OUR
+  beacon carries kPartRestrain; both sides need enemy_sync, enemy_hits and enemy_restrain_relay (kPartRestrain = hits part +
+  restrain relay + carry ready), which are on by default only with host_save. Without it (either side off, an older partner,
+  no beacon) no GameOver can come, so the verdict is at once round 28's rule by source: the gazer catch and the scripted /
+  timed voidout toast (`[bt] partner voidout verdict: no down channel (restrain part off here or there): toast by source;
+  source ...`), the corpse sources and unknown callers are logged only (`... no down channel (...): log only; source ...`).
+  A GameOver already seen within 5 s still gives the "partner" verdict. A new link session drops the VOIDs still pending
+  (`[bt] partner voidout verdict: n pending dropped (a new link session): log only`).
+* RESET (ResetAllGazers 0x1429A17A0) clears the manager's +0x1760, +0x1770 and +0x1780 (`44 89 B6 80 17 00 00` at
+  0x1429A19D4, verified) and resets the crater slot +0x2B0 (FUN_14299C2D0 at 0x1429A19DB), so a RESET applied on the guest
+  cancels a pending corpse voidout there.
+* F6 (the ride): while carried, the hunter manager's area [0x147BECBD0] +0x140 going from none to up ends the ride as ours
+  (`hunter area (BTs found Sam)`: he is put beside the vehicle), read through `bt::HunterAreaUp()` every 100 ms (the census
+  byte checks' hunter group). An area already up when the carry began does not count. The comment that claimed a tar grab ends
+  the ride by its health drop is corrected: the health shield (H_SetHealth) drops every decrease of the carried Sam but our own
+  vehicle hit's allowance, so "a health drop" never saw a BT.
+
+The world probes (`bt_probe` ops 9..14; hidden runs only, nothing installed or called otherwise; 10, 11 and 14 also need a
+sandboxed save, `automation::SavesRedirected()`). Their own byte checks run on the first op: `[bt] probe byte checks: n/n ok;
+threads ok, kill ok, crater ok, weather ok, hunter ok` (16 code sites, 8 rip / call targets and the gazer vtable slot
+0x143DA5848).
+* P1, `bt_probe 9`: the first call installs a pass-through MinHook detour on the gazer update FUN_142995210 (rcx the actor,
+  xmm1 float dt; reached only through the vtable slot). It counts calls on the Tick thread and on other threads (atomics only).
+  The next `bt_probe 9` logs `[bt] gz update threads: tick N, other M (threads k)`. "other 0" means the gazers update on the
+  game thread, so a write from Tick cannot race the update.
+* P2, `bt_probe 10 <hi16> <lo16>` (e.g. `10 0x40AB 0x1A93`, the action's numbers stop at 1e9; `0 0` = the nearest live
+  gazer): arms a kill for that gazer, applied inside the detour before the original, the update's own rain-gone kill
+  (0x1429957C8): +0xCC = 0x01322187, +0xD0 = +0x08, +0x180 = 0, +0x1B4 |= 8. It is applied only when state 0, +0x180 > 0,
+  +0x2B0 > 0 and the flags lack 0x1 / 0x8 (`btrules::KillGuard`, checked when armed and again in the detour). 2 s after:
+  `[bt] probe kill loc 40AB1A93: applied, the update ran to its end|returned early|unread (+0x2B0 v), death edge seen|not
+  seen (field killed +n)|n/a (+0x1B4 0x400000: no kill list)|n/a (no field record), list a -> b, field killed x -> y`.
+  Corrected by the round 30 review: +0x2B0 after the update cannot show the death edge, since every update that is not an
+  early return ends with the copy FUN_14299A3D0 (0x142996A45) that writes +0x180 (0 after the kill) into +0x2B0; it only says
+  the update ran to its end. The death branch (0x142995D04) posts its messages and ends with FUN_1429A31A0 (0x142995FA6,
+  skipped when +0x1B4 has 0x400000), which kills into the field record, so "death edge seen" is the field's kill count rising
+  (+0x1B4 read right after the update). Refusals: `[bt] probe kill loc ..: refused: ...`,
+  `refused in the update: ...`, `not applied (the gazer did not update in 10 s)`.
+* P3, `bt_probe 11 <m>` (default 200): the guarded crater m ahead of Sam. A lazy detour on the GameOver flow FUN_14341F840
+  (8 arguments passed verbatim) drops a call only while a thread-local flag is set. The op checks the function starts with
+  our jmp (0xE9), then calls the voidout FUN_14299B1B0(mgr, pos, 0, 0) with the flag set (cleared in `__finally`; the VOID
+  relay skips it). It then checks that one call was dropped, or that the early return FUN_143409690([0x147C0D6C0], 4) held
+  (replicated with reads). If neither: `[bt] FATAL-GUARD: ...` and P3 is refused for the rest of the run. The gate
+  (`btrules::CraterGate`): the manager has its resource (+0x68), the crater slot +0x2B0 is empty, and Sam is at least the far
+  distance ([+0x68] +0x54) from the spot. Logs `[bt] probe crater at (x y z) m 200: flow dropped 1, crater entity 0x..
+  (+0x2B0)`, then `[bt] probe crater +n s: +0x2B0 0x..` each second for 20 s.
+* P4, `bt_probe 12`: `[bt] weather: area <slot>, regions n (rain only a, heavy b, sunny c, mix d, other e), rain here x, mgr
+  timefall t area a`, then `[bt] weather rows (region:type/+4/+8): ...`. Rows: [0x147BF83B8] + ((i32 +0x64A0 * 0x40 + 0x18 +
+  region) * 0x5C). "rain here" is FUN_142E0C3F0([[0x144C73850]], Sam's position), the gazer update's own read (about -2..2).
+  The manager's +0x238 / +0x239 are FUN_1429A3F50's timefall-here and in-BT-area bytes.
+* P7, `bt_probe 14 <m>` (default 30; never during a carry): FUN_1429B8D60(hunter manager, pos, gold 0, 0) m ahead (`[bt] probe
+  hunter area at (..) m 30: FUN_1429B8D60 returned 0x.., +0x140 0x.. -> 0x..`), then each second for 30 s `[bt] probe hunter
+  +n s: +0x140 0x.. at (x y z), spawns s gold g; game state 0x.. (GameOver yes|no, stopping yes|no), Sam health h, Sam d m from
+  it`. Whether Sam gets pulled is not known yet: the game state, the health and Sam's distance to the area are the indicators.
+* 13 is not built. EmergencyStop: the update detour passes straight through, an armed kill is dropped, no more craters.
+
+Open: P2's "field killed" may lag the 2 s wait (then the death edge reads "not seen"; FUN_1429A31A0 is called in the branch
+itself, so a lag is not expected, but it is not proven in a run). The kill's message / stat path (0x523D4DC0 / 0x74FB05EE through FUN_142F21230)
+is not taken (rain-gone has no stats). P3's crater slot is released by the game at a time not yet seen (the 20 s watch shows
+it). The thread-local gate drops the flow only on the probe's own thread and call, but the flow's tail (clearing +0x4B) is
+skipped with it.
+
+## 23. Round 30 release A: riding on the trucks' sides (BT and MULE side)
+
+The side seats themselves are in docs/real-partner-body.md section 24.20. Two parts touch this module:
+
+* The side library's taps (`enemy_sync.cpp`; config `ride_mule_record`, default 1). The host taps `SendCaptures`: when a
+  capture slot's MULE is on a side seat 1..4 of a V3 truck (`truckv3::SeatHostSeat`, the newest occupant list), its joint frame
+  goes to `realbody::LearnSideFrame(seat, frame, now, "host")`. The guest taps the end of `SeatShowTick`: a mirror shown seated
+  on a side seat with the host's pose gives its newest SEP1 frame to `LearnSideFrame(seat, ..., "guest")` (a frame already seen
+  is skipped). Nothing is sent and nothing in the enemy sync changes; the learner logs `[ride] side library: seat N learned from
+  a seated MULE (host|guest): ...`.
+* BTs while riding a side seat: S0's hunter-area exit (section 22, F6) applies unchanged to every seat. When the hunter area
+  comes up while Sam is carried, the ride ends as a forced exit and he is put beside the truck at once, with no glide.
+
+Not built: the plan's BT meter (the hunter state 0x1427AD2F0 once a second while carried, the taken bits). It was optional
+(a log only, no behaviour) and is left for later. No new game address was added in release A.
+
+### 23.1 Release A review: what the taps pass on
+
+Both taps now pass the MULE's id, its place in the truck and its phase, and `muleride::LearnRefusal` decides
+(docs/real-partner-body.md 24.20, "Release A review fixes"). The host uses `truckv3::SeatHostEntry` (the whole occupant
+entry: the seat, the place in the truck's frame, and whether it was measured by the parent chain) and the phase of its own
+copy (`PhaseOf`). The guest uses the STO1 record's place and source (`SeatFindFor`) and the host's phase from the newest SEN1
+sample. A MULE that is climbing on or off, or alerted, is not learned: `[ride] side library: seat N (host|guest): MULE id not
+learned: <why> (n frames dropped)`.
+
+## 24. Round 30 BT S1 / S2: the partner's trouble as markers, and gazer kills in both worlds
+
+`native/mod/bt_sync.cpp` (the end of its anonymous namespace), `native/mod/bt_world.cpp` (the one gazer update hook),
+`native/mod/bt_markers.cpp` and `overlay/overlay_tags.cpp` (the markers); the pure parts are in `bt_rules.hpp` (tests in
+`tests/bt_rules_tests.cpp`). Scenarios: `two-games-bt-trouble` and `two-games-bt-kill`. Section 23 is the ride; this BT work
+was planned as "section 23" and moved here.
+
+Config (session.ini, each needs bt_sync 1 or 2 and a two-game session):
+* `bt_trouble=0|1` (default 1): TROUBLE and GZST are sent and taken.
+* `bt_markers=0|1` (default 1): the partner's trouble is drawn as small marks in this game's world (with bt_trouble).
+* `bt_kill=0|1|2` (default 2): 2 kills go both ways and a partner's kill is applied here; 1 they are sent but not applied; 0
+  off. It is capped by bt_sync (bt_sync=1 applies nothing). Log at start: `[config] bt_trouble=.. bt_markers=.. bt_kill=..`
+  and `[bt] sync: TROUBLE / GZST on|off; KILL on (partner kills applied here)|relayed, not applied|off`.
+
+Wire (BTS1 on channel 6, the header as in section 21). The new types go only to a partner whose hello names them (caps 0x10
+TROUBLE, 0x20 GZST, 0x40 KILL, 0x80 "kills applied here"), so an older build never gets one. `kBtsMaxSize` is now 240 B (the
+link's BTS1 slot is 256 B). After the hello: `[bt] sync: TROUBLE on, GZST on, KILL on (partner kills applied here: yes|no; mine
+applied there: yes|no)`.
+* 6 TROUBLE, 44 B: kind (1 HUNTED, 2 PULLED, 3 CAUGHT, 4 CATCHER, 5 CLEAR), flags (1 gold, 2 vehicle, 4 carried, 8 test), the
+  episode, a position, the catcher's health in percent, the catcher class (0 for now), the field and locator of a holding gazer.
+* 7 GZST, 16 + 28 B per gazer (up to 8): each gazer's field, locator, state, mode (+0x1A8), bits (1 near, 2 just realized, 4
+  react, 8 caught, 0x10 dead, 0x20 test), position and approach (+0xB4).
+* 8 KILL, 48 B: field, locator, reason (+0xCC), world print (the enemy sync's GUID print), cause (1 the player, 2 a player's
+  weapon (stats reason), 3 a test), flags (1 the sender plays on a sandboxed save, 0x80 test), position, the sender's time.
+
+### S1: the partner's trouble (no game changes on the receiver)
+
+The sender reads its census once a second:
+* HUNTED: the hunter manager's area is up (+0x140), gold from +0x244.
+* CAUGHT: a live gazer within 10 m of Sam has +0x1B4 bit 0x2000000.
+* CATCHER: a catcher record is active (+0xF0 clear), has an entity and health (+0xF4); the position is its entity's.
+* The priority is CATCHER, then CAUGHT, then HUNTED. A message goes on each change, on a catcher health step, and once a second
+  as a keepalive. CLEAR goes once when it ends. PULLED is never sent: no pull reading exists yet.
+* GZST lists the gazers that sense, react to or hold this player (near, react or caught; "just realized" alone is not enough,
+  since idle gazers have it too), nearest first, on a change and once a second while any. A gazer that stopped goes once more
+  with its bits now, so the partner drops its mark.
+
+The receiver:
+* Logs `[bt] partner trouble: HUNTED|CATCHER hp 60%|CAUGHT|CLEAR (episode n[, test][, gold][, carried]) at (..), you d m` on
+  a change of kind or episode, or a catcher health change of 10 points.
+* With the markers on (`bt_markers=1`, the default), shows no toast: the markers show it. It logs `[bt] partner trouble
+  toast (once this episode n): <text>: not shown (the markers show it)`. With the markers off it shows at most one toast per
+  episode, only for "Your partner was caught by a BT" or "Your partner is fighting a catcher" (through the old 8 s gate):
+  `[bt] partner trouble toast (once this episode n): ...`.
+* Logs `[bt] partner gazer state: loc .. (field ..) bits near react ..; here: live (id .., you d m from it)|not streamed here`
+  when a gazer's bits change.
+* With the markers on and a partner that sends GZST, the old NOTICED toast ("A BT senses your partner") is replaced by the
+  marks (`[bt] partner sensed: no toast (the markers show it)`).
+* Marks (no text): a small amber diamond over this game's own copy of a gazer sensing the partner; a dark ring of 6 m on the
+  ground round the partner while they are hunted (gold for a golden hunt), on the partner body when it is shown, else on the
+  sent position; a ring with a health bar over the catcher they fight. Each goes 3 s after its last refresh (`[bt] partner
+  trouble: no TROUBLE for 3 s (no CLEAR came): its markers are gone`); at most 8. They are hidden in menus, cutscenes, loads
+  and while Sam is asleep, as the name tags are, and fade out from 100 m to 150 m. Evidence: `[bt] markers: n drawn (gazer a,
+  tar b, catcher c); k kept` the first time and then every 5 s while drawn.
+
+Ops (hidden runs only): `bt_sync 5` the test sequence (HUNTED, CATCHER 100 / 60 / 20 %, CLEAR over 6 s, each flagged a test;
+`[bt] TROUBLE sent (test): ...`), `bt_sync 6` a test GZST of the nearest live gazer here (`[bt] GZST sent (test): loc ..`).
+
+### S2: gazer kills in both worlds
+
+The hook (`bt_world.cpp`): one MinHook detour on the gazer update FUN_142995210, shared with the probes bt_probe 9 / 10 (section
+22). Run S0 showed the update runs only on the game thread. It is installed when the partner's hello names KILL (`[bt] gazer
+update hook in (FUN_142995210, for the kill relay)`), after its byte checks: `[bt] world byte checks: n/m ok; hook ok, kill ok,
+bt-allowed ok, player id ok, scene owner ok` (the prologue and vtable slot, the update's own kill 0x1429957C8, its death edge
+0x142995D04 and +0x2B0 copy 0x142996A45, FUN_14299C1A0 "BT gameplay allowed" and its call site, the registry's player id call
+at 0x142995FC9, the +0x3A8 read at 0x142995BF9, and their rip targets). Inside the detour there are atomics, guarded reads and
+the guarded four-store kill only. Before the original, a kill armed for that gazer is applied as the update's own rain-gone
+kill. After it, a death edge (the last update's health above 0, now not) goes into a ring of 32 that the game thread drains.
+
+The relay rule (`btrules::KillRelay`). A kill is sent only when a player caused it: the killer (+0xD0) is this game's player,
+or the reason is one of the two stats reasons (0x523D4DC0, 0x74FB05EE). It is never sent when:
+* the rain under it ended (0x01322187) or a crater killed it (0x5414860D): each world keeps its own;
+* it is a partner kill applied here (tagged "mirror", never sent back);
+* it is the probe's kill;
+* it is an echo (the partner killed that locator within 10 s);
+* it came within 5 s of a reset.
+Logs `[bt] KILL sent[ (test)]: loc .. (field .., reason .., cause .., world .., sandboxed|real save)` or `[bt] kill here: loc
+.. (...): not sent: <why>`.
+
+The receiver's gate (`btrules::KillApplyGate`), checked 4 times a second for each pending kill (at most 16):
+* Refused, with `[bt] partner kill loc ..: not applied: <why>`:
+  * bt_kill is below 2 here.
+  * The guest plays on her own real save: Must-NOT 5, a partner never writes a real-save guest's world.
+  * The host refuses a guest's kill unless it came from a sandboxed save, the world prints are equal and the FIELD compare
+    says "records equal".
+  * It was held for 60 s.
+  * It already ended here.
+* Held, with `[bt] partner kill loc ..: held: <why>` (logged when the reason changes):
+  * a load, menu, cutscene or Sam asleep;
+  * Sam rides as a passenger;
+  * BT gameplay is off here (FUN_14299C1A0 says no or is unknown);
+  * the gazer is not streamed in here, not active, or not updated yet;
+  * its distance is unknown, or it is within 15 m of this game's player.
+* Applied: `[bt] partner kill loc ..: armed (id .., field ..; d m from you, +0x3A8 0x.. (the locator's scene), after t s)`, then 2 s after the update took it `[bt] partner kill applied loc .. (id
+  .., field ..; from the host|guest, reason .., cause ..; d m from you, +0x3A8 0x..): death edge seen (field killed +1), list a
+  -> b`. The applied kill's own death edge is logged here as `kill here: ... not sent: a partner kill applied here`.
+
+Op (hidden runs, a sandboxed save): `bt_sync 7 <hi16> <lo16>` (e.g. `7 0x40AB 0x1A93`; `0 0` = the nearest live gazer) arms a
+real kill of that gazer here, tagged a test: `[bt] test kill loc ..: armed`, its death edge goes as KILL (cause "a test"), and
+2 s later `[bt] test kill loc ..: applied here, death edge seen (field killed +1), list a -> b`.
+
+Status (`bt_sync 0`) adds after `bad N, stale N, unsent N`: `trouble sent a got b, gzst sent c got d, kill sent e (not sent f)
+got g (applied h, refused i, pending j), world events lost k`.
+
+Must-NOT (plan section 4), as built: nothing received in S1 changes the game; S2 writes only the four stores of the game's own
+rain-gone kill, to this game's own copy, and never on a real-save guest. No GameOver flow, no message aimed at Sam or the
+puppet, no pull, drag or BB stress, no crater, no catcher is added for the partner.
+
+Open:
+* Not yet run in a game: both scenarios are new.
+* The host's apply needs the enemy sync's GUID print on both games (`esync::Gate().guids`). With enemy_sync off, or before its
+  print is done, a guest's kill is refused ("another world").
+* The natural trouble readings (the hunter area, the caught bit 0x2000000, an active catcher record) have not been seen in a
+  two-game run; only the test sequence is gated. The catcher class is 0 (P12 not done). PULLED is not sent (P11 not done).
+* A natural player kill has not been relayed in a run (only the test kill); the killer id and the stats reasons come from the
+  code.
+
+### S2 review fixes (round 30)
+
+* **The armed gazer must still be the same one.** `btworld::ArmKill` takes the gazer's actor id (+0x08) and keeps it with the
+  slot. The detour reads +0x08 again (a guarded read) before the kill. If it changed (the actor was freed and another made at
+  that address), nothing is written and the outcome is "stale" (-3): `[bt] partner kill loc ..: not applied: refused in the
+  update: another gazer at that address (its id changed)`.
+* **A load takes armed kills back**: an armed partner kill is disarmed when a load starts (`[bt] partner kill loc ..: not
+  applied: a load (disarmed)`), and the test kill too (`[bt] test kill loc ..: not applied (a load: disarmed)`).
+* **A lost outcome ends the wait**: when the update took the kill but its event was dropped (the ring of 32 was full), the kill
+  is finished after 12 s: `[bt] partner kill loc ..: not applied: its outcome was lost (the event ring was full)` (and
+  `[bt] test kill loc ..: not applied (its outcome was lost: the event ring was full)`).
+* **A kill goes only to a partner that applies kills** (cap 0x80): else `[bt] kill here: ...: not sent: the partner does not
+  apply kills (its bt_kill, or its real save)`.
+* **The test kill's "nearest" gazer** (`bt_sync 7 0 0`) is the nearest one the kill can take: a dying one, or one with flags
+  0x9, is skipped (KillGuard would refuse it in the update).
+* **No trouble toast with the markers on** (S1 above).
+
+### S2 fix: +0x3A8 no longer refuses a kill (round 30)
+
+The first two-game run refused every partner kill: "a scene owns the gazer here (+0x3A8 set: a mission group)". The guess
+behind that guard was wrong.
+* **What +0x3A8 is.** It is the scene that owns the gazer's own locator, here the BT field's scene (bt211_01). The gazer
+  virtual FUN_142994B40 (vtable slot 0x143DA5820) clears +0x3A8 and +0x3B0, then, when the gazer has a locator ([actor+0x18],
+  a DSGazerGameActorLocator), sets both to [locator+0x80], the locator's scene. A gazer spawned without a locator keeps
+  +0x3A8 at 0 and gets the nearest area of the gazer manager in +0x3B0. Only the reset path and the constructor write 0 to it.
+* **So every placed gazer has it.** The kill's field accounting (0x1429A3212) reads that same locator scene and skips the
+  field record when it is null, and the mod keys gazers by their locator. Every gazer the relay can match has +0x3A8 set. The
+  host's own test kill never looked at +0x3A8, and it applied on such a gazer.
+* **What the game does with it.** The update asks whether that scene is active (the timefall test, 0x14299559E), needs its
+  byte +0x2E8 to be 1 before an idle gazer wakes (the byte-checked site 0x142995BF9), and scripts reach a scene's gazers by
+  comparing it (message 0x58305569 turns on their respawn). None of this makes it a mission group.
+* **The change.** `btrules::KillApplyGate` no longer refuses on it, and bt_sync no longer refuses a kill when the +0x3A8 byte
+  check fails (that check only names the read now). The value is still read and logged: the armed line says `+0x3A8 0x..
+  (the locator's scene)`, or `(NOT the locator's scene: logged only)` if it differs from [[actor+0x18]+0x80] (that would mean
+  a re-used actor, which ArmKill's actor id check already stops), or `(unread or 0)`.
+* **The test.** two-games-bt-kill now waits for the armed line with +0x3A8 set and equal to the locator's scene, on the guest
+  in leg 1 and on the host in leg 2, before the applied line. A refusal or an unequal value fails it.
+

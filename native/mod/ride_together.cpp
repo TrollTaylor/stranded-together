@@ -9,11 +9,14 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 
 #include "automation.hpp"
+#include "bt_sync.hpp"
 #include "coop_session.hpp"
+#include "dev_tools.hpp"
 #include "game_actions.hpp"
 #include "link.hpp"
 #include "MinHook.h"
@@ -24,9 +27,12 @@
 #include "real_body.hpp"
 #include "ride_camera.hpp"
 #include "ride_wire.hpp"
+#include "mule_ride_rules.hpp"
 #include "save_guard.hpp"
+#include "truck_v3.hpp"
 #include "vehicle_drive.hpp"
 #include "vehicle_share.hpp"
+#include "vehicle_sync.hpp"
 #include "vehicle_wire.hpp"
 
 namespace st::ride {
@@ -72,6 +78,31 @@ constexpr Site kSites[] = {
 using FnTeleport = void (*)(std::uintptr_t, const WorldTransform*, std::uint8_t, std::uint8_t);
 using FnVoid1 = void (*)(std::uintptr_t);
 
+// ---------------------------------------------------------------- round 30 stage 0 (side riding P1; section 24.19): the helpers
+// The game's skeleton helper lookup on a truck, its seat / hand helper names and its name key. A group of its own, checked on its
+// first use (HelperChecks): a mismatch turns only these probes off (riding together keeps the checks above).
+constexpr std::uintptr_t kTruckVt = 0x143E26790;        // DSVehicleTruck
+constexpr std::uintptr_t kTruckVtHelper = 0x143E268C0;  // its slot +0x130
+constexpr std::uintptr_t kVtHelperSlot = 0x130;
+constexpr std::uintptr_t kHelperLookup = 0x142F6B290;   // bool (entity, float out[16] (16-aligned: VMOVDQA), const u32* key)
+constexpr std::uintptr_t kNameKey = 0x14190D040;        // the name's key: CRC-32C & 0x7FFFFFFF, cached at the string - 0xC
+constexpr std::uintptr_t kSeatNames = 0x142DC8520;      // (unused, int seat) -> the seat's helper name object
+constexpr std::uintptr_t kHandNames = 0x142DC78B0;      // (unused, int seat, char side) -> the seat's hand helper name object
+// clang-format off
+constexpr Site kHelperSites[] = {
+    {kHelperLookup, "40 53 56 57 48 81 EC 80 00 00 00 41 8B 00 48 8D B1 10 11 00 00 48 8B FA", "the helper lookup (map +0x1110)"},
+    {kNameKey,      "48 8B 11 8B 42 F4 4C 8D 4A F4 83 F8 FF 75 64 44 8B 42 F8 33 C0 41 83 F8", "the name key (string - 0xC, length - 8)"},
+    {kSeatNames,    "48 89 5C 24 08 57 48 83 EC 20 65 48 8B 04 25 58 00 00 00 8B DA 8B 0D", "the seat helper names"},
+    {kHandNames,    "48 89 5C 24 08 48 89 74 24 10 57 48 83 EC 20 65 48 8B 04 25 58 00 00 00", "the hand helper names"},
+};
+// clang-format on
+using FnHelper = bool (*)(std::uintptr_t, float*, const std::uint32_t*);
+using FnNameKey = std::uintptr_t (*)(const void*);
+using FnSeatName = const void* (*)(void*, int);
+using FnHandName = const void* (*)(void*, int, char);
+int g_hp_state = 0;         // 0 not checked, 1 ok, -1 failed
+bool g_key_checked = false;  // the key check runs once
+
 // ---------------------------------------------------------------- state
 bool g_checks_ok = false;
 bool g_cfg_on = true;
@@ -92,12 +123,59 @@ bool g_notice_done = false;
 // seats: the table, or a tuning override per kind (ride_test 3)
 bool g_seat_override[4] = {};
 float g_seat_ov[4][3] = {};
+int g_ghost_seat = 0;              // round 30 (ride_test 43): the truck's side seat our Sam is carried at, 0 none
+float g_ghost_anchor[3] = {};
+double g_ghost_measure_at = 0;     // g_now of the ghost's measurement (0: done / none)
+void GhostTick() noexcept;         // round 30: the ghost's measurement (below)
 bool SeatOffset(std::uint8_t kind, float (&off)[3]) {
+    if (kind == 2 && g_ghost_seat) {
+        std::memcpy(off, g_ghost_anchor, sizeof(off));
+        return true;
+    }
     if (kind >= 1 && kind <= 3 && g_seat_override[kind]) {
         std::memcpy(off, g_seat_ov[kind], sizeof(off));
         return true;
     }
     return rwire::PassengerSeat(kind, off);
+}
+// Review (ux 10): a side seat's anchor follows the truck's body (it rises on its suspension: +0.273 m seen on a MULE truck): the
+// seat's inboard hand helper (HLP_MuleHand*, read live with ride::TruckHelper on the game thread) against its table place
+// (rwire::SideHandle, measured with the same lookup on a parked truck) is the shift, used when under kSideLiveMaxM; read as a
+// carry starts and about once a second (SideLiveRefresh), kept for kSideLiveKeepMs.
+constexpr double kSideLiveMaxM = 0.5, kSideLiveKeepMs = 3000.0;
+struct SideLive {
+    std::uintptr_t entity = 0;
+    std::uint8_t seat = 0;
+    double next_ms = 0, at_ms = -1e18;
+    bool ok = false;
+    float d[3] = {};
+    std::uint32_t logged_ride = 0;
+};
+SideLive g_side_live;
+// Round 30 release A (docs/real-partner-body.md section 24.20): the seat a ride uses (rwire::Seat: 0 or the kind's own seat =
+// SeatOffset; 3..6 the truck's side seats at their anchors; `entity` the truck: its live shift, when read). The ghost (ride_test
+// 43) keeps its own anchor.
+bool SeatOffsetFor(std::uint8_t kind, std::uint8_t seat, float (&off)[3], std::uintptr_t entity = 0) {
+    if (kind == 2 && rwire::SideSeat(seat) && !g_ghost_seat) {
+        if (!rwire::SeatAnchor(kind, seat, off)) return false;
+        const SideLive& l = g_side_live;
+        if (entity && l.ok && l.entity == entity && l.seat == seat && g_now - l.at_ms < kSideLiveKeepMs)
+            for (int k = 0; k < 3; ++k) off[k] += l.d[k];
+        return true;
+    }
+    return SeatOffset(kind, off);
+}
+bool g_sides_cfg = true;               // session.ini ride_sides
+bool g_side_pack_cfg = false;          // session.ini ride_side_hide_pack
+// The partner's STR1 hello (SVM1 type 53): the ride features its build knows. An old build sends none: the cab seat only.
+bool g_str_reg = false, g_str_have = false;
+rwire::Hello g_str_peer;
+double g_str_ms = -1e18, g_str_next = 0;
+std::uint32_t g_str_gen = 0, g_str_cab_gen = 0xFFFFFFFFu;
+unsigned g_str_tx = 0, g_str_rx = 0, g_str_bad = 0;
+bool g_str_mute = false;               // ride_test 44 2 (hidden runs): no STR1 hello sent, as an older build
+bool SidesNow() {
+    return rwire::SidesOffered(g_sides_cfg, g_str_have, g_str_gen == link::Generation(), g_now - g_str_ms, g_str_peer.features);
 }
 
 // The passenger's side (our Sam carried)
@@ -121,6 +199,7 @@ struct Pass {
     std::uint8_t driver_reason = 0;
     float health0 = -1;
     double next_health_ms = 0;
+    int hunter0 = -1;  // round 30 F6: the hunter area at the last check (bt::HunterAreaUp: -1 unknown, 0 none, 1 up)
     bool have_last = false;
     WorldTransform last_target{};
     WorldTransform last_xf{};
@@ -153,8 +232,21 @@ struct Pass {
     double yaw = 0, yaw_ms = 0, yaw_rate = 0, calm_since = 0;
     double pose_log_ms = 0;
     std::uint32_t pose_latches = 0;
+    // round 30 release A: the seat (rwire::Seat; 0 = the kind's own) and a side seat's get-on / get-off glide
+    std::uint8_t seat = 0;
+    muleride::Glide glide;
+    bool have_from = false;            // our Sam's place as the carry started, in the vehicle's frame: the glide's start
+    double from_local[3] = {};
+    bool alight = false;               // getting off a side seat by choice: the settle, the glide out, then the exit
+    double alight_local[3] = {};       // ... to the seat's exit spot, in the vehicle's frame
+    // review (ux 7): the glide turns Sam: from his own facing (relative to the truck's yaw) to the truck's, and out to the exit
+    // spot's facing (toward the truck)
+    bool have_from_yaw = false, have_off_yaw = false;
+    double from_yaw_rel = 0, off_yaw_rel = 0;
+    muleride::GlidePhase glide_logged = muleride::GlidePhase::none;
 };
 Pass g_p;
+bool SideCarry() { return g_p.kind == 2 && rwire::SideSeat(g_p.seat) && !g_ghost_seat; }
 rwire::HoldDetector g_hold;            // board (ImGui fallback) / get off (ImGui fallback)
 rwire::PressDetector g_press;          // get off (native prompt): a press
 double g_np_last_press_ms = -1e18;     // the game's TryStart repeats while the button is held: one press per gap
@@ -175,6 +267,10 @@ struct Drv {
     vwire::VKey key;
     std::uintptr_t entity = 0;
     double accept_ms = 0, last_bit_ms = -1e18;
+    std::uint8_t seat = 0;             // round 30 release A: the seat the partner rides (rwire::Seat; 0 the kind's own)
+    bool resume = false;               // review (ux 1): the seat back after a save (no glide there)
+    double glide_bit_ms = -1e18;       // review (ux 1): the partner's newest STP1 with kPoseRideGlide
+    bool glide_logged = false;
     bool placed_logged = false;
     double err_sum = 0, err_max = 0;
     unsigned err_n = 0;
@@ -192,12 +288,14 @@ struct Resume {
     std::uint32_t ride_id = 0;
     vwire::VKey key;
     double since = 0, saved_ms = 0;
+    std::uint8_t seat = 0;             // round 30 release A: the same seat back
 };
 Resume g_resume;                       // the passenger's side
 struct DrvResume {
     std::uint32_t ride_id = 0;
     std::uint32_t vehicle_id = 0;
     double until = 0;
+    std::uint8_t seat = 0;
 };
 DrvResume g_dres;                      // the driver's side: the ride it ended for a save
 unsigned g_resumes = 0;
@@ -304,6 +402,11 @@ std::atomic<std::uint32_t> g_np_press_id{0};
 // What the provider made of the partner's vehicle, per slot (3, 6): valid 31 | lifted 30 | off 29 | disabled 28 |
 // reason (4 bits) 20 | icon 0..7 (the tick logs every change).
 std::atomic<std::uint32_t> g_np_obs[2]{};
+// Round 30 (run 20261127-171443 leg 2: no prompt for 15 s at the left rear side): the ride action the provider was last asked
+// for (the targeting diagnostics read its context), and the RideOn requests the game made on the partner's vehicle and on any
+// other vehicle (the board press without the game's prompt: rwire::NoPromptPress).
+std::atomic<std::uintptr_t> g_np_action{0};
+std::atomic<unsigned> g_np_on_partner{0}, g_np_on_other{0};
 
 bool NativeOn() noexcept { return g_np_hooked.load(std::memory_order_relaxed) && g_np_enabled.load(std::memory_order_relaxed); }
 // The detours act only while riding together runs: after an emergency stop (or with it off) the game's prompt and its
@@ -317,11 +420,14 @@ void H_Icon(std::uintptr_t a, int slot, std::uint8_t* req) {
     o_icon(a, slot, req);
     if ((slot != 3 && slot != 6) || !req || *reinterpret_cast<std::uint64_t*>(a) != g_ride_vt || !NativeActs()) return;
     g_np_icon_calls.fetch_add(1, std::memory_order_relaxed);
+    g_np_action.store(a, std::memory_order_relaxed);
     const std::int32_t icon = *reinterpret_cast<std::int32_t*>(req);
     const std::uint32_t id = *reinterpret_cast<std::uint32_t*>(req + 0x98);
     if (icon != kIconRideOn || id == 0 || id == kNoActorId) return;
     const std::uint32_t seen = g_np_seen.load(std::memory_order_relaxed), lift = g_np_lift.load(std::memory_order_relaxed),
                         ride = g_np_ride.load(std::memory_order_relaxed);
+    if (id == seen || id == lift) g_np_on_partner.fetch_add(1, std::memory_order_relaxed);
+    else if (id != ride) g_np_on_other.fetch_add(1, std::memory_order_relaxed);
     if (id != seen && id != ride) return;  // another vehicle: the game's own prompt as it is
     const std::uint8_t dis0 = req[0x09];
     const std::int32_t reason0 = *reinterpret_cast<std::int32_t*>(req + 0x24);
@@ -1041,6 +1147,53 @@ WorldTransform SeatXf(const WorldTransform& xf, const float (&vel)[3], double le
     out.pos.x = w[0], out.pos.y = w[1], out.pos.z = w[2];
     return out;
 }
+// Review (ux 10): game thread: the side seat's live shift (g_side_live) for truck `entity`, at most once a second (`now`: at once);
+// one line a ride (`ride_id`).
+void SideLiveRefresh(std::uintptr_t entity, std::uint8_t seat, std::uint32_t ride_id, bool now) noexcept {
+    SideLive& l = g_side_live;
+    if (!entity || !rwire::SideSeat(seat) || g_ghost_seat) return;
+    if (!now && l.entity == entity && l.seat == seat && g_now < l.next_ms) return;
+    if (l.entity != entity || l.seat != seat) l.ok = false;
+    l.entity = entity, l.seat = seat, l.next_ms = g_now + 1000.0;
+    const char* name = muleride::InboardHelper(rwire::MuleSeatOf(seat));
+    float m[4][4] = {}, h[3] = {}, a[3] = {};
+    const bool read = name && rwire::SideHandle(seat, h) && rwire::SeatAnchor(2, seat, a) && ride::TruckHelper(entity, name, m);
+    double len = -1;
+    if (read) {
+        const double dx = m[3][0] - h[0], dy = m[3][1] - h[1], dz = m[3][2] - h[2];
+        len = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (std::isfinite(len) && len <= kSideLiveMaxM) {
+            l.ok = true, l.at_ms = g_now;
+            l.d[0] = static_cast<float>(dx), l.d[1] = static_cast<float>(dy), l.d[2] = static_cast<float>(dz);
+        } else {
+            l.ok = false;
+        }
+    }
+    if (ride_id && l.logged_ride != ride_id) {
+        l.logged_ride = ride_id;
+        if (l.ok)
+            Log("[ride] side seat %s: anchor live from %s (%.3f %.3f %.3f), %.3f m from the table", rwire::SeatName(seat), name, a[0] + l.d[0], a[1] + l.d[1],
+                a[2] + l.d[2], len);
+        else if (read)
+            Log("[ride] side seat %s: anchor from the table: %s %.3f m from its table place (over %.1f m)", rwire::SeatName(seat), name, len, kSideLiveMaxM);
+        else
+            Log("[ride] side seat %s: anchor from the table: %s not read (the helper lookup's checks, the animate thread, or missing)", rwire::SeatName(seat),
+                name ? name : "no helper");
+    }
+}
+
+// Review (ux 7): `t`'s rotation turned by `rel` radians about its own up row (+ toward the left: the yaw's sense).
+void TurnAboutUp(WorldTransform& t, double rel) noexcept {
+    if (!std::isfinite(rel)) return;
+    const double c = std::cos(rel), s = std::sin(rel);
+    float r[3], f[3];
+    for (int k = 0; k < 3; ++k) {
+        const double rx = t.rot.m[0][k], fy = t.rot.m[1][k];
+        r[k] = static_cast<float>(c * rx + s * fy);
+        f[k] = static_cast<float>(c * fy - s * rx);
+    }
+    for (int k = 0; k < 3; ++k) t.rot.m[0][k] = r[k], t.rot.m[1][k] = f[k];
+}
 
 // The local Sam's capsule component (Sam +0x5A0 refers to it + 0x20; its vtable and its entity checked), 0 when not.
 std::uintptr_t SamCapsule(std::uintptr_t sam) noexcept {
@@ -1084,10 +1237,10 @@ std::uint32_t OurWorld() noexcept {
     vshare::WorldReadyNow(&c);
     return c;
 }
-void Send(rwire::MsgType type, std::uint32_t ride_id, std::uint32_t vehicle_id, std::uint8_t kind, std::uint8_t reason) {
+void Send(rwire::MsgType type, std::uint32_t ride_id, std::uint32_t vehicle_id, std::uint8_t kind, std::uint8_t reason, std::uint8_t seat = 0) {
     rwire::Msg m;
     m.type = type;
-    m.seat = rwire::SeatOf(kind);
+    m.seat = rwire::SideSeat(seat) && rwire::SeatValidFor(kind, seat) ? static_cast<rwire::Seat>(seat) : rwire::SeatOf(kind);
     m.reason = reason;
     m.from = g_role == 1 ? 0 : 1;
     m.ride_id = ride_id;
@@ -1100,8 +1253,10 @@ void Send(rwire::MsgType type, std::uint32_t ride_id, std::uint32_t vehicle_id, 
     const bool ok = n && vshare::SendEvent(buf, n);
     if (type == rwire::MsgType::end && ok) ++g_ends_tx;
     const char* rs = type == rwire::MsgType::deny ? rwire::DenyName(reason) : type == rwire::MsgType::end ? rwire::EndName(reason) : "";
-    Log("[ride] %s: %s %s ride #%08X %s 0x%06X%s%s%s", g_role == 1 ? "host" : "guest", ok ? "sent" : "could not send", rwire::MsgTypeName(static_cast<std::uint8_t>(type)),
-        ride_id, vwire::KindName(kind), vehicle_id, rs[0] ? " (" : "", rs, rs[0] ? ")" : "");
+    const bool side = rwire::SideSeat(static_cast<std::uint8_t>(m.seat));
+    Log("[ride] %s: %s %s ride #%08X %s 0x%06X%s%s%s%s%s", g_role == 1 ? "host" : "guest", ok ? "sent" : "could not send", rwire::MsgTypeName(static_cast<std::uint8_t>(type)),
+        ride_id, vwire::KindName(kind), vehicle_id, rs[0] ? " (" : "", rs, rs[0] ? ")" : "", side ? ", seat " : "",
+        side ? rwire::SeatName(static_cast<std::uint8_t>(m.seat)) : "");
 }
 
 void Notice(const char* text, bool warn, double ms) { coop::SetVehicleNotice(text, warn, g_now + ms); }
@@ -1115,10 +1270,29 @@ void PeerLabel(char* out, std::size_t cap) {
 
 // ---------------------------------------------------------------- the passenger: carry
 void PoseLog(bool now);
-int CarryPoseSource() { return g_pose_mode ? 3 : g_p.solo ? 2 : 1; }
+int CarryPoseSource() { return g_ghost_seat ? 4 : SideCarry() ? 5 : g_pose_mode ? 3 : g_p.solo ? 2 : 1; }
+// Round 30 release A: the side hang's inputs (realbody source 5): the MULE seat, the pose weight (the glide), the inboard
+// hand's target in Sam's model frame (the truck's HLP_MuleHand helper minus the seat's anchor; Sam stands on the anchor
+// facing the truck's forward). Seat 0 turns it off; review (logic 2 / ux 6): so does `on` false (the carry's end, while g_p
+// still names the side seat).
+void SideFeed(bool on, double pose_w) {
+    double hand[3] = {};
+    float h[3], a[3];
+    const int ms = on && SideCarry() ? rwire::MuleSeatOf(g_p.seat) : 0;
+    if (ms && rwire::SideHandle(g_p.seat, h) && rwire::SeatAnchor(g_p.kind, g_p.seat, a))
+        for (int k = 0; k < 3; ++k) hand[k] = static_cast<double>(h[k]) - a[k];
+    realbody::SetRideSide(ms, ms ? pose_w : 0.0, hand);
+}
 void ApplyCarryState(bool on) {
+    if (!on && g_ghost_seat) {  // round 30: the ghost ends with the carry
+        // round 30 review: a carry ended before the 1.5 s measurement says so (the scenario's waitnew has its clue)
+        if (g_ghost_measure_at > 0) Log("[ride] ghost seat %d: joint err n/a (the carry ended before the measurement)", g_ghost_seat);
+        g_ghost_seat = 0, g_ghost_measure_at = 0;
+        truckv3::GhostStop();
+    }
     overlay::input::SetRideCarry(on);
-    realbody::SetRideSeat(on ? g_p.kind : 0, 0);
+    realbody::SetRideSeat(on && !SideCarry() ? g_p.kind : 0, 0);  // the seated idle never on a side seat
+    SideFeed(on, g_p.glide.phase == muleride::GlidePhase::seated ? 1.0 : 0.0);  // before the source: its seat is set
     realbody::SetRidePose(on ? CarryPoseSource() : 0);
     vdrive::SetCarriedUnit(on ? g_p.unit : 0);
     if (!on) ridecam::Stop("the ride ended");
@@ -1170,7 +1344,7 @@ void PlaceBeside(bool forced, bool allow_raw) {
     WorldTransform xf{};
     bool have = VehicleLive(g_p.entity, g_p.unit, g_p.kind) && ReadXf(g_p.entity, xf);
     float seat[3] = {};
-    SeatOffset(g_p.kind, seat);
+    SeatOffsetFor(g_p.kind, g_p.seat, seat, g_p.entity);
     const float zero[3] = {};
     if (have && have_sam && g_p.have_tp_xf && Dist3(SeatXf(xf, zero, 0, seat), sam_xf) > 3.0) {
         Log("[ride] our Sam is %.1f m from the seat (left behind): put beside where the %s was at our last teleport", Dist3(SeatXf(xf, zero, 0, seat), sam_xf),
@@ -1183,7 +1357,10 @@ void PlaceBeside(bool forced, bool allow_raw) {
     }
     double p[3];
     PosOf(xf, p);
-    const rwire::ExitSpot s = rwire::ExitPlacement(g_p.kind, p, Rows(xf), g_p.last_vel, forced);
+    // round 30 release A: a side seat's exit is on its own side at its place along the truck (by choice; forced: away from
+    // the slide, as the cab's)
+    const rwire::ExitSpot s = SideCarry() ? rwire::ExitPlacement(g_p.kind, g_p.seat, p, Rows(xf), g_p.last_vel, forced)
+                                          : rwire::ExitPlacement(g_p.kind, p, Rows(xf), g_p.last_vel, forced);
     const double spot[3] = {s.pos[0], s.pos[1], s.pos[2] + 0.5};
     double from[3] = {};
     if (have_sam) PosOf(sam_xf, from);
@@ -1316,10 +1493,10 @@ void EndCarry(rwire::End reason, bool place, bool tell_driver) {
     CapsuleBack(rwire::EndName(static_cast<std::uint8_t>(reason)));
     ++g_exits;
     Log("[ride] %s: our Sam off the %s 0x%06X (#%u, %s%s) after %.1f s; Sam vs the seat over the ride mean %.3f m, max %.3f m, %u of %u ticks over "
-        "0.25 m; %u teleports%s",
+        "0.25 m; %u teleports%s%s%s",
         g_role == 1 ? "host" : g_role == 2 ? "guest" : "solo", vwire::KindName(g_p.kind), g_p.key.id, g_exits, rwire::EndName(static_cast<std::uint8_t>(reason)),
         forced ? ", forced" : "", rode, g_p.ride_err_n ? g_p.ride_err_sum / g_p.ride_err_n : 0.0, g_p.ride_err_max, g_p.ride_err_over, g_p.ride_err_n,
-        g_p.teleports, g_p.solo ? " (solo seat test)" : "");
+        g_p.teleports, g_p.solo ? " (solo seat test)" : "", SideCarry() ? "; side seat " : "", SideCarry() ? rwire::SeatName(g_p.seat) : "");
     const bool jumped_fast = reason == rwire::End::jumped && g_p.last_speed > rwire::kCrashDvMps;
     if (reason == rwire::End::crash && !g_crash_legacy.load()) {
         // v0.21: the ridden vehicle never hurts its passenger (no D3-3 hit); the pillion thrown off a confirmed crash lands
@@ -1333,13 +1510,14 @@ void EndCarry(rwire::End reason, bool place, bool tell_driver) {
         Log("[ride] %s exit (dv %.1f m/s at %.1f m/s): %s", jumped_fast ? "jump-off" : "crash", dv, g_p.last_speed,
             !g_crash_hit ? "no hit handler (M4 partner_tackle not installed): put off only" : hit ? "the game's hit applied" : "the hit handler refused");
     }
-    if (tell_driver && !g_p.solo) Send(rwire::MsgType::end, g_p.ride_id, g_p.key.id, g_p.kind, static_cast<std::uint8_t>(reason));
+    if (tell_driver && !g_p.solo) Send(rwire::MsgType::end, g_p.ride_id, g_p.key.id, g_p.kind, static_cast<std::uint8_t>(reason), g_p.seat);
     const bool resume = reason == rwire::End::saving && g_resume_enabled && !g_p.solo && same_sam && tell_driver && !g_stop.load();
     if (resume) {
         g_resume = Resume{};
         g_resume.on = true;
         g_resume.ride_id = g_p.ride_id;
         g_resume.key = g_p.key;
+        g_resume.seat = g_p.seat;
         g_resume.since = g_now;
         Log("[ride] once the save is written our Sam asks for the %s's seat back (ride #%08X, within %.0f s)", vwire::KindName(g_p.kind), g_p.ride_id,
             rwire::kResumeWindowMs / 1000);
@@ -1361,7 +1539,9 @@ void EndCarry(rwire::End reason, bool place, bool tell_driver) {
     PublishSaveState();
 }
 
-bool StartCarry(const vwire::VKey& key, std::uint8_t kind, std::uintptr_t entity, std::uintptr_t unit, std::uint32_t ride_id, bool solo) {
+bool StartCarry(const vwire::VKey& key, std::uint8_t kind, std::uintptr_t entity, std::uintptr_t unit, std::uint32_t ride_id, bool solo,
+                std::uint8_t seat_id = 0, bool snap = false) {
+    if (seat_id && !rwire::SeatValidFor(kind, seat_id)) seat_id = 0;
     if (g_stop.load()) {
         Log("[ride] cannot carry our Sam: riding together stopped");
         return false;
@@ -1381,7 +1561,8 @@ bool StartCarry(const vwire::VKey& key, std::uint8_t kind, std::uintptr_t entity
         return false;
     }
     float seat[3];
-    if (!SeatOffset(kind, seat)) return false;
+    if (kind == 2) SideLiveRefresh(entity, seat_id, ride_id, true);
+    if (!SeatOffsetFor(kind, seat_id, seat, entity)) return false;
     g_p = Pass{};
     g_p.st = PState::riding;
     g_p.solo = solo;
@@ -1396,6 +1577,31 @@ bool StartCarry(const vwire::VKey& key, std::uint8_t kind, std::uintptr_t entity
     g_p.world = OurWorld();
     g_p.log_ms = g_now;
     g_p.cap_counter0 = CapCounter(cap);
+    g_p.seat = seat_id;
+    const char* glide_why = "";
+    if (SideCarry()) {
+        // the get-on glide starts where our Sam stands (in the truck's frame: the truck may move meanwhile); a resume, a start
+        // over 4 m off the anchor or an unreadable place: put on the anchor
+        WorldTransform vx{}, sx{};
+        if (snap) glide_why = "a resume";
+        else if (!ReadXf(entity, vx) || !ReadXf(sam, sx)) glide_why = "a place unread";
+        else {
+            double vp[3], sp[3], l[3];
+            PosOf(vx, vp), PosOf(sx, sp);
+            rwire::ToLocal(vp, Rows(vx), sp, l);
+            const double dx = l[0] - seat[0], dy = l[1] - seat[1], dz = l[2] - seat[2];
+            const double d = std::sqrt(dx * dx + dy * dy + dz * dz);
+            if (std::isfinite(d) && d < 4.0) {
+                g_p.have_from = true, std::memcpy(g_p.from_local, l, sizeof(l));
+                const double yr = vwire::WrapPi(std::atan2(sx.rot.m[1][1], sx.rot.m[1][0]) - std::atan2(vx.rot.m[1][1], vx.rot.m[1][0]));
+                if (std::isfinite(yr)) g_p.have_from_yaw = true, g_p.from_yaw_rel = yr;
+            } else {
+                glide_why = "over 4 m from the seat";
+            }
+        }
+        if (g_p.have_from) g_p.glide.StartOn(g_now);
+        else g_p.glide.Seated();
+    }
     ShieldOn(sam);  // before the capsule goes off: no landing damage (and no other damage, vhit's guard) while carried
     BootsRideStart(sam, vwire::KindName(kind));
     if (g_health_hooked.load() && !g_shield_hobj.load()) Log("[ride] health guard: our Sam's health object is not readable (Sam +0x54C0 -> +0x2E0): not guarded");
@@ -1427,26 +1633,36 @@ bool StartCarry(const vwire::VKey& key, std::uint8_t kind, std::uintptr_t entity
     ++g_boards;
     Log("[ride] %s: our Sam carried on the %s 0x%06X (%s, ride #%08X, #%u): capsule off (counter %d -> %d, on byte %d), seat (%.2f, %.2f, %.2f), "
         "input blocked, pose %s",
-        g_role == 1 ? "host" : g_role == 2 ? "guest" : "solo", vwire::KindName(kind), key.id, rwire::SeatName(static_cast<std::uint8_t>(rwire::SeatOf(kind))), ride_id,
-        g_boards, g_p.cap_counter0, CapCounter(cap), CapOnByte(cap), seat[0], seat[1], seat[2],
-        g_pose_mode ? "seated idle" : solo ? "the kept driver pose (solo test)" : "the driver's");
-    char label[96], text[200];
-    PeerLabel(label, sizeof(label));
-    if (solo) std::snprintf(text, sizeof(text), "Seat test: carried on the %s.", vwire::KindName(kind));
-    else if (NativeOn()) std::snprintf(text, sizeof(text), "Riding with %s. Press [X] / [F] to get off.", label);
-    else std::snprintf(text, sizeof(text), "Riding with %s. Hold [X] / [F] to get off.", label);
-    Notice(text, false, 5000);
+        g_role == 1 ? "host" : g_role == 2 ? "guest" : "solo", vwire::KindName(kind), key.id,
+        rwire::SeatName(seat_id ? seat_id : static_cast<std::uint8_t>(rwire::SeatOf(kind))), ride_id, g_boards, g_p.cap_counter0, CapCounter(cap), CapOnByte(cap),
+        seat[0], seat[1], seat[2],
+        SideCarry() ? "the side hang" : g_pose_mode ? "seated idle" : solo ? "the kept driver pose (solo test)" : "the driver's");
+    if (SideCarry())
+        Log("[ride] side seat %s (MULE seat %d): %s%s%s", rwire::SeatName(seat_id), rwire::MuleSeatOf(seat_id),
+            g_p.have_from ? "a 0.5 s glide onto the anchor, the hang blended in" : "put on the anchor (no glide: ", g_p.have_from ? "" : glide_why,
+            g_p.have_from ? "" : ")");
+    // round 30: no "Riding with ..." notice for the passenger (the user's ask); only the solo seat test says anything (not the
+    // side seat test, ride_test 40: silent)
+    if (solo && !SideCarry()) {
+        char text[200];
+        std::snprintf(text, sizeof(text), "Seat test: carried on the %s.", vwire::KindName(kind));
+        Notice(text, false, 5000);
+    }
     return true;
 }
 
 // The game takes our Sam. Two kinds:
 //   game  the game moves or holds him itself (a parent, a load, a cutscene / game-over / fast-travel state current or
 //         requested, Sam+0x678 (its warp guard), a pushed transform, a sequence binding): no placement of ours;
-//   ours  nothing of the game's places him (a health drop: a MULE spear, a BT, a fall; asleep for a minute; the world
-//         waiting for a scene, load mask 0x100): he is put beside the vehicle (PlaceBeside waits while he sleeps).
+//   ours  nothing of the game's places him (a health drop; the BTs finding him: the hunter area rising; asleep for a minute;
+//         the world waiting for a scene, load mask 0x100): he is put beside the vehicle (PlaceBeside waits while he sleeps).
 // A save is not "taken": the save guard's own exit (End::saving, CarryTick) comes before the save captures him.
-// Every tick (the sequence answer every 250 ms; the health every 100 ms). A BT / tar grab has no trigger of its own (the
-// game's "Hugged" state is not researched): it ends the ride by its health drop or its game state.
+// Every tick (the sequence answer every 250 ms; the health and the hunter area every 100 ms). Round 30 correction: a health drop
+// does not end a carry while the shield is up, because H_SetHealth drops every decrease of our carried Sam then, except our own
+// vehicle hit's allowance (AllowOwnHit, D3-3). So "a health drop" fires only for that allowance or with the shield down, and
+// a BT / tar grab never reached it. Round 30 F6: the BTs finding Sam (the hunter manager's area [0x147BECBD0] +0x140 going from
+// none to up, bt::HunterAreaUp) ends the ride, as ours ("hunter area (BTs found Sam)"). The game's "Hugged" state is still
+// not researched; a grab that sets a taken game state ends it through kTakenBits.
 constexpr std::uint64_t kTakenBits = (1ull << 3) | (1ull << 6) | (1ull << 8) | (1ull << 9) | (1ull << 10) | (1ull << 11) | (1ull << 12) | (1ull << 13) |
                                      (1ull << 14) | (1ull << 15) | (1ull << 17) | (1ull << 18) | (1ull << 19) | (1ull << 20) | (1ull << 22) | (1ull << 23) |
                                      (1ull << 24) | (1ull << 25) | (1ull << 29) | (1ull << 30);
@@ -1466,6 +1682,12 @@ TakenBy Taken(const char** why) {
         if (d.health_valid) {
             if (g_p.health0 < 0 || d.health > g_p.health0) g_p.health0 = d.health;
             else if (d.health < g_p.health0 - 1.0f) return *why = "a health drop", TakenBy::ours;
+        }
+        // round 30 F6: a rise of the hunter area while carried (an area already up when the carry began does not count)
+        const int h = bt::HunterAreaUp();
+        if (h >= 0) {
+            if (g_p.hunter0 == 0 && h == 1) return *why = "hunter area (BTs found Sam)", TakenBy::ours;
+            g_p.hunter0 = h;
         }
     }
     if (g_p.test_taken) return *why = "test", TakenBy::game;
@@ -1691,7 +1913,7 @@ void CarryTick() {
         exit_now = g_hold.Update(exit_down, g_now);
         if (exit_now) Log("[ride] get off: held (%s)", exit_how);
     }
-    if (exit_now) {
+    if (exit_now && !g_p.alight) {
         if (g_p.exit_wait_until > g_now && speed >= rwire::kExitMaxSpeed) {
             Log("[ride] get off: a second %s while the %s moves at %.1f m/s: jumping off", NativeOn() ? "press" : "hold", vwire::KindName(g_p.kind), speed);
             g_p.last_speed = (std::max)(g_p.last_speed, speed);
@@ -1706,16 +1928,73 @@ void CarryTick() {
                    3000);
         }
     }
-    if (g_p.exit_wait_until > g_now && speed < rwire::kExitMaxSpeed) {
-        EndCarry(rwire::End::choice, true, true);
-        return;
+    if (!g_p.alight && g_p.exit_wait_until > g_now && speed < rwire::kExitMaxSpeed) {
+        // round 30 release A: off a side seat by choice: a 0.3 s settle on the anchor (the hang eased out), a 0.4 s glide to
+        // the seat's exit spot, then the placement as any exit (PlaceBeside: game::PlacementGate, PlaceOn)
+        if (SideCarry() && have_xf && g_in.local_active) {
+            double p[3], w[3];
+            PosOf(xf, p);
+            const rwire::ExitSpot s = rwire::ExitPlacement(g_p.kind, g_p.seat, p, Rows(xf), vel, false);
+            for (int k = 0; k < 3; ++k) w[k] = s.pos[k];
+            rwire::ToLocal(p, Rows(xf), w, g_p.alight_local);
+            {
+                const double yr = vwire::WrapPi(std::atan2(static_cast<double>(s.facing[1]), static_cast<double>(s.facing[0])) -
+                                                std::atan2(xf.rot.m[1][1], xf.rot.m[1][0]));
+                g_p.have_off_yaw = std::isfinite(yr), g_p.off_yaw_rel = std::isfinite(yr) ? yr : 0.0;
+            }
+            g_p.alight = true;
+            g_p.glide.StartOff(g_now);
+            Log("[ride] get off the %s's %s: settle %.0f ms, glide %.0f ms to its exit spot (%.2f, %.2f, %.2f in its frame)", vwire::KindName(g_p.kind),
+                rwire::SeatName(g_p.seat), muleride::kAlightSettleMs, muleride::kAlightGlideMs, g_p.alight_local[0], g_p.alight_local[1], g_p.alight_local[2]);
+        } else {
+            EndCarry(rwire::End::choice, true, true);
+            return;
+        }
     }
     if (!have_xf) return;
     // the meters: where Sam is now against where the seat is now (the vehicle moved by its physics since we placed him)
     float seat[3];
-    SeatOffset(g_p.kind, seat);
+    if (SideCarry()) SideLiveRefresh(g_p.entity, g_p.seat, g_p.ride_id, false);
+    SeatOffsetFor(g_p.kind, g_p.seat, seat, g_p.entity);
     const float zero[3] = {};
-    const WorldTransform seat_now = SeatXf(xf, zero, 0, seat);
+    // round 30 release A: a side seat's glide moves the place (on: from where Sam stood to the anchor; off: the anchor to the
+    // exit spot) and weighs the hang; at its end the exit by choice
+    float place[3] = {seat[0], seat[1], seat[2]};
+    bool turn = false;  // review (ux 7): the glide's facing (relative to the truck's yaw)
+    double turn_rel = 0;
+    if (SideCarry()) {
+        const muleride::GlideOut go = g_p.glide.Step(g_now);
+        if (go.phase != g_p.glide_logged) {
+            g_p.glide_logged = go.phase;
+            Log("[ride] side seat %s: %s (%.0f ms into the ride)", rwire::SeatName(g_p.seat), muleride::GlidePhaseName(go.phase), g_now - g_p.since);
+        }
+        if (go.phase == muleride::GlidePhase::done) {
+            EndCarry(rwire::End::choice, true, true);
+            return;
+        }
+        const double a[3] = {seat[0], seat[1], seat[2]};
+        double out[3];
+        bool moved = false;
+        if (go.phase == muleride::GlidePhase::on && g_p.have_from) {
+            // review (ux 8): from beyond the approach point (1 m out from the anchor) first there, then up onto the anchor
+            float ap[3];
+            if (rwire::ApproachPoint(g_p.kind, g_p.seat, ap)) {
+                const double via[3] = {ap[0], ap[1], g_p.from_local[2]};
+                muleride::GlidePath(g_p.from_local, via, a, go.place_t, out);
+            } else {
+                muleride::GlidePos(g_p.from_local, a, go.place_t, out);
+            }
+            moved = true;
+            if (g_p.have_from_yaw) turn = true, turn_rel = muleride::GlideYaw(g_p.from_yaw_rel, 0.0, go.place_t);
+        } else if (go.phase == muleride::GlidePhase::off) {
+            muleride::GlidePos(a, g_p.alight_local, go.place_t, out), moved = true;
+            if (g_p.have_off_yaw) turn = true, turn_rel = muleride::GlideYaw(0.0, g_p.off_yaw_rel, go.place_t);
+        }
+        if (moved)
+            for (int k = 0; k < 3; ++k) place[k] = static_cast<float>(out[k]);
+        SideFeed(true, go.pose_w);
+    }
+    const WorldTransform seat_now = SeatXf(xf, zero, 0, place);
     WorldTransform sam_xf{};
     const bool sam_xf_ok = ReadXf(sam, sam_xf);
     if (g_p.have_last && g_in.local_active && sam_xf_ok) {
@@ -1745,7 +2024,7 @@ void CarryTick() {
         const bool calm_now = speed >= 3.0 && speed <= 30.0 && g_p.yaw_rate < 3.0 && !own_tp;
         if (!calm_now) g_p.calm_since = 0;
         else if (g_p.calm_since == 0) g_p.calm_since = g_now;
-        realbody::SetRideSeat(g_p.kind, g_p.calm_since > 0 && g_now - g_p.calm_since >= 500 ? speed : 0.0);
+        if (!SideCarry()) realbody::SetRideSeat(g_p.kind, g_p.calm_since > 0 && g_now - g_p.calm_since >= 500 ? speed : 0.0);
     }
     // the carry: the seat one frame ahead along the vehicle's velocity (it moves by its own physics later in this frame); our
     // follower's own teleport requested and not applied yet: the seat where it goes (v0.20 left Sam 1.7 m off the seat for
@@ -1754,7 +2033,8 @@ void CarryTick() {
         const double lead = (std::min)(0.05, g_dt_ms / 1000.0);
         const bool to_tp = own_tp && tp_age < 200 && Dist3(xf, tp_xf) > 0.5;
         if (to_tp) Log("[ride] our %s's follower teleport (%.0f ms ago, %.1f m): Sam put on the seat where it goes", vwire::KindName(g_p.kind), tp_age, Dist3(xf, tp_xf));
-        const WorldTransform target = to_tp ? SeatXf(tp_xf, zero, 0.0, seat) : SeatXf(xf, vel, speed > 0.3 ? lead : 0.0, seat);
+        WorldTransform target = to_tp ? SeatXf(tp_xf, zero, 0.0, place) : SeatXf(xf, vel, speed > 0.3 ? lead : 0.0, place);
+        if (turn) TurnAboutUp(target, turn_rel);
         {
             // the camera: the game's own ride camera on the vehicle (its position, one frame ahead as the seat)
             const WorldTransform& vb = to_tp ? tp_xf : xf;
@@ -1784,6 +2064,16 @@ void CarryTick() {
             "capsule counter %d on %d; pose %d",
             vwire::KindName(g_p.kind), g_p.key.id, speed, g_p.err_n ? g_p.err_sum / g_p.err_n : 0.0, g_p.err_max, g_p.err_n ? g_p.err_veh_sum / g_p.err_n : 0.0,
             g_p.err_veh_max, g_p.err_n, CapCounter(g_p.cap), CapOnByte(g_p.cap), realbody::RidePose());
+        realbody::SideHangStats hs;
+        if (SideCarry() && realbody::SideHangStatus(&hs)) {
+            // round 30 release A: the hang's own line (hidden runs: the feet against the step, Sam against the seat)
+            Log("[ride] side seat %s: pose %s, %s; feet z %.3f m over the anchor (the step: %.2f), Sam vs the seat mean %.3f m; hand err %.1f cm; lift "
+                "%.2f m; writes %u (library %u), IK %u ok %u failed, %u failed; legs %u ok %u failed, base %s",
+                rwire::SeatName(g_p.seat), hs.mode == 1 ? "library idle" : hs.mode == 2 ? "procedural hang" : "none yet",
+                muleride::GlidePhaseName(g_p.glide.phase), hs.feet_z, muleride::kHangFeetZ, g_p.err_n ? g_p.err_sum / g_p.err_n : 0.0, hs.hand_err_cm, hs.lift_m,
+                hs.writes, hs.lib_writes, hs.ik_ok, hs.ik_fail, hs.failed, hs.leg_ok, hs.leg_fail,
+                hs.base == 1 ? "standing still" : hs.base == 2 ? "the boarding frame" : "none");
+        }
         if (g_shield_hooked.load()) {
             const unsigned n = g_shield_skips.exchange(0, std::memory_order_relaxed);
             const float drop = TakeBits(g_shield_drop_bits), h = TakeBits(g_shield_h_bits);
@@ -1841,6 +2131,7 @@ struct BoardView {
     vdrive::DrivenView v;
     double dist = 1e9;                 // our Sam to its passenger door (horizontal)
     double origin_dist = 1e9;          // ... to its origin (horizontal)
+    std::uint8_t seat = 0;             // round 30 release A: the seat nearest our Sam (PickSeat; dist is to its approach point)
     double dist3 = 1e9;                // ... to its origin (3D: the native prompt's distance key)
     bool native = false;
 };
@@ -1858,13 +2149,27 @@ BoardView ViewBoard(bool native) {
     float door[3];
     if (in.partner_drives && ReadXf(b.v.entity, xf) && g_in.local_ok && ReadXf(reinterpret_cast<std::uintptr_t>(g_in.local), sam) &&
         rwire::DoorPoint(b.v.key.kind, door)) {
-        double p[3], w[3], s[3];
+        double p[3], w[3], s[3], l[3];
         PosOf(xf, p);
-        rwire::ToWorld(p, Rows(xf), door, w);
         PosOf(sam, s);
+        // round 30 release A: the seat nearest our Sam (the truck's side seats when the partner's build knows them)
+        rwire::ToLocal(p, Rows(xf), s, l);
+        const bool sides = SidesNow();
+        b.seat = rwire::PickSeat(b.v.key.kind, sides, l);
+        float ap[3];
+        if (!rwire::ApproachPoint(b.v.key.kind, b.seat, ap)) std::memcpy(ap, door, sizeof(ap));
+        rwire::ToWorld(p, Rows(xf), ap, w);
         b.dist = Dist2D(w, s);
         b.origin_dist = Dist2D(p, s);
         b.dist3 = Dist3(xf, sam);
+        if (!sides && g_sides_cfg && b.v.key.kind == 2 && g_str_cab_gen != link::Generation() && rwire::SideSeat(rwire::PickSeat(2, true, l))) {
+            g_str_cab_gen = link::Generation();
+            // review (logic 5): no hello is not only an older build (riding together off there, or its checks failed)
+            Log("[ride] side seats not offered: %s: the cab seat only",
+                !g_str_have ? "the partner sends no STR1 hello (an older build, riding together off there, or its checks failed)"
+                                                                     : (g_str_peer.features & rwire::kFeatSides) ? "the partner's STR1 hello is stale"
+                                                                                                                 : "the partner's build has its side seats off");
+        }
     }
     in.door_dist_m = b.dist;
     // the native 7 m rule only for a board asked through the game's own prompt (kReqNative): a debug / test board
@@ -1886,11 +2191,13 @@ void Request(const BoardView& b, std::uint8_t reason, const char* how) {
     g_p.unit = b.v.unit;
     g_p.req_ms = g_now;
     g_p.native = reason == rwire::kReqNative;
+    g_p.seat = rwire::SideSeat(b.seat) ? b.seat : 0;
     ++g_requests;
-    Log("[ride] %s: asking to ride the %s 0x%06X (%s, %.2f m from its door, %.2f m from its origin, ride #%08X)", g_role == 1 ? "host" : "guest",
-        vwire::KindName(g_p.kind), g_p.key.id, reason == rwire::kReqTest ? "test" : how, b.dist, b.origin_dist, g_p.ride_id);
-    Send(rwire::MsgType::request, g_p.ride_id, g_p.key.id, g_p.kind, reason);
-    Notice("Asking to ride...", false, 3000);
+    Log("[ride] %s: asking to ride the %s 0x%06X (%s, %.2f m from its door, %.2f m from its origin, ride #%08X, %s)", g_role == 1 ? "host" : "guest",
+        vwire::KindName(g_p.kind), g_p.key.id, reason == rwire::kReqTest ? "test" : how, b.dist, b.origin_dist, g_p.ride_id,
+        rwire::SeatName(g_p.seat ? g_p.seat : static_cast<std::uint8_t>(rwire::SeatOf(g_p.kind))));
+    Send(rwire::MsgType::request, g_p.ride_id, g_p.key.id, g_p.kind, reason, g_p.seat);
+    if (!NativeOn()) Notice("Asking to ride...", false, 3000);  // round 30: the game's own Use Vehicle boards silently
 }
 
 // The native prompt's view of the partner's vehicle (the hooks read it on whatever thread the game runs them): its actor
@@ -1914,6 +2221,74 @@ void NativeObsLog() {
             (o >> 20) & 0xF,
             (o & 0x40000000u) ? ": lifted (available)" : (o & 0x20000000u) ? ": carried, offered as get off" : ": left as the game has it");
     }
+}
+
+// Round 30 (run 20261127-171443 leg 2): what the game's own targeting makes of the partner's vehicle, for the log only. The
+// game offers Use Vehicle only on a vehicle that its candidate pass (FUN_142823210) takes from the world vehicle registry
+// (byte +0x1EC set, origin within 16 m, a clear ray from Sam to the vehicle centre), that Select (FUN_142796410) marks usable
+// (its origin within 3 m, Sam's body facing it: dot over 0.2), and that the provider does not drop (+0x59C under -0.5, or its
+// cached line-of-sight ray blocked; the rays are not read here). The ride action's context *(action+0x60) (ctor
+// FUN_142783A60): +0x58 the selected vehicle, +0x1E0 the candidate count, +0x1E4 the selected index, +0x208 flags (bit 2
+// usable), +0x1F0 + i*4 the candidates' actor ids, +0x88 + i*4 their squared distances. Fault-free reads only, no game call.
+constexpr std::uintptr_t kActCtx = 0x60, kCtxSel = 0x58, kCtxCount = 0x1E0, kCtxIndex = 0x1E4, kCtxFlags = 0x208, kCtxIds = 0x1F0, kCtxDist = 0x88;
+constexpr std::uintptr_t kVehCandidate = 0x1EC, kVehProviderF = 0x59C;
+constexpr int kCtxShown = 5;  // +0x60 + i*8 holds 5 entities before +0x88
+void AppendF(char* out, std::size_t cap, std::size_t& n, const char* fmt, ...) {
+    if (n + 1 >= cap) return;
+    va_list ap;
+    va_start(ap, fmt);
+    const int k = std::vsnprintf(out + n, cap - n, fmt, ap);
+    va_end(ap);
+    if (k > 0) n = (std::min)(cap - 1, n + static_cast<std::size_t>(k));
+}
+void GameTargetText(std::uintptr_t entity, std::uint32_t aid, char* out, std::size_t cap) {
+    if (!out || !cap) return;
+    out[0] = 0;
+    std::size_t n = 0;
+    const int reg = vsync::VehicleRegistered(entity);
+    AppendF(out, cap, n, "registry %s", reg > 0 ? "yes" : reg == 0 ? "NO" : "unread");
+    WorldTransform xf{}, sam{};
+    if (entity && ReadXf(entity, xf) && g_in.local_ok && ReadXf(reinterpret_cast<std::uintptr_t>(g_in.local), sam)) {
+        double p[3], s[3];
+        PosOf(xf, p);
+        PosOf(sam, s);
+        const double d[3] = {p[0] - s[0], p[1] - s[1], p[2] - s[2]};
+        const double len = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+        const double dot = len > 1e-6 ? (d[0] * sam.rot.m[1][0] + d[1] * sam.rot.m[1][1] + d[2] * sam.rot.m[1][2]) / len : 0.0;
+        AppendF(out, cap, n, "; origin %.2f m (3D; the game's limit 3), Sam facing it dot %.2f (over 0.2)", len, dot);
+    }
+    std::uint8_t cand = 0;
+    float pf = 0;
+    const bool cand_ok = entity && mem::Rd(entity + kVehCandidate, cand);
+    const bool pf_ok = entity && mem::Rd(entity + kVehProviderF, pf);
+    AppendF(out, cap, n, "; +0x1EC %s%u, +0x59C %s%.2f", cand_ok ? "" : "unread ", static_cast<unsigned>(cand), pf_ok ? "" : "unread ", static_cast<double>(pf));
+    const std::uintptr_t a = g_np_action.load(std::memory_order_relaxed);
+    std::uintptr_t ctx = 0;
+    if (!a || mem::Q(a) != g_ride_vt || (ctx = mem::Q(a + kActCtx)) == 0) {
+        AppendF(out, cap, n, "; the game's target: %s", a ? "unread" : "the ride action not asked yet");
+        return;
+    }
+    std::int32_t count = -1, index = -1;
+    std::uint32_t flags = 0;
+    std::uintptr_t sel = 0;
+    if (!mem::Rd(ctx + kCtxCount, count) || !mem::Rd(ctx + kCtxIndex, index) || !mem::Rd(ctx + kCtxFlags, flags) || !mem::Rd(ctx + kCtxSel, sel) || count < 0 ||
+        count > 64) {
+        AppendF(out, cap, n, "; the game's target: unread");
+        return;
+    }
+    AppendF(out, cap, n, "; the game's target: %d candidate(s) [", count);
+    bool in_list = false;
+    for (int i = 0; i < count && i < kCtxShown; ++i) {
+        std::uint32_t id = 0;
+        float d2 = -1;
+        mem::Rd(ctx + kCtxIds + static_cast<std::uintptr_t>(i) * 4, id);
+        mem::Rd(ctx + kCtxDist + static_cast<std::uintptr_t>(i) * 4, d2);
+        const bool ours = aid && id == aid;
+        in_list = in_list || ours;
+        AppendF(out, cap, n, "%s0x%06X%s %.2f m", i ? ", " : "", id, ours ? " (the partner's)" : "", d2 >= 0 && std::isfinite(d2) ? std::sqrt(static_cast<double>(d2)) : -1.0);
+    }
+    AppendF(out, cap, n, "%s], the partner's %s; selected #%d %s, flags 0x%X (%s)", count > kCtxShown ? ", ..." : "", in_list ? "listed" : "NOT listed", index,
+            !sel ? "none" : sel == entity ? "the partner's" : "another vehicle", flags, (flags & 2) ? "usable" : "not usable");
 }
 
 // After a save's exit: once the save is written (and any placement done), our Sam on foot, the partner still driving that
@@ -1944,10 +2319,11 @@ void ResumeTick() {
             g_p.unit = v.unit;
             g_p.req_ms = g_now;
             g_p.resume = true;
+            g_p.seat = g_resume.seat;
             ++g_requests;
             Log("[ride] %s: asking for the %s 0x%06X's seat back after the save (ride #%08X, %.0f ms after the exit, %.1f m/s)", g_role == 1 ? "host" : "guest",
                 vwire::KindName(g_p.kind), g_p.key.id, g_p.ride_id, g_now - g_resume.since, v.meas ? v.speed_mps : 0.0);
-            Send(rwire::MsgType::request, g_p.ride_id, g_p.key.id, g_p.kind, rwire::kReqResume);
+            Send(rwire::MsgType::request, g_p.ride_id, g_p.key.id, g_p.kind, rwire::kReqResume, g_p.seat);
             g_resume.on = false;
             return;
         }
@@ -1956,10 +2332,84 @@ void ResumeTick() {
     g_resume.on = false;
 }
 
+// Round 30 (run 20261127-171443 leg 2): the board press without the game's prompt (rwire::NoPromptPress). The game can decide
+// not to offer Use Vehicle on the partner's vehicle where the mod allows boarding; then a press of X / F (the same buttons
+// the mod reads to get off) beside the chosen seat asks to ride, through the same REQUEST as the game's prompt. Nothing is
+// drawn. Also the diagnostics: allowed for 1.5 s with no Use Vehicle from the game, logged once per spell with what the
+// game's targeting makes of the vehicle.
+struct NoPromptState {
+    unsigned on_partner = 0, on_other = 0;          // the provider's RideOn counts last seen
+    double partner_ms = -1e18, other_ms = -1e18;    // ... when they last moved
+    double allowed_since = -1;
+    double last_ms = -1e18;                         // the last board press taken here
+    bool told = false;                              // this allowed spell's "no Use Vehicle" line
+    unsigned lines = 0, boards = 0, left = 0;
+    rwire::PressDetector press;
+};
+NoPromptState g_npp;
+void NoPromptCounters() {
+    const unsigned a = g_np_on_partner.load(std::memory_order_relaxed), o = g_np_on_other.load(std::memory_order_relaxed);
+    if (a != g_npp.on_partner) g_npp.on_partner = a, g_npp.partner_ms = g_now;
+    if (o != g_npp.on_other) g_npp.on_other = o, g_npp.other_ms = g_now;
+}
+void NoPromptRest() {
+    g_npp.press.Reset();  // a button still held from the ride (getting off) never boards again
+    g_npp.allowed_since = -1;
+    g_npp.told = false;
+}
+void NoPromptBoard(const BoardView& b, std::uint32_t aid, bool allowed, bool game_press) {
+    if (g_p.st != PState::idle) return NoPromptRest();
+    if (!allowed) {
+        g_npp.allowed_since = -1;
+        g_npp.told = false;
+    } else if (g_npp.allowed_since < 0) {
+        g_npp.allowed_since = g_now;
+    }
+    const char* how = "";
+    const bool down = g_in.local_active && BoardButtonDown(&how);
+    rwire::NoPromptIn in;
+    in.native_on = NativeOn();
+    in.pressed = g_npp.press.Update(down);
+    in.allowed = allowed;
+    in.allowed_for_ms = allowed ? g_now - g_npp.allowed_since : 0;
+    in.approach_dist_m = b.dist;
+    in.partner_prompt_age_ms = g_now - g_npp.partner_ms;
+    in.other_prompt_age_ms = g_now - g_npp.other_ms;
+    in.game_press_now = game_press;
+    in.game_press_age_ms = g_now - g_np_last_press_ms;
+    in.since_last_ms = g_now - g_npp.last_ms;
+    const char* seat = rwire::SeatName(rwire::SideSeat(b.seat) ? b.seat : static_cast<std::uint8_t>(rwire::SeatOf(b.v.key.kind)));
+    if (allowed && !g_npp.told && in.allowed_for_ms >= 1500.0 && in.partner_prompt_age_ms >= 1500.0 && g_npp.lines < 40) {
+        g_npp.told = true;
+        ++g_npp.lines;
+        char t[480];
+        GameTargetText(b.v.entity, aid, t, sizeof(t));
+        Log("[ride] native prompt: boarding the partner's %s 0x%06X is allowed (the %s, %.2f m from its approach point) but the game offers no Use Vehicle on it "
+            "for %.1f s: %s; a press of X / F still asks to ride",
+            vwire::KindName(b.v.key.kind), aid, seat, b.dist, in.allowed_for_ms / 1000.0, t);
+    }
+    const rwire::NoPrompt r = rwire::NoPromptPress(in);
+    if (r == rwire::NoPrompt::board) {
+        g_npp.last_ms = g_now;
+        ++g_npp.boards;
+        char t[480];
+        GameTargetText(b.v.entity, aid, t, sizeof(t));
+        Log("[ride] board press without the game's prompt (%s): no Use Vehicle on the partner's %s 0x%06X %s, the %s %.2f m from its approach point; %s", how,
+            vwire::KindName(b.v.key.kind), aid, in.partner_prompt_age_ms > 1e9 ? "yet" : "for over 0.3 s", seat, b.dist, t);
+        Request(b, rwire::kReqNative, "the board press without the game's prompt");
+    } else if (in.pressed && allowed && r != rwire::NoPrompt::game_prompt && r != rwire::NoPrompt::game_press && g_npp.left < 20) {
+        ++g_npp.left;
+        Log("[ride] board press left to the game: %s (the partner's %s 0x%06X, the %s %.2f m from its approach point)", rwire::NoPromptName(r),
+            vwire::KindName(b.v.key.kind), aid, seat, b.dist);
+    }
+}
+
 void PassengerTick() {
     NativeObsLog();
     PollNativePress();
+    NoPromptCounters();
     ResumeTick();
+    if (g_p.st != PState::idle) NoPromptRest();
     if (g_p.st == PState::riding) {
         g_np_seen.store(g_np_ride.load(std::memory_order_relaxed), std::memory_order_relaxed);
         g_np_lift.store(0, std::memory_order_relaxed);
@@ -1998,6 +2448,7 @@ void PassengerTick() {
                 b.block == rwire::Block::ok ? "allowed: the game's prompt is lifted" : rwire::BlockName(b.block), b.origin_dist, b.dist);
         }
         last_block = aid ? b.block : rwire::Block::count;
+        const bool game_press = g_np_tick_press != 0;
         if (TakeNativePress(aid)) {
             if (allowed) {
                 Request(b, rwire::kReqNative, "the game's Use Vehicle");
@@ -2005,6 +2456,7 @@ void PassengerTick() {
                 Log("[ride] native press on the partner's vehicle refused: %s", rwire::BlockName(b.block));
             }
         }
+        NoPromptBoard(b, aid, allowed, game_press);
         return;
     }
     const char* how = "";
@@ -2039,11 +2491,11 @@ void PassengerTick() {
 // ---------------------------------------------------------------- the driver
 void DriverEnd(rwire::End reason, bool tell) {
     if (!g_d.accepted) return;
-    if (reason == rwire::End::saving) g_dres = DrvResume{g_d.ride_id, g_d.key.id, g_now + rwire::kResumeWindowMs + 2000};
+    if (reason == rwire::End::saving) g_dres = DrvResume{g_d.ride_id, g_d.key.id, g_now + rwire::kResumeWindowMs + 2000, g_d.seat};
     Log("[ride] %s: the partner's ride #%08X in our %s 0x%06X is over (%s) after %.1f s; body vs seat mean %.3f m", g_role == 1 ? "host" : "guest", g_d.ride_id,
         vwire::KindName(g_d.key.kind), g_d.key.id, rwire::EndName(static_cast<std::uint8_t>(reason)), (g_now - g_d.accept_ms) / 1000.0,
         g_d.err_n ? g_d.err_sum / g_d.err_n : 0.0);
-    if (tell) Send(rwire::MsgType::end, g_d.ride_id, g_d.key.id, g_d.key.kind, static_cast<std::uint8_t>(reason));
+    if (tell) Send(rwire::MsgType::end, g_d.ride_id, g_d.key.id, g_d.key.kind, static_cast<std::uint8_t>(reason), g_d.seat);
     g_d = Drv{};
 }
 
@@ -2055,7 +2507,13 @@ void DriverTick() {
         return;
     }
     g_d.entity = v.entity;
+    if (g_d.key.kind == 2 && rwire::SideSeat(g_d.seat)) SideLiveRefresh(v.entity, g_d.seat, g_d.ride_id, false);
     if ((g_in.partner_flags & wire::kPosePassenger) && g_now - g_in.partner_rx_ms < 500) g_d.last_bit_ms = g_in.partner_rx_ms;
+    // review (ux 1): the glide bit; after a glide, a fresh pose that is no longer the passenger's (it got off: its END on the
+    // way) keeps the body free too
+    if (g_now - g_in.partner_rx_ms < 500 &&
+        ((g_in.partner_flags & wire::kPoseRideGlide) || (!(g_in.partner_flags & wire::kPosePassenger) && g_now - g_d.glide_bit_ms < 2000.0)))
+        g_d.glide_bit_ms = g_in.partner_rx_ms;
     if (rwire::DriverTimedOut(true, g_now - g_d.accept_ms, g_now - g_d.last_bit_ms)) {
         DriverEnd(rwire::End::timeout, true);
         return;
@@ -2157,8 +2615,9 @@ void PackTick(const TickIn& in) {
     if (!g_pack_ok) return;
     const std::uintptr_t sam = reinterpret_cast<std::uintptr_t>(in.local);
     if (!sam || !in.local_ok) return;  // a load / no Sam this tick: the next tick decides (a new Sam forgets)
-    const bool ride = !g_stop.load() && g_on.load() && g_d.accepted && g_d.key.kind == 3 &&
-                      rwire::DriverPlacesBody(true, g_now - g_d.accept_ms, g_now - g_d.last_bit_ms);
+    const bool ride = !g_stop.load() && g_on.load() &&
+                      ((g_pack_cfg && g_d.accepted && g_d.key.kind == 3 && rwire::DriverPlacesBody(true, g_now - g_d.accept_ms, g_now - g_d.last_bit_ms)) ||
+                       (g_side_pack_cfg && g_p.st == PState::riding && SideCarry()));  // round 30: our own pack on a side seat
     const bool want = !g_stop.load() && (g_pack_test >= 0 ? g_pack_test == 1 : ride);
     if (g_pack.held && sam != g_pack.sam) {
         PackRelease(sam, "a new Sam");
@@ -2232,7 +2691,7 @@ void InstallPack(const Config& config) {
         Log("[ride] trike pillion: the driver's backpack stays shown with a passenger: this game build differs (%s; %u of %u checks failed)", first, bad, n);
         return;
     }
-    if (!g_pack_cfg) {
+    if (!g_pack_cfg && !g_side_pack_cfg) {
         Log("[ride] trike pillion: the driver's backpack stays shown with a passenger (session.ini ride_hide_pack=0; %u byte checks ok)", n);
         return;
     }
@@ -2249,9 +2708,11 @@ void OnRequest(const rwire::Msg& m) {
     in.native = m.reason == rwire::kReqNative;
     in.seat_taken = g_d.accepted && g_d.ride_id != m.ride_id;
     in.speed = v.meas ? v.speed_mps : 0;
+    // round 30 release A: the seat asked for (a side seat: its approach point stands for the door)
+    const std::uint8_t mseat = static_cast<std::uint8_t>(m.seat);
     WorldTransform xf{};
     float door[3];
-    if (in.we_drive_it && g_in.have_partner && ReadXf(v.entity, xf) && rwire::DoorPoint(m.kind, door)) {
+    if (in.we_drive_it && g_in.have_partner && ReadXf(v.entity, xf) && rwire::ApproachPoint(m.kind, mseat, door)) {
         double p[3], w[3], s[3];
         PosOf(xf, p);
         rwire::ToWorld(p, Rows(xf), door, w);
@@ -2262,11 +2723,21 @@ void OnRequest(const rwire::Msg& m) {
     }
     rwire::Deny why = rwire::Deny::count;
     if (g_d.accepted && g_d.ride_id == m.ride_id) {
-        Send(rwire::MsgType::accept, m.ride_id, m.vehicle_id, m.kind, 0);  // a repeat: the same answer
+        Send(rwire::MsgType::accept, m.ride_id, m.vehicle_id, m.kind, 0, g_d.seat);  // a repeat: the same answer
         return;
     }
     // the seat back after a save: the ride we ended for that save, in time, still driving that vehicle, the seat free
     const bool resume = m.reason == rwire::kReqResume;
+    // a side seat only to a partner whose STR1 hello says it knows them (and with ride_sides on here); review (logic 4 / ux 2):
+    // else the cab seat instead (no deny, no "Cannot ride" banner); a resume keeps its side seat while ride_sides is on here (a
+    // hello late across the save)
+    std::uint8_t give = mseat;
+    if (rwire::SideSeat(mseat) && !SidesNow() && !(resume && g_sides_cfg)) {
+        give = 0;
+        Log("[ride] %s: the partner asks to ride our %s 0x%06X at the %s (ride #%08X): side seats not offered here now (%s): the cab seat instead",
+            g_role == 1 ? "host" : "guest", vwire::KindName(m.kind), m.vehicle_id, rwire::SeatName(mseat), m.ride_id,
+            !g_sides_cfg ? "session.ini ride_sides=0" : "no fresh STR1 hello with the side seats");
+    }
     if (resume) {
         const bool ok = in.feature_on && in.same_world && in.we_drive_it && !g_d.accepted && m.ride_id == g_dres.ride_id && m.vehicle_id == g_dres.vehicle_id &&
                         g_now < g_dres.until;
@@ -2281,7 +2752,7 @@ void OnRequest(const rwire::Msg& m) {
                 : !in.we_drive_it ? "we no longer drive it"
                 : g_d.accepted    ? "the seat is taken"
                                   : "not the ride we ended for a save, or too late");
-            Send(rwire::MsgType::deny, m.ride_id, m.vehicle_id, m.kind, static_cast<std::uint8_t>(why));
+            Send(rwire::MsgType::deny, m.ride_id, m.vehicle_id, m.kind, static_cast<std::uint8_t>(why), mseat);
             return;
         }
     } else if (!rwire::DriverAccepts(in, &why)) {
@@ -2289,7 +2760,7 @@ void OnRequest(const rwire::Msg& m) {
         Log("[ride] %s: the partner asks to ride our %s 0x%06X (ride #%08X%s): DENIED, %s (speed %.1f m/s, partner %.2f m from the door, %.2f m from the origin)",
             g_role == 1 ? "host" : "guest", vwire::KindName(m.kind), m.vehicle_id, m.ride_id, in.native ? ", the game's Use Vehicle" : "",
             rwire::DenyName(static_cast<std::uint8_t>(why)), in.speed, in.partner_dist_m, in.partner_origin_dist_m);
-        Send(rwire::MsgType::deny, m.ride_id, m.vehicle_id, m.kind, static_cast<std::uint8_t>(why));
+        Send(rwire::MsgType::deny, m.ride_id, m.vehicle_id, m.kind, static_cast<std::uint8_t>(why), mseat);
         return;
     }
     g_d = Drv{};
@@ -2299,16 +2770,15 @@ void OnRequest(const rwire::Msg& m) {
     g_d.entity = v.entity;
     g_d.accept_ms = g_now;
     g_d.log_ms = g_now;
+    g_d.seat = rwire::SideSeat(give) ? give : 0;
+    g_d.resume = resume;
     ++g_accepts;
-    Log("[ride] %s: the partner asks to ride our %s 0x%06X (ride #%08X%s): ACCEPTED (#%u; partner %.2f m from the door, %.2f m from the origin, %.1f m/s)",
+    Log("[ride] %s: the partner asks to ride our %s 0x%06X (ride #%08X%s): ACCEPTED (#%u; partner %.2f m from the door, %.2f m from the origin, %.1f m/s; %s)",
         g_role == 1 ? "host" : "guest", vwire::KindName(m.kind), m.vehicle_id, m.ride_id,
         in.native ? ", the game's Use Vehicle" : resume ? ", the seat back after a save" : "", g_accepts, in.partner_dist_m,
-        in.partner_origin_dist_m, in.speed);
-    Send(rwire::MsgType::accept, m.ride_id, m.vehicle_id, m.kind, 0);
-    char label[96], text[200];
-    PeerLabel(label, sizeof(label));
-    std::snprintf(text, sizeof(text), "%s rides with you.", label);
-    Notice(text, false, 4000);
+        in.partner_origin_dist_m, in.speed, rwire::SeatName(g_d.seat ? g_d.seat : static_cast<std::uint8_t>(rwire::SeatOf(m.kind))));
+    Send(rwire::MsgType::accept, m.ride_id, m.vehicle_id, m.kind, 0, g_d.seat);
+    // round 30: no "... rides with you." notice for the driver (the user's ask)
 }
 
 void OnMsg(std::uint8_t /*type*/, const std::uint8_t* msg, std::size_t size, std::uint32_t /*generation*/, double now) {
@@ -2361,8 +2831,14 @@ void OnMsg(std::uint8_t /*type*/, const std::uint8_t* msg, std::size_t size, std
             Log("[ride] the driver accepted ride #%08X after %.0f ms (%.2f m from the door)", m.ride_id, g_now - g_p.req_ms, b.dist);
             const vwire::VKey key = g_p.key;
             const std::uint32_t id = g_p.ride_id;
+            // round 30 release A: the seat the driver accepted (its echo; an older driver's ACCEPT names the cab seat)
+            const std::uint8_t want = g_p.seat, aseat = static_cast<std::uint8_t>(m.seat);
+            const std::uint8_t seat = rwire::SideSeat(aseat) ? aseat : 0;
+            if (seat != want)
+                Log("[ride] ride #%08X: asked for the %s, the driver accepted the %s", id, rwire::SeatName(want ? want : static_cast<std::uint8_t>(rwire::SeatOf(key.kind))),
+                    rwire::SeatName(aseat));
             g_p = Pass{};
-            if (!still || !StartCarry(key, key.kind, b.v.entity, b.v.unit, id, false)) {
+            if (!still || !StartCarry(key, key.kind, b.v.entity, b.v.unit, id, false, seat, was_resume)) {
                 Log("[ride] ride #%08X not started: %s", id, still ? "the carry did not start" : "we are no longer at the vehicle");
                 Send(rwire::MsgType::end, id, key.id, key.kind, static_cast<std::uint8_t>(rwire::End::timeout));
                 g_cooldown_until = g_now + 1500;
@@ -2398,6 +2874,35 @@ void OnMsg(std::uint8_t /*type*/, const std::uint8_t* msg, std::size_t size, std
             break;
         }
     }
+}
+
+// Round 30 release A: the STR1 hello (SVM1 type 53), in and out (every 2 s while linked).
+void OnHello(std::uint8_t /*type*/, const std::uint8_t* msg, std::size_t size, std::uint32_t generation, double now) {
+    rwire::Hello h;
+    if (!rwire::DecodeHello(msg, size, h)) {
+        if (++g_str_bad <= 5) Log("[ride] dropped a STR1 hello (%zu bytes): not valid", size);
+        return;
+    }
+    ++g_str_rx;
+    const bool first = !g_str_have || g_str_gen != generation || g_str_peer.features != h.features || g_str_peer.role != h.role;
+    g_str_have = true;
+    g_str_peer = h;
+    g_str_ms = now;
+    g_str_gen = generation;
+    if (first)
+        Log("[ride] STR1 hello received: version %u, features 0x%X (side seats %s), role %s (link session %u)", h.version, h.features,
+            (h.features & rwire::kFeatSides) ? "yes" : "no", h.role == 1 ? "host" : "guest", generation);
+}
+void StrTick() {
+    if (!g_str_reg || g_str_mute || !(g_role == 1 || g_role == 2) || !link::GetInfo().connected || g_now < g_str_next) return;
+    g_str_next = g_now + rwire::kRideHelloEveryMs;
+    rwire::Hello h;
+    h.features = static_cast<std::uint8_t>(rwire::kFeatRide | (g_sides_cfg ? rwire::kFeatSides : 0));
+    h.role = static_cast<std::uint8_t>(g_role);
+    std::uint8_t buf[rwire::kHelloMessageSize];
+    const std::size_t n = rwire::EncodeHello(h, buf, sizeof(buf));
+    if (n && vshare::SendEvent(buf, n) && g_str_tx++ == 0)
+        Log("[ride] STR1 hello sent (role %s, features 0x%X; every %.0f s)", g_role == 1 ? "host" : "guest", h.features, rwire::kRideHelloEveryMs / 1000.0);
 }
 
 void RollTick() {
@@ -2489,7 +2994,9 @@ void TickBody(const TickIn& in, double now) {
         if (g_p.st == PState::requesting) g_p = Pass{};
         DriverEnd(rwire::End::driver_ended, false);
     }
+    StrTick();
     PassengerTick();
+    GhostTick();
     DriverTick();
     RollTick();
     MeterTick();
@@ -2534,6 +3041,9 @@ bool RestoreGuarded() noexcept {
 void Install(const Config& config) noexcept {
     g_cfg_on = config.ride_together;
     g_pose_mode = config.ride_pose;
+    g_sides_cfg = config.ride_sides;
+    g_side_pack_cfg = config.ride_side_hide_pack;
+    realbody::SetSideLibrary(config.ride_mule_pose, config.ride_mule_record, config.ride_mule_cache);
     ridecam::Install(config);
     InstallPack(config);
     unsigned bad = 0;
@@ -2573,6 +3083,11 @@ void Install(const Config& config) noexcept {
         return;
     }
     g_off[0] = 0;
+    // round 30 release A: the STR1 hello (which ride features each build knows: the side seats)
+    g_str_reg = vshare::RegisterHandler(rwire::kHelloSvmType, &OnHello);
+    if (!g_str_reg) Log("[ride] STR1 hello: channel 3 type %u is taken: the side seats are not offered", static_cast<unsigned>(rwire::kHelloSvmType));
+    else
+        Log("[ride] side seats %s (session.ini ride_sides=%d): offered to a partner whose STR1 hello has them", g_sides_cfg ? "ON" : "OFF", g_sides_cfg ? 1 : 0);
     // the game's pad state (our own reads: getting off, the ImGui fallback); off alone on a mismatch
     unsigned pad_bad = 0;
     for (const Site& s : kPadSites)
@@ -2620,7 +3135,10 @@ void SeatWatch(const TickIn& in) noexcept {
 
 static void TickInner(const TickIn& in, double now) noexcept;
 void Tick(const TickIn& in, double now) noexcept {
+    realbody::SideLibraryTick(now);  // round 30 release A: the side library's cache file (loaded once, saved after a new loop)
     TickInner(in, now);
+    // review (ux 4): Sam's still pose is kept while he is on foot and not riding (the next side carry's base)
+    realbody::SetStandTrack(g_on.load() && !g_stop.load() && g_p.st == PState::idle && OnFoot());
     PublishSaveState();
     // the trike driver's back (v0.23): after the driver's side decided this tick
     if (g_pack_ok && !g_stop.load() && !PackTickGuarded(in)) {
@@ -2690,6 +3208,10 @@ void EmergencyStop() noexcept {
     g_np_ride.store(0);
     overlay::input::SetRideCarry(false);
     realbody::SetRidePose(0);
+    {
+        const double none[3] = {};
+        realbody::SetRideSide(0, 0, none);
+    }
     realbody::SetHandMeter(false);
     vdrive::SetCarriedUnit(0);
     ridecam::Stop("the mod stopped");
@@ -2705,7 +3227,10 @@ void AfterStop() noexcept {
 }
 
 std::uint32_t PoseFlags() noexcept {
-    return g_p.st == PState::riding && !g_p.solo ? (wire::kPosePassenger | wire::kPoseInVehicle) : 0u;
+    if (g_p.st != PState::riding || g_p.solo) return 0u;
+    // review (ux 1): gliding onto or off a side seat: the driver's game lets the body follow this pose
+    const bool glide = SideCarry() && (g_p.glide.phase == muleride::GlidePhase::on || g_p.glide.phase == muleride::GlidePhase::off);
+    return wire::kPosePassenger | wire::kPoseInVehicle | (glide ? static_cast<std::uint32_t>(wire::kPoseRideGlide) : 0u);
 }
 bool Carried() noexcept { return g_p.st == PState::riding; }
 Pillion PillionNow() noexcept {
@@ -2724,11 +3249,18 @@ bool JustRode(std::uintptr_t vehicle_entity) noexcept {
 bool PassengerTarget(game::WorldTransform* target) noexcept {
     if (!target || !g_d.accepted || g_stop.load()) return false;
     if (!rwire::DriverPlacesBody(true, g_now - g_d.accept_ms, g_now - g_d.last_bit_ms)) return false;
+    if (rwire::DriverBodyFree(rwire::SideSeat(g_d.seat), g_d.resume, g_now - g_d.accept_ms, g_now - g_d.glide_bit_ms)) {
+        if (!g_d.glide_logged) {
+            g_d.glide_logged = true;
+            Log("[ride] the partner body follows its own pose while it glides (side seat %s)", rwire::SeatName(g_d.seat));
+        }
+        return false;
+    }
     vdrive::DrivenView v;
     if (!vdrive::LocalDriving(&v) || v.key.id != g_d.key.id) return false;
     WorldTransform xf{};
     float seat[3];
-    if (!ReadXf(v.entity, xf) || !SeatOffset(v.key.kind, seat)) return false;
+    if (!ReadXf(v.entity, xf) || !SeatOffsetFor(v.key.kind, g_d.seat, seat, v.entity)) return false;
     const double lead = (std::min)(0.05, g_dt_ms / 1000.0);
     const float zero[3] = {};
     // the meter: where the real body is now (placed last tick, the vehicle moved by its physics since) against the seat now
@@ -2744,7 +3276,8 @@ bool PassengerTarget(game::WorldTransform* target) noexcept {
     *target = SeatXf(xf, v.meas ? v.vel : zero, v.meas && v.speed_mps > 0.3 ? lead : 0.0, seat);
     if (!g_d.placed_logged) {
         g_d.placed_logged = true;
-        Log("[ride] the partner body sits in our %s 0x%06X at the passenger seat (%.2f, %.2f, %.2f)", vwire::KindName(v.key.kind), v.key.id, seat[0], seat[1], seat[2]);
+        Log("[ride] the partner body sits in our %s 0x%06X at the %s (%.2f, %.2f, %.2f)", vwire::KindName(v.key.kind), v.key.id,
+            g_d.seat ? rwire::SeatName(g_d.seat) : "passenger seat", seat[0], seat[1], seat[2]);
     }
     return true;
 }
@@ -2782,6 +3315,14 @@ bool StateCommand(char* msg, std::size_t cap) noexcept {
         g_np_ride.load(), g_np_icon_calls.load(), g_np_lifts.load(), g_np_offs.load(), g_np_presses.load(), g_np_refused.load(), g_pad_ok ? "read" : "off",
         g_np_obs[0].load(), g_np_obs[1].load());
     {
+        // round 30: what the game's own targeting makes of the partner's vehicle, and the board presses without its prompt
+        vdrive::DrivenView d;
+        char t[480] = "no partner-driven vehicle here";
+        if (vdrive::PartnerDriving(&d)) GameTargetText(d.entity, ActorIdOf(d.entity), t, sizeof(t));
+        Log("[ride] state: game targeting: %s; RideOn on the partner's vehicle %u (%.1f s ago), on others %u; board presses without the game's prompt %u", t,
+            g_np_on_partner.load(), g_npp.partner_ms > -1e17 ? (g_now - g_npp.partner_ms) / 1000.0 : -1.0, g_np_on_other.load(), g_npp.boards);
+    }
+    {
         std::uint8_t b = 0;
         const std::uintptr_t inv = SamInventory(reinterpret_cast<std::uintptr_t>(g_in.local));
         const bool have = inv && PackBit(inv, 0, &b);
@@ -2806,6 +3347,275 @@ bool ExitCommand(const double (&v)[3], char* msg, std::size_t cap) noexcept {
     EndCarry(v[0] != 0 ? rwire::End::test : rwire::End::choice, true, true);
     return std::snprintf(msg, cap, "off"), true;
 }
+
+namespace {
+
+// ---------------------------------------------------------------- round 30 stage 0 (side riding P1 / P3; section 24.19)
+bool HelperChecks() noexcept {
+    if (g_hp_state) return g_hp_state > 0;
+    unsigned ok = 0;
+    const unsigned n = static_cast<unsigned>(sizeof(kHelperSites) / sizeof(kHelperSites[0])) + 1;
+    for (const Site& s : kHelperSites) {
+        if (mem::CodeMatches(A(s.va), s.sig)) ++ok;
+        else Log("[ride] helper probe: byte check FAILED: %s at 0x%llX", s.name, static_cast<unsigned long long>(s.va));
+    }
+    if (mem::Q(A(kTruckVtHelper)) == A(kHelperLookup)) ++ok;
+    else Log("[ride] helper probe: byte check FAILED: the truck vtable 0x%llX slot +0x130 is not the helper lookup", static_cast<unsigned long long>(kTruckVt));
+    g_hp_state = ok == n ? 1 : -1;
+    Log("[ride] helper probe: byte checks %u/%u ok%s", ok, n, ok == n ? "" : ": the helper probes are off");
+    return g_hp_state > 0;
+}
+
+// The game calls, SEH-wrapped (no C++ objects in these frames).
+bool CallHelper(std::uintptr_t fn, std::uintptr_t e, float* out, const std::uint32_t* key, bool* faulted) noexcept {
+    __try {
+        return reinterpret_cast<FnHelper>(fn)(e, out, key);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *faulted = true;
+        return false;
+    }
+}
+const void* CallSeatName(int seat, bool* faulted) noexcept {
+    __try {
+        return reinterpret_cast<FnSeatName>(A(kSeatNames))(nullptr, seat);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *faulted = true;
+        return nullptr;
+    }
+}
+const void* CallHandName(int seat, char side, bool* faulted) noexcept {
+    __try {
+        return reinterpret_cast<FnHandName>(A(kHandNames))(nullptr, seat, side);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *faulted = true;
+        return nullptr;
+    }
+}
+bool CallNameKey(const void* name, bool* faulted) noexcept {
+    __try {
+        reinterpret_cast<FnNameKey>(A(kNameKey))(name);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        *faulted = true;
+        return false;
+    }
+}
+
+bool OnAnimateThread() noexcept {
+    const std::uint32_t a = realbody::AnimateThreadId();
+    return a != 0 && a == GetCurrentThreadId();
+}
+
+// A game name object (its first qword the string; the string - 0xC the cached key, - 8 the length): its text and, after the game's
+// own key function ran on it, the key it cached.
+bool GameName(const void* obj, char* text, std::size_t cap, std::uint32_t* key, bool* faulted) noexcept {
+    text[0] = 0, *key = 0;
+    if (!obj || !mem::InImage(reinterpret_cast<std::uintptr_t>(obj))) return false;
+    const std::uintptr_t str = mem::Q(reinterpret_cast<std::uintptr_t>(obj));
+    std::uint32_t len = 0;
+    if (!str || !mem::Rd(str - 8, len) || len == 0 || len >= cap || !mem::Read(str, text, len)) return false;
+    text[len] = 0;
+    if (!CallNameKey(obj, faulted)) return false;
+    return mem::Rd(str - 0xC, *key);
+}
+
+// Once: the game's own keys of the seat / hand helper names against ours (muleride::HelperKey) and the names against our table.
+void KeyCheck() noexcept {
+    unsigned n = 0, same = 0, bad_name = 0;
+    bool faulted = false;
+    char first[200] = {};
+    auto one = [&](const void* obj, const char* want, const char* what) {
+        char text[64];
+        std::uint32_t game = 0;
+        if (!GameName(obj, text, sizeof(text), &game, &faulted)) {
+            if (!first[0]) std::snprintf(first, sizeof(first), "%s: the game's name unread", what);
+            ++n;
+            return;
+        }
+        ++n;
+        const std::uint32_t ours = muleride::HelperKey(text);
+        if (ours == game) ++same;
+        else if (!first[0]) std::snprintf(first, sizeof(first), "%s '%s': ours 0x%08X game's 0x%08X", what, text, ours, game);
+        if (want && std::strcmp(want, text) != 0) {
+            ++bad_name;
+            Log("[ride] key check: %s is '%s' in the game, '%s' in our table", what, text, want);
+        }
+    };
+    char what[48];
+    for (int seat = 0; seat <= 4 && !faulted; ++seat) {
+        std::snprintf(what, sizeof(what), "seat %d", seat);
+        one(CallSeatName(seat, &faulted), muleride::SeatHelper(seat), what);
+    }
+    for (int seat = 0; seat <= 4 && !faulted; ++seat)
+        for (int side = 0; side < 2 && !faulted; ++side) {
+            const char* want = muleride::HandHelper(seat, side != 0);
+            if (!want) continue;  // the game's empty name
+            std::snprintf(what, sizeof(what), "seat %d side %d hand", seat, side);
+            one(CallHandName(seat, static_cast<char>(side), &faulted), want, what);
+        }
+    if (faulted) Log("[ride] key check: FAULT in a game name function: not checked");
+    else if (same == n && n) Log("[ride] key check: ours == game's (%u names, %u named differently)", n, bad_name);
+    else Log("[ride] key check: DIFFERS (%u of %u the same; first: %s)", same, n, first);
+}
+
+}  // namespace
+
+bool TruckHelper(std::uintptr_t truck_entity, const char* name, float (&m)[4][4]) noexcept {
+    if (!truck_entity || !name || OnAnimateThread() || !HelperChecks()) return false;
+    const std::uintptr_t vt = mem::Q(truck_entity);
+    if (vt != A(kTruckVt) || mem::Q(vt + kVtHelperSlot) != A(kHelperLookup) || !mem::CodeMatches(A(kHelperLookup), kHelperSites[0].sig)) return false;
+    alignas(16) float out[16] = {};
+    const std::uint32_t key = muleride::HelperKey(name);
+    bool faulted = false;
+    const bool found = CallHelper(A(kHelperLookup), truck_entity, out, &key, &faulted);
+    if (faulted) {
+        Log("[ride] helper probe: FAULT in the helper lookup (%s): the helper probes are off", name);
+        g_hp_state = -1;
+        return false;
+    }
+    if (!found) return false;
+    for (float f : out)
+        if (!std::isfinite(f)) return false;
+    std::memcpy(m, out, sizeof(m));
+    return true;
+}
+
+namespace {
+
+std::uint32_t VehIdOf(std::uintptr_t e) noexcept {
+    std::uint32_t id = 0;
+    const std::uintptr_t u = e ? mem::Q(e + kVUnit) : 0;
+    return u && mem::Rd(u + 0x08, id) ? id : 0;
+}
+
+// ride_test 41 [vehicle id]
+bool HelperProbeCommand(const double (&v)[3], char* msg, std::size_t cap) noexcept {
+    if (!automation::Enabled() && !dev::Enabled()) return std::snprintf(msg, cap, "hidden runs or dev_tools only"), false;
+    std::uintptr_t e = 0;
+    const char* whose = "";
+    const auto want = v[1] > 0 && v[1] < 4294967296.0 ? static_cast<std::uint32_t>(v[1]) : 0u;
+    if (want) {
+        if (!truckv3::TruckById(want, &e)) return std::snprintf(msg, cap, "no truck 0x%05X in the pools (or vehicle_truck_probe=0)", want), false;
+        whose = "named";
+    } else {
+        vdrive::DrivenView d;
+        const std::uintptr_t sam = reinterpret_cast<std::uintptr_t>(g_in.local);
+        const std::uintptr_t parent = sam ? mem::Q(sam + kEParent) : 0;
+        if (vdrive::PartnerDriving(&d) && d.key.kind == 2) e = d.entity, whose = "the partner's";
+        else if (parent && KindOfEntity(parent) == 2) e = parent, whose = "ours";
+        else if (vdrive::LocalDriving(&d) && d.key.kind == 2) e = d.entity, whose = "ours";
+        else {
+            WorldTransform sx{};
+            double p[3] = {};
+            std::uint32_t id = 0;
+            if (!sam || !ReadXf(sam, sx)) return std::snprintf(msg, cap, "no local Sam"), false;
+            PosOf(sx, p);
+            if (!truckv3::NearestTruck(p, 300.0, &e, &id)) return std::snprintf(msg, cap, "no truck within 300 m (or vehicle_truck_probe=0)"), false;
+            whose = "the nearest";
+        }
+    }
+    if (KindOfEntity(e) != 2) return std::snprintf(msg, cap, "not a truck"), false;
+    const std::uint32_t id = VehIdOf(e);
+    const DWORD tid = GetCurrentThreadId();
+    const std::uint32_t atid = realbody::AnimateThreadId();
+    Log("[ride] helper probe on %s truck 0x%05X: thread %lu, the animate detour's %lu (%s)", whose, id, static_cast<unsigned long>(tid),
+        static_cast<unsigned long>(atid), !atid ? "not seen yet" : atid == tid ? "the SAME: refused" : "another");
+    if (atid == tid) return std::snprintf(msg, cap, "on the animate thread: refused"), false;
+    if (!HelperChecks()) return std::snprintf(msg, cap, "the helper probe's byte checks failed"), false;
+    const std::uintptr_t vt = mem::Q(e);
+    if (mem::Q(vt + kVtHelperSlot) != A(kHelperLookup)) {
+        Log("[ride] helper probe: truck 0x%05X's vt slot +0x130 is not the helper lookup: refused", id);
+        return std::snprintf(msg, cap, "the truck's vt slot +0x130 differs"), false;
+    }
+    unsigned found = 0;
+    for (const char* name : muleride::kHelperNames) {
+        float m[4][4] = {};
+        if (TruckHelper(e, name, m)) {
+            ++found;
+            Log("[ride] helper %s on truck 0x%05X: found (%.3f %.3f %.3f) axes x (%.2f %.2f %.2f) y (%.2f %.2f %.2f)", name, id, m[3][0], m[3][1], m[3][2], m[0][0],
+                m[0][1], m[0][2], m[1][0], m[1][1], m[1][2]);
+        } else {
+            Log("[ride] helper %s on truck 0x%05X: missing", name, id);
+        }
+        if (g_hp_state < 0) break;  // a fault: off
+    }
+    if (!g_key_checked && g_hp_state > 0) {
+        g_key_checked = true;
+        KeyCheck();
+    }
+    Log("[ride] helper probe done: %s truck 0x%05X, %u of %zu found", whose, id, found, muleride::kHelperCount);
+    return std::snprintf(msg, cap, "truck 0x%05X: %u of %zu helpers found", id, found, muleride::kHelperCount), true;
+}
+
+// ride_test 43 <seat 1..4>
+bool GhostCommand(const double (&v)[3], char* msg, std::size_t cap) noexcept {
+    if (!automation::Enabled() && !dev::Enabled()) return std::snprintf(msg, cap, "hidden runs or dev_tools only"), false;
+    const int seat = static_cast<int>(v[1]);
+    double anchor[3];
+    if (static_cast<double>(seat) != v[1] || !muleride::SideAnchor(seat, anchor)) return std::snprintf(msg, cap, "seat 1..4"), false;
+    if (!g_checks_ok) return std::snprintf(msg, cap, "byte checks failed: %s", g_off), false;
+    if (g_p.st != PState::idle) return std::snprintf(msg, cap, "busy"), false;
+    if (!g_meas_e || g_meas_kind != 2 || KindOfEntity(g_meas_e) != 2 || mem::Q(g_meas_e + kVUnit) != g_meas_unit)
+        return std::snprintf(msg, cap, "measure our truck first (seat_measure while driving it)"), false;
+    if (!OnFoot()) return std::snprintf(msg, cap, "our Sam is not on foot"), false;
+    std::uint32_t mule = 0;
+    const int src = truckv3::GhostStart(seat, &mule);
+    for (int k = 0; k < 3; ++k) g_ghost_anchor[k] = static_cast<float>(anchor[k]);
+    g_ghost_seat = seat;
+    vwire::VKey key;
+    key.id = VehIdOf(g_meas_e), key.kind = 2;
+    if (!StartCarry(key, 2, g_meas_e, g_meas_unit, 0x5E57u, true)) {
+        g_ghost_seat = 0;
+        truckv3::GhostStop();
+        return std::snprintf(msg, cap, "the carry did not start"), false;
+    }
+    g_ghost_measure_at = g_now + 1500;
+    if (src == 0)
+        Log("[ride] ghost seat %d: no MULE sample (none seated in seat %d now, none recorded): the seated idle", seat, seat);
+    Log("[ride] ghost seat %d: our Sam carried on our truck 0x%05X at (%.3f %.3f %.3f), source %s 0x%05X", seat, key.id, anchor[0], anchor[1], anchor[2],
+        src == 1 ? "live MULE" : src == 2 ? "recorded MULE" : "none", mule);
+    return std::snprintf(msg, cap, "ghost seat %d (%s)", seat, src == 1 ? "live" : src == 2 ? "recorded" : "no source: seated idle"), true;
+}
+
+// ride_test 40 <seat 3..6>: round 30 release A's solo side seat test: our Sam carried on our measured truck's side seat as a
+// passenger is (the get-on glide, the hang: the library idle or the procedural one), no notice. Off: ride_test 2 (a snap) or a
+// press of X / F (the get-off settle and glide).
+bool SideSeatCommand(const double (&v)[3], char* msg, std::size_t cap) noexcept {
+    const auto seat = static_cast<std::uint8_t>(v[1] >= 3 && v[1] <= 6 && static_cast<double>(static_cast<int>(v[1])) == v[1] ? v[1] : 0);
+    if (!seat) return std::snprintf(msg, cap, "seat 3..6 (right front, left front, right rear, left rear side)"), false;
+    if (!g_checks_ok) return std::snprintf(msg, cap, "byte checks failed: %s", g_off), false;
+    if (g_p.st != PState::idle) return std::snprintf(msg, cap, "busy"), false;
+    if (!g_meas_e || g_meas_kind != 2 || KindOfEntity(g_meas_e) != 2 || mem::Q(g_meas_e + kVUnit) != g_meas_unit)
+        return std::snprintf(msg, cap, "measure our truck first (seat_measure while driving it)"), false;
+    if (!OnFoot()) return std::snprintf(msg, cap, "our Sam is not on foot"), false;
+    vwire::VKey key;
+    key.id = VehIdOf(g_meas_e), key.kind = 2;
+    if (!StartCarry(key, 2, g_meas_e, g_meas_unit, 0x5E58u, true, seat)) return std::snprintf(msg, cap, "the carry did not start"), false;
+    return std::snprintf(msg, cap, "side seat test: %s", rwire::SeatName(seat)), true;
+}
+
+// The ghost's measurement, 1.5 s into the carry (the game thread's ride tick).
+void GhostTick() noexcept {
+    if (!g_ghost_seat || g_ghost_measure_at <= 0 || g_now < g_ghost_measure_at) return;
+    g_ghost_measure_at = 0;
+    if (g_p.st != PState::riding) {  // round 30 review: not silent
+        Log("[ride] ghost seat %d: joint err n/a (the carry is not riding)", g_ghost_seat);
+        return;
+    }
+    truckv3::GhostErr r;
+    const bool ok = truckv3::GhostCompare(reinterpret_cast<std::uintptr_t>(g_in.local), g_meas_e, r);
+    char src[64];
+    if (r.kind) std::snprintf(src, sizeof(src), "%s MULE 0x%05X", r.kind == 1 ? "live" : "recorded", r.mule);
+    else std::snprintf(src, sizeof(src), "none");
+    if (ok)
+        Log("[ride] ghost seat %d: joint err mean %.1f cm max %.1f cm (joint %d, %u joints, fingers excluded), feet z %s%.3f, source %s, pose source %d",
+            g_ghost_seat, r.mean_cm, r.max_cm, r.max_j, r.n, r.feet ? "" : "unread ", r.feet_z, src, realbody::RidePose());
+    else
+        Log("[ride] ghost seat %d: joint err n/a (%s), feet z %s%.3f, source %s, pose source %d", g_ghost_seat, r.kind ? "a model unread" : "no reference",
+            r.feet ? "" : "unread ", r.feet_z, src, realbody::RidePose());
+}
+
+}  // namespace
 
 bool SeatMeasureCommand(const double (&v)[3], char* msg, std::size_t cap) noexcept {
     (void)v;
@@ -2892,6 +3702,12 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept 
         }
         case 2:
             if (g_p.st != PState::riding) return std::snprintf(msg, cap, "not riding"), false;
+            if (v[1] == 1) {
+                // round 30 release A: `ride_test 2 1` gets off as a press does (a side seat: the settle and the glide out)
+                g_p.exit_wait_until = g_now + 3000;
+                Log("[ride] test: get off as by a press");
+                return std::snprintf(msg, cap, "getting off (as a press)"), true;
+            }
             EndCarry(rwire::End::test, true, true);
             return std::snprintf(msg, cap, "off"), true;
         case 4:
@@ -2926,13 +3742,23 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept 
             WorldTransform xf{};
             float door[3];
             if (!ReadXf(d.entity, xf) || !rwire::DoorPoint(d.key.kind, door)) return std::snprintf(msg, cap, "unreadable"), false;
-            door[0] += static_cast<float>((v[1] > 0 ? v[1] : 1.0) - 1.0);  // 1 = the door point itself
+            // round 30 release A: `ride_test 8 <m> <seat 3..6>`: a truck side seat's approach point instead (outward on its side)
+            const auto side_seat = static_cast<std::uint8_t>(v[2] >= 3 && v[2] <= 6 ? v[2] : 0);
+            int out = 1;
+            if (side_seat) {
+                if (!rwire::ApproachPoint(d.key.kind, side_seat, door) || d.key.kind != 2) return std::snprintf(msg, cap, "side seats: the truck only"), false;
+                // round 30: a scenario places Sam again before each press (a facing drift); never while he asks or is carried
+                if (g_p.st != PState::idle) return std::snprintf(msg, cap, "our Sam is asking to ride or carried: not moved"), false;
+                out = rwire::SideOf(side_seat);
+            }
+            door[0] += static_cast<float>(out * ((v[1] > 0 ? v[1] : 1.0) - 1.0));  // 1 = the door point itself
             double p[3], w[3];
             PosOf(xf, p);
             rwire::ToWorld(p, Rows(xf), door, w);
-            const double fx = -xf.rot.m[0][0], fy = -xf.rot.m[0][1];
+            const double fx = -out * xf.rot.m[0][0], fy = -out * xf.rot.m[0][1];
             char why[160] = {};
             const bool ok = game::TeleportLocalPlayerFacing(w[0], w[1], w[2] + 0.5, fx, fy, game::TeleportMode::place, why, sizeof(why));
+            if (side_seat) return std::snprintf(msg, cap, "at the %s's %s: %s", vwire::KindName(d.key.kind), rwire::SeatName(side_seat), why), ok;
             return std::snprintf(msg, cap, "at the %s's passenger door: %s", vwire::KindName(d.key.kind), why), ok;
         }
         case 9:
@@ -2985,6 +3811,34 @@ bool Command(int op, const double (&v)[3], char* msg, std::size_t cap) noexcept 
         case 30:
             for (bool& b : g_seat_override) b = false;
             return std::snprintf(msg, cap, "seat overrides off"), true;
+        case 41: return HelperProbeCommand(v, msg, cap);  // round 30 stage 0 (P1)
+        case 40: return SideSeatCommand(v, msg, cap);     // round 30 release A: the solo side seat test
+        case 44: {
+            // round 30 release A (hidden runs or dev_tools): 0 the side seats off here (as ride_sides=0: the STR1 hello without
+            // them), 1 on, 2 no STR1 hello at all and none offered here (as an older build)
+            if (!automation::Enabled() && !dev::Enabled()) return std::snprintf(msg, cap, "hidden runs or dev_tools only"), false;
+            const int mode = static_cast<int>(v[1]);
+            if (mode < 0 || mode > 2 || static_cast<double>(mode) != v[1]) return std::snprintf(msg, cap, "0 side seats off, 1 on, 2 no STR1 hello"), false;
+            g_sides_cfg = mode == 1;
+            g_str_mute = mode == 2;
+            g_str_next = 0;  // the next tick tells the partner
+            Log("[ride] test: side seats %s", mode == 1 ? "ON" : mode == 0 ? "OFF (as ride_sides=0)" : "OFF and no STR1 hello (as an older build)");
+            return std::snprintf(msg, cap, "side seats %s", mode == 1 ? "on" : mode == 0 ? "off" : "off, no hello"), true;
+        }
+        case 42: {                                        // round 30 release A: the side library
+            char lib[400];
+            realbody::SideLibraryStatus(lib, sizeof(lib));
+            realbody::SideHangStats hs;
+            realbody::SideHangStatus(&hs);
+            Log("[ride] side library: %s", lib);
+            Log("[ride] side hang: seat %d, mode %s, writes %u (library %u), IK %u ok %u failed, %u failed, lift %.2f m, feet z %.3f, hand err %.1f cm%s; "
+                "STR1 hello %s (tx %u rx %u bad %u), side seats %s",
+                hs.seat, hs.mode == 1 ? "library" : hs.mode == 2 ? "procedural" : "none", hs.writes, hs.lib_writes, hs.ik_ok, hs.ik_fail, hs.failed, hs.lift_m,
+                hs.feet_z, hs.hand_err_cm, hs.lib_off ? ", the library off (its feet check)" : "", g_str_have ? "received" : "none", g_str_tx, g_str_rx, g_str_bad,
+                SidesNow() ? "offered" : "not offered");
+            return std::snprintf(msg, cap, "%s", lib), true;
+        }
+        case 43: return GhostCommand(v, msg, cap);        // round 30 stage 0 (P3)
         case 15: {
             // the landing shield and our Sam's health (logged)
             game::Diagnostics d;

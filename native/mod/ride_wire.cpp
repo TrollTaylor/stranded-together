@@ -33,7 +33,7 @@ bool Valid(const Msg& m) noexcept {
     const auto t = static_cast<std::uint8_t>(m.type);
     if (t < 1 || t > 4) return false;
     if (m.kind < 1 || m.kind > 3 || vwire::KindOfActorId(m.vehicle_id) != m.kind) return false;
-    if (m.seat != SeatOf(m.kind)) return false;
+    if (!SeatValidFor(m.kind, static_cast<std::uint8_t>(m.seat))) return false;
     if (!ReasonOk(m.type, m.reason)) return false;
     if (m.from > 1 || m.ride_id == 0) return false;
     return true;
@@ -54,12 +54,16 @@ const char* SeatName(std::uint8_t s) noexcept {
     switch (s) {
         case 1: return "passenger seat";
         case 2: return "pillion";
+        case 3: return "right front side";
+        case 4: return "left front side";
+        case 5: return "right rear side";
+        case 6: return "left rear side";
         default: return "no seat";
     }
 }
 const char* DenyName(std::uint8_t r) noexcept {
     static const char* const k[] = {"the driver does not drive it", "the seat is taken", "the vehicle moves", "not beside the vehicle",
-                                     "riding together is off on the driver's game", "another world"};
+                                     "riding together is off on the driver's game", "another world", "that seat is not offered"};
     return r < sizeof(k) / sizeof(k[0]) ? k[r] : "?";
 }
 const char* EndName(std::uint8_t r) noexcept {
@@ -153,6 +157,80 @@ bool DoorPoint(std::uint8_t kind, float (&off)[3]) noexcept {
     }
 }
 
+bool SeatValidFor(std::uint8_t kind, std::uint8_t seat) noexcept {
+    if (seat != 0 && seat == static_cast<std::uint8_t>(SeatOf(kind))) return true;
+    return kind == 2 && SideSeat(seat);
+}
+bool SeatAnchor(std::uint8_t kind, std::uint8_t seat, float (&off)[3]) noexcept {
+    if (SideSeat(seat)) {
+        if (kind != 2) return false;
+        off[0] = SideOf(seat) > 0 ? 1.299f : -1.299f;
+        off[1] = seat <= 4 ? 0.127f : -0.692f;
+        off[2] = 0.778f;
+        return true;
+    }
+    return PassengerSeat(kind, off);
+}
+bool SideHandle(std::uint8_t seat, float (&off)[3]) noexcept {
+    switch (seat) {
+        case 3: off[0] = 1.149f, off[1] = 0.341f, off[2] = 2.187f; return true;
+        case 4: off[0] = -1.166f, off[1] = 0.316f, off[2] = 2.160f; return true;
+        case 5: off[0] = 1.170f, off[1] = -0.758f, off[2] = 2.170f; return true;
+        case 6: off[0] = -1.179f, off[1] = -0.716f, off[2] = 2.163f; return true;
+        default: return false;
+    }
+}
+bool ApproachPoint(std::uint8_t kind, std::uint8_t seat, float (&off)[3]) noexcept {
+    if (!SideSeat(seat)) return DoorPoint(kind, off);
+    if (!SeatAnchor(kind, seat, off)) return false;
+    off[0] += static_cast<float>(SideOf(seat) * kApproachOutM);
+    off[2] = 0.0f;
+    return true;
+}
+std::uint8_t PickSeat(std::uint8_t kind, bool sides, const double (&local)[3], std::uint32_t taken) noexcept {
+    const auto own = static_cast<std::uint8_t>(SeatOf(kind));
+    if (!sides || kind != 2) return own;
+    for (double v : local)
+        if (!std::isfinite(v)) return own;
+    const auto hdist = [&](std::uint8_t s, double* d) {
+        float a[3];
+        if (!ApproachPoint(kind, s, a)) return false;
+        const double dx = local[0] - a[0], dy = local[1] - a[1];
+        *d = std::sqrt(dx * dx + dy * dy);
+        return true;
+    };
+    double dd = 1e9;  // the cab's door
+    if (!hdist(own, &dd)) dd = 1e9;
+    std::uint8_t best = own;
+    double bd = kPickRadiusM;
+    for (std::uint8_t s : {std::uint8_t{3}, std::uint8_t{4}, std::uint8_t{5}, std::uint8_t{6}}) {
+        if ((taken >> s) & 1u) continue;
+        double d = 0;
+        if (!hdist(s, &d)) continue;
+        if (d < bd && d + kPickCabBiasM < dd) bd = d, best = s;
+    }
+    return best;
+}
+
+std::size_t EncodeHello(const Hello& h, std::uint8_t* out, std::size_t cap) noexcept {
+    if (!out || cap < kHelloMessageSize || h.version < 1 || (h.role != 1 && h.role != 2)) return 0;
+    if (vwire::WriteHeader(kHelloSvmType, out, cap) != kSvmHeaderSize) return 0;
+    std::uint8_t* b = out + kSvmHeaderSize;
+    std::memcpy(b, "STR1", 4);
+    b[4] = h.version, b[5] = h.features, b[6] = h.role, b[7] = 0;
+    return kHelloMessageSize;
+}
+bool DecodeHello(const std::uint8_t* in, std::size_t size, Hello& out) noexcept {
+    std::uint8_t type = 0;
+    if (!in || size != kHelloMessageSize || !vwire::PeekType(in, size, &type) || type != kHelloSvmType) return false;
+    const std::uint8_t* b = in + kSvmHeaderSize;
+    if (std::memcmp(b, "STR1", 4) != 0 || b[4] < 1 || (b[6] != 1 && b[6] != 2) || b[7] != 0) return false;
+    out.version = b[4];
+    out.features = static_cast<std::uint8_t>(b[5] & kAllFeatures);
+    out.role = b[6];
+    return true;
+}
+
 void ToWorld(const double (&pos)[3], const float (&rows)[9], const float (&off)[3], double (&out)[3]) noexcept {
     for (int i = 0; i < 3; ++i)
         out[i] = pos[i] + static_cast<double>(off[0]) * rows[0 + i] + static_cast<double>(off[1]) * rows[3 + i] + static_cast<double>(off[2]) * rows[6 + i];
@@ -176,6 +254,32 @@ Block BoardCheck(const BoardIn& in) noexcept {
     return Block::ok;
 }
 
+const char* NoPromptName(NoPrompt n) noexcept {
+    switch (n) {
+        case NoPrompt::board: return "board";
+        case NoPrompt::idle: return "idle";
+        case NoPrompt::not_allowed: return "boarding not allowed";
+        case NoPrompt::too_soon: return "too soon";
+        case NoPrompt::too_far: return "too far from the seat's approach point";
+        case NoPrompt::game_prompt: return "the game's Use Vehicle is shown";
+        case NoPrompt::other_vehicle: return "the game offers another vehicle";
+        case NoPrompt::game_press: return "the game took the press";
+        case NoPrompt::count: break;
+    }
+    return "?";
+}
+
+NoPrompt NoPromptPress(const NoPromptIn& in) noexcept {
+    if (!in.native_on || !in.pressed) return NoPrompt::idle;
+    if (!in.allowed) return NoPrompt::not_allowed;
+    if (in.game_press_now || !(in.game_press_age_ms >= kNoPromptGameMs)) return NoPrompt::game_press;
+    if (!(in.partner_prompt_age_ms >= kNoPromptQuietMs)) return NoPrompt::game_prompt;
+    if (!(in.other_prompt_age_ms >= kNoPromptQuietMs)) return NoPrompt::other_vehicle;
+    if (!(in.approach_dist_m <= kBoardRadiusM)) return NoPrompt::too_far;
+    if (!(in.allowed_for_ms >= kNoPromptQuietMs) || !(in.since_last_ms >= kNoPromptGapMs)) return NoPrompt::too_soon;
+    return NoPrompt::board;
+}
+
 bool DriverAccepts(const DriverIn& in, Deny* why) noexcept {
     Deny d = Deny::count;
     if (!in.feature_on) d = Deny::off;
@@ -193,6 +297,10 @@ bool DriverAccepts(const DriverIn& in, Deny* why) noexcept {
 bool DriverPlacesBody(bool accepted, double since_accept_ms, double passenger_bit_age_ms) noexcept {
     if (!accepted) return false;
     return since_accept_ms < kAcceptGraceMs || passenger_bit_age_ms < kPassengerBitMs;
+}
+bool DriverBodyFree(bool side_seat, bool resume, double since_accept_ms, double glide_bit_age_ms) noexcept {
+    if (!side_seat || resume) return false;
+    return since_accept_ms < kSideGlideFreeMs || glide_bit_age_ms < kGlideBitMs;
 }
 bool DriverTimedOut(bool accepted, double since_accept_ms, double passenger_bit_age_ms) noexcept {
     return accepted && since_accept_ms >= kDriverTimeoutMs && passenger_bit_age_ms >= kDriverTimeoutMs;
@@ -323,7 +431,11 @@ double CrashConfirm::Update(const float (&vel)[3], float speed_kmh, double key_m
     return fired;
 }
 
-ExitSpot ExitPlacement(std::uint8_t kind, const double (&pos)[3], const float (&rows)[9], const float (&vel)[3], bool forced) noexcept {
+namespace {
+// want_side: 0 the old rule's choice, else that side when not forced; along / out_m: the place along the vehicle and the
+// distance beyond the body's edge.
+ExitSpot ExitImpl(std::uint8_t kind, const double (&pos)[3], const float (&rows)[9], const float (&vel)[3], bool forced, int want_side, bool have_along,
+                  double along_in, double out_m) noexcept {
     ExitSpot s;
     float half[3];
     vwire::KindHalfExtents(kind, half);
@@ -346,7 +458,7 @@ ExitSpot ExitPlacement(std::uint8_t kind, const double (&pos)[3], const float (&
     }
     const double vlat = static_cast<double>(vel[0]) * rx + static_cast<double>(vel[1]) * ry;
     const double vfwd = static_cast<double>(vel[0]) * fx + static_cast<double>(vel[1]) * fy;
-    int side = 1;
+    int side = want_side ? want_side : 1;
     if (forced && std::fabs(vlat) > 0.5) side = vlat > 0 ? -1 : 1;
     // the body's edge along the horizontal right direction on the chosen side: the body is the box right [-h0, h0], forward
     // [-h1, h1], up [0, 2 h2] in the vehicle's frame (its origin is its base: the seats' and doors' heights); upright that is
@@ -356,12 +468,12 @@ ExitSpot ExitPlacement(std::uint8_t kind, const double (&pos)[3], const float (&
     for (int a = 0; a < 2; ++a) flat += static_cast<double>(half[a]) * std::fabs(rx * rows[a * 3 + 0] + ry * rows[a * 3 + 1]);
     const double tall = 2.0 * static_cast<double>(half[2]) * up_d;
     const double edge = side > 0 ? flat + (std::max)(0.0, tall) : -flat + (std::min)(0.0, tall);
-    double along = door[1];
+    double along = have_along ? along_in : door[1];
     if (forced) {
         const double back = (std::min)(3.0, std::fabs(vfwd) * 0.25);
         along -= vfwd >= 0 ? back : -back;
     }
-    const double out = edge + side * 0.7;
+    const double out = edge + side * out_m;
     s.pos[0] = pos[0] + out * rx + along * fx;
     s.pos[1] = pos[1] + out * ry + along * fy;
     // the height: the vehicle's base when upright (the origin, its ground plane); tilted, the lowest point of its body (the
@@ -375,6 +487,16 @@ ExitSpot ExitPlacement(std::uint8_t kind, const double (&pos)[3], const float (&
     s.facing[0] = static_cast<float>(-side * rx), s.facing[1] = static_cast<float>(-side * ry);
     s.side = side;
     return s;
+}
+}  // namespace
+
+ExitSpot ExitPlacement(std::uint8_t kind, const double (&pos)[3], const float (&rows)[9], const float (&vel)[3], bool forced) noexcept {
+    return ExitImpl(kind, pos, rows, vel, forced, 0, false, 0, 0.7);
+}
+ExitSpot ExitPlacement(std::uint8_t kind, std::uint8_t seat, const double (&pos)[3], const float (&rows)[9], const float (&vel)[3], bool forced) noexcept {
+    float a[3];
+    if (!SideSeat(seat) || !SeatAnchor(kind, seat, a)) return ExitImpl(kind, pos, rows, vel, forced, 0, false, 0, 0.7);
+    return ExitImpl(kind, pos, rows, vel, forced, SideOf(seat), true, a[1], kSideExitOutM);
 }
 
 // ---------------------------------------------------------------- the save guard

@@ -99,6 +99,27 @@ Config LoadConfig(const std::wstring& dir) {
             c.enemy_host_hide = ParseBool(v);
             continue;
         }
+        // Round 30 release A keys (the side seats), outside the chain too.
+        if (k == "ride_sides") {
+            c.ride_sides = ParseBool(v);
+            continue;
+        }
+        if (k == "ride_mule_pose") {
+            c.ride_mule_pose = ParseBool(v);
+            continue;
+        }
+        if (k == "ride_mule_record") {
+            c.ride_mule_record = ParseBool(v);
+            continue;
+        }
+        if (k == "ride_mule_cache") {
+            c.ride_mule_cache = ParseBool(v);
+            continue;
+        }
+        if (k == "ride_side_hide_pack") {
+            c.ride_side_hide_pack = ParseBool(v);
+            continue;
+        }
         // Round 22 keys (dev give), outside the chain too (giverules: unit-tested).
         if (k == "dev_give") {
             c.dev_give = ParseBool(v);
@@ -168,6 +189,18 @@ Config LoadConfig(const std::wstring& dir) {
             }
             if (k == "bt_sync") {  // round 28 lane B1: 0..2, malformed / negative 0
                 c.bt_sync = btrules::SyncLevel(std::atof(v.c_str()));
+                continue;
+            }
+            if (k == "bt_trouble") {  // round 30 BT S1 (its own block: the else-if chain is at the nesting limit)
+                c.bt_trouble = ParseBool(v);
+                continue;
+            }
+            if (k == "bt_markers") {  // round 30 BT S1
+                c.bt_markers = ParseBool(v);
+                continue;
+            }
+            if (k == "bt_kill") {  // round 30 BT S2: 0..2, malformed / negative 0
+                c.bt_kill = btrules::SyncLevel(std::atof(v.c_str()));
                 continue;
             }
             {
@@ -585,6 +618,8 @@ Config LoadConfig(const std::wstring& dir) {
         c.vehicle_look ? 1 : 0, c.vehicle_packs ? 1 : 0, c.vehicle_real_native ? 1 : 0);
     Log("[config] ride_together=%d ride_pose=%d ride_camera=%d ride_hide_pack=%d partner_vehicle_damage=%d", c.ride_together ? 1 : 0, c.ride_pose,
         c.ride_camera ? 1 : 0, c.ride_hide_pack ? 1 : 0, c.partner_vehicle_damage ? 1 : 0);
+    Log("[config] ride_sides=%d ride_mule_pose=%d ride_mule_record=%d ride_mule_cache=%d ride_side_hide_pack=%d", c.ride_sides ? 1 : 0, c.ride_mule_pose ? 1 : 0,
+        c.ride_mule_record ? 1 : 0, c.ride_mule_cache ? 1 : 0, c.ride_side_hide_pack ? 1 : 0);
     Log("[config] world_sync=%d%s contrib=%d ladders=%d ziplines=%d anim=%s%s%s", c.world_sync ? 1 : 0, c.world_sync_set ? "" : " (default: on with host_save=1)",
         c.world_contrib ? 1 : 0, c.world_ladders ? 1 : 0, c.world_ziplines ? 1 : 0,
         c.world_anim == 1 ? "bits" : c.world_anim == 2 ? "loaded" : c.world_anim == 3 ? "off" : "645", c.world_test_fail.empty() ? "" : " test_fail=",
@@ -592,6 +627,8 @@ Config LoadConfig(const std::wstring& dir) {
     if (c.audio_probe) Log("[config] audio_probe=1 (logging only)");
     if (c.bt_probe) Log("[config] bt_probe=%d (BT census, logging only)", c.bt_probe);
     if (c.bt_sync) Log("[config] bt_sync=%d (BT field sync: FIELD / NOTICED / VOID%s)", c.bt_sync, c.bt_sync >= 2 ? " / RESET applied on the guest" : "");
+    if (c.bt_sync) Log("[config] bt_trouble=%d bt_markers=%d bt_kill=%d (%s)", c.bt_trouble ? 1 : 0, c.bt_markers ? 1 : 0, c.bt_kill,
+                       c.bt_kill >= 2 ? "partner kills applied" : c.bt_kill == 1 ? "kills relayed, not applied" : "kills off");
     Log("[config] self_voice=%s voice_sync=%d voice_subtitles=%d sound_sync=%d sound_steps=%d partner_volume=%d vehicle_sound=%d",
         selfvoice::ModeName(c.self_voice), c.voice_sync ? 1 : 0, c.voice_subtitles ? 1 : 0, c.sound_sync ? 1 : 0, c.sound_steps ? 1 : 0, c.partner_volume,
         c.vehicle_sound ? 1 : 0);

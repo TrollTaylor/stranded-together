@@ -16,3 +16,6 @@ testenv-saves/
 
 # devdash launcher (a local copy of tools/devdash/devdash.bat.example)
 /devdash.bat
+
+# round 30: the side seats' pose cache (game animation data learned at runtime; it lives in %LOCALAPPDATA%\StrandedTogether, never here)
+mule_ride_lib*

@@ -90,6 +90,11 @@ void SetHitsPart(bool on, const char* why_off) noexcept;
 // 5) on / off; the partner's beacon carries it (false: no beacon or an older build).
 void SetRestrainPart(bool on) noexcept;
 bool PeerRestrain() noexcept;
+// Round 30 review (bt_sync's VOID verdict; docs/enemy-sync.md 22), game thread: the partner's down code can reach us now: both
+// beacons carry kPartRestrain (ours makes the partner send its byte 22; theirs means its enemy_sync, hits and restrain relay run,
+// so its down tick does). False with enemy_sync, enemy_hits or enemy_restrain_relay off on either side (off by default without
+// host_save) or no beacon.
+bool DownChannel() noexcept;
 // Round 23 C (docs/enemy-sync.md 14.9), game thread: our own player's down code (erules::PlayerDown, 0..4) for the beacon's byte 22.
 // Sent only once the partner's beacon has carried kPartRestrain on this link generation (a round-23 build; an older decoder refuses
 // the byte). That is latched: a partner whose restrain part drops later (a fault there) still decodes the byte, and a 0 sent for that

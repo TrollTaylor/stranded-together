@@ -192,6 +192,11 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $zipPath = Join-Path $OutputRoot "$name.zip"
 if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
 $entries = @("StrandedTogether.exe", "winhttp.dll", "stranded_together/package.json", "stranded_together/README.txt", "stranded_together/THIRD_PARTY_NOTICES.txt")
+# Round 30: the side seats' pose cache (game animation data the mod learns at runtime, %LOCALAPPDATA%\StrandedTogether\mule_ride_lib.bin)
+# is never shipped: not staged, not an entry
+$poseCache = @(Get-ChildItem -LiteralPath $stage -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -like '*mule_ride_lib*' })
+if ($poseCache.Count -gt 0) { throw "the stage holds the side seats' pose cache ($($poseCache[0].FullName)): it is never shipped" }
+if (@($entries | Where-Object { $_ -like '*mule_ride_lib*' }).Count -gt 0) { throw "the zip would hold the side seats' pose cache: it is never shipped" }
 $zip = [IO.Compression.ZipFile]::Open($zipPath, [IO.Compression.ZipArchiveMode]::Create)
 try {
     foreach ($e in $entries) {
@@ -206,6 +211,7 @@ try {
     $names = @($check.Entries | ForEach-Object { $_.FullName })
     foreach ($e in $entries) { if ($names -notcontains $e) { throw "zip is missing $e" } }
     if ($names.Count -ne $entries.Count) { throw "zip has unexpected entries: $($names -join ', ')" }
+    if (@($names | Where-Object { $_ -like '*mule_ride_lib*' }).Count -gt 0) { throw "zip holds the side seats' pose cache: it is never shipped" }
     $sha = [Security.Cryptography.SHA256]::Create()
     foreach ($row in $files) {
         $s = $check.GetEntry($row.path).Open()

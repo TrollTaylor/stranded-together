@@ -175,6 +175,8 @@ native/mod/odra_rules.hpp              odradek-scan
 # P1b/P1c's ownership (enemy-own: auto run since round 21, its gate two-games-enemy-camp passed). The ~regex lines below add the later phases by the changed lines.
 native/mod/bt_sync.*                   bt-sync
 native/mod/bt_rules.hpp                bt-sync
+native/mod/bt_world.*                  bt-sync
+native/mod/bt_markers.*                bt-sync
 native/mod/bt_*                        research
 native/mod/enemy_l1_*                  research
 native/mod/enemy_phit*                 enemy-melee
@@ -251,6 +253,7 @@ native/mod/vehicle_*                   vehicle-share
 native/mod/partner_tackle.*            vehicle-hit
 native/mod/tackle_rules.*              vehicle-hit
 native/mod/ride_*                      ride
+native/mod/mule_ride_rules.hpp         ride research
 native/mod/world_*                     world-sync
 
 # ---- narrowing by the changed lines (added to the file's areas above). Keep the regexes specific: a match costs a run.

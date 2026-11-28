@@ -319,6 +319,11 @@ bool CameraView(game::Entity* local, double (&pos)[3], double (&fwd)[3]) noexcep
     return true;
 }
 
+std::uintptr_t CameraViewObject(game::Entity* local) noexcept {
+    if (!local || !Resolve()) return 0;
+    return ViewOf(local);
+}
+
 }  // namespace st::nametags
 
 namespace st::game {

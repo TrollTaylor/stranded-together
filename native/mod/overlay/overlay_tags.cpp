@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <cfloat>
+#include <cmath>
 #include <cstdio>
 
 #include "imgui.h"
@@ -18,6 +19,8 @@ constexpr ULONGLONG kFreshMs = 500;  // a frame the game thread stopped refreshi
 SRWLOCK g_lock = SRWLOCK_INIT;
 Frame g_frame;
 ULONGLONG g_frame_tick = 0;
+BtFrame g_bt;  // round 30 BT marks (under g_lock too)
+ULONGLONG g_bt_tick = 0;
 std::atomic<ViewReader> g_reader{nullptr};
 
 SRWLOCK g_stats_lock = SRWLOCK_INIT;
@@ -45,17 +48,107 @@ void Publish(const Frame& f) noexcept {
     ReleaseSRWLockExclusive(&g_stats_lock);
 }
 
+void PublishBt(const BtFrame& f) noexcept {
+    AcquireSRWLockExclusive(&g_lock);
+    g_bt = f;
+    g_bt_tick = GetTickCount64();
+    ReleaseSRWLockExclusive(&g_lock);
+    AcquireSRWLockExclusive(&g_stats_lock);
+    ++g_stats.bt_published;
+    ReleaseSRWLockExclusive(&g_stats_lock);
+}
+
 bool Wanted() noexcept {
     if (!g_reader.load()) return false;
     AcquireSRWLockShared(&g_lock);
-    const bool want = g_frame.show && g_frame.count > 0 && g_frame.view && Fresh(g_frame_tick);
+    const bool want = (g_frame.show && g_frame.count > 0 && g_frame.view && Fresh(g_frame_tick)) ||
+                      (g_bt.show && g_bt.count > 0 && g_bt.view && Fresh(g_bt_tick));
     ReleaseSRWLockShared(&g_lock);
     return want;
 }
 
-void Draw(ImDrawList* dl, float w, float h, float ui_scale) noexcept {
-    const ViewReader reader = g_reader.load();
-    if (!dl || !reader || !(w > 0) || !(h > 0)) return;
+namespace {
+
+// Round 30 BT marks: shapes only, sized by distance, faded out from 100 m to 150 m.
+float MarkSize(float dist, float scale) {
+    float s = dist > 1.0f ? 520.0f / dist : 520.0f;
+    s = s < 7.0f ? 7.0f : (s > 18.0f ? 18.0f : s);
+    return s * scale;
+}
+float MarkAlpha(float dist) {
+    if (!(dist < 150.0f)) return 0.0f;
+    return dist < 100.0f ? 1.0f : (150.0f - dist) / 50.0f;
+}
+
+void DrawBt(ImDrawList* dl, float w, float h, float scale, ViewReader reader) {
+    BtFrame f;
+    ULONGLONG tick = 0;
+    AcquireSRWLockShared(&g_lock);
+    f = g_bt;
+    tick = g_bt_tick;
+    ReleaseSRWLockShared(&g_lock);
+    if (!f.show || !f.count || !f.view || !Fresh(tick)) return;
+    nametag::View v;
+    if (!reader(f.view, &v)) return;  // the marks skip this frame (the name tags' path counts reader failures)
+    unsigned drawn = 0, gz = 0, tar = 0, cat = 0;
+    for (unsigned i = 0; i < f.count && i < kMaxBtMarks; ++i) {
+        const BtMark& m = f.marks[i];
+        if (m.kind == kBtTar) {
+            // the ring: 24 points on the ground round the partner, visible neighbours joined
+            const double r = m.radius > 0.5f ? m.radius : 6.0;
+            const nametag::Projected c = nametag::Project(v, m.anchor, w, h, 4000.0f);
+            const float a = MarkAlpha(c.dist);
+            if (!(a > 0)) continue;
+            const ImU32 col = m.gold ? IM_COL32(222, 170, 60, static_cast<int>(200 * a)) : IM_COL32(20, 14, 12, static_cast<int>(210 * a));
+            const ImU32 glow = m.gold ? IM_COL32(255, 220, 120, static_cast<int>(70 * a)) : IM_COL32(150, 30, 24, static_cast<int>(90 * a));
+            nametag::Projected prev{};
+            bool any = false;
+            for (int k = 0; k <= 24; ++k) {
+                const double t = 6.283185307179586 * (k % 24) / 24.0;
+                const double p[3] = {m.anchor[0] + r * std::cos(t), m.anchor[1] + r * std::sin(t), m.anchor[2]};
+                const nametag::Projected q = nametag::Project(v, p, w, h, 4000.0f);
+                if (k > 0 && prev.visible && q.visible) {
+                    dl->AddLine(ImVec2(prev.x, prev.y), ImVec2(q.x, q.y), glow, 7.0f * scale);
+                    dl->AddLine(ImVec2(prev.x, prev.y), ImVec2(q.x, q.y), col, 3.0f * scale);
+                    any = true;
+                }
+                prev = q;
+            }
+            if (any) ++drawn, ++tar;
+            continue;
+        }
+        const nametag::Projected p = nametag::Project(v, m.anchor, w, h);
+        const float a = MarkAlpha(p.dist);
+        if (!p.visible || !(a > 0)) continue;
+        const float s = MarkSize(p.dist, scale);
+        if (m.kind == kBtGazer) {
+            // a small amber diamond with a dark edge over the gazer's head
+            const ImVec2 t(p.x, p.y - s), r(p.x + s * 0.62f, p.y), b(p.x, p.y + s), l(p.x - s * 0.62f, p.y);
+            dl->AddQuadFilled(t, r, b, l, IM_COL32(236, 178, 64, static_cast<int>(185 * a)));
+            dl->AddQuad(t, r, b, l, IM_COL32(24, 18, 10, static_cast<int>(200 * a)), 1.5f * scale);
+            ++drawn, ++gz;
+        } else if (m.kind == kBtCatcher) {
+            // a ring over the catcher and its health under it
+            dl->AddCircle(ImVec2(p.x, p.y), s * 1.3f, IM_COL32(236, 178, 64, static_cast<int>(200 * a)), 24, 2.5f * scale);
+            if (m.hp >= 0) {
+                const float bw = s * 4.0f, bh = 4.0f * scale, y0 = p.y + s * 1.3f + 5.0f * scale;
+                const float fill = (m.hp > 100 ? 100 : m.hp) / 100.0f;
+                dl->AddRectFilled(ImVec2(p.x - bw / 2, y0), ImVec2(p.x + bw / 2, y0 + bh), IM_COL32(10, 10, 12, static_cast<int>(170 * a)));
+                dl->AddRectFilled(ImVec2(p.x - bw / 2, y0), ImVec2(p.x - bw / 2 + bw * fill, y0 + bh),
+                                  IM_COL32(236, 178, 64, static_cast<int>(230 * a)));
+            }
+            ++drawn, ++cat;
+        }
+    }
+    AcquireSRWLockExclusive(&g_stats_lock);
+    if (drawn) {
+        ++g_stats.bt_drawn_frames;
+        g_stats.bt_last_drawn = drawn, g_stats.bt_last_gazer = gz, g_stats.bt_last_tar = tar, g_stats.bt_last_catcher = cat;
+    }
+    ReleaseSRWLockExclusive(&g_stats_lock);
+}
+
+void DrawNames(ImDrawList* dl, float w, float h, float ui_scale, ViewReader reader) {
     Frame f;
     ULONGLONG tick = 0;
     AcquireSRWLockShared(&g_lock);
@@ -150,6 +243,15 @@ void Draw(ImDrawList* dl, float w, float h, float ui_scale) noexcept {
         }
         g_was_drawn = any;
     }
+}
+
+}  // namespace
+
+void Draw(ImDrawList* dl, float w, float h, float ui_scale) noexcept {
+    const ViewReader reader = g_reader.load();
+    if (!dl || !reader || !(w > 0) || !(h > 0)) return;
+    DrawNames(dl, w, h, ui_scale, reader);
+    DrawBt(dl, w, h, ui_scale > 0 ? ui_scale : 1.0f, reader);
 }
 
 Stats GetStats() noexcept {
